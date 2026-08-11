@@ -253,3 +253,40 @@ Two build notes worth keeping: adding a source file requires regenerating the ta
 Makefile (`automake src/Makefile && ./config.status src/Makefile`) or the object is
 silently not linked, and `xf86LoadSubModule(pScrn, "exa")` must run before any EXA
 symbol is referenced or the server dies with `undefined symbol: exaDriverAlloc`.
+
+## Line drawing
+
+The engine has a real **vector line primitive** — not a Bresenham-parameter engine.  There
+is no dx/dy, no error term and no octant code, and horizontal/vertical lines are *not*
+special-cased into rectangles.  [MxMD.dll `DrvLineTo` @0x35ae0, `DrvStrokePath` @0x352a0]
+
+| register | index | meaning |
+|---|---|---|
+| `0x13cc` | 0xf3 | start vertex, `(y<<16) \| (x & 0xffff)`, both signed 16-bit |
+| **`0x13ec`** | **0xfb** | **end vertex — draws the segment and becomes the new current point** |
+| `0x1224` | 0x89 | pixel mode; bits[2:0] = 1 when bpp >= 16, 0 below.  Only on a bpp change |
+| `0x13d4` / `0x13d8` | 0xf5/0xf6 | clip min/max, `(y<<16)\|x`, right/bottom exclusive |
+
+A polyline is one `0x13ec` write per segment with no re-setup.
+
+Lines use their **own control-word base**, not the rectangle path's `0x06000000`:
+
+```
+ctrl = (bpp >= 16 ? 0x48470000 : 0x48430000) | hwrop | (clipping ? 0x00008000 : 0)
+```
+
+**The endpoint is exclusive — the engine omits the last pixel**, which maps directly onto
+XAA's `OMIT_LAST`.  When the caller wants the endpoint drawn, extend by one step along the
+major axis.  (No inclusive-endpoint control bit could be located; the vendor never needs
+one because GDI also wants exclusive endpoints.  Its `PD_CLOSEFIGURE` handling re-emits
+vertex 0 as a final `0xfb`, which would double-hit every joint on an inclusive engine.)
+
+**There is no hardware line styling.**  `DrvStrokePath` punts to `EngStrokePath` for any
+geometric/styled/dashed line, any non-NULL style, coordinates outside ±0x7fff, or a complex
+clip that overflows its buffer.  Only solid, cosmetic, one-pixel-wide lines are accelerated,
+so an XAA port should hook the solid line entries only and leave dashes to software.
+
+Optional: index 0xec (`0x13b0`) carries 28.4 sub-pixel fractions (`y_frac` bits[31:28],
+`x_frac` bits[23:20]) — irrelevant for integer XAA lines.
+
+`INDEX_DrvFillPath`, `DrvStrokeAndFillPath` and `DrvPaint` are **not** hooked by the vendor.
