@@ -212,3 +212,44 @@ lives entirely in the miniport, the same split this driver already has.
 
 The low two bits of the base dword (a format tag), mode-dword bit 23, the low field of
 the GO register 0xe6, and the context-base registers 0x1094/0x1098/0x109c/0x10ec.
+
+## Acceleration APIs in the vendor drivers
+
+**There is no XAA anywhere in the M9 Linux driver** — no `XAAInit` / `XAACreateInfoRec`
+reference and no XAA string in any build of the package (6.9.0 through 1.13.0).  EXA
+only, and the driver bundles its own forked copy (`exa_for_xorg1.13/exa.c`), which is
+why `nm -D` shows no `exaDriverInit` import and why its `ExaDriverRec` carries four
+Matrox-private fields past the standard ones.  Its only accel knob is `NoAccel`.
+
+The **Windows** XDDM driver hooks a much wider set of GDI operations — `MxMD.dll`
+imports the whole punt family, which tells us what it hooks: `EngBitBlt`, `EngCopyBits`,
+`EngStretchBlt`, `EngStretchBltROP`, `EngAlphaBlend`, `EngTransparentBlt`,
+`EngGradientFill`, `EngTextOut`, `EngLineTo`, `EngStrokePath`, `EngPlgBlt`.  That is not
+extra hardware capability, only a wider API surface: EXA implements text, lines and
+gradients on top of solid/copy/composite.  Both drivers share a `PuntAll2d` debug knob.
+
+## Implementation status in this driver
+
+`parhelia_m9_exa.c` implements solid and copy over the direct-MMIO path, gated behind
+`Option "EXA"` on the M9 (XAA is refused there).  It initialises cleanly on hardware and
+X stays up under both VBE and native modesetting, logging
+`M9 EXA: solid + copy, offscreen 0x300000..0x10000000`.
+
+**Acceleration is not yet proven to work**, for two reasons that are independent of the
+EXA code:
+
+1. **The engine reports permanently busy** — `0x8f0 & 0x00030000` stays set.  The vendor
+   enables the drawing engine in `PBoard::InitBoard` / `EnableHardware` (error strings at
+   0xe8c3d1 / 0xe91338 / 0xe91368) *before* EXA init, and that step has never been
+   traced.  This is the prime suspect.
+2. **Nothing X draws reaches VRAM on the test machine at all** — an 8 MB scan reads zero
+   after fills, under EXA *and* under plain shadowfb, with both VBE and native
+   modesetting.  Reads work and the aperture accepts CPU writes (a direct
+   `0xa5a5a5a5` marker test succeeds), so this is a separate defect that predates the
+   accel work.  It should be isolated on a Parhelia/P690, where the display works and a
+   failure would be visible.
+
+Two build notes worth keeping: adding a source file requires regenerating the target
+Makefile (`automake src/Makefile && ./config.status src/Makefile`) or the object is
+silently not linked, and `xf86LoadSubModule(pScrn, "exa")` must run before any EXA
+symbol is referenced or the server dies with `undefined symbol: exaDriverAlloc`.
