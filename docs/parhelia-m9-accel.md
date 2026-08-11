@@ -290,3 +290,39 @@ Optional: index 0xec (`0x13b0`) carries 28.4 sub-pixel fractions (`y_frac` bits[
 `x_frac` bits[23:20]) — irrelevant for integer XAA lines.
 
 `INDEX_DrvFillPath`, `DrvStrokeAndFillPath` and `DrvPaint` are **not** hooked by the vendor.
+
+## CORRECTION: the 2D destination is 0x12d8/0x12dc, not 0x12e0/0x12e4
+
+The earlier identification of `0xb8`/`0xb9` (`0x12e0`/`0x12e4`) as the render target was
+wrong.  In the whole Windows display driver those are written from exactly one place —
+inside the **D3D texture-stage** flush — and never from any 2D path.
+
+**The 2D destination binds through `0xb6`/`0xb7` = `0x12d8`/`0x12dc`**, the pair previously
+labelled "copy source".  That is consistent with a copy binding its source as texture unit
+0: destination on `0xb6/0xb7`, source on `0xb8/0xb9`.
+
+This is the defect that made fills execute cleanly and produce nothing: the engine ran
+against whatever stale surface descriptor `0xb6`/`0xb7` happened to hold.
+
+Corrected encoding (`0x467e0`, slot 8 = the 2D surface):
+
+```c
+base = (vram_byte_offset & ~3) | (memory_location & 3);   /* 0 = local VRAM   */
+mode = (fmt7 << 25) | (flags16_18 << 16) | (pitch_pixels & 0xffff);
+/* fmt7<<25 == the familiar 0x60/0x9C/0xCC << 24.  There is NO 0x00200000 bit on
+   a 2D slot -- bit 21 belongs to the 3D/texture paths.  Pitch is in PIXELS. */
+```
+
+Two further corrections to the control word and init:
+
+* **The top nibble is a pixel-size field** (`[dev+0x238]`, built at `0x48892`): `0x10000000`
+  for 32/16 bpp, `0x08000000` for 8 bpp, `0x18000000` for 1 bpp, and it is ORed into *every*
+  control word.  A bare `0x06001C0C` tells the engine the wrong pixel size.
+* **The aperture windows are triples, not pairs** — `0x1320/0x1324/0x1328` and
+  `0x132c/0x1330/0x1334` — and the vendor brackets the block with `0x1398 <- 4`.
+* The plane mask is an init-time default (`0x00FFFFFF` at 32 bpp), never written per
+  operation; and `0x1398` is written *before* an operation (0 then 1) only when the control
+  word's bit 24 says the ROP reads the destination.  Nothing is required *after* the launch.
+* Clipping is opt-in via **control bit 15 (0x8000)**; if that bit is set while
+  `0x13d4`/`0x13d8` are zero, everything is clipped away.
+* At 32 bpp the fill colour goes in raw; at 8/16 bpp it must be replicated across the dword.
