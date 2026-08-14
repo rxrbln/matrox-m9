@@ -1,0 +1,120 @@
+# Matrox M9 ("Phoenix") — engine submission, init, and 3D for Mesa
+
+This is the root-cause analysis of why the M9 EXA/XAA path "consumes operations
+but writes nothing," and the specification of the submission stack that both 2D
+acceleration and a future GL/Mesa driver must build on. Sources: win32
+`MSerX/MxMD.dll` + `MxMM.sys` miniport, and Linux
+`m9xdriver…/xserver/1_13_0/m9x_drv.so` (stripped, but rich in C++ method-name
+debug strings). Confidence: `[WIN]`/`[DRV]` from those binaries, `[HW]` verified
+on the M9148 at .111.
+
+## Root cause: the M9 engine is a bus-master DMA FIFO, not an MMIO register port
+
+The M9 drawing engine **executes commands fetched by bus-master DMA from a
+memory-resident command list ("BmBuffer")** — it does *not* execute live writes
+to the `0x1000 + index*4` register window. Evidence:
+
+- `MxMD.dll` registry/config knobs: **`BmBuffers`, `BmCacheFifoSize`,
+  `BmRequestSize`, `BmDebugFlags`, `BmDebugInfo`** [WIN].
+- `MxMM.sys` miniport imports **`VideoPortGetDmaAdapter` / `VideoPortPutDmaAdapter`**
+  and carries **`BusMastering`, `Engine`** config strings [WIN] — the kernel side
+  sets up the DMA adapter and programs the ring.
+- `m9x_drv.so` debug strings name the submission classes [DRV]:
+  - `EMtxOglStatus WGLICDLink::SendCommandStream(GLbyte*, GLuint, GLContext*, GLboolean)`
+  - `EMtxOglStatus WGLICDLink::SendCommandStreamUseDmaList(GLubyte, GLContext*, GLbyte*, GLuint, GLboolean)`
+  - `BrdgDirectRequester::PostDOSBuffer: Invalid buffer BmBuffer==%p Size=%08X`
+  - `GLvoid WGLContextManager::EqualizeDMATag()`
+
+**This is why every direct-MMIO EXA/XAA attempt failed** (see
+`m9-ring-and-mmio-window` memory + `parhelia-m9-accel.md`): the `0x1000..0x13fc`
+window reads back all-zero and never renders because it is a decode shadow the
+DMA parser reads, not a command port. On the M9148 the whole window reads zero
+while `0x08f0`/`0x041c` read fine — consistent with a write-shadow the CPU cannot
+drive to the raster back end. Poking it can *stage* a register value the parser
+will pick up, but nothing executes until a DMA buffer is fetched. Contrast the
+original Parhelia, where the direct-MMIO "ExecuteEmulDma" replay *does* drive the
+engine (`parhelia-3d-driving.md`): **that path does not exist on M9** — the
+`UseDmaList` variant is the M9 route.
+
+## The mandatory arm step: EnableHardware / InitBoard
+
+Before the engine runs, `PBoard::InitBoard(MUINT8*, MUINT8*)` performs an
+**`EnableHardware`** step. Failure strings: `Failed to EnableHardware.`,
+`Problem with EnableHardware in GLServices`, `Problem with EnableHardware in
+UnitServices`, `Problem initializing requester` [DRV]. Location: function
+`m9x28002` in `1_13_0/m9x_drv.so` calls it through **vtable slot `*0x30`** on the
+board object `[rbx+0x18]`, immediately before the failure log. Our driver never
+performs this arm step — a second reason the engine stays idle. It is the
+"untraced EnableHardware" flagged as prime suspect in earlier sessions, now
+located (not yet fully decoded — it is a virtual call into a concrete PBoard
+subclass).
+
+## Submission primitives (concrete, verified offsets)
+
+The register accessor is a vtable on the object at `[dev+0x20]`:
+**slot `0x78` = write32(offset, value)`**, **slot `0x88` = read32(offset,&out)**
+[DRV] (confirmed by the idle poll reading `0x8f0` and by these helpers).
+
+Two doorbell helpers sit directly before `PostDOSBuffer` [DRV]:
+
+| helper | action | meaning |
+|---|---|---|
+| `m9x9938` | `write32(0x314, 1)` | kick / restart the DMA front-end (doorbell) |
+| `m9x27114` | `write32(0x31c, 0)` | DMA front-end state (also 5=park, 2=resume seen elsewhere) |
+
+So `0x314` (kick) and `0x31c` (park/resume) — the offsets `parhelia_m9_ring.c`
+already uses as `M9_2D_KICK` / `M9_2D_PARK` — are **correct**. What is missing is
+everything around them: the DMA buffer itself, its base programmed into the
+requester (via the DMA adapter, kernel side), the EnableHardware arm, and the
+`EqualizeDMATag` completion sync. `0x400`/`0x404` are **read-only** on hardware
+(three controls, `m9-ring-and-mmio-window`) because the ring base is programmed
+through the DMA-adapter path (`VideoPortGetDmaAdapter` physical mapping), not by a
+plain MMIO store from the X driver — they reflect a miniport/POST-owned pointer.
+
+## What this means for fixing EXA/XAA
+
+**Direct-MMIO submission cannot draw on M9.** Making 2D acceleration work
+requires the full DMA path, in order:
+
+1. **Arm** — run the InitBoard/EnableHardware sequence once (decode `m9x28002`'s
+   `*0x30` target; it configures the requester + DMA adapter).
+2. **Build** a BmBuffer command list in a bus-master-visible buffer (VRAM/AGP/
+   system via the `/dev/matrox`-style allocator) — the same indexed packet format
+   already in `parhelia_m9_ring.c` (`idx0|idx1<<8|…`, `0x45` stop) is the payload.
+3. **Post** it through the requester: program the buffer's DMA address/size, then
+   `write32(0x314, 1)` to kick.
+4. **Sync** on completion via the DMA tag (`EqualizeDMATag`) — a memory write-back
+   fence, not the `0x8f0` idle poll.
+
+This is a real subsystem, not a register tweak. `parhelia_m9_ring.c` has the
+packet format right but is bound to the wrong base (0x400 is read-only); it needs
+the DMA-adapter buffer + the arm step, which is the honest reason the EXA/XAA
+"engine not working" is still open.
+
+## For a Mesa GL driver
+
+M9 2D and 3D **share this exact submission stack** — `SendCommandStreamUseDmaList`
+serves both. A Mesa driver therefore builds the same BmBuffer DMA command lists;
+the 3D-specific content (vertex planes, DWGCTL, shader/combiner regs) is the M9
+analogue of the Parhelia registers in `parhelia-gl-driver.md`, carried as packet
+payload rather than MMIO writes. The M9 GL ICD to mine for the 3D register
+semantics is win32 **`MxMGLX.dll`** (the M9 OpenGL ICD) and the same
+`WGL*`/`GL*` code statically present in `m9x_drv.so`. Sequence to reverse next,
+all static:
+
+- `m9x28002` `*0x30` EnableHardware target → the arm sequence + requester setup
+  (unblocks 2D *and* 3D).
+- `SendCommandStreamUseDmaList` → exact BmBuffer layout, DMA-address programming,
+  and the doorbell/tag protocol.
+- `MxMGLX.dll` → M9 3D register set (vertex submission, raster/shader state) for
+  the GL pipeline, cross-checked against the reversed Parhelia pipeline.
+
+## Corrections to earlier M9 notes
+
+- The "engine consumes ops but writes nothing" mystery is **resolved**: M9 is
+  DMA-FIFO-only; direct MMIO is architecturally incapable of driving it. Prior
+  sessions treated the direct-MMIO path as viable-but-buggy; it is not viable.
+- `0x314`/`0x31c` offsets in `parhelia_m9_ring.c` are confirmed correct; the ring
+  *base* is not `0x400` (read-only) — it is a DMA-adapter descriptor.
+- The Parhelia "ExecuteEmulDma" direct-MMIO replay has **no M9 equivalent**; do
+  not port it.

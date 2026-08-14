@@ -242,12 +242,19 @@ EXA code:
    enables the drawing engine in `PBoard::InitBoard` / `EnableHardware` (error strings at
    0xe8c3d1 / 0xe91338 / 0xe91368) *before* EXA init, and that step has never been
    traced.  This is the prime suspect.
-2. **Nothing X draws reaches VRAM on the test machine at all** — an 8 MB scan reads zero
-   after fills, under EXA *and* under plain shadowfb, with both VBE and native
-   modesetting.  Reads work and the aperture accepts CPU writes (a direct
-   `0xa5a5a5a5` marker test succeeds), so this is a separate defect that predates the
-   accel work.  It should be isolated on a Parhelia/P690, where the display works and a
-   failure would be visible.
+2. ~~Nothing X draws reaches VRAM on the test machine at all.~~ **Retracted 2026-08-12.**
+   That conclusion came from scanning VRAM at a guessed offset.  Measured through X
+   instead (XFillRectangle + XGetImage readback), software rendering lands correctly:
+   accel off gives 0/20 sampled pixels wrong, XAA gives 20/20.  The defect is in the M9
+   hardware path only.
+
+**Correction — RT0 is the destination.**  A later session briefly swapped the destination
+to `0xb6/0xb7`, claiming `0xb8/0xb9` was a 3D texture stage.  That contradicts the
+direct-MMIO table above and is wrong: `0xb8/0xb9` (RT0) is the render target, `0xb6/0xb7`
+is the copy source.  With the destination misbound the status register is inert across the
+launch (`01060001 -> 01060001`); with RT0 restored it changes (`-> 00060001`), i.e. the
+engine consumes the operation.  Pixels still do not appear; the persistent
+`0x041c = 0x00080000` and the untraced `EnableHardware` step remain the open leads.
 
 Two build notes worth keeping: adding a source file requires regenerating the target
 Makefile (`automake src/Makefile && ./config.status src/Makefile`) or the object is
@@ -319,7 +326,13 @@ Two further corrections to the control word and init:
   for 32/16 bpp, `0x08000000` for 8 bpp, `0x18000000` for 1 bpp, and it is ORed into *every*
   control word.  A bare `0x06001C0C` tells the engine the wrong pixel size.
 * **The aperture windows are triples, not pairs** — `0x1320/0x1324/0x1328` and
-  `0x132c/0x1330/0x1334` — and the vendor brackets the block with `0x1398 <- 4`.
+  `0x132c/0x1330/0x1334`.  ~~The vendor brackets the block with `0x1398 <- 4`.~~
+  **Retracted 2026-08-12:** that came from matching `+0x1398` displacements in
+  `m9x_drv.so`, but the same base register is used at `+0x1460`, `+0x1479` and `+0x1570`,
+  past the 0x13fc end of the register file — it is a driver context struct, not MMIO.  At
+  `0x43b58d` the value stored there is a computed **log2**, i.e. a size/shift field of that
+  struct.  No `0x1398` MMIO write is evidenced.  Matching struct displacements against
+  register offsets is not valid evidence and was the source of several bad leads.
 * The plane mask is an init-time default (`0x00FFFFFF` at 32 bpp), never written per
   operation; and `0x1398` is written *before* an operation (0 then 1) only when the control
   word's bit 24 says the ROP reads the destination.  Nothing is required *after* the launch.
