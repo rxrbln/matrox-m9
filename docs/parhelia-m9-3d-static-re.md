@@ -890,6 +890,53 @@ instructions.  It is not the fixed two-dword native instruction stream copied
 by `MxMD.dll`.  A Mesa compiler can reuse the recovered operation semantics,
 but must still implement a separate Iris/native lowering and native bit packer.
 
+Compiler built-in generator `0x10689080` gives the exact 48-byte runtime-limit
+structure consumed when it creates the GLSL preamble [BIN]:
+
+| structure offset | generated GLSL constant |
+|---:|---|
+| `+0x00` | `gl_MaxLights` |
+| `+0x04` | `gl_MaxClipPlanes` |
+| `+0x08` | `gl_MaxTextureUnits` |
+| `+0x0c` | `gl_MaxTextureCoords` |
+| `+0x10` | `gl_MaxVertexAttribs` |
+| `+0x14` | `gl_MaxVertexUniformComponents` |
+| `+0x18` | `gl_MaxVaryingFloats` |
+| `+0x1c` | `gl_MaxVertexTextureImageUnits` |
+| `+0x20` | `gl_MaxCombinedTextureImageUnits` |
+| `+0x24` | `gl_MaxTextureImageUnits` |
+| `+0x28` | `gl_MaxFragmentUniformComponents` |
+| `+0x2c` | `gl_MaxDrawBuffers` |
+
+Wrapper `0x10669a90` passes this structure to the generator when a live limits
+object is supplied and selects a separate default-preamble builder at
+`0x106820d0` when it is null [BIN].  The live compiler caller at
+`0x105658a0`, immediately before its call to `0x10669ee0` at `0x10565925`,
+constructs that structure with these exact advertised values [BIN][DER]:
+
+| GLSL limit | value |
+|---|---:|
+| `gl_MaxLights` | 8 |
+| `gl_MaxClipPlanes` | 6 |
+| `gl_MaxTextureUnits` | 4 |
+| `gl_MaxTextureCoords` | 8 |
+| `gl_MaxVertexAttribs` | 16 |
+| `gl_MaxVertexUniformComponents` | 512 |
+| `gl_MaxVaryingFloats` | 60 |
+| `gl_MaxVertexTextureImageUnits` | 4 |
+| `gl_MaxCombinedTextureImageUnits` | 20 |
+| `gl_MaxTextureImageUnits` | 16 |
+| `gl_MaxFragmentUniformComponents` | 512 |
+| `gl_MaxDrawBuffers` | 4 |
+
+These are the vendor GLSL frontend limits for this M9 build and are suitable
+upper bounds for the Mesa implementation.  They agree with the independently
+recovered four vertex-sampler and sixteen fragment-sampler linker checks.  The
+four-draw-buffer value also identifies the four attachment pairs `b0..b7` as
+the hardware-visible color target capacity; private render-state IDs
+`215..218` extend the API shadow to masks 4..7 but do not raise the advertised
+active draw-buffer count.
+
 ### Serialized Iris object
 
 The serializer gate is compiler `+0x460` bit 2, tested at `0x1066f33d`; the
