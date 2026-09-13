@@ -369,9 +369,109 @@ Raster and output anchors are [BIN]:
 both update several coupled objects and need a longer join before their final
 packing can be stated safely.  These D3D objects are also distinct from the
 lower command-shadow objects emitted by `0xf4f50`, `0xfb920`, and `0xfc0e0`.
-The static pass has not joined every frontend field to a final M9 index, so the
-semantic names above must not yet be attached directly to those packet
-registers [INF].
+The depth/stencil exception is joined to final indices below.  Blend, alpha
+test, culling, color masks, multisample, and the viewport/scissor words still
+stop at an intermediate compiler object, so their frontend names must not yet
+be attached directly to packet registers [INF].
+
+### Depth/stencil frontend-to-command join
+
+The fixed-state validator constructed by `0x136940` contains a copy of the
+`p2514` frontend state at validator `+0x80` and a nested compiled-state object
+at validator `+0x1b8`.  `0x137110` installs those bindings: instructions
+`0x137159..0x137168` bind the frontend copy, while `0x13716b..0x137171` publish
+the nested object through core `+0xfc` [BIN].  The validator at `0x137f20`
+lowers depth/stencil into three dwords at validator `+0x34c,+0x350,+0x354`,
+which are nested-object `+0x194,+0x198,+0x19c`, and marks nested dirty mask
+`0x01021060` at `0x137f3b` [BIN].
+
+The selected draw-state instance with this same nested layout reaches
+`0x181900`.  That function copies nested `+0x194` to surface shadow `+0x14` at
+`0x18190a`, nested `+0x19c` to `+0x1c` at `0x181913`, and nested `+0x198` to
+`+0x18` on the two format-dependent paths at `0x1822b9` and `0x1823c5`.  Both
+paths mark surface dirty bit `0x100` (`0x1822bf` or `0x1823d9`) [BIN].  The
+surface emitter then tests that bit at `0xfbe58`, emits header `0x45aaa9a8` at
+`0xfbe7f`, and copies `+0x14,+0x18,+0x1c` at `0xfbe89,0xfbe92,0xfbe9b`
+respectively [BIN].  The resulting exact join is:
+
+| final M9 index | compiled offset | proven role |
+|---:|---:|---|
+| `a8` | `+0x194` | depth enable/write/compare plus two-sided stencil enable, compares, and operations |
+| `a9` | `+0x198` | first stencil ref/read-mask/write-mask triplet plus a format nibble |
+| `aa` | `+0x19c` | second stencil ref/read-mask/write-mask triplet |
+
+The intervening draw-state cache selects an instance of the compiled layout;
+the static analysis has not yet proved whether it aliases or copies the
+validator's original nested object.  It does not change the field offsets or
+the final command join [DER].
+
+`0x137f20` builds `a8` as follows [BIN]:
+
+| `a8` bits | source and conversion |
+|---:|---|
+| `0` | depth enabled when `(p2514+0x0c & 0x60) == 0x20` (`0x137f59..0x137f75`) |
+| `1` | `ZWRITEENABLE`, from `p2514+0x0c bit 1` (`0x137f4e..0x137f75`) |
+| `4:2` | `cmp_map((p2514+0x0c >> 7) & 0xf)`, `ZFUNC` (`0x137f77..0x137f8f`) |
+| `5` | stencil enable from `p2514+0x0c bit 3`; cleared if the attached depth/stencil format is incompatible (`0x137fa9..0x138009`, `0x13818c..0x13819e`) |
+| `6` | two-sided stencil enable from `p2514+0x0c bit 4`, subject to the validator's raster-mode gate (`0x138009..0x13805e`) |
+| `9:7` | selected face stencil compare |
+| `12:10` | selected face stencil-fail operation |
+| `15:13` | selected face depth-fail operation |
+| `18:16` | selected face pass operation |
+| `21:19` | other face stencil compare |
+| `24:22` | other face stencil-fail operation |
+| `27:25` | other face depth-fail operation |
+| `30:28` | other face pass operation |
+
+In normal face order, the low compare/operation quartet comes from frontend
+`+0x10` nibbles `15:12,3:0,7:4,11:8`, and the high quartet comes from nibbles
+`31:28,19:16,23:20,27:24` (`0x13829f..0x138361`, with the shared tail at
+`0x138161..0x138182`) [BIN].  The alternate path swaps those quartets
+(`0x13809f..0x138182`).  Frontend `+0x0c bit 20` participates in that face
+selection, but its exact public/API meaning remains unknown.  An internal
+override controlled by validator `+0x9a4` also forces the depth compare field
+at `0x137f9b..0x137fa3`; it must be preserved until its caller is identified
+[BIN].
+
+The comparison remap helper at `0x139670` converts Direct3D enum values to
+three-bit hardware codes [BIN]:
+
+| D3D comparison | `NEVER` | `LESS` | `EQUAL` | `LESSEQUAL` | `GREATER` | `NOTEQUAL` | `GREATEREQUAL` | `ALWAYS` |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| M9 code | `0` | `1` | `3` | `4` | `6` | `5` | `7` | `2` |
+
+The stencil-operation remap at `0x1396e0` likewise converts Direct3D values
+[BIN]:
+
+| D3D operation | `KEEP` | `ZERO` | `REPLACE` | `INCRSAT` | `DECRSAT` | `INVERT` | `INCR` | `DECR` |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| M9 code | `0` | `3` | `1` | `6` | `7` | `2` | `4` | `5` |
+
+The common one-face path at `0x1381bb..0x138292` places stencil reference,
+read mask, and write mask in bytes `0,1,2` of both `a9` and `aa`.  It obtains
+them from frontend `+0x6c,+0x70,+0x74` and masks them through an attachment
+format callback [BIN].  The two-face paths at `0x138366..0x13852a` assign that
+triplet to one word and frontend `+0x78,+0x7c,+0x80` to the other, swapping
+the two words when the face order swaps [BIN].  Private render states
+`210..212` write the second triplet, so its independent two-sided-stencil
+role is strong, but the exact private API contract is still inferred [DER].
+Finally, `0x138530..0x138550` places a format-dependent helper result from
+`0x139750` in `a9[27:24]`; static evidence does not yet justify a more specific
+name for that nibble.
+
+The remaining frontend-to-final-index boundary is now precise [BIN][DER]:
+
+* `0x138c10` compiles viewport/scissor inputs into validator
+  `+0x410,+0x414,+0x418,+0x41c` through helper `0x138cd0` and marks nested
+  dirty bit `0x04000000` at `0x138cb6`; its final packet copy is unlocated.
+* `CULLMODE` remains in the separate `p2528` raster object.  Neither its final
+  word nor the meaning of the `a8` face-order selection should be inferred
+  from the other.
+* `0x101550` canonicalizes blend, alpha-test, color-mask, and multisample
+  frontend fields into a flat D3D cache, but it is not a command emitter.
+  `0x13b570` reacts to blend dirty bit `0x4000` by selecting a fragment/program
+  variant; that proves program specialization, not a fixed M9 register.
+  Their final program key and any residual fixed-state words remain unjoined.
 
 ### Render and depth surface shadow layout
 
