@@ -900,7 +900,9 @@ before the dump.
 The Iris stream is variable length and contains metadata/sentinels as well as
 instructions.  It is not the fixed two-dword native instruction stream copied
 by `MxMD.dll`.  A Mesa compiler can reuse the recovered operation semantics,
-but must still implement a separate Iris/native lowering and native bit packer.
+but must still implement a separate Iris/native lowering.  The physical native
+bit packer is now decoded in `parhelia-m9-native-shader-fragments.md`; its
+operation mnemonics and operand directions are not yet joined.
 
 Compiler built-in generator `0x10689080` gives the exact 48-byte runtime-limit
 structure consumed when it creates the GLSL preamble [BIN]:
@@ -1172,13 +1174,20 @@ Static analysis has established these native facts:
   count-minus-one in the low bits of the `e6` value [BIN][DER];
 * the serialized Iris object uses 28-byte primary records and variable metadata,
   conclusively separating it from native 8-byte instructions [BIN][DER].
+* native packer `0x1db840..0x1db9bb` places two five-bit operation selectors in
+  `W0[4:0]` and `W1[25:21]`, with a format-dependent third selector in
+  `W1[18:14]`; it also fixes the gated seven-bit descriptor fields, split
+  selector, class-`0xb` bank remap, and two scattered component-mask maps
+  [BIN][DER].
 
-The static binaries do not yet give an unambiguous native mapping for ALU
-opcode, destination, source selectors, swizzles, predicates, texture operation,
-or end-of-program bits.  Prebuilt fragments are linked and copied verbatim, so
-there is no single obvious switch from a high-level opcode to one two-dword
-literal in `MxMD.dll`.  Those fields require controlled compiler outputs,
-capturing the linked `+0xbb4` buffer, or differential DMA/MMIO capture.
+The native field boundaries and encoder are no longer the blocking unknown.
+What remains ambiguous is the semantic mapping from each numeric native
+operation to an ALU/texture/control mnemonic, which descriptors are sources or
+destinations, the `xyzw` order of their component metadata, and predicate or
+end-of-program meanings.  The readable operation-name switch in `MxMGLX.dll`
+decodes Iris tokens and is not a native disassembler.  These semantic joins
+still require controlled compiler outputs, capturing the linked `+0xbb4`
+buffer, or differential DMA/MMIO capture.
 
 ## Driver implementation consequences
 
@@ -1194,7 +1203,7 @@ be implemented before capture is:
    upload lines, a 384-instruction/96-line bank boundary, and relocations which
    preserve address flag bits;
 5. Mesa compiler IR definitions for the recovered Iris operations and
-   modifiers, separate from a still-incomplete native packer;
+   modifiers, plus the recovered native packer behind a semantic-opcode table;
 6. resource checks for four vertex samplers, 15 attributes/outputs, 16 fragment
    samplers/inputs, and six predicate names;
 7. command validation which rejects native program selectors outside the
@@ -1202,7 +1211,8 @@ be implemented before capture is:
 8. requester/DMA scaffolding for the proven `2c/2d` start/end pair, `0x404`
    doorbell, fences, bounded idle waits, and reset/error recovery;
 9. a vendor-Iris parser/dumper for exact compiler comparisons, while keeping
-   the unresolved native packer behind an explicit unsupported boundary.
+   native operations without a proven mnemonic or operand direction behind an
+   explicit unsupported boundary.
 
 The first capture matrix should compile one-operation vertex and fragment
 programs with identity operands, then vary one destination, source, swizzle,
