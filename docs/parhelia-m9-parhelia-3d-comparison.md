@@ -63,8 +63,10 @@ reset, fence emitter, and state encoder belong behind M9-specific operations.
 * `MxMDI.dll` and the INF/auxiliary binaries.  `MSerX.inf` binds the Phoenix
   subsystem variants to PCI device `0540`.
 
-The four earlier M9 notes are `parhelia-m9.md`, `parhelia-m9-accel.md`,
-`parhelia-m9-dma.md`, and `parhelia-m9-3d-submission.md`.
+The detailed pre-capture command and shader findings are in
+`parhelia-m9-3d-static-re.md`.  The four earlier M9 notes are `parhelia-m9.md`,
+`parhelia-m9-accel.md`, `parhelia-m9-dma.md`, and
+`parhelia-m9-3d-submission.md`.
 
 ## Command-stream comparison
 
@@ -75,11 +77,11 @@ The four earlier M9 notes are `parhelia-m9.md`, `parhelia-m9-accel.md`,
 | Short packet framing | `0x20` consumes a pad value; `0x21` terminates a tag.  Header-bearing vendor records add an outer count, so `0x21` does not by itself delimit the complete record | `0x45` stops index scanning and fills unused header bytes | Separate parser and validator |
 | Command chaining | `0x28/0x29` are SECADDRESS/SECEND; the primary ring calls validated secondary buffers | M9 notes identify `0x2c/0x2d` as sub-buffer start/end and a BmBuffer/DMA-list submission path | Separate control-index policy and relocations |
 | Direct register execution | Direct writes to the indexed window can execute through Parhelia's MMIO/emulated-DMA path | Direct writes stage/read as zero and did not render on M9148; the vendor uses DMA lists [HW][BIN] | No shared PIO fallback |
-| Primary DMA | `0x404` start, `0x408` end/trigger, `0x400` write-back, with system-memory address tags | Context programming references `0x400`, descriptor state is saved/restored through `0x500..0x524`, and `0x314`/`0x31c` kick/park the front end.  Exact head/tail/trigger semantics remain unresolved | Separate requester backend |
+| Primary DMA | `0x404` start, `0x408` end/trigger, `0x400` write-back, with system-memory address tags | Saved Linux kernel code programs DMA base/control at `0x400` and rings `0x404` with the final write address. `0x314`/`0x31c` are additional front-end kick/state controls; userspace cannot replace the kernel-owned requester path with direct MMIO [BIN][HW] | Separate requester backend |
 | Completion | In-stream `0x1090/0x1094` write-back, `0x12bc` DWGSYNC, `0x41c`, plus Parhelia idle state | Fence/tag addresses at `0x1068/0x106c` and a memory write-back polled by `EqualizeDMATag`; `0x8f0 & 0x30000` is only an engine-state observation | Share scheduler/fence API, not packets |
 | Engine arm | Recovered Parhelia register sequence plus WARP microcode load | `EnableHardware`/`InitBoard` is mandatory and not decoded completely | Separate init/reset |
 | 2D launch | MGA-lineage surface slots, `DWGCTL` at index `0xc0`, geometry through `DSTXY/LEN` | Unified raster backend: control at index `0xf0`, geometry around `0xf2..0xfc`; copy binds a texture source | No payload compatibility |
-| 3D launch | WARP triangle setup and `DWGSYNC`; software decomposes other GL primitives | Exact primitive command and vertex-stream binding have not yet been recovered | Separate draw emitter |
+| 3D launch | WARP triangle setup and `DWGSYNC`; software decomposes other GL primitives | `MxMD.dll` has a direct inline path: header `2b,2a,e6`, layout selector through `2a`, `e6 = 0x20000000 \| (count-1)`, then three or four dwords per vertex. Relocated vertex/index stream bindings still need final semantic names [BIN] | Separate draw emitter |
 
 The first row is the strongest similarity.  It likely reflects a retained Matrox
 front-end convention.  It does not imply that an index has the same meaning on
@@ -101,8 +103,8 @@ for an M9 context.
 | Block | Parhelia/P690 | M9/Phoenix |
 |---|---|---|
 | Vertex processing | WARP microcode engine, 12-byte instruction format, attribute-plane latch submission, canned fixed-function programs | A distinct programmable vertex engine.  The M-Series ICD contains hardware-T&L and hardware-GLSL paths; no Parhelia WARP END signatures occur in the MSerX binaries [BIN] |
-| Fragment processing | Small DX8 ps.1.x-like combiner with two temporaries and two constants; Parhelia `GL_MTX_fragment_shader` lowering is now decoded | A separate programmable pixel-shader compiler.  MSerX exposes ARB fragment programs and GLSL 1.10 and has predicate registers `p0..p5`; its ISA encoding/upload is not decoded [BIN] |
-| Texture path | Four documented Parhelia pipes, sampler state and formats around `0x11c0..0x120c` | M9 copy already uses a texture source through its unified raster backend, but 3D sampler descriptors, cache/tiling fields, mip layout, and unit count still need recovery |
+| Fragment processing | Small DX8 ps.1.x-like combiner with two temporaries and two constants; Parhelia `GL_MTX_fragment_shader` lowering is now decoded | A separate programmable pixel-shader compiler.  MSerX exposes ARB fragment programs and GLSL 1.10 and has predicate registers `p0..p5`.  Static analysis recovers the compiler IR vocabulary and a native eight-dword upload record; native opcode/operand bit fields still need differential recovery [BIN] |
+| Texture path | Four documented Parhelia pipes, sampler state and formats around `0x11c0..0x120c` | Four M9 texture-unit selectors (`0x70..0x73`) and their common descriptor-index group are recovered.  Format, swizzle/tiling, mip layout, filtering, and cache fields still need semantic diffs [BIN] |
 | Fixed function | Mesa currently lowers fixed-function GL to Parhelia-specific state and WARP/combiner programs | The vendor ICD lowers fixed function, ARB programs, and GLSL to M9 vertex/pixel programs; reuse the Mesa state tracker, then write M9-specific lowering |
 | API evidence | Current open driver targets OpenGL 1.x behavior on Parhelia | M-Series ICD strings advertise GLSL, ARB vertex/fragment programs, FBO, VBO, occlusion query, draw buffers, NPOT, depth textures, cube/3D textures, S3TC, anisotropy, and multisample.  Strings prove driver paths, not that every advertised path works on every board |
 
@@ -126,9 +128,10 @@ not a working specification:
 * `parhelia-m9-accel.md` contains successive, mutually exclusive corrections for
   whether `0xb6/0xb7` or `0xb8/0xb9` is the destination.  The last section says
   `0xb6/0xb7`; earlier tables and the C implementation still say `0xb8/0xb9`.
-* `parhelia-m9-dma.md` records a vendor write to `0x400`, while the hardware note
-  calls `0x400/0x404` read-only.  This may be a context/privilege/descriptor latch
-  distinction, but it is not resolved.
+* `parhelia-m9-dma.md` records a vendor write to `0x400`, while hardware tests
+  found `0x400/0x404` read-only from the experimental userspace path.  Static
+  Linux kernel recovery resolves the role: privileged requester code programs
+  `0x400` and rings `0x404`; direct DDX writes are not a substitute.
 
 Do not copy these prototypes into DRM.  Use them as a list of experiments and
 known register candidates, then replace them after a vendor command capture or
@@ -146,20 +149,26 @@ The following technical pieces are also not yet recovered well enough to write
 a safe DRM submitter and a working Mesa driver:
 
 1. The complete `EnableHardware` sequence and reset/recovery sequence.
-2. The exact `0x500..0x524` descriptor fields, `0x400` role, address-space tags,
-   fetch trigger, producer/consumer rules, wrap handling, and fence command.
+2. The exact `0x500..0x524` descriptor fields, address-space tags,
+   producer/consumer rules, wrap handling, and fence command.  Static recovery
+   establishes `0x400` base/control and `0x404` as the submit doorbell.
 3. M9 context-switch state: which indexed registers, shader stores, descriptor
    tables, and query/fence state must be isolated between clients.
 4. A verified colour render-target and depth/stencil descriptor, clear packet,
-   viewport/scissor state, three vertices, primitive launch, and completion.
+   viewport/scissor state, and completion.  An inline primitive launch is
+   statically recovered but still needs hardware verification.
 5. Vertex-buffer and index-buffer descriptors, primitive types, and attribute
    formats.
-6. Raster state encodings for depth/stencil, blending, alpha test, culling,
-   polygon mode, multisampling, colour masks, and queries.
+6. The final M9-index join for depth/stencil, blending, alpha test, culling,
+   multisampling, and colour masks.  Their D3D frontend bit packing is recovered;
+   polygon mode and query semantics remain less complete.
 7. Texture/sampler descriptors, formats, swizzle/tiling, mip levels, cube/3D
    layout, filtering, wrap modes, compression, and cache flushes.
-8. Vertex and pixel shader token encodings, constants, predicates, instruction
-   limits, program upload/start registers, varying linkage, and compiler quirks.
+8. Native vertex and pixel shader opcode/operand bit fields, constant-record
+   meanings, stage linkage, and compiler quirks.  The eight-dword record,
+   upload selector/ports, 96-record bank boundary, compiler IR opcodes and
+   modifiers, predicate names, and several resource limits are recovered in
+   `parhelia-m9-3d-static-re.md`.
 9. IRQ source/status/ack bits for DMA completion, fault reporting, and vblank as
    used by a modern DRM driver.
 

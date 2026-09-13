@@ -4,6 +4,9 @@
 > `parhelia-m9-parhelia-3d-comparison.md`.  In particular, only the indexed
 > header shape is shared with Parhelia; the DMA, framing, register semantics,
 > draw launch, and shader engines require an M9-specific backend.
+> The recovered pre-capture 3D register banks, native eight-dword shader upload
+> record, compiler IR, and resource limits are documented in
+> `parhelia-m9-3d-static-re.md`.
 
 This is the root-cause analysis of why the M9 EXA/XAA path "consumes operations
 but writes nothing," and the specification of the submission stack that both 2D
@@ -60,21 +63,21 @@ The register accessor is a vtable on the object at `[dev+0x20]`:
 **slot `0x78` = write32(offset, value)`**, **slot `0x88` = read32(offset,&out)**
 [DRV] (confirmed by the idle poll reading `0x8f0` and by these helpers).
 
-Two doorbell helpers sit directly before `PostDOSBuffer` [DRV]:
+Two front-end control helpers sit directly before `PostDOSBuffer` [DRV]:
 
 | helper | action | meaning |
 |---|---|---|
-| `m9x9938` | `write32(0x314, 1)` | kick / restart the DMA front-end (doorbell) |
+| `m9x9938` | `write32(0x314, 1)` | kick / restart the DMA front end |
 | `m9x27114` | `write32(0x31c, 0)` | DMA front-end state (also 5=park, 2=resume seen elsewhere) |
 
-So `0x314` (kick) and `0x31c` (park/resume) — the offsets `parhelia_m9_ring.c`
-already uses as `M9_2D_KICK` / `M9_2D_PARK` — are **correct**. What is missing is
-everything around them: the DMA buffer itself, its base programmed into the
-requester (via the DMA adapter, kernel side), the EnableHardware arm, and the
-`EqualizeDMATag` completion sync. `0x400`/`0x404` are **read-only** on hardware
-(three controls, `m9-ring-and-mmio-window`) because the ring base is programmed
-through the DMA-adapter path (`VideoPortGetDmaAdapter` physical mapping), not by a
-plain MMIO store from the X driver — they reflect a miniport/POST-owned pointer.
+The saved Linux kernel object now supplies the primary requester operation
+[DRV].  Function `m9x109` programs DMA base/control at `0x400`; submission
+function `m9x1039` writes the final command address to `0x404`, making `0x404`
+the actual DMA doorbell in this path.  The `0x314` and `0x31c` helpers remain
+additional restart/park controls.  Hardware tests saw `0x400/0x404` as
+read-only from the experimental userspace path, which means the requester must
+remain kernel-owned; it does not invalidate the privileged vendor writes.
+Exact field formulas and ioctl sizes are in `parhelia-m9-3d-static-re.md`.
 
 ## What this means for fixing EXA/XAA
 
@@ -86,8 +89,9 @@ requires the full DMA path, in order:
 2. **Build** a BmBuffer command list in a bus-master-visible buffer (VRAM/AGP/
    system via the `/dev/matrox`-style allocator) — the same indexed packet format
    already in `parhelia_m9_ring.c` (`idx0|idx1<<8|…`, `0x45` stop) is the payload.
-3. **Post** it through the requester: program the buffer's DMA address/size, then
-   `write32(0x314, 1)` to kick.
+3. **Post** it through the requester: program base/control at `0x400`, then write
+   the final command address to the `0x404` doorbell.  Use `0x314` only for the
+   separately recovered restart path.
 4. **Sync** on completion via the DMA tag (`EqualizeDMATag`) — a memory write-back
    fence, not the `0x8f0` idle poll.
 
@@ -119,7 +123,8 @@ all static:
 - The "engine consumes ops but writes nothing" mystery is **resolved**: M9 is
   DMA-FIFO-only; direct MMIO is architecturally incapable of driving it. Prior
   sessions treated the direct-MMIO path as viable-but-buggy; it is not viable.
-- `0x314`/`0x31c` offsets in `parhelia_m9_ring.c` are confirmed correct; the ring
-  *base* is not `0x400` (read-only) — it is a DMA-adapter descriptor.
+- `0x314`/`0x31c` offsets in `parhelia_m9_ring.c` are real front-end controls,
+  but they are not the primary submit doorbell.  Kernel requester code programs
+  `0x400` and rings `0x404`; both belong behind the DRM submission interface.
 - The Parhelia "ExecuteEmulDma" direct-MMIO replay has **no M9 equivalent**; do
   not port it.
