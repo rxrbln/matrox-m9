@@ -4,7 +4,9 @@ This note records the native microcode database recovered statically from the
 saved Windows `MxMD.dll` and cross-checked against Linux `m9x_drv.so`.  It is a
 companion to `parhelia-m9-3d-static-re.md`.  Addresses and lengths below are
 binary evidence.  The backend encoder fixes several operation and operand-field
-boundaries, although the native operation mnemonics remain unknown.
+boundaries.  Compiler lowering also fixes operand direction, result-component
+order, and several source-operation anchors, although most native operation
+mnemonics remain unknown.
 
 Caller analysis identifies this table as the fixed-function vertex-program and
 vertex-declaration conversion generator.  It is not a pixel-shader library.
@@ -249,7 +251,8 @@ The relevant intermediate instruction members are [BIN]:
 | `+0x08` | `0` | base for native `W1`; operation and modifier bits |
 | `+0x0c` | `0`, 16-bit | base for native `W0` low half |
 | `+0x0e` | `0`, 16-bit | presence/format gates used by the packer |
-| `+0x10,+0x14,+0x18,+0x1c,+0x20,+0x24` | `0xf0000000` | explicit register/resource descriptors |
+| `+0x10,+0x14,+0x18,+0x20,+0x24` | `0xf0000000` | explicit source/resource descriptors |
+| `+0x1c` | `0xf0000000` | explicit result/destination descriptor |
 | `+0x28,+0x2a` | `0`, 16-bit | alternate selectors for two physical fields |
 | `+0x2c,+0x2e,+0x30,+0x32,+0x34` | low nibble cleared | per-descriptor component metadata used by analysis/rewrites |
 | `+0x38,+0x3c` | `0xf0000000` | inferred/implicit descriptor overrides |
@@ -257,9 +260,16 @@ The relevant intermediate instruction members are [BIN]:
 `0xf0000000` is the absent-descriptor sentinel.  Routine `0x1da4a0` walks the
 five pairs `(+0x14,+0x2c)`, `(+0x18,+0x2e)`, `(+0x20,+0x30)`,
 `(+0x10,+0x32)`, and `(+0x24,+0x34)` while constructing the compiler's
-resource/dependency list.  This proves that the dwords are operands and their
-adjacent words are component metadata.  It does not yet prove which operand is
-a source or destination, nor that the metadata nibble has native `xyzw` order.
+resource/dependency list.  It handles `+0x1c` separately at
+`0x1da935..0x1da94f`, storing it in the result-side local rather than adding it
+to that source collection.  Routine `0x1daf60` preserves the same separation
+while renumbering descriptors.  The arithmetic lowerers provide an independent
+data-flow check: the first RCP instruction receives the caller's source in
+`+0x14` or the format-dependent alternate `+0x10` and a newly allocated
+temporary in `+0x1c`; the final instruction reads intermediate temporaries
+through `+0x14/+0x18/+0x20` and places the caller's result descriptor in
+`+0x1c`.  This proves the direction shown in the table.  Exact register-class
+names remain unresolved.
 
 Let `replace(x, hi, lo, v)` replace inclusive bits `hi:lo` in `x` with the low
 `hi-lo+1` bits of `v`.  Ignoring a separate program-property side effect at
@@ -297,7 +307,7 @@ Three fields now have compiler-side operation evidence [BIN][DER]:
 
 | native field | encoder/decoder evidence | conclusion |
 |---:|---|---|
-| `W0[4:0]` | setter `0x1af390`; implicit-resource decoder `0x1db9d0`; explicit tests for `0x1c..0x1e` at `0x1da987` | first operation selector |
+| `W0[4:0]` | setter `0x1af390`; implicit-resource decoder `0x1db9d0`; explicit tests for `0x1c..0x1e` at `0x1da987` | operation selector with a proven result-component family |
 | `W1[25:21]` | setter `0x1dbe50`; expanded-operation decoder `0x1dc220` | second operation selector |
 | `W1[18:14]` | setter `0x1dc040`; expanded-operation decoder `0x1dc2d0` | format-dependent third operation selector, sharing `W1[20:14]` with a seven-bit descriptor |
 
@@ -309,12 +319,59 @@ also decoded through a sparse implicit-resource table at `0x1dbb40`, but the
 packer can replace all seven bits with descriptor `+0x1c`; it remains a
 format-dependent selector rather than a safely named fourth operation.
 
+The compiler source operation in its 0x88-byte input record is distinct from
+all three native operation fields.  Dispatch `0x1ca2d0` recognizes source
+operation values `6`, `7`, `14`, and `15`; these are the D3D `RCP`, `RSQ`,
+`EXP`, and `LOG` values and lead to four characteristic multi-instruction
+lowerers [BIN][DER]:
+
+| source operation | lowerer | native instruction objects | directly observed operation-setter inputs |
+|---|---:|---:|---|
+| `RCP` (`6`) | `0x1b0840` | 6 | second `0x11,0x13`; third `0x1a` |
+| `RSQ` (`7`) | `0x1b1210` | 7 | second `0x14,0x111,0x113`; third `0x1a` |
+| `EXP` (`14`) | `0x1b1ba0` | 6 | second `0x14,0x01`; third `0x14,0x02` |
+| `LOG` (`15`) | `0x1b2550` | 9 | second `0x14,0x02`; third `0x14,0x01` |
+
+These are semantic anchors for lowering sequences, not one-to-one native
+mnemonics.  In particular, RSQ uses expanded setter values `0x111` and
+`0x113`: they retain five-bit bases `0x11` and `0x13` while selecting extension
+bits.  Destination masks and descriptor classes also select or omit stages, so
+the constant call sites above are deliberately not presented as complete
+sequences.
+
+Helper `0x1afd30` establishes the result-component order for the simple
+descriptor-class path.  It selects a two-bit pair from the source-level D3D
+destination mask in bits `19:16`, using pair zero for `xy` and pair one for
+`zw`, and returns a `W0[4:0]` value as follows [DER]:
+
+| active components in selected pair | `W0[4:0]` |
+|---|---:|
+| neither | `0x00` |
+| first (`x` or `z`) | `0x1d` |
+| second (`y` or `w`) | `0x1e` |
+| both | `0x1c` |
+
+The generic compiler path independently maps descriptor component-class bits
+`27:26` to `0x1d`, `0x1e`, and `0x1c` for first, second, and both.  These
+selectors therefore express component write modes inside a result-operation
+family; they are not safe standalone ALU mnemonic assignments.
+
+The lowerers pass the original destination descriptor through helper
+`0x1afee0`, shift its result left by five, and insert it in `W0[7:5]`.  This
+proves that `W0[7:5]` is a result-class/routing selector.  Descriptor bit 20
+forces class 4; otherwise descriptor bits `27:24` map
+`0,1,2,3,4..12,13,14,15` to `0,1,2,3,7,4,5,6`.  Semantic names for those
+classes remain unknown.
+
 Two helpers encode independent four-bit component masks into scattered `W1`
 bits.  For input bits `m[3:0]`, `0x1af3e0` writes them to
 `W1[26,12,8,6]`, while `0x1af430` writes them to `W1[27,13,9,7]`, in
 `m[3],m[2],m[1],m[0]` order [DER].  The whole-program emitter invokes both
 with `m=0xa`.  Their association with the two `W1` operation lanes is strong;
-assigning low input bit to `x` still awaits a controlled compiler delta.
+observed lowerer call sites also pass `2,4,5,6,0xa,0xe` according to format.
+No call site found passes the source D3D write mask directly.  The `xyzw`
+result order above therefore does not assign component names to these scattered
+mask bits; that still awaits a controlled compiler delta.
 
 The low-operation implicit-descriptor table at `0x1dba44` contains these 32
 case indices [BIN]:
@@ -373,8 +430,29 @@ sets `W0[21:15]=2`, while slot 0 leaves that field zero.  The encoder's
 whole-program path also constructs the `0x1d/0x1e` family, and analysis routine
 `0x1da987..0x1daa74` treats `0x1c/0x1d/0x1e` paired with second operation
 `0x14` as a special family.  This proves the numeric operation selectors and
-their pairing, but does not distinguish terminal, export, or control-flow
-mnemonics safely.
+their pairing.  The `0x1d/0x1e` values are specifically the complementary
+first/second result-component forms proved above, rather than evidence for
+terminal or export mnemonics.  The purpose of the complete two-live-slot
+fragment remains unresolved.
+
+## Predicate and termination boundary
+
+The static databases do not expose a reliable native predicate or `END` bit.
+Across the final slot of all 48 fixed blobs, the bitwise intersection is zero
+for both dwords: no bit is set in every fragment ending.  Several fragment
+tails are all-zero slots, and linker `0x13bf80` appends identical all-zero slots
+to round a linked stream to four-slot upload lines.  An all-zero slot is thus
+padding/NOP-like and cannot be treated as a mandatory encoded `END`.  Because
+the fixed blobs are composable pieces, this negative result does not rule out a
+terminator in a complete program.
+
+The Iris textual predicate fields in `MxMGLX.dll` belong to the source compiler
+container; no static path has yet joined them to a native packed bit.  The exact
+remaining boundary is the linked compiler output around the call to
+`0xadf00`: vary one source predicate or control-flow/end condition, retain the
+descriptor pointer and byte length, and diff the unpadded 64-bit stream before
+`0x13bf80`.  Until that controlled compiler delta exists, predicate and
+termination fields should remain unnamed.
 
 The next static/runtime hooks should log `(slot, descriptor pointer, length)` in
 `0xadf00` while `0x1454a0` runs, then dump the unpadded linked stream immediately
