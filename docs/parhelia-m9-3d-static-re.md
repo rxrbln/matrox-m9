@@ -208,8 +208,12 @@ resource-format and condition fields; index `7d` LOD bias/bounds; indices
 `7e..81` converted border color; and indices `82..85` bump-environment matrix.
 The exact tables and bit fields are in `parhelia-m9-texture-state.md`.  Resource
 method `+0x5c` is now flattened into the bit layout for indices `78/79`,
-including the seven-bit hardware format field, but the size/pitch semantic names
-and full format-code table remain unresolved.  Index `87` remains reserved.
+including the seven-bit hardware format field.  Index `78[15:0]` is the aligned
+horizontal row span in format elements, `79[15:0]` is the ordinary vertical
+extent, and common D3D color, luminance, vector, float, depth, and DXT formats
+are joined to hardware codes.  A class-3 blocked-layout formula is exact, while
+its physical tile shape and per-mip offset recurrence remain unresolved.  Index
+`87` remains reserved.
 
 ### Common state-bank shadow layout
 
