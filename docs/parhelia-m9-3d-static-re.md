@@ -493,14 +493,20 @@ record becomes packed dwords
 Function `0xb5e70` uses the same `2a/2b/e6` family for inline mask/pixel data
 at depths `0x10,0x20,0x40,0x80` [BIN].  Therefore the high `e6` value denotes a
 generic inline-data count/form.  It is not evidence for a 3D primitive launch;
-the actual vertex/index draw emitter remains unresolved.
+the 3D draw launcher uses a different record family.
 
 The recovered D3D callback table, topology mapping, 16 stream descriptors,
 index descriptor, legacy and D3D9-style vertex-declaration IR, inline-vertex
 frontend staging, and modern draw records are documented in
-`parhelia-m9-draw-frontend.md`.  Their exact frontend layouts can be implemented
-now; final context vtable slots `+0x08/+0x0c` still need a data-flow join to
-packet indices before hardware submission is implemented.
+`parhelia-m9-draw-frontend.md`.  Context vtable slots `+0x08/+0x0c` are now
+joined through the common backend to concrete command-buffer writes [BIN].
+The launch is a three-dword record rather than an indexed-register packet:
+family `0x03000001` carries numeric start/exclusive-end ranges, family
+`0x07000001` carries relocation-backed 32-bit address ranges, and family
+`0x06000001` carries relocation-backed packed-16 address ranges.  Launch flags
+raise those headers into the `0x2?000001` or `0x6?000001` forms.  Primitive
+topology and base-vertex byte adjustment are lowered before launch and are not
+additional payload dwords [BIN][DER].
 
 Linux `m9x1011` at `0x2be20` provides another exact fixed transition stream
 [BIN].  It emits `45454524` and obtains index `24` through relocation type
@@ -1178,20 +1184,22 @@ M9 needs an engine and compiler backend distinct from Parhelia.  Code that can
 be implemented before capture is:
 
 1. a typed M9 packet builder with `0x45` short-header termination;
-2. register-bank definitions for the proven texture selectors and program
+2. typed H03 numeric-range, H07 32-bit-address, and H06 packed-16 draw records,
+   including checked exclusive ends and relocation selectors;
+3. register-bank definitions for the proven texture selectors and program
    upload ports, retaining unknown names where semantics are incomplete;
-3. a shader-program object model with two-dword instructions, four-instruction
+4. a shader-program object model with two-dword instructions, four-instruction
    upload lines, a 384-instruction/96-line bank boundary, and relocations which
    preserve address flag bits;
-4. Mesa compiler IR definitions for the recovered Iris operations and
+5. Mesa compiler IR definitions for the recovered Iris operations and
    modifiers, separate from a still-incomplete native packer;
-5. resource checks for four vertex samplers, 15 attributes/outputs, 16 fragment
+6. resource checks for four vertex samplers, 15 attributes/outputs, 16 fragment
    samplers/inputs, and six predicate names;
-6. command validation which rejects native program selectors outside the
+7. command validation which rejects native program selectors outside the
    proven store and checks all bus-master resources and lengths;
-7. requester/DMA scaffolding for the proven `2c/2d` start/end pair, `0x404`
+8. requester/DMA scaffolding for the proven `2c/2d` start/end pair, `0x404`
    doorbell, fences, bounded idle waits, and reset/error recovery;
-8. a vendor-Iris parser/dumper for exact compiler comparisons, while keeping
+9. a vendor-Iris parser/dumper for exact compiler comparisons, while keeping
    the unresolved native packer behind an explicit unsupported boundary.
 
 The first capture matrix should compile one-operation vertex and fragment

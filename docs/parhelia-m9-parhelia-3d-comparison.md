@@ -81,7 +81,7 @@ The detailed pre-capture command and shader findings are in
 | Completion | In-stream `0x1090/0x1094` write-back, `0x12bc` DWGSYNC, `0x41c`, plus Parhelia idle state | Fence/tag addresses at `0x1068/0x106c` and a memory write-back polled by `EqualizeDMATag`; `0x8f0 & 0x30000` is only an engine-state observation | Share scheduler/fence API, not packets |
 | Engine arm | Recovered Parhelia register sequence plus WARP microcode load | `EnableHardware`/`InitBoard` is mandatory and not decoded completely | Separate init/reset |
 | 2D launch | MGA-lineage surface slots, `DWGCTL` at index `0xc0`, geometry through `DSTXY/LEN` | Unified raster backend: control at index `0xf0`, geometry around `0xf2..0xfc`; copy binds a texture source | No payload compatibility |
-| 3D launch | WARP triangle setup and `DWGSYNC`; software decomposes other GL primitives | Still unresolved.  Header `2b,2a,e6`, previously thought to be an inline primitive path, is emitted only from a 2D rectangle/stretch caller and an inline mask/pixel path.  Vertex/index frontend state is decoded, but its final draw vtable methods still need joining to packet indices [BIN] | Separate draw emitter |
+| 3D launch | WARP triangle setup and `DWGSYNC`; software decomposes other GL primitives | Context draw vtable methods are joined to concrete three-dword command records.  H03 carries numeric start/exclusive-end ranges; H07 carries relocation-backed 32-bit ranges; H06 carries relocation-backed packed-16 ranges.  Topology and base-vertex address adjustment are lowered before launch.  Header `2b,2a,e6` is independently proven to be a 2D inline-data path [BIN][DER] | Separate draw emitter |
 
 The first row is the strongest similarity.  It likely reflects a retained Matrox
 front-end convention.  It does not imply that an index has the same meaning on
@@ -155,23 +155,21 @@ a safe DRM submitter and a working Mesa driver:
 3. M9 context-switch state: which indexed registers, shader stores, descriptor
    tables, and query/fence state must be isolated between clients.
 4. A verified colour render-target and depth/stencil descriptor, clear packet,
-   viewport/scissor state, draw launch, and completion.  The earlier
-   `2b,2a,e6` draw hypothesis was disproved by its 2D-only caller chain.
-5. Join the recovered D3D stream/index descriptors, topology selectors,
-   inline-vertex staging, and draw records to final packet indices.  Their
-   frontend object layouts are exact; the final vtable methods remain indirect.
-6. The final M9-index join for depth/stencil, blending, alpha test, culling,
+   viewport/scissor state, and completion.  Draw launch is statically joined to
+   H03/H06/H07 records; the earlier `2b,2a,e6` hypothesis was disproved by its
+   2D-only caller chain.
+5. The final M9-index join for depth/stencil, blending, alpha test, culling,
    multisampling, and colour masks.  Their D3D frontend bit packing is recovered;
    polygon mode and query semantics remain less complete.
-7. Texture/sampler descriptors, formats, swizzle/tiling, mip levels, cube/3D
+6. Texture/sampler descriptors, formats, swizzle/tiling, mip levels, cube/3D
    layout, filtering, wrap modes, compression, and cache flushes.
-8. Native vertex and pixel shader operand/control bit fields, constant-record
+7. Native vertex and pixel shader operand/control bit fields, constant-record
    meanings, stage linkage, and compiler quirks.  The two-dword instruction,
    partial opcode evidence, upload selector/ports, 384-instruction/96-line bank
    boundary, compiler IR opcodes and modifiers, predicate names, and several
    resource limits are recovered in
    `parhelia-m9-3d-static-re.md`.
-9. IRQ source bits for DMA completion and fault reporting.  The three
+8. IRQ source bits for DMA completion and fault reporting.  The three
    status/W1C and enable-mask register pairs, plus four vblank source mappings,
    are recovered; the remaining source semantics are not.
 
