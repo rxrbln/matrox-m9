@@ -202,8 +202,7 @@ The emitter also rewrites bits `14:13` of the current `f0` value with the unit
 number before sending it.  The relocation callback receives selectors
 `unit + 0x0b` for the first resource and `unit + 0x0f` for the second [BIN].
 This gives the Mesa state encoder an exact shadow grouping and dirty-bit model
-even though the filtering, wrap, format, pitch, and address bit fields inside
-the values still need semantic names.
+whose filtering, wrap, format, extent, and address subfields are decoded below.
 
 The frontend-to-backend join now identifies index `7c` filter, anisotropy, wrap,
 resource-format and condition fields; index `7d` LOD bias/bounds; indices
@@ -213,9 +212,12 @@ method `+0x5c` is now flattened into the bit layout for indices `78/79`,
 including the seven-bit hardware format field.  Index `78[15:0]` is the aligned
 horizontal row span in format elements, `79[15:0]` is the ordinary vertical
 extent, and common D3D color, luminance, vector, float, depth, and DXT formats
-are joined to hardware codes.  A class-3 blocked-layout formula is exact, while
-its physical tile shape and per-mip offset recurrence remain unresolved.  Index
-`87` remains reserved.
+are joined to hardware codes.  Resource dimensions are proven as 2D, cube, and
+volume/3D.  The live selector-2 view leaves indices `78[19]`, `78[20]`,
+`78[22]`, and `78[24]` clear and has no separate D3D channel-swizzle field.
+The visible class-3 block geometry and ordinary volume-mip offset recurrence
+are exact.  Only the physical permutation within class-3 blocks and packed mip
+tails remains unresolved.  Index `87` remains reserved.
 
 ### Common state-bank shadow layout
 
