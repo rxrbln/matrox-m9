@@ -5,6 +5,9 @@ saved Windows `MxMD.dll` and cross-checked against Linux `m9x_drv.so`.  It is a
 companion to `parhelia-m9-3d-static-re.md`.  Addresses and lengths below are
 binary evidence; semantic shader-operation names remain unknown.
 
+Caller analysis identifies this table as the fixed-function vertex-program and
+vertex-declaration conversion generator.  It is not a pixel-shader library.
+
 ## Proven representation
 
 * A native instruction slot is 8 bytes/two little-endian dwords.
@@ -107,6 +110,126 @@ use_a = (*(state + 0x0c) != 0) && (*(state + 0x40) == 0);
 This branch is at Windows `0x145db1..0x145e8b`.  Slots `0x12` and `0x19`
 strongly share that A/B prefix construction.  Conditions for `0x1f`, `0x22`,
 `0x32`, and `0x34` are only partially decoded.
+
+## Fixed-function vertex selector
+
+The selector and two-fragment linker are independently present in both vendor
+drivers [BIN]:
+
+| role | Windows `MxMD.dll` | Linux `m9x_drv.so` |
+|---|---:|---:|
+| main selector | `0x13b2b0`, wrapper `0x13b260` | `m9x1091` `0x44a9f0`, wrapper `m9x11255` `0x44add0` |
+| companion selector | `0x13b570` | `m9x27688` `0x44ae10` |
+| two-fragment linker | `0x13bf80` | corresponding linked-program path |
+
+The Windows pipeline calls main selector at `0x13c3a7`, companion selector at
+`0x13c3ec`, and linker at `0x13c503`.  The Linux order is `m9x11255` at
+`0x44c5ae`, then `m9x27688` at `0x44c5e3`.
+
+The encoded declaration uses `t = D & 0x0f` and `m = D & 0x30`.  Its low-nibble
+families match `D3DDECLTYPE` exactly [DER]:
+
+| declaration types | enum values | selector family |
+|---|---|---|
+| `UBYTE4,SHORT2,SHORT4,UBYTE4N,SHORT2N,SHORT4N,USHORT4N,UDEC3` | `5,6,7,8,9,10,12,13` | packed-input conversion |
+| `FLOAT3,FLOAT4,D3DCOLOR,USHORT2N,DEC3N` | `2,3,4,11,14` | float/color/special conversion |
+| `FLOAT1,FLOAT2,FLOAT16_2`, default | `0,1,15` | generic conversion |
+
+`FLOAT16_4` needs higher format bits because its enum value 16 aliases low
+nibble zero.  Helper `0x13c8d0` recognizes packed types
+`5,6,7,9,10,12,13`, while type 8 is forced into the same family.
+
+The main selector records `{P,S,M}` and the companion optionally replaces `S`
+with `Q`.  Linker `0x13bf80` concatenates `P + (Q when active, otherwise S)`.
+Roles overlap between slots:
+
+| role | slot IDs, hexadecimal |
+|---|---|
+| `P`, main conversion/fixed-function body | `00,01,04-06,09-0f,12-14,17-24,29-2f,31-35` |
+| `Q`, conditional companion/continuation | `02,03,07,08,0a,0b,0d,0e,10,11,15,16,2a,2d,2f,30,35,36` |
+| `S`, default/alternate continuation | `24-29` |
+| `M`, class marker | `37,38` |
+
+The main selector writes `cumulative_offset[P] >> 3` and
+`cumulative_offset[S] >> 3` to Windows pass fields `+0xa8/+0xaa` or Linux
+`+0xb0/+0xb2`.  The companion writes `cumulative_offset[Q] >> 3` at Windows
+`+0xbc` or Linux `+0xd0`.  The trace tuple has
+Windows stride `0x10` and Linux stride `0x18`; the cumulative-offset table is
+at Windows library `+0x418` or Linux `+0x7b0`.  Pass strides are `0xc04` and
+`0xc34`, respectively.
+
+Let `Fn` denote bit `n` of selector flags `F`.  The exact base `P` selection is:
+
+| predicate | base `P` |
+|---|---:|
+| `F7 && !F4` | `31` |
+| `F7 && F4 && !F8` | `32` |
+| `F7 && F4 && F8 && (m==0x10 || (D&0x6000)==0x2000)` | `34` |
+| remaining `F7` | `33` |
+| packed, `!F3`, `!F4 && !F9` | `00` |
+| packed, `!F3`, later zero-`F8/F9` case | `04` |
+| remaining packed `!F3` | `05` |
+| packed, `F3,!F6,m==0x20,!F5,!F4,!F9` | `09` |
+| same feature branch, later zero-`F8/F9` case | `0b` |
+| remaining same branch | `0c` |
+| packed, `F3,!F6,m==0x20,F5,!F4,!F9` | `0e` |
+| same feature branch, later zero-`F8/F9` case | `12` |
+| remaining same branch | `13` |
+| packed, `F3,!F6,m!=0x20,!F5` | `1c + F4` |
+| packed, `F3,!F6,m!=0x20,F5,!F4` | `1e` |
+| packed, `F3,!F6,m!=0x20,F5,F4` | `1f + F8` |
+| packed, `F3,F6,m==0x20,!F4,!F9` | `17` |
+| same feature branch, later zero-`F8/F9` case | `19` |
+| remaining same branch | `1a` |
+| packed, `F3,F6,m!=0x20,!F4` | `21` |
+| packed, `F3,F6,m!=0x20,F4` | `22 + F8` |
+| float/color, `!F4 && !F9` | `29` |
+| float/color, later zero-`F8/F9` case | `2b` |
+| remaining float/color | `2c` |
+| generic declaration fallback | `2e` |
+
+Flag `F10` normally increments both `P` and `S`.  The base continuation is
+`S=24` for `F6`, `S=28` for `!F6 && mode==1 && !global_inhibit`, and `S=26`
+otherwise.  Windows uniquely rejects special slot `28` with `F10`, falls back
+to `26`, then increments to `27`; Linux preserves the special choice and uses
+`29`.  This is a real cross-version behavior difference [BIN].
+
+The companion override is:
+
+| predicate | `Q` |
+|---|---:|
+| `F7`, special format condition | `30` |
+| other `F7` | `2f` |
+| `!F7,F11,!F3,!F4,!F9` | `02 + F10` |
+| `!F7,F11,!F3`, remaining | `07 + F10` |
+| `!F7,F11,F3,!F5,!F4,!F9` | `0a + F10` |
+| same branch, remaining | `0d + F10` |
+| `!F7,F11,F3,F5,!F4,!F9` | `10 + F10` |
+| same branch, remaining | `15 + F10` |
+| `!F7,!F11,F10,t in {FLOAT3,FLOAT4},!F9` | `2a` |
+| same with `F9` | `2d` |
+| pass zero, derived fallback A/B | `35` / `36` |
+| otherwise | retain `S` |
+
+For the `FLOAT3/FLOAT4` choice between `2a` and `2d`, Windows tests cached `F9`
+at `0x13b6b9..0x13b6c9`, while Linux tests a nested global-state bit at
+`0x44b030..0x44b042`.  They may be synchronized earlier, but the physical
+sources differ and an open implementation should derive this choice from its
+own explicit state rather than imitate either object layout.
+
+Marker `M` is `38` for `F7` or for packed input with
+`F3 && (F5 || F6)`; otherwise it is `37`.  No direct lookup of `M` through the
+cumulative-offset table was found, so its hardware use remains unknown.
+
+Proven flag construction includes `F2=packed_numeric`,
+`F7=F2&&(D&0x1000)`, and `F3=F2&&((D&0x30)!=0x30)`.  `F4` reflects nonzero
+context-derived state mask `&0x7e`; `F8` is helper `0x12bed0(0,1)`; `F9`
+mirrors context `+0x2504` bit 4 and accompanies installation of a 4x4 identity
+matrix; `F10` mirrors the next context bit; and `F11` accompanies allocation of
+floating-point constants.  Their final D3D semantic names remain unresolved.
+
+A prior sign-test interpretation as `F bit31` is wrong.  Windows and Linux both
+test the sign of the low byte, proving `F bit7`.
 
 ## Dynamically built fragment
 

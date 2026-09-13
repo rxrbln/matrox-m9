@@ -75,6 +75,12 @@ arbitrary immediate cannot be classified safely without data-flow context.
 Terminated matches also need contextual confirmation because unrelated x86
 immediates can accidentally have the same byte pattern.
 
+[`tools/m9-command-decode.py`](../tools/m9-command-decode.py) handles the
+complementary case: it decodes raw command-buffer dumps, where packet framing
+makes full four-index headers unambiguous, into index/MMIO/value writes or JSON.
+It rejects embedded-stop and truncated packets so a bad capture does not
+silently desynchronize the stream.
+
 As a cross-build check, the scanner finds 355 sites and 143 distinct terminated
 header immediates in `MxMD.dll`, and 180 sites/82 immediates in Linux
 `xserver/1_13_0/m9x_drv.so`.  Seventy-five exact header immediates occur in both
@@ -136,14 +142,14 @@ map for later annotation, not a final register-name header.
 | `0xfb920` | `b8..be`, `24`, `bc,bd`, `af`, `a8..ae`, `f1` | render/depth surface group [BIN][INF] |
 | `0xfc0e0` | `f0,ef,d7`, `ee`, `22`, `a7,c6` | late raster state group [BIN] |
 | `0xfc3a0` | `a5,d3` | paired state [BIN] |
-| `0xfc620`, `0xfcb60` | `44,2e,2f`, with `e6` in the latter | stream or launch candidate [BIN][INF] |
-| `0xfc8f0` | `1a,42`, sometimes followed by `e6` | stream or launch candidate [BIN][INF] |
+| `0xfc620`, `0xfcb60` | `44,2e,2f`, with `e6` in the latter | cache/TLB/address-domain synchronization records [BIN][DER] |
+| `0xfc8f0` | `1a,42`, sometimes followed by `e6` | cache/TLB/resource transition [BIN][DER] |
 | `0xfb260` | `19,18` | paired input/geometry state candidate [BIN][INF] |
 
-Index `e6` occurs in many state transitions and draw builders.  It is a general
-command/transition port whose values cover ordering operations and the recovered
-inline draw launch; it must not be assigned one global barrier meaning.  Its
-value encoding is not yet complete.  Indices `2c/2d` occur as a pair in many
+Index `e6` occurs in many state transitions and payload builders.  It is a
+general command/transition port whose values cover ordering operations and an
+inline-data count; it must not be assigned one global barrier or draw meaning.
+Its value encoding is not yet complete.  Indices `2c/2d` occur as a pair in many
 render paths and agree with the earlier sub-buffer start/end finding.  Neither
 should be admitted to a kernel command whitelist until its address and length
 constraints are understood.
@@ -196,6 +202,14 @@ number before sending it.  The relocation callback receives selectors
 This gives the Mesa state encoder an exact shadow grouping and dirty-bit model
 even though the filtering, wrap, format, pitch, and address bit fields inside
 the values still need semantic names.
+
+The frontend-to-backend join now identifies index `7c` filter, anisotropy, wrap,
+resource-format and condition fields; index `7d` LOD bias/bounds; indices
+`7e..81` converted border color; and indices `82..85` bump-environment matrix.
+The exact tables and bit fields are in `parhelia-m9-texture-state.md`.  Resource
+method `+0x5c` is now flattened into the bit layout for indices `78/79`,
+including the seven-bit hardware format field, but the size/pitch semantic names
+and full format-code table remain unresolved.  Index `87` remains reserved.
 
 ### Common state-bank shadow layout
 
@@ -378,7 +392,7 @@ record `+0x14`.  This is an exact sparse vector/constant upload mechanism
 diff, but the address calculation, data width, capacity, and dirty tracking can
 already be implemented.
 
-### Fixed index-44 resource records
+### Fixed index-44 address-domain transitions
 
 Functions `0xfc620` and `0xfcb60` each emit exactly eight writes to index `44`
 (engine offset `0x1110`), followed by relocation-backed indices `2e/2f`
@@ -391,10 +405,10 @@ Functions `0xfc620` and `0xfcb60` each emit exactly eight writes to index `44`
 
 Both paths compare the resource's low 29 address bits and upper-three flag
 bits separately, track the resource before emitting, and call relocation
-helpers with selectors `0x2c` and `0x2e`.  This is a fixed-width eight-dword
-FIFO/resource record, but static evidence does not yet prove whether it is a
-vertex stream descriptor, a launch record, or another draw resource.  Capture
-should identify it by toggling the secondary dirty bit that selects each form.
+helpers with selectors `0x2c` and `0x2e`.  Caller context identifies these as
+fixed-width cache/TLB/address-domain synchronization records [BIN][DER], not
+vertex stream descriptors.  Their exact resource-domain semantics and the
+meanings of the two repeated constants still need differential naming.
 
 ## Userspace requester submission
 
@@ -425,13 +439,27 @@ The sequence is likely ordering/cache work [INF]; its byte values and position
 in the chain are established and should be retained as an opaque transition
 until captures give each `e6` operation a semantic name.
 
-Function `0xf9c70` in `MxMD.dll` exposes a direct inline primitive
-path [BIN].  It emits the full header `2b,2a,e6`, writes
-`2b <- 0x00ffffff`, selects an inline-layout word of `0x45fcf2f3` or
-`0xfcf2f379` through `2a`, and writes
-`e6 <- 0x20000000 | (vertex_count - 1)`.  It then appends three or four packed
-dwords per vertex [DER].  This is the strongest static draw-launch anchor and
-should be the first path compared against a one-triangle capture.
+Function `0xf9c70` in `MxMD.dll` exposes a direct inline-data path [BIN].  Its
+sole caller `0x4ca40` is a 2D rectangle/stretch batch, not a generic 3D draw.
+It emits header `2b,2a,e6`, writes `2b <- 0x00ffffff`, selects an inline-layout
+word of `0x45fcf2f3` or `0xfcf2f379` through `2a`, and writes
+`e6 <- 0x20000000 | ((count - 1) & 0xffff)`.  Each 24-byte input coordinate
+record becomes packed dwords
+`p0=(u16(+4)<<16)|u16(+0)`, `p1=(u16(+12)<<16)|u16(+8)`, and
+`p2=(u16(+20)<<16)|u16(+16)`; output is an optional layout word followed by
+`p1,p0,p2` [BIN][DER].
+
+Function `0xb5e70` uses the same `2a/2b/e6` family for inline mask/pixel data
+at depths `0x10,0x20,0x40,0x80` [BIN].  Therefore the high `e6` value denotes a
+generic inline-data count/form.  It is not evidence for a 3D primitive launch;
+the actual vertex/index draw emitter remains unresolved.
+
+The recovered D3D callback table, topology mapping, 16 stream descriptors,
+index descriptor, legacy and D3D9-style vertex-declaration IR, inline-vertex
+frontend staging, and modern draw records are documented in
+`parhelia-m9-draw-frontend.md`.  Their exact frontend layouts can be implemented
+now; final context vtable slots `+0x08/+0x0c` still need a data-flow join to
+packet indices before hardware submission is implemented.
 
 Linux `m9x1011` at `0x2be20` provides another exact fixed transition stream
 [BIN].  It emits `45454524` and obtains index `24` through relocation type
@@ -714,12 +742,13 @@ not yet proof that every shader stage exposes 384 user instructions.
 
 ### Fixed native-fragment database
 
-`MxMD.dll` function `0x1454a0` builds a complete table of 57 fixed native
-microcode fragments [BIN].  Slots `0x00..0x38` have stride `0x10`; helper
+`MxMD.dll` function `0x1454a0` builds a complete table of 57 fixed-fragment
+lists [BIN].  Slots `0x00..0x38` have stride `0x10`; helper
 `0xadf00` appends `{read_only_data_pointer, byte_length}` descriptors to each
 slot.  Function `0x120910` walks the whole table at offsets `+0x000..+0x380`
-(end `+0x390`) and concatenates every descriptor payload verbatim into the
-pixel-program resource.  The static payloads span VA `0x1e91f8..0x1ef780`.
+(end `+0x390`) and concatenates every descriptor payload verbatim into a
+fixed-function vertex-program resource.  The static payloads span VA
+`0x1e91f8..0x1ef780`.
 Linux 1.15 exports the equivalent initializer as `m9x30489` at `0x4462d0`,
 with its mirrored read-only data beginning near `0xea40e0` [BIN].
 
@@ -753,8 +782,8 @@ changing that field, and dword 1 high nibble can independently select `0xe` or
 `0xa` [DER].  Operand and control meanings still need cross-fragment
 differencing; these fields should retain neutral names until that join is made.
 
-The complete 57-slot manifest, fixed-blob hash, conditional prefixes, and
-dynamic-builder masks are recorded in
+The complete 57-slot manifest, D3D vertex-declaration selector, fixed-blob hash,
+conditional prefixes, and dynamic-builder masks are recorded in
 `parhelia-m9-native-shader-fragments.md`.
 
 Several address fields preserve bits `31:29` while replacing bits `28:0`, using
@@ -1043,8 +1072,8 @@ Static analysis has established these native facts:
   eight-dword records [BIN];
 * index `44` is an eight-write record port in two relocation-backed paths
   [BIN][DER];
-* `2b,2a,e6` launches the recovered inline primitive path, with count-minus-one
-  in the low bits of the `e6` value [BIN][DER];
+* `2b,2a,e6` carries 2D rectangle/stretch and mask/pixel inline payloads, with
+  count-minus-one in the low bits of the `e6` value [BIN][DER];
 * the serialized Iris object uses 28-byte primary records and variable metadata,
   conclusively separating it from native 8-byte instructions [BIN][DER].
 

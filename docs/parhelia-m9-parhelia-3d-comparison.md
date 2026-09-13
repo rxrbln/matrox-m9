@@ -81,7 +81,7 @@ The detailed pre-capture command and shader findings are in
 | Completion | In-stream `0x1090/0x1094` write-back, `0x12bc` DWGSYNC, `0x41c`, plus Parhelia idle state | Fence/tag addresses at `0x1068/0x106c` and a memory write-back polled by `EqualizeDMATag`; `0x8f0 & 0x30000` is only an engine-state observation | Share scheduler/fence API, not packets |
 | Engine arm | Recovered Parhelia register sequence plus WARP microcode load | `EnableHardware`/`InitBoard` is mandatory and not decoded completely | Separate init/reset |
 | 2D launch | MGA-lineage surface slots, `DWGCTL` at index `0xc0`, geometry through `DSTXY/LEN` | Unified raster backend: control at index `0xf0`, geometry around `0xf2..0xfc`; copy binds a texture source | No payload compatibility |
-| 3D launch | WARP triangle setup and `DWGSYNC`; software decomposes other GL primitives | `MxMD.dll` has a direct inline path: header `2b,2a,e6`, layout selector through `2a`, `e6 = 0x20000000 \| (count-1)`, then three or four dwords per vertex. Relocated vertex/index stream bindings still need final semantic names [BIN] | Separate draw emitter |
+| 3D launch | WARP triangle setup and `DWGSYNC`; software decomposes other GL primitives | Still unresolved.  Header `2b,2a,e6`, previously thought to be an inline primitive path, is emitted only from a 2D rectangle/stretch caller and an inline mask/pixel path.  Vertex/index frontend state is decoded, but its final draw vtable methods still need joining to packet indices [BIN] | Separate draw emitter |
 
 The first row is the strongest similarity.  It likely reflects a retained Matrox
 front-end convention.  It does not imply that an index has the same meaning on
@@ -104,7 +104,7 @@ for an M9 context.
 |---|---|---|
 | Vertex processing | WARP microcode engine, 12-byte instruction format, attribute-plane latch submission, canned fixed-function programs | A distinct programmable vertex engine.  The M-Series ICD contains hardware-T&L and hardware-GLSL paths; no Parhelia WARP END signatures occur in the MSerX binaries [BIN] |
 | Fragment processing | Small DX8 ps.1.x-like combiner with two temporaries and two constants; Parhelia `GL_MTX_fragment_shader` lowering is now decoded | A separate programmable pixel-shader compiler.  MSerX exposes ARB fragment programs and GLSL 1.10 and has predicate registers `p0..p5`.  Static analysis recovers the compiler IR vocabulary, a two-dword native instruction, and four-instruction upload lines; native operand bit fields still need differential recovery [BIN] |
-| Texture path | Four documented Parhelia pipes, sampler state and formats around `0x11c0..0x120c` | Four M9 texture-unit selectors (`0x70..0x73`) and their common descriptor-index group are recovered.  Format, swizzle/tiling, mip layout, filtering, and cache fields still need semantic diffs [BIN] |
+| Texture path | Four documented Parhelia pipes, sampler state and formats around `0x11c0..0x120c` | Four M9 texture-unit selectors (`0x70..0x73`) are recovered.  Index `7c` filter/aniso/wrap packing, `7d` LOD packing, `7e..81` border color, `82..85` bump matrix, compare-function mapping, DXT families, and the `78/79` descriptor bit split are decoded.  Size/pitch names, the full seven-bit format table, and special tiling remain unresolved [BIN] |
 | Fixed function | Mesa currently lowers fixed-function GL to Parhelia-specific state and WARP/combiner programs | The vendor ICD lowers fixed function, ARB programs, and GLSL to M9 vertex/pixel programs; reuse the Mesa state tracker, then write M9-specific lowering |
 | API evidence | Current open driver targets OpenGL 1.x behavior on Parhelia | M-Series ICD strings advertise GLSL, ARB vertex/fragment programs, FBO, VBO, occlusion query, draw buffers, NPOT, depth textures, cube/3D textures, S3TC, anisotropy, and multisample.  Strings prove driver paths, not that every advertised path works on every board |
 
@@ -155,10 +155,11 @@ a safe DRM submitter and a working Mesa driver:
 3. M9 context-switch state: which indexed registers, shader stores, descriptor
    tables, and query/fence state must be isolated between clients.
 4. A verified colour render-target and depth/stencil descriptor, clear packet,
-   viewport/scissor state, and completion.  An inline primitive launch is
-   statically recovered but still needs hardware verification.
-5. Vertex-buffer and index-buffer descriptors, primitive types, and attribute
-   formats.
+   viewport/scissor state, draw launch, and completion.  The earlier
+   `2b,2a,e6` draw hypothesis was disproved by its 2D-only caller chain.
+5. Join the recovered D3D stream/index descriptors, topology selectors,
+   inline-vertex staging, and draw records to final packet indices.  Their
+   frontend object layouts are exact; the final vtable methods remain indirect.
 6. The final M9-index join for depth/stencil, blending, alpha test, culling,
    multisampling, and colour masks.  Their D3D frontend bit packing is recovered;
    polygon mode and query semantics remain less complete.
