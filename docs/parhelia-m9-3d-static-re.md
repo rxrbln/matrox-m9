@@ -260,6 +260,43 @@ through the byte dispatch table at `0x104bf4` and handler jump table at
 for the following states.  Here `p2514` means the object pointer at context
 `+0x2514`, and similarly for `p2518` and `p2528`.
 
+[`tools/m9-d3d-state-map.py`](../tools/m9-d3d-state-map.py) reproduces the
+complete dispatcher directly from those two PE tables.  It resolves all 218
+IDs in the accepted range without depending on guessed function boundaries:
+150 IDs have a real handler and 68 reach the common unsupported return at
+`0x104986` [DER].  The implemented group includes 140 public legacy/D3D9
+names plus ten driver-private IDs `210..219`.  The private handlers are real,
+but their API names must remain unknown until the private-state producer is
+found.  One subtle table detail is that unsupported state 62 uses selector
+`0x2f`, while the other unsupported entries use selector `0x98`; both slots
+contain the same `0x104986` target [BIN].
+
+The unsupported public states are also useful negative capability evidence:
+texture perspective; Z visibility; subpixel modes; stippled alpha and stipple
+enable; edge antialias; legacy flush/sort; extents; patch edge style; the debug
+monitor token; position/normal degree; antialiased lines; and adaptive
+tessellation states all dispatch to the common no-op/error path [BIN].  The 32
+legacy stipple-pattern values `64..95` do have individual storage handlers even
+though `STIPPLEENABLE` itself is unsupported; this proves frontend acceptance,
+not a usable stippled-raster path.
+
+The ten accepted IDs beyond the public D3D9 enum lower as follows [BIN]:
+
+| private ID | exact frontend effect | semantic conclusion |
+|---:|---|---|
+| `210..212` | store to `p2514+0x78,+0x7c,+0x80`; increment serial `+0x68`; dirty `+4 |= 0x200000` | three additional two-sided-stencil values, strongly matching independent CCW ref/read-mask/write-mask [INF] |
+| `213` | value bit 0 -> `p2520+0x18 bit5` and `p2514+0x0c bit20`; dirty `p2520+0 |= 0x80000000`, `p2514+8 |= 0x10` | coupled raster/program boolean, exact API meaning unknown |
+| `214` | value bit 0 -> `p2528+0x48 bit15`; dirty `p2528+0 |= 0x80` | raster boolean, exact API meaning unknown |
+| `215..218` | store to `p2514+0x110..+0x11c`; set per-target dirty bits `0x40..0x200`, then use the same common path as public color-write states | `COLORWRITEENABLE4..7` extension [DER] |
+| `219` | value bit 0 -> `p2514+0xf4 bit5`; dirty `+4 |= 0x2000` | alpha-test-group boolean, exact API meaning unknown |
+
+The `215..218` identification follows directly from the contiguous layout:
+public target-zero state 168 stores at `+0x100`, public targets 1..3 at
+`+0x104..+0x10c`, and the private four handlers continue the same dword and
+dirty-bit sequence for targets 4..7 [DER].  This is static evidence that the
+frontend represents eight color-write masks even though another hardware
+limit may reduce the simultaneously active render targets.
+
 | D3DRS ID | handler | frontend shadow update | dirty update |
 |---|---:|---|---|
 | `ZENABLE` 7 | `0x103857` | `p2514+0xc[6:5] = (v&1)<<5`; `p2528+4 bit2 = v&1`; `p2518+0x1a8 bit9 = v&1` | `p2514+4 \|= 0x100000`; `p2528+0 \|= 0x10`; `p2518+0 \|= 0x40000` |
