@@ -81,7 +81,10 @@ makes full four-index headers unambiguous, into index/MMIO/value writes or JSON.
 It also recognizes the recovered H03 numeric-range, H07 32-bit-address, and H06
 packed-16 draw records and derives their spans or element counts.  It rejects
 embedded-stop, truncated, reversed, and malformed-range records so a bad
-capture does not silently desynchronize the stream.
+capture does not silently desynchronize the stream.  The decoder also joins
+the exact consecutive `68`, `60..63`, `64..67` native-upload sequence into one
+32-byte line containing four numbered two-dword instructions.  A half-port
+sparse constant write is deliberately left as ordinary packets.
 
 As a cross-build check, the scanner finds 355 sites and 143 distinct terminated
 header immediates in `MxMD.dll`, and 180 sites/82 immediates in Linux
