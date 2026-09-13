@@ -78,8 +78,10 @@ immediates can accidentally have the same byte pattern.
 [`tools/m9-command-decode.py`](../tools/m9-command-decode.py) handles the
 complementary case: it decodes raw command-buffer dumps, where packet framing
 makes full four-index headers unambiguous, into index/MMIO/value writes or JSON.
-It rejects embedded-stop and truncated packets so a bad capture does not
-silently desynchronize the stream.
+It also recognizes the recovered H03 numeric-range, H07 32-bit-address, and H06
+packed-16 draw records and derives their spans or element counts.  It rejects
+embedded-stop, truncated, reversed, and malformed-range records so a bad
+capture does not silently desynchronize the stream.
 
 As a cross-build check, the scanner finds 355 sites and 143 distinct terminated
 header immediates in `MxMD.dll`, and 180 sites/82 immediates in Linux
