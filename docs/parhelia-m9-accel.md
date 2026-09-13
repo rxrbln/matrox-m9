@@ -1,5 +1,11 @@
 # Matrox M9 ("Phoenix") 2D acceleration
 
+> **Prototype history, not a working specification.**  Later hardware work
+> refuted direct-MMIO execution and left `0xb6/0xb7` versus `0xb8/0xb9` surface
+> roles contradictory within this file.  Use the packet payload findings as RE
+> leads only.  See `parhelia-m9-3d-submission.md` and
+> `parhelia-m9-parhelia-3d-comparison.md` before implementing an engine backend.
+
 Reverse-engineered from the vendor Linux driver
 `m9xdriver-x86_64-1.4.3-.../xserver/1_13_0/m9x_drv.so` (source file `PLOS_exa.cpp`).
 Addresses below are that binary's (file offset == virtual address).

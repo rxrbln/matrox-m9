@@ -1,5 +1,10 @@
 # Matrox M9 ("Phoenix") — engine submission, init, and 3D for Mesa
 
+> Cross-family status and implementation guidance are collected in
+> `parhelia-m9-parhelia-3d-comparison.md`.  In particular, only the indexed
+> header shape is shared with Parhelia; the DMA, framing, register semantics,
+> draw launch, and shader engines require an M9-specific backend.
+
 This is the root-cause analysis of why the M9 EXA/XAA path "consumes operations
 but writes nothing," and the specification of the submission stack that both 2D
 acceleration and a future GL/Mesa driver must build on. Sources: win32

@@ -1,5 +1,11 @@
 # Matrox M9 ("Phoenix") — bus-master DMA infrastructure
 
+> **Unresolved conflict:** static vendor analysis shows a write to `0x400`,
+> while M9148 testing found `0x400/0x404` did not latch or submit and instead
+> implicated the descriptor bank at `0x500..0x524`.  Do not implement the ring
+> from this note alone.  See `parhelia-m9-parhelia-3d-comparison.md` for the
+> current boundary between confirmed facts and missing evidence.
+
 The register-level map of the M9 command-DMA path, reversed from
 `m9xdriver…/xserver/1_13_0/m9x_drv.so` (the DMA context init `m9x6295`, the
 descriptor save/restore, and the submit worker `m9x26691`). This is what a
