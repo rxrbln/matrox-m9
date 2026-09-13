@@ -696,6 +696,17 @@ A DRM implementation can retain the recovered status/mask/ack ordering while
 using current DRM vblank and scheduler primitives instead of this global
 tasklet design.
 
+Relocations in the core driver's operation table join those wrapper callbacks
+to exact leaves [BIN]: `irq_fast` is `m9x782` at `0x5190`, which delegates to
+`m9x1012`; `irq_slow` is `m9x293` at `0x5160`, which delegates to `m9x434`;
+interrupt start is `m9x529` at `0x50e0`; and stop is `m9x1066` at `0x5100`.
+Start only sets the underlying object's `+0x08` flag to 1.  Stop first calls
+`m9x562` at `0xc810`, which directly calls controller reset `m9x704`, and then
+clears that flag.  Thus source masks must be configured by the individual
+enable helpers after start, while stop masks and acknowledges the controller
+before declaring interrupt service inactive.  This is an IRQ lifecycle, not an
+engine reset.
+
 Low-level handler `m9x547` at `0x3fd90` always stores raw `0x8f4` to its first
 output.  When raw bit 31 is set it reads `0x8e0` and `0x8e8`, stores
 `low_active = status & enable` in its second output, and acknowledges that mask
@@ -708,9 +719,56 @@ Core fast handler `m9x1012` at `0xdec0` nevertheless rejects the IRQ unless raw
 `0x1,0x2,0x100,0x200` into pending bits 0..3 for slow work.  Consequently a
 high-bank-only IRQ can be acknowledged by `m9x547` and still return
 `-1`/`IRQ_NONE`; there is no hidden high-source completion/fault dispatch in the
-saved Linux stack [BIN].  Older Parhelia evidence makes high bit `0x10000` a
-possible completion candidate, but that cross-family inference is too weak for
-a DRM IRQ implementation.
+saved Linux stack [BIN].  Older Parhelia evidence cannot assign meanings to
+these M9 sources; the Windows cross-check below further separates requester
+completion from this interrupt dispatch.
+
+### Windows miniport interrupt cross-check
+
+The MSerX `MxMM.sys` miniport ISR at `0x10875` uses the same two main banks
+[BIN].  It first takes an interlocked per-device guard, reads low enable
+`0x8e8`, then reads raw high/cascade status `0x8f4` and the driver's cached high
+enable at object `+0x8c`.  It rejects `0x8f4 == 0xffffffff`.  If high bit 31 is
+set, it reads low pending `0x8e0` and services only sources also present in
+`0x8e8`, acknowledging each through `0x8e4`.  This independently confirms that
+bit 31 is the low-bank cascade rather than an ordinary high-bank event.
+
+The Windows routine exposes more source-routing machinery than the Linux
+wrapper, but not enough names to classify requester faults.  In particular:
+
+| source | statically observed Windows ISR action |
+|---:|---|
+| high `0x40000` | W1C at `0x8f8`, increment record counter, store event code 9 |
+| high `0x10000` | W1C at `0x8f8`, increment record counter, store event code 10 |
+| high `0x20000` | W1C at `0x8f8`, increment record counter, store event code 11 |
+| high `0x8` | W1C at `0x8f8`, invoke an optional registered callback once |
+| high `0x4` | W1C at `0x8f8` |
+| high `0x01000000` | route an event record through guarded callback/work logic |
+| low `0x1`, `0x2`, `0x4`, `0x8` | W1C at `0x8e4`, update per-source notification records |
+| low `0x100`, `0x200`, `0x10` | W1C at `0x8e4`, route notification indices 4, 6, and 8 |
+
+The ISR also acknowledges enabled low sources `0x400`, `0x800`, `0x1000`,
+`0x2000`, `0x4000`, `0x8000` and their corresponding high-word bits, with an
+auxiliary dispatcher handling further source groups.  Those observations prove
+source existence and W1C behavior only.  Event numbers 9--11 are internal
+notification selectors, not semantic names, and no ISR path is joined to the
+requester's memory-tag completion.
+
+Windows interrupt-controller shutdown at `0x10f22` writes zero to `0x8fc`, the
+cached high mask, and `0x8e8`, then acknowledges `0x032f7f1f` through `0x8f8`
+and `0xff07ffff` through `0x8e4` [BIN].  Linux `m9x704` uses all ones for its
+reset acknowledgement instead.  Both establish mask-before-ack ordering.  A
+new DRM handler should acknowledge only captured active sources during normal
+shared-IRQ service and leave every unnamed source masked until a controlled
+test associates it with a hardware event.
+
+This Windows join also removes the earlier completion-IRQ hypothesis.  The
+miniport requester functions at `0x224c8` and `0x224f3` program `0x400` and
+`0x404`; synchronous helper `0x22533` waits on a GPU-written memory dword while
+repeatedly kicking `0x314`.  Fence completion is therefore a memory write-back
+in both saved operating-system stacks.  The high-bank sources may still include
+fault or service notifications, but none is required to retire a requester
+fence and none has a defensible fault name yet [BIN].
 
 ## Native shader upload transport
 

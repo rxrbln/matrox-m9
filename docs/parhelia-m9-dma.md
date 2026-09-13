@@ -154,6 +154,34 @@ until the combined value reaches the target.  While pending it writes
 in the saved stack is therefore memory-tag polling; no recovered IRQ bit can yet
 be assigned as DMA completion.
 
+The Windows miniport independently confirms this completion model [DRV].
+`MxMM.sys` function `0x224c8` snapshots its CPU producer pointer and writes the
+requester base/control value to MMIO `0x400`.  Function `0x224f3` clears
+`0x31c`, computes `producer_end - producer_start + gpu_base`, and posts that
+address to `0x404`.  Its synchronous helper at `0x22533` advances a sequence
+target by `0x10`, emits a 12-byte completion record, submits it, and then loops
+until the dword addressed by object `+0x30` reaches the target.  Every iteration
+writes `1` to `0x314`.  It has no timeout.  No part of this Windows wait consumes
+an interrupt-completion counter, so the Linux and Windows implementations agree
+that the requester fence is a GPU memory write-back and `0x314` is a progress
+kick rather than a completion acknowledgement.
+
+### Vendor waits that must not be copied literally [DRV]
+
+The saved implementations contain four distinct unbounded waits:
+
+| wait | vendor condition | disconnect handling |
+|---|---|---|
+| pending submission drain | tag-context `+0x54 == 0` in Linux `m9x1039` | none in this loop |
+| front-end state | `(read(0x8f0) & 0x00030000) == 0` in `m9x1039` | the following state loop does not special-case `0xffffffff` |
+| requester quiescence | `0x508` bit 0 set, two equal `0x500/0x50c` samples, then bit 0 still set in `m9x1016` | its alternate branch exits when `0x8f0 == 0xffffffff` |
+| fence completion | extended memory tag reaches the target in `m9x721`/`m9x946` and Windows `0x22533` | Linux tag waits abort on `0x8f0 == 0xffffffff`; Windows does not |
+
+These conditions observe different blocks and must retain separate diagnostics
+and deadlines.  Reaching one does not prove the others are healthy.  In
+particular, `0x8f0 & 0x30000` is not the fence, and a stable descriptor does not
+prove that the GPU wrote the requested tag.
+
 ## Address-window initialization [DRV]
 
 Linux `m9x421` at `0x16410` programs the following exact windows before it
@@ -198,6 +226,51 @@ are exact values; the address-translation/cache field names remain provisional.
    alignment, then write the final command address to `0x404`.
 4. **Sync**: poll the write-back tag at `[0x1068]`.
 
+## Safe kernel bring-up and bounded recovery [DRV]/[RE?]
+
+The statically defensible bring-up order for a future kernel backend is:
+
+1. Map the BAR and reject a disconnected device (`0x8f0 == 0xffffffff`).
+2. Mask the interrupt banks and acknowledge stale status before registering and
+   enabling individual sources.  Initially enable only the four proven vblank
+   sources.
+3. Enable `PCI_COMMAND_MASTER`, then allocate and pin requester, context, and
+   fence memory subject to the still-unresolved M9 address-tag constraints.
+4. Program the address windows and `m9x109` context registers, initialize the
+   `0x500..0x524` descriptor, and seed fence memory so zero cannot look complete.
+5. Submit one bounded no-op/completion record.  Permit rendering only after its
+   memory tag advances and all relevant MMIO reads remain connected.
+
+Steps 3--5 remain behind an experimental opt-in until address domains and the
+completion record are captured.  They are an implementation order derived from
+the vendor call graph, not evidence for an undiscovered global reset sequence.
+
+Every kernel wait needs an absolute deadline and checks for device removal,
+signals where sleeping is allowed, and a reset-generation change.  On timeout,
+the driver should first stop accepting submissions and serialize recovery, then
+snapshot at least `0x8f0`, raw/enabled IRQ state, `0x400/0x404/0x448`, the full
+`0x500..0x524` descriptor, `0x31c`, fence addresses/contents, and software
+producer, target, and wrap-epoch values.  Capturing these before acknowledgement
+or reprogramming preserves the evidence needed to distinguish a bad relocation,
+requester stall, engine hang, and disconnect.
+
+A requester-local restart is defensible only after the stable/quiescent
+handshake succeeds.  One bounded attempt may then use the known park/hold path,
+restore `0x520/0x524`, optionally `0x50c/0x514/0x510`, and finally
+`0x500/0x508/0x504` in the exact `m9x714` order, restore the address windows,
+kick `0x314`, and require a new no-op fence.  The driver must attach a generation
+to each job and fence, re-seed write-back memory on restart, and report every
+outstanding fence from the old generation as an error; otherwise a stale tag can
+falsely complete a new job.
+
+If quiescence cannot be reached or that one requester restart fails, fail the
+engine closed while preserving scanout when possible.  The recovered `0x31c`
+states and descriptor bit 1 park requester traffic; they do not reset a wedged
+3D engine.  Static analysis has found neither a complete engine/global reset nor
+proof that PCI function reset is safe on these display devices.  A production
+driver must not improvise either operation or repeatedly rewrite a live
+descriptor.
+
 ## What is still uncertain (blocks a first-try implementation) [RE?]
 
 - **Engine-specific reset/arm sequence** — `m9x30894` enables PCI bus mastering
@@ -211,7 +284,8 @@ are exact values; the address-translation/cache field names remain provisional.
   joined to `0x400/0x404` submission.
 - **Recovery** — status/mask/W1C banks are decoded, but no high-bank source has
   a defensible DMA-completion/fault name and no full 3D/global reset was found.
-  `0x31c` state changes are requester park/window restore, not global reset.
+  `0x31c` state changes and the `0x500..0x524` save/restore handshake provide a
+  bounded requester-local recovery candidate, not a global reset.
 
 These are why a fully-drawing DMA path cannot be written blind without risking a
 card lockup on each wrong guess. The safe way forward is a kernel-only diagnostic

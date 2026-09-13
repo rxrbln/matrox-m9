@@ -78,8 +78,8 @@ The detailed pre-capture command and shader findings are in
 | Command chaining | `0x28/0x29` are SECADDRESS/SECEND; the primary ring calls validated secondary buffers | M9 notes identify `0x2c/0x2d` as sub-buffer start/end and a BmBuffer/DMA-list submission path | Separate control-index policy and relocations |
 | Direct register execution | Direct writes to the indexed window can execute through Parhelia's MMIO/emulated-DMA path | Direct writes stage/read as zero and did not render on M9148; the vendor uses DMA lists [HW][BIN] | No shared PIO fallback |
 | Primary DMA | `0x404` start, `0x408` end/trigger, `0x400` write-back, with system-memory address tags | Saved Linux kernel code programs DMA base/control at `0x400` and rings `0x404` with the final write address. `0x314`/`0x31c` are additional front-end kick/state controls; userspace cannot replace the kernel-owned requester path with direct MMIO [BIN][HW] | Separate requester backend |
-| Completion | In-stream `0x1090/0x1094` write-back, `0x12bc` DWGSYNC, `0x41c`, plus Parhelia idle state | Fence/tag addresses at `0x1068/0x106c` and a memory write-back polled by `EqualizeDMATag`; `0x8f0 & 0x30000` is only an engine-state observation | Share scheduler/fence API, not packets |
-| Engine arm | Recovered Parhelia register sequence plus WARP microcode load | `EnableHardware`/`InitBoard` is mandatory and not decoded completely | Separate init/reset |
+| Completion | In-stream `0x1090/0x1094` write-back, `0x12bc` DWGSYNC, `0x41c`, plus Parhelia idle state | Fence/tag addresses at `0x1068/0x106c` and a memory write-back polled by both Linux and Windows; `0x314` is a progress kick and `0x8f0 & 0x30000` is only an engine-state observation. No completion IRQ is required [BIN] | Share scheduler/fence API, not packets |
+| Engine arm | Recovered Parhelia register sequence plus WARP microcode load | PCI bus-master enable and requester/context initialization are decoded. Descriptor park/save/restore is requester-local; a full engine/global reset is still unknown [BIN] | Separate init/reset |
 | 2D launch | MGA-lineage surface slots, `DWGCTL` at index `0xc0`, geometry through `DSTXY/LEN` | Unified raster backend: control at index `0xf0`, geometry around `0xf2..0xfc`; copy binds a texture source | No payload compatibility |
 | 3D launch | WARP triangle setup and `DWGSYNC`; software decomposes other GL primitives | Context draw vtable methods are joined to concrete three-dword command records.  H03 carries numeric start/exclusive-end ranges; H07 carries relocation-backed 32-bit ranges; H06 carries relocation-backed packed-16 ranges.  Topology and base-vertex address adjustment are lowered before launch.  Header `2b,2a,e6` is independently proven to be a 2D inline-data path [BIN][DER] | Separate draw emitter |
 
@@ -148,7 +148,9 @@ contents.
 The following technical pieces are also not yet recovered well enough to write
 a safe DRM submitter and a working Mesa driver:
 
-1. The complete `EnableHardware` sequence and reset/recovery sequence.
+1. The complete engine/global reset sequence.  PCI bus-master enable, requester
+   initialization, descriptor quiescence, and requester-local save/restore are
+   decoded, but the latter must not be treated as a 3D-engine reset.
 2. The exact `0x500..0x524` descriptor fields, address-space tags,
    producer/consumer rules, wrap handling, and fence command.  Static recovery
    establishes `0x400` base/control and `0x404` as the submit doorbell.
@@ -171,9 +173,11 @@ a safe DRM submitter and a working Mesa driver:
    384-instruction/96-line bank boundary, compiler IR opcodes and modifiers,
    predicate names, and several resource limits are recovered in
    `parhelia-m9-3d-static-re.md`.
-8. IRQ source bits for DMA completion and fault reporting.  The three
-   status/W1C and enable-mask register pairs, plus four vblank source mappings,
-   are recovered; the remaining source semantics are not.
+8. IRQ source bits for fault reporting and non-vblank service events.  Linux and
+   Windows both use memory write-back fences rather than a completion IRQ.  The
+   three status/W1C and enable-mask register pairs, four vblank source mappings,
+   Windows event routes, and mask-before-ack order are recovered; the remaining
+   source semantics are not.
 
 There is also no M9 support in the current `linux-7.2` Parhelia DRM directory or
 the current Mesa Parhelia driver.  PCI device `0540` is intentionally absent, so
@@ -181,18 +185,19 @@ probing an M9 cannot accidentally run Parhelia engine commands.
 
 ## Implementation order
 
-1. Reverse `KernelLibraries.o_shipped` first.  Map its `m9xNNN` functions from
-   diagnostic-string xrefs, open-wrapper relocations, call graph, and MMIO
-   constants.  Recover enable/reset, DMA allocation, descriptor programming,
-   submit, fence, and IRQ handling before touching Mesa.
+1. Continue the `KernelLibraries.o_shipped` and `MxMM.sys` reset call graphs.
+   Requester programming, memory-tag fences, IRQ banks, vblank routing, and a
+   bounded requester-local restart contract are now recovered.  Do not promote
+   that local restart to a global reset without another vendor join or capture.
 2. Capture a vendor clear and triangle on M9.  Save the DMA buffers, descriptor
    bank `0x400..0x524`, engine/IRQ registers, fence memory, and the affected VRAM
    pages.  A capture resolves the contradictory ring and surface notes quickly.
 3. Add M9 as a separate `parhelia_engine_ops` implementation in DRM, initially
    behind an explicit module option.  Validate and relocate M9 packet indices
    with an M9 whitelist.  Keep Parhelia and M9 contexts/state shadows separate.
-4. Prove kernel-only fill, clear, and triangle self-tests, including fence IRQ,
-   timeout, reset, and two alternating contexts.
+4. Prove kernel-only fill, clear, and triangle self-tests, including memory-tag
+   fence completion, independent IRQ source tests, timeout, requester restart,
+   and two alternating contexts.
 5. Add an M9 Mesa screen/backend which initially uses CPU-transformed vertices
    and minimal passthrough shaders.  Then recover textures, depth/blend, and the
    full shader ISA incrementally.
