@@ -180,10 +180,10 @@ it to wrapper `+0x20` and to task `+0xc4`.  Function `0x20770`, duplicated at
 | `+0xc0` | wrapper input state | `0xfb260` |
 | `+0xc4` | D3D context `+0x2538` late state | `0xfc0e0` |
 
-This closes the structural object-to-emitter join.  It still does not map the
-frontend `p2514` render-state shadow to final indices; no observed copy or
-lowering path justifies assigning depth/blend/raster names to neutral banks
-`88..9f`.
+This closes the structural object-to-emitter join but does not by itself map
+the frontend `p2514` render-state shadow to final indices.  The depth/stencil
+exception is joined below; no observed copy or lowering path justifies
+assigning the remaining blend/raster names to neutral banks `88..9f`.
 
 ### Texture shadow layout
 
@@ -1065,7 +1065,8 @@ instructions.  It is not the fixed two-dword native instruction stream copied
 by `MxMD.dll`.  A Mesa compiler can reuse the recovered operation semantics,
 but must still implement a separate Iris/native lowering.  The physical native
 bit packer is now decoded in `parhelia-m9-native-shader-fragments.md`; its
-operation mnemonics and operand directions are not yet joined.
+five source/resource descriptors and one result descriptor are distinguished.
+Native operation mnemonics remain unjoined.
 
 Compiler built-in generator `0x10689080` gives the exact 48-byte runtime-limit
 structure consumed when it creates the GLSL preamble [BIN]:
@@ -1374,8 +1375,9 @@ be implemented before capture is:
 8. requester/DMA scaffolding for the proven `2c/2d` start/end pair, `0x404`
    doorbell, fences, bounded idle waits, and reset/error recovery;
 9. a vendor-Iris parser/dumper for exact compiler comparisons, while keeping
-   native operations without a proven mnemonic or operand direction behind an
-   explicit unsupported boundary.
+   native operations without a proven mnemonic behind an explicit unsupported
+   boundary.  The five source/resource descriptors, result descriptor, result
+   routing, and `xy`/`zw` component-pair modes can already be represented.
 
 The first capture matrix should compile one-operation vertex and fragment
 programs with identity operands, then vary one destination, source, swizzle,

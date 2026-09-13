@@ -103,7 +103,7 @@ for an M9 context.
 | Block | Parhelia/P690 | M9/Phoenix |
 |---|---|---|
 | Vertex processing | WARP microcode engine, 12-byte instruction format, attribute-plane latch submission, canned fixed-function programs | A distinct programmable vertex engine.  The M-Series ICD contains hardware-T&L and hardware-GLSL paths; no Parhelia WARP END signatures occur in the MSerX binaries [BIN] |
-| Fragment processing | Small DX8 ps.1.x-like combiner with two temporaries and two constants; Parhelia `GL_MTX_fragment_shader` lowering is now decoded | A separate programmable pixel-shader compiler.  MSerX exposes ARB fragment programs and GLSL 1.10 and has predicate registers `p0..p5`.  Static analysis recovers the compiler IR vocabulary, two-dword native instruction, four-instruction upload lines, exact native packer, three operation-selector fields, gated descriptor fields, and component-mask scatter.  Native mnemonic and source/destination semantics still need differential recovery [BIN][DER] |
+| Fragment processing | Small DX8 ps.1.x-like combiner with two temporaries and two constants; Parhelia `GL_MTX_fragment_shader` lowering is now decoded | A separate programmable pixel-shader compiler.  MSerX exposes ARB fragment programs and GLSL 1.10 and has predicate registers `p0..p5`.  Static analysis recovers the compiler IR vocabulary, two-dword native instruction, four-instruction upload lines, exact native packer, three operation-selector fields, five source/resource descriptors, one result descriptor, result routing, `xy`/`zw` result-component modes, and component-mask scatter.  Native ALU/texture mnemonics and predicate/end fields still need differential recovery [BIN][DER] |
 | Texture path | Four documented Parhelia pipes, sampler state and formats around `0x11c0..0x120c` | Four M9 texture-unit selectors (`0x70..0x73`) are recovered.  Index `7c` filter/aniso/wrap packing, `7d` LOD packing, `7e..81` border color, `82..85` bump matrix, compare-function mapping, common color/luminance/vector/float/depth/DXT formats, and the `78/79` descriptor extents are decoded.  The combined texture-operation/resource-class decision tree, 2D/cube/volume dimension join, visible class-3 block geometry, and ordinary volume-mip offset recurrence are exact.  The live D3D selector-2 view has no independent channel-swizzle field; physical class-3 and packed mip-tail permutations remain unresolved [BIN][DER] |
 | Fixed function | Mesa currently lowers fixed-function GL to Parhelia-specific state and WARP/combiner programs | The vendor ICD lowers fixed function, ARB programs, and GLSL to M9 vertex/pixel programs; reuse the Mesa state tracker, then write M9-specific lowering |
 | API evidence | Current open driver targets OpenGL 1.x behavior on Parhelia | M-Series ICD strings advertise GLSL, ARB vertex/fragment programs, FBO, VBO, occlusion query, draw buffers, NPOT, depth textures, cube/3D textures, S3TC, anisotropy, and multisample.  The live compiler caller supplies exact limits of 16 vertex attributes, 4 vertex samplers, 16 fragment samplers, 20 combined samplers, 512 vertex and fragment uniform components, 60 varying floats, and 4 draw buffers.  Strings prove driver paths, not that every advertised path works on every board |
@@ -160,16 +160,19 @@ a safe DRM submitter and a working Mesa driver:
    viewport/scissor state, and completion.  Draw launch is statically joined to
    H03/H06/H07 records; the earlier `2b,2a,e6` hypothesis was disproved by its
    2D-only caller chain.
-5. The final M9-index join for depth/stencil, blending, alpha test, culling,
-   multisampling, and colour masks.  Their D3D frontend bit packing is recovered;
-   polygon mode and query semantics remain less complete.
+5. The final M9-index join for blending, alpha test, culling, multisampling,
+   and colour masks.  Depth/stencil state is joined through its compiler and
+   per-batch shadows to final indices `a8/a9/aa`; the remaining D3D frontend
+   packing stops before the final program key or command words.  Polygon mode
+   and query semantics remain less complete.
 6. Texture cache flushes and the physical address permutations within class-3
    blocks and packed mip tails.  Descriptor formats, filter/wrap/LOD fields,
    2D/cube/volume selection, visible class-3 geometry, and ordinary volume-mip
    offsets are statically recovered.
-7. Native vertex and pixel shader mnemonic/operand-direction joins,
+7. Native vertex and pixel shader mnemonic joins, predicate/end fields,
    constant-record meanings, stage linkage, and compiler quirks.  The two-dword
-   instruction, exact native packer and physical fields, upload selector/ports,
+   instruction, exact native packer and physical fields, source/result
+   direction, result routing and component-pair modes, upload selector/ports,
    384-instruction/96-line bank boundary, compiler IR opcodes and modifiers,
    predicate names, and several resource limits are recovered in
    `parhelia-m9-3d-static-re.md`.

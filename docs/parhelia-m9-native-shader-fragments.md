@@ -464,5 +464,5 @@ MMIO capture is needed.
 two-dword slots, reports the containing four-slot upload line and lane, and
 prints XOR masks plus changed bit ranges for each differing instruction.  Its
 `--fields` mode also prints the already-proven numeric operation selectors,
-overlapping seven-bit descriptor fields, split selector, and both scattered
-component masks before and after each change.
+result-routing selector, overlapping seven-bit descriptor fields, split
+selector, and both scattered component masks before and after each change.
