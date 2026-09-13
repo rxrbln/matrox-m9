@@ -244,10 +244,12 @@ X stays up under both VBE and native modesetting, logging
 **Acceleration is not yet proven to work**, for two reasons that are independent of the
 EXA code:
 
-1. **The engine reports permanently busy** — `0x8f0 & 0x00030000` stays set.  The vendor
-   enables the drawing engine in `PBoard::InitBoard` / `EnableHardware` (error strings at
-   0xe8c3d1 / 0xe91338 / 0xe91368) *before* EXA init, and that step has never been
-   traced.  This is the prime suspect.
+1. **The engine reports permanently busy** — `0x8f0 & 0x00030000` stays set.  Static
+   recovery now shows that the vendor `EnableHardware` lifecycle explicitly enables
+   `PCI_COMMAND_MASTER`, then builds bridge/display services; it is not a hidden drawing
+   reset.  The working path also initializes the privileged requester at `0x400/0x404`,
+   its `0x500..0x524` descriptor, address windows, and memory-tag fences.  The direct-MMIO
+   prototype omits that submission architecture.
 2. ~~Nothing X draws reaches VRAM on the test machine at all.~~ **Retracted 2026-08-12.**
    That conclusion came from scanning VRAM at a guessed offset.  Measured through X
    instead (XFillRectangle + XGetImage readback), software rendering lands correctly:

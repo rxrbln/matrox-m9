@@ -4,8 +4,9 @@
 > `parhelia-m9-parhelia-3d-comparison.md`.  In particular, only the indexed
 > header shape is shared with Parhelia; the DMA, framing, register semantics,
 > draw launch, and shader engines require an M9-specific backend.
-> The recovered pre-capture 3D register banks, native eight-dword shader upload
-> record, compiler IR, and resource limits are documented in
+> The recovered pre-capture 3D register banks, two-dword native shader ISA and
+> four-instruction/eight-dword upload line, compiler IR, and resource limits are
+> documented in
 > `parhelia-m9-3d-static-re.md`.
 
 This is the root-cause analysis of why the M9 EXA/XAA path "consumes operations
@@ -49,13 +50,17 @@ engine (`parhelia-3d-driving.md`): **that path does not exist on M9** — the
 Before the engine runs, `PBoard::InitBoard(MUINT8*, MUINT8*)` performs an
 **`EnableHardware`** step. Failure strings: `Failed to EnableHardware.`,
 `Problem with EnableHardware in GLServices`, `Problem with EnableHardware in
-UnitServices`, `Problem initializing requester` [DRV]. Location: function
-`m9x28002` in `1_13_0/m9x_drv.so` calls it through **vtable slot `*0x30`** on the
-board object `[rbx+0x18]`, immediately before the failure log. Our driver never
-performs this arm step — a second reason the engine stays idle. It is the
-"untraced EnableHardware" flagged as prime suspect in earlier sessions, now
-located (not yet fully decoded — it is a virtual call into a concrete PBoard
-subclass).
+UnitServices`, `Problem initializing requester` [DRV].  In the Linux binary,
+the `Failed to EnableHardware.` path is in `m9x21829` at `0x287963`.
+`m9x28121` at `0x28fff0` calls the actual board enable/disable orchestrator
+`m9x30894` at `0x294670` with arguments `(board, 1, 0)`.  The latter carries
+the GLServices/UnitServices failure diagnostics.  The earlier attribution to
+`m9x28002` was wrong; that function is a surface/resource allocator.  Our
+driver still lacks the equivalent prerequisites.  The directly relevant
+hardware action inside the large lifecycle function is a virtual config-space
+read/write of selector `4`, ORing bit `4`: strong evidence that it enables
+`PCI_COMMAND_MASTER`.  The rest creates bridge, display-manager, GLServices,
+UnitServices, and four head/output objects; it is not a hidden 3D reset.
 
 ## Submission primitives (concrete, verified offsets)
 
@@ -84,8 +89,9 @@ Exact field formulas and ioctl sizes are in `parhelia-m9-3d-static-re.md`.
 **Direct-MMIO submission cannot draw on M9.** Making 2D acceleration work
 requires the full DMA path, in order:
 
-1. **Arm** — run the InitBoard/EnableHardware sequence once (decode `m9x28002`'s
-   `*0x30` target; it configures the requester + DMA adapter).
+1. **Prerequisites** — enable PCI bus mastering in the kernel, then initialize
+   the requester and resources.  Use `m9x28121 -> m9x30894` as lifecycle and
+   ordering evidence, without reproducing its userspace display-service graph.
 2. **Build** a BmBuffer command list in a bus-master-visible buffer (VRAM/AGP/
    system via the `/dev/matrox`-style allocator) — the same indexed packet format
    already in `parhelia_m9_ring.c` (`idx0|idx1<<8|…`, `0x45` stop) is the payload.
@@ -96,9 +102,10 @@ requires the full DMA path, in order:
    fence, not the `0x8f0` idle poll.
 
 This is a real subsystem, not a register tweak. `parhelia_m9_ring.c` has the
-packet format right but is bound to the wrong base (0x400 is read-only); it needs
-the DMA-adapter buffer + the arm step, which is the honest reason the EXA/XAA
-"engine not working" is still open.
+packet format right, but its userspace-style register path cannot configure the
+kernel-owned requester.  It needs a DMA-adapter buffer, the recovered privileged
+`0x400/0x404` requester setup, and the arm step; this is why the EXA/XAA engine
+still does not run.
 
 ## For a Mesa GL driver
 
@@ -111,8 +118,8 @@ semantics is win32 **`MxMGLX.dll`** (the M9 OpenGL ICD) and the same
 `WGL*`/`GL*` code statically present in `m9x_drv.so`. Sequence to reverse next,
 all static:
 
-- `m9x28002` `*0x30` EnableHardware target → the arm sequence + requester setup
-  (unblocks 2D *and* 3D).
+- `m9x28121` and `m9x30894` EnableHardware path → finish the arm sequence and
+  requester prerequisites (unblocks 2D and 3D).
 - `SendCommandStreamUseDmaList` → exact BmBuffer layout, DMA-address programming,
   and the doorbell/tag protocol.
 - `MxMGLX.dll` → M9 3D register set (vertex submission, raster/shader state) for

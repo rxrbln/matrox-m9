@@ -103,7 +103,7 @@ for an M9 context.
 | Block | Parhelia/P690 | M9/Phoenix |
 |---|---|---|
 | Vertex processing | WARP microcode engine, 12-byte instruction format, attribute-plane latch submission, canned fixed-function programs | A distinct programmable vertex engine.  The M-Series ICD contains hardware-T&L and hardware-GLSL paths; no Parhelia WARP END signatures occur in the MSerX binaries [BIN] |
-| Fragment processing | Small DX8 ps.1.x-like combiner with two temporaries and two constants; Parhelia `GL_MTX_fragment_shader` lowering is now decoded | A separate programmable pixel-shader compiler.  MSerX exposes ARB fragment programs and GLSL 1.10 and has predicate registers `p0..p5`.  Static analysis recovers the compiler IR vocabulary and a native eight-dword upload record; native opcode/operand bit fields still need differential recovery [BIN] |
+| Fragment processing | Small DX8 ps.1.x-like combiner with two temporaries and two constants; Parhelia `GL_MTX_fragment_shader` lowering is now decoded | A separate programmable pixel-shader compiler.  MSerX exposes ARB fragment programs and GLSL 1.10 and has predicate registers `p0..p5`.  Static analysis recovers the compiler IR vocabulary, a two-dword native instruction, and four-instruction upload lines; native operand bit fields still need differential recovery [BIN] |
 | Texture path | Four documented Parhelia pipes, sampler state and formats around `0x11c0..0x120c` | Four M9 texture-unit selectors (`0x70..0x73`) and their common descriptor-index group are recovered.  Format, swizzle/tiling, mip layout, filtering, and cache fields still need semantic diffs [BIN] |
 | Fixed function | Mesa currently lowers fixed-function GL to Parhelia-specific state and WARP/combiner programs | The vendor ICD lowers fixed function, ARB programs, and GLSL to M9 vertex/pixel programs; reuse the Mesa state tracker, then write M9-specific lowering |
 | API evidence | Current open driver targets OpenGL 1.x behavior on Parhelia | M-Series ICD strings advertise GLSL, ARB vertex/fragment programs, FBO, VBO, occlusion query, draw buffers, NPOT, depth textures, cube/3D textures, S3TC, anisotropy, and multisample.  Strings prove driver paths, not that every advertised path works on every board |
@@ -164,13 +164,15 @@ a safe DRM submitter and a working Mesa driver:
    polygon mode and query semantics remain less complete.
 7. Texture/sampler descriptors, formats, swizzle/tiling, mip levels, cube/3D
    layout, filtering, wrap modes, compression, and cache flushes.
-8. Native vertex and pixel shader opcode/operand bit fields, constant-record
-   meanings, stage linkage, and compiler quirks.  The eight-dword record,
-   upload selector/ports, 96-record bank boundary, compiler IR opcodes and
-   modifiers, predicate names, and several resource limits are recovered in
+8. Native vertex and pixel shader operand/control bit fields, constant-record
+   meanings, stage linkage, and compiler quirks.  The two-dword instruction,
+   partial opcode evidence, upload selector/ports, 384-instruction/96-line bank
+   boundary, compiler IR opcodes and modifiers, predicate names, and several
+   resource limits are recovered in
    `parhelia-m9-3d-static-re.md`.
-9. IRQ source/status/ack bits for DMA completion, fault reporting, and vblank as
-   used by a modern DRM driver.
+9. IRQ source bits for DMA completion and fault reporting.  The three
+   status/W1C and enable-mask register pairs, plus four vblank source mappings,
+   are recovered; the remaining source semantics are not.
 
 There is also no M9 support in the current `linux-7.2` Parhelia DRM directory or
 the current Mesa Parhelia driver.  PCI device `0540` is intentionally absent, so

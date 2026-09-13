@@ -4,7 +4,8 @@ This note is the pre-capture specification recovered from the saved Matrox
 M-Series Windows and Linux drivers.  It covers indexed command construction,
 the 3D state banks, shader program upload, the vendor compiler interface, and
 the compiler's Iris instruction vocabulary.  It deliberately separates
-compiler IR from the native eight-dword hardware instruction record.
+compiler IR from the native two-dword hardware instruction format and its
+eight-dword upload lines.
 
 Confidence labels are:
 
@@ -139,17 +140,39 @@ map for later annotation, not a final register-name header.
 | `0xfc8f0` | `1a,42`, sometimes followed by `e6` | stream or launch candidate [BIN][INF] |
 | `0xfb260` | `19,18` | paired input/geometry state candidate [BIN][INF] |
 
-Index `e6` occurs in many state transitions and draw builders.  Its frequency
-supports a barrier/flush/synchronization role, but the value encoding is not yet
-known.  Indices `2c/2d` occur as a pair in many render paths and agree with the
-earlier sub-buffer start/end finding.  Neither should be admitted to a kernel
-command whitelist until its address and length constraints are understood.
+Index `e6` occurs in many state transitions and draw builders.  It is a general
+command/transition port whose values cover ordering operations and the recovered
+inline draw launch; it must not be assigned one global barrier meaning.  Its
+value encoding is not yet complete.  Indices `2c/2d` occur as a pair in many
+render paths and agree with the earlier sub-buffer start/end finding.  Neither
+should be admitted to a kernel command whitelist until its address and length
+constraints are understood.
 
 Top-level commit function `0xfadf0` emits these blocks in the fixed order
 `0xfc0e0` (late state), `0xfb920` (surfaces), `0xf4f50` (common banks),
 `0xf6f20` (program/vector state), then `0xfb260` (paired input state), and
 finally clears the context dirty word at `+0xc` [BIN].  The open driver should
 preserve this ordering until captures prove which dependencies can be relaxed.
+
+The task-object joins are exact [BIN].  Constructor `0x1df90` allocates and
+initializes the 0x90-byte late-state object, which is stored at outer D3D
+context `+0x2538`.  Calls at `0x102f49..0x102f56` and
+`0x11bddd..0x11bdf0` feed that object to binder `0x10a730`; the binder writes
+it to wrapper `+0x20` and to task `+0xc4`.  Function `0x20770`, duplicated at
+`0x13db29..0x13db58`, establishes the complete emitter routing:
+
+| task field | bound object | consumer |
+|---:|---|---:|
+| `+0xb4` | per-batch `+0x3e8` | `0xfb920` |
+| `+0xb8` | per-batch base | `0xf4f50` |
+| `+0xbc` | program state `+0xc04` | `0xf6f20` |
+| `+0xc0` | wrapper input state | `0xfb260` |
+| `+0xc4` | D3D context `+0x2538` late state | `0xfc0e0` |
+
+This closes the structural object-to-emitter join.  It still does not map the
+frontend `p2514` render-state shadow to final indices; no observed copy or
+lowering path justifies assigning depth/blend/raster names to neutral banks
+`88..9f`.
 
 ### Texture shadow layout
 
@@ -265,6 +288,7 @@ Blend and alpha packing in `p2514` is [BIN]:
 | `DESTBLENDALPHA` 208 | `0x103747` | `+0xf8[29:25]` | same |
 | `BLENDOPALPHA` 209 | `0x103773` | `+0xf8[14:12]` | same |
 | `BLENDFACTOR` 193 | `0x1037a1` | raw `+0xd0`, serial at `+0xcc` | `+4 \|= 0x8000` |
+| `SRGBWRITEENABLE` 194 | `0x1037e7` | `+0xf4 bit11` | `+4 \|= 0x10000` |
 
 Raster and output anchors are [BIN]:
 
@@ -409,19 +433,42 @@ path [BIN].  It emits the full header `2b,2a,e6`, writes
 dwords per vertex [DER].  This is the strongest static draw-launch anchor and
 should be the first path compared against a one-triangle capture.
 
+Linux `m9x1011` at `0x2be20` provides another exact fixed transition stream
+[BIN].  It emits `45454524` and obtains index `24` through relocation type
+`0x2b`; emits header `453ce6e6` with values `0x6dc00000`, `0x42000000`, and
+`0x000000a1`; then emits two `44444444` packets whose eight index-`44` values
+are all `0x30081898`; and ends with header `45452f2e` using relocation types
+`0x2c` and `0x2f`.  These bytes are safe to preserve as an opaque transition,
+but their semantic names remain provisional.
+
+Linux `m9x528` at `0x2db30` emits header `453e421a` [BIN].  Index `1a` combines
+tag fields at `+0x00` and `+0x18`; index `42` receives the tag `+0x10` pointer
+advanced by `0x10` and ORed with 1; index `3e` combines resource fields `+0x34`
+and `+0x44`.  This is an exact resource/tag-tail encoding and another anchor for
+joining descriptor address domains.
+
 ## Kernel DMA ABI and hardware doorbell
 
 The proprietary Linux `KernelLibraries.o_shipped` provides the matching static
 kernel side.  Its ioctl dispatcher `m9x1185` at `0x4e80` masks the command with
 `0xff` and exposes these relevant calls [BIN]:
 
-| command | saved name/operation | structure size | core vtable slot |
-|---:|---|---:|---:|
-| `1` | `GetBmBufferAddr` | `0x38` | `+0x98` |
-| `12` | `ExecuteDma` | `0x840` | `+0x80` |
-| `15` | `SetCommandBufferSize` | `0x10` | `+0xf8` |
-| `16` | `DrawOnSyncBuffer`, selector `1..4` | `0x18` | `+0xe0/+0xe8/+0xf0` |
-| `18` | `ReleaseBmBuffer` | `0x30` | `+0xa0` |
+| command | userspace ioctl | saved name/operation | structure size | core action |
+|---:|---:|---|---:|---|
+| `1` | `0xc0384601` | `GetBmBufferAddr` | `0x38` | vtable `+0x98` |
+| `12` | `0xc840460c` | `ExecuteDma` | `0x840` | vtable `+0x80` |
+| `13` | `0xc018460d` | `DrawOnSyncBuffer`, selector `1..4` | `0x18` | vtable `+0xe0/+0xe8/+0xf0` |
+| `14` | `0xc010460e` | DMA front-end restart | `0x10` | writes `0x314 <- 1` |
+| `15` | `0xc010460f` | DMA front-end clear | `0x10` | writes `0x31c <- 0` |
+| `16` | `0xc0104610` | `SetCommandBufferSize` | `0x10` | vtable `+0xf8` |
+| `18` | `0xc0304612` | `ReleaseBmBuffer` | `0x30` | vtable `+0xa0` |
+
+The shipped source in `kernel/src/m9x_fops.c` validates ioctl type `'F'`, uses
+number bit 7 to route public management calls, and sends private numbers below
+`0x80` to this proprietary core dispatcher while holding the device mutex
+[BIN].  Thus the full request values above and the low-byte command ordinals are
+both ABI-significant; a new DRM uAPI should not inherit this old pointer-bearing
+ABI directly.
 
 DMA initialization function `m9x109` at `0x2d150` writes the following device
 offsets through the vendor MMIO method [BIN]:
@@ -454,6 +501,135 @@ doorbell for this binary [DER].  The vendor's unbounded waits must become
 bounded DRM waits with reset/error recovery; copying them literally would make
 a malformed stream capable of hanging the kernel.
 
+### Board enable and PCI bus mastering
+
+The X-driver failure path in `m9x21829` calls `m9x28121` at `0x28fff0` with
+`(board, 1, 0)`.  That wrapper calls the real lifecycle orchestrator `m9x30894`
+at `0x294670`; it returns 0 on success, 7 on a false result, and 8 for a null
+board [BIN].
+
+The enable branch prepares the bridge through `m9x11035` at `0x300bb0`, updates
+the board service at `+0xa0`, then performs the one direct hardware operation
+which is important to a DRM port [BIN]:
+
+```text
+value = board->read_config(selector = 4);   /* vtable +0x68 */
+board->write_config(selector = 4, value | 4); /* vtable +0x58 */
+```
+
+Selector/bit pair `4/4` is strong evidence for PCI command offset `0x04` and
+`PCI_COMMAND_MASTER` bit 2 [DER].  A kernel M9 driver must enable PCI bus
+mastering before requester initialization and submission.
+
+The rest of `m9x30894` initializes the display manager, copies a 32-byte bridge
+descriptor through `m9x2240`, enables GLServices and UnitServices, constructs
+four 56-byte head/output objects for indices 0..3, and builds display-manager
+objects.  Its disable branch tears those objects and services down in reverse
+through `m9x14719` and the corresponding bridge/service callbacks [BIN].  It
+does not contain a direct 3D-engine reset MMIO sequence.  Therefore the vendor
+userspace lifecycle is useful for ordering and prerequisites, but should not be
+copied wholesale into the kernel as an engine-arm function.
+
+### Interrupt-controller banks
+
+The kernel object's interrupt reset function `m9x704` at `0x3f310` establishes
+three status/mask pairs [BIN].  It writes zero to mask registers `0x8fc`,
+`0x8e8`, and `0x8dc`, then writes `0xffffffff` to status registers `0x8f8`,
+`0x8e4`, and `0x8d8`.  It also clears the cached mask at interrupt object
+`+0x10 -> +0x8c`.  The paired source helpers prove that the status registers
+are write-one-to-clear and the adjacent registers hold enables [DER]:
+
+| status/W1C | enable mask | statically observed source bits |
+|---:|---:|---|
+| `0x8d8` | `0x8dc` | no individual source isolated in this pass |
+| `0x8e4` | `0x8e8` | vblank `0x1`, `0x2`, `0x100`, `0x200`; also `0x4`, `0x8`, `0x10` |
+| `0x8f8` | `0x8fc` | `0x10000`, `0x20000`, `0x40000`, `0x01000000` |
+
+For example, `m9x444` at `0x3f500` enables low-bank source `0x100`: it reads
+`0x8e8`, clears a pending event with `0x8e4 <- 0x100`, ORs `0x100` into the
+mask, and writes the result to `0x8e8`.  Its paired disable/ack helper
+`m9x1208` at `0x3f3c0` clears that mask bit first and then writes `0x100` to
+`0x8e4`.  Functions `m9x550` at `0x3f6d0` and `m9x639` at `0x3f650` perform
+the equivalent enable and disable/ack sequence for high-bank source
+`0x20000` through `0x8f8/0x8fc` [BIN].
+
+The complete list of one-source W1C helpers immediately before the reset
+function is [BIN]:
+
+| function | status register | source bit |
+|---:|---:|---:|
+| `m9x1061` `0x3f1b0` | `0x8f8` | `0x10000` |
+| `m9x1158` `0x3f1d0` | `0x8f8` | `0x40000` |
+| `m9x23` `0x3f1f0` | `0x8e4` | `0x10` |
+| `m9x146` `0x3f210` | `0x8e4` | `0x4` |
+| `m9x1007` `0x3f230` | `0x8e4` | `0x1` |
+| `m9x755` `0x3f250` | `0x8f8` | `0x20000` |
+| `m9x104` `0x3f270` | `0x8f8` | `0x01000000` |
+| `m9x488` `0x3f290` | `0x8e4` | `0x200` |
+| `m9x904` `0x3f2b0` | `0x8e4` | `0x100` |
+| `m9x1223` `0x3f2d0` | `0x8e4` | `0x8` |
+| `m9x780` `0x3f2f0` | `0x8e4` | `0x2` |
+
+All four recovered high-bank sources also have complete enable and disable
+pairs [BIN]:
+
+| source | enable helper | disable helper | W1C helper |
+|---:|---:|---:|---:|
+| `0x10000` | `m9x61` `0x3f850` | `m9x1122` `0x3fb70` | `m9x1061` `0x3f1b0` |
+| `0x20000` | `m9x550` `0x3f6d0` | `m9x639` `0x3f650` | `m9x755` `0x3f250` |
+| `0x40000` | `m9x1038` `0x3f9b0` | `m9x794` `0x3f930` | `m9x1158` `0x3f1d0` |
+| `0x01000000` | `m9x610` `0x3f750` | `m9x450` `0x3f7d0` | `m9x104` `0x3f270` |
+
+Enable helpers clear pending status first, then write `cached_mask | bit` to
+`0x8fc` and object cache `+0x8c`.  Disable helpers write
+`cached_mask & ~bit` to both mask locations first, then acknowledge the status
+bit.  Relocation and xref analysis finds no caller or function-pointer reference
+to these exported leaves in the shipped kernel object or duplicated DDX code,
+so none can yet be named DMA completion or fault without cross-family inference
+[BIN].
+
+Kernel functions `m9x664` at `0xc8a0` and `m9x161` at `0xc820` are anchored by
+the literal diagnostics `EnableVSyncInterrupt` and `DisableVSyncInterrupt`
+[BIN].  Their four-bit API mask maps to low-bank hardware sources exactly:
+
+| API selector mask | `0x8e4/0x8e8` source | enable helper | disable helper |
+|---:|---:|---:|---:|
+| `0x1` | `0x1` | `m9x520` `0x3fa90` | `m9x239` `0x3fa30` |
+| `0x2` | `0x2` | `m9x959` `0x3fc50` | `m9x258` `0x3fbf0` |
+| `0x4` | `0x100` | `m9x444` `0x3f500` | `m9x1208` `0x3f3c0` |
+| `0x8` | `0x200` | `m9x71` `0x3f480` | `m9x428` `0x3f420` |
+
+This is enough to implement four vblank sources with masked dispatch and safe
+acknowledgement.  The roles of low-bank `0x4`, `0x8`, `0x10`, all recovered
+high-bank sources, and the third bank still require callback joins or
+controlled source tests before assigning requester-completion, fault, or
+hotplug names.
+
+The open wrapper in `kernel/src/m9x_irq.c` confirms the intended interrupt
+split [BIN].  Its shared-IRQ top half calls proprietary `irq_fast` after a
+nonblocking device-mutex attempt; a negative result means `IRQ_NONE`, zero means
+handled, and a positive result schedules the `irq_slow` tasklet.  The bottom
+half obtains the mutex, calls `irq_slow`, or reschedules if the mutex is busy.
+A DRM implementation can retain the recovered status/mask/ack ordering while
+using current DRM vblank and scheduler primitives instead of this global
+tasklet design.
+
+Low-level handler `m9x547` at `0x3fd90` always stores raw `0x8f4` to its first
+output.  When raw bit 31 is set it reads `0x8e0` and `0x8e8`, stores
+`low_active = status & enable` in its second output, and acknowledges that mask
+at `0x8e4`.  Independently it computes
+`high_active = raw_8f4 & cached_8fc` and acknowledges that at `0x8f8`.  It
+returns 1 when either acknowledgement occurred [BIN].
+
+Core fast handler `m9x1012` at `0xdec0` nevertheless rejects the IRQ unless raw
+`0x8f4` bit 31 is set.  With bit 31 set, it translates only low active sources
+`0x1,0x2,0x100,0x200` into pending bits 0..3 for slow work.  Consequently a
+high-bank-only IRQ can be acknowledged by `m9x547` and still return
+`-1`/`IRQ_NONE`; there is no hidden high-source completion/fault dispatch in the
+saved Linux stack [BIN].  Older Parhelia evidence makes high bit `0x10000` a
+possible completion candidate, but that cross-family inference is too weak for
+a DRM IRQ implementation.
+
 ## Native shader upload transport
 
 Function `0xf74d0` gives an exact inline program upload [BIN]:
@@ -464,10 +640,10 @@ Function `0xf74d0` gives an exact inline program upload [BIN]:
    `6d` receives state `+0xbc`.
 3. For an inline program, `+0xbb0` is the byte length and `+0xbb4` is the CPU
    pointer.  Index `e3` receives a command-buffer allocation/result value.
-4. The driver computes `instruction_count = byte_length >> 5`.  It reserves
-   `15 * instruction_count + 10` dwords in the command buffer.
-5. For each instruction, index `68` receives a selector.  It starts at
-   `0x80000000`; selector bits `13:5` advance by `0x20` for each 32-byte record.
+4. The driver computes `upload_line_count = byte_length >> 5`.  It reserves
+   `15 * upload_line_count + 10` dwords in the command buffer.
+5. For each upload line, index `68` receives a selector.  It starts at
+   `0x80000000`; selector bits `13:5` advance by `0x20` for each 32-byte line.
 6. Indices `60,61,62,63` receive record dwords 0 through 3.  Indices
    `64,65,66,67` receive record dwords 4 through 7.  The source pointer advances
    by exactly 32 bytes.
@@ -483,9 +659,10 @@ for (unsigned byte_off = 0; byte_off < byte_length; byte_off += 32) {
 }
 ```
 
-This proves a native hardware-visible instruction record is 32 bytes/eight
-dwords and that `68` is the indexed-store selector [DER].  It does not yet
-identify fields inside those eight dwords.
+This proves that `68` is the indexed-store selector and that ports `60..67`
+write one 32-byte store line [DER].  It does not set the native instruction
+width: the fixed-fragment database below proves that each line contains four
+8-byte/two-dword native instructions.
 
 Linux function `m9x11728` at `0x4b9340` independently implements the same
 transport [BIN].  In that build the native byte length and CPU pointer are at
@@ -531,9 +708,54 @@ into the buffer later consumed at state `+0xbb0/+0xbb4` [BIN].  It:
 * copies both lists into the allocation;
 * stores the aligned length at `+0xbb0` and pointer at `+0xbb4`.
 
-The `0xc00` boundary is 3,072 bytes, or 96 native 32-byte records [DER].  It is
-a bank/assembly limit visible in this path, not yet proof that every shader
-stage exposes 96 user instructions.
+The `0xc00` boundary is 3,072 bytes, or 384 native 8-byte instructions and 96
+32-byte upload lines [DER].  It is a bank/assembly limit visible in this path,
+not yet proof that every shader stage exposes 384 user instructions.
+
+### Fixed native-fragment database
+
+`MxMD.dll` function `0x1454a0` builds a complete table of 57 fixed native
+microcode fragments [BIN].  Slots `0x00..0x38` have stride `0x10`; helper
+`0xadf00` appends `{read_only_data_pointer, byte_length}` descriptors to each
+slot.  Function `0x120910` walks the whole table at offsets `+0x000..+0x380`
+(end `+0x390`) and concatenates every descriptor payload verbatim into the
+pixel-program resource.  The static payloads span VA `0x1e91f8..0x1ef780`.
+Linux 1.15 exports the equivalent initializer as `m9x30489` at `0x4462d0`,
+with its mirrored read-only data beginning near `0xea40e0` [BIN].
+
+Every fragment length is divisible by eight, and the database includes a
+standalone eight-byte fragment at VA `0x1ecdd8` [BIN]:
+
+```text
+dword 0 = 0xfffc0fff
+dword 1 = 0x8bffffc0
+```
+
+Thus a native instruction is exactly 8 bytes/two dwords.  Linker `0x13bf80`
+concatenates selected fragments and pads only the final total to the 32-byte
+store-line boundary; that alignment is transport granularity, not instruction
+width [DER].
+
+A second independent pair of functions constructs a short program dynamically:
+Windows `0x147d30` and Linux `m9x25489` at `0x445ea0` [BIN].  It sets a count of
+four and emits these first two native instructions followed by two zero slots:
+
+```text
+{ 0xffc0291d, 0xe29fff1f }
+{ 0xffc1291e, 0xa29fff1f }
+{ 0x00000000, 0x00000000 }
+{ 0x00000000, 0x00000000 }
+```
+
+The builder proves that dword 0 low five bits form an independently selected
+opcode-like field (`0x1d`, then `0x1e`), dword 0 bit 16 can be toggled without
+changing that field, and dword 1 high nibble can independently select `0xe` or
+`0xa` [DER].  Operand and control meanings still need cross-fragment
+differencing; these fields should retain neutral names until that join is made.
+
+The complete 57-slot manifest, fixed-blob hash, conditional prefixes, and
+dynamic-builder masks are recorded in
+`parhelia-m9-native-shader-fragments.md`.
 
 Several address fields preserve bits `31:29` while replacing bits `28:0`, using
 the masks `0xe0000000` and `0x1fffffff` [BIN].  The upper three bits therefore
@@ -598,9 +820,9 @@ pipeline calls translation, allocation/linkage, and serialization passes at
 before the dump.
 
 The Iris stream is variable length and contains metadata/sentinels as well as
-instructions.  It is not the fixed eight-dword native record copied by
-`MxMD.dll`.  A Mesa compiler can reuse the recovered operation semantics, but
-must still implement a separate Iris/native lowering and native bit packer.
+instructions.  It is not the fixed two-dword native instruction stream copied
+by `MxMD.dll`.  A Mesa compiler can reuse the recovered operation semantics,
+but must still implement a separate Iris/native lowering and native bit packer.
 
 ### Serialized Iris object
 
@@ -626,7 +848,7 @@ list is nonempty [BIN]:
 | `+0x110` | `0x001d` | six dwords/24 bytes from node `+0x18` |
 
 Each primary record is one tag dword plus six payload dwords: 28 bytes, not a
-native 32-byte instruction.  For tag `0x2f`, node `+0x14` bit 1 controls a
+native 8-byte instruction.  For tag `0x2f`, node `+0x14` bit 1 controls a
 separate descriptor canonicalization.  When clear, the derived descriptor
 field is [DER]:
 
@@ -789,6 +1011,13 @@ but their hardware granularity remains unknown.  The independent 64-bit build
 therefore corroborates both the caps and the warning against treating
 `0x7c00` as a public vector count.
 
+The 16-fragment-sampler compiler check is a logical program-resource limit.  It
+does not prove 16 physical texture pipes and does not contradict the four live
+`70..73` texture-state blocks recovered from `0xf4350`; arraying, indirection,
+or time-multiplexing between those layers remains possible.  Report the
+compiler cap separately from physical throughput until capture establishes the
+sampler-to-state mapping.
+
 The `GL_MTX_fragment_shader` validator at `0x1012c180` also proves a legacy
 fragment path with two special temporaries, texture dependency rules, paired
 color/alpha requirements for DP3/DP4, result-only saturate/scale modifiers,
@@ -801,11 +1030,13 @@ copied blindly into native ISA validation.
 
 Static analysis has established these native facts:
 
-* instruction record: eight dwords, 32-byte alignment [BIN];
+* instruction: two dwords/eight bytes [BIN][DER];
+* upload-store line: eight dwords/32 bytes, carrying four instructions [BIN];
 * inline instruction-store selector: index `68`, enable bit 31, address in bits
   `13:5` [BIN][DER];
 * data ports: indices `60..67`, one dword each [BIN];
-* linked bank boundary: `0xc00` bytes, 96 records [BIN][DER];
+* linked bank boundary: `0xc00` bytes, 384 instructions or 96 upload lines
+  [BIN][DER];
 * program resources can be uploaded inline or fetched by bus mastering [BIN];
 * GPU resource addresses preserve three flag bits above a 29-bit address [BIN];
 * selectors `0x1300,0x1320,0x1340,0x1360,0x1500` address complete auxiliary
@@ -815,12 +1046,12 @@ Static analysis has established these native facts:
 * `2b,2a,e6` launches the recovered inline primitive path, with count-minus-one
   in the low bits of the `e6` value [BIN][DER];
 * the serialized Iris object uses 28-byte primary records and variable metadata,
-  conclusively separating it from native 32-byte records [BIN][DER].
+  conclusively separating it from native 8-byte instructions [BIN][DER].
 
 The static binaries do not yet give an unambiguous native mapping for ALU
 opcode, destination, source selectors, swizzles, predicates, texture operation,
 or end-of-program bits.  Prebuilt fragments are linked and copied verbatim, so
-there is no single obvious switch from a high-level opcode to one eight-dword
+there is no single obvious switch from a high-level opcode to one two-dword
 literal in `MxMD.dll`.  Those fields require controlled compiler outputs,
 capturing the linked `+0xbb4` buffer, or differential DMA/MMIO capture.
 
@@ -832,8 +1063,9 @@ be implemented before capture is:
 1. a typed M9 packet builder with `0x45` short-header termination;
 2. register-bank definitions for the proven texture selectors and program
    upload ports, retaining unknown names where semantics are incomplete;
-3. a shader-program object model with eight-dword records, 32-byte alignment,
-   a 96-record bank boundary, and relocations which preserve address flag bits;
+3. a shader-program object model with two-dword instructions, four-instruction
+   upload lines, a 384-instruction/96-line bank boundary, and relocations which
+   preserve address flag bits;
 4. Mesa compiler IR definitions for the recovered Iris operations and
    modifiers, separate from a still-incomplete native packer;
 5. resource checks for four vertex samplers, 15 attributes/outputs, 16 fragment
@@ -848,7 +1080,8 @@ be implemented before capture is:
 The first capture matrix should compile one-operation vertex and fragment
 programs with identity operands, then vary one destination, source, swizzle,
 write mask, negate/absolute modifier, predicate, saturation/scale, and texture
-unit at a time.  Save both the compiler output and the linked 32-byte records.
+unit at a time.  Save both the compiler output and the linked 8-byte
+instructions with their containing 32-byte upload lines.
 For submission, capture inline microcode/constants with all four BM knobs off,
 then repeat with each knob enabled.  This will connect the Iris vocabulary to
 native bit fields without conflating compiler containers, linked programs, and
