@@ -73,7 +73,7 @@ Backend `+0x14`, emitted at index `7c`, is packed exactly as follows [BIN][DER]:
 | `13` | input-descriptor condition |
 | `15:14` | resource conditions |
 | `17:16` | mapped anisotropy |
-| `21:18` | resource-input `+0x0c` low nibble |
+| `21:18` | compiler input descriptor `+0x0c` low nibble |
 | `24:22` | mapped ADDRESSU |
 | `27:25` | mapped ADDRESSV |
 | `30:28` | mapped ADDRESSW |
@@ -130,9 +130,9 @@ NEVER LESS EQUAL LEQUAL GREATER NOTEQUAL GEQUAL ALWAYS
     0    1     3      2       6        4     5      7
 ```
 
-## Texture operation and resource class
+## Texture operation and resource dimension
 
-Selector builder `0x187950` puts a four-bit texture-operation/resource-class
+Selector builder `0x187950` puts a four-bit texture-operation/resource-dimension
 code in backend `+0x10[11:8]`.  The complete static decision tree is now known
 [BIN][DER].  Before resource adjustment it selects:
 
@@ -145,16 +145,21 @@ code in backend `+0x10[11:8]`.  The complete static decision tree is now known
 | otherwise | `1` |
 
 Resource adjustment runs when input descriptor `+0x08` bit 5 is set, or when
-`+0x08[11:9] >= 6`.  For a base other than 8, resource kind 2 increments the
-code by one and kind 1 increments it by two.  Base 8 is special: kind 1 maps it
-to `c`, while kind 2 leaves it at 8.  Consequently the reachable families are:
+`+0x08[11:9] >= 6`.  Resource method `+0x48` returns a dimension kind: kind 0
+is ordinary 2D, kind 1 is cube, and kind 2 is volume/3D.  This identification
+is direct rather than inferred from the arithmetic: the ordinary constructor
+at `0x51990` stores 0 at object `+0x258`, the six-face loop at
+`0x53f22..0x54033` stores 1, and the three-dimension mip constructor at
+`0x53220..0x532be` stores 2 [BIN][DER].  For a base other than 8, volume adds
+one and cube adds two.  Base 8 is special: cube maps it to `c`, while volume
+leaves it at 8.  Consequently the reachable families are:
 
 ```text
-base 1: other -> 1, kind 2 -> 2, kind 1 -> 3
-base 5: other -> 5, kind 2 -> 6, kind 1 -> 3
-base 8: other/kind 2 -> 8, kind 1 -> c
-base 9: other -> 9, kind 2 -> a, kind 1 -> b
-base d: other -> d, kind 2 -> e, kind 1 -> f
+base 1: 2D -> 1, volume -> 2, cube -> 3
+base 5: 2D -> 5, volume -> 6, cube -> 3
+base 8: 2D/volume -> 8, cube -> c
+base 9: 2D -> 9, volume -> a, cube -> b
+base d: 2D -> d, volume -> e, cube -> f
 ```
 
 This corrects the earlier interpretation of `1,8,9,c,d` as bare texture
@@ -170,9 +175,9 @@ Relevant slots are:
 
 | slot | function | result |
 |---:|---:|---|
-| `+0x38` | `0xa6660` | resource class from `+0xb0[11:8]` |
+| `+0x38` | `0xa6660` | storage/layout class from `+0xb0[11:8]` |
 | `+0x3c` | `0xa6d30` | normalized format ID at resource `+0x90` |
-| `+0x48` | `0xa6d40` | resource `+0xb0[20:17]`, values `0..4` unchanged and larger values folded to 5 |
+| `+0x48` | `0xa6d40` | dimension kind from `+0xb0[20:17]`: 0=2D, 1=cube, 2=volume/3D; values `0..4` unchanged and larger values folded to 5 |
 | `+0x54` | `0xa7a60` | resource `+0xb0` bit 7 |
 | `+0x5c` | `0xa6740` | relocation plus descriptor pair, return `0x10` |
 | `+0x64` | `0xa7a40` | resource `+0x68` |
@@ -188,25 +193,35 @@ ordinary descriptor layout exactly [BIN][DER]:
 |---|---:|---|
 | `idx78` | `15:0` | cache source `+0x184` |
 | `idx78` | `18:16` | source `+0x138[2:0]` |
-| `idx78` | `20:19` | source `+0x13c[1:0]` when kind is 2 |
+| `idx78` | `20:19` | zero for selector 2 |
 | `idx78` | `21` | source flags dword 0 bit 3 |
+| `idx78` | `22` | zero for selector 2 |
 | `idx78` | `23` | source `+0x14c` bit 2 |
+| `idx78` | `24` | zero for selector 2 |
 | `idx78` | `31:25` | source `+0x140[6:0]`, hardware format code |
 | `idx79` | `15:0` | source `+0x12c[15:0]`, ordinary vertical extent |
 | `idx79` | `27:16` | source `+0x130[11:0]`, or `+0x134` for format `0x3f/0x7f` |
 
-Ordinary selector 2 leaves `idx78` bits 22/24 clear.  Kind 1 replaces
-`idx79[27:16]` with 1.  For nonzero layout selector `+0x138` and resource class
+Selector 2 leaves `idx78` bits 19, 20, 22, and 24 clear: its cache entry is
+zeroed at `0x46829..0x46833`, and none of its reachable branches writes those
+bits.  This corrects an earlier misread that assigned `+0x13c` to bits 20:19.
+That assignment belongs to other descriptor selectors: selector 3 writes
+class 2 as binary `10`, selectors 5--7 copy `+0x13c[1:0]`, and selectors
+18--19 also copy it.  Selectors 5--7 additionally copy `+0x14c` bits 0/1 to
+`idx78` bits 22/24.  They are cached alternate views, whereas the live 3D
+sampler requests selector 2 [BIN][DER].
+
+Descriptor class 1 replaces `idx79[27:16]` with 1.  For nonzero layout
+selector `+0x138` and descriptor class
 `+0x13c == 3`, it instead writes `idx78[15:0] = +0x16c`,
 `idx79[15:0] = ceil(+0x128 / +0x16c)`, clears `idx79[27:17]`, and forces bit 16.
-This is the exact class-3 tiled/blocked descriptor formula; the physical tile
-shape named by `+0x16c` is still unresolved.
+This is the exact class-3 blocked descriptor formula [BIN][DER].
 The triple's first dword is the BO address with low-two attribute bits, followed
 by `idx78` and `idx79`.  With no backing, the relocation fallback uses tag
 `0x20000000 | resource+0x70`.
 
 Fields `+0x184` and `+0x130/+0x134` are size/layout derived, while `+0x13c`
-values 1..3 distinguish resource classes.  Resource class method `0xa6660`
+values 1..3 distinguish descriptor storage/layout classes.  Method `0xa6660`
 returns `+0xb0[11:8]` for values 1..4 (and forces 3 when resource `+0x70` is
 nonzero).  Constructor path `0xa4010` maps source `+0x1e8` values `{3,4}->1`,
 `2` and out-of-range values to 2, `1->3`, and `{0,5,6}->4`; alternate path
@@ -227,6 +242,49 @@ Index `79[15:0]` is the unaligned vertical extent from `+0x12c`; the
 extent outside the special class-3 layout.  Defaults before resource fill are `idx78=0xcc010001` and
 `idx79=0x00010001`; function `0x18b7f4` may clear `idx78[20:19]` based on the
 combined operation/resource code.
+
+### Block geometry and the class-3 boundary
+
+Constructor `0x45eb0` derives an element-size category `+0x168` and reads its
+horizontal and vertical allocation quanta from tables at `0x1f19a0` and
+`0x1f1a78` [BIN][DER].  The horizontal quantum at `+0x16c` normally uses table
+index `6 * category + device_mode + 3`; the three entries are:
+
+| category | element bits at `+0x164` | `+0x16c` for device modes 0/1/2 |
+|---:|---:|---:|
+| 0 | 128 | `10 / 8 / 8` |
+| 1 | 64 | `20 / 10 / 10` |
+| 2 | 32 | `20 / 20 / 20` |
+| 4 | 16 | `20 / 20 / 20` |
+| 5 | 8 | `20 / 20 / 20` |
+| 6 | 8 | `40 / 20 / 20` |
+| 7 | 4 | `40 / 20 / 20` |
+| 8 | 1 | `100 / 100 / 100` |
+
+All values in that table are hexadecimal element counts.  The `device_mode`
+index is the remapping made at `0x4602b..0x4604a`: device property `+0x24`
+values 0 and 1 become indices 2 and 1, with other values becoming index 0.
+The three 192-byte Windows geometry tables beginning at `0x1f19a0`,
+`0x1f1a78`, and `0x1f1b50` occur byte-for-byte in Linux 1.15 at file offsets
+`0xe9b720/0xe9b800/0xe9b8e0`, with two further identical copies [BIN].
+Category 3 takes a separate branch.  Its table indices prove `+0x16c = 8` for both local-layout
+states and all three device modes.  The vertical quantum `+0x170` is 4 when
+the local-layout flag is clear, and `20 / 10 / 10` across device modes when it
+is set.  The class-3 branch then computes:
+
+```text
++0x184 = align(raw_width, 8)
++0x188 = align(raw_height + 8, vertical_quantum)
+idx78[15:0] = 8
+idx79[15:0] = ceil(raw_width / 8)
+idx79[27:16] = 1
+```
+
+This resolves the visible class-3 block width and allocation-height rule.  It
+does not reveal the address permutation within a block, nor whether the
+vendor's name for either layout state is tiled, swizzled, or macro-tiled.  A
+small coordinate-coded upload followed by GPU sampling is still required to
+recover that physical permutation.
 
 Compression is proven upstream.  Format helpers near `0x4ee70/0x4fd10` map
 FourCC DXT1 to internal 0, DXT2 to 2, DXT3 to 3, DXT4 to 4, and DXT5 to 5.
@@ -298,6 +356,23 @@ Depth/stencil descriptor codes are also recoverable (`D16=5c`, `D32=7c`,
 `D15S1=5d`, and the D24 family=`7d`), but their presence in this generic
 format table does not by itself prove texture sampling support.
 
+### Channel routing
+
+The live D3D9 selector-2 descriptor has no independent channel-swizzle field
+[BIN][DER].  Constructor `0x45eb0` copies the format descriptor's seven-bit
+hardware code to `+0x140`; builder `0x467e0` copies that code to
+`idx78[31:25]` and leaves the otherwise plausible routing bits 22/24 clear.
+Distinct channel orders already have distinct format codes where required:
+for example A8R8G8B8 is `66`, A8B8G8R8 is `64`, and the two 10:10:10:2 orders
+are `68` and `6a`.  Format-descriptor component masks used by CPU conversion
+and border-color helpers do not flow into indices 78/79.
+
+Therefore a driver implementing this D3D path must choose the matching format
+code rather than program a separate sampler swizzle.  This does not prove that
+M9 has no channel-routing mechanism in another packet or shader instruction.
+The compiler input nibble copied to index `7c[21:18]` is separate sampler or
+coordinate control; static data flow does not identify it as component routing.
+
 ### Mipmap and address layout boundary
 
 The final sampler bind emits one relocated base address plus indices `78` and
@@ -306,8 +381,36 @@ bounds travel separately through index `7d`.  The allocation helper computes
 slice offsets from aligned horizontal/vertical extents, a selected subresource
 index, and special DXT block geometry.  The hardware sampler therefore receives
 one root address and one compact layout descriptor for the active resource.
-Static code inspected so far does not prove whether all mip levels share one
-allocation, or expose the exact per-level offset recurrence or mip-tail rule.
+
+The volume-texture constructor at `0x531e0` proves the ordinary per-mip storage
+recurrence [BIN][DER].  For level `L`, it creates a separate subresource with:
+
+```text
+width[L]  = max(base_width  >> L, 1)
+height[L] = max(base_height >> L, 1)
+depth[L]  = max(base_depth  >> L, 1)
+size[L]   = subresource +0x1bc
+offset[0] = 0
+offset[L] = offset[L-1] + size[L-1]       for L > 0
+allocation_size = offset[last] + size[last]
+```
+
+Here `+0x1bc` is a byte size, not an inferred count: the subresource embeds the
+`0x45eb0` layout object at `+0x3c`, and `0x46470..0x464d9` combines aligned
+geometry with the element bit count, converts bits to bytes, aligns the result,
+and stores it at layout `+0x180`, which is subresource `+0x1bc`.
+The constructor saves sizes at `0x534b6..0x534c3`, accumulates offsets at
+`0x534d0..0x534e5`, and forms the final size at `0x5355f..0x53570`.
+
+Small levels have a special tail path.  The trigger is width and height, after
+the constructor's small-format adjustment, at most 16 and adjusted depth at
+most 15 (`0x53388..0x533b9`).  The first tail level is recorded; later tail
+levels copy that first level's `size[]` and `offset[]` entries at
+`0x5342e..0x5344b` instead of extending the recurrence.  A second call to
+`0x45eb0` supplies the remaining-level count and a pointer-derived layout
+parameter, showing that the levels share a packed tail region.  Static code
+does not expose the texel address permutation within that region, so drivers
+should not synthesize a tail layout without a coordinate-coded capture.
 
 Function `0x467e0` builds more than twenty cached relocation/descriptor triples,
 and `0xa6740` selects among them.  These are descriptor *views* selected by the
@@ -320,15 +423,18 @@ or one relocation per mip level from this table without capture evidence.
 High confidence: final index placement; `idx78` format field; the joined common
 format codes above; aligned horizontal/vertical allocation extents; all sampler
 filter, wrap, anisotropy, compare, border, bump, and LOD bit positions; and the
-complete numeric transition tree for backend `+0x10[11:8]`.
+complete numeric transition tree and 2D/cube/volume dimension join for backend
+`+0x10[11:8]`.  Selector-2 bits 19/20/22/24 being zero and the ordinary volume
+mip offset recurrence are also high confidence.
 
 Medium confidence: `idx78[15:0]` is best named row span/pitch in format elements,
 and `idx79[27:16]` is depth or layer count.  Both names follow construction and
 size arithmetic, but the binary contains no symbol names.
 
 Unresolved: semantic names for compiler-record bits 4/6/7/8/9 and therefore
-for operation families `1/5/8/9/d`; cube versus volume names for resource-class
-enums; `idx78` bits 22/24 and the class-specific bits 20:19; kind-3 special
-tile shape; swizzle semantics; and exact per-mip offsets.  Focused MMIO captures
-of otherwise identical 1D/2D/3D/cube, projected/LOD sample, linear/tiled, and
-single/multi-level resources are the shortest way to settle these boundaries.
+for operation families `1/5/8/9/d`; the physical address permutation for
+class-3 blocks and mip tails; whether a non-D3D path exposes programmable
+channel swizzle; and the exact meaning of the nonzero descriptor storage/layout
+classes.  Focused MMIO captures of otherwise identical projected/LOD samples,
+linear/class-3 resources, coordinate-coded blocks, and ordinary/tail mip chains
+are the shortest way to settle these boundaries.
