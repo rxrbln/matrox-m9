@@ -68,6 +68,58 @@ writes the descriptor words.  The only demonstrated relationship is that both
 interfaces carry GPU addresses belonging to command transport [DER].  In
 particular, `0x50c/0x510` cannot be named as mirrors or limits of `0x404`.
 
+## Field ownership, including first use
+
+The complete literal-MMIO census supports the following names without
+inventing the undocumented internal pipeline [BIN]:
+
+| register | software operation | narrow role |
+|---:|---|---|
+| `0x500` | seeded with a tagged address; thereafter only read or restored | tagged requester progress/base word |
+| `0x504` | repeatedly written with the raw translated producer | published producer endpoint |
+| `0x508` | initialized to zero; bit 1 is set before save; bit 0 is polled | requester control/status (`bit 0 = quiescent`, `bit 1 = park` [DER]) |
+| `0x50c` | polled with `0x500`; otherwise only read or restored | hardware progress companion, exact direction unknown |
+| `0x510` | only read or restored | address-like saved companion, exact direction unknown |
+| `0x514` | only read or restored with `0x50c/0x510` | opaque companion state |
+| `0x520/0x524` | only read or restored, always restored first | opaque pair |
+
+`0x500` is more specific than a static base: after initialization no software
+path advances it, while both vendor quiescence loops require two stable samples
+of it.  Calling it a hardware consumer pointer would still overstate the
+evidence because no saved capture shows its direction.  `0x504`, by contrast,
+has an unambiguous software producer and is the ring tail exposed to hardware.
+
+Windows gives an exact first-use sequence.  Constructor `0x14463` installs the
+sole rollover method `0x14540`, clears the saved eight-word image, selects
+four-byte stream alignment, and leaves the requester inactive.  `0x14633`
+then obtains the per-device requester at device `+0xc238`; on its first use it
+allocates exactly one `0x1000`-byte block through `0x14aa9`, whose private
+allocation selector is `2`.  Attach helper `0x144d9` maps selector 2 through
+the table `{2,3,0,3}`, hence this saved build initializes requester tag
+`+0x64` to zero, initializes the embedded software stream, and calls `0x145a5`.
+That call orders the first hardware writes as `0x500`, `0x508=0`, `0x504`.
+Later acquisitions reuse the page and repeat initialization only when the
+per-device requester state at `+0x1a60` is not `2` [BIN].  Selector 2 is an
+internal allocation selector; this sequence does not give it a public Linux
+memory-type name.
+
+There is no hidden priming record on first use.  The initial `0x500` address is
+the aligned-tail formula already documented below and the initial `0x504`
+value is the same formula without the tag.  Records enter the page only through
+the ordinary software-stream writers.  If a write does not fit, the stream's
+sole virtual method invokes `0x14540`, which publishes and quiesces, appends
+`{2, allocation_gpu_base}`, resets the stream, publishes the new `0x504`, and
+quiesces again [BIN].
+
+The producer/consumer census is closed for the saved binaries.  Windows has
+one additional read-only diagnostic path, `0x125fa` (`0x12d4b..0x12ded`),
+which copies all eight requester dwords verbatim into a diagnostic record.
+It derives no fields.  Linux has only `m9x759`, `m9x620`, `m9x1016`, `m9x399`,
+and `m9x714` as literal requester-register users; Windows has only the
+initializer/publisher/quiescence/save/restore family plus that diagnostic
+snapshot.  The sixteen saved X-server `m9x_drv.so` variants contain no kernel
+MMIO producer for this bank and all use the same shipped kernel object [BIN].
+
 The exhaustive direct-register audit remains the static boundary for the five
 hardware-owned descriptor words: outside restore, neither saved kernel binary
 has a software write to `0x50c`, `0x510`, `0x514`, `0x520`, or `0x524`.
