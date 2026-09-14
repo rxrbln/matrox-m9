@@ -144,10 +144,13 @@ guesswork.
 ## Remaining serializer validation
 
 `tools/m9x-linked-record-gdb.py` installs passive, bounded breakpoints on the
-constructor, backend translator, and cache promoter. It logs only CPU object
-addresses and the two descriptor/object pairs, continues immediately, and
-does not call vendor functions or modify rendering. Run it after the target is
-handed off and the DSO is mapped.
+constructor, backend translator, and cache promoter. The stronger
+`tools/m9x-linked-record-final-join-gdb.py` also saves the coherent host image
+and final packet and installs one four-byte hardware watchpoint on the first
+fresh-process record. It ignores zeroing and stops on the first nonzero write,
+providing the exact missing serializer PC and call stack without modifying
+vendor state. See `parhelia-m9-linked-record-final-join-boundary.md` for the
+bounded procedure and immutable capture set.
 
 The existing A/B/A capture already proves that changing either stage switches
 the complete pair through `6c` while `69/6a/6b` remain fixed. A future

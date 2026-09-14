@@ -205,11 +205,14 @@ generation-tracked state subrecord rather than incidental padding [DER].
 
 This closes the byte constructor for that 0x100-byte linked-state image. It
 does **not** prove that the host bytes are copied verbatim into the allocation
-selected by command index `6c`. Backend translator `m9x11630` visibly promotes
-the linked object's resource descriptor/object at `+0x301/+0x309`, and
-`m9x21983` promotes that pair before `m9x2427` relocates it at `6c`; no static
-copy from `linked+0xd9` to the 0x80-aligned allocation has yet been joined
-[BIN].
+selected by command index `6c`. Backend translator `m9x11630` reads the linked
+object's resource descriptor/object at `+0x301/+0x309`, but does not read the
+`+0xd9` image. `m9x21983` copies that pair into a separate `m9x31420`
+resource/link state, while final `m9x2427` consumes the independently owned
+pair in an `m9x18369` program state [BIN]. All eight invariant dwords from the
+host image are absent even individually from every complete saved `6c` system
+allocation [CAP]. `parhelia-m9-linked-record-final-join-boundary.md` pins this
+ownership split and proves that no verbatim copy occurs.
 
 ## Terminal operations and first-triangle gate
 
@@ -223,11 +226,12 @@ selector from full terminal-operation semantics [DER].
 
 The fixed-function first-triangle executable gate is therefore narrower now:
 graph scheduling and selector lifetime are closed, and the linked object's
-0x100-byte state image is byte-exact. The remaining blocker is the constructor
-or copier that joins the completed linked state and its referenced resources
-to the final 0x80-aligned GPU allocation addressed by selector `6c`. Until
-that join is observed or recovered, treating `linked+0xd9` as the final record
-base would be an unsupported shortcut.
+0x100-byte state image is byte-exact. The remaining blocker is the semantic
+serializer that constructs the heterogeneous, variable-size 0x80-aligned GPU
+allocation addressed by selector `6c`. The bounded hardware-write probe in
+`tools/m9x-linked-record-final-join-gdb.py` stops at that writer on the first
+baseline record. Until it is captured, treating `linked+0xd9` as the final
+record base would be an unsupported shortcut.
 
 ## Reproduction
 

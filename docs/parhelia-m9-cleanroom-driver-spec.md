@@ -969,6 +969,17 @@ key lookup, copy-on-write validation, dependency promotion and publication are
 exact; new arbitrary shaders still require the internal pair byte serializer
 and semantic linker rather than a guessed resource layout.
 
+The exact host-image audit additionally proves that this serializer is not a
+literal copy. Linux and Windows construct the same coherent 0x100-byte host
+image, but none of its eight invariant paired dwords occurs even once in any
+of the 17 complete captured system allocations. The compiled-pair promoter
+also targets the separate top-state `+0xd8` resource/link object, while
+`m9x2427` consumes the independently owned top-state `+0xc8` program object.
+Use `tools/m9x-linked-record-final-join-gdb.py` to stop at the first nonzero
+write to a fresh selected record and recover the remaining semantic
+constructor; do not seed an open driver with the host image or a captured
+record template.
+
 The live uniform A/B/A capture identifies vertex and fragment constant ranges,
 live-component packing, and the advancing record offsets in the external
 0x21000-byte resource.  Use that external range path first.  The conditional

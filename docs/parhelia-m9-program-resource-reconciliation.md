@@ -159,9 +159,10 @@ resource at `+0x138` [BIN]:
 The second destination has exactly the descriptor/pointer shape consumed by
 `m9x2427` for `6c`.  The copier's immediate destination is a separate
 `m9x31420` resource object, while final emission uses the larger top-state
-`+0xc8` object.  The promotion/copy edge between those object views is not yet
-proved.  It is safe to say the compiled pipeline produces resource pairs of
-the right shape; it is not safe to claim that `m9x21983` directly writes the
+`+0xc8` object. Device construction and final dispatch prove that the former
+is the top-state `+0xd8` resource/link path and the latter is the independent
+`m9x18369` program path. There is no alias or promotion edge between these
+matching field offsets: `m9x21983` is excluded as the direct writer of the
 final emitter object [BIN][DER].
 
 Initializer `m9x18369` constructs the large final object and independently
@@ -169,6 +170,12 @@ initializes descriptor/pointer pairs `+0xa0/+0xa8` and `+0xb8/+0xc0`, plus
 controls `+0xb0/+0xc8/+0xd0` and inline state `+0xbcc..+0xbe0` [BIN].  This
 confirms field ownership, but its default resource sentinels do not assign the
 semantic role of `69` or `6c` [DER].
+
+The exact cross-platform host-image and selected-allocation audit is in
+`parhelia-m9-linked-record-final-join-boundary.md`. None of the host image's
+eight invariant paired dwords occurs even once in any complete saved system
+allocation, proving that final `6c` storage is semantically constructed rather
+than copied verbatim [CAP][DER].
 
 ## Corresponding Direct3D command path
 
