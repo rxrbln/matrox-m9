@@ -12,8 +12,9 @@ The checked files are:
 | `MSerX/MxMD.dll` | `0x00010000` | `b6905b6e658b87544bc0081d080190e4f8112b723c0b2fefd781ba5766874f43` |
 
 Run `tools/m9-occlusion-query-evidence.py` from the `xf86-video-parhelia`
-directory to recheck the hashes, dispatch table, vtables, direct calls, object
-layout instructions, and fixed packet words quoted below.
+directory to recheck the hashes, dispatch table, vtables, complete packet-
+builder caller census, result/retirement slices, preserved result hashes, and
+fixed packet words quoted below.
 
 ## OpenGL entry points and restrictions
 
@@ -134,18 +135,31 @@ ICD's advertised 32 query-counter bits.  It does not prove that the backing
 allocation itself is only eight bytes: the allocation callbacks receive
 opaque `(2,2)` and mapping-mode `5` arguments whose units are not named.
 
-## Final M9 indexed record
+## Fixed selector pair and final M9 indexed record
 
 Query begin and end each queue one snapshot address.  `0x119ae0` drains that
-queue through `0xfc3a0`, whose per-address helper is `0xfc4b0`.  The latter
-uses six dwords of command-buffer framing and emits this exact five-dword
-indexed body (`slot` is maintained by the MxMD command-buffer object):
+queue through `0xfc3a0`, whose per-address helper is `0xfc4b0`.  There are
+exactly two direct calls to `0xfc4b0` in `.text` **[BIN]**:
+
+| caller | purpose | literal selector base | encoded pair |
+|---:|---|---:|---|
+| `0xf9004` | context-switch record | 1 | 1, 2 |
+| `0xfc470` | queued query snapshot | 0 | 0, 1 |
+
+The query drain does not obtain, increment, retire, or wrap a per-query slot.
+Every OpenGL begin/end snapshot uses selector pair 0/1.  The four-bit fields
+inside the two packet words are source selectors, not evidence of a 16-entry
+query allocator **[BIN][DER]**.  Query-object reuse allocates fresh snapshot
+resources but leaves this selector pair unchanged.
+
+Helper `0xfc4b0` uses six dwords of command-buffer framing and emits this exact
+five-dword indexed body (`base` is the literal caller argument):
 
 ```text
 body dword 0  0xe6e6e61e                     indices 1e,e6,e6,e6
 body dword 1  <writeback address, relocation selector 0x3d>
-body dword 2  0x64000004 | ((slot & 0xf) << 8)
-body dword 3  0x64000001 | (((slot + 1) & 0xf) << 8)
+body dword 2  0x64000004 | ((base & 0xf) << 8)
+body dword 3  0x64000001 | (((base + 1) & 0xf) << 8)
 body dword 4  0x40008000
 ```
 
@@ -154,10 +168,35 @@ the cursor back one dword and reuses generic indexed-packet framing.  The fixed
 body words and selector occur at `0xfc596`, `0xfc51f`, `0xfc525`,
 `0xfc5c4`, and `0xfc5b6`.  The address is registered through command-buffer
 vtable slot `+0x54`; therefore dword 2 is relocation-patched and cannot be
-recovered as one fixed literal.  The first returned snapshot word is joined
-to the `0x64000004` payload by ordering, and it is the word differenced for
-the OpenGL samples-passed result.  The second word is captured by the
-`0x64000001` payload but ignored by OpenGL kind `9`.
+recovered as one fixed literal.  For queries, the selector words are fixed at
+`0x64000004` and `0x64000101`.  The first returned snapshot word is joined to
+the first payload by ordering, and it is the word differenced for the OpenGL
+samples-passed result.  The second word is captured by the second payload but
+ignored by OpenGL kind `9`.
+
+## Availability and retirement
+
+Availability method `0x119a20` polls both begin and end snapshots through
+`0x144e40` and `0x144d90` **[BIN]**.  If either is pending, it drains the query
+queue through `0x119ae0`, forces command progress through `0x119b50`, and
+polls again.  `0x144d90` copies exactly two dwords into the query object only
+after the snapshot resource reports a completed mapping.  `GL_QUERY_RESULT`
+loops until this availability method succeeds before consuming the unsigned
+delta **[BIN]**.  Query availability therefore retires both snapshot writes;
+it is not inferred from command submission alone.
+
+The four preserved runs are pinned by the checker **[CAP]**:
+
+| run | result | availability before finish |
+|---|---:|---:|
+| visible | 16384 | 0 |
+| partial | 8192 | 0 |
+| hidden | 0 | 0 |
+| deleted-name reuse | 16384 | 0 |
+
+These runs close ordinary fixed-pair reuse and the asynchronous availability
+transition.  They did not drive the physical counter through overflow and did
+not use a multisample surface.
 
 This is enough static evidence to construct an experimental hardware query:
 allocate two GPU-visible two-dword snapshots, emit this record at begin and
@@ -166,18 +205,21 @@ the first end/begin dwords modulo 32 bits.
 
 ## Remaining capture boundary
 
-The final record encoding is recovered; it is no longer the missing boundary.
-The meanings of all subfields inside `0x64000004`, `0x64000001`, and
-`0x40008000` remain unnamed.  Static code also does not establish whether the
-second dword is a second statistic, a completion value, or both, nor whether
-all M9 revisions share the same requester-slot count.  A differential capture
-should verify:
+The final record encoding, query selector use, 32-bit software wrap rule, and
+software retirement path are recovered.  The meanings of all subfields inside
+`0x64000004`, `0x64000101`, and `0x40008000` remain unnamed.  Static code does
+not establish whether the second dword is a second statistic, a completion
+value, or both.  A differential capture should verify:
 
 1. the relocated dword-2 address and allocation alignment;
-2. that dword 3 changes by the expected visible-sample count while dword 4
-   provides the required completion/writeback behavior;
-3. requester-slot wrap and reuse ordering; and
-4. behavior across counter wrap and multisampling.
+2. that snapshot word 0 changes by the expected visible-sample count while
+   snapshot word 1 and the terminal word provide the required completion or
+   secondary-statistic behavior;
+3. a begin/end pair whose physical counter crosses `0xffffffff`, confirming
+   that hardware publication is coherent with the exact modulo-32 software
+   subtraction; and
+4. one multisample surface, comparing raw snapshot delta with the ICD's exact
+   32-bit post-multiply result and the actual samples-passed definition.
 
 Until those checks pass, advertise the extension only behind an experimental
 capability.  Omitting `GL_ARB_occlusion_query` does not block an initial M9

@@ -21,6 +21,33 @@ The checked artifacts are:
 - `KernelLibraries.o_shipped`, SHA-256
   `bec4490ff72b29887400e988a26e107e80ebb0b11e9d0b437267bec9db5b26e7`.
 
+## Exact controller register and ordering contract
+
+The saved paths distinguish raw pending state, write-one-to-clear
+acknowledgement, and enable masks as follows **[BIN]**:
+
+| bank | raw pending read | W1C write | enable mask |
+|---|---:|---:|---:|
+| first | not isolated in either handler | `0x8d8` | `0x8dc` |
+| low | `0x8e0` | `0x8e4` | `0x8e8` |
+| high/cascade | `0x8f4` | `0x8f8` | `0x8fc`; Linux caches it at interrupt object `+0x8c` |
+
+Calling `0x8d8`, `0x8e4`, or `0x8f8` a readable status register is not
+supported by these binaries. Linux handler `m9x547` reads high raw `0x8f4`;
+when its bit 31 is set, it reads low raw `0x8e0` and low mask `0x8e8`. It
+acknowledges exactly `raw_low & mask_low` through `0x8e4`, and independently
+acknowledges `raw_high & cached_mask_high` through `0x8f8`. The Windows ISR
+uses the same `0x8f4` raw, `0x8e0` raw, `0x8e8` mask, cached high mask, and
+per-source W1C writes **[BIN]**.
+
+Per-source enable leaves first acknowledge the selected W1C bit, then OR it
+into the mask. Disable leaves first remove the bit from the hardware mask and
+high-bank cache, then acknowledge it. Linux controller shutdown `m9x704`
+writes zero to `0x8fc`, `0x8e8`, and `0x8dc`, clears the high-mask cache, and
+then writes all ones to `0x8f8`, `0x8e4`, and `0x8d8` **[BIN]**. This pins the
+mask/ack behavior needed by a fail-closed interrupt implementation without
+assigning a semantic name to any source.
+
 ## Windows subscriptions and consumers
 
 The generic dispatcher at `0x1971b..0x199e4` is a notification framework, not
@@ -126,10 +153,13 @@ String-table audits reinforce this boundary without naming hardware.  The
 Linux diagnostics include size mismatch, invalid buffer, and vblank messages;
 the Windows strings include configuration and display services.  Neither
 artifact contains a word-level `fault`, `hang`, `timeout`, `recover`, or
-`recovery` diagnostic [BIN].  No interrupt caller reaches the known
-requester-local restart sequence, and neither stack exposes a callable
-3D/global-engine reset.  Static evidence therefore cannot assign any remaining
-source as a 3D fault or promise in-place hang recovery.
+`recovery` diagnostic [BIN]. No interrupt caller reaches the known requester-
+local restart sequence, and neither stack exposes a callable 3D/global-engine
+reset. The complete saved consumer join therefore closes the static
+classification negatively: no source can be identified as requester fault or
+3D fault, and no bounded reset/recovery sequence can be recovered from these
+binaries. Hardware fault injection is required to give an unnamed source
+either semantic label.
 
 ## Smallest decisive captures
 
@@ -137,8 +167,10 @@ Two isolated tests are needed because a bad requester address and a bad 3D
 program need not report through the same source:
 
 1. Submit one bounded requester record whose final endpoint is deliberately
-   unmapped.  Enable one unnamed source at a time.  Capture `0x8d8/0x8dc`,
-   `0x8e0/0x8e4/0x8e8`, `0x8f4/0x8f8/0x8fc`, `0x314`, `0x400/0x404`,
+   unmapped. Enable one unnamed source at a time. Capture first-bank mask
+   `0x8dc` (the raw read address paired with W1C `0x8d8` is not recovered),
+   low raw/mask `0x8e0/0x8e8`, high raw/mask `0x8f4/0x8fc`, `0x314`,
+   `0x400/0x404`,
    `0x500..0x524`, and the memory fence immediately before submit, at IRQ, and
    at a fixed timeout.
 2. Repeat with one otherwise valid draw containing the smallest known-invalid

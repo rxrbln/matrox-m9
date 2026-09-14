@@ -13,11 +13,13 @@ deterministically from those facts, and **[OPEN]** names a missing join.
 
 The Windows mini-driver has a complete structural four-target path. It lowers
 four independent attachment declarations, emits four address/descriptor
-pairs, packs a format class for every slot, compiles target-local color masks
-and blend fragments, registers every active target as a render-write resource,
-and attaches one submission value to all registered render-write resources
-before submit **[BIN]**. A generic “only RT0 gets an address or fence” model is
-therefore false for the Windows implementation.
+pairs with relocation selectors 2 through 5, packs a format class for every
+slot, compiles target-local color masks and blend fragments, registers every
+active target as a render-write resource, and attaches one submission value
+to all registered render-write resources before submit **[BIN]**. RT1, RT2,
+and RT3 therefore belong to the same submitted Windows job and retirement
+class as RT0 when enabled. A generic “only RT0 gets an address or fence” model
+is false for the Windows implementation.
 
 The preserved Linux run does not identify an RT1 readback failure. Mask `0x2`
 returned from `glFinish`, printed `MARK mrt-02 error=0x0`, and then stopped
@@ -90,14 +92,17 @@ surface-shadow `+0x38+8*s`, copies descriptor `+0x1fc+4*r` into
 **[BIN]**. Address copying retains the high three tag bits while replacing the
 low 29 address bits.
 
-The emitted target map is exact:
+The emitted target map is exact. The `fb920` loop at `0xfbaa3..0xfbb98` starts
+at state byte offset `0x2c4`, advances eight bytes per slot, loads descriptors
+from surface shadow `+0x58+4*s`, and submits the tagged address at
+`+0x38+8*s` with relocation selector `2+s` **[BIN]**:
 
-| target | state indices | MMIO address/descriptor |
-|---:|---|---|
-| RT0 | `b0,b1` | `0x12c0,0x12c4` |
-| RT1 | `b2,b3` | `0x12c8,0x12cc` |
-| RT2 | `b4,b5` | `0x12d0,0x12d4` |
-| RT3 | `b6,b7` | `0x12d8,0x12dc` |
+| target | state indices | MMIO address/descriptor | surface address | descriptor | reloc selector |
+|---:|---|---|---:|---:|---:|
+| RT0 | `b0,b1` | `0x12c0,0x12c4` | `+0x38` | `+0x58` | 2 |
+| RT1 | `b2,b3` | `0x12c8,0x12cc` | `+0x40` | `+0x5c` | 3 |
+| RT2 | `b4,b5` | `0x12d0,0x12d4` | `+0x48` | `+0x60` | 4 |
+| RT3 | `b6,b7` | `0x12d8,0x12dc` | `+0x50` | `+0x64` | 5 |
 
 Emitter `0xfb920` pairs their address relocations with selectors `2..5`.
 Common-state index `89` at MMIO `0x1224` carries one three-bit render format
@@ -163,11 +168,16 @@ aliases **[BIN]**.
 
 `m9x528` contains one proven producer for this first vector: it takes the
 current resource at task `+0x110` and inserts it into the vector subobject at
-task `+0xf0` through generic helper `m9x1131` **[BIN]**. Static analysis has
-not identified that current resource as a particular MRT slot, nor identified
-the indirect producers of the second vector **[OPEN]**. The fact that
-`m9x954` does not walk `+0x208` is not by itself a vendor bug: that vector may
-hold a different resource kind whose lifetime is handled elsewhere.
+task `+0xf0` through generic helper `m9x1131` **[BIN]**. The complete ELF
+relocation census has only three direct calls to `m9x1131`: `0x2bc22`,
+`0x2dd6b`, and `0x3754e`. The middle call is this task-vector insertion; the
+other two operate on `m9x738` and `m9x852` object-local vectors. None supplies
+four target-indexed Linux task insertions **[BIN]**. Indirect vector producers
+may still exist, so static analysis has not identified the current resource as
+a particular MRT slot or joined every attachment to either submit vector
+**[OPEN]**. The fact that `m9x954` does not walk `+0x208` is not by itself a
+vendor bug: that vector may hold a different resource kind whose lifetime is
+handled elsewhere.
 
 On teardown, `m9x102` takes resource types zero, three, four, and five through
 the unbounded `m9x880(resource,1)` loop; type one can enter it under two device
@@ -222,10 +232,12 @@ RT0 only:
 The following work remains. None can be claimed from the current artifacts:
 
 1. Recover or differentially capture the native color-export selector for
-   locations 0..3 and join it to the MxMD declaration slot.
-2. Trace the Linux userspace submission record far enough to prove that each
-   enabled MRT backing enters the fence-updated resource vector, or replace
-   that ABI with the new driver's explicit per-job BO list.
+   locations 0..3 and join it to the MxMD declaration slot. The descriptor,
+   relocation, and Windows job-membership paths for RT1..RT3 are already exact.
+2. Capture the Linux vendor submission record to identify any indirect vector
+   producers and prove that each enabled MRT backing enters the fence-updated
+   resource vector, or replace that ABI with the new driver's explicit per-job
+   BO list. The saved ELF has no further direct `m9x1131` join to mine.
 3. On the new driver, capture and decode an RT1-only job containing `b2/b3`,
    relocation selector 3, index-89 format bits `5:3`, the RT1 color export,
    the RT1 BO write reference, and the common completion record.
