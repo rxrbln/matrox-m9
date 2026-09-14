@@ -53,20 +53,20 @@ The evidence states used below are:
 
 | OpenGL 2.0 area | preserved evidence | remaining work before exposure |
 |---|---|---|
-| 1-D and 2-D integer/normalized formats | static format table, sampler/prototype families and layout; ordinary RGBA8 result/packet | phase-two 1-D and per-format swizzle/type normalization matrix |
+| 1-D and 2-D integer/normalized formats | result/packet/readback for odd 1-D, RGB565, RGBA4, RGB5A1, RGB8, RGBA8, L8, A8, LA8, I8, D16 and D32; exact descriptor codes and allocation alignments | remaining upload types, component conversions, filtering, renderability, and implementation replay |
 | NPOT 2-D | result/packet for a complete 13x7, 6x3, 3x1, 1x1 chain, including exact logical dimensions | implementation replay and incomplete-chain validation |
-| mipmaps and generated mipmaps | result/packet for a complete odd NPOT chain, selected levels, tail, signed bias and clamped LOD; D3D autogen opcode 89, filter mapping, and surface-vmethod dispatch are exact | base/max-level and incomplete behavior; join the autogen vmethod to its layout walk, result, and fence |
+| mipmaps and generated mipmaps | result/packet for complete odd chains, base/max selection, defined incomplete-texture behavior, tails, signed bias and clamped LOD; D3D autogen opcode 89, filter mapping, and surface-vmethod dispatch are exact | join the autogen vmethod to its layout walk, result, and fence |
 | nearest/linear and six minification filters | packet | visible LOD/footprint validation |
 | S/T wrap modes and border color | packet plus result for repeat and a nontrivial border color; mirror/edge selectors are static/packet | 1-D behavior and exact border-color packing |
 | LOD bias, min LOD, max LOD | packet/result for negative bias, both signed saturation limits, min 3, and max 2 | implementation replay |
 | cube maps | result/packet for all six faces and orientation checks; static six-face constructor | seams, mip selection, and incomplete cube behavior |
 | 3-D textures | result/packet for a 7x5x4 volume, all slices, and R repeat | mip recurrence, edge coordinates, and physical slice layout |
 | rectangle textures | result/packet for unnormalized coordinates; level 1, repeat, and mip filter produce the required errors | implementation replay |
-| depth textures and shadow compare | result/packet for raw 0.25/0.75 and LEQUAL fail/pass; static formats and eight compare codes | result-channel/filter matrix and FBO producer dependency |
+| depth textures and shadow compare | result/packet for raw D24 0.25/0.75, LEQUAL fail/pass, and exact D16/D32 gradients; static eight compare codes | result-channel/filter matrix, other compare functions, and FBO producer dependency |
 | texture compression | generic extension advertised; static DXT1-5 packers; Linux S3TC absent and direct DXT1/DXT5 uploads return `GL_INVALID_ENUM` | sentinel-filled core-format query; keep DXT disabled unless a returned public format passes upload/sample/readback |
-| texture objects, subimages, copies, priorities/residency semantics | ordinary resource lifecycle/static copy path | update-then-sample coherency, overlapping copies, subimage/mip boundaries |
+| texture objects, subimages, copies, priorities/residency semantics | live update-then-sample and framebuffer-copy-then-sample ordering, exact transfer/draw stream boundary, stable descriptors, and ordinary static lifecycle | overlapping copies, subimage/mip boundaries, deletion while bound, priorities/residency, and implementation replay |
 | pixel-store packing/unpacking and readback | basic readback | all core alignment/row-length/skip/type conversions; performance is secondary |
-| 10-bit GigaColor | static A2B10G10R10/A2R10G10B10 codes and config gates; Linux `RGB10_A2` upload/sample/readback demonstrably aliases RGBA8 with round-to-nearest 10->8->10 quantization | a Windows-enabled or gated native 10-bit render/sample capture, raw VRAM validation, and separate depth-30 scanout test |
+| 10-bit GigaColor | static A2B10G10R10/A2R10G10B10 codes and config gates; Linux `RGB10_A2` explicitly reports actual internal `GL_RGBA8` and round-to-nearest 10->8->10 quantization | a Windows-enabled or gated native 10-bit render/sample capture, raw backing validation, and separate depth-30 scanout test |
 | float, YUV, anisotropic, and sRGB textures | real dormant Windows packers/config paths | remain extension-gated until upload/sample/filter/render result matrices exist |
 
 ## Buffers, arrays, and draw submission
@@ -74,7 +74,7 @@ The evidence states used below are:
 | OpenGL 2.0 area | preserved evidence | remaining work before exposure |
 |---|---|---|
 | client arrays and sixteen generic attributes | static declaration grammar, complete ICD generic-attribute entrypoint vocabulary, four canonical live layouts, and D3D declarations for normalized short/ushort/ubyte and float16 types | visible conversion matrix, stride/offset, disabled current value, and alias rule |
-| VBO creation/update/map/unmap | advertised; vendor resource/fence lifecycle and captured VBO draw path | orphaning, partial updates, map failure, deletion while referenced, and context sharing |
+| VBO creation/update/map/unmap | advertised; vendor resource/fence lifecycle and captured VBO draw path; texture resource capture proves index `78` selects a repeated 0x80-byte tagged backing-page list rather than linear texels | orphaning, partial updates, map failure, deletion while referenced, context sharing, and equivalent resource-indirection construction |
 | 16/32-bit element buffers and draw ranges | packet/static H06/H07 paths | base/range boundaries, restart absence, mixed index sizes, and zero-count draws |
 | immediate mode and display lists | live fixed-function workloads | state capture/replay and resource lifetime in the Mesa implementation |
 | multiple contexts/share groups | result/packet for simultaneous A/B/A/B direct contexts | shared texture/VBO/program deletion and concurrent update ordering |

@@ -1014,7 +1014,7 @@ but its format, pack alignment, and rendered extent must remain correct.
 | MRT output routing and retirement | RT0 works; selecting RT1 or all targets finishes then wedges during readback/teardown | statically trace target 1--3 resource retirement or use a passive hook before any more live MRT stress |
 | multisample/FAA surface, pattern, mask and resolve | current GLX visuals expose no sample buffers | acquire one vendor multisample surface and capture edge, partial-mask, resolve and query behavior |
 | 10-bit and sRGB round trips | GigaColor and sRGB formats remain unexposed | sentinel render/sample/readback A/B for both 10-bit orders and linear-versus-sRGB resources |
-| copy/upload-to-texture cache rule | dynamic upload correctness uses conservative full fences | upload, fence, sample A/B with and without state re-emission; the ordinary FBO render-to-sample rule is already closed |
+| pixel-store, overlapping-copy and resource-lifetime edge cases | ordinary subimage and framebuffer-copy producer/consumer ordering is captured | alignment/row-length/skip/type matrix, overlap, mip-boundary updates, and deletion while referenced |
 | non-32-bit tiled calculator transcription | tiled 8/16/64/128-bit and DXT resources unavailable | translate identified kernel routines, add frozen vectors, validate one coordinate-coded upload per family |
 | query wrap and multisample scaling | ordinary full/half/hidden counts, availability, and reuse are captured | slot wrap, 32-bit counter wrap, ordering stress, and multisample comparison |
 | 3D/global reset and fault IRQ | no transparent recovery from a real engine hang | controlled address fault and bad-opcode tests, one source at a time, with complete pre-ack snapshots |

@@ -34,9 +34,11 @@ The following pieces no longer depend on another vendor capture:
 * depth test with writes independently enabled or disabled, one- and two-sided
   stencil packing, alpha test, blending, color masks, cull/fill/shade compiler
   inputs, and the fixed-state differential corpus;
-* ordinary linear RGBA8 textures, the full mip chain and packed mip tail,
-  sampler wrap/filter/LOD packing, four live sampler selectors, and the
-  class-1 render-to-sample dependency through index `43`;
+* RGB565, RGBA4, RGB5A1, RGB8, RGBA8, L8, A8, LA8, I8, D16 and D32 textures,
+  odd 1-D/2-D dimensions, full mip chains and packed tails, sampler state,
+  four live sampler selectors, subimage/copy coherency, and the class-1
+  render-to-sample dependency through index `43`.  Index `78` points to a
+  repeated 0x80-byte tagged backing-page list rather than linear texels;
 * separate index-`69` drawable/external and `6c` linked resources, atomic vertex plus
   fragment A/B/A selection, live stage-constant ranges, and the invariant
   nature of the 80-slot `8f/90..9f` store;
@@ -108,7 +110,7 @@ the live Linux ICD did not advertise.
 | `GL_ARB_multisample` / FAA | advertised; current GLX visuals report zero sample buffers | enable reaches four `ad` writes plus `af`; zero mask suppresses color | **capture** a real multisample visual/surface, sample pattern/resolve, and nonzero partial mask |
 | 10-bit GigaColor (`A2B10G10R10`, `A2R10G10B10`) | no dedicated GL extension observed | exact hardware codes `0x68/0x6a` and config gates are static; Linux `GL_RGB10_A2` explicitly reports actual `GL_RGBA8` and round-trips through 8-bit quantization | Linux route **not native**; capture the gated Windows 10-bit RT/sample path and matching visual before exposure |
 | framebuffer/texture sRGB | not advertised | Windows state has `SRGBWRITEENABLE` and an sRGB clear/surface flag | **unexposed/capture**: linear-vs-sRGB RT and texture A/B; keep CRT gamma LUT separate |
-| NPOT 2D | advertised | complete 13x7/6x3/3x1/1x1 chain samples correctly with exact descriptors | **captured**; incomplete and automatic-generation behavior remain |
+| NPOT 2D | advertised | complete 13x7/6x3/3x1/1x1 chain, base/max selection, and defined incomplete-texture behavior are captured | **captured**; automatic generation remains |
 | rectangle textures | ARB/EXT/NV names advertised | unnormalized sampling passes; level 1, repeat, and mip filters produce required errors | **captured** |
 | cube textures | ARB/EXT advertised | all six face/orientation tests pass with exact descriptor/resource dimension | **captured**; seams, mips, and physical face layout remain |
 | 3D textures | `GL_EXT_texture3D` advertised | 7x5x4 slices and R repeat pass; exact volume descriptor captured | **captured**; volume mips and physical slice layout remain |
