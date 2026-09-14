@@ -224,6 +224,15 @@ One substituted control chooses `0x0c000000` or `0x62000000`.  These are
 hardware context-restore records with exact packet bytes; the ten relocation
 roles still need names.
 
+The submission ownership and reuse lifecycle are now recovered as well.
+Windows `MxMD.dll` keeps one live context at TaskMgr `+0x5b8`; switch method
+`0xf8fd0` serializes the outgoing context, attaches the incoming context, and
+the main method `0xf85c0` emits all restore/state records through the shared
+TaskMgr command buffer at `+0x04`. Linux `m9x954` attaches the submission fence
+to referenced backing objects before dropping their in-flight references, and
+the restore pool admits a slot only through its availability/refcount checks.
+See `parhelia-m9-context-lifecycle-re.md` for the exact field and fence joins.
+
 ## Doorbell and front-end control [DRV][HW]
 
 | reg | write | meaning |
@@ -438,7 +447,10 @@ continues to use the write-back tag.
   address-like fields compared above their low tag nibble, `0x514` is restored
   with them, and `0x520/0x524` form an always-restored pair.  Their producer,
   consumer, and rollover roles and relationship to the final `0x404` limit
-  still need a controlled trace.
+  still need a controlled trace. Complete Linux and Windows direct-register
+  audits find no software producer for those five words outside restore, so
+  static recovery cannot safely narrow them beyond opaque hardware snapshot
+  state.
 - **Recovery** — status/mask/W1C banks are decoded.  High-bank `0x8` is joined
   narrowly to one Windows miniport rectangle-transfer completion path, but no
   source has a defensible 3D-fault meaning and no full 3D/global reset contract
