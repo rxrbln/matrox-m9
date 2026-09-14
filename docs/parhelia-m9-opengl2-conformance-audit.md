@@ -44,20 +44,20 @@ The evidence states used below are:
 
 | OpenGL 2.0 area | preserved evidence | remaining work before exposure |
 |---|---|---|
-| 1-D and 2-D integer/normalized formats | static format table, sampler/prototype families and layout; ordinary RGBA8 result/packet | per-format swizzle/type normalization matrix |
-| NPOT 2-D | advertised/static arbitrary dimensions | odd-size coordinate and full-mip result capture |
-| mipmaps and generated mipmaps | ordinary full chain and tail packet/result | odd dimensions and base/max-level boundary cases |
+| 1-D and 2-D integer/normalized formats | static format table, sampler/prototype families and layout; ordinary RGBA8 result/packet | phase-two 1-D and per-format swizzle/type normalization matrix |
+| NPOT 2-D | result/packet for a complete 13x7, 6x3, 3x1, 1x1 chain, including exact logical dimensions | implementation replay and incomplete-chain validation |
+| mipmaps and generated mipmaps | result/packet for a complete odd NPOT chain, selected levels, tail, signed bias and clamped LOD | base/max-level boundaries, incomplete behavior, and automatic generation |
 | nearest/linear and six minification filters | packet | visible LOD/footprint validation |
-| S/T wrap modes and border color | packet for repeat/mirror/edge/border selection | border color result; 1-D behavior |
-| LOD bias, min LOD, max LOD | packet for representative positive values | negative and clamped boundary matrix |
-| cube maps | API/result and static six-face constructor | face orientation, seams, mip selection, and incomplete cube behavior |
-| 3-D textures | advertised/static volume constructor | slice addressing, R wrap, mip recurrence, and edge coordinates |
-| rectangle textures | advertised/static resource family | unnormalized coordinate result and forbidden wrap/mipmap behavior |
-| depth textures and shadow compare | static formats and eight compare codes; one accepted GLSL shadow draw | compare-disabled raw depth, pass/fail pairs, result channel, filtering, and FBO producer dependency |
-| texture compression | generic extension advertised; static DXT1-5 packers, Linux S3TC token absent | query numeric core compressed formats; round-trip returned formats; DXT stays gated if not returned |
+| S/T wrap modes and border color | packet plus result for repeat and a nontrivial border color; mirror/edge selectors are static/packet | 1-D behavior and exact border-color packing |
+| LOD bias, min LOD, max LOD | packet/result for negative bias, both signed saturation limits, min 3, and max 2 | implementation replay |
+| cube maps | result/packet for all six faces and orientation checks; static six-face constructor | seams, mip selection, and incomplete cube behavior |
+| 3-D textures | result/packet for a 7x5x4 volume, all slices, and R repeat | mip recurrence, edge coordinates, and physical slice layout |
+| rectangle textures | result/packet for unnormalized coordinates; level 1, repeat, and mip filter produce the required errors | implementation replay |
+| depth textures and shadow compare | result/packet for raw 0.25/0.75 and LEQUAL fail/pass; static formats and eight compare codes | result-channel/filter matrix and FBO producer dependency |
+| texture compression | generic extension advertised; static DXT1-5 packers; Linux S3TC absent and direct DXT1/DXT5 uploads return `GL_INVALID_ENUM` | sentinel-filled core-format query; keep DXT disabled unless a returned public format passes upload/sample/readback |
 | texture objects, subimages, copies, priorities/residency semantics | ordinary resource lifecycle/static copy path | update-then-sample coherency, overlapping copies, subimage/mip boundaries |
 | pixel-store packing/unpacking and readback | basic readback | all core alignment/row-length/skip/type conversions; performance is secondary |
-| 10-bit GigaColor | static A2B10G10R10/A2R10G10B10 codes and config gates | sentinel upload, render, sample, readback, and separate depth-30 scanout test |
+| 10-bit GigaColor | static A2B10G10R10/A2R10G10B10 codes and config gates; Linux `RGB10_A2` upload/sample/readback demonstrably aliases RGBA8 with round-to-nearest 10->8->10 quantization | a Windows-enabled or gated native 10-bit render/sample capture, raw VRAM validation, and separate depth-30 scanout test |
 | float, YUV, anisotropic, and sRGB textures | real dormant Windows packers/config paths | remain extension-gated until upload/sample/filter/render result matrices exist |
 
 ## Buffers, arrays, and draw submission
@@ -82,16 +82,16 @@ and a visible result joined in the same fixture.
 | shader create/source/compile/link/validate/use/delete and info logs | live compiler matrix | negative tests, deferred deletion, relink, detach, and cross-context sharing |
 | scalar/vector/matrix bool, int, float types; constructors and conversions | static aggregate/type descriptor, integer frontend vocabulary, all 19 uniform update families, and representative live draws | systematic visible-result matrix; lower integer/bool forms conservatively until native results are recorded |
 | arithmetic, swizzles, write masks, abs/negate, min/max, reciprocal/rsqrt, exp/log, floor | 91-case native lowerer corpus | join generated bytes to the live linked-program record and reject unrecorded native combinations |
-| dot products and matrix/vector multiplication | static exact DP3/DP4 expansion; live mat4 draw | non-square matrix variants and alias cases in live native storage |
-| comparisons, boolean logic, selection | static CMP/SETP and ARB SLT/SGE result draws | exact native predicate fields and all six relational outcomes |
-| constant/uniform conditionals | live result captures | identify folded versus native branch representation and reconvergence |
-| fixed and uniform-bound loops, break/continue/function calls | live result captures and static frontend | native/unrolled policy, targets/backedges, nesting and implementation limits |
+| dot products and matrix/vector multiplication | static exact DP3/DP4 expansion; live `mat4 * vec4` result | non-square matrix variants and alias cases in live native storage |
+| comparisons, boolean logic, selection | static CMP/SETP plus live ARBfp SLT/SGE and GLSL conditional results | exact native predicate fields and all six relational outcomes |
+| constant/uniform conditionals | live result captures for both constant and uniform branches | identify folded versus native branch representation and reconvergence |
+| fixed and uniform-bound loops, break/continue/function calls | live fixed- and uniform-loop results plus static frontend paths | native/unrolled policy, targets/backedges, nesting and implementation limits |
 | vertex/fragment uniforms and arrays | A/B/A stage-specific resource/result captures; exact limits | matrices, integer/bool uniforms, arrays, partial updates, locations after relink |
 | attributes, varyings, built-ins, invariant matching | static 14-entry varying map; exact semantics for FrontFacing/FragCoord/Position/PointSize/ClipVertex/fragment outputs; live linked programs | visible built-in routes, type/size mismatch failures and interpolation slots; `gl_PointCoord` is absent from both pinned compiler images and needs a live acceptance probe |
-| ordinary, projected, and bias texture lookup | compiler/result captures and static texture lowerer | exact native mode/resource join |
-| vertex explicit-LOD lookup | compiler/result capture | native instruction and vertex sampler/resource join |
-| derivatives | accepted result captures and static DDX/DDY selectors | isolate nonconstant X/Y gradients and recover their actual native slots |
-| discard/KIL | accepted conditional/all result captures and static KILL lowerer | locate packed conditional KIL slots and validate helper/coverage behavior |
+| ordinary, projected, and bias texture lookup | live result captures plus static texture lowerer; explicit fragment LOD/gradient correctly rejected without the extension | exact native mode/resource join |
+| vertex explicit-LOD lookup | accepted live result capture under the four-vertex-sampler limit | native instruction and vertex sampler/resource join |
+| derivatives | live `dFdx`/`dFdy` results and static DDX/DDY selectors | isolate nonconstant X/Y gradients and finish their native-slot join |
+| discard/KIL | live conditional and unconditional discard results plus static KILL lowerer | locate packed conditional KIL slots and validate helper/coverage behavior |
 | fragment depth output | static one-component result semantic `0x13`, constructor/presence path and result-routing vocabulary | shallow/deep sentinel draw against later depth test, with native output route |
 | four fragment color outputs | runtime-sized `gl_FragData[gl_MaxDrawBuffers]` constructor, static target compiler and MRT emitter | distinct four-attachment result capture |
 | vertex position, point size, clip vertex; fragment color/depth built-ins | exact logical semantics `0x0d..0x13`, component counts and stage presence masks; partial fixed-function/point evidence | direct GLSL result fixtures to join every logical semantic to its native packed route |
@@ -104,7 +104,7 @@ The hardware also has paths outside the OpenGL 2.0 core contract.  Preserve
 them for later Gallium capabilities without letting them inflate the core
 conformance claim:
 
-* 10-bit GigaColor rendering and its no-page-flip presentation restriction;
+* native 10-bit GigaColor rendering and its no-page-flip presentation restriction; the Linux GL path's `RGB10_A2` alias to RGBA8 is an explicit negative result, not native 10-bit evidence;
 * floating-point texture formats, YUY2/UYVY sampling/video paths, DXT1-5, and
   dormant anisotropy levels 1/4/8/16;
 * render-target sRGB conversion, with sampler-side sRGB still unlocated;
