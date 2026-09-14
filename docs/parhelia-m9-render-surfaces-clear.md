@@ -330,8 +330,12 @@ The final path maps the allocation through `0x2cb40` (or the resource-specific
 map helpers), computes row and element offsets from the resource layout, and
 updates 8-, 16-, 32-, 64-, or 128-bit elements with the operation's masks and
 clear words in nested rectangle loops.  It unmaps through `0x56130`, `0x56430`,
-`0x58080`, or `0x2c840` and closes with `0x55370(2)` [BIN].  This is a CPU
-fallback and emits no pixel-fill packet.  The three paths together are the
+`0x58080`, or `0x2c840` and closes with `0x55370(2)` [BIN].  For source layout
+enum 1 / descriptor class 3, constructor flag `+0x2b8` makes this loop operate
+on a separate linear staging allocation with byte pitch `+0x2b0`; unlock
+submits the staging record for GPU conversion.  The exact row-major formula
+and transfer join are in `parhelia-m9-blocked-layout-boundary.md`.  This is a
+CPU fallback and emits no pixel-fill packet.  The three paths together are the
 complete concrete implementation below both attachment leaves.
 
 ## Driver-ready fields and remaining blockers

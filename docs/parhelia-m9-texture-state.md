@@ -280,11 +280,12 @@ idx79[15:0] = ceil(raw_width / 8)
 idx79[27:16] = 1
 ```
 
-This resolves the visible class-3 block width and allocation-height rule.  It
-does not reveal the address permutation within a block, nor whether the
-vendor's name for either layout state is tiled, swizzled, or macro-tiled.  A
-small coordinate-coded upload followed by GPU sampling is still required to
-recover that physical permutation.
+This resolves the visible class-3 block width and allocation-height rule.  The
+CPU mapping path uses a separate linear staging allocation and the GPU upload
+receives logical rectangles plus source/destination descriptors; neither path
+contains the physical address permutation within a block.  See
+`parhelia-m9-blocked-layout-boundary.md` for the exact producer/consumer trace
+and the minimal coordinate-coded VRAM capture needed to recover it.
 
 Compression is proven upstream.  Format helpers near `0x4ee70/0x4fd10` map
 FourCC DXT1 to internal 0, DXT2 to 2, DXT3 to 3, DXT4 to 4, and DXT5 to 5.
@@ -458,8 +459,9 @@ and `idx79[27:16]` is depth or layer count.  Both names follow construction and
 size arithmetic, but the binary contains no symbol names.
 
 Unresolved: semantic names for compiler-record bits 4/6/7/8/9 and therefore
-for operation families `1/5/8/9/d`; the physical address permutation within
-class-3 blocks; whether a non-D3D path exposes programmable channel swizzle;
+for operation families `1/5/8/9/d`; the hardware-defined physical address
+permutation within class-3 blocks; whether a non-D3D path exposes programmable
+channel swizzle;
 and the exact meaning of the nonzero descriptor storage/layout classes.
 Focused MMIO captures of otherwise identical projected/LOD samples and
 coordinate-coded class-3 blocks are the shortest way to settle these
