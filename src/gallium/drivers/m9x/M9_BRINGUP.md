@@ -10,8 +10,8 @@ definition, and no M9 source is built into the Parhelia Gallium libraries.
 
 The following userspace foundation is ready for the first executable
 userspace-stream submit.  The independent kernel module has already completed
-256 consecutive kernel-owned no-op fences, plus a fresh fence after adopting
-the `m9x` DRM identity.  Arbitrary userspace streams remain disabled:
+6,000 consecutive kernel-owned no-op fences across both directions of its
+two-slot primary command rebase.  Arbitrary userspace streams remain disabled:
 
 * `m9_internal.h` owns separate screen, context, resource, canonical vertex,
   and batch structures.  M9 command buffers are capped at the kernel's 32 KiB
@@ -68,7 +68,10 @@ at commits `b7d0194`, `c611a0e`, `d70b370`, and `f459a8b` validates arbitrary
 command streams but executes only its kernel-owned synchronous no-op fence
 diagnostic.  Fence targets now preserve the natural
 `0xfffffff0 -> 0 -> 0x10` rollover and polling issues at most one extra
-progress kick.
+progress kick.  Kernel commits `6c27e17` and `9219f41` add derived BO access,
+same-BO H06/H07 range validation, and retired two-slot command rotation.  The
+6,000-submit hardware run crossed from slot 0 to 1 at submit 2,731 and back to
+slot 0 at submit 5,461, ending at fence point `0x17700`.
 
 ## Evidence test
 
@@ -98,13 +101,20 @@ These gaps must remain visible in capability and execution gates:
    expose completion before `m9_screen.execute_submit` can become true.
 2. The gltri preprocessing pass writes four transient resources which the
    raster pass consumes in the address permutation `[b0,b4,b8,b2]` at
-   indices `00..03`.  Four canonical preprocessing layouts and their routing
-   are captured, but this Mesa skeleton has no preprocessing-pass builder or
-   local-VRAM transient allocator yet.
+   indices `00..03`.  Four canonical preprocessing layouts, their routing and
+   repeatable `0x16800` address lattice are captured.  The invariant 80-slot
+   native image, canonical vertex arena extent `0x192700`, C2 extent `0x1080`,
+   BE auxiliary-surface ownership and AB/AC/AE producer shape are also exact.
+   This Mesa skeleton still lacks the preprocessing builder, local-VRAM
+   allocator, exact source repacker, initial C2/BE bytes, BE extent and AB/AC
+   formula.
 3. Selector `6c` atomically binds one immutable linked VS/FS pair.  Private
    0x3158-byte allocation, ordered cache reuse, COW validation/publication and
-   fence lifetime are exact, but a new compiler still needs the opaque pair
-   byte serializer and semantic graph-target placement.  Index `69` is
+   fence lifetime are exact.  Symbolic graph descriptors now map through the
+   physical converter to finite `94/b4/c4` selector namespaces and exact
+   W0/W1 bit fields.  A new compiler still needs arbitrary CFG scheduling and
+   the heterogeneous external `6c` record constructor.  The captured A/B
+   records contain no embedded GPU-BO pointers.  Index `69` is
    drawable memory, and the known bind tuple alone is not a general shader
    path.
 4. Triangle-strip control is captured from gears, but its correlated `d7`
@@ -116,9 +126,12 @@ These gaps must remain visible in capability and execution gates:
    linear BOs can be CPU-cleared during early bring-up.
 6. All class-3 calculator routes and all fourteen non-32-bit aperture formulas
    are exact.  Their live index-`78` table-root/page ownership and physical-page
-   validation remain open.  Compressed, cube/volume, sampler sRGB, query,
-   reset-recovery, and general-shader paths remain gated at the narrower
-   boundaries in the readiness ledger.
+   validation remain open.  Hierarchical-Z format `0x0b`, its
+   `ceil(width/8) x ceil(height/4)` extent and selector-12 `ba/bb` bind are
+   exact, but metadata initialization/invalidation and lifetime remain gated.
+   Compressed, cube/volume, sampler sRGB, query, reset-recovery, and
+   general-shader paths remain gated at the narrower boundaries in the
+   readiness ledger.
 
 The Mesa loader maps PCI ID `0x0540` exclusively to `m9x`; the Parhelia map
 contains only the P-series IDs.  Keep the driver-local `m9x_drm.h`
