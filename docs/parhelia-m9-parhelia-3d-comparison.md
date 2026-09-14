@@ -154,9 +154,11 @@ a safe DRM submitter and a working Mesa driver:
 2. The remaining `0x500..0x524` rollover fields and public memory-domain names.
    Static recovery now establishes the initializer formulas, the internal
    four-class address-tag table `{2,3,0,3}`, tagged base/transition addresses,
-   a raw live `0x504` pointer, save/restore order and idle handshake.  A
-   controlled rollover trace is still required for `0x50c..0x524` and the
-   final relationship to the `0x404` submit limit.
+   a raw live `0x504` pointer, save/restore order and a vendor bounded-idle
+   entry point.  `0x50c/0x510` are address-like above a low tag nibble;
+   `0x514` is their companion and `0x520/0x524` are always restored first.  A
+   controlled rollover trace is still required to name their producer/consumer
+   roles and final relationship to the `0x404` submit limit.
 3. The remaining M9 context-switch lifecycle.  The vendor's exact `0xf8`-byte
    full-state index template and its per-context restore-record builders are
    recovered, including texture and shader-store indices.  Query/fence state,

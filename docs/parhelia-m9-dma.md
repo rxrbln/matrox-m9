@@ -79,7 +79,12 @@ snapshots these eight dwords exactly:
 It sets saved flag `+0x2c`.  Restore function `m9x714` at `0x2b5d0` writes
 `0x520,0x524` first; if saved `0x50c != 0x510`, it writes
 `0x50c,0x514,0x510`; it then writes `0x500,0x508,0x504` and clears the saved
-flag.  For an unsaved object it delegates to initializer `m9x759` at `0x2b290`,
+flag.  The Windows twin at `MxMM.sys` `0x1490c` makes the conditional more
+specific: it restores that middle triple only when
+`(saved_0x50c ^ saved_0x510) & ~0xf` is nonzero.  Thus `0x50c` and `0x510` are
+address-like fields whose low nibble carries control/tag bits, and `0x514` is
+their companion word.  It always restores `0x520/0x524` before this test.
+For an unsaved object Linux delegates to initializer `m9x759` at `0x2b290`,
 which writes translated base/tag/address-space bits to `0x500`, zero to `0x508`,
 and translated current/head to `0x504` [DRV].
 
@@ -129,6 +134,25 @@ base/transition address and must not be blindly ORed into the live current
 pointer.  `m9x620` emits a 16-byte transition record, or a 32-byte form when
 its bus-master mode flag is set; both begin with record opcode `1`, tagged old
 pointer, raw new pointer.
+
+The Windows miniport independently implements the same split [DRV].  Its
+requester initializer at `MxMM.sys` `0x145a5` computes:
+
+```text
+rounded = align_up(object[0x34], object[0x30])
+pointer = object[0x10][0x08] - rounded + object[0x18]
+
+MMIO[0x500] = pointer | object[0x64]
+MMIO[0x508] = 0
+MMIO[0x504] = pointer
+```
+
+The constructor initializes alignment `object[0x30]=4`; the size/span at
+`+0x34`, buffer end at `object[0x10]+0x08`, GPU base at `+0x18`, and tag at
+`+0x64` are populated by the owning allocation path.  Publisher `0x146bc`
+repeats the pointer formula and writes only raw `0x504`.  This second build
+rules out the possibility that the Linux raw-current/tagged-base distinction
+is an optimizer artifact.
 
 Quiescence helper `m9x1016` at `0x28960` publishes the requester pointer through
 `m9x620` to `0x504`, then polls `0x508` bit 0.  Once set, it accepts idle only
@@ -213,9 +237,9 @@ an interrupt-completion counter, so the Linux and Windows implementations agree
 that the requester fence is a GPU memory write-back and `0x314` is a progress
 kick rather than a completion acknowledgement.
 
-### Vendor waits that must not be copied literally [DRV]
+### Vendor waits and the recovered bounded quiescence form [DRV]
 
-The saved implementations contain four distinct unbounded waits:
+The ordinary saved call paths contain four distinct unbounded waits:
 
 | wait | vendor condition | disconnect handling |
 |---|---|---|
@@ -228,6 +252,16 @@ These conditions observe different blocks and must retain separate diagnostics
 and deadlines.  Reaching one does not prove the others are healthy.  In
 particular, `0x8f0 & 0x30000` is not the fence, and a stable descriptor does not
 prove that the GPU wrote the requested tag.
+
+Windows quiescence helper `MxMM.sys` `0x146ee` accepts a maximum-poll argument.
+Zero selects the vendor's unbounded behavior; a nonzero value counts outer
+`0x508` samples and returns false after the count is exceeded.  Export-facing
+wrapper `0x177bd` passes its caller's count through and returns success/failure.
+The inner stability test is the same as Linux: both consecutive `0x500` and
+`0x50c` samples must match and `0x508` bit 0 must remain set.  This proves that
+bounded requester quiescence is part of the vendor design, although a new DRM
+driver should use an absolute time deadline rather than a CPU-speed-dependent
+poll count.
 
 ## Address-window initialization [DRV]
 
@@ -331,9 +365,11 @@ descriptor.
   pointer are joined.  The public VRAM/system-memory names and allocation
   constraints for every class still need a constructor/capture join.
 - **Descriptor field semantics** — initialization, current-pointer publication,
-  save/restore order and idle handshake are exact.  The roles of `0x50c..0x524`
-  after wrap and their relationship to the final `0x404` limit still need a
-  controlled rollover trace.
+  save/restore order and bounded idle handshake are exact.  `0x50c/0x510` are
+  address-like fields compared above their low tag nibble, `0x514` is restored
+  with them, and `0x520/0x524` form an always-restored pair.  Their producer,
+  consumer, and rollover roles and relationship to the final `0x404` limit
+  still need a controlled trace.
 - **Recovery** — status/mask/W1C banks are decoded, but no high-bank source has
   a defensible DMA-completion/fault name and no full 3D/global reset was found.
   `0x31c` state changes and the `0x500..0x524` save/restore handshake provide a
