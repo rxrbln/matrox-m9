@@ -104,7 +104,7 @@ to `m9x2048` [BIN]:
 |---|---|---|---|
 | `m9x111` | `44b8b9` / `44b908` | `+0x60=u32 enable`, `+0x64=float bits`, `+0x68=u32`, `+0x6c=u32` | computed scalar, owner `+0x48`, owner `+0x50` |
 | `m9x26427` | `44bf29` / `44bf90` | `+0x1c=u32` | packed computed control |
-| `m9x25711` main | `44c046` / `44c0d2` | `+0x0c=0 or 0x08000000`, `+0x20..` copied bytes | `0x40` or `0x60` bytes from `[pipeline+0xd98]+0xe3c` |
+| `m9x25711` main | `44c046` / `44c0d2` | `+0x0c=0 or 0x08000000`, `+0x20..` copied bytes | `0x40` or `0x60` bytes from direct `pipeline+0xe3c`; `[pipeline+0xd98]` separately supplies flags |
 | `m9x25711` alternate | `44c25b` / `44c28b` | `+0x1c=0x3f800000 + (((linked[0x1ed]>>1)&0x3f)<<8)` | encoded native-fragment control |
 | `m9x5091` | `44c57e` / `44c5d1` | `+0x00=u64`, `+0x08=u32`, `+0x10=u64`, `+0x18=u32` | `[pipeline+0xd98]+0xdb8, +0xdc0, +0xdc8, +0xdd0` |
 
@@ -241,14 +241,14 @@ with these seven floats [CAP]:
 128.0, -128.0, 0.5, 0.0, 128.0, 128.0, 0.5
 ```
 
-The remainder is not a fixed A/B patch. The Gouraud record has substantially
-more populated semantic/native tables, while the flat record is shorter and
-contains different pointer-like values. Examples in the flat record include
+The defined remainder is a fixed first-process A/B image in every controlled
+pair. The Gouraud/A linked payload is zero. Examples in the case-B record include
 `0x007ff880` at relative `+0x24/+0x2c`, `0x007ff8a8` at `+0x4c/+0x54`, and
-`0x007ff8d0` at `+0x74/+0x7c`. These are process/backing references, not GPU
-register values [CAP][DER]. A raw byte array would preserve stale host
-addresses and omit serializer-owned relocation/lifetime metadata. No safe
-flat/Gouraud 6c C array can be emitted from the saved capture.
+`0x007ff8d0` at `+0x74/+0x7c`. Thirteen fresh processes spanning alpha,
+blend, color-mask, depth, cull, and flat-shade transitions reproduce those
+values exactly. They are shared linked-fragment references, not flat-shading
+opcodes [CAP][DER]. Their bounded constructor and scope are documented in
+`parhelia-m9-fixed-sixword-provenance.md`.
 
 ## Smallest exact unknown and kernel integration boundary
 
@@ -276,14 +276,11 @@ A clean kernel diagnostic can implement these proven pieces immediately:
    descriptors above;
 5. retain the native record and referenced BOs through fence retirement.
 
-It cannot safely synthesize the first flat or Gouraud 6c record until the
-concrete serializer callback is found or its first nonzero writes and fixups
-are captured. The exact next static target is the derived override of
-`CreateFragPtrsBuffer` and the object installed in owner `+0xa4`, followed by
-that object's vtable `+0x38` target. If static recovery remains impossible,
-one first-draw watchpoint on the selected aligned record, with a backtrace at
-the first nonzero write, closes precisely this last edge; no broad MMIO trace
-is required.
+It can now synthesize the bounded first Gouraud and flat/case-B 6c records.
+Arbitrary linked programs still require a verified `0x60`-byte linker product
+or recovery of the upstream arena cursor and aliased writer. A source
+watchpoint is the shortest route to name that writer, but it is not required
+for the bounded constructor and is not the only way to close the general edge.
 
 ## Reproduction
 

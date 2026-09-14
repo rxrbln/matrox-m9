@@ -180,8 +180,10 @@ flat
 ```
 
 The common prefix comes from `m9x5091`: direct fields at `+00/+08/+10/+18`.
-`m9x25711` then copies exactly 0x60 bytes from linked-fragment product
-`[pipeline+0xd98]+0xe3c` to image `+0x20`. For this Gouraud capture those bytes
+`m9x25711` then copies exactly 0x60 bytes from the linked-fragment product at
+direct `pipeline+0xe3c` to image `+0x20`. The separately loaded
+`[pipeline+0xd98]` object supplies builder flags; it is not the copy base. For
+this Gouraud capture those bytes
 are zero. For flat they contain three values twice:
 
 ```text
@@ -191,18 +193,17 @@ linked source +54/+5c -> image +74/+7c = 007ff8d0
 ```
 
 These are semantic words already produced by the fragment compiler/linker.
-Neither pool commit nor lazy copy changes or relocates them [BIN]. Their exact
-encoding and allocation-relative provenance remain the one unresolved edge;
-the values are capture-specific and cannot be reused for a newly linked
-program [CAP][DER].
+Neither pool commit nor lazy copy changes or relocates them [BIN]. The
+cross-capture encoding and bounded first-process allocation schedule are
+closed in `parhelia-m9-fixed-sixword-provenance.md`; the upstream cursor and
+writer for arbitrary linked programs remain unresolved.
 
 `tools/m9-pool5-image.h` provides an implementation-ready field constructor.
 The Gouraud constructor emits the recovered image and zeros the whole
 Linux-compatible backing. The flat constructor fails unless the caller marks
 a complete 0x60-byte linked-native product, then copies that product exactly as
-`m9x25711` does. A separately named case-37 fixture reproduces the six captured
-words for verifier/testing use and explicitly must not be submitted for a new
-allocation.
+`m9x25711` does. The bounded case-B constructor reproduces the six words for
+the saved initial arena schedule, including case-37 flat shading.
 
 ## Remaining live observation
 
@@ -210,13 +211,13 @@ Static analysis has closed all concrete device and pool vtables, allocation,
 dirtying, copying, pair publication, and outer command relocation. No live
 watchpoint is needed for the pool path.
 
-One live observation is still required before a general flat-program
-constructor can create its own linked-native words: watch the source at
-`[pipeline+0xd98]+0xe3c` when its three duplicated word pairs are first written,
-then record the writer backtrace and the associated program/resource base.
-This is a source compiler/linker watchpoint, not a pool serializer watchpoint.
-Until that is closed, callers must provide the full linked-native 0x60 bytes
-from a separately verified linker or fail closed.
+No live observation is required for the bounded first-triangle constructor.
+For a general allocator-independent constructor, a watchpoint on direct
+`pipeline+0xe3c` remains the shortest way to identify the aliased writer and
+associated cursor, but static alias recovery or controlled cursor-variation
+captures can close the same edge. Until that broader edge is closed, callers
+must provide the full linked-native 0x60 bytes from a separately verified
+linker or fail closed.
 
 ## Reproduction
 
