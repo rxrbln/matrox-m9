@@ -6,6 +6,12 @@ hardware evidence needed for an OpenGL 2.0 and GLSL 1.10 implementation.  It
 does not treat a vendor extension string, compiler acceptance, or a static
 packer as a successful rendering test.
 
+The bounded static pass in `parhelia-m9-opengl2-static-closure.md` and its
+verifier closes compiler/API reachability while retaining the live-result
+boundary used here.  It enumerates compiler operations, built-in semantic
+records, uniform entrypoints, sampler families, Direct3D state handlers, and
+all sixteen logic-op frontend codes.
+
 The evidence states used below are:
 
 * **result**: a controlled draw/readback demonstrated the API result;
@@ -26,9 +32,9 @@ The evidence states used below are:
 | culling, winding, smooth/flat shade | packet/result | implementation replay |
 | point, line, triangle, strip, fan, quad, quad-strip, polygon topology | packet/result for the ordinary frontend set | implementation replay and degenerate/batch-boundary tests |
 | polygon point/line/fill, point/line width, smoothing | packet/result for representative sizes | width ranges, line stipple, point attenuation, and exact coverage rules |
-| polygon offset | enable packet | capture factor/units numeric lowering and depth result |
+| polygon offset | enable packet/static; D3D slope and units handlers carry raw floats through `0x104267/0x1042a9` | join OpenGL factor/units to the generated depth equation and visible quantized result |
 | alpha test, blending, separate RGB/alpha, min/max/subtract/reverse subtract | enable/result/static factor and equation maps | join generated native state to visible destination-sensitive results |
-| all logic operations | XOR packet/result | capture or statically prove the remaining fifteen op codes |
+| all logic operations | static frontend: all sixteen GL enums map to exact ICD internal codes; XOR packet/result | join the other fifteen internal codes to final native state/program and visible results |
 | fog, explicit fog coordinate, clip planes, two-sided lighting | API/result plus generated-state snapshots | identify native program/constant deltas after the linked-record grammar is decoded |
 | multisample and sample coverage | API-only on an unsampled visual; static `ad/af` emitter | sampled allocation, pattern, mask, resolve, coverage invert, and query scaling |
 | occlusion query | static begin/end/result protocol | visible/hidden counts, availability, slot reuse/wrap, counter wrap, and ordering |
@@ -38,7 +44,7 @@ The evidence states used below are:
 
 | OpenGL 2.0 area | preserved evidence | remaining work before exposure |
 |---|---|---|
-| 1-D and 2-D integer/normalized formats | static format table; ordinary RGBA8 result/packet | per-format swizzle/type normalization matrix |
+| 1-D and 2-D integer/normalized formats | static format table, sampler/prototype families and layout; ordinary RGBA8 result/packet | per-format swizzle/type normalization matrix |
 | NPOT 2-D | advertised/static arbitrary dimensions | odd-size coordinate and full-mip result capture |
 | mipmaps and generated mipmaps | ordinary full chain and tail packet/result | odd dimensions and base/max-level boundary cases |
 | nearest/linear and six minification filters | packet | visible LOD/footprint validation |
@@ -58,7 +64,7 @@ The evidence states used below are:
 
 | OpenGL 2.0 area | preserved evidence | remaining work before exposure |
 |---|---|---|
-| client arrays and sixteen generic attributes | static declaration grammar and four canonical live layouts | every scalar/vector type, normalization, stride, offset, disabled current value, and alias rule |
+| client arrays and sixteen generic attributes | static declaration grammar, complete ICD generic-attribute entrypoint vocabulary, and four canonical live layouts | visible conversion matrix, stride/offset, disabled current value, and alias rule |
 | VBO creation/update/map/unmap | advertised; vendor resource/fence lifecycle and captured VBO draw path | orphaning, partial updates, map failure, deletion while referenced, and context sharing |
 | 16/32-bit element buffers and draw ranges | packet/static H06/H07 paths | base/range boundaries, restart absence, mixed index sizes, and zero-count draws |
 | immediate mode and display lists | live fixed-function workloads | state capture/replay and resource lifetime in the Mesa implementation |
@@ -74,21 +80,21 @@ and a visible result joined in the same fixture.
 | GLSL/program area | preserved evidence | remaining work before exposure |
 |---|---|---|
 | shader create/source/compile/link/validate/use/delete and info logs | live compiler matrix | negative tests, deferred deletion, relink, detach, and cross-context sharing |
-| scalar/vector/matrix bool, int, float types; constructors and conversions | static compiler dispatch and representative live draws | systematic visible-result matrix for legal conversions and precision/range limits |
+| scalar/vector/matrix bool, int, float types; constructors and conversions | static aggregate/type descriptor, integer frontend vocabulary, all 19 uniform update families, and representative live draws | systematic visible-result matrix; lower integer/bool forms conservatively until native results are recorded |
 | arithmetic, swizzles, write masks, abs/negate, min/max, reciprocal/rsqrt, exp/log, floor | 91-case native lowerer corpus | join generated bytes to the live linked-program record and reject unrecorded native combinations |
 | dot products and matrix/vector multiplication | static exact DP3/DP4 expansion; live mat4 draw | non-square matrix variants and alias cases in live native storage |
 | comparisons, boolean logic, selection | static CMP/SETP and ARB SLT/SGE result draws | exact native predicate fields and all six relational outcomes |
 | constant/uniform conditionals | live result captures | identify folded versus native branch representation and reconvergence |
 | fixed and uniform-bound loops, break/continue/function calls | live result captures and static frontend | native/unrolled policy, targets/backedges, nesting and implementation limits |
 | vertex/fragment uniforms and arrays | A/B/A stage-specific resource/result captures; exact limits | matrices, integer/bool uniforms, arrays, partial updates, locations after relink |
-| attributes, varyings, built-ins, invariant matching | static 14-entry varying map and live linked programs | type/size mismatch failures, all interpolation slots, `gl_FrontFacing`, point coordinates |
+| attributes, varyings, built-ins, invariant matching | static 14-entry varying map; exact semantics for FrontFacing/FragCoord/Position/PointSize/ClipVertex/fragment outputs; live linked programs | visible built-in routes, type/size mismatch failures and interpolation slots; `gl_PointCoord` is absent from both pinned compiler images and needs a live acceptance probe |
 | ordinary, projected, and bias texture lookup | compiler/result captures and static texture lowerer | exact native mode/resource join |
 | vertex explicit-LOD lookup | compiler/result capture | native instruction and vertex sampler/resource join |
 | derivatives | accepted result captures and static DDX/DDY selectors | isolate nonconstant X/Y gradients and recover their actual native slots |
 | discard/KIL | accepted conditional/all result captures and static KILL lowerer | locate packed conditional KIL slots and validate helper/coverage behavior |
-| fragment depth output | static result-routing vocabulary | shallow/deep sentinel draw against later depth test, with native output route |
-| four fragment color outputs | static target compiler and MRT emitter | distinct four-attachment result capture |
-| vertex position, point size, clip vertex; fragment color/depth built-ins | partial fixed-function and point evidence | direct GLSL result fixtures for every core built-in and legal stage |
+| fragment depth output | static one-component result semantic `0x13`, constructor/presence path and result-routing vocabulary | shallow/deep sentinel draw against later depth test, with native output route |
+| four fragment color outputs | runtime-sized `gl_FragData[gl_MaxDrawBuffers]` constructor, static target compiler and MRT emitter | distinct four-attachment result capture |
+| vertex position, point size, clip vertex; fragment color/depth built-ins | exact logical semantics `0x0d..0x13`, component counts and stage presence masks; partial fixed-function/point evidence | direct GLSL result fixtures to join every logical semantic to its native packed route |
 | compiler resource limits | live limits: 16 attributes, 4 vertex samplers, 16 fragment samplers, 20 combined, 512 uniform components per stage, 60 varying floats, 4 draw buffers | compile/link boundary tests at limit and limit+1; do not infer hardware maxima from allocation sizes |
 | program transport and termination | static two-dword slots, inline upload, terminal form; live `0x6c` and full system-resource snapshots | finish record grammar, native storage/entries/counts, endpoint semantics, and relocations |
 
