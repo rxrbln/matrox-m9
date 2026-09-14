@@ -65,9 +65,10 @@ two-slot primary command rebase.  Arbitrary userspace streams remain disabled:
   executable-submit gate is set.  The diagnostic no-op-fence request has a
   separate exact helper.  Pipe fences model the current synchronous UAPI; an
   asynchronous kernel ABI must add a wait operation before it can be enabled.
-  `m9_submit_first_triangle()` issues the separate no-input kernel-owned
-  diagnostic request.  The current kernel prepares its complete guarded job
-  and returns `-EOPNOTSUPP` at the fresh selector-6c serializer gate.
+  `m9_submit_first_triangle()` supplies one kernel-validated VRAM color target
+  to the otherwise kernel-owned diagnostic.  The current kernel prepares its
+  complete guarded job and returns `-EOPNOTSUPP` at the fresh selector-6c
+  serializer gate.
 * Context allocation, its per-context command BO, batch isolation, flush,
   teardown, and direct CPU buffer/texture transfers are implemented behind
   two independent gates: executable submit and a safe linked-program
