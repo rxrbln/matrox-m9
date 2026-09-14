@@ -976,6 +976,46 @@ wrapper, but not enough names to classify requester faults.  In particular:
 | low `0x1`, `0x2`, `0x4`, `0x8` | W1C at `0x8e4`, update per-source notification records |
 | low `0x100`, `0x200`, `0x10` | W1C at `0x8e4`, route notification indices 4, 6, and 8 |
 
+The miniport's logical interrupt selector is now fully joined to these two
+banks [BIN].  Function `0x19b4d` reads low enable `0x8e8` and cached high
+enable at device `+0x8c`, then tests one source selected by an integer from
+zero through 12.  Dispatcher `0x19bee` uses the same selector to call the
+matching enable or disable/ack helper:
+
+| logical selector | bank | source bit | enable helper | disable/ack helper |
+|---:|---:|---:|---:|---:|
+| 0 | low | `0x1` | `0x192ca` | `0x19317` |
+| 1 | low | `0x4` | `0x19358` | `0x193a5` |
+| 2 | low | `0x2` | `0x193e6` | `0x19433` |
+| 3 | low | `0x8` | `0x19474` | `0x194c1` |
+| 4 | low | `0x100` | `0x19502` | `0x19551` |
+| 5 | - | unsupported | - | - |
+| 6 | low | `0x200` | `0x19598` | `0x195e7` |
+| 7 | - | unsupported | - | - |
+| 8 | low | `0x10` | `0x1908c` | `0x190d9` |
+| 9 | high | `0x40000` | `0x1911a` | `0x19169` |
+| 10 | high | `0x10000` | `0x191aa` | `0x191f9` |
+| 11 | high | `0x20000` | `0x1923a` | `0x19289` |
+| 12 | high | `0x01000000` | `0x1962e` | `0x1967d` |
+
+This ordering independently explains the event codes written by ISR
+`0x10875`: high sources `0x40000`, `0x10000`, and `0x20000` become selectors
+9, 10, and 11, while low sources `0x100`, `0x200`, and `0x10` become 4, 6,
+and 8.  High source `0x01000000` becomes selector 12.  It also prevents an
+easy implementation error: logical selectors 1 and 2 do not follow increasing
+hardware bit order.
+
+Function `0x19d5c` builds a notification subscription from a 12-bit logical
+mask: mask bit *n* appends selector *n* for selectors 0 through 11.  It can
+therefore include the unsupported selector holes 5 and 7, but it cannot create
+selector 12; that guarded high-bank service is registered separately.  Record
+helper `0x19e59` clears the global pending word at `+0x9c`, increments the
+selected 12-byte record's counter at `+4`, and stores its selector at `+0`.
+Reset helper `0x19e72` clears 13 such records and sets the global pending word
+to one.  These joins recover the routing ABI and record layout.  They still do
+not provide semantic fault names, so a new DRM driver should expose only the
+four proven vblank sources initially and keep the other sources masked.
+
 High source `0x8` has one exact service-level join [BIN].  Miniport interface
 method `0x1b374` builds and publishes a rectangle-transfer command, installs
 its optional completion callback and argument at device `+0x1ac4/+0x1ac8`,
