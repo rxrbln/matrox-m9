@@ -79,6 +79,16 @@ retaining its engine-completion source.  M9 gamma streams index zero followed
 by 256 ten-bit RGB entries as recovered for M9; Parhelia keeps its separately
 tested explicit-index-per-entry sequence.
 
+The driver deliberately does not install an automatic fbdev client.  The first
+live scanout-gated load called ``drm_client_setup_with_fourcc()`` without a
+driver ``fbdev_probe`` callback.  The helper rejected initialization, then its
+partially registered restore client dereferenced a null fbdev modeset when the
+first ``modetest`` file closed.  The GPU remained bus-master disabled and the
+target stayed reachable, but the leaked client held the test module until a
+warm reboot.  Explicit KMS owners (first ``modetest``, then Xorg) now create and
+own the direct VRAM framebuffer lifecycle; this also avoids introducing a
+deferred shadow fbcon path into the initial direct-scanout test.
+
 UAPI boundary
 -------------
 

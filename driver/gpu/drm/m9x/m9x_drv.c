@@ -6,10 +6,8 @@
 #include <linux/module.h>
 #include <linux/pci.h>
 
-#include <drm/clients/drm_client_setup.h>
 #include <drm/drm_atomic_helper.h>
 #include <drm/drm_drv.h>
-#include <drm/drm_fourcc.h>
 #include <drm/drm_gem_ttm_helper.h>
 #include <drm/drm_gem_vram_helper.h>
 #include <drm/drm_ioctl.h>
@@ -154,8 +152,6 @@ static int m9x_pci_probe(struct pci_dev *pci,
 	if (ret)
 		goto err_modeset;
 	pci_set_drvdata(pci, drm);
-	if (m9x_kms_scanout_enabled())
-		drm_client_setup_with_fourcc(drm, DRM_FORMAT_XRGB8888);
 	return 0;
 
 err_modeset:
