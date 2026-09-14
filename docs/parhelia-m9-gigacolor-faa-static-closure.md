@@ -356,7 +356,7 @@ The following boundaries remain explicit:
 | sample positions | configured sample type 8 and eight quality levels | coordinates/pattern for each quality level |
 | coverage mask/invert | zero mask suppresses target output | nonzero bit mapping and coverage inversion |
 | resolve | generic copy `0xb21b0` exists; AAMode bit zero changes surface path decisions at `0x994df..0x9951a` and `0x9b569..0x9b59c` | a call edge from multisample surface state to a specific resolve/copy packet and filter |
-| query scaling | ordinary query snapshot/result paths exist | whether sample/fragment counts require division or another normalization |
+| query scaling | D3D query result `0x1199a0`; type 9 (occlusion) returns `[query+0x30] - [query+0x28]` directly at `0x1199ef..0x1199f5`, with no software division or AA-dependent normalization | whether the hardware counters count pixels, covered samples, or stored fragments |
 | presentation | WGL disables page flipping for GigaColor; independent-buffer multisample is rejected by diagnostic | exact multisample/Giga blit-present sequence and completion point |
 | synchronization | generic resource copy and render submission use ordinary dependency/fence machinery | dedicated resolve completion or fragment-buffer hazard rule, if any |
 
@@ -380,8 +380,8 @@ The from-scratch driver can implement these pieces from static evidence:
 
 Native GigaColor still needs render/sample/readback sentinel tests before
 public exposure. Multisampling remains unsafe to enable because allocation
-factor/layout, sample pattern, nonzero mask semantics, resolve, query scaling,
-and present synchronization are not closed.
+factor/layout, sample pattern, nonzero mask semantics, resolve, the hardware
+query-counter unit, and present synchronization are not closed.
 
 ## Minimal dynamic closure captures
 
