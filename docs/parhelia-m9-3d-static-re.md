@@ -242,9 +242,11 @@ the 16-entry `90..9f` bank [DER].  The nonsequential source order in the last
 slice is intentional and must be preserved.  The surrounding path also emits
 the fixed setup pair `e6 <- 0x04000001`, `8f <- 0x80000600`, dynamically
 constructs indexed resource packets, and refreshes selectors `70` and `f0`.
-Static evidence does not yet assign GL blend, viewport, raster, or linkage
-names to the four slices, so the driver should retain neutral bank names until
-the differential capture matrix labels them.
+The point-fill path above assigns a gated `c1[11:0]` effect; the other fields
+in this group remain unnamed.  Static evidence does not yet assign GL blend,
+viewport, the remaining raster state, or linkage names to the four slices, so
+the driver should retain neutral bank names until the differential capture
+matrix labels them.
 
 The late-state emitter at `0xfc0e0` supplies another compact exact map [BIN]:
 
@@ -375,9 +377,10 @@ D3D objects are distinct from the
 lower command-shadow objects emitted by `0xf4f50`, `0xfb920`, and `0xfc0e0`.
 Depth/stencil, viewport/scissor, and the compiled multisample pair are joined
 to final indices below.  Blend, alpha test, and format-dependent color masks
-are fragment-compiler inputs.  Cull, fill, and shade still stop at compiler or
-draw-path eligibility state, so their frontend names must not yet be attached
-directly to packet registers [INF].
+are fragment-compiler inputs.  Point fill has one gated final-command effect
+at index `c1`; cull, wireframe versus solid, and shade still stop at compiler
+or draw-path eligibility state, so their frontend names must not yet be
+attached directly to packet registers [INF].
 
 ### Depth/stencil frontend-to-command join
 
@@ -481,6 +484,15 @@ The remaining frontend-to-final-index boundary is now precise [BIN][DER]:
   condition.  It does not distinguish clockwise from counterclockwise or emit
   a command word.  The meaning of the `a8` face-order selection must not be
   inferred from this separate state [BIN].
+* Render-entry constructor `0x17edb0` keeps the live `p2528` pointer at entry
+  `+0x14` and a per-batch common command shadow at `+0x24`.  Helper `0x17f040`
+  recognizes `D3DFILL_POINT` (`p2528+0x48[5:4] == 1`) and, under entry/primitive
+  gates, sets shadow `+0x1c[11:0]` to `0xfff`; failure of any gate clears
+  `+0x1c[15:0]`.  It marks common group `0x01` dirty, and
+  `0xf4f50` emits shadow `+0x1c` as final index `c1`.  Bits `15:12` also depend
+  on raster bit 8 and per-item flags, so their name is still open.  This joins
+  a point-fill consequence to `c1[11:0]`; no static path yet distinguishes
+  `D3DFILL_WIREFRAME` from `D3DFILL_SOLID` at a final index [BIN].
 * Multisample compiler `0x139240` reads `MULTISAMPLEANTIALIAS` from validator
   `+0x174` (`p2514+0xf4 bit 0`) and rebuilds nested words `+0x1b0,+0x1b4`.
   `0x181fa0` copies them to surface `+0x28,+0x2c`, and `0xfb920` emits them as
