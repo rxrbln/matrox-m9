@@ -6,8 +6,10 @@ ownership, synchronization, fallback, and final binding of the optional
 feature `HZFlags`; its only metadata allocator creates an internal
 `G16R16`-class plane at one element per 8 by 4 depth pixels, initializes it
 through the ordinary clear executor, and selector 12 installs that plane in
-the `ba/bb` packet pair.  It is therefore M9 hierarchical-Z metadata rather
-than an API stencil plane or an unexplained second depth buffer [BIN][DER].
+the `ba/bb` packet pair.  The saved Linux 64-bit stack independently has the
+same three depth-class gates, rounded extent, initialization, and an owned
+auxiliary object.  It is therefore M9 hierarchical-Z metadata rather than an
+API stencil plane or an unexplained second depth buffer [BIN][DER].
 
 The reproducible evidence command is:
 
@@ -21,7 +23,9 @@ below are pinned to:
 * Windows `MxMD.dll`, SHA-256
   `b6905b6e658b87544bc0081d080190e4f8112b723c0b2fefd781ba5766874f43`;
 * Linux Xorg/GL monolith `xserver/1_15_0/m9x_drv.so`, SHA-256
-  `15ff4ad6e450c2d5a27c3d114011014e8aaf97851d107a070f31baa26eafc7e5`.
+  `15ff4ad6e450c2d5a27c3d114011014e8aaf97851d107a070f31baa26eafc7e5`;
+* Linux `kernel/KernelLibraries.o_shipped`, SHA-256
+  `bec4490ff72b29887400e988a26e107e80ebb0b11e9d0b437267bec9db5b26e7`.
 
 Addresses in the Windows discussion are preferred VAs for the image base
 `0x10000`; subtract `0x10000` for the RVA.  The verifier prints both forms.
@@ -34,15 +38,21 @@ and stores its configuration wrapper at object `+0x48`.  Runtime construction
 owner's `+0x334`.  Vtable entry `0x1f343c` points to getter `0x62310`, which
 returns wrapper `+0x10` [BIN].
 
-The saved Linux stack independently contains the same setting.  Code
-`0x32f40d..0x32f444` passes the `HZFlags` string at `0xe9dea5`, section `3D`,
-default 7, and stores the wrapper at its configuration object `+0x98` [BIN].
-This establishes cross-stack provenance for the name and default.  The exact
-resource consumer described below is from the Windows image.  The Linux 1.15
-monolith also contains the common depth-clear rectangle literals at
-`0x3a88df/0x3a893c`, but a Linux-side HZ allocation/ownership consumer has not
-been independently joined; do not transfer Windows object offsets into that
-64-bit image [BIN].
+The saved Linux stack independently contains the same setting twice.  The
+Xorg/GL monolith at `0x32f40d..0x32f444` passes the `HZFlags` string at
+`0xe9dea5`, section `3D`, default 7, and stores the wrapper at its configuration
+object `+0x98`.  `KernelLibraries.o_shipped` repeats the constructor at
+`.text+0x3c243`: relocations at `.text+0x3c26a` and `+0x3c271` select
+`.rodata+0x5d85` (`HZFlags`) and `.rodata+0x5cbc` (`3D`), while immediates 7
+and 1 precede the store to configuration object `+0x98` [BIN].
+
+In the monolith, initializer `m9x4818` at `0x37a960..0x37a981` stores its
+supplied packed runtime-settings pointer at device `+0x9b20`.  The HZ consumer
+reads byte `+0x60` from that block.  The exact adapter which copies the
+`KernelLibraries` configuration wrapper `+0x98` into packed runtime byte
+`+0x60` has not been joined, so these two ABI offsets must remain distinct.
+The identical feature name/default, masks, dimensions, and initialization
+identify the consumer without claiming that unobserved copy [BIN][DER].
 
 The value is a three-bit depth-class mask:
 
@@ -94,6 +104,70 @@ Examples are `320x240 -> 40x60`, `321x241 -> 41x61`, and
 `1920x1080 -> 240x270`.  The format identity and coverage do not reveal the
 meaning of the two 16-bit fields; a new driver must treat the contents as
 opaque hardware metadata.
+
+## Linux 64-bit allocation and object layout
+
+The independently recovered Linux path uses different 64-bit object layouts.
+Primary depth-resource creator `m9x1692` at `0x3718a0..0x371db6` reads the
+stored depth-bit count after primary resource creation.  For 16, 32, and 64
+bits it tests packed runtime-settings byte `+0x60` with masks `0x1`, `0x2`, and
+`0x4`, respectively, through the pointer at device `+0x9b20`.  A disabled bit
+skips HZ construction while the primary depth resource succeeds [BIN].
+
+An enabled bit allocates exactly `0xc20` bytes at `0x371b74..0x371b8f`, calls
+HZ-owner constructor `m9x1841` at `0x36ffb0`, stores the result at parent depth
+resource `+0xc18`, and invokes allocator/initializer `m9x10830` at `0x36fc10`.
+That routine requires parent resource class 4 and creates an auxiliary resource
+inside the owner at `+0x10`.  It derives the same rounded dimensions directly
+from parent width and height [BIN]:
+
+```text
+auxiliary_width  = (parent_width  + 7) >> 3
+auxiliary_height = (parent_height + 3) >> 2
+```
+
+The Linux resource-creation tuple includes constants `0x31`, `3`, and `0x0e`,
+plus two fields set to 1.  Their field names and the meaning of `0x31` have not
+been independently joined, so they are recorded as opaque tuple values.  In
+particular, `0x31` must not be equated with the Windows internal format ID
+`0x0b` merely because both paths have the same HZ role [BIN].
+
+After auxiliary creation, `m9x10830` initializes an embedded tracking/clear
+object at owner `+0x7a0`, stores the parent depth pointer back at owner
+`+0xc18`, and calls `m9x26281` at `0x36f620`.  Width/height accessors
+`m9x9094` and `m9x6804` read owner `+0x9cc` and `+0x9d0`; the initializer uses
+those values to construct the full auxiliary rectangle.  Clear builder
+`m9x7381` at `0x36f510` follows owner `+0xc18` to obtain the parent format,
+converts `(0.0, 1.0)`, targets owner `+0x7a0`, and invokes the common clear
+executor.  This independently corroborates the conservative full-image
+initialization without assigning meanings to metadata bits [BIN][DER].
+
+The resulting Linux ownership graph is bidirectional and exact [BIN]:
+
+| object offset | role |
+|---:|---|
+| parent depth `+0xc18` | owned HZ object pointer |
+| HZ owner `+0xc18` | parent depth back-reference |
+| HZ owner `+0x10` | embedded auxiliary resource |
+| HZ owner `+0x7a0` | embedded tracking/clear object |
+| HZ owner `+0x9cc` | auxiliary-width accessor storage |
+| HZ owner `+0x9d0` | auxiliary-height accessor storage |
+
+HZ cleanup method `m9x1485` at `0x36fbc0` releases the embedded auxiliary and
+tracker state.  Ordinary and deleting destructors `m9x26665` at `0x36ff30`
+and `m9x29558` at `0x370010` destruct owner `+0x7a0` and `+0x10`; the deleting
+form then frees the owner allocation.  Parent cleanup `m9x23676` at
+`0x3717c0..0x37187a` follows parent `+0xc18`, invokes HZ vtable slots `+0x28`
+and `+0x08`, and clears the pointer.  This proves direct parent ownership of
+one HZ object.  No Linux alias copy or non-owning marker has been found, so the
+Windows clone layout is not transferred to Linux [BIN].
+
+Linux differs from the Windows failure policy.  A disabled mask bit is a
+successful no-HZ fallback, but failure to allocate or initialize an enabled
+HZ owner branches through `0x371af6`, tears down child state, and returns the
+primary depth-creation failure convention.  A clean-room driver may choose a
+more permissive allocation fallback, but that would be its own policy rather
+than a byte-for-byte reproduction of this Linux branch [BIN].
 
 ## Initialization and the conservative image
 
@@ -177,12 +251,15 @@ then clears the auxiliary pointer and presence marker.  Thus the creating
 depth resource owns the auxiliary allocation; derived resource objects are
 explicit non-owning aliases and must not free it [BIN].
 
-Allocator failure and configuration disable are deliberately non-fatal.
+In the Windows path, allocator failure and configuration disable are
+deliberately non-fatal.
 `0x54be0` returns zero when the relevant `HZFlags` bit is clear or auxiliary
 creation fails; caller `0x51d6d..0x51d79` clears `+0x39c` and continues normal
 depth-resource construction.  Every binding and tracking site checks the
 presence marker before following `+0x38c`.  Ordinary depth remains bound at
-`b8/b9`, so this is the vendor's exact performance-only fallback [BIN].
+`b8/b9`, so this is the Windows vendor path's exact performance-only fallback
+[BIN].  As documented above, the pinned Linux branch tolerates configuration
+disable but fails parent creation when an enabled HZ allocation fails.
 
 ## Final `ba/bb` binding
 
@@ -218,8 +295,8 @@ Hierarchical Z is an optimization, not an OpenGL capability.  A Mesa and DRM
 implementation may disable it by omitting the auxiliary allocation and
 explicitly emitting null `ba/bb` state.  Ordinary hardware depth testing,
 depth writes, and packed stencil continue through `b8/b9` and `a8/a9/aa`.
-This follows the vendor's explicit disabled-bit and allocation-failure
-behavior [BIN][DER].
+This follows both vendor paths' explicit disabled-bit behavior and the Windows
+path's allocation-failure behavior [BIN][DER].
 
 Enabling HZ requires all of the following:
 
@@ -239,10 +316,12 @@ Enabling HZ requires all of the following:
 
 The allocation, initialization, invalidation, binding, tracking, and lifetime
 schema is statically closed.  The exact meaning of each metadata bit and the
-performance effect of the full-clear seed remain unknown; neither is needed
-to reproduce the vendor protocol byte for byte.  Dynamic validation is still
-required before enabling HZ because a wrong metadata value can reject visible
-fragments.  Linux independently proves the feature name/default and shared
-clear backend, but its 64-bit resource consumer remains unjoined.  These
-remaining boundaries affect optional performance only; they do not block the
-direct hardware depth path required for the fixed-function OpenGL subset.
+performance effect of the full-clear seed remain unknown.  The Linux tuple
+fields `0x31`, `3`, and `0x0e` are still semantically unnamed, and the adapter
+from the `KernelLibraries` wrapper `+0x98` to packed runtime byte `+0x60` is
+not joined.  Neither gap changes the recovered gate, dimensions, parent/owner
+links, initialization, or destruction.  Dynamic validation is still required
+before enabling HZ because a wrong metadata value can reject visible
+fragments.  These remaining boundaries affect optional performance only; they
+do not block the direct hardware depth path required for the fixed-function
+OpenGL subset.
