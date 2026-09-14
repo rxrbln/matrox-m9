@@ -1,5 +1,11 @@
 # M9 linked-state to selector-6c final join boundary
 
+> **Static follow-up:** `parhelia-m9-selector6c-constructor-static-closeout.md`
+> identifies `m9x2048` as the final `+0xb8/+0xc0` publisher and reduces the
+> remaining gap to the concrete `RsFragPtrsBuffer` commit callback. Its result
+> supersedes this note's statement that static analysis could not name the
+> semantic serializer boundary.
+
 This note records the last statically closed boundary between the compiler's
 linked state and the heterogeneous, 0x80-aligned resource selected by command
 index `6c`. It also defines the smallest live probe that can identify the
