@@ -824,6 +824,16 @@ from an engine stop triggered by completing the stage-relative endpoint.  A
 native compiler slot must not be assigned a universal `END` bit from this
 evidence.
 
+The final compiler-side invariant has now been isolated more tightly.  All
+three synthetic endpoint destinations (`0x3001fffe`, `0x3002fffe`, and
+`0x3003fffe`) preserve low selector `0x7e`; generic lowerer `0x1b5390` sets
+destination gate `0x04`, and packer `0x1db902..0x1db914` copies that selector
+to `W0[14:8]`.  The ordinary stage-relative result feeding it has selector
+`0x78`.  Thus termination is narrowed to a write to endpoint selector `0x7e`
+or the complete operation/control form of that final MOV.  Static data cannot
+choose between those two.  The cross-version bind proof and smallest decisive
+capture are recorded in `parhelia-m9-shader-termination-boundary.md` [BIN][DER].
+
 The selected fixed-function image reinforces that boundary.  Linker
 `0x13bf80` records the starts of `P` and its `S/Q` continuation at
 `+0xba8/+0xbac`; companion selector `0x13b570` sets `+0xba4` only when `Q`
