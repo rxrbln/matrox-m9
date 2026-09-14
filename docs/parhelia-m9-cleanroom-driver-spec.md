@@ -962,7 +962,7 @@ unbootable.
 2. Replay only a whitelisted no-op/fence, then a linear clear, then the captured
    fixed-layout triangle.  Compare the render BO rather than the scanout LUT.
    The decoder fixture must preserve the relocatable gltri program-bind tuple
-   `69=<program>, 6a=25010000, 68=00000000, 6b=00001030,
+   `69=<external/drawable>, 6a=25010000, 68=00000000, 6b=00001030,
    6c=40c3a301` before both sequence-12 draws.  It must also preserve the
    sequence-14 texture tuple `78=<resource>, 79=f0210140, 7a=000100f0`.
 3. Run repeated clear/triangle batches through requester wrap and 32-bit fence
@@ -1004,7 +1004,7 @@ but its format, pack alignment, and rendered extent must remain correct.
 | direct SPI/PInS fallback when PCI ROM mapping is absent or invalid | some cold boards may lack authoritative output data | trace one vendor direct PInS read from reset and reduce its MMIO/I/O sequence |
 | auxiliary requester address classes and hardware-owned rollover fields | optional auxiliary streaming cannot be enabled safely | force one auxiliary wrap with all eight descriptor words and allocation metadata |
 | ten relocation/control roles in the vendor full-context template | the template cannot be replayed safely; context switches must re-emit complete known state | vary one bound resource/control at a time and diff the 0xf8-byte template plus restore records |
-| native storage and two stage entries inside the external `69` heap / `6c` linked pair | arbitrary newly compiled programs cannot execute safely | preserve compiler-owned program heap and linked record for fixed-VS/two-FS then fixed-FS/two-VS without copying raw addresses |
+| native storage and two stage entries outside the resolved index-69 drawable / inside the `6c` linked state | arbitrary newly compiled programs cannot execute safely | trace the stage-control producer and its referenced mapping for fixed-VS/two-FS then fixed-FS/two-VS |
 | special shader packed forms and control flow | DDX/DDY, explicit LOD/gradients, shadow, vertex texture, comparisons, branches and loops remain gated | run the isolated probe matrix in `parhelia-m9-driver-readiness.md` and save the full program/link resources |
 | generated-stream semantic names and server-side zero-copy vertex layouts | the initial driver must CPU-repack to the four captured canonical layouts | one-output-at-a-time shader/content snapshots, then stride/offset differentials for an optional direct VBO path |
 | MRT output routing | four draw buffers cannot be exposed confidently | one shader writes unique values to four RGBA8 attachments and reads each back |

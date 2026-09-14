@@ -37,7 +37,7 @@ The following pieces no longer depend on another vendor capture:
 * ordinary linear RGBA8 textures, the full mip chain and packed mip tail,
   sampler wrap/filter/LOD packing, four live sampler selectors, and the
   class-1 render-to-sample dependency through index `43`;
-* separate `69` program heap and `6c` linked-pair resources, atomic vertex plus
+* separate index-`69` drawable/external and `6c` linked resources, atomic vertex plus
   fragment A/B/A selection, live stage-constant ranges, and the invariant
   nature of the 80-slot `8f/90..9f` store;
 * context lifetime rules and a successful two-process test in which both
@@ -80,7 +80,7 @@ The table distinguishes compiler acceptance from a native encoding.
 | constant/uniform branches | conditional-stack frontend is exact | **capture** | constant `if` versus uniform `if` to distinguish folding and native branch |
 | fixed/dynamic loops, BREAK/CALL | frontend loop, BREAK, and CALL paths are exact | **capture** | fixed-count versus uniform-bound loop with linked-program bytes |
 | uniforms/constants | vertex and fragment A/B/A sentinels identify live-component ranges in the 0x21000 resource | **closed** for external range path | mode-2 inline constant bank remains optional |
-| program entry/resource ownership | `69` heap, `6a/6d` entries, separate aligned `6c` linked pair, tag bit 0, and whole-pair A/B/A selection | external bind **closed** | internal native storage and the two stage entries inside the linked resource |
+| program entry/resource ownership | distinct `69` external and aligned `6c` resources, tag bit 0, and whole-pair A/B/A selection | external bind identity **closed**; `69` is live drawable backing | native storage and the two stage entries inside the linked resource |
 | termination | count-delimited compiler stream, endpoint selector `0x7e`, and complete terminal slot are exact | **validation** | determine endpoint-only versus full-terminal stop on generated programs |
 
 `tools/m9-gl2-compiler-control-evidence.py` pins the MxMD and MxMGLX hashes,
@@ -124,8 +124,8 @@ the live Linux ICD did not advertise.
 
 | remaining gap | consequence | smallest closing experiment |
 |---|---|---|
-| internal native instruction storage and vertex/fragment entry fields inside the `69`/`6c` resources | arbitrary newly compiled GLSL cannot execute | capture compiler-owned program heap and linked record for one-stage A/B programs, without copying raw addresses |
-| special shader packed forms: DDX/DDY, TEXLDL/TEXLDD, shadow, vertex texture, comparisons, branches and loops | corresponding GL2 forms must fail compilation | the isolated probes listed in the GL2 table, recording compile/link/use/draw, `69/6a/6b/6c`, full 0x21000 resource and program heap |
+| internal native instruction storage and vertex/fragment entry fields outside the resolved index-69 drawable | arbitrary newly compiled GLSL cannot execute | trace the producer or kernel mapping referenced by the stage controls and join it to one-stage A/B programs |
+| special shader packed forms: DDX/DDY, TEXLDL/TEXLDD, shadow, vertex texture, comparisons, branches and loops | corresponding GL2 forms must remain gated until packed words are found | use the preserved isolated draws, `69/6a/6b/6c`, full 0x21000 resource, and linked-record deltas to locate the still-hidden native storage |
 | four-target MRT output routing | draw-buffers cap remains off | one shader writing four unique colors into four RGBA8 attachments, then read each target |
 | multisample/FAA allocation, pattern, mask and resolve | no sample buffers and no FAA cap | acquire a vendor multisample visual/surface, then clear/edge/mask/query differentials |
 | 10-bit render and sample round trip | GigaColor formats cannot be advertised safely | A2B10 and A2R10 clear/draw/read/sample with sentinel channel values |

@@ -138,7 +138,7 @@ programs.  The parent alternated their draws A/B/A/B.  Both clients returned
 the same pixel on their first and repeated draw with `GL_NO_ERROR`, while the
 two clients returned different pixels:
 
-| client | readback on draw 1 and 2 | system resource | program heap |
+| client | readback on draw 1 and 2 | system resource | index-69 resource |
 |---:|---|---:|---:|
 | 0 | `(16,48,64,255)` | `40c3a000` | `11e42000` |
 | 1 | `(97,16,31,255)` | `41105000` | `11f5a000` |
@@ -154,8 +154,11 @@ The stage ranges are equally address-space local.  The final raster range is
 range is `8c=00500d00`, `8d=resource+0x21`, `8e=resource+0x89`.  Complete
 0x21000 resource snapshots are byte-identical between each client's first and
 repeated draw, and the linked record at byte offset 0x280 differs across the
-two shader programs.  This closes process/context ownership, program bind
-restoration, and resource-address isolation for the tested GL2 path.
+two shader programs.  This closes process/context ownership, bind restoration,
+and resource-address isolation for the tested GL2 path.  The later
+address-directed capture in `parhelia-m9-gl2-special-capture.md` proves that
+index 69 points into drawable backing on this route; it is not a native-program
+heap.
 
 The fixture also includes the authoritative full `glxinfo -l` inventory from
 the same live stack.  It identifies direct rendering by `Matrox ICD for

@@ -131,7 +131,9 @@ resource dependency [CAP].
 Program transport facts remain exact:
 
 * native instructions are two dwords, grouped four per 32-byte upload line;
-* index 69 binds the program heap address;
+* static emitter ownership associates index 69 with its external program
+  substate, but address-directed live capture resolves the selected value to
+  drawable backing; its live external semantic therefore remains unassigned;
 * index 6a contains packed entry starts, or index 6d holds the second start in
   the split form;
 * index 6c points to a separate 0x80-aligned linked record and preserves only
@@ -141,9 +143,10 @@ Program transport facts remain exact:
 * terminal output is narrowed to endpoint selector `0x7e` or its complete
   final MOV form. There is no proven universal END bit.
 
-New driver submission must relocate the program heap and linked record as
-separate resources. Arbitrary program execution stays gated until a capture
-identifies both internal stage entries and the hardware stop condition.
+New driver submission must treat index 69 and the linked record as separate
+relocations without calling index 69 a native-program heap. Arbitrary program
+execution stays gated until a capture identifies native storage, both internal
+stage entries, and the hardware stop condition.
 
 ## Implementation matrix
 
@@ -158,7 +161,7 @@ identifies both internal stage entries and the hardware stop condition.
 | vertex texture | enforce four-sampler cap | stage resource and result route |
 | static/dynamic branch | frontend IR only | folding, targets, reconvergence |
 | static/dynamic loop | frontend IR only | unroll policy, backedge encoding |
-| entry/resource bind | typed 69/6a/6c/6d resources | linked-record internal stage fields |
+| entry/resource bind | typed 69/6a/6c/6d resources | native storage and linked-record internal stage fields |
 | program termination | count compiler stream; pad transport | endpoint versus complete-form stop rule |
 
 This boundary is deliberate: compiler routing and macro expansion are complete
