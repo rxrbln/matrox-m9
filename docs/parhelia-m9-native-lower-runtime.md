@@ -24,9 +24,10 @@ The helper exposes only these audited entry points [BIN][RUN]:
 | RSQ `7` | `0x1b1210` | context in `ecx`, IR on stack | 7 |
 | DP3 `8` | `0x1c5a00` | two stack arguments | 8 |
 | DP4 `9` | `0x1c6160` | two stack arguments | 8 |
-| MIN `10`, MAX `11` | `0x1cb200` | two stack arguments | 10 |
+| MIN `10`, MAX `11` | `0x1c4d50` | two stack arguments | 6 |
 | EXP `14` | `0x1b1ba0` | context in `ecx`, IR on stack | 6 |
 | LOG `15` | `0x1b2550` | two stack arguments | 8 |
+| Iris TEXLD / D3D operation `66` | `0x1bda50` | eight stack arguments | 3 |
 | Iris FLOOR `0x8003` | `0x1c96d0` | three stack arguments, third zero | 6 |
 
 The arithmetic entries are the operation-family wrappers called after the
@@ -37,6 +38,14 @@ has `ret 0xc`, takes `(context, IR, mode)`, and the observed ordinary path uses
 mode zero.  On the canonical paths below, the only external ownership state
 reached is the same allocator and output vector already supplied by the
 harness; zero initialization is valid for the remaining context fields.
+
+The Iris TEXLD dispatcher at `0x1a538b` passes eight stack arguments to
+`0x1bda50`: `(context, IR, 0, 0, 0, 0, resource_metadata, 0)`.  Static audit
+shows `ret 0x20` and mandatory indexed reads through `resource_metadata`, plus
+a flag read at `+0x120`.  The harness therefore supplies a mapped, zeroed
+`0x200`-byte table rather than a null pointer.  `IR+0x20 == 0` selects its first
+entry.  This is an exact zero-metadata compiler fixture; the metadata fields
+for a declared 2-D Quake3 sampler still require a differential matrix.
 
 The i386 helper must be built with `-O0`: these old routines use mixed custom
 calling conventions and depend on the caller's literal stack layout.  The
@@ -147,24 +156,16 @@ MIN:
   ffff801f 0000000f
   e004001d b05a800f
   ffff801f 0000000f
-  c2030a5c af000d10
-  e2038b5c af000d10
-  e0050c1d b05a800f
-  ffff801f 0000000f
-  4289009c af000d41
-  62c9019c af000d41
+  c203005c af000d10
+  e203815c af000d10
 
 MAX:
   e004001d b05a800f
   ffff801f 0000000f
   e004001d b05a800f
   ffff801f 0000000f
-  c2030a7c af000d10
-  e2038b7c af000d10
-  e0050c1d b05a800f
-  ffff801f 0000000f
-  4289009c af000d41
-  62c9019c af000d41
+  c203007c af000d10
+  e203817c af000d10
 
 EXP:
   1fff801c 9e851d40
@@ -183,6 +184,11 @@ LOG:
   0041021d a27508a0
   0041021d a27548a0
   0080011c 9c451f00
+
+TEXLD (D3D operation 66, zeroed resource metadata):
+  ffff8000 0000000f
+  ffc0001c a2803f0f
+  ffc0011c a2803f0f
 
 FLOOR (Iris operation 0x8003):
   e004001d b05a800f
@@ -212,6 +218,7 @@ SLT and SGE remain outside the exact corpus.  Sending operations 12 and 13
 through the audited two-source arithmetic wrapper produces identical slots,
 showing that their distinguishing comparison control is synthesized upstream
 rather than represented by the operation field alone.  CMP/SETP, texture
-sampling forms and units, and controlled mask, swizzle, modifier, predicate,
+resource metadata, dimensions and units, and controlled mask, swizzle,
+modifier, predicate,
 destination-class, and coordinate-dimension matrices remain required for a
 complete semantic ISA table.
