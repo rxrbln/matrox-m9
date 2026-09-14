@@ -395,12 +395,15 @@ static const struct drm_mode_config_funcs m9_mode_config_funcs = {
 int m9x_dumb_create(struct drm_file *file, struct drm_device *drm,
 		    struct drm_mode_create_dumb *args)
 {
-	if (!m9x_kms_scanout_enabled() || args->width != M9_WARM_WIDTH ||
-	    args->height != M9_WARM_HEIGHT || args->bpp != 32)
+	if (!m9x_kms_scanout_enabled() || !args->width || !args->height ||
+	    args->bpp != 32)
 		return -EINVAL;
 	/*
-	 * A whole 4-KiB raster line gives the tested 1024-pixel pitch and keeps
-	 * every possible scanout placement at the DC's 1-KiB address alignment.
+	 * The framebuffer and plane checks below still admit only the exact warm
+	 * 1024x768 scanout.  Generic 32-bit dumb objects must remain available for
+	 * small mapped Xorg software-cursor and scratch allocations; none can reach
+	 * DC0 without first passing those stricter checks.  Page-align allocations
+	 * so the tested front buffer keeps its 4096-byte pitch and DC placement.
 	 */
 	return drm_gem_vram_fill_create_dumb(file, drm, 1, M9_WARM_PITCH,
 					     args);
