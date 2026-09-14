@@ -27,12 +27,12 @@ The helper exposes only these audited entry points [BIN][RUN]:
 | MIN `10`, MAX `11` | `0x1cb200` | two stack arguments | 10 |
 | EXP `14` | `0x1b1ba0` | context in `ecx`, IR on stack | 6 |
 | LOG `15` | `0x1b2550` | two stack arguments | 8 |
-| internal 2-D texture sample `0x8003` | `0x1c96d0` | three stack arguments, third zero | 6 |
+| Iris FLOOR `0x8003` | `0x1c96d0` | three stack arguments, third zero | 6 |
 
 The arithmetic entries are the operation-family wrappers called after the
 front end has selected a source operation.  Static audit shows `ret 8` for all
 of them, with `(context, IR)` on the stack.  They perform alias checks and
-temporary allocation before calling the native builders.  The texture wrapper
+temporary allocation before calling the native builders.  The FLOOR wrapper
 has `ret 0xc`, takes `(context, IR, mode)`, and the observed ordinary path uses
 mode zero.  On the canonical paths below, the only external ownership state
 reached is the same allocator and output vector already supplied by the
@@ -48,7 +48,7 @@ Every run starts with a zeroed `0x88`-byte backend IR record and sets:
 
 ```text
 IR +0x0c = source operation
-IR +0x10 = 0x00040000       texture sample only: 2-D xy coordinate form
+IR +0x10 = 0x00040000       FLOOR only: xy component pair
 IR +0x14 = 0x000f0000       full xyzw destination mask
 IR +0x1c = 0x10e40000       identity-swizzled source 0
 IR +0x24 = 0x10e40002       identity-swizzled source 1
@@ -184,7 +184,7 @@ LOG:
   0041021d a27548a0
   0080011c 9c451f00
 
-2-D texture sample (internal operation 0x8003):
+FLOOR (Iris operation 0x8003):
   e004001d b05a800f
   ffff801f 0000000f
   e004001d b05a800f
@@ -194,11 +194,11 @@ LOG:
 ```
 
 This closes the raw-byte question for the core arithmetic family, four complex
-scalar lowerings, ordinary MOV, and one internal texture-sample form under one
-canonical descriptor configuration.  A first Mesa backend can use these
-results as differential fixtures while its descriptor builder is developed.
-Driver emission should still be generated from typed lowering rules rather
-than copying these literal sequences for arbitrary IR.
+scalar lowerings, ordinary MOV, and one FLOOR form under one canonical
+descriptor configuration.  A first Mesa backend can use these results as
+differential fixtures while its descriptor builder is developed.  Driver
+emission should still be generated from typed lowering rules rather than
+copying these literal sequences for arbitrary IR.
 
 ## Remaining compiler boundary
 
@@ -211,7 +211,7 @@ generic entry as an arithmetic dispatcher silently produces wrong code.
 SLT and SGE remain outside the exact corpus.  Sending operations 12 and 13
 through the audited two-source arithmetic wrapper produces identical slots,
 showing that their distinguishing comparison control is synthesized upstream
-rather than represented by the operation field alone.  CMP/SETP, other
-texture forms and units, and controlled mask, swizzle, modifier, predicate,
+rather than represented by the operation field alone.  CMP/SETP, texture
+sampling forms and units, and controlled mask, swizzle, modifier, predicate,
 destination-class, and coordinate-dimension matrices remain required for a
 complete semantic ISA table.
