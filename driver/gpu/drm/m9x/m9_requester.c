@@ -7,7 +7,7 @@
 
 #include <drm/drm_managed.h>
 
-#include "parhelia_drv.h"
+#include "m9_drv.h"
 #include "m9_reg.h"
 
 static bool m9_enable;
@@ -25,30 +25,20 @@ module_param(m9_fence_timeout_ms, uint, 0600);
 MODULE_PARM_DESC(m9_fence_timeout_ms,
 	"Absolute timeout for the guarded M9 writeback-fence diagnostic");
 
-bool parhelia_is_m9(const struct parhelia_device *pdev)
-{
-	return pdev->chip->engine_family == PARHELIA_ENGINE_M9;
-}
-
-bool parhelia_m9_enabled(void)
+bool m9x_enabled(void)
 {
 	return m9_enable;
 }
 
-bool parhelia_m9_render_diagnostic(void)
-{
-	return m9_render_diag;
-}
-
 /* M9 does not use the classic Parhelia 0x384 MMIO write workaround. */
-static u32 m9_read(struct parhelia_device *pdev, u32 reg)
+static u32 m9_read(struct m9x_device *mdev, u32 reg)
 {
-	return readl((u8 __iomem *)pdev->mmio + reg);
+	return readl((u8 __iomem *)mdev->mmio + reg);
 }
 
-static void m9_write(struct parhelia_device *pdev, u32 reg, u32 value)
+static void m9_write(struct m9x_device *mdev, u32 reg, u32 value)
 {
-	writel(value, (u8 __iomem *)pdev->mmio + reg);
+	writel(value, (u8 __iomem *)mdev->mmio + reg);
 }
 
 static const char *m9_fence_get_driver_name(struct dma_fence *fence)
@@ -63,7 +53,7 @@ static const char *m9_fence_get_timeline_name(struct dma_fence *fence)
 
 static void m9_fence_release(struct dma_fence *fence)
 {
-	kfree(container_of(fence, struct parhelia_m9_fence, base));
+	kfree(container_of(fence, struct m9x_fence, base));
 }
 
 static const struct dma_fence_ops m9_fence_ops = {
@@ -72,59 +62,61 @@ static const struct dma_fence_ops m9_fence_ops = {
 	.release = m9_fence_release,
 };
 
-static struct parhelia_m9_fence *m9_fence_create(struct parhelia_device *pdev,
+static struct m9x_fence *m9_fence_create(struct m9x_device *mdev,
 						  u64 seqno)
 {
-	struct parhelia_m9_fence *fence;
+	struct m9x_fence *fence;
 
 	fence = kzalloc_obj(*fence);
 	if (!fence)
 		return NULL;
 	spin_lock_init(&fence->lock);
 	dma_fence_init(&fence->base, &m9_fence_ops, &fence->lock,
-		       pdev->m9.fence_context, seqno);
+		       mdev->transport.fence_context, seqno);
 	return fence;
 }
 
-static int m9_transport_arm(struct parhelia_device *pdev)
+static int m9_transport_arm(struct m9x_device *mdev)
 {
-	u32 command = lower_32_bits(pdev->m9.command_bus);
-	u32 fence0 = lower_32_bits(pdev->m9.fence_bus);
-	u32 fence1 = fence0 + sizeof(u32);
+	u32 command = lower_32_bits(mdev->transport.command_bus);
+	u32 writeback0 = lower_32_bits(mdev->transport.fence_bus);
+	u32 writeback1 = writeback0 + sizeof(u32);
 
-	if (pdev->m9.transport_armed)
+	if (mdev->transport.transport_armed)
 		return 0;
-	if (m9_read(pdev, M9_REG_ENGINE_STATUS) == U32_MAX)
+	if (m9_read(mdev, M9_REG_ENGINE_STATUS) == U32_MAX)
 		return -ENODEV;
+	pci_set_master(mdev->pdev);
 
 	/* Keep all interrupts masked. Render completion is a memory writeback. */
-	m9_write(pdev, M9_REG_IRQ0_MASK, 0);
-	m9_write(pdev, M9_REG_IRQ1_MASK, 0);
-	m9_write(pdev, M9_REG_IRQ2_MASK, 0);
-	m9_write(pdev, M9_REG_IRQ0_STATUS, U32_MAX);
-	m9_write(pdev, M9_REG_IRQ1_STATUS, U32_MAX);
-	m9_write(pdev, M9_REG_IRQ2_STATUS, U32_MAX);
+	m9_write(mdev, M9_REG_IRQ0_MASK, 0);
+	m9_write(mdev, M9_REG_IRQ1_MASK, 0);
+	m9_write(mdev, M9_REG_IRQ2_MASK, 0);
+	m9_write(mdev, M9_REG_IRQ0_STATUS, U32_MAX);
+	m9_write(mdev, M9_REG_IRQ1_STATUS, U32_MAX);
+	m9_write(mdev, M9_REG_IRQ2_STATUS, U32_MAX);
 
 	/*
 	 * This is the reduced m9x109 setup whose operands are fully owned here.
 	 * The opaque 0x44c/450/454 fields and optional context/window registers
 	 * stay firmware-owned until their values have been captured.
 	 */
-	m9_write(pdev, M9_REG_CONTEXT_BASE, 0x00080000);
-	m9_write(pdev, M9_REG_REQUESTER_STATE, 0);
-	m9_write(pdev, M9_REG_FENCE0_ADDRESS,
-		 fence0 | M9_COMMAND_SYSTEM_TAG);
-	m9_write(pdev, M9_REG_FENCE1_ADDRESS,
-		 fence1 | M9_COMMAND_SYSTEM_TAG);
-	m9_write(pdev, M9_REG_COMMAND_BASE,
+	m9_write(mdev, M9_REG_CONTEXT_BASE, 0x00080000);
+	m9_write(mdev, M9_REG_REQUESTER_STATE, 0);
+	/* Index e3 writes the address selected by 0x106c.  Keep 0x1068 on an
+	 * independent word so the two hardware fence selectors cannot alias. */
+	m9_write(mdev, M9_REG_FENCE0_ADDRESS,
+		 writeback1 | M9_COMMAND_SYSTEM_TAG);
+	m9_write(mdev, M9_REG_FENCE1_ADDRESS,
+		 writeback0 | M9_COMMAND_SYSTEM_TAG);
+	m9_write(mdev, M9_REG_COMMAND_BASE,
 		 command | M9_COMMAND_SYSTEM_TAG);
-	m9_read(pdev, M9_REG_COMMAND_BASE);
-	pci_set_master(pdev->pdev);
-	pdev->m9.transport_armed = true;
+	m9_read(mdev, M9_REG_COMMAND_BASE);
+	mdev->transport.transport_armed = true;
 	return 0;
 }
 
-static u64 m9_extend_fence(struct parhelia_m9 *m9, u32 raw)
+static u64 m9_extend_fence(struct m9x_transport *m9, u32 raw)
 {
 	u32 low = raw & ~0xfu;
 
@@ -134,34 +126,34 @@ static u64 m9_extend_fence(struct parhelia_m9 *m9, u32 raw)
 	return ((u64)m9->fence_epoch << 32) | low;
 }
 
-int parhelia_m9_submit_noop(struct parhelia_device *pdev, u64 *point)
+int m9x_submit_noop(struct m9x_device *mdev, u64 *point)
 {
-	struct parhelia_m9_fence *fence;
+	struct m9x_fence *fence;
 	unsigned long deadline;
-	u32 *command = pdev->m9.command_cpu;
-	u32 *writeback = pdev->m9.fence_cpu;
+	u32 *command = mdev->transport.command_cpu;
+	u32 *writeback = mdev->transport.fence_cpu;
 	u32 target, raw;
 	u64 extended;
 	int ret;
 
 	if (!m9_render_diag)
 		return -EACCES;
-	mutex_lock(&pdev->m9.lock);
-	if (pdev->m9.wedged) {
+	mutex_lock(&mdev->transport.lock);
+	if (mdev->transport.wedged) {
 		ret = -EIO;
 		goto out_unlock;
 	}
-	ret = m9_transport_arm(pdev);
+	ret = m9_transport_arm(mdev);
 	if (ret)
 		goto out_unlock;
 
-	target = pdev->m9.next_fence;
-	pdev->m9.next_fence += 0x10;
-	if (!pdev->m9.next_fence)
-		pdev->m9.next_fence = 0x10;
-	fence = m9_fence_create(pdev,
-		((u64)(pdev->m9.fence_epoch +
-			(target < pdev->m9.last_fence)) << 32) | target);
+	target = mdev->transport.next_fence;
+	mdev->transport.next_fence += 0x10;
+	if (!mdev->transport.next_fence)
+		mdev->transport.next_fence = 0x10;
+	fence = m9_fence_create(mdev,
+		((u64)(mdev->transport.fence_epoch +
+			(target < mdev->transport.last_fence)) << 32) | target);
 	if (!fence) {
 		ret = -ENOMEM;
 		goto out_unlock;
@@ -178,10 +170,10 @@ int parhelia_m9_submit_noop(struct parhelia_device *pdev, u64 *point)
 	 * Windows clears the front-end state immediately before ringing 0x404.
 	 * The endpoint is a byte address, never a size or a userspace pointer.
 	 */
-	m9_write(pdev, M9_REG_FRONTEND_STATE, 0);
-	m9_write(pdev, M9_REG_COMMAND_END,
-		 lower_32_bits(pdev->m9.command_bus) + 3 * sizeof(u32));
-	m9_write(pdev, M9_REG_FRONTEND_KICK, 1);
+	m9_write(mdev, M9_REG_FRONTEND_STATE, 0);
+	m9_write(mdev, M9_REG_COMMAND_END,
+		 lower_32_bits(mdev->transport.command_bus) + 3 * sizeof(u32));
+	m9_write(mdev, M9_REG_FRONTEND_KICK, 1);
 
 	deadline = jiffies + msecs_to_jiffies(max(m9_fence_timeout_ms, 1u));
 	for (;;) {
@@ -189,19 +181,30 @@ int parhelia_m9_submit_noop(struct parhelia_device *pdev, u64 *point)
 		raw = READ_ONCE(writeback[0]);
 		if ((raw & ~0xfu) == target)
 			break;
-		if (m9_read(pdev, M9_REG_ENGINE_STATUS) == U32_MAX) {
+		if (m9_read(mdev, M9_REG_ENGINE_STATUS) == U32_MAX) {
 			ret = -ENODEV;
 			goto out_error;
 		}
 		if (time_after_eq(jiffies, deadline)) {
+			dma_rmb();
+			dev_err(&mdev->pdev->dev,
+				"M9 fence timeout: target=%#x wb=%#x/%#x engine=%#x frontend=%#x command=%#x/%#x fence=%#x/%#x\n",
+				target, READ_ONCE(writeback[0]),
+				READ_ONCE(writeback[1]),
+				m9_read(mdev, M9_REG_ENGINE_STATUS),
+				m9_read(mdev, M9_REG_FRONTEND_STATE),
+				m9_read(mdev, M9_REG_COMMAND_BASE),
+				m9_read(mdev, M9_REG_COMMAND_END),
+				m9_read(mdev, M9_REG_FENCE0_ADDRESS),
+				m9_read(mdev, M9_REG_FENCE1_ADDRESS));
 			ret = -ETIMEDOUT;
 			goto out_error;
 		}
-		m9_write(pdev, M9_REG_FRONTEND_KICK, 1);
+		m9_write(mdev, M9_REG_FRONTEND_KICK, 1);
 		usleep_range(50, 100);
 	}
 
-	extended = m9_extend_fence(&pdev->m9, raw);
+	extended = m9_extend_fence(&mdev->transport, raw);
 	dma_fence_signal(&fence->base);
 	dma_fence_put(&fence->base);
 	*point = extended;
@@ -209,52 +212,52 @@ int parhelia_m9_submit_noop(struct parhelia_device *pdev, u64 *point)
 	goto out_unlock;
 
 out_error:
-	pdev->m9.wedged = true;
-	pdev->m9.generation++;
+	mdev->transport.wedged = true;
+	mdev->transport.generation++;
 	dma_fence_set_error(&fence->base, ret);
 	dma_fence_signal(&fence->base);
 	dma_fence_put(&fence->base);
 	/* Leave all coherent allocations reachable until teardown. */
 out_unlock:
-	mutex_unlock(&pdev->m9.lock);
+	mutex_unlock(&mdev->transport.lock);
 	return ret;
 }
 
-int parhelia_m9_init(struct parhelia_device *pdev)
+int m9x_init(struct m9x_device *mdev)
 {
-	struct device *dev = &pdev->pdev->dev;
+	struct device *dev = &mdev->pdev->dev;
 	int ret;
 
-	ret = parhelia_m9_submit_selftest();
+	ret = m9x_submit_selftest();
 	if (ret)
 		return dev_err_probe(dev, ret, "M9 submit selftest failed\n");
-	ret = drmm_mutex_init(&pdev->drm, &pdev->m9.lock);
+	ret = drmm_mutex_init(&mdev->drm, &mdev->transport.lock);
 	if (ret)
 		return ret;
-	INIT_LIST_HEAD(&pdev->m9.bos);
-	pdev->m9.fence_context = dma_fence_context_alloc(1);
-	pdev->m9.next_fence = 0x10;
-	pdev->m9.requester_cpu = dmam_alloc_coherent(dev, PAGE_SIZE,
-						      &pdev->m9.requester_bus,
+	INIT_LIST_HEAD(&mdev->transport.bos);
+	mdev->transport.fence_context = dma_fence_context_alloc(1);
+	mdev->transport.next_fence = 0x10;
+	mdev->transport.requester_cpu = dmam_alloc_coherent(dev, PAGE_SIZE,
+						      &mdev->transport.requester_bus,
 						      GFP_KERNEL | __GFP_ZERO);
-	pdev->m9.command_cpu = dmam_alloc_coherent(dev, PARHELIA_M9_COMMAND_BYTES,
-						    &pdev->m9.command_bus,
+	mdev->transport.command_cpu = dmam_alloc_coherent(dev, PARHELIA_M9_COMMAND_BYTES,
+						    &mdev->transport.command_bus,
 						    GFP_KERNEL | __GFP_ZERO);
-	pdev->m9.fence_cpu = dmam_alloc_coherent(dev, PAGE_SIZE,
-						  &pdev->m9.fence_bus,
+	mdev->transport.fence_cpu = dmam_alloc_coherent(dev, PAGE_SIZE,
+						  &mdev->transport.fence_bus,
 						  GFP_KERNEL | __GFP_ZERO);
-	if (!pdev->m9.requester_cpu || !pdev->m9.command_cpu ||
-	    !pdev->m9.fence_cpu)
+	if (!mdev->transport.requester_cpu || !mdev->transport.command_cpu ||
+	    !mdev->transport.fence_cpu)
 		return -ENOMEM;
-	if (upper_32_bits(pdev->m9.requester_bus) ||
-	    upper_32_bits(pdev->m9.command_bus) ||
-	    upper_32_bits(pdev->m9.fence_bus))
+	if (upper_32_bits(mdev->transport.requester_bus) ||
+	    upper_32_bits(mdev->transport.command_bus) ||
+	    upper_32_bits(mdev->transport.fence_bus))
 		return -ERANGE;
-	memset32(pdev->m9.command_cpu, 0x45454545,
+	memset32(mdev->transport.command_cpu, 0x45454545,
 		 PARHELIA_M9_COMMAND_BYTES / sizeof(u32));
-	memset32(pdev->m9.requester_cpu, 0x45454545,
+	memset32(mdev->transport.requester_cpu, 0x45454545,
 		 PAGE_SIZE / sizeof(u32));
-	memset32(pdev->m9.fence_cpu, U32_MAX, PAGE_SIZE / sizeof(u32));
+	memset32(mdev->transport.fence_cpu, U32_MAX, PAGE_SIZE / sizeof(u32));
 	dma_wmb();
 	dev_info(dev,
 		 "M9 clean-room transport allocated; hardware submission %s\n",
@@ -262,12 +265,12 @@ int parhelia_m9_init(struct parhelia_device *pdev)
 	return 0;
 }
 
-void parhelia_m9_fini(struct parhelia_device *pdev)
+void m9x_fini(struct m9x_device *mdev)
 {
-	mutex_lock(&pdev->m9.lock);
-	pdev->m9.wedged = true;
+	mutex_lock(&mdev->transport.lock);
+	mdev->transport.wedged = true;
 	/* Stop host DMA before devres releases any reachable allocation. */
-	pci_clear_master(pdev->pdev);
-	pdev->m9.transport_armed = false;
-	mutex_unlock(&pdev->m9.lock);
+	pci_clear_master(mdev->pdev);
+	mdev->transport.transport_armed = false;
+	mutex_unlock(&mdev->transport.lock);
 }

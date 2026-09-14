@@ -3,9 +3,12 @@
 M9/Phoenix clean-room render bring-up
 =====================================
 
-The M9 backend is isolated from the classic Parhelia engine.  Device
-``102b:0540`` selects a render-only ``drm_driver`` and never calls the
-Parhelia KMS, host-aperture, WARP, packet validator, submit or reset code.
+The M9 backend is the independent ``m9x_drm.ko`` module.  Device ``102b:0540``
+is absent from ``parhelia.ko`` and is the sole PCI ID claimed by this
+render-only driver.  The module does not link against or call the Parhelia KMS,
+host-aperture, WARP, packet validator, submit or reset code.  Its DRM driver
+name remains ``parhelia`` so the existing Mesa loader continues to select the
+clean-room userspace driver.
 
 Safety gates
 ------------
@@ -23,6 +26,12 @@ programs only the statically closed command and fence addresses, rings the
 ``0x404`` endpoint, and waits with an absolute deadline.  A disconnect or
 timeout wedges render submission.  The coherent allocations remain reachable
 until teardown disables PCI bus mastering.
+
+The ``e3`` packet operand writes through the address bound at MMIO ``0x106c``.
+That register points at writeback word 0, which the diagnostic polls;
+``0x1068`` points independently at word 1.  The driver enables PCI bus
+mastering before publishing either address.  On timeout it logs both
+writeback words plus engine, front-end, command and fence-address registers.
 
 The auxiliary ``0x500..0x524`` requester page is allocated but not published.
 The captured vendor GL stream leaves that descriptor dormant and forced-wrap

@@ -7,14 +7,14 @@
 #include <drm/drm_gem.h>
 #include <drm/drm_gem_dma_helper.h>
 
-#include "parhelia_drv.h"
+#include "m9_drv.h"
 
 #define M9_BO_MAX_SIZE	SZ_16M
 
 static void m9_bo_free(struct drm_gem_object *gem)
 {
-	struct parhelia_m9_bo *bo = container_of(to_drm_gem_dma_obj(gem),
-						   struct parhelia_m9_bo, dma);
+	struct m9x_bo *bo = container_of(to_drm_gem_dma_obj(gem),
+						   struct m9x_bo, dma);
 
 	if (bo->dma.vaddr)
 		dma_free_wc(drm_dev_dma_dev(gem->dev), gem->size,
@@ -31,9 +31,9 @@ static const struct drm_gem_object_funcs m9_bo_funcs = {
 	.vm_ops = &drm_gem_dma_vm_ops,
 };
 
-static struct parhelia_m9_bo *m9_bo_create(struct drm_device *drm, size_t size)
+static struct m9x_bo *m9_bo_create(struct drm_device *drm, size_t size)
 {
-	struct parhelia_m9_bo *bo;
+	struct m9x_bo *bo;
 	int ret;
 
 	bo = kzalloc_obj(*bo);
@@ -68,25 +68,25 @@ err_free:
 	return ERR_PTR(ret);
 }
 
-struct parhelia_m9_bo *parhelia_m9_bo_lookup(struct parhelia_device *pdev,
+struct m9x_bo *m9x_bo_lookup(struct m9x_device *mdev,
 					      struct drm_file *file,
 					      u32 handle)
 {
 	struct drm_gem_object *gem;
-	struct parhelia_m9_bo *bo, *found = NULL;
+	struct m9x_bo *bo, *found = NULL;
 
 	gem = drm_gem_object_lookup(file, handle);
 	if (!gem)
 		return ERR_PTR(-ENOENT);
 
-	mutex_lock(&pdev->m9.lock);
-	list_for_each_entry(bo, &pdev->m9.bos, link) {
+	mutex_lock(&mdev->transport.lock);
+	list_for_each_entry(bo, &mdev->transport.bos, link) {
 		if (&bo->dma.base == gem && bo->file == file) {
 			found = bo;
 			break;
 		}
 	}
-	mutex_unlock(&pdev->m9.lock);
+	mutex_unlock(&mdev->transport.lock);
 	if (!found) {
 		drm_gem_object_put(gem);
 		return ERR_PTR(-EINVAL);
@@ -95,17 +95,17 @@ struct parhelia_m9_bo *parhelia_m9_bo_lookup(struct parhelia_device *pdev,
 	return found;
 }
 
-int parhelia_m9_create_bo_ioctl(struct drm_device *drm, void *data,
+int m9x_create_bo_ioctl(struct drm_device *drm, void *data,
 				struct drm_file *file)
 {
 	struct drm_parhelia_m9_create_bo *args = data;
-	struct parhelia_device *pdev = to_parhelia(drm);
-	struct parhelia_m9_bo *bo;
+	struct m9x_device *mdev = to_m9x(drm);
+	struct m9x_bo *bo;
 	size_t size;
 	u32 handle;
 	int ret;
 
-	if (!parhelia_is_m9(pdev) || !parhelia_m9_enabled())
+	if (!m9x_enabled())
 		return -ENODEV;
 	if (!args->size || args->size > M9_BO_MAX_SIZE ||
 	    args->flags & ~PARHELIA_M9_BO_COMMAND || args->handle ||
@@ -120,15 +120,15 @@ int parhelia_m9_create_bo_ioctl(struct drm_device *drm, void *data,
 	if (ret)
 		goto out_put;
 
-	mutex_lock(&pdev->m9.lock);
-	if (pdev->m9.wedged) {
+	mutex_lock(&mdev->transport.lock);
+	if (mdev->transport.wedged) {
 		ret = -EIO;
 	} else {
 		drm_gem_object_get(&bo->dma.base);
 		bo->file = file;
-		list_add_tail(&bo->link, &pdev->m9.bos);
+		list_add_tail(&bo->link, &mdev->transport.bos);
 	}
-	mutex_unlock(&pdev->m9.lock);
+	mutex_unlock(&mdev->transport.lock);
 	if (ret)
 		goto out_handle;
 
@@ -145,17 +145,17 @@ out_put:
 	return ret;
 }
 
-void parhelia_m9_postclose(struct parhelia_device *pdev, struct drm_file *file)
+void m9x_postclose(struct m9x_device *mdev, struct drm_file *file)
 {
-	struct parhelia_m9_bo *bo, *tmp;
+	struct m9x_bo *bo, *tmp;
 	LIST_HEAD(dead);
 
-	mutex_lock(&pdev->m9.lock);
-	list_for_each_entry_safe(bo, tmp, &pdev->m9.bos, link) {
+	mutex_lock(&mdev->transport.lock);
+	list_for_each_entry_safe(bo, tmp, &mdev->transport.bos, link) {
 		if (bo->file == file)
 			list_move_tail(&bo->link, &dead);
 	}
-	mutex_unlock(&pdev->m9.lock);
+	mutex_unlock(&mdev->transport.lock);
 
 	list_for_each_entry_safe(bo, tmp, &dead, link) {
 		list_del_init(&bo->link);

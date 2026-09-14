@@ -6,7 +6,7 @@
 #include <drm/drm_file.h>
 #include <drm/drm_gem.h>
 
-#include "parhelia_drv.h"
+#include "m9_drv.h"
 #include "m9_reg.h"
 
 /*
@@ -135,8 +135,8 @@ static int m9_parse_commands(const u32 *words, u32 count, u8 *expected)
 	return 0;
 }
 
-static struct parhelia_m9_bo *
-m9_find_ref(struct parhelia_m9_bo **bos,
+static struct m9x_bo *
+m9_find_ref(struct m9x_bo **bos,
 	    const struct drm_parhelia_m9_bo_ref *refs, u32 count, u32 handle,
 	    u32 access)
 {
@@ -166,14 +166,14 @@ static u32 m9_reloc_alignment(u32 kind)
 
 static int m9_validate_relocs(u32 *image, u32 dwords, u8 *expected,
 		const struct drm_parhelia_m9_reloc *relocs, u32 reloc_count,
-		struct parhelia_m9_bo **bos,
+		struct m9x_bo **bos,
 		const struct drm_parhelia_m9_bo_ref *refs, u32 bo_count)
 {
 	u32 i;
 
 	for (i = 0; i < reloc_count; i++) {
 		const struct drm_parhelia_m9_reloc *reloc = &relocs[i];
-		struct parhelia_m9_bo *bo;
+		struct m9x_bo *bo;
 		u64 address;
 		u32 alignment;
 		bool end_reloc;
@@ -216,7 +216,7 @@ static int m9_validate_relocs(u32 *image, u32 dwords, u8 *expected,
 	return 0;
 }
 
-static void m9_put_bos(struct parhelia_m9_bo **bos, u32 count)
+static void m9_put_bos(struct m9x_bo **bos, u32 count)
 {
 	u32 i;
 
@@ -227,14 +227,14 @@ static void m9_put_bos(struct parhelia_m9_bo **bos, u32 count)
 			drm_gem_object_put(&bos[i]->dma.base);
 }
 
-static int m9_submit_validate(struct parhelia_device *pdev,
+static int m9_submit_validate(struct m9x_device *mdev,
 			      struct drm_file *file,
 			      const struct drm_parhelia_m9_submit *args)
 {
 	struct drm_parhelia_m9_reloc *relocs = NULL;
 	struct drm_parhelia_m9_bo_ref *refs = NULL;
-	struct parhelia_m9_bo **bos = NULL;
-	struct parhelia_m9_bo *command_bo;
+	struct m9x_bo **bos = NULL;
+	struct m9x_bo *command_bo;
 	u8 *expected = NULL;
 	u32 *image = NULL;
 	u64 command_end;
@@ -248,7 +248,7 @@ static int m9_submit_validate(struct parhelia_device *pdev,
 	    args->bo_count > PARHELIA_M9_MAX_BOS || !args->bo_count ||
 	    !args->bos_ptr || (args->relocation_count && !args->relocations_ptr))
 		return -EINVAL;
-	command_bo = parhelia_m9_bo_lookup(pdev, file, args->command_handle);
+	command_bo = m9x_bo_lookup(mdev, file, args->command_handle);
 	if (IS_ERR(command_bo))
 		return PTR_ERR(command_bo);
 	if (!(command_bo->flags & PARHELIA_M9_BO_COMMAND) ||
@@ -299,7 +299,7 @@ static int m9_submit_validate(struct parhelia_device *pdev,
 				ret = -EINVAL;
 				goto out;
 			}
-		bos[i] = parhelia_m9_bo_lookup(pdev, file, refs[i].handle);
+		bos[i] = m9x_bo_lookup(mdev, file, refs[i].handle);
 		if (IS_ERR(bos[i])) {
 			ret = PTR_ERR(bos[i]);
 			bos[i] = NULL;
@@ -328,14 +328,14 @@ out_command:
 	return ret;
 }
 
-int parhelia_m9_submit_ioctl(struct drm_device *drm, void *data,
+int m9x_submit_ioctl(struct drm_device *drm, void *data,
 			     struct drm_file *file)
 {
 	struct drm_parhelia_m9_submit *args = data;
-	struct parhelia_device *pdev = to_parhelia(drm);
+	struct m9x_device *mdev = to_m9x(drm);
 	u32 flags = args->flags;
 
-	if (!parhelia_is_m9(pdev) || !parhelia_m9_enabled())
+	if (!m9x_enabled())
 		return -ENODEV;
 	if (args->context_id || args->out_syncobj || args->pad || args->out_point ||
 	    flags & ~(PARHELIA_M9_SUBMIT_VALIDATE_ONLY |
@@ -346,14 +346,14 @@ int parhelia_m9_submit_ioctl(struct drm_device *drm, void *data,
 		    args->command_length || args->relocation_count ||
 		    args->relocations_ptr || args->bo_count || args->bos_ptr)
 			return -EINVAL;
-		return parhelia_m9_submit_noop(pdev, &args->out_point);
+		return m9x_submit_noop(mdev, &args->out_point);
 	}
 	if (flags != PARHELIA_M9_SUBMIT_VALIDATE_ONLY)
 		return -EOPNOTSUPP;
-	return m9_submit_validate(pdev, file, args);
+	return m9_submit_validate(mdev, file, args);
 }
 
-int parhelia_m9_submit_selftest(void)
+int m9x_submit_selftest(void)
 {
 	u32 good[] = { 0x45454522, 0x00006403,
 		       0x23000001, 0, 3, 0x45454545 };
