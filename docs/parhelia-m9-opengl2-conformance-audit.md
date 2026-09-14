@@ -33,6 +33,9 @@ The evidence states used below are:
 
 | OpenGL 2.0 area | preserved evidence | remaining work before exposure |
 |---|---|---|
+| matrix transforms and stacks | exact world/view/projection/eight texture-matrix dispatch plus GL model-view/projection/MVP/normal/inverse/transpose compiler records | non-symmetric visible transform/normal/texture-matrix results and implementation replay |
+| lighting and materials | exact front/back material fields, ambient/color-material/normalize/local-viewer/source controls, 0x80-byte light records, generated compiler constants; GL exposes 8 lights, D3D 12, internal list 16 | directional/point/spot attenuation, rescale/normalize, two-sided/separate-specular and color-material result matrix |
+| texgen and fixed texture environment | exact accepted S/T/R/Q mode matrix; eye/object planes, eight texture matrices, complete GL texenv/combine/source/operand/scale shadow, 28 D3D TSS records and D3DTOP 1..26 | visible five-mode texgen, legacy/combine/DOT3/crossbar/bump results and native-record joins |
 | viewport, depth range, scissor | result/packet for nontrivial rectangles and depth range | implementation replay |
 | color/depth/stencil clear and masks | packet/static; color mask and complete depth/stencil fields | validate every advertised depth/stencil format and partial clear masks |
 | FBO completeness and render-to-texture | result/packet for missing attachment, dimension mismatch, depth-only, stencil-only, color+depth, and producer-to-consumer sampling | packed color+depth+stencil combinations, deletion/rebinding, and new-driver replay |
@@ -44,7 +47,7 @@ The evidence states used below are:
 | polygon offset | enable packet/static; D3D slope and units handlers carry raw floats through `0x104267/0x1042a9` | join OpenGL factor/units to the generated depth equation and visible quantized result |
 | alpha test, blending, separate RGB/alpha, min/max/subtract/reverse subtract | enable/result/static factor and equation maps | join generated native state to visible destination-sensitive results |
 | all logic operations | static frontend: all sixteen GL enums map to exact ICD internal codes; XOR packet/result | join the other fifteen internal codes to final native state/program and visible results |
-| fog, explicit fog coordinate, clip planes, two-sided lighting | API/result plus generated-state snapshots | identify native program/constant deltas after the linked-record grammar is decoded |
+| fog, explicit fog coordinate, clip planes, two-sided lighting | API/result plus exact fog/clip/light state and generated compiler records | non-symmetric visible result matrix and native program/constant joins after the linked-record grammar is decoded |
 | multisample and sample coverage | API-only on an unsampled visual; Windows config selects sample type 8 and eight quality levels; `ad[20:0]` is backed allocation bytes/32 and `af` low9 plus bits 11--13 are exactly sourced; zero mask suppresses output; GL query post-scaling is exact | sampled allocation growth, fragment layout, positions/quality patterns, nonzero mask/invert, resolve, presentation, and physical query-counter unit |
 | occlusion query | result/packet for 16384 visible, 0 hidden, 8192 half-hidden, object reuse, and pre-finish availability zero; static begin/end/result protocol | slot wrap, counter wrap, ordering stress, and implementation replay |
 | draw buffers/MRT | static four-target address/mask/compiler paths; masks 0/1 complete and mask 1 writes RT0; mask 2 and mask 15 expose a repeatable vendor teardown/readback wedge after successful finish | recover safe per-target routing/teardown before testing or exposing masks beyond RT0 |
@@ -65,7 +68,7 @@ The evidence states used below are:
 | depth textures and shadow compare | result/packet for raw D24 0.25/0.75, LEQUAL fail/pass, and exact D16/D32 gradients; static eight compare codes | result-channel/filter matrix, other compare functions, and FBO producer dependency |
 | texture compression | generic extension advertised; static DXT1-5 packers; Linux S3TC absent and direct DXT1/DXT5 uploads return `GL_INVALID_ENUM` | sentinel-filled core-format query; keep DXT disabled unless a returned public format passes upload/sample/readback |
 | texture objects, subimages, copies, priorities/residency semantics | live update-then-sample and framebuffer-copy-then-sample ordering, exact transfer/draw stream boundary, stable descriptors, and ordinary static lifecycle | overlapping copies, subimage/mip boundaries, deletion while bound, priorities/residency, and implementation replay |
-| pixel-store packing/unpacking and readback | basic readback | all core alignment/row-length/skip/type conversions; performance is secondary |
+| pixel-store, Draw/Copy/ReadPixels and bitmap | fast GPU path diagnostics and exclusions, shader pack/unpack operations 117..125, basic readback | alignment/row-length/skip/type conversions, overlap, zoom/orientation, depth/stencil pixels, and fast-versus-fallback results; performance is secondary |
 | 10-bit GigaColor | exact native codes `0x68/0x6a`, channel masks, sampler/RT construction and rounded D3DCOLOR clear packers; Linux `RGB10_A2` explicitly reports actual `GL_RGBA8` and 8-bit quantization | native Windows/gated render, blend, sample, raw-backing/readback capture, plus separate depth-30 scanout/LUT/dither validation |
 | float, YUV, anisotropic, and sRGB textures | real dormant Windows packers/config paths | remain extension-gated until upload/sample/filter/render result matrices exist |
 
@@ -77,6 +80,7 @@ The evidence states used below are:
 | VBO creation/update/map/unmap | advertised; vendor resource/fence lifecycle and captured VBO draw path; texture resource capture proves index `78` selects a repeated 0x80-byte tagged backing-page list rather than linear texels | orphaning, partial updates, map failure, deletion while referenced, context sharing, and equivalent resource-indirection construction |
 | 16/32-bit element buffers and draw ranges | packet/static H06/H07 paths | base/range boundaries, restart absence, mixed index sizes, and zero-count draws |
 | immediate mode and display lists | live fixed-function workloads | state capture/replay and resource lifetime in the Mesa implementation |
+| evaluators, selection, feedback, display-list semantics | API frontends and explicit software paths; resident GPU mesh cache exists for compiled geometry | Mesa/Draw CPU semantic tests followed by ordinary GPU-draw state-isolation checks |
 | multiple contexts/share groups | result/packet for simultaneous A/B/A/B direct contexts | shared texture/VBO/program deletion and concurrent update ordering |
 | command completion and errors | coherent fence/static lifetime path | bounded wrap, rollover, OOM, invalid command rejection, hang/device-loss behavior |
 

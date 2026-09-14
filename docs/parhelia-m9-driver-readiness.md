@@ -58,6 +58,25 @@ later streaming path. Render completion is the coherent memory fence, not an
 IRQ. The documented IRQ handler should enable the four vblank sources and
 leave unproved service/fault sources masked.
 
+## OpenGL 2.0 compatibility fixed function
+
+`parhelia-m9-fixed-function-static-closure.md` closes the complete software
+state before native-program selection: world/view/projection and eight texture
+matrices; front/back materials; light, color-material, normalize/rescale and
+local-viewer inputs; six clip planes; all texgen modes; fog and point fields;
+the GL texenv/combine source/operand/scale shadow; 28 D3D texture-stage records
+and all D3DTOP operations 1 through 26.  GL should expose eight lights even
+though D3D publishes 12 and the internal record list holds 16.
+
+Direct depth/stencil/raster state uses captured packets.  Transform, lighting,
+texgen, fog, points, texenv and some fragment state use generated programs.
+Selection, feedback and evaluator semantics belong in Mesa/Draw; resident
+display-list meshes are an optional cache.  Fast pixel paths exist with exact
+fallback conditions and shader pack/unpack built-ins, but their conversion,
+zoom and overlap result matrix is still live work.  The five bounded fixtures
+at the end of the static-closure document are the remaining compatibility
+capture set.
+
 ## OpenGL 2.0 shader coverage
 
 The live compiler is OpenGL 2.0 / GLSL 1.10. Its advertised limits are 16
