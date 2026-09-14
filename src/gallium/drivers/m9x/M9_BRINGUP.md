@@ -105,16 +105,21 @@ These gaps must remain visible in capability and execution gates:
    repeatable `0x16800` address lattice are captured.  The invariant 80-slot
    native image, canonical vertex arena extent `0x192700`, C2 extent `0x1080`,
    BE auxiliary-surface ownership and AB/AC/AE producer shape are also exact.
-   This Mesa skeleton still lacks the preprocessing builder, local-VRAM
-   allocator, exact source repacker, initial C2/BE bytes, BE extent and AB/AC
-   formula.
+   The bounded flat-green source is four 20-byte `{x,y,r,g,b}` records (the
+   fourth duplicates record 2), and the one-target surface state is
+   `AB=AC=0xffffffff`.  C2 has no intervening GPU initializer and the guarded
+   diagnostic policy is a zeroed job-local `0x1080` object.  This Mesa skeleton
+   still lacks the preprocessing builder, local-VRAM allocator, exact M9148 BE
+   extent/initialization, and a fresh linked record.
 3. Selector `6c` atomically binds one immutable linked VS/FS pair.  Private
    0x3158-byte allocation, ordered cache reuse, COW validation/publication and
    fence lifetime are exact.  Symbolic graph descriptors now map through the
    physical converter to finite `94/b4/c4` selector namespaces and exact
    W0/W1 bit fields.  A new compiler still needs arbitrary CFG scheduling and
    the heterogeneous external `6c` record constructor.  The captured A/B
-   records contain no embedded GPU-BO pointers.  Index `69` is
+   programmable records contain no embedded GPU-BO pointers, but the selected
+   fixed-function slot contains nine process-specific host pointers and cannot
+   be replayed in a new context.  Index `69` is
    drawable memory, and the known bind tuple alone is not a general shader
    path.
 4. Triangle-strip control is captured from gears, but its correlated `d7`
