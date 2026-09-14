@@ -60,8 +60,8 @@ collapsed to one guessed default.
 | `TextureOpCaps` | `0x03feffff`: all fixed texture ops through LERP except reserved holes |
 | `MaxTextureBlendStages`, `MaxSimultaneousTextures` | `8`, `8` |
 | `VertexProcessingCaps` | template `0x17b & 0xfb = 0x7b` |
-| `MaxActiveLights`, `MaxUserClipPlanes` | template `0x0c`, `0` |
-| `MaxVertexBlendMatrices`, `MaxVertexBlendMatrixIndex` | template low/high words `6`, `4` |
+| `MaxActiveLights`, `MaxUserClipPlanes` | template `0x0c`, low word `6` |
+| `MaxVertexBlendMatrices`, `MaxVertexBlendMatrixIndex` | template high word `4`, literal `0x1f` |
 | `MaxPointSize` | float `2048.0` at `0x1f5470` |
 | `MaxPrimitiveCount`, `MaxVertexIndex` | `0x000fffff` each |
 | `MaxStreams` | runtime feature result: `1` or `16` |
