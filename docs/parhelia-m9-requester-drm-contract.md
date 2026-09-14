@@ -135,6 +135,13 @@ The four-entry auxiliary requester table {2,3,0,3} is a separate namespace.
 The live primary tag 2 must not be inferred from a public GEM placement enum or
 from the auxiliary descriptor's selector-2/tag-0 first-use allocation.
 
+On the tested M9148, kernel commit `d545438` also requires warm controls
+`44c/450/454` to equal `00280800/1f3f2707/00070703` before it enables bus
+mastering.  This is the fallback tuple independently recovered from the static
+packer and observed in the saved and current unbound-target snapshots.  The
+driver preserves those values and rejects a different tuple; support for
+another board requires its own property or packed-control evidence.
+
 ### 3.2 Submission
 
 Userspace supplies validated commands and GEM relocations through the new DRM

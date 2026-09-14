@@ -74,9 +74,11 @@ fallback tuples.  The pinned fixture is
 This target result does not establish that every M9 product uses the fallback.
 General cold initialization should join `+0x5f0/+0x5f8` to the board/device
 database that supplies them, preserve verified warm values, or guard this
-fallback to the tested product.  The kernel-owned no-op succeeds with all three
-registers left firmware-owned, so the diagnostic still has no reason to
-overwrite them.
+fallback to the tested product.  Kernel commit `d545438` now reads all three
+controls before enabling bus mastering and fails closed unless this M9148 has
+the exact verified image.  It never overwrites the firmware values.  The
+resulting module completed a fresh hardware no-op fence at `0x10`, unloaded
+cleanly, and left the device unbound with `BusMaster-`.
 
 <!-- Copyright 2026 Rene Rebe <rene@exactco.de> -->
 <!-- SPDX-License-Identifier: GPL-2.0 -->
