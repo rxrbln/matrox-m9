@@ -13,7 +13,7 @@
 #define M9_REG_REQUESTER_CTL2		0x0454
 /* Vendor fallback for the packed {8,32,24,32}/{4,8,8} partition tuples.
  * Preserve warm firmware values until the target property tuple is known. */
-#define M9_REQUESTER_CTL0_FALLBACK	0x1f280800
+#define M9_REQUESTER_CTL0_FALLBACK	0x00280800
 #define M9_REQUESTER_CTL1_FALLBACK	0x1f3f2707
 #define M9_REQUESTER_CTL2_FALLBACK	0x00070703
 #define M9_REG_AUX_BASE			0x0500
