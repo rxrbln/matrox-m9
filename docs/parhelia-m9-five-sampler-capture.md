@@ -1,0 +1,77 @@
+# M9 five dependent fragment samplers
+
+The Linux vendor ICD advertises 16 fragment and 20 combined texture image
+units.  Earlier captures exposed four complete hardware texture-state slots at
+indices `70..73`, leaving unclear whether a fifth sampler would be rejected,
+aliased, or compiled into additional work.  The bounded live fixture
+`tools/m9x-five-sampler-probe.c` distinguishes those outcomes.
+
+The GLSL 1.10 fragment shader declares five unique `sampler2D` uniforms.  Each
+of five 2x2 textures has a different solid sentinel value.  Sample B depends
+on A's result for coordinates, C on B, D on C, and E on D.  The final color
+uses channels from A through E, so optimizing away or aliasing any sampler
+changes the expected `903040ff` output.
+
+On the M9148 vendor stack:
+
+```text
+limits fragment-samplers=16 combined-samplers=20
+vertex compile=1
+fragment compile=1
+link=1
+sampler locations=0,1,2,3,4; units=0,1,2,3,4
+pixel=903040ff frame=41031dc5 error=0x0
+RESULT=PASS
+```
+
+## Hardware schedule
+
+The selected draw is sequence 25 on `bm2`, with three ranges:
+
+```text
+0x000..0x260  setup/preprocessing
+0x260..0xfa4  five serialized texture/raster blocks
+0xfa4..0xfd0  completion
+```
+
+The five nonzero index-70 control words are:
+
+```text
+00040118 0004111c 0004111c 0004111c 0004111c
+```
+
+The matching index-78 texture resources are:
+
+```text
+11f01000 11f09000 11f11000 11f19000 11f21000
+```
+
+Each is a separate type-0x10, placement-4, 0x800-byte allocation aligned to
+0x80.  Every block emits `79=c8010002`, `7a=00010002`, `7c=00009200`, and
+`7d=0ff80000`, describing a 2x2 RGBA8 nearest-sampled resource.  Indices
+`71..73` remain zero throughout.  The texture routing sequence at index 74 is:
+
+```text
+0000010c 00000100 00ff0110 00ff0910 00ff0510 00ff0d10
+```
+
+Later passes also update indices 75 and 76 and bind intermediate descriptors
+at index 78 from `10ec1000`.  All six program/state blocks select the same
+linked record `6c=40c3a281`.  The complete 0x21000-byte resource image is
+unchanged across submission.
+
+The vendor compiler therefore implements this five-dependent-sampler shader
+as five serialized passes inside one ExecuteDma submission, with intermediate
+results routed between them.  The fifth logical sampler works correctly, but
+it does not expose a fifth simultaneous hardware state slot.  A new compiler
+can initially cap native single-pass texture scheduling at the recovered
+physical limit and add this multipass lowering later.  Advertising more units
+requires equivalent dependency-preserving lowering and temporary-resource
+management.
+
+The compact evidence and verifier are under
+`captures/m9x-linux-five-sampler-20260914` and
+`tools/m9-five-sampler-evidence.py`.
+
+<!-- Copyright 2026 Rene Rebe <rene@exactco.de> -->
+<!-- SPDX-License-Identifier: GPL-2.0 -->
