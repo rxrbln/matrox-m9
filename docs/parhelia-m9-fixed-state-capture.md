@@ -84,8 +84,13 @@ Baseline setup ends with `a8=0038038a`, `a9=08ffff00`, and `ef=00000000`.
 | depth lequal, write disabled | `0038038d` | `00007000` |
 | depth always, write disabled | `0038039d` | `00007000` |
 
-This directly separates depth enable/function/write behavior.  The remaining
-five compare functions need the follow-up equivalence-class matrix.
+The extended same-context matrix closes every comparison.  Bits 4:2 use the
+following direct hardware codes (GL order): NEVER `0`, LESS `2`, EQUAL `1`,
+LEQUAL `3`, GREATER `4`, NOTEQUAL `6`, GEQUAL `5`, ALWAYS `7`.  With depth
+enabled and writes disabled, the five added words are `00380381`, `00380385`,
+`00380391`, `00380399`, and `00380395` for NEVER, EQUAL, GREATER, NOTEQUAL,
+and GEQUAL respectively.  Together with LESS/LEQUAL/ALWAYS above, this is a
+complete live-validated depth comparison table.
 
 | Stencil case | `a8` | `a9` |
 |---|---:|---:|
@@ -95,9 +100,23 @@ five compare functions need the follow-up equivalence-class matrix.
 
 `a9` is exactly `0x08WWCCRR` for these cases: `WW` is the write mask, `CC` the
 compare mask, and `RR` the reference.  Word `a8` carries enable, compare, and
-the three operations, but three mixed samples are insufficient to split every
-field.  Capture one operation at a time and separate front/back state before
-constructing arbitrary `a8` values.
+the three operations.  The added isolated comparison matrix gives bits 9:7 as
+NEVER `0`, LESS `2`, EQUAL `1`, LEQUAL `3`, GREATER `4`, NOTEQUAL `6`, GEQUAL
+`5`, ALWAYS `7`.  The added sfail matrix gives bits 12:10 as KEEP `0`, ZERO
+`3`, REPLACE `1`, INVERT `2`, INCR_WRAP `4`, DECR_WRAP `5`, saturating INCR
+`6`, and saturating DECR `7`.  The same three-bit operation encoding applies
+to zfail bits 15:13 and zpass bits 18:16, as confirmed by the earlier mixed
+samples and the static packer.
+
+`GL_ATI_separate_stencil` is advertised and both entry points resolve.  In
+case 85, `glStencilFuncSeparateATI(GL_LESS=0201, GL_GREATER=0204, 0x31, 0xa7)`
+returns `GL_INVALID_ENUM`; case 86 passes `GL_GREATER=0204, GL_LESS=0201` and
+gets the same error.  Case 85 applies FRONT `(KEEP=1e00, INCR=1e02,
+REPLACE=1e01)` and BACK `(INVERT=150a, DECR=1e03, ZERO=0)` operations; case 86
+swaps those two triples.  All four `glStencilOpSeparateATI` calls return no
+error and emit distinct two-face words `a8=1c3bebea` and `a8=3eb9c3ea`.
+Treat separate ops as live-supported and the vendor separate-function API as
+advertised but broken; do not copy its error into a new implementation.
 
 ## Cull and shading
 
@@ -112,6 +131,42 @@ implement the captured smooth/flat switch.  Line and point polygon modes were
 only present in the independent-process set and had no selected draw-state
 differential; they remain open until a same-context pair is captured.
 
+The follow-up matrix closes the direct line and point paths.  Polygon line
+sets `22=00042503` and `f0=c8008400`; width 3 adds `f0=cc008400,f4=3`.
+Line smoothing adds `ef=60000000`.  Polygon point sets `22=00042603`,
+`c1=00001fff`, `f0=c2008400`, and `f4=1`; size 5 changes `f4` to `5`.
+Point smoothing uses `c1=00007fff,ef=00000600`.  A real `GL_POINTS` point
+sprite with coordinate replacement ran without error and emitted
+`22=00006500,f0=c2008400,f4=20` for the requested 32-pixel point.
+
+## Bounds, fragment modes, and generated state
+
+Scissor `(17,23 101x79)` emits `c4=f5=009a0011` and
+`c5=f6=00e90076`.  Viewport `(13,19 171x149)` emits
+`c4=f5=0058000d` and `c5=f6=00ed00b8`.  The Y values are the expected
+bottom-to-top conversion in the 256-pixel drawable.  Depth range `.25,.75`
+materializes float `.25` at resource offset `688` and `.5` at `698` in this
+orthographic setup.  Polygon offset fill emits `ef=04000000`; its numeric
+factor/unit lowering remains generated state and needs a value matrix.
+
+Reverse subtract, MIN, MAX, and constant-color blending retain the common
+direct enable words `88=0110ff03,f0=c5008200`; the constant-color resource
+starts with floats `.2,.4,.6,.8` at `600`.  Separate RGB/alpha blending sets
+bit 7, `88=0110ff83`.  Factors and equations remain program-derived.  Logic
+XOR emits `88=01180000,ef=000000aa`, an exact single-op implementation seed.
+
+Linear, exponential, and exponential-squared fog all use
+`22=00002703,88=0910df03` and differ in generated program/constants.  The
+explicit `GL_EXT_fog_coord` fixture selects `GL_FOG_COORDINATE_EXT`, supplies
+per-vertex values `.1,.5,.9`, and completes with `GL_NO_ERROR`.  Clip plane 0
+also completes without error and changes generated constants/program state.
+Two-sided lighting emits `22=00002703,88=03109fe3` plus generated state.
+
+The captured legacy visual behaved as unsampled.  Enabling multisampling and
+calling sample coverage `.5` with invert both complete without error but leave
+the selected direct state and resource byte-identical.  These cases prove API
+acceptance only; a sampled FBConfig is required to assign `ad/af` sample bits.
+
 ## Driver rules
 
 Emit sampler and fragment/raster state in the B setup position before the draw,
@@ -120,11 +175,12 @@ half of `ab`, or the resource-tail host pointers as state: they vary between
 otherwise identical processes.  The command validator must allow the proven
 indices while relocating all address-bearing words.
 
-The next fixture should close the eight depth/alpha/stencil compare codes,
-single-op stencil fields, separate front/back stencil, blend factors and
-equations with visible destination dependence, logic ops, scissor/viewport/
-depth range, polygon offset, widths/smoothing/point sprites, fog/clip planes,
-two-sided lighting, and multisample state when a sampled FBConfig exists.
+Remaining fixed-function capture work is a sampled FBConfig, a 3-D texture for
+R wrap, negative/boundary LOD values, all logic-op codes, polygon-offset value
+lowering, and program-heap joins for blend, alpha, fog, clip, and lighting.
+The static packer already names most generated equivalence classes; targeted
+visible-result cases should validate those tables rather than repeat direct
+state that this matrix has closed.
 
 <!-- Copyright 2026 Rene Rebe <rene@exactco.de> -->
 <!-- SPDX-License-Identifier: GPL-2.0 -->
