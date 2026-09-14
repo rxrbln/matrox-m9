@@ -366,8 +366,9 @@ are narrower semantic or uncommon-mode issues:
 2. The private transformed meaning of `c4/c5` when the nonzero-origin path is
    active.  Ordinary framebuffer viewport/scissor operation does not depend on
    this gap because the zero-origin path duplicates `f5/f6`.
-3. Hierarchical-Z metadata initialization and invalidation.  Static data flow
-   now closes the vendor name, allocation dimensions, format, selector, and
-   final `ba/bb` binding, but not the opaque metadata bits or their maintenance
-   across partial clears, copies, depth writes, and depth sampling.  Keep this
-   optimization disabled until those operations pass a bounded hardware test.
+3. Hierarchical-Z metadata bit meaning and dynamic rejection behavior.  Static
+   data flow now closes initialization word `0x007ff000`, full-clear seeding,
+   whole-plane partial-clear invalidation, dirty refresh after uncoupled
+   writes, owner/alias lifetime, joint resource tracking, selector 12, and
+   final `ba/bb` binding.  A bounded hardware test must still prove that the
+   reproduced metadata never rejects visible fragments before default enablement.

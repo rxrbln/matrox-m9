@@ -35,8 +35,10 @@ The following pieces no longer depend on another vendor capture:
   stencil packing, alpha test, blending, color masks, cull/fill/shade compiler
   inputs, and the fixed-state differential corpus. `HZFlags` statically closes
   the optional `ba/bb` plane as format-`0x0b` hierarchical-Z metadata at
-  `ceil(width/8) x ceil(height/4)`; ordinary direct hardware depth does not
-  require it, and it stays disabled until metadata maintenance is validated;
+  `ceil(width/8) x ceil(height/4)`, including conservative initialization,
+  clear/write invalidation, owner/alias lifetime, and joint resource tracking;
+  ordinary direct hardware depth does not require it, and default enablement
+  remains gated only by a bounded rejection-correctness test;
 * RGB565, RGBA4, RGB5A1, RGB8, RGBA8, L8, A8, LA8, I8, D16 and D32 textures,
   odd 1-D/2-D dimensions, full mip chains and packed tails, sampler state,
   four live sampler selectors, subimage/copy coherency, and the class-1

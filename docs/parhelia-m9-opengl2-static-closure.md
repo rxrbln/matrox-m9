@@ -315,10 +315,14 @@ target masks, the fragment output declaration lowerer `0x181fa0`, and surface
 emitter `0xfb920` are exact.  Allocator `0x54be0` gates 16/32/64 stored-bit
 depth classes with `HZFlags` bits 0/1/2 and creates internal format `0x0b` at
 `ceil(width/8) x ceil(height/4)`; binder `0xaaa7d` installs selector 12 in
-`ba/bb`.  The opaque metadata maintenance protocol remains gated, so an
-initial driver must leave this optimization disabled while using ordinary
-hardware depth through `b8/b9`.  The saved FBO render-to-texture capture closes
-ordinary producer/consumer ordering.
+`ba/bb`.  The vendor initializes and conservatively invalidates the entire
+auxiliary plane with word `0x007ff000`; a full depth clear seeds it from the
+clear value, a partial clear invalidates the whole plane, and uncoupled writes
+set a retryable refresh marker.  Creator-owned lifetime, non-owning clones,
+and joint parent/auxiliary resource traversal are also exact.  This permits a
+byte-faithful implementation behind a validation flag; ordinary hardware
+depth through `b8/b9` remains the fallback.  The saved FBO render-to-texture
+capture closes ordinary producer/consumer ordering.
 The static pieces suffice for one linear RGBA8 FBO.  Four-target exposure still
 requires a unique output per attachment, completeness failures, partial masks,
 and readback.

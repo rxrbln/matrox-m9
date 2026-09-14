@@ -568,7 +568,12 @@ relocation-backed pairs: nested `+0x21c/+0x220/+0x224` becomes surface shadow
 `+0x230 = 0xf0010100` has `G16R16` format code `0x78`.  `HZFlags` allocator
 `0x54be0` closes this second pair as hierarchical-Z metadata: it creates
 internal format `0x0b` at `ceil(width/8) x ceil(height/4)`, and binder
-`0xaaa7d` installs its selector-12 view in the `ba/bb` shadow.  Alternate
+`0xaaa7d` installs its selector-12 view in the `ba/bb` shadow.  Initializer
+`0x55070` fills the whole plane with conservative word `0x007ff000`; clear
+companion `0x54f80` seeds complete clears and invalidates the whole plane for
+partial clears, while transition `0x55370` refreshes it after uncoupled writes.
+The creator owns the auxiliary, clones are non-owning, and traversal
+`0xa6dc4` tracks parent and auxiliary with the same arguments.  Alternate
 lowerer `0x182b40` also installs resource view 9 at `b8/b9`, forces its format to a
 depth code, and leaves `ba/bb` null.  Thus `b8/b9` is ordinary Z and `ba/bb`
 is an optional hierarchical-Z metadata surface, not an independent API
