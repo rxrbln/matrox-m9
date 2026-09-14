@@ -12,15 +12,31 @@ specific compiler inputs without requiring an M9 board or an MMIO capture.
 It builds a non-PIE i386 helper that maps the PE at its preferred base, supplies
 the allocator vtable used by the audited compiler functions, and constructs
 the exact nested output-vector ownership chain at compiler context `+0x41c`.
-The helper exposes only these five known entry points [BIN][RUN]:
+The helper exposes only these audited entry points [BIN][RUN]:
 
 | source operation | lowerer | calling convention | packed slots |
 |---:|---:|---|---:|
 | MOV `1` | `0x1b5390` | two stack arguments | 2 |
+| ADD `2`, SUB `3` | `0x1c4c40` | two stack arguments | 6 |
+| MAD `4` | `0x1c53e0` | two stack arguments | 8 |
+| MUL `5` | `0x1c50e0` | two stack arguments | 6 |
 | RCP `6` | `0x1b0840` | context in `ecx`, IR on stack | 6 |
 | RSQ `7` | `0x1b1210` | context in `ecx`, IR on stack | 7 |
+| DP3 `8` | `0x1c5a00` | two stack arguments | 8 |
+| DP4 `9` | `0x1c6160` | two stack arguments | 8 |
+| MIN `10`, MAX `11` | `0x1cb200` | two stack arguments | 10 |
 | EXP `14` | `0x1b1ba0` | context in `ecx`, IR on stack | 6 |
 | LOG `15` | `0x1b2550` | two stack arguments | 8 |
+| internal 2-D texture sample `0x8003` | `0x1c96d0` | three stack arguments, third zero | 6 |
+
+The arithmetic entries are the operation-family wrappers called after the
+front end has selected a source operation.  Static audit shows `ret 8` for all
+of them, with `(context, IR)` on the stack.  They perform alias checks and
+temporary allocation before calling the native builders.  The texture wrapper
+has `ret 0xc`, takes `(context, IR, mode)`, and the observed ordinary path uses
+mode zero.  On the canonical paths below, the only external ownership state
+reached is the same allocator and output vector already supplied by the
+harness; zero initialization is valid for the remaining context fields.
 
 The i386 helper must be built with `-O0`: these old routines use mixed custom
 calling conventions and depend on the caller's literal stack layout.  The
@@ -32,6 +48,7 @@ Every run starts with a zeroed `0x88`-byte backend IR record and sets:
 
 ```text
 IR +0x0c = source operation
+IR +0x10 = 0x00040000       texture sample only: 2-D xy coordinate form
 IR +0x14 = 0x000f0000       full xyzw destination mask
 IR +0x1c = 0x10e40000       identity-swizzled source 0
 IR +0x24 = 0x10e40002       identity-swizzled source 1
@@ -54,6 +71,40 @@ MOV:
   ffc0001c a2803f1f
   ffc0811c a2803f1f
 
+ADD:
+  e004001d b05a800f
+  ffff801f 0000000f
+  e004001d b05a800f
+  ffff801f 0000000f
+  dfc4001c ac800d00
+  ffc4011c ac800d00
+
+SUB:
+  e004001d b05a800f
+  ffff801f 0000000f
+  e004001d b05a800f
+  ffff801f 0000000f
+  dfc4001c ac800dc0
+  ffc4011c ac800dc0
+
+MAD:
+  e004001d b05a800f
+  ffff801f 0000000f
+  e004001d b05a800f
+  ffff801f 0000000f
+  e004001d b05a803f
+  ffff801f 0000000f
+  c205001c ac400d10
+  e205811c ac400d10
+
+MUL:
+  e004001d b05a800f
+  ffff801f 0000000f
+  e004001d b05a800f
+  ffff801f 0000000f
+  c23f801c ac200100
+  e23f811c ac200100
+
 RCP:
   1fff801c ae203000
   000301bc 8c26ac10
@@ -70,6 +121,50 @@ RSQ:
   003f811c ac200d00
   004080fc a2727f00
   004081fc a2727f00
+
+DP3:
+  e004001d b05a800f
+  ffff801f 0000000f
+  e004001d b05a800f
+  ffff801f 0000000f
+  c203011e adb08000
+  e200811e ac400c30
+  ffc0801c a2803f3f
+  ffc0811d a2803f3f
+
+DP4:
+  e004001d b05a800f
+  ffff801f 0000000f
+  e004001d b05a800f
+  ffff801f 0000000f
+  c203011e adb08000
+  e200811e ae003030
+  ffc0801c a2803f3f
+  ffc0811d a2803f3f
+
+MIN:
+  e004001d b05a800f
+  ffff801f 0000000f
+  e004001d b05a800f
+  ffff801f 0000000f
+  c2030a5c af000d10
+  e2038b5c af000d10
+  e0050c1d b05a800f
+  ffff801f 0000000f
+  4289009c af000d41
+  62c9019c af000d41
+
+MAX:
+  e004001d b05a800f
+  ffff801f 0000000f
+  e004001d b05a800f
+  ffff801f 0000000f
+  c2030a7c af000d10
+  e2038b7c af000d10
+  e0050c1d b05a800f
+  ffff801f 0000000f
+  4289009c af000d41
+  62c9019c af000d41
 
 EXP:
   1fff801c 9e851d40
@@ -88,21 +183,35 @@ LOG:
   0041021d a27508a0
   0041021d a27548a0
   0080011c 9c451f00
+
+2-D texture sample (internal operation 0x8003):
+  e004001d b05a800f
+  ffff801f 0000000f
+  e004001d b05a800f
+  ffff801f 0000000f
+  c23f807c 9c014100
+  e23f817c 9c014100
 ```
 
-This closes the raw-byte question for four complex scalar lowerings and the
-ordinary live MOV under one canonical descriptor configuration.  A first Mesa
-backend can use these results as differential fixtures while its descriptor
-builder is developed.  Driver emission should still be generated from typed
-lowering rules rather than copying these literal sequences for arbitrary IR.
+This closes the raw-byte question for the core arithmetic family, four complex
+scalar lowerings, ordinary MOV, and one internal texture-sample form under one
+canonical descriptor configuration.  A first Mesa backend can use these
+results as differential fixtures while its descriptor builder is developed.
+Driver emission should still be generated from typed lowering rules rather
+than copying these literal sequences for arbitrary IR.
 
 ## Remaining compiler boundary
 
-ADD, SUB, MAD, MUL, DP3, DP4, MIN, MAX, comparison, and texture operations do
-not enter the generic MOV-style lowerer directly.  The saved whole-program
-compiler first rewrites their IR and dispatches through additional operation
-specific paths.  The next execution target is the common post-optimizer
-operation dispatcher, or individually audited entry points with their precise
-calling conventions and context fields.  Controlled mask, swizzle, modifier,
-predicate, destination-class, and texture-unit matrices are still required to
-turn this five-operation corpus into a complete semantic ISA table.
+The direct generic-lowerer experiment is an important negative boundary.  With
+operations 2 through 11 placed in the otherwise canonical input, `0x1b5390`
+returns the same two placeholder slots for every operation.  Opcode semantics
+must therefore be carried through the audited family wrappers; treating the
+generic entry as an arithmetic dispatcher silently produces wrong code.
+
+SLT and SGE remain outside the exact corpus.  Sending operations 12 and 13
+through the audited two-source arithmetic wrapper produces identical slots,
+showing that their distinguishing comparison control is synthesized upstream
+rather than represented by the operation field alone.  CMP/SETP, other
+texture forms and units, and controlled mask, swizzle, modifier, predicate,
+destination-class, and coordinate-dimension matrices remain required for a
+complete semantic ISA table.
