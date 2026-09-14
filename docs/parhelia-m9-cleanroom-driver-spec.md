@@ -137,12 +137,42 @@ The saved Linux wrapper enables the PCI ROM BAR at the framebuffer base, copies
 copy only the bounded PInS image.  This is sufficient when the PCI ROM image
 contains the M9 PInS, as the vendor wrapper expects.
 
-**Fallback blocker:** other reverse-engineering notes identify the physical
-store as SPI flash, but its safe direct transaction sequence has not been
-reduced to a clean kernel routine.  If the standard PCI ROM image is absent or
-does not contain a valid PInS, accept a validated firmware copy and refuse cold
-board-specific output initialization.  Do not scan or drive unknown MMIO as a
-substitute.
+The Linux X driver's `HLPInS80_GetBoardInfo` path is now statically joined to
+communication mode zero, its serial-flash device probe, the `0x7ffc` pointer,
+`0x412e` signature, and bounded payload copy.  This proves that the vendor can
+obtain PInS directly from the board store rather than executing VBIOS.  The
+lowest GPIO/MMIO serial transaction has not yet been reduced to a clean kernel
+routine.  If the standard PCI ROM image is absent or does not contain a valid
+PInS, accept a validated firmware copy and refuse cold board-specific output
+initialization.  Do not scan or drive unknown MMIO as a substitute.  See
+`parhelia-m9-cold-init-re.md` for the call chain and pinned evidence.
+
+### 3.2.1 Cold reset, system clocks, and memory controller
+
+The Linux kernel vendor module does not POST the GPU.  Its connect path maps
+resources, copies the PCI ROM, creates software objects, and starts host IRQ
+handling.  The Linux X driver owns the cold branch behind an initialized-state
+test.  For `0x0540` it directly performs, in order:
+
+```text
+save PCI/MMIO state and execute the 0x358 reset/configuration protocol
+disable VGA/display and hold all four display clocks
+mask/ack interrupt banks
+hold all four display controllers
+apply PInS-patched 0xfxx defaults
+program the 27 MHz-derived system synthesizers
+program the direct and indirect memory-controller image and enable pulses
+destructively verify almost 512 KiB of VRAM
+restore the outer display/controller state
+```
+
+Exact register values, masks, delays, indirect-register defaults, board flag,
+and error behavior are closed in `parhelia-m9-cold-init-re.md`.  The vendor
+retries the whole transaction up to 2000 times and then incorrectly marks the
+device initialized even on failure.  The new driver must use bounded polling,
+retain a failed state, keep outputs/requester disabled, and return the failure.
+Cold MC setup does not arm the requester or modeset an output; those remain
+separate phases.
 
 ### 3.3 Atomic modesetting
 
@@ -1021,7 +1051,7 @@ but its format, pack alignment, and rendered extent must remain correct.
 
 | gap | consequence | smallest closing experiment |
 | --- | --- | --- |
-| direct SPI/PInS fallback when PCI ROM mapping is absent or invalid | some cold boards may lack authoritative output data | trace one vendor direct PInS read from reset and reduce its MMIO/I/O sequence |
+| direct SPI/PInS fallback when PCI ROM mapping is absent or invalid | some cold boards may lack authoritative output data | reduce the statically joined `m9x1755` serial-flash transport to its GPIO/MMIO transaction sequence and validate it |
 | auxiliary requester address classes and hardware-owned rollover fields | optional auxiliary streaming cannot be enabled safely | force one auxiliary wrap with all eight descriptor words and allocation metadata |
 | ten relocation/control roles in the vendor full-context template | the template cannot be replayed safely; context switches must re-emit complete known state | vary one bound resource/control at a time and diff the 0xf8-byte template plus restore records |
 | universal native grammar inside the heterogeneous `6c` linked record | arbitrary newly compiled programs cannot execute safely | use the bounded passive constructor/translator/cache hook to join native start/count, VS/FS split, entry selectors, stop and lifetime |
