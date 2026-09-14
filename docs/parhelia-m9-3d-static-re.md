@@ -1599,10 +1599,11 @@ through an explicit physical-index table before packing.
 
 The 16-fragment-sampler compiler check is a logical program-resource limit.  It
 does not prove 16 physical texture pipes and does not contradict the four live
-`70..73` texture-state blocks recovered from `0xf4350`; arraying, indirection,
-or time-multiplexing between those layers remains possible.  Report the
-compiler cap separately from physical throughput until capture establishes the
-sampler-to-state mapping.
+`70..73` texture-state blocks recovered from `0xf4350`.  The subsequent
+five-dependent-sampler capture proves time-serialized compiler scheduling:
+five distinct resources produce the exact result through five texture/raster
+blocks in one DMA submission.  Report the logical compiler cap, implemented
+scheduling limit, and four-slot physical throughput separately.
 
 The `GL_MTX_fragment_shader` validator at `0x1012c180` also proves a legacy
 fragment path with two special temporaries, texture dependency rules, paired
