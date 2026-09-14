@@ -354,7 +354,7 @@ submits matching indexed state:
 | MMIO | value |
 |---:|---|
 | `0x360` | `base & 0xfffff00c` |
-| `0x364` | computed limit/base control |
+| `0x364` | `base + size - 0x1000 + auxiliary_offset` |
 | `0xf64` | `base` |
 | `0xf68` | `base + size - 0x1000` |
 | `0xf74`,`0xf78` | `base` |
@@ -375,6 +375,18 @@ allocates 0x50 bytes, derives two fields from `0xf04`, clears `0xf04` bits
 `0x338=0x40`, `0x33c=0x80`, `0x340=0xc0`, and `0x330=0x1000`.  It initializes
 `0xf0c` with `0x8000`, then replaces bits `9:6` from a device property.  These
 are exact values; the address-translation/cache field names remain provisional.
+
+A read-only warm snapshot on the modern M9148 target after clean-room module
+unload adds an important lifecycle boundary [HW].  `0xf64..0xf7c`,
+`0x1088..0x10ec`, and `0x1320..0x1334` were all zero while the PCI function was
+unbound and `BusMaster-`.  The service lanes/map remained
+`0x40/0x80/0xc0/0x03020100`, but `0x330` was zero.  Thus the successful minimal
+no-op requester test does not establish render-ready address windows; a first
+triangle must program the exact job-derived values above before submission.
+The same snapshot observed `0x360/364=0x48602383/0x1a10c000` and
+`0xf04/f0c=0x0448803e/0x00200000`; these are warm-state observations, not
+portable initialization constants.  See
+`captures/m9x-cleanroom-warm-windows-20260914`.
 
 ## Submit sequence (assembled) [DRV]/[RE?]
 

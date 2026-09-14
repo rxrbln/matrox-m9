@@ -388,6 +388,14 @@ to `0x404`.  `0x404` is an endpoint doorbell, not a ring-size register.  Kick
 progress with `0x314=1` when required.  `0x31c` states 5, 2, and 0 belong only
 to the proved park/resume/clear lifecycle; state 4 stays disabled.
 
+The modern target's warm, unbound state has all aperture, context, and surface
+window registers cleared.  Minimal no-op fence success therefore cannot be
+used as evidence that rendering is ready.  Before the first triangle, derive
+the GPU-domain bases and inclusive last-page values from the pinned job
+resources.  In particular, the captured M9148 VRAM GPU domain begins at
+`0x10000000`; PCI BAR0 begins at `0xd0000000` and must not be substituted for
+that GPU address.
+
 Read-only observation of 32,782 live vendor GL ioctls closes the initial
 address domain: `0x400` points into DMA32 System RAM and always carries low tag
 2, while the exclusive `0x404` endpoint is untagged and dword aligned.  The
@@ -718,9 +726,14 @@ section 4.3.  `ba/bb` is internal hierarchical-Z metadata rather than a
 separate API stencil plane.  Windows `HZFlags` allocator `0x54be0` gates
 16/32/64 stored-bit depth resources with bits 0/1/2 and creates format `0x0b`
 at `ceil(width/8) x ceil(height/4)`; binder `0xaaa7d` installs its selector-12
-view through the `ba/bb` shadow.  The metadata contents and maintenance
-protocol remain opaque, so leave this performance optimization disabled until
-initialization and invalidation are validated.
+view through the `ba/bb` shadow.  Initialize and conservatively invalidate the
+complete plane with `0x007ff000`.  Complete depth clears seed the complete
+plane through the format-aware clear path; partial clears invalidate the whole
+plane.  Mark it dirty after uncoupled CPU/copy writes, retry the conservative
+reset during resource transition, give the allocation to the creating depth
+resource, make clones non-owning, and track parent plus auxiliary together.
+Retain explicit null `ba/bb` as the allocation-failure/disabled fallback and
+validate rejection correctness before enabling this optimization by default.
 
 Final depth/stencil controls are `a8/a9/aa`.  Live gltri/glxgears comparison
 closes `a8 bit 0` as depth-test enable and `bit 1` as depth-write enable, so
