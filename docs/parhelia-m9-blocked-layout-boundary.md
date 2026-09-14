@@ -1,15 +1,20 @@
-# Matrox M9 blocked texture layout: static evidence boundary
+# Matrox M9 blocked texture layout: recovered address calculation
 
-This note traces the last software-visible address calculations around the
-numeric class-3 texture layout. It distinguishes the CPU-visible staging
-layout from the physical destination layout. Addresses are image virtual
-addresses in the saved 32-bit Windows `MxMD.dll`.
+This note traces the numeric class-3 texture layout from the CPU-visible
+staging representation to the physical tiled byte address. The Windows
+user-mode driver delegates the conversion to a GPU copy, but the unstripped
+Linux kernel core contains an independent CPU readback path with the exact
+coordinate-to-byte calculators. That second path closes the physical layout
+gap which was previously thought to require a VRAM capture.
 
-The checked binary is
+The checked binaries are
 `xddm32_210_00_105_se_u_nowhql/MSerX/MxMD.dll`, SHA-256
-`b6905b6e658b87544bc0081d080190e4f8112b723c0b2fefd781ba5766874f43`.
+`b6905b6e658b87544bc0081d080190e4f8112b723c0b2fefd781ba5766874f43`,
+and `m9xdriver-x86_64-1.4.3-80847-20140908-build_98/kernel/`
+`KernelLibraries.o_shipped`, SHA-256
+`bec4490ff72b29887400e988a26e107e80ebb0b11e9d0b437267bec9db5b26e7`.
 Run `python3 tools/m9-blocked-layout-evidence.py` from the repository root to
-verify the byte sequences, tables, and direct-call joins below.
+verify the byte sequences, symbols, relocations, and formula vectors below.
 
 ## Class 3 is accessed through linear staging
 
@@ -89,30 +94,152 @@ additionally finds none of the standard `0x55555555`, `0xaaaaaaaa`, or
 corroborating evidence, because a different implementation need not use those
 masks.
 
-## Exact static boundary and smallest capture
+## Linux reverse-read path contains the physical calculation
 
-Static evidence now defines the logical staging address, staging pitch,
-rectangle, descriptor, block-width/allocation fields, and the operation that
-converts between the two resources. None of the inspected software computes
-the physical byte position of a texel inside a class-3 block. The hardware
-consumes the descriptor and logical coordinates, so the physical permutation
-cannot be derived uniquely from these binaries.
+The overlooked implementation is in the unstripped Linux kernel object.
+`m9x101` at text `0x24e60` is a CPU surface-copy/readback routine. It obtains
+the surface at request `+0x08`, reads two address-configuration values, and
+calls `m9x745` at relocation `0x24f34`. `m9x745` first calls initializer
+`m9x611` at relocation `0x233d0`, then stores a selected address function at
+calculator `+0x50`.
 
-The smallest decisive capture for an address-independent in-block mapping is
-one class-3 allocation containing one complete block:
+The copy loop at `0x25300..0x25348` calls that function indirectly with this
+exact contract [BIN][DER]:
 
-1. Use an uncompressed 32-bit format and the exact block width and allocation
-   quantum reported by the recovered constructor (`+0x16c` and `+0x170`).
-2. Lock through the vendor path and fill each logical texel with a unique
-   32-bit code such as `0x5a000000 | (y << 8) | x`.
-3. Unlock, wait for the upload fence, and record the emitted destination
-   address plus descriptor words (`idx78/idx79`).
-4. Dump exactly one physical destination block from VRAM as 32-bit words.
+```text
+offset = calculate(calculator, base, x, y, z)
+calculator+0x24 = offset
+```
 
-Each code directly maps one logical `(x,y)` to one physical word offset. If
-the permutation may include block-address-dependent XORs, use one 2-by-2 block
-allocation in the same capture, encode block X/Y in the upper code bits, and
-compare all four blocks. That is the smallest extension which distinguishes a
-fixed in-block permutation from horizontal or vertical block-dependent address
-folding. An MMIO command trace without the destination VRAM dump is
-insufficient: the traced command deliberately contains logical coordinates.
+The row-major `m9x252` implementation proves the coordinate order:
+
+```text
+base + (((z * height) + y) * width + x) * bits_per_element / 8
+```
+
+For a tiled surface, the dispatcher selects dedicated functions for 1, 8, 16,
+32, 64, and 128 bits per element, plus DXT1 and DXT2-5. These routines contain
+the expected shifts, masks, coordinate XORs, tile strides, and memory-bank bit
+permutations. They return a physical byte address, rather than a logical
+descriptor or pitch.
+
+The two configuration values are also statically joined to hardware. The
+unnamed service initializer at `0x121d0`, immediately after `m9x1187`, reads
+memory-controller register `0x0f04`. It stores `0x0f04[1:0]` at
+address-config `+0x44` (`device_mode`) and `0x0f04[20:19]` at `+0x48`
+(`channel_mode`). Thus a replacement driver must read these fields after
+memory-controller initialization and select the matching formula; PCI device
+ID alone does not choose one M9148 board layout.
+
+## Exact 32-bit dispatch
+
+For ordinary 32-bit texels, nonzero tiled mode selects one of four functions.
+Surface flag byte 0 bit 3 distinguishes local memory from the aperture path:
+
+| `device_mode == 2` | surface flag bit 3 | function | text address |
+|---:|---:|---|---:|
+| yes | 1 | `m9x474` | `0x24230` |
+| yes | 0 | `m9x659` | `0x244b0` |
+| no | 1 | `m9x587` | `0x24350` |
+| no | 0 | `m9x602` | `0x24580` |
+
+This selection is proven by the four `R_X86_64_32S` relocations at
+`0x23769`, `0x23785`, `0x237a5`, and `0x237c1`. Class 3 does not have a
+separate hidden permutation: it reaches this general tiled dispatcher through
+its nonzero surface mode and uses the function for its element size and memory
+location.
+
+The same dispatcher completely identifies the remaining format families. Each
+row below is ordered as mode-2 local, mode-2 aperture, other-mode local, and
+other-mode aperture:
+
+| element/format | selected functions |
+|---|---|
+| 1 bit | `m9x439`, `m9x531`, `m9x163`, `m9x323` |
+| 8 bits | `m9x297`, `m9x638`, `m9x417`, `m9x1115` |
+| 16 bits | `m9x977`, `m9x259`, `m9x1199`, `m9x460` |
+| 32 bits | `m9x474`, `m9x659`, `m9x587`, `m9x602` |
+| 64 bits | `m9x1029`, `m9x256`, `m9x885`, `m9x934` |
+| 128 bits | `m9x1010`, `m9x898`, `m9x177`, `m9x307` |
+| DXT1 (`format 0x10`) | `m9x710`, `m9x331`, `m9x341`, `m9x273` |
+| DXT2-5 (`format 0x15/0x17`) | `m9x521`, `m9x8`, `m9x911`, `m9x118` |
+
+Surface flag `+0x154 bit 6` overrides the ordinary uncompressed table with
+`m9x382`. Zero tiled mode selects row-major `m9x252`, or `m9x990` for DXT.
+The evidence checker verifies every one of these relocation targets.
+
+## Recovered local 32-bit layout
+
+Let `xn`, `yn`, and `zn` denote bit `n` of the logical coordinates. Both local
+32-bit variants place the low byte-address bits as follows:
+
+```text
+A[1:0] = 0                    (32-bit texel alignment)
+A[4:2] = x[2:0]
+A[6:5] = y[1:0]
+A[7]   = x3
+```
+
+This proves the visible eight-texel class-3 block width directly. Higher bits
+fold in coordinates from neighboring blocks and layers, so the layout is not
+a fixed Morton permutation repeated at every block.
+
+For `device_mode == 2`, `m9x474` adds these bits before the final channel
+transform:
+
+```text
+A8  = x4 ^ y2
+A9  = z0 ^ y3 ^ x5 ^ y2
+A10 = y4 ^ x7 ^ x5 ^ x6 ^ z1
+A11 = x7 ^ x5 ^ y5 ^ y3
+
+tile = (z * (height >> 5) + (y >> 5)) * (width >> 5) + (x >> 5)
+address = (base & ~0x3ff) + (tile << 12) + A10*0x400 + A11*0x800
+address |= A9*0x200 + A8*0x100 + (x3*0x80)
+         + ((y & 3) << 5) + ((x & 7) << 2)
+```
+
+For the other device modes, local routine `m9x587` uses:
+
+```text
+A8  = z0 ^ y2 ^ x4
+A9  = x6 ^ x4 ^ y4 ^ x5 ^ ((y2 ^ x4 ^ y3) & x5)
+A10 = y3 ^ x5
+
+tile = (z * (height >> 4) + (y >> 4)) * (width >> 5) + (x >> 5)
+base_mask = ~0x3ff when device_mode == 1, otherwise ~0x7ff
+address = (base & base_mask) + (tile << 11) + A10*0x400
+address |= A9*0x200 + A8*0x100 + (x3*0x80)
+         + ((y & 3) << 5) + ((x & 7) << 2)
+```
+
+All operations above follow the vendor's 32-bit arithmetic, including the
+addition of the masked base and bank-select bits. Finally, when
+`device_mode` is neither 1 nor 2 and `channel_mode != 1`, every calculator
+rotates address bits 8-10:
+
+```text
+new A10 = old A8
+new A9  = old A10
+new A8  = old A9
+```
+
+The executable reference implementation in
+`tools/m9-blocked-layout-evidence.py` includes these two local formulas and
+the `m9x659`/`m9x602` aperture formulas. Its frozen vectors cover block edges,
+bank XORs, and coarse tile transitions. The checker also hashes the complete
+vendor function bodies, so a different saved binary cannot silently validate
+against offsets from this build.
+
+## Remaining validation boundary
+
+No capture is needed to implement CPU detiling for the formats covered by this
+calculator family. A short coordinate-coded class-3 upload and VRAM dump is
+still useful as hardware validation of the selected `0x0f04` mode and base
+address convention. It is now an implementation check with an exact expected
+answer, rather than an information-recovery requirement.
+
+The checked Python implementation currently exposes all four 32-bit variants.
+The vendor object also contains exact routines for 1/8/16/64/128-bit and DXT
+surfaces; those bodies and their dispatch are identified, but they have not yet
+been transcribed into maintainable source formulas.
