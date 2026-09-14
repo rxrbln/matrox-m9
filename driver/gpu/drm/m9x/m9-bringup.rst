@@ -33,7 +33,11 @@ That register points at writeback word 0, which the diagnostic polls;
 mastering before publishing either address.  On timeout it logs both
 writeback words plus engine, front-end, command and fence-address registers.
 
-The auxiliary ``0x500..0x524`` requester page is allocated but not published.
+The primary stream uses two kernel-owned 32-KiB command slots.  Once a slot's
+last synchronous fence has retired, the producer advances to the alternate
+slot, rebases ``0x400`` to its tagged start, and begins again at offset zero.
+It never rewinds the currently published interval in place.  The auxiliary
+``0x500..0x524`` requester page is allocated but not published.
 The captured vendor GL stream leaves that descriptor dormant and forced-wrap
 behavior has not passed its hardware gate.  The five hardware-owned words are
 therefore neither cleared nor assigned invented meanings.
@@ -85,20 +89,25 @@ device unbound and bus mastering disabled.  These results close basic
 primary-requester execution but
 do not authorize arbitrary userspace streams.
 
+The two-slot primary rebase build (module SHA-256
+``de5cf70322daae380c4668a1c678704f7c2dc784c85785bce8c98525a5b7eea2``)
+then completed 6,000 consecutive fences on the M9148.  Submit 2,731 crossed
+from slot 0 to slot 1; submit 5,461 crossed back to slot 0; the final point was
+``0x17700``.  The module unloaded cleanly with no new warning or timeout and
+left the device unbound with PCI bus mastering disabled.  This independently
+closes both primary slot-switch directions.
+
 The following tests are required in order:
 
-1. Add the captured primary-requester rollover protocol before the bounded
-   32-KiB diagnostic producer reaches its end.  Then stress command-buffer
-   rollover independently from simulated 32-bit fence-epoch wrap.
-2. Record the target's seven requester property inputs or warm
+1. Record the target's seven requester property inputs or warm
    ``0x44c/0x450/0x454`` values, whose exact packer and fallback image are now
    known, plus all address windows before enabling a copied user command
    image.
-3. Add exact value masks for every whitelisted state index, reserve and fence
+2. Add exact value masks for every whitelisted state index, reserve and fence
    every referenced BO, and run the two-pass captured linear triangle.
-4. Force one auxiliary requester wrap and validate quiescence, save/restore
+3. Force one auxiliary requester wrap and validate quiescence, save/restore
    order and address class before publishing ``0x500`` from the new driver.
-5. Add scheduler entities and syncobj timeline output, then pass an A/B/A
+4. Add scheduler entities and syncobj timeline output, then pass an A/B/A
    multi-context state-isolation test before concurrent clients are enabled.
 
 KMS and vblank/IRQ support are separate M9 work.  The present M9 driver has no

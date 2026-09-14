@@ -41,6 +41,25 @@ static void m9_write(struct m9x_device *mdev, u32 reg, u32 value)
 	writel(value, (u8 __iomem *)mdev->mmio + reg);
 }
 
+static dma_addr_t m9_command_slot_bus(const struct m9x_transport *transport)
+{
+	return transport->command_bus +
+	       transport->command_slot * PARHELIA_M9_COMMAND_BYTES;
+}
+
+static void *m9_command_slot_cpu(const struct m9x_transport *transport)
+{
+	return (u8 *)transport->command_cpu +
+	       transport->command_slot * PARHELIA_M9_COMMAND_BYTES;
+}
+
+static void m9_advance_command_slot(struct m9x_transport *transport)
+{
+	transport->command_slot = (transport->command_slot + 1) %
+				  PARHELIA_M9_COMMAND_SLOTS;
+	transport->command_offset = 0;
+}
+
 static const char *m9_fence_get_driver_name(struct dma_fence *fence)
 {
 	return "m9x";
@@ -78,7 +97,7 @@ static struct m9x_fence *m9_fence_create(struct m9x_device *mdev,
 
 static int m9_transport_arm(struct m9x_device *mdev)
 {
-	u32 command = lower_32_bits(mdev->transport.command_bus);
+	u32 command = lower_32_bits(m9_command_slot_bus(&mdev->transport));
 	u32 writeback0 = lower_32_bits(mdev->transport.fence_bus);
 	u32 writeback1 = writeback0 + sizeof(u32);
 
@@ -142,6 +161,7 @@ static bool m9_fence_reached(u32 raw, u32 target)
 static int m9_requester_selftest(void)
 {
 	struct m9x_transport transport = {
+		.command_bus = 0x00100000,
 		.next_fence = 0xfffffff0,
 		.last_fence = 0xfffffff0,
 		.fence_epoch = 7,
@@ -158,6 +178,18 @@ static int m9_requester_selftest(void)
 	    m9_fence_reached(~target, target) ||
 	    !m9_fence_reached(target | 1, target) ||
 	    m9_extend_fence(&transport, target | 1) != (8ULL << 32))
+		return -EINVAL;
+	if (m9_command_slot_bus(&transport) != 0x00100000)
+		return -EINVAL;
+	transport.command_offset = PARHELIA_M9_COMMAND_BYTES - 4;
+	m9_advance_command_slot(&transport);
+	if (transport.command_slot != 1 || transport.command_offset ||
+	    m9_command_slot_bus(&transport) !=
+	    0x00100000 + PARHELIA_M9_COMMAND_BYTES)
+		return -EINVAL;
+	m9_advance_command_slot(&transport);
+	if (transport.command_slot || transport.command_offset ||
+	    m9_command_slot_bus(&transport) != 0x00100000)
 		return -EINVAL;
 	return 0;
 }
@@ -184,15 +216,23 @@ int m9x_submit_noop(struct m9x_device *mdev, u64 *point)
 	if (ret)
 		goto out_unlock;
 	command_offset = mdev->transport.command_offset;
-	if (command_offset > PARHELIA_M9_COMMAND_BYTES - 3 * sizeof(u32)) {
-		/* The vendor requester advances through a producer interval.  A
-		 * rewind needs its separately recovered rollover protocol, so keep
-		 * this diagnostic bounded instead of guessing that reset sequence. */
-		ret = -ENOSPC;
-		goto out_unlock;
+	if (command_offset > PARHELIA_M9_COMMAND_BYTES - 4 * sizeof(u32)) {
+		/*
+		 * Every submission is synchronous here, so the prior slot has
+		 * retired before its successor becomes visible.  Rebase 0x400 to
+		 * the alternate kernel-owned slot instead of rewinding a published
+		 * producer interval in place.
+		 */
+		m9_advance_command_slot(&mdev->transport);
+		command_offset = 0;
+		m9_write(mdev, M9_REG_COMMAND_BASE,
+			 lower_32_bits(m9_command_slot_bus(&mdev->transport)) |
+			 M9_COMMAND_SYSTEM_TAG);
+		m9_read(mdev, M9_REG_COMMAND_BASE);
 	}
-	command = (u32 *)((u8 *)mdev->transport.command_cpu + command_offset);
-	command_end = lower_32_bits(mdev->transport.command_bus) +
+	command = (u32 *)((u8 *)m9_command_slot_cpu(&mdev->transport) +
+			  command_offset);
+	command_end = lower_32_bits(m9_command_slot_bus(&mdev->transport)) +
 		      command_offset + 3 * sizeof(u32);
 
 	target = m9_next_fence_target(&mdev->transport);
@@ -276,6 +316,8 @@ out_unlock:
 int m9x_init(struct m9x_device *mdev)
 {
 	struct device *dev = &mdev->pdev->dev;
+	size_t command_bytes = PARHELIA_M9_COMMAND_BYTES *
+			       PARHELIA_M9_COMMAND_SLOTS;
 	int ret;
 
 	ret = m9x_submit_selftest();
@@ -293,7 +335,7 @@ int m9x_init(struct m9x_device *mdev)
 	mdev->transport.requester_cpu = dmam_alloc_coherent(dev, PAGE_SIZE,
 						      &mdev->transport.requester_bus,
 						      GFP_KERNEL | __GFP_ZERO);
-	mdev->transport.command_cpu = dmam_alloc_coherent(dev, PARHELIA_M9_COMMAND_BYTES,
+	mdev->transport.command_cpu = dmam_alloc_coherent(dev, command_bytes,
 						    &mdev->transport.command_bus,
 						    GFP_KERNEL | __GFP_ZERO);
 	mdev->transport.fence_cpu = dmam_alloc_coherent(dev, PAGE_SIZE,
@@ -304,10 +346,11 @@ int m9x_init(struct m9x_device *mdev)
 		return -ENOMEM;
 	if (upper_32_bits(mdev->transport.requester_bus) ||
 	    upper_32_bits(mdev->transport.command_bus) ||
+	    mdev->transport.command_bus > U32_MAX - command_bytes ||
 	    upper_32_bits(mdev->transport.fence_bus))
 		return -ERANGE;
 	memset32(mdev->transport.command_cpu, 0x45454545,
-		 PARHELIA_M9_COMMAND_BYTES / sizeof(u32));
+		 command_bytes / sizeof(u32));
 	memset32(mdev->transport.requester_cpu, 0x45454545,
 		 PAGE_SIZE / sizeof(u32));
 	memset32(mdev->transport.fence_cpu, U32_MAX, PAGE_SIZE / sizeof(u32));

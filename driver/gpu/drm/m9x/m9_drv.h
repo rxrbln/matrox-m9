@@ -20,6 +20,7 @@ struct drm_file;
 #define M9X_PCI_DEVICE_PHOENIX		0x0540
 
 #define PARHELIA_M9_COMMAND_BYTES	SZ_32K
+#define PARHELIA_M9_COMMAND_SLOTS	2u
 #define PARHELIA_M9_MAX_RELOCS		128u
 #define PARHELIA_M9_MAX_BOS		128u
 
@@ -49,6 +50,7 @@ struct m9x_transport {
 	u32 last_fence;
 	u32 fence_epoch;
 	u32 generation;
+	u32 command_slot;
 	u32 command_offset;
 	bool transport_armed;
 	bool wedged;
