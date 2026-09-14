@@ -44,10 +44,12 @@ PCI ID `0540` should remain behind `m9_enable=1` until the no-op fence, clear,
 triangle, A/B/A context, and modeset tests in section 12 pass.  This is a test
 gate, not an architectural requirement.
 
-The current evidence is sufficient to write most of this code.  It is not yet
-sufficient to claim a complete OpenGL 2.0 driver.  In particular, arbitrary
-programmable shaders cannot be enabled until the final stage-to-program-entry
-join and the needed native operation semantics are verified.
+The current evidence is sufficient to write and validate this initial path.
+It is not yet sufficient to claim a complete OpenGL 2.0 driver.  The external
+program heap, atomic linked vertex/fragment pair, entry controls, and constant
+ranges are joined.  Arbitrary programmable shaders remain gated by the
+internal native layout of that linked resource and the uncaptured packed forms
+listed in `parhelia-m9-driver-readiness.md`.
 
 ## 2. Kernel source structure and shared boundaries
 
@@ -493,9 +495,12 @@ relocated.  The initial implementation can instead serialize complete known
 state at every switch; the template is a later restore optimization.
 
 Do not recycle a context image or release a BO until the associated fence has
-retired.  Before enabling simultaneous GL clients, pass an A/B/A test with
-different render target, depth, viewport, texture, and program state in each
-context.  This is a validation gate; static lifetime ordering is closed.
+retired.  The vendor stack has passed a two-process direct-GLX test with
+distinct linked programs, colors, alternating draws, and correct readback in
+both clients.  Repeat that test with different render target, depth, viewport,
+texture, and program state before enabling simultaneous clients in the new
+driver.  This is now an implementation-validation gate rather than a missing
+vendor-behavior capture.
 
 ### 6.4 Recovery
 
@@ -591,12 +596,13 @@ fields `{stream, offset, type, method, usage, usage_index}`.  Preserve these in
 an M9 vertex-layout IR; do not submit the recovered two-dword frontend records
 as hardware packets because their final hardware lowering is separate.
 
-**Blocker for a general vertex-fetch path:** the complete final stream/
-declaration register payload is not yet isolated as a compact open-driver
-contract.  The known vendor triangle capture plus controlled single-attribute
-differentials must identify the state ranges and relocation words.  A first
-triangle may instead stage CPU-transformed, tightly packed vertices in the
-captured fixed layout and use the validated H03 numeric draw range.
+The controlled vertex corpus closes four canonical preprocessing layouts,
+including float2/float3 position and packed ubyte4 color.  API offsets, strides,
+and nonzero `first` disappear because the vendor CPU-repacks them before the
+preprocessing pass.  Use the exact captured index-`10` span and variable
+index-`23` records for those layouts.  Semantic naming of the four generated
+raster streams and a server-side zero-copy VBO layout remain optional; neither
+blocks the canonical CPU-repacked path.
 
 The captured settled gltri submission contains two draw ranges: physical
 command offsets `0x264` with `[0,4)` and `0x4b8` with `[0,3)`.  The latter
@@ -622,11 +628,12 @@ The user raster draw's other golden state is `22=00006403`, color
 `ba/bb=<11f89000>/f0010140`, depth/stencil
 `a8/a9/aa=0038038a/08ffff00/00ffff00`, and viewport/clip
 `f5=c4=0, f6=c5=00f00140`.  Bracketed addresses are capture-specific
-relocations.  Gears changes `22` between `00006406` and `00006407` for its
-strip batches and changes the low `d7` bit in step.  Those observations close
-the captured triangle code, but the complete topology/control mapping still
-needs a primitive-by-primitive live differential before advertising every
-statically mapped topology.
+relocations.  The later primitive-by-primitive capture closes the raster
+selector in both `22` and `d7`: points use their special expansion, ordinary
+selectors are lines `1`, line strip/loop `2`, triangles `3`, triangle strip
+`4`, fan `5`, quads `6`, quad strip `7`, and polygon `d`.  H03 nonindexed,
+H06 16-bit, H07 32-bit, and u8-to-u16 promotion are also captured.  Use
+`parhelia-m9-vertex-topology-capture.md` as the executable mapping contract.
 
 ### 8.2 Render targets, depth, viewport, and scissor
 
@@ -693,11 +700,12 @@ The API state inputs and compiler keys are closed:
 * multisample enable compiles to `ad` replicated four times followed by `af`;
   a zero `MULTISAMPLEMASK` suppresses color output.
 
-**Blockers:** capture the final effect of cull, wireframe/solid, and flat/
-Gouraud keys in both indexed state and native code.  The nonzero partial sample
-mask path is also unjoined.  Disable wireframe, hardware cull, non-default flat
-shading, and partial sample masks until these differentials pass; software
-lowering remains valid.
+The controlled fixed-state corpus now contains cull/front-face, polygon
+line/point, flat shade, alpha, blend, color-mask, depth-write-off, stencil, and
+sampler A/B cases together with their command and linked-state resources.
+Decode those preserved differentials into golden vectors and validate them on
+the new driver.  The nonzero partial sample-mask path is still unjoined;
+disable partial masks until a real multisample surface can be captured.
 
 ## 9. Textures, formats, mipmaps, and coherency
 
@@ -759,11 +767,12 @@ Track the latest class-1 submission fence on render targets.  When a BO becomes
 a sampled texture, emit the maximum dependency through index `0x43` even if
 its descriptor is otherwise clean.  This static path is closed.
 
-**Validation blocker:** establish whether retiring that dependency also
-invalidates/flushes the texture cache and whether copy/upload destinations use
-the same fence class.  Until then, serialize render-to-texture and upload-to-
-sample transitions with a full fence and re-emit texture state.  This is
-correct but may be slower.
+The live RGBA8 FBO chain proves that the class-1 dependency and ordinary state
+order make a rendered target visible to the sampler without an extra cache
+packet.  Implement that path directly.  Copy/upload destinations and
+depth/stencil producer transitions are different producer families; serialize
+those with a full fence and re-emit texture state until their own A/B captures
+prove the narrower rule.
 
 ## 10. Native shaders and program state
 
@@ -860,11 +869,11 @@ exact previous `6c` value.  The native instruction storage referenced by that
 record and its two internal stage entries remain resource-format blockers for
 new arbitrary shaders.
 
-**Constant blocker for bus-master programs:** the conditional mode-2 constant
-bank input is not joined to the final program resource allocation or its byte
-length.  Begin with inline program and explicit constant-upload paths.  Keep
-bus-master constant storage disabled until vertex-only and fragment-only
-sentinels identify the backing and stage association.
+The live uniform A/B/A capture identifies vertex and fragment constant ranges,
+live-component packing, and the advancing record offsets in the external
+0x21000-byte resource.  Use that external range path first.  The conditional
+mode-2 inline constant bank has no observed public GL trigger and remains an
+optional optimization rather than a first-render blocker.
 
 ### 10.4 NIR compiler scope
 
@@ -874,16 +883,19 @@ reciprocal/rsqrt, basic exp/log, one ordinary 2D TEXLD, comparison/kill for
 alpha test, constants, attributes, varyings, and color/depth outputs.  Lower
 matrix, lighting, fog, and fixed-function texture combine into those forms.
 
-The following remain blockers for arbitrary GLSL/ARB programs:
+The executable lowerer matrix closes destination masks, source swizzles and
+modifiers, destination classes, temp/varying/constant sources, predicate
+polarity, and canonical MOV-through-FLOOR/CMP/SETP forms.  Matrix operations
+lower exactly to DP3/DP4 rows.  The remaining arbitrary-GLSL blockers are:
 
-* texture resource metadata, dimensionality, coordinates, and sampler-unit
-  fields for TEXLD/TEXLDB/TEXLDP/TEXLDD/TEXLDL;
-* the six comparison predicates and nonzero SETP/CMP controls;
-* arbitrary source modifiers, swizzles, masks, predicates, destination classes,
-  and coordinate dimensions;
-* complete numeric native ALU/texture/control mnemonic mapping;
-* remaining program-property execution meanings and special result forms;
-* control flow, kill/discard edge cases, derivatives, and special result forms.
+* final resource/slot joins for TEXLDB/TEXLDP/TEXLDL/TEXLDD, shadow compare,
+  and vertex texture fetch;
+* the nonzero comparison controls needed by SLT/SGE;
+* packed KIL and DDX/DDY forms;
+* branch targets, loop backedges, reconvergence, BREAK/CALL, and the final
+  execution-stop rule;
+* the internal native storage and stage entries referenced by the external
+  linked-program record.
 
 Expose only caps whose required lowering fits this verified subset.  Use
 Gallium's draw module for supported software lowering and return a compile
@@ -992,24 +1004,26 @@ but its format, pack alignment, and rendered extent must remain correct.
 | direct SPI/PInS fallback when PCI ROM mapping is absent or invalid | some cold boards may lack authoritative output data | trace one vendor direct PInS read from reset and reduce its MMIO/I/O sequence |
 | auxiliary requester address classes and hardware-owned rollover fields | optional auxiliary streaming cannot be enabled safely | force one auxiliary wrap with all eight descriptor words and allocation metadata |
 | ten relocation/control roles in the vendor full-context template | the template cannot be replayed safely; context switches must re-emit complete known state | vary one bound resource/control at a time and diff the 0xf8-byte template plus restore records |
-| active `0x8f/0x90..9f` upload-mode selector and bind state | captured native bytes cannot yet become a general upload implementation | same-context shader A/B differential around upload and first draw |
-| final vertex/fragment descriptor to entry/resource ownership | arbitrary linked programs cannot execute safely | fixed VS with two FS programs, then fixed FS with two VS programs |
-| final preprocessing input plus `00..03` raster-consumer formats/strides | even the captured two-pass vertex path is not yet a general VBO implementation | position-only, then one added attribute, stride and offset differentials across both passes |
-| final `0x22` topology/control and correlated `d7` bit mapping | only the captured triangle and gears strip codes are safe | capture one minimal draw for each supported hardware primitive and diff `0x22`, `d7`, and launch flags |
-| sampler metadata and full native shader semantics | broad fixed-function and GLSL coverage is incomplete | one-operation compiler matrix with declared 2D sampler, masks, swizzles, predicates and result classes |
-| render/copy-to-texture cache rule | FBO and dynamic-texture correctness may require conservative stalls | write, fence, sample A/B with and without state re-emission/cache candidate records |
+| native storage and two stage entries inside the external `69` heap / `6c` linked pair | arbitrary newly compiled programs cannot execute safely | preserve compiler-owned program heap and linked record for fixed-VS/two-FS then fixed-FS/two-VS without copying raw addresses |
+| special shader packed forms and control flow | DDX/DDY, explicit LOD/gradients, shadow, vertex texture, comparisons, branches and loops remain gated | run the isolated probe matrix in `parhelia-m9-driver-readiness.md` and save the full program/link resources |
+| generated-stream semantic names and server-side zero-copy vertex layouts | the initial driver must CPU-repack to the four captured canonical layouts | one-output-at-a-time shader/content snapshots, then stride/offset differentials for an optional direct VBO path |
+| MRT output routing | four draw buffers cannot be exposed confidently | one shader writes unique values to four RGBA8 attachments and reads each back |
+| multisample/FAA surface, pattern, mask and resolve | current GLX visuals expose no sample buffers | acquire one vendor multisample surface and capture edge, partial-mask, resolve and query behavior |
+| 10-bit and sRGB round trips | GigaColor and sRGB formats remain unexposed | sentinel render/sample/readback A/B for both 10-bit orders and linear-versus-sRGB resources |
+| copy/upload-to-texture cache rule | dynamic upload correctness uses conservative full fences | upload, fence, sample A/B with and without state re-emission; the ordinary FBO render-to-sample rule is already closed |
 | non-32-bit tiled calculator transcription | tiled 8/16/64/128-bit and DXT resources unavailable | translate identified kernel routines, add frozen vectors, validate one coordinate-coded upload per family |
-| cull/fill/shade final effects and partial sample mask | these raster modes need software fallback | isolated state differential including native program and indexed stream |
 | query snapshot details | occlusion queries remain experimental | begin/end around known visible sample count, slot wrap and multisample |
 | 3D/global reset and fault IRQ | no transparent recovery from a real engine hang | controlled address fault and bad-opcode tests, one source at a time, with complete pre-ack snapshots |
 | hardware cursor layout and M9 gamma LUT | optional KMS features remain software backed | coordinate-coded cursor and LUT ramp captures |
 
-The two-pass vertex layouts and program upload/entry ownership are the
-immediate first-render gates.  Full native semantics and
-sampler metadata are the main gates for general OpenGL programs.  The context
-template, direct SPI fallback, tiled format expansion, queries, reset, cursor,
-and gamma can use the conservative paths described above while their rows stay
-open.
+The primary command path, two-pass canonical vertex layouts, topology,
+program-pair ownership, ordinary sampler state, mipmaps, fixed-state corpus,
+FBO chain, and two-client behavior are captured vendor facts.  Replaying those
+facts is new-driver validation, not a remaining reverse-engineering blocker.
+The linked resource's internal native layout and the special shader rows above
+are the immediate gates for general OpenGL 2.0.  The context template,
+auxiliary requester, tiled formats, queries, reset, cursor, and gamma can use
+the conservative paths described above while their rows stay open.
 
 ## 14. Evidence and clean-room rules
 
