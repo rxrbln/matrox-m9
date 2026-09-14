@@ -25,8 +25,9 @@ the Python standard library.  `[BIN]` below means direct binary data flow and
 
 The Direct3D render-target sRGB-write path is real and call-reachable.  It is a
 compiler-inserted native instruction suffix for draw output zero, with a CPU
-equivalent for color clears.  No corresponding public sampler-sRGB path was
-found.  A state-11 slot at `0x105c04` looks like
+equivalent for color clears.  The format-operation table advertises sRGB read
+for several texture families, but no corresponding sampler-state-to-packet
+path was found.  A state-11 slot at `0x105c04` looks like
 `D3DSAMP_SRGBTEXTURE` in isolation, but whole-caller analysis proves that the
 slot is unreachable legacy table residue.  Its storage and compiler consumer
 belong to `D3DTSS_TEXCOORDINDEX`.
@@ -38,10 +39,12 @@ implementation lead for Mesa, not an advertised GL feature.
 
 The public Direct3D mapper accepts 46 named formats and explicitly rejects 13
 other public formats.  Every one of the 59 names is directly referenced by the
-live D3D capability-builder body, but its operation masks are populated from a
-runtime device/configuration tree.  A live name reference is not proof of
-`D3DFORMAT_OP_TEXTURE`, render-target, sRGB-read, filtering, or autogen-mipmap
-support.
+live D3D capability-builder body.  A later audit recovered the complete
+52-record baseline operation table at `0x20a008` and proved that the runtime
+tree can only remove bits.  See `parhelia-m9-format-operation-matrix.md` and
+`tools/m9-format-operation-evidence.py`.  The operation masks are exact API
+capability declarations, but still do not replace result validation for a new
+driver.
 
 ## The sampler-sRGB false lead
 
@@ -74,11 +77,12 @@ to accept public sampler state 11.  It does not:
 * programmable dispatcher `0x105cf0` accepts a different state interval
   beginning at 13 and supplies no state-11 route.
 
-Thus the state-11-looking slot is dead/call-unreachable.  It cannot justify an
-sRGB sampler cap, and the final sampler words at indices `7c`, `7d`, and `78`
-still contain no joined sRGB-decode bit.  This also explains why the compiler
-consumer selects texture-coordinate records rather than a color-transfer
-operation.
+Thus the state-11-looking slot is dead/call-unreachable.  It cannot explain the
+baseline `D3DFORMAT_OP_SRGBREAD` declarations, and the final sampler words at
+indices `7c`, `7d`, and `78` still contain no joined sRGB-decode bit.  This
+also explains why the known compiler consumer selects texture-coordinate
+records rather than a color-transfer operation.  The advertisement/control
+mismatch is now an explicit remaining boundary.
 
 ## Reachable render-target sRGB write
 
@@ -269,30 +273,30 @@ to claim that resource creation reaches a native descriptor.
 | operation | static result | safe driver conclusion |
 |---|---|---|
 | ordinary sampling | public mapper, descriptor code, allocation layout, and sampler bind are joined | expose only formats already validated by result captures; code presence does not settle signed/float/depth/YUV filtering or conversion |
-| sRGB sampling/decode | state-11-looking fallback slot is unreachable; no final sampler bit or compiler conversion is joined | keep every Gallium sRGB sampler format disabled |
-| ordinary render target | selector-8 resource descriptors carry the same format code, but the per-format D3D operation flags are runtime/config-built | do not infer renderability from a sampler descriptor |
+| sRGB sampling/decode | exact baseline masks advertise `SRGBREAD` on packed normalized, luminance, DXT, and selected alpha formats; state-11-looking fallback slot is unreachable and no final sampler bit or compiler conversion is joined | treat this as a vendor capability declaration with an unresolved control path; keep Gallium sRGB sampler formats disabled until a packet/result delta closes it |
+| ordinary render target | selector-8 descriptors carry the same format code and the exact 52-row D3D baseline names RT-capable formats; runtime policy can only remove bits | use the operation matrix as the vendor capability upper bound, then require result validation before new-driver exposure |
 | sRGB draw write/encode | D3DRS 194 reaches an exact compiler suffix only for output zero | replay and validate the complete suffix before advertising framebuffer sRGB; test blending separately |
 | sRGB clear | RT0 clear performs the exact CPU conversion above before format packing | useful deterministic oracle for RGB8/10-bit clear captures; alpha must remain unchanged |
 | same-format copy/blit | no sRGB shadow consumer is joined in copy paths | treat copies as encoded-byte preserving until a conversion capture proves otherwise |
 | cross-format copy | format descriptors feed CPU/transfer helpers, but no complete pairwise legality table is static | keep conversions on tested paths only |
 | mip sampling | ordinary LOD/tail layout is joined and is independent of the dead sRGB slot | mip selection does not imply sRGB decode |
-| automatic mipmap generation | a global D3D autogen handler exists, while per-format `D3DFORMAT_OP_AUTOGENMIPMAP` masks are not pinned | do not advertise per-format autogen, especially for sRGB, float, depth, YUV, or DXT |
+| automatic mipmap generation | the exact baseline sets `D3DFORMAT_OP_AUTOGENMIPMAP` for common packed color, luminance, GigaColor, and float rows, but not DXT, signed/bump, YUV, or depth | preserve that upper bound and validate generation precision/layout before exposure |
 
 The Windows D3D capability builder at `0x784e0..0x79b7f` directly references
-all 59 public format names and builds 32-byte operation records.  The values
-come through a runtime device/configuration structure rather than a fixed
-literal table.  Static analysis can prove that the builder and names are live,
-but cannot recover the exact board/runtime-specific operation masks from this
-binary alone.  This is the remaining advertisement gate.
+all 59 public format names as restriction tokens.  Its destination records come
+from the fixed 52-entry, 32-byte template at `0x20a008`.  The exact masks and
+post-construction restrictions are documented in
+`parhelia-m9-format-operation-matrix.md`.  Static analysis now recovers the
+vendor capability upper bound; only the board/config-specific removal of bits
+requires a live query.
 
 ## Remaining capture gates
 
 The static map is complete enough to construct descriptors, but a fully
 advertised Mesa format table still needs narrowly scoped captures:
 
-1. Query the vendor D3D format-operation record for every mapped format,
-   including `D3DFORMAT_OP_SRGBREAD`, render-target, filtering, and autogen
-   bits.  Preserve board/config identity with the result.
+1. Query the vendor D3D format-operation records once to preserve the target's
+   board/config-specific restrictions and compare them with the exact baseline.
 2. Capture RT0 draw output with D3DRS 194 off/on and save the complete native
    program.  Match all 25 slots, including the ten-slot helper-generated middle,
    then validate byte results around the transfer-function breakpoint.

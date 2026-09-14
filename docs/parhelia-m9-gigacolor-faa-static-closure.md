@@ -31,8 +31,9 @@ Three tempting interpretations are now resolved:
 
 1. `(AAMode >> 8) & 0x1f` is the number of Direct3D multisample **quality
    levels**, not the sample count. The independently encoded sample type is
-   `(AAMode >> 3) & 0x1f`. The default advertises type 8 and eight quality
-   levels [BIN][DER].
+   `(AAMode >> 3) & 0x1f`. The default stores internal type 8 and reports eight
+   quality levels.  The format-table constructor stores the nonmaskable type,
+   while one GetDriverInfo record path recomputes type 8 [BIN][DER].
 2. `FragSize=6.0` is read and copied to a configuration snapshot, but no M9
    allocator, compiler, packet builder, or result path reads that snapshot
    field. There is no static basis for treating six as bytes per fragment, a
@@ -115,9 +116,14 @@ formats `0x17,0x18,0x19,0x1a,0x1e`. Neither GigaColor public format `0x1f` nor
 `0x23` is on that list [BIN]. The numeric bit is recorded without assigning a
 new semantic name.
 
-This closes the configured advertised mode as eight samples and eight quality
-levels. It does not reveal eight distinct sample locations or eight distinct
-quality patterns.
+This closes the configured internal mode as type eight with eight quality
+levels.  A later whole-caller audit found two calls to this builder.  The table
+constructor passes argument two as one and replaces every eligible pair with
+`0x0001/0x0001`, the nonmaskable type.  One GetDriverInfo record path passes
+zero and replaces it with `0x0080/0x0080`, the configured type-eight mask; a
+sibling query branch copies the constructed record unchanged.  See
+`parhelia-m9-format-operation-matrix.md`.  No static path reveals eight sample
+locations or eight quality patterns.
 
 ## Native GigaColor identity and descriptors
 
@@ -245,8 +251,8 @@ The compiler permits this path only for current surface internal IDs
 
 The local enable decision includes AAMode bit zero (`0x139250..0x139267`) and
 API-state bits from validator `+0x174`. Default AAMode `0x80000842` has bit zero
-clear, so the configured eight-sample capability is advertised without forcing
-AA on every surface [BIN][DER].
+clear, so the internal type-eight configuration does not force AA on every
+surface [BIN][DER].
 
 ## Exact AD dword and allocation join
 
@@ -353,7 +359,7 @@ The following boundaries remain explicit:
 |---|---|---|
 | allocation size | AD carries the current color backing allocation byte extent / 32 | where a multisample surface creation path enlarges or transforms that allocation |
 | fragment layout | selector 8 supplies the render descriptor and AD supplies total extent | per-pixel fragment order, block permutation, compression, and whether every sample is stored |
-| sample positions | configured sample type 8 and eight quality levels | coordinates/pattern for each quality level |
+| sample positions | internal sample type 8 and eight quality levels; stored format masks say nonmaskable while one query path recomputes type 8 | coordinates/pattern for each quality level and the query branch used by the runtime |
 | coverage mask/invert | zero mask suppresses target output | nonzero bit mapping and coverage inversion |
 | resolve | generic copy `0xb21b0` exists; AAMode bit zero changes surface path decisions at `0x994df..0x9951a` and `0x9b569..0x9b59c` | a call edge from multisample surface state to a specific resolve/copy packet and filter |
 | query scaling | MxMD/D3D result `0x1199a0` type 9 returns `[query+0x30] - [query+0x28]` directly at `0x1199ef..0x1199f5`. MxMGLX/GL `0x100b96f0` calls four-slot summer `0x10097240`, then, when context `+0x258:+0x20 == 1`, multiplies the sum by context `+0x258:+0x08` at `0x100b97f9..0x100b9808` | whether the hardware counters count pixels, covered samples, or stored fragments; the GL layer treats the context dword as the required multisample scale |
@@ -372,8 +378,8 @@ The from-scratch driver can implement these pieces from static evidence:
 
 - native `A2B10G10R10` and `A2R10G10B10` resource identities, channel masks,
   32-bit element size, sampler/RT descriptor codes, and D3DCOLOR clear packing;
-- an experimental eight-sample capability mode with eight advertised quality
-  levels;
+- an experimental internal type-eight mode with eight reported quality levels,
+  while retaining the distinct stored-nonmaskable and recomputed-query paths;
 - Direct3D-style AA enable and zero-mask output suppression;
 - AD/AF shadow construction exactly as above, including AD allocation extent,
   lowerer copies, repeated AD packet emission, and one AF packet value.
