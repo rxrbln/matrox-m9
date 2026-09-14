@@ -356,7 +356,7 @@ The following boundaries remain explicit:
 | sample positions | configured sample type 8 and eight quality levels | coordinates/pattern for each quality level |
 | coverage mask/invert | zero mask suppresses target output | nonzero bit mapping and coverage inversion |
 | resolve | generic copy `0xb21b0` exists; AAMode bit zero changes surface path decisions at `0x994df..0x9951a` and `0x9b569..0x9b59c` | a call edge from multisample surface state to a specific resolve/copy packet and filter |
-| query scaling | D3D query result `0x1199a0`; type 9 (occlusion) returns `[query+0x30] - [query+0x28]` directly at `0x1199ef..0x1199f5`, with no software division or AA-dependent normalization | whether the hardware counters count pixels, covered samples, or stored fragments |
+| query scaling | MxMD/D3D result `0x1199a0` type 9 returns `[query+0x30] - [query+0x28]` directly at `0x1199ef..0x1199f5`. MxMGLX/GL `0x100b96f0` calls four-slot summer `0x10097240`, then, when context `+0x258:+0x20 == 1`, multiplies the sum by context `+0x258:+0x08` at `0x100b97f9..0x100b9808` | whether the hardware counters count pixels, covered samples, or stored fragments; the GL layer treats the context dword as the required multisample scale |
 | presentation | WGL disables page flipping for GigaColor; independent-buffer multisample is rejected by diagnostic | exact multisample/Giga blit-present sequence and completion point |
 | synchronization | generic resource copy and render submission use ordinary dependency/fence machinery | dedicated resolve completion or fragment-buffer hazard rule, if any |
 
@@ -382,6 +382,13 @@ Native GigaColor still needs render/sample/readback sentinel tests before
 public exposure. Multisampling remains unsafe to enable because allocation
 factor/layout, sample pattern, nonzero mask semantics, resolve, the hardware
 query-counter unit, and present synchronization are not closed.
+
+The query statements are deliberately layer-specific. MxMD performs no
+software AA scaling for its D3D type-9 result. MxMGLX does perform an OpenGL
+post-scale after aggregating the enabled MxMD results: it multiplies by the
+context sample-count dword when the context multisample flag equals one [BIN].
+This establishes the vendor's GL result policy without proving the physical
+unit counted by one MxMD hardware snapshot.
 
 ## Minimal dynamic closure captures
 
