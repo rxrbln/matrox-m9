@@ -65,6 +65,9 @@ two-slot primary command rebase.  Arbitrary userspace streams remain disabled:
   executable-submit gate is set.  The diagnostic no-op-fence request has a
   separate exact helper.  Pipe fences model the current synchronous UAPI; an
   asynchronous kernel ABI must add a wait operation before it can be enabled.
+  `m9_submit_first_triangle()` issues the separate no-input kernel-owned
+  diagnostic request.  The current kernel prepares its complete guarded job
+  and returns `-EOPNOTSUPP` at the fresh selector-6c serializer gate.
 * Context allocation, its per-context command BO, batch isolation, flush,
   teardown, and direct CPU buffer/texture transfers are implemented behind
   two independent gates: executable submit and a safe linked-program
@@ -90,6 +93,9 @@ progress kick.  Kernel commits `6c27e17` and `9219f41` add derived BO access,
 same-BO H06/H07 range validation, and retired two-slot command rotation.  The
 6,000-submit hardware run crossed from slot 0 to 1 at submit 2,731 and back to
 slot 0 at submit 5,461, ending at fence point `0x17700`.
+Kernel commit `e8bd2f3` adds the no-input first-triangle preparation path.  It
+does not execute: after allocating, initializing and relocating the complete
+known draw it fails before MMIO at the fresh-record serializer boundary.
 
 ## Evidence test
 
@@ -124,13 +130,16 @@ These gaps must remain visible in capability and execution gates:
    indices `00..03`.  Four canonical preprocessing layouts, their routing and
    repeatable `0x16800` address lattice are captured.  The invariant 80-slot
    native image, canonical vertex arena extent `0x192700`, C2 extent `0x1080`,
-   BE auxiliary-surface ownership and AB/AC/AE producer shape are also exact.
+   BE auxiliary-surface ownership, its exact 1-MiB allocation extent, and
+   AB/AC/AE producer shape are also exact.
    The bounded flat-green source is four 20-byte `{x,y,r,g,b}` records (the
    fourth duplicates record 2), and the one-target surface state is
    `AB=AC=0xffffffff`.  C2 has no intervening GPU initializer and the guarded
    diagnostic policy is a zeroed job-local `0x1080` object.  This Mesa skeleton
-   still lacks the preprocessing builder, local-VRAM allocator, exact M9148 BE
-   extent/initialization, and a fresh linked record.
+   general Mesa path still lacks the preprocessing builder, local-VRAM
+   allocator, and a fresh linked record.  The kernel-owned diagnostic now
+   contains the exact 118/113/8-dword templates, all 24 typed address sites,
+   six transition targets, and guarded operand initialization.
 3. Selector `6c` atomically binds one immutable linked VS/FS pair.  Private
    0x3158-byte allocation, ordered cache reuse, COW validation/publication and
    fence lifetime are exact.  Symbolic graph descriptors now map through the

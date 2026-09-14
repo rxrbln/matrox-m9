@@ -115,5 +115,6 @@ int m9_batch_submit(struct m9_screen *screen, struct m9_resource *command,
                     const struct m9_batch *batch, uint32_t context_id,
                     uint64_t *out_point);
 int m9_submit_noop_fence(struct m9_screen *screen, uint64_t *out_point);
+int m9_submit_first_triangle(struct m9_screen *screen, uint64_t *out_point);
 
 #endif

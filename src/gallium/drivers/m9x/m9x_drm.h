@@ -64,6 +64,7 @@ struct drm_parhelia_m9_reloc {
 
 #define PARHELIA_M9_SUBMIT_VALIDATE_ONLY (1u << 0)
 #define PARHELIA_M9_SUBMIT_NOOP_FENCE (1u << 1)
+#define PARHELIA_M9_SUBMIT_FIRST_TRIANGLE (1u << 2)
 
 struct drm_parhelia_m9_submit {
    __u32 context_id;

@@ -592,3 +592,20 @@ m9_submit_noop_fence(struct m9_screen *screen, uint64_t *out_point)
    *out_point = submit.out_point;
    return 0;
 }
+
+int
+m9_submit_first_triangle(struct m9_screen *screen, uint64_t *out_point)
+{
+   struct drm_parhelia_m9_submit submit = {
+      .flags = PARHELIA_M9_SUBMIT_FIRST_TRIANGLE,
+   };
+
+   if (!screen || !out_point)
+      return -EINVAL;
+   if (ioctl(screen->fd, DRM_IOCTL_PARHELIA_M9_SUBMIT, &submit))
+      return -errno;
+   if (!submit.out_point)
+      return -EPROTO;
+   *out_point = submit.out_point;
+   return 0;
+}
