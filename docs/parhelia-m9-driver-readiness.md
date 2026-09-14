@@ -73,6 +73,13 @@ though D3D publishes 12 and the internal record list holds 16.
 
 Direct depth/stencil/raster state uses captured packets.  Transform, lighting,
 texgen, fog, points, texenv and some fragment state use generated programs.
+The 19-case live T&L matrix closes directional/point/spot lighting, materials,
+normal handling, two-sided/separate-specular behavior, clipping, five texgen
+modes, and texture/normal matrices with B/A/B context isolation.  Directional
+lighting also has the complete command/generated-instruction/resource join.
+Cases 1--18 retain exact result and state evidence; repeated vendor tracing
+wedged before their individual packet joins, so further broad tracing is not a
+bring-up prerequisite.
 Selection, feedback and evaluator semantics belong in Mesa/Draw; resident
 display-list meshes are an optional cache.  Fast pixel paths exist with exact
 fallback conditions and shader pack/unpack built-ins, but their conversion,
@@ -107,8 +114,8 @@ native encoding or an implemented scheduling limit.
 | shadow comparison | exact sampler enable/eight compare codes plus live raw 0.25/0.75 and LEQUAL fail/pass results | **captured** for the tested D24/nearest route | filtering, result-channel variants, and FBO producer dependency |
 | vertex texture fetch | four-sampler compiler limit plus live vertex `texture2DLod` result/resource | **captured** | native instruction and vertex sampler join |
 | SLT/SGE and comparisons | CMP/SETP frontend plus live ARBfp SLT/SGE zero/one results | **captured** for the recorded pair | exact native predicate fields and all relational outcomes |
-| constant/uniform branches | live constant and uniform conditional results/resources | **captured** | distinguish folding, native branch, and reconvergence |
-| fixed/dynamic loops, BREAK/CALL | live fixed and uniform-bound loop results plus static BREAK/CALL frontend | loops **captured**; BREAK/CALL native form open | targets/backedges, nesting, BREAK/CALL results and implementation limits |
+| constant/uniform branches | live constant/uniform results plus exact ELSE builder and two packed templates | **captured**, target fixup open | distinguish folded/native cases and resolve reconvergence |
+| fixed/dynamic loops, BREAK/CALL | live fixed/uniform loops; exact loop/break builder joins, BREAK templates, CALL/LABEL/RET graph edges and CALLNZ macro | compiler representation **closed**, physical fixups open | resolve serials into targets/backedges/calls, then nesting and implementation limits |
 | uniforms/constants | vertex and fragment A/B/A sentinels identify live-component ranges in the 0x21000 resource | **closed** for external range path | mode-2 inline constant bank remains optional |
 | program entry/resource ownership | `69` is live drawable/resource backing; `6c` selects a tagged 0x80-aligned heterogeneous linked record through an exact constructor/translator/cache chain | external bind identity **closed** | universal native start/count, VS/FS split, entry selectors, allocator wrap and lifetime |
 | termination | count-delimited compiler stream, endpoint selector `0x7e`, and complete terminal slot are exact | **validation** | determine endpoint-only versus full-terminal stop on generated programs |
@@ -155,7 +162,7 @@ the live Linux ICD did not advertise.
 | remaining gap | consequence | smallest closing experiment |
 |---|---|---|
 | universal native program grammar inside heterogeneous `6c` records | arbitrary newly compiled GLSL cannot execute safely | use the passive constructor/translator/cache hook to join native start/count, VS/FS ownership, entry selectors, stop rule and allocator lifetime to one-stage A/B programs |
-| special shader packed forms: KIL, derivatives, texture controls, predicates, branches and loops | visible behavior is captured but a new compiler cannot emit every form yet | join each preserved isolated draw to the universal native-record grammar and pin operation-specific slots |
+| special shader packed forms and physical control-flow fixups | ELSE/BREAK/BREAKP templates and parser-to-builder joins are exact; KIL, derivatives, texture controls, remaining predicates, branch targets/backedges/calls/reconvergence are not all externally joined | resolve typed fixup serials and join remaining operation-specific slots to the universal native-record grammar |
 | four-target MRT output routing and retirement | draw buffers beyond RT0 remain unsafe | trace the RT1/readback/teardown resource path statically or with a passive hook before any more live multi-target stress |
 | multisample/FAA allocation, pattern, mask and resolve | no sample buffers and no FAA cap | acquire a vendor multisample visual/surface, then clear/edge/mask/query differentials |
 | native 10-bit render and sample round trip | Linux GL downgrades RGB10_A2 to RGBA8, so GigaColor formats cannot be advertised | enable the gated Windows path and capture A2B10/A2R10 clear, draw, sample, raw storage and presentation with sentinel channels |

@@ -901,8 +901,10 @@ lower exactly to DP3/DP4 rows.  The remaining arbitrary-GLSL blockers are:
   and vertex texture fetch;
 * the nonzero comparison controls needed by SLT/SGE;
 * packed KIL and DDX/DDY forms;
-* branch targets, loop backedges, reconvergence, BREAK/CALL, and the final
-  execution-stop rule;
+* typed fixup resolution for branch targets, loop backedges, reconvergence,
+  BREAK/CALL, and the final execution-stop rule.  The ELSE/BREAK/BREAKP slot
+  templates, loop/break builder joins, CALL/LABEL/RET graph edges, and CALLNZ
+  macro expansion are already exact;
 * the internal native storage and stage entries referenced by the external
   linked-program record.
 
@@ -1018,7 +1020,7 @@ but its format, pack alignment, and rendered extent must remain correct.
 | auxiliary requester address classes and hardware-owned rollover fields | optional auxiliary streaming cannot be enabled safely | force one auxiliary wrap with all eight descriptor words and allocation metadata |
 | ten relocation/control roles in the vendor full-context template | the template cannot be replayed safely; context switches must re-emit complete known state | vary one bound resource/control at a time and diff the 0xf8-byte template plus restore records |
 | universal native grammar inside the heterogeneous `6c` linked record | arbitrary newly compiled programs cannot execute safely | use the bounded passive constructor/translator/cache hook to join native start/count, VS/FS split, entry selectors, stop and lifetime |
-| special shader packed forms and control flow | their live results/resources are preserved, but the new compiler cannot emit every native form | join the saved KIL/derivative/texture/predicate/branch/loop records to the universal grammar; capture BREAK/CALL only if static joining is insufficient |
+| special shader forms and physical control-flow fixups | ELSE/BREAK/BREAKP slots and all loop/break/CALL graph-builder joins are exact; KIL/derivative/texture/predicate joins and final branch target resolution remain | resolve typed fixup serials and join the remaining saved operation records to the universal grammar |
 | generated-stream semantic names and server-side zero-copy vertex layouts | the initial driver must CPU-repack to the four captured canonical layouts | one-output-at-a-time shader/content snapshots, then stride/offset differentials for an optional direct VBO path |
 | MRT output routing and retirement | RT0 works; selecting RT1 or all targets finishes then wedges during readback/teardown | statically trace target 1--3 resource retirement or use a passive hook before any more live MRT stress |
 | multisample/FAA surface, pattern, mask and resolve | current GLX visuals expose no sample buffers | acquire one vendor multisample surface and capture edge, partial-mask, resolve and query behavior |
