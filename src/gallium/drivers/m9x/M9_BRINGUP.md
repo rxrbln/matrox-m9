@@ -60,8 +60,11 @@ The pipe screen advertises only exact, joined linear format usages.  It does
 not advertise MSAA, arrays, cube/3-D targets, dma-buf sharing, shader images,
 compute, or GLSL.  Context creation returns `NULL` while the kernel screen
 state says executable submit is unavailable.  This is deliberate: the kernel
-at commits `b7d0194`, `c611a0e`, and `d70b370` validates arbitrary command
-streams but executes only its kernel-owned synchronous no-op fence diagnostic.
+at commits `b7d0194`, `c611a0e`, `d70b370`, and `f459a8b` validates arbitrary
+command streams but executes only its kernel-owned synchronous no-op fence
+diagnostic.  Fence targets now preserve the natural
+`0xfffffff0 -> 0 -> 0x10` rollover and polling issues at most one extra
+progress kick.
 
 ## Evidence test
 
@@ -90,13 +93,15 @@ These gaps must remain visible in capability and execution gates:
    expose completion before `m9_screen.execute_submit` can become true.
 2. The gltri preprocessing pass writes four transient resources which the
    raster pass consumes in the address permutation `[b0,b4,b8,b2]` at
-   indices `00..03`.  Their final element formats, strides, and semantic roles
-   still need controlled vertex-format captures.  The canonical CPU layout
-   therefore stops before hardware descriptor lowering.
-3. The native shader storage, linked-record bytes, and its two internal stage
-   entry/resource descriptors need a fully decoded grammar and native compiler.
-   Index `69` is drawable memory, and the known bind tuple alone is not a
-   general shader path.
+   indices `00..03`.  Four canonical preprocessing layouts and their routing
+   are captured, but this Mesa skeleton has no preprocessing-pass builder or
+   local-VRAM transient allocator yet.
+3. Selector `6c` atomically binds one immutable linked VS/FS pair.  Private
+   0x3158-byte allocation, ordered cache reuse, COW validation/publication and
+   fence lifetime are exact, but a new compiler still needs the opaque pair
+   byte serializer and semantic graph-target placement.  Index `69` is
+   drawable memory, and the known bind tuple alone is not a general shader
+   path.
 4. Triangle-strip control is captured from gears, but its correlated `d7`
    field and strip batching boundary need a minimal differential before live
    draw submission.  Other primitive raster-control values are unproved.
@@ -104,10 +109,11 @@ These gaps must remain visible in capability and execution gates:
    statically recorded, including their surface views and rectangle records.
    They still need translation into the new batch builder and live replay;
    linear BOs can be CPU-cleared during early bring-up.
-6. Packed/tiled render storage has exact descriptor rules but still lacks the
-   physical in-block permutation needed by a new allocator.  Compressed,
-   cube/volume, sampler-compare, query, reset-recovery, and general-shader
-   paths remain gated at the narrower boundaries in the readiness ledger.
+6. All class-3 calculator routes and all fourteen non-32-bit aperture formulas
+   are exact.  Their live index-`78` table-root/page ownership and physical-page
+   validation remain open.  Compressed, cube/volume, sampler sRGB, query,
+   reset-recovery, and general-shader paths remain gated at the narrower
+   boundaries in the readiness ledger.
 
 The Mesa loader maps PCI ID `0x0540` exclusively to `m9x`; the Parhelia map
 contains only the P-series IDs.  Keep the driver-local `m9x_drm.h`
