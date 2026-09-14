@@ -28,6 +28,8 @@ The helper exposes only these audited entry points [BIN][RUN]:
 | EXP `14` | `0x1b1ba0` | context in `ecx`, IR on stack | 6 |
 | LOG `15` | `0x1b2550` | two stack arguments | 8 |
 | Iris TEXLD / D3D operation `66` | `0x1bda50` | eight stack arguments | 3 |
+| Iris CMP / D3D operation `88` | `0x1c8e90` | two stack arguments | 8 |
+| Iris SETP / D3D operation `94` | `0x1c9430` | two stack arguments | 6 |
 | Iris FLOOR `0x8003` | `0x1c96d0` | three stack arguments, third zero | 6 |
 
 The arithmetic entries are the operation-family wrappers called after the
@@ -190,6 +192,24 @@ TEXLD (D3D operation 66, zeroed resource metadata):
   ffc0001c a2803f0f
   ffc0011c a2803f0f
 
+CMP (D3D operation 88):
+  e004001d b05a800f
+  ffff801f 0000000f
+  e004001d b05a800f
+  ffff801f 0000000f
+  e004001d b05a803f
+  ffff801f 0000000f
+  c205005c af400d10
+  e205815c af400d10
+
+SETP (D3D operation 94, zero comparison-control field):
+  e004001d b05a800f
+  ffff801f 0000000f
+  e004001d b05a800f
+  ffff801f 0000000f
+  c23f83dc afc00100
+  e23f8cdc afc00100
+
 FLOOR (Iris operation 0x8003):
   e004001d b05a800f
   ffff801f 0000000f
@@ -214,11 +234,12 @@ returns the same two placeholder slots for every operation.  Opcode semantics
 must therefore be carried through the audited family wrappers; treating the
 generic entry as an arithmetic dispatcher silently produces wrong code.
 
-SLT and SGE remain outside the exact corpus.  Sending operations 12 and 13
+Direct D3D SLT and SGE remain outside the exact corpus.  Sending operations 12 and 13
 through the audited two-source arithmetic wrapper produces identical slots,
 showing that their distinguishing comparison control is synthesized upstream
-rather than represented by the operation field alone.  CMP/SETP, texture
-resource metadata, dimensions and units, and controlled mask, swizzle,
-modifier, predicate,
-destination-class, and coordinate-dimension matrices remain required for a
-complete semantic ISA table.
+rather than represented by the operation field alone.  The GL compiler's
+normalized CMP and SETP paths are now exact for zeroed control fields, but the
+six comparison predicates still need controlled deltas.  Texture resource
+metadata, dimensions and units, and controlled mask, swizzle, modifier,
+predicate, destination-class, and coordinate-dimension matrices remain
+required for a complete semantic ISA table.
