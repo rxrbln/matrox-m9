@@ -110,8 +110,11 @@ base in the baseline case.
 
 The allocation snapshots are identical before and after `ExecuteDma`. That
 establishes CPU-side construction before submission and excludes GPU-generated
-record output for these draws. It does not reveal which private allocator or
-virtual builder wrote each subrecord.
+record output for these draws. The later constructor analysis in
+`parhelia-m9-linked-pair-construction-re.md` closes private allocation, keyed
+cache reuse, copy-on-write validation, and commit-like publication. It still
+does not reveal the opaque byte serializer or semantic placement of every
+subrecord.
 
 ## Safe driver contract
 
@@ -126,12 +129,15 @@ A clean driver may rely on these facts:
 
 Arbitrary programmable construction must remain gated. The absence of public
 native start/count, VS/FS entry, and stop fields is the closed transport result:
-those details belong inside the opaque linked pair. Static tracing ends at
-private resource objects and virtual relocation/allocation callbacks, so a new
-compiler still lacks the internal pair constructor and allocator reuse/wrap
-rule. Assigning fixed record offsets beyond that boundary would be guesswork.
+those details belong inside the opaque linked pair. Private 0x3158-byte
+whole-pipeline allocation, ordered keyed reuse, reclamation above 1023 entries,
+copy-on-write validation, and commit-like publication are closed separately in
+`parhelia-m9-linked-pair-construction-re.md`; there is no allocator wrap rule.
+A new compiler still lacks the internal pair-byte serializer and semantic
+placement of graph targets and some linked-resource controls. Assigning fixed
+record offsets beyond that boundary would be guesswork.
 
-## Remaining constructor validation
+## Remaining serializer validation
 
 `tools/m9x-linked-record-gdb.py` installs passive, bounded breakpoints on the
 constructor, backend translator, and cache promoter. It logs only CPU object
@@ -141,8 +147,9 @@ handed off and the DSO is mapped.
 
 The existing A/B/A capture already proves that changing either stage switches
 the complete pair through `6c` while `69/6a/6b` remain fixed. A future
-constructor investigation should pair this hook with complete allocation
+serializer investigation should pair this hook with complete allocation
 snapshots and one-stage code lengths around 4, 8, 16, and 32 slots. Its purpose
-is to reproduce the private pair builder, not to promote internal offsets into
-public transport fields. A forced allocator wrap is needed separately to close
-reuse; do not infer wrap from the current monotonic 17-record fixture.
+is to recover the private byte layout and semantic linker, not to promote
+internal offsets into public transport fields. Cache reuse and maintenance are
+already closed by static evidence; do not infer a record-ring wrap from the
+current monotonic 17-record fixture.

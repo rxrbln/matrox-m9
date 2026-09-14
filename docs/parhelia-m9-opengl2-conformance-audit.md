@@ -48,8 +48,8 @@ The evidence states used below are:
 | alpha test, blending, separate RGB/alpha, min/max/subtract/reverse subtract | enable/result/static factor and equation maps | join generated native state to visible destination-sensitive results |
 | all logic operations | static frontend: all sixteen GL enums map to exact ICD internal codes; XOR packet/result | join the other fifteen internal codes to final native state/program and visible results |
 | fog, explicit fog coordinate, clip planes, two-sided lighting | API/result plus exact fog/clip/light state and generated compiler records; non-symmetric clip and two-sided lighting are live-closed in B/A/B contexts | remaining fog-coordinate result variants and implementation replay |
-| multisample and sample coverage | API-only on an unsampled visual; Windows config stores internal sample type 8 and reports eight quality levels; the format-table constructor stores nonmaskable masks and one GetDriverInfo path recomputes type 8; `ad[20:0]` is backed allocation bytes/32 and `af` low9 plus bits 11--13 are exactly sourced; zero mask suppresses output; GL query post-scaling is exact | record the format-query branch consumed by the runtime; sampled allocation growth, fragment layout, positions/quality patterns, nonzero mask/invert, resolve, presentation, and physical query-counter unit |
-| occlusion query | result/packet for 16384 visible, 0 hidden, 8192 half-hidden, object reuse, and pre-finish availability zero; static begin/end/result protocol | slot wrap, counter wrap, ordering stress, and implementation replay |
+| multisample and sample coverage | API-only on an unsampled visual; Windows config stores internal sample type 8 and reports eight quality levels; the format-table constructor stores nonmaskable masks and one GetDriverInfo path recomputes type 8; `ad[20:0]` is backed allocation bytes/32; reserved DP2 opcode 5 alone reaches the auxiliary 1..31 dispatcher, whose state 25 stores the float reset to `1.0f` and converted to `af[8:0]=0x100`; the other `af` sources are exact; zero mask suppresses output; GL query post-scaling is exact | identify auxiliary state 25's public meaning and the runtime format-query branch; capture sampled allocation growth, fragment layout, positions/quality patterns, nonzero mask/invert, resolve, presentation, and physical query-counter unit |
+| occlusion query | result/packet for 16384 visible, 0 hidden, 8192 half-hidden, object reuse, and pre-finish availability zero; fixed selector pair 0/1, separate relocated begin/end resources, modulo-32 result, and both-snapshot retirement are exact; no slot allocator exists | physical counter overflow, snapshot word 1, ordering stress, raw/MSAA-scaled behavior, and implementation replay |
 | draw buffers/MRT | exact Windows fan-out for four descriptor pairs, relocations, format classes, masks/blend and common TaskMgr render-write fences; masks 0/1 complete and RT0 writes; mask 2 and no-read mask 15 finish before Linux wedges in timeout-free resource-close retirement | recover native output export and each RT's job-BO membership, then prove a decoded RT1 job, common fence writeback, independent readback and bounded close; expose RT0 only |
 
 ## Textures, samplers, and pixel transfer
@@ -62,22 +62,22 @@ The evidence states used below are:
 | nearest/linear and six minification filters | packet | visible LOD/footprint validation |
 | S/T wrap modes and border color | packet plus result for repeat and a nontrivial border color; mirror/edge selectors are static/packet | 1-D behavior and exact border-color packing |
 | LOD bias, min LOD, max LOD | packet/result for negative bias, both signed saturation limits, min 3, and max 2 | implementation replay |
-| cube maps | result/packet for all six faces and orientation checks; static six-face constructor | seams, mip selection, and incomplete cube behavior |
-| 3-D textures | result/packet for a 7x5x4 volume, all slices, and R repeat | mip recurrence, edge coordinates, and physical slice layout |
+| cube maps | result/packet for all six faces and orientation checks; exact physical base `allocation + level_offset + face*face_size` | seams, mip selection, incomplete cube behavior, and decoded-page validation |
+| 3-D textures | result/packet for a 7x5x4 volume, all slices, and R repeat; exact full-depth level-offset recurrence with Z passed through the address calculator | volume mip results, edge coordinates, and decoded-page validation |
 | rectangle textures | result/packet for unnormalized coordinates; level 1, repeat, and mip filter produce the required errors | implementation replay |
 | depth textures and shadow compare | result/packet for raw D24 0.25/0.75, LEQUAL fail/pass, and exact D16/D32 gradients; static eight compare codes | result-channel/filter matrix, other compare functions, and FBO producer dependency |
 | texture compression | generic extension advertised; static DXT1-5 packers; Linux S3TC absent and direct DXT1/DXT5 uploads return `GL_INVALID_ENUM` | sentinel-filled core-format query; keep DXT disabled unless a returned public format passes upload/sample/readback |
 | texture objects, subimages, copies, priorities/residency semantics | live update-then-sample and framebuffer-copy-then-sample ordering, exact transfer/draw stream boundary, stable descriptors, and ordinary static lifecycle | overlapping copies, subimage/mip boundaries, deletion while bound, priorities/residency, and implementation replay |
 | pixel-store, Draw/Copy/ReadPixels and bitmap | fast GPU path diagnostics and exclusions, shader pack/unpack operations 117..125, basic readback | alignment/row-length/skip/type conversions, overlap, zoom/orientation, depth/stencil pixels, and fast-versus-fallback results; performance is secondary |
 | 10-bit GigaColor | exact native codes `0x68/0x6a`, channel masks, sampler/RT construction and rounded D3DCOLOR clear packers; Linux `RGB10_A2` explicitly reports actual `GL_RGBA8` and 8-bit quantization | native Windows/gated render, blend, sample, raw-backing/readback capture, plus separate depth-30 scanout/LUT/dither validation |
-| float, signed, packed, depth/stencil, YUV, DXT, anisotropic, and sRGB formats | exact D3D map for 46 formats and 13 rejections; native codes/classes/bit sizes; exact 52-row format-operation baseline plus removal-only restrictions; live RT0 sRGB-write state lowers to an exact 25-slot suffix and clear uses the exact piecewise encode; sampler-state lookalike is unreachable TEXCOORDINDEX residue | keep unvalidated families gated until upload/sample/filter/render/blend/copy/readback behavior is proved; reconcile advertised sRGB-read with the unjoined sampler control |
+| float, signed, packed, depth/stencil, YUV, DXT, anisotropic, and sRGB formats | exact D3D map for 46 formats and 13 rejections; native codes/classes/bit sizes; exact 52-row format-operation baseline plus removal-only restrictions; live RT0 sRGB-write state lowers to an exact 25-slot suffix and clear uses the exact piecewise encode; D3D9 sampler state 29 is live for pixel and vertex samplers, stores `+0x46` bit 5 and survives state blocks/query normalization, but the pinned final native lowerers do not consume it; state 11 is the separate TEXCOORDINDEX control | keep unvalidated families gated until upload/sample/filter/render/blend/copy/readback behavior is proved; join a derived-record consumer or use explicit shader lowering for sRGB read |
 
 ## Buffers, arrays, and draw submission
 
 | OpenGL 2.0 area | preserved evidence | remaining work before exposure |
 |---|---|---|
 | client arrays and sixteen generic attributes | static declaration grammar, complete ICD generic-attribute entrypoint vocabulary, four canonical live layouts, and D3D declarations for normalized short/ushort/ubyte and float16 types | visible conversion matrix, stride/offset, disabled current value, and alias rule |
-| VBO creation/update/map/unmap | advertised; vendor resource/fence lifecycle and captured VBO draw path; exact 40-bit PTE grammar and all class-3 calculator bodies/vectors; the index-`78` image is PTE-shaped metadata rather than texels, but its table-root and physical-page ownership are unjoined | orphaning, partial updates, map failure, deletion while referenced, context sharing, and one root-plus-decoded-pages capture |
+| VBO creation/update/map/unmap | advertised; vendor resource/fence lifecycle and captured VBO draw path; exact 40-bit PTE grammar, all 35 class-3 calculator routes/352 vectors, and all 14 non-32-bit aperture formulas over 104,144 native comparisons; the index-`78` image is PTE-shaped metadata rather than texels, but its table-root and physical-page ownership are unjoined | orphaning, partial updates, map failure, deletion while referenced, context sharing, and one root-plus-decoded-pages capture |
 | 16/32-bit element buffers and draw ranges | packet/static H06/H07 paths | base/range boundaries, restart absence, mixed index sizes, and zero-count draws |
 | immediate mode and display lists | live fixed-function workloads | state capture/replay and resource lifetime in the Mesa implementation |
 | evaluators, selection, feedback, display-list semantics | API frontends and explicit software paths; resident GPU mesh cache exists for compiled geometry | Mesa/Draw CPU semantic tests followed by ordinary GPU-draw state-isolation checks |
@@ -87,8 +87,10 @@ The evidence states used below are:
 ## GLSL 1.10 language and programmable pipeline
 
 Compiler acceptance is insufficient here.  Each native family needs its
-instruction bytes, stage ownership, entry/count fields, constants/resources,
-and a visible result joined in the same fixture.
+instruction bytes, stage ownership, constants/resources, immutable linked-pair
+construction, and a visible result joined in the same fixture.  The external
+programmable path exposes no public per-stage entry/count or end-PC fields;
+those fields belong only to the separate fixed-chain inline path.
 
 | GLSL/program area | preserved evidence | remaining work before exposure |
 |---|---|---|
@@ -101,15 +103,15 @@ and a visible result joined in the same fixture.
 | fixed and uniform-bound loops, break/continue/function calls | live fixed/uniform-loop results; exact REP/LOOP/ENDLOOP, BREAK/BREAKP/BREAKC joins, BREAK templates, CALL/LABEL/RET graph edges, and CALLNZ macro expansion | resolve typed fixup serials into final targets/backedges/calls, then establish nesting and implementation limits |
 | vertex/fragment uniforms and arrays | A/B/A stage-specific resource/result captures; exact limits | matrices, integer/bool uniforms, arrays, partial updates, locations after relink |
 | attributes, varyings, built-ins, invariant matching | static 14-entry varying map and exact semantic records; live `gl_FrontFacing` produces distinct front/back colors; `gl_PointCoord` is rejected by the GLSL 1.10 frontend | remaining visible built-in routes, type/size mismatch failures, interpolation slots, and fixed-function point-sprite lowering |
-| ordinary, projected, and bias texture lookup | live result captures plus static texture lowerer; explicit fragment LOD/gradient correctly rejected without the extension | exact native mode/resource join |
+| ordinary, projected, and bias texture lookup | live result captures plus static texture lowerer; executable minimal fixtures prove B/P/L have no slot-local delta, so their distinction belongs to linked coordinate/resource state; explicit fragment LOD/gradient correctly reject without the extension | join the B/P/L linked-resource controls without inventing local instruction bits |
 | vertex explicit-LOD lookup | accepted live result capture under the four-vertex-sampler limit | native instruction and vertex sampler/resource join |
 | derivatives | live `dFdx`/`dFdy` results; exact selectors, canonical native streams, and 104 mask/swizzle/modifier/predicate/control variants | validate helper-lane behavior at primitive and viewport edges on the new driver |
-| discard/KIL | live conditional and unconditional discard results plus static KILL lowerer | locate packed conditional KIL slots and validate helper/coverage behavior |
+| discard/KIL | live conditional and unconditional discard results, exact lowerer, and exact seven-mask packed KIL basis | compose only recorded predicate/compare forms; validate helper and coverage behavior on the new driver |
 | fragment depth output | live `gl_FragDepth=0.25` color/depth result plus static one-component semantic `0x13` and result-routing vocabulary | native output-route join and later-depth-test ordering replay |
 | four fragment color outputs | runtime-sized `gl_FragData[gl_MaxDrawBuffers]` constructor, static target compiler/emitter, and live RT0 result; RT1/all-target attempts finish then wedge during readback/teardown | recover safe targets 1--3 routing and retirement before another result capture |
 | vertex position, point size, clip vertex; fragment color/depth built-ins | exact logical semantics `0x0d..0x13`, component counts and stage presence masks; partial fixed-function/point evidence | direct GLSL result fixtures to join every logical semantic to its native packed route |
 | compiler resource limits | Linux advertises 16 attributes, 4 vertex samplers, 16 fragment samplers, 20 combined, 512 uniform components per stage, 60 varying floats, and 4 draw buffers; static emission proves four full sampler slots plus four generic descriptor/route operands; a five-dependent fragment shader produces the exact result through four scratch RT passes and one final pass; active `vec4[129]` exposes a separate vendor limit bug | recover scratch allocation/lifetime and side-effect rules, then test N/N+1 boundaries; advertise only measured hardware plus implemented lowering limits |
-| program transport and termination | static two-dword slots, inline upload, terminal form; live `0x6c` and full system-resource snapshots | finish record grammar, native storage/entries/counts, endpoint semantics, and relocations |
+| program transport and termination | exact two-dword slots; ordered descriptor substitution before packing; fixed-chain inline starts, 32-byte padding and 256-slot bound; exact result-only, kill-only and combined finalizer forms; live immutable linked VS/FS pair selected atomically by `0x6c`; private 0x3158-byte allocation, keyed reuse, >1023-entry reclamation, COW publication and fence retention are exact; terminal forms have no MRT-index input | recover the opaque internal pair byte serializer, place semantic control-flow targets, establish endpoint-versus-full-operation hardware stop semantics, and exercise reset behavior |
 
 ## Extension and vendor-only retention
 
@@ -120,8 +122,9 @@ conformance claim:
 * native 10-bit GigaColor rendering and its no-page-flip presentation restriction; the Linux GL path's `RGB10_A2` alias to RGBA8 is an explicit negative result, not native 10-bit evidence;
 * floating-point texture formats, YUY2/UYVY sampling/video paths, DXT1-5, and
   dormant anisotropy levels 1/4/8/16;
-* render-target sRGB conversion, while the sampler-side state-11-looking table
-  entry is proven unreachable legacy residue;
+* render-target sRGB conversion and sampler-side execution: live D3D9 sampler
+  state 29 stores and preserves an sRGB-read bit, but no consumer is joined in
+  the pinned final lowerers; state 11 is a distinct TEXCOORDINDEX control;
 * four-target MRT, hardware occlusion counters, and the incomplete FAA/MSAA
   path;
 * the D3D9 SM3 compiler surface: predication, long dynamic flow, 32 temporary

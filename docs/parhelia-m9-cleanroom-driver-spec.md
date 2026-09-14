@@ -48,35 +48,45 @@ The current evidence is sufficient to write and validate this initial path.
 It is not yet sufficient to claim a complete OpenGL 2.0 driver.  The external
 resource/control pairs, atomic linked vertex/fragment selection, and constant
 ranges are joined, but index `69` is captured drawable backing and index `6c`
-selects a heterogeneous linked record.  Arbitrary programmable shaders remain
-gated by the universal native start/count, VS/FS split, entry selectors, stop
-rule, and unjoined packed forms listed in `parhelia-m9-driver-readiness.md`.
+selects one opaque immutable linked VS/FS pair.  There are no public
+programmable start/count, per-stage entry, or end-PC fields in that path.
+Private 0x3158-byte whole-pipeline allocation, keyed cache reuse,
+copy-on-write validation and commit-like publication are exact.  Arbitrary
+programmable shaders remain gated by the internal pair byte serializer,
+semantic graph-target placement, hardware stop semantics, and the remaining
+operation-specific linked-resource forms listed in
+`parhelia-m9-driver-readiness.md`.
 
 ## 2. Kernel source structure and shared boundaries
 
-Keep the current `drivers/gpu/drm/parhelia` device and common infrastructure,
-but add an explicit engine-operations split.  A practical source layout is:
+M9 is an independent DRM driver under `drivers/gpu/drm/m9x`; it must not share
+source files, private headers, objects, register definitions, packet
+validators, or chip dispatch with `drivers/gpu/drm/parhelia`.  Generic DRM,
+GEM and scheduler helpers are the only shared implementation boundary.  The
+current source layout is intentionally M9-specific:
 
 ```text
-parhelia_drv.[ch]             PCI, device lifetime, common DRM registration
-parhelia_gem.c                common BO handles and mmap plumbing
-parhelia_kms.c                common atomic helpers and classic chips
-m9_reg.h                      M9 MMIO and indexed-register definitions only
+m9x_drv.c                     PCI, device lifetime and DRM registration
+m9_drv.h                      private device/BO/requester state
+m9_reg.h                      M9 MMIO and indexed-register definitions
+m9_gem.c                      DMA32 GEM objects and mmap plumbing
+m9_requester.c                primary requester and owned no-op producer
+m9_submit.c                   M9 parser, whitelist and typed relocations
+
+planned independent files:
 m9_bios.c                     option-ROM/PInS 8.0 reader and parser
-m9_kms.c                      M9 CRTC, output, PLL, EDID, vblank
+m9_kms.c                      M9 CRTC, output, PLL, EDID and vblank
 m9_memory.c                   M9 VRAM/window/address-class handling
-m9_requester.c                0x400/0x404 and 0x500..0x524 requester
-m9_submit.c                   parser, whitelist, relocations, scheduler jobs
 m9_fence.c                    writeback sequence and dma_fence integration
 m9_irq.c                      M9 status/mask/W1C banks
 m9_context.c                  context images and ordered restore
 m9_reset.c                    bounded requester-local recovery only
 ```
 
-`struct parhelia_engine_ops` must select all chip-specific operations.  No
-M9 register offset may appear in a classic Parhelia path and no classic packet
-may pass an M9 validator.  The M9 submit parser must use its own opcode table,
-index whitelist, relocation kinds, state limits, and draw-record decoder.
+The independent module is named `m9x_drm.ko`, exposes DRM driver name `m9x`,
+and claims only `102b:0540`.  `parhelia.ko` has no M9 PCI alias or source
+dependency.  The M9 submit parser uses its own opcode table, index whitelist,
+relocation kinds, state limits, and draw-record decoder.
 
 The kernel owns all MMIO, physical or DMA addresses, requester pages, fence
 memory, state-restore images, and command execution.  Userspace supplies typed
@@ -754,7 +764,12 @@ The API state inputs and compiler keys are closed:
   `0x10/0x20/0x30`, and none/CW/CCW `0x40/0x80/0xc0`;
 * point fill has a gated `c1[11:0]=0xfff` effect;
 * multisample enable compiles to `ad` replicated four times followed by `af`;
-  a zero `MULTISAMPLEMASK` suppresses color output.
+  a zero `MULTISAMPLEMASK` suppresses color output;
+* reserved DP2 opcode 5 is the sole direct caller of the 1..31 auxiliary-state
+  dispatcher.  Auxiliary state 25 stores a float at frontend `+0xf0`
+  (validator `+0x170`); reset `1.0f` packs to `af[8:0]=0x100` through the
+  recovered magic-bias conversion.  The public meaning of state 25 remains
+  unknown and must not be invented.
 
 The controlled fixed-state corpus now contains cull/front-face, polygon
 line/point, flat shade, alpha, blend, color-mask, depth-write-off, stencil, and
@@ -921,9 +936,12 @@ The controlled vertex/fragment A/B/A capture closes the final external-path
 ownership edge: `69/6a/6b` remain invariant and `6c` selects a retained,
 0x80-aligned linked-pair record in a captured 0x21000-byte system resource.
 Changing either stage selects a new whole-pair record; restoring A restores its
-exact previous `6c` value.  The native instruction storage referenced by that
-record and its two internal stage entries remain resource-format blockers for
-new arbitrary shaders.
+exact previous `6c` value.  The pair is an opaque transport object: the
+reachable public serializer exposes no independent native start/count,
+per-stage entry, or end-PC controls.  Its private whole-pipeline allocation,
+key lookup, copy-on-write validation, dependency promotion and publication are
+exact; new arbitrary shaders still require the internal pair byte serializer
+and semantic linker rather than a guessed resource layout.
 
 The live uniform A/B/A capture identifies vertex and fragment constant ranges,
 live-component packing, and the advancing record offsets in the external
@@ -944,16 +962,22 @@ modifiers, destination classes, temp/varying/constant sources, predicate
 polarity, and canonical MOV-through-FLOOR/CMP/SETP forms.  Matrix operations
 lower exactly to DP3/DP4 rows.  The remaining arbitrary-GLSL blockers are:
 
-* final resource/slot joins for TEXLDB/TEXLDP/TEXLDL/TEXLDD, shadow compare,
-  and vertex texture fetch;
+* linked-resource controls distinguishing TEXLDB/TEXLDP/TEXLDL and vertex
+  texture fetch.  TEXLDD has an exact nine-slot expansion, ten metadata flag
+  expansions are recorded without invented semantic names, and shadow compare
+  enable plus all eight functions are exact;
 * the nonzero comparison controls needed by SLT/SGE;
-* packed KIL and DDX/DDY forms;
+* predicate composition around KIL and texture forms outside the recorded
+  basis.  Canonical KIL has an exact seven-mask packed basis, while DDX/DDY
+  selectors and 104 mask/swizzle/modifier/predicate/control variants are exact;
 * typed fixup resolution for branch targets, loop backedges, reconvergence,
-  BREAK/CALL, and the final execution-stop rule.  The ELSE/BREAK/BREAKP slot
-  templates, loop/break builder joins, CALL/LABEL/RET graph edges, and CALLNZ
-  macro expansion are already exact;
-* the internal native storage and stage entries referenced by the external
-  linked-program record.
+  BREAK/CALL, and the admitted terminal choice.  The ELSE/BREAK/BREAKP slot
+  templates, loop/break builder joins, CALL/LABEL/RET graph edges, CALLNZ
+  macro expansion, ordered resolver entries and pre-pack physical-descriptor
+  substitution are already exact;
+* serializing the completed native images and linked resources into the opaque
+  internal bytes of a new immutable `6c` pair.  Private allocation, keying,
+  cache reclamation, copy-on-write publication and fence retention are exact.
 
 Expose only caps whose required lowering fits this verified subset.  Use
 Gallium's draw module for supported software lowering and return a compile
@@ -974,8 +998,8 @@ write two dwords through a relocated address.  The indexed body is:
 ```text
 e6e6e61e
 <relocated snapshot address, selector 0x3d>
-64000004 | ((slot & 0xf) << 8)
-64000001 | (((slot + 1) & 0xf) << 8)
+64000004
+64000101
 40008000
 ```
 
@@ -983,18 +1007,25 @@ The OpenGL result is unsigned 32-bit `end.word0 - begin.word0`; word 1 is
 ignored for samples-passed.  Availability follows completion of both snapshot
 writes.  Multisample results are scaled in the vendor GL layer.
 
+Every OpenGL begin/end snapshot uses selector pair 0/1.  These fields are
+source selectors, not a per-query slot, and the vendor path has no query-slot
+allocator or wrap rule.  Query objects instead own distinct relocated begin
+and end snapshot resources.
+
 Live queries now return exactly 16384 for a full 128x128 quad, 8192 for half
 coverage, zero when depth-hidden, and 16384 after object reuse; pre-finish
 availability is zero.  Keep `PIPE_QUERY_OCCLUSION_COUNTER` experimental until
-slot wrap, counter wrap, ordering stress, and multisample scaling are verified.
-This does not block the initial driver.
+physical counter overflow, snapshot word 1, ordering stress, and raw versus
+ICD-scaled multisample behavior are verified.  This does not block the initial
+driver.
 
 The following also remain optional: hardware cursor, partial sample masks,
-class-3 format families whose exact oracle has not been transcribed into
-maintainable source, the fast whole-page clear, uncommon interrupt services,
-more than four live fragment texture blocks, and bus-master shader/constant
-optimizations.  Nonzero-origin `c4/c5` viewport/scissor bounds are already
-captured.
+the live index-`78` table-root/physical-page ownership join, the fast
+whole-page clear, uncommon interrupt services, more than four live fragment
+texture blocks, and bus-master shader/constant optimizations.  All fourteen
+non-32-bit class-3 aperture permutation families already have native-checked
+maintainable formulas.  Nonzero-origin `c4/c5` viewport/scissor bounds are
+already captured.
 
 ## 12. Bring-up and regression sequence
 
@@ -1066,15 +1097,15 @@ but its format, pack alignment, and rendered extent must remain correct.
 | direct SPI/PInS fallback when PCI ROM mapping is absent or invalid | some cold boards may lack authoritative output data | reduce the statically joined `m9x1755` serial-flash transport to its GPIO/MMIO transaction sequence and validate it |
 | auxiliary requester address classes and hardware-owned rollover fields | optional auxiliary streaming cannot be enabled safely | force one auxiliary wrap with all eight descriptor words and allocation metadata |
 | ten relocation/control roles in the vendor full-context template | the template cannot be replayed safely; context switches must re-emit complete known state | vary one bound resource/control at a time and diff the 0xf8-byte template plus restore records |
-| universal native grammar inside the heterogeneous `6c` linked record | arbitrary newly compiled programs cannot execute safely | use the bounded passive constructor/translator/cache hook to join native start/count, VS/FS split, entry selectors, stop and lifetime |
-| special shader forms and physical control-flow fixups | ELSE/BREAK/BREAKP slots and all loop/break/CALL graph-builder joins are exact; KIL/derivative/texture/predicate joins and final branch target resolution remain | resolve typed fixup serials and join the remaining saved operation records to the universal grammar |
+| programmable linked-pair byte serialization | `6c` atomically selects an opaque immutable VS/FS pair; private 0x3158-byte allocation, keyed reuse, >1023-entry reclamation, COW validation/publication and fence lifetime are exact, with no universal public start/count schema | recover the internal bytes that join completed native images and resources into one pair, then validate reset behavior |
+| special shader forms and physical control-flow fixups | KIL seven-mask, DDX/DDY 104-variant and TEXLDD nine-slot forms are exact; ten texture metadata expansions, eight shadow compares, ELSE/BREAK/BREAKP, graph-builder joins and pre-pack substitution are recorded; B/P/L linked-resource controls, unrecorded predicates and semantic branch placement remain | resolve graph targets/backedges/calls/reconvergence and the remaining linked-resource controls; reject combinations outside the recorded basis |
 | generated-stream semantic names and server-side zero-copy vertex layouts | the initial driver must CPU-repack to the four captured canonical layouts | one-output-at-a-time shader/content snapshots, then stride/offset differentials for an optional direct VBO path |
 | MRT export and retirement | four descriptor/relocation targets and common TaskMgr fences are exact, but native export and job-BO membership are unjoined; Linux close has an unbounded fence poll | prove one decoded RT1 export/write-list/common-writeback job, then bounded readback/unbind/delete/context/fd close; expose RT0 only |
-| multisample/FAA surface, pattern, mask and resolve | current GLX visuals expose no sample buffers | acquire one vendor multisample surface and capture edge, partial-mask, resolve and query behavior |
-| 10-bit and sRGB round trips | GigaColor remains unexposed; RT0 sRGB write has an exact 25-slot suffix and clear curve, while sampler sRGB is unjoined | sentinel render/blend/readback for both 10-bit orders and the sRGB RT suffix; locate a real sampler-decode path before texture sRGB |
+| multisample/FAA surface, pattern, mask and resolve | current GLX visuals expose no sample buffers; auxiliary state 25 is the exact float producer for `af[8:0]` and resets `1.0f -> 0x100`, but its public meaning is unknown | identify state 25 through a bounded differential, acquire a vendor multisample surface, then capture edge, partial-mask, resolve and query behavior |
+| 10-bit and sRGB round trips | GigaColor remains unexposed; RT0 sRGB write has an exact 25-slot suffix and clear curve; live D3D9 sampler state 29 stores `+0x46` bit 5 in both sampler paths, but the pinned final native lowerers do not consume it | sentinel render/blend/readback for both 10-bit orders and the sRGB RT suffix; join a later derived-record consumer or use explicit shader lowering for texture sRGB |
 | pixel-store, overlapping-copy and resource-lifetime edge cases | ordinary subimage and framebuffer-copy producer/consumer ordering is captured | alignment/row-length/skip/type matrix, overlap, mip-boundary updates, and deletion while referenced |
-| non-32-bit tiled calculator transcription | tiled 8/16/64/128-bit and DXT resources unavailable | translate identified kernel routines, add frozen vectors, validate one coordinate-coded upload per family |
-| query wrap and multisample scaling | ordinary full/half/hidden counts, availability, and reuse are captured | slot wrap, 32-bit counter wrap, ordering stress, and multisample comparison |
+| class-3 physical backing ownership | all 35 calculator routes, 352 golden vectors, all 14 non-32-bit aperture formulas, and cube-face/volume-Z base math are exact; index `78` ownership is not | capture `request+0x90`, its table root, decoded PTEs and coordinate-coded physical pages together |
+| query publication and multisample scaling | fixed selectors 0/1, modulo-32 arithmetic, ordinary full/half/hidden counts, availability, and reuse are captured; there is no slot allocator | cross physical `0xffffffff`, identify snapshot word 1, stress ordering, and compare raw versus ICD-scaled sampled-surface results |
 | 3D/global reset and fault IRQ | no transparent recovery from a real engine hang | controlled address fault and bad-opcode tests, one source at a time, with complete pre-ack snapshots |
 | hardware cursor fetch layout | cursor remains software backed | vendor MMIO/VRAM capture plus coordinate-coded image |
 | depth-30 LUT indexing/dithering | do not infer GigaColor from the RGB10 LUT ports | connector capture or DAC measurement of a 10-bit gradient |
@@ -1083,10 +1114,12 @@ The primary command path, two-pass canonical vertex layouts, topology,
 program-pair ownership, ordinary sampler state, mipmaps, fixed-state corpus,
 FBO chain, and two-client behavior are captured vendor facts.  Replaying those
 facts is new-driver validation, not a remaining reverse-engineering blocker.
-The linked resource's internal native layout and the special shader rows above
-are the immediate gates for general OpenGL 2.0.  The context template,
-auxiliary requester, tiled formats, queries, reset, cursor, and gamma can use
-the conservative paths described above while their rows stay open.
+Linked-pair byte serialization, semantic control-flow placement, and the
+remaining linked-resource shader rows are the immediate gates for general
+OpenGL 2.0.  The
+context template, auxiliary requester, index-`78` physical backing join,
+queries, reset, cursor, and gamma can use the conservative paths described
+above while their rows stay open.
 
 ## 14. Evidence and clean-room rules
 

@@ -174,9 +174,10 @@ does no PC-relative arithmetic on the low serial [BIN].
 The new control templates close native operation bits for selected branches;
 they do not change the established final-program boundaries:
 
-* `docs/parhelia-m9-program-stage-entry-re.md` proves two 16-bit entries into
-  the inline native image and the `69/6a/6d` bind path.  It does not prove a
-  universal vertex/fragment assignment for `6a` versus `6d`.
+* `docs/parhelia-m9-program-stage-entry-re.md` proves two 16-bit starts in the
+  fixed-chain inline image and the `69/6a/6d` bind path.  Those starts belong
+  only to that inline path; the external programmable `6c` path has no public
+  per-stage entry or count fields.
 * `docs/parhelia-m9-shader-termination-boundary.md` proves the common one-output
   terminal slot `fffc7e1d a2803f0f` and that neither compiler slot count nor
   aligned upload byte count is sent as an execution bound.  Static evidence
@@ -185,23 +186,27 @@ they do not change the established final-program boundaries:
 * `docs/parhelia-m9-linked-record-grammar-re.md` proves that external selector
   `6c` addresses a heterogeneous, 0x80-aligned linked render-resource record.
   The BO and referenced resources must survive until the submission fence;
-  the record can be replaced atomically on state change.  No universal
-  record-relative code start/count/stage split exists in the reachable static
-  serializer.
+  the record is an immutable whole-pair selection replaced atomically on state
+  change.  No universal record-relative code start/count/stage split exists in
+  the reachable static serializer.
 
 Accordingly, the known fixed slots are enough to reproduce these compiler
 fragments, but not enough to submit an arbitrary branch graph through selector
 `6c`.  The unresolved implementation fields are [DER]:
 
-1. the upstream graph-target rule that builds the ordered resolved-descriptor
-   table consumed before native packing;
-2. the final native placement rule for forward branches, backedges,
-   CALL targets, BREAK targets, and reconvergence;
-3. a universal external-record native start/count and VS/FS ownership rule, if
-   such fields exist at all;
-4. allocator reuse/wrap and the exact fence point permitting record reuse;
+1. the semantic rule that assigns graph targets for forward branches,
+   backedges, CALL, BREAK and reconvergence before the already recovered
+   ordered-descriptor substitution;
+2. the final native placement of those resolved targets in a newly constructed
+   pair;
+3. the opaque internal byte serializer that joins completed native images and
+   resources inside a new pair.  Private 0x3158-byte allocation, keyed cache
+   reuse, >1023-entry reclamation and COW publication are now exact;
+4. reset behavior for long-running programmable workloads;
 5. an independent Linux-binary join for these Windows D3D control helpers;
-6. multi-result terminal tails and the remaining semantic stop experiment.
+6. endpoint-only versus full-operation hardware stop semantics.  Result-only,
+   kill-only and combined finalizer tails are exact and have no MRT-index
+   input.
 
 Do not encode speculative PC-relative fields from the compiler serial.  A
 from-scratch driver can safely use the exact fixed templates only with a

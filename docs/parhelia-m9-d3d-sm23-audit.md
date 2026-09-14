@@ -71,8 +71,8 @@ following call-reachable D3D control and declaration routes:
 This proves real graph construction for calls, labels, nesting, conditional
 breaks, predicates, integer constants, and Boolean constants.  It does not
 identify native branch target bits, reconvergence records, or whether a
-particular constant branch is folded.  Those fields remain tied to the
-universal linked-record/native-program grammar.
+particular constant branch is folded.  Those fields remain tied to semantic
+graph-target placement and the opaque linked-pair byte serializer.
 
 The second table proves these arithmetic families reach dedicated common
 lowerers: MOV/MOVA, ADD/SUB, MAD, MUL, RCP, RSQ, DP3, DP4, MIN/MAX, SLT/SGE,
@@ -246,10 +246,17 @@ control-flow graph construction, arithmetic/matrix expansion into common IR,
 stage-specific constant updates, four full fragment samplers, four point-only
 vertex descriptor entries, and the front half of autogen-mipmap dispatch.
 
-Exact native encodings remain gated for KIL, derivatives, texture gradient and
-LOD modes, branch targets/reconvergence, and pixel depth output.  The universal
-linked-record grammar must supply native start/count, stage ownership, entry
-selectors, stop rule, alignment, and lifetime before arbitrary SM2/3 binaries
-can be emitted.  MRT1..3, more than four simultaneous fragment textures,
-sampler sRGB, and mip generation remain disabled until the narrowly scoped
+Exact DDX/DDY encodings, ordered pre-pack descriptor substitution, the
+fixed-chain inline upload, common terminal, and fence lifetime are now closed.
+The external programmable path is one opaque immutable linked VS/FS pair
+selected through `6c`; it has no public native start/count, per-stage entry, or
+end-PC fields.  Private whole-pipeline allocation, keyed reuse, COW
+publication, the canonical KIL seven-mask basis, TEXLDD's nine-slot expansion,
+ten texture metadata expansions, eight shadow-compare functions, and all three
+finalizer paths are now exact.  Arbitrary SM2/3 emission remains gated by the
+opaque internal pair byte serializer, semantic branch/backedge/CALL/BREAK/
+reconvergence placement, linked-resource B/P/L texture controls, unrecorded
+predicate combinations, output routing, and hardware stop semantics.  MRT1..3,
+more than four simultaneous fragment textures, sampler
+sRGB, and mip generation remain disabled until the narrowly scoped
 result/resource experiments above close their execution contracts.

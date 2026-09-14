@@ -104,7 +104,7 @@ for an M9 context.
 |---|---|---|
 | Vertex processing | WARP microcode engine, 12-byte instruction format, attribute-plane latch submission, canned fixed-function programs | A distinct programmable vertex engine.  The M-Series ICD contains hardware-T&L and hardware-GLSL paths; no Parhelia WARP END signatures occur in the MSerX binaries [BIN] |
 | Fragment processing | Small DX8 ps.1.x-like combiner with two temporaries and two constants; Parhelia `GL_MTX_fragment_shader` lowering is now decoded | A separate programmable pixel-shader compiler.  MSerX exposes ARB fragment programs and GLSL 1.10 and has predicate registers `p0..p5`.  Static analysis recovers the compiler IR vocabulary, two-dword native instruction, four-instruction upload lines, exact native packer, operation fields, named register-file classes, source/result descriptors, varying-link tables, predicate descriptors, result routing, `xy`/`zw` result modes, and component-mask scatter.  The complete native ALU/texture mnemonic table and special predicate/control fields still need differential recovery [BIN][DER] |
-| Texture path | Four documented Parhelia pipes, sampler state and formats around `0x11c0..0x120c` | Four full M9 sampler slots (`0x70..0x73`) and four generic descriptor/route operands (`0x74..0x77`) are recovered.  A live five-dependent-sampler shader produces the exact result through four scratch render-target passes and one final pass, proving logical scheduling beyond the physical slot count.  Index `7c` filter/aniso/wrap packing, `7d` LOD packing, `7e..81` border color, `82..85` bump matrix, compare functions, ordinary formats/targets, mip tails, 40-bit PTE decoding, and every class-3 address-calculator body/dispatch are decoded.  The mapped index-`78` bytes are PTE-shaped metadata rather than texels; table-root/page ownership and cube-face/volume-slice physical bases remain unjoined [BIN][CAP][DER] |
+| Texture path | Four documented Parhelia pipes, sampler state and formats around `0x11c0..0x120c` | Four full M9 sampler slots (`0x70..0x73`) and four generic descriptor/route operands (`0x74..0x77`) are recovered.  A live five-dependent-sampler shader produces the exact result through four scratch render-target passes and one final pass, proving logical scheduling beyond the physical slot count.  Index `7c` filter/aniso/wrap packing, `7d` LOD packing, `7e..81` border color, `82..85` bump matrix, compare functions, ordinary formats/targets, mip tails, 40-bit PTE decoding, and every class-3 address-calculator body/dispatch are decoded.  All fourteen non-32-bit aperture permutation families match native code over 104,144 comparisons; cube bases are `level_offset + face*face_size`, and volume bases use the full-depth mip offset with Z passed to the calculator.  The mapped index-`78` bytes are PTE-shaped metadata rather than texels; only their live table-root/page ownership and physical-page validation remain unjoined [BIN][CAP][DER] |
 | Fixed function | Mesa currently lowers fixed-function GL to Parhelia-specific state and WARP/combiner programs | The vendor ICD lowers fixed function, ARB programs, and GLSL to M9 vertex/pixel programs; reuse the Mesa state tracker, then write M9-specific lowering |
 | API evidence | Current open driver targets OpenGL 1.x behavior on Parhelia | The live M-Series ICD exposes GLSL 1.10, ARB vertex/fragment programs, FBO, VBO, occlusion query, draw buffers, NPOT, depth, cube/3D textures, and multisample, with exact limits of 16 attributes, 4 vertex samplers, 16 fragment samplers, 20 combined samplers, 512 uniform components per stage, 60 varying floats, and 4 draw buffers.  S3TC, anisotropy, and float-texture names/packers exist in binaries but are not advertised by the live Linux context.  Captures, rather than strings, decide usable paths |
 
@@ -137,133 +137,99 @@ Do not copy these prototypes into DRM.  Use them as a list of experiments and
 known register candidates, then replace them after a vendor command capture or
 a complete static recovery.
 
-## What is missing
+## What remains open
 
-No saved M9/Phoenix command-buffer capture was found under `captures/`.  This is
-the most important missing artifact.  In particular, the tree lacks a known-good
-M9 stream for a clear and one triangle, with its command-buffer physical/GPU
-address, DMA descriptor image, register trace, fence word, and resulting VRAM
-contents.
+Saved M9/Phoenix command captures now include requester framing, coherent
+writeback fences, a clear and triangle, broad fixed state, ordinary textures,
+FBO/query cases, GLSL differentials, complete system-resource snapshots, and
+two simultaneous direct contexts.  The independent kernel driver has also
+completed 256 consecutive kernel-owned no-op fences on M9148 hardware.  A
+known-good command stream is no longer the limiting artifact.
 
-The following technical pieces are also not yet recovered well enough to write
-a safe DRM submitter and a working Mesa driver:
+The remaining hardware and compiler contracts are narrower:
 
-1. A complete engine/global reset contract.  PCI bus-master enable, requester
-   initialization, descriptor quiescence, and requester-local save/restore are
-   decoded.  The complete immediate-offset Linux MMIO audit and Windows
-   reset-candidate cross-check find no reusable 3D/global reset in the saved
-   stacks, so stronger recovery now requires a controlled capture or hardware
-   experiment rather than another guessed register sequence.
-2. The remaining `0x500..0x524` rollover-field names and a hardware validation
-   of the recovered allocation joins.  The six internal allocation modes are
-   now separated from the public Linux memory enum and the four requester
-   address classes.  Mode 2 dynamically selects `SYS` or `PCI_LOCKED` from
-   request bit 5; mode 1 can add `SCATTER` backing; IO mapping is a separate
-   service.  Static recovery also establishes the initializer formulas, the
-   four-class address-tag table `{2,3,0,3}`, tagged base/transition addresses,
-   a raw live `0x504` pointer, the opcode-2 wrap-to-GPU-base record,
-   save/restore order and a vendor bounded-idle entry point.  Windows contains
-   the same tag table and allocates the requester from a dedicated 4 KiB
-   object.  `0x50c/0x510` are address-like above a low tag nibble; `0x514` is
-   their companion and `0x520/0x524` are always restored first.  A controlled
-   rollover trace is still required to name those hardware producer/consumer
-   fields and their final relationship to the `0x404` submit limit. Both saved
-   kernel stacks have no software producer for those five words outside
-   restoration, establishing that further names cannot come from static
-   register writers.  See `parhelia-m9-allocation-mode-joins.md`.
-3. Context-switch validation and optional query corner cases. Restore submission
-   ownership and fence lifetime are statically resolved: one TaskMgr current
-   context feeds save/restore state into its shared command queue, outgoing
-   serialization precedes incoming restore, and submission fences gate backing
-   objects and restore-slot reuse. `TaskMgr+0x5bc` has no live producer and is
-   not evidence for an alternating pointer. Occlusion create/begin/end/delete,
-   the six-dword relocated write-back record, slot selection, and the unsigned
-   32-bit begin/end subtraction are now recovered. Alignment, the second
-   returned word, slot reuse across revisions, and multisample interaction still
-   require a capture; queries can remain disabled during initial bring-up.
-   Validate the recovered lifecycle with an A/B/A render-and-fence capture. See
-   `parhelia-m9-context-lifecycle-re.md` and
-   `parhelia-m9-occlusion-query-re.md`.
-4. Uncommon render-surface layouts.  Four color pairs are joined to `b0..b7`,
-   ordinary Z to `b8/b9`, and an internal auxiliary depth allocation to
-   `ba/bb`.  Selector-8/9 row span, layout, format and flag fields are exact,
-   and both clear leaves are flattened into their direct page-run, normal GPU
-   rectangle-draw and CPU fallback paths.  Ordinary linear targets and clears
-   can therefore be implemented.  A coordinate-coded capture is still needed
-   to manufacture the physical in-block address permutation for the numeric
-   blocked layout classes; their descriptor overrides alone do not define that
-   permutation.  The uncommon nonzero-origin `c4/c5` transform also remains
-   unnamed.  Draw launch is statically joined to H03/H06/H07 records.
-5. The final M9-index join for culling, wireframe/solid, and shade mode.  Their
-   compiler-key fields are exact: fill `+0x78[1:0]`, shade `[5:4]`, and cull
-   `[7:6]`, retaining the Direct3D enum in each two-bit field.  The
-   equal-numbered per-target field emitted at index `30` is a different
-   object, and the program emitter has no case for cull's dirty group `0x2`.
-   A gated point-fill mask now reaches index `c1[11:0]`.  Multisample
-   enable is now joined through compiled surface words to final indices
-   `ad/af`; only the zero-mask color-output effect is proved for
-   `MULTISAMPLEMASK`.  Blend, alpha test, and format-dependent colour masks
-   feed fragment compilation.  The 256-byte block at validator `+0x248` is a
-   compiler-result cache record, not the native upload image.  Native bytes
-   come from program state `+0xbb0/+0xbb4` and are uploaded through selector
-   `68` and ports `60..67`.  Depth/stencil is joined through per-batch shadows
-   to final indices `a8/a9/aa`.  See
-   `parhelia-m9-blend-raster-lowering.md`.
-6. Texture-write cache visibility and the physical address permutation within
-   class-3 blocks.  Descriptor formats, filter/wrap/LOD fields,
-   2D/cube/volume selection, visible class-3 geometry, ordinary volume-mip
-   allocation, and the packed-tail atlas and upload offsets are statically
-   exact.  Render targets receive class-1 submission fences, sampled textures
-   query those fences even when their descriptors are clean, and the maximum
-   dependency is emitted through packet index `0x43`.  Static code has not yet
-   shown whether completion of that dependency intrinsically establishes
-   texture-cache visibility or whether copy/upload destinations use the same
-   fence class.  See `parhelia-m9-texture-coherency-re.md`.
-7. The complete native vertex and pixel shader ALU/texture/control mnemonic
-   table and a few special lowering fields.  Logical GLSL linkage is an exact
-   name/type/size join into a 14-entry remap; the compiler's `o` and `v`
-   descriptors then traverse explicit physical-index tables.  The shared
-   MxMGLX-to-MxMD instruction layout, named register-file classes, predicate
-   descriptor transforms, several D3D operation anchors, exact native packer,
-   source/result direction, result routing and component-pair modes, upload
-   selector/ports, and 384-instruction/96-line bank boundary are recovered.
-   Remaining unknowns are the full mnemonic table, final seven-bit varying
-   selector, scattered component order, special predicate distribution,
-   source auxiliary meanings and termination convention.  Final inline upload
-   and bind state is exact: it programs two 16-bit entry starts, in packed or
-   companion-split form, plus literal `69 <- 4`; it carries no execution count
-   or end address.  See `parhelia-m9-3d-static-re.md`.
-8. IRQ source bits for fault reporting and the remaining non-vblank service
-   events.  Linux and Windows both use memory write-back fences rather than a
-   completion IRQ.  The three status/W1C and enable-mask register pairs, four
-   vblank source mappings, Windows event routes, and mask-before-ack order are
-   recovered.  Windows high-bank `0x8` is additionally joined to one special
-   asynchronous rectangle-transfer completion path, not to generic 3D
-   retirement; the remaining source semantics are not recovered.
+1. **Fault handling and reset.**  Primary requester initialization,
+   quiescence, save/restore, the raw/W1C/mask IRQ order, and a bounded-idle
+   entry are exact.  Neither saved stack names a general requester/3D fault
+   source or supplies a transparent 3D reset.  Controlled bad-address and
+   bad-record tests must capture every status bank before acknowledgement;
+   recovery remains bounded and fail-closed until then.
+2. **Auxiliary requester wrap.**  Ordinary GL uses the primary `0x400/0x404`
+   requester.  The dormant `0x500..0x524` page has exact initialization and
+   save/restore order, but five hardware-owned words and their forced-wrap
+   transitions require one timestamped live capture before that optional
+   streaming path is enabled.
+3. **Programmable pair serialization.**  `6c` atomically selects an opaque,
+   immutable linked VS/FS pair.  Ordered physical-descriptor substitution,
+   fixed-chain inline starts, 32-byte upload padding, the common terminal,
+   private 0x3158-byte allocation, ordered key reuse, >1023-entry reclamation,
+   copy-on-write validation/publication and fence lifetime are exact; no
+   universal programmable start/count or per-stage entry fields exist.  A new
+   compiler still needs the opaque internal pair byte serializer and semantic
+   placement of branch, backedge, CALL, BREAK and reconvergence targets.
+4. **Special shader forms.**  Canonical ALU, matrix, DDX/DDY, seven-mask KIL,
+   nine-slot TEXLDD, ten texture-metadata and eight shadow-compare forms are
+   native-checked.  Remaining operation-specific joins include B/P/L linked
+   resource controls, unrecorded conditional predicates, output routes and the
+   endpoint-versus-full-operation hardware-stop distinction.
+5. **MRT execution and retirement.**  RT0..3 descriptors, relocations, format
+   classes, target-local masks/blend, and common Windows render-write fence
+   membership are exact.  Native color-export routing and Linux per-target
+   job-BO membership remain unjoined; RT1/all-target vendor runs return from
+   finish but can wedge during teardown.  Expose RT0 only until a decoded RT1
+   job passes independent readback, unbind, deletion, context destruction and
+   fd close under a finite timeout.
+6. **FAA, GigaColor and sRGB.**  Their static formats and front-half controls
+   are real hardware paths.  FAA auxiliary state 25 resets to `1.0f` and packs
+   `af[8:0]=0x100`; sampler state 29 stores sRGB-read enable in `+0x46` bit 5
+   but the pinned final native lowerers do not consume it.  Sampled
+   allocation/layout/pattern/resolve, native 10-bit render/sample/readback/
+   presentation, and sampler-side sRGB execution remain live gates.
+   CRT/output LUT gamma is a separate display function.
+7. **Class-3 physical ownership.**  All 35 calculator routes, 352 golden
+   vectors, all fourteen non-32-bit aperture formulas, cube-face bases and
+   volume-Z recurrence are exact.  Capture `request+0x90`, the live table root,
+   decoded PTEs, and coordinate-coded physical pages together to join the
+   index-`78` mapping to actual backing storage.
+8. **Query edge behavior.**  Occlusion uses fixed selectors 0/1, distinct
+   relocated begin/end resources, modulo-32 subtraction, and both-snapshot
+   retirement; there is no query-slot allocator.  Physical counter overflow,
+   snapshot word 1, ordering stress, and raw versus ICD-scaled MSAA counts
+   remain experimental checks.
+9. **General vertex-resource lifetime.**  Four canonical repack layouts,
+   H03/H06/H07 launches, declaration formats, and preprocessing topology are
+   exact.  Server-side transient contents, allocation/cache ownership, update
+   and cross-context deletion still need bounded validation; CPU repacking is
+   the safe initial policy.
 
-There is also no M9 support in the current `linux-7.2` Parhelia DRM directory or
-the current Mesa Parhelia driver.  PCI device `0540` is intentionally absent, so
-probing an M9 cannot accidentally run Parhelia engine commands.
+M9 production code now lives only in the independent
+`drivers/gpu/drm/m9x` kernel module and `src/gallium/drivers/m9x` Mesa driver.
+`parhelia.ko` claims only the Parhelia-family PCI IDs and the Parhelia Gallium
+driver has no M9 source or build dependency.
 
 ## Implementation order
 
-1. Treat the recovered requester-local restart as the static recovery boundary.
-   Requester programming, memory-tag fences, IRQ banks, vblank routing, and one
-   special Windows transfer-completion interrupt are recovered.  Capture a
-   timeout/restart or run a bounded hardware experiment before adding any
-   global-reset claim.
-2. Capture a vendor clear and triangle on M9.  Save the DMA buffers, descriptor
-   bank `0x400..0x524`, engine/IRQ registers, fence memory, and the affected VRAM
-   pages.  A capture resolves the contradictory ring and surface notes quickly.
-3. Add M9 as a separate `parhelia_engine_ops` implementation in DRM, initially
-   behind an explicit module option.  Validate and relocate M9 packet indices
-   with an M9 whitelist.  Keep Parhelia and M9 contexts/state shadows separate.
-4. Prove kernel-only fill, clear, and triangle self-tests, including memory-tag
-   fence completion, independent IRQ source tests, timeout, requester restart,
-   and two alternating contexts.
-5. Add an M9 Mesa screen/backend which initially uses CPU-transformed vertices
-   and minimal passthrough shaders.  Then recover textures, depth/blend, and the
-   full shader ISA incrementally.
+1. Finish the independent M9 primary-requester rollover and exact value masks,
+   then repeat no-op wrap and simulated 32-bit fence-epoch tests.  Keep the
+   module in a temporary target directory.
+2. Execute the preserved two-pass linear triangle through the M9 validator with
+   kernel-owned command/fence addresses and explicit read/write BO lists.
+   Validate a clear, triangle, depth test/write independence, and one ordinary
+   texture before widening the whitelist.
+3. Add scheduler jobs, one output fence shared by every writable attachment,
+   bounded timeout handling, and complete A/B/A context restore.  Do not
+   publish the auxiliary requester or RT1..3 during this stage.
+4. Enable the independent M9 Gallium context only after those kernel fixtures
+   pass.  Bring up CPU-repacked vertices, RT0, depth/stencil, four direct
+   samplers, mipmaps, blend/alpha state, FBO producer-to-consumer ordering, and
+   two-client isolation.
+5. Build the native NIR backend around immutable linked-pair construction and
+   the recovered packed forms.  Advertise each OpenGL 2.0 capability only after
+   its native result, resource lifetime, and failure boundary pass on the new
+   stack.
+6. Keep FAA, native 10-bit, sRGB, MRT1..3, uncommon formats, query corner cases,
+   and reset recovery behind independent gates until the named experiments
+   above close them.
 
-This order reuses the modern driver framework without assuming command-level
-compatibility that the evidence does not support.
+This sequence uses the modern DRM/Gallium framework while preserving the
+command-level separation proved by the binaries and hardware captures.
