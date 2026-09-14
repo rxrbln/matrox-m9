@@ -315,16 +315,35 @@ bits. The visible bit consequences are [BIN][DER]:
 
 | AF field | source |
 |---:|---|
-| `[8:0]` | low nine bits of the magic-bias float conversion from validator `+0x170` |
+| `[8:0]` | low nine bits of the magic-bias float conversion from validator `+0x170`, written by reserved DP2 opcode 5 auxiliary state ID 25 |
 | `[10:9]` | cleared by the merge |
 | `11` | validator `+0x174` bit 16 |
 | `12` | preserved old bit 12 OR validator `+0x8c` bit 19 |
 | `13` | preserved old bit 13 OR validator `+0x8c` bit 18 |
 | `[31:14]` | preserved old bits |
 
-The semantic names for validator float `+0x170` and the three source bits are
-not established. In particular, static analysis does not justify calling them
-sample count, coverage inversion, or sample-pattern selection [OPEN].
+The producer of validator float `+0x170` is now exact [BIN]. The DP2 parser at
+`0xd0770` maps reserved opcode 5 through compressed selector 2 to
+`0xd0824`. That branch consumes the command count as eight-byte records, loads the
+record dwords as `{id,value}`, and makes the image's only direct call to
+auxiliary-state dispatcher `0x104ce0` at `0xd083e`. The dispatcher accepts IDs
+1 through 31. Its complete target table at `0x1052b8` maps ID 25 to
+`0x1051b9`, whose handler interprets `value` as float bits, stores it at
+frontend `+0xf0`, and marks frontend dirty word `+0x08 bit 1`.
+
+Constructor `0x137110` publishes compiler/validator `+0x80` as that frontend
+at `0x137159..0x137166`; frontend `+0xf0` is therefore exactly validator
+`+0x170`. Initializer `0x12de30` leaves `1.0f` on the x87 stack and stores it
+at `0x12dfbf`, so the default magic-bias result contributes `0x100` to
+AF `[8:0]` [BIN][DER]. The verifier pins the complete opcode-5 parser slice,
+the sole direct call, all 31 table entries, the complete dispatcher slice, the
+ID-25 handler, the alias, and the default store.
+
+No public name for reserved opcode 5 or auxiliary ID 25 was recovered from the
+saved binaries. Its numeric transport, destination, dirty bit, reset value,
+and AF transform are closed; its API/product semantic and the three other AF
+source bits are not. Static analysis still does not justify naming ID 25 as a
+sample count, coverage inversion, or sample-pattern selector [OPEN].
 
 `MULTISAMPLEMASK` is joined only at one behavior point. At
 `0x138bd9..0x138bf0`, if compiled AD is zero, validator `+0x1ac >= 6`, and
@@ -360,7 +379,7 @@ The following boundaries remain explicit:
 | allocation size | AD carries the current color backing allocation byte extent / 32 | where a multisample surface creation path enlarges or transforms that allocation |
 | fragment layout | selector 8 supplies the render descriptor and AD supplies total extent | per-pixel fragment order, block permutation, compression, and whether every sample is stored |
 | sample positions | internal sample type 8 and eight quality levels; stored format masks say nonmaskable while one query path recomputes type 8 | coordinates/pattern for each quality level and the query branch used by the runtime |
-| coverage mask/invert | zero mask suppresses target output | nonzero bit mapping and coverage inversion |
+| coverage mask/invert | zero mask suppresses target output; AF low nine is auxiliary state 25 with default float 1.0 -> `0x100` | public semantic of auxiliary state 25, nonzero mask-bit mapping, and coverage inversion |
 | resolve | generic copy `0xb21b0` exists; AAMode bit zero changes surface path decisions at `0x994df..0x9951a` and `0x9b569..0x9b59c` | a call edge from multisample surface state to a specific resolve/copy packet and filter |
 | query scaling | MxMD/D3D result `0x1199a0` type 9 returns `[query+0x30] - [query+0x28]` directly at `0x1199ef..0x1199f5`. MxMGLX/GL `0x100b96f0` calls four-slot summer `0x10097240`, then, when context `+0x258:+0x20 == 1`, multiplies the sum by context `+0x258:+0x08` at `0x100b97f9..0x100b9808` | whether the hardware counters count pixels, covered samples, or stored fragments; the GL layer treats the context dword as the required multisample scale |
 | presentation | WGL disables page flipping for GigaColor; independent-buffer multisample is rejected by diagnostic | exact multisample/Giga blit-present sequence and completion point |
@@ -382,7 +401,8 @@ The from-scratch driver can implement these pieces from static evidence:
   while retaining the distinct stored-nonmaskable and recomputed-query paths;
 - Direct3D-style AA enable and zero-mask output suppression;
 - AD/AF shadow construction exactly as above, including AD allocation extent,
-  lowerer copies, repeated AD packet emission, and one AF packet value.
+  auxiliary-state-25 AF low field and default, lowerer copies, repeated AD
+  packet emission, and one AF packet value.
 
 Native GigaColor still needs render/sample/readback sentinel tests before
 public exposure. Multisampling remains unsafe to enable because allocation
@@ -409,8 +429,10 @@ than repeat broad MMIO logging:
 3. At surface allocation return and `0xa6d00`, log width, height, pitch,
    multisample type/quality, allocation `+0x14`, layout class, and selector-8
    descriptor. Sweep types 2, 4, and 8 and quality 0..7.
-4. At `0x1395a4` and `0xfbe09`, log validator `+0x18,+0x8c,+0x168,+0x170,
-   +0x174`, surface internal ID, allocation length, final AD, and final AF.
+4. At reserved-opcode-5 parser `0xd0824`, auxiliary handler `0x1051b9`,
+   compiler `0x1395a4`, and emitter `0xfbe09`, log the auxiliary ID/value,
+   validator `+0x18,+0x8c,+0x168,+0x170,+0x174`, surface internal ID,
+   allocation length, final AD, and final AF.
 5. Render one covered pixel with a unique color per sample/quality, then map the
    raw backing to recover physical fragment order and sample positions.
 6. Break on `0xb21b0`, `0x1b8d0`, and present entry points while resolving an
