@@ -179,12 +179,31 @@ uses method `+0x58` to form format-specific depth/stencil metadata from flags,
 depth, and stencil, then calls attachment method `+0x64` for every clipped
 rectangle at `0x13e73e..0x13e74a` [BIN].
 
-These are resource virtual calls, not raw indexed command writes.  Static
-analysis has not yet identified the concrete attachment-class vtables behind
-methods `+0x8c` and `+0x64`, so it does not prove a hardware clear opcode or a
-blit/fill packet.  A driver implementation must not turn the DP2 payload into
-a guessed command.  A differential clear capture or a definitive vtable join
-is still required.
+These are resource virtual calls, not raw indexed command writes.  The common
+resource constructor `0xa32a0` installs interface vtable `0x1f3ba0` at resource
+subobject `+0x18`; that is the exact subobject passed to the render-target
+binder at `0x2d6d0..0x2d721` [BIN].  The vtable therefore closes the next clear
+dispatch level [BIN][DER]:
+
+| attachment vtable slot | concrete function | observed action |
+|---:|---:|---|
+| `+0x64` | `0xa6c10` | construct depth/stencil clear state and call `0xb4fe0` |
+| `+0x8c` | `0xa7b70` | color clear/lazy-clear selection, falling through to `0xa7ee0` |
+
+Color method `0xa7b70` recognizes a whole-surface rectangle when width times
+height exceeds `0x280000` pixels.  That path flushes incompatible prior state,
+then caches the four converted clear words at subobject `+0x318..+0x324`, the
+rectangle at `+0x328..+0x334`, the color mask at `+0x338`, and sets pending bit
+`+0x34c bit 0` [BIN].  Other clears flush pending state through `0xa7ce0` and
+call `0xa7ee0`.  `0xa7ee0` routes ordinary matching-size clears through
+`0xa48b0`; a size-mismatch branch constructs a conversion operation through
+`0xb38d0`, `0xb4690`, and `0xab620` [BIN].
+
+This vtable join proves that the vendor batches some full color clears lazily
+and that the clear path is deeper than one indexed packet.  It still does not
+prove a hardware clear opcode or final blit/fill packet: the command-producing
+leaves below `0xb4fe0` and `0xa48b0` remain unflattened.  A driver implementation
+must not turn the DP2 payload into a guessed command.
 
 ## Driver-ready fields and remaining blockers
 
@@ -205,14 +224,15 @@ The remaining hardware blockers are narrowly defined:
    bitfields below the proven format field.
 2. The exact ordinary-Z versus auxiliary-plane meaning of depth pairs
    `b8/b9` and `ba/bb`.
-3. Concrete command emission behind color method `+0x8c` and depth/stencil
-   method `+0x64`, including any required cache transitions.
+3. Concrete command emission below color leaf `0xa48b0` and depth/stencil leaf
+   `0xb4fe0`, including any required cache transitions.  The attachment
+   vtable itself and the lazy full-color-clear decision are now exact.
 4. The private transformed meaning of `c4/c5` when the nonzero-origin path is
    active.  Ordinary framebuffer viewport/scissor operation does not depend on
    this gap because the zero-origin path duplicates `f5/f6`.
 
 Items 1--3 still prevent a general hardware render-target/depth/clear
-implementation from being called complete.  They can be closed by resolving
-the attachment vtables or by controlled captures that vary one field at a
-time; no additional shader-compiler reverse engineering is needed for these
-surface-state questions.
+implementation from being called complete.  They can be closed by flattening
+the two remaining clear leaves and descriptor builders, or by controlled
+captures that vary one field at a time; no additional shader-compiler reverse
+engineering is needed for these surface-state questions.
