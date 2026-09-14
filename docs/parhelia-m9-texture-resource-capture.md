@@ -3,7 +3,7 @@
 This experiment exercises the saved Linux M9 vendor ICD on the M9148 LP
 (`102b:0540`) with direct OpenGL 2.0 rendering.  It joins visible sampling,
 OpenGL errors, vendor allocations, and the exact indexed state emitted for
-each target.  The phase-one evidence is under
+each target.  Three normalized phases are under
 `captures/m9x-linux-texture-resources-20260914`; its self-test is
 `tools/m9-texture-resource-evidence.py --self-test`.
 
@@ -11,7 +11,7 @@ each target.  The phase-one evidence is under
 
 | case | operation | live result |
 |---:|---|---|
-| 0 | compressed-format inventory | count reports 4; initial zero-filled output remained ambiguous |
+| 0 | compressed-format inventory | count reports 4, but a sentinel-filled four-entry array remains byte-for-byte unchanged |
 | 1 | 13x7 NPOT, complete 13x7/6x3/3x1/1x1 chain | all four selected levels sampled correctly |
 | 2 | 13x7 rectangle, unnormalized coordinates | samples correctly; level 1 is `GL_INVALID_VALUE`; repeat and mip filter are `GL_INVALID_ENUM` |
 | 3 | six 8x8 cube faces with S/T gradient | every face and orientation check passes |
@@ -21,13 +21,23 @@ each target.  The phase-one evidence is under
 | 7 | LOD bias `-2,+100,-100`, min 3, max 2 | all selected mip colors pass |
 | 8 | `GL_RGB10_A2` packed upload | upload/readback calls accepted and sampling passes; packed readback differs |
 | 9/10 | direct DXT1/DXT5 tokens | both rejected with `GL_INVALID_ENUM`, consistent with absent S3TC extension |
+| 11 | odd 13x1 1-D texture | samples correctly; descriptor height is one |
+| 12 | red upload, draw, green `glTexSubImage2D`, draw | both outcomes pass in one context; the descriptor remains stable |
+| 13 | framebuffer `glCopyTexSubImage2D`, then sample | copy and sampled result pass; sequence 17 is a distinct resource-transfer stream |
+| 14 | base/max-level selection | level 1 and level 2 pass and relocate from `11f81000` to `11f91000` |
+| 15 | incomplete mip chain | defined white outcome passes; draw submission has no texture bind/state packet |
+| 16--20 | RGB565, RGBA4, RGB5A1, RGB8, RGBA8 | uploads, exact API readbacks, and visible sampling pass |
+| 21--24 | L8, A8, LA8, I8 | component expansion and visible sampling pass |
+| 25/26 | D16/D32 raw sampling | both return the expected 1/17 through 16/17 gradient and visible result |
 
 Framebuffer FNV-1a checksums are asserted by the verifier.  The vendor reports
 `GL_ARB_texture_compression` but no `GL_EXT_texture_compression_s3tc`.  The
 first inventory run reported count four but used a zero-initialized result
-array, then observed four zeros.  That is not yet evidence that zero is a
-returned format token: a sentinel-filled follow-up must determine whether the
-driver writes the array at all.
+array.  The follow-up initialized all four entries to distinct `dead000N`
+sentinels.  `glGetIntegerv(GL_COMPRESSED_TEXTURE_FORMATS, ...)` returned
+`GL_NO_ERROR` and wrote none of them.  Passing each unchanged sentinel to
+`glCompressedTexImage2D` produced `GL_INVALID_ENUM`.  The Linux vendor ICD has
+a count/list reporting defect: there are no validated compressed-format tokens.
 
 ## Target and descriptor words
 
@@ -138,33 +148,85 @@ the standard truncate/round/bit-replicate models, only round-to-nearest from
 ```
 
 The verifier regenerates these words from the exact upload and asserts both
-hashes.  They describe the observable `glGetTexImage` conversion.  A direct
-VRAM snapshot is still required before assigning the byte order to physical
-storage rather than to the ICD's upload/readback converters.
+hashes.  They describe the observable `glGetTexImage` conversion.  The focused
+run reports actual internal format `GL_RGBA8` (`0x8058`), so the request is
+explicitly downgraded rather than sampled from native 10-bit storage.  Its
+RGBA byte readback hash is `3ac4ea5d`.
 
-## Remaining capture gates
+## Format descriptors and allocation sizing
 
-The next bounded pass uses sentinel-filled compressed-format output, preserves
-the exact RGB10 packed readback, snapshots the complete 0x21000-byte linked
-system resource for selected draws, and captures each texture allocation from
-VRAM.  Until that pass is complete, the mip/cube/volume physical layouts and
-the compressed-inventory bug boundary remain open.
+All phase-three format draws use `70=00040118`, base `78=11f81000`, logical
+size 4x4, sampler `7c=00009200`, and LOD `7d=0ff80000`, except that D16 adds
+`7c[31]`.  Their measured index-79 high bytes are:
 
-Fixture cases 11--26 are prepared for the next live phase.  They add an odd
-1-D texture, update-then-sample coherency, framebuffer-to-texture copy,
-base/max-level selection, incomplete mip behavior, packed RGB565/RGBA4444/
-RGB5A1 uploads, RGB8/RGBA8/luminance/alpha/luminance-alpha/intensity formats,
-and D16/D32 raw depth sampling.  Each remains a separate process/capture case
-so allocation and descriptor changes are attributable to one API choice.
+| API internal format | `79` | hardware code `79 >> 25` | allocation size/alignment |
+|---|---:|---:|---:|
+| RGB565 | `9d010004` | `4e` | `400/40` |
+| RGBA4 | `8c010004` | `46` | `400/40` |
+| RGB5A1 | `94010004` | `4a` | `400/40` |
+| RGB8 | `c9010004` | `64` | `800/80` |
+| RGBA8 | `c8010004` | `64` | `800/80` |
+| L8 | `61010004` | `30` | `200/20` |
+| A8 | `66010004` | `33` | `200/20` |
+| LA8 | `a2010004` | `51` | `400/40` |
+| I8 | `a2010004` | `51` | `400/40` |
+| D16 | `b8010004` | `5c` | `400/40` |
+| D32 | `f8010004` | `7c` | `800/80` |
 
-The static format table gives falsifiable priors for that pass.  After the
-one-bit left shift seen in `c8 -> 0x64` and `fa -> 0x7d`, expected high bytes
-include `9c` for R5G6B5 (`0x4e`), `94` for A1R5G5B5 (`0x4a`), `8c` for
-A4R4G4B4 (`0x46`), `60` for L8 (`0x30`), `66` for A8 (`0x33`), `a2` for
-A8L8 (`0x51`), `b8` for D16 (`0x5c`), and `f8` for D32 (`0x7c`).  OpenGL
-external channel ordering may make the ICD choose a sibling code or convert on
-upload, so these values are comparison targets rather than assumptions in the
-fixture.
+This validates every static format-code prior.  Bit 24 distinguishes RGB from
+RGBA for the shared 32-bit code and similarly appears for RGB565 and L8.
+Intensity uses the LA8 storage code and relies on component routing.  D16 and
+D32 are distinct hardware families even though this input gradient produces
+identical API readback and framebuffer hashes.
+
+The object at index `78` begins with the following 0x80-byte record, repeated
+to fill each small allocation:
+
+```text
+0000: 11ee0008 11ee1008 00000000 ...
+0020: 11f88008 11f89008 11f8a008 ...
+```
+
+It is a list of tagged backing addresses, not linear pixels.  The 0x800-byte
+images are identical across RGB10_A2, updates, copy, and the narrow-format
+cases even while visible pixels and descriptor formats differ.  A new driver
+must build this indirection and allocate the referenced backing pages.
+
+## Update, copy, and mip-selection streams
+
+The same-context subimage draws are sequences 12 and 14.  Both emit an 8x8
+RGBA8 bind at `11f81000`, and both visible outcomes pass.  The update occurs
+outside those selected draw submissions; the resource object is stable before
+and after each draw.  This proves the vendor stack orders the update before
+reuse, although the selected snapshot does not expose the backing-page upload.
+
+Framebuffer-to-texture copy sequence 17 is an 0x11a4-byte, two-range transfer
+stream.  It programs destination `b0=11f81000`, `b1=c8010020`, then sequence
+18 samples a 16x16 RGBA8 descriptor at the same resource address.  The result
+checksum `c6909dc5` passes.  This is an implementation basis for a GPU copy
+path and its ordering point.
+
+Base/max selection sequence 12 binds level 1 as 4x4 at `11f81000` with
+`7d=01000000`; sequence 16 binds level 2 as 2x2 at `11f91000` with `7d=0`.
+Their linked-resource snapshots differ in 85 bytes from offsets `606` through
+`73a`.  The incomplete-chain case produces white but its submission contains
+only fence/progress writes and no index `70` or `78` bind.
+
+## Capture boundaries
+
+Every selected draw retains the complete 0x21000-byte system-resource mapping,
+the active BM image, ExecuteDma input, allocation tuples, and an image at the
+index-78 resource address.  The cube sequence additionally retains a complete
+0x2c0000-byte range.  Both long snapshots completed, but the 30-second tracer
+timeout killed that process before its result line was flushed; an independent
+map-only run produced the expected visible checksum.  The LOD long capture
+completed normally.  Changes in their large post-draw ranges overlap other
+backing/render allocations and are not evidence of a linear texture layout.
+
+One earlier X session ended when the controlling `startx` SSH shell received
+SIGHUP.  Its log says `xinit: unexpected signal 1`; there was no kernel or GPU
+fault.  Starting through `nohup setsid` keeps the reconstructed vendor session
+independent of SSH.
 
 <!-- Copyright 2026 Rene Rebe <rene@exactco.de> -->
 <!-- SPDX-License-Identifier: GPL-2.0 -->
