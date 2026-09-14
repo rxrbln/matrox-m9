@@ -112,6 +112,14 @@ reuse the previous mapped-buffer contents with different inline descriptors,
 so the descriptor fields must be interpreted before treating its total-size
 word as one contiguous stream length.
 
+Two raw fixture sets are checked in:
+
+- `captures/m9x-linux-glxgears-20260914` contains one steady eight-submission
+  glxgears cycle.
+- `captures/m9x-linux-gltri-20260914` contains the complete startup and one
+  settled flat-triangle submission from `tools/gltri.c`.  Its sequence 12 has
+  one numeric draw range at bus-master offset `0x264`.
+
 ## Capture tool
 
 Build [m9x-exec-trace.c](../tools/m9x-exec-trace.c) on the vendor host:
