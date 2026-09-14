@@ -55,7 +55,7 @@ The evidence states used below are:
 |---|---|---|
 | 1-D and 2-D integer/normalized formats | static format table, sampler/prototype families and layout; ordinary RGBA8 result/packet | phase-two 1-D and per-format swizzle/type normalization matrix |
 | NPOT 2-D | result/packet for a complete 13x7, 6x3, 3x1, 1x1 chain, including exact logical dimensions | implementation replay and incomplete-chain validation |
-| mipmaps and generated mipmaps | result/packet for a complete odd NPOT chain, selected levels, tail, signed bias and clamped LOD | base/max-level boundaries, incomplete behavior, and automatic generation |
+| mipmaps and generated mipmaps | result/packet for a complete odd NPOT chain, selected levels, tail, signed bias and clamped LOD; D3D autogen opcode 89, filter mapping, and surface-vmethod dispatch are exact | base/max-level and incomplete behavior; join the autogen vmethod to its layout walk, result, and fence |
 | nearest/linear and six minification filters | packet | visible LOD/footprint validation |
 | S/T wrap modes and border color | packet plus result for repeat and a nontrivial border color; mirror/edge selectors are static/packet | 1-D behavior and exact border-color packing |
 | LOD bias, min LOD, max LOD | packet/result for negative bias, both signed saturation limits, min 3, and max 2 | implementation replay |
@@ -104,7 +104,7 @@ and a visible result joined in the same fixture.
 | fragment depth output | live `gl_FragDepth=0.25` color/depth result plus static one-component semantic `0x13` and result-routing vocabulary | native output-route join and later-depth-test ordering replay |
 | four fragment color outputs | runtime-sized `gl_FragData[gl_MaxDrawBuffers]` constructor, static target compiler/emitter, and live RT0 result; RT1/all-target attempts finish then wedge during readback/teardown | recover safe targets 1--3 routing and retirement before another result capture |
 | vertex position, point size, clip vertex; fragment color/depth built-ins | exact logical semantics `0x0d..0x13`, component counts and stage presence masks; partial fixed-function/point evidence | direct GLSL result fixtures to join every logical semantic to its native packed route |
-| compiler resource limits | live advertised limits: 16 attributes, 4 vertex samplers, 16 fragment samplers, 20 combined, 512 uniform components per stage, 60 varying floats, 4 draw buffers; active `vec4[128]` and erroneous limit+1 `vec4[129]` both link; D3D9 publishes 256 VS vec4 constants, 32 VS/PS temporaries, 512 PS slots, and four MRTs | recover actual native allocation limits and enforce a truthful new-driver limit instead of reproducing the vendor link bug |
+| compiler resource limits | Linux advertises 16 attributes, 4 vertex samplers, 16 fragment samplers, 20 combined, 512 uniform components per stage, 60 varying floats, and 4 draw buffers; static hardware emission proves four full fragment samplers `70..73` plus four descriptor-only point-filtered vertex samplers `74..77`; active `vec4[129]` also exposes a vendor limit bug | capture a five-unique-fragment-texture result and recover actual native uniform/storage limits; advertise only measured hardware or proven scheduling limits |
 | program transport and termination | static two-dword slots, inline upload, terminal form; live `0x6c` and full system-resource snapshots | finish record grammar, native storage/entries/counts, endpoint semantics, and relocations |
 
 ## Extension and vendor-only retention

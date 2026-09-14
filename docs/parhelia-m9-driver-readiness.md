@@ -58,10 +58,13 @@ leave unproved service/fault sources masked.
 
 ## OpenGL 2.0 shader coverage
 
-The live compiler is OpenGL 2.0 / GLSL 1.10. Its exact limits are 16 vertex
-attributes, 4 vertex samplers, 16 fragment samplers, 20 combined samplers,
-512 uniform components in each stage, 60 varying floats, and 4 draw buffers.
-The table distinguishes compiler acceptance from a native encoding.
+The live compiler is OpenGL 2.0 / GLSL 1.10. Its advertised limits are 16
+vertex attributes, 4 vertex samplers, 16 fragment samplers, 20 combined
+samplers, 512 uniform components in each stage, 60 varying floats, and 4 draw
+buffers.  Static emission proves four full fragment samplers and four
+descriptor-only, point-filtered vertex samplers; a five-fragment-texture result
+is still required before trusting the larger frontend claim.  The table
+distinguishes compiler acceptance from a native encoding.
 
 | GLSL/ARB family | evidence now | driver status | smallest remaining check |
 |---|---|---|---|
