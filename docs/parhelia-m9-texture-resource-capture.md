@@ -55,6 +55,18 @@ uses `79=c811...` and places four in `7a[31:16]`.  Enabling depth compare change
 descriptor.  These are implementation-ready live joins for target selection
 and shadow compare.
 
+The live words also close two static format joins.  `c8 >> 1` is hardware code
+`0x64`, which the saved format table assigns to `A8B8G8R8`/the byte-compatible
+32-bit RGB family.  An OpenGL `GL_RGBA/GL_UNSIGNED_BYTE` array is RGBA in
+increasing little-endian addresses, so this code is consistent with that
+physical byte order.  `fa >> 1` is `0x7d`, exactly the statically recovered D24
+family.  In every sampled case `79[15:0]` is the exact logical width and
+`7a[15:0]` the exact logical height, including the odd NPOT levels.  Cube adds
+`0x00080000` in `79`; volume adds `0x00100000` and puts its depth in
+`7a[31:16]`.  The static notes name the two descriptor outputs `idx78/idx79`
+before the relocation is prepended; on the final indexed stream they appear at
+hardware indices `79/7a` because index `78` carries the resource address.
+
 Border mode emits `7c=0fc09200` plus
 `7e=40002000, 7f=ff00bf00, 80=ffffffff, 81=00000000`.  The requested normalized
 RGBA border was `(0.125,0.25,0.75,1)`; the four packed words must be copied as
@@ -113,6 +125,23 @@ raw-storage dump.  The focused follow-up preserves both those returned dwords
 and the VRAM bytes so the conversion and hardware order can be described
 separately.
 
+The saved hashes are sufficient to identify the API quantization exactly.  Of
+the standard truncate/round/bit-replicate models, only round-to-nearest from
+10 to 8 bits followed by round-to-nearest from 8 to 10 reproduces
+`155aedce`; A2 is unchanged.  That model yields:
+
+```text
+020f9c10 454eec4c 88ce2c8c cc1d6cc9
+0f5ca905 529bf941 95db397d d95a79bd
+1c99c9f9 5fd90a36 a3284a72 e6a786ae
+29e6d6ee 6d26172a b0655767 f3a4a7a3
+```
+
+The verifier regenerates these words from the exact upload and asserts both
+hashes.  They describe the observable `glGetTexImage` conversion.  A direct
+VRAM snapshot is still required before assigning the byte order to physical
+storage rather than to the ICD's upload/readback converters.
+
 ## Remaining capture gates
 
 The next bounded pass uses sentinel-filled compressed-format output, preserves
@@ -120,6 +149,22 @@ the exact RGB10 packed readback, snapshots the complete 0x21000-byte linked
 system resource for selected draws, and captures each texture allocation from
 VRAM.  Until that pass is complete, the mip/cube/volume physical layouts and
 the compressed-inventory bug boundary remain open.
+
+Fixture cases 11--26 are prepared for the next live phase.  They add an odd
+1-D texture, update-then-sample coherency, framebuffer-to-texture copy,
+base/max-level selection, incomplete mip behavior, packed RGB565/RGBA4444/
+RGB5A1 uploads, RGB8/RGBA8/luminance/alpha/luminance-alpha/intensity formats,
+and D16/D32 raw depth sampling.  Each remains a separate process/capture case
+so allocation and descriptor changes are attributable to one API choice.
+
+The static format table gives falsifiable priors for that pass.  After the
+one-bit left shift seen in `c8 -> 0x64` and `fa -> 0x7d`, expected high bytes
+include `9c` for R5G6B5 (`0x4e`), `94` for A1R5G5B5 (`0x4a`), `8c` for
+A4R4G4B4 (`0x46`), `60` for L8 (`0x30`), `66` for A8 (`0x33`), `a2` for
+A8L8 (`0x51`), `b8` for D16 (`0x5c`), and `f8` for D32 (`0x7c`).  OpenGL
+external channel ordering may make the ICD choose a sibling code or convert on
+upload, so these values are comparison targets rather than assumptions in the
+fixture.
 
 <!-- Copyright 2026 Rene Rebe <rene@exactco.de> -->
 <!-- SPDX-License-Identifier: GPL-2.0 -->
