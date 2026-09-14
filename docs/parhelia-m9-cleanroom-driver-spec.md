@@ -588,6 +588,11 @@ scratch route operands.  Do not expose all 16 logical fragment samplers
 until equivalent dependency/intermediate management and N/N+1 boundaries are
 implemented and tested.
 
+The four-target value is likewise a compiler/hardware upper bound.  The first
+driver must report one draw buffer and one color attachment.  It must reject
+fragment outputs above zero and never emit `b2..b7` or `89[11:3]` until the
+extra-target export and fence-retirement contract passes its bounded tests.
+
 ## 8. Draw frontend and fixed render state
 
 ### 8.1 Topology, vertices, and indices
@@ -1022,9 +1027,9 @@ but its format, pack alignment, and rendered extent must remain correct.
 | universal native grammar inside the heterogeneous `6c` linked record | arbitrary newly compiled programs cannot execute safely | use the bounded passive constructor/translator/cache hook to join native start/count, VS/FS split, entry selectors, stop and lifetime |
 | special shader forms and physical control-flow fixups | ELSE/BREAK/BREAKP slots and all loop/break/CALL graph-builder joins are exact; KIL/derivative/texture/predicate joins and final branch target resolution remain | resolve typed fixup serials and join the remaining saved operation records to the universal grammar |
 | generated-stream semantic names and server-side zero-copy vertex layouts | the initial driver must CPU-repack to the four captured canonical layouts | one-output-at-a-time shader/content snapshots, then stride/offset differentials for an optional direct VBO path |
-| MRT output routing and retirement | RT0 works; selecting RT1 or all targets finishes then wedges during readback/teardown | statically trace target 1--3 resource retirement or use a passive hook before any more live MRT stress |
+| MRT export and retirement | four descriptor/relocation targets and common TaskMgr fences are exact, but native export and job-BO membership are unjoined; Linux close has an unbounded fence poll | prove one decoded RT1 export/write-list/common-writeback job, then bounded readback/unbind/delete/context/fd close; expose RT0 only |
 | multisample/FAA surface, pattern, mask and resolve | current GLX visuals expose no sample buffers | acquire one vendor multisample surface and capture edge, partial-mask, resolve and query behavior |
-| 10-bit and sRGB round trips | GigaColor and sRGB formats remain unexposed | sentinel render/sample/readback A/B for both 10-bit orders and linear-versus-sRGB resources |
+| 10-bit and sRGB round trips | GigaColor remains unexposed; RT0 sRGB write has an exact 25-slot suffix and clear curve, while sampler sRGB is unjoined | sentinel render/blend/readback for both 10-bit orders and the sRGB RT suffix; locate a real sampler-decode path before texture sRGB |
 | pixel-store, overlapping-copy and resource-lifetime edge cases | ordinary subimage and framebuffer-copy producer/consumer ordering is captured | alignment/row-length/skip/type matrix, overlap, mip-boundary updates, and deletion while referenced |
 | non-32-bit tiled calculator transcription | tiled 8/16/64/128-bit and DXT resources unavailable | translate identified kernel routines, add frozen vectors, validate one coordinate-coded upload per family |
 | query wrap and multisample scaling | ordinary full/half/hidden counts, availability, and reuse are captured | slot wrap, 32-bit counter wrap, ordering stress, and multisample comparison |

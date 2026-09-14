@@ -50,7 +50,7 @@ The evidence states used below are:
 | fog, explicit fog coordinate, clip planes, two-sided lighting | API/result plus exact fog/clip/light state and generated compiler records; non-symmetric clip and two-sided lighting are live-closed in B/A/B contexts | remaining fog-coordinate result variants and implementation replay |
 | multisample and sample coverage | API-only on an unsampled visual; Windows config selects sample type 8 and eight quality levels; `ad[20:0]` is backed allocation bytes/32 and `af` low9 plus bits 11--13 are exactly sourced; zero mask suppresses output; GL query post-scaling is exact | sampled allocation growth, fragment layout, positions/quality patterns, nonzero mask/invert, resolve, presentation, and physical query-counter unit |
 | occlusion query | result/packet for 16384 visible, 0 hidden, 8192 half-hidden, object reuse, and pre-finish availability zero; static begin/end/result protocol | slot wrap, counter wrap, ordering stress, and implementation replay |
-| draw buffers/MRT | static four-target address/mask/compiler paths; masks 0/1 complete and mask 1 writes RT0; mask 2 and mask 15 expose a repeatable vendor teardown/readback wedge after successful finish | recover safe per-target routing/teardown before testing or exposing masks beyond RT0 |
+| draw buffers/MRT | exact Windows fan-out for four descriptor pairs, relocations, format classes, masks/blend and common TaskMgr render-write fences; masks 0/1 complete and RT0 writes; mask 2 and no-read mask 15 finish before Linux wedges in timeout-free resource-close retirement | recover native output export and each RT's job-BO membership, then prove a decoded RT1 job, common fence writeback, independent readback and bounded close; expose RT0 only |
 
 ## Textures, samplers, and pixel transfer
 
@@ -70,7 +70,7 @@ The evidence states used below are:
 | texture objects, subimages, copies, priorities/residency semantics | live update-then-sample and framebuffer-copy-then-sample ordering, exact transfer/draw stream boundary, stable descriptors, and ordinary static lifecycle | overlapping copies, subimage/mip boundaries, deletion while bound, priorities/residency, and implementation replay |
 | pixel-store, Draw/Copy/ReadPixels and bitmap | fast GPU path diagnostics and exclusions, shader pack/unpack operations 117..125, basic readback | alignment/row-length/skip/type conversions, overlap, zoom/orientation, depth/stencil pixels, and fast-versus-fallback results; performance is secondary |
 | 10-bit GigaColor | exact native codes `0x68/0x6a`, channel masks, sampler/RT construction and rounded D3DCOLOR clear packers; Linux `RGB10_A2` explicitly reports actual `GL_RGBA8` and 8-bit quantization | native Windows/gated render, blend, sample, raw-backing/readback capture, plus separate depth-30 scanout/LUT/dither validation |
-| float, YUV, anisotropic, and sRGB textures | real dormant Windows packers/config paths | remain extension-gated until upload/sample/filter/render result matrices exist |
+| float, signed, packed, depth/stencil, YUV, DXT, anisotropic, and sRGB formats | exact D3D map for 46 formats and 13 rejections; native codes/classes/bit sizes; live RT0 sRGB-write state lowers to an exact 25-slot suffix and clear uses the exact piecewise encode; sampler-state lookalike is unreachable TEXCOORDINDEX residue | keep unadvertised families gated until per-format capability masks and upload/sample/filter/render/blend/copy/readback behavior are proved; sampler sRGB remains unjoined |
 
 ## Buffers, arrays, and draw submission
 
