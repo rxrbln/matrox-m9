@@ -130,15 +130,50 @@ through index 43 before the consumer, and preserve the observed state order.
 Whether index 43 has an implicit cache side effect inside hardware remains
 unknown; no additional vendor packet is required in this tested chain.
 
-## Capture limits and next differentials
+## Two-client context and resource isolation
+
+`captures/m9x-linux-gl2-context-20260914` preserves two independent direct-GLX
+processes with simultaneously live contexts and different linked fragment
+programs.  The parent alternated their draws A/B/A/B.  Both clients returned
+the same pixel on their first and repeated draw with `GL_NO_ERROR`, while the
+two clients returned different pixels:
+
+| client | readback on draw 1 and 2 | system resource | program heap |
+|---:|---|---:|---:|
+| 0 | `(16,48,64,255)` | `40c3a000` | `11e42000` |
+| 1 | `(97,16,31,255)` | `41105000` | `11f5a000` |
+
+For both sequence 13 and sequence 21, each client has the same three command
+ranges with packet counts `[149,37,3]`.  The repeated draw restores that
+client's exact `69/6a/6b/6c` tuple.  Client 0 binds
+`69=11e42000,6a=25010000,6b=00001030,6c=40c3a281`; client 1 binds
+`69=11f5a000,6a=25010000,6b=00001030,6c=41105281`.
+
+The stage ranges are equally address-space local.  The final raster range is
+`8c=00500400`, `8d=resource+1`, `8e=resource+0x21`; the preceding preprocess
+range is `8c=00500d00`, `8d=resource+0x21`, `8e=resource+0x89`.  Complete
+0x21000 resource snapshots are byte-identical between each client's first and
+repeated draw, and the linked record at byte offset 0x280 differs across the
+two shader programs.  This closes process/context ownership, program bind
+restoration, and resource-address isolation for the tested GL2 path.
+
+The fixture also includes the authoritative full `glxinfo -l` inventory from
+the same live stack.  It identifies direct rendering by `Matrox ICD for
+M-Series`, OpenGL 2.0, GLSL 1.10, four fixed-function texture units, 16
+fragment texture image units, four vertex texture image units, 20 combined
+units, eight texture-coordinate sets, and four draw buffers.  PCI, kernel, X
+process/executable, and libGL/tracer/test binary hashes are saved alongside it.
+
+Run `python3 tools/m9-glsl-two-client-evidence.py --self-test` to verify the
+command/resource joins, isolation, readback, and inventory.
+
+## Remaining live differentials
 
 The strongest remaining shader-specific gaps are exact sampler wrap/filter/
 anisotropy/LOD fields and comparison-control bit values beyond the one static
 CMP/SETP fixture. FBO copy/blit-to-sample and
 depth/stencil attachment transitions are separate producer families and are
-not covered by this color-render-to-sample fixture.  Cross-context GL2
-switching is also not covered here; one context and multiple linked programs
-were tested in the preceding GLSL A/B/A capture.
+not covered by this color-render-to-sample fixture.
 
 Those are explicit implementation-validation targets.  The features actually
 exercised above are supported by the saved vendor stack.
