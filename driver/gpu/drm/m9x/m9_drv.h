@@ -12,7 +12,7 @@
 #include <drm/drm_device.h>
 #include <drm/drm_gem_dma_helper.h>
 
-#include "parhelia_drm.h"
+#include "m9x_drm.h"
 
 struct drm_file;
 
