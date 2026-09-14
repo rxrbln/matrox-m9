@@ -52,10 +52,10 @@ Programmed once to arm the DMA context (ordered as in the binary):
 | `0x454` | `[object+0x74]` | packed secondary subcounts |
 
 Constructors `m9x654` and `m9x1086` supply the exact packer and fallback
-values `0x1f280800`, `0x1f3f2707`, and `0x00070703`; see
-`parhelia-m9-primary-requester-controls-re.md`.  The seven target property
-inputs still need a warm readback or a join to their board/device database
-before a cold driver should choose between the actual tuple and fallback.
+values `0x00280800`, `0x1f3f2707`, and `0x00070703`; see
+`parhelia-m9-primary-requester-controls-re.md`.  Three stable read-only samples
+on the tested M9148 match that fallback exactly.  Other M9 products still need
+a join to their board/device database before a cold driver chooses a tuple.
 
 The kernel function does not write `0x1070`.  Earlier tentative lists which
 included it were based on an incomplete Windows-side trace.

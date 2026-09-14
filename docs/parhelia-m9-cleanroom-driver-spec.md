@@ -361,10 +361,13 @@ The closed one-time context writes include:
 1068/106c  two writeback-fence addresses
 10ec/1094/1098  optional context address/limit controls
 44c/450/454  packed partition/subcount controls; exact fallback
-             1f280800/1f3f2707/00070703
+             00280800/1f3f2707/00070703
 330=1000, 338=40, 33c=80, 340=c0, 354=03020100
 f0c initial 8000 plus device-property bits 9:6
 ```
+
+Three stable read-only samples on the tested M9148 match this exact fallback.
+Preserve warm values on other products until their property tuples are joined.
 
 Program the address windows exactly as documented in `parhelia-m9-dma.md`,
 including `0x360/364`, `0xf64/f68/f74/f78/f7c`, and

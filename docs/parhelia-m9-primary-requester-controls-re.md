@@ -41,7 +41,7 @@ secondary values become `4,8,8` respectively.
 The emitted controls are:
 
 ```text
-0x44c = (D-1)<<24 | (A+B)<<16 | A<<8
+0x44c =             (A+B)<<16 | A<<8
 0x450 = (D-1)<<24 | (A+B+C-1)<<16 | (A+B-1)<<8 | (A-1)
 0x454 = (c-1)<<16 | (b-1)<<8 | (a-1)
 ```
@@ -52,7 +52,7 @@ five- or six-bit byte fields.  No address or host pointer participates.
 The exact fallback image is:
 
 ```text
-0x44c = 1f280800
+0x44c = 00280800
 0x450 = 1f3f2707
 0x454 = 00070703
 ```
@@ -61,16 +61,22 @@ The first two words describe cumulative boundaries for the `8+32+24=64`
 partition.  The third selects `4,8,8` subcounts.  Those structural names are
 data-flow descriptions, not claims about the physical execution-unit names.
 
-## Remaining implementation boundary
+## Target validation and remaining boundary
 
-The static packer and safe fallback are closed.  The remaining target-specific
-fact is whether the M9148's valid property tuples differ from the fallback.
-Before programming these registers in the clean-room driver, record their
-warm vendor values or join `+0x5f0/+0x5f8` to the board/device database that
-initializes them.  The kernel-owned no-op succeeds with all three registers
-left firmware-owned, so there is no reason to guess them during the guarded
-diagnostic.  General copied-stream execution should either preserve verified
-warm values or program values derived from an equally verified property tuple.
+The static packer and safe fallback are closed.  A read-only snapshot of the
+tested M9148 (`102b:0540`, subsystem `102b:2240`, revision 1) after the
+clean-room no-op-fence tests found the device unbound with PCI bus mastering
+disabled.  Three consecutive samples read exactly
+`00280800/1f3f2707/00070703`, proving that this board's warm controls match the
+fallback tuples.  The pinned fixture is
+`captures/m9x-requester-live-20260914/warm-unbound-registers.txt`.
+
+This target result does not establish that every M9 product uses the fallback.
+General cold initialization should join `+0x5f0/+0x5f8` to the board/device
+database that supplies them, preserve verified warm values, or guard this
+fallback to the tested product.  The kernel-owned no-op succeeds with all three
+registers left firmware-owned, so the diagnostic still has no reason to
+overwrite them.
 
 <!-- Copyright 2026 Rene Rebe <rene@exactco.de> -->
 <!-- SPDX-License-Identifier: GPL-2.0 -->
