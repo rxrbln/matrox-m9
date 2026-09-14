@@ -157,12 +157,18 @@ a safe DRM submitter and a working Mesa driver:
    a raw live `0x504` pointer, save/restore order and idle handshake.  A
    controlled rollover trace is still required for `0x50c..0x524` and the
    final relationship to the `0x404` submit limit.
-3. M9 context-switch state: which indexed registers, shader stores, descriptor
-   tables, and query/fence state must be isolated between clients.
-4. A verified colour render-target and depth/stencil descriptor, clear packet,
-   viewport/scissor state, and completion.  Draw launch is statically joined to
-   H03/H06/H07 records; the earlier `2b,2a,e6` hypothesis was disproved by its
-   2D-only caller chain.
+3. The remaining M9 context-switch lifecycle.  The vendor's exact `0xf8`-byte
+   full-state index template and its per-context restore-record builders are
+   recovered, including texture and shader-store indices.  Query/fence state,
+   restore submission ownership, and alternating-context completion still need
+   validation.
+4. Render-surface layout and concrete clear packets.  Four color pairs are
+   joined to `b0..b7`, the two depth attachment pairs to `b8..bb`, descriptor
+   format to bits `31:25`, and viewport/scissor to `f5/f6/c4/c5`.  The remaining
+   descriptor pitch/tiling bits, ordinary-Z versus auxiliary-plane names, and
+   final command generation below the joined color/depth clear leaves
+   `0xa48b0`/`0xb4fe0` require further static recovery or capture.  Draw launch
+   is statically joined to H03/H06/H07 records.
 5. The final M9-index join for culling, polygon/shade mode, and multisampling,
    plus the final upload selector/port association for generated fragment
    programs.  Blend, alpha test, and format-dependent colour masks are now
@@ -174,8 +180,10 @@ a safe DRM submitter and a working Mesa driver:
    blocks and packed mip tails.  Descriptor formats, filter/wrap/LOD fields,
    2D/cube/volume selection, visible class-3 geometry, and ordinary volume-mip
    offsets are statically recovered.
-7. Native vertex and pixel shader mnemonic joins, predicate/end fields,
-   constant-record meanings, stage linkage, and compiler quirks.  The two-dword
+7. Native vertex and pixel shader mnemonic joins, predicate encoding,
+   constant-record meanings, physical varying routing, and compiler quirks.
+   Logical GLSL stage linkage is recovered as an exact-name/type/size join into
+   a 14-entry remap table.  The two-dword
    instruction, exact native packer and physical fields, source/result
    direction, result routing and component-pair modes, upload selector/ports,
    384-instruction/96-line bank boundary, compiler IR opcodes and modifiers,
