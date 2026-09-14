@@ -29,6 +29,7 @@
 #define M9_TRIANGLE_SYSTEM_BYTES	0x20080u
 #define M9_TRIANGLE_SECONDARY_BYTES	0x4f0u
 #define M9_TRIANGLE_SECONDARY_PREFIX	0x8u
+#define M9_TRIANGLE_SECONDARY_START_TAG	0x1u
 #define M9_TRIANGLE_LINKED_OFFSET	0x300u
 #define M9_TRIANGLE_LINKED_BYTES		0x200u
 #define M9_TRIANGLE_RESOURCE69_BYTES	0x1b080u
@@ -651,7 +652,7 @@ static void m9_triangle_build_primary(
 	for (i = 0; i < ARRAY_SIZE(bounds); i++) {
 		primary[i * 3] = 0x45452d2c;
 		primary[i * 3 + 1] = (job->secondary + bounds[i][0]) |
-			M9_COMMAND_SYSTEM_TAG;
+			M9_TRIANGLE_SECONDARY_START_TAG;
 		primary[i * 3 + 2] = (job->secondary + bounds[i][1]) |
 			M9_COMMAND_SYSTEM_TAG;
 	}
@@ -841,9 +842,9 @@ int m9x_triangle_selftest(void)
 	m9_triangle_build_commands(&job, &commands);
 	m9_triangle_build_primary(&job, commands.primary);
 	if (memcmp(commands.primary, (const u32[]) {
-		0x45452d2c, 0x1200000a, 0x12000272,
-		0x45452d2c, 0x12000272, 0x120004c6,
-		0x45452d2c, 0x120004c6, 0x120004f2,
+		0x45452d2c, 0x12000009, 0x12000272,
+		0x45452d2c, 0x12000271, 0x120004c6,
+		0x45452d2c, 0x120004c5, 0x120004f2,
 	}, sizeof(commands.primary)))
 		return -EINVAL;
 	for (i = 0; i < ARRAY_SIZE(m9_triangle_reloc_sites); i++) {
