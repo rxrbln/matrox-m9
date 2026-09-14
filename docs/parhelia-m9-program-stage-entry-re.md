@@ -144,6 +144,50 @@ typed current handles at vertex object `+0x1f1` or fragment object `+0x10e`.
 This cross-check therefore preserves, rather than closes, the final stage to
 entry-register boundary [DER].
 
+## Final Linux state ownership and dispatch
+
+The object passed to `m9x11728` is no longer structurally anonymous.  Program
+substate initializer `m9x17453` at `0x4b8b80` initializes external-resource
+identity fields `+0xa0/+0xa8`, primary entry control `+0xb0`, companion entry
+control `+0xd0`, and the inline-program fields later used by the emitter
+[BIN].  In temporary top-state construction at `0x4b4478`, that initialized
+object is installed specifically at top-state `+0xc8`; the other substates go
+to `+0xb8`, `+0xc0`, `+0xd0`, and `+0xd8` [BIN].
+
+The complete final dispatch chain is [BIN]:
+
+```text
+m9x15197 (0x4b6c40)
+  promote desired top_state+0xc8 dirty state
+  switch context current top state at context+0x5f8
+  -> m9x25088 (0x889a60)
+       top_state+0xc8 -> m9x26001 (0x4ba3a0)
+         -> m9x11728 (0x4b9340)
+              resource 69, entry controls 6a/6d, or inline image
+```
+
+`m9x26001` has one direct owner, the `top_state+0xc8` call in `m9x25088`,
+and `m9x11728` has one direct owner, the call at `m9x26001+0x579`.  Before a
+state switch, `m9x15197` merges the program substate's current dirty word into
+its pending word.  When byte `+1` has its high bit set it also promotes each
+28-byte sparse record from `+0xe8` to its pending word at `+0xec`, through
+offset `+0x7e8` [BIN].  This proves the lifetime and dirty-state route into the
+emitter, but it does not identify the earlier writer that associates a
+compiled native descriptor with `+0xa0/+0xa8/+0xb0/+0xd0` [DER].
+
+Two tempting alternate stage wrappers are excluded from the in-image live GL
+route.  Fragment `m9x1996` at `0x3b8ae0` and vertex `m9x13428` at `0x3b8df0`
+select builder mode 2 and optionally supply the persistent constant banks at
+fragment state `+0xba` and vertex state `+0x91`.  Across all 16 saved 64-bit
+`m9x_drv.so` images and all 16 combined `libGL.so.2.0.0` images, neither
+wrapper has a direct call/jump, RIP-relative address materialization, or ELF
+relocation owner [BIN].  They remain exported ABI entries, so an external
+caller is possible, but the saved combined images provide no evidence that
+the ordinary private GL stream calls them [DER].  The ordinary calls instead
+reach the mode-1 wrappers at `0x3b8a50/0x3b8d60`.  Mode-2/BM state therefore
+cannot supply the missing live programmable-stage join without runtime
+evidence.
+
 The often-cited state builder at `0x1397e0` does not close this gap.  Its call
 to `0x1743d0` writes float/color state at record offsets `+0x70..+0xec`, and
 `0x13ee10` consumes the record during draw/vertex state construction [BIN].
@@ -165,7 +209,8 @@ GL linked program
 ```
 
 Static code now joins `0x59/0x67` to typed backend objects, but no static call
-or shared structure joins either compiled object/current handle to MxMD state
+or ownership edge joins either compiled object/current handle to the program
+substate external fields in MxMD state
 `+0xa8/+0xbc` or `+0xba8/+0xbac` (Linux `+0xb0/+0xd0` or
 `+0xbd0/+0xbd4`).  The native bind producer found in both operating systems is
 the separate fixed-chain builder.  Therefore the final programmable
@@ -185,4 +230,7 @@ the entry values but omit the program image.  These two comparisons are enough
 to associate stages without relying on names inferred from `Ps` or `Ce`.
 
 Run `python3 tools/m9-program-stage-entry-evidence.py` to recheck the binary
-hashes and the critical stage/opcode/entry joins above.
+hashes and the critical stage/opcode/entry joins above.  Run
+`python3 tools/m9-entry-resource-boundary-evidence.py` to recheck the 32-image
+alternate-wrapper ownership census, program-substate construction, dirty
+promotion, and sole final dispatch chain.
