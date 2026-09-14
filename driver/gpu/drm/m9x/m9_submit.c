@@ -12,6 +12,7 @@
 
 #define M9_VRAM_GPU_BASE	0x10000000ull
 #define M9_VRAM_GPU_SIZE	0x10000000ull
+#define M9_TRIANGLE_COLOR_BYTES	0x0004b000u
 
 /*
  * This is deliberately the captured-triangle whitelist, not all 256 indexed
@@ -258,6 +259,56 @@ static int m9_vram_gpu_address(u64 vram_size, u64 offset, u64 target_offset,
 	    check_add_overflow(*address, M9_VRAM_GPU_BASE, address))
 		return -EOVERFLOW;
 	return 0;
+}
+
+static int m9_submit_first_triangle(struct m9x_device *mdev,
+				    struct drm_file *file,
+				    struct drm_parhelia_m9_submit *args)
+{
+	struct drm_parhelia_m9_bo_ref ref;
+	struct drm_gem_vram_object *vram;
+	struct drm_gem_object *gem;
+	s64 offset;
+	u64 address;
+	int ret;
+
+	if (args->command_handle || args->command_offset ||
+	    args->command_length || args->relocation_count ||
+	    args->relocations_ptr || args->bo_count != 1 || !args->bos_ptr)
+		return -EINVAL;
+	if (copy_from_user(&ref, u64_to_user_ptr(args->bos_ptr), sizeof(ref)))
+		return -EFAULT;
+	if (!ref.handle || ref.flags !=
+		(PARHELIA_M9_BO_READ | PARHELIA_M9_BO_WRITE))
+		return -EINVAL;
+	gem = drm_gem_object_lookup(file, ref.handle);
+	if (!gem)
+		return -ENOENT;
+	if (!m9x_gem_is_vram(gem) || gem->size < M9_TRIANGLE_COLOR_BYTES) {
+		ret = -EINVAL;
+		goto out_put;
+	}
+	vram = drm_gem_vram_of_gem(gem);
+	ret = m9x_vram_pin(vram);
+	if (ret)
+		goto out_put;
+	offset = drm_gem_vram_offset(vram);
+	if (offset < 0) {
+		ret = offset;
+		goto out_unpin;
+	}
+	ret = m9_vram_gpu_address(mdev->vram_size, offset,
+				  M9_TRIANGLE_COLOR_BYTES - 1, &address);
+	if (ret)
+		goto out_unpin;
+	address -= M9_TRIANGLE_COLOR_BYTES - 1;
+	ret = m9x_submit_triangle_diag(mdev, lower_32_bits(address),
+				       &args->out_point);
+out_unpin:
+	m9x_vram_unpin(vram);
+out_put:
+	drm_gem_object_put(gem);
+	return ret;
 }
 
 static int
@@ -555,11 +606,7 @@ int m9x_submit_ioctl(struct drm_device *drm, void *data,
 		return m9x_submit_noop(mdev, &args->out_point);
 	}
 	if (flags == PARHELIA_M9_SUBMIT_FIRST_TRIANGLE) {
-		if (args->command_handle || args->command_offset ||
-		    args->command_length || args->relocation_count ||
-		    args->relocations_ptr || args->bo_count || args->bos_ptr)
-			return -EINVAL;
-		return m9x_submit_triangle_diag(mdev, &args->out_point);
+		return m9_submit_first_triangle(mdev, file, args);
 	}
 	if (flags != PARHELIA_M9_SUBMIT_VALIDATE_ONLY)
 		return -EOPNOTSUPP;

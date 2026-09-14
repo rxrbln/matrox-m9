@@ -72,9 +72,10 @@ struct drm_parhelia_m9_reloc {
 #define PARHELIA_M9_SUBMIT_FIRST_TRIANGLE	(1u << 2)
 
 /*
- * NOOP_FENCE and FIRST_TRIANGLE ignore command fields.  FIRST_TRIANGLE is a
- * literal kernel-selected diagnostic; it accepts no userspace command bytes
- * or buffer handles.
+ * NOOP_FENCE ignores all command and BO fields.  FIRST_TRIANGLE accepts one
+ * read/write VRAM BO reference as its kernel-validated linear color target;
+ * all command bytes, resource addresses and executable state remain selected
+ * by the kernel.
  */
 struct drm_parhelia_m9_submit {
 	__u32 context_id;

@@ -34,7 +34,6 @@
 #define M9_TRIANGLE_C2_BYTES		0x1080u
 #define M9_TRIANGLE_BE_BYTES		SZ_1M
 #define M9_TRIANGLE_TRANSIENT_BYTES	0x16800u
-#define M9_TRIANGLE_MAGENTA		0xffff00ffu
 
 static bool m9_triangle_diag;
 module_param(m9_triangle_diag, bool, 0400);
@@ -57,7 +56,6 @@ enum m9_triangle_resource_id {
 	M9_TRI_TRANSIENT1,
 	M9_TRI_TRANSIENT2,
 	M9_TRI_TRANSIENT3,
-	M9_TRI_COLOR,
 	M9_TRI_DEPTH,
 	M9_TRI_AUX_DEPTH,
 	M9_TRI_RESOURCE_COUNT,
@@ -204,8 +202,6 @@ static const struct m9_triangle_resource_spec m9_triangle_specs[] = {
 				  0x100, 0x54520002 },
 	[M9_TRI_TRANSIENT3] = { "transient3", M9_TRIANGLE_TRANSIENT_BYTES,
 				  0x100, 0x54520003 },
-	[M9_TRI_COLOR] = { "color", M9_TRIANGLE_SURFACE_BYTES, 0x100,
-			     M9_TRIANGLE_MAGENTA },
 	[M9_TRI_DEPTH] = { "depth", M9_TRIANGLE_SURFACE_BYTES, 0x100,
 			     U32_MAX },
 	[M9_TRI_AUX_DEPTH] = { "aux-depth", M9_TRIANGLE_SURFACE_BYTES, 0x100,
@@ -383,6 +379,14 @@ static int m9_triangle_verify_guards(const struct m9x_triangle_diag *diag)
 static int m9_triangle_prepare_resources(struct m9x_device *mdev)
 {
 	struct m9x_triangle_diag *diag = mdev->transport.triangle;
+	static const u8 allocation_order[] = {
+		M9_TRI_BE,
+		M9_TRI_DEPTH, M9_TRI_AUX_DEPTH,
+		M9_TRI_SYSTEM, M9_TRI_RESOURCE69,
+		M9_TRI_TRANSIENT0, M9_TRI_TRANSIENT1,
+		M9_TRI_TRANSIENT2, M9_TRI_TRANSIENT3,
+		M9_TRI_C2, M9_TRI_SECONDARY, M9_TRI_SOURCE,
+	};
 	unsigned int id;
 	int ret;
 
@@ -394,12 +398,14 @@ static int m9_triangle_prepare_resources(struct m9x_device *mdev)
 			return -ENOMEM;
 		mdev->transport.triangle = diag;
 	}
-	for (id = 0; id < M9_TRI_RESOURCE_COUNT; id++) {
-		ret = m9_triangle_alloc_one(mdev, id);
+	for (id = 0; id < ARRAY_SIZE(allocation_order); id++) {
+		enum m9_triangle_resource_id resource = allocation_order[id];
+
+		ret = m9_triangle_alloc_one(mdev, resource);
 		if (ret) {
 			dev_err(&mdev->pdev->dev,
 				"M9 triangle %s allocation failed: %d\n",
-				m9_triangle_specs[id].name, ret);
+				m9_triangle_specs[resource].name, ret);
 			return ret;
 		}
 	}
@@ -421,7 +427,7 @@ static u32 m9_triangle_bus(const struct m9x_triangle_diag *diag,
 	return lower_32_bits(diag->resource[id].bus);
 }
 
-static int m9_triangle_build_addresses(struct m9x_device *mdev,
+static int m9_triangle_build_addresses(struct m9x_device *mdev, u32 color,
 				       struct m9_triangle_job_addresses *job)
 {
 	const struct m9x_triangle_diag *diag = mdev->transport.triangle;
@@ -447,7 +453,7 @@ static int m9_triangle_build_addresses(struct m9x_device *mdev,
 	for (i = 0; i < ARRAY_SIZE(job->transient); i++)
 		job->transient[i] = m9_triangle_bus(diag,
 						M9_TRI_TRANSIENT0 + i);
-	job->color = m9_triangle_bus(diag, M9_TRI_COLOR);
+	job->color = color;
 	job->depth = m9_triangle_bus(diag, M9_TRI_DEPTH);
 	job->aux_depth = m9_triangle_bus(diag, M9_TRI_AUX_DEPTH);
 	job->fence = lower_32_bits(mdev->transport.fence_bus) | 2;
@@ -612,7 +618,7 @@ static int m9_triangle_serialize_linked_record(struct m9x_device *mdev,
 	return -EOPNOTSUPP;
 }
 
-int m9x_submit_triangle_diag(struct m9x_device *mdev, u64 *point)
+int m9x_submit_triangle_diag(struct m9x_device *mdev, u32 color, u64 *point)
 {
 	struct m9_triangle_job_addresses job = {};
 	int ret;
@@ -628,7 +634,7 @@ int m9x_submit_triangle_diag(struct m9x_device *mdev, u64 *point)
 	ret = m9_triangle_prepare_resources(mdev);
 	if (ret)
 		goto out_unlock;
-	ret = m9_triangle_build_addresses(mdev, &job);
+	ret = m9_triangle_build_addresses(mdev, color, &job);
 	if (ret)
 		goto out_unlock;
 	m9_triangle_build_commands(&job, &mdev->transport.triangle->commands);
