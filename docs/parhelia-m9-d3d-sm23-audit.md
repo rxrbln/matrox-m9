@@ -149,8 +149,10 @@ common texture lowerer, and the serializer has the descriptor-only bank
 described below.  Linear vertex filtering must remain disabled.
 
 Shadow comparison remains sampler/resource state, not another D3DSIO texture
-opcode.  Sampler-side sRGB still has no handler-to-final-bit join.  Neither
-feature may be inferred from TEX acceptance.
+opcode.  The apparent sampler state-11 entry at `0x105c04` is unreachable
+legacy fallback residue; the live matching store at `0x105648` and compiler
+consumer `0x17f91d` are `D3DTSS_TEXCOORDINDEX`.  No sampler-side sRGB decode
+path is joined.  Neither feature may be inferred from TEX acceptance.
 
 Four output pairs `b0/b1` through `b6/b7`, four color masks, output declaration
 lowerer `0x181fa0`, and D3D `NumSimultaneousRTs=4` establish a real four-target

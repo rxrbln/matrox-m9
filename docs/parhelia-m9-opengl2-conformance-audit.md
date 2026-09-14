@@ -120,7 +120,8 @@ conformance claim:
 * native 10-bit GigaColor rendering and its no-page-flip presentation restriction; the Linux GL path's `RGB10_A2` alias to RGBA8 is an explicit negative result, not native 10-bit evidence;
 * floating-point texture formats, YUY2/UYVY sampling/video paths, DXT1-5, and
   dormant anisotropy levels 1/4/8/16;
-* render-target sRGB conversion, with sampler-side sRGB still unlocated;
+* render-target sRGB conversion, while the sampler-side state-11-looking table
+  entry is proven unreachable legacy residue;
 * four-target MRT, hardware occlusion counters, and the incomplete FAA/MSAA
   path;
 * the D3D9 SM3 compiler surface: predication, long dynamic flow, 32 temporary

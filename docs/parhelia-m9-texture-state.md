@@ -59,6 +59,15 @@ bit 11; and state 37 sets bit 12, stores low six payload bits at byte `+0x2c`,
 bits `7:6` at byte `+0x2d`, and sets bit 13 when byte `+0x2c` is nonzero.
 Programmable dispatcher `0x105cf0` mirrors these sampler fields.
 
+The apparent state-11 entry at `0x105c04` is not a reachable
+`D3DSAMP_SRGBTEXTURE` implementation.  Helper `0x105850` is reached only from
+legacy D3DTSS fallback `0x1057a6`; main dispatcher `0x105340` intercepts
+`D3DTSS_TEXCOORDINDEX` state 11 at `0x105648` before that fallback.  Both
+locations use the same three-bit-per-unit helper `0x109850`, and compiler
+`0x17f91d` consumes the field as a texture-coordinate record index.  The
+fallback's zero table entry is unreachable residue.  No sampler sRGB decode
+control is joined [BIN][DER].
+
 ## Final filter/wrap word: index `7c`
 
 Backend `+0x14`, emitted at index `7c`, is packed exactly as follows [BIN][DER]:
@@ -318,13 +327,13 @@ resulting joined table; all numeric entries are hexadecimal:
 
 | Direct3D format | internal ID | `idx78[31:25]` |
 |---|---:|---:|
-| `R8G8B8`, `X8R8G8B8` | `0d` | `64` |
+| `R8G8B8`, `X8R8G8B8` | `0d` | `66` |
 | `A8R8G8B8` | `0c` | `66` |
 | `R5G6B5` | `0a` | `4e` |
-| `X1R5G5B5` | `09` | `4e` |
+| `X1R5G5B5` | `09` | `4a` |
 | `A1R5G5B5` | `08` | `4a` |
 | `A4R4G4B4` | `06` | `46` |
-| `X4R4G4B4` | `07` | `4a` |
+| `X4R4G4B4` | `07` | `46` |
 | `A8` | `36` | `33` |
 | `A2B10G10R10` | `10` | `68` |
 | `A8B8G8R8` | `0e` | `64` |

@@ -242,13 +242,15 @@ are `NEVER,LESS,EQUAL,LEQUAL,GREATER,NOTEQUAL,GEQUAL,ALWAYS ->
 pass/fail output channel.
 
 Render-target sRGB is a reachable D3D state: selector 194 uses handler
-`0x1037e7`, sets frontend bit 11 and dirty group `0x10000`; the clear path has
-a corresponding RT conversion condition.  Sampler dispatcher `0x105850`
-covers address, border, min/mag/mip, bias, maximum level and anisotropy, but no
-sampler-side sRGB consumer or final bit has been joined.  Neither pinned Linux
-compiler advertises an sRGB texture extension.  Keep sampler sRGB disabled
-until a linear/sRGB view A/B capture either finds the state or proves the
-vendor path is shader emulation.
+`0x1037e7`, sets frontend bit 11 and dirty group `0x10000`; output-zero compiler
+gate `0x137242` inserts the native conversion suffix built at `0x174ea0`, and
+the clear path has a corresponding RT0 conversion condition.  The apparent
+sampler state-11 entry at `0x105c04` is unreachable legacy table residue:
+sole caller `0x1057a6` is reached only after D3DTSS state 11 has gone to live
+`TEXCOORDINDEX` handler `0x105648`, and compiler `0x17f91d` consumes their
+shared field as a coordinate-record index.  Neither pinned Linux compiler
+advertises an sRGB texture extension.  Keep sampler sRGB disabled; no vendor
+decode path remains to be enabled by a simple state bit.
 
 ## Core fragment and raster state
 
@@ -344,7 +346,7 @@ surface and result behavior.
 | shader limits | public values and private allocator bounds differ | compile/link at each advertised `N` and `N+1` |
 | all logic results | all frontend codes are exact; only XOR reaches a saved final packet/result | 16 destination/source sentinel draws with full state/program delta |
 | polygon offset | raw factor and units are exact; generated equation and depth quantization are not | positive/negative factor and units on sloped and coplanar primitives |
-| sampler sRGB | RT path exists but no sampler consumer is joined | identical encoded texture through linear and sRGB views, save pre-LUT BO |
+| sampler sRGB | RT write path exists; the state-11-looking sampler slot is proven unreachable legacy residue | retain software lowering as the only implementation option; an ignored-state A/B is a useful negative check, not a missing-register search |
 | point inputs/results | PointCoord absent statically; point setup exists | compile acceptance plus two sizes and coordinate-colored point sprite |
 | MRT/query/MSAA | packet structure exists; results depend on allocation and counters | four-target readback, visible/hidden query, sampled edge/mask/resolve |
 | special shader native forms | frontend/lowerer exact, universal linked-record grammar incomplete | isolated KIL, DDX/DDY, LOD/gradient/shadow/vertex texture/branch/loop snapshots |

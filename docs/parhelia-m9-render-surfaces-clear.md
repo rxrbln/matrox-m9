@@ -56,7 +56,7 @@ The helper's three-bit result is packed at `3*s` into per-batch common-state
 shadow `+0x14`, emitted by `0xf4f50` as final index `89` (MMIO `0x1224`).  An
 out-of-range format produces value seven [BIN].  This independently agrees
 with the format-code family recovered for texture descriptor index `78`,
-including `A8R8G8B8=0x66`, `X8R8G8B8/R8G8B8=0x64`, `R5G6B5=0x4e`,
+including `A8R8G8B8/X8R8G8B8/R8G8B8=0x66`, `R5G6B5=0x4e`,
 `A2B10G10R10=0x68`, and `A2R10G10B10=0x6a` [DER].
 
 The common resource-view builder `0x467e0` closes the rest of the render
