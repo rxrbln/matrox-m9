@@ -12,7 +12,7 @@ m9_format_info(enum pipe_format format, struct m9_format_info *out)
          M9_FORMAT_TEXTURE | M9_FORMAT_COLOR };
       break;
    case PIPE_FORMAT_B8G8R8X8_UNORM:
-      info = (struct m9_format_info){ 0x64, 4,
+      info = (struct m9_format_info){ 0x66, 4,
          M9_FORMAT_TEXTURE | M9_FORMAT_COLOR };
       break;
    case PIPE_FORMAT_R8G8B8A8_UNORM:
