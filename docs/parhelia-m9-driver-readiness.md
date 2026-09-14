@@ -1,8 +1,10 @@
 # M9 kernel and Mesa driver readiness
 
 This is the implementation boundary after the static Linux and Windows binary
-analysis.  It distinguishes code that can be written from evidence already in
-the tree from behavior that still needs an M9 capture or hardware experiment.
+analysis.  There is enough evidence to write an opt-in kernel and Mesa
+bring-up driver, but not enough to promise a safe working first triangle.  This
+note distinguishes code that can be written now from behavior that still needs
+an M9 capture or hardware experiment.
 
 ## Ready to implement
 
@@ -10,10 +12,12 @@ The following is sufficiently specified for an opt-in bring-up driver:
 
 * PCI/BAR discovery, PInS parsing, clocks, display controllers, output routing,
   modesetting, scanout, and the four vblank sources;
-* linear VRAM and DMA-visible system allocations, requester initialization,
-  command-buffer framing, relocation address tags, the `0x404` executable
-  address/doorbell, bounded idle waits, requester-local restart, and the exact
-  three-dword memory write-back fence record;
+* linear VRAM and DMA-visible system allocations, the six internal allocation
+  selectors, mode 2's request-controlled `SYS`/`PCI_LOCKED` allocation, mode
+  1's optional `SCATTER` backing, requester initialization, command-buffer
+  framing, relocation address tags, the `0x404` executable address/doorbell,
+  bounded idle waits, requester-local restart, and the exact three-dword memory
+  write-back fence record;
 * separate M9 packet construction and validation for the recovered H03, H06,
   and H07 records, draw records, render targets, ordinary depth, viewport,
   scissor, clears, and the recovered state indices;
@@ -41,12 +45,14 @@ submission:
 1. Capture one vendor clear and one triangle, including the command buffer,
    `0x400..0x524`, fence memory, referenced allocations, and affected VRAM.
    There is no saved known-good M9 3D stream in `captures/` today.
-2. Validate the internal allocation-mode to public memory-domain/address-tag
-   mapping.  The mode-dependent tag tables and allocation paths are recovered,
-   but their public names are not all joined.
+2. Validate one real M9 allocation and submission against the recovered three
+   separate namespaces: internal allocation mode, public Linux memory type,
+   and requester address class/tag.  Their static data flow is now joined, but
+   no saved M9 command stream confirms the resulting GPU addresses on hardware.
 3. Close or experimentally validate the minimal vertex/fragment program
-   boundary: stage ownership of the special output MOV forms, sparse constant
-   bank keys, and the program termination/count convention.
+   boundary.  Private record stage ownership is proved, but the final typed
+   stage-to-`6a`/`6d` association, context-dependent native MOV form, sparse
+   constant-bank key, and hardware execution-stop rule remain unjoined.
 4. Exercise requester timeout and restart.  Neither saved vendor stack exposes
    a reusable global/3D reset sequence or a statically identifiable 3D fault
    interrupt, so the initial driver must fail closed after the proven local
@@ -60,7 +66,9 @@ The following do not block a linear, basic OpenGL driver:
 
 * class-3 blocked texture/render-target allocation and its physical in-block
   address permutation;
-* render-to-texture cache optimization beyond conservative fencing;
+* render-to-texture cache optimization beyond the proved class-1 dependency
+  fence through packet index `0x43`; an explicit texture-cache visibility rule
+  is not statically identified;
 * occlusion queries and their revision-dependent slot details;
 * the complete native ALU/texture/control mnemonic table, uncommon predicates,
   and every special lowering path;
@@ -83,4 +91,3 @@ requester fields, fault behavior, and class-3 physical address permutation.
    programs; keep unproved opcodes and layouts unsupported.
 5. Validate alternating contexts, textures, depth/blend, mipmaps, and multiple
    GL clients before enabling the PCI ID by default.
-
