@@ -315,11 +315,12 @@ coordinate-coded upload remains a validation test, not a discovery blocker.
 All 35 linear/tiled/special calculator bodies and dispatch relocations are now
 hash-pinned.  The 32 tiled routines across 1/8/16/32/64/128-bit, DXT1, and
 DXT2--5 have 352 checked coordinate outputs from directly invoked leaf bodies;
-the 128-bit mode-2 aperture route is an explicit unsupported zero stub.
-Maintainable source formulas still exist only for the four 32-bit routes.
-Transcribe every other family against that executable oracle before enabling
-it.  The exact 40-bit PTE decode is also known, but a live root-plus-page dump
-must still join the PTE-shaped index-`78` image to actual resource ownership.
+the 128-bit mode-2 aperture route is an explicit unsupported zero stub.  All
+14 non-32-bit aperture permutation families now have maintainable formulas
+that match 104,144 native comparisons.  The exact 40-bit PTE decode is also
+known, but a live root-plus-page dump must still join the PTE-shaped index-`78`
+image to actual resource ownership and validate physical pages before these
+layouts are exposed broadly.
 
 ## 5. Requester, command transport, and UAPI
 
