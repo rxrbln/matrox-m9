@@ -103,6 +103,19 @@ producer-to-consumer ordering mechanism.  Descriptor emission is not used as
 the fence trigger: the sampled backing enters the first vector even when its
 descriptor dirty word is zero.
 
+Index `43` is an ordering-state write, but static code does not prove a cache
+side effect.  Its concrete emitter `0x25270` only compares the requested fence
+with the last 64-bit value, emits `43 = low32(value)` when newer, and saves the
+full value.  It contains no texture descriptor access or adjacent explicit
+cache-state transition.  The packed tag `0x45454543` occurs only twice in the
+whole image: once in this emitter and once at `0x65772`, where `0x656c0`
+constructs the generic command-state restore template alongside many unrelated
+indices.  The second occurrence shows that `43` is persistent/restorable
+command state; it does not establish texture-cache invalidation.  Consequently
+`43` is sufficient for the recovered vendor fence dependency, while its
+sufficiency for making an earlier same-address write visible to texture
+sampling remains a hardware/capture question.
+
 Top-level state serializer `0xfadf0` orders its blocks as `0xfc0e0` late state,
 `0xfb920` surfaces, `0xf4f50` common state (which contains the only call to
 `0xf4350`), `0xf6f20` program/vector state, and `0xfb260` input state, then
@@ -130,14 +143,54 @@ emitter `0x1b650` at `0x1b9f5`.  Other copy shapes go through `0x571d0`,
 calculated byte offset in destination-resource field `+0x3e0`; the stored
 value is an offset, not a Boolean dirty flag.
 
+The copy builder has an exact resource-fence preflight [BIN].  The resource
+constructor at `0x50cbb` installs vtable `0x1f3258`; its slots `+0x04/+0x08`
+are `0x555c0/0x55550`.  Before emitting the copy, `0x1b8d0` repeatedly invokes
+both slots with argument one on each of its two resource arguments
+(`0x1b978..0x1b9b1`) until all four calls return zero.  The two wrappers first
+forward to as many as two child resources at `+0x320/+0x324`.  If no child
+blocks, they fall through to these base-resource methods:
+
+| base method | backing operation at resource `+0x1e4` | numeric channel |
+|---|---|---:|
+| `0x4e130` | vtable `+0x04(class=2)` query, queue-progress wait when requested, then vtable `+0x00(value,class=2)` | 2 |
+| `0x4e250` | vtable `+0x0c()` query, queue-progress wait when requested, then vtable `+0x08(value)` | separate, unnumbered here |
+
+Thus the saved Windows copy route synchronizes both resource objects against
+two previously recorded backing-fence channels before it writes.  It does
+not query class 1 in this preflight.  Class 2 is an exact numeric argument;
+the purpose of the other channel remains unnamed because its getter takes no
+class argument.
+
+After those waits, `0x1b650` submits its legacy command queue through
+`0x1afd0(1)` at `0x1b811..0x1b815`.  A caller-controlled flag can additionally
+invoke `0x1ac40(1)` at `0x1b81a..0x1b824`; that routine submits a short record
+and polls queue completion.  Neither call receives the original source or
+destination resource object.  `0x1b8d0` then runs the paired `0x1b4a0`
+resource/relocation cleanup calls.  There is no post-copy call to the known
+TaskMgr class setter in this user-mode route.
+
+That negative result can be made complete for the known setter wrapper
+`0xfadc0`: its only direct call sites in all of `MxMD.dll` are `0xf9bc2`,
+`0xf9c02`, `0xf9e88`, and `0xf9ec6`.  The first pair is commit method
+`0xf9b70`; the second pair is the alternate 3D commit block
+`0xf9e44..0xf9edd`.  Both walk `+0x5e4` with class 0 and `+0x5f4` with class 1
+before submission.  None belongs to the copy/upload helper family.  The copy
+builder also receives no TaskMgr pointer and never appends its destination to
+either of those vectors.
+
 The direct-call census finds no `CALL rel32` edge from `0xb21b0`, `0x56a10`, `0x56c60`,
 `0x56eb0`, `0x1b8d0`, or `0x1b650` to `0xf4350`, `0xf4f50`, `0xf5730`,
 `0xf59b0`, `0xfc620`, `0xfcb60`, or `0xfc8f0`.  This is a precise negative
-result for direct calls.  It does not negate the TaskMgr resource-fence join
-above, which is reached by virtual dispatch and task sequencing.  Static code
-does not yet prove whether copy/upload tasks attach their destination backing
-to the same class-1 field used by `fb920`; that part remains an upload-specific
-boundary.
+result for direct calls.  Together with the concrete virtual-call resolution
+above, it establishes that **the inspected MxMD copy path does not explicitly
+give the destination a class-1 fence**.  It does not prove that the destination
+never receives an equivalent fence: `0x1b420` builds resource/relocation
+records before submission, and the lower submission or kernel layer may
+associate completion with those records.  No checked static path exposes the
+class selected there.  Treating a copy destination as a class-1 producer in a
+new driver is therefore a conservative unification with the render path, not
+a recovered vendor-copy rule.
 
 `MxMGLX.dll` contains diagnostics for
 `TextureObjectMgr::GenericUpdateTextureImage()` and
@@ -277,19 +330,25 @@ specific sequence:
    write has no static justification.
 
 For a copy/upload producer, use the same conservative class-1 destination
-fence until a static join or capture proves its precise registration path.
-The Windows render-target sequence gives task ordering and descriptor
-visibility without inventing a cache-packet meaning.  It does not yet prove
-whether index `43` completion also implies all texture-cache visibility, or
-whether same-address render-to-texture needs an additional cache control.
+fence until a capture proves its lower-layer registration path.  This is a
+driver policy inferred from the exact render dependency, since MxMD itself
+pre-waits copy resources through class 2 plus the separate legacy channel and
+does not attach class 1 after the copy.  The Windows render-target sequence
+gives task ordering and descriptor visibility without inventing a cache-packet
+meaning.  It does not yet prove whether index `43` completion also implies all
+texture-cache visibility, or whether same-address render-to-texture needs an
+additional cache control.
 
 ## Remaining boundary and required capture
 
 Static analysis has recovered render-surface class-1 fence production and the
 later sampled-resource class-1 dependency, but not an exact dedicated
-texture-cache invalidate, nor proof that one exists.  The unresolved static
-boundary is now narrower: cache visibility after the index-`43` dependency,
-plus destination-fence registration for the separate copy/upload task family.
+texture-cache invalidate, nor proof that one exists.  It also rules out an
+explicit MxMD class-1 destination attachment in the inspected copy path.  The
+remaining lower-layer possibility is bounded to resource/relocation submission
+metadata outside that path.  The unresolved boundary is cache visibility after
+the index-`43` dependency and whether the lower layer records a copy completion
+in any fence channel later queried by the texture consumer.
 A differential command/MMIO capture must compare at least:
 
 * sample without an intervening write;
