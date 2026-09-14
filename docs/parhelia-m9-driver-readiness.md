@@ -54,8 +54,10 @@ These facts are enough for a guarded clear/triangle Gallium path and for the
 fixed-function subset needed by ioquake3. The programmable transport boundary
 is now closed as one opaque linked VS/FS pair selected atomically through
 `6c`; there are no public native start/count or per-stage entry fields to fill.
-Arbitrary GLSL remains unsafe until a new compiler can construct that linked
-pair, place semantic control-flow targets, and emit the admitted terminal.
+The private whole-pipeline allocation, key cache, copy-on-write validation and
+publication order are exact. Arbitrary GLSL remains unsafe until a new compiler
+can construct the bytes inside that linked pair and place semantic control-flow
+targets.
 
 The first DRM implementation should continue to omit the dormant auxiliary
 `0x500..0x524` requester. Ordinary GL uses the primary `0x400/0x404` path;
@@ -108,11 +110,11 @@ native encoding or an implemented scheduling limit.
 | MOV, ADD, SUB, MUL, MAD, DP3/4, MIN/MAX, RCP/RSQ, EXP2/LOG2, FLOOR | executable hash-pinned lowerer fixtures plus live compile/link/draw | **closed** for canonical forms | expand only when a new modifier/result class is needed |
 | absolute/negate, swizzle, write masks, scalar predicates | 91-case native lowering matrix and live draw | **closed** for recorded forms | reject unrecorded combinations |
 | matrices M4x4/M4x3/M3x4/M3x3/M3x2 | exact static expansion to 4/3 DP4 and 4/3/2 DP3 rows, including alias MOV | **closed** | one `mat4*vec4` regression is sufficient |
-| KIL/discard | dedicated pairwise comparison lowerer plus live conditional and unconditional discard results/resources | typed behavior **captured**, packed form **capture** | identify the conditional KIL native slots inside the heterogeneous linked record |
+| KIL/discard | dedicated pairwise comparison lowerer, exact seven-mask native basis, all three kill/result finalizer paths, plus live conditional and unconditional discard results/resources | canonical packed forms **closed** | extend the native matrix before accepting unrecorded predicate/control combinations |
 | DDX/DDY | backend selectors 91/92, isolated live `dFdx`/`dFdy` results/resources, exact canonical packed streams, and a 104-case mask/swizzle/modifier/predicate/control basis | **closed** for recorded native forms | validate helper-lane behavior at primitive and viewport edges on the new driver |
 | TEXLD ordinary 2D | static lowerer, live single-level and mipmapped texture draws | **closed** for captured 2D forms | none for initial path |
 | TEXLDB / projected TEXLD | exact one-hot lowerer modes plus live bias and projected result/resources | **captured** | name the final native mode field |
-| TEXLDL / TEXLDD | vertex explicit LOD has a live result/resource; fragment explicit LOD and gradient are rejected because the required extension is absent | vertex **captured**; fragment **unexposed** | join the vertex native instruction and resource selector |
+| TEXLDL / TEXLDD | vertex explicit LOD has a live result/resource; TEXLDD has an exact nine-slot native expansion; fragment explicit LOD and gradient are rejected because the required extension is absent | vertex **captured**; fragment **unexposed** | join the vertex LOD resource selector; retain TEXLDD for compiler tests |
 | cube texture | all six faces and orientation probes pass; descriptor/resource dimension and exact `level_offset + face * face_size` base are captured/static | **captured** | mip/seam/incomplete cases and validate static face bases against decoded physical pages |
 | shadow comparison | exact sampler enable/eight compare codes plus live raw 0.25/0.75 and LEQUAL fail/pass results | **captured** for the tested D24/nearest route | filtering, result-channel variants, and FBO producer dependency |
 | vertex texture fetch | four-sampler compiler limit plus live vertex `texture2DLod` result/resource | **captured** | native instruction and vertex sampler join |
@@ -120,8 +122,8 @@ native encoding or an implemented scheduling limit.
 | constant/uniform branches | live constant/uniform results plus exact ELSE builder and two packed templates | **captured**, target fixup open | distinguish folded/native cases and resolve reconvergence |
 | fixed/dynamic loops, BREAK/CALL | live fixed/uniform loops; exact loop/break builder joins, BREAK templates, CALL/LABEL/RET graph edges, CALLNZ macro, and ordered pre-pack descriptor substitution | transport fixup lifetime **closed**, semantic placement open | implement graph targets/backedges/calls, then nesting and implementation limits |
 | uniforms/constants | vertex and fragment A/B/A sentinels identify live-component ranges in the 0x21000 resource | **closed** for external range path | mode-2 inline constant bank remains optional |
-| program entry/resource ownership | `69` is live drawable/resource backing; `6c` atomically selects an opaque tagged linked VS/FS pair; fixed-chain-only starts/counts are separately exact | transport contract **closed** | construct new linked pairs and validate allocator wrap/reuse |
-| termination | count-delimited compiler stream, endpoint selector `0x7e`, and complete terminal slot are exact | **validation** | determine endpoint-only versus full-terminal stop on generated programs |
+| program entry/resource ownership | `69` is live drawable/resource backing; `6c` atomically selects an opaque tagged linked VS/FS pair; private 0x3158-byte pipeline allocation, ordered key reuse and copy-on-write publication are exact; fixed-chain-only starts/counts are separately exact | transport/lifetime contract **closed** | construct the internal bytes of a new linked pair |
+| termination | count-delimited compiler stream, endpoint selector `0x7e`, and result-only, kill-only and combined finalizer paths are exact | **validation** | determine endpoint-only versus full-terminal stop on generated programs; terminal variants do not encode MRT target index |
 
 `tools/m9-gl2-compiler-control-evidence.py` pins the MxMD and MxMGLX hashes,
 the complete 55-entry compiler dispatch, special lowerer call targets, matrix
@@ -164,8 +166,8 @@ the live Linux ICD did not advertise.
 
 | remaining gap | consequence | smallest closing experiment |
 |---|---|---|
-| programmable linked-pair construction inside heterogeneous `6c` records | the transport can replay a complete pair but arbitrary newly compiled GLSL cannot build one safely | follow the constructor/cache transforms far enough to create a bounded pair, then validate allocator wrap/reuse |
-| special shader packed forms and semantic control-flow placement | DDX/DDY forms are exact; ELSE/BREAK/BREAKP templates, parser-to-builder joins, ordered descriptor tables and pre-pack substitution are exact; KIL, texture controls, remaining predicates, branch targets/backedges/calls/reconvergence are not all implemented | recover or independently implement target placement and join remaining operation-specific slots to the linked-pair constructor |
+| programmable linked-pair bytes inside heterogeneous `6c` records | private construction, validation, ordered key reuse and copy-on-write publication are exact, but arbitrary newly compiled GLSL still cannot serialize the internal record safely | recover or replace the opaque byte-layout builder while retaining the proven lifetime policy |
+| special shader packed forms and semantic control-flow placement | KIL, DDX/DDY and TEXLDD canonical forms are exact; ten texture metadata flags are recorded; ELSE/BREAK/BREAKP templates, parser-to-builder joins, ordered descriptor tables and pre-pack substitution are exact; B/P/L texture distinction, remaining predicates, branch targets/backedges/calls/reconvergence are not all implemented | recover or independently implement target placement and linked-resource texture controls; reject unrecorded combinations |
 | four-target MRT export and retirement | descriptor/reloc plus Windows RT0..3 job/fence membership are exact, but native output export and Linux per-RT job-BO membership are unjoined; Linux close can poll a nonretiring fence forever | decode one RT1 job through export, Linux write list and common writeback, then independently verify readback/unbind/delete/context/fd close with bounded recovery |
 | multisample/FAA allocation, pattern, mask and resolve | no sample buffers and no FAA cap | acquire a vendor multisample visual/surface, then clear/edge/mask/query differentials |
 | native 10-bit render and sample round trip | Linux GL downgrades RGB10_A2 to RGBA8, so GigaColor formats cannot be advertised | enable the gated Windows path and capture A2B10/A2R10 clear, draw, sample, raw storage and presentation with sentinel channels |
