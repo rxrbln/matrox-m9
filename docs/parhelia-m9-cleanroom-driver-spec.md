@@ -360,7 +360,8 @@ The closed one-time context writes include:
 448  00000000
 1068/106c  two writeback-fence addresses
 10ec/1094/1098  optional context address/limit controls
-44c/450/454  requester control fields
+44c/450/454  packed partition/subcount controls; exact fallback
+             1f280800/1f3f2707/00070703
 330=1000, 338=40, 33c=80, 340=c0, 354=03020100
 f0c initial 8000 plus device-property bits 9:6
 ```

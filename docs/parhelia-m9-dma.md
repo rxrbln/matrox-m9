@@ -47,9 +47,15 @@ Programmed once to arm the DMA context (ordered as in the binary):
 | `0x10ec` | optional `(([BM+0x44] + 0x200) & ~0x1f) \| ([BM+0x34] & 3)` | aligned context address with memory tag |
 | `0x1094` | optional `([BM+0x44] + 0x200) & ~0x1f` | aligned context address |
 | `0x1098` | `(base + 3 * field * 0x200 - 0x400) & ~0x1f \| 6` | computed context limit/control |
-| `0x44c` | `[object+0x6c]` | DMA control field |
-| `0x450` | `[object+0x70]` | DMA control field |
-| `0x454` | `[object+0x74]` | DMA control/alignment field |
+| `0x44c` | `[object+0x6c]` | packed primary partition start/cumulative boundary |
+| `0x450` | `[object+0x70]` | packed inclusive partition boundaries |
+| `0x454` | `[object+0x74]` | packed secondary subcounts |
+
+Constructors `m9x654` and `m9x1086` supply the exact packer and fallback
+values `0x1f280800`, `0x1f3f2707`, and `0x00070703`; see
+`parhelia-m9-primary-requester-controls-re.md`.  The seven target property
+inputs still need a warm readback or a join to their board/device database
+before a cold driver should choose between the actual tuple and fallback.
 
 The kernel function does not write `0x1070`.  Earlier tentative lists which
 included it were based on an incomplete Windows-side trace.
@@ -401,10 +407,13 @@ The statically defensible bring-up order for a future kernel backend is:
 5. Submit the recovered three-dword completion record.  Permit rendering only
    after its memory tag advances and all relevant MMIO reads remain connected.
 
-Steps 3--5 remain behind an experimental opt-in until the address domains and
-fence-address programming are captured and the recovered completion record is
-validated on hardware.  They are an implementation order derived from the
-vendor call graph, not evidence for an undiscovered global reset sequence.
+The primary address domain, `0x106c` fence routing, and recovered completion
+record have now passed the kernel-owned hardware diagnostic.  General stream
+execution remains behind an experimental opt-in until the target-specific
+requester property tuple, address windows, full register masks, BO lifetime,
+and copied-stream completion are validated.  This is an implementation order
+derived from the vendor call graph, not evidence for an undiscovered global
+reset sequence.
 
 Every kernel wait needs an absolute deadline and checks for device removal,
 signals where sleeping is allowed, and a reset-generation change.  On timeout,

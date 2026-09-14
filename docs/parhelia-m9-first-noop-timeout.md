@@ -79,8 +79,10 @@ for this test.
 
 The reduced open path does not yet own the complete Linux `m9x109` register
 set.  The vendor additionally writes `0x10ec`, `0x1094`, `0x1098`, and
-`0x44c/0x450/0x454`, using allocation-object fields and optional context
-resources.  General vendor engine initialization also owns the address/service
+`0x44c/0x450/0x454`.  The last three controls now have an exact property
+packer and fallback image in `parhelia-m9-primary-requester-controls-re.md`;
+only the target's seven property inputs remain unjoined.  The optional context
+resources and general vendor engine initialization also own the address/service
 state at `0x330..0x364`, `0xf04/0xf0c`, `0xf64..0xf7c`, and
 `0x1320..0x1334`.  These are real implementation gaps, but none should be
 filled with copied runtime constants for this retry.  The tested device was
