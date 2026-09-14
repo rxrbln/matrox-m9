@@ -50,7 +50,7 @@ but emits no command [BIN]:
 This cache is an API-facing mirror.  It must not be confused with an indexed
 register shadow.
 
-## Fill and shade fan-out
+## Fill and shade fan-out and compiler key
 
 `FILLMODE` handler `0x10405d` masks the D3D value to two bits and updates all
 three of these representations [BIN]:
@@ -71,8 +71,22 @@ p2520+0x18 bit 0 = (value == 1); on change p2520+0 |= 0x00000080
 
 The last comparison is exact because the common dispatcher establishes
 `edi=1`.  This resolves the earlier uncertainty about whether that bit meant
-flat shading: Direct3D `D3DSHADE_FLAT` is enum value 1 [DER].  The final M9
-index carrying the `p252c+0x0c` nibbles is not yet statically joined.
+flat shading: Direct3D `D3DSHADE_FLAT` is enum value 1 [DER].
+
+The compiler builder at `0x13a080` publishes its outer object's `+0x18` as
+core `p2528` and `+0x64` as the per-target program-state manager.  Therefore
+builder `+0x60` is exactly live raster `p2528+0x48`.  Initial builder routine
+`0x13a0e0` packs that word into the separate compiler key at builder `+0x78`:
+
+| frontend field | compiler-key field | exact enum contribution |
+|---|---|---|
+| `FILLMODE`, `p2528+0x48[5:4]` | `+0x78[1:0]` | point `1`, wireframe `2`, solid `3` |
+| `p2528+0x48[14:13]` | `+0x78[3:2]` | unchanged two-bit value |
+| `SHADEMODE`, `p2528+0x48[7:6]` | `+0x78[5:4]` | flat `0x10`, Gouraud `0x20`, Phong `0x30` |
+
+The two shifts at `0x13a1c2` and `0x13a1cf` are both required for this map.
+The persistent `p252c+0x0c` nibbles remain dependency inputs; the exact
+builder-key packing does not by itself identify a final M9 index [BIN].
 
 Point fill does have one exact final-command consequence.  Render-entry
 constructor `0x17edb0` receives the live `p2528` pointer in entry field
@@ -259,14 +273,19 @@ output mask described above.  No nonzero mask bits are copied into the
 compiled `ad/af` words or into another fixed command word by this saved path
 [BIN].  Partial sample-mask behavior consequently remains unjoined.
 
-The remaining raster states stop at compiler and optimization inputs rather
-than a proved fixed index [BIN][DER]:
+Cull, wireframe/solid, and shade mode now have exact compiler-key encodings,
+but still stop before a proved fixed index [BIN][DER]:
 
-* `CULLMODE` remains at `p2528+4[1:0]`.  Clone `0x1119b0` preserves this field
-  and its dirty `0x4`.  The only downstream decoder found for the low two bits,
-  `0x17e8d0`, accepts value 1 (`CULL_NONE`) as one condition of a draw-path
-  eligibility test; it does not distinguish clockwise from counterclockwise
-  or emit a command word.
+* `CULLMODE` starts at `p2528+4[1:0]`.  Since builder `+0x18` is `p2528`,
+  incremental lowerer `0x13ab40` reads the same field at builder `+0x1c` and
+  copies it to compiler key `+0x78[7:6]`: none `0x40`, clockwise `0x80`, and
+  counterclockwise `0xc0`.  It also makes `CULL_CW` set per-target program
+  record `+0x80 bit24`; a gated second path makes culling enabled
+  (`value != CULL_NONE`) affect record `+0x80 bit25`.  The lowerer marks record
+  dirty group `0x2`.  The final program/vector emitter `0xf6f20` has no group
+  `0x2` case, so neither these record fields nor key bits `7:6` can yet be
+  named as an indexed hardware word.  The separate `0x17e8d0` decoder accepts
+  `CULL_NONE` as a draw-path eligibility condition [BIN].
 * Clone `0x1119b0` covers the raster object only through `+0x44` and does not
   copy the fill/shade mirror at `p2528+0x48`.  That does not remove the live
   raster object from render-entry construction: `0x17f040` consumes it and
@@ -277,12 +296,20 @@ than a proved fixed index [BIN][DER]:
 * Persistent fill/shade nibbles in `p252c+0x0c` participate in renderer
   dependency checks at `0x132e10`, which invalidate and rebuild compiled draw
   entries.  Flat shade also has the independent `p2520+0x18 bit 0` fan-out
-  documented above.  Static data flow has not isolated the resulting native
-  instruction or indexed word for either fill or shade.
+  documented above.  Builder key bits `1:0` and `5:4` now retain the complete
+  fill and shade enums.  Static data flow has not isolated the resulting
+  native instruction or indexed word for either field.
 
-Controlled command captures are still needed to distinguish `CULL_CW` from
-`CULL_CCW`, distinguish wireframe from solid after draw compilation, identify
-the flat/Gouraud effect, and determine whether nonzero partial sample masks
-survive in a different surface or device path.  Such captures should include
-both the indexed command stream and the native program buffer uploaded from
-`+0xbb0/+0xbb4`.
+There is one easy false join to avoid.  Emitter `0xf6f20` writes its bound
+per-target program record `+0x78` to final index `30`.  That object is selected
+from builder `+0x74` with a `0xc04` target stride.  It is not builder `+0x78`,
+the compiler key above.  No copy between those two `+0x78` fields occurs in
+the builder range `0x13a020..0x13c610` [BIN].
+
+Controlled command captures are still needed to locate the final effect of
+the now-known `CULL_CW`/`CULL_CCW`, wireframe/solid, and flat/Gouraud compiler
+keys, and to determine whether nonzero partial sample masks survive in a
+different surface or device path.  Such captures should include both the
+indexed command stream and the native program buffer uploaded from
+`+0xbb0/+0xbb4`.  `tools/m9-raster-pack-evidence.py` pins the exact lowering,
+call joins, and the negative dirty-group boundary.

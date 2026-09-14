@@ -186,8 +186,12 @@ a safe DRM submitter and a working Mesa driver:
    blocked layout classes; their descriptor overrides alone do not define that
    permutation.  The uncommon nonzero-origin `c4/c5` transform also remains
    unnamed.  Draw launch is statically joined to H03/H06/H07 records.
-5. The final M9-index join for culling, wireframe/solid, and shade mode.  A
-   gated point-fill mask now reaches index `c1[11:0]`.  Multisample
+5. The final M9-index join for culling, wireframe/solid, and shade mode.  Their
+   compiler-key fields are exact: fill `+0x78[1:0]`, shade `[5:4]`, and cull
+   `[7:6]`, retaining the Direct3D enum in each two-bit field.  The
+   equal-numbered per-target field emitted at index `30` is a different
+   object, and the program emitter has no case for cull's dirty group `0x2`.
+   A gated point-fill mask now reaches index `c1[11:0]`.  Multisample
    enable is now joined through compiled surface words to final indices
    `ad/af`; only the zero-mask color-output effect is proved for
    `MULTISAMPLEMASK`.  Blend, alpha test, and format-dependent colour masks

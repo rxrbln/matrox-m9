@@ -380,9 +380,13 @@ lower command-shadow objects emitted by `0xf4f50`, `0xfb920`, and `0xfc0e0`.
 Depth/stencil, viewport/scissor, and the compiled multisample pair are joined
 to final indices below.  Blend, alpha test, and format-dependent color masks
 are fragment-compiler inputs.  Point fill has one gated final-command effect
-at index `c1`; cull, wireframe versus solid, and shade still stop at compiler
-or draw-path eligibility state, so their frontend names must not yet be
-attached directly to packet registers [INF].
+at index `c1`.  Builder `0x13a0e0` packs fill into compiler key
+`+0x78[1:0]` and shade into `[5:4]`; `0x13ab40` packs cull into `[7:6]`.
+The exact enum contributions are point/wireframe/solid `1/2/3`,
+flat/Gouraud/Phong `0x10/0x20/0x30`, and none/CW/CCW
+`0x40/0x80/0xc0`.  Their frontend names must not yet be attached directly to
+packet registers because this compiler key has no proved final-index join
+[BIN][INF].
 
 ### Depth/stencil frontend-to-command join
 
@@ -481,11 +485,14 @@ The remaining frontend-to-final-index boundary is now precise [BIN][DER]:
   `f5,f6,c4,c5` [BIN].  The exact rectangle construction and packing are
   recorded in `parhelia-m9-render-surfaces-clear.md`.
 * `CULLMODE` remains in the separate `p2528` raster object.  Raster clone
-  `0x1119b0` preserves `+4[1:0]` and dirty `0x4`; the only downstream decoder
-  found, `0x17e8d0`, tests value 1 (`CULL_NONE`) as a draw-path eligibility
-  condition.  It does not distinguish clockwise from counterclockwise or emit
-  a command word.  The meaning of the `a8` face-order selection must not be
-  inferred from this separate state [BIN].
+  `0x1119b0` preserves `+4[1:0]` and dirty `0x4`.  Builder `+0x1c` is exactly
+  `p2528+4`; `0x13ab40` shifts its low bits into compiler key
+  `+0x78[7:6]`, distinguishing none/CW/CCW as `0x40/0x80/0xc0`.  It also
+  creates gated per-target record `+0x80[25:24]` effects and marks dirty group
+  `0x2`, for which emitter `0xf6f20` has no case.  `0x17e8d0` separately uses
+  `CULL_NONE` only for draw-path eligibility.  A final indexed write remains
+  unproved, and the `a8` face-order selection must not be inferred from this
+  separate state [BIN].
 * Render-entry constructor `0x17edb0` keeps the live `p2528` pointer at entry
   `+0x14` and a per-batch common command shadow at `+0x24`.  Helper `0x17f040`
   recognizes `D3DFILL_POINT` (`p2528+0x48[5:4] == 1`) and, under entry/primitive
@@ -493,8 +500,14 @@ The remaining frontend-to-final-index boundary is now precise [BIN][DER]:
   `+0x1c[15:0]`.  It marks common group `0x01` dirty, and
   `0xf4f50` emits shadow `+0x1c` as final index `c1`.  Bits `15:12` also depend
   on raster bit 8 and per-item flags, so their name is still open.  This joins
-  a point-fill consequence to `c1[11:0]`; no static path yet distinguishes
-  `D3DFILL_WIREFRAME` from `D3DFILL_SOLID` at a final index [BIN].
+  a point-fill consequence to `c1[11:0]`.  Compiler key `+0x78[1:0]`
+  distinguishes point/wireframe/solid as `1/2/3`, and `[5:4]` distinguishes
+  flat/Gouraud/Phong as `0x10/0x20/0x30`, but neither field is joined to a
+  final index [BIN].
+* Emitter `0xf6f20` writes per-target record `+0x78` to index `30`.  This is
+  not compiler-builder `+0x78`: the record comes from builder
+  `+0x74 + target*0xc04`, and no copy between the equal-numbered fields occurs
+  in `0x13a020..0x13c610` [BIN].
 * Multisample compiler `0x139240` reads `MULTISAMPLEANTIALIAS` from validator
   `+0x174` (`p2514+0xf4 bit 0`) and rebuilds nested words `+0x1b0,+0x1b4`.
   `0x181fa0` copies them to surface `+0x28,+0x2c`, and `0xfb920` emits them as
