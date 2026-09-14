@@ -67,12 +67,16 @@ calls either function [BIN].  No shared field reference found in the 32 saved
 images joins compiled object `+0x128` to emitter external controls `+0xb0/+0xd0`
 or inline fields `+0xbd0/+0xbd4/+0xbd8/+0xbe0` [BIN].
 
-Thus static linkage now ends later and more precisely:
+Thus static linkage now ends later and more precisely.  September 2026 live
+capture additionally proves that external index `69` is drawable backing, so
+the unresolved association must be sought in the system record selected by
+`6c`, not by treating `69` as a native heap:
 
 ```text
 typed stage handle -> stage tree -> compiled object -> native descriptor +0x128
   -> [unrecovered native descriptor/resource to final bind-state association]
-  -> external 69 relocation and 6a/6d controls, or inline image and starts
+  -> external 6c-selected record and still-unresolved stage fields,
+     or inline image and starts
 ```
 
 The remaining gap is entry association and resource ownership, not compilation
@@ -133,15 +137,16 @@ cannot hold for an accepted live token.  Linux therefore uses operation
 operation-`0x15` fallback [DER].  This difference must be preserved when using
 the Linux compiler as the implementation reference.
 
-## Smallest remaining capture
+## Updated smallest remaining capture
 
-Hook the fragment and vertex bind setters and `m9x11728` for the first draw of
-one linked program.  At each bind, resolve the handle through its tree and dump
-compiled object `+0x128`: record count byte `+0x25`, the 8-byte slots beginning
-at `+0x28`, and any alternate vertex subrecords.  At `m9x11728` entry dump:
+The full-allocation special-op capture supersedes the earlier request to dump
+index `69`: that resource is the 128x128 drawable backing [CAP].  At each bind,
+resolve the handle through its tree and dump compiled object `+0x128`: record
+count byte `+0x25`, the 8-byte slots beginning at `+0x28`, and any alternate
+vertex subrecords.  At `m9x11728` entry retain the numeric fields:
 
 ```text
-+0xa0  relocation/resource descriptor for index 69
++0xa0  relocation/resource descriptor for drawable-backed index 69
 +0xb0  external 6a control
 +0xd0  external 6d control
 +0xbd0/+0xbd4  inline starts
@@ -150,9 +155,10 @@ at `+0x28`, and any alternate vertex subrecords.  At `m9x11728` entry dump:
 
 Run two pairs: hold the vertex shader fixed while changing a fragment ALU
 operation, then hold fragment fixed while changing a vertex ALU operation.
-Dump the resource referenced by index 69 when the external form is selected.
-Those two first-draw records are sufficient to identify which native descriptor
-or concatenated range owns each `6a/6d` entry without a broad MMIO capture.
+Dump the complete `6c`-selected system record and its surrounding allocation.
+Those two first-draw records can identify the changing stage subrecord without
+misclassifying drawable pixels as code.  The reconciled address evidence is in
+`parhelia-m9-program-resource-reconciliation.md`.
 
 Run `python3 tools/m9-stage-mov-boundary-evidence.py` to verify the Windows
 control-flow bytes, the Linux rel32 joins, native descriptor parsers, MOV

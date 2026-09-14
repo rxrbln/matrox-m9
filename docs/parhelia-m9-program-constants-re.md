@@ -256,12 +256,14 @@ at `0x431900` replays its lists through fragment handler `0x3b8430` [BIN].
 This replay updates the persistent CPU banks; it is not final command-buffer
 emission.
 
-## Final relocation-backed program packet
+## Final relocation-backed resource/control packet
 
-The common old-engine program emitter `0x4b9340` exposes a later, exact GPU
+The common old-engine state emitter `0x4b9340` exposes a later, exact GPU
 resource boundary [BIN]. Its state contains two opaque 64-bit values at
 `+0xa0` and `+0xa8`. They must remain opaque because the saved image does not
-join their internal fields to the program resource object above.
+join their internal fields to the persistent constant banks above.  Later live
+capture proves that the resource emitted at index `69` is drawable backing,
+not native-program or constant-bank storage [CAP].
 
 When state byte `+9` bit 1 is set, the emitter first calls command-buffer
 vtable slot `+0x68` with `state[+0xa0]`, `state[+0xa8]`, and count one. When
@@ -354,21 +356,17 @@ A compatible M9 implementation can reproduce the now-proved software side:
 - version the two banks independently.
 
 The persistent-bank destination, update ordering, stage association, resource
-builder argument boundary, and final program relocation packet are now fixed.
+builder argument boundary, and final `69/6a/6d` packet shape are now fixed.
 Static evidence does not connect the conditional mode-2 bank argument to the
 opaque `+0xa0/+0xa8` pair, expose the backing allocation length, or associate
 the two `*BmConstants` controls with a GL stage.
 
-The smallest decisive capture is therefore bounded. Hold the program binary
-fixed and record a baseline, one vertex-only vec4 update, and one fragment-only
-vec4 update under all four `PsBmConstants/CeBmConstants` combinations. Log the
-mode-2 wrapper/helper entry, the two arguments at state `+0xa0/+0xa8`, the
-vtable-`+0xb0` relocation result for index `0x69`, and the backing allocation's
-base and byte length. Begin after opcode `0x65/0x66` drain and end at the draw
-submission/fence. A changed allocation containing the known 16-byte sentinel
-then proves the bank layout, stage/control association, address, length, and
-completion ordering in one experiment. Do not search the separate sparse
-`0x68` packet for these values.
+The old proposal to search the index-`69` allocation for constant sentinels is
+retired: the complete allocation contains drawable pixels.  The remaining
+probe must compare the `6c`-selected system record and its surrounding
+0x21000-byte allocation while changing only one stage's constants.  See
+`parhelia-m9-program-resource-reconciliation.md` for the exact address join and
+bounded VS/FS record experiment.
 
 Run:
 

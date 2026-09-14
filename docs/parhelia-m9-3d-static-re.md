@@ -141,8 +141,8 @@ map for later annotation, not a final register-name header.
 | `0xf4f50` | `ef`, `e6,8f`, `90..92`, dynamic `00`, `70`, `f0` | common 3D setup and state-bank selection [BIN] |
 | `0xf5730`, `0xf59b0` | `c2,c3,8f`, `e6,e3` | resource/cache transition path [BIN][INF] |
 | `0xf6f20` | `ec,f4,ea,eb`, `30`, `28`, repeated `23`, `d0,d1`, then program helpers | central dirty-state emitter [BIN] |
-| `0xf74d0` | `69,6a,6d,e3,68,60..67` | native program address/control and inline upload [BIN] |
-| `0xf78c0` | `68,6b,6c,60..67` | auxiliary program/constant records [BIN] |
+| `0xf74d0` | `69,6a,6d,e3,68,60..67` | external resource/control group or alternative inline native upload; live `69` is drawable backing [BIN][CAP] |
+| `0xf78c0` | `68,6b,6c,60..67` | auxiliary resource/control group; live `6c` selects a tagged system record [BIN][CAP] |
 | `0xf7c60` | `68,60..67` | another complete auxiliary record [BIN] |
 | `0xfb920` | `b8..be`, `24`, `bc,bd`, `af`, `a8..ae`, `f1` | render/depth surface group [BIN][INF] |
 | `0xfc0e0` | `f0,ef,d7`, `ee`, `22`, `a7,c6` | late raster state group [BIN] |
@@ -1110,10 +1110,12 @@ by `0x20`.  Its selector update preserves bits selected by `0xc01f` and inserts
 `(instruction_number & 0x1ff) << 5`, independently fixing the selector's
 instruction-number field at bits `13:5` [DER].
 
-The Linux external-program form binds index `69` from resource
+The Linux external resource form binds index `69` from resource
 `+0xa0/+0xa8` with usage `0x19` and descriptor `2`, writes `6a <- +0xb0`, and
 `6d <- +0xd0`.  It also exposes a short control form selected by state
-`+0xbcc` [BIN]:
+`+0xbcc` [BIN].  Full-allocation capture later proves that the live external
+`69` resource is drawable backing, not the storage used by the inline native
+image [CAP]:
 
 ```c
 if (state_bcc) {
