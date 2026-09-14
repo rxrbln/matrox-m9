@@ -29,8 +29,9 @@ The following is sufficiently specified for an opt-in bring-up driver:
 * the two-dword native instruction container, native packer fields, program
   upload selector and ports, program-bank limit, entry-point registers, GLSL
   varying linkage, typed stage handles through parsed native descriptors, the
-  live Windows and Linux mode-6 MOV forms, and enough IR structure to add
-  semantic opcodes as they are proved;
+  live Windows and Linux mode-6 MOV forms, the exact shared terminal slot
+  `1d 7e fc ff 0f 3f 80 a2`, and enough IR structure to add semantic opcodes
+  as they are proved;
 * GL locations through stage-native indices, range records, vertex-then-fragment
   FIFO transport, persistent stage constant banks, old-engine limits, and the
   guarded mode-2 bus-master resource path up to its final opaque allocation
@@ -58,10 +59,13 @@ submission:
    resulting GPU addresses on hardware.
 3. Close or experimentally validate the minimal vertex/fragment program
    boundary.  Stage ownership, native descriptors and live MOV forms are
-   proved, but the compiled resource-to-`6a`/`6d` association remains unjoined.
-   The mode-2 constant helper output is not joined to its final backing
-   allocation and stage setting, and hardware stop is narrowed only to endpoint
-   selector `0x7e` versus the final MOV's complete control form.
+   proved, and both vendor compilers produce the same exact terminal slot.  The
+   remaining live-path gap is the producer/ownership edge from compiled
+   descriptor `+0x128` and native slots `+0x28` into top-state program substate
+   `+0xc8`, specifically its resource identity `+0xa0/+0xa8` and `6a/6d`
+   controls `+0xb0/+0xd0`.  The separately exported mode-2 constant helper has
+   no in-image live GL owner and must stay outside the ordinary stage map until
+   runtime evidence identifies an external trigger.
 4. Exercise requester timeout and restart.  Neither saved vendor stack exposes
    a reusable global/3D reset sequence or a statically identifiable 3D fault
    interrupt, so the initial driver must fail closed after the proven local
