@@ -133,9 +133,13 @@ those details belong inside the opaque linked pair. Private 0x3158-byte
 whole-pipeline allocation, ordered keyed reuse, reclamation above 1023 entries,
 copy-on-write validation, and commit-like publication are closed separately in
 `parhelia-m9-linked-pair-construction-re.md`; there is no allocator wrap rule.
-A new compiler still lacks the internal pair-byte serializer and semantic
-placement of graph targets and some linked-resource controls. Assigning fixed
-record offsets beyond that boundary would be guesswork.
+`parhelia-m9-cfg-linked-image-re.md` additionally closes the multi-root graph
+scheduler, physical-selector reset/reuse lifetime, and the exact zero-first
+0x100-byte host image at linked object `+0xd9`. A new compiler still lacks the
+final join that places that image, native code and referenced resources in the
+0x80-aligned GPU allocation, plus the frontend semantic choice of every typed
+graph descriptor. Assigning final record offsets beyond that boundary would be
+guesswork.
 
 ## Remaining serializer validation
 

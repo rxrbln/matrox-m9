@@ -203,14 +203,16 @@ Accordingly, the known fixed slots are enough to reproduce these compiler
 fragments, but not enough to submit an arbitrary branch graph through selector
 `6c`.  The unresolved implementation fields are [DER]:
 
-1. the graph construction and scheduling rules that choose source anchors and
-   typed descriptor families for arbitrary forward branches, backedges, CALL,
-   BREAK, nesting and reconvergence beyond the pinned REP/LOOP recipes;
-2. the opaque internal byte serializer that joins completed native images and
+1. the frontend semantic rules that choose every source anchor and typed
+   descriptor family for arbitrary D3D forward branches, backedges, CALL,
+   BREAK and nesting. The structural multi-root scheduler, reconvergence
+   release, interval bounds, finite allocation and retry behavior are now
+   exact in `parhelia-m9-cfg-linked-image-re.md`;
+2. the opaque final byte join that combines completed native images and
    resources inside a new pair.  Private 0x3158-byte allocation, keyed cache
-   reuse, >1023-entry reclamation and COW publication are now exact;
-3. reset and wrap behavior for long-running physical-selector workloads;
-4. endpoint-only versus full-operation hardware stop semantics.  Result-only,
+   reuse, >1023-entry reclamation and COW publication are exact, as is one
+   coherent 0x100-byte image at linked object `+0xd9`;
+3. endpoint-only versus full-operation hardware stop semantics.  Result-only,
    kill-only and combined finalizer tails are exact and have no MRT-index
    input.
 

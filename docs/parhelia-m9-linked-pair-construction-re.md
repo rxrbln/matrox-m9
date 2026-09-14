@@ -161,11 +161,14 @@ contract: builders allocate typed fixup objects, serials name ordered
 descriptor entries, the resolver substitutes resolved descriptors before
 packing, and the serializer performs no PC-relative arithmetic.  The cache
 path above shows where the completed pipeline is privately validated and
-published, but does not add a semantic map from graph nodes to forward target,
-backedge, call, break, or reconvergence locations.  A new linker can use the
-ordered-fixup lifetime and exact fixed templates; arbitrary graph placement
-remains gated until those semantic targets are independently implemented and
-tested.
+published. `parhelia-m9-cfg-linked-image-re.md` now closes the graph's
+multi-root scheduling, reconvergence release, interval bounds, physical
+selector retirement/quarantine and reset. It also recovers the exact
+zero-first 0x100-byte host image at linked object `+0xd9`. The remaining
+control-flow problem is the frontend semantic choice of typed descriptors,
+while the remaining selector-`6c` problem is the final byte join from host
+state and resource objects into the 0x80-aligned GPU allocation. Both must be
+implemented and tested before arbitrary graph submission is enabled.
 
 Run the deterministic checker from the repository root:
 

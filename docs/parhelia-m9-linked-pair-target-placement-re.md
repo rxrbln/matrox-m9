@@ -212,13 +212,16 @@ exact through source-anchor extraction, same-anchor multiplicity, typed fixup
 construction, physical selector allocation, mapping publication, modifier
 preservation and final W0/W1 insertion. The exact remaining gaps are:
 
-1. the graph construction and scheduling rules that choose anchors and typed
-   descriptor families for arbitrary forward branches, backedges, CALL,
-   BREAK, nesting and reconvergence beyond the pinned REP/LOOP recipes;
-2. the byte constructor that joins completed native images and referenced
-   resources inside the heterogeneous external selector-`6c` record;
-3. the hardware-semantic names of the three selector namespaces and their
-   reset/reuse behavior across long-running programs and context loss.
+1. the frontend semantic rules that choose every anchor and typed descriptor
+   family for arbitrary D3D constructs. The structural scheduler for arbitrary
+   graph topology is now exact in `parhelia-m9-cfg-linked-image-re.md`;
+2. the final byte join that combines completed native images and referenced
+   resources inside the heterogeneous external selector-`6c` record. One
+   coherent 0x100-byte linked-state image is now byte-exact at host object
+   `+0xd9`, but its placement in the 0x80-aligned GPU allocation is not joined;
+3. the hardware-semantic names of the three selector namespaces. Their
+   per-context reset, exhaustion, scheduling quarantine, retirement and
+   ordinary reuse rules are now exact.
 
 The mapping `entry+0x04` producer and its final native-slot unit are no longer
 open. This result does not turn the outer `6c` resource into an instruction
