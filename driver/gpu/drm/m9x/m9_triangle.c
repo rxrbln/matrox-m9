@@ -15,6 +15,7 @@
 #include <linux/overflow.h>
 #include <linux/sizes.h>
 #include <linux/slab.h>
+#include <linux/unaligned.h>
 
 #include "m9_drv.h"
 #include "m9_reg.h"
@@ -25,6 +26,8 @@
 					 M9_TRIANGLE_HEIGHT * sizeof(u32))
 #define M9_TRIANGLE_SOURCE_BYTES	0x50u
 #define M9_TRIANGLE_SYSTEM_BYTES	0x20080u
+#define M9_TRIANGLE_SECONDARY_BYTES	0x4f0u
+#define M9_TRIANGLE_SECONDARY_PREFIX	0x8u
 #define M9_TRIANGLE_LINKED_OFFSET	0x300u
 #define M9_TRIANGLE_LINKED_BYTES		0x580u
 #define M9_TRIANGLE_RESOURCE69_BYTES	0x1b080u
@@ -46,6 +49,7 @@ MODULE_PARM_DESC(m9_triangle_gouraud,
 enum m9_triangle_resource_id {
 	M9_TRI_SOURCE,
 	M9_TRI_SYSTEM,
+	M9_TRI_SECONDARY,
 	M9_TRI_RESOURCE69,
 	M9_TRI_C2,
 	M9_TRI_BE,
@@ -76,6 +80,7 @@ struct m9_triangle_resource {
 };
 
 struct m9_triangle_job_addresses {
+	u32 secondary;
 	u32 source;
 	u32 system_pre_start;
 	u32 system_pre_end;
@@ -126,6 +131,7 @@ struct m9_triangle_commands {
 	u32 preprocess[118];
 	u32 raster[113];
 	u32 completion[8];
+	u32 primary[9];
 };
 
 struct m9x_triangle_diag {
@@ -184,6 +190,8 @@ static const struct m9_triangle_transition_site m9_triangle_transition_sites[] =
 static const struct m9_triangle_resource_spec m9_triangle_specs[] = {
 	[M9_TRI_SOURCE] = { "source", M9_TRIANGLE_SOURCE_BYTES, 4, 0 },
 	[M9_TRI_SYSTEM] = { "system", M9_TRIANGLE_SYSTEM_BYTES, 0x80, 0 },
+	[M9_TRI_SECONDARY] = { "secondary", M9_TRIANGLE_SECONDARY_BYTES,
+			       0x80, 0 },
 	[M9_TRI_RESOURCE69] = { "resource69", M9_TRIANGLE_RESOURCE69_BYTES,
 				  SZ_4K, 0x69000000 },
 	[M9_TRI_C2] = { "c2", M9_TRIANGLE_C2_BYTES, SZ_4K, 0 },
@@ -217,6 +225,8 @@ static const u32 m9_triangle_gouraud_source[] = {
 	0x43200000, 0x435c0000, 0, 0, 0x3f800000,
 	0x43200000, 0x435c0000, 0, 0, 0x3f800000,
 };
+
+#include "m9_triangle_framed.h"
 
 /* Count words have been removed; packet grouping and write order are exact. */
 static const u32 m9_triangle_range_0[] = {
@@ -275,6 +285,18 @@ static const u32 m9_triangle_range_1[] = {
 static const u32 m9_triangle_range_2[] = {
 	0x4545451b, 0x13861002, 0x45e3e6e6, 0x00000003,
 	0x00000002, 0x000002c1, 0x45454543, 0x000002c0,
+};
+
+/* Absolute byte offsets in the private BmBuffer image.  They parallel the
+ * semantic count-free sites above, but retain every private count dword. */
+static const u16 m9_triangle_framed_reloc_offsets[] = {
+	0x05c, 0x06c, 0x07c, 0x08c, 0x130, 0x144, 0x15c, 0x160,
+	0x230, 0x250, 0x2ec, 0x2fc, 0x30c, 0x31c, 0x38c, 0x390,
+	0x3a0, 0x3a4, 0x3b4, 0x3cc, 0x3d0, 0x494, 0x4b4, 0x4cc,
+};
+
+static const u16 m9_triangle_framed_transition_offsets[] = {
+	0x014, 0x050, 0x27c, 0x298, 0x2a4, 0x2e0, 0x4e0, 0x4ec,
 };
 
 static u64 m9_triangle_template_fnv1a(const u32 *words, size_t count)
@@ -408,6 +430,7 @@ static int m9_triangle_build_addresses(struct m9x_device *mdev,
 
 	job->source = m9_triangle_bus(diag, M9_TRI_SOURCE) |
 		      M9_COMMAND_SYSTEM_TAG;
+	job->secondary = m9_triangle_bus(diag, M9_TRI_SECONDARY);
 	job->system_pre_start = (m9_triangle_bus(diag, M9_TRI_SYSTEM) + 0x10) |
 				M9_COMMAND_SYSTEM_TAG;
 	job->system_pre_end = (m9_triangle_bus(diag, M9_TRI_SYSTEM) + 0xc0) |
@@ -500,6 +523,55 @@ static void m9_triangle_build_commands(
 	}
 }
 
+static void m9_triangle_build_framed_secondary(
+		struct m9x_triangle_diag *diag,
+		const struct m9_triangle_job_addresses *job)
+{
+	struct m9_triangle_resource *secondary =
+		&diag->resource[M9_TRI_SECONDARY];
+	u8 *image = secondary->cpu;
+	unsigned int i;
+
+	/* The saved BmBuffer's first eight bytes are private host bookkeeping and
+	 * are never included in a GPU range.  Keep the same displacement while
+	 * refusing to retain the captured process pointer. */
+	memset(image, 0, M9_TRIANGLE_SECONDARY_PREFIX);
+	memcpy(image + M9_TRIANGLE_SECONDARY_PREFIX,
+	       m9_triangle_framed_payload, sizeof(m9_triangle_framed_payload));
+	for (i = 0; i < ARRAY_SIZE(m9_triangle_reloc_sites); i++)
+		put_unaligned_le32(m9_triangle_operand_value(job,
+			m9_triangle_reloc_sites[i].operand),
+			image + m9_triangle_framed_reloc_offsets[i]);
+	for (i = 0; i < ARRAY_SIZE(m9_triangle_transition_sites); i++) {
+		const struct m9_triangle_transition_site *site =
+			&m9_triangle_transition_sites[i];
+		u32 value = job->transition[site->transition];
+
+		if (site->tag)
+			value |= 1;
+		put_unaligned_le32(value,
+			image + m9_triangle_framed_transition_offsets[i]);
+	}
+}
+
+static void m9_triangle_build_primary(
+		const struct m9_triangle_job_addresses *job, u32 *primary)
+{
+	static const u16 bounds[][2] = {
+		{ 0x008, 0x270 },
+		{ 0x270, 0x4c4 },
+		{ 0x4c4, 0x4f0 },
+	};
+	unsigned int i;
+
+	for (i = 0; i < ARRAY_SIZE(bounds); i++) {
+		primary[i * 3] = 0x45452d2c;
+		primary[i * 3 + 1] = job->secondary + bounds[i][0];
+		primary[i * 3 + 2] = (job->secondary + bounds[i][1]) |
+			M9_COMMAND_SYSTEM_TAG;
+	}
+}
+
 static u32 m9_triangle_captured_operand(enum m9_triangle_operand operand)
 {
 	switch (operand) {
@@ -560,6 +632,9 @@ int m9x_submit_triangle_diag(struct m9x_device *mdev, u64 *point)
 	if (ret)
 		goto out_unlock;
 	m9_triangle_build_commands(&job, &mdev->transport.triangle->commands);
+	m9_triangle_build_framed_secondary(mdev->transport.triangle, &job);
+	m9_triangle_build_primary(&job,
+		mdev->transport.triangle->commands.primary);
 	ret = m9_triangle_serialize_linked_record(mdev, &job);
 	if (ret == -EOPNOTSUPP)
 		dev_warn_once(&mdev->pdev->dev,
@@ -589,6 +664,12 @@ int m9x_triangle_selftest(void)
 	    ARRAY_SIZE(m9_triangle_specs) != M9_TRI_RESOURCE_COUNT ||
 	    ARRAY_SIZE(m9_triangle_reloc_sites) != 24 ||
 	    ARRAY_SIZE(m9_triangle_transition_sites) != 8 ||
+	    ARRAY_SIZE(m9_triangle_framed_reloc_offsets) !=
+		ARRAY_SIZE(m9_triangle_reloc_sites) ||
+	    ARRAY_SIZE(m9_triangle_framed_transition_offsets) !=
+		ARRAY_SIZE(m9_triangle_transition_sites) ||
+	    sizeof(m9_triangle_framed_payload) !=
+		M9_TRIANGLE_SECONDARY_BYTES - M9_TRIANGLE_SECONDARY_PREFIX ||
 	    m9_triangle_specs[M9_TRI_BE].payload_bytes != SZ_1M)
 		return -EINVAL;
 	for (i = 0; i < ARRAY_SIZE(m9_triangle_specs); i++)
@@ -603,10 +684,16 @@ int m9x_triangle_selftest(void)
 	for (i = 0; i < ARRAY_SIZE(m9_triangle_reloc_sites); i++) {
 		const struct m9_triangle_reloc_site *site =
 			&m9_triangle_reloc_sites[i];
+		u16 framed = m9_triangle_framed_reloc_offsets[i];
 
 		if (m9_triangle_reloc_sites[i].range > 2 ||
 		    m9_triangle_reloc_sites[i].operand > M9_TRI_OP_FENCE ||
 		    m9_triangle_command_range(&commands, site->range)[site->dword] !=
+			m9_triangle_captured_operand(site->operand) ||
+		    framed < M9_TRIANGLE_SECONDARY_PREFIX ||
+		    framed > M9_TRIANGLE_SECONDARY_BYTES - sizeof(u32) ||
+		    get_unaligned_le32((const u8 *)m9_triangle_framed_payload +
+			framed - M9_TRIANGLE_SECONDARY_PREFIX) !=
 			m9_triangle_captured_operand(site->operand))
 			return -EINVAL;
 	}
@@ -614,10 +701,16 @@ int m9x_triangle_selftest(void)
 		const struct m9_triangle_transition_site *site =
 			&m9_triangle_transition_sites[i];
 		u32 captured = 0x270 + site->transition * 0x10;
+		u16 framed = m9_triangle_framed_transition_offsets[i];
 
 		if (m9_triangle_transition_sites[i].range > 2 ||
 		    m9_triangle_transition_sites[i].transition > 5 ||
 		    m9_triangle_command_range(&commands, site->range)[site->dword] !=
+			(captured | site->tag) ||
+		    framed < M9_TRIANGLE_SECONDARY_PREFIX ||
+		    framed > M9_TRIANGLE_SECONDARY_BYTES - sizeof(u32) ||
+		    get_unaligned_le32((const u8 *)m9_triangle_framed_payload +
+			framed - M9_TRIANGLE_SECONDARY_PREFIX) !=
 			(captured | site->tag))
 			return -EINVAL;
 	}
@@ -629,15 +722,26 @@ int m9x_triangle_selftest(void)
 				       0x7ea7088342b7d71bULL ||
 	    m9_triangle_template_fnv1a(m9_triangle_range_2,
 				       ARRAY_SIZE(m9_triangle_range_2)) !=
-				       0x726d161270583420ULL)
+				       0x726d161270583420ULL ||
+	    m9_triangle_template_fnv1a(m9_triangle_framed_payload,
+				       ARRAY_SIZE(m9_triangle_framed_payload)) !=
+				       0xf891d548016a1ee6ULL)
 		return -EINVAL;
 	for (i = 0; i < ARRAY_SIZE(job.transition); i++)
 		job.transition[i] = target + i * 0x10;
+	job.secondary = 0x12000000;
 	if (job.transition[0] != 0xfffffff0 || job.transition[1] != 0 ||
 	    job.transition[5] != 0x40 ||
 	    (job.transition[5] | 1) != 0x41)
 		return -EINVAL;
 	m9_triangle_build_commands(&job, &commands);
+	m9_triangle_build_primary(&job, commands.primary);
+	if (memcmp(commands.primary, (const u32[]) {
+		0x45452d2c, 0x12000008, 0x12000272,
+		0x45452d2c, 0x12000270, 0x120004c6,
+		0x45452d2c, 0x120004c4, 0x120004f2,
+	}, sizeof(commands.primary)))
+		return -EINVAL;
 	for (i = 0; i < ARRAY_SIZE(m9_triangle_reloc_sites); i++) {
 		const struct m9_triangle_reloc_site *site =
 			&m9_triangle_reloc_sites[i];
