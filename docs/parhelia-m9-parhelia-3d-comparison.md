@@ -143,7 +143,8 @@ Saved M9/Phoenix command captures now include requester framing, coherent
 writeback fences, a clear and triangle, broad fixed state, ordinary textures,
 FBO/query cases, GLSL differentials, complete system-resource snapshots, and
 two simultaneous direct contexts.  The independent kernel driver has also
-completed 256 consecutive kernel-owned no-op fences on M9148 hardware.  A
+completed 6,000 consecutive kernel-owned no-op fences across both directions
+of its two-slot primary command rebase on M9148 hardware.  A
 known-good command stream is no longer the limiting artifact.
 
 The remaining hardware and compiler contracts are narrower:
@@ -209,9 +210,9 @@ driver has no M9 source or build dependency.
 
 ## Implementation order
 
-1. Finish the independent M9 primary-requester rollover and exact value masks,
-   then repeat no-op wrap and simulated 32-bit fence-epoch tests.  Keep the
-   module in a temporary target directory.
+1. Finish exact value masks and the separately remaining simulated/live
+   32-bit fence-epoch tests.  Keep the module in a temporary target directory;
+   two-slot primary requester rollover is already hardware-validated.
 2. Execute the preserved two-pass linear triangle through the M9 validator with
    kernel-owned command/fence addresses and explicit read/write BO lists.
    Validate a clear, triangle, depth test/write independence, and one ordinary

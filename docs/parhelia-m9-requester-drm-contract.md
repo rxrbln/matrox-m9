@@ -114,6 +114,14 @@ Use multiple slots or pages.  A slot cannot be overwritten or returned until
 the fence appended to its submission retires.  Pin every referenced GEM object
 for the same lifetime.
 
+Kernel commit `9219f41` implements two coherent 32-KiB slots for the guarded
+no-op path.  Each 12-byte published record retains a fourth padding dword, so
+one slot accepts 2,730 records.  A live 6,000-submit run crossed slot 0 to 1 at
+submit 2,731 and slot 1 back to 0 at submit 5,461, then completed at fence
+`0x17700`.  The module unloaded without a warning or timeout and left the PCI
+function unbound with bus mastering disabled.  The immutable log and boundary
+model are in `m9-primary-slot-live-evidence.py` [HW].
+
 The live primary command address class is closed:
 
 ~~~text
@@ -373,8 +381,8 @@ quarantined DMA storage can be released.
    404=exclusive_end.
 5. Require the writeback word to advance under a bounded wait.
 6. Add validated clear and captured two-pass triangle packets.
-7. Alternate contexts and slots, verify fence lifetime, then test command and
-   32-bit fence rollover.
+7. Alternate contexts and verify shared BO fence lifetime, then test the
+   independently remaining 32-bit fence rollover.
 8. Add the auxiliary requester only when a demonstrated feature needs it.
 
 The module remains in a temporary target directory during bring-up.  Do not
