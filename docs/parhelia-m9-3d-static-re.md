@@ -774,6 +774,39 @@ does not contain a direct 3D-engine reset MMIO sequence.  Therefore the vendor
 userspace lifecycle is useful for ordering and prerequisites, but should not be
 copied wholesale into the kernel as an engine-arm function.
 
+### Static reset audit and its limit
+
+An audit of every Linux core call through the hardware write32 vtable slot
+whose register offset is immediate found 168 calls covering 54 distinct MMIO
+offsets [BIN].  They fall into the already decoded groups: front-end controls
+`0x30c/0x314/0x31c`, service/context setup `0x330..0x3a8`, requester and
+doorbell state `0x400..0x524`, interrupt banks `0x8d8..0x8fc`, address windows,
+write-back fences, and the `0x1094..0x10ec` context registers.  There is no
+separate immediate-offset engine-reset leaf in this set.  Dynamic-offset
+writes, especially the interrupt-descriptor publisher `m9x115`, prevent this
+count from proving that no undocumented register exists; the result is a
+bounded statement about the complete literal-offset set in the shipped kernel
+object.
+
+Two reset-looking candidates can be excluded more strongly.  Linux
+`m9x1172` writes zero to `0x30c`, changes only bits 17:16 of `0x3a8` to `1`,
+then publishes a table of register/value/extent descriptors through `m9x115`.
+It is constructed by the service initializer at `0x121d0`, not by requester
+submission or timeout recovery [BIN].  The Windows sequence at `0x179a2`
+temporarily masks `0x8c8/0x8dc`, toggles bits in `0x3c0`, waits for `0x3c4`
+bit 31, delays 15 ms twice, and restores the masks.  Its diagnostic strings are
+exactly `Test PLL lock`, `Program PLL`, and `Hardware init`; this is the PLL
+lock/reprogramming procedure, not a 3D reset [BIN].
+
+The open Linux core interface contains start/stop interrupt callbacks but no
+reset or recovery callback, and neither the Linux requester timeout paths nor
+the Windows memory-tag wait calls either candidate above [BIN].  The strongest
+static conclusion is therefore that the saved stacks do not provide a callable
+3D/global-reset contract.  This is not proof that the silicon lacks a reset
+bit.  A new DRM backend can implement the decoded requester-local restart and
+fail closed if it does not recover; it still needs a controlled capture or
+hardware experiment before claiming a stronger engine reset.
+
 ### Interrupt-controller banks
 
 The kernel object's interrupt reset function `m9x704` at `0x3f310` establishes
@@ -908,6 +941,19 @@ wrapper, but not enough names to classify requester faults.  In particular:
 | high `0x01000000` | route an event record through guarded callback/work logic |
 | low `0x1`, `0x2`, `0x4`, `0x8` | W1C at `0x8e4`, update per-source notification records |
 | low `0x100`, `0x200`, `0x10` | W1C at `0x8e4`, route notification indices 4, 6, and 8 |
+
+High source `0x8` has one exact service-level join [BIN].  Miniport interface
+method `0x1b374` builds and publishes a rectangle-transfer command, installs
+its optional completion callback and argument at device `+0x1ac4/+0x1ac8`,
+and clears completion word `+0x1acc`.  If the caller did not supply a callback,
+the method waits for that word after publishing through `0x146bc`; otherwise it
+returns asynchronously.  ISR `0x10875` acknowledges raw high bit `0x8`, invokes
+the installed callback once, and then sets `+0x1acc` to one.  Thus `0x8` is the
+completion/service interrupt for this special miniport transfer method.  It is
+not the generic 3D requester fence, whose Linux and Windows paths both wait on
+a GPU-written memory tag.  No static join establishes whether the transfer
+source is safe or useful for a DRM render scheduler, so it should remain masked
+outside an implementation of that specific transfer service.
 
 The ISR also acknowledges enabled low sources `0x400`, `0x800`, `0x1000`,
 `0x2000`, `0x4000`, `0x8000` and their corresponding high-word bits, with an

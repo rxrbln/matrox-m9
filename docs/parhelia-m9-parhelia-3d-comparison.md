@@ -79,7 +79,7 @@ The detailed pre-capture command and shader findings are in
 | Direct register execution | Direct writes to the indexed window can execute through Parhelia's MMIO/emulated-DMA path | Direct writes stage/read as zero and did not render on M9148; the vendor uses DMA lists [HW][BIN] | No shared PIO fallback |
 | Primary DMA | `0x404` start, `0x408` end/trigger, `0x400` write-back, with system-memory address tags | Saved Linux kernel code programs DMA base/control at `0x400` and rings `0x404` with the final write address. `0x314`/`0x31c` are additional front-end kick/state controls; userspace cannot replace the kernel-owned requester path with direct MMIO [BIN][HW] | Separate requester backend |
 | Completion | In-stream `0x1090/0x1094` write-back, `0x12bc` DWGSYNC, `0x41c`, plus Parhelia idle state | Fence/tag addresses at `0x1068/0x106c` and a memory write-back polled by both Linux and Windows; `0x314` is a progress kick and `0x8f0 & 0x30000` is only an engine-state observation. No completion IRQ is required [BIN] | Share scheduler/fence API, not packets |
-| Engine arm | Recovered Parhelia register sequence plus WARP microcode load | PCI bus-master enable and requester/context initialization are decoded. Descriptor park/save/restore is requester-local; a full engine/global reset is still unknown [BIN] | Separate init/reset |
+| Engine arm | Recovered Parhelia register sequence plus WARP microcode load | PCI bus-master enable and requester/context initialization are decoded. Descriptor park/save/restore is requester-local. An exhaustive literal-offset audit finds no callable 3D/global-reset contract in the saved stack [BIN] | Separate init/reset |
 | 2D launch | MGA-lineage surface slots, `DWGCTL` at index `0xc0`, geometry through `DSTXY/LEN` | Unified raster backend: control at index `0xf0`, geometry around `0xf2..0xfc`; copy binds a texture source | No payload compatibility |
 | 3D launch | WARP triangle setup and `DWGSYNC`; software decomposes other GL primitives | Context draw vtable methods are joined to concrete three-dword command records.  H03 carries numeric start/exclusive-end ranges; H07 carries relocation-backed 32-bit ranges; H06 carries relocation-backed packed-16 ranges.  Topology and base-vertex address adjustment are lowered before launch.  Header `2b,2a,e6` is independently proven to be a 2D inline-data path [BIN][DER] | Separate draw emitter |
 
@@ -148,9 +148,12 @@ contents.
 The following technical pieces are also not yet recovered well enough to write
 a safe DRM submitter and a working Mesa driver:
 
-1. The complete engine/global reset sequence.  PCI bus-master enable, requester
+1. A complete engine/global reset contract.  PCI bus-master enable, requester
    initialization, descriptor quiescence, and requester-local save/restore are
-   decoded, but the latter must not be treated as a 3D-engine reset.
+   decoded.  The complete immediate-offset Linux MMIO audit and Windows
+   reset-candidate cross-check find no reusable 3D/global reset in the saved
+   stacks, so stronger recovery now requires a controlled capture or hardware
+   experiment rather than another guessed register sequence.
 2. The remaining `0x500..0x524` rollover fields and public memory-domain names.
    Static recovery now establishes the initializer formulas, the internal
    four-class address-tag table `{2,3,0,3}`, tagged base/transition addresses,
@@ -197,11 +200,13 @@ a safe DRM submitter and a working Mesa driver:
    384-instruction/96-line bank boundary, compiler IR opcodes and modifiers,
    predicate names, and several resource limits are recovered in
    `parhelia-m9-3d-static-re.md`.
-8. IRQ source bits for fault reporting and non-vblank service events.  Linux and
-   Windows both use memory write-back fences rather than a completion IRQ.  The
-   three status/W1C and enable-mask register pairs, four vblank source mappings,
-   Windows event routes, and mask-before-ack order are recovered; the remaining
-   source semantics are not.
+8. IRQ source bits for fault reporting and the remaining non-vblank service
+   events.  Linux and Windows both use memory write-back fences rather than a
+   completion IRQ.  The three status/W1C and enable-mask register pairs, four
+   vblank source mappings, Windows event routes, and mask-before-ack order are
+   recovered.  Windows high-bank `0x8` is additionally joined to one special
+   asynchronous rectangle-transfer completion path, not to generic 3D
+   retirement; the remaining source semantics are not recovered.
 
 There is also no M9 support in the current `linux-7.2` Parhelia DRM directory or
 the current Mesa Parhelia driver.  PCI device `0540` is intentionally absent, so
@@ -209,10 +214,11 @@ probing an M9 cannot accidentally run Parhelia engine commands.
 
 ## Implementation order
 
-1. Continue the `KernelLibraries.o_shipped` and `MxMM.sys` reset call graphs.
-   Requester programming, memory-tag fences, IRQ banks, vblank routing, and a
-   bounded requester-local restart contract are now recovered.  Do not promote
-   that local restart to a global reset without another vendor join or capture.
+1. Treat the recovered requester-local restart as the static recovery boundary.
+   Requester programming, memory-tag fences, IRQ banks, vblank routing, and one
+   special Windows transfer-completion interrupt are recovered.  Capture a
+   timeout/restart or run a bounded hardware experiment before adding any
+   global-reset claim.
 2. Capture a vendor clear and triangle on M9.  Save the DMA buffers, descriptor
    bank `0x400..0x524`, engine/IRQ registers, fence memory, and the affected VRAM
    pages.  A capture resolves the contradictory ring and surface notes quickly.

@@ -403,6 +403,26 @@ proof that PCI function reset is safe on these display devices.  A production
 driver must not improvise either operation or repeatedly rewrite a live
 descriptor.
 
+The final static reset audit narrows that negative result.  All 168 Linux core
+write32-vtable calls with immediate register offsets cover 54 offsets, entirely
+within the decoded front-end, service/context, requester, IRQ, address-window,
+and fence groups.  No separate literal-offset reset leaf exists.  The apparent
+Windows reset sequence at `0x179a2` is tied by its own diagnostics and data flow
+to PLL programming and lock testing, while Linux `0x30c/0x3a8` writes belong to
+an auxiliary service constructor and its descriptor publisher.  The core API
+also exports no reset/recovery callback.  Dynamic-offset publishers mean this
+is not proof that the hardware has no reset register; it is strong evidence
+that the saved production stacks expose no reusable 3D/global-reset contract.
+
+One non-vblank interrupt now has an exact, deliberately narrow meaning.
+Windows high-bank source `0x8` completes miniport rectangle-transfer method
+`0x1b374`: the method registers callback/context at device
+`+0x1ac4/+0x1ac8`, clears word `+0x1acc`, publishes the requester, and waits on
+that word only for a synchronous call.  ISR `0x10875` W1C-acknowledges `0x8`,
+invokes the callback once, and sets the word.  This is a special transfer
+service interrupt, not generic requester completion; ordinary 3D retirement
+continues to use the write-back tag.
+
 ## What is still uncertain (blocks a first-try implementation) [RE?]
 
 - **Engine-specific reset/arm sequence** — `m9x30894` enables PCI bus mastering
@@ -419,10 +439,12 @@ descriptor.
   with them, and `0x520/0x524` form an always-restored pair.  Their producer,
   consumer, and rollover roles and relationship to the final `0x404` limit
   still need a controlled trace.
-- **Recovery** — status/mask/W1C banks are decoded, but no high-bank source has
-  a defensible DMA-completion/fault name and no full 3D/global reset was found.
-  `0x31c` state changes and the `0x500..0x524` save/restore handshake provide a
-  bounded requester-local recovery candidate, not a global reset.
+- **Recovery** — status/mask/W1C banks are decoded.  High-bank `0x8` is joined
+  narrowly to one Windows miniport rectangle-transfer completion path, but no
+  source has a defensible 3D-fault meaning and no full 3D/global reset contract
+  was found.  `0x31c` state changes and the `0x500..0x524` save/restore
+  handshake provide a bounded requester-local recovery candidate, not a global
+  reset.
 
 These are why a fully-drawing DMA path cannot be written blind without risking a
 card lockup on each wrong guess. The safe way forward is a kernel-only diagnostic
