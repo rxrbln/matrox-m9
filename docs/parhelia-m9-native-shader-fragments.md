@@ -640,6 +640,67 @@ fragment remains unresolved.
 
 ## Predicate and termination boundary
 
+### Minimal MOV programs: exact frontend and remaining native join
+
+The smallest compiler input is now reproducible.  Helper `0x1940b0` zeroes one
+`0x88`-byte backend IR record at `0x1940be..0x1940d0`, installs the normal
+absent-descriptor sentinels, and its first call at `0x19413d..0x194172` constructs an
+ordinary D3D `MOV` with exactly these live fields [BIN]:
+
+```text
+IR +0x0c = 1             D3D MOV
+IR +0x14 = destination descriptor
+IR +0x1c = source-zero descriptor
+other operation and source fields remain zero/absent
+CALL 0x1b5390
+```
+
+This removes an ambiguity between the source-token and backend-IR layouts.  A
+full four-component move uses destination mask `0xf` in descriptor bits
+`19:16`; identity source swizzle is `0xe4` in bits `23:16`.  After the already
+proved link transforms, an input at physical link `p` is
+`0x10000000 | 2*p` before its source swizzle is restored, an ordinary vertex
+output is `0x0000ffd8 + 2*p`, and the special output form is `0x0000fff8`.
+A constant source `c[i]` becomes `0x20000000 + 2*i`; because its top nibble is
+`2`, generic lowerer `0x1b5972..0x1b5a6a` places it in intermediate descriptor
+`+0x10`, sets format gate `1`, and the one-slot packer writes its low seven bits
+to `W1[20:14]`.  Thus `c0` selects native descriptor value zero in that gated
+field [BIN][DER].
+
+The raw two-dword move still cannot be generated from those facts alone.
+`MOV` dispatch at `0x1b552b..0x1b55a9` examines descriptor bits `27:24` and, for
+the normal zero case, also reads compiler context `+0x1f0/+0x1f4`.  It selects
+expanded second operation `0x14` with mode 10 only when `+0x1f4 == 0` and
+`+0x1f0 >= 0x400`; otherwise it selects operation `0x15` with mode 6.  The mode
+is then scattered through `W1` by `0x1b5813..0x1b58a6`.  A guessed single-slot
+`MOV` encoding would consequently choose one of two compiler-generated forms
+without knowing the stage/compiler configuration [BIN].
+
+Fresh-instruction construction rules out a hidden default that could close
+this gap.  Windows constructor `0x1da2c0` initializes descriptors
+`+0x10..+0x24,+0x38,+0x3c` to `0xf0000000`, zeros both operation words and gate,
+and leaves no terminal/export value.  Linux `m9x15235` at `0x516d40` performs
+the same initialization with fields shifted by four bytes after its 64-bit
+object header [BIN].
+
+Two more bindings are still absent for a runnable minimal pair:
+
+* the `0x0000fff8` special output is selected when the link record class is 12,
+  but no static data flow names class 12 as vertex position or fragment color;
+  the legacy MxMGLX final-result-class check occurs before native conversion;
+* sparse four-dword upload records have an exact key-to-selector formula, but
+  no static data flow joins an IR `c[i]` descriptor to a sparse-record key.
+  In particular, assuming that `c0` means sparse key zero would be a guess.
+
+Combined with the count/termination result below, this is the exact static
+boundary for a passthrough vertex shader and solid-color fragment shader.  We
+can build their compiler IR, link ordinary varyings, identify the constant
+read selector, upload native bytes, and bind two entry starts.  We cannot yet
+choose the special stage exports, choose the context-dependent raw `MOV` form,
+bind the solid-color payload to its sparse key, or prove how native execution
+stops.  The saved fixed fragments cannot close those joins: they are composable
+vertex/declaration conversion pieces, and their tails have no common bit.
+
 The static databases do not expose a standalone native predicate or `END` bit.
 Across the final slot of all 48 fixed blobs, the bitwise intersection is zero
 for both dwords: no bit is set in every fragment ending.  Several fragment
@@ -739,7 +800,9 @@ termination names.
 
 `tools/m9-native-static-evidence.py` checks the two saved PE identities and the
 Linux `m9x_drv.so` identity, uses proper PE image-base/RVA translation, verifies
-the fixed-fragment hash and emitter vtable slot, decodes the D3D and
+the fixed-fragment hash, emitter vtable slot, matching Windows/Linux native
+instruction constructors, canonical minimal-MOV IR call site, and the
+context-dependent MOV decision.  It also decodes the D3D and
 register-file dispatch tables, verifies final varying transforms, special
 predicate sites, count-delimited append/clone paths, the property-bit rewrite
 barrier, the exact linked starts and packed/split bind forms, the
