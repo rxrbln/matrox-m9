@@ -131,9 +131,12 @@ the dynamic join: it asks the bound resource for selector 9, installs that
 address and descriptor at `+0x68/+0x70`, rewrites the format field to `0x5c`
 or `0x75`, and dirties only `b8/b9` at `0x182eaa..0x182f76` [BIN].
 
-Thus `b8/b9` is the ordinary Z/depth surface.  `ba/bb` is an optional internal
-auxiliary backing surface, not a separately addressable API stencil plane
-[BIN][DER].  Stencil remains packed into the depth format and is selected by
+Thus `b8/b9` is the ordinary Z/depth surface.  `ba/bb` is the optional
+`HZFlags`-controlled hierarchical-Z metadata surface, not a separately
+addressable API stencil plane [BIN][DER].  Allocator `0x54be0` creates its
+format-`0x0b` storage at `ceil(width/8) x ceil(height/4)`, and binder `0xaaa7d`
+joins selector 12 to the `+0x74/+0x78/+0x7c` shadow fields.  Stencil remains
+packed into the depth format and is selected by
 the `a8/a9/aa` controls.  Clear helper `0xb5630` corroborates the distinction:
 for the flagged depth layout it obtains cached selector 9 at
 `layout+0x74/+0x78/+0x7c`, temporarily rebinds its address and descriptor-word
@@ -344,8 +347,8 @@ The following can be implemented from static evidence [BIN][DER]:
 
 * four color attachment packet pairs `b0/b1` through `b6/b7`, their relocation
   selectors, dirty bits, slot declaration mapping, and descriptor format bits;
-* ordinary depth packet pair `b8/b9`, auxiliary depth pair `ba/bb`, their
-  source fields, relocation selectors, dirty bits, and identities;
+* ordinary depth packet pair `b8/b9`, hierarchical-Z metadata pair `ba/bb`,
+  their source fields, relocation selectors, dirty bits, and identities;
 * effective viewport/scissor calculation, exclusive endpoints, dirty-state
   propagation, and final `f5/f6/c4/c5` packet indices;
 * clear API parsing, clipping and attachment iteration, plus direct page-run,
@@ -363,7 +366,8 @@ are narrower semantic or uncommon-mode issues:
 2. The private transformed meaning of `c4/c5` when the nonzero-origin path is
    active.  Ordinary framebuffer viewport/scissor operation does not depend on
    this gap because the zero-origin path duplicates `f5/f6`.
-3. A semantic vendor name for `ba/bb`'s auxiliary depth allocation.  Static
-   data flow proves that it is internal and distinct from ordinary Z and API
-   stencil, but does not distinguish hierarchical-Z from another auxiliary
-   organization.
+3. Hierarchical-Z metadata initialization and invalidation.  Static data flow
+   now closes the vendor name, allocation dimensions, format, selector, and
+   final `ba/bb` binding, but not the opaque metadata bits or their maintenance
+   across partial clears, copies, depth writes, and depth sampling.  Keep this
+   optimization disabled until those operations pass a bounded hardware test.

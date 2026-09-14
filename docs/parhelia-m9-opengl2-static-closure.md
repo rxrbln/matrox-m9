@@ -310,9 +310,15 @@ guessed ROP3 table.
 ## Queries, framebuffer objects, MRT, and capability masking
 
 Four color attachment address/descriptor pairs `b0/b1..b6/b7`, one depth pair
-`b8/b9`, the auxiliary depth pair `ba/bb`, target masks, the fragment output
-declaration lowerer `0x181fa0`, and surface emitter `0xfb920` are exact.  The
-saved FBO render-to-texture capture closes ordinary producer/consumer ordering.
+`b8/b9`, and the `HZFlags`-controlled hierarchical-Z metadata pair `ba/bb`,
+target masks, the fragment output declaration lowerer `0x181fa0`, and surface
+emitter `0xfb920` are exact.  Allocator `0x54be0` gates 16/32/64 stored-bit
+depth classes with `HZFlags` bits 0/1/2 and creates internal format `0x0b` at
+`ceil(width/8) x ceil(height/4)`; binder `0xaaa7d` installs selector 12 in
+`ba/bb`.  The opaque metadata maintenance protocol remains gated, so an
+initial driver must leave this optimization disabled while using ordinary
+hardware depth through `b8/b9`.  The saved FBO render-to-texture capture closes
+ordinary producer/consumer ordering.
 The static pieces suffice for one linear RGBA8 FBO.  Four-target exposure still
 requires a unique output per attachment, completeness failures, partial masks,
 and readback.

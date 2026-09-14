@@ -710,12 +710,17 @@ The closed surface packet map is:
 | --- | --- | ---: |
 | color 0..3 | `b0/b1`, `b2/b3`, `b4/b5`, `b6/b7` | `2..5` |
 | ordinary depth | `b8/b9` | 6 |
-| auxiliary depth | `ba/bb` | 7 |
+| hierarchical-Z metadata | `ba/bb` | 7 |
 
 The address word preserves three high tag bits and uses 29 address bits.  The
 descriptor contains row span, layout, flags, and format as specified in
-section 4.3.  `ba/bb` is an internal auxiliary surface rather than a separate
-API stencil plane.  Its exact hierarchical-Z-like role can remain unnamed.
+section 4.3.  `ba/bb` is internal hierarchical-Z metadata rather than a
+separate API stencil plane.  Windows `HZFlags` allocator `0x54be0` gates
+16/32/64 stored-bit depth resources with bits 0/1/2 and creates format `0x0b`
+at `ceil(width/8) x ceil(height/4)`; binder `0xaaa7d` installs its selector-12
+view through the `ba/bb` shadow.  The metadata contents and maintenance
+protocol remain opaque, so leave this performance optimization disabled until
+initialization and invalidation are validated.
 
 Final depth/stencil controls are `a8/a9/aa`.  Live gltri/glxgears comparison
 closes `a8 bit 0` as depth-test enable and `bit 1` as depth-write enable, so

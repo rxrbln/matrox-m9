@@ -11,6 +11,7 @@ Run the deterministic audit with:
 
 ```sh
 python3 tools/m9-hidden-feature-evidence.py
+python3 tools/m9-hierarchical-z-evidence.py
 ```
 
 The verifier pins these images and the complete Windows configuration
@@ -43,6 +44,25 @@ format, command path, resource lifetime, and result semantics all meet the
 corresponding API contract.  Callable hardware is evidence for implementation,
 not evidence that the vendor supported every public combination.
 
+## OpenGL 2 and vendor-path audit result
+
+The canonical feature inventory was compared against the saved Windows D3D/GL
+backend and Linux Xorg/GL monolith in the following areas.  The only
+previously unclassified final hardware path found in this pass was
+hierarchical Z; its exact closure is in
+`parhelia-m9-hierarchical-z-static-closure.md` [BIN][DER].
+
+| audit area | canonical evidence already present | result of this pass |
+|---|---|---|
+| integer, 10-bit, float, depth, YUV and DXT formats | format operation matrix, sRGB/format closure, texture resource and tail evidence | No unlisted format family found. Per-format runtime exposure gates remain unchanged. |
+| raster and fragment state | blend/raster lowering, fixed-state capture, render-surface/depth packers | Added the missing `HZFlags -> selector 12 -> ba/bb` performance path. |
+| shader ISA, compiler and limits | SM2/3 audit, GL2 compiler/control-flow/result captures, linked-pair construction and placement | No extra public limit follows from registry `PixelShader`, `VertexShader`, or `ShaderOpt`; opaque pair serialization remains the compiler boundary. |
+| multisample/FAA and queries | GigaColor/FAA closure and occlusion-query closure | Allocation/resolve and result-semantics validation gates remain; HZ is independent of FAA. |
+| gamma and sRGB | cursor/gamma and sRGB/format closures | Display LUT gamma remains a KMS/output property; render sRGB remains a format/program property. No shared GL gamma state was found. |
+| video and overlay | configuration audit and KMS/display boundary | Kept outside the render-node contract until plane, pitch, and synchronization behavior is proved. |
+| blocked layout, copies and coherency | backing-layout, blocked-layout, allocation-mode and texture-coherency closures | No new manufacturable tiled layout follows from the extra config names. Existing physical-page validation boundary remains. |
+| caches, bus mastering, DMA and submission | DMA/requester/rollover/context documents | HZ is a concrete depth-rejection cache. Other tuning names remain software configuration inputs unless a final register or allocation consumer is independently joined. |
+
 ## Exact hidden-feature classification
 
 | feature | M9 evidence and final path | classification and driver action |
@@ -50,6 +70,7 @@ not evidence that the vendor supported every public combination.
 | 10-bit GigaColor | `MxMD` maps `A2B10G10R10` and `A2R10G10B10` to unique codes `0x68/0x6a`, exact channel masks, sampler/RT construction, rounded native D3DCOLOR clear conversion, and baseline operations for 2-D/cube/volume, RT, sRGB read/write, autogen and vertex texture. Linux reads `3D\GigaColorFullScreen` and `3D\GigaColorRender` at `0x330a6f/0x330ac9` into config `+0x268/+0x270` [BIN]. | **Hardware-backed, dormant.** Add formats only after native draw/blend/sample/backing/readback. Scanout, LUT and dither need separate depth-30 validation. |
 | GigaColor presentation | `MxMGLX` diagnostic at file `0x7f15c5` says page flipping is unsupported with GigaColor [BIN]. | **Presentation restriction.** Do not infer that a 10-bit renderable is flippable. Blit/scanout conversion and LUT mode are separate. |
 | FAA/multisample | `AAMode=0x80000842` stores internal type 8 and reports eight quality levels; the table constructor rewrites eligible rows to nonmaskable, while one GetDriverInfo record path recomputes type 8. Compiler/lowerer/emitter reaches four repeated `ad` writes plus `af`; `ad[20:0]=min(allocation_bytes>>5,0xfffff)`, exact `af` sources are pinned, and zero mask suppresses output [BIN]. | **Hardware-backed, unsafe.** Live FBConfigs have zero sample buffers. Record the query branch consumed by the runtime and capture allocation growth, fragment layout, patterns, nonzero masks/invert, resolve, present and query scaling. |
+| hierarchical Z | `3D\HZFlags` defaults to 7 in both saved stacks. Windows gates 16/32/64-bit depth resources with bits 0/1/2, allocates format-`0x0b` metadata at `ceil(width/8) x ceil(height/4)`, builds selector 12, and binds it through surface shadow `+0x74/+0x78/+0x7c` to final `ba/bb` [BIN][DER]. | **Hardware-backed performance feature.** Keep the auxiliary plane disabled initially; ordinary depth remains direct hardware `b8/b9`. Enable only after metadata initialization, partial-clear invalidation, synchronization, and lifetime tests. |
 | sRGB render writes | D3DRS 194 handler `0x1037e7` sets frontend `+0xf4 bit11`; dirty `0x10000`. Compiler gate `0x137242` is output-zero-only and inserts an exact 25-slot native suffix at `0x174ea0`: 15 direct literal slots plus two five-slot helpers. Clear `0x13e0f0` independently converts RT0 RGB when surface-set `+0xf4 bit0x800` is set [BIN][DER]. | **Hardware-backed, dormant.** Replay/capture the complete suffix and validate blending and pre-LUT BO values before exposure. |
 | sRGB texture sampling | The baseline format table advertises `SRGBREAD`. Mapped D3D9 state 29 reaches both sampler dispatchers, stores sampler `+0x46` bit 5, and survives state blocks/query normalization. Neither pinned final native lowerer consumes bit 5. The unreachable state-11 fallback remains a useful negative control because live state 11 is `TEXCOORDINDEX`, not sRGB [BIN][DER]. | **Accepted frontend state; execution unresolved.** Keep sampler-side sRGB caps off until a later derived-record consumer or explicit shader conversion is joined and result-validated. |
 | floating-point textures | Descriptor initializer `0x4fe00` and selector-2 builder `0x467e0` produce `R16F=0x54`, `G16R16F=0x74`, `A16B16G16R16F=0x3c`, `R32F=0x75`, `G32R32F=0x3b`, `A32B32G32R32F=0x34` at index `78[31:25]` [BIN]. | **Hardware-backed, dormant.** The live ICD has no texture-float extension. Upload/sample captures must establish filtering and renderability per format. |
@@ -66,6 +87,7 @@ not evidence that the vendor supported every public combination.
 | fast trilinear / multiple texture pipes | `TEFastTrilinear` and `TEMultiplePipes` are absent from all pinned M9 images. M9 instead has a concrete four-unit sampler emitter `0xf4350` and normal min/mag/mip controls [BIN]. | **Legacy P-series names, not M9 controls.** Optimize batching and the known sampler path without copying old register meanings. |
 | volumetric shadow | `VolumetricShadow` is absent from all pinned M9 images. Ordinary depth-texture compare is separately joined to sampler state and index `7c`/program lowering [BIN]. | **Legacy name absent.** Implement API shadow compare from the M9 sampler/program evidence only. |
 | texture compression switch | `TextureCompress` is absent from all pinned M9 images even though DXT descriptor paths exist [BIN]. | **Legacy knob absent; formats dormant.** Capability follows validated formats, not this old option. |
+| cache and bus-master tuning names | `IndexBufferCacheSize`, `BmBuffers`, `BmCacheFifoSize`, `BmRequestSize`, `TlbPrefCnt`, and `LockCachedPointerInUserMem` have exact constructor rows and defaults [BIN]. | **Configuration inputs, not register definitions.** Do not translate their numeric defaults into MMIO. Use the separately closed requester, fence, relocation, and rollover contracts. |
 
 ## Comprehensive Direct3D path map
 
@@ -85,7 +107,7 @@ for the new driver, not a request to reproduce the XPDM ABI.
 | resource/control bind | final indices `69/6a/6b/6c`; live `69` is a 128x128 drawable backing, while `6c` selects a separate aligned record in the 0x21000-byte system allocation and retains low tag bit 0; the alternative inline path uses selector `68` and data ports `60..67` [BIN][CAP] | Use separately validated, neutrally named relocations for resources `69` and `6c`; never copy captured GPU addresses or call `69` native-program storage. `6c` atomically selects an opaque linked VS/FS pair and exposes no universal native start/count or per-stage entry schema. |
 | constants | GL uniform updater `0x100b9f70`; common Windows updater `0x10559510`; private opcodes `0x65` vertex and `0x66` fragment through `0x100a05e0` [BIN] | Exact 16-byte range records, per-stage arrays, FIFO drain order, and resource transport. Inline mode-2 bank remains optional/unjoined. |
 | MRT/FBO | declaration lowerer `0x181fa0`; surface emitter `0xfb920`; four color pairs `b0/b1` through `b6/b7`; per-target masks and native blend fragments [BIN]. Saved FBO producer/sample chain closes normal dependency ordering [CAP]. | Four linear attachments are structurally closed. A four-unique-output result capture is still required before advertising MRT broadly. |
-| depth/stencil | lowerer `0x137cf0..0x138292`; final `a8` control, `a9/aa` face ref/masks, address/descriptor `b8/b9`, auxiliary `ba/bb`; clear `0x13e4c0 -> 0xb4fe0` [BIN][CAP] | Depth enable/write/compare and two-sided stencil fields are exact. Validate each format and packed depth/stencil sampling separately. |
+| depth/stencil | lowerer `0x137cf0..0x138292`; final `a8` control, `a9/aa` face ref/masks, address/descriptor `b8/b9`; `HZFlags` allocator `0x54be0` and selector-12 binder `0xaaa7d` identify `ba/bb` as hierarchical-Z metadata; clear `0x13e4c0 -> 0xb4fe0` [BIN][CAP] | Depth enable/write/compare, two-sided stencil, and HZ allocation/binding are exact. Validate each packed depth/stencil format separately; keep HZ off until metadata maintenance is validated. |
 | clear | parser flag dispatch `0x13de20`; color `0x13e0f0`; depth/stencil `0x13e4c0`; fast whole allocation `0xb5e70`; rectangle draw `0xb5030`; CPU fallback `0xb5a80` [BIN] | Use only the path whose layout, bounds, masks, and synchronization are proved. |
 | queries | DP2 `0xd1032..0xd1091`; interface methods `0x119650/0x119720/0x1198b0`; snapshot builder `0x144b40`; packet leaf `0xfc4b0`; result `0x1199a0` [BIN] | Exact experimental occlusion protocol; see validation gates above. |
 | resource copy/blit | copy entry `0xb21b0`; packed-tail adjusters `0x56a10/0x56c60`; GPU task `0x1b8d0 -> 0x1b650`; source/destination relocation builder `0x1b420` [BIN] | Hardware copy preflights both resources against existing fences. Layout formulas are exact; physical-page validation and copy-domain visibility remain gated by the live table-root/page join. |

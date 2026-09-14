@@ -565,10 +565,13 @@ relocation-backed pairs: nested `+0x21c/+0x220/+0x224` becomes surface shadow
 (`0x182201..0x182291`, with the update path at
 `0x182549..0x182620`) [BIN].  Constructor defaults identify the first pair:
 `+0x224 = 0xb8010001` has depth format code `0x5c` (`D16`), while
-`+0x230 = 0xf0010100` has `G16R16` format code `0x78`.  Alternate lowerer
-`0x182b40` also installs resource view 9 at `b8/b9`, forces its format to a
+`+0x230 = 0xf0010100` has `G16R16` format code `0x78`.  `HZFlags` allocator
+`0x54be0` closes this second pair as hierarchical-Z metadata: it creates
+internal format `0x0b` at `ceil(width/8) x ceil(height/4)`, and binder
+`0xaaa7d` installs its selector-12 view in the `ba/bb` shadow.  Alternate
+lowerer `0x182b40` also installs resource view 9 at `b8/b9`, forces its format to a
 depth code, and leaves `ba/bb` null.  Thus `b8/b9` is ordinary Z and `ba/bb`
-is an optional internal auxiliary depth surface, not an independent API
+is an optional hierarchical-Z metadata surface, not an independent API
 stencil plane [BIN][DER].  The saved Linux build repeats both constructor
 constants at `0x3bf008/0x3bf09d`.
 
