@@ -95,6 +95,19 @@ The fence relationship is concrete [BIN]:
    and, when newer, emits indexed record `43 = low32(value)` at
    `0x25325..0x25338`, then saves the full 64-bit value.
 
+The concrete slot `+0x94` in vtable `0x1f2c60` resolves to the one-byte
+`ret` at `0xa1950` [BIN].  It cannot add a hidden resource fence, flush, or
+submission packet after the two class walks.  The fence-class relationship
+above is complete at this callback boundary.
+
+The indirect resource callbacks also form an exact pair [BIN].  `0xfadc0`
+dereferences each vector entry once and calls synchronization-object vtable
+slot `+0x00` with `(low, high, class)`.  The sampled-resource walk in
+`0xf85c0` performs the same entry dereference and calls slot `+0x04` with
+`class=1`.  The class-1 producer update and consumer query therefore operate
+on the same resolved backing synchronization object, rather than on unrelated
+TaskMgr-local counters.
+
 Therefore a render task which registers a surface in the second vector stores
 its submission fence as class 1; a later task sampling the same backing
 queries class 1 through its first-vector entry and emits the maximum dependency
@@ -143,6 +156,18 @@ emitter `0x1b650` at `0x1b9f5`.  Other copy shapes go through `0x571d0`,
 calculated byte offset in destination-resource field `+0x3e0`; the stored
 value is an offset, not a Boolean dirty flag.
 
+The source and destination relocation metadata is also bounded [BIN].
+`0x1b8d0` calls `0x1b420` once per resource.  That helper supplies the address
+record at resource `+0x3c`, chooses relocation backing at `+0x208` or at
+`resource->+0x1fc + 0x208`, calculates a 4-KiB-aligned extent, and passes those
+three values to `0x1b2b0`.  The latter appends the mapping through the generic
+`0x1cab0 -> 0x597a0` or `0x59840 -> 0x5b3c0` relocation paths.  If its
+relocation-area cursor would overflow, it first calls `0x1ac40(1)` and resets
+the cursor before appending the current resource.  That capacity drain orders
+older work only; it occurs before the current copy and cannot serve as the
+copy-to-sample completion.  None of these metadata helpers has a direct call
+to the known class setter `0xfadc0`.
+
 The copy builder has an exact resource-fence preflight [BIN].  The resource
 constructor at `0x50cbb` installs vtable `0x1f3258`; its slots `+0x04/+0x08`
 are `0x555c0/0x55550`.  Before emitting the copy, `0x1b8d0` repeatedly invokes
@@ -169,6 +194,43 @@ and polls queue completion.  Neither call receives the original source or
 destination resource object.  `0x1b8d0` then runs the paired `0x1b4a0`
 resource/relocation cleanup calls.  There is no post-copy call to the known
 TaskMgr class setter in this user-mode route.
+
+The two tails can now be separated exactly [BIN].  `0x1afd0(1)` first emits
+the requester's wrap/continuation record when its cached and current producer
+pointers differ, calls the queue-post routine `0x1a880`, and finally writes the
+resulting raw producer pointer to requester MMIO `0x504` at
+`0x1b042..0x1b04e`.  It neither polls completion nor returns a fence value.
+By contrast, `0x1ac40(1)` appends the four-argument index-`7c` record through
+`0x1ae60`, invokes `0x1afd0(1)`, and then waits until requester `0x508 bit 0`
+is set.  Its diagnostic branch additionally requires a stable
+`0x500/0x50c` snapshot while polling.  This is a real synchronous queue drain,
+not a resource-class update or a texture-specific invalidate.
+
+The fifth argument of `0x1b8d0` is forwarded unchanged to that optional drain
+at `0x1b9d2..0x1b9d5 -> 0x1b650 [ebp+0x34]`.  The complete direct caller set
+provides this exact policy matrix:
+
+| `0x1b8d0` call site | fifth argument | post-copy `0x1ac40(1)` |
+|---:|---:|---|
+| `0x499c0` | 1 | yes |
+| `0x56b66` | 0 | no |
+| `0x56da7` | 0 | no |
+| `0x57083` | 0 | no |
+| `0x573a3` | 0 | no |
+
+The ordinary rectangle/mip copy family is therefore normally asynchronous:
+its command has been posted through `0x504`, but no completion value is
+attached to the destination by this path.  One specialized caller explicitly
+selects the synchronous drain.  This rules out the earlier possibility that
+every `0x1b8d0` operation implicitly waited before returning.
+
+There is one other direct caller of core emitter `0x1b650`: `0x1ba30` at
+`0x1bb7d`, itself reached only from `0xbd761` [BIN].  Its final argument setup
+forwards descriptor field `+0x48` into `0x1b650`'s optional-drain slot, so this
+alternate producer family selects synchronous completion per descriptor.  It
+does not change the normal `0x1b8d0` matrix above, and a universally safe new
+driver path can request the same post-producer drain regardless of which
+front-end built the transfer.
 
 That negative result can be made complete for the known setter wrapper
 `0xfadc0`: its only direct call sites in all of `MxMD.dll` are `0xf9bc2`,
@@ -330,14 +392,18 @@ specific sequence:
    write has no static justification.
 
 For a copy/upload producer, use the same conservative class-1 destination
-fence until a capture proves its lower-layer registration path.  This is a
-driver policy inferred from the exact render dependency, since MxMD itself
-pre-waits copy resources through class 2 plus the separate legacy channel and
-does not attach class 1 after the copy.  The Windows render-target sequence
-gives task ordering and descriptor visibility without inventing a cache-packet
-meaning.  It does not yet prove whether index `43` completion also implies all
-texture-cache visibility, or whether same-address render-to-texture needs an
-additional cache control.
+fence only as an experimental unified scheduler policy; it is not the vendor
+copy contract.  The evidence-backed safe bring-up sequence is instead to use
+the recovered `0x1ac40(1)` drain after posting the copy and before submitting
+the sampling task.  This waits for requester quiescence and avoids inventing
+either a class-1 copy completion or a cache-packet meaning.  Once a capture
+shows that an asynchronous copy and later 3D task share sufficient FIFO and
+visibility ordering, the drain can be replaced by that narrower dependency.
+MxMD itself pre-waits copy resources through class 2 plus the separate legacy
+channel and does not attach class 1 after the copy.  The Windows render-target
+sequence gives task ordering and descriptor visibility, but still does not
+prove whether index `43` completion also implies all texture-cache visibility,
+or whether same-address render-to-texture needs an additional cache control.
 
 ## Remaining boundary and required capture
 
@@ -345,10 +411,14 @@ Static analysis has recovered render-surface class-1 fence production and the
 later sampled-resource class-1 dependency, but not an exact dedicated
 texture-cache invalidate, nor proof that one exists.  It also rules out an
 explicit MxMD class-1 destination attachment in the inspected copy path.  The
-remaining lower-layer possibility is bounded to resource/relocation submission
-metadata outside that path.  The unresolved boundary is cache visibility after
-the index-`43` dependency and whether the lower layer records a copy completion
-in any fence channel later queried by the texture consumer.
+copy emitter itself is now closed: its normal tail only posts requester
+`0x504`, while its optional tail drains through index `7c` and `0x508 bit 0`.
+The remaining lower-layer possibility is bounded to asynchronous requester
+ordering or kernel processing of the generated relocation metadata; no
+checked user-mode metadata helper attaches class 1.  The unresolved boundary
+is cache visibility after the index-`43` dependency and whether an
+asynchronously posted copy becomes visible to a later sampling task without
+the recovered full requester drain.
 A differential command/MMIO capture must compare at least:
 
 * sample without an intervening write;
