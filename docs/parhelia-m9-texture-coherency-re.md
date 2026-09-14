@@ -37,9 +37,80 @@ reads a content-generation counter or receives a signal from the upload
 routines identified below.  `0xf4350` does not emit indices `e6`, `e3`, `ef`,
 `c2`, `c3`, or `8f`.
 
-This proves that rebinding or changing a backing address causes texture
-descriptor state to be emitted.  It does not prove that rewriting content at
-the same address makes this descriptor comparator dirty.
+There is, however, an independent resource-registration path before the dirty
+test [BIN].  At `0xf436b..0xf4382`, binding flag `+0x08 & 0x02` passes the
+`+0x44/+0x48` address/backing pair and argument one through TaskMgr vtable slot
+`+0x30`.  At `0xf4384..0xf439b`, flag `+0x08 & 0x20` does the same for
+`+0x3c/+0x40`.  Only then does `0xf439d` test descriptor dirty dword `+0x00`.
+Consequently a clean, unchanged descriptor still registers its sampled
+backing whenever either binding flag is present.
+
+TaskMgr vtable `0x1f48e8` resolves slot `+0x30` to `0xfaa40`.  That method
+normalizes the address tag, resolves backing tags 2, 3, and 4, and appends the
+resolved object to vector `TaskMgr+0x5e4..+0x5e8` when its last argument is
+one.  Its call to submission-object slot `+0x84` is not a hidden coherency
+operation in this build: TaskMgr initialization at `0x23921..0x23923` installs
+the enclosing object, whose vtable is `0x1f2c60`, and that vtable resolves
+slot `+0x84` to the exact no-op `0x63c40` (`ret 8`).  Thus `0xfaa40` records
+resource membership/lifetime here; it emits no packet and performs no wait.
+
+This proves both descriptor rebinding and independent sampled-resource
+tracking.  It does not prove that rewriting content at the same address makes
+the descriptor comparator dirty, and it rules out an implicit flush in the
+registration callback for this concrete Windows object.
+
+## Render target to sampled texture: exact fence join
+
+The surface emitter `0xfb920`, called at `0xfae0e`, uses the same TaskMgr slot
+with the opposite routing argument [BIN].  Each active color attachment
+selected by the low four binding bits passes its pair at `+0x38+8*slot` with
+argument zero (`0xfb940..0xfb962`).  The depth pair `+0x68/+0x6c`, auxiliary
+pair `+0x74/+0x78`, and the additional resources selected by bits `0x800` and
+`0x40` are registered the same way.  `0xfaa40` routes argument zero to vector
+`TaskMgr+0x5f4..+0x5f8`.
+
+This gives two exact numeric classes and a narrow role inference:
+
+| state producer | `0xfaa40` argument | TaskMgr vector | fence class at commit | role [DER] |
+|---|---:|---|---:|---|
+| texture emitter `0xf4350` | 1 | `+0x5e4..+0x5e8` | 0 | sampled/read reference |
+| surface emitter `0xfb920` | 0 | `+0x5f4..+0x5f8` | 1 | render/depth write reference |
+
+The fence relationship is concrete [BIN]:
+
+1. Commit method `0xf9b70` obtains one 64-bit submission value from
+   submission-object slot `+0x74`.
+2. It attaches that value to every first-vector object through
+   `0xfadc0(..., class=0)` at `0xf9b90..0xf9bc7`, and to every second-vector
+   object with `class=1` at `0xf9bd0..0xf9c07`.
+3. It calls submission-object slot `+0x94` only after both walks
+   (`0xf9c0c..0xf9c17`).
+4. On a later 3D state/draw operation, `0xf85c0` walks the sampled first
+   vector at `0xf8f20..0xf8f87`.  For each object it calls resource vtable
+   slot `+0x04` with argument one, retains the maximum returned 64-bit value,
+   and passes that maximum to submission-object slot `+0x6c` at
+   `0xf8f8c..0xf8fa0`.
+5. The enclosing object's vtable resolves slot `+0x6c` to `0x25270`.  It
+   compares the requested 64-bit value with its last value at `+0x100/+0x104`
+   and, when newer, emits indexed record `43 = low32(value)` at
+   `0x25325..0x25338`, then saves the full 64-bit value.
+
+Therefore a render task which registers a surface in the second vector stores
+its submission fence as class 1; a later task sampling the same backing
+queries class 1 through its first-vector entry and emits the maximum dependency
+as index `43` [DER from the exact class flow].  This is the recovered vendor
+producer-to-consumer ordering mechanism.  Descriptor emission is not used as
+the fence trigger: the sampled backing enters the first vector even when its
+descriptor dirty word is zero.
+
+Top-level state serializer `0xfadf0` orders its blocks as `0xfc0e0` late state,
+`0xfb920` surfaces, `0xf4f50` common state (which contains the only call to
+`0xf4350`), `0xf6f20` program/vector state, and `0xfb260` input state, then
+clears the context dirty dword.  This proves the state-registration order
+within one operation.  A legal render-to-texture transition still requires
+the producer operation to be committed before the later consumer operation;
+sampling from an attachment still bound for writing is an API feedback case,
+not a coherency sequence recovered here.
 
 ## Exact resource-copy/upload path
 
@@ -59,11 +130,14 @@ emitter `0x1b650` at `0x1b9f5`.  Other copy shapes go through `0x571d0`,
 calculated byte offset in destination-resource field `+0x3e0`; the stored
 value is an offset, not a Boolean dirty flag.
 
-The direct-call census finds no edge from `0xb21b0`, `0x56a10`, `0x56c60`,
+The direct-call census finds no `CALL rel32` edge from `0xb21b0`, `0x56a10`, `0x56c60`,
 `0x56eb0`, `0x1b8d0`, or `0x1b650` to `0xf4350`, `0xf4f50`, `0xf5730`,
 `0xf59b0`, `0xfc620`, `0xfcb60`, or `0xfc8f0`.  This is a precise negative
-result for direct calls.  Virtual dispatch and higher-level task sequencing
-remain outside that result.
+result for direct calls.  It does not negate the TaskMgr resource-fence join
+above, which is reached by virtual dispatch and task sequencing.  Static code
+does not yet prove whether copy/upload tasks attach their destination backing
+to the same class-1 field used by `fb920`; that part remains an upload-specific
+boundary.
 
 `MxMGLX.dll` contains diagnostics for
 `TextureObjectMgr::GenericUpdateTextureImage()` and
@@ -87,6 +161,14 @@ There is no `e3` in that fixed pair.  The `ef = 0` write at
 the path first calls whole-common-shadow initializer `0xf4a80`.  This is a
 context/common-state reset condition, with no static join to resource content
 writes.
+
+Another reset path reinforces that separation.  When TaskMgr field `+0x5d4`
+is nonzero, `0xf85c0` marks common dirty groups `0x02`, `0x04`, and `0x80`,
+marks each live texture unit's group `0x02`, then clears `+0x5d4` at
+`0xf8693..0xf86f0`.  Vtable method `0xf9b60` is the direct setter of this
+global reset flag.  No per-resource fence or content generation is read in
+that branch.  The common `e6/e3/c2/c3/8f/ef` emissions therefore remain state
+reset/address-bank behavior rather than the recovered resource dependency.
 
 ### `0xf5730`: common dirty group `0x02`
 
@@ -145,11 +227,12 @@ payload forms `0xa1000009`, `0xa3000009`, and `0xa4000009`; one branch ends in
 `e6 = 0x40008000`.  It uses relocation selector `0x30`.
 
 These facts support the narrower description **address-window/domain
-synchronization with resource completion ordering**.  The late-state caller
-family is disjoint from the direct upload and final texture-state call families.
-Static analysis therefore does not establish any of these helpers as the
-missing texture-write cache operation.  They may still be necessary when a
-resource changes address domain.
+synchronization with resource completion ordering**.  The first vector is now
+known to include sampled texture resources, but the late-state caller family
+is still disjoint from the ordinary texture descriptor call family.  Static
+analysis therefore does not establish any of these helpers as a per-update
+texture-cache operation.  They may still be necessary when a resource changes
+address domain.
 
 ## Linux cross-check prevents a false `e6` conclusion
 
@@ -164,13 +247,25 @@ Nearby `m9x1011` at `.text+0x2bf33` places `0x6dc00000`, `0x42000000`, and
 is a polymorphic command/state port.  Neither the index nor
 `0x04000001` alone names a flush.
 
+Linux `m9x954` independently confirms task-level fence ownership, but does not
+add the Windows class split [BIN].  It obtains a submission value through its
+vtable slot `+0xd0` at `.text+0x2d9f3..0x2da00`; for each type-zero referenced
+resource it follows `resource+0x38`, then `+0x228`, and stores that value at
+backing `+0x60` (`.text+0x2da45..0x2da53`).  This supports retaining and
+fencing producer backing objects.  The checked Linux path has a single vector
+at `+0xf8..+0x100`, so it does not independently prove which fence field a
+texture consumer must query or whether a cache invalidate accompanies it.
+
 ## Defensible driver sequence before a differential capture
 
-The static code supports the following conservative sequence for an update
-followed by sampling:
+For render-to-texture followed by sampling, the static code now supports this
+specific sequence:
 
-1. Submit the copy/upload or render-write task and retain its resource.
-2. Order the later sampling task after that producer's completion fence.
+1. Register the render/depth destination in the class-1/second resource vector,
+   submit the producer, and attach its submission fence as class 1.
+2. Register the later sampled backing in the class-0/first vector even when
+   its descriptor is clean; query its class-1 fence, take the maximum sampled
+   dependency, and emit that dependency through index `43` before submission.
 3. Re-emit the `78,79,7a` texture address/descriptor group when the backing,
    offset, layout, or address domain changes.  Re-emitting on every content
    generation is a conservative experiment, not a recovered vendor rule.
@@ -181,15 +276,20 @@ followed by sampling:
    its object and relocation flow requires.  Injecting it after every texture
    write has no static justification.
 
-This sequence gives task ordering and descriptor visibility without inventing
-a cache-packet meaning.  It does not yet prove that same-address texture
-content becomes visible with only the ordinary common-state prefix.
+For a copy/upload producer, use the same conservative class-1 destination
+fence until a static join or capture proves its precise registration path.
+The Windows render-target sequence gives task ordering and descriptor
+visibility without inventing a cache-packet meaning.  It does not yet prove
+whether index `43` completion also implies all texture-cache visibility, or
+whether same-address render-to-texture needs an additional cache control.
 
 ## Remaining boundary and required capture
 
-Static analysis has not recovered an exact dedicated texture-cache invalidate,
-nor proved that one exists.  The unresolved boundary is indirect task/resource
-dispatch between the GL update methods, the GPU copy task, and the next 3D task.
+Static analysis has recovered render-surface class-1 fence production and the
+later sampled-resource class-1 dependency, but not an exact dedicated
+texture-cache invalidate, nor proof that one exists.  The unresolved static
+boundary is now narrower: cache visibility after the index-`43` dependency,
+plus destination-fence registration for the separate copy/upload task family.
 A differential command/MMIO capture must compare at least:
 
 * sample without an intervening write;
@@ -199,9 +299,12 @@ A differential command/MMIO capture must compare at least:
 * the same cases with unchanged and changed backing address/domain.
 
 For each pair, capture the complete producer tail, task submission boundary,
-consumer prefix, relocations, and waits.  Diff the occurrences of
-`e6/e3/c2/c3/8f/ef` while holding all sampler and descriptor fields constant.
-That experiment can distinguish an ordinary per-task prefix, an
-address-domain transition, descriptor rebinding, and a true content-coherency
-operation.  Until then, assigning cache semantics to any one of these packet
-words is unsupported.
+consumer prefix, index-`43` dependency, relocations, and waits.  Diff the
+occurrences of `e6/e3/c2/c3/8f/ef` while holding all sampler and descriptor
+fields constant.  The smallest decisive render-to-texture pair keeps the same
+backing/address/layout and changes only whether a render write precedes the
+sample; index `43` should change with the producer fence, while any additional
+packet is a cache-control candidate.  That experiment can distinguish an
+ordinary dependency, an address-domain transition, descriptor rebinding, and
+a true content-coherency operation.  Until then, assigning cache semantics to
+any one of these packet words is unsupported.
