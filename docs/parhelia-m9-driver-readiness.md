@@ -3,11 +3,11 @@
 The saved M9148 vendor stack now supplies a hardware reference for the first
 Linux driver, rather than only a static design. Captures cover command
 submission, a clear and triangle, all ordinary GL 1.x topologies, canonical
-vertex repacking, program-pair selection, stage constants, ordinary sampler
-and mip state, an FBO render-to-sample chain, and two simultaneous direct-GLX
-clients. The remaining work divides cleanly into implementation validation and
-optional GL2/extension paths whose final native form still needs a small
-capture.
+vertex repacking, program-pair selection, stage constants, fixed state, broad
+texture targets and formats, FBO/query behavior, special GLSL results, and two
+simultaneous direct-GLX clients. The remaining work divides into implementation
+validation and a smaller set of hard native-record, blocked-layout, MRT,
+multisample, GigaColor, sRGB, and recovery boundaries.
 
 Confidence labels in the tables are:
 
@@ -46,8 +46,8 @@ The following pieces no longer depend on another vendor capture:
 
 These facts are enough for a guarded clear/triangle Gallium path and for the
 fixed-function subset needed by ioquake3. They do not make arbitrary GLSL
-safe: native instruction packing for several special operations and the
-internal format of the vendor linked-program resources remain capture gates.
+safe: the `6c` resource is a heterogeneous linked record, and its universal
+native start/count, stage split, entry selectors, and stop rule remain open.
 
 The first DRM implementation should continue to omit the dormant auxiliary
 `0x500..0x524` requester. Ordinary GL uses the primary `0x400/0x404` path;
@@ -68,19 +68,19 @@ The table distinguishes compiler acceptance from a native encoding.
 | MOV, ADD, SUB, MUL, MAD, DP3/4, MIN/MAX, RCP/RSQ, EXP2/LOG2, FLOOR | executable hash-pinned lowerer fixtures plus live compile/link/draw | **closed** for canonical forms | expand only when a new modifier/result class is needed |
 | absolute/negate, swizzle, write masks, scalar predicates | 91-case native lowering matrix and live draw | **closed** for recorded forms | reject unrecorded combinations |
 | matrices M4x4/M4x3/M3x4/M3x3/M3x2 | exact static expansion to 4/3 DP4 and 4/3/2 DP3 rows, including alias MOV | **closed** | one `mat4*vec4` regression is sufficient |
-| KIL/discard | dedicated pairwise comparison lowerer; conditional discard compiles, links, and draws | typed lowering **closed**, packed form **capture** | unconditional versus conditional linked-program delta |
-| DDX/DDY | backend selectors 91/92, common lowerer, expanded markers `0x88/0x89` | **capture** | one isolated `dFdx`, one isolated `dFdy` |
+| KIL/discard | dedicated pairwise comparison lowerer plus live conditional and unconditional discard results/resources | typed behavior **captured**, packed form **capture** | identify the conditional KIL native slots inside the heterogeneous linked record |
+| DDX/DDY | backend selectors 91/92 plus isolated live `dFdx` and `dFdy` results/resources | **captured**, native-slot join open | finish operation-specific instruction ownership in the linked record |
 | TEXLD ordinary 2D | static lowerer, live single-level and mipmapped texture draws | **closed** for captured 2D forms | none for initial path |
-| TEXLDB / projected TEXLD | exact one-hot lowerer modes; bias and projection compile/link/draw | **captured** | linked resource/program delta to name the final mode field |
-| TEXLDL / TEXLDD | exact one-hot lowerer routes, no decisive live resource join | **capture** | isolated explicit-LOD and explicit-gradient draws |
-| cube texture | compiler accepts and draws; cube resource dimension mapping is static | **captured** | preserve descriptor/resource snapshot in an isolated cube case |
-| shadow comparison | exact sampler enable and eight compare codes | **capture** | one `sampler2DShadow` pass/fail pair and result-channel join |
-| vertex texture fetch | four-sampler compiler limit and stage-neutral texture lowerer | **capture** | vertex `texture2DLod` with resource and generated-stream snapshots |
-| SLT/SGE and comparisons | frontend acceptance plus CMP/SETP family | **capture** | SLT/SGE A/B to assign nonzero six-way predicate controls |
-| constant/uniform branches | conditional-stack frontend is exact | **capture** | constant `if` versus uniform `if` to distinguish folding and native branch |
-| fixed/dynamic loops, BREAK/CALL | frontend loop, BREAK, and CALL paths are exact | **capture** | fixed-count versus uniform-bound loop with linked-program bytes |
+| TEXLDB / projected TEXLD | exact one-hot lowerer modes plus live bias and projected result/resources | **captured** | name the final native mode field |
+| TEXLDL / TEXLDD | vertex explicit LOD has a live result/resource; fragment explicit LOD and gradient are rejected because the required extension is absent | vertex **captured**; fragment **unexposed** | join the vertex native instruction and resource selector |
+| cube texture | all six faces and orientation probes pass; descriptor/resource dimension is captured | **captured** | mip/seam/incomplete cases and physical face layout |
+| shadow comparison | exact sampler enable/eight compare codes plus live raw 0.25/0.75 and LEQUAL fail/pass results | **captured** for the tested D24/nearest route | filtering, result-channel variants, and FBO producer dependency |
+| vertex texture fetch | four-sampler compiler limit plus live vertex `texture2DLod` result/resource | **captured** | native instruction and vertex sampler join |
+| SLT/SGE and comparisons | CMP/SETP frontend plus live ARBfp SLT/SGE zero/one results | **captured** for the recorded pair | exact native predicate fields and all relational outcomes |
+| constant/uniform branches | live constant and uniform conditional results/resources | **captured** | distinguish folding, native branch, and reconvergence |
+| fixed/dynamic loops, BREAK/CALL | live fixed and uniform-bound loop results plus static BREAK/CALL frontend | loops **captured**; BREAK/CALL native form open | targets/backedges, nesting, BREAK/CALL results and implementation limits |
 | uniforms/constants | vertex and fragment A/B/A sentinels identify live-component ranges in the 0x21000 resource | **closed** for external range path | mode-2 inline constant bank remains optional |
-| program entry/resource ownership | distinct `69` external and aligned `6c` resources, tag bit 0, and whole-pair A/B/A selection | external bind identity **closed**; `69` is live drawable backing | native storage and the two stage entries inside the linked resource |
+| program entry/resource ownership | `69` is live drawable/resource backing; `6c` selects a tagged 0x80-aligned heterogeneous linked record through an exact constructor/translator/cache chain | external bind identity **closed** | universal native start/count, VS/FS split, entry selectors, allocator wrap and lifetime |
 | termination | count-delimited compiler stream, endpoint selector `0x7e`, and complete terminal slot are exact | **validation** | determine endpoint-only versus full-terminal stop on generated programs |
 
 `tools/m9-gl2-compiler-control-evidence.py` pins the MxMD and MxMGLX hashes,
@@ -99,24 +99,24 @@ the live Linux ICD did not advertise.
 
 | feature / public path | live M9 ICD | hardware and capture evidence | driver boundary |
 |---|---|---|---|
-| `GL_EXT_framebuffer_object` | advertised | RGBA8 FBO completeness, render, dependency, sample, and readback all pass | **closed** for linear color render-to-sample; capture depth/stencil FBO transition |
-| `GL_ARB_draw_buffers` / MRT | advertised, max 4 | four address/descriptor pairs `b0..b7`, four output masks and per-target fragment compilation are static | **capture** one four-color-attachment draw/readback before enabling MRT |
-| `GL_ARB_occlusion_query` | advertised, 32-bit counter | exact begin/end snapshot packet, modulo result and completion contract | **validation** behind an experimental cap: visible count, alignment, slot reuse, MSAA scaling |
+| `GL_EXT_framebuffer_object` | advertised | missing/dimension errors, depth-only, stencil-only, RGBA8+depth, render-to-sample dependency, and readback pass; distinct color+depth+stencil is rejected | **captured** for tested linear attachments; packed depth-stencil and lifecycle replay remain |
+| `GL_ARB_draw_buffers` / MRT | advertised, max 4 | four address/descriptor pairs and output compilers are static; RT0-only works, but RT1/all-target routes wedge during later readback/teardown | **unsafe beyond RT0** until routing and resource retirement are recovered |
+| `GL_ARB_occlusion_query` | advertised, 32-bit counter | exact packet plus live 16384/8192/0 visible/partial/hidden counts, pre-finish availability, and reuse | **captured** for ordinary single-sample use; wrap and MSAA scaling remain |
 | `GL_ARB_multisample` / FAA | advertised; current GLX visuals report zero sample buffers | enable reaches four `ad` writes plus `af`; zero mask suppresses color | **capture** a real multisample visual/surface, sample pattern/resolve, and nonzero partial mask |
-| 10-bit GigaColor (`A2B10G10R10`, `A2R10G10B10`) | no dedicated GL extension observed | exact hardware format codes `0x68/0x6a` and surface/texture descriptor paths | **capture** 10-bit RT clear/draw/readback and texture sample; expose only matching visual/FBO formats |
+| 10-bit GigaColor (`A2B10G10R10`, `A2R10G10B10`) | no dedicated GL extension observed | exact hardware codes `0x68/0x6a` and config gates are static; Linux `GL_RGB10_A2` explicitly reports actual `GL_RGBA8` and round-trips through 8-bit quantization | Linux route **not native**; capture the gated Windows 10-bit RT/sample path and matching visual before exposure |
 | framebuffer/texture sRGB | not advertised | Windows state has `SRGBWRITEENABLE` and an sRGB clear/surface flag | **unexposed/capture**: linear-vs-sRGB RT and texture A/B; keep CRT gamma LUT separate |
-| NPOT 2D | advertised | descriptors/layout accept arbitrary dimensions; no isolated live NPOT draw preserved | **validation** with coordinate-coded odd dimensions and mip tail |
-| rectangle textures | ARB/EXT/NV names advertised | compiler/resource family exists | **capture** rectangle coordinates, wrap restrictions, and descriptor delta |
-| cube textures | ARB/EXT advertised | live GLSL cube compile/link/draw plus exact six-face constructor and dimension kind | **captured**, enable after isolated face/orientation result test |
-| 3D textures | `GL_EXT_texture3D` advertised | exact volume constructor, depth-halving recurrence and dimension kind | **capture** slice-addressing and mip sampling |
-| depth texture and shadow | depth/shadow extensions advertised | depth formats and exact sampler compare packing | **capture** sampled depth format plus compare/no-compare A/B |
-| S3TC/DXT1-5 | not advertised by live ICD | binary contains extension name; hardware codes and DXT mip/block offsets are exact | implement format support, then **capture** DXT1 and DXT5 before exposing |
+| NPOT 2D | advertised | complete 13x7/6x3/3x1/1x1 chain samples correctly with exact descriptors | **captured**; incomplete and automatic-generation behavior remain |
+| rectangle textures | ARB/EXT/NV names advertised | unnormalized sampling passes; level 1, repeat, and mip filters produce required errors | **captured** |
+| cube textures | ARB/EXT advertised | all six face/orientation tests pass with exact descriptor/resource dimension | **captured**; seams, mips, and physical face layout remain |
+| 3D textures | `GL_EXT_texture3D` advertised | 7x5x4 slices and R repeat pass; exact volume descriptor captured | **captured**; volume mips and physical slice layout remain |
+| depth texture and shadow | depth/shadow extensions advertised | raw 0.25/0.75 plus LEQUAL fail/pass results and exact descriptor/control delta | **captured** for D24 nearest; filtering/FBO dependency remain |
+| S3TC/DXT1-5 | not advertised by live ICD | hardware codes/layouts are static; direct DXT1/DXT5 tokens reject, and the core compressed-format query reports four but leaves its output array untouched | **unexposed** pending a valid public token and result capture |
 | VBO | advertised | indexed H06/H07 and CPU canonical repacking are captured | **closed** with CPU repack; server-side zero-copy layout is optional |
 | PBO | not advertised and no `GL_ARB_pixel_buffer_object` token in pinned ICD | no M9-specific asynchronous pixel-transfer join | **unexposed**; Gallium staging copies may still back core transfers |
-| separate/two-sided stencil | `GL_ATI_separate_stencil` advertised; `GL_EXT_stencil_two_side` absent | exact two face compare/op quartets and two ref/mask words `a8..aa` | **validation** with opposite front/back outcomes |
-| point sprites | `GL_ARB_point_sprite` advertised | point topology/expansion and five generated streams captured | **capture** coord replacement, size attenuation and raster result |
-| fog coordinates | `GL_EXT_fog_coord` advertised | compiler vocabulary/path exists; no isolated M9 final-state join | **capture** depth fog versus explicit fog-coordinate A/B |
-| blend add/subtract/reverse/min/max | minmax/subtract/separate extensions advertised | factor dispatch, operations 1..5 and per-target native compilation static; ADD/SUB fixed-state draws captured | **captured** for ADD/SUB; capture MIN/MAX/REV_SUB result before broad exposure |
+| separate/two-sided stencil | `GL_ATI_separate_stencil` advertised; `GL_EXT_stencil_two_side` absent | exact face controls and live separate-op packet; the vendor separate-function call rejects valid LESS/GREATER enums | implement correct core behavior from final state; do not copy the vendor API bug |
+| point sprites | `GL_ARB_point_sprite` advertised | point topology/expansion and real GL_POINTS result captured; `gl_PointCoord` is rejected by the GLSL frontend | fixed-function coord replacement/attenuation and exact coverage remain |
+| fog coordinates | `GL_EXT_fog_coord` advertised | fog modes and explicit fog-coordinate result/state are captured | **captured** for representative modes; implementation replay remains |
+| blend add/subtract/reverse/min/max | minmax/subtract/separate extensions advertised | separate factors/equations and representative destination-sensitive results are captured; static mapping covers operations 1..5 | complete visible equation/factor matrix before broad exposure |
 | anisotropic filtering | not advertised by the live ICD (`max=0`) | exact hardware anisotropy classes 1..16 exist in the Windows sampler packer | **unexposed/capture** before enabling |
 | float textures | not advertised | R16F/RG16F/RGBA16F and 32-bit format codes exist | **unexposed/capture** format upload/sample and filter restrictions |
 
@@ -124,13 +124,13 @@ the live Linux ICD did not advertise.
 
 | remaining gap | consequence | smallest closing experiment |
 |---|---|---|
-| internal native instruction storage and vertex/fragment entry fields outside the resolved index-69 drawable | arbitrary newly compiled GLSL cannot execute | trace the producer or kernel mapping referenced by the stage controls and join it to one-stage A/B programs |
-| special shader packed forms: DDX/DDY, TEXLDL/TEXLDD, shadow, vertex texture, comparisons, branches and loops | corresponding GL2 forms must remain gated until packed words are found | use the preserved isolated draws, `69/6a/6b/6c`, full 0x21000 resource, and linked-record deltas to locate the still-hidden native storage |
-| four-target MRT output routing | draw-buffers cap remains off | one shader writing four unique colors into four RGBA8 attachments, then read each target |
+| universal native program grammar inside heterogeneous `6c` records | arbitrary newly compiled GLSL cannot execute safely | use the passive constructor/translator/cache hook to join native start/count, VS/FS ownership, entry selectors, stop rule and allocator lifetime to one-stage A/B programs |
+| special shader packed forms: KIL, derivatives, texture controls, predicates, branches and loops | visible behavior is captured but a new compiler cannot emit every form yet | join each preserved isolated draw to the universal native-record grammar and pin operation-specific slots |
+| four-target MRT output routing and retirement | draw buffers beyond RT0 remain unsafe | trace the RT1/readback/teardown resource path statically or with a passive hook before any more live multi-target stress |
 | multisample/FAA allocation, pattern, mask and resolve | no sample buffers and no FAA cap | acquire a vendor multisample visual/surface, then clear/edge/mask/query differentials |
-| 10-bit render and sample round trip | GigaColor formats cannot be advertised safely | A2B10 and A2R10 clear/draw/read/sample with sentinel channel values |
+| native 10-bit render and sample round trip | Linux GL downgrades RGB10_A2 to RGBA8, so GigaColor formats cannot be advertised | enable the gated Windows path and capture A2B10/A2R10 clear, draw, sample, raw storage and presentation with sentinel channels |
 | sRGB write/sample conversion | framebuffer sRGB remains off; output LUT semantics stay separate | identical linear/sRGB RT and texture fixtures, compare pre-LUT BO contents |
-| query result details | occlusion query remains experimental | known visible sample count, snapshot alignment/second word, slot wrap, counter wrap, MSAA |
+| query wrap and multisample scaling | ordinary visible/hidden/partial counts and reuse are closed | slot wrap, 32-bit counter wrap, ordering stress, and a sampled-surface comparison |
 | auxiliary requester wrap and five hardware-owned words | optional streaming path remains absent | one forced auxiliary wrap with four timestamped descriptor snapshots |
 | transparent 3D reset and fault IRQ | timeout recovery remains fail-closed | controlled bad address/opcode tests with complete pre-ack snapshots |
 | class-3 physical in-block permutation | tiled/blocked resources remain unavailable | coordinate-coded upload/readback for one element size per layout family |
