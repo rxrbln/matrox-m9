@@ -226,6 +226,29 @@ direct static call site to either alternate wrapper is present in the saved
 ELF image, so its external/callback trigger and the object produced by
 `0x4354d0` remain the exact unresolved join.
 
+The guarded helper does expose the CPU compiler's view of that bank [BIN].
+When its seventh argument is non-null, `0x4354d0` allocates a `0x60750`-byte
+compiler object and a separate `0x78`-byte table stored at compiler-object
+offset `+0x60008`.  The table contains 15 pointers:
+
+```text
+table[i] = bank_base + i * 0x8000, for i = 0..14
+```
+
+Consumer `m9x899` at `0x488da6` selects a table entry and reads one vec4 as
+four dwords at `table[selector] + 16 * index`.  It checks `index <= 0xfff`.
+Consequently each window covers `0x10000` bytes, adjacent windows overlap by
+`0x8000`, and their union spans `0x80000` bytes from `bank_base`.  The consumer
+guard admits selector 15 although the constructor creates only 15 entries;
+without a proved sixteenth entry or a live selector-15 producer, a new driver
+must preserve that discrepancy instead of assuming a 16-entry table.
+
+This proves how mode 2 presents persistent constants to the CPU compiler.  It
+does not identify a GPU allocation or relocation for those bytes, nor does it
+join the compiler result to final emitter fields `+0xa0/+0xa8`.  The remaining
+capture/static target is therefore that result-to-emitter ownership path,
+rather than the compiler's source-bank indexing.
+
 Program binding does establish the stage identity without relying on a name.
 Vertex handle lookup at `0x4314f0` replays resource `+0x130/+0x140` vec4
 records through the already-proved vertex handler `0x3b8160`. Fragment lookup
