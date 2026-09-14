@@ -33,6 +33,13 @@ That register points at writeback word 0, which the diagnostic polls;
 mastering before publishing either address.  On timeout it logs both
 writeback words plus engine, front-end, command and fence-address registers.
 
+Before enabling bus mastering, the guarded M9148 path now requires warm
+primary partition controls ``0x44c/0x450/0x454`` to equal the independently
+recovered and live-verified fallback image
+``00280800/1f3f2707/00070703``.  It preserves those values rather than writing
+them.  A different board/property tuple fails closed until its seven inputs or
+packed controls have their own evidence.
+
 The primary stream uses two kernel-owned 32-KiB command slots.  Once a slot's
 last synchronous fence has retired, the producer advances to the alternate
 slot, rebases ``0x400`` to its tagged start, and begins again at offset zero.
@@ -99,10 +106,10 @@ closes both primary slot-switch directions.
 
 The following tests are required in order:
 
-1. Record the target's seven requester property inputs or warm
-   ``0x44c/0x450/0x454`` values, whose exact packer and fallback image are now
-   known, plus all address windows before enabling a copied user command
-   image.
+1. Record all remaining address windows before enabling a copied user command
+   image.  The tested M9148's warm ``0x44c/0x450/0x454`` controls now have a
+   fail-closed equality gate; other boards still require their own property
+   tuple or packed-control evidence.
 2. Add exact value masks for every whitelisted state index, reserve and fence
    every referenced BO, and run the two-pass captured linear triangle.
 3. Force one auxiliary requester wrap and validate quiescence, save/restore

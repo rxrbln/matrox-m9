@@ -60,6 +60,16 @@ static void m9_advance_command_slot(struct m9x_transport *transport)
 	transport->command_offset = 0;
 }
 
+static bool m9_primary_controls_valid(struct m9x_device *mdev)
+{
+	return m9_read(mdev, M9_REG_REQUESTER_CTL0) ==
+			M9_REQUESTER_CTL0_FALLBACK &&
+	       m9_read(mdev, M9_REG_REQUESTER_CTL1) ==
+			M9_REQUESTER_CTL1_FALLBACK &&
+	       m9_read(mdev, M9_REG_REQUESTER_CTL2) ==
+			M9_REQUESTER_CTL2_FALLBACK;
+}
+
 static const char *m9_fence_get_driver_name(struct dma_fence *fence)
 {
 	return "m9x";
@@ -105,6 +115,14 @@ static int m9_transport_arm(struct m9x_device *mdev)
 		return 0;
 	if (m9_read(mdev, M9_REG_ENGINE_STATUS) == U32_MAX)
 		return -ENODEV;
+	if (!m9_primary_controls_valid(mdev)) {
+		dev_err(&mdev->pdev->dev,
+			"M9 primary requester controls differ from tested M9148 values: %#x/%#x/%#x\n",
+			m9_read(mdev, M9_REG_REQUESTER_CTL0),
+			m9_read(mdev, M9_REG_REQUESTER_CTL1),
+			m9_read(mdev, M9_REG_REQUESTER_CTL2));
+		return -EOPNOTSUPP;
+	}
 	pci_set_master(mdev->pdev);
 
 	/* Keep all interrupts masked. Render completion is a memory writeback. */
@@ -178,6 +196,10 @@ static int m9_requester_selftest(void)
 	    m9_fence_reached(~target, target) ||
 	    !m9_fence_reached(target | 1, target) ||
 	    m9_extend_fence(&transport, target | 1) != (8ULL << 32))
+		return -EINVAL;
+	if (M9_REQUESTER_CTL0_FALLBACK != 0x00280800 ||
+	    M9_REQUESTER_CTL1_FALLBACK != 0x1f3f2707 ||
+	    M9_REQUESTER_CTL2_FALLBACK != 0x00070703)
 		return -EINVAL;
 	if (m9_command_slot_bus(&transport) != 0x00100000)
 		return -EINVAL;
