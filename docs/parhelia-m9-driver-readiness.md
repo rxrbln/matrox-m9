@@ -39,9 +39,10 @@ The following pieces no longer depend on another vendor capture:
   four live sampler selectors, subimage/copy coherency, and the class-1
   render-to-sample dependency through index `43`.  The exact 40-bit PTE
   grammar and all class-3 calculator bodies/dispatches have deterministic
-  vectors.  The mapped index-`78` image is repeated PTE-shaped metadata rather
-  than linear texels; its table-root and physical-page ownership remain
-  unjoined;
+  vectors; all non-32-bit aperture permutation families have native-checked
+  formulas, and cube-face/volume-Z base rules are exact. The mapped index-`78`
+  image is repeated PTE-shaped metadata rather than linear texels; its live
+  table-root and physical-page ownership remain unjoined;
 * separate index-`69` drawable/external and `6c` linked resources, atomic vertex plus
   fragment A/B/A selection, live stage-constant ranges, and the invariant
   nature of the 80-slot `8f/90..9f` store;
@@ -112,7 +113,7 @@ native encoding or an implemented scheduling limit.
 | TEXLD ordinary 2D | static lowerer, live single-level and mipmapped texture draws | **closed** for captured 2D forms | none for initial path |
 | TEXLDB / projected TEXLD | exact one-hot lowerer modes plus live bias and projected result/resources | **captured** | name the final native mode field |
 | TEXLDL / TEXLDD | vertex explicit LOD has a live result/resource; fragment explicit LOD and gradient are rejected because the required extension is absent | vertex **captured**; fragment **unexposed** | join the vertex native instruction and resource selector |
-| cube texture | all six faces and orientation probes pass; descriptor/resource dimension is captured | **captured** | mip/seam/incomplete cases and physical face layout |
+| cube texture | all six faces and orientation probes pass; descriptor/resource dimension and exact `level_offset + face * face_size` base are captured/static | **captured** | mip/seam/incomplete cases and validate static face bases against decoded physical pages |
 | shadow comparison | exact sampler enable/eight compare codes plus live raw 0.25/0.75 and LEQUAL fail/pass results | **captured** for the tested D24/nearest route | filtering, result-channel variants, and FBO producer dependency |
 | vertex texture fetch | four-sampler compiler limit plus live vertex `texture2DLod` result/resource | **captured** | native instruction and vertex sampler join |
 | SLT/SGE and comparisons | CMP/SETP frontend plus live ARBfp SLT/SGE zero/one results | **captured** for the recorded pair | exact native predicate fields and all relational outcomes |
@@ -146,8 +147,8 @@ the live Linux ICD did not advertise.
 | framebuffer/texture sRGB | not advertised | D3D RT0 `SRGBWRITEENABLE` is live and emits an exact 25-slot suffix; clear has the exact CPU encode curve; the apparent sampler state is unreachable legacy TEXCOORDINDEX residue | **unexposed**; capture RT encode/blend/readback, and keep sampler decode disabled until a real path is found; CRT gamma LUT remains separate |
 | NPOT 2D | advertised | complete 13x7/6x3/3x1/1x1 chain, base/max selection, and defined incomplete-texture behavior are captured | **captured**; automatic generation remains |
 | rectangle textures | ARB/EXT/NV names advertised | unnormalized sampling passes; level 1, repeat, and mip filters produce required errors | **captured** |
-| cube textures | ARB/EXT advertised | all six face/orientation tests pass with exact descriptor/resource dimension | **captured**; seams, mips, and physical face layout remain |
-| 3D textures | `GL_EXT_texture3D` advertised | 7x5x4 slices and R repeat pass; exact volume descriptor captured | **captured**; volume mips and physical slice layout remain |
+| cube textures | ARB/EXT advertised | all six face/orientation tests pass with exact descriptor/resource dimension and static per-mip/per-face base formula | **captured**; seams, mips, and physical-page validation remain |
+| 3D textures | `GL_EXT_texture3D` advertised | 7x5x4 slices and R repeat pass; exact volume descriptor, full-depth mip recurrence, and calculator-Z convention | **captured**; volume mips and physical-page validation remain |
 | depth texture and shadow | depth/shadow extensions advertised | raw 0.25/0.75 plus LEQUAL fail/pass results and exact descriptor/control delta | **captured** for D24 nearest; filtering/FBO dependency remain |
 | S3TC/DXT1-5 | not advertised by live ICD | hardware codes/layouts are static; direct DXT1/DXT5 tokens reject, and the core compressed-format query reports four but leaves its output array untouched | **unexposed** pending a valid public token and result capture |
 | VBO | advertised | indexed H06/H07 and CPU canonical repacking are captured | **closed** with CPU repack; server-side zero-copy layout is optional |
@@ -172,7 +173,7 @@ the live Linux ICD did not advertise.
 | query counter publication and multisample scaling | fixed selector-pair reuse, software modulo-32 arithmetic, ordinary visible/hidden/partial counts, and snapshot retirement are closed | cross physical `0xffffffff`, identify snapshot word 1, and compare raw versus ICD-scaled results on a sampled surface |
 | auxiliary requester wrap and five hardware-owned words | optional streaming path remains absent | one forced auxiliary wrap with four timestamped descriptor snapshots |
 | transparent 3D reset and fault IRQ | raw/W1C/mask roles and ordering are exact, but no saved consumer names a requester/3D fault and no bounded reset entry exists; timeout recovery remains fail-closed | controlled bad address/opcode tests with complete pre-ack snapshots |
-| class-3 physical layout and backing join | all 35 dispatch/body routes are pinned and 32 tiled routes have 352 golden coordinate vectors; maintainable formulas exist for the four 32-bit routes | transcribe the remaining element/DXT families, then capture one page-table root plus decoded coordinate-coded physical pages, including cube faces and volume slices |
+| class-3 physical layout and backing join | all 35 dispatch/body routes and 352 golden vectors are pinned; all 14 non-32-bit aperture formulas match native code over 104,144 comparisons; cube-face and volume-Z base math is exact | capture `request+0x90`, the table root, and decoded coordinate-coded physical pages together to join index `78` ownership and validate the formulas on hardware |
 
 The vendor capture gates are now separate from new-driver validation. The new
 kernel/Mesa stack still has to replay a no-op fence, clear, triangle, mipmapped

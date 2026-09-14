@@ -2,21 +2,26 @@
 
 This note reconciles the phase-two and phase-three live resource captures with
 the saved Linux and Windows resource, copy, and CPU readback paths. It closes
-the address-translation record grammar and pins every class-3 address
-calculator. It also establishes that the saved bytes at the numeric index-78
-address are not a raw texture-pixel dump. Physical-page ownership and the
-cube-face/volume-slice backing join still need the focused capture described
-below.
+the address-translation record grammar, pins every class-3 address calculator,
+transcribes every non-32-bit aperture permutation family, and closes the
+cube-face/volume-slice base rules. It also establishes that the saved bytes at
+the numeric index-78 address are not a raw texture-pixel dump. Joining that
+PTE-shaped record to the live table root and physical-page owner still needs
+the focused capture described below.
 
 The checked Linux core is
 `m9xdriver-x86_64-1.4.3-80847-20140908-build_98/kernel/`
 `KernelLibraries.o_shipped`, SHA-256
 `bec4490ff72b29887400e988a26e107e80ebb0b11e9d0b437267bec9db5b26e7`.
+The checked Windows constructor image is
+`xddm32_210_00_105_se_u_nowhql/MSerX/MxMD.dll`, SHA-256
+`b6905b6e658b87544bc0081d080190e4f8112b723c0b2fefd781ba5766874f43`.
 The live evidence is under
 `captures/m9x-linux-texture-resources-20260914`. Run
 `python3 tools/m9-backing-layout-closure-evidence.py` from the repository root
-to verify the binary bodies, dispatch relocations, native golden vectors,
-allocation tuples, address records, and raw-image exclusions below.
+to verify both complete binary hashes, the exact constructor slices, binary
+bodies, dispatch relocations, native/formula comparisons, allocation tuples,
+address records, and raw-image exclusions below.
 
 ## Exact page-entry grammar
 
@@ -146,17 +151,22 @@ combination is unsupported by this implementation and must not silently use a
 different routine.
 
 The verifier pins all 35 complete bodies by SHA-256 and all 35 dispatcher
-relocations. For the 32 tiled routines it directly invokes the leaf-only,
-hash-checked vendor code with one fixed calculator state and compares 11
-golden addresses per routine. The 352 checked addresses cover origin,
-adjacent X/Y, microblock edges, 8/16/32-coordinate transitions, Z changes,
-and coarse-tile transitions. This is an exact executable specification and a
-reproducible oracle for transcription of every element-width and DXT
-permutation. The existing maintainable Python source in
-`tools/m9-blocked-layout-evidence.py` independently expresses all four 32-bit
-formulas. The other families remain hash-pinned executable formulas rather
-than clean-room Python expressions; they should be transcribed and compared
-against this oracle before inclusion in a kernel or Mesa path.
+relocations. It directly invokes every leaf-only, hash-checked vendor body
+with a fixed calculator state and compares 11 golden addresses per routine.
+The 352 checked addresses cover origin, adjacent X/Y, microblock edges,
+8/16/32-coordinate transitions, Z changes, and coarse-tile transitions.
+
+Maintainable Python now expresses both aperture variants for every non-32-bit
+family: 1, 8, 16, 64, and 128 bit, DXT1, and DXT2--5. The verifier compares
+those 14 formulas with the pinned native bodies over every `(x,y)` in one
+complete in-block extent, then exercises two calculator states, both relevant
+controller/channel branches, nonzero bases, Z changes, and boundary
+coordinates. That is 104,144 native/formula comparisons. The explicit-zero
+`m9x898` route is included. `tools/m9-blocked-layout-evidence.py` separately
+expresses all four 32-bit formulas. The non-32-bit local-memory coarse-address
+halves remain available through the hash-pinned native oracle; the clean
+aperture transcriptions close the requested non-32-bit in-block permutation
+families without claiming a clean source form for those local coarse terms.
 
 These functions return physical byte addresses for logical `(x,y,z)`. For DXT
 the copy routine first rounds the rectangle to 4x4 blocks and the DXT
@@ -166,7 +176,7 @@ driver must read register `0x0f04` after memory-controller initialization.
 
 ## Mip, face, and slice placement
 
-The resource constructors close the logical layout around the calculator:
+The resource constructors close the physical base passed to the calculator:
 
 ```text
 width[L]  = max(width[0]  >> L, 1)
@@ -184,15 +194,38 @@ offsets are `[0,64,96,320,352]`. Upload helpers add those X/Y origins before
 the GPU transfer. Pitch, allocation extent, and class-3 alignment tables are
 fully recorded in `parhelia-m9-texture-state.md`.
 
-Live cube and volume cases prove the sampler descriptors, all six face
-orientations, four volume slices, and visible sampling. The CPU calculator's
-Z argument proves that a slice/layer participates in the physical address.
-The current evidence does not join a cube face or volume slice to a concrete
-base plus Z convention in the physical pages. In particular, it cannot decide
-whether cube faces are consecutive subresources, encoded as Z in one surface,
-or mediated by a view offset before the calculator. This is the remaining
-face/slice placement gap. Logical mip recurrence and packed-tail placement are
-already exact.
+The Windows cube constructor resolves faces as six distinct two-dimensional
+subresources. At `0x53e84+0x1d`, each next mip offset advances by six times
+the preceding per-face mip size. The six-object loop at `0x53f22+0x117`
+stores dimension kind 1 and face ordinals 0 through 5. Finally,
+`0x5435e+0x54` publishes the exact per-face offset:
+
+```text
+cube_base(level, face) = allocation_base
+                       + level_offset[level]
+                       + face * face_size[level]
+```
+
+The final allocation calculation at `0x5404a+0x2a` uses the same six-times
+extent. The verifier pins SHA-256 hashes for each exact MxMD slice and checks
+deterministic sample face offsets.
+
+The volume constructor instead creates one dimension-kind-2 object per mip.
+At `0x53220+0xa1` it computes all three dimensions as
+`max(base >> level, 1)`; `0x534b0+0xc7` advances the next mip by the preceding
+full-depth level size. Linux `m9x101` at `0x25333+0x15` passes the current Z
+coordinate directly to the chosen calculator, and the loop at
+`0x25846+0x22` increments Z. Thus a tiled volume has no independent linear
+slice base:
+
+```text
+volume_address(level, x, y, z) =
+    calculator(allocation_base + level_offset[level], x, y, z)
+```
+
+This closes the static face/slice base convention. The capture still lacks
+the physical pages needed to compare those predicted addresses with stored
+texels.
 
 ## Coherency and copy hazards
 
@@ -214,8 +247,8 @@ callback and indexed-fence joins.
 
 ## Minimal remaining capture
 
-One carefully structured run can close the physical backing boundary without
-repeating the API and descriptor matrix:
+One carefully structured run can close the remaining root/page ownership and
+hardware-layout boundary without repeating the API and descriptor matrix:
 
 1. Save memory-controller register `0x0f04`, the selected surface local/
    aperture flag, index 78, its allocation response, and the CPU-copy request
@@ -235,18 +268,21 @@ repeating the API and descriptor matrix:
    block a unique decodable payload.
 6. Capture an odd 1-D texture, odd 2-D texture, the full five-level mip tail,
    six uniquely coded cube faces, and at least four uniquely coded 3-D slices
-   at two mip levels. Add a subimage and framebuffer-copy rectangle crossing
-   both a tile edge and a page edge.
+   at two mip levels to validate the now-static base formulas. Add a subimage
+   and framebuffer-copy rectangle crossing both a tile edge and a page edge.
 7. For each page, compare raw bytes at the exact addresses predicted by the
    selected calculator, including the packed-tail X/Y origin and any candidate
    face/slice base. Record allocation/free events so reused GPU addresses do
    not get mistaken for one persistent backing.
 
 That capture will validate the hardware-selected calculator and root-address
-convention, join the PTE-shaped record to its owner, and determine physical
-cube/volume placement. Until it exists, the exact vendor calculator bodies
-and golden vectors are enough to build and unit-test an address library, but
-not enough to claim that the old VRAM images prove the physical pixel layout.
+convention, join the PTE-shaped record to its owner, and validate the static
+cube/volume formulas against physical storage. Static binaries cannot supply
+the runtime value of `request+0x90`, identify which captured address view owns
+the repeated record, or dump the pages named by its PTEs. Those are the exact
+hardware-capture-only gates. Until that capture exists, the formulas are
+enough to build and unit-test an address library, but the old VRAM images do
+not prove the physical pixel layout.
 
 <!-- Copyright 2026 Rene Rebe <rene@exactco.de> -->
 <!-- SPDX-License-Identifier: GPL-2.0 -->
