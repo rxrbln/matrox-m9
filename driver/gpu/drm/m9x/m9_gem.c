@@ -31,6 +31,11 @@ static const struct drm_gem_object_funcs m9_bo_funcs = {
 	.vm_ops = &drm_gem_dma_vm_ops,
 };
 
+bool m9x_gem_is_dma(struct drm_gem_object *gem)
+{
+	return gem && gem->funcs == &m9_bo_funcs;
+}
+
 static struct m9x_bo *m9_bo_create(struct drm_device *drm, size_t size)
 {
 	struct m9x_bo *bo;

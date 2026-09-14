@@ -30,17 +30,6 @@ bool m9x_enabled(void)
 	return m9_enable;
 }
 
-/* M9 does not use the classic Parhelia 0x384 MMIO write workaround. */
-static u32 m9_read(struct m9x_device *mdev, u32 reg)
-{
-	return readl((u8 __iomem *)mdev->mmio + reg);
-}
-
-static void m9_write(struct m9x_device *mdev, u32 reg, u32 value)
-{
-	writel(value, (u8 __iomem *)mdev->mmio + reg);
-}
-
 static dma_addr_t m9_command_slot_bus(const struct m9x_transport *transport)
 {
 	return transport->command_bus +
@@ -62,11 +51,11 @@ static void m9_advance_command_slot(struct m9x_transport *transport)
 
 static bool m9_primary_controls_valid(struct m9x_device *mdev)
 {
-	return m9_read(mdev, M9_REG_REQUESTER_CTL0) ==
+	return m9x_read(mdev, M9_REG_REQUESTER_CTL0) ==
 			M9_REQUESTER_CTL0_FALLBACK &&
-	       m9_read(mdev, M9_REG_REQUESTER_CTL1) ==
+	       m9x_read(mdev, M9_REG_REQUESTER_CTL1) ==
 			M9_REQUESTER_CTL1_FALLBACK &&
-	       m9_read(mdev, M9_REG_REQUESTER_CTL2) ==
+	       m9x_read(mdev, M9_REG_REQUESTER_CTL2) ==
 			M9_REQUESTER_CTL2_FALLBACK;
 }
 
@@ -113,42 +102,43 @@ static int m9_transport_arm(struct m9x_device *mdev)
 
 	if (mdev->transport.transport_armed)
 		return 0;
-	if (m9_read(mdev, M9_REG_ENGINE_STATUS) == U32_MAX)
+	if (m9x_read(mdev, M9_REG_ENGINE_STATUS) == U32_MAX)
 		return -ENODEV;
 	if (!m9_primary_controls_valid(mdev)) {
 		dev_err(&mdev->pdev->dev,
 			"M9 primary requester controls differ from tested M9148 values: %#x/%#x/%#x\n",
-			m9_read(mdev, M9_REG_REQUESTER_CTL0),
-			m9_read(mdev, M9_REG_REQUESTER_CTL1),
-			m9_read(mdev, M9_REG_REQUESTER_CTL2));
+			m9x_read(mdev, M9_REG_REQUESTER_CTL0),
+			m9x_read(mdev, M9_REG_REQUESTER_CTL1),
+			m9x_read(mdev, M9_REG_REQUESTER_CTL2));
 		return -EOPNOTSUPP;
 	}
 	pci_set_master(mdev->pdev);
 
-	/* Keep all interrupts masked. Render completion is a memory writeback. */
-	m9_write(mdev, M9_REG_IRQ0_MASK, 0);
-	m9_write(mdev, M9_REG_IRQ1_MASK, 0);
-	m9_write(mdev, M9_REG_IRQ2_MASK, 0);
-	m9_write(mdev, M9_REG_IRQ0_STATUS, U32_MAX);
-	m9_write(mdev, M9_REG_IRQ1_STATUS, U32_MAX);
-	m9_write(mdev, M9_REG_IRQ2_STATUS, U32_MAX);
+	/* Render completion is a memory writeback.  Leave an installed KMS
+	 * vblank source alone; all other sources remain masked. */
+	m9x_write(mdev, M9_REG_IRQ0_MASK, 0);
+	m9x_write(mdev, M9_REG_IRQ_HIGH_MASK, 0);
+	if (!mdev->kms_initialized)
+		m9x_write(mdev, M9_REG_IRQ_LOW_MASK, 0);
+	/* Masked pending sources are normal in the warm image.  Do not W1C an
+	 * unowned source merely because the writeback-fence transport starts. */
 
 	/*
 	 * This is the reduced m9x109 setup whose operands are fully owned here.
 	 * The opaque 0x44c/450/454 fields and optional context/window registers
 	 * stay firmware-owned until their values have been captured.
 	 */
-	m9_write(mdev, M9_REG_CONTEXT_BASE, 0x00080000);
-	m9_write(mdev, M9_REG_REQUESTER_STATE, 0);
+	m9x_write(mdev, M9_REG_CONTEXT_BASE, 0x00080000);
+	m9x_write(mdev, M9_REG_REQUESTER_STATE, 0);
 	/* Index e3 writes the address selected by 0x106c.  Keep 0x1068 on an
 	 * independent word so the two hardware fence selectors cannot alias. */
-	m9_write(mdev, M9_REG_FENCE0_ADDRESS,
+	m9x_write(mdev, M9_REG_FENCE0_ADDRESS,
 		 writeback1 | M9_COMMAND_SYSTEM_TAG);
-	m9_write(mdev, M9_REG_FENCE1_ADDRESS,
+	m9x_write(mdev, M9_REG_FENCE1_ADDRESS,
 		 writeback0 | M9_COMMAND_SYSTEM_TAG);
-	m9_write(mdev, M9_REG_COMMAND_BASE,
+	m9x_write(mdev, M9_REG_COMMAND_BASE,
 		 command | M9_COMMAND_SYSTEM_TAG);
-	m9_read(mdev, M9_REG_COMMAND_BASE);
+	m9x_read(mdev, M9_REG_COMMAND_BASE);
 	mdev->transport.transport_armed = true;
 	return 0;
 }
@@ -247,10 +237,10 @@ int m9x_submit_noop(struct m9x_device *mdev, u64 *point)
 		 */
 		m9_advance_command_slot(&mdev->transport);
 		command_offset = 0;
-		m9_write(mdev, M9_REG_COMMAND_BASE,
+		m9x_write(mdev, M9_REG_COMMAND_BASE,
 			 lower_32_bits(m9_command_slot_bus(&mdev->transport)) |
 			 M9_COMMAND_SYSTEM_TAG);
-		m9_read(mdev, M9_REG_COMMAND_BASE);
+		m9x_read(mdev, M9_REG_COMMAND_BASE);
 	}
 	command = (u32 *)((u8 *)m9_command_slot_cpu(&mdev->transport) +
 			  command_offset);
@@ -277,9 +267,9 @@ int m9x_submit_noop(struct m9x_device *mdev, u64 *point)
 	 * Windows clears the front-end state immediately before ringing 0x404.
 	 * The endpoint is a byte address, never a size or a userspace pointer.
 	 */
-	m9_write(mdev, M9_REG_FRONTEND_STATE, 0);
-	m9_write(mdev, M9_REG_COMMAND_END, command_end);
-	m9_write(mdev, M9_REG_FRONTEND_KICK, 1);
+	m9x_write(mdev, M9_REG_FRONTEND_STATE, 0);
+	m9x_write(mdev, M9_REG_COMMAND_END, command_end);
+	m9x_write(mdev, M9_REG_FRONTEND_KICK, 1);
 
 	deadline = jiffies + msecs_to_jiffies(max(m9_fence_timeout_ms, 1u));
 	for (;;) {
@@ -287,7 +277,7 @@ int m9x_submit_noop(struct m9x_device *mdev, u64 *point)
 		raw = READ_ONCE(writeback[0]);
 		if (m9_fence_reached(raw, target))
 			break;
-		if (m9_read(mdev, M9_REG_ENGINE_STATUS) == U32_MAX) {
+		if (m9x_read(mdev, M9_REG_ENGINE_STATUS) == U32_MAX) {
 			ret = -ENODEV;
 			goto out_error;
 		}
@@ -297,19 +287,19 @@ int m9x_submit_noop(struct m9x_device *mdev, u64 *point)
 				"M9 fence timeout: target=%#x wb=%#x/%#x engine=%#x frontend=%#x command=%#x/%#x fence=%#x/%#x\n",
 				target, READ_ONCE(writeback[0]),
 				READ_ONCE(writeback[1]),
-				m9_read(mdev, M9_REG_ENGINE_STATUS),
-				m9_read(mdev, M9_REG_FRONTEND_STATE),
-				m9_read(mdev, M9_REG_COMMAND_BASE),
-				m9_read(mdev, M9_REG_COMMAND_END),
-				m9_read(mdev, M9_REG_FENCE0_ADDRESS),
-				m9_read(mdev, M9_REG_FENCE1_ADDRESS));
+				m9x_read(mdev, M9_REG_ENGINE_STATUS),
+				m9x_read(mdev, M9_REG_FRONTEND_STATE),
+				m9x_read(mdev, M9_REG_COMMAND_BASE),
+				m9x_read(mdev, M9_REG_COMMAND_END),
+				m9x_read(mdev, M9_REG_FENCE0_ADDRESS),
+				m9x_read(mdev, M9_REG_FENCE1_ADDRESS));
 			ret = -ETIMEDOUT;
 			goto out_error;
 		}
 		/* The recovered timeout contract permits one progress kick.  Repeated
 		 * writes can hide the first failing state and are not a reset. */
 		if (!progress_kicked) {
-			m9_write(mdev, M9_REG_FRONTEND_KICK, 1);
+			m9x_write(mdev, M9_REG_FRONTEND_KICK, 1);
 			progress_kicked = true;
 		}
 		usleep_range(50, 100);

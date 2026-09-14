@@ -5,16 +5,20 @@
 
 #include <linux/dma-fence.h>
 #include <linux/list.h>
+#include <linux/io.h>
 #include <linux/mutex.h>
 #include <linux/pci.h>
 #include <linux/sizes.h>
 
 #include <drm/drm_device.h>
 #include <drm/drm_gem_dma_helper.h>
+#include <drm/drm_modes.h>
+#include <drm/drm_simple_kms_helper.h>
 
 #include "m9x_drm.h"
 
 struct drm_file;
+struct drm_mode_create_dumb;
 
 #define M9X_PCI_VENDOR			0x102b
 #define M9X_PCI_DEVICE_PHOENIX		0x0540
@@ -61,6 +65,15 @@ struct m9x_device {
 	struct pci_dev *pdev;
 	void __iomem *mmio;
 	resource_size_t vram_size;
+	struct drm_simple_display_pipe pipe;
+	struct drm_connector connector;
+	struct drm_display_mode warm_mode;
+	u32 warm_dc_ctrl;
+	u32 warm_dc_pitch;
+	u32 warm_dc_start;
+	u32 warm_dvo;
+	bool kms_initialized;
+	bool irq_installed;
 	struct m9x_transport transport;
 };
 
@@ -70,6 +83,8 @@ static inline struct m9x_device *to_m9x(struct drm_device *drm)
 }
 
 bool m9x_enabled(void);
+bool m9x_kms_enabled(void);
+bool m9x_kms_scanout_enabled(void);
 int m9x_init(struct m9x_device *mdev);
 void m9x_fini(struct m9x_device *mdev);
 void m9x_postclose(struct m9x_device *mdev, struct drm_file *file);
@@ -81,5 +96,21 @@ int m9x_submit_noop(struct m9x_device *mdev, u64 *point);
 int m9x_submit_selftest(void);
 struct m9x_bo *m9x_bo_lookup(struct m9x_device *mdev,
 			     struct drm_file *file, u32 handle);
+bool m9x_gem_is_dma(struct drm_gem_object *gem);
+int m9x_modeset_init(struct m9x_device *mdev);
+void m9x_modeset_fini(struct m9x_device *mdev);
+irqreturn_t m9x_irq_handler(int irq, void *arg);
+int m9x_dumb_create(struct drm_file *file, struct drm_device *drm,
+		    struct drm_mode_create_dumb *args);
+
+static inline u32 m9x_read(struct m9x_device *mdev, u32 reg)
+{
+	return readl((u8 __iomem *)mdev->mmio + reg);
+}
+
+static inline void m9x_write(struct m9x_device *mdev, u32 reg, u32 value)
+{
+	writel(value, (u8 __iomem *)mdev->mmio + reg);
+}
 
 #endif

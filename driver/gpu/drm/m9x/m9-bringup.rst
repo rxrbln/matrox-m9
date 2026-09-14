@@ -1,12 +1,14 @@
 .. SPDX-License-Identifier: GPL-2.0-only
 
-M9/Phoenix clean-room render bring-up
-=====================================
+M9/Phoenix clean-room DRM/KMS bring-up
+======================================
 
 The M9 backend is the independent ``m9x_drm.ko`` module.  Device ``102b:0540``
-is absent from ``parhelia.ko`` and is the sole PCI ID claimed by this
-render-only driver.  The module does not link against or call the Parhelia KMS,
-host-aperture, WARP, packet validator, submit or reset code.  Its DRM driver
+is absent from ``parhelia.ko`` and is the sole PCI ID claimed by this driver.
+The module does not link against or call the Parhelia module's host-aperture,
+WARP, packet validator, submit, reset, register or output code.  The two
+independent modules compile the same neutral ``matrox_common`` atomic-event,
+mode/plane validation, LUT, VRAM-offset and IRQ-mask helpers.  Its DRM driver
 name is ``m9x`` and Mesa selects the independent M9X Gallium driver and
 ``m9x_dri.so`` from that name.
 
@@ -48,6 +50,34 @@ It never rewinds the currently published interval in place.  The auxiliary
 The captured vendor GL stream leaves that descriptor dormant and forced-wrap
 behavior has not passed its hardware gate.  The five hardware-owned words are
 therefore neither cleared nor assigned invented meanings.
+
+``m9_kms=1`` switches the device to the modesetting-capable DRM driver only
+when an exact, already-running M9148 display snapshot is present.  The initial
+gate accepts only the measured DC0 1024x768 raster (65 MHz, 1344x806 totals),
+XRGB8888 pitch, native/VGA flags and DVO0 state.  It exposes that one fixed
+DisplayPort connector mode and never writes the timing, PLL, DVO routing or
+external transmitter.  A mismatch fails probe rather than attempting cold
+display setup or DP link training.
+
+``m9_kms_scanout=1`` is a second gate for changing DC0 START/PITCH.  Dumb
+buffers are XRGB8888 1024x768 objects allocated by the standard DRM VRAM/TTM
+manager in linear BAR0, pinned before the atomic commit, and scanned out
+directly.  Command/resource objects remain the independent DMA32 GEM class and
+cannot become framebuffers.  There is no shadow buffer or present-time
+resolve.  An ordinary CRTC disable clears only DC0 CTRL's enable bit before the
+old BO is unpinned; enable selects the already-pinned replacement and reasserts
+that saved warm enable bit without touching timing or DVO training.  Module
+teardown restores the saved warm START, PITCH and CTRL before the VRAM manager
+is destroyed; restoring CTRL also returns to the firmware LUT bypass state.
+
+The guarded pipe shares Parhelia's atomic event, gamma-LUT and vblank-mask
+lifecycle helpers.  M9 retains its own registers and uses the measured DC0 low
+IRQ bit ``0x1``.  Its shared-IRQ handler computes ``raw & mask & owned``, W1C
+acknowledges only that active source and leaves the normal masked pending low
+bits alone.  The Parhelia handler applies the same ownership rule while also
+retaining its engine-completion source.  M9 gamma streams index zero followed
+by 256 ten-bit RGB entries as recovered for M9; Parhelia keeps its separately
+tested explicit-index-per-entry sequence.
 
 UAPI boundary
 -------------
@@ -117,5 +147,9 @@ The following tests are required in order:
 4. Add scheduler entities and syncobj timeline output, then pass an A/B/A
    multi-context state-isolation test before concurrent clients are enabled.
 
-KMS and vblank/IRQ support are separate M9 work.  The present M9 driver has no
-display feature and keeps all IRQ sources masked during the render diagnostic.
+The initial KMS gate still requires hardware review before loading.  Runtime
+tests must first verify the fixed connector enumeration without
+``m9_kms_scanout``, then IRQ/vblank counts, direct dumb-buffer scanout and warm
+state restoration.  Arbitrary timings, EDID/DDC, cold PLL setup, output route
+changes, external DP retraining, cursor planes and additional CRTCs remain
+disabled until their M9-specific sequences are independently proven.
