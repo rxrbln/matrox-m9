@@ -59,6 +59,55 @@ blob and passes zero.  At `0x6bee2b..0x6bee44`, the value in `[rsp+8]` from the
 fragment install is passed to `m9x13837` at `0x6aee50` along with the remap and
 high-water.  That function emits opcode `0x67`, size `0x18` [BIN].
 
+## Linux closes the private-call stage join
+
+The Linux build contains the private wrapper and the backend in one image, so
+the call following the `0x59` marker can be followed farther than its Windows
+counterpart.  Wrapper `0x5b6690` tests the serialized stage flag directly.
+Flag zero calls `0x3b8a50`; that path uses state object `device+0x2560` and
+calls compiler/install routine `0x4360c0`.  Flag one calls `0x3b8d60`; that
+path uses `device+0x2550` and calls `0x435b30` [BIN].  Joined to the
+`GL_VERTEX_SHADER` test in `0x6af060`, this assigns the objects without relying
+on names [DER]:
+
+| stage flag | GL stage | backend state object | compiler/install routine | current handle |
+| --- | --- | --- | --- | --- |
+| 0 | fragment | `device+0x2560` | `0x4360c0` | object `+0x10e` |
+| 1 | vertex | `device+0x2550` | `0x435b30` | object `+0x1f1` |
+
+Both compiler/install wrappers receive the source blob pointer and byte length
+from `0x59`, and both retain the supplied source byte length at compiled object
+`+0x40`.  That field is source transport metadata; it is not emitted beside a
+hardware entry control [BIN].
+
+The `0x67` route is fragment-owned too.  Its body wrapper `0x5b6550` calls
+`0x3b8c90`.  The latter loads `device+0x2560`, compares the `0x67` fragment
+handle with current association `+0x11c`, and calls `0x431d70` with that handle,
+the varying remap, and the high-water count (rejected above 15) [BIN].  Thus
+`0x67` creates/updates cross-stage association data in the fragment backend;
+it is not a second stage program upload [DER].
+
+This route is not peculiar to one X-server build.  The unique target-`0x8b31`,
+stage-dispatch, and `0x67` association signatures occur once in every one of
+the 16 saved `m9x_drv.so` images and every saved 64-bit `libGL.so.2.0.0` image,
+from X server 6.9 through 1.15.  In every copy, rel32 decoding reaches the same
+`+0x2560` fragment and `+0x2550` vertex object split and the same fragment
+`+0x11c` association field [BIN].
+
+The Windows opcode numbers are software-record identifiers, not native shader
+opcodes.  Allocator `MxMGLX!0x100030c0` groups records under an eight-byte
+`{opcode,count}` header.  Flush `0x100031a0` passes the byte span to
+`0x1002ea20`, resets the buffer, and writes `{0xffff,1}` at its new head
+[BIN].  That `0xffff` terminates the private software record stream.  It never
+appears in the native 8-byte shader image and therefore supplies no hardware
+program stop rule [DER].
+
+The exact producer signatures `push 0; push 0x20; push 0x59` and
+`push 0; push 0x18; push 0x67` each occur once in `MxMGLX.dll` and do not occur
+in `MxMD.dll` or `MxMDI.dll` [BIN].  This rules out a copied direct-call helper
+as the missing Windows join.  It does not rule out an indirect escape/table
+dispatcher, so it is negative evidence rather than a recovered consumer.
+
 ## What the two recovered hardware starts prove
 
 MxMD function `0x13bf80` builds one concatenated, 8-byte-instruction image for
@@ -85,6 +134,16 @@ its second slot can be a companion chain selected by `0x13b570`.  Packing both
 starts into `6a` when the companion mode is inactive is also incompatible with
 assigning a universal shader-stage name from the register number alone.
 
+Linux independently contains the same emitter as `m9x11728` at `0x4b9340`,
+with state layout shifted by `0x28`: native image pointer/length are
+`+0xbe0/+0xbd8`, starts are `+0xbd0/+0xbd4`, and companion flag is `+0xbcc`.
+It emits the same `68`, `60..67`, `69`, `6a`, and optional `6d` selectors
+[BIN].  Its producer `m9x24483` at `0x44ba40` builds those starts from selected
+fixed-chain fragments and cumulative byte sizes.  Neither function reads the
+typed current handles at vertex object `+0x1f1` or fragment object `+0x10e`.
+This cross-check therefore preserves, rather than closes, the final stage to
+entry-register boundary [DER].
+
 The often-cited state builder at `0x1397e0` does not close this gap.  Its call
 to `0x1743d0` writes float/color state at record offsets `+0x70..+0xec`, and
 `0x13ee10` consumes the record during draw/vertex state construction [BIN].
@@ -99,17 +158,20 @@ GL linked program
   -> distinct vertex/fragment serialized blobs
   -> opcode 0x59(stage flag, blob, length)
   -> opcode 0x67(fragment-install result, varying map, high-water)
-  -> [unrecovered transport/native-link consumer]
+  -> typed vertex (+0x2550) / fragment (+0x2560) backend objects [Linux]
+  -> [unrecovered compiled-object to native-bind-state join]
   -> native image resource or inline image
   -> entry controls 6a / 6d
 ```
 
-No static call or shared structure found so far joins the opcode `0x59/0x67`
-outputs to MxMD state `+0xa8/+0xbc` or `+0xba8/+0xbac`.  Therefore the final
-programmable vertex/fragment-to-entry association remains a capture boundary.
-A Mesa driver can implement typed stage blobs and the known transport layout,
-but cannot safely select the final two hardware entries from this evidence
-alone.
+Static code now joins `0x59/0x67` to typed backend objects, but no static call
+or shared structure joins either compiled object/current handle to MxMD state
+`+0xa8/+0xbc` or `+0xba8/+0xbac` (Linux `+0xb0/+0xd0` or
+`+0xbd0/+0xbd4`).  The native bind producer found in both operating systems is
+the separate fixed-chain builder.  Therefore the final programmable
+vertex/fragment-to-entry association remains a capture boundary.  A Mesa
+driver can implement typed stage blobs and the known transport layout, but
+cannot safely select the final two hardware entries from this evidence alone.
 
 The smallest decisive differential capture uses one fixed vertex shader and
 two fragment shaders differing only in a constant output.  Disable the saved
