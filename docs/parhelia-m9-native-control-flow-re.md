@@ -159,13 +159,15 @@ condition 2: W0=ffffff5c W1=8400ac1f
 condition 3: W0=ffffff7c W1=8400ac1f
 ```
 
-These templates deliberately exclude subsequent fixup objects and any
+These templates deliberately exclude subsequent typed-control objects and any
 address-dependent companion slot.  In `0x1bbd30`, a nonzero follow-up flag
 increments `ctx+0x59c`, forms descriptor `0xb4000000 + old_serial`, stores it
 in a 0x20-byte fixup object at `+0x1c`, and references it from the following
 native object.  `BREAKP` has the parallel mechanism [BIN].  This proves a
-typed relocation identity and lifetime join.  It does not prove that the low
-serial is a physical instruction address or a relative displacement [DER].
+typed relocation identity and lifetime join.  Resolver/serializer recovery in
+`parhelia-m9-shader-transport-static-closure.md` now proves that the marker is
+replaced by an ordered resolved descriptor before packing.  The serializer
+does no PC-relative arithmetic on the low serial [BIN].
 
 ## Relationship to program start, stop, and resource lifetime
 
@@ -191,9 +193,9 @@ Accordingly, the known fixed slots are enough to reproduce these compiler
 fragments, but not enough to submit an arbitrary branch graph through selector
 `6c`.  The unresolved implementation fields are [DER]:
 
-1. resolution of `0xb4000000 + serial` and related typed descriptors into the
-   native companion slot or external linked record;
-2. the final native location and patch rule for forward branches, backedges,
+1. the upstream graph-target rule that builds the ordered resolved-descriptor
+   table consumed before native packing;
+2. the final native placement rule for forward branches, backedges,
    CALL targets, BREAK targets, and reconvergence;
 3. a universal external-record native start/count and VS/FS ownership rule, if
    such fields exist at all;
@@ -217,3 +219,5 @@ python3 tools/m9-native-control-flow-evidence.py
 The verifier uses only Python's standard library.  It checks the pinned DLL
 hash, all eight direct builder joins, the CALLNZ macro calls, expanded-operation
 table actions, and the three fixed templates plus four BREAKP variants.
+`python3 tools/m9-shader-transport-closure-evidence.py` additionally checks the
+typed resolver, one-slot/four-slot serializer footprints, and inline bind.

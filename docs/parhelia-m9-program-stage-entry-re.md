@@ -294,6 +294,13 @@ driver can implement typed stage blobs, the known transport layout, and the
 resource/link state, but cannot safely populate the final external descriptor
 or select the final two hardware entries from this evidence alone.
 
+The separate fixed-chain inline path can nevertheless serve as a clean,
+bounded transport for a driver-owned native image: upload through
+`68/60..67`, emit `69=4`, and use the two known starts in `6a/6d`.  This avoids
+inventing a universal layout inside `6c`.  Arbitrary VS/FS use still requires
+one inline stage-swap capture to assign those two starts; see
+`parhelia-m9-shader-transport-static-closure.md` [DER].
+
 The smallest decisive differential capture uses one fixed vertex shader and
 two fragment shaders differing only in a constant output.  Disable the saved
 driver's bus-master microcode options (`PsBmMicrocode=0`, `CeBmMicrocode=0`)
