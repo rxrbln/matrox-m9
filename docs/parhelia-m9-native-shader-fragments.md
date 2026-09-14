@@ -373,6 +373,53 @@ No call site found passes the source D3D write mask directly.  The `xyzw`
 result order above therefore does not assign component names to these scattered
 mask bits; that still awaits a controlled compiler delta.
 
+### Program-context expansion and stream splicing
+
+Whole-program emitter `0x1db510` does more than pack one translated input
+instruction.  Its second argument is the output stream and its third argument
+is a program context.  After cloning and translating the input, it follows
+these mutually exclusive paths [BIN][DER]:
+
+```c
+if (program_context_u32[0x60 / 4] != 0) {
+        /* Replace the translated input with a complementary pair. */
+        append(synthetic_op0_1d_op1_14_mask_a_b_0a);
+        append(synthetic_op0_1e_op1_14_mask_a_b_0a);
+        return success;
+}
+if (program_context_u32[0x64 / 4] != 0) {
+        append(synthetic_op1_00);
+        append(the_same_synthetic_op1_00);
+        *(uint32_t *)(output + 0x397) |= 0x20000000;
+}
+append(translated_input);
+```
+
+The order of `0x1d` and `0x1e` in the replacement pair can swap according to
+a transformed descriptor bit.  Descriptor class bits are also adjusted by a
+format property.  The safe conclusion is a format-dependent result-pair
+expansion, not an export mnemonic assignment.  The `+0x64` pair is likewise a
+compiler-generated control sequence whose public meaning is not yet known.
+
+The one-slot packer has an independent side effect on the same output property
+bit.  Before format gates can replace the overlapping physical field, it tests
+the instruction object's internal `W1` high nibble for `8` or `9`, requires
+expanded second operation `0`, and requires expanded third operation in
+`{0x81,0x82,0x83,0x182,0x183}`.  Only that combination sets output
+`+0x397` bit `0x20000000` [BIN].  A raw packed slot cannot always reconstruct
+this test because the packer may replace `W1[20:14]` with a descriptor.
+
+A derived backend at vtable `0x1f5104` adds another context-sensitive path.
+Emitter `0x1dcaf0` records generated-run boundaries in output bytes
+`+0x39b/+0x39c` (using `+0x39d` temporarily).  Stream copier `0x14e900`
+recognizes such a run, requires a boundary slot with `W0[14:8]=0x3d`, and
+patches the last slot from the first slot: first `W0[14:8]` is copied into last
+`W0[21:15]`, and last `W1[5]` records whether first `W0[4:0]` is `0x1e`.
+For one following `W0[14:8]=0x21`, `W0[4:0]=0x1d` form, it replaces the same
+field in the rest of the special run with `0x7f` [BIN][DER].  Native slot
+meaning can therefore depend on compiler-run boundaries and neighboring
+slots.  Fixed fragments must not be decoded as isolated source operations.
+
 The low-operation implicit-descriptor table at `0x1dba44` contains these 32
 case indices [BIN]:
 
@@ -443,16 +490,22 @@ for both dwords: no bit is set in every fragment ending.  Several fragment
 tails are all-zero slots, and linker `0x13bf80` appends identical all-zero slots
 to round a linked stream to four-slot upload lines.  An all-zero slot is thus
 padding/NOP-like and cannot be treated as a mandatory encoded `END`.  Because
-the fixed blobs are composable pieces, this negative result does not rule out a
-terminator in a complete program.
+the fixed blobs are composable pieces, this negative result alone does not rule
+out a terminator in a complete program.  The program-context behavior above
+supplies stronger negative evidence against a universal per-slot `END`: the
+backend can replace one instruction, prepend two slots, patch fields while
+splicing runs, and set an output-program property outside the stream.  The
+property is not safely named `END`; its exact execution meaning remains
+unknown.
 
 The Iris textual predicate fields in `MxMGLX.dll` belong to the source compiler
 container; no static path has yet joined them to a native packed bit.  The exact
 remaining boundary is the linked compiler output around the call to
 `0xadf00`: vary one source predicate or control-flow/end condition, retain the
-descriptor pointer and byte length, and diff the unpadded 64-bit stream before
-`0x13bf80`.  Until that controlled compiler delta exists, predicate and
-termination fields should remain unnamed.
+descriptor pointer and byte length, output property `+0x397`, and generated-run
+bytes `+0x39b/+0x39c`, then diff the unpadded 64-bit stream before `0x13bf80`.
+Until that controlled compiler delta exists, predicate and termination fields
+should remain unnamed.
 
 The next static/runtime hooks should log `(slot, descriptor pointer, length)` in
 `0xadf00` while `0x1454a0` runs, then dump the unpadded linked stream immediately
@@ -465,4 +518,7 @@ two-dword slots, reports the containing four-slot upload line and lane, and
 prints XOR masks plus changed bit ranges for each differing instruction.  Its
 `--fields` mode also prints the already-proven numeric operation selectors,
 result-routing selector, overlapping seven-bit descriptor fields, split
-selector, and both scattered component masks before and after each change.
+selector, and both scattered component masks before and after each change.  It
+labels only the proven `0x1c/0x1d/0x1e` result-component modes and all-zero
+slots; it deliberately does not guess native ALU, texture, predicate, or
+termination names.

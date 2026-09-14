@@ -941,8 +941,12 @@ a trace.
 The same function can bind a relocated program resource rather than uploading
 inline words.  Registry names `PsBmMicrocode`, `PsBmConstants`,
 `CeBmMicrocode`, and `CeBmConstants` select bus-master paths independently for
-two program classes [BIN].  This explains why native code may be absent from an
-ordinary MMIO-only trace.  Capture work must exercise both inline and BM modes.
+two program classes [BIN].  The registry reader at `0xba400` stores them at
+configuration offsets `+0x13c`, `+0x140`, `+0x144`, and `+0x148`, respectively,
+with default zero [BIN].  `Ps` and `Ce` are exact vendor labels; static data flow
+does not yet prove which auxiliary selector or sparse-record half belongs to
+each label.  This explains why native code may be absent from an ordinary
+MMIO-only trace.  Capture work must exercise both inline and BM modes.
 
 ### Program linking and limits
 
@@ -953,11 +957,16 @@ into the buffer later consumed at state `+0xbb0/+0xbb4` [BIN].  It:
 * moves to a second source/bank when adding a fragment reaches `0xc00` bytes;
 * rounds the final allocation up with `(size + 0x1f) & ~0x1f`;
 * copies both lists into the allocation;
+* stores the two selected fragment-chain starting instruction offsets
+  (`cumulative_byte_offset >> 3`) at `+0xba8/+0xbac`;
 * stores the aligned length at `+0xbb0` and pointer at `+0xbb4`.
 
 The `0xc00` boundary is 3,072 bytes, or 384 native 8-byte instructions and 96
 32-byte upload lines [DER].  It is a bank/assembly limit visible in this path,
 not yet proof that every shader stage exposes 384 user instructions.
+The two offsets are entry points for the selected composable chains in this
+fixed-program assembly path.  They do not by themselves identify vertex and
+fragment shader stages.
 
 ### Fixed native-fragment database
 
@@ -1309,6 +1318,31 @@ but their hardware granularity remains unknown.  The independent 64-bit build
 therefore corroborates both the caps and the warning against treating
 `0x7c00` as a public vector count.
 
+### Vertex-to-fragment varying linkage
+
+The GLSL stage linker at `MxMGLX.dll` `0x1055db40` supplies the software side
+of the vertex/fragment interface [BIN][DER].  It initializes fourteen dword
+entries at linker `+0x5bbc..+0x5bf0` to `0xffffffff` and resets a high-water
+value at `+0x5bf4`.  With both stage-presence bytes `+0x61ac/+0x61ad` set, it
+walks every fragment varying and searches the vertex outputs.  A match requires
+the exact symbol name, identical type field, and identical size.  Failure emits
+the corresponding saved diagnostics:
+
+```text
+Varying "%s" is used in fragment shader, but not written in vertex shader.
+Varying "%s" is is defined with different types in the vertex and fragment shaders.
+Varying "%s" is is defined with different size in the vertex and fragment shaders.
+```
+
+The linker rejects an assigned end greater than `14` with `Not enough resources
+to allocate varyings.`  For each component/register element of a successful
+match it writes the translated slot number into the `+0x5bbc` table, then
+raises `+0x5bf4` to the largest occupied end.  This is a directly usable Mesa
+link rule: fragment inputs must be matched by name/type/size and allocated
+through an explicit remap.  It does not reveal how those logical slots are
+encoded in native result/source descriptors or routed by hardware; that last
+join still requires paired stage outputs.
+
 The 16-fragment-sampler compiler check is a logical program-resource limit.  It
 does not prove 16 physical texture pipes and does not contradict the four live
 `70..73` texture-state blocks recovered from `0xf4350`; arraying, indirection,
@@ -1350,15 +1384,24 @@ Static analysis has established these native facts:
   `W1[18:14]`; it also fixes the gated seven-bit descriptor fields, split
   selector, class-`0xb` bank remap, and two scattered component-mask maps
   [BIN][DER].
+* whole-program emitter `0x1db510` can replace one translated instruction with
+  a complementary `0x1d/0x1e` result pair, or prepend two identical synthetic
+  slots and set output property `+0x397` bit `0x20000000` [BIN][DER];
+* compiler-run metadata at output `+0x39b/+0x39c` drives cross-slot patching
+  during stream concatenation [BIN][DER];
+* the GLSL stage linker builds a fourteen-entry vertex-output/fragment-input
+  varying remap after exact name, type, and size checks [BIN][DER].
 
 The native field boundaries and encoder are no longer the blocking unknown.
 What remains ambiguous is the semantic mapping from each numeric native
-operation to an ALU/texture/control mnemonic, which descriptors are sources or
-destinations, the `xyzw` order of their component metadata, and predicate or
-end-of-program meanings.  The readable operation-name switch in `MxMGLX.dll`
-decodes Iris tokens and is not a native disassembler.  These semantic joins
-still require controlled compiler outputs, capturing the linked `+0xbb4`
-buffer, or differential DMA/MMIO capture.
+operation to an ALU/texture/control mnemonic, the register-class names of the
+already-proven source and result descriptors, the `xyzw` order of scattered
+component metadata, native predicate encoding, the execution meaning of the
+program property, and the hardware encoding of logical varying slots.  The
+readable operation-name switch in `MxMGLX.dll` decodes Iris tokens and is not a
+native disassembler.  These semantic joins still require controlled compiler
+outputs, including output properties and generated-run boundaries, capturing
+the linked `+0xbb4` buffer, or differential DMA/MMIO capture.
 
 ## Driver implementation consequences
 
