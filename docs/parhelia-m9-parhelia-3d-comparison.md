@@ -162,14 +162,20 @@ a safe DRM submitter and a working Mesa driver:
    the same tag table and allocates the requester from a dedicated 4 KiB
    object.  `0x50c/0x510` are address-like above a low tag nibble; `0x514` is
    their companion and `0x520/0x524` are always restored first.  A controlled
-   rollover trace is still required to name those hardware
-   producer/consumer fields and their final relationship to the `0x404`
-   submit limit.
-3. The remaining M9 context-switch lifecycle.  The vendor's exact `0xf8`-byte
-   full-state index template and its per-context restore-record builders are
-   recovered, including texture and shader-store indices.  Query/fence state,
-   restore submission ownership, and alternating-context completion still need
-   validation.
+   rollover trace is still required to name those hardware producer/consumer
+   fields and their final relationship to the `0x404` submit limit. Both saved
+   kernel stacks have no software producer for those five words outside
+   restoration, establishing that further names cannot come from static
+   register writers.
+3. Hardware-query encoding and context-switch validation. Restore submission
+   ownership and fence lifetime are statically resolved: one TaskMgr current
+   context feeds save/restore state into its shared command queue, outgoing
+   serialization precedes incoming restore, and submission fences gate backing
+   objects and restore-slot reuse. `TaskMgr+0x5bc` has no live producer and is
+   not evidence for an alternating pointer. The `Queries` setting proves only
+   a configurable pool/count; query begin/end/result records remain unknown.
+   Validate the recovered lifecycle with an A/B/A render-and-fence capture and
+   recover queries separately. See `parhelia-m9-context-lifecycle-re.md`.
 4. Uncommon render-surface layouts.  Four color pairs are joined to `b0..b7`,
    ordinary Z to `b8/b9`, and an internal auxiliary depth allocation to
    `ba/bb`.  Selector-8/9 row span, layout, format and flag fields are exact,
@@ -180,7 +186,8 @@ a safe DRM submitter and a working Mesa driver:
    blocked layout classes; their descriptor overrides alone do not define that
    permutation.  The uncommon nonzero-origin `c4/c5` transform also remains
    unnamed.  Draw launch is statically joined to H03/H06/H07 records.
-5. The final M9-index join for culling and polygon/shade mode.  Multisample
+5. The final M9-index join for culling, wireframe/solid, and shade mode.  A
+   gated point-fill mask now reaches index `c1[11:0]`.  Multisample
    enable is now joined through compiled surface words to final indices
    `ad/af`; only the zero-mask color-output effect is proved for
    `MULTISAMPLEMASK`.  Blend, alpha test, and format-dependent colour masks
