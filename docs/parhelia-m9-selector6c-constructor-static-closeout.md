@@ -1,5 +1,10 @@
 # M9 selector-6c constructor static closeout
 
+> **Superseded:** `parhelia-m9-pool5-raw-copy-closure.md` resolves the concrete
+> Linux and Windows vtables and corrects this note's opaque-serializer and
+> variable-record interpretation. Keep this note only for the earlier staging
+> and publication evidence.
+
 This note supersedes the tentative producer join in
 `parhelia-m9-linked-record-final-join-boundary.md`. Static analysis now closes
 the publication path into the final program state. It also reduces the missing
