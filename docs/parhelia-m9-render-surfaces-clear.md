@@ -2,9 +2,8 @@
 
 This note closes the static frontend-to-packet joins for color render targets,
 the depth attachment, and viewport/scissor state in the saved M-Series Windows
-driver.  It also identifies the Direct3D clear ABI and its dispatch chain.  It
-keeps the resource-specific clear methods separate because their final packet
-implementations have not yet been resolved statically.
+driver.  It also identifies the Direct3D clear ABI, its dispatch chain, and the
+three concrete clear implementations selected at the bottom of that chain.
 
 Confidence labels match `parhelia-m9-3d-static-re.md`: **[BIN]** is directly
 visible in the binary, **[DER]** is deterministic data-flow derived from those
@@ -60,10 +59,40 @@ with the format-code family recovered for texture descriptor index `78`,
 including `A8R8G8B8=0x66`, `X8R8G8B8/R8G8B8=0x64`, `R5G6B5=0x4e`,
 `A2B10G10R10=0x68`, and `A2R10G10B10=0x6a` [DER].
 
-Static data flow does not yet split the color descriptor's remaining bits into
-pitch, height, tiling, and allocation-layout fields.  The open driver may use
-the proven address/relocation and format locations, but must not invent those
-lower fields from the texture descriptor merely because the formats agree.
+The common resource-view builder `0x467e0` closes the rest of the render
+descriptor.  It caches 12-byte triples at
+`layout + 0x08 + 12*selector`; each triple is address, descriptor word 0, and
+descriptor word 1.  Helper `0x4d180` returns descriptor word 0 to the surface
+binder.  The GPU clear path requests selector 8 at `0xb50f5`, and alternate
+draw lowerer `0x182b40` requests the same view at `0x182bb3`, so the dword
+emitted at `b1/b3/b5/b7` is the following selector-8 word [BIN][DER]:
+
+| bits | ordinary source | meaning established by construction |
+|---:|---:|---|
+| `15:0` | layout `+0x184[15:0]` | aligned horizontal row span in format elements |
+| `18:16` | layout `+0x138[2:0]` | allocation-layout selector |
+| `20:19` | zero | selector 8 never copies storage class `+0x13c` here |
+| `21` | layout flags dword 0 bit 3 | layout/address-offset mode |
+| `22` | zero ordinarily; one in the special view below | blocked/special-view marker |
+| `23` | layout `+0x14c` bit 2 | resource-layout flag |
+| `24` | zero | not populated for selector 8 |
+| `31:25` | helper-adjusted layout `+0x140[6:0]` | hardware format code |
+
+The unused second descriptor word is still built exactly: bits `15:0` are raw
+vertical extent `+0x12c`, and bits `27:16` are `+0x130[11:0]` (or `+0x134`
+for formats `0x3f/0x7f`).  Storage class `+0x13c == 1` replaces those high
+extent bits with one [BIN].
+
+Selector 8 has one exact blocked-layout override.  When storage class
+`+0x13c == 2`, `0x46bea..0x46c3a` sets descriptor bit 22, puts
+`+0x150[3:0]` in address bits `5:2`, copies `+0x184` bit 5 to address bit 6,
+and either adds the aligned offset returned by `0x46e40` when layout flags
+dword 0 bit 3 is set, or replaces descriptor bits `15:0` with descriptor-word-1
+bits `27:16`.  Layout flag `+0x14c bit 6` clears descriptor bits `18:16` for
+selector 8.  These are the complete pitch and layout transformations visible
+at the packet boundary [BIN][DER].  The vendor binaries do not name the
+physical in-block address permutation, so the numeric classes should remain
+numeric until a coordinate-coded capture supplies that last semantic label.
 
 ## Depth/stencil attachment join
 
@@ -92,11 +121,30 @@ includes `D16=0x5c`, `D15S1=0x5d`, `D32=0x7c`, and the D24 family at `0x7d`
 [BIN][DER].  The two descriptors above remain distinct even when both refer to
 one API depth/stencil attachment.
 
-Static code proves that `b8/b9` and `ba/bb` are the two backing planes of the
-active depth attachment.  It does not prove which is the ordinary Z plane and
-which is auxiliary metadata, nor the pitch/tiling bits within either
-descriptor.  Those names require a capture that varies depth format, pitch,
-tiling, and hierarchical-Z allocation independently.
+The identities are no longer ambiguous.  Default compiled-state constructor
+`0x12e75a..0x12e7c9` initializes the first descriptor to `0xb8010001`; its
+format field is `0x5c`, the independently joined `D16` hardware code.  It
+initializes the second pair to the null resource and descriptor `0xf0010100`,
+whose format field is `0x78`, the independently joined `G16R16` code rather
+than a depth/stencil format [BIN][DER].  Alternate lowerer `0x182b40` provides
+the dynamic join: it asks the bound resource for selector 9, installs that
+address and descriptor at `+0x68/+0x70`, rewrites the format field to `0x5c`
+or `0x75`, and dirties only `b8/b9` at `0x182eaa..0x182f76` [BIN].
+
+Thus `b8/b9` is the ordinary Z/depth surface.  `ba/bb` is an optional internal
+auxiliary backing surface, not a separately addressable API stencil plane
+[BIN][DER].  Stencil remains packed into the depth format and is selected by
+the `a8/a9/aa` controls.  Clear helper `0xb5630` corroborates the distinction:
+for the flagged depth layout it obtains cached selector 9 at
+`layout+0x74/+0x78/+0x7c`, temporarily rebinds its address and descriptor-word
+0 as color slot 0, and issues the depth clear as a normal rectangle draw.  The
+second `ba/bb` pair is not substituted for the Z surface on that path [BIN].
+
+The selector-9 descriptor uses the same table above.  Its blocked-layout
+override is selected by layout flags dword 0 bit 2 rather than storage class 2,
+and it does not apply selector 8's `+0x14c bit 6` clearing rule.  This resolves
+the descriptor bit placement for the ordinary depth view as well as the color
+view [BIN][DER].
 
 ## Viewport and scissor through final packets
 
@@ -199,11 +247,92 @@ call `0xa7ee0`.  `0xa7ee0` routes ordinary matching-size clears through
 `0xa48b0`; a size-mismatch branch constructs a conversion operation through
 `0xb38d0`, `0xb4690`, and `0xab620` [BIN].
 
-This vtable join proves that the vendor batches some full color clears lazily
-and that the clear path is deeper than one indexed packet.  It still does not
-prove a hardware clear opcode or final blit/fill packet: the command-producing
-leaves below `0xb4fe0` and `0xa48b0` remain unflattened.  A driver implementation
-must not turn the DP2 payload into a guessed command.
+This vtable join proves that the vendor batches some full color clears lazily.
+The leaves can now be flattened.  Color leaf `0xa48b0` builds one common
+operation record: resource at `+0x04`, exclusive rectangle at `+0x08..+0x14`,
+mode flags at `+0x18`, component masks at `+0x1c..+0x28`, and four converted
+clear words at `+0x3c..+0x48`.  Depth/stencil leaf `0xb4fe0` receives the same
+record already constructed by `0xa6c10` [BIN].  Both then use exactly this
+ordered executor [BIN]:
+
+```text
+if (resource+0x3d0 != 0 && b5e70(op)) return success;
+if (b5030(op))                         return success;
+return b5a80(op);
+```
+
+### Whole-allocation fast clear at `0xb5e70`
+
+The first path is a direct command-stream clear, not a draw.  It accepts only
+a rectangle beginning at `(0,0)` and covering at least resource dimensions
+`+0x240/+0x244`, mode `op+0x18 & 3 == 0`, page-aligned allocation address
+`resource+0x198`, and element widths `0x10`, `0x20`, `0x40`, or `0x80` bits at
+`resource+0x1a0`.  A 64-bit element requires equal clear words 0 and 1; a
+128-bit element requires all four words equal.  The device capability call at
+`0xb5e87..0xb5e9f` must also leave bit 1 clear [BIN].
+
+After normal command-buffer entry and state preparation, it emits these exact
+indexed records [BIN]:
+
+```text
+header e6,ac,45,45       e6 = 00000002
+                        ac = clear_word
+
+header 2a,2b,e6,45       2a = 454545e6
+                        2b = 0000ffff
+                        e6 = 20000000 | ((run_words - 1) & ffff)
+                        inline payload = allocation page-run words...
+```
+
+For 16-bit elements `clear_word` duplicates the low halfword with multiplier
+`0x00010001`; wider accepted elements use `op+0x3c` unchanged.  The
+`0x454545e6` value is the inline layout word, as in the independently
+identified `0xf9c70` inline-data path.  The page-run payload is derived from
+`base_page = resource+0x198 >> 12` and
+`page_count = ceil(resource+0x1bc / 4096)`.  It covers the unaligned leading
+pages and then groups the rest in runs of eight.  Each payload starts from
+`(((base_page & 0xffff8) | 0xd00000) << 5)`; its low byte is the page mask,
+and bits above that mask advance by `0x100` per eight-page group.  The tail
+mask and the optional `0/1` padding words are selected at
+`0xb60c4..0xb61b0` from the device mode [BIN][DER].
+
+The path closes the inline run through command-buffer method `+0x68`.  It then
+emits either `e6,e6,45,45` with payloads `0,1`, or `e6,45,45,45` with payload
+`1`, tracks the allocation through resource method `+0x1e4`, sets surface
+dirty bit `0x200` so indices `ab/ac/ae` are recommitted, and leaves the command
+transition through `0x55370(0)` (`0xb61b3..0xb6327`) [BIN].
+
+### Rectangle-draw clear at `0xb5030`
+
+When the direct path is unavailable, `0xb5030` performs an ordinary GPU
+rectangle draw.  It requires a supported resource kind, device capability bit
+1 clear, a valid layout object, and selector-8 capability flag
+`layout+0x126 bit 0`.  It obtains or builds cached selector 8, copies its
+address/relocation and descriptor word 0 to color slot 0, writes the replicated
+clear value to common-state `+0x3a8`, installs the exclusive rectangle, and
+marks the normal raster and surface groups dirty [BIN].  Calls through the
+task interface at `0xb54ee` and `0xb54fd` run the standard state emitter and
+draw launcher, after which the allocation is tracked and `0x55370(0)` closes
+the transition.  There is no clear-specific launch opcode on this path [BIN][DER].
+
+One depth layout takes the specialized branch `0xb5630`.  It aligns the left
+edge down and the width up to eight elements, binds selector-9 depth storage as
+temporary color slot 0, emits the two rectangle vertex records beginning with
+literal headers `0x504e4c48` and `0x5e4f4c48`, and submits through the same
+task/draw methods.  The saved Linux 1.15 vendor build independently contains
+the same two record literals at file offsets `0x3a88df/0x3a893c`; it also
+contains the default depth/auxiliary descriptors `0xb8010001/0xf0010100` in
+the same constructor at `0x3bf008/0x3bf09d` [BIN].
+
+### CPU fallback at `0xb5a80`
+
+The final path maps the allocation through `0x2cb40` (or the resource-specific
+map helpers), computes row and element offsets from the resource layout, and
+updates 8-, 16-, 32-, 64-, or 128-bit elements with the operation's masks and
+clear words in nested rectangle loops.  It unmaps through `0x56130`, `0x56430`,
+`0x58080`, or `0x2c840` and closes with `0x55370(2)` [BIN].  This is a CPU
+fallback and emits no pixel-fill packet.  The three paths together are the
+complete concrete implementation below both attachment leaves.
 
 ## Driver-ready fields and remaining blockers
 
@@ -211,28 +340,26 @@ The following can be implemented from static evidence [BIN][DER]:
 
 * four color attachment packet pairs `b0/b1` through `b6/b7`, their relocation
   selectors, dirty bits, slot declaration mapping, and descriptor format bits;
-* two depth-attachment packet pairs `b8/b9` and `ba/bb`, their source fields,
-  relocation selectors, and dirty bits;
+* ordinary depth packet pair `b8/b9`, auxiliary depth pair `ba/bb`, their
+  source fields, relocation selectors, dirty bits, and identities;
 * effective viewport/scissor calculation, exclusive endpoints, dirty-state
   propagation, and final `f5/f6/c4/c5` packet indices;
-* clear API parsing, flag separation, rectangle clipping, attachment iteration,
-  color-mask selection, and depth/stencil metadata dispatch.
+* clear API parsing, clipping and attachment iteration, plus direct page-run,
+  GPU rectangle-draw, and CPU fallback implementations;
+* selector-8/9 render descriptor row-span, layout, format and flag fields,
+  including the blocked-layout address and descriptor overrides.
 
-The remaining hardware blockers are narrowly defined:
+The render-surface blockers named above are closed.  The remaining questions
+are narrower semantic or uncommon-mode issues:
 
-1. Color and depth descriptor pitch, height, tiling, and allocation-layout
-   bitfields below the proven format field.
-2. The exact ordinary-Z versus auxiliary-plane meaning of depth pairs
-   `b8/b9` and `ba/bb`.
-3. Concrete command emission below color leaf `0xa48b0` and depth/stencil leaf
-   `0xb4fe0`, including any required cache transitions.  The attachment
-   vtable itself and the lazy full-color-clear decision are now exact.
-4. The private transformed meaning of `c4/c5` when the nonzero-origin path is
+1. The physical address permutation inside the numeric blocked layout classes.
+   It is not needed to encode an already constructed vendor-style descriptor,
+   but a new allocator needs a coordinate-coded capture before manufacturing
+   that layout independently.
+2. The private transformed meaning of `c4/c5` when the nonzero-origin path is
    active.  Ordinary framebuffer viewport/scissor operation does not depend on
    this gap because the zero-origin path duplicates `f5/f6`.
-
-Items 1--3 still prevent a general hardware render-target/depth/clear
-implementation from being called complete.  They can be closed by flattening
-the two remaining clear leaves and descriptor builders, or by controlled
-captures that vary one field at a time; no additional shader-compiler reverse
-engineering is needed for these surface-state questions.
+3. A semantic vendor name for `ba/bb`'s auxiliary depth allocation.  Static
+   data flow proves that it is internal and distinct from ordinary Z and API
+   stencil, but does not distinguish hierarchical-Z from another auxiliary
+   organization.

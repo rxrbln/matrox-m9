@@ -520,16 +520,47 @@ relocation-backed pairs: nested `+0x21c/+0x220/+0x224` becomes surface shadow
 `+0x68/+0x6c/+0x70` and final `b8/b9`; nested
 `+0x228/+0x22c/+0x230` becomes `+0x74/+0x78/+0x7c` and final `ba/bb`
 (`0x182201..0x182291`, with the update path at
-`0x182549..0x182620`) [BIN].  The two pairs are both depth-attachment backing
-planes, but static code does not distinguish their public roles.  Exact field
-boundaries and the remaining descriptor uncertainty are recorded in
+`0x182549..0x182620`) [BIN].  Constructor defaults identify the first pair:
+`+0x224 = 0xb8010001` has depth format code `0x5c` (`D16`), while
+`+0x230 = 0xf0010100` has `G16R16` format code `0x78`.  Alternate lowerer
+`0x182b40` also installs resource view 9 at `b8/b9`, forces its format to a
+depth code, and leaves `ba/bb` null.  Thus `b8/b9` is ordinary Z and `ba/bb`
+is an optional internal auxiliary depth surface, not an independent API
+stencil plane [BIN][DER].  The saved Linux build repeats both constructor
+constants at `0x3bf008/0x3bf09d`.
+
+Common view builder `0x467e0` also closes the render descriptor layout.
+For color view 8 and depth view 9, descriptor bits `15:0` are aligned
+horizontal span `layout+0x184`, bits `18:16` are layout selector `+0x138`,
+bit 21 is layout flags dword 0 bit 3, bit 23 is `+0x14c bit 2`, and bits
+`31:25` are format `+0x140`; bits `20:19` and 24 remain zero [BIN][DER].
+The special view sets bit 22, moves `+0x150[3:0]` to address bits `5:2`, moves
+row-span bit 5 to address bit 6, and either applies helper `0x46e40`'s aligned
+offset or replaces the low span with the descriptor's high extent.  View 8
+selects this for storage class 2; view 9 selects it for layout-flags bit 2.
+The complete branch conditions are recorded in
 `parhelia-m9-render-surfaces-clear.md`.  The `bc/bd` and `be` paths remain
-auxiliary relocation-backed surface state.
+other auxiliary relocation-backed surface state.
 
 Before emitting commands, the same function walks every dirty resource pair
 and calls the command-buffer resource tracker.  This proves that addresses in
 these packet groups are relocation-backed and must not be accepted as raw
 userspace GPU addresses [BIN].
+
+Color clear leaf `0xa48b0` and depth/stencil leaf `0xb4fe0` converge on the
+same ordered executor [BIN]: whole-allocation direct clear `0xb5e70`, GPU
+rectangle draw `0xb5030`, then CPU fallback `0xb5a80`.  The direct clear emits
+`e6,ac` with `e6=2` and the replicated clear word, followed by a `2a,2b,e6`
+inline run with layout `0x454545e6`; its raw payload is an
+eight-pages-per-word mask of the allocation.  It finishes with `e6=1`,
+resource tracking, surface dirty bit
+`0x200`, and transition close `0x55370(0)`.  The draw path binds resource view
+8 as color slot 0 and launches the standard state/draw backend.  Its special
+depth branch binds view 9 temporarily as color slot 0 and emits rectangle
+records `0x504e4c48/0x5e4f4c48`; the same literals occur in the saved Linux
+build.  The fallback maps and modifies 8--128-bit elements on the CPU.  Exact
+eligibility tests, page-mask arithmetic, and cleanup are in
+`parhelia-m9-render-surfaces-clear.md` [BIN][DER].
 
 ### Program and vector state shadow layout
 
