@@ -29,6 +29,8 @@ The helper exposes only these audited entry points [BIN][RUN]:
 | LOG `15` | `0x1b2550` | two stack arguments | 8 |
 | Iris TEXLD / D3D operation `66` | `0x1bda50` | eight stack arguments | 3 |
 | Iris CMP / D3D operation `88` | `0x1c8e90` | two stack arguments | 8 |
+| Iris DDX / D3D operation `91` | `0x1c9300` | two stack arguments | 4 |
+| Iris DDY / D3D operation `92` | `0x1c9300` | two stack arguments | 4 |
 | Iris SETP / D3D operation `94` | `0x1c9430` | two stack arguments | 6 |
 | Iris FLOOR `0x8003` | `0x1c96d0` | three stack arguments, third zero | 6 |
 
@@ -202,6 +204,18 @@ CMP (D3D operation 88):
   c205005c af400d10
   e205815c af400d10
 
+DDX (D3D operation 91):
+  e004001d b05a800f
+  ffff801f 0000000f
+  dfff801c 8c020d10
+  ffff811c 8c020d10
+
+DDY (D3D operation 92):
+  e004001d b05a800f
+  ffff801f 0000000f
+  dfff801c 8c024d10
+  ffff811c 8c024d10
+
 SETP (D3D operation 94, zero comparison-control field):
   e004001d b05a800f
   ffff801f 0000000f
@@ -246,7 +260,7 @@ required for a complete semantic ISA table.
 
 ## September 2026 operand/control basis
 
-`tools/m9-native-lower-matrix.py` now runs 91 additional hash-pinned cases
+`tools/m9-native-lower-matrix.py` now runs 195 hash-pinned cases
 through the same saved lowerers and records every packed native word in
 `captures/m9-native-lower-matrix-20260914/matrix.json`. The matrix is fully
 deterministic and can be regenerated offline with `--write` or checked with
@@ -300,3 +314,13 @@ TEXLD resource dimension values 0, 3, and 4 produce the same three-slot stream
 under the zeroed resource/link fixture. This is a useful negative result only:
 the tested metadata is insufficient to activate a dimension-specific branch,
 so texture resource metadata remains unresolved rather than invariant.
+
+The added 104-case derivative basis covers every nonempty destination mask and
+the existing swizzle bit basis, plus GL-relevant modifiers, all six positive
+and negative predicate names, and conditional/predicate combinations for both
+axes.  Corresponding DDX/DDY sequences differ only by W1 bit 14 in derivative
+result slots.  Cross-pair swizzles can split a logical derivative into as many
+as four result slots.  Predicate polarity remains in the low W0 operation,
+conditional execution remains W1 bit 19, and predicate number remains external
+to these slots.  `parhelia-m9-native-derivative-re.md` records the static
+wrapper and marker join that assigns these streams.

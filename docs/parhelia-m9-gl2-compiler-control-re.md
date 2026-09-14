@@ -77,9 +77,13 @@ discard still require the linked instruction resource [CAP].
 
 DSX and DSY share `0x1c9300`; their only semantic discriminator enters as
 backend operation 91 or 92. The generic builder converts those to expanded
-third-operation markers `0x88` and `0x89`. This closes selection and proves
-they are separate operations. Destination/source aliasing can add a temporary
-MOV, so canonical raw sequences require two one-operation captures [CAP].
+third-operation markers `0x88` and `0x89`. The hash-pinned lowerer corpus in
+`parhelia-m9-native-derivative-re.md` closes the packed form: canonical DDX
+and DDY each use two common setup slots plus one `xy` and one `zw` result slot,
+and every derivative result changes only W1 bit 14 between the two axes.
+All 15 masks plus swizzle, modifier, predicate, and conditional bases are
+recorded. Destination/source aliasing uses the statically recovered temporary
+MOV path [BIN][RUN][DER].
 
 ARB `SLT` and `SGE` are accepted by the frontend, but their distinction is
 synthesized in comparison control before the recovered CMP/SETP wrappers.
@@ -154,7 +158,7 @@ stage entries, and the hardware stop condition.
 | matrix operations | DP3/DP4 row expansion | none; live sanity only |
 | texture operation IR | typed one-hot B/P/L/DD modes | resource/unit-to-slot delta |
 | KIL/discard | dedicated pairwise IR lowering | unconditional/conditional packed slots |
-| DDX/DDY | distinct backend selectors 91/92 | two canonical packed streams |
+| DDX/DDY | distinct backend selectors 91/92 and 104 exact native variants | helper-lane edge conformance on new driver |
 | SLT/SGE | represent six-way compare enum | comparison-control A/B values |
 | shadow compare | exact sampler enable/function packing | GLSL sampler/result join |
 | vertex texture | enforce four-sampler cap | stage resource and result route |

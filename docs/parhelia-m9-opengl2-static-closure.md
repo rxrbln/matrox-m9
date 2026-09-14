@@ -65,7 +65,7 @@ The recovered exact lowerings are:
 | `mat4x4`, `mat4x3`, `mat3x4`, `mat3x3`, `mat3x2` | wrappers `0x1c74c0/0x1c7690/0x1c7820/0x1c79f0/0x1c7b80`; exact 4/3 DP4 and 4/3/2 DP3 rows; alias adds a final MOV | none for lowering; one live matrix regression |
 | relational operators, equality, boolean selection | six conditions GT/EQ/GE/LT/NE/LE; CMP/SETP and frontend SLT/SGE routes | native nonzero predicate values and all six visible outcomes [LIVE] |
 | discard | `KILL 45 -> backend 65 -> 0x1c82d0`, pairwise `xy`/`zw` comparison records | conditional and unconditional packed slots plus helper coverage [LIVE] |
-| derivatives | `DSX 49 -> 91/0x88`, `DSY 50 -> 92/0x89`, common `0x1c9300` | isolated nonconstant gradients joined to packed slots [LIVE] |
+| derivatives | `DSX 49 -> 91/0x88`, `DSY 50 -> 92/0x89`, common `0x1c9300`; canonical packed streams and 104 operand/control variants exact | helper-lane edge behavior on the new driver [VALIDATE] |
 | calls, branches, loops, break/continue | CALL and BREAK dispatch plus conditional/predicate stack are exact frontend paths | target, backedge, reconvergence, folding/unroll policy and nesting limits [LIVE] |
 | texture lookup | common `0x1bda50` with one-hot ordinary/bias/projected/LOD/gradient modes | packed mode, stage resource, and result route for special forms [LIVE] |
 
