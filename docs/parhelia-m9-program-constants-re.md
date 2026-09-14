@@ -24,13 +24,60 @@ gate 1, and packs its low seven bits in native `W1[20:14]`.  Consequently
 `c0` produces native selector value zero in that gated instruction field
 [BIN][DER].
 
-The OpenGL entry side is also exact but ends at a virtual dispatch boundary.
-The Windows `glUniform4fv` thunk at `MxMGLX 0x100e92b0` obtains the current GL
-context and jumps through context-vtable slot `+0x504`; the adjacent 1fv, 2fv,
-and 3fv thunks use `+0x4f8`, `+0x4fc`, and `+0x500`.  The ARB program path is
-separate: `glProgramEnvParameter4fvARB` at `0x100eaec0` jumps through slot
-`+0x5a4` [BIN].  These public thunks preserve the GL arguments but contain no
-constant key or stage-bank conversion.
+The OpenGL entry side and its two linked-program banks are now exact.  The
+Windows `glUniform4fv` thunk at `MxMGLX 0x100e92b0` obtains the current GL
+context and jumps through context-vtable slot `+0x504`.  The concrete table at
+`0x107f4a70` resolves that slot to `0x100b9f70`, which loads the native context
+from `+0x238` and calls `0x1054f3b0`.  The adjacent 1fv, 2fv, and 3fv thunks use
+`+0x4f8`, `+0x4fc`, and `+0x500` [BIN].
+
+`0x10555cd0` proves that a non-negative GL uniform location is the index of a
+64-byte metadata record in linked-program array `+0x617c..+0x6180`.  Common
+updater `0x10559510` reads two independent native indices from metadata
+`+0x24` and `+0x28`; `0xffffffff` means that the uniform is absent from that
+stage.  For each array element, it compares and, only when changed, copies up
+to one vec4 into [BIN][DER]:
+
+| metadata field | value array | dirty vector |
+|---:|---:|---:|
+| `+0x24` | linked program `+0x410 + 16*index` | `+0x3f0` |
+| `+0x28` | linked program `+0x2fd0 + 16*index` | `+0x400` |
+
+The stage names are joined independently.  Selector `0x1054f020` makes
+context `+0x54` the active vertex program when presence byte `+0x61ac` is set,
+and `+0x58` the active fragment program when `+0x61ad` is set.  On a program
+change, `0x105660e0` clears old `+0x54`'s vector `+0x3f0` and old `+0x58`'s
+vector `+0x400`.  Therefore metadata `+0x24`, value base `+0x410`, and dirty
+vector `+0x3f0` are the **vertex** bank; metadata `+0x28`, value base `+0x2fd0`,
+and dirty vector `+0x400` are the **fragment** bank [BIN].
+
+Activation helper `0x105564d0` uses 16-bit high-water counts at `+0x3e4`
+(vertex) and `+0x3e8` (fragment), copies every live vec4 from the corresponding
+array, and appends it to the corresponding dirty vector.  Subsequent uniform
+updates compare old bytes first and append only changed ranges at
+`0x1055972d..0x10559800`.  Activation therefore promotes the complete live
+range, while ordinary updates promote only changed values.  The public GLSL
+limit is 512 uniform components per stage, or 128 vec4 registers; this is an
+API/compiler limit, distinct from the 64-entry final sparse-update queue
+[BIN][DER].
+
+The ARB program path rejoins the same updater.  `glProgramEnvParameter4fvARB`
+at `0x100eaec0` dispatches through `+0x5a4`; concrete entry `0x100ba5c0` calls
+`0x10567100`.  That function maps `GL_VERTEX_PROGRAM_ARB` (`0x8620`) to handle
+`+0x18` and 20-byte env-record array `+0x44`, and
+`GL_FRAGMENT_PROGRAM_ARB` (`0x8804`) to handle `+0x1c` and array `+0x58`.
+It writes the vec4 at `20*index`, increments both the record and bank versions,
+and calls dependency walker `0x1056b610`.  Dependent linked uniforms reach
+`0x10569170`, which validates a one-element vec4 and calls common updater
+`0x10559d90` [BIN].  This proves stage ownership before native transport, but
+the dependency node does not expose the final sparse key.
+
+The saved 32-bit Linux `libGL.so.2.0.0` independently exposes `glUniform4fv`
+at `0x76380` and `glProgramEnvParameter4fvARB` at `0x79b10`.  They preserve the
+same arguments and dispatch through Linux context-table slots `+0x894` and
+`+0x720`, respectively.  The Linux table layout differs from Windows, so equal
+slot numbers cannot be assumed; neither public thunk contains a sparse key
+[BIN].
 
 The final MxMD sparse upload is exact in both vendor builds.
 
@@ -94,39 +141,43 @@ This independent match proves record width, capacity, key parity, selector
 arithmetic, inline payload semantics, and port numbers.  It does not name the
 two halves as vertex and fragment banks.
 
-## What is not joined
+## Remaining unjoined boundary
 
-No recovered static call/data path connects any of these three endpoints:
+The newly recovered path connects GL locations and ARB env records to explicit
+vertex/fragment native indices and dirty vectors:
 
 ```text
-GL uniform location/value
-        -> hidden MxMGLX context-vtable implementation / native transport
-        -> MxMD sparse record key
+GL location -> 64-byte metadata -> vertex index +0x24 / fragment index +0x28
+            -> changed vec4 queued in vertex +0x3f0 / fragment +0x400
+            -> private MxMGLX-to-MxMD transport
+            -> MxMD sparse record key
         -> selector line and even/odd four-dword half
 ```
 
-Linked-program installation opcodes `0x59` and `0x67` carry native program
-blobs, entry information, and varying maps; their proved layouts do not carry
-the GL uniform-location to sparse-key association.  MxMGLX helpers
+The last arrow remains unjoined.  Dirty-vector elements are 16-byte ownership
+records for vec4 staging allocations; their index and value are not an MxMD
+sparse key.  Linked-program installation opcodes `0x59` and `0x67` carry
+native program blobs, entry information, and varying maps, but their proved
+layouts do not carry the native-index-to-sparse-key association.  MxMGLX helpers
 `0x105686e0` and `0x10569370` walk names such as `program_env_%d`,
 `program_local_%d`, and `__constant__`, build binding/symbol tables, and
 materialize runtime parameters, but their object layouts do not join to the
-MxMD `0x1c`-byte records.  The consumer lies behind the private GL/native
-interface.
+MxMD `0x1c`-byte records.  The conversion lies behind the private native
+transport used when the queued staging objects are submitted.
 
 Registry strings `PsBmConstants` and `CeBmConstants` occur beside
 `PsBmMicrocode` and `CeBmMicrocode`, with independent configuration fields at
 `MxMD` object offsets `+0x140` and `+0x148`.  They prove that the vendor names
-two bus-master constant modes.  Static callers do not establish that `Ps` or
-`Ce` corresponds to a particular GL shader stage, nor that either names the
-even or odd sparse half.  The two parity halves are therefore **not** assigned
-stage names here.
+two bus-master constant modes.  Static callers still do not establish whether
+`Ps` or `Ce` selects the vertex or fragment dirty vector, nor whether either
+names the even or odd sparse half.  The two parity halves are therefore **not**
+assigned stage names here.
 
-For a Mesa implementation, the remaining hard blocker is the mapping from a
-stage's logical `c[i]` (or linked uniform location) to the stored sparse key.
-`c0 -> key 0`, separate vertex/fragment banks, and any fixed bank stride would
-all be guesses.  Once that mapping is captured, the final packet encoder is
-complete.
+For a Mesa implementation, the remaining hard blocker is narrower: map each
+stage-native index to the stored sparse key.  Separate vertex/fragment software
+banks are proved, but `vertex index 0 -> key 0`, the parity-to-stage mapping,
+and any fixed bank stride remain guesses.  Once that mapping is captured, the
+final packet encoder is complete.
 
 ## Smallest decisive differential capture
 
