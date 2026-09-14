@@ -172,6 +172,7 @@ static int m9_validate_relocs(u32 *image, u32 dwords, u8 *expected,
 		struct parhelia_m9_bo *bo;
 		u64 address;
 		u32 alignment;
+		bool end_reloc;
 
 		if (reloc->command_dword >= dwords ||
 		    !expected[reloc->command_dword] ||
@@ -182,7 +183,10 @@ static int m9_validate_relocs(u32 *image, u32 dwords, u8 *expected,
 		    !reloc->flags || reloc->pad[0] || reloc->pad[1])
 			return -EINVAL;
 		bo = m9_find_ref(bos, refs, bo_count, reloc->handle, reloc->flags);
-		if (!bo || reloc->target_offset >= bo->dma.base.size)
+		end_reloc = reloc->kind == PARHELIA_M9_RELOC_DRAW32_END ||
+			    reloc->kind == PARHELIA_M9_RELOC_DRAW16_END;
+		if (!bo || reloc->target_offset > bo->dma.base.size ||
+		    (!end_reloc && reloc->target_offset == bo->dma.base.size))
 			return -EINVAL;
 		alignment = m9_reloc_alignment(reloc->kind);
 		if (reloc->target_offset & (alignment - 1))
