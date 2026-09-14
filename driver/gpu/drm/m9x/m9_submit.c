@@ -154,8 +154,9 @@ static u32 m9_reloc_alignment(u32 kind)
 	case PARHELIA_M9_RELOC_COLOR:
 	case PARHELIA_M9_RELOC_DEPTH:
 	case PARHELIA_M9_RELOC_TEXTURE:
-	case PARHELIA_M9_RELOC_RESOURCE_69:
 		return 256;
+	case PARHELIA_M9_RELOC_RESOURCE_69:
+		return 4096;
 	case PARHELIA_M9_RELOC_RESOURCE_6C:
 		return 128;
 	default:

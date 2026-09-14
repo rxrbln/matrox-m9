@@ -47,7 +47,8 @@ addresses.
 
 The captured bind tuple has two distinct operands.  ``RESOURCE_69`` relocates
 index ``0x69``; address-directed snapshots prove that its allocation contains
-drawable pixels rather than native program bytes.  ``RESOURCE_6C`` relocates
+drawable pixels rather than native program bytes.  Its captured allocation
+requires 0x1000 alignment.  ``RESOURCE_6C`` relocates
 the separate, 0x80-aligned system-resource record selected at index ``0x6c``
 and adds its hardware-owned low tag bit.  The captured values are
 ``0x11e42000`` and ``0x40c3a000 + 0x300 | 1`` respectively.  The kernel must
