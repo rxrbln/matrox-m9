@@ -328,7 +328,7 @@ resulting joined table; all numeric entries are hexadecimal:
 | `A8` | `36` | `33` |
 | `A2B10G10R10` | `10` | `68` |
 | `A8B8G8R8` | `0e` | `64` |
-| `X8B8G8R8` | `0f` | `68` |
+| `X8B8G8R8` | `0f` | `64` |
 | `G16R16` | `0b` | `78` |
 | `A2R10G10B10` | `11` | `6a` |
 | `A16B16G16R16` | `12` | `38` |

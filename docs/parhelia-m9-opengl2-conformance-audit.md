@@ -45,7 +45,7 @@ The evidence states used below are:
 | alpha test, blending, separate RGB/alpha, min/max/subtract/reverse subtract | enable/result/static factor and equation maps | join generated native state to visible destination-sensitive results |
 | all logic operations | static frontend: all sixteen GL enums map to exact ICD internal codes; XOR packet/result | join the other fifteen internal codes to final native state/program and visible results |
 | fog, explicit fog coordinate, clip planes, two-sided lighting | API/result plus generated-state snapshots | identify native program/constant deltas after the linked-record grammar is decoded |
-| multisample and sample coverage | API-only on an unsampled visual; static `ad/af` emitter | sampled allocation, pattern, mask, resolve, coverage invert, and query scaling |
+| multisample and sample coverage | API-only on an unsampled visual; Windows config selects sample type 8 and eight quality levels; `ad[20:0]` is backed allocation bytes/32 and `af` low9 plus bits 11--13 are exactly sourced; zero mask suppresses output | sampled allocation growth, fragment layout, positions/quality patterns, nonzero mask/invert, resolve, presentation, and query scaling |
 | occlusion query | result/packet for 16384 visible, 0 hidden, 8192 half-hidden, object reuse, and pre-finish availability zero; static begin/end/result protocol | slot wrap, counter wrap, ordering stress, and implementation replay |
 | draw buffers/MRT | static four-target address/mask/compiler paths; masks 0/1 complete and mask 1 writes RT0; mask 2 and mask 15 expose a repeatable vendor teardown/readback wedge after successful finish | recover safe per-target routing/teardown before testing or exposing masks beyond RT0 |
 
@@ -66,7 +66,7 @@ The evidence states used below are:
 | texture compression | generic extension advertised; static DXT1-5 packers; Linux S3TC absent and direct DXT1/DXT5 uploads return `GL_INVALID_ENUM` | sentinel-filled core-format query; keep DXT disabled unless a returned public format passes upload/sample/readback |
 | texture objects, subimages, copies, priorities/residency semantics | live update-then-sample and framebuffer-copy-then-sample ordering, exact transfer/draw stream boundary, stable descriptors, and ordinary static lifecycle | overlapping copies, subimage/mip boundaries, deletion while bound, priorities/residency, and implementation replay |
 | pixel-store packing/unpacking and readback | basic readback | all core alignment/row-length/skip/type conversions; performance is secondary |
-| 10-bit GigaColor | static A2B10G10R10/A2R10G10B10 codes and config gates; Linux `RGB10_A2` explicitly reports actual internal `GL_RGBA8` and round-to-nearest 10->8->10 quantization | a Windows-enabled or gated native 10-bit render/sample capture, raw backing validation, and separate depth-30 scanout test |
+| 10-bit GigaColor | exact native codes `0x68/0x6a`, channel masks, sampler/RT construction and rounded D3DCOLOR clear packers; Linux `RGB10_A2` explicitly reports actual `GL_RGBA8` and 8-bit quantization | native Windows/gated render, blend, sample, raw-backing/readback capture, plus separate depth-30 scanout/LUT/dither validation |
 | float, YUV, anisotropic, and sRGB textures | real dormant Windows packers/config paths | remain extension-gated until upload/sample/filter/render result matrices exist |
 
 ## Buffers, arrays, and draw submission
