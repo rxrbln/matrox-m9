@@ -732,6 +732,14 @@ bit 1 set it waits for tag-context `+0x54` to clear, then polls `0x8f0` until
 `value & 0x00030000` is zero.  Flag bit 2 adds callbacks around submission and
 an idle-wait helper.  The returned fence is stored at object `+0x1a8`.
 
+Requester wrap function `m9x1200` at `0x2b1c0` publishes and quiesces, writes
+the two-dword record `{2, resource[0x44]}`, resets its software producer to CPU
+base `resource[0x50]`, recomputes the end guard from size `resource[0x40]`, and
+publishes and quiesces again [BIN].  Resource initialization stores
+`resource[0x44] - resource[0x50]` as the CPU-to-GPU translation at `+0x58`, so
+record opcode 2 is the requester wrap-to-GPU-base marker [DER].  It is outside
+the indexed 3D packet grammar.
+
 This strongly establishes `0x400` as DMA base/control and `0x404` as the submit
 doorbell for this binary [DER].  The vendor's unbounded waits must become
 bounded DRM waits with reset/error recovery; copying them literally would make
