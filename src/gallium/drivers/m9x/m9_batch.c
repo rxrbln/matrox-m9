@@ -77,7 +77,7 @@ m9_batch_add_reloc(struct m9_batch *batch, uint32_t command_dword,
    int ret;
 
    if (!batch || command_dword >= batch->command_count ||
-       kind > PARHELIA_M9_RELOC_PROGRAM_LINK || batch->sealed)
+       kind > PARHELIA_M9_RELOC_RESOURCE_6C || batch->sealed)
       return -EINVAL;
    if (batch->reloc_count == M9_MAX_RELOCS)
       return -ENOSPC;
@@ -214,9 +214,9 @@ m9_batch_bind_program(struct m9_batch *batch,
    uint32_t address_dword = batch ? batch->command_count + 1 : 0;
    int ret;
 
-   if (!program || !program->captured_gltri || !program->heap_handle ||
-       !program->link_handle || (program->heap_offset & 31) ||
-       (program->link_offset & 127))
+   if (!program || !program->captured_gltri || !program->resource_69_handle ||
+       !program->resource_6c_handle || (program->resource_69_offset & 255) ||
+       (program->resource_6c_offset & 127))
       return -EINVAL;
    values[0] = 0;
    values[1] = program->control_6a;
@@ -226,18 +226,22 @@ m9_batch_bind_program(struct m9_batch *batch,
    ret = m9_batch_emit_regs(batch, indices, values, 5);
    if (ret)
       return ret;
-   ret = m9_batch_add_reloc(batch, address_dword, program->heap_handle,
-                            program->heap_offset,
-                            PARHELIA_M9_RELOC_PROGRAM,
-                            PARHELIA_M9_BO_READ);
+   /* Live address-directed snapshots prove index 69 selects drawable backing.
+    * Preserve both read and write access: blending may read the destination,
+    * and every captured draw updates this allocation. */
+   ret = m9_batch_add_reloc(batch, address_dword, program->resource_69_handle,
+                            program->resource_69_offset,
+                            PARHELIA_M9_RELOC_RESOURCE_69,
+                            PARHELIA_M9_BO_READ | PARHELIA_M9_BO_WRITE);
    if (ret)
       return ret;
-   /* 6c is a separate linked-record address.  PROGRAM_LINK makes the kernel
+   /* 6c is a separate system-resource record.  RESOURCE_6C makes the kernel
     * own captured low bit 0 instead of exposing it as a raw address bit in
     * userspace.  The live value does not carry the requester system tag. */
    return m9_batch_add_reloc(batch, batch->command_count - 1,
-                             program->link_handle, program->link_offset,
-                             PARHELIA_M9_RELOC_PROGRAM_LINK,
+                             program->resource_6c_handle,
+                             program->resource_6c_offset,
+                             PARHELIA_M9_RELOC_RESOURCE_6C,
                              PARHELIA_M9_BO_READ);
 }
 

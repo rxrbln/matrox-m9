@@ -40,10 +40,10 @@ struct m9_sampler_desc {
 };
 
 struct m9_linked_program {
-   uint32_t heap_handle;
-   uint64_t heap_offset;
-   uint32_t link_handle;
-   uint64_t link_offset;
+   uint32_t resource_69_handle;
+   uint64_t resource_69_offset;
+   uint32_t resource_6c_handle;
+   uint64_t resource_6c_offset;
    uint32_t control_6a;
    uint32_t entry_6b;
    bool captured_gltri;
