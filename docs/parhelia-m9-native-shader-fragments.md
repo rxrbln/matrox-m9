@@ -720,18 +720,32 @@ frontend-finalization step [DER].  Native hardware stop behavior remains
 bounded below because the later backend receives an explicit program count but
 the bind carries no count or end slot.
 
-This still does not assign the API name `gl_Position` or `gl_FragColor` to
-class 12.  Both stages traverse the same generic converter, while the saved GL
-ICD serializes stage identity outside this MxMD IR.  The association stops at
-the unrecovered opcode-`0x59/0x67` transport consumer documented in
-`parhelia-m9-program-stage-entry-re.md`.
+The saved GL ICD independently assigns its special vertex and fragment outputs
+to a class numbered 12.  The vertex parser recognizes `gl_Position` at
+`0x1071e725` and the fragment parser recognizes `gl_FragColor` at
+`0x107275c5`; both call the same helper `0x1071ff00`.  That helper builds a
+nine-dword symbol record and writes literal 12 at record offset `+0x10` (the
+fifth dword) before
+installing it through `0x10714620` [BIN].  This proves that class 12 is the
+stage-relative final color/position result in the GLSL frontend: it means
+`gl_Position` in a vertex compilation and `gl_FragColor` in a fragment
+compilation.  It does not by itself prove that the identically numbered MxMD
+link class survives the private serialization unchanged.  That last
+cross-module identity still stops at the unrecovered opcode-`0x59/0x67`
+transport consumer documented in `parhelia-m9-program-stage-entry-re.md`.
+This also supplies hard negative evidence against assigning expanded operation
+`0x14` or `0x15` to one stage by name.  Both stage-final symbols reach the same
+frontend helper, while MxMD chooses `0x14/mode-10` versus `0x15/mode-6` only
+from `ctx+0x1f4 == 0 && ctx+0x1f0 >= 0x400`.  Until the serialized stage flag
+is joined to those context values, neither operation has fixed vertex or
+fragment ownership [DER].
 
 Two bindings are still absent for a runnable minimal pair:
 
-* class 12 is proven to feed a synthesized terminal endpoint MOV, but no static
-  data flow names it as vertex position or fragment color or selects the
-  context-dependent native MOV form for either stage; the legacy MxMGLX
-  final-result-class check occurs before native conversion;
+* both API final outputs are class 12 in MxMGLX and class 12 feeds the terminal
+  endpoint MOV in MxMD, but the private transport consumer that would prove
+  these are the same class is absent, and no static path selects the
+  context-dependent native MOV form for either stage;
 * sparse four-dword upload records have an exact key-to-selector formula, but
   no static data flow joins an IR `c[i]` descriptor to a sparse-record key.
   In particular, assuming that `c0` means sparse key zero would be a guess.
@@ -740,19 +754,19 @@ Combined with the count/termination result below, this is the exact static
 boundary for a passthrough vertex shader and solid-color fragment shader.  We
 can build their compiler IR, link ordinary varyings, identify the constant
 read selector, upload native bytes, and bind two entry starts.  We cannot yet
-assign the special result to each API stage, choose the context-dependent raw
-`MOV` form, bind the solid-color payload to its sparse key, or prove the
-hardware stop rule.  The saved fixed fragments cannot close those joins: they
-are composable vertex/declaration conversion pieces, and their tails have no
-common bit.
+prove the class-number identity across the private interface, choose the
+context-dependent raw `MOV` form, bind the solid-color payload to its sparse
+key, or prove the hardware stop operation.  The saved fixed fragments cannot
+close those joins: their complete selected chains have no common terminal bit.
 
 The smallest decisive compiler delta is now narrower.  Compile a one-MOV
 program twice while holding its IR, varying map, and constants fixed, changing
 only the stage.  Break after `0x195991` and record `ctx+0x1e8/+0x1f0/+0x1f4`,
-then break after `0x195b88` and copy the counted slots.  A second pair which
-changes only `gl_Position` versus `gl_FragColor` confirms which serialized
-stage supplies class 12.  This four-compile capture resolves the stage enum,
-the native MOV branch, and class-12 ownership without MMIO tracing.
+then break after `0x195b88` and copy the counted slots.  Dumping the converted
+destination descriptor in each run proves whether the frontend class-12
+ordinal crosses the private interface unchanged.  This two-compile capture
+resolves the stage enum, the native MOV branch, and the final class join without
+MMIO tracing.
 
 The static databases do not expose a standalone native predicate or `END` bit.
 Across the final slot of all 48 fixed blobs, the bitwise intersection is zero
@@ -775,14 +789,40 @@ same count, and advances its expanded instruction destination by `0xb4`
 [BIN][DER].  Neither path scans for or appends an in-band terminator.  The D3D
 frontend `END` token, compiler stream count, four-slot upload padding, and any
 hardware fetch-stop state are separate layers.  The final program-state join
-is now exact: Windows `0xf7819..0xf78aa` and Linux `m9x11728`
-`0x4b9700..0x4b97a5` program one or two 16-bit instruction starts plus literal
-`69 <- 4`, but no instruction count or end address [BIN].  The linker's aligned
-byte length is read only by the preceding upload loop.  Therefore hardware
-execution is not delimited by the compiler count or the padded upload length;
-it must stop through native stream semantics or fixed engine behavior that is
-not exposed in this bind record [DER].  A native compiler slot still must not
-be assigned a universal `END` bit.
+is now exact.  Windows uses linked `+0xbb0` in only the resource cleanup test,
+the `0xf6ecd` command-size calculation, and the `0xf7713..0xf7813` CPU upload
+loop.  The loop advances its source and byte offset by `0x20`, writes selector
+`68` followed by ports `60..67`, and stops when the offset reaches `+0xbb0`.
+Its size calculation is exactly `15 * (+0xbb0 / 32) + 10` command dwords.
+Linux independently performs the same calculation at `0x4b7c0b`, reads
+`+0xbd8/+0xbe0` as length/pointer, and has the same 32-byte loop at
+`0x4b9450..0x4b9563` [BIN].  Exhaustive direct-displacement xrefs in the two
+emitters find no later use of either length.
+
+Windows `0xf7819..0xf78aa` and Linux `m9x11728`
+`0x4b9700..0x4b97a5` then program one or two 16-bit instruction starts plus
+literal `69 <- 4`, but no instruction count or end address [BIN].  Consequently
+the aligned byte length is a host-to-instruction-RAM transport bound only; the
+hardware cannot consume it as an execution count.  Zero fill is alignment
+padding, and the compiler and linker append no distinguished zero sentinel.
+The next entry cannot be the general end either: the split bind moves that
+entry to `6d`, and neither form supplies an end for the final entry.  Compiler
+property `+0x397` bit 29 cannot terminate hardware because it is consumed only
+as an optimizer rewrite barrier and never reaches the bind.  These paths rule
+out compiler count, aligned byte count, padding, next-entry boundary, and that
+property bit as hardware stop rules [DER].
+
+The remaining stop rule is in-stream native control or an implicit engine
+condition.  It is not one universal terminal encoding visible in the fixed
+database: the lists selected by `0x13b2b0/0x13b570` are complete entry lists,
+linker `0x13bf80` copies their exact fragments without inserting a record
+between them, and the final live slots of the selectable tails have no common
+bit in either dword.  The mandatory output finalizer similarly adds a normal
+opcode-1 bridge MOV and no separate `END`.  Static binaries therefore do not
+distinguish a terminal operation embedded in one of the varying tail forms
+from an engine stop triggered by completing the stage-relative endpoint.  A
+native compiler slot must not be assigned a universal `END` bit from this
+evidence.
 
 The selected fixed-function image reinforces that boundary.  Linker
 `0x13bf80` records the starts of `P` and its `S/Q` continuation at
