@@ -28,8 +28,13 @@ The following is sufficiently specified for an opt-in bring-up driver:
   LOD, mip allocation, and the packed mip-tail atlas;
 * the two-dword native instruction container, native packer fields, program
   upload selector and ports, program-bank limit, entry-point registers, GLSL
-  varying linkage, and enough IR structure to add semantic opcodes as they are
-  proved;
+  varying linkage, typed stage handles through parsed native descriptors, the
+  live Windows and Linux mode-6 MOV forms, and enough IR structure to add
+  semantic opcodes as they are proved;
+* GL locations through stage-native indices, range records, vertex-then-fragment
+  FIFO transport, persistent stage constant banks, old-engine limits, and the
+  guarded mode-2 bus-master resource path up to its final opaque allocation
+  join;
 * context ownership, state save/restore order, fence lifetime, and resource
   lifetime rules.
 
@@ -47,12 +52,16 @@ submission:
    There is no saved known-good M9 3D stream in `captures/` today.
 2. Validate one real M9 allocation and submission against the recovered three
    separate namespaces: internal allocation mode, public Linux memory type,
-   and requester address class/tag.  Their static data flow is now joined, but
-   no saved M9 command stream confirms the resulting GPU addresses on hardware.
+   and requester address class/tag.  First-use programming of `0x500`, `0x508`,
+   and `0x504` is exact.  The hardware-owned `0x50c/0x510/0x514/0x520/0x524`
+   fields still need one wrap capture, and no saved M9 stream confirms the
+   resulting GPU addresses on hardware.
 3. Close or experimentally validate the minimal vertex/fragment program
-   boundary.  Private record stage ownership is proved, but the final typed
-   stage-to-`6a`/`6d` association, context-dependent native MOV form, sparse
-   constant-bank key, and hardware execution-stop rule remain unjoined.
+   boundary.  Stage ownership, native descriptors and live MOV forms are
+   proved, but the compiled resource-to-`6a`/`6d` association remains unjoined.
+   The mode-2 constant helper output is not joined to its final backing
+   allocation and stage setting, and hardware stop is narrowed only to endpoint
+   selector `0x7e` versus the final MOV's complete control form.
 4. Exercise requester timeout and restart.  Neither saved vendor stack exposes
    a reusable global/3D reset sequence or a statically identifiable 3D fault
    interrupt, so the initial driver must fail closed after the proven local
@@ -67,8 +76,9 @@ The following do not block a linear, basic OpenGL driver:
 * class-3 blocked texture/render-target allocation and its physical in-block
   address permutation;
 * render-to-texture cache optimization beyond the proved class-1 dependency
-  fence through packet index `0x43`; an explicit texture-cache visibility rule
-  is not statically identified;
+  fence through packet index `0x43`; copy preflight uses class 2 plus a legacy
+  channel, and an explicit texture-cache visibility rule is not statically
+  identified;
 * occlusion queries and their revision-dependent slot details;
 * the complete native ALU/texture/control mnemonic table, uncommon predicates,
   and every special lowering path;
