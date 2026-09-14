@@ -374,6 +374,15 @@ context `+0x24..+0x28`.  Physical varying assignment therefore happens in an
 explicit linker table before the final seven-bit selector is packed; logical
 GLSL varying order is not a hardware register number.
 
+The final selector arithmetic is now joined.  Let `p` be entry `+0x00` from
+the matched physical-link record.  A fragment `v` descriptor is
+`0x10000000 + 2*p`, so its low seven-bit selector is `2*p`.  A vertex `o`
+descriptor is `0x0000ffd8 + 2*p`, giving selector `0x58 + 2*p`; the special
+output-class case uses descriptor `0x0000fff8`, selector `0x78` [BIN][DER].
+The linker's fourteen-slot bound keeps the ordinary formulas below `0x80`.
+The class prefixes remain relevant to earlier compiler decisions, but the
+gated packer consumes exactly these low seven bits.
+
 Let `replace(x, hi, lo, v)` replace inclusive bits `hi:lo` in `x` with the low
 `hi-lo+1` bits of `v`.  Ignoring a separate program-property side effect at
 `0x1db941..0x1db988`, the packer is exactly [DER]:
@@ -516,9 +525,16 @@ a transformed descriptor bit.  Descriptor class bits are also adjusted by a
 format property.  The safe conclusion is a format-dependent result-pair
 expansion, not an export mnemonic assignment.  The `+0x64` pair is likewise a
 compiler-generated control sequence whose public meaning is not yet known.
-Because the frontend operand formatter uses neighboring source-descriptor
-fields for addressing and ranges, indirect/range lowering is a plausible
-purpose, but the exact names of token `+0xa4/+0xa8` remain unproved.
+
+The source fields have a useful exact negative boundary.  MxMGLX clone
+constructor `0x106ade90` copies all four 0x38-byte operand descriptors,
+including source-zero descriptor `+0x28/+0x2c` into token `+0xa4/+0xa8`.
+Its own bounded operand formatter `0x106afa90..0x106aff2c` reads descriptor
+`+0x0c`, `+0x14/+0x18`, and `+0x20/+0x24` for the visible register index and
+range forms, but never reads `+0x28/+0x2c` [BIN].  The auxiliary pair is
+therefore hidden compiler annotation, not the printed relative-address or
+range bounds.  Its two nonzero expansion effects above are proven; semantic
+names remain unproved.
 
 The one-slot packer has an independent side effect on the same output property
 bit.  Before format gates can replace the overlapping physical field, it tests
@@ -527,6 +543,14 @@ expanded second operation `0`, and requires expanded third operation in
 `{0x81,0x82,0x83,0x182,0x183}`.  Only that combination sets output
 `+0x397` bit `0x20000000` [BIN].  A raw packed slot cannot always reconstruct
 this test because the packer may replace `W1[20:14]` with a descriptor.
+
+The direct consumer at `0x16ea00` fixes the property's compiler meaning.
+Function `0x16ea25` tests bit 29 and returns zero immediately when it is set.
+When clear, it allocates `count * 0xb4 + 4`, clones all counted native slots
+through `0x16eb50`, performs its requested transformations, and repacks the
+stream through `0x16eba0` [BIN][DER].  Bit 29 is therefore a compiler
+transformation barrier for this rewrite pass.  It is out-of-stream metadata;
+this evidence does not assign it a hardware `END`, export, or texture meaning.
 
 A derived backend at vtable `0x1f5104` adds another context-sensitive path.
 Emitter `0x1dcaf0` records generated-run boundaries in output bytes
@@ -572,6 +596,19 @@ ICD has the corresponding formatter strings near `0xecbd6b`.  Neither is a
 decoder for these native 64-bit slots, so Iris opcode numbers must not be
 copied into the fields above.
 
+This also fixes the static boundary for a complete ALU/texture/control
+mnemonic table.  The exhaustive 32-entry native tables at `0x1dba44` and
+`0x1dbb14` select implicit descriptors and component forms, not names; the
+sparse seven-bit table at `0x1dbbd0` does the same.  Conversely, one expanded
+selector such as `0x14` occurs in the lowerings of MOV, FRC, ABS, MOVA, RSQ,
+EXP, and LOG.  The mapping is many-to-many and depends on the other operation
+fields, descriptors, gates, and neighboring generated slots.  The saved ICD
+exports only its public `Drv*` surface, while MxMD is a native-subsystem image,
+so no supported offline compiler entry point was found.  Numeric operation
+families and their source-operation anchors are reproducible; assigning a
+complete native mnemonic table still requires captured compiler output or a
+native slot decoder.
+
 ## Dynamically built fragment
 
 Windows `0x147d30` and Linux `m9x25489` at `0x445ea0` allocate four slots; the
@@ -614,8 +651,18 @@ out a terminator in a complete program.  The per-instruction expansion above
 supplies stronger negative evidence against a universal per-slot `END`: the
 backend can replace one instruction, prepend two slots, patch fields while
 splicing runs, and set an output-program property outside the stream.  The
-property is not safely named `END`; its exact execution meaning remains
-unknown.
+property's compiler meaning is the rewrite barrier proved above, not `END`.
+
+The compiler-native stream itself is demonstrably count-delimited.  Packer
+`0x1db98d..0x1db9a5` reads output count `+0x04`, rejects an append past 256
+slots, writes the two-dword slot at `+0x08 + 8*count`, and increments the
+count.  Clone helper `0x16eb50` iterates exactly while its index is below that
+same count, and advances its expanded instruction destination by `0xb4`
+[BIN][DER].  Neither path scans for or appends an in-band terminator.  The D3D
+frontend `END` token, compiler stream count, four-slot upload padding, and any
+hardware fetch-stop state are separate layers.  Hardware execution termination
+still needs the final program-state join, but a native compiler slot must not
+be assigned a universal `END` bit.
 
 The compiler-to-MxMD predicate path is now joined statically.  Source token
 `+0x08` bit 1 becomes backend IR `+0x04` predicate-enable, and the predicate
@@ -634,15 +681,20 @@ metadata and are not copied verbatim into the packed slot.  Predicate polarity
 from descriptor bits `27:24` changes the helper's returned operation family.
 Thus this backend lowers a predicate into the per-component `W0[4:0]`
 operation form; there is no evidence for one universal packed predicate bit.
-Special multi-instruction lowerers can distribute the same state differently,
-so the complete numeric operation mapping still needs controlled output.
+The special lowerers now give the exact distribution boundary.  Their
+result-bearing calls to `0x1afd30` all reload IR `+0x30` and `+0x04`: RCP has
+two such sites (`0x1b0fbc`, `0x1b1168`), RSQ two (`0x1b195c`, `0x1b1ae5`),
+EXP two (`0x1b2350`, `0x1b24a1`), and LOG three (`0x1b2bb7`, `0x1b315f`,
+`0x1b32ca`) [BIN].  RCP also calls the helper at `0x1b0cae` with a zero
+descriptor for an internal preparatory result.  Thus the source predicate is
+distributed to each externally visible result form while that RCP internal
+form is deliberately descriptor-free.  Other synthetic objects in these
+sequences do not pass through the predicate helper.
 
-The exact remaining boundary for predicate details and termination is the
-linked compiler output around the call to `0xadf00`: vary one source predicate
-or control-flow/end condition, retain the descriptor pointer and byte length,
-output property `+0x397`, and generated-run bytes `+0x39b/+0x39c`, then diff
-the unpadded 64-bit stream before `0x13bf80`.  Until that controlled delta
-exists, a standalone predicate bit and termination field should remain unnamed.
+The remaining predicate boundary is the complete numeric mapping of the
+helper's operation-family results under every descriptor polarity and mask.
+It still needs controlled compiler output around the call to `0xadf00`; a
+standalone packed predicate bit should remain unnamed.
 
 The next static/runtime hooks should log `(slot, descriptor pointer, length)` in
 `0xadf00` while `0x1454a0` runs, then dump the unpadded linked stream immediately
@@ -662,6 +714,8 @@ termination names.
 
 `tools/m9-native-static-evidence.py` checks the two saved PE identities, uses
 proper image-base/RVA translation, verifies the fixed-fragment hash and emitter
-vtable slot, decodes the D3D and register-file dispatch tables, and verifies
-the four fixed-function vertex state-builder calls.  Run it from the repository
-root; a table or binary mismatch is a hard error.
+vtable slot, decodes the D3D and register-file dispatch tables, verifies final
+varying transforms, special predicate sites, count-delimited append/clone
+paths, the property-bit rewrite barrier, the operand-formatter negative
+boundary, and the four fixed-function vertex state-builder calls.  Run it from
+the repository root; a table or binary mismatch is a hard error.
