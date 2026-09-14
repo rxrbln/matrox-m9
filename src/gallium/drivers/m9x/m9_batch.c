@@ -215,7 +215,7 @@ m9_batch_bind_program(struct m9_batch *batch,
    int ret;
 
    if (!program || !program->captured_gltri || !program->resource_69_handle ||
-       !program->resource_6c_handle || (program->resource_69_offset & 255) ||
+       !program->resource_6c_handle || (program->resource_69_offset & 4095) ||
        (program->resource_6c_offset & 127))
       return -EINVAL;
    values[0] = 0;
