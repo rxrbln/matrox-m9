@@ -926,14 +926,17 @@ The OpenGL result is unsigned 32-bit `end.word0 - begin.word0`; word 1 is
 ignored for samples-passed.  Availability follows completion of both snapshot
 writes.  Multisample results are scaled in the vendor GL layer.
 
-Keep `PIPE_QUERY_OCCLUSION_COUNTER` experimental until hardware verifies
-snapshot alignment, the second word, slot wrap/reuse, counter wrap, and
-multisample behavior.  This does not block the initial driver.
+Live queries now return exactly 16384 for a full 128x128 quad, 8192 for half
+coverage, zero when depth-hidden, and 16384 after object reuse; pre-finish
+availability is zero.  Keep `PIPE_QUERY_OCCLUSION_COUNTER` experimental until
+slot wrap, counter wrap, ordering stress, and multisample scaling are verified.
+This does not block the initial driver.
 
 The following also remain optional: hardware cursor, partial sample masks,
-class-3 formats whose calculators are not transcribed, nonzero-origin `c4/c5`,
-the fast whole-page clear, uncommon interrupt services, more than four live
-texture blocks, and bus-master shader/constant optimizations.
+class-3 formats whose calculators are not transcribed, the fast whole-page
+clear, uncommon interrupt services, more than four live fragment texture
+blocks, and bus-master shader/constant optimizations.  Nonzero-origin `c4/c5`
+viewport/scissor bounds are already captured.
 
 ## 12. Bring-up and regression sequence
 
@@ -1005,15 +1008,15 @@ but its format, pack alignment, and rendered extent must remain correct.
 | direct SPI/PInS fallback when PCI ROM mapping is absent or invalid | some cold boards may lack authoritative output data | trace one vendor direct PInS read from reset and reduce its MMIO/I/O sequence |
 | auxiliary requester address classes and hardware-owned rollover fields | optional auxiliary streaming cannot be enabled safely | force one auxiliary wrap with all eight descriptor words and allocation metadata |
 | ten relocation/control roles in the vendor full-context template | the template cannot be replayed safely; context switches must re-emit complete known state | vary one bound resource/control at a time and diff the 0xf8-byte template plus restore records |
-| native storage and two stage entries outside the resolved index-69 drawable / inside the `6c` linked state | arbitrary newly compiled programs cannot execute safely | trace the stage-control producer and its referenced mapping for fixed-VS/two-FS then fixed-FS/two-VS |
-| special shader packed forms and control flow | DDX/DDY, explicit LOD/gradients, shadow, vertex texture, comparisons, branches and loops remain gated | run the isolated probe matrix in `parhelia-m9-driver-readiness.md` and save the full program/link resources |
+| universal native grammar inside the heterogeneous `6c` linked record | arbitrary newly compiled programs cannot execute safely | use the bounded passive constructor/translator/cache hook to join native start/count, VS/FS split, entry selectors, stop and lifetime |
+| special shader packed forms and control flow | their live results/resources are preserved, but the new compiler cannot emit every native form | join the saved KIL/derivative/texture/predicate/branch/loop records to the universal grammar; capture BREAK/CALL only if static joining is insufficient |
 | generated-stream semantic names and server-side zero-copy vertex layouts | the initial driver must CPU-repack to the four captured canonical layouts | one-output-at-a-time shader/content snapshots, then stride/offset differentials for an optional direct VBO path |
-| MRT output routing | four draw buffers cannot be exposed confidently | one shader writes unique values to four RGBA8 attachments and reads each back |
+| MRT output routing and retirement | RT0 works; selecting RT1 or all targets finishes then wedges during readback/teardown | statically trace target 1--3 resource retirement or use a passive hook before any more live MRT stress |
 | multisample/FAA surface, pattern, mask and resolve | current GLX visuals expose no sample buffers | acquire one vendor multisample surface and capture edge, partial-mask, resolve and query behavior |
 | 10-bit and sRGB round trips | GigaColor and sRGB formats remain unexposed | sentinel render/sample/readback A/B for both 10-bit orders and linear-versus-sRGB resources |
 | copy/upload-to-texture cache rule | dynamic upload correctness uses conservative full fences | upload, fence, sample A/B with and without state re-emission; the ordinary FBO render-to-sample rule is already closed |
 | non-32-bit tiled calculator transcription | tiled 8/16/64/128-bit and DXT resources unavailable | translate identified kernel routines, add frozen vectors, validate one coordinate-coded upload per family |
-| query snapshot details | occlusion queries remain experimental | begin/end around known visible sample count, slot wrap and multisample |
+| query wrap and multisample scaling | ordinary full/half/hidden counts, availability, and reuse are captured | slot wrap, 32-bit counter wrap, ordering stress, and multisample comparison |
 | 3D/global reset and fault IRQ | no transparent recovery from a real engine hang | controlled address fault and bad-opcode tests, one source at a time, with complete pre-ack snapshots |
 | hardware cursor layout and M9 gamma LUT | optional KMS features remain software backed | coordinate-coded cursor and LUT ramp captures |
 
