@@ -474,7 +474,8 @@ int m9x_submit_ioctl(struct drm_device *drm, void *data,
 		return -ENODEV;
 	if (args->context_id || args->out_syncobj || args->pad || args->out_point ||
 	    flags & ~(PARHELIA_M9_SUBMIT_VALIDATE_ONLY |
-		      PARHELIA_M9_SUBMIT_NOOP_FENCE))
+		      PARHELIA_M9_SUBMIT_NOOP_FENCE |
+		      PARHELIA_M9_SUBMIT_FIRST_TRIANGLE))
 		return -EINVAL;
 	if (flags == PARHELIA_M9_SUBMIT_NOOP_FENCE) {
 		if (args->command_handle || args->command_offset ||
@@ -482,6 +483,13 @@ int m9x_submit_ioctl(struct drm_device *drm, void *data,
 		    args->relocations_ptr || args->bo_count || args->bos_ptr)
 			return -EINVAL;
 		return m9x_submit_noop(mdev, &args->out_point);
+	}
+	if (flags == PARHELIA_M9_SUBMIT_FIRST_TRIANGLE) {
+		if (args->command_handle || args->command_offset ||
+		    args->command_length || args->relocation_count ||
+		    args->relocations_ptr || args->bo_count || args->bos_ptr)
+			return -EINVAL;
+		return m9x_submit_triangle_diag(mdev, &args->out_point);
 	}
 	if (flags != PARHELIA_M9_SUBMIT_VALIDATE_ONLY)
 		return -EOPNOTSUPP;

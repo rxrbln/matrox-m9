@@ -35,6 +35,41 @@ That register points at writeback word 0, which the diagnostic polls;
 mastering before publishing either address.  On timeout it logs both
 writeback words plus engine, front-end, command and fence-address registers.
 
+``m9_triangle_diag=1`` permits
+``M9_SUBMIT(FIRST_TRIANGLE)`` to prepare a second, literal diagnostic.  The
+ioctl accepts no command object, BO handle, userspace address or relocation.
+It lazily allocates and retains distinct coherent DMA32 storage for the exact
+80-byte flat-green source, the captured ``0x20080``-byte system payload,
+``0x1b080``-byte index-69 resource, ``0x1080``-byte C2 resource, exact 1-MiB
+BE context resource, four ``0x16800``-byte transient probes and 320x240
+color/depth/auxiliary-depth surfaces.  Every logical payload is followed
+immediately by at least one page of a resource-specific sentinel.  The source
+is initialized to four ``{x,y,r,g,b}`` records, including the proved duplicate
+prefetch record; RT0 is opaque magenta; C2, BE and the system payload are
+zeroed deterministically.  ``m9_triangle_gouraud=1`` selects the equally
+bounded captured red/green/blue source records; flat green remains the default
+that matches the exact M9148 command fixture.
+
+The preparation code encodes all 24 typed address sites in the exact
+118/113/8-dword preprocess/raster/completion layout and all eight uses of six
+consecutive transition targets.  It derives every address from those retained
+kernel allocations, adds the established low address tags, and reserves the
+largest observed ``0x580``-byte linked slot at system offset ``0x300``.  It
+then returns ``-EOPNOTSUPP`` from one explicit serializer gate.  It does not
+copy the captured fixed record because that record contains nine stale host
+pointers.  The failure occurs before command upload, PCI bus-master changes,
+requester MMIO or target consumption.  Implementing the semantic fresh-record
+constructor, or proving and selecting the inline fixed chain, is the remaining
+draw-record gate.  The load-time selftest pins each raw template with an
+independent byte-wise FNV-1a value, checks every captured address/target site,
+then confirms that rebuilding replaces all of those sites.
+
+Cold execution also needs the complete captured sequence-0 context setup
+envelope around the exact 80-slot ``8f/90..9f`` image.  The image and full
+envelope are captured, but the smallest safe isolated envelope has not passed
+a hardware test.  Consequently clearing the selector-6c serializer gate alone
+does not authorize command publication from a cold GPU.
+
 Before enabling bus mastering, the guarded M9148 path now requires warm
 primary partition controls ``0x44c/0x450/0x454`` to equal the independently
 recovered and live-verified fallback image

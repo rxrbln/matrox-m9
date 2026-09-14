@@ -69,10 +69,12 @@ struct drm_parhelia_m9_reloc {
 
 #define PARHELIA_M9_SUBMIT_VALIDATE_ONLY	(1u << 0)
 #define PARHELIA_M9_SUBMIT_NOOP_FENCE		(1u << 1)
+#define PARHELIA_M9_SUBMIT_FIRST_TRIANGLE	(1u << 2)
 
 /*
- * NOOP_FENCE ignores command fields and submits only the kernel-owned
- * completion record.
+ * NOOP_FENCE and FIRST_TRIANGLE ignore command fields.  FIRST_TRIANGLE is a
+ * literal kernel-selected diagnostic; it accepts no userspace command bytes
+ * or buffer handles.
  */
 struct drm_parhelia_m9_submit {
 	__u32 context_id;

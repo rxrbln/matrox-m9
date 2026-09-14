@@ -13,6 +13,8 @@ config DRM_M9X
 	  and a validate-only command interface.  m9_render_diag=1 is additionally
 	  required for the kernel-owned writeback-fence diagnostic.  Guarded warm
 	  KMS requires m9_kms=1 and the separately gated direct scanout path
-	  requires m9_kms_scanout=1.
+	  requires m9_kms_scanout=1.  m9_triangle_diag=1 permits allocation and
+	  validation of the kernel-owned first-triangle resources; execution stays
+	  disabled until the fresh selector-6c record serializer is implemented.
 
 	  If compiled as a module, it will be called m9x_drm.
