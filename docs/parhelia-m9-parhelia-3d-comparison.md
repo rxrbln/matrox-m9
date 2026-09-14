@@ -154,8 +154,12 @@ a safe DRM submitter and a working Mesa driver:
    reset-candidate cross-check find no reusable 3D/global reset in the saved
    stacks, so stronger recovery now requires a controlled capture or hardware
    experiment rather than another guessed register sequence.
-2. The remaining `0x500..0x524` rollover fields and public memory-domain names.
-   Static recovery now establishes the initializer formulas, the internal
+2. The remaining `0x500..0x524` rollover-field names and a hardware validation
+   of the recovered allocation joins.  The six internal allocation modes are
+   now separated from the public Linux memory enum and the four requester
+   address classes.  Mode 2 dynamically selects `SYS` or `PCI_LOCKED` from
+   request bit 5; mode 1 can add `SCATTER` backing; IO mapping is a separate
+   service.  Static recovery also establishes the initializer formulas, the
    four-class address-tag table `{2,3,0,3}`, tagged base/transition addresses,
    a raw live `0x504` pointer, the opcode-2 wrap-to-GPU-base record,
    save/restore order and a vendor bounded-idle entry point.  Windows contains
@@ -166,7 +170,7 @@ a safe DRM submitter and a working Mesa driver:
    fields and their final relationship to the `0x404` submit limit. Both saved
    kernel stacks have no software producer for those five words outside
    restoration, establishing that further names cannot come from static
-   register writers.
+   register writers.  See `parhelia-m9-allocation-mode-joins.md`.
 3. Context-switch validation and optional query corner cases. Restore submission
    ownership and fence lifetime are statically resolved: one TaskMgr current
    context feeds save/restore state into its shared command queue, outgoing
@@ -205,11 +209,16 @@ a safe DRM submitter and a working Mesa driver:
    `68` and ports `60..67`.  Depth/stencil is joined through per-batch shadows
    to final indices `a8/a9/aa`.  See
    `parhelia-m9-blend-raster-lowering.md`.
-6. Texture-write cache hazards and the physical address permutation within
+6. Texture-write cache visibility and the physical address permutation within
    class-3 blocks.  Descriptor formats, filter/wrap/LOD fields,
    2D/cube/volume selection, visible class-3 geometry, ordinary volume-mip
    allocation, and the packed-tail atlas and upload offsets are statically
-   exact.
+   exact.  Render targets receive class-1 submission fences, sampled textures
+   query those fences even when their descriptors are clean, and the maximum
+   dependency is emitted through packet index `0x43`.  Static code has not yet
+   shown whether completion of that dependency intrinsically establishes
+   texture-cache visibility or whether copy/upload destinations use the same
+   fence class.  See `parhelia-m9-texture-coherency-re.md`.
 7. The complete native vertex and pixel shader ALU/texture/control mnemonic
    table and a few special lowering fields.  Logical GLSL linkage is an exact
    name/type/size join into a 14-entry remap; the compiler's `o` and `v`
