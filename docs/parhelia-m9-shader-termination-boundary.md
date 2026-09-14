@@ -1,9 +1,12 @@
 # Matrox M9 native shader termination boundary
 
-This note isolates the last unknown in M9 native-program execution.  The saved
-compiler and submission paths determine what does **not** stop execution and
-identify one invariant endpoint selector.  They do not distinguish whether the
-hardware stops on that selector alone or on the complete final-MOV operation.
+This note isolates the last semantic unknown in M9 native-program execution.
+The saved compiler and submission paths determine what does **not** stop
+execution, identify the invariant endpoint selector, and now recover the exact
+terminal slot emitted by both live vendor compilers.  They do not distinguish
+whether the hardware recognizes that selector alone or the complete final-MOV
+operation.  That distinction no longer blocks emitting a vendor-identical
+terminal sequence.
 
 ## Bounds that do not reach hardware execution
 
@@ -72,6 +75,40 @@ copying `+0x1c & 0x7f` into native `W0[14:8]`.  Therefore the generated final
 operation writes physical selector `0x7e` [BIN][DER].  The finalizer returns
 immediately after appending this bridge; it adds no separate `END` slot.
 
+## Exact live terminal slot
+
+The final native bytes can be recovered without assigning speculative field
+names.  The one-output finalizer supplies destination `0x3001fffe`, source
+`0x0000fff8`, and ordinary opcode 1.  Windows' successful live compiler object
+always takes its operation-`0x15`, mode-6 arm; Linux's accepted token path
+always takes operation `0x14`, mode 6.  Despite that intermediate difference,
+both lowerers construct the same packer-visible endpoint object [BIN][DER]:
+
+```text
+native W0 base       0x001d
+native W1 base       0xa2803f00
+format gate          0x0b84
+destination          0x3400fffe
+source               0x0400fff8
+source metadata      0x00000004
+```
+
+Applying the proved one-slot packer produces one identical 64-bit instruction
+in Windows and Linux [DER]:
+
+```text
+W0 = 0xfffc7e1d
+W1 = 0xa2803f0f
+bytes = 1d 7e fc ff 0f 3f 80 a2
+```
+
+`W0[14:8]` is destination selector `0x7e`; the source selector installed in
+`W0[21:15]` is `0x78`.  The common finalizer is stage-neutral, so this is the
+one-output terminal tail for both a vertex program ending in `gl_Position` and
+a fragment program ending in `gl_FragColor`.  Multi-result paths still need
+their own byte derivation, but a minimal programmable vertex/fragment pair no
+longer needs a compiler capture merely to obtain its terminal slot.
+
 This narrows the native stop rule to two possibilities:
 
 1. completion is implicit when an instruction writes endpoint selector
@@ -85,27 +122,16 @@ destination only when the compiler set gate `0x04`.  The fixed-fragment tails
 also have no universal bit or universal 64-bit slot.  Calling `0x7e` an `END`
 opcode would therefore exceed the static evidence.
 
-## Smallest decisive capture
+## Smallest remaining semantic experiment
 
-Capture one passthrough vertex shader and one solid-color fragment shader at
-the native packer, recording each append at `0x1db99b` and the output count at
-`+0x04`.  Also record compiler context `+0x1f0/+0x1f4`, because those values
-select the two possible MOV lowerings.  Stop before the linker pads the stream
-to four-slot upload lines.  For each stage retain:
-
-```text
-stage, unpadded slot count, every (W0,W1), final endpoint slot, entry start
-```
-
-Those two traces provide the exact terminal sequence needed for a first
-open-driver shader without assigning speculative bit names.  To distinguish
-the two hardware rules later, take the captured final MOV, preserve all of its
-operation/control fields, retarget only its gate-proven destination from
+The first-driver terminal sequence is now exact.  To distinguish the two
+hardware rules, take `fffc7e1d a2803f0f`, preserve all operation/control
+fields, retarget only its gate-proven destination from
 `0x7e` to a known scratch selector, and append the original endpoint MOV one
 slot later.  Successful completion at the later slot proves endpoint-triggered
 termination; completion before it proves an operation/control trigger.  Run
 that mutation only under the recoverable opt-in test module.
 
 `tools/m9-shader-termination-evidence.py` verifies the compiler endpoint,
-counted host stream, Windows bind, and the byte-identical bind/upload evidence
-in every saved Linux render-driver variant.
+exact common live terminal slot, counted host stream, Windows bind, and the
+byte-identical bind/upload evidence in every saved Linux render-driver variant.
