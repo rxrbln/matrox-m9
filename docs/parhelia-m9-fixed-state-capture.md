@@ -175,12 +175,19 @@ half of `ab`, or the resource-tail host pointers as state: they vary between
 otherwise identical processes.  The command validator must allow the proven
 indices while relocating all address-bearing words.
 
-Remaining fixed-function capture work is a sampled FBConfig, a 3-D texture for
-R wrap, negative/boundary LOD values, all logic-op codes, polygon-offset value
-lowering, and program-heap joins for blend, alpha, fog, clip, and lighting.
-The static packer already names most generated equivalence classes; targeted
-visible-result cases should validate those tables rather than repeat direct
-state that this matrix has closed.
+Subsequent `parhelia-m9-texture-resource-capture.md` evidence closes 3-D R
+repeat and the signed/clamped LOD boundaries: bias -2, both saturation ends,
+minimum LOD 3, and maximum LOD 2 all produce the expected visible level.  The
+special/core GL2 captures also prove the corresponding generated-state
+resource is selected through tagged index `6c`; index `69` is drawable backing
+and must not be called a program heap.
+
+Remaining fixed-function capture work is a sampled FBConfig, the fifteen logic
+operations beyond XOR, polygon-offset factor/unit lowering, the exact border
+color packing, and native-record joins for blend, alpha, fog, clip, and
+lighting.  The static packer already names most generated equivalence classes;
+targeted visible-result cases should validate those tables rather than repeat
+direct state that this matrix has closed.
 
 <!-- Copyright 2026 Rene Rebe <rene@exactco.de> -->
 <!-- SPDX-License-Identifier: GPL-2.0 -->
