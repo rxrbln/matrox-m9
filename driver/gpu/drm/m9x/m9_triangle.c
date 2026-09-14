@@ -41,7 +41,7 @@
 static bool m9_triangle_diag;
 module_param(m9_triangle_diag, bool, 0400);
 MODULE_PARM_DESC(m9_triangle_diag,
-	"Prepare the kernel-owned M9 first-triangle resources (execution remains serializer-gated)");
+	"Prepare the kernel-owned M9 first-triangle resources (execution remains mapping/window-gated)");
 
 static bool m9_triangle_gouraud;
 module_param(m9_triangle_gouraud, bool, 0400);
@@ -497,6 +497,11 @@ static int m9_triangle_prepare_resources(struct m9x_device *mdev)
 		       m9_triangle_flat_source, sizeof(m9_triangle_flat_source));
 	dma_wmb();
 	diag->prepared = true;
+	dev_info(&mdev->pdev->dev,
+		 "M9 triangle DMA resources: source=%pad system=%pad secondary=%pad\n",
+		 &diag->resource[M9_TRI_SOURCE].bus,
+		 &diag->resource[M9_TRI_SYSTEM].bus,
+		 &diag->resource[M9_TRI_SECONDARY].bus);
 	return m9_triangle_verify_guards(diag);
 }
 
