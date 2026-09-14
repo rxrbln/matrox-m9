@@ -146,13 +146,27 @@ entry-register boundary [DER].
 
 ## Final Linux state ownership and dispatch
 
-The object passed to `m9x11728` is no longer structurally anonymous.  Program
-substate initializer `m9x17453` at `0x4b8b80` initializes external-resource
-identity fields `+0xa0/+0xa8`, primary entry control `+0xb0`, companion entry
-control `+0xd0`, and the inline-program fields later used by the emitter
-[BIN].  In temporary top-state construction at `0x4b4478`, that initialized
-object is installed specifically at top-state `+0xc8`; the other substates go
-to `+0xb8`, `+0xc0`, `+0xd0`, and `+0xd8` [BIN].
+The object passed to `m9x11728` is no longer structurally anonymous.  Generic
+program-substate initializer `m9x17453` at `0x4b8b80` initializes
+external-resource identity fields `+0xa0/+0xa8`, primary entry control
+`+0xb0`, companion entry control `+0xd0`, and the inline-program fields later
+used by the emitter [BIN].  In temporary top-state construction at
+`0x4b4478`, that initialized object is installed specifically at top-state
+`+0xc8`; the other substates go to `+0xb8`, `+0xc0`, `+0xd0`, and `+0xd8`
+[BIN].
+
+The live hardware-state constructor gives the specialized form of the same
+ownership.  `m9x3673` constructs `m9x18369` at live state `+0xbb0` and
+`m9x31420` at live state `+0x17c0`.  Its owner pointers are stored at `+0xd0`
+and `+0xe0`; the corresponding dispatch view is biased by eight bytes and sees
+them as top-state `+0xc8` and `+0xd8` [BIN][DER].  Independent reset routine
+`m9x11566` removes the need to infer that bias: it loads top-state `+0xc8` and
+calls `m9x18369`, then loads top-state `+0xd8` and tail-calls `m9x31420`
+[BIN].  `m9x18369` initializes a large specialized program state including
+the emitter's `+0xa0/+0xa8/+0xb0/+0xd0` and inline image
+`+0xbcc..+0xbe0`.  `m9x31420` initializes a separate `0xd0`-byte resource/link
+state with three descriptor/pointer pairs at `+0x98/+0xa0`, `+0xa8/+0xb0`,
+and `+0xb8/+0xc0` [BIN].
 
 The complete final dispatch chain is [BIN]:
 
@@ -174,6 +188,63 @@ its pending word.  When byte `+1` has its high bit set it also promotes each
 offset `+0x7e8` [BIN].  This proves the lifetime and dirty-state route into the
 emitter, but it does not identify the earlier writer that associates a
 compiled native descriptor with `+0xa0/+0xa8/+0xb0/+0xd0` [DER].
+
+## Compiler/cache vtables and the excluded resource-copy join
+
+The compiler/cache path is live through indirect calls that a rel32-only
+census misses.  Parent constructor `m9x1757` installs the vtable whose address
+point is `0x121e990`.  Its slot `+0x08` is `m9x15760`, a getter returning
+parent `+0x60`.  Factory `m9x8953` constructs an `m9x28041` child and stores it
+at that field.  At `0x5b15d1..0x5b15dd`, the GL context calls the getter and
+stores the returned child at context `+0x9ba8` [BIN].
+
+The `m9x28041` child vtable address point is `0x121e7b0` [BIN]:
+
+| slot | function | established role |
+| ---: | --- | --- |
+| `+0x00` | `m9x7986` | child destructor |
+| `+0x08` | `m9x28572` | child callback |
+| `+0x10` | `m9x3336` | child callback |
+| `+0x18` | `m9x22637` | live update/compile entry |
+| `+0x20` | `m9x1950` | live update/compile entry |
+| `+0x28` | `m9x27762` | child callback |
+| `+0x30` | `m9x30491` | child callback |
+| `+0x38` | `m9x24167` | child callback |
+| `+0x40` | `m9x10959` | returns child `+0x118` |
+
+GL paths at `0x5a56d6` and `0x5a544e/0x5a55f8` load context `+0x9ba8` and
+call vtable slots `+0x18` and `+0x20`, respectively.  The two exported entries
+have no direct rel32 callers, but both call `m9x24062`; the vtable and context
+ownership therefore prove they are live [BIN][DER].
+
+This indirect path also disproves the most attractive proposed final join.
+Device setup `m9x11513` maps child `+0x38` to device `+0x2588` and child
+`+0x40` to device `+0x2590`.  At `0x4530c7..0x4530db`, `m9x24062` passes
+child `+0x38` as `rdx`, child `+0x40` as `rcx`, and calls `m9x21983` with no
+pointer adjustment [BIN].  `m9x21983` copies two compiled-native records from
+`[compiled_pipeline+0x138]+0x2f1/+0x2f9` and `+0x301/+0x309` into destination
+`+0x98/+0xa0` and `+0xb8/+0xc0` [BIN].
+
+That destination is exactly the separate resource/link object.  During device
+construction `m9x4335` requests `0xd0` bytes, initializes through `+0xc8`,
+stores the allocation at device `+0x2590`, and wires it beside device
+`+0x2588` through `m9x21443` [BIN].  The identical `m9x31420` initializer is
+used for live state `+0x17c0` and top-state `+0xd8`.  Final dispatcher
+`m9x25088` sends `+0xd8` to `m9x21922`, then independently sends `+0xc8`
+through `m9x26001` to `m9x11728` [BIN].  The matching field numbers in these
+two types do not establish aliasing.  The compiler-native copy is now assigned
+to the resource/link path and excluded as the producer of the final program
+bind [DER].  Constructor-relocation vtable recovery, the shared child callback,
+the device-pointer setup, both compiled-resource copies, the `0xd0` allocation,
+and the distinct `+0xd8/+0xc8` dispatches reproduce in all 16 saved
+`m9x_drv.so` images and all 16 saved combined `libGL.so.2.0.0` images [BIN].
+
+Windows gives a consistent private-boundary result.  The decoded import table
+of the saved `MxMGLX.dll` names `DDRAW.dll` and ordinary system DLLs, but does
+not import `MxMD.dll` or `MxMDI.dll` [BIN].  Together with the unique software
+record producers already described, this rules out a statically named
+cross-DSO compiler-to-MxMD call.  It leaves an escape, callback table, copied
+object, or command-record consumer as the Windows ownership boundary [DER].
 
 Two tempting alternate stage wrappers are excluded from the in-image live GL
 route.  Fragment `m9x1996` at `0x3b8ae0` and vertex `m9x13428` at `0x3b8df0`
@@ -203,20 +274,25 @@ GL linked program
   -> opcode 0x59(stage flag, blob, length)
   -> opcode 0x67(fragment-install result, varying map, high-water)
   -> typed vertex (+0x2550) / fragment (+0x2560) backend objects [Linux]
-  -> [unrecovered compiled-object to native-bind-state join]
+  -> compiler/cache child at context +0x9ba8
+  -> compiled native pairs in separate top_state+0xd8 resource/link state
+  -> [unrecovered writer of final top_state+0xc8 program state]
   -> native image resource or inline image
   -> entry controls 6a / 6d
 ```
 
-Static code now joins `0x59/0x67` to typed backend objects, but no static call
-or ownership edge joins either compiled object/current handle to the program
+Static code now joins `0x59/0x67` to typed backend objects and follows the live
+compiler/cache vtable into its resource/link copy.  That copy is not the final
+program state.  No static call, vtable, relocation, constructor, or recovered
+object-copy edge joins either compiled stage/current handle to the program
 substate external fields in MxMD state
 `+0xa8/+0xbc` or `+0xba8/+0xbac` (Linux `+0xb0/+0xd0` or
 `+0xbd0/+0xbd4`).  The native bind producer found in both operating systems is
 the separate fixed-chain builder.  Therefore the final programmable
 vertex/fragment-to-entry association remains a capture boundary.  A Mesa
-driver can implement typed stage blobs and the known transport layout, but
-cannot safely select the final two hardware entries from this evidence alone.
+driver can implement typed stage blobs, the known transport layout, and the
+resource/link state, but cannot safely populate the final external descriptor
+or select the final two hardware entries from this evidence alone.
 
 The smallest decisive differential capture uses one fixed vertex shader and
 two fragment shaders differing only in a constant output.  Disable the saved
@@ -233,4 +309,5 @@ Run `python3 tools/m9-program-stage-entry-evidence.py` to recheck the binary
 hashes and the critical stage/opcode/entry joins above.  Run
 `python3 tools/m9-entry-resource-boundary-evidence.py` to recheck the 32-image
 alternate-wrapper ownership census, program-substate construction, dirty
-promotion, and sole final dispatch chain.
+promotion, compiler/cache vtables, object allocation/copy ownership, Windows
+import boundary, and sole final dispatch chain.
