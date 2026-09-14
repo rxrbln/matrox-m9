@@ -18,7 +18,9 @@ the `m9x` DRM identity.  Arbitrary userspace streams remain disabled:
   limit, with 128 relocations and 64 referenced BOs.
 * `m9_batch.c` emits the byte-indexed M9 packet format with stop byte `0x45`.
   Address operands always start as zero and are named by a typed UAPI
-  relocation.  BO access is accumulated independently from relocation type.
+  relocation.  BO access is accumulated independently from relocation type;
+  render/depth targets are conservatively read/write for kernel lifetime
+  validation.
 * Selector-8 linear render/depth descriptors and selector-2 texture
   descriptors use the statically recovered row-span, height/layer, layout,
   flag, and seven-bit format fields.  The captured 320x240 texture vector is
@@ -49,8 +51,10 @@ the `m9x` DRM identity.  Arbitrary userspace streams remain disabled:
   gltri class.  General NIR programs are not claimed.
 * The captured triangle raster state emits viewport/scissor, stream controls,
   and `a8` depth bits.  Depth test with no update is `a8 bit0=1, bit1=0`.
-  H03 numeric and H07 address-range draws use exclusive ends and only the two
-  observed launch classes.
+  H03 numeric, H07 32-bit-index, and H06 packed-16-index draws use exclusive
+  ends and only the two observed launch classes.  H06's odd terminal halfword
+  is an explicit relocation flag; both H06 and H07 use one BO for the paired
+  start/end relocations and reject a 32-bit packet-span overflow.
 * `m9_batch_prepare_submit()` builds the exact initial DRM UAPI request and
   `m9_batch_validate()` uploads it to a COMMAND BO with
   `PARHELIA_M9_SUBMIT_VALIDATE_ONLY`.  `m9_command_bo_create()` creates the
@@ -74,7 +78,8 @@ progress kick.
 * exact captured color, texture, and depth-control values;
 * packet header byte order and `0x45` termination;
 * relocation dword, kind, access, and deduplicated BO reference handling;
-* a draw END relocation equal to the modeled BO size;
+* H07 and even/odd H06 exclusive-end construction, including a draw END
+  relocation equal to the modeled BO size;
 * program binding, primitive counts, mip-tail positions, vertex conversion,
   and validation-only submit construction.
 

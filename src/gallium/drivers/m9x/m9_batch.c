@@ -74,14 +74,19 @@ m9_batch_add_reloc(struct m9_batch *batch, uint32_t command_dword,
                    uint32_t handle, uint64_t offset,
                    enum drm_parhelia_m9_reloc_kind kind, unsigned access)
 {
+   const unsigned access_mask = PARHELIA_M9_BO_READ | PARHELIA_M9_BO_WRITE;
+   unsigned bo_access = access & access_mask;
    int ret;
 
    if (!batch || command_dword >= batch->command_count ||
-       kind > PARHELIA_M9_RELOC_RESOURCE_6C || batch->sealed)
+       kind > PARHELIA_M9_RELOC_RESOURCE_6C || batch->sealed || !bo_access ||
+       access & ~(access_mask | PARHELIA_M9_RELOC_PACKED16_ODD) ||
+       ((access & PARHELIA_M9_RELOC_PACKED16_ODD) &&
+        kind != PARHELIA_M9_RELOC_DRAW16_END))
       return -EINVAL;
    if (batch->reloc_count == M9_MAX_RELOCS)
       return -ENOSPC;
-   ret = m9_batch_add_bo(batch, handle, access);
+   ret = m9_batch_add_bo(batch, handle, bo_access);
    if (ret)
       return ret;
    batch->relocs[batch->reloc_count++] = (struct drm_parhelia_m9_reloc) {
@@ -133,8 +138,10 @@ m9_batch_bind_surface(struct m9_batch *batch, uint8_t address_index,
    ret = m9_batch_emit_regs(batch, indices, values, 2);
    if (ret)
       return ret;
+   /* Destination reads depend on blend/logic-op state.  The current kernel
+    * executable boundary conservatively reserves every attachment both ways. */
    return m9_batch_add_reloc(batch, address_dword, handle, offset, kind,
-                             PARHELIA_M9_BO_WRITE);
+                             PARHELIA_M9_BO_READ | PARHELIA_M9_BO_WRITE);
 }
 
 static unsigned
@@ -275,26 +282,59 @@ int
 m9_batch_emit_draw32(struct m9_batch *batch, uint32_t handle,
                      uint64_t offset, uint32_t count, uint32_t flags)
 {
+   uint64_t span = 4ull * count;
    uint32_t base;
    int ret;
 
    if (!batch || !count || (offset & 3) ||
-       offset > UINT64_MAX - 4ull * count ||
+       span > UINT32_MAX || offset > UINT64_MAX - span ||
        (flags != 0x20000000u && flags != 0x60000000u) ||
        batch->command_count + 3 > M9_MAX_COMMAND_DWORDS)
       return -EINVAL;
    base = batch->command_count;
    batch->command[batch->command_count++] = 0x07000001u | flags;
    batch->command[batch->command_count++] = 0;
-   batch->command[batch->command_count++] = 4 * count;
+   batch->command[batch->command_count++] = span;
    ret = m9_batch_add_reloc(batch, base + 1, handle, offset,
                             PARHELIA_M9_RELOC_DRAW32_START,
                             PARHELIA_M9_BO_READ);
    if (ret)
       return ret;
-   return m9_batch_add_reloc(batch, base + 2, handle, offset + 4ull * count,
+   return m9_batch_add_reloc(batch, base + 2, handle, offset + span,
                              PARHELIA_M9_RELOC_DRAW32_END,
                              PARHELIA_M9_BO_READ);
+}
+
+int
+m9_batch_emit_draw16(struct m9_batch *batch, uint32_t handle,
+                     uint64_t offset, uint32_t count, uint32_t flags)
+{
+   uint64_t end, span;
+   uint32_t base;
+   int ret;
+
+   if (!batch || !count || (offset & 3) ||
+       (flags != 0x20000000u && flags != 0x60000000u) ||
+       batch->command_count + 3 > M9_MAX_COMMAND_DWORDS)
+      return -EINVAL;
+   span = 4ull * ((count + 1ull) / 2ull);
+   if (span > UINT32_MAX || offset > UINT64_MAX - span)
+      return -EOVERFLOW;
+   end = offset + span;
+   base = batch->command_count;
+   batch->command[batch->command_count++] = 0x06000001u | flags;
+   batch->command[batch->command_count++] = 0;
+   batch->command[batch->command_count++] = span;
+   ret = m9_batch_add_reloc(batch, base + 1, handle, offset,
+                            PARHELIA_M9_RELOC_DRAW16_START,
+                            PARHELIA_M9_BO_READ);
+   if (ret)
+      return ret;
+   return m9_batch_add_reloc(batch, base + 2, handle, end,
+                             PARHELIA_M9_RELOC_DRAW16_END,
+                             PARHELIA_M9_BO_READ |
+                             (count & 1 ?
+                              PARHELIA_M9_RELOC_PACKED16_ODD : 0));
 }
 
 int
@@ -459,7 +499,7 @@ m9_batch_prepare_submit(const struct m9_batch *batch,
 
    if (!batch || !command || !submit || !batch->command_count ||
        command->kind != M9_RESOURCE_COMMAND || !command->handle ||
-       !command->map || !batch->bo_count)
+       !command->map)
       return -EINVAL;
    bytes = (uint64_t)batch->command_count * sizeof(uint32_t);
    if (bytes > 32768 || bytes > command->size)
@@ -469,10 +509,11 @@ m9_batch_prepare_submit(const struct m9_batch *batch,
       .command_handle = command->handle,
       .command_length = bytes,
       .relocation_count = batch->reloc_count,
-      .relocations_ptr = (uintptr_t)batch->relocs,
+      .relocations_ptr = batch->reloc_count ?
+                         (uintptr_t)batch->relocs : 0,
       .bo_count = batch->bo_count,
       .flags = PARHELIA_M9_SUBMIT_VALIDATE_ONLY,
-      .bos_ptr = (uintptr_t)batch->bos,
+      .bos_ptr = batch->bo_count ? (uintptr_t)batch->bos : 0,
    };
    return 0;
 }

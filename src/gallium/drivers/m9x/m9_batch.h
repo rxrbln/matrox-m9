@@ -83,6 +83,8 @@ int m9_batch_emit_triangle_raster(struct m9_batch *batch, unsigned width,
                                   bool depth_write);
 int m9_batch_emit_draw32(struct m9_batch *batch, uint32_t handle,
                          uint64_t offset, uint32_t count, uint32_t flags);
+int m9_batch_emit_draw16(struct m9_batch *batch, uint32_t handle,
+                         uint64_t offset, uint32_t count, uint32_t flags);
 int m9_batch_emit_draw_numeric(struct m9_batch *batch, uint32_t start,
                                uint32_t count, uint32_t flags);
 int m9_primitive_map(enum m9_primitive primitive, uint32_t primitive_count,

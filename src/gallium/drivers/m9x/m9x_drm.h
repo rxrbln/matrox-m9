@@ -26,6 +26,12 @@ struct drm_parhelia_m9_create_bo {
 #define PARHELIA_M9_BO_READ (1u << 1)
 #define PARHELIA_M9_BO_WRITE (1u << 2)
 
+/*
+ * DRAW16_END only: the exclusive byte end names the upper halfword of the
+ * final dword.  Access bits remain independently derived from reloc kind.
+ */
+#define PARHELIA_M9_RELOC_PACKED16_ODD (1u << 3)
+
 struct drm_parhelia_m9_bo_ref {
    __u32 handle;
    __u32 flags;
