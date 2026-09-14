@@ -908,6 +908,13 @@ is runtime truth for the tested M9148 vendor configuration.  Keep the
 `0x68/0x60..67` and `0x8f/0x90..9f` paths distinct until their selection and
 roles are proved.
 
+The saved-resource audit now pins the full hash as
+`78434eea53365d762f7eda163d5981ab765d754d1bed9e5377ed231e30bc34fb`,
+the exact selector/port formula, and byte equality across startup sequences 0,
+8, 10, and 14.  A fresh diagnostic may use this exact 80-slot image, but it
+must initially retain the complete sequence-0 setup envelope because the
+smallest cold-safe surrounding transition subset has not been isolated.
+
 The isolated GLSL A/B/A differential in
 `parhelia-m9-glsl-bind-capture.md` proves that neither a vertex-only nor
 fragment-only program switch uploads `90..9f`; both atomically select a linked
@@ -1096,6 +1103,7 @@ but its format, pack alignment, and rendered extent must remain correct.
 
 | gap | consequence | smallest closing experiment |
 | --- | --- | --- |
+| cold fixed-triangle resource initialization | the command topology and relocation roles are exact, the canonical source arena is 0x192700 bytes with an exact 80-byte float2 access window, C2 is 0x1080 bytes, BE belongs to bound-surface usage 8, and four transients have a repeatable 0x16800 address lattice; source bytes, initial C2/BE bytes, and clean-room AB/AC derivation remain absent | snapshot one canonical source interval plus C2/BE at submit, derive AB/AC for that surface, then run one kernel-owned guarded two-pass triangle |
 | direct SPI/PInS fallback when PCI ROM mapping is absent or invalid | some cold boards may lack authoritative output data | reduce the statically joined `m9x1755` serial-flash transport to its GPIO/MMIO transaction sequence and validate it |
 | auxiliary requester address classes and hardware-owned rollover fields | optional auxiliary streaming cannot be enabled safely | force one auxiliary wrap with all eight descriptor words and allocation metadata |
 | ten relocation/control roles in the vendor full-context template | the template cannot be replayed safely; context switches must re-emit complete known state | vary one bound resource/control at a time and diff the 0xf8-byte template plus restore records |

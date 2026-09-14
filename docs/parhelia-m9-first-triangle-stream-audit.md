@@ -7,13 +7,14 @@ target.  Reproduce the checks with:
 
 ```sh
 python3 tools/m9-first-triangle-stream-evidence.py --self-test --sites
+python3 tools/m9-first-triangle-resources-evidence.py --self-test
 ```
 
 The result is deliberately narrower than "triangle ready."  The primary
 requester and memory-writeback completion path have passed hardware.  The
-two-pass command ordering is exact.  A cold, relocatable triangle still lacks
-several resource images and semantic relocation classes and must not be
-submitted by copying the vendor addresses.
+two-pass command ordering and the semantic relocation classes below are exact.
+A cold, relocatable triangle still lacks several resource images and derived
+surface fields and must not be submitted by copying vendor values.
 
 ## Current bring-up boundary
 
@@ -104,14 +105,14 @@ accesses.
 | P/21 | `b4` | transient 1 output | write | untagged, at least 256-byte aligned |
 | P/24 | `b8` | transient 2 output | write | untagged, at least 256-byte aligned |
 | P/57 | `00` | canonical vertex source | read | system address plus captured low tag 1 |
-| P/61, R/61 | `c2` | internal C2 resource | open read/write | untagged; observed page alignment |
+| P/61, R/61 | `c2` | 0x1080-byte common resource-bank backing | conservative read/write | untagged; observed page alignment |
 | P/66..67 | `8d/8e` | system range `[+0x10,+0xc0)` | read | same system BO, each address plus tag 1 |
 | P/105, R/103 | `69` | drawable/external resource | read/write | untagged, 4-KiB-aligned allocation |
 | P/111, R/109 | `6c` | linked record at `+0x300` | read | same system BO, 0x80 alignment, tag 1 |
 | R/22 | `b0` | linear color RT0 | write for this unblended draw | untagged, at least 256-byte aligned |
 | R/25 | `b8` | ordinary depth | conservative read/write | untagged, at least 256-byte aligned |
 | R/28 | `ba` | auxiliary depth | conservative read/write | untagged, at least 256-byte aligned |
-| R/31 | `be` | internal BE resource | open read/write | untagged; observed page alignment |
+| R/31 | `be` | auxiliary bound-surface resource, static usage 8 | conservative read/write | untagged; observed page alignment |
 | R/53..58 | `00..03` | transient inputs 0..3 | read | exact output permutation above |
 | R/66..67 | `8d/8e` | system range `[+0,+0x10)` | read | same system BO, each address plus tag 1 |
 | F/1 | `1b` | completion writeback word | write | kernel coherent address plus tag 2 |
@@ -202,27 +203,34 @@ cannot submit the saved triangle.
 The saved command stream alone is insufficient for a from-scratch replay:
 
 1. The canonical vertex source at captured `40f52000|1` was not snapshotted.
-   Its command declaration and 20-byte span are known, but the exact padded
-   four-element input bytes are not.
+   The preserved allocation result now pins its arena to `0x192700` bytes.
+   Index `10=0x14` is the per-element span and H03 `[0,4)` therefore reads the
+   exact interval `[+0,+0x50)`, but those 80 payload bytes remain absent.
 2. The four transient allocation contents were not captured between passes.
-   Their address routing is exact, while their minimum allocation extent and
-   guard requirements cannot be inferred from the observed `0x16800` spacing.
+   Their address routing is exact and four bases repeat with three exact
+   `0x16800` differences.  Four independent `0x16800` writable diagnostic BOs
+   followed by guards conservatively reproduce that lattice, but the value is
+   not proved as the hardware minimum or logical stream extent.
 3. The bytes covering the baseline linked record at system offset `0x300` are
    saved in the later GLSL A fixture, including
-   `m9x-linux-glsl-ab-20260914/fs/resource-15.bin`.  They are not yet a
-   self-contained relocatable fixture: the complete list and role of embedded
-   pointers is missing, so copying that 0x21000-byte snapshot does not make its
-   internal references valid in a new allocation.
-4. `c2` and raster `be` are definite resource addresses, but their contents,
-   bounds, and narrow access directions remain open.
-5. Raster `ab/ac` changes between literal float-like values and process-specific
-   fragments in controlled captures.  The exact state compiler must generate
-   this pair; the sequence-12 values must not be copied as addresses or generic
-   constants.
+   `m9x-linux-glsl-ab-20260914/fs/resource-15.bin`.  An aligned-dword scan of
+   both adjacent 0x580-byte A/B slots across sequences 15, 19, and 23 finds no
+   pointer into the captured local aperture or system allocation.  Their
+   embedded GPU-BO relocation map is empty; cold-context reuse and non-BO
+   compiler-internal references remain unproved.
+4. `c2` and raster `be` are definite resource addresses.  C2 is now tied to a
+   captured 0x1080-byte allocation and static paired usages `0x13/0x14`; BE is
+   statically tied to the bound-surface auxiliary pair with usage 8.  Initial
+   C2 bytes, BE bytes/extent, and their narrow access directions remain open.
+5. Raster `ab/ac` are ordinary packed surface state, not addresses.  Windows
+   static code derives their four halfwords from a per-surface table and a
+   device remap table.  The clean-room derivation for the chosen surface layout
+   is still missing; sequence-12 values must not be copied as generic constants.
 6. A fresh context requires the invariant 80-slot `8f/90..9f` image captured in
-   setup sequence 0.  The image bytes are pinned, but its smallest safe cold
-   upload and surrounding transition prerequisites have not been hardware
-   isolated.
+   setup sequence 0.  Its `0x280` payload, selector/port grammar, and equality
+   across setup sequences 0, 8, 10, and 14 are pinned.  Its smallest safe cold
+   surrounding envelope has not been hardware isolated, so the first
+   diagnostic should retain the full sequence-0 setup envelope.
 
 These items are the remaining evidence needed for an exact low-level triangle
 fixture.  The existing CPU `struct m9_vertex` repack is an API-side staging
@@ -243,7 +251,9 @@ one kernel-owned known-layout job.
 3. Allocate every operand as a distinct DMA32 BO with page guard/sentinel
    regions.  Keep command, source, system record, `69`, `c2`, `be`, four
    transients, RT0, depth, auxiliary depth, and fence storage separately
-   identifiable.  Do not infer size from adjacency in the vendor address map.
+   identifiable.  Give each transient at least `0x16800` writable bytes and a
+   following guard as a conservative probe; do not expose that observed spacing
+   as a hardware extent.
 4. CPU-clear the linear RT to opaque magenta and fill all guards and unused
    resources with distinct sentinels.  Publish CPU writes before the GPU job.
 5. Before enabling execution, pass the complete templated operation through
@@ -251,7 +261,7 @@ one kernel-owned known-layout job.
    typed relocations above.  Run negative cases for a missing relocation,
    literal/relocation confusion at `01` and `be`, overlap, bad tag, bad range,
    and end overflow.
-6. Close the six missing byte/layout items above.  Then upload the pinned
+6. Close the remaining byte/layout items above.  Then upload the pinned
    invariant context state and execute exactly one preprocess plus one raster
    pass with six kernel-owned transition targets and the expanded footer.
 7. Use one absolute 100 ms deadline.  On timeout, record both fence words,
