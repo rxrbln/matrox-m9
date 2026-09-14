@@ -110,6 +110,8 @@ bool m9x_gem_is_dma(struct drm_gem_object *gem);
 bool m9x_gem_is_vram(struct drm_gem_object *gem);
 struct drm_gem_object *m9x_gem_create_object(struct drm_device *drm,
 					      size_t size);
+int m9x_vram_pin(struct drm_gem_vram_object *bo);
+void m9x_vram_unpin(struct drm_gem_vram_object *bo);
 int m9x_modeset_init(struct m9x_device *mdev);
 void m9x_modeset_fini(struct m9x_device *mdev);
 irqreturn_t m9x_irq_handler(int irq, void *arg);

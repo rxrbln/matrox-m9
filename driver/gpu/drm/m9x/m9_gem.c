@@ -82,6 +82,39 @@ struct drm_gem_object *m9x_gem_create_object(struct drm_device *drm,
 	return &bo->vram.bo.base;
 }
 
+int m9x_vram_pin(struct drm_gem_vram_object *bo)
+{
+	struct ttm_operation_ctx ctx = { false, false };
+	int ret;
+
+	ret = ttm_bo_reserve(&bo->bo, true, false, NULL);
+	if (ret)
+		return ret;
+	if (!bo->bo.pin_count) {
+		bo->placement.placement = bo->placements;
+		bo->placement.num_placement = 1;
+		bo->placements[0].mem_type = TTM_PL_VRAM;
+		bo->placements[0].flags = 0;
+		bo->placements[0].fpfn = 0;
+		bo->placements[0].lpfn = 0;
+		ret = ttm_bo_validate(&bo->bo, &bo->placement, &ctx);
+		if (ret)
+			goto out;
+	}
+	ttm_bo_pin(&bo->bo);
+out:
+	ttm_bo_unreserve(&bo->bo);
+	return ret;
+}
+
+void m9x_vram_unpin(struct drm_gem_vram_object *bo)
+{
+	if (!ttm_bo_reserve(&bo->bo, false, false, NULL)) {
+		ttm_bo_unpin(&bo->bo);
+		ttm_bo_unreserve(&bo->bo);
+	}
+}
+
 static struct m9x_bo *m9_bo_create(struct drm_device *drm, size_t size)
 {
 	struct m9x_bo *bo;

@@ -406,6 +406,7 @@ static int m9_submit_validate(struct m9x_device *mdev,
 	struct drm_parhelia_m9_reloc *relocs = NULL;
 	struct drm_parhelia_m9_bo_ref *refs = NULL;
 	struct drm_gem_object **bos = NULL;
+	bool *vram_pinned = NULL;
 	struct m9x_bo *command_bo;
 	u8 *expected = NULL;
 	u32 *image = NULL;
@@ -458,7 +459,9 @@ static int m9_submit_validate(struct m9x_device *mdev,
 	}
 	if (args->bo_count) {
 		bos = kcalloc(args->bo_count, sizeof(*bos), GFP_KERNEL);
-		if (!bos) {
+		vram_pinned = kcalloc(args->bo_count, sizeof(*vram_pinned),
+				      GFP_KERNEL);
+		if (!bos || !vram_pinned) {
 			ret = -ENOMEM;
 			goto out;
 		}
@@ -493,7 +496,12 @@ static int m9_submit_validate(struct m9x_device *mdev,
 				goto out;
 			}
 			bos[i] = &bo->dma.base;
-		} else if (!m9x_gem_is_vram(bos[i])) {
+		} else if (m9x_gem_is_vram(bos[i])) {
+			ret = m9x_vram_pin(drm_gem_vram_of_gem(bos[i]));
+			if (ret)
+				goto out;
+			vram_pinned[i] = true;
+		} else {
 			ret = -EINVAL;
 			goto out;
 		}
@@ -509,6 +517,11 @@ static int m9_submit_validate(struct m9x_device *mdev,
 	 * register masks and BO reservation fences are complete.
 	 */
 out:
+	if (vram_pinned)
+		for (i = 0; i < args->bo_count; i++)
+			if (vram_pinned[i])
+				m9x_vram_unpin(drm_gem_vram_of_gem(bos[i]));
+	kfree(vram_pinned);
 	m9_put_bos(bos, args->bo_count);
 	kfree(bos);
 	kfree(relocs);
