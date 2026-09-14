@@ -22,6 +22,16 @@ several registers moved and — dangerously — **their old addresses were reuse
 something else**.  The rendering engine is unrelated to the MGA-lineage blitter and
 is out of scope; the driver runs the M9 with shadowfb only.
 
+The modern M9148 target's read-only warm snapshot confirms that this similarity
+extends to the complete modesetting flow, not just the register layout. Firmware
+left controller 0 in a conventional linear 32-bpp 1024x768 mode (pitch 1024,
+surface offset zero) with the standard 65 MHz 1024x768 timing and the external
+digital link already trained. A production KMS driver can reuse the mature
+Parhelia atomic pipe, framebuffer, gamma, vblank, and event flow through a common
+implementation. Register maps and encodings, controller count, output routing,
+PLL programming, and M9148 external-link handling remain chip operations. See
+`captures/m9x-cleanroom-warm-display-20260914/`. `[HW]`
+
 ## Address map at a glance
 
 BAR0 = framebuffer aperture (256 MB on the M9148, regardless of installed RAM),
