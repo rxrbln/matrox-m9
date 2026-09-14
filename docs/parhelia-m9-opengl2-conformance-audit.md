@@ -102,7 +102,7 @@ and a visible result joined in the same fixture.
 | derivatives | live `dFdx`/`dFdy` results and static DDX/DDY selectors | isolate nonconstant X/Y gradients and finish their native-slot join |
 | discard/KIL | live conditional and unconditional discard results plus static KILL lowerer | locate packed conditional KIL slots and validate helper/coverage behavior |
 | fragment depth output | live `gl_FragDepth=0.25` color/depth result plus static one-component semantic `0x13` and result-routing vocabulary | native output-route join and later-depth-test ordering replay |
-| four fragment color outputs | runtime-sized `gl_FragData[gl_MaxDrawBuffers]` constructor, static target compiler and MRT emitter | distinct four-attachment result capture |
+| four fragment color outputs | runtime-sized `gl_FragData[gl_MaxDrawBuffers]` constructor, static target compiler/emitter, and live RT0 result; RT1/all-target attempts finish then wedge during readback/teardown | recover safe targets 1--3 routing and retirement before another result capture |
 | vertex position, point size, clip vertex; fragment color/depth built-ins | exact logical semantics `0x0d..0x13`, component counts and stage presence masks; partial fixed-function/point evidence | direct GLSL result fixtures to join every logical semantic to its native packed route |
 | compiler resource limits | live advertised limits: 16 attributes, 4 vertex samplers, 16 fragment samplers, 20 combined, 512 uniform components per stage, 60 varying floats, 4 draw buffers; active `vec4[128]` and erroneous limit+1 `vec4[129]` both link; D3D9 publishes 256 VS vec4 constants, 32 VS/PS temporaries, 512 PS slots, and four MRTs | recover actual native allocation limits and enforce a truthful new-driver limit instead of reproducing the vendor link bug |
 | program transport and termination | static two-dword slots, inline upload, terminal form; live `0x6c` and full system-resource snapshots | finish record grammar, native storage/entries/counts, endpoint semantics, and relocations |
@@ -128,11 +128,12 @@ conformance claim:
   and the primary requester; no fast-context-switch, fast-trilinear,
   multiple-pipe, or volumetric-shadow M9 path is present in the pinned images.
 
-The aging vendor installation can be retired only after the rows marked open
-have either a preserved live capture, a conclusive static proof that no public
-path exists, or an explicit decision to keep the corresponding capability
-disabled.  New-driver replay tests are still required after capture; preserved
-vendor behavior does not prove the new kernel/Mesa implementation.
+The aging vendor installation can be retired only after every item in the
+remaining-work column has either preserved live evidence, conclusive static
+proof that no public path exists, or an explicit decision to keep the
+corresponding capability disabled.  New-driver replay tests are still required
+after capture; preserved vendor behavior does not prove the new kernel/Mesa
+implementation.
 
 <!-- Copyright 2026 Rene Rebe <rene@exactco.de> -->
 <!-- SPDX-License-Identifier: GPL-2.0 -->
