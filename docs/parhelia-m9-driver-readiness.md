@@ -64,9 +64,11 @@ The live compiler is OpenGL 2.0 / GLSL 1.10. Its advertised limits are 16
 vertex attributes, 4 vertex samplers, 16 fragment samplers, 20 combined
 samplers, 512 uniform components in each stage, 60 varying floats, and 4 draw
 buffers.  Static emission proves four full fragment samplers and four
-descriptor-only, point-filtered vertex samplers; a five-fragment-texture result
-is still required before trusting the larger frontend claim.  The table
-distinguishes compiler acceptance from a native encoding.
+descriptor-only, point-filtered vertex samplers.  A live shader with five
+dependent fragment textures produces the exact result through five serialized
+texture/raster blocks in one submission, proving compiler scheduling beyond
+the physical slot count.  The table distinguishes compiler acceptance from a
+native encoding or an implemented scheduling limit.
 
 | GLSL/ARB family | evidence now | driver status | smallest remaining check |
 |---|---|---|---|

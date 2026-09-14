@@ -569,16 +569,19 @@ bounds:
 | vertex samplers | 4 |
 | fragment samplers | 16 logical |
 | combined samplers | 20 |
-| live texture state blocks | 4 captured/static units |
+| simultaneous physical fragment state blocks | 4; logical samplers can be serialized |
 | vertex uniform components | 512 |
 | fragment uniform components | 512 |
 | varying floats | 60, with 14-entry varying remap |
 | draw buffers | 4 |
 | native backing-bank boundary | 384 instructions / 96 32-byte lines |
 
-Report the lower physical/live limit whenever the logical-to-physical mapping
-is not proved.  In particular, do not expose 16 independently live fragment
-texture units until sampler-to-four-state-block scheduling is captured.
+Report the lower implemented limit whenever the logical-to-physical mapping is
+not supported by the new compiler.  The vendor's five-dependent-sampler
+capture proves correct serialization into five texture/raster blocks over the
+four physical fragment slots.  Do not expose all 16 logical fragment samplers
+until equivalent dependency/intermediate management and N/N+1 boundaries are
+implemented and tested.
 
 ## 8. Draw frontend and fixed render state
 
