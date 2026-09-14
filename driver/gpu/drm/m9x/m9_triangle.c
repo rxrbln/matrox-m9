@@ -10,6 +10,7 @@
  * ever making the incomplete operation reachable by the GPU.
  */
 #include <linux/dma-mapping.h>
+#include <linux/iosys-map.h>
 #include <linux/kernel.h>
 #include <linux/module.h>
 #include <linux/overflow.h>
@@ -34,6 +35,7 @@
 #define M9_TRIANGLE_C2_BYTES		0x1080u
 #define M9_TRIANGLE_BE_BYTES		SZ_1M
 #define M9_TRIANGLE_TRANSIENT_BYTES	0x16800u
+#define M9_TRIANGLE_VRAM_BASE		0x10000000ull
 
 static bool m9_triangle_diag;
 module_param(m9_triangle_diag, bool, 0400);
@@ -66,6 +68,7 @@ struct m9_triangle_resource_spec {
 	u32 payload_bytes;
 	u32 alignment;
 	u32 fill;
+	bool local;
 };
 
 struct m9_triangle_resource {
@@ -75,6 +78,8 @@ struct m9_triangle_resource {
 	u32 alloc_bytes;
 	u32 guard_bytes;
 	u32 guard;
+	struct drm_gem_vram_object *vram;
+	struct iosys_map map;
 };
 
 struct m9_triangle_job_addresses {
@@ -191,21 +196,21 @@ static const struct m9_triangle_resource_spec m9_triangle_specs[] = {
 	[M9_TRI_SECONDARY] = { "secondary", M9_TRIANGLE_SECONDARY_BYTES,
 			       0x80, 0 },
 	[M9_TRI_RESOURCE69] = { "resource69", M9_TRIANGLE_RESOURCE69_BYTES,
-				  SZ_4K, 0x69000000 },
-	[M9_TRI_C2] = { "c2", M9_TRIANGLE_C2_BYTES, SZ_4K, 0 },
-	[M9_TRI_BE] = { "be", M9_TRIANGLE_BE_BYTES, SZ_4K, 0 },
+				  SZ_4K, 0x69000000, true },
+	[M9_TRI_C2] = { "c2", M9_TRIANGLE_C2_BYTES, SZ_4K, 0, true },
+	[M9_TRI_BE] = { "be", M9_TRIANGLE_BE_BYTES, SZ_4K, 0, true },
 	[M9_TRI_TRANSIENT0] = { "transient0", M9_TRIANGLE_TRANSIENT_BYTES,
-				  0x100, 0x54520000 },
+				  0x100, 0x54520000, true },
 	[M9_TRI_TRANSIENT1] = { "transient1", M9_TRIANGLE_TRANSIENT_BYTES,
-				  0x100, 0x54520001 },
+				  0x100, 0x54520001, true },
 	[M9_TRI_TRANSIENT2] = { "transient2", M9_TRIANGLE_TRANSIENT_BYTES,
-				  0x100, 0x54520002 },
+				  0x100, 0x54520002, true },
 	[M9_TRI_TRANSIENT3] = { "transient3", M9_TRIANGLE_TRANSIENT_BYTES,
-				  0x100, 0x54520003 },
+				  0x100, 0x54520003, true },
 	[M9_TRI_DEPTH] = { "depth", M9_TRIANGLE_SURFACE_BYTES, 0x100,
-			     U32_MAX },
+			     U32_MAX, true },
 	[M9_TRI_AUX_DEPTH] = { "aux-depth", M9_TRIANGLE_SURFACE_BYTES, 0x100,
-				 0xa5a5a5a5 },
+				 0xa5a5a5a5, true },
 };
 
 static const u32 m9_triangle_flat_source[] = {
@@ -314,6 +319,62 @@ static u32 m9_triangle_guard(enum m9_triangle_resource_id id)
 	return 0xd9a60000u | id;
 }
 
+static int m9_triangle_alloc_vram(struct m9x_device *mdev,
+				  enum m9_triangle_resource_id id,
+				  u32 alloc_bytes, u32 guard_offset)
+{
+	const struct m9_triangle_resource_spec *spec = &m9_triangle_specs[id];
+	struct m9_triangle_resource *resource =
+		&mdev->transport.triangle->resource[id];
+	struct drm_gem_vram_object *vram;
+	s64 offset;
+	u64 end;
+	u32 word;
+	int ret;
+
+	vram = drm_gem_vram_create(&mdev->drm, alloc_bytes,
+				    max_t(u32, spec->alignment / PAGE_SIZE, 1));
+	if (IS_ERR(vram))
+		return PTR_ERR(vram);
+	ret = m9x_vram_pin(vram);
+	if (ret)
+		goto out_put;
+	offset = drm_gem_vram_offset(vram);
+	if (offset < 0 || check_add_overflow((u64)offset, (u64)alloc_bytes,
+					     &end) || end > mdev->vram_size ||
+	    check_add_overflow(M9_TRIANGLE_VRAM_BASE, (u64)offset, &end) ||
+	    end > U32_MAX || (end & (spec->alignment - 1))) {
+		ret = offset < 0 ? (int)offset : -ERANGE;
+		goto out_unpin;
+	}
+	ret = ttm_bo_reserve(&vram->bo, true, false, NULL);
+	if (ret)
+		goto out_unpin;
+	ret = drm_gem_vram_vmap(vram, &resource->map);
+	ttm_bo_unreserve(&vram->bo);
+	if (ret)
+		goto out_unpin;
+
+	resource->vram = vram;
+	resource->bus = end;
+	resource->payload_bytes = spec->payload_bytes;
+	resource->alloc_bytes = alloc_bytes;
+	resource->guard_bytes = alloc_bytes - spec->payload_bytes;
+	resource->guard = m9_triangle_guard(id);
+	for (word = 0; word < spec->payload_bytes / sizeof(u32); word++)
+		iosys_map_wr(&resource->map, word * sizeof(u32), u32, spec->fill);
+	for (word = 0; word < resource->guard_bytes / sizeof(u32); word++)
+		iosys_map_wr(&resource->map, guard_offset + word * sizeof(u32),
+			     u32, resource->guard);
+	return 0;
+
+out_unpin:
+	m9x_vram_unpin(vram);
+out_put:
+	drm_gem_vram_put(vram);
+	return ret;
+}
+
 static int m9_triangle_alloc_one(struct m9x_device *mdev,
 				 enum m9_triangle_resource_id id)
 {
@@ -324,18 +385,19 @@ static int m9_triangle_alloc_one(struct m9x_device *mdev,
 	u32 guard_offset, alloc_bytes;
 	u64 end;
 
-	if (resource->cpu)
+	if (resource->cpu || resource->vram)
 		return 0;
-	/* A guard page after an exact 1 MiB BE image makes the coherent
-	 * allocation cross an order boundary and require 2 MiB of contiguous
-	 * DMA32 memory.  Keep that exact-size resource at one MiB; all other
-	 * resources retain their trailing guard page. */
+	/* BE is an exact, context-owned 1 MiB image.  Keep that allocation at its
+	 * recovered extent; all other diagnostic resources retain a guard page. */
 	if (id == M9_TRI_BE)
 		guard_offset = spec->payload_bytes;
 	else if (check_add_overflow(spec->payload_bytes, (u32)PAGE_SIZE,
 				    &guard_offset))
 		return -EOVERFLOW;
 	alloc_bytes = PAGE_ALIGN(guard_offset);
+	if (spec->local)
+		return m9_triangle_alloc_vram(mdev, id, alloc_bytes,
+					      guard_offset);
 	resource->cpu = dmam_alloc_coherent(dev, alloc_bytes, &resource->bus,
 					    GFP_KERNEL | __GFP_ZERO);
 	if (!resource->cpu)
@@ -365,13 +427,22 @@ static int m9_triangle_verify_guards(const struct m9x_triangle_diag *diag)
 
 	for (id = 0; id < M9_TRI_RESOURCE_COUNT; id++) {
 		const struct m9_triangle_resource *resource = &diag->resource[id];
-		const u32 *guard = (const u32 *)((const u8 *)resource->cpu +
-						 resource->payload_bytes);
 		unsigned int word;
 
-		for (word = 0; word < resource->guard_bytes / sizeof(u32); word++)
-			if (READ_ONCE(guard[word]) != resource->guard)
+		for (word = 0; word < resource->guard_bytes / sizeof(u32); word++) {
+			u32 value;
+
+			if (resource->vram)
+				value = iosys_map_rd(&resource->map,
+					resource->payload_bytes + word * sizeof(u32),
+					u32);
+			else
+				value = READ_ONCE(*(const u32 *)((const u8 *)
+					resource->cpu + resource->payload_bytes +
+					word * sizeof(u32)));
+			if (value != resource->guard)
 				return -EOVERFLOW;
+		}
 	}
 	return 0;
 }
@@ -766,4 +837,27 @@ int m9x_triangle_selftest(void)
 			return -EINVAL;
 	}
 	return 0;
+}
+
+void m9x_triangle_fini(struct m9x_device *mdev)
+{
+	struct m9x_triangle_diag *diag = mdev->transport.triangle;
+	unsigned int id;
+
+	if (!diag)
+		return;
+	for (id = 0; id < M9_TRI_RESOURCE_COUNT; id++) {
+		struct m9_triangle_resource *resource = &diag->resource[id];
+		struct drm_gem_vram_object *vram = resource->vram;
+
+		if (!vram)
+			continue;
+		if (!ttm_bo_reserve(&vram->bo, false, false, NULL)) {
+			drm_gem_vram_vunmap(vram, &resource->map);
+			ttm_bo_unreserve(&vram->bo);
+		}
+		m9x_vram_unpin(vram);
+		drm_gem_vram_put(vram);
+		resource->vram = NULL;
+	}
 }

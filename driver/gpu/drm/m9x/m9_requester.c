@@ -384,4 +384,5 @@ void m9x_fini(struct m9x_device *mdev)
 	pci_clear_master(mdev->pdev);
 	mdev->transport.transport_armed = false;
 	mutex_unlock(&mdev->transport.lock);
+	m9x_triangle_fini(mdev);
 }

@@ -103,6 +103,7 @@ int m9x_submit_ioctl(struct drm_device *drm, void *data,
 int m9x_submit_noop(struct m9x_device *mdev, u64 *point);
 int m9x_submit_triangle_diag(struct m9x_device *mdev, u32 color, u64 *point);
 int m9x_triangle_selftest(void);
+void m9x_triangle_fini(struct m9x_device *mdev);
 int m9x_submit_selftest(void);
 struct m9x_bo *m9x_bo_lookup(struct m9x_device *mdev,
 			     struct drm_file *file, u32 handle);
