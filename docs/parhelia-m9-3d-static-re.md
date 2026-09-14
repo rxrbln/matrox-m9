@@ -1090,6 +1090,16 @@ The surrounding resource-bind packet writes `68 <- 0`, `6b <- +0xc8`, and
 relocates resource `+0xb8/+0xc0` into `6c` with usage `0x1a`, descriptor `4`.
 Dirty bit `0x08` controls the `1320/1340/1360` group.
 
+The Windows producer fixes their stage assignment and its differing state
+layout.  Vertex/declaration-conversion wrapper `0x13c2c0` calls state builders
+`0x13b7e0`, `0x13b9b0`, `0x13bb80`, and `0x13bda0` before the same fixed
+fragment linker.  `0x13b7e0` copies device `+0xac0..+0xadc` to pass
+`+0x7c0..+0x7dc`; selector `1300` emits pass
+`+0x7c0,+0x7c4,+0x7c8,+0x844,+0x7d0,+0x7d4,+0x7d8,+0x840` in port order.
+`0x13b9b0` copies 24 dwords from device `+0xb44` to pass `+0x7e0`, and
+selectors `1320/1340/1360` emit the three consecutive eight-dword pieces
+`+0x7e0..+0x83c` [BIN][DER].
+
 Windows function `0xf7c60` and Linux twin `m9x14617` at `0x4b8fa0` use selector
 `0x80001500` and all eight data ports.  The Linux state map is [BIN]:
 
@@ -1104,10 +1114,14 @@ Windows function `0xf7c60` and Linux twin `m9x14617` at `0x4b8fa0` use selector
 | `66` | relocation `+0x868/+0x870`, usage `0x13`, descriptor `5` |
 | `67` | same resource, usage `0x14`, descriptor `2` |
 
-These are likely constant/control records adjacent to the native program store
-[INF].  Captures should initially call them `upload-1300`, `upload-1320`,
-`upload-1340`, `upload-1360`, and `upload-1500`, not vertex or fragment
-constants, until stage-specific diffs establish the names.
+Builder `0x13bda0` produces the `1500` state in the same fixed-function
+vertex/declaration-conversion path.  On Windows, `f7c60` relocates resources
+`+0x868/+0x86c` into ports `62/63` with usage `0x15/0x16` and resources
+`+0x850/+0x854` into ports `66/67` with usage `0x13/0x14`; the other ports are
+dimensions and controls.  The five selectors are therefore auxiliary
+fixed-function vertex-conversion records, and `1500` is specifically a
+resource/control record.  They are not generic vertex or fragment constant
+banks [BIN][DER].
 
 ## Matrox GLSL compiler interface
 
@@ -1238,8 +1252,16 @@ translated program back through compiler frontend `0x105658a0`.
 
 No Iris header or tag constants occur in `MxMD.dll`, and `MxMGLX.dll` does not
 import `MxMD.dll` [BIN].  The final Iris-to-native lowering therefore lies
-behind another opaque interface or code path [INF]; the traced serializer
-cannot be treated as the hardware ISA packer.
+behind another interface or code path; the traced serializer cannot be treated
+as the hardware ISA packer.
+
+The per-instruction representation is nevertheless shared.  MxMD converter
+`0x1a3e00` reads the same token offsets formatted below: token `+0x08` bits
+0/1 become conditional and predicate-enable flags, `+0x04` supplies the D3D
+opcode, `+0x44` is the result, `+0x7c+0x38*n` are four sources, `+0x0c` is the
+predicate descriptor, and each source's trailing auxiliary pair is retained
+[BIN][DER].  Thus the opaque boundary is the container/entry interface, not
+the instruction layout or its descriptor vocabulary.
 
 ## Iris instruction token layout
 
@@ -1395,8 +1417,14 @@ match it writes the translated slot number into the `+0x5bbc` table, then
 raises `+0x5bf4` to the largest occupied end.  This is a directly usable Mesa
 link rule: fragment inputs must be matched by name/type/size and allocated
 through an explicit remap.  It does not reveal how those logical slots are
-encoded in native result/source descriptors or routed by hardware; that last
-join still requires paired stage outputs.
+encoded in the final seven-bit selector, but the next static join is now known.
+The table and high-water mark are passed through `0x1055deb0` during paired
+program installation.  MxMD's `o` converters `0x1a34e0/0x1a3760` then scan a
+16-byte-stride link table at compiler context `+0x34..+0x38`, match the logical
+index against entry `+0x04`, and replace it with entry `+0x00` before native
+descriptor encoding.  The `v` input path uses the same record form at context
+`+0x24..+0x28` [BIN][DER].  This proves that logical varying order is routed
+through an explicit physical-index table before packing.
 
 The 16-fragment-sampler compiler check is a logical program-resource limit.  It
 does not prove 16 physical texture pipes and does not contradict the four live
@@ -1427,7 +1455,9 @@ Static analysis has established these native facts:
 * program resources can be uploaded inline or fetched by bus mastering [BIN];
 * GPU resource addresses preserve three flag bits above a 29-bit address [BIN];
 * selectors `0x1300,0x1320,0x1340,0x1360,0x1500` address complete auxiliary
-  eight-dword records [BIN];
+  eight-dword records in the fixed-function vertex/declaration-conversion
+  path; `1320..1360` partition one 24-dword table and `1500` contains two
+  relocation-backed resource pairs plus controls [BIN][DER];
 * index `44` is an eight-write record port in two relocation-backed paths
   [BIN][DER];
 * `2b,2a,e6` carries 2D rectangle/stretch and mask/pixel inline payloads, with
@@ -1439,20 +1469,27 @@ Static analysis has established these native facts:
   `W1[18:14]`; it also fixes the gated seven-bit descriptor fields, split
   selector, class-`0xb` bank remap, and two scattered component-mask maps
   [BIN][DER].
-* whole-program emitter `0x1db510` can replace one translated instruction with
-  a complementary `0x1d/0x1e` result pair, or prepend two identical synthetic
-  slots and set output property `+0x397` bit `0x20000000` [BIN][DER];
+* whole-program emitter `0x1db510` tests source-zero auxiliary fields in the
+  current instruction IR and can replace it with a complementary `0x1d/0x1e`
+  result pair, or prepend two identical synthetic slots and set output property
+  `+0x397` bit `0x20000000` [BIN][DER];
 * compiler-run metadata at output `+0x39b/+0x39c` drives cross-slot patching
   during stream concatenation [BIN][DER];
 * the GLSL stage linker builds a fourteen-entry vertex-output/fragment-input
-  varying remap after exact name, type, and size checks [BIN][DER].
+  varying remap after exact name, type, and size checks, and MxMD resolves `o`
+  and `v` descriptors through 16-byte physical-index tables before native
+  packing [BIN][DER].
+* MxMGLX's register-file strings join MxMD descriptor classes: `v` uses prefix
+  `0x10000000`, `c/ci/cb` use `0x20000000`, system inputs use
+  `0x40000000`, `p` uses `0x60000000`, and `s` uses `0x70000000`
+  [BIN][DER].
 
 The native field boundaries and encoder are no longer the blocking unknown.
-What remains ambiguous is the semantic mapping from each numeric native
-operation to an ALU/texture/control mnemonic, the register-class names of the
-already-proven source and result descriptors, the `xyzw` order of scattered
-component metadata, native predicate encoding, the execution meaning of the
-program property, and the hardware encoding of logical varying slots.  The
+What remains ambiguous is the complete semantic mapping from each numeric
+native operation to an ALU/texture/control mnemonic, the `xyzw` order of
+scattered component metadata, special-lowerer predicate details, the execution
+meaning of the program property, and the final seven-bit physical varying
+selector.  The
 readable operation-name switch in `MxMGLX.dll` decodes Iris tokens and is not a
 native disassembler.  These semantic joins still require controlled compiler
 outputs, including output properties and generated-run boundaries, capturing

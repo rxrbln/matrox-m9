@@ -234,6 +234,50 @@ floating-point constants.  Their final D3D semantic names remain unresolved.
 A prior sign-test interpretation as `F bit31` is wrong.  Windows and Linux both
 test the sign of the low byte, proving `F bit7`.
 
+### Auxiliary records belong to this vertex path
+
+The previously neutral `upload-1300` through `upload-1500` names can now be
+assigned to this fixed-function vertex/declaration-conversion path.  Wrapper
+`0x13c2c0`, whose only external use is the pipeline around the vertex
+declaration and device `+0xac0`, calls the following four state builders before
+linker/padder `0x13bf80` [BIN]:
+
+```text
+call 0x13c409 -> 0x13b7e0
+call 0x13c436 -> 0x13b9b0
+call 0x13c464 -> 0x13bb80
+call 0x13c4a8 -> 0x13bda0
+```
+
+Builder `0x13b7e0` copies eight floats from device `+0xac0..+0xadc` to the
+current Windows pass at `+0x7c0..+0x7dc` and derives two adjacent controls.
+Emitter `0xf78c0` then forms selector `0x80001300` as follows; this is the exact
+Windows map and explains why it mixes copied values and controls [BIN][DER]:
+
+| port | Windows pass source |
+|---:|---:|
+| `60,61,62` | `+0x7c0,+0x7c4,+0x7c8` |
+| `63,64,65,66,67` | `+0x844,+0x7d0,+0x7d4,+0x7d8,+0x840` |
+
+Builder `0x13b9b0` copies exactly 24 dwords (`rep movsd`, `ecx=0x18`) from
+device `+0xb44` to pass `+0x7e0`.  The next three selectors are consecutive
+pieces of that one table:
+
+| selector | Windows pass source |
+|---:|---:|
+| `0x80001320` | `+0x7e0..+0x7fc` |
+| `0x80001340` | `+0x800..+0x81c` |
+| `0x80001360` | `+0x820..+0x83c` |
+
+Builder `0x13bda0` fills resource/control state at `+0x848..+0x86c`.
+Emitter `0xf7c60` consumes it for selector `0x80001500`: ports `62/63` are two
+relocations of resource `+0x868/+0x86c` with usage pairs `0x15/0x16`, ports
+`66/67` are two relocations of resource `+0x850/+0x854` with usage pairs
+`0x13/0x14`, and the other ports carry dimensions and controls.  Selector
+`1500` is therefore a vertex-conversion resource/control record.  It is not a
+shader constant record.  The companion static-RE note retains the Linux field
+offsets, whose object layout differs while preserving all five selectors.
+
 ## Native instruction encoder
 
 The D3D compiler supplies the missing join between its optimizer and native
@@ -269,7 +313,66 @@ data-flow check: the first RCP instruction receives the caller's source in
 temporary in `+0x1c`; the final instruction reads intermediate temporaries
 through `+0x14/+0x18/+0x20` and places the caller's result descriptor in
 `+0x1c`.  This proves the direction shown in the table.  Exact register-class
-names remain unresolved.
+names are joined below.
+
+Converter `0x1a3e00` supplies a direct bridge from the compiler token described
+in the companion note to this backend's 0x88-byte instruction IR [BIN][DER]:
+
+| backend IR | compiler token source |
+|---:|---:|
+| `+0x00,+0x04` | token `+0x08` bits 0 and 1, conditional and predicate-enable |
+| `+0x0c` | token `+0x04` low 16-bit D3D operation |
+| `+0x14` | destination descriptor at token `+0x44` |
+| `+0x1c,+0x20,+0x24,+0x28` | four descriptors at token `+0x7c+0x38*n` |
+| `+0x30` | predicate descriptor at token `+0x0c` |
+| `+0x60,+0x64` | source-zero auxiliary dwords at token `+0xa4,+0xa8` |
+| `+0x68..+0x7c` | corresponding auxiliary pairs for sources one through three |
+
+This also corrects an earlier object-lifetime mistake: IR `+0x60/+0x64` are
+per-source fields carried by each instruction, not members of a program-wide
+context.
+
+### Compiler register files and native descriptor classes
+
+The register-file formatter at `MxMGLX.dll` `0x106ada60` names the same
+low-five-bit descriptor codes switched on by MxMD converters `0x1a34e0`,
+`0x1a3760`, and `0x1a3ac0`.  This joins the accepted compiler files to native
+descriptor classes [BIN][DER].  For a direct logical index `i`, the proven
+source transforms are:
+
+| code | compiler name | native descriptor transform |
+|---:|---|---|
+| `0` | `r` temporary | `2*i` |
+| `1` | `v` input | `0x10000000 + 2*i` |
+| `2` | `c` constant | `0x20000000 + 2*i` |
+| `3` | `a` address | `2*i`, with relative form checked separately |
+| `6` | `o` output | output-link remap before final encoding |
+| `7` | `ci` | `0x20000000 + 2*i` |
+| `10` | `s` sampler | `0x70000000 + i` |
+| `14` | `cb` constant buffer | `0x20000000 + 2*i` |
+| `17` | `vPos`/`vFace`/`gp` system input | linker remap plus `0x40000000` |
+| `18` | `l` literal | `i - 0x20000000` |
+| `30,31` | `rb`,`ri` internal | `2*i` |
+
+All other source file codes are rejected by the 32-byte dispatch table at
+`0x1a3a98`.  Destinations accept only `r`, `a`, `o`, `p`, `rb`, and `ri`.
+The direct transforms for `r/a/rb/ri` are `2*i`, while predicate file `p`
+becomes `0x60000000 + 2*i`; `o` goes through the output-link table and its
+special sentinel case.  These are compiler-facing descriptor classes.  The
+seven-bit physical selector is selected later by the instruction format, so a
+class prefix must not be truncated before packing.
+
+The varying remap also reaches this native descriptor conversion.  The GLSL
+linker builds fourteen dwords at `MxMGLX.dll +0x5bbc` and passes that table plus
+its high-water mark through `0x1055deb0` while installing the paired stage
+program.  In MxMD, an `o` descriptor enters the context's `+0x34..+0x38`
+16-byte-stride link table: converters `0x1a34e0` and `0x1a3760` compare the
+logical index with entry `+0x04`, replace it with entry `+0x00`, and use the
+file/class fields in entry `+0x0c` before producing the native descriptor
+[BIN][DER].  The corresponding `v` input path uses the same record shape in
+context `+0x24..+0x28`.  Physical varying assignment therefore happens in an
+explicit linker table before the final seven-bit selector is packed; logical
+GLSL varying order is not a hardware register number.
 
 Let `replace(x, hi, lo, v)` replace inclusive bits `hi:lo` in `x` with the low
 `hi-lo+1` bits of `v`.  Ignoring a separate program-property side effect at
@@ -339,6 +442,18 @@ bits.  Destination masks and descriptor classes also select or omit stages, so
 the constant call sites above are deliberately not presented as complete
 sequences.
 
+The generic builder at `0x1b5390` provides five more exact D3D-operation
+anchors.  Its 46-byte table at `0x1b5b30` is indexed by `opcode-1`; every entry
+uses the default handler except `MOV=1`, `FRC=19`, `SGN=34`, `ABS=35`, and
+`MOVA=46` [BIN][DER].  `MOV` selects expanded second operation `0x14` or
+`0x15` and a mode dependent on result class, `FRC` selects second operation
+`0x14` with mode 2, `SGN` selects `0x14/0x15` with mode 5, `ABS` selects
+`0x14` with mode 4, and `MOVA` selects `0x14` with mode zero.  D3D `DSX=91`
+and `DSY=92` bypass that table and select expanded third-operation markers
+`0x88` and `0x89`, respectively.  These joins identify lowering controls and
+differentiate arithmetic operations, but they also demonstrate why assigning
+`0x14` itself the mnemonic `MOV`, `FRC`, `ABS`, or `MOVA` would be wrong.
+
 Helper `0x1afd30` establishes the result-component order for the simple
 descriptor-class path.  It selects a two-bit pair from the source-level D3D
 destination mask in bits `19:16`, using pair zero for `xy` and pair one for
@@ -373,21 +488,22 @@ No call site found passes the source D3D write mask directly.  The `xyzw`
 result order above therefore does not assign component names to these scattered
 mask bits; that still awaits a controlled compiler delta.
 
-### Program-context expansion and stream splicing
+### Source-operand expansion and stream splicing
 
 Whole-program emitter `0x1db510` does more than pack one translated input
 instruction.  Its second argument is the output stream and its third argument
-is a program context.  After cloning and translating the input, it follows
-these mutually exclusive paths [BIN][DER]:
+is the current 0x88-byte instruction IR.  The tests below are its source-zero
+auxiliary dwords copied from compiler-token `+0xa4/+0xa8`.  After cloning and
+translating the input, it follows these mutually exclusive paths [BIN][DER]:
 
 ```c
-if (program_context_u32[0x60 / 4] != 0) {
+if (instruction_ir_u32[0x60 / 4] != 0) {
         /* Replace the translated input with a complementary pair. */
         append(synthetic_op0_1d_op1_14_mask_a_b_0a);
         append(synthetic_op0_1e_op1_14_mask_a_b_0a);
         return success;
 }
-if (program_context_u32[0x64 / 4] != 0) {
+if (instruction_ir_u32[0x64 / 4] != 0) {
         append(synthetic_op1_00);
         append(the_same_synthetic_op1_00);
         *(uint32_t *)(output + 0x397) |= 0x20000000;
@@ -400,6 +516,9 @@ a transformed descriptor bit.  Descriptor class bits are also adjusted by a
 format property.  The safe conclusion is a format-dependent result-pair
 expansion, not an export mnemonic assignment.  The `+0x64` pair is likewise a
 compiler-generated control sequence whose public meaning is not yet known.
+Because the frontend operand formatter uses neighboring source-descriptor
+fields for addressing and ranges, indirect/range lowering is a plausible
+purpose, but the exact names of token `+0xa4/+0xa8` remain unproved.
 
 The one-slot packer has an independent side effect on the same output property
 bit.  Before format gates can replace the overlapping physical field, it tests
@@ -484,28 +603,46 @@ fragment remains unresolved.
 
 ## Predicate and termination boundary
 
-The static databases do not expose a reliable native predicate or `END` bit.
+The static databases do not expose a standalone native predicate or `END` bit.
 Across the final slot of all 48 fixed blobs, the bitwise intersection is zero
 for both dwords: no bit is set in every fragment ending.  Several fragment
 tails are all-zero slots, and linker `0x13bf80` appends identical all-zero slots
 to round a linked stream to four-slot upload lines.  An all-zero slot is thus
 padding/NOP-like and cannot be treated as a mandatory encoded `END`.  Because
 the fixed blobs are composable pieces, this negative result alone does not rule
-out a terminator in a complete program.  The program-context behavior above
+out a terminator in a complete program.  The per-instruction expansion above
 supplies stronger negative evidence against a universal per-slot `END`: the
 backend can replace one instruction, prepend two slots, patch fields while
 splicing runs, and set an output-program property outside the stream.  The
 property is not safely named `END`; its exact execution meaning remains
 unknown.
 
-The Iris textual predicate fields in `MxMGLX.dll` belong to the source compiler
-container; no static path has yet joined them to a native packed bit.  The exact
-remaining boundary is the linked compiler output around the call to
-`0xadf00`: vary one source predicate or control-flow/end condition, retain the
-descriptor pointer and byte length, output property `+0x397`, and generated-run
-bytes `+0x39b/+0x39c`, then diff the unpadded 64-bit stream before `0x13bf80`.
-Until that controlled compiler delta exists, predicate and termination fields
-should remain unnamed.
+The compiler-to-MxMD predicate path is now joined statically.  Source token
+`+0x08` bit 1 becomes backend IR `+0x04` predicate-enable, and the predicate
+descriptor at token `+0x0c` becomes IR `+0x30`.  Converter `0x1a3ac0` accepts
+three files: `cb(14)` becomes `0x20000000+2*i`, `p(19)` becomes
+`0x60000000+2*i`, and internal `rb(30)` becomes `2*i` [BIN][DER].  The `p`
+case is the ordinary predicate-register class.
+
+Generic lowerer `0x1b5390` consumes both IR fields for every emitted component.
+It passes IR `+0x30`, predicate enable, the component number, and the selected
+two-bit component form to helper `0x1afd30`; the returned value replaces
+intermediate `+0x0c` low five bits, which pack directly as `W0[4:0]`.  It also
+copies predicate-enable into intermediate gate bit `+0x0e[10]` and conditional
+marker IR `+0x00` into gate bit `+0x0e[12]`.  Those gate bits are compiler
+metadata and are not copied verbatim into the packed slot.  Predicate polarity
+from descriptor bits `27:24` changes the helper's returned operation family.
+Thus this backend lowers a predicate into the per-component `W0[4:0]`
+operation form; there is no evidence for one universal packed predicate bit.
+Special multi-instruction lowerers can distribute the same state differently,
+so the complete numeric operation mapping still needs controlled output.
+
+The exact remaining boundary for predicate details and termination is the
+linked compiler output around the call to `0xadf00`: vary one source predicate
+or control-flow/end condition, retain the descriptor pointer and byte length,
+output property `+0x397`, and generated-run bytes `+0x39b/+0x39c`, then diff
+the unpadded 64-bit stream before `0x13bf80`.  Until that controlled delta
+exists, a standalone predicate bit and termination field should remain unnamed.
 
 The next static/runtime hooks should log `(slot, descriptor pointer, length)` in
 `0xadf00` while `0x1454a0` runs, then dump the unpadded linked stream immediately
@@ -522,3 +659,9 @@ selector, and both scattered component masks before and after each change.  It
 labels only the proven `0x1c/0x1d/0x1e` result-component modes and all-zero
 slots; it deliberately does not guess native ALU, texture, predicate, or
 termination names.
+
+`tools/m9-native-static-evidence.py` checks the two saved PE identities, uses
+proper image-base/RVA translation, verifies the fixed-fragment hash and emitter
+vtable slot, decodes the D3D and register-file dispatch tables, and verifies
+the four fixed-function vertex state-builder calls.  Run it from the repository
+root; a table or binary mismatch is a hard error.
