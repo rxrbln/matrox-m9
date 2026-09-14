@@ -30,7 +30,7 @@
 #define M9_TRIANGLE_SECONDARY_BYTES	0x4f0u
 #define M9_TRIANGLE_SECONDARY_PREFIX	0x8u
 #define M9_TRIANGLE_LINKED_OFFSET	0x300u
-#define M9_TRIANGLE_LINKED_BYTES		0x580u
+#define M9_TRIANGLE_LINKED_BYTES		0x200u
 #define M9_TRIANGLE_RESOURCE69_BYTES	0x1b080u
 #define M9_TRIANGLE_C2_BYTES		0x1080u
 #define M9_TRIANGLE_BE_BYTES		SZ_1M
@@ -225,6 +225,13 @@ static const u32 m9_triangle_gouraud_source[] = {
 	0x43960000, 0x41a00000, 0, 0x3f800000, 0,
 	0x43200000, 0x435c0000, 0, 0, 0x3f800000,
 	0x43200000, 0x435c0000, 0, 0, 0x3f800000,
+};
+
+/* Exact defined prefix of the pool-5 fixed-function record.  Gouraud needs
+ * no linked-native payload; bytes [0x20,0x200) are deterministically zero. */
+static const u32 m9_triangle_gouraud_linked_prefix[] = {
+	0x43000000, 0xc3000000, 0x3f000000, 0,
+	0x43000000, 0x43000000, 0x3f000000, 0,
 };
 
 #include "m9_triangle_framed.h"
@@ -679,15 +686,21 @@ static int m9_triangle_serialize_linked_record(struct m9x_device *mdev,
 {
 	struct m9_triangle_resource *system =
 		&mdev->transport.triangle->resource[M9_TRI_SYSTEM];
+	u8 *record = (u8 *)system->cpu + M9_TRIANGLE_LINKED_OFFSET;
 
-	/* Reserve and clear the complete largest observed fixed-function slot.
-	 * A captured slot cannot be copied: it contains nine stale 64-bit host
-	 * pointers.  This function is the one remaining semantic constructor
-	 * boundary, and must fail before command upload or requester MMIO. */
-	memset((u8 *)system->cpu + M9_TRIANGLE_LINKED_OFFSET, 0,
-	       M9_TRIANGLE_LINKED_BYTES);
+	/* Pool type 5 copies this backing byte-for-byte.  Linux allocates 0x200
+	 * bytes, but only the first 0x80 are semantic; the apparent host pointers
+	 * in captured upper bytes were uninitialized allocator residue. */
+	memset(record, 0, M9_TRIANGLE_LINKED_BYTES);
+	memcpy(record, m9_triangle_gouraud_linked_prefix,
+	       sizeof(m9_triangle_gouraud_linked_prefix));
 	(void)job;
-	return -EOPNOTSUPP;
+	/* Flat shading adds a compiler-produced 0x60-byte linked-native product
+	 * whose six nonzero word encodings are still being recovered. */
+	if (!m9_triangle_gouraud)
+		return -EOPNOTSUPP;
+	dma_wmb();
+	return 0;
 }
 
 int m9x_submit_triangle_diag(struct m9x_device *mdev, u32 color, u64 *point)
@@ -714,10 +727,19 @@ int m9x_submit_triangle_diag(struct m9x_device *mdev, u32 color, u64 *point)
 	m9_triangle_build_primary(&job,
 		mdev->transport.triangle->commands.primary);
 	ret = m9_triangle_serialize_linked_record(mdev, &job);
-	if (ret == -EOPNOTSUPP)
+	if (ret == -EOPNOTSUPP) {
 		dev_warn_once(&mdev->pdev->dev,
-			"M9 first triangle prepared but not submitted: fresh "
-			"0x580-byte selector-6c serializer is unavailable\n");
+			"M9 flat triangle prepared but not submitted: linked-native "
+			"word provenance remains gated\n");
+		goto out_unlock;
+	}
+	/* The fresh Gouraud pool-5 image is complete.  Execution remains gated
+	 * until the system-domain source/linked mappings and all m9x421 ranges
+	 * have exact owned inputs; local resources are already in VRAM. */
+	dev_warn_once(&mdev->pdev->dev,
+		"M9 Gouraud triangle fully prepared but not submitted: "
+		"system-domain mappings and engine windows remain gated\n");
+	ret = -EOPNOTSUPP;
 out_unlock:
 	mutex_unlock(&mdev->transport.lock);
 	return ret;
@@ -749,6 +771,10 @@ int m9x_triangle_selftest(void)
 	    sizeof(m9_triangle_framed_payload) !=
 		M9_TRIANGLE_SECONDARY_BYTES - M9_TRIANGLE_SECONDARY_PREFIX ||
 	    m9_triangle_specs[M9_TRI_BE].payload_bytes != SZ_1M)
+		return -EINVAL;
+	if (m9_triangle_template_fnv1a(m9_triangle_gouraud_linked_prefix,
+		ARRAY_SIZE(m9_triangle_gouraud_linked_prefix)) !=
+		0x80b075ef8b975c45ULL)
 		return -EINVAL;
 	for (i = 0; i < ARRAY_SIZE(m9_triangle_specs); i++)
 		if (m9_triangle_specs[i].payload_bytes & 3 ||
