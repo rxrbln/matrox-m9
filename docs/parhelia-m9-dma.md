@@ -152,7 +152,31 @@ The constructor initializes alignment `object[0x30]=4`; the size/span at
 `+0x64` are populated by the owning allocation path.  Publisher `0x146bc`
 repeats the pointer formula and writes only raw `0x504`.  This second build
 rules out the possibility that the Linux raw-current/tagged-base distinction
-is an optimizer artifact.
+is an optimizer artifact.  It also contains the same tag table verbatim at
+PE `.rdata` VMA `0x47d18`:
+
+```text
+internal backing selector:  0  1  2  3
+low address tag:            2  3  0  3
+```
+
+Initializer `0x144d9` indexes that table through the allocation object's
+`+0x10` field and stores the result at requester `+0x64` before calling
+`0x145a5`.  In the same function, requester `+0x60` is selected as `2` for
+backing selector 0, `1` for selector 2, and `0` otherwise.  This is a second
+exact build-level join for the four backing classes, but neither internal
+field yet supplies trustworthy public domain names.
+
+The Windows ownership path also fixes the allocation size and placement.
+Function `0x14633` locates a per-device block at device `+0xc208` and its
+requester object at block `+0x30`.  On first use it calls allocator helper
+`0x14aa9` with one page.  That helper shifts the page count by 12, requests
+exactly `0x1000` bytes, sets the allocation descriptor class at `+0x10` to
+`2`, and copies the returned CPU/GPU allocation fields into the requester
+block.  Only after that succeeds does `0x14633` call `0x144d9` and program the
+descriptor.  A new kernel implementation can therefore begin with a dedicated
+page-sized requester object rather than inferring its size from command-list
+traffic.
 
 Quiescence helper `m9x1016` at `0x28960` publishes the requester pointer through
 `m9x620` to `0x504`, then polls `0x508` bit 0.  Once set, it accepts idle only
@@ -188,7 +212,7 @@ roles still need names.
 |---|---|---|
 | `0x404` | final write address | primary requester submit doorbell — kernel `m9x1039` |
 | `0x314` | `1` | kick / restart DMA front end — `m9x9938` |
-| `0x31c` | `5` / `2` / `0` | park / resume / clear — `m9x27114` |
+| `0x31c` | `5` / `2` / `0`; Windows also writes `4` | park / resume / clear for the joined Linux states; state 4 remains unnamed |
 
 `0x314`/`0x31c` are real controls, but they are not the primary submission
 doorbell.  Kernel `m9x1039` pads the command list with `0x45454545`, stores its
@@ -202,6 +226,13 @@ command-14 restart/kick (`0x314 <- 1`).  Kernel `m9x22` at `0x15f10` uses
 `cb/cc/cd` and optional `c8/c9/ca` region bounds with `e6` transitions, fences,
 then restores `0x1320..0x1334`.  This is requester parking and address-window
 restore, not a full engine reset.
+
+Windows `MxMM.sys` has one additional exact state at `0x23abf`: it writes
+`0x31c <- 4` in a memory/aperture operation after setting bit 3 in one of two
+derived memory locations.  The branch is selected when its surrounding object
+mode at `+0x44` equals 1.  No saved caller or adjacent register operation names
+state 4 safely, so it must remain outside an initial DRM recovery sequence
+until a vendor trace or a stronger static join explains it.
 
 ## Completion sync [DRV]
 
