@@ -83,6 +83,53 @@ flag.  For an unsaved object it delegates to initializer `m9x759` at `0x2b290`,
 which writes translated base/tag/address-space bits to `0x500`, zero to `0x508`,
 and translated current/head to `0x504` [DRV].
 
+### Initial base, live pointer, and requester address tag [DRV]
+
+The former generic "translated" description can now be made exact.  Let `R`
+be the resource object at requester object `+0x68`, and let `N` be the
+requester object's dword at `+0x10`.  `m9x759` initializes its software bounds
+and the hardware descriptor as follows (all hardware address arithmetic is
+truncated to 32 bits):
+
+```text
+backed = R[0x6c] != 0 || R[0x70] != 0
+base   = backed ? qword(R[0x50]) : 0
+offset = backed ? dword(R[0x58]) : 0
+
+requester[0x70] = base
+requester[0x78] = base
+requester[0x80] = (backed ? base + dword(R[0x40]) : 0) - 4*N
+requester[0x88] = backed ? base - 4 : -4
+
+MMIO[0x500] = (offset + low32(base)) | tag[R[0x34]]
+MMIO[0x508] = 0
+MMIO[0x504] = offset + low32(requester[0x70])
+```
+
+The four-entry tag table at ELF `.rodata+0x5890` is exactly:
+
+```text
+resource selector:  0  1  2  3
+low address tag:    2  3  0  3
+```
+
+The selector is not the public `m9x_region.type` field: that field has a
+different object offset on x86-64.  Constructor `m9x306` initializes
+`R[0x34]=1`.  Resource initializer `m9x810` selects an internal backing class
+in `R[0x30]` from the memory manager's four-way mode at `+0x230`, and copies
+`R[0x30]` to `R[0x34]` after backing succeeds.  This proves the table's role
+as an internal backing/address-domain selector without guessing public memory
+type names for its rows.
+
+Producer publisher `m9x620` preserves an important distinction.  When the
+software producer changes, it puts the previous pointer ORed with the same tag
+into the internal command-list transition record, but writes the new live
+pointer to MMIO `0x504` without the tag.  Therefore the low bits belong on the
+base/transition address and must not be blindly ORed into the live current
+pointer.  `m9x620` emits a 16-byte transition record, or a 32-byte form when
+its bus-master mode flag is set; both begin with record opcode `1`, tagged old
+pointer, raw new pointer.
+
 Quiescence helper `m9x1016` at `0x28960` publishes the requester pointer through
 `m9x620` to `0x504`, then polls `0x508` bit 0.  Once set, it accepts idle only
 after two consecutive `0x500/0x50c` pairs are stable and a final `0x508` read
@@ -235,7 +282,9 @@ The statically defensible bring-up order for a future kernel backend is:
    enabling individual sources.  Initially enable only the four proven vblank
    sources.
 3. Enable `PCI_COMMAND_MASTER`, then allocate and pin requester, context, and
-   fence memory subject to the still-unresolved M9 address-tag constraints.
+   fence memory.  Select the requester's internal backing class and use its
+   recovered `{2,3,0,3}` base-address tag; validate the class-to-memory-domain
+   names with the no-op diagnostic before enabling general submission.
 4. Program the address windows and `m9x109` context registers, initialize the
    `0x500..0x524` descriptor, and seed fence memory so zero cannot look complete.
 5. Submit one bounded no-op/completion record.  Permit rendering only after its
@@ -277,11 +326,14 @@ descriptor.
   and constructs board/display services, but contains no direct 3D reset MMIO.
   The requester core is decoded separately; any additional engine reset must
   be found in its initialization callers or established by bounded testing.
-- **Requester address domains** — the origin of each base component, the exact
-  VRAM/system-memory tags, and all relocation constraints.
-- **Descriptor field semantics** — save/restore order and idle handshake are
-  exact, but base/head/tail/address-tag meanings and wrap handling are not all
-  joined to `0x400/0x404` submission.
+- **Requester address-domain names** — the internal four-way class producer,
+  exact `{2,3,0,3}` tag table, tagged base/transition pointer and raw live
+  pointer are joined.  The public VRAM/system-memory names and allocation
+  constraints for every class still need a constructor/capture join.
+- **Descriptor field semantics** — initialization, current-pointer publication,
+  save/restore order and idle handshake are exact.  The roles of `0x50c..0x524`
+  after wrap and their relationship to the final `0x404` limit still need a
+  controlled rollover trace.
 - **Recovery** — status/mask/W1C banks are decoded, but no high-bank source has
   a defensible DMA-completion/fault name and no full 3D/global reset was found.
   `0x31c` state changes and the `0x500..0x524` save/restore handshake provide a

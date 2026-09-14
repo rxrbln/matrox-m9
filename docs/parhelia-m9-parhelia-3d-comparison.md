@@ -151,9 +151,12 @@ a safe DRM submitter and a working Mesa driver:
 1. The complete engine/global reset sequence.  PCI bus-master enable, requester
    initialization, descriptor quiescence, and requester-local save/restore are
    decoded, but the latter must not be treated as a 3D-engine reset.
-2. The exact `0x500..0x524` descriptor fields, address-space tags,
-   producer/consumer rules, wrap handling, and fence command.  Static recovery
-   establishes `0x400` base/control and `0x404` as the submit doorbell.
+2. The remaining `0x500..0x524` rollover fields and public memory-domain names.
+   Static recovery now establishes the initializer formulas, the internal
+   four-class address-tag table `{2,3,0,3}`, tagged base/transition addresses,
+   a raw live `0x504` pointer, save/restore order and idle handshake.  A
+   controlled rollover trace is still required for `0x50c..0x524` and the
+   final relationship to the `0x404` submit limit.
 3. M9 context-switch state: which indexed registers, shader stores, descriptor
    tables, and query/fence state must be isolated between clients.
 4. A verified colour render-target and depth/stencil descriptor, clear packet,
