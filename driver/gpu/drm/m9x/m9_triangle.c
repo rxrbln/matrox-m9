@@ -321,7 +321,7 @@ static u32 m9_triangle_guard(enum m9_triangle_resource_id id)
 
 static int m9_triangle_alloc_vram(struct m9x_device *mdev,
 				  enum m9_triangle_resource_id id,
-				  u32 alloc_bytes, u32 guard_offset)
+				  u32 alloc_bytes)
 {
 	const struct m9_triangle_resource_spec *spec = &m9_triangle_specs[id];
 	struct m9_triangle_resource *resource =
@@ -364,8 +364,9 @@ static int m9_triangle_alloc_vram(struct m9x_device *mdev,
 	for (word = 0; word < spec->payload_bytes / sizeof(u32); word++)
 		iosys_map_wr(&resource->map, word * sizeof(u32), u32, spec->fill);
 	for (word = 0; word < resource->guard_bytes / sizeof(u32); word++)
-		iosys_map_wr(&resource->map, guard_offset + word * sizeof(u32),
-			     u32, resource->guard);
+		iosys_map_wr(&resource->map,
+			     resource->payload_bytes + word * sizeof(u32), u32,
+			     resource->guard);
 	return 0;
 
 out_unpin:
@@ -396,8 +397,7 @@ static int m9_triangle_alloc_one(struct m9x_device *mdev,
 		return -EOVERFLOW;
 	alloc_bytes = PAGE_ALIGN(guard_offset);
 	if (spec->local)
-		return m9_triangle_alloc_vram(mdev, id, alloc_bytes,
-					      guard_offset);
+		return m9_triangle_alloc_vram(mdev, id, alloc_bytes);
 	resource->cpu = dmam_alloc_coherent(dev, alloc_bytes, &resource->bus,
 					    GFP_KERNEL | __GFP_ZERO);
 	if (!resource->cpu)
