@@ -1,5 +1,6 @@
 /* SPDX-License-Identifier: MIT */
 #include "m9_screen.h"
+#include "m9x_public.h"
 
 #include <errno.h>
 #include <fcntl.h>
