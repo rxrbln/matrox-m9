@@ -8,7 +8,10 @@ definition, and no M9 source is built into the Parhelia Gallium libraries.
 
 ## Implemented foundation
 
-The following code is ready for the first executable kernel submit:
+The following userspace foundation is ready for the first executable
+userspace-stream submit.  The independent kernel module has already completed
+256 consecutive kernel-owned no-op fences, plus a fresh fence after adopting
+the `m9x` DRM identity.  Arbitrary userspace streams remain disabled:
 
 * `m9_internal.h` owns separate screen, context, resource, canonical vertex,
   and batch structures.  M9 command buffers are capped at the kernel's 32 KiB
@@ -57,8 +60,8 @@ The pipe screen advertises only exact, joined linear format usages.  It does
 not advertise MSAA, arrays, cube/3-D targets, dma-buf sharing, shader images,
 compute, or GLSL.  Context creation returns `NULL` while the kernel screen
 state says executable submit is unavailable.  This is deliberate: the kernel
-at commit `2eaa779` validates arbitrary command streams but executes only its
-kernel-owned synchronous no-op fence diagnostic.
+at commits `b7d0194`, `c611a0e`, and `d70b370` validates arbitrary command
+streams but executes only its kernel-owned synchronous no-op fence diagnostic.
 
 ## Evidence test
 
@@ -97,12 +100,14 @@ These gaps must remain visible in capability and execution gates:
 4. Triangle-strip control is captured from gears, but its correlated `d7`
    field and strip batching boundary need a minimal differential before live
    draw submission.  Other primitive raster-control values are unproved.
-5. GPU clear rectangle state has a recovered vendor call chain and surface
-   view, but the final standalone packet sequence has not been isolated.
-   Linear BOs can be CPU-cleared during bring-up; no GPU-clear cap is exposed.
-6. Packed/tiled render storage, compressed textures, cube/volume images,
-   sampler compare, queries, reset recovery, and general shader linkage remain
-   gated until their final packet and synchronization contracts are closed.
+5. The direct page-run, GPU rectangle-draw, and CPU fallback clear paths are
+   statically recorded, including their surface views and rectangle records.
+   They still need translation into the new batch builder and live replay;
+   linear BOs can be CPU-cleared during early bring-up.
+6. Packed/tiled render storage has exact descriptor rules but still lacks the
+   physical in-block permutation needed by a new allocator.  Compressed,
+   cube/volume, sampler-compare, query, reset-recovery, and general-shader
+   paths remain gated at the narrower boundaries in the readiness ledger.
 
 The Mesa loader maps PCI ID `0x0540` exclusively to `m9x`; the Parhelia map
 contains only the P-series IDs.  Keep the driver-local `m9x_drm.h`

@@ -221,7 +221,7 @@ m9_context_create_gated(struct pipe_screen *screen, void *priv, unsigned flags)
    /* The kernel currently validates streams and can execute only its owned
     * no-op fence.  Returning NULL prevents a state tracker from treating the
     * recovered packet builders as a safe arbitrary-program submit path. */
-   fprintf(stderr, "parhelia: M9 rendering awaits executable-stream UAPI\n");
+   fprintf(stderr, "m9x: rendering awaits executable-stream UAPI\n");
    return NULL;
 }
 
