@@ -133,8 +133,11 @@ These gaps must remain visible in capability and execution gates:
    are exact.  Their live index-`78` table-root/page ownership and physical-page
    validation remain open.  Hierarchical-Z format `0x0b`, its
    `ceil(width/8) x ceil(height/4)` extent and selector-12 `ba/bb` bind are
-   exact, but metadata initialization/invalidation and lifetime remain gated.
-   Compressed, cube/volume, sampler sRGB, query, reset-recovery, and
+   exact.  Static analysis also closes initialization/partial invalidation to
+   `0x007ff000`, full-depth-clear seeding, uncoupled-write dirty refresh,
+   creator/clone ownership, and null-auxiliary fallback.  Keep HZ disabled
+   until live rejection-correctness validates that protocol.  Compressed,
+   cube/volume, sampler sRGB, query, reset-recovery, and
    general-shader paths remain gated at the narrower boundaries in the
    readiness ledger.
 
