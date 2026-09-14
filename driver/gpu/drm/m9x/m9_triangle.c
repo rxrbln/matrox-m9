@@ -643,7 +643,8 @@ static void m9_triangle_build_primary(
 
 	for (i = 0; i < ARRAY_SIZE(bounds); i++) {
 		primary[i * 3] = 0x45452d2c;
-		primary[i * 3 + 1] = job->secondary + bounds[i][0];
+		primary[i * 3 + 1] = (job->secondary + bounds[i][0]) |
+			M9_COMMAND_SYSTEM_TAG;
 		primary[i * 3 + 2] = (job->secondary + bounds[i][1]) |
 			M9_COMMAND_SYSTEM_TAG;
 	}
@@ -814,9 +815,9 @@ int m9x_triangle_selftest(void)
 	m9_triangle_build_commands(&job, &commands);
 	m9_triangle_build_primary(&job, commands.primary);
 	if (memcmp(commands.primary, (const u32[]) {
-		0x45452d2c, 0x12000008, 0x12000272,
-		0x45452d2c, 0x12000270, 0x120004c6,
-		0x45452d2c, 0x120004c4, 0x120004f2,
+		0x45452d2c, 0x1200000a, 0x12000272,
+		0x45452d2c, 0x12000272, 0x120004c6,
+		0x45452d2c, 0x120004c6, 0x120004f2,
 	}, sizeof(commands.primary)))
 		return -EINVAL;
 	for (i = 0; i < ARRAY_SIZE(m9_triangle_reloc_sites); i++) {
