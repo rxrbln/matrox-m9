@@ -92,8 +92,8 @@ ioctls are:
 
 `ExecuteDma` copies a fixed `0x840`-byte image into the kernel.  Its inline
 `0x808`-byte body describes the submission, while the indexed packet bytes are
-in the bus-master mapping returned by command 1.  On the observed 64-bit path,
-the command 1 result contains:
+in 32 KiB bus-master mappings.  On the observed 64-bit path, the command 1
+result contains:
 
 | Offset | Meaning |
 | ---: | --- |
@@ -103,14 +103,41 @@ the command 1 result contains:
 | `+0x24` | mapping byte size |
 | `+0x28`, `+0x30` | remaining allocation metadata |
 
-The working run returned a 32 KiB mapping.  Captured GLX submissions contain
-valid M9 indexed headers and numeric draw-range records in that mapping.  The
-steady glxgears cycle repeats eight submissions with total-size values
+The ioctl header and range descriptor layout is:
+
+| Ioctl offset | Meaning |
+| ---: | --- |
+| `+0x00` | qword structure size, `0x840` |
+| `+0x08` | caller argument, observed as zero |
+| `+0x0c` | total extent |
+| `+0x10` | descriptor count `N` |
+| `+0x14` | padding or unused data |
+| `+0x18 + 0x10*i` | `start`, `end`, `flag0`, `flag1` for entry `i` |
+| `+0x818` | output mmap cookie for the next command buffer |
+| `+0x820` | output kernel address for that buffer |
+| `+0x828` | output type/status word |
+| `+0x82c` | output mapping size, observed as `0x8000` |
+
+Static recovery of the vendor conversion routine proves that `start` and
+`end` are the low 24 bits of its source words, while `flag0` and `flag1` come
+from source bits 56 and 57.  Each entry selects the end-exclusive byte range
+`[bm + 8 + start, bm + 8 + end)`.  The qword at bus-master offset zero is a
+private prefix and is outside the indexed packet stream.  The total extent is
+eight plus the last valid descriptor end.  Words after descriptor `N` are
+uninitialized data and must not be decoded.
+
+Captured GLX submissions contain valid M9 counted raw blocks and numeric
+draw-range records.  An ordinary outer record is `u32 count` followed by
+`count + 1` raw dwords.  That raw block may contain one or several indexed
+packets.  Draw packets remain uncounted raw three-dword records.  The steady
+glxgears cycle repeats eight submissions with total-extent values
 `0x1010`, `0x4f0`, `0x5e0`, `0x4f0`, `0x5e0`, `0x4f0`, `0x8cc`, and `0x8cc`.
-The `0x1010` stream decodes to seven numeric draw ranges.  Some submissions
-reuse the previous mapped-buffer contents with different inline descriptors,
-so the descriptor fields must be interpreted before treating its total-size
-word as one contiguous stream length.
+The `0x1010` submission contains two five-draw ranges plus a completion range.
+The vendor ping-pongs between command buffers: submission zero uses the mapping
+from command 1, then ExecuteDma returns the mmap cookie and size of the next
+buffer.  The current tracer joins that output to the following mmap and records
+all active command mappings.  The checked-in glxgears fixture has been reduced
+to the active A or B mapping for each submission.
 
 Two raw fixture sets are checked in:
 
@@ -118,7 +145,8 @@ Two raw fixture sets are checked in:
   glxgears cycle.
 - `captures/m9x-linux-gltri-20260914` contains the complete startup and one
   settled flat-triangle submission from `tools/gltri.c`.  Its sequence 12 has
-  one numeric draw range at bus-master offset `0x264`.
+  numeric draw ranges at bus-master offsets `0x264` and `0x4b8`; the second has
+  the three-element range `[0,3)` matching the submitted triangle.
 
 ## Capture tool
 
@@ -140,7 +168,7 @@ timeout 1 /usr/X11/bin/glxgears
 ```
 
 The tool records device opens, private ioctl numbers, mappings, the pre/post
-ExecuteDma images, and the command-1 bus-master mapping before and after each
+ExecuteDma images, and every 32 KiB command mapping before and after each
 bounded submission.  `M9XTRACE_PTRS=1` additionally probes plausible pointers
 from the inline image with safe kernel-validated writes; this is noisy and is
 normally unnecessary after the bus-master mapping join.  Limit pointer dumps
@@ -150,10 +178,10 @@ Preloading the tracer into Xorg as well records EXA submissions.  For 3D state,
 preload it into the direct GL application because the direct client owns the
 `/dev/m9x0` submission stream.
 
-Candidate contiguous packet spans can be decoded with:
+Vendor-framed captures can be decoded directly with:
 
 ```sh
-python3 tools/m9-command-decode.py --offset OFFSET --length LENGTH bm.bin
+python3 tools/m9-command-decode.py --execute execute.bin bm.bin
 ```
 
 For controlled differentials, keep one X server and one GL context alive and
