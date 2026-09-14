@@ -163,11 +163,13 @@ a safe DRM submitter and a working Mesa driver:
    viewport/scissor state, and completion.  Draw launch is statically joined to
    H03/H06/H07 records; the earlier `2b,2a,e6` hypothesis was disproved by its
    2D-only caller chain.
-5. The final M9-index join for blending, alpha test, culling, multisampling,
-   and colour masks.  Depth/stencil state is joined through its compiler and
-   per-batch shadows to final indices `a8/a9/aa`; the remaining D3D frontend
-   packing stops before the final program key or command words.  Polygon mode
-   and query semantics remain less complete.
+5. The final M9-index join for culling, polygon/shade mode, and multisampling,
+   plus the final upload selector/port association for generated fragment
+   programs.  Blend, alpha test, and format-dependent colour masks are now
+   joined through their compiler routines to the final 256-byte native-program
+   cache; depth/stencil is joined through per-batch shadows to final indices
+   `a8/a9/aa`.  See `parhelia-m9-blend-raster-lowering.md`.  Query semantics
+   remain less complete.
 6. Texture cache flushes and the physical address permutations within class-3
    blocks and packed mip tails.  Descriptor formats, filter/wrap/LOD fields,
    2D/cube/volume selection, visible class-3 geometry, and ordinary volume-mip

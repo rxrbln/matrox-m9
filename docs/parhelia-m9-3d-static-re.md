@@ -365,9 +365,13 @@ Raster and output anchors are [BIN]:
 | `COLORWRITEENABLE2` 191 | `0x103480` | raw `+0x108` | `+4 \|= 0x10`, then common dirty path |
 | `COLORWRITEENABLE3` 192 | `0x103498` | raw `+0x10c` | `+4 \|= 0x20`, then common dirty path |
 
-`FILLMODE` 8 dispatches to `0x10405d` and `SHADEMODE` 9 to `0x1040c9`, but
-both update several coupled objects and need a longer join before their final
-packing can be stated safely.  These D3D objects are also distinct from the
+`FILLMODE` 8 dispatches to `0x10405d` and writes its masked value to
+`p2528+0x48[5:4]`, `p2514+0x0c[16:15]`, and `p252c+0x0c[1:0]`, with dirty
+masks `0x2`, `0x08000000`, and `0x00040000` respectively.  `SHADEMODE` 9 at
+`0x1040c9` writes `p2528+0x48[7:6]` and `p252c+0x0c[3:2]`, with dirty masks
+`0x8` and `0x00080000`; it also sets `p2520+0x18 bit 0` exactly when the value
+is `D3DSHADE_FLAT` (1), marking `p2520` dirty `0x80` on a change [BIN].  These
+D3D objects are distinct from the
 lower command-shadow objects emitted by `0xf4f50`, `0xfb920`, and `0xfc0e0`.
 The depth/stencil exception is joined to final indices below.  Blend, alpha
 test, culling, color masks, multisample, and the viewport/scissor words still
@@ -469,9 +473,12 @@ The remaining frontend-to-final-index boundary is now precise [BIN][DER]:
   from the other.
 * `0x101550` canonicalizes blend, alpha-test, color-mask, and multisample
   frontend fields into a flat D3D cache, but it is not a command emitter.
-  `0x13b570` reacts to blend dirty bit `0x4000` by selecting a fragment/program
-  variant; that proves program specialization, not a fixed M9 register.
-  Their final program key and any residual fixed-state words remain unjoined.
+  Blend is lowered per render target by compiler routine `0x170ff0`, alpha
+  test by `0x170800`, and color masks by `0x1389a0`/`0x173ee0`.  Finalizer
+  `0x1397e0` produces and caches a 256-byte native fragment-program image.
+  `0x13b570` belongs to fixed-function vertex/declaration conversion and is
+  unrelated to the blend dirty bit.  The exact maps and remaining upload
+  boundary are in `parhelia-m9-blend-raster-lowering.md` [BIN][DER].
 
 ### Render and depth surface shadow layout
 
