@@ -41,9 +41,9 @@ static int m9_index_reloc_kind(u8 index)
 	case 0xc8 ... 0xcd:
 		return PARHELIA_M9_RELOC_SPECIAL;
 	case 0x69:
-		return PARHELIA_M9_RELOC_PROGRAM;
+		return PARHELIA_M9_RELOC_RESOURCE_69;
 	case 0x6c:
-		return PARHELIA_M9_RELOC_PROGRAM_LINK;
+		return PARHELIA_M9_RELOC_RESOURCE_6C;
 	case 0x78:
 		return PARHELIA_M9_RELOC_TEXTURE;
 	case 0xb0: case 0xb2: case 0xb4: case 0xb6:
@@ -154,10 +154,9 @@ static u32 m9_reloc_alignment(u32 kind)
 	case PARHELIA_M9_RELOC_COLOR:
 	case PARHELIA_M9_RELOC_DEPTH:
 	case PARHELIA_M9_RELOC_TEXTURE:
+	case PARHELIA_M9_RELOC_RESOURCE_69:
 		return 256;
-	case PARHELIA_M9_RELOC_PROGRAM:
-		return 32;
-	case PARHELIA_M9_RELOC_PROGRAM_LINK:
+	case PARHELIA_M9_RELOC_RESOURCE_6C:
 		return 128;
 	default:
 		return 4;
@@ -181,7 +180,7 @@ static int m9_validate_relocs(u32 *image, u32 dwords, u8 *expected,
 		if (reloc->command_dword >= dwords ||
 		    !expected[reloc->command_dword] ||
 		    expected[reloc->command_dword] - 1 != reloc->kind ||
-		    reloc->kind > PARHELIA_M9_RELOC_PROGRAM_LINK ||
+		    reloc->kind > PARHELIA_M9_RELOC_RESOURCE_6C ||
 		    reloc->kind == PARHELIA_M9_RELOC_FENCE ||
 		    reloc->flags & ~(PARHELIA_M9_BO_READ | PARHELIA_M9_BO_WRITE) ||
 		    !reloc->flags || reloc->pad[0] || reloc->pad[1])
@@ -205,7 +204,7 @@ static int m9_validate_relocs(u32 *image, u32 dwords, u8 *expected,
 		    reloc->kind == PARHELIA_M9_RELOC_DRAW16_START ||
 		    reloc->kind == PARHELIA_M9_RELOC_DRAW16_END)
 			address |= M9_COMMAND_SYSTEM_TAG;
-		else if (reloc->kind == PARHELIA_M9_RELOC_PROGRAM_LINK)
+		else if (reloc->kind == PARHELIA_M9_RELOC_RESOURCE_6C)
 			address |= 1;
 		image[reloc->command_dword] = lower_32_bits(address);
 		expected[reloc->command_dword] = 0;
