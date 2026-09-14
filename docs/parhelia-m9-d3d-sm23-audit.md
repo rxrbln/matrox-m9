@@ -178,7 +178,8 @@ There is a second four-entry collection at `+0x394/+0x398`, emitted by
 `0xf4630` with selector `0x74 + unit`.  It is not a hidden second full fragment
 bank: it emits the texture root and only the `0x78/0x79` descriptor pair, and
 lacks the full sampler controls.  Its shape and the D3D vertex-texture cap are
-consistent with a vertex-stage descriptor bank.
+consistent with vertex-stage use, while the later five-sampler capture proves
+the same generic descriptor/route operands also carry scratch feedback.
 
 The registry field `3D\AllowMultipass` exists at config offset `+0x30` and
 defaults to zero.  No call-reachable consumer has been joined to a pass split,
@@ -187,7 +188,8 @@ bank discrepancy by itself.  The static interpretation is:
 
 * eight fixed-function combine stages are compiler vocabulary;
 * four fully stateful fragment samplers are physically proved;
-* four descriptor-only vertex-stage entries are separately proved;
+* four descriptor-only route entries exist and are used by both vertex
+  texture/resource paths and fragment scratch feedback;
 * the D3D8-era value of eight simultaneous textures requires compiler
   scheduling or virtualization beyond the four physical fragment slots.
 

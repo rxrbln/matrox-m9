@@ -578,8 +578,9 @@ bounds:
 
 Report the lower implemented limit whenever the logical-to-physical mapping is
 not supported by the new compiler.  The vendor's five-dependent-sampler
-capture proves correct serialization into five texture/raster blocks over the
-four physical fragment slots.  Do not expose all 16 logical fragment samplers
+capture proves correct lowering into four scratch render-target passes and one
+final pass while time-slicing one full sampler slot and using `74..76` as
+scratch route operands.  Do not expose all 16 logical fragment samplers
 until equivalent dependency/intermediate management and N/N+1 boundaries are
 implemented and tested.
 

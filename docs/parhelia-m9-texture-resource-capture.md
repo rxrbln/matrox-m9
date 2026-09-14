@@ -187,10 +187,14 @@ to fill each small allocation:
 0020: 11f88008 11f89008 11f8a008 ...
 ```
 
-It is a list of tagged backing addresses, not linear pixels.  The 0x800-byte
-images are identical across RGB10_A2, updates, copy, and the narrow-format
-cases even while visible pixels and descriptor formats differ.  A new driver
-must build this indirection and allocate the referenced backing pages.
+This is repeated address-like allocation/translation metadata, not linear
+pixels.  The 0x800-byte images are identical across RGB10_A2, updates, copy,
+and the narrow-format cases even while visible pixels and descriptor formats
+differ.  That identity means the capture does not prove these words are the
+texture's backing-page list; they may describe another allocation or a BAR
+translation alias.  A new driver must not reproduce an inferred indirection
+until tag-stripped referenced-address dumps join these records to actual
+texels.
 
 ## Update, copy, and mip-selection streams
 
@@ -198,7 +202,8 @@ The same-context subimage draws are sequences 12 and 14.  Both emit an 8x8
 RGBA8 bind at `11f81000`, and both visible outcomes pass.  The update occurs
 outside those selected draw submissions; the resource object is stable before
 and after each draw.  This proves the vendor stack orders the update before
-reuse, although the selected snapshot does not expose the backing-page upload.
+reuse, although the selected snapshot does not expose the texel upload or its
+actual backing allocation.
 
 Framebuffer-to-texture copy sequence 17 is an 0x11a4-byte, two-range transfer
 stream.  It programs destination `b0=11f81000`, `b1=c8010020`, then sequence

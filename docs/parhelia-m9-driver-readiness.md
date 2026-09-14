@@ -37,8 +37,9 @@ The following pieces no longer depend on another vendor capture:
 * RGB565, RGBA4, RGB5A1, RGB8, RGBA8, L8, A8, LA8, I8, D16 and D32 textures,
   odd 1-D/2-D dimensions, full mip chains and packed tails, sampler state,
   four live sampler selectors, subimage/copy coherency, and the class-1
-  render-to-sample dependency through index `43`.  Index `78` points to a
-  repeated 0x80-byte tagged backing-page list rather than linear texels;
+  render-to-sample dependency through index `43`.  The mapped index-`78` image
+  is repeated address-like metadata rather than linear texels; its relationship
+  to the actual backing remains unproved;
 * separate index-`69` drawable/external and `6c` linked resources, atomic vertex plus
   fragment A/B/A selection, live stage-constant ranges, and the invariant
   nature of the 80-slot `8f/90..9f` store;
@@ -82,11 +83,12 @@ capture set.
 The live compiler is OpenGL 2.0 / GLSL 1.10. Its advertised limits are 16
 vertex attributes, 4 vertex samplers, 16 fragment samplers, 20 combined
 samplers, 512 uniform components in each stage, 60 varying floats, and 4 draw
-buffers.  Static emission proves four full fragment samplers and four
-descriptor-only, point-filtered vertex samplers.  A live shader with five
-dependent fragment textures produces the exact result through five serialized
-texture/raster blocks in one submission, proving compiler scheduling beyond
-the physical slot count.  The table distinguishes compiler acceptance from a
+buffers.  Static emission proves four full sampler slots and four generic
+descriptor/route operands at `74..77`; D3D separately declares four
+point-filtered vertex samplers.  A live shader with five dependent fragment
+textures produces the exact result through four scratch render-target passes
+and one final pass in one submission, proving compiler scheduling beyond the
+physical slot count.  The table distinguishes compiler acceptance from a
 native encoding or an implemented scheduling limit.
 
 | GLSL/ARB family | evidence now | driver status | smallest remaining check |
