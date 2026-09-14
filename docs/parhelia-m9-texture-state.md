@@ -402,15 +402,40 @@ and stores it at layout `+0x180`, which is subresource `+0x1bc`.
 The constructor saves sizes at `0x534b6..0x534c3`, accumulates offsets at
 `0x534d0..0x534e5`, and forms the final size at `0x5355f..0x53570`.
 
-Small levels have a special tail path.  The trigger is width and height, after
-the constructor's small-format adjustment, at most 16 and adjusted depth at
-most 15 (`0x53388..0x533b9`).  The first tail level is recorded; later tail
-levels copy that first level's `size[]` and `offset[]` entries at
-`0x5342e..0x5344b` instead of extending the recurrence.  A second call to
-`0x45eb0` supplies the remaining-level count and a pointer-derived layout
-parameter, showing that the levels share a packed tail region.  Static code
-does not expose the texel address permutation within that region, so drivers
-should not synthesize a tail layout without a coordinate-coded capture.
+Small levels use an exact packed tail [BIN][DER].  The trigger is width and
+height, after the constructor's small-format adjustment, at most 16 and
+adjusted depth at most 15 (`0x53388..0x533b9`).  The first tail level sets
+layout flags `0x18`; later tail levels retain bit `0x08`.  Bit `0x08` makes
+layout constructor `0x45eb0` force minimum aligned allocation extents 32 by 16
+(`0x4634d..0x4637b`, `0x4644a..0x4646a`).  The five relative tail levels occupy
+this atlas:
+
+| relative level | X | Y | minimum logical rectangle | linear texel offset |
+|---:|---:|---:|---:|---:|
+| 0 | 0 | 0 | 16x16 | 0 |
+| 1 | 16 | 0 | 8x8 | 16 |
+| 2 | 24 | 0 | 8x8 | 24 |
+| 3 | 16 | 8 | 8x8 | 272 |
+| 4 | 24 | 8 | 8x8 | 280 |
+
+The X table is at `0x1f10cc`, Y at `0x1f1700`, linear offsets at `0x1f1714`,
+and minimum rectangles at `0x1f1728`.  Every linear offset is exactly
+`Y * 32 + X`.  Constructor `0x52f00` stores the relative level at subresource
+`+0x2e8`, X/Y at `+0x2ec/+0x2f0`, the upload byte offset at `+0x2f4`, and marks
+the tail through `+0x2e0 = 1` (`0x538d3..0x53962`).  Later levels reuse the
+first tail allocation rather than extending the ordinary offset recurrence.
+
+For uncompressed formats the byte offset is the table's texel offset times
+bytes per texel.  For block-compressed formats it is
+`((X >> 2) + 8 * (Y >> 2)) * bytes_per_block`, yielding DXT1 byte offsets
+`0,32,48,160,176` and 16-byte-block DXT byte offsets
+`0,64,96,320,352`.  Upload helpers `0x56a10` and `0x56c60` add the saved X/Y
+coordinates to an upload box and enforce the saved minimum rectangle.  Helper
+`0x56910` creates the shared 32x16 view only for relative level zero and stores
+it at `+0x2fc`.  This recovers allocation and upload placement without a
+capture.  `tools/m9-texture-tail-evidence.py` verifies the tables, their
+coordinate relation, compressed offsets, and constructor/helper call joins
+against the saved binary.
 
 Function `0x467e0` builds more than twenty cached relocation/descriptor triples,
 and `0xa6740` selects among them.  These are descriptor *views* selected by the
@@ -425,16 +450,18 @@ format codes above; aligned horizontal/vertical allocation extents; all sampler
 filter, wrap, anisotropy, compare, border, bump, and LOD bit positions; and the
 complete numeric transition tree and 2D/cube/volume dimension join for backend
 `+0x10[11:8]`.  Selector-2 bits 19/20/22/24 being zero and the ordinary volume
-mip offset recurrence are also high confidence.
+mip offset recurrence are also high confidence.  The packed-tail 32x16 atlas,
+per-level coordinates, and uncompressed/DXT upload offsets are exact.
 
 Medium confidence: `idx78[15:0]` is best named row span/pitch in format elements,
 and `idx79[27:16]` is depth or layer count.  Both names follow construction and
 size arithmetic, but the binary contains no symbol names.
 
 Unresolved: semantic names for compiler-record bits 4/6/7/8/9 and therefore
-for operation families `1/5/8/9/d`; the physical address permutation for
-class-3 blocks and mip tails; whether a non-D3D path exposes programmable
-channel swizzle; and the exact meaning of the nonzero descriptor storage/layout
-classes.  Focused MMIO captures of otherwise identical projected/LOD samples,
-linear/class-3 resources, coordinate-coded blocks, and ordinary/tail mip chains
-are the shortest way to settle these boundaries.
+for operation families `1/5/8/9/d`; the physical address permutation within
+class-3 blocks; whether a non-D3D path exposes programmable channel swizzle;
+and the exact meaning of the nonzero descriptor storage/layout classes.
+Focused MMIO captures of otherwise identical projected/LOD samples and
+coordinate-coded class-3 blocks are the shortest way to settle these
+boundaries.  Packed-tail allocation and upload placement no longer require a
+capture.
