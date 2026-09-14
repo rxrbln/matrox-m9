@@ -74,6 +74,20 @@ The last comparison is exact because the common dispatcher establishes
 flat shading: Direct3D `D3DSHADE_FLAT` is enum value 1 [DER].  The final M9
 index carrying the `p252c+0x0c` nibbles is not yet statically joined.
 
+Point fill does have one exact final-command consequence.  Render-entry
+constructor `0x17edb0` receives the live `p2528` pointer in entry field
+`+0x14` and the per-batch common command shadow in `+0x24`.  Its helper
+`0x17f040` tests `p2528+0x48[5:4] == 1`, the `D3DFILL_POINT` encoding.  When
+entry `+0x2b0` is zero and the primitive code in `p2528+0x48[3:0]` is outside
+`{0,1,2,3,4,0xb,0xe}`, it ORs `0x00000fff` into common-shadow word `+0x1c`;
+if any of those conditions fails, it clears that word's low 16 bits.  Raster
+`+0x48 bit 8` and up to four per-item flags additionally control bits
+`15:12`, whose exact role remains unnamed [BIN].  The shadow marks common
+groups `0x01|0x02` dirty.  Emitter `0xf4f50` maps group `0x01` fields
+`+0x10,+0x14,+0x18,+0x1c` to final indices `88,89,8a,c1`, so the point-fill
+mask reaches final index `c1[11:0]` [BIN].  This is a point-mode effect, not
+evidence that every fill mode is encoded directly in index `c1`.
+
 ## Alpha-test fragment lowering
 
 The fixed-state validator is built at `0x136940`.  Its frontend-state view is
@@ -245,18 +259,21 @@ output mask described above.  No nonzero mask bits are copied into the
 compiled `ad/af` words or into another fixed command word by this saved path
 [BIN].  Partial sample-mask behavior consequently remains unjoined.
 
-The raster states stop at compiler and optimization inputs rather than a
-proved fixed index [BIN][DER]:
+The remaining raster states stop at compiler and optimization inputs rather
+than a proved fixed index [BIN][DER]:
 
 * `CULLMODE` remains at `p2528+4[1:0]`.  Clone `0x1119b0` preserves this field
   and its dirty `0x4`.  The only downstream decoder found for the low two bits,
   `0x17e8d0`, accepts value 1 (`CULL_NONE`) as one condition of a draw-path
   eligibility test; it does not distinguish clockwise from counterclockwise
   or emit a command word.
-* The same clone covers the raster object only through `+0x44` and does not
-  copy the fill/shade mirror at `p2528+0x48`.  Routine `0x133c80` reads fill
-  bits `5:4`, including a test for value 3, while computing a renderer-internal
-  eligibility boolean at `+0x1d18`; it is not a packet emitter.
+* Clone `0x1119b0` covers the raster object only through `+0x44` and does not
+  copy the fill/shade mirror at `p2528+0x48`.  That does not remove the live
+  raster object from render-entry construction: `0x17f040` consumes it and
+  produces the point-fill `c1[11:0]` effect described above.  Routine
+  `0x133c80` separately tests fill value 3 while computing renderer-internal
+  eligibility boolean `+0x1d18`; no corresponding live-raster test for value
+  2 (`D3DFILL_WIREFRAME`) reaches an indexed command in the saved path.
 * Persistent fill/shade nibbles in `p252c+0x0c` participate in renderer
   dependency checks at `0x132e10`, which invalidate and rebuild compiled draw
   entries.  Flat shade also has the independent `p2520+0x18 bit 0` fan-out
@@ -264,8 +281,8 @@ proved fixed index [BIN][DER]:
   instruction or indexed word for either fill or shade.
 
 Controlled command captures are still needed to distinguish `CULL_CW` from
-`CULL_CCW`, identify point/wireframe/solid and flat/Gouraud effects after draw
-compilation, and determine whether nonzero partial sample masks survive in a
-different surface or device path.  Such captures should include both the
-indexed command stream and the native program buffer uploaded from
+`CULL_CCW`, distinguish wireframe from solid after draw compilation, identify
+the flat/Gouraud effect, and determine whether nonzero partial sample masks
+survive in a different surface or device path.  Such captures should include
+both the indexed command stream and the native program buffer uploaded from
 `+0xbb0/+0xbb4`.
