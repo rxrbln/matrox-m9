@@ -45,6 +45,13 @@ patches a private copy, and discards it.  Relocations name GEM handles and
 offsets; userspace cannot provide MMIO, requester, fence, DMA or VRAM bus
 addresses.
 
+Program binding has two distinct operands.  ``PROGRAM`` relocates the raw
+external heap address written at index ``0x69``.  ``PROGRAM_LINK`` relocates
+the separate, 0x80-aligned linked vertex-plus-fragment record selected at
+index ``0x6c`` and adds its hardware-owned low tag bit.  The captured values
+are ``0x11e42000`` and ``0x40c3a000 + 0x300 | 1`` respectively; conflating
+them would either expose a stale process address or select the wrong record.
+
 Hardware gates before general execution
 ---------------------------------------
 

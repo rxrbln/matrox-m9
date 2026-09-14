@@ -42,6 +42,8 @@ static int m9_index_reloc_kind(u8 index)
 		return PARHELIA_M9_RELOC_SPECIAL;
 	case 0x69:
 		return PARHELIA_M9_RELOC_PROGRAM;
+	case 0x6c:
+		return PARHELIA_M9_RELOC_PROGRAM_LINK;
 	case 0x78:
 		return PARHELIA_M9_RELOC_TEXTURE;
 	case 0xb0: case 0xb2: case 0xb4: case 0xb6:
@@ -155,6 +157,8 @@ static u32 m9_reloc_alignment(u32 kind)
 		return 256;
 	case PARHELIA_M9_RELOC_PROGRAM:
 		return 32;
+	case PARHELIA_M9_RELOC_PROGRAM_LINK:
+		return 128;
 	default:
 		return 4;
 	}
@@ -177,7 +181,7 @@ static int m9_validate_relocs(u32 *image, u32 dwords, u8 *expected,
 		if (reloc->command_dword >= dwords ||
 		    !expected[reloc->command_dword] ||
 		    expected[reloc->command_dword] - 1 != reloc->kind ||
-		    reloc->kind > PARHELIA_M9_RELOC_SPECIAL ||
+		    reloc->kind > PARHELIA_M9_RELOC_PROGRAM_LINK ||
 		    reloc->kind == PARHELIA_M9_RELOC_FENCE ||
 		    reloc->flags & ~(PARHELIA_M9_BO_READ | PARHELIA_M9_BO_WRITE) ||
 		    !reloc->flags || reloc->pad[0] || reloc->pad[1])
@@ -196,12 +200,13 @@ static int m9_validate_relocs(u32 *image, u32 dwords, u8 *expected,
 		    address > U32_MAX)
 			return -EOVERFLOW;
 		if (reloc->kind == PARHELIA_M9_RELOC_REQUESTER ||
-		    reloc->kind == PARHELIA_M9_RELOC_PROGRAM ||
 		    reloc->kind == PARHELIA_M9_RELOC_DRAW32_START ||
 		    reloc->kind == PARHELIA_M9_RELOC_DRAW32_END ||
 		    reloc->kind == PARHELIA_M9_RELOC_DRAW16_START ||
 		    reloc->kind == PARHELIA_M9_RELOC_DRAW16_END)
 			address |= M9_COMMAND_SYSTEM_TAG;
+		else if (reloc->kind == PARHELIA_M9_RELOC_PROGRAM_LINK)
+			address |= 1;
 		image[reloc->command_dword] = lower_32_bits(address);
 		expected[reloc->command_dword] = 0;
 	}
