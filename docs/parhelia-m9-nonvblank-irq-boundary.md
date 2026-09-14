@@ -64,6 +64,34 @@ permit:
 | high `0x20000` | 11 | ISR record and optional general caller callback; no fixed internal subscriber in the saved miniport |
 | high `0x01000000` | 12 | separately registered worker `0x239a3`; updates service register `0xf0c`, builds/copies work, and can kick register `0x31c` with `4` |
 
+The complete ISR at `0x10875..0x10f02` accounts for every raw source that it
+tests [BIN].  Its low-bank map is:
+
+| raw low bit | ISR record/action |
+|---:|---|
+| `0x1`, `0x4`, `0x2`, `0x8` | acknowledge and build selector 0, 1, 2, 3 records respectively |
+| `0x100`, `0x400` | acknowledge and build selector 4, 5 records |
+| `0x200`, `0x800` | acknowledge and build selector 6, 7 records |
+| `0x10` | acknowledge and build selector 8 record |
+| `0x1000`, `0x10000000` | acknowledge only |
+| `0x2000`, `0x20000000` | acknowledge only |
+| `0x4000`, `0x40000000` | acknowledge only |
+| `0x8000`, `0x80000000` | acknowledge only |
+
+Selector 4 additionally samples MMIO `0x1e24` bit 25 and stores its inverse in
+notification record `+8`; selector 6 performs the same operation on `0x1f24`
+[BIN].  Selector 8 samples `0x1ebc` as described above.  These are display
+status additions to the notification records.  They do not branch to the
+requester, a 3D service, or reset code [BIN].  This also closes the apparent
+`0x1e24`/`0x1f24` lead: the addresses name per-head display blocks, not hidden
+engine-fault status [DER].
+
+In the high bank, `0x40000`, `0x10000`, and `0x20000` build selectors 9, 10,
+and 11; `0x8` completes the rectangle-transfer service; `0x01000000` builds
+selector 12 after serialization; and `0x4` is acknowledged without building a
+record [BIN].  High bit 31 is only the condition for entering the low-bank
+decoder.  No other high bit is tested by this ISR.
+
 The `0x404` write is the strongest command-engine relationship recovered from
 an unnamed IRQ [BIN].  It is a requester resume/repost action: the value comes
 from saved device state and the callback does not rebuild engine state or issue
@@ -72,9 +100,11 @@ does not take the selector-10 repost branch.  Selector 12 performs auxiliary
 work rather than recovery; its ISR-side helper at `0x196be` only writes
 `0x01000000` to W1C register `0x8f8`.
 
-The ISR also acknowledges low sources `0x400..0x8000` and related auxiliary
-groups.  No recovered logical selector or fixed consumer joins these bits to a
-3D fault.  They remain existence/W1C evidence only.
+Selectors 5 and 7 therefore exist and can be forwarded through the general
+caller callback, but have no fixed internal consumer in the saved miniport.
+The eight paired low bits in the acknowledgement-only rows and high `0x4`
+remain existence/W1C evidence only.  None joins a requester-failure handler or
+3D reset [BIN].
 
 ## Linux boundary
 

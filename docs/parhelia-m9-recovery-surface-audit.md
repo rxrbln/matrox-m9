@@ -7,6 +7,12 @@ virtual addresses in `MxMM.sys` and `.text` offsets in
 `KernelLibraries.o_shipped`.  `[BIN]` is a direct binary observation and
 `[DER]` is a conclusion from joined observations.
 
+The Windows `MSerX.inf` lists twelve M9120/M9138/M9140/M9148-era subsystem
+variants, all under PCI device `102b:0540`.  Both install sections register the
+same `MxMM` service and copy the same miniport/ICD family [SRC].  There is no
+per-board reset binary to mine: the board names select setup/output support
+around one shared recovery surface [DER].
+
 ## Windows miniport callback surface
 
 `DriverEntry` at `0x55e05` builds the 0x54-byte legacy
@@ -112,6 +118,77 @@ are pinned by `tools/m9-recovery-surface-evidence.py`.  All sites are in the
 `0x14540..0x23e2b` requester/context service family; none is in ResetHw, power,
 StartIO, or their direct dispatcher functions [BIN].
 
+## ICD error recovery restores resources, not the engine
+
+The saved Windows and Linux OpenGL drivers retain C++ method names for
+`WGLICDLink::CallDriverErrorRecovery`,
+`WGLICDLink::SendCommandStreamErrorRecovery`, and `WGLICDLink::Restore`.
+These names make it possible to inspect the vendor's highest-level recovery
+policy without guessing from an IRQ bit [BIN].  The implementations diverge
+sharply between the two builds.
+
+In `MxMGLX.dll`, `SendCommandStreamErrorRecovery` is the routine at
+`0x1002e560` [BIN].  Its only direct caller is the command-stream flush at
+`0x10003280`.  The caller initializes a retry byte to zero, invokes the helper
+after a nonzero send result, and resubmits only if the helper changes that byte
+[BIN].  The helper handles statuses as follows:
+
+| send status | action | return/retry |
+|---:|---|---|
+| `0x0a`, `0x0b` | call `Restore` at `0x1002dfe0` until true, sleeping 10 ms between attempts | return `0x57`; retry byte remains false |
+| `0x3f` | call context-side method `0x100a2460` on `context+0x121c` with argument zero | return zero; set retry byte true |
+| other | no recovery action | return zero, except a null context returns one |
+
+`CallDriverErrorRecovery` maps to `0x10030b50`; its sole direct caller is
+`CallDriver` at `0x10030fa3` [BIN].  It accepts status 2 or `0x0a..0x0c`, unless
+recovery is already active at `WGLICDLink+0x25`.  It then calls the same
+`Restore` routine until true, sleeping 100 ms between attempts, clears the
+caller's retry byte, and returns `0x57`.  Other statuses return one.  This loop
+has no deadline [BIN].
+
+The complete `Restore` body is `0x1002dfe0..0x1002e313`.  It guards against
+re-entry, walks monitor/context/resource state, tears down and re-creates
+surfaces, and updates software bookkeeping [BIN].  Its direct calls include
+monitor/resource helpers, but not the imported `ExtEscape` thunk at
+`0x1072801c`.  The two error helpers themselves call only `Restore`, the
+context-side method for status `0x3f`, and imported `Sleep`; neither sends a
+dedicated recovery escape [BIN].  Ordinary reconstruction helpers can still
+submit normal miniport requests through indirect or deeper calls, so this does
+not establish that restoration is kernel-independent.  It establishes that
+the Windows ICD publishes resource reconstruction and retry as its recovery
+contract, not a 3D engine reset [DER].
+
+The Linux `m9x_drv.so` build closes the boundary more strongly.  Its named
+methods are unconditional assertions against the literal expression `false`
+in `WGLICDLinkLinux.cpp` [BIN]:
+
+| method | entry | assertion line |
+|---|---:|---:|
+| `CallDriverErrorRecovery` | `m9x21649`, `0x5ce180` | `0x8bf` |
+| `SendCommandStreamErrorRecovery` | `m9x11978`, `0x5ce360` | `0x648` |
+| `Restore` | `m9x2254`, `0x5ce390` | `0x620` |
+
+This is not only dead diagnostic material.  Command-stream function `m9x1135`
+calls sender `m9x7606` at `0x5ba255`; every nonzero result reaches
+`SendCommandStreamErrorRecovery` at `0x5ba279`, which asserts [BIN].  The sole
+direct call to `Restore` is behind `m9x17456`, whose entire implementation is
+`xor eax,eax; ret`; that guard therefore reports false before the Restore loop
+can run.  `CallDriverErrorRecovery` has no direct caller in `.text` [BIN].
+
+The package contains sixteen `m9x_drv.so` siblings for X-server ABIs 6.9,
+7.1--7.5.99, and 1.9--1.15.  Their ABI-facing code shifts the linked addresses,
+but every image contains the same three signature-referenced assertion bodies,
+with the same source file, literal `false`, and source lines `0x8bf`, `0x648`,
+and `0x620` [BIN].  The checker verifies the complete sibling set and each
+image hash.  There is therefore no alternate packaged Linux ABI module with
+an operational recovery implementation [DER].
+
+Consequently, the saved Linux OpenGL stack has no operational user-mode
+recovery path.  A command-send failure is fail-stop, while the Windows path
+rebuilds resources and may retry without revealing a hardware reset sequence
+[DER].  Neither implementation supplies a safe reset primitive for a new DRM
+driver.
+
 ## Linux close, removal, and disable paths
 
 The open wrapper has no power-management lifecycle to inspect: its
@@ -148,11 +225,13 @@ No saved production entry point provides a 3D/global reset contract [DER].
 The Windows callback explicitly named ResetHw is display-only and reports
 failure; Windows power resume reconstructs board/display services without a
 direct requester restart; its complete StartIO direct graph exposes no reset
-join.  Linux has no PM/reset callback, its core disable operation is empty, and
-close performs an unbounded requester drain followed by destruction.  These
-facts add lifecycle and escape coverage to the earlier exhaustive immediate
-MMIO-write audit.  They do not prove that the silicon lacks an undocumented
-reset bit or that no indirect/table-driven path ever touches a requester word.
+join.  Windows ICD recovery reconstructs resources but issues no dedicated
+reset escape.  Linux has no PM/reset callback, its ICD recovery method asserts,
+its core disable operation is empty, and close performs an unbounded requester
+drain followed by destruction.  These facts add lifecycle, user-mode recovery,
+and escape coverage to the earlier exhaustive immediate MMIO-write audit.
+They do not prove that the silicon lacks an undocumented reset bit or that no
+indirect/table-driven path ever touches a requester word.
 
 A new DRM driver's safest bounded contract is therefore:
 
