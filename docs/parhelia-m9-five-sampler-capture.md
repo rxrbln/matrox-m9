@@ -30,7 +30,7 @@ The selected draw is sequence 25 on `bm2`, with three ranges:
 
 ```text
 0x000..0x260  setup/preprocessing
-0x260..0xfa4  five serialized texture/raster blocks
+0x260..0xfa4  four scratch RT passes plus the final RT pass
 0xfa4..0xfd0  completion
 ```
 
@@ -61,13 +61,17 @@ linked record `6c=40c3a281`.  The complete 0x21000-byte resource image is
 unchanged across submission.
 
 The vendor compiler therefore implements this five-dependent-sampler shader
-as five serialized passes inside one ExecuteDma submission, with intermediate
-results routed between them.  The fifth logical sampler works correctly, but
+as framebuffer multipass inside one ExecuteDma submission.  Passes 0--3 write
+four rotating views of scratch surface `0x10ec1000`; the final pass samples
+three scratch views plus the fifth application texture and writes the user
+target.  All application textures time-slice full slot `70`, while generic
+routes `74..76` carry scratch feedback.  The fifth logical sampler works, but
 it does not expose a fifth simultaneous hardware state slot.  A new compiler
 can initially cap native single-pass texture scheduling at the recovered
-physical limit and add this multipass lowering later.  Advertising more units
-requires equivalent dependency-preserving lowering and temporary-resource
-management.
+physical limit and add this lowering later.  Advertising more units requires
+equivalent scratch allocation/lifetime plus correct depth, blend, stencil,
+discard, query, MRT and MSAA behavior.  The exact schedule is in
+`parhelia-m9-five-sampler-schedule-re.md`.
 
 The compact evidence and verifier are under
 `captures/m9x-linux-five-sampler-20260914` and

@@ -187,14 +187,16 @@ to fill each small allocation:
 0020: 11f88008 11f89008 11f8a008 ...
 ```
 
-This is repeated address-like allocation/translation metadata, not linear
-pixels.  The 0x800-byte images are identical across RGB10_A2, updates, copy,
-and the narrow-format cases even while visible pixels and descriptor formats
-differ.  That identity means the capture does not prove these words are the
-texture's backing-page list; they may describe another allocation or a BAR
-translation alias.  A new driver must not reproduce an inferred indirection
-until tag-stripped referenced-address dumps join these records to actual
-texels.
+This is repeated PTE-shaped allocation/translation metadata, not linear
+pixels.  Static analysis now proves the matching 40-bit PTE grammar: bit 3 is
+valid, bits 31:12 supply physical bits 31:12, and bits 11:4 supply physical
+bits 39:32.  The 0x800-byte images are nevertheless identical across
+RGB10_A2, updates, copy, and narrow formats while visible pixels and
+descriptors differ.  The capture therefore does not prove that this particular
+record is the texture's page-table root or that its decoded pages own the
+texture.  Join the request root and decoded physical pages to coordinate-coded
+texels before assigning that role.  The exact boundary and all class-3 address
+calculators are recorded in `parhelia-m9-backing-layout-closure.md`.
 
 ## Update, copy, and mip-selection streams
 

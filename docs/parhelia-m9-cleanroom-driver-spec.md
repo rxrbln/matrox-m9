@@ -264,10 +264,14 @@ formula from `0x0f04[1:0]` (`device_mode`), `0x0f04[20:19]`
 `tools/m9-blocked-layout-evidence.py` covers all four 32-bit variants.  A
 coordinate-coded upload remains a validation test, not a discovery blocker.
 
-**Blocker for full format coverage:** the vendor kernel contains and the docs
-identify the 1/8/16/64/128-bit and DXT address calculators, but their formulas
-have not yet been transcribed into maintainable source.  Keep tiled support to
-validated 32-bit formats until those implementations and vectors exist.
+All 35 linear/tiled/special calculator bodies and dispatch relocations are now
+hash-pinned.  The 32 tiled routines across 1/8/16/32/64/128-bit, DXT1, and
+DXT2--5 have 352 checked coordinate outputs from directly invoked leaf bodies;
+the 128-bit mode-2 aperture route is an explicit unsupported zero stub.
+Maintainable source formulas still exist only for the four 32-bit routes.
+Transcribe every other family against that executable oracle before enabling
+it.  The exact 40-bit PTE decode is also known, but a live root-plus-page dump
+must still join the PTE-shaped index-`78` image to actual resource ownership.
 
 ## 5. Requester, command transport, and UAPI
 
@@ -937,10 +941,11 @@ slot wrap, counter wrap, ordering stress, and multisample scaling are verified.
 This does not block the initial driver.
 
 The following also remain optional: hardware cursor, partial sample masks,
-class-3 formats whose calculators are not transcribed, the fast whole-page
-clear, uncommon interrupt services, more than four live fragment texture
-blocks, and bus-master shader/constant optimizations.  Nonzero-origin `c4/c5`
-viewport/scissor bounds are already captured.
+class-3 format families whose exact oracle has not been transcribed into
+maintainable source, the fast whole-page clear, uncommon interrupt services,
+more than four live fragment texture blocks, and bus-master shader/constant
+optimizations.  Nonzero-origin `c4/c5` viewport/scissor bounds are already
+captured.
 
 ## 12. Bring-up and regression sequence
 

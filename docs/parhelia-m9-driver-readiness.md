@@ -37,9 +37,11 @@ The following pieces no longer depend on another vendor capture:
 * RGB565, RGBA4, RGB5A1, RGB8, RGBA8, L8, A8, LA8, I8, D16 and D32 textures,
   odd 1-D/2-D dimensions, full mip chains and packed tails, sampler state,
   four live sampler selectors, subimage/copy coherency, and the class-1
-  render-to-sample dependency through index `43`.  The mapped index-`78` image
-  is repeated address-like metadata rather than linear texels; its relationship
-  to the actual backing remains unproved;
+  render-to-sample dependency through index `43`.  The exact 40-bit PTE
+  grammar and all class-3 calculator bodies/dispatches have deterministic
+  vectors.  The mapped index-`78` image is repeated PTE-shaped metadata rather
+  than linear texels; its table-root and physical-page ownership remain
+  unjoined;
 * separate index-`69` drawable/external and `6c` linked resources, atomic vertex plus
   fragment A/B/A selection, live stage-constant ranges, and the invariant
   nature of the 80-slot `8f/90..9f` store;
@@ -161,7 +163,7 @@ the live Linux ICD did not advertise.
 | query wrap and multisample scaling | ordinary visible/hidden/partial counts and reuse are closed | slot wrap, 32-bit counter wrap, ordering stress, and a sampled-surface comparison |
 | auxiliary requester wrap and five hardware-owned words | optional streaming path remains absent | one forced auxiliary wrap with four timestamped descriptor snapshots |
 | transparent 3D reset and fault IRQ | timeout recovery remains fail-closed | controlled bad address/opcode tests with complete pre-ack snapshots |
-| class-3 physical in-block permutation | tiled/blocked resources remain unavailable | coordinate-coded upload/readback for one element size per layout family |
+| class-3 physical layout and backing join | all 35 dispatch/body routes are pinned and 32 tiled routes have 352 golden coordinate vectors; maintainable formulas exist for the four 32-bit routes | transcribe the remaining element/DXT families, then capture one page-table root plus decoded coordinate-coded physical pages, including cube faces and volume slices |
 
 The vendor capture gates are now separate from new-driver validation. The new
 kernel/Mesa stack still has to replay a no-op fence, clear, triangle, mipmapped
