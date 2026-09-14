@@ -218,9 +218,11 @@ extent, and common D3D color, luminance, vector, float, depth, and DXT formats
 are joined to hardware codes.  Resource dimensions are proven as 2D, cube, and
 volume/3D.  The live selector-2 view leaves indices `78[19]`, `78[20]`,
 `78[22]`, and `78[24]` clear and has no separate D3D channel-swizzle field.
-The visible class-3 block geometry and ordinary volume-mip offset recurrence
-are exact.  Only the physical permutation within class-3 blocks and packed mip
-tails remains unresolved.  Index `87` remains reserved.
+The visible class-3 block geometry, ordinary volume-mip offset recurrence, and
+packed-tail 32x16 atlas are exact.  Tail upload coordinates and byte offsets
+are recovered for uncompressed and DXT resources.  Only the physical
+permutation within class-3 blocks remains unresolved.  Index `87` remains
+reserved.
 
 ### Common state-bank shadow layout
 
