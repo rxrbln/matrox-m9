@@ -79,8 +79,10 @@ The following tests are required in order:
 1. Add the captured primary-requester rollover protocol before the bounded
    32-KiB diagnostic producer reaches its end.  Then stress command-buffer
    rollover independently from simulated 32-bit fence-epoch wrap.
-2. Capture the three unknown ``0x44c/0x450/0x454`` controls and all address
-   windows before enabling a copied user command image.
+2. Record the target's seven requester property inputs or warm
+   ``0x44c/0x450/0x454`` values, whose exact packer and fallback image are now
+   known, plus all address windows before enabling a copied user command
+   image.
 3. Add exact value masks for every whitelisted state index, reserve and fence
    every referenced BO, and run the two-pass captured linear triangle.
 4. Force one auxiliary requester wrap and validate quiescence, save/restore
