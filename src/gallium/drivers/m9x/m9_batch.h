@@ -105,7 +105,15 @@ int m9_batch_prepare_submit(const struct m9_batch *batch,
                             const struct m9_resource *command,
                             uint32_t context_id,
                             struct drm_parhelia_m9_submit *submit);
+int m9_batch_prepare_execute(const struct m9_batch *batch,
+                             const struct m9_resource *command,
+                             uint32_t context_id,
+                             struct drm_parhelia_m9_submit *submit);
 int m9_batch_validate(struct m9_screen *screen, struct m9_resource *command,
                       const struct m9_batch *batch, uint32_t context_id);
+int m9_batch_submit(struct m9_screen *screen, struct m9_resource *command,
+                    const struct m9_batch *batch, uint32_t context_id,
+                    uint64_t *out_point);
+int m9_submit_noop_fence(struct m9_screen *screen, uint64_t *out_point);
 
 #endif

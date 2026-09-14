@@ -5,11 +5,15 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <stdio.h>
+#include <string.h>
 #include <sys/ioctl.h>
 #include <sys/mman.h>
 #include <unistd.h>
 
+#include <xf86drm.h>
 #include "drm-uapi/drm.h"
+#include "drm-uapi/drm_fourcc.h"
+#include "drm-uapi/drm_mode.h"
 #include "m9_batch.h"
 #include "m9_format.h"
 #include "m9_internal.h"
@@ -53,6 +57,22 @@ static int m9_fd(struct pipe_screen *screen)
 }
 
 static bool
+m9_presentation_template(const struct pipe_resource *templ)
+{
+   const unsigned presentation = PIPE_BIND_SCANOUT | PIPE_BIND_DISPLAY_TARGET |
+                                 PIPE_BIND_SHARED;
+
+   return templ->target == PIPE_TEXTURE_2D && templ->width0 == 1024 &&
+          templ->height0 == 768 && templ->depth0 == 1 &&
+          templ->array_size == 1 && !templ->last_level &&
+          templ->nr_samples <= 1 && templ->nr_storage_samples <= 1 &&
+          templ->format == PIPE_FORMAT_B8G8R8X8_UNORM &&
+          (templ->bind & (PIPE_BIND_SCANOUT | PIPE_BIND_DISPLAY_TARGET)) &&
+          !(templ->bind & ~(presentation | PIPE_BIND_RENDER_TARGET |
+                            PIPE_BIND_LINEAR));
+}
+
+static bool
 m9_is_format_supported(struct pipe_screen *screen, enum pipe_format format,
                        enum pipe_texture_target target, unsigned samples,
                        unsigned storage_samples, unsigned bind)
@@ -78,10 +98,67 @@ m9_is_format_supported(struct pipe_screen *screen, enum pipe_format format,
       required |= M9_FORMAT_COLOR;
    if (bind & PIPE_BIND_DEPTH_STENCIL)
       required |= M9_FORMAT_DEPTH;
-   if (bind & (PIPE_BIND_SCANOUT | PIPE_BIND_DISPLAY_TARGET |
-               PIPE_BIND_SHARED | PIPE_BIND_SHADER_IMAGE))
+   if (bind & PIPE_BIND_SHADER_IMAGE)
       return false;
+   if (bind & (PIPE_BIND_SCANOUT | PIPE_BIND_DISPLAY_TARGET |
+               PIPE_BIND_SHARED))
+      return target == PIPE_TEXTURE_2D &&
+             (bind & (PIPE_BIND_SCANOUT | PIPE_BIND_DISPLAY_TARGET)) &&
+             format == PIPE_FORMAT_B8G8R8X8_UNORM &&
+             !(bind & ~(PIPE_BIND_SCANOUT | PIPE_BIND_DISPLAY_TARGET |
+                        PIPE_BIND_SHARED | PIPE_BIND_RENDER_TARGET |
+                        PIPE_BIND_LINEAR));
    return required && !(required & ~info.usage);
+}
+
+static int
+m9_resource_map_dumb(struct m9_screen *screen, struct m9_resource *resource)
+{
+   struct drm_mode_map_dumb map = { .handle = resource->handle };
+
+   if (ioctl(screen->fd, DRM_IOCTL_MODE_MAP_DUMB, &map))
+      return -errno;
+   resource->mmap_offset = map.offset;
+   resource->map = mmap(NULL, resource->size, PROT_READ | PROT_WRITE,
+                        MAP_SHARED, screen->fd, map.offset);
+   if (resource->map == MAP_FAILED) {
+      resource->map = NULL;
+      return -errno;
+   }
+   return 0;
+}
+
+static int
+m9_resource_create_dumb(struct m9_screen *screen,
+                        struct m9_resource *resource)
+{
+   struct drm_mode_create_dumb create = {
+      .width = 1024,
+      .height = 768,
+      .bpp = 32,
+   };
+   int ret;
+
+   if (ioctl(screen->fd, DRM_IOCTL_MODE_CREATE_DUMB, &create))
+      return -errno;
+   if (create.pitch != 4096 || create.size < 4096ull * 768) {
+      struct drm_mode_destroy_dumb destroy = { .handle = create.handle };
+      ioctl(screen->fd, DRM_IOCTL_MODE_DESTROY_DUMB, &destroy);
+      return -EINVAL;
+   }
+   resource->handle = create.handle;
+   resource->size = create.size;
+   resource->row_span = create.pitch / 4;
+   resource->domain = M9_BO_VRAM;
+   resource->dumb_owned = true;
+   ret = m9_resource_map_dumb(screen, resource);
+   if (ret) {
+      struct drm_mode_destroy_dumb destroy = { .handle = create.handle };
+      ioctl(screen->fd, DRM_IOCTL_MODE_DESTROY_DUMB, &destroy);
+      resource->handle = 0;
+      resource->dumb_owned = false;
+   }
+   return ret;
 }
 
 static struct pipe_resource *
@@ -96,11 +173,18 @@ m9_resource_create(struct pipe_screen *pscreen,
 
    if (!resource)
       return NULL;
+   resource->map_fd = -1;
    if (!m9_is_format_supported(pscreen, templ->format, templ->target,
                                templ->nr_samples, templ->nr_storage_samples,
                                templ->bind))
       goto fail;
-   if (templ->target == PIPE_BUFFER) {
+   if (m9_presentation_template(templ)) {
+      resource->kind = M9_RESOURCE_LINEAR_COLOR;
+      format.cpp = 4;
+      if (m9_resource_create_dumb(screen, resource))
+         goto fail;
+      size = resource->size;
+   } else if (templ->target == PIPE_BUFFER) {
       size = templ->width0;
       resource->kind = M9_RESOURCE_LINEAR_BUFFER;
       format.cpp = 1;
@@ -126,23 +210,27 @@ m9_resource_create(struct pipe_screen *pscreen,
          size = (uint64_t)resource->row_span * templ->height0 * format.cpp;
       }
    }
-   create.size = size;
-   if (ioctl(screen->fd, DRM_IOCTL_PARHELIA_M9_CREATE_BO, &create))
-      goto fail;
-   resource->map = mmap(NULL, create.size, PROT_READ | PROT_WRITE, MAP_SHARED,
-                        screen->fd, create.mmap_offset);
-   if (resource->map == MAP_FAILED) {
-      struct drm_gem_close close_bo = { .handle = create.handle };
-      resource->map = NULL;
-      ioctl(screen->fd, DRM_IOCTL_GEM_CLOSE, &close_bo);
-      goto fail;
+   if (!resource->handle) {
+      create.size = size;
+      if (ioctl(screen->fd, DRM_IOCTL_PARHELIA_M9_CREATE_BO, &create))
+         goto fail;
+      resource->map = mmap(NULL, create.size, PROT_READ | PROT_WRITE,
+                           MAP_SHARED, screen->fd, create.mmap_offset);
+      if (resource->map == MAP_FAILED) {
+         struct drm_gem_close close_bo = { .handle = create.handle };
+         resource->map = NULL;
+         ioctl(screen->fd, DRM_IOCTL_GEM_CLOSE, &close_bo);
+         goto fail;
+      }
+      resource->handle = create.handle;
+      resource->size = create.size;
+      resource->mmap_offset = create.mmap_offset;
+      resource->domain = M9_BO_DMA32;
+      resource->handle_owned = true;
    }
    resource->base = *templ;
    resource->base.screen = pscreen;
    pipe_reference_init(&resource->base.reference, 1);
-   resource->handle = create.handle;
-   resource->size = create.size;
-   resource->mmap_offset = create.mmap_offset;
    resource->width = templ->width0;
    resource->height = templ->height0;
    resource->depth = templ->depth0;
@@ -151,8 +239,145 @@ m9_resource_create(struct pipe_screen *pscreen,
    resource->layout = 1; /* exact ordinary linear descriptor class */
    return &resource->base;
 fail:
+   if (resource->map)
+      munmap(resource->map, resource->size);
+   if (resource->dumb_owned && resource->handle) {
+      struct drm_mode_destroy_dumb destroy = { .handle = resource->handle };
+      ioctl(screen->fd, DRM_IOCTL_MODE_DESTROY_DUMB, &destroy);
+   }
    FREE(resource);
    return NULL;
+}
+
+static struct pipe_resource *
+m9_resource_from_handle(struct pipe_screen *pscreen,
+                        const struct pipe_resource *templ,
+                        struct winsys_handle *whandle, unsigned usage)
+{
+   struct m9_screen *screen = m9_screen(pscreen);
+   struct m9_resource *resource;
+   struct m9_format_info format;
+   uint64_t size;
+   int ret = 0;
+
+   (void)usage;
+   if (!whandle || !m9_presentation_template(templ) || whandle->offset ||
+       whandle->stride != 4096 ||
+       (whandle->modifier != DRM_FORMAT_MOD_INVALID &&
+        whandle->modifier != DRM_FORMAT_MOD_LINEAR))
+      return NULL;
+   size = (uint64_t)whandle->stride * templ->height0;
+   resource = CALLOC_STRUCT(m9_resource);
+   if (!resource)
+      return NULL;
+   resource->map_fd = -1;
+   resource->size = size;
+   resource->row_span = whandle->stride / 4;
+   resource->domain = M9_BO_IMPORTED;
+
+   switch (whandle->type) {
+   case WINSYS_HANDLE_TYPE_KMS:
+      resource->handle = whandle->handle;
+      ret = m9_resource_map_dumb(screen, resource);
+      break;
+   case WINSYS_HANDLE_TYPE_SHARED: {
+      struct drm_gem_open open = { .name = whandle->handle };
+      if (ioctl(screen->fd, DRM_IOCTL_GEM_OPEN, &open)) {
+         ret = -errno;
+         break;
+      }
+      resource->handle = open.handle;
+      resource->handle_owned = true;
+      ret = m9_resource_map_dumb(screen, resource);
+      break;
+   }
+   case WINSYS_HANDLE_TYPE_FD:
+      if (drmPrimeFDToHandle(screen->fd, whandle->handle,
+                             &resource->handle)) {
+         ret = -errno;
+         break;
+      }
+      resource->handle_owned = true;
+      resource->map_fd = fcntl(whandle->handle, F_DUPFD_CLOEXEC, 3);
+      if (resource->map_fd < 0) {
+         ret = -errno;
+         break;
+      }
+      resource->map = mmap(NULL, size, PROT_READ | PROT_WRITE, MAP_SHARED,
+                           resource->map_fd, 0);
+      if (resource->map == MAP_FAILED) {
+         resource->map = NULL;
+         ret = -errno;
+      }
+      break;
+   default:
+      ret = -EINVAL;
+      break;
+   }
+   if (ret)
+      goto fail;
+   if (!m9_format_info(templ->format, &format))
+      goto fail;
+   resource->base = *templ;
+   resource->base.screen = pscreen;
+   pipe_reference_init(&resource->base.reference, 1);
+   resource->kind = M9_RESOURCE_LINEAR_COLOR;
+   resource->width = templ->width0;
+   resource->height = templ->height0;
+   resource->depth = 1;
+   resource->cpp = format.cpp;
+   resource->format = format.code;
+   resource->layout = 1;
+   return &resource->base;
+fail:
+   if (resource->map)
+      munmap(resource->map, resource->size);
+   if (resource->map_fd >= 0)
+      close(resource->map_fd);
+   if (resource->handle_owned && resource->handle) {
+      struct drm_gem_close close_bo = { .handle = resource->handle };
+      ioctl(screen->fd, DRM_IOCTL_GEM_CLOSE, &close_bo);
+   }
+   FREE(resource);
+   return NULL;
+}
+
+static bool
+m9_resource_get_handle(struct pipe_screen *pscreen, struct pipe_context *ctx,
+                       struct pipe_resource *pres,
+                       struct winsys_handle *whandle, unsigned usage)
+{
+   struct m9_resource *resource = m9_resource(pres);
+
+   (void)ctx;
+   (void)usage;
+   if (!whandle || !resource->handle || resource->domain == M9_BO_DMA32)
+      return false;
+   whandle->stride = resource->row_span * resource->cpp;
+   whandle->offset = 0;
+   whandle->modifier = DRM_FORMAT_MOD_LINEAR;
+   switch (whandle->type) {
+   case WINSYS_HANDLE_TYPE_KMS:
+      whandle->handle = resource->handle;
+      return true;
+   case WINSYS_HANDLE_TYPE_SHARED: {
+      struct drm_gem_flink flink = { .handle = resource->handle };
+      if (ioctl(m9_screen(pscreen)->fd, DRM_IOCTL_GEM_FLINK, &flink))
+         return false;
+      whandle->handle = flink.name;
+      return true;
+   }
+   case WINSYS_HANDLE_TYPE_FD: {
+      int fd;
+      if (drmPrimeHandleToFD(m9_screen(pscreen)->fd, resource->handle,
+                             DRM_CLOEXEC | DRM_RDWR, &fd))
+         return false;
+      whandle->handle = fd;
+      return true;
+   }
+   default:
+      return false;
+   }
 }
 
 static void
@@ -163,8 +388,14 @@ m9_resource_destroy(struct pipe_screen *pscreen, struct pipe_resource *pres)
 
    if (resource->map)
       munmap(resource->map, resource->size);
-   if (resource->handle)
+   if (resource->map_fd >= 0)
+      close(resource->map_fd);
+   if (resource->dumb_owned && resource->handle) {
+      struct drm_mode_destroy_dumb destroy = { .handle = resource->handle };
+      ioctl(m9_screen(pscreen)->fd, DRM_IOCTL_MODE_DESTROY_DUMB, &destroy);
+   } else if (resource->handle_owned && resource->handle) {
       ioctl(m9_screen(pscreen)->fd, DRM_IOCTL_GEM_CLOSE, &close_bo);
+   }
    FREE(resource);
 }
 
@@ -181,6 +412,7 @@ m9_command_bo_create(struct m9_screen *screen, struct m9_resource *resource)
    if (ioctl(screen->fd, DRM_IOCTL_PARHELIA_M9_CREATE_BO, &create))
       return -errno;
    memset(resource, 0, sizeof(*resource));
+   resource->map_fd = -1;
    resource->map = mmap(NULL, create.size, PROT_READ | PROT_WRITE, MAP_SHARED,
                         screen->fd, create.mmap_offset);
    if (resource->map == MAP_FAILED) {
@@ -194,6 +426,8 @@ m9_command_bo_create(struct m9_screen *screen, struct m9_resource *resource)
    resource->kind = M9_RESOURCE_COMMAND;
    resource->size = create.size;
    resource->mmap_offset = create.mmap_offset;
+   resource->domain = M9_BO_DMA32;
+   resource->handle_owned = true;
    return 0;
 }
 
@@ -210,19 +444,85 @@ m9_command_bo_destroy(struct m9_screen *screen, struct m9_resource *resource)
    if (close_bo.handle)
       ioctl(screen->fd, DRM_IOCTL_GEM_CLOSE, &close_bo);
    memset(resource, 0, sizeof(*resource));
+   resource->map_fd = -1;
 }
 
-static struct pipe_context *
-m9_context_create_gated(struct pipe_screen *screen, void *priv, unsigned flags)
+struct pipe_fence_handle *
+m9_fence_create(uint64_t point, bool signaled)
 {
+   struct m9_fence *fence = CALLOC_STRUCT(m9_fence);
+
+   if (!fence)
+      return NULL;
+   pipe_reference_init(&fence->reference, 1);
+   fence->point = point;
+   fence->signaled = signaled;
+   return (struct pipe_fence_handle *)fence;
+}
+
+static void
+m9_fence_reference(struct pipe_screen *screen,
+                   struct pipe_fence_handle **ptr,
+                   struct pipe_fence_handle *fence)
+{
+   struct m9_fence *old = (struct m9_fence *)*ptr;
+   struct m9_fence *new_fence = (struct m9_fence *)fence;
+
    (void)screen;
-   (void)priv;
-   (void)flags;
-   /* The kernel currently validates streams and can execute only its owned
-    * no-op fence.  Returning NULL prevents a state tracker from treating the
-    * recovered packet builders as a safe arbitrary-program submit path. */
-   fprintf(stderr, "m9x: rendering awaits executable-stream UAPI\n");
-   return NULL;
+   if (pipe_reference(old ? &old->reference : NULL,
+                      new_fence ? &new_fence->reference : NULL))
+      FREE(old);
+   *ptr = fence;
+}
+
+static bool
+m9_fence_finish(struct pipe_screen *screen, struct pipe_context *ctx,
+                struct pipe_fence_handle *fence, uint64_t timeout)
+{
+   struct m9_fence *m9f = (struct m9_fence *)fence;
+
+   (void)screen;
+   (void)ctx;
+   (void)timeout;
+   /* Both currently defined M9 fence-producing ioctls complete
+    * synchronously.  A future asynchronous UAPI needs an explicit wait
+    * ioctl before execute_submit can be enabled. */
+   return !m9f || m9f->signaled;
+}
+
+static bool
+m9_check_resource_capability(struct pipe_screen *pscreen,
+                             struct pipe_resource *pres, unsigned bind)
+{
+   struct m9_resource *resource = m9_resource(pres);
+
+   (void)pscreen;
+   if (bind & ~(PIPE_BIND_SCANOUT | PIPE_BIND_LINEAR))
+      return false;
+   if ((bind & PIPE_BIND_SCANOUT) && resource->domain == M9_BO_DMA32)
+      return false;
+   return !(bind & PIPE_BIND_LINEAR) || resource->layout == 1;
+}
+
+static void
+m9_flush_frontbuffer(struct pipe_screen *screen, struct pipe_context *ctx,
+                     struct pipe_resource *pres, unsigned level,
+                     unsigned layer, void *winsys_drawable_handle,
+                     unsigned nboxes, struct pipe_box *subbox)
+{
+   struct m9_resource *resource = m9_resource(pres);
+
+   (void)screen;
+   (void)ctx;
+   (void)level;
+   (void)layer;
+   (void)winsys_drawable_handle;
+   (void)nboxes;
+   (void)subbox;
+   /* Scanout is the same linear VRAM BO.  Publish direct CPU writes; there
+    * is no shadow, resolve, or Present-side copy in this driver. */
+   if (resource->domain != M9_BO_DMA32)
+      __sync_synchronize();
 }
 
 static void
@@ -248,6 +548,7 @@ m9_screen_create(int fd, const struct pipe_screen_config *config)
    screen->uapi_version = 1;
    screen->validate_submit = true;
    screen->execute_submit = false;
+   screen->linked_program_ready = false;
    screen->base.get_screen_fd = m9_fd;
    u_init_pipe_screen_caps(&screen->base, 1);
    caps = (struct pipe_caps *)&screen->base.caps;
@@ -267,13 +568,19 @@ m9_screen_create(int fd, const struct pipe_screen_config *config)
    caps->compute = false;
    caps->dmabuf = 0;
    screen->base.destroy = m9_destroy;
-   screen->base.context_create = m9_context_create_gated;
+   screen->base.context_create = m9_context_create;
    screen->base.get_name = m9_name;
    screen->base.get_vendor = m9_vendor;
    screen->base.get_device_vendor = m9_device_vendor;
    screen->base.is_format_supported = m9_is_format_supported;
    screen->base.resource_create = m9_resource_create;
+   screen->base.resource_from_handle = m9_resource_from_handle;
+   screen->base.resource_get_handle = m9_resource_get_handle;
+   screen->base.check_resource_capability = m9_check_resource_capability;
    screen->base.resource_destroy = m9_resource_destroy;
+   screen->base.flush_frontbuffer = m9_flush_frontbuffer;
+   screen->base.fence_reference = m9_fence_reference;
+   screen->base.fence_finish = m9_fence_finish;
    return &screen->base;
 fail:
    if (screen->fd >= 0)

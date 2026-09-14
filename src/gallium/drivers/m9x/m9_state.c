@@ -26,6 +26,9 @@ m9_context_set_framebuffer(struct m9_context *context,
        (depth && (depth->kind != M9_RESOURCE_LINEAR_DEPTH ||
                   width > depth->width || height > depth->height)))
       return -EINVAL;
+   if (color->domain != M9_BO_DMA32 ||
+       (depth && depth->domain != M9_BO_DMA32))
+      return -EOPNOTSUPP;
    context->color = color;
    context->depth = depth;
    context->framebuffer_width = width;

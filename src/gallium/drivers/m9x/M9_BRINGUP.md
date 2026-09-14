@@ -59,11 +59,29 @@ two-slot primary command rebase.  Arbitrary userspace streams remain disabled:
   `m9_batch_validate()` uploads it to a COMMAND BO with
   `PARHELIA_M9_SUBMIT_VALIDATE_ONLY`.  `m9_command_bo_create()` creates the
   required 32 KiB DMA32 command object.
+* The lower execution path is now built rather than implied.  It prepares the
+  same request with flags zero, uploads the sealed command image, requires a
+  nonzero returned fence point, and refuses the operation unless the screen's
+  executable-submit gate is set.  The diagnostic no-op-fence request has a
+  separate exact helper.  Pipe fences model the current synchronous UAPI; an
+  asynchronous kernel ABI must add a wait operation before it can be enabled.
+* Context allocation, its per-context command BO, batch isolation, flush,
+  teardown, and direct CPU buffer/texture transfers are implemented behind
+  two independent gates: executable submit and a safe linked-program
+  constructor.  Mip transfer offsets include the recovered 32x16 tail atlas.
+  A state tracker still receives `NULL` while either gate is closed.
+* Presentation BOs use `MODE_CREATE_DUMB`, the guarded KMS contract's exact
+  1024x768 XRGB8888 shape and 4096-byte pitch, and direct BAR0 mapping.
+  KMS, flink, and PRIME winsys handles have symmetric import/export paths.
+  `flush_frontbuffer` publishes writes to that same BO and performs no shadow
+  copy or resolve.  DMA32 resources and VRAM scanout resources retain distinct
+  domains and destruction rules.
 
 The pipe screen advertises only exact, joined linear format usages.  It does
 not advertise MSAA, arrays, cube/3-D targets, dma-buf sharing, shader images,
 compute, or GLSL.  Context creation returns `NULL` while the kernel screen
-state says executable submit is unavailable.  This is deliberate: the kernel
+state says executable submit is unavailable or the linked-program constructor
+is unsafe.  This is deliberate: the kernel
 at commits `b7d0194`, `c611a0e`, `d70b370`, and `f459a8b` validates arbitrary
 command streams but executes only its kernel-owned synchronous no-op fence
 diagnostic.  Fence targets now preserve the natural
@@ -99,6 +117,8 @@ These gaps must remain visible in capability and execution gates:
 1. The kernel does not execute a user command stream yet.  It must append and
    own completion, validate full state masks, pin every referenced BO, and
    expose completion before `m9_screen.execute_submit` can become true.
+   The Mesa flags-zero execution request is ready, but the current ioctl
+   returns `-EOPNOTSUPP` by design.
 2. The gltri preprocessing pass writes four transient resources which the
    raster pass consumes in the address permutation `[b0,b4,b8,b2]` at
    indices `00..03`.  Four canonical preprocessing layouts, their routing and
@@ -122,6 +142,7 @@ These gaps must remain visible in capability and execution gates:
    be replayed in a new context.  Index `69` is
    drawable memory, and the known bind tuple alone is not a general shader
    path.
+   This is now the final Mesa context-creation gate after kernel execution.
 4. Triangle-strip control is captured from gears, but its correlated `d7`
    field and strip batching boundary need a minimal differential before live
    draw submission.  Other primitive raster-control values are unproved.
@@ -140,6 +161,13 @@ These gaps must remain visible in capability and execution gates:
    cube/volume, sampler sRGB, query, reset-recovery, and
    general-shader paths remain gated at the narrower boundaries in the
    readiness ledger.
+7. Guarded KMS scanout BOs are local-VRAM TTM objects, while every object the
+   current submit validator accepts is an `m9x_bo` DMA32 allocation.  The
+   kernel rejects a VRAM object in `m9x_bo_lookup()`, so direct rendering into
+   the scanout BO cannot be claimed yet.  The Mesa resource domain check
+   rejects that submission explicitly.  Closing this requires the kernel to
+   accept, pin, and relocate its own VRAM GEM objects as color targets; Mesa
+   deliberately has no presentation copy fallback.
 
 The Mesa loader maps PCI ID `0x0540` exclusively to `m9x`; the Parhelia map
 contains only the P-series IDs.  Keep the driver-local `m9x_drm.h`

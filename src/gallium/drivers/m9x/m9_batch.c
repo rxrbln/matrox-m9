@@ -519,6 +519,22 @@ m9_batch_prepare_submit(const struct m9_batch *batch,
 }
 
 int
+m9_batch_prepare_execute(const struct m9_batch *batch,
+                         const struct m9_resource *command,
+                         uint32_t context_id,
+                         struct drm_parhelia_m9_submit *submit)
+{
+   int ret;
+
+   if (!batch || !batch->sealed)
+      return -EINVAL;
+   ret = m9_batch_prepare_submit(batch, command, context_id, submit);
+   if (!ret)
+      submit->flags = 0;
+   return ret;
+}
+
+int
 m9_batch_validate(struct m9_screen *screen, struct m9_resource *command,
                   const struct m9_batch *batch, uint32_t context_id)
 {
@@ -535,4 +551,44 @@ m9_batch_validate(struct m9_screen *screen, struct m9_resource *command,
    if (ioctl(screen->fd, DRM_IOCTL_PARHELIA_M9_SUBMIT, &submit))
       return -errno;
    return submit.out_point ? -EPROTO : 0;
+}
+
+int
+m9_batch_submit(struct m9_screen *screen, struct m9_resource *command,
+                const struct m9_batch *batch, uint32_t context_id,
+                uint64_t *out_point)
+{
+   struct drm_parhelia_m9_submit submit;
+   int ret;
+
+   if (!screen || !screen->execute_submit || !out_point)
+      return -EOPNOTSUPP;
+   ret = m9_batch_prepare_execute(batch, command, context_id, &submit);
+   if (ret)
+      return ret;
+   memcpy(command->map, batch->command, submit.command_length);
+   __sync_synchronize();
+   if (ioctl(screen->fd, DRM_IOCTL_PARHELIA_M9_SUBMIT, &submit))
+      return -errno;
+   if (!submit.out_point)
+      return -EPROTO;
+   *out_point = submit.out_point;
+   return 0;
+}
+
+int
+m9_submit_noop_fence(struct m9_screen *screen, uint64_t *out_point)
+{
+   struct drm_parhelia_m9_submit submit = {
+      .flags = PARHELIA_M9_SUBMIT_NOOP_FENCE,
+   };
+
+   if (!screen || !out_point)
+      return -EINVAL;
+   if (ioctl(screen->fd, DRM_IOCTL_PARHELIA_M9_SUBMIT, &submit))
+      return -errno;
+   if (!submit.out_point)
+      return -EPROTO;
+   *out_point = submit.out_point;
+   return 0;
 }

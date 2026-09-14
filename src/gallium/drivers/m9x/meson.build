@@ -10,7 +10,7 @@ libm9x_batch = static_library(
 
 libm9x = static_library(
   'm9x',
-  files('m9_screen.c'),
+  files('m9_screen.c', 'm9_context.c'),
   include_directories : [inc_include, inc_src, inc_gallium, inc_gallium_aux],
   dependencies : [dep_libdrm, idep_mesautil],
   link_with : libm9x_batch,

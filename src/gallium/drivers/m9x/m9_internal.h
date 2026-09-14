@@ -27,6 +27,15 @@ enum m9_resource_kind {
    M9_RESOURCE_SYSTEM_STATE,
 };
 
+enum m9_bo_domain {
+   /* CREATE_BO: DMA32 system memory accepted by the submit validator. */
+   M9_BO_DMA32,
+   /* MODE_CREATE_DUMB: linear BAR0 storage accepted by guarded KMS. */
+   M9_BO_VRAM,
+   /* A winsys handle whose placement is owned by the exporter. */
+   M9_BO_IMPORTED,
+};
+
 struct m9_mip_level {
    uint64_t offset;
    uint32_t width, height, depth;
@@ -54,6 +63,10 @@ struct m9_resource {
    uint32_t cpp;
    uint8_t format;
    uint8_t layout;
+   enum m9_bo_domain domain;
+   bool handle_owned;
+   bool dumb_owned;
+   int map_fd;
    struct m9_mip_layout mip;
    void *map;
 };
@@ -65,6 +78,13 @@ struct m9_screen {
    uint32_t uapi_version;
    bool validate_submit;
    bool execute_submit;
+   bool linked_program_ready;
+};
+
+struct m9_fence {
+   struct pipe_reference reference;
+   uint64_t point;
+   bool signaled;
 };
 
 struct m9_vertex {
@@ -95,6 +115,7 @@ struct m9_context {
    struct pipe_context base;
    struct m9_screen *screen;
    struct m9_batch batch;
+   struct m9_resource command;
    struct m9_vertex_stream vertex_stream;
    uint32_t context_id;
    uint64_t last_point;
