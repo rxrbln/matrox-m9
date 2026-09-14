@@ -110,23 +110,22 @@ operations. Iris `CALL` 23 and `BREAK` 41 have dedicated converter paths at
 `0x1a4dd2` and `0x1a4dec` [BIN].
 
 Static analysis does not close a native target field, relative displacement,
-loop backedge, or dynamic reconvergence operation. It also does not prove
-whether constant-condition branches and fixed-count loops are folded or
-unrolled before native emission. Hardware control flow therefore remains
-disabled. Four compact captures distinguish the implementation choices:
-constant versus uniform `if`, and fixed-count versus uniform-bound loop. Each
-must preserve compiler acceptance, linked-record bytes, both entry fields, and
-the referenced program heap [CAP].
+loop backedge, or dynamic reconvergence operation.  The subsequent special
+capture preserves successful visible results and full linked resources for
+constant and uniform `if` plus fixed-count and uniform-bound loops.  Those
+results prove frontend and hardware execution but still do not distinguish
+folding/unrolling from native flow or identify target/backedge fields.
+Generated hardware control flow therefore remains gated until those records
+are joined to the universal native grammar [CAP].
 
 ## Vertex texture fetch and stage resources
 
 The linker enforces four vertex samplers and sixteen fragment samplers. The
 texture operation family itself is stage-neutral at the recovered lowerer.
-This proves compiler support and the resource cap, but it does not prove how a
-vertex sampler selects its constant/resource range or how its result is routed
-through the preprocessing pass. Keep vertex texture fetch gated until one
-vertex `texture2DLod` capture identifies the linked-record fields and texture
-resource dependency [CAP].
+A subsequent vertex `texture2DLod` case compiles, links, executes, and preserves
+its full linked resource.  Vertex texture fetch is therefore result-captured,
+but its native instruction, constant/resource selector, and preprocessing
+result route remain gated pending the linked-record grammar [CAP].
 
 Program transport facts remain exact:
 
@@ -134,8 +133,8 @@ Program transport facts remain exact:
 * static emitter ownership associates index 69 with its external program
   substate, but address-directed live capture resolves the selected value to
   drawable backing; its live external semantic therefore remains unassigned;
-* index 6a contains packed entry starts, or index 6d holds the second start in
-  the split form;
+* index 6a is a paired numeric control whose exact encoding remains open;
+  index 6d is an optional companion control in the split form;
 * index 6c points to a separate 0x80-aligned linked record and preserves only
   low tag bit 0;
 * the compiler stream is count-delimited, the upload byte length is transport

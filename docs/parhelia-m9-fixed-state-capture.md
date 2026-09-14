@@ -61,8 +61,8 @@ combinations all produce those same direct words:
 
 The factor and equation selection is therefore indirect or program-derived;
 this capture proves the enable path but does not assign those fields.  A
-destination-sensitive correctness fixture plus program-heap capture is needed
-before implementing the full blend matrix.
+destination-sensitive correctness fixture plus linked-record/native-state
+capture is needed before implementing the full blend matrix.
 
 Alpha reference 0.5 is materialized twice as float `128.0` (`43000000`) at
 resource offsets `600/604`; reference 0.25 becomes float `64.0` (`42800000`).

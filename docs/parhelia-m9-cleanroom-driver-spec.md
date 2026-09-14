@@ -46,10 +46,11 @@ gate, not an architectural requirement.
 
 The current evidence is sufficient to write and validate this initial path.
 It is not yet sufficient to claim a complete OpenGL 2.0 driver.  The external
-program heap, atomic linked vertex/fragment pair, entry controls, and constant
-ranges are joined.  Arbitrary programmable shaders remain gated by the
-internal native layout of that linked resource and the uncaptured packed forms
-listed in `parhelia-m9-driver-readiness.md`.
+resource/control pairs, atomic linked vertex/fragment selection, and constant
+ranges are joined, but index `69` is captured drawable backing and index `6c`
+selects a heterogeneous linked record.  Arbitrary programmable shaders remain
+gated by the universal native start/count, VS/FS split, entry selectors, stop
+rule, and unjoined packed forms listed in `parhelia-m9-driver-readiness.md`.
 
 ## 2. Kernel source structure and shared boundaries
 
