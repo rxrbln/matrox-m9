@@ -172,11 +172,112 @@ state byte `+0` bit 1. State propagation at `0x3c0f8b` and `0x3c3b39` compares
 those versions, copies a changed version, and sets the corresponding bit in the
 new state [BIN].
 
-The arrays feed the two distinct shader-resource builders. Vertex
-`0x3b8d60` passes state pointer `+0x91` with program fields `+0x9d/+0xb1` to
-`0x435b30`; fragment `0x3b8a50` passes `+0xba` with `+0xc6/+0xda` to
-`0x4360c0` [BIN]. This is the recovered boundary toward the old M9
-shader-resource/bus-master upload.
+The arrays reach the argument boundary of two distinct shader-resource
+builders. Vertex `0x3b8d60` passes state pointer `+0x91` with program fields
+`+0x9d/+0xb1` to `0x435b30`; fragment `0x3b8a50` passes `+0xba` with
+`+0xc6/+0xda` to `0x4360c0` [BIN]. Passing the pointer is not evidence that
+the ordinary creation path uploads its contents. The builder data flow below
+fixes that distinction.
+
+## Program resource builders and the constant-bank boundary
+
+The two builders share this leading interface [BIN]:
+
+```c
+build(device, mode, handle_out, primary_byte_length, primary_bytes, ...)
+```
+
+They search a stage-specific cache by `primary_byte_length` and an exact byte
+comparison against the saved primary bytes. A new CPU resource object has the
+following statically observed fields [BIN]:
+
+| resource offset | contents |
+|---:|---|
+| `+0x34` | reference count, initially one |
+| `+0x38` | live/busy count used during replacement |
+| `+0x40` | primary byte length |
+| `+0x48` | separately allocated CPU copy of the primary bytes |
+| `+0x60..+0xff` | copied 160-byte compiler result |
+| `+0x128` | parsed program object |
+| `+0x130` | optional default/dependent-value lists |
+| `+0x138` | one caller-supplied program field |
+| `+0x140` | optional linked value list on the vertex side |
+
+Vertex uses device cache/list bases `+0x250/+0x1c0/+0x1d0`; fragment uses
+`+0x130/+0xa0/+0xb0`. `0x431880` performs the length-and-byte lookup and
+increments `+0x34` on a hit. `0x4330c0` registers a new object. The vertex
+builder copies the bytes and length at `0x435e79..0x435ebc`; fragment does so
+at `0x43643d..0x436493`. These are CPU cache fields, not a GPU address or a BM
+descriptor [BIN].
+
+The ordinary wrappers select builder mode 1. In that mode, vertex calls
+`0x432370` with program fields `+0xb1/+0x9d`; fragment calls it with
+`+0xda/+0xc6`. The passed persistent-bank pointer is not read by either mode-1
+branch [BIN]. This rules out the tempting model in which every program create
+blindly concatenates the current constant bank.
+
+Exported alternate wrappers `0x3b8df0` (vertex) and `0x3b8ae0` (fragment)
+select mode 2. Each can replace its constant-bank argument with null under a
+caller flag. Only the mode-2 branch guarded by an additional non-null caller
+argument forwards that selected bank to common helper `0x4354d0`; the null
+case follows the parser/`0x432510` path without it. If `0x4354d0` returns one,
+vertex continues through `0x432800` and fragment through `0x432650` [BIN]. No
+direct static call site to either alternate wrapper is present in the saved
+ELF image, so its external/callback trigger and the object produced by
+`0x4354d0` remain the exact unresolved join.
+
+Program binding does establish the stage identity without relying on a name.
+Vertex handle lookup at `0x4314f0` replays resource `+0x130/+0x140` vec4
+records through the already-proved vertex handler `0x3b8160`. Fragment lookup
+at `0x431900` replays its lists through fragment handler `0x3b8430` [BIN].
+This replay updates the persistent CPU banks; it is not final command-buffer
+emission.
+
+## Final relocation-backed program packet
+
+The common old-engine program emitter `0x4b9340` exposes a later, exact GPU
+resource boundary [BIN]. Its state contains two opaque 64-bit values at
+`+0xa0` and `+0xa8`. They must remain opaque because the saved image does not
+join their internal fields to the program resource object above.
+
+When state byte `+9` bit 1 is set, the emitter first calls command-buffer
+vtable slot `+0x68` with `state[+0xa0]`, `state[+0xa8]`, and count one. When
+state byte `+1` bit 1 is set, it then emits header `0x45454569` and calls
+command-buffer vtable slot `+0xb0` with:
+
+```text
+resource_state = &state[+0xa0]
+descriptor_word = 2
+usage_or_relocation_type = 0x19
+count = 1
+```
+
+If also dirty, index `0x6a` receives state dword `+0xb0`, followed by index
+`0x6d` from state dword `+0xd0`. Thus the proved dirty order is resource track,
+relocated `0x69`, plain `0x6a`, then plain `0x6d` [BIN]. The relocation
+callback supplies the emitted GPU address; no byte length is read directly by
+this emitter.
+
+The alternative inline form takes a CPU pointer at `+0xbe0` and byte length at
+`+0xbd8`, emits one 32-byte line at a time through selector index `0x68` and
+ports `0x60..0x67`, and advances the selector by one line. That form proves
+microcode length and ordering, but it does not prove a constant-bank layout.
+
+The configuration names are present in both saved vendor builds, and their
+object placement agrees exactly [BIN]:
+
+| setting | Windows MxMD object | Linux object |
+|---|---:|---:|
+| `PsBmMicrocode` | `+0x13c` | `+0x240` |
+| `PsBmConstants` | `+0x140` | `+0x248` |
+| `CeBmMicrocode` | `+0x144` | `+0x250` |
+| `CeBmConstants` | `+0x148` | `+0x258` |
+
+Those fields hold setting-reader objects, not the resolved Boolean itself.
+Their order proves four independent controls. It does not prove that `Ps` or
+`Ce` denotes the GL vertex or fragment stage, nor does it join either
+`*BmConstants` reader to the mode-2 bank argument. The similar spelling is not
+used as semantic evidence here.
 
 ## Why there is no sparse key, parity, or line mapping
 
@@ -229,15 +330,22 @@ A compatible M9 implementation can reproduce the now-proved software side:
 - hold staged storage until both queues are empty;
 - version the two banks independently.
 
-The remaining static boundary is downstream of the persistent arrays: exact
-old-M9 bus-master resource descriptor fields, GPU address/relocation placement,
-and the choice controlled by `PsBmConstants` and `CeBmConstants`. The saved
-registry strings prove two independently configurable constant upload modes,
-but spelling alone does not safely assign `Ps` or `Ce` to a GL stage. Functions
-`0x435b30` and `0x4360c0` are the next targets for static tracing or a minimal
-MMIO/DMA capture. A capture should follow the resource address referenced after
-one vertex-only and one fragment-only uniform update; it should not search the
-sparse `0x68` inline packet for these values.
+The persistent-bank destination, update ordering, stage association, resource
+builder argument boundary, and final program relocation packet are now fixed.
+Static evidence does not connect the conditional mode-2 bank argument to the
+opaque `+0xa0/+0xa8` pair, expose the backing allocation length, or associate
+the two `*BmConstants` controls with a GL stage.
+
+The smallest decisive capture is therefore bounded. Hold the program binary
+fixed and record a baseline, one vertex-only vec4 update, and one fragment-only
+vec4 update under all four `PsBmConstants/CeBmConstants` combinations. Log the
+mode-2 wrapper/helper entry, the two arguments at state `+0xa0/+0xa8`, the
+vtable-`+0xb0` relocation result for index `0x69`, and the backing allocation's
+base and byte length. Begin after opcode `0x65/0x66` drain and end at the draw
+submission/fence. A changed allocation containing the known 16-byte sentinel
+then proves the bank layout, stage/control association, address, length, and
+completion ordering in one experiment. Do not search the separate sparse
+`0x68` packet for these values.
 
 Run:
 
@@ -246,5 +354,6 @@ python3 tools/m9-program-constant-evidence.py
 ```
 
 The checker verifies the hashes, producer records, allocator lifetime,
-private batching, recipient bank copies and limits, dirty/version flags, and
-the separate sparse packet arithmetic.
+private batching, recipient bank copies and limits, dirty/version flags,
+program-resource builders, configuration-object placement, final relocation
+ordering, and the separate sparse packet arithmetic.
