@@ -126,6 +126,42 @@ static u64 m9_extend_fence(struct m9x_transport *m9, u32 raw)
 	return ((u64)m9->fence_epoch << 32) | low;
 }
 
+static u32 m9_next_fence_target(struct m9x_transport *m9)
+{
+	u32 target = m9->next_fence;
+
+	m9->next_fence += 0x10;
+	return target;
+}
+
+static bool m9_fence_reached(u32 raw, u32 target)
+{
+	return (raw & ~0xfu) == target;
+}
+
+static int m9_requester_selftest(void)
+{
+	struct m9x_transport transport = {
+		.next_fence = 0xfffffff0,
+		.last_fence = 0xfffffff0,
+		.fence_epoch = 7,
+	};
+	u32 target;
+
+	target = m9_next_fence_target(&transport);
+	if (target != 0xfffffff0 || transport.next_fence != 0 ||
+	    m9_fence_reached(~target, target) ||
+	    !m9_fence_reached(target | 1, target))
+		return -EINVAL;
+	target = m9_next_fence_target(&transport);
+	if (target != 0 || transport.next_fence != 0x10 ||
+	    m9_fence_reached(~target, target) ||
+	    !m9_fence_reached(target | 1, target) ||
+	    m9_extend_fence(&transport, target | 1) != (8ULL << 32))
+		return -EINVAL;
+	return 0;
+}
+
 int m9x_submit_noop(struct m9x_device *mdev, u64 *point)
 {
 	struct m9x_fence *fence;
@@ -134,6 +170,7 @@ int m9x_submit_noop(struct m9x_device *mdev, u64 *point)
 	u32 *writeback = mdev->transport.fence_cpu;
 	u32 command_offset, command_end, target, raw;
 	u64 extended;
+	bool progress_kicked = false;
 	int ret;
 
 	if (!m9_render_diag)
@@ -158,10 +195,7 @@ int m9x_submit_noop(struct m9x_device *mdev, u64 *point)
 	command_end = lower_32_bits(mdev->transport.command_bus) +
 		      command_offset + 3 * sizeof(u32);
 
-	target = mdev->transport.next_fence;
-	mdev->transport.next_fence += 0x10;
-	if (!mdev->transport.next_fence)
-		mdev->transport.next_fence = 0x10;
+	target = m9_next_fence_target(&mdev->transport);
 	fence = m9_fence_create(mdev,
 		((u64)(mdev->transport.fence_epoch +
 			(target < mdev->transport.last_fence)) << 32) | target);
@@ -189,7 +223,7 @@ int m9x_submit_noop(struct m9x_device *mdev, u64 *point)
 	for (;;) {
 		dma_rmb();
 		raw = READ_ONCE(writeback[0]);
-		if ((raw & ~0xfu) == target)
+		if (m9_fence_reached(raw, target))
 			break;
 		if (m9_read(mdev, M9_REG_ENGINE_STATUS) == U32_MAX) {
 			ret = -ENODEV;
@@ -210,7 +244,12 @@ int m9x_submit_noop(struct m9x_device *mdev, u64 *point)
 			ret = -ETIMEDOUT;
 			goto out_error;
 		}
-		m9_write(mdev, M9_REG_FRONTEND_KICK, 1);
+		/* The recovered timeout contract permits one progress kick.  Repeated
+		 * writes can hide the first failing state and are not a reset. */
+		if (!progress_kicked) {
+			m9_write(mdev, M9_REG_FRONTEND_KICK, 1);
+			progress_kicked = true;
+		}
 		usleep_range(50, 100);
 	}
 
@@ -242,6 +281,9 @@ int m9x_init(struct m9x_device *mdev)
 	ret = m9x_submit_selftest();
 	if (ret)
 		return dev_err_probe(dev, ret, "M9 submit selftest failed\n");
+	ret = m9_requester_selftest();
+	if (ret)
+		return dev_err_probe(dev, ret, "M9 requester selftest failed\n");
 	ret = drmm_mutex_init(&mdev->drm, &mdev->transport.lock);
 	if (ret)
 		return ret;
