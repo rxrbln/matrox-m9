@@ -25,8 +25,7 @@ static const struct drm_ioctl_desc m9x_ioctls[] = {
 			  DRM_RENDER_ALLOW),
 };
 
-/* Keep this name stable: Mesa's current loader selects the shared
- * clean-room userspace driver from the DRM driver name. */
+/* Mesa selects the independent M9X Gallium driver from this DRM name. */
 static const struct drm_driver m9x_drm_driver = {
 	.driver_features = DRIVER_GEM | DRIVER_RENDER,
 	.fops = &m9x_fops,

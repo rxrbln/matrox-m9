@@ -7,8 +7,8 @@ The M9 backend is the independent ``m9x_drm.ko`` module.  Device ``102b:0540``
 is absent from ``parhelia.ko`` and is the sole PCI ID claimed by this
 render-only driver.  The module does not link against or call the Parhelia KMS,
 host-aperture, WARP, packet validator, submit or reset code.  Its DRM driver
-name remains ``parhelia`` so the existing Mesa loader continues to select the
-clean-room userspace driver.
+name is ``m9x`` and Mesa selects the independent M9X Gallium driver and
+``m9x_dri.so`` from that name.
 
 Safety gates
 ------------
@@ -16,8 +16,8 @@ Safety gates
 ``m9_enable=1`` is required before the PCI driver binds M9.  With that gate
 alone the driver maps the BARs, enforces a coherent 32-bit DMA mask, allocates
 kernel-owned requester/command/fence memory, and exposes DMA32 GEM plus a
-validate-only command ioctl.  It does not enable PCI bus mastering or write
-requester registers.
+validate-only command ioctl.  It leaves PCI bus mastering disabled and does
+not write requester registers until the separately gated diagnostic runs.
 
 ``m9_render_diag=1`` additionally permits ``M9_SUBMIT(NOOP_FENCE)``.  This is
 the sole hardware submission accepted by this revision.  It builds the known
@@ -67,20 +67,25 @@ is completely decoded.
 Hardware gates before general execution
 ---------------------------------------
 
+The relocated standalone module has completed 256 consecutive kernel-owned
+no-op fences on the M9148, with monotonically advancing 12-byte command
+intervals and completion points through ``0x1000``.  After the independent
+DRM name change, a fresh module completed another fence at ``0x10`` and
+unloaded cleanly.  These results close basic primary-requester execution but
+do not authorize arbitrary userspace streams.
+
 The following tests are required in order:
 
-1. Load from a temporary path with both gates set and run one no-op fence.
-   Record ``0x400/0x404``, ``0x1068/0x106c``, the writeback word, ``0x8f0``
-   and all ``0x500..0x524`` words before and after.
-2. Repeat enough no-op fences to cross a 32-bit tag wrap and verify the
-   software epoch extension.
-3. Capture the three unknown ``0x44c/0x450/0x454`` controls and all address
+1. Add the captured primary-requester rollover protocol before the bounded
+   32-KiB diagnostic producer reaches its end.  Then stress command-buffer
+   rollover independently from simulated 32-bit fence-epoch wrap.
+2. Capture the three unknown ``0x44c/0x450/0x454`` controls and all address
    windows before enabling a copied user command image.
-4. Add exact value masks for every whitelisted state index, reserve and fence
+3. Add exact value masks for every whitelisted state index, reserve and fence
    every referenced BO, and run the two-pass captured linear triangle.
-5. Force one auxiliary requester wrap and validate quiescence, save/restore
+4. Force one auxiliary requester wrap and validate quiescence, save/restore
    order and address class before publishing ``0x500`` from the new driver.
-6. Add scheduler entities and syncobj timeline output, then pass an A/B/A
+5. Add scheduler entities and syncobj timeline output, then pass an A/B/A
    multi-context state-isolation test before concurrent clients are enabled.
 
 KMS and vblank/IRQ support are separate M9 work.  The present M9 driver has no

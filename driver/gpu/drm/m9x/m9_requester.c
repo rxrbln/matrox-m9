@@ -43,7 +43,7 @@ static void m9_write(struct m9x_device *mdev, u32 reg, u32 value)
 
 static const char *m9_fence_get_driver_name(struct dma_fence *fence)
 {
-	return "parhelia-m9";
+	return "m9x";
 }
 
 static const char *m9_fence_get_timeline_name(struct dma_fence *fence)
