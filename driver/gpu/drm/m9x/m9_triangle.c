@@ -308,8 +308,14 @@ static int m9_triangle_alloc_one(struct m9x_device *mdev,
 
 	if (resource->cpu)
 		return 0;
-	if (check_add_overflow(spec->payload_bytes, (u32)PAGE_SIZE,
-			       &guard_offset))
+	/* A guard page after an exact 1 MiB BE image makes the coherent
+	 * allocation cross an order boundary and require 2 MiB of contiguous
+	 * DMA32 memory.  Keep that exact-size resource at one MiB; all other
+	 * resources retain their trailing guard page. */
+	if (id == M9_TRI_BE)
+		guard_offset = spec->payload_bytes;
+	else if (check_add_overflow(spec->payload_bytes, (u32)PAGE_SIZE,
+				    &guard_offset))
 		return -EOVERFLOW;
 	alloc_bytes = PAGE_ALIGN(guard_offset);
 	resource->cpu = dmam_alloc_coherent(dev, alloc_bytes, &resource->bus,
