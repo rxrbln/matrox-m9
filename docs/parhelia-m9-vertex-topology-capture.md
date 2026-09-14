@@ -84,10 +84,12 @@ halfword.  These observations match the exact H06/H07 endpoint formulas in
 ## Canonical vertex input
 
 The vendor copies GL client arrays into a canonical preprocessing input.  The
-original byte offset, caller stride, and `glDrawArrays(first=2)` do not survive
-as final numeric draw starts: both offset tests and the nonzero-first test still
-launch `[0,4)`.  Component count and enabled color do change final input state.
-**CAP/DER**
+isolated offset/stride tests and `glDrawArrays(first=2)` case all launch
+`[0,4)`; their original byte offset, caller stride, and first value do not
+survive.  The interleaved position/color case is a boundary exception: it has
+canonical span `0x10` but launches `[1,5)`, so a one-unit alignment/base rebase
+survives there even though its original 28-byte C stride does not.  Component
+count and enabled color also change final input state. **CAP/DER**
 
 | input case | preprocessing index `10` | index `23` distinguishing fields |
 |---|---:|---|
@@ -147,6 +149,13 @@ Points use five generated raster inputs and a third consumer control:
 
 The precise point-expanded stream meanings remain internal, but this closes
 their count, address join, consumer count, and exact captured descriptor state.
+
+This five-stream shape is not point-only.  The saved one-level textured
+`gltri` capture uses the same three-stage transient-output skeleton and the
+same three consumer controls, but routes
+`113c1000,113d3400,113f7c00,1140a000,113e5800,0` to `00..05` and uses a
+different index-`23` list.  The exact two variants and their common transient
+stages are pinned in `parhelia-m9-vertex-final-contract.md`. **CAP/DER**
 
 ## Implementation boundary
 
