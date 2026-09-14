@@ -1,23 +1,41 @@
-# M9 native shader transport: static closure and implementation boundary
+# M9 programmable shader transport contract: static closure
 
 This note reconciles the linked-record, stage-install, entry, termination, and
 native-control-flow investigations into one driver-facing result. It uses only
-the saved binaries. `[BIN]` is a direct binary observation and `[DER]` is the
-narrow conclusion supported by it.
+the saved binaries and the existing saved A/B/A evidence. `[BIN]` is a direct
+binary observation, `[CAP]` a saved-capture observation, and `[DER]` the narrow
+conclusion supported by them.
 
-The pinned inputs are Windows `MxMD.dll`, SHA-256
-`b6905b6e658b87544bc0081d080190e4f8112b723c0b2fefd781ba5766874f43`,
-and Linux 1.4.3 build 98 `xserver/1_13_0/m9x_drv.so`, SHA-256
-`3878475450ffad5cd648cc037cc65c29fcb07b5e86caf41ccf5983ef8e570273`.
+The pinned inputs are:
+
+| image | SHA-256 |
+|---|---|
+| Windows `MxMGLX.dll` | `d4e04dc371809f079651e9938b285878afd42acabcba2eaabef2e65d218e9f86` |
+| Windows `MxMD.dll` | `b6905b6e658b87544bc0081d080190e4f8112b723c0b2fefd781ba5766874f43` |
+| Linux 1.4.3 build 98 `xserver/1_13_0/m9x_drv.so` | `3878475450ffad5cd648cc037cc65c29fcb07b5e86caf41ccf5983ef8e570273` |
 
 ## Driver-facing result
 
-There is no statically supported universal `6c` record field containing a
-native-image address, slot count, vertex start, fragment start, or terminal PC.
-The reachable `6c` objects are heterogeneous linked render-resource records,
-and captured record-relative native-looking regions move between workloads.
-The external bind writes a resource through `69`, controls through `6a/6d`,
-and the linked record through `6c`; it emits no code count or end [BIN].
+The universal programmable contract is an **opaque linked pair**, selected by
+one tagged write to index `6c` [BIN][DER]. It is not an exposed native-image
+header. The reachable records are heterogeneous linked render-resource
+objects, and record-relative native-looking regions move between workloads.
+There is no statically supported universal `6c` field containing a native
+image address, slot count, vertex start, fragment start, or terminal PC. The
+external bind writes drawable/resource `69`, numeric controls `6a/6b`, and one
+linked-pair resource through `6c`; it emits no code count or end [BIN].
+
+This negative result closes the transport schema. A driver may replay a
+complete linked pair as one immutable object; it must not parse or manufacture
+stage entries in a presumed fixed `6c` header. The September A/B/A corpus
+independently changes either source stage while `69=0x11e42000`,
+`6a=0x25010000`, and `6b=0x00001030` remain fixed. In both axes the sole
+program-selection value is `6c`, changing
+`0x40c3a301 -> 0x40c3a881 -> 0x40c3a301` [CAP]. After removing its low tag,
+the two selections are offsets `0x300` and `0x880` in the same
+`0x40c3a000`/`0x21000` system allocation [CAP]. Vertex and fragment selection
+therefore changes atomically at this boundary; there is no separately visible
+VS or FS entry assignment to tear [DER].
 
 The fixed-chain inline form is a clean, bounded transport for a driver-owned
 native image [DER]. It uploads 8-byte slots in 32-byte lines through selector
@@ -28,14 +46,38 @@ pointer/length at `+0xbb4/+0xbb0` and starts at `+0xba8/+0xbac`; Linux uses
 and the compiler-side slot vector rejects growth beyond 256 slots [BIN].
 
 This is sufficient to implement native-image upload, bounds checking, padding,
-and entry emission without reverse engineering a universal external record.
-It is not yet sufficient to label the two starts as universal VS and FS
-entries. The recovered inline producer is the fixed vertex/declaration chain;
-its second start is a selected companion chain, and the inactive-companion form
-packs both starts into `6a`. One stage-swap capture remains necessary before a
-new driver assigns arbitrary vertex and fragment programs to these controls.
+and entry emission for that fixed chain without reverse engineering an
+external record. It does not label the two starts as VS and FS. The producer is
+the fixed vertex/declaration chain, its second start is a selected companion
+chain, and the inactive-companion form packs both starts into `6a`. The
+programmable A/B/A result above also leaves `6a` invariant and emits no `6d`.
+Consequently `6a/6d` are replayable fixed-chain controls, not universal
+programmable-stage registers [BIN][CAP][DER].
 
-## Typed control resolution closes before serialization
+The native count is likewise representation-local. In the fixed-chain builder
+the two entries are cumulative byte counts divided by eight and total bytes
+are rounded to 32 before publication. In the compiler serializer every native
+slot append is bounded at 256. Neither value is emitted as an execution bound
+in the programmable external bind [BIN]. A clean driver therefore retains a
+software slot count for validation and allocation, while the hardware-facing
+programmable object remains the complete linked pair [DER].
+
+The exact Windows offsets and corresponding PE file offsets are:
+
+| evidence | VA | file offset | fields |
+|---|---:|---:|---|
+| fixed-chain builder | `0x13bf80` | `0x12bf80` | starts `+0xba8/+0xbac`, aligned bytes `+0xbb0`, pointer `+0xbb4` |
+| program emitter | `0x0f74d0` | `0x0e74d0` | selectors `68`, `60..67`, `69`, `6a`, optional `6d` |
+| resolver append | `0x1a2700` | `0x192700` | record boundary `+0x40`, entries at resolver `+0x6c/+0xb8` |
+| ordinal lookup | `0x1a2e60` | `0x192e60` | 12-byte entry dword 1 or `0xf0000000` |
+| type-3 resolver | `0x1dc690` | `0x1cc690` | typed operands `+0x14/+0x18/+0x1c` |
+| resolve/serialize | `0x1dc7d0` | `0x1cc7d0` | resolve temporary, then call serializer |
+| direct serializer | `0x1dc8b0` | `0x1cc8b0` | packed native slot(s), maximum 256 |
+
+Linux independently places the fixed-chain fields at starts `+0xbd0/+0xbd4`,
+aligned bytes `+0xbd8`, and pointer `+0xbe0`; emitter `0x4b9340` consumes them.
+
+## Physical control-flow fixups close before transport
 
 Windows control builders allocate 0x20-byte objects with vtable `0x1f50e0`.
 The live virtual sequence is [BIN]:
@@ -63,11 +105,31 @@ returns `0xf0000000` [BIN]. The serializer performs no arithmetic on the low
 serial value. Physical destination selection has already become a resolved
 descriptor before native packing [DER].
 
-This closes the typed-fixup *mechanism* but does not recover the upstream rule
-that builds the ordered resolved table from graph targets. Forward branch,
-backedge, CALL, BREAK, and reconvergence target placement still need either
-the linker pass decoded to that table's producer or a compiler hook dumping
-the table before `0x1dc7d0`.
+The producer side is now joined too. Resolver records are 0xc4 bytes and carry
+an ordered sequence of 12-byte entries. `0x1a2700` sets record word `+0x40` to
+the current terminal-entry ordinal on first use, writes its input descriptor
+to that entry's dword 1, then appends
+`{descriptor & 0x0000fff0, 0xf0000000, 0xffffffff}`. `0x1a2a10` performs the
+parallel dword-1 update for the ordinal in record word `+0x30`; `0x1a28d0`
+updates dword 0 [BIN]. These operations make the final sentinel explicit and
+explain why lookup requires `ordinal + 1 < total` [DER].
+
+Transform `0x1cef80` walks every non-sentinel source entry in ordinal order.
+For a type-`0x0d` record it compares the loop ordinal with record word `+0x40`;
+the matching entry's already-resolved dword 1 goes to `0x1a2700`, while other
+entries go through descriptor conversion `0x1a30c0`. Compiler pass `0x1d1d40`
+copies the resulting 0xc4-byte records in order at
+`0x1d3b6b..0x1d3baa` and `0x1d3e01..0x1d3e40` [BIN]. The type-3 resolver then
+consumes those physical descriptors by ordinal, as described above.
+
+This closes the transport lifetime and placement rule for fixups: graph
+serials and typed markers are compiler temporaries; all physical descriptors
+are substituted before the native slot is packed, and the selected linked
+pair is immutable while submitted [DER]. There is no late branch relocation
+in the `68..6d` packet emitter. A new native compiler still needs the semantic
+graph-target-to-descriptor algorithm for forward branches, backedges, CALL,
+BREAK, and reconvergence. That is compiler implementation work, rather than a
+missing transport field [DER].
 
 ## Exact serializer footprint
 
@@ -111,6 +173,14 @@ slot to compiler output; claiming a general `END` encoding still requires the
 single terminal mutation experiment described in
 `parhelia-m9-shader-termination-boundary.md`.
 
+For opaque programmable replay, termination is already part of the immutable
+linked pair and needs no packet field [DER]. For driver-generated inline code,
+the admitted terminal contract is deliberately narrower: append exactly
+`fffc7e1d a2803f0f`, include it in the validated software slot count, pad the
+upload to four slots, and do not submit any other proposed stop form. This
+closes safe transport of known images while keeping general endpoint semantics
+as an ISA-validation gate [DER].
+
 ## Association, allocation, and lifetime
 
 GL stage identity is exact before the final bind. Private opcode `0x59` carries
@@ -138,26 +208,50 @@ same queue, but no binary proves that inline program RAM survives reset or
 another context's upload. Re-upload on context switch, reset generation, and
 engine recovery is therefore the implementation-safe policy [DER].
 
-## Remaining live gates
+The complete ownership rule is copy-on-write. Construct and finish the
+instruction image, physical fixups, terminal, linked stage pair, and resource
+vector before making the bind visible. Queue the data and its `6c` selection in
+order; do not modify the selected object. Retire the command BO, linked record,
+instruction backing, and referenced resources together at the submission
+fence. A stage change builds or retrieves another complete pair and switches it
+with one `6c` value [DER].
 
-Only three hardware-facing questions remain for this transport [DER]:
+## Closed contract and remaining gates
 
-1. Run one VS-only and one FS-only program swap while forcing inline transport;
-   record `6a/6d` and the two inline starts to assign universal stage ownership
-   or prove that a separate mode selector controls it.
-2. Dump the ordered resolved table immediately before `0x1dc7d0` for one
-   forward IF/ELSE, one backward loop, and one CALL/RET. This reveals the
-   graph-target-to-native-descriptor placement rule without decoding the
-   heterogeneous external record.
-3. Mutate the terminal destination and final operation independently to decide
-   selector-stop versus full-terminal-form semantics.
+The universal transport contract is closed [BIN][CAP][DER]:
 
-Until those are captured, use inline upload only for vendor-identical bounded
-images whose two entry roles are known by construction, append the exact
-terminal slot, keep all command/resources fenced, and leave arbitrary native
-control flow behind a development flag.
+1. programmable VS/FS state is one opaque, immutable linked pair selected by
+   `6c`; it has no public per-stage entry or count fields;
+2. stage changes publish a complete pair atomically, with all physical fixups
+   resolved before native packing;
+3. the fixed-chain inline form has two shared-image starts, a software byte
+   length, 32-byte upload padding, and no hardware end/count write;
+4. known driver-generated images end in the exact vendor terminal slot; and
+5. instruction, command, linked-record, and referenced-resource lifetimes end
+   only after the submission fence, with program RAM replayed after context or
+   reset invalidation.
+
+The remaining gates are outside this transport ABI [DER]:
+
+1. recover or independently implement the semantic graph-target placement
+   algorithm for arbitrary forward branches, backedges, CALL, BREAK, and
+   reconvergence;
+2. identify enough of the heterogeneous linked-record constructor to create a
+   new programmable pair rather than replay a captured/vendor-produced one;
+3. mutate the terminal destination and final operation independently before
+   accepting stop forms other than `fffc7e1d a2803f0f`; and
+4. establish allocator wrap/reuse and reset behavior on hardware before
+   enabling long-running programmable workloads.
+
+Until those are closed, use the programmable path only for complete known-good
+linked pairs, and use inline upload only for bounded images whose two starts
+are known by construction. Keep arbitrary native control flow behind a
+development flag.
 
 Run `python3 tools/m9-shader-transport-closure-evidence.py` from the repository
 root. The checker uses Python's standard library, executes no vendor code, and
-pins the hashes, vtable, typed resolver, direct serializer, footprint table,
-zero-slot append helper, and Linux inline bind.
+pins the hashes, GL stage flags, fixed-chain start/length publication, ordered
+resolver producer/lookup, direct serializer, footprint table, zero-slot append
+helper, and Linux inline bind. Run
+`python3 tools/m9-glsl-ab-evidence.py --self-test` for the independent atomic
+linked-pair A/B/A evidence.

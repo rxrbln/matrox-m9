@@ -130,9 +130,9 @@ The slot width matches the independently recovered native ISA width.  The
 words vary with special shader behavior and include control-flow and texture
 forms, making these strong native-code candidates [CAP][DER].  The record
 layout is not uniform, however.  Other cases have metadata, pointers, poison
-patterns, or code at a different location in the same selected window.  No
-single header field yet supplies a verified instruction start, instruction
-count, VS entry, FS entry, or termination rule across all cases.
+patterns, or code at a different location in the same selected window. No
+single public header field supplies an instruction start, instruction count,
+VS entry, FS entry, or termination rule across all cases.
 
 The exact current boundary is therefore:
 
@@ -142,7 +142,8 @@ The exact current boundary is therefore:
 * `8d..8e` ranges are exact constant/vertex-resource ranges here [CAP];
 * the inline `68/60..67` path remains a separately proved on-chip upload mode
   [BIN];
-* universal VS/FS entry, count, and stop fields remain unresolved.
+* public VS/FS entry, count, and stop fields are absent from this transport;
+  those details remain private to the opaque linked pair.
 
 ## Static compiled-resource producer boundary
 
@@ -189,7 +190,7 @@ binary therefore corroborates the two hardware packet groups and the inline
 fixed-chain route.  It does not override the live evidence by turning `69`
 back into a program address [DER].
 
-## Driver contract and remaining probes
+## Driver contract and remaining construction work
 
 Kernel validation and Mesa emission must use separate, neutral resource kinds
 for index `69` and index `6c`.  Existing names such as `PROGRAM` for `69` are
@@ -210,18 +211,9 @@ never submit the captured raw addresses.  The kernel should add the proven
 low tag only for the typed `6c` relocation, enforce 0x80 alignment, and check
 the selected record lies within the BO.  It must not add that tag to `69`.
 
-Arbitrary programmable submission remains gated on three small controlled
-captures:
-
-1. Reuse one VS with two FS programs, then one FS with two VS programs, and
-   retain the complete system allocation before each draw.  This isolates the
-   record fields that follow each stage.
-2. Force code sizes around 4, 8, 16, and 32 native slots for one stage at a
-   time.  Search every changed 6c-relative dword for exact start/count deltas
-   and verify the candidate by modifying only padding.
-3. Capture a minimal terminating program and a program with an unreachable
-   tail.  This distinguishes explicit stop encoding from a count-delimited
-   record without executing arbitrary guessed words.
-
-Until those joins are exact, expose only programs reproduced from complete
-captured records and keep raw programmable submission disabled.
+The separate GLSL A/B/A fixture now proves that either a VS-only or FS-only
+change selects a new complete pair through `6c`; it exposes no independent
+stage entry. Arbitrary programmable construction remains gated on the private
+linked-pair builder, semantic control-flow placement, allocator wrap/reuse, and
+general stop semantics. Until those joins are exact, expose only complete
+known-good linked pairs and keep raw programmable submission disabled.

@@ -124,13 +124,14 @@ A clean driver may rely on these facts:
 * state changes may replace the complete record atomically;
 * fixed-chain inline uploads are a separate representation.
 
-Arbitrary programmable submission must remain gated. The missing universal
-fields are native byte start, byte or slot count, VS/FS ownership, stage entry
-selectors, padding and termination, and allocator reuse/wrap. Static tracing
-ends at private resource objects and virtual relocation/allocation callbacks;
-assigning meanings beyond that boundary would be guesswork.
+Arbitrary programmable construction must remain gated. The absence of public
+native start/count, VS/FS entry, and stop fields is the closed transport result:
+those details belong inside the opaque linked pair. Static tracing ends at
+private resource objects and virtual relocation/allocation callbacks, so a new
+compiler still lacks the internal pair constructor and allocator reuse/wrap
+rule. Assigning fixed record offsets beyond that boundary would be guesswork.
 
-## Minimal dynamic closure
+## Remaining constructor validation
 
 `tools/m9x-linked-record-gdb.py` installs passive, bounded breakpoints on the
 constructor, backend translator, and cache promoter. It logs only CPU object
@@ -138,9 +139,10 @@ addresses and the two descriptor/object pairs, continues immediately, and
 does not call vendor functions or modify rendering. Run it after the target is
 handed off and the DSO is mapped.
 
-The next capture should pair that log with complete system-allocation snapshots
-for: one VS with two FS programs, one FS with two VS programs, and one-stage
-code lengths around 4, 8, 16, and 32 native slots. A field earns a stage/count
-meaning only if its CPU producer, final address, and live byte delta join in
-all those cases. A forced allocator wrap is needed separately to close reuse;
-do not infer wrap from the current monotonic 17-record fixture.
+The existing A/B/A capture already proves that changing either stage switches
+the complete pair through `6c` while `69/6a/6b` remain fixed. A future
+constructor investigation should pair this hook with complete allocation
+snapshots and one-stage code lengths around 4, 8, 16, and 32 slots. Its purpose
+is to reproduce the private pair builder, not to promote internal offsets into
+public transport fields. A forced allocator wrap is needed separately to close
+reuse; do not infer wrap from the current monotonic 17-record fixture.

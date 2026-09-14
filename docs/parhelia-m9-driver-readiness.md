@@ -50,9 +50,11 @@ The following pieces no longer depend on another vendor capture:
   expected result without state leakage.
 
 These facts are enough for a guarded clear/triangle Gallium path and for the
-fixed-function subset needed by ioquake3. They do not make arbitrary GLSL
-safe: the `6c` resource is a heterogeneous linked record, and its universal
-native start/count, stage split, entry selectors, and stop rule remain open.
+fixed-function subset needed by ioquake3. The programmable transport boundary
+is now closed as one opaque linked VS/FS pair selected atomically through
+`6c`; there are no public native start/count or per-stage entry fields to fill.
+Arbitrary GLSL remains unsafe until a new compiler can construct that linked
+pair, place semantic control-flow targets, and emit the admitted terminal.
 
 The first DRM implementation should continue to omit the dormant auxiliary
 `0x500..0x524` requester. Ordinary GL uses the primary `0x400/0x404` path;
@@ -115,9 +117,9 @@ native encoding or an implemented scheduling limit.
 | vertex texture fetch | four-sampler compiler limit plus live vertex `texture2DLod` result/resource | **captured** | native instruction and vertex sampler join |
 | SLT/SGE and comparisons | CMP/SETP frontend plus live ARBfp SLT/SGE zero/one results | **captured** for the recorded pair | exact native predicate fields and all relational outcomes |
 | constant/uniform branches | live constant/uniform results plus exact ELSE builder and two packed templates | **captured**, target fixup open | distinguish folded/native cases and resolve reconvergence |
-| fixed/dynamic loops, BREAK/CALL | live fixed/uniform loops; exact loop/break builder joins, BREAK templates, CALL/LABEL/RET graph edges and CALLNZ macro | compiler representation **closed**, physical fixups open | resolve serials into targets/backedges/calls, then nesting and implementation limits |
+| fixed/dynamic loops, BREAK/CALL | live fixed/uniform loops; exact loop/break builder joins, BREAK templates, CALL/LABEL/RET graph edges, CALLNZ macro, and ordered pre-pack descriptor substitution | transport fixup lifetime **closed**, semantic placement open | implement graph targets/backedges/calls, then nesting and implementation limits |
 | uniforms/constants | vertex and fragment A/B/A sentinels identify live-component ranges in the 0x21000 resource | **closed** for external range path | mode-2 inline constant bank remains optional |
-| program entry/resource ownership | `69` is live drawable/resource backing; `6c` selects a tagged 0x80-aligned heterogeneous linked record through an exact constructor/translator/cache chain | external bind identity **closed** | universal native start/count, VS/FS split, entry selectors, allocator wrap and lifetime |
+| program entry/resource ownership | `69` is live drawable/resource backing; `6c` atomically selects an opaque tagged linked VS/FS pair; fixed-chain-only starts/counts are separately exact | transport contract **closed** | construct new linked pairs and validate allocator wrap/reuse |
 | termination | count-delimited compiler stream, endpoint selector `0x7e`, and complete terminal slot are exact | **validation** | determine endpoint-only versus full-terminal stop on generated programs |
 
 `tools/m9-gl2-compiler-control-evidence.py` pins the MxMD and MxMGLX hashes,
@@ -161,8 +163,8 @@ the live Linux ICD did not advertise.
 
 | remaining gap | consequence | smallest closing experiment |
 |---|---|---|
-| universal native program grammar inside heterogeneous `6c` records | arbitrary newly compiled GLSL cannot execute safely | use the passive constructor/translator/cache hook to join native start/count, VS/FS ownership, entry selectors, stop rule and allocator lifetime to one-stage A/B programs |
-| special shader packed forms and physical control-flow fixups | DDX/DDY forms are exact; ELSE/BREAK/BREAKP templates and parser-to-builder joins are exact; KIL, texture controls, remaining predicates, branch targets/backedges/calls/reconvergence are not all externally joined | resolve typed fixup serials and join remaining operation-specific slots to the universal native-record grammar |
+| programmable linked-pair construction inside heterogeneous `6c` records | the transport can replay a complete pair but arbitrary newly compiled GLSL cannot build one safely | follow the constructor/cache transforms far enough to create a bounded pair, then validate allocator wrap/reuse |
+| special shader packed forms and semantic control-flow placement | DDX/DDY forms are exact; ELSE/BREAK/BREAKP templates, parser-to-builder joins, ordered descriptor tables and pre-pack substitution are exact; KIL, texture controls, remaining predicates, branch targets/backedges/calls/reconvergence are not all implemented | recover or independently implement target placement and join remaining operation-specific slots to the linked-pair constructor |
 | four-target MRT export and retirement | descriptor/reloc plus Windows RT0..3 job/fence membership are exact, but native output export and Linux per-RT job-BO membership are unjoined; Linux close can poll a nonretiring fence forever | decode one RT1 job through export, Linux write list and common writeback, then independently verify readback/unbind/delete/context/fd close with bounded recovery |
 | multisample/FAA allocation, pattern, mask and resolve | no sample buffers and no FAA cap | acquire a vendor multisample visual/surface, then clear/edge/mask/query differentials |
 | native 10-bit render and sample round trip | Linux GL downgrades RGB10_A2 to RGBA8, so GigaColor formats cannot be advertised | enable the gated Windows path and capture A2B10/A2R10 clear, draw, sample, raw storage and presentation with sentinel channels |
