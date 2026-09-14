@@ -236,8 +236,11 @@ Recorded because each of these looked authoritative and cost time:
 * The M9 cursor is **not** the packed 64×64×4 / pitch-256 linear ARGB surface the
   Linux driver describes.  The chip *accepts* `CFG = 0xcc000000` and `CTL = 5` (the
   P690 masks them away), and colours come out **R/B swapped** versus an ARGB write,
-  but no stride tried so far reproduces a correct image.  Unresolved; use the
-  software cursor.  `[HW]`
+  but no stride tried so far reproduces a correct image.  Static analysis now
+  closes the saved driver's intended four-bank register, position, control,
+  allocation, and upload contract in `parhelia-m9-cursor-gamma-re.md`; it does
+  not supersede this hardware contradiction.  Unresolved; use the software
+  cursor.  `[HW] [M9LIN]`
 * `C+0x00` uses `fmt<<22` and `C+0x58` uses `fmt<<24` — a working VBIOS mode reads
   `0x33046001` and `0xcc210400` on a 32 bpp surface.  `[M9WIN]` claimed `<<23` and
   `<<25`; those even truncate the 8-bit code.  `[HW]`

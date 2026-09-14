@@ -225,15 +225,23 @@ M9148 mini-DP requires the external transmitter sequence in
 transmitter register `0x0a[5:4]=3`.  This sequence is validation-required on
 each connector type because the transmitter part number is still unknown.
 
-Use the DRM software cursor initially.  The purported linear 64x64 ARGB cursor
-layout is hardware-disproved; only R/B swapping and acceptance of control
-values are known.  Hardware cursor support is optional and remains blocked on
-a coordinate-coded cursor image capture.
+Use the DRM software cursor initially.  Static vendor code closes four cursor
+banks at `0x18c0/0x1ac0/0x18e0/0x1ae0`, their address/config/control/position
+registers, `+64` signed-edge positioning, and the intended 64x64 color and
+monochrome upload sizes.  However, the purported linear 64x64x32 color layout
+is hardware-disproved; only R/B swapping and acceptance of config/control are
+known.  Hardware cursor support remains blocked on a vendor MMIO/VRAM capture
+that resolves the fetch layout.  Keep hotspot subtraction and complete-offscreen
+hiding in software.  See `parhelia-m9-cursor-gamma-re.md`.
 
-Use standard per-CRTC DRM gamma LUTs.  The LUT affects scanout, not render BO
-contents.  M9 LUT register addresses/packing are not closed in the current M9
-notes, so expose no hardware gamma property until they are recovered; software
-composition remains correct.
+M9 has a 256-entry primary scanout LUT for each controller route.  For control
+bases `0x1800/0x1a00/0x1980/0x1b80`, the index and RGB ports are respectively
+`C+0x38/+0x3c/+0x40/+0x44`.  Clear control bit 14, write index zero, then write
+each `u16` channel masked with `0xffc0`; OR bit 31 into each blue-port write to
+latch the RGB entry.  Expose a standard 256-entry per-CRTC DRM gamma LUT.  It
+affects scanout only and never render BO contents.  Restore the software ramp
+after VT/suspend transitions.  Depth-30 input indexing and dithering remain a
+separate GigaColor validation gate.
 
 ## 4. GEM, placement, address classes, and tiled resources
 
@@ -1064,7 +1072,8 @@ but its format, pack alignment, and rendered extent must remain correct.
 | non-32-bit tiled calculator transcription | tiled 8/16/64/128-bit and DXT resources unavailable | translate identified kernel routines, add frozen vectors, validate one coordinate-coded upload per family |
 | query wrap and multisample scaling | ordinary full/half/hidden counts, availability, and reuse are captured | slot wrap, 32-bit counter wrap, ordering stress, and multisample comparison |
 | 3D/global reset and fault IRQ | no transparent recovery from a real engine hang | controlled address fault and bad-opcode tests, one source at a time, with complete pre-ack snapshots |
-| hardware cursor layout and M9 gamma LUT | optional KMS features remain software backed | coordinate-coded cursor and LUT ramp captures |
+| hardware cursor fetch layout | cursor remains software backed | vendor MMIO/VRAM capture plus coordinate-coded image |
+| depth-30 LUT indexing/dithering | do not infer GigaColor from the RGB10 LUT ports | connector capture or DAC measurement of a 10-bit gradient |
 
 The primary command path, two-pass canonical vertex layouts, topology,
 program-pair ownership, ordinary sampler state, mipmaps, fixed-state corpus,
