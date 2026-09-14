@@ -233,7 +233,7 @@ static int m9_pipe_check(struct drm_simple_display_pipe *pipe,
 	    fb->width != M9_WARM_WIDTH || fb->height != M9_WARM_HEIGHT)
 		return -EINVAL;
 	gem = drm_gem_fb_get_obj(fb, 0);
-	if (!gem || m9x_gem_is_dma(gem))
+	if (!m9x_gem_is_vram(gem))
 		return -EINVAL;
 	return 0;
 }
@@ -375,7 +375,7 @@ m9_fb_create(struct drm_device *drm, struct drm_file *file,
 	gem = drm_gem_object_lookup(file, mode_cmd->handles[0]);
 	if (!gem)
 		return ERR_PTR(-ENOENT);
-	if (m9x_gem_is_dma(gem)) {
+	if (!m9x_gem_is_vram(gem)) {
 		fb = ERR_PTR(-EINVAL);
 		goto out_put;
 	}

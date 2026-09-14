@@ -5,9 +5,13 @@
 
 #include <drm/drm_file.h>
 #include <drm/drm_gem.h>
+#include <drm/drm_gem_vram_helper.h>
 
 #include "m9_drv.h"
 #include "m9_reg.h"
+
+#define M9_VRAM_GPU_BASE	0x10000000ull
+#define M9_VRAM_GPU_SIZE	0x10000000ull
 
 /*
  * This is deliberately the captured-triangle whitelist, not all 256 indexed
@@ -129,8 +133,8 @@ static int m9_parse_commands(const u32 *words, u32 count, u8 *expected)
 	return 0;
 }
 
-static struct m9x_bo *
-m9_find_ref(struct m9x_bo **bos,
+static struct drm_gem_object *
+m9_find_ref(struct drm_gem_object **bos,
 	    const struct drm_parhelia_m9_bo_ref *refs, u32 count, u32 handle,
 	    u32 access)
 {
@@ -243,10 +247,23 @@ static u32 m9_reloc_alignment(u32 kind)
 	}
 }
 
+static int m9_vram_gpu_address(u64 vram_size, u64 offset, u64 target_offset,
+			       u64 *address)
+{
+	u64 limit = min_t(u64, vram_size, M9_VRAM_GPU_SIZE);
+
+	if (offset >= limit ||
+	    check_add_overflow(offset, target_offset, address) ||
+	    *address >= limit ||
+	    check_add_overflow(*address, M9_VRAM_GPU_BASE, address))
+		return -EOVERFLOW;
+	return 0;
+}
+
 static int
 m9_validate_relocs(u32 *image, u32 dwords, u8 *expected,
 		   const struct drm_parhelia_m9_reloc *relocs, u32 reloc_count,
-		   struct m9x_bo **bos,
+		   struct drm_gem_object **bos, struct m9x_device *mdev,
 		   const struct drm_parhelia_m9_bo_ref *refs, u32 bo_count)
 {
 	const struct drm_parhelia_m9_reloc **by_dword;
@@ -263,6 +280,7 @@ m9_validate_relocs(u32 *image, u32 dwords, u8 *expected,
 
 	for (i = 0; i < reloc_count; i++) {
 		const struct drm_parhelia_m9_reloc *reloc = &relocs[i];
+		struct drm_gem_object *gem;
 		struct m9x_bo *bo;
 		u64 address;
 		u32 alignment;
@@ -287,16 +305,16 @@ m9_validate_relocs(u32 *image, u32 dwords, u8 *expected,
 			ret = -EINVAL;
 			goto out;
 		}
-		bo = m9_find_ref(bos, refs, bo_count, reloc->handle, access);
+		gem = m9_find_ref(bos, refs, bo_count, reloc->handle, access);
 		end_reloc = reloc->kind == PARHELIA_M9_RELOC_DRAW32_END ||
 			    reloc->kind == PARHELIA_M9_RELOC_DRAW16_END;
-		if (!bo || reloc->target_offset > bo->dma.base.size ||
-		    (!end_reloc && reloc->target_offset == bo->dma.base.size)) {
+		if (!gem || reloc->target_offset > gem->size ||
+		    (!end_reloc && reloc->target_offset == gem->size)) {
 			ret = -EINVAL;
 			goto out;
 		}
 		for (bo_index = 0; bo_index < bo_count; bo_index++)
-			if (bos[bo_index] == bo)
+			if (bos[bo_index] == gem)
 				break;
 		if (bo_index == bo_count) {
 			ret = -EINVAL;
@@ -308,11 +326,35 @@ m9_validate_relocs(u32 *image, u32 dwords, u8 *expected,
 			ret = -EINVAL;
 			goto out;
 		}
-		if (check_add_overflow((u64)bo->dma.dma_addr,
-				       reloc->target_offset, &address) ||
-		    address > U32_MAX) {
-			ret = -EOVERFLOW;
-			goto out;
+		if (reloc->kind == PARHELIA_M9_RELOC_COLOR) {
+			s64 offset;
+
+			if (!m9x_gem_is_vram(gem)) {
+				ret = -EINVAL;
+				goto out;
+			}
+			offset = drm_gem_vram_offset(drm_gem_vram_of_gem(gem));
+			if (offset < 0) {
+				ret = offset;
+				goto out;
+			}
+			ret = m9_vram_gpu_address(mdev->vram_size, offset,
+						  reloc->target_offset, &address);
+			if (ret)
+				goto out;
+		} else {
+			if (!m9x_gem_is_dma(gem)) {
+				ret = -EINVAL;
+				goto out;
+			}
+			bo = container_of(to_drm_gem_dma_obj(gem),
+					  struct m9x_bo, dma);
+			if (check_add_overflow((u64)bo->dma.dma_addr,
+					       reloc->target_offset, &address) ||
+			    address > U32_MAX) {
+				ret = -EOVERFLOW;
+				goto out;
+			}
 		}
 		if (reloc->kind == PARHELIA_M9_RELOC_REQUESTER ||
 		    reloc->kind == PARHELIA_M9_RELOC_DRAW32_START ||
@@ -346,7 +388,7 @@ out:
 	return ret;
 }
 
-static void m9_put_bos(struct m9x_bo **bos, u32 count)
+static void m9_put_bos(struct drm_gem_object **bos, u32 count)
 {
 	u32 i;
 
@@ -354,7 +396,7 @@ static void m9_put_bos(struct m9x_bo **bos, u32 count)
 		return;
 	for (i = 0; i < count; i++)
 		if (bos[i])
-			drm_gem_object_put(&bos[i]->dma.base);
+			drm_gem_object_put(bos[i]);
 }
 
 static int m9_submit_validate(struct m9x_device *mdev,
@@ -363,7 +405,7 @@ static int m9_submit_validate(struct m9x_device *mdev,
 {
 	struct drm_parhelia_m9_reloc *relocs = NULL;
 	struct drm_parhelia_m9_bo_ref *refs = NULL;
-	struct m9x_bo **bos = NULL;
+	struct drm_gem_object **bos = NULL;
 	struct m9x_bo *command_bo;
 	u8 *expected = NULL;
 	u32 *image = NULL;
@@ -434,17 +476,32 @@ static int m9_submit_validate(struct m9x_device *mdev,
 				ret = -EINVAL;
 				goto out;
 			}
-		bos[i] = m9x_bo_lookup(mdev, file, refs[i].handle);
-		if (IS_ERR(bos[i])) {
-			ret = PTR_ERR(bos[i]);
-			bos[i] = NULL;
+		bos[i] = drm_gem_object_lookup(file, refs[i].handle);
+		if (!bos[i]) {
+			ret = -ENOENT;
+			goto out;
+		}
+		if (m9x_gem_is_dma(bos[i])) {
+			struct m9x_bo *bo;
+
+			/* Keep the private per-file DMA allocation registry check. */
+			drm_gem_object_put(bos[i]);
+			bo = m9x_bo_lookup(mdev, file, refs[i].handle);
+			if (IS_ERR(bo)) {
+				ret = PTR_ERR(bo);
+				bos[i] = NULL;
+				goto out;
+			}
+			bos[i] = &bo->dma.base;
+		} else if (!m9x_gem_is_vram(bos[i])) {
+			ret = -EINVAL;
 			goto out;
 		}
 	}
 	ret = m9_parse_commands(image, dwords, expected);
 	if (!ret)
 		ret = m9_validate_relocs(image, dwords, expected, relocs,
-					 args->relocation_count, bos, refs,
+					 args->relocation_count, bos, mdev, refs,
 					 args->bo_count);
 	/*
 	 * The patched image is intentionally discarded. A later, independently
@@ -525,6 +582,15 @@ int m9x_submit_selftest(void)
 	const struct drm_parhelia_m9_reloc *by_dword[3] = {
 		NULL, &draw_relocs[0], &draw_relocs[1],
 	};
+	u64 address;
+
+	if (m9_vram_gpu_address(SZ_256M, 0, 0, &address) ||
+	    address != 0x10000000 ||
+	    m9_vram_gpu_address(SZ_256M, 0x01ee9000, 0, &address) ||
+	    address != 0x11ee9000 ||
+	    m9_vram_gpu_address(SZ_256M, SZ_256M - 0x100, 0x100,
+				&address) != -EOVERFLOW)
+		return -EINVAL;
 
 	if (m9_reloc_access(PARHELIA_M9_RELOC_COLOR) !=
 	    (PARHELIA_M9_BO_READ | PARHELIA_M9_BO_WRITE) ||

@@ -6,6 +6,8 @@
 #include <drm/drm_file.h>
 #include <drm/drm_gem.h>
 #include <drm/drm_gem_dma_helper.h>
+#include <drm/drm_gem_ttm_helper.h>
+#include <drm/drm_gem_vram_helper.h>
 
 #include "m9_drv.h"
 
@@ -31,9 +33,53 @@ static const struct drm_gem_object_funcs m9_bo_funcs = {
 	.vm_ops = &drm_gem_dma_vm_ops,
 };
 
+static void m9_vram_bo_free(struct drm_gem_object *gem)
+{
+	struct m9x_vram_bo *bo = container_of(drm_gem_vram_of_gem(gem),
+						struct m9x_vram_bo, vram);
+
+	drm_gem_vram_put(&bo->vram);
+}
+
+static int m9_vram_bo_vmap(struct drm_gem_object *gem, struct iosys_map *map)
+{
+	return drm_gem_vram_vmap(drm_gem_vram_of_gem(gem), map);
+}
+
+static void m9_vram_bo_vunmap(struct drm_gem_object *gem,
+			      struct iosys_map *map)
+{
+	drm_gem_vram_vunmap(drm_gem_vram_of_gem(gem), map);
+}
+
+static const struct drm_gem_object_funcs m9_vram_bo_funcs = {
+	.free = m9_vram_bo_free,
+	.vmap = m9_vram_bo_vmap,
+	.vunmap = m9_vram_bo_vunmap,
+	.mmap = drm_gem_ttm_mmap,
+	.print_info = drm_gem_ttm_print_info,
+};
+
 bool m9x_gem_is_dma(struct drm_gem_object *gem)
 {
 	return gem && gem->funcs == &m9_bo_funcs;
+}
+
+bool m9x_gem_is_vram(struct drm_gem_object *gem)
+{
+	return gem && gem->funcs == &m9_vram_bo_funcs;
+}
+
+struct drm_gem_object *m9x_gem_create_object(struct drm_device *drm,
+					      size_t size)
+{
+	struct m9x_vram_bo *bo;
+
+	bo = kzalloc_obj(*bo);
+	if (!bo)
+		return ERR_PTR(-ENOMEM);
+	bo->vram.bo.base.funcs = &m9_vram_bo_funcs;
+	return &bo->vram.bo.base;
 }
 
 static struct m9x_bo *m9_bo_create(struct drm_device *drm, size_t size)

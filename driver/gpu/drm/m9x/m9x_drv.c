@@ -52,6 +52,7 @@ static const struct drm_driver m9x_kms_driver = {
 	.driver_features = DRIVER_GEM | DRIVER_RENDER | DRIVER_MODESET |
 			   DRIVER_ATOMIC,
 	.debugfs_init = drm_vram_mm_debugfs_init,
+	.gem_create_object = m9x_gem_create_object,
 	.dumb_create = m9x_dumb_create,
 	.dumb_map_offset = drm_gem_ttm_dumb_map_offset,
 	M9X_DRM_DRIVER_COMMON,

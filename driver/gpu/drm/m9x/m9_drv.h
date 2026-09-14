@@ -12,6 +12,7 @@
 
 #include <drm/drm_device.h>
 #include <drm/drm_gem_dma_helper.h>
+#include <drm/drm_gem_vram_helper.h>
 #include <drm/drm_modes.h>
 #include <drm/drm_simple_kms_helper.h>
 
@@ -33,6 +34,10 @@ struct m9x_bo {
 	struct list_head link;
 	struct drm_file *file;
 	u32 flags;
+};
+
+struct m9x_vram_bo {
+	struct drm_gem_vram_object vram;
 };
 
 struct m9x_fence {
@@ -102,6 +107,9 @@ int m9x_submit_selftest(void);
 struct m9x_bo *m9x_bo_lookup(struct m9x_device *mdev,
 			     struct drm_file *file, u32 handle);
 bool m9x_gem_is_dma(struct drm_gem_object *gem);
+bool m9x_gem_is_vram(struct drm_gem_object *gem);
+struct drm_gem_object *m9x_gem_create_object(struct drm_device *drm,
+					      size_t size);
 int m9x_modeset_init(struct m9x_device *mdev);
 void m9x_modeset_fini(struct m9x_device *mdev);
 irqreturn_t m9x_irq_handler(int irq, void *arg);
