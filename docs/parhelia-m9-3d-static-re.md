@@ -465,9 +465,15 @@ name for that nibble.
 
 The remaining frontend-to-final-index boundary is now precise [BIN][DER]:
 
-* `0x138c10` compiles viewport/scissor inputs into validator
+* `0x138c10` compiles viewport and scissor inputs into validator
   `+0x410,+0x414,+0x418,+0x41c` through helper `0x138cd0` and marks nested
-  dirty bit `0x04000000` at `0x138cb6`; its final packet copy is unlocated.
+  dirty bit `0x04000000` at `0x138cb6`.  These are nested offsets
+  `+0x258,+0x25c,+0x260,+0x264`.  Lowerer `0x181fa0` tests that bit at
+  `0x18283e`, copies the four words to surface shadow
+  `+0xa4,+0xa8,+0xac,+0xb0`, and sets surface dirty bit `0x400` at
+  `0x182870`.  Emitter `0xfb920` consequently writes them to final indices
+  `f5,f6,c4,c5` [BIN].  The exact rectangle construction and packing are
+  recorded in `parhelia-m9-render-surfaces-clear.md`.
 * `CULLMODE` remains in the separate `p2528` raster object.  Neither its final
   word nor the meaning of the `a8` face-order selection should be inferred
   from the other.
@@ -501,14 +507,24 @@ arrays advance with the loop index.  The emitted indices and fields are:
 | `0x800` | `be` | resource `+0x8c/+0x90`, selector `8` |
 | `0x1000` | `f1` | `+0xbc` |
 
-The first four pairs are conclusively four indexed attachment slots because
-the driver derives their headers from byte offsets `0x2c0/0x2c4`, increments
-the offsets by eight for each slot, and bounds the loop with `+0x34` [DER].
-They are the render-target descriptor bank in this surface object [INF].  The
-`b8/b9`, `ba/bb`, `bc/bd`, and `be` resource paths are further surface or
-depth/stencil attachments, but their individual semantic names remain for
-differential capture.  Keeping these unknown names prevents a guessed depth
-base/pitch assignment from entering the kernel ABI.
+The first four pairs are conclusively four indexed color render-target slots.
+Lowerer `0x181fa0` decodes the fragment-output declaration, copies its selected
+resource address/relocation/descriptor to `+0x38/+0x3c/+0x58 + slot*8/4`, and
+sets `1 << slot` at `0x182096..0x1820f3` [BIN].  The driver then derives the
+packet headers from byte offsets `0x2c0/0x2c4`, increments the offsets by eight
+for each slot, and bounds the loop with `+0x34` [DER].  Thus `b0/b1` through
+`b6/b7` are the four color attachment address/descriptor pairs [BIN].
+
+The same lowerer joins the enabled depth/stencil attachment to two
+relocation-backed pairs: nested `+0x21c/+0x220/+0x224` becomes surface shadow
+`+0x68/+0x6c/+0x70` and final `b8/b9`; nested
+`+0x228/+0x22c/+0x230` becomes `+0x74/+0x78/+0x7c` and final `ba/bb`
+(`0x182201..0x182291`, with the update path at
+`0x182549..0x182620`) [BIN].  The two pairs are both depth-attachment backing
+planes, but static code does not distinguish their public roles.  Exact field
+boundaries and the remaining descriptor uncertainty are recorded in
+`parhelia-m9-render-surfaces-clear.md`.  The `bc/bd` and `be` paths remain
+auxiliary relocation-backed surface state.
 
 Before emitting commands, the same function walks every dirty resource pair
 and calls the command-buffer resource tracker.  This proves that addresses in
