@@ -380,3 +380,20 @@ The checker verifies the hashes, producer records, allocator lifetime,
 private batching, recipient bank copies and limits, dirty/version flags,
 program-resource builders, configuration-object placement, final relocation
 ordering, and the separate sparse packet arithmetic.
+
+## September 2026 live constant-range closure
+
+The follow-up same-program uniform A/B/A capture in
+`captures/m9x-linux-gl2-matrix-20260914` closes the ordinary draw-time
+constant boundary. Fragment and vertex updates append stage-specific data to
+the 0x21000-byte resource at `0x40c3a000`, while raster state binds it through
+indices `8c/8d/8e`. Fragment use produces `8c=0x00500400` with an 8d-to-8e
+delta of `0x20`; vertex use produces `8c=0x00500200` with a delta of `0x10`.
+The preprocessing pass consumes its following range with
+`8c=0x00501500` or `0x00501700`, respectively. Full values and the executable
+checker are documented in `parhelia-m9-gl2-runtime-capture.md`.
+
+Both passes retain `8f=0` and emit no `90..9f` payload. This runtime evidence
+agrees with the static result that normal GL selects the mode-1 resource
+builders. It does not supply a trigger for the unreferenced mode-2 wrappers;
+that route remains untriggered rather than disproved.

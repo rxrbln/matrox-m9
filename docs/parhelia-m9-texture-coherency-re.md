@@ -437,3 +437,21 @@ packet is a cache-control candidate.  That experiment can distinguish an
 ordinary dependency, an address-domain transition, descriptor rebinding, and
 a true content-coherency operation.  Until then, assigning cache semantics to
 any one of these packet words is unsupported.
+
+## September 2026 live FBO producer/consumer closure
+
+The focused vendor-GL capture in
+`captures/m9x-linux-gl2-matrix-20260914/fbo-chain` executes a complete 64x64
+RGBA8 FBO render followed by a GLSL `texture2D` draw. Producer sequence 14
+binds `b0=0x11f21000, b1=0xc8010040`; consumer sequence 15 binds the exact
+same pair at texture indices `78/79`. Producer post-state reaches
+`43=0x350`, while the later consumer raster state emits `43=0x3e0` before its
+draw and advances `e3` to `0x3f0`. Because the draw has other resources,
+`0x3e0` is the maximum live dependency and is not assigned solely to the
+texture.
+
+A separate synchronized validation reads producer-center RGBA
+`(3,130,130,255)` and sampled-consumer center `(2,128,128,255)`. Thus the
+statically recovered class-1 resource ordering is now joined to a live exact
+surface-to-texture address transition and verified visible content. No
+additional texture-specific cache packet appears in the tested chain.

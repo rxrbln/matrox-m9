@@ -243,3 +243,60 @@ six comparison predicates still need controlled deltas.  Texture resource
 metadata, dimensions and units, and controlled mask, swizzle, modifier,
 predicate, destination-class, and coordinate-dimension matrices remain
 required for a complete semantic ISA table.
+
+## September 2026 operand/control basis
+
+`tools/m9-native-lower-matrix.py` now runs 91 additional hash-pinned cases
+through the same saved lowerers and records every packed native word in
+`captures/m9-native-lower-matrix-20260914/matrix.json`. The matrix is fully
+deterministic and can be regenerated offline with `--write` or checked with
+`--check`. The harness accepts explicit inputs through its `M9_IR_*` and
+`M9_TEX_*` environment variables; its original defaults and the 17-operation
+golden corpus remain unchanged.
+
+The MOV destination-mask matrix exhausts all 15 nonempty xyzw masks. It proves
+that xy and zw are independently emitted pairs, omits an empty pair, and uses
+the already identified low operations `1d`, `1e`, and `1c` for first, second,
+and both components. The JSON fixture gives the complete exact sequence for
+every mask.
+
+The swizzle basis independently toggles each two-bit field and includes
+identity `e4`, BGRA `c6`, reverse `1b`, and YXWZ `b1`. All 17 cases produce
+distinct native streams. Nontrivial cross-pair swizzles expand from two slots
+to three or four, proving that a new compiler must retain the vendor's
+decomposition rather than merely permute one packed selector. The basis spans
+every bit position in the eight-bit source swizzle; arbitrary composition
+remains an optimizer validation target.
+
+The complete 0..15 D3D source-modifier nibble has five observed equivalence
+classes. The GL-relevant cases are exact:
+
+| source modifier | native W1 change from ordinary MOV |
+|---|---|
+| none `0` | `a2803f1f` |
+| negate `1` | `a2a03f1f` |
+| absolute `11` | `a2803c1f` |
+| absolute-negate `12` | `a2a03c1f` |
+
+Raw values 2..10 and 13..15 collapse to `a0000c1f` in this direct backend
+fixture. Since this bypasses frontend validation, that equivalence is not a
+claim that those source forms are legal for this MOV path.
+
+All 16 destination routing nibbles yield the statically predicted seven
+classes: 0; direct 1, 2, 3; collapsed 4..12 to 0; and direct 13, 14, 15.
+Temporary and varying sources share the same low physical selector for equal
+indices; constant `c0/c1` select distinct gated W0/W1 forms.
+
+Predicate-enable changes full-mask MOV low operations from `1c` to `00` for
+both emitted pairs. Predicate NOT polarity changes those to `10`. Raw p0..p5
+indices produce identical packed words in this fixture, so the register index
+is not encoded in these two MOV slots and must remain external predicate state
+until another path proves otherwise. Conditional mode independently changes
+W1 from `a2803f1f` to `42803f1f`; combining conditional and predicate-enable
+preserves both deltas. The context-selected MOV modes are also exact: mode 6
+uses `a2803f1f`, while guarded mode 10 uses `ae800f1f`.
+
+TEXLD resource dimension values 0, 3, and 4 produce the same three-slot stream
+under the zeroed resource/link fixture. This is a useful negative result only:
+the tested metadata is insufficient to activate a dimension-specific branch,
+so texture resource metadata remains unresolved rather than invariant.
