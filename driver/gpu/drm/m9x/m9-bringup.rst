@@ -50,9 +50,16 @@ parses M9 four-index packets, padding and H03/H06/H07 draw triples.  The
 validator currently permits only indices present in the controlled triangle
 capture, rejects kernel-owned fence/dependency indices, requires a semantic
 relocation for every known address operand, checks all BO ranges and alignment,
-patches a private copy, and discards it.  Relocations name GEM handles and
+patches a private copy, and discards it.  H06/H07 start and exclusive-end
+relocations must name the same BO in increasing order; H06 records its odd
+terminal halfword with ``PARHELIA_M9_RELOC_PACKED16_ODD`` instead of smuggling
+bit 1 through an address.  The kernel derives access from each relocation
+kind, unions it per BO, and rejects under- or over-declared BO access.  Color
+and depth attachments are conservatively read/write until blend and write-mask
+state belong to a kernel-selected template.  Relocations name GEM handles and
 offsets; userspace cannot provide MMIO, requester, fence, DMA or VRAM bus
-addresses.
+addresses.  Private linked-program ports ``c8..cd`` remain kernel-owned, while
+captured ordinary state ``af`` is accepted.
 
 The captured bind tuple has two distinct operands.  ``RESOURCE_69`` relocates
 index ``0x69``; address-directed snapshots prove that its allocation contains
@@ -71,7 +78,11 @@ The relocated standalone module has completed 256 consecutive kernel-owned
 no-op fences on the M9148, with monotonically advancing 12-byte command
 intervals and completion points through ``0x1000``.  After the independent
 DRM name change, a fresh module completed another fence at ``0x10`` and
-unloaded cleanly.  These results close basic primary-requester execution but
+unloaded cleanly.  Commit ``f459a8b`` completed a further 256 fences through
+``0x1000``.  The later typed-access/H06/H07 validator build probed successfully
+with execution disabled, ran its load-time selftests, and unloaded with the PCI
+device unbound and bus mastering disabled.  These results close basic
+primary-requester execution but
 do not authorize arbitrary userspace streams.
 
 The following tests are required in order:

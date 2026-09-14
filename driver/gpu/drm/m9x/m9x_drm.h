@@ -16,8 +16,10 @@
 	DRM_IOWR(DRM_COMMAND_BASE + DRM_PARHELIA_M9_SUBMIT, \
 		 struct drm_parhelia_m9_submit)
 
-/* M9 command and staging objects are immutable DMA32 allocations. The mmap
- * offset is a DRM cookie and no engine address is exposed. */
+/*
+ * M9 command and staging objects are immutable DMA32 allocations. The mmap
+ * offset is a DRM cookie and no engine address is exposed.
+ */
 struct drm_parhelia_m9_create_bo {
 	__u64 size;
 	__u64 mmap_offset; /* out */
@@ -28,6 +30,12 @@ struct drm_parhelia_m9_create_bo {
 #define PARHELIA_M9_BO_COMMAND	(1u << 0)
 #define PARHELIA_M9_BO_READ	(1u << 1)
 #define PARHELIA_M9_BO_WRITE	(1u << 2)
+
+/*
+ * DRAW16_END only: the exclusive byte end names the upper halfword of the
+ * final dword.  Access bits remain independently derived from reloc kind.
+ */
+#define PARHELIA_M9_RELOC_PACKED16_ODD	(1u << 3)
 
 struct drm_parhelia_m9_bo_ref {
 	__u32 handle;
@@ -62,8 +70,10 @@ struct drm_parhelia_m9_reloc {
 #define PARHELIA_M9_SUBMIT_VALIDATE_ONLY	(1u << 0)
 #define PARHELIA_M9_SUBMIT_NOOP_FENCE		(1u << 1)
 
-/* NOOP_FENCE ignores command fields and submits only the kernel-owned
- * completion record. */
+/*
+ * NOOP_FENCE ignores command fields and submits only the kernel-owned
+ * completion record.
+ */
 struct drm_parhelia_m9_submit {
 	__u32 context_id;
 	__u32 command_handle;
