@@ -676,6 +676,20 @@ is then scattered through `W1` by `0x1b5813..0x1b58a6`.  A guessed single-slot
 `MOV` encoding would consequently choose one of two compiler-generated forms
 without knowing the stage/compiler configuration [BIN].
 
+The two context fields now have an exact producer and whole-program join.
+The live compile/install path at `0x4569f..0x456d4` copies the request type to
+`ctx+0x1e8`, the outer object at `+0x4f8` to `ctx+0x1f4`, and the adjacent
+outer value at `+0x4f4` to `ctx+0x204`.  Installer `0x4dfe0` switches on the
+seven request types.  Types 2 and 5 copy the installed object's `+0x1c` to
+`ctx+0x1f0`; types 0 and 6 allocate an auxiliary object and copy `ctx+0x1f4`
+into its first dword; types 1, 3, and 4 do neither [BIN].  Finalizer
+`0x195b61..0x195b8c` evaluates the identical predicate and passes it as the
+fourth argument to whole-program backend `0x1d1d40` [BIN].  This proves that
+the `0x14/mode-10` versus `0x15/mode-6` choice is a program/backend mode, not
+an output-register or shader-stage discriminator.  Static code does not prove
+that outer `+0x4f8` is nonzero for every live vertex or fragment request, nor
+does it name request types 2 and 5.
+
 Fresh-instruction construction rules out a hidden default that could close
 this gap.  Windows constructor `0x1da2c0` initializes descriptors
 `+0x10..+0x24,+0x38,+0x3c` to `0xf0000000`, zeros both operation words and gate,
@@ -683,11 +697,41 @@ and leaves no terminal/export value.  Linux `m9x15235` at `0x516d40` performs
 the same initialization with fields shifted by four bytes after its 64-bit
 object header [BIN].
 
-Two more bindings are still absent for a runnable minimal pair:
+### Class-12 is an intermediate special result, not the terminal endpoint
 
-* the `0x0000fff8` special output is selected when the link record class is 12,
-  but no static data flow names class 12 as vertex position or fragment color;
-  the legacy MxMGLX final-result-class check occurs before native conversion;
+Frontend `0x1a4cdc..0x1a4ced` increments program counter `+0x5a8` whenever
+the converted destination low word is `0xfff8`.  Program finalizer `0x1c8590`,
+called unconditionally from optimizer `0x195991`, reads that counter and
+synthesizes ordinary opcode-1 IR records through the same generic lowerer
+[BIN]:
+
+```text
+condition                  opcode  destination  source
++0x5a4 <= 0, +0x5a8 > 0      1    0x3001fffe   0x0000fff8
++0x5a4 > 0,  +0x5a8 > 0      1    0x3003fffe   0x0044fff8
+```
+
+The latter path also builds a helper record with destination `0x0002fff8` and
+sources `0x0000fff9/0x0055fff9`.  Class 12 / selector `0x78` is therefore an
+intermediate special result, while `0x3001fffe` (or the multi-result form) is
+the final synthetic endpoint.  The finalizer appends these bridge MOVs before
+counted native emission; there is no separate `END` record synthesized by this
+frontend-finalization step [DER].  Native hardware stop behavior remains
+bounded below because the later backend receives an explicit program count but
+the bind carries no count or end slot.
+
+This still does not assign the API name `gl_Position` or `gl_FragColor` to
+class 12.  Both stages traverse the same generic converter, while the saved GL
+ICD serializes stage identity outside this MxMD IR.  The association stops at
+the unrecovered opcode-`0x59/0x67` transport consumer documented in
+`parhelia-m9-program-stage-entry-re.md`.
+
+Two bindings are still absent for a runnable minimal pair:
+
+* class 12 is proven to feed a synthesized terminal endpoint MOV, but no static
+  data flow names it as vertex position or fragment color or selects the
+  context-dependent native MOV form for either stage; the legacy MxMGLX
+  final-result-class check occurs before native conversion;
 * sparse four-dword upload records have an exact key-to-selector formula, but
   no static data flow joins an IR `c[i]` descriptor to a sparse-record key.
   In particular, assuming that `c0` means sparse key zero would be a guess.
@@ -696,10 +740,19 @@ Combined with the count/termination result below, this is the exact static
 boundary for a passthrough vertex shader and solid-color fragment shader.  We
 can build their compiler IR, link ordinary varyings, identify the constant
 read selector, upload native bytes, and bind two entry starts.  We cannot yet
-choose the special stage exports, choose the context-dependent raw `MOV` form,
-bind the solid-color payload to its sparse key, or prove how native execution
-stops.  The saved fixed fragments cannot close those joins: they are composable
-vertex/declaration conversion pieces, and their tails have no common bit.
+assign the special result to each API stage, choose the context-dependent raw
+`MOV` form, bind the solid-color payload to its sparse key, or prove the
+hardware stop rule.  The saved fixed fragments cannot close those joins: they
+are composable vertex/declaration conversion pieces, and their tails have no
+common bit.
+
+The smallest decisive compiler delta is now narrower.  Compile a one-MOV
+program twice while holding its IR, varying map, and constants fixed, changing
+only the stage.  Break after `0x195991` and record `ctx+0x1e8/+0x1f0/+0x1f4`,
+then break after `0x195b88` and copy the counted slots.  A second pair which
+changes only `gl_Position` versus `gl_FragColor` confirms which serialized
+stage supplies class 12.  This four-compile capture resolves the stage enum,
+the native MOV branch, and class-12 ownership without MMIO tracing.
 
 The static databases do not expose a standalone native predicate or `END` bit.
 Across the final slot of all 48 fixed blobs, the bitwise intersection is zero
