@@ -21,7 +21,7 @@ top-level `ExecuteDma` ranges through three 12-byte primary indirection records:
 
 ```text
 45452d2c                 indices 2c,2d,stop,stop
-secondary_range_start    index 2c
+secondary_range_start | 1 index 2c, BmBuffer start/access-class tag
 secondary_range_end | 2  index 2d, end-exclusive with class/tag 2
 ```
 
@@ -34,9 +34,9 @@ For an aligned secondary DMA base `S`, the captured triangle is:
 
 | range | logical bytes | secondary bytes | primary descriptor |
 |---:|---:|---:|---|
-| preprocess | `[000,268)` | `[S+008,S+270)` | `{45452d2c,S+008,(S+270)|2}` |
-| raster | `[268,4bc)` | `[S+270,S+4c4)` | `{45452d2c,S+270,(S+4c4)|2}` |
-| completion | `[4bc,4e8)` | `[S+4c4,S+4f0)` | `{45452d2c,S+4c4,(S+4f0)|2}` |
+| preprocess | `[000,268)` | `[S+008,S+270)` | `{45452d2c,(S+008)|1,(S+270)|2}` |
+| raster | `[268,4bc)` | `[S+270,S+4c4)` | `{45452d2c,(S+270)|1,(S+4c4)|2}` |
+| completion | `[4bc,4e8)` | `[S+4c4,S+4f0)` | `{45452d2c,(S+4c4)|1,(S+4f0)|2}` |
 
 The eight-byte displacement is part of the saved BmBuffer layout.  The
 `ExecuteDma` wrapper `m9x840` dispatches vtable slot `+0x80` to kernel routine
@@ -93,7 +93,8 @@ initial implementation is consequently:
 2. Reserve 36 contiguous bytes in an unretired primary slot.  If the current
    slot cannot fit them, switch only to a slot whose fence has retired, write
    `0x400 = primary_dma | 2`, and read it back before the first endpoint.
-3. Write all three `{0x45452d2c,start,end|2}` records and issue `dma_wmb()`.
+3. Write all three `{0x45452d2c,start|1,end|2}` records and issue
+   `dma_wmb()`.
 4. Clear `0x31c` through the already hardware-tested requester path, then
    publish only `0x404 = primary_dma + 36`.  This value is an untagged,
    end-exclusive primary DMA address.  Read it back as a PCI posting barrier
@@ -150,7 +151,7 @@ There is no recovered primary/3D reset sequence.  Keep possibly reachable BOs
 pinned, keep KMS scanout running, and clear PCI bus mastering before terminal
 teardown releases quarantined DMA memory.
 
-## Remaining hardware uncertainty
+## Secondary start tag and remaining hardware uncertainty
 
 Static evidence closes the three primary records, exact secondary bytes,
 endpoint order, six-target allocation, completion, and lifetimes.  The live
@@ -162,13 +163,15 @@ then the triangle after selector-`6c` serialization.  Any failure wedges only
 the opt-in render generation and must not trigger a guessed reset.
 
 The exact `m9x830` start formula ORs the secondary resource's field at `+0x34`
-into every index-`2c` start address.  Neither the saved BmBuffer bytes nor the
-ExecuteDma ioctl output contains that runtime object field.  The descriptor
-table above therefore shows the canonical clean DMA32 case where this address
-class field is zero.  Do not copy the primary requester's known `|2` base tag
-into the secondary start: establish the clean-room secondary allocation's
-field from an object capture or a guarded primary-descriptor trace.  The
-index-`2d` end tag `|2` is independently exact.
+into every index-`2c` start address.  A later audit of the preserved raw ioctl
+archive found the field in the `ExecuteDma` output after all: kernel `m9x83`
+copies the next BmBuffer's `+0x34` to ioctl tail `+0x10`, which is complete
+ioctl offset `0x828`.  All 15 complete saved output records contain `1` there.
+The canonical clean DMA32 system-memory implementation must therefore use
+start tag `|1`; the zero assumption in the original version of this note is
+superseded.  The primary requester's `|2` base tag remains a separate register
+contract.  See `parhelia-m9-secondary-start-tag-re.md` for the complete static
+and capture join.  The index-`2d` end tag `|2` remains independently exact.
 
 <!-- Copyright 2026 Rene Rebe <rene@exactco.de> -->
 <!-- SPDX-License-Identifier: GPL-2.0 -->
