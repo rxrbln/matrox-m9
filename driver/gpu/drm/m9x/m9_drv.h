@@ -49,6 +49,7 @@ struct m9x_transport {
 	u32 last_fence;
 	u32 fence_epoch;
 	u32 generation;
+	u32 command_offset;
 	bool transport_armed;
 	bool wedged;
 };

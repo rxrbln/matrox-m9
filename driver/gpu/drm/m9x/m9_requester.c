@@ -130,9 +130,9 @@ int m9x_submit_noop(struct m9x_device *mdev, u64 *point)
 {
 	struct m9x_fence *fence;
 	unsigned long deadline;
-	u32 *command = mdev->transport.command_cpu;
+	u32 *command;
 	u32 *writeback = mdev->transport.fence_cpu;
-	u32 target, raw;
+	u32 command_offset, command_end, target, raw;
 	u64 extended;
 	int ret;
 
@@ -146,6 +146,17 @@ int m9x_submit_noop(struct m9x_device *mdev, u64 *point)
 	ret = m9_transport_arm(mdev);
 	if (ret)
 		goto out_unlock;
+	command_offset = mdev->transport.command_offset;
+	if (command_offset > PARHELIA_M9_COMMAND_BYTES - 3 * sizeof(u32)) {
+		/* The vendor requester advances through a producer interval.  A
+		 * rewind needs its separately recovered rollover protocol, so keep
+		 * this diagnostic bounded instead of guessing that reset sequence. */
+		ret = -ENOSPC;
+		goto out_unlock;
+	}
+	command = (u32 *)((u8 *)mdev->transport.command_cpu + command_offset);
+	command_end = lower_32_bits(mdev->transport.command_bus) +
+		      command_offset + 3 * sizeof(u32);
 
 	target = mdev->transport.next_fence;
 	mdev->transport.next_fence += 0x10;
@@ -171,8 +182,7 @@ int m9x_submit_noop(struct m9x_device *mdev, u64 *point)
 	 * The endpoint is a byte address, never a size or a userspace pointer.
 	 */
 	m9_write(mdev, M9_REG_FRONTEND_STATE, 0);
-	m9_write(mdev, M9_REG_COMMAND_END,
-		 lower_32_bits(mdev->transport.command_bus) + 3 * sizeof(u32));
+	m9_write(mdev, M9_REG_COMMAND_END, command_end);
 	m9_write(mdev, M9_REG_FRONTEND_KICK, 1);
 
 	deadline = jiffies + msecs_to_jiffies(max(m9_fence_timeout_ms, 1u));
@@ -205,6 +215,7 @@ int m9x_submit_noop(struct m9x_device *mdev, u64 *point)
 	}
 
 	extended = m9_extend_fence(&mdev->transport, raw);
+	mdev->transport.command_offset = command_offset + 3 * sizeof(u32);
 	dma_fence_signal(&fence->base);
 	dma_fence_put(&fence->base);
 	*point = extended;
