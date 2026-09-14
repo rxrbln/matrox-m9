@@ -154,23 +154,29 @@ a safe DRM submitter and a working Mesa driver:
 2. The remaining `0x500..0x524` rollover fields and public memory-domain names.
    Static recovery now establishes the initializer formulas, the internal
    four-class address-tag table `{2,3,0,3}`, tagged base/transition addresses,
-   a raw live `0x504` pointer, save/restore order and a vendor bounded-idle
-   entry point.  `0x50c/0x510` are address-like above a low tag nibble;
-   `0x514` is their companion and `0x520/0x524` are always restored first.  A
-   controlled rollover trace is still required to name their producer/consumer
-   roles and final relationship to the `0x404` submit limit.
+   a raw live `0x504` pointer, the opcode-2 wrap-to-GPU-base record,
+   save/restore order and a vendor bounded-idle entry point.  Windows contains
+   the same tag table and allocates the requester from a dedicated 4 KiB
+   object.  `0x50c/0x510` are address-like above a low tag nibble; `0x514` is
+   their companion and `0x520/0x524` are always restored first.  A controlled
+   rollover trace is still required to name those hardware
+   producer/consumer fields and their final relationship to the `0x404`
+   submit limit.
 3. The remaining M9 context-switch lifecycle.  The vendor's exact `0xf8`-byte
    full-state index template and its per-context restore-record builders are
    recovered, including texture and shader-store indices.  Query/fence state,
    restore submission ownership, and alternating-context completion still need
    validation.
-4. Render-surface layout and concrete clear packets.  Four color pairs are
-   joined to `b0..b7`, the two depth attachment pairs to `b8..bb`, descriptor
-   format to bits `31:25`, and viewport/scissor to `f5/f6/c4/c5`.  The remaining
-   descriptor pitch/tiling bits, ordinary-Z versus auxiliary-plane names, and
-   final command generation below the joined color/depth clear leaves
-   `0xa48b0`/`0xb4fe0` require further static recovery or capture.  Draw launch
-   is statically joined to H03/H06/H07 records.
+4. Uncommon render-surface layouts.  Four color pairs are joined to `b0..b7`,
+   ordinary Z to `b8/b9`, and an internal auxiliary depth allocation to
+   `ba/bb`.  Selector-8/9 row span, layout, format and flag fields are exact,
+   and both clear leaves are flattened into their direct page-run, normal GPU
+   rectangle-draw and CPU fallback paths.  Ordinary linear targets and clears
+   can therefore be implemented.  A coordinate-coded capture is still needed
+   to manufacture the physical in-block address permutation for the numeric
+   blocked layout classes; their descriptor overrides alone do not define that
+   permutation.  The uncommon nonzero-origin `c4/c5` transform also remains
+   unnamed.  Draw launch is statically joined to H03/H06/H07 records.
 5. The final M9-index join for culling, polygon/shade mode, and multisampling,
    plus the final upload selector/port association for generated fragment
    programs.  Blend, alpha test, and format-dependent colour masks are now

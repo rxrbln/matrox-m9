@@ -135,6 +135,24 @@ pointer.  `m9x620` emits a 16-byte transition record, or a 32-byte form when
 its bus-master mode flag is set; both begin with record opcode `1`, tagged old
 pointer, raw new pointer.
 
+Linux `m9x1200` at `0x2b1c0` resolves the companion record opcode `2`.  After
+publishing and quiescing the current list it writes this eight-byte record at
+the current software producer:
+
+```text
+dword 0 = 2
+dword 1 = resource[0x44]
+```
+
+Resource initialization proves `resource[0x44]` is the GPU base corresponding
+to CPU base `resource[0x50]`: it stores their difference in translation field
+`resource[0x58]`, and all requester address formulas add that translation to
+the CPU pointer.  Immediately after the record, `m9x1200` resets software
+producer and start to `resource[0x50]`, recomputes the end guard from
+`resource[0x40]`, republishes, and quiesces again.  Opcode `2` is therefore the
+command-list wrap-to-base record, with the new GPU base as its operand.  It is
+not an indexed 3D packet.
+
 The Windows miniport independently implements the same split [DRV].  Its
 requester initializer at `MxMM.sys` `0x145a5` computes:
 
