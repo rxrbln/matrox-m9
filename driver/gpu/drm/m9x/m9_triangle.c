@@ -235,6 +235,10 @@ static const u32 m9_triangle_gouraud_linked_prefix[] = {
 	0x43000000, 0x43000000, 0x3f000000, 0,
 };
 
+#define M9_TRIANGLE_LINKED_ARENA_LIMIT	0x00800000u
+#define M9_TRIANGLE_LINKED_FIRST_BACKOFF	0x00000780u
+#define M9_TRIANGLE_LINKED_REF_STRIDE	0x00000028u
+
 #include "m9_triangle_framed.h"
 
 /* Count words have been removed; packet grouping and write order are exact. */
@@ -687,6 +691,32 @@ static u32 m9_triangle_captured_operand(enum m9_triangle_operand operand)
 	return 0;
 }
 
+static void m9_triangle_build_linked_record(u8 *record, bool gouraud)
+{
+	/* Pool type 5 copies this backing byte-for-byte.  Linux allocates 0x200
+	 * bytes, but only the first 0x80 are semantic; the apparent host pointers
+	 * in captured upper bytes were uninitialized allocator residue. */
+	memset(record, 0, M9_TRIANGLE_LINKED_BYTES);
+	memcpy(record, m9_triangle_gouraud_linked_prefix,
+	       sizeof(m9_triangle_gouraud_linked_prefix));
+	if (!gouraud) {
+		unsigned int i;
+
+		/* Thirteen independent fresh-process captures prove this bounded
+		 * first-draw schedule for the case-B linked image, including flat
+		 * shading.  Each of the three arena references is duplicated. */
+		for (i = 0; i < 3; i++) {
+			u32 ref = M9_TRIANGLE_LINKED_ARENA_LIMIT -
+				  M9_TRIANGLE_LINKED_FIRST_BACKOFF +
+				  i * M9_TRIANGLE_LINKED_REF_STRIDE;
+
+			put_unaligned_le32(ref, record + 0x24 + i * 0x28);
+			put_unaligned_le32(ref, record + 0x2c + i * 0x28);
+		}
+	}
+
+}
+
 static int m9_triangle_serialize_linked_record(struct m9x_device *mdev,
 				const struct m9_triangle_job_addresses *job)
 {
@@ -694,17 +724,8 @@ static int m9_triangle_serialize_linked_record(struct m9x_device *mdev,
 		&mdev->transport.triangle->resource[M9_TRI_SYSTEM];
 	u8 *record = (u8 *)system->cpu + M9_TRIANGLE_LINKED_OFFSET;
 
-	/* Pool type 5 copies this backing byte-for-byte.  Linux allocates 0x200
-	 * bytes, but only the first 0x80 are semantic; the apparent host pointers
-	 * in captured upper bytes were uninitialized allocator residue. */
-	memset(record, 0, M9_TRIANGLE_LINKED_BYTES);
-	memcpy(record, m9_triangle_gouraud_linked_prefix,
-	       sizeof(m9_triangle_gouraud_linked_prefix));
+	m9_triangle_build_linked_record(record, m9_triangle_gouraud);
 	(void)job;
-	/* Flat shading adds a compiler-produced 0x60-byte linked-native product
-	 * whose six nonzero word encodings are still being recovered. */
-	if (!m9_triangle_gouraud)
-		return -EOPNOTSUPP;
 	dma_wmb();
 	return 0;
 }
@@ -733,17 +754,13 @@ int m9x_submit_triangle_diag(struct m9x_device *mdev, u32 color, u64 *point)
 	m9_triangle_build_primary(&job,
 		mdev->transport.triangle->commands.primary);
 	ret = m9_triangle_serialize_linked_record(mdev, &job);
-	if (ret == -EOPNOTSUPP) {
-		dev_warn_once(&mdev->pdev->dev,
-			"M9 flat triangle prepared but not submitted: linked-native "
-			"word provenance remains gated\n");
+	if (ret)
 		goto out_unlock;
-	}
-	/* The fresh Gouraud pool-5 image is complete.  Execution remains gated
+	/* The bounded first-draw pool-5 image is complete.  Execution remains gated
 	 * until the system-domain source/linked mappings and all m9x421 ranges
 	 * have exact owned inputs; local resources are already in VRAM. */
 	dev_warn_once(&mdev->pdev->dev,
-		"M9 Gouraud triangle fully prepared but not submitted: "
+		"M9 triangle fully prepared but not submitted: "
 		"system-domain mappings and engine windows remain gated\n");
 	ret = -EOPNOTSUPP;
 out_unlock:
@@ -755,6 +772,7 @@ int m9x_triangle_selftest(void)
 {
 	struct m9_triangle_job_addresses job = {};
 	struct m9_triangle_commands commands;
+	u8 linked[M9_TRIANGLE_LINKED_BYTES] = {};
 	u32 target = 0xfffffff0;
 	unsigned int i;
 
@@ -781,6 +799,14 @@ int m9x_triangle_selftest(void)
 	if (m9_triangle_template_fnv1a(m9_triangle_gouraud_linked_prefix,
 		ARRAY_SIZE(m9_triangle_gouraud_linked_prefix)) !=
 		0x80b075ef8b975c45ULL)
+		return -EINVAL;
+	m9_triangle_build_linked_record(linked, false);
+	if (get_unaligned_le32(linked + 0x24) != 0x007ff880 ||
+	    get_unaligned_le32(linked + 0x2c) != 0x007ff880 ||
+	    get_unaligned_le32(linked + 0x4c) != 0x007ff8a8 ||
+	    get_unaligned_le32(linked + 0x54) != 0x007ff8a8 ||
+	    get_unaligned_le32(linked + 0x74) != 0x007ff8d0 ||
+	    get_unaligned_le32(linked + 0x7c) != 0x007ff8d0)
 		return -EINVAL;
 	for (i = 0; i < ARRAY_SIZE(m9_triangle_specs); i++)
 		if (m9_triangle_specs[i].payload_bytes & 3 ||
