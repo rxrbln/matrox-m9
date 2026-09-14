@@ -283,17 +283,36 @@ until the combined value reaches the target.  While pending it writes
 in the saved stack is therefore memory-tag polling; no recovered IRQ bit can yet
 be assigned as DMA completion.
 
-The Windows miniport independently confirms this completion model [DRV].
-`MxMM.sys` function `0x224c8` snapshots its CPU producer pointer and writes the
-requester base/control value to MMIO `0x400`.  Function `0x224f3` clears
-`0x31c`, computes `producer_end - producer_start + gpu_base`, and posts that
-address to `0x404`.  Its synchronous helper at `0x22533` advances a sequence
-target by `0x10`, emits a 12-byte completion record, submits it, and then loops
-until the dword addressed by object `+0x30` reaches the target.  Every iteration
-writes `1` to `0x314`.  It has no timeout.  No part of this Windows wait consumes
-an interrupt-completion counter, so the Linux and Windows implementations agree
-that the requester fence is a GPU memory write-back and `0x314` is a progress
-kick rather than a completion acknowledgement.
+The Windows miniport independently confirms this completion model and supplies
+the exact minimal record [DRV].  `MxMM.sys` function `0x224c8` snapshots its CPU
+producer pointer and writes the requester base/control value to MMIO `0x400`.
+Function `0x224f3` clears `0x31c`, computes
+`producer_end - producer_start + gpu_base`, and posts that address to `0x404`.
+Its synchronous helper at `0x22533` advances a sequence target by `0x10` and
+emits these three dwords:
+
+```
+0x4545e3e6
+0x00000003
+sequence_target | 1
+```
+
+The header packer at `0x22472` derives the header from MMIO addresses
+`{0x1398, 0x138c, 0x1114, 0x1114}` by `(address - 0x1000) >> 2`, giving indexed
+bytes `{e6,e3,45,45}`.  Consequently the record writes `e6 <- 3`, then
+`e3 <- sequence_target | 1`; `45` terminates the packet.  The helper advances
+the producer by 12 bytes, submits through `0x224f3`, and loops until the dword
+addressed by object `+0x30` reaches the target.  Every iteration writes `1` to
+`0x314`.  It has no timeout.
+
+Linux `m9x604` independently emits the same reduced record at
+`0x309f..0x30bd`: header `0x4545e3e6`, payload `3`, payload `target | 1`, and a
+saved target at requester object `+0x1a0` [DRV].  Other branches prepend one or
+two indexed values for requester modes, but converge on the same `e3/e6`
+completion operation.  No part of either vendor wait consumes an interrupt
+completion counter, so both implementations identify this as a GPU memory
+write-back and `0x314` as a progress kick rather than a completion
+acknowledgement.
 
 ### Vendor waits and the recovered bounded quiescence form [DRV]
 
@@ -379,12 +398,13 @@ The statically defensible bring-up order for a future kernel backend is:
    names with the no-op diagnostic before enabling general submission.
 4. Program the address windows and `m9x109` context registers, initialize the
    `0x500..0x524` descriptor, and seed fence memory so zero cannot look complete.
-5. Submit one bounded no-op/completion record.  Permit rendering only after its
-   memory tag advances and all relevant MMIO reads remain connected.
+5. Submit the recovered three-dword completion record.  Permit rendering only
+   after its memory tag advances and all relevant MMIO reads remain connected.
 
-Steps 3--5 remain behind an experimental opt-in until address domains and the
-completion record are captured.  They are an implementation order derived from
-the vendor call graph, not evidence for an undiscovered global reset sequence.
+Steps 3--5 remain behind an experimental opt-in until the address domains and
+fence-address programming are captured and the recovered completion record is
+validated on hardware.  They are an implementation order derived from the
+vendor call graph, not evidence for an undiscovered global reset sequence.
 
 Every kernel wait needs an absolute deadline and checks for device removal,
 signals where sleeping is allowed, and a reset-generation change.  On timeout,

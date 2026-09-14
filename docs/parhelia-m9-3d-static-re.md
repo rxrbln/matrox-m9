@@ -1059,8 +1059,11 @@ test associates it with a hardware event.
 
 This Windows join also removes the earlier completion-IRQ hypothesis.  The
 miniport requester functions at `0x224c8` and `0x224f3` program `0x400` and
-`0x404`; synchronous helper `0x22533` waits on a GPU-written memory dword while
-repeatedly kicking `0x314`.  Fence completion is therefore a memory write-back
+`0x404`; synchronous helper `0x22533` emits the exact three-dword record
+`{0x4545e3e6, 3, target | 1}`, waits on a GPU-written memory dword, and
+repeatedly kicks `0x314`.  Its header means `e6 <- 3`, `e3 <- target | 1`, then
+two `45` terminators.  Linux `m9x604` independently emits the same reduced
+record at `0x309f..0x30bd`.  Fence completion is therefore a memory write-back
 in both saved operating-system stacks.  The high-bank sources may still include
 fault or service notifications, but none is required to retire a requester
 fence and none has a defensible fault name yet [BIN].

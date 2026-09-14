@@ -167,15 +167,19 @@ a safe DRM submitter and a working Mesa driver:
    kernel stacks have no software producer for those five words outside
    restoration, establishing that further names cannot come from static
    register writers.
-3. Hardware-query encoding and context-switch validation. Restore submission
+3. Context-switch validation and optional query corner cases. Restore submission
    ownership and fence lifetime are statically resolved: one TaskMgr current
    context feeds save/restore state into its shared command queue, outgoing
    serialization precedes incoming restore, and submission fences gate backing
    objects and restore-slot reuse. `TaskMgr+0x5bc` has no live producer and is
-   not evidence for an alternating pointer. The `Queries` setting proves only
-   a configurable pool/count; query begin/end/result records remain unknown.
-   Validate the recovered lifecycle with an A/B/A render-and-fence capture and
-   recover queries separately. See `parhelia-m9-context-lifecycle-re.md`.
+   not evidence for an alternating pointer. Occlusion create/begin/end/delete,
+   the six-dword relocated write-back record, slot selection, and the unsigned
+   32-bit begin/end subtraction are now recovered. Alignment, the second
+   returned word, slot reuse across revisions, and multisample interaction still
+   require a capture; queries can remain disabled during initial bring-up.
+   Validate the recovered lifecycle with an A/B/A render-and-fence capture. See
+   `parhelia-m9-context-lifecycle-re.md` and
+   `parhelia-m9-occlusion-query-re.md`.
 4. Uncommon render-surface layouts.  Four color pairs are joined to `b0..b7`,
    ordinary Z to `b8/b9`, and an internal auxiliary depth allocation to
    `ba/bb`.  Selector-8/9 row span, layout, format and flag fields are exact,
@@ -200,8 +204,7 @@ a safe DRM submitter and a working Mesa driver:
    come from program state `+0xbb0/+0xbb4` and are uploaded through selector
    `68` and ports `60..67`.  Depth/stencil is joined through per-batch shadows
    to final indices `a8/a9/aa`.  See
-   `parhelia-m9-blend-raster-lowering.md`.  Query semantics remain less
-   complete.
+   `parhelia-m9-blend-raster-lowering.md`.
 6. Texture-write cache hazards and the physical address permutation within
    class-3 blocks.  Descriptor formats, filter/wrap/LOD fields,
    2D/cube/volume selection, visible class-3 geometry, ordinary volume-mip
