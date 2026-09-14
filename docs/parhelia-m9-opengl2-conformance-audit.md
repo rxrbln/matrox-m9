@@ -12,6 +12,14 @@ boundary used here.  It enumerates compiler operations, built-in semantic
 records, uniform entrypoints, sampler families, Direct3D state handlers, and
 all sixteen logic-op frontend codes.
 
+`parhelia-m9-d3d-caps-audit.md` preserves the independent Windows D3D8/D3D9
+capability builders.  D3D9 can publish VS/PS 3.0, predication, 24 levels of
+dynamic flow control, 32 temporary registers per stage, 512 pixel-shader
+slots, four render targets, vertex texture point sampling, NPOT textures, and
+anisotropy 16.  D3D8 clamps the same backend to VS 1.1 and PS 1.4.  These are
+valuable upper-bound and compiler-reachability evidence, but remain
+declarations until their generated records and visible results are joined.
+
 The evidence states used below are:
 
 * **result**: a controlled draw/readback demonstrated the API result;
@@ -30,8 +38,8 @@ The evidence states used below are:
 | all eight depth comparisons; depth write independently disabled | result/packet | implementation replay |
 | front/back stencil compare, reference, masks, and eight operations | static/packet; ATI separate op path captured; vendor separate-function call is broken | validate core `glStencil*Separate` behavior in the new implementation |
 | culling, winding, smooth/flat shade | packet/result | implementation replay |
-| point, line, triangle, strip, fan, quad, quad-strip, polygon topology | packet/result for the ordinary frontend set | implementation replay and degenerate/batch-boundary tests |
-| polygon point/line/fill, point/line width, smoothing | packet/result for representative sizes | width ranges, line stipple, point attenuation, and exact coverage rules |
+| point, line, triangle, strip, fan, quad, quad-strip, polygon topology | packet/result for the ordinary frontend set; D3D caps allow 1,048,575 primitives and indices | implementation replay and degenerate/batch-boundary tests |
+| polygon point/line/fill, point/line width, smoothing | packet/result for representative sizes; D3D publishes maximum point size 2048 | width ranges, line stipple, point attenuation, and exact coverage rules |
 | polygon offset | enable packet/static; D3D slope and units handlers carry raw floats through `0x104267/0x1042a9` | join OpenGL factor/units to the generated depth equation and visible quantized result |
 | alpha test, blending, separate RGB/alpha, min/max/subtract/reverse subtract | enable/result/static factor and equation maps | join generated native state to visible destination-sensitive results |
 | all logic operations | static frontend: all sixteen GL enums map to exact ICD internal codes; XOR packet/result | join the other fifteen internal codes to final native state/program and visible results |
@@ -64,7 +72,7 @@ The evidence states used below are:
 
 | OpenGL 2.0 area | preserved evidence | remaining work before exposure |
 |---|---|---|
-| client arrays and sixteen generic attributes | static declaration grammar, complete ICD generic-attribute entrypoint vocabulary, and four canonical live layouts | visible conversion matrix, stride/offset, disabled current value, and alias rule |
+| client arrays and sixteen generic attributes | static declaration grammar, complete ICD generic-attribute entrypoint vocabulary, four canonical live layouts, and D3D declarations for normalized short/ushort/ubyte and float16 types | visible conversion matrix, stride/offset, disabled current value, and alias rule |
 | VBO creation/update/map/unmap | advertised; vendor resource/fence lifecycle and captured VBO draw path | orphaning, partial updates, map failure, deletion while referenced, and context sharing |
 | 16/32-bit element buffers and draw ranges | packet/static H06/H07 paths | base/range boundaries, restart absence, mixed index sizes, and zero-count draws |
 | immediate mode and display lists | live fixed-function workloads | state capture/replay and resource lifetime in the Mesa implementation |
@@ -95,7 +103,7 @@ and a visible result joined in the same fixture.
 | fragment depth output | static one-component result semantic `0x13`, constructor/presence path and result-routing vocabulary | shallow/deep sentinel draw against later depth test, with native output route |
 | four fragment color outputs | runtime-sized `gl_FragData[gl_MaxDrawBuffers]` constructor, static target compiler and MRT emitter | distinct four-attachment result capture |
 | vertex position, point size, clip vertex; fragment color/depth built-ins | exact logical semantics `0x0d..0x13`, component counts and stage presence masks; partial fixed-function/point evidence | direct GLSL result fixtures to join every logical semantic to its native packed route |
-| compiler resource limits | live limits: 16 attributes, 4 vertex samplers, 16 fragment samplers, 20 combined, 512 uniform components per stage, 60 varying floats, 4 draw buffers | compile/link boundary tests at limit and limit+1; do not infer hardware maxima from allocation sizes |
+| compiler resource limits | live limits: 16 attributes, 4 vertex samplers, 16 fragment samplers, 20 combined, 512 uniform components per stage, 60 varying floats, 4 draw buffers; D3D9 separately publishes 256 VS vec4 constants, 32 VS/PS temporaries, 512 PS slots, and four MRTs | compile/link boundary tests at limit and limit+1; reconcile frontend limits with actual native allocation and do not infer hardware maxima from declarations alone |
 | program transport and termination | static two-dword slots, inline upload, terminal form; live `0x6c` and full system-resource snapshots | finish record grammar, native storage/entries/counts, endpoint semantics, and relocations |
 
 ## Extension and vendor-only retention
@@ -110,6 +118,9 @@ conformance claim:
 * render-target sRGB conversion, with sampler-side sRGB still unlocated;
 * four-target MRT, hardware occlusion counters, and the incomplete FAA/MSAA
   path;
+* the D3D9 SM3 compiler surface: predication, long dynamic flow, 32 temporary
+  registers per stage, vertex texture fetch, and substantially larger declared
+  shader limits than the Linux GLSL 1.10 frontend;
 * point sprites, wide/smooth/stippled lines, stereo/layer planes, overlays,
   VPE/DXVA, tear-free/page-flip policy, and independent back buffers;
 * conservative serialized context switching, resource fences, hardware copy,
