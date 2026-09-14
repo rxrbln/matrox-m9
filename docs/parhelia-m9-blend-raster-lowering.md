@@ -191,52 +191,81 @@ of relying only on the 16-bit mask [BIN].  If validator
 `+0x1b0` is zero, `+0x1ac >= 6`, and `MULTISAMPLEMASK` is zero, the routine
 clears the 16-bit target mask at `0x138be2..0x138bf2` [BIN].
 
-## Final program cache boundary
+## Compiler-result cache and native upload boundary
 
 The fragment pieces for output conversion, alpha test, blending, and the
 application pixel shader are appended into one per-target compiler program by
 `0x1371e0` [BIN].  Finalizer `0x1397e0` then:
 
 * seeds constants including the alpha reference at validator `+0x908`;
-* finalizes the compiler object into a 256-byte candidate image at validator
+* finalizes the compiler object into a 256-byte candidate record at validator
   `+0x248`;
-* byte-compares that image with the previous image at validator `+0x688`;
+* byte-compares that record with the previous record at validator `+0x688`;
 * on change, increments a serial through validator `+4`, stores it at
   validator `+0x244`, copies all 64 dwords to `+0x688`, and marks nested
   compiled-state dirty bit `0x00100000` at validator `+0x1b8`.
 
-Backend builder `0x13eea4` consumes validator `+0x248` while constructing its
-program object [BIN].  Thus blending, alpha test, and format-dependent color
-masks are proved native fragment-program specializations, and the exact
-cache identity is the final 256-byte image rather than `0x13b570`'s vertex
-fragment number [DER].
+Backend builder `0x13eea4` reads only the first dword of validator `+0x248`.
+It adds that dword to the backend program object's `+0xa0` base and also saves
+the dword at program-object `+0xa4`; adjacent validator dwords are consumed as
+separate fields later in the builder [BIN].  This disproves the former claim
+that all 256 bytes are a native fragment-program image.  Their exact internal
+layout remains opaque, but the block is conclusively a compiler-result cache
+record whose identity changes when the specialized fragment compilation
+changes [BIN][DER].
 
-The static join stops after that backend program object.  The final indexed
-program-upload selectors/ports for this exact 256-byte image have not been
-joined to `0xf6f20`'s upload records.  A differential command capture toggling
-one state at a time remains the shortest way to prove that last association.
+The actual native-program upload is independently joined.  Linker `0x13bf80`
+builds the native instruction buffer represented by program-state byte length
+`+0xbb0` and CPU pointer `+0xbb4`.  Emitter `0xf74d0` streams that buffer in
+32-byte lines through selector index `68` and data indices `60..67` [BIN].
+The 64 sparse records handled by `0xf6f20` are a different state array at
+`+0xc0`, stride `0x1c`: each has a key, four payload dwords, current dirty at
+record `+0x14`, and pending dirty at `+0x18`.  State promotion at `0x13dac0`
+copies pending to current for all 64 records; `0xf6f20` emits current records,
+using even keys for `60..63`, odd keys for `64..67`, and the same selector
+index `68`, then clears current dirty [BIN].  No data flow associates the
+validator's 256-byte cache record with these sparse uploads.
 
-## Cull, fill, shade, and multisample capture boundary
+## Cull, fill, shade, and multisample final paths
 
-The exact facts available before capture are [BIN]:
+Multisample enable has an exact compiler-to-command join.  Validator
+`0x139240` reads `MULTISAMPLEANTIALIAS` from validator `+0x174`, corresponding
+to `p2514+0xf4 bit 0`.  Together with attachment and mode conditions, it
+rebuilds nested compiled-state words `+0x1b0` and `+0x1b4` and marks dirty bits
+`0x000a0000` [BIN].  Lowerer `0x181fa0` copies these words to surface shadow
+`+0x28,+0x2c` at `0x1826a5..0x1826b4` and marks surface dirty `0xc0`.
+Emitter `0xfb920` then replicates `+0x28` to four writes of final index `ad`
+and writes `+0x2c` to final index `af` [BIN].  Enable therefore controls a
+compiled `ad/af` state pair; it is not a single independently copied command
+bit.
 
-* `CULLMODE` is shadowed in `p2528+4[1:0]` and mirrored to flat-cache `+0x5c`.
-* Fill and shade use the coupled fields and dirties listed above.
-* Multisample enable and mask remain at `p2514+0xf4 bit 0` and `+0xe8`.
-  Enable participates in compiler gating at `0x13926a`; a zero mask affects
-  color-output lowering at `0x138be2`.
+`MULTISAMPLEMASK` has a narrower proved effect.  Its validator field `+0x168`
+is read at `0x138be2`: a zero value can suppress the per-target 16-bit color
+output mask described above.  No nonzero mask bits are copied into the
+compiled `ad/af` words or into another fixed command word by this saved path
+[BIN].  Partial sample-mask behavior consequently remains unjoined.
 
-Their final fixed-state command words are not statically identified.  The
-remaining captures should hold all other state constant and vary:
+The raster states stop at compiler and optimization inputs rather than a
+proved fixed index [BIN][DER]:
 
-1. `CULL_NONE`, `CULL_CW`, `CULL_CCW` on an asymmetric triangle;
-2. point, wireframe, and solid fill, then flat and Gouraud shade;
-3. sample enable with masks `0`, `1`, alternating bits, and all ones;
-4. each color channel independently on render-target formats that do and do
-   not take the `0x173ee0` conversion path;
-5. alpha functions with reference values `0`, `127`, and `255`;
-6. source/destination blend factors and operations, including separate alpha.
+* `CULLMODE` remains at `p2528+4[1:0]`.  Clone `0x1119b0` preserves this field
+  and its dirty `0x4`.  The only downstream decoder found for the low two bits,
+  `0x17e8d0`, accepts value 1 (`CULL_NONE`) as one condition of a draw-path
+  eligibility test; it does not distinguish clockwise from counterclockwise
+  or emit a command word.
+* The same clone covers the raster object only through `+0x44` and does not
+  copy the fill/shade mirror at `p2528+0x48`.  Routine `0x133c80` reads fill
+  bits `5:4`, including a test for value 3, while computing a renderer-internal
+  eligibility boolean at `+0x1d18`; it is not a packet emitter.
+* Persistent fill/shade nibbles in `p252c+0x0c` participate in renderer
+  dependency checks at `0x132e10`, which invalidate and rebuild compiled draw
+  entries.  Flat shade also has the independent `p2520+0x18 bit 0` fan-out
+  documented above.  Static data flow has not isolated the resulting native
+  instruction or indexed word for either fill or shade.
 
-Those captures must include both the indexed command stream and the uploaded
-native program image.  Without them, assigning any unknown fixed-state index
-or naming the native comparison and blend opcodes would be guesswork.
+Controlled command captures are still needed to distinguish `CULL_CW` from
+`CULL_CCW`, identify point/wireframe/solid and flat/Gouraud effects after draw
+compilation, and determine whether nonzero partial sample masks survive in a
+different surface or device path.  Such captures should include both the
+indexed command stream and the native program buffer uploaded from
+`+0xbb0/+0xbb4`.

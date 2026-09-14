@@ -373,10 +373,11 @@ masks `0x2`, `0x08000000`, and `0x00040000` respectively.  `SHADEMODE` 9 at
 is `D3DSHADE_FLAT` (1), marking `p2520` dirty `0x80` on a change [BIN].  These
 D3D objects are distinct from the
 lower command-shadow objects emitted by `0xf4f50`, `0xfb920`, and `0xfc0e0`.
-The depth/stencil exception is joined to final indices below.  Blend, alpha
-test, culling, color masks, multisample, and the viewport/scissor words still
-stop at an intermediate compiler object, so their frontend names must not yet
-be attached directly to packet registers [INF].
+Depth/stencil, viewport/scissor, and the compiled multisample pair are joined
+to final indices below.  Blend, alpha test, and format-dependent color masks
+are fragment-compiler inputs.  Cull, fill, and shade still stop at compiler or
+draw-path eligibility state, so their frontend names must not yet be attached
+directly to packet registers [INF].
 
 ### Depth/stencil frontend-to-command join
 
@@ -474,17 +475,32 @@ The remaining frontend-to-final-index boundary is now precise [BIN][DER]:
   `0x182870`.  Emitter `0xfb920` consequently writes them to final indices
   `f5,f6,c4,c5` [BIN].  The exact rectangle construction and packing are
   recorded in `parhelia-m9-render-surfaces-clear.md`.
-* `CULLMODE` remains in the separate `p2528` raster object.  Neither its final
-  word nor the meaning of the `a8` face-order selection should be inferred
-  from the other.
+* `CULLMODE` remains in the separate `p2528` raster object.  Raster clone
+  `0x1119b0` preserves `+4[1:0]` and dirty `0x4`; the only downstream decoder
+  found, `0x17e8d0`, tests value 1 (`CULL_NONE`) as a draw-path eligibility
+  condition.  It does not distinguish clockwise from counterclockwise or emit
+  a command word.  The meaning of the `a8` face-order selection must not be
+  inferred from this separate state [BIN].
+* Multisample compiler `0x139240` reads `MULTISAMPLEANTIALIAS` from validator
+  `+0x174` (`p2514+0xf4 bit 0`) and rebuilds nested words `+0x1b0,+0x1b4`.
+  `0x181fa0` copies them to surface `+0x28,+0x2c`, and `0xfb920` emits them as
+  four replicated writes to final index `ad` followed by index `af` [BIN].
+  `MULTISAMPLEMASK` has only a zero-value join at `0x138be2`, where it can
+  suppress a target color-output mask; no nonzero mask bits reach a fixed
+  index in this saved path.
 * `0x101550` canonicalizes blend, alpha-test, color-mask, and multisample
   frontend fields into a flat D3D cache, but it is not a command emitter.
   Blend is lowered per render target by compiler routine `0x170ff0`, alpha
   test by `0x170800`, and color masks by `0x1389a0`/`0x173ee0`.  Finalizer
-  `0x1397e0` produces and caches a 256-byte native fragment-program image.
+  `0x1397e0` produces and caches a 256-byte compiler-result record.  Backend
+  builder `0x13eea4` reads only its first dword as an offset from the program
+  object's `+0xa0` base, so the complete record is not an uploaded native
+  image.  Linker `0x13bf80` instead produces the native buffer at program state
+  `+0xbb0/+0xbb4`, which `0xf74d0` uploads through selector `68` and ports
+  `60..67`.
   `0x13b570` belongs to fixed-function vertex/declaration conversion and is
-  unrelated to the blend dirty bit.  The exact maps and remaining upload
-  boundary are in `parhelia-m9-blend-raster-lowering.md` [BIN][DER].
+  unrelated to the blend dirty bit.  The exact maps and remaining raster
+  boundaries are in `parhelia-m9-blend-raster-lowering.md` [BIN][DER].
 
 ### Render and depth surface shadow layout
 
@@ -590,9 +606,13 @@ ports = (key & 1) ? indices_64_through_67 : indices_60_through_63;
 It emits the selector through index `68` when it changes, sends the four
 payload words through the selected half of the eight data ports, then clears
 record `+0x14`.  This is an exact sparse vector/constant upload mechanism
-[BIN][DER].  Stage and register-class names still require a controlled shader
-diff, but the address calculation, data width, capacity, and dirty tracking can
-already be implemented.
+[BIN][DER].  Record `+0x18` is pending dirty: state promotion at `0x13dac0`
+copies it to current dirty `+0x14` for all 64 records.  These records have no
+data-flow association with the 256-byte compiler-result cache at validator
+`+0x248/+0x688`; native program bytes use the separate `+0xbb0/+0xbb4` path
+described below [BIN].  Stage and register-class names still require a
+controlled shader diff, but the address calculation, data width, capacity, and
+dirty tracking can already be implemented.
 
 ### Fixed index-44 address-domain transitions
 

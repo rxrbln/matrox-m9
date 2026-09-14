@@ -180,13 +180,17 @@ a safe DRM submitter and a working Mesa driver:
    blocked layout classes; their descriptor overrides alone do not define that
    permutation.  The uncommon nonzero-origin `c4/c5` transform also remains
    unnamed.  Draw launch is statically joined to H03/H06/H07 records.
-5. The final M9-index join for culling, polygon/shade mode, and multisampling,
-   plus the final upload selector/port association for generated fragment
-   programs.  Blend, alpha test, and format-dependent colour masks are now
-   joined through their compiler routines to the final 256-byte native-program
-   cache; depth/stencil is joined through per-batch shadows to final indices
-   `a8/a9/aa`.  See `parhelia-m9-blend-raster-lowering.md`.  Query semantics
-   remain less complete.
+5. The final M9-index join for culling and polygon/shade mode.  Multisample
+   enable is now joined through compiled surface words to final indices
+   `ad/af`; only the zero-mask color-output effect is proved for
+   `MULTISAMPLEMASK`.  Blend, alpha test, and format-dependent colour masks
+   feed fragment compilation.  The 256-byte block at validator `+0x248` is a
+   compiler-result cache record, not the native upload image.  Native bytes
+   come from program state `+0xbb0/+0xbb4` and are uploaded through selector
+   `68` and ports `60..67`.  Depth/stencil is joined through per-batch shadows
+   to final indices `a8/a9/aa`.  See
+   `parhelia-m9-blend-raster-lowering.md`.  Query semantics remain less
+   complete.
 6. Texture cache flushes and the physical address permutations within class-3
    blocks and packed mip tails.  Descriptor formats, filter/wrap/LOD fields,
    2D/cube/volume selection, visible class-3 geometry, and ordinary volume-mip
