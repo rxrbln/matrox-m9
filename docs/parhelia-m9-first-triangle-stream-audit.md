@@ -202,10 +202,13 @@ cannot submit the saved triangle.
 
 The saved command stream alone is insufficient for a from-scratch replay:
 
-1. The canonical vertex source at captured `40f52000|1` was not snapshotted.
-   The preserved allocation result now pins its arena to `0x192700` bytes.
-   Index `10=0x14` is the per-element span and H03 `[0,4)` therefore reads the
-   exact interval `[+0,+0x50)`, but those 80 payload bytes remain absent.
+1. The canonical vertex source at captured `40f52000|1` was not snapshotted by
+   the M9148 wrapper, but its exact bounded producer is closed.  M9148 emits
+   the same `0x14` span and float2-position/RGB-float declaration as two
+   hash-pinned M0528 CPU-ring captures that expose `{x,y,r,g,b}`.  The default
+   green triangle has three exact records; duplicating record 2 into the
+   alignment/prefetch record gives a fully initialized 80-byte image with
+   SHA-256 `58bd76a39629399e0da5241acea797223c6b68c8eaf83dec7161a6e095845f3a`.
 2. The four transient allocation contents were not captured between passes.
    Their address routing is exact and four bases repeat with three exact
    `0x16800` differences.  Four independent `0x16800` writable diagnostic BOs
@@ -216,26 +219,38 @@ The saved command stream alone is insufficient for a from-scratch replay:
    `m9x-linux-glsl-ab-20260914/fs/resource-15.bin`.  An aligned-dword scan of
    both adjacent 0x580-byte A/B slots across sequences 15, 19, and 23 finds no
    pointer into the captured local aperture or system allocation.  Their
-   embedded GPU-BO relocation map is empty; cold-context reuse and non-BO
-   compiler-internal references remain unproved.
-4. `c2` and raster `be` are definite resource addresses.  C2 is now tied to a
-   captured 0x1080-byte allocation and static paired usages `0x13/0x14`; BE is
-   statically tied to the bound-surface auxiliary pair with usage 8.  Initial
-   C2 bytes, BE bytes/extent, and their narrow access directions remain open.
+   embedded GPU-BO relocation map is empty.  This is not a cold-replay permit:
+   the fixed-function slot selected at offset `0x1600` embeds nine 64-bit
+   `0x2b94...` process addresses.  Raw fixed-slot replay is therefore rejected;
+   a new context needs a newly serialized record or a validated inline-chain
+   replacement.
+4. `c2` and raster `be` are definite resource addresses.  C2 is tied to a
+   captured 0x1080-byte allocation and paired usages `0x13/0x14`; the two
+   submits between allocation and draw are fence-only, so there is no GPU
+   initializer.  Zeroing it and retaining it read/write for the whole job is a
+   deterministic guarded probe, not proof of the missing initial bytes.  BE is
+   tied to the bound-surface auxiliary pair with usage 8.  An
+   M0528 aperture trace proves at least `0x3f00` zero bytes following the same
+   BE base encoding, but exact M9148 extent and bytes remain open.
 5. Raster `ab/ac` are ordinary packed surface state, not addresses.  Windows
-   static code derives their four halfwords from a per-surface table and a
-   device remap table.  The clean-room derivation for the chosen surface layout
-   is still missing; sequence-12 values must not be copied as generic constants.
+   static code supplies the exact descriptor-to-halfword formula.  It also
+   leaves inactive local halfwords uninitialized, explaining why all twenty
+   single-RT topology captures have slot 0 equal to `ffff` while the upper 48
+   bits vary.  Initialize inactive slots to `ffff`; the bounded one-RT value is
+   deterministically `ab=ac=ffffffff`.  Arbitrary MRT requires its active
+   per-surface table entries.
 6. A fresh context requires the invariant 80-slot `8f/90..9f` image captured in
    setup sequence 0.  Its `0x280` payload, selector/port grammar, and equality
    across setup sequences 0, 8, 10, and 14 are pinned.  Its smallest safe cold
    surrounding envelope has not been hardware isolated, so the first
    diagnostic should retain the full sequence-0 setup envelope.
 
-These items are the remaining evidence needed for an exact low-level triangle
-fixture.  The existing CPU `struct m9_vertex` repack is an API-side staging
-layout; no capture proves that its 40-byte records are the bytes consumed by
-the preprocessing source.
+These items leave two resource gates for an exact cold low-level triangle:
+M9148 BE allocation/initialization beyond the cross-family guarded lower bound,
+and construction of a fresh linked record or validation of the inline fixed
+chain.  The bounded canonical source bytes, one-RT AB/AC policy, and guarded
+C2 zeroing policy are now specified; exact C2 bytes remain conditional on that
+probe succeeding.
 
 ## Safest first hardware sequence
 
