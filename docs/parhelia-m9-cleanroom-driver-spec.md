@@ -268,10 +268,12 @@ validated 32-bit formats until those implementations and vectors exist.
 
 ## 5. Requester, command transport, and UAPI
 
-### 5.1 Kernel-owned requester state
+### 5.1 Deferred auxiliary requester state
 
-Allocate a dedicated 4 KiB DMA32 requester object and separate coherent command
-pages.  The recovered first-use order is:
+The live vendor GL path uses the separate `0x400/0x404` command interval and
+leaves `0x500..0x524` dormant.  The first driver can defer this auxiliary
+requester.  When a demonstrated feature needs it, allocate a dedicated 4 KiB
+DMA32 object.  Its recovered first-use order is:
 
 1. compute the tagged command base and write `0x500`;
 2. write zero to `0x508`;
@@ -297,17 +299,18 @@ hardware-owned opaque state.  Quiescence requires `0x508 bit 0`, two identical
 successive samples of both `0x500` and `0x50c`, and a final confirmation of
 `0x508 bit 0`.  Set `0x508 bit 1` only in the proved park/save path.
 
-**Validation blocker:** force one requester wrap while tracing
-`0x500..0x524`.  This is needed to validate the chosen address class and save/
+**Auxiliary-path blocker:** force one requester wrap while tracing
+`0x500..0x524`.  This is needed to validate that path's address class and save/
 restore behavior, although software does not need semantic names for the five
-opaque words.  Do not invent producer/consumer meanings for them.
+opaque words.  It does not block primary rendering.  Do not invent producer/
+consumer meanings for them.
 
 ### 5.2 Engine arm and submit
 
 The closed one-time context writes include:
 
 ```text
-400  tagged requester base/control
+400  tagged primary command start
 109c 00080000
 448  00000000
 1068/106c  two writeback-fence addresses
@@ -324,6 +327,12 @@ closed.  Submit a finished command endpoint by writing its translated address
 to `0x404`.  `0x404` is an endpoint doorbell, not a ring-size register.  Kick
 progress with `0x314=1` when required.  `0x31c` states 5, 2, and 0 belong only
 to the proved park/resume/clear lifecycle; state 4 stays disabled.
+
+Read-only observation of 32,782 live vendor GL ioctls closes the initial
+address domain: `0x400` points into DMA32 System RAM and always carries low tag
+2, while the exclusive `0x404` endpoint is untagged and dword aligned.  The
+complete auxiliary descriptor stayed idle.  See
+`parhelia-m9-requester-drm-contract.md`.
 
 The latest working vendor capture closes the private `ExecuteDma` envelope:
 
@@ -503,6 +512,12 @@ defensible initial recovery is:
    no-op fence;
 4. error every old-generation fence;
 5. if any step fails, keep rendering wedged while leaving scanout running.
+
+This requester-local sequence applies only if the auxiliary `0x500` path was
+active.  It must not be used to claim recovery from a primary `0x400/0x404`
+render timeout: live GL runs while `0x508` already reports the auxiliary path
+quiescent.  For a primary timeout, allow one bounded `0x314` progress kick and
+then fail closed.
 
 Never free memory reachable by a non-quiescent requester.  On terminal device
 teardown, first stop host DMA by clearing PCI bus mastering, then quarantine
@@ -975,7 +990,7 @@ but its format, pack alignment, and rendered extent must remain correct.
 | gap | consequence | smallest closing experiment |
 | --- | --- | --- |
 | direct SPI/PInS fallback when PCI ROM mapping is absent or invalid | some cold boards may lack authoritative output data | trace one vendor direct PInS read from reset and reduce its MMIO/I/O sequence |
-| requester class on open allocations and hardware-owned rollover fields | general submit cannot be enabled safely | no-op fence plus one forced wrap with all eight descriptor words and allocation metadata |
+| auxiliary requester address classes and hardware-owned rollover fields | optional auxiliary streaming cannot be enabled safely | force one auxiliary wrap with all eight descriptor words and allocation metadata |
 | ten relocation/control roles in the vendor full-context template | the template cannot be replayed safely; context switches must re-emit complete known state | vary one bound resource/control at a time and diff the 0xf8-byte template plus restore records |
 | active `0x8f/0x90..9f` upload-mode selector and bind state | captured native bytes cannot yet become a general upload implementation | same-context shader A/B differential around upload and first draw |
 | final vertex/fragment descriptor to entry/resource ownership | arbitrary linked programs cannot execute safely | fixed VS with two FS programs, then fixed FS with two VS programs |
@@ -989,8 +1004,8 @@ but its format, pack alignment, and rendered extent must remain correct.
 | 3D/global reset and fault IRQ | no transparent recovery from a real engine hang | controlled address fault and bad-opcode tests, one source at a time, with complete pre-ack snapshots |
 | hardware cursor layout and M9 gamma LUT | optional KMS features remain software backed | coordinate-coded cursor and LUT ramp captures |
 
-Requester address class, the two-pass vertex layouts, and program upload/entry
-ownership are the immediate first-render gates.  Full native semantics and
+The two-pass vertex layouts and program upload/entry ownership are the
+immediate first-render gates.  Full native semantics and
 sampler metadata are the main gates for general OpenGL programs.  The context
 template, direct SPI fallback, tiled format expansion, queries, reset, cursor,
 and gamma can use the conservative paths described above while their rows stay
