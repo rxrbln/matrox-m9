@@ -311,3 +311,17 @@ hashes and the critical stage/opcode/entry joins above.  Run
 alternate-wrapper ownership census, program-substate construction, dirty
 promotion, compiler/cache vtables, object allocation/copy ownership, Windows
 import boundary, and sole final dispatch chain.
+
+## September 2026 live closure
+
+The requested differential is now captured in
+`captures/m9x-linux-glsl-ab-20260914` and analyzed in
+`parhelia-m9-glsl-bind-capture.md`.  Both the vertex-only and fragment-only
+A/B/A switches keep `69=0x11e42000`, `6a=0x25010000`, and `6b=0x1030`, while
+`6c` selects `0x40c3a301`, `0x40c3a881`, then the original
+`0x40c3a301`.  Allocation capture joins the high address to a 0x21000-byte
+system resource at `0x40c3a000`; masking the retained low tag selects record
+offsets `0x300` and `0x880`.  This closes the final live ownership edge as an
+atomic linked-pair state record.  It does not expose the native bytes or the
+two internal stage entries within that record; those remain resource-format
+and compiler-coverage work rather than final-dispatch ownership work.

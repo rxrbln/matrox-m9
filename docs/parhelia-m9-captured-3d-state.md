@@ -130,7 +130,7 @@ The settled gltri raster pass emits this directly actionable state:
 | `69` | `0x11e42000` | relocated program resource (**CAP/BIN**) |
 | `6a` | `0x25010000` | program entry pair/control (**CAP/BIN**) |
 | `68,6b` | `0, 0x00001030` | program controls; exact subfields open (**CAP**) |
-| `6c` | `0x40c3a301` | relocated program-related resource/control; exact role open (**CAP**) |
+| `6c` | `0x40c3a301` | relocated selected linked-program-state record; A/B/A ownership closed by the GLSL capture (**CAP/BIN/DER**) |
 | `c2,c3` | `0x11f91000, 0` | internal resource and control; exact role open (**CAP**) |
 
 Descriptor bits `31:25` are the hardware format and bits `15:0` are the row
@@ -172,7 +172,11 @@ image is safely described as a native-looking indexed-store program image.
 It does not contain the separately recovered terminal slot
 `fffc7e1d a2803f0f`.  It must therefore not be identified as the application's
 vertex shader, fragment shader, or as the `68/60..67` inline-program class
-without an isolated program differential.  **CAP/DER**
+without an isolated program differential.  The later controlled GLSL A/B/A
+capture supplies that differential: neither a vertex-only nor fragment-only
+switch uploads `90..9f`, while both switch the linked record selected through
+`6c`.  The 80-slot image is therefore context/invariant state rather than the
+selected application GLSL program.  **CAP/DER**
 
 Static disassembly of the saved Linux Xorg 1.13 DDX
 `m9xdriver-x86_64-1.4.3-80847-20140908-build_98/xserver/1_13_0/m9x_drv.so`
@@ -188,11 +192,8 @@ stream shows adjacent records merged into packets such as `8f,90,91`.
 **BIN/CAP**
 
 Keep this store separate from program binding through `69/6a/6b/6c` and from
-the statically recovered inline `68/60..67` uploader.  The active mode
-selector, stage ownership, and relation between the 80-slot image and the
-relocated program resource remain general shader-driver blockers.  Capturing
-two shaders that differ by one instruction in only one stage is the shortest
-way to close them.
+the statically recovered inline `68/60..67` uploader.  The controlled result
+and allocation join are documented in `parhelia-m9-glsl-bind-capture.md`.
 
 ## Render-target-to-texture rectangle pass
 
@@ -264,8 +265,9 @@ A general Mesa driver still needs controlled differentials for:
 1. the exact format, stride, and component interpretation of generated input
    resources `00..03`, plus the general vertex declaration lowering;
 2. index `22` topology subfields and the correlated `d7` bit;
-3. selection and stage ownership of `8f/90..9f`, `68/60..67`, and the
-   `69/6a/6b/6c` external program bind;
+3. native instruction storage referenced by the now-identified `6c` linked
+   record, its internal vertex/fragment entry fields, and the mode-2 constant
+   backing layout;
 4. sampler bitfields in `7c/7d/7e/7f/80/81/87` and controlled mip transitions;
 5. blend, alpha-test, stencil, cull/fill, and color-mask live differentials,
    even where static packers already exist.

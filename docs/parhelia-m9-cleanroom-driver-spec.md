@@ -812,10 +812,12 @@ is runtime truth for the tested M9148 vendor configuration.  Keep the
 `0x68/0x60..67` and `0x8f/0x90..9f` paths distinct until their selection and
 roles are proved.
 
-**Blocker:** the selector for those two upload modes and the complete bind/
-entry state around the captured `0x8f` upload still need an isolated program
-differential.  Until then, a diagnostic can replay the captured fixed program,
-but a general Mesa compiler cannot choose the mode safely.
+The isolated GLSL A/B/A differential in
+`parhelia-m9-glsl-bind-capture.md` proves that neither a vertex-only nor
+fragment-only program switch uploads `90..9f`; both atomically select a linked
+state record through relocated index `0x6c`.  The `0x8f` image is therefore
+context/invariant state in this configuration.  Selection between the external
+linked-record path and the separate `0x68/0x60..67` inline path remains open.
 
 ### 10.3 Vertex/fragment stage ownership and constants
 
@@ -835,13 +837,13 @@ The external program emitter tracks a relocated resource, then emits `0x69`,
 `0x6a`, and `0x6d` in that order.  The inline fixed-chain builder records two
 entry starts and can place both in `0x6a` or split the second to `0x6d`.
 
-**Primary programmable-shader blocker:** no static ownership edge joins the
-compiled vertex and fragment descriptors/current handles to the final program
-resource identity and two entry controls.  Capture one fixed vertex shader
-with two one-instruction fragment shaders, then invert the experiment.  Record
-the native bytes, program relocation, `0x69/6a/6d` or captured alternate bind
-indices, and the first draw.  This assigns stage entries and program ownership
-without relying on `Ps`/`Ce` configuration names.
+The controlled vertex/fragment A/B/A capture closes the final external-path
+ownership edge: `69/6a/6b` remain invariant and `6c` selects a retained,
+0x80-aligned linked-pair record in a captured 0x21000-byte system resource.
+Changing either stage selects a new whole-pair record; restoring A restores its
+exact previous `6c` value.  The native instruction storage referenced by that
+record and its two internal stage entries remain resource-format blockers for
+new arbitrary shaders.
 
 **Constant blocker for bus-master programs:** the conditional mode-2 constant
 bank input is not joined to the final program resource allocation or its byte
