@@ -157,9 +157,20 @@ The following tests are required in order:
 4. Add scheduler entities and syncobj timeline output, then pass an A/B/A
    multi-context state-isolation test before concurrent clients are enabled.
 
-The initial KMS gate still requires hardware review before loading.  Runtime
-tests must first verify the fixed connector enumeration without
-``m9_kms_scanout``, then IRQ/vblank counts, direct dumb-buffer scanout and warm
-state restoration.  Arbitrary timings, EDID/DDC, cold PLL setup, output route
-changes, external DP retraining, cursor planes and additional CRTCs remain
-disabled until their M9-specific sequences are independently proven.
+The fixed warm KMS gate has passed its first M9148 hardware review.  With the
+module staged only below ``/tmp`` and loaded with
+``m9_enable=1 m9_kms=1 m9_kms_scanout=1``, ``modetest -M m9x -c`` enumerated
+one connected ``DP-1`` and exactly one preferred 1024x768 mode at 60.00 Hz.
+The connector, CRTC and primary XR24 linear plane were usable by an explicit
+DRM client.  A direct XR24 modeset completed without a kernel warning, and the
+same modeset with the vblank test produced five interrupts on the M9 IRQ.
+After the clients closed, ``rmmod m9x_drm`` succeeded and restored
+``CTRL=33046001``, ``START=0``, ``PITCH=cc210400``,
+``HBLANK=053f03ff``, ``VBLANK=032502ff`` and ``DVO0=0000a800`` exactly; the
+PCI function was left unbound with bus mastering disabled.  The corrected
+client-owned build also completed a subsequent no-op fence at point ``0x10``
+while KMS and the vblank IRQ handler were installed.
+
+Arbitrary timings, EDID/DDC, cold PLL setup, output route changes, external DP
+retraining, cursor planes and additional CRTCs remain disabled until their
+M9-specific sequences are independently proven.
