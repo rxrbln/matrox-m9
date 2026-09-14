@@ -150,18 +150,110 @@ callback with usage `8` (`0x4b08de..0x4b0939`).  This proves raster `be` is a
 relocated auxiliary member of the bound surface state.  Preprocess `be=3` is
 the literal alternate form.
 
-The saved allocation records are client allocations and do not contain the
-server-owned raster `be=112c1000` object, so its exact allocation extent remains
-absent.  The M0528 MMIO trace with SHA-256
+The Windows producer closes the resource's allocation boundary.  Raw
+configuration constructor `0xb94e8..0xb9528` creates the `TempBufferSize`
+entry at object `+0x68` with default `0x400`.  The derived configuration
+wrapper at `0x60613..0x60638` carries that same entry into device slot
+`+0x230`.  Snapshot constructor `0xbe425..0xbe44c` reads it and computes:
+
+```text
+snapshot +0x88 = TempBufferSize << 12       = 0x400000
+snapshot +0x8c = (snapshot[+0x88] + 3) / 4 = 0x100000
+```
+
+The shifts establish that the option counts 4-KiB units.  The independent
+Linux derived-configuration constructor `m9x5653` stores the same two values
+at `+0x84=0x400000` and `+0x88=0x100000`
+(`0x297b68..0x297b7b`).  Its raw option constructor at
+`0x32f828..0x32f87f` also names `TempBufferSize` and supplies default `0x400`.
+
+The Linux producer provides a direct same-binary join to the emitter.  Cold
+context setup `m9x17919` passes configuration `+0x84` to vtable method `+0x70`
+and keeps that 4-MiB resource at setup `+0xd0`.  It then passes configuration
+`+0x88` to vtable method `+0x78`, keeps the returned 1-MiB resource at setup
+`+0xd8`, and calls `m9x3202` (`0x3b6f90`) to install it in current state
+`+0x8a` (`0x461c2b..0x461c98`).  Lowerer `m9x11630` reads current state
+`+0x8a`, calls resource method `+0x40` with selector `0x0d`, copies the result
+to surface shadow `+0xd0/+0xd8`, and sets the byte representation of dirty bit
+`0x800` (`0x3f02c7..0x3f034f`).  Emitter `m9x12791` then consumes this exact
+shadow pair with relocation usage `8`.
+
+The Windows context object installs vtable `0x1f3850`; entries `+0x34` and
+`+0x38` are factories `0x75eb0` and `0x75ff0`.  Cold setup first passes
+snapshot `+0x88` to `+0x34` and retains the resulting 4-MiB resource at setup
+`+0x68`.  It then passes snapshot `+0x8c` to `+0x38`, retains the result at
+setup `+0x6c`, and calls setter `0x109090` to install it in current state
+`+0x6c` (`0x11c0fa..0x11c14c`).  These are separate resources; the second one
+is BE.
+
+Factory `0x75ff0` transforms its byte request as follows:
+
+```text
+elements = ceil(request / 4)
+width    = 0x400 32-bit elements
+height   = ceil(elements / 0x400)
+depth    = 1
+levels   = 1
+internal format = 0x0a
+```
+
+For the default request, `elements=0x40000` and `height=0x100`, so the logical
+backing is exactly `0x400 * 0x100 * 4 = 0x100000` bytes.  The factory calls the
+common allocator at `0xa3870` and returns its `+0x30` resource interface.  The
+interface vtable is installed at `0xa334a`; its method `+0x1c` reaches the
+resource selector at `0xa95d0 -> 0xa6740`.  Public selector `0x0d` selects
+internal view `0x0f`.  This is the same method and selector used by the BE
+lowerer at `0x1828c5..0x182936`, which copies the returned address/backing pair
+to surface shadow `+0x8c/+0x90` while preserving the high tag bits, then sets
+dirty bit `0x800`.  That joins the option, allocation, current-state slot,
+surface shadow, Linux relocation usage, and final `be` command value.
+
+The captured M9148 address boundary corroborates the constructor exactly:
+
+```text
+raster BE base                 0x112c1000
+first preprocessing transient 0x113c1000
+difference                     0x00100000 bytes
+```
+
+The captured GPU-address fields therefore reserve exactly the requested 1 MiB
+before the next internal resource.  All 54 allocation results in the preserved
+raw archive are later client allocations; none has base `0x112c1000`.  This is
+why the wrapper did not save a BE allocation result or content snapshot: BE
+was already owned by the context.
+
+The lifetime is also closed.  Setup-to-current-state clone
+`0x11bd84..0x11bda1` reinstalls both temporary resources, including setup
+`+0x6c` through setter `0x109090`.  Context cleanup
+`0x11c3ee..0x11c41e` decrements the BE reference, destroys it on the final
+reference, and clears setup `+0x6c`; outer context destruction reaches this
+cleanup from `0x11bbe0`.  Linux independently performs the same reference
+decrement/destruction and clears setup `+0xd8` at
+`0x4615ef..0x461623`.  BE is consequently one private resource per context,
+not a per-draw transient.
+
+There is no explicit CPU payload write or GPU fill between the `0xa3870`
+allocation call and the initial BE bind in the traced cold-setup path.  The
+saved wrapper has no image of the context-private allocation, so it cannot
+distinguish fresh zeroed storage from an allocator zeroing policy.  The related
+M0528 MMIO trace with SHA-256
 `8fa1b88deda8cedd8a747c17669e8ad6ace7c408d754a0687e4165321b9aabd6`
-adds one useful cross-family bound.  A
-single `rep stosq` run zeros every aperture qword from `d1120000` through
-`d112fff8`.  Local command addresses use 16-byte units, placing
-`be=112c1000` at aperture byte `d112c100`; at least `0x3f00` physical bytes at
-and after BE are therefore zero initialized in that vendor stack.  This does
-not prove an M9148 allocation size.  A bounded M9148 diagnostic may allocate a
-separate zeroed read/write BO of at least `0x3f00` bytes and guard its end; any
-guard access means the saved evidence did not establish a sufficient extent.
+provides independent initialization corroboration: one `rep stosq` run zeros
+every aperture qword from `d1120000` through `d112fff8`.  M0528 local command
+addresses use 16-byte units, placing its `be=112c1000` at aperture byte
+`d112c100`; at least `0x3f00` bytes from that related-family BE base are
+observed zero.
+
+The clean-room M9148 rule is now precise: allocate a distinct, page-aligned
+`0x100000`-byte read/write BO when creating the 3D context; zero the complete
+BO once before its first possible submission; bind its selector-13 address
+through surface-shadow BE and relocation usage `8`; never alias it with the
+four preprocessing transients; and release it only after all jobs from that
+context have retired.  Full zeroing is a deterministic clean-room and
+information-disclosure policy.  It does not claim knowledge of missing vendor
+bytes, and no opaque initialization image is required.  The historical M9148
+allocator's exact initial contents remain unrecorded, but they are no longer an
+implementation dependency.
 
 ## AB, AC, and AE are packed surface state
 
@@ -265,21 +357,25 @@ Closed from saved evidence:
 * canonical vertex arena extent, exact source windows, and an exact 80-byte
   flat-green source/repacker contract;
 * C2 backing extent, paired static usages, and absence of a GPU initializer;
-* BE ownership plus a cross-family zeroed lower bound of `0x3f00` bytes;
+* BE's exact 1-MiB M9148 extent, configuration/factory derivation, selector-13
+  bind, context lifetime, and deterministic full-zero clean-room policy;
 * exact AB/AC descriptor formula and deterministic one-RT initialization;
 * exact transient address lattice, join, and conservative guarded probe size;
 * rejection of raw fixed linked-record replay due to embedded host addresses.
 
 Still required before the first validated triangle executes:
 
-* exact M9148 BE allocation extent; the diagnostic must retain its end guard;
-* direct proof of M9148 BE initialization if the M0528-derived zero policy is
-  insufficient;
 * exact initial C2 bytes if deterministic zero initialization does not work;
 * between-pass transient content semantics, if the conservative `0x16800`
   guard test fails;
 * a current-context linked-pair serializer, or validation that the inline
   fixed-chain path selects the required two-pass program.
+
+For archival completeness, the vendor M9148 allocator's pre-use BE bytes were
+not captured.  Static construction shows no explicit payload initializer, and
+the related M0528 stack zeros the containing range.  Since the clean-room rule
+zeros the entire exact extent and relies on no unknown payload, this missing
+historical image is not a bring-up gap.
 
 <!-- Copyright 2026 Rene Rebe <rene@exactco.de> -->
 <!-- SPDX-License-Identifier: GPL-2.0 -->
