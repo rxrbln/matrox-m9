@@ -169,6 +169,15 @@ typed relocation identity and lifetime join.  Resolver/serializer recovery in
 replaced by an ordered resolved descriptor before packing.  The serializer
 does no PC-relative arithmetic on the low serial [BIN].
 
+The physical replacement producer is now joined in
+`parhelia-m9-linked-pair-target-placement-re.md`. Compiler pass `0x1d1d40`
+pairs every source descriptor with the output of converter `0x1df900`, then
+publishes the pair as dwords 0 and 1 of the 0x1c-byte mapping entry [BIN]. The
+`94`, `b4` and `c4` families allocate finite selectors through descending
+`+0x20`, four-slot `+4` and 23-slot `+8` namespaces respectively. Direct
+serializer `0x1dc8b0` inserts their resolved low selector bits into
+`W1[20:15]`, `W0[5:0]` and `W1[13:9]` according to the object gates [BIN].
+
 ## Relationship to program start, stop, and resource lifetime
 
 The new control templates close native operation bits for selected branches;
@@ -194,17 +203,14 @@ Accordingly, the known fixed slots are enough to reproduce these compiler
 fragments, but not enough to submit an arbitrary branch graph through selector
 `6c`.  The unresolved implementation fields are [DER]:
 
-1. the semantic rule that assigns graph targets for forward branches,
-   backedges, CALL, BREAK and reconvergence before the already recovered
-   ordered-descriptor substitution;
-2. the final native placement of those resolved targets in a newly constructed
-   pair;
-3. the opaque internal byte serializer that joins completed native images and
+1. the graph construction and scheduling rules that choose source anchors and
+   typed descriptor families for arbitrary forward branches, backedges, CALL,
+   BREAK, nesting and reconvergence beyond the pinned REP/LOOP recipes;
+2. the opaque internal byte serializer that joins completed native images and
    resources inside a new pair.  Private 0x3158-byte allocation, keyed cache
    reuse, >1023-entry reclamation and COW publication are now exact;
-4. reset behavior for long-running programmable workloads;
-5. an independent Linux-binary join for these Windows D3D control helpers;
-6. endpoint-only versus full-operation hardware stop semantics.  Result-only,
+3. reset and wrap behavior for long-running physical-selector workloads;
+4. endpoint-only versus full-operation hardware stop semantics.  Result-only,
    kill-only and combined finalizer tails are exact and have no MRT-index
    input.
 

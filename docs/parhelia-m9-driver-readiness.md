@@ -33,7 +33,10 @@ The following pieces no longer depend on another vendor capture:
   generated-stream producer/consumer joins;
 * depth test with writes independently enabled or disabled, one- and two-sided
   stencil packing, alpha test, blending, color masks, cull/fill/shade compiler
-  inputs, and the fixed-state differential corpus;
+  inputs, and the fixed-state differential corpus. `HZFlags` statically closes
+  the optional `ba/bb` plane as format-`0x0b` hierarchical-Z metadata at
+  `ceil(width/8) x ceil(height/4)`; ordinary direct hardware depth does not
+  require it, and it stays disabled until metadata maintenance is validated;
 * RGB565, RGBA4, RGB5A1, RGB8, RGBA8, L8, A8, LA8, I8, D16 and D32 textures,
   odd 1-D/2-D dimensions, full mip chains and packed tails, sampler state,
   four live sampler selectors, subimage/copy coherency, and the class-1
@@ -119,8 +122,8 @@ native encoding or an implemented scheduling limit.
 | shadow comparison | exact sampler enable/eight compare codes plus live raw 0.25/0.75 and LEQUAL fail/pass results | **captured** for the tested D24/nearest route | filtering, result-channel variants, and FBO producer dependency |
 | vertex texture fetch | four-sampler compiler limit plus live vertex `texture2DLod` result/resource | **captured** | native instruction and vertex sampler join |
 | SLT/SGE and comparisons | CMP/SETP frontend plus live ARBfp SLT/SGE zero/one results | **captured** for the recorded pair | exact native predicate fields and all relational outcomes |
-| constant/uniform branches | live constant/uniform results plus exact ELSE builder and two packed templates | **captured**, target fixup open | distinguish folded/native cases and resolve reconvergence |
-| fixed/dynamic loops, BREAK/CALL | live fixed/uniform loops; exact loop/break builder joins, BREAK templates, CALL/LABEL/RET graph edges, CALLNZ macro, and ordered pre-pack descriptor substitution | transport fixup lifetime **closed**, semantic placement open | implement graph targets/backedges/calls, then nesting and implementation limits |
+| constant/uniform branches | live constant/uniform results plus exact ELSE builder, two packed templates, physical selector allocation and native field placement | **captured**, graph reconvergence open | distinguish folded/native cases and construct reconvergence graph |
+| fixed/dynamic loops, BREAK/CALL | live fixed/uniform loops; exact loop/break builder joins, BREAK templates, CALL/LABEL/RET graph edges, CALLNZ macro, paired physical-selector allocation for `94/b4/c4`, ordered substitution, and final W0/W1 placement | physical fixup and transport lifetime **closed** for pinned families | implement graph construction/scheduling for arbitrary targets, backedges, calls, nesting and reconvergence |
 | uniforms/constants | vertex and fragment A/B/A sentinels identify live-component ranges in the 0x21000 resource | **closed** for external range path | mode-2 inline constant bank remains optional |
 | program entry/resource ownership | `69` is live drawable/resource backing; `6c` atomically selects an opaque tagged linked VS/FS pair; private 0x3158-byte pipeline allocation, ordered key reuse and copy-on-write publication are exact; fixed-chain-only starts/counts are separately exact | transport/lifetime contract **closed** | construct the internal bytes of a new linked pair |
 | termination | count-delimited compiler stream, endpoint selector `0x7e`, and result-only, kill-only and combined finalizer paths are exact | **validation** | determine endpoint-only versus full-terminal stop on generated programs; terminal variants do not encode MRT target index |
@@ -167,7 +170,7 @@ the live Linux ICD did not advertise.
 | remaining gap | consequence | smallest closing experiment |
 |---|---|---|
 | programmable linked-pair bytes inside heterogeneous `6c` records | private construction, validation, ordered key reuse and copy-on-write publication are exact, but arbitrary newly compiled GLSL still cannot serialize the internal record safely | recover or replace the opaque byte-layout builder while retaining the proven lifetime policy |
-| special shader packed forms and semantic control-flow placement | KIL, DDX/DDY and TEXLDD canonical forms are exact; ten texture metadata flags are recorded; ELSE/BREAK/BREAKP templates, parser-to-builder joins, ordered descriptor tables and pre-pack substitution are exact; B/P/L texture distinction, remaining predicates, branch targets/backedges/calls/reconvergence are not all implemented | recover or independently implement target placement and linked-resource texture controls; reject unrecorded combinations |
+| special shader packed forms and semantic control flow | KIL, DDX/DDY and TEXLDD canonical forms are exact; ten texture metadata flags are recorded; ELSE/BREAK/BREAKP templates, parser-to-builder joins, `94/b4/c4` physical selector allocation, ordered substitution and final native selector bits are exact; B/P/L texture distinction, remaining predicates, and arbitrary branch graph construction/scheduling are not all implemented | implement graph targets/backedges/calls/reconvergence and linked-resource texture controls; reject unrecorded combinations |
 | four-target MRT export and retirement | descriptor/reloc plus Windows RT0..3 job/fence membership are exact, but native output export and Linux per-RT job-BO membership are unjoined; Linux close can poll a nonretiring fence forever | decode one RT1 job through export, Linux write list and common writeback, then independently verify readback/unbind/delete/context/fd close with bounded recovery |
 | multisample/FAA allocation, pattern, mask and resolve | no sample buffers and no FAA cap | acquire a vendor multisample visual/surface, then clear/edge/mask/query differentials |
 | native 10-bit render and sample round trip | Linux GL downgrades RGB10_A2 to RGBA8, so GigaColor formats cannot be advertised | enable the gated Windows path and capture A2B10/A2R10 clear, draw, sample, raw storage and presentation with sentinel channels |

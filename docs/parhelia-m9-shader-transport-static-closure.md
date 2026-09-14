@@ -122,14 +122,26 @@ copies the resulting 0xc4-byte records in order at
 `0x1d3b6b..0x1d3baa` and `0x1d3e01..0x1d3e40` [BIN]. The type-3 resolver then
 consumes those physical descriptors by ordinal, as described above.
 
-This closes the transport lifetime and placement rule for fixups: graph
-serials and typed markers are compiler temporaries; all physical descriptors
-are substituted before the native slot is packed, and the selected linked
-pair is immutable while submitted [DER]. There is no late branch relocation
-in the `68..6d` packet emitter. A new native compiler still needs the semantic
-graph-target-to-descriptor algorithm for forward branches, backedges, CALL,
-BREAK, and reconvergence. That is compiler implementation work, rather than a
-missing transport field [DER].
+The mapping replacement producer is now exact too. Compiler pass `0x1d1d40`
+keeps source descriptors and the output of physical converter `0x1df900` in
+same-length dword arrays. Its later loops call constructor `0x1a2ae0` with
+`{source[i], physical[i]}`, producing mapping dwords 0 and 1 before the
+0x1c-byte entry is appended and sent to `0x1cef80` [BIN]. Type-`0x94` uses a
+descending 16-bit selector allocator with bias `+0x20`; type `0xb4` uses four
+selectors biased by 4; type `0xc4` uses 23 selectors biased by 8 [BIN]. The
+saved Linux compiler independently has the paired arrays, mapping publication,
+same formulas and modifier merge [BIN]. Exact sites and formulas are in
+`parhelia-m9-linked-pair-target-placement-re.md`.
+
+This closes the transport lifetime and physical placement rule for the pinned
+typed fixups: graph serials and typed markers are compiler temporaries;
+physical selectors are substituted before the native slot is packed, and the
+selected linked pair is immutable while submitted [DER]. There is no late
+branch relocation in the `68..6d` packet emitter. A new native compiler still
+needs graph construction and scheduling rules for arbitrary forward branches,
+backedges, CALL, BREAK, nesting and reconvergence beyond the pinned REP/LOOP
+recipes. That is compiler implementation work, rather than a missing
+transport field [DER].
 
 ## Exact serializer footprint
 
@@ -233,9 +245,10 @@ The universal transport contract is closed [BIN][CAP][DER]:
 
 The remaining gates are outside this transport ABI [DER]:
 
-1. recover or independently implement the semantic graph-target placement
-   algorithm for arbitrary forward branches, backedges, CALL, BREAK, and
-   reconvergence;
+1. recover or independently implement graph construction and scheduling for
+   arbitrary forward branches, backedges, CALL, BREAK, nesting and
+   reconvergence; physical allocation and final W0/W1 selector placement for
+   the pinned `94/b4/c4` families are exact;
 2. identify enough of the heterogeneous linked-record constructor to create a
    new programmable pair rather than replay a captured/vendor-produced one;
 3. mutate the terminal destination and final operation independently before
@@ -253,5 +266,8 @@ root. The checker uses Python's standard library, executes no vendor code, and
 pins the hashes, GL stage flags, fixed-chain start/length publication, ordered
 resolver producer/lookup, direct serializer, footprint table, zero-slot append
 helper, and Linux inline bind. Run
+`python3 tools/m9-linked-pair-target-evidence.py` for the independent
+Linux/Windows paired mapping producer, physical-selector allocators and final
+native selector fields. Run
 `python3 tools/m9-glsl-ab-evidence.py --self-test` for the independent atomic
 linked-pair A/B/A evidence.

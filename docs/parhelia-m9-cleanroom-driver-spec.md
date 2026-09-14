@@ -53,9 +53,9 @@ programmable start/count, per-stage entry, or end-PC fields in that path.
 Private 0x3158-byte whole-pipeline allocation, keyed cache reuse,
 copy-on-write validation and commit-like publication are exact.  Arbitrary
 programmable shaders remain gated by the internal pair byte serializer,
-semantic graph-target placement, hardware stop semantics, and the remaining
-operation-specific linked-resource forms listed in
-`parhelia-m9-driver-readiness.md`.
+graph construction and scheduling beyond the pinned control recipes, hardware
+stop semantics, and the remaining operation-specific linked-resource forms
+listed in `parhelia-m9-driver-readiness.md`.
 
 ## 2. Kernel source structure and shared boundaries
 
@@ -971,11 +971,12 @@ lower exactly to DP3/DP4 rows.  The remaining arbitrary-GLSL blockers are:
 * predicate composition around KIL and texture forms outside the recorded
   basis.  Canonical KIL has an exact seven-mask packed basis, while DDX/DDY
   selectors and 104 mask/swizzle/modifier/predicate/control variants are exact;
-* typed fixup resolution for branch targets, loop backedges, reconvergence,
-  BREAK/CALL, and the admitted terminal choice.  The ELSE/BREAK/BREAKP slot
-  templates, loop/break builder joins, CALL/LABEL/RET graph edges, CALLNZ
-  macro expansion, ordered resolver entries and pre-pack physical-descriptor
-  substitution are already exact;
+* graph construction and scheduling for arbitrary branch targets, loop
+  backedges, reconvergence and BREAK/CALL, plus the admitted terminal choice.
+  The ELSE/BREAK/BREAKP slot templates, loop/break builder joins,
+  CALL/LABEL/RET graph edges, CALLNZ macro expansion, paired physical-selector
+  allocation for `94/b4/c4`, ordered substitution and final W0/W1 selector
+  placement are already exact;
 * serializing the completed native images and linked resources into the opaque
   internal bytes of a new immutable `6c` pair.  Private allocation, keying,
   cache reclamation, copy-on-write publication and fence retention are exact.

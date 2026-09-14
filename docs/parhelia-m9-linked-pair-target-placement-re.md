@@ -1,9 +1,10 @@
-# M9 linked-pair target placement: static boundary
+# M9 linked-pair target placement: native-selector closure
 
-This note records the newly closed part of control-flow target placement and a
-negative classification in the saved Linux translator. It does not infer a
-selector-`6c` byte layout. Addresses are virtual addresses. `[BIN]` marks
-direct binary evidence and `[DER]` a conclusion from it.
+This note closes the control descriptor's symbolic-anchor-to-native-selector
+chain and records a negative classification in the saved Linux translator. It
+does not infer a selector-`6c` record byte layout. Addresses are virtual
+addresses. `[BIN]` marks direct binary evidence and `[DER]` a conclusion from
+it.
 
 The pinned inputs are:
 
@@ -118,22 +119,110 @@ resolved = replacement ^ ((replacement ^ source) & 0x0c000000)
 
 It writes the result back to the same ordinal through helper `0x1a2b10` at
 `0x1cf061` [BIN]. Therefore the replacement supplies every bit except 27:26;
-those two bits remain from the source descriptor [DER]. This is the recovered
-symbolic-anchor substitution boundary. Static evidence in this note does not
-yet identify the producer meaning of every replacement value, so it does not
-rename the replacement as a byte PC [DER].
+those two bits remain from the source descriptor [DER].
 
-## What remains open
+## Mapping dword 1 is the paired physical-converter output
 
-The semantic chain is now exact through source-anchor extraction,
-same-anchor multiplicity, typed fixup construction, mapping match, modifier
-preservation and in-place replacement. The remaining selector-`6c` work is:
+Windows compiler pass `0x1d1d40` keeps two same-length dword arrays. At
+`0x1d2c31..0x1d2c47` it obtains source descriptor `D` from ordinal lookup
+`0x1a2e60` and writes `D` to the first array. It then passes the same `D` to
+physical converter `0x1df900` at `0x1d2c5d`, with the corresponding second
+array element as the output pointer [BIN]. Thus the arrays are paired by graph
+ordinal [DER]:
 
-1. identify how each 0x1c-byte mapping entry's replacement is assigned from
-   final native placement;
-2. locate the byte serializer that joins the completed VS/FS native images and
-   referenced resources into the heterogeneous linked record;
-3. prove the final GPU-visible location and unit for resolved control targets.
+```text
+source[i]      = graph_descriptor(i)
+replacement[i] = physical_convert(source[i])
+```
+
+The publication loops at `0x1d341d..0x1d343f` and
+`0x1d3508..0x1d352a` read the same ordinal from both arrays and call
+constructor `0x1a2ae0`. The constructor writes its first argument to mapping
+dword 0, its second argument to dword 1, and zeros the remaining four dwords
+[BIN]. The 0x18-byte value is appended in a 0x1c-byte vector element. The
+completed table reaches transform `0x1cef80` through its only compiler call at
+`0x1d3579` [BIN]. Therefore the previously unnamed `entry+0x04` replacement is
+exactly the physical converter's output for `entry+0x00`, not a guessed byte
+PC or external-record offset [DER].
+
+The saved Linux compiler independently proves the same relationship. In
+`m9x14892`, `0x532a47..0x532a71` obtains a source descriptor and writes the
+first dword array. Call `0x532a94` sends that descriptor to converter
+`m9x17578` (`0x4c30f0`) with the same-ordinal element of the second array as
+its output [BIN]. At `0x532560..0x5325cf`, the publication loop reads the two
+arrays, writes them as dwords 0 and 1 of a zero-filled 0x1c-byte record, and
+appends it [BIN]. Transform `m9x7815` applies the same replacement while
+preserving source bits 27:26 at `0x527fd0..0x527ff4` [BIN]. This is an
+independent 64-bit build join for the producer and consumer [DER].
+
+## The REP/LOOP families allocate finite native selectors
+
+Converter `0x1df900` dispatches on the descriptor high nibble. The three
+families emitted by builder `0x1ba2c0` have exact finite allocation rules
+[BIN]:
+
+| family | Windows allocator | allocation and replacement |
+|---:|---:|---|
+| `0x94` | `0x1df0c0` | reuse a matching 0x1c-byte cache entry; otherwise decrement 16-bit context `+0x0a` and return `(source & 0xffff0000) | (new_counter + 0x20)`, selecting `0x2f..0x20` |
+| `0xb4` | `0x1e37c0`, subcontext `+0x3c0` | reuse or allocate one of four indices `i=0..3`; return `(source & 0xfc000000) | (i + 4)` |
+| `0xc4` | `0x1e2f50`, subcontext `+0x250` | reuse or allocate one of 23 indices `i=0..22`; return `(source & 0xfc000000) | (i + 8)` |
+
+All three match an existing allocation with mask `0xf000ffff`. Initializer
+`0x1de2d0` sets the type-9 counter to 16 at `0x1de2ed`, proving its sixteen
+low selectors are `0x20..0x2f`; exhaustion returns descriptor sentinel
+`0xf0000000` [BIN]. The type-9 miss path also appends
+`{source, replacement, 0, 0, 0, 0}` to the 0x1c-byte cache at context
+`+0x424`; the four-slot and 23-slot allocators keep their source descriptors,
+used masks, lifetime flags and 16-bit owner values in their respective
+subcontexts [BIN]. These are allocation identities with explicit reuse and
+failure. Their low values are not compiler serials after conversion [DER].
+
+Linux high-level dispatcher `m9x17578` independently sends type 9 to
+`m9x7929`, type B to `m9x21980`, and type C to `m9x28923` [BIN]. The type-9
+miss path at `0x4bd9e8..0x4bda15` has the same decrement and `+0x20` formula;
+initializer `0x4c0c50` writes the same counter value 16 at `0x4c0c81` [BIN].
+The B and C output paths at `0x4bd5f5..0x4bd606` and
+`0x4bd165..0x4bd176` preserve `source & 0xfc000000` and add 4 or 8 to the
+allocated index [BIN]. The different structure offsets reflect the 64-bit
+layout, while the returned descriptor formulas match Windows [DER].
+
+## Resolved selectors become native instruction bits
+
+After transform `0x1cef80` has substituted each paired physical descriptor,
+the type-3 resolver described in
+`parhelia-m9-shader-transport-static-closure.md` feeds the resolved values to
+direct serializer `0x1dc8b0`. Its final insertions are [BIN]:
+
+| gate | resolved object field | native slot insertion |
+|---:|---:|---|
+| `0x02` | `+0x14` | `W1[20:15] = resolved & 0x3f` |
+| `0x04` | `+0x18` | `W0[5:0] = resolved & 0x3f` |
+| `0x10` | `+0x1c` | `W1[13:9] = resolved & 0x1f` |
+
+`0x1dc940..0x1dc95f` stores W0 and W1 directly into the native 8-byte-slot
+vector [BIN]. This closes the chain from a REP/LOOP source anchor, through a
+typed symbolic descriptor and paired physical allocation, to the exact native
+instruction bits [DER]. No step interprets the anchor or compiler serial as a
+byte displacement [BIN][DER].
+
+## Closed boundary and remaining uncertainty
+
+The native placement chain for the typed REP/LOOP control descriptors is now
+exact through source-anchor extraction, same-anchor multiplicity, typed fixup
+construction, physical selector allocation, mapping publication, modifier
+preservation and final W0/W1 insertion. The exact remaining gaps are:
+
+1. the graph construction and scheduling rules that choose anchors and typed
+   descriptor families for arbitrary forward branches, backedges, CALL,
+   BREAK, nesting and reconvergence beyond the pinned REP/LOOP recipes;
+2. the byte constructor that joins completed native images and referenced
+   resources inside the heterogeneous external selector-`6c` record;
+3. the hardware-semantic names of the three selector namespaces and their
+   reset/reuse behavior across long-running programs and context loss.
+
+The mapping `entry+0x04` producer and its final native-slot unit are no longer
+open. This result does not turn the outer `6c` resource into an instruction
+array or establish a universal record-relative code offset [DER].
 
 Existing allocation, cache, COW publication and lifetime results are unchanged
 and are intentionally not repeated here.
