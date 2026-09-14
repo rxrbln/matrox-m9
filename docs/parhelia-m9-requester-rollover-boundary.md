@@ -63,6 +63,11 @@ chain [BIN]:
   their requester object's aligned start, CPU mapping and GPU base.  They do
   not access `0x400/0x404`.
 
+Those formulas also establish the units.  Both drivers subtract CPU byte
+pointers and add the result directly to a GPU byte address; neither shifts or
+scales the result.  `0x500` and `0x504` therefore contain byte addresses with
+four-byte stream alignment, rather than dword indices or byte counts [BIN].
+
 Neither rollover path writes `0x404`, and neither `0x404` submitter reads or
 writes the descriptor words.  The only demonstrated relationship is that both
 interfaces carry GPU addresses belonging to command transport [DER].  In
@@ -88,6 +93,17 @@ path advances it, while both vendor quiescence loops require two stable samples
 of it.  Calling it a hardware consumer pointer would still overstate the
 evidence because no saved capture shows its direction.  `0x504`, by contrast,
 has an unambiguous software producer and is the ring tail exposed to hardware.
+
+The stable-snapshot rule is independently present in user mode.  `MxMD.dll`
+`0x1ac40..0x1ad5e` follows its device object's MMIO mapping and uses the same
+sequence as `MxMM.sys`: it samples `0x508`, repeatedly takes consecutive
+`0x500/0x50c` pairs until both match, then accepts the snapshot only when a
+final `0x508.bit0` is set.  Its fallback path polls only `0x508.bit0` [BIN].
+Consequently `0x500` and `0x50c` are the only words statically demonstrated as
+transition-sensitive live progress state.  Nothing in either loop compares
+them with the software tail at `0x504`, and neither loop consults
+`0x510/0x514/0x520/0x524`.  Completion is signaled by `0x508.bit0`, not inferred
+from pointer equality [DER].
 
 Windows gives an exact first-use sequence.  Constructor `0x14463` installs the
 sole rollover method `0x14540`, clears the saved eight-word image, selects
@@ -129,10 +145,31 @@ Windows conditionally restores the `50c/514/510` triple when
 tagging and rollover-sensitive state, but do not reveal which word is a fetch
 pointer, boundary, or pending transition [DER].
 
+The Windows predicate establishes one additional limit: the upper 28 bits of
+`0x50c` and `0x510` are compared as 16-byte-granular address-like values, while
+their low nibbles are ignored for the decision.  The low bits may be tags or
+control state, but static code does not assign them individual meanings [DER].
+Linux uses the stricter full-dword inequality before restoring the same triple.
+
+Restore ordering splits the opaque image into three observable groups [BIN]:
+
+1. `0x520/0x524` are restored first and unconditionally;
+2. `0x50c/0x514/0x510` are restored as one conditional triple;
+3. `0x500/0x508/0x504` are restored last, with the software producer at
+   `0x504` published last.
+
+This order is sufficient to preserve in a replacement driver, but it does not
+identify either member of the first pair or the direction of the triple.  The
+Parhelia and P-series miniports shipped beside MSerX use a different register
+layout in this region, and their diagnostic dumps provide no transferable
+requester field names [BIN].
+
 ## Smallest capture that resolves the remaining fields
 
-Instrument MMIO reads/writes and force exactly one `m9x1200` requester wrap
-with a fence after it.  Four timestamped samples are sufficient:
+Static analysis has no producer from which the direction or arithmetic of
+`0x50c/0x510/0x514/0x520/0x524` can be derived.  Instrument MMIO reads/writes
+and force exactly one `m9x1200` requester wrap with a fence after it.  Four
+timestamped samples are sufficient:
 
 1. quiescent state before the final pre-wrap descriptor;
 2. immediately after its `0x504` publication;
@@ -142,12 +179,15 @@ with a fence after it.  Four timestamped samples are sufficient:
 Each sample must contain `0x400`, the most recent value written to `0x404`, all
 eight words `0x500..0x524`, the software CPU start/producer/end-guard pointers,
 the backing GPU base/class, and the two dwords at the old-ring transition
-record.  Record the two `0x504` writes and any `0x404` write in order.  A single
-wrap distinguishes stable limits from moving fetch/current pointers; the
-pre-publication and post-fence samples distinguish software publication from
-hardware consumption.  No rendering workload or second wrap is needed unless
-the first wrap leaves `0x50c` equal to `0x510`; in that case repeat once with
-the ring base chosen across a different low-nibble tag boundary.
+record.  Record every `0x504` write and any `0x404` write in order, and record
+the first value of each hardware-owned word after initialization and before a
+descriptor is published.  A single wrap distinguishes stable limits from
+moving fetch/current pointers; the pre-publication and post-fence samples
+distinguish software publication from hardware consumption.  No rendering
+workload or second wrap is needed unless the first wrap leaves `0x50c` equal to
+`0x510`; in that case repeat once with ring bases whose upper 28 address bits
+differ.  Merely changing the low nibble cannot exercise the Windows restore
+predicate because that predicate masks those bits.
 
 Until that capture, preserve `0x50c..0x524` as opaque saved hardware state and
 keep requester rollover separate from construction of the `0x404` endpoint.
