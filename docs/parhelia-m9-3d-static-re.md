@@ -1105,13 +1105,24 @@ if (state_bcc) {
         emit(0x69, 4);
         emit(0x6a, low16(state_bd0));
 } else {
-        emit(0x6d, low16(state_bd4) | (low16(state_bd0) << 16));
+        emit(0x69, 4);
+        emit(0x6a, low16(state_bd0) | (low16(state_bd4) << 16));
 }
 ```
 
-The meaning of this short form remains unknown, but its encoding can be
-preserved and isolated in a typed helper rather than reconstructed later from
-a trace.
+Windows `0xf7819..0xf78aa` is independently identical with offsets shifted to
+`+0xba4/+0xba8/+0xbac` [BIN].  When `+0xba4` is zero it packs the two low-16-bit
+starts into index `6a`; otherwise it writes the second start alone to `6d` and
+the first start alone to `6a`.  Both forms write literal `4` to index `69`.
+Companion selector `0x13b570` sets `+0xba4` when it installs its override at
+state `+0xbc` (`0x13b656..0x13b67c`) and clears it when no override is active
+(`0x13b7c1`).  Thus the split form is exactly the companion-entry form in this
+fixed vertex/declaration-conversion path [BIN][DER].
+
+No execution count or end address occurs in either final record.  The aligned
+byte length is consumed only by the upload loop and includes zero padding; it
+is not copied into `69`, `6a`, or `6d`.  The final record therefore binds
+entry instruction slots rather than start/end ranges [BIN][DER].
 
 The same function can bind a relocated program resource rather than uploading
 inline words.  Registry names `PsBmMicrocode`, `PsBmConstants`,
@@ -1142,6 +1153,28 @@ not yet proof that every shader stage exposes 384 user instructions.
 The two offsets are entry points for the selected composable chains in this
 fixed-program assembly path.  They do not by themselves identify vertex and
 fragment shader stages.
+
+The exact run-boundary contract is consequently:
+
+* `+0xba8/+0xbd0` and `+0xbac/+0xbd4` are instruction-slot starts, truncated
+  to 16 bits by the emitter;
+* the code image is uploaded in complete 32-byte lines, and its stored byte
+  length is transport state only;
+* companion inactive: the two starts occupy `6a[15:0]` and `6a[31:16]`;
+* companion active: the primary start occupies `6a[15:0]`, the companion
+  start occupies `6d[15:0]`, and the unused high halves are zero;
+* `69 <- 4` completes the inline-program bind; its finer semantic name is not
+  established by static evidence;
+* execution begins later with the ordinary H03/H06/H07 draw record after the
+  rest of context state is emitted.  The program upload/bind itself is not a
+  draw launch.
+
+This is sufficient to implement a typed inline upload and entry bind without
+inventing a count register.  It is not sufficient to submit a new minimal
+programmable vertex-plus-fragment pair: the fixed image here belongs to the
+vertex/declaration-conversion path, and static data flow has not joined a
+programmable fragment image to one of these starts.  The exact native stop
+operation also remains unnamed.
 
 ### Fixed native-fragment database
 

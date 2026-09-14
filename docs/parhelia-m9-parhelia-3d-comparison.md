@@ -213,8 +213,10 @@ a safe DRM submitter and a working Mesa driver:
    selector/ports, and 384-instruction/96-line bank boundary are recovered.
    Remaining unknowns are the full mnemonic table, final seven-bit varying
    selector, scattered component order, special predicate distribution,
-   source auxiliary meanings, output-property bit 29, and termination
-   convention.  See `parhelia-m9-3d-static-re.md`.
+   source auxiliary meanings and termination convention.  Final inline upload
+   and bind state is exact: it programs two 16-bit entry starts, in packed or
+   companion-split form, plus literal `69 <- 4`; it carries no execution count
+   or end address.  See `parhelia-m9-3d-static-re.md`.
 8. IRQ source bits for fault reporting and the remaining non-vblank service
    events.  Linux and Windows both use memory write-back fences rather than a
    completion IRQ.  The three status/W1C and enable-mask register pairs, four

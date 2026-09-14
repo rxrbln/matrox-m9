@@ -660,9 +660,34 @@ count.  Clone helper `0x16eb50` iterates exactly while its index is below that
 same count, and advances its expanded instruction destination by `0xb4`
 [BIN][DER].  Neither path scans for or appends an in-band terminator.  The D3D
 frontend `END` token, compiler stream count, four-slot upload padding, and any
-hardware fetch-stop state are separate layers.  Hardware execution termination
-still needs the final program-state join, but a native compiler slot must not
+hardware fetch-stop state are separate layers.  The final program-state join
+is now exact: Windows `0xf7819..0xf78aa` and Linux `m9x11728`
+`0x4b9700..0x4b97a5` program one or two 16-bit instruction starts plus literal
+`69 <- 4`, but no instruction count or end address [BIN].  The linker's aligned
+byte length is read only by the preceding upload loop.  Therefore hardware
+execution is not delimited by the compiler count or the padded upload length;
+it must stop through native stream semantics or fixed engine behavior that is
+not exposed in this bind record [DER].  A native compiler slot still must not
 be assigned a universal `END` bit.
+
+The selected fixed-function image reinforces that boundary.  Linker
+`0x13bf80` records the starts of `P` and its `S/Q` continuation at
+`+0xba8/+0xbac`; companion selector `0x13b570` sets `+0xba4` only when `Q`
+overrides `S`.  With no override the starts are packed into the low/high halves
+of `6a`.  With an override the primary start remains in `6a[15:0]` and the
+companion start moves to `6d[15:0]` [BIN][DER].  Neither adjacency nor the
+second start can safely be treated as the first run's exclusive end, because
+the split form does not encode such a range and supplies no end for the
+companion run.
+
+`MxMGLX.dll` supplies a useful cross-layer negative check.  Its legacy Matrox
+fragment-shader validator at `0x1012c1c0` rejects a zero API-instruction count,
+then at `0x1012c215` multiplies that count by its `0x94`-byte frontend-record
+stride and requires result class `4` in the final record.  The associated
+diagnostics are exactly “Too few instructions” and “Final instruction does not
+write to output register” [BIN].  This proves a frontend final-instruction
+rule, but that count is absent from the MxMD/Linux native bind above and must
+not be repurposed as a hardware execution bound.
 
 The compiler-to-MxMD predicate path is now joined statically.  Source token
 `+0x08` bit 1 becomes backend IR `+0x04` predicate-enable, and the predicate
@@ -712,10 +737,12 @@ labels only the proven `0x1c/0x1d/0x1e` result-component modes and all-zero
 slots; it deliberately does not guess native ALU, texture, predicate, or
 termination names.
 
-`tools/m9-native-static-evidence.py` checks the two saved PE identities, uses
-proper image-base/RVA translation, verifies the fixed-fragment hash and emitter
-vtable slot, decodes the D3D and register-file dispatch tables, verifies final
-varying transforms, special predicate sites, count-delimited append/clone
-paths, the property-bit rewrite barrier, the operand-formatter negative
-boundary, and the four fixed-function vertex state-builder calls.  Run it from
+`tools/m9-native-static-evidence.py` checks the two saved PE identities and the
+Linux `m9x_drv.so` identity, uses proper PE image-base/RVA translation, verifies
+the fixed-fragment hash and emitter vtable slot, decodes the D3D and
+register-file dispatch tables, verifies final varying transforms, special
+predicate sites, count-delimited append/clone paths, the property-bit rewrite
+barrier, the exact linked starts and packed/split bind forms, the
+operand-formatter negative boundary, and the four fixed-function vertex
+state-builder calls.  Run it from
 the repository root; a table or binary mismatch is a hard error.
