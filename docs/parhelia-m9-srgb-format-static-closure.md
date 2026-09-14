@@ -3,8 +3,8 @@
 This note separates four questions which the saved vendor driver answers at
 different confidence levels: public format translation, native descriptor
 construction, API capability advertisement, and actual operation legality.
-Conflating them previously produced one wrong RGB8 code and one tempting but
-unreachable sampler-sRGB interpretation.
+Conflating them previously produced one wrong RGB8 code and mistook the
+public sampler enum value for the HAL/DDI state delivered to the driver.
 
 All analysis here is offline.  The primary images are:
 
@@ -25,12 +25,16 @@ the Python standard library.  `[BIN]` below means direct binary data flow and
 
 The Direct3D render-target sRGB-write path is real and call-reachable.  It is a
 compiler-inserted native instruction suffix for draw output zero, with a CPU
-equivalent for color clears.  The format-operation table advertises sRGB read
-for several texture families, but no corresponding sampler-state-to-packet
-path was found.  A state-11 slot at `0x105c04` looks like
-`D3DSAMP_SRGBTEXTURE` in isolation, but whole-caller analysis proves that the
-slot is unreachable legacy table residue.  Its storage and compiler consumer
-belong to `D3DTSS_TEXCOORDINDEX`.
+equivalent for color clears.  Sampler sRGB also has a live frontend transport:
+the Direct3D 9 runtime maps public `D3DSAMP_SRGBTEXTURE` onto legacy HAL/DDI
+state 29, which both pixel/fixed and vertex sampler dispatchers store at sampler
+shadow `+0x46 bit 5`.  State blocks and normalized state queries preserve that
+bit.  No consumer of bit 5 is joined in the pinned final sampler lowerers, so
+this proves accepted state transport but not native texture decode.
+
+A separate state-11 slot at `0x105c04` remains unreachable legacy table
+residue.  Live state 11 is `D3DTSS_TEXCOORDINDEX`; its storage and compiler
+consumer select texture-coordinate records and are unrelated to sRGB.
 
 Neither saved GL implementation contains `GL_EXT_texture_sRGB` or
 `GL_EXT_framebuffer_sRGB`.  The existing vendor `glxinfo` capture advertises
@@ -46,43 +50,45 @@ tree can only remove bits.  See `parhelia-m9-format-operation-matrix.md` and
 capability declarations, but still do not replace result validation for a new
 driver.
 
-## The sampler-sRGB false lead
+## Reachable sampler state, unresolved native decode
 
-The fixed-stage dispatcher at `0x105340` handles `D3DTSS_TEXCOORDINDEX` state
-11 at `0x105648`.  That handler stores a three-bit coordinate-set selection per
-texture unit in the shared 64-bit field at `ctx->texture_state +0x48:+0x4c`.
-Helper `0x109850` replaces exactly:
+Direct3D 9 presents sampler states to legacy HAL drivers in the texture-stage
+state namespace.  In that mapped sequence state 28 is `RESULTARG`, state 29 is
+`SRGBTEXTURE`, state 30 is `ELEMENTINDEX`, state 31 is `DMAPOFFSET`, and state
+32 is `CONSTANT`.  The DP2 texture-stage parser at `0xd094b..0xd0984` passes
+its 16-bit stage and state IDs plus the 32-bit value to dispatcher `0x105340`.
+
+For pixel/fixed stages below 28, the fallback path `0x1057a2 -> 0x105850`
+routes mapped state 29 to handler `0x105b82`.  For vertex sampler stage IDs
+257..272, `0x105340` subtracts 257 and calls dispatcher `0x105cf0`; its selector
+and target tables route state 29 to mirror handler `0x105fa9`.  Both handlers
+replace Boolean sampler shadow `+0x46 bit 5` and set dirty group `+0x04 |= 8`
+[BIN][DER].  State-block builders at `0x12fe37` and `0x130b79` serialize the
+same bit.  State normalization at `0x102a3c` publishes it at output `+0x74`.
+Thus sampler sRGB is call-reachable, retained, and queryable.
+
+The final filter helper `0x18afb0..0x18b4d7` consumes `+0x46` bits 11, 12, and
+`4:0`; central lowerer `0x18ba27..0x18c22b` consumes bits 8, 10, 11, and 12.
+Neither consumes bit 5.  Their exact byte ranges are hash-pinned by the
+verifier.  The native sRGB-decode instruction or register path, if effective
+on this hardware, is therefore still unjoined.  Do not expose texture sRGB
+until a packet differential or a complete static data-flow join establishes
+that consumer and result behavior.
+
+The old state-11 interpretation provides a useful negative control.  Main
+fixed-stage dispatch handles state 11 at `0x105648` as
+`D3DTSS_TEXCOORDINDEX`, storing a three-bit coordinate-set selection per unit
+in `ctx->texture_state +0x48:+0x4c`.  Helper `0x109850` replaces exactly:
 
 ```text
 field = (field & ~(7ull << (3 * unit))) |
         ((uint64_t)(value & 7) << (3 * unit))
 ```
 
-Compiler construction at `0x17f91d` consumes the same field on its pre-SM3
-route.  For an input record with class 5, it extracts the original unit from
-record bits `30:26`, reads the corresponding three-bit coordinate index, and
-uses class/index lookup `0x12bed0` to select the compiler record.  This is an
-exact `TEXCOORDINDEX` join [BIN][DER].
-
-The nearby fallback helper `0x105850` subtracts 11 and has jump-table entry
-zero pointing to nearly identical storage at `0x105c04`.  It initially appears
-to accept public sampler state 11.  It does not:
-
-* its only direct caller is `0x1057a6`;
-* the caller is reached only after the main TSS jump table has already routed
-  state 11 to `0x105648`;
-* main-table state 12 and later legacy sampler states enter the fallback;
-* no direct call reaches `0x105c04`, and its only absolute reference is the
-  fallback jump-table entry;
-* programmable dispatcher `0x105cf0` accepts a different state interval
-  beginning at 13 and supplies no state-11 route.
-
-Thus the state-11-looking slot is dead/call-unreachable.  It cannot explain the
-baseline `D3DFORMAT_OP_SRGBREAD` declarations, and the final sampler words at
-indices `7c`, `7d`, and `78` still contain no joined sRGB-decode bit.  This
-also explains why the known compiler consumer selects texture-coordinate
-records rather than a color-transfer operation.  The advertisement/control
-mismatch is now an explicit remaining boundary.
+Compiler construction at `0x17f91d` consumes that field on its pre-SM3 route.
+The fallback table's state-11 entry at `0x105c04` cannot be reached because the
+main dispatcher intercepts state 11 before fallback.  It is neither the public
+sampler enum route nor evidence of native sRGB decoding.
 
 ## Reachable render-target sRGB write
 

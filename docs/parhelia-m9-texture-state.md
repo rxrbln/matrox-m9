@@ -53,20 +53,26 @@ Dispatcher `0x105850` packs these public states [BIN]:
 | MAXMIPLEVEL | `+0x1c` | `0x10` |
 | MAXANISOTROPY | `+0x46[4:0]` | `0x08` |
 
-Private state 29 sets `+0x46` bit 5; states 33/34 select a special border source
-through `+0x08` bit 14 and `+0x42`; state 35 sets `+0x46` bit 10; state 36 sets
+Mapped HAL/DDI state 29 (`D3DSAMP_SRGBTEXTURE`) sets `+0x46` bit 5; states
+33/34 select a special border source through `+0x08` bit 14 and `+0x42`; state
+35 sets `+0x46` bit 10; state 36 sets
 bit 11; and state 37 sets bit 12, stores low six payload bits at byte `+0x2c`,
 bits `7:6` at byte `+0x2d`, and sets bit 13 when byte `+0x2c` is nonzero.
 Programmable dispatcher `0x105cf0` mirrors these sampler fields.
 
-The apparent state-11 entry at `0x105c04` is not a reachable
-`D3DSAMP_SRGBTEXTURE` implementation.  Helper `0x105850` is reached only from
-legacy D3DTSS fallback `0x1057a6`; main dispatcher `0x105340` intercepts
-`D3DTSS_TEXCOORDINDEX` state 11 at `0x105648` before that fallback.  Both
-locations use the same three-bit-per-unit helper `0x109850`, and compiler
-`0x17f91d` consumes the field as a texture-coordinate record index.  The
-fallback's zero table entry is unreachable residue.  No sampler sRGB decode
-control is joined [BIN][DER].
+Direct3D 9 maps public sampler states to legacy HAL/DDI texture-stage-state
+IDs, so public `D3DSAMP_SRGBTEXTURE` arrives as state 29 rather than enum value
+11.  Pixel/fixed handler `0x105b82` and vertex handler `0x105fa9` both store its
+Boolean at `+0x46 bit 5` and mark dirty group `0x08`.  State-block paths
+`0x12fe37`/`0x130b79` and normalized-state output `0x102a3c` preserve/query it.
+The pinned final filter helper `0x18afb0..0x18b4d7` and central lowerer
+`0x18ba27..0x18c22b` do not consume bit 5, so native decode remains unjoined
+[BIN][DER].
+
+The apparent state-11 entry at `0x105c04` is unreachable legacy residue.  Main
+dispatcher `0x105340` intercepts state 11 as `D3DTSS_TEXCOORDINDEX` at
+`0x105648`; compiler `0x17f91d` consumes its three-bit-per-unit field as a
+texture-coordinate record index.  It is unrelated to sampler sRGB.
 
 ## Final filter/wrap word: index `7c`
 
