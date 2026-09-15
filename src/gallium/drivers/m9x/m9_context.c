@@ -88,6 +88,7 @@ struct m9_fs_variant {
    uint8_t extra_location[M9_FS_MAX_VARYINGS + M9_FS_MAX_TEXTURES];
    unsigned coord_count;               /* distinct texture coordinate streams */
    uint8_t coord_location[M9_FS_MAX_TEXTURES];
+   int8_t coord_extra[M9_FS_MAX_TEXTURES];     /* CPU view of a coordinate stream, -1 for COL0 */
    uint8_t texture_coord[M9_FS_MAX_TEXTURES];  /* coordinate stream per texel pair */
 };
 
@@ -771,13 +772,15 @@ m9_texture_bind_view(const struct pipe_sampler_view *view,
       };
       return NULL;
    }
-   /* Captured 79=c8210080 FBO textures: ordinary tiled render targets. */
+   /* Captured 79=c8210080 FBO textures: ordinary tiled render targets.  The
+    * descriptor carries the 32-aligned row span; other widths sample through
+    * scaled coordinates (m9_job_textures). */
    if (res->tiled && res->kind == M9_RESOURCE_LINEAR_COLOR &&
-       res->base.format == PIPE_FORMAT_B8G8R8A8_UNORM && !(res->width % 32) &&
-       (res->width > 64 || res->height > 64)) {
+       (res->base.format == PIPE_FORMAT_B8G8R8A8_UNORM ||
+        res->base.format == PIPE_FORMAT_B8G8R8X8_UNORM)) {
       *bind = (struct m9_texture_bind) {
          .code = 0xcc, .kind = M9_TEXTURE_KIND_RENDER,
-         .width = res->width, .height = res->height, .depth = 1,
+         .width = (res->width + 31) & ~31u, .height = res->height, .depth = 1,
       };
       return NULL;
    }
@@ -810,6 +813,22 @@ m9_job_textures(struct m9_context *ctx, const struct m9_fs_variant *fs,
          return false;
       }
       key->unit_res[k] = view->texture;
+      key->unit_scale[k][0] = (float)m9_res(view->texture)->width / bind.width;
+      key->unit_scale[k][1] = (float)m9_res(view->texture)->height / bind.height;
+      if (key->unit_scale[k][0] != 1.0f &&
+          sampler->wrap_s != PIPE_TEX_WRAP_CLAMP_TO_EDGE)
+         reason = "wrapping a render target of unaligned width is not "
+                  "implemented; draw skipped";
+      for (unsigned j = 0; !reason && j < k; j++)
+         if (fs->texture_coord[j] == fs->texture_coord[k] &&
+             memcmp(key->unit_scale[j], key->unit_scale[k],
+                    sizeof(key->unit_scale[k])))
+            reason = "textures of different spans share a coordinate; "
+                     "draw skipped";
+      if (reason) {
+         m9_warn_once(ctx, M9_WARN_TEXTURE, reason);
+         return false;
+      }
    }
    key->unit_count = p->texture_count;
    if (!p->texture_count) {
@@ -915,9 +934,12 @@ m9_fs_streams(struct m9_fs_variant *v)
       while (c < v->coord_count && v->coord_location[c] != p->texcoords[t])
          c++;
       if (c == v->coord_count) {
+         v->coord_extra[c] = -1;
          v->coord_location[v->coord_count++] = p->texcoords[t];
-         if (p->texcoords[t] != VARYING_SLOT_COL0)
+         if (p->texcoords[t] != VARYING_SLOT_COL0) {
+            v->coord_extra[c] = v->extra_count;
             v->extra_location[v->extra_count++] = p->texcoords[t];
+         }
       }
       v->texture_coord[t] = c;
    }
@@ -1160,6 +1182,22 @@ m9_render_record(const struct m9_vbuf_render *r, unsigned index, float *out,
       out[3 + c] = r->has_color ? CLAMP(v[4 + c], 0.0f, 1.0f) : 1.0f;
 }
 
+/* Texture coordinates of sampled render targets address the aligned span. */
+static void
+m9_scale_coords(const struct m9_job_key *key, float *extra)
+{
+   const struct m9_fs_variant *v = key->variant;
+
+   for (unsigned k = 0; k < v->program.texture_count; k++) {
+      int j = v->coord_extra[v->texture_coord[k]];
+
+      if (j < 0)
+         continue;
+      extra[4 * j] *= key->unit_scale[k][0];
+      extra[4 * j + 1] *= key->unit_scale[k][1];
+   }
+}
+
 static void
 m9_render_append(struct m9_vbuf_render *r, const struct m9_job_key *key,
                  enum m9_topology topology, bool lines, uint32_t cull,
@@ -1193,6 +1231,8 @@ m9_render_append(struct m9_vbuf_render *r, const struct m9_job_key *key,
 
          m9_render_record(r, index, out + i * M9_RECORD_FLOATS,
                           extra ? extra + i * 4 * r->extra_count : NULL);
+         if (extra)
+            m9_scale_coords(key, extra + i * 4 * r->extra_count);
       }
       m9_job_commit(r->ctx, out, extra, n, first, topology, cull, lines,
                     r->ctx->rasterizer && r->ctx->rasterizer->flatshade);
@@ -1580,11 +1620,43 @@ m9_clear_depth_stencil(struct pipe_context *pctx, struct pipe_surface *dst,
    m9_clear_depth_cpu(resource, clear_flags, depth, stencil);
 }
 
+/* Unscaled colour blit with format conversion through CPU transfers. */
+static bool
+m9_blit_convert(struct pipe_context *pctx, const struct pipe_blit_info *info)
+{
+   const struct pipe_box *s = &info->src.box, *d = &info->dst.box;
+   struct pipe_transfer *st = NULL, *dt = NULL;
+   uint8_t *src, *dst;
+   bool ok;
+
+   if (info->mask != PIPE_MASK_RGBA || info->scissor_enable ||
+       info->render_condition_enable || info->alpha_blend ||
+       s->width != d->width || s->height != d->height || s->depth != 1 ||
+       d->depth != 1 || s->width <= 0 || s->height <= 0 ||
+       info->swizzle_enable)
+      return false;
+   src = pipe_texture_map(pctx, info->src.resource, info->src.level, s->z,
+                          PIPE_MAP_READ, s->x, s->y, s->width, s->height, &st);
+   dst = src ? pipe_texture_map(pctx, info->dst.resource, info->dst.level, d->z,
+                                PIPE_MAP_WRITE, d->x, d->y, d->width,
+                                d->height, &dt) : NULL;
+   ok = src && dst &&
+        util_format_translate(info->dst.format, dst, dt->stride, 0, 0,
+                              info->src.format, src, st->stride, 0, 0,
+                              s->width, s->height);
+   if (dt)
+      pipe_texture_unmap(pctx, dt);
+   if (st)
+      pipe_texture_unmap(pctx, st);
+   return ok;
+}
+
 static void
 m9_blit(struct pipe_context *pctx, const struct pipe_blit_info *info)
 {
-   if (!util_try_blit_via_copy_region(pctx, info, false))
-      m9_warn_once(m9_context(pctx), M9_WARN_BLIT, "scaled, converting or "
+   if (!util_try_blit_via_copy_region(pctx, info, false) &&
+       !m9_blit_convert(pctx, info))
+      m9_warn_once(m9_context(pctx), M9_WARN_BLIT, "scaled, scissored or "
                    "filtered blits are not implemented");
 }
 

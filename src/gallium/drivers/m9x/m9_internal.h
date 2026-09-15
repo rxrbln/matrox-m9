@@ -210,6 +210,8 @@ struct m9_job_key {
    uint32_t depth_control, depth_ef, color_mask, clip_min, clip_max;
    struct m9_texture_unit units[M9_TEXTURE_MAX_UNITS];
    struct pipe_resource *unit_res[M9_TEXTURE_MAX_UNITS];
+   /* Content over descriptor size of a sampled render target, s and t. */
+   float unit_scale[M9_TEXTURE_MAX_UNITS][2];
    unsigned unit_count;
 };
 
