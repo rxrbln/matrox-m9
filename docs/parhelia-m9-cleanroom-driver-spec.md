@@ -47,7 +47,8 @@ gate, not an architectural requirement.
 The current evidence is sufficient to write and validate this initial path.
 It is not yet sufficient to claim a complete OpenGL 2.0 driver.  The external
 resource/control pairs, atomic linked vertex/fragment selection, and constant
-ranges are joined, but index `69` is captured drawable backing and index `6c`
+ranges are joined, but index `69` binds the external fixed-fragment database
+with unresolved address translation and index `6c`
 selects one opaque immutable linked VS/FS pair.  There are no public
 programmable start/count, per-stage entry, or end-PC fields in that path.
 Private 0x3158-byte whole-pipeline allocation, keyed cache reuse,
@@ -1093,7 +1094,7 @@ unbootable.
 2. Replay only a whitelisted no-op/fence, then a linear clear, then the captured
    fixed-layout triangle.  Compare the render BO rather than the scanout LUT.
    The decoder fixture must preserve the relocatable gltri program-bind tuple
-   `69=<external/drawable>, 6a=25010000, 68=00000000, 6b=00001030,
+   `69=<external-fixed-fragment-db>, 6a=25010000, 68=00000000, 6b=00001030,
    6c=40c3a301` before both sequence-12 draws.  It must also preserve the
    sequence-14 texture tuple `78=<resource>, 79=f0210140, 7a=000100f0`.
 3. Run repeated clear/triangle batches through requester wrap and 32-bit fence

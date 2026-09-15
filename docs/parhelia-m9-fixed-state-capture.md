@@ -179,8 +179,10 @@ Subsequent `parhelia-m9-texture-resource-capture.md` evidence closes 3-D R
 repeat and the signed/clamped LOD boundaries: bias -2, both saturation ends,
 minimum LOD 3, and maximum LOD 2 all produce the expected visible level.  The
 special/core GL2 captures also prove the corresponding generated-state
-resource is selected through tagged index `6c`; index `69` is drawable backing
-and must not be called a program heap.
+resource is selected through tagged index `6c`; index `69` binds the external
+fixed-fragment database.  The old address-directed BAR snapshot is an opaque
+alias with unresolved translation and must not be treated as drawable backing
+or a directly mapped program heap.
 
 Remaining fixed-function capture work is a sampled FBConfig, the fifteen logic
 operations beyond XOR, polygon-offset factor/unit lowering, the exact border

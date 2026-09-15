@@ -63,9 +63,10 @@ not a result written by that submission [CAP].
 
 ## Index 69 capture correction
 
-The allocation selected by index 69 starts at `0x11e42000` and has captured
-extent `0x1b080`.  The original address-directed snapshots appeared to expose
-pixels from the preceding draw.  Representative observed prefixes were [CAP]:
+The allocation descriptor used by index 69 reports address `0x11e42000` and
+extent `0x1b080`.  The original address-directed BAR snapshots appeared to
+expose pixels from the preceding draw.  Representative observed prefixes were
+[CAP]:
 
 | submission before which bytes were read | repeated first dword |
 |---|---:|
@@ -79,10 +80,10 @@ pixels from the preceding draw.  Representative observed prefixes were [CAP]:
 That interpretation is superseded by the exact `RsFragPtrsBuffer` constructor
 and binding call graph.  Index 69 binds a per-context immutable, flattened
 fixed-function vertex/declaration-conversion fragment database.  The captured
-`0x1b080` bytes are lower allocator/MMU root records containing backing
-addresses, not the logical database and not drawable pixels [BIN/DER].  The
-apparent preceding-draw values show that an address-directed snapshot did not
-resolve the resource's logical mapping; they cannot assign resource semantics.
+`0x1b080` address-directed BAR bytes are an opaque alias, not a linear copy of
+the database, drawable evidence, or proof of an MMU/root structure [BIN/CAP/DER].
+The apparent preceding-draw values show that the snapshot did not resolve the
+resource's logical mapping; translation remains unresolved.
 
 ## Native-looking bytes in the selected 6c resource
 

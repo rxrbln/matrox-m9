@@ -22,7 +22,7 @@ header. The reachable records are heterogeneous linked render-resource
 objects, and record-relative native-looking regions move between workloads.
 There is no statically supported universal `6c` field containing a native
 image address, slot count, vertex start, fragment start, or terminal PC. The
-external bind writes drawable/resource `69`, numeric controls `6a/6b`, and one
+external bind writes fixed-fragment-database resource `69`, numeric controls `6a/6b`, and one
 linked-pair resource through `6c`; it emits no code count or end [BIN].
 
 This negative result closes the transport schema. A driver may replay a

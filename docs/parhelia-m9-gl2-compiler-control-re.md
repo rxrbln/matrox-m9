@@ -135,8 +135,9 @@ Program transport facts remain exact:
 
 * native instructions are two dwords, grouped four per 32-byte upload line;
 * index 69 binds the per-context immutable fixed-function
-  vertex/declaration-conversion fragment database; its captured `0x1b080`
-  image is lower allocator/MMU root storage rather than logical shader bytes;
+  vertex/declaration-conversion fragment database; the old address-directed
+  `0x1b080` BAR snapshot is an opaque alias, not a linear database image, and
+  the address translation remains unresolved;
 * index 6a is a paired numeric control whose exact encoding remains open;
   index 6d is an optional companion control in the split form;
 * index 6c points to a separate 0x80-aligned linked record and preserves only

@@ -67,10 +67,11 @@ calls either function [BIN].  No shared field reference found in the 32 saved
 images joins compiled object `+0x128` to emitter external controls `+0xb0/+0xd0`
 or inline fields `+0xbd0/+0xbd4/+0xbd8/+0xbe0` [BIN].
 
-Thus static linkage now ends later and more precisely.  September 2026 live
-capture additionally proves that external index `69` is drawable backing, so
-the unresolved association must be sought in the system record selected by
-`6c`, not by treating `69` as a native heap:
+Thus static linkage now ends later and more precisely.  The exact fixed-chain
+constructor and binding path proves that external index `69` selects the
+fixed-fragment database.  The old address-directed BAR snapshot is only an
+opaque alias, with translation unresolved, so the programmable association
+must be sought in the system record selected by `6c`:
 
 ```text
 typed stage handle -> stage tree -> compiled object -> native descriptor +0x128
@@ -141,9 +142,10 @@ the Linux compiler as the implementation reference.
 
 The exact `RsFragPtrsBuffer` constructor supersedes the earlier
 address-directed interpretation of index `69`: it is a per-context immutable
-fixed-fragment database binding, while the captured `0x1b080` span is its
-lower allocator/MMU root [BIN/DER].  At each bind,
-resolve the handle through its tree and dump compiled object `+0x128`: record
+fixed-fragment database binding, while the captured `0x1b080` BAR span is an
+opaque alias rather than a linear database image or proved MMU/root structure;
+translation remains unresolved [BIN/CAP/DER].  Instrument the resource
+allocator and binding path, then dump compiled object `+0x128`: record
 count byte `+0x25`, the 8-byte slots beginning at `+0x28`, and any alternate
 vertex subrecords.  At `m9x11728` entry retain the numeric fields:
 

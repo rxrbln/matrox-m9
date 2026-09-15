@@ -127,7 +127,7 @@ The settled gltri raster pass emits this directly actionable state:
 | `f5,f6` | `0, 0x00f00140` | clip `[0,0,320,240)` (**CAP/BIN**) |
 | `c4,c5` | `0, 0x00f00140` | zero-origin transformed clip copy (**CAP/BIN**) |
 | `70..73` | all zero | texture-unit selectors disabled (**CAP**) |
-| `69` | `0x11e42000` | relocated external resource; live bytes are drawable backing, not native instructions (**CAP/BIN**) |
+| `69` | `0x11e42000` | relocated external fixed-fragment-database binding; the old address-directed BAR bytes are an opaque alias and its translation is unresolved (**CAP/BIN/DER**) |
 | `6a` | `0x25010000` | paired numeric control; exact encoding and stage meaning open (**CAP/BIN**) |
 | `68,6b` | `0, 0x00001030` | program controls; exact subfields open (**CAP**) |
 | `6c` | `0x40c3a301` | relocated selected linked-program-state record; A/B/A ownership closed by the GLSL capture (**CAP/BIN/DER**) |

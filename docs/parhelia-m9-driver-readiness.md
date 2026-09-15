@@ -48,7 +48,7 @@ The following pieces no longer depend on another vendor capture:
   formulas, and cube-face/volume-Z base rules are exact. The mapped index-`78`
   image is repeated PTE-shaped metadata rather than linear texels; its live
   table-root and physical-page ownership remain unjoined;
-* separate index-`69` drawable/external and `6c` linked resources, atomic vertex plus
+* separate index-`69` external fixed-fragment-database and `6c` linked resources, atomic vertex plus
   fragment A/B/A selection, live stage-constant ranges, and the invariant
   nature of the 80-slot `8f/90..9f` store;
 * context lifetime rules and a successful two-process test in which both
@@ -127,7 +127,7 @@ native encoding or an implemented scheduling limit.
 | constant/uniform branches | live constant/uniform results plus exact ELSE builder, two packed templates, physical selector allocation and native field placement | **captured**, graph reconvergence open | distinguish folded/native cases and construct reconvergence graph |
 | fixed/dynamic loops, BREAK/CALL | live fixed/uniform loops; exact loop/break builder joins, BREAK templates, CALL/LABEL/RET graph edges, CALLNZ macro, paired physical-selector allocation for `94/b4/c4`, ordered substitution, and final W0/W1 placement | physical fixup and transport lifetime **closed** for pinned families | implement graph construction/scheduling for arbitrary targets, backedges, calls, nesting and reconvergence |
 | uniforms/constants | vertex and fragment A/B/A sentinels identify live-component ranges in the 0x21000 resource | **closed** for external range path | mode-2 inline constant bank remains optional |
-| program entry/resource ownership | `69` is live drawable/resource backing; `6c` atomically selects an opaque tagged linked VS/FS pair; private 0x3158-byte pipeline allocation, ordered key reuse and copy-on-write publication are exact; fixed-chain-only starts/counts are separately exact | transport/lifetime contract **closed** | construct the internal bytes of a new linked pair |
+| program entry/resource ownership | `69` binds the external fixed-fragment database, with address translation unresolved; `6c` atomically selects an opaque tagged linked VS/FS pair; private 0x3158-byte pipeline allocation, ordered key reuse and copy-on-write publication are exact; fixed-chain-only starts/counts are separately exact | transport/lifetime contract **closed** | construct the internal bytes of a new linked pair |
 | termination | count-delimited compiler stream, endpoint selector `0x7e`, and result-only, kill-only and combined finalizer paths are exact | **validation** | determine endpoint-only versus full-terminal stop on generated programs; terminal variants do not encode MRT target index |
 
 `tools/m9-gl2-compiler-control-evidence.py` pins the MxMD and MxMGLX hashes,

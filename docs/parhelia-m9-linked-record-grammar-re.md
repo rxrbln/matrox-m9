@@ -120,7 +120,8 @@ subrecord.
 
 A clean driver may rely on these facts:
 
-* the external record relocation is separate from drawable index `69`;
+* the external record relocation is separate from the fixed-fragment-database
+  binding at index `69`;
 * the record address is `0x80` aligned and retains only the proved low tag;
 * record bounds are end-exclusive and must remain inside the BO;
 * referenced BOs must remain alive until the submission fence retires;

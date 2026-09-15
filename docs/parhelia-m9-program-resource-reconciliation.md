@@ -1,10 +1,13 @@
 # M9 indices 68--6d resource and native-state reconciliation
 
-This note corrects the former claim that live index `69` points to a native
-program heap.  A new full-allocation capture proves that it points to the
-128x128 drawable backing.  Independent disassembly of the Linux and Windows
-emitters then fixes what each field does without assigning shader-stage names
-that the address joins do not support.
+This note corrects the former claims that live index `69` points to a generic
+native-program heap or drawable backing.  The exact `RsFragPtrsBuffer`
+constructor and binding path prove that it selects the external fixed-fragment
+database.  The old address-directed BAR snapshot is an opaque alias, and
+translation from the emitted address to the logical database remains
+unresolved.  Independent disassembly of the Linux and Windows emitters fixes
+what each field does without assigning shader-stage names that the joins do
+not support.
 
 Evidence labels are `[BIN]` for exact static instructions, `[CAP]` for captured
 bytes or commands, and `[DER]` for a conclusion constrained by those facts.
@@ -29,7 +32,7 @@ top-state `+0xc8` object, but consume disjoint field groups [BIN].
 | final index | Linux producer | Windows producer | exact established role |
 | ---: | --- | --- | --- |
 | `68` | `m9x2427`: literal zero in the external `6c` bind; both emitters also use it as an indexed-store selector | `0xf78c0` and inline path in `0xf74d0` | multiplexed selector/control; not a persistent program address |
-| `69` | `m9x11728`: relocation from descriptor/pointer `+0xa0/+0xa8`, descriptor 2, usage `0x19` | `0xf74d0`: `+0xa0/+0xa4`, same descriptor and usage | external relocation-backed resource; live binding is drawable backing |
+| `69` | `m9x11728`: relocation from descriptor/pointer `+0xa0/+0xa8`, descriptor 2, usage `0x19` | `0xf74d0`: `+0xa0/+0xa4`, same descriptor and usage | external relocation-backed fixed-fragment database; address translation unresolved |
 | `6a` | `m9x11728`: numeric dword `+0xb0` | `0xf74d0`: numeric dword `+0xa8` | control paired with the `69` group; external bitfield is not decoded |
 | `6b` | `m9x2427`: numeric dword `+0xc8` | `0xf78c0`: numeric dword `+0xb4` | control paired with the `6c` group; normalizer forces the observed `0x1030` bits |
 | `6c` | `m9x2427`: relocation from descriptor/pointer `+0xb8/+0xc0`, descriptor 4, usage `0x1a` | `0xf78c0`: relocation from `+0xac/+0xb0`, same descriptor and usage | external relocation-backed system-resource record; low bit 0 is retained as a tag |
@@ -67,10 +70,11 @@ count or end is written beside `69/6a/6d`.  The two inline starts belong to a
 fixed vertex/declaration-conversion chain and its optional companion.  Static
 evidence still does not assign them universally to VS and FS [BIN][DER].
 
-## Live address joins
+## Live binding and address-snapshot boundary
 
-The special-op fixture captures the entire allocation selected by `69`, not a
-small guessed window.  Its allocation result is [CAP]:
+The special-op fixture records the allocation descriptor used for `69` and an
+address-directed BAR snapshot at the same numeric value.  The descriptor result
+is [CAP]:
 
 | result field | value |
 | --- | ---: |
@@ -80,12 +84,16 @@ small guessed window.  Its allocation result is [CAP]:
 | extent `+0x218` | `0x1b080` |
 | alignment `+0x21c` | `0x1000` |
 
-All 17 isolated draws bind `69=0x11e42000`.  The 0x1b080-byte snapshots hold
-changing 128x128 drawable pixels and cross-case prior draw/clear patterns.
-More than eight distinct complete-allocation hashes occur.  Values include
-the exact `dfdx`, `dfdy`, comparison, texture, and control-flow test colors.
-This is positive content and address evidence that `69` is drawable backing;
-it is not merely the absence of recognizable native opcodes [CAP].
+All 17 isolated draws bind `69=0x11e42000`.  The 0x1b080-byte BAR snapshots
+vary across cases, with more than eight distinct complete hashes, and include
+values matching the preceding 128x128 render, including the exact `dfdx`,
+`dfdy`, comparison, texture, and control-flow colors [CAP].  The static
+constructor and bind path establish that `69` selects the fixed-fragment
+database [BIN].
+The mismatch makes the old address-directed bytes an opaque alias: they are
+not a linear database image or drawable-ownership evidence and do not prove an
+MMU root or other translation structure.  Translation from the emitted address
+to the logical database remains unresolved [DER].
 
 The separately captured system allocation is [CAP]:
 
@@ -138,7 +146,8 @@ The exact current boundary is therefore:
 
 * native instructions can reside inside or be referenced by the record
   selected through `6c` [CAP][DER];
-* `69` is excluded as native storage on this live route [CAP];
+* `69` binds the external fixed-fragment database, but its emitted-address
+  translation is unresolved [BIN/DER];
 * `8d..8e` ranges are exact constant/vertex-resource ranges here [CAP];
 * the inline `68/60..67` path remains a separately proved on-chip upload mode
   [BIN];
@@ -194,18 +203,19 @@ The programmable fragment compiler finalizes a compiler/cache record and
 marks nested state dirty, but the exact setter/promotion edge from a Direct3D
 VS/PS object to external `69/6a/6b/6c/6d` is not recovered.  The Windows
 binary therefore corroborates the two hardware packet groups and the inline
-fixed-chain route.  It does not override the live evidence by turning `69`
-back into a program address [DER].
+fixed-chain route.  It does not resolve how the external `69` address reaches
+the logical fixed-fragment database [DER].
 
 ## Driver contract and remaining construction work
 
-Kernel validation and Mesa emission must use separate, neutral resource kinds
-for index `69` and index `6c`.  Existing names such as `PROGRAM` for `69` are
-incorrect and can lead a validator to apply the wrong memory class, alignment,
+Kernel validation and Mesa emission must use separate resource kinds for the
+fixed-fragment database at index `69` and the linked record at index `6c`.
+Generic names such as `PROGRAM` or `DRAWABLE` for `69` lose the established
+identity and can lead a validator to apply the wrong memory class, alignment,
 or tag.  For the captured external route:
 
 ```text
-69 = relocated drawable-resource address
+69 = relocated external fixed-fragment-database binding
 6a = captured numeric control 0x25010000
 68 = 0
 6b = captured numeric control 0x00001030

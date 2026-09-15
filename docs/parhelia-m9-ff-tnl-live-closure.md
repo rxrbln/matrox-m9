@@ -65,7 +65,7 @@ Its final resource state is:
 
 | index | final value | role |
 |---:|---:|---|
-| `69` | `11e42000` | drawable backing |
+| `69` | `11e42000` | external fixed-fragment-database binding; address translation unresolved |
 | `6a` | `25010000` | paired numeric resource control |
 | `6b` | `00001030` | tagged system-record companion control |
 | `6c` | `40c3b601` | system resource base `40c3a000` plus record `0x1600`, tag 1 |

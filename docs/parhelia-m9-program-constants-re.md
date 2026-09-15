@@ -261,9 +261,11 @@ emission.
 The common old-engine state emitter `0x4b9340` exposes a later, exact GPU
 resource boundary [BIN]. Its state contains two opaque 64-bit values at
 `+0xa0` and `+0xa8`. They must remain opaque because the saved image does not
-join their internal fields to the persistent constant banks above.  Later live
-capture proves that the resource emitted at index `69` is drawable backing,
-not native-program or constant-bank storage [CAP].
+join their internal fields to the persistent constant banks above.  Static
+constructor and binding recovery proves that the resource emitted at index
+`69` is the external fixed-fragment database, not programmable-program or
+constant-bank storage; translation from its emitted address remains unresolved
+[BIN/DER].
 
 When state byte `+9` bit 1 is set, the emitter first calls command-buffer
 vtable slot `+0x68` with `state[+0xa0]`, `state[+0xa8]`, and count one. When
@@ -361,10 +363,11 @@ Static evidence does not connect the conditional mode-2 bank argument to the
 opaque `+0xa0/+0xa8` pair, expose the backing allocation length, or associate
 the two `*BmConstants` controls with a GL stage.
 
-The old proposal to search the index-`69` allocation for constant sentinels is
-retired: the complete allocation contains drawable pixels.  The remaining
-probe must compare the `6c`-selected system record and its surrounding
-0x21000-byte allocation while changing only one stage's constants.  See
+The old proposal to search the address-directed index-`69` BAR snapshot for
+constant sentinels is retired: that snapshot is an opaque alias rather than a
+linear view of the fixed-fragment database.  The remaining probe must compare
+the `6c`-selected system record and its surrounding 0x21000-byte allocation
+while changing only one stage's constants.  See
 `parhelia-m9-program-resource-reconciliation.md` for the exact address join and
 bounded VS/FS record experiment.
 

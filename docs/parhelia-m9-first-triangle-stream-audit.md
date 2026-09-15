@@ -107,7 +107,7 @@ accesses.
 | P/57 | `00` | canonical vertex source | read | system address plus captured low tag 1 |
 | P/61, R/61 | `c2` | 0x1080-byte common resource-bank backing | conservative read/write | untagged; observed page alignment |
 | P/66..67 | `8d/8e` | system range `[+0x10,+0xc0)` | read | same system BO, each address plus tag 1 |
-| P/105, R/103 | `69` | drawable/external resource | read/write | untagged, 4-KiB-aligned allocation |
+| P/105, R/103 | `69` | external fixed-fragment database | read | untagged emitted address; descriptor reports 4-KiB alignment, but translation to the logical database is unresolved |
 | P/111, R/109 | `6c` | linked record at `+0x300` | read | same system BO, 0x80 alignment, tag 1 |
 | R/22 | `b0` | linear color RT0 | write for this unblended draw | untagged, at least 256-byte aligned |
 | R/25 | `b8` | ordinary depth | conservative read/write | untagged, at least 256-byte aligned |
