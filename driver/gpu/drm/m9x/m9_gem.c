@@ -292,16 +292,16 @@ int m9x_get_bo_info_ioctl(struct drm_device *drm, void *data,
 
 	if (!m9x_enabled())
 		return -ENODEV;
-	if (!args->handle || args->domain || args->size || args->flags ||
+	if (!args->handle || args->memory_class || args->size || args->flags ||
 	    args->pad)
 		return -EINVAL;
 	gem = drm_gem_object_lookup(file, args->handle);
 	if (!gem)
 		return -ENOENT;
 	if (m9x_gem_is_vram(gem))
-		args->domain = PARHELIA_M9_DOMAIN_LOCAL_VRAM;
+		args->memory_class = PARHELIA_M9_MEMORY_CLASS_VRAM;
 	else if (m9x_gem_is_dma(gem))
-		args->domain = PARHELIA_M9_DOMAIN_DMA32;
+		args->memory_class = PARHELIA_M9_MEMORY_CLASS_DMA32;
 	else
 		ret = -EINVAL;
 	if (!ret)
