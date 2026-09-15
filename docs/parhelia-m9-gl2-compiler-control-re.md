@@ -134,9 +134,9 @@ result route remain gated pending the linked-record grammar [CAP].
 Program transport facts remain exact:
 
 * native instructions are two dwords, grouped four per 32-byte upload line;
-* static emitter ownership associates index 69 with its external program
-  substate, but address-directed live capture resolves the selected value to
-  drawable backing; its live external semantic therefore remains unassigned;
+* index 69 binds the per-context immutable fixed-function
+  vertex/declaration-conversion fragment database; its captured `0x1b080`
+  image is lower allocator/MMU root storage rather than logical shader bytes;
 * index 6a is a paired numeric control whose exact encoding remains open;
   index 6d is an optional companion control in the split form;
 * index 6c points to a separate 0x80-aligned linked record and preserves only
@@ -147,7 +147,7 @@ Program transport facts remain exact:
   final MOV form. There is no proven universal END bit.
 
 New driver submission must treat index 69 and the linked record as separate
-relocations without calling index 69 a native-program heap. Arbitrary program
+relocations with independent lifetimes. Arbitrary program
 execution stays gated until a capture identifies native storage, both internal
 stage entries, and the hardware stop condition.
 

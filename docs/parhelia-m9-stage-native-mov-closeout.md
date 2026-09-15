@@ -139,14 +139,16 @@ the Linux compiler as the implementation reference.
 
 ## Updated smallest remaining capture
 
-The full-allocation special-op capture supersedes the earlier request to dump
-index `69`: that resource is the 128x128 drawable backing [CAP].  At each bind,
+The exact `RsFragPtrsBuffer` constructor supersedes the earlier
+address-directed interpretation of index `69`: it is a per-context immutable
+fixed-fragment database binding, while the captured `0x1b080` span is its
+lower allocator/MMU root [BIN/DER].  At each bind,
 resolve the handle through its tree and dump compiled object `+0x128`: record
 count byte `+0x25`, the 8-byte slots beginning at `+0x28`, and any alternate
 vertex subrecords.  At `m9x11728` entry retain the numeric fields:
 
 ```text
-+0xa0  relocation/resource descriptor for drawable-backed index 69
++0xa0  relocation/resource descriptor for fixed-fragment DB index 69
 +0xb0  external 6a control
 +0xd0  external 6d control
 +0xbd0/+0xbd4  inline starts
@@ -156,8 +158,8 @@ vertex subrecords.  At `m9x11728` entry retain the numeric fields:
 Run two pairs: hold the vertex shader fixed while changing a fragment ALU
 operation, then hold fragment fixed while changing a vertex ALU operation.
 Dump the complete `6c`-selected system record and its surrounding allocation.
-Those two first-draw records can identify the changing stage subrecord without
-misclassifying drawable pixels as code.  The reconciled address evidence is in
+Those two first-draw records can identify the changing stage subrecord.  The
+reconciled address evidence is in
 `parhelia-m9-program-resource-reconciliation.md`.
 
 Run `python3 tools/m9-stage-mov-boundary-evidence.py` to verify the Windows

@@ -61,11 +61,11 @@ The full system resource is byte-identical immediately before and after each
 selected ExecuteDma call.  It is compiler-populated state selected by the draw,
 not a result written by that submission [CAP].
 
-## Index 69 correction
+## Index 69 capture correction
 
 The allocation selected by index 69 starts at `0x11e42000` and has captured
-extent `0x1b080`.  Address-directed snapshots expose pixels from the preceding
-draw.  Representative prefixes are [CAP]:
+extent `0x1b080`.  The original address-directed snapshots appeared to expose
+pixels from the preceding draw.  Representative observed prefixes were [CAP]:
 
 | submission before which bytes were read | repeated first dword |
 |---|---:|
@@ -76,11 +76,13 @@ draw.  Representative prefixes are [CAP]:
 | ARBfp `SLT` | `ff000000` (the vertex-texture result) |
 | ARBfp `SGE` | `00000000` (the `SLT` result) |
 
-This proves that the selected index-69 value is drawable backing on this route,
-not native shader storage [CAP/DER].  Static code still associates index 69
-with the external program-bind substate.  Driver documentation and code must
-keep that static ownership observation separate from the now-resolved live
-allocation contents.
+That interpretation is superseded by the exact `RsFragPtrsBuffer` constructor
+and binding call graph.  Index 69 binds a per-context immutable, flattened
+fixed-function vertex/declaration-conversion fragment database.  The captured
+`0x1b080` bytes are lower allocator/MMU root records containing backing
+addresses, not the logical database and not drawable pixels [BIN/DER].  The
+apparent preceding-draw values show that an address-directed snapshot did not
+resolve the resource's logical mapping; they cannot assign resource semantics.
 
 ## Native-looking bytes in the selected 6c resource
 

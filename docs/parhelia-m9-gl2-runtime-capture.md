@@ -156,9 +156,11 @@ range is `8c=00500d00`, `8d=resource+0x21`, `8e=resource+0x89`.  Complete
 repeated draw, and the linked record at byte offset 0x280 differs across the
 two shader programs.  This closes process/context ownership, bind restoration,
 and resource-address isolation for the tested GL2 path.  The later
-address-directed capture in `parhelia-m9-gl2-special-capture.md` proves that
-index 69 points into drawable backing on this route; it is not a native-program
-heap.
+later static `RsFragPtrsBuffer` constructor and binding recovery proves that
+index 69 is each context's fixed-function vertex/declaration-conversion
+fragment-database root.  The address-directed capture in
+`parhelia-m9-gl2-special-capture.md` read lower mapping storage and did not
+establish drawable ownership.
 
 The fixture also includes the authoritative full `glxinfo -l` inventory from
 the same live stack.  It identifies direct rendering by `Matrox ICD for
