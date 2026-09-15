@@ -219,7 +219,7 @@ m9_batch_emit_draw_job(struct m9_batch *batch, const struct m9_draw_job *job)
    EMIT(V(0xe6, 3), V(0xe3, 0x30));
    EMIT(V(0x43, 0x30));
    EMIT(V(0xe6, 0x42000000));
-   EMIT(V(0xf0, m9_raster_class(d0->lines)), V(0xef, d0->cull | job->depth_ef),
+   EMIT(V(0xf0, m9_raster_class(d0->lines, job->blend_dest)), V(0xef, d0->cull | job->depth_ef),
         V(0xd7, m9_raster_d7(d0->topology)));
    EMIT(V(0x22, m9_job_raster_control(job, d0)));
    EMIT(V(0xe6, 3), V(0xe3, 0x40));
@@ -272,7 +272,7 @@ m9_batch_emit_draw_job(struct m9_batch *batch, const struct m9_draw_job *job)
       if (i) {
          EMIT(V(0x22, m9_job_raster_control(job, d)),
               V(0x6a, 0x25010000));
-         EMIT(V(0xf0, m9_raster_class(d->lines)),
+         EMIT(V(0xf0, m9_raster_class(d->lines, job->blend_dest)),
               V(0xef, d->cull | job->depth_ef),
               V(0xd7, m9_raster_d7(d->topology)), V(0xf4, 0));
       }

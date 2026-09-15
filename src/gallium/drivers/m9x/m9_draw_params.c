@@ -258,9 +258,12 @@ m9_raster_d7(enum m9_topology topology)
 }
 
 uint32_t
-m9_raster_class(bool lines)
+m9_raster_class(bool lines, bool blend_dest)
 {
-   return lines ? 0xc8008400u : 0xc4008400u;
+   /* Blended lines are not captured; they keep the line class. */
+   if (lines)
+      return 0xc8008400u;
+   return blend_dest ? 0xc5008200u : 0xc4008400u;
 }
 
 bool

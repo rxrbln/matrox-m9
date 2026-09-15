@@ -72,14 +72,20 @@ struct m9_fs_state {
    bool passthrough;
    bool native, warned;
    const char *reason;
-   struct m9_fs_program program;
-   struct m9_resource c2;              /* fragment slots, then vertex program */
-   unsigned vertex_entry;
-   unsigned extra_count;               /* CPU view locations: varyings, then coordinates */
+   struct m9_fs_program program;       /* unblended: streams and samplers */
+   struct util_dynarray variants;      /* struct m9_fs_variant *, per blend */
+   unsigned extra_count;              /* CPU view locations: varyings, then coordinates */
    uint8_t extra_location[M9_FS_MAX_VARYINGS + M9_FS_MAX_TEXTURES];
    unsigned coord_count;               /* distinct texture coordinate streams */
    uint8_t coord_location[M9_FS_MAX_TEXTURES];
    uint8_t texture_coord[M9_FS_MAX_TEXTURES];  /* coordinate stream per texel pair */
+};
+
+struct m9_fs_variant {
+   struct m9_fs_blend blend;
+   struct m9_fs_program program;
+   struct m9_resource c2;              /* fragment slots, then vertex program */
+   unsigned vertex_entry;
 };
 
 struct m9_velems {
@@ -410,7 +416,8 @@ m9_varying_is_color(unsigned location)
 /* Raster constants and CPU varying views of a native fragment job. */
 static int
 m9_job_native(struct m9_context *ctx, const struct m9_fs_state *fs,
-              unsigned records, struct m9_raster_fs *raster)
+              const struct m9_fs_variant *variant, unsigned records,
+              struct m9_raster_fs *raster)
 {
    const struct m9_fs_program *p = &fs->program;
    const float *extra = ctx->extra.data;
@@ -436,9 +443,9 @@ m9_job_native(struct m9_context *ctx, const struct m9_fs_state *fs,
          memcpy(view + r * M9_TRANSIENT_VERTEX_BYTES,
                 extra + (r * fs->extra_count + j) * 4, 4 * sizeof(float));
    }
-   return m9_raster_fs_init_textured(raster, fs->vertex_entry,
-                                     m9_fs_raster_88(p),
-                                     util_dynarray_num_elements(&p->consts,
+   return m9_raster_fs_init_textured(raster, variant->vertex_entry,
+                                     m9_fs_raster_88(&variant->program),
+                                     util_dynarray_num_elements(&variant->program.consts,
                                                                 struct m9_fs_const),
                                      p->varying_count, flat, views,
                                      fs->coord_count, coords,
@@ -471,7 +478,7 @@ m9_submit_job(struct m9_context *ctx)
       memcpy((uint8_t *)ctx->system.map + M9_LINKED_OFFSET,
              ctx->params.linked_prefix, sizeof(ctx->params.linked_prefix));
       if (fs)
-         ret = m9_job_native(ctx, fs, records, &raster);
+         ret = m9_job_native(ctx, fs, key->variant, records, &raster);
       job = (struct m9_draw_job) {
          .params = &ctx->params,
          .decl = &ctx->decl,
@@ -496,8 +503,10 @@ m9_submit_job(struct m9_context *ctx)
          .units = key->unit_count ? key->units : NULL,
          .unit_count = key->unit_count,
       };
-      if (fs)
-         job.program = fs->c2.handle;
+      if (fs) {
+         job.program = key->variant->c2.handle;
+         job.blend_dest = key->variant->program.blend_dest;
+      }
       m9_batch_init(&ctx->batch);
       if (!ret)
          ret = m9_batch_emit_draw_job(&ctx->batch, &job);
@@ -650,7 +659,7 @@ m9_scissor_key(struct m9_context *ctx, const struct pipe_scissor_state *s,
 
 /* Raster constant span values for the current constant buffer 0. */
 static bool
-m9_fs_resolve_consts(struct m9_context *ctx, const struct m9_fs_state *fs,
+m9_fs_resolve_consts(struct m9_context *ctx, const struct m9_fs_variant *fs,
                      struct util_dynarray *out)
 {
    const struct pipe_constant_buffer *cb = &ctx->fs_constants;
@@ -770,6 +779,120 @@ m9_job_textures(struct m9_context *ctx, const struct m9_fs_state *fs,
 }
 
 static bool
+m9_blend_factor(enum pipe_blendfactor f, uint8_t *out)
+{
+   static const struct { enum pipe_blendfactor pipe; uint8_t m9; } map[] = {
+      { PIPE_BLENDFACTOR_ZERO, M9_FS_ZERO },
+      { PIPE_BLENDFACTOR_ONE, M9_FS_ONE },
+      { PIPE_BLENDFACTOR_SRC_ALPHA, M9_FS_SRC_ALPHA },
+      { PIPE_BLENDFACTOR_INV_SRC_ALPHA, M9_FS_INV_SRC_ALPHA },
+      { PIPE_BLENDFACTOR_DST_ALPHA, M9_FS_DST_ALPHA },
+      { PIPE_BLENDFACTOR_INV_DST_ALPHA, M9_FS_INV_DST_ALPHA },
+      { PIPE_BLENDFACTOR_SRC_COLOR, M9_FS_SRC_COLOR },
+      { PIPE_BLENDFACTOR_INV_SRC_COLOR, M9_FS_INV_SRC_COLOR },
+   };
+
+   for (unsigned i = 0; i < ARRAY_SIZE(map); i++) {
+      if (map[i].pipe == f) {
+         *out = map[i].m9;
+         return true;
+      }
+   }
+   return false;
+}
+
+/* The alpha lane of SRC_COLOR is SRC_ALPHA. */
+static enum pipe_blendfactor
+m9_alpha_equivalent(enum pipe_blendfactor f)
+{
+   switch (f) {
+   case PIPE_BLENDFACTOR_SRC_COLOR: return PIPE_BLENDFACTOR_SRC_ALPHA;
+   case PIPE_BLENDFACTOR_INV_SRC_COLOR: return PIPE_BLENDFACTOR_INV_SRC_ALPHA;
+   default: return f;
+   }
+}
+
+/* Blend state as lowered factors, or the reason draws are skipped. */
+static const char *
+m9_blend_key(const struct pipe_blend_state *blend, struct m9_fs_blend *out)
+{
+   const struct pipe_rt_blend_state *rt = blend ? &blend->rt[0] : NULL;
+
+   if (!rt || !rt->blend_enable)
+      return NULL;
+   if (rt->rgb_func != PIPE_BLEND_ADD || rt->alpha_func != PIPE_BLEND_ADD)
+      return "blend equations other than ADD are not implemented; "
+             "draw skipped";
+   if (m9_alpha_equivalent(rt->rgb_src_factor) != rt->alpha_src_factor ||
+       m9_alpha_equivalent(rt->rgb_dst_factor) != rt->alpha_dst_factor ||
+       !m9_blend_factor(rt->rgb_src_factor, &out->src) ||
+       !m9_blend_factor(rt->rgb_dst_factor, &out->dst))
+      return "separate or constant blend factors are not implemented; "
+             "draw skipped";
+   return NULL;
+}
+
+static bool
+m9_fs_variant_upload(struct m9_context *ctx, struct m9_fs_variant *v,
+                     const char **reason)
+{
+   const unsigned vs_slots = ARRAY_SIZE(m9_passthrough_c2_program) / 2 - 4;
+   unsigned slots = m9_fs_slot_count(&v->program);
+
+   if ((slots + vs_slots) * 8 > M9_PROGRAM_BYTES) {
+      *reason = "program exceeds the c2 image";
+      return false;
+   }
+   if (m9_bo_create(ctx->screen, M9_PROGRAM_BYTES, PARHELIA_M9_BO_VRAM,
+                    M9_RESOURCE_SYSTEM_STATE, &v->c2)) {
+      *reason = "cannot allocate the c2 image";
+      return false;
+   }
+   /* Fragment slots first, the captured vertex program behind them. */
+   memset(v->c2.map, 0, v->c2.size);
+   memcpy(v->c2.map, v->program.slots.data, 8 * slots);
+   memcpy((uint8_t *)v->c2.map + 8 * slots, m9_passthrough_c2_program + 8,
+          8 * vs_slots);
+   v->vertex_entry = slots;
+   return true;
+}
+
+/* Program of fs for a blend state, compiled on first use. */
+static const struct m9_fs_variant *
+m9_fs_variant(struct m9_context *ctx, struct m9_fs_state *fs,
+              const struct m9_fs_blend *blend, const char **reason)
+{
+   struct m9_fs_variant *v;
+   nir_shader *clone;
+   bool ok;
+
+   util_dynarray_foreach(&fs->variants, struct m9_fs_variant *, it) {
+      if ((*it)->blend.src == blend->src && (*it)->blend.dst == blend->dst)
+         return *it;
+   }
+   *reason = "out of memory";
+   v = CALLOC_STRUCT(m9_fs_variant);
+   clone = v ? nir_shader_clone(NULL, fs->nir) : NULL;
+   if (!clone) {
+      FREE(v);
+      return NULL;
+   }
+   v->blend = *blend;
+   ok = m9_fs_compile(clone, blend, &v->program, reason);
+   ralloc_free(clone);
+   if (ok && !m9_fs_variant_upload(ctx, v, reason)) {
+      m9_fs_program_fini(&v->program);
+      ok = false;
+   }
+   if (!ok) {
+      FREE(v);
+      return NULL;
+   }
+   util_dynarray_append_typed(&fs->variants, struct m9_fs_variant *, v);
+   return v;
+}
+
+static bool
 m9_job_key_current(struct m9_context *ctx, struct m9_job_key *key)
 {
    const struct pipe_depth_stencil_alpha_state *dsa = ctx->dsa;
@@ -789,9 +912,6 @@ m9_job_key_current(struct m9_context *ctx, struct m9_job_key *key)
       test = false;
    }
    write = test && dsa->depth_writemask;
-   if (blend && blend->rt[0].blend_enable)
-      m9_warn_once(ctx, M9_WARN_BLEND, "blending is not implemented; "
-                   "drawing opaque");
    if (dsa && (dsa->stencil[0].enabled || dsa->alpha_enabled))
       m9_warn_once(ctx, M9_WARN_STENCIL, "stencil and alpha test are not "
                    "implemented");
@@ -804,10 +924,25 @@ m9_job_key_current(struct m9_context *ctx, struct m9_job_key *key)
    key->color_mask = m9_color_mask(blend ? blend->rt[0].colormask :
                                            PIPE_MASK_RGBA);
    if (ctx->fs && ctx->fs->native && !ctx->fs->passthrough) {
+      struct m9_fs_blend fb = { M9_FS_ONE, M9_FS_ZERO };
+      const char *reason = m9_blend_key(blend, &fb);
+
+      if (reason) {
+         m9_warn_once(ctx, M9_WARN_BLEND, reason);
+         return false;
+      }
       key->fs = ctx->fs;
-      if (!m9_fs_resolve_consts(ctx, ctx->fs, &ctx->key_consts) ||
+      key->variant = m9_fs_variant(ctx, ctx->fs, &fb, &reason);
+      if (!key->variant) {
+         m9_warn_once(ctx, M9_WARN_BLEND, reason);
+         return false;
+      }
+      if (!m9_fs_resolve_consts(ctx, key->variant, &ctx->key_consts) ||
           !m9_job_textures(ctx, ctx->fs, key))
          return false;
+   } else if (blend && blend->rt[0].blend_enable) {
+      m9_warn_once(ctx, M9_WARN_BLEND, "blending needs a native fragment "
+                   "program; drawing opaque");
    }
    if (rast && rast->scissor)
       return m9_scissor_key(ctx, &ctx->scissor, key);
@@ -1617,38 +1752,25 @@ m9_fs_streams(struct m9_fs_state *fs)
 static void
 m9_fs_native_init(struct m9_context *ctx, struct m9_fs_state *fs)
 {
-   const unsigned vs_slots = ARRAY_SIZE(m9_passthrough_c2_program) / 2 - 4;
+   static const struct m9_fs_blend opaque = { M9_FS_ONE, M9_FS_ZERO };
    nir_shader *clone = nir_shader_clone(NULL, fs->nir);
-   unsigned slots;
 
+   util_dynarray_init(&fs->variants, NULL);
    fs->reason = "out of memory";
    if (!clone)
       return;
-   if (!m9_fs_compile(clone, &fs->program, &fs->reason)) {
+   if (!m9_fs_compile(clone, NULL, &fs->program, &fs->reason)) {
       ralloc_free(clone);
       return;
    }
    ralloc_free(clone);
-   slots = m9_fs_slot_count(&fs->program);
    m9_fs_streams(fs);
-   if (fs->extra_count > M9_TRANSIENT_VIEWS - M9_TRANSIENT_CPU_VIEW) {
+   if (fs->extra_count > M9_TRANSIENT_VIEWS - M9_TRANSIENT_CPU_VIEW)
       fs->reason = "more CPU varying streams than transient views";
-   } else if ((slots + vs_slots) * 8 > M9_PROGRAM_BYTES) {
-      fs->reason = "program exceeds the c2 image";
-   } else if (m9_bo_create(ctx->screen, M9_PROGRAM_BYTES, PARHELIA_M9_BO_VRAM,
-                           M9_RESOURCE_SYSTEM_STATE, &fs->c2)) {
-      fs->reason = "cannot allocate the c2 image";
-   } else {
-      /* Fragment slots first, the captured vertex program behind them. */
-      memset(fs->c2.map, 0, fs->c2.size);
-      memcpy(fs->c2.map, fs->program.slots.data, 8 * slots);
-      memcpy((uint8_t *)fs->c2.map + 8 * slots, m9_passthrough_c2_program + 8,
-             8 * vs_slots);
-      fs->vertex_entry = slots;
+   else if (m9_fs_variant(ctx, fs, &opaque, &fs->reason))
       fs->native = true;
-      return;
-   }
-   m9_fs_program_fini(&fs->program);
+   if (!fs->native)
+      m9_fs_program_fini(&fs->program);
 }
 
 static void *
@@ -1692,10 +1814,14 @@ m9_delete_fs_state(struct pipe_context *pctx, void *state)
 
    if (ctx->job_key.fs == fs)
       m9_context_sync(ctx);
-   if (fs->native) {
-      m9_bo_destroy(ctx->screen, &fs->c2);
-      m9_fs_program_fini(&fs->program);
+   util_dynarray_foreach(&fs->variants, struct m9_fs_variant *, it) {
+      m9_bo_destroy(ctx->screen, &(*it)->c2);
+      m9_fs_program_fini(&(*it)->program);
+      FREE(*it);
    }
+   util_dynarray_fini(&fs->variants);
+   if (fs->native)
+      m9_fs_program_fini(&fs->program);
    draw_delete_fragment_shader(ctx->draw, fs->draw);
    ralloc_free(fs->nir);
    FREE(fs);

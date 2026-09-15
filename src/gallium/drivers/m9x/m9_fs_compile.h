@@ -40,6 +40,17 @@ struct m9_fs_varying {
    uint8_t components;     /* component mask read by the program */
 };
 
+/* Blend factors lowered into the program, applied to R,G,B and A alike with
+ * the ADD equation (captures/m9x-vendor-glamor-blend-20260915). */
+enum m9_fs_factor {
+   M9_FS_ZERO, M9_FS_ONE, M9_FS_SRC_ALPHA, M9_FS_INV_SRC_ALPHA,
+   M9_FS_DST_ALPHA, M9_FS_INV_DST_ALPHA, M9_FS_SRC_COLOR, M9_FS_INV_SRC_COLOR,
+};
+
+struct m9_fs_blend {
+   uint8_t src, dst;              /* enum m9_fs_factor */
+};
+
 struct m9_fs_program {
    struct util_dynarray slots;    /* uint32_t W0, W1 */
    struct util_dynarray consts;   /* struct m9_fs_const, fixed tail included */
@@ -51,6 +62,7 @@ struct m9_fs_program {
    unsigned texture_count;
    uint16_t registers_used;       /* bit per register pair group 08..1f */
    bool discard, fragcoord, fragdepth;
+   bool blend_dest;               /* raster f0 c5008200: destination blend */
 };
 
 extern const struct nir_shader_compiler_options m9_fs_nir_options;
@@ -61,9 +73,10 @@ void m9_fs_find_inlinable_uniforms(struct nir_shader *nir);
  * control flow that depended on them. */
 void m9_fs_inline_uniforms(struct nir_shader *nir, const uint32_t *values);
 
-/* Returns false with a static reason when the shader is not covered. */
-bool m9_fs_compile(struct nir_shader *nir, struct m9_fs_program *program,
-                   const char **reason);
+/* Returns false with a static reason when the shader is not covered.  A NULL
+ * blend, or ONE/ZERO, writes the colour unblended. */
+bool m9_fs_compile(struct nir_shader *nir, const struct m9_fs_blend *blend,
+                   struct m9_fs_program *program, const char **reason);
 void m9_fs_program_fini(struct m9_fs_program *program);
 unsigned m9_fs_slot_count(const struct m9_fs_program *program);
 uint32_t m9_fs_raster_88(const struct m9_fs_program *program);

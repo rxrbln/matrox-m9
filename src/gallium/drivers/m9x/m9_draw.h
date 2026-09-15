@@ -32,6 +32,7 @@ struct m9_draw_job {
    uint32_t depth_control;    /* raster a8 */
    uint32_t depth_ef;         /* raster ef depth bits */
    uint32_t color_mask;       /* raster ab */
+   bool blend_dest;           /* the fragment program blends the destination */
    uint32_t clip_min, clip_max;
    /* Native fragment program; NULL keeps the pass-through colour image. */
    const struct m9_raster_fs *fs;

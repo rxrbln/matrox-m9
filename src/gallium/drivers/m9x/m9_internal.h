@@ -199,11 +199,13 @@ struct m9_batch {
 
 struct draw_context;
 struct m9_fs_state;
+struct m9_fs_variant;
 
 /* Pass-level raster state shared by every draw of one two-pass job. */
 struct m9_job_key {
    struct m9_resource *depth, *aux;
    const struct m9_fs_state *fs;   /* native fragment program or NULL */
+   const struct m9_fs_variant *variant;  /* its program for the blend state */
    uint32_t depth_control, depth_ef, color_mask, clip_min, clip_max;
    struct m9_texture_unit units[M9_TEXTURE_MAX_UNITS];
    struct pipe_resource *unit_res[M9_TEXTURE_MAX_UNITS];

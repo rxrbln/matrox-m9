@@ -1054,6 +1054,9 @@ m9_screen_create(int fd, const struct pipe_screen_config *config)
    caps->glsl_feature_level_compatibility = 120;
    caps->essl_feature_level = 100;
    caps->npot_textures = true;
+   /* ES 2.0 for glamor; factors lower into the fragment program, and
+    * equations other than ADD skip the draw with a warning. */
+   caps->blend_equation_separate = true;
    caps->user_vertex_buffers = true;
    caps->vertex_color_clamped = true;
    caps->vertex_color_unclamped = true;

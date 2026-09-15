@@ -103,6 +103,7 @@ struct kkey {
 struct ctx {
    nir_shader *nir;
    struct m9_fs_program *p;
+   const struct m9_fs_blend *blend;  /* NULL when unblended */
    struct util_dynarray nodes, lops, values, keys, key_index;
    const char *reason;
    bool has_consts;
@@ -827,12 +828,14 @@ allocate(struct ctx *c)
          if (v->reg >= 0 || v->general)
             continue;
          if (v->interp) {
-            if (v->rg_read && !reg_busy(busy, REG_I))
+            /* Blending reads the destination from 18..1b. */
+            if (v->rg_read && !c->blend && !reg_busy(busy, REG_I))
                reg = REG_I;
             for (unsigned r = base; reg < 0 && r < base + 2; r++)
                if (!reg_busy(busy, r))
                   reg = r;
-            for (unsigned r = 0; reg < 0 && r < ARRAY_SIZE(interp_extra); r++)
+            for (unsigned r = c->blend ? 2 : 0;
+                 reg < 0 && r < ARRAY_SIZE(interp_extra); r++)
                if (!reg_busy(busy, interp_extra[r]))
                   reg = interp_extra[r];
             if (reg < 0)
@@ -1413,6 +1416,186 @@ assign_texels(struct ctx *c)
    return true;
 }
 
+/* Blending */
+
+#define REG_DST 0x18u        /* destination R,G; B,A in 1a */
+#define SWZ_ALPHA 3u
+#define SWZ_LANE 1u
+
+enum bterm { B_ZERO, B_ONE, B_REG, B_INV };
+
+struct bfactor {
+   enum bterm term;
+   unsigned reg, swz;
+};
+
+static unsigned
+slot_a(uint32_t w0, uint32_t w1)
+{
+   return (w1 & 0xf) << 3 | w0 >> 29;
+}
+
+static int
+blend_temp(struct ctx *c, uint32_t *used)
+{
+   for (unsigned r = 0; r < 0x10; r++) {
+      if (!(*used & BITFIELD_BIT(r))) {
+         *used |= BITFIELD_BIT(r);
+         mark_register(c, r);
+         return r;
+      }
+   }
+   return fail(c, "out of temporaries for blending"), -1;
+}
+
+static void
+blend_emit(struct ctx *c, uint32_t w0, uint32_t w1)
+{
+   emit(c, w0, w1);
+}
+
+/* temp = K1 - reg.a, replicated (captured OMSA/OMDA factor load) */
+static int
+blend_inv_alpha(struct ctx *c, uint32_t *used, unsigned reg, unsigned k1)
+{
+   int t = blend_temp(c, used);
+
+   if (t >= 0)
+      blend_emit(c, w0_make(NONE, NONE, reg, t, 0, 0x1c),
+                 w1_make(0xa0800cf0, k1, NONE));
+   return t;
+}
+
+static struct bfactor
+blend_factor(unsigned f, unsigned lane, unsigned s, unsigned s_ba)
+{
+   switch (f) {
+   case M9_FS_ONE: return (struct bfactor){ B_ONE };
+   case M9_FS_SRC_ALPHA: return (struct bfactor){ B_REG, s_ba, SWZ_ALPHA };
+   case M9_FS_INV_SRC_ALPHA: return (struct bfactor){ B_INV, s_ba, SWZ_ALPHA };
+   case M9_FS_DST_ALPHA: return (struct bfactor){ B_REG, REG_DST + 2, SWZ_ALPHA };
+   case M9_FS_INV_DST_ALPHA: return (struct bfactor){ B_INV, REG_DST + 2, SWZ_ALPHA };
+   case M9_FS_SRC_COLOR: return (struct bfactor){ B_REG, s, SWZ_LANE };
+   case M9_FS_INV_SRC_COLOR: return (struct bfactor){ B_INV, s, SWZ_LANE };
+   default: return (struct bfactor){ B_ZERO };
+   }
+}
+
+/* out = S * fs + D * fd for one lane, from instruction forms captured in
+ * captures/m9x-vendor-glamor-blend-20260915. */
+static bool
+blend_lane(struct ctx *c, uint32_t *used, unsigned lane, unsigned s,
+           unsigned s_ba, unsigned k0, unsigned k1)
+{
+   const unsigned op0 = 0x1d + lane, d = REG_DST + 2 * lane;
+   struct bfactor fs = blend_factor(c->blend->src, lane, s, s_ba);
+   struct bfactor fd = blend_factor(c->blend->dst, lane, s, s_ba);
+   int t;
+
+   /* Inverted factors other than the fused forms load 1 - alpha. */
+   if (fs.term == B_INV) {
+      if (fs.swz != SWZ_ALPHA)
+         return fail(c, "ONE_MINUS_SRC_COLOR source factor");
+      if ((t = blend_inv_alpha(c, used, fs.reg, k1)) < 0)
+         return false;
+      fs = (struct bfactor){ B_REG, t, SWZ_ALPHA };
+   }
+   if (fd.term == B_INV && fs.term == B_REG && fd.reg != s) {
+      if ((t = blend_inv_alpha(c, used, fd.reg, k1)) < 0)
+         return false;
+      fd = (struct bfactor){ B_REG, t, SWZ_ALPHA };
+   }
+
+   if (fs.term != B_REG && fd.term == B_ZERO) {
+      /* ZERO/ZERO */
+      blend_emit(c, w0_make(NONE, s, NONE, OUT, 4, op0),
+                 w1_make(0xa0200040, k0, NONE));
+   } else if (fs.term == B_ZERO && fd.term == B_ONE) {
+      blend_emit(c, w0_make(NONE, d, NONE, OUT, 4, op0),
+                 w1_make(0xa0200040, k1, NONE));
+   } else if (fs.term == B_ONE && fd.term == B_ONE) {
+      blend_emit(c, w0_make(NONE, s, d, OUT, 4, op0),
+                 w1_make(0xa0400c50, k1, NONE));
+   } else if (fs.term != B_REG && fd.term == B_INV) {
+      /* S * K + D * (1 - r) */
+      blend_emit(c, w0_make(s, fd.reg, d, OUT, 4, op0),
+                 w1_make(0xa4e00040 | fd.swz << 10,
+                         fs.term == B_ONE ? k1 : k0, s));
+   } else if (fs.term == B_ZERO) {
+      blend_emit(c, w0_make(fd.reg, d, NONE, OUT, 4, op0),
+                 w1_make(0xac200040 | fd.swz << 8, NONE, fd.reg));
+   } else if (fs.term == B_ONE) {
+      blend_emit(c, w0_make(fd.reg, d, s, OUT, 4, op0),
+                 w1_make(0xac400c50 | fd.swz << 8, NONE, fd.reg));
+   } else if (fd.term == B_ZERO) {
+      blend_emit(c, w0_make(fs.reg, s, NONE, OUT, 4, op0),
+                 w1_make(0xac200040 | fs.swz << 8, NONE, fs.reg));
+   } else if (fd.term == B_ONE) {
+      blend_emit(c, w0_make(fs.reg, s, d, OUT, 4, op0),
+                 w1_make(0xac400c50 | fs.swz << 8, NONE, fs.reg));
+   } else if (fd.term == B_INV) {
+      /* r.swz * S + D * (1 - S.swz), the inverted operand is S itself */
+      blend_emit(c, w0_make(fs.reg, s, d, OUT, 4, op0),
+                 w1_make(0xa4a00040 | fd.swz << 10 | fs.swz << 8, NONE,
+                         fs.reg));
+   } else {
+      if ((t = blend_temp(c, used)) < 0)
+         return false;
+      blend_emit(c, w0_make(fd.reg, d, NONE, t, 0, 0x1c),
+                 w1_make(0xac200040 | fd.swz << 8, NONE, fd.reg));
+      blend_emit(c, w0_make(fs.reg, s, t, OUT, 4, op0),
+                 w1_make(0xac400c50 | fs.swz << 8, NONE, fs.reg));
+   }
+   return true;
+}
+
+/* Redirect the colour writes to saturated temporaries and append the blend
+ * against the destination registers 18..1b. */
+static bool
+blend_append(struct ctx *c)
+{
+   uint32_t *w = (uint32_t *)c->p->slots.data;
+   unsigned n = m9_fs_slot_count(c->p);
+   unsigned consts = NUM(c, p->consts, struct m9_fs_const);
+   uint32_t used = BITFIELD_MASK(4 * c->p->texture_count);
+   int s[2];
+
+   if (c->custom_consts)
+      return fail(c, "blending with a constant template");
+   for (unsigned i = 0; i < n; i++) {
+      uint32_t w0 = w[2 * i], w1 = w[2 * i + 1];
+      const unsigned field[4] = { slot_a(w0, w1), w0 >> 22 & 0x7f,
+                                  w0 >> 15 & 0x7f, w0 >> 8 & 0x7f };
+
+      for (unsigned f = 0; f < 4; f++) {
+         if (field[f] >= REG_DST && field[f] < REG_DST + 4)
+            return fail(c, "blending with a program using registers 18..1b");
+         if (field[f] < 0x20)
+            used |= BITFIELD_BIT(field[f]);
+      }
+   }
+   for (unsigned lane = 0; lane < 2; lane++)
+      if ((s[lane] = blend_temp(c, &used)) < 0)
+         return false;
+   for (unsigned i = 0; i < n; i++) {
+      uint32_t *w0 = &w[2 * i];
+      unsigned op0 = *w0 & 0x1f;
+
+      if ((*w0 >> 8 & 0x7f) != OUT)
+         continue;
+      if (op0 != 0x1d && op0 != 0x1e)
+         return fail(c, "internal: partial colour write");
+      *w0 = (*w0 & ~0x7fffu) | s[op0 - 0x1d] << 8 | 4u << 5 | 0x1c;
+   }
+   /* 88 bit 4 clears whenever the destination is blended. */
+   c->p->registers_used |= BITFIELD_BIT(0);
+   c->p->blend_dest = c->blend->src != M9_FS_ZERO ||
+                      c->blend->dst != M9_FS_ZERO;
+   /* The pad pair precedes the (0,1), (1,0.5) tail. */
+   return blend_lane(c, &used, 1, s[1], s[1], consts + 1, consts + 2) &&
+          blend_lane(c, &used, 0, s[0], s[1], consts + 1, consts + 2);
+}
+
 /* Output assembly */
 
 static bool
@@ -1553,7 +1736,15 @@ compile_impl(struct ctx *c, nir_function_impl *impl)
    c->has_consts |= discard;
    if (!encode_lops(c))
       return false;
+   if (c->blend && !blend_append(c))
+      return false;
    finish_slots(c);
+   if (c->blend) {
+      struct m9_fs_const *pad = util_dynarray_grow(&c->p->consts,
+                                                   struct m9_fs_const, 1);
+
+      memset(pad, 0, sizeof(*pad));
+   }
    if (!c->custom_consts)
       const_tail(c);
    return true;
@@ -1684,10 +1875,12 @@ m9_fs_inline_uniforms(nir_shader *nir, const uint32_t *values)
 }
 
 bool
-m9_fs_compile(struct nir_shader *nir, struct m9_fs_program *program,
-              const char **reason)
+m9_fs_compile(struct nir_shader *nir, const struct m9_fs_blend *blend,
+              struct m9_fs_program *program, const char **reason)
 {
-   struct ctx c = { .nir = nir, .p = program };
+   /* ONE/ZERO is the unblended program, as the vendor emits it. */
+   bool opaque = !blend || (blend->src == M9_FS_ONE && blend->dst == M9_FS_ZERO);
+   struct ctx c = { .nir = nir, .p = program, .blend = opaque ? NULL : blend };
    bool ok = false;
 
    memset(program, 0, sizeof(*program));

@@ -105,7 +105,7 @@ int m9_raster_fs_init_textured(struct m9_raster_fs *r, unsigned vertex_entry,
                                unsigned texture_count,
                                const uint8_t *texture_coord);
 uint32_t m9_raster_d7(enum m9_topology topology);
-uint32_t m9_raster_class(bool lines);
+uint32_t m9_raster_class(bool lines, bool blend_dest);
 bool m9_topology_valid(unsigned topology);
 uint32_t m9_draw_preprocess_vertices(uint32_t raster_vertices);
 uint32_t m9_draw_max_source_vertices(void);
