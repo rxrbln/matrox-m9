@@ -21,8 +21,8 @@ kernel-owned requester/command/fence memory, and exposes DMA32 GEM plus a
 validate-only command ioctl.  It leaves PCI bus mastering disabled and does
 not write requester registers until the separately gated diagnostic runs.
 
-``m9_render_diag=1`` additionally permits ``M9_SUBMIT(NOOP_FENCE)``.  This is
-the sole hardware submission accepted by this revision.  It builds the known
+``m9_render_diag=1`` additionally permits ``M9_SUBMIT(NOOP_FENCE)``.  It
+builds the known
 ``{ 4545e3e6, 3, target|1 }`` completion packet in kernel-owned DMA memory,
 programs only the statically closed command and fence addresses, rings the
 ``0x404`` endpoint, and waits with an absolute deadline.  A disconnect or
@@ -36,7 +36,7 @@ mastering before publishing either address.  On timeout it logs both
 writeback words plus engine, front-end, command and fence-address registers.
 
 ``m9_triangle_diag=1`` permits
-``M9_SUBMIT(FIRST_TRIANGLE)`` to prepare a second, literal diagnostic.  The
+``M9_SUBMIT(FIRST_TRIANGLE)`` to run a staged, literal diagnostic.  The
 ioctl accepts no command object, BO handle, userspace address or relocation.
 It lazily allocates and retains coherent DMA32 storage for the exact 80-byte
 flat-green source, the captured ``0x20080``-byte system payload and the framed
@@ -44,8 +44,7 @@ secondary command image.  It allocates index-69, C2, the exact 1-MiB BE
 context, four ``0x16800``-byte transient probes and the 320x240
 color/depth/auxiliary-depth surfaces directly in local VRAM.  Every logical
 payload is followed by at least one page of a resource-specific sentinel.  The
-source
-is initialized to four ``{x,y,r,g,b}`` records, including the proved duplicate
+source is initialized to four ``{x,y,r,g,b}`` records, including the proved duplicate
 prefetch record; RT0 is opaque magenta; C2, BE and the system payload are
 zeroed deterministically.  ``m9_triangle_gouraud=1`` selects the equally
 bounded captured red/green/blue source records; flat green remains the default
@@ -58,28 +57,29 @@ kernel allocations, adds the established low address tags, and reserves the
 largest observed ``0x580``-byte linked slot at system offset ``0x300``.  It
 constructs the bounded selector-6c image semantically: Gouraud has a zero
 linked payload, while the flat/case-B image uses the six references proved
-across thirteen fresh vendor processes.  It then returns ``-EOPNOTSUPP``
-before submission.  Source and system storage receive separate ``0x4...`` GPU
-virtual intervals and zero-padded 16-byte translation entries with the proved
-DMA32 packing and ``0xa`` flags.  Publishing those staged entries still needs
-the concrete table base, translation invalidation and exact engine-window
-tuple.  The load-time selftest pins each
+across thirteen fresh vendor processes.  The fixed-function draw remains gated
+until its setup sequence retires.  Source, system and secondary storage receive
+separate ``0x4...`` GPU virtual intervals.  Their pages use the proved
+four-byte compact PTE packing and ``0xa`` flags in the reserved low-VRAM
+manager image.  The load-time selftest pins each
 raw template with an independent byte-wise FNV-1a value, checks every captured
 address/target site, then confirms that rebuilding replaces all of those sites
 and reproduces the bounded six-word record.
 
-Cold execution also needs the complete captured sequence-0 context setup
-envelope around the exact 80-slot ``8f/90..9f`` image.  The image and full
-envelope are captured, but the smallest safe isolated envelope has not passed
-a hardware test.  Consequently clearing the selector-6c serializer gate alone
-does not authorize command publication from a cold GPU.
+Cold execution follows the recovered vendor construction order.  It runs the
+complete ``m9x421`` transition once, publishes and activates the compact PTE
+mirror, runs the complete transition a second time, and then installs the
+nonzero 1024-entry restore pool through the exact ``m9x109`` requester writes.
+Each transition preserves its two flush boundaries and three consecutive
+completion targets.  A direct no-op must retire before the driver submits the
+complete captured sequence-0 context image.  The fixed-function draw remains
+gated until this sequence passes on hardware.
 
-Before enabling bus mastering, the guarded M9148 path now requires warm
-primary partition controls ``0x44c/0x450/0x454`` to equal the independently
-recovered and live-verified fallback image
-``00280800/1f3f2707/00070703``.  It preserves those values rather than writing
-them.  A different board/property tuple fails closed until its seven inputs or
-packed controls have their own evidence.
+The guarded M9148 path writes primary requester controls
+``0x44c/0x450/0x454`` as ``00280800/1f3f2707/00070703`` in their exact
+``m9x109`` position after the restore tuple.  These values come from the
+independently recovered target property tuple and match three warm readbacks.
+A different board/property tuple must derive its own packed controls.
 
 The primary stream uses two kernel-owned 32-KiB command slots.  Once a slot's
 last synchronous fence has retired, the producer advances to the alternate
