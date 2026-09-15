@@ -34,7 +34,8 @@ m9_framebuffer_resource_valid(const struct m9_resource *resource,
        !(format.usage & usage) || format.cpp != resource->cpp ||
        format.code != resource->format)
       return false;
-   bytes = (uint64_t)resource->row_span * resource->height * resource->cpp;
+   bytes = (uint64_t)resource->row_span *
+           m9_render_surface_height(resource->height) * resource->cpp;
    return bytes <= resource->size;
 }
 

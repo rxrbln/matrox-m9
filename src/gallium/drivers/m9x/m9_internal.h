@@ -97,6 +97,13 @@ m9_resource_row_span(uint32_t width)
    return (width + 7) & ~7u;
 }
 
+static inline uint32_t
+m9_render_surface_height(uint32_t height)
+{
+   /* M9148 category-2 color/depth layouts use a 32-row allocation quantum. */
+   return (height + 31) & ~31u;
+}
+
 struct m9_screen {
    struct pipe_screen base;
    int fd;

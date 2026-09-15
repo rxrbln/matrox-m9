@@ -361,7 +361,8 @@ m9_resource_create(struct pipe_screen *pscreen,
          size = resource->mip.size;
       } else {
          resource->row_span = m9_resource_row_span(templ->width0);
-         size = (uint64_t)resource->row_span * templ->height0 * format.cpp;
+         size = (uint64_t)resource->row_span *
+                m9_render_surface_height(templ->height0) * format.cpp;
       }
    }
    if (!resource->handle) {
@@ -433,7 +434,10 @@ m9_resource_from_handle(struct pipe_screen *pscreen,
        (whandle->modifier != DRM_FORMAT_MOD_INVALID &&
         whandle->modifier != DRM_FORMAT_MOD_LINEAR))
       return NULL;
-   required = (uint64_t)whandle->stride * templ->height0;
+   required = (uint64_t)whandle->stride *
+              ((templ->bind & (PIPE_BIND_RENDER_TARGET |
+                               PIPE_BIND_DEPTH_STENCIL)) ?
+               m9_render_surface_height(templ->height0) : templ->height0);
    resource = CALLOC_STRUCT(m9_resource);
    if (!resource)
       return NULL;
