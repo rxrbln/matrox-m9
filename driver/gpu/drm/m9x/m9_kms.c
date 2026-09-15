@@ -38,6 +38,11 @@ MODULE_PARM_DESC(m9_kms,
 
 static bool m9_kms_scanout;
 module_param(m9_kms_scanout, bool, 0400);
+
+static bool m9_kms_direct_scanout = true;
+module_param(m9_kms_direct_scanout, bool, 0600);
+MODULE_PARM_DESC(m9_kms_direct_scanout,
+	"Scan out tiled framebuffers in place instead of copying them");
 MODULE_PARM_DESC(m9_kms_scanout,
 	"Permit direct BAR0 VRAM scanout address changes (requires m9_kms=1)");
 
@@ -314,12 +319,34 @@ static int m9_scanout_address(struct m9x_device *mdev, u32 *address)
 				      address);
 }
 
+/* A tiled framebuffer of the scanout geometry can be fetched where it is,
+ * which skips the read and write of the whole surface per frame. */
+static int m9_scanout_direct_address(struct m9x_device *mdev,
+				     struct drm_framebuffer *fb, u32 *address)
+{
+	struct drm_gem_object *gem = fb ? drm_gem_fb_get_obj(fb, 0) : NULL;
+	u64 limit = min_t(u64, mdev->vram_size - 1, M9_DC_START_MASK);
+
+	if (!m9_kms_direct_scanout || !gem || !m9x_gem_vram_tiled(gem))
+		return -ENODEV;
+	return matrox_kms_vram_offset(gem, 1024, limit, address);
+}
+
 static void m9_program_scanout(struct drm_simple_display_pipe *pipe,
 			       struct drm_framebuffer *fb)
 {
 	struct m9x_device *mdev = to_m9x(pipe->crtc.dev);
 	u32 address, pitch;
 
+	if (!m9_scanout_direct_address(mdev, fb, &address)) {
+		pitch = (mdev->warm_dc_pitch & ~M9_DC_PITCH_MASK) |
+			M9_WARM_WIDTH;
+		wmb();
+		m9x_write(mdev, M9_DC0 + M9_DC_START,
+			  address & M9_DC_START_MASK);
+		m9x_write(mdev, M9_DC0 + M9_DC_PITCH, pitch);
+		return;
+	}
 	if (!fb || m9_scanout_publish(mdev, fb) ||
 	    m9_scanout_address(mdev, &address))
 		return;
@@ -406,8 +433,11 @@ static int m9_fb_dirty(struct drm_framebuffer *fb, struct drm_file *file,
 	int ret = 0;
 
 	drm_modeset_lock(&mdev->pipe.plane.mutex, NULL);
+	/* Nothing to publish while the framebuffer is scanned out in place. */
 	if (mdev->pipe.plane.state && mdev->pipe.plane.state->fb == fb &&
-	    mdev->pipe.crtc.state && mdev->pipe.crtc.state->active)
+	    mdev->pipe.crtc.state && mdev->pipe.crtc.state->active &&
+	    !(m9_kms_direct_scanout &&
+	      m9x_gem_vram_tiled(drm_gem_fb_get_obj(fb, 0))))
 		ret = m9_scanout_publish(mdev, fb);
 	drm_modeset_unlock(&mdev->pipe.plane.mutex);
 	return ret;
