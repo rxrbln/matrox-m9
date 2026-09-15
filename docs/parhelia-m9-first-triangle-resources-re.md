@@ -101,14 +101,21 @@ arbitrary direct VBO layouts remain outside this diagnostic.
 
 ## C2/C3 common resource
 
-The same float3 draw uses `c2=11f61000,c3=4` in preprocessing and
-`c2=11f61000,c3=0` in raster.  Allocation result 52 identifies that backing:
+The exported float3 draw uses `c2=11f61000,c3=4` in preprocessing and
+`c2=11f61000,c3=0` in raster.  A separate run of the same fixture returns the
+matching base in allocation result 52:
 
 ```text
 GPU base    11f61000
 extent      00001080 bytes
 dimensions  00000400 x 1
 ```
+
+The next identical allocation returns `11f63000`, proving a page-rounded
+`0x2000` reservation for the `0x1080` logical object.  Both command passes bind
+the allocation base directly, with no leading page or address tag.  The
+separate process histories establish the allocation and command ABI, but must
+not be treated as one allocation-to-draw timeline.
 
 Linux emitter `m9x29970` at `0x4ae4ed..0x4ae55b` emits header `c2,c3`, takes
 the resource pair at state `+0x148`, and registers two views through the same
@@ -127,20 +134,17 @@ read/write direction of usages `0x13/0x14` is still unavailable, so retain the
 0x1080-byte object for the complete job and declare it read/write in the first
 diagnostic.
 
-The raw archive also settles when initialization can occur.  Allocation 52 is
-followed by submits 53 and 54, each exactly five writes:
-
-```text
-1b=05927002  e6=3  e6=2  e3=<fence|1>  43=<fence>
-```
-
-The real two-pass draw is submit 55.  There is therefore no GPU command that
-initializes C2 between allocation and its first preprocessing use.  Any vendor
-initial bytes come from a CPU aperture store or allocator policy, neither of
-which the wrapper saved.  A guarded diagnostic should zero all `0x1080` bytes
-and treat C2 as a job-local read/write object.  This is a deterministic probe
-policy, not proof that zero matches the missing vendor image; exact initial C2
-bytes remain an evidence gap if the probe does not complete correctly.
+The raw archive does not settle initialization.  Allocation 52 belongs to
+process 5644; the exported draw and its preceding fence-only submits belong to
+process 5632.  The same-process submit after allocation 52 contains only the
+literal null C2 form.  Neither process saved a C2 payload or trapped CPU stores
+through the mapped local aperture.  Any vendor initial bytes can therefore
+come from an earlier CPU aperture store or allocator policy.  A guarded
+diagnostic should zero all `0x1080` bytes and treat C2 as a job-local read/write
+object.  This is a deterministic probe policy, not proof that zero matches the
+missing vendor image; exact initial C2 bytes remain an evidence gap if the
+probe does not complete correctly.  The complete corrected provenance is in
+`parhelia-m9-c2-backing-re.md`.
 
 ## BE auxiliary surface resource
 
