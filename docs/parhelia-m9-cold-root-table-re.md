@@ -35,10 +35,31 @@ root entry address = 0x861000 + 4 * 0x901 = 0x863404
 root entry value   = (0x901 << 12) | 0x8 = 0x00901008
 ```
 
-The failing clean-room run read the expected leaf value from `0x901090` using
-the CPU BAR mapping, but the root entry at `0x863404` was zero.  A physical
-primary command stream consequently retired while a class-1 secondary fetch
-made no progress.  The missing root level explains both observations.
+An early clean-room run read the expected leaf value from `0x901090` using the
+CPU BAR mapping, but the root entry at `0x863404` was zero.  Adding the table
+removed that concrete mismatch.  It did not by itself make a class-1
+secondary fetch retire, so the zero root entry explained one invalid state but
+was not the final execution blocker.
+
+A later live BAR snapshot after exact root construction and per-allocation
+leaf publication read:
+
+```text
+root[0]       @ 861000 = 00000008
+root[901]     @ 863404 = 00901008
+root[905]     @ 863414 = 00905008
+root[d40]     @ 864500 = 00d40008
+leaf[400000]  @ 901000 = 0595400a
+leaf[400020]  @ 901008 = 04d8000a
+leaf[400240]  @ 901090 = 04d7800a
+leaf[410000]  @ 905000 = 02a0000a
+```
+
+The DMA page values vary per boot.  In the same boot a class-2 raw-DMA
+secondary range retired immediately, while the same footer through class-1
+GPUVA `0x40024000` did not.  This proves the CALL engine and secondary framing
+work and isolates the remaining failure to compact-translation selection or
+activation rather than the CPU-visible table image.
 
 ## Binary proof
 
@@ -78,6 +99,16 @@ The exact relevant order is:
 9. Run the second complete `m9x421` transition.
 10. Publish later system-resource leaf PTEs through the separate `m9x887` to
     `m9x328` path, ending with another `0x31c = 0xf, 1, 0`.
+
+Every later `m9x887` allocation has its own CPU mirror and `0xf,1,0`
+publication.  The vendor does not batch independently allocated leaves under
+one final activation.
+
+The surrounding service owner also calls `m9x115` once during initial service
+construction and twice at the final `m9x1141`/explicit-`m9x115` boundary.
+With all 20 software slot pointers null, each call writes only dword zero of
+MMIO slots `0x000,0x010,...,0x130`, setting it to `0x0000ffff`.  No active
+descriptor entry is constructed for the ordinary mode-1 BmBuffer path.
 
 Publishing resource leaves before the cold tail clear is incorrect because
 the tail child contains those leaf PTEs.  It also reverses the vendor's split
