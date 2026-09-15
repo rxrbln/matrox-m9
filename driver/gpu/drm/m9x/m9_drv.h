@@ -128,7 +128,9 @@ int m9x_address_bind_dma(struct m9x_device *mdev, u32 gpuva,
 			 dma_addr_t dma, u32 bytes);
 int m9x_address_prepare(struct m9x_device *mdev);
 int m9x_address_publish(struct m9x_device *mdev);
+int m9x_address_construct_manager(struct m9x_device *mdev);
 int m9x_address_commit_bindings(struct m9x_device *mdev);
+int m9x_address_read_pte(struct m9x_device *mdev, u32 gpuva, u32 *value);
 int m9x_submit_triangle_diag(struct m9x_device *mdev, u32 color,
 			     struct drm_gem_vram_object *color_bo, u64 *point,
 			     bool *color_active);

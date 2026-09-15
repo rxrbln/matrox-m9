@@ -71,6 +71,11 @@ module_param(m9_triangle_gouraud, bool, 0400);
 MODULE_PARM_DESC(m9_triangle_gouraud,
 	"Use the captured red/green/blue Gouraud source instead of flat green");
 
+static bool m9_triangle_secondary_noop_only;
+module_param(m9_triangle_secondary_noop_only, bool, 0400);
+MODULE_PARM_DESC(m9_triangle_secondary_noop_only,
+	"Stop after the guarded vendor-framed secondary no-op diagnostic");
+
 enum m9_triangle_resource_id {
 	M9_TRI_SOURCE,
 	M9_TRI_SYSTEM,
@@ -943,6 +948,53 @@ static void m9_seq0_build_primary(const struct m9_seq0_job *job, u32 *primary)
 	}
 }
 
+static void m9_triangle_build_secondary_noop(u8 *image, u32 secondary,
+					     u32 completion, u32 target,
+					     u32 *primary)
+{
+	/* Exact invariant 0x2c-byte footer from the saved short vendor submits.
+	 * A BmBuffer retains two private host dwords before these three counted
+	 * records. */
+	memset(image, 0, M9_TRIANGLE_SECONDARY_BYTES);
+	put_unaligned_le32(1, image + 0x08);
+	put_unaligned_le32(0x4545451b, image + 0x0c);
+	put_unaligned_le32(completion | M9_TRIANGLE_COMPLETION_TAG,
+			   image + 0x10);
+	put_unaligned_le32(3, image + 0x14);
+	put_unaligned_le32(0x45e3e6e6, image + 0x18);
+	put_unaligned_le32(3, image + 0x1c);
+	put_unaligned_le32(2, image + 0x20);
+	put_unaligned_le32(target | 1, image + 0x24);
+	put_unaligned_le32(1, image + 0x28);
+	put_unaligned_le32(0x45454543, image + 0x2c);
+	put_unaligned_le32(target, image + 0x30);
+	primary[0] = 0x45452d2c;
+	primary[1] = (secondary + 0x08) |
+		M9_TRIANGLE_SECONDARY_START_TAG;
+	primary[2] = (secondary + 0x34) |
+		M9_TRIANGLE_SECONDARY_END_TAG;
+}
+
+static int m9_triangle_log_secondary_mapping(struct m9x_device *mdev)
+{
+	const struct m9_triangle_resource *secondary =
+		&mdev->transport.triangle->resource[M9_TRI_SECONDARY];
+	u32 expected, pte;
+	int ret;
+
+	ret = m9x_address_read_pte(mdev, secondary->gpuva, &pte);
+	if (ret)
+		return ret;
+	expected = (lower_32_bits(secondary->bus) & 0xfffff000u) |
+		((secondary->bus >> 28) & 0x00000ff0u) | 0xau;
+	dev_info(&mdev->pdev->dev,
+		 "M9 secondary probe: gpuva=%#x dma=%pad pte=%#x expected=%#x primary={%#x,%#x,%#x}\n",
+		 secondary->gpuva, &secondary->bus, pte, expected,
+		 0x45452d2c, (secondary->gpuva + 0x08) | 1,
+		 (secondary->gpuva + 0x34) | 2);
+	return pte == expected ? 0 : -EIO;
+}
+
 static int m9_triangle_build_addresses(struct m9x_device *mdev, u32 color,
 				       u32 target,
 				       struct m9_triangle_job_addresses *job)
@@ -1328,8 +1380,18 @@ int m9x_submit_triangle_diag(struct m9x_device *mdev, u32 color,
 		 * requester with restore disabled, so publish the recovered register
 		 * tuple again before the first transition.
 		 */
-		mdev->transport.restore_ready = true;
+		/* The vendor does not install the nonzero restore tuple until both
+		 * m9x421 builders and compact publication have been constructed.  Our
+		 * synchronous diagnostic executes those builders, so keep restore
+		 * disabled until its PTE is active and both transitions have retired. */
+		mdev->transport.restore_ready = false;
 		ret = m9x_transport_rearm_locked(mdev);
+		if (ret)
+			goto out_unlock;
+		ret = m9_triangle_run_manager_transition(mdev, point);
+		if (ret)
+			goto out_unlock;
+		ret = m9x_address_construct_manager(mdev);
 		if (ret)
 			goto out_unlock;
 		ret = m9_triangle_run_manager_transition(mdev, point);
@@ -1338,7 +1400,8 @@ int m9x_submit_triangle_diag(struct m9x_device *mdev, u32 color,
 		ret = m9x_address_commit_bindings(mdev);
 		if (ret)
 			goto out_unlock;
-		ret = m9_triangle_run_manager_transition(mdev, point);
+		mdev->transport.restore_ready = true;
+		ret = m9x_transport_rearm_locked(mdev);
 		if (ret)
 			goto out_unlock;
 		mdev->transport.engine_transitioned = true;
@@ -1365,6 +1428,29 @@ int m9x_submit_triangle_diag(struct m9x_device *mdev, u32 color,
 		if (ret)
 			goto out_unlock;
 		mdev->transport.next_fence = target + 0x10;
+
+		if (m9_triangle_secondary_noop_only) {
+			target = mdev->transport.next_fence;
+			m9_triangle_build_secondary_noop(
+				diag->resource[M9_TRI_SECONDARY].cpu,
+				diag->resource[M9_TRI_SECONDARY].gpuva,
+				lower_32_bits(mdev->transport.fence_bus),
+				target, diag->commands.sequence0_primary);
+			dma_wmb();
+			ret = m9_triangle_log_secondary_mapping(mdev);
+			if (ret)
+				goto out_unlock;
+			ret = m9x_submit_kernel_stream_locked(mdev,
+					diag->commands.sequence0_primary, 3,
+					target, point);
+			if (ret)
+				goto out_unlock;
+			mdev->transport.next_fence = target + 0x10;
+			dev_info(&mdev->pdev->dev,
+				 "M9 vendor-framed secondary no-op retired at %#x\n",
+				 target);
+			goto out_unlock;
+		}
 
 		ret = m9_seq0_build_job(mdev, mdev->transport.next_fence,
 					&sequence0);
@@ -1480,7 +1566,16 @@ static int m9_seq0_selftest(void)
 		0x45452d2c, 0x02000541, 0x02000f76,
 		0x45452d2c, 0x02000f75, 0x02000fa2,
 	};
+	static const u32 expected_secondary_noop[] = {
+		0, 0, 1, 0x4545451b, 0x02400002,
+		3, 0x45e3e6e6, 3, 2, 0x00000101,
+		1, 0x45454543, 0x00000100,
+	};
+	static const u32 expected_secondary_noop_primary[] = {
+		0x45452d2c, 0x02000009, 0x02000036,
+	};
 	u32 primary[ARRAY_SIZE(expected_primary)];
+	u32 noop_primary[ARRAY_SIZE(expected_secondary_noop_primary)];
 	u8 *image;
 	unsigned int i;
 	int ret = -EINVAL;
@@ -1523,6 +1618,13 @@ static int m9_seq0_selftest(void)
 	image = kzalloc(M9_TRIANGLE_SECONDARY_BYTES, GFP_KERNEL);
 	if (!image)
 		return -ENOMEM;
+	m9_triangle_build_secondary_noop(image, job.secondary,
+					 job.completion, job.target, noop_primary);
+	if (memcmp(image, expected_secondary_noop,
+		   sizeof(expected_secondary_noop)) ||
+	    memcmp(noop_primary, expected_secondary_noop_primary,
+		   sizeof(noop_primary)))
+		goto out;
 	m9_seq0_build_secondary(image, &job);
 	m9_seq0_build_primary(&job, primary);
 	if (memcmp(primary, expected_primary, sizeof(primary)) ||

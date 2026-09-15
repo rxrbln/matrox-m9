@@ -99,6 +99,11 @@ static dma_addr_t m9_command_slot_bus(const struct m9x_transport *transport)
 	       transport->command_slot * PARHELIA_M9_COMMAND_BYTES;
 }
 
+static dma_addr_t m9_command_current_bus(const struct m9x_transport *transport)
+{
+	return m9_command_slot_bus(transport) + transport->command_offset;
+}
+
 static void *m9_command_slot_cpu(const struct m9x_transport *transport)
 {
 	return (u8 *)transport->command_cpu +
@@ -174,7 +179,7 @@ struct m9x_fence *m9x_fence_create_target_locked(struct m9x_device *mdev,
 int m9x_transport_arm_locked(struct m9x_device *mdev)
 {
 	struct m9x_transport *transport = &mdev->transport;
-	u32 command = lower_32_bits(m9_command_slot_bus(&mdev->transport));
+	u32 command = lower_32_bits(m9_command_current_bus(transport));
 	u32 writeback0 = lower_32_bits(mdev->transport.fence_bus);
 	u32 writeback1 = writeback0 + sizeof(u32);
 	u32 restore = transport->restore_ready ? PARHELIA_M9_RESTORE_GPUVA : 0;
@@ -259,9 +264,8 @@ int m9x_submit_kernel_stream_locked(struct m9x_device *mdev,
 	unsigned long deadline;
 	dma_addr_t start_bus;
 	u32 *writeback = transport->fence_cpu;
-	u32 start, end, raw;
+	u32 command_offset, end, progress_kicks = 0, raw;
 	u64 extended;
-	bool progress_kicked = false;
 	int ret;
 
 	lockdep_assert_held(&transport->lock);
@@ -274,19 +278,27 @@ int m9x_submit_kernel_stream_locked(struct m9x_device *mdev,
 	if (ret)
 		return ret;
 
-	start_bus = m9_command_slot_bus(transport);
+	command_offset = transport->command_offset;
+	if (command_offset > PARHELIA_M9_COMMAND_BYTES - dwords * sizeof(u32)) {
+		/* The prior interval is synchronous and retired.  Only an actual
+		 * primary-buffer switch rebases the vendor requester's 0x400. */
+		m9_advance_command_slot(transport);
+		command_offset = 0;
+		m9x_write(mdev, M9_REG_COMMAND_BASE,
+			  lower_32_bits(m9_command_slot_bus(transport)) |
+			  M9_COMMAND_SYSTEM_TAG);
+		m9x_read(mdev, M9_REG_COMMAND_BASE);
+	}
+	start_bus = m9_command_slot_bus(transport) + command_offset;
 	if (upper_32_bits(start_bus) ||
 	    check_add_overflow(lower_32_bits(start_bus),
 			       dwords * (u32)sizeof(u32), &end))
 		return -ERANGE;
-	start = lower_32_bits(start_bus);
-	memcpy(m9_command_slot_cpu(transport), commands,
+	memcpy((u8 *)m9_command_slot_cpu(transport) + command_offset, commands,
 	       dwords * sizeof(u32));
 	WRITE_ONCE(writeback[0], ~target);
 	dma_wmb();
 
-	m9x_write(mdev, M9_REG_COMMAND_BASE, start | M9_COMMAND_SYSTEM_TAG);
-	m9x_read(mdev, M9_REG_COMMAND_BASE);
 	m9x_write(mdev, M9_REG_COMMAND_END, end);
 	m9x_read(mdev, M9_REG_COMMAND_END);
 
@@ -304,25 +316,48 @@ int m9x_submit_kernel_stream_locked(struct m9x_device *mdev,
 		}
 		if (time_after_eq(jiffies, deadline)) {
 			dev_err(&mdev->pdev->dev,
-				"M9 kernel stream timeout: target=%#x wb=%#x engine=%#x frontend=%#x command=%#x/%#x\n",
+				"M9 kernel stream timeout: target=%#x wb=%#x/%#x engine=%#x frontend=%#x kick=%#x command=%#x/%#x\n",
 				target, READ_ONCE(writeback[0]),
+				READ_ONCE(writeback[1]),
 				m9x_read(mdev, M9_REG_ENGINE_STATUS),
 				m9x_read(mdev, M9_REG_FRONTEND_STATE),
+				m9x_read(mdev, M9_REG_FRONTEND_KICK),
 				m9x_read(mdev, M9_REG_COMMAND_BASE),
 				m9x_read(mdev, M9_REG_COMMAND_END));
+			dev_err(&mdev->pdev->dev,
+				"M9 timeout windows: 360/364=%#x/%#x f64/f68=%#x/%#x f74/f78/f7c=%#x/%#x/%#x 132c/1330/1334=%#x/%#x/%#x\n",
+				m9x_read(mdev, M9_REG_TRANSLATION_BASE),
+				m9x_read(mdev, M9_REG_TRANSLATION_LIMIT),
+				m9x_read(mdev, M9_REG_PTE_BASE),
+				m9x_read(mdev, M9_REG_PTE_LIMIT),
+				m9x_read(mdev, M9_REG_LOCAL_BASE0),
+				m9x_read(mdev, M9_REG_LOCAL_BASE1),
+				m9x_read(mdev, M9_REG_LOCAL_LIMIT),
+				m9x_read(mdev, M9_REG_SURFACE_BASE2),
+				m9x_read(mdev, M9_REG_SURFACE_BASE3),
+				m9x_read(mdev, M9_REG_SURFACE_LIMIT1));
+			dev_err(&mdev->pdev->dev,
+				"M9 timeout requester: 448=%#x 1068/106c=%#x/%#x 10ec/1094/1098=%#x/%#x/%#x\n",
+				m9x_read(mdev, M9_REG_REQUESTER_STATE),
+				m9x_read(mdev, M9_REG_FENCE0_ADDRESS),
+				m9x_read(mdev, M9_REG_FENCE1_ADDRESS),
+				m9x_read(mdev, M9_REG_RESTORE_TAGGED),
+				m9x_read(mdev, M9_REG_RESTORE_BASE),
+				m9x_read(mdev, M9_REG_RESTORE_LIMIT));
 			transport->wedged = true;
 			transport->generation++;
 			return -ETIMEDOUT;
 		}
-		if (!progress_kicked) {
-			m9x_write(mdev, M9_REG_FRONTEND_KICK, 1);
-			progress_kicked = true;
-		}
-		usleep_range(50, 100);
+		/* Vendor waits re-strobe 0x314 before every incomplete poll. */
+		m9x_write(mdev, M9_REG_FRONTEND_KICK, 1);
+		if (++progress_kicks < 4096)
+			cpu_relax();
+		else
+			usleep_range(50, 100);
 	}
 
 	extended = m9_extend_fence(transport, raw);
-	m9_advance_command_slot(transport);
+	transport->command_offset = command_offset + dwords * sizeof(u32);
 	if (point)
 		*point = extended;
 	return 0;
@@ -397,9 +432,8 @@ int m9x_submit_noop(struct m9x_device *mdev, u64 *point)
 	unsigned long deadline;
 	u32 *command;
 	u32 *writeback = mdev->transport.fence_cpu;
-	u32 command_offset, command_end, target, raw;
+	u32 command_offset, command_end, progress_kicks = 0, target, raw;
 	u64 extended;
-	bool progress_kicked = false;
 	int ret;
 
 	if (!m9_render_diag)
@@ -479,13 +513,12 @@ int m9x_submit_noop(struct m9x_device *mdev, u64 *point)
 			ret = -ETIMEDOUT;
 			goto out_error;
 		}
-		/* The recovered timeout contract permits one progress kick.  Repeated
-		 * writes can hide the first failing state and are not a reset. */
-		if (!progress_kicked) {
-			m9x_write(mdev, M9_REG_FRONTEND_KICK, 1);
-			progress_kicked = true;
-		}
-		usleep_range(50, 100);
+		/* Vendor waits re-strobe 0x314 before every incomplete poll. */
+		m9x_write(mdev, M9_REG_FRONTEND_KICK, 1);
+		if (++progress_kicks < 4096)
+			cpu_relax();
+		else
+			usleep_range(50, 100);
 	}
 
 	extended = m9_extend_fence(&mdev->transport, raw);

@@ -27,6 +27,10 @@
 #define M9_ADDRESS_COMPACT_ORIGIN	0x00801000u
 #define M9_ADDRESS_TRANSLATION_BASE	0x00861000u
 #define M9_ADDRESS_TRANSLATION_LIMIT	0x008e0000u
+#define M9_ADDRESS_PRIMARY_BYTES	(M9_ADDRESS_TRANSLATION_BASE - \
+					 M9_ADDRESS_COMPACT_ORIGIN)
+#define M9_ADDRESS_TRANSLATION_BYTES	0x00040000u
+#define M9_ADDRESS_ROOT_PAGES		(M9_ADDRESS_ROOT_BYTES >> PAGE_SHIFT)
 #define M9_ADDRESS_SYSTEM_BASE		0x40000000u
 #define M9_ADDRESS_SYSTEM_END		0x50000000u
 #define M9_ADDRESS_PRIMARY_BASE		0x00801000u
@@ -55,6 +59,11 @@ static u32 m9_address_pte_word(dma_addr_t dma)
 {
 	return (lower_32_bits(dma) & 0xfffff000u) |
 	       ((dma >> 28) & 0x00000ff0u) | 0xau;
+}
+
+static u32 m9_address_root_pte_word(u32 page)
+{
+	return (page << PAGE_SHIFT) | 0x8u;
 }
 
 static int m9_address_slot(u32 gpuva, u32 *offset)
@@ -90,7 +99,12 @@ static int m9_address_selftest(void)
 	    !m9_address_slot(0x3ffff000, &offset) ||
 	    !m9_address_slot(0x50000000, &offset) ||
 	    m9_address_pte_word((dma_addr_t)0x0232a000) != 0x0232a00a ||
-	    m9_address_pte_word((dma_addr_t)0xab12345000ULL) != 0x12345aba)
+	    m9_address_pte_word((dma_addr_t)0xab12345000ULL) != 0x12345aba ||
+	    M9_ADDRESS_ROOT_PAGES != 0x0d41 ||
+	    m9_address_root_pte_word(0) != 0x00000008 ||
+	    m9_address_root_pte_word(0x901) != 0x00901008 ||
+	    m9_address_root_pte_word(M9_ADDRESS_ROOT_PAGES - 1) !=
+		0x00d40008)
 		return -EINVAL;
 	return 0;
 }
@@ -273,22 +287,76 @@ int m9x_address_publish(struct m9x_device *mdev)
 	return 0;
 }
 
-int m9x_address_commit_bindings(struct m9x_device *mdev)
+int m9x_address_construct_manager(struct m9x_device *mdev)
 {
 	struct m9x_address_space *address = mdev->transport.address;
+	u32 page;
 	u32 value;
-	u32 binding_index;
 
 	if (!address || !address->mapped || !address->service_ready ||
 	    !address->windows_published)
 		return -EINVAL;
-	if (!address->bindings_dirty && address->manager_ready)
+	if (address->manager_ready)
 		return 0;
 
 	/*
-	 * The vendor's initial compact m9x328 call follows the complete m9x421
-	 * transition. Stage all CPU-visible mirror dwords together so none can
-	 * become active during the transition itself.
+	 * Exact fresh-service m9x53 construction for the captured 256 MiB M9148
+	 * profile.  m9x1027 first clears the primary child.  Selector-zero
+	 * m9x328 then CPU-mirrors one identity entry for every page in the
+	 * 0xd41000-byte root allocation into the child selected by 0x360/0x364.
+	 */
+	iosys_map_memset(&address->map, M9_ADDRESS_COMPACT_ORIGIN, 0,
+			 M9_ADDRESS_PRIMARY_BYTES);
+	for (page = 0; page < M9_ADDRESS_ROOT_PAGES; page++)
+		iosys_map_wr(&address->map,
+			     M9_ADDRESS_TRANSLATION_BASE + page * sizeof(u32),
+			     u32, m9_address_root_pte_word(page));
+	/* Make the BAR/WC identity table visible before its frontend activate. */
+	wmb();
+	m9x_write(mdev, M9_REG_FRONTEND_STATE, 0x0f);
+	m9x_write(mdev, M9_REG_FRONTEND_STATE, 0x01);
+	m9x_write(mdev, M9_REG_FRONTEND_STATE, 0x00);
+	m9x_read(mdev, M9_REG_FRONTEND_STATE);
+
+	m9x_write(mdev, M9_REG_SERVICE_CONTROL, 0x1000);
+	iosys_map_memset(&address->map,
+			 M9_ADDRESS_TRANSLATION_BASE +
+			 M9_ADDRESS_TRANSLATION_BYTES,
+			 0, M9_ADDRESS_PTE_OFFSET -
+			 (M9_ADDRESS_TRANSLATION_BASE +
+			  M9_ADDRESS_TRANSLATION_BYTES));
+	iosys_map_memset(&address->map, M9_ADDRESS_PTE_OFFSET, 0,
+			 M9_ADDRESS_PTE_BYTES);
+	/* Finish the vendor child clears before the terminal manager activate. */
+	wmb();
+	m9x_write(mdev, M9_REG_FRONTEND_STATE, 0x0c);
+	m9x_write(mdev, M9_REG_FRONTEND_STATE, 0x01);
+	m9x_read(mdev, M9_REG_FRONTEND_STATE);
+	address->manager_ready = true;
+
+	/* System\\TlbPrefCnt=1 is published after m9x53 returns. */
+	value = m9x_read(mdev, M9_REG_APERTURE_CONTROL);
+	m9x_write(mdev, M9_REG_APERTURE_CONTROL,
+		  (value & 0xfffffc3fu) | 0x40u);
+	m9x_read(mdev, M9_REG_APERTURE_CONTROL);
+	return 0;
+}
+
+int m9x_address_commit_bindings(struct m9x_device *mdev)
+{
+	struct m9x_address_space *address = mdev->transport.address;
+	u32 binding_index;
+
+	if (!address || !address->mapped || !address->service_ready ||
+	    !address->windows_published || !address->manager_ready)
+		return -EINVAL;
+	if (!address->bindings_dirty)
+		return 0;
+
+	/*
+	 * Later m9x887 resource publication uses a separate selector-zero m9x328
+	 * call after the cold manager and second m9x421 transition have completed.
+	 * Stage all CPU-visible leaf dwords before activating them together.
 	 */
 	for (binding_index = 0; binding_index < address->binding_count;
 	     binding_index++) {
@@ -323,21 +391,21 @@ int m9x_address_commit_bindings(struct m9x_device *mdev)
 	m9x_read(mdev, M9_REG_FRONTEND_STATE);
 	address->bindings_dirty = false;
 
-	if (!address->manager_ready) {
-		/* Exact tail of the cold m9x53 manager constructor. */
-		m9x_write(mdev, M9_REG_SERVICE_CONTROL, 0x1000);
-		m9x_write(mdev, M9_REG_FRONTEND_STATE, 0x0c);
-		m9x_write(mdev, M9_REG_FRONTEND_STATE, 0x01);
-		m9x_read(mdev, M9_REG_FRONTEND_STATE);
-		address->manager_ready = true;
-	}
+	return 0;
+}
 
-	/* System\TlbPrefCnt defaults to one on the saved M9148 profile. The
-	 * service owner publishes this field after m9x53 completes. */
-	value = m9x_read(mdev, M9_REG_APERTURE_CONTROL);
-	m9x_write(mdev, M9_REG_APERTURE_CONTROL,
-		  (value & 0xfffffc3fu) | 0x40u);
-	m9x_read(mdev, M9_REG_APERTURE_CONTROL);
+int m9x_address_read_pte(struct m9x_device *mdev, u32 gpuva, u32 *value)
+{
+	struct m9x_address_space *address = mdev->transport.address;
+	u32 offset;
+	int ret;
+
+	if (!address || !address->mapped || !value)
+		return -EINVAL;
+	ret = m9_address_slot(gpuva, &offset);
+	if (ret)
+		return ret;
+	*value = iosys_map_rd(&address->map, offset, u32);
 	return 0;
 }
 
