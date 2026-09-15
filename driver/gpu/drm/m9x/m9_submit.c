@@ -29,11 +29,11 @@ MODULE_PARM_DESC(m9_user_submit,
 static bool m9_index_allowed(u8 index)
 {
 	switch (index) {
-	case 0x00 ... 0x03:
-	case 0x10: case 0x11: case 0x18: case 0x19:
+	case 0x00 ... 0x04:
+	case 0x10 ... 0x12: case 0x18: case 0x19:
 	case 0x22: case 0x23: case 0x28: case 0x30:
 	case 0x68 ... 0x6c:
-	case 0x70 ... 0x7d:
+	case 0x70 ... 0x87:
 	case 0x88 ... 0x8a: case 0x8c ... 0x9f:
 	case 0xa8 ... 0xaf:
 	case 0xb0 ... 0xbb: case 0xbe:
@@ -51,11 +51,13 @@ static bool m9_index_allowed(u8 index)
 /* Non-reloc markers in the per-dword expectation mask. */
 #define M9_EXPECT_DEPENDENCY	BIT(31)
 #define M9_EXPECT_OPTIONAL	BIT(30)
+/* c3 selects the native program entry slot inside the c2 resource. */
+#define M9_EXPECT_PROGRAM_ENTRY	BIT(29)
 
 static u32 m9_index_reloc_kinds(u8 index)
 {
 	switch (index) {
-	case 0x00 ... 0x03:
+	case 0x00 ... 0x04:
 		return M9_RELOC_BIT(SYSTEM) | M9_RELOC_BIT(STREAM);
 	case 0x69:
 		return M9_RELOC_BIT(RESOURCE_69);
@@ -82,11 +84,11 @@ static u32 m9_index_reloc_kinds(u8 index)
 
 /*
  * The vendor emits small non-address literals for disabled ba/be/c2 forms, and
- * preprocessing passes carry a source control word in 01..03.
+ * preprocessing passes carry a source control word in 01..04.
  */
 static bool m9_index_literal(u8 index, u32 value)
 {
-	if (index >= 0x01 && index <= 0x03)
+	if (index >= 0x01 && index <= 0x04)
 		return true;
 	return (index == 0xba || index == 0xbe || index == 0xc2) &&
 	       value < PAGE_SIZE;
@@ -105,9 +107,16 @@ static bool m9_draw_header(u32 header, u32 *family)
 	return true;
 }
 
+/* A textured 88 combiner form without a bound texture stops the engine. */
+static bool m9_textured_combiner(u32 value)
+{
+	return (value & 0xf) == 0x3;
+}
+
 static int m9_parse_commands(const u32 *words, u32 count, u32 *expected,
 			     u32 program_type)
 {
+	bool textured = false, texture = false;
 	u32 cursor = 0;
 
 	while (cursor < count) {
@@ -118,8 +127,10 @@ static int m9_parse_commands(const u32 *words, u32 count, u32 *expected,
 		if (header == 0x45454545)
 			continue;
 		if (header == PARHELIA_M9_RANGE_BREAK) {
-			if (cursor >= count || words[cursor])
+			if (cursor >= count || words[cursor] ||
+			    (textured && !texture))
 				return -EINVAL;
+			textured = texture = false;
 			cursor++;
 			continue;
 		}
@@ -170,6 +181,12 @@ static int m9_parse_commands(const u32 *words, u32 count, u32 *expected,
 				expected[cursor + i] = M9_EXPECT_DEPENDENCY;
 				continue;
 			}
+			if (index[i] == 0x88 && m9_textured_combiner(value))
+				textured = true;
+			if (index[i] == 0x78)
+				texture = true;
+			if (index[i] == 0xc3)
+				expected[cursor + i] |= M9_EXPECT_PROGRAM_ENTRY;
 			/* Only the observed pass-separator controls of e6. */
 			if (index[i] == 0xe6) {
 				if (value != 0x00000003 && value != 0x42000000)
@@ -188,13 +205,14 @@ static int m9_parse_commands(const u32 *words, u32 count, u32 *expected,
 			    index[i] == 0x69 && cursor + i ==
 				M9_RESOURCE69_COUNT_FREE_DWORDS - 2)
 				continue;
-			expected[cursor + i] = m9_index_reloc_kinds(index[i]);
+			expected[cursor + i] = m9_index_reloc_kinds(index[i]) |
+				(expected[cursor + i] & M9_EXPECT_PROGRAM_ENTRY);
 			if (m9_index_literal(index[i], value))
 				expected[cursor + i] |= M9_EXPECT_OPTIONAL;
 		}
 		cursor += values;
 	}
-	return 0;
+	return textured && !texture ? -EINVAL : 0;
 }
 
 static struct drm_gem_object *
@@ -554,6 +572,18 @@ m9_validate_relocs(u32 *image, u32 dwords, u32 *expected,
 		if (reloc->kind == PARHELIA_M9_RELOC_DRAW16_END &&
 		    reloc->flags & PARHELIA_M9_RELOC_PACKED16_ODD)
 			address |= 2;
+		/* The entry slot of this packet's c3 must lie inside the program BO. */
+		if (reloc->kind == PARHELIA_M9_RELOC_PROGRAM) {
+			u32 d;
+
+			for (d = reloc->command_dword + 1;
+			     d < dwords && d <= reloc->command_dword + 3; d++)
+				if ((expected[d] & M9_EXPECT_PROGRAM_ENTRY) &&
+				    ((u64)image[d] + 1) * 8 > gem->size - reloc->target_offset) {
+					ret = -EINVAL;
+					goto out;
+				}
+		}
 		image[reloc->command_dword] = lower_32_bits(address);
 		drm_dbg(&mdev->drm, "M9 reloc dword %u kind %u -> %#llx\n",
 			reloc->command_dword, reloc->kind, address);
@@ -885,6 +915,7 @@ int m9x_submit_selftest(void)
 	u32 dependency[] = { 0x4545e3e6, 3, 0x20, PARHELIA_M9_RANGE_BREAK, 0,
 			     0x45454543, 0x20 };
 	u32 bad_dependency[] = { 0x454545e3, 0x21 };
+	u32 untextured_combiner[] = { 0x45454588, 0x0110dfe3 };
 	u32 expected[ARRAY_SIZE(dependency)] = {};
 	u32 *inline_expected;
 	int ret;
@@ -943,6 +974,10 @@ int m9x_submit_selftest(void)
 	memset(expected, 0, sizeof(expected));
 	if (m9_parse_commands(bad_dependency, ARRAY_SIZE(bad_dependency),
 			      expected, PARHELIA_M9_PROGRAM_NONE) != -EPERM)
+		return -EINVAL;
+	memset(expected, 0, sizeof(expected));
+	if (m9_parse_commands(untextured_combiner, ARRAY_SIZE(untextured_combiner),
+			      expected, PARHELIA_M9_PROGRAM_NONE) != -EINVAL)
 		return -EINVAL;
 	memset(expected, 0, sizeof(expected));
 	if (m9_parse_commands(privileged, ARRAY_SIZE(privileged), expected,
