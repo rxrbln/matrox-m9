@@ -44,8 +44,10 @@ flat-green source, the captured ``0x20080``-byte system payload and the exact
 32-KiB class-1 BmBuffer.  The first ``0xfa0`` bytes hold the framed sequence-0
 image; all bytes through ``0x8000`` are deterministic zeroes and all eight
 pages receive compact PTEs.  It allocates C2, the exact 1-MiB BE context, four
-``0x16800``-byte transient probes and the 320x240
-depth/auxiliary-depth surfaces directly in local VRAM.  Resources without an
+``0x16800``-byte transient probes, the vendor's ``0x50000``-byte category-2
+depth backing and ``0x2d00``-byte category-3 HZ backing directly in local
+VRAM.  The color BO must likewise provide the captured ``0x50000``-byte
+backing for its 320x240 visible rectangle.  Resources without an
 exact vendor extent are followed by at least one page of a resource-specific
 sentinel.  The source is initialized to four ``{x,y,r,g,b}`` records,
 including the proved duplicate prefetch record; BE and the system payload are

@@ -21,11 +21,13 @@
 
 #define M9_TRIANGLE_WIDTH		320u
 #define M9_TRIANGLE_HEIGHT		240u
+#define M9_TRIANGLE_SURFACE_HEIGHT	ALIGN(M9_TRIANGLE_HEIGHT, 32)
 #define M9_TRIANGLE_SURFACE_BYTES	(M9_TRIANGLE_WIDTH * \
-					 M9_TRIANGLE_HEIGHT * sizeof(u32))
-#define M9_TRIANGLE_AUX_DEPTH_BYTES	(DIV_ROUND_UP(M9_TRIANGLE_WIDTH, 8) * \
-					 DIV_ROUND_UP(M9_TRIANGLE_HEIGHT, 4) * \
-					 sizeof(u32))
+					 M9_TRIANGLE_SURFACE_HEIGHT * sizeof(u32))
+#define M9_TRIANGLE_AUX_DEPTH_WIDTH	ALIGN(DIV_ROUND_UP(M9_TRIANGLE_WIDTH, 8), 8)
+#define M9_TRIANGLE_AUX_DEPTH_HEIGHT	ALIGN(DIV_ROUND_UP(M9_TRIANGLE_HEIGHT, 4) + 8, 8)
+#define M9_TRIANGLE_AUX_DEPTH_BYTES	(M9_TRIANGLE_AUX_DEPTH_WIDTH * \
+					 M9_TRIANGLE_AUX_DEPTH_HEIGHT * sizeof(u32))
 #define M9_TRIANGLE_SOURCE_BYTES	0x50u
 #define M9_TRIANGLE_SYSTEM_BYTES	0x20080u
 #define M9_SEQ0_SECONDARY_IMAGE_BYTES	0xfa0u
@@ -1599,14 +1601,14 @@ m9_triangle_stream_selftest(struct m9_triangle_commands *commands)
 	    sizeof(m9_triangle_gouraud_source) != M9_TRIANGLE_SOURCE_BYTES ||
 	    sizeof(m9_triangle_system_prefix) != 0xc0 ||
 	    M9_TRIANGLE_MAX_SYSTEM_PTES != 44 ||
-	    M9_TRIANGLE_AUX_DEPTH_BYTES != 0x2580 ||
+	    M9_TRIANGLE_AUX_DEPTH_BYTES != 0x2d00 ||
 	    m9_triangle_specs[M9_TRI_SECONDARY].payload_bytes != SZ_32K ||
 	    m9_triangle_specs[M9_TRI_C2].payload_bytes !=
 		M9_TRIANGLE_C2_BACKING_BYTES ||
 	    ARRAY_SIZE(m9_triangle_range_0) != ARRAY_SIZE(commands->preprocess) ||
 	    ARRAY_SIZE(m9_triangle_range_1) != ARRAY_SIZE(commands->raster) ||
 	    ARRAY_SIZE(m9_triangle_range_2) != ARRAY_SIZE(commands->completion) ||
-	    M9_TRIANGLE_SURFACE_BYTES != 0x4b000 ||
+	    M9_TRIANGLE_SURFACE_BYTES != 0x50000 ||
 	    M9_TRIANGLE_LINKED_OFFSET & 0x7f ||
 	    M9_TRIANGLE_LINKED_OFFSET + M9_TRIANGLE_LINKED_BYTES >
 		M9_TRIANGLE_SYSTEM_BYTES ||

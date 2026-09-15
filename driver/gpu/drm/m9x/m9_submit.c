@@ -13,7 +13,7 @@
 
 #define M9_VRAM_GPU_BASE	0x10000000ull
 #define M9_VRAM_GPU_SIZE	0x10000000ull
-#define M9_TRIANGLE_COLOR_BYTES	0x0004b000u
+#define M9_TRIANGLE_COLOR_BYTES	0x00050000u
 
 /*
  * This is deliberately the captured-triangle whitelist, not all 256 indexed
