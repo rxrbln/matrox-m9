@@ -71,6 +71,23 @@ struct m9_resource {
    void *map;
 };
 
+static inline uint32_t
+m9_resource_bo_flags(const struct pipe_resource *templ)
+{
+   /* Gallium buffers are the command/vertex/index/constant upload domain.
+    * Explicit staging images likewise remain CPU-oriented DMA32 objects.
+    * Every image that can be consumed by the rasterizer uses the vendor's
+    * local-memory placement. */
+   return templ->target == PIPE_BUFFER || templ->usage == PIPE_USAGE_STAGING ?
+          0 : PARHELIA_M9_BO_VRAM;
+}
+
+static inline uint32_t
+m9_resource_row_span(uint32_t width)
+{
+   return (width + 7) & ~7u;
+}
+
 struct m9_screen {
    struct pipe_screen base;
    int fd;

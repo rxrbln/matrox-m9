@@ -74,11 +74,17 @@ two-slot primary command rebase.  Arbitrary userspace streams remain disabled:
   two independent gates: executable submit and a safe linked-program
   constructor.  Mip transfer offsets include the recovered 32x16 tail atlas.
   A state tracker still receives `NULL` while either gate is closed.
+* Ordinary render targets, depth buffers, and sampled images use
+  `CREATE_BO(VRAM)`, matching the vendor's placement-4 local-memory resources,
+  ordinary layout 1, and an eight-pixel-aligned row span.  Gallium buffers,
+  explicit staging images, and command BOs remain DMA32 upload resources.
+  Framebuffer state accepts only a complete local-VRAM layout-1 image; it
+  rejects DMA32 and placement-unknown imports before command construction.
 * Presentation BOs use `MODE_CREATE_DUMB`, the guarded KMS contract's exact
   1024x768 XRGB8888 shape and 4096-byte pitch, and direct BAR0 mapping.
   KMS, flink, and PRIME winsys handles have symmetric import/export paths.
   `flush_frontbuffer` publishes writes to that same BO and performs no shadow
-  copy or resolve.  DMA32 resources and VRAM scanout resources retain distinct
+  copy or resolve.  DMA32 resources and VRAM image resources retain distinct
   domains and destruction rules.
 
 The pipe screen advertises only exact, joined linear format usages.  It does
@@ -171,13 +177,11 @@ These gaps must remain visible in capability and execution gates:
    cube/volume, sampler sRGB, query, reset-recovery, and
    general-shader paths remain gated at the narrower boundaries in the
    readiness ledger.
-7. Guarded KMS scanout BOs are local-VRAM TTM objects, while every object the
-   current submit validator accepts is an `m9x_bo` DMA32 allocation.  The
-   kernel rejects a VRAM object in `m9x_bo_lookup()`, so direct rendering into
-   the scanout BO cannot be claimed yet.  The Mesa resource domain check
-   rejects that submission explicitly.  Closing this requires the kernel to
-   accept, pin, and relocate its own VRAM GEM objects as color targets; Mesa
-   deliberately has no presentation copy fallback.
+7. The additive `PARHELIA_M9_BO_VRAM` create flag and typed VRAM relocation
+   validation must remain synchronized with the kernel UAPI.  Mesa now uses
+   that domain for raster images and rejects DMA32 framebuffer attachments;
+   executable userspace draws remain gated until the parameterized job path
+   has complete BO reservations and retirement fences.
 
 The Mesa loader maps PCI ID `0x0540` exclusively to `m9x`; the Parhelia map
 contains only the P-series IDs.  Keep `include/drm-uapi/m9x_drm.h`

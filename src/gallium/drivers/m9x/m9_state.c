@@ -1,6 +1,7 @@
 /* SPDX-License-Identifier: MIT */
 #include "m9_state.h"
 #include "m9_batch.h"
+#include "m9_format.h"
 
 #include <errno.h>
 #include <string.h>
@@ -15,20 +16,40 @@ m9_context_state_init(struct m9_context *context, struct m9_screen *screen)
    m9_batch_init(&context->batch);
 }
 
+static bool
+m9_framebuffer_resource_valid(const struct m9_resource *resource,
+                              enum m9_resource_kind kind)
+{
+   struct m9_format_info format;
+   unsigned usage = kind == M9_RESOURCE_LINEAR_COLOR ?
+                    M9_FORMAT_COLOR : M9_FORMAT_DEPTH;
+   uint64_t bytes;
+
+   if (!resource || !resource->handle || resource->kind != kind ||
+       resource->domain != M9_BO_VRAM || resource->layout != 1 ||
+       resource->row_span != m9_resource_row_span(resource->width) ||
+       !resource->width || !resource->height || !resource->cpp ||
+       !m9_format_info(resource->base.format, &format) ||
+       !(format.usage & usage) || format.cpp != resource->cpp ||
+       format.code != resource->format)
+      return false;
+   bytes = (uint64_t)resource->row_span * resource->height * resource->cpp;
+   return bytes <= resource->size;
+}
+
 int
 m9_context_set_framebuffer(struct m9_context *context,
                            struct m9_resource *color,
                            struct m9_resource *depth,
                            unsigned width, unsigned height)
 {
-   if (!context || !color || color->kind != M9_RESOURCE_LINEAR_COLOR ||
+   if (!context || !m9_framebuffer_resource_valid(
+                          color, M9_RESOURCE_LINEAR_COLOR) ||
        !width || !height || width > color->width || height > color->height ||
-       (depth && (depth->kind != M9_RESOURCE_LINEAR_DEPTH ||
+       (depth && (!m9_framebuffer_resource_valid(
+                             depth, M9_RESOURCE_LINEAR_DEPTH) ||
                   width > depth->width || height > depth->height)))
       return -EINVAL;
-   if (color->domain != M9_BO_DMA32 ||
-       (depth && depth->domain != M9_BO_DMA32))
-      return -EOPNOTSUPP;
    context->color = color;
    context->depth = depth;
    context->framebuffer_width = width;

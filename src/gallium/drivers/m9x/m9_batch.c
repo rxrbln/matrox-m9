@@ -411,7 +411,7 @@ m9_mip_layout_init(struct m9_mip_layout *layout, uint32_t width,
       level->width = width >> l ? width >> l : 1;
       level->height = height >> l ? height >> l : 1;
       level->depth = 1;
-      level->row_span = m9_align(level->width, 8);
+      level->row_span = m9_resource_row_span(level->width);
       if (level->width <= 16 && level->height <= 16) {
          unsigned relative;
          if (tail_first < 0) {

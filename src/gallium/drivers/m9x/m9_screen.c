@@ -78,6 +78,13 @@ m9_is_format_supported(struct pipe_screen *screen, enum pipe_format format,
                        unsigned storage_samples, unsigned bind)
 {
    struct m9_format_info info;
+   const unsigned image_bind = PIPE_BIND_DEPTH_STENCIL |
+                               PIPE_BIND_RENDER_TARGET |
+                               PIPE_BIND_BLENDABLE |
+                               PIPE_BIND_SAMPLER_VIEW |
+                               PIPE_BIND_DISPLAY_TARGET |
+                               PIPE_BIND_SCANOUT | PIPE_BIND_SHARED |
+                               PIPE_BIND_LINEAR;
    unsigned required = 0;
 
    (void)screen;
@@ -91,6 +98,13 @@ m9_is_format_supported(struct pipe_screen *screen, enum pipe_format format,
        target != PIPE_TEXTURE_RECT)
       return false;
    if (!m9_format_info(format, &info))
+      return false;
+   if (bind & ~image_bind)
+      return false;
+   if ((bind & PIPE_BIND_BLENDABLE) && !(bind & PIPE_BIND_RENDER_TARGET))
+      return false;
+   if ((bind & PIPE_BIND_DEPTH_STENCIL) &&
+       (bind & (PIPE_BIND_RENDER_TARGET | PIPE_BIND_BLENDABLE)))
       return false;
    if (bind & PIPE_BIND_SAMPLER_VIEW)
       required |= M9_FORMAT_TEXTURE;
@@ -108,7 +122,8 @@ m9_is_format_supported(struct pipe_screen *screen, enum pipe_format format,
              !(bind & ~(PIPE_BIND_SCANOUT | PIPE_BIND_DISPLAY_TARGET |
                         PIPE_BIND_SHARED | PIPE_BIND_RENDER_TARGET |
                         PIPE_BIND_LINEAR));
-   return required && !(required & ~info.usage);
+   /* bind==0 and LINEAR-only images are CPU staging resources. */
+   return !(required & ~info.usage);
 }
 
 static int
@@ -206,12 +221,13 @@ m9_resource_create(struct pipe_screen *pscreen,
          resource->row_span = resource->mip.level[0].row_span;
          size = resource->mip.size;
       } else {
-         resource->row_span = (templ->width0 + 7) & ~7u;
+         resource->row_span = m9_resource_row_span(templ->width0);
          size = (uint64_t)resource->row_span * templ->height0 * format.cpp;
       }
    }
    if (!resource->handle) {
       create.size = size;
+      create.flags = m9_resource_bo_flags(templ);
       if (ioctl(screen->fd, DRM_IOCTL_PARHELIA_M9_CREATE_BO, &create))
          goto fail;
       resource->map = mmap(NULL, create.size, PROT_READ | PROT_WRITE,
@@ -225,7 +241,8 @@ m9_resource_create(struct pipe_screen *pscreen,
       resource->handle = create.handle;
       resource->size = create.size;
       resource->mmap_offset = create.mmap_offset;
-      resource->domain = M9_BO_DMA32;
+      resource->domain = create.flags & PARHELIA_M9_BO_VRAM ?
+                         M9_BO_VRAM : M9_BO_DMA32;
       resource->handle_owned = true;
    }
    resource->base = *templ;
@@ -499,8 +516,16 @@ m9_check_resource_capability(struct pipe_screen *pscreen,
    (void)pscreen;
    if (bind & ~(PIPE_BIND_SCANOUT | PIPE_BIND_LINEAR))
       return false;
-   if ((bind & PIPE_BIND_SCANOUT) && resource->domain == M9_BO_DMA32)
-      return false;
+   if (bind & PIPE_BIND_SCANOUT)
+      if (resource->domain != M9_BO_VRAM ||
+          resource->kind != M9_RESOURCE_LINEAR_COLOR ||
+          resource->layout != 1 || resource->row_span != 1024 ||
+          resource->width != 1024 || resource->height != 768 ||
+          resource->depth != 1 || resource->cpp != 4 ||
+          pres->target != PIPE_TEXTURE_2D || pres->last_level ||
+          pres->array_size != 1 ||
+          pres->format != PIPE_FORMAT_B8G8R8X8_UNORM)
+         return false;
    return !(bind & PIPE_BIND_LINEAR) || resource->layout == 1;
 }
 
