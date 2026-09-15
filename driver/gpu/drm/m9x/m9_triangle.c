@@ -1397,11 +1397,18 @@ int m9x_submit_triangle_diag(struct m9x_device *mdev, u32 color,
 		ret = m9_triangle_run_manager_transition(mdev, point);
 		if (ret)
 			goto out_unlock;
-		ret = m9x_address_commit_bindings(mdev);
+		ret = m9x_address_commit_gpuva(mdev,
+					      PARHELIA_M9_RESTORE_GPUVA);
 		if (ret)
 			goto out_unlock;
 		mdev->transport.restore_ready = true;
 		ret = m9x_transport_rearm_locked(mdev);
+		if (ret)
+			goto out_unlock;
+		ret = m9x_address_finalize_service(mdev);
+		if (ret)
+			goto out_unlock;
+		ret = m9x_address_commit_bindings(mdev);
 		if (ret)
 			goto out_unlock;
 		mdev->transport.engine_transitioned = true;

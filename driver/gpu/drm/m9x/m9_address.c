@@ -35,11 +35,15 @@
 #define M9_ADDRESS_SYSTEM_END		0x50000000u
 #define M9_ADDRESS_PRIMARY_BASE		0x00801000u
 #define M9_ADDRESS_PRIMARY_LIMIT	0x00860000u
+#define M9_ADDRESS_SERVICE_SLOTS	20u
+#define M9_ADDRESS_SERVICE_STRIDE	0x10u
+#define M9_ADDRESS_SERVICE_INVALID	0x0000ffffu
 
 struct m9x_address_binding {
 	u32 gpuva;
 	u32 bytes;
 	dma_addr_t dma;
+	bool published;
 };
 
 struct m9x_address_space {
@@ -53,7 +57,20 @@ struct m9x_address_space {
 	bool windows_published;
 	bool bindings_dirty;
 	bool manager_ready;
+	bool service_finalized;
 };
+
+static void m9_address_invalidate_service_bank(struct m9x_device *mdev)
+{
+	u32 slot;
+
+	/* A null m9x115 entry writes only dword zero, committing it last. */
+	for (slot = 0; slot < M9_ADDRESS_SERVICE_SLOTS; slot++)
+		m9x_write(mdev, slot * M9_ADDRESS_SERVICE_STRIDE,
+			  M9_ADDRESS_SERVICE_INVALID);
+	m9x_read(mdev, (M9_ADDRESS_SERVICE_SLOTS - 1) *
+		 M9_ADDRESS_SERVICE_STRIDE);
+}
 
 static u32 m9_address_pte_word(dma_addr_t dma)
 {
@@ -249,6 +266,8 @@ int m9x_address_prepare(struct m9x_device *mdev)
 	value = m9x_read(mdev, M9_REG_SERVICE_MODE);
 	m9x_write(mdev, M9_REG_SERVICE_MODE,
 		  (value & 0xfffcffffu) | 0x00010000u);
+	/* Initial m9x1172 -> m9x115 invalidates all 20 fresh null slots. */
+	m9_address_invalidate_service_bank(mdev);
 	address->service_ready = true;
 	return 0;
 }
@@ -342,6 +361,37 @@ int m9x_address_construct_manager(struct m9x_device *mdev)
 	return 0;
 }
 
+static int m9_address_publish_binding(struct m9x_device *mdev,
+				      struct m9x_address_space *address,
+				      struct m9x_address_binding *binding)
+{
+	u32 pages = binding->bytes >> PAGE_SHIFT;
+	u32 page;
+
+	if (binding->published)
+		return 0;
+	for (page = 0; page < pages; page++) {
+		u32 offset;
+		int ret;
+
+		ret = m9_address_slot(binding->gpuva + page * PAGE_SIZE,
+				      &offset);
+		if (ret)
+			return ret;
+		iosys_map_wr(&address->map, offset, u32,
+			     m9_address_pte_word(binding->dma +
+						     page * PAGE_SIZE));
+	}
+	/* Make this allocation's BAR/WC leaves visible before activation. */
+	wmb();
+	m9x_write(mdev, M9_REG_FRONTEND_STATE, 0x0f);
+	m9x_write(mdev, M9_REG_FRONTEND_STATE, 0x01);
+	m9x_write(mdev, M9_REG_FRONTEND_STATE, 0x00);
+	m9x_read(mdev, M9_REG_FRONTEND_STATE);
+	binding->published = true;
+	return 0;
+}
+
 int m9x_address_commit_bindings(struct m9x_device *mdev)
 {
 	struct m9x_address_space *address = mdev->transport.address;
@@ -353,44 +403,60 @@ int m9x_address_commit_bindings(struct m9x_device *mdev)
 	if (!address->bindings_dirty)
 		return 0;
 
-	/*
-	 * Later m9x887 resource publication uses a separate selector-zero m9x328
-	 * call after the cold manager and second m9x421 transition have completed.
-	 * Stage all CPU-visible leaf dwords before activating them together.
-	 */
 	for (binding_index = 0; binding_index < address->binding_count;
 	     binding_index++) {
-		const struct m9x_address_binding *binding =
+		struct m9x_address_binding *binding =
 			&address->bindings[binding_index];
-		u32 pages = binding->bytes >> PAGE_SHIFT;
-		u32 page;
+		int ret;
 
-		for (page = 0; page < pages; page++) {
-			u32 offset;
-			int ret;
-
-			ret = m9_address_slot(binding->gpuva +
-					      page * PAGE_SIZE, &offset);
-			if (ret)
-				return ret;
-			iosys_map_wr(&address->map, offset, u32,
-				     m9_address_pte_word(binding->dma +
-							 page * PAGE_SIZE));
-		}
+		if (binding->published)
+			continue;
+		/*
+		 * Every vendor m9x1030 allocation completes its own m9x887 ->
+		 * m9x328 CPU mirror and activation before constructing the next
+		 * allocation.  Do not batch independently allocated resources.
+		 */
+		ret = m9_address_publish_binding(mdev, address, binding);
+		if (ret)
+			return ret;
 	}
-
-	/*
-	 * The CPU-mirror fallback bypasses m9x694 and therefore does not kick
-	 * 0x314. Its selector-zero post-list is 0x3000001f, decoded from the low
-	 * nibble as f,1,0.
-	 */
-	wmb();
-	m9x_write(mdev, M9_REG_FRONTEND_STATE, 0x0f);
-	m9x_write(mdev, M9_REG_FRONTEND_STATE, 0x01);
-	m9x_write(mdev, M9_REG_FRONTEND_STATE, 0x00);
-	m9x_read(mdev, M9_REG_FRONTEND_STATE);
 	address->bindings_dirty = false;
 
+	return 0;
+}
+
+int m9x_address_commit_gpuva(struct m9x_device *mdev, u32 gpuva)
+{
+	struct m9x_address_space *address = mdev->transport.address;
+	u32 binding_index;
+
+	if (!address || !address->mapped || !address->service_ready ||
+	    !address->windows_published || !address->manager_ready)
+		return -EINVAL;
+	for (binding_index = 0; binding_index < address->binding_count;
+	     binding_index++) {
+		struct m9x_address_binding *binding =
+			&address->bindings[binding_index];
+
+		if (binding->gpuva != gpuva)
+			continue;
+		return m9_address_publish_binding(mdev, address, binding);
+	}
+	return -ENOENT;
+}
+
+int m9x_address_finalize_service(struct m9x_device *mdev)
+{
+	struct m9x_address_space *address = mdev->transport.address;
+
+	if (!address || !address->service_ready || !address->manager_ready)
+		return -EINVAL;
+	if (address->service_finalized)
+		return 0;
+	/* m9x1141 publishes once; the explicit m9x582 tail repeats m9x115. */
+	m9_address_invalidate_service_bank(mdev);
+	m9_address_invalidate_service_bank(mdev);
+	address->service_finalized = true;
 	return 0;
 }
 
