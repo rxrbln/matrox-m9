@@ -196,11 +196,20 @@ BAR-visible VRAM.  The first triangle binds index 69 to a local VRAM copy of
 the normal fixed-fragment database, loaded as firmware
 ``m9x/rsfragptrs-normal.bin`` (``6a=0x25010000``, Linux vendor bm-12 framing);
 ``m9_triangle_inline_program=1`` selects the Windows inline P00/S28 upload.
-On the M9148 the sequence-0 context activation and the draw retire and the
-preprocessing pass writes its transient views, but no pixel reaches the
-color target yet.  Host-aperture slot 0 ``d1`` selects the VRAM address shown
-at BAR0 offset 0, which allows comparing these intermediate results with the
-vendor stack's GPU-only allocations.
+Index ``c2`` binds the vendor's compiled 40-instruction vertex program, and
+the ``8d/8e`` constants and ``6c`` linked record use the bytes captured from
+the vendor draw.
+
+On the M9148 the flat 320x240 triangle renders: its 28000 green pixels land
+at the same storage positions as in the vendor color target, and the
+preprocessing transient views match the vendor records.  The color surface
+is not stored as linear 320-pixel rows, so linear readback checks must use
+the decoded storage layout.
+
+``m9_user_submit=1`` executes validated userspace streams.  The kernel frames
+the count-free packets into counted records, submits them through the
+class-1 BmBuffer followed by the vendor completion range, and waits for its
+fence with every referenced VRAM BO pinned.
 
 UAPI boundary
 -------------
