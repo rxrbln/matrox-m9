@@ -281,12 +281,16 @@ int m9x_submit_kernel_stream_locked(struct m9x_device *mdev,
 
 	deadline = jiffies + msecs_to_jiffies(max(m9_fence_timeout_ms, 1u));
 	for (;;) {
-		dma_rmb();
 		raw = READ_ONCE(writeback[0]);
-		if (m9_fence_reached(raw, target))
+		if (m9_fence_reached(raw, target)) {
+			dma_rmb();
 			break;
-		if (m9x_read(mdev, M9_REG_ENGINE_STATUS) == U32_MAX)
+		}
+		if (m9x_read(mdev, M9_REG_ENGINE_STATUS) == U32_MAX) {
+			transport->wedged = true;
+			transport->generation++;
 			return -ENODEV;
+		}
 		if (time_after_eq(jiffies, deadline)) {
 			dev_err(&mdev->pdev->dev,
 				"M9 kernel stream timeout: target=%#x wb=%#x engine=%#x frontend=%#x command=%#x/%#x\n",
@@ -442,10 +446,11 @@ int m9x_submit_noop(struct m9x_device *mdev, u64 *point)
 
 	deadline = jiffies + msecs_to_jiffies(max(m9_fence_timeout_ms, 1u));
 	for (;;) {
-		dma_rmb();
 		raw = READ_ONCE(writeback[0]);
-		if (m9_fence_reached(raw, target))
+		if (m9_fence_reached(raw, target)) {
+			dma_rmb();
 			break;
+		}
 		if (m9x_read(mdev, M9_REG_ENGINE_STATUS) == U32_MAX) {
 			ret = -ENODEV;
 			goto out_error;
@@ -556,11 +561,19 @@ int m9x_init(struct m9x_device *mdev)
 
 void m9x_fini(struct m9x_device *mdev)
 {
+	struct drm_gem_vram_object *color;
+
 	mutex_lock(&mdev->transport.lock);
 	mdev->transport.wedged = true;
 	/* Stop host DMA before devres releases any reachable allocation. */
 	pci_clear_master(mdev->pdev);
 	mdev->transport.transport_armed = false;
+	color = mdev->transport.quarantined_color;
+	mdev->transport.quarantined_color = NULL;
 	mutex_unlock(&mdev->transport.lock);
 	m9x_triangle_fini(mdev);
+	if (color) {
+		m9x_vram_unpin(color);
+		drm_gem_vram_put(color);
+	}
 }

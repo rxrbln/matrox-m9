@@ -79,6 +79,13 @@ complete captured sequence-0 context image.  Once that image retires, the
 driver replaces the shared BmBuffer with the exact three-range draw image and
 submits its nine-dword primary publication.
 
+The color target remains pinned and TTM-reserved across the synchronous draw.
+After observing the final writeback token, a DMA read barrier orders all later
+guard and color reads after GPU completion.  A timeout wedges the transport
+and quarantines the still-pinned color GEM until teardown, because the local
+raster engine may still reference it even when host completion is uncertain.
+Guard corruption is likewise terminal for that transport generation.
+
 The guarded M9148 path writes primary requester controls
 ``0x44c/0x450/0x454`` as ``00280800/1f3f2707/00070703`` in their exact
 ``m9x109`` position after the restore tuple.  These values come from the

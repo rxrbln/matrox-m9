@@ -734,7 +734,8 @@ static int m9_triangle_build_addresses(struct m9x_device *mdev, u32 color,
 	unsigned int i;
 
 	if (!m9_triangle_gpuva(diag, M9_TRI_SOURCE) ||
-	    !m9_triangle_gpuva(diag, M9_TRI_SYSTEM))
+	    !m9_triangle_gpuva(diag, M9_TRI_SYSTEM) ||
+	    !IS_ALIGNED(color, 0x100))
 		return -EINVAL;
 	job->source = m9_triangle_gpuva(diag, M9_TRI_SOURCE) |
 		      M9_TRIANGLE_GPUVA_TAG;
@@ -1057,7 +1058,8 @@ static int m9_triangle_run_manager_transition(struct m9x_device *mdev,
 	return 0;
 }
 
-int m9x_submit_triangle_diag(struct m9x_device *mdev, u32 color, u64 *point)
+int m9x_submit_triangle_diag(struct m9x_device *mdev, u32 color, u64 *point,
+			     bool *color_active)
 {
 	struct m9_triangle_job_addresses job = {};
 	struct m9_seq0_job sequence0 = {};
@@ -1068,9 +1070,10 @@ int m9x_submit_triangle_diag(struct m9x_device *mdev, u32 color, u64 *point)
 	u32 target;
 	int ret;
 
+	*point = 0;
+	*color_active = false;
 	if (!m9_triangle_diag)
 		return -EACCES;
-	*point = 0;
 	mutex_lock(&mdev->transport.lock);
 	if (mdev->transport.wedged) {
 		ret = -EIO;
@@ -1142,8 +1145,11 @@ int m9x_submit_triangle_diag(struct m9x_device *mdev, u32 color, u64 *point)
 		goto out_unlock;
 	mdev->transport.next_fence = draw_target;
 	ret = m9_triangle_verify_guards(diag);
-	if (ret)
+	if (ret) {
+		mdev->transport.wedged = true;
+		mdev->transport.generation++;
 		goto out_unlock;
+	}
 	ret = m9_triangle_build_addresses(mdev, color, draw_target, &job);
 	if (ret)
 		goto out_unlock;
@@ -1161,15 +1167,20 @@ int m9x_submit_triangle_diag(struct m9x_device *mdev, u32 color, u64 *point)
 	m9_triangle_build_framed_secondary(diag->resource[M9_TRI_SECONDARY].cpu,
 					   &job);
 	dma_wmb();
+	*color_active = true;
 	ret = m9x_submit_kernel_stream_locked(mdev, diag->commands.primary,
 					      ARRAY_SIZE(diag->commands.primary),
 					      job.transition[5], point);
 	if (ret)
 		goto out_unlock;
+	*color_active = false;
 	mdev->transport.next_fence = job.transition[5] + 0x10;
 	ret = m9_triangle_verify_guards(diag);
-	if (ret)
+	if (ret) {
+		mdev->transport.wedged = true;
+		mdev->transport.generation++;
 		goto out_unlock;
+	}
 	dev_info(&mdev->pdev->dev,
 		 "M9 first triangle retired: setup=%#x..%#x draw=%#x..%#x\n",
 		 sequence0.target, sequence0_final, draw_target,

@@ -268,6 +268,7 @@ static int m9_submit_first_triangle(struct m9x_device *mdev,
 	struct drm_parhelia_m9_bo_ref ref;
 	struct drm_gem_vram_object *vram;
 	struct drm_gem_object *gem;
+	bool color_active;
 	s64 offset;
 	u64 address;
 	int ret;
@@ -292,18 +293,36 @@ static int m9_submit_first_triangle(struct m9x_device *mdev,
 	ret = m9x_vram_pin(vram);
 	if (ret)
 		goto out_put;
+	ret = ttm_bo_reserve(&vram->bo, true, false, NULL);
+	if (ret)
+		goto out_unpin;
 	offset = drm_gem_vram_offset(vram);
 	if (offset < 0) {
 		ret = offset;
-		goto out_unpin;
+		goto out_unreserve;
 	}
 	ret = m9_vram_gpu_address(mdev->vram_size, offset,
 				  M9_TRIANGLE_COLOR_BYTES - 1, &address);
 	if (ret)
-		goto out_unpin;
+		goto out_unreserve;
 	address -= M9_TRIANGLE_COLOR_BYTES - 1;
 	ret = m9x_submit_triangle_diag(mdev, lower_32_bits(address),
-				       &args->out_point);
+				       &args->out_point, &color_active);
+	ttm_bo_unreserve(&vram->bo);
+	if (color_active) {
+		/* A timed-out local draw can keep writing after the ioctl returns.
+		 * Retain both the pin and GEM reference until teardown has disabled
+		 * the device's DMA reachability.
+		 */
+		mutex_lock(&mdev->transport.lock);
+		WARN_ON(mdev->transport.quarantined_color);
+		mdev->transport.quarantined_color = vram;
+		mutex_unlock(&mdev->transport.lock);
+		return ret;
+	}
+	goto out_unpin;
+out_unreserve:
+	ttm_bo_unreserve(&vram->bo);
 out_unpin:
 	m9x_vram_unpin(vram);
 out_put:

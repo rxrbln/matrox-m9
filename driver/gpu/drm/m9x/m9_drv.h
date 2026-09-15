@@ -72,6 +72,7 @@ struct m9x_transport {
 	bool engine_transitioned;
 	bool restore_ready;
 	bool wedged;
+	struct drm_gem_vram_object *quarantined_color;
 	struct m9x_address_space *address;
 	struct m9x_triangle_diag *triangle;
 };
@@ -122,7 +123,8 @@ int m9x_address_bind_dma(struct m9x_device *mdev, u32 gpuva,
 int m9x_address_prepare(struct m9x_device *mdev);
 int m9x_address_publish(struct m9x_device *mdev);
 int m9x_address_commit_bindings(struct m9x_device *mdev);
-int m9x_submit_triangle_diag(struct m9x_device *mdev, u32 color, u64 *point);
+int m9x_submit_triangle_diag(struct m9x_device *mdev, u32 color, u64 *point,
+			     bool *color_active);
 int m9x_triangle_selftest(void);
 void m9x_triangle_fini(struct m9x_device *mdev);
 int m9x_submit_selftest(void);
