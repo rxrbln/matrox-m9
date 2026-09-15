@@ -27,20 +27,11 @@ m9_format_info(enum pipe_format format, struct m9_format_info *out)
    case PIPE_FORMAT_B4G4R4A4_UNORM:
       info = (struct m9_format_info){ 0x46, 2, M9_FORMAT_TEXTURE };
       break;
-   case PIPE_FORMAT_B10G10R10A2_UNORM:
-      info = (struct m9_format_info){ 0x6a, 4, M9_FORMAT_TEXTURE };
-      break;
-   case PIPE_FORMAT_R10G10B10A2_UNORM:
-      info = (struct m9_format_info){ 0x68, 4, M9_FORMAT_TEXTURE };
-      break;
    case PIPE_FORMAT_L8_UNORM:
       info = (struct m9_format_info){ 0x30, 1, M9_FORMAT_TEXTURE };
       break;
    case PIPE_FORMAT_Z16_UNORM:
       info = (struct m9_format_info){ 0x5c, 2, M9_FORMAT_DEPTH };
-      break;
-   case PIPE_FORMAT_Z24_UNORM_S8_UINT:
-      info = (struct m9_format_info){ 0x7d, 4, M9_FORMAT_DEPTH };
       break;
    default:
       return false;

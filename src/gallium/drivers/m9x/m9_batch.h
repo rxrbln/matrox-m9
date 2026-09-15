@@ -78,6 +78,7 @@ int m9_batch_bind_texture(struct m9_batch *batch, uint32_t handle,
                           const struct m9_sampler_desc *sampler);
 int m9_batch_bind_program(struct m9_batch *batch,
                           const struct m9_linked_program *program);
+int m9_batch_bind_fixed_inline_program(struct m9_batch *batch);
 int m9_batch_emit_triangle_raster(struct m9_batch *batch, unsigned width,
                                   unsigned height, bool depth_test,
                                   bool depth_write);

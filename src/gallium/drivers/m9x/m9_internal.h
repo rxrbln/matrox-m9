@@ -39,7 +39,6 @@ struct m9_prime_import {
    struct m9_prime_import *next;
    uint32_t handle;
    uint32_t references;
-   bool owns_handle;
 };
 
 struct m9_mip_level {
@@ -167,6 +166,12 @@ struct m9_vertex_stream {
    uint32_t capacity;
 };
 
+enum m9_program_mode {
+   M9_PROGRAM_MODE_NONE,
+   M9_PROGRAM_MODE_EXTERNAL,
+   M9_PROGRAM_MODE_FIXED_INLINE,
+};
+
 struct m9_batch {
    uint32_t command[M9_MAX_COMMAND_DWORDS];
    struct drm_parhelia_m9_reloc relocs[M9_MAX_RELOCS];
@@ -174,6 +179,7 @@ struct m9_batch {
    uint32_t command_count;
    uint32_t reloc_count;
    uint32_t bo_count;
+   enum m9_program_mode program_mode;
    bool sealed;
 };
 

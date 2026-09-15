@@ -156,15 +156,11 @@ m9_prime_import_get(struct m9_screen *screen, int fd,
    }
    entry = CALLOC_STRUCT(m9_prime_import);
    if (!entry) {
-      struct drm_gem_close close_bo = { .handle = handle };
-
-      ioctl(screen->fd, DRM_IOCTL_GEM_CLOSE, &close_bo);
       ret = -ENOMEM;
       goto out_unlock;
    }
    entry->handle = handle;
    entry->references = 1;
-   entry->owns_handle = true;
    entry->next = screen->imports;
    screen->imports = entry;
    resource->handle = handle;
@@ -228,7 +224,6 @@ m9_prime_track_export(struct m9_screen *screen, struct m9_resource *resource)
    }
    entry->handle = resource->handle;
    entry->references = 1;
-   entry->owns_handle = resource->handle_owned;
    entry->next = screen->imports;
    screen->imports = entry;
    resource->prime_import = entry;
@@ -247,11 +242,6 @@ m9_prime_import_put(struct m9_screen *screen, struct m9_prime_import *entry)
          continue;
       if (--entry->references == 0) {
          *link = entry->next;
-         if (entry->owns_handle) {
-            struct drm_gem_close close_bo = { .handle = entry->handle };
-
-            ioctl(screen->fd, DRM_IOCTL_GEM_CLOSE, &close_bo);
-         }
          FREE(entry);
       }
       break;
@@ -421,7 +411,10 @@ m9_resource_from_handle(struct pipe_screen *pscreen,
          break;
       }
       resource->handle = open.handle;
-      resource->handle_owned = true;
+      /* Duplicated screen fds share one DRM file/handle namespace.  Keep
+       * imported handles until that file closes so another screen cannot
+       * invalidate the same numeric handle. */
+      resource->handle_owned = false;
       break;
    }
    case WINSYS_HANDLE_TYPE_FD:
@@ -722,11 +715,6 @@ m9_destroy(struct pipe_screen *pscreen)
       struct m9_prime_import *entry = screen->imports;
 
       screen->imports = entry->next;
-      if (entry->owns_handle) {
-         struct drm_gem_close close_bo = { .handle = entry->handle };
-
-         ioctl(screen->fd, DRM_IOCTL_GEM_CLOSE, &close_bo);
-      }
       FREE(entry);
    }
    simple_mtx_destroy(&screen->import_lock);

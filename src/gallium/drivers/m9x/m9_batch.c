@@ -1,5 +1,6 @@
 /* SPDX-License-Identifier: MIT */
 #include "m9_batch.h"
+#include "m9_resource69_inline.h"
 
 #include <errno.h>
 #include <limits.h>
@@ -10,6 +11,47 @@ static uint32_t
 m9_align(uint32_t value, uint32_t alignment)
 {
    return (value + alignment - 1) & ~(alignment - 1);
+}
+
+static bool
+m9_header_is_draw(uint32_t header)
+{
+   uint32_t launch = header & 0x60000000u;
+   uint32_t base = header & ~0x60000000u;
+
+   return (launch == 0x20000000u || launch == 0x60000000u) &&
+          (base == 0x03000001u || base == 0x06000001u ||
+           base == 0x07000001u);
+}
+
+struct m9_batch_checkpoint {
+   uint32_t command_count, reloc_count, bo_count;
+   uint32_t bo_flags[M9_MAX_BOS];
+   enum m9_program_mode program_mode;
+};
+
+static void
+m9_batch_checkpoint(const struct m9_batch *batch,
+                    struct m9_batch_checkpoint *checkpoint)
+{
+   checkpoint->command_count = batch->command_count;
+   checkpoint->reloc_count = batch->reloc_count;
+   checkpoint->bo_count = batch->bo_count;
+   checkpoint->program_mode = batch->program_mode;
+   for (unsigned i = 0; i < batch->bo_count; i++)
+      checkpoint->bo_flags[i] = batch->bos[i].flags;
+}
+
+static void
+m9_batch_rollback(struct m9_batch *batch,
+                  const struct m9_batch_checkpoint *checkpoint)
+{
+   batch->command_count = checkpoint->command_count;
+   batch->reloc_count = checkpoint->reloc_count;
+   batch->bo_count = checkpoint->bo_count;
+   batch->program_mode = checkpoint->program_mode;
+   for (unsigned i = 0; i < checkpoint->bo_count; i++)
+      batch->bos[i].flags = checkpoint->bo_flags[i];
 }
 
 void
@@ -23,23 +65,42 @@ m9_batch_emit_regs(struct m9_batch *batch, const uint8_t *indices,
                    const uint32_t *values, unsigned count)
 {
    unsigned first = 0;
+   unsigned packets = 0;
 
    if (!batch || !indices || !values || !count || batch->sealed)
       return -EINVAL;
-   if (batch->command_count + count + (count + 3) / 4 >
-       M9_MAX_COMMAND_DWORDS)
-      return -ENOSPC;
    for (unsigned i = 0; i < count; i++)
       if (indices[i] == M9_PACKET_STOP)
          return -EINVAL;
 
    while (first < count) {
-      const unsigned n = count - first > 4 ? 4 : count - first;
+      unsigned n = count - first > 4 ? 4 : count - first;
       uint32_t header = 0x45454545u;
 
       for (unsigned i = 0; i < n; i++) {
          header &= ~(0xffu << (8 * i));
          header |= (uint32_t)indices[first + i] << (8 * i);
+      }
+      if (n == 4 && m9_header_is_draw(header))
+         n = 3;
+      packets++;
+      first += n;
+   }
+   if (batch->command_count + count + packets > M9_MAX_COMMAND_DWORDS)
+      return -ENOSPC;
+
+   first = 0;
+   while (first < count) {
+      unsigned n = count - first > 4 ? 4 : count - first;
+      uint32_t header = 0x45454545u;
+
+      for (unsigned i = 0; i < n; i++) {
+         header &= ~(0xffu << (8 * i));
+         header |= (uint32_t)indices[first + i] << (8 * i);
+      }
+      if (n == 4 && m9_header_is_draw(header)) {
+         n = 3;
+         header = (header & 0x00ffffffu) | 0x45000000u;
       }
       batch->command[batch->command_count++] = header;
       for (unsigned i = 0; i < n; i++)
@@ -124,12 +185,14 @@ m9_batch_bind_surface(struct m9_batch *batch, uint8_t address_index,
    const uint8_t indices[] = { address_index, (uint8_t)(address_index + 1) };
    const uint32_t values[] = { 0, m9_surface_desc0(desc) };
    uint32_t address_dword = batch ? batch->command_count + 1 : 0;
+   struct m9_batch_checkpoint checkpoint;
    int ret;
 
-   if (!desc || (address_index != 0xb0 && address_index != 0xb2 &&
+   if (!batch || !desc || (address_index != 0xb0 && address_index != 0xb2 &&
                  address_index != 0xb4 && address_index != 0xb6 &&
                  address_index != 0xb8 && address_index != 0xba))
       return -EINVAL;
+   m9_batch_checkpoint(batch, &checkpoint);
    if (!desc->row_span || !desc->height || !desc->layers ||
        (offset & 255) ||
        ((address_index <= 0xb6) != (kind == PARHELIA_M9_RELOC_COLOR)) ||
@@ -140,8 +203,11 @@ m9_batch_bind_surface(struct m9_batch *batch, uint8_t address_index,
       return ret;
    /* Destination reads depend on blend/logic-op state.  The current kernel
     * executable boundary conservatively reserves every attachment both ways. */
-   return m9_batch_add_reloc(batch, address_dword, handle, offset, kind,
-                             PARHELIA_M9_BO_READ | PARHELIA_M9_BO_WRITE);
+   ret = m9_batch_add_reloc(batch, address_dword, handle, offset, kind,
+                            PARHELIA_M9_BO_READ | PARHELIA_M9_BO_WRITE);
+   if (ret)
+      m9_batch_rollback(batch, &checkpoint);
+   return ret;
 }
 
 static unsigned
@@ -199,58 +265,47 @@ m9_batch_bind_texture(struct m9_batch *batch, uint32_t handle,
       m9_surface_desc1(desc), m9_sampler_control(sampler),
       m9_sampler_lod(sampler) };
    uint32_t address_dword = batch ? batch->command_count + 1 : 0;
+   struct m9_batch_checkpoint checkpoint;
    int ret;
 
-   if (!desc || !sampler || !desc->row_span || !desc->height ||
+   if (!batch || !desc || !sampler || !desc->row_span || !desc->height ||
        !desc->layers || (offset & 255))
       return -EINVAL;
+   m9_batch_checkpoint(batch, &checkpoint);
    ret = m9_batch_emit_regs(batch, indices, values, 5);
    if (ret)
       return ret;
-   return m9_batch_add_reloc(batch, address_dword, handle, offset,
-                             PARHELIA_M9_RELOC_TEXTURE,
-                             PARHELIA_M9_BO_READ);
+   ret = m9_batch_add_reloc(batch, address_dword, handle, offset,
+                            PARHELIA_M9_RELOC_TEXTURE,
+                            PARHELIA_M9_BO_READ);
+   if (ret)
+      m9_batch_rollback(batch, &checkpoint);
+   return ret;
 }
 
 int
 m9_batch_bind_program(struct m9_batch *batch,
                       const struct m9_linked_program *program)
 {
-   const uint8_t indices[] = { 0x69, 0x6a, 0x68, 0x6b, 0x6c };
-   uint32_t values[5];
-   uint32_t address_dword = batch ? batch->command_count + 1 : 0;
-   int ret;
+   (void)batch;
+   (void)program;
+   /* External 69/6c resources need kernel-owned compact GPUVA bindings. */
+   return -EOPNOTSUPP;
+}
 
-   if (!program || !program->captured_gltri ||
-       !program->fixed_fragment_db_handle || !program->linked_state_handle ||
-       (program->fixed_fragment_db_offset & 4095) ||
-       (program->linked_state_offset & 127))
+int
+m9_batch_bind_fixed_inline_program(struct m9_batch *batch)
+{
+   if (!batch || batch->sealed || batch->program_mode != M9_PROGRAM_MODE_NONE ||
+       batch->command_count || batch->reloc_count || batch->bo_count)
       return -EINVAL;
-   values[0] = 0;
-   values[1] = program->control_6a;
-   values[2] = 0;
-   values[3] = program->entry_6b;
-   values[4] = 0;
-   ret = m9_batch_emit_regs(batch, indices, values, 5);
-   if (ret)
-      return ret;
-   /* Index 69 selects the immutable external fixed-fragment database.  The
-    * render target is bound independently through selector-8 b0/b1. */
-   ret = m9_batch_add_reloc(batch, address_dword,
-                            program->fixed_fragment_db_handle,
-                            program->fixed_fragment_db_offset,
-                            PARHELIA_M9_RELOC_RESOURCE_69,
-                            PARHELIA_M9_BO_READ);
-   if (ret)
-      return ret;
-   /* 6c is a separate system-resource record.  RESOURCE_6C makes the kernel
-    * own captured low bit 0 instead of exposing it as a raw address bit in
-    * userspace.  The live value does not carry the requester system tag. */
-   return m9_batch_add_reloc(batch, batch->command_count - 1,
-                             program->linked_state_handle,
-                             program->linked_state_offset,
-                             PARHELIA_M9_RELOC_RESOURCE_6C,
-                             PARHELIA_M9_BO_READ);
+   if (M9_RESOURCE69_COUNT_FREE_DWORDS > M9_MAX_COMMAND_DWORDS)
+      return -ENOSPC;
+   memcpy(batch->command, m9_resource69_inline_count_free,
+          sizeof(m9_resource69_inline_count_free));
+   batch->command_count = M9_RESOURCE69_COUNT_FREE_DWORDS;
+   batch->program_mode = M9_PROGRAM_MODE_FIXED_INLINE;
+   return 0;
 }
 
 int
@@ -284,14 +339,18 @@ m9_batch_emit_draw32(struct m9_batch *batch, uint32_t handle,
                      uint64_t offset, uint32_t count, uint32_t flags)
 {
    uint64_t span = 4ull * count;
+   struct m9_batch_checkpoint checkpoint;
    uint32_t base;
    int ret;
 
-   if (!batch || !count || (offset & 3) ||
-       span > UINT32_MAX || offset > UINT64_MAX - span ||
-       (flags != 0x20000000u && flags != 0x60000000u) ||
-       batch->command_count + 3 > M9_MAX_COMMAND_DWORDS)
+   if (!batch || batch->sealed || !count || (offset & 3) ||
+       (flags != 0x20000000u && flags != 0x60000000u))
       return -EINVAL;
+   if (span > UINT32_MAX || offset > UINT64_MAX - span)
+      return -EOVERFLOW;
+   if (batch->command_count + 3 > M9_MAX_COMMAND_DWORDS)
+      return -ENOSPC;
+   m9_batch_checkpoint(batch, &checkpoint);
    base = batch->command_count;
    batch->command[batch->command_count++] = 0x07000001u | flags;
    batch->command[batch->command_count++] = 0;
@@ -299,11 +358,13 @@ m9_batch_emit_draw32(struct m9_batch *batch, uint32_t handle,
    ret = m9_batch_add_reloc(batch, base + 1, handle, offset,
                             PARHELIA_M9_RELOC_DRAW32_START,
                             PARHELIA_M9_BO_READ);
+   if (!ret)
+      ret = m9_batch_add_reloc(batch, base + 2, handle, offset + span,
+                               PARHELIA_M9_RELOC_DRAW32_END,
+                               PARHELIA_M9_BO_READ);
    if (ret)
-      return ret;
-   return m9_batch_add_reloc(batch, base + 2, handle, offset + span,
-                             PARHELIA_M9_RELOC_DRAW32_END,
-                             PARHELIA_M9_BO_READ);
+      m9_batch_rollback(batch, &checkpoint);
+   return ret;
 }
 
 int
@@ -311,16 +372,19 @@ m9_batch_emit_draw16(struct m9_batch *batch, uint32_t handle,
                      uint64_t offset, uint32_t count, uint32_t flags)
 {
    uint64_t end, span;
+   struct m9_batch_checkpoint checkpoint;
    uint32_t base;
    int ret;
 
-   if (!batch || !count || (offset & 3) ||
-       (flags != 0x20000000u && flags != 0x60000000u) ||
-       batch->command_count + 3 > M9_MAX_COMMAND_DWORDS)
+   if (!batch || batch->sealed || !count || (offset & 3) ||
+       (flags != 0x20000000u && flags != 0x60000000u))
       return -EINVAL;
    span = 4ull * ((count + 1ull) / 2ull);
    if (span > UINT32_MAX || offset > UINT64_MAX - span)
       return -EOVERFLOW;
+   if (batch->command_count + 3 > M9_MAX_COMMAND_DWORDS)
+      return -ENOSPC;
+   m9_batch_checkpoint(batch, &checkpoint);
    end = offset + span;
    base = batch->command_count;
    batch->command[batch->command_count++] = 0x06000001u | flags;
@@ -329,23 +393,28 @@ m9_batch_emit_draw16(struct m9_batch *batch, uint32_t handle,
    ret = m9_batch_add_reloc(batch, base + 1, handle, offset,
                             PARHELIA_M9_RELOC_DRAW16_START,
                             PARHELIA_M9_BO_READ);
+   if (!ret)
+      ret = m9_batch_add_reloc(batch, base + 2, handle, end,
+                               PARHELIA_M9_RELOC_DRAW16_END,
+                               PARHELIA_M9_BO_READ |
+                               (count & 1 ?
+                                PARHELIA_M9_RELOC_PACKED16_ODD : 0));
    if (ret)
-      return ret;
-   return m9_batch_add_reloc(batch, base + 2, handle, end,
-                             PARHELIA_M9_RELOC_DRAW16_END,
-                             PARHELIA_M9_BO_READ |
-                             (count & 1 ?
-                              PARHELIA_M9_RELOC_PACKED16_ODD : 0));
+      m9_batch_rollback(batch, &checkpoint);
+   return ret;
 }
 
 int
 m9_batch_emit_draw_numeric(struct m9_batch *batch, uint32_t start,
                            uint32_t count, uint32_t flags)
 {
-   if (!batch || !count || start > UINT_MAX - count ||
-       (flags != 0x20000000u && flags != 0x60000000u) ||
-       batch->command_count + 3 > M9_MAX_COMMAND_DWORDS)
+   if (!batch || batch->sealed || !count ||
+       (flags != 0x20000000u && flags != 0x60000000u))
       return -EINVAL;
+   if (start > UINT_MAX - count)
+      return -EOVERFLOW;
+   if (batch->command_count + 3 > M9_MAX_COMMAND_DWORDS)
+      return -ENOSPC;
    batch->command[batch->command_count++] = 0x03000001u | flags;
    batch->command[batch->command_count++] = start;
    batch->command[batch->command_count++] = start + count;
@@ -515,6 +584,9 @@ m9_batch_prepare_submit(const struct m9_batch *batch,
       .bo_count = batch->bo_count,
       .flags = PARHELIA_M9_SUBMIT_VALIDATE_ONLY,
       .bos_ptr = batch->bo_count ? (uintptr_t)batch->bos : 0,
+      .program_type = batch->program_mode == M9_PROGRAM_MODE_FIXED_INLINE ?
+                      PARHELIA_M9_PROGRAM_FIXED_P00_S28_INLINE :
+                      PARHELIA_M9_PROGRAM_NONE,
    };
    return 0;
 }
