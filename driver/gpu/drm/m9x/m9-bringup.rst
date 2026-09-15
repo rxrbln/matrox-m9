@@ -59,9 +59,11 @@ largest observed ``0x580``-byte linked slot at system offset ``0x300``.  It
 constructs the bounded selector-6c image semantically: Gouraud has a zero
 linked payload, while the flat/case-B image uses the six references proved
 across thirteen fresh vendor processes.  It then returns ``-EOPNOTSUPP``
-before submission because source and system storage still need separately
-allocated ``0x4...`` GPU virtual addresses, 16-byte translation entries and
-the exact engine-window publication tuple.  The load-time selftest pins each
+before submission.  Source and system storage receive separate ``0x4...`` GPU
+virtual intervals and zero-padded 16-byte translation entries with the proved
+DMA32 packing and ``0xa`` flags.  Publishing those staged entries still needs
+the concrete table base, translation invalidation and exact engine-window
+tuple.  The load-time selftest pins each
 raw template with an independent byte-wise FNV-1a value, checks every captured
 address/target site, then confirms that rebuilding replaces all of those sites
 and reproduces the bounded six-word record.

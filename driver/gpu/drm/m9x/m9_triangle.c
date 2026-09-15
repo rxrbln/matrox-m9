@@ -37,6 +37,9 @@
 #define M9_TRIANGLE_BE_BYTES		SZ_1M
 #define M9_TRIANGLE_TRANSIENT_BYTES	0x16800u
 #define M9_TRIANGLE_VRAM_BASE		0x10000000ull
+#define M9_TRIANGLE_SYSTEM_GPUVA_BASE	0x40000000u
+#define M9_TRIANGLE_SYSTEM_GPUVA_END	0x50000000u
+#define M9_TRIANGLE_MAX_SYSTEM_PTES	36u
 
 static bool m9_triangle_diag;
 module_param(m9_triangle_diag, bool, 0400);
@@ -75,12 +78,22 @@ struct m9_triangle_resource_spec {
 struct m9_triangle_resource {
 	void *cpu;
 	dma_addr_t bus;
+	u32 gpuva;
 	u32 payload_bytes;
 	u32 alloc_bytes;
 	u32 guard_bytes;
 	u32 guard;
 	struct drm_gem_vram_object *vram;
 	struct iosys_map map;
+};
+
+struct m9_triangle_pte_image {
+	u32 word[4];
+};
+
+struct m9_triangle_pte {
+	u32 gpuva;
+	struct m9_triangle_pte_image image;
 };
 
 struct m9_triangle_job_addresses {
@@ -140,6 +153,8 @@ struct m9_triangle_commands {
 
 struct m9x_triangle_diag {
 	struct m9_triangle_resource resource[M9_TRI_RESOURCE_COUNT];
+	struct m9_triangle_pte pte[M9_TRIANGLE_MAX_SYSTEM_PTES];
+	u32 pte_count;
 	struct m9_triangle_commands commands;
 	bool prepared;
 };
@@ -331,6 +346,12 @@ static u32 m9_triangle_guard(enum m9_triangle_resource_id id)
 	return 0xd9a60000u | id;
 }
 
+static u32 m9_triangle_pte_word(dma_addr_t dma)
+{
+	return (lower_32_bits(dma) & 0xfffff000u) |
+	       ((dma >> 28) & 0x00000ff0u) | 0xau;
+}
+
 static int m9_triangle_alloc_vram(struct m9x_device *mdev,
 				  enum m9_triangle_resource_id id,
 				  u32 alloc_bytes)
@@ -459,6 +480,47 @@ static int m9_triangle_verify_guards(const struct m9x_triangle_diag *diag)
 	return 0;
 }
 
+static int m9_triangle_prepare_gpuva(struct m9x_triangle_diag *diag)
+{
+	static const u8 mapped[] = { M9_TRI_SOURCE, M9_TRI_SYSTEM };
+	u32 gpuva = M9_TRIANGLE_SYSTEM_GPUVA_BASE;
+	u32 pte_count = 0;
+	unsigned int i;
+
+	memset(diag->pte, 0, sizeof(diag->pte));
+	for (i = 0; i < ARRAY_SIZE(mapped); i++) {
+		struct m9_triangle_resource *resource =
+			&diag->resource[mapped[i]];
+		u32 page_count = resource->alloc_bytes >> PAGE_SHIFT;
+		u32 next_gpuva, next_pte_count;
+		u32 page;
+
+		if (!resource->cpu || !resource->alloc_bytes ||
+		    !IS_ALIGNED(resource->alloc_bytes, PAGE_SIZE) ||
+		    !IS_ALIGNED(resource->bus, PAGE_SIZE) ||
+		    check_add_overflow(pte_count, page_count, &next_pte_count) ||
+		    next_pte_count > M9_TRIANGLE_MAX_SYSTEM_PTES ||
+		    check_add_overflow(gpuva, resource->alloc_bytes, &next_gpuva) ||
+		    next_gpuva > M9_TRIANGLE_SYSTEM_GPUVA_END)
+			return -ERANGE;
+
+		resource->gpuva = gpuva;
+		for (page = 0; page < page_count; page++) {
+			struct m9_triangle_pte *pte =
+				&diag->pte[pte_count + page];
+
+			pte->gpuva = resource->gpuva + (page << PAGE_SHIFT);
+			pte->image.word[0] =
+				m9_triangle_pte_word(resource->bus +
+						     (page << PAGE_SHIFT));
+		}
+		pte_count = next_pte_count;
+		gpuva = next_gpuva;
+	}
+	diag->pte_count = pte_count;
+	return 0;
+}
+
 static int m9_triangle_prepare_resources(struct m9x_device *mdev)
 {
 	struct m9x_triangle_diag *diag = mdev->transport.triangle;
@@ -492,6 +554,9 @@ static int m9_triangle_prepare_resources(struct m9x_device *mdev)
 			return ret;
 		}
 	}
+	ret = m9_triangle_prepare_gpuva(diag);
+	if (ret)
+		return ret;
 	if (m9_triangle_gouraud)
 		memcpy(diag->resource[M9_TRI_SOURCE].cpu,
 		       m9_triangle_gouraud_source,
@@ -502,10 +567,12 @@ static int m9_triangle_prepare_resources(struct m9x_device *mdev)
 	dma_wmb();
 	diag->prepared = true;
 	dev_info(&mdev->pdev->dev,
-		 "M9 triangle DMA resources: source=%pad system=%pad secondary=%pad\n",
+		 "M9 triangle resources: source=%pad/%#x system=%pad/%#x secondary=%pad, %u PTEs staged\n",
 		 &diag->resource[M9_TRI_SOURCE].bus,
+		 diag->resource[M9_TRI_SOURCE].gpuva,
 		 &diag->resource[M9_TRI_SYSTEM].bus,
-		 &diag->resource[M9_TRI_SECONDARY].bus);
+		 diag->resource[M9_TRI_SYSTEM].gpuva,
+		 &diag->resource[M9_TRI_SECONDARY].bus, diag->pte_count);
 	return m9_triangle_verify_guards(diag);
 }
 
@@ -515,6 +582,12 @@ static u32 m9_triangle_bus(const struct m9x_triangle_diag *diag,
 	return lower_32_bits(diag->resource[id].bus);
 }
 
+static u32 m9_triangle_gpuva(const struct m9x_triangle_diag *diag,
+			     enum m9_triangle_resource_id id)
+{
+	return diag->resource[id].gpuva;
+}
+
 static int m9_triangle_build_addresses(struct m9x_device *mdev, u32 color,
 				       struct m9_triangle_job_addresses *job)
 {
@@ -522,18 +595,21 @@ static int m9_triangle_build_addresses(struct m9x_device *mdev, u32 color,
 	u32 target = mdev->transport.next_fence;
 	unsigned int i;
 
-	job->source = m9_triangle_bus(diag, M9_TRI_SOURCE) |
+	if (!m9_triangle_gpuva(diag, M9_TRI_SOURCE) ||
+	    !m9_triangle_gpuva(diag, M9_TRI_SYSTEM))
+		return -EINVAL;
+	job->source = m9_triangle_gpuva(diag, M9_TRI_SOURCE) |
 		      M9_COMMAND_SYSTEM_TAG;
 	job->secondary = m9_triangle_bus(diag, M9_TRI_SECONDARY);
-	job->system_pre_start = (m9_triangle_bus(diag, M9_TRI_SYSTEM) + 0x10) |
+	job->system_pre_start = (m9_triangle_gpuva(diag, M9_TRI_SYSTEM) + 0x10) |
 				M9_COMMAND_SYSTEM_TAG;
-	job->system_pre_end = (m9_triangle_bus(diag, M9_TRI_SYSTEM) + 0xc0) |
+	job->system_pre_end = (m9_triangle_gpuva(diag, M9_TRI_SYSTEM) + 0xc0) |
 			      M9_COMMAND_SYSTEM_TAG;
-	job->system_raster_start = m9_triangle_bus(diag, M9_TRI_SYSTEM) |
+	job->system_raster_start = m9_triangle_gpuva(diag, M9_TRI_SYSTEM) |
 				   M9_COMMAND_SYSTEM_TAG;
-	job->system_raster_end = (m9_triangle_bus(diag, M9_TRI_SYSTEM) + 0x10) |
+	job->system_raster_end = (m9_triangle_gpuva(diag, M9_TRI_SYSTEM) + 0x10) |
 				 M9_COMMAND_SYSTEM_TAG;
-	job->linked = (m9_triangle_bus(diag, M9_TRI_SYSTEM) +
+	job->linked = (m9_triangle_gpuva(diag, M9_TRI_SYSTEM) +
 		       M9_TRIANGLE_LINKED_OFFSET) | M9_COMMAND_SYSTEM_TAG;
 	job->resource69 = m9_triangle_bus(diag, M9_TRI_RESOURCE69);
 	job->c2 = m9_triangle_bus(diag, M9_TRI_C2);
@@ -778,6 +854,10 @@ int m9x_triangle_selftest(void)
 
 	if (sizeof(m9_triangle_flat_source) != M9_TRIANGLE_SOURCE_BYTES ||
 	    sizeof(m9_triangle_gouraud_source) != M9_TRIANGLE_SOURCE_BYTES ||
+	    sizeof(struct m9_triangle_pte_image) != 16 ||
+	    M9_TRIANGLE_MAX_SYSTEM_PTES != 36 ||
+	    m9_triangle_pte_word((dma_addr_t)0x0232a000) != 0x0232a00a ||
+	    m9_triangle_pte_word((dma_addr_t)0xab12345000ULL) != 0x12345aba ||
 	    ARRAY_SIZE(m9_triangle_range_0) != ARRAY_SIZE(commands.preprocess) ||
 	    ARRAY_SIZE(m9_triangle_range_1) != ARRAY_SIZE(commands.raster) ||
 	    ARRAY_SIZE(m9_triangle_range_2) != ARRAY_SIZE(commands.completion) ||
