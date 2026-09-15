@@ -48,17 +48,16 @@ The cold-start address-manager setup ends by writing `MMIO[0x31c]=0xc`, then
 `MMIO[0x31c]=1`, and reading `MMIO[0x31c]` once after the second write to
 drain posted MMIO before the initial `E6` command.  For the corrected target
 bind sequence, write all PTEs and windows, execute the memory barrier, kick
-`MMIO[0x314]=1`, write `MMIO[0x31c]=0`, then `MMIO[0x31c]=2`, and read
-`MMIO[0x31c]` once after the second write.  No readback is required between
-the two writes in either packed sequence.  The older tentative `0xf,1,0`
-compact-bind sequence selected the wrong manager list.
+`MMIO[0x314]=1`, write `MMIO[0x31c]=0xf`, then `1`, then `0`, and read
+`MMIO[0x31c]` once after the third write.  No readback is required between
+writes in either packed sequence.  The `0,2` sequence belongs to the optional
+16-byte companion-table path, which target `MmFlags=0x100e8` disables.
 
-Preserve the final state `2` when submitting through a mode-2 primary
-BmBuffer.  `m9x1039` at `0x2d800..0x2d828` reads the current primary's class
-from `BmBuffer+0x34` and writes `MMIO[0x31c]=0` only when that class is zero.
-The mode-2 allocation path below sets the class to 2, so it skips the clear.
-An unconditional pre-submit `0x31c=0` invalidates the compact translation
-state immediately before the primary attempts to dispatch this secondary.
+`m9x1039` at `0x2d800..0x2d828` reads the current primary's class from
+`BmBuffer+0x34` and writes `MMIO[0x31c]=0` only when that class is zero.  The
+mode-2 allocation path below sets the class to 2, so it skips that write.
+The compact bind has already ended in state zero; skipping another zero is
+still the byte-exact class-2 submit rule.
 
 ## Allocation path and field identity
 

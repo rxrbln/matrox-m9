@@ -165,18 +165,24 @@ pte = (dma & 0xfffff000) | ((dma >> 28) & 0x00000ff0) | 0x0a;
 destination mode 2 and the low slot address, writes `MMIO[0x314]=1` when the
 copy helper reports success, and mirrors the dwords through the table child's
 BAR0 CPU pointer `+0x40`. The normal compact-bind post-list is
-`0x20000028`; least-significant nibble first, it produces the exact
-`MMIO[0x31c]` sequence `0x0,0x2`. Initial manager construction has the
-separate final packed list `0x2000001c`, producing `0xc,0x1`. The older
-`0x3000001f`/`0xf,0x1,0x0` claim selected a different manager list and must
-not be used for the normal compact bind.
+`0x3000001f`; least-significant nibble first, it produces the exact
+`MMIO[0x31c]` sequence `0xf,0x1,0x0`. Initial manager construction has the
+separate final packed list `0x2000001c`, producing `0xc,0x1`.
+
+This selection follows directly from the call arguments. `m9x887` passes
+`ecx=0` to `m9x328`. That selector makes `m9x328` use manager `+0xe0` as its
+empty pre-list and manager `+0xf8` as its post-list. `m9x53` constructs
+`+0xf8=0x3000001f`. The `0x20000028` list at manager `+0x100`, which produces
+`0,2`, is decoded later by `m9x887` only after building the optional 16-byte
+companion table. The Linux `C24=0` branch skips that whole path, so `0,2`
+must not replace `f,1,0` for a normal compact bind.
 
 The clean-room ordering is: finish the initial `0xc,1` pair and read back
 `0x31c` once after `1`, before submitting the initial `E6`; then write all
 PTEs and windows, execute a memory barrier, write `0x314=1`, write the
-`0,2` pair, and read back `0x31c` once after `2`. The terminal read in each
-phase drains posted MMIO. No readback is needed between the two writes in a
-packed sequence.
+`f,1,0` sequence, and read back `0x31c` once after the final `0`. The terminal
+read in each phase drains posted MMIO. No readback is needed between writes
+in a packed sequence.
 
 The mode-2 requester records depend on the transient staging allocation's
 address and alignment. No saved capture joins those runtime values to one
