@@ -163,11 +163,20 @@ pte = (dma & 0xfffff000) | ((dma >> 28) & 0x00000ff0) | 0x0a;
 
 `m9x328` stages entries with `m9x789`, uploads them through `m9x694` using
 destination mode 2 and the low slot address, writes `MMIO[0x314]=1` when the
-copy helper reports success, mirrors the dwords through the table child's
-BAR0 CPU pointer `+0x40`, and executes the selector-0 post-list
-`0x3000001f`. Least-significant nibble first, the exact `MMIO[0x31c]`
-sequence is `0xf,0x1,0x0`; its pre-list is empty. Initial manager construction
-has a separate final packed list `0x2000001c`, producing `0xc,0x1`.
+copy helper reports success, and mirrors the dwords through the table child's
+BAR0 CPU pointer `+0x40`. The normal compact-bind post-list is
+`0x20000028`; least-significant nibble first, it produces the exact
+`MMIO[0x31c]` sequence `0x0,0x2`. Initial manager construction has the
+separate final packed list `0x2000001c`, producing `0xc,0x1`. The older
+`0x3000001f`/`0xf,0x1,0x0` claim selected a different manager list and must
+not be used for the normal compact bind.
+
+The clean-room ordering is: finish the initial `0xc,1` pair and read back
+`0x31c` once after `1`, before submitting the initial `E6`; then write all
+PTEs and windows, execute a memory barrier, write `0x314=1`, write the
+`0,2` pair, and read back `0x31c` once after `2`. The terminal read in each
+phase drains posted MMIO. No readback is needed between the two writes in a
+packed sequence.
 
 The mode-2 requester records depend on the transient staging allocation's
 address and alignment. No saved capture joins those runtime values to one

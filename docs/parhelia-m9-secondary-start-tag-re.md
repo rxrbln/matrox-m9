@@ -15,7 +15,7 @@ python3 tools/m9-secondary-start-tag-evidence.py
 
 ## Implementable rule
 
-For a dword-aligned DMA32 system-memory BmBuffer with GPU base `S`, extent
+For a dword-aligned, compact-PTE-mapped system BmBuffer with GPUVA `S`, extent
 `N`, and logical half-open range `[a,b)`, publish:
 
 ```text
@@ -34,9 +34,11 @@ the exact records are:
 ```
 
 The clean-room driver does not need to reproduce the vendor object's private
-field.  Its coherent DMA32 secondary command allocation can use the fixed
-transport tag `1`.  This start tag is separate from the primary requester's
-`0x400 = primary_dma | 2` contract and from the index-`2d` end tag `2`.
+field.  Bind its coherent backing at a system GPUVA and use the fixed
+transport tag `1` on that GPUVA.  The backing's raw DMA/mmap-cookie address
+must not be substituted.  This start tag is separate from the primary
+requester's `0x400 = primary_dma | 2` contract and from the index-`2d` end
+tag `2`.
 
 ## Kernel object-to-descriptor path
 
@@ -123,8 +125,9 @@ the same header, combines a resource-relative offset and a separate low start
 tag, and uses a zero-or-two end tag.  Its private object layout differs, so it
 does not independently assign a numeric value to Linux `BmBuffer+0x34`.
 
-No live-only boundary remains for the canonical coherent DMA32 secondary
-command buffer: use start tag `1`.  The human-facing meanings and hardware
+The address-field audit in `parhelia-m9-secondary-address-domain-audit.md`
+closes the other half of this rule: use the class-1 compact-PTE GPUVA with
+start tag `1`.  The human-facing meanings and hardware
 requirements of vendor-only classes 0 and 2 remain unproven beyond the copy-in
 behavior and alternate construction paths above.  A clean-room driver need
 not expose those classes unless it later implements those backing types.

@@ -166,12 +166,13 @@ translation and are unrelated to the PTE low nibble.
 | primary command start `400` | raw coherent DMA | `start | 2` |
 | primary command end `404` | raw coherent DMA | untagged exclusive end |
 | completion index `1b` / `106c` | raw coherent DMA | `fence_dma | 2` |
-| secondary `2c/2d` start | raw secondary DMA plus offset | `start | 1` |
-| secondary `2c/2d` end | raw secondary DMA plus offset | `end | 2` |
+| secondary `2c/2d` start | class-1 compact-PTE GPUVA plus offset | `start | 1` |
+| secondary `2c/2d` end | class-1 compact-PTE GPUVA plus offset | `end | 2` |
 
-The first three rows are translated GPU virtual resources.  Command,
-secondary, and completion storage uses raw DMA addresses and has no GPU-VA
-allocation or PTE binding.
+The first three rows and the class-1 secondary are translated GPU virtual
+resources.  Primary-command and completion storage use raw DMA addresses and
+have no GPUVA allocation or PTE binding.  The secondary field identity is
+proved in `parhelia-m9-secondary-address-domain-audit.md`.
 
 ## Binding and lifetime rule for the clean-room driver
 
