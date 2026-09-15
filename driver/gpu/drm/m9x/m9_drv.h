@@ -68,6 +68,7 @@ struct m9x_transport {
 	u32 command_slot;
 	u32 command_offset;
 	bool transport_armed;
+	bool bus_master_enabled;
 	bool engine_transitioned;
 	bool restore_ready;
 	bool wedged;
@@ -112,6 +113,7 @@ int m9x_submit_ioctl(struct drm_device *drm, void *data,
 		     struct drm_file *file);
 int m9x_submit_noop(struct m9x_device *mdev, u64 *point);
 int m9x_transport_arm_locked(struct m9x_device *mdev);
+int m9x_transport_enable_bus_master_locked(struct m9x_device *mdev);
 int m9x_transport_rearm_locked(struct m9x_device *mdev);
 int m9x_restore_bind(struct m9x_device *mdev);
 int m9x_submit_kernel_stream_locked(struct m9x_device *mdev,

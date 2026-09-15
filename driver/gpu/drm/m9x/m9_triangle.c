@@ -986,6 +986,9 @@ static void m9_triangle_build_secondary_noop(u8 *image, u32 secondary,
 		M9_TRIANGLE_SECONDARY_START_TAG;
 	primary[2] = (secondary + 0x34) |
 		M9_TRIANGLE_SECONDARY_END_TAG;
+	primary[3] = 0x4545421a;
+	primary[4] = (completion + sizeof(u32)) | M9_COMMAND_SYSTEM_TAG;
+	primary[5] = target | 1;
 }
 
 static int m9_triangle_log_secondary_mapping(struct m9x_device *mdev)
@@ -1261,7 +1264,6 @@ int m9x_submit_triangle_diag(struct m9x_device *mdev, u32 color,
 	struct m9_seq0_job sequence0 = {};
 	struct m9x_triangle_diag *diag;
 	struct m9x_fence *out_fence = NULL;
-	u32 noop_primary[3];
 	u32 draw_target;
 	u32 sequence0_final = 0;
 	u32 target;
@@ -1279,6 +1281,13 @@ int m9x_submit_triangle_diag(struct m9x_device *mdev, u32 color,
 		goto out_unlock;
 	}
 	ret = m9_triangle_prepare_resources(mdev);
+	if (ret)
+		goto out_unlock;
+	/*
+	 * Match the vendor prerequisite: compact manager construction and every
+	 * 31c/314 resource publication run with PCI bus mastering enabled.
+	 */
+	ret = m9x_transport_enable_bus_master_locked(mdev);
 	if (ret)
 		goto out_unlock;
 	ret = m9x_address_prepare(mdev);
@@ -1325,27 +1334,6 @@ int m9x_submit_triangle_diag(struct m9x_device *mdev, u32 color,
 	}
 
 	if (!diag->context_initialized) {
-		/*
-		 * Complete traces contain this large first ExecuteDma envelope
-		 * exactly once per context.  Its three scratch objects remain live
-		 * with the context; replaying it before every draw does not match the
-		 * vendor TaskMgr and can destroy incremental state.
-		 *
-		 * Keep the captured inert completion between engine publication and
-		 * first activation.  The secondary BO is shared, so activation must
-		 * retire before the draw image replaces it.
-		 */
-		target = mdev->transport.next_fence;
-		noop_primary[0] = M9_PACKET_FENCE_HEADER;
-		noop_primary[1] = 3;
-		noop_primary[2] = target | 1;
-		ret = m9x_submit_kernel_stream_locked(mdev, noop_primary,
-					      ARRAY_SIZE(noop_primary),
-					      target, point, NULL);
-		if (ret)
-			goto out_unlock;
-		mdev->transport.next_fence = target + 0x10;
-
 		if (m9_triangle_secondary_noop_only) {
 			target = mdev->transport.next_fence;
 			m9_triangle_build_secondary_noop(
@@ -1358,7 +1346,7 @@ int m9x_submit_triangle_diag(struct m9x_device *mdev, u32 color,
 			if (ret)
 				goto out_unlock;
 			ret = m9x_submit_kernel_stream_locked(mdev,
-					diag->commands.sequence0_primary, 3,
+					diag->commands.sequence0_primary, 6,
 					target, point, NULL);
 			if (ret)
 				goto out_unlock;
@@ -1379,7 +1367,6 @@ int m9x_submit_triangle_diag(struct m9x_device *mdev, u32 color,
 					&sequence0);
 		m9_seq0_build_primary(&sequence0,
 				      diag->commands.sequence0_primary);
-		WRITE_ONCE(*(u32 *)mdev->transport.fence_cpu, ~sequence0_final);
 		ret = m9x_submit_kernel_stream_locked(mdev,
 					      diag->commands.sequence0_primary,
 					      ARRAY_SIZE(diag->commands.sequence0_primary),
@@ -1489,6 +1476,7 @@ static int m9_seq0_selftest(void)
 	};
 	static const u32 expected_secondary_noop_primary[] = {
 		0x45452d2c, 0x02000009, 0x02000036,
+		0x4545421a, 0x02400006, 0x00000101,
 	};
 	u32 primary[ARRAY_SIZE(expected_primary)];
 	u32 noop_primary[ARRAY_SIZE(expected_secondary_noop_primary)];

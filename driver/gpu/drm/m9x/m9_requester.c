@@ -127,6 +127,38 @@ static bool m9_primary_controls_valid(struct m9x_device *mdev)
 			M9_REQUESTER_CTL2_FALLBACK;
 }
 
+int m9x_transport_enable_bus_master_locked(struct m9x_device *mdev)
+{
+	struct m9x_transport *transport = &mdev->transport;
+	u32 base, end;
+
+	lockdep_assert_held(&transport->lock);
+	if (transport->bus_master_enabled)
+		return 0;
+	if (m9x_read(mdev, M9_REG_ENGINE_STATUS) == U32_MAX)
+		return -ENODEV;
+	if (!m9_primary_controls_valid(mdev))
+		return -EOPNOTSUPP;
+
+	/*
+	 * The vendor enables PCI mastering before service and compact-translation
+	 * construction.  Refuse a reload whose old requester interval has not
+	 * retired: 0x400 is hardware-advanced and retains its low address-class
+	 * tag, while 0x404 is the untagged end-exclusive producer.
+	 */
+	base = m9x_read(mdev, M9_REG_COMMAND_BASE);
+	end = m9x_read(mdev, M9_REG_COMMAND_END);
+	if ((base & ~3u) != end) {
+		dev_err(&mdev->pdev->dev,
+			"M9 requester is not quiescent before bus-master enable: %#x/%#x\n",
+			base, end);
+		return -EBUSY;
+	}
+	pci_set_master(mdev->pdev);
+	transport->bus_master_enabled = true;
+	return 0;
+}
+
 static const char *m9_fence_get_driver_name(struct dma_fence *fence)
 {
 	return "m9x";
@@ -186,10 +218,14 @@ int m9x_transport_arm_locked(struct m9x_device *mdev)
 	u32 restore_base = restore ? (restore + 0x200) & ~0x1fu : 0;
 	u32 restore_limit = restore ?
 		((restore + 0x17fc00) & ~0x1fu) | 6 : 0;
+	int ret;
 
 	lockdep_assert_held(&mdev->transport.lock);
 	if (mdev->transport.transport_armed)
 		return 0;
+	ret = m9x_transport_enable_bus_master_locked(mdev);
+	if (ret)
+		return ret;
 	if (m9x_read(mdev, M9_REG_ENGINE_STATUS) == U32_MAX)
 		return -ENODEV;
 	if (!m9_primary_controls_valid(mdev)) {
@@ -289,11 +325,8 @@ int m9x_submit_kernel_stream_locked(struct m9x_device *mdev,
 		return -ERANGE;
 	memcpy((u8 *)m9_command_slot_cpu(transport) + command_offset, commands,
 	       dwords * sizeof(u32));
-	WRITE_ONCE(writeback[0], ~target);
 	dma_wmb();
 
-	/* Enable host DMA only after every address check and command copy passed. */
-	pci_set_master(mdev->pdev);
 	m9x_write(mdev, M9_REG_COMMAND_END, end);
 	m9x_read(mdev, M9_REG_COMMAND_END);
 	if (doorbell_posted)
@@ -435,6 +468,9 @@ int m9x_submit_noop(struct m9x_device *mdev, u64 *point)
 		ret = -EIO;
 		goto out_unlock;
 	}
+	ret = m9x_transport_enable_bus_master_locked(mdev);
+	if (ret)
+		goto out_unlock;
 	ret = m9x_transport_arm_locked(mdev);
 	if (ret)
 		goto out_unlock;
@@ -465,7 +501,6 @@ int m9x_submit_noop(struct m9x_device *mdev, u64 *point)
 		goto out_unlock;
 	}
 
-	WRITE_ONCE(writeback[0], ~target);
 	command[0] = M9_PACKET_FENCE_HEADER;
 	command[1] = 3;
 	command[2] = target | 1;
@@ -476,7 +511,6 @@ int m9x_submit_noop(struct m9x_device *mdev, u64 *point)
 	 * A class-2 requester skips the vendor's class-0 0x31c clear.  This also
 	 * preserves an active compact-translation state across submissions.
 	 */
-	pci_set_master(mdev->pdev);
 	m9x_write(mdev, M9_REG_COMMAND_END, command_end);
 	m9x_read(mdev, M9_REG_COMMAND_END);
 
@@ -549,7 +583,9 @@ int m9x_init(struct m9x_device *mdev)
 	if (ret)
 		return ret;
 	mdev->transport.fence_context = dma_fence_context_alloc(1);
-	mdev->transport.next_fence = 0x10;
+	/* m9x865 seeds both tracker domains at 0x10.  m9x708/m9x604
+	 * increment their tracker before emitting the first 0x20 token. */
+	mdev->transport.next_fence = 0x20;
 	mdev->transport.requester_cpu = dmam_alloc_coherent(dev, PAGE_SIZE,
 						      &mdev->transport.requester_bus,
 						      GFP_KERNEL | __GFP_ZERO);
@@ -579,6 +615,8 @@ int m9x_init(struct m9x_device *mdev)
 	memset32(mdev->transport.requester_cpu, 0x45454545,
 		 PAGE_SIZE / sizeof(u32));
 	memset32(mdev->transport.fence_cpu, U32_MAX, PAGE_SIZE / sizeof(u32));
+	WRITE_ONCE(((u32 *)mdev->transport.fence_cpu)[0], 0x10);
+	WRITE_ONCE(((u32 *)mdev->transport.fence_cpu)[1], 0x10);
 	ret = m9_restore_build(&mdev->transport);
 	if (ret)
 		return ret;
@@ -597,6 +635,7 @@ void m9x_fini(struct m9x_device *mdev)
 	mdev->transport.wedged = true;
 	/* Stop host DMA before devres releases any reachable allocation. */
 	pci_clear_master(mdev->pdev);
+	mdev->transport.bus_master_enabled = false;
 	mdev->transport.transport_armed = false;
 	fence = mdev->transport.quarantined_fence;
 	mdev->transport.quarantined_fence = NULL;
