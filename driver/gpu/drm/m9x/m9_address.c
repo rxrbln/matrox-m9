@@ -32,6 +32,10 @@
 #define M9_ADDRESS_SERVICE_STRIDE	0x10u
 #define M9_ADDRESS_SERVICE_INVALID	0x0000ffffu
 #define M9_ADDRESS_SERVICE_POOLS	4u
+#define M9_ADDRESS_CPU_WINDOW		0x0000u
+#define M9_ADDRESS_CPU_WINDOW_VALID	0xa0000000u
+#define M9_ADDRESS_CPU_WINDOW_FORMAT	0xf0000000u
+#define M9_ADDRESS_CPU_WINDOW_EXTENT	0x00010001u
 
 /* m9x926's four mode-0 resources in a fresh m9x565 local range. */
 static const u32 m9_service_pool_bytes[M9_ADDRESS_SERVICE_POOLS] = {
@@ -257,6 +261,20 @@ static int m9_address_selftest(void)
 	return 0;
 }
 
+/*
+ * BAR0 is a CPU window translated by the 20-slot host-aperture descriptor
+ * bank.  m9x115 invalidates every slot, so publish the linear identity
+ * descriptor vendor X uses for its VRAM test before any CPU VRAM access.
+ */
+static void m9_address_publish_cpu_window(struct m9x_device *mdev)
+{
+	m9x_write(mdev, M9_ADDRESS_CPU_WINDOW + 0x4, 0);
+	m9x_write(mdev, M9_ADDRESS_CPU_WINDOW + 0x8, M9_ADDRESS_CPU_WINDOW_FORMAT);
+	m9x_write(mdev, M9_ADDRESS_CPU_WINDOW + 0xc, M9_ADDRESS_CPU_WINDOW_EXTENT);
+	m9x_write(mdev, M9_ADDRESS_CPU_WINDOW, M9_ADDRESS_CPU_WINDOW_VALID);
+	m9x_read(mdev, M9_ADDRESS_CPU_WINDOW);
+}
+
 int m9x_address_init(struct m9x_device *mdev)
 {
 	struct m9x_address_space *address;
@@ -270,16 +288,7 @@ int m9x_address_init(struct m9x_device *mdev)
 		return ret;
 	if (mdev->transport.address)
 		return 0;
-	/*
-	 * Published windows survive module unload.  BAR0 CPU access is then
-	 * decoded through the live tables, so clearing them would alias VRAM.
-	 */
-	if (m9x_read(mdev, M9_REG_PTE_BASE) ||
-	    m9x_read(mdev, M9_REG_LOCAL_LIMIT)) {
-		dev_err(&mdev->pdev->dev,
-			"M9 translation windows are already published; reboot before reloading\n");
-		return -EBUSY;
-	}
+	m9_address_publish_cpu_window(mdev);
 	address = devm_kzalloc(&mdev->pdev->dev, sizeof(*address), GFP_KERNEL);
 	if (!address)
 		return -ENOMEM;
@@ -431,6 +440,7 @@ int m9x_address_prepare(struct m9x_device *mdev)
 		  (value & 0xfffcffffu) | 0x00010000u);
 	/* Initial m9x1172 -> m9x115 invalidates all 20 fresh null slots. */
 	m9_address_invalidate_service_bank(mdev);
+	m9_address_publish_cpu_window(mdev);
 	address->service_ready = true;
 	return 0;
 }
@@ -679,6 +689,7 @@ int m9x_address_finalize_service(struct m9x_device *mdev)
 	/* m9x1141 publishes once; the explicit m9x582 tail repeats m9x115. */
 	m9_address_invalidate_service_bank(mdev);
 	m9_address_invalidate_service_bank(mdev);
+	m9_address_publish_cpu_window(mdev);
 	address->service_finalized = true;
 	return 0;
 }
