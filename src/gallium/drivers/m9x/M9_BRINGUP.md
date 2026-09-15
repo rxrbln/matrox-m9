@@ -76,15 +76,20 @@ two-slot primary command rebase.  Arbitrary userspace streams remain disabled:
   transfers are implemented behind
   two independent gates: executable submit and a safe linked-program
   constructor.  Mip transfer offsets include the recovered 32x16 tail atlas.
+  A failed submit marks its context lost; later flushes discard pending work
+  without issuing another global-engine job.
   A state tracker still receives `NULL` while either gate is closed.
 * Ordinary render targets, depth buffers, and sampled images use
   `CREATE_BO(VRAM)`, matching the vendor's placement-4 local-memory resources,
-  ordinary layout 1, and an eight-pixel-aligned row span.  Gallium buffers,
+  ordinary layout 1. Render/depth allocation reproduces the vendor's
+  small-versus-ordinary category selection, horizontal and vertical quanta,
+  eight-element end padding, and final byte-quantum rounding. Gallium buffers,
   explicit staging images, and command BOs remain DMA32 upload resources.
   Framebuffer state accepts only a complete local-VRAM layout-1 image; it
   rejects DMA32 and placement-unknown imports before command construction.
 * Presentation BOs use `MODE_CREATE_DUMB`, the guarded KMS contract's exact
-  1024x768 XRGB8888 shape and 4096-byte pitch, and direct BAR0 mapping.
+  1024x768 XRGB8888 shape, 4096-byte pitch, vendor-exact `0x301000`
+  renderable backing, and direct BAR0 mapping.
   Resource creation rejects every other scanout or display-target template,
   including ARGB8888, before allocating a generic VRAM image.
   KMS, flink, and PRIME winsys handles have symmetric import/export paths.

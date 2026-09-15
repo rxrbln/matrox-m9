@@ -107,13 +107,17 @@ m9_context_flush(struct pipe_context *pctx,
 
    (void)flags;
    if (context->batch.command_count) {
-      context->batch.sealed = true;
-      ret = m9_batch_submit(context->screen, &context->command,
-                            &context->batch, context->context_id, &point);
-      if (ret)
-         context->lost = true;
-      else
-         context->last_point = point;
+      if (context->lost) {
+         ret = -EIO;
+      } else {
+         context->batch.sealed = true;
+         ret = m9_batch_submit(context->screen, &context->command,
+                               &context->batch, context->context_id, &point);
+         if (ret)
+            context->lost = true;
+         else
+            context->last_point = point;
+      }
       m9_batch_init(&context->batch);
       context->dirty = M9_DIRTY_ALL;
    }

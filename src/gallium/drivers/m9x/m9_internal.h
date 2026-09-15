@@ -83,11 +83,16 @@ struct m9_resource {
 static inline uint32_t
 m9_resource_bo_flags(const struct pipe_resource *templ)
 {
+   const unsigned gpu_image = PIPE_BIND_RENDER_TARGET |
+                              PIPE_BIND_DEPTH_STENCIL |
+                              PIPE_BIND_SAMPLER_VIEW | PIPE_BIND_SHARED;
+
    /* Gallium buffers are the command/vertex/index/constant upload domain.
-    * Explicit staging images likewise remain CPU-oriented DMA32 objects.
-    * Every image that can be consumed by the rasterizer uses the vendor's
-    * local-memory placement. */
-   return templ->target == PIPE_BUFFER || templ->usage == PIPE_USAGE_STAGING ?
+    * Staging-only images likewise remain CPU-oriented DMA32 objects.  A
+    * staging usage hint cannot move a raster-consumed image out of the
+    * vendor's local-memory placement. */
+   return templ->target == PIPE_BUFFER ||
+          (templ->usage == PIPE_USAGE_STAGING && !(templ->bind & gpu_image)) ?
           0 : PARHELIA_M9_BO_VRAM;
 }
 
@@ -97,18 +102,39 @@ m9_resource_row_span(uint32_t width)
    return (width + 7) & ~7u;
 }
 
-static inline uint32_t
-m9_render_surface_height(uint32_t height)
-{
-   /* M9148 category-2 color/depth layouts use a 32-row allocation quantum. */
-   return (height + 31) & ~31u;
-}
+struct m9_render_layout {
+   uint32_t row_span;
+   uint32_t allocation_height;
+   uint64_t size;
+};
 
-static inline uint32_t
-m9_render_surface_row_span(uint32_t width)
+static inline bool
+m9_render_surface_layout(uint32_t width, uint32_t height, uint32_t cpp,
+                         struct m9_render_layout *layout)
 {
-   /* Supported 16/32-bit render formats use 0x20-element category quanta. */
-   return (width + 31) & ~31u;
+   bool small = width <= 64 && height <= 64;
+   uint32_t height_quantum = small ? (cpp == 4 ? 8 : 4) : 32;
+   uint32_t byte_quantum;
+   uint64_t elements, tail;
+
+   if (!layout || !width || !height || width > 2048 || height > 2048 ||
+       (cpp != 2 && cpp != 4))
+      return false;
+   byte_quantum = cpp == 4 ? (small ? 0x400 : 0x1000) :
+                             (small ? 0x200 : 0x800);
+   layout->row_span = (width + 31) & ~31u;
+   layout->allocation_height =
+      (height + height_quantum - 1) & ~(height_quantum - 1);
+   if (width <= 16 && height <= 16)
+      layout->allocation_height = 16;
+   elements = (uint64_t)layout->row_span * layout->allocation_height;
+   tail = (uint64_t)(layout->allocation_height - height) *
+          layout->row_span + layout->row_span - width;
+   if (tail < 8)
+      elements += 8 - tail;
+   layout->size = (elements * cpp + byte_quantum - 1) &
+                  ~(uint64_t)(byte_quantum - 1);
+   return true;
 }
 
 struct m9_screen {

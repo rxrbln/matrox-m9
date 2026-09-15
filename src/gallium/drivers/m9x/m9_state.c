@@ -34,21 +34,23 @@ m9_framebuffer_resource_valid(const struct m9_resource *resource,
                               enum m9_resource_kind kind)
 {
    struct m9_format_info format;
+   struct m9_render_layout layout;
    unsigned usage = kind == M9_RESOURCE_LINEAR_COLOR ?
                     M9_FORMAT_COLOR : M9_FORMAT_DEPTH;
    uint64_t bytes;
 
    if (!resource || !resource->handle || resource->kind != kind ||
        resource->domain != M9_BO_VRAM || resource->layout != 1 ||
-       resource->row_span < m9_render_surface_row_span(resource->width) ||
        resource->row_span > UINT16_MAX ||
        !resource->width || !resource->height || !resource->cpp ||
        !m9_format_info(resource->base.format, &format) ||
        !(format.usage & usage) || format.cpp != resource->cpp ||
-       format.code != resource->format)
+       format.code != resource->format ||
+       !m9_render_surface_layout(resource->width, resource->height,
+                                 resource->cpp, &layout) ||
+       resource->row_span != layout.row_span)
       return false;
-   bytes = (uint64_t)resource->row_span *
-           m9_render_surface_height(resource->height) * resource->cpp;
+   bytes = layout.size;
    return bytes <= resource->size;
 }
 

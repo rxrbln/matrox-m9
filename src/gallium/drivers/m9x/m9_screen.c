@@ -69,7 +69,9 @@ m9_presentation_template(const struct pipe_resource *templ)
           templ->format == PIPE_FORMAT_B8G8R8X8_UNORM &&
           (templ->bind & (PIPE_BIND_SCANOUT | PIPE_BIND_DISPLAY_TARGET)) &&
           !(templ->bind & ~(presentation | PIPE_BIND_RENDER_TARGET |
-                            PIPE_BIND_LINEAR));
+                            PIPE_BIND_BLENDABLE | PIPE_BIND_SAMPLER_VIEW |
+                            PIPE_BIND_LINEAR |
+                            PIPE_BIND_USE_FRONT_RENDERING));
 }
 
 static bool
@@ -84,7 +86,8 @@ m9_is_format_supported(struct pipe_screen *screen, enum pipe_format format,
                                PIPE_BIND_SAMPLER_VIEW |
                                PIPE_BIND_DISPLAY_TARGET |
                                PIPE_BIND_SCANOUT | PIPE_BIND_SHARED |
-                               PIPE_BIND_LINEAR;
+                               PIPE_BIND_LINEAR |
+                               PIPE_BIND_USE_FRONT_RENDERING;
    unsigned required = 0;
 
    (void)screen;
@@ -120,7 +123,8 @@ m9_is_format_supported(struct pipe_screen *screen, enum pipe_format format,
              !(bind & ~(PIPE_BIND_SCANOUT | PIPE_BIND_DISPLAY_TARGET |
                         PIPE_BIND_SHARED | PIPE_BIND_RENDER_TARGET |
                         PIPE_BIND_BLENDABLE | PIPE_BIND_SAMPLER_VIEW |
-                        PIPE_BIND_LINEAR));
+                        PIPE_BIND_LINEAR |
+                        PIPE_BIND_USE_FRONT_RENDERING));
    /* bind==0 and LINEAR-only images are CPU staging resources. */
    return !(required & ~info.usage);
 }
@@ -284,6 +288,7 @@ static int
 m9_resource_create_dumb(struct m9_screen *screen,
                         struct m9_resource *resource)
 {
+   struct m9_render_layout layout;
    struct drm_mode_create_dumb create = {
       .width = 1024,
       .height = 768,
@@ -293,7 +298,8 @@ m9_resource_create_dumb(struct m9_screen *screen,
 
    if (ioctl(screen->fd, DRM_IOCTL_MODE_CREATE_DUMB, &create))
       return -errno;
-   if (create.pitch != 4096 || create.size < 4096ull * 768) {
+   if (!m9_render_surface_layout(1024, 768, 4, &layout) ||
+       create.pitch != 4096 || create.size < layout.size) {
       struct drm_mode_destroy_dumb destroy = { .handle = create.handle };
       ioctl(screen->fd, DRM_IOCTL_MODE_DESTROY_DUMB, &destroy);
       return -EINVAL;
@@ -321,6 +327,7 @@ m9_resource_create(struct pipe_screen *pscreen,
    struct m9_resource *resource = CALLOC_STRUCT(m9_resource);
    struct drm_parhelia_m9_create_bo create = {0};
    struct m9_format_info format = {0};
+   struct m9_render_layout render_layout;
    uint64_t size;
 
    if (!resource)
@@ -335,7 +342,8 @@ m9_resource_create(struct pipe_screen *pscreen,
       goto fail;
    if (m9_presentation_template(templ)) {
       resource->kind = M9_RESOURCE_LINEAR_COLOR;
-      format.cpp = 4;
+      if (!m9_format_info(templ->format, &format))
+         goto fail;
       if (m9_resource_create_dumb(screen, resource))
          goto fail;
       size = resource->size;
@@ -361,9 +369,11 @@ m9_resource_create(struct pipe_screen *pscreen,
          resource->row_span = resource->mip.level[0].row_span;
          size = resource->mip.size;
       } else {
-         resource->row_span = m9_render_surface_row_span(templ->width0);
-         size = (uint64_t)resource->row_span *
-                m9_render_surface_height(templ->height0) * format.cpp;
+         if (!m9_render_surface_layout(templ->width0, templ->height0,
+                                       format.cpp, &render_layout))
+            goto fail;
+         resource->row_span = render_layout.row_span;
+         size = render_layout.size;
       }
    }
    if (!resource->handle) {
@@ -416,6 +426,7 @@ m9_resource_from_handle(struct pipe_screen *pscreen,
    struct m9_screen *screen = m9_screen(pscreen);
    struct m9_resource *resource;
    struct m9_format_info format;
+   struct m9_render_layout render_layout;
    struct drm_parhelia_m9_get_bo_info info = {0};
    uint64_t required;
    int ret = 0;
@@ -428,21 +439,26 @@ m9_resource_from_handle(struct pipe_screen *pscreen,
        templ->target != PIPE_TEXTURE_2D || !templ->width0 ||
        !templ->height0 || templ->width0 > 2048 || templ->height0 > 2048 ||
        templ->depth0 != 1 || templ->array_size != 1 || templ->last_level ||
+       ((templ->bind & (PIPE_BIND_SCANOUT | PIPE_BIND_DISPLAY_TARGET)) &&
+        !m9_presentation_template(templ)) ||
        whandle->offset || !m9_format_info(templ->format, &format) ||
        !format.cpp || whandle->stride % format.cpp ||
-       whandle->stride / format.cpp <
-          ((templ->bind & (PIPE_BIND_RENDER_TARGET |
-                           PIPE_BIND_DEPTH_STENCIL)) ?
-           m9_render_surface_row_span(templ->width0) :
-           m9_resource_row_span(templ->width0)) ||
        whandle->stride / format.cpp > UINT16_MAX ||
        (whandle->modifier != DRM_FORMAT_MOD_INVALID &&
         whandle->modifier != DRM_FORMAT_MOD_LINEAR))
       return NULL;
-   required = (uint64_t)whandle->stride *
-              ((templ->bind & (PIPE_BIND_RENDER_TARGET |
-                               PIPE_BIND_DEPTH_STENCIL)) ?
-               m9_render_surface_height(templ->height0) : templ->height0);
+   if (templ->bind & (PIPE_BIND_RENDER_TARGET | PIPE_BIND_DEPTH_STENCIL)) {
+      if (!m9_render_surface_layout(templ->width0, templ->height0,
+                                    format.cpp, &render_layout) ||
+          whandle->stride / format.cpp != render_layout.row_span)
+         return NULL;
+      required = render_layout.size;
+   } else {
+      if (whandle->stride / format.cpp <
+          m9_resource_row_span(templ->width0))
+         return NULL;
+      required = (uint64_t)whandle->stride * templ->height0;
+   }
    resource = CALLOC_STRUCT(m9_resource);
    if (!resource)
       return NULL;
@@ -521,7 +537,7 @@ m9_resource_from_handle(struct pipe_screen *pscreen,
    resource->kind = templ->bind & PIPE_BIND_DEPTH_STENCIL ?
       M9_RESOURCE_LINEAR_DEPTH :
       (templ->bind & (PIPE_BIND_RENDER_TARGET | PIPE_BIND_SCANOUT |
-                      PIPE_BIND_DISPLAY_TARGET | PIPE_BIND_SHARED)) ?
+                      PIPE_BIND_DISPLAY_TARGET)) ?
       M9_RESOURCE_LINEAR_COLOR : M9_RESOURCE_LINEAR_TEXTURE;
    resource->width = templ->width0;
    resource->height = templ->height0;
