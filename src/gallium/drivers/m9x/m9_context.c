@@ -834,7 +834,16 @@ m9_job_textures(struct m9_context *ctx, const struct m9_fs_variant *fs,
       const struct pipe_sampler_state *sampler = slot < PIPE_MAX_SAMPLERS ?
                                                  ctx->fs_samplers[slot] : NULL;
       struct m9_texture_bind bind;
-      const char *reason = m9_texture_bind_view(view, &bind);
+      const char *reason;
+
+      /* An incomplete unit samples the opaque black placeholder. */
+      if (!view || !view->texture) {
+         m9_texture_unit_placeholder(&key->units[k],
+                                     ctx->placeholder_texture.handle);
+         key->unit_scale[k][0] = key->unit_scale[k][1] = 1.0f;
+         continue;
+      }
+      reason = m9_texture_bind_view(view, &bind);
 
       if (reason && view && view->texture && ctx->debug)
          fprintf(stderr, "m9x: unit %u view %s on %s swizzle %u%u%u%u: %s\n",
@@ -1386,7 +1395,10 @@ m9_render_emit(struct m9_vbuf_render *r, const uint16_t *indices,
       ctx->skipped_draws++;
       return;
    }
-   ctx->submitted_draws++;
+   /* A killed client never destroys its context, so report as we go. */
+   if (ctx->debug && ++ctx->submitted_draws % 2000 == 0)
+      fprintf(stderr, "m9x: %u draws submitted, %u skipped\n",
+              ctx->submitted_draws, ctx->skipped_draws);
    if (u_reduced_prim(prim) == MESA_PRIM_POINTS) {
       m9_warn_once(ctx, M9_WARN_POINTS, "unexpanded points are not drawn");
       return;
@@ -1652,7 +1664,13 @@ m9_clear(struct pipe_context *pctx, unsigned buffers,
                    "of the target size");
       return;
    }
-   if (full && (!(buffers & PIPE_CLEAR_STENCIL) || stencil_clear_mask == 0xff)) {
+   /* The quad clear runs on the GPU; only stencil still needs the CPU. */
+   if (!(buffers & PIPE_CLEAR_STENCIL) && (buffers & PIPE_CLEAR_DEPTH)) {
+      m9_clear_quad(ctx, full ? NULL : scissor, 0, zero, true, depth);
+      if (full && zs->hz)
+         m9_fill_dwords(zs->hz, M9_HZ_CLEAR);
+   } else if (full && (!(buffers & PIPE_CLEAR_STENCIL) ||
+                       stencil_clear_mask == 0xff)) {
       m9_context_sync(ctx);
       m9_clear_depth_cpu(zs, buffers, depth, stencil);
    } else if (buffers & PIPE_CLEAR_DEPTH) {
@@ -1731,21 +1749,45 @@ m9_blit_convert(struct pipe_context *pctx, const struct pipe_blit_info *info)
    uint8_t *src, *dst;
    bool ok;
 
+   unsigned blocksize;
+   uint8_t *scaled = NULL;
+
    if (info->mask != PIPE_MASK_RGBA || info->scissor_enable ||
        info->render_condition_enable || info->alpha_blend ||
-       s->width != d->width || s->height != d->height || s->depth != 1 ||
-       d->depth != 1 || s->width <= 0 || s->height <= 0 ||
-       info->swizzle_enable)
+       s->depth != 1 || d->depth != 1 || s->width <= 0 || s->height <= 0 ||
+       d->width <= 0 || d->height <= 0 || info->swizzle_enable)
       return false;
    src = pipe_texture_map(pctx, info->src.resource, info->src.level, s->z,
                           PIPE_MAP_READ, s->x, s->y, s->width, s->height, &st);
    dst = src ? pipe_texture_map(pctx, info->dst.resource, info->dst.level, d->z,
                                 PIPE_MAP_WRITE, d->x, d->y, d->width,
                                 d->height, &dt) : NULL;
-   ok = src && dst &&
-        util_format_translate(info->dst.format, dst, dt->stride, 0, 0,
-                              info->src.format, src, st->stride, 0, 0,
-                              s->width, s->height);
+   blocksize = util_format_get_blocksize(info->dst.format);
+   if (src && dst && (s->width != d->width || s->height != d->height)) {
+      /* Nearest sampling: translate the source, then pick its texels. */
+      scaled = MALLOC((size_t)s->width * s->height * blocksize);
+      ok = scaled &&
+           util_format_translate(info->dst.format, scaled,
+                                 s->width * blocksize, 0, 0, info->src.format,
+                                 src, st->stride, 0, 0, s->width, s->height);
+      for (int y = 0; ok && y < d->height; y++) {
+         int sy = (int)(((int64_t)y * s->height + s->height / 2) / d->height);
+
+         for (int x = 0; x < d->width; x++) {
+            int sx = (int)(((int64_t)x * s->width + s->width / 2) / d->width);
+
+            memcpy(dst + (size_t)y * dt->stride + (size_t)x * blocksize,
+                   scaled + ((size_t)MIN2(sy, s->height - 1) * s->width +
+                             MIN2(sx, s->width - 1)) * blocksize, blocksize);
+         }
+      }
+   } else {
+      ok = src && dst &&
+           util_format_translate(info->dst.format, dst, dt->stride, 0, 0,
+                                 info->src.format, src, st->stride, 0, 0,
+                                 s->width, s->height);
+   }
+   FREE(scaled);
    if (dt)
       pipe_texture_unmap(pctx, dt);
    if (st)
@@ -2288,7 +2330,8 @@ m9_context_init_fixed(struct m9_context *ctx)
                          M9_RESOURCE_LINEAR_TEXTURE, &ctx->placeholder_texture);
    if (ret)
       return ret;
-   memset(ctx->placeholder_texture.map, 0, ctx->placeholder_texture.size);
+   /* Opaque black: an incomplete GL texture samples (0, 0, 0, 1). */
+   m9_fill_dwords(&ctx->placeholder_texture, 0xff000000u);
    memset(ctx->program.map, 0, ctx->program.size);
    memcpy(ctx->program.map, m9_passthrough_c2_program,
           sizeof(m9_passthrough_c2_program));
@@ -2333,9 +2376,6 @@ m9_context_destroy(struct pipe_context *pctx)
    util_dynarray_fini(&ctx->records);
    util_dynarray_fini(&ctx->draws);
    util_dynarray_fini(&ctx->extra);
-   if (ctx->debug)
-      fprintf(stderr, "m9x: %u draws submitted, %u skipped\n",
-              ctx->submitted_draws, ctx->skipped_draws);
    util_dynarray_fini(&ctx->key_consts);
    util_dynarray_fini(&ctx->job_consts);
    FREE(ctx);
