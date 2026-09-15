@@ -39,6 +39,17 @@
 #define M9_ADDRESS_SERVICE_STRIDE	0x10u
 #define M9_ADDRESS_SERVICE_INVALID	0x0000ffffu
 
+/* m9x926's four mode-0 resources in a fresh m9x565 local range. */
+static const struct {
+	u32 base;
+	u32 bytes;
+} m9_service_pools[] = {
+	{ 0x00d41000, 0x00400000 },
+	{ 0x01141000, 0x00100000 },
+	{ 0x01241000, 0x00060000 },
+	{ 0x012a1000, 0x00000500 },
+};
+
 struct m9x_address_binding {
 	u32 gpuva;
 	u32 bytes;
@@ -48,6 +59,7 @@ struct m9x_address_binding {
 
 struct m9x_address_space {
 	struct drm_gem_vram_object *root;
+	struct drm_gem_vram_object *service_pools[ARRAY_SIZE(m9_service_pools)];
 	struct iosys_map map;
 	struct m9x_address_binding *bindings;
 	u32 binding_count;
@@ -59,6 +71,59 @@ struct m9x_address_space {
 	bool manager_ready;
 	bool service_finalized;
 };
+
+static void m9_address_free_service_pools(struct m9x_address_space *address)
+{
+	u32 i;
+
+	for (i = 0; i < ARRAY_SIZE(m9_service_pools); i++) {
+		if (!address->service_pools[i])
+			continue;
+		m9x_vram_unpin(address->service_pools[i]);
+		drm_gem_vram_put(address->service_pools[i]);
+		address->service_pools[i] = NULL;
+	}
+}
+
+static int m9_address_reserve_service_pools(struct m9x_device *mdev,
+					 struct m9x_address_space *address)
+{
+	u32 i;
+	int ret;
+
+	/* Reserve before KMS/user BOs can consume the fresh vendor local range. */
+	for (i = 0; i < ARRAY_SIZE(m9_service_pools); i++) {
+		struct drm_gem_vram_object *pool;
+		u32 bytes = PAGE_ALIGN(m9_service_pools[i].bytes);
+		s64 offset;
+
+		if ((u64)m9_service_pools[i].base + bytes > mdev->vram_size) {
+			ret = -ENOSPC;
+			goto fail;
+		}
+		pool = drm_gem_vram_create(&mdev->drm, bytes, 1);
+		if (IS_ERR(pool)) {
+			ret = PTR_ERR(pool);
+			goto fail;
+		}
+		ret = m9x_vram_pin(pool);
+		if (ret) {
+			drm_gem_vram_put(pool);
+			goto fail;
+		}
+		address->service_pools[i] = pool;
+		offset = drm_gem_vram_offset(pool);
+		if (offset != m9_service_pools[i].base) {
+			ret = offset < 0 ? (int)offset : -ERANGE;
+			goto fail;
+		}
+	}
+	return 0;
+
+fail:
+	m9_address_free_service_pools(address);
+	return ret;
+}
 
 static void m9_address_invalidate_service_bank(struct m9x_device *mdev)
 {
@@ -162,6 +227,13 @@ int m9x_address_init(struct m9x_device *mdev)
 
 	address->root = root;
 	address->mapped = true;
+	ret = m9_address_reserve_service_pools(mdev, address);
+	if (ret) {
+		/* The common teardown owns both the root mapping and its pin. */
+		mdev->transport.address = address;
+		m9x_address_fini(mdev);
+		return ret;
+	}
 	iosys_map_memset(&address->map, 0, 0, M9_ADDRESS_ROOT_BYTES);
 	/* Publish the cleared low-VRAM manager image before handing it to HW. */
 	wmb();
@@ -297,10 +369,7 @@ int m9x_address_publish(struct m9x_device *mdev)
 	m9x_write(mdev, M9_REG_LOCAL_BASE1, M9_ADDRESS_PRIMARY_BASE);
 	m9x_write(mdev, M9_REG_LOCAL_LIMIT, M9_ADDRESS_PRIMARY_LIMIT);
 
-	/*
-	 * The caller completes m9x421's final E6/22 stream before starting the
-	 * later m9x53 compact-table phase.
-	 */
+	/* The cold m9x421 path only writes MMIO; it emits no E6/22 stream. */
 	m9x_read(mdev, M9_REG_LOCAL_LIMIT);
 	address->windows_published = true;
 	return 0;
@@ -450,11 +519,40 @@ int m9x_address_commit_gpuva(struct m9x_device *mdev, u32 gpuva)
 int m9x_address_finalize_service(struct m9x_device *mdev)
 {
 	struct m9x_address_space *address = mdev->transport.address;
+	u32 i;
 
-	if (!address || !address->service_ready || !address->manager_ready)
+	if (!address || !address->service_ready || !address->manager_ready ||
+	    !mdev->transport.transport_armed)
 		return -EINVAL;
 	if (address->service_finalized)
 		return 0;
+	/*
+	 * m9x926 calls m9x1030 directly in mode 0 after m9x109. Applied
+	 * System\\MmFlags=0x100e8 enables m9x535 -> m9x887 -> m9x328.
+	 * No scatter list: each local resource receives identity PTEs with
+	 * nibble 8. This is the primary compact child, not the root child.
+	 * Each pool ends with its own 31c triplet, without m9x810's 314 kick.
+	 */
+	for (i = 0; i < ARRAY_SIZE(m9_service_pools); i++) {
+		u32 base = m9_service_pools[i].base;
+		u32 pages = DIV_ROUND_UP(m9_service_pools[i].bytes, PAGE_SIZE);
+		u32 first = base >> PAGE_SHIFT;
+		u32 slot = M9_ADDRESS_COMPACT_ORIGIN + first * sizeof(u32);
+		u32 page;
+
+		for (page = 0; page < pages; page++)
+			iosys_map_wr(&address->map, slot + page * sizeof(u32),
+				     u32, m9_address_root_pte_word(first + page));
+		wmb();
+		m9x_write(mdev, M9_REG_FRONTEND_STATE, 0x0f);
+		m9x_write(mdev, M9_REG_FRONTEND_STATE, 0x01);
+		m9x_write(mdev, M9_REG_FRONTEND_STATE, 0x00);
+		m9x_read(mdev, M9_REG_FRONTEND_STATE);
+		dev_info(&mdev->pdev->dev,
+			 "M9 mode-0 service pool %u: VRAM=%#x bytes=%#x PTE=%#x/%#x\n",
+			 i, base, m9_service_pools[i].bytes, slot,
+			 iosys_map_rd(&address->map, slot, u32));
+	}
 	/* m9x1141 publishes once; the explicit m9x582 tail repeats m9x115. */
 	m9_address_invalidate_service_bank(mdev);
 	m9_address_invalidate_service_bank(mdev);
@@ -505,6 +603,7 @@ void m9x_address_fini(struct m9x_device *mdev)
 
 	if (!address)
 		return;
+	m9_address_free_service_pools(address);
 	if (address->mapped) {
 		ret = ttm_bo_reserve(&address->root->bo, false, false, NULL);
 		if (!ret) {
