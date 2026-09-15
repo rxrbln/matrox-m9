@@ -1198,7 +1198,7 @@ static void m9_triangle_build_commands(
 	commands->raster[37] = U32_MAX;
 	commands->raster[38] = U32_MAX;
 	if (gouraud) {
-		commands->raster[M9_TRIANGLE_RASTER_SHADE_CONTROL_DW] = 0x00002503;
+		commands->raster[M9_TRIANGLE_RASTER_SHADE_CONTROL_DW] = 0x00002403;
 		commands->raster[M9_TRIANGLE_RASTER_SHADE_LINK0_DW] = 0x00100d88;
 		commands->raster[M9_TRIANGLE_RASTER_SHADE_LINK1_DW] = 0x001006b6;
 	}
@@ -1289,7 +1289,7 @@ static void m9_triangle_build_framed_secondary(
 	put_unaligned_le32(U32_MAX, image + layout->mrt0);
 	put_unaligned_le32(U32_MAX, image + layout->mrt1);
 	if (gouraud) {
-		put_unaligned_le32(0x00002503, image + layout->shade_control);
+		put_unaligned_le32(0x00002403, image + layout->shade_control);
 		put_unaligned_le32(0x00100d88, image + layout->shade_link0);
 		put_unaligned_le32(0x001006b6, image + layout->shade_link1);
 	}
@@ -1776,7 +1776,7 @@ static int m9_seq0_selftest(void)
 	m9_triangle_build_framed_secondary(image, &draw, true,
 					   &m9_triangle_inline_layout);
 	if (get_unaligned_le32(image + M9_TRIANGLE_FRAMED_SHADE_CONTROL) !=
-		0x00002503 ||
+		0x00002403 ||
 	    get_unaligned_le32(image + M9_TRIANGLE_FRAMED_SHADE_LINK0) !=
 		0x00100d88 ||
 	    get_unaligned_le32(image + M9_TRIANGLE_FRAMED_SHADE_LINK1) !=
@@ -1967,7 +1967,7 @@ m9_triangle_stream_selftest(struct m9_triangle_commands *commands)
 	}, sizeof(commands->primary)))
 		return -EINVAL;
 	m9_triangle_build_commands(&job, true, commands);
-	if (commands->raster[M9_TRIANGLE_RASTER_SHADE_CONTROL_DW] != 0x00002503 ||
+	if (commands->raster[M9_TRIANGLE_RASTER_SHADE_CONTROL_DW] != 0x00002403 ||
 	    commands->raster[M9_TRIANGLE_RASTER_SHADE_LINK0_DW] != 0x00100d88 ||
 	    commands->raster[M9_TRIANGLE_RASTER_SHADE_LINK1_DW] != 0x001006b6)
 		return -EINVAL;

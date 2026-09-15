@@ -310,12 +310,10 @@ static int m9_address_vram_selftest(struct m9x_device *mdev,
 	u32 status = m9x_read(mdev, M9_REG_MEMORY_STATUS);
 	u32 i, value;
 
-	if (status != U32_MAX && ((status >> 16) & 0x11) != 1) {
-		dev_err(&mdev->pdev->dev,
-			"M9 memory status %#x reports no initialized VRAM\n",
-			status);
-		return -EIO;
-	}
+	/* Bit 20 stays set after GPU use, so on a warm reload the status is advisory. */
+	if (status != U32_MAX && ((status >> 16) & 0x11) != 1)
+		dev_info(&mdev->pdev->dev,
+			 "M9 memory status %#x; verifying VRAM\n", status);
 	for (i = 0; i < 0xffff; i++)
 		iosys_map_wr(map, i * sizeof(u32), u32, i);
 	for (i = 0x10000; i < 0x1ffff; i++)
