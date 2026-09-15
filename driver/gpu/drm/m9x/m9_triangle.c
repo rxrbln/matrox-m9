@@ -3,9 +3,9 @@
 /*
  * Bounded, kernel-owned M9148 first-triangle preparation.
  *
- * The diagnostic advances through independently fenced transition and
- * sequence-zero stages, then publishes the captured fixed-function draw only
- * after every prerequisite retires with the expected token.
+ * The diagnostic advances through independently fenced engine and first
+ * context-activation stages.  Later draws reuse that live context and publish
+ * only the captured incremental fixed-function operation.
  */
 #include <linux/dma-mapping.h>
 #include <linux/iosys-map.h>
@@ -165,6 +165,7 @@ struct m9x_triangle_diag {
 	struct m9_triangle_resource resource[M9_TRI_RESOURCE_COUNT];
 	u32 pte_count;
 	struct m9_triangle_commands commands;
+	bool context_initialized;
 	bool prepared;
 };
 
@@ -1146,9 +1147,10 @@ int m9x_submit_triangle_diag(struct m9x_device *mdev, u32 color, u64 *point,
 	struct m9_seq0_job sequence0 = {};
 	struct m9x_triangle_diag *diag;
 	u32 noop_primary[3];
-	u32 sequence0_final;
 	u32 draw_target;
+	u32 sequence0_final = 0;
 	u32 target;
+	bool initialized_now = false;
 	int ret;
 
 	*point = 0;
@@ -1188,49 +1190,58 @@ int m9x_submit_triangle_diag(struct m9x_device *mdev, u32 color, u64 *point,
 		mdev->transport.engine_transitioned = true;
 	}
 
-	/*
-	 * Require an otherwise inert completion after service/windows/requester
-	 * publication before the much larger sequence-zero image.
-	 */
-	target = mdev->transport.next_fence;
-	noop_primary[0] = M9_PACKET_FENCE_HEADER;
-	noop_primary[1] = 3;
-	noop_primary[2] = target | 1;
-	ret = m9x_submit_kernel_stream_locked(mdev, noop_primary,
-					      ARRAY_SIZE(noop_primary),
-					      target, point);
-	if (ret)
-		goto out_unlock;
-	mdev->transport.next_fence = target + 0x10;
+	if (!diag->context_initialized) {
+		/*
+		 * Complete traces contain this large first ExecuteDma envelope
+		 * exactly once per context.  Its three scratch objects remain live
+		 * with the context; replaying it before every draw does not match the
+		 * vendor TaskMgr and can destroy incremental state.
+		 *
+		 * Keep the captured inert completion between engine publication and
+		 * first activation.  The secondary BO is shared, so activation must
+		 * retire before the draw image replaces it.
+		 */
+		target = mdev->transport.next_fence;
+		noop_primary[0] = M9_PACKET_FENCE_HEADER;
+		noop_primary[1] = 3;
+		noop_primary[2] = target | 1;
+		ret = m9x_submit_kernel_stream_locked(mdev, noop_primary,
+						      ARRAY_SIZE(noop_primary),
+						      target, point);
+		if (ret)
+			goto out_unlock;
+		mdev->transport.next_fence = target + 0x10;
 
-	ret = m9_seq0_build_job(mdev, mdev->transport.next_fence,
-				&sequence0);
-	if (ret)
-		goto out_unlock;
-	sequence0_final = sequence0.target + M9_SEQ0_FINAL_TARGET_OFFSET;
-	draw_target = sequence0.target + M9_SEQ0_NEXT_TARGET_OFFSET;
-	m9_seq0_build_secondary(diag->resource[M9_TRI_SECONDARY].cpu,
-				 &sequence0);
-	m9_seq0_build_primary(&sequence0, diag->commands.sequence0_primary);
-	WRITE_ONCE(*(u32 *)mdev->transport.fence_cpu, ~sequence0_final);
-
-	/*
-	 * Sequence 0 is the sole image in the shared secondary BO.  Retire it
-	 * before that BO can be replaced with the draw image.
-	 */
-	ret = m9x_submit_kernel_stream_locked(mdev,
-					      diag->commands.sequence0_primary,
-					      ARRAY_SIZE(diag->commands.sequence0_primary),
-					      sequence0_final, point);
-	if (ret)
-		goto out_unlock;
-	mdev->transport.next_fence = draw_target;
-	ret = m9_triangle_verify_guards(diag);
-	if (ret) {
-		mdev->transport.wedged = true;
-		mdev->transport.generation++;
-		goto out_unlock;
+		ret = m9_seq0_build_job(mdev, mdev->transport.next_fence,
+					&sequence0);
+		if (ret)
+			goto out_unlock;
+		sequence0_final = sequence0.target +
+					  M9_SEQ0_FINAL_TARGET_OFFSET;
+		m9_seq0_build_secondary(diag->resource[M9_TRI_SECONDARY].cpu,
+					&sequence0);
+		m9_seq0_build_primary(&sequence0,
+				      diag->commands.sequence0_primary);
+		WRITE_ONCE(*(u32 *)mdev->transport.fence_cpu, ~sequence0_final);
+		ret = m9x_submit_kernel_stream_locked(mdev,
+						      diag->commands.sequence0_primary,
+						      ARRAY_SIZE(diag->commands.sequence0_primary),
+						      sequence0_final, point);
+		if (ret)
+			goto out_unlock;
+		mdev->transport.next_fence = sequence0.target +
+					    M9_SEQ0_NEXT_TARGET_OFFSET;
+		ret = m9_triangle_verify_guards(diag);
+		if (ret) {
+			mdev->transport.wedged = true;
+			mdev->transport.generation++;
+			goto out_unlock;
+		}
+		diag->context_initialized = true;
+		initialized_now = true;
 	}
+
+	draw_target = mdev->transport.next_fence;
 	ret = m9_triangle_build_addresses(mdev, color, draw_target, &job);
 	if (ret)
 		goto out_unlock;
@@ -1262,9 +1273,12 @@ int m9x_submit_triangle_diag(struct m9x_device *mdev, u32 color, u64 *point,
 		mdev->transport.generation++;
 		goto out_unlock;
 	}
+	if (initialized_now)
+		dev_info(&mdev->pdev->dev,
+			 "M9 context first activation retired: setup=%#x..%#x\n",
+			 sequence0.target, sequence0_final);
 	dev_info(&mdev->pdev->dev,
-		 "M9 first triangle retired: setup=%#x..%#x draw=%#x..%#x\n",
-		 sequence0.target, sequence0_final, draw_target,
+		 "M9 triangle retired: draw=%#x..%#x\n", draw_target,
 		 job.transition[5]);
 out_unlock:
 	mutex_unlock(&mdev->transport.lock);
