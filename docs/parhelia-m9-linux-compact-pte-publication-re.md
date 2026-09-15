@@ -125,16 +125,17 @@ The separate `m9x953` interval beginning at
 instruction in the object-allocation, ioctl-output, `m9x887`, or `m9x328`
 chain substitutes it for resource `+0x48`.
 
-## Publication into the wrapper context
+## Publication into a private CPU shadow object
 
 At the start of `m9x421`, the selected manager children are copied into the
 object reached through `[service+0x10]`.  This object is not a low-address
-BAR mapping or a hardware page-table root.  The open wrapper calls
-`connect(dev->core_data, dev, &dev->ctx, ...)`; the exported `connect` entry
-reaches `m9x320`, whose `.text+0x4c71` stores its third argument at core
-object `+0x10`.  `m9x92` then stores that same core object at owner `+0x740`,
-which is the service pointer used by `m9x421`.  Consequently these are
-wrapper-private `m9x_context` fields.  For the Linux target they receive:
+BAR mapping or a hardware page-table root.  `m9x595` allocates the `0xf68`-
+byte service object at `.text+0x2ec57..0x2ec69`, then separately allocates a
+`0x158`-byte CPU object at `0x2ec97..0x2eca9`.  It zeroes that second object,
+stores its pointer at `service+0x10` at `0x2ed30..0x2ed3d`, and returns the
+same pointer separately to its caller at `0x2ed54..0x2ed60`.  `m9x421`
+therefore publishes these tuples into a private CPU shadow object.  For the
+Linux target they receive:
 
 ```text
 raw+130 = 00801000     raw+134 = 00060000
@@ -168,11 +169,12 @@ For an ordinary mode-1 scatter mapping, the compact PTE dword is:
 pte = (dma & 0xfffff000) | ((dma >> 28) & 0x00000ff0) | 0x0a;
 ```
 
-`m9x328` has two mutually exclusive publication paths.  Normally it stages
-entries with `m9x789`, uploads them through `m9x694` using destination mode 2
-and the low slot address, and writes `MMIO[0x314]=1`.  At `0x15d8` it subtracts
-the completed chunk and, when no pages remain, jumps directly to the return at
-`0x19a1`.  It does not execute the CPU mirror or direct `0x31c` post-list.
+`m9x328` has two mutually exclusive publication paths.  When
+`builder+0x24` is nonzero, it stages entries with `m9x789`, uploads them
+through `m9x694` using destination mode 2 and the low slot address, and writes
+`MMIO[0x314]=1`.  At `0x15d8` it subtracts the completed chunk and, when no
+pages remain, jumps directly to the return at `0x19a1`.  It does not execute
+the CPU mirror or direct `0x31c` post-list.
 
 If `m9x789` returns null or `m9x694` returns zero, execution instead reaches
 `0x160a`.  This fallback emits no `0x314`; it runs the empty pre-list, writes
@@ -183,13 +185,32 @@ therefore directly supported by the binary, but combining it with `0x314`
 mixes the two vendor branches.  Initial manager construction has the separate
 final packed list `0x2000001c`, producing `0xc,0x1`.
 
+The canonical fresh-service path selects the CPU-mirror branch; it is not an
+allocation failure.  `m9x595` clears the complete `0xf68`-byte service, and
+`m9x261` explicitly initializes `builder+0x24=0` at `.text+0x27d11`.  The
+ordered initializer table reaches `m9x1042` before `m9x723`.  `m9x1042`
+constructs the device through the local function at `0x121d0`, `m9x92`, and
+then `m9x53`, so its first `m9x328` runs before `m9x723` calls `m9x950`.
+Therefore neither auxiliary stream exists during the first bind.
+
+Later, `m9x950` constructs the control and data stream objects at
+`builder+0x10/+0x18` and sets `builder+0x20=1`, but never changes
+`builder+0x24`; its return at `0x281c8` even reloads that still-zero field.
+`m9x789` tests it at `0x287e2` and returns null at `0x28920`.  Thus the first
+`m9x328` skips `m9x694` and `0x314`, performs the BAR CPU mirror, and
+activates it with `0x31c=f,1,0`.  The GPU-copy path belongs to a later
+explicitly backed requester mode.
+
 This selection follows directly from the call arguments. `m9x887` passes
 `ecx=0` to `m9x328`. That selector makes `m9x328` use manager `+0xe0` as its
 empty pre-list and manager `+0xf8` as its post-list. `m9x53` constructs
 `+0xf8=0x3000001f`. The `0x20000028` list at manager `+0x100`, which produces
 `0,2`, is decoded later by `m9x887` only after building the optional 16-byte
-companion table. The Linux `C24=0` branch skips that whole path, so `0,2`
-must not replace `f,1,0` on the compact CPU-mirror fallback.
+companion table. Immediately after compact `m9x328`, `m9x887` reads the
+selected companion extent at `0x17592..0x1759d`; zero jumps to `0x17e6d`.
+The Linux `C24=0` branch therefore skips the staging/upload and CPU-mirror
+implementations of that entire 16-byte view, as well as `0,2`.  The compact
+four-byte table plus `f,1,0` is the complete vendor target path.
 
 The outer service-owner order is also fixed.  The anonymous initializer at
 `.text+0x121d0` writes the service-lane registers and calls `m9x1172` at
@@ -202,12 +223,12 @@ real service-construction write; it does not replace the later
 Cold manager construction has an exact, different order.  `m9x53` first calls
 `m9x421(..., publish=1)`, which completes the initial `E6`, all direct window
 writes, and the terminal `454522e6,40000000,(1088|20000000)` submission.
-It then calls `m9x328(..., selector=0)`.  Its normal branch executes auxiliary
-copy and synchronous wait, then writes `0x314=1`; its fallback instead writes
-the CPU BAR mirror and `0x31c=f,1,0`.  Back in `m9x53`, the next relevant write is
-`0x30c=0x1000`.  After the remaining internal table initializers, `m9x53`
-ends with `0x31c=c,1`.  Thus moving the terminal `m9x421` transition after the
-compact publication reverses the vendor's cold order.
+It then calls `m9x328(..., selector=0)`.  On this fresh-service path that call
+writes the CPU BAR mirror and `0x31c=f,1,0`; it emits no `0x314`.  Back in
+`m9x53`, the next relevant write is `0x30c=0x1000`.  After the remaining
+internal table initializers, `m9x53` ends with `0x31c=c,1`.  Thus moving the
+terminal `m9x421` transition after the compact publication reverses the
+vendor's cold order.
 
 When the optional upload branch is active, the corresponding `m9x694`
 arguments are:
@@ -239,6 +260,34 @@ For the concrete aligned example `src=0x12340000`, `dst=0x00901090`, modes
 The last three records are the `f,1,0` post-list translated for the auxiliary
 requester. These records cannot be submitted through the primary
 `0x400/0x404` requester without separate hardware evidence.
+
+The auxiliary path itself uses two software streams.  `builder+0x18` is the
+data stream containing the copy and post-list records.  `m9x620` observes its
+new raw endpoint and appends a transition to the control stream at
+`builder+0x10`:
+
+```text
+ordinary form:   00000001 old_data_endpoint|data_tag new_data_endpoint 00000000
+bus-master form: same first four dwords, followed by four zero dwords
+```
+
+It then publishes the raw control-stream endpoint to `MMIO[0x504]`.
+`m9x1016(builder,1)` appends `{0x7c,0,0xffffffff,0}` to the data stream,
+causing a second control transition and a second `0x504` publication.  It
+requires two consecutive `0x508` samples with bit 0 set, two stable
+`0x500/0x50c` pairs, and a final `0x508.bit0` sample.
+
+The first-use initializer `m9x759` writes exactly
+`0x500=control_base|control_tag`, `0x508=0`, then `0x504=control_base`.
+The tag table for backing selectors 0 through 3 is `{2,3,0,3}`.  It does not
+initialize `0x50c`, `0x510`, `0x514`, `0x520`, or `0x524`; those registers
+are only sampled or restored elsewhere in the binary.  A clean-room one-shot
+implementation must issue a DMA write barrier before each `0x504` doorbell,
+bound the otherwise unbounded vendor wait, and reserve data space for the
+terminal 16-byte `0x7c` record plus control space for two 16-byte or 32-byte
+transitions.  Avoiding wrap is sufficient for a one-shot upload.  The vendor
+wrap path publishes and quiesces, appends `{2,resource_gpu_base}`, resets the
+software stream to the resource base, republishes, and quiesces again.
 
 The first transfer record depends on the transient staging allocation's
 address and alignment, so a byte-identical live upload still requires the

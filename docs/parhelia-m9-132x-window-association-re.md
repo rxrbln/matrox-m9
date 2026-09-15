@@ -2,8 +2,9 @@
 
 This note closes the conditional range-publication boundary left open by the
 engine-to-execution audit. It joins the independent Linux and Windows vendor
-implementations to the range allocator and the saved first-triangle resource
-domains. Recheck every conclusion with:
+implementations to the range allocator, while keeping that internal allocator
+separate from the saved first-triangle render-resource domains. Recheck every
+conclusion with:
 
 ```sh
 python3 tools/m9-132x-window-association-evidence.py
@@ -27,20 +28,21 @@ is the address of the last 4-KiB page, inclusive. A zero companion size means
 no companion publication at all. The vendor does not write zeroes to the
 companion family in that case.
 
-For the first clean-room M9148 flat or Gouraud triangle, program the primary
-local-VRAM family directly:
+For the saved Linux M9148 descriptor, program the selected primary manager
+range directly:
 
 ```text
-132c = 10000000
-1330 = 10000000
-1334 = 1ffff000
+132c = 00801000
+1330 = 00801000
+1334 = 00860000
 ```
 
-Leave `1320/1324/1328` untouched. Do not synthesize a second `10000000`
-triple, and do not put any `40xxxxxx` system BO in that family. The saved
-M9148 profile validates one 256-MiB local domain and supplies no positive
-evidence for a nonzero companion extent. The clean-room profile therefore
-sets `companion_size=0` instead of inventing one.
+The inputs are descriptor `C+0x18=0x00801000` and
+`C+0x1c=0x00060000`, constructed by `m9x858` and copied into the selected
+manager child by `m9x53`. Leave `1320/1324/1328` untouched because
+`C+0x24=0`. The separate `0x10000000..0x1fffffff` allocator contains local
+render resources; no instruction in this chain substitutes it for the
+selected manager child.
 
 ## Exact range inputs
 
@@ -99,10 +101,10 @@ companion[k].size = companion_size;
 
 This exact construction at `m9x53+0x4f1..+0x67a` resolves the important
 association: the optional family is a contiguous extension following every
-primary partition. It cannot be the captured system-memory address space at
-`0x40000000..0x4fffffff`, because the validated M9148 primary local range ends
-at `0x20000000`. A nonzero companion would start at `0x20000000`; it would not
-jump to `0x40000000` [BIN][DER].
+primary partition. On the saved target `N=1`, primary base is `0x00801000`,
+primary size is `0x00060000`, and companion size is zero. Therefore the
+selected child remains `0x00801000..0x00860fff`; neither captured address
+domain supplies this initialization tuple [BIN][DER].
 
 `m9x92` constructs this manager only when `System\\MmFlags` bit 3 is set. Both
 saved defaults set that bit, so this manager is present on the tested profile:
@@ -179,7 +181,7 @@ because a previous broad recipe used identical values. Their descriptor roles
 are independent and require the actual first-job inputs recovered for those
 groups.
 
-## First-triangle resource association
+## Separation from first-triangle resources
 
 The saved M9148 allocation capture contains two disjoint GPU domains [CAP]:
 
@@ -191,13 +193,14 @@ placement 1 / system:      40000000..4fffffff
 Every captured selector-8 color target is local. The window color target is
 `0x11ee9000`; the FBO target is `0x11f41000`. Depth, textures, and the private
 BE/scratch surface used by the first-triangle path are likewise local resources
-and must lie inside the validated primary aperture before submission [CAP].
+in this separate render-resource allocator [CAP].
 
 The command pages, fences, canonical vertex arena (`0x40f52000`), and linked
 program/resource arena (`0x40c3a000`) are system resources. They retain their
 captured low address tags and resource-specific requester bindings. `m9x421`
 also emits the separate indexed transition `e6=0x40000000`, but it never feeds
-those per-job system addresses into either conditional `132x` range [BIN][CAP].
+those per-job system addresses or the local `0x1xxxxxxx` resource addresses
+into either conditional `132x` range [BIN][CAP].
 
 The implementation boundary for the first flat/Gouraud triangle is therefore:
 
@@ -205,12 +208,13 @@ The implementation boundary for the first flat/Gouraud triangle is therefore:
    `0x10000000..0x1fffffff`;
 2. validate system command, vertex, linked-record, and fence resources in the
    `0x40000000..0x4fffffff` domain;
-3. publish the direct primary tuple at `132c/1330/1334` and its identical
-   `f74/f78/f7c` tuple;
+3. during `m9x421` initialization, publish the internal
+   `0x00801000..0x00860fff` primary tuple at `132c/1330/1334` and its
+   identical `f74/f78/f7c` tuple;
 4. set `companion_size=0` and leave `1320/1324/1328` untouched because no
    nonzero companion extent is validated for the clean-room M9148 profile;
-5. obtain the distinct inputs for `360/364` and `f64/f68` from their typed
-   first-job resources; do not copy the primary tuple into them;
+5. take the distinct `360/364` and `f64/f68` inputs from their other descriptor
+   fields; do not derive them from first-job render resources;
 6. continue with the already recovered requester arm, sequence 0, current
    context record, and draw state.
 

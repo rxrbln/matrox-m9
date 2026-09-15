@@ -96,33 +96,33 @@ not be used as the linear scanout recipe.
 
 ## Required engine address windows
 
-Vendor Linux core function `m9x421` programs the local aperture, context, and
-surface windows before submitting the matching indexed state.  For M9148's
-256-MiB local domain, `base=0x10000000`, `size=0x10000000`, and auxiliary
-offset zero produce:
+Vendor Linux core function `m9x421` programs internal manager windows before
+submitting the matching indexed state.  The saved Linux M9148 descriptor and
+manager construction produce:
 
 | MMIO | value |
 |---:|---:|
-| `0x360` | `0x10000000` |
-| `0x364` | `0x1ffff000` |
-| `0xf64` | `0x10000000` |
-| `0xf68` | `0x1ffff000` |
-| `0xf74` | `0x10000000` |
-| `0xf78` | `0x10000000` |
-| `0xf7c` | `0x1ffff000` |
-| `0x1320` | `0x10000000` |
-| `0x1324` | `0x10000000` |
-| `0x1328` | `0x1ffff000` |
-| `0x132c` | `0x10000000` |
-| `0x1330` | `0x10000000` |
-| `0x1334` | `0x1ffff000` |
+| `0x360` | `0x00861000` |
+| `0x364` | `0x008e0000` |
+| `0xf64` | `0x008e1000` |
+| `0xf68` | `0x00940000` |
+| `0xf74` | `0x00801000` |
+| `0xf78` | `0x00801000` |
+| `0xf7c` | `0x00860000` |
+| `0x1320/24/28` | untouched (`C+0x24=0`) |
+| `0x132c` | `0x00801000` |
+| `0x1330` | `0x00801000` |
+| `0x1334` | `0x00860000` |
 
 The corresponding indexed mirrors are:
 
 ```text
 45cdcccb: cb=base, cc=base, cd=limit
-45cac9c8: c8=base, c9=base, ca=limit
+45cac9c8: c8=base, c9=base, ca=limit (only when companion size != 0)
 ```
+
+The `0x10000000..0x1fffffff` interval above belongs to the separate local
+render-resource allocator.  It is not an input to these `m9x421` windows.
 
 The vendor transition also emits index `47` values `0x11a4` then `0x1308`,
 `e6=0x40000000`, and index `22 = read(0x1088) | 0x20000000`, with submission
