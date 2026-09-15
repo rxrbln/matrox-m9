@@ -1192,6 +1192,178 @@ tmpl_discard_varying(struct ctx *c, int root)
    return true;
 }
 
+/* Compare and select templates (fill-rect-stipple, fill-rect-opaque-stipple) */
+
+static float
+float_from_bits(uint32_t bits)
+{
+   float f;
+
+   memcpy(&f, &bits, sizeof(f));
+   return f;
+}
+
+static void
+const_push(struct ctx *c, const struct kkey *k)
+{
+   struct m9_fs_const *out = util_dynarray_grow(&c->p->consts,
+                                                struct m9_fs_const, 1);
+
+   memset(out, 0, sizeof(*out));
+   out->kind = k->kind;
+   memcpy(out->value, k->v, sizeof(out->value));
+   memcpy(out->offset, k->off, sizeof(out->offset));
+}
+
+/* Constant buffer slot of a whole vec4 uniform, or -1. */
+static int
+ubo_vec4_slot(nir_def *def)
+{
+   int slot = -1;
+
+   if (def->num_components != 4)
+      return -1;
+   for (unsigned k = 0; k < 4; k++) {
+      nir_scalar s = nir_scalar_chase_movs(nir_get_scalar(def, k));
+      nir_intrinsic_instr *intr;
+      int this_slot;
+
+      if (!nir_scalar_is_intrinsic(s) || s.comp != k)
+         return -1;
+      intr = nir_def_as_intrinsic(s.def);
+      if (intr->intrinsic != nir_intrinsic_load_ubo_vec4 ||
+          !nir_src_is_const(intr->src[0]) || nir_src_as_uint(intr->src[0]) ||
+          !nir_src_is_const(intr->src[1]) || nir_intrinsic_component(intr))
+         return -1;
+      this_slot = nir_intrinsic_base(intr) + nir_src_as_uint(intr->src[1]);
+      if (k && this_slot != slot)
+         return -1;
+      slot = this_slot;
+   }
+   return slot;
+}
+
+/* feq(texture(sampler, varying).w, literal) of the only texture */
+static bool
+match_alpha_compare(struct ctx *c, nir_scalar cond, float *literal)
+{
+   nir_scalar t, k;
+
+   cond = nir_scalar_chase_movs(cond);
+   if (!nir_scalar_is_alu(cond) || nir_scalar_alu_op(cond) != nir_op_feq)
+      return fail(c, "unsupported compare");
+   t = nir_scalar_chase_movs(nir_scalar_chase_alu_src(cond, 0));
+   k = nir_scalar_chase_movs(nir_scalar_chase_alu_src(cond, 1));
+   if (nir_scalar_is_const(t)) {
+      nir_scalar tmp = t;
+
+      t = k;
+      k = tmp;
+   }
+   if (!nir_scalar_is_const(k) || t.comp != 3 ||
+       nir_def_instr(t.def)->type != nir_instr_type_tex)
+      return fail(c, "unsupported compare");
+   *literal = nir_scalar_as_float(k);
+   if (build_def(c, t.def) < 0)
+      return false;
+   return c->p->texture_count == 1 || fail(c, "compare with two textures");
+}
+
+static void
+push_uniform_lanes(struct ctx *c, int slot, unsigned lane)
+{
+   struct kkey k = key_uniform((slot * 4 + 2 * lane) * 4,
+                               (slot * 4 + 2 * lane + 1) * 4);
+
+   const_push(c, &k);
+}
+
+/* if (texture.w == literal) discard; color = uniform; */
+static bool
+tmpl_stipple(struct ctx *c, nir_intrinsic_instr *kill, nir_def *color)
+{
+   static const uint32_t words[] = {
+      0xffc284bc, 0x9000d03f, 0xe082059d, 0x900140cf, 0xbfc202bc, 0x8800cc10,
+      0xffff821c, 0xa280730f, 0xffff851d, 0xa280730f, 0xffff951c, 0xa280f31f,
+      0xe14102bc, 0x5360400f, 0xffff881c, 0xa280331f, 0x5fc1071e, 0xac8fcc30,
+      0xffffc0bc, 0xafdfc300, 0xffcaad1d, 0xa29fff1f, 0xffc42d1e, 0xa29fff1f,
+   };
+   int slot = ubo_vec4_slot(color);
+   struct kkey k;
+   float lit;
+
+   if (slot < 0)
+      return fail(c, "unsupported conditional discard");
+   if (!match_alpha_compare(c, nir_get_scalar(kill->src[0].ssa, 0), &lit))
+      return false;
+   push_uniform_lanes(c, slot, 1);
+   k = key_literal(0.0f, 1.0f);
+   const_push(c, &k);
+   k = key_literal(1.0f, 0.5f);
+   const_push(c, &k);
+   push_uniform_lanes(c, slot, 0);
+   k = key_literal(lit, lit);
+   const_push(c, &k);
+   k = key_literal(float_from_bits(0x40000001), 1.0f);
+   const_push(c, &k);
+   for (unsigned i = 0; i < ARRAY_SIZE(words); i += 2)
+      raw(c, words[i], words[i + 1]);
+   c->p->registers_used = 0x43;
+   c->p->discard = true;
+   c->custom_consts = true;
+   return true;
+}
+
+/* color = texture.w == literal ? uniform_a : uniform_b; */
+static bool
+tmpl_select(struct ctx *c, const nir_scalar *s)
+{
+   static const uint32_t words[] = {
+      0xffc286bc, 0x9000d03f, 0xe082059d, 0x900140cf, 0xbfc302bc, 0x8800cc10,
+      0xffff861c, 0xa280f31f, 0xffc1071c, 0x80004c1f, 0xbfc3829c, 0x8800cc10,
+      0xffff821c, 0xa280b31f, 0xffc3091c, 0xa28fff1f, 0xffff891c, 0x4280731f,
+      0xffc1081c, 0xa28fff1f, 0xffff881c, 0x4280331f, 0xffc4ad1d, 0xa29fff1f,
+      0xffc42d1e, 0xa29fff1f,
+   };
+   nir_alu_instr *alu = nir_def_as_alu(s[0].def);
+   int on_true, on_false;
+   struct kkey k;
+   float lit;
+
+   for (unsigned i = 0; i < 4; i++) {
+      if (s[i].def != s[0].def || s[i].comp != i)
+         return fail(c, "unsupported select");
+   }
+   for (unsigned i = 1; i < 3; i++) {
+      for (unsigned j = 0; j < 4; j++)
+         if (alu->src[i].swizzle[j] != j)
+            return fail(c, "unsupported select");
+   }
+   on_true = ubo_vec4_slot(alu->src[1].src.ssa);
+   on_false = ubo_vec4_slot(alu->src[2].src.ssa);
+   if (on_true < 0 || on_false < 0)
+      return fail(c, "unsupported select");
+   if (!match_alpha_compare(c, nir_scalar_chase_alu_src(s[0], 0), &lit))
+      return false;
+   push_uniform_lanes(c, on_false, 1);
+   push_uniform_lanes(c, on_false, 0);
+   push_uniform_lanes(c, on_true, 1);
+   push_uniform_lanes(c, on_true, 0);
+   k = key_literal(lit, lit);
+   const_push(c, &k);
+   k = key_literal(float_from_bits(0x40000001), 1.0f);
+   const_push(c, &k);
+   k = key_literal(0.0f, 1.0f);
+   const_push(c, &k);
+   k = key_literal(1.0f, 0.5f);
+   const_push(c, &k);
+   for (unsigned i = 0; i < ARRAY_SIZE(words); i += 2)
+      raw(c, words[i], words[i + 1]);
+   c->p->registers_used = 0x01;
+   c->custom_consts = true;
+   return true;
+}
+
 /* The vendor binds the texture read through a replicated scalar to the first
  * texel pair, otherwise the last sampled one. */
 static bool
@@ -1258,6 +1430,9 @@ compile_output(struct ctx *c, nir_def *value, bool discard)
    if (!discard && nir_scalar_is_alu(s[0]) &&
        nir_scalar_alu_op(s[0]) == nir_op_fmul && s[0].def->num_components == 2)
       return tmpl_fragcoord(c, s);
+   if (!discard && nir_scalar_is_alu(s[0]) &&
+       nir_scalar_alu_op(s[0]) == nir_op_bcsel)
+      return tmpl_select(c, s);
    if (fragcoord)
       return fail(c, "unsupported gl_FragCoord use");
    if (!discard && (all_const || (s[0].def != s[1].def)) &&
@@ -1319,7 +1494,7 @@ compile_output(struct ctx *c, nir_def *value, bool discard)
 static bool
 compile_impl(struct ctx *c, nir_function_impl *impl)
 {
-   nir_intrinsic_instr *store = NULL;
+   nir_intrinsic_instr *store = NULL, *kill = NULL;
    bool discard = false, first = true;
 
    if (exec_list_length(&impl->body) != 1)
@@ -1337,6 +1512,11 @@ compile_impl(struct ctx *c, nir_function_impl *impl)
             if (!first || discard)
                return fail(c, "conditional discard");
             discard = true;
+            break;
+         case nir_intrinsic_terminate_if:
+            if (kill)
+               return fail(c, "more than one conditional discard");
+            kill = intr;
             break;
          case nir_intrinsic_store_output: {
             unsigned location = nir_intrinsic_io_semantics(intr).location;
@@ -1366,13 +1546,16 @@ compile_impl(struct ctx *c, nir_function_impl *impl)
    }
    if (!store)
       return fail(c, "no color output");
-   if (!compile_output(c, store->src[0].ssa, discard))
+   if (kill && (discard || !tmpl_stipple(c, kill, store->src[0].ssa)))
+      return fail(c, "unsupported conditional discard");
+   if (!kill && !compile_output(c, store->src[0].ssa, discard))
       return false;
    c->has_consts |= discard;
    if (!encode_lops(c))
       return false;
    finish_slots(c);
-   const_tail(c);
+   if (!c->custom_consts)
+      const_tail(c);
    return true;
 }
 
