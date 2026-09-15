@@ -80,5 +80,57 @@ The cold path programs BAR0 window slot 0 only for its self-test.  The kernel
 service later invalidates all 20 slots (`m9x1172 → m9x115`), matching the
 clean-room driver.
 
+## Kernel service layout on the 1 GiB M9148
+
+Source: the observer blob `m9cold-capture-123934.bin` and the BAR0 image
+`vram-root-0-ec1000-124346.bin`.  The vendor module reports
+`TotalMemorySize = 0x40000000` and sizes its tables for it:
+
+| region | range | contents |
+|---|---|---|
+| primary compact table | `[0x801000, 0x921000)` | local identity PTEs `|8` at `0x801000 + 4*(off>>12)`; class-1 PTEs `|0xa` from `0x901000` |
+| root identity table | `[0x921000, 0x9a1000)` | entries `(i<<12)|8` |
+| tail | `[0x9a1000, 0xac1000)` | zero |
+| restore pool | `[0xac1000, 0xc42000)` | prefix, 1024 records, filler `45454545` |
+| mode-0 pools | local `0x10ec1000` (4 MiB), `0x112c1000` (1 MiB), `0x113c1000` (`0x60000`), `0x11421000` (`0x500`) | published with `31c=f,1,0`, no `314` |
+
+Service writes, in order:
+
+- **`m9x1172`:** `30c=0`, `3a8=00010a05`, 20 slots `0000ffff`.
+- **`m9x53`:** windows `132c/1330=801000`, `1334=920000`, `360=921000`,
+  `364=9a0000`, `f64=9a1000`, `f68=ac0000`, `f74/f78=801000`,
+  `f7c=920000`; then `31c=f,1,0`, `30c=1000`, `31c=c,1`, `f0c=00200040`.
+  The second transition repeats the windows.
+- **Restore pool:** published as mode 3, then `31c=f,1,0`, `314=1`.
+- **`m9x109`:** `400=055e0002`, `109c=00080000`, `448=0`, `1068=08dea002`,
+  `106c=1cbbc002`, `10ec=00ac1200`, `1094=00ac1200`, `1098=00c40c06`,
+  `44c/450/454=00280800/1f3f2707/00070703`.
+- **Tail:** `m9x926` pools, `m9x115` twice, then the first `404=055e001c`.
+
+## Vendor triangle submission
+
+Source: `gltri-flat-124914/` and `m9cold-gltri-124914-order.txt`.  One flat
+triangle takes 17 ExecuteDma calls and 34 kernel CALLs, all class 1, and
+renders correctly.  Per call the kernel:
+
+1. publishes any new BmBuffers (32 KiB: `31c=f,1,0`, `314=1`; `0x21000`
+   arenas: `31c=f,1,0`, with one `314=1` closing the batch);
+2. emits one to three CALLs `{45452d2c, A|9, end}` on the mapped 32 KiB
+   buffer;
+3. rings `404` once.
+
+No other MMIO accompanies a 3D doorbell.  X 2D operations bracket their
+doorbells with BAR0 window slot 1 (`0014` base, `0018=60010020`,
+`001c=00010020` or `00010010`, `0010=124b124b`, then `0010=0000ffff`).
+Vendor X also writes `314=1` (`m9x12857`) and `31c=0` (`m9x27120`) directly;
+without direct MMIO it issues ioctls `0xc010460e` and `0xc010460f` instead.
+
+The command mappings match `captures/m9x-linux-gltri-20260914` except for:
+
+- class-1 addresses;
+- the fence-page word (`0b221002`);
+- the drawable origin (`f2`);
+- the scanout stride word (`f0210400` at 1024 columns).
+
 <!-- Copyright 2026 Rene Rebe <rene@exactco.de> -->
 <!-- SPDX-License-Identifier: GPL-2.0 -->
