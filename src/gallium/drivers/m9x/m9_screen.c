@@ -156,11 +156,15 @@ m9_presentation_template(const struct pipe_resource *templ)
    const unsigned presentation = PIPE_BIND_SCANOUT | PIPE_BIND_DISPLAY_TARGET |
                                  PIPE_BIND_SHARED;
 
-   return templ->target == PIPE_TEXTURE_2D && templ->width0 == 1024 &&
-          templ->height0 == 768 && templ->depth0 == 1 &&
+   /* DRI3 back buffers are SCANOUT|SHARED at window size; KMS checks the
+    * framebuffer size itself. */
+   return templ->target == PIPE_TEXTURE_2D && templ->width0 &&
+          templ->width0 <= 2048 && templ->height0 &&
+          templ->height0 <= 2048 && templ->depth0 == 1 &&
           templ->array_size == 1 && !templ->last_level &&
           templ->nr_samples <= 1 && templ->nr_storage_samples <= 1 &&
-          templ->format == PIPE_FORMAT_B8G8R8X8_UNORM &&
+          (templ->format == PIPE_FORMAT_B8G8R8X8_UNORM ||
+           templ->format == PIPE_FORMAT_B8G8R8A8_UNORM) &&
           (templ->bind & (PIPE_BIND_SCANOUT | PIPE_BIND_DISPLAY_TARGET)) &&
           !(templ->bind & ~(presentation | PIPE_BIND_RENDER_TARGET |
                             PIPE_BIND_BLENDABLE | PIPE_BIND_SAMPLER_VIEW |
@@ -188,9 +192,11 @@ m9_is_format_supported(struct pipe_screen *screen, enum pipe_format format,
    if (samples > 1 || storage_samples > 1)
       return false;
    if (target == PIPE_BUFFER)
+      /* VERTEX_STATE: display-list (vbo_save) vertex/index storage. */
       return bind && !(bind & ~(PIPE_BIND_VERTEX_BUFFER |
                                 PIPE_BIND_INDEX_BUFFER |
-                                PIPE_BIND_CONSTANT_BUFFER));
+                                PIPE_BIND_CONSTANT_BUFFER |
+                                PIPE_BIND_VERTEX_STATE));
    if (target != PIPE_TEXTURE_1D && target != PIPE_TEXTURE_2D &&
        target != PIPE_TEXTURE_RECT)
       return false;
@@ -213,7 +219,8 @@ m9_is_format_supported(struct pipe_screen *screen, enum pipe_format format,
       return false;
    if (bind & (PIPE_BIND_SCANOUT | PIPE_BIND_DISPLAY_TARGET))
       return target == PIPE_TEXTURE_2D &&
-             format == PIPE_FORMAT_B8G8R8X8_UNORM &&
+             (format == PIPE_FORMAT_B8G8R8X8_UNORM ||
+              format == PIPE_FORMAT_B8G8R8A8_UNORM) &&
              !(bind & ~(PIPE_BIND_SCANOUT | PIPE_BIND_DISPLAY_TARGET |
                         PIPE_BIND_SHARED | PIPE_BIND_RENDER_TARGET |
                         PIPE_BIND_BLENDABLE | PIPE_BIND_SAMPLER_VIEW |
@@ -405,7 +412,16 @@ m9_resource_create(struct pipe_screen *pscreen,
          size = render_layout.size;
       }
    }
-   if (!resource->handle) {
+   if (templ->target == PIPE_BUFFER) {
+      /* Only the CPU draw module reads Gallium buffers; no kernel BO, so no
+       * contiguous DMA32 allocation (vbo_save asks for 1 MiB). */
+      resource->map = align_malloc(size, 64);
+      if (!resource->map)
+         goto fail;
+      resource->map_writable = true;
+      resource->size = size;
+      resource->domain = M9_BO_DMA32;
+   } else if (!resource->handle) {
       create.size = size;
       create.flags = m9_resource_bo_flags(templ);
       /* GPU color targets carry the kernel's immutable tiled layout tag. */
@@ -448,7 +464,9 @@ m9_resource_create(struct pipe_screen *pscreen,
    return &resource->base;
 fail:
    m9_resource_release_hz(screen, resource);
-   if (resource->map)
+   if (resource->map && !resource->handle)
+      align_free(resource->map);
+   else if (resource->map)
       munmap(resource->map, resource->size);
    if (resource->handle_owned && resource->handle) {
       struct drm_gem_close close_bo = { .handle = resource->handle };
@@ -675,7 +693,10 @@ m9_resource_destroy(struct pipe_screen *pscreen, struct pipe_resource *pres)
    struct drm_gem_close close_bo = { .handle = resource->handle };
 
    m9_resource_release_hz(m9_screen(pscreen), resource);
-   if (resource->map)
+   /* Heap-backed Gallium buffers carry no kernel handle. */
+   if (resource->map && !resource->handle)
+      align_free(resource->map);
+   else if (resource->map)
       munmap(resource->map, resource->size);
    if (resource->map_fd >= 0)
       close(resource->map_fd);
