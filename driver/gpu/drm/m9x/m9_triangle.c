@@ -83,6 +83,11 @@ module_param(m9_triangle_inline_program, bool, 0400);
 MODULE_PARM_DESC(m9_triangle_inline_program,
 	"Upload the Windows inline P00/S28 chain instead of binding the fragment database");
 
+static bool m9_triangle_present;
+module_param(m9_triangle_present, bool, 0400);
+MODULE_PARM_DESC(m9_triangle_present,
+	"Copy the rendered triangle into a 1024x768 VRAM surface with the vendor present stream");
+
 static bool m9_triangle_secondary_noop_only;
 module_param(m9_triangle_secondary_noop_only, bool, 0400);
 MODULE_PARM_DESC(m9_triangle_secondary_noop_only,
@@ -101,6 +106,7 @@ enum m9_triangle_resource_id {
 	M9_TRI_SEQ0_SCRATCH27,
 	M9_TRI_SEQ0_SCRATCH38,
 	M9_TRI_FRAGMENT_DB,
+	M9_TRI_PRESENT,
 	M9_TRI_RESOURCE_COUNT,
 };
 
@@ -279,6 +285,8 @@ static const struct m9_triangle_resource_spec m9_triangle_specs[] = {
 					 0, true },
 	[M9_TRI_FRAGMENT_DB] = { "fragment-db", M9_TRIANGLE_FRAGMENT_DB_BYTES,
 				 SZ_4K, 0, true },
+	/* 1024x768 XRGB8888 scanout backing, vendor category-2 end pad. */
+	[M9_TRI_PRESENT] = { "present", 0x00301000, SZ_4K, 0xff404040, true },
 };
 
 static const u32 m9_triangle_flat_source[] = {
@@ -344,6 +352,7 @@ static const u32 m9_triangle_linked_prefix[] = {
 #include "m9_triangle_framed.h"
 #include "m9_sequence0_framed.h"
 #include "m9_triangle_external.h"
+#include "m9_present_framed.h"
 
 MODULE_FIRMWARE(M9_TRIANGLE_FRAGMENT_DB_FW);
 
@@ -879,6 +888,7 @@ static int m9_triangle_prepare_resources(struct m9x_device *mdev)
 		M9_TRI_C2, M9_TRI_SEQ0_SCRATCH26,
 		M9_TRI_SEQ0_SCRATCH27, M9_TRI_SEQ0_SCRATCH38,
 		M9_TRI_SECONDARY, M9_TRI_SOURCE, M9_TRI_FRAGMENT_DB,
+		M9_TRI_PRESENT,
 	};
 	unsigned int id;
 	int ret;
@@ -1531,6 +1541,116 @@ int m9x_submit_user_stream_locked(struct m9x_device *mdev, const u32 *records,
 	return m9_triangle_verify_guards(diag, &mdev->pdev->dev);
 }
 
+/*
+ * Vendor texture-rectangle present: sample the 320x240 color target and
+ * write it at the origin of a 1024-pixel layout-0x21 surface.
+ */
+#define M9_PRESENT_DEST_DESCRIPTOR	0xf0210400u
+#define M9_PRESENT_SOURCE_DESCRIPTOR	0xf0210140u
+#define M9_PRESENT_SOURCE_EXTENT_VALUE	0x000100f0u
+#define M9_PRESENT_RECT			0x00f00140u
+
+static void m9_present_build(u8 *image, u32 dest, u32 source, u32 fence,
+			     u32 target)
+{
+	unsigned int i;
+
+	memset(image, 0, M9_TRIANGLE_SECONDARY_BYTES);
+	memcpy(image + M9_TRIANGLE_SECONDARY_PREFIX, m9_present_payload,
+	       sizeof(m9_present_payload));
+	put_unaligned_le32(dest, image + M9_PRESENT_DEST);
+	put_unaligned_le32(M9_PRESENT_DEST_DESCRIPTOR, image + M9_PRESENT_DEST_DESC);
+	put_unaligned_le32(source, image + M9_PRESENT_SOURCE);
+	put_unaligned_le32(M9_PRESENT_SOURCE_DESCRIPTOR,
+			   image + M9_PRESENT_SOURCE_DESC);
+	put_unaligned_le32(M9_PRESENT_SOURCE_EXTENT_VALUE,
+			   image + M9_PRESENT_SOURCE_EXTENT);
+	put_unaligned_le32(0, image + M9_PRESENT_ORIGIN);
+	put_unaligned_le32(M9_PRESENT_RECT, image + M9_PRESENT_EXTENT);
+	put_unaligned_le32(M9_PRESENT_RECT, image + M9_PRESENT_TRIGGER);
+	put_unaligned_le32(fence | M9_TRIANGLE_COMPLETION_TAG,
+			   image + M9_PRESENT_FENCE);
+	for (i = 0; i < ARRAY_SIZE(m9_present_transitions); i++)
+		put_unaligned_le32((target + m9_present_transitions[i].step * 0x10) |
+				   m9_present_transitions[i].tag,
+				   image + m9_present_transitions[i].offset);
+}
+
+static int m9_triangle_present_locked(struct m9x_device *mdev, u32 color,
+				      u64 *point)
+{
+	struct m9x_triangle_diag *diag = mdev->transport.triangle;
+	u32 secondary = diag->resource[M9_TRI_SECONDARY].gpuva;
+	u32 dest = m9_triangle_bus(diag, M9_TRI_PRESENT);
+	u32 target = mdev->transport.next_fence;
+	u32 final = target + 0x20;
+	u32 primary[6];
+	int ret;
+
+	m9_present_build(diag->resource[M9_TRI_SECONDARY].cpu, dest, color,
+			 lower_32_bits(mdev->transport.fence_bus), target);
+	dma_wmb();
+	primary[0] = 0x45452d2c;
+	primary[1] = (secondary + M9_TRIANGLE_SECONDARY_PREFIX) |
+		     M9_TRIANGLE_SECONDARY_START_TAG;
+	primary[2] = (secondary + M9_PRESENT_RANGE0_END) |
+		     M9_TRIANGLE_SECONDARY_END_TAG;
+	primary[3] = 0x45452d2c;
+	primary[4] = (secondary + M9_PRESENT_RANGE0_END) |
+		     M9_TRIANGLE_SECONDARY_START_TAG;
+	primary[5] = (secondary + M9_PRESENT_RANGE1_END) |
+		     M9_TRIANGLE_SECONDARY_END_TAG;
+	ret = m9x_submit_kernel_stream_locked(mdev, primary, ARRAY_SIZE(primary),
+					      final, point, NULL);
+	if (ret)
+		return ret;
+	mdev->transport.next_fence = final + 0x10;
+	dev_info(&mdev->pdev->dev,
+		 "M9 present retired: %#x..%#x source=%#x dest=%#x\n",
+		 target, final, color, dest);
+	return m9_triangle_verify_guards(diag, &mdev->pdev->dev);
+}
+
+static int m9_present_selftest(void)
+{
+	const u8 *payload = (const u8 *)m9_present_payload;
+	static const struct {
+		u16 offset;
+		u32 captured;
+	} sites[] = {
+		{ M9_PRESENT_DEST, M9_PRESENT_DEST_CAPTURED },
+		{ M9_PRESENT_DEST_DESC, M9_PRESENT_DEST_DESC_CAPTURED },
+		{ M9_PRESENT_SOURCE, M9_PRESENT_SOURCE_CAPTURED },
+		{ M9_PRESENT_SOURCE_DESC, M9_PRESENT_SOURCE_DESC_CAPTURED },
+		{ M9_PRESENT_SOURCE_EXTENT, M9_PRESENT_SOURCE_EXTENT_CAPTURED },
+		{ M9_PRESENT_ORIGIN, M9_PRESENT_ORIGIN_CAPTURED },
+		{ M9_PRESENT_EXTENT, M9_PRESENT_EXTENT_CAPTURED },
+		{ M9_PRESENT_TRIGGER, M9_PRESENT_TRIGGER_CAPTURED },
+		{ M9_PRESENT_FENCE, M9_PRESENT_FENCE_CAPTURED },
+	};
+	unsigned int i;
+
+	if (sizeof(m9_present_payload) !=
+		M9_PRESENT_RANGE1_END - M9_TRIANGLE_SECONDARY_PREFIX ||
+	    m9_triangle_template_fnv1a(m9_present_payload,
+				       ARRAY_SIZE(m9_present_payload)) !=
+		M9_PRESENT_PAYLOAD_FNV1A)
+		return -EINVAL;
+	for (i = 0; i < ARRAY_SIZE(sites); i++)
+		if (get_unaligned_le32(payload + sites[i].offset -
+				       M9_TRIANGLE_SECONDARY_PREFIX) !=
+		    sites[i].captured)
+			return -EINVAL;
+	for (i = 0; i < ARRAY_SIZE(m9_present_transitions); i++)
+		if (get_unaligned_le32(payload + m9_present_transitions[i].offset -
+				       M9_TRIANGLE_SECONDARY_PREFIX) !=
+		    ((M9_PRESENT_TRANSITION_BASE_CAPTURED +
+		      m9_present_transitions[i].step * 0x10) |
+		     m9_present_transitions[i].tag))
+			return -EINVAL;
+	return 0;
+}
+
 int m9x_submit_triangle_diag(struct m9x_device *mdev, u32 color,
 			     struct drm_gem_vram_object *color_bo, u64 *point,
 			     bool *color_active)
@@ -1640,6 +1760,11 @@ int m9x_submit_triangle_diag(struct m9x_device *mdev, u32 color,
 		mdev->transport.wedged = true;
 		mdev->transport.generation++;
 		goto out_unlock;
+	}
+	if (m9_triangle_present) {
+		ret = m9_triangle_present_locked(mdev, color, point);
+		if (ret)
+			goto out_unlock;
 	}
 	(void)initialized_now;
 	dev_info(&mdev->pdev->dev,
@@ -1845,6 +1970,9 @@ m9_triangle_stream_selftest(struct m9_triangle_commands *commands)
 	if (ret)
 		return ret;
 	ret = m9_triangle_external_selftest();
+	if (ret)
+		return ret;
+	ret = m9_present_selftest();
 	if (ret)
 		return ret;
 
