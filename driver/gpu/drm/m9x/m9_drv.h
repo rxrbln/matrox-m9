@@ -43,6 +43,9 @@ struct m9x_bo {
 	struct drm_gem_dma_object dma;
 	/* Class-1 engine address of a non-command BO. */
 	struct drm_mm_node system;
+	/* Page-array backing when no contiguous DMA32 range was available. */
+	struct page **pages;
+	struct sg_table sgt;
 	u32 flags;
 };
 
@@ -146,6 +149,9 @@ int m9x_address_commit_gpuva(struct m9x_device *mdev, u32 gpuva);
 int m9x_address_finalize_service(struct m9x_device *mdev);
 int m9x_address_map_system(struct m9x_device *mdev, struct drm_mm_node *node,
 			   dma_addr_t dma, u32 bytes);
+int m9x_address_map_system_sgt(struct m9x_device *mdev,
+			       struct drm_mm_node *node, struct sg_table *sgt,
+			       u32 bytes);
 void m9x_address_unmap_system(struct m9x_device *mdev, struct drm_mm_node *node);
 int m9x_address_restore_region(struct m9x_device *mdev,
 			       struct iosys_map *map, u32 *base);
@@ -170,6 +176,8 @@ int m9x_submit_selftest(void);
 struct m9x_bo *m9x_bo_lookup(struct m9x_device *mdev,
 			     struct drm_file *file, u32 handle);
 bool m9x_gem_is_dma(struct drm_gem_object *gem);
+bool m9x_bo_is_paged(const struct m9x_bo *bo);
+void m9x_bo_sync_for_device(struct m9x_bo *bo);
 bool m9x_gem_is_vram(struct drm_gem_object *gem);
 bool m9x_gem_vram_tiled(struct drm_gem_object *gem);
 int m9x_surface_access_ioctl(struct drm_device *drm, void *data,

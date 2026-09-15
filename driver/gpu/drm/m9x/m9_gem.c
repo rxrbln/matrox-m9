@@ -1,7 +1,10 @@
 // SPDX-License-Identifier: GPL-2.0-only
 /* Copyright 2026 René Rebe <rene@exactco.de> */
 #include <linux/dma-mapping.h>
+#include <linux/mm.h>
+#include <linux/scatterlist.h>
 #include <linux/sizes.h>
+#include <linux/vmalloc.h>
 
 #include <drm/drm_file.h>
 #include <drm/drm_drv.h>
@@ -13,6 +16,11 @@
 #include "m9_drv.h"
 
 #define M9_BO_MAX_SIZE	SZ_32M
+
+static bool m9_bo_force_paged;
+module_param(m9_bo_force_paged, bool, 0600);
+MODULE_PARM_DESC(m9_bo_force_paged,
+	"Back non-command DMA32 BOs by page arrays (fragmentation fallback test)");
 
 static void m9_bo_free(struct drm_gem_object *gem)
 {
@@ -39,6 +47,82 @@ static const struct drm_gem_object_funcs m9_bo_funcs = {
 	.mmap = drm_gem_dma_object_mmap,
 	.vm_ops = &drm_gem_dma_vm_ops,
 };
+
+static void m9_paged_bo_free(struct drm_gem_object *gem)
+{
+	struct m9x_bo *bo = container_of(to_drm_gem_dma_obj(gem),
+					 struct m9x_bo, dma);
+	struct m9x_device *mdev = to_m9x(gem->dev);
+	unsigned long i;
+
+	if (drm_mm_node_allocated(&bo->system)) {
+		mutex_lock(&mdev->transport.lock);
+		m9x_address_unmap_system(mdev, &bo->system);
+		mutex_unlock(&mdev->transport.lock);
+	}
+	if (bo->sgt.sgl) {
+		if (bo->sgt.nents)
+			dma_unmap_sgtable(drm_dev_dma_dev(gem->dev), &bo->sgt,
+					  DMA_BIDIRECTIONAL, 0);
+		sg_free_table(&bo->sgt);
+	}
+	for (i = 0; bo->pages && i < gem->size >> PAGE_SHIFT; i++)
+		if (bo->pages[i])
+			__free_page(bo->pages[i]);
+	kvfree(bo->pages);
+	drm_gem_object_release(gem);
+	kfree(bo);
+}
+
+static int m9_paged_bo_mmap(struct drm_gem_object *gem,
+			    struct vm_area_struct *vma)
+{
+	struct m9x_bo *bo = container_of(to_drm_gem_dma_obj(gem),
+					 struct m9x_bo, dma);
+
+	vma->vm_pgoff -= drm_vma_node_start(&gem->vma_node);
+	vm_flags_mod(vma, VM_DONTDUMP | VM_DONTEXPAND, VM_PFNMAP);
+	return vm_map_pages(vma, bo->pages, gem->size >> PAGE_SHIFT);
+}
+
+static int m9_paged_bo_vmap(struct drm_gem_object *gem, struct iosys_map *map)
+{
+	struct m9x_bo *bo = container_of(to_drm_gem_dma_obj(gem),
+					 struct m9x_bo, dma);
+	void *vaddr = vmap(bo->pages, gem->size >> PAGE_SHIFT, VM_MAP,
+			   PAGE_KERNEL);
+
+	if (!vaddr)
+		return -ENOMEM;
+	iosys_map_set_vaddr(map, vaddr);
+	return 0;
+}
+
+static void m9_paged_bo_vunmap(struct drm_gem_object *gem,
+			       struct iosys_map *map)
+{
+	vunmap(map->vaddr);
+}
+
+static const struct drm_gem_object_funcs m9_paged_bo_funcs = {
+	.free = m9_paged_bo_free,
+	.vmap = m9_paged_bo_vmap,
+	.vunmap = m9_paged_bo_vunmap,
+	.mmap = m9_paged_bo_mmap,
+};
+
+bool m9x_bo_is_paged(const struct m9x_bo *bo)
+{
+	return bo->dma.base.funcs == &m9_paged_bo_funcs;
+}
+
+/* CPU stores through user mappings reach the device before a submit. */
+void m9x_bo_sync_for_device(struct m9x_bo *bo)
+{
+	if (m9x_bo_is_paged(bo))
+		dma_sync_sgtable_for_device(drm_dev_dma_dev(bo->dma.base.dev),
+					    &bo->sgt, DMA_BIDIRECTIONAL);
+}
 
 static void m9_vram_bo_free(struct drm_gem_object *gem)
 {
@@ -69,7 +153,8 @@ static const struct drm_gem_object_funcs m9_vram_bo_funcs = {
 
 bool m9x_gem_is_dma(struct drm_gem_object *gem)
 {
-	return gem && gem->funcs == &m9_bo_funcs;
+	return gem && (gem->funcs == &m9_bo_funcs ||
+		       gem->funcs == &m9_paged_bo_funcs);
 }
 
 bool m9x_gem_is_vram(struct drm_gem_object *gem)
@@ -127,6 +212,61 @@ void m9x_vram_unpin(struct drm_gem_vram_object *bo)
 		ttm_bo_unpin(&bo->bo);
 		ttm_bo_unreserve(&bo->bo);
 	}
+}
+
+/* Individually allocated DMA32 pages, mapped as one scatter-gather table. */
+static struct m9x_bo *m9_paged_bo_create(struct drm_device *drm, size_t size)
+{
+	unsigned long npages = size >> PAGE_SHIFT, i;
+	struct scatterlist *sg;
+	struct m9x_bo *bo;
+	int ret;
+
+	bo = kzalloc_obj(*bo);
+	if (!bo)
+		return ERR_PTR(-ENOMEM);
+	ret = drm_gem_object_init(drm, &bo->dma.base, size);
+	if (ret) {
+		kfree(bo);
+		return ERR_PTR(ret);
+	}
+	bo->dma.base.funcs = &m9_paged_bo_funcs;
+	ret = drm_gem_create_mmap_offset(&bo->dma.base);
+	if (ret)
+		goto err_put;
+	bo->pages = kvcalloc(npages, sizeof(*bo->pages), GFP_KERNEL);
+	if (!bo->pages) {
+		ret = -ENOMEM;
+		goto err_put;
+	}
+	for (i = 0; i < npages; i++) {
+		bo->pages[i] = alloc_page(GFP_KERNEL | GFP_DMA32 | __GFP_ZERO |
+					  __GFP_NOWARN);
+		if (!bo->pages[i]) {
+			ret = -ENOMEM;
+			goto err_put;
+		}
+	}
+	ret = sg_alloc_table_from_pages(&bo->sgt, bo->pages, npages, 0, size,
+					GFP_KERNEL);
+	if (ret)
+		goto err_put;
+	ret = dma_map_sgtable(drm_dev_dma_dev(drm), &bo->sgt, DMA_BIDIRECTIONAL, 0);
+	if (ret) {
+		bo->sgt.nents = 0;
+		goto err_put;
+	}
+	for_each_sgtable_dma_sg(&bo->sgt, sg, i)
+		if (upper_32_bits(sg_dma_address(sg)) ||
+		    sg_dma_address(sg) > U32_MAX - sg_dma_len(sg)) {
+			ret = -ERANGE;
+			goto err_put;
+		}
+	return bo;
+
+err_put:
+	drm_gem_object_put(&bo->dma.base);
+	return ERR_PTR(ret);
 }
 
 static struct m9x_bo *m9_bo_create(struct drm_device *drm, size_t size)
@@ -258,15 +398,24 @@ static int m9_create_bo_ioctl(struct drm_device *drm, void *data,
 		vram_bo->tiled = args->flags & PARHELIA_M9_BO_TILED;
 		gem = &vram_bo->vram.bo.base;
 	} else {
-		bo = m9_bo_create(drm, size);
+		bool command = args->flags & PARHELIA_M9_BO_COMMAND;
+
+		/* Only class-1 addressed BOs may fall back to scattered pages. */
+		bo = command || !m9_bo_force_paged ? m9_bo_create(drm, size) :
+						       ERR_PTR(-ENOMEM);
+		if (IS_ERR(bo) && PTR_ERR(bo) == -ENOMEM && !command)
+			bo = m9_paged_bo_create(drm, size);
 		if (IS_ERR(bo))
 			return PTR_ERR(bo);
 		bo->flags = args->flags;
 		gem = &bo->dma.base;
-		if (!(args->flags & PARHELIA_M9_BO_COMMAND)) {
+		if (!command) {
 			mutex_lock(&mdev->transport.lock);
-			ret = m9x_address_map_system(mdev, &bo->system,
-						     bo->dma.dma_addr, size);
+			ret = m9x_bo_is_paged(bo) ?
+				m9x_address_map_system_sgt(mdev, &bo->system,
+							   &bo->sgt, size) :
+				m9x_address_map_system(mdev, &bo->system,
+						       bo->dma.dma_addr, size);
 			mutex_unlock(&mdev->transport.lock);
 			if (ret)
 				goto out_put;

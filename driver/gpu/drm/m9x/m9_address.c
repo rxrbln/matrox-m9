@@ -723,33 +723,71 @@ int m9x_address_commit_gpuva(struct m9x_device *mdev, u32 gpuva)
 	return -ENOENT;
 }
 
-/* Reserve a class-1 address for a DMA32 allocation and stage its leaves. */
-int m9x_address_map_system(struct m9x_device *mdev, struct drm_mm_node *node,
-			   dma_addr_t dma, u32 bytes)
+static int m9_address_reserve_system(struct m9x_device *mdev,
+				     struct drm_mm_node *node, u32 bytes)
 {
 	struct m9x_address_space *address = mdev->transport.address;
-	int ret;
 
 	lockdep_assert_held(&mdev->transport.lock);
 	if (!address || !address->system_mm_ready)
 		return -ENODEV;
 	if (!bytes)
 		return -EINVAL;
-	ret = drm_mm_insert_node_in_range(&address->system_mm, node,
-					  PAGE_ALIGN(bytes), PAGE_SIZE, 0,
-					  M9_ADDRESS_SYSTEM_BASE,
-					  address->layout.system_end,
-					  DRM_MM_INSERT_LOW);
-	if (ret)
-		return ret;
-	ret = m9x_address_bind_dma(mdev, node->start, dma, bytes);
+	return drm_mm_insert_node_in_range(&address->system_mm, node,
+					   PAGE_ALIGN(bytes), PAGE_SIZE, 0,
+					   M9_ADDRESS_SYSTEM_BASE,
+					   address->layout.system_end,
+					   DRM_MM_INSERT_LOW);
+}
+
+static int m9_address_finish_system(struct m9x_device *mdev,
+				    struct drm_mm_node *node, int ret)
+{
+	struct m9x_address_space *address = mdev->transport.address;
+
 	if (!ret && address->manager_ready)
 		ret = m9x_address_commit_bindings(mdev);
-	drm_dbg(&mdev->drm, "M9 system map %#llx dma %pad bytes %#x: %d (manager %d)\n",
-		node->start, &dma, bytes, ret, address->manager_ready);
+	drm_dbg(&mdev->drm, "M9 system map %#llx bytes %#llx: %d (manager %d)\n",
+		node->start, node->size, ret, address->manager_ready);
 	if (ret)
 		m9x_address_unmap_system(mdev, node);
 	return ret;
+}
+
+/* Reserve a class-1 address for a DMA32 allocation and stage its leaves. */
+int m9x_address_map_system(struct m9x_device *mdev, struct drm_mm_node *node,
+			   dma_addr_t dma, u32 bytes)
+{
+	int ret = m9_address_reserve_system(mdev, node, bytes);
+
+	if (ret)
+		return ret;
+	return m9_address_finish_system(mdev, node,
+			m9x_address_bind_dma(mdev, node->start, dma, bytes));
+}
+
+/* The same for a mapped page array: one binding per DMA segment. */
+int m9x_address_map_system_sgt(struct m9x_device *mdev,
+			       struct drm_mm_node *node, struct sg_table *sgt,
+			       u32 bytes)
+{
+	struct scatterlist *sg;
+	u32 offset = 0;
+	int ret, i;
+
+	ret = m9_address_reserve_system(mdev, node, bytes);
+	if (ret)
+		return ret;
+	for_each_sgtable_dma_sg(sgt, sg, i) {
+		ret = m9x_address_bind_dma(mdev, node->start + offset,
+					   sg_dma_address(sg), sg_dma_len(sg));
+		if (ret)
+			break;
+		offset += sg_dma_len(sg);
+	}
+	if (!ret && offset < bytes)
+		ret = -EINVAL;
+	return m9_address_finish_system(mdev, node, ret);
 }
 
 void m9x_address_unmap_system(struct m9x_device *mdev, struct drm_mm_node *node)
@@ -760,11 +798,14 @@ void m9x_address_unmap_system(struct m9x_device *mdev, struct drm_mm_node *node)
 	lockdep_assert_held(&mdev->transport.lock);
 	if (!address || !drm_mm_node_allocated(node))
 		return;
-	for (i = 0; i < address->binding_count; i++) {
+	for (i = 0; i < address->binding_count;) {
 		struct m9x_address_binding *binding = &address->bindings[i];
 
-		if (binding->gpuva != node->start)
+		if (binding->gpuva < node->start ||
+		    binding->gpuva >= node->start + node->size) {
+			i++;
 			continue;
+		}
 		if (binding->published) {
 			for (page = 0; page < binding->bytes >> PAGE_SHIFT; page++)
 				iosys_map_wr(&address->map,
@@ -774,7 +815,6 @@ void m9x_address_unmap_system(struct m9x_device *mdev, struct drm_mm_node *node)
 			m9_address_activate(mdev);
 		}
 		address->bindings[i] = address->bindings[--address->binding_count];
-		break;
 	}
 	drm_mm_remove_node(node);
 }

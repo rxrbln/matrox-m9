@@ -550,6 +550,10 @@ m9_validate_relocs(u32 *image, u32 dwords, u32 *expected,
 					goto out;
 				}
 				address = bo->system.start;
+			} else if (m9x_bo_is_paged(bo)) {
+				/* Raw bus addresses need a contiguous allocation. */
+				ret = -EINVAL;
+				goto out;
 			} else {
 				address = bo->dma.dma_addr;
 			}
@@ -810,6 +814,7 @@ static int m9_submit_validate(struct m9x_device *mdev,
 				goto out;
 			}
 			bos[i] = &bo->dma.base;
+			m9x_bo_sync_for_device(bo);
 		} else if (m9x_gem_is_vram(bos[i])) {
 			ret = m9x_vram_pin(drm_gem_vram_of_gem(bos[i]));
 			if (ret)
