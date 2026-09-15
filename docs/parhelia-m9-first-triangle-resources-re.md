@@ -306,19 +306,17 @@ triangle use the same bases:
 All three adjacent differences are exactly `0x16800`.  Preprocessing writes
 them through `[b0,b2,b4,b8]`; raster reads them in the exact permutation
 `[00,03,01,02]`, equivalent to the canonical join `[b0,b4,b8,b2] ->
-[00,01,02,03]`.  Their descriptors are also invariant in the saved ordinary
-cases.
+[00,01,02,03]`.
 
-The capture proves the address lattice and the full-job read/write lifetime.
-It does not prove that each base is a distinct allocation rather than a
-suballocation of one server arena, and no between-pass contents snapshot was
-saved.  For a guarded diagnostic, allocate four independent objects with at
-least `0x16800` writable bytes each, preserve their alignment requirements,
-and place an inaccessible or sentinel guard after that conservative writable
-extent.  This reproduces at least the spacing available to the first three
-vendor views; it is a diagnostic allocation policy, not a claim that
-`0x16800` is the hardware's minimum or exact logical stream size.  Treat any
-guard access as a failed bound and stop.
+Later static work closes the allocation question: Windows context startup
+creates one flag-1 `0x5a000` resource, and `4 * 0x16800 = 0x5a000`.  These are
+four contiguous subviews of one context-owned arena.  The arena is page
+aligned, each ordinary view is `0x800` aligned, and it has no inter-view
+guards.  Preprocessing defines every record consumed by raster, so no opaque
+initial image is required; full zeroing is the deterministic,
+vendor-correlated policy.  Use one guard after the complete arena.  The exact
+binary proof, five-stream dynamic-repartition corroboration, and kernel source
+audit are in `parhelia-m9-transient-arena-re.md`.
 
 ## Linked-record cold-context rule
 
@@ -364,14 +362,13 @@ Closed from saved evidence:
 * BE's exact 1-MiB M9148 extent, configuration/factory derivation, selector-13
   bind, context lifetime, and deterministic full-zero clean-room policy;
 * exact AB/AC descriptor formula and deterministic one-RT initialization;
-* exact transient address lattice, join, and conservative guarded probe size;
+* exact transient owner, `0x5a000` extent, four-view layout, alignment, join,
+  initialization rule, and one-tail-guard policy;
 * rejection of raw fixed linked-record replay due to embedded host addresses.
 
 Still required before the first validated triangle executes:
 
 * exact initial C2 bytes if deterministic zero initialization does not work;
-* between-pass transient content semantics, if the conservative `0x16800`
-  guard test fails;
 * a current-context linked-pair serializer, or validation that the inline
   fixed-chain path selects the required two-pass program.
 
