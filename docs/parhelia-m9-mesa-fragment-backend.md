@@ -36,6 +36,15 @@ case with a fragment shader:
 | raster `88` reproduced | 21 |
 | required cases exact | 11 / 11 |
 
+The test also compiles glamor's 99 GLSL programs against
+`captures/m9x-vendor-glamor-shaders-20260915`
+(`parhelia-m9-glamor-shader-coverage.md`).  Of those, 89 are accepted,
+29 are byte-exact and 60 are proven equivalent with
+`tools/m9-native-eval.py`.  The required set grows to 23 cases, all exact.
+Inlining uniforms that select control flow also makes `fs-loop-break`
+acceptable: it is specialized on `f` and compiles to a chain whose layout
+differs from the vendor loop.  That chain is not checked for equivalence.
+
 The required cases are all exact: `fs-const`, `fs-uniform`, `fs-color`,
 `pr-color-mul-uniform`, `pr-color-add-uniform`, `fs-tex2d`, `pr-tex-mul-color`,
 `pr-temp-chain`, `fs-discard-all`, `pr-two-texcoords` and `fs-fragcoord`.
