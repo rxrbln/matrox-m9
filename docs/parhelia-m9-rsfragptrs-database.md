@@ -72,6 +72,14 @@ This is the fully recovered vendor route for a first primitive while the
 external allocation's GPU address translation remains unresolved.  It avoids
 inventing a linear mapping for index 69.
 
+`tools/m9-resource69-inline-evidence.py` also generates the compact,
+submission-ready form of this route.  The header contains exactly 483
+count-free dwords: forty `68/60..67` upload lines followed by the `69/6a`
+bind.  It includes no captured draw stream or duplicated private framing, and
+uses `u32` in a Linux kernel build and `uint32_t` in Mesa.  Its packed little
+endian dword SHA-256 is
+`7588059e96bc4b8ed40229df3c22bb8099d7f61a6ba3bda8d5a16a6c06888969`.
+
 ## Index 69 capture boundary
 
 The external selector-69 publication path statically owns this immutable
@@ -96,6 +104,13 @@ python3 tools/m9-rsfragptrs-extract.py \
   --output /tmp/m9-rsfragptrs-padded.bin \
   --first-triangle-inline-output /tmp/m9-p00-s28-inline.bin
 python3 -m py_compile tools/m9-rsfragptrs-extract.py
+python3 tools/m9-resource69-inline-evidence.py --self-test
+
+# Generate an identical header at either consumer's chosen path:
+python3 tools/m9-resource69-inline-evidence.py \
+  --emit-count-free-header /path/to/linux/drivers/gpu/drm/m9x/m9_resource69_inline.h
+python3 tools/m9-resource69-inline-evidence.py \
+  --emit-count-free-header /path/to/mesa/src/gallium/drivers/m9x/m9_resource69_inline.h
 ```
 
 <!-- Copyright 2026 Rene Rebe <rene@exactco.de> -->
