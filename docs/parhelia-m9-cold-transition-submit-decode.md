@@ -8,7 +8,12 @@ workspace root).  Evidence is the shipped Linux core
 preserved `captures/m9x-linux-gltri-20260914` images, and
 `captures/m9x-requester-live-20260914/ioctl-mmio.csv`.  All addresses are
 `.text` offsets.  Several earlier notes are corrected by this one; each
-carries a dated pointer here.
+carries a dated pointer here.  Recheck the file hashes, every instruction
+anchor, the `m9x582` relocation order and the capture framing with:
+
+```sh
+python3 tools/m9-cold-transition-submit-evidence.py
+```
 
 ## 1. The cold `m9x421` transitions emit no packets
 
