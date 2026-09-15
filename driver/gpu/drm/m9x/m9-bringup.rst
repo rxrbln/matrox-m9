@@ -162,6 +162,10 @@ creates a page-aligned object pinned in local video memory for its handle
 lifetime; it is mutually exclusive with ``COMMAND``.  No bus or local address
 is returned.
 
+``M9_GET_BO_INFO`` returns the memory class, size, and DRM mmap cookie for an
+imported handle.  It is render-node allowed so Mesa can map a driver VRAM BO
+without calling the primary-node-only ``MODE_MAP_DUMB`` ioctl.
+
 ``M9_SUBMIT(VALIDATE_ONLY)`` copies a command slice from such an object.  It
 parses M9 four-index packets, padding and H03/H06/H07 draw triples.  The
 validator currently permits only indices present in the controlled triangle

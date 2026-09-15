@@ -11,7 +11,7 @@
 
 #include "m9_drv.h"
 
-#define M9_BO_MAX_SIZE	SZ_16M
+#define M9_BO_MAX_SIZE	SZ_32M
 
 static void m9_bo_free(struct drm_gem_object *gem)
 {
@@ -292,8 +292,8 @@ int m9x_get_bo_info_ioctl(struct drm_device *drm, void *data,
 
 	if (!m9x_enabled())
 		return -ENODEV;
-	if (!args->handle || args->memory_class || args->size || args->flags ||
-	    args->pad)
+	if (!args->handle || args->memory_class || args->size ||
+	    args->mmap_offset)
 		return -EINVAL;
 	gem = drm_gem_object_lookup(file, args->handle);
 	if (!gem)
@@ -306,6 +306,8 @@ int m9x_get_bo_info_ioctl(struct drm_device *drm, void *data,
 		ret = -EINVAL;
 	if (!ret)
 		args->size = gem->size;
+	if (!ret)
+		args->mmap_offset = drm_vma_node_offset_addr(&gem->vma_node);
 	drm_gem_object_put(gem);
 	return ret;
 }

@@ -38,13 +38,12 @@ struct drm_parhelia_m9_create_bo {
 #define PARHELIA_M9_BO_WRITE	(1u << 2)
 #define PARHELIA_M9_BO_VRAM	0x00000008u
 
-/* Query the driver's storage class for an object after PRIME/flink import. */
+/* Query storage and the render-node-safe mmap cookie after handle import. */
 struct drm_parhelia_m9_get_bo_info {
 	__u32 handle;
 	__u32 memory_class; /* out */
 	__u64 size; /* out */
-	__u32 flags; /* reserved; must be zero */
-	__u32 pad;
+	__u64 mmap_offset; /* out: DRM mmap cookie */
 };
 
 #define PARHELIA_M9_MEMORY_CLASS_DMA32	1u
