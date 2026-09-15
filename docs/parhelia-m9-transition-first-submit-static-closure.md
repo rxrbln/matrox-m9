@@ -44,12 +44,47 @@ synchronization token around the `47` pair.  Replacing these packets with
 idle CPU writes would discard the observed engine ordering and has no static
 support.
 
-## Construction order versus execution order
+## Cold construction runs the transition twice
 
-The `m9x582` construction order is:
+The cold `m9x582` constructor reaches `m9x421` twice.  The first call is
+nested in initializer-table entry `m9x1042`: `m9x1042` calls the service
+initializer at `.text+0x121d0`, which calls `m9x92`, then `m9x53`, and
+`m9x53` calls `m9x421(..., publish=1)` at `.text+0x187aa`.  That complete
+transition returns before `m9x53` calls the compact-table publisher `m9x328`
+at `.text+0x1891b`.
+
+After `m9x1042` and the three remaining initializer-table entries return,
+`m9x582` calls `m9x1187` at `.text+0x2efd0`.  `m9x1187` calls
+`m9x421(..., publish=1)` again at `.text+0x121bc`.  The exact cold logical
+order is therefore:
 
 ```text
-m9x1187 -> m9x421       build/publish transition
+complete m9x421 transition #1
+compact PTE CPU mirror and 31c invalidation
+complete m9x421 transition #2
+completion/restore allocation and primary requester setup
+```
+
+The first `m9x421` read of `0x1088` has no preceding software writer in this
+path.  The immutable M9148 warm-unbound hardware sample also reads
+`0x1088=0`.  Consequently the first terminal index-22 operand on the tested
+M9148 is `0x00000000 | 0x20000000 = 0x20000000`.  The transition itself then
+writes that value to index 22.  No code between the two calls changes index
+22, so the second call also emits `0x20000000`, whether its CPU read observes
+the first transition already executed or still observes zero.
+
+Zero is therefore the expected first read on this M9148, not evidence of a
+missing context-state initializer.  The implementation should nevertheless
+retain the vendor read-modify-write operation rather than hard-code zero,
+because it intentionally preserves any firmware or product-specific low
+bits.
+
+## Construction order versus execution order
+
+The tail of the `m9x582` construction order is:
+
+```text
+m9x1187 -> m9x421       build/publish transition #2
 m9x865                  completion resources
 m9x949 -> m9x182
               -> m9x109 arm primary requester
@@ -64,11 +99,16 @@ hardware order by:
 
 1. initializing the restore and completion backing;
 2. arming the primary requester in exact `m9x109` register order;
-3. submitting the initial `e6` packet alone and requiring its completion;
-4. publishing or verifying the direct address-window MMIO state;
-5. submitting the final `47`, inner completion/dependency, and `e6/22` packet
-   groups together, followed by a distinct terminal `e3` completion packet;
+3. submitting one complete `m9x421` transition and requiring its completion;
+4. publishing the compact PTE mirror and its exact invalidation sequence;
+5. submitting the second complete `m9x421` transition and requiring its
+   completion;
 6. requiring that completion before sequence 0.
+
+Each complete transition retains the internal split below: initial `e6`, a
+flush boundary, direct window publication, then the final `47`, dependency,
+and `e6/22` group.  The PTE publication belongs between two such complete
+transitions; it does not belong inside either one.
 
 The corresponding clean-room streams are:
 

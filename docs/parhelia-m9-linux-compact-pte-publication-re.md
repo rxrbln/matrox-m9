@@ -228,7 +228,16 @@ writes the CPU BAR mirror and `0x31c=f,1,0`; it emits no `0x314`.  Back in
 `m9x53`, the next relevant write is `0x30c=0x1000`.  After the remaining
 internal table initializers, `m9x53` ends with `0x31c=c,1`.  Thus moving the
 terminal `m9x421` transition after the compact publication reverses the
-vendor's cold order.
+vendor's order within this first transition.
+
+There is then a second complete transition.  After initializer-table entry
+`m9x1042` returns from this service/manager construction and the remaining
+three table entries finish, `m9x582` calls `m9x1187` at `.text+0x2efd0`.
+`m9x1187` calls `m9x421(..., publish=1)` at `.text+0x121bc`.  The full cold
+outer order is consequently `m9x421 #1`, compact CPU mirror/invalidation,
+then `m9x421 #2`.  A clean-room sequence with only one transition cannot place
+the compact publication at the vendor boundary; it must replay two complete
+transitions around it.
 
 When the optional upload branch is active, the corresponding `m9x694`
 arguments are:
