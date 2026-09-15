@@ -26,6 +26,8 @@ struct drm_mode_create_dumb;
 
 #define PARHELIA_M9_COMMAND_BYTES	SZ_32K
 #define PARHELIA_M9_COMMAND_SLOTS	2u
+#define PARHELIA_M9_RESTORE_BYTES	0x00181000u
+#define PARHELIA_M9_RESTORE_GPUVA	0x41000000u
 #define PARHELIA_M9_MAX_RELOCS		128u
 #define PARHELIA_M9_MAX_BOS		128u
 
@@ -46,6 +48,7 @@ struct m9x_fence {
 };
 
 struct m9x_triangle_diag;
+struct m9x_address_space;
 
 struct m9x_transport {
 	struct mutex lock;
@@ -56,6 +59,8 @@ struct m9x_transport {
 	dma_addr_t command_bus;
 	void *fence_cpu;
 	dma_addr_t fence_bus;
+	void *restore_cpu;
+	dma_addr_t restore_bus;
 	u64 fence_context;
 	u32 next_fence;
 	u32 last_fence;
@@ -64,7 +69,10 @@ struct m9x_transport {
 	u32 command_slot;
 	u32 command_offset;
 	bool transport_armed;
+	bool engine_transitioned;
+	bool restore_ready;
 	bool wedged;
+	struct m9x_address_space *address;
 	struct m9x_triangle_diag *triangle;
 };
 
@@ -101,6 +109,19 @@ int m9x_create_bo_ioctl(struct drm_device *drm, void *data,
 int m9x_submit_ioctl(struct drm_device *drm, void *data,
 		     struct drm_file *file);
 int m9x_submit_noop(struct m9x_device *mdev, u64 *point);
+int m9x_transport_arm_locked(struct m9x_device *mdev);
+int m9x_transport_rearm_locked(struct m9x_device *mdev);
+int m9x_restore_bind(struct m9x_device *mdev);
+int m9x_submit_kernel_stream_locked(struct m9x_device *mdev,
+				    const u32 *commands, u32 dwords,
+				    u32 target, u64 *point);
+int m9x_address_init(struct m9x_device *mdev);
+void m9x_address_fini(struct m9x_device *mdev);
+int m9x_address_bind_dma(struct m9x_device *mdev, u32 gpuva,
+			 dma_addr_t dma, u32 bytes);
+int m9x_address_prepare(struct m9x_device *mdev);
+int m9x_address_publish(struct m9x_device *mdev);
+int m9x_address_commit_bindings(struct m9x_device *mdev);
 int m9x_submit_triangle_diag(struct m9x_device *mdev, u32 color, u64 *point);
 int m9x_triangle_selftest(void);
 void m9x_triangle_fini(struct m9x_device *mdev);

@@ -118,17 +118,24 @@ static int m9x_pci_probe(struct pci_dev *pci,
 	dev_info(&pci->dev,
 		 "M9/Phoenix: %pa-byte framebuffer BAR0, MMIO BAR%u\n",
 		 &mdev->vram_size, mmio_bar);
+	/*
+	 * The render requester also needs the pinned low-VRAM translation root,
+	 * including when KMS exposure is disabled.
+	 */
+	ret = drmm_vram_helper_init(drm, pci_resource_start(pci, 0),
+				    mdev->vram_size);
+	if (ret)
+		return ret;
 	ret = m9x_init(mdev);
 	if (ret)
 		return ret;
+	ret = m9x_address_init(mdev);
+	if (ret)
+		goto err_fini;
+	ret = m9x_restore_bind(mdev);
+	if (ret)
+		goto err_fini;
 	if (kms) {
-		/* Unlike Parhelia's descriptor-translated aperture, M9 BAR0 is a
-		 * conventional linear VRAM resource.  Keep render BOs in DMA32 system
-		 * memory while dumb/scanout BOs use this independent local-VRAM manager. */
-		ret = drmm_vram_helper_init(drm, pci_resource_start(pci, 0),
-					    mdev->vram_size);
-		if (ret)
-			goto err_fini;
 		ret = m9x_modeset_init(mdev);
 		if (ret)
 			goto err_fini;
@@ -160,6 +167,7 @@ err_modeset:
 		m9x_modeset_fini(mdev);
 err_fini:
 	m9x_fini(mdev);
+	m9x_address_fini(mdev);
 	return ret;
 }
 
@@ -173,6 +181,7 @@ static void m9x_pci_remove(struct pci_dev *pci)
 		m9x_modeset_fini(to_m9x(drm));
 	}
 	m9x_fini(to_m9x(drm));
+	m9x_address_fini(to_m9x(drm));
 }
 
 static const struct pci_device_id m9x_pci_table[] = {

@@ -25,6 +25,69 @@ module_param(m9_fence_timeout_ms, uint, 0600);
 MODULE_PARM_DESC(m9_fence_timeout_ms,
 	"Absolute timeout for the guarded M9 writeback-fence diagnostic");
 
+/* Exact Linux m9x46 context-index image and type-1 m9x72 restore record. */
+static const u32 m9_restore_full_template[62] = {
+	0xeeedeff0, 0xf4f3f2ec, 0x47474747, 0xb3b2b1b0,
+	0xb7b6b5b4, 0xbbbab9b8, 0x45bdbcbe, 0x47474747,
+	0xabaaa9a8, 0xf6f5aeac, 0xa5a7c0af, 0xc7c6c5c4,
+	0x45454547, 0xada4a3a1, 0x47474747, 0xc28a8988,
+	0x8e8d8cc3, 0x75797874, 0x78767978, 0x45454547,
+	0x79787779, 0x47474747, 0x7a797870, 0x83827d7c,
+	0x81808584, 0x45877f7e, 0x47474747, 0x7a797871,
+	0x83827d7c, 0x81808584, 0x45457f7e, 0x47474747,
+	0x7a797872, 0x83827d7c, 0x81808584, 0x45457f7e,
+	0x45474747, 0x7a797873, 0x83827d7c, 0x81808584,
+	0x45457f7e, 0x45474747, 0xd1d0ebea, 0x45d4d3ed,
+	0xc1d68b8f, 0x47474747, 0x93929190, 0x97969594,
+	0x9b9a9998, 0x9f9e9d9c, 0x47474747, 0x6b6a6968,
+	0x456e6d6c, 0x63626160, 0x67666564, 0x45474747,
+	0x45f3d7f1, 0xdad9d8d7, 0xdedddcdb, 0x45454547,
+	0xe8d5a2d2, 0x00000000,
+};
+
+static const u32 m9_restore_record_template[20] = {
+	0x45e3e6e6, 0x624f7fff, 0x00000000, 0xffbeef04,
+	0x2f2e3c28, 0xfffffff0, 0x00000000, 0x00000000,
+	0x00000000, 0x45454543, 0xffbeef01, 0x45452f2e,
+	0xfffffff0, 0x00000000, 0x453ee6e6, 0xffbeef03,
+	0x00000000, 0x08000000, 0x624fbfbf, 0xffbeef07,
+};
+
+static int m9_restore_build(struct m9x_transport *transport)
+{
+	u32 base = PARHELIA_M9_RESTORE_GPUVA;
+	u32 *pool = transport->restore_cpu;
+	unsigned int i;
+
+	if (!pool || upper_32_bits(transport->restore_bus) ||
+	    base > U32_MAX - PARHELIA_M9_RESTORE_BYTES)
+		return -ERANGE;
+	memset32(pool, 0x45454545,
+		 PARHELIA_M9_RESTORE_BYTES / sizeof(*pool));
+	memcpy(pool, m9_restore_full_template,
+	       sizeof(m9_restore_full_template));
+	for (i = 0; i < 0x400; i++) {
+		u32 *record = (u32 *)((u8 *)pool + 0x700 + i * 0x600);
+		u32 work = base + 0x200 + i * 0x600;
+
+		memcpy(record, m9_restore_record_template,
+		       sizeof(m9_restore_record_template));
+		record[3] = i == 1 ? 0x0c000000 : 0x62000000;
+		record[10] = (work + 0x400) | 1;
+		record[15] = base + 0xf8;
+		record[19] = work + 0x440;
+	}
+	dma_wmb();
+	return 0;
+}
+
+int m9x_restore_bind(struct m9x_device *mdev)
+{
+	return m9x_address_bind_dma(mdev, PARHELIA_M9_RESTORE_GPUVA,
+				    mdev->transport.restore_bus,
+				    PARHELIA_M9_RESTORE_BYTES);
+}
+
 bool m9x_enabled(void)
 {
 	return m9_enable;
@@ -80,6 +143,9 @@ static const struct dma_fence_ops m9_fence_ops = {
 	.release = m9_fence_release,
 };
 
+static u64 m9_extend_fence(struct m9x_transport *m9, u32 raw);
+static bool m9_fence_reached(u32 raw, u32 target);
+
 static struct m9x_fence *m9_fence_create(struct m9x_device *mdev,
 						  u64 seqno)
 {
@@ -94,12 +160,18 @@ static struct m9x_fence *m9_fence_create(struct m9x_device *mdev,
 	return fence;
 }
 
-static int m9_transport_arm(struct m9x_device *mdev)
+int m9x_transport_arm_locked(struct m9x_device *mdev)
 {
+	struct m9x_transport *transport = &mdev->transport;
 	u32 command = lower_32_bits(m9_command_slot_bus(&mdev->transport));
 	u32 writeback0 = lower_32_bits(mdev->transport.fence_bus);
 	u32 writeback1 = writeback0 + sizeof(u32);
+	u32 restore = transport->restore_ready ? PARHELIA_M9_RESTORE_GPUVA : 0;
+	u32 restore_base = restore ? (restore + 0x200) & ~0x1fu : 0;
+	u32 restore_limit = restore ?
+		((restore + 0x17fc00) & ~0x1fu) | 6 : 0;
 
+	lockdep_assert_held(&mdev->transport.lock);
 	if (mdev->transport.transport_armed)
 		return 0;
 	if (m9x_read(mdev, M9_REG_ENGINE_STATUS) == U32_MAX)
@@ -114,6 +186,10 @@ static int m9_transport_arm(struct m9x_device *mdev)
 	}
 	pci_set_master(mdev->pdev);
 
+	if (transport->restore_ready &&
+	    (!transport->restore_cpu || upper_32_bits(transport->restore_bus) ||
+	     restore > U32_MAX - PARHELIA_M9_RESTORE_BYTES))
+		return -ERANGE;
 	/* Render completion is a memory writeback.  Leave an installed KMS
 	 * vblank source alone; all other sources remain masked. */
 	m9x_write(mdev, M9_REG_IRQ0_MASK, 0);
@@ -124,10 +200,11 @@ static int m9_transport_arm(struct m9x_device *mdev)
 	 * unowned source merely because the writeback-fence transport starts. */
 
 	/*
-	 * This is the reduced m9x109 setup whose operands are fully owned here.
-	 * The opaque 0x44c/450/454 fields and optional context/window registers
-	 * stay firmware-owned until their values have been captured.
+	 * Byte-for-byte m9x109 register order.  The target's MmFlags/MmDebugFlags
+	 * select vendor candidate 1: compact system GPUVA R with restore tag 0.
 	 */
+	m9x_write(mdev, M9_REG_COMMAND_BASE,
+		  command | M9_COMMAND_SYSTEM_TAG);
 	m9x_write(mdev, M9_REG_CONTEXT_BASE, 0x00080000);
 	m9x_write(mdev, M9_REG_REQUESTER_STATE, 0);
 	/* Index e3 writes the address selected by 0x106c.  Keep 0x1068 on an
@@ -136,10 +213,103 @@ static int m9_transport_arm(struct m9x_device *mdev)
 		 writeback1 | M9_COMMAND_SYSTEM_TAG);
 	m9x_write(mdev, M9_REG_FENCE1_ADDRESS,
 		 writeback0 | M9_COMMAND_SYSTEM_TAG);
-	m9x_write(mdev, M9_REG_COMMAND_BASE,
-		 command | M9_COMMAND_SYSTEM_TAG);
+	m9x_write(mdev, M9_REG_RESTORE_TAGGED, restore_base);
+	m9x_write(mdev, M9_REG_RESTORE_BASE, restore_base);
+	m9x_write(mdev, M9_REG_RESTORE_LIMIT, restore_limit);
+	m9x_write(mdev, M9_REG_REQUESTER_CTL0, M9_REQUESTER_CTL0_FALLBACK);
+	m9x_write(mdev, M9_REG_REQUESTER_CTL1, M9_REQUESTER_CTL1_FALLBACK);
+	m9x_write(mdev, M9_REG_REQUESTER_CTL2, M9_REQUESTER_CTL2_FALLBACK);
 	m9x_read(mdev, M9_REG_COMMAND_BASE);
+	dev_info(&mdev->pdev->dev,
+		 "M9 requester armed: command=%#x programmed fences=%#x/%#x restore=%#x/%#x/%#x controls=%#x/%#x/%#x\n",
+		 m9x_read(mdev, M9_REG_COMMAND_BASE),
+		 writeback1 | M9_COMMAND_SYSTEM_TAG,
+		 writeback0 | M9_COMMAND_SYSTEM_TAG,
+		 restore_base, restore_base, restore_limit,
+		 m9x_read(mdev, M9_REG_REQUESTER_CTL0),
+		 m9x_read(mdev, M9_REG_REQUESTER_CTL1),
+		 m9x_read(mdev, M9_REG_REQUESTER_CTL2));
 	mdev->transport.transport_armed = true;
+	return 0;
+}
+
+int m9x_transport_rearm_locked(struct m9x_device *mdev)
+{
+	lockdep_assert_held(&mdev->transport.lock);
+	mdev->transport.transport_armed = false;
+	return m9x_transport_arm_locked(mdev);
+}
+
+int m9x_submit_kernel_stream_locked(struct m9x_device *mdev,
+				    const u32 *commands, u32 dwords,
+				    u32 target, u64 *point)
+{
+	struct m9x_transport *transport = &mdev->transport;
+	unsigned long deadline;
+	dma_addr_t start_bus;
+	u32 *writeback = transport->fence_cpu;
+	u32 start, end, raw;
+	u64 extended;
+	bool progress_kicked = false;
+	int ret;
+
+	lockdep_assert_held(&transport->lock);
+	if (!commands || !dwords ||
+	    dwords > PARHELIA_M9_COMMAND_BYTES / sizeof(u32))
+		return -EINVAL;
+	if (transport->wedged)
+		return -EIO;
+	ret = m9x_transport_arm_locked(mdev);
+	if (ret)
+		return ret;
+
+	start_bus = m9_command_slot_bus(transport);
+	if (upper_32_bits(start_bus) ||
+	    check_add_overflow(lower_32_bits(start_bus),
+			       dwords * (u32)sizeof(u32), &end))
+		return -ERANGE;
+	start = lower_32_bits(start_bus);
+	memcpy(m9_command_slot_cpu(transport), commands,
+	       dwords * sizeof(u32));
+	WRITE_ONCE(writeback[0], ~target);
+	dma_wmb();
+
+	m9x_write(mdev, M9_REG_COMMAND_BASE, start | M9_COMMAND_SYSTEM_TAG);
+	m9x_read(mdev, M9_REG_COMMAND_BASE);
+	m9x_write(mdev, M9_REG_COMMAND_END, end);
+	m9x_read(mdev, M9_REG_COMMAND_END);
+
+	deadline = jiffies + msecs_to_jiffies(max(m9_fence_timeout_ms, 1u));
+	for (;;) {
+		dma_rmb();
+		raw = READ_ONCE(writeback[0]);
+		if (m9_fence_reached(raw, target))
+			break;
+		if (m9x_read(mdev, M9_REG_ENGINE_STATUS) == U32_MAX)
+			return -ENODEV;
+		if (time_after_eq(jiffies, deadline)) {
+			dev_err(&mdev->pdev->dev,
+				"M9 kernel stream timeout: target=%#x wb=%#x engine=%#x frontend=%#x command=%#x/%#x\n",
+				target, READ_ONCE(writeback[0]),
+				m9x_read(mdev, M9_REG_ENGINE_STATUS),
+				m9x_read(mdev, M9_REG_FRONTEND_STATE),
+				m9x_read(mdev, M9_REG_COMMAND_BASE),
+				m9x_read(mdev, M9_REG_COMMAND_END));
+			transport->wedged = true;
+			transport->generation++;
+			return -ETIMEDOUT;
+		}
+		if (!progress_kicked) {
+			m9x_write(mdev, M9_REG_FRONTEND_KICK, 1);
+			progress_kicked = true;
+		}
+		usleep_range(50, 100);
+	}
+
+	extended = m9_extend_fence(transport, raw);
+	m9_advance_command_slot(transport);
+	if (point)
+		*point = extended;
 	return 0;
 }
 
@@ -224,7 +394,7 @@ int m9x_submit_noop(struct m9x_device *mdev, u64 *point)
 		ret = -EIO;
 		goto out_unlock;
 	}
-	ret = m9_transport_arm(mdev);
+	ret = m9x_transport_arm_locked(mdev);
 	if (ret)
 		goto out_unlock;
 	command_offset = mdev->transport.command_offset;
@@ -264,12 +434,11 @@ int m9x_submit_noop(struct m9x_device *mdev, u64 *point)
 	dma_wmb();
 
 	/*
-	 * Windows clears the front-end state immediately before ringing 0x404.
-	 * The endpoint is a byte address, never a size or a userspace pointer.
+	 * A class-2 requester skips the vendor's class-0 0x31c clear.  This also
+	 * preserves an active compact-translation state across submissions.
 	 */
-	m9x_write(mdev, M9_REG_FRONTEND_STATE, 0);
 	m9x_write(mdev, M9_REG_COMMAND_END, command_end);
-	m9x_write(mdev, M9_REG_FRONTEND_KICK, 1);
+	m9x_read(mdev, M9_REG_COMMAND_END);
 
 	deadline = jiffies + msecs_to_jiffies(max(m9_fence_timeout_ms, 1u));
 	for (;;) {
@@ -353,23 +522,32 @@ int m9x_init(struct m9x_device *mdev)
 	mdev->transport.command_cpu = dmam_alloc_coherent(dev, command_bytes,
 						    &mdev->transport.command_bus,
 						    GFP_KERNEL | __GFP_ZERO);
-	mdev->transport.fence_cpu = dmam_alloc_coherent(dev, PAGE_SIZE,
-						  &mdev->transport.fence_bus,
-						  GFP_KERNEL | __GFP_ZERO);
+	mdev->transport.fence_cpu =
+		dmam_alloc_coherent(dev, PAGE_SIZE, &mdev->transport.fence_bus,
+				    GFP_KERNEL | __GFP_ZERO);
+	mdev->transport.restore_cpu = dmam_alloc_coherent(dev,
+							  PARHELIA_M9_RESTORE_BYTES,
+							  &mdev->transport.restore_bus,
+							  GFP_KERNEL | __GFP_ZERO);
 	if (!mdev->transport.requester_cpu || !mdev->transport.command_cpu ||
-	    !mdev->transport.fence_cpu)
+	    !mdev->transport.fence_cpu || !mdev->transport.restore_cpu)
 		return -ENOMEM;
 	if (upper_32_bits(mdev->transport.requester_bus) ||
 	    upper_32_bits(mdev->transport.command_bus) ||
 	    mdev->transport.command_bus > U32_MAX - command_bytes ||
-	    upper_32_bits(mdev->transport.fence_bus))
+	    upper_32_bits(mdev->transport.fence_bus) ||
+	    upper_32_bits(mdev->transport.restore_bus) ||
+	    mdev->transport.restore_bus >
+		U32_MAX - PARHELIA_M9_RESTORE_BYTES)
 		return -ERANGE;
 	memset32(mdev->transport.command_cpu, 0x45454545,
 		 command_bytes / sizeof(u32));
 	memset32(mdev->transport.requester_cpu, 0x45454545,
 		 PAGE_SIZE / sizeof(u32));
 	memset32(mdev->transport.fence_cpu, U32_MAX, PAGE_SIZE / sizeof(u32));
-	dma_wmb();
+	ret = m9_restore_build(&mdev->transport);
+	if (ret)
+		return ret;
 	dev_info(dev,
 		 "M9 clean-room transport allocated; hardware submission %s\n",
 		 m9_render_diag ? "requires explicit NOOP_FENCE ioctl" : "disabled");
