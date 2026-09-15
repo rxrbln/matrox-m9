@@ -248,6 +248,13 @@ static u32 m9_reloc_alignment(u32 kind)
 	}
 }
 
+static bool m9_reloc_uses_vram(u32 kind)
+{
+	return kind == PARHELIA_M9_RELOC_COLOR ||
+	       kind == PARHELIA_M9_RELOC_DEPTH ||
+	       kind == PARHELIA_M9_RELOC_TEXTURE;
+}
+
 static int m9_vram_gpu_address(u64 vram_size, u64 offset, u64 target_offset,
 			       u64 *address)
 {
@@ -396,10 +403,17 @@ m9_validate_relocs(u32 *image, u32 dwords, u8 *expected,
 			ret = -EINVAL;
 			goto out;
 		}
-		if (reloc->kind == PARHELIA_M9_RELOC_COLOR) {
+		if (m9_reloc_uses_vram(reloc->kind)) {
+			struct m9x_vram_bo *vram_bo;
 			s64 offset;
 
 			if (!m9x_gem_is_vram(gem)) {
+				ret = -EINVAL;
+				goto out;
+			}
+			vram_bo = container_of(drm_gem_vram_of_gem(gem),
+					       struct m9x_vram_bo, vram);
+			if (!(vram_bo->flags & PARHELIA_M9_BO_VRAM)) {
 				ret = -EINVAL;
 				goto out;
 			}
@@ -677,7 +691,12 @@ int m9x_submit_selftest(void)
 	    (PARHELIA_M9_BO_READ | PARHELIA_M9_BO_WRITE) ||
 	    m9_reloc_access(PARHELIA_M9_RELOC_TEXTURE) !=
 	    PARHELIA_M9_BO_READ ||
-	    m9_reloc_access(PARHELIA_M9_RELOC_FENCE))
+	    m9_reloc_access(PARHELIA_M9_RELOC_FENCE) ||
+	    !m9_reloc_uses_vram(PARHELIA_M9_RELOC_COLOR) ||
+	    !m9_reloc_uses_vram(PARHELIA_M9_RELOC_DEPTH) ||
+	    !m9_reloc_uses_vram(PARHELIA_M9_RELOC_TEXTURE) ||
+	    m9_reloc_uses_vram(PARHELIA_M9_RELOC_RESOURCE_69) ||
+	    m9_reloc_uses_vram(PARHELIA_M9_RELOC_DRAW32_START))
 		return -EINVAL;
 	if (m9_parse_commands(good, ARRAY_SIZE(good), expected))
 		return -EINVAL;

@@ -38,6 +38,8 @@ static void m9_vram_bo_free(struct drm_gem_object *gem)
 	struct m9x_vram_bo *bo = container_of(drm_gem_vram_of_gem(gem),
 						struct m9x_vram_bo, vram);
 
+	if (bo->user_pinned)
+		m9x_vram_unpin(&bo->vram);
 	drm_gem_vram_put(&bo->vram);
 }
 
@@ -152,6 +154,46 @@ err_free:
 	return ERR_PTR(ret);
 }
 
+static struct m9x_vram_bo *
+m9_vram_bo_create(struct drm_device *drm, size_t size, u32 flags)
+{
+	struct drm_gem_vram_object *vram;
+	struct m9x_vram_bo *bo;
+	struct iosys_map map;
+	int ret;
+
+	vram = drm_gem_vram_create(drm, size, 1);
+	if (IS_ERR(vram))
+		return ERR_CAST(vram);
+	bo = container_of(vram, struct m9x_vram_bo, vram);
+	bo->flags = flags;
+	ret = m9x_vram_pin(vram);
+	if (ret)
+		goto err_put;
+	bo->user_pinned = true;
+	ret = ttm_bo_reserve(&vram->bo, true, false, NULL);
+	if (ret)
+		goto err_put;
+	ret = drm_gem_vram_vmap(vram, &map);
+	if (!ret) {
+		iosys_map_memset(&map, 0, 0, size);
+		/* Publish zeroes before exposing the mapping cookie to userspace. */
+		wmb();
+		drm_gem_vram_vunmap(vram, &map);
+	}
+	ttm_bo_unreserve(&vram->bo);
+	if (ret)
+		goto err_put;
+	ret = drm_gem_create_mmap_offset(&vram->bo.base);
+	if (ret)
+		goto err_put;
+	return bo;
+
+err_put:
+	drm_gem_object_put(&vram->bo.base);
+	return ERR_PTR(ret);
+}
+
 struct m9x_bo *m9x_bo_lookup(struct m9x_device *mdev,
 					      struct drm_file *file,
 					      u32 handle)
@@ -184,7 +226,8 @@ int m9x_create_bo_ioctl(struct drm_device *drm, void *data,
 {
 	struct drm_parhelia_m9_create_bo *args = data;
 	struct m9x_device *mdev = to_m9x(drm);
-	struct m9x_bo *bo;
+	struct drm_gem_object *gem;
+	struct m9x_bo *bo = NULL;
 	size_t size;
 	u32 handle;
 	int ret;
@@ -192,23 +235,35 @@ int m9x_create_bo_ioctl(struct drm_device *drm, void *data,
 	if (!m9x_enabled())
 		return -ENODEV;
 	if (!args->size || args->size > M9_BO_MAX_SIZE ||
-	    args->flags & ~PARHELIA_M9_BO_COMMAND || args->handle ||
+	    args->flags & ~(PARHELIA_M9_BO_COMMAND | PARHELIA_M9_BO_VRAM) ||
+	    (args->flags & (PARHELIA_M9_BO_COMMAND | PARHELIA_M9_BO_VRAM)) ==
+		(PARHELIA_M9_BO_COMMAND | PARHELIA_M9_BO_VRAM) || args->handle ||
 	    args->mmap_offset)
 		return -EINVAL;
 	size = PAGE_ALIGN(args->size);
-	bo = m9_bo_create(drm, size);
-	if (IS_ERR(bo))
-		return PTR_ERR(bo);
-	bo->flags = args->flags;
-	ret = drm_gem_handle_create(file, &bo->dma.base, &handle);
+	if (args->flags & PARHELIA_M9_BO_VRAM) {
+		struct m9x_vram_bo *vram_bo;
+
+		vram_bo = m9_vram_bo_create(drm, size, args->flags);
+		if (IS_ERR(vram_bo))
+			return PTR_ERR(vram_bo);
+		gem = &vram_bo->vram.bo.base;
+	} else {
+		bo = m9_bo_create(drm, size);
+		if (IS_ERR(bo))
+			return PTR_ERR(bo);
+		bo->flags = args->flags;
+		gem = &bo->dma.base;
+	}
+	ret = drm_gem_handle_create(file, gem, &handle);
 	if (ret)
 		goto out_put;
 
 	mutex_lock(&mdev->transport.lock);
 	if (mdev->transport.wedged) {
 		ret = -EIO;
-	} else {
-		drm_gem_object_get(&bo->dma.base);
+	} else if (bo) {
+		drm_gem_object_get(gem);
 		bo->file = file;
 		list_add_tail(&bo->link, &mdev->transport.bos);
 	}
@@ -218,14 +273,14 @@ int m9x_create_bo_ioctl(struct drm_device *drm, void *data,
 
 	args->size = size;
 	args->handle = handle;
-	args->mmap_offset = drm_vma_node_offset_addr(&bo->dma.base.vma_node);
-	drm_gem_object_put(&bo->dma.base);
+	args->mmap_offset = drm_vma_node_offset_addr(&gem->vma_node);
+	drm_gem_object_put(gem);
 	return 0;
 
 out_handle:
 	drm_gem_handle_delete(file, handle);
 out_put:
-	drm_gem_object_put(&bo->dma.base);
+	drm_gem_object_put(gem);
 	return ret;
 }
 

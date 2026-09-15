@@ -17,8 +17,10 @@
 		 struct drm_parhelia_m9_submit)
 
 /*
- * M9 command and staging objects are immutable DMA32 allocations. The mmap
- * offset is a DRM cookie and no engine address is exposed.
+ * M9 command and staging objects are immutable DMA32 allocations unless
+ * PARHELIA_M9_BO_VRAM requests pinned local video memory.  COMMAND and VRAM
+ * are mutually exclusive.  The mmap offset is a DRM cookie and no engine
+ * address is exposed.
  */
 struct drm_parhelia_m9_create_bo {
 	__u64 size;
@@ -30,6 +32,7 @@ struct drm_parhelia_m9_create_bo {
 #define PARHELIA_M9_BO_COMMAND	(1u << 0)
 #define PARHELIA_M9_BO_READ	(1u << 1)
 #define PARHELIA_M9_BO_WRITE	(1u << 2)
+#define PARHELIA_M9_BO_VRAM	0x00000008u
 
 /*
  * DRAW16_END only: the exclusive byte end names the upper halfword of the

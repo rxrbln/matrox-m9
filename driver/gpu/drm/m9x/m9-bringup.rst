@@ -149,16 +149,22 @@ deferred shadow fbcon path into the initial direct-scanout test.
 UAPI boundary
 -------------
 
-``M9_CREATE_BO`` creates an immutable DMA32 object and returns a GEM handle and
-DRM mmap cookie.  No bus address is returned.  Command objects are explicitly
-marked with ``PARHELIA_M9_BO_COMMAND``.
+``M9_CREATE_BO`` creates an immutable DMA32 object by default and returns a GEM
+handle and DRM mmap cookie.  Command objects are explicitly marked with
+``PARHELIA_M9_BO_COMMAND``.  The additive ``PARHELIA_M9_BO_VRAM`` flag instead
+creates a page-aligned object pinned in local video memory for its handle
+lifetime; it is mutually exclusive with ``COMMAND``.  No bus or local address
+is returned.
 
 ``M9_SUBMIT(VALIDATE_ONLY)`` copies a command slice from such an object.  It
 parses M9 four-index packets, padding and H03/H06/H07 draw triples.  The
 validator currently permits only indices present in the controlled triangle
 capture, rejects kernel-owned fence/dependency indices, requires a semantic
 relocation for every known address operand, checks all BO ranges and alignment,
-patches a private copy, and discards it.  H06/H07 start and exclusive-end
+patches a private copy, and discards it.  Color, depth and texture operands
+alone accept ``BO_VRAM`` objects and resolve through the local 0x10000000
+address window; command, vertex/index and private resource operands remain
+DMA32.  H06/H07 start and exclusive-end
 relocations must name the same BO in increasing order; H06 records its odd
 terminal halfword with ``PARHELIA_M9_RELOC_PACKED16_ODD`` instead of smuggling
 bit 1 through an address.  The kernel derives access from each relocation
