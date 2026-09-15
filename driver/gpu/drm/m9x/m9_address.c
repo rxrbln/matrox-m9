@@ -32,6 +32,8 @@
 #define M9_ADDRESS_SERVICE_STRIDE	0x10u
 #define M9_ADDRESS_SERVICE_INVALID	0x0000ffffu
 #define M9_ADDRESS_SERVICE_POOLS	4u
+/* m9x926 places its private pools in VRAM above the 256-MiB BAR. */
+#define M9_ADDRESS_POOL_DOMAIN		0x10000000u
 #define M9_ADDRESS_CPU_WINDOW		0x0000u
 #define M9_ADDRESS_CPU_WINDOW_VALID	0xa0000000u
 #define M9_ADDRESS_CPU_WINDOW_FORMAT	0xf0000000u
@@ -503,9 +505,9 @@ int m9x_address_construct_manager(struct m9x_device *mdev)
 			     layout->translation_base + page * sizeof(u32),
 			     u32, m9_address_root_pte_word(page));
 	/*
-	 * Once active, BAR0 CPU access and local GPU addressing both resolve
-	 * 0x10000000 + offset through these leaves.  The vendor publishes them
-	 * per local allocation; publish the whole BAR-visible range up front.
+	 * Local GPU addresses resolve through identity leaves.  The vendor
+	 * publishes them per local allocation; publish the whole BAR-visible
+	 * range up front.
 	 */
 	for (page = 0; page < address->local_pages; page++) {
 		u32 local = (u32)M9_VRAM_GPU_BASE + (page << PAGE_SHIFT);
@@ -671,7 +673,7 @@ int m9x_address_finalize_service(struct m9x_device *mdev)
 	 * primary child.  Each pool ends with its own 31c triplet, without 314.
 	 */
 	for (i = 0; i < M9_ADDRESS_SERVICE_POOLS; i++) {
-		u32 local = (u32)M9_VRAM_GPU_BASE + address->layout.pool_base[i];
+		u32 local = M9_ADDRESS_POOL_DOMAIN + address->layout.pool_base[i];
 		u32 pages = DIV_ROUND_UP(m9_service_pool_bytes[i], PAGE_SIZE);
 		u32 slot = m9_address_identity_slot(local);
 		u32 page;

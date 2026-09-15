@@ -30,7 +30,8 @@ struct iosys_map;
 #define PARHELIA_M9_RESTORE_BYTES	0x00181000u
 #define PARHELIA_M9_MAX_RELOCS		128u
 #define PARHELIA_M9_MAX_BOS		128u
-#define M9_VRAM_GPU_BASE		0x10000000ull
+/* GPU addresses below the PInS size are VRAM offsets; BAR0 shows the low part. */
+#define M9_VRAM_GPU_BASE		0x00000000ull
 #define M9_VRAM_GPU_SIZE		0x10000000ull
 
 struct m9x_bo {

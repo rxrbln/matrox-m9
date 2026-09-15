@@ -735,9 +735,9 @@ int m9x_submit_selftest(void)
 	u64 address;
 
 	if (m9_vram_gpu_address(SZ_256M, 0, 0, &address) ||
-	    address != 0x10000000 ||
+	    address != M9_VRAM_GPU_BASE ||
 	    m9_vram_gpu_address(SZ_256M, 0x01ee9000, 0, &address) ||
-	    address != 0x11ee9000 ||
+	    address != M9_VRAM_GPU_BASE + 0x01ee9000 ||
 	    m9_vram_gpu_address(SZ_256M, SZ_256M - 0x100, 0x100,
 				&address) != -EOVERFLOW)
 		return -EINVAL;
