@@ -1,5 +1,17 @@
 # M9 first executable clear and triangle stream audit
 
+> **Implementation update:** the resource gaps recorded in the historical
+> “Missing bytes” section below are closed for the bounded first triangle.
+> `parhelia-m9-first-triangle-resources-re.md` proves the exact 1-MiB BE
+> allocation and the guarded C2/transient policy;
+> `parhelia-m9-pool5-raw-copy-closure.md` proves the exact 0x80-byte semantic
+> selector-6c image and vendor raw-copy path; and
+> `parhelia-m9-rsfragptrs-database.md` plus
+> `parhelia-m9-program-resource-reconciliation.md` separate the external
+> fixed-fragment database from the inline P00/S28 upload. The current kernel
+> diagnostic implements those later results. Keep the older boundary text as
+> the audit trail that led to them, not as the current execution gate.
+
 This note fixes the exact boundary between the M9148 command evidence and the
 current clean-room kernel/Mesa code.  It uses the settled single-triangle
 fixture in `captures/m9x-linux-gltri-20260914`, and it does not rely on a live
