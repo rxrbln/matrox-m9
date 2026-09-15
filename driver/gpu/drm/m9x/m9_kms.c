@@ -253,7 +253,7 @@ static int m9_pipe_check(struct drm_simple_display_pipe *pipe,
 /*
  * Userspace draws linear XRGB8888 into its dumb BO.  Copy those bytes into the
  * kernel-owned tiled scanout surface through host-aperture slot 0 carrying the
- * scanout descriptor, then restore the identity window.
+ * scanout descriptor, then release that window.
  */
 static int m9_scanout_publish(struct m9x_device *mdev,
 			      struct drm_framebuffer *fb)
@@ -281,12 +281,12 @@ static int m9_scanout_publish(struct m9x_device *mdev,
 	if (ret)
 		return ret;
 	mutex_lock(&mdev->transport.lock);
-	m9x_address_cpu_window(mdev, lower_32_bits(offset), M9_SCANOUT_FORMAT,
+	m9x_address_surface_window(mdev, lower_32_bits(offset), M9_SCANOUT_FORMAT,
 			       M9_SCANOUT_EXTENT);
 	memcpy_toio(mdev->bar0_window, mdev->scanout_bounce, M9_SCANOUT_BYTES);
-	/* Complete WC stores before the identity window returns. */
+	/* Complete WC stores before the window is released. */
 	wmb();
-	m9x_address_cpu_identity(mdev);
+	m9x_address_surface_release(mdev);
 	mutex_unlock(&mdev->transport.lock);
 	return 0;
 }
@@ -577,8 +577,8 @@ static int m9_scanout_init(struct m9x_device *mdev)
 	struct pci_dev *pci = mdev->pdev;
 	int ret;
 
-	mdev->bar0_window = devm_ioremap_wc(&pci->dev, pci_resource_start(pci, 0),
-					    M9_SCANOUT_BYTES);
+	mdev->bar0_window = devm_ioremap_wc(&pci->dev, pci_resource_start(pci, 0) +
+					    M9_ADDRESS_CPU_BYTES, M9_SCANOUT_BYTES);
 	mdev->scanout_bounce = kvzalloc(M9_SCANOUT_BYTES, GFP_KERNEL);
 	if (!mdev->bar0_window || !mdev->scanout_bounce) {
 		ret = -ENOMEM;

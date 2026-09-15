@@ -157,8 +157,10 @@ static int m9x_pci_probe(struct pci_dev *pci,
 	 * The render requester also needs the pinned low-VRAM translation root,
 	 * including when KMS exposure is disabled.
 	 */
+	/* TTM only sees the slot 0 identity range; the BAR top is the window. */
 	ret = drmm_vram_helper_init(drm, pci_resource_start(pci, 0),
-				    mdev->vram_size);
+				    min_t(u64, mdev->vram_size,
+					  M9_ADDRESS_CPU_BYTES));
 	if (ret)
 		return ret;
 	ret = m9x_init(mdev);

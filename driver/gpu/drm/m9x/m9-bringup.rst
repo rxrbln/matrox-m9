@@ -238,9 +238,16 @@ Tiled KMS scanout
 
 With ``m9_kms=1 m9_kms_scanout=1`` the display controller never fetches a
 userspace dumb BO.  Probe pins a kernel scanout BO; each plane update and
-dirty-fb call copies the linear 1024x768 XRGB8888 image through slot 0
-retargeted to that BO (``d2=cc210400``, ``d3=00010300``), restores the
-identity window and points ``DC_START`` at the scanout BO.  modetest's SMPTE
+dirty-fb call copies the linear 1024x768 XRGB8888 image through a
+host-aperture surface window on that BO (``d2=cc210400``, ``d3=00010300``),
+releases the window and points ``DC_START`` at the scanout BO.
+
+Slot ``d0`` is ``start_page | end_page << 16`` of BAR0 (inclusive, no valid
+bit; ``0x0000ffff`` is empty) and the lowest slot wins on overlap.  Slot 0 is
+a permanent identity window over BAR0 [0, 224 MiB) (``d0=0xdfff0000``), which
+is also the range handed to TTM; surface windows use slot 1 at BAR0
+[224, 256 MiB) (``d0=0xffffe000``), so CPU mappings of VRAM BOs stay valid
+while the kernel reads or writes a de-tiled surface.  modetest's SMPTE
 pattern reads back row-exact through the same descriptor.  Xorg modesetting
 with ``AccelMethod none`` and ``ShadowFB on`` scans out through the dirty-fb
 copy; every root-window pixel matches the scanout surface.

@@ -34,10 +34,16 @@
 #define M9_ADDRESS_SERVICE_STRIDE	0x10u
 #define M9_ADDRESS_SERVICE_INVALID	0x0000ffffu
 #define M9_ADDRESS_SERVICE_POOLS	4u
+/* Slot d0 = BAR0 start_page | end_page << 16 (inclusive); lowest slot wins. */
 #define M9_ADDRESS_CPU_WINDOW		0x0000u
-#define M9_ADDRESS_CPU_WINDOW_VALID	0xa0000000u
+#define M9_ADDRESS_CPU_WINDOW_RANGE	((((M9_ADDRESS_CPU_BYTES >> PAGE_SHIFT) - 1) << 16))
 #define M9_ADDRESS_CPU_WINDOW_FORMAT	0xf0000000u
 #define M9_ADDRESS_CPU_WINDOW_EXTENT	0x00010001u
+#define M9_ADDRESS_SURFACE_WINDOW	0x0010u
+#define M9_ADDRESS_SURFACE_WINDOW_RANGE \
+	((M9_ADDRESS_CPU_BYTES >> PAGE_SHIFT) | \
+	 (((M9_ADDRESS_CPU_BYTES + M9_ADDRESS_SURFACE_BYTES) >> PAGE_SHIFT) - 1) << 16)
+#define M9_ADDRESS_SLOT_EMPTY		0x0000ffffu
 
 /* m9x926's four mode-0 resources in a fresh m9x565 local range. */
 static const u32 m9_service_pool_bytes[M9_ADDRESS_SERVICE_POOLS] = {
@@ -196,22 +202,26 @@ fail:
 	return ret;
 }
 
-/* Retarget host-aperture slot 0 at BAR0 offset 0 to one surface layout. */
-void m9x_address_cpu_window(struct m9x_device *mdev, u32 surface, u32 format,
-			    u32 extent)
+/*
+ * Map one surface de-tiled at BAR0 M9_ADDRESS_CPU_BYTES through slot 1; the
+ * slot 0 identity view of VRAM stays valid for concurrent CPU access.
+ */
+void m9x_address_surface_window(struct m9x_device *mdev, u32 surface,
+				u32 format, u32 extent)
 {
-	m9x_write(mdev, M9_ADDRESS_CPU_WINDOW, 0);
-	m9x_write(mdev, M9_ADDRESS_CPU_WINDOW + 0x4, surface);
-	m9x_write(mdev, M9_ADDRESS_CPU_WINDOW + 0x8, format);
-	m9x_write(mdev, M9_ADDRESS_CPU_WINDOW + 0xc, extent);
-	m9x_write(mdev, M9_ADDRESS_CPU_WINDOW, M9_ADDRESS_CPU_WINDOW_VALID);
-	m9x_read(mdev, M9_ADDRESS_CPU_WINDOW);
+	m9x_write(mdev, M9_ADDRESS_SURFACE_WINDOW, 0);
+	m9x_write(mdev, M9_ADDRESS_SURFACE_WINDOW + 0x4, surface);
+	m9x_write(mdev, M9_ADDRESS_SURFACE_WINDOW + 0x8, format);
+	m9x_write(mdev, M9_ADDRESS_SURFACE_WINDOW + 0xc, extent);
+	m9x_write(mdev, M9_ADDRESS_SURFACE_WINDOW,
+		  M9_ADDRESS_SURFACE_WINDOW_RANGE);
+	m9x_read(mdev, M9_ADDRESS_SURFACE_WINDOW);
 }
 
-void m9x_address_cpu_identity(struct m9x_device *mdev)
+void m9x_address_surface_release(struct m9x_device *mdev)
 {
-	m9x_address_cpu_window(mdev, 0, M9_ADDRESS_CPU_WINDOW_FORMAT,
-			       M9_ADDRESS_CPU_WINDOW_EXTENT);
+	m9x_write(mdev, M9_ADDRESS_SURFACE_WINDOW, M9_ADDRESS_SLOT_EMPTY);
+	m9x_read(mdev, M9_ADDRESS_SURFACE_WINDOW);
 }
 
 static void m9_address_invalidate_service_bank(struct m9x_device *mdev)
@@ -317,7 +327,7 @@ static void m9_address_publish_cpu_window(struct m9x_device *mdev)
 	m9x_write(mdev, M9_ADDRESS_CPU_WINDOW + 0x4, 0);
 	m9x_write(mdev, M9_ADDRESS_CPU_WINDOW + 0x8, M9_ADDRESS_CPU_WINDOW_FORMAT);
 	m9x_write(mdev, M9_ADDRESS_CPU_WINDOW + 0xc, M9_ADDRESS_CPU_WINDOW_EXTENT);
-	m9x_write(mdev, M9_ADDRESS_CPU_WINDOW, M9_ADDRESS_CPU_WINDOW_VALID);
+	m9x_write(mdev, M9_ADDRESS_CPU_WINDOW, M9_ADDRESS_CPU_WINDOW_RANGE);
 	m9x_read(mdev, M9_ADDRESS_CPU_WINDOW);
 }
 

@@ -35,6 +35,9 @@ struct iosys_map;
 extern uint m9x_local_gpu_base;
 #define M9_VRAM_GPU_BASE		((u64)m9x_local_gpu_base)
 #define M9_VRAM_GPU_SIZE		0x10000000ull
+/* BAR0 [0,224M) is the identity VRAM view, [224M,256M) the surface window. */
+#define M9_ADDRESS_CPU_BYTES		0x0e000000u
+#define M9_ADDRESS_SURFACE_BYTES	0x02000000u
 
 struct m9x_bo {
 	struct drm_gem_dma_object dma;
@@ -148,9 +151,9 @@ int m9x_address_publish_restore(struct m9x_device *mdev);
 int m9x_address_read_pte(struct m9x_device *mdev, u32 gpuva, u32 *value);
 int m9x_address_read_root_pte(struct m9x_device *mdev, u32 gpuva, u32 *value);
 u32 m9x_address_pte_word(dma_addr_t dma);
-void m9x_address_cpu_window(struct m9x_device *mdev, u32 surface, u32 format,
-			    u32 extent);
-void m9x_address_cpu_identity(struct m9x_device *mdev);
+void m9x_address_surface_window(struct m9x_device *mdev, u32 surface,
+				u32 format, u32 extent);
+void m9x_address_surface_release(struct m9x_device *mdev);
 int m9x_submit_triangle_diag(struct m9x_device *mdev, u32 color,
 			     struct drm_gem_vram_object *color_bo, u64 *point,
 			     bool *color_active);
