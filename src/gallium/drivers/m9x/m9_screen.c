@@ -1064,6 +1064,8 @@ m9_screen_create(int fd, const struct pipe_screen_config *config)
    caps->glsl_feature_level_compatibility = 120;
    caps->essl_feature_level = 100;
    caps->npot_textures = true;
+   /* No fixed-function alpha test: st lowers it into the fragment shader. */
+   caps->alpha_test = false;
    /* ES 2.0 for glamor; factors lower into the fragment program, and
     * equations other than ADD skip the draw with a warning. */
    caps->blend_equation_separate = true;

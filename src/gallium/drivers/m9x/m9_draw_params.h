@@ -14,7 +14,7 @@
 #define M9_PROGRAM_BYTES          0x2000u
 #define M9_PROGRAM_DWORDS         80u
 #define M9_FRAGMENT_DB_MIN_BYTES  0x1c000u
-#define M9_TRANSIENT_VIEWS        6u
+#define M9_TRANSIENT_VIEWS        7u
 /* Views 0..3 belong to the pass-through program, 4.. carry CPU varyings. */
 #define M9_TRANSIENT_CPU_VIEW     4u
 #define M9_TRANSIENT_VIEW_BYTES   0x16800u
@@ -39,7 +39,7 @@ enum m9_topology {
 };
 
 /* Kernel-accepted raster streams 00..04 with stride words 10..12. */
-#define M9_RASTER_MAX_STREAMS     5u
+#define M9_RASTER_MAX_STREAMS     6u
 #define M9_RASTER_MAX_DECL        8u
 /* Native fragment constants; the span at +0x1000 is hardware-measured. */
 #define M9_RASTER_CONST_OFFSET    0x1000u

@@ -194,8 +194,12 @@ m9_texture_window(struct m9_context *ctx, const struct m9_resource *resource,
    struct drm_parhelia_m9_surface_access access = {
       .handle = resource->handle,
       .op = write ? PARHELIA_M9_ACCESS_WRITE : PARHELIA_M9_ACCESS_READ,
+      /* The kernel window takes the small kind up to 64 and the large kind,
+       * which needs a 32-aligned span, above it. */
       .descriptor0 = (uint32_t)resource->texture_code << 24 |
-                     M9_TEXTURE_KIND_2D << 16 | lvl->width,
+                     (lvl->width > 64 || lvl->height > 64 ?
+                      M9_TEXTURE_KIND_RENDER : M9_TEXTURE_KIND_2D) << 16 |
+                     lvl->width,
       .descriptor1 = 1u << 16 | lvl->height,
       .surface_width = lvl->width,
       .x = box->x,
@@ -286,8 +290,16 @@ m9_transfer_map(struct pipe_context *pctx, struct pipe_resource *pres,
        ((usage & PIPE_MAP_WRITE) && !resource->map_writable) ||
        !box || !out || box->x < 0 ||
        box->y < 0 || box->z || box->width < 0 || box->height < 0 ||
-       box->depth != 1 || level > pres->last_level)
+       box->depth != 1 || level > pres->last_level) {
+      if (ctx->debug && resource && box)
+         fprintf(stderr, "m9x: map refused: %s %ux%u target %u level %u/%u "
+                 "box %d,%d,%d %dx%dx%d usage %#x map %p writable %d kind %u\n",
+                 util_format_short_name(pres->format), pres->width0,
+                 pres->height0, pres->target, level, pres->last_level,
+                 box->x, box->y, box->z, box->width, box->height, box->depth,
+                 usage, resource->map, resource->map_writable, resource->kind);
       return NULL;
+   }
    width = pres->target == PIPE_BUFFER ? pres->width0 :
            (pres->width0 >> level ? pres->width0 >> level : 1);
    height = pres->target == PIPE_BUFFER ? 1 :
@@ -345,6 +357,13 @@ m9_transfer_map(struct pipe_context *pctx, struct pipe_resource *pres,
          last += (uint64_t)(box->height - 1) * stride +
                  (uint64_t)box->width * resource->cpp;
       if (last > resource->size) {
+         if (ctx->debug)
+            fprintf(stderr, "m9x: map beyond BO: %s %ux%u level %u box %d,%d "
+                    "%dx%d offset %#" PRIx64 " last %#" PRIx64 " size %#"
+                    PRIx64 " kind %u\n", util_format_short_name(pres->format),
+                    pres->width0, pres->height0, level, box->x, box->y,
+                    box->width, box->height, offset, last, resource->size,
+                    resource->kind);
          FREE(transfer);
          return NULL;
       }
@@ -731,6 +750,15 @@ m9_fs_resolve_consts(struct m9_context *ctx, const struct m9_fs_variant *fs,
          case M9_FS_CONST_FRAG_Y:
             v = lane ? (float)ctx->params.height - 1.0f : 0.0f;
             break;
+         case M9_FS_CONST_ALPHA_REF:
+            if ((size_t)k->offset[0] + sizeof(float) > size) {
+               m9_warn_once(ctx, M9_WARN_FS, "alpha reference outside the "
+                            "bound constant buffer; draw skipped");
+               return false;
+            }
+            memcpy(&v, data + k->offset[0], sizeof(v));
+            v *= 256.0f;
+            break;
          }
          util_dynarray_append_typed(out, float, v);
       }
@@ -859,6 +887,8 @@ m9_blend_factor(enum pipe_blendfactor f, uint8_t *out)
       { PIPE_BLENDFACTOR_INV_DST_ALPHA, M9_FS_INV_DST_ALPHA },
       { PIPE_BLENDFACTOR_SRC_COLOR, M9_FS_SRC_COLOR },
       { PIPE_BLENDFACTOR_INV_SRC_COLOR, M9_FS_INV_SRC_COLOR },
+      { PIPE_BLENDFACTOR_DST_COLOR, M9_FS_DST_COLOR },
+      { PIPE_BLENDFACTOR_INV_DST_COLOR, M9_FS_INV_DST_COLOR },
    };
 
    for (unsigned i = 0; i < ARRAY_SIZE(map); i++) {
@@ -877,6 +907,8 @@ m9_alpha_equivalent(enum pipe_blendfactor f)
    switch (f) {
    case PIPE_BLENDFACTOR_SRC_COLOR: return PIPE_BLENDFACTOR_SRC_ALPHA;
    case PIPE_BLENDFACTOR_INV_SRC_COLOR: return PIPE_BLENDFACTOR_INV_SRC_ALPHA;
+   case PIPE_BLENDFACTOR_DST_COLOR: return PIPE_BLENDFACTOR_DST_ALPHA;
+   case PIPE_BLENDFACTOR_INV_DST_COLOR: return PIPE_BLENDFACTOR_INV_DST_ALPHA;
    default: return f;
    }
 }
@@ -1002,7 +1034,11 @@ m9_fs_variant(struct m9_context *ctx, struct m9_fs_state *fs,
       if (tex.swizzle_result)
          NIR_PASS(_, clone, nir_lower_tex, &tex);
    }
+   if (ctx->debug)
+      nir_print_shader(clone, stderr);
    v->ok = m9_fs_compile(clone, &v->blend, &v->program, &v->reason);
+   if (!v->ok && ctx->debug)
+      fprintf(stderr, "m9x: variant refused: %s\n", v->reason);
    ralloc_free(clone);
    if (v->ok) {
       m9_fs_streams(v);
@@ -1222,17 +1258,30 @@ m9_render_record(const struct m9_vbuf_render *r, unsigned index, float *out,
       out[3 + c] = r->has_color ? CLAMP(v[4 + c], 0.0f, 1.0f) : 1.0f;
 }
 
-/* Texture coordinates of sampled render targets address the aligned span. */
+/* Projective coordinates are divided per vertex: exact while q is constant
+ * over a primitive (fixed-function texturing without a projective texture
+ * matrix).  Render-target coordinates address the aligned span. */
 static void
 m9_scale_coords(const struct m9_job_key *key, float *extra)
 {
    const struct m9_fs_variant *v = key->variant;
+   uint32_t divided = 0;
 
    for (unsigned k = 0; k < v->program.texture_count; k++) {
       int j = v->coord_extra[v->texture_coord[k]];
 
       if (j < 0)
          continue;
+      if (v->program.texcoord_projective[k] && !(divided & BITFIELD_BIT(j))) {
+         float q = extra[4 * j + 3];
+
+         if (q != 0.0f && q != 1.0f) {
+            extra[4 * j] /= q;
+            extra[4 * j + 1] /= q;
+            extra[4 * j + 3] = 1.0f;
+         }
+         divided |= BITFIELD_BIT(j);
+      }
       extra[4 * j] *= key->unit_scale[k][0];
       extra[4 * j + 1] *= key->unit_scale[k][1];
    }

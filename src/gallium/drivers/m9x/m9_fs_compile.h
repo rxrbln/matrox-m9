@@ -25,6 +25,9 @@ enum m9_fs_const_kind {
    M9_FS_CONST_LITERAL,
    M9_FS_CONST_UNIFORM,    /* two constant-buffer components or zero */
    M9_FS_CONST_FRAG_Y,     /* (0, drawable height - 1) */
+   /* Alpha-test reference, both lanes scaled by 256 (MEASURED with the
+    * vendor kill program: the reference is constant pair 0). */
+   M9_FS_CONST_ALPHA_REF,
 };
 
 #define M9_FS_UNIFORM_ZERO 0xffffffffu
@@ -45,6 +48,7 @@ struct m9_fs_varying {
 enum m9_fs_factor {
    M9_FS_ZERO, M9_FS_ONE, M9_FS_SRC_ALPHA, M9_FS_INV_SRC_ALPHA,
    M9_FS_DST_ALPHA, M9_FS_INV_DST_ALPHA, M9_FS_SRC_COLOR, M9_FS_INV_SRC_COLOR,
+   M9_FS_DST_COLOR, M9_FS_INV_DST_COLOR,
 };
 
 struct m9_fs_blend {
@@ -59,6 +63,8 @@ struct m9_fs_program {
    uint8_t textures[M9_FS_MAX_TEXTURES];  /* sampler index per texel pair */
    uint8_t texcoords[M9_FS_MAX_TEXTURES]; /* coordinate gl_varying_slot */
    uint8_t texcoord_components[M9_FS_MAX_TEXTURES]; /* first coordinate component */
+   /* xy divided by w of the same varying; the driver divides per vertex */
+   bool texcoord_projective[M9_FS_MAX_TEXTURES];
    unsigned texture_count;
    uint16_t registers_used;       /* bit per register pair group 08..1f */
    bool discard, fragcoord, fragdepth;

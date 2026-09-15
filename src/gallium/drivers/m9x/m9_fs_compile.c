@@ -109,6 +109,12 @@ struct ctx {
    const struct m9_fs_blend *blend;  /* NULL when unblended */
    struct util_dynarray nodes, lops, values, keys, key_index;
    const char *reason;
+   /* Fixed-function alpha test lowered into the shader by st. */
+   struct {
+      bool enabled;
+      unsigned func;        /* kill slot instruction class */
+      uint32_t ref_offset;  /* constant buffer byte offset of the reference */
+   } alpha;
    bool has_consts;
    bool custom_consts;  /* a template supplies the whole constant span */
 };
@@ -306,10 +312,12 @@ build_tex(struct ctx *c, nir_tex_instr *tex)
    nir_intrinsic_instr *coord;
    unsigned location;
    int n, ci = nir_tex_instr_src_index(tex, nir_tex_src_coord);
+   int pi = nir_tex_instr_src_index(tex, nir_tex_src_projector);
    nir_scalar s[2];
 
    if (tex->op != nir_texop_tex || tex->sampler_dim != GLSL_SAMPLER_DIM_2D ||
-       tex->is_shadow || tex->is_array || tex->num_srcs != 1 || ci < 0 ||
+       tex->is_shadow || tex->is_array || ci < 0 ||
+       tex->num_srcs != (pi < 0 ? 1u : 2u) ||
        p->texture_count >= M9_FS_MAX_TEXTURES)
       return fail(c, "texture sampling needs a computed coordinate pass"), -1;
    /* Linked vec2 varyings may share one slot: xy or zw of the input. */
@@ -322,6 +330,17 @@ build_tex(struct ctx *c, nir_tex_instr *tex)
    coord = nir_def_as_intrinsic(s[0].def);
    if (coord->intrinsic != nir_intrinsic_load_interpolated_input)
       return fail(c, "texture coordinate is not a varying"), -1;
+   /* The fixed-function projector is w of the same varying; the driver
+    * divides the coordinate stream per vertex. */
+   if (pi >= 0) {
+      nir_scalar q = nir_scalar_chase_movs(
+         nir_get_scalar(tex->src[pi].src.ssa, 0));
+
+      if (q.def != s[0].def || q.comp != 3)
+         return fail(c, "texture sampling needs a computed coordinate pass"),
+                -1;
+      p->texcoord_projective[p->texture_count] = true;
+   }
    location = nir_intrinsic_io_semantics(coord).location;
    for (unsigned i = 0; i < p->varying_count; i++)
       if (p->varyings[i].location == location)
@@ -387,6 +406,14 @@ build_alu(struct ctx *c, nir_alu_instr *alu)
 
    if (alu->def.num_components != 4)
       return fail(c, "non-vec4 arithmetic"), -1;
+   /* A constructor is a value, not an operation. */
+   if (nir_op_is_vec_or_mov(alu->op)) {
+      nir_scalar v[4];
+
+      for (unsigned k = 0; k < 4; k++)
+         v[k] = nir_scalar_chase_movs(nir_get_scalar(&alu->def, k));
+      return build_vec(c, v);
+   }
    switch (alu->op) {
    case nir_op_fmul:
    case nir_op_fadd:
@@ -534,6 +561,63 @@ build_vec(struct ctx *c, nir_scalar s[4])
       NODES(c)[n].lit[0] = w;
       return n;
    }
+   /* vec4(fmul(texture, b).xyz, b.w): the fixed-function texenv keeps the
+    * incoming alpha, which is fmul(vec4(texture.xyz, 1), b). */
+   if (s[0].comp == 0 && s[1].comp == 1 && s[2].comp == 2 && s[3].comp == 3 &&
+       s[1].def == s[0].def && s[2].def == s[0].def && s[3].def != s[0].def &&
+       nir_scalar_is_alu(s[0]) && nir_scalar_alu_op(s[0]) == nir_op_fmul) {
+      nir_alu_instr *mul = nir_def_as_alu(s[0].def);
+      nir_def *other = NULL, *colour = NULL;
+
+      for (unsigned i = 0; i < 2; i++) {
+         bool plain = true;
+
+         for (unsigned k = 0; k < 4; k++)
+            plain &= mul->src[i].swizzle[k] == k;
+         if (!plain)
+            continue;
+         if (mul->src[i].src.ssa == s[3].def)
+            other = mul->src[i].src.ssa;
+         else
+            colour = mul->src[i].src.ssa;
+      }
+      if (other && colour) {
+         static const uint8_t lane_id[2] = { 0, 1 }, swz_id[2] = { 1, 1 };
+         int x = build_def(c, colour), rgb = -1, b;
+
+         if (x < 0)
+            return -1;
+         /* The alpha of the other factor survives, so this side contributes
+          * rgb with alpha one: a texel pair, or one already composed. */
+         if (NODES(c)[x].kind == N_COMPOSE && NODES(c)[x].lit[0] == 1.0f) {
+            rgb = x;
+         } else if (NODES(c)[x].kind != N_TEX) {
+            return fail(c, "swizzled or composed vector"), -1;
+         } else {
+            util_dynarray_foreach(&c->nodes, struct node, it) {
+               if (it->kind == N_COMPOSE && it->src[0] == x &&
+                   it->lit[0] == 1.0f)
+                  rgb = it - NODES(c);
+            }
+         }
+         if (rgb < 0) {
+            rgb = node_new(c, N_COMPOSE);
+            if (rgb < 0)
+               return -1;
+            NODES(c)[rgb].src[0] = x;
+            NODES(c)[rgb].lit[0] = 1.0f;
+         }
+         b = build_def(c, other);
+         if (b < 0)
+            return -1;
+         n = node_new(c, N_MUL);
+         if (n < 0)
+            return -1;
+         set_src(&NODES(c)[n], 0, rgb, lane_id, swz_id);
+         set_src(&NODES(c)[n], 1, b, lane_id, swz_id);
+         return n;
+      }
+   }
    for (unsigned k = 0; k < 4; k++) {
       if (s[k].def != s[0].def || s[k].comp != k)
          return fail(c, "swizzled or composed vector"), -1;
@@ -554,8 +638,8 @@ varying_slot(struct ctx *c, unsigned location)
    for (unsigned i = 0; i < p->texture_count; i++)
       if (p->texcoords[i] == location)
          return fail(c, "texture coordinate also used as a varying"), -1;
-   /* The kernel accepts two raster streams besides position. */
-   if (p->varying_count + p->texture_count >= 2)
+   /* Three raster streams besides position, c and d. */
+   if (p->varying_count + p->texture_count >= 3)
       return fail(c, "too many interpolated inputs"), -1;
    p->varyings[p->varying_count].location = location;
    p->varyings[p->varying_count].components = 0xf;
@@ -1275,6 +1359,48 @@ match_alpha_compare(struct ctx *c, nir_scalar cond, float *literal)
    return c->p->texture_count == 1 || fail(c, "compare with two textures");
 }
 
+/* st lowers the alpha test to discard_if(!(alpha OP reference)); the vendor
+ * kill slot classes are GEQUAL 0, LESS 1, GREATER 2, LEQUAL 3, NOTEQUAL 4,
+ * EQUAL 5 (captures/m9x-linux-gl15-ff-20260915). */
+static bool
+match_alpha_test(struct ctx *c, nir_intrinsic_instr *kill, nir_def *colour)
+{
+   static const struct { nir_op op; bool swap; unsigned func; } map[] = {
+      { nir_op_flt, false, 1 }, { nir_op_flt, true, 2 },
+      { nir_op_fge, false, 0 }, { nir_op_fge, true, 3 },
+      { nir_op_feq, false, 5 }, { nir_op_fneu, false, 4 },
+   };
+   nir_scalar cond = nir_scalar_chase_movs(nir_get_scalar(kill->src[0].ssa, 0));
+   nir_scalar cmp, src[2];
+
+   if (!nir_scalar_is_alu(cond) || nir_scalar_alu_op(cond) != nir_op_inot)
+      return false;
+   cmp = nir_scalar_chase_movs(nir_scalar_chase_alu_src(cond, 0));
+   if (!nir_scalar_is_alu(cmp))
+      return false;
+   for (unsigned i = 0; i < 2; i++)
+      src[i] = nir_scalar_chase_movs(nir_scalar_chase_alu_src(cmp, i));
+   for (unsigned i = 0; i < ARRAY_SIZE(map); i++) {
+      nir_scalar alpha = src[map[i].swap], ref = src[!map[i].swap];
+      nir_intrinsic_instr *intr;
+
+      if (map[i].op != nir_scalar_alu_op(cmp) || alpha.def != colour ||
+          alpha.comp != 3 || !nir_scalar_is_intrinsic(ref))
+         continue;
+      intr = nir_def_as_intrinsic(ref.def);
+      if (intr->intrinsic != nir_intrinsic_load_ubo_vec4 ||
+          !nir_src_is_const(intr->src[0]) || nir_src_as_uint(intr->src[0]) ||
+          !nir_src_is_const(intr->src[1]))
+         continue;
+      c->alpha.func = map[i].func;
+      c->alpha.ref_offset = ((nir_intrinsic_base(intr) +
+                              nir_src_as_uint(intr->src[1])) * 4 +
+                             nir_intrinsic_component(intr) + ref.comp) * 4;
+      return true;
+   }
+   return false;
+}
+
 static void
 push_uniform_lanes(struct ctx *c, int slot, unsigned lane)
 {
@@ -1480,6 +1606,10 @@ blend_factor(unsigned f, unsigned lane, unsigned s, unsigned s_ba)
    case M9_FS_INV_DST_ALPHA: return (struct bfactor){ B_INV, REG_DST + 2, SWZ_ALPHA };
    case M9_FS_SRC_COLOR: return (struct bfactor){ B_REG, s, SWZ_LANE };
    case M9_FS_INV_SRC_COLOR: return (struct bfactor){ B_INV, s, SWZ_LANE };
+   case M9_FS_DST_COLOR:
+      return (struct bfactor){ B_REG, REG_DST + 2 * lane, SWZ_LANE };
+   case M9_FS_INV_DST_COLOR:
+      return (struct bfactor){ B_INV, REG_DST + 2 * lane, SWZ_LANE };
    default: return (struct bfactor){ B_ZERO };
    }
 }
@@ -1504,6 +1634,9 @@ blend_lane(struct ctx *c, uint32_t *used, unsigned lane, unsigned s,
       fs = (struct bfactor){ B_REG, t, SWZ_ALPHA };
    }
    if (fd.term == B_INV && fs.term == B_REG && fd.reg != s) {
+      /* Only the alpha form of the constant-minus-register load is captured. */
+      if (fd.swz != SWZ_ALPHA)
+         return fail(c, "inverted destination colour factor");
       if ((t = blend_inv_alpha(c, used, fd.reg, k1)) < 0)
          return false;
       fd = (struct bfactor){ B_REG, t, SWZ_ALPHA };
@@ -1552,33 +1685,39 @@ blend_lane(struct ctx *c, uint32_t *used, unsigned lane, unsigned s,
    return true;
 }
 
-/* Redirect the colour writes to saturated temporaries and append the blend
- * against the destination registers 18..1b. */
+/* Registers the encoded program reads or writes, plus the texel pairs.  A
+ * reason rejects programs touching 18..1b, which only blending needs free. */
 static bool
-blend_append(struct ctx *c)
+program_registers(struct ctx *c, uint32_t *used, const char *reason)
 {
-   uint32_t *w = (uint32_t *)c->p->slots.data;
+   const uint32_t *w = (const uint32_t *)c->p->slots.data;
    unsigned n = m9_fs_slot_count(c->p);
-   unsigned consts = NUM(c, p->consts, struct m9_fs_const);
-   uint32_t used = BITFIELD_MASK(4 * c->p->texture_count);
-   int s[2];
 
-   if (c->custom_consts)
-      return fail(c, "blending with a constant template");
+   *used = BITFIELD_MASK(4 * c->p->texture_count);
    for (unsigned i = 0; i < n; i++) {
       uint32_t w0 = w[2 * i], w1 = w[2 * i + 1];
       const unsigned field[4] = { slot_a(w0, w1), w0 >> 22 & 0x7f,
                                   w0 >> 15 & 0x7f, w0 >> 8 & 0x7f };
 
       for (unsigned f = 0; f < 4; f++) {
-         if (field[f] >= REG_DST && field[f] < REG_DST + 4)
-            return fail(c, "blending with a program using registers 18..1b");
+         if (reason && field[f] >= REG_DST && field[f] < REG_DST + 4)
+            return fail(c, reason);
          if (field[f] < 0x20)
-            used |= BITFIELD_BIT(field[f]);
+            *used |= BITFIELD_BIT(field[f]);
       }
    }
+   return true;
+}
+
+/* Send both colour lanes to saturated temporaries instead of the output. */
+static bool
+redirect_output(struct ctx *c, uint32_t *used, int s[2])
+{
+   uint32_t *w = (uint32_t *)c->p->slots.data;
+   unsigned n = m9_fs_slot_count(c->p);
+
    for (unsigned lane = 0; lane < 2; lane++)
-      if ((s[lane] = blend_temp(c, &used)) < 0)
+      if ((s[lane] = blend_temp(c, used)) < 0)
          return false;
    for (unsigned i = 0; i < n; i++) {
       uint32_t *w0 = &w[2 * i];
@@ -1590,6 +1729,27 @@ blend_append(struct ctx *c)
          return fail(c, "internal: partial colour write");
       *w0 = (*w0 & ~0x7fffu) | s[op0 - 0x1d] << 8 | 4u << 5 | 0x1c;
    }
+   return true;
+}
+
+/* Redirect the colour writes to saturated temporaries and append the blend
+ * against the destination registers 18..1b. */
+static bool
+blend_append(struct ctx *c, const int have[2])
+{
+   unsigned consts = NUM(c, p->consts, struct m9_fs_const);
+   uint32_t used;
+   int s[2] = { have[0], have[1] };
+
+   if (c->custom_consts)
+      return fail(c, "blending with a constant template");
+   if (!program_registers(c, &used,
+                          "blending with a program using registers 18..1b"))
+      return false;
+   if (s[0] < 0 && !redirect_output(c, &used, s))
+      return false;
+   for (unsigned lane = 0; lane < 2; lane++)
+      used |= BITFIELD_BIT(s[lane]);
    /* 88 bit 4 clears whenever the destination is blended. */
    c->p->registers_used |= BITFIELD_BIT(0);
    c->p->blend_dest = c->blend->src != M9_FS_ZERO ||
@@ -1597,6 +1757,60 @@ blend_append(struct ctx *c)
    /* The pad pair precedes the (0,1), (1,0.5) tail. */
    return blend_lane(c, &used, 1, s[1], s[1], consts + 1, consts + 2) &&
           blend_lane(c, &used, 0, s[0], s[1], consts + 1, consts + 2);
+}
+
+/* Alpha test (captures/m9x-linux-gl15-ff-20260915, cases alpha_*): the
+ * comparison value comes from the colour alpha and the (0.5, 255) and (2, 1)
+ * helpers; the kill slot carries the compare function in its instruction
+ * class and the reference constant pair in its e field. */
+static bool
+alpha_append(struct ctx *c, int s[2])
+{
+   uint32_t used;
+   unsigned ref;
+   struct m9_fs_const *k;
+   int t;
+
+   if (c->custom_consts)
+      return fail(c, "alpha test with a constant template");
+   /* Only blending needs 18..1b free; the kill slot reads no destination. */
+   if (!program_registers(c, &used, c->blend ?
+                          "alpha test with a program using registers 18..1b" :
+                          NULL))
+      return false;
+   if (!redirect_output(c, &used, s))
+      return false;
+   used |= BITFIELD_BIT(s[0]) | BITFIELD_BIT(s[1]);
+   t = blend_temp(c, &used);
+   if (t < 0)
+      return false;
+   ref = NUM(c, p->consts, struct m9_fs_const);
+   k = util_dynarray_grow(&c->p->consts, struct m9_fs_const, 3);
+   if (!k)
+      return fail(c, "out of memory");
+   memset(k, 0, 3 * sizeof(*k));
+   k[0].kind = M9_FS_CONST_ALPHA_REF;
+   k[0].offset[0] = k[0].offset[1] = c->alpha.ref_offset;
+   k[1].value[0] = 0.5f;
+   k[1].value[1] = 255.0f;
+   k[2].value[0] = 2.0f;
+   k[2].value[1] = 1.0f;
+   emit(c, w0_make(NONE, s[1], NONE, t, 0, 0x1d),
+        w1_make(0xa04003c0, ref + 1, NONE));
+   emit(c, w0_make(NONE, NONE, t, t, 0, 0x1d), 0xa29fcccf);
+   emit(c, w0_make(NONE, t, NONE, 0x40, c->alpha.func, 0x1c),
+        w1_make(0xa3c00000, ref, NONE));
+   c->has_consts = true;
+   return true;
+}
+
+/* Move the colour temporaries to the output, as the vendor does after a
+ * kill slot when nothing blends. */
+static void
+output_temps(struct ctx *c, const int s[2])
+{
+   for (unsigned lane = 0; lane < 2; lane++)
+      emit(c, w0_make(NONE, NONE, s[lane], OUT, 0, 0x1d + lane), 0xa29fff1f);
 }
 
 /* Output assembly */
@@ -1682,6 +1896,7 @@ compile_impl(struct ctx *c, nir_function_impl *impl)
 {
    nir_intrinsic_instr *store = NULL, *kill = NULL;
    bool discard = false, first = true;
+   int colour[2] = { -1, -1 };
 
    if (exec_list_length(&impl->body) != 1)
       return fail(c, "control flow");
@@ -1733,14 +1948,23 @@ compile_impl(struct ctx *c, nir_function_impl *impl)
    }
    if (!store)
       return fail(c, "no color output");
-   if (kill && (discard || !tmpl_stipple(c, kill, store->src[0].ssa)))
+   if (kill && match_alpha_test(c, kill, store->src[0].ssa))
+      c->alpha.enabled = true;
+   else if (kill && (discard || !tmpl_stipple(c, kill, store->src[0].ssa)))
       return fail(c, "unsupported conditional discard");
-   if (!kill && !compile_output(c, store->src[0].ssa, discard))
+   if ((!kill || c->alpha.enabled) &&
+       !compile_output(c, store->src[0].ssa, discard))
       return false;
    c->has_consts |= discard;
    if (!encode_lops(c))
       return false;
-   if (c->blend && !blend_append(c))
+   if (c->alpha.enabled) {
+      if (!alpha_append(c, colour))
+         return false;
+      if (!c->blend)
+         output_temps(c, colour);
+   }
+   if (c->blend && !blend_append(c, colour))
       return false;
    finish_slots(c);
    if (c->blend) {
