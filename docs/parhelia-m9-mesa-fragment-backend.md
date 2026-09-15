@@ -180,9 +180,76 @@ The other exact cases are `fs-varying`, `fs-texcoord`, `fs-mul`, `fs-add`,
   constants.
 * **GLSL level.**  The screen already reports `glsl_feature_level` 120.  It is
   left unchanged: an unsupported GLSL shader fails compilation and its draws
-  are skipped with a warning, so no incorrect program is submitted.  Glamor
-  additionally needs blending, textures and conditionals before its composite
-  paths render.
+  are skipped with a warning, so no incorrect program is submitted.
+
+## 5a. Blending (OFFLINE)
+
+The M9 has no fixed blend stage: the vendor lowers `glBlendFunc` into the
+fragment program.  `captures/m9x-vendor-glamor-blend-20260915` holds glamor's
+solid and texture composite programs under every factor pair glamor's
+composite table and component-alpha remapping produce (sources ZERO, ONE,
+DST_ALPHA, ONE_MINUS_DST_ALPHA × destinations ZERO, ONE, SRC_ALPHA,
+ONE_MINUS_SRC_ALPHA, SRC_COLOR, ONE_MINUS_SRC_COLOR), cleared to alpha 0.5
+(`tools/m9x-glamor-blend-capture.sh`, `tools/m9-glamor-blend-analyze.py`).
+
+**Vendor rules (CAPTURED)**
+
+| | |
+|---|---|
+| ONE/ZERO | the unblended program, `f0=c4008400` |
+| ZERO/ZERO | blended program, `f0=c4008400` |
+| any other pair | `f0=c5008200` |
+| colour writes | go to temporaries with `cls=4` instead of `0x2d` |
+| destination | read from `18` (R,G) and `1a` (B,A) |
+| `88` | bit 4 cleared; bit 5 also cleared when temporaries reach `08` |
+| constants | a `(0,0)` pair precedes the `(0,1),(1,0.5)` tail; blend operations use the tail as the constants 0 and 1 |
+
+**Instruction semantics (MEASURED).**  `m9-native-eval.py --validate` reproduces
+the vendor readback of 23 of the 24 solid-source cases with these forms:
+
+* `op2 02` MAD: `a·b + c`;
+* `op2 05`: `a·b + c·(1 − b')`;
+* `op2 07`: `a·K + c·(1 − b')`;
+* `op2 0a`: `a·b + c·b'`;
+* `op2 04` ADD, loading `K − reg.a`;
+* `cls 4` saturates.
+
+Here `b'` is operand b read through `W1[11:10]`.  ONE_MINUS_DST_ALPHA/ZERO uses
+an `op2 02` form with `W1[28]` set that is not modelled.  Texture cases use the
+vendor rel_sampler stub, which has `cls 5` sample slots, and are not evaluated.
+
+**Backend (OFFLINE).**
+* `m9_fs_compile()` takes an optional `struct m9_fs_blend`.
+* After encoding, colour writes are redirected to two free temporaries with
+  `cls 4`.
+* Each lane then gets `S·fs + D·fd`, built only from the forms above:
+  * fused `op2 07` for a constant source factor with an inverted destination
+    factor;
+  * `op2 05` when the inverted operand is the source lane;
+  * MUL/MAD register forms otherwise;
+  * a `K − reg.a` temporary for other inverted alpha factors.
+* Programs using registers `18..1b`, and the stipple/select constant
+  templates, refuse blending.  Interpolants avoid `1a/1b` while blending.
+* `M9_FS_BLEND=src:dst m9-fs-compile-test` plus `m9-native-eval.py --compare
+  --shaders` gives EQUIV for glamor's solid composite program in 23 pairs.
+  ONE_MINUS_DST_ALPHA/ZERO is unverified, because its vendor reference uses
+  the unmodelled form.
+
+**Driver (UNTESTED).**
+* Each fragment state compiles one variant per blend state on first use, with
+  its own `c2` image.  The job key carries the variant.
+* Supported:
+  * ADD equations with equal RGB and alpha factors (SRC_COLOR in alpha counts
+    as SRC_ALPHA);
+  * factors ZERO, ONE, SRC_ALPHA, DST_ALPHA, SRC_COLOR and their inverses.
+* Not supported:
+  * ONE_MINUS_SRC_COLOR as a source factor.
+  * Other equations, separate factors and constant factors.  Those draws are
+    skipped with a warning, although the screen reports
+    `blend_equation_separate` for the ES 2.0 version glamor requires.  The
+    captured FF equations (`parhelia-m9-gl15-ff-capture.md`) are the source
+    for completing this.
+* Blended lines keep `f0=c8008400`; that combination is not captured.
 
 ## 6. Hardware test plan, safest first
 
