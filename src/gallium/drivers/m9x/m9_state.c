@@ -27,7 +27,7 @@ m9_framebuffer_resource_valid(const struct m9_resource *resource,
 
    if (!resource || !resource->handle || resource->kind != kind ||
        resource->domain != M9_BO_VRAM || resource->layout != 1 ||
-       resource->row_span < m9_resource_row_span(resource->width) ||
+       resource->row_span < m9_render_surface_row_span(resource->width) ||
        resource->row_span > UINT16_MAX ||
        !resource->width || !resource->height || !resource->cpp ||
        !m9_format_info(resource->base.format, &format) ||

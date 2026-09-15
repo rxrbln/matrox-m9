@@ -360,7 +360,7 @@ m9_resource_create(struct pipe_screen *pscreen,
          resource->row_span = resource->mip.level[0].row_span;
          size = resource->mip.size;
       } else {
-         resource->row_span = m9_resource_row_span(templ->width0);
+         resource->row_span = m9_render_surface_row_span(templ->width0);
          size = (uint64_t)resource->row_span *
                 m9_render_surface_height(templ->height0) * format.cpp;
       }
@@ -429,7 +429,11 @@ m9_resource_from_handle(struct pipe_screen *pscreen,
        templ->depth0 != 1 || templ->array_size != 1 || templ->last_level ||
        whandle->offset || !m9_format_info(templ->format, &format) ||
        !format.cpp || whandle->stride % format.cpp ||
-       whandle->stride / format.cpp < m9_resource_row_span(templ->width0) ||
+       whandle->stride / format.cpp <
+          ((templ->bind & (PIPE_BIND_RENDER_TARGET |
+                           PIPE_BIND_DEPTH_STENCIL)) ?
+           m9_render_surface_row_span(templ->width0) :
+           m9_resource_row_span(templ->width0)) ||
        whandle->stride / format.cpp > UINT16_MAX ||
        (whandle->modifier != DRM_FORMAT_MOD_INVALID &&
         whandle->modifier != DRM_FORMAT_MOD_LINEAR))

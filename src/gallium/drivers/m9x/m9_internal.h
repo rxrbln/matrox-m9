@@ -104,6 +104,13 @@ m9_render_surface_height(uint32_t height)
    return (height + 31) & ~31u;
 }
 
+static inline uint32_t
+m9_render_surface_row_span(uint32_t width)
+{
+   /* Supported 16/32-bit render formats use 0x20-element category quanta. */
+   return (width + 31) & ~31u;
+}
+
 struct m9_screen {
    struct pipe_screen base;
    int fd;
