@@ -73,9 +73,9 @@ static int m9_restore_build(struct m9x_transport *transport)
 		memcpy(record, m9_restore_record_template,
 		       sizeof(m9_restore_record_template));
 		record[3] = i == 1 ? 0x0c000000 : 0x62000000;
-		record[10] = (work + 0x400) | 1;
+		record[10] = (work + 0x400) | M9_RESTORE_SYSTEM_TAG;
 		record[15] = base + 0xf8;
-		record[19] = work + 0x440;
+		record[19] = (work + 0x440) | M9_RESTORE_SYSTEM_TAG;
 	}
 	dma_wmb();
 	return 0;
@@ -206,18 +206,9 @@ int m9x_transport_arm_locked(struct m9x_device *mdev)
 	    (!transport->restore_cpu || upper_32_bits(transport->restore_bus) ||
 	     restore > U32_MAX - PARHELIA_M9_RESTORE_BYTES))
 		return -ERANGE;
-	/* Render completion is a memory writeback.  Leave an installed KMS
-	 * vblank source alone; all other sources remain masked. */
-	m9x_write(mdev, M9_REG_IRQ0_MASK, 0);
-	m9x_write(mdev, M9_REG_IRQ_HIGH_MASK, 0);
-	if (!mdev->kms_initialized)
-		m9x_write(mdev, M9_REG_IRQ_LOW_MASK, 0);
-	/* Masked pending sources are normal in the warm image.  Do not W1C an
-	 * unowned source merely because the writeback-fence transport starts. */
-
 	/*
-	 * Byte-for-byte m9x109 register order.  The target's MmFlags/MmDebugFlags
-	 * select vendor candidate 1: compact system GPUVA R with restore tag 0.
+	 * Byte-for-byte m9x109 register order. The target's MmFlags/MmDebugFlags
+	 * select vendor candidate 1, so the restore resource class/tag is one.
 	 */
 	m9x_write(mdev, M9_REG_COMMAND_BASE,
 		  command | M9_COMMAND_SYSTEM_TAG);
@@ -229,7 +220,8 @@ int m9x_transport_arm_locked(struct m9x_device *mdev)
 		 writeback1 | M9_COMMAND_SYSTEM_TAG);
 	m9x_write(mdev, M9_REG_FENCE1_ADDRESS,
 		 writeback0 | M9_COMMAND_SYSTEM_TAG);
-	m9x_write(mdev, M9_REG_RESTORE_TAGGED, restore_base);
+	m9x_write(mdev, M9_REG_RESTORE_TAGGED,
+		  restore ? restore_base | M9_RESTORE_SYSTEM_TAG : 0);
 	m9x_write(mdev, M9_REG_RESTORE_BASE, restore_base);
 	m9x_write(mdev, M9_REG_RESTORE_LIMIT, restore_limit);
 	m9x_write(mdev, M9_REG_REQUESTER_CTL0, M9_REQUESTER_CTL0_FALLBACK);
@@ -241,7 +233,8 @@ int m9x_transport_arm_locked(struct m9x_device *mdev)
 		 m9x_read(mdev, M9_REG_COMMAND_BASE),
 		 writeback1 | M9_COMMAND_SYSTEM_TAG,
 		 writeback0 | M9_COMMAND_SYSTEM_TAG,
-		 restore_base, restore_base, restore_limit,
+		 restore ? restore_base | M9_RESTORE_SYSTEM_TAG : 0,
+		 restore_base, restore_limit,
 		 m9x_read(mdev, M9_REG_REQUESTER_CTL0),
 		 m9x_read(mdev, M9_REG_REQUESTER_CTL1),
 		 m9x_read(mdev, M9_REG_REQUESTER_CTL2));
@@ -264,7 +257,7 @@ int m9x_submit_kernel_stream_locked(struct m9x_device *mdev,
 	unsigned long deadline;
 	dma_addr_t start_bus;
 	u32 *writeback = transport->fence_cpu;
-	u32 command_offset, end, progress_kicks = 0, raw;
+	u32 command_offset, end, raw;
 	u64 extended;
 	int ret;
 
@@ -348,12 +341,7 @@ int m9x_submit_kernel_stream_locked(struct m9x_device *mdev,
 			transport->generation++;
 			return -ETIMEDOUT;
 		}
-		/* Vendor waits re-strobe 0x314 before every incomplete poll. */
-		m9x_write(mdev, M9_REG_FRONTEND_KICK, 1);
-		if (++progress_kicks < 4096)
-			cpu_relax();
-		else
-			usleep_range(50, 100);
+		usleep_range(50, 100);
 	}
 
 	extended = m9_extend_fence(transport, raw);
@@ -432,7 +420,7 @@ int m9x_submit_noop(struct m9x_device *mdev, u64 *point)
 	unsigned long deadline;
 	u32 *command;
 	u32 *writeback = mdev->transport.fence_cpu;
-	u32 command_offset, command_end, progress_kicks = 0, target, raw;
+	u32 command_offset, command_end, target, raw;
 	u64 extended;
 	int ret;
 
@@ -513,12 +501,7 @@ int m9x_submit_noop(struct m9x_device *mdev, u64 *point)
 			ret = -ETIMEDOUT;
 			goto out_error;
 		}
-		/* Vendor waits re-strobe 0x314 before every incomplete poll. */
-		m9x_write(mdev, M9_REG_FRONTEND_KICK, 1);
-		if (++progress_kicks < 4096)
-			cpu_relax();
-		else
-			usleep_range(50, 100);
+		usleep_range(50, 100);
 	}
 
 	extended = m9_extend_fence(&mdev->transport, raw);

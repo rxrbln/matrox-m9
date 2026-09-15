@@ -388,6 +388,8 @@ static int m9_address_publish_binding(struct m9x_device *mdev,
 	m9x_write(mdev, M9_REG_FRONTEND_STATE, 0x01);
 	m9x_write(mdev, M9_REG_FRONTEND_STATE, 0x00);
 	m9x_read(mdev, M9_REG_FRONTEND_STATE);
+	/* m9x810 completes every mode-1 allocation with this front-end kick. */
+	m9x_write(mdev, M9_REG_FRONTEND_KICK, 1);
 	binding->published = true;
 	return 0;
 }

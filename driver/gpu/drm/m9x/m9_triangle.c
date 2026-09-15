@@ -1171,70 +1171,6 @@ static void m9_triangle_build_primary(
 	}
 }
 
-static int m9_triangle_build_initial_transition(u32 target, u32 *primary)
-{
-	if (!IS_ALIGNED(target, 0x10))
-		return -EINVAL;
-	primary[0] = 0x454545e6;
-	primary[1] = 0x00000002;
-	primary[2] = M9_PACKET_FENCE_HEADER;
-	primary[3] = 3;
-	primary[4] = target | 1;
-	return 0;
-}
-
-static int m9_triangle_build_final_transition(u32 context_state,
-					      u32 barrier, u32 done,
-					      u32 *primary)
-{
-	if (!IS_ALIGNED(barrier, 0x10) || !IS_ALIGNED(done, 0x10) ||
-	    done != barrier + 0x10)
-		return -EINVAL;
-	primary[0] = 0x45454747;
-	primary[1] = 0x000011a4;
-	primary[2] = 0x00001308;
-	primary[3] = M9_PACKET_FENCE_HEADER;
-	primary[4] = 3;
-	primary[5] = barrier | 1;
-	primary[6] = 0x45454543;
-	primary[7] = barrier;
-	primary[8] = 0x454522e6;
-	primary[9] = 0x40000000;
-	primary[10] = context_state | 0x20000000;
-	primary[11] = M9_PACKET_FENCE_HEADER;
-	primary[12] = 3;
-	primary[13] = done | 1;
-	return 0;
-}
-
-static int m9_triangle_transition_selftest(void)
-{
-	static const u32 expected_initial[] = {
-		0x454545e6, 0x00000002,
-		0x4545e3e6, 0x00000003, 0x00000011,
-	};
-	static const u32 expected_final[] = {
-		0x45454747, 0x000011a4, 0x00001308,
-		0x4545e3e6, 0x00000003, 0x00000021,
-		0x45454543, 0x00000020,
-		0x454522e6, 0x40000000, 0x32345678,
-		0x4545e3e6, 0x00000003, 0x00000031,
-	};
-	u32 initial[ARRAY_SIZE(expected_initial)];
-	u32 final[ARRAY_SIZE(expected_final)];
-
-	if (m9_triangle_build_initial_transition(0x10, initial) ||
-	    memcmp(initial, expected_initial, sizeof(initial)) ||
-	    !m9_triangle_build_initial_transition(0x11, initial) ||
-	    m9_triangle_build_final_transition(0x12345678, 0x20, 0x30,
-					       final) ||
-	    memcmp(final, expected_final, sizeof(final)) ||
-	    !m9_triangle_build_final_transition(0x12345678, 0x20, 0x20,
-						final))
-		return -EINVAL;
-	return 0;
-}
-
 static u32 m9_triangle_captured_operand(enum m9_triangle_operand operand)
 {
 	switch (operand) {
@@ -1297,49 +1233,6 @@ static int m9_triangle_serialize_linked_record(struct m9x_device *mdev,
 	return 0;
 }
 
-static int m9_triangle_run_manager_transition(struct m9x_device *mdev,
-					      u64 *point)
-{
-	u32 initial_primary[5];
-	u32 transition_primary[14];
-	u32 barrier, context_state, done, target;
-	int ret;
-
-	/*
-	 * m9x421 has two real flush boundaries: the initial E6 packet precedes
-	 * the direct window writes, and the final transition follows them.
-	 */
-	target = mdev->transport.next_fence;
-	ret = m9_triangle_build_initial_transition(target, initial_primary);
-	if (ret)
-		return ret;
-	ret = m9x_submit_kernel_stream_locked(mdev, initial_primary,
-					      ARRAY_SIZE(initial_primary),
-					      target, point);
-	if (ret)
-		return ret;
-	mdev->transport.next_fence = target + 0x10;
-
-	ret = m9x_address_publish(mdev);
-	if (ret)
-		return ret;
-
-	barrier = mdev->transport.next_fence;
-	done = barrier + 0x10;
-	context_state = m9x_read(mdev, M9_REG_CONTEXT_STATE);
-	ret = m9_triangle_build_final_transition(context_state, barrier, done,
-						 transition_primary);
-	if (ret)
-		return ret;
-	ret = m9x_submit_kernel_stream_locked(mdev, transition_primary,
-					      ARRAY_SIZE(transition_primary),
-					      done, point);
-	if (ret)
-		return ret;
-	mdev->transport.next_fence = done + 0x10;
-	return 0;
-}
-
 int m9x_submit_triangle_diag(struct m9x_device *mdev, u32 color,
 			     struct drm_gem_vram_object *color_bo, u64 *point,
 			     bool *color_active)
@@ -1373,42 +1266,38 @@ int m9x_submit_triangle_diag(struct m9x_device *mdev, u32 color,
 	diag = mdev->transport.triangle;
 	if (!mdev->transport.engine_transitioned) {
 		/*
-		 * The vendor arms the stable requester, completion and restore
-		 * addresses before executing m9x421.  Its first complete transition
-		 * precedes compact publication and m9x1187 executes the second one
-		 * afterward.  A preceding diagnostic no-op may have armed the
-		 * requester with restore disabled, so publish the recovered register
-		 * tuple again before the first transition.
+		 * Both cold m9x421 calls precede m9x182.  Their command builder is
+		 * absent or has a zero +0xc8 refcount, so the vendor performs only the
+		 * direct MMIO window writes.  Do not inject the warm e6/47/e3/43/22
+		 * packet path into cold construction.
 		 */
-		/* The vendor does not install the nonzero restore tuple until both
-		 * m9x421 builders and compact publication have been constructed.  Our
-		 * synchronous diagnostic executes those builders, so keep restore
-		 * disabled until its PTE is active and both transitions have retired. */
-		mdev->transport.restore_ready = false;
-		ret = m9x_transport_rearm_locked(mdev);
-		if (ret)
+		if (mdev->transport.transport_armed) {
+			ret = -EBUSY;
 			goto out_unlock;
-		ret = m9_triangle_run_manager_transition(mdev, point);
+		}
+		ret = m9x_address_publish(mdev);
 		if (ret)
 			goto out_unlock;
 		ret = m9x_address_construct_manager(mdev);
 		if (ret)
 			goto out_unlock;
-		ret = m9_triangle_run_manager_transition(mdev, point);
+		ret = m9x_address_publish(mdev);
 		if (ret)
 			goto out_unlock;
+		/* m9x182 publishes the restore allocation before its single arm. */
 		ret = m9x_address_commit_gpuva(mdev,
 					      PARHELIA_M9_RESTORE_GPUVA);
 		if (ret)
 			goto out_unlock;
 		mdev->transport.restore_ready = true;
-		ret = m9x_transport_rearm_locked(mdev);
+		ret = m9x_transport_arm_locked(mdev);
+		if (ret)
+			goto out_unlock;
+		/* m9x926 publishes its four resources before m9x1141/m9x115. */
+		ret = m9x_address_commit_bindings(mdev);
 		if (ret)
 			goto out_unlock;
 		ret = m9x_address_finalize_service(mdev);
-		if (ret)
-			goto out_unlock;
-		ret = m9x_address_commit_bindings(mdev);
 		if (ret)
 			goto out_unlock;
 		mdev->transport.engine_transitioned = true;
@@ -1691,9 +1580,6 @@ m9_triangle_stream_selftest(struct m9_triangle_commands *commands)
 	int ret;
 
 	ret = m9_seq0_selftest();
-	if (ret)
-		return ret;
-	ret = m9_triangle_transition_selftest();
 	if (ret)
 		return ret;
 
