@@ -283,9 +283,9 @@ The three 192-byte Windows geometry tables beginning at `0x1f19a0`,
 `0x1f1a78`, and `0x1f1b50` occur byte-for-byte in Linux 1.15 at file offsets
 `0xe9b720/0xe9b800/0xe9b8e0`, with two further identical copies [BIN].
 Category 3 takes a separate branch.  Its table indices prove `+0x16c = 8` for both local-layout
-states and all three device modes.  The vertical quantum `+0x170` is 4 when
-the local-layout flag is clear, and `20 / 10 / 10` across device modes when it
-is set.  The class-3 branch then computes:
+states and all three device modes.  The vertical quantum `+0x170` is also 8
+for both local-layout states and all three device modes.  The class-3 branch
+then computes:
 
 ```text
 +0x184 = align(raw_width, 8)

@@ -105,6 +105,27 @@ Examples are `320x240 -> 40x60`, `321x241 -> 41x61`, and
 meaning of the two 16-bit fields; a new driver must treat the contents as
 opaque hardware metadata.
 
+Those dimensions are the logical metadata rectangle, not the complete backing
+allocation.  The call chain from allocator `0x54be0` through generic resource
+creator `0x51870/0x51990` recognizes internal format ID `0x0b` at
+`0x51b82..0x51b8a` and adds layout flag `0x40`.  Constructor `0x45eb0` uses
+that flag at `0x46018..0x46028` to force layout category 3 after deriving the
+format's 32-bit element size.  Both category-3 rows in the exact geometry
+tables at `0x1f19a0` and `0x1f1a78` are `{8,8,8,8,8,8}`.  The dedicated
+branch at `0x461b1..0x461e5` therefore computes [BIN][DER]:
+
+```text
+allocated_width  = align(metadata_width, 8)
+allocated_height = align(metadata_height + 8, 8)
+allocation_bytes = align(allocated_width * allocated_height * 4, 0x80)
+```
+
+The byte-size leaf is `0x46470..0x464d9`.  Consequently a 320-by-240 parent
+has a logical 40-by-60 metadata rectangle but a 40-by-72, `0x2d00`-byte
+backing allocation.  Conservative initialization clears the complete backing,
+including the eight extra allocation rows; treating only the logical
+`0x2580` bytes as usable would place a guard inside the vendor allocation.
+
 ## Linux 64-bit allocation and object layout
 
 The independently recovered Linux path uses different 64-bit object layouts.
