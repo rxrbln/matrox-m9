@@ -31,7 +31,7 @@ enum m9_resource_kind {
 enum m9_bo_domain {
    /* CREATE_BO: DMA32 system memory accepted by the submit validator. */
    M9_BO_DMA32,
-   /* Driver VRAM GEM class; render submission pins movable dumb objects. */
+   /* Driver VRAM GEM class; pinned local-memory objects for render/scanout. */
    M9_BO_VRAM,
 };
 
@@ -40,7 +40,6 @@ struct m9_prime_import {
    uint32_t handle;
    uint32_t references;
    bool owns_handle;
-   bool destroy_dumb;
 };
 
 struct m9_mip_level {
@@ -72,7 +71,6 @@ struct m9_resource {
    uint8_t layout;
    enum m9_bo_domain domain;
    bool handle_owned;
-   bool dumb_owned;
    bool map_writable;
    int map_fd;
    struct m9_prime_import *prime_import;
@@ -85,7 +83,9 @@ m9_resource_bo_flags(const struct pipe_resource *templ)
 {
    const unsigned gpu_image = PIPE_BIND_RENDER_TARGET |
                               PIPE_BIND_DEPTH_STENCIL |
-                              PIPE_BIND_SAMPLER_VIEW | PIPE_BIND_SHARED;
+                              PIPE_BIND_SAMPLER_VIEW | PIPE_BIND_SHARED |
+                              PIPE_BIND_SCANOUT | PIPE_BIND_DISPLAY_TARGET |
+                              PIPE_BIND_USE_FRONT_RENDERING;
 
    /* Gallium buffers are the command/vertex/index/constant upload domain.
     * Staging-only images likewise remain CPU-oriented DMA32 objects.  A

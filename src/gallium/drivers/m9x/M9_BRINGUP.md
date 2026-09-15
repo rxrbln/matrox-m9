@@ -87,9 +87,11 @@ two-slot primary command rebase.  Arbitrary userspace streams remain disabled:
   explicit staging images, and command BOs remain DMA32 upload resources.
   Framebuffer state accepts only a complete local-VRAM layout-1 image; it
   rejects DMA32 and placement-unknown imports before command construction.
-* Presentation BOs use `MODE_CREATE_DUMB`, the guarded KMS contract's exact
-  1024x768 XRGB8888 shape, 4096-byte pitch, vendor-exact `0x301000`
-  renderable backing, and direct BAR0 mapping.
+* Presentation BOs use the render-node-safe `CREATE_BO(VRAM)` path with the
+  guarded KMS contract's exact 1024x768 XRGB8888 shape, 4096-byte pitch,
+  vendor-exact `0x301000` renderable backing, and direct BAR0 mapping.
+  `GET_BO_INFO` returns the mmap cookie needed to map imported local-VRAM
+  handles without primary-node-only modesetting ioctls.
   Resource creation rejects every other scanout or display-target template,
   including ARGB8888, before allocating a generic VRAM image.
   KMS, flink, and PRIME winsys handles have symmetric import/export paths.

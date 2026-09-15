@@ -130,24 +130,6 @@ m9_is_format_supported(struct pipe_screen *screen, enum pipe_format format,
 }
 
 static int
-m9_resource_map_dumb(struct m9_screen *screen, struct m9_resource *resource)
-{
-   struct drm_mode_map_dumb map = { .handle = resource->handle };
-
-   if (ioctl(screen->fd, DRM_IOCTL_MODE_MAP_DUMB, &map))
-      return -errno;
-   resource->mmap_offset = map.offset;
-   resource->map = mmap(NULL, resource->size, PROT_READ | PROT_WRITE,
-                        MAP_SHARED, screen->fd, map.offset);
-   if (resource->map == MAP_FAILED) {
-      resource->map = NULL;
-      return -errno;
-   }
-   resource->map_writable = true;
-   return 0;
-}
-
-static int
 m9_prime_import_get(struct m9_screen *screen, int fd,
                     struct m9_resource *resource)
 {
@@ -246,8 +228,7 @@ m9_prime_track_export(struct m9_screen *screen, struct m9_resource *resource)
    }
    entry->handle = resource->handle;
    entry->references = 1;
-   entry->owns_handle = resource->handle_owned || resource->dumb_owned;
-   entry->destroy_dumb = resource->dumb_owned;
+   entry->owns_handle = resource->handle_owned;
    entry->next = screen->imports;
    screen->imports = entry;
    resource->prime_import = entry;
@@ -266,13 +247,7 @@ m9_prime_import_put(struct m9_screen *screen, struct m9_prime_import *entry)
          continue;
       if (--entry->references == 0) {
          *link = entry->next;
-         if (entry->owns_handle && entry->destroy_dumb) {
-            struct drm_mode_destroy_dumb destroy = {
-               .handle = entry->handle,
-            };
-
-            ioctl(screen->fd, DRM_IOCTL_MODE_DESTROY_DUMB, &destroy);
-         } else if (entry->owns_handle) {
+         if (entry->owns_handle) {
             struct drm_gem_close close_bo = { .handle = entry->handle };
 
             ioctl(screen->fd, DRM_IOCTL_GEM_CLOSE, &close_bo);
@@ -282,41 +257,6 @@ m9_prime_import_put(struct m9_screen *screen, struct m9_prime_import *entry)
       break;
    }
    simple_mtx_unlock(&screen->import_lock);
-}
-
-static int
-m9_resource_create_dumb(struct m9_screen *screen,
-                        struct m9_resource *resource)
-{
-   struct m9_render_layout layout;
-   struct drm_mode_create_dumb create = {
-      .width = 1024,
-      .height = 768,
-      .bpp = 32,
-   };
-   int ret;
-
-   if (ioctl(screen->fd, DRM_IOCTL_MODE_CREATE_DUMB, &create))
-      return -errno;
-   if (!m9_render_surface_layout(1024, 768, 4, &layout) ||
-       create.pitch != 4096 || create.size < layout.size) {
-      struct drm_mode_destroy_dumb destroy = { .handle = create.handle };
-      ioctl(screen->fd, DRM_IOCTL_MODE_DESTROY_DUMB, &destroy);
-      return -EINVAL;
-   }
-   resource->handle = create.handle;
-   resource->size = create.size;
-   resource->row_span = create.pitch / 4;
-   resource->domain = M9_BO_VRAM;
-   resource->dumb_owned = true;
-   ret = m9_resource_map_dumb(screen, resource);
-   if (ret) {
-      struct drm_mode_destroy_dumb destroy = { .handle = create.handle };
-      ioctl(screen->fd, DRM_IOCTL_MODE_DESTROY_DUMB, &destroy);
-      resource->handle = 0;
-      resource->dumb_owned = false;
-   }
-   return ret;
 }
 
 static struct pipe_resource *
@@ -342,11 +282,12 @@ m9_resource_create(struct pipe_screen *pscreen,
       goto fail;
    if (m9_presentation_template(templ)) {
       resource->kind = M9_RESOURCE_LINEAR_COLOR;
-      if (!m9_format_info(templ->format, &format))
+      if (!m9_format_info(templ->format, &format) ||
+          !m9_render_surface_layout(templ->width0, templ->height0,
+                                    format.cpp, &render_layout))
          goto fail;
-      if (m9_resource_create_dumb(screen, resource))
-         goto fail;
-      size = resource->size;
+      resource->row_span = render_layout.row_span;
+      size = render_layout.size;
    } else if (templ->target == PIPE_BUFFER) {
       size = templ->width0;
       resource->kind = M9_RESOURCE_LINEAR_BUFFER;
@@ -410,9 +351,9 @@ m9_resource_create(struct pipe_screen *pscreen,
 fail:
    if (resource->map)
       munmap(resource->map, resource->size);
-   if (resource->dumb_owned && resource->handle) {
-      struct drm_mode_destroy_dumb destroy = { .handle = resource->handle };
-      ioctl(screen->fd, DRM_IOCTL_MODE_DESTROY_DUMB, &destroy);
+   if (resource->handle_owned && resource->handle) {
+      struct drm_gem_close close_bo = { .handle = resource->handle };
+      ioctl(screen->fd, DRM_IOCTL_GEM_CLOSE, &close_bo);
    }
    FREE(resource);
    return NULL;
@@ -510,6 +451,7 @@ m9_resource_from_handle(struct pipe_screen *pscreen,
       goto fail;
    }
    resource->size = info.size;
+   resource->mmap_offset = info.mmap_offset;
    resource->domain = M9_BO_VRAM;
    if (resource->map_fd >= 0) {
       int prot = PROT_READ;
@@ -527,7 +469,13 @@ m9_resource_from_handle(struct pipe_screen *pscreen,
          ret = -errno;
       }
    } else {
-      ret = m9_resource_map_dumb(screen, resource);
+      resource->map_writable = true;
+      resource->map = mmap(NULL, resource->size, PROT_READ | PROT_WRITE,
+                           MAP_SHARED, screen->fd, resource->mmap_offset);
+      if (resource->map == MAP_FAILED) {
+         resource->map = NULL;
+         ret = -errno;
+      }
    }
    if (ret)
       goto fail;
@@ -624,9 +572,6 @@ m9_resource_destroy(struct pipe_screen *pscreen, struct pipe_resource *pres)
       close(resource->map_fd);
    if (resource->prime_import) {
       m9_prime_import_put(m9_screen(pscreen), resource->prime_import);
-   } else if (resource->dumb_owned && resource->handle) {
-      struct drm_mode_destroy_dumb destroy = { .handle = resource->handle };
-      ioctl(m9_screen(pscreen)->fd, DRM_IOCTL_MODE_DESTROY_DUMB, &destroy);
    } else if (resource->handle_owned && resource->handle) {
       ioctl(m9_screen(pscreen)->fd, DRM_IOCTL_GEM_CLOSE, &close_bo);
    }
@@ -777,13 +722,7 @@ m9_destroy(struct pipe_screen *pscreen)
       struct m9_prime_import *entry = screen->imports;
 
       screen->imports = entry->next;
-      if (entry->owns_handle && entry->destroy_dumb) {
-         struct drm_mode_destroy_dumb destroy = {
-            .handle = entry->handle,
-         };
-
-         ioctl(screen->fd, DRM_IOCTL_MODE_DESTROY_DUMB, &destroy);
-      } else if (entry->owns_handle) {
+      if (entry->owns_handle) {
          struct drm_gem_close close_bo = { .handle = entry->handle };
 
          ioctl(screen->fd, DRM_IOCTL_GEM_CLOSE, &close_bo);
