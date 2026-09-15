@@ -41,6 +41,12 @@
 #define M9_TRIANGLE_C2_BACKING_BYTES	(M9_TRIANGLE_C2_LEADING_BYTES + \
 					 M9_TRIANGLE_C2_BYTES)
 #define M9_TRIANGLE_RESOURCE69_RECORD_BYTES 0x80u
+#define M9_TRIANGLE_RASTER_SHADE_CONTROL_DW 17u
+#define M9_TRIANGLE_RASTER_SHADE_LINK0_DW 93u
+#define M9_TRIANGLE_RASTER_SHADE_LINK1_DW 94u
+#define M9_TRIANGLE_FRAMED_SHADE_CONTROL 0x2d0u
+#define M9_TRIANGLE_FRAMED_SHADE_LINK0 0x464u
+#define M9_TRIANGLE_FRAMED_SHADE_LINK1 0x468u
 #define M9_TRIANGLE_BE_BYTES		SZ_1M
 #define M9_TRIANGLE_TRANSIENT_BYTES	0x16800u
 #define M9_TRIANGLE_VRAM_BASE		0x10000000ull
@@ -869,6 +875,7 @@ static u32 *m9_triangle_command_range(struct m9_triangle_commands *commands,
 
 static void m9_triangle_build_commands(
 		const struct m9_triangle_job_addresses *job,
+		bool gouraud,
 		struct m9_triangle_commands *commands)
 {
 	unsigned int i;
@@ -885,6 +892,11 @@ static void m9_triangle_build_commands(
 	 */
 	commands->raster[37] = U32_MAX;
 	commands->raster[38] = U32_MAX;
+	if (gouraud) {
+		commands->raster[M9_TRIANGLE_RASTER_SHADE_CONTROL_DW] &= ~BIT(14);
+		commands->raster[M9_TRIANGLE_RASTER_SHADE_LINK0_DW] &= ~BIT(31);
+		commands->raster[M9_TRIANGLE_RASTER_SHADE_LINK1_DW] &= ~BIT(31);
+	}
 	for (i = 0; i < ARRAY_SIZE(m9_triangle_reloc_sites); i++) {
 		const struct m9_triangle_reloc_site *site =
 			&m9_triangle_reloc_sites[i];
@@ -905,7 +917,8 @@ static void m9_triangle_build_commands(
 
 static void m9_triangle_build_framed_secondary(
 		u8 *image,
-		const struct m9_triangle_job_addresses *job)
+		const struct m9_triangle_job_addresses *job,
+		bool gouraud)
 {
 	unsigned int i;
 
@@ -917,6 +930,14 @@ static void m9_triangle_build_framed_secondary(
 	       m9_triangle_framed_payload, sizeof(m9_triangle_framed_payload));
 	put_unaligned_le32(U32_MAX, image + 0x33c);
 	put_unaligned_le32(U32_MAX, image + 0x340);
+	if (gouraud) {
+		put_unaligned_le32(0x00002503,
+				   image + M9_TRIANGLE_FRAMED_SHADE_CONTROL);
+		put_unaligned_le32(0x00100d88,
+				   image + M9_TRIANGLE_FRAMED_SHADE_LINK0);
+		put_unaligned_le32(0x001006b6,
+				   image + M9_TRIANGLE_FRAMED_SHADE_LINK1);
+	}
 	for (i = 0; i < ARRAY_SIZE(m9_triangle_reloc_sites); i++)
 		put_unaligned_le32(m9_triangle_operand_value(job,
 			m9_triangle_reloc_sites[i].operand),
@@ -1217,7 +1238,7 @@ int m9x_submit_triangle_diag(struct m9x_device *mdev, u32 color, u64 *point,
 	ret = m9_triangle_build_addresses(mdev, color, draw_target, &job);
 	if (ret)
 		goto out_unlock;
-	m9_triangle_build_commands(&job, &diag->commands);
+	m9_triangle_build_commands(&job, m9_triangle_gouraud, &diag->commands);
 	m9_triangle_build_primary(&job, diag->commands.primary);
 	ret = m9_triangle_serialize_linked_record(mdev, &job);
 	if (ret)
@@ -1229,7 +1250,7 @@ int m9x_submit_triangle_diag(struct m9x_device *mdev, u32 color, u64 *point,
 	 * every referenced synchronous diagnostic allocation.
 	 */
 	m9_triangle_build_framed_secondary(diag->resource[M9_TRI_SECONDARY].cpu,
-					   &job);
+					   &job, m9_triangle_gouraud);
 	dma_wmb();
 	*color_active = true;
 	ret = m9x_submit_kernel_stream_locked(mdev, diag->commands.primary,
@@ -1331,10 +1352,24 @@ static int m9_seq0_selftest(void)
 
 	/* Keep the separately captured draw serializer covered even though the
 	 * shared secondary BO cannot receive it until sequence 0 retires. */
-	m9_triangle_build_framed_secondary(image, &draw);
+	m9_triangle_build_framed_secondary(image, &draw, false);
 	if (get_unaligned_le32(image) || get_unaligned_le32(image + 4) ||
 	    get_unaligned_le32(image + 0x33c) != U32_MAX ||
-	    get_unaligned_le32(image + 0x340) != U32_MAX)
+	    get_unaligned_le32(image + 0x340) != U32_MAX ||
+	    get_unaligned_le32(image + M9_TRIANGLE_FRAMED_SHADE_CONTROL) !=
+		0x00006403 ||
+	    get_unaligned_le32(image + M9_TRIANGLE_FRAMED_SHADE_LINK0) !=
+		0x80100d88 ||
+	    get_unaligned_le32(image + M9_TRIANGLE_FRAMED_SHADE_LINK1) !=
+		0x801006b6)
+		goto out;
+	m9_triangle_build_framed_secondary(image, &draw, true);
+	if (get_unaligned_le32(image + M9_TRIANGLE_FRAMED_SHADE_CONTROL) !=
+		0x00002503 ||
+	    get_unaligned_le32(image + M9_TRIANGLE_FRAMED_SHADE_LINK0) !=
+		0x00100d88 ||
+	    get_unaligned_le32(image + M9_TRIANGLE_FRAMED_SHADE_LINK1) !=
+		0x001006b6)
 		goto out;
 	for (i = 0x4f0; i < M9_TRIANGLE_SECONDARY_BYTES; i++)
 		if (image[i])
@@ -1479,15 +1514,23 @@ int m9x_triangle_selftest(void)
 	    job.transition[5] != 0x40 ||
 	    (job.transition[5] | 1) != 0x41)
 		return -EINVAL;
-	m9_triangle_build_commands(&job, &commands);
+	m9_triangle_build_commands(&job, false, &commands);
 	m9_triangle_build_primary(&job, commands.primary);
 	if (commands.raster[37] != U32_MAX ||
 	    commands.raster[38] != U32_MAX ||
+	    commands.raster[M9_TRIANGLE_RASTER_SHADE_CONTROL_DW] != 0x00006403 ||
+	    commands.raster[M9_TRIANGLE_RASTER_SHADE_LINK0_DW] != 0x80100d88 ||
+	    commands.raster[M9_TRIANGLE_RASTER_SHADE_LINK1_DW] != 0x801006b6 ||
 	    memcmp(commands.primary, (const u32[]) {
 		0x45452d2c, 0x12000009, 0x12000272,
 		0x45452d2c, 0x12000271, 0x120004c6,
 		0x45452d2c, 0x120004c5, 0x120004f2,
 	}, sizeof(commands.primary)))
+		return -EINVAL;
+	m9_triangle_build_commands(&job, true, &commands);
+	if (commands.raster[M9_TRIANGLE_RASTER_SHADE_CONTROL_DW] != 0x00002503 ||
+	    commands.raster[M9_TRIANGLE_RASTER_SHADE_LINK0_DW] != 0x00100d88 ||
+	    commands.raster[M9_TRIANGLE_RASTER_SHADE_LINK1_DW] != 0x001006b6)
 		return -EINVAL;
 	for (i = 0; i < ARRAY_SIZE(m9_triangle_reloc_sites); i++) {
 		const struct m9_triangle_reloc_site *site =
