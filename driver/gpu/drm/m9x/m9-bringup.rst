@@ -173,13 +173,18 @@ The restore pool is the vendor's local mode-3 image: a ``45454747`` prefix,
 1024 records at ``0x700 + i * 0x600`` with untagged local pointers, and
 ``10ec = 1094 = base + 0x200``.
 
-Once the manager is active, BAR0 CPU access to VRAM offset ``X`` also
-resolves local address ``0x10000000 + X`` through the leaves; an unpublished
-page reads back its leaf page.  Manager construction therefore publishes
-identity leaves for the whole BAR-visible VRAM range.  Published windows
-survive module unload and warm reboot (``f64..f7c`` are reset by reboot,
-``360/364`` are not), so probe refuses to reload while ``f64`` or ``f7c`` is
-programmed.
+BAR0 is a CPU window translated by the 20-slot host-aperture descriptor bank
+at MMIO ``0x000..0x13f``.  The service construction (``m9x115``) invalidates
+every slot, after which the low 32 MiB of BAR0 alias to the last accessed
+page.  The driver publishes the linear descriptor vendor X uses for its VRAM
+test (``0004=0``, ``0008=f0000000``, ``000c=00010001``, ``0000=a0000000``)
+before the first CPU VRAM access and after each invalidation.  BAR0 above
+32 MiB is not covered by that window.
+
+GPU addresses below the PInS memory size are VRAM offsets, so a BO at BAR
+offset ``X`` is addressed as ``X`` and receives an identity leaf.  The vendor's
+private pools stay above the BAR at ``0x10000000 + base``.  Windows
+``360/364`` survive warm reboot; ``f64..f7c`` are reset.
 
 UAPI boundary
 -------------
