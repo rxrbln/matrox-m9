@@ -1,6 +1,7 @@
 /* SPDX-License-Identifier: MIT */
 /* Copyright 2026 René Rebe <rene@exactco.de> */
 #include "m9_screen.h"
+#include "m9_fs_compile.h"
 #include "m9x_public.h"
 
 #include <errno.h>
@@ -866,24 +867,6 @@ static const nir_shader_compiler_options m9_vs_nir_options = {
    .has_fused_comp_and_csel = true,
 };
 
-/* Fragment shaders are only inspected for an interpolated-color pass-through. */
-static const nir_shader_compiler_options m9_fs_nir_options = {
-   .fdot_replicates = true,
-   .lower_bitops = true,
-   .lower_extract_byte = true,
-   .lower_extract_word = true,
-   .lower_fdiv = true,
-   .lower_fdph = true,
-   .lower_flrp32 = true,
-   .lower_fmod = true,
-   .lower_sincos = true,
-   .lower_uniforms_to_ubo = true,
-   .force_indirect_unrolling = nir_var_all,
-   .force_indirect_unrolling_sampler = true,
-   .max_unroll_iterations = 32,
-   .no_integers = true,
-   .has_fused_comp_and_csel = true,
-};
 
 static void
 m9_init_shader_caps(struct m9_screen *screen)
