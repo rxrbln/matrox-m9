@@ -724,7 +724,8 @@ static int m9_triangle_alloc_one(struct m9x_device *mdev,
 	return 0;
 }
 
-static int m9_triangle_verify_guards(const struct m9x_triangle_diag *diag)
+static int m9_triangle_verify_guards(const struct m9x_triangle_diag *diag,
+				     struct device *dev)
 {
 	unsigned int id;
 
@@ -743,8 +744,13 @@ static int m9_triangle_verify_guards(const struct m9x_triangle_diag *diag)
 				value = READ_ONCE(*(const u32 *)((const u8 *)
 					resource->cpu + resource->payload_bytes +
 					word * sizeof(u32)));
-			if (value != resource->guard)
+			if (value != resource->guard) {
+				dev_err(dev,
+					"M9 triangle %s guard word %u = %#x, expected %#x\n",
+					m9_triangle_specs[id].name, word, value,
+					resource->guard);
 				return -EOVERFLOW;
+			}
 		}
 	}
 	return 0;
@@ -808,7 +814,7 @@ static int m9_triangle_prepare_resources(struct m9x_device *mdev)
 	int ret;
 
 	if (diag && diag->prepared)
-		return m9_triangle_verify_guards(diag);
+		return m9_triangle_verify_guards(diag, &mdev->pdev->dev);
 	if (!diag) {
 		diag = devm_kzalloc(&mdev->pdev->dev, sizeof(*diag), GFP_KERNEL);
 		if (!diag)
@@ -848,7 +854,7 @@ static int m9_triangle_prepare_resources(struct m9x_device *mdev)
 		 diag->resource[M9_TRI_SYSTEM].gpuva,
 		 &diag->resource[M9_TRI_SECONDARY].bus,
 		 diag->resource[M9_TRI_SECONDARY].gpuva, diag->pte_count);
-	return m9_triangle_verify_guards(diag);
+	return m9_triangle_verify_guards(diag, &mdev->pdev->dev);
 }
 
 int m9x_triangle_prepare_diag(struct m9x_device *mdev)
@@ -1377,7 +1383,7 @@ int m9x_submit_triangle_diag(struct m9x_device *mdev, u32 color,
 			goto out_unlock;
 		mdev->transport.next_fence = sequence0.target +
 					    M9_SEQ0_NEXT_TARGET_OFFSET;
-		ret = m9_triangle_verify_guards(diag);
+		ret = m9_triangle_verify_guards(diag, &mdev->pdev->dev);
 		if (ret) {
 			mdev->transport.wedged = true;
 			mdev->transport.generation++;
@@ -1420,7 +1426,7 @@ int m9x_submit_triangle_diag(struct m9x_device *mdev, u32 color,
 	if (ret)
 		goto out_unlock;
 	mdev->transport.next_fence = job.transition[5] + 0x10;
-	ret = m9_triangle_verify_guards(diag);
+	ret = m9_triangle_verify_guards(diag, &mdev->pdev->dev);
 	if (ret) {
 		mdev->transport.wedged = true;
 		mdev->transport.generation++;

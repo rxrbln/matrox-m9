@@ -152,6 +152,35 @@ warm reboot.  Explicit KMS owners (first ``modetest``, then Xorg) now create and
 own the direct VRAM framebuffer lifecycle; this also avoids introducing a
 deferred shadow fbcon path into the initial direct-scanout test.
 
+Address layout
+--------------
+
+The manager tables are sized from the real VRAM size, not from the 256-MiB
+BAR0.  Like the vendor ``m9x320 -> m9x798``, the driver reads the u16 PInS
+pointer at ROM ``0x7ffc``, checks signature ``0x412e`` and sums
+``32 MiB << (n - 1)`` for each low nibble ``n`` in 1..6 of PInS+0x44.  The
+M9148-E1024LAF reports ``00014444``, i.e. 1 GiB.  With ``P = 4 * (VRAM pages +
+0x8000)`` the layout is primary ``[0x801000, 0x801000 + P)``, translation
+window ``0x80000`` bytes, tail ``P`` bytes, then the 0x181000-byte local
+restore pool and its 4-MiB reserve, followed by the four mode-0 pools.  On
+1 GiB this reproduces the live vendor windows ``1334/f7c=920000``,
+``360/364=921000/9a0000``, ``f64/f68=9a1000/ac0000``, restore ``0xac1000`` and
+pools ``0x10ec1000/0x112c1000/0x113c1000/0x11421000``.  Class-1 GPU
+addresses from ``0x40000000`` index the primary child at
+``0x801000 + 4 * (A >> 12)``.
+
+The restore pool is the vendor's local mode-3 image: a ``45454747`` prefix,
+1024 records at ``0x700 + i * 0x600`` with untagged local pointers, and
+``10ec = 1094 = base + 0x200``.
+
+Once the manager is active, BAR0 CPU access to VRAM offset ``X`` also
+resolves local address ``0x10000000 + X`` through the leaves; an unpublished
+page reads back its leaf page.  Manager construction therefore publishes
+identity leaves for the whole BAR-visible VRAM range.  Published windows
+survive module unload and warm reboot (``f64..f7c`` are reset by reboot,
+``360/364`` are not), so probe refuses to reload while ``f64`` or ``f7c`` is
+programmed.
+
 UAPI boundary
 -------------
 

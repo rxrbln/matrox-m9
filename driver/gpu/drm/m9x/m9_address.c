@@ -65,6 +65,7 @@ struct m9x_address_space {
 	struct drm_gem_vram_object *service_pools[M9_ADDRESS_SERVICE_POOLS];
 	struct iosys_map map;
 	struct m9x_address_binding *bindings;
+	u32 local_pages;
 	u32 binding_count;
 	u32 binding_capacity;
 	bool mapped;
@@ -269,13 +270,25 @@ int m9x_address_init(struct m9x_device *mdev)
 		return ret;
 	if (mdev->transport.address)
 		return 0;
+	/*
+	 * Published windows survive module unload.  BAR0 CPU access is then
+	 * decoded through the live tables, so clearing them would alias VRAM.
+	 */
+	if (m9x_read(mdev, M9_REG_PTE_BASE) ||
+	    m9x_read(mdev, M9_REG_LOCAL_LIMIT)) {
+		dev_err(&mdev->pdev->dev,
+			"M9 translation windows are already published; reboot before reloading\n");
+		return -EBUSY;
+	}
 	address = devm_kzalloc(&mdev->pdev->dev, sizeof(*address), GFP_KERNEL);
 	if (!address)
 		return -ENOMEM;
 	layout = &address->layout;
+	address->local_pages = min_t(u64, mdev->vram_size,
+				     M9_VRAM_GPU_SIZE) >> PAGE_SHIFT;
 	ret = m9_address_layout_init(mdev->vram_total,
-				     min_t(u64, mdev->vram_size,
-					   M9_VRAM_GPU_SIZE), layout);
+				     (u64)address->local_pages << PAGE_SHIFT,
+				     layout);
 	if (ret)
 		return ret;
 	if (layout->system_end <= M9_ADDRESS_SYSTEM_BASE)
@@ -479,6 +492,17 @@ int m9x_address_construct_manager(struct m9x_device *mdev)
 		iosys_map_wr(&address->map,
 			     layout->translation_base + page * sizeof(u32),
 			     u32, m9_address_root_pte_word(page));
+	/*
+	 * Once active, BAR0 CPU access and local GPU addressing both resolve
+	 * 0x10000000 + offset through these leaves.  The vendor publishes them
+	 * per local allocation; publish the whole BAR-visible range up front.
+	 */
+	for (page = 0; page < address->local_pages; page++) {
+		u32 local = (u32)M9_VRAM_GPU_BASE + (page << PAGE_SHIFT);
+
+		iosys_map_wr(&address->map, m9_address_identity_slot(local),
+			     u32, m9_address_root_pte_word(local >> PAGE_SHIFT));
+	}
 	m9_address_activate(mdev);
 
 	m9x_write(mdev, M9_REG_SERVICE_CONTROL, 0x1000);
