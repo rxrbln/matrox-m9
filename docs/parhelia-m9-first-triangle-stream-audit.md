@@ -4,6 +4,8 @@
 > “Missing bytes” section below are closed for the bounded first triangle.
 > `parhelia-m9-first-triangle-resources-re.md` proves the exact 1-MiB BE
 > allocation and the guarded C2/transient policy;
+> `parhelia-m9-first-triangle-system-constants.md` reconstructs and pins the
+> nonzero 320x240 bytes selected by `8d/8e`;
 > `parhelia-m9-pool5-raw-copy-closure.md` proves the exact 0x80-byte semantic
 > selector-6c image and vendor raw-copy path; and
 > `parhelia-m9-rsfragptrs-database.md` plus
