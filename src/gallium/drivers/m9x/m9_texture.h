@@ -62,6 +62,7 @@ struct m9_texture_bind {
 struct m9_texture_unit {
    uint32_t handle;
    uint32_t w70, w79, w7a, w7c, w7d, w7e, w7f, w80, w81;
+   bool placeholder;          /* unsampled unit-0 binding, 82..85 cleared */
 };
 
 bool m9_texture_format(enum pipe_format format, struct m9_texture_format *out);
@@ -86,5 +87,8 @@ int m9_texture_fetch(const struct m9_texture_layout *layout,
 int m9_texture_unit_init(struct m9_texture_unit *unit, uint32_t handle,
                          const struct m9_texture_bind *bind,
                          const struct pipe_sampler_state *sampler);
+/* Native fragment programs that sample nothing still bind unit 0: the vendor
+ * raster pass always carries a 1x1 BGRA texture there. */
+void m9_texture_unit_placeholder(struct m9_texture_unit *unit, uint32_t handle);
 
 #endif

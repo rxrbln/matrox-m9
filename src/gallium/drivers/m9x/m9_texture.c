@@ -371,3 +371,19 @@ m9_texture_unit_init(struct m9_texture_unit *unit, uint32_t handle,
    unit->w81 = 0;
    return ok ? 0 : -EINVAL;
 }
+
+/* Captured fs-uniform/fs-color raster unit 0 (m9x-vendor-glsl-programs). */
+void
+m9_texture_unit_placeholder(struct m9_texture_unit *unit, uint32_t handle)
+{
+   *unit = (struct m9_texture_unit) {
+      .handle = handle,
+      .w70 = 0x00040118u,
+      .w79 = 0xcc000000u | (uint32_t)M9_TEXTURE_KIND_2D << 16 | 1,
+      .w7a = 0x00010001u,
+      .w7c = 0x00000200u,
+      .w7d = M9_TEXTURE_LOD_DEFAULT,
+      .w80 = 0xffffffffu,
+      .placeholder = true,
+   };
+}

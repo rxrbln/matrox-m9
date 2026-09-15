@@ -313,6 +313,9 @@ m9_batch_emit_texture_unit(struct m9_batch *batch, unsigned index,
       { .index = 0x7e, .value = unit->w7e },
       { .index = 0x7f, .value = unit->w7f },
    };
+   const struct m9_packet_value cleared[] = {
+      { .index = 0x82 }, { .index = 0x83 }, { .index = 0x84 }, { .index = 0x85 },
+   };
 
    m9_batch_checkpoint(batch, &checkpoint);
    ret = m9_batch_emit_packet(batch, select, ARRAY_SIZE(select));
@@ -320,6 +323,8 @@ m9_batch_emit_texture_unit(struct m9_batch *batch, unsigned index,
       ret = m9_batch_emit_packet(batch, bind, ARRAY_SIZE(bind));
    if (!ret)
       ret = m9_batch_emit_packet(batch, sampler, ARRAY_SIZE(sampler));
+   if (!ret && unit->placeholder)
+      ret = m9_batch_emit_packet(batch, cleared, ARRAY_SIZE(cleared));
    if (!ret)
       ret = m9_batch_emit_packet(batch, border, ARRAY_SIZE(border));
    if (ret)

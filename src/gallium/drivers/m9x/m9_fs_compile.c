@@ -37,6 +37,9 @@ const nir_shader_compiler_options m9_fs_nir_options = {
    .max_unroll_iterations = 32,
    .no_integers = true,
    .has_fused_comp_and_csel = true,
+   /* Keep st/mesa's IO intrinsics instead of variables; the backend and
+    * its corpus test consume load_interpolated_input/store_output. */
+   .io_options = nir_io_has_intrinsics | nir_io_mediump_is_32bit,
 };
 
 #define STOP_W0 0xffff801cu
@@ -1722,7 +1725,8 @@ compile_impl(struct ctx *c, nir_function_impl *impl)
          case nir_intrinsic_load_input:
             break;
          default:
-            return fail(c, "unsupported intrinsic");
+            /* intrinsic names are static strings */
+            return fail(c, nir_intrinsic_infos[intr->intrinsic].name);
          }
          first &= intr->intrinsic == nir_intrinsic_terminate;
       }

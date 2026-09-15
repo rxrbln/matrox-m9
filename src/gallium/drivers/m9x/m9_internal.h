@@ -251,6 +251,7 @@ struct m9_context {
    /* Fixed two-pass resources and the pending job. */
    struct m9_resource system, program, fragment_db, transient, be, source;
    struct m9_resource target_depth, target_aux;
+   struct m9_resource placeholder_texture;  /* 1x1 unit-0 binding */
    struct m9_draw_params params;
    struct m9_vertex_decl decl;
    bool params_valid;
@@ -261,6 +262,9 @@ struct m9_context {
    struct util_dynarray key_consts, job_consts;  /* raster constant floats */
    uint32_t warned;
    bool debug;
+   const char *dump_path;   /* M9X_DUMP: append every job's words */
+   bool dry_run;            /* M9X_DRYRUN: validate jobs, never execute */
+   unsigned dump_seq;
 };
 
 #endif

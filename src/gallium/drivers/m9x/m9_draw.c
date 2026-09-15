@@ -38,8 +38,9 @@ unsigned
 m9_draw_job_dwords_fs(unsigned draw_count, unsigned unit_count)
 {
    /* A fifth stream packet; the declaration stays within two packets.  A
-    * bound unit replaces its zero 70+unit packet by 15 dwords. */
-   return m9_draw_job_dwords(draw_count) + 4 + 13 * unit_count;
+    * bound unit replaces its zero 70+unit packet by 15 dwords, 20 with the
+    * placeholder's cleared 82..85. */
+   return m9_draw_job_dwords(draw_count) + 4 + 18 * unit_count;
 }
 
 static int

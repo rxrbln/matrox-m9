@@ -454,6 +454,36 @@ m9_job_native(struct m9_context *ctx, const struct m9_fs_variant *fs,
                                      p->texture_count, fs->texture_coord);
 }
 
+/* Job words, relocations, fragment slots and constants for offline decode. */
+static void
+m9_dump_job(struct m9_context *ctx, const struct m9_fs_variant *fs)
+{
+   const struct m9_batch *b = &ctx->batch;
+   FILE *out = fopen(ctx->dump_path, "a");
+
+   if (!out)
+      return;
+   fprintf(out, "JOB %u dwords %u relocs %u\n", ctx->dump_seq++,
+           b->command_count, b->reloc_count);
+   for (unsigned i = 0; i < b->command_count; i++)
+      fprintf(out, "%08x%c", b->command[i], i % 8 == 7 ? '\n' : ' ');
+   fputc('\n', out);
+   for (unsigned i = 0; i < b->reloc_count; i++)
+      fprintf(out, "RELOC dword %u handle %u offset %#" PRIx64 " kind %u\n",
+              b->relocs[i].command_dword, b->relocs[i].handle,
+              (uint64_t)b->relocs[i].target_offset, b->relocs[i].kind);
+   if (fs) {
+      const uint32_t *w = fs->program.slots.data;
+      const float *k = ctx->job_consts.data;
+
+      for (unsigned i = 0; i < m9_fs_slot_count(&fs->program); i++)
+         fprintf(out, "SLOT %u %08x %08x\n", i, w[2 * i], w[2 * i + 1]);
+      for (unsigned i = 0; i < ctx->job_consts.size / sizeof(float); i++)
+         fprintf(out, "CONST %u %g\n", i, k[i]);
+   }
+   fclose(out);
+}
+
 static int
 m9_submit_job(struct m9_context *ctx)
 {
@@ -515,7 +545,12 @@ m9_submit_job(struct m9_context *ctx)
    }
    if (!ret) {
       ctx->batch.sealed = true;
-      ret = m9_batch_submit(ctx->screen, &ctx->command, &ctx->batch,
+      if (ctx->dump_path)
+         m9_dump_job(ctx, fs ? key->variant : NULL);
+      ret = ctx->dry_run ?
+            m9_batch_validate(ctx->screen, &ctx->command, &ctx->batch,
+                              ctx->context_id) :
+            m9_batch_submit(ctx->screen, &ctx->command, &ctx->batch,
                             ctx->context_id, &point);
    }
    if (ret) {
@@ -777,6 +812,10 @@ m9_job_textures(struct m9_context *ctx, const struct m9_fs_variant *fs,
       key->unit_res[k] = view->texture;
    }
    key->unit_count = p->texture_count;
+   if (!p->texture_count) {
+      m9_texture_unit_placeholder(&key->units[0], ctx->placeholder_texture.handle);
+      key->unit_count = 1;
+   }
    return true;
 }
 
@@ -2063,8 +2102,12 @@ m9_context_init_fixed(struct m9_context *ctx)
    if (!ret)
       ret = m9_bo_create(screen, 4096, 0, M9_RESOURCE_LINEAR_BUFFER,
                          &ctx->source);
+   if (!ret)
+      ret = m9_bo_create(screen, M9_TEXTURE_TAIL_BYTES, PARHELIA_M9_BO_VRAM,
+                         M9_RESOURCE_LINEAR_TEXTURE, &ctx->placeholder_texture);
    if (ret)
       return ret;
+   memset(ctx->placeholder_texture.map, 0, ctx->placeholder_texture.size);
    memset(ctx->program.map, 0, ctx->program.size);
    memcpy(ctx->program.map, m9_passthrough_c2_program,
           sizeof(m9_passthrough_c2_program));
@@ -2105,6 +2148,7 @@ m9_context_destroy(struct pipe_context *pctx)
    m9_bo_destroy(screen, &ctx->source);
    m9_bo_destroy(screen, &ctx->target_depth);
    m9_bo_destroy(screen, &ctx->target_aux);
+   m9_bo_destroy(screen, &ctx->placeholder_texture);
    util_dynarray_fini(&ctx->records);
    util_dynarray_fini(&ctx->draws);
    util_dynarray_fini(&ctx->extra);
@@ -2134,6 +2178,8 @@ m9_context_create(struct pipe_screen *pscreen, void *priv, unsigned flags)
    m9_context_state_init(ctx, screen);
    ctx->base.priv = priv;
    ctx->debug = debug_get_bool_option("M9X_DEBUG", false);
+   ctx->dump_path = debug_get_option("M9X_DUMP", NULL);
+   ctx->dry_run = debug_get_bool_option("M9X_DRYRUN", false);
    util_dynarray_init(&ctx->records, NULL);
    util_dynarray_init(&ctx->draws, NULL);
    util_dynarray_init(&ctx->extra, NULL);
