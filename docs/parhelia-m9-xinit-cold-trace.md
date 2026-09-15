@@ -84,7 +84,18 @@ clean-room driver.
 
 Source: the observer blob `m9cold-capture-123934.bin` and the BAR0 image
 `vram-root-0-ec1000-124346.bin`.  The vendor module reports
-`TotalMemorySize = 0x40000000` and sizes its tables for it:
+`TotalMemorySize = 0x40000000` and sizes its tables for it.  The size comes
+from PInS, not BAR0:
+
+- **Parser:** `m9x320 → m9x798` follows the u16 pointer at ROM `0x7ffc`,
+  checks the signature `0x412e` and reads PInS+0x44.
+- **Nibble lookup:** each of the four low nibbles `n` in 1..6 adds
+  `0x2000000 << (n - 1)`.
+- **Default:** the sum replaces the default only if it is not smaller.
+- **This board:** `M9148-E1024LAF`, PInS+0x44 = `00014444`, total
+  `0x40000000`.
+
+The tables are laid out as follows:
 
 | region | range | contents |
 |---|---|---|
