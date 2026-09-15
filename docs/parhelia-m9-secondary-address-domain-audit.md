@@ -1,5 +1,10 @@
 # M9148 secondary BmBuffer address-domain audit
 
+> **Correction (2026-09-15):** the bind sequence is `31c=f,1,0` (inside
+> `m9x328`) followed by `314=1` (`.text+0x37a4b`, after `m9x1030` returns),
+> not `314` then `31c`.  See
+> `parhelia-m9-cold-transition-submit-decode.md` section 2.
+
 The Linux vendor's class-1 BmBuffer uses a compact-PTE-mapped system GPU
 virtual address in index `2c/2d`.  Its physical address, returned to userspace
 as the mmap cookie, is a different field and never enters the secondary range

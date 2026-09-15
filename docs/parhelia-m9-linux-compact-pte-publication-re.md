@@ -1,5 +1,15 @@
 # Linux M9148 compact page-table root and publication
 
+> **Correction (2026-09-15):** `m9x328` emits no `0x314`, but the allocation
+> as a whole does: `m9x810`'s mode-1 branch calls `.text+0x37a20` after
+> `m9x1030`, which writes `MMIO[0x314]=1` unconditionally (`0x37a4b`).  The
+> per-resource order is mirror, `31c=f,1,0`, `314=1`.  Descriptor bit 5 is
+> derived from `request+0x30` (constant 1), not `resource+0x30`.  Both cold
+> `m9x421` calls run with `B+0xc8==0` and write windows only; the
+> "terminal `454522e6,40000000,(1088|20000000)` submission" attributed to
+> transition 1 does not occur.  See
+> `parhelia-m9-cold-transition-submit-decode.md` sections 1-2.
+
 This note closes the table object used by the normal Linux mode-1 scatter
 mapping. It also reconciles the primary compact-table origin at `C18` with
 the later `f64` range at `C38`, across which the higher compact slots land,

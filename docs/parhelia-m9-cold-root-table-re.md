@@ -1,5 +1,11 @@
 # M9148 cold root translation table
 
+> **Correction (2026-09-15):** steps 1 and 9 ("complete `m9x421`
+> transition") are MMIO window writes only on the cold path; the packet
+> half is gated on `B+0xc8` and does not run before `m9x182`.  Step 10's
+> leaf publication is followed by `314=1` (`.text+0x37a4b`).  See
+> `parhelia-m9-cold-transition-submit-decode.md`.
+
 ## Result
 
 The Linux vendor manager constructor builds a translation level which the

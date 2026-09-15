@@ -1,5 +1,12 @@
 # M9 first-render restore-pool template closure
 
+> **Correction (2026-09-15):** `T = 1`, not 0.  `request+0x1b4` is written by
+> `m9x286` through `request+0x68` (`.text+0x10ac4`), with the candidate type;
+> candidate 1 is the one taken on the M9148.  `10ec = ((R+0x200)&~0x1f)|1`
+> and `record+0x4c = (W+0x440)|1`.  See
+> `parhelia-m9-cold-transition-submit-decode.md` section 3.  The mechanism
+> lines below are otherwise correct; only the `T=0` conclusion is wrong.
+
 This note gives the byte-exact Linux `m9x655`/`m9x72` restore-pool image used
 by the normal M9148 first-render path.  Evidence is the canonical proprietary
 Linux core `KernelLibraries.o_shipped`, SHA-256

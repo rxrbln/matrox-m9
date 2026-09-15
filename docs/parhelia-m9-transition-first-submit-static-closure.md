@@ -1,5 +1,14 @@
 # M9148 first-submit transition
 
+> **Superseded (2026-09-15):** the packet half of `m9x421` is gated on
+> `B+0xc8 != 0` (`.text+0x16ab0`), a refcount that `m9x182` increments only
+> after both cold transitions.  Both cold calls are MMIO-only; no
+> `e6/47/e3/43/22` packet precedes sequence 0 on the M9148, and the
+> post-publication packet path in `m9x887` is disabled by `MmFlags` bit 24.
+> The streams below are therefore not a vendor transition; kernel commit
+> `b788cc4` removes them.  See
+> `parhelia-m9-cold-transition-submit-decode.md` section 1.
+
 This note records the static decision used by the clean-room first-triangle
 diagnostic.  It supplements `parhelia-m9-pre-submit-engine-sequence.md` and
 does not replace the exact address-window or requester recipes there.

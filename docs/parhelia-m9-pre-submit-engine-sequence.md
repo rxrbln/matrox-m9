@@ -1,5 +1,13 @@
 # M9148 pre-submit engine sequence
 
+> **Correction (2026-09-15):** steps 1, 5 and 6 of the "exact `m9x421`
+> transition" (the `e6`, `47` and `e6/22` packets) apply only to warm calls
+> with a constructed requester (`B+0xc8 != 0`); both cold calls write the
+> MMIO windows only.  `T = 1` for the restore tuple.  The per-job `0x314`
+> rule is: no strobe once `0x106c` is programmed; one `314=1` after each
+> resource publication instead.  See
+> `parhelia-m9-cold-transition-submit-decode.md`.
+
 This note turns the vendor service construction, `m9x421` range publisher,
 restore-pool construction, and `m9x109` requester arm into one ordered recipe
 for the guarded first-triangle path.  It builds on the separate initialization

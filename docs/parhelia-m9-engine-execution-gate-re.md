@@ -1,5 +1,12 @@
 # M9148 cold/warm engine-to-execution gate
 
+> **Correction (2026-09-15):** `0x400` is written first in `m9x109`, not
+> "last" as the plan below says.  `m9x1172 -> m9x115` publishes the 20-slot
+> buffer window table at MMIO `0x000..0x13f` (all-invalid `0x0000ffff` on the
+> first-render path); `m9x865` allocates the two completion dwords with tag
+> `mode ? 0 : 2`; `m9x926/m9x301` have no MMIO.  See
+> `parhelia-m9-cold-transition-submit-decode.md` section 4.
+
 This note closes the initialization ordering immediately before the captured
 sequence-0 setup stream.  It joins the saved Linux X driver, the proprietary
 Linux kernel core, the Windows miniport, and the modern target's read-only warm

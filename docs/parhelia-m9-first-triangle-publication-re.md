@@ -1,5 +1,15 @@
 # M9148 first-triangle publication and retirement
 
+> **Correction (2026-09-15):** the range table and patch offsets below
+> predate the inline P00/S28 expansion (current framed ends
+> `0xbc8/0x1774/0x17a0`, 22 relocation sites).  Every vendor `ExecuteDma`
+> also appends `4545421a <TC[0]|tag> <token|1>` after the `2c/2d` records
+> (twelve dwords for three ranges); a buffer switch is the in-stream
+> `453e421a` record, never a `0x400` rewrite; `31c=0` is written only for a
+> class-0 primary; the vendor wait has no timeout and strobes `0x314` only
+> while `0x106c` is unprogrammed.  `S` is a class-1 compact GPUVA.  See
+> `parhelia-m9-cold-transition-submit-decode.md` section 5.
+
 This note closes the command-transport step which follows construction of the
 fresh selector-`6c` record.  It joins the successful Linux triangle capture,
 the Linux `PostDOSBuffer` implementation, the proprietary Linux kernel
