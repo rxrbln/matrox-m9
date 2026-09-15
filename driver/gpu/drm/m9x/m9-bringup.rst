@@ -162,9 +162,10 @@ validator currently permits only indices present in the controlled triangle
 capture, rejects kernel-owned fence/dependency indices, requires a semantic
 relocation for every known address operand, checks all BO ranges and alignment,
 patches a private copy, and discards it.  Color, depth and texture operands
-alone accept ``BO_VRAM`` objects and resolve through the local 0x10000000
-address window; command, vertex/index and private resource operands remain
-DMA32.  H06/H07 start and exclusive-end
+alone accept this driver's pinned local-VRAM objects, including direct dumb
+scanout buffers and ``BO_VRAM`` allocations, and resolve through the local
+0x10000000 address window; command, vertex/index and private resource operands
+remain DMA32.  H06/H07 start and exclusive-end
 relocations must name the same BO in increasing order; H06 records its odd
 terminal halfword with ``PARHELIA_M9_RELOC_PACKED16_ODD`` instead of smuggling
 bit 1 through an address.  The kernel derives access from each relocation

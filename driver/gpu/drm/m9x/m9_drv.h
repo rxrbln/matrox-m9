@@ -40,7 +40,6 @@ struct m9x_bo {
 
 struct m9x_vram_bo {
 	struct drm_gem_vram_object vram;
-	u32 flags;
 	bool user_pinned;
 };
 

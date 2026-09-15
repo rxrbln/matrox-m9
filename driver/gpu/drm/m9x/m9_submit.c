@@ -404,16 +404,9 @@ m9_validate_relocs(u32 *image, u32 dwords, u8 *expected,
 			goto out;
 		}
 		if (m9_reloc_uses_vram(reloc->kind)) {
-			struct m9x_vram_bo *vram_bo;
 			s64 offset;
 
 			if (!m9x_gem_is_vram(gem)) {
-				ret = -EINVAL;
-				goto out;
-			}
-			vram_bo = container_of(drm_gem_vram_of_gem(gem),
-					       struct m9x_vram_bo, vram);
-			if (!(vram_bo->flags & PARHELIA_M9_BO_VRAM)) {
 				ret = -EINVAL;
 				goto out;
 			}

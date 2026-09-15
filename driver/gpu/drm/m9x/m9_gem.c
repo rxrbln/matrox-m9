@@ -155,7 +155,7 @@ err_free:
 }
 
 static struct m9x_vram_bo *
-m9_vram_bo_create(struct drm_device *drm, size_t size, u32 flags)
+m9_vram_bo_create(struct drm_device *drm, size_t size)
 {
 	struct drm_gem_vram_object *vram;
 	struct m9x_vram_bo *bo;
@@ -166,7 +166,6 @@ m9_vram_bo_create(struct drm_device *drm, size_t size, u32 flags)
 	if (IS_ERR(vram))
 		return ERR_CAST(vram);
 	bo = container_of(vram, struct m9x_vram_bo, vram);
-	bo->flags = flags;
 	ret = m9x_vram_pin(vram);
 	if (ret)
 		goto err_put;
@@ -244,7 +243,7 @@ int m9x_create_bo_ioctl(struct drm_device *drm, void *data,
 	if (args->flags & PARHELIA_M9_BO_VRAM) {
 		struct m9x_vram_bo *vram_bo;
 
-		vram_bo = m9_vram_bo_create(drm, size, args->flags);
+		vram_bo = m9_vram_bo_create(drm, size);
 		if (IS_ERR(vram_bo))
 			return PTR_ERR(vram_bo);
 		gem = &vram_bo->vram.bo.base;
