@@ -35,20 +35,27 @@ m9_draw_job_dwords(unsigned draw_count)
 }
 
 unsigned
-m9_draw_job_dwords_fs(unsigned draw_count)
+m9_draw_job_dwords_fs(unsigned draw_count, unsigned unit_count)
 {
-   /* A fifth stream packet; the declaration stays within two packets. */
-   return m9_draw_job_dwords(draw_count) + 4;
+   /* A fifth stream packet; the declaration stays within two packets.  A
+    * bound unit replaces its zero 70+unit packet by 15 dwords. */
+   return m9_draw_job_dwords(draw_count) + 4 + 13 * unit_count;
 }
 
 static int
-m9_emit_units(struct m9_batch *batch)
+m9_emit_units(struct m9_batch *batch, const struct m9_texture_unit *units,
+              unsigned unit_count)
 {
    int ret = 0;
 
    for (unsigned i = 0; i < 4; i++)
       EMIT(V(0x74 + i, 0x100));
-   for (unsigned i = 0; i < 4; i++)
+   for (unsigned i = 0; i < unit_count; i++) {
+      ret = m9_batch_emit_texture_unit(batch, i, &units[i]);
+      if (ret)
+         goto fail;
+   }
+   for (unsigned i = unit_count; i < 4; i++)
       EMIT(V(0x70 + i, 0));
 fail:
    return ret;
@@ -129,8 +136,13 @@ m9_draw_job_valid(const struct m9_draw_job *job)
        !job->program || !job->fragment_db || !job->transient ||
        !job->color || !job->depth || !job->aux || !job->be ||
        !job->draws || !job->draw_count || job->source_vertices % 4 ||
-       job->source_vertices > m9_draw_max_source_vertices())
+       job->source_vertices > m9_draw_max_source_vertices() ||
+       job->unit_count > M9_TEXTURE_MAX_UNITS ||
+       (job->unit_count && (!job->fs || !job->units)))
       return false;
+   for (unsigned i = 0; i < job->unit_count; i++)
+      if (!job->units[i].handle)
+         return false;
    for (unsigned i = 0; i < job->draw_count; i++) {
       const struct m9_draw_record *d = &job->draws[i];
 
@@ -180,7 +192,7 @@ m9_batch_emit_draw_job(struct m9_batch *batch, const struct m9_draw_job *job)
         V(0xc3, job->fs ? job->fs->vertex_entry : 4), V(0x8f, 0));
    EMIT(V(0x8c, 0x00501600), R(0x8d, job->system, 0x10, SYSTEM),
         R(0x8e, job->system, 0xc0, SYSTEM), V(0x8f, 0));
-   ret = m9_emit_units(batch);
+   ret = m9_emit_units(batch, NULL, 0);
    if (ret)
       goto fail;
    EMIT(V(0xec, 0), V(0xf4, 0x00010004), V(0xea, 0), V(0xeb, 0x46000000));
@@ -235,7 +247,7 @@ m9_batch_emit_draw_job(struct m9_batch *batch, const struct m9_draw_job *job)
       EMIT(V(0x8c, 0x00500200), R(0x8d, job->system, 0, SYSTEM),
            R(0x8e, job->system, 0x10, SYSTEM), V(0x8f, 0));
    }
-   ret = m9_emit_units(batch);
+   ret = m9_emit_units(batch, job->units, job->unit_count);
    if (ret)
       goto fail;
    EMIT(V(0xec, 0), V(0xf4, 0), V(0xea, 0), V(0xeb, 0));

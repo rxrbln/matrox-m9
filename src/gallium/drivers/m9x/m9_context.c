@@ -31,6 +31,7 @@
 #include "tgsi/tgsi_from_mesa.h"
 #include "util/u_debug.h"
 #include "util/u_debug_cb.h"
+#include "util/format/u_format.h"
 #include "util/u_draw.h"
 #include "util/u_framebuffer.h"
 #include "util/u_helpers.h"
@@ -57,6 +58,7 @@ enum m9_warning {
    M9_WARN_CLEAR = 1u << 7,
    M9_WARN_TRANSFER = 1u << 8,
    M9_WARN_MEMORY = 1u << 9,
+   M9_WARN_TEXTURE = 1u << 10,
 };
 
 struct m9_transfer {
@@ -73,8 +75,11 @@ struct m9_fs_state {
    struct m9_fs_program program;
    struct m9_resource c2;              /* fragment slots, then vertex program */
    unsigned vertex_entry;
-   unsigned extra_count;               /* varyings fed from CPU views */
-   uint8_t extra_varying[M9_FS_MAX_VARYINGS];
+   unsigned extra_count;               /* CPU view locations: varyings, then coordinates */
+   uint8_t extra_location[M9_FS_MAX_VARYINGS + M9_FS_MAX_TEXTURES];
+   unsigned coord_count;               /* distinct texture coordinate streams */
+   uint8_t coord_location[M9_FS_MAX_TEXTURES];
+   uint8_t texture_coord[M9_FS_MAX_TEXTURES];  /* coordinate stream per texel pair */
 };
 
 struct m9_velems {
@@ -92,7 +97,7 @@ struct m9_vbuf_render {
    uint16_t vertex_size;
    bool has_color;
    unsigned extra_count;
-   int extra_offset[M9_FS_MAX_VARYINGS];  /* float offset, -1 if unwritten */
+   int extra_offset[M9_FS_MAX_VARYINGS + M9_FS_MAX_TEXTURES];  /* float offset, -1 if unwritten */
    struct util_dynarray indices;
 };
 
@@ -166,6 +171,73 @@ m9_surface_access(struct m9_context *ctx, const struct m9_resource *resource,
                 &access) ? -errno : 0;
 }
 
+/* Proposed SURFACE_ACCESS extension (docs/parhelia-m9-texture-storage.md):
+ * flags bit 0 opens a texture descriptor window at BO byte offset pad. */
+#define M9_SURFACE_ACCESS_TEXTURE (1u << 0)
+
+static int
+m9_texture_window(struct m9_context *ctx, const struct m9_resource *resource,
+                  unsigned level, bool write, const struct pipe_box *box,
+                  uint8_t *data, unsigned stride)
+{
+   const struct m9_texture_level *lvl = &resource->texture.level[level];
+   size_t bytes = (size_t)box->width * box->height * 4;
+   uint8_t *rows = MALLOC(bytes);
+   struct drm_parhelia_m9_surface_access access = {
+      .handle = resource->handle,
+      .op = write ? PARHELIA_M9_ACCESS_WRITE : PARHELIA_M9_ACCESS_READ,
+      .descriptor0 = (uint32_t)resource->texture_code << 24 |
+                     M9_TEXTURE_KIND_2D << 16 | lvl->width,
+      .descriptor1 = 1u << 16 | lvl->height,
+      .surface_width = lvl->width,
+      .x = box->x,
+      .y = box->y,
+      .width = box->width,
+      .height = box->height,
+      .data_stride = box->width * 4,
+      .data_ptr = (uintptr_t)rows,
+      .data_size = bytes,
+      .flags = M9_SURFACE_ACCESS_TEXTURE,
+      .pad = (uint32_t)lvl->offset,
+   };
+   int ret = rows && lvl->offset <= UINT32_MAX ? 0 : -ENOMEM;
+
+   if (!ret && write &&
+       !util_format_translate(resource->texture_storage, rows, box->width * 4,
+                              0, 0, resource->base.format, data, stride, 0, 0,
+                              box->width, box->height))
+      ret = -EINVAL;
+   if (!ret && ioctl(ctx->screen->fd, DRM_IOCTL_PARHELIA_M9_SURFACE_ACCESS,
+                     &access))
+      ret = -errno;
+   if (!ret && !write &&
+       !util_format_translate(resource->base.format, data, stride, 0, 0,
+                              resource->texture_storage, rows, box->width * 4,
+                              0, 0, box->width, box->height))
+      ret = -EINVAL;
+   FREE(rows);
+   return ret;
+}
+
+/* Rows in the texture's pipe format to and from tiled texture storage. */
+static int
+m9_texture_access(struct m9_context *ctx, struct m9_resource *resource,
+                  unsigned level, bool write, const struct pipe_box *box,
+                  uint8_t *data, unsigned stride)
+{
+   const struct m9_texture_layout *layout = &resource->texture;
+
+   if (!m9_texture_level_placed(layout, level))
+      return m9_texture_window(ctx, resource, level, write, box, data, stride);
+   return write ?
+      m9_texture_store(layout, resource->map, resource->size,
+                       resource->texture_storage, level, 0, box,
+                       resource->base.format, data, stride) :
+      m9_texture_fetch(layout, resource->map, resource->size,
+                       resource->texture_storage, level, 0, box,
+                       resource->base.format, data, stride);
+}
+
 static uint64_t
 m9_transfer_offset(const struct m9_resource *resource, unsigned level,
                    const struct pipe_box *box, unsigned *stride)
@@ -221,7 +293,23 @@ m9_transfer_map(struct pipe_context *pctx, struct pipe_resource *pres,
    transfer = CALLOC_STRUCT(m9_transfer);
    if (!transfer)
       return NULL;
-   if (resource->tiled) {
+   if (resource->texture.levels) {
+      bool preserve = (usage & PIPE_MAP_READ) ||
+                      !(usage & (PIPE_MAP_DISCARD_RANGE |
+                                 PIPE_MAP_DISCARD_WHOLE_RESOURCE));
+
+      stride = box->width * util_format_get_blocksize(pres->format);
+      transfer->staging = box->width && box->height ?
+                          MALLOC((size_t)stride * box->height) : NULL;
+      if (!transfer->staging ||
+          (preserve && m9_texture_access(ctx, resource, level, false, box,
+                                         transfer->staging, stride))) {
+         m9_warn_once(ctx, M9_WARN_TRANSFER, "texture storage read failed");
+         FREE(transfer->staging);
+         FREE(transfer);
+         return NULL;
+      }
+   } else if (resource->tiled) {
       bool preserve = (usage & PIPE_MAP_READ) ||
                       !(usage & (PIPE_MAP_DISCARD_RANGE |
                                  PIPE_MAP_DISCARD_WHOLE_RESOURCE));
@@ -270,7 +358,24 @@ m9_transfer_unmap(struct pipe_context *pctx, struct pipe_transfer *ptransfer)
 {
    struct m9_transfer *transfer = (struct m9_transfer *)ptransfer;
 
-   if (transfer->staging) {
+   if (transfer->staging && m9_res(ptransfer->resource)->texture.levels) {
+      struct m9_resource *resource = m9_res(ptransfer->resource);
+      uint32_t bit = 1u << ptransfer->level;
+
+      if (ptransfer->usage & PIPE_MAP_WRITE) {
+         if (m9_texture_access(m9_context(pctx), resource, ptransfer->level,
+                               true, &ptransfer->box, transfer->staging,
+                               ptransfer->stride)) {
+            resource->texture_unplaced |= bit;
+            m9_warn_once(m9_context(pctx), M9_WARN_TRANSFER,
+                         "texture level cannot be stored: no captured "
+                         "placement and no kernel texture window");
+         } else {
+            resource->texture_unplaced &= ~bit;
+         }
+      }
+      FREE(transfer->staging);
+   } else if (transfer->staging) {
       if ((ptransfer->usage & PIPE_MAP_WRITE) &&
           m9_surface_access(m9_context(pctx), m9_res(ptransfer->resource),
                             PARHELIA_M9_ACCESS_WRITE, &ptransfer->box,
@@ -313,7 +418,7 @@ m9_job_native(struct m9_context *ctx, const struct m9_fs_state *fs,
 {
    const struct m9_fs_program *p = &fs->program;
    const float *extra = ctx->extra.data;
-   uint32_t views[M9_FS_MAX_VARYINGS];
+   uint32_t views[M9_FS_MAX_VARYINGS], coords[M9_FS_MAX_TEXTURES];
    bool flat[M9_FS_MAX_VARYINGS];
    unsigned cpu = 0;
 
@@ -324,6 +429,9 @@ m9_job_native(struct m9_context *ctx, const struct m9_fs_state *fs,
       views[k] = p->varyings[k].location == VARYING_SLOT_COL0 ? 0 :
                  M9_TRANSIENT_CPU_VIEW + cpu++;
    }
+   for (unsigned c = 0; c < fs->coord_count; c++)
+      coords[c] = fs->coord_location[c] == VARYING_SLOT_COL0 ? 0 :
+                  M9_TRANSIENT_CPU_VIEW + cpu++;
    for (unsigned j = 0; j < fs->extra_count; j++) {
       uint8_t *view = (uint8_t *)ctx->transient.map +
                       (M9_TRANSIENT_CPU_VIEW + j) * M9_TRANSIENT_VIEW_BYTES;
@@ -332,10 +440,13 @@ m9_job_native(struct m9_context *ctx, const struct m9_fs_state *fs,
          memcpy(view + r * M9_TRANSIENT_VERTEX_BYTES,
                 extra + (r * fs->extra_count + j) * 4, 4 * sizeof(float));
    }
-   return m9_raster_fs_init(raster, fs->vertex_entry, m9_fs_raster_88(p),
-                            util_dynarray_num_elements(&p->consts,
-                                                       struct m9_fs_const),
-                            p->varying_count, flat, views);
+   return m9_raster_fs_init_textured(raster, fs->vertex_entry,
+                                     m9_fs_raster_88(p),
+                                     util_dynarray_num_elements(&p->consts,
+                                                                struct m9_fs_const),
+                                     p->varying_count, flat, views,
+                                     fs->coord_count, coords,
+                                     p->texture_count, fs->texture_coord);
 }
 
 static int
@@ -386,6 +497,8 @@ m9_submit_job(struct m9_context *ctx)
          .clip_min = key->clip_min,
          .clip_max = key->clip_max,
          .fs = fs ? &raster : NULL,
+         .units = key->unit_count ? key->units : NULL,
+         .unit_count = key->unit_count,
       };
       if (fs)
          job.program = fs->c2.handle;
@@ -441,7 +554,7 @@ m9_job_reserve(struct m9_context *ctx, const struct m9_job_key *key,
 
    if (padded > m9_draw_max_source_vertices())
       return NULL;
-   dwords = key->fs ? m9_draw_job_dwords_fs(draws + 1) :
+   dwords = key->fs ? m9_draw_job_dwords_fs(draws + 1, key->unit_count) :
                       m9_draw_job_dwords(draws + 1);
    if (draws && (memcmp(key, &ctx->job_key, sizeof(*key)) ||
                  (key->fs && m9_consts_differ(consts, &ctx->job_consts)) ||
@@ -461,6 +574,9 @@ m9_job_reserve(struct m9_context *ctx, const struct m9_job_key *key,
          memcpy(ctx->job_consts.data, consts->data, consts->size);
    }
    ctx->job_key = *key;
+   for (unsigned k = 0; k < M9_TEXTURE_MAX_UNITS; k++)
+      pipe_resource_reference(&ctx->textures[k], k < key->unit_count ?
+                              key->unit_res[k] : NULL);
    *extra = NULL;
    if (extra_count) {
       *extra = util_dynarray_grow(&ctx->extra, float,
@@ -577,6 +693,86 @@ m9_fs_resolve_consts(struct m9_context *ctx, const struct m9_fs_state *fs,
    return true;
 }
 
+/* Unit words of a sampler view, or the reason it cannot be sampled. */
+static const char *
+m9_texture_bind_view(const struct pipe_sampler_view *view,
+                     struct m9_texture_bind *bind)
+{
+   struct m9_resource *res;
+   unsigned last;
+
+   if (!view || !view->texture)
+      return "no texture on a sampled unit; draw skipped";
+   res = m9_res(view->texture);
+   if (view->target != PIPE_TEXTURE_2D && view->target != PIPE_TEXTURE_RECT)
+      return "only 2-D sampling is implemented; draw skipped";
+   if (view->format != res->base.format ||
+       view->swizzle_r != PIPE_SWIZZLE_X ||
+       view->swizzle_g != PIPE_SWIZZLE_Y ||
+       view->swizzle_b != PIPE_SWIZZLE_Z ||
+       view->swizzle_a != PIPE_SWIZZLE_W)
+      return "sampler view format or swizzle differs from the texture; "
+             "draw skipped";
+   /* The vendor re-lays the chain from the base level; not implemented. */
+   if (view->u.tex.first_level)
+      return "a base level above 0 needs a re-based texture copy; "
+             "draw skipped";
+   last = MIN2(view->u.tex.last_level, res->base.last_level);
+   if (res->texture.levels) {
+      if (res->texture_unplaced & ((2u << last) - 1))
+         return "texture levels beyond the captured 32x16 tail need the "
+                "kernel texture window; draw skipped";
+      *bind = (struct m9_texture_bind) {
+         .code = res->texture_code, .kind = M9_TEXTURE_KIND_2D,
+         .width = res->width, .height = res->height, .depth = 1,
+         .last_level = res->base.last_level, .view_last_level = last,
+      };
+      return NULL;
+   }
+   /* Captured 79=c8210080 FBO textures: ordinary tiled render targets. */
+   if (res->tiled && res->kind == M9_RESOURCE_LINEAR_COLOR &&
+       res->base.format == PIPE_FORMAT_B8G8R8A8_UNORM && !(res->width % 32) &&
+       (res->width > 64 || res->height > 64)) {
+      *bind = (struct m9_texture_bind) {
+         .code = 0xcc, .kind = M9_TEXTURE_KIND_RENDER,
+         .width = res->width, .height = res->height, .depth = 1,
+      };
+      return NULL;
+   }
+   return "texture is not stored in a captured sampler layout; draw skipped";
+}
+
+static bool
+m9_job_textures(struct m9_context *ctx, const struct m9_fs_state *fs,
+                struct m9_job_key *key)
+{
+   const struct m9_fs_program *p = &fs->program;
+
+   for (unsigned k = 0; k < p->texture_count; k++) {
+      unsigned slot = p->textures[k];
+      struct pipe_sampler_view *view = slot < PIPE_MAX_SAMPLERS ?
+                                       ctx->fs_views[slot] : NULL;
+      const struct pipe_sampler_state *sampler = slot < PIPE_MAX_SAMPLERS ?
+                                                 ctx->fs_samplers[slot] : NULL;
+      struct m9_texture_bind bind;
+      const char *reason = m9_texture_bind_view(view, &bind);
+
+      if (!reason && !sampler)
+         reason = "sampled unit has no sampler state; draw skipped";
+      if (!reason && m9_texture_unit_init(&key->units[k],
+                                          m9_res(view->texture)->handle,
+                                          &bind, sampler))
+         reason = "sampler wrap mode is not implemented; draw skipped";
+      if (reason) {
+         m9_warn_once(ctx, M9_WARN_TEXTURE, reason);
+         return false;
+      }
+      key->unit_res[k] = view->texture;
+   }
+   key->unit_count = p->texture_count;
+   return true;
+}
+
 static bool
 m9_job_key_current(struct m9_context *ctx, struct m9_job_key *key)
 {
@@ -613,7 +809,8 @@ m9_job_key_current(struct m9_context *ctx, struct m9_job_key *key)
                                            PIPE_MASK_RGBA);
    if (ctx->fs && ctx->fs->native && !ctx->fs->passthrough) {
       key->fs = ctx->fs;
-      if (!m9_fs_resolve_consts(ctx, ctx->fs, &ctx->key_consts))
+      if (!m9_fs_resolve_consts(ctx, ctx->fs, &ctx->key_consts) ||
+          !m9_job_textures(ctx, ctx->fs, key))
          return false;
    }
    if (rast && rast->scissor)
@@ -650,8 +847,7 @@ m9_render_get_vertex_info(struct vbuf_render *render)
       unsigned offset = r->has_color ? 8 : 4;
 
       for (unsigned j = 0; j < fs->extra_count; j++) {
-         unsigned location =
-            fs->program.varyings[fs->extra_varying[j]].location;
+         unsigned location = fs->extra_location[j];
          unsigned name, index;
          int output;
 
@@ -1225,11 +1421,12 @@ static void
 m9_bind_sampler_states(struct pipe_context *pctx, mesa_shader_stage shader,
                        unsigned start, unsigned count, void **states)
 {
-   (void)pctx;
-   (void)shader;
-   (void)start;
-   (void)count;
-   (void)states;
+   struct m9_context *ctx = m9_context(pctx);
+
+   if (shader != MESA_SHADER_FRAGMENT)
+      return;
+   for (unsigned i = 0; i < count && start + i < PIPE_MAX_SAMPLERS; i++)
+      ctx->fs_samplers[start + i] = states ? states[i] : NULL;
 }
 
 static void
@@ -1269,13 +1466,14 @@ m9_set_sampler_views(struct pipe_context *pctx, mesa_shader_stage shader,
                      unsigned start, unsigned count, unsigned unbind_trailing,
                      struct pipe_sampler_view **views)
 {
-   /* Textured fragment shaders fail the pass-through check at draw time. */
-   (void)pctx;
-   (void)shader;
-   (void)start;
-   (void)count;
-   (void)unbind_trailing;
-   (void)views;
+   struct m9_context *ctx = m9_context(pctx);
+
+   if (shader != MESA_SHADER_FRAGMENT)
+      return;
+   for (unsigned i = 0; i < count + unbind_trailing &&
+                        start + i < PIPE_MAX_SAMPLERS; i++)
+      pipe_sampler_view_reference(&ctx->fs_views[start + i],
+                                  views && i < count ? views[i] : NULL);
 }
 
 static void *
@@ -1397,6 +1595,29 @@ m9_fs_passthrough(nir_shader *nir)
    return written;
 }
 
+/* CPU view order: non-colour varyings, then distinct coordinate streams. */
+static void
+m9_fs_streams(struct m9_fs_state *fs)
+{
+   const struct m9_fs_program *p = &fs->program;
+
+   for (unsigned k = 0; k < p->varying_count; k++)
+      if (p->varyings[k].location != VARYING_SLOT_COL0)
+         fs->extra_location[fs->extra_count++] = p->varyings[k].location;
+   for (unsigned t = 0; t < p->texture_count; t++) {
+      unsigned c = 0;
+
+      while (c < fs->coord_count && fs->coord_location[c] != p->texcoords[t])
+         c++;
+      if (c == fs->coord_count) {
+         fs->coord_location[fs->coord_count++] = p->texcoords[t];
+         if (p->texcoords[t] != VARYING_SLOT_COL0)
+            fs->extra_location[fs->extra_count++] = p->texcoords[t];
+      }
+      fs->texture_coord[t] = c;
+   }
+}
+
 static void
 m9_fs_native_init(struct m9_context *ctx, struct m9_fs_state *fs)
 {
@@ -1413,9 +1634,9 @@ m9_fs_native_init(struct m9_context *ctx, struct m9_fs_state *fs)
    }
    ralloc_free(clone);
    slots = m9_fs_slot_count(&fs->program);
-   if (fs->program.texture_count) {
-      fs->reason = "texture sampling stays disabled until the texture "
-                   "storage layout is measured";
+   m9_fs_streams(fs);
+   if (fs->extra_count > M9_TRANSIENT_VIEWS - M9_TRANSIENT_CPU_VIEW) {
+      fs->reason = "more CPU varying streams than transient views";
    } else if ((slots + vs_slots) * 8 > M9_PROGRAM_BYTES) {
       fs->reason = "program exceeds the c2 image";
    } else if (m9_bo_create(ctx->screen, M9_PROGRAM_BYTES, PARHELIA_M9_BO_VRAM,
@@ -1428,9 +1649,6 @@ m9_fs_native_init(struct m9_context *ctx, struct m9_fs_state *fs)
       memcpy((uint8_t *)fs->c2.map + 8 * slots, m9_passthrough_c2_program + 8,
              8 * vs_slots);
       fs->vertex_entry = slots;
-      for (unsigned k = 0; k < fs->program.varying_count; k++)
-         if (fs->program.varyings[k].location != VARYING_SLOT_COL0)
-            fs->extra_varying[fs->extra_count++] = k;
       fs->native = true;
       return;
    }
@@ -1720,6 +1938,8 @@ m9_context_destroy(struct pipe_context *pctx)
    for (unsigned i = 0; i < PIPE_MAX_CONSTANT_BUFFERS; i++)
       pipe_resource_reference(&ctx->vs_constants[i].buffer, NULL);
    pipe_resource_reference(&ctx->fs_constants.buffer, NULL);
+   for (unsigned i = 0; i < PIPE_MAX_SAMPLERS; i++)
+      pipe_sampler_view_reference(&ctx->fs_views[i], NULL);
    m9_context_state_cleanup(ctx);
    m9_command_bo_destroy(screen, &ctx->command);
    m9_bo_destroy(screen, &ctx->system);

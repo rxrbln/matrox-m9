@@ -12,6 +12,7 @@
 #include "pipe/p_state.h"
 #include "drm-uapi/m9x_drm.h"
 #include "m9_draw_params.h"
+#include "m9_texture.h"
 #include "util/simple_mtx.h"
 #include "util/u_dynarray.h"
 
@@ -78,6 +79,11 @@ struct m9_resource {
    int map_fd;
    struct m9_prime_import *prime_import;
    struct m9_mip_layout mip;
+   /* Tiled sampler storage; texture.levels is 0 for other images. */
+   struct m9_texture_layout texture;
+   enum pipe_format texture_storage;
+   uint8_t texture_code;
+   uint32_t texture_unplaced;  /* levels whose content could not be stored */
    void *map;
    /* Hierarchical-Z metadata owned by a D24S8 depth image. */
    struct m9_resource *hz;
@@ -199,6 +205,9 @@ struct m9_job_key {
    struct m9_resource *depth, *aux;
    const struct m9_fs_state *fs;   /* native fragment program or NULL */
    uint32_t depth_control, depth_ef, color_mask, clip_min, clip_max;
+   struct m9_texture_unit units[M9_TEXTURE_MAX_UNITS];
+   struct pipe_resource *unit_res[M9_TEXTURE_MAX_UNITS];
+   unsigned unit_count;
 };
 
 /* Per-context state is complete rather than inherited from the classic
@@ -213,7 +222,8 @@ struct m9_context {
    uint64_t dirty;
    struct pipe_resource *color;
    struct pipe_resource *depth;
-   struct pipe_resource *textures[4];
+   /* Texture units referenced by the pending job. */
+   struct pipe_resource *textures[M9_TEXTURE_MAX_UNITS];
    uint32_t framebuffer_width, framebuffer_height;
    bool depth_test;
    bool depth_write;
@@ -231,6 +241,8 @@ struct m9_context {
    unsigned num_vertex_buffers;
    struct pipe_constant_buffer vs_constants[PIPE_MAX_CONSTANT_BUFFERS];
    struct pipe_constant_buffer fs_constants;
+   struct pipe_sampler_view *fs_views[PIPE_MAX_SAMPLERS];
+   const struct pipe_sampler_state *fs_samplers[PIPE_MAX_SAMPLERS];
 
    /* Fixed two-pass resources and the pending job. */
    struct m9_resource system, program, fragment_db, transient, be, source;

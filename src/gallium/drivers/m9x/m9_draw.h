@@ -35,10 +35,13 @@ struct m9_draw_job {
    uint32_t clip_min, clip_max;
    /* Native fragment program; NULL keeps the pass-through colour image. */
    const struct m9_raster_fs *fs;
+   /* Raster texture units, texel pair order. */
+   const struct m9_texture_unit *units;
+   unsigned unit_count;
 };
 
 unsigned m9_draw_job_dwords(unsigned draw_count);
-unsigned m9_draw_job_dwords_fs(unsigned draw_count);
+unsigned m9_draw_job_dwords_fs(unsigned draw_count, unsigned unit_count);
 int m9_batch_emit_draw_job(struct m9_batch *batch,
                            const struct m9_draw_job *job);
 

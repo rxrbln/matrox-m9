@@ -3,6 +3,7 @@
 
 m9x_batch_files = files(
   'm9_batch.c', 'm9_draw.c', 'm9_draw_params.c', 'm9_format.c', 'm9_state.c',
+  'm9_texture.c',
 )
 
 libm9x_batch = static_library(

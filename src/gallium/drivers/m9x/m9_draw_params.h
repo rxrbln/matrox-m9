@@ -95,6 +95,15 @@ int m9_raster_fs_init(struct m9_raster_fs *r, unsigned vertex_entry,
                       uint32_t r88, unsigned const_count,
                       unsigned varying_count, const bool *flat_link,
                       const uint32_t *varying_view);
+/* Texture k links coordinate stream texture_coord[k] as attribute 5+k. */
+int m9_raster_fs_init_textured(struct m9_raster_fs *r, unsigned vertex_entry,
+                               uint32_t r88, unsigned const_count,
+                               unsigned varying_count, const bool *flat_link,
+                               const uint32_t *varying_view,
+                               unsigned coord_count,
+                               const uint32_t *coord_view,
+                               unsigned texture_count,
+                               const uint8_t *texture_coord);
 uint32_t m9_raster_d7(enum m9_topology topology);
 uint32_t m9_raster_class(bool lines);
 bool m9_topology_valid(unsigned topology);

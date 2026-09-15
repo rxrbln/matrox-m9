@@ -8,6 +8,8 @@
 #include <string.h>
 #include <sys/ioctl.h>
 
+#include "util/macros.h"
+
 static uint32_t
 m9_align(uint32_t value, uint32_t alignment)
 {
@@ -279,74 +281,47 @@ m9_batch_bind_surface(struct m9_batch *batch, uint8_t address_index,
    return ret;
 }
 
-static unsigned
-m9_map_filter(unsigned filter)
-{
-   static const uint8_t table[9] = { 0, 0, 2, 3, 0, 0, 4, 4, 7 };
-   return filter < 9 ? table[filter] : 0;
-}
-
-static unsigned
-m9_map_wrap(unsigned wrap)
-{
-   static const uint8_t table[7] = { 0, 0, 4, 1, 7, 5, 6 };
-   return wrap < 7 ? table[wrap] : 0;
-}
-
-uint32_t
-m9_sampler_control(const struct m9_sampler_desc *desc)
-{
-   static const uint8_t mip[3] = { 0, 1, 2 };
-   unsigned aniso = desc->anisotropy > 16 ? 16 : desc->anisotropy;
-   unsigned aniso_code = aniso == 16 ? 3 : aniso >= 8 ? 2 : aniso >= 4 ? 1 : 0;
-
-   return m9_map_filter(desc->min_filter) |
-          (m9_map_filter(desc->mag_filter) << 3) |
-          ((desc->mip_filter < 3 ? mip[desc->mip_filter] : 0) << 7) |
-          (1u << 12) | (aniso_code << 16) |
-          ((desc->compiler_input & 0xfu) << 18) |
-          (m9_map_wrap(desc->wrap_s) << 22) |
-          (m9_map_wrap(desc->wrap_t) << 25) |
-          (m9_map_wrap(desc->wrap_r) << 28);
-}
-
-uint32_t
-m9_sampler_lod(const struct m9_sampler_desc *desc)
-{
-   int bias = desc->lod_bias_1_256;
-   unsigned first = desc->first_level > 511 ? 511 : desc->first_level;
-   unsigned last = desc->last_level > 511 ? 511 : desc->last_level;
-
-   if (bias < -512)
-      bias = -512;
-   if (bias > 511)
-      bias = 511;
-   return ((uint32_t)bias & 0x3ffu) | (first << 10) | (last << 19);
-}
-
 int
-m9_batch_bind_texture(struct m9_batch *batch, uint32_t handle,
-                      uint64_t offset, const struct m9_surface_desc *desc,
-                      const struct m9_sampler_desc *sampler)
+m9_batch_emit_texture_unit(struct m9_batch *batch, unsigned index,
+                           const struct m9_texture_unit *unit)
 {
-   const uint8_t indices[] = { 0x78, 0x79, 0x7a, 0x7c, 0x7d };
-   const uint32_t values[] = { 0, m9_surface_desc0(desc),
-      m9_surface_desc1(desc), m9_sampler_control(sampler),
-      m9_sampler_lod(sampler) };
-   uint32_t address_dword = batch ? batch->command_count + 1 : 0;
    struct m9_batch_checkpoint checkpoint;
    int ret;
 
-   if (!batch || !desc || !sampler || !desc->row_span || !desc->height ||
-       !desc->layers || (offset & 255))
+   if (!batch || batch->sealed || !unit || !unit->handle ||
+       index >= M9_TEXTURE_MAX_UNITS)
       return -EINVAL;
+   /* Captured GLSL order: 70+unit selects, then 78/79/7a, 7c/7d/87 and
+    * the border words 80/81/7e/7f. */
+   const struct m9_packet_value select[] = {
+      { .index = 0x70 + index, .value = unit->w70 },
+   };
+   const struct m9_packet_value bind[] = {
+      { .index = 0x78, .handle = unit->handle,
+        .kind = PARHELIA_M9_RELOC_TEXTURE },
+      { .index = 0x79, .value = unit->w79 },
+      { .index = 0x7a, .value = unit->w7a },
+   };
+   const struct m9_packet_value sampler[] = {
+      { .index = 0x7c, .value = unit->w7c },
+      { .index = 0x7d, .value = unit->w7d },
+      { .index = 0x87, .value = 0 },
+   };
+   const struct m9_packet_value border[] = {
+      { .index = 0x80, .value = unit->w80 },
+      { .index = 0x81, .value = unit->w81 },
+      { .index = 0x7e, .value = unit->w7e },
+      { .index = 0x7f, .value = unit->w7f },
+   };
+
    m9_batch_checkpoint(batch, &checkpoint);
-   ret = m9_batch_emit_regs(batch, indices, values, 5);
-   if (ret)
-      return ret;
-   ret = m9_batch_add_reloc(batch, address_dword, handle, offset,
-                            PARHELIA_M9_RELOC_TEXTURE,
-                            PARHELIA_M9_BO_READ);
+   ret = m9_batch_emit_packet(batch, select, ARRAY_SIZE(select));
+   if (!ret)
+      ret = m9_batch_emit_packet(batch, bind, ARRAY_SIZE(bind));
+   if (!ret)
+      ret = m9_batch_emit_packet(batch, sampler, ARRAY_SIZE(sampler));
+   if (!ret)
+      ret = m9_batch_emit_packet(batch, border, ARRAY_SIZE(border));
    if (ret)
       m9_batch_rollback(batch, &checkpoint);
    return ret;

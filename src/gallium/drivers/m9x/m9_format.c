@@ -31,6 +31,18 @@ m9_format_info(enum pipe_format format, struct m9_format_info *out)
    case PIPE_FORMAT_L8_UNORM:
       info = (struct m9_format_info){ 0x30, 1, M9_FORMAT_TEXTURE };
       break;
+   case PIPE_FORMAT_R8G8B8X8_UNORM:
+      info = (struct m9_format_info){ 0x64, 4, M9_FORMAT_TEXTURE };
+      break;
+   case PIPE_FORMAT_A8_UNORM:
+      info = (struct m9_format_info){ 0x33, 1, M9_FORMAT_TEXTURE };
+      break;
+   case PIPE_FORMAT_L8A8_UNORM:
+      info = (struct m9_format_info){ 0x51, 2, M9_FORMAT_TEXTURE };
+      break;
+   case PIPE_FORMAT_I8_UNORM:
+      info = (struct m9_format_info){ 0x51, 1, M9_FORMAT_TEXTURE };
+      break;
    case PIPE_FORMAT_Z16_UNORM:
       info = (struct m9_format_info){ 0x5c, 2, M9_FORMAT_DEPTH };
       break;

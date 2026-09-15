@@ -360,6 +360,7 @@ m9_resource_create(struct pipe_screen *pscreen,
    struct drm_parhelia_m9_create_bo create = {0};
    struct m9_format_info format = {0};
    struct m9_render_layout render_layout;
+   struct m9_texture_format texture;
    uint64_t size;
 
    if (!resource)
@@ -398,7 +399,20 @@ m9_resource_create(struct pipe_screen *pscreen,
          M9_RESOURCE_LINEAR_COLOR : M9_RESOURCE_LINEAR_TEXTURE;
       if (resource->kind != M9_RESOURCE_LINEAR_TEXTURE && templ->last_level)
          goto fail;
-      if (resource->kind == M9_RESOURCE_LINEAR_TEXTURE) {
+      if (resource->kind == M9_RESOURCE_LINEAR_TEXTURE &&
+          m9_resource_bo_flags(templ) == PARHELIA_M9_BO_VRAM &&
+          templ->target != PIPE_TEXTURE_1D &&
+          m9_texture_format(templ->format, &texture)) {
+         /* Sampled images use the vendor's tiled texture storage. */
+         if (m9_texture_layout_init(&resource->texture, M9_TEXTURE_KIND_2D,
+                                    templ->width0, templ->height0, 1,
+                                    templ->last_level + 1))
+            goto fail;
+         resource->texture_storage = texture.storage;
+         resource->texture_code = texture.code;
+         resource->row_span = m9_resource_row_span(templ->width0);
+         size = resource->texture.size;
+      } else if (resource->kind == M9_RESOURCE_LINEAR_TEXTURE) {
          if (m9_mip_layout_init(&resource->mip, templ->width0,
                                 templ->height0, 1, templ->last_level + 1,
                                 format.cpp))
@@ -654,7 +668,9 @@ m9_resource_get_handle(struct pipe_screen *pscreen, struct pipe_context *ctx,
 
    (void)ctx;
    (void)usage;
-   if (!whandle || !resource->handle || resource->domain == M9_BO_DMA32)
+   /* Tiled textures have no linear stride to export. */
+   if (!whandle || !resource->handle || resource->domain == M9_BO_DMA32 ||
+       resource->texture.levels)
       return false;
    whandle->stride = resource->row_span * resource->cpp;
    whandle->offset = 0;
@@ -897,7 +913,7 @@ m9_init_shader_caps(struct m9_screen *screen)
    fs->max_const_buffer0_size = 32 * 4 * sizeof(float);
    fs->max_const_buffers = 1;
    fs->max_temps = 32;
-   fs->max_texture_samplers = fs->max_sampler_views = 1;
+   fs->max_texture_samplers = fs->max_sampler_views = M9_FS_MAX_TEXTURES;
 }
 
 static bool

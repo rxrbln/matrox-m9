@@ -4,6 +4,7 @@
 #define M9_BATCH_H
 
 #include "m9_internal.h"
+#include "m9_texture.h"
 
 struct m9_batch_checkpoint {
    uint32_t command_count, reloc_count, bo_count;
@@ -44,15 +45,6 @@ struct m9_surface_desc {
    uint8_t format;
    bool address_offset;
    bool resource_layout;
-};
-
-struct m9_sampler_desc {
-   unsigned min_filter, mag_filter, mip_filter;
-   unsigned wrap_s, wrap_t, wrap_r;
-   unsigned anisotropy;
-   unsigned compiler_input;
-   int lod_bias_1_256;
-   unsigned first_level, last_level;
 };
 
 struct m9_linked_program {
@@ -97,9 +89,8 @@ int m9_batch_bind_surface(struct m9_batch *batch, uint8_t address_index,
                           uint32_t handle, uint64_t offset,
                           enum drm_parhelia_m9_reloc_kind kind,
                           const struct m9_surface_desc *desc);
-int m9_batch_bind_texture(struct m9_batch *batch, uint32_t handle,
-                          uint64_t offset, const struct m9_surface_desc *desc,
-                          const struct m9_sampler_desc *sampler);
+int m9_batch_emit_texture_unit(struct m9_batch *batch, unsigned index,
+                               const struct m9_texture_unit *unit);
 int m9_batch_bind_program(struct m9_batch *batch,
                           const struct m9_linked_program *program);
 int m9_batch_bind_fixed_inline_program(struct m9_batch *batch);
@@ -116,8 +107,6 @@ int m9_primitive_map(enum m9_primitive primitive, uint32_t primitive_count,
                      struct m9_primitive_info *out);
 uint32_t m9_surface_desc0(const struct m9_surface_desc *desc);
 uint32_t m9_surface_desc1(const struct m9_surface_desc *desc);
-uint32_t m9_sampler_control(const struct m9_sampler_desc *desc);
-uint32_t m9_sampler_lod(const struct m9_sampler_desc *desc);
 int m9_mip_layout_init(struct m9_mip_layout *layout, uint32_t width,
                        uint32_t height, uint32_t depth, unsigned levels,
                        unsigned cpp);

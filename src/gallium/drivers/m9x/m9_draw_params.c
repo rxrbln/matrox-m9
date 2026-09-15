@@ -188,11 +188,30 @@ m9_raster_fs_init(struct m9_raster_fs *r, unsigned vertex_entry,
                   uint32_t r88, unsigned const_count, unsigned varying_count,
                   const bool *flat_link, const uint32_t *varying_view)
 {
-   uint32_t stride[M9_RASTER_MAX_STREAMS] = { 0 };
+   return m9_raster_fs_init_textured(r, vertex_entry, r88, const_count,
+                                     varying_count, flat_link, varying_view,
+                                     0, NULL, 0, NULL);
+}
 
-   if (!r || varying_count + 3 > M9_RASTER_MAX_STREAMS ||
-       2 * varying_count + 3 > M9_RASTER_MAX_DECL || const_count > 0x7f)
+int
+m9_raster_fs_init_textured(struct m9_raster_fs *r, unsigned vertex_entry,
+                           uint32_t r88, unsigned const_count,
+                           unsigned varying_count, const bool *flat_link,
+                           const uint32_t *varying_view, unsigned coord_count,
+                           const uint32_t *coord_view, unsigned texture_count,
+                           const uint8_t *texture_coord)
+{
+   uint32_t stride[M9_RASTER_MAX_STREAMS] = { 0 };
+   unsigned streams = varying_count + coord_count;
+
+   if (!r || streams + 3 > M9_RASTER_MAX_STREAMS ||
+       2 * varying_count + texture_count + 3 > M9_RASTER_MAX_DECL ||
+       const_count > 0x7f || texture_count > 4 ||
+       (coord_count && !coord_view) || (texture_count && !texture_coord))
       return -EINVAL;
+   for (unsigned k = 0; k < texture_count; k++)
+      if (texture_coord[k] >= coord_count)
+         return -EINVAL;
    memset(r, 0, sizeof(*r));
    r->vertex_entry = vertex_entry;
    r->r88 = r88;
@@ -206,16 +225,26 @@ m9_raster_fs_init(struct m9_raster_fs *r, unsigned vertex_entry,
       r->stream_view[k] = varying_view[k];
       stride[k] = 0x10;
    }
-   r->decl[r->decl_count++] = varying_count << 16 | 0x0688;
-   r->decl[r->decl_count++] = 0x00c00000u | (varying_count + 1) << 16 | 0x31b6;
-   r->decl[r->decl_count++] = 0x00d00000u | (varying_count + 2) << 16 | 0x0688;
-   r->stream_view[varying_count] = 1;
-   r->stream_view[varying_count + 1] = 2;
-   r->stream_view[varying_count + 2] = 3;
-   stride[varying_count] = 0x10;
-   stride[varying_count + 1] = 0x06;
-   stride[varying_count + 2] = 0x10;
-   r->stream_count = varying_count + 3;
+   for (unsigned c = 0; c < coord_count; c++) {
+      r->stream_view[varying_count + c] = coord_view[c];
+      stride[varying_count + c] = 0x10;
+   }
+   /* Captured fs-tex2d/-two, pr-tex-mul-color: texture k reads its
+    * coordinate stream as attribute 5+k, xyzw. */
+   for (unsigned k = 0; k < texture_count; k++)
+      r->decl[r->decl_count++] = (5 + k) << 20 |
+                                 (varying_count + texture_coord[k]) << 16 |
+                                 0x0688;
+   r->decl[r->decl_count++] = streams << 16 | 0x0688;
+   r->decl[r->decl_count++] = 0x00c00000u | (streams + 1) << 16 | 0x31b6;
+   r->decl[r->decl_count++] = 0x00d00000u | (streams + 2) << 16 | 0x0688;
+   r->stream_view[streams] = 1;
+   r->stream_view[streams + 1] = 2;
+   r->stream_view[streams + 2] = 3;
+   stride[streams] = 0x10;
+   stride[streams + 1] = 0x06;
+   stride[streams + 2] = 0x10;
+   r->stream_count = streams + 3;
    for (unsigned i = 0; i < 3; i++)
       r->stride[i] = stride[2 * i] |
                      (2 * i + 1 < M9_RASTER_MAX_STREAMS ? stride[2 * i + 1] : 0) << 16;
