@@ -394,6 +394,14 @@ int m9x_address_init(struct m9x_device *mdev)
 		dev_warn(&mdev->pdev->dev,
 			 "M9 %#llx-byte layout has no class-1 system slots\n",
 			 mdev->vram_total);
+	/* Kernel surface transfers map the slot 1 window above the identity. */
+	if (mdev->vram_size >= M9_ADDRESS_CPU_BYTES + M9_ADDRESS_SURFACE_BYTES) {
+		mdev->bar0_window = devm_ioremap_wc(&mdev->pdev->dev,
+				pci_resource_start(mdev->pdev, 0) + M9_ADDRESS_CPU_BYTES,
+				M9_ADDRESS_SURFACE_BYTES);
+		if (!mdev->bar0_window)
+			return -ENOMEM;
+	}
 	root = drm_gem_vram_create(&mdev->drm, layout->root_bytes, 1);
 	if (IS_ERR(root))
 		return PTR_ERR(root);

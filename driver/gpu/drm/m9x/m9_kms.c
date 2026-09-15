@@ -258,9 +258,11 @@ static int m9_pipe_check(struct drm_simple_display_pipe *pipe,
 static int m9_scanout_publish(struct m9x_device *mdev,
 			      struct drm_framebuffer *fb)
 {
-	struct drm_gem_vram_object *src = drm_gem_vram_of_gem(drm_gem_fb_get_obj(fb, 0));
+	struct drm_gem_object *gem = drm_gem_fb_get_obj(fb, 0);
+	struct drm_gem_vram_object *src = drm_gem_vram_of_gem(gem);
+	bool tiled = m9x_gem_vram_tiled(gem);
 	struct iosys_map map;
-	s64 offset;
+	s64 offset, src_offset = 0;
 	int ret;
 
 	if (!mdev->scanout || !mdev->bar0_window || !mdev->scanout_bounce)
@@ -268,19 +270,30 @@ static int m9_scanout_publish(struct m9x_device *mdev,
 	offset = drm_gem_vram_offset(mdev->scanout);
 	if (offset < 0)
 		return offset;
-	ret = ttm_bo_reserve(&src->bo, true, false, NULL);
-	if (ret)
-		return ret;
-	ret = drm_gem_vram_vmap(src, &map);
-	if (!ret) {
-		iosys_map_memcpy_from(mdev->scanout_bounce, &map, 0,
-				      M9_SCANOUT_BYTES);
-		drm_gem_vram_vunmap(src, &map);
+	if (tiled) {
+		src_offset = drm_gem_vram_offset(src);
+		if (src_offset < 0)
+			return src_offset;
+	} else {
+		ret = ttm_bo_reserve(&src->bo, true, false, NULL);
+		if (ret)
+			return ret;
+		ret = drm_gem_vram_vmap(src, &map);
+		if (!ret) {
+			iosys_map_memcpy_from(mdev->scanout_bounce, &map, 0,
+					      M9_SCANOUT_BYTES);
+			drm_gem_vram_vunmap(src, &map);
+		}
+		ttm_bo_unreserve(&src->bo);
+		if (ret)
+			return ret;
 	}
-	ttm_bo_unreserve(&src->bo);
-	if (ret)
-		return ret;
 	mutex_lock(&mdev->transport.lock);
+	/* GPU-rendered frames are tiled: de-tile them through the window. */
+	if (tiled)
+		m9x_surface_read_locked(mdev, lower_32_bits(src_offset),
+					M9_SCANOUT_FORMAT, M9_SCANOUT_EXTENT,
+					mdev->scanout_bounce, M9_SCANOUT_BYTES);
 	m9x_address_surface_window(mdev, lower_32_bits(offset), M9_SCANOUT_FORMAT,
 			       M9_SCANOUT_EXTENT);
 	memcpy_toio(mdev->bar0_window, mdev->scanout_bounce, M9_SCANOUT_BYTES);
@@ -569,7 +582,6 @@ static void m9_scanout_fini(struct m9x_device *mdev)
 	}
 	kvfree(mdev->scanout_bounce);
 	mdev->scanout_bounce = NULL;
-	mdev->bar0_window = NULL;
 }
 
 static int m9_scanout_init(struct m9x_device *mdev)
@@ -577,8 +589,6 @@ static int m9_scanout_init(struct m9x_device *mdev)
 	struct pci_dev *pci = mdev->pdev;
 	int ret;
 
-	mdev->bar0_window = devm_ioremap_wc(&pci->dev, pci_resource_start(pci, 0) +
-					    M9_ADDRESS_CPU_BYTES, M9_SCANOUT_BYTES);
 	mdev->scanout_bounce = kvzalloc(M9_SCANOUT_BYTES, GFP_KERNEL);
 	if (!mdev->bar0_window || !mdev->scanout_bounce) {
 		ret = -ENOMEM;

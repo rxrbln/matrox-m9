@@ -247,7 +247,18 @@ bit; ``0x0000ffff`` is empty) and the lowest slot wins on overlap.  Slot 0 is
 a permanent identity window over BAR0 [0, 224 MiB) (``d0=0xdfff0000``), which
 is also the range handed to TTM; surface windows use slot 1 at BAR0
 [224, 256 MiB) (``d0=0xffffe000``), so CPU mappings of VRAM BOs stay valid
-while the kernel reads or writes a de-tiled surface.  modetest's SMPTE
+while the kernel reads or writes a de-tiled surface.
+
+GPU render targets are created with ``PARHELIA_M9_BO_TILED``; ``GET_BO_INFO``
+reports the layout.  ``DRM_IOCTL_PARHELIA_M9_SURFACE_ACCESS`` reads or writes
+a rectangle of such a BO as linear top-down BGRX rows through the slot 1
+window.  It accepts only the verified ``cc21`` XRGB8888 descriptors with a
+row span of ``align(width, 32)``, BOs at least as large as the vendor render
+layout, and copies user memory outside the reservation and transport lock.
+A framebuffer on a tiled BO is de-tiled into the scanout surface the same
+way.  ``tools/m9-surface-access-test`` round-trips coordinate-coded images and
+sub-rectangles without a mismatch at 320x240, 300x300 and 1024x768, while the
+raw storage of the same BOs is not linear.  modetest's SMPTE
 pattern reads back row-exact through the same descriptor.  Xorg modesetting
 with ``AccelMethod none`` and ``ShadowFB on`` scans out through the dirty-fb
 copy; every root-window pixel matches the scanout surface.

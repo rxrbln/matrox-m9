@@ -48,6 +48,7 @@ struct m9x_bo {
 
 struct m9x_vram_bo {
 	struct drm_gem_vram_object vram;
+	bool tiled;
 };
 
 struct m9x_fence {
@@ -101,6 +102,7 @@ struct m9x_device {
 	bool kms_initialized;
 	bool irq_installed;
 	struct drm_gem_vram_object *scanout;
+	/* BAR0 [M9_ADDRESS_CPU_BYTES, +M9_ADDRESS_SURFACE_BYTES), slot 1 view. */
 	void __iomem *bar0_window;
 	u8 *scanout_bounce;
 	struct m9x_transport transport;
@@ -169,6 +171,12 @@ struct m9x_bo *m9x_bo_lookup(struct m9x_device *mdev,
 			     struct drm_file *file, u32 handle);
 bool m9x_gem_is_dma(struct drm_gem_object *gem);
 bool m9x_gem_is_vram(struct drm_gem_object *gem);
+bool m9x_gem_vram_tiled(struct drm_gem_object *gem);
+int m9x_surface_access_ioctl(struct drm_device *drm, void *data,
+			     struct drm_file *file);
+void m9x_surface_read_locked(struct m9x_device *mdev, u32 offset, u32 d0,
+			     u32 d1, u8 *dst, size_t bytes);
+int m9x_surface_selftest(void);
 struct drm_gem_object *m9x_gem_create_object(struct drm_device *drm,
 					      size_t size);
 int m9x_vram_pin(struct drm_gem_vram_object *bo);

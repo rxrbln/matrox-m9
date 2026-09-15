@@ -77,6 +77,13 @@ bool m9x_gem_is_vram(struct drm_gem_object *gem)
 	return gem && gem->funcs == &m9_vram_bo_funcs;
 }
 
+bool m9x_gem_vram_tiled(struct drm_gem_object *gem)
+{
+	return m9x_gem_is_vram(gem) &&
+	       container_of(drm_gem_vram_of_gem(gem), struct m9x_vram_bo,
+			    vram)->tiled;
+}
+
 struct drm_gem_object *m9x_gem_create_object(struct drm_device *drm,
 					      size_t size)
 {
@@ -229,9 +236,11 @@ static int m9_create_bo_ioctl(struct drm_device *drm, void *data,
 	if (!m9x_enabled())
 		return -ENODEV;
 	if (!args->size || args->size > M9_BO_MAX_SIZE ||
-	    args->flags & ~(PARHELIA_M9_BO_COMMAND | PARHELIA_M9_BO_VRAM) ||
-	    (args->flags & (PARHELIA_M9_BO_COMMAND | PARHELIA_M9_BO_VRAM)) ==
-		(PARHELIA_M9_BO_COMMAND | PARHELIA_M9_BO_VRAM) || args->handle ||
+	    args->flags & ~(PARHELIA_M9_BO_COMMAND | PARHELIA_M9_BO_VRAM |
+			    PARHELIA_M9_BO_TILED) ||
+	    ((args->flags & PARHELIA_M9_BO_COMMAND) &&
+	     (args->flags & (PARHELIA_M9_BO_VRAM | PARHELIA_M9_BO_TILED))) ||
+	    args->handle ||
 	    args->mmap_offset)
 		return -EINVAL;
 	size = PAGE_ALIGN(args->size);
@@ -240,12 +249,13 @@ static int m9_create_bo_ioctl(struct drm_device *drm, void *data,
 	mutex_unlock(&mdev->transport.lock);
 	if (ret)
 		return ret;
-	if (args->flags & PARHELIA_M9_BO_VRAM) {
+	if (args->flags & (PARHELIA_M9_BO_VRAM | PARHELIA_M9_BO_TILED)) {
 		struct m9x_vram_bo *vram_bo;
 
 		vram_bo = m9_vram_bo_create(drm, size);
 		if (IS_ERR(vram_bo))
 			return PTR_ERR(vram_bo);
+		vram_bo->tiled = args->flags & PARHELIA_M9_BO_TILED;
 		gem = &vram_bo->vram.bo.base;
 	} else {
 		bo = m9_bo_create(drm, size);
@@ -299,7 +309,7 @@ static int m9_get_bo_info_ioctl(struct drm_device *drm, void *data,
 	if (!m9x_enabled())
 		return -ENODEV;
 	if (!args->handle || args->memory_class || args->size ||
-	    args->mmap_offset)
+	    args->mmap_offset || args->layout || args->pad)
 		return -EINVAL;
 	gem = drm_gem_object_lookup(file, args->handle);
 	if (!gem)
@@ -314,6 +324,9 @@ static int m9_get_bo_info_ioctl(struct drm_device *drm, void *data,
 		args->size = gem->size;
 	if (!ret)
 		args->mmap_offset = drm_vma_node_offset_addr(&gem->vma_node);
+	if (!ret)
+		args->layout = m9x_gem_vram_tiled(gem) ?
+			PARHELIA_M9_LAYOUT_TILED : PARHELIA_M9_LAYOUT_LINEAR;
 	drm_gem_object_put(gem);
 	return ret;
 }

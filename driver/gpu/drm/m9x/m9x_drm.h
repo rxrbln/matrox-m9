@@ -9,6 +9,7 @@
 #define DRM_PARHELIA_M9_CREATE_BO	0x09
 #define DRM_PARHELIA_M9_SUBMIT		0x0a
 #define DRM_PARHELIA_M9_GET_BO_INFO	0x0b
+#define DRM_PARHELIA_M9_SURFACE_ACCESS	0x0c
 
 #define DRM_IOCTL_PARHELIA_M9_CREATE_BO \
 	DRM_IOWR(DRM_COMMAND_BASE + DRM_PARHELIA_M9_CREATE_BO, \
@@ -19,6 +20,9 @@
 #define DRM_IOCTL_PARHELIA_M9_GET_BO_INFO \
 	DRM_IOWR(DRM_COMMAND_BASE + DRM_PARHELIA_M9_GET_BO_INFO, \
 		 struct drm_parhelia_m9_get_bo_info)
+#define DRM_IOCTL_PARHELIA_M9_SURFACE_ACCESS \
+	DRM_IOWR(DRM_COMMAND_BASE + DRM_PARHELIA_M9_SURFACE_ACCESS, \
+		 struct drm_parhelia_m9_surface_access)
 
 /*
  * M9 command and staging objects are immutable DMA32 allocations unless
@@ -37,6 +41,8 @@ struct drm_parhelia_m9_create_bo {
 #define PARHELIA_M9_BO_READ	(1u << 1)
 #define PARHELIA_M9_BO_WRITE	(1u << 2)
 #define PARHELIA_M9_BO_VRAM	0x00000008u
+/* GPU render/scanout color storage, stored tiled; implies BO_VRAM. */
+#define PARHELIA_M9_BO_TILED	0x00000010u
 
 /* Query storage and the render-node-safe mmap cookie after handle import. */
 struct drm_parhelia_m9_get_bo_info {
@@ -44,10 +50,40 @@ struct drm_parhelia_m9_get_bo_info {
 	__u32 memory_class; /* out */
 	__u64 size; /* out */
 	__u64 mmap_offset; /* out: DRM mmap cookie */
+	__u32 layout; /* out: PARHELIA_M9_LAYOUT_* */
+	__u32 pad;
 };
 
 #define PARHELIA_M9_MEMORY_CLASS_DMA32	1u
 #define PARHELIA_M9_MEMORY_CLASS_VRAM	2u
+
+#define PARHELIA_M9_LAYOUT_LINEAR	0u
+#define PARHELIA_M9_LAYOUT_TILED	1u
+
+/*
+ * De-tiled CPU access to a rectangle of a TILED VRAM BO.  descriptor0/1 are
+ * the surface's cc21xxxx descriptor and layers << 16 | height; the user
+ * buffer holds top-down rows of BGRX dwords, data_stride bytes per row.
+ */
+#define PARHELIA_M9_ACCESS_READ		1u
+#define PARHELIA_M9_ACCESS_WRITE	2u
+
+struct drm_parhelia_m9_surface_access {
+	__u32 handle;
+	__u32 op;
+	__u32 descriptor0;
+	__u32 descriptor1;
+	__u32 surface_width;
+	__u32 x;
+	__u32 y;
+	__u32 width;
+	__u32 height;
+	__u32 data_stride;
+	__u64 data_ptr;
+	__u64 data_size;
+	__u32 flags;
+	__u32 pad;
+};
 
 /*
  * DRAW16_END only: the exclusive byte end names the upper halfword of the

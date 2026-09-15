@@ -623,6 +623,9 @@ int m9x_init(struct m9x_device *mdev)
 	ret = m9x_triangle_selftest();
 	if (ret)
 		return dev_err_probe(dev, ret, "M9 triangle selftest failed\n");
+	ret = m9x_surface_selftest();
+	if (ret)
+		return dev_err_probe(dev, ret, "M9 surface selftest failed\n");
 	ret = m9_requester_selftest();
 	if (ret)
 		return dev_err_probe(dev, ret, "M9 requester selftest failed\n");
