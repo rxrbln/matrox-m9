@@ -63,6 +63,11 @@
 
 static bool m9_triangle_diag;
 module_param(m9_triangle_diag, bool, 0400);
+
+static bool m9_triangle_guard_scan;
+module_param(m9_triangle_guard_scan, bool, 0600);
+MODULE_PARM_DESC(m9_triangle_guard_scan,
+	"Re-verify the triangle guard words on every submit (slow)");
 MODULE_PARM_DESC(m9_triangle_diag,
 	"Run the staged kernel-owned M9 first-triangle diagnostic");
 
@@ -890,8 +895,11 @@ static int m9_triangle_prepare_resources(struct m9x_device *mdev)
 	unsigned int id;
 	int ret;
 
+	/* Rescanning every guard word costs an uncached read per word from
+	 * VRAM; on the submit path it dominated a glxgears profile. */
 	if (diag && diag->prepared)
-		return m9_triangle_verify_guards(diag, &mdev->pdev->dev);
+		return m9_triangle_guard_scan ?
+		       m9_triangle_verify_guards(diag, &mdev->pdev->dev) : 0;
 	if (!diag) {
 		diag = devm_kzalloc(&mdev->pdev->dev, sizeof(*diag), GFP_KERNEL);
 		if (!diag)
