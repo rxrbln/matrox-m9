@@ -47,12 +47,19 @@ struct m9_fs_program {
    unsigned varying_count;
    uint8_t textures[M9_FS_MAX_TEXTURES];  /* sampler index per texel pair */
    uint8_t texcoords[M9_FS_MAX_TEXTURES]; /* coordinate gl_varying_slot */
+   uint8_t texcoord_components[M9_FS_MAX_TEXTURES]; /* first coordinate component */
    unsigned texture_count;
    uint16_t registers_used;       /* bit per register pair group 08..1f */
    bool discard, fragcoord, fragdepth;
 };
 
 extern const struct nir_shader_compiler_options m9_fs_nir_options;
+
+/* Marks uniforms used by if conditions as inlinable (screen finalize_nir). */
+void m9_fs_find_inlinable_uniforms(struct nir_shader *nir);
+/* Inlines constant buffer words for the inlinable uniforms and folds the
+ * control flow that depended on them. */
+void m9_fs_inline_uniforms(struct nir_shader *nir, const uint32_t *values);
 
 /* Returns false with a static reason when the shader is not covered. */
 bool m9_fs_compile(struct nir_shader *nir, struct m9_fs_program *program,

@@ -10,14 +10,16 @@
  * registers 11/13, fresh general registers for values read by the last slot,
  * interpolation registers 00/01 and 1a..1f) and numbers constants in backward
  * order of first use.  Every word below is an instruction form captured in
- * captures/m9x-vendor-glsl-programs-20260915; shapes outside these forms are
- * refused.
+ * captures/m9x-vendor-glsl-programs-20260915 or
+ * captures/m9x-vendor-glamor-shaders-20260915; shapes outside these forms
+ * are refused.
  */
 #include "m9_fs_compile.h"
 
 #include <string.h>
 
 #include "nir.h"
+#include "nir_builder.h"
 #include "util/u_math.h"
 
 const nir_shader_compiler_options m9_fs_nir_options = {
@@ -48,6 +50,8 @@ const nir_shader_compiler_options m9_fs_nir_options = {
 
 enum node_kind {
    N_VARY, N_TEX, N_UBO, N_LIT, N_MUL, N_ADD, N_SUB, N_MAD,
+   N_LOAD,              /* constant factor moved into a register */
+   N_COMPOSE,           /* vec4(texture.xyz, literal), written in place */
 };
 
 struct node {
@@ -61,11 +65,13 @@ struct node {
    bool neg;            /* ADD with a negated literal */
    int level;
    int value[2];        /* per lane: 0 xy, 1 zw */
+   uint8_t lane[3][2];  /* source lane read for result lane xy, zw */
+   uint8_t swz[3][2];   /* 2-bit operand swizzle per result lane, 1 = xy */
 };
 
 enum lop_kind {
    L_INTERP, L_MUL_RC, L_MUL_RR, L_ADD_RC, L_ADD_RR, L_SUB_CR, L_MAD,
-   L_MOV_OUT, L_MOVC_OUT, L_RAW,
+   L_MOV_OUT, L_MOVC_OUT, L_MOVC_TMP, L_MOVC_SECOND, L_RAW,
 };
 
 struct lop {
@@ -76,6 +82,8 @@ struct lop {
    int opval[2];        /* register operands as value ids */
    int opreg[2];        /* fixed register operands (texels), -1 if unused */
    int konst;           /* constant operand key, -1 if unused */
+   uint8_t opswz[2];    /* register operand swizzles */
+   uint8_t kswz;        /* constant operand swizzle */
    uint32_t w0, w1;     /* L_RAW */
 };
 
@@ -98,6 +106,7 @@ struct ctx {
    struct util_dynarray nodes, lops, values, keys, key_index;
    const char *reason;
    bool has_consts;
+   bool custom_consts;  /* a template supplies the whole constant span */
 };
 
 #define NODES(c) ((struct node *)(c)->nodes.data)
@@ -224,7 +233,18 @@ node_new(struct ctx *c, enum node_kind kind)
    n->kind = kind;
    n->src[0] = n->src[1] = n->src[2] = -1;
    n->value[0] = n->value[1] = -1;
+   for (unsigned i = 0; i < 3; i++) {
+      n->lane[i][1] = 1;
+      n->swz[i][0] = n->swz[i][1] = 1;
+   }
    return NUM(c, nodes, struct node) - 1;
+}
+
+static bool
+node_swizzled(const struct node *n, unsigned i)
+{
+   return n->lane[i][0] != 0 || n->lane[i][1] != 1 || n->swz[i][0] != 1 ||
+          n->swz[i][1] != 1;
 }
 
 static bool
@@ -288,10 +308,11 @@ build_tex(struct ctx *c, nir_tex_instr *tex)
        tex->is_shadow || tex->is_array || tex->num_srcs != 1 || ci < 0 ||
        p->texture_count >= M9_FS_MAX_TEXTURES)
       return fail(c, "texture sampling needs a computed coordinate pass"), -1;
+   /* Linked vec2 varyings may share one slot: xy or zw of the input. */
    for (unsigned i = 0; i < 2; i++) {
       s[i] = nir_scalar_chase_movs(nir_get_scalar(tex->src[ci].src.ssa, i));
-      if (s[i].comp != i || s[i].def != s[0].def ||
-          !nir_scalar_is_intrinsic(s[i]))
+      if (s[i].comp != s[0].comp + i || (s[0].comp & 1) ||
+          s[i].def != s[0].def || !nir_scalar_is_intrinsic(s[i]))
          return fail(c, "texture coordinate is not a varying"), -1;
    }
    coord = nir_def_as_intrinsic(s[0].def);
@@ -303,6 +324,7 @@ build_tex(struct ctx *c, nir_tex_instr *tex)
          return fail(c, "texture coordinate also used as a varying"), -1;
    p->textures[p->texture_count] = tex->texture_index;
    p->texcoords[p->texture_count] = location;
+   p->texcoord_components[p->texture_count] = s[0].comp;
    n = node_new(c, N_TEX);
    if (n < 0)
       return -1;
@@ -310,19 +332,53 @@ build_tex(struct ctx *c, nir_tex_instr *tex)
    return n;
 }
 
+/* Operand i of alu; a swizzle that keeps each result lane inside one source
+ * lane becomes a source lane plus a 2-bit operand swizzle. */
 static int
-alu_src_node(struct ctx *c, nir_alu_instr *alu, unsigned i)
+alu_src_node(struct ctx *c, nir_alu_instr *alu, unsigned i, uint8_t *lane,
+             uint8_t *swz)
 {
    nir_scalar s[4];
+   bool identity = true, same = true;
 
-   for (unsigned k = 0; k < 4; k++)
-      s[k] = nir_get_scalar(alu->src[i].src.ssa, alu->src[i].swizzle[k]);
+   lane[0] = 0;
+   lane[1] = 1;
+   swz[0] = swz[1] = 1;
+   for (unsigned k = 0; k < 4; k++) {
+      s[k] = nir_scalar_chase_movs(nir_get_scalar(alu->src[i].src.ssa,
+                                                  alu->src[i].swizzle[k]));
+      same &= s[k].def == s[0].def && !nir_scalar_is_const(s[k]);
+      identity &= s[k].comp == k;
+   }
+   if (same && !identity && s[0].def->num_components == 4) {
+      for (unsigned l = 0; l < 2; l++) {
+         unsigned c0 = s[2 * l].comp, c1 = s[2 * l + 1].comp;
+
+         if (c0 / 2 != c1 / 2)
+            return fail(c, "swizzle crosses register lanes"), -1;
+         lane[l] = c0 / 2;
+         swz[l] = (c0 & 1) << 1 | (c1 & 1);
+      }
+      for (unsigned k = 0; k < 4; k++)
+         s[k].comp = k;
+   }
    return build_vec(c, s);
+}
+
+static void
+set_src(struct node *n, unsigned i, int src, const uint8_t *lane,
+        const uint8_t *swz)
+{
+   n->src[i] = src;
+   memcpy(n->lane[i], lane, 2);
+   memcpy(n->swz[i], swz, 2);
 }
 
 static int
 build_alu(struct ctx *c, nir_alu_instr *alu)
 {
+   static const uint8_t lane_id[2] = { 0, 1 }, swz_id[2] = { 1, 1 };
+   uint8_t lane[3][2], swz[3][2];
    int a, b, t, n, s;
 
    if (alu->def.num_components != 4)
@@ -330,22 +386,43 @@ build_alu(struct ctx *c, nir_alu_instr *alu)
    switch (alu->op) {
    case nir_op_fmul:
    case nir_op_fadd:
-      a = alu_src_node(c, alu, 0);
-      b = a < 0 ? -1 : alu_src_node(c, alu, 1);
+      a = alu_src_node(c, alu, 0, lane[0], swz[0]);
+      b = a < 0 ? -1 : alu_src_node(c, alu, 1, lane[1], swz[1]);
       if (b < 0)
          return -1;
       if (node_is_const(&NODES(c)[a])) {
          int tmp = a;
          a = b;
          b = tmp;
+         memcpy(lane[2], lane[0], 2);
+         memcpy(lane[0], lane[1], 2);
+         memcpy(lane[1], lane[2], 2);
+         memcpy(swz[2], swz[0], 2);
+         memcpy(swz[0], swz[1], 2);
+         memcpy(swz[1], swz[2], 2);
       }
-      if (node_is_const(&NODES(c)[a]))
-         return fail(c, "constant expression"), -1;
+      if (node_is_const(&NODES(c)[a])) {
+         int load;
+
+         if (alu->op != nir_op_fmul)
+            return fail(c, "constant expression"), -1;
+         /* The vendor moves a constant factor into a register. */
+         load = node_new(c, N_LOAD);
+         if (load < 0)
+            return -1;
+         set_src(&NODES(c)[load], 0, a, lane[0], swz[0]);
+         a = load;
+         memcpy(lane[0], lane_id, 2);
+         memcpy(swz[0], swz_id, 2);
+      }
       n = node_new(c, alu->op == nir_op_fmul ? N_MUL : N_ADD);
       if (n < 0)
          return -1;
-      NODES(c)[n].src[0] = a;
-      NODES(c)[n].src[1] = b;
+      set_src(&NODES(c)[n], 0, a, lane[0], swz[0]);
+      set_src(&NODES(c)[n], 1, b, lane[1], swz[1]);
+      if (alu->op == nir_op_fadd &&
+          (node_swizzled(&NODES(c)[n], 0) || node_swizzled(&NODES(c)[n], 1)))
+         return fail(c, "swizzled addition operand"), -1;
       if (alu->op == nir_op_fadd && NODES(c)[b].kind == N_LIT) {
          const float *v = NODES(c)[b].lit;
 
@@ -357,11 +434,14 @@ build_alu(struct ctx *c, nir_alu_instr *alu)
       }
       return n;
    case nir_op_flrp:
-      a = alu_src_node(c, alu, 0);
-      b = a < 0 ? -1 : alu_src_node(c, alu, 1);
-      t = b < 0 ? -1 : alu_src_node(c, alu, 2);
+      a = alu_src_node(c, alu, 0, lane[0], swz[0]);
+      b = a < 0 ? -1 : alu_src_node(c, alu, 1, lane[1], swz[1]);
+      t = b < 0 ? -1 : alu_src_node(c, alu, 2, lane[2], swz[2]);
       if (t < 0)
          return -1;
+      for (unsigned i = 0; i < 3; i++)
+         if (memcmp(lane[i], lane_id, 2) || memcmp(swz[i], swz_id, 2))
+            return fail(c, "swizzled mix operand"), -1;
       if (node_is_const(&NODES(c)[a]) || !node_is_const(&NODES(c)[t]) ||
           NODES(c)[b].kind == N_LIT)
          return fail(c, "unsupported mix operands"), -1;
@@ -428,6 +508,28 @@ build_vec(struct ctx *c, nir_scalar s[4])
          NODES(c)[n].lit[k] = nir_scalar_as_float(s[k]);
       return n;
    }
+   /* vec4(texture.xyz, literal): composite rgbx sources */
+   if (nir_scalar_is_const(s[3]) && !nir_scalar_is_const(s[0]) &&
+       s[0].def->num_components == 4 &&
+       nir_def_instr(s[0].def)->type == nir_instr_type_tex &&
+       s[1].def == s[0].def && s[2].def == s[0].def &&
+       s[0].comp == 0 && s[1].comp == 1 && s[2].comp == 2) {
+      float w = nir_scalar_as_float(s[3]);
+      int x = build_def(c, s[0].def);
+
+      if (x < 0)
+         return -1;
+      util_dynarray_foreach(&c->nodes, struct node, it) {
+         if (it->kind == N_COMPOSE && it->src[0] == x && it->lit[0] == w)
+            return it - NODES(c);
+      }
+      n = node_new(c, N_COMPOSE);
+      if (n < 0)
+         return -1;
+      NODES(c)[n].src[0] = x;
+      NODES(c)[n].lit[0] = w;
+      return n;
+   }
    for (unsigned k = 0; k < 4; k++) {
       if (s[k].def != s[0].def || s[k].comp != k)
          return fail(c, "swizzled or composed vector"), -1;
@@ -467,7 +569,7 @@ node_level(struct ctx *c, int n)
    if (nd->level)
       return nd->level - 1;
    switch (nd->kind) {
-   case N_VARY:
+   case N_VARY: case N_LOAD: case N_COMPOSE:
       level = 0;
       break;
    case N_TEX: case N_UBO: case N_LIT:
@@ -499,32 +601,45 @@ lop_add(struct ctx *c, const struct lop *l)
    util_dynarray_append_typed(&c->lops, struct lop, *l);
 }
 
-/* Fill register or constant operand i of a lane operation from node src. */
-static void
-operand(struct ctx *c, struct lop *l, unsigned i, int src)
+/* Constant key of lane of a uniform or literal node. */
+static struct kkey
+node_key(const struct node *s, unsigned lane)
 {
-   const struct node *s = &NODES(c)[src];
-   unsigned lane = l->lane;
+   if (s->kind == N_UBO)
+      return key_uniform((s->ubo_slot * 4 + 2 * lane) * 4,
+                         (s->ubo_slot * 4 + 2 * lane + 1) * 4);
+   return key_literal(s->lit[2 * lane], s->lit[2 * lane + 1]);
+}
+
+/* Fill register or constant operand i of a lane operation from source pos of
+ * node nd. */
+static void
+operand(struct ctx *c, struct lop *l, unsigned i, const struct node *nd,
+        unsigned pos)
+{
+   const struct node *s = &NODES(c)[nd->src[pos]];
+   unsigned lane = nd->lane[pos][l->lane], swz = nd->swz[pos][l->lane];
 
    switch (s->kind) {
    case N_TEX:
       l->opreg[i] = s->texel + 2 * lane;
+      l->opswz[i] = swz;
       break;
-   case N_UBO: {
-      struct kkey k = key_uniform((s->ubo_slot * 4 + 2 * lane) * 4,
-                                  (s->ubo_slot * 4 + 2 * lane + 1) * 4);
-
-      l->konst = key_add(c, &k);
+   case N_COMPOSE:
+      l->opreg[i] = NODES(c)[s->src[0]].texel + 2 * lane;
+      l->opswz[i] = swz;
       break;
-   }
+   case N_UBO:
    case N_LIT: {
-      struct kkey k = key_literal(s->lit[2 * lane], s->lit[2 * lane + 1]);
+      struct kkey k = node_key(s, lane);
 
       l->konst = key_add(c, &k);
+      l->kswz = swz;
       break;
    }
    default:
       l->opval[i] = s->value[lane];
+      l->opswz[i] = swz;
       break;
    }
 }
@@ -539,17 +654,43 @@ lop_init(struct lop *l, enum lop_kind kind, unsigned lane, int node)
    l->dst = -1;
    l->opval[0] = l->opval[1] = -1;
    l->opreg[0] = l->opreg[1] = -1;
+   l->opswz[0] = l->opswz[1] = 1;
+   l->kswz = 1;
    l->konst = -1;
+}
+
+/* A register operand read through one scalar in both result lanes. */
+static bool
+replicated_register(struct ctx *c, const struct node *nd)
+{
+   for (unsigned i = 0; i < 2; i++) {
+      if (nd->src[i] >= 0 && !node_is_const(&NODES(c)[nd->src[i]]) &&
+          (nd->swz[i][0] == 0 || nd->swz[i][0] == 3))
+         return true;
+   }
+   return false;
 }
 
 static bool
 emit_node_lops(struct ctx *c, int n, bool output, bool direct_ba)
 {
    struct node *nd = &NODES(c)[n];
+   /* The vendor starts with R,G when an operand register is replicated. */
+   bool rg_first = nd->kind == N_MUL && replicated_register(c, nd);
 
-   for (int lane = 1; lane >= 0; lane--) {
+   if (nd->kind == N_COMPOSE) {
       struct lop l;
-      const struct node *a = nd->src[0] >= 0 ? &NODES(c)[nd->src[0]] : NULL;
+      struct kkey k = key_literal(nd->lit[0], nd->lit[0]);
+
+      lop_init(&l, L_MOVC_SECOND, 1, n);
+      l.opreg[0] = NODES(c)[nd->src[0]].texel + 2;
+      l.konst = key_add(c, &k);
+      lop_add(c, &l);
+      return true;
+   }
+   for (int step = 0; step < 2; step++) {
+      int lane = rg_first ? step : 1 - step;
+      struct lop l;
       const struct node *b = nd->src[1] >= 0 ? &NODES(c)[nd->src[1]] : NULL;
       bool out = output && (lane == 0 || direct_ba);
 
@@ -557,37 +698,40 @@ emit_node_lops(struct ctx *c, int n, bool output, bool direct_ba)
       case N_VARY:
          lop_init(&l, L_INTERP, lane, n);
          break;
+      case N_LOAD:
+         lop_init(&l, L_MOVC_TMP, lane, n);
+         operand(c, &l, 0, nd, 0);
+         break;
       case N_MUL:
          lop_init(&l, node_is_const(b) ? L_MUL_RC : L_MUL_RR, lane, n);
-         operand(c, &l, 0, nd->src[0]);
-         operand(c, &l, 1, nd->src[1]);
+         operand(c, &l, 0, nd, 0);
+         operand(c, &l, 1, nd, 1);
          break;
       case N_ADD:
          lop_init(&l, node_is_const(b) ? L_ADD_RC : L_ADD_RR, lane, n);
-         operand(c, &l, 0, nd->src[0]);
-         operand(c, &l, 1, nd->src[1]);
+         operand(c, &l, 0, nd, 0);
+         operand(c, &l, 1, nd, 1);
          break;
       case N_SUB:
          /* b - a */
          lop_init(&l, node_is_const(b) ? L_SUB_CR : L_ADD_RR, lane, n);
          if (node_is_const(b)) {
-            operand(c, &l, 0, nd->src[0]);
-            operand(c, &l, 1, nd->src[1]);
+            operand(c, &l, 0, nd, 0);
+            operand(c, &l, 1, nd, 1);
          } else {
-            operand(c, &l, 0, nd->src[1]);
-            operand(c, &l, 1, nd->src[0]);
+            operand(c, &l, 0, nd, 1);
+            operand(c, &l, 1, nd, 0);
          }
          break;
       case N_MAD:
          lop_init(&l, L_MAD, lane, n);
-         operand(c, &l, 0, nd->src[0]);
-         operand(c, &l, 1, nd->src[1]);
-         operand(c, &l, 1, nd->src[2]);
+         operand(c, &l, 0, nd, 0);
+         operand(c, &l, 1, nd, 1);
+         operand(c, &l, 1, nd, 2);
          break;
       default:
          return fail(c, "internal: not an operation");
       }
-      (void)a;
       if (!out) {
          nd->value[lane] = value_new(c, nd->kind == N_VARY);
          l.dst = nd->value[lane];
@@ -614,11 +758,19 @@ schedule_tree(struct ctx *c, int root)
             return false;
       }
    }
+   for (unsigned i = 0; i < count; i++) {
+      enum node_kind kind = NODES(c)[i].kind;
+
+      if ((kind == N_LOAD || kind == N_COMPOSE) &&
+          !emit_node_lops(c, i, false, false))
+         return false;
+   }
    for (int level = 1; level <= max_level; level++) {
       for (unsigned i = 0; i < count; i++) {
          struct node *nd = &NODES(c)[i];
 
-         if (nd->kind != N_VARY && nd->level - 1 == level &&
+         if (nd->kind != N_VARY && nd->kind != N_LOAD &&
+             nd->kind != N_COMPOSE && nd->level - 1 == level &&
              !emit_node_lops(c, i, i == (unsigned)root, max_level == 1))
             return false;
       }
@@ -756,6 +908,8 @@ encode_lops(struct ctx *c)
       unsigned op0 = out ? (l->lane ? 0x1e : 0x1d) : 0x1c;
       unsigned e = l->konst >= 0 ? const_ref(c, l->konst) : 0;
       bool pair = l->konst >= 0 && KEYS(c)[l->konst].pair;
+      /* (v, v) literals read the first scalar only */
+      unsigned kbits = pair ? l->kswz : 0;
       unsigned has = c->has_consts ? 0x3f : 0;
       unsigned a;
 
@@ -771,12 +925,20 @@ encode_lops(struct ctx *c)
          break;
       case L_MUL_RC:
          emit(c, w0_make(NONE, opreg(c, l, 0), NONE, d, 0, op0),
-              w1_make(0xa0200040 | (pair ? 0x100 : 0), e, NONE));
+              w1_make(0xa0200000 | kbits << 8 | l->opswz[0] << 6, e, NONE));
          break;
       case L_MUL_RR:
          a = opreg(c, l, 0);
          emit(c, w0_make(a, opreg(c, l, 1), NONE, d, 0, op0),
-              w1_make(0xac200140, has, a));
+              w1_make(0xac200000 | l->opswz[0] << 8 | l->opswz[1] << 6, has, a));
+         break;
+      case L_MOVC_TMP:
+         emit(c, w0_make(NONE, NONE, NONE, d, 0, 0x1c),
+              w1_make(0xa2803300 | kbits << 4, e, NONE));
+         break;
+      case L_MOVC_SECOND:
+         emit(c, w0_make(NONE, NONE, NONE, l->opreg[0], 0, 0x1e),
+              w1_make(0xa2803300, e, NONE));
          break;
       case L_ADD_RC:
          a = opreg(c, l, 0);
@@ -1030,25 +1192,53 @@ tmpl_discard_varying(struct ctx *c, int root)
    return true;
 }
 
-/* The vendor binds the last sampled texture to the first texel pair. */
-static void
-reverse_textures(struct ctx *c)
+/* The vendor binds the texture read through a replicated scalar to the first
+ * texel pair, otherwise the last sampled one. */
+static bool
+assign_texels(struct ctx *c)
 {
    struct m9_fs_program *p = c->p;
+   unsigned order[M9_FS_MAX_TEXTURES], replicated = 0;
+   uint8_t textures[M9_FS_MAX_TEXTURES], coords[M9_FS_MAX_TEXTURES];
+   uint8_t comps[M9_FS_MAX_TEXTURES], pair_of[M9_FS_MAX_TEXTURES];
 
-   for (unsigned i = 0; i < p->texture_count / 2; i++) {
-      unsigned j = p->texture_count - 1 - i;
-      uint8_t t = p->textures[i], tc = p->texcoords[i];
+   util_dynarray_foreach(&c->nodes, struct node, n) {
+      for (unsigned i = 0; i < 3; i++) {
+         const struct node *s = n->src[i] >= 0 ? &NODES(c)[n->src[i]] : NULL;
 
-      p->textures[i] = p->textures[j];
-      p->texcoords[i] = p->texcoords[j];
-      p->textures[j] = t;
-      p->texcoords[j] = tc;
+         if (!s || s->kind != N_TEX)
+            continue;
+         /* A composed alpha overwrites the texel register in place. */
+         if (n->kind != N_COMPOSE) {
+            util_dynarray_foreach(&c->nodes, struct node, m) {
+               if (m->kind == N_COMPOSE && m->src[0] == n->src[i])
+                  return fail(c, "texture read with and without composed alpha");
+            }
+         }
+         if (n->swz[i][0] == 0 || n->swz[i][0] == 3)
+            replicated |= BITFIELD_BIT(s->texel / 4);
+      }
    }
+   for (unsigned i = 0; i < p->texture_count; i++)
+      order[i] = p->texture_count - 1 - i;
+   if (p->texture_count == 2 && util_bitcount(replicated) == 1) {
+      order[0] = u_bit_scan(&replicated);
+      order[1] = 1 - order[0];
+   }
+   for (unsigned i = 0; i < p->texture_count; i++) {
+      textures[i] = p->textures[order[i]];
+      coords[i] = p->texcoords[order[i]];
+      comps[i] = p->texcoord_components[order[i]];
+      pair_of[order[i]] = i;
+   }
+   memcpy(p->textures, textures, p->texture_count);
+   memcpy(p->texcoords, coords, p->texture_count);
+   memcpy(p->texcoord_components, comps, p->texture_count);
    util_dynarray_foreach(&c->nodes, struct node, n) {
       if (n->kind == N_TEX)
-         n->texel = 4 * (p->texture_count - 1) - n->texel;
+         n->texel = 4 * pair_of[n->texel / 4];
    }
+   return true;
 }
 
 /* Output assembly */
@@ -1080,9 +1270,8 @@ compile_output(struct ctx *c, nir_def *value, bool discard)
    util_dynarray_clear(&c->p->consts);
    util_dynarray_clear(&c->lops);
    root = build_vec(c, s);
-   if (root < 0)
+   if (root < 0 || !assign_texels(c))
       return false;
-   reverse_textures(c);
    if (discard)
       return tmpl_discard_varying(c, root);
    switch (NODES(c)[root].kind) {
@@ -1098,13 +1287,27 @@ compile_output(struct ctx *c, nir_def *value, bool discard)
       lop_add(c, &l);
       return true;
    }
+   case N_COMPOSE: {
+      unsigned t = NODES(c)[NODES(c)[root].src[0]].texel;
+      struct lop l;
+
+      emit_node_lops(c, root, false, false);
+      lop_init(&l, L_MOV_OUT, 0, root);
+      l.opreg[0] = t;
+      lop_add(c, &l);
+      lop_init(&l, L_MOV_OUT, 1, root);
+      l.opreg[0] = t + 2;
+      lop_add(c, &l);
+      return true;
+   }
    case N_UBO:
    case N_LIT:
       for (int lane = 1; lane >= 0; lane--) {
          struct lop l;
+         struct kkey k = node_key(&NODES(c)[root], lane);
 
          lop_init(&l, L_MOVC_OUT, lane, root);
-         operand(c, &l, 0, root);
+         l.konst = key_add(c, &k);
          lop_add(c, &l);
       }
       return true;
@@ -1171,6 +1374,130 @@ compile_impl(struct ctx *c, nir_function_impl *impl)
    finish_slots(c);
    const_tail(c);
    return true;
+}
+
+/* Uniforms are lowered to load_ubo_vec4, which nir_find_inlinable_uniforms
+ * does not track: collect the constant buffer dwords an if condition reads. */
+static bool
+cond_dwords(nir_scalar s, uint16_t *dw, unsigned *count, unsigned depth)
+{
+   if (nir_scalar_is_const(s))
+      return true;
+   if (depth > 16)
+      return false;
+   if (nir_scalar_is_alu(s)) {
+      nir_alu_instr *alu = nir_def_as_alu(s.def);
+
+      if (nir_op_infos[alu->op].output_size && !nir_op_is_vec(alu->op))
+         return false;
+      for (unsigned i = 0; i < nir_op_infos[alu->op].num_inputs; i++)
+         if (!cond_dwords(nir_scalar_chase_alu_src(s, i), dw, count, depth + 1))
+            return false;
+      return true;
+   }
+   if (nir_scalar_is_intrinsic(s)) {
+      nir_intrinsic_instr *intr = nir_def_as_intrinsic(s.def);
+      unsigned word;
+
+      if (intr->intrinsic != nir_intrinsic_load_ubo_vec4 ||
+          !nir_src_is_const(intr->src[0]) || nir_src_as_uint(intr->src[0]) ||
+          !nir_src_is_const(intr->src[1]))
+         return false;
+      word = (nir_intrinsic_base(intr) + nir_src_as_uint(intr->src[1])) * 4 +
+             nir_intrinsic_component(intr) + s.comp;
+      for (unsigned i = 0; i < *count; i++)
+         if (dw[i] == word)
+            return true;
+      if (*count == MAX_INLINABLE_UNIFORMS)
+         return false;
+      dw[(*count)++] = word;
+      return true;
+   }
+   return false;
+}
+
+void
+m9_fs_find_inlinable_uniforms(nir_shader *nir)
+{
+   uint16_t dw[MAX_INLINABLE_UNIFORMS] = { 0 };
+   unsigned count = 0;
+
+   if (nir->info.stage != MESA_SHADER_FRAGMENT)
+      return;
+   nir_foreach_function_impl(impl, nir) {
+      nir_foreach_block(block, impl) {
+         nir_if *nif = nir_block_get_following_if(block);
+         uint16_t trial[MAX_INLINABLE_UNIFORMS];
+         unsigned n = count;
+
+         if (!nif)
+            continue;
+         memcpy(trial, dw, sizeof(dw));
+         if (cond_dwords(nir_get_scalar(nif->condition.ssa, 0), trial, &n, 0)) {
+            memcpy(dw, trial, sizeof(dw));
+            count = n;
+         }
+      }
+   }
+   memcpy(nir->info.inlinable_uniform_dw_offsets, dw, sizeof(dw));
+   nir->info.num_inlinable_uniforms = count;
+}
+
+static bool
+inline_ubo_vec4(nir_builder *b, nir_intrinsic_instr *intr, void *data)
+{
+   const uint32_t *values = data;
+   const struct shader_info *info = &b->shader->info;
+   nir_scalar comps[NIR_MAX_VEC_COMPONENTS];
+   bool hit = false;
+   nir_def *vec;
+   unsigned base;
+
+   if (intr->intrinsic != nir_intrinsic_load_ubo_vec4 ||
+       !nir_src_is_const(intr->src[0]) || nir_src_as_uint(intr->src[0]) ||
+       !nir_src_is_const(intr->src[1]) || intr->def.bit_size != 32)
+      return false;
+   base = (nir_intrinsic_base(intr) + nir_src_as_uint(intr->src[1])) * 4 +
+          nir_intrinsic_component(intr);
+   b->cursor = nir_after_instr(&intr->instr);
+   for (unsigned c = 0; c < intr->def.num_components; c++) {
+      comps[c] = nir_get_scalar(&intr->def, c);
+      for (unsigned i = 0; i < info->num_inlinable_uniforms; i++) {
+         if (info->inlinable_uniform_dw_offsets[i] != base + c)
+            continue;
+         comps[c] = nir_get_scalar(nir_build_imm(b, 1, 32,
+                                   &(nir_const_value){ .u32 = values[i] }), 0);
+         hit = true;
+      }
+   }
+   if (!hit)
+      return false;
+   vec = nir_vec_scalars(b, comps, intr->def.num_components);
+   nir_def_rewrite_uses_after(&intr->def, vec);
+   return true;
+}
+
+void
+m9_fs_inline_uniforms(nir_shader *nir, const uint32_t *values)
+{
+   bool progress;
+
+   if (!nir->info.num_inlinable_uniforms ||
+       !nir_shader_intrinsics_pass(nir, inline_ubo_vec4,
+                                   nir_metadata_control_flow, (void *)values))
+      return;
+   do {
+      progress = false;
+      NIR_PASS(progress, nir, nir_opt_constant_folding);
+      NIR_PASS(progress, nir, nir_opt_dead_cf);
+      NIR_PASS(progress, nir, nir_opt_remove_phis);
+      NIR_PASS(progress, nir, nir_opt_peephole_select,
+               &(nir_opt_peephole_select_options){ .limit = 8 });
+      NIR_PASS(progress, nir, nir_opt_copy_prop);
+      NIR_PASS(progress, nir, nir_opt_algebraic);
+      NIR_PASS(progress, nir, nir_opt_cse);
+      NIR_PASS(progress, nir, nir_opt_dce);
+   } while (progress);
 }
 
 bool
