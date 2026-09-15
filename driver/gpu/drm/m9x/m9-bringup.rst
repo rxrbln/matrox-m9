@@ -176,16 +176,17 @@ offsets; userspace cannot provide MMIO, requester, fence, DMA or VRAM bus
 addresses.  Private linked-program ports ``c8..cd`` remain kernel-owned, while
 captured ordinary state ``af`` is accepted.
 
-The captured bind tuple has two distinct operands.  ``RESOURCE_69`` relocates
-index ``0x69`` to a fixed 0x1b080-byte local-VRAM raster/intermediate resource.
-It is distinct from the primary color attachment even though address-directed
-snapshots contain prior pixel-like data.  Its captured allocation requires
-0x1000 alignment.  ``RESOURCE_6C`` relocates
+The captured bind tuple has two distinct operands.  ``RESOURCE_69`` describes
+the external binding for the per-context immutable fixed-fragment database.
+The saved descriptor reports a 0x1b080-byte, 0x1000-aligned allocation, but its
+address-directed BAR snapshot is an opaque alias rather than a logical
+resource dump.  External address translation remains unresolved; the bounded
+triangle therefore uses the vendor's exact inline alternative.  ``RESOURCE_6C`` relocates
 the separate, 0x80-aligned system-resource record selected at index ``0x6c``
 and adds its hardware-owned low tag bit.  The captured values are
 ``0x11e42000`` and ``0x40c3a000 + 0x300 | 1`` respectively.  The kernel must
-not infer native shader storage from either address until the record grammar
-is completely decoded.
+not infer native shader storage from the latter address until the record
+grammar is completely decoded.
 
 Hardware gates before general execution
 ---------------------------------------
