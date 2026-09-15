@@ -101,9 +101,12 @@ archive give their exact bounds:
 | 27 | `11e21000` | `20080` | `2000 x 1` |
 | 38 | `11ed9000` | `0400` | `4 x 8` |
 
-Allocate distinct DMA32 BOs of at least those extents and clear them before
-the first use.  Keep them resident until `T+80` retires.  The unusual logical
-dimensions are vendor allocation metadata and do not replace the byte bounds.
+Allocate distinct placement-4 local-VRAM BOs of at least those extents and
+clear them before the first use.  Patch their untagged
+`0x10000000 + BAR0 offset` engine addresses.  Keep them resident until `T+80`
+retires.  The unusual logical dimensions are vendor allocation metadata and
+do not replace the byte bounds.  Exact result fields and the kernel allocation
+policy are audited in `parhelia-m9-sequence0-kernel-integration-audit.md`.
 
 The safe replay rule is consequently exact: copy the three hash-pinned arrays,
 patch only the 17 table entries, preserve the 220 private-record boundaries,
