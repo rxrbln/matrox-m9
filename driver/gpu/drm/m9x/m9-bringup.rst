@@ -37,16 +37,19 @@ writeback words plus engine, front-end, command and fence-address registers.
 
 ``m9_triangle_diag=1`` permits
 ``M9_SUBMIT(FIRST_TRIANGLE)`` to run a staged, literal diagnostic.  The
-ioctl accepts no command object, BO handle, userspace address or relocation.
+ioctl accepts one read/write VRAM color BO, but no command object, userspace
+command address or relocation.
 It lazily allocates and retains coherent DMA32 storage for the exact 80-byte
-flat-green source, the captured ``0x20080``-byte system payload and the framed
-secondary command image.  It allocates index-69, C2, the exact 1-MiB BE
+flat-green source, the captured ``0x20080``-byte system payload and the exact
+32-KiB class-1 BmBuffer.  The first ``0xfa0`` bytes hold the framed sequence-0
+image; all bytes through ``0x8000`` are deterministic zeroes and all eight
+pages receive compact PTEs.  It allocates index-69, C2, the exact 1-MiB BE
 context, four ``0x16800``-byte transient probes and the 320x240
-color/depth/auxiliary-depth surfaces directly in local VRAM.  Every logical
-payload is followed by at least one page of a resource-specific sentinel.  The
-source is initialized to four ``{x,y,r,g,b}`` records, including the proved duplicate
-prefetch record; RT0 is opaque magenta; C2, BE and the system payload are
-zeroed deterministically.  ``m9_triangle_gouraud=1`` selects the equally
+depth/auxiliary-depth surfaces directly in local VRAM.  Resources without an
+exact vendor extent are followed by at least one page of a resource-specific
+sentinel.  The source is initialized to four ``{x,y,r,g,b}`` records,
+including the proved duplicate prefetch record; C2, BE and the system payload
+are zeroed deterministically.  ``m9_triangle_gouraud=1`` selects the equally
 bounded captured red/green/blue source records; flat green remains the default
 that matches the exact M9148 command fixture.
 
@@ -57,8 +60,8 @@ kernel allocations, adds the established low address tags, and reserves the
 largest observed ``0x580``-byte linked slot at system offset ``0x300``.  It
 constructs the bounded selector-6c image semantically: Gouraud has a zero
 linked payload, while the flat/case-B image uses the six references proved
-across thirteen fresh vendor processes.  The fixed-function draw remains gated
-until its setup sequence retires.  Source, system and secondary storage receive
+across thirteen fresh vendor processes.  The fixed-function draw is published
+only after its setup sequence retires.  Source, system and secondary storage receive
 separate ``0x4...`` GPU virtual intervals.  Their pages use the proved
 four-byte compact PTE packing and ``0xa`` flags in the reserved low-VRAM
 manager image.  The load-time selftest pins each
@@ -72,8 +75,9 @@ mirror, runs the complete transition a second time, and then installs the
 nonzero 1024-entry restore pool through the exact ``m9x109`` requester writes.
 Each transition preserves its two flush boundaries and three consecutive
 completion targets.  A direct no-op must retire before the driver submits the
-complete captured sequence-0 context image.  The fixed-function draw remains
-gated until this sequence passes on hardware.
+complete captured sequence-0 context image.  Once that image retires, the
+driver replaces the shared BmBuffer with the exact three-range draw image and
+submits its nine-dword primary publication.
 
 The guarded M9148 path writes primary requester controls
 ``0x44c/0x450/0x454`` as ``00280800/1f3f2707/00070703`` in their exact

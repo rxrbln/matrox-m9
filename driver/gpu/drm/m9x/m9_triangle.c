@@ -3,9 +3,9 @@
 /*
  * Bounded, kernel-owned M9148 first-triangle preparation.
  *
- * The diagnostic advances through independently fenced transition, secondary
- * dispatch, and sequence-zero stages.  The fixed-function draw remains gated
- * until every prerequisite retires with the expected token.
+ * The diagnostic advances through independently fenced transition and
+ * sequence-zero stages, then publishes the captured fixed-function draw only
+ * after every prerequisite retires with the expected token.
  */
 #include <linux/dma-mapping.h>
 #include <linux/iosys-map.h>
@@ -25,7 +25,8 @@
 					 M9_TRIANGLE_HEIGHT * sizeof(u32))
 #define M9_TRIANGLE_SOURCE_BYTES	0x50u
 #define M9_TRIANGLE_SYSTEM_BYTES	0x20080u
-#define M9_TRIANGLE_SECONDARY_BYTES	0xfa0u
+#define M9_TRIANGLE_SECONDARY_IMAGE_BYTES 0xfa0u
+#define M9_TRIANGLE_SECONDARY_BYTES	SZ_32K
 #define M9_TRIANGLE_SECONDARY_PREFIX	0x8u
 #define M9_TRIANGLE_SECONDARY_START_TAG	0x1u
 #define M9_TRIANGLE_SECONDARY_END_TAG	0x2u
@@ -40,7 +41,7 @@
 #define M9_TRIANGLE_VRAM_BASE		0x10000000ull
 #define M9_TRIANGLE_SYSTEM_GPUVA_BASE	0x40000000u
 #define M9_TRIANGLE_SYSTEM_GPUVA_END	0x50000000u
-#define M9_TRIANGLE_MAX_SYSTEM_PTES	38u
+#define M9_TRIANGLE_MAX_SYSTEM_PTES	44u
 #define M9_SEQ0_TARGET_COUNT		9u
 #define M9_SEQ0_FINAL_TARGET_OFFSET	0x80u
 #define M9_SEQ0_NEXT_TARGET_OFFSET	0x90u
@@ -466,9 +467,12 @@ static int m9_triangle_alloc_one(struct m9x_device *mdev,
 
 	if (resource->cpu || resource->vram)
 		return 0;
-	/* BE is an exact, context-owned 1 MiB image.  Keep that allocation at its
-	 * recovered extent; all other diagnostic resources retain a guard page. */
-	if (id == M9_TRI_BE)
+	/*
+	 * BE and the class-1 BmBuffer have exact vendor extents.  Every byte after
+	 * the submitted secondary image through 0x8000 is part of its zero tail.
+	 * Other diagnostic resources retain a guard page.
+	 */
+	if (id == M9_TRI_BE || id == M9_TRI_SECONDARY)
 		guard_offset = spec->payload_bytes;
 	else if (check_add_overflow(spec->payload_bytes, (u32)PAGE_SIZE,
 				    &guard_offset))
@@ -695,7 +699,7 @@ static void m9_seq0_build_secondary(u8 *image,
 {
 	unsigned int i;
 
-	memset(image, 0, M9_TRIANGLE_SECONDARY_PREFIX);
+	memset(image, 0, M9_TRIANGLE_SECONDARY_BYTES);
 	memcpy(image + M9_TRIANGLE_SECONDARY_PREFIX,
 	       m9_seq0_framed_payload, sizeof(m9_seq0_framed_payload));
 	for (i = 0; i < ARRAY_SIZE(m9_seq0_patches); i++)
@@ -843,7 +847,7 @@ static void m9_triangle_build_framed_secondary(
 	/* The saved BmBuffer's first eight bytes are private host bookkeeping and
 	 * are never included in a GPU range.  Keep the same displacement while
 	 * refusing to retain the captured process pointer. */
-	memset(image, 0, M9_TRIANGLE_SECONDARY_PREFIX);
+	memset(image, 0, M9_TRIANGLE_SECONDARY_BYTES);
 	memcpy(image + M9_TRIANGLE_SECONDARY_PREFIX,
 	       m9_triangle_framed_payload, sizeof(m9_triangle_framed_payload));
 	put_unaligned_le32(U32_MAX, image + 0x33c);
@@ -1126,18 +1130,9 @@ int m9x_submit_triangle_diag(struct m9x_device *mdev, u32 color, u64 *point)
 	m9_seq0_build_primary(&sequence0, diag->commands.sequence0_primary);
 	WRITE_ONCE(*(u32 *)mdev->transport.fence_cpu, ~sequence0_final);
 
-	ret = m9_triangle_build_addresses(mdev, color, draw_target, &job);
-	if (ret)
-		goto out_unlock;
-	m9_triangle_build_commands(&job, &diag->commands);
-	m9_triangle_build_primary(&job, diag->commands.primary);
-	ret = m9_triangle_serialize_linked_record(mdev, &job);
-	if (ret)
-		goto out_unlock;
-	dma_wmb();
 	/*
 	 * Sequence 0 is the sole image in the shared secondary BO.  Retire it
-	 * before that BO can be replaced with the prepared draw image.
+	 * before that BO can be replaced with the draw image.
 	 */
 	ret = m9x_submit_kernel_stream_locked(mdev,
 					      diag->commands.sequence0_primary,
@@ -1149,12 +1144,36 @@ int m9x_submit_triangle_diag(struct m9x_device *mdev, u32 color, u64 *point)
 	ret = m9_triangle_verify_guards(diag);
 	if (ret)
 		goto out_unlock;
-	dev_warn_once(&mdev->pdev->dev,
-		"M9 sequence 0 completed; %s setup=%#x..%#x draw=%#x..%#x; draw remains gated\n",
-		"triangle prepared but not submitted:",
-		sequence0.target, sequence0_final, draw_target,
-		job.transition[5]);
-	ret = -EOPNOTSUPP;
+	ret = m9_triangle_build_addresses(mdev, color, draw_target, &job);
+	if (ret)
+		goto out_unlock;
+	m9_triangle_build_commands(&job, &diag->commands);
+	m9_triangle_build_primary(&job, diag->commands.primary);
+	ret = m9_triangle_serialize_linked_record(mdev, &job);
+	if (ret)
+		goto out_unlock;
+
+	/*
+	 * Sequence 0 has retired, so the shared BmBuffer can now hold the exact
+	 * three-range first-draw image.  Its final in-stream completion retires
+	 * every referenced synchronous diagnostic allocation.
+	 */
+	m9_triangle_build_framed_secondary(diag->resource[M9_TRI_SECONDARY].cpu,
+					   &job);
+	dma_wmb();
+	ret = m9x_submit_kernel_stream_locked(mdev, diag->commands.primary,
+					      ARRAY_SIZE(diag->commands.primary),
+					      job.transition[5], point);
+	if (ret)
+		goto out_unlock;
+	mdev->transport.next_fence = job.transition[5] + 0x10;
+	ret = m9_triangle_verify_guards(diag);
+	if (ret)
+		goto out_unlock;
+	dev_info(&mdev->pdev->dev,
+		 "M9 first triangle retired: setup=%#x..%#x draw=%#x..%#x\n",
+		 sequence0.target, sequence0_final, draw_target,
+		 job.transition[5]);
 out_unlock:
 	mutex_unlock(&mdev->transport.lock);
 	return ret;
@@ -1185,7 +1204,8 @@ static int m9_seq0_selftest(void)
 	    ARRAY_SIZE(m9_seq0_patch_offsets) !=
 		ARRAY_SIZE(m9_seq0_patches) ||
 	    sizeof(m9_seq0_framed_payload) !=
-		M9_TRIANGLE_SECONDARY_BYTES - M9_TRIANGLE_SECONDARY_PREFIX ||
+		M9_TRIANGLE_SECONDARY_IMAGE_BYTES -
+		M9_TRIANGLE_SECONDARY_PREFIX ||
 	    m9_triangle_template_fnv1a(m9_seq0_framed_payload,
 		ARRAY_SIZE(m9_seq0_framed_payload)) !=
 		0xd4169ed545a19999ULL)
@@ -1199,7 +1219,8 @@ static int m9_seq0_selftest(void)
 
 		if (patch->offset != m9_seq0_patch_offsets[i] ||
 		    patch->offset < M9_TRIANGLE_SECONDARY_PREFIX ||
-		    patch->offset > M9_TRIANGLE_SECONDARY_BYTES - sizeof(u32) ||
+		    patch->offset >
+			M9_TRIANGLE_SECONDARY_IMAGE_BYTES - sizeof(u32) ||
 		    patch->operand > M9_SEQ0_COMPLETION ||
 		    patch->step >= M9_SEQ0_TARGET_COUNT ||
 		    captured != patch->captured)
@@ -1221,12 +1242,16 @@ static int m9_seq0_selftest(void)
 	m9_seq0_build_primary(&job, primary);
 	if (memcmp(primary, expected_primary, sizeof(primary)) ||
 	    m9_triangle_template_fnv1a((const u32 *)image,
-		M9_TRIANGLE_SECONDARY_BYTES / sizeof(u32)) !=
+		M9_TRIANGLE_SECONDARY_IMAGE_BYTES / sizeof(u32)) !=
 		0xfd653b6594219969ULL)
 		goto out;
 	for (i = 0; i < ARRAY_SIZE(m9_seq0_patches); i++)
 		if (get_unaligned_le32(image + m9_seq0_patches[i].offset) !=
 		    m9_seq0_patch_value(&job, &m9_seq0_patches[i]))
+			goto out;
+	for (i = M9_TRIANGLE_SECONDARY_IMAGE_BYTES;
+	     i < M9_TRIANGLE_SECONDARY_BYTES; i++)
+		if (image[i])
 			goto out;
 
 	/* Keep the separately captured draw serializer covered even though the
@@ -1236,6 +1261,9 @@ static int m9_seq0_selftest(void)
 	    get_unaligned_le32(image + 0x33c) != U32_MAX ||
 	    get_unaligned_le32(image + 0x340) != U32_MAX)
 		goto out;
+	for (i = 0x4f0; i < M9_TRIANGLE_SECONDARY_BYTES; i++)
+		if (image[i])
+			goto out;
 	ret = 0;
 out:
 	kfree(image);
@@ -1260,7 +1288,8 @@ int m9x_triangle_selftest(void)
 
 	if (sizeof(m9_triangle_flat_source) != M9_TRIANGLE_SOURCE_BYTES ||
 	    sizeof(m9_triangle_gouraud_source) != M9_TRIANGLE_SOURCE_BYTES ||
-	    M9_TRIANGLE_MAX_SYSTEM_PTES != 38 ||
+	    M9_TRIANGLE_MAX_SYSTEM_PTES != 44 ||
+	    m9_triangle_specs[M9_TRI_SECONDARY].payload_bytes != SZ_32K ||
 	    ARRAY_SIZE(m9_triangle_range_0) != ARRAY_SIZE(commands.preprocess) ||
 	    ARRAY_SIZE(m9_triangle_range_1) != ARRAY_SIZE(commands.raster) ||
 	    ARRAY_SIZE(m9_triangle_range_2) != ARRAY_SIZE(commands.completion) ||
@@ -1313,7 +1342,7 @@ int m9x_triangle_selftest(void)
 		    m9_triangle_command_range(&commands, site->range)[site->dword] !=
 			m9_triangle_captured_operand(site->operand) ||
 		    framed < M9_TRIANGLE_SECONDARY_PREFIX ||
-		    framed > M9_TRIANGLE_SECONDARY_BYTES - sizeof(u32) ||
+		    framed > M9_TRIANGLE_SECONDARY_IMAGE_BYTES - sizeof(u32) ||
 		    get_unaligned_le32((const u8 *)m9_triangle_framed_payload +
 			framed - M9_TRIANGLE_SECONDARY_PREFIX) !=
 			m9_triangle_captured_operand(site->operand))
@@ -1330,7 +1359,7 @@ int m9x_triangle_selftest(void)
 		    m9_triangle_command_range(&commands, site->range)[site->dword] !=
 			(captured | site->tag) ||
 		    framed < M9_TRIANGLE_SECONDARY_PREFIX ||
-		    framed > M9_TRIANGLE_SECONDARY_BYTES - sizeof(u32) ||
+		    framed > M9_TRIANGLE_SECONDARY_IMAGE_BYTES - sizeof(u32) ||
 		    get_unaligned_le32((const u8 *)m9_triangle_framed_payload +
 			framed - M9_TRIANGLE_SECONDARY_PREFIX) !=
 			(captured | site->tag))
