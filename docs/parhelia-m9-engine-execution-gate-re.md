@@ -4,7 +4,9 @@
 > "last" as the plan below says.  `m9x1172 -> m9x115` publishes the 20-slot
 > buffer window table at MMIO `0x000..0x13f` (all-invalid `0x0000ffff` on the
 > first-render path); `m9x865` allocates the two completion dwords with tag
-> `mode ? 0 : 2`; `m9x926/m9x301` have no MMIO.  See
+> `mode ? 0 : 2`; `m9x926` has no direct MMIO but its four mode-0
+> allocations publish identity PTEs and `31c=f,1,0` through
+> `m9x1030 -> m9x887 -> m9x328`; `m9x301` has no MMIO. See
 > `parhelia-m9-cold-transition-submit-decode.md` section 4.
 
 This note closes the initialization ordering immediately before the captured

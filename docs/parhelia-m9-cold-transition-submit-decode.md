@@ -140,6 +140,43 @@ three queue passes only when `hwstate+0x18 == 0` (`0x2e405`).  `m9x926`
 allocates the four BM pools (`0x400000/0x100000/0x60000/0x500` bytes)
 through `m9x1030`; `m9x301` clears a pointer.
 
+The `m9x926` allocations are transitively GPU-visible. The publication gate
+`m9x535` reads applied `System\\MmFlags=0x100e8` from device `+0x640`,
+not the separate `0x300004` hardware capability word. `m9x344` constructs
+this wrapper from configuration `+0x210`; `m9x233 -> m9x1079 -> m9x1096`
+applies it before the allocation path, and `m9x184` returns the applied
+value at wrapper `+0x14`. Bit `0x8` enables mode-0 publication, and bit
+`0x40` additionally enables mode 1.
+
+Each pool is mode 0, with no external page list. `m9x887` selects GPUVA page
+index and rounded byte extent; `m9x328` writes identity PTEs to the primary
+compact child:
+
+```text
+slot[i] = 0x801000 + 4 * ((GPUVA >> 12) + i)
+PTE[i]  = (GPUVA + i * 0x1000) | 0x8
+```
+
+The fresh `m9x565` local range begins at `0xd41000`. With no intervening
+mode-0 allocation, first-fit placement gives these four pools:
+
+| GPUVA | requested bytes | pages | first PTE slot |
+|---:|---:|---:|---:|
+| `0x00d41000` | `0x400000` | `1024` | `0x804504` |
+| `0x01141000` | `0x100000` | `256` | `0x805504` |
+| `0x01241000` | `0x60000` | `96` | `0x805904` |
+| `0x012a1000` | `0x500` | `1` | `0x805a84` |
+
+Every pool's CPU mirror ends with `31c=f,1,0`. There is no enclosing
+`314=1`: `m9x926` calls `m9x1030` directly, bypassing the mode-1 `m9x810`
+helper. These four publications follow `m9x109` and precede the final two
+`m9x115` passes. The new DRM implementation reserves exactly those VRAM
+ranges before KMS and client allocation, and publishes them at that point.
+The bases above are a static fresh-service prediction; the saved client
+captures do not contain the four internal allocation objects. The
+[cold-service observer](parhelia-m9-cold-service-capture.md) can confirm their
+runtime placement and the actual write order.
+
 ## 5. Primary submission
 
 Builder class vtable `m9x43+0x10` (`.rodata 0x40fb0`), ctor `m9x654`
