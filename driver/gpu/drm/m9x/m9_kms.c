@@ -1,6 +1,9 @@
 // SPDX-License-Identifier: GPL-2.0-only
 /* Copyright 2026 René Rebe <rene@exactco.de> */
 #include <linux/interrupt.h>
+#include <linux/iosys-map.h>
+#include <linux/mm.h>
+#include <linux/slab.h>
 #include <linux/module.h>
 #include <linux/overflow.h>
 
@@ -23,6 +26,10 @@
 #define M9_WARM_PITCH		4096u
 #define M9_WARM_RENDER_BYTES	0x00301000u
 #define M9_WARM_CLOCK_KHZ	65000u
+/* Scanout surfaces use the tiled 0x21 layout; DC pitch and window descriptor. */
+#define M9_SCANOUT_FORMAT	0xcc210400u
+#define M9_SCANOUT_EXTENT	0x00010300u
+#define M9_SCANOUT_BYTES	(M9_WARM_PITCH * M9_WARM_HEIGHT)
 
 static bool m9_kms;
 module_param(m9_kms, bool, 0400);
@@ -243,13 +250,55 @@ static int m9_pipe_check(struct drm_simple_display_pipe *pipe,
 	return 0;
 }
 
-static int m9_scanout_address(struct drm_framebuffer *fb, u32 *address)
+/*
+ * Userspace draws linear XRGB8888 into its dumb BO.  Copy those bytes into the
+ * kernel-owned tiled scanout surface through host-aperture slot 0 carrying the
+ * scanout descriptor, then restore the identity window.
+ */
+static int m9_scanout_publish(struct m9x_device *mdev,
+			      struct drm_framebuffer *fb)
 {
-	struct drm_gem_object *gem = drm_gem_fb_get_obj(fb, 0);
-	struct m9x_device *mdev = to_m9x(fb->dev);
+	struct drm_gem_vram_object *src = drm_gem_vram_of_gem(drm_gem_fb_get_obj(fb, 0));
+	struct iosys_map map;
+	s64 offset;
+	int ret;
+
+	if (!mdev->scanout || !mdev->bar0_window || !mdev->scanout_bounce)
+		return -ENODEV;
+	offset = drm_gem_vram_offset(mdev->scanout);
+	if (offset < 0)
+		return offset;
+	ret = ttm_bo_reserve(&src->bo, true, false, NULL);
+	if (ret)
+		return ret;
+	ret = drm_gem_vram_vmap(src, &map);
+	if (!ret) {
+		iosys_map_memcpy_from(mdev->scanout_bounce, &map, 0,
+				      M9_SCANOUT_BYTES);
+		drm_gem_vram_vunmap(src, &map);
+	}
+	ttm_bo_unreserve(&src->bo);
+	if (ret)
+		return ret;
+	mutex_lock(&mdev->transport.lock);
+	m9x_address_cpu_window(mdev, lower_32_bits(offset), M9_SCANOUT_FORMAT,
+			       M9_SCANOUT_EXTENT);
+	memcpy_toio(mdev->bar0_window, mdev->scanout_bounce, M9_SCANOUT_BYTES);
+	/* Complete WC stores before the identity window returns. */
+	wmb();
+	m9x_address_cpu_identity(mdev);
+	mutex_unlock(&mdev->transport.lock);
+	return 0;
+}
+
+static int m9_scanout_address(struct m9x_device *mdev, u32 *address)
+{
 	u64 limit = min_t(u64, mdev->vram_size - 1, M9_DC_START_MASK);
 
-	return matrox_kms_vram_offset(gem, 1024, limit, address);
+	if (!mdev->scanout)
+		return -ENODEV;
+	return matrox_kms_vram_offset(&mdev->scanout->bo.base, 1024, limit,
+				      address);
 }
 
 static void m9_program_scanout(struct drm_simple_display_pipe *pipe,
@@ -258,7 +307,8 @@ static void m9_program_scanout(struct drm_simple_display_pipe *pipe,
 	struct m9x_device *mdev = to_m9x(pipe->crtc.dev);
 	u32 address, pitch;
 
-	if (!fb || m9_scanout_address(fb, &address))
+	if (!fb || m9_scanout_publish(mdev, fb) ||
+	    m9_scanout_address(mdev, &address))
 		return;
 	pitch = (mdev->warm_dc_pitch & ~M9_DC_PITCH_MASK) | M9_WARM_WIDTH;
 	/* Publish CPU writes before the display controller fetches this BO. */
@@ -331,9 +381,30 @@ static void m9_pipe_disable(struct drm_simple_display_pipe *pipe)
 static void m9_pipe_update_scanout(struct drm_simple_display_pipe *pipe,
 				   struct drm_plane_state *old_state)
 {
-	if (!old_state->fb || old_state->fb != pipe->plane.state->fb)
-		m9_program_scanout(pipe, pipe->plane.state->fb);
+	/* Every update republishes the linear image into the tiled surface. */
+	m9_program_scanout(pipe, pipe->plane.state->fb);
 }
+
+static int m9_fb_dirty(struct drm_framebuffer *fb, struct drm_file *file,
+		       unsigned int flags, unsigned int color,
+		       struct drm_clip_rect *clips, unsigned int num_clips)
+{
+	struct m9x_device *mdev = to_m9x(fb->dev);
+	int ret = 0;
+
+	drm_modeset_lock(&mdev->pipe.plane.mutex, NULL);
+	if (mdev->pipe.plane.state && mdev->pipe.plane.state->fb == fb &&
+	    mdev->pipe.crtc.state && mdev->pipe.crtc.state->active)
+		ret = m9_scanout_publish(mdev, fb);
+	drm_modeset_unlock(&mdev->pipe.plane.mutex);
+	return ret;
+}
+
+static const struct drm_framebuffer_funcs m9_fb_funcs = {
+	.destroy = drm_gem_fb_destroy,
+	.create_handle = drm_gem_fb_create_handle,
+	.dirty = m9_fb_dirty,
+};
 
 static void m9_pipe_update(struct drm_simple_display_pipe *pipe,
 			   struct drm_plane_state *old_state)
@@ -410,7 +481,7 @@ m9_fb_create(struct drm_device *drm, struct drm_file *file,
 		goto out_put;
 	}
 	fb = drm_gem_fb_create_with_funcs(drm, file, info, mode_cmd,
-					  &matrox_kms_fb_funcs);
+					  &m9_fb_funcs);
 out_put:
 	drm_gem_object_put(gem);
 	return fb;
@@ -489,6 +560,50 @@ irqreturn_t m9x_irq_handler(int irq, void *arg)
 	return IRQ_HANDLED;
 }
 
+static void m9_scanout_fini(struct m9x_device *mdev)
+{
+	if (mdev->scanout) {
+		m9x_vram_unpin(mdev->scanout);
+		drm_gem_vram_put(mdev->scanout);
+		mdev->scanout = NULL;
+	}
+	kvfree(mdev->scanout_bounce);
+	mdev->scanout_bounce = NULL;
+	mdev->bar0_window = NULL;
+}
+
+static int m9_scanout_init(struct m9x_device *mdev)
+{
+	struct pci_dev *pci = mdev->pdev;
+	int ret;
+
+	mdev->bar0_window = devm_ioremap_wc(&pci->dev, pci_resource_start(pci, 0),
+					    M9_SCANOUT_BYTES);
+	mdev->scanout_bounce = kvzalloc(M9_SCANOUT_BYTES, GFP_KERNEL);
+	if (!mdev->bar0_window || !mdev->scanout_bounce) {
+		ret = -ENOMEM;
+		goto fail;
+	}
+	mdev->scanout = drm_gem_vram_create(&mdev->drm, M9_WARM_RENDER_BYTES, 1);
+	if (IS_ERR(mdev->scanout)) {
+		ret = PTR_ERR(mdev->scanout);
+		mdev->scanout = NULL;
+		goto fail;
+	}
+	ret = m9x_vram_pin(mdev->scanout);
+	if (ret) {
+		drm_gem_vram_put(mdev->scanout);
+		mdev->scanout = NULL;
+		goto fail;
+	}
+	dev_info(&pci->dev, "M9 tiled scanout surface at VRAM %#llx\n",
+		 drm_gem_vram_offset(mdev->scanout));
+	return 0;
+fail:
+	m9_scanout_fini(mdev);
+	return ret;
+}
+
 int m9x_modeset_init(struct m9x_device *mdev)
 {
 	struct drm_device *drm = &mdev->drm;
@@ -508,6 +623,11 @@ int m9x_modeset_init(struct m9x_device *mdev)
 	mdev->warm_dvo = snapshot.dvo;
 	mdev->warm_mode = m9_warm_mode;
 	drm_mode_set_name(&mdev->warm_mode);
+	if (m9x_kms_scanout_enabled()) {
+		ret = m9_scanout_init(mdev);
+		if (ret)
+			return ret;
+	}
 
 	ret = drmm_mode_config_init(drm);
 	if (ret)
@@ -560,5 +680,6 @@ void m9x_modeset_fini(struct m9x_device *mdev)
 	m9x_write(mdev, M9_DC0 + M9_DC_START, mdev->warm_dc_start);
 	m9x_write(mdev, M9_DC0 + M9_DC_PITCH, mdev->warm_dc_pitch);
 	m9x_write(mdev, M9_DC0 + M9_DC_CTRL, mdev->warm_dc_ctrl);
+	m9_scanout_fini(mdev);
 	mdev->kms_initialized = false;
 }

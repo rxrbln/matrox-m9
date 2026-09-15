@@ -94,6 +94,9 @@ struct m9x_device {
 	u32 warm_dvo;
 	bool kms_initialized;
 	bool irq_installed;
+	struct drm_gem_vram_object *scanout;
+	void __iomem *bar0_window;
+	u8 *scanout_bounce;
 	struct m9x_transport transport;
 };
 
@@ -139,6 +142,9 @@ int m9x_address_publish_restore(struct m9x_device *mdev);
 int m9x_address_read_pte(struct m9x_device *mdev, u32 gpuva, u32 *value);
 int m9x_address_read_root_pte(struct m9x_device *mdev, u32 gpuva, u32 *value);
 u32 m9x_address_pte_word(dma_addr_t dma);
+void m9x_address_cpu_window(struct m9x_device *mdev, u32 surface, u32 format,
+			    u32 extent);
+void m9x_address_cpu_identity(struct m9x_device *mdev);
 int m9x_submit_triangle_diag(struct m9x_device *mdev, u32 color,
 			     struct drm_gem_vram_object *color_bo, u64 *point,
 			     bool *color_active);

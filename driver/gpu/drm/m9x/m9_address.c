@@ -192,6 +192,24 @@ fail:
 	return ret;
 }
 
+/* Retarget host-aperture slot 0 at BAR0 offset 0 to one surface layout. */
+void m9x_address_cpu_window(struct m9x_device *mdev, u32 surface, u32 format,
+			    u32 extent)
+{
+	m9x_write(mdev, M9_ADDRESS_CPU_WINDOW, 0);
+	m9x_write(mdev, M9_ADDRESS_CPU_WINDOW + 0x4, surface);
+	m9x_write(mdev, M9_ADDRESS_CPU_WINDOW + 0x8, format);
+	m9x_write(mdev, M9_ADDRESS_CPU_WINDOW + 0xc, extent);
+	m9x_write(mdev, M9_ADDRESS_CPU_WINDOW, M9_ADDRESS_CPU_WINDOW_VALID);
+	m9x_read(mdev, M9_ADDRESS_CPU_WINDOW);
+}
+
+void m9x_address_cpu_identity(struct m9x_device *mdev)
+{
+	m9x_address_cpu_window(mdev, 0, M9_ADDRESS_CPU_WINDOW_FORMAT,
+			       M9_ADDRESS_CPU_WINDOW_EXTENT);
+}
+
 static void m9_address_invalidate_service_bank(struct m9x_device *mdev)
 {
 	u32 slot;
