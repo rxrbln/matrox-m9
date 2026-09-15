@@ -3,11 +3,11 @@
 /*
  * Bounded, kernel-owned M9148 first-triangle preparation.
  *
- * This file intentionally stops before command publication.  The captured
- * fixed-function selector-6c object contains stale host pointers, and the
- * semantic serializer for a fresh record is not yet recovered.  Keeping the
- * gate here makes the resource, address and lifetime work testable without
- * ever making the incomplete operation reachable by the GPU.
+ * This file intentionally stops before command publication. Sequence 0 and
+ * the fixed-function draw are serialized from owned resources, while the
+ * hardware mapping/window transition remains separately gated. Keeping the
+ * gate here makes resource, address and lifetime work testable without making
+ * an incomplete operation reachable by the GPU.
  */
 #include <linux/dma-mapping.h>
 #include <linux/iosys-map.h>
@@ -27,9 +27,12 @@
 					 M9_TRIANGLE_HEIGHT * sizeof(u32))
 #define M9_TRIANGLE_SOURCE_BYTES	0x50u
 #define M9_TRIANGLE_SYSTEM_BYTES	0x20080u
-#define M9_TRIANGLE_SECONDARY_BYTES	0x4f0u
+#define M9_TRIANGLE_SECONDARY_BYTES	0xfa0u
 #define M9_TRIANGLE_SECONDARY_PREFIX	0x8u
 #define M9_TRIANGLE_SECONDARY_START_TAG	0x1u
+#define M9_TRIANGLE_SECONDARY_END_TAG	0x2u
+#define M9_TRIANGLE_GPUVA_TAG		0x1u
+#define M9_TRIANGLE_COMPLETION_TAG	0x2u
 #define M9_TRIANGLE_LINKED_OFFSET	0x300u
 #define M9_TRIANGLE_LINKED_BYTES		0x200u
 #define M9_TRIANGLE_RESOURCE69_BYTES	0x1b080u
@@ -40,6 +43,9 @@
 #define M9_TRIANGLE_SYSTEM_GPUVA_BASE	0x40000000u
 #define M9_TRIANGLE_SYSTEM_GPUVA_END	0x50000000u
 #define M9_TRIANGLE_MAX_SYSTEM_PTES	36u
+#define M9_SEQ0_TARGET_COUNT		9u
+#define M9_SEQ0_FINAL_TARGET_OFFSET	0x80u
+#define M9_SEQ0_NEXT_TARGET_OFFSET	0x90u
 
 static bool m9_triangle_diag;
 module_param(m9_triangle_diag, bool, 0400);
@@ -64,6 +70,9 @@ enum m9_triangle_resource_id {
 	M9_TRI_TRANSIENT3,
 	M9_TRI_DEPTH,
 	M9_TRI_AUX_DEPTH,
+	M9_TRI_SEQ0_SCRATCH26,
+	M9_TRI_SEQ0_SCRATCH27,
+	M9_TRI_SEQ0_SCRATCH38,
 	M9_TRI_RESOURCE_COUNT,
 };
 
@@ -149,6 +158,7 @@ struct m9_triangle_commands {
 	u32 raster[113];
 	u32 completion[8];
 	u32 primary[9];
+	u32 sequence0_primary[9];
 };
 
 struct m9x_triangle_diag {
@@ -157,6 +167,32 @@ struct m9x_triangle_diag {
 	u32 pte_count;
 	struct m9_triangle_commands commands;
 	bool prepared;
+};
+
+enum m9_seq0_operand {
+	M9_SEQ0_TARGET,
+	M9_SEQ0_SCRATCH26,
+	M9_SEQ0_SCRATCH27,
+	M9_SEQ0_SCRATCH38,
+	M9_SEQ0_COMPLETION,
+};
+
+struct m9_seq0_patch {
+	u16 offset;
+	u8 index;
+	u8 operand;
+	u8 step;
+	u8 tag;
+	u32 captured;
+};
+
+struct m9_seq0_job {
+	u32 secondary;
+	u32 target;
+	u32 scratch26;
+	u32 scratch27;
+	u32 scratch38;
+	u32 completion;
 };
 
 /* Exact address-bearing sites in the count-free 118/113/8-dword operation. */
@@ -227,6 +263,12 @@ static const struct m9_triangle_resource_spec m9_triangle_specs[] = {
 			     U32_MAX, true },
 	[M9_TRI_AUX_DEPTH] = { "aux-depth", M9_TRIANGLE_SURFACE_BYTES, 0x100,
 				 0xa5a5a5a5, true },
+	[M9_TRI_SEQ0_SCRATCH26] = { "sequence0-scratch26", 0x800, SZ_4K,
+					 0, true },
+	[M9_TRI_SEQ0_SCRATCH27] = { "sequence0-scratch27", 0x20080, SZ_4K,
+					 0, true },
+	[M9_TRI_SEQ0_SCRATCH38] = { "sequence0-scratch38", 0x400, SZ_4K,
+					 0, true },
 };
 
 static const u32 m9_triangle_flat_source[] = {
@@ -255,6 +297,27 @@ static const u32 m9_triangle_gouraud_linked_prefix[] = {
 #define M9_TRIANGLE_LINKED_REF_STRIDE	0x00000028u
 
 #include "m9_triangle_framed.h"
+#include "m9_sequence0_framed.h"
+
+static const struct m9_seq0_patch m9_seq0_patches[] = {
+	{ 0x014, 0xe3, M9_SEQ0_TARGET, 0, 0, 0x00000030 },
+	{ 0x084, 0xe3, M9_SEQ0_TARGET, 1, 0, 0x00000040 },
+	{ 0x184, 0xe3, M9_SEQ0_TARGET, 1, 0, 0x00000040 },
+	{ 0x54c, 0xe3, M9_SEQ0_TARGET, 2, 0, 0x00000050 },
+	{ 0x5a0, 0xe3, M9_SEQ0_TARGET, 3, 0, 0x00000060 },
+	{ 0x5ac, 0xb0, M9_SEQ0_SCRATCH26, 0, 0, 0x11e19000 },
+	{ 0x648, 0xe3, M9_SEQ0_TARGET, 3, 0, 0x00000060 },
+	{ 0xcc0, 0xe3, M9_SEQ0_TARGET, 3, 0, 0x00000060 },
+	{ 0xd74, 0xe3, M9_SEQ0_TARGET, 4, 0, 0x00000070 },
+	{ 0xdbc, 0xe3, M9_SEQ0_TARGET, 5, 0, 0x00000080 },
+	{ 0xdc8, 0xb0, M9_SEQ0_SCRATCH27, 0, 0, 0x11e21000 },
+	{ 0xe88, 0xe3, M9_SEQ0_TARGET, 6, 0, 0x00000090 },
+	{ 0xed0, 0xe3, M9_SEQ0_TARGET, 7, 0, 0x000000a0 },
+	{ 0xedc, 0xb0, M9_SEQ0_SCRATCH38, 0, 0, 0x11ed9000 },
+	{ 0xf7c, 0x1b, M9_SEQ0_COMPLETION, 0, 2, 0x13861002 },
+	{ 0xf90, 0xe3, M9_SEQ0_TARGET, 8, 1, 0x000000b1 },
+	{ 0xf9c, 0x43, M9_SEQ0_TARGET, 8, 0, 0x000000b0 },
+};
 
 /* Count words have been removed; packet grouping and write order are exact. */
 static const u32 m9_triangle_range_0[] = {
@@ -530,7 +593,9 @@ static int m9_triangle_prepare_resources(struct m9x_device *mdev)
 		M9_TRI_SYSTEM, M9_TRI_RESOURCE69,
 		M9_TRI_TRANSIENT0, M9_TRI_TRANSIENT1,
 		M9_TRI_TRANSIENT2, M9_TRI_TRANSIENT3,
-		M9_TRI_C2, M9_TRI_SECONDARY, M9_TRI_SOURCE,
+		M9_TRI_C2, M9_TRI_SEQ0_SCRATCH26,
+		M9_TRI_SEQ0_SCRATCH27, M9_TRI_SEQ0_SCRATCH38,
+		M9_TRI_SECONDARY, M9_TRI_SOURCE,
 	};
 	unsigned int id;
 	int ret;
@@ -588,29 +653,114 @@ static u32 m9_triangle_gpuva(const struct m9x_triangle_diag *diag,
 	return diag->resource[id].gpuva;
 }
 
+static int m9_seq0_build_job(const struct m9x_device *mdev, u32 target,
+			     struct m9_seq0_job *job)
+{
+	const struct m9x_triangle_diag *diag = mdev->transport.triangle;
+	u64 secondary_end;
+
+	job->secondary = m9_triangle_bus(diag, M9_TRI_SECONDARY);
+	job->target = target;
+	job->scratch26 = m9_triangle_bus(diag, M9_TRI_SEQ0_SCRATCH26);
+	job->scratch27 = m9_triangle_bus(diag, M9_TRI_SEQ0_SCRATCH27);
+	job->scratch38 = m9_triangle_bus(diag, M9_TRI_SEQ0_SCRATCH38);
+	job->completion = lower_32_bits(mdev->transport.fence_bus);
+
+	if (!IS_ALIGNED(target, 0x10) ||
+	    !IS_ALIGNED(job->secondary, sizeof(u32)) ||
+	    check_add_overflow((u64)job->secondary,
+			       (u64)M9_TRIANGLE_SECONDARY_BYTES,
+			       &secondary_end) || secondary_end > (u64)U32_MAX + 1 ||
+	    !IS_ALIGNED(job->scratch26, SZ_4K) ||
+	    !IS_ALIGNED(job->scratch27, SZ_4K) ||
+	    !IS_ALIGNED(job->scratch38, SZ_4K) ||
+	    !IS_ALIGNED(job->completion, 0x10))
+		return -ERANGE;
+	return 0;
+}
+
+static u32 m9_seq0_patch_value(const struct m9_seq0_job *job,
+			       const struct m9_seq0_patch *patch)
+{
+	u32 value;
+
+	switch (patch->operand) {
+	case M9_SEQ0_TARGET:
+		value = job->target + patch->step * 0x10;
+		break;
+	case M9_SEQ0_SCRATCH26:
+		value = job->scratch26;
+		break;
+	case M9_SEQ0_SCRATCH27:
+		value = job->scratch27;
+		break;
+	case M9_SEQ0_SCRATCH38:
+		value = job->scratch38;
+		break;
+	case M9_SEQ0_COMPLETION:
+		value = job->completion;
+		break;
+	default:
+		return 0;
+	}
+	return value | patch->tag;
+}
+
+static void m9_seq0_build_secondary(u8 *image,
+				    const struct m9_seq0_job *job)
+{
+	unsigned int i;
+
+	memset(image, 0, M9_TRIANGLE_SECONDARY_PREFIX);
+	memcpy(image + M9_TRIANGLE_SECONDARY_PREFIX,
+	       m9_seq0_framed_payload, sizeof(m9_seq0_framed_payload));
+	for (i = 0; i < ARRAY_SIZE(m9_seq0_patches); i++)
+		put_unaligned_le32(m9_seq0_patch_value(job,
+						       &m9_seq0_patches[i]),
+				   image + m9_seq0_patches[i].offset);
+}
+
+static void m9_seq0_build_primary(const struct m9_seq0_job *job, u32 *primary)
+{
+	static const u16 bounds[][2] = {
+		{ 0x008, 0x540 },
+		{ 0x540, 0xf74 },
+		{ 0xf74, 0xfa0 },
+	};
+	unsigned int i;
+
+	for (i = 0; i < ARRAY_SIZE(bounds); i++) {
+		primary[i * 3] = 0x45452d2c;
+		primary[i * 3 + 1] = (job->secondary + bounds[i][0]) |
+			M9_TRIANGLE_SECONDARY_START_TAG;
+		primary[i * 3 + 2] = (job->secondary + bounds[i][1]) |
+			M9_TRIANGLE_SECONDARY_END_TAG;
+	}
+}
+
 static int m9_triangle_build_addresses(struct m9x_device *mdev, u32 color,
+				       u32 target,
 				       struct m9_triangle_job_addresses *job)
 {
 	const struct m9x_triangle_diag *diag = mdev->transport.triangle;
-	u32 target = mdev->transport.next_fence;
 	unsigned int i;
 
 	if (!m9_triangle_gpuva(diag, M9_TRI_SOURCE) ||
 	    !m9_triangle_gpuva(diag, M9_TRI_SYSTEM))
 		return -EINVAL;
 	job->source = m9_triangle_gpuva(diag, M9_TRI_SOURCE) |
-		      M9_COMMAND_SYSTEM_TAG;
+		      M9_TRIANGLE_GPUVA_TAG;
 	job->secondary = m9_triangle_bus(diag, M9_TRI_SECONDARY);
 	job->system_pre_start = (m9_triangle_gpuva(diag, M9_TRI_SYSTEM) + 0x10) |
-				M9_COMMAND_SYSTEM_TAG;
+				M9_TRIANGLE_GPUVA_TAG;
 	job->system_pre_end = (m9_triangle_gpuva(diag, M9_TRI_SYSTEM) + 0xc0) |
-			      M9_COMMAND_SYSTEM_TAG;
+			      M9_TRIANGLE_GPUVA_TAG;
 	job->system_raster_start = m9_triangle_gpuva(diag, M9_TRI_SYSTEM) |
-				   M9_COMMAND_SYSTEM_TAG;
+				   M9_TRIANGLE_GPUVA_TAG;
 	job->system_raster_end = (m9_triangle_gpuva(diag, M9_TRI_SYSTEM) + 0x10) |
-				 M9_COMMAND_SYSTEM_TAG;
+				 M9_TRIANGLE_GPUVA_TAG;
 	job->linked = (m9_triangle_gpuva(diag, M9_TRI_SYSTEM) +
-		       M9_TRIANGLE_LINKED_OFFSET) | M9_COMMAND_SYSTEM_TAG;
+		       M9_TRIANGLE_LINKED_OFFSET) | M9_TRIANGLE_GPUVA_TAG;
 	job->resource69 = m9_triangle_bus(diag, M9_TRI_RESOURCE69);
 	job->c2 = m9_triangle_bus(diag, M9_TRI_C2);
 	job->be = m9_triangle_bus(diag, M9_TRI_BE);
@@ -620,7 +770,8 @@ static int m9_triangle_build_addresses(struct m9x_device *mdev, u32 color,
 	job->color = color;
 	job->depth = m9_triangle_bus(diag, M9_TRI_DEPTH);
 	job->aux_depth = m9_triangle_bus(diag, M9_TRI_AUX_DEPTH);
-	job->fence = lower_32_bits(mdev->transport.fence_bus) | 2;
+	job->fence = lower_32_bits(mdev->transport.fence_bus) |
+		     M9_TRIANGLE_COMPLETION_TAG;
 	for (i = 0; i < ARRAY_SIZE(job->transition); i++)
 		job->transition[i] = target + i * 0x10;
 	job->final_e3 = job->transition[5] | 1;
@@ -694,12 +845,9 @@ static void m9_triangle_build_commands(
 }
 
 static void m9_triangle_build_framed_secondary(
-		struct m9x_triangle_diag *diag,
+		u8 *image,
 		const struct m9_triangle_job_addresses *job)
 {
-	struct m9_triangle_resource *secondary =
-		&diag->resource[M9_TRI_SECONDARY];
-	u8 *image = secondary->cpu;
 	unsigned int i;
 
 	/* The saved BmBuffer's first eight bytes are private host bookkeeping and
@@ -739,7 +887,7 @@ static void m9_triangle_build_primary(
 		primary[i * 3 + 1] = (job->secondary + bounds[i][0]) |
 			M9_TRIANGLE_SECONDARY_START_TAG;
 		primary[i * 3 + 2] = (job->secondary + bounds[i][1]) |
-			M9_COMMAND_SYSTEM_TAG;
+			M9_TRIANGLE_SECONDARY_END_TAG;
 	}
 }
 
@@ -809,6 +957,10 @@ static int m9_triangle_serialize_linked_record(struct m9x_device *mdev,
 int m9x_submit_triangle_diag(struct m9x_device *mdev, u32 color, u64 *point)
 {
 	struct m9_triangle_job_addresses job = {};
+	struct m9_seq0_job sequence0 = {};
+	struct m9x_triangle_diag *diag;
+	u32 sequence0_final;
+	u32 draw_target;
 	int ret;
 
 	if (!m9_triangle_diag)
@@ -822,25 +974,118 @@ int m9x_submit_triangle_diag(struct m9x_device *mdev, u32 color, u64 *point)
 	ret = m9_triangle_prepare_resources(mdev);
 	if (ret)
 		goto out_unlock;
-	ret = m9_triangle_build_addresses(mdev, color, &job);
+	diag = mdev->transport.triangle;
+	ret = m9_seq0_build_job(mdev, mdev->transport.next_fence,
+				&sequence0);
 	if (ret)
 		goto out_unlock;
-	m9_triangle_build_commands(&job, &mdev->transport.triangle->commands);
-	m9_triangle_build_framed_secondary(mdev->transport.triangle, &job);
-	m9_triangle_build_primary(&job,
-		mdev->transport.triangle->commands.primary);
+	sequence0_final = sequence0.target + M9_SEQ0_FINAL_TARGET_OFFSET;
+	draw_target = sequence0.target + M9_SEQ0_NEXT_TARGET_OFFSET;
+	m9_seq0_build_secondary(diag->resource[M9_TRI_SECONDARY].cpu,
+				 &sequence0);
+	m9_seq0_build_primary(&sequence0, diag->commands.sequence0_primary);
+	WRITE_ONCE(*(u32 *)mdev->transport.fence_cpu, ~sequence0_final);
+
+	ret = m9_triangle_build_addresses(mdev, color, draw_target, &job);
+	if (ret)
+		goto out_unlock;
+	m9_triangle_build_commands(&job, &diag->commands);
+	m9_triangle_build_primary(&job, diag->commands.primary);
 	ret = m9_triangle_serialize_linked_record(mdev, &job);
 	if (ret)
 		goto out_unlock;
-	/* The bounded first-draw pool-5 image is complete.  Execution remains gated
-	 * until the system-domain source/linked mappings and all m9x421 ranges
-	 * have exact owned inputs; local resources are already in VRAM. */
+	dma_wmb();
+	/* Sequence 0 is now the sole image in the shared secondary BO.  Once
+	 * execution is enabled it must retire at sequence0_final before that BO is
+	 * replaced with the separately prepared draw image. */
 	dev_warn_once(&mdev->pdev->dev,
-		"M9 triangle fully prepared but not submitted: "
-		"system-domain mappings and engine windows remain gated\n");
+		"M9 sequence 0 and triangle prepared but not submitted: "
+		"setup=%#x..%#x draw=%#x..%#x; execution remains gated\n",
+		sequence0.target, sequence0_final, draw_target,
+		job.transition[5]);
 	ret = -EOPNOTSUPP;
 out_unlock:
 	mutex_unlock(&mdev->transport.lock);
+	return ret;
+}
+
+static int m9_seq0_selftest(void)
+{
+	struct m9_triangle_job_addresses draw = {};
+	struct m9_seq0_job job = {
+		.secondary = 0x02000000,
+		.target = 0x00000100,
+		.scratch26 = 0x11000000,
+		.scratch27 = 0x11200000,
+		.scratch38 = 0x11400000,
+		.completion = 0x02400000,
+	};
+	static const u32 expected_primary[] = {
+		0x45452d2c, 0x02000009, 0x02000542,
+		0x45452d2c, 0x02000541, 0x02000f76,
+		0x45452d2c, 0x02000f75, 0x02000fa2,
+	};
+	u32 primary[ARRAY_SIZE(expected_primary)];
+	u8 *image;
+	unsigned int i;
+	int ret = -EINVAL;
+
+	if (ARRAY_SIZE(m9_seq0_patches) != 17 ||
+	    ARRAY_SIZE(m9_seq0_patch_offsets) !=
+		ARRAY_SIZE(m9_seq0_patches) ||
+	    sizeof(m9_seq0_framed_payload) !=
+		M9_TRIANGLE_SECONDARY_BYTES - M9_TRIANGLE_SECONDARY_PREFIX ||
+	    m9_triangle_template_fnv1a(m9_seq0_framed_payload,
+		ARRAY_SIZE(m9_seq0_framed_payload)) !=
+		0xd4169ed545a19999ULL)
+		return -EINVAL;
+
+	for (i = 0; i < ARRAY_SIZE(m9_seq0_patches); i++) {
+		const struct m9_seq0_patch *patch = &m9_seq0_patches[i];
+		u32 captured = get_unaligned_le32(
+			(const u8 *)m9_seq0_framed_payload + patch->offset -
+			M9_TRIANGLE_SECONDARY_PREFIX);
+
+		if (patch->offset != m9_seq0_patch_offsets[i] ||
+		    patch->offset < M9_TRIANGLE_SECONDARY_PREFIX ||
+		    patch->offset > M9_TRIANGLE_SECONDARY_BYTES - sizeof(u32) ||
+		    patch->operand > M9_SEQ0_COMPLETION ||
+		    patch->step >= M9_SEQ0_TARGET_COUNT ||
+		    captured != patch->captured)
+			return -EINVAL;
+		if ((patch->operand == M9_SEQ0_TARGET &&
+		     patch->index != 0xe3 && patch->index != 0x43) ||
+		    (patch->operand >= M9_SEQ0_SCRATCH26 &&
+		     patch->operand <= M9_SEQ0_SCRATCH38 &&
+		     patch->index != 0xb0) ||
+		    (patch->operand == M9_SEQ0_COMPLETION &&
+		     patch->index != 0x1b))
+			return -EINVAL;
+	}
+
+	image = kzalloc(M9_TRIANGLE_SECONDARY_BYTES, GFP_KERNEL);
+	if (!image)
+		return -ENOMEM;
+	m9_seq0_build_secondary(image, &job);
+	m9_seq0_build_primary(&job, primary);
+	if (memcmp(primary, expected_primary, sizeof(primary)) ||
+	    m9_triangle_template_fnv1a((const u32 *)image,
+		M9_TRIANGLE_SECONDARY_BYTES / sizeof(u32)) !=
+		0xfd653b6594219969ULL)
+		goto out;
+	for (i = 0; i < ARRAY_SIZE(m9_seq0_patches); i++)
+		if (get_unaligned_le32(image + m9_seq0_patches[i].offset) !=
+		    m9_seq0_patch_value(&job, &m9_seq0_patches[i]))
+			goto out;
+
+	/* Keep the separately captured draw serializer covered even though the
+	 * shared secondary BO cannot receive it until sequence 0 retires. */
+	m9_triangle_build_framed_secondary(image, &draw);
+	if (get_unaligned_le32(image) || get_unaligned_le32(image + 4))
+		goto out;
+	ret = 0;
+out:
+	kfree(image);
 	return ret;
 }
 
@@ -851,6 +1096,11 @@ int m9x_triangle_selftest(void)
 	u8 linked[M9_TRIANGLE_LINKED_BYTES] = {};
 	u32 target = 0xfffffff0;
 	unsigned int i;
+	int ret;
+
+	ret = m9_seq0_selftest();
+	if (ret)
+		return ret;
 
 	if (sizeof(m9_triangle_flat_source) != M9_TRIANGLE_SOURCE_BYTES ||
 	    sizeof(m9_triangle_gouraud_source) != M9_TRIANGLE_SOURCE_BYTES ||
@@ -873,7 +1123,10 @@ int m9x_triangle_selftest(void)
 	    ARRAY_SIZE(m9_triangle_framed_transition_offsets) !=
 		ARRAY_SIZE(m9_triangle_transition_sites) ||
 	    sizeof(m9_triangle_framed_payload) !=
-		M9_TRIANGLE_SECONDARY_BYTES - M9_TRIANGLE_SECONDARY_PREFIX ||
+		0x4f0 - M9_TRIANGLE_SECONDARY_PREFIX ||
+	    m9_triangle_specs[M9_TRI_SEQ0_SCRATCH26].payload_bytes != 0x800 ||
+	    m9_triangle_specs[M9_TRI_SEQ0_SCRATCH27].payload_bytes != 0x20080 ||
+	    m9_triangle_specs[M9_TRI_SEQ0_SCRATCH38].payload_bytes != 0x400 ||
 	    m9_triangle_specs[M9_TRI_BE].payload_bytes != SZ_1M)
 		return -EINVAL;
 	if (m9_triangle_template_fnv1a(m9_triangle_gouraud_linked_prefix,
