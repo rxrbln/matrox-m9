@@ -211,6 +211,11 @@ linear top-down rows, where the triangle covers exactly its 28000 pixels.
 CPU readback, scanout copies and userspace transfers of render targets must
 use such a window rather than the raw BAR0 BO mapping.
 
+``m9_triangle_present=1`` follows the draw with the vendor texture-rectangle
+present stream, copying the color target into a kernel-owned 1024x768
+layout-``0x21`` surface; its descriptor window shows exactly the triangle in
+the top-left 320x240.
+
 ``m9_user_submit=1`` executes validated userspace streams.  The kernel frames
 the count-free packets into counted records, submits them through the
 class-1 BmBuffer followed by the vendor completion range, and waits for its
