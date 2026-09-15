@@ -160,6 +160,17 @@ static struct m9x_fence *m9_fence_create(struct m9x_device *mdev,
 	return fence;
 }
 
+struct m9x_fence *m9x_fence_create_target_locked(struct m9x_device *mdev,
+						 u32 target)
+{
+	struct m9x_transport *transport = &mdev->transport;
+	u32 epoch;
+
+	lockdep_assert_held(&transport->lock);
+	epoch = transport->fence_epoch + (target < transport->last_fence);
+	return m9_fence_create(mdev, ((u64)epoch << 32) | target);
+}
+
 int m9x_transport_arm_locked(struct m9x_device *mdev)
 {
 	struct m9x_transport *transport = &mdev->transport;
@@ -422,9 +433,7 @@ int m9x_submit_noop(struct m9x_device *mdev, u64 *point)
 		      command_offset + 3 * sizeof(u32);
 
 	target = m9_next_fence_target(&mdev->transport);
-	fence = m9_fence_create(mdev,
-		((u64)(mdev->transport.fence_epoch +
-			(target < mdev->transport.last_fence)) << 32) | target);
+	fence = m9x_fence_create_target_locked(mdev, target);
 	if (!fence) {
 		ret = -ENOMEM;
 		goto out_unlock;
@@ -562,16 +571,24 @@ int m9x_init(struct m9x_device *mdev)
 void m9x_fini(struct m9x_device *mdev)
 {
 	struct drm_gem_vram_object *color;
+	struct m9x_fence *fence;
 
 	mutex_lock(&mdev->transport.lock);
 	mdev->transport.wedged = true;
 	/* Stop host DMA before devres releases any reachable allocation. */
 	pci_clear_master(mdev->pdev);
 	mdev->transport.transport_armed = false;
+	fence = mdev->transport.quarantined_fence;
+	mdev->transport.quarantined_fence = NULL;
 	color = mdev->transport.quarantined_color;
 	mdev->transport.quarantined_color = NULL;
 	mutex_unlock(&mdev->transport.lock);
 	m9x_triangle_fini(mdev);
+	if (fence) {
+		dma_fence_set_error(&fence->base, -EIO);
+		dma_fence_signal(&fence->base);
+		dma_fence_put(&fence->base);
+	}
 	if (color) {
 		m9x_vram_unpin(color);
 		drm_gem_vram_put(color);

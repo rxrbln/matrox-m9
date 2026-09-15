@@ -73,6 +73,7 @@ struct m9x_transport {
 	bool engine_transitioned;
 	bool restore_ready;
 	bool wedged;
+	struct m9x_fence *quarantined_fence;
 	struct drm_gem_vram_object *quarantined_color;
 	struct m9x_address_space *address;
 	struct m9x_triangle_diag *triangle;
@@ -119,6 +120,8 @@ int m9x_restore_bind(struct m9x_device *mdev);
 int m9x_submit_kernel_stream_locked(struct m9x_device *mdev,
 				    const u32 *commands, u32 dwords,
 				    u32 target, u64 *point);
+struct m9x_fence *m9x_fence_create_target_locked(struct m9x_device *mdev,
+						 u32 target);
 int m9x_address_init(struct m9x_device *mdev);
 void m9x_address_fini(struct m9x_device *mdev);
 int m9x_address_bind_dma(struct m9x_device *mdev, u32 gpuva,
@@ -126,7 +129,8 @@ int m9x_address_bind_dma(struct m9x_device *mdev, u32 gpuva,
 int m9x_address_prepare(struct m9x_device *mdev);
 int m9x_address_publish(struct m9x_device *mdev);
 int m9x_address_commit_bindings(struct m9x_device *mdev);
-int m9x_submit_triangle_diag(struct m9x_device *mdev, u32 color, u64 *point,
+int m9x_submit_triangle_diag(struct m9x_device *mdev, u32 color,
+			     struct drm_gem_vram_object *color_bo, u64 *point,
 			     bool *color_active);
 int m9x_triangle_selftest(void);
 void m9x_triangle_fini(struct m9x_device *mdev);

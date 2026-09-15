@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0-only
 /* Copyright 2026 René Rebe <rene@exactco.de> */
 #include <linux/overflow.h>
+#include <linux/sched.h>
 #include <linux/uaccess.h>
 
 #include <drm/drm_file.h>
@@ -277,6 +278,7 @@ static int m9_submit_first_triangle(struct m9x_device *mdev,
 	struct drm_gem_vram_object *vram;
 	struct drm_gem_object *gem;
 	bool color_active;
+	long wait;
 	s64 offset;
 	u64 address;
 	int ret;
@@ -314,20 +316,37 @@ static int m9_submit_first_triangle(struct m9x_device *mdev,
 	if (ret)
 		goto out_unreserve;
 	address -= M9_TRIANGLE_COLOR_BYTES - 1;
-	ret = m9x_submit_triangle_diag(mdev, lower_32_bits(address),
+
+	/*
+	 * Do not wait on the intentionally unsignaled fence retained by a prior
+	 * timed-out job.  All lock nesting in this path is COLOR RESV ->
+	 * TRANSPORT.
+	 */
+	mutex_lock(&mdev->transport.lock);
+	ret = mdev->transport.wedged ? -EIO : 0;
+	mutex_unlock(&mdev->transport.lock);
+	if (ret)
+		goto out_unreserve;
+	wait = dma_resv_wait_timeout(gem->resv, dma_resv_usage_rw(true), true,
+				     MAX_SCHEDULE_TIMEOUT);
+	if (wait <= 0) {
+		ret = wait < 0 ? wait : -ETIMEDOUT;
+		goto out_unreserve;
+	}
+	ret = dma_resv_reserve_fences(gem->resv, 1);
+	if (ret)
+		goto out_unreserve;
+	ret = m9x_submit_triangle_diag(mdev, lower_32_bits(address), vram,
 				       &args->out_point, &color_active);
-	ttm_bo_unreserve(&vram->bo);
 	if (color_active) {
 		/* A timed-out local draw can keep writing after the ioctl returns.
-		 * Retain both the pin and GEM reference until teardown has disabled
-		 * the device's DMA reachability.
+		 * The draw path transferred its unsignaled fence, pin and GEM
+		 * reference to the transport before dropping its lock.
 		 */
-		mutex_lock(&mdev->transport.lock);
-		WARN_ON(mdev->transport.quarantined_color);
-		mdev->transport.quarantined_color = vram;
-		mutex_unlock(&mdev->transport.lock);
+		ttm_bo_unreserve(&vram->bo);
 		return ret;
 	}
+	ttm_bo_unreserve(&vram->bo);
 	goto out_unpin;
 out_unreserve:
 	ttm_bo_unreserve(&vram->bo);

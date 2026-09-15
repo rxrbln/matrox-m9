@@ -1140,12 +1140,14 @@ static int m9_triangle_run_manager_transition(struct m9x_device *mdev,
 	return 0;
 }
 
-int m9x_submit_triangle_diag(struct m9x_device *mdev, u32 color, u64 *point,
+int m9x_submit_triangle_diag(struct m9x_device *mdev, u32 color,
+			     struct drm_gem_vram_object *color_bo, u64 *point,
 			     bool *color_active)
 {
 	struct m9_triangle_job_addresses job = {};
 	struct m9_seq0_job sequence0 = {};
 	struct m9x_triangle_diag *diag;
+	struct m9x_fence *out_fence = NULL;
 	u32 noop_primary[3];
 	u32 draw_target;
 	u32 sequence0_final = 0;
@@ -1252,13 +1254,21 @@ int m9x_submit_triangle_diag(struct m9x_device *mdev, u32 color, u64 *point,
 		goto out_unlock;
 
 	/*
-	 * Sequence 0 has retired, so the shared BmBuffer can now hold the exact
-	 * three-range first-draw image.  Its final in-stream completion retires
-	 * every referenced synchronous diagnostic allocation.
+	 * First context activation, when needed, has retired before this path,
+	 * so the shared BmBuffer can hold the exact three-range draw image.  Its
+	 * final in-stream completion retires every referenced allocation.
 	 */
 	m9_triangle_build_framed_secondary(diag->resource[M9_TRI_SECONDARY].cpu,
 					   &job, m9_triangle_gouraud);
 	dma_wmb();
+	dma_resv_assert_held(color_bo->bo.base.resv);
+	out_fence = m9x_fence_create_target_locked(mdev, job.transition[5]);
+	if (!out_fence) {
+		ret = -ENOMEM;
+		goto out_unlock;
+	}
+	dma_resv_add_fence(color_bo->bo.base.resv, &out_fence->base,
+			   DMA_RESV_USAGE_WRITE);
 	*color_active = true;
 	ret = m9x_submit_kernel_stream_locked(mdev, diag->commands.primary,
 					      ARRAY_SIZE(diag->commands.primary),
@@ -1281,6 +1291,23 @@ int m9x_submit_triangle_diag(struct m9x_device *mdev, u32 color, u64 *point,
 		 "M9 triangle retired: draw=%#x..%#x\n", draw_target,
 		 job.transition[5]);
 out_unlock:
+	if (out_fence && ret)
+		dma_fence_set_error(&out_fence->base, ret);
+	if (out_fence && *color_active) {
+		if (!mdev->transport.wedged) {
+			mdev->transport.wedged = true;
+			mdev->transport.generation++;
+		}
+		WARN_ON(mdev->transport.quarantined_fence ||
+			mdev->transport.quarantined_color);
+		mdev->transport.quarantined_fence = out_fence;
+		mdev->transport.quarantined_color = color_bo;
+		out_fence = NULL;
+	} else if (out_fence) {
+		dma_fence_signal(&out_fence->base);
+	}
+	if (out_fence)
+		dma_fence_put(&out_fence->base);
 	mutex_unlock(&mdev->transport.lock);
 	return ret;
 }
