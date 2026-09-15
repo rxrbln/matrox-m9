@@ -1083,10 +1083,12 @@ m9_render_get_vertex_info(struct vbuf_render *render)
          unsigned name, index;
          int output;
 
-         tgsi_get_gl_varying_semantic(location,
-                                      r->ctx->screen->base.caps.tgsi_texcoord,
-                                      &name, &index);
+         /* The draw module scans shader outputs with need_texcoord set. */
+         tgsi_get_gl_varying_semantic(location, true, &name, &index);
          output = draw_find_shader_output(r->ctx->draw, name, index);
+         if (r->ctx->debug)
+            fprintf(stderr, "m9x: CPU varying %u location %u semantic %u/%u "
+                    "draw output %d\n", j, location, name, index, output);
          r->extra_offset[j] = output >= 0 ? (int)offset : -1;
          if (output >= 0) {
             draw_emit_vertex_attr(&r->vinfo, EMIT_4F, output);
