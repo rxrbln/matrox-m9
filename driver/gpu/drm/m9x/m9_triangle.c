@@ -893,9 +893,9 @@ static void m9_triangle_build_commands(
 	commands->raster[37] = U32_MAX;
 	commands->raster[38] = U32_MAX;
 	if (gouraud) {
-		commands->raster[M9_TRIANGLE_RASTER_SHADE_CONTROL_DW] &= ~BIT(14);
-		commands->raster[M9_TRIANGLE_RASTER_SHADE_LINK0_DW] &= ~BIT(31);
-		commands->raster[M9_TRIANGLE_RASTER_SHADE_LINK1_DW] &= ~BIT(31);
+		commands->raster[M9_TRIANGLE_RASTER_SHADE_CONTROL_DW] = 0x00002503;
+		commands->raster[M9_TRIANGLE_RASTER_SHADE_LINK0_DW] = 0x00100d88;
+		commands->raster[M9_TRIANGLE_RASTER_SHADE_LINK1_DW] = 0x001006b6;
 	}
 	for (i = 0; i < ARRAY_SIZE(m9_triangle_reloc_sites); i++) {
 		const struct m9_triangle_reloc_site *site =
