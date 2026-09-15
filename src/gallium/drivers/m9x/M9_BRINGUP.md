@@ -43,8 +43,10 @@ two-slot primary command rebase.  Arbitrary userspace streams remain disabled:
   control is enabled only for captured triangle-list `0x6403`.  Gears uses
   both `0x6406` and `0x6407`, so strip control remains gated.
 * The known gltri linked-program bind emits indices `69,6a,68,6b,6c`.
-  Address-directed live snapshots prove index `69` selects drawable backing;
-  it uses a 0x1000-aligned RESOURCE_69 relocation with read/write access.  Index `6c`
+  Static emitter ownership and live snapshots prove index `69` selects the
+  immutable external fixed-fragment database; it uses a 0x1000-aligned
+  RESOURCE_69 relocation with read-only access. The render target is bound
+  independently through selector-8 `b0/b1`. Index `6c`
   uses a distinct RESOURCE_6C relocation to a 0x80-aligned system record.
   The kernel supplies `6c` low bit 0; it does not add the requester system
   tag.  The builder accepts only a program explicitly marked as the captured
@@ -69,8 +71,9 @@ two-slot primary command rebase.  Arbitrary userspace streams remain disabled:
   to the otherwise kernel-owned diagnostic.  The current kernel prepares its
   complete guarded job and returns `-EOPNOTSUPP` at the fresh selector-6c
   serializer gate.
-* Context allocation, its per-context command BO, batch isolation, flush,
-  teardown, and direct CPU buffer/texture transfers are implemented behind
+* Context allocation, its per-context command BO, batch isolation, referenced
+  framebuffer/texture state, flush, teardown, and direct CPU buffer/texture
+  transfers are implemented behind
   two independent gates: executable submit and a safe linked-program
   constructor.  Mip transfer offsets include the recovered 32x16 tail atlas.
   A state tracker still receives `NULL` while either gate is closed.
@@ -82,6 +85,8 @@ two-slot primary command rebase.  Arbitrary userspace streams remain disabled:
   rejects DMA32 and placement-unknown imports before command construction.
 * Presentation BOs use `MODE_CREATE_DUMB`, the guarded KMS contract's exact
   1024x768 XRGB8888 shape and 4096-byte pitch, and direct BAR0 mapping.
+  Resource creation rejects every other scanout or display-target template,
+  including ARGB8888, before allocating a generic VRAM image.
   KMS, flink, and PRIME winsys handles have symmetric import/export paths.
   `flush_frontbuffer` publishes writes to that same BO and performs no shadow
   copy or resolve.  DMA32 resources and VRAM image resources retain distinct
@@ -155,9 +160,8 @@ These gaps must remain visible in capability and execution gates:
    the heterogeneous external `6c` record constructor.  The captured A/B
    programmable records contain no embedded GPU-BO pointers, but the selected
    fixed-function slot contains nine process-specific host pointers and cannot
-   be replayed in a new context.  Index `69` is
-   drawable memory, and the known bind tuple alone is not a general shader
-   path.
+   be replayed in a new context. Index `69` is the external fixed-fragment
+   database, and the known bind tuple alone is not a general shader path.
    This is now the final Mesa context-creation gate after kernel execution.
 4. Triangle-strip control is captured from gears, but its correlated `d7`
    field and strip batching boundary need a minimal differential before live

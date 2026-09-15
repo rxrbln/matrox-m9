@@ -162,9 +162,9 @@ struct m9_context {
    uint32_t context_id;
    uint64_t last_point;
    uint64_t dirty;
-   struct m9_resource *color;
-   struct m9_resource *depth;
-   struct m9_resource *textures[4];
+   struct pipe_resource *color;
+   struct pipe_resource *depth;
+   struct pipe_resource *textures[4];
    uint32_t framebuffer_width, framebuffer_height;
    bool depth_test;
    bool depth_write;

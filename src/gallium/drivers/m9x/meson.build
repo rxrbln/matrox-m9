@@ -3,7 +3,7 @@
 libm9x_batch = static_library(
   'm9x_batch',
   files('m9_batch.c', 'm9_format.c', 'm9_state.c'),
-  include_directories : [inc_include, inc_src, inc_gallium],
+  include_directories : [inc_include, inc_src, inc_gallium, inc_gallium_aux],
   dependencies : [idep_mesautil],
   gnu_symbol_visibility : 'hidden',
 )

@@ -6,6 +6,8 @@
 #include <errno.h>
 #include <string.h>
 
+#include "util/u_inlines.h"
+
 void
 m9_context_state_init(struct m9_context *context, struct m9_screen *screen)
 {
@@ -14,6 +16,17 @@ m9_context_state_init(struct m9_context *context, struct m9_screen *screen)
    context->base.screen = screen ? &screen->base : NULL;
    context->dirty = M9_DIRTY_ALL;
    m9_batch_init(&context->batch);
+}
+
+void
+m9_context_state_cleanup(struct m9_context *context)
+{
+   if (!context)
+      return;
+   pipe_resource_reference(&context->color, NULL);
+   pipe_resource_reference(&context->depth, NULL);
+   for (unsigned i = 0; i < ARRAY_SIZE(context->textures); i++)
+      pipe_resource_reference(&context->textures[i], NULL);
 }
 
 static bool
@@ -52,8 +65,8 @@ m9_context_set_framebuffer(struct m9_context *context,
                              depth, M9_RESOURCE_LINEAR_DEPTH) ||
                   width > depth->width || height > depth->height)))
       return -EINVAL;
-   context->color = color;
-   context->depth = depth;
+   pipe_resource_reference(&context->color, &color->base);
+   pipe_resource_reference(&context->depth, depth ? &depth->base : NULL);
    context->framebuffer_width = width;
    context->framebuffer_height = height;
    context->dirty |= M9_DIRTY_FRAMEBUFFER;

@@ -114,11 +114,9 @@ m9_is_format_supported(struct pipe_screen *screen, enum pipe_format format,
       required |= M9_FORMAT_DEPTH;
    if (bind & PIPE_BIND_SHADER_IMAGE)
       return false;
-   if (bind & (PIPE_BIND_SCANOUT | PIPE_BIND_DISPLAY_TARGET |
-               PIPE_BIND_SHARED))
+   if (bind & (PIPE_BIND_SCANOUT | PIPE_BIND_DISPLAY_TARGET))
       return target == PIPE_TEXTURE_2D &&
-             (format == PIPE_FORMAT_B8G8R8X8_UNORM ||
-              format == PIPE_FORMAT_B8G8R8A8_UNORM) &&
+             format == PIPE_FORMAT_B8G8R8X8_UNORM &&
              !(bind & ~(PIPE_BIND_SCANOUT | PIPE_BIND_DISPLAY_TARGET |
                         PIPE_BIND_SHARED | PIPE_BIND_RENDER_TARGET |
                         PIPE_BIND_BLENDABLE | PIPE_BIND_SAMPLER_VIEW |
@@ -331,6 +329,9 @@ m9_resource_create(struct pipe_screen *pscreen,
    if (!m9_is_format_supported(pscreen, templ->format, templ->target,
                                templ->nr_samples, templ->nr_storage_samples,
                                templ->bind))
+      goto fail;
+   if ((templ->bind & (PIPE_BIND_SCANOUT | PIPE_BIND_DISPLAY_TARGET)) &&
+       !m9_presentation_template(templ))
       goto fail;
    if (m9_presentation_template(templ)) {
       resource->kind = M9_RESOURCE_LINEAR_COLOR;

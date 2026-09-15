@@ -132,6 +132,7 @@ m9_context_destroy(struct pipe_context *pctx)
    struct m9_context *context = (struct m9_context *)pctx;
 
    m9_context_flush(pctx, NULL, 0);
+   m9_context_state_cleanup(context);
    m9_command_bo_destroy(context->screen, &context->command);
    FREE(context->vertex_stream.vertices);
    FREE(context);

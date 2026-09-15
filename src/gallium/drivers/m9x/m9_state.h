@@ -16,6 +16,7 @@ enum m9_dirty {
 
 void m9_context_state_init(struct m9_context *context,
                            struct m9_screen *screen);
+void m9_context_state_cleanup(struct m9_context *context);
 int m9_context_set_framebuffer(struct m9_context *context,
                                struct m9_resource *color,
                                struct m9_resource *depth,

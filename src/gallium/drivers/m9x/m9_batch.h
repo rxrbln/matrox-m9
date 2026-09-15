@@ -40,10 +40,10 @@ struct m9_sampler_desc {
 };
 
 struct m9_linked_program {
-   uint32_t resource_69_handle;
-   uint64_t resource_69_offset;
-   uint32_t resource_6c_handle;
-   uint64_t resource_6c_offset;
+   uint32_t fixed_fragment_db_handle;
+   uint64_t fixed_fragment_db_offset;
+   uint32_t linked_state_handle;
+   uint64_t linked_state_offset;
    uint32_t control_6a;
    uint32_t entry_6b;
    bool captured_gltri;

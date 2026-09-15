@@ -221,9 +221,10 @@ m9_batch_bind_program(struct m9_batch *batch,
    uint32_t address_dword = batch ? batch->command_count + 1 : 0;
    int ret;
 
-   if (!program || !program->captured_gltri || !program->resource_69_handle ||
-       !program->resource_6c_handle || (program->resource_69_offset & 4095) ||
-       (program->resource_6c_offset & 127))
+   if (!program || !program->captured_gltri ||
+       !program->fixed_fragment_db_handle || !program->linked_state_handle ||
+       (program->fixed_fragment_db_offset & 4095) ||
+       (program->linked_state_offset & 127))
       return -EINVAL;
    values[0] = 0;
    values[1] = program->control_6a;
@@ -233,21 +234,21 @@ m9_batch_bind_program(struct m9_batch *batch,
    ret = m9_batch_emit_regs(batch, indices, values, 5);
    if (ret)
       return ret;
-   /* Live address-directed snapshots prove index 69 selects drawable backing.
-    * Preserve both read and write access: blending may read the destination,
-    * and every captured draw updates this allocation. */
-   ret = m9_batch_add_reloc(batch, address_dword, program->resource_69_handle,
-                            program->resource_69_offset,
+   /* Index 69 selects the immutable external fixed-fragment database.  The
+    * render target is bound independently through selector-8 b0/b1. */
+   ret = m9_batch_add_reloc(batch, address_dword,
+                            program->fixed_fragment_db_handle,
+                            program->fixed_fragment_db_offset,
                             PARHELIA_M9_RELOC_RESOURCE_69,
-                            PARHELIA_M9_BO_READ | PARHELIA_M9_BO_WRITE);
+                            PARHELIA_M9_BO_READ);
    if (ret)
       return ret;
    /* 6c is a separate system-resource record.  RESOURCE_6C makes the kernel
     * own captured low bit 0 instead of exposing it as a raw address bit in
     * userspace.  The live value does not carry the requester system tag. */
    return m9_batch_add_reloc(batch, batch->command_count - 1,
-                             program->resource_6c_handle,
-                             program->resource_6c_offset,
+                             program->linked_state_handle,
+                             program->linked_state_offset,
                              PARHELIA_M9_RELOC_RESOURCE_6C,
                              PARHELIA_M9_BO_READ);
 }
