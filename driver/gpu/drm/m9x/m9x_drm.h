@@ -91,7 +91,7 @@ struct drm_parhelia_m9_reloc {
 #define PARHELIA_M9_SUBMIT_FIRST_TRIANGLE	(1u << 2)
 
 /*
- * NOOP_FENCE ignores all command and BO fields.  FIRST_TRIANGLE accepts one
+ * NOOP_FENCE requires all command and BO fields to be zero.  FIRST_TRIANGLE accepts one
  * read/write VRAM BO reference as its kernel-validated linear color target;
  * all command bytes, resource addresses and executable state remain selected
  * by the kernel.

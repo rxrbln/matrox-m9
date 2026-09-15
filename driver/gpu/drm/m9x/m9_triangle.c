@@ -124,8 +124,6 @@ struct m9_triangle_job_addresses {
 	u32 aux_depth;
 	u32 fence;
 	u32 transition[6];
-	u32 final_e3;
-	u32 final_43;
 };
 
 enum m9_triangle_operand {
@@ -833,8 +831,6 @@ static int m9_triangle_build_addresses(struct m9x_device *mdev, u32 color,
 		     M9_TRIANGLE_COMPLETION_TAG;
 	for (i = 0; i < ARRAY_SIZE(job->transition); i++)
 		job->transition[i] = target + i * 0x10;
-	job->final_e3 = job->transition[5] | 1;
-	job->final_43 = job->transition[5];
 	return 0;
 }
 

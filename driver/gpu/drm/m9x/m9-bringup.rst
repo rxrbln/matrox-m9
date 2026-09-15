@@ -161,11 +161,11 @@ parses M9 four-index packets, padding and H03/H06/H07 draw triples.  The
 validator currently permits only indices present in the controlled triangle
 capture, rejects kernel-owned fence/dependency indices, requires a semantic
 relocation for every known address operand, checks all BO ranges and alignment,
-patches a private copy, and discards it.  Color, depth and texture operands
-alone accept this driver's pinned local-VRAM objects, including direct dumb
+patches a private copy, and discards it.  Color, depth, texture and resource-69
+operands accept this driver's pinned local-VRAM objects, including direct dumb
 scanout buffers and ``BO_VRAM`` allocations, and resolve through the local
-0x10000000 address window; command, vertex/index and private resource operands
-remain DMA32.  H06/H07 start and exclusive-end
+0x10000000 address window; command, vertex/index and other private resource
+operands remain DMA32.  H06/H07 start and exclusive-end
 relocations must name the same BO in increasing order; H06 records its odd
 terminal halfword with ``PARHELIA_M9_RELOC_PACKED16_ODD`` instead of smuggling
 bit 1 through an address.  The kernel derives access from each relocation
@@ -177,9 +177,10 @@ addresses.  Private linked-program ports ``c8..cd`` remain kernel-owned, while
 captured ordinary state ``af`` is accepted.
 
 The captured bind tuple has two distinct operands.  ``RESOURCE_69`` relocates
-index ``0x69``; address-directed snapshots prove that its allocation contains
-drawable pixels rather than native program bytes.  Its captured allocation
-requires 0x1000 alignment.  ``RESOURCE_6C`` relocates
+index ``0x69`` to a fixed 0x1b080-byte local-VRAM raster/intermediate resource.
+It is distinct from the primary color attachment even though address-directed
+snapshots contain prior pixel-like data.  Its captured allocation requires
+0x1000 alignment.  ``RESOURCE_6C`` relocates
 the separate, 0x80-aligned system-resource record selected at index ``0x6c``
 and adds its hardware-owned low tag bit.  The captured values are
 ``0x11e42000`` and ``0x40c3a000 + 0x300 | 1`` respectively.  The kernel must

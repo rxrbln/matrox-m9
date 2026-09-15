@@ -252,7 +252,8 @@ static bool m9_reloc_uses_vram(u32 kind)
 {
 	return kind == PARHELIA_M9_RELOC_COLOR ||
 	       kind == PARHELIA_M9_RELOC_DEPTH ||
-	       kind == PARHELIA_M9_RELOC_TEXTURE;
+	       kind == PARHELIA_M9_RELOC_TEXTURE ||
+	       kind == PARHELIA_M9_RELOC_RESOURCE_69;
 }
 
 static int m9_vram_gpu_address(u64 vram_size, u64 offset, u64 target_offset,
@@ -688,7 +689,7 @@ int m9x_submit_selftest(void)
 	    !m9_reloc_uses_vram(PARHELIA_M9_RELOC_COLOR) ||
 	    !m9_reloc_uses_vram(PARHELIA_M9_RELOC_DEPTH) ||
 	    !m9_reloc_uses_vram(PARHELIA_M9_RELOC_TEXTURE) ||
-	    m9_reloc_uses_vram(PARHELIA_M9_RELOC_RESOURCE_69) ||
+	    !m9_reloc_uses_vram(PARHELIA_M9_RELOC_RESOURCE_69) ||
 	    m9_reloc_uses_vram(PARHELIA_M9_RELOC_DRAW32_START))
 		return -EINVAL;
 	if (m9_parse_commands(good, ARRAY_SIZE(good), expected))
