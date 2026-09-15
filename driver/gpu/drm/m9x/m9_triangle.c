@@ -1323,11 +1323,14 @@ int m9x_submit_triangle_diag(struct m9x_device *mdev, u32 color,
 		ret = m9x_transport_arm_locked(mdev);
 		if (ret)
 			goto out_unlock;
-		/* m9x926 publishes its four resources before m9x1141/m9x115. */
-		ret = m9x_address_commit_bindings(mdev);
+		/* m9x926's private pools precede m9x1141/m9x115.  Application
+		 * BmBuffers are allocated only after this cold-service finalization,
+		 * so their compact-leaf activation must remain the final translation
+		 * event before ExecuteDma. */
+		ret = m9x_address_finalize_service(mdev);
 		if (ret)
 			goto out_unlock;
-		ret = m9x_address_finalize_service(mdev);
+		ret = m9x_address_commit_bindings(mdev);
 		if (ret)
 			goto out_unlock;
 		mdev->transport.engine_transitioned = true;
