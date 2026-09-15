@@ -56,16 +56,29 @@ An `f0c=00008000` write exists only behind three vendor predicates: feature
 bit 3 is set, a service-object field is zero, and feature bit 26 is set.  The
 saved default M9148 flags `000100e8` do not have bit 26, so this write is not
 part of the tested M9148 recipe.  Later, unconditionally, the initializer
-reads `f0c`, replaces only bits 9:6 with the low nibble of a device property,
-and writes it back:
+reads `f0c`, replaces only bits 9:6 with the low nibble of
+`System\\TlbPrefCnt`, and writes it back:
 
 ```c
 f0c = (old_f0c & 0xfffffc3f) | ((property & 0xf) << 6);
 ```
 
-This is the exact warm-state preservation rule.  In particular, the observed
-`f04=0448803e` and `f0c=00200000` are inputs to masked updates, not portable
-constants to replay.
+The setting construction is exact.  `m9x385` at `.text+0x3b89d` passes group
+`System`, name `TlbPrefCnt`, and default `1` to the integer-setting constructor
+`m9x1063`.  That constructor stores the default at object `+0x20`; its
+`m9x325` getter returns that field.  The `m9x683` wrapper caches and refreshes
+the selected setting, and the service initializer calls its selected-value
+getter at `.text+0x125a5`.  No packaged configuration overrides this setting.
+The canonical M9148 value is consequently:
+
+```text
+f0c = (old_f0c & fffffc3f) | 00000040
+```
+
+The read-only `f0c=00200000` snapshot was taken after the earlier clean-room
+no-op module had cleared bits 9:6.  It is useful for the preserved bits outside
+that field, but cannot override the vendor binary's exact default.  Starting
+from that snapshot, vendor construction produces `00200040`.
 
 The descriptor constructor `m9x1172` then writes `30c=0`, performs
 `3a8 = (old_3a8 & fffcffff) | 00010000`, and publishes its service table
@@ -79,7 +92,8 @@ Service construction runs once while taking ownership of the engine.  It is
 not repeated for every job or context switch.
 
 The warm-state preservation set is therefore exact: retain every `f04` bit
-except 29:28, every `f0c` bit except 9:6, and every `3a8` bit except 17:16.
+except 29:28, replace `f0c[9:6]` with `1`, and retain every other `f0c` bit;
+retain every `3a8` bit except 17:16.
 Leave `1320..1328` unchanged when there is no companion extent.  The fixed
 service lanes and M9148 requester controls listed here are intentional
 replacements; unrelated KMS registers remain outside this operation.
@@ -129,13 +143,22 @@ ordered as follows [BIN]:
 6. Read MMIO `1088`, append `e6=40000000,22=(read_1088|20000000)`, and publish
    the stream.  The packet headers are `45454747` and `454522e6`.
 
-The primary M9148 tuple is closed as
-`10000000/10000000/1ffff000`.  The inputs for `360/364` and `f64/f68` are
-different descriptor ranges.  No saved snapshot joins those two descriptors
-to concrete clean-room BOs.  This is a live-only input gap: obtain their
-typed base, size, and auxiliary offset from one vendor manager/capture, or
-fail before writes.  Copying the primary tuple into them is not supported by
-the static evidence.
+For Linux `MmFlags=000100e8` and `V=B=10000000`, `m9x858` closes every input
+to these writes.  The exact direct-MMIO values are:
+
+```text
+132c=00801000 1330=00801000 1334=00860000
+360 =00861000 364 =008e0000
+f64 =008e1000 f68 =00940000
+f74 =00801000 f78 =00801000 f7c =00860000
+```
+
+The primary tuple comes from descriptor `C18/C1c`, the `360` tuple from
+`C28/C2c` plus auxiliary size `C34`, and the `f64` tuple from `C38/C3c`.
+The separate `m9x953` local-resource allocator interval at
+`10000000..1fffffff` is not an input to these manager windows.  Earlier notes
+which assigned that local interval to `132c/f74` conflated the two address
+domains.
 
 The final two packets are part of `m9x421`, not sequence 0.  Direct MMIO range
 writes alone omit an observed vendor transition.
@@ -154,6 +177,13 @@ m9x301
 m9x1141
 m9x115
 ```
+
+The final `f0c` replacement belongs after the manager constructed by
+`m9x92 -> m9x53`.  In that manager, `m9x421` completes its transition,
+`m9x328` publishes the compact table, `30c=1000` is written, and the terminal
+`31c=c,1` list is consumed before control returns to the service initializer.
+Clearing `f0c[9:6]` during the earlier fixed-lane phase both programs the wrong
+value and reverses this vendor order.
 
 Within `m9x182`, `m9x1207` creates the restore-pool descriptor, and
 `m9x1160(...,0x400)` constructs 1024 entries before `m9x109` is called.  Its
