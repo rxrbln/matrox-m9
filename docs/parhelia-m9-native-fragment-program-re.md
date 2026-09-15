@@ -154,24 +154,49 @@ Conclusions:
    not plain input copies, so these slots cannot be edited field by field into
    arbitrary sources.
 
-Not yet achieved: a constant output color through a raster constant.  The next
-batch replaces slot 1 with lowerer-derived MOV forms carrying the cls-4 output
-routing:
+### Second session: constant output and source selectors (MEASURED)
+
+After the reboot (module sha `de704649...`, `c3` now range-checked by the
+validator), the probe drew three smooth triangles (8506 interior pixels each;
+corners `ff0000/00ff00/0000ff`, `3366cc/cc9933/99cc66`, constant `4080c0`).
+Slot 0 (vendor B,A interpolation) was kept; slot 1 was replaced by a
+lowerer-style MOV carrying the cls-4 output routing:
 
 ```text
-source c (varying pair): W0 = e0000000|7f<<22|c<<15|2d<<8|4<<5|op0, W1 = a2803f1f
-constant pair e=0..3:    W0 = ffffad9d (op0 1d) / ffffad9e (1e), W1 = a280331f a280731f a280b31f a280f31f
+W0 = 0xffc00000 | c << 15 | 0x2d << 8 | 4 << 5 | op0     op0 1d -> R,G ; 1e -> B,A
+W1 = 0xa2803f1f                                           source in c (W1[11:10]=11)
+W1 = 0xa280331f | (2*i + pair) << 14                      source constant pair e (W1[11:10]=00)
 ```
 
-The constant words come from the lowerer matrix (`constant0/constant1` cases:
-`e = 2*i + pair`, `W1[11:10]=00`).  This batch could not run.  During this session another agent's textured
-raster probe (raster `88=0110dfe3` without a bound texture) locked up the
-engine: kernel stream timeout at 8728 s, then `requester is not quiescent
-before bus-master enable: 0x4820fb6/0x4820fc0` after every module reload, and
-submits failed.  The probe runs above completed before that event.  Rerun the
-commands in *Reproduction* after the target has been rebooted.  Do not combine
-fragment-program patches with textured raster `88` forms unless a valid texture
-is bound.
+| slot 1 | R,G on all three triangles | reading |
+|---|---|---|
+| constant `e=0` (`a280331f`) | `3f-40`, `7f-80` | constant entry 0 = (0.25, 0.5) |
+| constant `e=1` (`a280731f`) | `bf-c0`, `1f-20` | entry 1 = (0.75, 0.125) |
+| constant `e=2` (`a280b31f`) | `5f-60`, `9f-a0` | entry 2 = (0.375, 0.625) |
+| constant `e=3` (`a280f31f`) | `df-e0`, `ff` | entry 3 = (0.875, 1.0) |
+| `c=0x44` | t0 `00,00`; t1 `99,cc`; t2 `40,80` | provoking (last) vertex color x,y, not interpolated |
+| `c=0x45` | t0 `ff,ff`; t1 `66,ff`; t2 `c0,ff` | provoking vertex color z,w |
+| `c=0x40`, `c=0x42` | flat per-triangle values, not colors | unidentified per-triangle setup data |
+| cls 0 instead of 4 (`c=0x44`) | same as cls 4 | cls does not change this output write |
+
+Constant output color is therefore verified: raster constants are 8-byte
+entries in the `8d..8e` span; `e` selects the entry (`2*i + pair`, i.e. pair
+index); the output MOV form above writes them to R,G or B,A.  The vendor
+`op2=0x10` slot (`a=40/42 b=79 c=44/45`) is the per-pixel interpolation
+operation: it combines the provoking-vertex attribute (`c`) with per-triangle
+setup data (`a`) and, presumably, the pixel position (`b=0x79`).  Its exact
+formula is unmeasured.  Replacing slot 0 with a constant MOV to B,A while
+keeping vendor slot 1 changed R,G and A unpredictably, so slot 1 depends on
+state that slot 0 leaves behind.
+
+**Lockup trigger (MEASURED):** a program at slot 40 (raster `c3=0x28`) of
+`ffff801c a280331f`, `ffff811c a280731f` (lowerer constant MOV, cls 0,
+destinations `d=0x00/0x01`), then the output MOV from `c=0x00/0x01` and the stop
+slot, timed out (`M9 kernel stream timeout ... command=0x4a90dbe/0x4a90dc8`) and
+left the engine unusable.  Class-0 destinations `0x00/0x01` are not safe fragment
+temporaries.  The temporary selector space, MUL/ADD of two sources and
+interpolation into a temporary remain unverified.  The prepared variants are in
+*Reproduction*; each must first be proven with a safe destination.
 
 ## 3. What a NIR-to-native fragment backend needs
 
@@ -193,8 +218,12 @@ fragment stage:
   `0x44/0x45` and `0x79`, whose semantics are not decoded;
 * the output write form: class 4 with `op0` 1d/1e (MEASURED above); the vendor
   compiler endpoint `fffc7e1d a2803f0f` does not occur in the dumped programs;
-* the constant read path (raster `8c[14:8]` entries of 8 bytes in `8d..8e`;
-  selector `e` with `W1[11:10]=00` per the corpus, hardware-unverified);
+* temporaries: class-0 destinations `0x00/0x01` lock up the engine, so the
+  fragment temporary selector range must be found (the vendor interpolation
+  slot routes its result with `d=0x2d`, so selectors near that are candidates);
+* the interpolation formula of `op2=0x10` for arbitrary varyings (texcoords).
+  The raster constant path is verified: 8-byte entries in `8d..8e`, `e = pair
+  index` with `W1[11:10]=00`;
 * TEXLD resource metadata and sampler binding (`parhelia-m9-texture-state.md`,
   five-stream textured raster template), kill (discard) and derivatives.
 
@@ -239,6 +268,17 @@ gcc -O2 -Wall -I/root/parhelia-cleanroom/include -o m9-user-fragment-probe \
 K=const=0.25,0.5,0.75,0.125,0.375,0.625,0.875,1.0
 ./m9-user-fragment-probe mov-rg-c44,slot1=ffe22d9d:a2803f1f \
     mov-rg-k1,slot1=ffffad9d:a280731f,$K mov-ba-k1,slot0=ffffad9e:a280731f,$K
+```
+
+Second-session constant outputs (verified) and the unverified MUL/ADD forms:
+
+```sh
+K=const=0.25,0.5,0.75,0.125,0.375,0.625,0.875,1.0
+./m9-user-fragment-probe mov-rg-k0,slot1=ffffad9d:a280331f,$K \
+    mov-rg-k3,slot1=ffffad9d:a280f31f,$K mov-rg-c44,slot1=ffe22d9d:a2803f1f
+# locks up the engine, do not run: k-out with class-0 d=0x00/0x01 temporaries
+# MUL corpus form (a,b sources): W0=(a&7)<<29|b<<22|7f<<15|d<<8|1c W1=ac200100|a>>3
+# ADD corpus form (a,c sources): W0=(a&7)<<29|7f<<22|c<<15|d<<8|1c W1=ac800d00|a>>3
 ```
 
 Variant syntax: `name,arg,...` with `slotN=w0:w1`, `FIELD@SLOT=hex` (`a b c d e
