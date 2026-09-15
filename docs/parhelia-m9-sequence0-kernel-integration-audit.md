@@ -14,7 +14,7 @@ python3 tools/m9-sequence0-kernel-audit.py --emit-c \
   > /tmp/m9-sequence0-framed.c
 ```
 
-The generated directory contains an exact `secondary.bin`, its 36-byte
+The generated directory contains an exact 32-KiB `secondary.bin`, its 36-byte
 `primary.bin`, and a JSON manifest of every patched value.  The default
 addresses are synthetic, valid addresses for offline checking only.
 
@@ -23,7 +23,9 @@ addresses are synthetic, valid addresses for offline checking only.
 The captured BmBuffer begins with eight bytes of private host bookkeeping.
 The first dword is the stale process value `0x006c57d8`; it is not submitted.
 A clean-room image must zero bytes `[0,8)` and retain the captured bytes
-`[8,fa0)` byte for byte before applying the typed patches below.
+`[8,fa0)` byte for byte before applying the typed patches below.  The vendor
+BmBuffer has an exact `0x8000`-byte extent.  Bytes `[fa0,8000)` are zero, and
+all eight pages are present in the compact translation table.
 
 The three ExecuteDma ranges are end-exclusive:
 
@@ -39,8 +41,8 @@ boundary and pins a boundary-list hash for each range.  It also pins the
 complete source BmBuffer as
 `91854895140729c8dcb6ec55c511505241f3441be4bf5eea040fbea1ddfeeebd`.
 
-For raw DMA address `S` of the coherent secondary BO, build exactly nine
-primary dwords:
+For compact class-1 GPU virtual address `S` of the coherent secondary BO,
+build exactly nine primary dwords:
 
 ```text
 45452d2c  (S+008)|1  (S+540)|2
@@ -49,10 +51,11 @@ primary dwords:
 ```
 
 Index `2c` receives the inclusive byte start with tag 1.  Index `2d` receives
-the end-exclusive byte address with tag 2.  `S` is a raw DMA32 address, not a
-`0x40000000` system-resource address.  Build all 36 primary bytes, execute
-`dma_wmb()`, and publish one final endpoint.  Do not expose intermediate
-12-byte or 24-byte endpoints.
+the end-exclusive byte address with tag 2.  `S` is the BO's
+`0x40000000..0x4fffffff` dispatcher address.  Its raw DMA32 pages appear only
+in the compact PTE values.  Build all 36 primary bytes, execute `dma_wmb()`,
+and publish one final endpoint.  Do not expose intermediate 12-byte or 24-byte
+endpoints.
 
 ## All 17 patches
 
@@ -135,30 +138,20 @@ there is no captured command read from it, and deterministic zeroing supplies
 the only unwritten bytes.  It remains a limitation on claiming byte-identical
 vendor scratch output after completion.
 
-## Delta against the current kernel diagnostic
+## Current kernel integration
 
-At the time of this audit, `m9_triangle.c` declares a `0x4f0` secondary
-payload with an eight-byte prefix.  It allocates every non-BE resource as
-`PAGE_ALIGN(payload + PAGE_SIZE)`, so the current guarded secondary occupies
-`0x2000` bytes:
+`m9_triangle.c` now allocates the secondary as the exact `0x8000`-byte vendor
+BmBuffer rather than placing a sentinel after the submitted `0xfa0` bytes.
+It maps all eight pages, which raises the complete source/system/secondary
+compact table from 38 to 44 PTEs, and clears the full BmBuffer before building
+either sequence zero or the draw image.  Its `u32 primary[9]` holds the exact
+36-byte publication.
 
-```text
-current:  PAGE_ALIGN(0x4f0 + 0x1000) = 0x2000
-sequence: PAGE_ALIGN(0xfa0 + 0x1000) = 0x2000
-```
-
-Increase the usable secondary payload and move its guard start from `0x4f0`
-to `0xfa0`.  The underlying allocation does not grow.  Reusing the existing
-buffer without moving the guard would overwrite the current sentinel region.
-Its `u32 primary[9]` already has the required 36-byte capacity.
-
-Add three local resource identities with usable sizes `0x800`, `0x20080`,
-and `0x400`; the existing four `0x16800` first-draw transients are not matching
-substitutes.  Add a sequence-0 framed template and its independent 17-entry
-patch table.  Run sequence 0 after guarded cold engine/requester/window setup
-and before constructing or publishing the captured triangle.  Advance the
-shared fence allocator by nine values for setup and by the draw's own six
-values afterward.
+The three local scratch identities use the captured usable sizes `0x800`,
+`0x20080`, and `0x400`; the four `0x16800` first-draw transients remain
+distinct.  Sequence zero runs after guarded cold engine/requester/window
+setup.  After its ninth value retires, the driver constructs the draw image in
+the shared BmBuffer and publishes the draw's own six values.
 
 The exact setup publication has no remaining offline transport blocker.
 Hardware execution still depends on the parent work that publishes the local
