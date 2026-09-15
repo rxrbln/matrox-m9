@@ -40,9 +40,6 @@
 #define M9_TRIANGLE_LINKED_OFFSET	0x300u
 #define M9_TRIANGLE_LINKED_BYTES		0x200u
 #define M9_TRIANGLE_C2_BYTES		0x1080u
-#define M9_TRIANGLE_C2_LEADING_BYTES	SZ_4K
-#define M9_TRIANGLE_C2_BACKING_BYTES	(M9_TRIANGLE_C2_LEADING_BYTES + \
-					 M9_TRIANGLE_C2_BYTES)
 #define M9_TRIANGLE_RASTER_SHADE_CONTROL_DW 17u
 #define M9_TRIANGLE_RASTER_SHADE_LINK0_DW 93u
 #define M9_TRIANGLE_RASTER_SHADE_LINK1_DW 94u
@@ -245,7 +242,7 @@ static const struct m9_triangle_resource_spec m9_triangle_specs[] = {
 	[M9_TRI_SYSTEM] = { "system", M9_TRIANGLE_SYSTEM_BYTES, 0x80, 0 },
 	[M9_TRI_SECONDARY] = { "secondary", M9_TRIANGLE_SECONDARY_BYTES,
 			       0x80, 0 },
-	[M9_TRI_C2] = { "c2-backing", M9_TRIANGLE_C2_BACKING_BYTES,
+	[M9_TRI_C2] = { "c2-backing", M9_TRIANGLE_C2_BYTES,
 			 SZ_4K, 0, true },
 	[M9_TRI_BE] = { "be", M9_TRIANGLE_BE_BYTES, SZ_4K, 0, true },
 	[M9_TRI_TRANSIENT0] = { "transient0", M9_TRIANGLE_TRANSIENT_BYTES,
@@ -976,8 +973,7 @@ static int m9_triangle_build_addresses(struct m9x_device *mdev, u32 color,
 				 M9_TRIANGLE_GPUVA_TAG;
 	job->linked = (m9_triangle_gpuva(diag, M9_TRI_SYSTEM) +
 		       M9_TRIANGLE_LINKED_OFFSET) | M9_TRIANGLE_GPUVA_TAG;
-	job->c2 = m9_triangle_bus(diag, M9_TRI_C2) +
-		  M9_TRIANGLE_C2_LEADING_BYTES;
+	job->c2 = m9_triangle_bus(diag, M9_TRI_C2);
 	job->be = m9_triangle_bus(diag, M9_TRI_BE);
 	for (i = 0; i < ARRAY_SIZE(job->transient); i++)
 		job->transient[i] = m9_triangle_bus(diag,
@@ -1603,8 +1599,7 @@ m9_triangle_stream_selftest(struct m9_triangle_commands *commands)
 	    M9_TRIANGLE_MAX_SYSTEM_PTES != 44 ||
 	    M9_TRIANGLE_AUX_DEPTH_BYTES != 0x2d00 ||
 	    m9_triangle_specs[M9_TRI_SECONDARY].payload_bytes != SZ_32K ||
-	    m9_triangle_specs[M9_TRI_C2].payload_bytes !=
-		M9_TRIANGLE_C2_BACKING_BYTES ||
+	    m9_triangle_specs[M9_TRI_C2].payload_bytes != M9_TRIANGLE_C2_BYTES ||
 	    ARRAY_SIZE(m9_triangle_range_0) != ARRAY_SIZE(commands->preprocess) ||
 	    ARRAY_SIZE(m9_triangle_range_1) != ARRAY_SIZE(commands->raster) ||
 	    ARRAY_SIZE(m9_triangle_range_2) != ARRAY_SIZE(commands->completion) ||

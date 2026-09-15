@@ -51,8 +51,9 @@ backing for its 320x240 visible rectangle.  Resources without an
 exact vendor extent are followed by at least one page of a resource-specific
 sentinel.  The source is initialized to four ``{x,y,r,g,b}`` records,
 including the proved duplicate prefetch record; BE and the system payload are
-zeroed deterministically.  The exposed ``0x1080``-byte C2 object begins after
-one leading page, matching its captured address relationship.  The first
+zeroed deterministically.  The ``0x1080``-byte C2 object begins at its
+page-aligned allocation base; page rounding gives the captured ``0x2000``
+reservation stride.  The first
 triangle uploads the exact vendor P00 and S28 fixed-fragment chains through
 selector 68 in both rendering passes, binds their inline starts with
 ``69=4, 6a=0x00990000``, and then performs the vendor's selector reset before
