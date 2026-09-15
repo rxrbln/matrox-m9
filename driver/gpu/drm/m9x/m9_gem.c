@@ -221,7 +221,7 @@ struct m9x_bo *m9x_bo_lookup(struct m9x_device *mdev,
 }
 
 int m9x_create_bo_ioctl(struct drm_device *drm, void *data,
-				struct drm_file *file)
+			 struct drm_file *file)
 {
 	struct drm_parhelia_m9_create_bo *args = data;
 	struct m9x_device *mdev = to_m9x(drm);
@@ -279,6 +279,33 @@ int m9x_create_bo_ioctl(struct drm_device *drm, void *data,
 out_handle:
 	drm_gem_handle_delete(file, handle);
 out_put:
+	drm_gem_object_put(gem);
+	return ret;
+}
+
+int m9x_get_bo_info_ioctl(struct drm_device *drm, void *data,
+			  struct drm_file *file)
+{
+	struct drm_parhelia_m9_get_bo_info *args = data;
+	struct drm_gem_object *gem;
+	int ret = 0;
+
+	if (!m9x_enabled())
+		return -ENODEV;
+	if (!args->handle || args->domain || args->size || args->flags ||
+	    args->pad)
+		return -EINVAL;
+	gem = drm_gem_object_lookup(file, args->handle);
+	if (!gem)
+		return -ENOENT;
+	if (m9x_gem_is_vram(gem))
+		args->domain = PARHELIA_M9_DOMAIN_LOCAL_VRAM;
+	else if (m9x_gem_is_dma(gem))
+		args->domain = PARHELIA_M9_DOMAIN_DMA32;
+	else
+		ret = -EINVAL;
+	if (!ret)
+		args->size = gem->size;
 	drm_gem_object_put(gem);
 	return ret;
 }

@@ -108,6 +108,8 @@ void m9x_fini(struct m9x_device *mdev);
 void m9x_postclose(struct m9x_device *mdev, struct drm_file *file);
 int m9x_create_bo_ioctl(struct drm_device *drm, void *data,
 			struct drm_file *file);
+int m9x_get_bo_info_ioctl(struct drm_device *drm, void *data,
+			  struct drm_file *file);
 int m9x_submit_ioctl(struct drm_device *drm, void *data,
 		     struct drm_file *file);
 int m9x_submit_noop(struct m9x_device *mdev, u64 *point);

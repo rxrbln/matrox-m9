@@ -30,6 +30,8 @@ static const struct drm_ioctl_desc m9x_ioctls[] = {
 			  DRM_RENDER_ALLOW),
 	DRM_IOCTL_DEF_DRV(PARHELIA_M9_SUBMIT, m9x_submit_ioctl,
 			  DRM_RENDER_ALLOW),
+	DRM_IOCTL_DEF_DRV(PARHELIA_M9_GET_BO_INFO, m9x_get_bo_info_ioctl,
+			  DRM_RENDER_ALLOW),
 };
 
 /* Mesa selects the independent M9X Gallium driver from this DRM name. */

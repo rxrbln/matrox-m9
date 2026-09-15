@@ -8,6 +8,7 @@
 /* Preserve the provisional command numbers used by the existing Mesa code. */
 #define DRM_PARHELIA_M9_CREATE_BO	0x09
 #define DRM_PARHELIA_M9_SUBMIT		0x0a
+#define DRM_PARHELIA_M9_GET_BO_INFO	0x0b
 
 #define DRM_IOCTL_PARHELIA_M9_CREATE_BO \
 	DRM_IOWR(DRM_COMMAND_BASE + DRM_PARHELIA_M9_CREATE_BO, \
@@ -15,6 +16,9 @@
 #define DRM_IOCTL_PARHELIA_M9_SUBMIT \
 	DRM_IOWR(DRM_COMMAND_BASE + DRM_PARHELIA_M9_SUBMIT, \
 		 struct drm_parhelia_m9_submit)
+#define DRM_IOCTL_PARHELIA_M9_GET_BO_INFO \
+	DRM_IOWR(DRM_COMMAND_BASE + DRM_PARHELIA_M9_GET_BO_INFO, \
+		 struct drm_parhelia_m9_get_bo_info)
 
 /*
  * M9 command and staging objects are immutable DMA32 allocations unless
@@ -33,6 +37,18 @@ struct drm_parhelia_m9_create_bo {
 #define PARHELIA_M9_BO_READ	(1u << 1)
 #define PARHELIA_M9_BO_WRITE	(1u << 2)
 #define PARHELIA_M9_BO_VRAM	0x00000008u
+
+/* Query the actual placement of an object after a PRIME or flink import. */
+struct drm_parhelia_m9_get_bo_info {
+	__u32 handle;
+	__u32 domain; /* out */
+	__u64 size; /* out */
+	__u32 flags; /* reserved; must be zero */
+	__u32 pad;
+};
+
+#define PARHELIA_M9_DOMAIN_DMA32		1u
+#define PARHELIA_M9_DOMAIN_LOCAL_VRAM	2u
 
 /*
  * DRAW16_END only: the exclusive byte end names the upper halfword of the
