@@ -2,7 +2,8 @@
 
 This note closes the table object used by the normal Linux mode-1 scatter
 mapping. It also reconciles the primary compact-table origin at `C18` with
-the later `f64` range at `C38`, across which the higher compact slots land.
+the later `f64` range at `C38`, across which the higher compact slots land,
+and proves that the visible `0x40xxxxxx` allocation address is used directly.
 Recheck the arithmetic and pinned instruction sequences with:
 
 ```sh
@@ -52,20 +53,48 @@ origin plus its allocated offset. The normal selected primary object's exact
 The final `0x400000` bytes in the `0xd41000` root follow `0x941000`; they are
 part of the root extent but not one of these five selected manager children.
 
+## Allocation identity and zero page bias
+
+The allocation object returned to userspace is the same object mapped by
+`m9x887`:
+
+1. `m9x1030` obtains the object in `r14` at
+   `.text+0x1d0ac..0x1d0c4` and passes that same `r14` as `rdx` to `m9x887`
+   at `.text+0x1d2f4..0x1d317`.
+2. It later passes the same `r14` to `m9x1215` at
+   `.text+0x1d3c8..0x1d3ce`.
+3. `m9x1215` stores the object at request `+0x228`, reads object `+0x48`,
+   and stores that value at request `+0x1cc` at
+   `.text+0x130d2..0x13100`.
+4. `m9x805` stores the request pointer at output `+0` and reads that same
+   request object's `+0x48` into output `+8` at
+   `.text+0xd344..0xd358`. `m9x925` supplies its ioctl blob `+0x200` as the
+   output pointer at `.text+0x4b01..0x4b70`.
+
+Thus a captured allocation result such as ioctl output `+8 = 0x40c3a000`
+is exactly the resource `+0x48` later read by `m9x887`; it is not an alias
+that must be converted to an internal `0x10xxxxxx` address.
+
+The mapping descriptor is the stack object at `rbp-0x90` in `m9x1030`.
+Descriptor `+0x20` is initialized by
+`.text+0x1d14d: movl $0,-0x70(%rbp)`. There is no later write before the call
+to `m9x887`; the next access is the post-call archive copy at
+`.text+0x1d35d..0x1d361`. `m9x887` fills descriptor `+0x34` and `+0x38`
+before calling `m9x328`, but does not change `+0x20`. Therefore:
+
+```c
+page_index = allocation_resource_gpu_address >> 12;
+```
+
 ## Exact compact-table destination
 
 `m9x887` selects manager `+0x20+8*(manager+0x30)` and unconditionally passes
 that object to `m9x328` at `.text+0x1757d..0x1758d`. Before the call,
 `.text+0x1744d..0x17454` reads the mode-1 allocation child's `+0x48`, shifts it
-right by 12, and stores it in mapping descriptor `+0x34`. The same allocation
-address is copied by `m9x1215` at `.text+0x130db..0x13100` into the resource
-address field returned by `m9x202`; the saved allocation result contains
-`0x40000000`, so this is the command-visible system GPUVA.
-
-The normal mode-1 descriptor adds no bias. Its `+0x20` is the dword at
-`rbp-0x70` in `m9x1030`: `.text+0x1d14d` initializes it to zero, no later
-instruction changes it, and `.text+0x1d2fc` passes the descriptor to
-`m9x887`. In particular, there is no `-0x30000` page correction.
+right by 12, and stores it in mapping descriptor `+0x34`. The identity chain
+above proves that this is the command-visible system GPUVA. The normal
+mode-1 descriptor adds no bias; in particular there is no `-0x30000` page
+correction and no `0x40000000` to `0x10000000` normalization.
 
 `m9x328` adds descriptor `+0x20` to that page number at
 `.text+0x129d..0x12a7`, multiplies by four at `0x1548..0x1555`, and adds the
@@ -90,6 +119,11 @@ child `[0x8e1000,0x941000)` corresponds exactly to compact indices for GPUVA
 `0x38000000..0x4fffffff`; therefore the captured `0x40000000..0x4fffffff`
 system domain occupies `[0x901000,0x941000)`. Changing the origin to `C38`
 would double-count the page index and is incorrect.
+
+The separate `m9x953` interval beginning at
+`manager+0xdc << 12 = 0x10000000` belongs to another allocator. No
+instruction in the object-allocation, ioctl-output, `m9x887`, or `m9x328`
+chain substitutes it for resource `+0x48`.
 
 ## Publication into the raw service image
 
