@@ -168,15 +168,20 @@ For an ordinary mode-1 scatter mapping, the compact PTE dword is:
 pte = (dma & 0xfffff000) | ((dma >> 28) & 0x00000ff0) | 0x0a;
 ```
 
-`m9x328` stages entries with `m9x789`, uploads them through `m9x694` using
-destination mode 2 and the low slot address, writes `MMIO[0x314]=1` when the
-copy helper reports success, and mirrors the dwords through the table child's
-BAR0 CPU pointer `+0x40`. The vendor therefore performs both publications;
-the binary contains no path that proves a CPU mirror alone becomes visible
-after invalidation. The normal compact-bind post-list is
-`0x3000001f`; least-significant nibble first, it produces the exact
-`MMIO[0x31c]` sequence `0xf,0x1,0x0`. Initial manager construction has the
-separate final packed list `0x2000001c`, producing `0xc,0x1`.
+`m9x328` has two mutually exclusive publication paths.  Normally it stages
+entries with `m9x789`, uploads them through `m9x694` using destination mode 2
+and the low slot address, and writes `MMIO[0x314]=1`.  At `0x15d8` it subtracts
+the completed chunk and, when no pages remain, jumps directly to the return at
+`0x19a1`.  It does not execute the CPU mirror or direct `0x31c` post-list.
+
+If `m9x789` returns null or `m9x694` returns zero, execution instead reaches
+`0x160a`.  This fallback emits no `0x314`; it runs the empty pre-list, writes
+the dwords through the table child's BAR0 pointer `+0x40`, then decodes the
+post-list.  For selector zero that post-list is `0x3000001f`, producing direct
+`MMIO[0x31c]` writes `0xf,0x1,0x0`.  A clean-room CPU-mirror publication is
+therefore directly supported by the binary, but combining it with `0x314`
+mixes the two vendor branches.  Initial manager construction has the separate
+final packed list `0x2000001c`, producing `0xc,0x1`.
 
 This selection follows directly from the call arguments. `m9x887` passes
 `ecx=0` to `m9x328`. That selector makes `m9x328` use manager `+0xe0` as its
@@ -184,7 +189,7 @@ empty pre-list and manager `+0xf8` as its post-list. `m9x53` constructs
 `+0xf8=0x3000001f`. The `0x20000028` list at manager `+0x100`, which produces
 `0,2`, is decoded later by `m9x887` only after building the optional 16-byte
 companion table. The Linux `C24=0` branch skips that whole path, so `0,2`
-must not replace `f,1,0` for a normal compact bind.
+must not replace `f,1,0` on the compact CPU-mirror fallback.
 
 The outer service-owner order is also fixed.  The anonymous initializer at
 `.text+0x121d0` writes the service-lane registers and calls `m9x1172` at
@@ -197,15 +202,15 @@ real service-construction write; it does not replace the later
 Cold manager construction has an exact, different order.  `m9x53` first calls
 `m9x421(..., publish=1)`, which completes the initial `E6`, all direct window
 writes, and the terminal `454522e6,40000000,(1088|20000000)` submission.
-It then calls `m9x328(..., selector=0)`.  For every staging chunk, `m9x328`
-executes the auxiliary copy and synchronous wait, then writes `0x314=1`;
-after all chunks it executes the empty `+0xe0` pre-list, writes the CPU BAR
-mirror, and writes `0x31c=f,1,0`.  Back in `m9x53`, the next relevant write is
+It then calls `m9x328(..., selector=0)`.  Its normal branch executes auxiliary
+copy and synchronous wait, then writes `0x314=1`; its fallback instead writes
+the CPU BAR mirror and `0x31c=f,1,0`.  Back in `m9x53`, the next relevant write is
 `0x30c=0x1000`.  After the remaining internal table initializers, `m9x53`
 ends with `0x31c=c,1`.  Thus moving the terminal `m9x421` transition after the
-compact invalidation reverses the vendor's cold order.
+compact publication reverses the vendor's cold order.
 
-The corresponding `m9x694` arguments are:
+When the optional upload branch is active, the corresponding `m9x694`
+arguments are:
 
 ```text
 src      = staging GPU byte address returned by m9x789
