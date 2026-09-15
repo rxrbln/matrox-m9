@@ -25,7 +25,7 @@
 					 M9_TRIANGLE_HEIGHT * sizeof(u32))
 #define M9_TRIANGLE_SOURCE_BYTES	0x50u
 #define M9_TRIANGLE_SYSTEM_BYTES	0x20080u
-#define M9_TRIANGLE_SECONDARY_IMAGE_BYTES 0xfa0u
+#define M9_SEQ0_SECONDARY_IMAGE_BYTES	0xfa0u
 #define M9_TRIANGLE_SECONDARY_BYTES	SZ_32K
 #define M9_TRIANGLE_SECONDARY_PREFIX	0x8u
 #define M9_TRIANGLE_SECONDARY_START_TAG	0x1u
@@ -34,19 +34,18 @@
 #define M9_TRIANGLE_COMPLETION_TAG	0x2u
 #define M9_TRIANGLE_LINKED_OFFSET	0x300u
 #define M9_TRIANGLE_LINKED_BYTES		0x200u
-#define M9_TRIANGLE_RESOURCE69_BYTES	0x1b080u
-#define M9_TRIANGLE_RESOURCE69_A_BYTES	SZ_8K
 #define M9_TRIANGLE_C2_BYTES		0x1080u
 #define M9_TRIANGLE_C2_LEADING_BYTES	SZ_4K
 #define M9_TRIANGLE_C2_BACKING_BYTES	(M9_TRIANGLE_C2_LEADING_BYTES + \
 					 M9_TRIANGLE_C2_BYTES)
-#define M9_TRIANGLE_RESOURCE69_RECORD_BYTES 0x80u
 #define M9_TRIANGLE_RASTER_SHADE_CONTROL_DW 17u
 #define M9_TRIANGLE_RASTER_SHADE_LINK0_DW 93u
 #define M9_TRIANGLE_RASTER_SHADE_LINK1_DW 94u
-#define M9_TRIANGLE_FRAMED_SHADE_CONTROL 0x2d0u
-#define M9_TRIANGLE_FRAMED_SHADE_LINK0 0x464u
-#define M9_TRIANGLE_FRAMED_SHADE_LINK1 0x468u
+#define M9_TRIANGLE_FRAMED_SHADE_CONTROL 0x0c28u
+#define M9_TRIANGLE_FRAMED_SHADE_LINK0 0x0dbcu
+#define M9_TRIANGLE_FRAMED_SHADE_LINK1 0x0dc0u
+#define M9_TRIANGLE_FRAMED_MRT0	0x0c94u
+#define M9_TRIANGLE_FRAMED_MRT1	0x0c98u
 #define M9_TRIANGLE_BE_BYTES		SZ_1M
 #define M9_TRIANGLE_TRANSIENT_BYTES	0x16800u
 #define M9_TRIANGLE_VRAM_BASE		0x10000000ull
@@ -71,8 +70,6 @@ enum m9_triangle_resource_id {
 	M9_TRI_SOURCE,
 	M9_TRI_SYSTEM,
 	M9_TRI_SECONDARY,
-	M9_TRI_RESOURCE69,
-	M9_TRI_RESOURCE69_A,
 	M9_TRI_C2,
 	M9_TRI_BE,
 	M9_TRI_TRANSIENT0,
@@ -115,7 +112,6 @@ struct m9_triangle_job_addresses {
 	u32 system_raster_start;
 	u32 system_raster_end;
 	u32 linked;
-	u32 resource69;
 	u32 c2;
 	u32 be;
 	u32 transient[4];
@@ -133,7 +129,6 @@ enum m9_triangle_operand {
 	M9_TRI_OP_SYSTEM_RASTER_START,
 	M9_TRI_OP_SYSTEM_RASTER_END,
 	M9_TRI_OP_LINKED,
-	M9_TRI_OP_RESOURCE69,
 	M9_TRI_OP_C2,
 	M9_TRI_OP_BE,
 	M9_TRI_OP_TRANSIENT0,
@@ -154,8 +149,8 @@ struct m9_triangle_reloc_site {
 };
 
 struct m9_triangle_commands {
-	u32 preprocess[118];
-	u32 raster[113];
+	u32 preprocess[597];
+	u32 raster[592];
 	u32 completion[8];
 	u32 primary[9];
 	u32 sequence0_primary[9];
@@ -195,7 +190,7 @@ struct m9_seq0_job {
 	u32 completion;
 };
 
-/* Exact address-bearing sites in the count-free 118/113/8-dword operation. */
+/* Exact address-bearing sites in the count-free 597/592/8-dword operation. */
 static const struct m9_triangle_reloc_site m9_triangle_reloc_sites[] = {
 	{ 0, 0xb0, 15, M9_TRI_OP_TRANSIENT0 },
 	{ 0, 0xb2, 18, M9_TRI_OP_TRANSIENT3 },
@@ -205,8 +200,7 @@ static const struct m9_triangle_reloc_site m9_triangle_reloc_sites[] = {
 	{ 0, 0xc2, 61, M9_TRI_OP_C2 },
 	{ 0, 0x8d, 66, M9_TRI_OP_SYSTEM_PRE_START },
 	{ 0, 0x8e, 67, M9_TRI_OP_SYSTEM_PRE_END },
-	{ 0, 0x69, 105, M9_TRI_OP_RESOURCE69 },
-	{ 0, 0x6c, 111, M9_TRI_OP_LINKED },
+	{ 0, 0x6c, 590, M9_TRI_OP_LINKED },
 	{ 1, 0xb0, 22, M9_TRI_OP_COLOR },
 	{ 1, 0xb8, 25, M9_TRI_OP_DEPTH },
 	{ 1, 0xba, 28, M9_TRI_OP_AUX_DEPTH },
@@ -218,8 +212,7 @@ static const struct m9_triangle_reloc_site m9_triangle_reloc_sites[] = {
 	{ 1, 0xc2, 61, M9_TRI_OP_C2 },
 	{ 1, 0x8d, 66, M9_TRI_OP_SYSTEM_RASTER_START },
 	{ 1, 0x8e, 67, M9_TRI_OP_SYSTEM_RASTER_END },
-	{ 1, 0x69, 103, M9_TRI_OP_RESOURCE69 },
-	{ 1, 0x6c, 109, M9_TRI_OP_LINKED },
+	{ 1, 0x6c, 588, M9_TRI_OP_LINKED },
 	{ 2, 0x1b, 1, M9_TRI_OP_FENCE },
 };
 
@@ -247,11 +240,6 @@ static const struct m9_triangle_resource_spec m9_triangle_specs[] = {
 	[M9_TRI_SYSTEM] = { "system", M9_TRIANGLE_SYSTEM_BYTES, 0x80, 0 },
 	[M9_TRI_SECONDARY] = { "secondary", M9_TRIANGLE_SECONDARY_BYTES,
 			       0x80, 0 },
-	[M9_TRI_RESOURCE69] = { "resource69", M9_TRIANGLE_RESOURCE69_BYTES,
-				  SZ_4K, 0, true },
-	[M9_TRI_RESOURCE69_A] = { "resource69-a-backing",
-				    M9_TRIANGLE_RESOURCE69_A_BYTES,
-				    SZ_4K, 0, true },
 	[M9_TRI_C2] = { "c2-backing", M9_TRIANGLE_C2_BACKING_BYTES,
 			 SZ_4K, 0, true },
 	[M9_TRI_BE] = { "be", M9_TRIANGLE_BE_BYTES, SZ_4K, 0, true },
@@ -345,10 +333,106 @@ static const u32 m9_triangle_range_0[] = {
 	0xebeaf4ec, 0x00000000, 0x00010004, 0x00000000, 0x46000000,
 	0x45454530, 0x00000000, 0x45454528, 0x00000000, 0x23232323,
 	0x00100dac, 0x00100236, 0x02200d88, 0x02200ab6, 0x23232323,
-	0x00004b08, 0x00000000, 0x00000000, 0x00000000, 0x45454569,
-	0x11e42000, 0x4545456a, 0x25010000, 0x456c6b68, 0x00000000,
-	0x00001030, 0x40c3a301, 0x45451819, 0x00000000, 0x7fffffff,
-	0x23000001, 0x00000000, 0x00000004,
+	0x00004b08, 0x00000000, 0x00000000, 0x00000000, 0x45454568,
+	0x80000000, 0x63626160, 0x03f0183d, 0xa0318fff, 0x41000000,
+	0x00403200, 0x67666564, 0x42000000, 0x00403400, 0x00020000,
+	0x024a2800, 0x45454568, 0x80000020, 0x63626160, 0x13f0187f,
+	0x9034fb3f, 0x23e018bf, 0x9b3bffef, 0x67666564, 0x03f2003f,
+	0x80fd1c00, 0x03f201bf, 0x80fd2c40, 0x45454568, 0x80000040,
+	0x63626160, 0x13e200bf, 0x9b33fffe, 0x4000005c, 0x02471c00,
+	0x67666564, 0x33f2007f, 0x80fcfb40, 0x33e201ff, 0x9034cffe,
+	0x45454568, 0x80000060, 0x63626160, 0x23f2013f, 0x80fcfb80,
+	0x4001005d, 0x02489c00, 0x67666564, 0x33f200ff, 0x8bffffc0,
+	0x4002005e, 0x02491c00, 0x45454568, 0x80000080, 0x63626160,
+	0x33f2017f, 0x8bffffc0, 0x03fc3fff, 0x8bffffc0, 0x67666564,
+	0x00000008, 0x00400000, 0x00000004, 0x00402000, 0x45454568,
+	0x800000a0, 0x63626160, 0x07fc303f, 0x8bffffc0, 0x00000043,
+	0x04c00016, 0x67666564, 0x00000001, 0x00402217, 0x00000001,
+	0x01482017, 0x45454568, 0x800000c0, 0x63626160, 0x73feafff,
+	0x80fddfc0, 0x03f01e3f, 0x8bffffc0, 0x67666564, 0x13f01e3f,
+	0x8bffffc0, 0x23f01e3f, 0x80fdae80, 0x45454568, 0x800000e0,
+	0x63626160, 0x33f01f3f, 0x8bffffc0, 0x00000000, 0x00000000,
+	0x67666564, 0x03f20acf, 0x8cfff1c0, 0x53f00ae8, 0x8afd20d2,
+	0x45454568, 0x80000100, 0x63626160, 0x53f01e2a, 0x8afd32d3,
+	0x00000022, 0x04c00010, 0x67666564, 0x00000027, 0x04c00011,
+	0x00020000, 0x01c3ba11, 0x45454568, 0x80000120, 0x63626160,
+	0x13f20ad2, 0x81fff4c0, 0x4bfea4ff, 0x8bffffd3, 0x67666564,
+	0x0000ffff, 0x01c7b600, 0x63f18aff, 0x8dfffd52, 0x45454568,
+	0x80000140, 0x63626160, 0x3f800000, 0x024db600, 0x0003ffff,
+	0x01c38e00, 0x67666564, 0xff5fffff, 0x9b4bffd2, 0x00000007,
+	0x020db600, 0x45454568, 0x80000160, 0x63626160, 0x00010000,
+	0x024db612, 0x63f19f0b, 0x81fff0d3, 0x67666564, 0x6bfea38a,
+	0x81fff092, 0xffffffc9, 0x75fff07f, 0x45454568, 0x80000180,
+	0x63626160, 0xfd2fffc8, 0x91fff035, 0xfd2fffcc, 0x91fff135,
+	0x67666564, 0xfd2fffcd, 0x91fff175, 0xfd2ffff6, 0x96fd75f5,
+	0x45454568, 0x800001a0, 0x63626160, 0xfd2ffff6, 0x98fd65b5,
+	0xfd2ffff6, 0x98fd5575, 0x67666564, 0xfffe6d76, 0x88fd4500,
+	0xfffffff6, 0x74fd863f, 0x45454568, 0x800001c0, 0x63626160,
+	0xfffffff6, 0x74fd967f, 0xfffcf6ff, 0x8bffffc0, 0x67666564,
+	0xfffd16ff, 0x8bffffc0, 0x6ffc86ff, 0x8bffffc0, 0x45454568,
+	0x800001e0, 0x63626160, 0xffffff00, 0x01cd3400, 0x00010000,
+	0x01cd8100, 0x67666564, 0x00010000, 0x00ce380a, 0xfffdffff,
+	0x01cdb612, 0x45454568, 0x80000200, 0x63626160, 0x00020000,
+	0x01ce8000, 0x00000000, 0x020db613, 0x67666564, 0x53f21e7f,
+	0x8bffffc0, 0x00000006, 0x04c00012, 0x45454568, 0x80000220,
+	0x63626160, 0x63f21e7f, 0x8bffffc0, 0xfffcc6ff, 0x8bffffc0,
+	0x67666564, 0x00000001, 0x00c8a200, 0x23f21e7f, 0x8bffffc0,
+	0x45454568, 0x80000240, 0x63626160, 0x33f21e7f, 0x8bffffc0,
+	0xfffcc3ff, 0x8bffffc0, 0x67666564, 0x00000001, 0x00c8a200,
+	0x00010000, 0x01c7a700, 0x45454568, 0x80000260, 0x63626160,
+	0x00010000, 0x00ce380a, 0x00000001, 0x01482100, 0x67666564,
+	0xffffffc7, 0x04c0000b, 0xfffcdfff, 0x8bffffca, 0x45454568,
+	0x80000280, 0x63626160, 0x43fea47f, 0x8bffffca, 0x00000004,
+	0x0148a50a, 0x67666564, 0x00000006, 0x04c0000c, 0x00000000,
+	0x0040200c, 0x45454568, 0x800002a0, 0x63626160, 0x03f01c3f,
+	0x8bffffcd, 0x03f01e3f, 0x8bffffcd, 0x67666564, 0x13f1193f,
+	0x8bffffc0, 0x0000001d, 0x021d8e00, 0x45454568, 0x800002c0,
+	0x63626160, 0xffffffba, 0x04c00012, 0x03f21e7f, 0x8bffffc0,
+	0x67666564, 0x13f21e7f, 0x8bffffc0, 0x13f2ff3f, 0x8bffffc0,
+	0x45454568, 0x800002e0, 0x63626160, 0x00000000, 0x00402013,
+	0x00000004, 0x01482300, 0x67666564, 0x0000001c, 0x04c0000c,
+	0x0000001f, 0x0500000d, 0x45454568, 0x80000300, 0x63626160,
+	0x00000003, 0x01482000, 0x23f10c3f, 0x8bffffc0, 0x67666564,
+	0x33f10c7f, 0x8bffffc0, 0x0000001b, 0x05000000, 0x45454568,
+	0x80000320, 0x63626160, 0x13f8033f, 0x80fcb100, 0x03f8003f,
+	0x80fcf140, 0x67666564, 0x53fc4fff, 0x8bffffc0, 0xfbffffff,
+	0x01ca2800, 0x45454568, 0x80000340, 0x63626160, 0xfffc353f,
+	0x8bffffc0, 0x00000015, 0x05000000, 0x67666564, 0x13e80704,
+	0x914542c4, 0x03e80405, 0x914953c5, 0x45454568, 0x80000360,
+	0x63626160, 0x00000000, 0x00000000, 0x53f802c4, 0x81fd8440,
+	0x67666564, 0xffffffc5, 0x75fd94bf, 0xffffffcb, 0x75fdc13f,
+	0x45454568, 0x80000380, 0x63626160, 0xffffffcf, 0x75fdd17f,
+	0x00000001, 0x01482100, 0x67666564, 0x63f806ff, 0x8bffffc0,
+	0xfffffff2, 0x04c0000b, 0x45454568, 0x800003a0, 0x63626160,
+	0x13f80b3f, 0x8bffffc0, 0x73f80aff, 0x8bffffc0, 0x67666564,
+	0x87f8083f, 0x8bffffcb, 0x33f0083f, 0x8bffffc0, 0x45454568,
+	0x800003c0, 0x63626160, 0x43f0087f, 0x8bffffc0, 0x53f008bf,
+	0x8bffffc0, 0x67666564, 0x8ff8083f, 0xcbffffc0, 0x33f8003f,
+	0x8bffffc0, 0x45454568, 0x800003e0, 0x63626160, 0x43f8043f,
+	0x8bffffc0, 0x53f8083f, 0x8bffffc0, 0x67666564, 0x8bf9f03f,
+	0xcbffffc0, 0x00000000, 0x00000000, 0x45454568, 0x80000400,
+	0x63626160, 0x00000000, 0x00000000, 0x00000000, 0x00000000,
+	0x67666564, 0x03f01e3f, 0x8bffffc0, 0x13f01e3f, 0x8dfc3ec0,
+	0x45454568, 0x80000420, 0x63626160, 0x000000ff, 0x01dd0700,
+	0x00000009, 0x04c0000b, 0x67666564, 0x075c31bf, 0x9bffffc0,
+	0xfc3fffff, 0x9bffffc1, 0x45454568, 0x80000440, 0x63626160,
+	0x183c4fff, 0x9bffffc2, 0xfc8fffff, 0x9bfffff6, 0x67666564,
+	0xfc9fffff, 0x9bfffff6, 0xfcafffff, 0x9bfffff6, 0x45454568,
+	0x80000460, 0x63626160, 0xfc3fffcc, 0x90100d84, 0xfc3fffcd,
+	0x90141d85, 0x67666564, 0xffffffce, 0x74fc2dbf, 0x00000000,
+	0x06400000, 0x45454568, 0x80000480, 0x63626160, 0x00000000,
+	0x00000000, 0x00000000, 0x00000000, 0x67666564, 0x03f0f97f,
+	0x8bffffcb, 0xffbfffff, 0x9b13ffc4, 0x45454568, 0x800004a0,
+	0x63626160, 0x0031197f, 0x9b17ffc5, 0x00000000, 0x06400000,
+	0x67666564, 0x00000000, 0x00000000, 0x00000000, 0x00000000,
+	0x45454568, 0x800004c0, 0x63626160, 0x00000000, 0x00000000,
+	0x00000000, 0x10000000, 0x67666564, 0xfffc0fff, 0x8bffffc0,
+	0x00000000, 0x00000000, 0x45454568, 0x800004e0, 0x63626160,
+	0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x67666564,
+	0x00000000, 0x00000000, 0x00000000, 0x00000000, 0x45456a69,
+	0x00000004, 0x00990000, 0x456c6b68, 0x00000000, 0x00001030,
+	0x40c3a301, 0x45451819, 0x00000000, 0x7fffffff, 0x23000001,
+	0x00000000, 0x00000004,
 };
 
 static const u32 m9_triangle_range_1[] = {
@@ -372,9 +456,105 @@ static const u32 m9_triangle_range_1[] = {
 	0xebeaf4ec, 0x00000000, 0x00000000, 0x00000000, 0x00000000,
 	0x45454528, 0x00000000, 0x23232323, 0x80100d88, 0x801006b6,
 	0x00010688, 0x00c231b6, 0x23232323, 0x00d30688, 0x00000000,
-	0x00000000, 0x00000000, 0x45454569, 0x11e42000, 0x4545456a,
-	0x25010000, 0x456c6b68, 0x00000000, 0x00001030, 0x40c3a301,
-	0x23000001, 0x00000000, 0x00000003,
+	0x00000000, 0x00000000, 0x45454568, 0x80000000, 0x63626160,
+	0x03f0183d, 0xa0318fff, 0x41000000, 0x00403200, 0x67666564,
+	0x42000000, 0x00403400, 0x00020000, 0x024a2800, 0x45454568,
+	0x80000020, 0x63626160, 0x13f0187f, 0x9034fb3f, 0x23e018bf,
+	0x9b3bffef, 0x67666564, 0x03f2003f, 0x80fd1c00, 0x03f201bf,
+	0x80fd2c40, 0x45454568, 0x80000040, 0x63626160, 0x13e200bf,
+	0x9b33fffe, 0x4000005c, 0x02471c00, 0x67666564, 0x33f2007f,
+	0x80fcfb40, 0x33e201ff, 0x9034cffe, 0x45454568, 0x80000060,
+	0x63626160, 0x23f2013f, 0x80fcfb80, 0x4001005d, 0x02489c00,
+	0x67666564, 0x33f200ff, 0x8bffffc0, 0x4002005e, 0x02491c00,
+	0x45454568, 0x80000080, 0x63626160, 0x33f2017f, 0x8bffffc0,
+	0x03fc3fff, 0x8bffffc0, 0x67666564, 0x00000008, 0x00400000,
+	0x00000004, 0x00402000, 0x45454568, 0x800000a0, 0x63626160,
+	0x07fc303f, 0x8bffffc0, 0x00000043, 0x04c00016, 0x67666564,
+	0x00000001, 0x00402217, 0x00000001, 0x01482017, 0x45454568,
+	0x800000c0, 0x63626160, 0x73feafff, 0x80fddfc0, 0x03f01e3f,
+	0x8bffffc0, 0x67666564, 0x13f01e3f, 0x8bffffc0, 0x23f01e3f,
+	0x80fdae80, 0x45454568, 0x800000e0, 0x63626160, 0x33f01f3f,
+	0x8bffffc0, 0x00000000, 0x00000000, 0x67666564, 0x03f20acf,
+	0x8cfff1c0, 0x53f00ae8, 0x8afd20d2, 0x45454568, 0x80000100,
+	0x63626160, 0x53f01e2a, 0x8afd32d3, 0x00000022, 0x04c00010,
+	0x67666564, 0x00000027, 0x04c00011, 0x00020000, 0x01c3ba11,
+	0x45454568, 0x80000120, 0x63626160, 0x13f20ad2, 0x81fff4c0,
+	0x4bfea4ff, 0x8bffffd3, 0x67666564, 0x0000ffff, 0x01c7b600,
+	0x63f18aff, 0x8dfffd52, 0x45454568, 0x80000140, 0x63626160,
+	0x3f800000, 0x024db600, 0x0003ffff, 0x01c38e00, 0x67666564,
+	0xff5fffff, 0x9b4bffd2, 0x00000007, 0x020db600, 0x45454568,
+	0x80000160, 0x63626160, 0x00010000, 0x024db612, 0x63f19f0b,
+	0x81fff0d3, 0x67666564, 0x6bfea38a, 0x81fff092, 0xffffffc9,
+	0x75fff07f, 0x45454568, 0x80000180, 0x63626160, 0xfd2fffc8,
+	0x91fff035, 0xfd2fffcc, 0x91fff135, 0x67666564, 0xfd2fffcd,
+	0x91fff175, 0xfd2ffff6, 0x96fd75f5, 0x45454568, 0x800001a0,
+	0x63626160, 0xfd2ffff6, 0x98fd65b5, 0xfd2ffff6, 0x98fd5575,
+	0x67666564, 0xfffe6d76, 0x88fd4500, 0xfffffff6, 0x74fd863f,
+	0x45454568, 0x800001c0, 0x63626160, 0xfffffff6, 0x74fd967f,
+	0xfffcf6ff, 0x8bffffc0, 0x67666564, 0xfffd16ff, 0x8bffffc0,
+	0x6ffc86ff, 0x8bffffc0, 0x45454568, 0x800001e0, 0x63626160,
+	0xffffff00, 0x01cd3400, 0x00010000, 0x01cd8100, 0x67666564,
+	0x00010000, 0x00ce380a, 0xfffdffff, 0x01cdb612, 0x45454568,
+	0x80000200, 0x63626160, 0x00020000, 0x01ce8000, 0x00000000,
+	0x020db613, 0x67666564, 0x53f21e7f, 0x8bffffc0, 0x00000006,
+	0x04c00012, 0x45454568, 0x80000220, 0x63626160, 0x63f21e7f,
+	0x8bffffc0, 0xfffcc6ff, 0x8bffffc0, 0x67666564, 0x00000001,
+	0x00c8a200, 0x23f21e7f, 0x8bffffc0, 0x45454568, 0x80000240,
+	0x63626160, 0x33f21e7f, 0x8bffffc0, 0xfffcc3ff, 0x8bffffc0,
+	0x67666564, 0x00000001, 0x00c8a200, 0x00010000, 0x01c7a700,
+	0x45454568, 0x80000260, 0x63626160, 0x00010000, 0x00ce380a,
+	0x00000001, 0x01482100, 0x67666564, 0xffffffc7, 0x04c0000b,
+	0xfffcdfff, 0x8bffffca, 0x45454568, 0x80000280, 0x63626160,
+	0x43fea47f, 0x8bffffca, 0x00000004, 0x0148a50a, 0x67666564,
+	0x00000006, 0x04c0000c, 0x00000000, 0x0040200c, 0x45454568,
+	0x800002a0, 0x63626160, 0x03f01c3f, 0x8bffffcd, 0x03f01e3f,
+	0x8bffffcd, 0x67666564, 0x13f1193f, 0x8bffffc0, 0x0000001d,
+	0x021d8e00, 0x45454568, 0x800002c0, 0x63626160, 0xffffffba,
+	0x04c00012, 0x03f21e7f, 0x8bffffc0, 0x67666564, 0x13f21e7f,
+	0x8bffffc0, 0x13f2ff3f, 0x8bffffc0, 0x45454568, 0x800002e0,
+	0x63626160, 0x00000000, 0x00402013, 0x00000004, 0x01482300,
+	0x67666564, 0x0000001c, 0x04c0000c, 0x0000001f, 0x0500000d,
+	0x45454568, 0x80000300, 0x63626160, 0x00000003, 0x01482000,
+	0x23f10c3f, 0x8bffffc0, 0x67666564, 0x33f10c7f, 0x8bffffc0,
+	0x0000001b, 0x05000000, 0x45454568, 0x80000320, 0x63626160,
+	0x13f8033f, 0x80fcb100, 0x03f8003f, 0x80fcf140, 0x67666564,
+	0x53fc4fff, 0x8bffffc0, 0xfbffffff, 0x01ca2800, 0x45454568,
+	0x80000340, 0x63626160, 0xfffc353f, 0x8bffffc0, 0x00000015,
+	0x05000000, 0x67666564, 0x13e80704, 0x914542c4, 0x03e80405,
+	0x914953c5, 0x45454568, 0x80000360, 0x63626160, 0x00000000,
+	0x00000000, 0x53f802c4, 0x81fd8440, 0x67666564, 0xffffffc5,
+	0x75fd94bf, 0xffffffcb, 0x75fdc13f, 0x45454568, 0x80000380,
+	0x63626160, 0xffffffcf, 0x75fdd17f, 0x00000001, 0x01482100,
+	0x67666564, 0x63f806ff, 0x8bffffc0, 0xfffffff2, 0x04c0000b,
+	0x45454568, 0x800003a0, 0x63626160, 0x13f80b3f, 0x8bffffc0,
+	0x73f80aff, 0x8bffffc0, 0x67666564, 0x87f8083f, 0x8bffffcb,
+	0x33f0083f, 0x8bffffc0, 0x45454568, 0x800003c0, 0x63626160,
+	0x43f0087f, 0x8bffffc0, 0x53f008bf, 0x8bffffc0, 0x67666564,
+	0x8ff8083f, 0xcbffffc0, 0x33f8003f, 0x8bffffc0, 0x45454568,
+	0x800003e0, 0x63626160, 0x43f8043f, 0x8bffffc0, 0x53f8083f,
+	0x8bffffc0, 0x67666564, 0x8bf9f03f, 0xcbffffc0, 0x00000000,
+	0x00000000, 0x45454568, 0x80000400, 0x63626160, 0x00000000,
+	0x00000000, 0x00000000, 0x00000000, 0x67666564, 0x03f01e3f,
+	0x8bffffc0, 0x13f01e3f, 0x8dfc3ec0, 0x45454568, 0x80000420,
+	0x63626160, 0x000000ff, 0x01dd0700, 0x00000009, 0x04c0000b,
+	0x67666564, 0x075c31bf, 0x9bffffc0, 0xfc3fffff, 0x9bffffc1,
+	0x45454568, 0x80000440, 0x63626160, 0x183c4fff, 0x9bffffc2,
+	0xfc8fffff, 0x9bfffff6, 0x67666564, 0xfc9fffff, 0x9bfffff6,
+	0xfcafffff, 0x9bfffff6, 0x45454568, 0x80000460, 0x63626160,
+	0xfc3fffcc, 0x90100d84, 0xfc3fffcd, 0x90141d85, 0x67666564,
+	0xffffffce, 0x74fc2dbf, 0x00000000, 0x06400000, 0x45454568,
+	0x80000480, 0x63626160, 0x00000000, 0x00000000, 0x00000000,
+	0x00000000, 0x67666564, 0x03f0f97f, 0x8bffffcb, 0xffbfffff,
+	0x9b13ffc4, 0x45454568, 0x800004a0, 0x63626160, 0x0031197f,
+	0x9b17ffc5, 0x00000000, 0x06400000, 0x67666564, 0x00000000,
+	0x00000000, 0x00000000, 0x00000000, 0x45454568, 0x800004c0,
+	0x63626160, 0x00000000, 0x00000000, 0x00000000, 0x10000000,
+	0x67666564, 0xfffc0fff, 0x8bffffc0, 0x00000000, 0x00000000,
+	0x45454568, 0x800004e0, 0x63626160, 0x00000000, 0x00000000,
+	0x00000000, 0x00000000, 0x67666564, 0x00000000, 0x00000000,
+	0x00000000, 0x00000000, 0x45456a69, 0x00000004, 0x00990000,
+	0x456c6b68, 0x00000000, 0x00001030, 0x40c3a301, 0x23000001,
+	0x00000000, 0x00000003,
 };
 
 static const u32 m9_triangle_range_2[] = {
@@ -386,12 +566,12 @@ static const u32 m9_triangle_range_2[] = {
  * semantic count-free sites above, but retain every private count dword. */
 static const u16 m9_triangle_framed_reloc_offsets[] = {
 	0x05c, 0x06c, 0x07c, 0x08c, 0x130, 0x144, 0x15c, 0x160,
-	0x230, 0x250, 0x2ec, 0x2fc, 0x30c, 0x31c, 0x38c, 0x390,
-	0x3a0, 0x3a4, 0x3b4, 0x3cc, 0x3d0, 0x494, 0x4b4, 0x4cc,
+	0xba8, 0xc44, 0xc54, 0xc64, 0xc74, 0xce4, 0xce8, 0xcf8,
+	0xcfc, 0xd0c, 0xd24, 0xd28, 0x1764, 0x177c,
 };
 
 static const u16 m9_triangle_framed_transition_offsets[] = {
-	0x014, 0x050, 0x27c, 0x298, 0x2a4, 0x2e0, 0x4e0, 0x4ec,
+	0x014, 0x050, 0xbd4, 0xbf0, 0xbfc, 0xc38, 0x1790, 0x179c,
 };
 
 static u64 m9_triangle_template_fnv1a(const u32 *words, size_t count)
@@ -483,13 +663,12 @@ static int m9_triangle_alloc_one(struct m9x_device *mdev,
 	if (resource->cpu || resource->vram)
 		return 0;
 	/*
-	 * BE, the class-1 BmBuffer and resource-69's contiguous A/C2 backing
-	 * groups have exact vendor extents.  Every byte after the submitted
-	 * secondary image through 0x8000 is part of its zero tail.  Other
-	 * diagnostic resources retain a guard page.
+	 * BE, the class-1 BmBuffer, and C2 backing have exact vendor extents.
+	 * Every byte after the submitted secondary image through 0x8000 is part
+	 * of its zero tail.  Other diagnostic resources retain a guard page.
 	 */
 	if (id == M9_TRI_BE || id == M9_TRI_SECONDARY ||
-	    id == M9_TRI_RESOURCE69_A || id == M9_TRI_C2)
+	    id == M9_TRI_C2)
 		guard_offset = spec->payload_bytes;
 	else if (check_add_overflow(spec->payload_bytes, (u32)PAGE_SIZE,
 				    &guard_offset))
@@ -588,61 +767,13 @@ static int m9_triangle_prepare_gpuva(struct m9x_device *mdev,
 	return 0;
 }
 
-static void m9_triangle_build_resource69_record(u32 *record, u32 a1, u32 c2)
-{
-	memset(record, 0, M9_TRIANGLE_RESOURCE69_RECORD_BYTES);
-	record[0] = a1 - SZ_4K + 8;
-	record[1] = a1 + 8;
-	record[8] = c2 - SZ_4K + 8;
-	record[9] = c2 + 8;
-	record[10] = c2 + SZ_4K + 8;
-}
-
-static int m9_triangle_prepare_resource69(struct m9x_triangle_diag *diag)
-{
-	struct m9_triangle_resource *resource69 =
-		&diag->resource[M9_TRI_RESOURCE69];
-	const struct m9_triangle_resource *a =
-		&diag->resource[M9_TRI_RESOURCE69_A];
-	const struct m9_triangle_resource *c2 = &diag->resource[M9_TRI_C2];
-	u32 record[M9_TRIANGLE_RESOURCE69_RECORD_BYTES / sizeof(u32)];
-	u32 a1_address;
-	u32 c2_address;
-	u32 offset;
-
-	if (!resource69->vram || !a->vram || !c2->vram ||
-	    resource69->payload_bytes != M9_TRIANGLE_RESOURCE69_BYTES ||
-	    a->payload_bytes != M9_TRIANGLE_RESOURCE69_A_BYTES ||
-	    c2->payload_bytes != M9_TRIANGLE_C2_BACKING_BYTES ||
-	    !IS_ALIGNED(resource69->bus, SZ_4K) ||
-	    !IS_ALIGNED(a->bus, SZ_4K) || upper_32_bits(a->bus) ||
-	    !IS_ALIGNED(c2->bus, SZ_4K) || upper_32_bits(c2->bus) ||
-	    check_add_overflow(lower_32_bits(a->bus), SZ_4K, &a1_address) ||
-	    a1_address < SZ_4K || a1_address > U32_MAX - 0x200 ||
-	    check_add_overflow(lower_32_bits(c2->bus),
-			       M9_TRIANGLE_C2_LEADING_BYTES, &c2_address) ||
-	    c2_address < SZ_4K ||
-	    c2_address > U32_MAX - M9_TRIANGLE_C2_BYTES)
-		return -ERANGE;
-
-	m9_triangle_build_resource69_record(record, a1_address, c2_address);
-	for (offset = 0; offset < M9_TRIANGLE_RESOURCE69_BYTES;
-	     offset += M9_TRIANGLE_RESOURCE69_RECORD_BYTES)
-		iosys_map_memcpy_to(&resource69->map, offset, record,
-				    sizeof(record));
-	/* Drain all write-combined VRAM initialization before engine access. */
-	wmb();
-	return 0;
-}
-
 static int m9_triangle_prepare_resources(struct m9x_device *mdev)
 {
 	struct m9x_triangle_diag *diag = mdev->transport.triangle;
 	static const u8 allocation_order[] = {
 		M9_TRI_BE,
 		M9_TRI_DEPTH, M9_TRI_AUX_DEPTH,
-		M9_TRI_SYSTEM, M9_TRI_RESOURCE69,
-		M9_TRI_RESOURCE69_A,
+		M9_TRI_SYSTEM,
 		M9_TRI_TRANSIENT0, M9_TRI_TRANSIENT1,
 		M9_TRI_TRANSIENT2, M9_TRI_TRANSIENT3,
 		M9_TRI_C2, M9_TRI_SEQ0_SCRATCH26,
@@ -671,9 +802,6 @@ static int m9_triangle_prepare_resources(struct m9x_device *mdev)
 			return ret;
 		}
 	}
-	ret = m9_triangle_prepare_resource69(diag);
-	if (ret)
-		return ret;
 	ret = m9_triangle_prepare_gpuva(mdev, diag);
 	if (ret)
 		return ret;
@@ -818,7 +946,6 @@ static int m9_triangle_build_addresses(struct m9x_device *mdev, u32 color,
 				 M9_TRIANGLE_GPUVA_TAG;
 	job->linked = (m9_triangle_gpuva(diag, M9_TRI_SYSTEM) +
 		       M9_TRIANGLE_LINKED_OFFSET) | M9_TRIANGLE_GPUVA_TAG;
-	job->resource69 = m9_triangle_bus(diag, M9_TRI_RESOURCE69);
 	job->c2 = m9_triangle_bus(diag, M9_TRI_C2) +
 		  M9_TRIANGLE_C2_LEADING_BYTES;
 	job->be = m9_triangle_bus(diag, M9_TRI_BE);
@@ -845,7 +972,6 @@ static u32 m9_triangle_operand_value(const struct m9_triangle_job_addresses *job
 	case M9_TRI_OP_SYSTEM_RASTER_START: return job->system_raster_start;
 	case M9_TRI_OP_SYSTEM_RASTER_END: return job->system_raster_end;
 	case M9_TRI_OP_LINKED: return job->linked;
-	case M9_TRI_OP_RESOURCE69: return job->resource69;
 	case M9_TRI_OP_C2: return job->c2;
 	case M9_TRI_OP_BE: return job->be;
 	case M9_TRI_OP_TRANSIENT0: return job->transient[0];
@@ -925,8 +1051,8 @@ static void m9_triangle_build_framed_secondary(
 	memset(image, 0, M9_TRIANGLE_SECONDARY_BYTES);
 	memcpy(image + M9_TRIANGLE_SECONDARY_PREFIX,
 	       m9_triangle_framed_payload, sizeof(m9_triangle_framed_payload));
-	put_unaligned_le32(U32_MAX, image + 0x33c);
-	put_unaligned_le32(U32_MAX, image + 0x340);
+	put_unaligned_le32(U32_MAX, image + M9_TRIANGLE_FRAMED_MRT0);
+	put_unaligned_le32(U32_MAX, image + M9_TRIANGLE_FRAMED_MRT1);
 	if (gouraud) {
 		put_unaligned_le32(0x00002503,
 				   image + M9_TRIANGLE_FRAMED_SHADE_CONTROL);
@@ -955,9 +1081,11 @@ static void m9_triangle_build_primary(
 		const struct m9_triangle_job_addresses *job, u32 *primary)
 {
 	static const u16 bounds[][2] = {
-		{ 0x008, 0x270 },
-		{ 0x270, 0x4c4 },
-		{ 0x4c4, 0x4f0 },
+		{ 0x008, M9_TRIANGLE_FRAMED_RANGE0_END },
+		{ M9_TRIANGLE_FRAMED_RANGE0_END,
+		  M9_TRIANGLE_FRAMED_RANGE1_END },
+		{ M9_TRIANGLE_FRAMED_RANGE1_END,
+		  M9_TRIANGLE_FRAMED_RANGE2_END },
 	};
 	unsigned int i;
 
@@ -1043,7 +1171,6 @@ static u32 m9_triangle_captured_operand(enum m9_triangle_operand operand)
 	case M9_TRI_OP_SYSTEM_RASTER_START: return 0x40c3a001;
 	case M9_TRI_OP_SYSTEM_RASTER_END: return 0x40c3a011;
 	case M9_TRI_OP_LINKED: return 0x40c3a301;
-	case M9_TRI_OP_RESOURCE69: return 0x11e42000;
 	case M9_TRI_OP_C2: return 0x11f91000;
 	case M9_TRI_OP_BE: return 0x112c1000;
 	case M9_TRI_OP_TRANSIENT0: return 0x113c1000;
@@ -1337,7 +1464,7 @@ static int m9_seq0_selftest(void)
 	    ARRAY_SIZE(m9_seq0_patch_offsets) !=
 		ARRAY_SIZE(m9_seq0_patches) ||
 	    sizeof(m9_seq0_framed_payload) !=
-		M9_TRIANGLE_SECONDARY_IMAGE_BYTES -
+		M9_SEQ0_SECONDARY_IMAGE_BYTES -
 		M9_TRIANGLE_SECONDARY_PREFIX ||
 	    m9_triangle_template_fnv1a(m9_seq0_framed_payload,
 		ARRAY_SIZE(m9_seq0_framed_payload)) !=
@@ -1353,7 +1480,7 @@ static int m9_seq0_selftest(void)
 		if (patch->offset != m9_seq0_patch_offsets[i] ||
 		    patch->offset < M9_TRIANGLE_SECONDARY_PREFIX ||
 		    patch->offset >
-			M9_TRIANGLE_SECONDARY_IMAGE_BYTES - sizeof(u32) ||
+			M9_SEQ0_SECONDARY_IMAGE_BYTES - sizeof(u32) ||
 		    patch->operand > M9_SEQ0_COMPLETION ||
 		    patch->step >= M9_SEQ0_TARGET_COUNT ||
 		    captured != patch->captured)
@@ -1375,14 +1502,14 @@ static int m9_seq0_selftest(void)
 	m9_seq0_build_primary(&job, primary);
 	if (memcmp(primary, expected_primary, sizeof(primary)) ||
 	    m9_triangle_template_fnv1a((const u32 *)image,
-		M9_TRIANGLE_SECONDARY_IMAGE_BYTES / sizeof(u32)) !=
+		M9_SEQ0_SECONDARY_IMAGE_BYTES / sizeof(u32)) !=
 		0xfd653b6594219969ULL)
 		goto out;
 	for (i = 0; i < ARRAY_SIZE(m9_seq0_patches); i++)
 		if (get_unaligned_le32(image + m9_seq0_patches[i].offset) !=
 		    m9_seq0_patch_value(&job, &m9_seq0_patches[i]))
 			goto out;
-	for (i = M9_TRIANGLE_SECONDARY_IMAGE_BYTES;
+	for (i = M9_SEQ0_SECONDARY_IMAGE_BYTES;
 	     i < M9_TRIANGLE_SECONDARY_BYTES; i++)
 		if (image[i])
 			goto out;
@@ -1391,8 +1518,8 @@ static int m9_seq0_selftest(void)
 	 * shared secondary BO cannot receive it until sequence 0 retires. */
 	m9_triangle_build_framed_secondary(image, &draw, false);
 	if (get_unaligned_le32(image) || get_unaligned_le32(image + 4) ||
-	    get_unaligned_le32(image + 0x33c) != U32_MAX ||
-	    get_unaligned_le32(image + 0x340) != U32_MAX ||
+	    get_unaligned_le32(image + M9_TRIANGLE_FRAMED_MRT0) != U32_MAX ||
+	    get_unaligned_le32(image + M9_TRIANGLE_FRAMED_MRT1) != U32_MAX ||
 	    get_unaligned_le32(image + M9_TRIANGLE_FRAMED_SHADE_CONTROL) !=
 		0x00006403 ||
 	    get_unaligned_le32(image + M9_TRIANGLE_FRAMED_SHADE_LINK0) !=
@@ -1408,7 +1535,8 @@ static int m9_seq0_selftest(void)
 	    get_unaligned_le32(image + M9_TRIANGLE_FRAMED_SHADE_LINK1) !=
 		0x001006b6)
 		goto out;
-	for (i = 0x4f0; i < M9_TRIANGLE_SECONDARY_BYTES; i++)
+	for (i = M9_TRIANGLE_FRAMED_RANGE2_END;
+	     i < M9_TRIANGLE_SECONDARY_BYTES; i++)
 		if (image[i])
 			goto out;
 	ret = 0;
@@ -1417,13 +1545,11 @@ out:
 	return ret;
 }
 
-int m9x_triangle_selftest(void)
+static int
+m9_triangle_stream_selftest(struct m9_triangle_commands *commands)
 {
 	struct m9_triangle_job_addresses job = {};
-	struct m9_triangle_commands commands;
 	u8 linked[M9_TRIANGLE_LINKED_BYTES] = {};
-	u32 resource69_record[M9_TRIANGLE_RESOURCE69_RECORD_BYTES / sizeof(u32)];
-	u64 resource69_hash;
 	u32 target = 0xfffffff0;
 	unsigned int i;
 	int ret;
@@ -1439,43 +1565,28 @@ int m9x_triangle_selftest(void)
 	    sizeof(m9_triangle_gouraud_source) != M9_TRIANGLE_SOURCE_BYTES ||
 	    M9_TRIANGLE_MAX_SYSTEM_PTES != 44 ||
 	    m9_triangle_specs[M9_TRI_SECONDARY].payload_bytes != SZ_32K ||
-	    m9_triangle_specs[M9_TRI_RESOURCE69].payload_bytes %
-		M9_TRIANGLE_RESOURCE69_RECORD_BYTES ||
 	    m9_triangle_specs[M9_TRI_C2].payload_bytes !=
 		M9_TRIANGLE_C2_BACKING_BYTES ||
-	    ARRAY_SIZE(m9_triangle_range_0) != ARRAY_SIZE(commands.preprocess) ||
-	    ARRAY_SIZE(m9_triangle_range_1) != ARRAY_SIZE(commands.raster) ||
-	    ARRAY_SIZE(m9_triangle_range_2) != ARRAY_SIZE(commands.completion) ||
+	    ARRAY_SIZE(m9_triangle_range_0) != ARRAY_SIZE(commands->preprocess) ||
+	    ARRAY_SIZE(m9_triangle_range_1) != ARRAY_SIZE(commands->raster) ||
+	    ARRAY_SIZE(m9_triangle_range_2) != ARRAY_SIZE(commands->completion) ||
 	    M9_TRIANGLE_SURFACE_BYTES != 0x4b000 ||
 	    M9_TRIANGLE_LINKED_OFFSET & 0x7f ||
 	    M9_TRIANGLE_LINKED_OFFSET + M9_TRIANGLE_LINKED_BYTES >
 		M9_TRIANGLE_SYSTEM_BYTES ||
 	    ARRAY_SIZE(m9_triangle_specs) != M9_TRI_RESOURCE_COUNT ||
-	    ARRAY_SIZE(m9_triangle_reloc_sites) != 24 ||
+	    ARRAY_SIZE(m9_triangle_reloc_sites) != 22 ||
 	    ARRAY_SIZE(m9_triangle_transition_sites) != 8 ||
 	    ARRAY_SIZE(m9_triangle_framed_reloc_offsets) !=
 		ARRAY_SIZE(m9_triangle_reloc_sites) ||
 	    ARRAY_SIZE(m9_triangle_framed_transition_offsets) !=
 		ARRAY_SIZE(m9_triangle_transition_sites) ||
 	    sizeof(m9_triangle_framed_payload) !=
-		0x4f0 - M9_TRIANGLE_SECONDARY_PREFIX ||
+		M9_TRIANGLE_FRAMED_RANGE2_END - M9_TRIANGLE_SECONDARY_PREFIX ||
 	    m9_triangle_specs[M9_TRI_SEQ0_SCRATCH26].payload_bytes != 0x800 ||
 	    m9_triangle_specs[M9_TRI_SEQ0_SCRATCH27].payload_bytes != 0x20080 ||
 	    m9_triangle_specs[M9_TRI_SEQ0_SCRATCH38].payload_bytes != 0x400 ||
 	    m9_triangle_specs[M9_TRI_BE].payload_bytes != SZ_1M)
-		return -EINVAL;
-	m9_triangle_build_resource69_record(resource69_record, 0x11ee1000,
-					    0x11f29000);
-	resource69_hash =
-		m9_triangle_template_fnv1a(resource69_record,
-					   ARRAY_SIZE(resource69_record));
-	if (resource69_record[0] != 0x11ee0008 ||
-	    resource69_record[1] != 0x11ee1008 || resource69_record[2] ||
-	    resource69_record[7] ||
-	    resource69_record[8] != 0x11f28008 ||
-	    resource69_record[9] != 0x11f29008 ||
-	    resource69_record[10] != 0x11f2a008 || resource69_record[11] ||
-	    resource69_hash != 0xeeca525aa6a86ea4ULL)
 		return -EINVAL;
 	if (m9_triangle_template_fnv1a(m9_triangle_gouraud_linked_prefix,
 		ARRAY_SIZE(m9_triangle_gouraud_linked_prefix)) !=
@@ -1493,11 +1604,11 @@ int m9x_triangle_selftest(void)
 		if (m9_triangle_specs[i].payload_bytes & 3 ||
 		    !is_power_of_2(m9_triangle_specs[i].alignment))
 			return -EINVAL;
-	memcpy(commands.preprocess, m9_triangle_range_0,
-	       sizeof(commands.preprocess));
-	memcpy(commands.raster, m9_triangle_range_1, sizeof(commands.raster));
-	memcpy(commands.completion, m9_triangle_range_2,
-	       sizeof(commands.completion));
+	memcpy(commands->preprocess, m9_triangle_range_0,
+	       sizeof(commands->preprocess));
+	memcpy(commands->raster, m9_triangle_range_1, sizeof(commands->raster));
+	memcpy(commands->completion, m9_triangle_range_2,
+	       sizeof(commands->completion));
 	for (i = 0; i < ARRAY_SIZE(m9_triangle_reloc_sites); i++) {
 		const struct m9_triangle_reloc_site *site =
 			&m9_triangle_reloc_sites[i];
@@ -1505,10 +1616,10 @@ int m9x_triangle_selftest(void)
 
 		if (m9_triangle_reloc_sites[i].range > 2 ||
 		    m9_triangle_reloc_sites[i].operand > M9_TRI_OP_FENCE ||
-		    m9_triangle_command_range(&commands, site->range)[site->dword] !=
+		    m9_triangle_command_range(commands, site->range)[site->dword] !=
 			m9_triangle_captured_operand(site->operand) ||
 		    framed < M9_TRIANGLE_SECONDARY_PREFIX ||
-		    framed > M9_TRIANGLE_SECONDARY_IMAGE_BYTES - sizeof(u32) ||
+		    framed > M9_TRIANGLE_FRAMED_RANGE2_END - sizeof(u32) ||
 		    get_unaligned_le32((const u8 *)m9_triangle_framed_payload +
 			framed - M9_TRIANGLE_SECONDARY_PREFIX) !=
 			m9_triangle_captured_operand(site->operand))
@@ -1522,10 +1633,10 @@ int m9x_triangle_selftest(void)
 
 		if (m9_triangle_transition_sites[i].range > 2 ||
 		    m9_triangle_transition_sites[i].transition > 5 ||
-		    m9_triangle_command_range(&commands, site->range)[site->dword] !=
+		    m9_triangle_command_range(commands, site->range)[site->dword] !=
 			(captured | site->tag) ||
 		    framed < M9_TRIANGLE_SECONDARY_PREFIX ||
-		    framed > M9_TRIANGLE_SECONDARY_IMAGE_BYTES - sizeof(u32) ||
+		    framed > M9_TRIANGLE_FRAMED_RANGE2_END - sizeof(u32) ||
 		    get_unaligned_le32((const u8 *)m9_triangle_framed_payload +
 			framed - M9_TRIANGLE_SECONDARY_PREFIX) !=
 			(captured | site->tag))
@@ -1533,16 +1644,16 @@ int m9x_triangle_selftest(void)
 	}
 	if (m9_triangle_template_fnv1a(m9_triangle_range_0,
 				       ARRAY_SIZE(m9_triangle_range_0)) !=
-				       0x2f0d9c8c5afce09bULL ||
+				       0x46aefda60abba6c0ULL ||
 	    m9_triangle_template_fnv1a(m9_triangle_range_1,
 				       ARRAY_SIZE(m9_triangle_range_1)) !=
-				       0x7ea7088342b7d71bULL ||
+				       0x261e2794915380e0ULL ||
 	    m9_triangle_template_fnv1a(m9_triangle_range_2,
 				       ARRAY_SIZE(m9_triangle_range_2)) !=
 				       0x726d161270583420ULL ||
 	    m9_triangle_template_fnv1a(m9_triangle_framed_payload,
 				       ARRAY_SIZE(m9_triangle_framed_payload)) !=
-				       0xf891d548016a1ee6ULL)
+				       0xf1c29f08b6b50182ULL)
 		return -EINVAL;
 	for (i = 0; i < ARRAY_SIZE(job.transition); i++)
 		job.transition[i] = target + i * 0x10;
@@ -1551,29 +1662,29 @@ int m9x_triangle_selftest(void)
 	    job.transition[5] != 0x40 ||
 	    (job.transition[5] | 1) != 0x41)
 		return -EINVAL;
-	m9_triangle_build_commands(&job, false, &commands);
-	m9_triangle_build_primary(&job, commands.primary);
-	if (commands.raster[37] != U32_MAX ||
-	    commands.raster[38] != U32_MAX ||
-	    commands.raster[M9_TRIANGLE_RASTER_SHADE_CONTROL_DW] != 0x00006403 ||
-	    commands.raster[M9_TRIANGLE_RASTER_SHADE_LINK0_DW] != 0x80100d88 ||
-	    commands.raster[M9_TRIANGLE_RASTER_SHADE_LINK1_DW] != 0x801006b6 ||
-	    memcmp(commands.primary, (const u32[]) {
-		0x45452d2c, 0x12000009, 0x12000272,
-		0x45452d2c, 0x12000271, 0x120004c6,
-		0x45452d2c, 0x120004c5, 0x120004f2,
-	}, sizeof(commands.primary)))
+	m9_triangle_build_commands(&job, false, commands);
+	m9_triangle_build_primary(&job, commands->primary);
+	if (commands->raster[37] != U32_MAX ||
+	    commands->raster[38] != U32_MAX ||
+	    commands->raster[M9_TRIANGLE_RASTER_SHADE_CONTROL_DW] != 0x00006403 ||
+	    commands->raster[M9_TRIANGLE_RASTER_SHADE_LINK0_DW] != 0x80100d88 ||
+	    commands->raster[M9_TRIANGLE_RASTER_SHADE_LINK1_DW] != 0x801006b6 ||
+	    memcmp(commands->primary, (const u32[]) {
+		0x45452d2c, 0x12000009, 0x12000bca,
+		0x45452d2c, 0x12000bc9, 0x12001776,
+		0x45452d2c, 0x12001775, 0x120017a2,
+	}, sizeof(commands->primary)))
 		return -EINVAL;
-	m9_triangle_build_commands(&job, true, &commands);
-	if (commands.raster[M9_TRIANGLE_RASTER_SHADE_CONTROL_DW] != 0x00002503 ||
-	    commands.raster[M9_TRIANGLE_RASTER_SHADE_LINK0_DW] != 0x00100d88 ||
-	    commands.raster[M9_TRIANGLE_RASTER_SHADE_LINK1_DW] != 0x001006b6)
+	m9_triangle_build_commands(&job, true, commands);
+	if (commands->raster[M9_TRIANGLE_RASTER_SHADE_CONTROL_DW] != 0x00002503 ||
+	    commands->raster[M9_TRIANGLE_RASTER_SHADE_LINK0_DW] != 0x00100d88 ||
+	    commands->raster[M9_TRIANGLE_RASTER_SHADE_LINK1_DW] != 0x001006b6)
 		return -EINVAL;
 	for (i = 0; i < ARRAY_SIZE(m9_triangle_reloc_sites); i++) {
 		const struct m9_triangle_reloc_site *site =
 			&m9_triangle_reloc_sites[i];
 
-		if (m9_triangle_command_range(&commands, site->range)[site->dword] !=
+		if (m9_triangle_command_range(commands, site->range)[site->dword] !=
 		    m9_triangle_operand_value(&job, site->operand))
 			return -EINVAL;
 	}
@@ -1582,11 +1693,24 @@ int m9x_triangle_selftest(void)
 			&m9_triangle_transition_sites[i];
 		u32 expected = job.transition[site->transition] | site->tag;
 
-		if (m9_triangle_command_range(&commands, site->range)[site->dword] !=
+		if (m9_triangle_command_range(commands, site->range)[site->dword] !=
 		    expected)
 			return -EINVAL;
 	}
 	return 0;
+}
+
+int m9x_triangle_selftest(void)
+{
+	struct m9_triangle_commands *commands;
+	int ret;
+
+	commands = kzalloc_obj(*commands);
+	if (!commands)
+		return -ENOMEM;
+	ret = m9_triangle_stream_selftest(commands);
+	kfree(commands);
+	return ret;
 }
 
 void m9x_triangle_fini(struct m9x_device *mdev)

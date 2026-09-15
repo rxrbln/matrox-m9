@@ -43,25 +43,25 @@ It lazily allocates and retains coherent DMA32 storage for the exact 80-byte
 flat-green source, the captured ``0x20080``-byte system payload and the exact
 32-KiB class-1 BmBuffer.  The first ``0xfa0`` bytes hold the framed sequence-0
 image; all bytes through ``0x8000`` are deterministic zeroes and all eight
-pages receive compact PTEs.  It allocates index-69, C2, the exact 1-MiB BE
-context, four ``0x16800``-byte transient probes and the 320x240
+pages receive compact PTEs.  It allocates C2, the exact 1-MiB BE context, four
+``0x16800``-byte transient probes and the 320x240
 depth/auxiliary-depth surfaces directly in local VRAM.  Resources without an
 exact vendor extent are followed by at least one page of a resource-specific
 sentinel.  The source is initialized to four ``{x,y,r,g,b}`` records,
 including the proved duplicate prefetch record; BE and the system payload are
-zeroed deterministically.  Resource 69 is initialized as exactly ``0x361``
-copies of its recovered 0x80-byte record.  Each record points at the two-page
-A backing and the three-page C2 backing with the vendor's ``+8`` tags; the
-exposed ``0x1080``-byte C2 object begins at the middle page.  This preserves
-the captured contiguous predecessor/successor relationships.  The five
-pointee payloads are zeroed as a deterministic clean-room policy because their
-pre-draw bytes were not captured and read-before-write is not excluded.
+zeroed deterministically.  The exposed ``0x1080``-byte C2 object begins after
+one leading page, matching its captured address relationship.  The first
+triangle uploads the exact vendor P00 and S28 fixed-fragment chains through
+selector 68 in both rendering passes, binds their inline starts with
+``69=4, 6a=0x00990000``, and then performs the vendor's selector reset before
+each linked-record binding.  It does not manufacture external index-69
+storage from the opaque address-directed BAR snapshot.
 ``m9_triangle_gouraud=1`` selects the equally
 bounded captured red/green/blue source records; flat green remains the default
 that matches the exact M9148 command fixture.
 
-The preparation code encodes all 24 typed address sites in the exact
-118/113/8-dword preprocess/raster/completion layout and all eight uses of six
+The preparation code encodes all 22 typed address sites in the exact
+597/592/8-dword preprocess/raster/completion layout and all eight uses of six
 consecutive transition targets.  It derives every address from those retained
 kernel allocations, adds the established low address tags, and reserves the
 largest observed ``0x580``-byte linked slot at system offset ``0x300``.  It
@@ -74,7 +74,7 @@ four-byte compact PTE packing and ``0xa`` flags in the reserved low-VRAM
 manager image.  The load-time selftest pins each
 raw template with an independent byte-wise FNV-1a value, checks every captured
 address/target site, then confirms that rebuilding replaces all of those sites
-and reproduces the bounded six-word record.
+and reproduces the three exact vendor ranges.
 
 Cold execution follows the recovered vendor construction order.  It runs the
 complete ``m9x421`` transition once, publishes and activates the compact PTE
@@ -83,8 +83,8 @@ nonzero 1024-entry restore pool through the exact ``m9x109`` requester writes.
 Each transition preserves its two flush boundaries and three consecutive
 completion targets.  A direct no-op must retire before the driver submits the
 complete captured sequence-0 context image.  Once that image retires, the
-driver replaces the shared BmBuffer with the exact three-range draw image and
-submits its nine-dword primary publication.
+driver replaces the shared BmBuffer through ``0x17a0`` with the exact
+three-range draw image and submits its nine-dword primary publication.
 
 The color target remains pinned and TTM-reserved across the synchronous draw.
 After observing the final writeback token, a DMA read barrier orders all later
