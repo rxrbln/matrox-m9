@@ -864,8 +864,10 @@ m9_blend_key(const struct pipe_blend_state *blend, struct m9_fs_blend *out)
    if (rt->rgb_func != PIPE_BLEND_ADD || rt->alpha_func != PIPE_BLEND_ADD)
       return "blend equations other than ADD are not implemented; "
              "draw skipped";
-   if (m9_alpha_equivalent(rt->rgb_src_factor) != rt->alpha_src_factor ||
-       m9_alpha_equivalent(rt->rgb_dst_factor) != rt->alpha_dst_factor ||
+   if (m9_alpha_equivalent(rt->rgb_src_factor) !=
+          m9_alpha_equivalent(rt->alpha_src_factor) ||
+       m9_alpha_equivalent(rt->rgb_dst_factor) !=
+          m9_alpha_equivalent(rt->alpha_dst_factor) ||
        !m9_blend_factor(rt->rgb_src_factor, &out->src) ||
        !m9_blend_factor(rt->rgb_dst_factor, &out->dst))
       return "separate or constant blend factors are not implemented; "
