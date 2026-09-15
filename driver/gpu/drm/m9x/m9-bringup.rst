@@ -202,9 +202,14 @@ the vendor draw.
 
 On the M9148 the flat 320x240 triangle renders: its 28000 green pixels land
 at the same storage positions as in the vendor color target, and the
-preprocessing transient views match the vendor records.  The color surface
-is not stored as linear 320-pixel rows, so linear readback checks must use
-the decoded storage layout.
+preprocessing transient views match the vendor records.  The Gouraud triangle
+(raster ``22=0x2403``) matches the vendor colors at every pixel.  Render
+targets are stored as an opaque tiling of 8x4 pixel blocks; a host-aperture
+descriptor carrying the surface's own format (slot ``d1`` = surface address,
+``d2=cc210140``, ``d3=000100f0`` for this target) makes the hardware present
+linear top-down rows, where the triangle covers exactly its 28000 pixels.
+CPU readback, scanout copies and userspace transfers of render targets must
+use such a window rather than the raw BAR0 BO mapping.
 
 ``m9_user_submit=1`` executes validated userspace streams.  The kernel frames
 the count-free packets into counted records, submits them through the
