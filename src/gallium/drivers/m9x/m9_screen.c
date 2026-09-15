@@ -825,6 +825,16 @@ m9_flush_frontbuffer(struct pipe_screen *screen, struct pipe_context *ctx,
       __sync_synchronize();
 }
 
+/* Uniforms selecting glamor's control flow are inlined per value set. */
+static void
+m9_finalize_nir(struct pipe_screen *pscreen, struct nir_shader *nir,
+                bool optimize)
+{
+   (void)pscreen;
+   (void)optimize;
+   m9_fs_find_inlinable_uniforms(nir);
+}
+
 static void
 m9_destroy(struct pipe_screen *pscreen)
 {
@@ -1074,6 +1084,7 @@ m9_screen_create(int fd, const struct pipe_screen_config *config)
    caps->compute = false;
    caps->dmabuf = DRM_PRIME_CAP_IMPORT | DRM_PRIME_CAP_EXPORT;
    screen->base.destroy = m9_destroy;
+   screen->base.finalize_nir = m9_finalize_nir;
    screen->base.context_create = m9_context_create;
    screen->base.get_name = m9_name;
    screen->base.get_vendor = m9_vendor;

@@ -7,6 +7,7 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#include "compiler/shader_info.h"
 #include "pipe/p_context.h"
 #include "pipe/p_screen.h"
 #include "pipe/p_state.h"
@@ -243,6 +244,7 @@ struct m9_context {
    unsigned num_vertex_buffers;
    struct pipe_constant_buffer vs_constants[PIPE_MAX_CONSTANT_BUFFERS];
    struct pipe_constant_buffer fs_constants;
+   uint32_t fs_inline[MAX_INLINABLE_UNIFORMS];  /* fragment inlinable uniforms */
    struct pipe_sampler_view *fs_views[PIPE_MAX_SAMPLERS];
    const struct pipe_sampler_state *fs_samplers[PIPE_MAX_SAMPLERS];
 

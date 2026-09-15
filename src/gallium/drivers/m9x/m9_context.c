@@ -72,20 +72,23 @@ struct m9_fs_state {
    bool passthrough;
    bool native, warned;
    const char *reason;
-   struct m9_fs_program program;       /* unblended: streams and samplers */
-   struct util_dynarray variants;      /* struct m9_fs_variant *, per blend */
-   unsigned extra_count;              /* CPU view locations: varyings, then coordinates */
+   struct util_dynarray variants;      /* struct m9_fs_variant * */
+};
+
+/* A fragment state specialised on blend state and inlined uniform values. */
+struct m9_fs_variant {
+   struct m9_fs_blend blend;
+   uint32_t inline_values[MAX_INLINABLE_UNIFORMS];
+   bool ok;
+   const char *reason;                 /* why the variant is not drawable */
+   struct m9_fs_program program;
+   struct m9_resource c2;              /* fragment slots, then vertex program */
+   unsigned vertex_entry;
+   unsigned extra_count;               /* CPU view locations: varyings, then coordinates */
    uint8_t extra_location[M9_FS_MAX_VARYINGS + M9_FS_MAX_TEXTURES];
    unsigned coord_count;               /* distinct texture coordinate streams */
    uint8_t coord_location[M9_FS_MAX_TEXTURES];
    uint8_t texture_coord[M9_FS_MAX_TEXTURES];  /* coordinate stream per texel pair */
-};
-
-struct m9_fs_variant {
-   struct m9_fs_blend blend;
-   struct m9_fs_program program;
-   struct m9_resource c2;              /* fragment slots, then vertex program */
-   unsigned vertex_entry;
 };
 
 struct m9_velems {
@@ -415,9 +418,8 @@ m9_varying_is_color(unsigned location)
 
 /* Raster constants and CPU varying views of a native fragment job. */
 static int
-m9_job_native(struct m9_context *ctx, const struct m9_fs_state *fs,
-              const struct m9_fs_variant *variant, unsigned records,
-              struct m9_raster_fs *raster)
+m9_job_native(struct m9_context *ctx, const struct m9_fs_variant *fs,
+              unsigned records, struct m9_raster_fs *raster)
 {
    const struct m9_fs_program *p = &fs->program;
    const float *extra = ctx->extra.data;
@@ -443,9 +445,9 @@ m9_job_native(struct m9_context *ctx, const struct m9_fs_state *fs,
          memcpy(view + r * M9_TRANSIENT_VERTEX_BYTES,
                 extra + (r * fs->extra_count + j) * 4, 4 * sizeof(float));
    }
-   return m9_raster_fs_init_textured(raster, variant->vertex_entry,
-                                     m9_fs_raster_88(&variant->program),
-                                     util_dynarray_num_elements(&variant->program.consts,
+   return m9_raster_fs_init_textured(raster, fs->vertex_entry,
+                                     m9_fs_raster_88(p),
+                                     util_dynarray_num_elements(&p->consts,
                                                                 struct m9_fs_const),
                                      p->varying_count, flat, views,
                                      fs->coord_count, coords,
@@ -478,7 +480,7 @@ m9_submit_job(struct m9_context *ctx)
       memcpy((uint8_t *)ctx->system.map + M9_LINKED_OFFSET,
              ctx->params.linked_prefix, sizeof(ctx->params.linked_prefix));
       if (fs)
-         ret = m9_job_native(ctx, fs, key->variant, records, &raster);
+         ret = m9_job_native(ctx, key->variant, records, &raster);
       job = (struct m9_draw_job) {
          .params = &ctx->params,
          .decl = &ctx->decl,
@@ -549,7 +551,7 @@ m9_job_reserve(struct m9_context *ctx, const struct m9_job_key *key,
                uint32_t *first, float **extra)
 {
    unsigned padded = m9_draw_preprocess_vertices(vertices);
-   unsigned extra_count = key->fs ? key->fs->extra_count : 0;
+   unsigned extra_count = key->variant ? key->variant->extra_count : 0;
    unsigned dwords;
    unsigned records = util_dynarray_num_elements(&ctx->records, float) /
                       M9_RECORD_FLOATS;
@@ -602,8 +604,8 @@ m9_job_commit(struct m9_context *ctx, float *out, float *extra,
               uint32_t cull, bool lines, bool flat)
 {
    unsigned padded = m9_draw_preprocess_vertices(vertices);
-   unsigned extra_floats = 4 * (ctx->job_key.fs ?
-                                ctx->job_key.fs->extra_count : 0);
+   unsigned extra_floats = 4 * (ctx->job_key.variant ?
+                                ctx->job_key.variant->extra_count : 0);
    struct m9_draw_record *draw;
 
    /* Pad to the next four-record boundary with the last vertex. */
@@ -748,7 +750,7 @@ m9_texture_bind_view(const struct pipe_sampler_view *view,
 }
 
 static bool
-m9_job_textures(struct m9_context *ctx, const struct m9_fs_state *fs,
+m9_job_textures(struct m9_context *ctx, const struct m9_fs_variant *fs,
                 struct m9_job_key *key)
 {
    const struct m9_fs_program *p = &fs->program;
@@ -857,18 +859,47 @@ m9_fs_variant_upload(struct m9_context *ctx, struct m9_fs_variant *v,
    return true;
 }
 
-/* Program of fs for a blend state, compiled on first use. */
+/* CPU view order: non-colour varyings, then distinct coordinate streams. */
+static void
+m9_fs_streams(struct m9_fs_variant *v)
+{
+   const struct m9_fs_program *p = &v->program;
+
+   for (unsigned k = 0; k < p->varying_count; k++)
+      if (p->varyings[k].location != VARYING_SLOT_COL0)
+         v->extra_location[v->extra_count++] = p->varyings[k].location;
+   for (unsigned t = 0; t < p->texture_count; t++) {
+      unsigned c = 0;
+
+      while (c < v->coord_count && v->coord_location[c] != p->texcoords[t])
+         c++;
+      if (c == v->coord_count) {
+         v->coord_location[v->coord_count++] = p->texcoords[t];
+         if (p->texcoords[t] != VARYING_SLOT_COL0)
+            v->extra_location[v->extra_count++] = p->texcoords[t];
+      }
+      v->texture_coord[t] = c;
+   }
+}
+
+/* Program of fs for a blend state and inlined uniform values, compiled on
+ * first use; refused variants stay cached with their reason. */
 static const struct m9_fs_variant *
 m9_fs_variant(struct m9_context *ctx, struct m9_fs_state *fs,
-              const struct m9_fs_blend *blend, const char **reason)
+              const struct m9_fs_variant *want, const char **reason)
 {
-   struct m9_fs_variant *v;
+   const size_t inline_bytes = fs->nir->info.num_inlinable_uniforms *
+                               sizeof(uint32_t);
+   struct m9_fs_variant *v, **slot;
    nir_shader *clone;
-   bool ok;
 
    util_dynarray_foreach(&fs->variants, struct m9_fs_variant *, it) {
-      if ((*it)->blend.src == blend->src && (*it)->blend.dst == blend->dst)
-         return *it;
+      if ((*it)->blend.src == want->blend.src &&
+          (*it)->blend.dst == want->blend.dst &&
+          !memcmp((*it)->inline_values, want->inline_values, inline_bytes)) {
+         *reason = (*it)->reason;
+         return (*it)->ok ? *it : NULL;
+      }
    }
    *reason = "out of memory";
    v = CALLOC_STRUCT(m9_fs_variant);
@@ -877,19 +908,49 @@ m9_fs_variant(struct m9_context *ctx, struct m9_fs_state *fs,
       FREE(v);
       return NULL;
    }
-   v->blend = *blend;
-   ok = m9_fs_compile(clone, blend, &v->program, reason);
+   v->blend = want->blend;
+   memcpy(v->inline_values, want->inline_values, inline_bytes);
+   if (inline_bytes)
+      m9_fs_inline_uniforms(clone, v->inline_values);
+   v->ok = m9_fs_compile(clone, &v->blend, &v->program, &v->reason);
    ralloc_free(clone);
-   if (ok && !m9_fs_variant_upload(ctx, v, reason)) {
-      m9_fs_program_fini(&v->program);
-      ok = false;
+   if (v->ok) {
+      m9_fs_streams(v);
+      if (v->extra_count > M9_TRANSIENT_VIEWS - M9_TRANSIENT_CPU_VIEW) {
+         v->reason = "more CPU varying streams than transient views";
+         v->ok = false;
+      } else {
+         v->ok = m9_fs_variant_upload(ctx, v, &v->reason);
+      }
+      if (!v->ok)
+         m9_fs_program_fini(&v->program);
    }
-   if (!ok) {
+   slot = util_dynarray_grow(&fs->variants, struct m9_fs_variant *, 1);
+   if (!slot) {
+      if (v->ok) {
+         m9_bo_destroy(ctx->screen, &v->c2);
+         m9_fs_program_fini(&v->program);
+      }
       FREE(v);
       return NULL;
    }
-   util_dynarray_append_typed(&fs->variants, struct m9_fs_variant *, v);
-   return v;
+   *slot = v;
+   *reason = v->reason;
+   return v->ok ? v : NULL;
+}
+
+/* Variant of the bound fragment state for the current blend and inlined
+ * uniform values. */
+static const struct m9_fs_variant *
+m9_ctx_variant(struct m9_context *ctx, const char **reason)
+{
+   struct m9_fs_variant want = { .blend = { M9_FS_ONE, M9_FS_ZERO } };
+
+   *reason = m9_blend_key(ctx->blend, &want.blend);
+   if (*reason)
+      return NULL;
+   memcpy(want.inline_values, ctx->fs_inline, sizeof(want.inline_values));
+   return m9_fs_variant(ctx, ctx->fs, &want, reason);
 }
 
 static bool
@@ -924,21 +985,16 @@ m9_job_key_current(struct m9_context *ctx, struct m9_job_key *key)
    key->color_mask = m9_color_mask(blend ? blend->rt[0].colormask :
                                            PIPE_MASK_RGBA);
    if (ctx->fs && ctx->fs->native && !ctx->fs->passthrough) {
-      struct m9_fs_blend fb = { M9_FS_ONE, M9_FS_ZERO };
-      const char *reason = m9_blend_key(blend, &fb);
+      const char *reason;
 
-      if (reason) {
-         m9_warn_once(ctx, M9_WARN_BLEND, reason);
-         return false;
-      }
       key->fs = ctx->fs;
-      key->variant = m9_fs_variant(ctx, ctx->fs, &fb, &reason);
+      key->variant = m9_ctx_variant(ctx, &reason);
       if (!key->variant) {
          m9_warn_once(ctx, M9_WARN_BLEND, reason);
          return false;
       }
       if (!m9_fs_resolve_consts(ctx, key->variant, &ctx->key_consts) ||
-          !m9_job_textures(ctx, ctx->fs, key))
+          !m9_job_textures(ctx, key->variant, key))
          return false;
    } else if (blend && blend->rt[0].blend_enable) {
       m9_warn_once(ctx, M9_WARN_BLEND, "blending needs a native fragment "
@@ -967,6 +1023,8 @@ m9_render_get_vertex_info(struct vbuf_render *render)
                                           TGSI_SEMANTIC_POSITION, 0);
    int color = draw_find_shader_output(r->ctx->draw, TGSI_SEMANTIC_COLOR, 0);
    const struct m9_fs_state *fs = r->ctx->fs;
+   const struct m9_fs_variant *v = NULL;
+   const char *reason;
 
    memset(&r->vinfo, 0, sizeof(r->vinfo));
    draw_emit_vertex_attr(&r->vinfo, EMIT_4F, MAX2(position, 0));
@@ -974,11 +1032,13 @@ m9_render_get_vertex_info(struct vbuf_render *render)
    if (r->has_color)
       draw_emit_vertex_attr(&r->vinfo, EMIT_4F, color);
    r->extra_count = 0;
-   if (fs && fs->native && !fs->passthrough) {
+   if (fs && fs->native && !fs->passthrough)
+      v = m9_ctx_variant(r->ctx, &reason);
+   if (v) {
       unsigned offset = r->has_color ? 8 : 4;
 
-      for (unsigned j = 0; j < fs->extra_count; j++) {
-         unsigned location = fs->extra_location[j];
+      for (unsigned j = 0; j < v->extra_count; j++) {
+         unsigned location = v->extra_location[j];
          unsigned name, index;
          int output;
 
@@ -992,7 +1052,7 @@ m9_render_get_vertex_info(struct vbuf_render *render)
             offset += 4;
          }
       }
-      r->extra_count = fs->extra_count;
+      r->extra_count = v->extra_count;
    }
    draw_compute_vertex_size(&r->vinfo);
    return &r->vinfo;
@@ -1080,7 +1140,7 @@ m9_render_append(struct m9_vbuf_render *r, const struct m9_job_key *key,
 
       if (!out)
          return;
-      if (extra && r->extra_count != key->fs->extra_count)
+      if (extra && r->extra_count != key->variant->extra_count)
          return;
       for (unsigned i = 0; i < n; i++) {
          unsigned index = !indices ? start + done + i :
@@ -1726,51 +1786,15 @@ m9_fs_passthrough(nir_shader *nir)
    return written;
 }
 
-/* CPU view order: non-colour varyings, then distinct coordinate streams. */
-static void
-m9_fs_streams(struct m9_fs_state *fs)
-{
-   const struct m9_fs_program *p = &fs->program;
-
-   for (unsigned k = 0; k < p->varying_count; k++)
-      if (p->varyings[k].location != VARYING_SLOT_COL0)
-         fs->extra_location[fs->extra_count++] = p->varyings[k].location;
-   for (unsigned t = 0; t < p->texture_count; t++) {
-      unsigned c = 0;
-
-      while (c < fs->coord_count && fs->coord_location[c] != p->texcoords[t])
-         c++;
-      if (c == fs->coord_count) {
-         fs->coord_location[fs->coord_count++] = p->texcoords[t];
-         if (p->texcoords[t] != VARYING_SLOT_COL0)
-            fs->extra_location[fs->extra_count++] = p->texcoords[t];
-      }
-      fs->texture_coord[t] = c;
-   }
-}
-
 static void
 m9_fs_native_init(struct m9_context *ctx, struct m9_fs_state *fs)
 {
-   static const struct m9_fs_blend opaque = { M9_FS_ONE, M9_FS_ZERO };
-   nir_shader *clone = nir_shader_clone(NULL, fs->nir);
+   const struct m9_fs_variant opaque = { .blend = { M9_FS_ONE, M9_FS_ZERO } };
 
    util_dynarray_init(&fs->variants, NULL);
-   fs->reason = "out of memory";
-   if (!clone)
-      return;
-   if (!m9_fs_compile(clone, NULL, &fs->program, &fs->reason)) {
-      ralloc_free(clone);
-      return;
-   }
-   ralloc_free(clone);
-   m9_fs_streams(fs);
-   if (fs->extra_count > M9_TRANSIENT_VIEWS - M9_TRANSIENT_CPU_VIEW)
-      fs->reason = "more CPU varying streams than transient views";
-   else if (m9_fs_variant(ctx, fs, &opaque, &fs->reason))
-      fs->native = true;
-   if (!fs->native)
-      m9_fs_program_fini(&fs->program);
+   /* Shaders specialised on inlined uniforms compile per value set. */
+   fs->native = fs->nir->info.num_inlinable_uniforms ||
+                m9_fs_variant(ctx, fs, &opaque, &fs->reason);
 }
 
 static void *
@@ -1815,13 +1839,13 @@ m9_delete_fs_state(struct pipe_context *pctx, void *state)
    if (ctx->job_key.fs == fs)
       m9_context_sync(ctx);
    util_dynarray_foreach(&fs->variants, struct m9_fs_variant *, it) {
-      m9_bo_destroy(ctx->screen, &(*it)->c2);
-      m9_fs_program_fini(&(*it)->program);
+      if ((*it)->ok) {
+         m9_bo_destroy(ctx->screen, &(*it)->c2);
+         m9_fs_program_fini(&(*it)->program);
+      }
       FREE(*it);
    }
    util_dynarray_fini(&fs->variants);
-   if (fs->native)
-      m9_fs_program_fini(&fs->program);
    draw_delete_fragment_shader(ctx->draw, fs->draw);
    ralloc_free(fs->nir);
    FREE(fs);
@@ -1873,6 +1897,15 @@ m9_set_constant_buffer(struct pipe_context *pctx, mesa_shader_stage shader,
       util_copy_constant_buffer(&m9_context(pctx)->vs_constants[index], cb);
    else if (shader == MESA_SHADER_FRAGMENT && index == 0)
       util_copy_constant_buffer(&m9_context(pctx)->fs_constants, cb);
+}
+
+static void
+m9_set_inlinable_constants(struct pipe_context *pctx, mesa_shader_stage shader,
+                           uint num_values, uint32_t *values)
+{
+   if (shader == MESA_SHADER_FRAGMENT)
+      memcpy(m9_context(pctx)->fs_inline, values,
+             MIN2(num_values, MAX_INLINABLE_UNIFORMS) * sizeof(*values));
 }
 
 static void
@@ -2143,6 +2176,7 @@ m9_context_create(struct pipe_screen *pscreen, void *priv, unsigned flags)
    ctx->base.delete_vertex_elements_state = m9_delete_state;
    ctx->base.set_vertex_buffers = m9_set_vertex_buffers;
    ctx->base.set_constant_buffer = m9_set_constant_buffer;
+   ctx->base.set_inlinable_constants = m9_set_inlinable_constants;
    ctx->base.set_framebuffer_state = m9_set_framebuffer_state;
    ctx->base.set_viewport_states = m9_set_viewport_states;
    ctx->base.set_scissor_states = m9_set_scissor_states;
