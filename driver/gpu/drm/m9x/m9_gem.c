@@ -4,6 +4,7 @@
 #include <linux/sizes.h>
 
 #include <drm/drm_file.h>
+#include <drm/drm_drv.h>
 #include <drm/drm_gem.h>
 #include <drm/drm_gem_dma_helper.h>
 #include <drm/drm_gem_ttm_helper.h>
@@ -38,8 +39,6 @@ static void m9_vram_bo_free(struct drm_gem_object *gem)
 	struct m9x_vram_bo *bo = container_of(drm_gem_vram_of_gem(gem),
 						struct m9x_vram_bo, vram);
 
-	if (bo->user_pinned)
-		m9x_vram_unpin(&bo->vram);
 	drm_gem_vram_put(&bo->vram);
 }
 
@@ -143,7 +142,6 @@ static struct m9x_bo *m9_bo_create(struct drm_device *drm, size_t size)
 		ret = -ERANGE;
 		goto err_put;
 	}
-	INIT_LIST_HEAD(&bo->link);
 	return bo;
 
 err_put:
@@ -166,10 +164,6 @@ m9_vram_bo_create(struct drm_device *drm, size_t size)
 	if (IS_ERR(vram))
 		return ERR_CAST(vram);
 	bo = container_of(vram, struct m9x_vram_bo, vram);
-	ret = m9x_vram_pin(vram);
-	if (ret)
-		goto err_put;
-	bo->user_pinned = true;
 	ret = ttm_bo_reserve(&vram->bo, true, false, NULL);
 	if (ret)
 		goto err_put;
@@ -198,30 +192,25 @@ struct m9x_bo *m9x_bo_lookup(struct m9x_device *mdev,
 					      u32 handle)
 {
 	struct drm_gem_object *gem;
-	struct m9x_bo *bo, *found = NULL;
+	struct m9x_bo *bo;
+
+	(void)mdev;
 
 	gem = drm_gem_object_lookup(file, handle);
 	if (!gem)
 		return ERR_PTR(-ENOENT);
 
-	mutex_lock(&mdev->transport.lock);
-	list_for_each_entry(bo, &mdev->transport.bos, link) {
-		if (&bo->dma.base == gem && bo->file == file) {
-			found = bo;
-			break;
-		}
-	}
-	mutex_unlock(&mdev->transport.lock);
-	if (!found) {
+	if (!m9x_gem_is_dma(gem)) {
 		drm_gem_object_put(gem);
 		return ERR_PTR(-EINVAL);
 	}
 	/* The handle lookup reference is returned to the caller. */
-	return found;
+	bo = container_of(to_drm_gem_dma_obj(gem), struct m9x_bo, dma);
+	return bo;
 }
 
-int m9x_create_bo_ioctl(struct drm_device *drm, void *data,
-			 struct drm_file *file)
+static int m9_create_bo_ioctl(struct drm_device *drm, void *data,
+			      struct drm_file *file)
 {
 	struct drm_parhelia_m9_create_bo *args = data;
 	struct m9x_device *mdev = to_m9x(drm);
@@ -240,6 +229,11 @@ int m9x_create_bo_ioctl(struct drm_device *drm, void *data,
 	    args->mmap_offset)
 		return -EINVAL;
 	size = PAGE_ALIGN(args->size);
+	mutex_lock(&mdev->transport.lock);
+	ret = mdev->transport.wedged ? -EIO : 0;
+	mutex_unlock(&mdev->transport.lock);
+	if (ret)
+		return ret;
 	if (args->flags & PARHELIA_M9_BO_VRAM) {
 		struct m9x_vram_bo *vram_bo;
 
@@ -258,33 +252,31 @@ int m9x_create_bo_ioctl(struct drm_device *drm, void *data,
 	if (ret)
 		goto out_put;
 
-	mutex_lock(&mdev->transport.lock);
-	if (mdev->transport.wedged) {
-		ret = -EIO;
-	} else if (bo) {
-		drm_gem_object_get(gem);
-		bo->file = file;
-		list_add_tail(&bo->link, &mdev->transport.bos);
-	}
-	mutex_unlock(&mdev->transport.lock);
-	if (ret)
-		goto out_handle;
-
 	args->size = size;
 	args->handle = handle;
 	args->mmap_offset = drm_vma_node_offset_addr(&gem->vma_node);
 	drm_gem_object_put(gem);
 	return 0;
 
-out_handle:
-	drm_gem_handle_delete(file, handle);
 out_put:
 	drm_gem_object_put(gem);
 	return ret;
 }
 
-int m9x_get_bo_info_ioctl(struct drm_device *drm, void *data,
-			  struct drm_file *file)
+int m9x_create_bo_ioctl(struct drm_device *drm, void *data,
+			 struct drm_file *file)
+{
+	int idx, ret;
+
+	if (!drm_dev_enter(drm, &idx))
+		return -ENODEV;
+	ret = m9_create_bo_ioctl(drm, data, file);
+	drm_dev_exit(idx);
+	return ret;
+}
+
+static int m9_get_bo_info_ioctl(struct drm_device *drm, void *data,
+				struct drm_file *file)
 {
 	struct drm_parhelia_m9_get_bo_info *args = data;
 	struct drm_gem_object *gem;
@@ -312,20 +304,14 @@ int m9x_get_bo_info_ioctl(struct drm_device *drm, void *data,
 	return ret;
 }
 
-void m9x_postclose(struct m9x_device *mdev, struct drm_file *file)
+int m9x_get_bo_info_ioctl(struct drm_device *drm, void *data,
+			  struct drm_file *file)
 {
-	struct m9x_bo *bo, *tmp;
-	LIST_HEAD(dead);
+	int idx, ret;
 
-	mutex_lock(&mdev->transport.lock);
-	list_for_each_entry_safe(bo, tmp, &mdev->transport.bos, link) {
-		if (bo->file == file)
-			list_move_tail(&bo->link, &dead);
-	}
-	mutex_unlock(&mdev->transport.lock);
-
-	list_for_each_entry_safe(bo, tmp, &dead, link) {
-		list_del_init(&bo->link);
-		drm_gem_object_put(&bo->dma.base);
-	}
+	if (!drm_dev_enter(drm, &idx))
+		return -ENODEV;
+	ret = m9_get_bo_info_ioctl(drm, data, file);
+	drm_dev_exit(idx);
+	return ret;
 }

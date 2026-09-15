@@ -53,7 +53,6 @@
 #define M9_TRIANGLE_TRANSIENT_COUNT	4u
 #define M9_TRIANGLE_TRANSIENT_ARENA_BYTES \
 	(M9_TRIANGLE_TRANSIENT_COUNT * M9_TRIANGLE_TRANSIENT_BYTES)
-#define M9_TRIANGLE_VRAM_BASE		0x10000000ull
 #define M9_TRIANGLE_SYSTEM_GPUVA_BASE	0x40000000u
 #define M9_TRIANGLE_SYSTEM_GPUVA_END	0x50000000u
 #define M9_TRIANGLE_MAX_SYSTEM_PTES	44u
@@ -627,7 +626,7 @@ static int m9_triangle_alloc_vram(struct m9x_device *mdev,
 		&mdev->transport.triangle->resource[id];
 	struct drm_gem_vram_object *vram;
 	s64 offset;
-	u64 end;
+	u64 bus, offset_end;
 	u32 word;
 	int ret;
 
@@ -640,9 +639,10 @@ static int m9_triangle_alloc_vram(struct m9x_device *mdev,
 		goto out_put;
 	offset = drm_gem_vram_offset(vram);
 	if (offset < 0 || check_add_overflow((u64)offset, (u64)alloc_bytes,
-					     &end) || end > mdev->vram_size ||
-	    check_add_overflow(M9_TRIANGLE_VRAM_BASE, (u64)offset, &end) ||
-	    end > U32_MAX || (end & (spec->alignment - 1))) {
+				     &offset_end) ||
+	    offset_end > min_t(u64, mdev->vram_size, M9_VRAM_GPU_SIZE) ||
+	    check_add_overflow(M9_VRAM_GPU_BASE, (u64)offset, &bus) ||
+	    bus > U32_MAX || (bus & (spec->alignment - 1))) {
 		ret = offset < 0 ? (int)offset : -ERANGE;
 		goto out_unpin;
 	}
@@ -655,7 +655,7 @@ static int m9_triangle_alloc_vram(struct m9x_device *mdev,
 		goto out_unpin;
 
 	resource->vram = vram;
-	resource->bus = end;
+	resource->bus = bus;
 	resource->payload_bytes = spec->payload_bytes;
 	resource->alloc_bytes = alloc_bytes;
 	resource->guard_bytes = alloc_bytes - spec->payload_bytes;
@@ -851,6 +851,19 @@ static int m9_triangle_prepare_resources(struct m9x_device *mdev)
 	return m9_triangle_verify_guards(diag);
 }
 
+int m9x_triangle_prepare_diag(struct m9x_device *mdev)
+{
+	int ret;
+
+	if (!m9_triangle_diag)
+		return -EACCES;
+	mutex_lock(&mdev->transport.lock);
+	ret = mdev->transport.wedged ? -EIO :
+		m9_triangle_prepare_resources(mdev);
+	mutex_unlock(&mdev->transport.lock);
+	return ret;
+}
+
 static u32 m9_triangle_bus(const struct m9x_triangle_diag *diag,
 			   enum m9_triangle_resource_id id)
 {
@@ -979,20 +992,27 @@ static int m9_triangle_log_secondary_mapping(struct m9x_device *mdev)
 {
 	const struct m9_triangle_resource *secondary =
 		&mdev->transport.triangle->resource[M9_TRI_SECONDARY];
-	u32 expected, pte;
+	u32 expected, expected_root, pte, root, root_page;
 	int ret;
 
 	ret = m9x_address_read_pte(mdev, secondary->gpuva, &pte);
 	if (ret)
 		return ret;
-	expected = (lower_32_bits(secondary->bus) & 0xfffff000u) |
-		((secondary->bus >> 28) & 0x00000ff0u) | 0xau;
+	ret = m9x_address_read_root_pte(mdev, secondary->gpuva, &root);
+	if (ret)
+		return ret;
+	expected = m9x_address_pte_word(secondary->bus);
+	root_page = (0x00801000u +
+		     (secondary->gpuva >> PAGE_SHIFT) * sizeof(u32)) >> PAGE_SHIFT;
+	expected_root = (root_page << PAGE_SHIFT) | 0x8u;
 	dev_info(&mdev->pdev->dev,
-		 "M9 secondary probe: gpuva=%#x dma=%pad pte=%#x expected=%#x primary={%#x,%#x,%#x}\n",
-		 secondary->gpuva, &secondary->bus, pte, expected,
+		 "M9 secondary probe: gpuva=%#x dma=%pad root=%#x/%#x pte=%#x/%#x primary={%#x,%#x,%#x}\n",
+		 secondary->gpuva, &secondary->bus, root,
+		 expected_root, pte, expected,
 		 0x45452d2c, (secondary->gpuva + 0x08) | 1,
 		 (secondary->gpuva + 0x34) | 2);
-	return pte == expected ? 0 : -EIO;
+	return pte == expected && root == expected_root ?
+		0 : -EIO;
 }
 
 static int m9_triangle_build_addresses(struct m9x_device *mdev, u32 color,
@@ -1246,6 +1266,7 @@ int m9x_submit_triangle_diag(struct m9x_device *mdev, u32 color,
 	u32 sequence0_final = 0;
 	u32 target;
 	bool initialized_now = false;
+	bool draw_posted = false;
 	int ret;
 
 	*point = 0;
@@ -1319,8 +1340,8 @@ int m9x_submit_triangle_diag(struct m9x_device *mdev, u32 color,
 		noop_primary[1] = 3;
 		noop_primary[2] = target | 1;
 		ret = m9x_submit_kernel_stream_locked(mdev, noop_primary,
-						      ARRAY_SIZE(noop_primary),
-						      target, point);
+					      ARRAY_SIZE(noop_primary),
+					      target, point, NULL);
 		if (ret)
 			goto out_unlock;
 		mdev->transport.next_fence = target + 0x10;
@@ -1338,7 +1359,7 @@ int m9x_submit_triangle_diag(struct m9x_device *mdev, u32 color,
 				goto out_unlock;
 			ret = m9x_submit_kernel_stream_locked(mdev,
 					diag->commands.sequence0_primary, 3,
-					target, point);
+					target, point, NULL);
 			if (ret)
 				goto out_unlock;
 			mdev->transport.next_fence = target + 0x10;
@@ -1360,9 +1381,9 @@ int m9x_submit_triangle_diag(struct m9x_device *mdev, u32 color,
 				      diag->commands.sequence0_primary);
 		WRITE_ONCE(*(u32 *)mdev->transport.fence_cpu, ~sequence0_final);
 		ret = m9x_submit_kernel_stream_locked(mdev,
-						      diag->commands.sequence0_primary,
-						      ARRAY_SIZE(diag->commands.sequence0_primary),
-						      sequence0_final, point);
+					      diag->commands.sequence0_primary,
+					      ARRAY_SIZE(diag->commands.sequence0_primary),
+					      sequence0_final, point, NULL);
 		if (ret)
 			goto out_unlock;
 		mdev->transport.next_fence = sequence0.target +
@@ -1403,13 +1424,12 @@ int m9x_submit_triangle_diag(struct m9x_device *mdev, u32 color,
 	}
 	dma_resv_add_fence(color_bo->bo.base.resv, &out_fence->base,
 			   DMA_RESV_USAGE_WRITE);
-	*color_active = true;
 	ret = m9x_submit_kernel_stream_locked(mdev, diag->commands.primary,
 					      ARRAY_SIZE(diag->commands.primary),
-					      job.transition[5], point);
+					      job.transition[5], point, &draw_posted);
+	*color_active = draw_posted && ret;
 	if (ret)
 		goto out_unlock;
-	*color_active = false;
 	mdev->transport.next_fence = job.transition[5] + 0x10;
 	ret = m9_triangle_verify_guards(diag);
 	if (ret) {

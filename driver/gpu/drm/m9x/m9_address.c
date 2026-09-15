@@ -72,7 +72,7 @@ static void m9_address_invalidate_service_bank(struct m9x_device *mdev)
 		 M9_ADDRESS_SERVICE_STRIDE);
 }
 
-static u32 m9_address_pte_word(dma_addr_t dma)
+u32 m9x_address_pte_word(dma_addr_t dma)
 {
 	return (lower_32_bits(dma) & 0xfffff000u) |
 	       ((dma >> 28) & 0x00000ff0u) | 0xau;
@@ -115,8 +115,8 @@ static int m9_address_selftest(void)
 	    m9_address_slot(0x4ffff000, &offset) || offset != 0x00940ffc ||
 	    !m9_address_slot(0x3ffff000, &offset) ||
 	    !m9_address_slot(0x50000000, &offset) ||
-	    m9_address_pte_word((dma_addr_t)0x0232a000) != 0x0232a00a ||
-	    m9_address_pte_word((dma_addr_t)0xab12345000ULL) != 0x12345aba ||
+	    m9x_address_pte_word((dma_addr_t)0x0232a000) != 0x0232a00a ||
+	    m9x_address_pte_word((dma_addr_t)0xab12345000ULL) != 0x12345aba ||
 	    M9_ADDRESS_ROOT_PAGES != 0x0d41 ||
 	    m9_address_root_pte_word(0) != 0x00000008 ||
 	    m9_address_root_pte_word(0x901) != 0x00901008 ||
@@ -379,7 +379,7 @@ static int m9_address_publish_binding(struct m9x_device *mdev,
 		if (ret)
 			return ret;
 		iosys_map_wr(&address->map, offset, u32,
-			     m9_address_pte_word(binding->dma +
+			     m9x_address_pte_word(binding->dma +
 						     page * PAGE_SIZE));
 	}
 	/* Make this allocation's BAR/WC leaves visible before activation. */
@@ -474,6 +474,27 @@ int m9x_address_read_pte(struct m9x_device *mdev, u32 gpuva, u32 *value)
 	if (ret)
 		return ret;
 	*value = iosys_map_rd(&address->map, offset, u32);
+	return 0;
+}
+
+int m9x_address_read_root_pte(struct m9x_device *mdev, u32 gpuva, u32 *value)
+{
+	struct m9x_address_space *address = mdev->transport.address;
+	u32 offset, root_page, root_offset;
+	int ret;
+
+	if (!value || !address || !address->mapped)
+		return -EINVAL;
+	ret = m9_address_slot(gpuva, &offset);
+	if (ret)
+		return ret;
+	root_page = offset >> PAGE_SHIFT;
+	if (check_mul_overflow(root_page, (u32)sizeof(u32), &root_offset) ||
+	    check_add_overflow(root_offset, M9_ADDRESS_TRANSLATION_BASE,
+			       &root_offset) ||
+	    root_offset > M9_ADDRESS_TRANSLATION_LIMIT - sizeof(u32))
+		return -ERANGE;
+	*value = iosys_map_rd(&address->map, root_offset, u32);
 	return 0;
 }
 

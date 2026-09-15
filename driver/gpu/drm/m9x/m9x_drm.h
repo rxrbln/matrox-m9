@@ -89,6 +89,11 @@ struct drm_parhelia_m9_reloc {
 #define PARHELIA_M9_SUBMIT_NOOP_FENCE		(1u << 1)
 #define PARHELIA_M9_SUBMIT_FIRST_TRIANGLE	(1u << 2)
 
+enum drm_parhelia_m9_program_type {
+	PARHELIA_M9_PROGRAM_NONE,
+	PARHELIA_M9_PROGRAM_FIXED_P00_S28_INLINE,
+};
+
 /*
  * NOOP_FENCE requires all command and BO fields to be zero.  FIRST_TRIANGLE accepts one
  * read/write VRAM BO reference as its kernel-validated linear color target;
@@ -106,7 +111,7 @@ struct drm_parhelia_m9_submit {
 	__u32 flags;
 	__u64 bos_ptr;
 	__u32 out_syncobj;
-	__u32 pad;
+	__u32 program_type;
 	__u64 out_point;
 };
 

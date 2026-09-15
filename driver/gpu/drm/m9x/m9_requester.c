@@ -200,8 +200,6 @@ int m9x_transport_arm_locked(struct m9x_device *mdev)
 			m9x_read(mdev, M9_REG_REQUESTER_CTL2));
 		return -EOPNOTSUPP;
 	}
-	pci_set_master(mdev->pdev);
-
 	if (transport->restore_ready &&
 	    (!transport->restore_cpu || upper_32_bits(transport->restore_bus) ||
 	     restore > U32_MAX - PARHELIA_M9_RESTORE_BYTES))
@@ -251,7 +249,7 @@ int m9x_transport_rearm_locked(struct m9x_device *mdev)
 
 int m9x_submit_kernel_stream_locked(struct m9x_device *mdev,
 				    const u32 *commands, u32 dwords,
-				    u32 target, u64 *point)
+				    u32 target, u64 *point, bool *doorbell_posted)
 {
 	struct m9x_transport *transport = &mdev->transport;
 	unsigned long deadline;
@@ -262,6 +260,8 @@ int m9x_submit_kernel_stream_locked(struct m9x_device *mdev,
 	int ret;
 
 	lockdep_assert_held(&transport->lock);
+	if (doorbell_posted)
+		*doorbell_posted = false;
 	if (!commands || !dwords ||
 	    dwords > PARHELIA_M9_COMMAND_BYTES / sizeof(u32))
 		return -EINVAL;
@@ -292,8 +292,12 @@ int m9x_submit_kernel_stream_locked(struct m9x_device *mdev,
 	WRITE_ONCE(writeback[0], ~target);
 	dma_wmb();
 
+	/* Enable host DMA only after every address check and command copy passed. */
+	pci_set_master(mdev->pdev);
 	m9x_write(mdev, M9_REG_COMMAND_END, end);
 	m9x_read(mdev, M9_REG_COMMAND_END);
+	if (doorbell_posted)
+		*doorbell_posted = true;
 
 	deadline = jiffies + msecs_to_jiffies(max(m9_fence_timeout_ms, 1u));
 	for (;;) {
@@ -472,6 +476,7 @@ int m9x_submit_noop(struct m9x_device *mdev, u64 *point)
 	 * A class-2 requester skips the vendor's class-0 0x31c clear.  This also
 	 * preserves an active compact-translation state across submissions.
 	 */
+	pci_set_master(mdev->pdev);
 	m9x_write(mdev, M9_REG_COMMAND_END, command_end);
 	m9x_read(mdev, M9_REG_COMMAND_END);
 
@@ -543,7 +548,6 @@ int m9x_init(struct m9x_device *mdev)
 	ret = drmm_mutex_init(&mdev->drm, &mdev->transport.lock);
 	if (ret)
 		return ret;
-	INIT_LIST_HEAD(&mdev->transport.bos);
 	mdev->transport.fence_context = dma_fence_context_alloc(1);
 	mdev->transport.next_fence = 0x10;
 	mdev->transport.requester_cpu = dmam_alloc_coherent(dev, PAGE_SIZE,

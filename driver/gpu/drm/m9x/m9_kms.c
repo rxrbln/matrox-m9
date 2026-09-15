@@ -7,6 +7,7 @@
 #include <drm/drm_atomic_helper.h>
 #include <drm/drm_color_mgmt.h>
 #include <drm/drm_connector.h>
+#include <drm/drm_drv.h>
 #include <drm/drm_fourcc.h>
 #include <drm/drm_gem_framebuffer_helper.h>
 #include <drm/drm_gem_vram_helper.h>
@@ -287,8 +288,11 @@ static void m9_pipe_enable(struct drm_simple_display_pipe *pipe,
 			   struct drm_plane_state *plane_state)
 {
 	struct m9x_device *mdev = to_m9x(pipe->crtc.dev);
+	int idx;
 	u32 ctrl;
 
+	if (!drm_dev_enter(&mdev->drm, &idx))
+		return;
 	ctrl = m9x_read(mdev, M9_DC0 + M9_DC_CTRL);
 	m9x_write(mdev, M9_DC0 + M9_DC_CTRL, ctrl & ~M9_DC_ENABLE);
 	m9_program_scanout(pipe, plane_state->fb);
@@ -300,6 +304,7 @@ static void m9_pipe_enable(struct drm_simple_display_pipe *pipe,
 	m9x_write(mdev, M9_DC0 + M9_DC_CTRL, ctrl);
 	/* Timing, clocks and the trained DVO/DP path stay untouched. */
 	drm_crtc_vblank_on(&pipe->crtc);
+	drm_dev_exit(idx);
 }
 
 static void m9_pipe_disable_hw(struct drm_simple_display_pipe *pipe)
@@ -313,8 +318,14 @@ static void m9_pipe_disable_hw(struct drm_simple_display_pipe *pipe)
 
 static void m9_pipe_disable(struct drm_simple_display_pipe *pipe)
 {
+	struct drm_device *drm = pipe->crtc.dev;
+	int idx;
+
+	if (!drm_dev_enter(drm, &idx))
+		return;
 	/* The external DP transmitter and raster timing remain trained/running. */
 	matrox_kms_pipe_disable(pipe, m9_pipe_disable_hw);
+	drm_dev_exit(idx);
 }
 
 static void m9_pipe_update_scanout(struct drm_simple_display_pipe *pipe,
@@ -327,24 +338,39 @@ static void m9_pipe_update_scanout(struct drm_simple_display_pipe *pipe,
 static void m9_pipe_update(struct drm_simple_display_pipe *pipe,
 			   struct drm_plane_state *old_state)
 {
+	struct drm_device *drm = pipe->crtc.dev;
+	int idx;
+
+	if (!drm_dev_enter(drm, &idx))
+		return;
 	matrox_kms_pipe_update(pipe, old_state, m9_pipe_update_scanout,
 				 m9_pipe_load_gamma);
+	drm_dev_exit(idx);
 }
 
 static int m9_pipe_enable_vblank(struct drm_simple_display_pipe *pipe)
 {
 	struct m9x_device *mdev = to_m9x(pipe->crtc.dev);
 	struct matrox_kms_irq desc = m9_kms_irq_desc(mdev);
+	int idx, ret;
 
-	return matrox_kms_enable_vblank(&desc);
+	if (!drm_dev_enter(&mdev->drm, &idx))
+		return -ENODEV;
+	ret = matrox_kms_enable_vblank(&desc);
+	drm_dev_exit(idx);
+	return ret;
 }
 
 static void m9_pipe_disable_vblank(struct drm_simple_display_pipe *pipe)
 {
 	struct m9x_device *mdev = to_m9x(pipe->crtc.dev);
 	struct matrox_kms_irq desc = m9_kms_irq_desc(mdev);
+	int idx;
 
+	if (!drm_dev_enter(&mdev->drm, &idx))
+		return;
 	matrox_kms_disable_vblank(&desc);
+	drm_dev_exit(idx);
 }
 
 static const struct drm_simple_display_pipe_funcs m9_pipe_funcs = {
@@ -396,8 +422,8 @@ static const struct drm_mode_config_funcs m9_mode_config_funcs = {
 	.atomic_commit = drm_atomic_helper_commit,
 };
 
-int m9x_dumb_create(struct drm_file *file, struct drm_device *drm,
-		    struct drm_mode_create_dumb *args)
+static int m9_dumb_create(struct drm_file *file, struct drm_device *drm,
+			  struct drm_mode_create_dumb *args)
 {
 	struct drm_mode_create_dumb alloc_args;
 	int ret;
@@ -432,6 +458,18 @@ int m9x_dumb_create(struct drm_file *file, struct drm_device *drm,
 	args->size = alloc_args.size;
 	args->handle = alloc_args.handle;
 	return 0;
+}
+
+int m9x_dumb_create(struct drm_file *file, struct drm_device *drm,
+		    struct drm_mode_create_dumb *args)
+{
+	int idx, ret;
+
+	if (!drm_dev_enter(drm, &idx))
+		return -ENODEV;
+	ret = m9_dumb_create(file, drm, args);
+	drm_dev_exit(idx);
+	return ret;
 }
 
 irqreturn_t m9x_irq_handler(int irq, void *arg)

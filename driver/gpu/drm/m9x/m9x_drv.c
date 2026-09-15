@@ -20,11 +20,6 @@
 
 DEFINE_DRM_GEM_FOPS(m9x_fops);
 
-static void m9x_drm_postclose(struct drm_device *drm, struct drm_file *file)
-{
-	m9x_postclose(to_m9x(drm), file);
-}
-
 static const struct drm_ioctl_desc m9x_ioctls[] = {
 	DRM_IOCTL_DEF_DRV(PARHELIA_M9_CREATE_BO, m9x_create_bo_ioctl,
 			  DRM_RENDER_ALLOW),
@@ -37,7 +32,6 @@ static const struct drm_ioctl_desc m9x_ioctls[] = {
 /* Mesa selects the independent M9X Gallium driver from this DRM name. */
 #define M9X_DRM_DRIVER_COMMON						\
 	.fops = &m9x_fops,						\
-	.postclose = m9x_drm_postclose,					\
 	.ioctls = m9x_ioctls,						\
 	.num_ioctls = ARRAY_SIZE(m9x_ioctls),				\
 	.gem_create_object = m9x_gem_create_object,			\
@@ -85,11 +79,10 @@ static int m9x_pci_probe(struct pci_dev *pci,
 		return dev_err_probe(&pci->dev, -ENODEV,
 			"device was not POSTed; cold memory/clock bring-up is unavailable\n");
 
-	if (kms) {
-		ret = aperture_remove_conflicting_pci_devices(pci, M9X_MODULE_NAME);
-		if (ret)
-			return ret;
-	}
+	/* The render address manager owns and clears low VRAM even without KMS. */
+	ret = aperture_remove_conflicting_pci_devices(pci, M9X_MODULE_NAME);
+	if (ret)
+		return ret;
 	ret = pcim_enable_device(pci);
 	if (ret)
 		return ret;
@@ -177,7 +170,7 @@ static void m9x_pci_remove(struct pci_dev *pci)
 {
 	struct drm_device *drm = pci_get_drvdata(pci);
 
-	drm_dev_unregister(drm);
+	drm_dev_unplug(drm);
 	if (m9x_kms_enabled()) {
 		drm_atomic_helper_shutdown(drm);
 		m9x_modeset_fini(to_m9x(drm));

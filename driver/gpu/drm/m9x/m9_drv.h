@@ -30,17 +30,16 @@ struct drm_mode_create_dumb;
 #define PARHELIA_M9_RESTORE_GPUVA	0x41000000u
 #define PARHELIA_M9_MAX_RELOCS		128u
 #define PARHELIA_M9_MAX_BOS		128u
+#define M9_VRAM_GPU_BASE		0x10000000ull
+#define M9_VRAM_GPU_SIZE		0x10000000ull
 
 struct m9x_bo {
 	struct drm_gem_dma_object dma;
-	struct list_head link;
-	struct drm_file *file;
 	u32 flags;
 };
 
 struct m9x_vram_bo {
 	struct drm_gem_vram_object vram;
-	bool user_pinned;
 };
 
 struct m9x_fence {
@@ -53,7 +52,6 @@ struct m9x_address_space;
 
 struct m9x_transport {
 	struct mutex lock;
-	struct list_head bos;
 	void *requester_cpu;
 	dma_addr_t requester_bus;
 	void *command_cpu;
@@ -106,7 +104,6 @@ bool m9x_kms_enabled(void);
 bool m9x_kms_scanout_enabled(void);
 int m9x_init(struct m9x_device *mdev);
 void m9x_fini(struct m9x_device *mdev);
-void m9x_postclose(struct m9x_device *mdev, struct drm_file *file);
 int m9x_create_bo_ioctl(struct drm_device *drm, void *data,
 			struct drm_file *file);
 int m9x_get_bo_info_ioctl(struct drm_device *drm, void *data,
@@ -119,7 +116,7 @@ int m9x_transport_rearm_locked(struct m9x_device *mdev);
 int m9x_restore_bind(struct m9x_device *mdev);
 int m9x_submit_kernel_stream_locked(struct m9x_device *mdev,
 				    const u32 *commands, u32 dwords,
-				    u32 target, u64 *point);
+				    u32 target, u64 *point, bool *doorbell_posted);
 struct m9x_fence *m9x_fence_create_target_locked(struct m9x_device *mdev,
 						 u32 target);
 int m9x_address_init(struct m9x_device *mdev);
@@ -133,9 +130,12 @@ int m9x_address_commit_bindings(struct m9x_device *mdev);
 int m9x_address_commit_gpuva(struct m9x_device *mdev, u32 gpuva);
 int m9x_address_finalize_service(struct m9x_device *mdev);
 int m9x_address_read_pte(struct m9x_device *mdev, u32 gpuva, u32 *value);
+int m9x_address_read_root_pte(struct m9x_device *mdev, u32 gpuva, u32 *value);
+u32 m9x_address_pte_word(dma_addr_t dma);
 int m9x_submit_triangle_diag(struct m9x_device *mdev, u32 color,
 			     struct drm_gem_vram_object *color_bo, u64 *point,
 			     bool *color_active);
+int m9x_triangle_prepare_diag(struct m9x_device *mdev);
 int m9x_triangle_selftest(void);
 void m9x_triangle_fini(struct m9x_device *mdev);
 int m9x_submit_selftest(void);
