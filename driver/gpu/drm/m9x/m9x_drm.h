@@ -64,9 +64,13 @@ struct drm_parhelia_m9_get_bo_info {
  * De-tiled CPU access to a rectangle of a TILED VRAM BO.  descriptor0/1 are
  * the surface's cc21xxxx descriptor and layers << 16 | height; the user
  * buffer holds top-down rows of BGRX dwords, data_stride bytes per row.
+ * With PARHELIA_M9_ACCESS_TEXTURE the BO is a VRAM texture, offset is the
+ * byte offset of one level inside it, descriptor0 is format << 24 |
+ * kind << 16 | width and rows hold elements of that format's size.
  */
 #define PARHELIA_M9_ACCESS_READ		1u
 #define PARHELIA_M9_ACCESS_WRITE	2u
+#define PARHELIA_M9_ACCESS_TEXTURE	(1u << 0)
 
 struct drm_parhelia_m9_surface_access {
 	__u32 handle;
@@ -82,7 +86,7 @@ struct drm_parhelia_m9_surface_access {
 	__u64 data_ptr;
 	__u64 data_size;
 	__u32 flags;
-	__u32 pad;
+	__u32 offset;
 };
 
 /*

@@ -19,6 +19,31 @@
 #define M9_SURFACE_MAX_SPAN	2048u
 #define M9_SURFACE_FAMILY	0xcc210000u
 #define M9_SURFACE_WAIT		msecs_to_jiffies(10000)
+/* Texture storage kinds: small (<= 64x64) and 32-aligned large levels. */
+#define M9_TEXTURE_KIND_SMALL	0x01u
+#define M9_TEXTURE_KIND_LARGE	0x21u
+
+struct m9_surface_view {
+	u32 span;
+	u32 height;
+	u32 cpp;
+	u64 bytes;
+};
+
+/* Element size per captured texture format byte, 0 when unsupported. */
+static u32 m9_texture_cpp(u8 format)
+{
+	switch (format) {
+	case 0xc8: case 0xc9: case 0xcc:
+		return 4;
+	case 0x9d: case 0x8c: case 0x94: case 0xa2:
+		return 2;
+	case 0x66: case 0x61:
+		return 1;
+	default:
+		return 0;
+	}
+}
 
 /* Vendor render allocation contract, shared with Mesa m9_internal.h. */
 static bool m9_surface_layout_bytes(u32 width, u32 height, u32 cpp, u64 *size)
@@ -46,36 +71,58 @@ static bool m9_surface_layout_bytes(u32 width, u32 height, u32 cpp, u64 *size)
 }
 
 static int m9_surface_check(const struct drm_parhelia_m9_surface_access *args,
-			    u32 *span, u32 *surface_height)
+			    struct m9_surface_view *view)
 {
+	bool texture = args->flags & PARHELIA_M9_ACCESS_TEXTURE;
 	u32 d0 = args->descriptor0, d1 = args->descriptor1, end;
 	u64 need;
 
-	if (args->flags || args->pad ||
+	if ((args->flags & ~PARHELIA_M9_ACCESS_TEXTURE) ||
+	    (!texture && args->offset) ||
 	    (args->op != PARHELIA_M9_ACCESS_READ &&
 	     args->op != PARHELIA_M9_ACCESS_WRITE) ||
 	    !args->width || !args->height || !args->surface_width)
 		return -EINVAL;
-	/* Only the verified cc21 family: format 0x66, layout 1, bit 21. */
-	*span = d0 & 0xffff;
-	*surface_height = d1 & 0xffff;
-	if ((d0 & 0xffff0000) != M9_SURFACE_FAMILY ||
-	    *span != ALIGN(args->surface_width, 32) ||
-	    *span > M9_SURFACE_MAX_SPAN || (d1 & 0xf0000000) ||
-	    ((d1 >> 16) & 0xfff) != 1 || !*surface_height ||
-	    *surface_height > M9_SURFACE_MAX_SPAN)
+	view->span = d0 & 0xffff;
+	view->height = d1 & 0xffff;
+	if ((d1 & 0xf0000000) || ((d1 >> 16) & 0xfff) != 1 || !view->height ||
+	    view->height > M9_SURFACE_MAX_SPAN || !view->span ||
+	    view->span > M9_SURFACE_MAX_SPAN)
 		return -EINVAL;
-	/* Small layouts use other height quanta and are not measured yet. */
-	if (args->surface_width <= 64 && *surface_height <= 64)
-		return -EINVAL;
+	if (texture) {
+		u8 kind = (d0 >> 16) & 0xff;
+
+		/* Texture levels: captured format bytes and storage kinds only. */
+		view->cpp = m9_texture_cpp(d0 >> 24);
+		if (!view->cpp || !IS_ALIGNED(args->offset, 0x100) ||
+		    view->span != args->surface_width ||
+		    (kind == M9_TEXTURE_KIND_SMALL ?
+		     view->span > 64 || view->height > 64 :
+		     kind != M9_TEXTURE_KIND_LARGE ||
+		     !IS_ALIGNED(view->span, 32)))
+			return -EINVAL;
+		view->bytes = max_t(u64, (u64)ALIGN(view->span, 32) *
+				    ALIGN(view->height, 32), 32 * 16) * view->cpp;
+	} else {
+		/* Render targets: the verified cc21 family (format 0x66, bit 21). */
+		view->cpp = 4;
+		if ((d0 & 0xffff0000) != M9_SURFACE_FAMILY ||
+		    view->span != ALIGN(args->surface_width, 32))
+			return -EINVAL;
+		/* Small layouts use other height quanta and are not measured yet. */
+		if (args->surface_width <= 64 && view->height <= 64)
+			return -EINVAL;
+		view->bytes = (u64)view->span * 4 * view->height;
+	}
 	if (check_add_overflow(args->x, args->width, &end) ||
 	    end > args->surface_width ||
 	    check_add_overflow(args->y, args->height, &end) ||
-	    end > *surface_height ||
-	    (u64)*span * 4 * *surface_height > M9_ADDRESS_SURFACE_BYTES)
+	    end > view->height || view->bytes > M9_ADDRESS_SURFACE_BYTES)
 		return -EINVAL;
-	need = (u64)(args->height - 1) * args->data_stride + (u64)args->width * 4;
-	if (args->data_stride < (u64)args->width * 4 || need > args->data_size)
+	need = (u64)(args->height - 1) * args->data_stride +
+	       (u64)args->width * view->cpp;
+	if (args->data_stride < (u64)args->width * view->cpp ||
+	    need > args->data_size)
 		return -EINVAL;
 	return 0;
 }
@@ -94,22 +141,24 @@ static int m9_surface_access(struct m9x_device *mdev, struct drm_file *file,
 			     struct drm_parhelia_m9_surface_access *args)
 {
 	bool write = args->op == PARHELIA_M9_ACCESS_WRITE;
+	bool texture = args->flags & PARHELIA_M9_ACCESS_TEXTURE;
 	struct drm_gem_vram_object *vram;
+	struct m9_surface_view view;
 	struct drm_gem_object *gem;
-	u32 span, surface_height, row;
 	size_t row_bytes;
 	u64 min_size;
 	s64 offset;
 	long wait;
+	u32 row;
 	u8 *kbuf;
 	int ret;
 
-	ret = m9_surface_check(args, &span, &surface_height);
+	ret = m9_surface_check(args, &view);
 	if (ret)
 		return ret;
 	if (!mdev->bar0_window)
 		return -ENODEV;
-	row_bytes = (size_t)args->width * 4;
+	row_bytes = (size_t)args->width * view.cpp;
 	kbuf = kvmalloc_array(args->height, row_bytes, GFP_KERNEL);
 	if (!kbuf)
 		return -ENOMEM;
@@ -127,9 +176,13 @@ static int m9_surface_access(struct m9x_device *mdev, struct drm_file *file,
 		ret = -ENOENT;
 		goto out_free;
 	}
-	if (!m9x_gem_is_vram(gem) || !m9x_gem_vram_tiled(gem) ||
-	    !m9_surface_layout_bytes(args->surface_width, surface_height, 4,
-				     &min_size) || gem->size < min_size) {
+	if (texture)
+		min_size = (u64)args->offset + view.bytes;
+	else if (!m9_surface_layout_bytes(args->surface_width, view.height, 4,
+					  &min_size))
+		min_size = U64_MAX;
+	if (!m9x_gem_is_vram(gem) || (!texture && !m9x_gem_vram_tiled(gem)) ||
+	    gem->size < min_size) {
 		ret = -EINVAL;
 		goto out_put;
 	}
@@ -156,16 +209,17 @@ static int m9_surface_access(struct m9x_device *mdev, struct drm_file *file,
 	if (mdev->transport.wedged) {
 		ret = -EIO;
 	} else {
-		m9x_address_surface_window(mdev, lower_32_bits(offset),
+		m9x_address_surface_window(mdev, lower_32_bits(offset + args->offset),
 					   args->descriptor0, args->descriptor1);
 		for (row = 0; row < args->height; row++) {
-			void __iomem *view = (u8 __iomem *)mdev->bar0_window +
-				((u64)(args->y + row) * span + args->x) * 4;
+			void __iomem *rows = (u8 __iomem *)mdev->bar0_window +
+				((u64)(args->y + row) * view.span + args->x) *
+				view.cpp;
 
 			if (write)
-				memcpy_toio(view, kbuf + row * row_bytes, row_bytes);
+				memcpy_toio(rows, kbuf + row * row_bytes, row_bytes);
 			else
-				memcpy_fromio(kbuf + row * row_bytes, view, row_bytes);
+				memcpy_fromio(kbuf + row * row_bytes, rows, row_bytes);
 		}
 		/* Complete WC stores before the window is released. */
 		if (write)
@@ -211,11 +265,11 @@ int m9x_surface_selftest(void)
 		.surface_width = 320, .width = 320, .height = 240,
 		.data_stride = 1280, .data_size = 1280 * 240,
 	};
-	u32 span, height;
+	struct m9_surface_view view;
 	u64 size;
 
-	if (m9_surface_check(&args, &span, &height) || span != 320 ||
-	    height != 240)
+	if (m9_surface_check(&args, &view) || view.span != 320 ||
+	    view.height != 240 || view.cpp != 4)
 		return -EINVAL;
 	args.descriptor0 = 0xcc210400;
 	args.descriptor1 = 0x00010300;
@@ -224,21 +278,43 @@ int m9x_surface_selftest(void)
 	args.height = 768;
 	args.data_stride = 4096;
 	args.data_size = 4096 * 768;
-	if (m9_surface_check(&args, &span, &height))
+	if (m9_surface_check(&args, &view))
 		return -EINVAL;
 	args.data_size--;
-	if (m9_surface_check(&args, &span, &height) != -EINVAL)
+	if (m9_surface_check(&args, &view) != -EINVAL)
 		return -EINVAL;
 	args.data_size++;
 	args.descriptor0 = 0xc8010020;
-	if (m9_surface_check(&args, &span, &height) != -EINVAL)
+	if (m9_surface_check(&args, &view) != -EINVAL)
 		return -EINVAL;
 	args.descriptor0 = 0xf0210400;
-	if (m9_surface_check(&args, &span, &height) != -EINVAL)
+	if (m9_surface_check(&args, &view) != -EINVAL)
 		return -EINVAL;
 	args.descriptor0 = 0xcc210400;
 	args.surface_width = 900;
-	if (m9_surface_check(&args, &span, &height) != -EINVAL)
+	if (m9_surface_check(&args, &view) != -EINVAL)
+		return -EINVAL;
+	/* A 64x64 RGB565 texture level at a 256-aligned offset. */
+	args.flags = PARHELIA_M9_ACCESS_TEXTURE;
+	args.descriptor0 = 0x9d010040;
+	args.descriptor1 = 0x00010040;
+	args.surface_width = 64;
+	args.width = 64;
+	args.height = 64;
+	args.data_stride = 128;
+	args.data_size = 128 * 64;
+	args.offset = 0x800;
+	if (m9_surface_check(&args, &view) || view.cpp != 2)
+		return -EINVAL;
+	args.offset = 0x801;
+	if (m9_surface_check(&args, &view) != -EINVAL)
+		return -EINVAL;
+	args.offset = 0x800;
+	args.descriptor0 = 0x9d210040;
+	if (m9_surface_check(&args, &view))
+		return -EINVAL;
+	args.descriptor0 = 0x77010040;
+	if (m9_surface_check(&args, &view) != -EINVAL)
 		return -EINVAL;
 	if (!m9_surface_layout_bytes(320, 240, 4, &size) || size != 0x50000 ||
 	    !m9_surface_layout_bytes(1024, 768, 4, &size) || size != 0x301000)
