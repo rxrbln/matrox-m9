@@ -84,6 +84,34 @@ Levels larger than 16x16 are not covered by any dump.  STATIC: their bases follo
 `offset[L] = offset[L-1] + size[L-1]`, and the vendor allocation contract gives
 the sizes.  The in-level permutation for them is **not captured**; see section 6.
 
+**Large levels (CAPTURED, `captures/m9x-vendor-texture-layout-20260915`,
+`tools/m9-texture-large-analyze.py`).**  Every level of the POT 32..1024 chains,
+NPOT 100x37/300x300 and the 300x200 rectangle is present exactly once.  Levels
+are consecutive: 64x64 level 0 at `0x0`, level 1 at `0x4000`, the 16x16 tail
+region at `0x5000`; 1024x1024 level 1 at `0x400000`.
+
+* **POT levels are GF(2)-linear.**  `offset = base + (X[x] ^ Y[y]) * 4` with
+  X/Y linear in the coordinate bits, for every texel of every POT level (the
+  1024x1024 level 0 has all 1048576 texels separable).  The basis depends only
+  on the level size: X = `1 2 4 20 40 80` up to 64, and `1 2 4 20 40 780 900
+  1300 2000 4000` (prefix by size) from 128; Y = `8 10 1c0 280 480 800` at 64,
+  and `8 10 c0 280 100` followed by `w*32|200`, `w*64`, `w*128`, ... from 128.
+* **NPOT levels above 64 are not separable** (300x300 level 0: 53632 of 90000
+  texels, 150x150 and 75x75 similar, 300x200 rectangle 35968 of 60000); their
+  calculator state differs and is not recovered.  NPOT levels of 64 or less
+  are separable with small-size bases.
+* **Descriptor windows (CAPTURED, read-only on the vendor host).**  Slot 0 with
+  the texture descriptor presents level 0 as linear rows: 64x64 with kind `01`
+  (`c8010040`) 4096/4096, 128x128 with kind `21` (`c8210080`) 16384/16384; the
+  other kind gives 256.  NPOT 100x37 and the 300x200 rectangle with their
+  unaligned width in the descriptor gave no linear view (32-aligned spans were
+  not captured).
+
+Driver consequence: POT textures can be placed from the basis model or written
+through a kind 01 (<= 64) or kind 21 window; NPOT textures above 64 should use
+the render-target storage family, whose `cc21` window is hardware-verified,
+until their texture calculator state is recovered.
+
 ## 3. Formats and byte order (CAPTURED)
 
 `79[31:24]` is the hardware format code `<<1`, plus bit 24.  Bit 24 is set for
