@@ -186,6 +186,22 @@ offset ``X`` is addressed as ``X`` and receives an identity leaf.  The vendor's
 private pools stay above the BAR at ``0x10000000 + base``.  Windows
 ``360/364`` survive warm reboot; ``f64..f7c`` are reset.
 
+First-triangle status
+---------------------
+
+Probe runs the vendor ``m9x24643`` VRAM check once (``0x0f28`` status, dword
+index and ``index << 16`` over the first ``0x1ffff`` aperture dwords) and
+fails on the first mismatch.  The four service pools are zeroed in
+BAR-visible VRAM.  The first triangle binds index 69 to a local VRAM copy of
+the normal fixed-fragment database, loaded as firmware
+``m9x/rsfragptrs-normal.bin`` (``6a=0x25010000``, Linux vendor bm-12 framing);
+``m9_triangle_inline_program=1`` selects the Windows inline P00/S28 upload.
+On the M9148 the sequence-0 context activation and the draw retire and the
+preprocessing pass writes its transient views, but no pixel reaches the
+color target yet.  Host-aperture slot 0 ``d1`` selects the VRAM address shown
+at BAR0 offset 0, which allows comparing these intermediate results with the
+vendor stack's GPU-only allocations.
+
 UAPI boundary
 -------------
 
