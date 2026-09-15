@@ -48,8 +48,15 @@ context, four ``0x16800``-byte transient probes and the 320x240
 depth/auxiliary-depth surfaces directly in local VRAM.  Resources without an
 exact vendor extent are followed by at least one page of a resource-specific
 sentinel.  The source is initialized to four ``{x,y,r,g,b}`` records,
-including the proved duplicate prefetch record; C2, BE and the system payload
-are zeroed deterministically.  ``m9_triangle_gouraud=1`` selects the equally
+including the proved duplicate prefetch record; BE and the system payload are
+zeroed deterministically.  Resource 69 is initialized as exactly ``0x361``
+copies of its recovered 0x80-byte record.  Each record points at the two-page
+A backing and the three-page C2 backing with the vendor's ``+8`` tags; the
+exposed ``0x1080``-byte C2 object begins at the middle page.  This preserves
+the captured contiguous predecessor/successor relationships.  The five
+pointee payloads are zeroed as a deterministic clean-room policy because their
+pre-draw bytes were not captured and read-before-write is not excluded.
+``m9_triangle_gouraud=1`` selects the equally
 bounded captured red/green/blue source records; flat green remains the default
 that matches the exact M9148 command fixture.
 

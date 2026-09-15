@@ -35,7 +35,12 @@
 #define M9_TRIANGLE_LINKED_OFFSET	0x300u
 #define M9_TRIANGLE_LINKED_BYTES		0x200u
 #define M9_TRIANGLE_RESOURCE69_BYTES	0x1b080u
+#define M9_TRIANGLE_RESOURCE69_A_BYTES	SZ_8K
 #define M9_TRIANGLE_C2_BYTES		0x1080u
+#define M9_TRIANGLE_C2_LEADING_BYTES	SZ_4K
+#define M9_TRIANGLE_C2_BACKING_BYTES	(M9_TRIANGLE_C2_LEADING_BYTES + \
+					 M9_TRIANGLE_C2_BYTES)
+#define M9_TRIANGLE_RESOURCE69_RECORD_BYTES 0x80u
 #define M9_TRIANGLE_BE_BYTES		SZ_1M
 #define M9_TRIANGLE_TRANSIENT_BYTES	0x16800u
 #define M9_TRIANGLE_VRAM_BASE		0x10000000ull
@@ -61,6 +66,7 @@ enum m9_triangle_resource_id {
 	M9_TRI_SYSTEM,
 	M9_TRI_SECONDARY,
 	M9_TRI_RESOURCE69,
+	M9_TRI_RESOURCE69_A,
 	M9_TRI_C2,
 	M9_TRI_BE,
 	M9_TRI_TRANSIENT0,
@@ -237,8 +243,12 @@ static const struct m9_triangle_resource_spec m9_triangle_specs[] = {
 	[M9_TRI_SECONDARY] = { "secondary", M9_TRIANGLE_SECONDARY_BYTES,
 			       0x80, 0 },
 	[M9_TRI_RESOURCE69] = { "resource69", M9_TRIANGLE_RESOURCE69_BYTES,
-				  SZ_4K, 0x69000000, true },
-	[M9_TRI_C2] = { "c2", M9_TRIANGLE_C2_BYTES, SZ_4K, 0, true },
+				  SZ_4K, 0, true },
+	[M9_TRI_RESOURCE69_A] = { "resource69-a-backing",
+				    M9_TRIANGLE_RESOURCE69_A_BYTES,
+				    SZ_4K, 0, true },
+	[M9_TRI_C2] = { "c2-backing", M9_TRIANGLE_C2_BACKING_BYTES,
+			 SZ_4K, 0, true },
 	[M9_TRI_BE] = { "be", M9_TRIANGLE_BE_BYTES, SZ_4K, 0, true },
 	[M9_TRI_TRANSIENT0] = { "transient0", M9_TRIANGLE_TRANSIENT_BYTES,
 				  0x100, 0x54520000, true },
@@ -468,11 +478,13 @@ static int m9_triangle_alloc_one(struct m9x_device *mdev,
 	if (resource->cpu || resource->vram)
 		return 0;
 	/*
-	 * BE and the class-1 BmBuffer have exact vendor extents.  Every byte after
-	 * the submitted secondary image through 0x8000 is part of its zero tail.
-	 * Other diagnostic resources retain a guard page.
+	 * BE, the class-1 BmBuffer and resource-69's contiguous A/C2 backing
+	 * groups have exact vendor extents.  Every byte after the submitted
+	 * secondary image through 0x8000 is part of its zero tail.  Other
+	 * diagnostic resources retain a guard page.
 	 */
-	if (id == M9_TRI_BE || id == M9_TRI_SECONDARY)
+	if (id == M9_TRI_BE || id == M9_TRI_SECONDARY ||
+	    id == M9_TRI_RESOURCE69_A || id == M9_TRI_C2)
 		guard_offset = spec->payload_bytes;
 	else if (check_add_overflow(spec->payload_bytes, (u32)PAGE_SIZE,
 				    &guard_offset))
@@ -571,6 +583,53 @@ static int m9_triangle_prepare_gpuva(struct m9x_device *mdev,
 	return 0;
 }
 
+static void m9_triangle_build_resource69_record(u32 *record, u32 a1, u32 c2)
+{
+	memset(record, 0, M9_TRIANGLE_RESOURCE69_RECORD_BYTES);
+	record[0] = a1 - SZ_4K + 8;
+	record[1] = a1 + 8;
+	record[8] = c2 - SZ_4K + 8;
+	record[9] = c2 + 8;
+	record[10] = c2 + SZ_4K + 8;
+}
+
+static int m9_triangle_prepare_resource69(struct m9x_triangle_diag *diag)
+{
+	struct m9_triangle_resource *resource69 =
+		&diag->resource[M9_TRI_RESOURCE69];
+	const struct m9_triangle_resource *a =
+		&diag->resource[M9_TRI_RESOURCE69_A];
+	const struct m9_triangle_resource *c2 = &diag->resource[M9_TRI_C2];
+	u32 record[M9_TRIANGLE_RESOURCE69_RECORD_BYTES / sizeof(u32)];
+	u32 a1_address;
+	u32 c2_address;
+	u32 offset;
+
+	if (!resource69->vram || !a->vram || !c2->vram ||
+	    resource69->payload_bytes != M9_TRIANGLE_RESOURCE69_BYTES ||
+	    a->payload_bytes != M9_TRIANGLE_RESOURCE69_A_BYTES ||
+	    c2->payload_bytes != M9_TRIANGLE_C2_BACKING_BYTES ||
+	    !IS_ALIGNED(resource69->bus, SZ_4K) ||
+	    !IS_ALIGNED(a->bus, SZ_4K) || upper_32_bits(a->bus) ||
+	    !IS_ALIGNED(c2->bus, SZ_4K) || upper_32_bits(c2->bus) ||
+	    check_add_overflow(lower_32_bits(a->bus), SZ_4K, &a1_address) ||
+	    a1_address < SZ_4K || a1_address > U32_MAX - 0x200 ||
+	    check_add_overflow(lower_32_bits(c2->bus),
+			       M9_TRIANGLE_C2_LEADING_BYTES, &c2_address) ||
+	    c2_address < SZ_4K ||
+	    c2_address > U32_MAX - M9_TRIANGLE_C2_BYTES)
+		return -ERANGE;
+
+	m9_triangle_build_resource69_record(record, a1_address, c2_address);
+	for (offset = 0; offset < M9_TRIANGLE_RESOURCE69_BYTES;
+	     offset += M9_TRIANGLE_RESOURCE69_RECORD_BYTES)
+		iosys_map_memcpy_to(&resource69->map, offset, record,
+				    sizeof(record));
+	/* Drain all write-combined VRAM initialization before engine access. */
+	wmb();
+	return 0;
+}
+
 static int m9_triangle_prepare_resources(struct m9x_device *mdev)
 {
 	struct m9x_triangle_diag *diag = mdev->transport.triangle;
@@ -578,6 +637,7 @@ static int m9_triangle_prepare_resources(struct m9x_device *mdev)
 		M9_TRI_BE,
 		M9_TRI_DEPTH, M9_TRI_AUX_DEPTH,
 		M9_TRI_SYSTEM, M9_TRI_RESOURCE69,
+		M9_TRI_RESOURCE69_A,
 		M9_TRI_TRANSIENT0, M9_TRI_TRANSIENT1,
 		M9_TRI_TRANSIENT2, M9_TRI_TRANSIENT3,
 		M9_TRI_C2, M9_TRI_SEQ0_SCRATCH26,
@@ -606,6 +666,9 @@ static int m9_triangle_prepare_resources(struct m9x_device *mdev)
 			return ret;
 		}
 	}
+	ret = m9_triangle_prepare_resource69(diag);
+	if (ret)
+		return ret;
 	ret = m9_triangle_prepare_gpuva(mdev, diag);
 	if (ret)
 		return ret;
@@ -751,7 +814,8 @@ static int m9_triangle_build_addresses(struct m9x_device *mdev, u32 color,
 	job->linked = (m9_triangle_gpuva(diag, M9_TRI_SYSTEM) +
 		       M9_TRIANGLE_LINKED_OFFSET) | M9_TRIANGLE_GPUVA_TAG;
 	job->resource69 = m9_triangle_bus(diag, M9_TRI_RESOURCE69);
-	job->c2 = m9_triangle_bus(diag, M9_TRI_C2);
+	job->c2 = m9_triangle_bus(diag, M9_TRI_C2) +
+		  M9_TRIANGLE_C2_LEADING_BYTES;
 	job->be = m9_triangle_bus(diag, M9_TRI_BE);
 	for (i = 0; i < ARRAY_SIZE(job->transient); i++)
 		job->transient[i] = m9_triangle_bus(diag,
@@ -1286,6 +1350,8 @@ int m9x_triangle_selftest(void)
 	struct m9_triangle_job_addresses job = {};
 	struct m9_triangle_commands commands;
 	u8 linked[M9_TRIANGLE_LINKED_BYTES] = {};
+	u32 resource69_record[M9_TRIANGLE_RESOURCE69_RECORD_BYTES / sizeof(u32)];
+	u64 resource69_hash;
 	u32 target = 0xfffffff0;
 	unsigned int i;
 	int ret;
@@ -1301,6 +1367,10 @@ int m9x_triangle_selftest(void)
 	    sizeof(m9_triangle_gouraud_source) != M9_TRIANGLE_SOURCE_BYTES ||
 	    M9_TRIANGLE_MAX_SYSTEM_PTES != 44 ||
 	    m9_triangle_specs[M9_TRI_SECONDARY].payload_bytes != SZ_32K ||
+	    m9_triangle_specs[M9_TRI_RESOURCE69].payload_bytes %
+		M9_TRIANGLE_RESOURCE69_RECORD_BYTES ||
+	    m9_triangle_specs[M9_TRI_C2].payload_bytes !=
+		M9_TRIANGLE_C2_BACKING_BYTES ||
 	    ARRAY_SIZE(m9_triangle_range_0) != ARRAY_SIZE(commands.preprocess) ||
 	    ARRAY_SIZE(m9_triangle_range_1) != ARRAY_SIZE(commands.raster) ||
 	    ARRAY_SIZE(m9_triangle_range_2) != ARRAY_SIZE(commands.completion) ||
@@ -1321,6 +1391,19 @@ int m9x_triangle_selftest(void)
 	    m9_triangle_specs[M9_TRI_SEQ0_SCRATCH27].payload_bytes != 0x20080 ||
 	    m9_triangle_specs[M9_TRI_SEQ0_SCRATCH38].payload_bytes != 0x400 ||
 	    m9_triangle_specs[M9_TRI_BE].payload_bytes != SZ_1M)
+		return -EINVAL;
+	m9_triangle_build_resource69_record(resource69_record, 0x11ee1000,
+					    0x11f29000);
+	resource69_hash =
+		m9_triangle_template_fnv1a(resource69_record,
+					   ARRAY_SIZE(resource69_record));
+	if (resource69_record[0] != 0x11ee0008 ||
+	    resource69_record[1] != 0x11ee1008 || resource69_record[2] ||
+	    resource69_record[7] ||
+	    resource69_record[8] != 0x11f28008 ||
+	    resource69_record[9] != 0x11f29008 ||
+	    resource69_record[10] != 0x11f2a008 || resource69_record[11] ||
+	    resource69_hash != 0xeeca525aa6a86ea4ULL)
 		return -EINVAL;
 	if (m9_triangle_template_fnv1a(m9_triangle_gouraud_linked_prefix,
 		ARRAY_SIZE(m9_triangle_gouraud_linked_prefix)) !=
