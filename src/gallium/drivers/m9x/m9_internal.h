@@ -1,4 +1,5 @@
 /* SPDX-License-Identifier: MIT */
+/* Copyright 2026 René Rebe <rene@exactco.de> */
 #ifndef M9_INTERNAL_H
 #define M9_INTERNAL_H
 
@@ -10,7 +11,9 @@
 #include "pipe/p_screen.h"
 #include "pipe/p_state.h"
 #include "drm-uapi/m9x_drm.h"
+#include "m9_draw_params.h"
 #include "util/simple_mtx.h"
+#include "util/u_dynarray.h"
 
 #define M9_PCI_ID 0x0540u
 #define M9_PACKET_STOP 0x45u
@@ -69,12 +72,15 @@ struct m9_resource {
    uint8_t format;
    uint8_t layout;
    enum m9_bo_domain domain;
+   bool tiled;  /* kernel PARHELIA_M9_LAYOUT_TILED storage */
    bool handle_owned;
    bool map_writable;
    int map_fd;
    struct m9_prime_import *prime_import;
    struct m9_mip_layout mip;
    void *map;
+   /* Hierarchical-Z metadata owned by a D24S8 depth image. */
+   struct m9_resource *hz;
 };
 
 static inline uint32_t
@@ -143,9 +149,11 @@ struct m9_screen {
    uint32_t uapi_version;
    bool validate_submit;
    bool execute_submit;
-   bool linked_program_ready;
    simple_mtx_t import_lock;
    struct m9_prime_import *imports;
+   /* Fixed-fragment database firmware bound through index 69. */
+   uint8_t *fragment_db;
+   size_t fragment_db_size;
 };
 
 struct m9_fence {
@@ -183,6 +191,15 @@ struct m9_batch {
    bool sealed;
 };
 
+struct draw_context;
+struct m9_fs_state;
+
+/* Pass-level raster state shared by every draw of one two-pass job. */
+struct m9_job_key {
+   struct m9_resource *depth, *aux;
+   uint32_t depth_control, depth_ef, color_mask, clip_min, clip_max;
+};
+
 /* Per-context state is complete rather than inherited from the classic
  * Parhelia shadow.  Dirty bits describe only M9 packet groups. */
 struct m9_context {
@@ -190,7 +207,6 @@ struct m9_context {
    struct m9_screen *screen;
    struct m9_batch batch;
    struct m9_resource command;
-   struct m9_vertex_stream vertex_stream;
    uint32_t context_id;
    uint64_t last_point;
    uint64_t dirty;
@@ -201,6 +217,30 @@ struct m9_context {
    bool depth_test;
    bool depth_write;
    bool lost;
+
+   /* Vertex processing runs on the CPU in the Gallium draw module. */
+   struct draw_context *draw;
+   struct pipe_framebuffer_state framebuffer;
+   const struct pipe_rasterizer_state *rasterizer;
+   const struct pipe_depth_stencil_alpha_state *dsa;
+   const struct pipe_blend_state *blend;
+   struct pipe_scissor_state scissor;
+   struct m9_fs_state *fs;
+   struct pipe_vertex_buffer vertex_buffers[PIPE_MAX_ATTRIBS];
+   unsigned num_vertex_buffers;
+   struct pipe_constant_buffer vs_constants[PIPE_MAX_CONSTANT_BUFFERS];
+
+   /* Fixed two-pass resources and the pending job. */
+   struct m9_resource system, program, fragment_db, transient, be, source;
+   struct m9_resource target_depth, target_aux;
+   struct m9_draw_params params;
+   struct m9_vertex_decl decl;
+   bool params_valid;
+   struct m9_job_key job_key;
+   struct util_dynarray records;  /* float source records */
+   struct util_dynarray draws;    /* struct m9_draw_record */
+   uint32_t warned;
+   bool debug;
 };
 
 #endif

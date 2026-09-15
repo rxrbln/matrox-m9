@@ -1,8 +1,24 @@
 /* SPDX-License-Identifier: MIT */
+/* Copyright 2026 René Rebe <rene@exactco.de> */
 #ifndef M9_BATCH_H
 #define M9_BATCH_H
 
 #include "m9_internal.h"
+
+struct m9_batch_checkpoint {
+   uint32_t command_count, reloc_count, bo_count;
+   uint32_t bo_flags[M9_MAX_BOS];
+   enum m9_program_mode program_mode;
+};
+
+/* One packet value; a nonzero handle emits zero plus a typed relocation. */
+struct m9_packet_value {
+   uint8_t index;
+   uint32_t value;
+   uint32_t handle;
+   uint64_t offset;
+   enum drm_parhelia_m9_reloc_kind kind;
+};
 
 enum m9_primitive {
    M9_PRIM_POINTS,
@@ -63,6 +79,14 @@ struct m9_vertex_input {
 };
 
 void m9_batch_init(struct m9_batch *batch);
+void m9_batch_checkpoint(const struct m9_batch *batch,
+                         struct m9_batch_checkpoint *checkpoint);
+void m9_batch_rollback(struct m9_batch *batch,
+                       const struct m9_batch_checkpoint *checkpoint);
+unsigned m9_reloc_kind_access(enum drm_parhelia_m9_reloc_kind kind);
+int m9_batch_emit_packet(struct m9_batch *batch,
+                         const struct m9_packet_value *values, unsigned count);
+int m9_batch_emit_range_break(struct m9_batch *batch);
 int m9_batch_emit_regs(struct m9_batch *batch, const uint8_t *indices,
                        const uint32_t *values, unsigned count);
 int m9_batch_add_reloc(struct m9_batch *batch, uint32_t command_dword,

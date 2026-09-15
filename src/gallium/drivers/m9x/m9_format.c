@@ -1,4 +1,5 @@
 /* SPDX-License-Identifier: MIT */
+/* Copyright 2026 René Rebe <rene@exactco.de> */
 #include "m9_format.h"
 
 bool
@@ -32,6 +33,11 @@ m9_format_info(enum pipe_format format, struct m9_format_info *out)
       break;
    case PIPE_FORMAT_Z16_UNORM:
       info = (struct m9_format_info){ 0x5c, 2, M9_FORMAT_DEPTH };
+      break;
+   case PIPE_FORMAT_S8_UINT_Z24_UNORM:
+   case PIPE_FORMAT_X8Z24_UNORM:
+      /* D24S8 element: depth in bits 31:8, stencil in the low byte. */
+      info = (struct m9_format_info){ 0x7d, 4, M9_FORMAT_DEPTH };
       break;
    default:
       return false;

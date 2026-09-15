@@ -1,8 +1,13 @@
 # SPDX-License-Identifier: GPL-2.0-only
+# Copyright 2026 René Rebe <rene@exactco.de>
+
+m9x_batch_files = files(
+  'm9_batch.c', 'm9_draw.c', 'm9_draw_params.c', 'm9_format.c', 'm9_state.c',
+)
 
 libm9x_batch = static_library(
   'm9x_batch',
-  files('m9_batch.c', 'm9_format.c', 'm9_state.c'),
+  m9x_batch_files,
   include_directories : [inc_include, inc_src, inc_gallium, inc_gallium_aux],
   dependencies : [idep_mesautil],
   gnu_symbol_visibility : 'hidden',
@@ -12,7 +17,7 @@ libm9x = static_library(
   'm9x',
   files('m9_screen.c', 'm9_context.c'),
   include_directories : [inc_include, inc_src, inc_gallium, inc_gallium_aux],
-  dependencies : [dep_libdrm, idep_mesautil],
+  dependencies : [dep_libdrm, idep_mesautil, idep_nir],
   link_with : libm9x_batch,
   gnu_symbol_visibility : 'hidden',
 )

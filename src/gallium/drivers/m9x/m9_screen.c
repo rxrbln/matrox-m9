@@ -1,22 +1,28 @@
 /* SPDX-License-Identifier: MIT */
+/* Copyright 2026 René Rebe <rene@exactco.de> */
 #include "m9_screen.h"
 #include "m9x_public.h"
 
 #include <errno.h>
 #include <fcntl.h>
+#include <limits.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <sys/ioctl.h>
 #include <sys/mman.h>
+#include <sys/stat.h>
 #include <unistd.h>
 
 #include <xf86drm.h>
 #include "drm-uapi/drm.h"
 #include "drm-uapi/drm_fourcc.h"
 #include "drm-uapi/drm_mode.h"
+#include "draw/draw_context.h"
 #include "m9_batch.h"
 #include "m9_format.h"
 #include "m9_internal.h"
+#include "nir.h"
 #include "util/u_memory.h"
 #include "util/u_inlines.h"
 #include "util/u_screen.h"
@@ -31,6 +37,94 @@ static inline struct m9_resource *
 m9_resource(struct pipe_resource *resource)
 {
    return (struct m9_resource *)resource;
+}
+
+int
+m9_bo_create(struct m9_screen *screen, uint64_t size, uint32_t flags,
+             unsigned kind, struct m9_resource *resource)
+{
+   struct drm_parhelia_m9_create_bo create = {
+      .size = size,
+      .flags = flags,
+   };
+
+   if (!screen || !resource || !size)
+      return -EINVAL;
+   if (ioctl(screen->fd, DRM_IOCTL_PARHELIA_M9_CREATE_BO, &create))
+      return -errno;
+   memset(resource, 0, sizeof(*resource));
+   resource->map_fd = -1;
+   resource->map = mmap(NULL, create.size, PROT_READ | PROT_WRITE, MAP_SHARED,
+                        screen->fd, create.mmap_offset);
+   if (resource->map == MAP_FAILED) {
+      int error = errno;
+      struct drm_gem_close close_bo = { .handle = create.handle };
+
+      resource->map = NULL;
+      ioctl(screen->fd, DRM_IOCTL_GEM_CLOSE, &close_bo);
+      return -error;
+   }
+   resource->map_writable = true;
+   resource->handle = create.handle;
+   resource->kind = kind;
+   resource->size = create.size;
+   resource->mmap_offset = create.mmap_offset;
+   resource->domain = flags & (PARHELIA_M9_BO_VRAM | PARHELIA_M9_BO_TILED) ?
+                      M9_BO_VRAM : M9_BO_DMA32;
+   resource->tiled = flags & PARHELIA_M9_BO_TILED;
+   resource->handle_owned = true;
+   return 0;
+}
+
+void
+m9_bo_destroy(struct m9_screen *screen, struct m9_resource *resource)
+{
+   struct drm_gem_close close_bo;
+
+   if (!screen || !resource)
+      return;
+   if (resource->map)
+      munmap(resource->map, resource->size);
+   close_bo.handle = resource->handle;
+   if (close_bo.handle)
+      ioctl(screen->fd, DRM_IOCTL_GEM_CLOSE, &close_bo);
+   memset(resource, 0, sizeof(*resource));
+   resource->map_fd = -1;
+}
+
+static int
+m9_resource_attach_hz(struct m9_screen *screen, struct m9_resource *resource)
+{
+   struct m9_resource *hz = CALLOC_STRUCT(m9_resource);
+   uint32_t *words;
+   int ret;
+
+   if (!hz)
+      return -ENOMEM;
+   ret = m9_bo_create(screen, m9_hz_bytes(resource->width, resource->height),
+                      PARHELIA_M9_BO_VRAM, M9_RESOURCE_LINEAR_DEPTH, hz);
+   if (ret) {
+      FREE(hz);
+      return ret;
+   }
+   hz->width = resource->width;
+   hz->height = resource->height;
+   hz->cpp = 4;
+   words = hz->map;
+   for (uint64_t i = 0; i < hz->size / 4; i++)
+      words[i] = M9_HZ_CLEAR;
+   resource->hz = hz;
+   return 0;
+}
+
+static void
+m9_resource_release_hz(struct m9_screen *screen, struct m9_resource *resource)
+{
+   if (!resource->hz)
+      return;
+   m9_bo_destroy(screen, resource->hz);
+   FREE(resource->hz);
+   resource->hz = NULL;
 }
 
 static const char *m9_name(struct pipe_screen *screen)
@@ -263,8 +357,12 @@ m9_resource_create(struct pipe_screen *pscreen,
    if (!resource)
       return NULL;
    resource->map_fd = -1;
+   /* Renderbuffers always request SAMPLER_VIEW; depth images are never
+    * sampled on this path, so do not advertise depth textures for them. */
    if (!m9_is_format_supported(pscreen, templ->format, templ->target,
                                templ->nr_samples, templ->nr_storage_samples,
+                               templ->bind & PIPE_BIND_DEPTH_STENCIL ?
+                               templ->bind & ~PIPE_BIND_SAMPLER_VIEW :
                                templ->bind))
       goto fail;
    if ((templ->bind & (PIPE_BIND_SCANOUT | PIPE_BIND_DISPLAY_TARGET)) &&
@@ -310,6 +408,10 @@ m9_resource_create(struct pipe_screen *pscreen,
    if (!resource->handle) {
       create.size = size;
       create.flags = m9_resource_bo_flags(templ);
+      /* GPU color targets carry the kernel's immutable tiled layout tag. */
+      if (resource->kind == M9_RESOURCE_LINEAR_COLOR &&
+          format.code == M9_COLOR_FORMAT_A8R8G8B8)
+         create.flags = PARHELIA_M9_BO_TILED;
       if (ioctl(screen->fd, DRM_IOCTL_PARHELIA_M9_CREATE_BO, &create))
          goto fail;
       resource->map = mmap(NULL, create.size, PROT_READ | PROT_WRITE,
@@ -324,8 +426,10 @@ m9_resource_create(struct pipe_screen *pscreen,
       resource->handle = create.handle;
       resource->size = create.size;
       resource->mmap_offset = create.mmap_offset;
-      resource->domain = create.flags & PARHELIA_M9_BO_VRAM ?
+      resource->domain = create.flags &
+                         (PARHELIA_M9_BO_VRAM | PARHELIA_M9_BO_TILED) ?
                          M9_BO_VRAM : M9_BO_DMA32;
+      resource->tiled = create.flags & PARHELIA_M9_BO_TILED;
       resource->handle_owned = true;
    }
    resource->base = *templ;
@@ -337,8 +441,13 @@ m9_resource_create(struct pipe_screen *pscreen,
    resource->cpp = format.cpp;
    resource->format = format.code;
    resource->layout = 1; /* exact ordinary linear descriptor class */
+   if (resource->kind == M9_RESOURCE_LINEAR_DEPTH &&
+       format.code == M9_DEPTH_FORMAT_D24S8 &&
+       m9_resource_attach_hz(screen, resource))
+      goto fail;
    return &resource->base;
 fail:
+   m9_resource_release_hz(screen, resource);
    if (resource->map)
       munmap(resource->map, resource->size);
    if (resource->handle_owned && resource->handle) {
@@ -446,6 +555,7 @@ m9_resource_from_handle(struct pipe_screen *pscreen,
    resource->size = info.size;
    resource->mmap_offset = info.mmap_offset;
    resource->domain = M9_BO_VRAM;
+   resource->tiled = info.layout == PARHELIA_M9_LAYOUT_TILED;
    if (resource->map_fd >= 0) {
       int prot = PROT_READ;
 
@@ -486,6 +596,10 @@ m9_resource_from_handle(struct pipe_screen *pscreen,
    resource->cpp = format.cpp;
    resource->format = format.code;
    resource->layout = 1;
+   if (resource->kind == M9_RESOURCE_LINEAR_DEPTH &&
+       format.code == M9_DEPTH_FORMAT_D24S8 &&
+       (ret = m9_resource_attach_hz(screen, resource)))
+      goto fail;
    if (resource->kind == M9_RESOURCE_LINEAR_TEXTURE) {
       resource->mip.level[0].width = resource->width;
       resource->mip.level[0].height = resource->height;
@@ -497,6 +611,7 @@ m9_resource_from_handle(struct pipe_screen *pscreen,
    }
    return &resource->base;
 fail:
+   m9_resource_release_hz(screen, resource);
    if (resource->map)
       munmap(resource->map, resource->size);
    if (resource->map_fd >= 0)
@@ -559,6 +674,7 @@ m9_resource_destroy(struct pipe_screen *pscreen, struct pipe_resource *pres)
    struct m9_resource *resource = m9_resource(pres);
    struct drm_gem_close close_bo = { .handle = resource->handle };
 
+   m9_resource_release_hz(m9_screen(pscreen), resource);
    if (resource->map)
       munmap(resource->map, resource->size);
    if (resource->map_fd >= 0)
@@ -574,50 +690,14 @@ m9_resource_destroy(struct pipe_screen *pscreen, struct pipe_resource *pres)
 int
 m9_command_bo_create(struct m9_screen *screen, struct m9_resource *resource)
 {
-   struct drm_parhelia_m9_create_bo create = {
-      .size = 32768,
-      .flags = PARHELIA_M9_BO_COMMAND,
-   };
-
-   if (!screen || !resource)
-      return -EINVAL;
-   if (ioctl(screen->fd, DRM_IOCTL_PARHELIA_M9_CREATE_BO, &create))
-      return -errno;
-   memset(resource, 0, sizeof(*resource));
-   resource->map_fd = -1;
-   resource->map = mmap(NULL, create.size, PROT_READ | PROT_WRITE, MAP_SHARED,
-                        screen->fd, create.mmap_offset);
-   if (resource->map == MAP_FAILED) {
-      int error = errno;
-      struct drm_gem_close close_bo = { .handle = create.handle };
-      resource->map = NULL;
-      ioctl(screen->fd, DRM_IOCTL_GEM_CLOSE, &close_bo);
-      return -error;
-   }
-   resource->map_writable = true;
-   resource->handle = create.handle;
-   resource->kind = M9_RESOURCE_COMMAND;
-   resource->size = create.size;
-   resource->mmap_offset = create.mmap_offset;
-   resource->domain = M9_BO_DMA32;
-   resource->handle_owned = true;
-   return 0;
+   return m9_bo_create(screen, M9_MAX_COMMAND_DWORDS * sizeof(uint32_t),
+                       PARHELIA_M9_BO_COMMAND, M9_RESOURCE_COMMAND, resource);
 }
 
 void
 m9_command_bo_destroy(struct m9_screen *screen, struct m9_resource *resource)
 {
-   struct drm_gem_close close_bo;
-
-   if (!screen || !resource)
-      return;
-   if (resource->map)
-      munmap(resource->map, resource->size);
-   close_bo.handle = resource->handle;
-   if (close_bo.handle)
-      ioctl(screen->fd, DRM_IOCTL_GEM_CLOSE, &close_bo);
-   memset(resource, 0, sizeof(*resource));
-   resource->map_fd = -1;
+   m9_bo_destroy(screen, resource);
 }
 
 struct pipe_fence_handle *
@@ -682,7 +762,8 @@ m9_check_resource_capability(struct pipe_screen *pscreen,
           pres->array_size != 1 ||
           pres->format != PIPE_FORMAT_B8G8R8X8_UNORM)
          return false;
-   return !(bind & PIPE_BIND_LINEAR) || resource->layout == 1;
+   return !(bind & PIPE_BIND_LINEAR) ||
+          (resource->layout == 1 && !resource->tiled);
 }
 
 static void
@@ -718,8 +799,198 @@ m9_destroy(struct pipe_screen *pscreen)
       FREE(entry);
    }
    simple_mtx_destroy(&screen->import_lock);
+   FREE(screen->fragment_db);
    close(screen->fd);
    FREE(pscreen);
+}
+
+/* The draw module's exec path runs vertex programs as non-integer TGSI. */
+static const nir_shader_compiler_options m9_vs_nir_options = {
+   .lower_bitops = true,
+   .lower_scmp = true,
+   .lower_flrp32 = true,
+   .lower_flrp64 = true,
+   .lower_fsat = true,
+   .lower_bitfield_insert = true,
+   .lower_bitfield_extract = true,
+   .lower_fdph = true,
+   .lower_fmod = true,
+   .lower_hadd = true,
+   .lower_uadd_sat = true,
+   .lower_usub_sat = true,
+   .lower_iadd_sat = true,
+   .lower_pack_snorm_2x16 = true,
+   .lower_pack_snorm_4x8 = true,
+   .lower_pack_unorm_2x16 = true,
+   .lower_pack_unorm_4x8 = true,
+   .lower_pack_half_2x16 = true,
+   .lower_pack_split = true,
+   .lower_unpack_snorm_2x16 = true,
+   .lower_unpack_snorm_4x8 = true,
+   .lower_unpack_unorm_2x16 = true,
+   .lower_unpack_unorm_4x8 = true,
+   .lower_unpack_half_2x16 = true,
+   .lower_extract_byte = true,
+   .lower_extract_word = true,
+   .lower_uadd_carry = true,
+   .lower_usub_borrow = true,
+   .lower_mul_2x32_64 = true,
+   .lower_ifind_msb = true,
+   .max_unroll_iterations = 32,
+   .lower_uniforms_to_ubo = true,
+   .lower_device_index_to_zero = true,
+   .support_indirect_inputs = (uint8_t)BITFIELD_MASK(MESA_SHADER_STAGES),
+   .support_indirect_outputs = (uint8_t)BITFIELD_MASK(MESA_SHADER_STAGES),
+   .no_integers = true,
+   .has_fused_comp_and_csel = true,
+};
+
+/* Fragment shaders are only inspected for an interpolated-color pass-through. */
+static const nir_shader_compiler_options m9_fs_nir_options = {
+   .fdot_replicates = true,
+   .lower_bitops = true,
+   .lower_extract_byte = true,
+   .lower_extract_word = true,
+   .lower_fdiv = true,
+   .lower_fdph = true,
+   .lower_flrp32 = true,
+   .lower_fmod = true,
+   .lower_sincos = true,
+   .lower_uniforms_to_ubo = true,
+   .force_indirect_unrolling = nir_var_all,
+   .force_indirect_unrolling_sampler = true,
+   .max_unroll_iterations = 32,
+   .no_integers = true,
+   .has_fused_comp_and_csel = true,
+};
+
+static void
+m9_init_shader_caps(struct m9_screen *screen)
+{
+   struct pipe_shader_caps *vs =
+      (struct pipe_shader_caps *)&screen->base.shader_caps[MESA_SHADER_VERTEX];
+   struct pipe_shader_caps *fs =
+      (struct pipe_shader_caps *)&screen->base.shader_caps[MESA_SHADER_FRAGMENT];
+
+   draw_init_shader_caps(vs);
+   vs->supported_irs = 1 << PIPE_SHADER_IR_NIR;
+   /* st requires matching integer support across stages. */
+   vs->integers = false;
+   vs->int16 = false;
+   vs->fp16 = false;
+   vs->fp16_derivatives = false;
+   vs->fp16_const_buffers = false;
+   vs->glsl_16bit_load_dst = false;
+   vs->indirect_temp_addr = false;
+   vs->max_texture_samplers = vs->max_sampler_views = 0;
+   vs->max_shader_buffers = vs->max_shader_images = 0;
+
+   fs->supported_irs = 1 << PIPE_SHADER_IR_NIR;
+   fs->max_instructions = fs->max_alu_instructions = 64;
+   fs->max_tex_instructions = fs->max_tex_indirections = 8;
+   fs->max_inputs = 8;
+   fs->max_outputs = 1;
+   fs->max_const_buffer0_size = 32 * 4 * sizeof(float);
+   fs->max_const_buffers = 1;
+   fs->max_temps = 32;
+   fs->max_texture_samplers = fs->max_sampler_views = 1;
+}
+
+static bool
+m9_probe_user_submit(struct m9_screen *screen)
+{
+   struct drm_parhelia_m9_submit empty = {0};
+   struct m9_resource command, stream;
+   struct m9_batch *batch;
+   bool ok = false;
+
+   /* An empty executable request fails argument validation (EINVAL) only
+    * when the kernel executes user streams; otherwise it is refused. */
+   if (!ioctl(screen->fd, DRM_IOCTL_PARHELIA_M9_SUBMIT, &empty) ||
+       errno != EINVAL)
+      return false;
+   /* The two-pass STREAM relocation kind must pass validation. */
+   batch = CALLOC_STRUCT(m9_batch);
+   if (!batch)
+      return false;
+   if (!m9_command_bo_create(screen, &command)) {
+      if (!m9_bo_create(screen, 4096, PARHELIA_M9_BO_VRAM,
+                        M9_RESOURCE_LINEAR_BUFFER, &stream)) {
+         const struct m9_packet_value be = {
+            .index = 0xbe, .handle = stream.handle,
+            .kind = PARHELIA_M9_RELOC_STREAM,
+         };
+
+         m9_batch_init(batch);
+         ok = !m9_batch_emit_packet(batch, &be, 1) &&
+              !m9_batch_validate(screen, &command, batch, 0);
+         m9_bo_destroy(screen, &stream);
+      }
+      m9_command_bo_destroy(screen, &command);
+   }
+   FREE(batch);
+   return ok;
+}
+
+static bool
+m9_read_file(const char *path, uint8_t **data, size_t *size)
+{
+   int fd = open(path, O_RDONLY | O_CLOEXEC);
+   uint8_t *buffer = NULL;
+   struct stat st;
+   size_t done = 0;
+
+   if (fd < 0)
+      return false;
+   if (!fstat(fd, &st) && st.st_size > 0 && st.st_size <= (64 << 20))
+      buffer = MALLOC(st.st_size);
+   while (buffer && done < (size_t)st.st_size) {
+      ssize_t n = read(fd, buffer + done, st.st_size - done);
+
+      if (n <= 0)
+         break;
+      done += n;
+   }
+   close(fd);
+   if (!buffer || done != (size_t)st.st_size) {
+      FREE(buffer);
+      return false;
+   }
+   *data = buffer;
+   *size = done;
+   return true;
+}
+
+static void
+m9_load_fragment_db(struct m9_screen *screen)
+{
+   static const char name[] = "m9x/rsfragptrs-normal.bin";
+   const char *dirs[] = { NULL, "/lib/firmware/updates", "/lib/firmware" };
+   const char *env = getenv("M9X_FRAGMENT_DB");
+   char custom[PATH_MAX] = "", path[PATH_MAX];
+   FILE *param;
+
+   if (env) {
+      if (!m9_read_file(env, &screen->fragment_db, &screen->fragment_db_size))
+         fprintf(stderr, "m9x: cannot read M9X_FRAGMENT_DB %s\n", env);
+      return;
+   }
+   /* Search the firmware directories in the kernel loader's order. */
+   param = fopen("/sys/module/firmware_class/parameters/path", "r");
+   if (param) {
+      if (fgets(custom, sizeof(custom), param))
+         custom[strcspn(custom, "\n")] = 0;
+      fclose(param);
+   }
+   if (custom[0])
+      dirs[0] = custom;
+   for (unsigned i = 0; i < ARRAY_SIZE(dirs); i++) {
+      if (!dirs[i])
+         continue;
+      snprintf(path, sizeof(path), "%s/%s", dirs[i], name);
+      if (m9_read_file(path, &screen->fragment_db, &screen->fragment_db_size))
+         return;
+   }
 }
 
 struct pipe_screen *
@@ -738,10 +1009,13 @@ m9_screen_create(int fd, const struct pipe_screen_config *config)
    screen->chip_id = M9_PCI_ID;
    screen->uapi_version = 1;
    screen->validate_submit = true;
-   screen->execute_submit = false;
-   screen->linked_program_ready = false;
+   screen->execute_submit = m9_probe_user_submit(screen);
+   m9_load_fragment_db(screen);
    screen->base.get_screen_fd = m9_fd;
    u_init_pipe_screen_caps(&screen->base, 1);
+   screen->base.nir_options[MESA_SHADER_VERTEX] = &m9_vs_nir_options;
+   screen->base.nir_options[MESA_SHADER_FRAGMENT] = &m9_fs_nir_options;
+   m9_init_shader_caps(screen);
    caps = (struct pipe_caps *)&screen->base.caps;
    caps->max_render_targets = 1;
    caps->max_texture_2d_size = 2048;
@@ -754,8 +1028,26 @@ m9_screen_create(int fd, const struct pipe_screen_config *config)
    caps->vendor_id = 0x102b;
    caps->device_id = M9_PCI_ID;
    caps->endianness = PIPE_ENDIAN_NATIVE;
-   caps->glsl_feature_level = 0;
-   caps->glsl_feature_level_compatibility = 0;
+   /* Vertex programs run in the draw module; fragment shading is limited to
+    * the interpolated primary color (m9_context.c). */
+   caps->glsl_feature_level = 120;
+   caps->glsl_feature_level_compatibility = 120;
+   caps->essl_feature_level = 100;
+   caps->npot_textures = true;
+   caps->user_vertex_buffers = true;
+   caps->vertex_color_clamped = true;
+   caps->vertex_color_unclamped = true;
+   caps->fs_coord_origin_upper_left = true;
+   caps->fs_coord_pixel_center_half_integer = true;
+   caps->clear_scissored = true;
+   caps->clear_masked = true;
+   caps->shareable_shaders = false;
+   caps->max_varyings = 8;
+   caps->min_point_size = caps->min_point_size_aa = 1.0f;
+   caps->min_line_width = caps->min_line_width_aa = 1.0f;
+   caps->max_point_size = caps->max_point_size_aa = 255.0f;
+   caps->max_line_width = caps->max_line_width_aa = 255.0f;
+   caps->point_size_granularity = caps->line_width_granularity = 0.1f;
    caps->compute = false;
    caps->dmabuf = DRM_PRIME_CAP_IMPORT | DRM_PRIME_CAP_EXPORT;
    screen->base.destroy = m9_destroy;

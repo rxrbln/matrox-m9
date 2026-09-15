@@ -1,4 +1,5 @@
 /* SPDX-License-Identifier: MIT */
+/* Copyright 2026 René Rebe <rene@exactco.de> */
 #include "m9_batch.h"
 #include "m9_resource69_inline.h"
 
@@ -24,13 +25,7 @@ m9_header_is_draw(uint32_t header)
            base == 0x07000001u);
 }
 
-struct m9_batch_checkpoint {
-   uint32_t command_count, reloc_count, bo_count;
-   uint32_t bo_flags[M9_MAX_BOS];
-   enum m9_program_mode program_mode;
-};
-
-static void
+void
 m9_batch_checkpoint(const struct m9_batch *batch,
                     struct m9_batch_checkpoint *checkpoint)
 {
@@ -42,7 +37,7 @@ m9_batch_checkpoint(const struct m9_batch *batch,
       checkpoint->bo_flags[i] = batch->bos[i].flags;
 }
 
-static void
+void
 m9_batch_rollback(struct m9_batch *batch,
                   const struct m9_batch_checkpoint *checkpoint)
 {
@@ -140,7 +135,7 @@ m9_batch_add_reloc(struct m9_batch *batch, uint32_t command_dword,
    int ret;
 
    if (!batch || command_dword >= batch->command_count ||
-       kind > PARHELIA_M9_RELOC_RESOURCE_6C || batch->sealed || !bo_access ||
+       kind > PARHELIA_M9_RELOC_STREAM || batch->sealed || !bo_access ||
        access & ~(access_mask | PARHELIA_M9_RELOC_PACKED16_ODD) ||
        ((access & PARHELIA_M9_RELOC_PACKED16_ODD) &&
         kind != PARHELIA_M9_RELOC_DRAW16_END))
@@ -157,6 +152,77 @@ m9_batch_add_reloc(struct m9_batch *batch, uint32_t command_dword,
       .kind = kind,
       .flags = access,
    };
+   return 0;
+}
+
+unsigned
+m9_reloc_kind_access(enum drm_parhelia_m9_reloc_kind kind)
+{
+   /* Mirrors the kernel: BO refs must carry exactly the union of these. */
+   switch (kind) {
+   case PARHELIA_M9_RELOC_COLOR:
+   case PARHELIA_M9_RELOC_DEPTH:
+   case PARHELIA_M9_RELOC_PROGRAM:
+   case PARHELIA_M9_RELOC_STREAM:
+      return PARHELIA_M9_BO_READ | PARHELIA_M9_BO_WRITE;
+   case PARHELIA_M9_RELOC_SYSTEM:
+   case PARHELIA_M9_RELOC_TEXTURE:
+   case PARHELIA_M9_RELOC_RESOURCE_69:
+   case PARHELIA_M9_RELOC_RESOURCE_6C:
+   case PARHELIA_M9_RELOC_DRAW32_START:
+   case PARHELIA_M9_RELOC_DRAW32_END:
+   case PARHELIA_M9_RELOC_DRAW16_START:
+   case PARHELIA_M9_RELOC_DRAW16_END:
+      return PARHELIA_M9_BO_READ;
+   default:
+      return 0;
+   }
+}
+
+int
+m9_batch_emit_packet(struct m9_batch *batch,
+                     const struct m9_packet_value *values, unsigned count)
+{
+   struct m9_batch_checkpoint checkpoint;
+   uint8_t indices[4];
+   uint32_t words[4], header = 0x45454545u, base;
+   int ret;
+
+   if (!batch || !values || !count || count > 4 || batch->sealed)
+      return -EINVAL;
+   for (unsigned i = 0; i < count; i++) {
+      indices[i] = values[i].index;
+      words[i] = values[i].handle ? 0 : values[i].value;
+      header &= ~(0xffu << (8 * i));
+      header |= (uint32_t)indices[i] << (8 * i);
+   }
+   /* A split header would move the relocated value dwords. */
+   if (count == 4 && m9_header_is_draw(header))
+      return -EINVAL;
+   m9_batch_checkpoint(batch, &checkpoint);
+   base = batch->command_count;
+   ret = m9_batch_emit_regs(batch, indices, words, count);
+   for (unsigned i = 0; !ret && i < count; i++) {
+      if (!values[i].handle)
+         continue;
+      ret = m9_batch_add_reloc(batch, base + 1 + i, values[i].handle,
+                               values[i].offset, values[i].kind,
+                               m9_reloc_kind_access(values[i].kind));
+   }
+   if (ret)
+      m9_batch_rollback(batch, &checkpoint);
+   return ret;
+}
+
+int
+m9_batch_emit_range_break(struct m9_batch *batch)
+{
+   if (!batch || batch->sealed)
+      return -EINVAL;
+   if (batch->command_count + 2 > M9_MAX_COMMAND_DWORDS)
+      return -ENOSPC;
+   batch->command[batch->command_count++] = PARHELIA_M9_RANGE_BREAK;
+   batch->command[batch->command_count++] = 0;
    return 0;
 }
 
@@ -195,8 +261,11 @@ m9_batch_bind_surface(struct m9_batch *batch, uint8_t address_index,
    m9_batch_checkpoint(batch, &checkpoint);
    if (!desc->row_span || !desc->height || !desc->layers ||
        (offset & 255) ||
-       ((address_index <= 0xb6) != (kind == PARHELIA_M9_RELOC_COLOR)) ||
-       ((address_index >= 0xb8) != (kind == PARHELIA_M9_RELOC_DEPTH)))
+       (address_index <= 0xb6 && kind != PARHELIA_M9_RELOC_COLOR &&
+        kind != PARHELIA_M9_RELOC_STREAM) ||
+       (address_index == 0xb8 && kind != PARHELIA_M9_RELOC_DEPTH &&
+        kind != PARHELIA_M9_RELOC_STREAM) ||
+       (address_index == 0xba && kind != PARHELIA_M9_RELOC_DEPTH))
       return -EINVAL;
    ret = m9_batch_emit_regs(batch, indices, values, 2);
    if (ret)
@@ -204,7 +273,7 @@ m9_batch_bind_surface(struct m9_batch *batch, uint8_t address_index,
    /* Destination reads depend on blend/logic-op state.  The current kernel
     * executable boundary conservatively reserves every attachment both ways. */
    ret = m9_batch_add_reloc(batch, address_dword, handle, offset, kind,
-                            PARHELIA_M9_BO_READ | PARHELIA_M9_BO_WRITE);
+                            m9_reloc_kind_access(kind));
    if (ret)
       m9_batch_rollback(batch, &checkpoint);
    return ret;

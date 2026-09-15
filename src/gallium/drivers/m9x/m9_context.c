@@ -1,18 +1,158 @@
 /* SPDX-License-Identifier: MIT */
+/* Copyright 2026 René Rebe <rene@exactco.de> */
+/*
+ * M9 rendering context.  The Gallium draw module transforms vertices on the
+ * CPU and hands window-space primitives to a vbuf render, which batches them
+ * into two-pass pass-through jobs (m9_draw.c) rasterized by the hardware.
+ * Fragment shading is limited to the interpolated primary color.
+ */
 #include "m9_screen.h"
 
 #include <errno.h>
+#include <inttypes.h>
 #include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <sys/ioctl.h>
 
+#include "draw/draw_context.h"
+#include "draw/draw_vbuf.h"
+#include "draw/draw_vertex.h"
+#include "indices/u_indices.h"
 #include "m9_batch.h"
+#include "m9_draw.h"
+#include "m9_format.h"
 #include "m9_internal.h"
+#include "m9_passthrough.h"
 #include "m9_state.h"
+#include "nir.h"
+#include "util/u_debug.h"
+#include "util/u_debug_cb.h"
+#include "util/u_draw.h"
+#include "util/u_framebuffer.h"
+#include "util/u_helpers.h"
 #include "util/u_inlines.h"
+#include "util/u_math.h"
 #include "util/u_memory.h"
+#include "util/u_pack_color.h"
+#include "util/u_prim.h"
+#include "util/u_surface.h"
+#include "util/u_transfer.h"
+#include "util/u_upload_mgr.h"
+
+/* Source record: x, y bottom-up, z in ortho object space, r, g, b, a. */
+#define M9_RECORD_FLOATS 7u
+
+enum m9_warning {
+   M9_WARN_TARGET = 1u << 0,
+   M9_WARN_FS = 1u << 1,
+   M9_WARN_BLEND = 1u << 2,
+   M9_WARN_DEPTH = 1u << 3,
+   M9_WARN_STENCIL = 1u << 4,
+   M9_WARN_POINTS = 1u << 5,
+   M9_WARN_BLIT = 1u << 6,
+   M9_WARN_CLEAR = 1u << 7,
+   M9_WARN_TRANSFER = 1u << 8,
+   M9_WARN_MEMORY = 1u << 9,
+};
 
 struct m9_transfer {
    struct pipe_transfer base;
+   uint8_t *staging;  /* de-tiled rows of a tiled render target */
 };
+
+struct m9_fs_state {
+   struct draw_fragment_shader *draw;
+   nir_shader *nir;
+   bool passthrough;
+};
+
+struct m9_velems {
+   unsigned count;
+   struct pipe_vertex_element elements[PIPE_MAX_ATTRIBS];
+};
+
+struct m9_vbuf_render {
+   struct vbuf_render base;
+   struct m9_context *ctx;
+   struct vertex_info vinfo;
+   enum mesa_prim prim;
+   uint8_t *vertices;
+   size_t capacity;
+   uint16_t vertex_size;
+   bool has_color;
+   struct util_dynarray indices;
+};
+
+static int m9_submit_job(struct m9_context *ctx);
+
+static inline struct m9_context *
+m9_context(struct pipe_context *pctx)
+{
+   return (struct m9_context *)pctx;
+}
+
+static inline struct m9_resource *
+m9_res(struct pipe_resource *pres)
+{
+   return (struct m9_resource *)pres;
+}
+
+static void
+m9_warn_once(struct m9_context *ctx, uint32_t bit, const char *message)
+{
+   if (ctx->warned & bit)
+      return;
+   ctx->warned |= bit;
+   fprintf(stderr, "m9x: %s\n", message);
+}
+
+static void
+m9_context_sync(struct m9_context *ctx)
+{
+   if (ctx->draw)
+      draw_flush(ctx->draw);
+   m9_submit_job(ctx);
+}
+
+static void
+m9_fill_dwords(struct m9_resource *resource, uint32_t value)
+{
+   uint32_t *words = resource->map;
+
+   for (uint64_t i = 0; i < resource->size / 4; i++)
+      words[i] = value;
+}
+
+/* Transfers */
+
+static int
+m9_surface_access(struct m9_context *ctx, const struct m9_resource *resource,
+                  uint32_t op, const struct pipe_box *box, uint8_t *data)
+{
+   const struct m9_surface_desc desc = {
+      .row_span = resource->row_span, .height = resource->height,
+      .layers = 1, .layout = 1, .address_offset = true,
+      .format = resource->format,
+   };
+   struct drm_parhelia_m9_surface_access access = {
+      .handle = resource->handle,
+      .op = op,
+      .descriptor0 = m9_surface_desc0(&desc),
+      .descriptor1 = m9_surface_desc1(&desc),
+      .surface_width = resource->width,
+      .x = box->x,
+      .y = box->y,
+      .width = box->width,
+      .height = box->height,
+      .data_stride = box->width * 4,
+      .data_ptr = (uintptr_t)data,
+      .data_size = (uint64_t)box->width * box->height * 4,
+   };
+
+   return ioctl(ctx->screen->fd, DRM_IOCTL_PARHELIA_M9_SURFACE_ACCESS,
+                &access) ? -errno : 0;
+}
 
 static uint64_t
 m9_transfer_offset(const struct m9_resource *resource, unsigned level,
@@ -44,12 +184,12 @@ m9_transfer_map(struct pipe_context *pctx, struct pipe_resource *pres,
                 unsigned level, unsigned usage, const struct pipe_box *box,
                 struct pipe_transfer **out)
 {
+   struct m9_context *ctx = m9_context(pctx);
    struct m9_resource *resource = (struct m9_resource *)pres;
    struct m9_transfer *transfer;
-   uint64_t offset, last;
+   uint64_t offset = 0, last;
    unsigned width, height, stride;
 
-   (void)pctx;
    if (!resource || !resource->map ||
        ((usage & PIPE_MAP_WRITE) && !resource->map_writable) ||
        !box || !out || box->x < 0 ||
@@ -63,18 +203,44 @@ m9_transfer_map(struct pipe_context *pctx, struct pipe_resource *pres,
    if ((unsigned)box->x > width || (unsigned)box->width > width - box->x ||
        (unsigned)box->y > height || (unsigned)box->height > height - box->y)
       return NULL;
-   offset = m9_transfer_offset(resource, level, box, &stride);
-   last = offset;
-   if (pres->target == PIPE_BUFFER)
-      last += box->width;
-   else if (box->width && box->height)
-      last += (uint64_t)(box->height - 1) * stride +
-              (uint64_t)box->width * resource->cpp;
-   if (last > resource->size)
-      return NULL;
+   /* Pending jobs may still write render and depth targets. */
+   if (pres->target != PIPE_BUFFER && !(usage & PIPE_MAP_UNSYNCHRONIZED))
+      m9_context_sync(ctx);
    transfer = CALLOC_STRUCT(m9_transfer);
    if (!transfer)
       return NULL;
+   if (resource->tiled) {
+      bool preserve = (usage & PIPE_MAP_READ) ||
+                      !(usage & (PIPE_MAP_DISCARD_RANGE |
+                                 PIPE_MAP_DISCARD_WHOLE_RESOURCE));
+
+      /* Tiled storage is only reachable as rows through the kernel. */
+      stride = box->width * 4;
+      transfer->staging = box->width && box->height ?
+                          MALLOC((size_t)stride * box->height) : NULL;
+      if (!transfer->staging ||
+          (preserve && m9_surface_access(ctx, resource,
+                                         PARHELIA_M9_ACCESS_READ, box,
+                                         transfer->staging))) {
+         m9_warn_once(ctx, M9_WARN_TRANSFER,
+                      "de-tiled render target access failed");
+         FREE(transfer->staging);
+         FREE(transfer);
+         return NULL;
+      }
+   } else {
+      offset = m9_transfer_offset(resource, level, box, &stride);
+      last = offset;
+      if (pres->target == PIPE_BUFFER)
+         last += box->width;
+      else if (box->width && box->height)
+         last += (uint64_t)(box->height - 1) * stride +
+                 (uint64_t)box->width * resource->cpp;
+      if (last > resource->size) {
+         FREE(transfer);
+         return NULL;
+      }
+   }
    pipe_resource_reference(&transfer->base.resource, pres);
    transfer->base.level = level;
    transfer->base.usage = usage;
@@ -83,96 +249,1370 @@ m9_transfer_map(struct pipe_context *pctx, struct pipe_resource *pres,
    transfer->base.layer_stride = pres->target == PIPE_BUFFER ? 0 :
                                  (uintptr_t)stride * height;
    *out = &transfer->base;
-   return (uint8_t *)resource->map + offset;
+   return transfer->staging ? transfer->staging :
+          (uint8_t *)resource->map + offset;
 }
 
 static void
-m9_transfer_unmap(struct pipe_context *pctx, struct pipe_transfer *transfer)
+m9_transfer_unmap(struct pipe_context *pctx, struct pipe_transfer *ptransfer)
 {
-   (void)pctx;
-   if (transfer->usage & PIPE_MAP_WRITE)
+   struct m9_transfer *transfer = (struct m9_transfer *)ptransfer;
+
+   if (transfer->staging) {
+      if ((ptransfer->usage & PIPE_MAP_WRITE) &&
+          m9_surface_access(m9_context(pctx), m9_res(ptransfer->resource),
+                            PARHELIA_M9_ACCESS_WRITE, &ptransfer->box,
+                            transfer->staging))
+         m9_warn_once(m9_context(pctx), M9_WARN_TRANSFER,
+                      "de-tiled render target write failed");
+      FREE(transfer->staging);
+   } else if (ptransfer->usage & PIPE_MAP_WRITE) {
       __sync_synchronize();
-   pipe_resource_reference(&transfer->resource, NULL);
+   }
+   pipe_resource_reference(&ptransfer->resource, NULL);
    FREE(transfer);
 }
+
+/* Two-pass jobs */
+
+static int
+m9_source_reserve(struct m9_context *ctx, uint64_t bytes)
+{
+   uint64_t size;
+
+   if (bytes <= ctx->source.size)
+      return 0;
+   size = MAX2((bytes + 0xfff) & ~0xfffull, 2 * ctx->source.size);
+   m9_bo_destroy(ctx->screen, &ctx->source);
+   return m9_bo_create(ctx->screen, size, 0, M9_RESOURCE_LINEAR_BUFFER,
+                       &ctx->source);
+}
+
+static int
+m9_submit_job(struct m9_context *ctx)
+{
+   unsigned records = util_dynarray_num_elements(&ctx->records, float) /
+                      M9_RECORD_FLOATS;
+   unsigned draws = util_dynarray_num_elements(&ctx->draws,
+                                               struct m9_draw_record);
+   const struct m9_job_key *key = &ctx->job_key;
+   struct m9_draw_job job;
+   uint64_t point = 0;
+   int ret;
+
+   if (!draws)
+      return 0;
+   ret = ctx->lost ? -EIO :
+         m9_source_reserve(ctx, (uint64_t)records * M9_RECORD_FLOATS *
+                                sizeof(float));
+   if (!ret) {
+      memcpy(ctx->source.map, ctx->records.data, ctx->records.size);
+      memcpy(ctx->system.map, ctx->params.system_prefix,
+             sizeof(ctx->params.system_prefix));
+      memcpy((uint8_t *)ctx->system.map + M9_LINKED_OFFSET,
+             ctx->params.linked_prefix, sizeof(ctx->params.linked_prefix));
+      job = (struct m9_draw_job) {
+         .params = &ctx->params,
+         .decl = &ctx->decl,
+         .source = ctx->source.handle,
+         .system = ctx->system.handle,
+         .program = ctx->program.handle,
+         .fragment_db = ctx->fragment_db.handle,
+         .transient = ctx->transient.handle,
+         .color = m9_res(ctx->color)->handle,
+         .depth = key->depth->handle,
+         .aux = key->aux->handle,
+         .be = ctx->be.handle,
+         .source_vertices = records,
+         .draws = ctx->draws.data,
+         .draw_count = draws,
+         .depth_control = key->depth_control,
+         .depth_ef = key->depth_ef,
+         .color_mask = key->color_mask,
+         .clip_min = key->clip_min,
+         .clip_max = key->clip_max,
+      };
+      m9_batch_init(&ctx->batch);
+      ret = m9_batch_emit_draw_job(&ctx->batch, &job);
+   }
+   if (!ret) {
+      ctx->batch.sealed = true;
+      ret = m9_batch_submit(ctx->screen, &ctx->command, &ctx->batch,
+                            ctx->context_id, &point);
+   }
+   if (ret) {
+      if (!ctx->lost)
+         fprintf(stderr, "m9x: two-pass job failed (%s); context lost\n",
+                 strerror(-ret));
+      ctx->lost = true;
+   } else {
+      ctx->last_point = point;
+      if (ctx->debug)
+         fprintf(stderr, "m9x: job %u records %u draws a8 %08x ef %08x "
+                 "ab %08x clip %08x/%08x -> %#" PRIx64 "\n", records, draws,
+                 key->depth_control, key->depth_ef, key->color_mask,
+                 key->clip_min, key->clip_max, point);
+   }
+   util_dynarray_clear(&ctx->records);
+   util_dynarray_clear(&ctx->draws);
+   m9_batch_init(&ctx->batch);
+   return ret;
+}
+
+/* Space for vertices source records of one draw in a job with this key. */
+static float *
+m9_job_reserve(struct m9_context *ctx, const struct m9_job_key *key,
+               unsigned vertices, uint32_t *first)
+{
+   unsigned padded = m9_draw_preprocess_vertices(vertices);
+   unsigned records = util_dynarray_num_elements(&ctx->records, float) /
+                      M9_RECORD_FLOATS;
+   unsigned draws = util_dynarray_num_elements(&ctx->draws,
+                                               struct m9_draw_record);
+   float *out;
+
+   if (padded > m9_draw_max_source_vertices())
+      return NULL;
+   if (draws && (memcmp(key, &ctx->job_key, sizeof(*key)) ||
+                 records + padded > m9_draw_max_source_vertices() ||
+                 m9_draw_job_dwords(draws + 1) > M9_MAX_COMMAND_DWORDS)) {
+      m9_submit_job(ctx);
+      records = 0;
+   }
+   if (ctx->lost)
+      return NULL;
+   ctx->job_key = *key;
+   out = util_dynarray_grow(&ctx->records, float, padded * M9_RECORD_FLOATS);
+   if (!out)
+      m9_warn_once(ctx, M9_WARN_MEMORY, "out of memory for source records");
+   *first = records;
+   return out;
+}
+
+static void
+m9_job_commit(struct m9_context *ctx, float *out, unsigned vertices,
+              uint32_t first, enum m9_topology topology, uint32_t cull,
+              bool lines, bool flat)
+{
+   unsigned padded = m9_draw_preprocess_vertices(vertices);
+   struct m9_draw_record *draw;
+
+   /* Pad to the next four-record boundary with the last vertex. */
+   for (unsigned i = vertices; i < padded; i++)
+      memcpy(out + i * M9_RECORD_FLOATS, out + (vertices - 1) * M9_RECORD_FLOATS,
+             M9_RECORD_FLOATS * sizeof(float));
+   draw = util_dynarray_grow(&ctx->draws, struct m9_draw_record, 1);
+   if (!draw) {
+      /* Shrinking never reallocates; drop the orphaned records. */
+      ctx->records.size = (size_t)first * M9_RECORD_FLOATS * sizeof(float);
+      m9_warn_once(ctx, M9_WARN_MEMORY, "out of memory for draw records");
+      return;
+   }
+   *draw = (struct m9_draw_record) {
+      .start = first,
+      .count = vertices,
+      .topology = topology,
+      .cull = cull,
+      .lines = lines,
+      .flat = flat,
+   };
+}
+
+static struct m9_resource *
+m9_context_depth(struct m9_context *ctx)
+{
+   const struct pipe_surface *zsbuf = &ctx->framebuffer.zsbuf;
+   struct m9_resource *zs = zsbuf->texture ? m9_res(zsbuf->texture) : NULL;
+
+   return zs && zs->hz && !zsbuf->level && zs->width == ctx->params.width &&
+          zs->height == ctx->params.height ? zs : NULL;
+}
+
+static bool
+m9_scissor_key(struct m9_context *ctx, const struct pipe_scissor_state *s,
+               struct m9_job_key *key)
+{
+   uint32_t minx = MIN2(s->minx, ctx->params.width);
+   uint32_t miny = MIN2(s->miny, ctx->params.height);
+   uint32_t maxx = MIN2(s->maxx, ctx->params.width);
+   uint32_t maxy = MIN2(s->maxy, ctx->params.height);
+
+   if (minx >= maxx || miny >= maxy)
+      return false;
+   m9_scissor_words(minx, miny, maxx, maxy, &key->clip_min, &key->clip_max);
+   return true;
+}
+
+static bool
+m9_job_key_current(struct m9_context *ctx, struct m9_job_key *key)
+{
+   const struct pipe_depth_stencil_alpha_state *dsa = ctx->dsa;
+   const struct pipe_blend_state *blend = ctx->blend;
+   const struct pipe_rasterizer_state *rast = ctx->rasterizer;
+   struct m9_resource *zs;
+   bool test, write;
+
+   if (ctx->lost || !ctx->params_valid)
+      return false;
+   zs = m9_context_depth(ctx);
+   test = dsa && dsa->depth_enabled;
+   if (test && !zs) {
+      m9_warn_once(ctx, M9_WARN_DEPTH,
+                   "depth test needs a D24S8 attachment of the target size; "
+                   "drawing without depth");
+      test = false;
+   }
+   write = test && dsa->depth_writemask;
+   if (blend && blend->rt[0].blend_enable)
+      m9_warn_once(ctx, M9_WARN_BLEND, "blending is not implemented; "
+                   "drawing opaque");
+   if (dsa && (dsa->stencil[0].enabled || dsa->alpha_enabled))
+      m9_warn_once(ctx, M9_WARN_STENCIL, "stencil and alpha test are not "
+                   "implemented");
+   memset(key, 0, sizeof(*key));
+   key->depth = zs ? zs : &ctx->target_depth;
+   key->aux = zs ? zs->hz : &ctx->target_aux;
+   key->depth_control = m9_depth_control(test, write,
+                                         dsa ? dsa->depth_func : PIPE_FUNC_LESS);
+   key->depth_ef = m9_depth_ef(test, write);
+   key->color_mask = m9_color_mask(blend ? blend->rt[0].colormask :
+                                           PIPE_MASK_RGBA);
+   if (rast && rast->scissor)
+      return m9_scissor_key(ctx, &ctx->scissor, key);
+   key->clip_min = ctx->params.clip_min;
+   key->clip_max = ctx->params.clip_max;
+   return true;
+}
+
+/* vbuf render */
+
+static inline struct m9_vbuf_render *
+m9_vbuf_render(struct vbuf_render *render)
+{
+   return (struct m9_vbuf_render *)render;
+}
+
+static const struct vertex_info *
+m9_render_get_vertex_info(struct vbuf_render *render)
+{
+   struct m9_vbuf_render *r = m9_vbuf_render(render);
+   int position = draw_find_shader_output(r->ctx->draw,
+                                          TGSI_SEMANTIC_POSITION, 0);
+   int color = draw_find_shader_output(r->ctx->draw, TGSI_SEMANTIC_COLOR, 0);
+
+   memset(&r->vinfo, 0, sizeof(r->vinfo));
+   draw_emit_vertex_attr(&r->vinfo, EMIT_4F, MAX2(position, 0));
+   r->has_color = color >= 0;
+   if (r->has_color)
+      draw_emit_vertex_attr(&r->vinfo, EMIT_4F, color);
+   draw_compute_vertex_size(&r->vinfo);
+   return &r->vinfo;
+}
+
+static bool
+m9_render_allocate_vertices(struct vbuf_render *render, uint16_t vertex_size,
+                            uint16_t count)
+{
+   struct m9_vbuf_render *r = m9_vbuf_render(render);
+   size_t bytes = (size_t)vertex_size * count;
+
+   if (bytes > r->capacity) {
+      uint8_t *vertices = realloc(r->vertices, bytes);
+
+      if (!vertices)
+         return false;
+      r->vertices = vertices;
+      r->capacity = bytes;
+   }
+   r->vertex_size = vertex_size;
+   return true;
+}
+
+static void *
+m9_render_map_vertices(struct vbuf_render *render)
+{
+   return m9_vbuf_render(render)->vertices;
+}
+
+static void
+m9_render_unmap_vertices(struct vbuf_render *render, uint16_t min_index,
+                         uint16_t max_index)
+{
+   (void)render;
+   (void)min_index;
+   (void)max_index;
+}
+
+static void
+m9_render_set_primitive(struct vbuf_render *render, enum mesa_prim prim)
+{
+   m9_vbuf_render(render)->prim = prim;
+}
+
+static void
+m9_render_record(const struct m9_vbuf_render *r, unsigned index, float *out)
+{
+   const float *v = (const float *)(r->vertices + (size_t)index * r->vertex_size);
+
+   /* The captured ortho program flips window y and maps z = 1 - 2 z_win. */
+   out[0] = v[0];
+   out[1] = (float)r->ctx->params.height - v[1];
+   out[2] = 1.0f - 2.0f * v[2];
+   for (unsigned c = 0; c < 4; c++)
+      out[3 + c] = r->has_color ? CLAMP(v[4 + c], 0.0f, 1.0f) : 1.0f;
+}
+
+static void
+m9_render_append(struct m9_vbuf_render *r, const struct m9_job_key *key,
+                 enum m9_topology topology, bool lines, uint32_t cull,
+                 const void *indices, unsigned index_size, unsigned start,
+                 unsigned count)
+{
+   const unsigned max = m9_draw_max_source_vertices();
+   bool list = topology == M9_TOPOLOGY_LINES ||
+               topology == M9_TOPOLOGY_TRIANGLES;
+
+   /* Native connected primitives are bounded by max_vertex_buffer_bytes;
+    * lists split on any multiple of six. */
+   if (count > max && !list)
+      return;
+   for (unsigned done = 0; done < count;) {
+      unsigned n = MIN2(count - done, max);
+      uint32_t first;
+      float *out = m9_job_reserve(r->ctx, key, n, &first);
+
+      if (!out)
+         return;
+      for (unsigned i = 0; i < n; i++) {
+         unsigned index = !indices ? start + done + i :
+                          index_size == 4 ?
+                          ((const uint32_t *)indices)[done + i] :
+                          ((const uint16_t *)indices)[done + i];
+
+         m9_render_record(r, index, out + i * M9_RECORD_FLOATS);
+      }
+      m9_job_commit(r->ctx, out, n, first, topology, cull, lines,
+                    r->ctx->rasterizer && r->ctx->rasterizer->flatshade);
+      done += n;
+   }
+}
+
+static bool
+m9_native_topology(enum mesa_prim prim, unsigned in_pv,
+                   enum m9_topology *topology)
+{
+   switch (prim) {
+   case MESA_PRIM_LINES: *topology = M9_TOPOLOGY_LINES; break;
+   case MESA_PRIM_LINE_STRIP: *topology = M9_TOPOLOGY_LINE_STRIP; break;
+   case MESA_PRIM_TRIANGLES: *topology = M9_TOPOLOGY_TRIANGLES; break;
+   case MESA_PRIM_TRIANGLE_STRIP: *topology = M9_TOPOLOGY_TRIANGLE_STRIP; break;
+   case MESA_PRIM_TRIANGLE_FAN: *topology = M9_TOPOLOGY_TRIANGLE_FAN; break;
+   case MESA_PRIM_QUADS: *topology = M9_TOPOLOGY_QUADS; break;
+   case MESA_PRIM_QUAD_STRIP: *topology = M9_TOPOLOGY_QUAD_STRIP; break;
+   case MESA_PRIM_POLYGON: *topology = M9_TOPOLOGY_POLYGON; return true;
+   default: return false;
+   }
+   /* Hardware flat shading provokes with the last vertex. */
+   return in_pv == PV_LAST;
+}
+
+static void *
+m9_render_scratch(struct m9_vbuf_render *r, size_t bytes)
+{
+   util_dynarray_clear(&r->indices);
+   return util_dynarray_grow_bytes(&r->indices, 1, bytes);
+}
+
+static void
+m9_render_emit(struct m9_vbuf_render *r, const uint16_t *indices,
+               unsigned start, unsigned count)
+{
+   struct m9_context *ctx = r->ctx;
+   const struct pipe_rasterizer_state *rast = ctx->rasterizer;
+   const unsigned lists = BITFIELD_BIT(MESA_PRIM_LINES) |
+                          BITFIELD_BIT(MESA_PRIM_TRIANGLES);
+   enum mesa_prim prim = r->prim, out_prim = r->prim;
+   unsigned in_pv = rast && rast->flatshade && rast->flatshade_first ?
+                    PV_FIRST : PV_LAST;
+   unsigned out_size = 0, out_count = count;
+   enum m9_topology topology;
+   const void *list = NULL;
+   struct m9_job_key key;
+   uint32_t cull = 0;
+
+   if (!count || !m9_job_key_current(ctx, &key))
+      return;
+   if (u_reduced_prim(prim) == MESA_PRIM_POINTS) {
+      m9_warn_once(ctx, M9_WARN_POINTS, "unexpanded points are not drawn");
+      return;
+   }
+   if (u_reduced_prim(prim) == MESA_PRIM_TRIANGLES && rast) {
+      if (rast->cull_face == PIPE_FACE_FRONT_AND_BACK)
+         return;
+      cull = m9_cull_ef(rast->cull_face, rast->front_ccw);
+   }
+   if (indices || !m9_native_topology(prim, in_pv, &topology)) {
+      void *buffer;
+
+      if (indices) {
+         u_translate_func translate;
+
+         if (u_index_translator(lists, prim, 2, count, in_pv, PV_LAST,
+                                PR_DISABLE, &out_prim, &out_size, &out_count,
+                                &translate) == U_TRANSLATE_ERROR)
+            return;
+         buffer = m9_render_scratch(r, (size_t)out_count * out_size);
+         if (!buffer)
+            return;
+         translate(indices, 0, count, out_count, 0, buffer);
+      } else {
+         u_generate_func generate;
+
+         if (u_index_generator(lists, prim, start, count, in_pv, PV_LAST,
+                               &out_prim, &out_size, &out_count,
+                               &generate) == U_TRANSLATE_ERROR)
+            return;
+         buffer = m9_render_scratch(r, (size_t)out_count * out_size);
+         if (!buffer)
+            return;
+         generate(start, out_count, buffer);
+      }
+      list = buffer;
+      topology = out_prim == MESA_PRIM_LINES ? M9_TOPOLOGY_LINES :
+                                               M9_TOPOLOGY_TRIANGLES;
+   }
+   m9_render_append(r, &key, topology,
+                    u_reduced_prim(out_prim) == MESA_PRIM_LINES, cull, list,
+                    out_size, start, out_count);
+}
+
+static void
+m9_render_draw_elements(struct vbuf_render *render, const uint16_t *indices,
+                        unsigned count)
+{
+   m9_render_emit(m9_vbuf_render(render), indices, 0, count);
+}
+
+static void
+m9_render_draw_arrays(struct vbuf_render *render, unsigned start,
+                      unsigned count)
+{
+   m9_render_emit(m9_vbuf_render(render), NULL, start, count);
+}
+
+static void
+m9_render_release_vertices(struct vbuf_render *render)
+{
+   (void)render;
+}
+
+static void
+m9_render_destroy(struct vbuf_render *render)
+{
+   struct m9_vbuf_render *r = m9_vbuf_render(render);
+
+   util_dynarray_fini(&r->indices);
+   free(r->vertices);
+   FREE(r);
+}
+
+static struct m9_vbuf_render *
+m9_render_create(struct m9_context *ctx)
+{
+   struct m9_vbuf_render *r = CALLOC_STRUCT(m9_vbuf_render);
+
+   if (!r)
+      return NULL;
+   r->ctx = ctx;
+   /* A draw's vertices must fit the transient stream views. */
+   r->base.max_indices = m9_draw_max_source_vertices();
+   r->base.max_vertex_buffer_bytes =
+      m9_draw_max_source_vertices() * M9_TRANSIENT_VERTEX_BYTES;
+   r->base.get_vertex_info = m9_render_get_vertex_info;
+   r->base.allocate_vertices = m9_render_allocate_vertices;
+   r->base.map_vertices = m9_render_map_vertices;
+   r->base.unmap_vertices = m9_render_unmap_vertices;
+   r->base.set_primitive = m9_render_set_primitive;
+   r->base.draw_elements = m9_render_draw_elements;
+   r->base.draw_arrays = m9_render_draw_arrays;
+   r->base.release_vertices = m9_render_release_vertices;
+   r->base.destroy = m9_render_destroy;
+   util_dynarray_init(&r->indices, NULL);
+   return r;
+}
+
+/* Drawing */
+
+static void
+m9_draw_vbo(struct pipe_context *pctx, const struct pipe_draw_info *info,
+            unsigned drawid_offset,
+            const struct pipe_draw_indirect_info *indirect,
+            const struct pipe_draw_start_count_bias *draws,
+            unsigned num_draws)
+{
+   struct m9_context *ctx = m9_context(pctx);
+   bool indexed = info->index_size;
+
+   if (num_draws > 1) {
+      util_draw_multi(pctx, info, drawid_offset, indirect, draws, num_draws);
+      return;
+   }
+   if (!num_draws || indirect || !draws[0].count || !info->instance_count ||
+       ctx->lost || !ctx->params_valid)
+      return;
+   if (!ctx->fs || !ctx->fs->passthrough) {
+      m9_warn_once(ctx, M9_WARN_FS, "fragment shader is not an interpolated "
+                   "color pass-through; draw skipped");
+      return;
+   }
+   for (unsigned i = 0; i < ctx->num_vertex_buffers; i++) {
+      const struct pipe_vertex_buffer *vb = &ctx->vertex_buffers[i];
+      const void *map = vb->is_user_buffer ? vb->buffer.user :
+                        vb->buffer.resource ?
+                        m9_res(vb->buffer.resource)->map : NULL;
+
+      draw_set_mapped_vertex_buffer(ctx->draw, i, map,
+                                    vb->is_user_buffer || !vb->buffer.resource ?
+                                    ~(size_t)0 : vb->buffer.resource->width0);
+   }
+   if (indexed)
+      draw_set_indexes(ctx->draw, info->has_user_indices ? info->index.user :
+                       m9_res(info->index.resource)->map, info->index_size,
+                       info->has_user_indices ? ~0u :
+                       info->index.resource->width0);
+   for (unsigned i = 0; i < PIPE_MAX_CONSTANT_BUFFERS; i++) {
+      const struct pipe_constant_buffer *cb = &ctx->vs_constants[i];
+      const uint8_t *data = cb->user_buffer ? cb->user_buffer :
+                            cb->buffer ? m9_res(cb->buffer)->map : NULL;
+
+      draw_set_mapped_constant_buffer(ctx->draw, MESA_SHADER_VERTEX, i,
+                                      data ? data + cb->buffer_offset : NULL,
+                                      data ? cb->buffer_size : 0);
+   }
+   draw_prepare_shader_outputs(ctx->draw);
+   draw_vbo(ctx->draw, info, drawid_offset, NULL, draws, 1, 0);
+   draw_flush(ctx->draw);
+   for (unsigned i = 0; i < ctx->num_vertex_buffers; i++)
+      draw_set_mapped_vertex_buffer(ctx->draw, i, NULL, 0);
+   if (indexed)
+      draw_set_indexes(ctx->draw, NULL, 0, 0);
+}
+
+/* Clears */
+
+static bool
+m9_scissor_full(const struct m9_context *ctx,
+                const struct pipe_scissor_state *s)
+{
+   return !s || (!s->minx && !s->miny && s->maxx >= ctx->params.width &&
+                 s->maxy >= ctx->params.height);
+}
+
+/* The vendor rectangle-draw clear: a full-target quad inside the scissor. */
+static void
+m9_clear_quad(struct m9_context *ctx, const struct pipe_scissor_state *scissor,
+              unsigned colormask, const float *rgba, bool depth, double z)
+{
+   const float w = ctx->params.width, h = ctx->params.height;
+   const float corner[4][2] = { { 0, 0 }, { w, 0 }, { w, h }, { 0, h } };
+   struct m9_resource *zs = m9_context_depth(ctx);
+   struct m9_job_key key;
+   uint32_t first;
+   float *out;
+
+   if (ctx->lost || !ctx->params_valid)
+      return;
+   depth = depth && zs;
+   memset(&key, 0, sizeof(key));
+   key.depth = zs ? zs : &ctx->target_depth;
+   key.aux = zs ? zs->hz : &ctx->target_aux;
+   key.depth_control = m9_depth_control(depth, depth, PIPE_FUNC_ALWAYS);
+   key.depth_ef = m9_depth_ef(depth, depth);
+   key.color_mask = m9_color_mask(colormask);
+   key.clip_min = ctx->params.clip_min;
+   key.clip_max = ctx->params.clip_max;
+   if (scissor && !m9_scissor_key(ctx, scissor, &key))
+      return;
+   out = m9_job_reserve(ctx, &key, 4, &first);
+   if (!out)
+      return;
+   for (unsigned i = 0; i < 4; i++) {
+      float *rec = out + i * M9_RECORD_FLOATS;
+
+      rec[0] = corner[i][0];
+      rec[1] = corner[i][1];
+      rec[2] = 1.0f - 2.0f * (float)CLAMP(z, 0.0, 1.0);
+      for (unsigned c = 0; c < 4; c++)
+         rec[3 + c] = CLAMP(rgba[c], 0.0f, 1.0f);
+   }
+   m9_job_commit(ctx, out, 4, first, M9_TOPOLOGY_QUADS, 0, false, true);
+}
+
+static void
+m9_clear_depth_cpu(struct m9_resource *zs, unsigned buffers, double depth,
+                   unsigned stencil)
+{
+   uint32_t z = (uint32_t)(CLAMP(depth, 0.0, 1.0) * 0xffffff + 0.5) << 8;
+   uint32_t *words = zs->map;
+
+   /* D24S8: depth in bits 31:8, stencil in the low byte. */
+   for (uint64_t i = 0; i < zs->size / 4; i++) {
+      uint32_t v = words[i];
+
+      if (buffers & PIPE_CLEAR_DEPTH)
+         v = (v & 0xff) | z;
+      if (buffers & PIPE_CLEAR_STENCIL)
+         v = (v & ~0xffu) | (stencil & 0xff);
+      words[i] = v;
+   }
+   if ((buffers & PIPE_CLEAR_DEPTH) && zs->hz)
+      m9_fill_dwords(zs->hz, M9_HZ_CLEAR);
+}
+
+static void
+m9_clear(struct pipe_context *pctx, unsigned buffers,
+         uint32_t color_clear_mask, uint8_t stencil_clear_mask,
+         const struct pipe_scissor_state *scissor,
+         const union pipe_color_union *color, double depth, unsigned stencil)
+{
+   static const float zero[4];
+   struct m9_context *ctx = m9_context(pctx);
+   struct pipe_resource *cbuf = ctx->framebuffer.nr_cbufs ?
+                                ctx->framebuffer.cbufs[0].texture : NULL;
+   struct m9_resource *zs = m9_context_depth(ctx);
+   bool full = m9_scissor_full(ctx, scissor);
+
+   if (!ctx->params_valid)
+      return;
+   m9_context_sync(ctx);
+   if ((buffers & PIPE_CLEAR_COLOR0) && cbuf) {
+      if (full && (color_clear_mask & PIPE_MASK_RGBA) == PIPE_MASK_RGBA) {
+         union util_color uc;
+
+         /* Tiling permutes pixels inside the BO: fill every dword. */
+         util_pack_color(color->f, cbuf->format, &uc);
+         m9_fill_dwords(m9_res(cbuf), uc.ui[0]);
+      } else {
+         m9_clear_quad(ctx, full ? NULL : scissor, color_clear_mask,
+                       color->f, false, 0);
+      }
+   }
+   if (!(buffers & PIPE_CLEAR_DEPTHSTENCIL))
+      return;
+   if (!zs) {
+      m9_warn_once(ctx, M9_WARN_CLEAR, "depth clear needs a D24S8 attachment "
+                   "of the target size");
+      return;
+   }
+   if (full && (!(buffers & PIPE_CLEAR_STENCIL) || stencil_clear_mask == 0xff)) {
+      m9_context_sync(ctx);
+      m9_clear_depth_cpu(zs, buffers, depth, stencil);
+   } else if (buffers & PIPE_CLEAR_DEPTH) {
+      m9_clear_quad(ctx, full ? NULL : scissor, 0, zero, true, depth);
+      if (buffers & PIPE_CLEAR_STENCIL)
+         m9_warn_once(ctx, M9_WARN_CLEAR, "partial stencil clears are not "
+                      "implemented");
+   }
+}
+
+static void
+m9_clear_render_target(struct pipe_context *pctx, struct pipe_surface *dst,
+                       const union pipe_color_union *color,
+                       unsigned dstx, unsigned dsty,
+                       unsigned width, unsigned height,
+                       bool render_condition_enabled)
+{
+   struct m9_context *ctx = m9_context(pctx);
+   struct m9_resource *resource = m9_res(dst->texture);
+   union util_color uc;
+
+   (void)render_condition_enabled;
+   if (dst->level || resource->cpp != 4 || !resource->map || !width || !height)
+      return;
+   m9_context_sync(ctx);
+   util_pack_color(color->f, dst->format, &uc);
+   if (!dstx && !dsty && width >= resource->width &&
+       height >= resource->height) {
+      m9_fill_dwords(resource, uc.ui[0]);
+   } else if (resource->tiled) {
+      const struct pipe_box box = {
+         .x = dstx, .y = dsty, .width = width, .height = height, .depth = 1,
+      };
+      uint32_t *rows = MALLOC((size_t)width * height * 4);
+
+      for (size_t i = 0; rows && i < (size_t)width * height; i++)
+         rows[i] = uc.ui[0];
+      if (!rows || m9_surface_access(ctx, resource, PARHELIA_M9_ACCESS_WRITE,
+                                     &box, (uint8_t *)rows))
+         m9_warn_once(ctx, M9_WARN_CLEAR, "partial render target clear failed");
+      FREE(rows);
+   } else {
+      m9_resource_clear_linear(resource, uc.ui[0], dstx, dsty, width, height);
+   }
+}
+
+static void
+m9_clear_depth_stencil(struct pipe_context *pctx, struct pipe_surface *dst,
+                       unsigned clear_flags, double depth, unsigned stencil,
+                       unsigned dstx, unsigned dsty,
+                       unsigned width, unsigned height,
+                       bool render_condition_enabled)
+{
+   struct m9_context *ctx = m9_context(pctx);
+   struct m9_resource *resource = m9_res(dst->texture);
+
+   (void)render_condition_enabled;
+   if (dst->level || !resource->map)
+      return;
+   m9_context_sync(ctx);
+   if (dstx || dsty || width < resource->width || height < resource->height ||
+       resource->format != M9_DEPTH_FORMAT_D24S8) {
+      m9_warn_once(ctx, M9_WARN_CLEAR, "partial or non-D24S8 depth clears "
+                   "are not implemented");
+      return;
+   }
+   m9_clear_depth_cpu(resource, clear_flags, depth, stencil);
+}
+
+static void
+m9_blit(struct pipe_context *pctx, const struct pipe_blit_info *info)
+{
+   if (!util_try_blit_via_copy_region(pctx, info, false))
+      m9_warn_once(m9_context(pctx), M9_WARN_BLIT, "scaled, converting or "
+                   "filtered blits are not implemented");
+}
+
+static void
+m9_flush_resource(struct pipe_context *pctx, struct pipe_resource *resource)
+{
+   (void)pctx;
+   (void)resource;
+}
+
+/* State objects */
+
+static void *
+m9_create_blend_state(struct pipe_context *pctx,
+                      const struct pipe_blend_state *state)
+{
+   (void)pctx;
+   return mem_dup(state, sizeof(*state));
+}
+
+static void
+m9_bind_blend_state(struct pipe_context *pctx, void *state)
+{
+   m9_context(pctx)->blend = state;
+}
+
+static void *
+m9_create_dsa_state(struct pipe_context *pctx,
+                    const struct pipe_depth_stencil_alpha_state *state)
+{
+   (void)pctx;
+   return mem_dup(state, sizeof(*state));
+}
+
+static void
+m9_bind_dsa_state(struct pipe_context *pctx, void *state)
+{
+   m9_context(pctx)->dsa = state;
+}
+
+static void *
+m9_create_rasterizer_state(struct pipe_context *pctx,
+                           const struct pipe_rasterizer_state *state)
+{
+   (void)pctx;
+   return mem_dup(state, sizeof(*state));
+}
+
+static void
+m9_bind_rasterizer_state(struct pipe_context *pctx, void *state)
+{
+   struct m9_context *ctx = m9_context(pctx);
+
+   /* draw may rebind its own state; set it before recording ours. */
+   draw_set_rasterizer_state(ctx->draw, state, state);
+   ctx->rasterizer = state;
+}
+
+static void *
+m9_create_sampler_state(struct pipe_context *pctx,
+                        const struct pipe_sampler_state *state)
+{
+   (void)pctx;
+   return mem_dup(state, sizeof(*state));
+}
+
+static void
+m9_bind_sampler_states(struct pipe_context *pctx, mesa_shader_stage shader,
+                       unsigned start, unsigned count, void **states)
+{
+   (void)pctx;
+   (void)shader;
+   (void)start;
+   (void)count;
+   (void)states;
+}
+
+static void
+m9_delete_state(struct pipe_context *pctx, void *state)
+{
+   (void)pctx;
+   FREE(state);
+}
+
+static struct pipe_sampler_view *
+m9_create_sampler_view(struct pipe_context *pctx, struct pipe_resource *texture,
+                       const struct pipe_sampler_view *templ)
+{
+   struct pipe_sampler_view *view = CALLOC_STRUCT(pipe_sampler_view);
+
+   if (!view)
+      return NULL;
+   *view = *templ;
+   pipe_reference_init(&view->reference, 1);
+   view->texture = NULL;
+   pipe_resource_reference(&view->texture, texture);
+   view->context = pctx;
+   return view;
+}
+
+static void
+m9_sampler_view_destroy(struct pipe_context *pctx,
+                        struct pipe_sampler_view *view)
+{
+   (void)pctx;
+   pipe_resource_reference(&view->texture, NULL);
+   FREE(view);
+}
+
+static void
+m9_set_sampler_views(struct pipe_context *pctx, mesa_shader_stage shader,
+                     unsigned start, unsigned count, unsigned unbind_trailing,
+                     struct pipe_sampler_view **views)
+{
+   /* Textured fragment shaders fail the pass-through check at draw time. */
+   (void)pctx;
+   (void)shader;
+   (void)start;
+   (void)count;
+   (void)unbind_trailing;
+   (void)views;
+}
+
+static void *
+m9_create_vs_state(struct pipe_context *pctx,
+                   const struct pipe_shader_state *templ)
+{
+   return draw_create_vertex_shader(m9_context(pctx)->draw, templ);
+}
+
+static void
+m9_bind_vs_state(struct pipe_context *pctx, void *state)
+{
+   draw_bind_vertex_shader(m9_context(pctx)->draw, state);
+}
+
+static void
+m9_delete_vs_state(struct pipe_context *pctx, void *state)
+{
+   draw_delete_vertex_shader(m9_context(pctx)->draw, state);
+}
+
+/* True when def is the unmodified four-component primary color input. */
+static bool
+m9_fs_is_primary_color(nir_def *def, unsigned depth)
+{
+   nir_instr *instr = nir_def_instr(def);
+
+   if (depth > 8 || def->num_components != 4)
+      return false;
+   if (instr->type == nir_instr_type_intrinsic) {
+      nir_intrinsic_instr *intr = nir_instr_as_intrinsic(instr);
+      nir_variable *var;
+
+      switch (intr->intrinsic) {
+      case nir_intrinsic_load_input:
+      case nir_intrinsic_load_interpolated_input:
+         return nir_intrinsic_io_semantics(intr).location == VARYING_SLOT_COL0 &&
+                !nir_intrinsic_component(intr);
+      case nir_intrinsic_load_deref:
+         var = nir_intrinsic_get_var(intr, 0);
+         return var && var->data.mode == nir_var_shader_in &&
+                var->data.location == VARYING_SLOT_COL0;
+      default:
+         return false;
+      }
+   }
+   if (instr->type == nir_instr_type_alu) {
+      nir_alu_instr *alu = nir_instr_as_alu(instr);
+
+      if (alu->op == nir_op_mov || alu->op == nir_op_fsat) {
+         for (unsigned c = 0; c < 4; c++)
+            if (alu->src[0].swizzle[c] != c)
+               return false;
+         return m9_fs_is_primary_color(alu->src[0].src.ssa, depth + 1);
+      }
+      if (alu->op == nir_op_vec4) {
+         nir_def *src = alu->src[0].src.ssa;
+
+         for (unsigned c = 0; c < 4; c++)
+            if (alu->src[c].src.ssa != src || alu->src[c].swizzle[0] != c)
+               return false;
+         return m9_fs_is_primary_color(src, depth + 1);
+      }
+   }
+   return false;
+}
+
+/* The raster pass interpolates vertex color only: accept exactly that. */
+static bool
+m9_fs_passthrough(nir_shader *nir)
+{
+   bool written = false;
+
+   nir_foreach_function_impl(impl, nir) {
+      nir_foreach_block(block, impl) {
+         nir_foreach_instr(instr, block) {
+            nir_intrinsic_instr *intr;
+            nir_variable *var;
+            unsigned location;
+
+            if (instr->type == nir_instr_type_deref ||
+                instr->type == nir_instr_type_load_const ||
+                instr->type == nir_instr_type_alu)
+               continue;
+            if (instr->type != nir_instr_type_intrinsic)
+               return false;
+            intr = nir_instr_as_intrinsic(instr);
+            switch (intr->intrinsic) {
+            case nir_intrinsic_load_input:
+            case nir_intrinsic_load_interpolated_input:
+            case nir_intrinsic_load_barycentric_pixel:
+            case nir_intrinsic_load_barycentric_centroid:
+            case nir_intrinsic_load_barycentric_sample:
+            case nir_intrinsic_load_deref:
+               break;
+            case nir_intrinsic_store_output:
+               location = nir_intrinsic_io_semantics(intr).location;
+               if ((location != FRAG_RESULT_COLOR &&
+                    location != FRAG_RESULT_DATA0) ||
+                   !m9_fs_is_primary_color(intr->src[0].ssa, 0))
+                  return false;
+               written = true;
+               break;
+            case nir_intrinsic_store_deref:
+               var = nir_intrinsic_get_var(intr, 0);
+               if (!var || var->data.mode != nir_var_shader_out ||
+                   (var->data.location != FRAG_RESULT_COLOR &&
+                    var->data.location != FRAG_RESULT_DATA0) ||
+                   !m9_fs_is_primary_color(intr->src[1].ssa, 0))
+                  return false;
+               written = true;
+               break;
+            default:
+               return false;
+            }
+         }
+      }
+   }
+   return written;
+}
+
+static void *
+m9_create_fs_state(struct pipe_context *pctx,
+                   const struct pipe_shader_state *templ)
+{
+   struct m9_fs_state *fs = CALLOC_STRUCT(m9_fs_state);
+
+   if (!fs)
+      return NULL;
+   if (templ->type == PIPE_SHADER_IR_NIR) {
+      fs->nir = templ->ir.nir;
+      fs->passthrough = m9_fs_passthrough(fs->nir);
+   }
+   fs->draw = draw_create_fragment_shader(m9_context(pctx)->draw, templ);
+   if (!fs->draw) {
+      ralloc_free(fs->nir);
+      FREE(fs);
+      return NULL;
+   }
+   return fs;
+}
+
+static void
+m9_bind_fs_state(struct pipe_context *pctx, void *state)
+{
+   struct m9_context *ctx = m9_context(pctx);
+   struct m9_fs_state *fs = state;
+
+   ctx->fs = fs;
+   draw_bind_fragment_shader(ctx->draw, fs ? fs->draw : NULL);
+}
+
+static void
+m9_delete_fs_state(struct pipe_context *pctx, void *state)
+{
+   struct m9_fs_state *fs = state;
+
+   draw_delete_fragment_shader(m9_context(pctx)->draw, fs->draw);
+   ralloc_free(fs->nir);
+   FREE(fs);
+}
+
+static void *
+m9_create_vertex_elements_state(struct pipe_context *pctx, unsigned count,
+                                const struct pipe_vertex_element *elements)
+{
+   struct m9_velems *velems;
+
+   (void)pctx;
+   if (count > PIPE_MAX_ATTRIBS)
+      return NULL;
+   velems = CALLOC_STRUCT(m9_velems);
+   if (!velems)
+      return NULL;
+   velems->count = count;
+   memcpy(velems->elements, elements, count * sizeof(*elements));
+   return velems;
+}
+
+static void
+m9_bind_vertex_elements_state(struct pipe_context *pctx, void *state)
+{
+   struct m9_velems *velems = state;
+
+   draw_set_vertex_elements(m9_context(pctx)->draw,
+                            velems ? velems->count : 0,
+                            velems ? velems->elements : NULL);
+}
+
+static void
+m9_set_vertex_buffers(struct pipe_context *pctx, unsigned count,
+                      const struct pipe_vertex_buffer *buffers)
+{
+   struct m9_context *ctx = m9_context(pctx);
+
+   util_set_vertex_buffers_count(ctx->vertex_buffers, &ctx->num_vertex_buffers,
+                                 buffers, count);
+   draw_set_vertex_buffers(ctx->draw, count, buffers);
+}
+
+static void
+m9_set_constant_buffer(struct pipe_context *pctx, mesa_shader_stage shader,
+                       uint index, const struct pipe_constant_buffer *cb)
+{
+   /* Only vertex programs evaluate constants. */
+   if (shader == MESA_SHADER_VERTEX && index < PIPE_MAX_CONSTANT_BUFFERS)
+      util_copy_constant_buffer(&m9_context(pctx)->vs_constants[index], cb);
+}
+
+static void
+m9_update_target(struct m9_context *ctx)
+{
+   const struct pipe_surface *cbuf = &ctx->framebuffer.cbufs[0];
+   struct m9_resource *color = ctx->framebuffer.nr_cbufs && cbuf->texture ?
+                               m9_res(cbuf->texture) : NULL;
+   struct m9_render_layout layout;
+   uint32_t w, h;
+
+   ctx->params_valid = false;
+   pipe_resource_reference(&ctx->color, NULL);
+   if (!color)
+      return;
+   w = color->width;
+   h = color->height;
+   if (cbuf->level || !color->tiled ||
+       m9_context_set_framebuffer(ctx, color, NULL, w, h) ||
+       m9_draw_params_init(&ctx->params, w, h, color->format) ||
+       !m9_render_surface_layout(w, h, 4, &layout)) {
+      m9_warn_once(ctx, M9_WARN_TARGET, "render target is not a tiled "
+                   "A8R8G8B8 surface; draws skipped");
+      return;
+   }
+   /* Depth-less targets still bind a depth and HZ BO of their size. */
+   if (!ctx->target_depth.handle || ctx->target_depth.width != w ||
+       ctx->target_depth.height != h) {
+      m9_bo_destroy(ctx->screen, &ctx->target_depth);
+      m9_bo_destroy(ctx->screen, &ctx->target_aux);
+      if (m9_bo_create(ctx->screen, layout.size, PARHELIA_M9_BO_VRAM,
+                       M9_RESOURCE_LINEAR_DEPTH, &ctx->target_depth) ||
+          m9_bo_create(ctx->screen, m9_hz_bytes(w, h), PARHELIA_M9_BO_VRAM,
+                       M9_RESOURCE_LINEAR_DEPTH, &ctx->target_aux)) {
+         m9_bo_destroy(ctx->screen, &ctx->target_depth);
+         m9_bo_destroy(ctx->screen, &ctx->target_aux);
+         m9_warn_once(ctx, M9_WARN_MEMORY, "cannot allocate target depth");
+         return;
+      }
+      ctx->target_depth.width = w;
+      ctx->target_depth.height = h;
+      m9_fill_dwords(&ctx->target_depth, 0xffffffff);
+      m9_fill_dwords(&ctx->target_aux, M9_HZ_CLEAR);
+   }
+   ctx->params_valid = true;
+}
+
+static void
+m9_set_framebuffer_state(struct pipe_context *pctx,
+                         const struct pipe_framebuffer_state *fb)
+{
+   struct m9_context *ctx = m9_context(pctx);
+
+   m9_context_sync(ctx);
+   util_copy_framebuffer_state(&ctx->framebuffer, fb);
+   draw_set_zs_format(ctx->draw, fb->zsbuf.texture ? fb->zsbuf.format :
+                                                     PIPE_FORMAT_NONE);
+   m9_update_target(ctx);
+}
+
+static void
+m9_set_viewport_states(struct pipe_context *pctx, unsigned start,
+                       unsigned count, const struct pipe_viewport_state *vp)
+{
+   draw_set_viewport_states(m9_context(pctx)->draw, start, count, vp);
+}
+
+static void
+m9_set_scissor_states(struct pipe_context *pctx, unsigned start,
+                      unsigned count, const struct pipe_scissor_state *s)
+{
+   if (!start && count)
+      m9_context(pctx)->scissor = s[0];
+}
+
+static void
+m9_set_clip_state(struct pipe_context *pctx, const struct pipe_clip_state *clip)
+{
+   draw_set_clip_state(m9_context(pctx)->draw, clip);
+}
+
+static void
+m9_set_blend_color(struct pipe_context *pctx,
+                   const struct pipe_blend_color *color)
+{
+   (void)pctx;
+   (void)color;
+}
+
+static void
+m9_set_stencil_ref(struct pipe_context *pctx, const struct pipe_stencil_ref ref)
+{
+   (void)pctx;
+   (void)ref;
+}
+
+static void
+m9_set_sample_mask(struct pipe_context *pctx, unsigned mask)
+{
+   (void)pctx;
+   (void)mask;
+}
+
+static void
+m9_set_polygon_stipple(struct pipe_context *pctx,
+                       const struct pipe_poly_stipple *stipple)
+{
+   (void)pctx;
+   (void)stipple;
+}
+
+/* Context */
 
 static void
 m9_context_flush(struct pipe_context *pctx,
                  struct pipe_fence_handle **out_fence, unsigned flags)
 {
-   struct m9_context *context = (struct m9_context *)pctx;
+   struct m9_context *ctx = m9_context(pctx);
    struct pipe_fence_handle *fence = NULL;
-   uint64_t point = context->last_point;
-   int ret = 0;
 
    (void)flags;
-   if (context->batch.command_count) {
-      if (context->lost) {
-         ret = -EIO;
-      } else {
-         context->batch.sealed = true;
-         ret = m9_batch_submit(context->screen, &context->command,
-                               &context->batch, context->context_id, &point);
-         if (ret)
-            context->lost = true;
-         else
-            context->last_point = point;
-      }
-      m9_batch_init(&context->batch);
-      context->dirty = M9_DIRTY_ALL;
-   }
+   m9_context_sync(ctx);
    if (out_fence) {
-      if (!ret)
-         fence = m9_fence_create(point, true);
+      if (!ctx->lost)
+         fence = m9_fence_create(ctx->last_point, true);
       pctx->screen->fence_reference(pctx->screen, out_fence, fence);
       if (fence)
          pctx->screen->fence_reference(pctx->screen, &fence, NULL);
    }
 }
 
+static int
+m9_context_init_fixed(struct m9_context *ctx)
+{
+   struct m9_screen *screen = ctx->screen;
+   uint64_t db_bytes = MAX2((screen->fragment_db_size + 0xfff) & ~0xfffull,
+                            M9_FRAGMENT_DB_MIN_BYTES);
+   int ret;
+
+   ret = m9_bo_create(screen, M9_SYSTEM_BYTES, 0, M9_RESOURCE_SYSTEM_STATE,
+                      &ctx->system);
+   if (!ret)
+      ret = m9_bo_create(screen, M9_PROGRAM_BYTES, PARHELIA_M9_BO_VRAM,
+                         M9_RESOURCE_SYSTEM_STATE, &ctx->program);
+   if (!ret)
+      ret = m9_bo_create(screen, db_bytes, PARHELIA_M9_BO_VRAM,
+                         M9_RESOURCE_SYSTEM_STATE, &ctx->fragment_db);
+   if (!ret)
+      ret = m9_bo_create(screen, M9_TRANSIENT_VIEWS * M9_TRANSIENT_VIEW_BYTES,
+                         PARHELIA_M9_BO_VRAM, M9_RESOURCE_SYSTEM_STATE,
+                         &ctx->transient);
+   if (!ret)
+      ret = m9_bo_create(screen, M9_BE_BYTES, PARHELIA_M9_BO_VRAM,
+                         M9_RESOURCE_SYSTEM_STATE, &ctx->be);
+   if (!ret)
+      ret = m9_bo_create(screen, 4096, 0, M9_RESOURCE_LINEAR_BUFFER,
+                         &ctx->source);
+   if (ret)
+      return ret;
+   memset(ctx->program.map, 0, ctx->program.size);
+   memcpy(ctx->program.map, m9_passthrough_c2_program,
+          sizeof(m9_passthrough_c2_program));
+   memset(ctx->fragment_db.map, 0, ctx->fragment_db.size);
+   memcpy(ctx->fragment_db.map, screen->fragment_db, screen->fragment_db_size);
+   memset(ctx->be.map, 0, ctx->be.size);
+   return 0;
+}
+
 static void
 m9_context_destroy(struct pipe_context *pctx)
 {
-   struct m9_context *context = (struct m9_context *)pctx;
+   struct m9_context *ctx = m9_context(pctx);
+   struct m9_screen *screen = ctx->screen;
 
-   m9_context_flush(pctx, NULL, 0);
-   m9_context_state_cleanup(context);
-   m9_command_bo_destroy(context->screen, &context->command);
-   FREE(context->vertex_stream.vertices);
-   FREE(context);
+   if (ctx->draw) {
+      m9_context_sync(ctx);
+      draw_destroy(ctx->draw);
+      ctx->draw = NULL;
+   }
+   if (ctx->base.stream_uploader)
+      u_upload_destroy(ctx->base.stream_uploader);
+   util_unreference_framebuffer_state(&ctx->framebuffer);
+   util_set_vertex_buffers_count(ctx->vertex_buffers, &ctx->num_vertex_buffers,
+                                 NULL, 0);
+   for (unsigned i = 0; i < PIPE_MAX_CONSTANT_BUFFERS; i++)
+      pipe_resource_reference(&ctx->vs_constants[i].buffer, NULL);
+   m9_context_state_cleanup(ctx);
+   m9_command_bo_destroy(screen, &ctx->command);
+   m9_bo_destroy(screen, &ctx->system);
+   m9_bo_destroy(screen, &ctx->program);
+   m9_bo_destroy(screen, &ctx->fragment_db);
+   m9_bo_destroy(screen, &ctx->transient);
+   m9_bo_destroy(screen, &ctx->be);
+   m9_bo_destroy(screen, &ctx->source);
+   m9_bo_destroy(screen, &ctx->target_depth);
+   m9_bo_destroy(screen, &ctx->target_aux);
+   util_dynarray_fini(&ctx->records);
+   util_dynarray_fini(&ctx->draws);
+   FREE(ctx);
 }
 
 struct pipe_context *
 m9_context_create(struct pipe_screen *pscreen, void *priv, unsigned flags)
 {
    struct m9_screen *screen = (struct m9_screen *)pscreen;
-   struct m9_context *context;
+   struct m9_vbuf_render *render;
+   struct draw_stage *stage;
+   struct m9_context *ctx;
 
    if (flags & PIPE_CONTEXT_COMPUTE_ONLY)
       return NULL;
-   /* Every lower-level lifetime and submit operation is wired below this
-    * gate.  The remaining linked-program record contains process-local host
-    * pointers in the only captured fixed-function slot, so accepting a GL
-    * context before a clean constructor exists would submit stale addresses. */
-   if (!screen->execute_submit || !screen->linked_program_ready) {
-      fprintf(stderr,
-              "m9x: rendering awaits executable submit and linked-program constructor\n");
+   if (!screen->execute_submit || !screen->fragment_db) {
+      fprintf(stderr, "m9x: rendering needs kernel user submit "
+              "(m9_user_submit=1) and firmware m9x/rsfragptrs-normal.bin\n");
       return NULL;
    }
-   context = CALLOC_STRUCT(m9_context);
-   if (!context)
+   ctx = CALLOC_STRUCT(m9_context);
+   if (!ctx)
       return NULL;
-   m9_context_state_init(context, screen);
-   context->base.priv = priv;
-   context->base.destroy = m9_context_destroy;
-   context->base.flush = m9_context_flush;
-   context->base.buffer_map = m9_transfer_map;
-   context->base.buffer_unmap = m9_transfer_unmap;
-   context->base.texture_map = m9_transfer_map;
-   context->base.texture_unmap = m9_transfer_unmap;
-   if (m9_command_bo_create(screen, &context->command)) {
-      FREE(context);
-      return NULL;
+   m9_context_state_init(ctx, screen);
+   ctx->base.priv = priv;
+   ctx->debug = debug_get_bool_option("M9X_DEBUG", false);
+   util_dynarray_init(&ctx->records, NULL);
+   util_dynarray_init(&ctx->draws, NULL);
+
+   ctx->base.destroy = m9_context_destroy;
+   ctx->base.flush = m9_context_flush;
+   ctx->base.draw_vbo = m9_draw_vbo;
+   ctx->base.clear = m9_clear;
+   ctx->base.clear_render_target = m9_clear_render_target;
+   ctx->base.clear_depth_stencil = m9_clear_depth_stencil;
+   ctx->base.blit = m9_blit;
+   ctx->base.resource_copy_region = util_resource_copy_region;
+   ctx->base.flush_resource = m9_flush_resource;
+   ctx->base.create_blend_state = m9_create_blend_state;
+   ctx->base.bind_blend_state = m9_bind_blend_state;
+   ctx->base.delete_blend_state = m9_delete_state;
+   ctx->base.create_depth_stencil_alpha_state = m9_create_dsa_state;
+   ctx->base.bind_depth_stencil_alpha_state = m9_bind_dsa_state;
+   ctx->base.delete_depth_stencil_alpha_state = m9_delete_state;
+   ctx->base.create_rasterizer_state = m9_create_rasterizer_state;
+   ctx->base.bind_rasterizer_state = m9_bind_rasterizer_state;
+   ctx->base.delete_rasterizer_state = m9_delete_state;
+   ctx->base.create_sampler_state = m9_create_sampler_state;
+   ctx->base.bind_sampler_states = m9_bind_sampler_states;
+   ctx->base.delete_sampler_state = m9_delete_state;
+   ctx->base.create_sampler_view = m9_create_sampler_view;
+   ctx->base.sampler_view_destroy = m9_sampler_view_destroy;
+   ctx->base.sampler_view_release = u_default_sampler_view_release;
+   ctx->base.set_sampler_views = m9_set_sampler_views;
+   ctx->base.create_vs_state = m9_create_vs_state;
+   ctx->base.bind_vs_state = m9_bind_vs_state;
+   ctx->base.delete_vs_state = m9_delete_vs_state;
+   ctx->base.create_fs_state = m9_create_fs_state;
+   ctx->base.bind_fs_state = m9_bind_fs_state;
+   ctx->base.delete_fs_state = m9_delete_fs_state;
+   ctx->base.create_vertex_elements_state = m9_create_vertex_elements_state;
+   ctx->base.bind_vertex_elements_state = m9_bind_vertex_elements_state;
+   ctx->base.delete_vertex_elements_state = m9_delete_state;
+   ctx->base.set_vertex_buffers = m9_set_vertex_buffers;
+   ctx->base.set_constant_buffer = m9_set_constant_buffer;
+   ctx->base.set_framebuffer_state = m9_set_framebuffer_state;
+   ctx->base.set_viewport_states = m9_set_viewport_states;
+   ctx->base.set_scissor_states = m9_set_scissor_states;
+   ctx->base.set_clip_state = m9_set_clip_state;
+   ctx->base.set_blend_color = m9_set_blend_color;
+   ctx->base.set_stencil_ref = m9_set_stencil_ref;
+   ctx->base.set_sample_mask = m9_set_sample_mask;
+   ctx->base.set_polygon_stipple = m9_set_polygon_stipple;
+   ctx->base.buffer_map = m9_transfer_map;
+   ctx->base.buffer_unmap = m9_transfer_unmap;
+   ctx->base.texture_map = m9_transfer_map;
+   ctx->base.texture_unmap = m9_transfer_unmap;
+   ctx->base.transfer_flush_region = u_default_transfer_flush_region;
+   ctx->base.buffer_subdata = u_default_buffer_subdata;
+   ctx->base.texture_subdata = u_default_texture_subdata;
+   ctx->base.clear_buffer = u_default_clear_buffer;
+   ctx->base.set_debug_callback = u_default_set_debug_callback;
+   ctx->base.resource_release = u_default_resource_release;
+
+   if (m9_vertex_decl_init(&ctx->decl, 3, 4) ||
+       m9_command_bo_create(screen, &ctx->command) ||
+       m9_context_init_fixed(ctx))
+      goto fail;
+   ctx->draw = draw_create(&ctx->base);
+   if (!ctx->draw)
+      goto fail;
+   render = m9_render_create(ctx);
+   if (!render)
+      goto fail;
+   stage = draw_vbuf_stage(ctx->draw, &render->base);
+   if (!stage) {
+      m9_render_destroy(&render->base);
+      goto fail;
    }
-   return &context->base;
+   draw_set_rasterize_stage(ctx->draw, stage);
+   draw_set_render(ctx->draw, &render->base);
+   /* Points become two triangles; the native point path is unverified. */
+   draw_wide_point_threshold(ctx->draw, 0.0f);
+   draw_set_constant_buffer_stride(ctx->draw, sizeof(float));
+   ctx->base.stream_uploader = u_upload_create_default(&ctx->base);
+   if (!ctx->base.stream_uploader)
+      goto fail;
+   ctx->base.const_uploader = ctx->base.stream_uploader;
+   return &ctx->base;
+fail:
+   m9_context_destroy(&ctx->base);
+   return NULL;
 }

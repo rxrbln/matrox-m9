@@ -6,6 +6,47 @@ megadriver link.  The separate M9 kernel driver exposes only its M9 ioctls.
 No M9 command is described with a classic `P3D_*` register or packet
 definition, and no M9 source is built into the Parhelia Gallium libraries.
 
+## CPU transform rendering path (working)
+
+Contexts are created when the kernel executes user streams (probed by
+ioctl behaviour: an empty flags-zero SUBMIT fails with `EINVAL`, and a
+validate-only `STREAM` relocation passes) and the fixed-fragment database
+`m9x/rsfragptrs-normal.bin` is found (`M9X_FRAGMENT_DB`, the firmware_class
+path, `/lib/firmware/updates`, `/lib/firmware`).  The earlier user-submit and
+linked-program blockers below do not apply to this path.
+
+* The Gallium draw module runs vertex programs (NIR to TGSI exec, GLSL 1.20
+  caps, GL 1.5 compatibility is what st exposes).  A vbuf render receives
+  window-space primitives; strips, fans, quads, quad strips and polygons are
+  native, line loops and first-vertex flat shading are converted to lists.
+  Points are expanded to triangles by draw.
+* `m9_draw.c` emits one two-pass job per pass state: the captured
+  pass-through program over `xyz + rgba` float records (y submitted bottom-up,
+  `z = 1 - 2 z_win`), one covering preprocess draw padded to four records,
+  and raster draws restating `22/6a` and `f0/ef/d7/f4`.
+* `m9_draw_params.c` holds every size and state word, measured on the
+  M9148 (xf86-video-parhelia docs `parhelia-m9-cpu-tnl-raster-state.md`,
+  `parhelia-m9-cpu-tnl-draw-parameters.md`): descriptors
+  `cc21/fa21/f001 | align(W,32)`, clip `H<<16|W`, the 48-word system prefix
+  and linked record formulas, index 10/23 declarations, depth `a8`+`ef`,
+  cull `ef`, scissor `f5/f6/c4/c5`, color mask `ab`, topology and per-draw
+  shading (flat-form links, `22` bit 14).  Its unit tests reproduce the
+  verified 320x240 stream dword for dword.
+* Color render targets are `PARHELIA_M9_BO_TILED`; transfers read and write
+  rows through `DRM_IOCTL_PARHELIA_M9_SURFACE_ACCESS`.  Full clears fill the
+  BO (tiling only permutes pixels); scissored or masked clears draw a quad.
+  D24S8 depth images own a hierarchical-Z BO initialized to `0x007ff000`.
+* `tools/m9-mesa-triangle` (xf86-video-parhelia) passes on hardware at
+  320x240: reference triangle 28000 pixels at the right positions, flat and
+  Gouraud, native topologies, culling, scissored clear, color mask, a
+  7200-vertex draw split over two jobs, and the LESS depth scene.
+
+Gaps: texturing, blending, stencil, alpha test and non-pass-through fragment
+shaders (draws are skipped with a warning), perspective-correct color
+interpolation (records carry w = 1), render sizes other than 320x240 are
+covered by the measured formulas but not yet run through Mesa, surface access
+excludes targets with both sides <= 64, and depth readback is raw tiled data.
+
 ## Implemented foundation
 
 The following userspace foundation is ready for the first executable
