@@ -138,14 +138,17 @@ The other exact cases are `fs-varying`, `fs-texcoord`, `fs-mul`, `fs-add`,
   and shadow sampling, and swizzled coordinates.  The vendor uses an extra
   raster pass for them.
 * **Conditionals and loops.**  Conditional `discard`, `if`/ternary,
-  `step`/compare/select forms, and loops that NIR does not unroll.
+  `step`/compare/select forms, and loops that NIR does not unroll.  The
+  exceptions are glamor's stipple compare templates and conditions on
+  inlinable uniforms (`parhelia-m9-glamor-shader-coverage.md`).
 * **Unary and other built-ins.**
   * unary: `min`, `max`, `abs`, `floor`, `ceil`, `fract`, `sign`, negation;
   * multi-slot built-ins: dot products, `normalize`, `length`, `cross`,
     division and the exp/log/pow/sqrt/sin families;
   * derivatives, `gl_FrontFacing` and `gl_FragDepth`.
-* **Vector shapes.**  Swizzles, partial writemasks, vec2/vec3 arithmetic and
-  matrices.
+* **Vector shapes.**  Swizzles that cross register lanes, partial writemasks,
+  vec2/vec3 arithmetic and matrices.  Lane-preserving swizzles on
+  multiplication operands and `vec4(texture.xyz, literal)` are supported.
 * **Varyings.**  More than two interpolated streams; a texture coordinate that
   is also used arithmetically.
 * **Textures in the driver.**  Sampling compiles and matches offline, but the
