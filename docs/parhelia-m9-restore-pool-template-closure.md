@@ -79,7 +79,7 @@ built before it calls `m9x109`.  A clean-room first-render implementation must
 therefore supply the nonzero pool tuple and publish the initialized DMA memory
 before arming or ringing the requester.
 
-## Backing-class boundary
+## Backing class on the tested M9148
 
 `m9x655` allocates through `m9x306` using an ordered capability-dependent list
 of internal allocation modes 0, 1, and 2.  The successful resource, rather
@@ -90,15 +90,47 @@ R = resource +0x44
 T = resource +0x34 & 3
 ```
 
-The static path does not force one candidate to succeed on every M9 board, and
-these internal modes are not identical to the open wrapper's public memory
-enum.  Consequently neither a fixed low tag nor a claim that `R` is always a
-raw local address, a system GPUVA, or a requester DMA address is justified by
-`m9x655` alone.  The clean-room allocator must choose a supported backing,
-retain its resulting command-visible GPU address and access tag as one typed
-pair, then use that same pair in every record and in `0x10ec`.  For a live
-vendor join, the smallest sufficient observation is the successful restore
-resource's `+0x34` and `+0x44` immediately before `m9x109`.
+The saved Linux configuration closes the choice for the tested M9148.  The
+DDX constructor stores `System\\MmFlags=0x100e8` at config object `+0x210`
+(`m9x_drv.so` `0x3303b7..0x3303ea`) and
+`System\\BmDebugFlags=0xa0` at `+0x1e0` (`0x3304cb..0x3304fe`).  Kernel
+constructor `m9x344` binds those properties to device wrappers `+0x640` and
+`+0x5d0`, respectively (`0x31dea..0x31e2a` and
+`0x31c2a..0x31c62`).
+
+Applying those exact defaults to the predicates at `m9x655`
+`0x36bfd..0x36d08` disables candidates 0 and 2.  Candidate 1 is the sole
+candidate when the device feature word has all of `0x300004`, as it must for
+the vendor initialization to succeed.  `m9x810` converts candidate 1 to
+allocation mode 1 at `0x38210`, then publishes:
+
+```text
+R                    = request[0x1cc] = resource[0x44]
+T                    = request[0x1b4] = resource[0x30]
+resource[0x34]       = resource[0x30]
+```
+
+The `0x2b0`-byte request comes from `KernelClientKmalloc`.  The open Linux
+wrapper zeroes the whole allocation, and no instruction on this path writes
+request `+0x1b4`; therefore **`T=0`**.  `R` is the page-aligned, dynamically
+allocated mode-1 address returned at request `+0x1cc`.  Mode 1 is the same
+visible system GPUVA domain whose mappings appear at `0x40000000` and above;
+it is not a raw coherent DMA address.
+
+The exact target implementation is consequently:
+
+```c
+R = alloc_visible_system_gpuva(0x181000); /* page aligned, compact PTE mapped */
+T = 0;
+MMIO[0x10ec] = R + 0x200;
+MMIO[0x1094] = R + 0x200;
+MMIO[0x1098] = (R + 0x17fc00) | 6;
+```
+
+Build the byte-exact pool with this same `R,T` pair, publish every compact
+PTE, and issue the memory barrier before these writes and the first requester
+doorbell.  Other M9 configurations may enable another candidate, so portable
+code must retain the allocator's resulting address and tag as one typed pair.
 
 <!-- Copyright 2026 Rene Rebe <rene@exactco.de> -->
 <!-- SPDX-License-Identifier: GPL-2.0 -->
