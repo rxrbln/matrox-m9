@@ -263,6 +263,8 @@ struct m9_context {
    struct util_dynarray extra;    /* float4 CPU varyings per source record */
    struct util_dynarray key_consts, job_consts;  /* raster constant floats */
    uint32_t warned;
+   uint32_t skipped_draws;      /* dropped for an unimplemented state */
+   uint32_t submitted_draws;
    bool debug;
    const char *dump_path;   /* M9X_DUMP: append every job's words */
    bool dry_run;            /* M9X_DRYRUN: validate jobs, never execute */

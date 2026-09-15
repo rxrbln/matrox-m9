@@ -774,8 +774,16 @@ m9_texture_bind_view(const struct pipe_sampler_view *view,
    struct m9_resource *res;
    unsigned last;
 
+   static unsigned res_debug_once;
+
    if (!view || !view->texture)
       return "no texture on a sampled unit; draw skipped";
+   if (!res_debug_once++ && getenv("M9X_DEBUG"))
+      fprintf(stderr, "m9x: sampling %s %ux%u kind %u tiled %d levels %u\n",
+              util_format_short_name(view->texture->format),
+              m9_res(view->texture)->width, m9_res(view->texture)->height,
+              m9_res(view->texture)->kind, m9_res(view->texture)->tiled,
+              m9_res(view->texture)->texture.levels);
    res = m9_res(view->texture);
    if (view->target != PIPE_TEXTURE_2D && view->target != PIPE_TEXTURE_RECT)
       return "only 2-D sampling is implemented; draw skipped";
@@ -1372,8 +1380,13 @@ m9_render_emit(struct m9_vbuf_render *r, const uint16_t *indices,
    struct m9_job_key key;
    uint32_t cull = 0;
 
-   if (!count || !m9_job_key_current(ctx, &key))
+   if (!count)
       return;
+   if (!m9_job_key_current(ctx, &key)) {
+      ctx->skipped_draws++;
+      return;
+   }
+   ctx->submitted_draws++;
    if (u_reduced_prim(prim) == MESA_PRIM_POINTS) {
       m9_warn_once(ctx, M9_WARN_POINTS, "unexpanded points are not drawn");
       return;
@@ -2320,6 +2333,9 @@ m9_context_destroy(struct pipe_context *pctx)
    util_dynarray_fini(&ctx->records);
    util_dynarray_fini(&ctx->draws);
    util_dynarray_fini(&ctx->extra);
+   if (ctx->debug)
+      fprintf(stderr, "m9x: %u draws submitted, %u skipped\n",
+              ctx->submitted_draws, ctx->skipped_draws);
    util_dynarray_fini(&ctx->key_consts);
    util_dynarray_fini(&ctx->job_consts);
    FREE(ctx);
