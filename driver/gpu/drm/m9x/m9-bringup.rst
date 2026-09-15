@@ -221,6 +221,16 @@ the count-free packets into counted records, submits them through the
 class-1 BmBuffer followed by the vendor completion range, and waits for its
 fence with every referenced VRAM BO pinned.
 
+Tiled KMS scanout
+-----------------
+
+With ``m9_kms=1 m9_kms_scanout=1`` the display controller never fetches a
+userspace dumb BO.  Probe pins a kernel scanout BO; each plane update and
+dirty-fb call copies the linear 1024x768 XRGB8888 image through slot 0
+retargeted to that BO (``d2=cc210400``, ``d3=00010300``), restores the
+identity window and points ``DC_START`` at the scanout BO.  modetest's SMPTE
+pattern reads back row-exact through the same descriptor.
+
 UAPI boundary
 -------------
 
