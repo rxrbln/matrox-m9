@@ -50,6 +50,9 @@
 #define M9_TRIANGLE_FRAMED_MRT1	0x0c98u
 #define M9_TRIANGLE_BE_BYTES		SZ_1M
 #define M9_TRIANGLE_TRANSIENT_BYTES	0x16800u
+#define M9_TRIANGLE_TRANSIENT_COUNT	4u
+#define M9_TRIANGLE_TRANSIENT_ARENA_BYTES \
+	(M9_TRIANGLE_TRANSIENT_COUNT * M9_TRIANGLE_TRANSIENT_BYTES)
 #define M9_TRIANGLE_VRAM_BASE		0x10000000ull
 #define M9_TRIANGLE_SYSTEM_GPUVA_BASE	0x40000000u
 #define M9_TRIANGLE_SYSTEM_GPUVA_END	0x50000000u
@@ -74,10 +77,7 @@ enum m9_triangle_resource_id {
 	M9_TRI_SECONDARY,
 	M9_TRI_C2,
 	M9_TRI_BE,
-	M9_TRI_TRANSIENT0,
-	M9_TRI_TRANSIENT1,
-	M9_TRI_TRANSIENT2,
-	M9_TRI_TRANSIENT3,
+	M9_TRI_TRANSIENT_ARENA,
 	M9_TRI_DEPTH,
 	M9_TRI_AUX_DEPTH,
 	M9_TRI_SEQ0_SCRATCH26,
@@ -245,14 +245,9 @@ static const struct m9_triangle_resource_spec m9_triangle_specs[] = {
 	[M9_TRI_C2] = { "c2-backing", M9_TRIANGLE_C2_BYTES,
 			 SZ_4K, 0, true },
 	[M9_TRI_BE] = { "be", M9_TRIANGLE_BE_BYTES, SZ_4K, 0, true },
-	[M9_TRI_TRANSIENT0] = { "transient0", M9_TRIANGLE_TRANSIENT_BYTES,
-				  0x100, 0x54520000, true },
-	[M9_TRI_TRANSIENT1] = { "transient1", M9_TRIANGLE_TRANSIENT_BYTES,
-				  0x100, 0x54520001, true },
-	[M9_TRI_TRANSIENT2] = { "transient2", M9_TRIANGLE_TRANSIENT_BYTES,
-				  0x100, 0x54520002, true },
-	[M9_TRI_TRANSIENT3] = { "transient3", M9_TRIANGLE_TRANSIENT_BYTES,
-				  0x100, 0x54520003, true },
+	[M9_TRI_TRANSIENT_ARENA] = { "transient-arena",
+				       M9_TRIANGLE_TRANSIENT_ARENA_BYTES,
+				       SZ_4K, 0, true },
 	[M9_TRI_DEPTH] = { "depth", M9_TRIANGLE_SURFACE_BYTES, 0x100,
 			     U32_MAX, true },
 	[M9_TRI_AUX_DEPTH] = { "aux-depth", M9_TRIANGLE_AUX_DEPTH_BYTES, 0x100,
@@ -799,8 +794,7 @@ static int m9_triangle_prepare_resources(struct m9x_device *mdev)
 		M9_TRI_BE,
 		M9_TRI_DEPTH, M9_TRI_AUX_DEPTH,
 		M9_TRI_SYSTEM,
-		M9_TRI_TRANSIENT0, M9_TRI_TRANSIENT1,
-		M9_TRI_TRANSIENT2, M9_TRI_TRANSIENT3,
+		M9_TRI_TRANSIENT_ARENA,
 		M9_TRI_C2, M9_TRI_SEQ0_SCRATCH26,
 		M9_TRI_SEQ0_SCRATCH27, M9_TRI_SEQ0_SCRATCH38,
 		M9_TRI_SECONDARY, M9_TRI_SOURCE,
@@ -976,8 +970,9 @@ static int m9_triangle_build_addresses(struct m9x_device *mdev, u32 color,
 	job->c2 = m9_triangle_bus(diag, M9_TRI_C2);
 	job->be = m9_triangle_bus(diag, M9_TRI_BE);
 	for (i = 0; i < ARRAY_SIZE(job->transient); i++)
-		job->transient[i] = m9_triangle_bus(diag,
-						M9_TRI_TRANSIENT0 + i);
+		job->transient[i] =
+			m9_triangle_bus(diag, M9_TRI_TRANSIENT_ARENA) +
+			i * M9_TRIANGLE_TRANSIENT_BYTES;
 	job->color = color;
 	job->depth = m9_triangle_bus(diag, M9_TRI_DEPTH);
 	job->aux_depth = m9_triangle_bus(diag, M9_TRI_AUX_DEPTH);
@@ -1598,6 +1593,8 @@ m9_triangle_stream_selftest(struct m9_triangle_commands *commands)
 	    sizeof(m9_triangle_system_prefix) != 0xc0 ||
 	    M9_TRIANGLE_MAX_SYSTEM_PTES != 44 ||
 	    M9_TRIANGLE_AUX_DEPTH_BYTES != 0x2d00 ||
+	    M9_TRIANGLE_TRANSIENT_ARENA_BYTES != 0x5a000 ||
+	    ARRAY_SIZE(job.transient) != M9_TRIANGLE_TRANSIENT_COUNT ||
 	    m9_triangle_specs[M9_TRI_SECONDARY].payload_bytes != SZ_32K ||
 	    m9_triangle_specs[M9_TRI_C2].payload_bytes != M9_TRIANGLE_C2_BYTES ||
 	    ARRAY_SIZE(m9_triangle_range_0) != ARRAY_SIZE(commands->preprocess) ||
