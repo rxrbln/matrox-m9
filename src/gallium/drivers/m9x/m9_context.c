@@ -171,10 +171,6 @@ m9_surface_access(struct m9_context *ctx, const struct m9_resource *resource,
                 &access) ? -errno : 0;
 }
 
-/* Proposed SURFACE_ACCESS extension (docs/parhelia-m9-texture-storage.md):
- * flags bit 0 opens a texture descriptor window at BO byte offset pad. */
-#define M9_SURFACE_ACCESS_TEXTURE (1u << 0)
-
 static int
 m9_texture_window(struct m9_context *ctx, const struct m9_resource *resource,
                   unsigned level, bool write, const struct pipe_box *box,
@@ -197,8 +193,8 @@ m9_texture_window(struct m9_context *ctx, const struct m9_resource *resource,
       .data_stride = box->width * 4,
       .data_ptr = (uintptr_t)rows,
       .data_size = bytes,
-      .flags = M9_SURFACE_ACCESS_TEXTURE,
-      .pad = (uint32_t)lvl->offset,
+      .flags = PARHELIA_M9_ACCESS_TEXTURE,
+      .offset = (uint32_t)lvl->offset,
    };
    int ret = rows && lvl->offset <= UINT32_MAX ? 0 : -ENOMEM;
 
