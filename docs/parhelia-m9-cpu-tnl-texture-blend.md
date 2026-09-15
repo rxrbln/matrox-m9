@@ -13,18 +13,21 @@ Probe tool: `tools/m9-user-texture.c` (build next to `m9-user-triangle-data.h`,
 a CPU-written transient view, raster stream 0 redirection, c2 raster-entry
 slots).  The texture BO carries a per-dword storage-index code.
 
-## 1. The c2 raster entry is fixed setup, not the combiner (CAPTURED/STATIC)
+## 1. Texture sampling is a c2 fragment program (CAPTURED/MEASURED)
 
-The raster pass binds the same c2 image with `c3=0`.  Slots 0..3 are
-`5e62ad9e ee003c18`, `1e622d9d ae003c18` and two `ffff801c a01fc00f`
-terminators in the flat and Gouraud gltri program and, byte for byte, in the
-lit vendor glxgears program (`gt-gears-150539/vram/c2-12033000.bin`).  The
-per-state part of c2 is the preprocessing section (entries `c3=4`, and
-`4/0x14/0x19` for the three textured stages).  Offline execution of the
-vendor TEXLD lowerer emits the same three slots for every coordinate and
-sampler descriptor, so no native slot carries the unit or coordinate
-routing.  Texture combine is therefore selected by raster state words and the
-raster declaration, not by writing a fragment program into c2.
+`parhelia-m9-native-fragment-program-re.md` shows that raster `c3` enters a
+fragment program at the start of the `c2` image.  Slots 0..3 of the flat,
+Gouraud and glxgears images are the vendor color fragment program.  The vendor
+GLSL `tex2d` raster draw (`captures/m9x-linux-gl2-special-20260914/tex2d`)
+uses exactly the REPLACE raster state below with `c3=0` and a fragment
+program of the same four-slot size (first preprocessing `c3=4`, as in the
+untextured baseline).  Its `c2` bytes were not dumped.  Section 4 measures
+that the raster state alone does not sample: the color fragment program then
+outputs the texture-coordinate varying.  The texel fetch therefore lives in
+the (uncaptured) fragment slots.  Offline execution of the vendor TEXLD
+lowerer emits `ffff8000 0000000f` followed by two copy slots and carries no
+coordinate or sampler selector, so the unit routing stays in `70/74` and the
+raster declaration (STATIC/RUN).
 
 ## 2. System constants and linked record are texture independent (CAPTURED)
 
@@ -72,42 +75,41 @@ Baseline (flat white quad x[40,296) y[40,232) on the untextured template):
 
 | change on the untextured template | result |
 |---|---|
-| unit block with `7e..85/87` | `EPERM`: indices outside the kernel allow-list |
+| unit block with `7e..85/87`, old kernel | `EPERM` (now allowed) |
 | unit block `70/78/79/7a/7c/7d` + `22|=0x100` + `88=0110dfe3` | retired, no pixel written |
-| same + CPU texcoord view on stream 2 (`rdecl` attr 5) | retired, no pixel written |
 | `22|=0x100` only | retired, no pixel written |
-| `88=0110dfe3` only (no texture bound) | **job timeout; the engine stops** with command base `0x4820fb6` != end `0x4820fc0`.  `rmmod/insmod` then fails bus-master enable (`requester is not quiescent`) and every submit returns `EBUSY` |
+| `88=0110dfe3` without a bound texture | engine stop (requester interval never retires; module reload cannot recover; kernel now rejects it with `EINVAL`) |
+| REPLACE form: `22=00002303`, `88=0010ffe3`, 4-value decl `00500688 00010688 00c231b6 00d30688`, stream 0 = CPU view of float4 `(s,t,0,1)` records at 16-byte stride, unit block incl. `7e..87`, flat c2 | 49152 pixels written, full quad; every pixel is the interpolated coordinate: `R = s`, `G = t` (sample grid `10..ef` in both axes), `B = ff`, `A = ff`; no texel code (`5a` marker 0 of 48260 interior pixels) |
 
 Consequences:
 
-* `22` bit 8 gates fragment output on texture state; with it set and no valid
-  texture/stream combination nothing is written.
-* `88` low byte `e3` (texture-combine form) without a bound texture hangs the
-  engine.  A driver must never emit the textured `88` form without a
-  complete unit block, and the probe tool must not be run with `r88` alone.
-* The hang is not recoverable by module reload; recovery needs a machine
-  reboot (the requester interval never retires).
+* Raster declaration attr `5` on stream 0 with a 16-byte float4 record is
+  accepted and interpolated; the REPLACE raster state is correct and safe.
+* The vendor color fragment program reads that first varying: textures need
+  the TEXLD fragment slots (section 1).  Candidate programs were built
+  (`tools/m9-user-texture.c frag=`; TEXLD sample slot + output copy in the
+  class-4 `2d` form) but could not run: at 256 s after boot another
+  submitter's job (target `0x2500`, after this probe's last retired job) timed
+  out and left the requester at `0x4a90dbe/0x4a90dc8`; the reload inside the
+  lock failed bus-master enable again.
+* Texture storage (tiled or linear) remains unmeasured.
 
-Hardware testing stopped at this point.  Nothing in sections 1..3 beyond the
-baseline is MEASURED yet.
+## 5. Next measurements (after a reboot)
 
-## 5. Next measurements (once the target is rebooted)
+Common arguments `R="tex=1 texext=1 r22=0x2300 r88=0x0010ffe3 linkbit=0
+rs0view=4 tcstream=4 rdecl=00500688,00010688,00c231b6,00d30688,0,0,0,0"`:
 
-1. REPLACE on four streams, exactly the case-20 form: `22=0x2300|topo`,
-   `88=0010ffe3`, `rdecl=00500688,00010688,00c231b6,00d30688,0,0,0,0`
-   `linkbit=0`, raster stream 0 redirected to a CPU-written texcoord view
-   (`rs0view=4 tcstream=4`), unit block without `7e..87`.  Verify every
-   pixel against the storage-index code to name the texel fetched (linear or
-   tiled storage, descriptor bit 21, 8x4 tile order).
-2. MODULATE on four streams by sharing one record: stream 0 stride `0x20`
-   (`r10=00100020`), color at dword 0, texcoord at dword 4
-   (`rdecl=80100d88,801006b6,04500688,00010688,00c231b6,00d30688,0,0`,
-   `22=0x6500|topo`, `88=0110dfe3`, `tccolor=1 tcoff=16 tcstride=32`).
-3. Linear filter (`7c=00009292`), wrap/clamp (`7c[27:22]`, table in
-   `parhelia-m9-texture-state.md`), then blend: `f0=c5008200`,
-   `8c=00500300`, `88` blend form, destination-sensitive fixture with
-   alpha ramps; factor encoding is still unlocated (identical direct words
-   for all factor pairs in the vendor captures).
+1. Output-form check: `frag=ffe22d9d,a2803f1f,ffe2ad9e,a2803f1f` (MOV of
+   varying pair `44/45`) must reproduce the section-4 coordinate output.
+2. TEXLD candidates, each verified against the storage-index code:
+   `frag=ffff8000,0000000f,ffc02d9d,a2803f0f,ffc0ad9e,a2803f0f` and
+   `preslot=8 prec3=8 frag=ffff8000,0000000f,ffc0001c,a2803f0f,ffc0011c,a2803f0f,ffc02d9d,a2803f1f,ffc0ad9e,a2803f1f`.
+   The verifier reports exact texel matches under the linear-row layout; a
+   tiled layout shows as systematic misses naming the fetched dword.
+3. Highest value without hardware risk: dump the vendor `tex2d` `c2` slots
+   0..3 with `tools/m9-vendor-vram-dump.py` (and a MODULATE fixed-function
+   texture draw) to obtain the exact fragment programs.
+4. Then MODULATE on four streams, linear filter/wrap, blend.
 
 ## 6. Kernel requests
 
@@ -115,9 +117,9 @@ baseline is MEASURED yet.
   with plain values; the vendor emits them in every textured draw.
 * Five-stream raster (MODULATE vendor form): allow index `04` with the
   `STREAM` relocation kind (as `00..03`) and index `12`.
-* A recovery path for a stopped engine (non-retired requester interval)
-  that does not require a reboot, or reject `88` textured forms without a
-  `78` texture relocation in the same pass until the hang is understood.
+* Done: `7e..87`, `04`, `12` allowed; textured `88` without `78` rejected.
+* Still open: a recovery path for a stopped engine (non-retired requester
+  interval) short of a reboot.
 
 <!-- Copyright 2026 René Rebe <rene@exactco.de> -->
 <!-- SPDX-License-Identifier: GPL-2.0 -->
