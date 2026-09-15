@@ -32,8 +32,6 @@
 #define M9_ADDRESS_SERVICE_STRIDE	0x10u
 #define M9_ADDRESS_SERVICE_INVALID	0x0000ffffu
 #define M9_ADDRESS_SERVICE_POOLS	4u
-/* m9x926 places its private pools in VRAM above the 256-MiB BAR. */
-#define M9_ADDRESS_POOL_DOMAIN		0x10000000u
 #define M9_ADDRESS_CPU_WINDOW		0x0000u
 #define M9_ADDRESS_CPU_WINDOW_VALID	0xa0000000u
 #define M9_ADDRESS_CPU_WINDOW_FORMAT	0xf0000000u
@@ -134,6 +132,27 @@ static void m9_address_free_service_pools(struct m9x_address_space *address)
 	}
 }
 
+/*
+ * The vendor pools sit above the BAR; the clean-room driver keeps them in
+ * CPU-visible VRAM so the GPU never reads uninitialized memory.
+ */
+static int m9_address_clear_bo(struct drm_gem_vram_object *bo, u32 bytes)
+{
+	struct iosys_map map;
+	int ret;
+
+	ret = ttm_bo_reserve(&bo->bo, true, false, NULL);
+	if (ret)
+		return ret;
+	ret = drm_gem_vram_vmap(bo, &map);
+	if (!ret) {
+		iosys_map_memset(&map, 0, 0, bytes);
+		drm_gem_vram_vunmap(bo, &map);
+	}
+	ttm_bo_unreserve(&bo->bo);
+	return ret;
+}
+
 static int m9_address_reserve_service_pools(struct m9x_device *mdev,
 					     struct m9x_address_space *address)
 {
@@ -162,6 +181,9 @@ static int m9_address_reserve_service_pools(struct m9x_device *mdev,
 			ret = offset < 0 ? (int)offset : -ERANGE;
 			goto fail;
 		}
+		ret = m9_address_clear_bo(pool, bytes);
+		if (ret)
+			goto fail;
 	}
 	return 0;
 
@@ -277,6 +299,42 @@ static void m9_address_publish_cpu_window(struct m9x_device *mdev)
 	m9x_read(mdev, M9_ADDRESS_CPU_WINDOW);
 }
 
+/*
+ * m9x24643: accept an all-ones 0x0f28 or status bits 16/20 == 01, then
+ * destructively verify the first 0x1ffff dwords of the aperture with their
+ * index and index << 16.  One bounded attempt instead of the vendor's 2000.
+ */
+static int m9_address_vram_selftest(struct m9x_device *mdev,
+				    struct iosys_map *map)
+{
+	u32 status = m9x_read(mdev, M9_REG_MEMORY_STATUS);
+	u32 i, value;
+
+	if (status != U32_MAX && ((status >> 16) & 0x11) != 1) {
+		dev_err(&mdev->pdev->dev,
+			"M9 memory status %#x reports no initialized VRAM\n",
+			status);
+		return -EIO;
+	}
+	for (i = 0; i < 0xffff; i++)
+		iosys_map_wr(map, i * sizeof(u32), u32, i);
+	for (i = 0x10000; i < 0x1ffff; i++)
+		iosys_map_wr(map, i * sizeof(u32), u32, i << 16);
+	wmb();
+	for (i = 0; i < 0x1ffff; i++) {
+		if (i == 0xffff)
+			continue;
+		value = iosys_map_rd(map, i * sizeof(u32), u32);
+		if (value != (i < 0x10000 ? i : i << 16)) {
+			dev_err(&mdev->pdev->dev,
+				"M9 VRAM self-test failed at %#x: %#x, expected %#x\n",
+				i * 4, value, i < 0x10000 ? i : i << 16);
+			return -EIO;
+		}
+	}
+	return 0;
+}
+
 int m9x_address_init(struct m9x_device *mdev)
 {
 	struct m9x_address_space *address;
@@ -327,7 +385,9 @@ int m9x_address_init(struct m9x_device *mdev)
 
 	address->root = root;
 	address->mapped = true;
-	ret = m9_address_reserve_service_pools(mdev, address);
+	ret = m9_address_vram_selftest(mdev, &address->map);
+	if (!ret)
+		ret = m9_address_reserve_service_pools(mdev, address);
 	if (ret) {
 		/* The common teardown owns both the root mapping and its pin. */
 		mdev->transport.address = address;
@@ -673,7 +733,7 @@ int m9x_address_finalize_service(struct m9x_device *mdev)
 	 * primary child.  Each pool ends with its own 31c triplet, without 314.
 	 */
 	for (i = 0; i < M9_ADDRESS_SERVICE_POOLS; i++) {
-		u32 local = M9_ADDRESS_POOL_DOMAIN + address->layout.pool_base[i];
+		u32 local = address->layout.pool_base[i];
 		u32 pages = DIV_ROUND_UP(m9_service_pool_bytes[i], PAGE_SIZE);
 		u32 slot = m9_address_identity_slot(local);
 		u32 page;
