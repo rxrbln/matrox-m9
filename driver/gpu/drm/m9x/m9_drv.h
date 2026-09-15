@@ -20,6 +20,7 @@
 
 struct drm_file;
 struct drm_mode_create_dumb;
+struct iosys_map;
 
 #define M9X_PCI_VENDOR			0x102b
 #define M9X_PCI_DEVICE_PHOENIX		0x0540
@@ -27,7 +28,6 @@ struct drm_mode_create_dumb;
 #define PARHELIA_M9_COMMAND_BYTES	SZ_32K
 #define PARHELIA_M9_COMMAND_SLOTS	2u
 #define PARHELIA_M9_RESTORE_BYTES	0x00181000u
-#define PARHELIA_M9_RESTORE_GPUVA	0x41000000u
 #define PARHELIA_M9_MAX_RELOCS		128u
 #define PARHELIA_M9_MAX_BOS		128u
 #define M9_VRAM_GPU_BASE		0x10000000ull
@@ -58,8 +58,7 @@ struct m9x_transport {
 	dma_addr_t command_bus;
 	void *fence_cpu;
 	dma_addr_t fence_bus;
-	void *restore_cpu;
-	dma_addr_t restore_bus;
+	u32 restore_base;
 	u64 fence_context;
 	u32 next_fence;
 	u32 last_fence;
@@ -83,6 +82,7 @@ struct m9x_device {
 	struct pci_dev *pdev;
 	void __iomem *mmio;
 	resource_size_t vram_size;
+	u64 vram_total;
 	struct drm_simple_display_pipe pipe;
 	struct drm_connector connector;
 	struct drm_display_mode warm_mode;
@@ -131,6 +131,9 @@ int m9x_address_construct_manager(struct m9x_device *mdev);
 int m9x_address_commit_bindings(struct m9x_device *mdev);
 int m9x_address_commit_gpuva(struct m9x_device *mdev, u32 gpuva);
 int m9x_address_finalize_service(struct m9x_device *mdev);
+int m9x_address_restore_region(struct m9x_device *mdev,
+			       struct iosys_map *map, u32 *base);
+int m9x_address_publish_restore(struct m9x_device *mdev);
 int m9x_address_read_pte(struct m9x_device *mdev, u32 gpuva, u32 *value);
 int m9x_address_read_root_pte(struct m9x_device *mdev, u32 gpuva, u32 *value);
 u32 m9x_address_pte_word(dma_addr_t dma);

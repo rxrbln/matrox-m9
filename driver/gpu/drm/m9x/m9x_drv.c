@@ -62,6 +62,40 @@ static bool m9x_firmware_initialized(struct pci_dev *pci)
 	return command & PCI_COMMAND_MEMORY;
 }
 
+/*
+ * m9x320 -> m9x798: the u16 at ROM 0x7ffc locates PInS (".A").  Each of the
+ * four low nibbles of PInS+0x44 in 1..6 adds 32 MiB << (n - 1).  The sum only
+ * replaces the default when it is not smaller.
+ */
+static u64 m9x_pins_memory_size(struct pci_dev *pci, u64 fallback)
+{
+	void __iomem *rom;
+	size_t size;
+	u64 total = 0;
+	unsigned int i;
+	u32 word;
+	u16 pins;
+
+	rom = pci_map_rom(pci, &size);
+	if (!rom)
+		return fallback;
+	if (size > 0x7ffe) {
+		pins = readw(rom + 0x7ffc);
+		if (size >= 0x48 && pins <= size - 0x48 &&
+		    readw(rom + pins) == 0x412e) {
+			word = readl(rom + pins + 0x44);
+			for (i = 0; i < 4; i++) {
+				u32 n = (word >> (i * 4)) & 0xf;
+
+				if (n >= 1 && n <= 6)
+					total += (u64)SZ_32M << (n - 1);
+			}
+		}
+	}
+	pci_unmap_rom(pci, rom);
+	return total >= fallback ? total : fallback;
+}
+
 static int m9x_pci_probe(struct pci_dev *pci,
 			 const struct pci_device_id *ent)
 {
@@ -110,9 +144,10 @@ static int m9x_pci_probe(struct pci_dev *pci,
 	if (!mdev->mmio)
 		return dev_err_probe(&pci->dev, -ENOMEM, "cannot map MMIO BAR\n");
 
+	mdev->vram_total = m9x_pins_memory_size(pci, mdev->vram_size);
 	dev_info(&pci->dev,
-		 "M9/Phoenix: %pa-byte framebuffer BAR0, MMIO BAR%u\n",
-		 &mdev->vram_size, mmio_bar);
+		 "M9/Phoenix: %pa-byte framebuffer BAR0, %#llx-byte VRAM, MMIO BAR%u\n",
+		 &mdev->vram_size, mdev->vram_total, mmio_bar);
 	/*
 	 * The render requester also needs the pinned low-VRAM translation root,
 	 * including when KMS exposure is disabled.

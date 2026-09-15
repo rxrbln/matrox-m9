@@ -1315,8 +1315,7 @@ int m9x_submit_triangle_diag(struct m9x_device *mdev, u32 color,
 		if (ret)
 			goto out_unlock;
 		/* m9x182 publishes the restore allocation before its single arm. */
-		ret = m9x_address_commit_gpuva(mdev,
-					      PARHELIA_M9_RESTORE_GPUVA);
+		ret = m9x_address_publish_restore(mdev);
 		if (ret)
 			goto out_unlock;
 		mdev->transport.restore_ready = true;

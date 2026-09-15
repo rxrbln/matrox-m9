@@ -2,8 +2,11 @@
 /* Copyright 2026 René Rebe <rene@exactco.de> */
 #include <linux/delay.h>
 #include <linux/dma-mapping.h>
+#include <linux/iosys-map.h>
 #include <linux/jiffies.h>
+#include <linux/mm.h>
 #include <linux/module.h>
+#include <linux/slab.h>
 
 #include <drm/drm_managed.h>
 
@@ -25,67 +28,114 @@ module_param(m9_fence_timeout_ms, uint, 0600);
 MODULE_PARM_DESC(m9_fence_timeout_ms,
 	"Absolute timeout for the guarded M9 writeback-fence diagnostic");
 
-/* Exact Linux m9x46 context-index image and type-1 m9x72 restore record. */
-static const u32 m9_restore_full_template[62] = {
-	0xeeedeff0, 0xf4f3f2ec, 0x47474747, 0xb3b2b1b0,
-	0xb7b6b5b4, 0xbbbab9b8, 0x45bdbcbe, 0x47474747,
-	0xabaaa9a8, 0xf6f5aeac, 0xa5a7c0af, 0xc7c6c5c4,
-	0x45454547, 0xada4a3a1, 0x47474747, 0xc28a8988,
-	0x8e8d8cc3, 0x75797874, 0x78767978, 0x45454547,
-	0x79787779, 0x47474747, 0x7a797870, 0x83827d7c,
-	0x81808584, 0x45877f7e, 0x47474747, 0x7a797871,
-	0x83827d7c, 0x81808584, 0x45457f7e, 0x47474747,
-	0x7a797872, 0x83827d7c, 0x81808584, 0x45457f7e,
-	0x45474747, 0x7a797873, 0x83827d7c, 0x81808584,
-	0x45457f7e, 0x45474747, 0xd1d0ebea, 0x45d4d3ed,
-	0xc1d68b8f, 0x47474747, 0x93929190, 0x97969594,
-	0x9b9a9998, 0x9f9e9d9c, 0x47474747, 0x6b6a6968,
-	0x456e6d6c, 0x63626160, 0x67666564, 0x45474747,
-	0x45f3d7f1, 0xdad9d8d7, 0xdedddcdb, 0x45454547,
-	0xe8d5a2d2, 0x00000000,
+#define M9_RESTORE_RECORD_BASE		0x700u
+#define M9_RESTORE_RECORD_STRIDE	0x600u
+#define M9_RESTORE_RECORD_COUNT		0x400u
+#define M9_RESTORE_WORK_OFFSET		0x200u
+#define M9_RESTORE_FILL			0x45454545u
+
+/* Live vendor local restore-pool prefix (BAR0 image at the pool base). */
+static const u32 m9_restore_prefix[62] = {
+	0x45454747, 0xeeedeff0, 0xf4f3f2ec, 0x47474747,
+	0xb3b2b1b0, 0xb7b6b5b4, 0xbbbab9b8, 0x45bdbcbe,
+	0x47474747, 0xabaaa9a8, 0xf6f5aeac, 0xa5a7c0af,
+	0xc7c6c5c4, 0x45454547, 0xada4a3a1, 0x47474747,
+	0xc28a8988, 0x8e8d8cc3, 0x75797874, 0x78767978,
+	0x45454547, 0x79787779, 0x47474747, 0x7a797870,
+	0x83827d7c, 0x81808584, 0x45877f7e, 0x47474747,
+	0x7a797871, 0x83827d7c, 0x81808584, 0x45457f7e,
+	0x47474747, 0x7a797872, 0x83827d7c, 0x81808584,
+	0x45457f7e, 0x47474747, 0x7a797873, 0x83827d7c,
+	0x81808584, 0x45457f7e, 0x45474747, 0xd1d0ebea,
+	0x45d4d3ed, 0xc1d68b8f, 0x47474747, 0x93929190,
+	0x97969594, 0x9b9a9998, 0x9f9e9d9c, 0x47474747,
+	0x6b6a6968, 0x456e6d6c, 0x63626160, 0x67666564,
+	0x45474747, 0x45f3d7f1, 0xdad9d8d7, 0xdedddcdb,
+	0x45454547, 0xe8d5a2d2,
 };
 
-static const u32 m9_restore_record_template[20] = {
-	0x45e3e6e6, 0x624f7fff, 0x00000000, 0xffbeef04,
-	0x2f2e3c28, 0xfffffff0, 0x00000000, 0x00000000,
-	0x00000000, 0x45454543, 0xffbeef01, 0x45452f2e,
-	0xfffffff0, 0x00000000, 0x453ee6e6, 0xffbeef03,
-	0x00000000, 0x08000000, 0x624fbfbf, 0xffbeef07,
+/* Live vendor m9x72 record; zero words are patched per record. */
+static const u32 m9_restore_record[20] = {
+	0x454545e6, 0x624f7fff, 0x45e3e6e6, 0x00000000,
+	0x00000002, 0xfffffff0, 0x2f2e3c28, 0x00000000,
+	0x00000000, 0x00000000, 0x00000000, 0x45454543,
+	0xfffffff0, 0x45452f2e, 0x00000000, 0x00000000,
+	0x453ee6e6, 0x08000000, 0x624fbfbf, 0x00000000,
 };
 
-static int m9_restore_build(struct m9x_transport *transport)
+static void m9_restore_fill(u32 *pool, u32 base)
 {
-	u32 base = PARHELIA_M9_RESTORE_GPUVA;
-	u32 *pool = transport->restore_cpu;
 	unsigned int i;
 
-	if (!pool || upper_32_bits(transport->restore_bus) ||
-	    base > U32_MAX - PARHELIA_M9_RESTORE_BYTES)
-		return -ERANGE;
-	memset32(pool, 0x45454545,
-		 PARHELIA_M9_RESTORE_BYTES / sizeof(*pool));
-	memcpy(pool, m9_restore_full_template,
-	       sizeof(m9_restore_full_template));
-	for (i = 0; i < 0x400; i++) {
-		u32 *record = (u32 *)((u8 *)pool + 0x700 + i * 0x600);
-		u32 work = base + 0x200 + i * 0x600;
+	memset32(pool, M9_RESTORE_FILL, PARHELIA_M9_RESTORE_BYTES / sizeof(*pool));
+	memcpy(pool, m9_restore_prefix, sizeof(m9_restore_prefix));
+	for (i = 0; i < M9_RESTORE_RECORD_COUNT; i++) {
+		u32 *record = pool + (M9_RESTORE_RECORD_BASE +
+				      i * M9_RESTORE_RECORD_STRIDE) / sizeof(u32);
+		u32 work = base + M9_RESTORE_WORK_OFFSET +
+			   i * M9_RESTORE_RECORD_STRIDE;
 
-		memcpy(record, m9_restore_record_template,
-		       sizeof(m9_restore_record_template));
+		memcpy(record, m9_restore_record, sizeof(m9_restore_record));
 		record[3] = i == 1 ? 0x0c000000 : 0x62000000;
-		record[10] = (work + 0x400) | M9_RESTORE_SYSTEM_TAG;
+		record[9] = work;
+		record[10] = work + 0x401;
+		record[14] = base;
 		record[15] = base + 0xf8;
-		record[19] = (work + 0x440) | M9_RESTORE_SYSTEM_TAG;
+		record[19] = work + 0x440;
 	}
-	dma_wmb();
-	return 0;
 }
 
 int m9x_restore_bind(struct m9x_device *mdev)
 {
-	return m9x_address_bind_dma(mdev, PARHELIA_M9_RESTORE_GPUVA,
-				    mdev->transport.restore_bus,
-				    PARHELIA_M9_RESTORE_BYTES);
+	struct iosys_map map;
+	u32 *pool;
+	u32 base;
+	int ret;
+
+	ret = m9x_address_restore_region(mdev, &map, &base);
+	if (ret)
+		return ret;
+	if (base > U32_MAX - PARHELIA_M9_RESTORE_BYTES)
+		return -ERANGE;
+	pool = kvmalloc(PARHELIA_M9_RESTORE_BYTES, GFP_KERNEL);
+	if (!pool)
+		return -ENOMEM;
+	m9_restore_fill(pool, base);
+	iosys_map_memcpy_to(&map, 0, pool, PARHELIA_M9_RESTORE_BYTES);
+	kvfree(pool);
+	/* The BAR/WC pool image must be visible before its publication. */
+	wmb();
+	mdev->transport.restore_base = base;
+	return 0;
+}
+
+static int m9_restore_selftest(void)
+{
+	u32 *pool;
+	int ret = -EINVAL;
+
+	pool = kvmalloc(PARHELIA_M9_RESTORE_BYTES, GFP_KERNEL);
+	if (!pool)
+		return -ENOMEM;
+	m9_restore_fill(pool, 0x00ac1000);
+	/* Words of the live vendor pool at 0xac1000 on the 1 GiB M9148. */
+	if (pool[0] != 0x45454747 || pool[61] != 0xe8d5a2d2 ||
+	    pool[62] != M9_RESTORE_FILL ||
+	    memcmp(pool + 0x1c0, (const u32[]) {
+		0x454545e6, 0x624f7fff, 0x45e3e6e6, 0x62000000, 0x00000002,
+		0xfffffff0, 0x2f2e3c28, 0, 0, 0x00ac1200, 0x00ac1601,
+		0x45454543, 0xfffffff0, 0x45452f2e, 0x00ac1000, 0x00ac10f8,
+		0x453ee6e6, 0x08000000, 0x624fbfbf, 0x00ac1640 },
+		20 * sizeof(u32)) ||
+	    pool[0x340 + 3] != 0x0c000000 || pool[0x340 + 9] != 0x00ac1800 ||
+	    pool[0x340 + 19] != 0x00ac1c40 ||
+	    pool[(M9_RESTORE_RECORD_BASE + 1023 * M9_RESTORE_RECORD_STRIDE) /
+		 sizeof(u32) + 20] != M9_RESTORE_FILL)
+		goto out;
+	ret = 0;
+out:
+	kvfree(pool);
+	return ret;
 }
 
 bool m9x_enabled(void)
@@ -214,7 +264,7 @@ int m9x_transport_arm_locked(struct m9x_device *mdev)
 	u32 command = lower_32_bits(m9_command_current_bus(transport));
 	u32 writeback0 = lower_32_bits(mdev->transport.fence_bus);
 	u32 writeback1 = writeback0 + sizeof(u32);
-	u32 restore = transport->restore_ready ? PARHELIA_M9_RESTORE_GPUVA : 0;
+	u32 restore = transport->restore_ready ? transport->restore_base : 0;
 	u32 restore_base = restore ? (restore + 0x200) & ~0x1fu : 0;
 	u32 restore_limit = restore ?
 		((restore + 0x17fc00) & ~0x1fu) | 6 : 0;
@@ -237,12 +287,11 @@ int m9x_transport_arm_locked(struct m9x_device *mdev)
 		return -EOPNOTSUPP;
 	}
 	if (transport->restore_ready &&
-	    (!transport->restore_cpu || upper_32_bits(transport->restore_bus) ||
-	     restore > U32_MAX - PARHELIA_M9_RESTORE_BYTES))
+	    (!restore || restore > U32_MAX - PARHELIA_M9_RESTORE_BYTES))
 		return -ERANGE;
 	/*
-	 * Byte-for-byte m9x109 register order. The target's MmFlags/MmDebugFlags
-	 * select vendor candidate 1, so the restore resource class/tag is one.
+	 * Byte-for-byte m9x109 register order. The live vendor restore pool is
+	 * local (mode 3), so its 0x10ec tag is zero.
 	 */
 	m9x_write(mdev, M9_REG_COMMAND_BASE,
 		  command | M9_COMMAND_SYSTEM_TAG);
@@ -254,8 +303,7 @@ int m9x_transport_arm_locked(struct m9x_device *mdev)
 		 writeback1 | M9_COMMAND_SYSTEM_TAG);
 	m9x_write(mdev, M9_REG_FENCE1_ADDRESS,
 		 writeback0 | M9_COMMAND_SYSTEM_TAG);
-	m9x_write(mdev, M9_REG_RESTORE_TAGGED,
-		  restore ? restore_base | M9_RESTORE_SYSTEM_TAG : 0);
+	m9x_write(mdev, M9_REG_RESTORE_TAGGED, restore_base);
 	m9x_write(mdev, M9_REG_RESTORE_BASE, restore_base);
 	m9x_write(mdev, M9_REG_RESTORE_LIMIT, restore_limit);
 	m9x_write(mdev, M9_REG_REQUESTER_CTL0, M9_REQUESTER_CTL0_FALLBACK);
@@ -267,8 +315,7 @@ int m9x_transport_arm_locked(struct m9x_device *mdev)
 		 m9x_read(mdev, M9_REG_COMMAND_BASE),
 		 writeback1 | M9_COMMAND_SYSTEM_TAG,
 		 writeback0 | M9_COMMAND_SYSTEM_TAG,
-		 restore ? restore_base | M9_RESTORE_SYSTEM_TAG : 0,
-		 restore_base, restore_limit,
+		 restore_base, restore_base, restore_limit,
 		 m9x_read(mdev, M9_REG_REQUESTER_CTL0),
 		 m9x_read(mdev, M9_REG_REQUESTER_CTL1),
 		 m9x_read(mdev, M9_REG_REQUESTER_CTL2));
@@ -579,6 +626,9 @@ int m9x_init(struct m9x_device *mdev)
 	ret = m9_requester_selftest();
 	if (ret)
 		return dev_err_probe(dev, ret, "M9 requester selftest failed\n");
+	ret = m9_restore_selftest();
+	if (ret)
+		return dev_err_probe(dev, ret, "M9 restore selftest failed\n");
 	ret = drmm_mutex_init(&mdev->drm, &mdev->transport.lock);
 	if (ret)
 		return ret;
@@ -595,20 +645,13 @@ int m9x_init(struct m9x_device *mdev)
 	mdev->transport.fence_cpu =
 		dmam_alloc_coherent(dev, PAGE_SIZE, &mdev->transport.fence_bus,
 				    GFP_KERNEL | __GFP_ZERO);
-	mdev->transport.restore_cpu = dmam_alloc_coherent(dev,
-							  PARHELIA_M9_RESTORE_BYTES,
-							  &mdev->transport.restore_bus,
-							  GFP_KERNEL | __GFP_ZERO);
 	if (!mdev->transport.requester_cpu || !mdev->transport.command_cpu ||
-	    !mdev->transport.fence_cpu || !mdev->transport.restore_cpu)
+	    !mdev->transport.fence_cpu)
 		return -ENOMEM;
 	if (upper_32_bits(mdev->transport.requester_bus) ||
 	    upper_32_bits(mdev->transport.command_bus) ||
 	    mdev->transport.command_bus > U32_MAX - command_bytes ||
-	    upper_32_bits(mdev->transport.fence_bus) ||
-	    upper_32_bits(mdev->transport.restore_bus) ||
-	    mdev->transport.restore_bus >
-		U32_MAX - PARHELIA_M9_RESTORE_BYTES)
+	    upper_32_bits(mdev->transport.fence_bus))
 		return -ERANGE;
 	memset32(mdev->transport.command_cpu, 0x45454545,
 		 command_bytes / sizeof(u32));
@@ -617,9 +660,6 @@ int m9x_init(struct m9x_device *mdev)
 	memset32(mdev->transport.fence_cpu, U32_MAX, PAGE_SIZE / sizeof(u32));
 	WRITE_ONCE(((u32 *)mdev->transport.fence_cpu)[0], 0x10);
 	WRITE_ONCE(((u32 *)mdev->transport.fence_cpu)[1], 0x10);
-	ret = m9_restore_build(&mdev->transport);
-	if (ret)
-		return ret;
 	dev_info(dev,
 		 "M9 clean-room transport allocated; hardware submission %s\n",
 		 m9_render_diag ? "requires explicit NOOP_FENCE ioctl" : "disabled");
