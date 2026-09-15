@@ -180,5 +180,5 @@ These gaps must remain visible in capability and execution gates:
    deliberately has no presentation copy fallback.
 
 The Mesa loader maps PCI ID `0x0540` exclusively to `m9x`; the Parhelia map
-contains only the P-series IDs.  Keep the driver-local `m9x_drm.h`
+contains only the P-series IDs.  Keep `include/drm-uapi/m9x_drm.h`
 synchronized with the kernel UAPI header.

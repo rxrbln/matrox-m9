@@ -9,7 +9,7 @@
 #include "pipe/p_context.h"
 #include "pipe/p_screen.h"
 #include "pipe/p_state.h"
-#include "m9x_drm.h"
+#include "drm-uapi/m9x_drm.h"
 
 #define M9_PCI_ID 0x0540u
 #define M9_PACKET_STOP 0x45u
