@@ -20,6 +20,11 @@
 
 DEFINE_DRM_GEM_FOPS(m9x_fops);
 
+uint m9x_local_gpu_base;
+module_param_named(m9_local_gpu_base, m9x_local_gpu_base, uint, 0400);
+MODULE_PARM_DESC(m9_local_gpu_base,
+	"Diagnostic GPU address of VRAM offset 0 for local render resources");
+
 static const struct drm_ioctl_desc m9x_ioctls[] = {
 	DRM_IOCTL_DEF_DRV(PARHELIA_M9_CREATE_BO, m9x_create_bo_ioctl,
 			  DRM_RENDER_ALLOW),
