@@ -15,6 +15,11 @@
 
 #define M9_TRIANGLE_COLOR_BYTES	0x00050000u
 
+static bool m9_user_submit;
+module_param(m9_user_submit, bool, 0400);
+MODULE_PARM_DESC(m9_user_submit,
+	"Execute validated userspace M9 command streams (bring-up only)");
+
 /*
  * This is deliberately the captured-triangle whitelist, not all 256 indexed
  * registers. General execution remains disabled while the masks for these
@@ -517,9 +522,67 @@ static void m9_put_bos(struct drm_gem_object **bos, u32 count)
 			drm_gem_object_put(bos[i]);
 }
 
+/*
+ * The engine consumes counted records: a count, the four-index header and
+ * that many values.  Numeric draw triples stay uncounted, as in bm-12.
+ */
+static u32 *m9_frame_records(const u32 *image, u32 dwords, u32 *out_dwords)
+{
+	u32 *framed, cursor = 0, out = 0;
+
+	framed = kvcalloc(dwords * 2, sizeof(*framed), GFP_KERNEL);
+	if (!framed)
+		return NULL;
+	while (cursor < dwords) {
+		u32 header = image[cursor], family;
+		unsigned int values = 4, i;
+
+		if (header == 0x45454545) {
+			cursor++;
+			continue;
+		}
+		if (m9_draw_header(header, &family)) {
+			memcpy(framed + out, image + cursor, 3 * sizeof(u32));
+			out += 3;
+			cursor += 3;
+			continue;
+		}
+		for (i = 0; i < 4; i++)
+			if (((header >> (8 * i)) & 0xff) == M9_PACKET_STOP) {
+				values = i;
+				break;
+			}
+		framed[out++] = values;
+		memcpy(framed + out, image + cursor, (values + 1) * sizeof(u32));
+		out += values + 1;
+		cursor += values + 1;
+	}
+	*out_dwords = out;
+	return framed;
+}
+
+static int m9_submit_execute(struct m9x_device *mdev, const u32 *image,
+			     u32 dwords, u64 *point)
+{
+	u32 *framed, framed_dwords;
+	int ret;
+
+	framed = m9_frame_records(image, dwords, &framed_dwords);
+	if (!framed)
+		return -ENOMEM;
+	mutex_lock(&mdev->transport.lock);
+	ret = m9x_engine_ready_locked(mdev);
+	if (!ret)
+		ret = m9x_submit_user_stream_locked(mdev, framed, framed_dwords,
+						    point);
+	mutex_unlock(&mdev->transport.lock);
+	kvfree(framed);
+	return ret;
+}
+
 static int m9_submit_validate(struct m9x_device *mdev,
 			      struct drm_file *file,
-			      const struct drm_parhelia_m9_submit *args)
+			      struct drm_parhelia_m9_submit *args, bool execute)
 {
 	struct drm_parhelia_m9_reloc *relocs = NULL;
 	struct drm_parhelia_m9_bo_ref *refs = NULL;
@@ -636,11 +699,9 @@ static int m9_submit_validate(struct m9x_device *mdev,
 		ret = m9_validate_relocs(image, dwords, expected, relocs,
 					 args->relocation_count, bos, mdev, refs,
 					 args->bo_count);
-	/*
-	 * The patched image is intentionally discarded. A later, independently
-	 * gated triangle path will copy it to coherent command memory only after
-	 * register masks and BO reservation fences are complete.
-	 */
+	/* Referenced VRAM BOs stay pinned across the synchronous job. */
+	if (!ret && execute)
+		ret = m9_submit_execute(mdev, image, dwords, &args->out_point);
 out:
 	if (vram_pinned)
 		for (i = 0; i < args->bo_count; i++)
@@ -685,9 +746,14 @@ static int m9_submit_ioctl(struct drm_device *drm, void *data,
 	if (flags == PARHELIA_M9_SUBMIT_FIRST_TRIANGLE) {
 		return m9_submit_first_triangle(mdev, file, args);
 	}
+	if (!flags) {
+		if (!m9_user_submit)
+			return -EOPNOTSUPP;
+		return m9_submit_validate(mdev, file, args, true);
+	}
 	if (flags != PARHELIA_M9_SUBMIT_VALIDATE_ONLY)
 		return -EOPNOTSUPP;
-	return m9_submit_validate(mdev, file, args);
+	return m9_submit_validate(mdev, file, args, false);
 }
 
 int m9x_submit_ioctl(struct drm_device *drm, void *data,

@@ -295,39 +295,51 @@ static const u32 m9_triangle_gouraud_source[] = {
 	0x43200000, 0x435c0000, 0, 0, 0x3f800000,
 };
 
-/* Exact 320x240 GL viewport, depth and glOrtho constants consumed through
- * 8d/8e.  The first vec4 is the raster range; the following eleven vec4s are
- * the preprocessing range.  The vendor stores 2/width and 2/height at dwords
- * 9 and 14, then copies its viewport/depth constructor at dwords 32..47.
+/* Vendor flat gltri system constants at the draw, consumed through 8d/8e
+ * (capture pre-mode0-151327, sequence 12, system [0,0xc0)).
  */
 static const u32 m9_triangle_system_prefix[] = {
 	0x00000000, 0x3f800000, 0x3f800000, 0x3f000000,
 	0x00000000, 0xbf800000, 0x00000000, 0x3f800000,
-	0x00000000, 0x3bcccccd, 0x00000000, 0x3f800000,
-	0x00000000, 0xbf800000, 0x3c088889, 0x00000000,
+	0x00000000, 0x3c088889, 0x00000000, 0x3f800000,
+	0x00000000, 0xbf800000, 0x3bcccccd, 0x00000000,
 	0x00000000, 0x00000000, 0xbf800000, 0x00000000,
-	0x00000000, 0x00000000, 0x00000000, 0x00000000,
-	0x00000000, 0x3f800000, 0x00000000, 0x3f800000,
-	0x00000000, 0x00000000, 0x3f800000, 0x00000000,
-	0x43200000, 0xc2f00000, 0x3f000000, 0x3f800000,
-	0x43200000, 0x42f00000, 0x3f000000, 0x43700000,
-	0x00000000, 0x40000000, 0xc67f8000, 0x467f7c00,
-	0x00000000, 0x00000000, 0x3f800000, 0x3f000000,
+	0x00000000, 0x00000000, 0x43200000, 0xc2f00000,
+	0x3f000000, 0x3f800000, 0x43200000, 0x42f00000,
+	0x3f000000, 0x43700000, 0x00000000, 0x40000000,
+	0xc67f8000, 0x467f7c00, 0x00000000, 0x00000000,
+	0x3f800000, 0x3f000000, 0x7f800000, 0xff800000,
+	0x3f800000, 0x42bdfccd, 0x3f800000, 0xc2fdfbbc,
+	0x42fe0000, 0x43000000, 0x3fa00000, 0x3fc00000,
 };
 
-/* Exact vendor viewport/depth transform copied by m9x5091 into the pool-5
- * fixed-function record: {w/2, -h/2, .5, 0}, {w/2, h/2, .5, 0}.
- * Gouraud needs no following linked-native payload; bytes [0x20,0x200) are
- * deterministically zero.
+/* Vendor flat first-triangle C2 program, VRAM capture gt-flat-150233 [0,0x140). */
+static const u32 m9_triangle_c2_program[] = {
+	0x5e62ad9e, 0xee003c18, 0x1e622d9d, 0xae003c18, 0xffff801c,
+	0xa01fc00f, 0xffff801c, 0xa01fc00f, 0xffe7939c, 0xa28fff1f,
+	0xf1c1911d, 0xbe020d0f, 0xffe7029c, 0xa28fff1f, 0xf188811d,
+	0xadc1cc0f, 0xf1c1911d, 0xbe014d0f, 0xf1c1951e, 0xbe018d0f,
+	0xf188801d, 0xadc10c0f, 0xf1c1911e, 0xbe008d0f, 0xf18a811e,
+	0xadc04c3f, 0xf188801e, 0xadc00c3f, 0xe0488f5c, 0x9001405f,
+	0x3fff8c1d, 0xae3ff200, 0xffc1111c, 0xa29fff1f, 0x233f89bc,
+	0x8c26af10, 0x82448c1d, 0xa2634f01, 0xffc0151c, 0xa29fff1f,
+	0x233f84bc, 0x8c26af10, 0xffc0971c, 0xa29fff1f, 0x8102041d,
+	0xa2634f01, 0x013f851c, 0xac3fc100, 0x213f9c1d, 0xac3fc000,
+	0xffc21b1e, 0xa29fff0f, 0xe145861c, 0xb042415f, 0xe7061b1d,
+	0xb042800f, 0xffc3191c, 0xae9fcfdf, 0xffffa11c, 0xa284330f,
+	0xe07f871c, 0xa02481df, 0xe07f8a1c, 0xa024c1df, 0xe010881c,
+	0x8c01cd10, 0x40040b3c, 0x8c01cdd1, 0xe0088e5c, 0x9001405f,
+	0x20458d5c, 0x8c01cf10, 0xc3c70a1d, 0xeda40c01, 0x437f9d1c,
+	0xaf454071, 0xbfffa11c, 0xac8401c3, 0xffff801c, 0xa01fc00f,
+};
+
+/* Vendor flat and Gouraud linked record at system +0x300: viewport transform
+ * and 0x31; the vendor first draw carries no linked-fragment references.
  */
 static const u32 m9_triangle_linked_prefix[] = {
 	0x43200000, 0xc2f00000, 0x3f000000, 0,
-	0x43200000, 0x42f00000, 0x3f000000, 0,
+	0x43200000, 0x42f00000, 0x3f000000, 0x00000031,
 };
-
-#define M9_TRIANGLE_LINKED_ARENA_LIMIT	0x00800000u
-#define M9_TRIANGLE_LINKED_FIRST_BACKOFF	0x00000780u
-#define M9_TRIANGLE_LINKED_REF_STRIDE	0x00000028u
 
 #include "m9_triangle_framed.h"
 #include "m9_sequence0_framed.h"
@@ -899,6 +911,8 @@ static int m9_triangle_prepare_resources(struct m9x_device *mdev)
 	m9_triangle_write(&diag->resource[M9_TRI_SYSTEM], 0,
 			  m9_triangle_system_prefix,
 			  sizeof(m9_triangle_system_prefix));
+	m9_triangle_write(&diag->resource[M9_TRI_C2], 0, m9_triangle_c2_program,
+			  sizeof(m9_triangle_c2_program));
 	m9_triangle_write(&diag->resource[M9_TRI_SOURCE], 0,
 			  m9_triangle_gouraud ? m9_triangle_gouraud_source :
 						m9_triangle_flat_source,
@@ -1338,28 +1352,11 @@ static u32 m9_triangle_captured_operand(enum m9_triangle_operand operand)
 
 static void m9_triangle_build_linked_record(u8 *record, bool gouraud)
 {
-	/* Pool type 5 copies this backing byte-for-byte.  Linux allocates 0x200
-	 * bytes, but only the first 0x80 are semantic; the apparent host pointers
-	 * in captured upper bytes were uninitialized allocator residue. */
+	/* Bytes after +0x20 in the captured record are host allocator residue. */
 	memset(record, 0, M9_TRIANGLE_LINKED_BYTES);
 	memcpy(record, m9_triangle_linked_prefix,
 	       sizeof(m9_triangle_linked_prefix));
-	if (!gouraud) {
-		unsigned int i;
-
-		/* Thirteen independent fresh-process captures prove this bounded
-		 * first-draw schedule for the case-B linked image, including flat
-		 * shading.  Each of the three arena references is duplicated. */
-		for (i = 0; i < 3; i++) {
-			u32 ref = M9_TRIANGLE_LINKED_ARENA_LIMIT -
-				  M9_TRIANGLE_LINKED_FIRST_BACKOFF +
-				  i * M9_TRIANGLE_LINKED_REF_STRIDE;
-
-			put_unaligned_le32(ref, record + 0x24 + i * 0x28);
-			put_unaligned_le32(ref, record + 0x2c + i * 0x28);
-		}
-	}
-
+	(void)gouraud;
 }
 
 static int m9_triangle_serialize_linked_record(struct m9x_device *mdev,
@@ -1377,16 +1374,171 @@ static int m9_triangle_serialize_linked_record(struct m9x_device *mdev,
 	return 0;
 }
 
+static int m9_triangle_engine_transition_locked(struct m9x_device *mdev)
+{
+	int ret;
+
+	lockdep_assert_held(&mdev->transport.lock);
+	if (mdev->transport.engine_transitioned)
+		return 0;
+	/*
+	 * Both cold m9x421 calls precede m9x182.  Their command builder is
+	 * absent or has a zero +0xc8 refcount, so the vendor performs only the
+	 * direct MMIO window writes.
+	 */
+	if (mdev->transport.transport_armed)
+		return -EBUSY;
+	ret = m9x_address_publish(mdev);
+	if (ret)
+		return ret;
+	ret = m9x_address_construct_manager(mdev);
+	if (ret)
+		return ret;
+	ret = m9x_address_publish(mdev);
+	if (ret)
+		return ret;
+	/* m9x182 publishes the restore allocation before its single arm. */
+	ret = m9x_address_publish_restore(mdev);
+	if (ret)
+		return ret;
+	mdev->transport.restore_ready = true;
+	ret = m9x_transport_arm_locked(mdev);
+	if (ret)
+		return ret;
+	/* m9x926's private pools precede m9x1141/m9x115; BmBuffer leaves last. */
+	ret = m9x_address_finalize_service(mdev);
+	if (ret)
+		return ret;
+	ret = m9x_address_commit_bindings(mdev);
+	if (ret)
+		return ret;
+	mdev->transport.engine_transitioned = true;
+	return 0;
+}
+
+/* Sequence 0: the captured first-context activation, once per transport. */
+static int m9_triangle_context_init_locked(struct m9x_device *mdev,
+					   u64 *point)
+{
+	struct m9x_triangle_diag *diag = mdev->transport.triangle;
+	struct m9_seq0_job sequence0 = {};
+	u32 final;
+	int ret;
+
+	if (diag->context_initialized)
+		return 0;
+	ret = m9_seq0_build_job(mdev, mdev->transport.next_fence, &sequence0);
+	if (ret)
+		return ret;
+	final = sequence0.target + M9_SEQ0_FINAL_TARGET_OFFSET;
+	m9_seq0_build_secondary(diag->resource[M9_TRI_SECONDARY].cpu,
+				&sequence0);
+	m9_seq0_build_primary(&sequence0, diag->commands.sequence0_primary);
+	ret = m9x_submit_kernel_stream_locked(mdev,
+			diag->commands.sequence0_primary,
+			ARRAY_SIZE(diag->commands.sequence0_primary),
+			final, point, NULL);
+	if (ret)
+		return ret;
+	mdev->transport.next_fence = sequence0.target +
+				    M9_SEQ0_NEXT_TARGET_OFFSET;
+	ret = m9_triangle_verify_guards(diag, &mdev->pdev->dev);
+	if (ret) {
+		mdev->transport.wedged = true;
+		mdev->transport.generation++;
+		return ret;
+	}
+	diag->context_initialized = true;
+	dev_info(&mdev->pdev->dev,
+		 "M9 context first activation retired: setup=%#x..%#x\n",
+		 sequence0.target, final);
+	return 0;
+}
+
+int m9x_engine_ready_locked(struct m9x_device *mdev)
+{
+	u64 point;
+	int ret;
+
+	lockdep_assert_held(&mdev->transport.lock);
+	if (mdev->transport.wedged)
+		return -EIO;
+	ret = m9_triangle_prepare_resources(mdev);
+	if (!ret)
+		ret = m9x_transport_enable_bus_master_locked(mdev);
+	if (!ret)
+		ret = m9x_address_prepare(mdev);
+	if (!ret)
+		ret = m9_triangle_engine_transition_locked(mdev);
+	if (!ret)
+		ret = m9_triangle_context_init_locked(mdev, &point);
+	return ret;
+}
+
+/*
+ * Execute counted user records through the shared class-1 BmBuffer, then the
+ * vendor bm-12 completion range with a fresh target.
+ */
+int m9x_submit_user_stream_locked(struct m9x_device *mdev, const u32 *records,
+				  u32 dwords, u64 *point)
+{
+	const struct m9_triangle_layout *layout = &m9_triangle_external_layout;
+	struct m9x_triangle_diag *diag = mdev->transport.triangle;
+	u16 footer_start = layout->end[1], footer_end = layout->end[2];
+	u32 footer_bytes = footer_end - footer_start;
+	u32 target = mdev->transport.next_fence;
+	u32 body_end, secondary, primary[6];
+	u8 *image;
+	int ret;
+
+	lockdep_assert_held(&mdev->transport.lock);
+	if (!diag || !diag->context_initialized)
+		return -EINVAL;
+	if (!dwords || dwords > (M9_TRIANGLE_SECONDARY_BYTES -
+				  M9_TRIANGLE_SECONDARY_PREFIX - footer_bytes) /
+				 sizeof(u32))
+		return -E2BIG;
+	image = diag->resource[M9_TRI_SECONDARY].cpu;
+	secondary = diag->resource[M9_TRI_SECONDARY].gpuva;
+	body_end = M9_TRIANGLE_SECONDARY_PREFIX + dwords * sizeof(u32);
+	memset(image, 0, M9_TRIANGLE_SECONDARY_BYTES);
+	memcpy(image + M9_TRIANGLE_SECONDARY_PREFIX, records,
+	       dwords * sizeof(u32));
+	memcpy(image + body_end, (const u8 *)layout->payload + footer_start -
+	       M9_TRIANGLE_SECONDARY_PREFIX, footer_bytes);
+	/* Completion range sites: 1b fence, e3 target|1, 43 target. */
+	put_unaligned_le32(lower_32_bits(mdev->transport.fence_bus) |
+			   M9_TRIANGLE_COMPLETION_TAG,
+			   image + body_end + layout->reloc[21] - footer_start);
+	put_unaligned_le32(target | 1, image + body_end +
+			   layout->transition[6] - footer_start);
+	put_unaligned_le32(target, image + body_end +
+			   layout->transition[7] - footer_start);
+	dma_wmb();
+	primary[0] = 0x45452d2c;
+	primary[1] = (secondary + M9_TRIANGLE_SECONDARY_PREFIX) |
+		     M9_TRIANGLE_SECONDARY_START_TAG;
+	primary[2] = (secondary + body_end) | M9_TRIANGLE_SECONDARY_END_TAG;
+	primary[3] = 0x45452d2c;
+	primary[4] = (secondary + body_end) | M9_TRIANGLE_SECONDARY_START_TAG;
+	primary[5] = (secondary + body_end + footer_bytes) |
+		     M9_TRIANGLE_SECONDARY_END_TAG;
+	ret = m9x_submit_kernel_stream_locked(mdev, primary, ARRAY_SIZE(primary),
+					      target, point, NULL);
+	if (ret)
+		return ret;
+	mdev->transport.next_fence = target + 0x10;
+	return m9_triangle_verify_guards(diag, &mdev->pdev->dev);
+}
+
 int m9x_submit_triangle_diag(struct m9x_device *mdev, u32 color,
 			     struct drm_gem_vram_object *color_bo, u64 *point,
 			     bool *color_active)
 {
 	struct m9_triangle_job_addresses job = {};
-	struct m9_seq0_job sequence0 = {};
 	struct m9x_triangle_diag *diag;
 	struct m9x_fence *out_fence = NULL;
 	u32 draw_target;
-	u32 sequence0_final = 0;
 	u32 target;
 	bool initialized_now = false;
 	bool draw_posted = false;
@@ -1415,47 +1567,9 @@ int m9x_submit_triangle_diag(struct m9x_device *mdev, u32 color,
 	if (ret)
 		goto out_unlock;
 	diag = mdev->transport.triangle;
-	if (!mdev->transport.engine_transitioned) {
-		/*
-		 * Both cold m9x421 calls precede m9x182.  Their command builder is
-		 * absent or has a zero +0xc8 refcount, so the vendor performs only the
-		 * direct MMIO window writes.  Do not inject the warm e6/47/e3/43/22
-		 * packet path into cold construction.
-		 */
-		if (mdev->transport.transport_armed) {
-			ret = -EBUSY;
-			goto out_unlock;
-		}
-		ret = m9x_address_publish(mdev);
-		if (ret)
-			goto out_unlock;
-		ret = m9x_address_construct_manager(mdev);
-		if (ret)
-			goto out_unlock;
-		ret = m9x_address_publish(mdev);
-		if (ret)
-			goto out_unlock;
-		/* m9x182 publishes the restore allocation before its single arm. */
-		ret = m9x_address_publish_restore(mdev);
-		if (ret)
-			goto out_unlock;
-		mdev->transport.restore_ready = true;
-		ret = m9x_transport_arm_locked(mdev);
-		if (ret)
-			goto out_unlock;
-		/* m9x926's private pools precede m9x1141/m9x115.  Application
-		 * BmBuffers are allocated only after this cold-service finalization,
-		 * so their compact-leaf activation must remain the final translation
-		 * event before ExecuteDma. */
-		ret = m9x_address_finalize_service(mdev);
-		if (ret)
-			goto out_unlock;
-		ret = m9x_address_commit_bindings(mdev);
-		if (ret)
-			goto out_unlock;
-		mdev->transport.engine_transitioned = true;
-	}
-
+	ret = m9_triangle_engine_transition_locked(mdev);
+	if (ret)
+		goto out_unlock;
 	if (!diag->context_initialized) {
 		if (m9_triangle_secondary_noop_only) {
 			target = mdev->transport.next_fence;
@@ -1480,31 +1594,9 @@ int m9x_submit_triangle_diag(struct m9x_device *mdev, u32 color,
 			goto out_unlock;
 		}
 
-		ret = m9_seq0_build_job(mdev, mdev->transport.next_fence,
-					&sequence0);
+		ret = m9_triangle_context_init_locked(mdev, point);
 		if (ret)
 			goto out_unlock;
-		sequence0_final = sequence0.target +
-					  M9_SEQ0_FINAL_TARGET_OFFSET;
-		m9_seq0_build_secondary(diag->resource[M9_TRI_SECONDARY].cpu,
-					&sequence0);
-		m9_seq0_build_primary(&sequence0,
-				      diag->commands.sequence0_primary);
-		ret = m9x_submit_kernel_stream_locked(mdev,
-					      diag->commands.sequence0_primary,
-					      ARRAY_SIZE(diag->commands.sequence0_primary),
-					      sequence0_final, point, NULL);
-		if (ret)
-			goto out_unlock;
-		mdev->transport.next_fence = sequence0.target +
-					    M9_SEQ0_NEXT_TARGET_OFFSET;
-		ret = m9_triangle_verify_guards(diag, &mdev->pdev->dev);
-		if (ret) {
-			mdev->transport.wedged = true;
-			mdev->transport.generation++;
-			goto out_unlock;
-		}
-		diag->context_initialized = true;
 		initialized_now = true;
 	}
 
@@ -1549,10 +1641,7 @@ int m9x_submit_triangle_diag(struct m9x_device *mdev, u32 color,
 		mdev->transport.generation++;
 		goto out_unlock;
 	}
-	if (initialized_now)
-		dev_info(&mdev->pdev->dev,
-			 "M9 context first activation retired: setup=%#x..%#x\n",
-			 sequence0.target, sequence0_final);
+	(void)initialized_now;
 	dev_info(&mdev->pdev->dev,
 		 "M9 triangle retired: draw=%#x..%#x\n", draw_target,
 		 job.transition[5]);
@@ -1791,19 +1880,15 @@ m9_triangle_stream_selftest(struct m9_triangle_commands *commands)
 		return -EINVAL;
 	linked_hash = m9_triangle_template_fnv1a(m9_triangle_linked_prefix,
 						 ARRAY_SIZE(m9_triangle_linked_prefix));
-	if (linked_hash != 0xf671348f86ae78e5ULL)
+	if (linked_hash != 0x5621490c93d48564ULL)
 		return -EINVAL;
 	system_hash = m9_triangle_template_fnv1a(m9_triangle_system_prefix,
 						 ARRAY_SIZE(m9_triangle_system_prefix));
-	if (system_hash != 0xab2075c3793cfdc5ULL)
+	if (system_hash != 0x16f964a138832021ULL)
 		return -EINVAL;
 	m9_triangle_build_linked_record(linked, false);
-	if (get_unaligned_le32(linked + 0x24) != 0x007ff880 ||
-	    get_unaligned_le32(linked + 0x2c) != 0x007ff880 ||
-	    get_unaligned_le32(linked + 0x4c) != 0x007ff8a8 ||
-	    get_unaligned_le32(linked + 0x54) != 0x007ff8a8 ||
-	    get_unaligned_le32(linked + 0x74) != 0x007ff8d0 ||
-	    get_unaligned_le32(linked + 0x7c) != 0x007ff8d0)
+	if (get_unaligned_le32(linked + 0x1c) != 0x00000031 ||
+	    get_unaligned_le32(linked + 0x24) || get_unaligned_le32(linked + 0x7c))
 		return -EINVAL;
 	for (i = 0; i < ARRAY_SIZE(m9_triangle_specs); i++)
 		if (m9_triangle_specs[i].payload_bytes & 3 ||

@@ -143,6 +143,9 @@ int m9x_submit_triangle_diag(struct m9x_device *mdev, u32 color,
 			     struct drm_gem_vram_object *color_bo, u64 *point,
 			     bool *color_active);
 int m9x_triangle_prepare_diag(struct m9x_device *mdev);
+int m9x_engine_ready_locked(struct m9x_device *mdev);
+int m9x_submit_user_stream_locked(struct m9x_device *mdev, const u32 *records,
+				  u32 dwords, u64 *point);
 int m9x_triangle_selftest(void);
 void m9x_triangle_fini(struct m9x_device *mdev);
 int m9x_submit_selftest(void);
