@@ -117,10 +117,11 @@ m9_is_format_supported(struct pipe_screen *screen, enum pipe_format format,
    if (bind & (PIPE_BIND_SCANOUT | PIPE_BIND_DISPLAY_TARGET |
                PIPE_BIND_SHARED))
       return target == PIPE_TEXTURE_2D &&
-             (bind & (PIPE_BIND_SCANOUT | PIPE_BIND_DISPLAY_TARGET)) &&
-             format == PIPE_FORMAT_B8G8R8X8_UNORM &&
+             (format == PIPE_FORMAT_B8G8R8X8_UNORM ||
+              format == PIPE_FORMAT_B8G8R8A8_UNORM) &&
              !(bind & ~(PIPE_BIND_SCANOUT | PIPE_BIND_DISPLAY_TARGET |
                         PIPE_BIND_SHARED | PIPE_BIND_RENDER_TARGET |
+                        PIPE_BIND_BLENDABLE | PIPE_BIND_SAMPLER_VIEW |
                         PIPE_BIND_LINEAR));
    /* bind==0 and LINEAR-only images are CPU staging resources. */
    return !(required & ~info.usage);
@@ -140,7 +141,145 @@ m9_resource_map_dumb(struct m9_screen *screen, struct m9_resource *resource)
       resource->map = NULL;
       return -errno;
    }
+   resource->map_writable = true;
    return 0;
+}
+
+static int
+m9_prime_import_get(struct m9_screen *screen, int fd,
+                    struct m9_resource *resource)
+{
+   struct m9_prime_import *entry;
+   uint32_t handle;
+   int ret = 0;
+
+   simple_mtx_lock(&screen->import_lock);
+   if (drmPrimeFDToHandle(screen->fd, fd, &handle)) {
+      ret = -errno;
+      goto out_unlock;
+   }
+   for (entry = screen->imports; entry; entry = entry->next) {
+      if (entry->handle == handle) {
+         if (entry->references == UINT32_MAX) {
+            ret = -EOVERFLOW;
+            goto out_unlock;
+         }
+         entry->references++;
+         resource->handle = handle;
+         resource->prime_import = entry;
+         goto out_unlock;
+      }
+   }
+   entry = CALLOC_STRUCT(m9_prime_import);
+   if (!entry) {
+      struct drm_gem_close close_bo = { .handle = handle };
+
+      ioctl(screen->fd, DRM_IOCTL_GEM_CLOSE, &close_bo);
+      ret = -ENOMEM;
+      goto out_unlock;
+   }
+   entry->handle = handle;
+   entry->references = 1;
+   entry->owns_handle = true;
+   entry->next = screen->imports;
+   screen->imports = entry;
+   resource->handle = handle;
+   resource->prime_import = entry;
+out_unlock:
+   simple_mtx_unlock(&screen->import_lock);
+   return ret;
+}
+
+static int
+m9_prime_import_get_cached(struct m9_screen *screen, uint32_t handle,
+                           struct m9_resource *resource)
+{
+   struct m9_prime_import *entry;
+   int ret = -ENOENT;
+
+   simple_mtx_lock(&screen->import_lock);
+   for (entry = screen->imports; entry; entry = entry->next) {
+      if (entry->handle != handle)
+         continue;
+      if (entry->references == UINT32_MAX) {
+         ret = -EOVERFLOW;
+         break;
+      }
+      entry->references++;
+      resource->handle = handle;
+      resource->prime_import = entry;
+      ret = 0;
+      break;
+   }
+   simple_mtx_unlock(&screen->import_lock);
+   return ret;
+}
+
+static int
+m9_prime_track_export(struct m9_screen *screen, struct m9_resource *resource)
+{
+   struct m9_prime_import *entry;
+
+   simple_mtx_lock(&screen->import_lock);
+   if (resource->prime_import) {
+      simple_mtx_unlock(&screen->import_lock);
+      return 0;
+   }
+   for (entry = screen->imports; entry; entry = entry->next) {
+      if (entry->handle == resource->handle) {
+         if (entry->references == UINT32_MAX) {
+            simple_mtx_unlock(&screen->import_lock);
+            return -EOVERFLOW;
+         }
+         entry->references++;
+         resource->prime_import = entry;
+         simple_mtx_unlock(&screen->import_lock);
+         return 0;
+      }
+   }
+   entry = CALLOC_STRUCT(m9_prime_import);
+   if (!entry) {
+      simple_mtx_unlock(&screen->import_lock);
+      return -ENOMEM;
+   }
+   entry->handle = resource->handle;
+   entry->references = 1;
+   entry->owns_handle = resource->handle_owned || resource->dumb_owned;
+   entry->destroy_dumb = resource->dumb_owned;
+   entry->next = screen->imports;
+   screen->imports = entry;
+   resource->prime_import = entry;
+   simple_mtx_unlock(&screen->import_lock);
+   return 0;
+}
+
+static void
+m9_prime_import_put(struct m9_screen *screen, struct m9_prime_import *entry)
+{
+   struct m9_prime_import **link;
+
+   simple_mtx_lock(&screen->import_lock);
+   for (link = &screen->imports; *link; link = &(*link)->next) {
+      if (*link != entry)
+         continue;
+      if (--entry->references == 0) {
+         *link = entry->next;
+         if (entry->owns_handle && entry->destroy_dumb) {
+            struct drm_mode_destroy_dumb destroy = {
+               .handle = entry->handle,
+            };
+
+            ioctl(screen->fd, DRM_IOCTL_MODE_DESTROY_DUMB, &destroy);
+         } else if (entry->owns_handle) {
+            struct drm_gem_close close_bo = { .handle = entry->handle };
+
+            ioctl(screen->fd, DRM_IOCTL_GEM_CLOSE, &close_bo);
+         }
+         FREE(entry);
+      }
+      break;
+   }
+   simple_mtx_unlock(&screen->import_lock);
 }
 
 static int
@@ -238,6 +377,7 @@ m9_resource_create(struct pipe_screen *pscreen,
          ioctl(screen->fd, DRM_IOCTL_GEM_CLOSE, &close_bo);
          goto fail;
       }
+      resource->map_writable = true;
       resource->handle = create.handle;
       resource->size = create.size;
       resource->mmap_offset = create.mmap_offset;
@@ -274,28 +414,39 @@ m9_resource_from_handle(struct pipe_screen *pscreen,
    struct m9_screen *screen = m9_screen(pscreen);
    struct m9_resource *resource;
    struct m9_format_info format;
-   uint64_t size;
+   struct drm_parhelia_m9_get_bo_info info = {0};
+   uint64_t required;
    int ret = 0;
 
-   (void)usage;
-   if (!whandle || !m9_presentation_template(templ) || whandle->offset ||
-       whandle->stride != 4096 ||
+   if (!whandle || !m9_is_format_supported(pscreen, templ->format,
+                                            templ->target,
+                                            templ->nr_samples,
+                                            templ->nr_storage_samples,
+                                            templ->bind) ||
+       templ->target != PIPE_TEXTURE_2D || !templ->width0 ||
+       !templ->height0 || templ->width0 > 2048 || templ->height0 > 2048 ||
+       templ->depth0 != 1 || templ->array_size != 1 || templ->last_level ||
+       whandle->offset || !m9_format_info(templ->format, &format) ||
+       !format.cpp || whandle->stride % format.cpp ||
+       whandle->stride / format.cpp < m9_resource_row_span(templ->width0) ||
+       whandle->stride / format.cpp > UINT16_MAX ||
        (whandle->modifier != DRM_FORMAT_MOD_INVALID &&
         whandle->modifier != DRM_FORMAT_MOD_LINEAR))
       return NULL;
-   size = (uint64_t)whandle->stride * templ->height0;
+   required = (uint64_t)whandle->stride * templ->height0;
    resource = CALLOC_STRUCT(m9_resource);
    if (!resource)
       return NULL;
    resource->map_fd = -1;
-   resource->size = size;
-   resource->row_span = whandle->stride / 4;
-   resource->domain = M9_BO_IMPORTED;
+   resource->row_span = whandle->stride / format.cpp;
 
    switch (whandle->type) {
    case WINSYS_HANDLE_TYPE_KMS:
-      resource->handle = whandle->handle;
-      ret = m9_resource_map_dumb(screen, resource);
+      ret = m9_prime_import_get_cached(screen, whandle->handle, resource);
+      if (ret == -ENOENT) {
+         resource->handle = whandle->handle;
+         ret = 0;
+      }
       break;
    case WINSYS_HANDLE_TYPE_SHARED: {
       struct drm_gem_open open = { .name = whandle->handle };
@@ -305,26 +456,16 @@ m9_resource_from_handle(struct pipe_screen *pscreen,
       }
       resource->handle = open.handle;
       resource->handle_owned = true;
-      ret = m9_resource_map_dumb(screen, resource);
       break;
    }
    case WINSYS_HANDLE_TYPE_FD:
-      if (drmPrimeFDToHandle(screen->fd, whandle->handle,
-                             &resource->handle)) {
-         ret = -errno;
+      ret = m9_prime_import_get(screen, whandle->handle, resource);
+      if (ret)
          break;
-      }
-      resource->handle_owned = true;
       resource->map_fd = fcntl(whandle->handle, F_DUPFD_CLOEXEC, 3);
       if (resource->map_fd < 0) {
          ret = -errno;
          break;
-      }
-      resource->map = mmap(NULL, size, PROT_READ | PROT_WRITE, MAP_SHARED,
-                           resource->map_fd, 0);
-      if (resource->map == MAP_FAILED) {
-         resource->map = NULL;
-         ret = -errno;
       }
       break;
    default:
@@ -333,25 +474,70 @@ m9_resource_from_handle(struct pipe_screen *pscreen,
    }
    if (ret)
       goto fail;
-   if (!m9_format_info(templ->format, &format))
+   info.handle = resource->handle;
+   if (ioctl(screen->fd, DRM_IOCTL_PARHELIA_M9_GET_BO_INFO, &info)) {
+      ret = -errno;
+      goto fail;
+   }
+   if (info.memory_class != PARHELIA_M9_MEMORY_CLASS_VRAM ||
+       info.size < required) {
+      ret = -EINVAL;
+      goto fail;
+   }
+   resource->size = info.size;
+   resource->domain = M9_BO_VRAM;
+   if (resource->map_fd >= 0) {
+      int prot = PROT_READ;
+
+      resource->map_writable =
+         usage & (PIPE_HANDLE_USAGE_FRAMEBUFFER_WRITE |
+                  PIPE_HANDLE_USAGE_SHADER_WRITE) ||
+         templ->bind & (PIPE_BIND_RENDER_TARGET | PIPE_BIND_DEPTH_STENCIL);
+      if (resource->map_writable)
+         prot |= PROT_WRITE;
+      resource->map = mmap(NULL, resource->size, prot,
+                           MAP_SHARED, resource->map_fd, 0);
+      if (resource->map == MAP_FAILED) {
+         resource->map = NULL;
+         ret = -errno;
+      }
+   } else {
+      ret = m9_resource_map_dumb(screen, resource);
+   }
+   if (ret)
       goto fail;
    resource->base = *templ;
    resource->base.screen = pscreen;
    pipe_reference_init(&resource->base.reference, 1);
-   resource->kind = M9_RESOURCE_LINEAR_COLOR;
+   resource->kind = templ->bind & PIPE_BIND_DEPTH_STENCIL ?
+      M9_RESOURCE_LINEAR_DEPTH :
+      (templ->bind & (PIPE_BIND_RENDER_TARGET | PIPE_BIND_SCANOUT |
+                      PIPE_BIND_DISPLAY_TARGET | PIPE_BIND_SHARED)) ?
+      M9_RESOURCE_LINEAR_COLOR : M9_RESOURCE_LINEAR_TEXTURE;
    resource->width = templ->width0;
    resource->height = templ->height0;
    resource->depth = 1;
    resource->cpp = format.cpp;
    resource->format = format.code;
    resource->layout = 1;
+   if (resource->kind == M9_RESOURCE_LINEAR_TEXTURE) {
+      resource->mip.level[0].width = resource->width;
+      resource->mip.level[0].height = resource->height;
+      resource->mip.level[0].depth = 1;
+      resource->mip.level[0].row_span = resource->row_span;
+      resource->mip.size = required;
+      resource->mip.levels = 1;
+      resource->mip.cpp = resource->cpp;
+   }
    return &resource->base;
 fail:
    if (resource->map)
       munmap(resource->map, resource->size);
    if (resource->map_fd >= 0)
       close(resource->map_fd);
-   if (resource->handle_owned && resource->handle) {
+   if (resource->prime_import) {
+      m9_prime_import_put(screen, resource->prime_import);
+   } else if (resource->handle_owned && resource->handle) {
       struct drm_gem_close close_bo = { .handle = resource->handle };
       ioctl(screen->fd, DRM_IOCTL_GEM_CLOSE, &close_bo);
    }
@@ -375,6 +561,8 @@ m9_resource_get_handle(struct pipe_screen *pscreen, struct pipe_context *ctx,
    whandle->modifier = DRM_FORMAT_MOD_LINEAR;
    switch (whandle->type) {
    case WINSYS_HANDLE_TYPE_KMS:
+      if (m9_prime_track_export(m9_screen(pscreen), resource))
+         return false;
       whandle->handle = resource->handle;
       return true;
    case WINSYS_HANDLE_TYPE_SHARED: {
@@ -386,6 +574,8 @@ m9_resource_get_handle(struct pipe_screen *pscreen, struct pipe_context *ctx,
    }
    case WINSYS_HANDLE_TYPE_FD: {
       int fd;
+      if (m9_prime_track_export(m9_screen(pscreen), resource))
+         return false;
       if (drmPrimeHandleToFD(m9_screen(pscreen)->fd, resource->handle,
                              DRM_CLOEXEC | DRM_RDWR, &fd))
          return false;
@@ -407,7 +597,9 @@ m9_resource_destroy(struct pipe_screen *pscreen, struct pipe_resource *pres)
       munmap(resource->map, resource->size);
    if (resource->map_fd >= 0)
       close(resource->map_fd);
-   if (resource->dumb_owned && resource->handle) {
+   if (resource->prime_import) {
+      m9_prime_import_put(m9_screen(pscreen), resource->prime_import);
+   } else if (resource->dumb_owned && resource->handle) {
       struct drm_mode_destroy_dumb destroy = { .handle = resource->handle };
       ioctl(m9_screen(pscreen)->fd, DRM_IOCTL_MODE_DESTROY_DUMB, &destroy);
    } else if (resource->handle_owned && resource->handle) {
@@ -439,6 +631,7 @@ m9_command_bo_create(struct m9_screen *screen, struct m9_resource *resource)
       ioctl(screen->fd, DRM_IOCTL_GEM_CLOSE, &close_bo);
       return -error;
    }
+   resource->map_writable = true;
    resource->handle = create.handle;
    resource->kind = M9_RESOURCE_COMMAND;
    resource->size = create.size;
@@ -553,7 +746,27 @@ m9_flush_frontbuffer(struct pipe_screen *screen, struct pipe_context *ctx,
 static void
 m9_destroy(struct pipe_screen *pscreen)
 {
-   close(m9_screen(pscreen)->fd);
+   struct m9_screen *screen = m9_screen(pscreen);
+
+   while (screen->imports) {
+      struct m9_prime_import *entry = screen->imports;
+
+      screen->imports = entry->next;
+      if (entry->owns_handle && entry->destroy_dumb) {
+         struct drm_mode_destroy_dumb destroy = {
+            .handle = entry->handle,
+         };
+
+         ioctl(screen->fd, DRM_IOCTL_MODE_DESTROY_DUMB, &destroy);
+      } else if (entry->owns_handle) {
+         struct drm_gem_close close_bo = { .handle = entry->handle };
+
+         ioctl(screen->fd, DRM_IOCTL_GEM_CLOSE, &close_bo);
+      }
+      FREE(entry);
+   }
+   simple_mtx_destroy(&screen->import_lock);
+   close(screen->fd);
    FREE(pscreen);
 }
 
@@ -569,6 +782,7 @@ m9_screen_create(int fd, const struct pipe_screen_config *config)
    screen->fd = fcntl(fd, F_DUPFD_CLOEXEC, 3);
    if (screen->fd < 0)
       goto fail;
+   simple_mtx_init(&screen->import_lock, mtx_plain);
    screen->chip_id = M9_PCI_ID;
    screen->uapi_version = 1;
    screen->validate_submit = true;
@@ -591,7 +805,7 @@ m9_screen_create(int fd, const struct pipe_screen_config *config)
    caps->glsl_feature_level = 0;
    caps->glsl_feature_level_compatibility = 0;
    caps->compute = false;
-   caps->dmabuf = 0;
+   caps->dmabuf = DRM_PRIME_CAP_IMPORT | DRM_PRIME_CAP_EXPORT;
    screen->base.destroy = m9_destroy;
    screen->base.context_create = m9_context_create;
    screen->base.get_name = m9_name;

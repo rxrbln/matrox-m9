@@ -50,7 +50,9 @@ m9_transfer_map(struct pipe_context *pctx, struct pipe_resource *pres,
    unsigned width, height, stride;
 
    (void)pctx;
-   if (!resource || !resource->map || !box || !out || box->x < 0 ||
+   if (!resource || !resource->map ||
+       ((usage & PIPE_MAP_WRITE) && !resource->map_writable) ||
+       !box || !out || box->x < 0 ||
        box->y < 0 || box->z || box->width < 0 || box->height < 0 ||
        box->depth != 1 || level > pres->last_level)
       return NULL;

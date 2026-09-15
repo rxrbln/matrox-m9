@@ -10,6 +10,7 @@
 #include "pipe/p_screen.h"
 #include "pipe/p_state.h"
 #include "drm-uapi/m9x_drm.h"
+#include "util/simple_mtx.h"
 
 #define M9_PCI_ID 0x0540u
 #define M9_PACKET_STOP 0x45u
@@ -30,10 +31,16 @@ enum m9_resource_kind {
 enum m9_bo_domain {
    /* CREATE_BO: DMA32 system memory accepted by the submit validator. */
    M9_BO_DMA32,
-   /* MODE_CREATE_DUMB: linear BAR0 storage accepted by guarded KMS. */
+   /* Driver VRAM GEM class; render submission pins movable dumb objects. */
    M9_BO_VRAM,
-   /* A winsys handle whose placement is owned by the exporter. */
-   M9_BO_IMPORTED,
+};
+
+struct m9_prime_import {
+   struct m9_prime_import *next;
+   uint32_t handle;
+   uint32_t references;
+   bool owns_handle;
+   bool destroy_dumb;
 };
 
 struct m9_mip_level {
@@ -66,7 +73,9 @@ struct m9_resource {
    enum m9_bo_domain domain;
    bool handle_owned;
    bool dumb_owned;
+   bool map_writable;
    int map_fd;
+   struct m9_prime_import *prime_import;
    struct m9_mip_layout mip;
    void *map;
 };
@@ -96,6 +105,8 @@ struct m9_screen {
    bool validate_submit;
    bool execute_submit;
    bool linked_program_ready;
+   simple_mtx_t import_lock;
+   struct m9_prime_import *imports;
 };
 
 struct m9_fence {
