@@ -59,6 +59,7 @@ enum m9_warning {
    M9_WARN_TRANSFER = 1u << 8,
    M9_WARN_MEMORY = 1u << 9,
    M9_WARN_TEXTURE = 1u << 10,
+   M9_WARN_WRAP = 1u << 11,
 };
 
 struct m9_transfer {
@@ -79,6 +80,7 @@ struct m9_fs_state {
 struct m9_fs_variant {
    struct m9_fs_blend blend;
    uint32_t inline_values[MAX_INLINABLE_UNIFORMS];
+   uint8_t swizzle[PIPE_MAX_SAMPLERS][4];  /* view swizzle per sampler, applied in NIR */
    bool ok;
    const char *reason;                 /* why the variant is not drawable */
    struct m9_fs_program program;
@@ -749,13 +751,9 @@ m9_texture_bind_view(const struct pipe_sampler_view *view,
    res = m9_res(view->texture);
    if (view->target != PIPE_TEXTURE_2D && view->target != PIPE_TEXTURE_RECT)
       return "only 2-D sampling is implemented; draw skipped";
-   if (view->format != res->base.format ||
-       view->swizzle_r != PIPE_SWIZZLE_X ||
-       view->swizzle_g != PIPE_SWIZZLE_Y ||
-       view->swizzle_b != PIPE_SWIZZLE_Z ||
-       view->swizzle_a != PIPE_SWIZZLE_W)
-      return "sampler view format or swizzle differs from the texture; "
-             "draw skipped";
+   /* View swizzles are lowered into the fragment variant (m9_ctx_variant). */
+   if (view->format != res->base.format)
+      return "sampler view format differs from the texture; draw skipped";
    /* The vendor re-lays the chain from the base level; not implemented. */
    if (view->u.tex.first_level)
       return "a base level above 0 needs a re-based texture copy; "
@@ -802,6 +800,12 @@ m9_job_textures(struct m9_context *ctx, const struct m9_fs_variant *fs,
       struct m9_texture_bind bind;
       const char *reason = m9_texture_bind_view(view, &bind);
 
+      if (reason && view && view->texture && ctx->debug)
+         fprintf(stderr, "m9x: unit %u view %s on %s swizzle %u%u%u%u: %s\n",
+                 k, util_format_short_name(view->format),
+                 util_format_short_name(view->texture->format),
+                 view->swizzle_r, view->swizzle_g, view->swizzle_b,
+                 view->swizzle_a, reason);
       if (!reason && !sampler)
          reason = "sampled unit has no sampler state; draw skipped";
       if (!reason && m9_texture_unit_init(&key->units[k],
@@ -815,10 +819,15 @@ m9_job_textures(struct m9_context *ctx, const struct m9_fs_variant *fs,
       key->unit_res[k] = view->texture;
       key->unit_scale[k][0] = (float)m9_res(view->texture)->width / bind.width;
       key->unit_scale[k][1] = (float)m9_res(view->texture)->height / bind.height;
+      /* Every wrap mode agrees inside the content; beyond it the hardware
+       * wraps or clamps at the aligned span, including its padding. */
       if (key->unit_scale[k][0] != 1.0f &&
-          sampler->wrap_s != PIPE_TEX_WRAP_CLAMP_TO_EDGE)
-         reason = "wrapping a render target of unaligned width is not "
-                  "implemented; draw skipped";
+          sampler->wrap_s != PIPE_TEX_WRAP_CLAMP_TO_EDGE &&
+          sampler->wrap_s != PIPE_TEX_WRAP_CLAMP_TO_BORDER &&
+          sampler->wrap_s != PIPE_TEX_WRAP_CLAMP)
+         m9_warn_once(ctx, M9_WARN_WRAP, "render targets of unaligned width "
+                      "wrap at their 32-aligned span; samples outside the "
+                      "content read padding");
       for (unsigned j = 0; !reason && j < k; j++)
          if (fs->texture_coord[j] == fs->texture_coord[k] &&
              memcmp(key->unit_scale[j], key->unit_scale[k],
@@ -959,7 +968,8 @@ m9_fs_variant(struct m9_context *ctx, struct m9_fs_state *fs,
    util_dynarray_foreach(&fs->variants, struct m9_fs_variant *, it) {
       if ((*it)->blend.src == want->blend.src &&
           (*it)->blend.dst == want->blend.dst &&
-          !memcmp((*it)->inline_values, want->inline_values, inline_bytes)) {
+          !memcmp((*it)->inline_values, want->inline_values, inline_bytes) &&
+          !memcmp((*it)->swizzle, want->swizzle, sizeof(want->swizzle))) {
          *reason = (*it)->reason;
          return (*it)->ok ? *it : NULL;
       }
@@ -973,8 +983,25 @@ m9_fs_variant(struct m9_context *ctx, struct m9_fs_state *fs,
    }
    v->blend = want->blend;
    memcpy(v->inline_values, want->inline_values, inline_bytes);
+   memcpy(v->swizzle, want->swizzle, sizeof(v->swizzle));
    if (inline_bytes)
       m9_fs_inline_uniforms(clone, v->inline_values);
+   {
+      nir_lower_tex_options tex = { 0 };
+
+      for (unsigned s = 0; s < PIPE_MAX_SAMPLERS; s++) {
+         if (v->swizzle[s][0] == PIPE_SWIZZLE_X &&
+             v->swizzle[s][1] == PIPE_SWIZZLE_Y &&
+             v->swizzle[s][2] == PIPE_SWIZZLE_Z &&
+             v->swizzle[s][3] == PIPE_SWIZZLE_W)
+            continue;
+         /* PIPE_SWIZZLE_ZERO/ONE are nir_lower_tex's 4 and 5 */
+         tex.swizzle_result |= BITFIELD_BIT(s);
+         memcpy(tex.swizzles[s], v->swizzle[s], 4);
+      }
+      if (tex.swizzle_result)
+         NIR_PASS(_, clone, nir_lower_tex, &tex);
+   }
    v->ok = m9_fs_compile(clone, &v->blend, &v->program, &v->reason);
    ralloc_free(clone);
    if (v->ok) {
@@ -1013,6 +1040,19 @@ m9_ctx_variant(struct m9_context *ctx, const char **reason)
    if (*reason)
       return NULL;
    memcpy(want.inline_values, ctx->fs_inline, sizeof(want.inline_values));
+   for (unsigned s = 0; s < PIPE_MAX_SAMPLERS; s++) {
+      const struct pipe_sampler_view *view = ctx->fs_views[s];
+
+      if (view && BITSET_TEST(ctx->fs->nir->info.textures_used, s)) {
+         want.swizzle[s][0] = view->swizzle_r;
+         want.swizzle[s][1] = view->swizzle_g;
+         want.swizzle[s][2] = view->swizzle_b;
+         want.swizzle[s][3] = view->swizzle_a;
+      } else {
+         for (unsigned c = 0; c < 4; c++)
+            want.swizzle[s][c] = PIPE_SWIZZLE_X + c;
+      }
+   }
    return m9_fs_variant(ctx, ctx->fs, &want, reason);
 }
 
@@ -1904,8 +1944,11 @@ m9_fs_passthrough(nir_shader *nir)
 static void
 m9_fs_native_init(struct m9_context *ctx, struct m9_fs_state *fs)
 {
-   const struct m9_fs_variant opaque = { .blend = { M9_FS_ONE, M9_FS_ZERO } };
+   struct m9_fs_variant opaque = { .blend = { M9_FS_ONE, M9_FS_ZERO } };
 
+   for (unsigned s = 0; s < PIPE_MAX_SAMPLERS; s++)
+      for (unsigned c = 0; c < 4; c++)
+         opaque.swizzle[s][c] = PIPE_SWIZZLE_X + c;
    util_dynarray_init(&fs->variants, NULL);
    /* Shaders specialised on inlined uniforms compile per value set. */
    fs->native = fs->nir->info.num_inlinable_uniforms ||
