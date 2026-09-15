@@ -13,6 +13,7 @@
 #include <drm/drm_device.h>
 #include <drm/drm_gem_dma_helper.h>
 #include <drm/drm_gem_vram_helper.h>
+#include <drm/drm_mm.h>
 #include <drm/drm_modes.h>
 #include <drm/drm_simple_kms_helper.h>
 
@@ -37,6 +38,8 @@ extern uint m9x_local_gpu_base;
 
 struct m9x_bo {
 	struct drm_gem_dma_object dma;
+	/* Class-1 engine address of a non-command BO. */
+	struct drm_mm_node system;
 	u32 flags;
 };
 
@@ -136,6 +139,9 @@ int m9x_address_construct_manager(struct m9x_device *mdev);
 int m9x_address_commit_bindings(struct m9x_device *mdev);
 int m9x_address_commit_gpuva(struct m9x_device *mdev, u32 gpuva);
 int m9x_address_finalize_service(struct m9x_device *mdev);
+int m9x_address_map_system(struct m9x_device *mdev, struct drm_mm_node *node,
+			   dma_addr_t dma, u32 bytes);
+void m9x_address_unmap_system(struct m9x_device *mdev, struct drm_mm_node *node);
 int m9x_address_restore_region(struct m9x_device *mdev,
 			       struct iosys_map *map, u32 *base);
 int m9x_address_publish_restore(struct m9x_device *mdev);
@@ -151,7 +157,8 @@ int m9x_submit_triangle_diag(struct m9x_device *mdev, u32 color,
 int m9x_triangle_prepare_diag(struct m9x_device *mdev);
 int m9x_engine_ready_locked(struct m9x_device *mdev);
 int m9x_submit_user_stream_locked(struct m9x_device *mdev, const u32 *records,
-				  u32 dwords, u64 *point);
+				  u32 dwords, const u32 *range_ends, u32 ranges,
+				  u32 target, u64 *point);
 int m9x_triangle_selftest(void);
 void m9x_triangle_fini(struct m9x_device *mdev);
 int m9x_submit_selftest(void);

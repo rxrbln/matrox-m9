@@ -18,7 +18,13 @@ static void m9_bo_free(struct drm_gem_object *gem)
 {
 	struct m9x_bo *bo = container_of(to_drm_gem_dma_obj(gem),
 						   struct m9x_bo, dma);
+	struct m9x_device *mdev = to_m9x(gem->dev);
 
+	if (drm_mm_node_allocated(&bo->system)) {
+		mutex_lock(&mdev->transport.lock);
+		m9x_address_unmap_system(mdev, &bo->system);
+		mutex_unlock(&mdev->transport.lock);
+	}
 	if (bo->dma.vaddr)
 		dma_free_wc(drm_dev_dma_dev(gem->dev), gem->size,
 			    bo->dma.vaddr, bo->dma.dma_addr);
@@ -247,6 +253,14 @@ static int m9_create_bo_ioctl(struct drm_device *drm, void *data,
 			return PTR_ERR(bo);
 		bo->flags = args->flags;
 		gem = &bo->dma.base;
+		if (!(args->flags & PARHELIA_M9_BO_COMMAND)) {
+			mutex_lock(&mdev->transport.lock);
+			ret = m9x_address_map_system(mdev, &bo->system,
+						     bo->dma.dma_addr, size);
+			mutex_unlock(&mdev->transport.lock);
+			if (ret)
+				goto out_put;
+		}
 	}
 	ret = drm_gem_handle_create(file, gem, &handle);
 	if (ret)

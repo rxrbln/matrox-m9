@@ -17,6 +17,8 @@
 #include <linux/sizes.h>
 #include <linux/slab.h>
 
+#include <drm/drm_print.h>
+
 #include "m9_drv.h"
 #include "m9_reg.h"
 
@@ -69,6 +71,8 @@ struct m9x_address_space {
 	struct drm_gem_vram_object *service_pools[M9_ADDRESS_SERVICE_POOLS];
 	struct iosys_map map;
 	struct m9x_address_binding *bindings;
+	struct drm_mm system_mm;
+	bool system_mm_ready;
 	u32 local_pages;
 	u32 binding_count;
 	u32 binding_capacity;
@@ -413,6 +417,11 @@ int m9x_address_init(struct m9x_device *mdev)
 	iosys_map_memset(&address->map, 0, 0, layout->root_bytes);
 	/* Publish the cleared low-VRAM manager image before handing it to HW. */
 	wmb();
+	if (layout->system_end > M9_ADDRESS_SYSTEM_BASE) {
+		drm_mm_init(&address->system_mm, M9_ADDRESS_SYSTEM_BASE,
+			    layout->system_end - M9_ADDRESS_SYSTEM_BASE);
+		address->system_mm_ready = true;
+	}
 	mdev->transport.address = address;
 	dev_info(&mdev->pdev->dev,
 		 "M9 %#llx-byte VRAM layout: root [0,%#x) primary %#x/%#x translation %#x/%#x tail %#x/%#x restore %#x system <%#x\n",
@@ -696,6 +705,62 @@ int m9x_address_commit_gpuva(struct m9x_device *mdev, u32 gpuva)
 	return -ENOENT;
 }
 
+/* Reserve a class-1 address for a DMA32 allocation and stage its leaves. */
+int m9x_address_map_system(struct m9x_device *mdev, struct drm_mm_node *node,
+			   dma_addr_t dma, u32 bytes)
+{
+	struct m9x_address_space *address = mdev->transport.address;
+	int ret;
+
+	lockdep_assert_held(&mdev->transport.lock);
+	if (!address || !address->system_mm_ready)
+		return -ENODEV;
+	if (!bytes)
+		return -EINVAL;
+	ret = drm_mm_insert_node_in_range(&address->system_mm, node,
+					  PAGE_ALIGN(bytes), PAGE_SIZE, 0,
+					  M9_ADDRESS_SYSTEM_BASE,
+					  address->layout.system_end,
+					  DRM_MM_INSERT_LOW);
+	if (ret)
+		return ret;
+	ret = m9x_address_bind_dma(mdev, node->start, dma, bytes);
+	if (!ret && address->manager_ready)
+		ret = m9x_address_commit_bindings(mdev);
+	drm_dbg(&mdev->drm, "M9 system map %#llx dma %pad bytes %#x: %d (manager %d)\n",
+		node->start, &dma, bytes, ret, address->manager_ready);
+	if (ret)
+		m9x_address_unmap_system(mdev, node);
+	return ret;
+}
+
+void m9x_address_unmap_system(struct m9x_device *mdev, struct drm_mm_node *node)
+{
+	struct m9x_address_space *address = mdev->transport.address;
+	u32 i, page;
+
+	lockdep_assert_held(&mdev->transport.lock);
+	if (!address || !drm_mm_node_allocated(node))
+		return;
+	for (i = 0; i < address->binding_count; i++) {
+		struct m9x_address_binding *binding = &address->bindings[i];
+
+		if (binding->gpuva != node->start)
+			continue;
+		if (binding->published) {
+			for (page = 0; page < binding->bytes >> PAGE_SHIFT; page++)
+				iosys_map_wr(&address->map,
+					     m9_address_identity_slot(binding->gpuva +
+								      page * PAGE_SIZE),
+					     u32, 0);
+			m9_address_activate(mdev);
+		}
+		address->bindings[i] = address->bindings[--address->binding_count];
+		break;
+	}
+	drm_mm_remove_node(node);
+}
+
 int m9x_address_restore_region(struct m9x_device *mdev,
 			       struct iosys_map *map, u32 *base)
 {
@@ -832,6 +897,15 @@ void m9x_address_fini(struct m9x_device *mdev)
 	if (address->root) {
 		m9x_vram_unpin(address->root);
 		drm_gem_vram_put(address->root);
+	}
+	if (address->system_mm_ready) {
+		struct drm_mm_node *node, *next;
+
+		/* BOs outliving the device see unallocated nodes on free. */
+		drm_mm_for_each_node_safe(node, next, &address->system_mm)
+			drm_mm_remove_node(node);
+		drm_mm_takedown(&address->system_mm);
+		address->system_mm_ready = false;
 	}
 	kfree(address->bindings);
 	mdev->transport.address = NULL;

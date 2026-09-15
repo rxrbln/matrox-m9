@@ -54,8 +54,6 @@
 #define M9_TRIANGLE_TRANSIENT_COUNT	4u
 #define M9_TRIANGLE_TRANSIENT_ARENA_BYTES \
 	(M9_TRIANGLE_TRANSIENT_COUNT * M9_TRIANGLE_TRANSIENT_BYTES)
-#define M9_TRIANGLE_SYSTEM_GPUVA_BASE	0x40000000u
-#define M9_TRIANGLE_SYSTEM_GPUVA_END	0x50000000u
 #define M9_TRIANGLE_MAX_SYSTEM_PTES	44u
 #define M9_SEQ0_TARGET_COUNT		9u
 #define M9_SEQ0_FINAL_TARGET_OFFSET	0x80u
@@ -122,6 +120,7 @@ struct m9_triangle_resource {
 	void *cpu;
 	dma_addr_t bus;
 	u32 gpuva;
+	struct drm_mm_node system;
 	u32 payload_bytes;
 	u32 alloc_bytes;
 	u32 guard_bytes;
@@ -822,7 +821,6 @@ static int m9_triangle_prepare_gpuva(struct m9x_device *mdev,
 	static const u8 mapped[] = {
 		M9_TRI_SOURCE, M9_TRI_SYSTEM, M9_TRI_SECONDARY,
 	};
-	u32 gpuva = M9_TRIANGLE_SYSTEM_GPUVA_BASE;
 	u32 pte_count = 0;
 	unsigned int i;
 
@@ -830,7 +828,7 @@ static int m9_triangle_prepare_gpuva(struct m9x_device *mdev,
 		struct m9_triangle_resource *resource =
 			&diag->resource[mapped[i]];
 		u32 page_count = resource->alloc_bytes >> PAGE_SHIFT;
-		u32 next_gpuva, next_pte_count;
+		u32 next_pte_count;
 		int ret;
 
 		if (m9_triangle_local_input(mapped[i]))
@@ -839,18 +837,17 @@ static int m9_triangle_prepare_gpuva(struct m9x_device *mdev,
 		    !IS_ALIGNED(resource->alloc_bytes, PAGE_SIZE) ||
 		    !IS_ALIGNED(resource->bus, PAGE_SIZE) ||
 		    check_add_overflow(pte_count, page_count, &next_pte_count) ||
-		    next_pte_count > M9_TRIANGLE_MAX_SYSTEM_PTES ||
-		    check_add_overflow(gpuva, resource->alloc_bytes, &next_gpuva) ||
-		    next_gpuva > M9_TRIANGLE_SYSTEM_GPUVA_END)
+		    next_pte_count > M9_TRIANGLE_MAX_SYSTEM_PTES)
 			return -ERANGE;
-
-		resource->gpuva = gpuva;
-		ret = m9x_address_bind_dma(mdev, resource->gpuva, resource->bus,
-					   resource->alloc_bytes);
-		if (ret)
-			return ret;
+		if (!drm_mm_node_allocated(&resource->system)) {
+			ret = m9x_address_map_system(mdev, &resource->system,
+						     resource->bus,
+						     resource->alloc_bytes);
+			if (ret)
+				return ret;
+		}
+		resource->gpuva = resource->system.start;
 		pte_count = next_pte_count;
-		gpuva = next_gpuva;
 	}
 	diag->pte_count = pte_count;
 	return 0;
@@ -1490,24 +1487,28 @@ int m9x_engine_ready_locked(struct m9x_device *mdev)
  * vendor bm-12 completion range with a fresh target.
  */
 int m9x_submit_user_stream_locked(struct m9x_device *mdev, const u32 *records,
-				  u32 dwords, u64 *point)
+				  u32 dwords, const u32 *range_ends, u32 ranges,
+				  u32 target, u64 *point)
 {
 	const struct m9_triangle_layout *layout = &m9_triangle_external_layout;
 	struct m9x_triangle_diag *diag = mdev->transport.triangle;
 	u16 footer_start = layout->end[1], footer_end = layout->end[2];
 	u32 footer_bytes = footer_end - footer_start;
-	u32 target = mdev->transport.next_fence;
-	u32 body_end, secondary, primary[6];
+	u32 body_end, secondary, start, i, *primary;
 	u8 *image;
 	int ret;
 
 	lockdep_assert_held(&mdev->transport.lock);
-	if (!diag || !diag->context_initialized)
+	if (!diag || !diag->context_initialized || !ranges ||
+	    range_ends[ranges - 1] != dwords)
 		return -EINVAL;
 	if (!dwords || dwords > (M9_TRIANGLE_SECONDARY_BYTES -
 				  M9_TRIANGLE_SECONDARY_PREFIX - footer_bytes) /
 				 sizeof(u32))
 		return -E2BIG;
+	for (i = 0; i < ranges; i++)
+		if (range_ends[i] <= (i ? range_ends[i - 1] : 0))
+			return -EINVAL;
 	image = diag->resource[M9_TRI_SECONDARY].cpu;
 	secondary = diag->resource[M9_TRI_SECONDARY].gpuva;
 	body_end = M9_TRIANGLE_SECONDARY_PREFIX + dwords * sizeof(u32);
@@ -1525,16 +1526,25 @@ int m9x_submit_user_stream_locked(struct m9x_device *mdev, const u32 *records,
 	put_unaligned_le32(target, image + body_end +
 			   layout->transition[7] - footer_start);
 	dma_wmb();
-	primary[0] = 0x45452d2c;
-	primary[1] = (secondary + M9_TRIANGLE_SECONDARY_PREFIX) |
-		     M9_TRIANGLE_SECONDARY_START_TAG;
-	primary[2] = (secondary + body_end) | M9_TRIANGLE_SECONDARY_END_TAG;
-	primary[3] = 0x45452d2c;
-	primary[4] = (secondary + body_end) | M9_TRIANGLE_SECONDARY_START_TAG;
-	primary[5] = (secondary + body_end + footer_bytes) |
-		     M9_TRIANGLE_SECONDARY_END_TAG;
-	ret = m9x_submit_kernel_stream_locked(mdev, primary, ARRAY_SIZE(primary),
+	primary = kcalloc(3 * (ranges + 1), sizeof(*primary), GFP_KERNEL);
+	if (!primary)
+		return -ENOMEM;
+	start = M9_TRIANGLE_SECONDARY_PREFIX;
+	for (i = 0; i <= ranges; i++) {
+		u32 end = i < ranges ?
+			M9_TRIANGLE_SECONDARY_PREFIX + range_ends[i] * sizeof(u32) :
+			body_end + footer_bytes;
+
+		primary[3 * i] = 0x45452d2c;
+		primary[3 * i + 1] = (secondary + start) |
+				     M9_TRIANGLE_SECONDARY_START_TAG;
+		primary[3 * i + 2] = (secondary + end) |
+				     M9_TRIANGLE_SECONDARY_END_TAG;
+		start = end;
+	}
+	ret = m9x_submit_kernel_stream_locked(mdev, primary, 3 * (ranges + 1),
 					      target, point, NULL);
+	kfree(primary);
 	if (ret)
 		return ret;
 	mdev->transport.next_fence = target + 0x10;

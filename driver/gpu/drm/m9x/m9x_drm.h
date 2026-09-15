@@ -74,7 +74,21 @@ enum drm_parhelia_m9_reloc_kind {
 	PARHELIA_M9_RELOC_QUERY,
 	PARHELIA_M9_RELOC_SPECIAL,
 	PARHELIA_M9_RELOC_RESOURCE_6C,
+	PARHELIA_M9_RELOC_SYSTEM,
+	PARHELIA_M9_RELOC_PROGRAM,
+	PARHELIA_M9_RELOC_STREAM,
 };
+
+/*
+ * SYSTEM names a non-command DMA32 BO by its class-1 engine address (vertex
+ * sources, 8d/8e constant spans); PROGRAM the VRAM c2 program backing; STREAM
+ * a VRAM stream written by a preprocessing pass or read by its raster pass.
+ * e3/43 values are 0x10-aligned dependency offsets below
+ * PARHELIA_M9_DEPENDENCY_LIMIT, rebased onto the kernel-owned job target.
+ * A PARHELIA_M9_RANGE_BREAK packet with value zero ends one execution range.
+ */
+#define PARHELIA_M9_DEPENDENCY_LIMIT	0x400u
+#define PARHELIA_M9_RANGE_BREAK		0x4545452cu
 
 struct drm_parhelia_m9_reloc {
 	__u32 command_dword;

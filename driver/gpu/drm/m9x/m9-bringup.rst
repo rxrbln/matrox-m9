@@ -221,6 +221,18 @@ the count-free packets into counted records, submits them through the
 class-1 BmBuffer followed by the vendor completion range, and waits for its
 fence with every referenced VRAM BO pinned.
 
+Every non-command DMA32 BO receives a class-1 engine address from a
+``drm_mm`` range above ``0x40000000``; its compact leaves are published at
+creation and cleared on free.  Complete two-pass draws use the relocation
+kinds ``SYSTEM`` (vertex sources, ``8d/8e`` constant spans, tag 1),
+``PROGRAM`` (``c2``), ``STREAM`` (preprocessing outputs, raster inputs,
+``be``), ``RESOURCE_69`` and ``RESOURCE_6C``.  ``e3``/``43`` values are
+0x10-aligned dependency offsets rebased onto the kernel job target, and a
+``0x4545452c`` packet with value zero ends an execution range.
+``tools/m9-user-triangle`` replays the first triangle entirely from userspace
+this way: flat gives the vendor 28000 green pixels, Gouraud 28000 shaded
+pixels.
+
 Tiled KMS scanout
 -----------------
 
