@@ -23,6 +23,9 @@
 #define M9_TRIANGLE_HEIGHT		240u
 #define M9_TRIANGLE_SURFACE_BYTES	(M9_TRIANGLE_WIDTH * \
 					 M9_TRIANGLE_HEIGHT * sizeof(u32))
+#define M9_TRIANGLE_AUX_DEPTH_BYTES	(DIV_ROUND_UP(M9_TRIANGLE_WIDTH, 8) * \
+					 DIV_ROUND_UP(M9_TRIANGLE_HEIGHT, 4) * \
+					 sizeof(u32))
 #define M9_TRIANGLE_SOURCE_BYTES	0x50u
 #define M9_TRIANGLE_SYSTEM_BYTES	0x20080u
 #define M9_SEQ0_SECONDARY_IMAGE_BYTES	0xfa0u
@@ -253,8 +256,8 @@ static const struct m9_triangle_resource_spec m9_triangle_specs[] = {
 				  0x100, 0x54520003, true },
 	[M9_TRI_DEPTH] = { "depth", M9_TRIANGLE_SURFACE_BYTES, 0x100,
 			     U32_MAX, true },
-	[M9_TRI_AUX_DEPTH] = { "aux-depth", M9_TRIANGLE_SURFACE_BYTES, 0x100,
-				 0xa5a5a5a5, true },
+	[M9_TRI_AUX_DEPTH] = { "aux-depth", M9_TRIANGLE_AUX_DEPTH_BYTES, 0x100,
+				 0x007ff000, true },
 	[M9_TRI_SEQ0_SCRATCH26] = { "sequence0-scratch26", 0x800, SZ_4K,
 					 0, true },
 	[M9_TRI_SEQ0_SCRATCH27] = { "sequence0-scratch27", 0x20080, SZ_4K,
@@ -277,11 +280,14 @@ static const u32 m9_triangle_gouraud_source[] = {
 	0x43200000, 0x435c0000, 0, 0, 0x3f800000,
 };
 
-/* Exact defined prefix of the pool-5 fixed-function record.  Gouraud needs
- * no linked-native payload; bytes [0x20,0x200) are deterministically zero. */
-static const u32 m9_triangle_gouraud_linked_prefix[] = {
-	0x43000000, 0xc3000000, 0x3f000000, 0,
-	0x43000000, 0x43000000, 0x3f000000, 0,
+/* Exact vendor viewport/depth transform copied by m9x5091 into the pool-5
+ * fixed-function record: {w/2, -h/2, .5, 0}, {w/2, h/2, .5, 0}.
+ * Gouraud needs no following linked-native payload; bytes [0x20,0x200) are
+ * deterministically zero.
+ */
+static const u32 m9_triangle_linked_prefix[] = {
+	0x43200000, 0xc2f00000, 0x3f000000, 0,
+	0x43200000, 0x42f00000, 0x3f000000, 0,
 };
 
 #define M9_TRIANGLE_LINKED_ARENA_LIMIT	0x00800000u
@@ -1191,8 +1197,8 @@ static void m9_triangle_build_linked_record(u8 *record, bool gouraud)
 	 * bytes, but only the first 0x80 are semantic; the apparent host pointers
 	 * in captured upper bytes were uninitialized allocator residue. */
 	memset(record, 0, M9_TRIANGLE_LINKED_BYTES);
-	memcpy(record, m9_triangle_gouraud_linked_prefix,
-	       sizeof(m9_triangle_gouraud_linked_prefix));
+	memcpy(record, m9_triangle_linked_prefix,
+	       sizeof(m9_triangle_linked_prefix));
 	if (!gouraud) {
 		unsigned int i;
 
@@ -1551,6 +1557,7 @@ m9_triangle_stream_selftest(struct m9_triangle_commands *commands)
 	struct m9_triangle_job_addresses job = {};
 	u8 linked[M9_TRIANGLE_LINKED_BYTES] = {};
 	u32 target = 0xfffffff0;
+	u64 linked_hash;
 	unsigned int i;
 	int ret;
 
@@ -1564,6 +1571,7 @@ m9_triangle_stream_selftest(struct m9_triangle_commands *commands)
 	if (sizeof(m9_triangle_flat_source) != M9_TRIANGLE_SOURCE_BYTES ||
 	    sizeof(m9_triangle_gouraud_source) != M9_TRIANGLE_SOURCE_BYTES ||
 	    M9_TRIANGLE_MAX_SYSTEM_PTES != 44 ||
+	    M9_TRIANGLE_AUX_DEPTH_BYTES != 0x2580 ||
 	    m9_triangle_specs[M9_TRI_SECONDARY].payload_bytes != SZ_32K ||
 	    m9_triangle_specs[M9_TRI_C2].payload_bytes !=
 		M9_TRIANGLE_C2_BACKING_BYTES ||
@@ -1588,9 +1596,9 @@ m9_triangle_stream_selftest(struct m9_triangle_commands *commands)
 	    m9_triangle_specs[M9_TRI_SEQ0_SCRATCH38].payload_bytes != 0x400 ||
 	    m9_triangle_specs[M9_TRI_BE].payload_bytes != SZ_1M)
 		return -EINVAL;
-	if (m9_triangle_template_fnv1a(m9_triangle_gouraud_linked_prefix,
-		ARRAY_SIZE(m9_triangle_gouraud_linked_prefix)) !=
-		0x80b075ef8b975c45ULL)
+	linked_hash = m9_triangle_template_fnv1a(m9_triangle_linked_prefix,
+						 ARRAY_SIZE(m9_triangle_linked_prefix));
+	if (linked_hash != 0xf671348f86ae78e5ULL)
 		return -EINVAL;
 	m9_triangle_build_linked_record(linked, false);
 	if (get_unaligned_le32(linked + 0x24) != 0x007ff880 ||
