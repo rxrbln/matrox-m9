@@ -120,6 +120,15 @@ first-render path.  `m9x1172` (`0x222c0`; also `30c=0`,
 (`0x209b0`, refcount 0->1) and the explicit call at `0x2f006` repeat it
 after the arm.
 
+The `m9x565` low-VRAM root is also deliberately absent from this table.
+`m9x565` stores `0x16` at request `+0x10` (`0x1da30`) before calling
+`m9x1102`.  The set `0x10` bit makes `m9x1102` take `0x21c80 -> 0x22240`,
+bypassing `m9x919`; `r15b` becomes zero and `0x21f38` selects the dynamic
+list at `0x21f7f`, bypassing `m9x716`.  The root therefore has no fixed
+slot for `m9x115` to republish.  Its GPU-visible activation is the compact
+table CPU mirror followed by the `0x31c = 0xf,1,0` sequence in `m9x53`,
+not a live `0x000..0x13f` window entry.
+
 `m9x865` (`0x3e2a0`) has no MMIO: it allocates the two completion dwords
 through `m9x479 -> m9x286(fmt 0x78, ecx = mode ? 0 : 2) -> m9x1030`, with
 `mode = ((hwcaps & 0x200004) == 0x200004) ? (BmDebugFlags & 0x10 ? 1 : 0) : 1`
