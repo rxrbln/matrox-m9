@@ -1328,9 +1328,17 @@ int m9x_submit_triangle_diag(struct m9x_device *mdev, u32 color,
 	diag = mdev->transport.triangle;
 	if (!mdev->transport.engine_transitioned) {
 		/*
-		 * The vendor construction invokes m9x421 once inside m9x53 before
-		 * compact publication and once again through m9x1187 afterward.
+		 * The vendor arms the stable requester, completion and restore
+		 * addresses before executing m9x421.  Its first complete transition
+		 * precedes compact publication and m9x1187 executes the second one
+		 * afterward.  A preceding diagnostic no-op may have armed the
+		 * requester with restore disabled, so publish the recovered register
+		 * tuple again before the first transition.
 		 */
+		mdev->transport.restore_ready = true;
+		ret = m9x_transport_rearm_locked(mdev);
+		if (ret)
+			goto out_unlock;
 		ret = m9_triangle_run_manager_transition(mdev, point);
 		if (ret)
 			goto out_unlock;
@@ -1338,10 +1346,6 @@ int m9x_submit_triangle_diag(struct m9x_device *mdev, u32 color,
 		if (ret)
 			goto out_unlock;
 		ret = m9_triangle_run_manager_transition(mdev, point);
-		if (ret)
-			goto out_unlock;
-		mdev->transport.restore_ready = true;
-		ret = m9x_transport_rearm_locked(mdev);
 		if (ret)
 			goto out_unlock;
 		mdev->transport.engine_transitioned = true;
