@@ -53,6 +53,13 @@ bind sequence, write all PTEs and windows, execute the memory barrier, kick
 the two writes in either packed sequence.  The older tentative `0xf,1,0`
 compact-bind sequence selected the wrong manager list.
 
+Preserve the final state `2` when submitting through a mode-2 primary
+BmBuffer.  `m9x1039` at `0x2d800..0x2d828` reads the current primary's class
+from `BmBuffer+0x34` and writes `MMIO[0x31c]=0` only when that class is zero.
+The mode-2 allocation path below sets the class to 2, so it skips the clear.
+An unconditional pre-submit `0x31c=0` invalidates the compact translation
+state immediately before the primary attempts to dispatch this secondary.
+
 ## Allocation path and field identity
 
 The returned buffer and the buffer grown by the pool are the same resource
