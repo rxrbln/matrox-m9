@@ -34,6 +34,13 @@ m9_draw_job_dwords(unsigned draw_count)
           M9_JOB_BASE_DWORDS + M9_JOB_DRAW_DWORDS * (draw_count - 1) : 0;
 }
 
+unsigned
+m9_draw_job_dwords_fs(unsigned draw_count)
+{
+   /* A fifth stream packet; the declaration stays within two packets. */
+   return m9_draw_job_dwords(draw_count) + 4;
+}
+
 static int
 m9_emit_units(struct m9_batch *batch)
 {
@@ -56,6 +63,61 @@ m9_emit_linked(struct m9_batch *batch, const struct m9_draw_job *job)
    EMIT(V(0x6a, 0x25010000));
    EMIT(V(0x68, 0), V(0x6b, 0x1030),
         R(0x6c, job->system, M9_LINKED_OFFSET, RESOURCE_6C));
+fail:
+   return ret;
+}
+
+static uint32_t
+m9_job_raster_control(const struct m9_draw_job *job,
+                      const struct m9_draw_record *d)
+{
+   return job->fs ? m9_raster_control_decl(d->flat, d->topology,
+                                           job->fs->decl_count) :
+                    m9_raster_control(d->flat, d->topology);
+}
+
+/* Streams, program entry and constant span of a native raster pass. */
+static int
+m9_emit_raster_fs(struct m9_batch *batch, const struct m9_draw_job *job)
+{
+   const struct m9_raster_fs *fs = job->fs;
+   uint64_t base = M9_RASTER_CONST_OFFSET;
+   int ret = 0;
+
+   EMIT(V(0x88, fs->r88), V(0x89, 0xfe207ff8), V(0x8a, 0), V(0xc1, 0));
+   for (unsigned pair = 0; pair < 3 && 2 * pair < fs->stream_count; pair++) {
+      unsigned s = 2 * pair;
+
+      if (s + 1 < fs->stream_count) {
+         EMIT(R(s, job->transient, VIEW(fs->stream_view[s]), STREAM),
+              R(s + 1, job->transient, VIEW(fs->stream_view[s + 1]), STREAM),
+              V(0x10 + pair, fs->stride[pair]));
+      } else {
+         EMIT(R(s, job->transient, VIEW(fs->stream_view[s]), STREAM),
+              V(0x10 + pair, fs->stride[pair]));
+      }
+   }
+   EMIT(R(0xc2, job->program, 0, PROGRAM), V(0xc3, 0), V(0x8f, 0));
+   EMIT(V(0x8c, 0x00500000 | fs->const_count << 8),
+        R(0x8d, job->system, base, SYSTEM),
+        R(0x8e, job->system, base + 8 * fs->const_count, SYSTEM), V(0x8f, 0));
+fail:
+   return ret;
+}
+
+static int
+m9_emit_raster_decl(struct m9_batch *batch, const struct m9_raster_fs *fs)
+{
+   unsigned words = (fs->decl_count + 3) & ~3u;
+   int ret = 0;
+
+   for (unsigned i = 0; i < words; i += 4) {
+      uint32_t v[4];
+
+      for (unsigned j = 0; j < 4; j++)
+         v[j] = i + j < fs->decl_count ? fs->decl[i + j] : 0;
+      EMIT(V(0x23, v[0]), V(0x23, v[1]), V(0x23, v[2]), V(0x23, v[3]));
+   }
 fail:
    return ret;
 }
@@ -114,7 +176,8 @@ m9_batch_emit_draw_job(struct m9_batch *batch, const struct m9_draw_job *job)
    EMIT(V(0x88, 0x0300bf00), V(0x89, 0xfe201e92), V(0x8a, 0), V(0xc1, 0));
    EMIT(R(0x00, job->source, 0, SYSTEM), V(0x01, 0xf2fe014f),
         V(0x10, job->decl->record_bytes));
-   EMIT(R(0xc2, job->program, 0, PROGRAM), V(0xc3, 4), V(0x8f, 0));
+   EMIT(R(0xc2, job->program, 0, PROGRAM),
+        V(0xc3, job->fs ? job->fs->vertex_entry : 4), V(0x8f, 0));
    EMIT(V(0x8c, 0x00501600), R(0x8d, job->system, 0x10, SYSTEM),
         R(0x8e, job->system, 0xc0, SYSTEM), V(0x8f, 0));
    ret = m9_emit_units(batch);
@@ -146,7 +209,7 @@ m9_batch_emit_draw_job(struct m9_batch *batch, const struct m9_draw_job *job)
    EMIT(V(0xe6, 0x42000000));
    EMIT(V(0xf0, m9_raster_class(d0->lines)), V(0xef, d0->cull | job->depth_ef),
         V(0xd7, m9_raster_d7(d0->topology)));
-   EMIT(V(0x22, m9_raster_control(d0->flat, d0->topology)));
+   EMIT(V(0x22, m9_job_raster_control(job, d0)));
    EMIT(V(0xe6, 3), V(0xe3, 0x40));
    EMIT(R(0xb0, job->color, 0, COLOR), V(0xb1, p->color_desc));
    EMIT(R(0xb8, job->depth, 0, DEPTH), V(0xb9, p->depth_desc));
@@ -158,23 +221,35 @@ m9_batch_emit_draw_job(struct m9_batch *batch, const struct m9_draw_job *job)
    EMIT(V(0xf5, job->clip_min), V(0xf6, job->clip_max), V(0xc4, job->clip_min),
         V(0xc5, job->clip_max));
    EMIT(V(0xf1, 0));
-   EMIT(V(0x88, 0x0100dff0), V(0x89, 0xfe207ff8), V(0x8a, 0), V(0xc1, 0));
-   EMIT(R(0x00, job->transient, VIEW(0), STREAM),
-        R(0x01, job->transient, VIEW(1), STREAM), V(0x10, 0x00100010));
-   EMIT(R(0x02, job->transient, VIEW(2), STREAM),
-        R(0x03, job->transient, VIEW(3), STREAM), V(0x11, 0x00100006));
-   EMIT(R(0xc2, job->program, 0, PROGRAM), V(0xc3, 0), V(0x8f, 0));
-   EMIT(V(0x8c, 0x00500200), R(0x8d, job->system, 0, SYSTEM),
-        R(0x8e, job->system, 0x10, SYSTEM), V(0x8f, 0));
+   if (job->fs) {
+      ret = m9_emit_raster_fs(batch, job);
+      if (ret)
+         goto fail;
+   } else {
+      EMIT(V(0x88, 0x0100dff0), V(0x89, 0xfe207ff8), V(0x8a, 0), V(0xc1, 0));
+      EMIT(R(0x00, job->transient, VIEW(0), STREAM),
+           R(0x01, job->transient, VIEW(1), STREAM), V(0x10, 0x00100010));
+      EMIT(R(0x02, job->transient, VIEW(2), STREAM),
+           R(0x03, job->transient, VIEW(3), STREAM), V(0x11, 0x00100006));
+      EMIT(R(0xc2, job->program, 0, PROGRAM), V(0xc3, 0), V(0x8f, 0));
+      EMIT(V(0x8c, 0x00500200), R(0x8d, job->system, 0, SYSTEM),
+           R(0x8e, job->system, 0x10, SYSTEM), V(0x8f, 0));
+   }
    ret = m9_emit_units(batch);
    if (ret)
       goto fail;
    EMIT(V(0xec, 0), V(0xf4, 0), V(0xea, 0), V(0xeb, 0));
    EMIT(V(0x28, 0));
-   /* Flat-form color links serve both shadings; 22 bit 14 selects per draw. */
-   EMIT(V(0x23, 0x80100d88), V(0x23, 0x801006b6), V(0x23, 0x00010688),
-        V(0x23, 0x00c231b6));
-   EMIT(V(0x23, 0x00d30688), V(0x23, 0), V(0x23, 0), V(0x23, 0));
+   if (job->fs) {
+      ret = m9_emit_raster_decl(batch, job->fs);
+      if (ret)
+         goto fail;
+   } else {
+      /* Flat-form color links serve both shadings; 22 bit 14 selects per draw. */
+      EMIT(V(0x23, 0x80100d88), V(0x23, 0x801006b6), V(0x23, 0x00010688),
+           V(0x23, 0x00c231b6));
+      EMIT(V(0x23, 0x00d30688), V(0x23, 0), V(0x23, 0), V(0x23, 0));
+   }
    ret = m9_emit_linked(batch, job);
    if (ret)
       goto fail;
@@ -183,7 +258,7 @@ m9_batch_emit_draw_job(struct m9_batch *batch, const struct m9_draw_job *job)
 
       /* Later draws restate topology, shading, class and cull. */
       if (i) {
-         EMIT(V(0x22, m9_raster_control(d->flat, d->topology)),
+         EMIT(V(0x22, m9_job_raster_control(job, d)),
               V(0x6a, 0x25010000));
          EMIT(V(0xf0, m9_raster_class(d->lines)),
               V(0xef, d->cull | job->depth_ef),

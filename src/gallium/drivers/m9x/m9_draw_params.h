@@ -14,7 +14,9 @@
 #define M9_PROGRAM_BYTES          0x2000u
 #define M9_PROGRAM_DWORDS         80u
 #define M9_FRAGMENT_DB_MIN_BYTES  0x1c000u
-#define M9_TRANSIENT_VIEWS        4u
+#define M9_TRANSIENT_VIEWS        6u
+/* Views 0..3 belong to the pass-through program, 4.. carry CPU varyings. */
+#define M9_TRANSIENT_CPU_VIEW     4u
 #define M9_TRANSIENT_VIEW_BYTES   0x16800u
 #define M9_TRANSIENT_VERTEX_BYTES 16u
 #define M9_BE_BYTES               0x100000u
@@ -34,6 +36,24 @@ enum m9_topology {
    M9_TOPOLOGY_QUADS = 0x6,
    M9_TOPOLOGY_QUAD_STRIP = 0x7,
    M9_TOPOLOGY_POLYGON = 0xd,
+};
+
+/* Kernel-accepted raster streams 00..04 with stride words 10..12. */
+#define M9_RASTER_MAX_STREAMS     5u
+#define M9_RASTER_MAX_DECL        8u
+/* Native fragment constants; the span at +0x1000 is hardware-measured. */
+#define M9_RASTER_CONST_OFFSET    0x1000u
+
+/* Raster pass of a native fragment program job. */
+struct m9_raster_fs {
+   unsigned vertex_entry;                       /* preprocessing c3 */
+   uint32_t r88;
+   unsigned const_count;
+   unsigned stream_count;
+   uint32_t stream_view[M9_RASTER_MAX_STREAMS]; /* transient view per stream */
+   uint32_t stride[3];                          /* 10..12 */
+   unsigned decl_count;
+   uint32_t decl[M9_RASTER_MAX_DECL];
 };
 
 /* Render-target size dependent words of one job. */
@@ -69,6 +89,12 @@ uint32_t m9_color_mask(unsigned pipe_colormask);
 void m9_scissor_words(uint32_t minx, uint32_t miny, uint32_t maxx,
                       uint32_t maxy, uint32_t *min, uint32_t *max);
 uint32_t m9_raster_control(bool flat, enum m9_topology topology);
+uint32_t m9_raster_control_decl(bool flat, enum m9_topology topology,
+                                unsigned decl_count);
+int m9_raster_fs_init(struct m9_raster_fs *r, unsigned vertex_entry,
+                      uint32_t r88, unsigned const_count,
+                      unsigned varying_count, const bool *flat_link,
+                      const uint32_t *varying_view);
 uint32_t m9_raster_d7(enum m9_topology topology);
 uint32_t m9_raster_class(bool lines);
 bool m9_topology_valid(unsigned topology);

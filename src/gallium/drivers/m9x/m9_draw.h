@@ -33,9 +33,12 @@ struct m9_draw_job {
    uint32_t depth_ef;         /* raster ef depth bits */
    uint32_t color_mask;       /* raster ab */
    uint32_t clip_min, clip_max;
+   /* Native fragment program; NULL keeps the pass-through colour image. */
+   const struct m9_raster_fs *fs;
 };
 
 unsigned m9_draw_job_dwords(unsigned draw_count);
+unsigned m9_draw_job_dwords_fs(unsigned draw_count);
 int m9_batch_emit_draw_job(struct m9_batch *batch,
                            const struct m9_draw_job *job);
 

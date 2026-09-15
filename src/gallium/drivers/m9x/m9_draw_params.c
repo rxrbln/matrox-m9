@@ -172,7 +172,54 @@ m9_scissor_words(uint32_t minx, uint32_t miny, uint32_t maxx, uint32_t maxy,
 uint32_t
 m9_raster_control(bool flat, enum m9_topology topology)
 {
-   return (flat ? 0x6400u : 0x2400u) | topology;
+   return m9_raster_control_decl(flat, topology, 5);
+}
+
+uint32_t
+m9_raster_control_decl(bool flat, enum m9_topology topology,
+                       unsigned decl_count)
+{
+   /* Bits 11:8 carry the raster declaration word count minus one. */
+   return (flat ? 0x4000u : 0) | 0x2000u | (decl_count - 1) << 8 | topology;
+}
+
+int
+m9_raster_fs_init(struct m9_raster_fs *r, unsigned vertex_entry,
+                  uint32_t r88, unsigned const_count, unsigned varying_count,
+                  const bool *flat_link, const uint32_t *varying_view)
+{
+   uint32_t stride[M9_RASTER_MAX_STREAMS] = { 0 };
+
+   if (!r || varying_count + 3 > M9_RASTER_MAX_STREAMS ||
+       2 * varying_count + 3 > M9_RASTER_MAX_DECL || const_count > 0x7f)
+      return -EINVAL;
+   memset(r, 0, sizeof(*r));
+   r->vertex_entry = vertex_entry;
+   r->r88 = r88;
+   r->const_count = const_count;
+   /* Varying slot k is attribute k+1 as an xy/zw pair on stream k. */
+   for (unsigned k = 0; k < varying_count; k++) {
+      uint32_t link = flat_link[k] ? 0x80000000u : 0;
+
+      r->decl[r->decl_count++] = link | (k + 1) << 20 | k << 16 | 0x0d88;
+      r->decl[r->decl_count++] = link | (k + 1) << 20 | k << 16 | 0x06b6;
+      r->stream_view[k] = varying_view[k];
+      stride[k] = 0x10;
+   }
+   r->decl[r->decl_count++] = varying_count << 16 | 0x0688;
+   r->decl[r->decl_count++] = 0x00c00000u | (varying_count + 1) << 16 | 0x31b6;
+   r->decl[r->decl_count++] = 0x00d00000u | (varying_count + 2) << 16 | 0x0688;
+   r->stream_view[varying_count] = 1;
+   r->stream_view[varying_count + 1] = 2;
+   r->stream_view[varying_count + 2] = 3;
+   stride[varying_count] = 0x10;
+   stride[varying_count + 1] = 0x06;
+   stride[varying_count + 2] = 0x10;
+   r->stream_count = varying_count + 3;
+   for (unsigned i = 0; i < 3; i++)
+      r->stride[i] = stride[2 * i] |
+                     (2 * i + 1 < M9_RASTER_MAX_STREAMS ? stride[2 * i + 1] : 0) << 16;
+   return 0;
 }
 
 uint32_t

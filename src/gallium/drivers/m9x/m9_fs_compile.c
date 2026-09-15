@@ -218,6 +218,8 @@ node_new(struct ctx *c, enum node_kind kind)
 {
    struct node *n = util_dynarray_grow(&c->nodes, struct node, 1);
 
+   if (!n)
+      return fail(c, "out of memory"), -1;
    memset(n, 0, sizeof(*n));
    n->kind = kind;
    n->src[0] = n->src[1] = n->src[2] = -1;
@@ -252,6 +254,8 @@ build_intrinsic(struct ctx *c, nir_intrinsic_instr *intr)
       if (k < 0)
          return -1;
       n = node_new(c, N_VARY);
+      if (n < 0)
+         return -1;
       NODES(c)[n].k = k;
       return n;
    }
@@ -261,6 +265,8 @@ build_intrinsic(struct ctx *c, nir_intrinsic_instr *intr)
           intr->def.num_components != 4)
          return fail(c, "unsupported uniform access"), -1;
       n = node_new(c, N_UBO);
+      if (n < 0)
+         return -1;
       NODES(c)[n].ubo_slot = nir_intrinsic_base(intr) +
                              nir_src_as_uint(intr->src[1]);
       return n;
@@ -298,6 +304,8 @@ build_tex(struct ctx *c, nir_tex_instr *tex)
    p->textures[p->texture_count] = tex->texture_index;
    p->texcoords[p->texture_count] = location;
    n = node_new(c, N_TEX);
+   if (n < 0)
+      return -1;
    NODES(c)[n].texel = 4 * p->texture_count++;
    return n;
 }
@@ -334,6 +342,8 @@ build_alu(struct ctx *c, nir_alu_instr *alu)
       if (node_is_const(&NODES(c)[a]))
          return fail(c, "constant expression"), -1;
       n = node_new(c, alu->op == nir_op_fmul ? N_MUL : N_ADD);
+      if (n < 0)
+         return -1;
       NODES(c)[n].src[0] = a;
       NODES(c)[n].src[1] = b;
       if (alu->op == nir_op_fadd && NODES(c)[b].kind == N_LIT) {
@@ -356,9 +366,13 @@ build_alu(struct ctx *c, nir_alu_instr *alu)
           NODES(c)[b].kind == N_LIT)
          return fail(c, "unsupported mix operands"), -1;
       s = node_new(c, N_SUB);
+      if (s < 0)
+         return -1;
       NODES(c)[s].src[0] = a;
       NODES(c)[s].src[1] = b;
       n = node_new(c, N_MAD);
+      if (n < 0)
+         return -1;
       NODES(c)[n].src[0] = s;
       NODES(c)[n].src[1] = t;
       NODES(c)[n].src[2] = a;
@@ -408,6 +422,8 @@ build_vec(struct ctx *c, nir_scalar s[4])
    }
    if (all_const) {
       n = node_new(c, N_LIT);
+      if (n < 0)
+         return -1;
       for (unsigned k = 0; k < 4; k++)
          NODES(c)[n].lit[k] = nir_scalar_as_float(s[k]);
       return n;

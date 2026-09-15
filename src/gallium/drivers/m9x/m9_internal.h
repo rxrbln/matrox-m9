@@ -197,6 +197,7 @@ struct m9_fs_state;
 /* Pass-level raster state shared by every draw of one two-pass job. */
 struct m9_job_key {
    struct m9_resource *depth, *aux;
+   const struct m9_fs_state *fs;   /* native fragment program or NULL */
    uint32_t depth_control, depth_ef, color_mask, clip_min, clip_max;
 };
 
@@ -229,6 +230,7 @@ struct m9_context {
    struct pipe_vertex_buffer vertex_buffers[PIPE_MAX_ATTRIBS];
    unsigned num_vertex_buffers;
    struct pipe_constant_buffer vs_constants[PIPE_MAX_CONSTANT_BUFFERS];
+   struct pipe_constant_buffer fs_constants;
 
    /* Fixed two-pass resources and the pending job. */
    struct m9_resource system, program, fragment_db, transient, be, source;
@@ -239,6 +241,8 @@ struct m9_context {
    struct m9_job_key job_key;
    struct util_dynarray records;  /* float source records */
    struct util_dynarray draws;    /* struct m9_draw_record */
+   struct util_dynarray extra;    /* float4 CPU varyings per source record */
+   struct util_dynarray key_consts, job_consts;  /* raster constant floats */
    uint32_t warned;
    bool debug;
 };
