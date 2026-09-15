@@ -199,5 +199,31 @@ draws with the per-draw restate above and preprocess ranges rounded to four.
 Every raster word in that list is covered by the measurements above except
 the depth fields.
 
+## Mixed flat and smooth draws in one pass (MEASURED)
+
+`tools/m9-user-raster-state` tests `mixed-shade-*` and `mixed-link-*` submit
+several triangle-list draws in one two-pass package, alternating flat and
+smooth (two triangles in each of the first two draws, one in the others) and
+check every interior pixel (at least 1 px from each edge) of every triangle
+in the linear `SURFACE_ACCESS` readback: flat draws must equal the provoking
+(last) vertex color within 1, smooth draws the barycentric interpolation
+within 4.
+
+| order | setup link bit 31 | per-draw 23 re-emit | result |
+|---|---|---|---|
+| FSFS | from draw 0 (flat) | no | all 6 triangles pass |
+| FSFS | from draw 0 (flat) | yes | all 6 pass |
+| SFSF | from draw 0 (smooth) | yes | flat draw 1 shaded (fail), flat draw 3 passed |
+| SFSF, FSFS, SFFSF | forced set (flat form) | no | all pass (6, 6, 7 triangles) |
+| FSFS | forced clear (smooth form) | no | every flat triangle shaded |
+| SFFSF | from draw 0 (smooth) | yes | every flat triangle shaded |
+
+Rule for a driver: emit the raster declaration link words at the pass setup
+with bit 31 set (`80100d88 801006b6`) and select shading per draw only with
+`22` bit 14 in the `45456a22` restate (`0x6400` flat, `0x2400` smooth).
+Smooth rendering ignores the set link bit; flat rendering requires it.
+Re-emitting the `23` declaration packets inside the raster pass does not
+reliably change the link state and must not be used.
+
 <!-- Copyright 2026 René Rebe <rene@exactco.de> -->
 <!-- SPDX-License-Identifier: GPL-2.0 -->
