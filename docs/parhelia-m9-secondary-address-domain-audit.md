@@ -45,18 +45,19 @@ bounds can equivalently add `G` to `{8+a,8+b}`.  For example, `G=0x40000000`,
 Allocate and bind the secondary exactly like other system rendering
 resources: assign a system GPUVA, write its compact PTEs, issue the normal
 post-bind translation invalidation, and keep both backing and GPUVA alive
-until the primary call retires.  One invalidation after a batch containing
-source, system, and secondary PTEs is sufficient.  There is no additional
+until the primary call retires.  The vendor completes each mode-1 allocation
+independently: publish that allocation's PTEs, write `31c=f,1,0`, then write
+`314=1` before constructing the next allocation.  There is no additional
 secondary-specific invalidation in `m9x830`.
 
 The cold-start address-manager setup ends by writing `MMIO[0x31c]=0xc`, then
 `MMIO[0x31c]=1`, and reading `MMIO[0x31c]` once after the second write to
-drain posted MMIO before the initial `E6` command.  For the corrected target
-bind sequence, write all PTEs and windows, execute the memory barrier, kick
-`MMIO[0x314]=1`, write `MMIO[0x31c]=0xf`, then `1`, then `0`, and read
-`MMIO[0x31c]` once after the third write.  No readback is required between
-writes in either packed sequence.  The `0,2` sequence belongs to the optional
-16-byte companion-table path, which target `MmFlags=0x100e8` disables.
+drain posted MMIO before the first command stream.  For each target bind,
+write its PTEs, execute the memory barrier, write `MMIO[0x31c]=0xf`, then `1`,
+then `0`, read `MMIO[0x31c]` after the third write, and finally write
+`MMIO[0x314]=1`.  No readback is required between the packed `31c` writes.
+The `0,2` sequence belongs to the optional 16-byte companion-table path,
+which target `MmFlags=0x100e8` disables.
 
 `m9x1039` at `0x2d800..0x2d828` reads the current primary's class from
 `BmBuffer+0x34` and writes `MMIO[0x31c]=0` only when that class is zero.  The
@@ -141,10 +142,14 @@ translation `+0x58`, and leaves the constructor-zeroed `+0x48` unchanged.
 Thus `+0x44` always means the GPU transport address, while `+0x48` is an
 optional userspace mapping token and must never be substituted for it.
 
-On the clean-room target, the mode-2 primary requester has separately passed
-the no-op/fence hardware test using its raw coherent DMA address with tag 2.
-That result does not generalize to class-1 BmBuffers: class 1 is the mapped
-system-GPUVA path proven above.  Address class and low tags are field-specific.
+On the clean-room target, a class-2 raw-DMA secondary has separately retired
+using its coherent DMA address and class-2 framing.  After kernel `b788cc4`, a
+clean boot also retired the direct primary no-op at target `0x10`, but the
+canonical class-1 secondary at GPUVA `0x40024000` timed out at target `0x20`
+despite its expected leaf PTE.  The class-2 result therefore proves indirect
+CALL/framing but does not generalize to class-1 BmBuffers: class 1 is the
+mapped system-GPUVA path proven above.  Address class and low tags are
+field-specific.
 
 <!-- Copyright 2026 Rene Rebe <rene@exactco.de> -->
 <!-- SPDX-License-Identifier: GPL-2.0 -->

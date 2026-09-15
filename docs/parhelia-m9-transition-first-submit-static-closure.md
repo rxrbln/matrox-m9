@@ -5,18 +5,18 @@
 > after both cold transitions.  Both cold calls are MMIO-only; no
 > `e6/47/e3/43/22` packet precedes sequence 0 on the M9148, and the
 > post-publication packet path in `m9x887` is disabled by `MmFlags` bit 24.
-> The streams below are therefore not a vendor transition; kernel commit
-> `b788cc4` removes them.  See
+> Those streams describe only the gated warm half; kernel commit `b788cc4`
+> removes them from cold construction.  See
 > `parhelia-m9-cold-transition-submit-decode.md` section 1.
 
-This note records the static decision used by the clean-room first-triangle
-diagnostic.  It supplements `parhelia-m9-pre-submit-engine-sequence.md` and
-does not replace the exact address-window or requester recipes there.
+This note retains the packet decode, but corrects its scope.  It supplements
+`parhelia-m9-pre-submit-engine-sequence.md` and does not replace the exact
+address-window or requester recipes there.
 
-## Do not lower the transition to idle MMIO
+## The packet half is a warm-path operation
 
-Linux `m9x421` emits three packet groups through its command builder, but it
-publishes them in two distinct submissions:
+Linux `m9x421` can emit three packet groups through its command builder in two
+distinct submissions:
 
 ```text
 454545e6 00000002
@@ -24,13 +24,14 @@ publishes them in two distinct submissions:
 454522e6 40000000 (MMIO[1088] | 20000000)
 ```
 
-The call at `.text+0x1660c` submits the first `e6` packet through vtable slot
-`+0x100`.  Only after that call does `m9x421` publish the address windows.  At
-the tail it appends the `47` packet, reserves a synchronization value through
-slot `+0xe0`, reads `0x1088`, appends the `e6/22` packet, and submits that work
-through slot `+0x100` at `.text+0x16a0a`.  Slot `+0x100` resolves to `m9x954`;
-with argument one it reaches `m9x1039`, the primary requester doorbell path.
-Thus `+0x100` is a real flush boundary, not a builder-only state update.
+When `B+0xc8 != 0`, the call at `.text+0x1660c` submits the first `e6` packet
+through vtable slot `+0x100`.  Only after that call does `m9x421` publish the
+address windows.  At the tail it appends the `47` packet, reserves a
+synchronization value through slot `+0xe0`, reads `0x1088`, appends the
+`e6/22` packet, and submits that work through slot `+0x100` at
+`.text+0x16a0a`.  Slot `+0x100` resolves to `m9x954`; with argument one it
+reaches `m9x1039`, the primary requester doorbell path.  Thus `+0x100` is a
+real flush boundary on the warm path, not a builder-only state update.
 
 The slot `+0xe0` call is also observable command content.  It resolves to
 `m9x81(-1)`, which calls slot `+0xd8` = `m9x604`.  That routine advances the
@@ -47,97 +48,60 @@ completion.  Captured streams have this exact pattern:
 ```
 
 Although packet indices `e6`, `47`, and `22` correspond arithmetically to
-MMIO offsets `1398`, `111c`, and `1088`, the vendor does not perform those
-writes through its direct-MMIO interface.  In particular, it reserves a
-synchronization token around the `47` pair.  Replacing these packets with
-idle CPU writes would discard the observed engine ordering and has no static
-support.
+MMIO offsets `1398`, `111c`, and `1088`, they must remain packets whenever
+the gated warm path executes.  This says nothing about the cold calls, which
+skip this entire half and use only `m9x421`'s direct window writes.
 
-## Cold construction runs the transition twice
+## Cold construction publishes the windows twice
 
 The cold `m9x582` constructor reaches `m9x421` twice.  The first call is
 nested in initializer-table entry `m9x1042`: `m9x1042` calls the service
 initializer at `.text+0x121d0`, which calls `m9x92`, then `m9x53`, and
-`m9x53` calls `m9x421(..., publish=1)` at `.text+0x187aa`.  That complete
-transition returns before `m9x53` calls the compact-table publisher `m9x328`
-at `.text+0x1891b`.
+`m9x53` calls `m9x421(..., publish=1)` at `.text+0x187aa`.  At this point the
+requester object's `B+0xc8` refcount is zero, so the call publishes the direct
+MMIO windows and returns before `m9x53` calls compact-table publisher
+`m9x328` at `.text+0x1891b`.
 
 After `m9x1042` and the three remaining initializer-table entries return,
 `m9x582` calls `m9x1187` at `.text+0x2efd0`.  `m9x1187` calls
-`m9x421(..., publish=1)` again at `.text+0x121bc`.  The exact cold logical
-order is therefore:
+`m9x421(..., publish=1)` again at `.text+0x121bc`, still before `m9x182`
+increments `B+0xc8`.  The exact cold logical order is therefore:
 
 ```text
-complete m9x421 transition #1
+MMIO window publication #1
 compact PTE CPU mirror and 31c invalidation
-complete m9x421 transition #2
+MMIO window publication #2
 completion/restore allocation and primary requester setup
 ```
 
-The first `m9x421` read of `0x1088` has no preceding software writer in this
-path.  The immutable M9148 warm-unbound hardware sample also reads
-`0x1088=0`.  Consequently the first terminal index-22 operand on the tested
-M9148 is `0x00000000 | 0x20000000 = 0x20000000`.  The transition itself then
-writes that value to index 22.  No code between the two calls changes index
-22, so the second call also emits `0x20000000`, whether its CPU read observes
-the first transition already executed or still observes zero.
-
-Zero is therefore the expected first read on this M9148, not evidence of a
-missing context-state initializer.  The implementation should nevertheless
-retain the vendor read-modify-write operation rather than hard-code zero,
-because it intentionally preserves any firmware or product-specific low
-bits.
+Neither cold call reads `0x1088` or emits index `22`.  The earlier warm-unbound
+sample `0x1088=0` remains useful only for the separately gated warm packet
+path.
 
 ## Construction order versus execution order
 
 The tail of the `m9x582` construction order is:
 
 ```text
-m9x1187 -> m9x421       build/publish transition #2
+m9x1187 -> m9x421       publish MMIO windows #2
 m9x865                  completion resources
 m9x949 -> m9x182
               -> m9x109 arm primary requester
 ```
 
-This is software construction order.  It does not require an unarmed
-requester to execute the packets.  `m9x421` appends the packets through the
-command-builder virtual interface; `m9x109` subsequently installs the stable
-primary command, fence, and restore addresses.  A clean-room driver which
-does not reproduce that retained builder lifetime can preserve the effective
-hardware order by:
+`m9x182` increments the requester refcount only after both calls, then
+`m9x109` installs the stable primary command, fence, and restore addresses.
+There is no retained cold packet stream to execute after that arm.  A
+clean-room driver preserves the effective hardware order by:
 
-1. initializing the restore and completion backing;
-2. arming the primary requester in exact `m9x109` register order;
-3. submitting one complete `m9x421` transition and requiring its completion;
-4. publishing the compact PTE mirror and its exact invalidation sequence;
-5. submitting the second complete `m9x421` transition and requiring its
-   completion;
-6. requiring that completion before sequence 0.
+1. publishing the first direct-MMIO window tuple;
+2. building the root table and activating it with `31c=f,1,0`;
+3. publishing the second direct-MMIO window tuple;
+4. allocating and publishing restore/completion and later mode-1 resources;
+5. arming the primary requester once in exact `m9x109` register order;
+6. starting sequence 0 as the first command stream.
 
-Each complete transition retains the internal split below: initial `e6`, a
-flush boundary, direct window publication, then the final `47`, dependency,
-and `e6/22` group.  The PTE publication belongs between two such complete
-transitions; it does not belong inside either one.
-
-The corresponding clean-room streams are:
-
-```text
-454545e6 00000002
-4545e3e6 00000003 (target1 | 1)
-
-45454747 000011a4 00001308
-4545e3e6 00000003 (target2 | 1)
-45454543 (target2)
-454522e6 40000000 (MMIO[1088] | 20000000)
-4545e3e6 00000003 (target3 | 1)
-```
-
-Targets advance by `0x10`.  If the first submission uses `target1=0x10`, the
-dependency is exactly `target2=0x20`, while the final fence to poll is
-`target3=0x30`.  Reusing `0x20` only as the terminal fence omits the vendor's
-inner producer/dependency pair.
-
-The command endpoint remains an untagged, end-exclusive byte address.
+The corresponding clean-room cold-transition command streams are empty.
 
 ## Initial E6 choice
 
@@ -151,21 +115,17 @@ bit set:   4545e6e6 00000000 00000002
 Both finish at `e6=2`.  The saved Windows driver selects the analogous
 single-write form for the same M9148 default profile because its selector,
 `MmFlags` bit 0, is clear in `0x000101f8`.  No saved Linux command image
-contains the transient packet.  The clean-room M9148 diagnostic therefore
-uses the single-write form as the best cross-driver static specialization;
-it should retain the two-write form as a guarded quirk rather than emit both
-forms.
+contains the transient packet.  These encodings remain evidence for a warm
+call only; the clean-room cold path emits neither form.
 
 ## Interpretation of the current failure
 
-Consumption of all sequence-zero primary dwords with no secondary completion
-shows that command fetch is alive but does not establish that the `2c/2d`
-linked range was followed.  The supported next experiment is the two
-independently fenced transition streams above, with the direct windows between
-them, followed by the existing sequence-zero submission.  Combining all three
-packet groups into one stream removes a statically proven vendor flush boundary
-and should not be used as the reference experiment.  The failure is not a
-reason to write the packet indices directly through MMIO.
+The post-`b788cc4` clean-boot test used MMIO-only cold transitions, restore tag
+one and one `314=1` after each compact publication.  A direct primary no-op
+retired at target `0x10`.  The canonical class-1 secondary at GPUVA
+`0x40024000` then timed out at target `0x20` with its expected compact leaf
+present.  This excludes the removed cold packet streams as a required gate and
+continues to isolate the failure to compact translation or its selector state.
 
 <!-- Copyright 2026 Rene Rebe <rene@exactco.de> -->
 <!-- SPDX-License-Identifier: GPL-2.0 -->

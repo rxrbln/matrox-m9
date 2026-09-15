@@ -4,8 +4,8 @@
 > `m9x286` through `request+0x68` (`.text+0x10ac4`), with the candidate type;
 > candidate 1 is the one taken on the M9148.  `10ec = ((R+0x200)&~0x1f)|1`
 > and `record+0x4c = (W+0x440)|1`.  See
-> `parhelia-m9-cold-transition-submit-decode.md` section 3.  The mechanism
-> lines below are otherwise correct; only the `T=0` conclusion is wrong.
+> `parhelia-m9-cold-transition-submit-decode.md` section 3.  The corrected
+> derivation is incorporated below.
 
 This note gives the byte-exact Linux `m9x655`/`m9x72` restore-pool image used
 by the normal M9148 first-render path.  Evidence is the canonical proprietary
@@ -113,23 +113,28 @@ allocation mode 1 at `0x38210`, then publishes:
 
 ```text
 R                    = request[0x1cc] = resource[0x44]
-T                    = request[0x1b4] = resource[0x30]
+candidate type       = request[0x1b4]
+T                    = resource[0x30], then resource[0x34]
 resource[0x34]       = resource[0x30]
 ```
 
-The `0x2b0`-byte request comes from `KernelClientKmalloc`.  The open Linux
-wrapper zeroes the whole allocation, and no instruction on this path writes
-request `+0x1b4`; therefore **`T=0`**.  `R` is the page-aligned, dynamically
-allocated mode-1 address returned at request `+0x1cc`.  Mode 1 is the same
-visible system GPUVA domain whose mappings appear at `0x40000000` and above;
-it is not a raw coherent DMA address.
+The `0x2b0`-byte request comes from `KernelClientKmalloc`, but the constructor's
+initial zero is not the final value.  `m9x810` passes the selected candidate
+type in `ecx` to `m9x286` with `rdi=request+0x68`; the store at
+`.text+0x10ac4`, `mov %ecx,0x14c(%rdi)`, is therefore exactly
+`request+0x1b4 = candidate type`.  The successful mode-1 branch copies that
+type to `resource+0x30`, and then to public tag field `resource+0x34`.
+Candidate 1 is the selected candidate on this M9148, so **`T=1`**.  `R` is the
+page-aligned, dynamically allocated mode-1 address returned at request
+`+0x1cc`.  Mode 1 is the same visible system GPUVA domain whose mappings
+appear at `0x40000000` and above; it is not a raw coherent DMA address.
 
 The exact target implementation is consequently:
 
 ```c
 R = alloc_visible_system_gpuva(0x181000); /* page aligned, compact PTE mapped */
-T = 0;
-MMIO[0x10ec] = R + 0x200;
+T = 1;
+MMIO[0x10ec] = (R + 0x200) | 1;
 MMIO[0x1094] = R + 0x200;
 MMIO[0x1098] = (R + 0x17fc00) | 6;
 ```

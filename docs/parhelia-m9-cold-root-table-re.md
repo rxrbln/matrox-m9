@@ -1,7 +1,7 @@
 # M9148 cold root translation table
 
-> **Correction (2026-09-15):** steps 1 and 9 ("complete `m9x421`
-> transition") are MMIO window writes only on the cold path; the packet
+> **Correction (2026-09-15):** both `m9x421` calls are MMIO window writes
+> only on the cold path; the packet
 > half is gated on `B+0xc8` and does not run before `m9x182`.  Step 10's
 > leaf publication is followed by `314=1` (`.text+0x37a4b`).  See
 > `parhelia-m9-cold-transition-submit-decode.md`.
@@ -67,6 +67,28 @@ GPUVA `0x40024000` did not.  This proves the CALL engine and secondary framing
 work and isolates the remaining failure to compact-translation selection or
 activation rather than the CPU-visible table image.
 
+The clean-boot test of kernel `b788cc4` repeated that boundary after applying
+all three corrected construction rules: both cold `m9x421` calls were
+MMIO-only, the restore tuple used tag one, and each mode-1 publication ended
+with `31c=f,1,0` followed by one `314=1`.  The direct primary no-op retired at
+target `0x10`.  The canonical class-1 secondary then timed out at target
+`0x20` with:
+
+```text
+writeback        = ffffffdf
+engine/frontend  = 00000000 / 00000000
+kick             = 00000000
+command          = 04b90002
+fences           = 04bd5006 / 04bd5002
+restore tuple    = 41000201 / 41000200 / 4117fc06
+secondary        = GPUVA 40024000, DMA 05dd0000
+secondary leaf   = 05dd000a (expected 05dd000a)
+```
+
+The corrections are therefore present but are not sufficient to make compact
+secondary fetch retire.  The remaining gate is below command framing and
+above the CPU-visible leaf contents.
+
 ## Binary proof
 
 The source is `KernelLibraries.o_shipped`, SHA-256
@@ -94,7 +116,7 @@ operations reduce to CPU clears.  Their selector-5 pre/post lists are empty.
 
 The exact relevant order is:
 
-1. Run the first complete `m9x421` transition.
+1. Publish the first `m9x421` MMIO window tuple; emit no transition packets.
 2. Clear the primary child.
 3. Build the `0xd41`-entry root identity table.
 4. Order the BAR/WC writes with `wmb()` and write `0x31c = 0xf, 1, 0`.
@@ -102,9 +124,9 @@ The exact relevant order is:
 6. Clear the auxiliary and tail children.
 7. Order the clears and write `0x31c = 0xc, 1`.
 8. Apply `System\\TlbPrefCnt=1` in `0xf0c`.
-9. Run the second complete `m9x421` transition.
+9. Publish the second `m9x421` MMIO window tuple; emit no transition packets.
 10. Publish later system-resource leaf PTEs through the separate `m9x887` to
-    `m9x328` path, ending with another `0x31c = 0xf, 1, 0`.
+    `m9x328` path, ending with `0x31c = 0xf, 1, 0`, then one `0x314 = 1`.
 
 Every later `m9x887` allocation has its own CPU mirror and `0xf,1,0`
 publication.  The vendor does not batch independently allocated leaves under
@@ -123,11 +145,12 @@ between manager construction and later resource publication.
 ## Clean-room implementation
 
 The kernel implementation belongs in a distinct cold manager helper between
-the two transition calls.  It uses `iosys_map_wr()`/`iosys_map_memset()` for
-the BAR mapping and `wmb()` before the MMIO activations.  `dma_wmb()` is not
-the right primitive for these WC VRAM writes.  Dynamic compact leaf PTEs are
-committed only after transition two, before enabling the restore tuple and
-rearming the requester.
+the two MMIO window publications.  It uses
+`iosys_map_wr()`/`iosys_map_memset()` for the BAR mapping and `wmb()` before
+the MMIO activations.  `dma_wmb()` is not the right primitive for these WC
+VRAM writes.  Dynamic compact leaf PTEs are committed only after window
+publication two; each allocation gets its own `31c=f,1,0` and following
+`314=1` before the requester is armed once.
 
 This result is specific to the captured 256 MiB M9148 descriptor.  Other M9
 memory sizes require their own recovered manager layout rather than silently

@@ -191,9 +191,14 @@ If `m9x789` returns null or `m9x694` returns zero, execution instead reaches
 the dwords through the table child's BAR0 pointer `+0x40`, then decodes the
 post-list.  For selector zero that post-list is `0x3000001f`, producing direct
 `MMIO[0x31c]` writes `0xf,0x1,0x0`.  A clean-room CPU-mirror publication is
-therefore directly supported by the binary, but combining it with `0x314`
-mixes the two vendor branches.  Initial manager construction has the separate
-final packed list `0x2000001c`, producing `0xc,0x1`.
+therefore directly supported by the binary.  After `m9x1030` returns from this
+publication, the enclosing mode-1 allocation path calls the helper at
+`.text+0x37a20`, which waits for the allocation's last token and writes
+`MMIO[0x314]=1` unconditionally at `0x37a4b`.  Thus the allocation-level order
+is CPU mirror, `31c=f,1,0`, then one `314=1`; this final kick is outside
+`m9x328` and does not mix its two internal branches.  Initial manager
+construction has the separate final packed list `0x2000001c`, producing
+`0xc,0x1`.
 
 The canonical fresh-service path selects the CPU-mirror branch; it is not an
 allocation failure.  `m9x595` clears the complete `0xf68`-byte service, and
@@ -207,9 +212,10 @@ Later, `m9x950` constructs the control and data stream objects at
 `builder+0x10/+0x18` and sets `builder+0x20=1`, but never changes
 `builder+0x24`; its return at `0x281c8` even reloads that still-zero field.
 `m9x789` tests it at `0x287e2` and returns null at `0x28920`.  Thus the first
-`m9x328` skips `m9x694` and `0x314`, performs the BAR CPU mirror, and
-activates it with `0x31c=f,1,0`.  The GPU-copy path belongs to a later
-explicitly backed requester mode.
+`m9x328` skips `m9x694` and its internal `0x314`, performs the BAR CPU mirror,
+and activates it with `0x31c=f,1,0`.  A mode-1 resource allocation still
+receives the enclosing helper's one post-publication `314=1`.  The GPU-copy
+path belongs to a later explicitly backed requester mode.
 
 This selection follows directly from the call arguments. `m9x887` passes
 `ecx=0` to `m9x328`. That selector makes `m9x328` use manager `+0xe0` as its
@@ -231,23 +237,22 @@ real service-construction write; it does not replace the later
 `0x30c=0x1000`.
 
 Cold manager construction has an exact, different order.  `m9x53` first calls
-`m9x421(..., publish=1)`, which completes the initial `E6`, all direct window
-writes, and the terminal `454522e6,40000000,(1088|20000000)` submission.
-It then calls `m9x328(..., selector=0)`.  On this fresh-service path that call
-writes the CPU BAR mirror and `0x31c=f,1,0`; it emits no `0x314`.  Back in
-`m9x53`, the next relevant write is `0x30c=0x1000`.  After the remaining
-internal table initializers, `m9x53` ends with `0x31c=c,1`.  Thus moving the
-terminal `m9x421` transition after the compact publication reverses the
-vendor's order within this first transition.
+`m9x421(..., publish=1)`.  The requester refcount `B+0xc8` is still zero, so
+this cold call performs only the direct window writes; it emits neither the
+initial `E6` nor the terminal `47/e3/43/e6/22` packets.  `m9x53` then calls
+`m9x328(..., selector=0)`, which writes the root-table CPU BAR mirror and
+`0x31c=f,1,0`.  Back in `m9x53`, the next relevant write is
+`0x30c=0x1000`.  After the remaining internal table initializers, `m9x53`
+ends with `0x31c=c,1`.
 
-There is then a second complete transition.  After initializer-table entry
+There is then a second window publication.  After initializer-table entry
 `m9x1042` returns from this service/manager construction and the remaining
 three table entries finish, `m9x582` calls `m9x1187` at `.text+0x2efd0`.
-`m9x1187` calls `m9x421(..., publish=1)` at `.text+0x121bc`.  The full cold
-outer order is consequently `m9x421 #1`, compact CPU mirror/invalidation,
-then `m9x421 #2`.  A clean-room sequence with only one transition cannot place
-the compact publication at the vendor boundary; it must replay two complete
-transitions around it.
+`m9x1187` calls `m9x421(..., publish=1)` at `.text+0x121bc`, still before
+`m9x182` increments `B+0xc8`, so it too writes only the windows.  The full
+cold outer order is consequently window publication #1, root-table CPU
+mirror/invalidation, then window publication #2.  No transition packet is
+retained or submitted around this boundary.
 
 When the optional upload branch is active, the corresponding `m9x694`
 arguments are:
