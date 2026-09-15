@@ -20,6 +20,7 @@
 #define M9_WARM_WIDTH		1024u
 #define M9_WARM_HEIGHT		768u
 #define M9_WARM_PITCH		4096u
+#define M9_WARM_RENDER_BYTES	0x00301000u
 #define M9_WARM_CLOCK_KHZ	65000u
 
 static bool m9_kms;
@@ -116,6 +117,9 @@ static int m9_kms_selftest(void)
 		return -EINVAL;
 	if (matrox_kms_mode_geometry_valid(&m9_warm_mode, 1024, 768,
 					     65000, 65000) != MODE_OK)
+		return -EINVAL;
+	if (M9_WARM_PITCH * M9_WARM_HEIGHT != 0x00300000u ||
+	    M9_WARM_RENDER_BYTES != 0x00301000u)
 		return -EINVAL;
 	return 0;
 }
@@ -375,7 +379,7 @@ m9_fb_create(struct drm_device *drm, struct drm_file *file,
 	gem = drm_gem_object_lookup(file, mode_cmd->handles[0]);
 	if (!gem)
 		return ERR_PTR(-ENOENT);
-	if (!m9x_gem_is_vram(gem)) {
+	if (!m9x_gem_is_vram(gem) || gem->size < M9_WARM_RENDER_BYTES) {
 		fb = ERR_PTR(-EINVAL);
 		goto out_put;
 	}
@@ -395,6 +399,9 @@ static const struct drm_mode_config_funcs m9_mode_config_funcs = {
 int m9x_dumb_create(struct drm_file *file, struct drm_device *drm,
 		    struct drm_mode_create_dumb *args)
 {
+	struct drm_mode_create_dumb alloc_args;
+	int ret;
+
 	if (!m9x_kms_scanout_enabled() || !args->width || !args->height ||
 	    args->bpp != 32)
 		return -EINVAL;
@@ -405,8 +412,26 @@ int m9x_dumb_create(struct drm_file *file, struct drm_device *drm,
 	 * DC0 without first passing those stricter checks.  Page-align allocations
 	 * so the tested front buffer keeps its 4096-byte pitch and DC placement.
 	 */
-	return drm_gem_vram_fill_create_dumb(file, drm, 1, M9_WARM_PITCH,
-					     args);
+	if (args->width != M9_WARM_WIDTH || args->height != M9_WARM_HEIGHT)
+		return drm_gem_vram_fill_create_dumb(file, drm, 1,
+						     M9_WARM_PITCH, args);
+
+	/*
+	 * The M9148 category-2 constructor adds eight end-pad elements when
+	 * aligned geometry leaves no tail slack, then rounds to its 4-KiB byte
+	 * quantum.  Preserve the visible 1024x768 geometry and 4096-byte pitch,
+	 * but allocate the exact 0x301000-byte renderable backing.
+	 */
+	alloc_args = *args;
+	alloc_args.height = M9_WARM_RENDER_BYTES / M9_WARM_PITCH;
+	ret = drm_gem_vram_fill_create_dumb(file, drm, 1, M9_WARM_PITCH,
+					    &alloc_args);
+	if (ret)
+		return ret;
+	args->pitch = alloc_args.pitch;
+	args->size = alloc_args.size;
+	args->handle = alloc_args.handle;
+	return 0;
 }
 
 irqreturn_t m9x_irq_handler(int irq, void *arg)

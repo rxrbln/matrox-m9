@@ -121,9 +121,11 @@ external transmitter.  A mismatch fails probe rather than attempting cold
 display setup or DP link training.
 
 ``m9_kms_scanout=1`` is a second gate for changing DC0 START/PITCH.  Dumb
-buffers are XRGB8888 1024x768 objects allocated by the standard DRM VRAM/TTM
-manager in linear BAR0, pinned before the atomic commit, and scanned out
-directly.  Command/resource objects remain the independent DMA32 GEM class and
+buffers are XRGB8888 1024x768 objects allocated by the DRM VRAM/TTM
+manager in linear BAR0.  Their ``0x301000`` backing includes the vendor
+category-2 end pad beyond the ``0x300000`` visible pixels.  They are pinned
+before the atomic commit and scanned out directly.  Command/resource objects
+remain the independent DMA32 GEM class and
 cannot become framebuffers.  There is no shadow buffer or present-time
 resolve.  An ordinary CRTC disable clears only DC0 CTRL's enable bit before the
 old BO is unpinned; enable selects the already-pinned replacement and reasserts
