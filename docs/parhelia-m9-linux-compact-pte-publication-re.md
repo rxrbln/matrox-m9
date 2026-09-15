@@ -125,10 +125,16 @@ The separate `m9x953` interval beginning at
 instruction in the object-allocation, ioctl-output, `m9x887`, or `m9x328`
 chain substitutes it for resource `+0x48`.
 
-## Publication into the raw service image
+## Publication into the wrapper context
 
 At the start of `m9x421`, the selected manager children are copied into the
-raw service object reached through `[service+0x10]`. For the Linux target:
+object reached through `[service+0x10]`.  This object is not a low-address
+BAR mapping or a hardware page-table root.  The open wrapper calls
+`connect(dev->core_data, dev, &dev->ctx, ...)`; the exported `connect` entry
+reaches `m9x320`, whose `.text+0x4c71` stores its third argument at core
+object `+0x10`.  `m9x92` then stores that same core object at owner `+0x740`,
+which is the service pointer used by `m9x421`.  Consequently these are
+wrapper-private `m9x_context` fields.  For the Linux target they receive:
 
 ```text
 raw+130 = 00801000     raw+134 = 00060000
@@ -139,7 +145,8 @@ raw+148 = 00861000     raw+14c = 00080000
 
 The last size is the selected range size plus the selected auxiliary size,
 `C2c+C34`. This metadata publication happens before the command/MMIO window
-transition.
+transition, but a clean-room driver must not reproduce it by writing the BAR
+root at offsets `0x130..0x14c`.
 
 For direct Linux transport, `m9x421` writes the primary tuple and then, when
 its publish argument is one, the remaining windows in this order:
@@ -164,7 +171,9 @@ pte = (dma & 0xfffff000) | ((dma >> 28) & 0x00000ff0) | 0x0a;
 `m9x328` stages entries with `m9x789`, uploads them through `m9x694` using
 destination mode 2 and the low slot address, writes `MMIO[0x314]=1` when the
 copy helper reports success, and mirrors the dwords through the table child's
-BAR0 CPU pointer `+0x40`. The normal compact-bind post-list is
+BAR0 CPU pointer `+0x40`. The vendor therefore performs both publications;
+the binary contains no path that proves a CPU mirror alone becomes visible
+after invalidation. The normal compact-bind post-list is
 `0x3000001f`; least-significant nibble first, it produces the exact
 `MMIO[0x31c]` sequence `0xf,0x1,0x0`. Initial manager construction has the
 separate final packed list `0x2000001c`, producing `0xc,0x1`.
@@ -177,19 +186,60 @@ empty pre-list and manager `+0xf8` as its post-list. `m9x53` constructs
 companion table. The Linux `C24=0` branch skips that whole path, so `0,2`
 must not replace `f,1,0` for a normal compact bind.
 
-The clean-room ordering is: finish the initial `0xc,1` pair and read back
-`0x31c` once after `1`, before submitting the initial `E6`; then write all
-PTEs and windows, execute a memory barrier, write `0x314=1`, write the
-`f,1,0` sequence, and read back `0x31c` once after the final `0`. The terminal
-read in each phase drains posted MMIO. No readback is needed between writes
-in a packed sequence.
+The outer service-owner order is also fixed.  The anonymous initializer at
+`.text+0x121d0` writes the service-lane registers and calls `m9x1172` at
+`0x12512`.  `m9x1172` writes `0x30c=0`, updates `0x3a8[17:16]`, and publishes
+the service table.  The initializer then calls `m9x92`, which constructs the
+manager by calling `m9x53` at `0x1e6be`.  The first `0x30c=0` is therefore a
+real service-construction write; it does not replace the later
+`0x30c=0x1000`.
 
-The mode-2 requester records depend on the transient staging allocation's
-address and alignment. No saved capture joins those runtime values to one
-compact update. The deterministic cold-bring-up inputs are the slot, PTE,
-BAR mirror, `0x314` kick, and `0x31c` sequence. Capturing the `m9x694` source
-and destination for one vendor bind is the smallest diagnostic needed for a
-byte-identical requester upload.
+Cold manager construction has an exact, different order.  `m9x53` first calls
+`m9x421(..., publish=1)`, which completes the initial `E6`, all direct window
+writes, and the terminal `454522e6,40000000,(1088|20000000)` submission.
+It then calls `m9x328(..., selector=0)`.  For every staging chunk, `m9x328`
+executes the auxiliary copy and synchronous wait, then writes `0x314=1`;
+after all chunks it executes the empty `+0xe0` pre-list, writes the CPU BAR
+mirror, and writes `0x31c=f,1,0`.  Back in `m9x53`, the next relevant write is
+`0x30c=0x1000`.  After the remaining internal table initializers, `m9x53`
+ends with `0x31c=c,1`.  Thus moving the terminal `m9x421` transition after the
+compact invalidation reverses the vendor's cold order.
+
+The corresponding `m9x694` arguments are:
+
+```text
+src      = staging GPU byte address returned by m9x789
+dst      = table_resource+0x48 + 4*page_index
+src_mode = mode returned by m9x789
+dst_mode = 2
+count    = compact PTE dword count
+pre      = manager+0xe0 (empty for selector zero)
+post     = manager+0xf8 (3000001f)
+arg9/10  = 0,0
+```
+
+It emits 16-byte records into the auxiliary builder at `builder+0x18`, calls
+`m9x620(builder,1)` to publish that stream through `MMIO[0x504]`, and calls
+`m9x1016(builder,1)` to wait for `0x508.bit0` and stable `0x500/0x50c`.
+For the concrete aligned example `src=0x12340000`, `dst=0x00901090`, modes
+`2,2`, and one dword, the hash-pinned binary emits:
+
+```text
+0a000078 12340002 04000000 00901082
+00000008 00000000 ffffffff 00000000
+00000004 00000000 ffffffff 00000000
+00000078 00000000 ffffffff 00000000
+```
+
+The last three records are the `f,1,0` post-list translated for the auxiliary
+requester. These records cannot be submitted through the primary
+`0x400/0x404` requester without separate hardware evidence.
+
+The first transfer record depends on the transient staging allocation's
+address and alignment, so a byte-identical live upload still requires the
+runtime `m9x789` source. The destination formula, request modes, post records,
+submission boundary, synchronous wait, BAR mirror, and invalidations are
+fully fixed by the binary.
 
 ## Initial E6 selector
 
