@@ -11,6 +11,13 @@ The currently installed host `/usr/bin/gdb` was checked on 2026-09-15 and is
 built `--without-python`; it cannot run this script. The observer has offline
 tests, but has not been exercised through KGDB on the target.
 
+A private GDB 17.2 with Python was subsequently built from the cached
+`/srv/t2/download/mirror/g/gdb-17.2.tar.xz` into `/tmp/m9-gdb` on the host.
+`/tmp/m9-gdb/bin/gdb -nx -batch -ex 'python import gdb; print(gdb.VERSION)'`
+passes. This resolves the host debugger dependency. The preserved target's
+2.6.30 and 2.6.34.1 configurations both disable KGDB, kprobes and mmiotrace,
+so this KGDB observer still needs a suitable target kernel/connection.
+
 This is a kernel service trace. It does not capture the X driver's earlier
 board POST, PCI bus-master enable, or direct userspace MMIO accesses. Those
 still require a separate X-side observer if full cold-boot parity is needed.
@@ -47,9 +54,16 @@ Supply a new directory on the **debugger host**, and the canonical object:
 set $m9_cold_output = "/host/captures/m9-service-NEW"
 set $m9_cold_image = "/host/parhelia/xf86-video-parhelia/m9xdriver-x86_64-1.4.3-80847-20140908-build_98/kernel/KernelLibraries.o_shipped"
 set $m9_cold_vram = 0
+set $m9_cold_stop_class1 = 1
 source /host/parhelia/xf86-video-parhelia/tools/m9x-cold-service-kgdb.py
 continue
 ```
+
+`$m9_cold_stop_class1 = 1` records and continues past earlier doorbells,
+then pauses before the first doorbell following construction of a native
+class-1 CALL. This is the boundary needed for the current translated-fetch
+failure. Set it to zero (the default when unset) to stop before the very
+first doorbell instead. The selected boundary is recorded in the manifest.
 
 For compact-table snapshots, replace zero with a **verified kernel virtual
 mapping of BAR0 offset zero**, covering at least `[0,0x941000)`. A physical BAR
@@ -81,7 +95,52 @@ timestamps, and target thread IDs:
   `+0x277`, `+0x33b`, including success, allocation mode, request mode,
   complete 0x2b0-byte request, resource, GPUVA and extent;
 - optional `[0x801000,0x941000)` table images at phase boundaries;
-- a terminal marker immediately before the first `0x404` write.
+- each native CALL at `m9x830+0x290` (`.text+0xcf40`), after its third
+  dword was stored: the actual three primary words, their CPU address,
+  BmBuffer pointer, `+0x34` class, `+0x40` extent, `+0x44` GPUVA,
+  `+0x48` 64-bit raw cookie, and a complete 0xb8-byte BmBuffer image;
+- every pre-`0x404` boundary, with the CALLs constructed since the previous
+  doorbell for the same primary builder, a table snapshot, and explicit read-only register observations
+  covering `30c/314/31c/360/364/3a8`, requester state, raw IRQ status and
+  masks, `f04/f0c/f64/f68/f74/f78/f7c`, `1068/106c`, and `132c..1334`;
+- a terminal marker before the selected doorbell write.
+
+The CALL breakpoint's live instruction signature is checked along with the
+entry signatures. At this point RAX is the primary record address and
+`*(u64 *)(rbp-0x58)` is the actual BmBuffer; these are taken from the
+canonical `m9x830` disassembly, not inferred from the ioctl's returned next
+buffer. The packet address must also equal the cursor at `RBX+8`. Each call's
+event sequence number joins it to the doorbell record. At the doorbell,
+the caller must be `m9x1039+0xf2`; this proves that RBX still holds the
+submitting builder. Only that builder's pending CALLs are attached and
+consumed. Construction thread IDs are retained without assuming that all
+operations on a shared builder execute in the same thread.
+This join records CPU construction order; it does not establish that every
+record was fetched by the GPU.
+
+For class-1 CALLs, a supplied BAR mapping also permits explicit page-entry
+reads at the doorbell boundary. Using the observed `f74` and `360` origins:
+
+```text
+leaf_slot = MMIO[f74] + 4 * (CALL_address >> 12)
+root_slot = (MMIO[360] & 0xfffff000) + 4 * (leaf_slot >> 12)
+```
+
+All pages in the actual half-open CALL range are recorded, up to 256 pages.
+The event labels this as the selector-zero compact-table derivation; it
+preserves raw values and does not assume that the entries are valid. Root
+control bits `360 & 0xc` and equality of the two leaf origins are recorded.
+For local root entries with nibble 8, a second leaf observation follows the
+root's encoded backing page; the direct logical-slot observation is retained
+as well. This exposes a nonidentity root instead of silently assuming one.
+Other root flag combinations remain raw evidence, marked unavailable for
+this local-root interpretation. An
+empty/wrapped range, missing BAR mapping, or a derived offset outside the
+verified table interval is explicitly marked unavailable. Full table images
+remain available for an independent decode. Register readbacks are kept
+separate from the pending doorbell's value and ordered write events: a
+write-only requester register reading zero is not evidence that its earlier
+write was lost. The observer never acknowledges IRQs or writes MMIO itself.
 
 The allocation data is recorded even if its mapping-publication branch is
 skipped. Do not infer PTE writes or `0x31c` triplets merely from the four
@@ -97,12 +156,13 @@ Every artifact and JSON event is flushed with `fsync`; binary artifacts carry
 sizes and SHA-256 values in the event stream. Limits are 2048 events and 64
 table images. Errors, bounds, a second service constructor, or an unexpected
 accessor disable this observer's breakpoints and mark the capture incomplete.
-The first `0x404` also disables them and **leaves the target paused before that
-write**. Inspect the artifacts before continuing the vendor operation.
+The selected `0x404` also disables them and **leaves the target paused before
+that write**. Inspect the artifacts before continuing the vendor operation.
 
 Debugger pauses change timing. This is evidence of CPU ordering, allocation
 results and table contents; it is not a performance measurement or proof of
-GPU execution. The first doorbell has not executed at the terminal marker.
+GPU execution. The selected doorbell has not executed at the terminal marker.
+With class-1 stopping enabled, earlier doorbells may already have executed.
 
 ## Offline checks
 
@@ -113,5 +173,8 @@ python3 tools/test_m9_cold_service_observer.py -v
 The tests use the real vendor instruction bytes with a simulated GDB memory
 interface. They check rejection of mismatched code and accessor vtables,
 preservation of `0x31c` write order, stopping before the first doorbell, and
-allocation field/artifact collection. They do not test KGDB availability,
+allocation field/artifact collection. They also check traversal of earlier
+doorbells, the actual BmBuffer/packet join, malformed CALL rejection, and
+page-entry decoding with deliberately different live origins and an exclusive
+page-aligned range end. They do not test KGDB availability,
 GDB stack unwinding, or the hardware.
