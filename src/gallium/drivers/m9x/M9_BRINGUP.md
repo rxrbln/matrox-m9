@@ -99,9 +99,10 @@ two-slot primary command rebase.  Arbitrary userspace streams remain disabled:
   copy or resolve.  DMA32 resources and VRAM image resources retain distinct
   domains and destruction rules.
 
-The pipe screen advertises only exact, joined linear format usages.  It does
-not advertise MSAA, arrays, cube/3-D targets, dma-buf sharing, shader images,
-compute, or GLSL.  Context creation returns `NULL` while the kernel screen
+The pipe screen advertises only exact, joined linear format usages and
+same-driver dma-buf import/export. It does not advertise MSAA, arrays,
+cube/3-D targets, shader images, compute, or GLSL. Context creation returns
+`NULL` while the kernel screen
 state says executable submit is unavailable or the linked-program constructor
 is unsafe.  This is deliberate: the kernel
 at commits `b7d0194`, `c611a0e`, `d70b370`, and `f459a8b` validates arbitrary
