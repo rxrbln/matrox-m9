@@ -6,12 +6,35 @@ does not replace the exact address-window or requester recipes there.
 
 ## Do not lower the transition to idle MMIO
 
-Linux `m9x421` emits three packet groups through its command builder:
+Linux `m9x421` emits three packet groups through its command builder, but it
+publishes them in two distinct submissions:
 
 ```text
 454545e6 00000002
 45454747 000011a4 00001308
 454522e6 40000000 (MMIO[1088] | 20000000)
+```
+
+The call at `.text+0x1660c` submits the first `e6` packet through vtable slot
+`+0x100`.  Only after that call does `m9x421` publish the address windows.  At
+the tail it appends the `47` packet, reserves a synchronization value through
+slot `+0xe0`, reads `0x1088`, appends the `e6/22` packet, and submits that work
+through slot `+0x100` at `.text+0x16a0a`.  Slot `+0x100` resolves to `m9x954`;
+with argument one it reaches `m9x1039`, the primary requester doorbell path.
+Thus `+0x100` is a real flush boundary, not a builder-only state update.
+
+The slot `+0xe0` call is also observable command content.  It resolves to
+`m9x81(-1)`, which calls slot `+0xd8` = `m9x604`.  That routine advances the
+common submission target by `0x10`, emits `e3 = target | 1`, and returns the
+low-bit-clear target.  `m9x81` immediately emits `43 = target`.  The later
+`m9x954` flush advances the target by another `0x10` for its terminal
+completion.  Captured streams have this exact pattern:
+
+```text
+... e3 = 0000eb40
+    43 = 0000eb40
+... 22 = 0008000e
+... e3 = 0000eb50
 ```
 
 Although packet indices `e6`, `47`, and `22` correspond arithmetically to
@@ -39,21 +62,31 @@ primary command, fence, and restore addresses.  A clean-room driver which
 does not reproduce that retained builder lifetime can preserve the effective
 hardware order by:
 
-1. publishing the direct address windows;
-2. initializing the restore and completion backing;
-3. arming the primary requester in exact `m9x109` register order;
-4. submitting the packet groups above as the first primary stream, followed
-   by an `e3` completion packet;
-5. requiring that completion before sequence 0.
+1. initializing the restore and completion backing;
+2. arming the primary requester in exact `m9x109` register order;
+3. submitting the initial `e6` packet alone and requiring its completion;
+4. publishing or verifying the direct address-window MMIO state;
+5. submitting the final `47`, inner completion/dependency, and `e6/22` packet
+   groups together, followed by a distinct terminal `e3` completion packet;
+6. requiring that completion before sequence 0.
 
-The corresponding fenced stream is:
+The corresponding clean-room streams are:
 
 ```text
 454545e6 00000002
+4545e3e6 00000003 (target1 | 1)
+
 45454747 000011a4 00001308
+4545e3e6 00000003 (target2 | 1)
+45454543 (target2)
 454522e6 40000000 (MMIO[1088] | 20000000)
-4545e3e6 00000003 (target | 1)
+4545e3e6 00000003 (target3 | 1)
 ```
+
+Targets advance by `0x10`.  If the first submission uses `target1=0x10`, the
+dependency is exactly `target2=0x20`, while the final fence to poll is
+`target3=0x30`.  Reusing `0x20` only as the terminal fence omits the vendor's
+inner producer/dependency pair.
 
 The command endpoint remains an untagged, end-exclusive byte address.
 
@@ -78,10 +111,12 @@ forms.
 
 Consumption of all sequence-zero primary dwords with no secondary completion
 shows that command fetch is alive but does not establish that the `2c/2d`
-linked range was followed.  The supported next experiment is the independently
-fenced transition stream above, followed by the existing sequence-zero
-submission.  It is not a reason to write the packet indices directly through
-MMIO.
+linked range was followed.  The supported next experiment is the two
+independently fenced transition streams above, with the direct windows between
+them, followed by the existing sequence-zero submission.  Combining all three
+packet groups into one stream removes a statically proven vendor flush boundary
+and should not be used as the reference experiment.  The failure is not a
+reason to write the packet indices directly through MMIO.
 
 <!-- Copyright 2026 Rene Rebe <rene@exactco.de> -->
 <!-- SPDX-License-Identifier: GPL-2.0 -->
