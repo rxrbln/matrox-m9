@@ -280,6 +280,26 @@ static const u32 m9_triangle_gouraud_source[] = {
 	0x43200000, 0x435c0000, 0, 0, 0x3f800000,
 };
 
+/* Exact 320x240 GL viewport, depth and glOrtho constants consumed through
+ * 8d/8e.  The first vec4 is the raster range; the following eleven vec4s are
+ * the preprocessing range.  The vendor stores 2/width and 2/height at dwords
+ * 9 and 14, then copies its viewport/depth constructor at dwords 32..47.
+ */
+static const u32 m9_triangle_system_prefix[] = {
+	0x00000000, 0x3f800000, 0x3f800000, 0x3f000000,
+	0x00000000, 0xbf800000, 0x00000000, 0x3f800000,
+	0x00000000, 0x3bcccccd, 0x00000000, 0x3f800000,
+	0x00000000, 0xbf800000, 0x3c088889, 0x00000000,
+	0x00000000, 0x00000000, 0xbf800000, 0x00000000,
+	0x00000000, 0x00000000, 0x00000000, 0x00000000,
+	0x00000000, 0x3f800000, 0x00000000, 0x3f800000,
+	0x00000000, 0x00000000, 0x3f800000, 0x00000000,
+	0x43200000, 0xc2f00000, 0x3f000000, 0x3f800000,
+	0x43200000, 0x42f00000, 0x3f000000, 0x43700000,
+	0x00000000, 0x40000000, 0xc67f8000, 0x467f7c00,
+	0x00000000, 0x00000000, 0x3f800000, 0x3f000000,
+};
+
 /* Exact vendor viewport/depth transform copied by m9x5091 into the pool-5
  * fixed-function record: {w/2, -h/2, .5, 0}, {w/2, h/2, .5, 0}.
  * Gouraud needs no following linked-native payload; bytes [0x20,0x200) are
@@ -811,6 +831,8 @@ static int m9_triangle_prepare_resources(struct m9x_device *mdev)
 	ret = m9_triangle_prepare_gpuva(mdev, diag);
 	if (ret)
 		return ret;
+	memcpy(diag->resource[M9_TRI_SYSTEM].cpu, m9_triangle_system_prefix,
+	       sizeof(m9_triangle_system_prefix));
 	if (m9_triangle_gouraud)
 		memcpy(diag->resource[M9_TRI_SOURCE].cpu,
 		       m9_triangle_gouraud_source,
@@ -1558,6 +1580,7 @@ m9_triangle_stream_selftest(struct m9_triangle_commands *commands)
 	u8 linked[M9_TRIANGLE_LINKED_BYTES] = {};
 	u32 target = 0xfffffff0;
 	u64 linked_hash;
+	u64 system_hash;
 	unsigned int i;
 	int ret;
 
@@ -1570,6 +1593,7 @@ m9_triangle_stream_selftest(struct m9_triangle_commands *commands)
 
 	if (sizeof(m9_triangle_flat_source) != M9_TRIANGLE_SOURCE_BYTES ||
 	    sizeof(m9_triangle_gouraud_source) != M9_TRIANGLE_SOURCE_BYTES ||
+	    sizeof(m9_triangle_system_prefix) != 0xc0 ||
 	    M9_TRIANGLE_MAX_SYSTEM_PTES != 44 ||
 	    M9_TRIANGLE_AUX_DEPTH_BYTES != 0x2580 ||
 	    m9_triangle_specs[M9_TRI_SECONDARY].payload_bytes != SZ_32K ||
@@ -1599,6 +1623,10 @@ m9_triangle_stream_selftest(struct m9_triangle_commands *commands)
 	linked_hash = m9_triangle_template_fnv1a(m9_triangle_linked_prefix,
 						 ARRAY_SIZE(m9_triangle_linked_prefix));
 	if (linked_hash != 0xf671348f86ae78e5ULL)
+		return -EINVAL;
+	system_hash = m9_triangle_template_fnv1a(m9_triangle_system_prefix,
+						 ARRAY_SIZE(m9_triangle_system_prefix));
+	if (system_hash != 0xab2075c3793cfdc5ULL)
 		return -EINVAL;
 	m9_triangle_build_linked_record(linked, false);
 	if (get_unaligned_le32(linked + 0x24) != 0x007ff880 ||
