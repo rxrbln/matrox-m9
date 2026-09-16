@@ -636,12 +636,11 @@ build_alu(struct ctx *c, nir_alu_instr *alu)
       }
       return n;
    case nir_op_fsat: {
-      int a = alu_src_node(c, alu, 0, lane[0], swz[0]);
+      int a = materialise(c, alu_src_node(c, alu, 0, lane[0], swz[0]),
+                          lane[0], swz[0]);
 
       if (a < 0)
          return -1;
-      if (node_is_const(&NODES(c)[a]))
-         return fail(c, "unsupported arithmetic operation"), -1;
       n = node_new(c, N_SAT);
       if (n < 0)
          return -1;
@@ -652,15 +651,14 @@ build_alu(struct ctx *c, nir_alu_instr *alu)
    case nir_op_ffract:
    case nir_op_ffloor:
    case nir_op_fceil: {
-      int a = alu_src_node(c, alu, 0, lane[0], swz[0]);
+      int a = materialise(c, alu_src_node(c, alu, 0, lane[0], swz[0]),
+                          lane[0], swz[0]);
       enum node_kind kind = alu->op == nir_op_fneg ? N_NEG :
                             alu->op == nir_op_ffract ? N_FRACT :
                             alu->op == nir_op_ffloor ? N_FLOOR : N_CEIL;
 
       if (a < 0)
          return -1;
-      if (node_is_const(&NODES(c)[a]))
-         return fail(c, "unsupported arithmetic operation"), -1;
       n = node_new(c, kind);
       if (n < 0)
          return -1;
@@ -695,6 +693,37 @@ build_alu(struct ctx *c, nir_alu_instr *alu)
          return -1;
       set_src(&NODES(c)[n], 0, a, lane[0], swz[0]);
       set_src(&NODES(c)[n], 1, b, lane[1], swz[1]);
+      return n;
+   }
+   case nir_op_fabs: {
+      /* No modifier for absolute value is captured, but the compare and
+       * select classes express it: negate where the value is below zero. */
+      int zero, neg, cond;
+
+      a = materialise(c, alu_src_node(c, alu, 0, lane[0], swz[0]),
+                      lane[0], swz[0]);
+      if (a < 0)
+         return -1;
+      zero = node_new(c, N_LIT);
+      if (zero < 0)
+         return -1;
+      cond = node_new(c, N_CMP);
+      if (cond < 0)
+         return -1;
+      set_src(&NODES(c)[cond], 0, a, lane[0], swz[0]);
+      set_src(&NODES(c)[cond], 1, zero, lane_id, swz_id);
+      NODES(c)[cond].cmp = 0;
+      neg = node_new(c, N_NEG);
+      if (neg < 0)
+         return -1;
+      set_src(&NODES(c)[neg], 0, a, lane[0], swz[0]);
+      n = node_new(c, N_SEL);
+      if (n < 0)
+         return -1;
+      set_src(&NODES(c)[n], 0, cond, lane_id, swz_id);
+      set_src(&NODES(c)[n], 1, a, lane[0], swz[0]);
+      set_src(&NODES(c)[n], 2, neg, lane_id, swz_id);
+      NODES(c)[n].cmp = 4;
       return n;
    }
    case nir_op_flt:
