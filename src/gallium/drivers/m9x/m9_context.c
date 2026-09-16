@@ -45,7 +45,8 @@
 #include "util/u_upload_mgr.h"
 
 /* Source record: x, y bottom-up, z in ortho object space, r, g, b, a. */
-#define M9_RECORD_FLOATS 7u
+/* x, y, z, w, r, g, b, a: the w slot carries 1/w_clip for the setup engine. */
+#define M9_RECORD_FLOATS 8u
 
 enum m9_warning {
    M9_WARN_TARGET = 1u << 0,
@@ -1370,12 +1371,19 @@ m9_render_record(const struct m9_vbuf_render *r, unsigned index, float *out,
       memcpy(extra + 4 * j, r->extra_offset[j] >= 0 ?
              v + r->extra_offset[j] : missing, 4 * sizeof(float));
 
-   /* The captured ortho program flips window y and maps z = 1 - 2 z_win. */
-   out[0] = v[0];
-   out[1] = (float)r->ctx->params.height - v[1];
-   out[2] = 1.0f - 2.0f * v[2];
+   /* The captured ortho program flips window y and maps z = 1 - 2 z_win.
+    * The draw module already divided by w and left 1/w_clip in position w,
+    * so the window coordinates are multiplied back out: the program's own
+    * divide restores them and the setup engine keeps 1/w for
+    * perspective-correct varyings. */
+   const float w = v[3] > 0.0f ? 1.0f / v[3] : 1.0f;
+
+   out[0] = v[0] * w;
+   out[1] = ((float)r->ctx->params.height - v[1]) * w;
+   out[2] = (1.0f - 2.0f * v[2]) * w;
+   out[3] = w;
    for (unsigned c = 0; c < 4; c++)
-      out[3 + c] = r->has_color ? CLAMP(v[4 + c], 0.0f, 1.0f) : 1.0f;
+      out[4 + c] = r->has_color ? CLAMP(v[4 + c], 0.0f, 1.0f) : 1.0f;
 }
 
 /* Projective coordinates are divided per vertex: exact while q is constant
@@ -1738,8 +1746,9 @@ m9_clear_quad(struct m9_context *ctx, const struct pipe_scissor_state *scissor,
       rec[0] = corner[i][0];
       rec[1] = corner[i][1];
       rec[2] = 1.0f - 2.0f * (float)CLAMP(z, 0.0, 1.0);
+      rec[3] = 1.0f;
       for (unsigned c = 0; c < 4; c++)
-         rec[3 + c] = CLAMP(rgba[c], 0.0f, 1.0f);
+         rec[4 + c] = CLAMP(rgba[c], 0.0f, 1.0f);
    }
    m9_job_commit(ctx, out, NULL, 4, first, M9_TOPOLOGY_QUADS, 0, false, true);
 }
@@ -2604,7 +2613,7 @@ m9_context_create(struct pipe_screen *pscreen, void *priv, unsigned flags)
    ctx->base.set_debug_callback = u_default_set_debug_callback;
    ctx->base.resource_release = u_default_resource_release;
 
-   if (m9_vertex_decl_init(&ctx->decl, 3, 4) ||
+   if (m9_vertex_decl_init(&ctx->decl, 4, 4) ||
        m9_command_bo_create(screen, &ctx->command) ||
        m9_context_init_fixed(ctx))
       goto fail;
