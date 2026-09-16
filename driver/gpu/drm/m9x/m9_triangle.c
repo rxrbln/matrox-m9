@@ -1457,7 +1457,8 @@ static int m9_triangle_context_init_locked(struct m9x_device *mdev,
 		return ret;
 	mdev->transport.next_fence = sequence0.target +
 				    M9_SEQ0_NEXT_TARGET_OFFSET;
-	ret = m9_triangle_verify_guards(diag, &mdev->pdev->dev);
+	ret = m9_triangle_guard_scan ?
+	      m9_triangle_verify_guards(diag, &mdev->pdev->dev) : 0;
 	if (ret) {
 		mdev->transport.wedged = true;
 		mdev->transport.generation++;
@@ -1556,7 +1557,8 @@ int m9x_submit_user_stream_locked(struct m9x_device *mdev, const u32 *records,
 	if (ret)
 		return ret;
 	mdev->transport.next_fence = target + 0x10;
-	return m9_triangle_verify_guards(diag, &mdev->pdev->dev);
+	return m9_triangle_guard_scan ?
+	       m9_triangle_verify_guards(diag, &mdev->pdev->dev) : 0;
 }
 
 /*
@@ -1773,7 +1775,8 @@ int m9x_submit_triangle_diag(struct m9x_device *mdev, u32 color,
 	if (ret)
 		goto out_unlock;
 	mdev->transport.next_fence = job.transition[5] + 0x10;
-	ret = m9_triangle_verify_guards(diag, &mdev->pdev->dev);
+	ret = m9_triangle_guard_scan ?
+	      m9_triangle_verify_guards(diag, &mdev->pdev->dev) : 0;
 	if (ret) {
 		mdev->transport.wedged = true;
 		mdev->transport.generation++;
