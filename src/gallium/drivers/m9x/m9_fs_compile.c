@@ -56,6 +56,8 @@ enum node_kind {
    N_MIN, N_MAX,        /* against a constant, the captured cls 2 / 3 form */
    N_NEG,               /* move with the W1 negate bit, as fs-neg emits */
    N_FRACT, N_FLOOR, N_CEIL,  /* the move family's rounding classes */
+   N_CMP,               /* register against a constant, giving 1.0 or 0.0 */
+   N_SEL,               /* src[0] against zero picks src[1] or src[2] */
    N_SAT,               /* move in the saturating class, as blending uses */
    N_GATHER,            /* a result lane per source: src[lane] * src[2] */
    N_LOAD,              /* constant factor moved into a register */
@@ -71,6 +73,7 @@ struct node {
    unsigned ubo_slot;
    float lit[4];
    bool neg;            /* ADD with a negated literal */
+   uint8_t cmp;         /* N_CMP/N_SEL comparison class */
    int level;
    int value[2];        /* per lane: 0 xy, 1 zw */
    uint8_t lane[3][2];  /* source lane read for result lane xy, zw */
@@ -79,7 +82,7 @@ struct node {
 
 enum lop_kind {
    L_INTERP, L_MUL_RC, L_MUL_RR, L_ADD_RC, L_ADD_RR, L_SUB_CR, L_MAD,
-   L_FRACT, L_FLOOR, L_CEIL,
+   L_FRACT, L_FLOOR, L_CEIL, L_CMP, L_SEL,
    L_MIN_RC, L_MAX_RC, L_NEG, L_SAT,
    L_MOV_OUT, L_MOVC_OUT, L_MOVC_TMP, L_MOVC_SECOND, L_RAW,
 };
@@ -89,10 +92,10 @@ struct lop {
    unsigned lane;
    int node;
    int dst;             /* value id, -1 writes the output lane */
-   int opval[2];        /* register operands as value ids */
-   int opreg[2];        /* fixed register operands (texels), -1 if unused */
+   int opval[3];        /* register operands as value ids */
+   int opreg[3];        /* fixed register operands (texels), -1 if unused */
    int konst;           /* constant operand key, -1 if unused */
-   uint8_t opswz[2];    /* register operand swizzles */
+   uint8_t opswz[3];    /* register operand swizzles */
    uint8_t kswz;        /* constant operand swizzle */
    uint32_t w0, w1;     /* L_RAW */
 };
@@ -135,12 +138,15 @@ struct ctx {
 #define NUM(c, a, t) util_dynarray_num_elements(&(c)->a, t)
 
 static bool
-fail(struct ctx *c, const char *reason)
+fail_at(struct ctx *c, const char *reason, int line)
 {
+   if (getenv("M9_FS_FAILTRACE"))
+      fprintf(stderr, "m9x fs: fail at line %d: %s\n", line, reason);
    if (!c->reason)
       c->reason = reason;
    return false;
 }
+#define fail(c, r) fail_at((c), (r), __LINE__)
 
 static uint32_t
 w0_make(unsigned a, unsigned b, unsigned cf, unsigned d, unsigned cls,
@@ -274,6 +280,7 @@ node_is_const(const struct node *n)
 
 static int varying_slot(struct ctx *c, unsigned location);
 static int build_vec(struct ctx *c, nir_scalar s[4]);
+static int build_def(struct ctx *c, nir_def *def);
 
 /* st scalarises IO, so a load carries the first varying component it reads. */
 static unsigned
@@ -446,6 +453,56 @@ alu_src_node(struct ctx *c, nir_alu_instr *alu, unsigned i, uint8_t *lane,
    return build_vec(c, s);
 }
 
+/* A boolean operand is a comparison result.  The vector paths describe a
+ * value by component and a one-bit definition has none, so take its node
+ * directly and express the swizzle as a source lane plus operand swizzle. */
+static int
+bool_src_node(struct ctx *c, nir_alu_instr *alu, unsigned i, uint8_t *lane,
+              uint8_t *swz)
+{
+   unsigned nc = alu->def.num_components;
+   nir_scalar s[4];
+   int n;
+
+   lane[0] = 0;
+   lane[1] = 1;
+   swz[0] = swz[1] = 1;
+   for (unsigned k = 0; k < 4; k++) {
+      s[k] = nir_scalar_chase_movs(
+         nir_get_scalar(alu->src[i].src.ssa,
+                        alu->src[i].swizzle[MIN2(k, nc - 1)]));
+      if (s[k].def != s[0].def)
+         return fail(c, "unsupported condition"), -1;
+   }
+   if (s[0].def->num_components > 1) {
+      for (unsigned l = 0; l < 2; l++) {
+         unsigned c0 = s[2 * l].comp, c1 = s[2 * l + 1].comp;
+
+         if (c0 / 2 != c1 / 2)
+            return fail(c, "swizzle crosses register lanes"), -1;
+         lane[l] = c0 / 2;
+         swz[l] = (c0 & 1) << 1 | (c1 & 1);
+      }
+   } else {
+      /* A scalar condition holds in every scalar of the first lane. */
+      lane[0] = lane[1] = 0;
+      swz[0] = swz[1] = 0;
+   }
+   n = build_def(c, s[0].def);
+   if (n >= 0 && NODES(c)[n].kind != N_CMP)
+      return fail(c, "unsupported condition"), -1;
+   return n;
+}
+
+/* A condition used as a value has to arrive unswizzled: either the
+ * identity, or the replicating form a scalar condition is given. */
+static bool
+cond_is_plain(const uint8_t lane[2], const uint8_t swz[2])
+{
+   return (!lane[0] && lane[1] == 1 && swz[0] == 1 && swz[1] == 1) ||
+          (!lane[0] && !lane[1] && !swz[0] && !swz[1]);
+}
+
 static void
 set_src(struct node *n, unsigned i, int src, const uint8_t *lane,
         const uint8_t *swz)
@@ -453,6 +510,25 @@ set_src(struct node *n, unsigned i, int src, const uint8_t *lane,
    n->src[i] = src;
    memcpy(n->lane[i], lane, 2);
    memcpy(n->swz[i], swz, 2);
+}
+
+/* A constant an operation cannot take directly is moved into a register
+ * first, the way the vendor loads a constant multiply factor. */
+static int
+materialise(struct ctx *c, int n, uint8_t lane[2], uint8_t swz[2])
+{
+   static const uint8_t lane_id[2] = { 0, 1 }, swz_id[2] = { 1, 1 };
+   int load;
+
+   if (n < 0 || !node_is_const(&NODES(c)[n]))
+      return n;
+   load = node_new(c, N_LOAD);
+   if (load < 0)
+      return -1;
+   set_src(&NODES(c)[load], 0, n, lane, swz);
+   memcpy(lane, lane_id, 2);
+   memcpy(swz, swz_id, 2);
+   return load;
 }
 
 /* The add and mix forms carry no operand swizzle field, so a swizzled
@@ -619,6 +695,98 @@ build_alu(struct ctx *c, nir_alu_instr *alu)
          return -1;
       set_src(&NODES(c)[n], 0, a, lane[0], swz[0]);
       set_src(&NODES(c)[n], 1, b, lane[1], swz[1]);
+      return n;
+   }
+   case nir_op_flt:
+   case nir_op_fge:
+   case nir_op_feq:
+   case nir_op_fneu: {
+      /* Comparison classes, from fs-step (>=) and fs-ternary (>): 0 <,
+       * 1 >=, 2 <=, 3 >, 4 ==, 5 !=.  Bit 0 is the complement. */
+      static const uint8_t direct[] = { 0, 1, 4, 5 };
+      static const uint8_t flipped[] = { 3, 2, 4, 5 };
+      unsigned which = alu->op == nir_op_flt ? 0 : alu->op == nir_op_fge ? 1 :
+                       alu->op == nir_op_feq ? 2 : 3;
+      bool swap;
+
+      a = alu_src_node(c, alu, 0, lane[0], swz[0]);
+      b = a < 0 ? -1 : alu_src_node(c, alu, 1, lane[1], swz[1]);
+      if (b < 0)
+         return -1;
+      /* The compare unit reads one register and one constant pair. */
+      swap = node_is_const(&NODES(c)[a]);
+      if (swap == node_is_const(&NODES(c)[b]))
+         return fail(c, "unsupported comparison"), -1;
+      if (swap) {
+         int t2 = a;
+         uint8_t tl[2], ts[2];
+
+         memcpy(tl, lane[0], 2);
+         memcpy(ts, swz[0], 2);
+         a = b;
+         memcpy(lane[0], lane[1], 2);
+         memcpy(swz[0], swz[1], 2);
+         b = t2;
+         memcpy(lane[1], tl, 2);
+         memcpy(swz[1], ts, 2);
+      }
+      n = node_new(c, N_CMP);
+      if (n < 0)
+         return -1;
+      set_src(&NODES(c)[n], 0, a, lane[0], swz[0]);
+      set_src(&NODES(c)[n], 1, b, lane[1], swz[1]);
+      NODES(c)[n].cmp = swap ? flipped[which] : direct[which];
+      return n;
+   }
+   case nir_op_inot: {
+      /* A negated condition is the same compare in the opposite class. */
+      int cond = bool_src_node(c, alu, 0, lane[0], swz[0]);
+
+      if (cond < 0)
+         return -1;
+      if (!cond_is_plain(lane[0], swz[0]))
+         return fail(c, "swizzled boolean negate"), -1;
+      n = node_new(c, N_CMP);
+      if (n < 0)
+         return -1;
+      NODES(c)[n] = NODES(c)[cond];
+      NODES(c)[n].def = NULL;
+      NODES(c)[n].level = 0;
+      NODES(c)[n].value[0] = NODES(c)[n].value[1] = -1;
+      NODES(c)[n].cmp ^= 1;
+      return n;
+   }
+   case nir_op_b2f32:
+   case nir_op_b2f16: {
+      /* The compare unit already produces 1.0 and 0.0. */
+      int cond = bool_src_node(c, alu, 0, lane[0], swz[0]);
+
+      if (cond < 0)
+         return -1;
+      if (!cond_is_plain(lane[0], swz[0]))
+         return fail(c, "swizzled boolean conversion"), -1;
+      return cond;
+   }
+   case nir_op_bcsel: {
+      int cond = bool_src_node(c, alu, 0, lane[0], swz[0]);
+
+      a = cond < 0 ? -1 : alu_src_node(c, alu, 1, lane[1], swz[1]);
+      b = a < 0 ? -1 : alu_src_node(c, alu, 2, lane[2], swz[2]);
+      if (b < 0)
+         return -1;
+      a = materialise(c, a, lane[1], swz[1]);
+      b = a < 0 ? -1 : materialise(c, b, lane[2], swz[2]);
+      if (b < 0)
+         return -1;
+      n = node_new(c, N_SEL);
+      if (n < 0)
+         return -1;
+      /* Only the equal class is captured for this opcode (fs-sqrt, fs-exp),
+       * so test the condition against zero and take the false value first. */
+      set_src(&NODES(c)[n], 0, cond, lane[0], swz[0]);
+      set_src(&NODES(c)[n], 1, b, lane[2], swz[2]);
+      set_src(&NODES(c)[n], 2, a, lane[1], swz[1]);
+      NODES(c)[n].cmp = 4;
       return n;
    }
    case nir_op_flrp:
@@ -1143,9 +1311,11 @@ lop_init(struct lop *l, enum lop_kind kind, unsigned lane, int node)
    l->lane = lane;
    l->node = node;
    l->dst = -1;
-   l->opval[0] = l->opval[1] = -1;
-   l->opreg[0] = l->opreg[1] = -1;
-   l->opswz[0] = l->opswz[1] = 1;
+   for (unsigned i = 0; i < ARRAY_SIZE(l->opval); i++) {
+      l->opval[i] = -1;
+      l->opreg[i] = -1;
+      l->opswz[i] = 1;
+   }
    l->kswz = 1;
    l->konst = -1;
 }
@@ -1227,6 +1397,16 @@ emit_node_lops(struct ctx *c, int n, bool output, bool direct_ba)
       case N_NEG:
          lop_init(&l, L_NEG, lane, n);
          operand(c, &l, 0, nd, 0);
+         break;
+      case N_CMP:
+         lop_init(&l, L_CMP, lane, n);
+         operand(c, &l, 0, nd, 0);
+         operand(c, &l, 1, nd, 1);
+         break;
+      case N_SEL:
+         lop_init(&l, L_SEL, lane, n);
+         for (unsigned i = 0; i < 3; i++)
+            operand(c, &l, i, nd, i);
          break;
       case N_FRACT:
       case N_FLOOR:
@@ -1325,7 +1505,7 @@ allocate(struct ctx *c)
       struct lop *l = &LOPS(c)[s];
       bool rg = l->dst < 0 && l->lane == 0 && l->kind != L_INTERP;
 
-      for (unsigned i = 0; i < 2; i++) {
+      for (unsigned i = 0; i < ARRAY_SIZE(l->opval); i++) {
          if (l->opval[i] < 0)
             continue;
          VALUES(c)[l->opval[i]].last = s;
@@ -1337,7 +1517,7 @@ allocate(struct ctx *c)
    for (int s = n - 1; s >= 0; s--) {
       struct lop *l = &LOPS(c)[s];
 
-      for (unsigned i = 0; i < 2; i++) {
+      for (unsigned i = 0; i < ARRAY_SIZE(l->opval); i++) {
          struct value *v;
          int reg = -1;
 
@@ -1412,6 +1592,7 @@ allocate(struct ctx *c)
    if (debug_get_bool_option("M9X_DEBUG_FS", false)) {
       static const char *const names[] = {
          "INTERP", "MUL_RC", "MUL_RR", "ADD_RC", "ADD_RR", "SUB_CR", "MAD",
+         "FRACT", "FLOOR", "CEIL", "CMP", "SEL",
          "MIN_RC", "MAX_RC", "NEG", "SAT",
          "MOV_OUT", "MOVC_OUT", "MOVC_TMP", "MOVC_SECOND", "RAW",
       };
@@ -1425,11 +1606,11 @@ allocate(struct ctx *c)
          const struct lop *l = &LOPS(c)[s];
 
          fprintf(stderr, "m9x fs: lop %u %-11s lane %u node %d dst %d "
-                 "src %d/%d reg %d/%d swz %u/%u k %d\n", s,
+                 "src %d/%d/%d reg %d/%d/%d swz %u/%u/%u k %d\n", s,
                  l->kind < ARRAY_SIZE(names) ? names[l->kind] : "?",
                  l->lane, l->node, l->dst, l->opval[0], l->opval[1],
-                 l->opreg[0], l->opreg[1], l->opswz[0], l->opswz[1],
-                 l->konst);
+                 l->opval[2], l->opreg[0], l->opreg[1], l->opreg[2],
+                 l->opswz[0], l->opswz[1], l->opswz[2], l->konst);
       }
    }
    return true;
@@ -1553,6 +1734,20 @@ encode_lops(struct ctx *c)
 
          emit(c, w0_make(NONE, NONE, opreg(c, l, 0), d, 0, op0),
               w1_make(base | l->opswz[0] << 4, has, NONE));
+         break;
+      }
+      case L_CMP:
+         /* The compare unit writes 1.0 or 0.0; its constant operand is a
+          * pair index in the c field, as every UNIT 1 instruction takes it. */
+         emit(c, w0_make(NONE, opreg(c, l, 0), e, d, nd->cmp, op0),
+              w1_make(0x90000000 | kbits << 8 | l->opswz[0] << 6, 0x05, NONE));
+         break;
+      case L_SEL: {
+         unsigned a0 = opreg(c, l, 0);
+
+         emit(c, w0_make(a0, opreg(c, l, 1), opreg(c, l, 2), d, nd->cmp, op0),
+              w1_make(0xaf400c00 | l->opswz[0] << 8 | l->opswz[1] << 6 |
+                      l->opswz[2] << 4, has, a0));
          break;
       }
       case L_MOV_OUT:
