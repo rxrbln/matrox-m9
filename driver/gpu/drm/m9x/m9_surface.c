@@ -109,9 +109,9 @@ static int m9_surface_check(const struct drm_parhelia_m9_surface_access *args,
 		if ((d0 & 0xffff0000) != M9_SURFACE_FAMILY ||
 		    view->span != ALIGN(args->surface_width, 32))
 			return -EINVAL;
-		/* Small layouts use other height quanta and are not measured yet. */
-		if (args->surface_width <= 64 && view->height <= 64)
-			return -EINVAL;
+		/* The small family allocates with other height and byte quanta;
+		 * m9_surface_layout_bytes below sizes the object from that
+		 * contract, and the window extent stays the linear view. */
 		view->bytes = (u64)view->span * 4 * view->height;
 	}
 	if (check_add_overflow(args->x, args->width, &end) ||
