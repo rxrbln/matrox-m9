@@ -301,6 +301,10 @@ build_intrinsic(struct ctx *c, nir_intrinsic_instr *intr)
       if (location == VARYING_SLOT_POS ||
           nir_intrinsic_component(intr) + intr->def.num_components > 4)
          return fail(c, "unsupported fragment input"), -1;
+      if (debug_get_bool_option("M9X_DEBUG_FS", false))
+         fprintf(stderr, "m9x fs: input location %u component %u comps %u\n",
+                 location, nir_intrinsic_component(intr),
+                 intr->def.num_components);
       k = varying_slot(c, location);
       if (k < 0)
          return -1;
@@ -364,6 +368,9 @@ build_tex(struct ctx *c, nir_tex_instr *tex)
           nir_intrinsic_io_semantics(nir_def_as_intrinsic(s[0].def)).location)
          return fail(c, "texture coordinate is not a varying"), -1;
       coord_comp[i] = nir_intrinsic_component(in) + s[i].comp;
+      if (debug_get_bool_option("M9X_DEBUG_FS", false))
+         fprintf(stderr, "m9x fs: coord %u location %u component %u\n", i,
+                 nir_intrinsic_io_semantics(in).location, coord_comp[i]);
    }
    if (coord_comp[0] > 2 || coord_comp[1] != coord_comp[0] + 1)
       return fail(c, "texture coordinate is not a varying"), -1;
@@ -1319,6 +1326,41 @@ allocate(struct ctx *c)
    util_dynarray_foreach(&c->values, struct value, v) {
       if (v->reg < 0 && v->last >= 0)
          return fail(c, "internal: unallocated value");
+   }
+   /* Both lanes of every node are emitted, but a value no lane reads is an
+    * interpolation the raster engine still steps through.  Drop those. */
+   {
+      struct lop *lops = LOPS(c);
+      unsigned keep = 0;
+
+      for (unsigned s = 0; s < n; s++)
+         if (lops[s].dst < 0 || VALUES(c)[lops[s].dst].last >= 0)
+            lops[keep++] = lops[s];
+      c->lops.size = keep * sizeof(struct lop);
+      n = keep;
+   }
+   if (debug_get_bool_option("M9X_DEBUG_FS", false)) {
+      static const char *const names[] = {
+         "INTERP", "MUL_RC", "MUL_RR", "ADD_RC", "ADD_RR", "SUB_CR", "MAD",
+         "MIN_RC", "MAX_RC", "NEG", "SAT",
+         "MOV_OUT", "MOVC_OUT", "MOVC_TMP", "MOVC_SECOND", "RAW",
+      };
+      unsigned i = 0;
+
+      util_dynarray_foreach(&c->values, struct value, v)
+         fprintf(stderr, "m9x fs: value %u reg %#x interp %d rg_read %d "
+                 "general %d def %d last %d\n", i++, v->reg, v->interp,
+                 v->rg_read, v->general, v->def, v->last);
+      for (unsigned s = 0; s < n; s++) {
+         const struct lop *l = &LOPS(c)[s];
+
+         fprintf(stderr, "m9x fs: lop %u %-11s lane %u node %d dst %d "
+                 "src %d/%d reg %d/%d swz %u/%u k %d\n", s,
+                 l->kind < ARRAY_SIZE(names) ? names[l->kind] : "?",
+                 l->lane, l->node, l->dst, l->opval[0], l->opval[1],
+                 l->opreg[0], l->opreg[1], l->opswz[0], l->opswz[1],
+                 l->konst);
+      }
    }
    return true;
 }
