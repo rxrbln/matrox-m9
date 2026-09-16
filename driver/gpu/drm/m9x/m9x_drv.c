@@ -178,7 +178,7 @@ static int m9x_pci_probe(struct pci_dev *pci,
 		ret = m9x_modeset_init(mdev);
 		if (ret)
 			goto err_fini;
-		ret = drm_vblank_init(drm, 1);
+		ret = drm_vblank_init(drm, mdev->heads);
 		if (ret)
 			goto err_modeset;
 		/* Mask every source without consuming the pending masked low bits

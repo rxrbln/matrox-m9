@@ -843,6 +843,9 @@ static int m9_pipe_enable_vblank(struct drm_simple_display_pipe *pipe)
 	struct matrox_kms_irq desc = m9_kms_irq_desc(mdev);
 	int idx, ret;
 
+	/* A head whose vblank source is not measured never reports one. */
+	if (!head->vblank_mask)
+		return -EINVAL;
 	if (!drm_dev_enter(&mdev->drm, &idx))
 		return -ENODEV;
 	ret = matrox_kms_enable_vblank(&desc);
