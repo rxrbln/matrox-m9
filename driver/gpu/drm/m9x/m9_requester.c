@@ -330,6 +330,9 @@ int m9x_transport_rearm_locked(struct m9x_device *mdev)
 	return m9x_transport_arm_locked(mdev);
 }
 
+/* Writeback polls before the wait sleeps; about a hundred microseconds. */
+#define M9_FENCE_SPIN_LIMIT 20000u
+
 int m9x_submit_kernel_stream_locked(struct m9x_device *mdev,
 				    const u32 *commands, u32 dwords,
 				    u32 target, u64 *point, bool *doorbell_posted)
@@ -380,12 +383,24 @@ int m9x_submit_kernel_stream_locked(struct m9x_device *mdev,
 		*doorbell_posted = true;
 
 	deadline = jiffies + msecs_to_jiffies(max(m9_fence_timeout_ms, 1u));
-	for (;;) {
+	/*
+	 * The writeback word lands in system memory, so poll it directly for a
+	 * while before sleeping: a job that retires in tens of microseconds
+	 * used to wait out a whole usleep_range() interval, and the register
+	 * read that checked for a dead engine cost a bus round trip on every
+	 * pass.  Both now belong to the slow path.
+	 */
+	for (unsigned int spins = 0;;) {
 		raw = READ_ONCE(writeback[0]);
 		if (m9_fence_reached(raw, target)) {
 			dma_rmb();
 			break;
 		}
+		if (++spins < M9_FENCE_SPIN_LIMIT) {
+			cpu_relax();
+			continue;
+		}
+		spins = 0;
 		if (m9x_read(mdev, M9_REG_ENGINE_STATUS) == U32_MAX) {
 			transport->wedged = true;
 			transport->generation++;
@@ -425,7 +440,7 @@ int m9x_submit_kernel_stream_locked(struct m9x_device *mdev,
 			transport->generation++;
 			return -ETIMEDOUT;
 		}
-		usleep_range(50, 100);
+		usleep_range(10, 30);
 	}
 
 	extended = m9_extend_fence(transport, raw);
