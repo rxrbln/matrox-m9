@@ -23,7 +23,7 @@
 #include "util/u_math.h"
 
 const nir_shader_compiler_options m9_fs_nir_options = {
-   .fdot_replicates = true,
+   .fdot_replicates = false,
    .lower_bitops = true,
    .lower_extract_byte = true,
    .lower_extract_word = true,
@@ -3033,7 +3033,9 @@ m9_fs_inline_uniforms(nir_shader *nir, const uint32_t *values)
 }
 
 /* The special-function chains compute one scalar each, so a vector one is
- * split rather than refused; the vector paths reassemble the components. */
+ * split rather than refused; the vector paths reassemble the components.
+ * The captured dot products take one constant operand, which a shader that
+ * dots two computed vectors cannot use, so those are expanded too. */
 static bool
 is_transcendental(const nir_instr *instr, const void *data)
 {
@@ -3049,6 +3051,9 @@ is_transcendental(const nir_instr *instr, const void *data)
    case nir_op_frcp:
    case nir_op_frsq:
    case nir_op_fsqrt:
+   case nir_op_fdot2:
+   case nir_op_fdot3:
+   case nir_op_fdot4:
       return true;
    default:
       return false;
