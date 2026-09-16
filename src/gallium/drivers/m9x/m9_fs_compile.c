@@ -119,6 +119,8 @@ struct ctx {
       bool enabled;
       unsigned func;        /* kill slot instruction class */
       uint32_t ref_offset;  /* constant buffer byte offset of the reference */
+      float ref_value;      /* the reference itself, when it is a literal */
+      bool ref_literal;
    } alpha;
    bool has_consts;
    bool custom_consts;  /* a template supplies the whole constant span */
@@ -451,6 +453,33 @@ set_src(struct node *n, unsigned i, int src, const uint8_t *lane,
    memcpy(n->swz[i], swz, 2);
 }
 
+/* The add and mix forms carry no operand swizzle field, so a swizzled
+ * register operand is copied through a multiply by one, which does. */
+static int
+deswizzle(struct ctx *c, int n, uint8_t lane[2], uint8_t swz[2])
+{
+   static const uint8_t lane_id[2] = { 0, 1 }, swz_id[2] = { 1, 1 };
+   int one, m;
+
+   if (n < 0 || (!memcmp(lane, lane_id, 2) && !memcmp(swz, swz_id, 2)))
+      return n;
+   if (node_is_const(&NODES(c)[n]))
+      return n;
+   one = node_new(c, N_LIT);
+   if (one < 0)
+      return -1;
+   for (unsigned i = 0; i < 4; i++)
+      NODES(c)[one].lit[i] = 1.0f;
+   m = node_new(c, N_MUL);
+   if (m < 0)
+      return -1;
+   set_src(&NODES(c)[m], 0, n, lane, swz);
+   set_src(&NODES(c)[m], 1, one, lane_id, swz_id);
+   memcpy(lane, lane_id, 2);
+   memcpy(swz, swz_id, 2);
+   return m;
+}
+
 static int
 build_alu(struct ctx *c, nir_alu_instr *alu)
 {
@@ -503,6 +532,12 @@ build_alu(struct ctx *c, nir_alu_instr *alu)
          a = load;
          memcpy(lane[0], lane_id, 2);
          memcpy(swz[0], swz_id, 2);
+      }
+      if (alu->op == nir_op_fadd) {
+         a = deswizzle(c, a, lane[0], swz[0]);
+         b = deswizzle(c, b, lane[1], swz[1]);
+         if (a < 0 || b < 0)
+            return -1;
       }
       n = node_new(c, alu->op == nir_op_fmul ? N_MUL : N_ADD);
       if (n < 0)
@@ -584,23 +619,43 @@ build_alu(struct ctx *c, nir_alu_instr *alu)
       t = b < 0 ? -1 : alu_src_node(c, alu, 2, lane[2], swz[2]);
       if (t < 0)
          return -1;
+      a = deswizzle(c, a, lane[0], swz[0]);
+      b = deswizzle(c, b, lane[1], swz[1]);
+      t = deswizzle(c, t, lane[2], swz[2]);
+      if (a < 0 || b < 0 || t < 0)
+         return -1;
       for (unsigned i = 0; i < 3; i++)
          if (memcmp(lane[i], lane_id, 2) || memcmp(swz[i], swz_id, 2))
             return fail(c, "swizzled mix operand"), -1;
-      if (node_is_const(&NODES(c)[a]) || !node_is_const(&NODES(c)[t]) ||
-          NODES(c)[b].kind == N_LIT)
+      if (node_is_const(&NODES(c)[a]) || NODES(c)[b].kind == N_LIT)
          return fail(c, "unsupported mix operands"), -1;
       s = node_new(c, N_SUB);
       if (s < 0)
          return -1;
       NODES(c)[s].src[0] = a;
       NODES(c)[s].src[1] = b;
-      n = node_new(c, N_MAD);
-      if (n < 0)
-         return -1;
-      NODES(c)[n].src[0] = s;
-      NODES(c)[n].src[1] = t;
-      NODES(c)[n].src[2] = a;
+      /* A constant factor fuses into the multiply-add; a computed one needs
+       * the register-register multiply and add. */
+      if (node_is_const(&NODES(c)[t])) {
+         n = node_new(c, N_MAD);
+         if (n < 0)
+            return -1;
+         NODES(c)[n].src[0] = s;
+         NODES(c)[n].src[1] = t;
+         NODES(c)[n].src[2] = a;
+      } else {
+         int m = node_new(c, N_MUL);
+
+         if (m < 0)
+            return -1;
+         NODES(c)[m].src[0] = s;
+         NODES(c)[m].src[1] = t;
+         n = node_new(c, N_ADD);
+         if (n < 0)
+            return -1;
+         NODES(c)[n].src[0] = m;
+         NODES(c)[n].src[1] = a;
+      }
       return n;
    default:
       /* The op name is a static string, so it can be the reason. */
@@ -1793,11 +1848,16 @@ match_alpha_test(struct ctx *c, nir_intrinsic_instr *kill, nir_def *colour)
       { nir_op_feq, false, 5 }, { nir_op_fneu, false, 4 },
    };
    nir_scalar cond = nir_scalar_chase_movs(nir_get_scalar(kill->src[0].ssa, 0));
+   nir_scalar out_a = nir_scalar_chase_movs(nir_get_scalar(colour, 3));
    nir_scalar cmp, src[2];
+   /* st lowers the fixed-function test to discard_if(!(alpha OP ref)); a
+    * GLSL discard states the condition directly, so the kill class is the
+    * opposite one, and the six classes pair up as func ^ 1. */
+   bool inverted = nir_scalar_is_alu(cond) &&
+                   nir_scalar_alu_op(cond) == nir_op_inot;
 
-   if (!nir_scalar_is_alu(cond) || nir_scalar_alu_op(cond) != nir_op_inot)
-      return false;
-   cmp = nir_scalar_chase_movs(nir_scalar_chase_alu_src(cond, 0));
+   cmp = inverted ? nir_scalar_chase_movs(nir_scalar_chase_alu_src(cond, 0)) :
+                    cond;
    if (!nir_scalar_is_alu(cmp))
       return false;
    for (unsigned i = 0; i < 2; i++)
@@ -1806,15 +1866,27 @@ match_alpha_test(struct ctx *c, nir_intrinsic_instr *kill, nir_def *colour)
       nir_scalar alpha = src[map[i].swap], ref = src[!map[i].swap];
       nir_intrinsic_instr *intr;
 
-      if (map[i].op != nir_scalar_alu_op(cmp) || alpha.def != colour ||
-          alpha.comp != 3 || !nir_scalar_is_intrinsic(ref))
+      unsigned func = map[i].func ^ (inverted ? 0 : 1);
+
+      if (map[i].op != nir_scalar_alu_op(cmp) ||
+          !nir_scalar_equal(alpha, out_a))
+         continue;
+      /* A GLSL discard compares against a literal as often as a uniform. */
+      if (nir_scalar_is_const(ref)) {
+         c->alpha.func = func;
+         c->alpha.ref_literal = true;
+         c->alpha.ref_value = nir_scalar_as_float(ref);
+         return true;
+      }
+      if (!nir_scalar_is_intrinsic(ref))
          continue;
       intr = nir_def_as_intrinsic(ref.def);
       if (intr->intrinsic != nir_intrinsic_load_ubo_vec4 ||
           !nir_src_is_const(intr->src[0]) || nir_src_as_uint(intr->src[0]) ||
           !nir_src_is_const(intr->src[1]))
          continue;
-      c->alpha.func = map[i].func;
+      c->alpha.func = func;
+      c->alpha.ref_literal = false;
       c->alpha.ref_offset = ((nir_intrinsic_base(intr) +
                               nir_src_as_uint(intr->src[1])) * 4 +
                              nir_intrinsic_component(intr) + ref.comp) * 4;
@@ -2224,8 +2296,15 @@ alpha_append(struct ctx *c, int s[2])
    if (!k)
       return fail(c, "out of memory");
    memset(k, 0, 3 * sizeof(*k));
-   k[0].kind = M9_FS_CONST_ALPHA_REF;
-   k[0].offset[0] = k[0].offset[1] = c->alpha.ref_offset;
+   /* The kill slot compares in 8.8 fixed point, as M9_FS_CONST_ALPHA_REF
+    * scales a uniform reference; a literal is scaled here instead. */
+   if (c->alpha.ref_literal) {
+      k[0].kind = M9_FS_CONST_LITERAL;
+      k[0].value[0] = k[0].value[1] = c->alpha.ref_value * 256.0f;
+   } else {
+      k[0].kind = M9_FS_CONST_ALPHA_REF;
+      k[0].offset[0] = k[0].offset[1] = c->alpha.ref_offset;
+   }
    k[1].value[0] = 0.5f;
    k[1].value[1] = 255.0f;
    k[2].value[0] = 2.0f;
@@ -2250,6 +2329,23 @@ output_temps(struct ctx *c, const int s[2])
 
 /* Output assembly */
 
+/* A template that did not match must leave nothing behind, so that the
+ * general compiler starts from an empty program. */
+static void
+reset_output(struct ctx *c)
+{
+   c->reason = NULL;
+   c->custom_consts = false;
+   c->has_consts = false;
+   c->p->registers_used = 0;
+   c->p->discard = false;
+   util_dynarray_clear(&c->keys);
+   util_dynarray_clear(&c->key_index);
+   util_dynarray_clear(&c->p->consts);
+   util_dynarray_clear(&c->p->slots);
+   util_dynarray_clear(&c->lops);
+}
+
 static bool
 compile_output(struct ctx *c, nir_def *value, bool discard)
 {
@@ -2263,22 +2359,19 @@ compile_output(struct ctx *c, nir_def *value, bool discard)
       fragcoord |= scalar_is_input(s[i], VARYING_SLOT_POS, i);
    }
    if (!discard && nir_scalar_is_alu(s[0]) &&
-       nir_scalar_alu_op(s[0]) == nir_op_fmul && s[0].def->num_components == 2)
-      return tmpl_fragcoord(c, s);
+       nir_scalar_alu_op(s[0]) == nir_op_fmul &&
+       s[0].def->num_components == 2 && tmpl_fragcoord(c, s))
+      return true;
    if (!discard && nir_scalar_is_alu(s[0]) &&
-       nir_scalar_alu_op(s[0]) == nir_op_bcsel)
-      return tmpl_select(c, s);
+       nir_scalar_alu_op(s[0]) == nir_op_bcsel && tmpl_select(c, s))
+      return true;
+   reset_output(c);
    if (fragcoord)
       return fail(c, "unsupported gl_FragCoord use");
    if (!discard && (all_const || (s[0].def != s[1].def)) &&
        tmpl_scalars(c, s))
       return true;
-   c->reason = NULL;
-   c->p->registers_used = 0;
-   util_dynarray_clear(&c->keys);
-   util_dynarray_clear(&c->key_index);
-   util_dynarray_clear(&c->p->consts);
-   util_dynarray_clear(&c->lops);
+   reset_output(c);
    root = build_vec(c, s);
    if (root < 0 || !assign_texels(c))
       return false;
