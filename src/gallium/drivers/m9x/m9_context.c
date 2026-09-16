@@ -755,14 +755,34 @@ m9_job_reserve(struct m9_context *ctx, const struct m9_job_key *key,
    dwords = unit_dwords +
             (key->fs ? m9_draw_job_dwords_fs(draws + 1, key->unit_count) :
                        m9_draw_job_dwords(draws + 1));
-   if (draws && (memcmp(key, &ctx->job_key,
-                        offsetof(struct m9_job_key, units)) ||
-                 (key->fs && m9_consts_differ(consts, &ctx->job_consts)) ||
-                 records + padded > m9_draw_max_source_vertices() ||
-                 dwords > M9_MAX_COMMAND_DWORDS)) {
-      m9_submit_job(ctx);
-      records = 0;
-      unit_dwords = 0;
+   if (draws) {
+      bool state = memcmp(key, &ctx->job_key,
+                          offsetof(struct m9_job_key, units)) != 0;
+
+      if (state && ctx->debug) {
+         const struct m9_job_key *o = &ctx->job_key;
+
+         ctx->split_target += key->depth != o->depth || key->aux != o->aux;
+         ctx->split_program += key->fs != o->fs || key->variant != o->variant;
+         ctx->split_depth += key->depth_control != o->depth_control ||
+                             key->depth_ef != o->depth_ef;
+         ctx->split_mask += key->color_mask != o->color_mask;
+         ctx->split_clip += key->clip_min != o->clip_min ||
+                            key->clip_max != o->clip_max;
+      }
+      bool uniforms = key->fs && m9_consts_differ(consts, &ctx->job_consts);
+      bool vertices_full = records + padded > m9_draw_max_source_vertices();
+      bool stream_full = dwords > M9_MAX_COMMAND_DWORDS;
+
+      if (state || uniforms || vertices_full || stream_full) {
+         ctx->split_state += state;
+         ctx->split_uniforms += !state && uniforms;
+         ctx->split_vertices += !state && !uniforms && vertices_full;
+         ctx->split_stream += !state && !uniforms && !vertices_full;
+         m9_submit_job(ctx);
+         records = 0;
+         unit_dwords = 0;
+      }
    }
    if (ctx->lost)
       return NULL;
@@ -2510,6 +2530,13 @@ m9_context_flush(struct pipe_context *pctx,
    struct pipe_fence_handle *fence = NULL;
 
    (void)flags;
+   if (ctx->debug && ++ctx->flush_count % 300 == 0)
+      fprintf(stderr, "m9x: after %u frames job splits: state %u uniforms %u "
+              "vertices %u stream %u | target %u program %u depth %u mask %u "
+              "clip %u\n", ctx->flush_count, ctx->split_state,
+              ctx->split_uniforms, ctx->split_vertices, ctx->split_stream,
+              ctx->split_target, ctx->split_program, ctx->split_depth,
+              ctx->split_mask, ctx->split_clip);
    ctx->frame_jobs = 0;
    m9_context_sync(ctx);
    if (out_fence) {
@@ -2597,6 +2624,10 @@ m9_context_destroy(struct pipe_context *pctx)
    m9_bo_destroy(screen, &ctx->target_depth);
    m9_bo_destroy(screen, &ctx->target_aux);
    m9_bo_destroy(screen, &ctx->placeholder_texture);
+   if (ctx->debug)
+      fprintf(stderr, "m9x: job splits: state %u uniforms %u vertices %u "
+              "stream %u\n", ctx->split_state, ctx->split_uniforms,
+              ctx->split_vertices, ctx->split_stream);
    util_dynarray_foreach(&ctx->job_textures, struct pipe_resource *, held)
       pipe_resource_reference(held, NULL);
    util_dynarray_fini(&ctx->job_textures);

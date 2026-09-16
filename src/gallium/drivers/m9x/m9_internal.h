@@ -290,6 +290,9 @@ struct m9_context {
    unsigned dump_seq;
    unsigned dump_from, dump_count;
    unsigned frame_jobs, only_first, only_after;
+   unsigned split_state, split_uniforms, split_vertices, split_stream;
+   unsigned flush_count;
+   unsigned split_target, split_program, split_depth, split_mask, split_clip;
 };
 
 #endif
