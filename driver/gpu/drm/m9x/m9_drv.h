@@ -123,6 +123,9 @@ struct m9_head {
 	 * registers decode to an empty raster rather than a mode. */
 	struct drm_display_mode warm_mode;
 	bool warm_valid;
+	/* True only for the controller the firmware actually posted; any other
+	 * head owns no link routing or clock until the driver programs it. */
+	bool posted;
 	u32 warm_dc_ctrl;
 	u32 warm_dc_pitch;
 	u32 warm_dc_start;
@@ -159,6 +162,9 @@ struct m9x_device {
 	unsigned int ddc_owned;
 	struct m9_ddc_bus ddc[M9_DDC_MAX_BUSES];
 	unsigned int ddc_count;
+	/* Board register patches from PInS, keyed to the pixel clock. */
+	const u8 *pins_patch;
+	size_t pins_patch_len;
 	void __iomem *bar0_window;
 	struct m9x_transport transport;
 };
@@ -174,6 +180,7 @@ int m9x_mode_program(struct m9_head *head,
 		     const struct drm_display_mode *mode, u32 pitch_pixels);
 bool m9x_surface_layout_bytes(u32 width, u32 height, u32 cpp, u64 *size);
 int m9x_ddc_init(struct m9x_device *mdev);
+void m9x_pins_patch(struct m9x_device *mdev, u16 reg, u32 dot_khz);
 struct i2c_adapter *m9x_ddc_adapter(struct m9x_device *mdev,
 				    unsigned int index);
 bool m9x_enabled(void);

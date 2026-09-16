@@ -211,19 +211,34 @@ static void m9_program_timing(struct m9_head *head,
 	m9x_write(head->mdev, head->dc + M9_DC_HOLD2, value | 0xff000000u);
 }
 
-/* The serializer takes its sync polarity from the link word; every other bit
- * of it belongs to the board's own link setup and is left alone. */
+/*
+ * Route this controller to its digital link.  The board's own setup word for
+ * the link is keyed to the pixel clock and comes from the PInS patch table -
+ * the values the firmware left are only right for the mode it posted.  Clock
+ * source codes are not the controller number: 0..3 encode as 00, 08, 01, 09.
+ */
 static void m9_program_link(struct m9_head *head,
 			    const struct drm_display_mode *mode)
 {
-	u32 value = m9x_read(head->mdev, head->link);
+	static const u32 source[M9_MAX_HEADS] = { 0x00, 0x08 };
+	struct m9x_device *mdev = head->mdev;
+	u32 value;
 
-	value &= ~(M9_DVO_HSYNC_NEG | M9_DVO_VSYNC_NEG);
+	m9x_pins_patch(mdev, M9_REG_LINK_FORMAT0, mode->clock);
+	m9x_pins_patch(mdev, M9_REG_LINK_FORMAT1, mode->clock);
+	m9x_pins_patch(mdev, head->link, mode->clock);
+
+	value = m9x_read(mdev, head->link);
+	value &= ~(M9_DVO_SRC_MASK | M9_DVO_HSYNC_NEG | M9_DVO_VSYNC_NEG |
+		   M9_DVO_PATH_OFF);
+	value |= source[head->index];
 	if (mode->flags & DRM_MODE_FLAG_NHSYNC)
 		value |= M9_DVO_HSYNC_NEG;
 	if (mode->flags & DRM_MODE_FLAG_NVSYNC)
 		value |= M9_DVO_VSYNC_NEG;
-	m9x_write(head->mdev, head->link, value);
+	m9x_write(mdev, head->link, value);
+	drm_info(&mdev->drm, "head %u link %#06x = %#010x\n", head->index,
+		 head->link, m9x_read(mdev, head->link));
 }
 
 int m9x_mode_program(struct m9_head *head,

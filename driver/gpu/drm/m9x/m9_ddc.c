@@ -25,6 +25,7 @@
 #define M9_PINS_MIN_VERSION	0x0800
 #define M9_PINS_DDC_MAP		0x0050	/* 8 function IDs, physical bit order */
 #define M9_PINS_DDC_MAP_BYTES	8
+#define M9_PINS_PATCH_START	0x000e	/* -> register-patch table */
 
 /*
  * The HMC shares both GPIO registers with the driver.  Acquisition is
@@ -122,11 +123,53 @@ static int m9_pins_ddc_bit(const u8 *map, u8 id)
 	return -ENOENT;
 }
 
+/*
+ * PInS 8.0 register patches: a list of {register, flags, clock selector} with
+ * an optional data word, mask and above-the-threshold alternative.  The board
+ * keys its link setup to the pixel clock, so the values the firmware left for
+ * its own mode are wrong for any other one.
+ */
+void m9x_pins_patch(struct m9x_device *mdev, u16 reg, u32 dot_khz)
+{
+	const u8 *patch = mdev->pins_patch;
+	size_t i = 0;
+
+	while (patch && i + 4 <= mdev->pins_patch_len) {
+		const u8 *e = patch + i;
+		u16 entry = get_unaligned_le16(e);
+		u8 flags = e[2], clksel = e[3];
+		u32 data = 0, mask = ~0u, alt = 0;
+		size_t n = 4;
+
+		if ((!entry && !flags && !clksel) || (entry == 0xffff &&
+						      flags == 0xff))
+			return;
+		if (flags & 1) { data = get_unaligned_le32(e + n); n += 4; }
+		if (flags & 2) { mask = get_unaligned_le32(e + n); n += 4; }
+		if (flags & 4) { alt = get_unaligned_le32(e + n); n += 4; }
+		if (i + n > mdev->pins_patch_len)
+			return;
+		if (entry == reg) {
+			u32 value = data;
+
+			if ((flags & 4) &&
+			    ((clksel == 1 && dot_khz > 100000) ||
+			     (clksel == 2 && dot_khz > 200000)))
+				value = alt;
+			m9x_write(mdev, reg,
+				  (m9x_read(mdev, reg) & ~mask) |
+				  (value & mask));
+		}
+		i += n;
+	}
+}
+
 static bool m9_pins_ddc_map(struct m9x_device *mdev, u8 *map)
 {
 	struct pci_dev *pdev = mdev->pdev;
 	void __iomem *rom;
 	size_t size, base;
+	size_t patch, length;
 	bool ok = false;
 	u8 *copy;
 
@@ -149,8 +192,20 @@ static bool m9_pins_ddc_map(struct m9x_device *mdev, u8 *map)
 	    M9_PINS_MIN_VERSION)
 		goto out;
 	memcpy(map, copy + base + M9_PINS_DDC_MAP, M9_PINS_DDC_MAP_BYTES);
-	drm_info(&mdev->drm, "PInS %#06x at %#zx: DDC map %8ph\n",
-		 get_unaligned_le16(copy + base + M9_PINS_VERSION), base, map);
+	/* Retain the register-patch table: the option ROM is unmapped here but
+	 * the link setup is needed at every modeset.  The table runs to the end
+	 * of the PInS structure. */
+	patch = get_unaligned_le16(copy + base + M9_PINS_PATCH_START);
+	length = get_unaligned_le16(copy + base + M9_PINS_LENGTH);
+	if (patch && patch < length && base + length <= size) {
+		mdev->pins_patch = devm_kmemdup(&pdev->dev, copy + base + patch,
+						length - patch, GFP_KERNEL);
+		mdev->pins_patch_len = mdev->pins_patch ? length - patch : 0;
+	}
+	drm_info(&mdev->drm,
+		 "PInS %#06x at %#zx: DDC map %8ph, %zu patch bytes\n",
+		 get_unaligned_le16(copy + base + M9_PINS_VERSION), base, map,
+		 mdev->pins_patch_len);
 	ok = true;
 out:
 	kfree(copy);

@@ -203,6 +203,11 @@
  * rest of the word alone across a mode change. */
 #define M9_DVO_HSYNC_NEG		BIT(20)
 #define M9_DVO_VSYNC_NEG		BIT(22)
+#define M9_DVO_SRC_MASK			0x1fu
+#define M9_DVO_PATH_OFF			BIT(18)
+/* Clock-keyed link format registers the board patches alongside the link. */
+#define M9_REG_LINK_FORMAT0		0x1c38
+#define M9_REG_LINK_FORMAT1		0x1c3c
 #define M9_VIDRST_STROBE		BIT(31)
 
 #endif

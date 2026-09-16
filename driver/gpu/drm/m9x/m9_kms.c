@@ -740,9 +740,10 @@ static void m9_pipe_enable(struct drm_simple_display_pipe *pipe,
 	ctrl = m9x_read(head->mdev, head->dc + M9_DC_CTRL);
 	m9x_write(head->mdev, head->dc + M9_DC_CTRL, ctrl & ~M9_DC_ENABLE);
 	m9_scanout_geometry(head, &crtc_state->mode);
-	/* A head whose timing was never adopted from the hardware has to be
-	 * programmed even when the requested mode matches the placeholder. */
-	if (m9_kms_modeset && (!head->warm_valid ||
+	/* A head the firmware never posted owns no link routing or clock, and
+	 * one whose timing was never adopted has only a placeholder mode, so
+	 * neither may take the "already at this timing" shortcut. */
+	if (m9_kms_modeset && (!head->posted || !head->warm_valid ||
 	    !drm_mode_equal(&crtc_state->mode, &head->warm_mode)) &&
 	    !m9x_mode_program(head, &crtc_state->mode,
 			      head->scanout_pitch / 4)) {
@@ -1096,6 +1097,7 @@ static int m9_head_init(struct m9x_device *mdev, struct m9_head *head,
 	head->warm_dc_start = snapshot.start;
 	head->warm_dvo = snapshot.dvo;
 	head->warm_valid = true;
+	head->posted = m9_warm_snapshot_valid(&snapshot);
 	if (m9_warm_snapshot_valid(&snapshot)) {
 		head->warm_mode = m9_warm_mode;
 		drm_mode_set_name(&head->warm_mode);
