@@ -56,6 +56,7 @@ enum node_kind {
    N_MIN, N_MAX,        /* against a constant, the captured cls 2 / 3 form */
    N_NEG,               /* move with the W1 negate bit, as fs-neg emits */
    N_SAT,               /* move in the saturating class, as blending uses */
+   N_GATHER,            /* a result lane per source: src[lane] * src[2] */
    N_LOAD,              /* constant factor moved into a register */
    N_COMPOSE,           /* vec4(texture.xyz, literal), written in place */
 };
@@ -341,10 +342,11 @@ build_tex(struct ctx *c, nir_tex_instr *tex)
    int pi = nir_tex_instr_src_index(tex, nir_tex_src_projector);
    nir_scalar s[2];
 
+   if (p->texture_count >= M9_FS_MAX_TEXTURES)
+      return fail(c, "more textures than the program can bind"), -1;
    if (tex->op != nir_texop_tex || tex->sampler_dim != GLSL_SAMPLER_DIM_2D ||
        tex->is_shadow || tex->is_array || ci < 0 ||
-       tex->num_srcs != (pi < 0 ? 1u : 2u) ||
-       p->texture_count >= M9_FS_MAX_TEXTURES)
+       tex->num_srcs != (pi < 0 ? 1u : 2u))
       return fail(c, "texture sampling needs a computed coordinate pass"), -1;
    /* Linked vec2 varyings may share one slot: xy or zw of the input.  st
     * scalarises IO, so the pair can also be two loads of one location. */
@@ -627,6 +629,82 @@ build_def(struct ctx *c, nir_def *def)
    return n;
 }
 
+/* One masked term of a gather: result lane l reads component 2*l + t of the
+ * vec4, so two terms summed cover any arrangement of four scalars. */
+static int
+gather_term(struct ctx *c, const int comp_node[4], const unsigned comp_idx[4],
+            const bool is_lit[4], unsigned t)
+{
+   static const uint8_t lane_id[2] = { 0, 1 }, swz_id[2] = { 1, 1 };
+   int lane_node[2], n_mask, n;
+   uint8_t src_lane[2] = { 0, 1 }, src_swz[2] = { 1, 1 };
+   float mask[4] = { 0, 0, 0, 0 };
+
+   for (unsigned l = 0; l < 2; l++) {
+      unsigned k = 2 * l + t;
+
+      lane_node[l] = comp_node[k];
+      if (is_lit[k] || lane_node[l] < 0)
+         continue;
+      mask[k] = 1.0f;
+      src_lane[l] = comp_idx[k] / 2;
+      src_swz[l] = (comp_idx[k] & 1) << 1 | (comp_idx[k] & 1);
+   }
+   for (unsigned l = 0; l < 2; l++)
+      if (lane_node[l] < 0) {
+         if (lane_node[1 - l] < 0)
+            return -2;          /* nothing of this term is a register */
+         lane_node[l] = lane_node[1 - l];
+         src_lane[l] = src_lane[1 - l];
+         src_swz[l] = src_swz[1 - l];
+      }
+   /* The multiply needs a register operand, so materialise constants. */
+   for (unsigned l = 0; l < 2; l++)
+      if (node_is_const(&NODES(c)[lane_node[l]])) {
+         uint8_t ll[2] = { src_lane[l], src_lane[l] };
+         uint8_t ls[2] = { src_swz[l], src_swz[l] };
+         int load = node_new(c, N_LOAD);
+
+         if (load < 0)
+            return -1;
+         set_src(&NODES(c)[load], 0, lane_node[l], ll, ls);
+         if (lane_node[1 - l] == lane_node[l] &&
+             src_lane[1 - l] == src_lane[l] && src_swz[1 - l] == src_swz[l]) {
+            lane_node[1 - l] = load;
+            src_lane[1 - l] = l;
+            src_swz[1 - l] = 1;
+         }
+         lane_node[l] = load;
+         src_lane[l] = l;
+         src_swz[l] = 1;
+      }
+   n_mask = node_new(c, N_LIT);
+   if (n_mask < 0)
+      return -1;
+   memcpy(NODES(c)[n_mask].lit, mask, sizeof(mask));
+   if (lane_node[0] == lane_node[1]) {
+      uint8_t ll[2] = { src_lane[0], src_lane[1] };
+      uint8_t ls[2] = { src_swz[0], src_swz[1] };
+
+      n = node_new(c, N_MUL);
+      if (n < 0)
+         return -1;
+      set_src(&NODES(c)[n], 0, lane_node[0], ll, ls);
+      set_src(&NODES(c)[n], 1, n_mask, lane_id, swz_id);
+   } else {
+      uint8_t l0[2] = { src_lane[0], 0 }, s0[2] = { src_swz[0], 1 };
+      uint8_t l1[2] = { 0, src_lane[1] }, s1[2] = { 1, src_swz[1] };
+
+      n = node_new(c, N_GATHER);
+      if (n < 0)
+         return -1;
+      set_src(&NODES(c)[n], 0, lane_node[0], l0, s0);
+      set_src(&NODES(c)[n], 1, lane_node[1], l1, s1);
+      set_src(&NODES(c)[n], 2, n_mask, lane_id, swz_id);
+   }
+   return n;
+}
+
 static int
 build_vec(struct ctx *c, nir_scalar s[4])
 {
@@ -735,94 +813,149 @@ build_vec(struct ctx *c, nir_scalar s[4])
          return build_def(c, s[0].def);
       }
    }
-   /* One source read through a swizzle, with literals allowed in any lane:
-    * multiply by a per-lane (1, 0) mask and add the literals back.  Both are
-    * captured forms (fs-mul, fs-add), so the swizzle costs slots, not new
-    * encodings.  A literal lane reads any scalar; its factor is zero. */
+   /* General gather: each result lane reads one source through a swizzle,
+    * with literals masked in by a per-lane (1, 0) factor and added back.
+    * The two lanes may read different sources, so a vec4 can be assembled
+    * from several values; a constant source is moved into a register first.
+    * MUL and ADD are captured forms, so this costs slots, not encodings. */
    {
-      uint8_t lane[2], swz[2];
-      float mul[4], add[4];
+      static const uint8_t lane_id[2] = { 0, 1 }, swz_id[2] = { 1, 1 };
+      int comp_node[4], lane_node[2] = { -1, -1 };
+      unsigned comp_idx[4];
+      uint8_t src_lane[2] = { 0, 1 }, src_swz[2] = { 1, 1 };
       bool is_lit[4], need_add = false;
-      unsigned comp[4];
-      nir_def *src = NULL;
-      int x, k_mul, n_mul;
+      float mask[4], addend[4];
+      int n_mask, n_val;
 
       for (unsigned k = 0; k < 4; k++) {
          is_lit[k] = nir_scalar_is_const(s[k]);
-         comp[k] = s[k].comp;
-         add[k] = is_lit[k] ? nir_scalar_as_float(s[k]) : 0.0f;
-         mul[k] = is_lit[k] ? 0.0f : 1.0f;
+         mask[k] = is_lit[k] ? 0.0f : 1.0f;
+         addend[k] = is_lit[k] ? nir_scalar_as_float(s[k]) : 0.0f;
          need_add |= is_lit[k];
+         comp_node[k] = -1;
+         comp_idx[k] = 0;
          if (is_lit[k])
             continue;
-         if (!src)
-            src = s[k].def;
-         if (s[k].def != src)
+         if (s[k].def->bit_size != 32)
+            return fail(c, "swizzled or composed vector"), -1;
+         comp_node[k] = build_def(c, s[k].def);
+         if (comp_node[k] < 0)
+            return -1;
+         comp_idx[k] = s[k].comp + def_comp_base(s[k].def);
+         if (comp_idx[k] > 3)
             return fail(c, "swizzled or composed vector"), -1;
       }
-      if (!src || src->bit_size != 32)
-         return fail(c, "swizzled or composed vector"), -1;
-      {
-         unsigned base = def_comp_base(src);
+      /* A lane whose scalars sit in different register pairs, or come from
+       * different values, is built as two masked terms and summed. */
+      for (unsigned l = 0; l < 2; l++) {
+         unsigned a = 2 * l, b = a + 1;
 
-         for (unsigned k = 0; k < 4; k++)
-            if (!is_lit[k]) {
-               comp[k] += base;
-               if (comp[k] > 3)
-                  return fail(c, "swizzled or composed vector"), -1;
-            }
+         if (comp_node[a] >= 0 && comp_node[b] >= 0 &&
+             (comp_node[a] != comp_node[b] ||
+              comp_idx[a] / 2 != comp_idx[b] / 2)) {
+            int t0 = gather_term(c, comp_node, comp_idx, is_lit, 0);
+            int t1 = gather_term(c, comp_node, comp_idx, is_lit, 1);
+            int sum;
+
+            if (t0 == -1 || t1 == -1)
+               return -1;
+            if (t0 == -2 || t1 == -2)
+               return fail(c, "swizzled or composed vector"), -1;
+            sum = node_new(c, N_ADD);
+            if (sum < 0)
+               return -1;
+            set_src(&NODES(c)[sum], 0, t0, (const uint8_t[]){ 0, 1 },
+                    (const uint8_t[]){ 1, 1 });
+            set_src(&NODES(c)[sum], 1, t1, (const uint8_t[]){ 0, 1 },
+                    (const uint8_t[]){ 1, 1 });
+            n_val = sum;
+            goto have_value;
+         }
       }
       for (unsigned l = 0; l < 2; l++) {
          unsigned a = 2 * l, b = a + 1;
 
-         if (is_lit[a] && is_lit[b]) {
-            lane[l] = 0;
-            swz[l] = 1;
-         } else if (is_lit[a] || is_lit[b]) {
-            unsigned only = is_lit[a] ? comp[b] : comp[a];
+         if (comp_node[a] >= 0 && comp_node[b] >= 0) {
+            lane_node[l] = comp_node[a];
+            src_lane[l] = comp_idx[a] / 2;
+            src_swz[l] = (comp_idx[a] & 1) << 1 | (comp_idx[b] & 1);
+         } else if (comp_node[a] >= 0 || comp_node[b] >= 0) {
+            unsigned only = comp_node[a] >= 0 ? comp_idx[a] : comp_idx[b];
 
-            lane[l] = only / 2;
-            swz[l] = (only & 1) << 1 | (only & 1);
-         } else {
-            if (comp[a] / 2 != comp[b] / 2)
-               return fail(c, "swizzle crosses register lanes"), -1;
-            lane[l] = comp[a] / 2;
-            swz[l] = (comp[a] & 1) << 1 | (comp[b] & 1);
+            lane_node[l] = comp_node[a] >= 0 ? comp_node[a] : comp_node[b];
+            src_lane[l] = only / 2;
+            src_swz[l] = (only & 1) << 1 | (only & 1);
          }
       }
-      x = build_def(c, src);
-      if (x < 0)
-         return -1;
-      /* A constant source would leave the multiply with no register operand;
-       * the swizzle belongs in the constant span, which this path cannot
-       * build. */
-      if (node_is_const(&NODES(c)[x]))
-         return fail(c, "swizzled or composed vector"), -1;
-      k_mul = node_new(c, N_LIT);
-      if (k_mul < 0)
-         return -1;
-      memcpy(NODES(c)[k_mul].lit, mul, sizeof(mul));
-      n_mul = node_new(c, N_MUL);
-      if (n_mul < 0)
-         return -1;
-      set_src(&NODES(c)[n_mul], 0, x, lane, swz);
-      set_src(&NODES(c)[n_mul], 1, k_mul, (const uint8_t[]){ 0, 1 },
-              (const uint8_t[]){ 1, 1 });
-      if (!need_add)
-         return n_mul;
-      {
-         int k_add = node_new(c, N_LIT), n_add;
+      /* A lane of pure literals rides on the other lane's register with a
+       * zero factor. */
+      for (unsigned l = 0; l < 2; l++)
+         if (lane_node[l] < 0) {
+            if (lane_node[1 - l] < 0)
+               return fail(c, "swizzled or composed vector"), -1;
+            lane_node[l] = lane_node[1 - l];
+            src_lane[l] = src_lane[1 - l];
+            src_swz[l] = src_swz[1 - l];
+         }
+      /* The multiply needs a register operand, so materialise constants. */
+      for (unsigned l = 0; l < 2; l++)
+         if (node_is_const(&NODES(c)[lane_node[l]])) {
+            uint8_t ll[2] = { src_lane[l], src_lane[l] };
+            uint8_t ls[2] = { src_swz[l], src_swz[l] };
+            int load = node_new(c, N_LOAD);
 
-         if (k_add < 0)
+            if (load < 0)
+               return -1;
+            set_src(&NODES(c)[load], 0, lane_node[l], ll, ls);
+            if (lane_node[1 - l] == lane_node[l] &&
+                src_lane[1 - l] == src_lane[l] &&
+                src_swz[1 - l] == src_swz[l]) {
+               lane_node[1 - l] = load;
+               src_lane[1 - l] = l;
+               src_swz[1 - l] = 1;
+            }
+            lane_node[l] = load;
+            src_lane[l] = l;
+            src_swz[l] = 1;
+         }
+      n_mask = node_new(c, N_LIT);
+      if (n_mask < 0)
+         return -1;
+      memcpy(NODES(c)[n_mask].lit, mask, sizeof(mask));
+      if (lane_node[0] == lane_node[1]) {
+         uint8_t ll[2] = { src_lane[0], src_lane[1] };
+         uint8_t ls[2] = { src_swz[0], src_swz[1] };
+
+         n_val = node_new(c, N_MUL);
+         if (n_val < 0)
             return -1;
-         memcpy(NODES(c)[k_add].lit, add, sizeof(add));
+         set_src(&NODES(c)[n_val], 0, lane_node[0], ll, ls);
+         set_src(&NODES(c)[n_val], 1, n_mask, lane_id, swz_id);
+      } else {
+         uint8_t l0[2] = { src_lane[0], 0 }, s0[2] = { src_swz[0], 1 };
+         uint8_t l1[2] = { 0, src_lane[1] }, s1[2] = { 1, src_swz[1] };
+
+         n_val = node_new(c, N_GATHER);
+         if (n_val < 0)
+            return -1;
+         set_src(&NODES(c)[n_val], 0, lane_node[0], l0, s0);
+         set_src(&NODES(c)[n_val], 1, lane_node[1], l1, s1);
+         set_src(&NODES(c)[n_val], 2, n_mask, lane_id, swz_id);
+      }
+have_value:
+      if (!need_add)
+         return n_val;
+      {
+         int n_lit = node_new(c, N_LIT), n_add;
+
+         if (n_lit < 0)
+            return -1;
+         memcpy(NODES(c)[n_lit].lit, addend, sizeof(addend));
          n_add = node_new(c, N_ADD);
          if (n_add < 0)
             return -1;
-         set_src(&NODES(c)[n_add], 0, n_mul, (const uint8_t[]){ 0, 1 },
-                 (const uint8_t[]){ 1, 1 });
-         set_src(&NODES(c)[n_add], 1, k_add, (const uint8_t[]){ 0, 1 },
-                 (const uint8_t[]){ 1, 1 });
+         set_src(&NODES(c)[n_add], 0, n_val, lane_id, swz_id);
+         set_src(&NODES(c)[n_add], 1, n_lit, lane_id, swz_id);
          return n_add;
       }
    }
@@ -1010,6 +1143,12 @@ emit_node_lops(struct ctx *c, int n, bool output, bool direct_ba)
             operand(c, &l, 0, nd, 1);
             operand(c, &l, 1, nd, 0);
          }
+         break;
+      case N_GATHER:
+         /* Each result lane multiplies its own source by the lane factor. */
+         lop_init(&l, L_MUL_RC, lane, n);
+         operand(c, &l, 0, nd, lane);
+         operand(c, &l, 1, nd, 2);
          break;
       case N_SAT:
          lop_init(&l, L_SAT, lane, n);

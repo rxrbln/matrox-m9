@@ -923,7 +923,11 @@ m9_init_shader_caps(struct m9_screen *screen)
    fs->max_const_buffer0_size = 32 * 4 * sizeof(float);
    fs->max_const_buffers = 1;
    fs->max_temps = 32;
-   fs->max_texture_samplers = fs->max_sampler_views = M9_FS_MAX_TEXTURES;
+   /* A program binds at most M9_FS_MAX_TEXTURES texel pairs, but shaders
+    * declare more samplers than any one variant uses and the unused ones are
+    * eliminated before compiling; advertising only the binding limit stops
+    * such shaders linking at all (ioquake3's opengl2 renderer). */
+   fs->max_texture_samplers = fs->max_sampler_views = 8;
 }
 
 static bool
