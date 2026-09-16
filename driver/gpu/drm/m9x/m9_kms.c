@@ -399,6 +399,7 @@ static int m9_scanout_publish(struct m9_head *head,
 			return ret;
 	}
 	mutex_lock(&mdev->transport.lock);
+	m9x_transport_drain_locked(mdev);
 	/* GPU-rendered frames are tiled: de-tile them through the window. */
 	if (tiled)
 		m9x_surface_read_locked(mdev, lower_32_bits(src_offset),

@@ -242,6 +242,7 @@ static int m9_surface_access(struct m9x_device *mdev, struct drm_file *file,
 		goto out_unreserve;
 	}
 	mutex_lock(&mdev->transport.lock);
+	m9x_transport_drain_locked(mdev);
 	if (mdev->transport.wedged) {
 		ret = -EIO;
 	} else {

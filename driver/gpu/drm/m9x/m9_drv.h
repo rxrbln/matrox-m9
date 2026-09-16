@@ -7,6 +7,8 @@
 #include <linux/list.h>
 #include <linux/i2c-algo-bit.h>
 #include <linux/io.h>
+#include <linux/llist.h>
+#include <linux/workqueue.h>
 #include <linux/mutex.h>
 #include <linux/pci.h>
 #include <linux/sizes.h>
@@ -84,6 +86,20 @@ struct m9x_transport {
 	bool engine_transitioned;
 	bool restore_ready;
 	bool wedged;
+	/*
+	 * A posted job the CPU has not waited for.  The objects it reads stay
+	 * referenced and pinned until it retires, which is what lets the next
+	 * job be built while this one runs.
+	 */
+	bool async_pending;
+	u32 async_target;
+	struct drm_gem_object **async_bos;
+	bool *async_pinned;
+	u32 async_count;
+	/* Releasing an object takes this same lock, so retired objects go to a
+	 * worker rather than being freed under it. */
+	struct llist_head async_retired;
+	struct work_struct async_release;
 	struct m9x_fence *quarantined_fence;
 	struct drm_gem_vram_object *quarantined_color;
 	struct m9x_address_space *address;
@@ -199,9 +215,20 @@ int m9x_transport_arm_locked(struct m9x_device *mdev);
 int m9x_transport_enable_bus_master_locked(struct m9x_device *mdev);
 int m9x_transport_rearm_locked(struct m9x_device *mdev);
 int m9x_restore_bind(struct m9x_device *mdev);
+/* Objects a retired job was reading, released off the transport lock. */
+struct m9_retired {
+	struct llist_node node;
+	struct drm_gem_object **bos;
+	bool *pinned;
+	u32 count;
+};
+
+void m9x_transport_release_retired(struct work_struct *work);
+int m9x_transport_drain_locked(struct m9x_device *mdev);
 int m9x_submit_kernel_stream_locked(struct m9x_device *mdev,
 				    const u32 *commands, u32 dwords,
-				    u32 target, u64 *point, bool *doorbell_posted);
+				    u32 target, u64 *point, bool *doorbell_posted,
+				    bool async);
 struct m9x_fence *m9x_fence_create_target_locked(struct m9x_device *mdev,
 						 u32 target);
 int m9x_address_init(struct m9x_device *mdev);
@@ -236,7 +263,7 @@ int m9x_triangle_prepare_diag(struct m9x_device *mdev);
 int m9x_engine_ready_locked(struct m9x_device *mdev);
 int m9x_submit_user_stream_locked(struct m9x_device *mdev, const u32 *records,
 				  u32 dwords, const u32 *range_ends, u32 ranges,
-				  u32 target, u64 *point);
+				  u32 target, u64 *point, bool async);
 int m9x_triangle_selftest(void);
 void m9x_triangle_fini(struct m9x_device *mdev);
 int m9x_submit_selftest(void);

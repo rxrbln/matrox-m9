@@ -1452,7 +1452,7 @@ static int m9_triangle_context_init_locked(struct m9x_device *mdev,
 	ret = m9x_submit_kernel_stream_locked(mdev,
 			diag->commands.sequence0_primary,
 			ARRAY_SIZE(diag->commands.sequence0_primary),
-			final, point, NULL);
+			final, point, NULL, false);
 	if (ret)
 		return ret;
 	mdev->transport.next_fence = sequence0.target +
@@ -1497,7 +1497,7 @@ int m9x_engine_ready_locked(struct m9x_device *mdev)
  */
 int m9x_submit_user_stream_locked(struct m9x_device *mdev, const u32 *records,
 				  u32 dwords, const u32 *range_ends, u32 ranges,
-				  u32 target, u64 *point)
+				  u32 target, u64 *point, bool async)
 {
 	const struct m9_triangle_layout *layout = &m9_triangle_external_layout;
 	struct m9x_triangle_diag *diag = mdev->transport.triangle;
@@ -1552,7 +1552,7 @@ int m9x_submit_user_stream_locked(struct m9x_device *mdev, const u32 *records,
 		start = end;
 	}
 	ret = m9x_submit_kernel_stream_locked(mdev, primary, 3 * (ranges + 1),
-					      target, point, NULL);
+					      target, point, NULL, async);
 	kfree(primary);
 	if (ret)
 		return ret;
@@ -1621,7 +1621,7 @@ static int m9_triangle_present_locked(struct m9x_device *mdev, u32 color,
 	primary[5] = (secondary + M9_PRESENT_RANGE1_END) |
 		     M9_TRIANGLE_SECONDARY_END_TAG;
 	ret = m9x_submit_kernel_stream_locked(mdev, primary, ARRAY_SIZE(primary),
-					      final, point, NULL);
+					      final, point, NULL, false);
 	if (ret)
 		return ret;
 	mdev->transport.next_fence = final + 0x10;
@@ -1724,7 +1724,7 @@ int m9x_submit_triangle_diag(struct m9x_device *mdev, u32 color,
 				goto out_unlock;
 			ret = m9x_submit_kernel_stream_locked(mdev,
 					diag->commands.sequence0_primary, 6,
-					target, point, NULL);
+					target, point, NULL, false);
 			if (ret)
 				goto out_unlock;
 			mdev->transport.next_fence = target + 0x10;
@@ -1770,7 +1770,7 @@ int m9x_submit_triangle_diag(struct m9x_device *mdev, u32 color,
 			   DMA_RESV_USAGE_WRITE);
 	ret = m9x_submit_kernel_stream_locked(mdev, diag->commands.primary,
 					      ARRAY_SIZE(diag->commands.primary),
-					      job.transition[5], point, &draw_posted);
+					      job.transition[5], point, &draw_posted, false);
 	*color_active = draw_posted && ret;
 	if (ret)
 		goto out_unlock;

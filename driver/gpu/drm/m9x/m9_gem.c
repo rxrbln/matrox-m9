@@ -30,6 +30,7 @@ static void m9_bo_free(struct drm_gem_object *gem)
 
 	if (drm_mm_node_allocated(&bo->system)) {
 		mutex_lock(&mdev->transport.lock);
+	m9x_transport_drain_locked(mdev);
 		m9x_address_unmap_system(mdev, &bo->system);
 		mutex_unlock(&mdev->transport.lock);
 	}
@@ -57,6 +58,7 @@ static void m9_paged_bo_free(struct drm_gem_object *gem)
 
 	if (drm_mm_node_allocated(&bo->system)) {
 		mutex_lock(&mdev->transport.lock);
+	m9x_transport_drain_locked(mdev);
 		m9x_address_unmap_system(mdev, &bo->system);
 		mutex_unlock(&mdev->transport.lock);
 	}
@@ -385,6 +387,7 @@ static int m9_create_bo_ioctl(struct drm_device *drm, void *data,
 		return -EINVAL;
 	size = PAGE_ALIGN(args->size);
 	mutex_lock(&mdev->transport.lock);
+	m9x_transport_drain_locked(mdev);
 	ret = mdev->transport.wedged ? -EIO : 0;
 	mutex_unlock(&mdev->transport.lock);
 	if (ret)
@@ -411,6 +414,7 @@ static int m9_create_bo_ioctl(struct drm_device *drm, void *data,
 		gem = &bo->dma.base;
 		if (!command) {
 			mutex_lock(&mdev->transport.lock);
+	m9x_transport_drain_locked(mdev);
 			ret = m9x_bo_is_paged(bo) ?
 				m9x_address_map_system_sgt(mdev, &bo->system,
 							   &bo->sgt, size) :

@@ -331,57 +331,26 @@ int m9x_transport_rearm_locked(struct m9x_device *mdev)
 }
 
 /* Writeback polls before the wait sleeps; about a hundred microseconds. */
-#define M9_FENCE_SPIN_LIMIT 20000u
+static unsigned int m9_fence_spins = 20000;
+module_param_named(fence_spins, m9_fence_spins, uint, 0644);
+MODULE_PARM_DESC(fence_spins, "writeback polls before the fence wait sleeps");
+#define M9_FENCE_SPIN_LIMIT m9_fence_spins
 
-int m9x_submit_kernel_stream_locked(struct m9x_device *mdev,
-				    const u32 *commands, u32 dwords,
-				    u32 target, u64 *point, bool *doorbell_posted)
+/*
+ * Wait for the writeback to reach a target.  The word lands in system memory,
+ * so poll it directly for about a hundred microseconds before sleeping: a job
+ * that retires in tens of microseconds used to wait out a whole
+ * usleep_range() interval, and the register read that checks for a dead
+ * engine cost a bus round trip on every pass.
+ */
+static int m9_fence_wait_locked(struct m9x_device *mdev, u32 target)
 {
 	struct m9x_transport *transport = &mdev->transport;
-	unsigned long deadline;
-	dma_addr_t start_bus;
 	u32 *writeback = transport->fence_cpu;
-	u32 command_offset, end, raw;
-	u64 extended;
-	int ret;
+	unsigned long deadline;
+	u32 raw;
 
 	lockdep_assert_held(&transport->lock);
-	if (doorbell_posted)
-		*doorbell_posted = false;
-	if (!commands || !dwords ||
-	    dwords > PARHELIA_M9_COMMAND_BYTES / sizeof(u32))
-		return -EINVAL;
-	if (transport->wedged)
-		return -EIO;
-	ret = m9x_transport_arm_locked(mdev);
-	if (ret)
-		return ret;
-
-	command_offset = transport->command_offset;
-	if (command_offset > PARHELIA_M9_COMMAND_BYTES - dwords * sizeof(u32)) {
-		/* The prior interval is synchronous and retired.  Only an actual
-		 * primary-buffer switch rebases the vendor requester's 0x400. */
-		m9_advance_command_slot(transport);
-		command_offset = 0;
-		m9x_write(mdev, M9_REG_COMMAND_BASE,
-			  lower_32_bits(m9_command_slot_bus(transport)) |
-			  M9_COMMAND_SYSTEM_TAG);
-		m9x_read(mdev, M9_REG_COMMAND_BASE);
-	}
-	start_bus = m9_command_slot_bus(transport) + command_offset;
-	if (upper_32_bits(start_bus) ||
-	    check_add_overflow(lower_32_bits(start_bus),
-			       dwords * (u32)sizeof(u32), &end))
-		return -ERANGE;
-	memcpy((u8 *)m9_command_slot_cpu(transport) + command_offset, commands,
-	       dwords * sizeof(u32));
-	dma_wmb();
-
-	m9x_write(mdev, M9_REG_COMMAND_END, end);
-	m9x_read(mdev, M9_REG_COMMAND_END);
-	if (doorbell_posted)
-		*doorbell_posted = true;
-
 	deadline = jiffies + msecs_to_jiffies(max(m9_fence_timeout_ms, 1u));
 	/*
 	 * The writeback word lands in system memory, so poll it directly for a
@@ -442,9 +411,135 @@ int m9x_submit_kernel_stream_locked(struct m9x_device *mdev,
 		}
 		usleep_range(10, 30);
 	}
+	return 0;
+}
 
-	extended = m9_extend_fence(transport, raw);
+/*
+ * Retire a posted job: wait for it, then release the objects it was reading.
+ * Every path that touches the shared command image, the engine state or an
+ * object the engine may still be reading goes through here first.
+ */
+int m9x_transport_drain_locked(struct m9x_device *mdev)
+{
+	struct m9x_transport *transport = &mdev->transport;
+	struct m9_retired *retired;
+	int ret;
+
+	lockdep_assert_held(&transport->lock);
+	if (!transport->async_pending)
+		return 0;
+	transport->async_pending = false;
+	ret = m9_fence_wait_locked(mdev, transport->async_target);
+	if (!transport->async_bos)
+		return ret;
+	/*
+	 * The job has retired, so its objects are free, but unpinning and
+	 * putting one takes this lock again: hand them to the worker.
+	 */
+	retired = kmalloc(sizeof(*retired), GFP_KERNEL);
+	if (retired) {
+		retired->bos = transport->async_bos;
+		retired->pinned = transport->async_pinned;
+		retired->count = transport->async_count;
+		llist_add(&retired->node, &transport->async_retired);
+		schedule_work(&transport->async_release);
+	}
+	transport->async_bos = NULL;
+	transport->async_pinned = NULL;
+	transport->async_count = 0;
+	return ret;
+}
+
+void m9x_transport_release_retired(struct work_struct *work)
+{
+	struct m9x_transport *transport =
+		container_of(work, struct m9x_transport, async_release);
+	struct llist_node *nodes = llist_del_all(&transport->async_retired);
+	struct m9_retired *retired, *next;
+
+	llist_for_each_entry_safe(retired, next, nodes, node) {
+		u32 i;
+
+		for (i = 0; i < retired->count; i++) {
+			if (!retired->bos[i])
+				continue;
+			if (retired->pinned && retired->pinned[i])
+				m9x_vram_unpin(drm_gem_vram_of_gem(retired->bos[i]));
+			drm_gem_object_put(retired->bos[i]);
+		}
+		kfree(retired->bos);
+		kfree(retired->pinned);
+		kfree(retired);
+	}
+}
+
+int m9x_submit_kernel_stream_locked(struct m9x_device *mdev,
+				    const u32 *commands, u32 dwords,
+				    u32 target, u64 *point, bool *doorbell_posted,
+				    bool async)
+{
+	struct m9x_transport *transport = &mdev->transport;
+	dma_addr_t start_bus;
+	u32 *writeback = transport->fence_cpu;
+	u32 command_offset, end, raw;
+	u64 extended;
+	int ret;
+
+	lockdep_assert_held(&transport->lock);
+	if (doorbell_posted)
+		*doorbell_posted = false;
+	/* The command image and the engine state are shared, so a job posted
+	 * earlier has to retire before this one is built. */
+	ret = m9x_transport_drain_locked(mdev);
+	if (ret)
+		return ret;
+	if (!commands || !dwords ||
+	    dwords > PARHELIA_M9_COMMAND_BYTES / sizeof(u32))
+		return -EINVAL;
+	if (transport->wedged)
+		return -EIO;
+	ret = m9x_transport_arm_locked(mdev);
+	if (ret)
+		return ret;
+
+	command_offset = transport->command_offset;
+	if (command_offset > PARHELIA_M9_COMMAND_BYTES - dwords * sizeof(u32)) {
+		/* The prior interval is synchronous and retired.  Only an actual
+		 * primary-buffer switch rebases the vendor requester's 0x400. */
+		m9_advance_command_slot(transport);
+		command_offset = 0;
+		m9x_write(mdev, M9_REG_COMMAND_BASE,
+			  lower_32_bits(m9_command_slot_bus(transport)) |
+			  M9_COMMAND_SYSTEM_TAG);
+		m9x_read(mdev, M9_REG_COMMAND_BASE);
+	}
+	start_bus = m9_command_slot_bus(transport) + command_offset;
+	if (upper_32_bits(start_bus) ||
+	    check_add_overflow(lower_32_bits(start_bus),
+			       dwords * (u32)sizeof(u32), &end))
+		return -ERANGE;
+	memcpy((u8 *)m9_command_slot_cpu(transport) + command_offset, commands,
+	       dwords * sizeof(u32));
+	dma_wmb();
+
+	m9x_write(mdev, M9_REG_COMMAND_END, end);
+	m9x_read(mdev, M9_REG_COMMAND_END);
+	if (doorbell_posted)
+		*doorbell_posted = true;
 	transport->command_offset = command_offset + dwords * sizeof(u32);
+	if (async) {
+		/* The next drain retires it; the point is the target it
+		 * reaches. */
+		transport->async_pending = true;
+		transport->async_target = target;
+		raw = target;
+	} else {
+		ret = m9_fence_wait_locked(mdev, target);
+		if (ret)
+			return ret;
+		raw = READ_ONCE(writeback[0]);
+	}
+	extended = m9_extend_fence(transport, raw);
 	if (point)
 		*point = extended;
 	return 0;
@@ -650,6 +745,9 @@ int m9x_init(struct m9x_device *mdev)
 	ret = drmm_mutex_init(&mdev->drm, &mdev->transport.lock);
 	if (ret)
 		return ret;
+	init_llist_head(&mdev->transport.async_retired);
+	INIT_WORK(&mdev->transport.async_release,
+		  m9x_transport_release_retired);
 	mdev->transport.fence_context = dma_fence_context_alloc(1);
 	/* m9x865 seeds both tracker domains at 0x10.  m9x708/m9x604
 	 * increment their tracker before emitting the first 0x20 token. */
@@ -690,6 +788,9 @@ void m9x_fini(struct m9x_device *mdev)
 	struct m9x_fence *fence;
 
 	mutex_lock(&mdev->transport.lock);
+	/* Retire a posted job and let go of what it was reading before the
+	 * engine is stopped. */
+	m9x_transport_drain_locked(mdev);
 	mdev->transport.wedged = true;
 	/* Stop host DMA before devres releases any reachable allocation. */
 	pci_clear_master(mdev->pdev);
@@ -710,4 +811,5 @@ void m9x_fini(struct m9x_device *mdev)
 		m9x_vram_unpin(color);
 		drm_gem_vram_put(color);
 	}
+	flush_work(&mdev->transport.async_release);
 }

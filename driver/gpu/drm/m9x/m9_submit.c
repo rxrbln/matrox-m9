@@ -14,6 +14,12 @@
 #include "m9_reg.h"
 #include "m9_resource69_inline.h"
 
+/* Posting a job and retiring it at the next one lets the next job be built
+ * while this one runs; the objects it reads are held until then. */
+static bool m9_async_submit = true;
+module_param_named(async_submit, m9_async_submit, bool, 0644);
+MODULE_PARM_DESC(async_submit, "retire a job at the next submission");
+
 #define M9_TRIANGLE_COLOR_BYTES	0x00050000u
 
 static bool m9_user_submit;
@@ -417,6 +423,7 @@ static int m9_submit_first_triangle(struct m9x_device *mdev,
 	 * TRANSPORT.
 	 */
 	mutex_lock(&mdev->transport.lock);
+	m9x_transport_drain_locked(mdev);
 	ret = mdev->transport.wedged ? -EIO : 0;
 	mutex_unlock(&mdev->transport.lock);
 	if (ret)
@@ -687,7 +694,8 @@ static u32 *m9_frame_records(const u32 *image, const u32 *expected, u32 dwords,
 }
 
 static int m9_submit_execute(struct m9x_device *mdev, const u32 *image,
-			     const u32 *expected, u32 dwords, u64 *point)
+			     const u32 *expected, u32 dwords, u64 *point,
+			     bool async)
 {
 	u32 *framed, *range_ends, framed_dwords, ranges, max_token, target;
 	int ret;
@@ -696,6 +704,7 @@ static int m9_submit_execute(struct m9x_device *mdev, const u32 *image,
 	if (!range_ends)
 		return -ENOMEM;
 	mutex_lock(&mdev->transport.lock);
+	m9x_transport_drain_locked(mdev);
 	ret = m9x_engine_ready_locked(mdev);
 	if (ret)
 		goto out_unlock;
@@ -710,7 +719,8 @@ static int m9_submit_execute(struct m9x_device *mdev, const u32 *image,
 	/* The completion target follows every userspace dependency token. */
 	ret = m9x_submit_user_stream_locked(mdev, framed, framed_dwords,
 					    range_ends, ranges,
-					    target + max_token + 0x10, point);
+					    target + max_token + 0x10, point,
+					    async);
 	kvfree(framed);
 out_unlock:
 	mutex_unlock(&mdev->transport.lock);
@@ -838,10 +848,30 @@ static int m9_submit_validate(struct m9x_device *mdev,
 		ret = m9_validate_relocs(image, dwords, expected, relocs,
 					 args->relocation_count, bos, mdev, refs,
 					 args->bo_count);
-	/* Referenced VRAM BOs stay pinned across the synchronous job. */
-	if (!ret && execute)
+	/*
+	 * A synchronous job holds its objects for the call.  An asynchronous
+	 * one hands them to the transport, which releases them when the job
+	 * retires: the point of posting without waiting is that the next job
+	 * is built while this one still reads them.
+	 */
+	if (!ret && execute) {
+		bool async = m9_async_submit && !mdev->transport.wedged;
+
 		ret = m9_submit_execute(mdev, image, expected, dwords,
-					&args->out_point);
+					&args->out_point, async);
+		if (!ret && async) {
+			mutex_lock(&mdev->transport.lock);
+			if (mdev->transport.async_pending &&
+			    !mdev->transport.async_bos) {
+				mdev->transport.async_bos = bos;
+				mdev->transport.async_pinned = vram_pinned;
+				mdev->transport.async_count = args->bo_count;
+				bos = NULL;
+				vram_pinned = NULL;
+			}
+			mutex_unlock(&mdev->transport.lock);
+		}
+	}
 out:
 	if (vram_pinned)
 		for (i = 0; i < args->bo_count; i++)
