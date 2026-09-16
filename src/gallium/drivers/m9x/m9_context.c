@@ -905,14 +905,16 @@ m9_texture_bind_view(const struct pipe_sampler_view *view,
    if (res->tiled && res->kind == M9_RESOURCE_LINEAR_COLOR &&
        (res->base.format == PIPE_FORMAT_B8G8R8A8_UNORM ||
         res->base.format == PIPE_FORMAT_B8G8R8X8_UNORM)) {
-      /* Targets of at most 64x64 are the small storage family, which the
-       * sampler addresses through the 2-D kind at its own span. */
-      bool small = res->width <= 64 && res->height <= 64;
-
+      /* The small storage family (at most 64 in both dimensions) tiles
+       * differently and samples wrong: rtt64 and rtt32 come back band
+       * structured, and glamor's 2x2 sources turned xterm's text into
+       * noise.  Refuse until that layout is measured. */
+      if (res->width <= 64 && res->height <= 64)
+         return "render targets of at most 64x64 are not sampled; "
+                "draw skipped";
       *bind = (struct m9_texture_bind) {
-         .code = 0xcc,
-         .kind = small ? M9_TEXTURE_KIND_2D : M9_TEXTURE_KIND_RENDER,
-         .width = small ? res->width : (res->width + 31) & ~31u,
+         .code = 0xcc, .kind = M9_TEXTURE_KIND_RENDER,
+         .width = (res->width + 31) & ~31u,
          .height = res->height, .depth = 1,
       };
       return NULL;
