@@ -53,6 +53,7 @@ const nir_shader_compiler_options m9_fs_nir_options = {
 
 enum node_kind {
    N_VARY, N_TEX, N_UBO, N_LIT, N_MUL, N_ADD, N_SUB, N_MAD,
+   N_MIN, N_MAX,        /* against a constant, the captured cls 2 / 3 form */
    N_LOAD,              /* constant factor moved into a register */
    N_COMPOSE,           /* vec4(texture.xyz, literal), written in place */
 };
@@ -74,6 +75,7 @@ struct node {
 
 enum lop_kind {
    L_INTERP, L_MUL_RC, L_MUL_RR, L_ADD_RC, L_ADD_RR, L_SUB_CR, L_MAD,
+   L_MIN_RC, L_MAX_RC,
    L_MOV_OUT, L_MOVC_OUT, L_MOVC_TMP, L_MOVC_SECOND, L_RAW,
 };
 
@@ -266,6 +268,22 @@ node_is_const(const struct node *n)
 static int varying_slot(struct ctx *c, unsigned location);
 static int build_vec(struct ctx *c, nir_scalar s[4]);
 
+/* st scalarises IO, so a load carries the first varying component it reads. */
+static unsigned
+def_comp_base(nir_def *def)
+{
+   nir_instr *instr = nir_def_instr(def);
+
+   if (instr->type == nir_instr_type_intrinsic) {
+      nir_intrinsic_instr *in = nir_instr_as_intrinsic(instr);
+
+      if (in->intrinsic == nir_intrinsic_load_interpolated_input ||
+          in->intrinsic == nir_intrinsic_load_input)
+         return nir_intrinsic_component(in);
+   }
+   return 0;
+}
+
 static int
 build_intrinsic(struct ctx *c, nir_intrinsic_instr *intr)
 {
@@ -277,12 +295,16 @@ build_intrinsic(struct ctx *c, nir_intrinsic_instr *intr)
       unsigned location = nir_intrinsic_io_semantics(intr).location;
       int k;
 
-      if (location == VARYING_SLOT_POS || intr->def.num_components != 4 ||
-          nir_intrinsic_component(intr))
+      if (location == VARYING_SLOT_POS ||
+          nir_intrinsic_component(intr) + intr->def.num_components > 4)
          return fail(c, "unsupported fragment input"), -1;
       k = varying_slot(c, location);
       if (k < 0)
          return -1;
+      /* One interpolation feeds every component read of the same slot. */
+      util_dynarray_foreach(&c->nodes, struct node, it)
+         if (it->kind == N_VARY && it->k == (unsigned)k)
+            return it - NODES(c);
       n = node_new(c, N_VARY);
       if (n < 0)
          return -1;
@@ -320,23 +342,36 @@ build_tex(struct ctx *c, nir_tex_instr *tex)
        tex->num_srcs != (pi < 0 ? 1u : 2u) ||
        p->texture_count >= M9_FS_MAX_TEXTURES)
       return fail(c, "texture sampling needs a computed coordinate pass"), -1;
-   /* Linked vec2 varyings may share one slot: xy or zw of the input. */
+   /* Linked vec2 varyings may share one slot: xy or zw of the input.  st
+    * scalarises IO, so the pair can also be two loads of one location. */
+   unsigned coord_comp[2];
+
    for (unsigned i = 0; i < 2; i++) {
+      nir_intrinsic_instr *in;
+
       s[i] = nir_scalar_chase_movs(nir_get_scalar(tex->src[ci].src.ssa, i));
-      if (s[i].comp != s[0].comp + i || (s[0].comp & 1) ||
-          s[i].def != s[0].def || !nir_scalar_is_intrinsic(s[i]))
+      if (!nir_scalar_is_intrinsic(s[i]))
          return fail(c, "texture coordinate is not a varying"), -1;
+      in = nir_def_as_intrinsic(s[i].def);
+      if (in->intrinsic != nir_intrinsic_load_interpolated_input ||
+          nir_intrinsic_io_semantics(in).location !=
+          nir_intrinsic_io_semantics(nir_def_as_intrinsic(s[0].def)).location)
+         return fail(c, "texture coordinate is not a varying"), -1;
+      coord_comp[i] = nir_intrinsic_component(in) + s[i].comp;
    }
-   coord = nir_def_as_intrinsic(s[0].def);
-   if (coord->intrinsic != nir_intrinsic_load_interpolated_input)
+   if (coord_comp[0] > 2 || coord_comp[1] != coord_comp[0] + 1)
       return fail(c, "texture coordinate is not a varying"), -1;
+   coord = nir_def_as_intrinsic(s[0].def);
    /* The fixed-function projector is w of the same varying; the driver
     * divides the coordinate stream per vertex. */
    if (pi >= 0) {
       nir_scalar q = nir_scalar_chase_movs(
          nir_get_scalar(tex->src[pi].src.ssa, 0));
 
-      if (q.def != s[0].def || q.comp != 3)
+      if (!nir_scalar_is_intrinsic(q) ||
+          nir_intrinsic_io_semantics(nir_def_as_intrinsic(q.def)).location !=
+          nir_intrinsic_io_semantics(coord).location ||
+          nir_intrinsic_component(nir_def_as_intrinsic(q.def)) + q.comp != 3)
          return fail(c, "texture sampling needs a computed coordinate pass"),
                 -1;
       p->texcoord_projective[p->texture_count] = true;
@@ -345,9 +380,15 @@ build_tex(struct ctx *c, nir_tex_instr *tex)
    for (unsigned i = 0; i < p->varying_count; i++)
       if (p->varyings[i].location == location)
          return fail(c, "texture coordinate also used as a varying"), -1;
+   /* An even pair is a captured slot half.  An odd pair is repacked per
+    * vertex by the driver, which needs one texture to own the stream. */
+   for (unsigned i = 0; i < p->texture_count; i++)
+      if (p->texcoords[i] == location &&
+          ((coord_comp[0] & 1) || (p->texcoord_components[i] & 1)))
+         return fail(c, "texture coordinate is not a varying"), -1;
    p->textures[p->texture_count] = tex->texture_index;
    p->texcoords[p->texture_count] = location;
-   p->texcoord_components[p->texture_count] = s[0].comp;
+   p->texcoord_components[p->texture_count] = coord_comp[0];
    n = node_new(c, N_TEX);
    if (n < 0)
       return -1;
@@ -464,6 +505,36 @@ build_alu(struct ctx *c, nir_alu_instr *alu)
          }
       }
       return n;
+   case nir_op_fmin:
+   case nir_op_fmax: {
+      int a = alu_src_node(c, alu, 0, lane[0], swz[0]);
+      int b = alu_src_node(c, alu, 1, lane[1], swz[1]);
+
+      if (a < 0 || b < 0)
+         return -1;
+      /* The captured form takes one register and one constant. */
+      if (node_is_const(&NODES(c)[a]) == node_is_const(&NODES(c)[b]))
+         return fail(c, "unsupported arithmetic operation"), -1;
+      if (node_is_const(&NODES(c)[a])) {
+         int t = a;
+         uint8_t tl[2], ts[2];
+
+         memcpy(tl, lane[0], 2);
+         memcpy(ts, swz[0], 2);
+         a = b;
+         memcpy(lane[0], lane[1], 2);
+         memcpy(swz[0], swz[1], 2);
+         b = t;
+         memcpy(lane[1], tl, 2);
+         memcpy(swz[1], ts, 2);
+      }
+      n = node_new(c, alu->op == nir_op_fmin ? N_MIN : N_MAX);
+      if (n < 0)
+         return -1;
+      set_src(&NODES(c)[n], 0, a, lane[0], swz[0]);
+      set_src(&NODES(c)[n], 1, b, lane[1], swz[1]);
+      return n;
+   }
    case nir_op_flrp:
       a = alu_src_node(c, alu, 0, lane[0], swz[0]);
       b = a < 0 ? -1 : alu_src_node(c, alu, 1, lane[1], swz[1]);
@@ -618,13 +689,108 @@ build_vec(struct ctx *c, nir_scalar s[4])
          return n;
       }
    }
-   for (unsigned k = 0; k < 4; k++) {
-      if (s[k].def != s[0].def || s[k].comp != k)
-         return fail(c, "swizzled or composed vector"), -1;
+   {
+      bool identity = true;
+
+      for (unsigned k = 0; k < 4; k++)
+         identity &= s[k].def == s[0].def && s[k].comp == k;
+      if (identity) {
+         if (s[0].def->num_components != 4 || s[0].def->bit_size != 32)
+            return fail(c, "non-vec4 value"), -1;
+         return build_def(c, s[0].def);
+      }
    }
-   if (s[0].def->num_components != 4 || s[0].def->bit_size != 32)
-      return fail(c, "non-vec4 value"), -1;
-   return build_def(c, s[0].def);
+   /* One source read through a swizzle, with literals allowed in any lane:
+    * multiply by a per-lane (1, 0) mask and add the literals back.  Both are
+    * captured forms (fs-mul, fs-add), so the swizzle costs slots, not new
+    * encodings.  A literal lane reads any scalar; its factor is zero. */
+   {
+      uint8_t lane[2], swz[2];
+      float mul[4], add[4];
+      bool is_lit[4], need_add = false;
+      unsigned comp[4];
+      nir_def *src = NULL;
+      int x, k_mul, n_mul;
+
+      for (unsigned k = 0; k < 4; k++) {
+         is_lit[k] = nir_scalar_is_const(s[k]);
+         comp[k] = s[k].comp;
+         add[k] = is_lit[k] ? nir_scalar_as_float(s[k]) : 0.0f;
+         mul[k] = is_lit[k] ? 0.0f : 1.0f;
+         need_add |= is_lit[k];
+         if (is_lit[k])
+            continue;
+         if (!src)
+            src = s[k].def;
+         if (s[k].def != src)
+            return fail(c, "swizzled or composed vector"), -1;
+      }
+      if (!src || src->bit_size != 32)
+         return fail(c, "swizzled or composed vector"), -1;
+      {
+         unsigned base = def_comp_base(src);
+
+         for (unsigned k = 0; k < 4; k++)
+            if (!is_lit[k]) {
+               comp[k] += base;
+               if (comp[k] > 3)
+                  return fail(c, "swizzled or composed vector"), -1;
+            }
+      }
+      for (unsigned l = 0; l < 2; l++) {
+         unsigned a = 2 * l, b = a + 1;
+
+         if (is_lit[a] && is_lit[b]) {
+            lane[l] = 0;
+            swz[l] = 1;
+         } else if (is_lit[a] || is_lit[b]) {
+            unsigned only = is_lit[a] ? comp[b] : comp[a];
+
+            lane[l] = only / 2;
+            swz[l] = (only & 1) << 1 | (only & 1);
+         } else {
+            if (comp[a] / 2 != comp[b] / 2)
+               return fail(c, "swizzle crosses register lanes"), -1;
+            lane[l] = comp[a] / 2;
+            swz[l] = (comp[a] & 1) << 1 | (comp[b] & 1);
+         }
+      }
+      x = build_def(c, src);
+      if (x < 0)
+         return -1;
+      /* A constant source would leave the multiply with no register operand;
+       * the swizzle belongs in the constant span, which this path cannot
+       * build. */
+      if (node_is_const(&NODES(c)[x]))
+         return fail(c, "swizzled or composed vector"), -1;
+      k_mul = node_new(c, N_LIT);
+      if (k_mul < 0)
+         return -1;
+      memcpy(NODES(c)[k_mul].lit, mul, sizeof(mul));
+      n_mul = node_new(c, N_MUL);
+      if (n_mul < 0)
+         return -1;
+      set_src(&NODES(c)[n_mul], 0, x, lane, swz);
+      set_src(&NODES(c)[n_mul], 1, k_mul, (const uint8_t[]){ 0, 1 },
+              (const uint8_t[]){ 1, 1 });
+      if (!need_add)
+         return n_mul;
+      {
+         int k_add = node_new(c, N_LIT), n_add;
+
+         if (k_add < 0)
+            return -1;
+         memcpy(NODES(c)[k_add].lit, add, sizeof(add));
+         n_add = node_new(c, N_ADD);
+         if (n_add < 0)
+            return -1;
+         set_src(&NODES(c)[n_add], 0, n_mul, (const uint8_t[]){ 0, 1 },
+                 (const uint8_t[]){ 1, 1 });
+         set_src(&NODES(c)[n_add], 1, k_add, (const uint8_t[]){ 0, 1 },
+                 (const uint8_t[]){ 1, 1 });
+         return n_add;
+      }
+   }
 }
 
 static int
@@ -810,6 +976,14 @@ emit_node_lops(struct ctx *c, int n, bool output, bool direct_ba)
             operand(c, &l, 0, nd, 1);
             operand(c, &l, 1, nd, 0);
          }
+         break;
+      case N_MIN:
+      case N_MAX:
+         if (!node_is_const(b))
+            return fail(c, "unsupported arithmetic operation");
+         lop_init(&l, nd->kind == N_MIN ? L_MIN_RC : L_MAX_RC, lane, n);
+         operand(c, &l, 0, nd, 0);
+         operand(c, &l, 1, nd, 1);
          break;
       case N_MAD:
          lop_init(&l, L_MAD, lane, n);
@@ -1021,6 +1195,12 @@ encode_lops(struct ctx *c)
          a = opreg(c, l, 0);
          emit(c, w0_make(a, opreg(c, l, 1), NONE, d, 0, op0),
               w1_make(0xac200000 | l->opswz[0] << 8 | l->opswz[1] << 6, has, a));
+         break;
+      case L_MIN_RC:
+      case L_MAX_RC:
+         a = opreg(c, l, 0);
+         emit(c, w0_make(NONE, a, a, d, l->kind == L_MIN_RC ? 2 : 3, op0),
+              w1_make(0xa3200d50 | l->opswz[0] << 6, e, NONE));
          break;
       case L_MOVC_TMP:
          emit(c, w0_make(NONE, NONE, NONE, d, 0, 0x1c),
@@ -2123,6 +2303,11 @@ m9_fs_compile(struct nir_shader *nir, const struct m9_fs_blend *blend,
    if (nir->info.stage != MESA_SHADER_FRAGMENT) {
       fail(&c, "not a fragment shader");
    } else {
+      /* st hands IO and arithmetic over scalarised; the native program is
+       * a two-component machine, so put the vectors back first. */
+      NIR_PASS(_, nir, nir_opt_vectorize_io,
+               nir_var_shader_in | nir_var_shader_out, false);
+      NIR_PASS(_, nir, nir_opt_vectorize, NULL, NULL);
       NIR_PASS(_, nir, nir_opt_copy_prop);
       NIR_PASS(_, nir, nir_opt_dce);
       nir_foreach_function_impl(impl, nir) {

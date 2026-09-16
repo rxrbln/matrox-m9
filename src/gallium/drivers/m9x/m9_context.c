@@ -1385,11 +1385,20 @@ m9_scale_coords(const struct m9_job_key *key, float *extra)
    const struct m9_fs_variant *v = key->variant;
    uint32_t divided = 0;
 
+   uint32_t packed = 0;
+
    for (unsigned k = 0; k < v->program.texture_count; k++) {
       int j = v->coord_extra[v->texture_coord[k]];
+      unsigned c = v->program.texcoord_components[k];
 
       if (j < 0)
          continue;
+      /* An odd pair does not line up with a slot half; move it down. */
+      if ((c & 1) && !(packed & BITFIELD_BIT(j))) {
+         extra[4 * j] = extra[4 * j + c];
+         extra[4 * j + 1] = extra[4 * j + c + 1];
+         packed |= BITFIELD_BIT(j);
+      }
       if (v->program.texcoord_projective[k] && !(divided & BITFIELD_BIT(j))) {
          float q = extra[4 * j + 3];
 
