@@ -143,6 +143,11 @@ m9_skip_report(struct m9_context *ctx)
    fprintf(stderr, "m9x: context %u: %u seen, %u skipped, %u reasons\n",
            ctx->context_id, ctx->submitted_draws, ctx->skipped_draws,
            ctx->skip_reasons);
+   fprintf(stderr, "m9x: window %u reads %" PRIu64 " KiB, %u writes %" PRIu64
+           " KiB, map usage %#x, read usage %#x, explicit reads %u\n",
+           ctx->window_reads, ctx->window_read_bytes >> 10, ctx->window_writes,
+           ctx->window_write_bytes >> 10, ctx->map_usage_seen,
+           ctx->window_read_usage, ctx->window_reads_explicit);
    for (unsigned i = 0; i < ctx->skip_reasons; i++)
       fprintf(stderr, "m9x: context %u: %u draws skipped: %s\n",
               ctx->context_id, ctx->skip_reason[i].draws,
@@ -258,6 +263,15 @@ m9_texture_window(struct m9_context *ctx, const struct m9_resource *resource,
                               0, 0, resource->base.format, data, stride, 0, 0,
                               box->width, box->height))
       ret = -EINVAL;
+   if (!ret) {
+      if (write) {
+         ctx->window_writes++;
+         ctx->window_write_bytes += bytes;
+      } else {
+         ctx->window_reads++;
+         ctx->window_read_bytes += bytes;
+      }
+   }
    if (!ret && ioctl(ctx->screen->fd, DRM_IOCTL_PARHELIA_M9_SURFACE_ACCESS,
                      &access))
       ret = -errno;
@@ -353,18 +367,21 @@ m9_transfer_map(struct pipe_context *pctx, struct pipe_resource *pres,
    if (!transfer)
       return NULL;
    if (resource->texture.levels) {
-      /* A write that covers the whole level cannot observe its old content,
-       * so the de-tiling read back through the window is dead work. */
-      bool whole = !box->x && !box->y && (unsigned)box->width == width &&
-                   (unsigned)box->height == height;
+      ctx->map_usage_seen |= usage;
+      /* Storage is read and written through the box alone, so a write-only
+       * map never observes the old content: the read back is dead work. */
       bool preserve = (usage & PIPE_MAP_READ) ||
                       (!(usage & (PIPE_MAP_DISCARD_RANGE |
                                   PIPE_MAP_DISCARD_WHOLE_RESOURCE)) &&
-                       !(whole && (usage & PIPE_MAP_WRITE)));
+                       !(usage & PIPE_MAP_WRITE));
 
       stride = box->width * util_format_get_blocksize(pres->format);
       transfer->staging = box->width && box->height ?
                           MALLOC((size_t)stride * box->height) : NULL;
+      if (preserve) {
+         ctx->window_read_usage |= usage;
+         ctx->window_reads_explicit += !!(usage & PIPE_MAP_READ);
+      }
       if (!transfer->staging ||
           (preserve && m9_texture_access(ctx, resource, level, false, box,
                                          transfer->staging, stride))) {
@@ -374,12 +391,10 @@ m9_transfer_map(struct pipe_context *pctx, struct pipe_resource *pres,
          return NULL;
       }
    } else if (resource->tiled) {
-      bool whole = !box->x && !box->y && (unsigned)box->width == width &&
-                   (unsigned)box->height == height;
       bool preserve = (usage & PIPE_MAP_READ) ||
                       (!(usage & (PIPE_MAP_DISCARD_RANGE |
                                   PIPE_MAP_DISCARD_WHOLE_RESOURCE)) &&
-                       !(whole && (usage & PIPE_MAP_WRITE)));
+                       !(usage & PIPE_MAP_WRITE));
 
       /* Tiled storage is only reachable as rows through the kernel. */
       stride = box->width * 4;

@@ -266,6 +266,13 @@ struct m9_context {
    uint32_t warned;
    uint32_t skipped_draws;      /* dropped for an unimplemented state */
    uint32_t submitted_draws;
+   /* Kernel window traffic: the de-tiling copies cost a host-aperture
+    * access per row, so count both directions and their volume. */
+   uint32_t window_reads, window_writes;
+   uint64_t window_read_bytes, window_write_bytes;
+   uint32_t map_usage_seen;     /* OR of every texture transfer usage */
+   uint32_t window_read_usage;  /* OR of the usage of every windowed read */
+   uint32_t window_reads_explicit;  /* reads a PIPE_MAP_READ asked for */
    /* Draws dropped per distinct reason; the strings are literals, so the
     * pointer identifies the reason and the table needs no allocation. */
    struct {
