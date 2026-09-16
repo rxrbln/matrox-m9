@@ -12,6 +12,7 @@
 #include <drm/drm_color_mgmt.h>
 #include <drm/drm_connector.h>
 #include <drm/drm_edid.h>
+#include <drm/drm_print.h>
 #include <drm/drm_drv.h>
 #include <drm/drm_fourcc.h>
 #include <drm/drm_gem_framebuffer_helper.h>
@@ -30,9 +31,12 @@
 #define M9_WARM_RENDER_BYTES	0x00301000u
 #define M9_WARM_CLOCK_KHZ	65000u
 /* Scanout surfaces use the tiled 0x21 layout; DC pitch and window descriptor. */
-#define M9_SCANOUT_FORMAT	0xcc210400u
-#define M9_SCANOUT_EXTENT	0x00010300u
-#define M9_SCANOUT_BYTES	(M9_WARM_PITCH * M9_WARM_HEIGHT)
+/* Surface descriptor of the programmed scanout: format cc, ordinary tiled
+ * kind 21, the 32-aligned span, and the line count. */
+#define M9_SCANOUT_FORMAT(span)	(0xcc210000u | (span))
+#define M9_SCANOUT_EXTENT(lines)	(0x00010000u | (lines))
+#define M9_SCANOUT_MAX_WIDTH	2048u
+#define M9_SCANOUT_MAX_HEIGHT	2048u
 
 static bool m9_kms;
 module_param(m9_kms, bool, 0400);
@@ -52,6 +56,22 @@ static bool m9_kms_cursor = true;
 module_param(m9_kms_cursor, bool, 0600);
 MODULE_PARM_DESC(m9_kms_cursor,
 	"Drive the hardware cursor overlay instead of leaving it to software");
+
+static bool m9_kms_modeset;
+module_param(m9_kms_modeset, bool, 0400);
+MODULE_PARM_DESC(m9_kms_modeset,
+	"Program the pixel clock and raster timing instead of keeping the firmware's mode");
+
+/* The controller's own limits: a surface is at most 2048 in each dimension,
+ * and the synthesiser covers this range with the divider search. */
+#define M9_CLOCK_MIN_KHZ	20000u
+#define M9_CLOCK_MAX_KHZ	200000u
+
+/* Every scanout surface is allocated with a 32-aligned row span. */
+static u32 m9_scanout_pitch(u32 width)
+{
+	return ALIGN(width, 32) * 4;
+}
 
 static bool m9_kms_lut;
 module_param(m9_kms_lut, bool, 0600);
@@ -249,13 +269,19 @@ m9_pipe_mode_valid(struct drm_simple_display_pipe *pipe,
 	struct m9x_device *mdev = to_m9x(pipe->crtc.dev);
 	enum drm_mode_status status;
 
-	status = matrox_kms_mode_geometry_valid(mode, M9_WARM_WIDTH,
-						 M9_WARM_HEIGHT,
-						 M9_WARM_CLOCK_KHZ,
-						 M9_WARM_CLOCK_KHZ);
+	status = matrox_kms_mode_geometry_valid(mode, M9_SCANOUT_MAX_WIDTH,
+						 M9_SCANOUT_MAX_HEIGHT,
+						 M9_CLOCK_MIN_KHZ,
+						 M9_CLOCK_MAX_KHZ);
 	if (status != MODE_OK)
 		return status;
-	return drm_mode_equal(mode, &mdev->warm_mode) ? MODE_OK : MODE_BAD;
+	if (mode->flags & DRM_MODE_FLAG_INTERLACE)
+		return MODE_NO_INTERLACE;
+	/* Without m9_kms_modeset the firmware's timing is all the pipe can
+	 * scan out, so nothing else may be advertised. */
+	if (!m9_kms_modeset && !drm_mode_equal(mode, &mdev->warm_mode))
+		return MODE_BAD;
+	return MODE_OK;
 }
 
 static int m9_pipe_check(struct drm_simple_display_pipe *pipe,
@@ -269,7 +295,7 @@ static int m9_pipe_check(struct drm_simple_display_pipe *pipe,
 	ret = matrox_kms_plane_geometry_check(plane_state, crtc_state);
 	if (ret)
 		return ret;
-	if (crtc_state->enable &&
+	if (crtc_state->enable && !m9_kms_modeset &&
 	    !drm_mode_equal(&crtc_state->mode, &to_m9x(pipe->crtc.dev)->warm_mode))
 		return -EINVAL;
 	if (crtc_state->color_mgmt_changed) {
@@ -281,9 +307,10 @@ static int m9_pipe_check(struct drm_simple_display_pipe *pipe,
 	if (!fb)
 		return 0;
 	if (!m9x_kms_scanout_enabled() ||
-	    fb->format->format != DRM_FORMAT_XRGB8888 ||
-	    fb->pitches[0] != M9_WARM_PITCH || fb->offsets[0] ||
-	    fb->width != M9_WARM_WIDTH || fb->height != M9_WARM_HEIGHT)
+	    fb->format->format != DRM_FORMAT_XRGB8888 || fb->offsets[0] ||
+	    fb->pitches[0] != m9_scanout_pitch(fb->width) ||
+	    fb->width != crtc_state->mode.hdisplay ||
+	    fb->height != crtc_state->mode.vdisplay)
 		return -EINVAL;
 	gem = drm_gem_fb_get_obj(fb, 0);
 	if (!m9x_gem_is_vram(gem))
@@ -306,7 +333,11 @@ static int m9_scanout_publish(struct m9x_device *mdev,
 	s64 offset, src_offset = 0;
 	int ret;
 
-	if (!mdev->scanout || !mdev->bar0_window || !mdev->scanout_bounce)
+	if (!mdev->scanout || !mdev->bar0_window || !mdev->scanout_bounce ||
+	    mdev->scanout->bo.base.size < mdev->scanout_bytes ||
+	    fb->width != mdev->scanout_width ||
+	    fb->height != mdev->scanout_height ||
+	    fb->pitches[0] != mdev->scanout_pitch)
 		return -ENODEV;
 	offset = drm_gem_vram_offset(mdev->scanout);
 	if (offset < 0)
@@ -322,7 +353,7 @@ static int m9_scanout_publish(struct m9x_device *mdev,
 		ret = drm_gem_vram_vmap(src, &map);
 		if (!ret) {
 			iosys_map_memcpy_from(mdev->scanout_bounce, &map, 0,
-					      M9_SCANOUT_BYTES);
+					      mdev->scanout_bytes);
 			drm_gem_vram_vunmap(src, &map);
 		}
 		ttm_bo_unreserve(&src->bo);
@@ -333,11 +364,15 @@ static int m9_scanout_publish(struct m9x_device *mdev,
 	/* GPU-rendered frames are tiled: de-tile them through the window. */
 	if (tiled)
 		m9x_surface_read_locked(mdev, lower_32_bits(src_offset),
-					M9_SCANOUT_FORMAT, M9_SCANOUT_EXTENT,
-					mdev->scanout_bounce, M9_SCANOUT_BYTES);
-	m9x_address_surface_window(mdev, lower_32_bits(offset), M9_SCANOUT_FORMAT,
-			       M9_SCANOUT_EXTENT);
-	memcpy_toio(mdev->bar0_window, mdev->scanout_bounce, M9_SCANOUT_BYTES);
+					M9_SCANOUT_FORMAT(mdev->scanout_pitch / 4),
+					M9_SCANOUT_EXTENT(mdev->scanout_height),
+					mdev->scanout_bounce,
+					mdev->scanout_bytes);
+	m9x_address_surface_window(mdev, lower_32_bits(offset),
+				   M9_SCANOUT_FORMAT(mdev->scanout_pitch / 4),
+				   M9_SCANOUT_EXTENT(mdev->scanout_height));
+	memcpy_toio(mdev->bar0_window, mdev->scanout_bounce,
+		    mdev->scanout_bytes);
 	/* Complete WC stores before the window is released. */
 	wmb();
 	m9x_address_surface_release(mdev);
@@ -376,7 +411,7 @@ static void m9_program_scanout(struct drm_simple_display_pipe *pipe,
 
 	if (!m9_scanout_direct_address(mdev, fb, &address)) {
 		pitch = (mdev->warm_dc_pitch & ~M9_DC_PITCH_MASK) |
-			M9_WARM_WIDTH;
+			(fb->pitches[0] / 4);
 		wmb();
 		m9x_write(mdev, M9_DC0 + M9_DC_START,
 			  address & M9_DC_START_MASK);
@@ -386,7 +421,7 @@ static void m9_program_scanout(struct drm_simple_display_pipe *pipe,
 	if (!fb || m9_scanout_publish(mdev, fb) ||
 	    m9_scanout_address(mdev, &address))
 		return;
-	pitch = (mdev->warm_dc_pitch & ~M9_DC_PITCH_MASK) | M9_WARM_WIDTH;
+	pitch = (mdev->warm_dc_pitch & ~M9_DC_PITCH_MASK) | (fb->pitches[0] / 4);
 	/* Publish CPU writes before the display controller fetches this BO. */
 	wmb();
 	m9x_write(mdev, M9_DC0 + M9_DC_START, address & M9_DC_START_MASK);
@@ -569,8 +604,8 @@ static void m9_cursor_atomic_update(struct drm_plane *plane,
 	 * rather than let the shifted origin wrap it back on. */
 	offscreen = new->crtc_x <= -(int)M9_CURSOR_SIZE ||
 		    new->crtc_y <= -(int)M9_CURSOR_SIZE ||
-		    new->crtc_x >= (int)M9_WARM_WIDTH ||
-		    new->crtc_y >= (int)M9_WARM_HEIGHT;
+		    new->crtc_x >= (int)mdev->scanout_width ||
+		    new->crtc_y >= (int)mdev->scanout_height;
 	if (offscreen) {
 		m9_cursor_hide(mdev);
 		goto out;
@@ -657,6 +692,25 @@ static void m9_pipe_load_gamma(struct drm_simple_display_pipe *pipe,
 			       M9_DC_LUT_LATCH, false, blob);
 }
 
+/* Record the geometry the rest of the display path describes surfaces with,
+ * and grow the de-tiling bounce buffer to match.  A failed growth only costs
+ * the copied path; a tiled framebuffer is still scanned out in place. */
+static void m9_scanout_geometry(struct m9x_device *mdev,
+				const struct drm_display_mode *mode)
+{
+	size_t bytes;
+
+	mdev->scanout_width = mode->hdisplay;
+	mdev->scanout_height = mode->vdisplay;
+	mdev->scanout_pitch = m9_scanout_pitch(mode->hdisplay);
+	bytes = (size_t)mdev->scanout_pitch * mdev->scanout_height;
+	if (bytes <= mdev->scanout_bytes)
+		return;
+	kvfree(mdev->scanout_bounce);
+	mdev->scanout_bounce = kvzalloc(bytes, GFP_KERNEL);
+	mdev->scanout_bytes = mdev->scanout_bounce ? bytes : 0;
+}
+
 static void m9_pipe_enable(struct drm_simple_display_pipe *pipe,
 			   struct drm_crtc_state *crtc_state,
 			   struct drm_plane_state *plane_state)
@@ -669,6 +723,10 @@ static void m9_pipe_enable(struct drm_simple_display_pipe *pipe,
 		return;
 	ctrl = m9x_read(mdev, M9_DC0 + M9_DC_CTRL);
 	m9x_write(mdev, M9_DC0 + M9_DC_CTRL, ctrl & ~M9_DC_ENABLE);
+	m9_scanout_geometry(mdev, &crtc_state->mode);
+	if (m9_kms_modeset &&
+	    !drm_mode_equal(&crtc_state->mode, &mdev->warm_mode))
+		m9x_mode_program(mdev, &crtc_state->mode, mdev->scanout_pitch / 4);
 	m9_program_scanout(pipe, plane_state->fb);
 	m9_pipe_load_gamma(pipe, crtc_state->gamma_lut);
 	/* Re-enable only the proven warm controller bit after the pinned new BO
@@ -822,10 +880,11 @@ m9_fb_create(struct drm_device *drm, struct drm_file *file,
 		return ERR_PTR(-EINVAL);
 	}
 	need = (u64)mode_cmd->pitches[0] * mode_cmd->height;
-	if (funcs == &m9_fb_funcs && mode_cmd->width == M9_WARM_WIDTH &&
-	    mode_cmd->height == M9_WARM_HEIGHT &&
-	    mode_cmd->pitches[0] == M9_WARM_PITCH)
-		need = M9_WARM_RENDER_BYTES;
+	/* A scanout-shaped image carries the vendor allocation's tail. */
+	if (funcs == &m9_fb_funcs &&
+	    mode_cmd->pitches[0] == m9_scanout_pitch(mode_cmd->width))
+		m9x_surface_layout_bytes(mode_cmd->width, mode_cmd->height, 4,
+					 &need);
 	gem = drm_gem_object_lookup(file, mode_cmd->handles[0]);
 	if (!gem)
 		return ERR_PTR(-ENOENT);
@@ -849,32 +908,29 @@ static int m9_dumb_create(struct drm_file *file, struct drm_device *drm,
 			  struct drm_mode_create_dumb *args)
 {
 	struct drm_mode_create_dumb alloc_args;
+	u64 bytes;
 	int ret;
 
 	if (!m9x_kms_scanout_enabled() || !args->width || !args->height ||
 	    args->bpp != 32)
 		return -EINVAL;
-	/*
-	 * The framebuffer and plane checks below still admit only the exact warm
-	 * 1024x768 scanout.  Generic 32-bit dumb objects must remain available for
-	 * small mapped Xorg software-cursor and scratch allocations; none can reach
-	 * DC0 without first passing those stricter checks.  Page-align allocations
-	 * so the tested front buffer keeps its 4096-byte pitch and DC placement.
-	 */
-	if (args->width != M9_WARM_WIDTH || args->height != M9_WARM_HEIGHT)
+	/* Geometry the surface constructor cannot describe still gets a plain
+	 * object: nothing reaches DC0 without passing the framebuffer and plane
+	 * checks, which insist on the constructor's own span. */
+	if (!m9x_surface_layout_bytes(args->width, args->height, 4, &bytes))
 		return drm_gem_vram_fill_create_dumb(file, drm, 1,
 						     M9_WARM_PITCH, args);
 
 	/*
 	 * The M9148 category-2 constructor adds eight end-pad elements when
-	 * aligned geometry leaves no tail slack, then rounds to its 4-KiB byte
-	 * quantum.  Preserve the visible 1024x768 geometry and 4096-byte pitch,
-	 * but allocate the exact 0x301000-byte renderable backing.
+	 * aligned geometry leaves no tail slack, then rounds to its byte
+	 * quantum, so the visible geometry is kept and the height inflated to
+	 * cover the real backing.  ALIGN(width, 32) * 4 is ALIGN(width * 4,
+	 * 128), and the helper needs a power-of-two alignment.
 	 */
 	alloc_args = *args;
-	alloc_args.height = M9_WARM_RENDER_BYTES / M9_WARM_PITCH;
-	ret = drm_gem_vram_fill_create_dumb(file, drm, 1, M9_WARM_PITCH,
-					    &alloc_args);
+	alloc_args.height = DIV_ROUND_UP(bytes, m9_scanout_pitch(args->width));
+	ret = drm_gem_vram_fill_create_dumb(file, drm, 1, 128, &alloc_args);
 	if (ret)
 		return ret;
 	args->pitch = alloc_args.pitch;
@@ -928,7 +984,11 @@ static int m9_scanout_init(struct m9x_device *mdev)
 	struct pci_dev *pci = mdev->pdev;
 	int ret;
 
-	mdev->scanout_bounce = kvzalloc(M9_SCANOUT_BYTES, GFP_KERNEL);
+	mdev->scanout_width = mdev->warm_mode.hdisplay;
+	mdev->scanout_height = mdev->warm_mode.vdisplay;
+	mdev->scanout_pitch = m9_scanout_pitch(mdev->scanout_width);
+	mdev->scanout_bytes = (size_t)mdev->scanout_pitch * mdev->scanout_height;
+	mdev->scanout_bounce = kvzalloc(mdev->scanout_bytes, GFP_KERNEL);
 	if (!mdev->bar0_window || !mdev->scanout_bounce) {
 		ret = -ENOMEM;
 		goto fail;
@@ -963,15 +1023,23 @@ int m9x_modeset_init(struct m9x_device *mdev)
 	if (ret)
 		return ret;
 	m9_capture_warm_snapshot(mdev, &snapshot);
-	if (!m9_warm_snapshot_valid(&snapshot))
+	/* Programming modes means the controller no longer holds the firmware's
+	 * state after the first modeset, so adopt whatever it is running. */
+	if (!m9_warm_snapshot_valid(&snapshot) && !m9_kms_modeset)
 		return dev_err_probe(&mdev->pdev->dev, -EOPNOTSUPP,
 			"untested M9 display state; refusing guarded warm KMS\n");
 	mdev->warm_dc_ctrl = snapshot.ctrl;
 	mdev->warm_dc_pitch = snapshot.pitch;
 	mdev->warm_dc_start = snapshot.start;
 	mdev->warm_dvo = snapshot.dvo;
-	mdev->warm_mode = m9_warm_mode;
-	drm_mode_set_name(&mdev->warm_mode);
+	if (m9_warm_snapshot_valid(&snapshot)) {
+		mdev->warm_mode = m9_warm_mode;
+		drm_mode_set_name(&mdev->warm_mode);
+	} else {
+		m9x_mode_read_current(mdev, &mdev->warm_mode);
+		drm_info(drm, "adopted the live timing " DRM_MODE_FMT "\n",
+			 DRM_MODE_ARG(&mdev->warm_mode));
+	}
 	if (m9x_kms_scanout_enabled()) {
 		ret = m9_scanout_init(mdev);
 		if (ret)
@@ -985,9 +1053,9 @@ int m9x_modeset_init(struct m9x_device *mdev)
 	/* The scanout size is pinned by m9_fb_create; the framebuffer bounds
 	 * must still admit the small cursor image. */
 	drm->mode_config.min_width = 1;
-	drm->mode_config.max_width = M9_WARM_WIDTH;
+	drm->mode_config.max_width = M9_SCANOUT_MAX_WIDTH;
 	drm->mode_config.min_height = 1;
-	drm->mode_config.max_height = M9_WARM_HEIGHT;
+	drm->mode_config.max_height = M9_SCANOUT_MAX_HEIGHT;
 	drm->mode_config.prefer_shadow = 0;
 	drm->mode_config.cursor_width = M9_CURSOR_SIZE;
 	drm->mode_config.cursor_height = M9_CURSOR_SIZE;

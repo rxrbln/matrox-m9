@@ -154,4 +154,52 @@
 #define M9_MISCIO		0x1c4c
 #define M9_DDC_OE_SHIFT		16
 
+
+/* Native modeset on display controller 0.  Field encodings are the M9's own:
+ * every timing value is (n - 1), horizontal 15 bit and vertical 14 bit
+ * (xf86-video-parhelia src/parhelia_reg.h, recovered from the vendor driver). */
+#define M9_DC_MISC			0x0004
+#define M9_DC_HOLD			0x0088
+#define M9_DC_HOLD_SET			0x00000012u
+#define M9_DC_HOLD_CLR			0x00000032u
+#define M9_DC_HOLD2			0x0090
+#define M9_DC_CTRL_INTERLACE		BIT(12)
+#define M9_DC_PITCH_FORMAT_SHIFT	24
+#define M9_DCT_CTRL			0x0000
+#define M9_DCT_RESET			0x00030000u
+#define M9_DCT_H_MASK			0x7fffu
+#define M9_DCT_V_MASK			0x3fffu
+
+/* Frequency synthesisers.  0x0e30/34/38 are ~500 MHz system clocks in both
+ * the firmware's and the vendor driver's state; the pixel clock of controller
+ * 0 is 0x0e48 (MEASURED: the vendor's 1920x1200 capture holds 0x0004d6f6
+ * there, which decodes to exactly 154000 kHz, and the firmware's 1024x768
+ * holds 0x00063a1d, 65089 kHz).  Field widths are b0 6, b1 5, b2 5, b3 4
+ * bits, each stored as value - 1. */
+#define M9_FS_OSC			0x0e24
+#define M9_FS_PIXEL0			0x0e48
+#define M9_FS_B0_MAX			64u
+#define M9_FS_B1_MAX			32u
+#define M9_FS_B2_MAX			32u
+#define M9_FS_B3_MAX			16u
+#define M9_FS_REF_KHZ			27000u
+#define M9_FS_LOAD			BIT(31)
+#define M9_FS_INIT			BIT(21)
+#define M9_FS_LOCK			BIT(24)
+#define M9_VCO_MIN_KHZ			800000u
+#define M9_VCO_MAX_KHZ			1600000u
+#define M9_FS_OUT_MIN_KHZ		54000u
+#define M9_FS_OUT_MAX_KHZ		108000u
+#define M9_CLKSEL0			0x1c00
+#define M9_CLK_HOLD			BIT(0)
+#define M9_CLK_SEL_MASK			0x0000001eu
+#define M9_CLK_SEL_SHIFT		1
+#define M9_CLK_SEL_FS2			4u
+#define M9_REG_SYNCARM			0x1c24
+/* Digital link 0: the vendor sets bit 22 for a negative vsync and leaves the
+ * rest of the word alone across a mode change. */
+#define M9_DVO_HSYNC_NEG		BIT(20)
+#define M9_DVO_VSYNC_NEG		BIT(22)
+#define M9_VIDRST_STROBE		BIT(31)
+
 #endif

@@ -46,7 +46,7 @@ static u32 m9_texture_cpp(u8 format)
 }
 
 /* Vendor render allocation contract, shared with Mesa m9_internal.h. */
-static bool m9_surface_layout_bytes(u32 width, u32 height, u32 cpp, u64 *size)
+bool m9x_surface_layout_bytes(u32 width, u32 height, u32 cpp, u64 *size)
 {
 	bool small = width <= 64 && height <= 64;
 	u32 height_quantum = small ? (cpp == 4 ? 8 : 4) : 32;
@@ -178,7 +178,7 @@ static int m9_surface_access(struct m9x_device *mdev, struct drm_file *file,
 	}
 	if (texture)
 		min_size = (u64)args->offset + view.bytes;
-	else if (!m9_surface_layout_bytes(args->surface_width, view.height, 4,
+	else if (!m9x_surface_layout_bytes(args->surface_width, view.height, 4,
 					  &min_size))
 		min_size = U64_MAX;
 	if (!m9x_gem_is_vram(gem) || (!texture && !m9x_gem_vram_tiled(gem)) ||
@@ -316,8 +316,8 @@ int m9x_surface_selftest(void)
 	args.descriptor0 = 0x77010040;
 	if (m9_surface_check(&args, &view) != -EINVAL)
 		return -EINVAL;
-	if (!m9_surface_layout_bytes(320, 240, 4, &size) || size != 0x50000 ||
-	    !m9_surface_layout_bytes(1024, 768, 4, &size) || size != 0x301000)
+	if (!m9x_surface_layout_bytes(320, 240, 4, &size) || size != 0x50000 ||
+	    !m9x_surface_layout_bytes(1024, 768, 4, &size) || size != 0x301000)
 		return -EINVAL;
 	return 0;
 }

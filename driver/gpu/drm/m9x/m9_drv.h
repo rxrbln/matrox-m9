@@ -116,6 +116,9 @@ struct m9x_device {
 	bool kms_initialized;
 	bool irq_installed;
 	struct drm_gem_vram_object *scanout;
+	/* Geometry the controller is currently programmed for. */
+	u32 scanout_width, scanout_height, scanout_pitch;
+	size_t scanout_bytes;
 	struct drm_gem_vram_object *cursor;
 	struct iosys_map cursor_map;
 	struct drm_plane cursor_plane;
@@ -139,6 +142,11 @@ static inline struct m9x_device *to_m9x(struct drm_device *drm)
 	return container_of(drm, struct m9x_device, drm);
 }
 
+void m9x_mode_read_current(struct m9x_device *mdev,
+			   struct drm_display_mode *mode);
+int m9x_mode_program(struct m9x_device *mdev,
+		     const struct drm_display_mode *mode, u32 pitch_pixels);
+bool m9x_surface_layout_bytes(u32 width, u32 height, u32 cpp, u64 *size);
 int m9x_ddc_init(struct m9x_device *mdev);
 struct i2c_adapter *m9x_ddc_adapter(struct m9x_device *mdev);
 bool m9x_enabled(void);
