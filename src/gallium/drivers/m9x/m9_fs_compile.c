@@ -54,6 +54,7 @@ const nir_shader_compiler_options m9_fs_nir_options = {
 enum node_kind {
    N_VARY, N_TEX, N_UBO, N_LIT, N_MUL, N_ADD, N_SUB, N_MAD,
    N_MIN, N_MAX,        /* against a constant, the captured cls 2 / 3 form */
+   N_NEG,               /* move with the W1 negate bit, as fs-neg emits */
    N_LOAD,              /* constant factor moved into a register */
    N_COMPOSE,           /* vec4(texture.xyz, literal), written in place */
 };
@@ -75,7 +76,7 @@ struct node {
 
 enum lop_kind {
    L_INTERP, L_MUL_RC, L_MUL_RR, L_ADD_RC, L_ADD_RR, L_SUB_CR, L_MAD,
-   L_MIN_RC, L_MAX_RC,
+   L_MIN_RC, L_MAX_RC, L_NEG,
    L_MOV_OUT, L_MOVC_OUT, L_MOVC_TMP, L_MOVC_SECOND, L_RAW,
 };
 
@@ -377,9 +378,6 @@ build_tex(struct ctx *c, nir_tex_instr *tex)
       p->texcoord_projective[p->texture_count] = true;
    }
    location = nir_intrinsic_io_semantics(coord).location;
-   for (unsigned i = 0; i < p->varying_count; i++)
-      if (p->varyings[i].location == location)
-         return fail(c, "texture coordinate also used as a varying"), -1;
    /* An even pair is a captured slot half.  An odd pair is repacked per
     * vertex by the driver, which needs one texture to own the stream. */
    for (unsigned i = 0; i < p->texture_count; i++)
@@ -408,9 +406,12 @@ alu_src_node(struct ctx *c, nir_alu_instr *alu, unsigned i, uint8_t *lane,
    lane[0] = 0;
    lane[1] = 1;
    swz[0] = swz[1] = 1;
+   unsigned nc = alu->def.num_components;
+
    for (unsigned k = 0; k < 4; k++) {
-      s[k] = nir_scalar_chase_movs(nir_get_scalar(alu->src[i].src.ssa,
-                                                  alu->src[i].swizzle[k]));
+      s[k] = nir_scalar_chase_movs(
+         nir_get_scalar(alu->src[i].src.ssa,
+                        alu->src[i].swizzle[MIN2(k, nc - 1)]));
       same &= s[k].def == s[0].def && !nir_scalar_is_const(s[k]);
       identity &= s[k].comp == k;
    }
@@ -445,14 +446,18 @@ build_alu(struct ctx *c, nir_alu_instr *alu)
    uint8_t lane[3][2], swz[3][2];
    int a, b, t, n, s;
 
-   if (alu->def.num_components != 4)
+   /* A narrower result computes in every lane and is read back through its
+    * own components; the lanes above it are don't-care. */
+   if (alu->def.num_components < 1 || alu->def.num_components > 4)
       return fail(c, "non-vec4 arithmetic"), -1;
    /* A constructor is a value, not an operation. */
    if (nir_op_is_vec_or_mov(alu->op)) {
+      unsigned nc = alu->def.num_components;
       nir_scalar v[4];
 
       for (unsigned k = 0; k < 4; k++)
-         v[k] = nir_scalar_chase_movs(nir_get_scalar(&alu->def, k));
+         v[k] = nir_scalar_chase_movs(
+            nir_get_scalar(&alu->def, MIN2(k, nc - 1)));
       return build_vec(c, v);
    }
    switch (alu->op) {
@@ -505,6 +510,19 @@ build_alu(struct ctx *c, nir_alu_instr *alu)
          }
       }
       return n;
+   case nir_op_fneg: {
+      int a = alu_src_node(c, alu, 0, lane[0], swz[0]);
+
+      if (a < 0)
+         return -1;
+      if (node_is_const(&NODES(c)[a]))
+         return fail(c, "unsupported arithmetic operation"), -1;
+      n = node_new(c, N_NEG);
+      if (n < 0)
+         return -1;
+      set_src(&NODES(c)[n], 0, a, lane[0], swz[0]);
+      return n;
+   }
    case nir_op_fmin:
    case nir_op_fmax: {
       int a = alu_src_node(c, alu, 0, lane[0], swz[0]);
@@ -801,9 +819,8 @@ varying_slot(struct ctx *c, unsigned location)
    for (unsigned i = 0; i < p->varying_count; i++)
       if (p->varyings[i].location == location)
          return i;
-   for (unsigned i = 0; i < p->texture_count; i++)
-      if (p->texcoords[i] == location)
-         return fail(c, "texture coordinate also used as a varying"), -1;
+   /* A location may feed both the texture unit and an interpolation: the
+    * driver emits one CPU stream per use from the same draw output. */
    /* Three raster streams besides position, c and d. */
    if (p->varying_count + p->texture_count >= 3)
       return fail(c, "too many interpolated inputs"), -1;
@@ -976,6 +993,10 @@ emit_node_lops(struct ctx *c, int n, bool output, bool direct_ba)
             operand(c, &l, 0, nd, 1);
             operand(c, &l, 1, nd, 0);
          }
+         break;
+      case N_NEG:
+         lop_init(&l, L_NEG, lane, n);
+         operand(c, &l, 0, nd, 0);
          break;
       case N_MIN:
       case N_MAX:
@@ -1195,6 +1216,13 @@ encode_lops(struct ctx *c)
          a = opreg(c, l, 0);
          emit(c, w0_make(a, opreg(c, l, 1), NONE, d, 0, op0),
               w1_make(0xac200000 | l->opswz[0] << 8 | l->opswz[1] << 6, has, a));
+         break;
+      case L_NEG:
+         /* The move forms carry no operand swizzle field. */
+         if (l->opswz[0] != 1)
+            return fail(c, "swizzled negate operand");
+         emit(c, w0_make(NONE, NONE, opreg(c, l, 0), d, 0, op0),
+              w1_make(0xa2a03f10, has, NONE));
          break;
       case L_MIN_RC:
       case L_MAX_RC:
