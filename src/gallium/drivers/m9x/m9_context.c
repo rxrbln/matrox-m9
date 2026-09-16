@@ -603,6 +603,7 @@ m9_submit_job(struct m9_context *ctx)
                                                struct m9_draw_record);
    const struct m9_job_key *key = &ctx->job_key;
    const struct m9_fs_state *fs = key->fs;
+   const struct m9_draw_record *first_draw = ctx->draws.data;
    struct m9_raster_fs raster;
    struct m9_draw_job job;
    uint64_t point = 0;
@@ -642,8 +643,8 @@ m9_submit_job(struct m9_context *ctx)
          .clip_min = key->clip_min,
          .clip_max = key->clip_max,
          .fs = fs ? &raster : NULL,
-         .units = key->unit_count ? key->units : NULL,
-         .unit_count = key->unit_count,
+         .units = first_draw->unit_count ? first_draw->units : NULL,
+         .unit_count = first_draw->unit_count,
       };
       if (fs) {
          job.program = key->variant->c2.handle;
@@ -689,6 +690,10 @@ m9_submit_job(struct m9_context *ctx)
                  key->depth_control, key->depth_ef, key->color_mask,
                  key->clip_min, key->clip_max, point);
    }
+   util_dynarray_foreach(&ctx->job_textures, struct pipe_resource *, held)
+      pipe_resource_reference(held, NULL);
+   util_dynarray_clear(&ctx->job_textures);
+   ctx->job_unit_dwords = 0;
    util_dynarray_clear(&ctx->records);
    util_dynarray_clear(&ctx->draws);
    util_dynarray_clear(&ctx->extra);
@@ -719,14 +724,26 @@ m9_job_reserve(struct m9_context *ctx, const struct m9_job_key *key,
 
    if (padded > m9_draw_max_source_vertices())
       return NULL;
-   dwords = key->fs ? m9_draw_job_dwords_fs(draws + 1, key->unit_count) :
-                      m9_draw_job_dwords(draws + 1);
-   if (draws && (memcmp(key, &ctx->job_key, sizeof(*key)) ||
+   /* The bound textures are restated per draw, so they need not end a job;
+    * only their extra stream words have to fit the command budget. */
+   bool units_differ = key->unit_count != ctx->job_key.unit_count ||
+                       memcmp(key->units, ctx->job_key.units,
+                              key->unit_count * sizeof(key->units[0]));
+   unsigned unit_dwords = ctx->job_unit_dwords +
+                          (draws && units_differ ?
+                           m9_draw_units_dwords(key->unit_count) : 0);
+
+   dwords = unit_dwords +
+            (key->fs ? m9_draw_job_dwords_fs(draws + 1, key->unit_count) :
+                       m9_draw_job_dwords(draws + 1));
+   if (draws && (memcmp(key, &ctx->job_key,
+                        offsetof(struct m9_job_key, units)) ||
                  (key->fs && m9_consts_differ(consts, &ctx->job_consts)) ||
                  records + padded > m9_draw_max_source_vertices() ||
                  dwords > M9_MAX_COMMAND_DWORDS)) {
       m9_submit_job(ctx);
       records = 0;
+      unit_dwords = 0;
    }
    if (ctx->lost)
       return NULL;
@@ -739,9 +756,16 @@ m9_job_reserve(struct m9_context *ctx, const struct m9_job_key *key,
          memcpy(ctx->job_consts.data, consts->data, consts->size);
    }
    ctx->job_key = *key;
-   for (unsigned k = 0; k < M9_TEXTURE_MAX_UNITS; k++)
-      pipe_resource_reference(&ctx->textures[k], k < key->unit_count ?
-                              key->unit_res[k] : NULL);
+   ctx->job_unit_dwords = unit_dwords;
+   for (unsigned k = 0; k < key->unit_count; k++) {
+      struct pipe_resource **held =
+         util_dynarray_grow(&ctx->job_textures, struct pipe_resource *, 1);
+
+      if (!held)
+         return NULL;
+      *held = NULL;
+      pipe_resource_reference(held, key->unit_res[k]);
+   }
    *extra = NULL;
    if (extra_count) {
       *extra = util_dynarray_grow(&ctx->extra, float,
@@ -789,7 +813,10 @@ m9_job_commit(struct m9_context *ctx, float *out, float *extra,
       .cull = cull,
       .lines = lines,
       .flat = flat,
+      .unit_count = ctx->job_key.unit_count,
    };
+   memcpy(draw->units, ctx->job_key.units,
+          ctx->job_key.unit_count * sizeof(draw->units[0]));
 }
 
 static struct m9_resource *
@@ -2544,6 +2571,9 @@ m9_context_destroy(struct pipe_context *pctx)
    m9_bo_destroy(screen, &ctx->target_depth);
    m9_bo_destroy(screen, &ctx->target_aux);
    m9_bo_destroy(screen, &ctx->placeholder_texture);
+   util_dynarray_foreach(&ctx->job_textures, struct pipe_resource *, held)
+      pipe_resource_reference(held, NULL);
+   util_dynarray_fini(&ctx->job_textures);
    util_dynarray_fini(&ctx->records);
    util_dynarray_fini(&ctx->draws);
    util_dynarray_fini(&ctx->extra);

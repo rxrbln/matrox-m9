@@ -263,6 +263,10 @@ struct m9_context {
    struct util_dynarray draws;    /* struct m9_draw_record */
    struct util_dynarray extra;    /* float4 CPU varyings per source record */
    struct util_dynarray key_consts, job_consts;  /* raster constant floats */
+   /* References held for every texture the pending job binds, and the stream
+    * budget its restated unit blocks have already claimed. */
+   struct util_dynarray job_textures;  /* struct pipe_resource * */
+   unsigned job_unit_dwords;
    uint32_t warned;
    uint32_t skipped_draws;      /* dropped for an unimplemented state */
    uint32_t submitted_draws;

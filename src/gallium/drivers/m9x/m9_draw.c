@@ -43,6 +43,14 @@ m9_draw_job_dwords_fs(unsigned draw_count, unsigned unit_count)
    return m9_draw_job_dwords(draw_count) + 4 + 18 * unit_count;
 }
 
+unsigned
+m9_draw_units_dwords(unsigned unit_count)
+{
+   /* One restated unit block inside a job: the 74 group, the bound units and
+    * the zero 70+unit packets for the units left unbound. */
+   return 10 + 18 * unit_count;
+}
+
 static int
 m9_emit_units(struct m9_batch *batch, const struct m9_texture_unit *units,
               unsigned unit_count)
@@ -269,8 +277,16 @@ m9_batch_emit_draw_job(struct m9_batch *batch, const struct m9_draw_job *job)
    for (unsigned i = 0; i < job->draw_count; i++) {
       const struct m9_draw_record *d = &job->draws[i];
 
-      /* Later draws restate topology, shading, class and cull. */
+      /* Later draws restate topology, shading, class and cull, and their
+       * texture units whenever the binding moved on. */
       if (i) {
+         if (d->unit_count != job->draws[i - 1].unit_count ||
+             memcmp(d->units, job->draws[i - 1].units,
+                    d->unit_count * sizeof(d->units[0]))) {
+            ret = m9_emit_units(batch, d->units, d->unit_count);
+            if (ret)
+               goto fail;
+         }
          EMIT(V(0x22, m9_job_raster_control(job, d)),
               V(0x6a, 0x25010000));
          EMIT(V(0xf0, m9_raster_class(d->lines, job->blend_dest)),

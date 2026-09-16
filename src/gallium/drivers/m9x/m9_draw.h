@@ -5,6 +5,7 @@
 
 #include "m9_batch.h"
 #include "m9_draw_params.h"
+#include "m9_texture.h"
 
 /* One raster draw; start is a four-record boundary of the source. */
 struct m9_draw_record {
@@ -13,6 +14,10 @@ struct m9_draw_record {
    uint32_t cull;          /* ef cull bits */
    bool lines;
    bool flat;              /* raster 22 bit 14 */
+   /* Texture units this draw samples; restated in the stream whenever they
+    * differ from the preceding draw, so one job spans texture changes. */
+   struct m9_texture_unit units[M9_TEXTURE_MAX_UNITS];
+   unsigned unit_count;
 };
 
 /* One two-pass job: shared pass state, GEM handles and its raster draws. */
@@ -42,6 +47,7 @@ struct m9_draw_job {
 };
 
 unsigned m9_draw_job_dwords(unsigned draw_count);
+unsigned m9_draw_units_dwords(unsigned unit_count);
 unsigned m9_draw_job_dwords_fs(unsigned draw_count, unsigned unit_count);
 int m9_batch_emit_draw_job(struct m9_batch *batch,
                            const struct m9_draw_job *job);
