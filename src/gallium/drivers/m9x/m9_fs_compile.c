@@ -55,6 +55,7 @@ enum node_kind {
    N_VARY, N_TEX, N_UBO, N_LIT, N_MUL, N_ADD, N_SUB, N_MAD,
    N_MIN, N_MAX,        /* against a constant, the captured cls 2 / 3 form */
    N_NEG,               /* move with the W1 negate bit, as fs-neg emits */
+   N_SAT,               /* move in the saturating class, as blending uses */
    N_LOAD,              /* constant factor moved into a register */
    N_COMPOSE,           /* vec4(texture.xyz, literal), written in place */
 };
@@ -76,7 +77,7 @@ struct node {
 
 enum lop_kind {
    L_INTERP, L_MUL_RC, L_MUL_RR, L_ADD_RC, L_ADD_RR, L_SUB_CR, L_MAD,
-   L_MIN_RC, L_MAX_RC, L_NEG,
+   L_MIN_RC, L_MAX_RC, L_NEG, L_SAT,
    L_MOV_OUT, L_MOVC_OUT, L_MOVC_TMP, L_MOVC_SECOND, L_RAW,
 };
 
@@ -510,6 +511,19 @@ build_alu(struct ctx *c, nir_alu_instr *alu)
          }
       }
       return n;
+   case nir_op_fsat: {
+      int a = alu_src_node(c, alu, 0, lane[0], swz[0]);
+
+      if (a < 0)
+         return -1;
+      if (node_is_const(&NODES(c)[a]))
+         return fail(c, "unsupported arithmetic operation"), -1;
+      n = node_new(c, N_SAT);
+      if (n < 0)
+         return -1;
+      set_src(&NODES(c)[n], 0, a, lane[0], swz[0]);
+      return n;
+   }
    case nir_op_fneg: {
       int a = alu_src_node(c, alu, 0, lane[0], swz[0]);
 
@@ -578,7 +592,8 @@ build_alu(struct ctx *c, nir_alu_instr *alu)
       NODES(c)[n].src[2] = a;
       return n;
    default:
-      return fail(c, "unsupported arithmetic operation"), -1;
+      /* The op name is a static string, so it can be the reason. */
+      return fail(c, nir_op_infos[alu->op].name), -1;
    }
 }
 
@@ -994,6 +1009,10 @@ emit_node_lops(struct ctx *c, int n, bool output, bool direct_ba)
             operand(c, &l, 1, nd, 0);
          }
          break;
+      case N_SAT:
+         lop_init(&l, L_SAT, lane, n);
+         operand(c, &l, 0, nd, 0);
+         break;
       case N_NEG:
          lop_init(&l, L_NEG, lane, n);
          operand(c, &l, 0, nd, 0);
@@ -1216,6 +1235,13 @@ encode_lops(struct ctx *c)
          a = opreg(c, l, 0);
          emit(c, w0_make(a, opreg(c, l, 1), NONE, d, 0, op0),
               w1_make(0xac200000 | l->opswz[0] << 8 | l->opswz[1] << 6, has, a));
+         break;
+      case L_SAT:
+         /* Class 4 saturates the result, as the blend lowering relies on. */
+         if (l->opswz[0] != 1)
+            return fail(c, "swizzled saturate operand");
+         emit(c, w0_make(NONE, NONE, opreg(c, l, 0), d, 4, op0),
+              w1_make(0xa2803f10, has, NONE));
          break;
       case L_NEG:
          /* The move forms carry no operand swizzle field. */
