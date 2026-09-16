@@ -353,9 +353,14 @@ m9_transfer_map(struct pipe_context *pctx, struct pipe_resource *pres,
    if (!transfer)
       return NULL;
    if (resource->texture.levels) {
+      /* A write that covers the whole level cannot observe its old content,
+       * so the de-tiling read back through the window is dead work. */
+      bool whole = !box->x && !box->y && (unsigned)box->width == width &&
+                   (unsigned)box->height == height;
       bool preserve = (usage & PIPE_MAP_READ) ||
-                      !(usage & (PIPE_MAP_DISCARD_RANGE |
-                                 PIPE_MAP_DISCARD_WHOLE_RESOURCE));
+                      (!(usage & (PIPE_MAP_DISCARD_RANGE |
+                                  PIPE_MAP_DISCARD_WHOLE_RESOURCE)) &&
+                       !(whole && (usage & PIPE_MAP_WRITE)));
 
       stride = box->width * util_format_get_blocksize(pres->format);
       transfer->staging = box->width && box->height ?
@@ -369,9 +374,12 @@ m9_transfer_map(struct pipe_context *pctx, struct pipe_resource *pres,
          return NULL;
       }
    } else if (resource->tiled) {
+      bool whole = !box->x && !box->y && (unsigned)box->width == width &&
+                   (unsigned)box->height == height;
       bool preserve = (usage & PIPE_MAP_READ) ||
-                      !(usage & (PIPE_MAP_DISCARD_RANGE |
-                                 PIPE_MAP_DISCARD_WHOLE_RESOURCE));
+                      (!(usage & (PIPE_MAP_DISCARD_RANGE |
+                                  PIPE_MAP_DISCARD_WHOLE_RESOURCE)) &&
+                       !(whole && (usage & PIPE_MAP_WRITE)));
 
       /* Tiled storage is only reachable as rows through the kernel. */
       stride = box->width * 4;
