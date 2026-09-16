@@ -24,6 +24,7 @@
 #include "m9_format.h"
 #include "m9_internal.h"
 #include "nir.h"
+#include "util/format/u_format.h"
 #include "util/u_memory.h"
 #include "util/u_inlines.h"
 #include "util/u_screen.h"
@@ -394,8 +395,13 @@ m9_resource_create(struct pipe_screen *pscreen,
           templ->array_size != 1 || templ->last_level >= M9_MAX_MIP_LEVELS ||
           templ->width0 > 2048 || templ->height0 > 2048)
          goto fail;
+      /* Mesa asks for mipmapped textures that are also render targets.  The
+       * render surface holds one level, so such an image is stored as a
+       * texture; m9_update_target refuses it as a target, which is the bind
+       * Mesa only asks for speculatively. */
       resource->kind = templ->bind & PIPE_BIND_DEPTH_STENCIL ?
-         M9_RESOURCE_LINEAR_DEPTH : templ->bind & PIPE_BIND_RENDER_TARGET ?
+         M9_RESOURCE_LINEAR_DEPTH :
+         (templ->bind & PIPE_BIND_RENDER_TARGET) && !templ->last_level ?
          M9_RESOURCE_LINEAR_COLOR : M9_RESOURCE_LINEAR_TEXTURE;
       if (resource->kind != M9_RESOURCE_LINEAR_TEXTURE && templ->last_level)
          goto fail;
@@ -476,8 +482,18 @@ m9_resource_create(struct pipe_screen *pscreen,
        format.code == M9_DEPTH_FORMAT_D24S8 &&
        m9_resource_attach_hz(screen, resource))
       goto fail;
+   if (templ->target != PIPE_BUFFER && getenv("M9X_DEBUG_RESOURCE"))
+      fprintf(stderr, "m9x: resource %ux%u levels %u kind %u tex %u "
+              "format %s bind %#x\n", templ->width0, templ->height0,
+              templ->last_level + 1, resource->kind, resource->texture.levels,
+              util_format_short_name(templ->format), templ->bind);
    return &resource->base;
 fail:
+   if (templ->target != PIPE_BUFFER && getenv("M9X_DEBUG_RESOURCE"))
+      fprintf(stderr, "m9x: resource REFUSED %ux%u levels %u format %s "
+              "bind %#x usage %u\n", templ->width0, templ->height0,
+              templ->last_level + 1, util_format_short_name(templ->format),
+              templ->bind, templ->usage);
    m9_resource_release_hz(screen, resource);
    if (resource->map && !resource->handle)
       align_free(resource->map);
