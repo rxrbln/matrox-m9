@@ -1306,7 +1306,12 @@ allocate(struct ctx *c)
       struct lop *l = &LOPS(c)[s];
 
       if (l->dst >= 0 && VALUES(c)[l->dst].general) {
-         if (next_general > 0x0f)
+         /* 10..13 carry the scratch and interpolation roles, so the general
+          * run continues at 14.  Blending reads the destination from 18..1b
+          * and takes its interpolation spares from 1c, so it stops at 17. */
+         if (next_general == 0x10)
+            next_general = 0x14;
+         if (next_general > (c->blend ? 0x17u : 0x19u))
             return fail(c, "out of temporaries");
          VALUES(c)[l->dst].reg = next_general++;
       }
@@ -1942,7 +1947,16 @@ slot_a(uint32_t w0, uint32_t w1)
 static int
 blend_temp(struct ctx *c, uint32_t *used)
 {
-   for (unsigned r = 0; r < 0x10; r++) {
+   /* 10..13 are the scratch roles and 18..1b hold the destination. */
+   static const uint8_t pool[] = {
+      0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07,
+      0x08, 0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e, 0x0f,
+      0x14, 0x15, 0x16, 0x17,
+   };
+
+   for (unsigned i = 0; i < ARRAY_SIZE(pool); i++) {
+      unsigned r = pool[i];
+
       if (!(*used & BITFIELD_BIT(r))) {
          *used |= BITFIELD_BIT(r);
          mark_register(c, r);
