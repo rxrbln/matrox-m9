@@ -1857,13 +1857,23 @@ m9_clear(struct pipe_context *pctx, unsigned buffers,
    struct m9_resource *zs = m9_context_depth(ctx);
    bool full = m9_scissor_full(ctx, scissor);
 
+   bool colour = (buffers & PIPE_CLEAR_COLOR0) && cbuf;
+
    if (!ctx->params_valid)
       return;
+   /* One quad writes both attachments: a clear of colour and depth is what
+    * a frame starts with, and two full-screen quads is twice the fill. */
+   if (colour && zs && (buffers & PIPE_CLEAR_DEPTH) &&
+       !(buffers & PIPE_CLEAR_STENCIL)) {
+      m9_clear_quad(ctx, full ? NULL : scissor, color_clear_mask, color->f,
+                    true, depth);
+      return;
+   }
    /* The quad clear rasterises in tiled space and covers the drawable, not
     * the whole object: a dword fill of the object costs three megabytes of
     * uncached writes per frame and reaches past the drawable into the rest
     * of a shared screen surface. */
-   if ((buffers & PIPE_CLEAR_COLOR0) && cbuf)
+   if (colour)
       m9_clear_quad(ctx, full ? NULL : scissor, color_clear_mask,
                     color->f, false, 0);
    if (!(buffers & PIPE_CLEAR_DEPTHSTENCIL))
@@ -1875,11 +1885,11 @@ m9_clear(struct pipe_context *pctx, unsigned buffers,
    }
    /* The quad clear runs on the GPU; only stencil still needs the CPU. */
    if (!(buffers & PIPE_CLEAR_STENCIL) && (buffers & PIPE_CLEAR_DEPTH)) {
+      /* The quad writes depth through the engine, which keeps the
+       * hierarchical buffer with it; only a CPU depth write has to reset it
+       * by hand.  Doing it here cost a stall and a megabyte of uncached
+       * writes per frame. */
       m9_clear_quad(ctx, full ? NULL : scissor, 0, zero, true, depth);
-      if (full && zs->hz) {
-         m9_context_sync(ctx);
-         m9_fill_dwords(zs->hz, M9_HZ_CLEAR);
-      }
    } else if (full && (!(buffers & PIPE_CLEAR_STENCIL) ||
                        stencil_clear_mask == 0xff)) {
       m9_context_sync(ctx);
