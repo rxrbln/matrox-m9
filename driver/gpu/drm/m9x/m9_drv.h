@@ -100,40 +100,66 @@ struct m9_ddc_bus {
 	u8 scl, sda;
 };
 
+/* The M9 has four display controllers; the upper pair are secondary planes
+ * composited into the lower pair, so only two are independent heads. */
+#define M9_MAX_HEADS	2u
+
+/* One independent display controller with its own register banks, connector
+ * and DDC bus. */
+struct m9_head {
+	struct m9x_device *mdev;
+	unsigned int index;
+	struct drm_simple_display_pipe pipe;
+	struct drm_connector connector;
+	struct drm_plane cursor_plane;
+	struct i2c_adapter *ddc;
+	bool ddc_probed;
+	/* Register banks of this controller. */
+	u32 dc, dct, clksel, fs, link, cursor_bank;
+	u32 clk_select;
+	u32 vblank_mask;
+	/* The timing the controller was found running, and its opaque bits.
+	 * warm_valid is false for a head the firmware left dark, whose
+	 * registers decode to an empty raster rather than a mode. */
+	struct drm_display_mode warm_mode;
+	bool warm_valid;
+	u32 warm_dc_ctrl;
+	u32 warm_dc_pitch;
+	u32 warm_dc_start;
+	u32 warm_dvo;
+	/* Geometry the controller is currently programmed for. */
+	u32 scanout_width, scanout_height, scanout_pitch;
+	size_t scanout_bytes;
+	struct drm_gem_vram_object *scanout;
+	u8 *scanout_bounce;
+	struct drm_gem_vram_object *cursor;
+	struct iosys_map cursor_map;
+	bool cursor_visible;
+	bool cursor_armed;   /* address and config survive in the controller */
+};
+
+static inline struct m9_head *m9_head_of_pipe(struct drm_simple_display_pipe *p)
+{
+	return container_of(p, struct m9_head, pipe);
+}
+
 struct m9x_device {
 	struct drm_device drm;
 	struct pci_dev *pdev;
 	void __iomem *mmio;
 	resource_size_t vram_size;
 	u64 vram_total;
-	struct drm_simple_display_pipe pipe;
-	struct drm_connector connector;
-	struct drm_display_mode warm_mode;
-	u32 warm_dc_ctrl;
-	u32 warm_dc_pitch;
-	u32 warm_dc_start;
-	u32 warm_dvo;
+	struct m9_head head[M9_MAX_HEADS];
+	unsigned int heads;
 	bool kms_initialized;
 	bool irq_installed;
-	struct drm_gem_vram_object *scanout;
-	/* Geometry the controller is currently programmed for. */
-	u32 scanout_width, scanout_height, scanout_pitch;
-	size_t scanout_bytes;
-	struct drm_gem_vram_object *cursor;
-	struct iosys_map cursor_map;
-	struct drm_plane cursor_plane;
-	bool cursor_visible;
-	bool cursor_armed;   /* address and config survive in the controller */
 	/* BAR0 [M9_ADDRESS_CPU_BYTES, +M9_ADDRESS_SURFACE_BYTES), slot 1 view. */
 	/* Native DDC, shared with the board controller. */
 	struct mutex ddc_lock;
 	unsigned int ddc_owned;
 	struct m9_ddc_bus ddc[M9_DDC_MAX_BUSES];
 	unsigned int ddc_count;
-	struct i2c_adapter *ddc_live;
-	bool ddc_probed;
 	void __iomem *bar0_window;
-	u8 *scanout_bounce;
 	struct m9x_transport transport;
 };
 
@@ -142,13 +168,14 @@ static inline struct m9x_device *to_m9x(struct drm_device *drm)
 	return container_of(drm, struct m9x_device, drm);
 }
 
-void m9x_mode_read_current(struct m9x_device *mdev,
+void m9x_mode_read_current(struct m9_head *head,
 			   struct drm_display_mode *mode);
-int m9x_mode_program(struct m9x_device *mdev,
+int m9x_mode_program(struct m9_head *head,
 		     const struct drm_display_mode *mode, u32 pitch_pixels);
 bool m9x_surface_layout_bytes(u32 width, u32 height, u32 cpp, u64 *size);
 int m9x_ddc_init(struct m9x_device *mdev);
-struct i2c_adapter *m9x_ddc_adapter(struct m9x_device *mdev);
+struct i2c_adapter *m9x_ddc_adapter(struct m9x_device *mdev,
+				    unsigned int index);
 bool m9x_enabled(void);
 bool m9x_kms_enabled(void);
 bool m9x_kms_scanout_enabled(void);

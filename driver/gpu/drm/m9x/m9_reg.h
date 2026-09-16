@@ -126,6 +126,9 @@
 #define M9_REG_DVO0			0x1c9c
 
 #define M9_IRQ_LOW_VBLANK0		BIT(0)
+/* The second controller's vblank source is not measured; a zero mask keeps
+ * that head out of the interrupt path instead of guessing a bit. */
+#define M9_IRQ_LOW_VBLANK1		0u
 #define M9_IRQ_HIGH_LOW_CASCADE	BIT(31)
 
 #define M9_REQUESTER_DMA_TAG		2u

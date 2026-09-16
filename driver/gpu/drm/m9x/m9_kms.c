@@ -174,26 +174,26 @@ static int m9_kms_selftest(void)
 	return 0;
 }
 
-static void m9_capture_warm_snapshot(struct m9x_device *mdev,
+static void m9_capture_warm_snapshot(struct m9_head *head,
 				     struct m9_warm_snapshot *s)
 {
-	s->ctrl = m9x_read(mdev, M9_DC0 + M9_DC_CTRL);
-	s->xstart = m9x_read(mdev, M9_DC0 + M9_DC_XSTART);
-	s->xend = m9x_read(mdev, M9_DC0 + M9_DC_XEND);
-	s->ystart = m9x_read(mdev, M9_DC0 + M9_DC_YSTART);
-	s->yend = m9x_read(mdev, M9_DC0 + M9_DC_YEND);
-	s->start = m9x_read(mdev, M9_DC0 + M9_DC_START);
-	s->pitch = m9x_read(mdev, M9_DC0 + M9_DC_PITCH);
-	s->hblank = m9x_read(mdev, M9_DCT0 + M9_DCT_HBLANK);
-	s->htotal = m9x_read(mdev, M9_DCT0 + M9_DCT_HTOTAL);
-	s->hsync = m9x_read(mdev, M9_DCT0 + M9_DCT_HSYNC);
-	s->vblank = m9x_read(mdev, M9_DCT0 + M9_DCT_VBLANK);
-	s->vtotal = m9x_read(mdev, M9_DCT0 + M9_DCT_VTOTAL);
-	s->vsync = m9x_read(mdev, M9_DCT0 + M9_DCT_VSYNC);
-	s->vsyncend = m9x_read(mdev, M9_DCT0 + M9_DCT_VSYNCEND);
-	s->vgaflag = m9x_read(mdev, M9_REG_VGAFLAG);
-	s->vgamisc = m9x_read(mdev, M9_REG_VGAMISC);
-	s->dvo = m9x_read(mdev, M9_REG_DVO0);
+	s->ctrl = m9x_read(head->mdev, head->dc + M9_DC_CTRL);
+	s->xstart = m9x_read(head->mdev, head->dc + M9_DC_XSTART);
+	s->xend = m9x_read(head->mdev, head->dc + M9_DC_XEND);
+	s->ystart = m9x_read(head->mdev, head->dc + M9_DC_YSTART);
+	s->yend = m9x_read(head->mdev, head->dc + M9_DC_YEND);
+	s->start = m9x_read(head->mdev, head->dc + M9_DC_START);
+	s->pitch = m9x_read(head->mdev, head->dc + M9_DC_PITCH);
+	s->hblank = m9x_read(head->mdev, head->dct + M9_DCT_HBLANK);
+	s->htotal = m9x_read(head->mdev, head->dct + M9_DCT_HTOTAL);
+	s->hsync = m9x_read(head->mdev, head->dct + M9_DCT_HSYNC);
+	s->vblank = m9x_read(head->mdev, head->dct + M9_DCT_VBLANK);
+	s->vtotal = m9x_read(head->mdev, head->dct + M9_DCT_VTOTAL);
+	s->vsync = m9x_read(head->mdev, head->dct + M9_DCT_VSYNC);
+	s->vsyncend = m9x_read(head->mdev, head->dct + M9_DCT_VSYNCEND);
+	s->vgaflag = m9x_read(head->mdev, M9_REG_VGAFLAG);
+	s->vgamisc = m9x_read(head->mdev, M9_REG_VGAMISC);
+	s->dvo = m9x_read(head->mdev, head->link);
 }
 
 static u32 m9_kms_read(void *cookie, u32 reg)
@@ -208,6 +208,13 @@ static void m9_kms_write(void *cookie, u32 reg, u32 value)
 
 static struct matrox_kms_irq m9_kms_irq_desc(struct m9x_device *mdev)
 {
+	u32 owned = 0;
+	unsigned int i;
+
+	for (i = 0; i < mdev->heads; i++)
+		owned |= mdev->head[i].vblank_mask;
+	if (!owned)
+		owned = M9_IRQ_LOW_VBLANK0;
 	return (struct matrox_kms_irq) {
 		.cookie = mdev,
 		.read = m9_kms_read,
@@ -215,8 +222,8 @@ static struct matrox_kms_irq m9_kms_irq_desc(struct m9x_device *mdev)
 		.raw_reg = M9_REG_IRQ_LOW_RAW,
 		.ack_reg = M9_REG_IRQ_LOW_ACK,
 		.mask_reg = M9_REG_IRQ_LOW_MASK,
-		.owned_mask = M9_IRQ_LOW_VBLANK0,
-		.vblank_mask = M9_IRQ_LOW_VBLANK0,
+		.owned_mask = owned,
+		.vblank_mask = owned,
 	};
 }
 
@@ -231,10 +238,11 @@ static int m9_connector_detect(struct drm_connector *connector,
  * display has no EDID. */
 static int m9_connector_add_warm_mode(struct drm_connector *connector)
 {
-	struct m9x_device *mdev = to_m9x(connector->dev);
+	struct m9_head *head = container_of(connector, struct m9_head,
+					    connector);
 	struct drm_display_mode *mode;
 
-	mode = drm_mode_duplicate(connector->dev, &mdev->warm_mode);
+	mode = drm_mode_duplicate(connector->dev, &head->warm_mode);
 	if (!mode)
 		return 0;
 	drm_mode_probed_add(connector, mode);
@@ -243,8 +251,9 @@ static int m9_connector_add_warm_mode(struct drm_connector *connector)
 
 static int m9_connector_get_modes(struct drm_connector *connector)
 {
-	struct m9x_device *mdev = to_m9x(connector->dev);
-	struct i2c_adapter *ddc = m9x_ddc_adapter(mdev);
+	struct m9_head *head = container_of(connector, struct m9_head,
+					    connector);
+	struct i2c_adapter *ddc = head->ddc;
 	const struct drm_edid *edid;
 	int count = 0;
 
@@ -266,7 +275,7 @@ static enum drm_mode_status
 m9_pipe_mode_valid(struct drm_simple_display_pipe *pipe,
 		   const struct drm_display_mode *mode)
 {
-	struct m9x_device *mdev = to_m9x(pipe->crtc.dev);
+	struct m9_head *head = m9_head_of_pipe(pipe);
 	enum drm_mode_status status;
 
 	status = matrox_kms_mode_geometry_valid(mode, M9_SCANOUT_MAX_WIDTH,
@@ -279,7 +288,7 @@ m9_pipe_mode_valid(struct drm_simple_display_pipe *pipe,
 		return MODE_NO_INTERLACE;
 	/* Without m9_kms_modeset the firmware's timing is all the pipe can
 	 * scan out, so nothing else may be advertised. */
-	if (!m9_kms_modeset && !drm_mode_equal(mode, &mdev->warm_mode))
+	if (!m9_kms_modeset && !drm_mode_equal(mode, &head->warm_mode))
 		return MODE_BAD;
 	return MODE_OK;
 }
@@ -296,7 +305,7 @@ static int m9_pipe_check(struct drm_simple_display_pipe *pipe,
 	if (ret)
 		return ret;
 	if (crtc_state->enable && !m9_kms_modeset &&
-	    !drm_mode_equal(&crtc_state->mode, &to_m9x(pipe->crtc.dev)->warm_mode))
+	    !drm_mode_equal(&crtc_state->mode, &m9_head_of_pipe(pipe)->warm_mode))
 		return -EINVAL;
 	if (crtc_state->color_mgmt_changed) {
 		if (crtc_state->gamma_lut &&
@@ -323,7 +332,7 @@ static int m9_pipe_check(struct drm_simple_display_pipe *pipe,
  * kernel-owned tiled scanout surface through host-aperture slot 0 carrying the
  * scanout descriptor, then release that window.
  */
-static int m9_scanout_publish(struct m9x_device *mdev,
+static int m9_scanout_publish(struct m9_head *head,
 			      struct drm_framebuffer *fb)
 {
 	struct drm_gem_object *gem = drm_gem_fb_get_obj(fb, 0);
@@ -333,13 +342,15 @@ static int m9_scanout_publish(struct m9x_device *mdev,
 	s64 offset, src_offset = 0;
 	int ret;
 
-	if (!mdev->scanout || !mdev->bar0_window || !mdev->scanout_bounce ||
-	    mdev->scanout->bo.base.size < mdev->scanout_bytes ||
-	    fb->width != mdev->scanout_width ||
-	    fb->height != mdev->scanout_height ||
-	    fb->pitches[0] != mdev->scanout_pitch)
+	struct m9x_device *mdev = head->mdev;
+
+	if (!head->scanout || !mdev->bar0_window || !head->scanout_bounce ||
+	    head->scanout->bo.base.size < head->scanout_bytes ||
+	    fb->width != head->scanout_width ||
+	    fb->height != head->scanout_height ||
+	    fb->pitches[0] != head->scanout_pitch)
 		return -ENODEV;
-	offset = drm_gem_vram_offset(mdev->scanout);
+	offset = drm_gem_vram_offset(head->scanout);
 	if (offset < 0)
 		return offset;
 	if (tiled) {
@@ -352,8 +363,8 @@ static int m9_scanout_publish(struct m9x_device *mdev,
 			return ret;
 		ret = drm_gem_vram_vmap(src, &map);
 		if (!ret) {
-			iosys_map_memcpy_from(mdev->scanout_bounce, &map, 0,
-					      mdev->scanout_bytes);
+			iosys_map_memcpy_from(head->scanout_bounce, &map, 0,
+					      head->scanout_bytes);
 			drm_gem_vram_vunmap(src, &map);
 		}
 		ttm_bo_unreserve(&src->bo);
@@ -364,15 +375,15 @@ static int m9_scanout_publish(struct m9x_device *mdev,
 	/* GPU-rendered frames are tiled: de-tile them through the window. */
 	if (tiled)
 		m9x_surface_read_locked(mdev, lower_32_bits(src_offset),
-					M9_SCANOUT_FORMAT(mdev->scanout_pitch / 4),
-					M9_SCANOUT_EXTENT(mdev->scanout_height),
-					mdev->scanout_bounce,
-					mdev->scanout_bytes);
+					M9_SCANOUT_FORMAT(head->scanout_pitch / 4),
+					M9_SCANOUT_EXTENT(head->scanout_height),
+					head->scanout_bounce,
+					head->scanout_bytes);
 	m9x_address_surface_window(mdev, lower_32_bits(offset),
-				   M9_SCANOUT_FORMAT(mdev->scanout_pitch / 4),
-				   M9_SCANOUT_EXTENT(mdev->scanout_height));
-	memcpy_toio(mdev->bar0_window, mdev->scanout_bounce,
-		    mdev->scanout_bytes);
+				   M9_SCANOUT_FORMAT(head->scanout_pitch / 4),
+				   M9_SCANOUT_EXTENT(head->scanout_height));
+	memcpy_toio(mdev->bar0_window, head->scanout_bounce,
+		    head->scanout_bytes);
 	/* Complete WC stores before the window is released. */
 	wmb();
 	m9x_address_surface_release(mdev);
@@ -380,13 +391,13 @@ static int m9_scanout_publish(struct m9x_device *mdev,
 	return 0;
 }
 
-static int m9_scanout_address(struct m9x_device *mdev, u32 *address)
+static int m9_scanout_address(struct m9_head *head, u32 *address)
 {
-	u64 limit = min_t(u64, mdev->vram_size - 1, M9_DC_START_MASK);
+	u64 limit = min_t(u64, head->mdev->vram_size - 1, M9_DC_START_MASK);
 
-	if (!mdev->scanout)
+	if (!head->scanout)
 		return -ENODEV;
-	return matrox_kms_vram_offset(&mdev->scanout->bo.base, 1024, limit,
+	return matrox_kms_vram_offset(&head->scanout->bo.base, 1024, limit,
 				      address);
 }
 
@@ -406,26 +417,27 @@ static int m9_scanout_direct_address(struct m9x_device *mdev,
 static void m9_program_scanout(struct drm_simple_display_pipe *pipe,
 			       struct drm_framebuffer *fb)
 {
-	struct m9x_device *mdev = to_m9x(pipe->crtc.dev);
+	struct m9_head *head = m9_head_of_pipe(pipe);
+	struct m9x_device *mdev = head->mdev;
 	u32 address, pitch;
 
 	if (!m9_scanout_direct_address(mdev, fb, &address)) {
-		pitch = (mdev->warm_dc_pitch & ~M9_DC_PITCH_MASK) |
+		pitch = (head->warm_dc_pitch & ~M9_DC_PITCH_MASK) |
 			(fb->pitches[0] / 4);
 		wmb();
-		m9x_write(mdev, M9_DC0 + M9_DC_START,
+		m9x_write(head->mdev, head->dc + M9_DC_START,
 			  address & M9_DC_START_MASK);
-		m9x_write(mdev, M9_DC0 + M9_DC_PITCH, pitch);
+		m9x_write(head->mdev, head->dc + M9_DC_PITCH, pitch);
 		return;
 	}
-	if (!fb || m9_scanout_publish(mdev, fb) ||
-	    m9_scanout_address(mdev, &address))
+	if (!fb || m9_scanout_publish(head, fb) ||
+	    m9_scanout_address(head, &address))
 		return;
-	pitch = (mdev->warm_dc_pitch & ~M9_DC_PITCH_MASK) | (fb->pitches[0] / 4);
+	pitch = (head->warm_dc_pitch & ~M9_DC_PITCH_MASK) | (fb->pitches[0] / 4);
 	/* Publish CPU writes before the display controller fetches this BO. */
 	wmb();
-	m9x_write(mdev, M9_DC0 + M9_DC_START, address & M9_DC_START_MASK);
-	m9x_write(mdev, M9_DC0 + M9_DC_PITCH, pitch);
+	m9x_write(head->mdev, head->dc + M9_DC_START, address & M9_DC_START_MASK);
+	m9x_write(head->mdev, head->dc + M9_DC_PITCH, pitch);
 }
 
 /* Only the upper ten bits of each entry reach the LUT ports, so compare the
@@ -458,28 +470,28 @@ static bool m9_lut_is_identity(const struct drm_property_blob *blob)
 /* Hardware cursor overlay (parhelia-m9-cursor-gamma-re.md section 1): a
  * 64x64 colour image in VRAM with a 256-byte row, an address and config pair,
  * a shifted-origin position, and a control word that shows or hides it. */
-static void m9_cursor_hide(struct m9x_device *mdev)
+static void m9_cursor_hide(struct m9_head *head)
 {
-	m9x_write(mdev, M9_CURSOR0 + M9_CURSOR_CONTROL, M9_CURSOR_OFF);
-	mdev->cursor_visible = false;
+	m9x_write(head->mdev, head->cursor_bank + M9_CURSOR_CONTROL, M9_CURSOR_OFF);
+	head->cursor_visible = false;
 }
 
 /* A disabled controller keeps no cursor state, so the next update has to
  * program the address and config again before showing the overlay. */
-static void m9_cursor_suspend(struct m9x_device *mdev)
+static void m9_cursor_suspend(struct m9_head *head)
 {
-	m9_cursor_hide(mdev);
-	mdev->cursor_armed = false;
+	m9_cursor_hide(head);
+	head->cursor_armed = false;
 }
 
-static int m9_cursor_storage(struct m9x_device *mdev)
+static int m9_cursor_storage(struct m9_head *head)
 {
 	struct drm_gem_vram_object *bo;
 	int ret;
 
-	if (mdev->cursor)
+	if (head->cursor)
 		return 0;
-	bo = drm_gem_vram_create(&mdev->drm, M9_CURSOR_BYTES, 0);
+	bo = drm_gem_vram_create(&head->mdev->drm, M9_CURSOR_BYTES, 0);
 	if (IS_ERR(bo))
 		return PTR_ERR(bo);
 	ret = m9x_vram_pin(bo);
@@ -488,12 +500,12 @@ static int m9_cursor_storage(struct m9x_device *mdev)
 	ret = ttm_bo_reserve(&bo->bo, true, false, NULL);
 	if (ret)
 		goto err_unpin;
-	ret = drm_gem_vram_vmap(bo, &mdev->cursor_map);
+	ret = drm_gem_vram_vmap(bo, &head->cursor_map);
 	ttm_bo_unreserve(&bo->bo);
 	if (ret)
 		goto err_unpin;
-	iosys_map_memset(&mdev->cursor_map, 0, 0, M9_CURSOR_BYTES);
-	mdev->cursor = bo;
+	iosys_map_memset(&head->cursor_map, 0, 0, M9_CURSOR_BYTES);
+	head->cursor = bo;
 	return 0;
 err_unpin:
 	m9x_vram_unpin(bo);
@@ -503,7 +515,7 @@ err_put:
 }
 
 /* Copy the plane image into the device row stride, zero filling the rest. */
-static int m9_cursor_upload(struct m9x_device *mdev, struct drm_framebuffer *fb)
+static int m9_cursor_upload(struct m9_head *head, struct drm_framebuffer *fb)
 {
 	struct drm_gem_object *gem = drm_gem_fb_get_obj(fb, 0);
 	struct drm_gem_vram_object *src = drm_gem_vram_of_gem(gem);
@@ -531,7 +543,7 @@ static int m9_cursor_upload(struct m9x_device *mdev, struct drm_framebuffer *fb)
 			for (i = 0; i < cols; i++)
 				line[i] &= M9_CURSOR_DWORD_MASK;
 		}
-		iosys_map_memcpy_to(&mdev->cursor_map,
+		iosys_map_memcpy_to(&head->cursor_map,
 				    (size_t)row * M9_CURSOR_ROW_BYTES, line,
 				    sizeof(line));
 	}
@@ -569,7 +581,8 @@ static void m9_cursor_atomic_update(struct drm_plane *plane,
 		drm_atomic_get_new_plane_state(state, plane);
 	struct drm_plane_state *old =
 		drm_atomic_get_old_plane_state(state, plane);
-	struct m9x_device *mdev = to_m9x(plane->dev);
+	struct m9_head *head = container_of(plane, struct m9_head,
+					   cursor_plane);
 	bool offscreen;
 	s64 address;
 	u32 px, py;
@@ -578,44 +591,44 @@ static void m9_cursor_atomic_update(struct drm_plane *plane,
 	if (!drm_dev_enter(plane->dev, &idx))
 		return;
 	if (!m9_kms_cursor || !new->fb || !new->crtc) {
-		m9_cursor_hide(mdev);
+		m9_cursor_hide(head);
 		goto out;
 	}
-	if (m9_cursor_storage(mdev))
+	if (m9_cursor_storage(head))
 		goto out;
 	if (!old || old->fb != new->fb) {
 		/* Keep control zero while the image and address change. */
-		m9_cursor_suspend(mdev);
-		if (m9_cursor_upload(mdev, new->fb))
+		m9_cursor_suspend(head);
+		if (m9_cursor_upload(head, new->fb))
 			goto out;
 	}
-	if (!mdev->cursor_armed) {
-		m9_cursor_hide(mdev);
-		address = drm_gem_vram_offset(mdev->cursor);
+	if (!head->cursor_armed) {
+		m9_cursor_hide(head);
+		address = drm_gem_vram_offset(head->cursor);
 		if (address < 0 || upper_32_bits(address))
 			goto out;
-		m9x_write(mdev, M9_CURSOR0 + M9_CURSOR_ADDRESS,
+		m9x_write(head->mdev, head->cursor_bank + M9_CURSOR_ADDRESS,
 			  lower_32_bits(address));
-		m9x_write(mdev, M9_CURSOR0 + M9_CURSOR_CONFIG,
+		m9x_write(head->mdev, head->cursor_bank + M9_CURSOR_CONFIG,
 			  M9_CURSOR_CONFIG_COLOR);
-		mdev->cursor_armed = true;
+		head->cursor_armed = true;
 	}
 	/* Nothing clips in hardware, so hide a cursor that has left the scanout
 	 * rather than let the shifted origin wrap it back on. */
 	offscreen = new->crtc_x <= -(int)M9_CURSOR_SIZE ||
 		    new->crtc_y <= -(int)M9_CURSOR_SIZE ||
-		    new->crtc_x >= (int)mdev->scanout_width ||
-		    new->crtc_y >= (int)mdev->scanout_height;
+		    new->crtc_x >= (int)head->scanout_width ||
+		    new->crtc_y >= (int)head->scanout_height;
 	if (offscreen) {
-		m9_cursor_hide(mdev);
+		m9_cursor_hide(head);
 		goto out;
 	}
 	px = (new->crtc_x + M9_CURSOR_SIZE) & M9_CURSOR_POS_MASK;
 	py = (new->crtc_y + M9_CURSOR_SIZE) & M9_CURSOR_POS_MASK;
-	m9x_write(mdev, M9_CURSOR0 + M9_CURSOR_POSITION, px << 16 | py);
-	if (!mdev->cursor_visible) {
-		m9x_write(mdev, M9_CURSOR0 + M9_CURSOR_CONTROL, M9_CURSOR_COLOR);
-		mdev->cursor_visible = true;
+	m9x_write(head->mdev, head->cursor_bank + M9_CURSOR_POSITION, px << 16 | py);
+	if (!head->cursor_visible) {
+		m9x_write(head->mdev, head->cursor_bank + M9_CURSOR_CONTROL, M9_CURSOR_COLOR);
+		head->cursor_visible = true;
 	}
 out:
 	drm_dev_exit(idx);
@@ -624,12 +637,13 @@ out:
 static void m9_cursor_atomic_disable(struct drm_plane *plane,
 				     struct drm_atomic_commit *state)
 {
-	struct m9x_device *mdev = to_m9x(plane->dev);
+	struct m9_head *head = container_of(plane, struct m9_head,
+					   cursor_plane);
 	int idx;
 
 	if (!drm_dev_enter(plane->dev, &idx))
 		return;
-	m9_cursor_suspend(mdev);
+	m9_cursor_suspend(head);
 	drm_dev_exit(idx);
 }
 
@@ -650,28 +664,29 @@ static const struct drm_plane_funcs m9_cursor_funcs = {
 
 static const u32 m9_cursor_formats[] = { DRM_FORMAT_ARGB8888 };
 
-static void m9_cursor_fini(struct m9x_device *mdev)
+static void m9_cursor_fini(struct m9_head *head)
 {
-	if (!mdev->cursor)
+	if (!head->cursor)
 		return;
-	m9_cursor_suspend(mdev);
-	if (iosys_map_is_set(&mdev->cursor_map)) {
-		if (!ttm_bo_reserve(&mdev->cursor->bo, true, false, NULL)) {
-			drm_gem_vram_vunmap(mdev->cursor, &mdev->cursor_map);
-			ttm_bo_unreserve(&mdev->cursor->bo);
+	m9_cursor_suspend(head);
+	if (iosys_map_is_set(&head->cursor_map)) {
+		if (!ttm_bo_reserve(&head->cursor->bo, true, false, NULL)) {
+			drm_gem_vram_vunmap(head->cursor, &head->cursor_map);
+			ttm_bo_unreserve(&head->cursor->bo);
 		}
-		iosys_map_clear(&mdev->cursor_map);
+		iosys_map_clear(&head->cursor_map);
 	}
-	m9x_vram_unpin(mdev->cursor);
-	drm_gem_object_put(&mdev->cursor->bo.base);
-	mdev->cursor = NULL;
+	m9x_vram_unpin(head->cursor);
+	drm_gem_object_put(&head->cursor->bo.base);
+	head->cursor = NULL;
 }
 
 static void m9_pipe_load_gamma(struct drm_simple_display_pipe *pipe,
 			       const struct drm_property_blob *blob)
 {
-	struct m9x_device *mdev = to_m9x(pipe->crtc.dev);
-	u32 ctrl = m9x_read(mdev, M9_DC0 + M9_DC_CTRL);
+	struct m9_head *head = m9_head_of_pipe(pipe);
+	struct m9x_device *mdev = head->mdev;
+	u32 ctrl = m9x_read(head->mdev, head->dc + M9_DC_CTRL);
 
 	/* An identity ramp needs no table at all: the firmware console runs
 	 * with bit 14 set, and the recovered contract offers that as an
@@ -679,73 +694,81 @@ static void m9_pipe_load_gamma(struct drm_simple_display_pipe *pipe,
 	 * table that never took keeps its colours off the screen.  X hands a
 	 * linear ramp down at start-up, which is this same identity. */
 	if (!m9_kms_lut || m9_lut_is_identity(blob)) {
-		m9x_write(mdev, M9_DC0 + M9_DC_CTRL, ctrl | M9_DC_LUT_BYPASS);
+		m9x_write(head->mdev, head->dc + M9_DC_CTRL, ctrl | M9_DC_LUT_BYPASS);
 		return;
 	}
 	/* The M9 DC LUT is the same ten-bit interface used by Parhelia. */
-	m9x_write(mdev, M9_DC0 + M9_DC_CTRL, ctrl & ~M9_DC_LUT_BYPASS);
+	m9x_write(head->mdev, head->dc + M9_DC_CTRL, ctrl & ~M9_DC_LUT_BYPASS);
 	matrox_kms_write_lut(mdev, m9_kms_write,
-			       M9_DC0 + M9_DC_LUT_INDEX,
-			       M9_DC0 + M9_DC_LUT_RED,
-			       M9_DC0 + M9_DC_LUT_GREEN,
-			       M9_DC0 + M9_DC_LUT_BLUE,
+			       head->dc + M9_DC_LUT_INDEX,
+			       head->dc + M9_DC_LUT_RED,
+			       head->dc + M9_DC_LUT_GREEN,
+			       head->dc + M9_DC_LUT_BLUE,
 			       M9_DC_LUT_LATCH, false, blob);
 }
 
 /* Record the geometry the rest of the display path describes surfaces with,
  * and grow the de-tiling bounce buffer to match.  A failed growth only costs
  * the copied path; a tiled framebuffer is still scanned out in place. */
-static void m9_scanout_geometry(struct m9x_device *mdev,
+static void m9_scanout_geometry(struct m9_head *head,
 				const struct drm_display_mode *mode)
 {
 	size_t bytes;
 
-	mdev->scanout_width = mode->hdisplay;
-	mdev->scanout_height = mode->vdisplay;
-	mdev->scanout_pitch = m9_scanout_pitch(mode->hdisplay);
-	bytes = (size_t)mdev->scanout_pitch * mdev->scanout_height;
-	if (bytes <= mdev->scanout_bytes)
+	head->scanout_width = mode->hdisplay;
+	head->scanout_height = mode->vdisplay;
+	head->scanout_pitch = m9_scanout_pitch(mode->hdisplay);
+	bytes = (size_t)head->scanout_pitch * head->scanout_height;
+	if (bytes <= head->scanout_bytes)
 		return;
-	kvfree(mdev->scanout_bounce);
-	mdev->scanout_bounce = kvzalloc(bytes, GFP_KERNEL);
-	mdev->scanout_bytes = mdev->scanout_bounce ? bytes : 0;
+	kvfree(head->scanout_bounce);
+	head->scanout_bounce = kvzalloc(bytes, GFP_KERNEL);
+	head->scanout_bytes = head->scanout_bounce ? bytes : 0;
 }
 
 static void m9_pipe_enable(struct drm_simple_display_pipe *pipe,
 			   struct drm_crtc_state *crtc_state,
 			   struct drm_plane_state *plane_state)
 {
-	struct m9x_device *mdev = to_m9x(pipe->crtc.dev);
+	struct m9_head *head = m9_head_of_pipe(pipe);
+	struct m9x_device *mdev = head->mdev;
 	int idx;
 	u32 ctrl;
 
 	if (!drm_dev_enter(&mdev->drm, &idx))
 		return;
-	ctrl = m9x_read(mdev, M9_DC0 + M9_DC_CTRL);
-	m9x_write(mdev, M9_DC0 + M9_DC_CTRL, ctrl & ~M9_DC_ENABLE);
-	m9_scanout_geometry(mdev, &crtc_state->mode);
-	if (m9_kms_modeset &&
-	    !drm_mode_equal(&crtc_state->mode, &mdev->warm_mode))
-		m9x_mode_program(mdev, &crtc_state->mode, mdev->scanout_pitch / 4);
+	ctrl = m9x_read(head->mdev, head->dc + M9_DC_CTRL);
+	m9x_write(head->mdev, head->dc + M9_DC_CTRL, ctrl & ~M9_DC_ENABLE);
+	m9_scanout_geometry(head, &crtc_state->mode);
+	/* A head whose timing was never adopted from the hardware has to be
+	 * programmed even when the requested mode matches the placeholder. */
+	if (m9_kms_modeset && (!head->warm_valid ||
+	    !drm_mode_equal(&crtc_state->mode, &head->warm_mode)) &&
+	    !m9x_mode_program(head, &crtc_state->mode,
+			      head->scanout_pitch / 4)) {
+		drm_mode_copy(&head->warm_mode, &crtc_state->mode);
+		head->warm_valid = true;
+	}
 	m9_program_scanout(pipe, plane_state->fb);
 	m9_pipe_load_gamma(pipe, crtc_state->gamma_lut);
 	/* Re-enable only the proven warm controller bit after the pinned new BO
 	 * is selected.  Preserve the current LUT choice and every opaque bit. */
-	ctrl = m9x_read(mdev, M9_DC0 + M9_DC_CTRL);
-	ctrl |= mdev->warm_dc_ctrl & M9_DC_ENABLE;
-	m9x_write(mdev, M9_DC0 + M9_DC_CTRL, ctrl);
+	ctrl = m9x_read(head->mdev, head->dc + M9_DC_CTRL);
+	ctrl |= head->warm_dc_ctrl & M9_DC_ENABLE;
+	m9x_write(head->mdev, head->dc + M9_DC_CTRL, ctrl);
 	/* Timing, clocks and the trained DVO/DP path stay untouched. */
-	drm_crtc_vblank_on(&pipe->crtc);
+	if (head->vblank_mask)
+		drm_crtc_vblank_on(&pipe->crtc);
 	drm_dev_exit(idx);
 }
 
 static void m9_pipe_disable_hw(struct drm_simple_display_pipe *pipe)
 {
-	struct m9x_device *mdev = to_m9x(pipe->crtc.dev);
-	u32 ctrl = m9x_read(mdev, M9_DC0 + M9_DC_CTRL);
+	struct m9_head *head = m9_head_of_pipe(pipe);
+	u32 ctrl = m9x_read(head->mdev, head->dc + M9_DC_CTRL);
 
 	/* Stop memory fetch before the old scanout BO is unpinned. */
-	m9x_write(mdev, M9_DC0 + M9_DC_CTRL, ctrl & ~M9_DC_ENABLE);
+	m9x_write(head->mdev, head->dc + M9_DC_CTRL, ctrl & ~M9_DC_ENABLE);
 }
 
 static void m9_pipe_disable(struct drm_simple_display_pipe *pipe)
@@ -755,7 +778,7 @@ static void m9_pipe_disable(struct drm_simple_display_pipe *pipe)
 
 	if (!drm_dev_enter(drm, &idx))
 		return;
-	m9_cursor_suspend(to_m9x(drm));
+	m9_cursor_suspend(m9_head_of_pipe(pipe));
 	/* The external DP transmitter and raster timing remain trained/running. */
 	matrox_kms_pipe_disable(pipe, m9_pipe_disable_hw);
 	drm_dev_exit(idx);
@@ -773,16 +796,23 @@ static int m9_fb_dirty(struct drm_framebuffer *fb, struct drm_file *file,
 		       struct drm_clip_rect *clips, unsigned int num_clips)
 {
 	struct m9x_device *mdev = to_m9x(fb->dev);
+	unsigned int i;
 	int ret = 0;
 
-	drm_modeset_lock(&mdev->pipe.plane.mutex, NULL);
-	/* Nothing to publish while the framebuffer is scanned out in place. */
-	if (mdev->pipe.plane.state && mdev->pipe.plane.state->fb == fb &&
-	    mdev->pipe.crtc.state && mdev->pipe.crtc.state->active &&
-	    !(m9_kms_direct_scanout &&
-	      m9x_gem_vram_tiled(drm_gem_fb_get_obj(fb, 0))))
-		ret = m9_scanout_publish(mdev, fb);
-	drm_modeset_unlock(&mdev->pipe.plane.mutex);
+	for (i = 0; i < mdev->heads; i++) {
+		struct m9_head *head = &mdev->head[i];
+
+		drm_modeset_lock(&head->pipe.plane.mutex, NULL);
+		/* Nothing to publish while the framebuffer is scanned out in
+		 * place. */
+		if (head->pipe.plane.state &&
+		    head->pipe.plane.state->fb == fb &&
+		    head->pipe.crtc.state && head->pipe.crtc.state->active &&
+		    !(m9_kms_direct_scanout &&
+		      m9x_gem_vram_tiled(drm_gem_fb_get_obj(fb, 0))))
+			ret = m9_scanout_publish(head, fb);
+		drm_modeset_unlock(&head->pipe.plane.mutex);
+	}
 	return ret;
 }
 
@@ -807,7 +837,8 @@ static void m9_pipe_update(struct drm_simple_display_pipe *pipe,
 
 static int m9_pipe_enable_vblank(struct drm_simple_display_pipe *pipe)
 {
-	struct m9x_device *mdev = to_m9x(pipe->crtc.dev);
+	struct m9_head *head = m9_head_of_pipe(pipe);
+	struct m9x_device *mdev = head->mdev;
 	struct matrox_kms_irq desc = m9_kms_irq_desc(mdev);
 	int idx, ret;
 
@@ -820,7 +851,8 @@ static int m9_pipe_enable_vblank(struct drm_simple_display_pipe *pipe)
 
 static void m9_pipe_disable_vblank(struct drm_simple_display_pipe *pipe)
 {
-	struct m9x_device *mdev = to_m9x(pipe->crtc.dev);
+	struct m9_head *head = m9_head_of_pipe(pipe);
+	struct m9x_device *mdev = head->mdev;
 	struct matrox_kms_irq desc = m9_kms_irq_desc(mdev);
 	int idx;
 
@@ -956,6 +988,7 @@ irqreturn_t m9x_irq_handler(int irq, void *arg)
 	struct m9x_device *mdev = arg;
 	struct matrox_kms_irq desc = m9_kms_irq_desc(mdev);
 	u32 active = matrox_kms_active_irq(&desc);
+	unsigned int i;
 
 	if (!active)
 		return IRQ_NONE;
@@ -964,88 +997,176 @@ irqreturn_t m9x_irq_handler(int irq, void *arg)
 	 * sample had several of them pending while the low mask was zero.
 	 */
 	m9x_write(mdev, M9_REG_IRQ_LOW_ACK, active);
-	drm_crtc_handle_vblank(&mdev->pipe.crtc);
+	for (i = 0; i < mdev->heads; i++)
+		if (active & mdev->head[i].vblank_mask)
+			drm_crtc_handle_vblank(&mdev->head[i].pipe.crtc);
 	return IRQ_HANDLED;
 }
 
-static void m9_scanout_fini(struct m9x_device *mdev)
+static void m9_scanout_fini(struct m9_head *head)
 {
-	if (mdev->scanout) {
-		m9x_vram_unpin(mdev->scanout);
-		drm_gem_vram_put(mdev->scanout);
-		mdev->scanout = NULL;
+	if (head->scanout) {
+		m9x_vram_unpin(head->scanout);
+		drm_gem_vram_put(head->scanout);
+		head->scanout = NULL;
 	}
-	kvfree(mdev->scanout_bounce);
-	mdev->scanout_bounce = NULL;
+	kvfree(head->scanout_bounce);
+	head->scanout_bounce = NULL;
 }
 
-static int m9_scanout_init(struct m9x_device *mdev)
+static int m9_scanout_init(struct m9_head *head)
 {
-	struct pci_dev *pci = mdev->pdev;
+	struct m9x_device *mdev = head->mdev;
+	u64 bytes;
 	int ret;
 
-	mdev->scanout_width = mdev->warm_mode.hdisplay;
-	mdev->scanout_height = mdev->warm_mode.vdisplay;
-	mdev->scanout_pitch = m9_scanout_pitch(mdev->scanout_width);
-	mdev->scanout_bytes = (size_t)mdev->scanout_pitch * mdev->scanout_height;
-	mdev->scanout_bounce = kvzalloc(mdev->scanout_bytes, GFP_KERNEL);
-	if (!mdev->bar0_window || !mdev->scanout_bounce) {
+	head->scanout_width = head->warm_mode.hdisplay;
+	head->scanout_height = head->warm_mode.vdisplay;
+	head->scanout_pitch = m9_scanout_pitch(head->scanout_width);
+	head->scanout_bytes = (size_t)head->scanout_pitch * head->scanout_height;
+	head->scanout_bounce = kvzalloc(head->scanout_bytes, GFP_KERNEL);
+	if (!mdev->bar0_window || !head->scanout_bounce) {
 		ret = -ENOMEM;
 		goto fail;
 	}
-	mdev->scanout = drm_gem_vram_create(&mdev->drm, M9_WARM_RENDER_BYTES, 1);
-	if (IS_ERR(mdev->scanout)) {
-		ret = PTR_ERR(mdev->scanout);
-		mdev->scanout = NULL;
+	/* The controller fetches through the surface constructor's allocation,
+	 * and a GEM object is whole pages. */
+	if (!m9x_surface_layout_bytes(head->scanout_width, head->scanout_height,
+				      4, &bytes)) {
+		ret = -EINVAL;
 		goto fail;
 	}
-	ret = m9x_vram_pin(mdev->scanout);
+	head->scanout = drm_gem_vram_create(&mdev->drm, PAGE_ALIGN(bytes), 1);
+	if (IS_ERR(head->scanout)) {
+		ret = PTR_ERR(head->scanout);
+		head->scanout = NULL;
+		goto fail;
+	}
+	ret = m9x_vram_pin(head->scanout);
 	if (ret) {
-		drm_gem_vram_put(mdev->scanout);
-		mdev->scanout = NULL;
+		drm_gem_vram_put(head->scanout);
+		head->scanout = NULL;
 		goto fail;
 	}
-	dev_info(&pci->dev, "M9 tiled scanout surface at VRAM %#llx\n",
-		 drm_gem_vram_offset(mdev->scanout));
+	drm_info(&mdev->drm, "head %u scanout surface at VRAM %#llx\n",
+		 head->index, drm_gem_vram_offset(head->scanout));
 	return 0;
 fail:
-	m9_scanout_fini(mdev);
+	m9_scanout_fini(head);
 	return ret;
 }
 
-int m9x_modeset_init(struct m9x_device *mdev)
+/* Per-head register banks.  Head 0 is the controller the firmware posts;
+ * head 1 is its twin, with the symmetric DC, timing, clock, cursor and link
+ * banks (parhelia-m9.md).  Only head 0's banks have been exercised. */
+static const struct {
+	u32 dc, dct, clksel, fs, link, cursor_bank, clk_select, vblank_mask;
+} m9_head_banks[M9_MAX_HEADS] = {
+	{ 0x1800, 0x1900, 0x1c00, 0x0e48, 0x1c9c, 0x18c0, 4, M9_IRQ_LOW_VBLANK0 },
+	{ 0x1a00, 0x1b00, 0x1c08, 0x0e4c, 0x1ca0, 0x1ac0, 5, M9_IRQ_LOW_VBLANK1 },
+};
+
+static int m9_head_init(struct m9x_device *mdev, struct m9_head *head,
+			unsigned int index)
 {
 	struct drm_device *drm = &mdev->drm;
 	struct m9_warm_snapshot snapshot;
 	int ret;
 
-	ret = m9_kms_selftest();
-	if (ret)
-		return ret;
-	m9_capture_warm_snapshot(mdev, &snapshot);
+	head->mdev = mdev;
+	head->index = index;
+	head->dc = m9_head_banks[index].dc;
+	head->dct = m9_head_banks[index].dct;
+	head->clksel = m9_head_banks[index].clksel;
+	head->fs = m9_head_banks[index].fs;
+	head->link = m9_head_banks[index].link;
+	head->cursor_bank = m9_head_banks[index].cursor_bank;
+	head->clk_select = m9_head_banks[index].clk_select;
+	head->vblank_mask = m9_head_banks[index].vblank_mask;
+	head->ddc = m9x_ddc_adapter(mdev, index);
+
+	m9_capture_warm_snapshot(head, &snapshot);
 	/* Programming modes means the controller no longer holds the firmware's
 	 * state after the first modeset, so adopt whatever it is running. */
-	if (!m9_warm_snapshot_valid(&snapshot) && !m9_kms_modeset)
+	if (!index && !m9_warm_snapshot_valid(&snapshot) && !m9_kms_modeset)
 		return dev_err_probe(&mdev->pdev->dev, -EOPNOTSUPP,
 			"untested M9 display state; refusing guarded warm KMS\n");
-	mdev->warm_dc_ctrl = snapshot.ctrl;
-	mdev->warm_dc_pitch = snapshot.pitch;
-	mdev->warm_dc_start = snapshot.start;
-	mdev->warm_dvo = snapshot.dvo;
+	head->warm_dc_ctrl = snapshot.ctrl;
+	head->warm_dc_pitch = snapshot.pitch;
+	head->warm_dc_start = snapshot.start;
+	head->warm_dvo = snapshot.dvo;
+	head->warm_valid = true;
 	if (m9_warm_snapshot_valid(&snapshot)) {
-		mdev->warm_mode = m9_warm_mode;
-		drm_mode_set_name(&mdev->warm_mode);
+		head->warm_mode = m9_warm_mode;
+		drm_mode_set_name(&head->warm_mode);
 	} else {
-		m9x_mode_read_current(mdev, &mdev->warm_mode);
-		drm_info(drm, "adopted the live timing " DRM_MODE_FMT "\n",
-			 DRM_MODE_ARG(&mdev->warm_mode));
+		m9x_mode_read_current(head, &head->warm_mode);
 	}
+	/* A head the firmware left dark reads back as an empty raster, not as
+	 * a mode: its registers are zero, so every field decodes to one.  Fall
+	 * back to the warm timing until something programs it. */
+	if (head->warm_mode.hdisplay < 64 || head->warm_mode.vdisplay < 64 ||
+	    head->warm_mode.htotal <= head->warm_mode.hdisplay ||
+	    head->warm_mode.vtotal <= head->warm_mode.vdisplay ||
+	    head->warm_mode.clock < M9_CLOCK_MIN_KHZ ||
+	    head->warm_mode.clock > M9_CLOCK_MAX_KHZ) {
+		head->warm_mode = m9_warm_mode;
+		drm_mode_set_name(&head->warm_mode);
+		head->warm_valid = false;
+	}
+	drm_info(drm, "head %u: DC %#06x timing %#06x clock %#06x link %#06x, "
+		 "found " DRM_MODE_FMT "\n", index, head->dc, head->dct,
+		 head->fs, head->link, DRM_MODE_ARG(&head->warm_mode));
+
 	if (m9x_kms_scanout_enabled()) {
-		ret = m9_scanout_init(mdev);
+		ret = m9_scanout_init(head);
 		if (ret)
 			return ret;
 	}
+	ret = drm_simple_display_pipe_init(drm, &head->pipe, &m9_pipe_funcs,
+					   m9_formats, ARRAY_SIZE(m9_formats),
+					   NULL, NULL);
+	if (ret)
+		return ret;
+	ret = drm_connector_init(drm, &head->connector,
+				 &matrox_kms_connector_funcs,
+				 DRM_MODE_CONNECTOR_DisplayPort);
+	if (ret)
+		return ret;
+	drm_connector_helper_add(&head->connector, &m9_connector_helper_funcs);
+	ret = drm_connector_attach_encoder(&head->connector,
+					   &head->pipe.encoder);
+	if (ret)
+		return ret;
+	/* The overlay rides the same controller, so it belongs to this CRTC. */
+	ret = drm_universal_plane_init(drm, &head->cursor_plane,
+				       drm_crtc_mask(&head->pipe.crtc),
+				       &m9_cursor_funcs, m9_cursor_formats,
+				       ARRAY_SIZE(m9_cursor_formats), NULL,
+				       DRM_PLANE_TYPE_CURSOR, "cursor");
+	if (ret)
+		return ret;
+	drm_plane_helper_add(&head->cursor_plane, &m9_cursor_helper_funcs);
+	/* drm_simple_display_pipe_init() builds the CRTC without a cursor
+	 * plane, and the legacy cursor ioctl has nothing to target until the
+	 * CRTC points at one, so X falls back to its software cursor. */
+	head->pipe.crtc.cursor = &head->cursor_plane;
+	ret = drm_mode_crtc_set_gamma_size(&head->pipe.crtc, 256);
+	if (ret)
+		return ret;
+	drm_crtc_enable_color_mgmt(&head->pipe.crtc, 0, false, 256);
+	return 0;
+}
 
+int m9x_modeset_init(struct m9x_device *mdev)
+{
+	struct drm_device *drm = &mdev->drm;
+	unsigned int i;
+	int ret;
+
+	ret = m9_kms_selftest();
+	if (ret)
+		return ret;
 	ret = drmm_mode_config_init(drm);
 	if (ret)
 		return ret;
@@ -1060,40 +1181,21 @@ int m9x_modeset_init(struct m9x_device *mdev)
 	drm->mode_config.cursor_width = M9_CURSOR_SIZE;
 	drm->mode_config.cursor_height = M9_CURSOR_SIZE;
 
-	ret = drm_simple_display_pipe_init(drm, &mdev->pipe, &m9_pipe_funcs,
-					   m9_formats, ARRAY_SIZE(m9_formats),
-					   NULL, NULL);
-	if (ret)
-		return ret;
-	ret = drm_connector_init(drm, &mdev->connector,
-				 &matrox_kms_connector_funcs,
-				 DRM_MODE_CONNECTOR_DisplayPort);
-	if (ret)
-		return ret;
 	ret = m9x_ddc_init(mdev);
 	if (ret)
 		return ret;
-	drm_connector_helper_add(&mdev->connector, &m9_connector_helper_funcs);
-	ret = drm_connector_attach_encoder(&mdev->connector, &mdev->pipe.encoder);
-	if (ret)
-		return ret;
-	/* The overlay rides the same controller, so it belongs to this CRTC. */
-	ret = drm_universal_plane_init(drm, &mdev->cursor_plane,
-				       drm_crtc_mask(&mdev->pipe.crtc),
-				       &m9_cursor_funcs, m9_cursor_formats,
-				       ARRAY_SIZE(m9_cursor_formats), NULL,
-				       DRM_PLANE_TYPE_CURSOR, "cursor");
-	if (ret)
-		return ret;
-	drm_plane_helper_add(&mdev->cursor_plane, &m9_cursor_helper_funcs);
-	/* drm_simple_display_pipe_init() builds the CRTC without a cursor
-	 * plane, and the legacy cursor ioctl has nothing to target until the
-	 * CRTC points at one, so X falls back to its software cursor. */
-	mdev->pipe.crtc.cursor = &mdev->cursor_plane;
-	ret = drm_mode_crtc_set_gamma_size(&mdev->pipe.crtc, 256);
-	if (ret)
-		return ret;
-	drm_crtc_enable_color_mgmt(&mdev->pipe.crtc, 0, false, 256);
+	/* One head per DDC bus that the board populates, so a connector always
+	 * owns the bus its display answers on.  A second head is only brought
+	 * up when the driver may program its timing. */
+	mdev->heads = min3(mdev->ddc_count, M9_MAX_HEADS,
+			   m9_kms_modeset ? M9_MAX_HEADS : 1u);
+	if (!mdev->heads)
+		mdev->heads = 1;
+	for (i = 0; i < mdev->heads; i++) {
+		ret = m9_head_init(mdev, &mdev->head[i], i);
+		if (ret)
+			return ret;
+	}
 	drm_mode_config_reset(drm);
 	mdev->kms_initialized = true;
 	return 0;
@@ -1101,7 +1203,8 @@ int m9x_modeset_init(struct m9x_device *mdev)
 
 void m9x_modeset_fini(struct m9x_device *mdev)
 {
-	m9_cursor_fini(mdev);
+	unsigned int i;
+
 	m9x_write(mdev, M9_REG_IRQ_LOW_MASK, 0);
 	m9x_write(mdev, M9_REG_IRQ_HIGH_MASK, 0);
 	m9x_write(mdev, M9_REG_IRQ0_MASK, 0);
@@ -1110,14 +1213,20 @@ void m9x_modeset_fini(struct m9x_device *mdev)
 		mdev->irq_installed = false;
 	}
 	/*
-	 * Return the controller to its exact warm scanout before TTM releases the
-	 * last pinned dumb buffer.  Restoring CTRL also restores firmware's LUT
-	 * bypass choice, so no driver-programmed gamma table remains selected.
+	 * Return every controller to the scanout it was found with before TTM
+	 * releases the last pinned dumb buffer.  Restoring CTRL also restores
+	 * the firmware's LUT bypass choice, so no driver-programmed gamma table
+	 * remains selected.
 	 */
 	wmb();
-	m9x_write(mdev, M9_DC0 + M9_DC_START, mdev->warm_dc_start);
-	m9x_write(mdev, M9_DC0 + M9_DC_PITCH, mdev->warm_dc_pitch);
-	m9x_write(mdev, M9_DC0 + M9_DC_CTRL, mdev->warm_dc_ctrl);
-	m9_scanout_fini(mdev);
+	for (i = 0; i < mdev->heads; i++) {
+		struct m9_head *head = &mdev->head[i];
+
+		m9_cursor_fini(head);
+		m9x_write(mdev, head->dc + M9_DC_START, head->warm_dc_start);
+		m9x_write(mdev, head->dc + M9_DC_PITCH, head->warm_dc_pitch);
+		m9x_write(mdev, head->dc + M9_DC_CTRL, head->warm_dc_ctrl);
+		m9_scanout_fini(head);
+	}
 	mdev->kms_initialized = false;
 }

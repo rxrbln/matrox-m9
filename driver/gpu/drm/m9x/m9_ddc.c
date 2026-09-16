@@ -233,24 +233,11 @@ int m9x_ddc_init(struct m9x_device *mdev)
 	return 0;
 }
 
-/* The bus that answers an EDID read owns the connector; probing is the only
- * evidence we have for which DDC pair a lit connector uses. */
-struct i2c_adapter *m9x_ddc_adapter(struct m9x_device *mdev)
+/* Connector n uses DDC bus n: the PInS map orders the pairs, and with two
+ * displays attached the first two buses are the two lit connectors. */
+struct i2c_adapter *m9x_ddc_adapter(struct m9x_device *mdev, unsigned int index)
 {
-	unsigned int i;
-
-	if (mdev->ddc_probed)
-		return mdev->ddc_live;
-	mdev->ddc_probed = true;
-	for (i = 0; i < mdev->ddc_count; i++) {
-		if (!drm_probe_ddc(&mdev->ddc[i].adapter))
-			continue;
-		drm_info(&mdev->drm, "display answers on %s\n",
-			 mdev->ddc[i].adapter.name);
-		mdev->ddc_live = &mdev->ddc[i].adapter;
-		return mdev->ddc_live;
-	}
-	drm_info(&mdev->drm, "no display answered DDC on %u buses\n",
-		 mdev->ddc_count);
-	return NULL;
+	if (index >= mdev->ddc_count)
+		return NULL;
+	return &mdev->ddc[index].adapter;
 }
