@@ -288,6 +288,8 @@ struct m9_context {
    const char *dump_path;   /* M9X_DUMP: append every job's words */
    bool dry_run;            /* M9X_DRYRUN: validate jobs, never execute */
    unsigned dump_seq;
+   unsigned dump_from, dump_count;
+   unsigned frame_jobs, only_first, only_after;
 };
 
 #endif

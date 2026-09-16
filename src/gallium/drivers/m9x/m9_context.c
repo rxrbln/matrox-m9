@@ -554,11 +554,17 @@ static void
 m9_dump_job(struct m9_context *ctx, const struct m9_fs_variant *fs)
 {
    const struct m9_batch *b = &ctx->batch;
-   FILE *out = fopen(ctx->dump_path, "a");
+   /* M9X_DUMP_FROM / M9X_DUMP_COUNT select a window of jobs by their running
+    * number, so a long run leaves one decodable stretch from mid-game. */
+   unsigned seq = ctx->dump_seq++;
+   FILE *out;
 
+   if (seq < ctx->dump_from || seq >= ctx->dump_from + ctx->dump_count)
+      return;
+   out = fopen(ctx->dump_path, seq == ctx->dump_from ? "w" : "a");
    if (!out)
       return;
-   fprintf(out, "JOB %u dwords %u relocs %u\n", ctx->dump_seq++,
+   fprintf(out, "JOB %u dwords %u relocs %u\n", seq,
            b->command_count, b->reloc_count);
    for (unsigned i = 0; i < b->command_count; i++)
       fprintf(out, "%08x%c", b->command[i], i % 8 == 7 ? '\n' : ' ');
@@ -611,6 +617,19 @@ m9_submit_job(struct m9_context *ctx)
 
    if (!draws)
       return 0;
+   /* M9X_ONLY_FIRST / M9X_ONLY_AFTER drop every job of a frame outside that
+    * range, which isolates the draws a screen region comes from. */
+   if (ctx->frame_jobs++ < ctx->only_after ||
+       ctx->frame_jobs > ctx->only_first) {
+      util_dynarray_foreach(&ctx->job_textures, struct pipe_resource *, held)
+         pipe_resource_reference(held, NULL);
+      util_dynarray_clear(&ctx->job_textures);
+      ctx->job_unit_dwords = 0;
+      util_dynarray_clear(&ctx->records);
+      util_dynarray_clear(&ctx->draws);
+      util_dynarray_clear(&ctx->extra);
+      return 0;
+   }
    ret = ctx->lost ? -EIO :
          m9_source_reserve(ctx, (uint64_t)records * M9_RECORD_FLOATS *
                                 sizeof(float));
@@ -2485,6 +2504,7 @@ m9_context_flush(struct pipe_context *pctx,
    struct pipe_fence_handle *fence = NULL;
 
    (void)flags;
+   ctx->frame_jobs = 0;
    m9_context_sync(ctx);
    if (out_fence) {
       if (!ctx->lost)
@@ -2604,6 +2624,10 @@ m9_context_create(struct pipe_screen *pscreen, void *priv, unsigned flags)
    ctx->base.priv = priv;
    ctx->debug = debug_get_bool_option("M9X_DEBUG", false);
    ctx->dump_path = debug_get_option("M9X_DUMP", NULL);
+   ctx->dump_from = debug_get_num_option("M9X_DUMP_FROM", 0);
+   ctx->dump_count = debug_get_num_option("M9X_DUMP_COUNT", 4096);
+   ctx->only_first = debug_get_num_option("M9X_ONLY_FIRST", UINT_MAX);
+   ctx->only_after = debug_get_num_option("M9X_ONLY_AFTER", 0);
    ctx->dry_run = debug_get_bool_option("M9X_DRYRUN", false);
    util_dynarray_init(&ctx->records, NULL);
    util_dynarray_init(&ctx->draws, NULL);
