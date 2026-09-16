@@ -60,6 +60,7 @@ enum m9_warning {
    M9_WARN_MEMORY = 1u << 9,
    M9_WARN_TEXTURE = 1u << 10,
    M9_WARN_WRAP = 1u << 11,
+   M9_WARN_SUBMIT = 1u << 12,
 };
 
 struct m9_transfer {
@@ -137,6 +138,36 @@ m9_warn_once(struct m9_context *ctx, uint32_t bit, const char *message)
 }
 
 static void
+m9_skip_report(struct m9_context *ctx)
+{
+   fprintf(stderr, "m9x: context %u: %u seen, %u skipped, %u reasons\n",
+           ctx->context_id, ctx->submitted_draws, ctx->skipped_draws,
+           ctx->skip_reasons);
+   for (unsigned i = 0; i < ctx->skip_reasons; i++)
+      fprintf(stderr, "m9x: context %u: %u draws skipped: %s\n",
+              ctx->context_id, ctx->skip_reason[i].draws,
+              ctx->skip_reason[i].reason);
+}
+
+/* Warnings are printed once per reason; the tally keeps the draw count. */
+static bool
+m9_skip_reason(struct m9_context *ctx, const char *reason)
+{
+   unsigned i;
+
+   for (i = 0; i < ctx->skip_reasons; i++)
+      if (ctx->skip_reason[i].reason == reason) {
+         ctx->skip_reason[i].draws++;
+         return false;
+      }
+   if (ctx->skip_reasons < M9_MAX_SKIP_REASONS) {
+      ctx->skip_reason[ctx->skip_reasons].reason = reason;
+      ctx->skip_reason[ctx->skip_reasons++].draws = 1;
+   }
+   return false;
+}
+
+static void
 m9_context_sync(struct m9_context *ctx)
 {
    if (ctx->draw)
@@ -194,11 +225,11 @@ m9_texture_window(struct m9_context *ctx, const struct m9_resource *resource,
    struct drm_parhelia_m9_surface_access access = {
       .handle = resource->handle,
       .op = write ? PARHELIA_M9_ACCESS_WRITE : PARHELIA_M9_ACCESS_READ,
-      /* The kernel window takes the small kind up to 64 and the large kind,
-       * which needs a 32-aligned span, above it. */
+      /* The kernel window takes the small kind with both dimensions up to
+       * 64, and the large kind only with a 32-aligned span. */
       .descriptor0 = (uint32_t)resource->texture_code << 24 |
-                     (lvl->width > 64 || lvl->height > 64 ?
-                      M9_TEXTURE_KIND_RENDER : M9_TEXTURE_KIND_2D) << 16 |
+                     (lvl->width <= 64 && lvl->height <= 64 ?
+                      M9_TEXTURE_KIND_2D : M9_TEXTURE_KIND_RENDER) << 16 |
                      lvl->width,
       .descriptor1 = 1u << 16 | lvl->height,
       .surface_width = lvl->width,
@@ -212,7 +243,15 @@ m9_texture_window(struct m9_context *ctx, const struct m9_resource *resource,
       .flags = PARHELIA_M9_ACCESS_TEXTURE,
       .offset = (uint32_t)lvl->offset,
    };
-   int ret = rows && lvl->offset <= UINT32_MAX ? 0 : -ENOMEM;
+   /* Neither window shape fits a level above 64 with an unaligned span. */
+   bool fits = (lvl->width <= 64 && lvl->height <= 64) ||
+               !(lvl->width % 32);
+   int ret = !fits ? -ENOTSUP :
+             rows && lvl->offset <= UINT32_MAX ? 0 : -ENOMEM;
+
+   if (!fits && ctx->debug)
+      fprintf(stderr, "m9x: texture window refuses level %u %ux%u\n",
+              level, lvl->width, lvl->height);
 
    if (!ret && write &&
        !util_format_translate(resource->texture_storage, rows, box->width * 4,
@@ -494,6 +533,21 @@ m9_dump_job(struct m9_context *ctx, const struct m9_fs_variant *fs)
       fprintf(out, "RELOC dword %u handle %u offset %#" PRIx64 " kind %u\n",
               b->relocs[i].command_dword, b->relocs[i].handle,
               (uint64_t)b->relocs[i].target_offset, b->relocs[i].kind);
+   /* The kernel compares each ref's flags against the union of its relocs,
+    * and every target offset against the object size. */
+   for (unsigned i = 0; i < b->bo_count; i++) {
+      uint64_t size = 0;
+
+      if (b->bos[i].handle == ctx->command.handle) size = ctx->command.size;
+      else if (b->bos[i].handle == ctx->system.handle) size = ctx->system.size;
+      else if (b->bos[i].handle == ctx->program.handle) size = ctx->program.size;
+      else if (b->bos[i].handle == ctx->fragment_db.handle) size = ctx->fragment_db.size;
+      else if (b->bos[i].handle == ctx->transient.handle) size = ctx->transient.size;
+      else if (b->bos[i].handle == ctx->be.handle) size = ctx->be.size;
+      else if (b->bos[i].handle == ctx->source.handle) size = ctx->source.size;
+      fprintf(out, "BO handle %u flags %u size %#" PRIx64 "\n",
+              b->bos[i].handle, b->bos[i].flags, size);
+   }
    if (fs) {
       const uint32_t *w = fs->program.slots.data;
       const float *k = ctx->job_consts.data;
@@ -575,7 +629,20 @@ m9_submit_job(struct m9_context *ctx)
             m9_batch_submit(ctx->screen, &ctx->command, &ctx->batch,
                             ctx->context_id, &point);
    }
-   if (ret) {
+   if (ret == -EINVAL) {
+      /* A refused job is one unsupported state, not a broken context. */
+      m9_warn_once(ctx, M9_WARN_SUBMIT,
+                   "the kernel refused a job; those draws are skipped");
+      m9_skip_reason(ctx, "the kernel refused a job; those draws are skipped");
+      ctx->skipped_draws++;
+      /* Name the refused job so the failing validator check is identifiable. */
+      if (ctx->debug)
+         fprintf(stderr, "m9x: refused job: words %u relocs %u bos %u "
+                 "records %u draws %u units %u fs %d blend_dest %d\n",
+                 ctx->batch.command_count, ctx->batch.reloc_count,
+                 ctx->batch.bo_count, records, draws, key->unit_count,
+                 !!fs, fs ? (int)key->variant->program.blend_dest : -1);
+   } else if (ret) {
       if (!ctx->lost)
          fprintf(stderr, "m9x: two-pass job failed (%s); context lost\n",
                  strerror(-ret));
@@ -711,7 +778,8 @@ m9_scissor_key(struct m9_context *ctx, const struct pipe_scissor_state *s,
    uint32_t maxy = MIN2(s->maxy, ctx->params.height);
 
    if (minx >= maxx || miny >= maxy)
-      return false;
+      return m9_skip_reason(ctx, "the scissor rectangle is empty; "
+                            "draw skipped");
    m9_scissor_words(minx, miny, maxx, maxy, &key->clip_min, &key->clip_max);
    return true;
 }
@@ -743,7 +811,8 @@ m9_fs_resolve_consts(struct m9_context *ctx, const struct m9_fs_variant *fs,
             if ((size_t)k->offset[lane] + sizeof(float) > size) {
                m9_warn_once(ctx, M9_WARN_FS, "fragment constants outside "
                             "the bound constant buffer; draw skipped");
-               return false;
+               return m9_skip_reason(ctx, "fragment constants outside the "
+                                     "bound constant buffer; draw skipped");
             }
             memcpy(&v, data + k->offset[lane], sizeof(v));
             break;
@@ -754,7 +823,8 @@ m9_fs_resolve_consts(struct m9_context *ctx, const struct m9_fs_variant *fs,
             if ((size_t)k->offset[0] + sizeof(float) > size) {
                m9_warn_once(ctx, M9_WARN_FS, "alpha reference outside the "
                             "bound constant buffer; draw skipped");
-               return false;
+               return m9_skip_reason(ctx, "alpha reference outside the "
+                                     "bound constant buffer; draw skipped");
             }
             memcpy(&v, data + k->offset[0], sizeof(v));
             v *= 256.0f;
@@ -812,9 +882,15 @@ m9_texture_bind_view(const struct pipe_sampler_view *view,
    if (res->tiled && res->kind == M9_RESOURCE_LINEAR_COLOR &&
        (res->base.format == PIPE_FORMAT_B8G8R8A8_UNORM ||
         res->base.format == PIPE_FORMAT_B8G8R8X8_UNORM)) {
+      /* Targets of at most 64x64 are the small storage family, which the
+       * sampler addresses through the 2-D kind at its own span. */
+      bool small = res->width <= 64 && res->height <= 64;
+
       *bind = (struct m9_texture_bind) {
-         .code = 0xcc, .kind = M9_TEXTURE_KIND_RENDER,
-         .width = (res->width + 31) & ~31u, .height = res->height, .depth = 1,
+         .code = 0xcc,
+         .kind = small ? M9_TEXTURE_KIND_2D : M9_TEXTURE_KIND_RENDER,
+         .width = small ? res->width : (res->width + 31) & ~31u,
+         .height = res->height, .depth = 1,
       };
       return NULL;
    }
@@ -859,7 +935,7 @@ m9_job_textures(struct m9_context *ctx, const struct m9_fs_variant *fs,
          reason = "sampler wrap mode is not implemented; draw skipped";
       if (reason) {
          m9_warn_once(ctx, M9_WARN_TEXTURE, reason);
-         return false;
+         return m9_skip_reason(ctx, reason);
       }
       key->unit_res[k] = view->texture;
       key->unit_scale[k][0] = (float)m9_res(view->texture)->width / bind.width;
@@ -881,7 +957,7 @@ m9_job_textures(struct m9_context *ctx, const struct m9_fs_variant *fs,
                      "draw skipped";
       if (reason) {
          m9_warn_once(ctx, M9_WARN_TEXTURE, reason);
-         return false;
+         return m9_skip_reason(ctx, reason);
       }
    }
    key->unit_count = p->texture_count;
@@ -1118,8 +1194,10 @@ m9_job_key_current(struct m9_context *ctx, struct m9_job_key *key)
    struct m9_resource *zs;
    bool test, write;
 
-   if (ctx->lost || !ctx->params_valid)
-      return false;
+   if (ctx->lost)
+      return m9_skip_reason(ctx, "the context is lost; draw skipped");
+   if (!ctx->params_valid)
+      return m9_skip_reason(ctx, "no valid raster parameters; draw skipped");
    zs = m9_context_depth(ctx);
    test = dsa && dsa->depth_enabled;
    if (test && !zs) {
@@ -1147,7 +1225,7 @@ m9_job_key_current(struct m9_context *ctx, struct m9_job_key *key)
       key->variant = m9_ctx_variant(ctx, &reason);
       if (!key->variant) {
          m9_warn_once(ctx, M9_WARN_BLEND, reason);
-         return false;
+         return m9_skip_reason(ctx, reason);
       }
       if (!m9_fs_resolve_consts(ctx, key->variant, &ctx->key_consts) ||
           !m9_job_textures(ctx, key->variant, key))
@@ -1392,11 +1470,13 @@ m9_render_emit(struct m9_vbuf_render *r, const uint16_t *indices,
    if (!count)
       return;
    if (!m9_job_key_current(ctx, &key)) {
+      /* Every inner path records its own reason; this names the rest. */
+      m9_skip_reason(ctx, "the job state is unsupported; draw skipped");
       ctx->skipped_draws++;
       return;
    }
    /* A killed client never destroys its context, so report as we go. */
-   if (ctx->debug && ++ctx->submitted_draws % 2000 == 0)
+   if (ctx->debug && ++ctx->submitted_draws % 200 == 0)
       fprintf(stderr, "m9x: %u draws submitted, %u skipped\n",
               ctx->submitted_draws, ctx->skipped_draws);
    if (u_reduced_prim(prim) == MESA_PRIM_POINTS) {
@@ -1514,10 +1594,32 @@ m9_draw_vbo(struct pipe_context *pctx, const struct pipe_draw_info *info,
       util_draw_multi(pctx, info, drawid_offset, indirect, draws, num_draws);
       return;
    }
+   /* Count at the entry point: a draw dropped here never reaches the
+    * vbuf render, and a killed client never destroys its context. */
+   if (ctx->debug && ++ctx->submitted_draws % 200 == 0) {
+      fprintf(stderr, "m9x: %u draws seen, %u dropped before submission\n",
+              ctx->submitted_draws, ctx->skipped_draws);
+      m9_skip_report(ctx);
+   }
    if (!num_draws || indirect || !draws[0].count || !info->instance_count ||
-       ctx->lost || !ctx->params_valid)
+       ctx->lost || !ctx->params_valid) {
+      m9_skip_reason(ctx, !num_draws || !draws[0].count ||
+                     !info->instance_count ? "the draw is empty; skipped" :
+                     indirect ? "indirect draws are not implemented; skipped" :
+                     ctx->lost ? "the context is lost; draw skipped" :
+                     "no valid raster parameters; draw skipped");
+      ctx->skipped_draws++;
+      if (ctx->debug && ctx->skipped_draws % 200 == 0)
+         fprintf(stderr, "m9x: draw dropped: draws %u indirect %d count %u "
+                 "instances %u lost %d params %d\n", num_draws, !!indirect,
+                 num_draws ? draws[0].count : 0, info->instance_count,
+                 ctx->lost, ctx->params_valid);
       return;
+   }
    if (!ctx->fs || (!ctx->fs->passthrough && !ctx->fs->native)) {
+      m9_skip_reason(ctx, ctx->fs && ctx->fs->reason ? ctx->fs->reason :
+                     "no fragment shader is bound; draw skipped");
+      ctx->skipped_draws++;
       if (ctx->fs && !ctx->fs->warned) {
          fprintf(stderr, "m9x: fragment shader not supported by the native "
                  "backend (%s); draws skipped\n", ctx->fs->reason);
@@ -2347,6 +2449,8 @@ m9_context_destroy(struct pipe_context *pctx)
    struct m9_context *ctx = m9_context(pctx);
    struct m9_screen *screen = ctx->screen;
 
+   if (ctx->debug)
+      m9_skip_report(ctx);
    if (ctx->draw) {
       m9_context_sync(ctx);
       draw_destroy(ctx->draw);

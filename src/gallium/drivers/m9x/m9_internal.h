@@ -23,6 +23,7 @@
 #define M9_MAX_RELOCS 128u
 #define M9_MAX_BOS 64u
 #define M9_MAX_MIP_LEVELS 13u
+#define M9_MAX_SKIP_REASONS 16u
 
 enum m9_resource_kind {
    M9_RESOURCE_LINEAR_BUFFER,
@@ -265,6 +266,13 @@ struct m9_context {
    uint32_t warned;
    uint32_t skipped_draws;      /* dropped for an unimplemented state */
    uint32_t submitted_draws;
+   /* Draws dropped per distinct reason; the strings are literals, so the
+    * pointer identifies the reason and the table needs no allocation. */
+   struct {
+      const char *reason;
+      uint32_t draws;
+   } skip_reason[M9_MAX_SKIP_REASONS];
+   unsigned skip_reasons;
    bool debug;
    const char *dump_path;   /* M9X_DUMP: append every job's words */
    bool dry_run;            /* M9X_DRYRUN: validate jobs, never execute */
