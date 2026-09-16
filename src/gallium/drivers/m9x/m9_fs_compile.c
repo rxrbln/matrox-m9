@@ -55,6 +55,7 @@ enum node_kind {
    N_VARY, N_TEX, N_UBO, N_LIT, N_MUL, N_ADD, N_SUB, N_MAD,
    N_MIN, N_MAX,        /* against a constant, the captured cls 2 / 3 form */
    N_NEG,               /* move with the W1 negate bit, as fs-neg emits */
+   N_FRACT, N_FLOOR, N_CEIL,  /* the move family's rounding classes */
    N_SAT,               /* move in the saturating class, as blending uses */
    N_GATHER,            /* a result lane per source: src[lane] * src[2] */
    N_LOAD,              /* constant factor moved into a register */
@@ -78,6 +79,7 @@ struct node {
 
 enum lop_kind {
    L_INTERP, L_MUL_RC, L_MUL_RR, L_ADD_RC, L_ADD_RR, L_SUB_CR, L_MAD,
+   L_FRACT, L_FLOOR, L_CEIL,
    L_MIN_RC, L_MAX_RC, L_NEG, L_SAT,
    L_MOV_OUT, L_MOVC_OUT, L_MOVC_TMP, L_MOVC_SECOND, L_RAW,
 };
@@ -570,14 +572,20 @@ build_alu(struct ctx *c, nir_alu_instr *alu)
       set_src(&NODES(c)[n], 0, a, lane[0], swz[0]);
       return n;
    }
-   case nir_op_fneg: {
+   case nir_op_fneg:
+   case nir_op_ffract:
+   case nir_op_ffloor:
+   case nir_op_fceil: {
       int a = alu_src_node(c, alu, 0, lane[0], swz[0]);
+      enum node_kind kind = alu->op == nir_op_fneg ? N_NEG :
+                            alu->op == nir_op_ffract ? N_FRACT :
+                            alu->op == nir_op_ffloor ? N_FLOOR : N_CEIL;
 
       if (a < 0)
          return -1;
       if (node_is_const(&NODES(c)[a]))
          return fail(c, "unsupported arithmetic operation"), -1;
-      n = node_new(c, N_NEG);
+      n = node_new(c, kind);
       if (n < 0)
          return -1;
       set_src(&NODES(c)[n], 0, a, lane[0], swz[0]);
@@ -1220,6 +1228,13 @@ emit_node_lops(struct ctx *c, int n, bool output, bool direct_ba)
          lop_init(&l, L_NEG, lane, n);
          operand(c, &l, 0, nd, 0);
          break;
+      case N_FRACT:
+      case N_FLOOR:
+      case N_CEIL:
+         lop_init(&l, nd->kind == N_FRACT ? L_FRACT :
+                      nd->kind == N_FLOOR ? L_FLOOR : L_CEIL, lane, n);
+         operand(c, &l, 0, nd, 0);
+         break;
       case N_MIN:
       case N_MAX:
          if (!node_is_const(b))
@@ -1528,6 +1543,18 @@ encode_lops(struct ctx *c)
          emit(c, w0_make(NONE, opreg(c, l, 0), opreg(c, l, 1), d, 0, op0),
               w1_make(0xa0400c50 | (pair ? 0x100 : 0), e, NONE));
          break;
+      case L_FRACT:
+      case L_FLOOR:
+      case L_CEIL: {
+         /* The move family's rounding classes, byte-identical in fs-fract,
+          * fs-floor and fs-ceil apart from this word. */
+         uint32_t base = l->kind == L_FRACT ? 0xa2800f00 :
+                         l->kind == L_FLOOR ? 0xa2800cc0 : 0xa2800c00;
+
+         emit(c, w0_make(NONE, NONE, opreg(c, l, 0), d, 0, op0),
+              w1_make(base | l->opswz[0] << 4, has, NONE));
+         break;
+      }
       case L_MOV_OUT:
          emit(c, w0_make(NONE, NONE, opreg(c, l, 0), OUT, 0, op0),
               w1_make(0xa2803f10, NONE, NONE));
