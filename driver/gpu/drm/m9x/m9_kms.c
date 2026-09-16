@@ -346,9 +346,19 @@ static int m9_pipe_check(struct drm_simple_display_pipe *pipe,
  * kernel-owned tiled scanout surface through host-aperture slot 0 carrying the
  * scanout descriptor, then release that window.
  */
+/* Bytes of the frame the head currently scans out.  scanout_bytes is only
+ * the bounce buffer's capacity, which grows and never shrinks, so it is not
+ * the length to copy once a mode has become smaller. */
+static size_t m9_scanout_frame_bytes(const struct m9_head *head)
+{
+	return (size_t)head->scanout_pitch * head->scanout_height;
+}
+
 static int m9_scanout_publish(struct m9_head *head,
 			      struct drm_framebuffer *fb)
 {
+	size_t frame;
+
 	struct drm_gem_object *gem = drm_gem_fb_get_obj(fb, 0);
 	struct drm_gem_vram_object *src = drm_gem_vram_of_gem(gem);
 	bool tiled = m9x_gem_vram_tiled(gem);
@@ -358,8 +368,11 @@ static int m9_scanout_publish(struct m9_head *head,
 
 	struct m9x_device *mdev = head->mdev;
 
+	frame = m9_scanout_frame_bytes(head);
 	if (!head->scanout || !mdev->bar0_window || !head->scanout_bounce ||
-	    head->scanout->bo.base.size < head->scanout_bytes ||
+	    !frame || frame > head->scanout_bytes ||
+	    head->scanout->bo.base.size < frame ||
+	    gem->size < frame ||
 	    fb->width != head->scanout_width ||
 	    fb->height != head->scanout_height ||
 	    fb->pitches[0] != head->scanout_pitch)
@@ -378,7 +391,7 @@ static int m9_scanout_publish(struct m9_head *head,
 		ret = drm_gem_vram_vmap(src, &map);
 		if (!ret) {
 			iosys_map_memcpy_from(head->scanout_bounce, &map, 0,
-					      head->scanout_bytes);
+					      frame);
 			drm_gem_vram_vunmap(src, &map);
 		}
 		ttm_bo_unreserve(&src->bo);
@@ -391,13 +404,11 @@ static int m9_scanout_publish(struct m9_head *head,
 		m9x_surface_read_locked(mdev, lower_32_bits(src_offset),
 					M9_SCANOUT_FORMAT(head->scanout_pitch / 4),
 					M9_SCANOUT_EXTENT(head->scanout_height),
-					head->scanout_bounce,
-					head->scanout_bytes);
+					head->scanout_bounce, frame);
 	m9x_address_surface_window(mdev, lower_32_bits(offset),
 				   M9_SCANOUT_FORMAT(head->scanout_pitch / 4),
 				   M9_SCANOUT_EXTENT(head->scanout_height));
-	memcpy_toio(mdev->bar0_window, head->scanout_bounce,
-		    head->scanout_bytes);
+	memcpy_toio(mdev->bar0_window, head->scanout_bounce, frame);
 	/* Complete WC stores before the window is released. */
 	wmb();
 	m9x_address_surface_release(mdev);
