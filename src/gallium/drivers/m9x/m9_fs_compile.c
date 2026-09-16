@@ -29,6 +29,7 @@ const nir_shader_compiler_options m9_fs_nir_options = {
    .lower_extract_word = true,
    .lower_fdiv = true,
    .lower_fdph = true,
+   .lower_fpow = true,
    .lower_fmod = true,
    .lower_sincos = true,
    .lower_uniforms_to_ubo = true,
@@ -56,6 +57,7 @@ enum node_kind {
    N_MIN, N_MAX,        /* against a constant, the captured cls 2 / 3 form */
    N_NEG,               /* move with the W1 negate bit, as fs-neg emits */
    N_FRACT, N_FLOOR, N_CEIL,  /* the move family's rounding classes */
+   N_EXP2, N_LOG2,      /* scalar chains, the vendor's fs-exp and fs-log */
    N_CMP,               /* register against a constant, giving 1.0 or 0.0 */
    N_SEL,               /* src[0] against zero picks src[1] or src[2] */
    N_SAT,               /* move in the saturating class, as blending uses */
@@ -82,7 +84,7 @@ struct node {
 
 enum lop_kind {
    L_INTERP, L_MUL_RC, L_MUL_RR, L_ADD_RC, L_ADD_RR, L_SUB_CR, L_MAD,
-   L_FRACT, L_FLOOR, L_CEIL, L_CMP, L_SEL,
+   L_FRACT, L_FLOOR, L_CEIL, L_CMP, L_SEL, L_CHAIN,
    L_MIN_RC, L_MAX_RC, L_NEG, L_SAT,
    L_MOV_OUT, L_MOVC_OUT, L_MOVC_TMP, L_MOVC_SECOND, L_RAW,
 };
@@ -97,7 +99,9 @@ struct lop {
    int konst;           /* constant operand key, -1 if unused */
    uint8_t opswz[3];    /* register operand swizzles */
    uint8_t kswz;        /* constant operand swizzle */
-   uint32_t w0, w1;     /* L_RAW */
+   uint8_t op0;         /* L_CHAIN destination scalar mask */
+   bool kc;             /* L_CHAIN takes its constant index in the c field */
+   uint32_t w0, w1;     /* L_RAW, and the L_CHAIN base word */
 };
 
 struct value {
@@ -597,19 +601,11 @@ build_alu(struct ctx *c, nir_alu_instr *alu)
          memcpy(swz[0], swz[1], 2);
          memcpy(swz[1], swz[2], 2);
       }
+      /* The vendor moves a constant factor into a register. */
       if (node_is_const(&NODES(c)[a])) {
-         int load;
-
-         if (alu->op != nir_op_fmul)
-            return fail(c, "constant expression"), -1;
-         /* The vendor moves a constant factor into a register. */
-         load = node_new(c, N_LOAD);
-         if (load < 0)
+         a = materialise(c, a, lane[0], swz[0]);
+         if (a < 0)
             return -1;
-         set_src(&NODES(c)[load], 0, a, lane[0], swz[0]);
-         a = load;
-         memcpy(lane[0], lane_id, 2);
-         memcpy(swz[0], swz_id, 2);
       }
       if (alu->op == nir_op_fadd) {
          a = deswizzle(c, a, lane[0], swz[0]);
@@ -693,6 +689,21 @@ build_alu(struct ctx *c, nir_alu_instr *alu)
          return -1;
       set_src(&NODES(c)[n], 0, a, lane[0], swz[0]);
       set_src(&NODES(c)[n], 1, b, lane[1], swz[1]);
+      return n;
+   }
+   case nir_op_fexp2:
+   case nir_op_flog2: {
+      /* The chain is scalar: one seed instruction and its polynomial. */
+      if (alu->def.num_components != 1)
+         return fail(c, "vector transcendental"), -1;
+      a = materialise(c, alu_src_node(c, alu, 0, lane[0], swz[0]),
+                      lane[0], swz[0]);
+      if (a < 0)
+         return -1;
+      n = node_new(c, alu->op == nir_op_fexp2 ? N_EXP2 : N_LOG2);
+      if (n < 0)
+         return -1;
+      set_src(&NODES(c)[n], 0, a, lane[0], swz[0]);
       return n;
    }
    case nir_op_fabs: {
@@ -1361,6 +1372,104 @@ replicated_register(struct ctx *c, const struct node *nd)
    return false;
 }
 
+/* One instruction of a transcendental chain: the base word is the vendor's,
+ * the registers are ours.  A constant index rides in the c field for the
+ * UNIT 1 forms and in e for the rest. */
+static int
+chain_lop(struct ctx *c, int n, uint32_t w1, unsigned op0, int a, int b,
+          int cc, int konst, bool kc, unsigned swz)
+{
+   struct lop l;
+   int dst = value_new(c, false);
+
+   if (dst < 0)
+      return -1;
+   lop_init(&l, L_CHAIN, 0, n);
+   l.w1 = w1;
+   l.op0 = op0;
+   l.opval[0] = a;
+   l.opval[1] = b;
+   l.opval[2] = cc;
+   l.konst = konst;
+   l.kc = kc;
+   l.kswz = swz;
+   l.dst = dst;
+   lop_add(c, &l);
+   return dst;
+}
+
+static int
+chain_const(struct ctx *c, const uint32_t bits[2])
+{
+   struct kkey k;
+   float v[2];
+
+   memcpy(v, bits, sizeof(v));
+   k = key_literal(v[0], v[1]);
+   k.pair = true;
+   return key_add(c, &k);
+}
+
+/* exp2 and log2 evaluate a minimax polynomial after a seed instruction that
+ * splits the argument; the coefficients and the wiring are fs-exp's and
+ * fs-log's, so the sequence is the vendor's with our registers. */
+static bool
+emit_chain(struct ctx *c, int n, struct node *nd)
+{
+   static const uint32_t exp_k[3][2] = {
+      { 0x3af71c15, 0x3c130514 }, { 0x3d64b436, 0x3e75ea9e },
+      { 0x3f317271, 0x3f800000 },
+   };
+   static const uint32_t log_k[4][2] = {
+      { 0xbc188576, 0x3d553bd2 }, { 0xbe0cd266, 0x3e77ab67 },
+      { 0xbeb1d173, 0x3ef51608 }, { 0xbf389e52, 0x3fb8aa10 },
+   };
+   struct lop probe;
+   int src, t0, t1, t2, t3, r;
+   unsigned swz;
+
+   lop_init(&probe, L_CHAIN, 0, n);
+   operand(c, &probe, 0, nd, 0);
+   if (probe.konst >= 0)
+      return fail(c, "constant transcendental");
+   src = probe.opval[0];
+   swz = probe.opswz[0] == 3 ? 3 : 0;
+   if (src < 0) {
+      /* A texel register is not a value the chain can name. */
+      return fail(c, "transcendental of a texture read");
+   }
+   if (nd->kind == N_EXP2) {
+      t0 = chain_lop(c, n, 0x9e851d40, 0x1c, src, -1, -1, -1, false, swz);
+      t1 = chain_lop(c, n, 0x982082d0, 0x1c, t0, t0, -1,
+                     chain_const(c, exp_k[0]), true, 0);
+      t2 = chain_lop(c, n, 0xa2600cf0, 0x1e, t0, t1, t1,
+                     chain_const(c, exp_k[1]), false, 0);
+      t3 = chain_lop(c, n, 0xa2600cf0, 0x1e, t0, t2, t1,
+                     chain_const(c, exp_k[2]), false, 0);
+      r = chain_lop(c, n, 0xac2fc0c0, 0x1c, t0, t3, -1, -1, false, 0);
+   } else {
+      /* The log2 seed reads the first scalar only, so shuffle it there. */
+      int p = chain_lop(c, n, 0xa28ffc00, 0x1d, -1, -1, src, -1, false, swz);
+
+      t0 = chain_lop(c, n, 0x96852ec0, 0x1c, p, -1, -1, -1, false, 0);
+      t1 = chain_lop(c, n, 0x944041e0, 0x1c, t0, t0, -1,
+                     chain_const(c, log_k[0]), true, 0);
+      t2 = chain_lop(c, n, 0xa26008a0, 0x1d, t0, t1, t1,
+                     chain_const(c, log_k[1]), false, 0);
+      t3 = chain_lop(c, n, 0xa26008a0, 0x1d, t0, t1, t2,
+                     chain_const(c, log_k[2]), false, 0);
+      t2 = chain_lop(c, n, 0xa26008a0, 0x1d, t0, t1, t3,
+                     chain_const(c, log_k[3]), false, 0);
+      r = chain_lop(c, n, 0xac4fcf00, 0x1c, t0, t2, t0, -1, false, 0);
+      if (p < 0)
+         return false;
+   }
+   if (t0 < 0 || t1 < 0 || t2 < 0 || t3 < 0 || r < 0)
+      return false;
+   nd->value[0] = nd->value[1] = r;
+   return true;
+}
+
 static bool
 emit_node_lops(struct ctx *c, int n, bool output, bool direct_ba)
 {
@@ -1368,6 +1477,18 @@ emit_node_lops(struct ctx *c, int n, bool output, bool direct_ba)
    /* The vendor starts with R,G when an operand register is replicated. */
    bool rg_first = nd->kind == N_MUL && replicated_register(c, nd);
 
+   if (nd->kind == N_EXP2 || nd->kind == N_LOG2) {
+      if (!emit_chain(c, n, nd))
+         return false;
+      for (unsigned lane = 0; output && lane < (direct_ba ? 2u : 1u); lane++) {
+         struct lop l;
+
+         lop_init(&l, L_MOV_OUT, lane, n);
+         l.opval[0] = nd->value[lane];
+         lop_add(c, &l);
+      }
+      return true;
+   }
    if (nd->kind == N_COMPOSE) {
       struct lop l;
       struct kkey k = key_literal(nd->lit[0], nd->lit[0]);
@@ -1588,18 +1709,36 @@ allocate(struct ctx *c)
       if (v->interp && v->reg >= 0 && v->reg < 0x10)
          next_general = MAX2(next_general, (unsigned)v->reg + 1);
    }
-   for (unsigned s = 0; s < n; s++) {
-      struct lop *l = &LOPS(c)[s];
+   {
+      /* A register is released once the value in it has had its last read,
+       * which is what lets a shader hold more temporaries than the file
+       * has registers; the release happens after the destination of the
+       * reading instruction is placed, so the two never collide. */
+      uint8_t freed[0x20];
+      unsigned num_freed = 0;
 
-      if (l->dst >= 0 && VALUES(c)[l->dst].general) {
-         /* 10..13 carry the scratch and interpolation roles, so the general
-          * run continues at 14.  Blending reads the destination from 18..1b
-          * and takes its interpolation spares from 1c, so it stops at 17. */
-         if (next_general == 0x10)
-            next_general = 0x14;
-         if (next_general > (c->blend ? 0x17u : 0x19u))
-            return fail(c, "out of temporaries");
-         VALUES(c)[l->dst].reg = next_general++;
+      for (unsigned s = 0; s < n; s++) {
+         struct lop *l = &LOPS(c)[s];
+
+         if (l->dst >= 0 && VALUES(c)[l->dst].general) {
+            /* 10..13 carry the scratch and interpolation roles, so the
+             * general run continues at 14.  Blending reads the destination
+             * from 18..1b and takes its interpolation spares from 1c, so it
+             * stops at 17.  Fresh registers come first, so a program that
+             * fits the file is laid out the way the vendor lays it out. */
+            if (next_general == 0x10)
+               next_general = 0x14;
+            if (next_general <= (c->blend ? 0x17u : 0x19u))
+               VALUES(c)[l->dst].reg = next_general++;
+            else if (num_freed)
+               VALUES(c)[l->dst].reg = freed[--num_freed];
+            else
+               return fail(c, "out of temporaries");
+         }
+         util_dynarray_foreach(&c->values, struct value, v)
+            if (v->general && v->reg >= 0 && num_freed < ARRAY_SIZE(freed) &&
+                (v->last == (int)s || (v->def == (int)s && v->last < 0)))
+               freed[num_freed++] = v->reg;
       }
    }
    util_dynarray_foreach(&c->values, struct value, v) {
@@ -1621,7 +1760,7 @@ allocate(struct ctx *c)
    if (debug_get_bool_option("M9X_DEBUG_FS", false)) {
       static const char *const names[] = {
          "INTERP", "MUL_RC", "MUL_RR", "ADD_RC", "ADD_RR", "SUB_CR", "MAD",
-         "FRACT", "FLOOR", "CEIL", "CMP", "SEL",
+         "FRACT", "FLOOR", "CEIL", "CMP", "SEL", "CHAIN",
          "MIN_RC", "MAX_RC", "NEG", "SAT",
          "MOV_OUT", "MOVC_OUT", "MOVC_TMP", "MOVC_SECOND", "RAW",
       };
@@ -1777,6 +1916,18 @@ encode_lops(struct ctx *c)
          emit(c, w0_make(a0, opreg(c, l, 1), opreg(c, l, 2), d, nd->cmp, op0),
               w1_make(0xaf400c00 | l->opswz[0] << 8 | l->opswz[1] << 6 |
                       l->opswz[2] << 4, has, a0));
+         break;
+      }
+      case L_CHAIN: {
+         unsigned ra = l->opval[0] >= 0 ? opreg(c, l, 0) : NONE;
+         unsigned rb = l->opval[1] >= 0 ? opreg(c, l, 1) : NONE;
+         unsigned rc = l->opval[2] >= 0 ? opreg(c, l, 2) : NONE;
+
+         if (l->konst >= 0 && l->kc)
+            rc = e;
+         emit(c, w0_make(ra, rb, rc, d, 0, l->op0),
+              w1_make(l->w1 | l->kswz << 4,
+                      l->konst >= 0 && !l->kc ? e : 0, ra));
          break;
       }
       case L_MOV_OUT:
@@ -2881,6 +3032,29 @@ m9_fs_inline_uniforms(nir_shader *nir, const uint32_t *values)
    } while (progress);
 }
 
+/* The special-function chains compute one scalar each, so a vector one is
+ * split rather than refused; the vector paths reassemble the components. */
+static bool
+is_transcendental(const nir_instr *instr, const void *data)
+{
+   const nir_alu_instr *alu;
+
+   (void)data;
+   if (instr->type != nir_instr_type_alu)
+      return false;
+   alu = nir_instr_as_alu(instr);
+   switch (alu->op) {
+   case nir_op_fexp2:
+   case nir_op_flog2:
+   case nir_op_frcp:
+   case nir_op_frsq:
+   case nir_op_fsqrt:
+      return true;
+   default:
+      return false;
+   }
+}
+
 bool
 m9_fs_compile(struct nir_shader *nir, const struct m9_fs_blend *blend,
               struct m9_fs_program *program, const char **reason)
@@ -2907,6 +3081,7 @@ m9_fs_compile(struct nir_shader *nir, const struct m9_fs_blend *blend,
       NIR_PASS(_, nir, nir_opt_vectorize_io,
                nir_var_shader_in | nir_var_shader_out, false);
       NIR_PASS(_, nir, nir_opt_vectorize, NULL, NULL);
+      NIR_PASS(_, nir, nir_lower_alu_to_scalar, is_transcendental, NULL);
       NIR_PASS(_, nir, nir_opt_copy_prop);
       NIR_PASS(_, nir, nir_opt_dce);
       nir_foreach_function_impl(impl, nir) {
