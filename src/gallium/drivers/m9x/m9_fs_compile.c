@@ -2137,6 +2137,10 @@ blend_append(struct ctx *c, const int have[2])
       return false;
    if (s[0] < 0 && !redirect_output(c, &used, s))
       return false;
+   /* The blend code runs after every other slot, so once the colour lanes
+    * are written the program's general registers are dead and the blend
+    * temporaries may reuse them.  The texel pairs stay reserved. */
+   used &= ~0x00f0ff00u;
    for (unsigned lane = 0; lane < 2; lane++)
       used |= BITFIELD_BIT(s[lane]);
    /* 88 bit 4 clears whenever the destination is blended. */
