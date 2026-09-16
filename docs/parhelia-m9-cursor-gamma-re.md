@@ -127,6 +127,34 @@ contract, not proof that the silicon consumes the apparent linear layout.
 Keep the DRM hardware cursor disabled by default and retain the software cursor
 until the live tests below close the layout.
 
+### Live bring-up, 2026-09-16
+
+The `m9x` DRM driver now drives route 0 from a universal cursor plane, and the
+register contract above is confirmed on the M9148 under Xorg/modesetting with
+twm: control reads `5`, config `0xcc000000`, the address holds the cursor BO's
+VRAM offset, and the position register tracks the pointer exactly - a warp to
+`512,620` with the root cursor's `7,7` hotspot reads `0x023902a5`, that is
+`(512-7+64) << 16 | (620-7+64)`.  The scanout no longer contains any pointer
+image, so Xorg has stopped compositing one.
+
+Three things had to change in the driver before Xorg would even attempt the
+ioctl, and they are worth recording because none of them is cursor hardware:
+
+* `drm_simple_display_pipe_init()` creates its CRTC with no cursor plane, so
+  `crtc->cursor` stayed NULL and `drm_mode_cursor_common()` returned `-ENXIO`;
+  modesetting then disables the hardware cursor for the rest of the session.
+* `m9_fb_create()` and `mode_config.min_width/min_height` admitted only the
+  exact 1024x768 scanout, so `MODE_CURSOR2` failed with `-EINVAL` when DRM
+  wrapped the 64x64 ARGB image in a framebuffer.
+* Relaxing those bounds must not stop at the cursor: modesetting decides its
+  colour depth by addfb-testing a `min_width x min_height` buffer, so a driver
+  that refuses small framebuffers falls back to 24bpp and loses glamor.
+
+The apparent red/blue swap recorded above predates the gamma-LUT bypass fix
+(`DC_CTRL` bit 14), which distorted every colour the controller emitted.  The
+appearance of the overlay on the monitor is the one part of the contract a
+capture cannot check, because the cursor is composited in the display stage.
+
 ### Update, destruction, and VT contract
 
 The leaf uploads program address and config before copying pixels, and show is
