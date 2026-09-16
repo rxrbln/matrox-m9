@@ -227,10 +227,24 @@ static struct matrox_kms_irq m9_kms_irq_desc(struct m9x_device *mdev)
 	};
 }
 
+/*
+ * A DDC bus that answers has a display on it.  When it does not, only the
+ * head the firmware left scanning out is known to carry one, which keeps a
+ * display without DDC usable on the boot head.
+ */
 static int m9_connector_detect(struct drm_connector *connector,
 			       struct drm_modeset_acquire_ctx *ctx, bool force)
 {
-	return connector_status_connected;
+	struct m9_head *head = container_of(connector, struct m9_head,
+					    connector);
+	const struct drm_edid *edid;
+	bool present;
+
+	edid = head->ddc ? drm_edid_read_ddc(connector, head->ddc) : NULL;
+	present = edid || (head->warm_dc_ctrl & M9_DC_ENABLE);
+	drm_edid_free(edid);
+	return present ? connector_status_connected :
+			 connector_status_disconnected;
 }
 
 /* The warm mode the firmware left is always offered: it is the only timing
