@@ -29,7 +29,7 @@ MODULE_PARM_DESC(m9_user_submit,
 static bool m9_index_allowed(u8 index)
 {
 	switch (index) {
-	case 0x00 ... 0x04:
+	case 0x00 ... 0x05:
 	case 0x10 ... 0x12: case 0x18: case 0x19:
 	case 0x22: case 0x23: case 0x28: case 0x30:
 	case 0x68 ... 0x6c:
@@ -57,7 +57,8 @@ static bool m9_index_allowed(u8 index)
 static u32 m9_index_reloc_kinds(u8 index)
 {
 	switch (index) {
-	case 0x00 ... 0x04:
+	/* Stream slots 00..05; the fifth slot appears with two texture units. */
+	case 0x00 ... 0x05:
 		return M9_RELOC_BIT(SYSTEM) | M9_RELOC_BIT(STREAM);
 	case 0x69:
 		return M9_RELOC_BIT(RESOURCE_69);
