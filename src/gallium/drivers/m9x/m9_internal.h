@@ -86,6 +86,8 @@ struct m9_resource {
    enum pipe_format texture_storage;
    uint8_t texture_code;
    uint32_t texture_unplaced;  /* levels whose content could not be stored */
+   uint32_t levels_written;    /* levels a transfer has actually written */
+   bool bind_logged;
    void *map;
    /* Hierarchical-Z metadata owned by a D24S8 depth image. */
    struct m9_resource *hz;

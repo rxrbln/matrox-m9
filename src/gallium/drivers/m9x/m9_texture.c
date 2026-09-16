@@ -6,6 +6,7 @@
  * kernel texture window (docs/parhelia-m9-texture-storage.md).
  */
 #include "m9_texture.h"
+
 #include "m9_internal.h"
 
 #include <errno.h>
@@ -112,9 +113,19 @@ m9_texture_layout_init(struct m9_texture_layout *layout,
          struct m9_render_layout render;
 
          /* Vendor allocation contract (STATIC); the placement is not captured. */
+         uint64_t quantum;
+
          if (!m9_render_surface_layout(lvl->width, lvl->height, 4, &render))
             return -EINVAL;
-         lvl->face_bytes = render.size * lvl->depth;
+         /* A level inside a chain is packed by its own extent.  The spare
+          * elements a standalone surface reserves push the next level past
+          * where the sampler looks for it, and from there the chain reads
+          * nothing: a 256x64 texture came out black from level 3 down. */
+         quantum = lvl->width <= 64 && lvl->height <= 64 ? 0x400 : 0x1000;
+         lvl->face_bytes = (((uint64_t)render.row_span *
+                             render.allocation_height * 4) + quantum - 1) &
+                           ~(quantum - 1);
+         lvl->face_bytes *= lvl->depth;
          lvl->offset = offset;
          offset += layout->faces * lvl->face_bytes;
       }

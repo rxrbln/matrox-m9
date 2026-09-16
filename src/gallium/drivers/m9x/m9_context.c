@@ -174,6 +174,11 @@ m9_skip_reason(struct m9_context *ctx, const char *reason)
    return false;
 }
 
+/* M9X_DEBUG_TEXTURES traces the level state of every sampled texture and
+ * M9X_TEXTURE_DUMP writes each uploaded level 0 out as a PPM. */
+static bool m9_debug_textures;
+static const char *m9_texture_dump;
+
 static void
 m9_context_sync(struct m9_context *ctx)
 {
@@ -282,8 +287,16 @@ m9_texture_window(struct m9_context *ctx, const struct m9_resource *resource,
       }
    }
    if (!ret && ioctl(ctx->screen->fd, DRM_IOCTL_PARHELIA_M9_SURFACE_ACCESS,
-                     &access))
+                     &access)) {
       ret = -errno;
+      if (ctx->debug)
+         fprintf(stderr, "m9x: window %s level %u %ux%u span %u off %#" PRIx64
+                 " box %d,%d %ux%u d0 %08x d1 %08x: %s\n",
+                 write ? "store" : "fetch", level, lvl->width, lvl->height,
+                 span, (uint64_t)lvl->offset, box->x, box->y, box->width,
+                 box->height, access.descriptor0, access.descriptor1,
+                 strerror(-ret));
+   }
    if (!ret && !write &&
        !util_format_translate(resource->base.format, data, stride, 0, 0,
                               resource->texture_storage, rows, box->width * 4,
@@ -465,6 +478,31 @@ m9_transfer_unmap(struct pipe_context *pctx, struct pipe_transfer *ptransfer)
                                        ptransfer->level, true, &ptransfer->box,
                                        transfer->staging, ptransfer->stride);
 
+         /* M9X_TEXTURE_DUMP=dir writes each uploaded level 0 as a PPM, so
+          * the content a surface samples can be looked at directly. */
+         if (m9_texture_dump && !ptransfer->level) {
+            const uint8_t *p = transfer->staging;
+            char path[512];
+            FILE *f;
+
+            snprintf(path, sizeof(path), "%s/tex%03u_%ux%u.ppm",
+                     m9_texture_dump, resource->handle, ptransfer->box.width,
+                     ptransfer->box.height);
+            f = fopen(path, "wb");
+            if (f) {
+               fprintf(f, "P6\n%u %u\n255\n", ptransfer->box.width,
+                       ptransfer->box.height);
+               for (unsigned y = 0; y < ptransfer->box.height; y++)
+                  for (unsigned x = 0; x < ptransfer->box.width; x++) {
+                     const uint8_t *t = p + (size_t)y * ptransfer->stride +
+                                        (size_t)x * 4;
+
+                     fwrite((uint8_t[]){ t[0], t[1], t[2] }, 1, 3, f);
+                  }
+               fclose(f);
+            }
+         }
+
          if (store) {
             resource->texture_unplaced |= bit;
             m9_warn_once(m9_context(pctx), M9_WARN_TRANSFER,
@@ -472,6 +510,7 @@ m9_transfer_unmap(struct pipe_context *pctx, struct pipe_transfer *ptransfer)
                          "placement and no kernel texture window");
          } else {
             resource->texture_unplaced &= ~bit;
+            resource->levels_written |= bit;
          }
       }
       FREE(transfer->staging);
@@ -845,6 +884,26 @@ m9_job_commit(struct m9_context *ctx, float *out, float *extra,
       m9_warn_once(ctx, M9_WARN_MEMORY, "out of memory for draw records");
       return;
    }
+   /* M9X_DEBUG_TEXTURES: the screen extent a draw covers and the texture it
+    * samples, so a region of the image can be traced back to its texture. */
+   if (m9_debug_textures) {
+      float x0 = 1e30f, x1 = -1e30f, y0 = 1e30f, y1 = -1e30f;
+
+      /* Records hold window coordinates premultiplied by 1/w. */
+      for (unsigned i = 0; i < vertices; i++) {
+         const float *r = out + i * M9_RECORD_FLOATS;
+         float iw = r[3] != 0.0f ? 1.0f / r[3] : 0.0f;
+         float x = r[0] * iw, y = ctx->params.height - r[1] * iw;
+
+         x0 = MIN2(x0, x); x1 = MAX2(x1, x);
+         y0 = MIN2(y0, y); y1 = MAX2(y1, y);
+      }
+      fprintf(stderr, "m9x: draw %.0f,%.0f-%.0f,%.0f tex %u/%u units %u\n",
+              x0, y0, x1, y1, ctx->job_key.unit_count ?
+              ctx->job_key.units[0].handle : 0,
+              ctx->job_key.unit_count > 1 ? ctx->job_key.units[1].handle : 0,
+              ctx->job_key.unit_count);
+   }
    *draw = (struct m9_draw_record) {
       .start = first,
       .count = vertices,
@@ -937,6 +996,8 @@ m9_fs_resolve_consts(struct m9_context *ctx, const struct m9_fs_variant *fs,
 }
 
 /* Unit words of a sampler view, or the reason it cannot be sampled. */
+static struct m9_context *m9_debug_ctx;
+
 static const char *
 m9_texture_bind_view(const struct pipe_sampler_view *view,
                      struct m9_texture_bind *bind)
@@ -965,10 +1026,26 @@ m9_texture_bind_view(const struct pipe_sampler_view *view,
       return "a base level above 0 needs a re-based texture copy; "
              "draw skipped";
    last = MIN2(view->u.tex.last_level, res->base.last_level);
+   /* The tail page packs every level of 16 texels or less into one captured
+    * placement, which only matches the chain it was captured from: on other
+    * shapes those levels sample nothing.  Stop at the last level with a
+    * placement of its own until the tail's own contract is measured. */
+   if (res->texture.levels)
+      while (last && res->texture.level[last].in_tail)
+         last--;
    if (res->texture.levels) {
       if (res->texture_unplaced & ((2u << last) - 1))
          return "texture levels beyond the captured 32x16 tail need the "
                 "kernel texture window; draw skipped";
+      /* A level nothing ever wrote samples whatever the object was
+       * allocated with, which is why such a texture comes out black. */
+      if (m9_debug_textures && !res->bind_logged) {
+         ((struct m9_resource *)res)->bind_logged = true;
+         fprintf(stderr, "m9x: bind texture %u %ux%u %s levels %u written "
+                 "%#x kind %u\n", res->handle, res->width, res->height,
+                 util_format_short_name(res->base.format),
+                 res->base.last_level + 1, res->levels_written, res->kind);
+      }
       /* The storage kind must be the one the level was written through:
        * the small kind up to 64 in both dimensions, the ordinary tiled kind
        * above it.  Reading 128x128 and larger textures as the small kind
@@ -1022,6 +1099,10 @@ m9_job_textures(struct m9_context *ctx, const struct m9_fs_variant *fs,
 
       /* An incomplete unit samples the opaque black placeholder. */
       if (!view || !view->texture) {
+         if (m9_debug_textures)
+            fprintf(stderr, "m9x: unit %u slot %u has no view: placeholder "
+                    "(handle %u), textures %u\n", k, slot,
+                    ctx->placeholder_texture.handle, p->texture_count);
          m9_texture_unit_placeholder(&key->units[k],
                                      ctx->placeholder_texture.handle);
          key->unit_scale[k][0] = key->unit_scale[k][1] = 1.0f;
@@ -2661,6 +2742,9 @@ m9_context_create(struct pipe_screen *pscreen, void *priv, unsigned flags)
    ctx->base.priv = priv;
    ctx->debug = debug_get_bool_option("M9X_DEBUG", false);
    ctx->dump_path = debug_get_option("M9X_DUMP", NULL);
+   m9_debug_textures = debug_get_bool_option("M9X_DEBUG_TEXTURES", false);
+   m9_texture_dump = debug_get_option("M9X_TEXTURE_DUMP", NULL);
+   m9_debug_ctx = ctx;
    ctx->dump_from = debug_get_num_option("M9X_DUMP_FROM", 0);
    ctx->dump_count = debug_get_num_option("M9X_DUMP_COUNT", 4096);
    ctx->only_first = debug_get_num_option("M9X_ONLY_FIRST", UINT_MAX);
