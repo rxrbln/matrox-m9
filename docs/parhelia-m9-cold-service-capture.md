@@ -1,5 +1,10 @@
 # M9148 kernel service initialization capture
 
+For the current old kernel, which lacks KGDB, use the
+[current initialization tracing harness](parhelia-m9-cold-init-tracing.md):
+a private instrumented vendor module plus X MMIO/PCI and port-I/O observers.
+The KGDB tool below remains an alternative for a suitable debug kernel.
+
 The missing runtime evidence is the interval from initial service construction
 through the first primary doorbell. Existing client `ExecuteDma` captures
 begin after the X server has constructed global vendor services. They do not

@@ -1,5 +1,10 @@
 # M9/Phoenix cold initialization: recovered vendor sequence
 
+For the current runtime evidence, limits and executable observer setup, see
+[initialization findings and tracing harness](parhelia-m9-cold-init-tracing.md).
+That capture is still in progress; the static sequence below is not itself
+a recording of a cold boot.
+
 This note answers one narrow bring-up question for PCI device `102b:0540`:
 what the saved vendor stacks do when M9 memory and clocks are not already
 initialized.  Addresses are virtual addresses in the ELF `m9x_drv.so`, virtual
