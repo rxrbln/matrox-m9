@@ -11,6 +11,7 @@
 #include <drm/drm_atomic_helper.h>
 #include <drm/drm_color_mgmt.h>
 #include <drm/drm_connector.h>
+#include <drm/drm_edid.h>
 #include <drm/drm_drv.h>
 #include <drm/drm_fourcc.h>
 #include <drm/drm_gem_framebuffer_helper.h>
@@ -205,7 +206,10 @@ static int m9_connector_detect(struct drm_connector *connector,
 	return connector_status_connected;
 }
 
-static int m9_connector_get_modes(struct drm_connector *connector)
+/* The warm mode the firmware left is always offered: it is the only timing
+ * the pipe can currently program, and it must remain available when the
+ * display has no EDID. */
+static int m9_connector_add_warm_mode(struct drm_connector *connector)
 {
 	struct m9x_device *mdev = to_m9x(connector->dev);
 	struct drm_display_mode *mode;
@@ -215,6 +219,22 @@ static int m9_connector_get_modes(struct drm_connector *connector)
 		return 0;
 	drm_mode_probed_add(connector, mode);
 	return 1;
+}
+
+static int m9_connector_get_modes(struct drm_connector *connector)
+{
+	struct m9x_device *mdev = to_m9x(connector->dev);
+	struct i2c_adapter *ddc = m9x_ddc_adapter(mdev);
+	const struct drm_edid *edid;
+	int count = 0;
+
+	edid = ddc ? drm_edid_read_ddc(connector, ddc) : NULL;
+	drm_edid_connector_update(connector, edid);
+	if (edid) {
+		count = drm_edid_connector_add_modes(connector);
+		drm_edid_free(edid);
+	}
+	return count + m9_connector_add_warm_mode(connector);
 }
 
 static const struct drm_connector_helper_funcs m9_connector_helper_funcs = {
@@ -980,6 +1000,9 @@ int m9x_modeset_init(struct m9x_device *mdev)
 	ret = drm_connector_init(drm, &mdev->connector,
 				 &matrox_kms_connector_funcs,
 				 DRM_MODE_CONNECTOR_DisplayPort);
+	if (ret)
+		return ret;
+	ret = m9x_ddc_init(mdev);
 	if (ret)
 		return ret;
 	drm_connector_helper_add(&mdev->connector, &m9_connector_helper_funcs);

@@ -4,6 +4,8 @@ config DRM_M9X
 	tristate "Matrox M9/Phoenix clean-room driver"
 	depends on DRM && PCI
 	select DRM_GEM_DMA_HELPER
+	select I2C
+	select I2C_ALGOBIT
 	select DRM_GEM_VRAM_HELPER
 	help
 	  Independent clean-room bring-up driver for Matrox M9/Phoenix device

@@ -5,6 +5,7 @@
 
 #include <linux/dma-fence.h>
 #include <linux/list.h>
+#include <linux/i2c-algo-bit.h>
 #include <linux/io.h>
 #include <linux/mutex.h>
 #include <linux/pci.h>
@@ -89,6 +90,16 @@ struct m9x_transport {
 	struct m9x_triangle_diag *triangle;
 };
 
+/* PInS 8.0 pairs the eight DDC function IDs into four selectors. */
+#define M9_DDC_MAX_BUSES	4u
+
+struct m9_ddc_bus {
+	struct m9x_device *mdev;
+	struct i2c_adapter adapter;
+	struct i2c_algo_bit_data bit;
+	u8 scl, sda;
+};
+
 struct m9x_device {
 	struct drm_device drm;
 	struct pci_dev *pdev;
@@ -111,6 +122,13 @@ struct m9x_device {
 	bool cursor_visible;
 	bool cursor_armed;   /* address and config survive in the controller */
 	/* BAR0 [M9_ADDRESS_CPU_BYTES, +M9_ADDRESS_SURFACE_BYTES), slot 1 view. */
+	/* Native DDC, shared with the board controller. */
+	struct mutex ddc_lock;
+	unsigned int ddc_owned;
+	struct m9_ddc_bus ddc[M9_DDC_MAX_BUSES];
+	unsigned int ddc_count;
+	struct i2c_adapter *ddc_live;
+	bool ddc_probed;
 	void __iomem *bar0_window;
 	u8 *scanout_bounce;
 	struct m9x_transport transport;
@@ -121,6 +139,8 @@ static inline struct m9x_device *to_m9x(struct drm_device *drm)
 	return container_of(drm, struct m9x_device, drm);
 }
 
+int m9x_ddc_init(struct m9x_device *mdev);
+struct i2c_adapter *m9x_ddc_adapter(struct m9x_device *mdev);
 bool m9x_enabled(void);
 bool m9x_kms_enabled(void);
 bool m9x_kms_scanout_enabled(void);

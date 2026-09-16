@@ -138,4 +138,20 @@
 #define M9_PACKET_STOP			0x45u
 #define M9_PACKET_FENCE_HEADER		0x4545e3e6u
 
+
+/* Board-controller (HMC) ownership of the shared GPIO registers: the request
+ * bit is active low and the grant appears in a separate register. */
+#define M9_HMC_REQUEST		0x0318
+#define M9_HMC_GRANT		0x03b0
+#define M9_HMC_DDC_REQUEST	BIT(29)
+#define M9_HMC_DDC_GRANT	BIT(1)
+#define M9_HMC_MISCIO_REQUEST	BIT(28)
+#define M9_HMC_MISCIO_GRANT	BIT(0)
+#define M9_HMC_GRANT_TRIES	2000u
+
+/* Bit-banged DDC: data bit n, output enable at n + 16. */
+#define M9_DDC			0x1c48
+#define M9_MISCIO		0x1c4c
+#define M9_DDC_OE_SHIFT		16
+
 #endif
