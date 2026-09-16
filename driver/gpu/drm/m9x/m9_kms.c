@@ -40,6 +40,12 @@ static bool m9_kms_scanout;
 module_param(m9_kms_scanout, bool, 0400);
 
 static bool m9_kms_direct_scanout = true;
+/* The firmware console runs with the LUT bypassed; programming a ramp is off
+ * until the table is shown to reach the screen. */
+static bool m9_kms_lut;
+module_param(m9_kms_lut, bool, 0600);
+MODULE_PARM_DESC(m9_kms_lut,
+	"Program the scanout gamma table instead of bypassing it");
 module_param(m9_kms_direct_scanout, bool, 0600);
 MODULE_PARM_DESC(m9_kms_direct_scanout,
 	"Scan out tiled framebuffers in place instead of copying them");
@@ -357,12 +363,47 @@ static void m9_program_scanout(struct drm_simple_display_pipe *pipe,
 	m9x_write(mdev, M9_DC0 + M9_DC_PITCH, pitch);
 }
 
+/* Only the upper ten bits of each entry reach the LUT ports, so compare the
+ * ramp at that granularity. */
+static bool m9_lut_is_identity(const struct drm_property_blob *blob)
+{
+	const struct drm_color_lut *lut;
+	unsigned int i;
+
+	if (!blob)
+		return true;
+	if (drm_color_lut_size(blob) != 256)
+		return false;
+	lut = blob->data;
+	for (i = 0; i < 256; i++) {
+		/* X builds its linear ramp as i << 8, the DRM identity is
+		 * i * 257; both are gamma 1.0, so allow the low bits to
+		 * differ rather than programming a table for either. */
+		u16 want = i << 2;
+
+		if (abs((int)(lut[i].red >> 6) - want) > 4 ||
+		    abs((int)(lut[i].green >> 6) - want) > 4 ||
+		    abs((int)(lut[i].blue >> 6) - want) > 4)
+			return false;
+	}
+	return true;
+}
+
 static void m9_pipe_load_gamma(struct drm_simple_display_pipe *pipe,
 			       const struct drm_property_blob *blob)
 {
 	struct m9x_device *mdev = to_m9x(pipe->crtc.dev);
 	u32 ctrl = m9x_read(mdev, M9_DC0 + M9_DC_CTRL);
 
+	/* An identity ramp needs no table at all: the firmware console runs
+	 * with bit 14 set, and the recovered contract offers that as an
+	 * explicit bypass identity.  Only a real ramp turns the table on, so a
+	 * table that never took keeps its colours off the screen.  X hands a
+	 * linear ramp down at start-up, which is this same identity. */
+	if (!m9_kms_lut || m9_lut_is_identity(blob)) {
+		m9x_write(mdev, M9_DC0 + M9_DC_CTRL, ctrl | M9_DC_LUT_BYPASS);
+		return;
+	}
 	/* The M9 DC LUT is the same ten-bit interface used by Parhelia. */
 	m9x_write(mdev, M9_DC0 + M9_DC_CTRL, ctrl & ~M9_DC_LUT_BYPASS);
 	matrox_kms_write_lut(mdev, m9_kms_write,
