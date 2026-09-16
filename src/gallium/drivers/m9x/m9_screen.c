@@ -2,7 +2,6 @@
 /* Copyright 2026 René Rebe <rene@exactco.de> */
 #include "m9_screen.h"
 #include "m9_fs_compile.h"
-#include "m9_vs_texture.h"
 #include "m9x_public.h"
 
 #include <errno.h>
@@ -24,6 +23,7 @@
 #include "m9_batch.h"
 #include "m9_format.h"
 #include "m9_internal.h"
+#include "m9_vs_texture.h"
 #include "nir.h"
 #include "util/format/u_format.h"
 #include "util/u_memory.h"
@@ -1046,19 +1046,6 @@ m9_load_fragment_db(struct m9_screen *screen)
    }
 }
 
-/* Vertex-stage sampling wraps the context here because m9_context.c builds
- * the vtable. */
-static struct pipe_context *
-m9_screen_context_create(struct pipe_screen *pscreen, void *priv,
-                         unsigned flags)
-{
-   struct pipe_context *pctx = m9_context_create(pscreen, priv, flags);
-
-   if (pctx)
-      m9_vs_texture_install(pctx);
-   return pctx;
-}
-
 struct pipe_screen *
 m9_screen_create(int fd, const struct pipe_screen_config *config)
 {
@@ -1123,7 +1110,7 @@ m9_screen_create(int fd, const struct pipe_screen_config *config)
    caps->dmabuf = DRM_PRIME_CAP_IMPORT | DRM_PRIME_CAP_EXPORT;
    screen->base.destroy = m9_destroy;
    screen->base.finalize_nir = m9_finalize_nir;
-   screen->base.context_create = m9_screen_context_create;
+   screen->base.context_create = m9_context_create;
    screen->base.get_name = m9_name;
    screen->base.get_vendor = m9_vendor;
    screen->base.get_device_vendor = m9_device_vendor;

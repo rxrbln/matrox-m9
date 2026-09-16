@@ -120,16 +120,13 @@ m9_vs_map_view(struct pipe_context *pctx, struct m9_vs_textures *vs,
                            mip_offsets);
 }
 
-static void
-m9_vs_set_sampler_views(struct pipe_context *pctx, mesa_shader_stage shader,
-                        unsigned start, unsigned count,
-                        unsigned unbind_trailing,
-                        struct pipe_sampler_view **views)
+void
+m9_vs_texture_views(struct pipe_context *pctx, unsigned start, unsigned count,
+                    unsigned unbind_trailing, struct pipe_sampler_view **views)
 {
    struct m9_vs_textures *vs = m9_vs_context(pctx)->vs_textures;
 
-   vs->set_sampler_views(pctx, shader, start, count, unbind_trailing, views);
-   if (shader != MESA_SHADER_VERTEX)
+   if (!vs)
       return;
    for (unsigned i = 0; i < count + unbind_trailing &&
                         start + i < ARRAY_SIZE(vs->views); i++)
@@ -143,14 +140,13 @@ m9_vs_set_sampler_views(struct pipe_context *pctx, mesa_shader_stage shader,
                           vs->views, vs->num_views);
 }
 
-static void
-m9_vs_bind_sampler_states(struct pipe_context *pctx, mesa_shader_stage shader,
-                          unsigned start, unsigned count, void **states)
+void
+m9_vs_texture_states(struct pipe_context *pctx, unsigned start,
+                     unsigned count, void **states)
 {
    struct m9_vs_textures *vs = m9_vs_context(pctx)->vs_textures;
 
-   vs->bind_sampler_states(pctx, shader, start, count, states);
-   if (shader != MESA_SHADER_VERTEX)
+   if (!vs)
       return;
    for (unsigned i = 0; i < count && start + i < ARRAY_SIZE(vs->states); i++)
       vs->states[start + i] = states ? states[i] : NULL;
@@ -162,53 +158,40 @@ m9_vs_bind_sampler_states(struct pipe_context *pctx, mesa_shader_stage shader,
                      vs->states, vs->num_states);
 }
 
-static void
-m9_vs_draw_vbo(struct pipe_context *pctx, const struct pipe_draw_info *info,
-               unsigned drawid_offset,
-               const struct pipe_draw_indirect_info *indirect,
-               const struct pipe_draw_start_count_bias *draws,
-               unsigned num_draws)
+/* Render targets sampled by a vertex program change between draws, so the
+ * linear copy is refreshed rather than cached. */
+void
+m9_vs_texture_refresh(struct pipe_context *pctx)
 {
    struct m9_vs_textures *vs = m9_vs_context(pctx)->vs_textures;
 
-   /* Render targets sampled by a vertex program change between draws, so
-    * the copy is refreshed rather than cached. */
-   for (unsigned i = 0; i < vs->num_views; i++)
+   for (unsigned i = 0; vs && i < vs->num_views; i++)
       m9_vs_map_view(pctx, vs, i);
-   vs->draw_vbo(pctx, info, drawid_offset, indirect, draws, num_draws);
 }
 
-static void
-m9_vs_destroy(struct pipe_context *pctx)
+void
+m9_vs_texture_fini(struct pipe_context *pctx)
 {
    struct m9_context *ctx = m9_vs_context(pctx);
    struct m9_vs_textures *vs = ctx->vs_textures;
-   void (*destroy)(struct pipe_context *) = vs->destroy;
 
+   if (!vs)
+      return;
    for (unsigned i = 0; i < ARRAY_SIZE(vs->views); i++) {
       pipe_sampler_view_reference(&vs->views[i], NULL);
       FREE(vs->linear[i]);
    }
    ctx->vs_textures = NULL;
    FREE(vs);
-   destroy(pctx);
 }
 
-void
-m9_vs_texture_install(struct pipe_context *pctx)
+bool
+m9_vs_texture_init(struct pipe_context *pctx)
 {
-   struct m9_context *ctx = m9_vs_context(pctx);
    struct m9_vs_textures *vs = CALLOC_STRUCT(m9_vs_textures);
 
    if (!vs)
-      return;
-   vs->set_sampler_views = pctx->set_sampler_views;
-   vs->bind_sampler_states = pctx->bind_sampler_states;
-   vs->draw_vbo = pctx->draw_vbo;
-   vs->destroy = pctx->destroy;
-   ctx->vs_textures = vs;
-   pctx->set_sampler_views = m9_vs_set_sampler_views;
-   pctx->bind_sampler_states = m9_vs_bind_sampler_states;
-   pctx->draw_vbo = m9_vs_draw_vbo;
-   pctx->destroy = m9_vs_destroy;
+      return false;
+   m9_vs_context(pctx)->vs_textures = vs;
+   return true;
 }

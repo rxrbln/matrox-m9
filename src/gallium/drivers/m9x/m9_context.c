@@ -25,6 +25,7 @@
 #include "m9_format.h"
 #include "m9_fs_compile.h"
 #include "m9_internal.h"
+#include "m9_vs_texture.h"
 #include "m9_passthrough.h"
 #include "m9_state.h"
 #include "nir.h"
@@ -1009,7 +1010,7 @@ m9_texture_bind_view(const struct pipe_sampler_view *view,
 
    if (!view || !view->texture)
       return "no texture on a sampled unit; draw skipped";
-   if (!res_debug_once++ && getenv("M9X_DEBUG"))
+   if (!res_debug_once++ && debug_get_bool_option("M9X_DEBUG", false))
       fprintf(stderr, "m9x: sampling %s %ux%u kind %u tiled %d levels %u\n",
               util_format_short_name(view->texture->format),
               m9_res(view->texture)->width, m9_res(view->texture)->height,
@@ -1807,6 +1808,7 @@ m9_draw_vbo(struct pipe_context *pctx, const struct pipe_draw_info *info,
       util_draw_multi(pctx, info, drawid_offset, indirect, draws, num_draws);
       return;
    }
+   m9_vs_texture_refresh(pctx);
    /* Count at the entry point: a draw dropped here never reaches the
     * vbuf render, and a killed client never destroys its context. */
    if (ctx->debug && ++ctx->submitted_draws % 200 == 0) {
@@ -2195,6 +2197,8 @@ m9_bind_sampler_states(struct pipe_context *pctx, mesa_shader_stage shader,
 {
    struct m9_context *ctx = m9_context(pctx);
 
+   if (shader == MESA_SHADER_VERTEX)
+      m9_vs_texture_states(pctx, start, count, states);
    if (shader != MESA_SHADER_FRAGMENT)
       return;
    for (unsigned i = 0; i < count && start + i < PIPE_MAX_SAMPLERS; i++)
@@ -2240,6 +2244,8 @@ m9_set_sampler_views(struct pipe_context *pctx, mesa_shader_stage shader,
 {
    struct m9_context *ctx = m9_context(pctx);
 
+   if (shader == MESA_SHADER_VERTEX)
+      m9_vs_texture_views(pctx, start, count, unbind_trailing, views);
    if (shader != MESA_SHADER_FRAGMENT)
       return;
    for (unsigned i = 0; i < count + unbind_trailing &&
@@ -2679,6 +2685,7 @@ m9_context_destroy(struct pipe_context *pctx)
 
    if (ctx->debug)
       m9_skip_report(ctx);
+   m9_vs_texture_fini(pctx);
    if (ctx->draw) {
       m9_context_sync(ctx);
       draw_destroy(ctx->draw);
@@ -2756,6 +2763,7 @@ m9_context_create(struct pipe_screen *pscreen, void *priv, unsigned flags)
    util_dynarray_init(&ctx->key_consts, NULL);
    util_dynarray_init(&ctx->job_consts, NULL);
 
+   m9_vs_texture_init(&ctx->base);
    ctx->base.destroy = m9_context_destroy;
    ctx->base.flush = m9_context_flush;
    ctx->base.draw_vbo = m9_draw_vbo;
