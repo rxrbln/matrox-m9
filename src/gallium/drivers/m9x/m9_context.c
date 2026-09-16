@@ -92,6 +92,7 @@ struct m9_fs_variant {
    uint8_t extra_location[M9_FS_MAX_VARYINGS + M9_FS_MAX_TEXTURES];
    unsigned coord_count;               /* distinct texture coordinate streams */
    uint8_t coord_location[M9_FS_MAX_TEXTURES];
+   uint8_t coord_component[M9_FS_MAX_TEXTURES];  /* slot half the stream carries */
    int8_t coord_extra[M9_FS_MAX_TEXTURES];     /* CPU view of a coordinate stream, -1 for COL0 */
    uint8_t texture_coord[M9_FS_MAX_TEXTURES];  /* coordinate stream per texel pair */
 };
@@ -1103,13 +1104,20 @@ m9_fs_streams(struct m9_fs_variant *v)
    for (unsigned k = 0; k < p->varying_count; k++)
       if (p->varyings[k].location != VARYING_SLOT_COL0)
          v->extra_location[v->extra_count++] = p->varyings[k].location;
-   for (unsigned t = 0; t < p->texture_count; t++) {
+   /* Two vec2 coordinate sets are packed into one varying slot, so a stream
+    * is a slot *half*: keying it by location alone gave both textures the
+    * same coordinates, and the second unit sampled where the first did. */
+    for (unsigned t = 0; t < p->texture_count; t++) {
+      unsigned half = p->texcoord_components[t] / 2;
       unsigned c = 0;
 
-      while (c < v->coord_count && v->coord_location[c] != p->texcoords[t])
+      while (c < v->coord_count &&
+             (v->coord_location[c] != p->texcoords[t] ||
+              v->coord_component[c] != half))
          c++;
       if (c == v->coord_count) {
          v->coord_extra[c] = -1;
+         v->coord_component[c] = half;
          v->coord_location[v->coord_count++] = p->texcoords[t];
          if (p->texcoords[t] != VARYING_SLOT_COL0) {
             v->coord_extra[c] = v->extra_count;
@@ -1418,8 +1426,9 @@ m9_scale_coords(const struct m9_job_key *key, float *extra)
 
       if (j < 0)
          continue;
-      /* An odd pair does not line up with a slot half; move it down. */
-      if ((c & 1) && !(packed & BITFIELD_BIT(j))) {
+      /* A stream carries one pair; anything but the low one is moved down,
+       * since the program reads its coordinate attribute as xy. */
+      if (c && !(packed & BITFIELD_BIT(j))) {
          extra[4 * j] = extra[4 * j + c];
          extra[4 * j + 1] = extra[4 * j + c + 1];
          packed |= BITFIELD_BIT(j);
