@@ -1859,19 +1859,13 @@ m9_clear(struct pipe_context *pctx, unsigned buffers,
 
    if (!ctx->params_valid)
       return;
-   m9_context_sync(ctx);
-   if ((buffers & PIPE_CLEAR_COLOR0) && cbuf) {
-      if (full && (color_clear_mask & PIPE_MASK_RGBA) == PIPE_MASK_RGBA) {
-         union util_color uc;
-
-         /* Tiling permutes pixels inside the BO: fill every dword. */
-         util_pack_color(color->f, cbuf->format, &uc);
-         m9_fill_dwords(m9_res(cbuf), uc.ui[0]);
-      } else {
-         m9_clear_quad(ctx, full ? NULL : scissor, color_clear_mask,
-                       color->f, false, 0);
-      }
-   }
+   /* The quad clear rasterises in tiled space and covers the drawable, not
+    * the whole object: a dword fill of the object costs three megabytes of
+    * uncached writes per frame and reaches past the drawable into the rest
+    * of a shared screen surface. */
+   if ((buffers & PIPE_CLEAR_COLOR0) && cbuf)
+      m9_clear_quad(ctx, full ? NULL : scissor, color_clear_mask,
+                    color->f, false, 0);
    if (!(buffers & PIPE_CLEAR_DEPTHSTENCIL))
       return;
    if (!zs) {
@@ -1882,8 +1876,10 @@ m9_clear(struct pipe_context *pctx, unsigned buffers,
    /* The quad clear runs on the GPU; only stencil still needs the CPU. */
    if (!(buffers & PIPE_CLEAR_STENCIL) && (buffers & PIPE_CLEAR_DEPTH)) {
       m9_clear_quad(ctx, full ? NULL : scissor, 0, zero, true, depth);
-      if (full && zs->hz)
+      if (full && zs->hz) {
+         m9_context_sync(ctx);
          m9_fill_dwords(zs->hz, M9_HZ_CLEAR);
+      }
    } else if (full && (!(buffers & PIPE_CLEAR_STENCIL) ||
                        stencil_clear_mask == 0xff)) {
       m9_context_sync(ctx);
