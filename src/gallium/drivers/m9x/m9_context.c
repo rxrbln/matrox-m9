@@ -226,6 +226,13 @@ m9_texture_window(struct m9_context *ctx, const struct m9_resource *resource,
                   uint8_t *data, unsigned stride)
 {
    const struct m9_texture_level *lvl = &resource->texture.level[level];
+   /* Every level is allocated with a 32-aligned row span, so that span is
+    * what the window descriptor must carry: a 16-wide level lives in the
+    * first 16 columns of a 32-wide surface.  Passing the texel width instead
+    * left narrow levels with no window shape at all and their draws were
+    * dropped. */
+   uint32_t span = (lvl->width + 31) & ~31u;
+   bool small = span <= 64 && lvl->height <= 64;
    size_t bytes = (size_t)box->width * box->height * 4;
    uint8_t *rows = MALLOC(bytes);
    struct drm_parhelia_m9_surface_access access = {
@@ -234,11 +241,10 @@ m9_texture_window(struct m9_context *ctx, const struct m9_resource *resource,
       /* The kernel window takes the small kind with both dimensions up to
        * 64, and the large kind only with a 32-aligned span. */
       .descriptor0 = (uint32_t)resource->texture_code << 24 |
-                     (lvl->width <= 64 && lvl->height <= 64 ?
-                      M9_TEXTURE_KIND_2D : M9_TEXTURE_KIND_RENDER) << 16 |
-                     lvl->width,
+                     (small ? M9_TEXTURE_KIND_2D :
+                              M9_TEXTURE_KIND_RENDER) << 16 | span,
       .descriptor1 = 1u << 16 | lvl->height,
-      .surface_width = lvl->width,
+      .surface_width = span,
       .x = box->x,
       .y = box->y,
       .width = box->width,
@@ -249,15 +255,7 @@ m9_texture_window(struct m9_context *ctx, const struct m9_resource *resource,
       .flags = PARHELIA_M9_ACCESS_TEXTURE,
       .offset = (uint32_t)lvl->offset,
    };
-   /* Neither window shape fits a level above 64 with an unaligned span. */
-   bool fits = (lvl->width <= 64 && lvl->height <= 64) ||
-               !(lvl->width % 32);
-   int ret = !fits ? -ENOTSUP :
-             rows && lvl->offset <= UINT32_MAX ? 0 : -ENOMEM;
-
-   if (!fits && ctx->debug)
-      fprintf(stderr, "m9x: texture window refuses level %u %ux%u\n",
-              level, lvl->width, lvl->height);
+   int ret = rows && lvl->offset <= UINT32_MAX ? 0 : -ENOMEM;
 
    if (!ret && write &&
        !util_format_translate(resource->texture_storage, rows, box->width * 4,
@@ -453,9 +451,11 @@ m9_transfer_unmap(struct pipe_context *pctx, struct pipe_transfer *ptransfer)
       uint32_t bit = 1u << ptransfer->level;
 
       if (ptransfer->usage & PIPE_MAP_WRITE) {
-         if (m9_texture_access(m9_context(pctx), resource, ptransfer->level,
-                               true, &ptransfer->box, transfer->staging,
-                               ptransfer->stride)) {
+         int store = m9_texture_access(m9_context(pctx), resource,
+                                       ptransfer->level, true, &ptransfer->box,
+                                       transfer->staging, ptransfer->stride);
+
+         if (store) {
             resource->texture_unplaced |= bit;
             m9_warn_once(m9_context(pctx), M9_WARN_TRANSFER,
                          "texture level cannot be stored: no captured "
@@ -893,8 +893,15 @@ m9_texture_bind_view(const struct pipe_sampler_view *view,
       if (res->texture_unplaced & ((2u << last) - 1))
          return "texture levels beyond the captured 32x16 tail need the "
                 "kernel texture window; draw skipped";
+      /* The storage kind must be the one the level was written through:
+       * the small kind up to 64 in both dimensions, the ordinary tiled kind
+       * above it.  Reading 128x128 and larger textures as the small kind
+       * returned a single constant texel. */
+      bool small = res->width <= 64 && res->height <= 64;
+
       *bind = (struct m9_texture_bind) {
-         .code = res->texture_code, .kind = M9_TEXTURE_KIND_2D,
+         .code = res->texture_code,
+         .kind = small ? M9_TEXTURE_KIND_2D : M9_TEXTURE_KIND_RENDER,
          .width = res->width, .height = res->height, .depth = 1,
          .last_level = res->base.last_level, .view_last_level = last,
       };
