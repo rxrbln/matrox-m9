@@ -70,6 +70,31 @@ bool m9x_surface_layout_bytes(u32 width, u32 height, u32 cpp, u64 *size)
 	return true;
 }
 
+/*
+ * The window descriptor carries a level's 32-aligned span, not its width, and
+ * the allocation contract's spare-element rule depends on that width: a level
+ * narrower than its span already has the spare, and one as wide as its span
+ * is allocated more.  Require only what the narrower case needs, so a valid
+ * object is never refused.
+ */
+static bool m9_surface_min_bytes(u32 span, u32 height, u32 cpp, u64 *size)
+{
+	bool small = span <= 64 && height <= 64;
+	u32 height_quantum = small ? (cpp == 4 ? 8 : 4) : 32;
+	u32 byte_quantum = cpp == 4 ? (small ? 0x400 : 0x1000) :
+				      (small ? 0x200 : 0x800);
+	u32 alloc_height;
+
+	if (!span || !height || span > M9_SURFACE_MAX_SPAN ||
+	    height > M9_SURFACE_MAX_SPAN || (cpp != 2 && cpp != 4))
+		return false;
+	alloc_height = ALIGN(height, height_quantum);
+	if (span <= 16 && height <= 16)
+		alloc_height = 16;
+	*size = ALIGN((u64)span * alloc_height * cpp, (u64)byte_quantum);
+	return true;
+}
+
 static int m9_surface_check(const struct drm_parhelia_m9_surface_access *args,
 			    struct m9_surface_view *view)
 {
@@ -101,8 +126,19 @@ static int m9_surface_check(const struct drm_parhelia_m9_surface_access *args,
 		     kind != M9_TEXTURE_KIND_LARGE ||
 		     !IS_ALIGNED(view->span, 32)))
 			return -EINVAL;
-		view->bytes = max_t(u64, (u64)ALIGN(view->span, 32) *
-				    ALIGN(view->height, 32), 32 * 16) * view->cpp;
+		/*
+		 * A level is allocated by the same contract as a render
+		 * surface, so size it that way.  The small kind quantises its
+		 * height by eight, and demanding a multiple of 32 refused
+		 * every short level: a 64x4 level is allocated 2 KiB and this
+		 * asked for 8 KiB, so the level could never be stored and the
+		 * texture sampled as black.
+		 */
+		if (!m9_surface_min_bytes(view->span, view->height,
+					  view->cpp, &view->bytes))
+			view->bytes = max_t(u64, (u64)ALIGN(view->span, 32) *
+					    ALIGN(view->height, 32), 32 * 16) *
+				      view->cpp;
 	} else {
 		/* Render targets: the verified cc21 family (format 0x66, bit 21). */
 		view->cpp = 4;
