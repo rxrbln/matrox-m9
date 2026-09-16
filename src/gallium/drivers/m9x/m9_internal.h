@@ -204,6 +204,7 @@ struct m9_batch {
 struct draw_context;
 struct m9_fs_state;
 struct m9_fs_variant;
+struct m9_vs_textures;
 
 /* Pass-level raster state shared by every draw of one two-pass job. */
 struct m9_job_key {
@@ -252,6 +253,8 @@ struct m9_context {
    uint32_t fs_inline[MAX_INLINABLE_UNIFORMS];  /* fragment inlinable uniforms */
    struct pipe_sampler_view *fs_views[PIPE_MAX_SAMPLERS];
    const struct pipe_sampler_state *fs_samplers[PIPE_MAX_SAMPLERS];
+   /* Vertex-stage sampling, done by the draw module (m9_vs_texture.c). */
+   struct m9_vs_textures *vs_textures;
 
    /* Fixed two-pass resources and the pending job. */
    struct m9_resource system, program, fragment_db, transient, be, source;

@@ -2,6 +2,7 @@
 /* Copyright 2026 René Rebe <rene@exactco.de> */
 #include "m9_screen.h"
 #include "m9_fs_compile.h"
+#include "m9_vs_texture.h"
 #include "m9x_public.h"
 
 #include <errno.h>
@@ -928,7 +929,9 @@ m9_init_shader_caps(struct m9_screen *screen)
    vs->fp16_const_buffers = false;
    vs->glsl_16bit_load_dst = false;
    vs->indirect_temp_addr = false;
-   vs->max_texture_samplers = vs->max_sampler_views = 0;
+   /* Vertex programs run on the CPU in the draw module, whose own sampler
+    * reads a linear copy of the image (m9_vs_texture.c). */
+   vs->max_texture_samplers = vs->max_sampler_views = M9_VS_MAX_SAMPLERS;
    vs->max_shader_buffers = vs->max_shader_images = 0;
 
    fs->supported_irs = 1 << PIPE_SHADER_IR_NIR;
@@ -1043,6 +1046,19 @@ m9_load_fragment_db(struct m9_screen *screen)
    }
 }
 
+/* Vertex-stage sampling wraps the context here because m9_context.c builds
+ * the vtable. */
+static struct pipe_context *
+m9_screen_context_create(struct pipe_screen *pscreen, void *priv,
+                         unsigned flags)
+{
+   struct pipe_context *pctx = m9_context_create(pscreen, priv, flags);
+
+   if (pctx)
+      m9_vs_texture_install(pctx);
+   return pctx;
+}
+
 struct pipe_screen *
 m9_screen_create(int fd, const struct pipe_screen_config *config)
 {
@@ -1107,7 +1123,7 @@ m9_screen_create(int fd, const struct pipe_screen_config *config)
    caps->dmabuf = DRM_PRIME_CAP_IMPORT | DRM_PRIME_CAP_EXPORT;
    screen->base.destroy = m9_destroy;
    screen->base.finalize_nir = m9_finalize_nir;
-   screen->base.context_create = m9_context_create;
+   screen->base.context_create = m9_screen_context_create;
    screen->base.get_name = m9_name;
    screen->base.get_vendor = m9_vendor;
    screen->base.get_device_vendor = m9_device_vendor;
