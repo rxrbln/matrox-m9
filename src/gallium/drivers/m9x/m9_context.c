@@ -201,11 +201,20 @@ m9_surface_access(struct m9_context *ctx, const struct m9_resource *resource,
       .layers = 1, .layout = 1, .address_offset = true,
       .format = resource->format,
    };
+   /* At most 64 in both dimensions the ordinary tiled descriptor addresses
+    * the surface wrongly - the content comes back band structured - while
+    * the small 2-D kind reproduces it exactly, which is the same kind the
+    * sampler binds for that size. */
+   bool small = resource->width <= 64 && resource->height <= 64;
    struct drm_parhelia_m9_surface_access access = {
       .handle = resource->handle,
       .op = op,
-      .descriptor0 = m9_surface_desc0(&desc),
-      .descriptor1 = m9_surface_desc1(&desc),
+      .descriptor0 = small ?
+         M9_TEXTURE_CODE_BGRA << 24 | M9_TEXTURE_KIND_2D << 16 |
+         resource->width : m9_surface_desc0(&desc),
+      .descriptor1 = small ? 1u << 16 | resource->height :
+                             m9_surface_desc1(&desc),
+      .flags = small ? PARHELIA_M9_ACCESS_TEXTURE : 0,
       .surface_width = resource->width,
       .x = box->x,
       .y = box->y,
@@ -913,16 +922,15 @@ m9_texture_bind_view(const struct pipe_sampler_view *view,
    if (res->tiled && res->kind == M9_RESOURCE_LINEAR_COLOR &&
        (res->base.format == PIPE_FORMAT_B8G8R8A8_UNORM ||
         res->base.format == PIPE_FORMAT_B8G8R8X8_UNORM)) {
-      /* The small storage family (at most 64 in both dimensions) tiles
-       * differently and samples wrong: rtt64 and rtt32 come back band
-       * structured, and glamor's 2x2 sources turned xterm's text into
-       * noise.  Refuse until that layout is measured. */
-      if (res->width <= 64 && res->height <= 64)
-         return "render targets of at most 64x64 are not sampled; "
-                "draw skipped";
+      /* The small family is addressed by the 2-D kind, like a small texture:
+       * reading it as the ordinary tiled kind returns only the first 16x16
+       * texels, which is 1/16 of a 64x64 surface and 1/4 of a 32x32 one. */
+      bool small = res->width <= 64 && res->height <= 64;
+
       *bind = (struct m9_texture_bind) {
-         .code = 0xcc, .kind = M9_TEXTURE_KIND_RENDER,
-         .width = (res->width + 31) & ~31u,
+         .code = 0xcc,
+         .kind = small ? M9_TEXTURE_KIND_2D : M9_TEXTURE_KIND_RENDER,
+         .width = small ? res->width : (res->width + 31) & ~31u,
          .height = res->height, .depth = 1,
       };
       return NULL;

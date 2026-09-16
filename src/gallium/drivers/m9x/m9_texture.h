@@ -20,6 +20,8 @@
 #define M9_TEXTURE_TAIL_EXTENT 16u
 #define M9_TEXTURE_TAIL_BYTES 0x800u
 #define M9_TEXTURE_LOD_DEFAULT 0x0ff80000u
+/* Descriptor format code of the BGRA render-target family. */
+#define M9_TEXTURE_CODE_BGRA 0xccu
 
 /* Descriptor 79[23:16]. */
 enum m9_texture_kind {
