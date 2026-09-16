@@ -7,6 +7,7 @@
 #include <linux/module.h>
 #include <linux/overflow.h>
 
+#include <drm/drm_atomic.h>
 #include <drm/drm_atomic_helper.h>
 #include <drm/drm_color_mgmt.h>
 #include <drm/drm_connector.h>
@@ -14,6 +15,7 @@
 #include <drm/drm_fourcc.h>
 #include <drm/drm_gem_framebuffer_helper.h>
 #include <drm/drm_gem_vram_helper.h>
+#include <drm/drm_plane_helper.h>
 #include <drm/drm_probe_helper.h>
 #include <drm/drm_vblank.h>
 
@@ -42,6 +44,14 @@ module_param(m9_kms_scanout, bool, 0400);
 static bool m9_kms_direct_scanout = true;
 /* The firmware console runs with the LUT bypassed; programming a ramp is off
  * until the table is shown to reach the screen. */
+/* The recovered upload contract is exact, but earlier hardware testing saw no
+ * correct image; that test predates the gamma-table bypass, so it is worth
+ * retrying before trusting or discarding this path. */
+static bool m9_kms_cursor = true;
+module_param(m9_kms_cursor, bool, 0600);
+MODULE_PARM_DESC(m9_kms_cursor,
+	"Drive the hardware cursor overlay instead of leaving it to software");
+
 static bool m9_kms_lut;
 module_param(m9_kms_lut, bool, 0600);
 MODULE_PARM_DESC(m9_kms_lut,
@@ -389,6 +399,219 @@ static bool m9_lut_is_identity(const struct drm_property_blob *blob)
 	return true;
 }
 
+
+/* Hardware cursor overlay (parhelia-m9-cursor-gamma-re.md section 1): a
+ * 64x64 colour image in VRAM with a 256-byte row, an address and config pair,
+ * a shifted-origin position, and a control word that shows or hides it. */
+static void m9_cursor_hide(struct m9x_device *mdev)
+{
+	m9x_write(mdev, M9_CURSOR0 + M9_CURSOR_CONTROL, M9_CURSOR_OFF);
+	mdev->cursor_visible = false;
+}
+
+/* A disabled controller keeps no cursor state, so the next update has to
+ * program the address and config again before showing the overlay. */
+static void m9_cursor_suspend(struct m9x_device *mdev)
+{
+	m9_cursor_hide(mdev);
+	mdev->cursor_armed = false;
+}
+
+static int m9_cursor_storage(struct m9x_device *mdev)
+{
+	struct drm_gem_vram_object *bo;
+	int ret;
+
+	if (mdev->cursor)
+		return 0;
+	bo = drm_gem_vram_create(&mdev->drm, M9_CURSOR_BYTES, 0);
+	if (IS_ERR(bo))
+		return PTR_ERR(bo);
+	ret = m9x_vram_pin(bo);
+	if (ret)
+		goto err_put;
+	ret = ttm_bo_reserve(&bo->bo, true, false, NULL);
+	if (ret)
+		goto err_unpin;
+	ret = drm_gem_vram_vmap(bo, &mdev->cursor_map);
+	ttm_bo_unreserve(&bo->bo);
+	if (ret)
+		goto err_unpin;
+	iosys_map_memset(&mdev->cursor_map, 0, 0, M9_CURSOR_BYTES);
+	mdev->cursor = bo;
+	return 0;
+err_unpin:
+	m9x_vram_unpin(bo);
+err_put:
+	drm_gem_object_put(&bo->bo.base);
+	return ret;
+}
+
+/* Copy the plane image into the device row stride, zero filling the rest. */
+static int m9_cursor_upload(struct m9x_device *mdev, struct drm_framebuffer *fb)
+{
+	struct drm_gem_object *gem = drm_gem_fb_get_obj(fb, 0);
+	struct drm_gem_vram_object *src = drm_gem_vram_of_gem(gem);
+	unsigned int cols = min_t(u32, fb->width, M9_CURSOR_SIZE);
+	unsigned int rows = min_t(u32, fb->height, M9_CURSOR_SIZE);
+	u32 line[M9_CURSOR_SIZE];
+	struct iosys_map smap;
+	unsigned int row, i;
+	int ret;
+
+	ret = ttm_bo_reserve(&src->bo, true, false, NULL);
+	if (ret)
+		return ret;
+	ret = drm_gem_vram_vmap(src, &smap);
+	if (ret) {
+		ttm_bo_unreserve(&src->bo);
+		return ret;
+	}
+	for (row = 0; row < M9_CURSOR_SIZE; row++) {
+		memset(line, 0, sizeof(line));
+		if (row < rows) {
+			iosys_map_memcpy_from(line, &smap,
+					      (size_t)row * fb->pitches[0],
+					      (size_t)cols * 4);
+			for (i = 0; i < cols; i++)
+				line[i] &= M9_CURSOR_DWORD_MASK;
+		}
+		iosys_map_memcpy_to(&mdev->cursor_map,
+				    (size_t)row * M9_CURSOR_ROW_BYTES, line,
+				    sizeof(line));
+	}
+	/* Publish the image before the controller is pointed at it. */
+	wmb();
+	drm_gem_vram_vunmap(src, &smap);
+	ttm_bo_unreserve(&src->bo);
+	return 0;
+}
+
+static int m9_cursor_check(struct drm_plane *plane,
+			   struct drm_atomic_commit *state)
+{
+	struct drm_plane_state *new =
+		drm_atomic_get_new_plane_state(state, plane);
+	struct drm_crtc_state *crtc_state;
+
+	if (!new->fb || !new->crtc)
+		return 0;
+	if (new->fb->width > M9_CURSOR_SIZE || new->fb->height > M9_CURSOR_SIZE)
+		return -EINVAL;
+	crtc_state = drm_atomic_get_new_crtc_state(state, new->crtc);
+	if (!crtc_state)
+		return -EINVAL;
+	return drm_atomic_helper_check_plane_state(new, crtc_state,
+						   DRM_PLANE_NO_SCALING,
+						   DRM_PLANE_NO_SCALING,
+						   true, true);
+}
+
+static void m9_cursor_atomic_update(struct drm_plane *plane,
+				    struct drm_atomic_commit *state)
+{
+	struct drm_plane_state *new =
+		drm_atomic_get_new_plane_state(state, plane);
+	struct drm_plane_state *old =
+		drm_atomic_get_old_plane_state(state, plane);
+	struct m9x_device *mdev = to_m9x(plane->dev);
+	bool offscreen;
+	s64 address;
+	u32 px, py;
+	int idx;
+
+	if (!drm_dev_enter(plane->dev, &idx))
+		return;
+	if (!m9_kms_cursor || !new->fb || !new->crtc) {
+		m9_cursor_hide(mdev);
+		goto out;
+	}
+	if (m9_cursor_storage(mdev))
+		goto out;
+	if (!old || old->fb != new->fb) {
+		/* Keep control zero while the image and address change. */
+		m9_cursor_suspend(mdev);
+		if (m9_cursor_upload(mdev, new->fb))
+			goto out;
+	}
+	if (!mdev->cursor_armed) {
+		m9_cursor_hide(mdev);
+		address = drm_gem_vram_offset(mdev->cursor);
+		if (address < 0 || upper_32_bits(address))
+			goto out;
+		m9x_write(mdev, M9_CURSOR0 + M9_CURSOR_ADDRESS,
+			  lower_32_bits(address));
+		m9x_write(mdev, M9_CURSOR0 + M9_CURSOR_CONFIG,
+			  M9_CURSOR_CONFIG_COLOR);
+		mdev->cursor_armed = true;
+	}
+	/* Nothing clips in hardware, so hide a cursor that has left the scanout
+	 * rather than let the shifted origin wrap it back on. */
+	offscreen = new->crtc_x <= -(int)M9_CURSOR_SIZE ||
+		    new->crtc_y <= -(int)M9_CURSOR_SIZE ||
+		    new->crtc_x >= (int)M9_WARM_WIDTH ||
+		    new->crtc_y >= (int)M9_WARM_HEIGHT;
+	if (offscreen) {
+		m9_cursor_hide(mdev);
+		goto out;
+	}
+	px = (new->crtc_x + M9_CURSOR_SIZE) & M9_CURSOR_POS_MASK;
+	py = (new->crtc_y + M9_CURSOR_SIZE) & M9_CURSOR_POS_MASK;
+	m9x_write(mdev, M9_CURSOR0 + M9_CURSOR_POSITION, px << 16 | py);
+	if (!mdev->cursor_visible) {
+		m9x_write(mdev, M9_CURSOR0 + M9_CURSOR_CONTROL, M9_CURSOR_COLOR);
+		mdev->cursor_visible = true;
+	}
+out:
+	drm_dev_exit(idx);
+}
+
+static void m9_cursor_atomic_disable(struct drm_plane *plane,
+				     struct drm_atomic_commit *state)
+{
+	struct m9x_device *mdev = to_m9x(plane->dev);
+	int idx;
+
+	if (!drm_dev_enter(plane->dev, &idx))
+		return;
+	m9_cursor_suspend(mdev);
+	drm_dev_exit(idx);
+}
+
+static const struct drm_plane_helper_funcs m9_cursor_helper_funcs = {
+	.atomic_check = m9_cursor_check,
+	.atomic_update = m9_cursor_atomic_update,
+	.atomic_disable = m9_cursor_atomic_disable,
+};
+
+static const struct drm_plane_funcs m9_cursor_funcs = {
+	.update_plane = drm_atomic_helper_update_plane,
+	.disable_plane = drm_atomic_helper_disable_plane,
+	.destroy = drm_plane_cleanup,
+	.reset = drm_atomic_helper_plane_reset,
+	.atomic_duplicate_state = drm_atomic_helper_plane_duplicate_state,
+	.atomic_destroy_state = drm_atomic_helper_plane_destroy_state,
+};
+
+static const u32 m9_cursor_formats[] = { DRM_FORMAT_ARGB8888 };
+
+static void m9_cursor_fini(struct m9x_device *mdev)
+{
+	if (!mdev->cursor)
+		return;
+	m9_cursor_suspend(mdev);
+	if (iosys_map_is_set(&mdev->cursor_map)) {
+		if (!ttm_bo_reserve(&mdev->cursor->bo, true, false, NULL)) {
+			drm_gem_vram_vunmap(mdev->cursor, &mdev->cursor_map);
+			ttm_bo_unreserve(&mdev->cursor->bo);
+		}
+		iosys_map_clear(&mdev->cursor_map);
+	}
+	m9x_vram_unpin(mdev->cursor);
+	drm_gem_object_put(&mdev->cursor->bo.base);
+	mdev->cursor = NULL;
+}
+
 static void m9_pipe_load_gamma(struct drm_simple_display_pipe *pipe,
 			       const struct drm_property_blob *blob)
 {
@@ -454,6 +677,7 @@ static void m9_pipe_disable(struct drm_simple_display_pipe *pipe)
 
 	if (!drm_dev_enter(drm, &idx))
 		return;
+	m9_cursor_suspend(to_m9x(drm));
 	/* The external DP transmitter and raster timing remain trained/running. */
 	matrox_kms_pipe_disable(pipe, m9_pipe_disable_hw);
 	drm_dev_exit(idx);
@@ -544,28 +768,52 @@ static const u32 m9_formats[] = {
 	DRM_FORMAT_XRGB8888,
 };
 
+/* The cursor image never reaches DC0 as a scanout, so it needs no dirty
+ * publication and no tiled backing - the plane copies it into VRAM. */
+static const struct drm_framebuffer_funcs m9_cursor_fb_funcs = {
+	.destroy = drm_gem_fb_destroy,
+	.create_handle = drm_gem_fb_create_handle,
+};
+
 static struct drm_framebuffer *
 m9_fb_create(struct drm_device *drm, struct drm_file *file,
 	     const struct drm_format_info *info,
 	     const struct drm_mode_fb_cmd2 *mode_cmd)
 {
+	const struct drm_framebuffer_funcs *funcs;
 	struct drm_gem_object *gem;
 	struct drm_framebuffer *fb;
+	u64 need;
 
-	if (info->format != DRM_FORMAT_XRGB8888 || mode_cmd->offsets[0] ||
-	    mode_cmd->width != M9_WARM_WIDTH ||
-	    mode_cmd->height != M9_WARM_HEIGHT ||
-	    mode_cmd->pitches[0] != M9_WARM_PITCH)
+	/* Only m9_pipe_check admits a framebuffer to DC0, so this accepts the
+	 * cursor image and the small probe buffers Xorg uses to settle on a
+	 * depth, and keeps the tail allowance for the warm scanout itself. */
+	if (mode_cmd->offsets[0] ||
+	    mode_cmd->pitches[0] < (u64)mode_cmd->width * 4)
 		return ERR_PTR(-EINVAL);
+	if (info->format == DRM_FORMAT_ARGB8888) {
+		if (mode_cmd->width > M9_CURSOR_SIZE ||
+		    mode_cmd->height > M9_CURSOR_SIZE)
+			return ERR_PTR(-EINVAL);
+		funcs = &m9_cursor_fb_funcs;
+	} else if (info->format == DRM_FORMAT_XRGB8888) {
+		funcs = &m9_fb_funcs;
+	} else {
+		return ERR_PTR(-EINVAL);
+	}
+	need = (u64)mode_cmd->pitches[0] * mode_cmd->height;
+	if (funcs == &m9_fb_funcs && mode_cmd->width == M9_WARM_WIDTH &&
+	    mode_cmd->height == M9_WARM_HEIGHT &&
+	    mode_cmd->pitches[0] == M9_WARM_PITCH)
+		need = M9_WARM_RENDER_BYTES;
 	gem = drm_gem_object_lookup(file, mode_cmd->handles[0]);
 	if (!gem)
 		return ERR_PTR(-ENOENT);
-	if (!m9x_gem_is_vram(gem) || gem->size < M9_WARM_RENDER_BYTES) {
+	if (!m9x_gem_is_vram(gem) || gem->size < need) {
 		fb = ERR_PTR(-EINVAL);
 		goto out_put;
 	}
-	fb = drm_gem_fb_create_with_funcs(drm, file, info, mode_cmd,
-					  &m9_fb_funcs);
+	fb = drm_gem_fb_create_with_funcs(drm, file, info, mode_cmd, funcs);
 out_put:
 	drm_gem_object_put(gem);
 	return fb;
@@ -714,11 +962,15 @@ int m9x_modeset_init(struct m9x_device *mdev)
 	if (ret)
 		return ret;
 	drm->mode_config.funcs = &m9_mode_config_funcs;
-	drm->mode_config.min_width = M9_WARM_WIDTH;
+	/* The scanout size is pinned by m9_fb_create; the framebuffer bounds
+	 * must still admit the small cursor image. */
+	drm->mode_config.min_width = 1;
 	drm->mode_config.max_width = M9_WARM_WIDTH;
-	drm->mode_config.min_height = M9_WARM_HEIGHT;
+	drm->mode_config.min_height = 1;
 	drm->mode_config.max_height = M9_WARM_HEIGHT;
 	drm->mode_config.prefer_shadow = 0;
+	drm->mode_config.cursor_width = M9_CURSOR_SIZE;
+	drm->mode_config.cursor_height = M9_CURSOR_SIZE;
 
 	ret = drm_simple_display_pipe_init(drm, &mdev->pipe, &m9_pipe_funcs,
 					   m9_formats, ARRAY_SIZE(m9_formats),
@@ -734,6 +986,19 @@ int m9x_modeset_init(struct m9x_device *mdev)
 	ret = drm_connector_attach_encoder(&mdev->connector, &mdev->pipe.encoder);
 	if (ret)
 		return ret;
+	/* The overlay rides the same controller, so it belongs to this CRTC. */
+	ret = drm_universal_plane_init(drm, &mdev->cursor_plane,
+				       drm_crtc_mask(&mdev->pipe.crtc),
+				       &m9_cursor_funcs, m9_cursor_formats,
+				       ARRAY_SIZE(m9_cursor_formats), NULL,
+				       DRM_PLANE_TYPE_CURSOR, "cursor");
+	if (ret)
+		return ret;
+	drm_plane_helper_add(&mdev->cursor_plane, &m9_cursor_helper_funcs);
+	/* drm_simple_display_pipe_init() builds the CRTC without a cursor
+	 * plane, and the legacy cursor ioctl has nothing to target until the
+	 * CRTC points at one, so X falls back to its software cursor. */
+	mdev->pipe.crtc.cursor = &mdev->cursor_plane;
 	ret = drm_mode_crtc_set_gamma_size(&mdev->pipe.crtc, 256);
 	if (ret)
 		return ret;
@@ -745,6 +1010,7 @@ int m9x_modeset_init(struct m9x_device *mdev)
 
 void m9x_modeset_fini(struct m9x_device *mdev)
 {
+	m9_cursor_fini(mdev);
 	m9x_write(mdev, M9_REG_IRQ_LOW_MASK, 0);
 	m9x_write(mdev, M9_REG_IRQ_HIGH_MASK, 0);
 	m9x_write(mdev, M9_REG_IRQ0_MASK, 0);

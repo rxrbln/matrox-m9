@@ -105,6 +105,11 @@ struct m9x_device {
 	bool kms_initialized;
 	bool irq_installed;
 	struct drm_gem_vram_object *scanout;
+	struct drm_gem_vram_object *cursor;
+	struct iosys_map cursor_map;
+	struct drm_plane cursor_plane;
+	bool cursor_visible;
+	bool cursor_armed;   /* address and config survive in the controller */
 	/* BAR0 [M9_ADDRESS_CPU_BYTES, +M9_ADDRESS_SURFACE_BYTES), slot 1 view. */
 	void __iomem *bar0_window;
 	u8 *scanout_bounce;

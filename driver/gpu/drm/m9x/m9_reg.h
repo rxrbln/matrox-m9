@@ -90,6 +90,25 @@
 #define M9_DC_FORMAT_MASK		(0xffu << M9_DC_FORMAT_SHIFT)
 #define M9_DC_FORMAT_XRGB8888		0xccu
 
+/* Hardware cursor, route 0 (parhelia-m9-cursor-gamma-re.md section 1). */
+#define M9_CURSOR0			0x18c0
+#define M9_CURSOR_PALETTE		0x0000
+#define M9_CURSOR_CONTROL		0x0004
+#define M9_CURSOR_POSITION		0x0008
+#define M9_CURSOR_ADDRESS		0x000c
+#define M9_CURSOR_CONFIG		0x0010
+#define M9_CURSOR_OFF			0x00u
+#define M9_CURSOR_COLOR			0x05u
+#define M9_CURSOR_CONFIG_COLOR		0xcc000000u
+/* The colour image is 64 rows of 64 pixels stored with a 256-byte row. */
+#define M9_CURSOR_SIZE			64u
+#define M9_CURSOR_ROW_BYTES		256u
+#define M9_CURSOR_BYTES			(M9_CURSOR_ROW_BYTES * M9_CURSOR_SIZE)
+/* The vendor upload clears bit 24 of every source dword. */
+#define M9_CURSOR_DWORD_MASK		0xfeffffffu
+/* The origin is shifted by the cursor size so it can leave the top left. */
+#define M9_CURSOR_POS_MASK		0x7fffu
+
 #define M9_DCT0				0x1900
 #define M9_DCT_HBLANK			0x0008
 #define M9_DCT_HTOTAL			0x0010
