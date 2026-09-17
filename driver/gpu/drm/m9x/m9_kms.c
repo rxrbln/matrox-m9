@@ -492,6 +492,7 @@ static void m9_program_scanout(struct drm_simple_display_pipe *pipe,
 	struct m9_head *head = m9_head_of_pipe(pipe);
 	struct m9x_device *mdev = head->mdev;
 	u32 address, pitch;
+	int ret;
 
 	if (!m9_scanout_direct_address(mdev, fb, &address)) {
 		pitch = m9_dc_pitch(head, fb->pitches[0] / 4);
@@ -501,9 +502,20 @@ static void m9_program_scanout(struct drm_simple_display_pipe *pipe,
 		m9x_write(head->mdev, head->dc + M9_DC_PITCH, pitch);
 		return;
 	}
-	if (!fb || m9_scanout_publish(head, fb) ||
-	    m9_scanout_address(head, &address))
+	if (!fb)
 		return;
+	/* A failed publish leaves the previous frame on screen; the flip still
+	 * retires on the vertical blank, so silence here reads as a working
+	 * flip that never changes the picture. */
+	ret = m9_scanout_publish(head, fb);
+	if (!ret && m9_scanout_address(head, &address))
+		ret = -ENXIO;
+	if (ret) {
+		drm_err_ratelimited(&mdev->drm,
+			"head %u: scanout publish failed (%d); the previous frame stays on screen\n",
+			head->index, ret);
+		return;
+	}
 	pitch = m9_dc_pitch(head, fb->pitches[0] / 4);
 	/* Publish CPU writes before the display controller fetches this BO. */
 	wmb();
@@ -781,6 +793,42 @@ static void m9_pipe_load_gamma(struct drm_simple_display_pipe *pipe,
 /* Record the geometry the rest of the display path describes surfaces with,
  * and grow the de-tiling bounce buffer to match.  A failed growth only costs
  * the copied path; a tiled framebuffer is still scanned out in place. */
+/*
+ * The surface a head publishes into is created from the firmware's mode at
+ * init, so a larger mode outgrows it and every publish into it fails.  Grow
+ * it here, where the caller has already stopped the display controller's
+ * fetch, and keep the old one until the new one is pinned.
+ */
+static void m9_scanout_resize(struct m9_head *head, u32 width, u32 height)
+{
+	struct m9x_device *mdev = head->mdev;
+	struct drm_gem_vram_object *bo;
+	u64 bytes;
+
+	if (!m9x_surface_layout_bytes(width, height, 4, &bytes))
+		return;
+	if (head->scanout && head->scanout->bo.base.size >= PAGE_ALIGN(bytes))
+		return;
+	bo = drm_gem_vram_create(&mdev->drm, PAGE_ALIGN(bytes), 1);
+	if (IS_ERR(bo)) {
+		drm_err(&mdev->drm,
+			"head %u: no scanout surface for %ux%u: %pe\n",
+			head->index, width, height, bo);
+		return;
+	}
+	if (m9x_vram_pin(bo)) {
+		drm_gem_vram_put(bo);
+		return;
+	}
+	if (head->scanout) {
+		m9x_vram_unpin(head->scanout);
+		drm_gem_vram_put(head->scanout);
+	}
+	head->scanout = bo;
+	drm_info(&mdev->drm, "head %u scanout surface at VRAM %#llx for %ux%u\n",
+		 head->index, drm_gem_vram_offset(bo), width, height);
+}
+
 static void m9_scanout_geometry(struct m9_head *head,
 				const struct drm_display_mode *mode)
 {
@@ -789,6 +837,7 @@ static void m9_scanout_geometry(struct m9_head *head,
 	head->scanout_width = mode->hdisplay;
 	head->scanout_height = mode->vdisplay;
 	head->scanout_pitch = m9_scanout_pitch(mode->hdisplay);
+	m9_scanout_resize(head, mode->hdisplay, mode->vdisplay);
 	bytes = (size_t)head->scanout_pitch * head->scanout_height;
 	if (bytes <= head->scanout_bytes)
 		return;
