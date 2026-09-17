@@ -4057,6 +4057,7 @@ m9_fs_find_inlinable_uniforms(nir_shader *nir)
 
    if (nir->info.stage != MESA_SHADER_FRAGMENT)
       return;
+   NIR_PASS(_, nir, nir_opt_constant_folding);
    nir_foreach_function_impl(impl, nir) {
       nir_foreach_block(block, impl) {
          nir_if *nif = nir_block_get_following_if(block);
@@ -4176,6 +4177,10 @@ vectorize_around_chains(const nir_instr *instr, const void *data)
 static void
 fs_prepare(nir_shader *nir)
 {
+   /* st lowers uniforms to UBO loads after its last folding pass, so a
+    * constant slot index arrives as an iadd of two constants; without this
+    * every matrix uniform looks indirectly indexed. */
+   NIR_PASS(_, nir, nir_opt_constant_folding);
    NIR_PASS(_, nir, nir_opt_vectorize_io,
             nir_var_shader_in | nir_var_shader_out, false);
    NIR_PASS(_, nir, nir_opt_vectorize, NULL, NULL);
