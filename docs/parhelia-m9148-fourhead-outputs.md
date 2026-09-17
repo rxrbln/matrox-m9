@@ -370,3 +370,42 @@ Two driver defects were found and fixed while measuring this:
   the documented lifecycle never ran.  The bridge is now cleared for the read,
   the read is repeated through the bridge when the pins give nothing, and the
   register is restored.
+
+## Lighting several heads at once (MEASURED, 2026-09-17)
+
+All four connectors drive a panel simultaneously.  Measured with all four
+attached, each head programmed independently:
+
+| connector | head | mode | pixel clock | link register |
+|---|---:|---|---:|---|
+| DP-1 | 0 | 1920x1200@60 | 154000 kHz | `0x1c9c = 0x0040a800` |
+| DP-2 | 1 | 1024x768@60 | 65000 kHz | `0x1ca0 = 0x0000a808` |
+| DP-3 | 2 | 1920x1080@60 | 148500 kHz | `0x1ca4 = 0x0040a801` |
+| DP-4 | 3 | 1024x768@60 | 65000 kHz | `0x1ca8 = 0x0000a809` |
+
+`modetest` cannot do this: given several `-s` options it allocates **one**
+framebuffer spanning all outputs, and the m9x pipe refuses it.  The pipe is a
+`drm_simple_display_pipe`, whose plane always shows the whole framebuffer, and
+`m9_kms.c` requires `fb->width == mode.hdisplay && fb->height ==
+mode.vdisplay`; `mode_config.max_width` and `max_height` are both 2048, so a
+wider screen is rejected before that.  `tools/m9-heads.c` gives each head its
+own dumb buffer from one DRM master instead, and paints a pattern that names
+the connector and encodes each pixel's coordinates.
+
+The same limit shapes what X can do today.  A `modesetting` screen wider than
+one head cannot be scanned out, so the four heads run **cloned**:
+`tools/xorg-m9x-clone.conf` pins the virtual size to a mode every panel carries
+(1024x768), which keeps all outputs at `+0+0`, and `tools/m9x-clone-x.sh`
+starts the server and enables them.  Measured: four monitors in
+`xrandr --listmonitors`, `OpenGL renderer string: Matrox M9 (clean-room
+bring-up)`, direct rendering, glxgears 663 fps.
+
+An extended desktop needs the pipe replaced by a full `drm_crtc`/`drm_plane`
+pair so each head can scan out a window of a larger shared framebuffer at its
+own offset - the hardware side is only a per-head `M9_DC_START` of
+`base + y * pitch + x * 4` with the shared pitch in `M9_DC_PITCH`, whose mask
+holds 14 bits of pixels.  NOT IMPLEMENTED.
+
+DP-3 read `disconnected` on one probe immediately after DP-2 was attached, then
+`connected` with valid EDID on the next X start without anything being
+replugged.  One transient, not reproduced, cause not established.
