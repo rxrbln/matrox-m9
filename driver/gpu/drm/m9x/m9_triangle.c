@@ -191,6 +191,8 @@ struct m9x_triangle_diag {
 	struct m9_triangle_resource resource[M9_TRI_RESOURCE_COUNT];
 	u32 pte_count;
 	struct m9_triangle_commands commands;
+	/* Bytes a previous submit left non-zero in the command image. */
+	u32 secondary_used;
 	bool context_initialized;
 	bool prepared;
 };
@@ -1448,6 +1450,7 @@ static int m9_triangle_context_init_locked(struct m9x_device *mdev,
 	final = sequence0.target + M9_SEQ0_FINAL_TARGET_OFFSET;
 	m9_seq0_build_secondary(diag->resource[M9_TRI_SECONDARY].cpu,
 				&sequence0);
+	diag->secondary_used = M9_TRIANGLE_SECONDARY_BYTES;
 	m9_seq0_build_primary(&sequence0, diag->commands.sequence0_primary);
 	ret = m9x_submit_kernel_stream_locked(mdev,
 			diag->commands.sequence0_primary,
@@ -1503,7 +1506,7 @@ int m9x_submit_user_stream_locked(struct m9x_device *mdev, const u32 *records,
 	struct m9x_triangle_diag *diag = mdev->transport.triangle;
 	u16 footer_start = layout->end[1], footer_end = layout->end[2];
 	u32 footer_bytes = footer_end - footer_start;
-	u32 body_end, secondary, start, i, *primary;
+	u32 body_end, secondary, start, used, i, *primary;
 	u8 *image;
 	int ret;
 
@@ -1521,7 +1524,13 @@ int m9x_submit_user_stream_locked(struct m9x_device *mdev, const u32 *records,
 	image = diag->resource[M9_TRI_SECONDARY].cpu;
 	secondary = diag->resource[M9_TRI_SECONDARY].gpuva;
 	body_end = M9_TRIANGLE_SECONDARY_PREFIX + dwords * sizeof(u32);
-	memset(image, 0, M9_TRIANGLE_SECONDARY_BYTES);
+	/* Everything after the published ranges is the image's zero tail, so
+	 * only what a previous submit left behind has to be cleared. */
+	used = body_end + footer_bytes;
+	if (diag->secondary_used > used)
+		memset(image + used, 0, diag->secondary_used - used);
+	diag->secondary_used = used;
+	memset(image, 0, M9_TRIANGLE_SECONDARY_PREFIX);
 	memcpy(image + M9_TRIANGLE_SECONDARY_PREFIX, records,
 	       dwords * sizeof(u32));
 	memcpy(image + body_end, (const u8 *)layout->payload + footer_start -
@@ -1609,6 +1618,7 @@ static int m9_triangle_present_locked(struct m9x_device *mdev, u32 color,
 
 	m9_present_build(diag->resource[M9_TRI_SECONDARY].cpu, dest, color,
 			 lower_32_bits(mdev->transport.fence_bus), target);
+	diag->secondary_used = M9_TRIANGLE_SECONDARY_BYTES;
 	dma_wmb();
 	primary[0] = 0x45452d2c;
 	primary[1] = (secondary + M9_TRIANGLE_SECONDARY_PREFIX) |
@@ -1718,6 +1728,7 @@ int m9x_submit_triangle_diag(struct m9x_device *mdev, u32 color,
 				diag->resource[M9_TRI_SECONDARY].gpuva,
 				lower_32_bits(mdev->transport.fence_bus),
 				target, diag->commands.sequence0_primary);
+			diag->secondary_used = M9_TRIANGLE_SECONDARY_BYTES;
 			dma_wmb();
 			ret = m9_triangle_log_secondary_mapping(mdev);
 			if (ret)
@@ -1759,6 +1770,7 @@ int m9x_submit_triangle_diag(struct m9x_device *mdev, u32 color,
 	m9_triangle_build_framed_secondary(diag->resource[M9_TRI_SECONDARY].cpu,
 					   &job, m9_triangle_gouraud,
 					   m9_triangle_layout());
+	diag->secondary_used = M9_TRIANGLE_SECONDARY_BYTES;
 	dma_wmb();
 	dma_resv_assert_held(color_bo->bo.base.resv);
 	out_fence = m9x_fence_create_target_locked(mdev, job.transition[5]);
