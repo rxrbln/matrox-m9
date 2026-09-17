@@ -47,6 +47,14 @@ screen, i.e. 1.99 Gpixel-operations/s** (the first added operation is cheaper,
 so the back end pairs it into an existing slot).  A texture fetch costs the
 same as an arithmetic operation, and a trilinear fetch is two.
 
+**The rate is not uniform across every slot.**  It was measured by adding
+`c = c * k1 + v_col * k2` operations, which read an interpolated value, and it
+holds for texture fetches; it does **not** hold for moves out of the constant
+span.  The constant-colour case below is 6 instructions longer than the
+interpolated one and costs only half an operation more, so a constant move is
+roughly a twelfth of an arithmetic operation.  Program *length* is therefore
+the wrong budget: count the operations that read interpolated or sampled data.
+
 That single rate explains every other case:
 
 | fill | ms/screen | Mpixel/s |
@@ -94,8 +102,18 @@ Notes, all measured:
   and a trilinear filter also costs exactly one fetch (2.880 against 2.879), so
   nothing is wasted there either.
 * A **constant-colour fragment program costs 0.59 ms/screen more than one that
-  interpolates a varying** (1.757 vs 1.171): half an operation more for a
-  program that does strictly less.  Worth a look in the fragment back end.
+  interpolates a varying** (1.757 vs 1.171), and it is much longer: the
+  backend compiles `gl_FragColor = vec4(...)` to **8 slots against 4** for
+  `gl_FragColor = v_col` (OFFLINE, `m9-fs-compile-test --glsl` with
+  `M9_FS_PROGRAM=1`; the varying program's last two slots are the stop pair, so
+  it is 2 real instructions against 8).  This is **not a missed fold**: the
+  same source is corpus case `fs-const`, which the backend reproduces byte for
+  byte against the captured vendor program, so the vendor compiler emits the
+  same shape.  The output move cannot take a constant operand, so every
+  component is staged through a register first.
+  What the pair does show is that those six extra instructions cost half an
+  operation between them, which is why the rate above cannot be applied to slot
+  counts blindly.
 
 ## Hidden fragments are already cheap, and the ba/bb plane is not why
 
