@@ -1652,7 +1652,10 @@ varying_slot(struct ctx *c, unsigned location)
          return i;
    /* A location may feed both the texture unit and an interpolation: the
     * driver emits one CPU stream per use from the same draw output. */
-   /* Three raster streams besides position, c and d. */
+   /* The raster pass has six stream slots and reserves three for position,
+    * c and d, so three are left for interpolated inputs and distinct
+    * texture coordinates together.  More texture units than that is fine
+    * as long as they share coordinates. */
    if (p->varying_count + p->texture_count >= 3)
       return fail(c, "too many interpolated inputs"), -1;
    p->varyings[p->varying_count].location = location;
@@ -3900,13 +3903,15 @@ m9_fs_slot_count(const struct m9_fs_program *program)
 uint32_t
 m9_fs_raster_88(const struct m9_fs_program *program)
 {
-   uint32_t r88 = 0x00100000 | 0xfff0;
+   /* Bits 23:20 count the texture units in unary: one unit reads 0x1, two
+    * 0x3, three 0x7 and four 0xf, the last in the glamor gradient cases.
+    * A program with no texture still sets the first. */
+   uint32_t r88 = BITFIELD_MASK(MAX2(program->texture_count, 1u)) << 20 |
+                  0xfff0;
    unsigned low = 0;
 
    for (unsigned k = 0; k < program->varying_count; k++)
       r88 |= BITFIELD_BIT(24 + k);
-   if (program->texture_count > 1)
-      r88 |= 0x00200000;
    if (program->fragcoord)
       r88 |= 0x00080000;
    /* Bits 15:4 flag register pairs 08/09 .. 1e/1f the program leaves unused. */

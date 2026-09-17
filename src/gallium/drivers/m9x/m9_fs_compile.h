@@ -19,7 +19,7 @@ struct nir_shader_compiler_options;
 /* The vendor splits beyond six interpolated varying slots per raster pass. */
 #define M9_FS_MAX_VARYINGS 6u
 /* First texel lands in 00/02, the second in 04/06. */
-#define M9_FS_MAX_TEXTURES 2u
+#define M9_FS_MAX_TEXTURES 4u
 
 enum m9_fs_const_kind {
    M9_FS_CONST_LITERAL,

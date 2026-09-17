@@ -15,7 +15,10 @@
 #define M9_PROGRAM_DWORDS         80u
 #define M9_FRAGMENT_DB_MIN_BYTES  0x1c000u
 #define M9_TRANSIENT_VIEWS        7u
-/* Views 0..3 belong to the pass-through program, 4.. carry CPU varyings. */
+/* Views 0..3 belong to the vertex program, 4..6 carry CPU varyings, one per
+ * interpolated input or distinct texture coordinate -- three of them,
+ * because the raster pass keeps three of its six stream slots for
+ * position, c and d. */
 #define M9_TRANSIENT_CPU_VIEW     4u
 #define M9_TRANSIENT_VIEW_BYTES   0x16800u
 #define M9_TRANSIENT_VERTEX_BYTES 16u
