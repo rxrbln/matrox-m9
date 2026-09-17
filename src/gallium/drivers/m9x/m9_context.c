@@ -680,8 +680,8 @@ m9_job_native(struct m9_context *ctx, const struct m9_fs_variant *fs,
    uint64_t t_varying = m9_prof_begin();
 
    for (unsigned j = 0; j < fs->extra_count; j++) {
-      uint8_t *view = (uint8_t *)ctx->transient.map +
-                      (M9_TRANSIENT_CPU_VIEW + j) * M9_TRANSIENT_VIEW_BYTES;
+      uint8_t *view = (uint8_t *)ctx->cpu_streams.map +
+                      j * M9_TRANSIENT_VIEW_BYTES;
 
       for (unsigned r = 0; r < records; r++)
          memcpy(view + r * M9_TRANSIENT_VERTEX_BYTES,
@@ -733,6 +733,7 @@ m9_dump_job(struct m9_context *ctx, const struct m9_fs_variant *fs)
       else if (b->bos[i].handle == ctx->program.handle) size = ctx->program.size;
       else if (b->bos[i].handle == ctx->fragment_db.handle) size = ctx->fragment_db.size;
       else if (b->bos[i].handle == ctx->transient.handle) size = ctx->transient.size;
+      else if (b->bos[i].handle == ctx->cpu_streams.handle) size = ctx->cpu_streams.size;
       else if (b->bos[i].handle == ctx->be.handle) size = ctx->be.size;
       else if (b->bos[i].handle == ctx->source.handle) size = ctx->source.size;
       else if (b->bos[i].handle == ctx->index.handle) size = ctx->index.size;
@@ -821,6 +822,7 @@ m9_submit_job(struct m9_context *ctx)
          .program = ctx->program.handle,
          .fragment_db = ctx->fragment_db.handle,
          .transient = ctx->transient.handle,
+         .cpu_streams = ctx->cpu_streams.handle,
          .color = m9_res(ctx->color)->handle,
          .depth = key->depth->handle,
          .aux = key->aux->handle,
@@ -3018,6 +3020,11 @@ m9_context_init_fixed(struct m9_context *ctx)
                          PARHELIA_M9_BO_VRAM, M9_RESOURCE_SYSTEM_STATE,
                          &ctx->transient);
    if (!ret)
+      ret = m9_bo_create(screen,
+                         (M9_TRANSIENT_VIEWS - M9_TRANSIENT_CPU_VIEW) *
+                         M9_TRANSIENT_VIEW_BYTES, 0,
+                         M9_RESOURCE_LINEAR_BUFFER, &ctx->cpu_streams);
+   if (!ret)
       ret = m9_bo_create(screen, M9_BE_BYTES, PARHELIA_M9_BO_VRAM,
                          M9_RESOURCE_SYSTEM_STATE, &ctx->be);
    if (!ret)
@@ -3069,6 +3076,7 @@ m9_context_destroy(struct pipe_context *pctx)
    m9_bo_destroy(screen, &ctx->program);
    m9_bo_destroy(screen, &ctx->fragment_db);
    m9_bo_destroy(screen, &ctx->transient);
+   m9_bo_destroy(screen, &ctx->cpu_streams);
    m9_bo_destroy(screen, &ctx->be);
    m9_bo_destroy(screen, &ctx->source);
    m9_bo_destroy(screen, &ctx->index);

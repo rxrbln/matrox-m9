@@ -278,6 +278,10 @@ struct m9_context {
     * address, so only this has to be physically contiguous, and keeping it
     * out of the record arena keeps that demand small. */
    struct m9_resource index;
+   /* The CPU-written stream views, in system memory: the raster engine
+    * fetches a stream from either address class, and the host aperture
+    * takes writes at 265 MB/s against 1380 MB/s to system memory. */
+   struct m9_resource cpu_streams;
    /* The depth and HZ pair a target without a depth attachment of its own
     * binds, kept per size: a scene that alternates target sizes would
     * otherwise reallocate and refill them on every switch. */

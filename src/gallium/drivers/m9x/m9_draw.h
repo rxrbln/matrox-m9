@@ -33,6 +33,7 @@ struct m9_draw_job {
    uint32_t program;       /* VRAM c2 pass-through program */
    uint32_t fragment_db;   /* VRAM fixed-fragment database */
    uint32_t transient;     /* VRAM, M9_TRANSIENT_VIEWS stream views */
+   uint32_t cpu_streams;   /* DMA32, the views the CPU writes */
    uint32_t color, depth, aux;
    uint32_t be;
    uint32_t source_vertices;  /* padded record count, multiple of four */

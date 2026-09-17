@@ -100,6 +100,37 @@ m9_job_raster_control(const struct m9_draw_job *job,
                     m9_raster_control(d->flat, d->topology);
 }
 
+/* A view the CPU fills lives in system memory and is fetched through the
+ * compact page window; the ones the preprocessing pass renders into stay
+ * local.  The engine takes a stream from either address class -- the class
+ * is in the address tag, not in the slot -- which is what the vendor's own
+ * capture does, binding slot 00 to a system record arena in one job and to
+ * the local transient arena in another. */
+static bool
+m9_stream_is_cpu(const struct m9_draw_job *job, unsigned view)
+{
+   return view >= M9_TRANSIENT_CPU_VIEW && job->cpu_streams;
+}
+
+static uint32_t
+m9_stream_handle(const struct m9_draw_job *job, unsigned view)
+{
+   return m9_stream_is_cpu(job, view) ? job->cpu_streams : job->transient;
+}
+
+static uint64_t
+m9_stream_offset(const struct m9_draw_job *job, unsigned view)
+{
+   return m9_stream_is_cpu(job, view) ?
+          VIEW(view - M9_TRANSIENT_CPU_VIEW) : VIEW(view);
+}
+
+#define STREAM_RELOC(job, slot, view)                                      \
+   { .index = (slot), .handle = m9_stream_handle(job, view),               \
+     .offset = m9_stream_offset(job, view),                                \
+     .kind = m9_stream_is_cpu(job, view) ? PARHELIA_M9_RELOC_SYSTEM :      \
+             PARHELIA_M9_RELOC_STREAM }
+
 /* Streams, program entry and constant span of a native raster pass. */
 static int
 m9_emit_raster_fs(struct m9_batch *batch, const struct m9_draw_job *job)
@@ -113,11 +144,11 @@ m9_emit_raster_fs(struct m9_batch *batch, const struct m9_draw_job *job)
       unsigned s = 2 * pair;
 
       if (s + 1 < fs->stream_count) {
-         EMIT(R(s, job->transient, VIEW(fs->stream_view[s]), STREAM),
-              R(s + 1, job->transient, VIEW(fs->stream_view[s + 1]), STREAM),
+         EMIT(STREAM_RELOC(job, s, fs->stream_view[s]),
+              STREAM_RELOC(job, s + 1, fs->stream_view[s + 1]),
               V(0x10 + pair, fs->stride[pair]));
       } else {
-         EMIT(R(s, job->transient, VIEW(fs->stream_view[s]), STREAM),
+         EMIT(STREAM_RELOC(job, s, fs->stream_view[s]),
               V(0x10 + pair, fs->stride[pair]));
       }
    }
