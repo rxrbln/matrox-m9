@@ -2307,9 +2307,42 @@ m9_render_record(const struct m9_vbuf_render *r, unsigned index, float *out,
       out[4 + c] = r->has_color ? CLAMP(v[4 + c], 0.0f, 1.0f) : 1.0f;
 }
 
+/* Extra slots whose coordinate m9_scale_coords divides by a projector. */
+static uint32_t
+m9_proj_slots(const struct m9_job_key *key)
+{
+   const struct m9_fs_variant *v = key->variant;
+   uint32_t mask = 0;
+
+   for (unsigned u = 0; v && u < v->slot_count; u++) {
+      const struct m9_fs_program *p = &v->passes.pass[v->slot_pass[u]];
+      const struct m9_fs_pass_streams *st = &v->stream[v->slot_pass[u]];
+      unsigned k = v->slot_index[u];
+      int j = st->coord_extra[st->texture_coord[k]];
+
+      if (j >= 0 && p->texcoord_projective[k])
+         mask |= BITFIELD_BIT(j);
+   }
+   return mask;
+}
+
+/* Vertices one primitive of this topology owns alone, or zero for a strip,
+ * fan or polygon: those share vertices, so a value that is constant over
+ * every primitive of the run is constant over the whole run. */
+static unsigned
+m9_topology_group(enum m9_topology topology)
+{
+   switch (topology) {
+   case M9_TOPOLOGY_LINES: return 2;
+   case M9_TOPOLOGY_TRIANGLES: return 3;
+   case M9_TOPOLOGY_QUADS: return 4;
+   default: return 0;
+   }
+}
+
 /* Projective coordinates are divided per vertex: exact while q is constant
- * over a primitive (fixed-function texturing without a projective texture
- * matrix).  Render-target coordinates address the aligned span. */
+ * over a primitive, which m9_proj_constant checks before the job is built.
+ * Render-target coordinates address the aligned span. */
 static void
 m9_scale_coords(const struct m9_job_key *key, float *extra)
 {
@@ -2370,6 +2403,57 @@ m9_index_at(const void *indices, unsigned index_size, unsigned i)
    return index_size == 4 ? ((const uint32_t *)indices)[i] :
                             ((const uint16_t *)indices)[i];
 }
+
+/* The projector divide below is per vertex, which is exact only while the
+ * projector is constant over a primitive: the engine interpolates s/q and
+ * t/q, and a q that varies makes that differ from the S/Q the fetch needs.
+ * MEASURED: a projector that quadruples across a quad puts 75373 of 76800
+ * pixels at the wrong texel (fixture projtexz), so a draw that breaks the
+ * precondition is refused instead of drawn.  The comparison carries a
+ * relative tolerance because a projector a vertex shader recomputes per
+ * vertex is only bitwise equal when the arithmetic is. */
+#define M9_PROJ_TOLERANCE 1.0e-6f
+
+static const char m9_proj_reason[] =
+   "a projective texture coordinate whose projector varies over a primitive "
+   "is divided per vertex, not per pixel; draw skipped";
+
+static bool
+m9_proj_constant(const struct m9_job_key *key, enum m9_topology topology,
+                 const float *extra, unsigned extra_count,
+                 const void *indices, unsigned index_size, unsigned offset,
+                 uint32_t lo, unsigned count)
+{
+   uint32_t mask = m9_proj_slots(key);
+   unsigned span = m9_topology_group(topology);
+
+   if (!mask || !extra_count)
+      return true;
+   if (!span)
+      span = count;
+   for (unsigned base = 0; base + span <= count; base += span) {
+      u_foreach_bit(j, mask) {
+         unsigned i0 = indices ?
+                       m9_index_at(indices, index_size, offset + base) - lo :
+                       base;
+         float q = extra[(size_t)i0 * 4 * extra_count + 4 * j + 3];
+         float tol = M9_PROJ_TOLERANCE * MAX2(fabsf(q), 1.0f);
+
+         for (unsigned k = 1; k < span; k++) {
+            unsigned i = indices ?
+                         m9_index_at(indices, index_size,
+                                     offset + base + k) - lo :
+                         base + k;
+
+            if (fabsf(extra[(size_t)i * 4 * extra_count + 4 * j + 3] - q) >
+                tol)
+               return false;
+         }
+      }
+   }
+   return true;
+}
+
 
 /* Lowest and highest vertex a run of indices refers to. */
 static void
@@ -2433,13 +2517,20 @@ m9_render_append_indexed(struct m9_vbuf_render *r, const struct m9_job_key *key,
          m9_warn_once(ctx, M9_WARN_MEMORY, "out of memory for raster indices");
          return;
       }
-      for (unsigned v = 0; v < vertices; v++) {
-         float *e = extra ? extra + v * 4 * r->extra_count : NULL;
-
-         m9_render_record(r, lo + v, out + v * M9_RECORD_FLOATS, e);
-         if (e)
-            m9_scale_coords(key, e);
+      for (unsigned v = 0; v < vertices; v++)
+         m9_render_record(r, lo + v, out + v * M9_RECORD_FLOATS,
+                          extra ? extra + v * 4 * r->extra_count : NULL);
+      if (extra &&
+          !m9_proj_constant(key, topology, extra, r->extra_count, indices,
+                            index_size, done, lo, n)) {
+         ctx->records.size = (size_t)first * M9_RECORD_FLOATS * sizeof(float);
+         ctx->extra.size = (size_t)first * 4 * r->extra_count * sizeof(float);
+         ctx->indices.size = (size_t)index_first * sizeof(uint16_t);
+         m9_warn_once(ctx, M9_WARN_FS, m9_proj_reason);
+         return;
       }
+      for (unsigned v = 0; extra && v < vertices; v++)
+         m9_scale_coords(key, extra + v * 4 * r->extra_count);
       for (unsigned i = 0; i < n; i++)
          words[i] = first +
                     m9_index_at(indices, index_size, done + i) - lo;
@@ -2490,9 +2581,20 @@ m9_render_append(struct m9_vbuf_render *r, const struct m9_job_key *key,
 
          m9_render_record(r, index, out + i * M9_RECORD_FLOATS,
                           extra ? extra + i * 4 * r->extra_count : NULL);
-         if (extra)
-            m9_scale_coords(key, extra + i * 4 * r->extra_count);
       }
+      /* The records are already in primitive order here, indexed or not. */
+      if (extra &&
+          !m9_proj_constant(key, topology, extra, r->extra_count, NULL, 0, 0,
+                            0, n)) {
+         r->ctx->records.size =
+            (size_t)first * M9_RECORD_FLOATS * sizeof(float);
+         r->ctx->extra.size =
+            (size_t)first * 4 * r->extra_count * sizeof(float);
+         m9_warn_once(r->ctx, M9_WARN_FS, m9_proj_reason);
+         return;
+      }
+      for (unsigned i = 0; extra && i < n; i++)
+         m9_scale_coords(key, extra + i * 4 * r->extra_count);
       m9_job_commit(r->ctx, out, extra, n, first, 0, 0, topology, cull, lines,
                     r->ctx->rasterizer && r->ctx->rasterizer->flatshade);
       done += n;
