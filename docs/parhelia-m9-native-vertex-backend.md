@@ -10,7 +10,10 @@ compiler's own contracts, what each form rests on, and what is not covered.
 
 ## Result
 
-Twelve vertex shaders, glmark2's `bump-poly.vert` among them, compile and
+The driver runs the compiled program on the GPU: section 8 records the
+integration, what it measures and what it still cannot do.
+
+Eighteen vertex shaders, glmark2's `bump-poly.vert` among them, compile and
 verify offline (OFFLINE, `m9-vs-compile-test`).  `mvp * position` with a
 colour varying compiles to **36 slots, the same length the vendor compiler
 emits for it**, with the transform in the vendor's own eight instructions.
@@ -179,22 +182,192 @@ ninja -C objs-m9x-llvm src/gallium/drivers/m9x/m9-vs-compile-test
 # M9_VS_TRACE=1 every register the simulator writes
 ```
 
-## 8. What integration still needs
+## 8. Integration: what the driver does with it
 
-The backend is complete and tested offline; the driver still runs every vertex
-shader in the draw module.  Binding it needs, in order:
+Since 2026-09-17 the driver runs the compiled program on the GPU.  The
+decision is per draw, taken in `m9_native_vs_draw()` before the draw module is
+entered; when any part of it says no the draw falls through to the draw
+module unchanged.  `M9X_NATIVE_VS=0` disables the path outright.
 
-1. a screen path that compiles the shader at `create_vs_state` time and keeps
-   the draw-module shader as the fallback;
-2. source records built from the raw vertex attributes and the index-`23`
-   declaration from `m9_vs_decl_words()`, instead of the CPU-transformed
-   position and colour the driver writes today;
-3. the constant span written from `m9_vs_const()` entries resolved against
-   constant buffer 0, with pairs 9..21 left as `m9_draw_params_init()` sets
-   them;
-4. the raster pass reading the varying from transient view 0 -- the vertex
-   program's own `b0` target -- instead of the CPU-written views 4..6.
+### 8.1 The predicate
 
-Step 4 is where the one-varying limit bites: a shader with two varyings has to
-keep running in the draw module until the multi-target output contract is
-decoded.
+In the order it is evaluated, cheapest first, because a draw that falls back
+must not pay for the decision:
+
+1. a compiled program exists, and declares at most `M9_VS_HW_ATTRIBUTES`
+   attributes (section 8.6);
+2. the bound fragment shader samples no texture and reads at most one
+   varying -- read straight from its `shader_info`, before any variant of it
+   is compiled;
+3. one instance, no primitive restart, a topology the raster pass expresses
+   with the provoking vertex the hardware uses (`m9_native_topology()`), and
+   a rasterizer state the pass carries: no discard, user clip plane, half-z
+   clip, disabled depth clip, polygon offset, polygon stipple, non-fill
+   polygon mode, and no wide, smooth or stippled line;
+4. every declared attribute resolves to a `pipe_vertex_element` over a
+   linear, non-instanced source whose whole vertex range lies inside the
+   bound buffers (`m9_vs_source_layout_init()` and `m9_vs_source_in_range()`,
+   which report the reason they refuse);
+5. after the job key is built: the fragment variant reads no texture, and its
+   one varying is the one the vertex program writes.
+
+The vertex element that feeds attribute *i* is **not** its NIR
+`driver_location`: `st_atom_array` builds one element per input the shader
+reads, in `inputs_read` order, so it is `util_bitcount64(inputs_read &
+BITFIELD64_MASK(location))`.  `m9_vs_attr_element()` is that map.
+
+### 8.2 What a native job changes
+
+* **Source records.**  `m9_vs_source_records()` writes the raw attributes
+  instead of the draw module's transformed position and colour.  The job key
+  carries the program, so a job never mixes the two record shapes, and
+  `ctx->record_floats` is the stride of the pending job rather than a
+  constant.
+* **Declaration.**  `m9_vs_decl_words()` supplies the index-`23` words and
+  index `10` the record span; both used to be the pass-through's four words
+  and fixed stride.  `m9_preprocess_control()` computes index `22` from the
+  word count, which reproduces the captured `0008040e` at five words.
+* **Constant span.**  `m9_vs_const_span()` places the resolved user constants
+  at their pairs, leaving 9..21 as `m9_draw_params_init()` set them.  Indices
+  `8c`, `8d` and `8e` are computed from the pair count -- they were the
+  captured 22-pair constants, which would have silently truncated the span of
+  any program needing pairs 22 and up.
+* **Viewport.**  The appended tail applies constant pairs 9..12 to the divided
+  position.  The draw module applied the pipe viewport itself and those pairs
+  were always the target's own; a native pass needs the viewport actually in
+  force, so `m9_draw_params_viewport()` rewrites them per job from
+  `pipe_viewport_state`.  Without this every FBO render is upside down,
+  because the state tracker flips the viewport for a window framebuffer and
+  not for an FBO.
+* **c2 image.**  `m9_vs_c2_image()` assembles the fragment slots with the
+  compiled vertex program behind them.  One image per fragment variant, keyed
+  by a never-reused serial on the vertex state, so a stale pointer cannot
+  match; the pass-through fragment image gets its own.
+* **Varying.**  The preprocessing pass writes one varying, to transient view
+  0.  `m9_varying_from_pass()` routes the fragment program's varying there
+  whatever its slot, instead of only `VARYING_SLOT_COL0`, and no CPU stream
+  is written at all.
+
+### 8.3 Results (MEASURED, M9148, 2026-09-17)
+
+`tools/m9-mesa-vs.c` renders each case into a 320x240 RGBA8 FBO and compares
+every pixel a full pixel inside a predicted triangle against a CPU reference
+that applies the same transform, divides by w and interpolates
+perspective-correctly.  A pixel any triangle might or might not cover is not
+predicted and not checked, so no edge rule is under test.
+
+14 of 14 cases pass with the path on and with it off: `inline mvp persp scale
+flat strip indexed attr3 attr4 attr4b vbo viewport depth cull`.  Eleven of
+them run natively; `attr3`, `attr4` and `attr4b` fall back for section 8.6.
+Worst per-pixel error 1.14/255.  `persp` carries a real `w` row, so the
+reciprocal chain and perspective-correct interpolation are under test.
+
+The fragment corpus `tools/m9-mesa-glsl.c` is 90 of 90 with the path on and
+with it off, no kernel stream timeout either way.  That run is what justified
+making the path the default; the knob remains for A/B.
+
+glmark2, 800x600 windowed on the glamor server, off -> on:
+
+| scene | off | on | |
+|---|---:|---:|---:|
+| build use-vbo=false | 227 | 508 | +124 % |
+| build use-vbo=true | 254 | 565 | +122 % |
+| shading gouraud | 138 | 334 | +142 % |
+| shading blinn-phong-inf | 141 | 296 | +110 % |
+| bump high-poly | 42 | 111 | +164 % |
+| conditionals 0/5 | 604 | 818 | +35 % |
+| conditionals 0/0 | 652 | 816 | +25 % |
+| function low | 506 | 604 | +19 % |
+| ideas | 242 | 219 | -10 % |
+| pulsar | 855 | 814 | -5 % |
+| texture (all three) | ~1050 | ~1040 | -1 % |
+| glmark2 score | 512 | 568 | +11 % |
+
+ioquake3 timedemo at 640x480: 115.2 fps off, 117.0 fps on (387 frames both).
+Every Quake III draw samples a texture, so the path does not apply there and
+the number only shows that the predicate costs nothing measurable.
+
+The two regressions are the cost of the design rather than noise, and both
+runs reproduced them.  A native job's constant span is the vertex program's
+uniforms, so a draw that changes them ends the job; `ideas` and `pulsar` give
+each object its own transform, which is one job per object where the draw
+module needed none.  Carrying several spans in one job is what would fix it,
+and the pass binds one.
+
+### 8.4 The record carries four components per attribute
+
+Every attribute occupies a whole 16-byte slot and the record writer fills the
+components the shader does not read with the GL default `(0, 0, 0, 1)`, so
+the declaration selects only components 0..3.  Two reasons:
+
+* every captured vendor record places its attributes at dword offsets 0, 4, 8
+  and 12 of a 64-byte record, so 16-byte slots are the captured shape and a
+  tighter packing is untested;
+* the compiled head reuses the padded scalars as the literals `0.0` and `1.0`
+  (section 3), and with the record carrying them that reuse rests on data the
+  driver wrote rather than on declaration selectors `4` and `5`, which appear
+  in a captured *declaration* but which no captured vertex program is known to
+  read.
+
+Packing the record tighter is an untested optimisation, not a known-good one.
+
+### 8.5 A literal argument is folded, not run through the chain
+
+The offline case `literal-xy` -- `gl_Position = vec4(pos.x / 160.0 - 1.0,
+...)`, which Mesa leaves as `fdiv` by a constant -- compiled to the captured
+reciprocal chain over a materialised literal and produced a result exactly
+four times too large, in the simulator and on the hardware alike (all 74892
+checked pixels wrong).  A reciprocal over a *register* operand is correct
+(`divide` offline, `persp` on hardware), so the defect is specific to a
+compile-time literal reaching `emit_rcp()`.
+
+`build_alu()` now folds a literal argument of `frcp`, `frsq`, `fsqrt` and
+`fexp2`, and a literal divisor of `fdiv`, at compile time.  That is correct by
+construction, removes six slots, and puts the wrong path out of reach of
+GLSL.  **The defect inside `emit_rcp()` itself is not root-caused**; a probe
+that materialises a literal into a register and runs the chain over it is
+what would settle it.
+
+### 8.6 Only two attributes reach the hardware correctly
+
+`m9_vs_source_layout_init()` will lay out four attributes and the offline
+corpus verifies four, but the **draw path stops at two**
+(`M9_VS_HW_ATTRIBUTES`).  With three or four attributes declared over one
+interleaved record the engine draws, without any timeout, from data that is
+neither the attribute's own nor anything recognisable: `m9-mesa-vs attr3`,
+`attr4` and `attr4b` each miss every one of 67156 checked pixels by up to
+255/255, while the same geometry through the draw module is exact.  A third
+attribute feeding the *position* puts the geometry elsewhere entirely, so it
+is not only the colour path that is wrong.
+
+This reproduces, through Mesa and a compiled program, what the userspace probe
+of `parhelia-m9-native-vertex-isa.md` section 2 found from the other side:
+"either a third preprocessing attribute needs something the probe does not
+set, or its registers are not `0x56/0x57` in a three-attribute declaration".
+Two independent paths now agree that the rule `0x46 + 8 * (a - 1)` is right
+for attributes 1 and 2 and wrong, or incomplete, from three.
+
+The vendor's own multi-attribute declarations (`parhelia-m9-openbits-gl-capture.md`)
+suggest where to look: they leave the dword field zero, put each GL attribute
+on its own **stream**, and pack two GL attributes into one hardware attribute
+register pair -- three GL attributes become two hardware attributes, four
+become three.  Whether hardware attribute 3 needs a second stream binding, a
+different register, or something else, no capture isolates.  The experiment
+that would settle it is the one that document already names: dump the compiled
+c2 vertex program alongside the index-`23` words for the same attribute counts
+and join each declaration entry to the register the program reads.
+
+### 8.7 What the path still cannot do
+
+* **One varying, so no texture.**  The pass has one varying target and it is
+  transient view 0; a texture coordinate needs a stream of its own, and the
+  CPU views the draw module fills cannot be filled here.  Every textured draw
+  therefore falls back, which is why Quake III does not move.  Decoding a
+  second preprocessing output target is worth more to this driver than
+  anything else in this list.
+* **Three attributes** (section 8.6).
+* **One basic block**, the backend's own limit.
+* Instanced draws, primitive restart, user clip planes, polygon offset,
+  polygon or line stipple, wide or smooth lines, non-fill polygon modes and
+  vertex-stage sampling all fall back.
+
