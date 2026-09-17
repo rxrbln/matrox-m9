@@ -377,3 +377,40 @@ machine is restarted.
   either way; test (b) settles it.
 * the split tail's constant-span layout, which a driver adopting the vendor's
   three-draw chain would need.  Not decoded, and not needed by section 4.
+
+## The attribute-count prediction is confirmed on hardware (MEASURED 2026-09-17)
+
+Test §5a run on the dual-DisplayPort M9128 at 192.168.1.111.  The probe's
+`submit()` loop now rewrites index `0x88` the way it already rewrites `0x22`
+and `0x23`:
+
+```c
+else if (idx == 0x88)
+        *p = (*p & ~0xff000000u) |
+             ((1u << v->color_attr) - 1) << 24;
+```
+
+A/B on the same binary tree, same board, same run:
+
+| variant | `88[27:24]` | t0 | t1 | t2 | decoy |
+|---|---|---|---|---|---|
+| `attr3-r56`, unpatched | `0x3` (two attributes) | 0.0% | 11.6% | - | 0 |
+| `attr3-r56`, patched | `0x7` (three attributes) | **100.0%** | **100.0%** | **100.0%** | 0 |
+
+So **`88[27:24]` is the unary count of declared source attributes**, and the
+third attribute works the moment it is declared.  The other two variants place
+the read correctly: `attr3-r46` reads attribute 1's register and sees nothing,
+`attr3-r4e` reads the decoy's, and `attr3-r56` is `0x46 + 8 * (3 - 1)`, which
+is the documented `REG_ATTR0 + 8 * (a - 1)` rule.
+
+This closes the failure recorded in `m9_vs_compile.h` - "a third draws geometry
+from neither its own value nor a decoy, both in the userspace probe and through
+this driver".  It was never a hardware limit: `m9_draw.c` emits
+`EMIT(V(0x88, 0x0300bf00), ...)` unconditionally, which declares two source
+attributes whatever the declaration says, so a third attribute was read from a
+slot the pass never declared.
+
+**Driver change still to make:** drive `0x88[27:24]` from the attribute count in
+`m9_draw.c`'s preprocessing block, then raise `M9_VS_HW_ATTRIBUTES` from 2.
+Four attributes is UNTESTED - the probe has no `attr4` variant - so raise it to
+3 on this evidence, or add the variant first.
