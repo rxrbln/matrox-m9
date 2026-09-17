@@ -24,6 +24,12 @@ MODULE_PARM_DESC(async_submit, "retire a job at the next submission");
 
 /* Dynamic debug is not built on this target, so name the refusing check
  * behind a parameter instead. */
+/* Hierarchical Z is bound as the ba/bb auxiliary pair.  Clearing this emits
+ * the vendor's disabled ba form instead, so its worth can be measured. */
+static bool m9_hierarchical_z = true;
+module_param_named(hierarchical_z, m9_hierarchical_z, bool, 0644);
+MODULE_PARM_DESC(hierarchical_z, "bind the depth auxiliary (ba/bb) plane");
+
 static bool m9_submit_trace;
 module_param_named(submit_trace, m9_submit_trace, bool, 0644);
 MODULE_PARM_DESC(submit_trace, "log the validator check that refuses a job");
@@ -611,6 +617,14 @@ m9_validate_relocs(u32 *image, u32 dwords, u32 *expected,
 					ret = m9_refuse(-EINVAL);
 					goto out;
 				}
+		}
+		/* Only index ba expects DEPTH alone; b8 expects DEPTH|STREAM. */
+		if (!m9_hierarchical_z &&
+		    (expected[reloc->command_dword] & M9_RELOC_KIND_MASK) ==
+		    M9_RELOC_BIT(DEPTH)) {
+			pr_info_once("m9x: hierarchical Z unbound at dword %u\n",
+				     reloc->command_dword);
+			address = 0;
 		}
 		image[reloc->command_dword] = lower_32_bits(address);
 		drm_dbg(&mdev->drm, "M9 reloc dword %u kind %u -> %#llx\n",
