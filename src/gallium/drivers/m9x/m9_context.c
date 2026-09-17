@@ -1308,19 +1308,6 @@ m9_texture_bind_view(const struct pipe_sampler_view *view,
    return "texture is not stored in a captured sampler layout; draw skipped";
 }
 
-/* LESS against a complemented depth is GREATER against the plain one. */
-static unsigned
-m9_compare_mirror(unsigned func)
-{
-   switch (func) {
-   case PIPE_FUNC_LESS: return PIPE_FUNC_GREATER;
-   case PIPE_FUNC_GREATER: return PIPE_FUNC_LESS;
-   case PIPE_FUNC_LEQUAL: return PIPE_FUNC_GEQUAL;
-   case PIPE_FUNC_GEQUAL: return PIPE_FUNC_LEQUAL;
-   default: return func;
-   }
-}
-
 static bool
 m9_job_textures(struct m9_context *ctx, const struct m9_fs_variant *fs,
                 struct m9_job_key *key)
@@ -1361,19 +1348,15 @@ m9_job_textures(struct m9_context *ctx, const struct m9_fs_variant *fs,
                  view->swizzle_a, reason);
       if (!reason && !sampler)
          reason = "sampled unit has no sampler state; draw skipped";
-      if (!reason) {
-         struct pipe_sampler_state compare = *sampler;
-
-         /* The engine stores the complement of the window depth and the
-          * driver complements the reference with it, so the function is
-          * mirrored too: mirror(f)(1 - r, 1 - d) == f(r, d). */
-         if (compare.compare_mode == PIPE_TEX_COMPARE_R_TO_TEXTURE)
-            compare.compare_func = m9_compare_mirror(sampler->compare_func);
-         if (m9_texture_unit_init(&key->units[k],
-                                  m9_res(view->texture)->handle, &bind,
-                                  &compare))
-            reason = "sampler wrap mode is not implemented; draw skipped";
-      }
+      /* The comparison needs no compensation: a depth surface the engine
+       * rendered compares against the plain window depth, exactly, for
+       * every one of the eight functions (MEASURED, m9-mesa-glsl
+       * shadow:FUNC).  The vendor ICD's complemented readback is not what
+       * this pipeline stores. */
+      if (!reason && m9_texture_unit_init(&key->units[k],
+                                          m9_res(view->texture)->handle,
+                                          &bind, sampler))
+         reason = "sampler wrap mode is not implemented; draw skipped";
       if (reason) {
          m9_warn_once(ctx, M9_WARN_TEXTURE, reason);
          return m9_skip_reason(ctx, reason);
@@ -1563,27 +1546,27 @@ m9_fs_streams(struct m9_fs_variant *v)
    }
 }
 
-/* A depth surface stores the complement of the window depth (MEASURED), so
- * a plain fetch of one reads 1 - z and the program puts it back.  A shadow
- * fetch is compensated in the sampler and the reference instead. */
+/* A plain fetch of a depth surface returns the window depth in the texel's
+ * second scalar, not the first; a comparing fetch returns its result in the
+ * first (MEASURED, m9-mesa-glsl depthchan).  Splat the second one over the
+ * result, which is what every GL_DEPTH_TEXTURE_MODE then selects from. */
 static bool
-m9_depth_complement_instr(nir_builder *b, nir_instr *instr, void *data)
+m9_depth_channel_instr(nir_builder *b, nir_instr *instr, void *data)
 {
    uint32_t mask = *(const uint32_t *)data;
    nir_tex_instr *tex;
-   nir_def *value;
+   nir_def *depth;
 
    if (instr->type != nir_instr_type_tex)
       return false;
    tex = nir_instr_as_tex(instr);
-   if (tex->is_shadow || tex->sampler_index >= 32 ||
-       !(mask & BITFIELD_BIT(tex->sampler_index)))
+   if (tex->is_shadow || tex->def.num_components < 2 ||
+       tex->sampler_index >= 32 || !(mask & BITFIELD_BIT(tex->sampler_index)))
       return false;
    b->cursor = nir_after_instr(instr);
-   /* fadd of a negation, not fsub: the backend has no fsub and nothing
-    * reoptimises what this pass inserts. */
-   value = nir_fadd_imm(b, nir_fneg(b, &tex->def), 1.0);
-   nir_def_rewrite_uses_after(&tex->def, value);
+   depth = nir_channel(b, &tex->def, 1);
+   nir_def_rewrite_uses_after(&tex->def,
+                              nir_vec4(b, depth, depth, depth, depth));
    return true;
 }
 
@@ -1621,10 +1604,6 @@ m9_fs_variant(struct m9_context *ctx, struct m9_fs_state *fs,
    v->depth_texture = want->depth_texture;
    if (inline_bytes)
       m9_fs_inline_uniforms(clone, v->inline_values);
-   if (v->depth_texture)
-      NIR_PASS(_, clone, nir_shader_instructions_pass,
-               m9_depth_complement_instr,
-               nir_metadata_control_flow, &v->depth_texture);
    {
       nir_lower_tex_options tex = { 0 };
 
@@ -1641,6 +1620,12 @@ m9_fs_variant(struct m9_context *ctx, struct m9_fs_state *fs,
       if (tex.swizzle_result)
          NIR_PASS(_, clone, nir_lower_tex, &tex);
    }
+   /* After the view swizzle: nir_lower_tex rewrites every use of the fetch,
+    * this one included, so a channel pick before it reads the swizzled
+    * value instead of the texel. */
+   if (v->depth_texture)
+      NIR_PASS(_, clone, nir_shader_instructions_pass, m9_depth_channel_instr,
+               nir_metadata_control_flow, &v->depth_texture);
    if (ctx->debug)
       nir_print_shader(clone, stderr);
    v->ok = m9_fs_compile(clone, &v->blend, &v->program, &v->reason);
@@ -1896,7 +1881,7 @@ static void
 m9_scale_coords(const struct m9_job_key *key, float *extra)
 {
    const struct m9_fs_variant *v = key->variant;
-   uint32_t divided = 0, folded = 0, scaled = 0, compared = 0;
+   uint32_t divided = 0, folded = 0, scaled = 0;
 
    uint32_t packed = 0;
 
@@ -1933,13 +1918,6 @@ m9_scale_coords(const struct m9_job_key *key, float *extra)
             extra[4 * j + 3] = 1.0f;
          }
          divided |= BITFIELD_BIT(j);
-      }
-      /* The engine stores the complement of the window depth, so the
-       * reference is complemented and the compare function mirrored with
-       * it (m9_texture.c, docs/parhelia-m9-openbits-gl-capture.md). */
-      if (v->program.texcoord_shadow[k] && !(compared & BITFIELD_BIT(j))) {
-         extra[4 * j + 2] = 1.0f - extra[4 * j + 2];
-         compared |= BITFIELD_BIT(j);
       }
       /* The stream is shared, so its scale is applied once like every other
        * step here: two units on one coordinate scaled it twice. */
