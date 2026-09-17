@@ -1590,8 +1590,8 @@ m9_job_key_current(struct m9_context *ctx, struct m9_job_key *key)
       m9_warn_once(ctx, M9_WARN_STENCIL, "stencil and alpha test are not "
                    "implemented");
    memset(key, 0, sizeof(*key));
-   key->depth = zs ? zs : &ctx->target_depth;
-   key->aux = zs ? zs->hz : &ctx->target_aux;
+   key->depth = zs ? zs : ctx->target_depth;
+   key->aux = zs ? zs->hz : ctx->target_aux;
    key->depth_control = m9_depth_control(test, write,
                                          dsa ? dsa->depth_func : PIPE_FUNC_LESS);
    key->depth_ef = m9_depth_ef(test, write);
@@ -2180,8 +2180,8 @@ m9_clear_quad(struct m9_context *ctx, const struct pipe_scissor_state *scissor,
       return;
    depth = depth && zs;
    memset(&key, 0, sizeof(key));
-   key.depth = zs ? zs : &ctx->target_depth;
-   key.aux = zs ? zs->hz : &ctx->target_aux;
+   key.depth = zs ? zs : ctx->target_depth;
+   key.aux = zs ? zs->hz : ctx->target_aux;
    key.depth_control = m9_depth_control(depth, depth, PIPE_FUNC_ALWAYS);
    key.depth_ef = m9_depth_ef(depth, depth);
    key.color_mask = m9_color_mask(colormask);
@@ -2800,6 +2800,70 @@ m9_set_inlinable_constants(struct pipe_context *pctx, mesa_shader_stage shader,
              MIN2(num_values, MAX_INLINABLE_UNIFORMS) * sizeof(*values));
 }
 
+/* The depth and HZ pair for a target of this size, allocated once and kept.
+ * Depth testing is refused outright when the target has no attachment of its
+ * own, so the content is never read and a reused pair needs no refill; only
+ * a fresh one is filled, the way a fresh one always was. */
+static bool
+m9_target_depth_bind(struct m9_context *ctx, uint32_t w, uint32_t h,
+                     uint64_t bytes)
+{
+   struct m9_target_depth *entry = NULL, **oldest = NULL;
+   uint64_t total = 0;
+
+   util_dynarray_foreach(&ctx->target_depths, struct m9_target_depth *, it) {
+      total += (*it)->depth.size + (*it)->aux.size;
+      if ((*it)->width == w && (*it)->height == h)
+         entry = *it;
+      else if (!oldest || (*it)->used < (*oldest)->used)
+         oldest = it;
+   }
+   if (!entry) {
+      /* Release the size used longest ago before adding another, so a
+       * context that walks through many sizes does not grow without end. */
+      while (oldest && total + bytes + m9_hz_bytes(w, h) >
+             M9_TARGET_DEPTH_BUDGET) {
+         struct m9_target_depth *evict = *oldest;
+
+         total -= evict->depth.size + evict->aux.size;
+         m9_bo_destroy(ctx->screen, &evict->depth);
+         m9_bo_destroy(ctx->screen, &evict->aux);
+         *oldest = *util_dynarray_pop_ptr(&ctx->target_depths,
+                                          struct m9_target_depth *);
+         FREE(evict);
+         oldest = NULL;
+         util_dynarray_foreach(&ctx->target_depths,
+                               struct m9_target_depth *, it)
+            if (!oldest || (*it)->used < (*oldest)->used)
+               oldest = it;
+      }
+      entry = CALLOC_STRUCT(m9_target_depth);
+      if (!entry ||
+          m9_bo_create(ctx->screen, bytes, PARHELIA_M9_BO_VRAM,
+                       M9_RESOURCE_LINEAR_DEPTH, &entry->depth) ||
+          m9_bo_create(ctx->screen, m9_hz_bytes(w, h), PARHELIA_M9_BO_VRAM,
+                       M9_RESOURCE_LINEAR_DEPTH, &entry->aux)) {
+         if (entry) {
+            m9_bo_destroy(ctx->screen, &entry->depth);
+            m9_bo_destroy(ctx->screen, &entry->aux);
+            FREE(entry);
+         }
+         m9_warn_once(ctx, M9_WARN_MEMORY, "cannot allocate target depth");
+         return false;
+      }
+      entry->width = entry->depth.width = w;
+      entry->height = entry->depth.height = h;
+      m9_fill_dwords(&entry->depth, 0xffffffff);
+      m9_fill_dwords(&entry->aux, M9_HZ_CLEAR);
+      util_dynarray_append_typed(&ctx->target_depths,
+                                 struct m9_target_depth *, entry);
+   }
+   entry->used = ++ctx->target_clock;
+   ctx->target_depth = &entry->depth;
+   ctx->target_aux = &entry->aux;
+   return true;
+}
+
 static void
 m9_update_target(struct m9_context *ctx)
 {
@@ -2827,24 +2891,8 @@ m9_update_target(struct m9_context *ctx)
       return;
    }
    /* Depth-less targets still bind a depth and HZ BO of their size. */
-   if (!ctx->target_depth.handle || ctx->target_depth.width != w ||
-       ctx->target_depth.height != h) {
-      m9_bo_destroy(ctx->screen, &ctx->target_depth);
-      m9_bo_destroy(ctx->screen, &ctx->target_aux);
-      if (m9_bo_create(ctx->screen, layout.size, PARHELIA_M9_BO_VRAM,
-                       M9_RESOURCE_LINEAR_DEPTH, &ctx->target_depth) ||
-          m9_bo_create(ctx->screen, m9_hz_bytes(w, h), PARHELIA_M9_BO_VRAM,
-                       M9_RESOURCE_LINEAR_DEPTH, &ctx->target_aux)) {
-         m9_bo_destroy(ctx->screen, &ctx->target_depth);
-         m9_bo_destroy(ctx->screen, &ctx->target_aux);
-         m9_warn_once(ctx, M9_WARN_MEMORY, "cannot allocate target depth");
-         return;
-      }
-      ctx->target_depth.width = w;
-      ctx->target_depth.height = h;
-      m9_fill_dwords(&ctx->target_depth, 0xffffffff);
-      m9_fill_dwords(&ctx->target_aux, M9_HZ_CLEAR);
-   }
+   if (!m9_target_depth_bind(ctx, w, h, layout.size))
+      return;
    ctx->params_valid = true;
    m9_prof_end(M9_PROF_TARGET, t_target);
 }
@@ -3016,8 +3064,13 @@ m9_context_destroy(struct pipe_context *pctx)
    m9_bo_destroy(screen, &ctx->transient);
    m9_bo_destroy(screen, &ctx->be);
    m9_bo_destroy(screen, &ctx->source);
-   m9_bo_destroy(screen, &ctx->target_depth);
-   m9_bo_destroy(screen, &ctx->target_aux);
+   util_dynarray_foreach(&ctx->target_depths, struct m9_target_depth *, it) {
+      m9_bo_destroy(screen, &(*it)->depth);
+      m9_bo_destroy(screen, &(*it)->aux);
+      FREE(*it);
+   }
+   util_dynarray_fini(&ctx->target_depths);
+   ctx->target_depth = ctx->target_aux = NULL;
    m9_bo_destroy(screen, &ctx->placeholder_texture);
    if (ctx->debug)
       fprintf(stderr, "m9x: job splits: state %u uniforms %u vertices %u "
@@ -3071,6 +3124,7 @@ m9_context_create(struct pipe_screen *pscreen, void *priv, unsigned flags)
    ctx->only_after = debug_get_num_option("M9X_ONLY_AFTER", 0);
    ctx->dry_run = debug_get_bool_option("M9X_DRYRUN", false);
    util_dynarray_init(&ctx->records, NULL);
+   util_dynarray_init(&ctx->target_depths, NULL);
    util_dynarray_init(&ctx->indices, NULL);
    util_dynarray_init(&ctx->draws, NULL);
    util_dynarray_init(&ctx->extra, NULL);

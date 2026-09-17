@@ -93,6 +93,17 @@ struct m9_resource {
    struct m9_resource *hz;
 };
 
+struct m9_target_depth {
+   uint32_t width, height;
+   uint64_t used;
+   struct m9_resource depth, aux;
+};
+
+/* Enough for several full-screen pairs, so that a scene alternating a
+ * window target with the screen keeps both; beyond that a size is one the
+ * context has stopped drawing into. */
+#define M9_TARGET_DEPTH_BUDGET (32u << 20)
+
 static inline uint32_t
 m9_resource_bo_flags(const struct pipe_resource *templ)
 {
@@ -263,7 +274,12 @@ struct m9_context {
 
    /* Fixed two-pass resources and the pending job. */
    struct m9_resource system, program, fragment_db, transient, be, source;
-   struct m9_resource target_depth, target_aux;
+   /* The depth and HZ pair a target without a depth attachment of its own
+    * binds, kept per size: a scene that alternates target sizes would
+    * otherwise reallocate and refill them on every switch. */
+   struct m9_resource *target_depth, *target_aux;
+   struct util_dynarray target_depths;  /* struct m9_target_depth * */
+   uint64_t target_clock;
    struct m9_resource placeholder_texture;  /* 1x1 unit-0 binding */
    struct m9_draw_params params;
    struct m9_vertex_decl decl;
