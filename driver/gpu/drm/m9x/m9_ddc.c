@@ -430,11 +430,15 @@ int m9x_ddc_init(struct m9x_device *mdev)
 		return 0;
 	}
 	/* Release every pin this map claims before the first transaction, in
-	 * case a previous owner left one asserted. */
+	 * case a previous owner left one asserted.  The released data bits are
+	 * logged: a populated pair pulls both of its lines high, which is
+	 * evidence about any pair the map does not describe. */
 	if (!m9_hmc_acquire(mdev)) {
 		m9x_write(mdev, M9_DDC, m9x_read(mdev, M9_DDC) &
 			  ~GENMASK(M9_DDC_OE_SHIFT + M9_PINS_DDC_MAP_BYTES - 1,
 				   M9_DDC_OE_SHIFT));
+		drm_info(&mdev->drm, "DDC pins released, %#06x = %#010x\n",
+			 M9_DDC, m9x_read(mdev, M9_DDC));
 		m9_hmc_release(mdev);
 	}
 	/* Eight selectors share the eight physical bits, so a board populates
