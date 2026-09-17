@@ -127,15 +127,28 @@ both the shapes the fragment backend already uses.
 
 ## 6. Limits
 
-* **Three attributes.**  The preprocessing packet has room for eight index-`23`
-  words and two describe one attribute, so three fit and four do not.  This is
-  a limit of the command stream, not of the hardware.
+* **Four attributes.**  Index `22` carries the declaration word count minus one
+  in bits 11:8 -- four bits, so **sixteen words per pass**, not eight.  Four
+  attributes are CAPTURED in one pass: every `fs-*` case of the vendor corpus
+  declares four in nine index-`23` words over one 64-byte record and its vertex
+  program reads `46 47 4e 4f 56 57 5e 5f`.  Five is refused for a decoded
+  reason, not a guessed one: the vendor's attribute numbering **skips 5..8**,
+  which are the four texture coordinate sets, and resumes at 9, so the register
+  rule `0x46 + 8*(a - 1)` reaches `0x86` -- which does not fit the seven-bit
+  `b`/`c`/`d` operand fields.  The linear rule provably stops at four.  (The
+  vendor stack does run fifteen attributes, so beyond four it must use another
+  mechanism; no capture isolates it.)
 * **One varying.**  The driver's four-target configuration carries one varying
   vector; the register-to-target rule for any other target set is UNDECODED.
 * **One basic block.**  Control flow is refused.
-* **No exponential, logarithm or power.**  The fragment unit has those chains,
-  but the vertex unit's own were not decoded, so they are refused rather than
-  guessed at.
+* **No logarithm or power.**  `exp2` is CAPTURED on the vertex unit -- the
+  vendor's own `ff-fog-exp` and `ff-fog-exp2` vertex programs carry the seed,
+  polynomial, two steps and scale with the same words, the same operand wiring
+  and the same three coefficient pairs the fragment unit uses -- and the backend
+  emits it.  `log2` appears in no captured vertex program, and the fragment
+  unit's own log2 chain cannot be validated offline (its polynomial slots write
+  the first scalar while their chained operand's swizzle reads the second), so
+  `log2` and `pow` stay refused rather than ported on a guess.
 * A shader outside any of this fails with a reason and the draw module runs it,
   which is what the driver does today.
 

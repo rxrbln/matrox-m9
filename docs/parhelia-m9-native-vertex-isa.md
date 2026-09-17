@@ -65,8 +65,27 @@ pairs: preprocessing pair *p* is prefix dwords `4 + 2p` and `5 + 2p`.
 The preprocessing source declaration is the index-`23` list.  Each word is
 
 ```text
-dword << 24 | attr << 20 | s0 | s1 << 3 | s2 << 6 | s3 << 9
+dword << 24 | attr << 20 | stream << 16 | s0 | s1 << 3 | s2 << 6 | s3 << 9
 ```
+
+Bits 19:16 are the **source stream index** (DECODED 2026-09-17).  That is what
+the byte at 23:16 walking `10, 11, 22, 21, 33, 34, 45, 46, 97, 98, a9, aa`
+means: it is `(attr, stream)` = (1,0)(1,1)(2,2)(2,1)(3,3)(3,4)(4,5)(4,6)
+(9,7)(9,8)(10,9)(10,10).  The vendor packs the used components of two different
+GL attributes into one attribute register pair, giving each half its own
+stream.  The raster builder in `m9_draw_params.c` already writes this same
+`attr << 20 | stream << 16` form.
+
+A pass takes **up to sixteen** declaration words, not eight: index `22` bits
+11:8 hold the count minus one, a four-bit field.  Measured word counts across
+the captures: N=3 gives 5, N=4 gives 6, N=6 gives 8, N=8 gives 10, and N=14
+gives 5 plus 13 **across two preprocessing passes** -- several "blocks" are
+several passes, not one block splitting.
+
+**Attributes 5..8 are the four texture coordinate sets**, so the general
+attribute numbering runs 1..4 and then resumes at 9..10.  That is why the
+register rule below stops being usable after four: `0x46 + 8*(a - 1)` reaches
+`0x86` at a=9, which does not fit the seven-bit operand fields.
 
 where `dword` is the offset of the element inside the source record, `attr` the
 destination attribute, and `s0..s3` are four component selectors: `0..3` pick
