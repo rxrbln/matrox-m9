@@ -576,3 +576,56 @@ Two things this measurement caught that event counting alone would have hidden:
   (`(II) modeset(0): [DRI2] DRI driver: m9x`), where glamor swaps by copying;
   Present-based flipping needs DRI3.  `tools/xorg-m9x-dri3.conf` exists and is
   UNTESTED against this.
+
+## The pad gate at 0x1cac is status, not a gate (MEASURED 2026-09-17)
+
+Read with no driver loaded, on a freshly POSTed board:
+
+```
+0x1cac = 0x000000e1      pad gate
+0x1c9c = 0x0000a800      head 0 link  - programmed
+0x1ca0 = 0x00000000      head 1 link  - zero
+0x1ca4 = 0x00000000      head 2 link  - zero
+0x1ca8 = 0x00000000      head 3 link  - zero
+0x1c38 = 0x111d011d      links 0,1 format halves
+0x1c3c = 0x30002000      links 2,3 format halves
+```
+
+POST brings up exactly one link, and the pad gate's low nibble has exactly one
+bit.  Reproducible across reboots.
+
+**The register does not accept writes.**  Walking it from userspace through
+BAR2, every value reads back as `0x00000001`:
+
+| written | reads back |
+|---|---|
+| 0x0f | 0x00000001 |
+| 0xff | 0x00000001 |
+| 0x0e | 0x00000001 |
+| 0x02 | 0x00000001 |
+| 0xe1 | 0x00000001 |
+| 0xf0 | 0x00000001 |
+| 0x05 | 0x00000001 |
+| 0x07 | 0x00000001 |
+
+The first write moves it from `0xe1` to `0x01` and it never moves again, not
+even back to its own POST value; a reboot restores `0xe1`.  So
+`m9x.pad_gate=` cannot enable anything, and the earlier note that the vendor
+"walks" this register was reading a **progression, not a sequence of writes**:
+the vendor's own sequence in `parhelia-m9.md` writes `0x1cac |= 0xf0`, the
+high nibble only.
+
+That gives a consistent DERIVED reading, which is **not established**: the high
+nibble is a per-pad enable *request*, the low nibble per-pad *up* status, and a
+request bit clears when its pad comes up.  POST's `0xe1` is then pad 0 up with
+pads 1, 2 and 3 requested and never up; the vendor's final `0x0f` is all four
+up with no request outstanding.  It agrees with what reaches the panels - one
+output of four - and it says the hardware was asked for four pads and three did
+not come up.
+
+The consequence for the dark heads: the missing enablement is **not** a
+register bit in the display controller.  `parhelia-m9.md` names the likely
+place - the mini-DP connectors are driven by an external DisplayPort 1.1
+transmitter on a bit-banged I2C bus, trained by the VBIOS at POST, and nothing
+writable in the GPU register file brings that link up.  DP-1 works because POST
+trained it.
