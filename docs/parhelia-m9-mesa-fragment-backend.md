@@ -85,8 +85,13 @@ The other exact cases are `fs-varying`, `fs-texcoord`, `fs-mul`, `fs-add`,
   * `vec4(gl_FragCoord.xy * s, gl_FragCoord.z | literal, literal)`, 7 slots,
     with the constant `(0, H-1)` resolved per drawable;
   * an unconditional `discard` followed by a varying passthrough (8 slots).
-* **Textures.**  `texture2D` with a varying coordinate, one or two samplers.
-  The last sampler used takes texel pair `00/02`.
+* **Textures.**  `texture2D` with a varying coordinate, up to four fetches
+  per pass.  The last sampler used takes texel pair `00/02`.  A unit is a
+  fetch, not a texture: fetches that agree in sampler, coordinate stream and
+  transform share one unit, and a fifth distinct fetch is refused, because
+  the vendor splits it into another framebuffer pass.  `shadow2D` is
+  supported, with the comparison reference as the third component of the
+  coordinate stream (`parhelia-m9-mesa-depth-textures.md`).
 
 ## 3. Vendor layout rules (DERIVED, reproduced OFFLINE)
 
@@ -134,9 +139,11 @@ The other exact cases are `fs-varying`, `fs-texcoord`, `fs-mul`, `fs-add`,
 
 ## 4. Not supported (compile fails, draw skipped)
 
-* **Computed texture coordinates.**  Bias, projective, cube, 3-D, rectangle
-  and shadow sampling, and swizzled coordinates.  The vendor uses an extra
-  raster pass for them.
+* **Computed texture coordinates.**  Bias, cube, 3-D, rectangle and swizzled
+  coordinates.  The vendor uses an extra raster pass for them.  A coordinate
+  that is an affine function of a varying with per-draw coefficients is
+  folded into the varying instead (`parhelia-m9-affine-texture-coordinates.md`),
+  and projective and shadow sampling are supported.
 * **Conditionals and loops.**  Conditional `discard`, `if`/ternary,
   `step`/compare/select forms, and loops that NIR does not unroll.  The
   exceptions are glamor's stipple compare templates and conditions on
