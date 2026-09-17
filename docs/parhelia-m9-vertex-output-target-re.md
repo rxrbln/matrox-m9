@@ -1,0 +1,379 @@
+<!-- Copyright 2026 René Rebe <rene@exactco.de> -->
+<!-- SPDX-License-Identifier: GPL-2.0 -->
+# M9 preprocessing pass: which vertex output register feeds which bound target
+
+The native vertex backend can fill exactly one of the four targets the m9x
+driver binds in its preprocessing pass, because the register-to-target rule
+was undecoded (`m9_vs_compile.h`, `M9_VS_MAX_VARYINGS 1`;
+`docs/parhelia-m9-native-vertex-isa.md` section 6 item 1).  This note closes
+it out of the saved vendor captures, states how a pass declares how many
+targets it writes, and says what the driver has to emit.
+
+Labels: **CAPTURED** is read from a saved vendor command stream or program
+image in this tree; **DERIVED** is joined from captured facts, with the join
+given; **MEASURED** is an earlier hardware result cited by its note;
+**UNTESTED** is named where it is.  Nothing here was run on hardware.
+
+Everything below is re-derivable with the tool added alongside this note:
+
+```sh
+python3 tools/m9-vertex-output-target-evidence.py --rule \
+        captures/m9x-vendor-glsl-programs-20260915        # the join, one row per pass
+python3 tools/m9-vertex-output-target-evidence.py \
+        captures/m9x-vendor-glsl-programs-20260915/vs-varyings-4   # one case in full
+```
+
+## Result, in one paragraph
+
+**Output register pair `(0x11 + 4j, 0x13 + 4j)` goes to the target bound at
+index `0xb0 + 2j`, for `j = 0..3`; register `0x21` goes to `0xb8`.**  A pass
+declares how many of them it writes in **index `0xef`**: bit 19 enables target
+1 (`b2`), bit 21 target 2 (`b4`), bit 23 target 3 (`b6`), and bit 15 enables
+the clip-code output `0x21` into `b8`.  Target 0 (`b0`) is always on.  Both
+halves hold in **310 of 310** captured preprocessing passes with no exception.
+The lead that the preprocessing pass reuses the raster pass's
+`(0x11 + 4j, 0x13 + 4j)` convention is **right**; the reading of `0x02` as an
+output register is **wrong** — `0x02` is an ordinary temporary that the
+appended tail happens to copy into `0x11`.
+
+## 1. The register-to-target rule (CAPTURED)
+
+The join is mechanical: for every draw, take the targets bound at `b0/b2/b4/b6`
+in that draw's own packet run, and take the destination registers of the
+program the draw enters at `c3`.
+
+| case | `c3` | `ef` | targets bound in the draw | output registers written |
+|---|---|---|---|---|
+| `vs-varyings-4` | `13` | `00000200` | `b0` | `11 13` |
+| `vs-varyings-2` | `0b` | `00280200` | `b0 b2 b4` | `11 13 15 17 19 1b` |
+| `vs-varyings-4` | `18` | `00a80400` | `b0 b2 b4 b6` | `11 13 15 17 19 1b 1d 1f` |
+| `vs-varyings-4` | `27` | `00a80600` | `b0 b2 b4 b6` | `11 13 15 17 19 1b 1d 1f` |
+| `vs-varyings-max` | `95` | `00080600` | `b0 b2` | `11 13 15 17` |
+| `vs-varyings-2` | `1b` | `00088e00` | `b0 b2` + `b8` | `11 13 15 17` + `21`, and `19` as a temporary |
+
+The rule is `(0x11 + 4j, 0x13 + 4j) -> b0 + 2j`, low register first, plus
+`0x21 -> b8`.  This is the same statement
+`docs/parhelia-m9-raster-stream-limit-re.md` section 3 makes for the raster
+half; the preprocessing half uses it unchanged.  `vs-varyings-4`'s gather pass
+(`c3=27`) is the clearest single witness: four targets, four `mov`s, one per
+pair, nothing else in the program.
+
+Two readings that the join **refutes**:
+
+* `0x02` is not an output register.  `m9_vs_compile.h` documents `REG_VAR_XY`
+  as `0x02`, but no bound target ever receives `0x02`.  What happens is that
+  the appended tail contains `r11 = mov r02` (slot 16 of
+  `m9_passthrough_c2_program`), so the head's `r02` reaches target 0 through
+  `0x11`.  `REG_VAR_ZW = 0x13` is a genuine output register — it is `j = 0`'s
+  high half, and the head writes it directly because the tail does not.
+* the output pairs are not the register pairs the hardware counts elsewhere.
+  Target `j` uses the odd register of hardware pair `8 + 2j` and of pair
+  `9 + 2j`; the even registers `0x10, 0x12, 0x14 ... 0x20` are never output
+  registers in any capture.
+
+### Where the m9x driver already sits on this rule
+
+`m9_draw.c` binds `b0 = VIEW(0)`, `b2 = VIEW(3)`, `b4 = VIEW(1)`,
+`b8 = VIEW(2)`, and `m9_raster_fs_init_textured()` declares the raster streams
+as `view 0 = attribute 1` (the varying), `view 1 = attribute 0` (the
+rasterizer position), `view 2 = attribute 12` (the clip code, stride 6),
+`view 3 = attribute 13` (the clip position).  Running that through the rule:
+
+| `j` | register pair | index | transient view | raster attribute |
+|---|---|---|---|---|
+| 0 | `0x11 / 0x13` | `b0` | 0 | 1, the varying |
+| 1 | `0x15 / 0x17` | `b2` | 3 | 13, the clip position |
+| 2 | `0x19 / 0x1b` | `b4` | 1 | 0, the rasterizer position |
+| 3 | `0x1d / 0x1f` | `b6` | — | not bound |
+| — | `0x21` | `b8` | 2 | 12, the clip code |
+
+and that is exactly what the appended tail writes: `0x11 = mov r02`,
+`0x15/0x17 = mov r00/r01`, `0x19/0x1b` the viewport-transformed position,
+`0x21` the clip code (CAPTURED, disassembly of
+`m9_passthrough_c2_program` slots 14..38).  The driver's binding order, which
+looks arbitrary in the source, is the tail's own semantic order.  **`b6` is
+the one free slot and `0x1d/0x1f` is the register pair that feeds it.**
+
+## 2. How a pass declares the targets it writes: index `0xef`
+
+`0xef` is the index the driver already emits as the constant `0x00288800` for
+its preprocessing pass and as `cull | depth_ef` for a raster pass.  In a
+preprocessing pass its upper half is the output declaration (CAPTURED, all
+310 passes of `captures/m9x-vendor-glsl-programs-20260915`, and the same
+values across `m9x-vendor-gl2ext-2d-video-modes-20260915`,
+`m9x-vendor-glamor-shaders-20260915` and `m9x-vendor-glamor-blend-20260915`):
+
+| bit | meaning | check |
+|---|---|---|
+| 19 | target 1 (`b2`, register pair `0x15/0x17`) enabled | 310/310 |
+| 21 | target 2 (`b4`, pair `0x19/0x1b`) enabled | 310/310 |
+| 23 | target 3 (`b6`, pair `0x1d/0x1f`) enabled | 310/310 |
+| 15 | clip-code output `0x21` into `b8` enabled | 310/310 |
+
+so the byte at `ef[23:16]` takes exactly four values: `0x00` (one target),
+`0x08` (two), `0x28` (three), `0xa8` (four).  Both checks are two-sided: no
+pass binds a target the declaration does not enable, and no program writes
+`0x21` unless bit 15 is set.  A program that writes an output register whose
+target the declaration does not enable is simply using it as a temporary —
+`vs-builtin-light`, `vs-lighting` and `vs-texlod` all write `0x1d`/`0x1f`
+with `ef` bit 23 clear, and only three targets bound.
+
+Bits 11:9 also vary, and they are **not decoded**.  They correlate with the
+pass's role in the chain, and bit 11 is set in all 310 passes that set bit 15
+and in none that do not:
+
+| pass role | `ef[11:8]` | example |
+|---|---|---|
+| a head pass, first preprocessing draw of the submission | `2` | `vs-varyings-2 c3=0b`, `fs-abs c3=07` |
+| a head pass that follows another head pass | `4` | `vs-varyings-4 c3=18`, `vs-varyings-max c3=49` |
+| a pass fed by `0x74` route bindings, no clip code | `6` | every gather pass |
+| the fused single pass: head, tail and clip code in one draw | `8` | `vs-texcoord c3=04`, and the m9x driver |
+| the split tail: route-fed, clip code | `e` | `fs-abs c3=1d`, 95 identical instances |
+
+Nothing outside that set of five occurs.
+
+### Index `0x88` carries the input declaration, not the output one
+
+Decoded here as a by-product, because the driver hardcodes it and one of its
+fields is wrong for anything but the captured shape:
+
+* **`88[27:24]` is the unary count of declared source attributes** — `0x1`,
+  `0x3`, `0x7`, `0xf` for one to four.  308/310 (the two exceptions are passes
+  that inherit a declaration emitted by an earlier draw, which the tool's
+  per-draw grouping loses, not counter-examples).  `vs-uniform-color` is the
+  clean witness: the same fused pass shape as the driver's, the same
+  `ef = 0x00288800`, the same tail, one attribute instead of two, and
+  `88 = 0x0100bf00` against the driver's `0x0300bf00`.
+* **`88[23:20]` is the unary count of bound `0x74 + k` route bindings**
+  — 310/310.  A route left at its idle value `0x00000100` does not count.
+  This is the same field `docs/parhelia-m9-raster-stream-limit-re.md` section 4
+  calls the unary texture-unit count in a raster pass; the four hardware source
+  slots are shared between the two stages.
+* **`88[15:0]` is a per-register-pair mask** (pair `p` = registers `2p`,
+  `2p + 1`), with bit `p` **clear** meaning the pass uses that pair.  Read as
+  "pairs the program writes that are not enabled outputs" it reproduces 215 of
+  310 values exactly, including every pass the driver copies
+  (`0xbf00` = pairs 0..7 and 14, which is precisely `r00..r0f` plus the tail's
+  `r1c`/`r1d`).  The other 95 mark more pairs than that (`fs-abs` reserves
+  pair 3 with nothing in it) or mark pairs that hold live outputs
+  (`vs-lighting`'s `0x3c00`), so the exact rule is **OPEN**.  A driver that
+  keeps the captured value for the pass shape it copies is safe; one that
+  invents a value is not.
+
+**A latent bug this exposes (DERIVED, UNTESTED).**  `m9_draw.c` emits
+`88 = 0x0300bf00` unconditionally, which declares **two** source attributes.
+`tools/m9-user-vertex-probe.c` inherits the same word from
+`tools/m9-user-triangle-data.h` and never rewrites it, while its
+`build_decl()` does grow the index-23 declaration for a third attribute.  That
+is exactly the failure `m9_vs_compile.h` records for `M9_VS_HW_ATTRIBUTES`:
+"a third draws geometry from neither its own value nor a decoy, both in the
+userspace probe and through this driver".  The prediction is that the third
+attribute works as soon as `88[27:24]` is `0x7`, and the fourth at `0xf`.  The
+probe change is one line; see section 5.
+
+## 3. Whether the appended tail can carry a second varying
+
+**No, not as it stands, and for two independent reasons (CAPTURED).**
+
+The 25-slot tail the driver appends (`m9_passthrough_c2_program` slots 14..38)
+already occupies three of the four targets and the clip code.  The driver's
+whole 36-slot vertex program, head and tail, is byte-identical to the vendor's
+in `ff-color` and `ff-alpha-test` (CAPTURED), so the corpus reads on it are
+reads on the shipping program:
+
+```text
+slot 16  r11 = mov r02                 target 0 low  <- the one varying
+         r13                            target 0 high <- written by the head
+slot 19  r15 = mov r00                 target 1      <- clip position
+slot 21  r17 = mov r01
+slots 25,27,28  r19, r1b               target 2      <- viewport position
+slots 29,38     r21                    b8            <- clip code
+```
+
+and it uses `r1c` (live across slots 24..27) and `r1d` (live across slots
+37..38) as temporaries.  `r1d` is target 3's **low** register, so a head that
+wrote a second varying into `0x1d/0x1f` would have `0x1d` overwritten by the
+tail before the draw.  Every one of the fifteen distinct clip-code-producing
+epilogues in the corpus writes `r1d`; the vendor treats it as scratch
+precisely because it never enables target 3 in the same pass.
+
+Nor does any capture show the combination the fused form would need.  Across
+the preprocessing pass of **every** submission under `captures/`, `ef` bit 23
+occurs only as `0x00a80200`, `0x00a80400` and `0x00a80600` — never once with
+bit 15.  **No vendor
+preprocessing pass writes four targets and the clip code in the same draw.**
+Whether that is a hardware restriction or only the vendor's scheduling habit
+is **OPEN**; the captures cannot distinguish them.
+
+The vendor's own answer to more than one varying is to split the
+preprocessing into several draws inside one range, and the corpus contains
+the complete alternative epilogue that goes with it:
+
+* the **split tail** (`fs-abs c3=0x1d` and 94 byte-identical instances,
+  `ef = 0x00088e00`, `88 = 0x0010ef03`) reads the clip position back through
+  route binding 0 as `r00`/`r02`, writes target 0 = the clip position,
+  target 1 = the viewport position and `0x21` = the clip code, and uses
+  `r04..r0f` and `r18`/`r19` as temporaries.  It leaves `r1c..r1f` free — but
+  it clobbers `r19`, which is target 2, so a pass using it can bind at most
+  two targets and the clip code, exactly as its `ef` says.
+
+So both captured epilogues leave room for **one** varying beside the
+positions.  The way to a second one is another draw, not another register.
+
+If the fused single-draw form is wanted anyway — it would carry two varyings
+and save a draw — the minimal change is to move the tail's scratch out of
+`r1c`/`r1d`.  Their live ranges are disjoint and `r03` is untouched by the
+tail (the head only reads it as the partial dot's `c` selector), so both can
+become `r03`, a two-word patch with the fields the disassembler already
+decodes:
+
+```text
+slot 37   W0 437f9d1c -> 437f831c        d: 0x1d -> 0x03
+slot 38   W0 bfffa11c -> 7fffa11c        a: 0x1d -> 0x03
+          W1 ac8401c3 -> ac8401c0        (a's high bits live in W1[3:0])
+```
+
+This is **UNTESTED**, it edits an instruction whose opcode
+(`op2 = 0x04`) is one of the two the ISA note calls undecoded, and it still
+depends on `ef = 0x00a88800` being accepted.  It is an experiment, not a plan.
+
+## 4. What the driver has to change
+
+The recommended shape uses **two preprocessing draws in two ranges**, both of
+them shapes the captures already contain, and needs no new hardware feature,
+no route binding, no intermediate arena and no kernel change (`b6`/`b7` are
+already inside `m9_index_allowed()`'s `0xb0..0xbb`, and `m9_index_reloc_kinds()`
+already gives `0xb6` `COLOR|STREAM`).  Draw 1 carries varyings 1..4, draw 2 is
+today's pass unchanged and carries varying 0 and the three position streams.
+Up to five varyings, which is inside the raster declaration limit of six.
+
+Ordered, by file and function:
+
+1. **`m9_vs_compile.h` / `m9_vs_compile.c`** — raise `M9_VS_MAX_VARYINGS` to 5
+   and let `struct m9_vs_program` hold an array of varyings
+   (`varying_location[]`, `varying_components[]`, `varying_count`) instead of
+   the single `has_varying` / `varying_location` pair.  `m9_vs_compile()` keeps
+   pinning varying 0 to `REG_VAR_XY`/`REG_VAR_ZW` as today.  Varyings 1..4 are
+   compiled into a **second entry**: a head that computes only those values and
+   writes them to `(0x11, 0x13)`, `(0x15, 0x17)`, `(0x19, 0x1b)`,
+   `(0x1d, 0x1f)` with **no tail and no stop-pair tail constants**, just the
+   stop pair.  `m9_vs_emit()` gains an `entry` selector or a second emitter;
+   `m9_vs_c2_image()` lays both entries out and reports both entry slots.  The
+   extra entry reuses the same attribute declaration and the same constant
+   span, so `m9_vs_decl_words()` and `m9_vs_constants()` are unchanged.
+2. **`m9_draw.h`** — `struct m9_draw_job` gains the second preprocessing pass:
+   `unsigned vs_extra_entry` (0 = absent), `unsigned vs_extra_targets` (1..4)
+   and `uint32_t vs_extra_view[4]`.
+3. **`m9_draw.c`, `m9_batch_emit_draw_job()`** — this is the part that is not
+   mine to edit; it needs, in order:
+   * factor the existing preprocessing block into a helper taking `(entry,
+     ef, r88, const_pairs, targets[], target_count, bool clip_code)`;
+   * emit the **new draw first**, with
+     `ef = 0x00000200 | (n > 1 ? 0x00080000 : 0) | (n > 2 ? 0x00200000 : 0) | (n > 3 ? 0x00800000 : 0)`
+     for `n` extra varyings — that is `0x00000200`, `0x00080200`, `0x00280200`,
+     `0x00a80200`, all four CAPTURED — binding
+     `EMIT(R(0xb0 + 2 * k, job->transient, VIEW(vs_extra_view[k]), STREAM),
+      V(0xb1 + 2 * k, 0x68002000))` for `k < n`, **no `0xb8` bind and no
+     `0x21`**, `c3 = job->vs_extra_entry`, and otherwise the same `88`, `22`,
+     `8c/8d/8e`, source-record, declaration and linked-record words the
+     existing pass emits;
+   * close it with `m9_batch_emit_draw_numeric()` and
+     `m9_batch_emit_range_break()`, exactly as the existing preprocessing pass
+     is closed — the vendor separates its preprocessing draws with an `e6`
+     epilogue the m9x kernel refuses, and the range break is the stronger
+     barrier the same way `docs/parhelia-m9-fragment-pass-splitting.md`
+     section 6 concluded for raster passes;
+   * shift the raster ranges' dependency base, which is
+     `dep = 0x20 + M9_PASS_DEPENDENCY_STEP * index` in
+     `m9_emit_raster_range()`, by one step when the extra draw is present;
+   * fix `EMIT(V(0x88, 0x0300bf00), ...)` in the existing pass to
+     `0x0000bf00 | ((1u << job->vs_attr_count) - 1) << 24` so the attribute
+     field follows the declaration instead of being pinned at two — see the
+     prediction in section 2, and keep the low half at `0xbf00`, which is the
+     captured value for this exact pass and tail.
+4. **`m9_draw_params.h`** — `M9_TRANSIENT_VIEWS` already allows 11 views and
+   `m9_stream_is_cpu()` only diverts views `>= M9_TRANSIENT_CPU_VIEW` when
+   `job->cpu_streams` is set, which a native-vertex job leaves at zero.  So
+   native varying `k >= 1` can take view `3 + k` with no constant change at
+   all; add a comment saying so.
+5. **`m9_context.c`, `m9_job_native()` and `m9_varying_from_pass()`** —
+   `m9_varying_from_pass()` becomes a lookup returning the varying's index in
+   the vertex program, and `views[k]` becomes `0` for index 0 and `3 + index`
+   for the rest; the `cpu` counter keeps numbering only the varyings the
+   vertex program does not produce.  Fill `vs_extra_entry`, `vs_extra_targets`
+   and `vs_extra_view[]` in the same place `job.vs_decl` is filled.
+6. **`m9_context.c`, `m9_native_vs_raster_ok()`** — drop
+   "the fragment program reads more than one varying" and instead require that
+   every varying the fragment program reads is one the vertex program writes,
+   and that `fp->varying_count <= M9_VS_MAX_VARYINGS`.
+7. **`m9_vs_compile_test.cpp`** — an offline case per target count asserting
+   that varying `i` lands on register pair `0x11 + 4i` / `0x13 + 4i` in the
+   extra entry, and that the fused entry still writes `0x13` and leaves
+   `0x1d` alone.
+
+Nothing in the kernel changes.  Nothing in `m9_fs_compile.c` changes: the
+fragment side already interpolates six inputs from `0x40 + 8k` and
+`m9_raster_fs_init_textured()` already declares attributes `1..4, 9, 10`, one
+stream slot each — the raster half has been ready since
+`docs/parhelia-m9-raster-stream-limit-re.md`.
+
+## 5. The shortest hardware tests
+
+Two, in increasing cost.  Both belong in `tools/m9-user-vertex-probe.c`, which
+already builds a one-draw preprocessing pass with the same fused tail, so the
+existing pass/fail machinery and traceable colours carry over.
+
+**(a) The `88` attribute-count prediction, four lines.**  The probe's `attr3`
+variants already fail.  Its `submit()` loop already rewrites index `0x22` with
+`ndecl - 1` and feeds index `0x23` from `build_decl()`, but leaves index `0x88`
+at the captured `0x0300bf00`.  Add the matching branch next to them:
+
+```c
+else if (idx == 0x88)
+        *p = (*p & ~0xff000000u) |
+             ((1u << v->color_attr) - 1) << 24;
+```
+
+which reproduces `0x0300bf00` for the two-attribute variants and gives
+`0x0700bf00` for `attr3`.  If `attr3` then paints the traceable colour it was
+given, `88[27:24]` is confirmed and `M9_VS_HW_ATTRIBUTES` goes from 2 to 4.
+This costs one submission and settles a limit that is currently costing the
+driver two vertex attributes.
+
+**(b) The target rule itself, one new variant.**  In the same probe:
+bind `b6` to a fifth transient view with `b7 = 0x68002000`; set
+`ef = 0x00a88800`; extend the raster declaration with attribute 2 on a new
+stream slot reading that view with stride `0x10` (index `22`'s word count
+grows by two); patch the tail's `r1d` to `r03` in the two words of section 3;
+and have the head write a value that identifies both the view and the vertex
+into `0x1d`/`0x1f`.  Three outcomes, all informative:
+
+* the fifth stream interpolates that value — the rule and the fused four-target
+  form are both confirmed, and section 4 can drop its second draw for the
+  two-varying case;
+* the draw is refused or the engine stops — `ef` bit 23 and bit 15 are
+  mutually exclusive, and section 4's two-draw plan is the only route;
+* the stream reads as another input's value — the tail patch is wrong, and
+  re-running with `ef = 0x00a80200`, no clip code and the clip-code stream
+  left from the previous draw isolates which half failed.
+
+Run either inside `flock -w 1800 /root/tmp/m9-hw.lock`.  Note the standing
+warning in `docs/parhelia-m9-native-vertex-isa.md`: the probe must never read
+an attribute register it did not declare, which locks the engine until the
+machine is restarted.
+
+## 6. What is still open
+
+* `ef[11:9]`, the five-valued pass-role field of section 2.  The driver's new
+  first draw is given `2`, which is the captured value for a head pass that
+  precedes another preprocessing draw; if the geometry does not appear, `4`
+  is the only other head-pass value in the corpus and the A/B costs one run.
+* `88[15:0]`, the register-pair mask: a "pairs the program uses" reading fits
+  215 of 310 passes and fails the other 95 in both directions.  Whether it is
+  a correctness requirement or a scheduling hint is undecided; the driver
+  already ships a value that does not match its compiled heads, which is weak
+  evidence for a hint.
+* whether one pass may write four targets **and** the clip code.  Not captured
+  either way; test (b) settles it.
+* the split tail's constant-span layout, which a driver adopting the vendor's
+  three-draw chain would need.  Not decoded, and not needed by section 4.
