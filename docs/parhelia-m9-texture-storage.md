@@ -236,8 +236,12 @@ without changing the ABI size:
   * Up to two samplers (`M9_FS_MAX_TEXTURES`).
 * **Tiled render targets.**  A tiled B8G8R8A8 target is sampled as kind `21` if
   its width is a multiple of 32 and it is not small.
+* **Cube and volume.**  Implemented and measured on the M9128; the face and
+  slice placement, the height/depth domain the captured calculator state
+  actually covers, and what the driver advertises are in
+  `parhelia-m9-cube-volume-textures.md`.
 * **Not implemented.**  A base level above 0 (the vendor re-lays the chain),
-  swizzled views, and 1-D, 3-D, cube and shadow sampling.
+  swizzled views, and 1-D sampling.
 
 ## 7. Hardware test plan (T2 OS, clean-room kernel)
 
