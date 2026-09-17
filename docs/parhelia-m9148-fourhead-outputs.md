@@ -464,8 +464,69 @@ could a bit of the high interrupt word reached through
 `M9_IRQ_HIGH_LOW_CASCADE`; that the low word carries heads 1..3 at all is an
 assumption, not a measurement.
 
-Finding them means walking `m9x.vblank_mask=` per head and watching whether
-that CRTC's DRM sequence advances at its own refresh rate - which is safe from
-an interrupt storm, because the handler acknowledges exactly what it unmasked.
-Giving each head a different refresh rate disambiguates a candidate set in one
-load.  NOT DONE.
+### All four sources, found by frequency (MEASURED 2026-09-17)
+
+Walking the mask was not needed.  The status word latches a source whether or
+not it is unmasked, and it is write-1-to-clear, so `tools/m9-irq-scan`
+acknowledges whatever is set and times how long each bit takes to come back -
+no mask change, no interrupt enabled, no kernel change.  With every head on a
+different refresh rate, each source's frequency names its head.  Two runs,
+with the rates permuted so that no bit keeps its rate by coincidence:
+
+| bit | run A | run B | head |
+|---:|---:|---:|---:|
+| 0 | 45.50 | 36.75 | 0 (raced with the driver's own acknowledge) |
+| 1 | 60.00 | 60.00 | 1 |
+| 2 | 75.00 | 59.75 | 0 |
+| 3 | 60.00 | 60.00 | 1 |
+| 8 | 50.00 | 24.00 | 2 |
+| 9 | 30.00 | 50.00 | 3 |
+| 10 | 50.00 | 24.00 | 2 |
+| 11 | 30.00 | 50.00 | 3 |
+| 12 | 75.00 | 60.00 | 0 |
+| 13 | 60.00 | 60.00 | 1 |
+| 14 | 50.00 | 24.00 | 2 |
+| 15 | 30.00 | 50.00 | 3 |
+| 16 | 10.00 | 10.00 | unrelated |
+| 17 | 10.00 | 9.75 | unrelated |
+
+Head rates were 75 / 60 / 50 / 30 in run A and 60 / 60 / 24 / 50 in run B;
+head 1 stays at 60 in both because DP-2 was disconnected and it runs the
+firmware's posted timing.  **Every head raises three interrupts per frame**,
+grouped (0,1)+(8,9), (2,3)+(10,11), (12,13)+(14,15) across the head pairs.
+Bit 0's measured rate is low in both runs because the running driver
+acknowledges it too, which is itself a check that bit 0 is the driver's.
+
+The lowest group is taken as the vblank source, since it contains the
+documented head 0 bit: `M9_IRQ_LOW_VBLANK0..3 = BIT(0), BIT(1), BIT(8),
+BIT(9)`.  Which of a head's three is the vertical blank edge proper is NOT
+established.
+
+### One head was masking the others
+
+Delivery has to be measured by queueing real vblank events.  The DRM sequence
+counter is extrapolated from the mode's frame duration while the source is
+masked, so it reports a plausible rate for a head that is receiving nothing -
+it reported 60.00 Hz for a head whose true delivery was 43 Hz.
+
+With the bits set, delivery was still short on three heads.  The cause was in
+the driver: `m9_kms_irq_desc()` filled the descriptor's `vblank_mask` with the
+**union** of every head's bit, and that field is exactly what
+`matrox_kms_enable_vblank` ORs into the mask register and what disable clears.
+One head's `vblank_put` therefore masked every other head's source.  Enable
+and disable now act on one head's bit, while the handler keeps the union,
+which is what it must consume.
+
+Measured over 2 s with heads at 75 / 60 / 50 / 30 Hz, counting queued events:
+
+| crtc | head | union mask | per-head mask |
+|---:|---:|---:|---:|
+| 37 | 0 | 75.19 Hz | **75.50 Hz** |
+| 44 | 1 | 43.36 Hz | **60.29 Hz** |
+| 51 | 2 | 39.17 Hz | **50.20 Hz** |
+| 58 | 3 | 24.05 Hz | **30.34 Hz** |
+
+All four now deliver at their own refresh rate.  Head 1 delivers although
+DP-2 is disconnected and no mode was set on it: its timing generator is still
+running what the firmware posted, and the interrupt follows the generator, not
+the CRTC.
