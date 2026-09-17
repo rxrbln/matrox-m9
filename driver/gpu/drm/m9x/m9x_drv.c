@@ -165,6 +165,9 @@ static int m9x_pci_probe(struct pci_dev *pci,
 					  M9_ADDRESS_CPU_BYTES));
 	if (ret)
 		return ret;
+	ret = m9x_dma_reserve_init(mdev);
+	if (ret)
+		return ret;
 	ret = m9x_init(mdev);
 	if (ret)
 		return ret;

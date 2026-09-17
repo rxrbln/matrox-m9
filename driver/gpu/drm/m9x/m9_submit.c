@@ -22,6 +22,18 @@ MODULE_PARM_DESC(async_submit, "retire a job at the next submission");
 
 #define M9_TRIANGLE_COLOR_BYTES	0x00050000u
 
+/* Dynamic debug is not built on this target, so name the refusing check
+ * behind a parameter instead. */
+static bool m9_submit_trace;
+module_param_named(submit_trace, m9_submit_trace, bool, 0644);
+MODULE_PARM_DESC(submit_trace, "log the validator check that refuses a job");
+
+#define m9_refuse(err) ({ \
+	if (m9_submit_trace) \
+		pr_warn_ratelimited("m9x: submit refused at %s:%d (%d)\n", \
+				    __func__, __LINE__, (err)); \
+	(err); })
+
 static bool m9_user_submit;
 module_param(m9_user_submit, bool, 0400);
 MODULE_PARM_DESC(m9_user_submit,
@@ -136,17 +148,17 @@ static int m9_parse_commands(const u32 *words, u32 count, u32 *expected,
 		if (header == PARHELIA_M9_RANGE_BREAK) {
 			if (cursor >= count || words[cursor] ||
 			    (textured && !texture))
-				return -EINVAL;
+				return m9_refuse(-EINVAL);
 			textured = texture = false;
 			cursor++;
 			continue;
 		}
 		if (m9_draw_header(header, &family)) {
 			if (count - cursor < 2)
-				return -EINVAL;
+				return m9_refuse(-EINVAL);
 			if (family == 0x03000001) {
 				if (words[cursor + 1] < words[cursor])
-					return -EINVAL;
+					return m9_refuse(-EINVAL);
 			} else if (family == 0x07000001) {
 				expected[cursor] = M9_RELOC_BIT(DRAW32_START);
 				expected[cursor + 1] = M9_RELOC_BIT(DRAW32_END);
@@ -169,10 +181,10 @@ static int m9_parse_commands(const u32 *words, u32 count, u32 *expected,
 			}
 		}
 		if (!values || count - cursor < values)
-			return -EINVAL;
+			return m9_refuse(-EINVAL);
 		for (i = values; i < 4; i++)
 			if (index[i] != M9_PACKET_STOP)
-				return -EINVAL;
+				return m9_refuse(-EINVAL);
 		for (i = 0; i < values; i++) {
 			u32 value = words[cursor + i];
 			bool inline_private = program_type ==
@@ -184,7 +196,7 @@ static int m9_parse_commands(const u32 *words, u32 count, u32 *expected,
 			if (index[i] == 0xe3 || index[i] == 0x43) {
 				if (value & 0xf ||
 				    value >= PARHELIA_M9_DEPENDENCY_LIMIT)
-					return -EPERM;
+					return m9_refuse(-EPERM);
 				expected[cursor + i] = M9_EXPECT_DEPENDENCY;
 				continue;
 			}
@@ -197,7 +209,7 @@ static int m9_parse_commands(const u32 *words, u32 count, u32 *expected,
 			/* Only the observed pass-separator controls of e6. */
 			if (index[i] == 0xe6) {
 				if (value != 0x00000003 && value != 0x42000000)
-					return -EPERM;
+					return m9_refuse(-EPERM);
 				continue;
 			}
 			/* Fence and launch ownership stays in the kernel. */
@@ -205,7 +217,7 @@ static int m9_parse_commands(const u32 *words, u32 count, u32 *expected,
 			    index[i] == 0x1c ||
 			    (index[i] >= 0xc8 && index[i] <= 0xcd) ||
 			    (!inline_private && !m9_index_allowed(index[i])))
-				return -EPERM;
+				return m9_refuse(-EPERM);
 			/* The exact inline atom ends with literal 69=4,6a=0x990000. */
 			if (program_type ==
 				PARHELIA_M9_PROGRAM_FIXED_P00_S28_INLINE &&
@@ -219,7 +231,7 @@ static int m9_parse_commands(const u32 *words, u32 count, u32 *expected,
 		}
 		cursor += values;
 	}
-	return textured && !texture ? -EINVAL : 0;
+	return textured && !texture ? m9_refuse(-EINVAL) : 0;
 }
 
 static struct drm_gem_object *
@@ -281,7 +293,7 @@ m9_validate_draw_reloc_pairs(const u32 *image, u32 dwords,
 			const struct drm_parhelia_m9_reloc *start, *end;
 
 			if (dwords - cursor < 2)
-				return -EINVAL;
+				return m9_refuse(-EINVAL);
 			if (family == 0x03000001) {
 				cursor += 2;
 				continue;
@@ -290,19 +302,19 @@ m9_validate_draw_reloc_pairs(const u32 *image, u32 dwords,
 			end = by_dword[cursor + 1];
 			if (!start || !end || start->handle != end->handle ||
 			    end->target_offset < start->target_offset)
-				return -EINVAL;
+				return m9_refuse(-EINVAL);
 			if (family == 0x07000001) {
 				if (start->kind != PARHELIA_M9_RELOC_DRAW32_START ||
 				    end->kind != PARHELIA_M9_RELOC_DRAW32_END ||
 				    (start->target_offset | end->target_offset) & 3)
-					return -EINVAL;
+					return m9_refuse(-EINVAL);
 			} else {
 				if (start->kind != PARHELIA_M9_RELOC_DRAW16_START ||
 				    end->kind != PARHELIA_M9_RELOC_DRAW16_END ||
 				    (start->target_offset | end->target_offset) & 3 ||
 				    ((end->flags & PARHELIA_M9_RELOC_PACKED16_ODD) &&
 				     end->target_offset == start->target_offset))
-					return -EINVAL;
+					return m9_refuse(-EINVAL);
 			}
 			cursor += 2;
 			continue;
@@ -317,7 +329,7 @@ m9_validate_draw_reloc_pairs(const u32 *image, u32 dwords,
 				break;
 			}
 		if (!values || dwords - cursor < values)
-			return -EINVAL;
+			return m9_refuse(-EINVAL);
 		cursor += values;
 	}
 	return 0;
@@ -359,7 +371,7 @@ static int m9_vram_gpu_address(u64 vram_size, u64 offset, u64 target_offset,
 	    check_add_overflow(offset, target_offset, address) ||
 	    *address >= limit ||
 	    check_add_overflow(*address, M9_VRAM_GPU_BASE, address))
-		return -EOVERFLOW;
+		return m9_refuse(-EOVERFLOW);
 	return 0;
 }
 
@@ -380,12 +392,12 @@ static int m9_submit_first_triangle(struct m9x_device *mdev,
 	    args->command_length || args->relocation_count ||
 	    args->relocations_ptr || args->bo_count != 1 || !args->bos_ptr ||
 	    args->program_type)
-		return -EINVAL;
+		return m9_refuse(-EINVAL);
 	if (copy_from_user(&ref, u64_to_user_ptr(args->bos_ptr), sizeof(ref)))
 		return -EFAULT;
 	if (!ref.handle || ref.flags !=
 		(PARHELIA_M9_BO_READ | PARHELIA_M9_BO_WRITE))
-		return -EINVAL;
+		return m9_refuse(-EINVAL);
 	/* Allocate and pin every private diagnostic BO before reserving the
 	 * userspace color BO.  Later transport work then performs no nested TTM
 	 * reservation under the color reservation. */
@@ -396,7 +408,7 @@ static int m9_submit_first_triangle(struct m9x_device *mdev,
 	if (!gem)
 		return -ENOENT;
 	if (!m9x_gem_is_vram(gem) || gem->size < M9_TRIANGLE_COLOR_BYTES) {
-		ret = -EINVAL;
+		ret = m9_refuse(-EINVAL);
 		goto out_put;
 	}
 	vram = drm_gem_vram_of_gem(gem);
@@ -502,7 +514,7 @@ m9_validate_relocs(u32 *image, u32 dwords, u32 *expected,
 		    reloc->pad[0] || reloc->pad[1]) {
 			drm_dbg(&mdev->drm, "M9 reloc %u kind %u at dword %u rejected\n",
 				i, reloc->kind, reloc->command_dword);
-			ret = -EINVAL;
+			ret = m9_refuse(-EINVAL);
 			goto out;
 		}
 		gem = m9_find_ref(bos, refs, bo_count, reloc->handle, access);
@@ -511,27 +523,27 @@ m9_validate_relocs(u32 *image, u32 dwords, u32 *expected,
 			    reloc->kind == PARHELIA_M9_RELOC_SYSTEM;
 		if (!gem || reloc->target_offset > gem->size ||
 		    (!end_reloc && reloc->target_offset == gem->size)) {
-			ret = -EINVAL;
+			ret = m9_refuse(-EINVAL);
 			goto out;
 		}
 		for (bo_index = 0; bo_index < bo_count; bo_index++)
 			if (bos[bo_index] == gem)
 				break;
 		if (bo_index == bo_count) {
-			ret = -EINVAL;
+			ret = m9_refuse(-EINVAL);
 			goto out;
 		}
 		required_access[bo_index] |= access;
 		alignment = m9_reloc_alignment(reloc->kind);
 		if (reloc->target_offset & (alignment - 1)) {
-			ret = -EINVAL;
+			ret = m9_refuse(-EINVAL);
 			goto out;
 		}
 		if (m9_reloc_uses_vram(reloc->kind)) {
 			s64 offset;
 
 			if (!m9x_gem_is_vram(gem)) {
-				ret = -EINVAL;
+				ret = m9_refuse(-EINVAL);
 				goto out;
 			}
 			offset = drm_gem_vram_offset(drm_gem_vram_of_gem(gem));
@@ -545,7 +557,7 @@ m9_validate_relocs(u32 *image, u32 dwords, u32 *expected,
 				goto out;
 		} else {
 			if (!m9x_gem_is_dma(gem)) {
-				ret = -EINVAL;
+				ret = m9_refuse(-EINVAL);
 				goto out;
 			}
 			bo = container_of(to_drm_gem_dma_obj(gem),
@@ -554,13 +566,17 @@ m9_validate_relocs(u32 *image, u32 dwords, u32 *expected,
 			if (reloc->kind == PARHELIA_M9_RELOC_SYSTEM ||
 			    reloc->kind == PARHELIA_M9_RELOC_RESOURCE_6C) {
 				if (!drm_mm_node_allocated(&bo->system)) {
-					ret = -EINVAL;
+					ret = m9_refuse(-EINVAL);
 					goto out;
 				}
 				address = bo->system.start;
 			} else if (m9x_bo_is_paged(bo)) {
 				/* Raw bus addresses need a contiguous allocation. */
-				ret = -EINVAL;
+				if (m9_submit_trace)
+					pr_warn_ratelimited("m9x: paged BO handle %u size %zu kind %u dword %u\n",
+						reloc->handle, gem->size,
+						reloc->kind, reloc->command_dword);
+				ret = m9_refuse(-EINVAL);
 				goto out;
 			} else {
 				address = bo->dma.dma_addr;
@@ -568,7 +584,7 @@ m9_validate_relocs(u32 *image, u32 dwords, u32 *expected,
 			if (check_add_overflow(address, reloc->target_offset,
 					       &address) ||
 			    address > U32_MAX) {
-				ret = -EOVERFLOW;
+				ret = m9_refuse(-EOVERFLOW);
 				goto out;
 			}
 		}
@@ -592,7 +608,7 @@ m9_validate_relocs(u32 *image, u32 dwords, u32 *expected,
 			     d < dwords && d <= reloc->command_dword + 3; d++)
 				if ((expected[d] & M9_EXPECT_PROGRAM_ENTRY) &&
 				    ((u64)image[d] + 1) * 8 > gem->size - reloc->target_offset) {
-					ret = -EINVAL;
+					ret = m9_refuse(-EINVAL);
 					goto out;
 				}
 		}
@@ -607,12 +623,12 @@ m9_validate_relocs(u32 *image, u32 dwords, u32 *expected,
 		    !(expected[i] & M9_EXPECT_OPTIONAL)) {
 			drm_dbg(&mdev->drm, "M9 dword %u lacks a %#x relocation\n",
 				i, expected[i]);
-			ret = -EINVAL;
+			ret = m9_refuse(-EINVAL);
 			goto out;
 		}
 	for (i = 0; i < bo_count; i++)
 		if (refs[i].flags != required_access[i]) {
-			ret = -EINVAL;
+			ret = m9_refuse(-EINVAL);
 			goto out;
 		}
 	ret = m9_validate_draw_reloc_pairs(image, dwords, by_dword);
@@ -749,15 +765,21 @@ static int m9_submit_validate(struct m9x_device *mdev,
 	    args->relocation_count > PARHELIA_M9_MAX_RELOCS ||
 	    args->bo_count > PARHELIA_M9_MAX_BOS ||
 	    (!!args->bo_count != !!args->bos_ptr) ||
-	    (!!args->relocation_count != !!args->relocations_ptr))
-		return -EINVAL;
+	    (!!args->relocation_count != !!args->relocations_ptr)) {
+		if (m9_submit_trace)
+			pr_warn_ratelimited("m9x: submit args len %u relocs %u bos %u ptrs %llu/%llu\n",
+				args->command_length, args->relocation_count,
+				args->bo_count, args->bos_ptr,
+				args->relocations_ptr);
+		return m9_refuse(-EINVAL);
+	}
 	command_bo = m9x_bo_lookup(mdev, file, args->command_handle);
 	if (IS_ERR(command_bo))
 		return PTR_ERR(command_bo);
 	if (!(command_bo->flags & PARHELIA_M9_BO_COMMAND) ||
 	    check_add_overflow(args->command_offset, (u64)args->command_length,
 			       &command_end) || command_end > command_bo->dma.base.size) {
-		ret = -EINVAL;
+		ret = m9_refuse(-EINVAL);
 		goto out_command;
 	}
 	dwords = args->command_length / sizeof(u32);
@@ -800,12 +822,12 @@ static int m9_submit_validate(struct m9x_device *mdev,
 
 		if (!refs[i].handle || !refs[i].flags ||
 		    refs[i].flags & ~(PARHELIA_M9_BO_READ | PARHELIA_M9_BO_WRITE)) {
-			ret = -EINVAL;
+			ret = m9_refuse(-EINVAL);
 			goto out;
 		}
 		for (j = 0; j < i; j++)
 			if (refs[j].handle == refs[i].handle) {
-				ret = -EINVAL;
+				ret = m9_refuse(-EINVAL);
 				goto out;
 			}
 		bos[i] = drm_gem_object_lookup(file, refs[i].handle);
@@ -832,7 +854,7 @@ static int m9_submit_validate(struct m9x_device *mdev,
 				goto out;
 			vram_pinned[i] = true;
 		} else {
-			ret = -EINVAL;
+			ret = m9_refuse(-EINVAL);
 			goto out;
 		}
 	}
@@ -840,7 +862,7 @@ static int m9_submit_validate(struct m9x_device *mdev,
 	    (dwords < M9_RESOURCE69_COUNT_FREE_DWORDS ||
 	     memcmp(image, m9_resource69_inline_count_free,
 		    sizeof(m9_resource69_inline_count_free)))) {
-		ret = -EINVAL;
+		ret = m9_refuse(-EINVAL);
 		goto out;
 	}
 	ret = m9_parse_commands(image, dwords, expected, args->program_type);
@@ -904,13 +926,13 @@ static int m9_submit_ioctl(struct drm_device *drm, void *data,
 	    flags & ~(PARHELIA_M9_SUBMIT_VALIDATE_ONLY |
 		      PARHELIA_M9_SUBMIT_NOOP_FENCE |
 		      PARHELIA_M9_SUBMIT_FIRST_TRIANGLE))
-		return -EINVAL;
+		return m9_refuse(-EINVAL);
 	if (flags == PARHELIA_M9_SUBMIT_NOOP_FENCE) {
 		if (args->command_handle || args->command_offset ||
 		    args->command_length || args->relocation_count ||
 		    args->relocations_ptr || args->bo_count || args->bos_ptr ||
 		    args->program_type)
-			return -EINVAL;
+			return m9_refuse(-EINVAL);
 		return m9x_submit_noop(mdev, &args->out_point);
 	}
 	if (flags == PARHELIA_M9_SUBMIT_FIRST_TRIANGLE) {
@@ -981,7 +1003,7 @@ int m9x_submit_selftest(void)
 	    address != M9_VRAM_GPU_BASE + 0x01ee9000 ||
 	    m9_vram_gpu_address(SZ_256M, SZ_256M - 0x100, 0x100,
 				&address) != -EOVERFLOW)
-		return -EINVAL;
+		return m9_refuse(-EINVAL);
 
 	if (m9_reloc_access(PARHELIA_M9_RELOC_COLOR) !=
 	    (PARHELIA_M9_BO_READ | PARHELIA_M9_BO_WRITE) ||
@@ -997,45 +1019,45 @@ int m9x_submit_selftest(void)
 	    !m9_reloc_uses_vram(PARHELIA_M9_RELOC_TEXTURE) ||
 	    !m9_reloc_uses_vram(PARHELIA_M9_RELOC_RESOURCE_69) ||
 	    m9_reloc_uses_vram(PARHELIA_M9_RELOC_DRAW32_START))
-		return -EINVAL;
+		return m9_refuse(-EINVAL);
 	if (m9_parse_commands(good, ARRAY_SIZE(good), expected,
 			      PARHELIA_M9_PROGRAM_NONE))
-		return -EINVAL;
+		return m9_refuse(-EINVAL);
 	memset(expected, 0, sizeof(expected));
 	if (m9_parse_commands(dependency, ARRAY_SIZE(dependency), expected,
 			      PARHELIA_M9_PROGRAM_NONE) ||
 	    expected[2] != M9_EXPECT_DEPENDENCY ||
 	    expected[6] != M9_EXPECT_DEPENDENCY || expected[4])
-		return -EINVAL;
+		return m9_refuse(-EINVAL);
 	memset(expected, 0, sizeof(expected));
 	if (m9_parse_commands(bad_dependency, ARRAY_SIZE(bad_dependency),
 			      expected, PARHELIA_M9_PROGRAM_NONE) != -EPERM)
-		return -EINVAL;
+		return m9_refuse(-EINVAL);
 	memset(expected, 0, sizeof(expected));
 	if (m9_parse_commands(untextured_combiner, ARRAY_SIZE(untextured_combiner),
 			      expected, PARHELIA_M9_PROGRAM_NONE) != -EINVAL)
-		return -EINVAL;
+		return m9_refuse(-EINVAL);
 	memset(expected, 0, sizeof(expected));
 	if (m9_parse_commands(privileged, ARRAY_SIZE(privileged), expected,
 			      PARHELIA_M9_PROGRAM_NONE) != -EPERM)
-		return -EINVAL;
+		return m9_refuse(-EINVAL);
 	memset(expected, 0, sizeof(expected));
 	if (m9_parse_commands(private_program, ARRAY_SIZE(private_program),
 			      expected, PARHELIA_M9_PROGRAM_NONE) != -EPERM)
-		return -EINVAL;
+		return m9_refuse(-EINVAL);
 	memset(expected, 0, sizeof(expected));
 	if (m9_parse_commands(state_af, ARRAY_SIZE(state_af), expected,
 			      PARHELIA_M9_PROGRAM_NONE))
-		return -EINVAL;
+		return m9_refuse(-EINVAL);
 	memset(expected, 0, sizeof(expected));
 	if (m9_parse_commands(truncated, ARRAY_SIZE(truncated), expected,
 			      PARHELIA_M9_PROGRAM_NONE) != -EINVAL)
-		return -EINVAL;
+		return m9_refuse(-EINVAL);
 	memset(expected, 0, sizeof(expected));
 	if (m9_parse_commands(draw32, ARRAY_SIZE(draw32), expected,
 			      PARHELIA_M9_PROGRAM_NONE) ||
 	    m9_validate_draw_reloc_pairs(draw32, ARRAY_SIZE(draw32), by_dword))
-		return -EINVAL;
+		return m9_refuse(-EINVAL);
 	inline_expected = kcalloc(M9_RESOURCE69_COUNT_FREE_DWORDS,
 				  sizeof(*inline_expected), GFP_KERNEL);
 	if (!inline_expected)
@@ -1053,17 +1075,17 @@ int m9x_submit_selftest(void)
 	draw_relocs[0].target_offset = 16;
 	if (m9_validate_draw_reloc_pairs(draw32, ARRAY_SIZE(draw32), by_dword) !=
 	    -EINVAL)
-		return -EINVAL;
+		return m9_refuse(-EINVAL);
 	draw_relocs[0].target_offset = 0;
 	draw_relocs[1].target_offset = 4;
 	draw_relocs[0].kind = PARHELIA_M9_RELOC_DRAW16_START;
 	draw_relocs[1].kind = PARHELIA_M9_RELOC_DRAW16_END;
 	draw_relocs[1].flags |= PARHELIA_M9_RELOC_PACKED16_ODD;
 	if (m9_validate_draw_reloc_pairs(draw16, ARRAY_SIZE(draw16), by_dword))
-		return -EINVAL;
+		return m9_refuse(-EINVAL);
 	draw_relocs[1].target_offset = 0;
 	if (m9_validate_draw_reloc_pairs(draw16, ARRAY_SIZE(draw16), by_dword) !=
 	    -EINVAL)
-		return -EINVAL;
+		return m9_refuse(-EINVAL);
 	return 0;
 }

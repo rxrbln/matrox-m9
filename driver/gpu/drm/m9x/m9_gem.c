@@ -10,6 +10,8 @@
 #include <drm/drm_drv.h>
 #include <drm/drm_gem.h>
 #include <drm/drm_gem_dma_helper.h>
+#include <drm/drm_managed.h>
+#include <drm/drm_print.h>
 #include <drm/drm_gem_ttm_helper.h>
 #include <drm/drm_gem_vram_helper.h>
 
@@ -25,10 +27,123 @@ MODULE_PARM_DESC(m9_bo_force_paged,
 /* Allocation counters, read back from sysfs to size the per-frame BO churn. */
 static unsigned long m9_bo_vram_creates, m9_bo_vram_kib;
 static unsigned long m9_bo_dma_creates, m9_bo_dma_kib;
+static unsigned long m9_bo_reserve_creates, m9_bo_paged_creates;
 module_param(m9_bo_vram_creates, ulong, 0444);
 module_param(m9_bo_vram_kib, ulong, 0444);
 module_param(m9_bo_dma_creates, ulong, 0444);
 module_param(m9_bo_dma_kib, ulong, 0444);
+module_param(m9_bo_reserve_creates, ulong, 0444);
+module_param(m9_bo_paged_creates, ulong, 0444);
+
+/* A draw range is fetched by its raw bus address, so a BO the engine reads
+ * that way has to be one physically contiguous range.  Above the costly order
+ * the page allocator cannot produce one once memory is fragmented, so the
+ * driver holds its own contiguous DMA32 ranges and suballocates them. */
+static uint m9_dma_reserve_kib = 2048;
+module_param_named(dma_reserve_kib, m9_dma_reserve_kib, uint, 0400);
+MODULE_PARM_DESC(dma_reserve_kib,
+	"contiguous DMA32 memory reserved per chunk, in KiB");
+
+static struct m9x_dma_chunk *m9_dma_chunk_add(struct m9x_device *mdev,
+					      size_t least)
+{
+	struct device *dev = drm_dev_dma_dev(&mdev->drm);
+	size_t size = max_t(size_t, (size_t)m9_dma_reserve_kib << 10, least);
+	struct m9x_dma_chunk *chunk;
+
+	chunk = kzalloc_obj(*chunk);
+	if (!chunk)
+		return NULL;
+	for (size = PAGE_ALIGN(size); size >= least && size >= PAGE_SIZE;
+	     size /= 2) {
+		chunk->vaddr = dma_alloc_wc(dev, size, &chunk->dma,
+					    GFP_KERNEL | __GFP_RETRY_MAYFAIL |
+					    __GFP_NOWARN | __GFP_ZERO);
+		if (!chunk->vaddr)
+			continue;
+		if (!upper_32_bits(chunk->dma) && chunk->dma <= U32_MAX - size)
+			break;
+		dma_free_wc(dev, size, chunk->vaddr, chunk->dma);
+		chunk->vaddr = NULL;
+	}
+	if (!chunk->vaddr) {
+		kfree(chunk);
+		return NULL;
+	}
+	chunk->size = size;
+	drm_mm_init(&chunk->mm, 0, size);
+	list_add(&chunk->link, &mdev->dma_chunks);
+	drm_info(&mdev->drm, "reserved %zu KiB of contiguous DMA32 at %pad\n",
+		 size >> 10, &chunk->dma);
+	return chunk;
+}
+
+static bool m9_dma_reserve_alloc(struct m9x_device *mdev, struct m9x_bo *bo,
+				 size_t size)
+{
+	struct m9x_dma_chunk *chunk;
+	bool grown = false;
+
+	mutex_lock(&mdev->dma_lock);
+	for (;;) {
+		list_for_each_entry(chunk, &mdev->dma_chunks, link)
+			if (!drm_mm_insert_node_generic(&chunk->mm, &bo->reserve,
+							size, PAGE_SIZE, 0,
+							DRM_MM_INSERT_BEST)) {
+				bo->dma.dma_addr = chunk->dma + bo->reserve.start;
+				bo->dma.vaddr = chunk->vaddr + bo->reserve.start;
+				memset(bo->dma.vaddr, 0, size);
+				m9_bo_reserve_creates++;
+				mutex_unlock(&mdev->dma_lock);
+				return true;
+			}
+		if (grown || !m9_dma_chunk_add(mdev, size))
+			break;
+		grown = true;
+	}
+	mutex_unlock(&mdev->dma_lock);
+	return false;
+}
+
+static void m9_dma_reserve_free(struct m9x_device *mdev, struct m9x_bo *bo)
+{
+	mutex_lock(&mdev->dma_lock);
+	drm_mm_remove_node(&bo->reserve);
+	mutex_unlock(&mdev->dma_lock);
+}
+
+static void m9_dma_reserve_release(struct drm_device *drm, void *unused)
+{
+	struct m9x_device *mdev = to_m9x(drm);
+	struct m9x_dma_chunk *chunk, *next;
+
+	list_for_each_entry_safe(chunk, next, &mdev->dma_chunks, link) {
+		list_del(&chunk->link);
+		drm_mm_takedown(&chunk->mm);
+		dma_free_wc(drm_dev_dma_dev(drm), chunk->size, chunk->vaddr,
+			    chunk->dma);
+		kfree(chunk);
+	}
+}
+
+/* Reserve one chunk while memory is least fragmented, before any client. */
+int m9x_dma_reserve_init(struct m9x_device *mdev)
+{
+	int ret;
+
+	INIT_LIST_HEAD(&mdev->dma_chunks);
+	ret = drmm_mutex_init(&mdev->drm, &mdev->dma_lock);
+	if (ret)
+		return ret;
+	ret = drmm_add_action_or_reset(&mdev->drm, m9_dma_reserve_release, NULL);
+	if (ret)
+		return ret;
+	mutex_lock(&mdev->dma_lock);
+	if (m9_dma_reserve_kib && !m9_dma_chunk_add(mdev, SZ_256K))
+		drm_warn(&mdev->drm, "no contiguous DMA32 reserve available\n");
+	mutex_unlock(&mdev->dma_lock);
+	return 0;
+}
 
 static void m9_bo_free(struct drm_gem_object *gem)
 {
@@ -42,7 +157,9 @@ static void m9_bo_free(struct drm_gem_object *gem)
 		m9x_address_unmap_system(mdev, &bo->system);
 		mutex_unlock(&mdev->transport.lock);
 	}
-	if (bo->dma.vaddr)
+	if (drm_mm_node_allocated(&bo->reserve))
+		m9_dma_reserve_free(mdev, bo);
+	else if (bo->dma.vaddr)
 		dma_free_wc(drm_dev_dma_dev(gem->dev), gem->size,
 			    bo->dma.vaddr, bo->dma.dma_addr);
 	drm_gem_object_release(gem);
@@ -294,15 +411,21 @@ static struct m9x_bo *m9_bo_create(struct drm_device *drm, size_t size)
 	ret = drm_gem_create_mmap_offset(&bo->dma.base);
 	if (ret)
 		goto err_put;
+	/* A draw range is fetched by raw bus address, so this allocation has to
+	 * be physically contiguous.  Above the costly order the page allocator
+	 * gives up before compacting unless it is told to retry. */
 	bo->dma.vaddr = dma_alloc_wc(drm_dev_dma_dev(drm), size,
 					&bo->dma.dma_addr,
-					GFP_KERNEL | __GFP_NOWARN | __GFP_ZERO);
-	if (!bo->dma.vaddr) {
-		ret = -ENOMEM;
+					GFP_KERNEL | __GFP_RETRY_MAYFAIL |
+					__GFP_NOWARN | __GFP_ZERO);
+	if (bo->dma.vaddr &&
+	    (upper_32_bits(bo->dma.dma_addr) ||
+	     bo->dma.dma_addr > U32_MAX - size)) {
+		ret = -ERANGE;
 		goto err_put;
 	}
-	if (upper_32_bits(bo->dma.dma_addr) || bo->dma.dma_addr > U32_MAX - size) {
-		ret = -ERANGE;
+	if (!bo->dma.vaddr && !m9_dma_reserve_alloc(to_m9x(drm), bo, size)) {
+		ret = -ENOMEM;
 		goto err_put;
 	}
 	return bo;
@@ -421,8 +544,12 @@ static int m9_create_bo_ioctl(struct drm_device *drm, void *data,
 		/* Only class-1 addressed BOs may fall back to scattered pages. */
 		bo = command || !m9_bo_force_paged ? m9_bo_create(drm, size) :
 						       ERR_PTR(-ENOMEM);
-		if (IS_ERR(bo) && PTR_ERR(bo) == -ENOMEM && !command)
+		if (IS_ERR(bo) && PTR_ERR(bo) == -ENOMEM && !command) {
+			pr_warn("m9x: no contiguous DMA32 for %zu bytes; scattered pages\n",
+				size);
+			m9_bo_paged_creates++;
 			bo = m9_paged_bo_create(drm, size);
+		}
 		if (IS_ERR(bo))
 			return PTR_ERR(bo);
 		bo->flags = args->flags;

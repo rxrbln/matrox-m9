@@ -46,10 +46,21 @@ struct m9x_bo {
 	struct drm_gem_dma_object dma;
 	/* Class-1 engine address of a non-command BO. */
 	struct drm_mm_node system;
+	/* Backing inside the contiguous DMA32 reserve, when it came from there. */
+	struct drm_mm_node reserve;
 	/* Page-array backing when no contiguous DMA32 range was available. */
 	struct page **pages;
 	struct sg_table sgt;
 	u32 flags;
+};
+
+/* One contiguous DMA32 range the driver holds and suballocates. */
+struct m9x_dma_chunk {
+	struct list_head link;
+	void *vaddr;
+	dma_addr_t dma;
+	size_t size;
+	struct drm_mm mm;
 };
 
 struct m9x_vram_bo {
@@ -182,6 +193,9 @@ struct m9x_device {
 	const u8 *pins_patch;
 	size_t pins_patch_len;
 	void __iomem *bar0_window;
+	/* Contiguous DMA32 reserve: raw-addressed ranges outlive fragmentation. */
+	struct mutex dma_lock;
+	struct list_head dma_chunks;
 	struct m9x_transport transport;
 };
 
@@ -202,6 +216,7 @@ struct i2c_adapter *m9x_ddc_adapter(struct m9x_device *mdev,
 bool m9x_enabled(void);
 bool m9x_kms_enabled(void);
 bool m9x_kms_scanout_enabled(void);
+int m9x_dma_reserve_init(struct m9x_device *mdev);
 int m9x_init(struct m9x_device *mdev);
 void m9x_fini(struct m9x_device *mdev);
 int m9x_create_bo_ioctl(struct drm_device *drm, void *data,
