@@ -77,6 +77,8 @@ struct node {
    unsigned ubo_slot;
    float lit[4];
    bool neg;            /* ADD with a negated literal */
+   bool emitted;        /* already placed by the depth-first schedule */
+   int weight;          /* registers its subtree needs, one plus, memoised */
    uint8_t cmp;         /* N_CMP/N_SEL comparison class */
    bool is_cond;        /* holds 1.0 or 0.0, so a select can test it */
    int level;
@@ -139,6 +141,7 @@ struct ctx {
    } alpha;
    bool has_consts;
    bool custom_consts;  /* a template supplies the whole constant span */
+   bool depth_first;    /* schedule operands before breadth, for pressure */
 };
 
 #define NODES(c) ((struct node *)(c)->nodes.data)
@@ -146,6 +149,8 @@ struct ctx {
 #define VALUES(c) ((struct value *)(c)->values.data)
 #define KEYS(c) ((struct kkey *)(c)->keys.data)
 #define NUM(c, a, t) util_dynarray_num_elements(&(c)->a, t)
+
+static const char fail_out_of_temporaries[] = "out of temporaries";
 
 static bool
 fail_at(struct ctx *c, const char *reason, int line)
@@ -1065,8 +1070,16 @@ build_alu(struct ctx *c, nir_alu_instr *alu)
       for (unsigned i = 0; i < 3; i++)
          if (memcmp(lane[i], lane_id, 2) || memcmp(swz[i], swz_id, 2))
             return fail(c, "swizzled mix operand"), -1;
-      if (node_is_const(&NODES(c)[a]) || NODES(c)[b].kind == N_LIT)
-         return fail(c, "unsupported mix operands"), -1;
+      /* The subtraction takes a uniform on the b side, but nothing else
+       * constant: the rest goes into a register first. */
+      a = materialise(c, a, lane[0], swz[0]);
+      if (a < 0)
+         return -1;
+      if (NODES(c)[b].kind == N_LIT) {
+         b = materialise(c, b, lane[1], swz[1]);
+         if (b < 0)
+            return -1;
+      }
       s = node_new(c, N_SUB);
       if (s < 0)
          return -1;
@@ -1948,6 +1961,63 @@ emit_node_lops(struct ctx *c, int n, bool output, bool direct_ba)
    return true;
 }
 
+/* How many registers a subtree needs alive at once: two subtrees of equal
+ * need cost one more than either alone, an uneven pair costs the larger. */
+static int
+node_weight(struct ctx *c, int n)
+{
+   struct node *nd = &NODES(c)[n];
+   int w = 0;
+
+   if (nd->weight)
+      return nd->weight - 1;
+   if (nd->kind == N_VARY || nd->kind == N_LOAD || nd->kind == N_COMPOSE ||
+       nd->kind == N_TEX || node_is_const(nd)) {
+      nd->weight = 2;
+      return 1;
+   }
+   for (unsigned i = 0; i < 3; i++) {
+      int s = NODES(c)[n].src[i] >= 0 ? node_weight(c, NODES(c)[n].src[i]) : 0;
+
+      w = s == w ? w + 1 : MAX2(w, s);
+   }
+   NODES(c)[n].weight = MAX2(w, 1) + 1;
+   return MAX2(w, 1);
+}
+
+/* Post-order, heaviest operand first: every operand of n is emitted before
+ * n itself and nothing else in between, and the subtree that needs the most
+ * registers runs while the fewest of its siblings are alive. */
+static bool
+schedule_operands(struct ctx *c, int n, int root, bool direct_ba)
+{
+   struct node *nd = &NODES(c)[n];
+   unsigned order[3] = { 0, 1, 2 };
+
+   if (nd->kind == N_VARY || nd->kind == N_LOAD || nd->kind == N_COMPOSE ||
+       nd->kind == N_TEX || node_is_const(nd) || nd->value[0] >= 0 ||
+       nd->emitted)
+      return true;
+   nd->emitted = true;
+   for (unsigned i = 0; i < 3; i++)
+      for (unsigned j = i + 1; j < 3; j++) {
+         int a = NODES(c)[n].src[order[i]], b = NODES(c)[n].src[order[j]];
+
+         if ((b >= 0 ? node_weight(c, b) : 0) >
+             (a >= 0 ? node_weight(c, a) : 0)) {
+            unsigned t = order[i];
+
+            order[i] = order[j];
+            order[j] = t;
+         }
+      }
+   for (unsigned i = 0; i < 3; i++)
+      if (NODES(c)[n].src[order[i]] >= 0 &&
+          !schedule_operands(c, NODES(c)[n].src[order[i]], root, direct_ba))
+         return false;
+   return emit_node_lops(c, n, n == root, direct_ba);
+}
+
 static bool
 schedule_tree(struct ctx *c, int root)
 {
@@ -1972,14 +2042,22 @@ schedule_tree(struct ctx *c, int root)
           !emit_node_lops(c, i, false, false))
          return false;
    }
-   for (int level = 1; level <= max_level; level++) {
-      for (unsigned i = 0; i < count; i++) {
-         struct node *nd = &NODES(c)[i];
+   if (c->depth_first) {
+      /* A value dies as soon as its last reader runs, so emitting each
+       * operand immediately before the operation that reads it keeps far
+       * fewer alive at once than sweeping the graph one level at a time. */
+      if (!schedule_operands(c, root, root, max_level == 1))
+         return false;
+   } else {
+      for (int level = 1; level <= max_level; level++) {
+         for (unsigned i = 0; i < count; i++) {
+            struct node *nd = &NODES(c)[i];
 
-         if (nd->kind != N_VARY && nd->kind != N_LOAD &&
-             nd->kind != N_COMPOSE && nd->level - 1 == level &&
-             !emit_node_lops(c, i, i == (unsigned)root, max_level == 1))
-            return false;
+            if (nd->kind != N_VARY && nd->kind != N_LOAD &&
+                nd->kind != N_COMPOSE && nd->level - 1 == level &&
+                !emit_node_lops(c, i, i == (unsigned)root, max_level == 1))
+               return false;
+         }
       }
    }
    if (r->kind != N_VARY && max_level > 1) {
@@ -2075,6 +2153,13 @@ allocate(struct ctx *c)
        * reading instruction is placed, so the two never collide. */
       uint8_t freed[0x20];
       unsigned num_freed = 0;
+      uint64_t taken = 0;
+
+      /* 1a..1f are the interpolation spares; the ones no interpolated
+       * value took extend the general run rather than sit idle. */
+      util_dynarray_foreach(&c->values, struct value, v)
+         if (v->reg >= 0)
+            taken |= BITFIELD64_BIT(v->reg);
 
       for (unsigned s = 0; s < n; s++) {
          struct lop *l = &LOPS(c)[s];
@@ -2087,12 +2172,18 @@ allocate(struct ctx *c)
              * fits the file is laid out the way the vendor lays it out. */
             if (next_general == 0x10)
                next_general = 0x14;
-            if (next_general <= (c->blend ? 0x17u : 0x19u))
+            while (next_general > (c->blend ? 0x17u : 0x19u) &&
+                   next_general < 0x20u &&
+                   (c->blend || reg_busy(taken, next_general)))
+               next_general++;
+            if (next_general < 0x20u &&
+                (next_general <= (c->blend ? 0x17u : 0x19u) ||
+                 !reg_busy(taken, next_general)))
                VALUES(c)[l->dst].reg = next_general++;
             else if (num_freed)
                VALUES(c)[l->dst].reg = freed[--num_freed];
             else
-               return fail(c, "out of temporaries");
+               return fail(c, fail_out_of_temporaries);
          }
          util_dynarray_foreach(&c->values, struct value, v)
             if (v->general && v->reg >= 0 && num_freed < ARRAY_SIZE(freed) &&
@@ -3178,6 +3269,25 @@ compile_output(struct ctx *c, nir_def *value, bool discard)
       }
       return true;
    default:
+      if (schedule_tree(c, root) && allocate(c))
+         return true;
+      /* A wide expression can outlive the register file laid out one level
+       * at a time; scheduling each operand next to its reader is tighter. */
+      if (c->depth_first || c->reason != fail_out_of_temporaries)
+         return false;
+      c->reason = NULL;
+      c->depth_first = true;
+      c->p->registers_used = 0;
+      util_dynarray_clear(&c->lops);
+      util_dynarray_clear(&c->values);
+      util_dynarray_clear(&c->keys);
+      util_dynarray_clear(&c->key_index);
+      util_dynarray_clear(&c->p->consts);
+      util_dynarray_foreach(&c->nodes, struct node, it) {
+         it->value[0] = it->value[1] = -1;
+         it->emitted = false;
+         it->weight = 0;
+      }
       return schedule_tree(c, root) && allocate(c);
    }
 }
