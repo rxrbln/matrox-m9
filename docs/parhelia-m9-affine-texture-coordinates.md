@@ -40,7 +40,21 @@ m9_context::extra`, "float4 CPU varyings per source record"), so the machinery
 exists.  What is needed is for the fragment backend to recognise the affine
 form, record the transform, and for the draw path to emit the extra varying.
 
-glmark2's **jellyfish** is exactly this shape:
+**However, the interpolation budget rules both of the scenes below out**, and
+that was established after this note was first written.  The raster pass has
+six stream slots and keeps three for position, c and d, so a shader may
+interpolate **three** streams in total, counting each distinct texture
+coordinate.  Scanning the declarations of all 182 captured programs, the
+highest stream index the vendor ever declares is 4 -- five streams, i.e. two
+usable -- so three is already at or above anything the captures support.
+jellyfish needs five (two coordinates plus vDiffuse, vAmbient, vFresnel) and
+bump-height needs six (three coordinates plus NormalEye, TangentEye,
+BitangentEye).  The folding below is implemented and measured, and it is what
+a shader sampling at a computed offset needs, but only while that shader
+stays inside three interpolated streams.
+
+glmark2's **jellyfish** has exactly the coordinate shape this note is about,
+even though its varying count puts it out of reach:
 
     texture2D(uSampler1, vec2(vWorld.x / 24.0 + uCurrentTime / 20.0,
                               (vWorld.z - vWorld.y) / 48.0 + uCurrentTime / 40.0))
@@ -48,7 +62,8 @@ glmark2's **jellyfish** is exactly this shape:
 — two varying components combined with uniform coefficients.  It binds two
 units, so it needs no new unit either.
 
-**bump-height** is the same shape but needs three units:
+**bump-height** is the same shape, and needs three units -- but six
+interpolated streams, so it is out of reach for that reason:
 
     texture2D(HeightMap, TextureCoord)
     texture2D(HeightMap, TextureCoord + vec2(TextureStepX, 0.0))
@@ -70,6 +85,8 @@ read to fall back on.
 | effect2d, 5x5 kernel | 25 | out of reach |
 | desktop, blur radius 5 separable | 11 per pass | out of reach |
 | terrain | 6 distinct samplers, plus computed coordinates | out of reach |
+| jellyfish | 2 fetches, but 5 interpolated streams | out of reach |
+| bump-height | 3 fetches, but 6 interpolated streams | out of reach |
 
 These are not backend limitations to be worked around; they are what the
 raster engine is.  The desktop blur scene still runs and is still worth
