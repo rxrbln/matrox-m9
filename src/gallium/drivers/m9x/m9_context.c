@@ -1991,6 +1991,14 @@ m9_fs_variant(struct m9_context *ctx, struct m9_fs_state *fs,
          return (*it)->ok ? *it : NULL;
       }
    }
+   /* A shader specialised on a uniform can be asked for one variant per
+    * value, so the cache is capped and a further one is refused. */
+   if (util_dynarray_num_elements(&fs->variants, struct m9_fs_variant *) >=
+       M9_FS_MAX_VARIANTS) {
+      *reason = "more shader variants than the cache holds";
+      return NULL;
+   }
+
    *reason = "out of memory";
    v = CALLOC_STRUCT(m9_fs_variant);
    clone = v ? nir_shader_clone(NULL, fs->nir) : NULL;

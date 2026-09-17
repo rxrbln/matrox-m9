@@ -1155,6 +1155,11 @@ m9_screen_create(int fd, const struct pipe_screen_config *config)
    caps->max_line_width = caps->max_line_width_aa = 255.0f;
    caps->point_size_granularity = caps->line_width_granularity = 0.1f;
    caps->compute = false;
+   /* Run finalize_nir at link time, so the inlinable uniforms the fragment
+    * backend marks reach gl_program::info and st sends their values; without
+    * it set_inlinable_constants is never called and every specialised variant
+    * compiles against zeros. */
+   caps->call_finalize_nir_in_linker = true;
    caps->dmabuf = DRM_PRIME_CAP_IMPORT | DRM_PRIME_CAP_EXPORT;
    screen->base.destroy = m9_destroy;
    screen->base.finalize_nir = m9_finalize_nir;
