@@ -865,9 +865,13 @@ m9_submit_job(struct m9_context *ctx)
    }
    if (ret == -EINVAL) {
       /* A refused job is one unsupported state, not a broken context. */
-      m9_warn_once(ctx, M9_WARN_SUBMIT,
-                   "the kernel refused a job; those draws are skipped");
-      m9_skip_reason(ctx, "the kernel refused a job; those draws are skipped");
+      const char *who = built ? "the kernel refused a job; those draws are "
+                                "skipped" :
+                                "a job could not be built; those draws are "
+                                "skipped";
+
+      m9_warn_once(ctx, M9_WARN_SUBMIT, who);
+      m9_skip_reason(ctx, who);
       ctx->skipped_draws++;
       m9_prof_refused++;
       m9_prof_skipped += draws;
@@ -1573,6 +1577,15 @@ m9_fs_variant(struct m9_context *ctx, struct m9_fs_state *fs,
       m9_fs_streams(v);
       if (v->extra_count > M9_TRANSIENT_VIEWS - M9_TRANSIENT_CPU_VIEW) {
          v->reason = "more CPU varying streams than transient views";
+         v->ok = false;
+      /* A varying on view 0 costs a raster stream without costing a CPU
+       * view, so the check above does not cover the pass's own limit;
+       * without this the job builds and its draws are dropped instead of
+       * the shader falling back. */
+      } else if (!m9_raster_fs_layout_ok(v->program.varying_count,
+                                         v->coord_count,
+                                         v->program.texture_count)) {
+         v->reason = "more raster streams than the pass has";
          v->ok = false;
       } else {
          v->ok = m9_fs_variant_upload(ctx, v, &v->reason);

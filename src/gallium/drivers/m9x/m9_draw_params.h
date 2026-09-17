@@ -97,6 +97,11 @@ void m9_scissor_words(uint32_t minx, uint32_t miny, uint32_t maxx,
 uint32_t m9_raster_control(bool flat, enum m9_topology topology);
 uint32_t m9_raster_control_decl(bool flat, enum m9_topology topology,
                                 unsigned decl_count);
+/* The raster pass keeps three of its six stream slots for position, c and d,
+ * and its declaration has eight words; a layout past either cannot be
+ * emitted.  Stated once, so the compiler's gate and the emitter agree. */
+bool m9_raster_fs_layout_ok(unsigned varying_count, unsigned coord_count,
+                            unsigned texture_count);
 int m9_raster_fs_init(struct m9_raster_fs *r, unsigned vertex_entry,
                       uint32_t r88, unsigned const_count,
                       unsigned varying_count, const bool *flat_link,

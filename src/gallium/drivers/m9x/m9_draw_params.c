@@ -216,6 +216,15 @@ m9_raster_control_decl(bool flat, enum m9_topology topology,
    return (flat ? 0x4000u : 0) | 0x2000u | (decl_count - 1) << 8 | topology;
 }
 
+bool
+m9_raster_fs_layout_ok(unsigned varying_count, unsigned coord_count,
+                       unsigned texture_count)
+{
+   return varying_count + coord_count + 3 <= M9_RASTER_MAX_STREAMS &&
+          2 * varying_count + texture_count + 3 <= M9_RASTER_MAX_DECL &&
+          texture_count <= 4;
+}
+
 int
 m9_raster_fs_init(struct m9_raster_fs *r, unsigned vertex_entry,
                   uint32_t r88, unsigned const_count, unsigned varying_count,
@@ -237,9 +246,9 @@ m9_raster_fs_init_textured(struct m9_raster_fs *r, unsigned vertex_entry,
    uint32_t stride[M9_RASTER_MAX_STREAMS] = { 0 };
    unsigned streams = varying_count + coord_count;
 
-   if (!r || streams + 3 > M9_RASTER_MAX_STREAMS ||
-       2 * varying_count + texture_count + 3 > M9_RASTER_MAX_DECL ||
-       const_count > 0x7f || texture_count > 4 ||
+   if (!r || !m9_raster_fs_layout_ok(varying_count, coord_count,
+                                     texture_count) ||
+       const_count > 0x7f ||
        (coord_count && !coord_view) || (texture_count && !texture_coord))
       return -EINVAL;
    for (unsigned k = 0; k < texture_count; k++)
