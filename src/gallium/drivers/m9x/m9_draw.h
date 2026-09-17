@@ -36,7 +36,8 @@ struct m9_draw_job {
    uint32_t color, depth, aux;
    uint32_t be;
    uint32_t source_vertices;  /* padded record count, multiple of four */
-   uint32_t index_base;       /* byte offset of the indices in the source */
+   uint32_t index;            /* DMA32 raster indices, contiguous */
+   uint32_t index_base;       /* byte offset of the indices in that object */
    uint32_t index_count;      /* 16-bit indices stored there */
    const struct m9_draw_record *draws;
    unsigned draw_count;

@@ -309,7 +309,7 @@ m9_batch_emit_draw_job(struct m9_batch *batch, const struct m9_draw_job *job)
               V(0xd7, m9_raster_d7(d->topology)), V(0xf4, 0));
       }
       ret = d->index_count ?
-            m9_batch_emit_draw16(batch, job->source,
+            m9_batch_emit_draw16(batch, job->index,
                                  job->index_base +
                                  (uint64_t)d->index_first * sizeof(uint16_t),
                                  d->index_count, 0x20000000) :

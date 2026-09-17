@@ -274,6 +274,10 @@ struct m9_context {
 
    /* Fixed two-pass resources and the pending job. */
    struct m9_resource system, program, fragment_db, transient, be, source;
+   /* The raster index run, in its own object: a draw range is a raw bus
+    * address, so only this has to be physically contiguous, and keeping it
+    * out of the record arena keeps that demand small. */
+   struct m9_resource index;
    /* The depth and HZ pair a target without a depth attachment of its own
     * binds, kept per size: a scene that alternates target sizes would
     * otherwise reallocate and refill them on every switch. */

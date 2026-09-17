@@ -637,16 +637,17 @@ m9_transfer_unmap(struct pipe_context *pctx, struct pipe_transfer *ptransfer)
 /* Two-pass jobs */
 
 static int
-m9_source_reserve(struct m9_context *ctx, uint64_t bytes)
+m9_arena_reserve(struct m9_context *ctx, struct m9_resource *arena,
+                 uint64_t bytes)
 {
    uint64_t size;
 
-   if (bytes <= ctx->source.size)
+   if (bytes <= arena->size)
       return 0;
-   size = MAX2((bytes + 0xfff) & ~0xfffull, 2 * ctx->source.size);
-   m9_bo_destroy(ctx->screen, &ctx->source);
+   size = MAX2((bytes + 0xfff) & ~0xfffull, 2 * arena->size);
+   m9_bo_destroy(ctx->screen, arena);
    return m9_bo_create(ctx->screen, size, 0, M9_RESOURCE_LINEAR_BUFFER,
-                       &ctx->source);
+                       arena);
 }
 
 static bool
@@ -734,6 +735,7 @@ m9_dump_job(struct m9_context *ctx, const struct m9_fs_variant *fs)
       else if (b->bos[i].handle == ctx->transient.handle) size = ctx->transient.size;
       else if (b->bos[i].handle == ctx->be.handle) size = ctx->be.size;
       else if (b->bos[i].handle == ctx->source.handle) size = ctx->source.size;
+      else if (b->bos[i].handle == ctx->index.handle) size = ctx->index.size;
       fprintf(out, "BO handle %u flags %u size %#" PRIx64 "\n",
               b->bos[i].handle, b->bos[i].flags, size);
    }
@@ -788,17 +790,21 @@ m9_submit_job(struct m9_context *ctx)
       util_dynarray_clear(&ctx->extra);
       return 0;
    }
-   uint64_t index_base = (uint64_t)records * M9_RECORD_FLOATS * sizeof(float);
    unsigned index_count = util_dynarray_num_elements(&ctx->indices, uint16_t);
+   uint64_t index_base = 0;
 
    ret = ctx->lost ? -EIO :
-         m9_source_reserve(ctx, index_base + ctx->indices.size);
+         m9_arena_reserve(ctx, &ctx->source,
+                          (uint64_t)records * M9_RECORD_FLOATS *
+                          sizeof(float));
+   if (!ret && ctx->indices.size)
+      ret = m9_arena_reserve(ctx, &ctx->index, ctx->indices.size);
    if (!ret) {
       uint64_t t_records = m9_prof_begin();
 
       memcpy(ctx->source.map, ctx->records.data, ctx->records.size);
-      memcpy((uint8_t *)ctx->source.map + index_base, ctx->indices.data,
-             ctx->indices.size);
+      if (ctx->indices.size)
+         memcpy(ctx->index.map, ctx->indices.data, ctx->indices.size);
       memcpy(ctx->system.map, ctx->params.system_prefix,
              sizeof(ctx->params.system_prefix));
       memcpy((uint8_t *)ctx->system.map + M9_LINKED_OFFSET,
@@ -810,6 +816,7 @@ m9_submit_job(struct m9_context *ctx)
          .params = &ctx->params,
          .decl = &ctx->decl,
          .source = ctx->source.handle,
+         .index = ctx->index.handle,
          .system = ctx->system.handle,
          .program = ctx->program.handle,
          .fragment_db = ctx->fragment_db.handle,
@@ -3064,6 +3071,7 @@ m9_context_destroy(struct pipe_context *pctx)
    m9_bo_destroy(screen, &ctx->transient);
    m9_bo_destroy(screen, &ctx->be);
    m9_bo_destroy(screen, &ctx->source);
+   m9_bo_destroy(screen, &ctx->index);
    util_dynarray_foreach(&ctx->target_depths, struct m9_target_depth *, it) {
       m9_bo_destroy(screen, &(*it)->depth);
       m9_bo_destroy(screen, &(*it)->aux);
