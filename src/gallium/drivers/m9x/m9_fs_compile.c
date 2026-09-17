@@ -512,6 +512,7 @@ term_mul(struct m9_fs_coord_term *t, const struct m9_fs_coord_term *o)
       t->factor = o->factor * k;
       /* A coefficient scaled to nothing no longer names the uniform. */
       t->offset = t->factor == 0.0f ? M9_FS_UNIFORM_ZERO : o->offset;
+      t->reciprocal = t->offset != M9_FS_UNIFORM_ZERO && o->reciprocal;
       return true;
    }
    if (o->offset != M9_FS_UNIFORM_ZERO)
@@ -530,6 +531,7 @@ term_add(struct m9_fs_coord_term *t, const struct m9_fs_coord_term *o)
          return false;
       t->offset = o->offset;
       t->factor = o->factor;
+      t->reciprocal = o->reciprocal;
    }
    t->literal += o->literal;
    return true;
@@ -598,6 +600,17 @@ coord_parse(nir_scalar s, struct coord_expr *e)
          return false;
       return term_add(&e->bias, &add.bias);
    }
+   case nir_op_frcp: {
+      /* One over a uniform: the reciprocal stays on the coefficient, which
+       * the driver resolves per draw.  Only a bare uniform qualifies -- a
+       * reciprocal of a sum is not a coefficient of this shape. */
+      if (!coord_parse(nir_scalar_chase_alu_src(s, 0), e) || e->varying ||
+          e->bias.offset == M9_FS_UNIFORM_ZERO || e->bias.reciprocal ||
+          e->bias.literal != 0.0f || e->bias.factor != 1.0f)
+         return false;
+      e->bias.reciprocal = true;
+      return true;
+   }
    case nir_op_fneg: {
       if (!coord_parse(nir_scalar_chase_alu_src(s, 0), e))
          return false;
@@ -648,9 +661,11 @@ m9_fs_coord_affine_same(const struct m9_fs_coord_affine *a,
       if (a->scale[i].literal != b->scale[i].literal ||
           a->scale[i].factor != b->scale[i].factor ||
           a->scale[i].offset != b->scale[i].offset ||
+          a->scale[i].reciprocal != b->scale[i].reciprocal ||
           a->bias[i].literal != b->bias[i].literal ||
           a->bias[i].factor != b->bias[i].factor ||
-          a->bias[i].offset != b->bias[i].offset)
+          a->bias[i].offset != b->bias[i].offset ||
+          a->bias[i].reciprocal != b->bias[i].reciprocal)
          return false;
    }
    return true;

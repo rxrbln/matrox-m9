@@ -1209,6 +1209,11 @@ m9_coord_term(const struct m9_context *ctx, const struct m9_fs_coord_term *t)
        (size_t)t->offset + sizeof(float) > cb->buffer_size)
       return t->literal;
    memcpy(&v, data + cb->buffer_offset + t->offset, sizeof(v));
+   if (t->reciprocal) {
+      if (v == 0.0f)
+         return t->literal;
+      v = 1.0f / v;
+   }
    return t->literal + v * t->factor;
 }
 

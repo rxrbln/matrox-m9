@@ -40,13 +40,15 @@ enum m9_fs_const_kind {
 #define M9_FS_UNIFORM_ZERO 0xffffffffu
 
 /* One coefficient of a coordinate transform: a constant, optionally plus a
- * component of the fragment constant buffer scaled by another constant.
- * That covers a literal, a uniform, and a uniform scaled by a literal,
- * which is every form the shaders that need this use. */
+ * component of the fragment constant buffer, or its reciprocal, scaled by
+ * another constant.  That covers a literal, a uniform, a uniform scaled by a
+ * literal, and one over a uniform -- the step a shader that walks its
+ * neighbours writes as 1.0 / resolution.x. */
 struct m9_fs_coord_term {
    float literal;
    float factor;
    uint32_t offset;        /* M9_FS_UNIFORM_ZERO when there is no uniform */
+   bool reciprocal;        /* the uniform enters as 1 / value */
 };
 
 /* A texture coordinate that is an affine function of an interpolated pair:
