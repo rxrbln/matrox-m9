@@ -16,6 +16,9 @@
 
 #define M9_TEXTURE_MAX_LEVELS 13u
 #define M9_TEXTURE_MAX_UNITS 4u
+/* Application texture slots one job binds across all its raster passes: a
+ * split fragment shader binds up to four in each of its passes. */
+#define M9_DRAW_MAX_UNITS 32u
 /* Levels up to 16x16 share one 32x16 packed tail. */
 #define M9_TEXTURE_TAIL_EXTENT 16u
 #define M9_TEXTURE_TAIL_BYTES 0x800u

@@ -24,9 +24,9 @@
       goto fail; \
 } while (0)
 
-/* Dwords of a single-draw job and of each restated raster draw. */
+/* Dwords of a single-draw job; each restated raster draw adds
+ * M9_JOB_DRAW_DWORDS, which m9_draw.h states. */
 #define M9_JOB_BASE_DWORDS 233u
-#define M9_JOB_DRAW_DWORDS 11u
 
 unsigned
 m9_draw_job_dwords(unsigned draw_count)
@@ -67,7 +67,8 @@ unsigned
 m9_draw_pass_dwords(unsigned draw_count, unsigned unit_count,
                     unsigned route_count)
 {
-   return m9_draw_job_dwords_fs(draw_count, unit_count) + 5 * route_count;
+   /* Three more for the index-30 write a consuming pass carries. */
+   return m9_draw_job_dwords_fs(draw_count, unit_count) + 5 * route_count + 3;
 }
 
 unsigned
@@ -85,6 +86,21 @@ m9_draw_units_dwords(unsigned unit_count)
    return 10 + 18 * unit_count;
 }
 
+/* Dependency token a pass starts at; its raster range begins two steps in
+ * when the pass preprocesses for itself, and at the same place otherwise. */
+static uint32_t
+m9_pass_dependency(const struct m9_draw_job *job, unsigned pass)
+{
+   return pass * (job->preprocess_per_pass ? M9_PASS_DEPENDENCY_FULL :
+                                             M9_PASS_DEPENDENCY_STEP);
+}
+
+static int m9_emit_preprocess(struct m9_batch *batch,
+                              const struct m9_draw_job *job,
+                              const uint32_t *decl, unsigned decl_count,
+                              uint32_t record_bytes, unsigned const_pairs,
+                              uint32_t base);
+
 /* The descriptor-only operands 74..77: a bound route selects the record and
  * names its base and consumer descriptor behind it, an idle one carries the
  * captured 0x100.  Ordering follows the vendor's own five-pass block, which
@@ -97,6 +113,12 @@ m9_emit_routes(struct m9_batch *batch, const struct m9_draw_job *job,
    int ret = 0;
 
    for (unsigned k = 0; k < routes; k++) {
+      /* A slot no record feeds carries the captured idle word and no
+       * descriptor of its own. */
+      if (!pass->routes[k].desc) {
+         EMIT(V(0x74 + k, 0x100));
+         continue;
+      }
       EMIT(V(0x74 + k, pass->routes[k].word));
       EMIT(R(0x78, job->record, 0, TEXTURE), V(0x79, pass->routes[k].desc));
    }
@@ -121,10 +143,15 @@ m9_emit_units(struct m9_batch *batch, const struct m9_draw_job *job,
        * still binds the placeholder, whose slot the engine reads. */
       for (unsigned i = 0; i < pass->unit_count; i++) {
          uint8_t sel = pass->unit_index[i];
-         const struct m9_texture_unit *u =
-            sel == M9_PASS_UNIT_PLACEHOLDER ? job->placeholder :
-            sel < unit_count ? &units[sel] : NULL;
+         const struct m9_texture_unit *u;
 
+         /* A slot a route fills carries no texture of its own. */
+         if (sel == M9_PASS_UNIT_NONE) {
+            EMIT(V(0x70 + i, 0));
+            continue;
+         }
+         u = sel == M9_PASS_UNIT_PLACEHOLDER ? job->placeholder :
+             sel < unit_count ? &units[sel] : NULL;
          if (!u)
             return -EINVAL;
          ret = m9_batch_emit_texture_unit(batch, i, u);
@@ -260,7 +287,7 @@ m9_emit_raster_range(struct m9_batch *batch, const struct m9_draw_job *job,
 {
    const struct m9_draw_params *p = job->params;
    const struct m9_draw_record *d0 = &job->draws[0];
-   uint32_t dep = 0x20 + M9_PASS_DEPENDENCY_STEP * index;
+   uint32_t dep = m9_pass_dependency(job, index) + 0x20;
    /* A record-writing pass never blends: the destination it would read is
     * the record, not the application target. */
    bool blend = job->blend_dest && !(pass && pass->writes_record);
@@ -271,7 +298,9 @@ m9_emit_raster_range(struct m9_batch *batch, const struct m9_draw_job *job,
    EMIT(V(0xe6, 3), V(0xe3, dep + 0x10));
    EMIT(V(0x43, dep + 0x10));
    EMIT(V(0xe6, 0x42000000));
-   EMIT(V(0xf0, m9_raster_class(d0->lines, blend)), V(0xef, d0->cull | job->depth_ef),
+   uint32_t depth_ef = pass ? pass->depth_ef : job->depth_ef;
+
+   EMIT(V(0xf0, m9_raster_class(d0->lines, blend)), V(0xef, d0->cull | depth_ef),
         V(0xd7, m9_raster_d7(d0->topology)));
    EMIT(V(0x22, m9_job_raster_control(job, pass, d0)));
    EMIT(V(0xe6, 3), V(0xe3, dep + 0x20));
@@ -307,6 +336,10 @@ m9_emit_raster_range(struct m9_batch *batch, const struct m9_draw_job *job,
    if (ret)
       goto fail;
    EMIT(V(0xec, 0), V(0xf4, 0), V(0xea, 0), V(0xeb, 0));
+   /* Index 30 is written by a pass that consumes a record, and by no
+    * other raster pass (CAPTURED, both schedules). */
+   if (index)
+      EMIT(V(0x30, 0));
    EMIT(V(0x28, 0));
    if (job->fs || pass) {
       const struct m9_raster_fs *rfs = pass ? &pass->fs : job->fs;
@@ -329,9 +362,12 @@ m9_emit_raster_range(struct m9_batch *batch, const struct m9_draw_job *job,
       /* Later draws restate topology, shading, class and cull, and their
        * texture units whenever the binding moved on. */
       if (i) {
-         if (d->unit_count != job->draws[i - 1].unit_count ||
-             memcmp(d->units, job->draws[i - 1].units,
-                    d->unit_count * sizeof(d->units[0]))) {
+         /* A split shader binds one unit pool for the whole job: its passes
+          * index that pool, so a draw cannot restate units of its own. */
+         if (!job->pass_count &&
+             (d->unit_count != job->draws[i - 1].unit_count ||
+              memcmp(d->units, job->draws[i - 1].units,
+                     d->unit_count * sizeof(d->units[0])))) {
             ret = m9_emit_units(batch, job, pass, d->units, d->unit_count);
             if (ret)
                goto fail;
@@ -339,15 +375,19 @@ m9_emit_raster_range(struct m9_batch *batch, const struct m9_draw_job *job,
          EMIT(V(0x22, m9_job_raster_control(job, pass, d)),
               V(0x6a, 0x25010000));
          EMIT(V(0xf0, m9_raster_class(d->lines, blend)),
-              V(0xef, d->cull | job->depth_ef),
+              V(0xef, d->cull | depth_ef),
               V(0xd7, m9_raster_d7(d->topology)), V(0xf4, 0));
       }
       ret = d->index_count ?
             m9_batch_emit_draw16(batch, job->index,
                                  job->index_base +
+                                 (pass ? pass->index_offset : 0) +
                                  (uint64_t)d->index_first * sizeof(uint16_t),
                                  d->index_count, 0x20000000) :
-            m9_batch_emit_draw_numeric(batch, d->start, d->count, 0x20000000);
+            m9_batch_emit_draw_numeric(batch,
+                                       d->start +
+                                       (pass ? pass->vertex_offset : 0),
+                                       d->count, 0x20000000);
       if (ret)
          goto fail;
    }
@@ -364,7 +404,8 @@ m9_draw_job_valid(const struct m9_draw_job *job)
        !job->color || !job->depth || !job->aux || !job->be ||
        !job->draws || !job->draw_count || job->source_vertices % 4 ||
        job->source_vertices > m9_draw_max_source_vertices() ||
-       job->unit_count > M9_TEXTURE_MAX_UNITS ||
+       job->unit_count > (job->pass_count ? M9_DRAW_MAX_UNITS :
+                                           M9_TEXTURE_MAX_UNITS) ||
        (job->unit_count && ((!job->fs && !job->pass_count) || !job->units)))
       return false;
    for (unsigned i = 0; i < job->unit_count; i++)
@@ -385,13 +426,13 @@ m9_draw_job_valid(const struct m9_draw_job *job)
        * needs one; the dependency the last pass requests must stay inside
        * the kernel's window. */
       if (!job->passes || job->fs ||
-          0x20 + M9_PASS_DEPENDENCY_STEP * job->pass_count + 0x20 >
+          m9_pass_dependency(job, job->pass_count) + 0x40 >
           PARHELIA_M9_DEPENDENCY_LIMIT)
          return false;
       for (unsigned i = 0; i < job->pass_count; i++) {
          const struct m9_raster_pass *pass = &job->passes[i];
 
-         if (pass->writes_record != (i + 1 < job->pass_count) ||
+         if ((pass->writes_record && !job->record) ||
              (pass->writes_record && (!job->record || !pass->record_desc)) ||
              /* The descriptor-only operands 74..77 are their own bank: the
               * five-sampler schedule's final pass binds three of them
@@ -407,7 +448,7 @@ m9_draw_job_valid(const struct m9_draw_job *job)
             if (sel == M9_PASS_UNIT_PLACEHOLDER) {
                if (!job->placeholder || !job->placeholder->handle)
                   return false;
-            } else if (sel >= job->unit_count) {
+            } else if (sel != M9_PASS_UNIT_NONE && sel >= job->unit_count) {
                return false;
             }
          }
@@ -458,13 +499,47 @@ m9_batch_emit_draw_job(struct m9_batch *batch, const struct m9_draw_job *job)
    const_pairs = job->vs_const_pairs ? job->vs_const_pairs :
                                        M9_VS_CONST_PAIRS;
    m9_batch_checkpoint(batch, &checkpoint);
+   for (unsigned pi = 0, n = MAX2(job->pass_count, 1u); pi < n; pi++) {
+      /* The raster stage drains what preprocessing produced, so a pass
+       * that runs again preprocesses again; a single-pass job emits
+       * exactly the captured stream. */
+      /* A range break separates a raster pass from the preprocessing range
+       * of the next one; passes that share a preprocessing range follow
+       * each other inside a single raster range, as the vendor's own
+       * five-pass schedule does. */
+      bool brk = job->preprocess_per_pass && pi + 1 < n;
 
-   /* Preprocessing pass: dependency steps 0 and 1. */
-   EMIT(V(0xe6, 3), V(0xe3, 0x00));
+      if (!pi || job->preprocess_per_pass) {
+         ret = m9_emit_preprocess(batch, job, decl, decl_count, record_bytes,
+                                  const_pairs, m9_pass_dependency(job, pi));
+         if (ret)
+            goto fail;
+      }
+      ret = m9_emit_raster_range(batch, job,
+                                 job->pass_count ? &job->passes[pi] : NULL,
+                                 pi, !brk);
+      if (ret)
+         goto fail;
+   }
+   return 0;
+fail:
+   m9_batch_rollback(batch, &checkpoint);
+   return ret;
+}
+
+/* Preprocessing pass: two dependency steps from base. */
+static int
+m9_emit_preprocess(struct m9_batch *batch, const struct m9_draw_job *job,
+                   const uint32_t *decl, unsigned decl_count,
+                   uint32_t record_bytes, unsigned const_pairs, uint32_t base)
+{
+   int ret = 0;
+
+   EMIT(V(0xe6, 3), V(0xe3, base));
    EMIT(V(0xe6, 3));
    EMIT(V(0xf0, 0xf0000400), V(0xef, 0x00288800), V(0xd7, 0x000050ae));
    EMIT(V(0x22, m9_preprocess_control(decl_count)));
-   EMIT(V(0xe6, 3), V(0xe3, 0x10));
+   EMIT(V(0xe6, 3), V(0xe3, base + 0x10));
    EMIT(R(0xb0, job->transient, VIEW(0), STREAM), V(0xb1, 0x68002000));
    EMIT(R(0xb2, job->transient, VIEW(3), STREAM), V(0xb3, 0x68002000));
    EMIT(R(0xb4, job->transient, VIEW(1), STREAM), V(0xb5, 0x68002000));
@@ -485,8 +560,12 @@ m9_batch_emit_draw_job(struct m9_batch *batch, const struct m9_draw_job *job)
         V(0x89, 0xfe201e92), V(0x8a, 0), V(0xc1, 0));
    EMIT(R(0x00, job->source, 0, SYSTEM), V(0x01, 0xf2fe014f),
         V(0x10, record_bytes));
+   /* The vertex program of a split shader sits behind every fragment
+    * pass, so its entry comes from the passes when fs is unset. */
    EMIT(R(0xc2, job->program, 0, PROGRAM),
-        V(0xc3, job->fs ? job->fs->vertex_entry : 4), V(0x8f, 0));
+        V(0xc3, job->fs ? job->fs->vertex_entry :
+                job->pass_count ? job->passes[0].fs.vertex_entry : 4),
+        V(0x8f, 0));
    EMIT(V(0x8c, 0x00500000 | const_pairs << 8),
         R(0x8d, job->system, M9_VS_CONST_OFFSET, SYSTEM),
         R(0x8e, job->system, M9_VS_CONST_OFFSET + 8 * const_pairs, SYSTEM),
@@ -509,18 +588,6 @@ m9_batch_emit_draw_job(struct m9_batch *batch, const struct m9_draw_job *job)
                                     0x20000000);
    if (!ret)
       ret = m9_batch_emit_range_break(batch);
-   if (ret)
-      goto fail;
-
-   for (unsigned pi = 0, n = MAX2(job->pass_count, 1u); pi < n; pi++) {
-      ret = m9_emit_raster_range(batch, job,
-                                 job->pass_count ? &job->passes[pi] : NULL,
-                                 pi, pi + 1 == n);
-      if (ret)
-         goto fail;
-   }
-   return 0;
 fail:
-   m9_batch_rollback(batch, &checkpoint);
    return ret;
 }

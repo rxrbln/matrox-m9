@@ -18,11 +18,12 @@
  * allocation bound; no capture names a hardware program length. */
 #define M9_PROGRAM_MAX_BYTES      0x40000u
 #define M9_FRAGMENT_DB_MIN_BYTES  0x1c000u
-#define M9_TRANSIENT_VIEWS        11u
-/* Views 0..3 belong to the vertex program, 4..6 carry CPU varyings, one per
- * interpolated input or distinct texture coordinate -- seven of them,
- * because the raster pass keeps three of its ten stream slots for
- * position, c and d. */
+#define M9_TRANSIENT_VIEWS        20u
+/* Views 0..3 belong to the vertex program and the rest carry CPU varyings,
+ * one per interpolated input or distinct texture coordinate.  One raster
+ * pass reads at most seven of them, because it keeps three of its ten
+ * stream slots for position, c and d; a shader split across passes needs
+ * one view per coordinate of every pass, so the arena holds more. */
 #define M9_TRANSIENT_CPU_VIEW     4u
 #define M9_TRANSIENT_VIEW_BYTES   0x16800u
 #define M9_TRANSIENT_VERTEX_BYTES 16u
@@ -181,6 +182,9 @@ int m9_raster_fs_init(struct m9_raster_fs *r, unsigned vertex_entry,
                       uint32_t r88, unsigned const_count,
                       unsigned varying_count, const bool *flat_link,
                       const uint32_t *varying_view);
+/* A texel slot whose value comes from a record, not from a sampler: it
+ * links no coordinate stream and declares no attribute. */
+#define M9_RASTER_COORD_NONE 0xffu
 /* Texture k links coordinate stream texture_coord[k] as attribute 5+k. */
 int m9_raster_fs_init_textured(struct m9_raster_fs *r, unsigned vertex_entry,
                                uint32_t r88, unsigned const_count,

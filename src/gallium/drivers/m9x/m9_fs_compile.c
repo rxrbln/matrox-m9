@@ -148,6 +148,12 @@ struct ctx {
       bool ref_literal;
    } alpha;
    bool has_consts;
+   /* Values earlier raster passes produce, reachable through the record:
+    * cut[i] is what pass i handed on, and reading it here binds a route. */
+   nir_def *cut[M9_FS_MAX_PASSES];
+   unsigned cut_count;
+   nir_def *root;       /* value this pass computes, NULL the shader output */
+   bool record_out;     /* write 0x11/0x13 for a later pass, not the colour */
    bool custom_consts;  /* a template supplies the whole constant span */
    bool depth_first;    /* schedule operands before breadth, for pressure */
    bool no_gather_reuse;  /* rebuild each assembled vector, for pressure */
@@ -165,6 +171,18 @@ struct gather_key {
 #define NUM(c, a, t) util_dynarray_num_elements(&(c)->a, t)
 
 static const char fail_out_of_temporaries[] = "out of temporaries";
+static const char fail_too_many_textures[] =
+   "more texture fetches than one raster pass can bind";
+
+unsigned
+m9_fs_sampler_count(const struct m9_fs_program *program)
+{
+   unsigned n = 0;
+
+   for (unsigned i = 0; i < program->texture_count; i++)
+      n += program->texture_source[i] == M9_FS_ROUTE_NONE;
+   return n;
+}
 
 static bool
 fail_at(struct ctx *c, const char *reason, int line)
@@ -406,6 +424,7 @@ pair_swizzled(struct ctx *c, int n)
 }
 
 static int varying_slot(struct ctx *c, unsigned location);
+static int build_route(struct ctx *c, unsigned pass);
 static int build_vec(struct ctx *c, nir_scalar s[4]);
 static int build_def(struct ctx *c, nir_def *def);
 
@@ -671,6 +690,34 @@ m9_fs_coord_affine_same(const struct m9_fs_coord_affine *a,
    return true;
 }
 
+/* A value an earlier raster pass handed over through the record.  It
+ * arrives in the register pair a texel does, so it takes a texel slot and
+ * the rest of the program cannot tell the two apart; what differs is that
+ * the emitter binds a route at 0x74 + k instead of a texture at 0x70 + k.
+ * docs/parhelia-m9-fragment-pass-routes.md */
+static int
+build_route(struct ctx *c, unsigned pass)
+{
+   struct m9_fs_program *p = c->p;
+   int n;
+
+   for (unsigned i = 0; i < p->texture_count; i++)
+      if (p->texture_source[i] == pass) {
+         n = node_new(c, N_TEX);
+         if (n >= 0)
+            NODES(c)[n].texel = 4 * i;
+         return n;
+      }
+   if (p->texture_count >= M9_FS_MAX_TEXTURES)
+      return fail(c, fail_too_many_textures), -1;
+   p->texture_source[p->texture_count] = pass;
+   n = node_new(c, N_TEX);
+   if (n < 0)
+      return -1;
+   NODES(c)[n].texel = 4 * p->texture_count++;
+   return n;
+}
+
 static int
 build_tex(struct ctx *c, nir_tex_instr *tex)
 {
@@ -740,7 +787,8 @@ build_tex(struct ctx *c, nir_tex_instr *tex)
    /* Fetches that agree in sampler and coordinate read one texel pair: a
     * unit carries a fetch, and two of them would sample the same place. */
    for (unsigned i = 0; i < p->texture_count; i++)
-      if (p->textures[i] == tex->texture_index && p->texcoords[i] == location &&
+      if (p->texture_source[i] == M9_FS_ROUTE_NONE &&
+          p->textures[i] == tex->texture_index && p->texcoords[i] == location &&
           p->texcoord_components[i] == coord_comp[0] &&
           p->texcoord_projective[i] == (pi >= 0) &&
           p->texcoord_shadow[i] == tex->is_shadow &&
@@ -752,11 +800,12 @@ build_tex(struct ctx *c, nir_tex_instr *tex)
          return n;
       }
    if (p->texture_count >= M9_FS_MAX_TEXTURES)
-      return fail(c, "more texture fetches than one raster pass can bind"), -1;
+      return fail(c, fail_too_many_textures), -1;
    /* An even pair is a captured slot half.  An odd pair is repacked per
     * vertex by the driver, which needs one texture to own the stream. */
    for (unsigned i = 0; i < p->texture_count; i++)
-      if (p->texcoords[i] == location &&
+      if (p->texture_source[i] == M9_FS_ROUTE_NONE &&
+          p->texcoords[i] == location &&
           ((coord_comp[0] & 1) || (p->texcoord_components[i] & 1)))
          return fail(c, "texture coordinate is not a varying"), -1;
    p->texcoord_affine[p->texture_count] = affine;
@@ -765,6 +814,7 @@ build_tex(struct ctx *c, nir_tex_instr *tex)
    p->textures[p->texture_count] = tex->texture_index;
    p->texcoords[p->texture_count] = location;
    p->texcoord_components[p->texture_count] = coord_comp[0];
+   p->texture_source[p->texture_count] = M9_FS_ROUTE_NONE;
    n = node_new(c, N_TEX);
    if (n < 0)
       return -1;
@@ -1556,6 +1606,13 @@ build_def(struct ctx *c, nir_def *def)
       if (it->def == def)
          return it - NODES(c);
    }
+   for (unsigned i = 0; i < c->cut_count; i++)
+      if (c->cut[i] == def) {
+         n = build_route(c, i);
+         if (n >= 0)
+            NODES(c)[n].def = def;
+         return n;
+      }
    switch (instr->type) {
    case nir_instr_type_intrinsic:
       n = build_intrinsic(c, nir_instr_as_intrinsic(instr));
@@ -1882,8 +1939,8 @@ varying_slot(struct ctx *c, unsigned location)
     * coordinates that are shared or folded, is re-checked at variant
     * creation.  The predicate is shared with the emitter so the two
     * cannot disagree. */
-   if (!m9_raster_fs_layout_ok(p->varying_count + 1, p->texture_count,
-                               p->texture_count))
+   if (!m9_raster_fs_layout_ok(p->varying_count + 1,
+                               m9_fs_sampler_count(p), p->texture_count))
       return fail(c, "too many interpolated inputs"), -1;
    p->varyings[p->varying_count].location = location;
    p->varyings[p->varying_count].components = 0xf;
@@ -2571,9 +2628,11 @@ allocate(struct ctx *c)
                   reg = interp_extra[r];
             if (reg < 0)
                return fail(c, "out of interpolation registers");
-         } else if (s != (int)n - 1 && !reg_busy(busy, REG_S0)) {
+         } else if (!c->record_out && s != (int)n - 1 &&
+                    !reg_busy(busy, REG_S0)) {
             reg = REG_S0;
-         } else if (s != (int)n - 1 && !reg_busy(busy, REG_S1)) {
+         } else if (!c->record_out && s != (int)n - 1 &&
+                    !reg_busy(busy, REG_S1)) {
             reg = REG_S1;
          } else {
             v->general = true;
@@ -2728,8 +2787,13 @@ encode_lops(struct ctx *c)
       const struct lop *l = &LOPS(c)[s];
       const struct node *nd = &NODES(c)[l->node];
       bool out = l->dst < 0;
-      unsigned d = out ? OUT : (unsigned)VALUES(c)[l->dst].reg;
-      unsigned op0 = out ? (l->lane ? 0x1e : 0x1d) : 0x1c;
+      /* A pass that hands its result to a later one writes the record
+       * through 0x11 and 0x13 and never the colour output (CAPTURED, every
+       * producing pass of the seven two-pass cases). */
+      bool record = out && c->record_out;
+      unsigned d = !out ? (unsigned)VALUES(c)[l->dst].reg :
+                   record ? (l->lane ? REG_S1 : REG_S0) : OUT;
+      unsigned op0 = out && !record ? (l->lane ? 0x1e : 0x1d) : 0x1c;
       unsigned e = l->konst >= 0 ? const_ref(c, l->konst) : 0;
       bool pair = l->konst >= 0 && KEYS(c)[l->konst].pair;
       /* (v, v) literals read the first scalar only */
@@ -2742,7 +2806,7 @@ encode_lops(struct ctx *c)
       case L_INTERP:
          a = 0x40 + 8 * nd->k + 2 * l->lane;
          /* Interpolating straight into the output uses the 1a/1b group. */
-         if (out)
+         if (out && !record)
             mark_register(c, REG_I);
          emit(c, w0_make(a, 0x79, 0x44 + 8 * nd->k + l->lane, d, 0, op0),
               w1_make(0xae003c10, has, a));
@@ -3339,6 +3403,7 @@ assign_texels(struct ctx *c)
    unsigned order[M9_FS_MAX_TEXTURES], replicated = 0;
    uint8_t textures[M9_FS_MAX_TEXTURES], coords[M9_FS_MAX_TEXTURES];
    uint8_t comps[M9_FS_MAX_TEXTURES], pair_of[M9_FS_MAX_TEXTURES];
+   uint8_t source[M9_FS_MAX_TEXTURES];
    struct m9_fs_coord_affine affine[M9_FS_MAX_TEXTURES];
    bool projective[M9_FS_MAX_TEXTURES], shadow[M9_FS_MAX_TEXTURES];
 
@@ -3379,6 +3444,7 @@ assign_texels(struct ctx *c)
       affine[i] = p->texcoord_affine[order[i]];
       projective[i] = p->texcoord_projective[order[i]];
       shadow[i] = p->texcoord_shadow[order[i]];
+      source[i] = p->texture_source[order[i]];
       pair_of[order[i]] = i;
    }
    memcpy(p->textures, textures, p->texture_count);
@@ -3387,6 +3453,7 @@ assign_texels(struct ctx *c)
    memcpy(p->texcoord_affine, affine, sizeof(affine));
    memcpy(p->texcoord_projective, projective, sizeof(projective));
    memcpy(p->texcoord_shadow, shadow, sizeof(shadow));
+   memcpy(p->texture_source, source, p->texture_count);
    util_dynarray_foreach(&c->nodes, struct node, n) {
       if (n->kind == N_TEX)
          n->texel = 4 * pair_of[n->texel / 4];
@@ -3713,6 +3780,7 @@ reset_graph(struct ctx *c)
    util_dynarray_clear(&c->gathers);
    p->texture_count = 0;
    p->varying_count = 0;
+   memset(p->texture_source, M9_FS_ROUTE_NONE, sizeof(p->texture_source));
    p->fragcoord = false;
    memset(p->texcoord_projective, 0, sizeof(p->texcoord_projective));
 }
@@ -3724,9 +3792,12 @@ compile_output(struct ctx *c, nir_def *value, bool discard)
 {
    nir_scalar s[4];
    bool all_const = true, fragcoord = false;
+   unsigned comps = value->num_components;
 
    for (unsigned i = 0; i < 4; i++) {
-      s[i] = nir_scalar_chase_movs(nir_get_scalar(value, i));
+      /* A record slot always holds four scalars; a narrower value repeats
+       * its own components rather than costing new ones. */
+      s[i] = nir_scalar_chase_movs(nir_get_scalar(value, i % comps));
       all_const &= nir_scalar_is_const(s[i]);
       fragcoord |= scalar_is_input(s[i], VARYING_SLOT_POS, i);
    }
@@ -3882,8 +3953,22 @@ compile_impl(struct ctx *c, nir_function_impl *impl)
          first &= intr->intrinsic == nir_intrinsic_terminate;
       }
    }
-   if (!store)
+   if (!store && !c->root)
       return fail(c, "no color output");
+   if (c->root) {
+      /* A producing pass computes one value for the record; the discard and
+       * alpha-test templates belong to the pass that writes the colour. */
+      if (kill || discard)
+         return fail(c, "a split pass cannot discard");
+      if (!compile_output(c, c->root, false))
+         return false;
+      if (!encode_lops(c))
+         return false;
+      finish_slots(c);
+      if (!c->custom_consts)
+         const_tail(c);
+      return true;
+   }
    if (kill && match_alpha_test(c, kill, store->src[0].ssa))
       c->alpha.enabled = true;
    else if (kill && (discard || !tmpl_stipple(c, kill, store->src[0].ssa)))
@@ -4075,16 +4160,45 @@ vectorize_around_chains(const nir_instr *instr, const void *data)
    return is_transcendental(instr, data) ? 1 : 4;
 }
 
-bool
-m9_fs_compile(struct nir_shader *nir, const struct m9_fs_blend *blend,
-              struct m9_fs_program *program, const char **reason)
+/* st hands IO and arithmetic over scalarised; the native program is a
+ * two-component machine, so put the vectors back before anything reads it.
+ * The passes of a split shader share one prepared NIR. */
+static void
+fs_prepare(nir_shader *nir)
+{
+   NIR_PASS(_, nir, nir_opt_vectorize_io,
+            nir_var_shader_in | nir_var_shader_out, false);
+   NIR_PASS(_, nir, nir_opt_vectorize, NULL, NULL);
+   NIR_PASS(_, nir, nir_lower_alu_to_scalar, is_transcendental, NULL);
+   NIR_PASS(_, nir, nir_opt_vectorize, vectorize_around_chains, NULL);
+   NIR_PASS(_, nir, nir_opt_copy_prop);
+   /* Scalarising a vector special function leaves one chain per component,
+    * and the components are often the same argument. */
+   NIR_PASS(_, nir, nir_opt_cse);
+   NIR_PASS(_, nir, nir_opt_dce);
+}
+
+/* One raster pass: the shader output, or the value root a producing pass
+ * hands on, with the values earlier passes produced available as routes. */
+static bool
+fs_compile_pass(nir_shader *nir, const struct m9_fs_blend *blend,
+                struct m9_fs_program *program, nir_def *root, bool record_out,
+                nir_def *const *cuts, unsigned cut_count, const char **reason)
 {
    /* ONE/ZERO is the unblended program, as the vendor emits it. */
    bool opaque = !blend || (blend->src == M9_FS_ONE && blend->dst == M9_FS_ZERO);
-   struct ctx c = { .nir = nir, .p = program, .blend = opaque ? NULL : blend };
+   struct ctx c = { .nir = nir, .p = program, .blend = opaque ? NULL : blend,
+                    .root = root, .record_out = record_out,
+                    .cut_count = cut_count };
    bool ok = false;
 
    memset(program, 0, sizeof(*program));
+   memset(program->texture_source, M9_FS_ROUTE_NONE,
+          sizeof(program->texture_source));
+   program->writes_record = record_out;
+   program->record_components = root ? root->num_components : 4;
+   for (unsigned i = 0; i < cut_count; i++)
+      c.cut[i] = cuts[i];
    util_dynarray_init(&program->slots, NULL);
    util_dynarray_init(&program->consts, NULL);
    util_dynarray_init(&c.nodes, NULL);
@@ -4097,18 +4211,6 @@ m9_fs_compile(struct nir_shader *nir, const struct m9_fs_blend *blend,
    if (nir->info.stage != MESA_SHADER_FRAGMENT) {
       fail(&c, "not a fragment shader");
    } else {
-      /* st hands IO and arithmetic over scalarised; the native program is
-       * a two-component machine, so put the vectors back first. */
-      NIR_PASS(_, nir, nir_opt_vectorize_io,
-               nir_var_shader_in | nir_var_shader_out, false);
-      NIR_PASS(_, nir, nir_opt_vectorize, NULL, NULL);
-      NIR_PASS(_, nir, nir_lower_alu_to_scalar, is_transcendental, NULL);
-      NIR_PASS(_, nir, nir_opt_vectorize, vectorize_around_chains, NULL);
-      NIR_PASS(_, nir, nir_opt_copy_prop);
-      /* Scalarising a vector special function leaves one chain per
-       * component, and the components are often the same argument. */
-      NIR_PASS(_, nir, nir_opt_cse);
-      NIR_PASS(_, nir, nir_opt_dce);
       nir_foreach_function_impl(impl, nir) {
          if (!impl->function->is_entrypoint)
             continue;
@@ -4127,6 +4229,286 @@ m9_fs_compile(struct nir_shader *nir, const struct m9_fs_blend *blend,
       memset(program, 0, sizeof(*program));
    }
    return ok;
+}
+
+bool
+m9_fs_compile(struct nir_shader *nir, const struct m9_fs_blend *blend,
+              struct m9_fs_program *program, const char **reason)
+{
+   if (nir->info.stage == MESA_SHADER_FRAGMENT)
+      fs_prepare(nir);
+   return fs_compile_pass(nir, blend, program, NULL, false, NULL, 0, reason);
+}
+
+/* Splitting one shader across raster passes */
+
+/* Fetches a shader may hold while it is being split, one bit each. */
+#define M9_FS_SPLIT_FETCHES 64u
+
+/* What one value reaches: the fetches below it, and the records of earlier
+ * passes it reads instead of recomputing them. */
+struct fs_cone {
+   uint64_t tex;
+   uint32_t routes;
+   bool done;
+};
+
+struct fs_split {
+   struct fs_cone *cone;      /* per SSA definition index */
+   uint8_t *fetch;            /* fetch number of a texture definition */
+   nir_def *const *cut;
+   unsigned cut_count;
+   nir_def *extra;            /* a cut under trial, numbered cut_count */
+   unsigned defs;
+};
+
+static unsigned
+fs_cone_slots(const struct fs_cone *cone)
+{
+   return util_bitcount64(cone->tex) + util_bitcount(cone->routes);
+}
+
+static const struct fs_cone *fs_cone_of(struct fs_split *sp, nir_def *def);
+
+static bool
+fs_cone_src(nir_src *src, void *data)
+{
+   struct fs_split *sp = data;
+   const struct fs_cone *sub = fs_cone_of(sp, src->ssa);
+   struct fs_cone *cone = sp->cone + sp->defs;  /* the accumulator */
+
+   cone->tex |= sub->tex;
+   cone->routes |= sub->routes;
+   return true;
+}
+
+static const struct fs_cone *
+fs_cone_of(struct fs_split *sp, nir_def *def)
+{
+   struct fs_cone *cone = &sp->cone[def->index], *acc = sp->cone + sp->defs;
+   nir_instr *instr;
+   struct fs_cone saved;
+
+   if (cone->done)
+      return cone;
+   cone->done = true;
+   for (unsigned i = 0; i < sp->cut_count; i++)
+      if (sp->cut[i] == def) {
+         cone->routes = BITFIELD_BIT(i);
+         return cone;
+      }
+   if (sp->extra == def) {
+      cone->routes = BITFIELD_BIT(sp->cut_count);
+      return cone;
+   }
+   instr = nir_def_instr(def);
+   if (instr->type == nir_instr_type_tex)
+      cone->tex = BITFIELD64_BIT(sp->fetch[def->index]);
+   /* One accumulator serves the walk; recursion saves and restores it. */
+   saved = *acc;
+   acc->tex = cone->tex;
+   acc->routes = cone->routes;
+   nir_foreach_src(instr, fs_cone_src, sp);
+   cone->tex = acc->tex;
+   cone->routes = acc->routes;
+   *acc = saved;
+   return cone;
+}
+
+static void
+fs_cone_reset(struct fs_split *sp, nir_def *extra)
+{
+   memset(sp->cone, 0, (sp->defs + 1) * sizeof(*sp->cone));
+   sp->extra = extra;
+}
+
+/* The value a producing pass should hand on: the one absorbing the most
+ * fetches while staying inside the four units a pass binds, and leaving the
+ * rest of the shader strictly smaller than it was. */
+static nir_def *
+fs_choose_cut(struct fs_split *sp, nir_function_impl *impl, nir_def *out,
+              unsigned limit, nir_def *const *rejected, unsigned rejects)
+{
+   nir_def *best = NULL;
+   unsigned best_tex = 0, best_rest = ~0u, current;
+
+   fs_cone_reset(sp, NULL);
+   /* Progress is measured in fetches left to the rest of the shader, not
+    * in units: a cut costs the consumer a unit of its own, so a schedule
+    * of one fetch a pass would otherwise look like no progress at all. */
+   current = util_bitcount64(fs_cone_of(sp, out)->tex);
+   nir_foreach_block(block, impl) {
+      nir_foreach_instr(instr, block) {
+         nir_def *def = nir_instr_def(instr);
+         const struct fs_cone *cone;
+         unsigned tex, rest;
+         bool skip = false;
+
+         if (!def || def == out || def->bit_size != 32 ||
+             def->num_components > 4)
+            continue;
+         for (unsigned i = 0; i < sp->cut_count; i++)
+            skip |= sp->cut[i] == def;
+         for (unsigned i = 0; i < rejects; i++)
+            skip |= rejected[i] == def;
+         if (skip)
+            continue;
+         fs_cone_reset(sp, NULL);
+         cone = fs_cone_of(sp, def);
+         tex = util_bitcount64(cone->tex);
+         if (!tex || fs_cone_slots(cone) > limit)
+            continue;
+         fs_cone_reset(sp, def);
+         {
+            const struct fs_cone *left = fs_cone_of(sp, out);
+
+            if (util_bitcount64(left->tex) >= current)
+               continue;
+            rest = fs_cone_slots(left);
+         }
+         if (debug_get_bool_option("M9X_DEBUG_SPLIT", false))
+            fprintf(stderr, "m9x split: candidate %%%u comps %u tex %u "
+                    "slots %u rest %u current %u\n", def->index,
+                    def->num_components, tex, fs_cone_slots(cone), rest,
+                    current);
+         if (tex > best_tex || (tex == best_tex && rest < best_rest)) {
+            best = def;
+            best_tex = tex;
+            best_rest = rest;
+         }
+      }
+   }
+   return best;
+}
+
+bool
+m9_fs_compile_passes(struct nir_shader *nir, const struct m9_fs_blend *blend,
+                     struct m9_fs_passes *passes, const char **reason)
+{
+   nir_function_impl *impl = NULL;
+   nir_def *out = NULL, *cut[M9_FS_MAX_PASSES], *rejected[M9_FS_MAX_PASSES];
+   struct fs_split sp = { .cut = cut };
+   unsigned fetches = 0, rejects = 0;
+   bool ok = false;
+
+   *reason = NULL;
+   memset(passes, 0, sizeof(*passes));
+   if (nir->info.stage != MESA_SHADER_FRAGMENT) {
+      *reason = "not a fragment shader";
+      return false;
+   }
+   /* M9X_FS_FORCE_SPLIT=N splits a shader the engine would run in one pass
+    * and caps each producing pass at N units, which is how a schedule of
+    * the captured shape is exercised against the hardware. */
+   unsigned force = debug_get_num_option("M9X_FS_FORCE_SPLIT", 0);
+
+   fs_prepare(nir);
+   if (!force &&
+       fs_compile_pass(nir, blend, &passes->pass[0], NULL, false, NULL, 0,
+                       reason)) {
+      passes->count = 1;
+      return true;
+   }
+   if (!force && *reason != fail_too_many_textures)
+      return false;
+
+   impl = nir_shader_get_entrypoint(nir);
+   if (exec_list_length(&impl->body) != 1) {
+      *reason = "control flow";
+      return false;
+   }
+   nir_index_ssa_defs(impl);
+   sp.defs = impl->ssa_alloc;
+   sp.cone = calloc(sp.defs + 1, sizeof(*sp.cone));
+   sp.fetch = calloc(sp.defs ? sp.defs : 1, sizeof(*sp.fetch));
+   if (!sp.cone || !sp.fetch) {
+      *reason = "out of memory";
+      goto done;
+   }
+   nir_foreach_block(block, impl) {
+      nir_foreach_instr(instr, block) {
+         nir_intrinsic_instr *intr;
+
+         if (instr->type == nir_instr_type_tex) {
+            if (fetches >= M9_FS_SPLIT_FETCHES) {
+               *reason = "more texture fetches than the splitter tracks";
+               goto done;
+            }
+            sp.fetch[nir_instr_as_tex(instr)->def.index] = fetches++;
+            continue;
+         }
+         if (instr->type != nir_instr_type_intrinsic)
+            continue;
+         intr = nir_instr_as_intrinsic(instr);
+         if (intr->intrinsic == nir_intrinsic_terminate ||
+             intr->intrinsic == nir_intrinsic_terminate_if) {
+            *reason = "a split shader cannot discard";
+            goto done;
+         }
+         if (intr->intrinsic == nir_intrinsic_store_output)
+            out = intr->src[0].ssa;
+      }
+   }
+   if (!out) {
+      *reason = "no color output";
+      goto done;
+   }
+   for (passes->count = 0; passes->count + 1 < M9_FS_MAX_PASSES; ) {
+      unsigned i = passes->count;
+      nir_def *v;
+
+      /* A pass binds four units, the records it reads among them. */
+      v = fs_choose_cut(&sp, impl, out,
+                        force ? force : M9_FS_MAX_TEXTURES, rejected,
+                        rejects);
+      if (!v) {
+         if (i && fs_compile_pass(nir, blend, &passes->pass[i], NULL, false,
+                                  cut, sp.cut_count, reason)) {
+            passes->count++;
+            ok = true;
+            goto done;
+         }
+         *reason = "no value splits this shader into raster passes";
+         goto done;
+      }
+      if (!fs_compile_pass(nir, NULL, &passes->pass[i], v, true, cut,
+                           sp.cut_count, reason)) {
+         if (rejects >= ARRAY_SIZE(rejected))
+            goto done;
+         rejected[rejects++] = v;
+         continue;
+      }
+      cut[sp.cut_count++] = v;
+      passes->count++;
+      rejects = 0;
+      if (fs_compile_pass(nir, blend, &passes->pass[passes->count], NULL,
+                          false, cut, sp.cut_count, reason) &&
+          (!force ||
+           m9_fs_sampler_count(&passes->pass[passes->count]) <= force ||
+           passes->count + 1 >= M9_FS_MAX_PASSES - 1)) {
+         passes->count++;
+         ok = true;
+         goto done;
+      }
+      if (*reason != fail_too_many_textures)
+         goto done;
+   }
+   if (!ok && !*reason)
+      *reason = "more raster passes than the driver emits";
+done:
+   free(sp.cone);
+   free(sp.fetch);
+   if (!ok)
+      m9_fs_passes_fini(passes);
+   return ok;
+}
+
+void
+m9_fs_passes_fini(struct m9_fs_passes *passes)
+{
+   for (unsigned i = 0; i < M9_FS_MAX_PASSES; i++)
+      m9_fs_program_fini(&passes->pass[i]);
+   memset(passes, 0, sizeof(*passes));
 }
 
 void
@@ -4167,6 +4549,22 @@ m9_fs_raster_88(const struct m9_fs_program *program)
    } else if (program->discard || program->fragdepth) {
       r88 &= ~0x30u;
       low = 0xc;
+   }
+   /* A pass that writes the record instead of the colour sets two more
+    * flags, one place higher for every unit it binds.  Both captured
+    * producers follow it: 0110fffc where the producer samples nothing
+    * (the seven two-pass cases, 0xfff0 | 0x0c) and 0110dffb where it
+    * samples one (the five-sampler schedule, 0xffe3 | 0x18).  Two points
+    * fix the rule; beyond one unit it is UNTESTED. */
+   if (program->writes_record) {
+      /* M9X_RECORD_88 replaces the derived low nibbles, so the value can
+       * be swept against the hardware. */
+      int override = debug_get_num_option("M9X_RECORD_88", -1);
+
+      low = override >= 0 ? (unsigned)override & 0xff :
+                            low | 0x0cu << program->texture_count;
+      if (override >= 0)
+         r88 = (r88 & ~0xffu) | low;
    }
    if (debug_get_bool_option("M9X_DEBUG_FS", false))
       fprintf(stderr, "m9x fs: r88 %08x slots %u consts %u varyings %u "

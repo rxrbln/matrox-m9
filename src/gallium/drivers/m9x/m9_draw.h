@@ -42,18 +42,25 @@ struct m9_raster_pass {
    uint64_t const_offset;     /* byte offset of its constant span */
    bool writes_record;        /* binds the record at b0 instead of the target */
    uint32_t record_desc;      /* b1 of a record-writing pass */
+   /* Preprocessed records this pass draws from: the raster stage consumes
+    * what preprocessing produced, so every pass reads a copy of its own. */
+   uint32_t vertex_offset;    /* records before this pass's copy */
+   uint32_t index_offset;     /* bytes before its copy of the index run */
    uint32_t depth_control;    /* raster a8 of this pass */
+   uint32_t depth_ef;         /* raster ef depth bits of this pass */
    uint32_t a9, ae;           /* coverage words, which differ on a record pass */
    unsigned route_count;
    struct m9_pass_route routes[M9_TEXTURE_MAX_UNITS];
-   /* Application units this pass binds, as indices into the draw's unit
-    * array; M9_PASS_UNIT_PLACEHOLDER binds the 1x1 opaque black texture a
-    * record-writing pass still needs in slot 0. */
-   unsigned unit_count;
+   /* What each of the pass's texture slots binds, slot by slot: an index
+    * into the job's unit array, M9_PASS_UNIT_PLACEHOLDER for the 1x1
+    * opaque black texture a record-writing pass without one still needs,
+    * or M9_PASS_UNIT_NONE for a slot whose texel a route fills. */
+   unsigned unit_count;       /* slots described, the rest are cleared */
    uint8_t unit_index[M9_TEXTURE_MAX_UNITS];
 };
 
 #define M9_PASS_UNIT_PLACEHOLDER 0xffu
+#define M9_PASS_UNIT_NONE        0xfeu
 
 /* One two-pass job: shared pass state, GEM handles and its raster draws. */
 struct m9_draw_job {
@@ -96,10 +103,16 @@ struct m9_draw_job {
    const struct m9_raster_pass *passes;
    unsigned pass_count;
    uint32_t record;           /* VRAM inter-pass record surface */
+   /* Run the preprocessing pass again ahead of every raster pass: the
+    * raster stage drains the streams it produced, so a second pass over
+    * the same job finds nothing left unless they are produced again. */
+   bool preprocess_per_pass;
    /* Placeholder texture a record-writing pass binds in slot 0. */
    const struct m9_texture_unit *placeholder;
 };
 
+/* Dwords a restated raster draw costs beyond the first. */
+#define M9_JOB_DRAW_DWORDS 11u
 unsigned m9_draw_job_dwords(unsigned draw_count);
 /* Dwords a declaration of this many words costs beyond the pass-through five
  * the base job already counts. */
@@ -112,8 +125,12 @@ unsigned m9_draw_pass_dwords(unsigned draw_count, unsigned unit_count,
                              unsigned route_count);
 unsigned m9_draw_pass_relocs(unsigned draw_count, unsigned unit_count,
                              unsigned route_count);
-/* Dependency steps one raster pass advances; the kernel caps the value. */
-#define M9_PASS_DEPENDENCY_STEP 0x20u
+/* Dependency steps one pass advances.  Index e3 advances by 0x10 on every
+ * write across the whole submission, so a raster range claims three steps
+ * and a preprocessing range of its own two more; the kernel caps the value
+ * at PARHELIA_M9_DEPENDENCY_LIMIT. */
+#define M9_PASS_DEPENDENCY_STEP 0x30u
+#define M9_PASS_DEPENDENCY_FULL 0x50u
 int m9_batch_emit_draw_job(struct m9_batch *batch,
                            const struct m9_draw_job *job);
 

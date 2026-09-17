@@ -27,6 +27,12 @@ struct nir_shader_compiler_options;
  * four, the shader has to be split across raster passes; the contract is in
  * docs/parhelia-m9-fragment-pass-splitting.md. */
 #define M9_FS_MAX_TEXTURES 4u
+/* Raster passes one shader may be split across.  A pass binds four units,
+ * the first of which a continuation spends on the record it reads, so eight
+ * passes cover every corpus shader the backend otherwise supports. */
+#define M9_FS_MAX_PASSES 8u
+/* A texel slot fed by a sampler rather than by an inter-pass record. */
+#define M9_FS_ROUTE_NONE 0xffu
 
 enum m9_fs_const_kind {
    M9_FS_CONST_LITERAL,
@@ -104,6 +110,24 @@ struct m9_fs_program {
    uint16_t registers_used;       /* bit per register pair group 08..1f */
    bool discard, fragcoord, fragdepth;
    bool blend_dest;               /* raster f0 c5008200: destination blend */
+   /* A texel slot fed by the record a previous raster pass wrote: the index
+    * of the pass that produced it, M9_FS_ROUTE_NONE for an ordinary fetch.
+    * A routed value arrives in the register pair a texel does, so the rest
+    * of the program treats it as one.
+    * docs/parhelia-m9-fragment-pass-routes.md */
+   uint8_t texture_source[M9_FS_MAX_TEXTURES];
+   /* The program hands its result to a later pass through registers
+    * 0x11/0x13 instead of writing the colour output 0x2d. */
+   bool writes_record;
+   /* Scalars it hands on, 1..4; the record slot rounds up to a pair. */
+   unsigned record_components;
+};
+
+/* One fragment shader as the raster passes the engine runs it in.  Pass i
+ * hands its result to every later pass through record slot i. */
+struct m9_fs_passes {
+   struct m9_fs_program pass[M9_FS_MAX_PASSES];
+   unsigned count;
 };
 
 extern const struct nir_shader_compiler_options m9_fs_nir_options;
@@ -122,6 +146,15 @@ void m9_fs_inline_uniforms(struct nir_shader *nir, const uint32_t *values);
  * blend, or ONE/ZERO, writes the colour unblended. */
 bool m9_fs_compile(struct nir_shader *nir, const struct m9_fs_blend *blend,
                    struct m9_fs_program *program, const char **reason);
+/* The same, splitting a shader the engine cannot run in one raster pass
+ * across several of them.  A one-pass result is byte for byte what
+ * m9_fs_compile returns. */
+bool m9_fs_compile_passes(struct nir_shader *nir,
+                          const struct m9_fs_blend *blend,
+                          struct m9_fs_passes *passes, const char **reason);
+void m9_fs_passes_fini(struct m9_fs_passes *passes);
+/* Texel slots the pass fills from a sampler rather than from a record. */
+unsigned m9_fs_sampler_count(const struct m9_fs_program *program);
 void m9_fs_program_fini(struct m9_fs_program *program);
 unsigned m9_fs_slot_count(const struct m9_fs_program *program);
 uint32_t m9_fs_raster_88(const struct m9_fs_program *program);

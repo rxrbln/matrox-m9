@@ -236,15 +236,17 @@ struct m9_job_key {
    const struct m9_vs_program *vs;
    uint32_t vs_program;
    float viewport_scale[3], viewport_bias[3];
-   struct m9_texture_unit units[M9_TEXTURE_MAX_UNITS];
-   struct pipe_resource *unit_res[M9_TEXTURE_MAX_UNITS];
+   /* One entry a texture slot of every raster pass: a shader split across
+    * passes binds four in each of them. */
+   struct m9_texture_unit units[M9_DRAW_MAX_UNITS];
+   struct pipe_resource *unit_res[M9_DRAW_MAX_UNITS];
    /* Content over descriptor size of a sampled render target, s and t. */
-   float unit_scale[M9_TEXTURE_MAX_UNITS][2];
+   float unit_scale[M9_DRAW_MAX_UNITS][2];
    /* A coordinate the shader computed affinely from a varying, resolved
     * against the constant buffer and applied per vertex.  The third term
     * is the comparison reference of a shadow fetch. */
-   float coord_scale[M9_TEXTURE_MAX_UNITS][3];
-   float coord_bias[M9_TEXTURE_MAX_UNITS][3];
+   float coord_scale[M9_DRAW_MAX_UNITS][3];
+   float coord_bias[M9_DRAW_MAX_UNITS][3];
    unsigned unit_count;
 };
 
@@ -327,6 +329,10 @@ struct m9_context {
    struct util_dynarray target_depths;  /* struct m9_target_depth * */
    uint64_t target_clock;
    struct m9_resource placeholder_texture;  /* 1x1 unit-0 binding */
+   /* Per-fragment record a shader split across raster passes hands its
+    * values over through; grown to the largest target and stride seen. */
+   struct m9_resource record;
+   unsigned record_dwords;
    /* Pass-through fragment slots with a native vertex program behind them,
     * for a draw whose fragment shader keeps the captured colour image. */
    struct m9_resource vs_c2;

@@ -277,7 +277,8 @@ m9_raster_fs_init_textured(struct m9_raster_fs *r, unsigned vertex_entry,
        (coord_count && !coord_view) || (texture_count && !texture_coord))
       return -EINVAL;
    for (unsigned k = 0; k < texture_count; k++)
-      if (texture_coord[k] >= coord_count)
+      if (texture_coord[k] != M9_RASTER_COORD_NONE &&
+          texture_coord[k] >= coord_count)
          return -EINVAL;
    memset(r, 0, sizeof(*r));
    r->vertex_entry = vertex_entry;
@@ -303,9 +304,10 @@ m9_raster_fs_init_textured(struct m9_raster_fs *r, unsigned vertex_entry,
    /* Captured fs-tex2d/-two, pr-tex-mul-color: texture k reads its
     * coordinate stream as attribute 5+k, xyzw. */
    for (unsigned k = 0; k < texture_count; k++)
-      r->decl[r->decl_count++] = (5 + k) << 20 |
-                                 (varying_count + texture_coord[k]) << 16 |
-                                 0x0688;
+      if (texture_coord[k] != M9_RASTER_COORD_NONE)
+         r->decl[r->decl_count++] = (5 + k) << 20 |
+                                    (varying_count + texture_coord[k]) << 16 |
+                                    0x0688;
    r->decl[r->decl_count++] = streams << 16 | 0x0688;
    r->decl[r->decl_count++] = 0x00c00000u | (streams + 1) << 16 | 0x31b6;
    r->decl[r->decl_count++] = 0x00d00000u | (streams + 2) << 16 | 0x0688;

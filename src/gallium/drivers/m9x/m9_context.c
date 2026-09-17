@@ -82,6 +82,24 @@ struct m9_fs_state {
    struct util_dynarray variants;      /* struct m9_fs_variant * */
 };
 
+/* CPU views a split shader may need: one per interpolated input and one per
+ * distinct texture coordinate of every pass. */
+#define M9_FS_MAX_EXTRA (M9_TRANSIENT_VIEWS - M9_TRANSIENT_CPU_VIEW)
+
+/* Streams and units of one raster pass of a fragment shader. */
+struct m9_fs_pass_streams {
+   unsigned coord_count;               /* distinct texture coordinate streams */
+   uint8_t coord_location[M9_FS_MAX_TEXTURES];
+   uint8_t coord_component[M9_FS_MAX_TEXTURES];  /* slot half the stream carries */
+   int8_t coord_extra[M9_FS_MAX_TEXTURES];     /* CPU view of a coordinate stream, -1 for COL0 */
+   uint8_t texture_coord[M9_FS_MAX_TEXTURES];  /* coordinate stream per texel pair */
+   int8_t varying_extra[M9_FS_MAX_VARYINGS];   /* CPU view of an interpolated input */
+   /* Job unit pool entry of each texel slot; M9_PASS_UNIT_PLACEHOLDER binds
+    * the opaque-black texture a record-writing pass without one still needs,
+    * and a slot fed by a record binds no texture at all. */
+   uint8_t unit[M9_FS_MAX_TEXTURES];
+};
+
 /* A fragment state specialised on blend state and inlined uniform values. */
 struct m9_fs_variant {
    struct m9_fs_blend blend;
@@ -90,20 +108,46 @@ struct m9_fs_variant {
    uint32_t depth_texture;             /* samplers bound to a depth surface */
    bool ok;
    const char *reason;                 /* why the variant is not drawable */
-   struct m9_fs_program program;
+   /* The raster passes the shader runs as; one for everything the engine
+    * takes in a single pass. */
+   struct m9_fs_passes passes;
+   unsigned entry[M9_FS_MAX_PASSES];   /* c2 slot each pass enters at */
+   unsigned record_dwords;             /* stride of the inter-pass record */
    struct m9_resource c2;              /* fragment slots, then vertex program */
    /* The same fragment slots with a compiled vertex program behind them. */
    struct m9_resource native_c2;
    uint64_t native_c2_serial;
    unsigned vertex_entry;
    unsigned extra_count;               /* CPU view locations: varyings, then coordinates */
-   uint8_t extra_location[M9_FS_MAX_VARYINGS + M9_FS_MAX_TEXTURES];
-   unsigned coord_count;               /* distinct texture coordinate streams */
-   uint8_t coord_location[M9_FS_MAX_TEXTURES];
-   uint8_t coord_component[M9_FS_MAX_TEXTURES];  /* slot half the stream carries */
-   int8_t coord_extra[M9_FS_MAX_TEXTURES];     /* CPU view of a coordinate stream, -1 for COL0 */
-   uint8_t texture_coord[M9_FS_MAX_TEXTURES];  /* coordinate stream per texel pair */
+   uint8_t extra_location[M9_FS_MAX_EXTRA];
+   struct m9_fs_pass_streams stream[M9_FS_MAX_PASSES];
+   /* Application texture slots of every pass, in binding order. */
+   unsigned slot_count;
+   uint8_t slot_pass[M9_DRAW_MAX_UNITS], slot_index[M9_DRAW_MAX_UNITS];
+   /* Command budget of the job this variant builds: every pass emits its
+    * own preprocessing and raster range. */
+   unsigned relocs_base, relocs_draw, dwords_base, dwords_draw;
 };
+
+/* Words and relocations the passes of a variant cost for this many draws. */
+static unsigned
+m9_variant_relocs(const struct m9_fs_variant *v, unsigned draws)
+{
+   return v->relocs_base + draws * v->relocs_draw;
+}
+
+static unsigned
+m9_variant_dwords(const struct m9_fs_variant *v, unsigned draws)
+{
+   return v->dwords_base + (draws - 1) * v->dwords_draw;
+}
+
+/* The pass that writes the colour; it carries the blend the state asked for. */
+static inline const struct m9_fs_program *
+m9_fs_final(const struct m9_fs_variant *v)
+{
+   return &v->passes.pass[v->passes.count - 1];
+}
 
 struct m9_velems {
    unsigned count;
@@ -210,6 +254,28 @@ static unsigned m9_job_draws;
  * (m9-mesa-vs 14/14, m9-mesa-glsl 90/90, 2026-09-17). */
 static bool m9_native_vs;
 
+/* M9X_PASS_LOOP emits even a one-pass shader through the multi-pass loop. */
+static bool m9_pass_loop;
+/* M9X_SPLIT_STAGE isolates where a split job stops the engine, one binding
+ * at a time.  1 leaves the record unbound and the routes idle, 2 binds the
+ * record and keeps the routes idle, 3 is the real schedule, 4 binds the
+ * record object with an ordinary colour descriptor, 5 with the captured
+ * two-dword producer descriptor and 6 with the record format over the
+ * colour target's row span. */
+static unsigned m9_split_stage;
+/* M9X_SPLIT_PREPROCESS runs the preprocessing range ahead of every pass. */
+static bool m9_split_preprocess;
+/* M9X_SPLIT_SUBMIT=0 puts every pass of a split shader in one submission. */
+static bool m9_split_submit;
+/* M9X_SPLIT_PASSES=N emits only the first N passes of a split shader. */
+static unsigned m9_split_passes;
+/* M9X_SPLIT_COVERAGE=0 keeps the plain coverage words on a record pass. */
+static bool m9_split_coverage;
+/* M9X_SPLIT enables the multi-pass schedule.  It is off by default: a pass
+ * that binds the inter-pass record stalls the engine (MEASURED), so a
+ * shader past the four-fetch limit falls back instead of locking the
+ * device up. */
+static bool m9_split_enable;
 /* M9X_INDEXED=0 falls back to one record per index. */
 static bool m9_indexed_draws = true;
 static uint64_t m9_prof_ns[M9_PROF_COUNT];
@@ -692,31 +758,54 @@ m9_varying_from_pass(const struct m9_job_key *key, unsigned location)
    return location == VARYING_SLOT_COL0;
 }
 
-/* Raster constants and CPU varying views of a native fragment job. */
+/* The per-fragment record a split shader hands its values through.  Its
+ * granularity is not decoded, so m9_record_bytes covers one record per
+ * covered pixel rounded out to whole 64-pixel blocks; the object is grown
+ * rather than reallocated per job. */
+static bool
+m9_record_grow(struct m9_context *ctx, unsigned dwords, const char **reason)
+{
+   uint64_t bytes = m9_record_bytes(ctx->params.width, ctx->params.height,
+                                    dwords);
+
+   if (!bytes) {
+      *reason = "the inter-pass record has no size";
+      return false;
+   }
+   if (ctx->record.handle && ctx->record.size >= bytes &&
+       ctx->record_dwords >= dwords)
+      return true;
+   m9_bo_destroy(ctx->screen, &ctx->record);
+   if (m9_bo_create(ctx->screen, bytes, PARHELIA_M9_BO_VRAM,
+                    M9_RESOURCE_LINEAR_COLOR, &ctx->record)) {
+      *reason = "cannot allocate the inter-pass record";
+      ctx->record_dwords = 0;
+      return false;
+   }
+   ctx->record_dwords = dwords;
+   return true;
+}
+
+/* Raster constants, CPU varying views and per-pass state of a native
+ * fragment job.  A shader the engine runs in one pass produces one entry,
+ * which the emitter drives through its single-pass path unchanged. */
 static int
 m9_job_native(struct m9_context *ctx, const struct m9_job_key *key,
-              unsigned records, struct m9_raster_fs *raster)
+              unsigned records, unsigned index_bytes,
+              struct m9_raster_pass *out)
 {
    const struct m9_fs_variant *fs = key->variant;
-   const struct m9_fs_program *p = &fs->program;
    const float *extra = ctx->extra.data;
-   uint32_t views[M9_FS_MAX_VARYINGS], coords[M9_FS_MAX_TEXTURES];
-   bool flat[M9_FS_MAX_VARYINGS];
    unsigned cpu_streams = key->vs ? 0 : fs->extra_count;
-   unsigned cpu = 0;
+   uint64_t const_offset = M9_RASTER_CONST_OFFSET;
+   uint64_t t_varying;
+   int ret;
 
+   /* The spans of the passes lie consecutively in one arena, as the
+    * captured two-pass and five-sampler schedules lay them out. */
    memcpy((uint8_t *)ctx->system.map + M9_RASTER_CONST_OFFSET,
           ctx->job_consts.data, ctx->job_consts.size);
-   for (unsigned k = 0; k < p->varying_count; k++) {
-      flat[k] = m9_varying_is_color(p->varyings[k].location);
-      views[k] = m9_varying_from_pass(key, p->varyings[k].location) ? 0 :
-                 M9_TRANSIENT_CPU_VIEW + cpu++;
-   }
-   for (unsigned c = 0; c < fs->coord_count; c++)
-      coords[c] = m9_varying_from_pass(key, fs->coord_location[c]) ? 0 :
-                  M9_TRANSIENT_CPU_VIEW + cpu++;
-   uint64_t t_varying = m9_prof_begin();
-
+   t_varying = m9_prof_begin();
    for (unsigned j = 0; j < cpu_streams; j++) {
       uint8_t *view = (uint8_t *)ctx->cpu_streams.map +
                       j * M9_TRANSIENT_VIEW_BYTES;
@@ -724,17 +813,106 @@ m9_job_native(struct m9_context *ctx, const struct m9_job_key *key,
       for (unsigned r = 0; r < records; r++)
          memcpy(view + r * M9_TRANSIENT_VERTEX_BYTES,
                 extra + (r * fs->extra_count + j) * 4, 4 * sizeof(float));
+      /* Each pass draws its own copy of the geometry, so its varyings are
+       * repeated behind the first set. */
+      for (unsigned i = 1; i < fs->passes.count; i++)
+         memcpy(view + (uint64_t)i * records * M9_TRANSIENT_VERTEX_BYTES,
+                view, (uint64_t)records * M9_TRANSIENT_VERTEX_BYTES);
    }
    m9_prof_varying_bytes += (uint64_t)records * cpu_streams *
-                            M9_TRANSIENT_VERTEX_BYTES;
+                            fs->passes.count * M9_TRANSIENT_VERTEX_BYTES;
    m9_prof_end(M9_PROF_VARYING, t_varying);
-   return m9_raster_fs_init_textured(raster, fs->vertex_entry,
-                                     m9_fs_raster_88(p),
-                                     util_dynarray_num_elements(&p->consts,
-                                                                struct m9_fs_const),
-                                     p->varying_count, flat, views,
-                                     fs->coord_count, coords,
-                                     p->texture_count, fs->texture_coord);
+
+   for (unsigned i = 0; i < fs->passes.count; i++) {
+      const struct m9_fs_program *p = &fs->passes.pass[i];
+      const struct m9_fs_pass_streams *st = &fs->stream[i];
+      uint32_t views[M9_FS_MAX_VARYINGS], coords[M9_FS_MAX_TEXTURES];
+      bool flat[M9_FS_MAX_VARYINGS];
+      unsigned consts = util_dynarray_num_elements(&p->consts,
+                                                   struct m9_fs_const);
+      struct m9_raster_pass *pass = &out[i];
+
+      memset(pass, 0, sizeof(*pass));
+      /* A varying the preprocessing pass itself writes comes from stream
+       * view 0; everything else the CPU gathers into a view of its own. */
+      for (unsigned k = 0; k < p->varying_count; k++) {
+         flat[k] = m9_varying_is_color(p->varyings[k].location);
+         views[k] = st->varying_extra[k] < 0 ||
+                    m9_varying_from_pass(key, p->varyings[k].location) ? 0 :
+                    M9_TRANSIENT_CPU_VIEW + st->varying_extra[k];
+      }
+      for (unsigned c = 0; c < st->coord_count; c++)
+         coords[c] = st->coord_extra[c] < 0 ||
+                     m9_varying_from_pass(key, st->coord_location[c]) ? 0 :
+                     M9_TRANSIENT_CPU_VIEW + st->coord_extra[c];
+      ret = m9_raster_fs_init_textured(&pass->fs, fs->vertex_entry,
+                                       m9_fs_raster_88(p), consts,
+                                       p->varying_count, flat, views,
+                                       st->coord_count, coords,
+                                       p->texture_count, st->texture_coord);
+      if (ret)
+         return ret;
+      pass->entry = fs->entry[i];
+      pass->vertex_offset = i * records;
+      pass->index_offset = i * index_bytes;
+      pass->const_offset = const_offset;
+      const_offset += 8ull * consts;
+      pass->writes_record = p->writes_record && m9_split_stage != 1;
+      /* Every producer owns a four-dword slot of the record, so a pass
+       * reads the slots of the passes before it while writing its own. */
+      /* Stage 4 binds the record object with an ordinary colour
+       * descriptor, which separates the 0x77 record format from the
+       * allocation it names. */
+      pass->record_desc = !pass->writes_record ? 0 :
+                          m9_split_stage == 4 ? ctx->params.color_desc :
+                          m9_split_stage == 5 ?
+                          m9_record_desc(M9_RECORD_PAIR, 2, 0) :
+                          m9_split_stage == 6 ?
+                          m9_record_desc(M9_RECORD_SLOT, fs->record_dwords,
+                                         4 * i) |
+                          (ctx->params.color_desc & 0xffffu) :
+                          m9_record_desc(M9_RECORD_SLOT, fs->record_dwords,
+                                         4 * i);
+      /* The first pass writes depth and the later ones only test against
+       * what it left (CAPTURED, a8 0038038a then 00380388 in all seven
+       * two-pass cases; inert there, since their depth is off).  A shader
+       * that both tests and writes is therefore refused at variant
+       * creation rather than scheduled against its own result. */
+      pass->depth_control = i ? key->depth_control & ~0x2u :
+                                key->depth_control;
+      pass->depth_ef = i ? key->depth_ef & ~0x8000u : key->depth_ef;
+      pass->a9 = pass->writes_record && m9_split_coverage ? 0x88ffff00u :
+                                                           0x08ffff00u;
+      pass->ae = pass->writes_record && m9_split_coverage ? 0x32444442u :
+                                                           0x22444442u;
+      pass->unit_count = p->texture_count;
+      for (unsigned k = 0; k < M9_TEXTURE_MAX_UNITS; k++)
+         pass->routes[k].word = 0x100;
+      for (unsigned k = 0; k < p->texture_count; k++) {
+         pass->unit_index[k] = st->unit[k];
+         if (p->texture_source[k] == M9_FS_ROUTE_NONE ||
+             m9_split_stage == 1 || m9_split_stage == 2 ||
+             m9_split_stage == 4)
+            continue;
+         /* A routed value arrives in the texel registers of its own slot,
+          * so route index and texel slot are the same k. */
+         pass->routes[k].word =
+            m9_record_route(false, 4 * p->texture_source[k] + 1,
+                            4 * p->texture_source[k] + 2,
+                            4 * p->texture_source[k] + 3);
+         pass->routes[k].desc = m9_record_desc(M9_RECORD_SLOT,
+                                               fs->record_dwords,
+                                               4 * p->texture_source[k]);
+         pass->route_count = MAX2(pass->route_count, k + 1);
+      }
+      /* A record-writing pass that samples nothing still binds unit 0:
+       * setting 88 bit 20 without one stops the engine. */
+      if (!p->texture_count) {
+         pass->unit_index[0] = M9_PASS_UNIT_PLACEHOLDER;
+         pass->unit_count = 1;
+      }
+   }
+   return 0;
 }
 
 /* Job words, relocations, fragment slots and constants for offline decode. */
@@ -779,11 +957,18 @@ m9_dump_job(struct m9_context *ctx, const struct m9_fs_variant *fs)
               b->bos[i].handle, b->bos[i].flags, size);
    }
    if (fs) {
-      const uint32_t *w = fs->program.slots.data;
       const float *k = ctx->job_consts.data;
+      unsigned base = 0;
 
-      for (unsigned i = 0; i < m9_fs_slot_count(&fs->program); i++)
-         fprintf(out, "SLOT %u %08x %08x\n", i, w[2 * i], w[2 * i + 1]);
+      for (unsigned pi = 0; pi < fs->passes.count; pi++) {
+         const struct m9_fs_program *p = &fs->passes.pass[pi];
+         const uint32_t *w = p->slots.data;
+
+         for (unsigned i = 0; i < m9_fs_slot_count(p); i++)
+            fprintf(out, "SLOT %u %08x %08x\n", base + i, w[2 * i],
+                    w[2 * i + 1]);
+         base += m9_fs_slot_count(p);
+      }
       for (unsigned i = 0; i < ctx->job_consts.size / sizeof(float); i++)
          fprintf(out, "CONST %u %g\n", i, k[i]);
    }
@@ -802,7 +987,9 @@ m9_submit_job(struct m9_context *ctx)
    unsigned vs_decl_count = 0, vs_const_pairs = 0;
    const struct m9_fs_state *fs = key->fs;
    const struct m9_draw_record *first_draw = ctx->draws.data;
-   struct m9_raster_fs raster;
+   struct m9_raster_pass passes[M9_FS_MAX_PASSES];
+   struct m9_texture_unit placeholder;
+   unsigned pass_count = fs ? key->variant->passes.count : 0;
    struct m9_draw_job job;
    uint64_t point = 0;
    uint64_t t_submit;
@@ -832,22 +1019,33 @@ m9_submit_job(struct m9_context *ctx)
       return 0;
    }
    unsigned index_count = util_dynarray_num_elements(&ctx->indices, uint16_t);
+   /* Copies of the geometry the job preprocesses: one a raster pass. */
+   unsigned copies = MAX2(pass_count, 1u);
    uint64_t index_base = 0;
 
    /* Before a single byte of this job is written. */
    m9_arena_rotate(ctx);
    ret = ctx->lost ? -EIO :
          m9_arena_reserve(ctx, &ctx->source,
-                          (uint64_t)records * ctx->record_floats *
+                          (uint64_t)records * copies * ctx->record_floats *
                           sizeof(float));
    if (!ret && ctx->indices.size)
-      ret = m9_arena_reserve(ctx, &ctx->index, ctx->indices.size);
+      ret = m9_arena_reserve(ctx, &ctx->index, ctx->indices.size * copies);
    if (!ret) {
       uint64_t t_records = m9_prof_begin();
 
-      memcpy(ctx->source.map, ctx->records.data, ctx->records.size);
-      if (ctx->indices.size)
-         memcpy(ctx->index.map, ctx->indices.data, ctx->indices.size);
+      /* A split shader draws its geometry once a pass, each from its own
+       * copy of the preprocessed records. */
+      for (unsigned i = 0; i < copies; i++)
+         memcpy((uint8_t *)ctx->source.map + i * ctx->records.size,
+                ctx->records.data, ctx->records.size);
+      for (unsigned i = 0; i < (ctx->indices.size ? copies : 0); i++) {
+         uint16_t *out = (uint16_t *)ctx->index.map + i * index_count;
+         const uint16_t *in = ctx->indices.data;
+
+         for (unsigned k = 0; k < index_count; k++)
+            out[k] = in[k] + i * records;
+      }
       memcpy(ctx->system.map, ctx->params.system_prefix,
              sizeof(ctx->params.system_prefix));
       memcpy((uint8_t *)ctx->system.map + M9_LINKED_OFFSET,
@@ -871,8 +1069,20 @@ m9_submit_job(struct m9_context *ctx)
          if (!vs_decl_count || !vs_const_pairs)
             ret = -EINVAL;
       }
-      if (fs)
-         ret = m9_job_native(ctx, key, records, &raster);
+      if (fs) {
+         const char *why = NULL;
+
+         /* A split shader needs the record before its first pass runs. */
+         if (pass_count > 1 &&
+             !m9_record_grow(ctx, key->variant->record_dwords, &why)) {
+            m9_warn_once(ctx, M9_WARN_MEMORY, why);
+            m9_skip_reason(ctx, why);
+            ret = -EINVAL;
+         } else {
+            ret = m9_job_native(ctx, key, records,
+                                index_count * sizeof(uint16_t), passes);
+         }
+      }
       job = (struct m9_draw_job) {
          .params = &ctx->params,
          .decl = &ctx->decl,
@@ -887,9 +1097,9 @@ m9_submit_job(struct m9_context *ctx)
          .depth = key->depth->handle,
          .aux = key->aux->handle,
          .be = ctx->be.handle,
-         .source_vertices = records,
+         .source_vertices = records * copies,
          .index_base = (uint32_t)index_base,
-         .index_count = index_count,
+         .index_count = index_count * copies,
          .draws = ctx->draws.data,
          .draw_count = draws,
          .depth_control = key->depth_control,
@@ -897,13 +1107,37 @@ m9_submit_job(struct m9_context *ctx)
          .color_mask = key->color_mask,
          .clip_min = key->clip_min,
          .clip_max = key->clip_max,
-         .fs = fs ? &raster : NULL,
+         /* One pass is emitted through the single-pass path, so the
+          * captured stream is unchanged; more become a pass loop.
+          * M9X_PASS_LOOP drives a one-pass shader through the loop too,
+          * which separates a fault in the loop from one in the record. */
+         .fs = pass_count == 1 && !m9_pass_loop ? &passes[0].fs : NULL,
+         .passes = pass_count > 1 || (pass_count && m9_pass_loop) ?
+                   passes : NULL,
+         .pass_count = pass_count > 1 || (pass_count && m9_pass_loop) ?
+                       pass_count : 0,
          .units = first_draw->unit_count ? first_draw->units : NULL,
          .unit_count = first_draw->unit_count,
       };
       if (fs) {
          job.program = key->variant->c2.handle;
-         job.blend_dest = key->variant->program.blend_dest;
+         job.blend_dest = m9_fs_final(key->variant)->blend_dest;
+      }
+      if (pass_count > 1 || (pass_count && m9_pass_loop)) {
+         /* The unit pool of a split job is the key's, not a draw's: its
+          * passes index the pool and a draw cannot restate it. */
+         job.units = key->unit_count ? key->units : NULL;
+         job.unit_count = key->unit_count;
+         job.record = ctx->record.handle;
+         /* M9X_SPLIT_PREPROCESS=0 keeps one preprocessing range for the
+          * whole job, which is what the vendor emits; the default runs one
+          * ahead of every raster pass. */
+         job.preprocess_per_pass = m9_split_preprocess;
+         if (pass_count > 1 && m9_split_submit)
+            job.pass_count = 1;
+         m9_texture_unit_placeholder(&placeholder,
+                                     ctx->placeholder_texture.handle);
+         job.placeholder = &placeholder;
       }
       if (key->vs) {
          job.program = key->vs_program;
@@ -928,6 +1162,30 @@ m9_submit_job(struct m9_context *ctx)
                               ctx->context_id) :
             m9_batch_submit(ctx->screen, &ctx->command, &ctx->batch,
                             ctx->context_id, &point);
+      /* A second raster pass inside one submission stalls the engine
+       * (MEASURED): the vendor separates its passes with an engine
+       * transition the kernel does not accept.  Every pass after the
+       * first is therefore submitted on its own, which the transport
+       * serialises against the one before it. */
+      unsigned emit = m9_split_passes ? MIN2(m9_split_passes, copies) :
+                      copies;
+
+      for (unsigned pi = 1; !ret && m9_split_submit && pi < emit; pi++) {
+         m9_batch_init(&ctx->batch);
+         job.passes = &passes[pi];
+         job.pass_count = 1;
+         ret = m9_batch_emit_draw_job(&ctx->batch, &job);
+         if (ret)
+            break;
+         ctx->batch.sealed = true;
+         if (ctx->dump_path)
+            m9_dump_job(ctx, key->variant);
+         ret = ctx->dry_run ?
+               m9_batch_validate(ctx->screen, &ctx->command, &ctx->batch,
+                                 ctx->context_id) :
+               m9_batch_submit(ctx->screen, &ctx->command, &ctx->batch,
+                               ctx->context_id, &point);
+      }
       m9_prof_end(M9_PROF_IOCTL, t_ioctl);
    }
    if (ret == -EINVAL) {
@@ -950,7 +1208,7 @@ m9_submit_job(struct m9_context *ctx)
                  built ? "kernel" : "build",
                  ctx->batch.command_count, ctx->batch.reloc_count,
                  ctx->batch.bo_count, records, draws, key->unit_count,
-                 !!fs, fs ? (int)key->variant->program.blend_dest : -1,
+                 !!fs, fs ? (int)m9_fs_final(key->variant)->blend_dest : -1,
                  index_count, (unsigned)index_base, first_draw->index_first,
                  first_draw->index_count);
    } else if (ret) {
@@ -1003,20 +1261,26 @@ m9_job_reserve(struct m9_context *ctx, const struct m9_job_key *key,
                       ctx->record_floats : 0;
    float *out;
 
-   if (padded > m9_draw_max_source_vertices() || !record_floats)
+   /* A split shader preprocesses one copy of the geometry a pass. */
+   unsigned copies = key->variant && key->fs ? key->variant->passes.count : 1;
+
+   if (padded * copies > m9_draw_max_source_vertices() || !record_floats)
       return NULL;
    /* The bound textures are restated per draw, so they need not end a job;
     * only their extra stream words have to fit the command budget. */
+   unsigned passes = copies;
    bool units_differ = key->unit_count != ctx->job_key.unit_count ||
                        memcmp(key->units, ctx->job_key.units,
                               key->unit_count * sizeof(key->units[0]));
    unsigned unit_dwords = ctx->job_unit_dwords +
-                          (draws && units_differ ?
+                          (draws && units_differ && passes == 1 ?
                            m9_draw_units_dwords(key->unit_count) : 0);
 
    dwords = unit_dwords +
-            (key->fs ? m9_draw_job_dwords_fs(draws + 1, key->unit_count) :
-                       m9_draw_job_dwords(draws + 1)) +
+            (key->fs ?
+             (passes > 1 ? m9_variant_dwords(key->variant, draws + 1) :
+              m9_draw_job_dwords_fs(draws + 1, key->unit_count)) :
+             m9_draw_job_dwords(draws + 1)) +
             m9_draw_decl_dwords(key->vs ? 2 * key->vs->attr_count + 1 : 5);
    if (draws) {
       bool state = memcmp(key, &ctx->job_key,
@@ -1044,10 +1308,16 @@ m9_job_reserve(struct m9_context *ctx, const struct m9_job_key *key,
                       (key->vs && m9_consts_differ(vs_consts,
                                                    &ctx->job_vs_consts)) ||
                       record_floats != ctx->record_floats;
-      bool vertices_full = records + padded > m9_draw_max_source_vertices();
+      bool vertices_full = (records + padded) * copies >
+                           m9_draw_max_source_vertices();
+      unsigned relocs = passes > 1 ?
+                        m9_variant_relocs(key->variant, draws + 1) :
+                        m9_draw_job_relocs(draws + 1, key->unit_count);
+      /* A split shader binds one unit pool for the whole job, so a draw
+       * that needs another set starts a job of its own. */
       bool stream_full = dwords > M9_MAX_COMMAND_DWORDS ||
-                         m9_draw_job_relocs(draws + 1, key->unit_count) >
-                         M9_MAX_RELOCS ||
+                         relocs > M9_MAX_RELOCS ||
+                         (passes > 1 && units_differ) ||
                          (m9_job_draws && draws >= m9_job_draws);
 
       if (state || uniforms || vertices_full || stream_full) {
@@ -1164,10 +1434,12 @@ m9_job_commit(struct m9_context *ctx, float *out, float *extra,
       .cull = cull,
       .lines = lines,
       .flat = flat,
-      .unit_count = ctx->job_key.unit_count,
+      /* A draw restates the units of a single-pass shader; a split one
+       * binds one pool for the whole job, which the job carries. */
+      .unit_count = MIN2(ctx->job_key.unit_count, M9_TEXTURE_MAX_UNITS),
    };
    memcpy(draw->units, ctx->job_key.units,
-          ctx->job_key.unit_count * sizeof(draw->units[0]));
+          draw->unit_count * sizeof(draw->units[0]));
 }
 
 static struct m9_resource *
@@ -1230,7 +1502,8 @@ m9_fs_resolve_consts(struct m9_context *ctx, const struct m9_fs_variant *fs,
    if (data)
       data += cb->buffer_offset;
    util_dynarray_clear(out);
-   util_dynarray_foreach(&fs->program.consts, struct m9_fs_const, k) {
+   for (unsigned pi = 0; pi < fs->passes.count; pi++)
+   util_dynarray_foreach(&fs->passes.pass[pi].consts, struct m9_fs_const, k) {
       for (unsigned lane = 0; lane < 2; lane++) {
          float v = 0.0f;
 
@@ -1381,9 +1654,11 @@ static bool
 m9_job_textures(struct m9_context *ctx, const struct m9_fs_variant *fs,
                 struct m9_job_key *key)
 {
-   const struct m9_fs_program *p = &fs->program;
-
-   for (unsigned k = 0; k < p->texture_count; k++) {
+   /* One binding per texture slot of every raster pass, in the order the
+    * variant pooled them; a slot a record feeds binds nothing. */
+   for (unsigned u = 0; u < fs->slot_count; u++) {
+      const struct m9_fs_program *p = &fs->passes.pass[fs->slot_pass[u]];
+      unsigned k = fs->slot_index[u];
       unsigned slot = p->textures[k];
       struct pipe_sampler_view *view = slot < PIPE_MAX_SAMPLERS ?
                                        ctx->fs_views[slot] : NULL;
@@ -1396,14 +1671,14 @@ m9_job_textures(struct m9_context *ctx, const struct m9_fs_variant *fs,
       if (!view || !view->texture) {
          if (m9_debug_textures)
             fprintf(stderr, "m9x: unit %u slot %u has no view: placeholder "
-                    "(handle %u), textures %u\n", k, slot,
+                    "(handle %u), textures %u\n", u, slot,
                     ctx->placeholder_texture.handle, p->texture_count);
-         m9_texture_unit_placeholder(&key->units[k],
+         m9_texture_unit_placeholder(&key->units[u],
                                      ctx->placeholder_texture.handle);
-         key->unit_scale[k][0] = key->unit_scale[k][1] = 1.0f;
+         key->unit_scale[u][0] = key->unit_scale[u][1] = 1.0f;
          for (unsigned i = 0; i < 3; i++) {
-            key->coord_scale[k][i] = 1.0f;
-            key->coord_bias[k][i] = 0.0f;
+            key->coord_scale[u][i] = 1.0f;
+            key->coord_bias[u][i] = 0.0f;
          }
          continue;
       }
@@ -1411,7 +1686,7 @@ m9_job_textures(struct m9_context *ctx, const struct m9_fs_variant *fs,
 
       if (reason && view && view->texture && ctx->debug)
          fprintf(stderr, "m9x: unit %u view %s on %s swizzle %u%u%u%u: %s\n",
-                 k, util_format_short_name(view->format),
+                 u, util_format_short_name(view->format),
                  util_format_short_name(view->texture->format),
                  view->swizzle_r, view->swizzle_g, view->swizzle_b,
                  view->swizzle_a, reason);
@@ -1422,7 +1697,7 @@ m9_job_textures(struct m9_context *ctx, const struct m9_fs_variant *fs,
        * every one of the eight functions (MEASURED, m9-mesa-glsl
        * shadow:FUNC).  The vendor ICD's complemented readback is not what
        * this pipeline stores. */
-      if (!reason && m9_texture_unit_init(&key->units[k],
+      if (!reason && m9_texture_unit_init(&key->units[u],
                                           m9_res(view->texture)->handle,
                                           &bind, sampler))
          reason = "sampler wrap mode is not implemented; draw skipped";
@@ -1430,28 +1705,30 @@ m9_job_textures(struct m9_context *ctx, const struct m9_fs_variant *fs,
          m9_warn_once(ctx, M9_WARN_TEXTURE, reason);
          return m9_skip_reason(ctx, reason);
       }
-      key->unit_res[k] = view->texture;
+      key->unit_res[u] = view->texture;
       for (unsigned i = 0; i < 3; i++) {
-         key->coord_scale[k][i] =
+         key->coord_scale[u][i] =
             m9_coord_term(ctx, &p->texcoord_affine[k].scale[i]);
-         key->coord_bias[k][i] =
+         key->coord_bias[u][i] =
             m9_coord_term(ctx, &p->texcoord_affine[k].bias[i]);
       }
-      key->unit_scale[k][0] = (float)m9_res(view->texture)->width / bind.width;
-      key->unit_scale[k][1] = (float)m9_res(view->texture)->height / bind.height;
+      key->unit_scale[u][0] = (float)m9_res(view->texture)->width / bind.width;
+      key->unit_scale[u][1] = (float)m9_res(view->texture)->height / bind.height;
       /* Every wrap mode agrees inside the content; beyond it the hardware
        * wraps or clamps at the aligned span, including its padding. */
-      if (key->unit_scale[k][0] != 1.0f &&
+      if (key->unit_scale[u][0] != 1.0f &&
           sampler->wrap_s != PIPE_TEX_WRAP_CLAMP_TO_EDGE &&
           sampler->wrap_s != PIPE_TEX_WRAP_CLAMP_TO_BORDER &&
           sampler->wrap_s != PIPE_TEX_WRAP_CLAMP)
          m9_warn_once(ctx, M9_WARN_WRAP, "render targets of unaligned width "
                       "wrap at their 32-aligned span; samples outside the "
                       "content read padding");
-      for (unsigned j = 0; !reason && j < k; j++)
-         if (fs->texture_coord[j] == fs->texture_coord[k] &&
-             memcmp(key->unit_scale[j], key->unit_scale[k],
-                    sizeof(key->unit_scale[k])))
+      for (unsigned j = 0; !reason && j < u; j++)
+         if (fs->slot_pass[j] == fs->slot_pass[u] &&
+             fs->stream[fs->slot_pass[j]].texture_coord[fs->slot_index[j]] ==
+             fs->stream[fs->slot_pass[u]].texture_coord[k] &&
+             memcmp(key->unit_scale[j], key->unit_scale[u],
+                    sizeof(key->unit_scale[u])))
             reason = "textures of different spans share a coordinate; "
                      "draw skipped";
       if (reason) {
@@ -1459,8 +1736,8 @@ m9_job_textures(struct m9_context *ctx, const struct m9_fs_variant *fs,
          return m9_skip_reason(ctx, reason);
       }
    }
-   key->unit_count = p->texture_count;
-   if (!p->texture_count) {
+   key->unit_count = fs->slot_count;
+   if (!fs->slot_count) {
       m9_texture_unit_placeholder(&key->units[0], ctx->placeholder_texture.handle);
       key->unit_count = 1;
    }
@@ -1555,9 +1832,16 @@ m9_fs_variant_upload(struct m9_context *ctx, struct m9_fs_variant *v,
                      const char **reason)
 {
    const unsigned vs_slots = ARRAY_SIZE(m9_passthrough_c2_program) / 2 - 4;
-   unsigned slots = m9_fs_slot_count(&v->program);
-   uint64_t bytes = align64(8ull * (slots + vs_slots), 0x1000);
+   unsigned slots = 0;
+   uint64_t bytes;
 
+   /* One image holds the fragment program of every raster pass back to
+    * back, each entered at its own c3, then the vertex program. */
+   for (unsigned i = 0; i < v->passes.count; i++) {
+      v->entry[i] = slots;
+      slots += m9_fs_slot_count(&v->passes.pass[i]);
+   }
+   bytes = align64(8ull * (slots + vs_slots), 0x1000);
    if (bytes > M9_PROGRAM_MAX_BYTES) {
       *reason = "program exceeds the largest c2 image the driver allocates";
       return false;
@@ -1567,53 +1851,82 @@ m9_fs_variant_upload(struct m9_context *ctx, struct m9_fs_variant *v,
       *reason = "cannot allocate the c2 image";
       return false;
    }
-   /* Fragment slots first, the captured vertex program behind them. */
    memset(v->c2.map, 0, v->c2.size);
-   memcpy(v->c2.map, v->program.slots.data, 8 * slots);
+   for (unsigned i = 0; i < v->passes.count; i++)
+      memcpy((uint8_t *)v->c2.map + 8 * v->entry[i],
+             v->passes.pass[i].slots.data,
+             8 * m9_fs_slot_count(&v->passes.pass[i]));
    memcpy((uint8_t *)v->c2.map + 8 * slots, m9_passthrough_c2_program + 8,
           8 * vs_slots);
    v->vertex_entry = slots;
    return true;
 }
 
-/* CPU view order: non-colour varyings, then distinct coordinate streams. */
-static void
+/* CPU view order, pass by pass: non-colour varyings, then the pass's own
+ * distinct coordinate streams.  Passes share no stream: each interpolates
+ * what it reads, and a value handed on between them travels through the
+ * record instead. */
+static bool
 m9_fs_streams(struct m9_fs_variant *v)
 {
-   const struct m9_fs_program *p = &v->program;
+   for (unsigned i = 0; i < v->passes.count; i++) {
+      const struct m9_fs_program *p = &v->passes.pass[i];
+      struct m9_fs_pass_streams *st = &v->stream[i];
+      /* Two vec2 coordinate sets are packed into one varying slot, so a
+       * stream is a slot *half*: keying it by location alone gave both
+       * textures the same coordinates, and the second unit sampled where
+       * the first did. */
+      uint8_t c_owner[M9_FS_MAX_TEXTURES] = { 0 };
 
-   for (unsigned k = 0; k < p->varying_count; k++)
-      if (p->varyings[k].location != VARYING_SLOT_COL0)
+      for (unsigned k = 0; k < p->varying_count; k++) {
+         st->varying_extra[k] = -1;
+         if (p->varyings[k].location == VARYING_SLOT_COL0)
+            continue;
+         if (v->extra_count >= M9_FS_MAX_EXTRA)
+            return false;
+         st->varying_extra[k] = v->extra_count;
          v->extra_location[v->extra_count++] = p->varyings[k].location;
-   /* Two vec2 coordinate sets are packed into one varying slot, so a stream
-    * is a slot *half*: keying it by location alone gave both textures the
-    * same coordinates, and the second unit sampled where the first did. */
-    uint8_t c_owner[M9_FS_MAX_TEXTURES] = { 0 };
-
-   for (unsigned t = 0; t < p->texture_count; t++) {
-      unsigned half = p->texcoord_components[t] / 2;
-      unsigned c = 0;
-
-      /* A unit that transforms its coordinate needs a stream of its own:
-       * sharing one would sample both units at the same place. */
-      while (c < v->coord_count &&
-             (v->coord_location[c] != p->texcoords[t] ||
-              v->coord_component[c] != half ||
-              !m9_fs_coord_affine_same(&p->texcoord_affine[c_owner[c]],
-                                      &p->texcoord_affine[t])))
-         c++;
-      if (c == v->coord_count) {
-         c_owner[c] = t;
-         v->coord_extra[c] = -1;
-         v->coord_component[c] = half;
-         v->coord_location[v->coord_count++] = p->texcoords[t];
-         if (p->texcoords[t] != VARYING_SLOT_COL0) {
-            v->coord_extra[c] = v->extra_count;
-            v->extra_location[v->extra_count++] = p->texcoords[t];
-         }
       }
-      v->texture_coord[t] = c;
+      for (unsigned t = 0; t < p->texture_count; t++) {
+         unsigned half, c = 0;
+
+         /* A slot an earlier pass feeds through the record interpolates
+          * nothing and binds no texture of its own. */
+         if (p->texture_source[t] != M9_FS_ROUTE_NONE) {
+            st->texture_coord[t] = M9_RASTER_COORD_NONE;
+            st->unit[t] = M9_PASS_UNIT_NONE;
+            continue;
+         }
+         half = p->texcoord_components[t] / 2;
+         /* A unit that transforms its coordinate needs a stream of its own:
+          * sharing one would sample both units at the same place. */
+         while (c < st->coord_count &&
+                (st->coord_location[c] != p->texcoords[t] ||
+                 st->coord_component[c] != half ||
+                 !m9_fs_coord_affine_same(&p->texcoord_affine[c_owner[c]],
+                                         &p->texcoord_affine[t])))
+            c++;
+         if (c == st->coord_count) {
+            c_owner[c] = t;
+            st->coord_extra[c] = -1;
+            st->coord_component[c] = half;
+            st->coord_location[st->coord_count++] = p->texcoords[t];
+            if (p->texcoords[t] != VARYING_SLOT_COL0) {
+               if (v->extra_count >= M9_FS_MAX_EXTRA)
+                  return false;
+               st->coord_extra[c] = v->extra_count;
+               v->extra_location[v->extra_count++] = p->texcoords[t];
+            }
+         }
+         st->texture_coord[t] = c;
+         if (v->slot_count >= M9_DRAW_MAX_UNITS)
+            return false;
+         st->unit[t] = v->slot_count;
+         v->slot_pass[v->slot_count] = i;
+         v->slot_index[v->slot_count++] = t;
+      }
    }
+   return true;
 }
 
 /* A plain fetch of a depth surface returns the window depth in the texel's
@@ -1698,35 +2011,66 @@ m9_fs_variant(struct m9_context *ctx, struct m9_fs_state *fs,
                nir_metadata_control_flow, &v->depth_texture);
    if (ctx->debug)
       nir_print_shader(clone, stderr);
-   v->ok = m9_fs_compile(clone, &v->blend, &v->program, &v->reason);
+   v->ok = m9_fs_compile_passes(clone, &v->blend, &v->passes, &v->reason);
+   if (v->ok && v->passes.count > 1 && !m9_split_enable) {
+      m9_fs_passes_fini(&v->passes);
+      v->reason = "the multi-pass schedule is not enabled (M9X_SPLIT)";
+      v->ok = false;
+   }
    if (!v->ok && ctx->debug)
       fprintf(stderr, "m9x: variant refused: %s\n", v->reason);
    ralloc_free(clone);
    if (v->ok) {
-      m9_fs_streams(v);
-      if (v->extra_count > M9_TRANSIENT_VIEWS - M9_TRANSIENT_CPU_VIEW) {
+      /* Every pass but the last hands a four-dword slot to the ones after
+       * it, so the record's stride is four dwords a producer. */
+      v->record_dwords = 4 * (v->passes.count - 1);
+      if (!m9_fs_streams(v)) {
+         v->reason = "more CPU varying streams or texture slots than a job "
+                     "binds";
+         v->ok = false;
+      } else if (v->extra_count > M9_FS_MAX_EXTRA) {
          v->reason = "more CPU varying streams than transient views";
          v->ok = false;
+      }
       /* A varying on view 0 costs a raster stream without costing a CPU
-       * view, so the check above does not cover the pass's own limit;
+       * view, so the check above does not cover a pass's own limit;
        * without this the job builds and its draws are dropped instead of
        * the shader falling back. */
-      } else if (!m9_raster_fs_layout_ok(v->program.varying_count,
-                                         v->coord_count,
-                                         v->program.texture_count)) {
-         v->reason = "more raster streams than the pass has";
-         v->ok = false;
-      } else {
-         v->ok = m9_fs_variant_upload(ctx, v, &v->reason);
+      for (unsigned i = 0; v->ok && i < v->passes.count; i++)
+         if (!m9_raster_fs_layout_ok(v->passes.pass[i].varying_count,
+                                     v->stream[i].coord_count,
+                                     v->passes.pass[i].texture_count)) {
+            v->reason = "more raster streams than the pass has";
+            v->ok = false;
+         }
+      if (v->ok) {
+         for (unsigned i = 0; i < v->passes.count; i++) {
+            const struct m9_fs_program *p = &v->passes.pass[i];
+            unsigned units = MAX2(m9_fs_sampler_count(p), 1u);
+            unsigned routes = p->texture_count - m9_fs_sampler_count(p);
+
+            v->relocs_base += m9_draw_job_relocs(0, units) + routes;
+            v->relocs_draw += units + 2;
+            v->dwords_base += m9_draw_pass_dwords(1, units, routes);
+            v->dwords_draw += M9_JOB_DRAW_DWORDS;
+         }
+         if (m9_variant_relocs(v, 1) > M9_MAX_RELOCS ||
+             m9_variant_dwords(v, 1) > M9_MAX_COMMAND_DWORDS) {
+            v->reason = "the raster passes of this shader need more "
+                        "relocations than one submission carries";
+            v->ok = false;
+         }
       }
+      if (v->ok)
+         v->ok = m9_fs_variant_upload(ctx, v, &v->reason);
       if (!v->ok)
-         m9_fs_program_fini(&v->program);
+         m9_fs_passes_fini(&v->passes);
    }
    slot = util_dynarray_grow(&fs->variants, struct m9_fs_variant *, 1);
    if (!slot) {
       if (v->ok) {
          m9_bo_destroy(ctx->screen, &v->c2);
-         m9_fs_program_fini(&v->program);
+         m9_fs_passes_fini(&v->passes);
       }
       FREE(v);
       return NULL;
@@ -1955,9 +2299,12 @@ m9_scale_coords(const struct m9_job_key *key, float *extra)
 
    uint32_t packed = 0;
 
-   for (unsigned k = 0; k < v->program.texture_count; k++) {
-      int j = v->coord_extra[v->texture_coord[k]];
-      unsigned c = v->program.texcoord_components[k];
+   for (unsigned u = 0; u < v->slot_count; u++) {
+      const struct m9_fs_program *p = &v->passes.pass[v->slot_pass[u]];
+      const struct m9_fs_pass_streams *st = &v->stream[v->slot_pass[u]];
+      unsigned k = v->slot_index[u];
+      int j = st->coord_extra[st->texture_coord[k]];
+      unsigned c = p->texcoord_components[k];
 
       if (j < 0)
          continue;
@@ -1968,22 +2315,21 @@ m9_scale_coords(const struct m9_job_key *key, float *extra)
          extra[4 * j + 1] = extra[4 * j + c + 1];
          packed |= BITFIELD_BIT(j);
       }
-      if (v->program.texcoord_affine[k].present &&
-          !(folded & BITFIELD_BIT(j))) {
-         unsigned n = v->program.texcoord_shadow[k] ? 3 : 2;
+      if (p->texcoord_affine[k].present && !(folded & BITFIELD_BIT(j))) {
+         unsigned n = p->texcoord_shadow[k] ? 3 : 2;
 
          for (unsigned i = 0; i < n; i++)
-            extra[4 * j + i] = extra[4 * j + i] * key->coord_scale[k][i] +
-                               key->coord_bias[k][i];
+            extra[4 * j + i] = extra[4 * j + i] * key->coord_scale[u][i] +
+                               key->coord_bias[u][i];
          folded |= BITFIELD_BIT(j);
       }
-      if (v->program.texcoord_projective[k] && !(divided & BITFIELD_BIT(j))) {
+      if (p->texcoord_projective[k] && !(divided & BITFIELD_BIT(j))) {
          float q = extra[4 * j + 3];
 
          if (q != 0.0f && q != 1.0f) {
             extra[4 * j] /= q;
             extra[4 * j + 1] /= q;
-            if (v->program.texcoord_shadow[k])
+            if (p->texcoord_shadow[k])
                extra[4 * j + 2] /= q;
             extra[4 * j + 3] = 1.0f;
          }
@@ -1992,8 +2338,8 @@ m9_scale_coords(const struct m9_job_key *key, float *extra)
       /* The stream is shared, so its scale is applied once like every other
        * step here: two units on one coordinate scaled it twice. */
       if (!(scaled & BITFIELD_BIT(j))) {
-         extra[4 * j] *= key->unit_scale[k][0];
-         extra[4 * j + 1] *= key->unit_scale[k][1];
+         extra[4 * j] *= key->unit_scale[u][0];
+         extra[4 * j + 1] *= key->unit_scale[u][1];
          scaled |= BITFIELD_BIT(j);
       }
    }
@@ -2361,9 +2707,9 @@ m9_native_vs_c2(struct m9_context *ctx, struct m9_fs_variant *v)
    const struct m9_vs_state *vs = ctx->vs;
    struct m9_resource *image = v ? &v->native_c2 : &ctx->vs_c2;
    uint64_t *serial = v ? &v->native_c2_serial : &ctx->vs_c2_serial;
-   const uint32_t *fs_slots = v ? v->program.slots.data :
+   const uint32_t *fs_slots = v ? m9_fs_final(v)->slots.data :
                                   m9_passthrough_c2_program;
-   unsigned fs_slots_count = v ? m9_fs_slot_count(&v->program) :
+   unsigned fs_slots_count = v ? m9_fs_slot_count(m9_fs_final(v)) :
                                  M9_PASSTHROUGH_FS_SLOTS;
    unsigned entry = 0;
    uint64_t bytes = align64(8ull * (fs_slots_count +
@@ -2546,7 +2892,9 @@ m9_native_vs_raster_ok(const struct m9_job_key *key,
    if (!key->fs)
       return p->has_varying && p->varying_location == VARYING_SLOT_COL0 ?
              NULL : "the pass-through fragment image needs a primary colour";
-   fp = &key->variant->program;
+   fp = m9_fs_final(key->variant);
+   if (key->variant->passes.count > 1)
+      return "the fragment program runs as several raster passes";
    if (fp->texture_count)
       return "the fragment program samples a texture";
    if (!fp->varying_count)
@@ -3429,7 +3777,7 @@ m9_delete_fs_state(struct pipe_context *pctx, void *state)
       if ((*it)->ok) {
          m9_bo_destroy(ctx->screen, &(*it)->c2);
          m9_bo_destroy(ctx->screen, &(*it)->native_c2);
-         m9_fs_program_fini(&(*it)->program);
+         m9_fs_passes_fini(&(*it)->passes);
       }
       FREE(*it);
    }
@@ -3792,6 +4140,7 @@ m9_context_destroy(struct pipe_context *pctx)
    util_dynarray_fini(&ctx->target_depths);
    ctx->target_depth = ctx->target_aux = NULL;
    m9_bo_destroy(screen, &ctx->placeholder_texture);
+   m9_bo_destroy(screen, &ctx->record);
    m9_bo_destroy(screen, &ctx->vs_c2);
    if (ctx->debug)
       fprintf(stderr, "m9x: job splits: state %u uniforms %u vertices %u "
@@ -3845,6 +4194,13 @@ m9_context_create(struct pipe_screen *pscreen, void *priv, unsigned flags)
    m9_debug_textures = debug_get_bool_option("M9X_DEBUG_TEXTURES", false);
    m9_texture_dump = debug_get_option("M9X_TEXTURE_DUMP", NULL);
    m9_debug_ctx = ctx;
+   m9_pass_loop = debug_get_bool_option("M9X_PASS_LOOP", false);
+   m9_split_stage = debug_get_num_option("M9X_SPLIT_STAGE", 3);
+   m9_split_preprocess = debug_get_bool_option("M9X_SPLIT_PREPROCESS", false);
+   m9_split_submit = debug_get_bool_option("M9X_SPLIT_SUBMIT", true);
+   m9_split_passes = debug_get_num_option("M9X_SPLIT_PASSES", 0);
+   m9_split_coverage = debug_get_bool_option("M9X_SPLIT_COVERAGE", true);
+   m9_split_enable = debug_get_bool_option("M9X_SPLIT", false);
    ctx->dump_from = debug_get_num_option("M9X_DUMP_FROM", 0);
    ctx->dump_count = debug_get_num_option("M9X_DUMP_COUNT", 4096);
    ctx->only_first = debug_get_num_option("M9X_ONLY_FIRST", UINT_MAX);
