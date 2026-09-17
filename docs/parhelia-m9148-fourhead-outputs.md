@@ -530,3 +530,49 @@ All four now deliver at their own refresh rate.  Head 1 delivers although
 DP-2 is disconnected and no mode was set on it: its timing generator is still
 running what the firmware posted, and the interrupt follows the generator, not
 the CRTC.
+
+## Page flipping on the vertical blank (MEASURED 2026-09-17)
+
+With every head owning a source, `drmModePageFlip` retires on that head's own
+vertical blank on every active head.  `tools/m9-heads -p SECS` flips each head
+between two buffers and counts completions.
+
+Vblank is tied to the active scanouts by the mask register alone: a head's bit
+is unmasked only between `drm_crtc_vblank_on` at pipe enable and `vblank_off`
+at pipe disable.  With three connectors attached and one unplugged, delivery
+was 60.56 / 60.15 / 60.20 Hz on the three and 0 on the fourth, whose line
+counter also read STATIC.
+
+**A dumb-buffer flip is not an address change.**  Direct scanout needs a BO
+allocated tiled (`PARHELIA_M9_BO_TILED`), which only the driver-specific create
+sets; `m9_dumb_create` never does.  So every dumb flip runs
+`m9_scanout_publish`, a whole-frame de-tiling copy into the head's single
+scanout surface, and the start register never moves.  The cost is exactly
+linear in pixels - one head, four modes, five-second windows:
+
+| mode | pixels | flips/s | pixels/s |
+|---|---:|---:|---:|
+| 640x480 | 307200 | 1.34 | 412k |
+| 800x600 | 480000 | 0.99 | 475k |
+| 1024x768 | 786432 | 0.58 | 456k |
+| 1920x1200 | 2304000 | 0.19 | 438k |
+
+**~440k pixels/s, about 1.75 MB/s.**  So a dumb-buffer flip cannot reach the
+refresh rate at any useful size, and the number to improve is that copy, not
+the interrupt.
+
+Two things this measurement caught that event counting alone would have hidden:
+
+* An earlier run reported 361 and 360 flips in six seconds at 1920x1200 and
+  1920x1080 - a clean 60 Hz - with the scanout address never moving and no
+  copy that could have kept up.  `m9_program_scanout` returns silently when
+  `m9_scanout_publish` fails, so the flip completed on the vertical blank and
+  presented the previous frame.  A failed publish should be reported.  NOT
+  FIXED.
+* X here does not page flip at all.  `PageFlip: enabled` in the log is the
+  option being accepted, not a flip happening: glxgears measures 527 fps with
+  `vblank_mode=0` and 525 with `vblank_mode=1`, on one head and on three, so
+  swaps are not synchronised to anything.  The server initialises **DRI2**
+  (`(II) modeset(0): [DRI2] DRI driver: m9x`), where glamor swaps by copying;
+  Present-based flipping needs DRI3.  `tools/xorg-m9x-dri3.conf` exists and is
+  UNTESTED against this.
