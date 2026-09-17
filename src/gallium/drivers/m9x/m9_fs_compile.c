@@ -4283,6 +4283,92 @@ fs_prepare(nir_shader *nir)
    NIR_PASS(_, nir, nir_opt_dce);
 }
 
+/* sRGB write
+ *
+ * The vendor encodes a colour clear on the CPU with exactly this curve
+ * (docs/parhelia-m9-srgb-format-static-closure.md, from its own constants):
+ *
+ *   y = x <= 0.0030400000978261232 ? 12.920000076293945 * x
+ *                                  : 1.0549999475479126 * pow(x, 0.4166..)
+ *                                    - 0.054999999701976776
+ *
+ * and inserts a 25-slot suffix into the fragment program for draw output
+ * zero.  The suffix is not replayed here: it reads and writes registers
+ * 0x10/0x12 rather than the colour output 0x2d this backend emits, and three
+ * of its five opcodes (op2 0x11, 0x13, 0x18) are not decoded, so it can be
+ * neither placed nor evaluated.  The same curve is lowered into the program
+ * instead, out of the compare, select, log2, exp2 and multiply-add forms the
+ * corpus and the hardware fixtures already cover.
+ */
+#define M9_SRGB_THRESHOLD  0.0030400000978261232f
+#define M9_SRGB_LINEAR     12.920000076293945f
+#define M9_SRGB_SCALE      1.0549999475479126f
+#define M9_SRGB_BIAS       0.054999999701976776f
+#define M9_SRGB_EXPONENT   0.4166666567325592f
+
+static nir_def *
+srgb_encode(nir_builder *b, nir_def *x)
+{
+   /* The clamp keeps log2 out of the negatives and lands the value in a
+    * register, which a special-function chain needs its operand to be. */
+   nir_def *c = nir_fmax(b, x, nir_imm_float(b, 0.0f));
+   nir_def *hi = nir_fadd_imm(b,
+      nir_fmul_imm(b, nir_fexp2(b, nir_fmul_imm(b, nir_flog2(b, c),
+                                                M9_SRGB_EXPONENT)),
+                   M9_SRGB_SCALE), -M9_SRGB_BIAS);
+   nir_def *lo = nir_fmul_imm(b, c, M9_SRGB_LINEAR);
+
+   return nir_bcsel(b, nir_flt(b, nir_imm_float(b, M9_SRGB_THRESHOLD), c),
+                    hi, lo);
+}
+
+static bool
+srgb_store(nir_builder *b, nir_intrinsic_instr *intr, void *data)
+{
+   unsigned location;
+   nir_def *v;
+
+   (void)data;
+   if (intr->intrinsic != nir_intrinsic_store_output)
+      return false;
+   location = nir_intrinsic_io_semantics(intr).location;
+   if ((location != FRAG_RESULT_COLOR && location != FRAG_RESULT_DATA0) ||
+       intr->src[0].ssa->num_components != 4)
+      return false;
+   b->cursor = nir_before_instr(&intr->instr);
+   v = intr->src[0].ssa;
+   nir_src_rewrite(&intr->src[0],
+                   nir_vec4(b, srgb_encode(b, nir_channel(b, v, 0)),
+                            srgb_encode(b, nir_channel(b, v, 1)),
+                            srgb_encode(b, nir_channel(b, v, 2)),
+                            nir_channel(b, v, 3)));
+   return true;
+}
+
+void
+m9_fs_lower_srgb(nir_shader *nir)
+{
+   NIR_PASS(_, nir, nir_shader_intrinsics_pass, srgb_store,
+            nir_metadata_control_flow, NULL);
+}
+
+/* GL blends an sRGB target in linear space, which needs the destination
+ * decoded before the blend and encoded after it.  Decode is not implemented,
+ * so a blended sRGB draw is refused rather than blended in encoded space. */
+static bool
+fs_srgb(nir_shader *nir, const struct m9_fs_blend *blend, const char **reason)
+{
+   if (!blend || !blend->srgb)
+      return true;
+   if (blend->src != M9_FS_ONE || blend->dst != M9_FS_ZERO) {
+      *reason = "blending into an sRGB target (destination decode is not "
+                "implemented)";
+      return false;
+   }
+   m9_fs_lower_srgb(nir);
+   return true;
+}
+
 /* One raster pass: the shader output, or the value root a producing pass
  * hands on, with the values earlier passes produced available as routes. */
 static bool
@@ -4340,8 +4426,11 @@ bool
 m9_fs_compile(struct nir_shader *nir, const struct m9_fs_blend *blend,
               struct m9_fs_program *program, const char **reason)
 {
-   if (nir->info.stage == MESA_SHADER_FRAGMENT)
+   if (nir->info.stage == MESA_SHADER_FRAGMENT) {
+      if (!fs_srgb(nir, blend, reason))
+         return memset(program, 0, sizeof(*program)), false;
       fs_prepare(nir);
+   }
    return fs_compile_pass(nir, blend, program, NULL, false, NULL, 0, reason);
 }
 
@@ -4507,6 +4596,8 @@ m9_fs_compile_passes(struct nir_shader *nir, const struct m9_fs_blend *blend,
     * the captured shape is exercised against the hardware. */
    unsigned force = debug_get_num_option("M9X_FS_FORCE_SPLIT", 0);
 
+   if (!fs_srgb(nir, blend, reason))
+      return false;
    fs_prepare(nir);
    if (!force &&
        fs_compile_pass(nir, blend, &passes->pass[0], NULL, false, NULL, 0,

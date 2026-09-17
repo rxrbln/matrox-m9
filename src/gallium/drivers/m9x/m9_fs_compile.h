@@ -94,6 +94,10 @@ enum m9_fs_factor {
 
 struct m9_fs_blend {
    uint8_t src, dst;              /* enum m9_fs_factor */
+   /* The colour target stores sRGB, so the program encodes what it writes.
+    * Sampler-side decode is not implemented, so a blended sRGB draw -- which
+    * would have to decode the destination -- is refused. */
+   bool srgb;
 };
 
 struct m9_fs_program {
@@ -142,6 +146,10 @@ extern const struct nir_shader_compiler_options m9_fs_nir_options;
 /* Two coordinate transforms that fold to the same per-vertex stream. */
 bool m9_fs_coord_affine_same(const struct m9_fs_coord_affine *a,
                              const struct m9_fs_coord_affine *b);
+
+/* Rewrites the colour output with the vendor's sRGB transfer curve.  Exposed
+ * so the offline test can check the lowering against a reference encode. */
+void m9_fs_lower_srgb(struct nir_shader *nir);
 
 /* Marks uniforms used by if conditions as inlinable (screen finalize_nir). */
 void m9_fs_find_inlinable_uniforms(struct nir_shader *nir);
