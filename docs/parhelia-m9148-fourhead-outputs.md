@@ -629,3 +629,132 @@ place - the mini-DP connectors are driven by an external DisplayPort 1.1
 transmitter on a bit-banged I2C bus, trained by the VBIOS at POST, and nothing
 writable in the GPU register file brings that link up.  DP-1 works because POST
 trained it.
+
+## Why only one connector shows a picture: the pad gate (MEASURED 2026-09-17)
+
+Everything upstream of the connector was healthy on all four heads - EDID,
+pixel clock, raster timing, line counter, vertical blank interrupt - and three
+connectors were still dark.  The cause is `0x1cac`, and it needed a probe that
+reads what leaves the chip before it could be seen.
+
+### The probe: the transmitter's main-stream attributes
+
+The external transmitter's main-page registers `0x10..0x1f` are eight
+little-endian 16-bit fields - htotal, hstart, hactive, vtotal, vstart,
+vactive, hsync width, vsync width - with the sync polarity in bit 15 of the
+two widths.  **Nothing writes them.**  CAPTURED: every bit-banged I2C
+transaction on `0x1c48` in `captures/m9x-cold-init-20260915-v1/
+xinit-mmio-part2.jsonl` was decoded, and a whole vendor X run contains no
+write anywhere in that range.  They report the video the display controller is
+feeding that transmitter.
+
+Calibrated three ways, MEASURED:
+
+* connector 0 reported `1344/1024/806/768/136/6` while head 0 ran 1024x768, and
+  `2200/1920/1125/1080/44/5` after X moved head 0 to 1920x1080;
+* blanking connector 0's transmitter (`0x0a = 0x10`) dropped every field to
+  zero and unblanking it (`0x0a = 0x00`) brought the mode straight back;
+* connectors 1, 2 and 3 reported the 640x480 power-on default
+  (`800/640/525/480/96/2`) while their heads were rastering something else.
+
+Two further indicators move with it: main `0x79` reads `0x01` while the
+transmitter is not driving and `0x00` while it is, and bit 2 of the hot-plug
+byte on the second slave address sets while it is not driving.
+
+**This is necessary, not sufficient.**  A connector whose transmitter reports
+the right attributes is being fed the right video and is sending it; whether
+the sink locks is a separate question that only link training and the sink's
+own DPCD answer.  Connector 2 was brought to this state and the panel still
+showed nothing.
+
+### `0x1cac` is a per-pad gate
+
+MEASURED.  The high nibble gates, **active high for off**, one bit per pad:
+
+| value | meaning |
+|---|---|
+| `0xe1` | what POST leaves: pad 0 ungated, pads 1, 2 and 3 held off |
+| `0x07` | all four pads ungated |
+| `0xc3` | pads 0 and 1 ungated |
+| `0x83` | pads 0, 1 and 2 ungated |
+
+That single register is the whole reason a freshly posted M9148 lights exactly
+one connector.  It was missed twice because of a precondition: **the gate only
+acts while that pad's transmitter is initialised and its output gate open.**
+Written to a dark, uninitialised pad it does nothing, and a writability walk on
+such a board reads back values that look like the register is ignoring writes.
+Clearing a bit starts the pad; setting it again does not stop one already
+running.
+
+The decisive measurement: with connector 2's transmitter initialised and
+`0x0a = 0x00`, its attributes read all zeros; writing `0x1cac = 0x07` made them
+read `1344/1024/806/768` with the negative-sync flags of head 2's mode in the
+same operation, and `0x79` and the hot-plug byte flipped with them.  Connector
+0 was untouched throughout.
+
+The low nibble is read-only and changes as pads come up, but its meaning is
+**not established**: it has been observed set for a connector with no panel
+attached at all, and clear for one that was demonstrably sending.  It is
+therefore neither hot-plug detect nor a "this pad is driving" flag, and nothing
+in the driver gates on it.
+
+### The transmitters are not reset by a reboot
+
+Only the firmware's own connector is initialised at POST.  MEASURED on a
+freshly posted board, connector 0 against connectors 1..3: main `0x02` `b6`/`35`,
+`0x20` `21`/`20`, `0x24` `01`/`00`, `0x27` `30`/`00`, `0x2f` `82`/`c2`, `0x30`
+`32`/`12`, `0x71` `20`/`00`, `0x72` `a9`/`29`, `0x77` `b2`/`00`, `0x78`
+`30`/`00`, `0x87` `74`/`b0`, and page 3 `0x00` `18`/`00`, `0x03` `06`/`00`,
+`0x24` `10`/`00`, `0x25` `04`/`00`, `0x26` `04`/`00`.  Every left-hand value is
+a vendor table entry.
+
+A warm reboot does **not** restore this: the transmitters keep whatever
+registers were last written to them, because nothing power-cycles them.  A
+"clean POST state" claim covers the GPU registers only.  Use the MISCIO reset
+line (PInS function `0x20 + connector`) to get a transmitter back to defaults.
+
+### Output gate `0x0a`, and what it costs to blank
+
+MEASURED on the connector the firmware trained: `0x00` lets the stream out;
+both `0x10` and `0x30` blank it.  The saved binaries read as if `0x30` were
+"enabled"; the vendor's captured sequence passes through `0x30` and closes on
+`0x00`, and the closing write is the one that matters.
+
+`0x30` is additionally destructive.  Reading the capability mirror and running
+a real AUX transaction at each step on the connector with a sink:
+
+```
+0a=0x00 -> 51=14 52=c4 63=77 65=01   AUX ok
+0a=0x10 -> 51=14 52=c4 63=77 65=01   AUX ok
+0a=0x30 -> 51=14 52=c4 63=00 65=80   AUX fails
+0a=0x00 -> 51=14 52=c4 63=00 65=00   AUX ok, lane status still gone
+```
+
+So the AUX gate is bit 5, not bit 4, and `0x30` drops a trained link: the lane
+status at `0x63..0x65` does not come back when the gate reopens, only a fresh
+bring-up restores it.  This is why earlier probing read `0x51`, `0x52`, `0x53`,
+`0x5c`, `0x63`, `0x64`, `0x65` and `0x8d` as zero even on the trained
+connector - the readings were taken after a blank.  On an untouched trained
+connector they read `14 c4 01 10 77 77 81` and `0x8d = 0x44`, which satisfies
+the documented `(0x8d & 0x70) == 0x40`.
+
+### What the driver does now
+
+`drivers/gpu/drm/m9x` brings each head's connector up from `m9_pipe_enable`:
+`m9x_tx_stream` first, and if the transmitter is not already sending this
+head's mode, `m9x_tx_enable` runs the MISCIO reset, the vendor's common,
+main-pre and page-3 tables, opens the output gate, runs `m9x_dp_train`, and
+clears that head's bit in `0x1cac`.  It runs again on every mode change,
+because the transmitter samples the video it is fed.
+
+MEASURED with three heads held by `tools/m9-heads`:
+
+```
+head 0: was sending 1024x768 1344/806 -> already correct, skipped
+head 1: was sending 640x480 800/525 -> brought up -> sending 1024x768 1344/806, pad gate 0xc3
+head 2: was sending nothing          -> brought up -> sending 1024x768 1344/806, pad gate 0x83
+```
+
+Link training reported failure on both, on connectors with no panel attached.
+**Training has not been exercised against a real sink, and no second panel has
+confirmed a picture.**  That is the open item.
