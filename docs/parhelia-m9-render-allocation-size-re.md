@@ -110,6 +110,39 @@ No saved live allocation uses format `0x5c`; these five values are deterministic
 results of the hash-pinned binary constructor and tables, not live allocation
 observations.
 
+## The small state selects the address calculator (MEASURED)
+
+The small/ordinary split is not only an allocation quantum.  A surface of at
+most 64 by 64 is stored by the mode-2 aperture calculator `m9x659`, the one
+`parhelia-m9-blocked-layout-boundary.md` recovers for texture storage; larger
+surfaces use the local calculator `m9x474`.
+
+Measured on the M9148 with the `rtt32` and `rtt64` fixtures, which render a
+traceable gradient into a 32x32 and a 64x64 texture and sample it back.  With
+the target descriptor carrying the ordinary tiled bit, the readback is the
+composition `m9x659^-1 . m9x474`: predicting every texel that way reproduces
+the captured image exactly, 1024 of 1024 texels at 32x32 (`m9x659` state
+depth 1, category 0) and 4096 of 4096 at 64x64 (category 1).  Clearing the
+bit for small targets makes both fixtures exact.
+
+Two further facts follow:
+
+* The allocation sizes agree with the same split.  A 16x16 surface is
+  allocated `0x800`, which is the `m9x659` footprint; the `m9x474` footprint
+  of the same shape is `0xc00`.  Every small vector in the table above is at
+  or just above its aperture footprint, and several are below their local
+  one.
+* The texture-unit kind field does not select the calculator.  Binding a
+  32x32 render target as kind `21` instead of `01` left the sampled image
+  byte for byte identical, so the sampler picks the calculator from the
+  surface geometry.  Only the descriptor the raster target is bound with
+  decides how the engine writes.
+
+Driver consequence: `m9_render_surface_layout()` reports the small state and
+`m9_draw_params_init()` leaves descriptor bit 21 clear for it, so the target
+descriptor is `cc01xxxx` below the boundary and `cc21xxxx` above it.  The CPU
+window already took the small kind for these surfaces.
+
 ## Clean-room audit
 
 The kernel diagnostic's only render shape is 320x240 RGBA8.  Its current
