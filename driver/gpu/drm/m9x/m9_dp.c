@@ -39,6 +39,9 @@
 #define M9_DP_SETTLE_MS		200u
 #define M9_DP_TRAIN_TRIES	3u
 #define M9_DP_MODE_TRIES	3u
+/* A sink with no AUX channel never reports capabilities, so retrying the whole
+ * mode init three times only costs time; one retry covers a transient. */
+#define M9_DP_CAPS_TRIES	2u
 #define M9_DP_PLL_RETRIES	5u
 #define M9_DP_PLL_SETTLE_US	1200u
 #define M9_DP_PLL_RESET		BIT(7)
@@ -415,12 +418,19 @@ int m9x_dp_train(struct m9x_device *mdev, unsigned int index, u32 pixel_khz)
 		m9_dp_arm_mirror(mdev, index);
 		m9_dp_power_up_sink(mdev, index);
 		ret = m9_dp_caps(mdev, index, &max_rate, &lanes);
-		if (ret)
-			continue;
-		if (!(lanes & M9_DPCD_LANE_MASK)) {
-			drm_dbg_kms(&mdev->drm, "head %u: lane count = 0\n",
-				    index);
-			ret = -ENODEV;
+		if (ret || !(lanes & M9_DPCD_LANE_MASK)) {
+			/*
+			 * A dual-mode consumer - a passive adapter or DP++
+			 * dongle - answers EDID through the transmitter's I2C
+			 * bridge and has no AUX channel at all, so no number
+			 * of mode attempts will produce a capability block.
+			 * MEASURED.  Give a transient one retry, then stop:
+			 * the caller drives the pad unconditioned, which is
+			 * how such a sink is meant to work.
+			 */
+			if (attempt + 1 >= M9_DP_CAPS_TRIES)
+				return -ENOTCONN;
+			ret = ret ?: -ENODEV;
 			continue;
 		}
 		rate = m9_dp_pick_rate(max_rate, lanes & M9_DPCD_LANE_MASK,

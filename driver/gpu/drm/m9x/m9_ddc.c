@@ -690,9 +690,20 @@ int m9x_tx_enable(struct m9x_device *mdev, unsigned int index, u32 dot_khz)
 	 * (xf86-video-parhelia docs/parhelia-m9148-displayport-transmitter-re.md).
 	 * A failure here still opens the pad, so a link the firmware trained
 	 * is not taken down by a training attempt that could not run. */
-	if (m9x_dp_train(mdev, index, dot_khz))
-		drm_dbg_kms(&mdev->drm, "head %u: continuing untrained\n",
-			    index);
+	/* Say which of the three outcomes happened: a trained link, a sink with
+	 * no AUX channel driven unconditioned, or a real training failure.
+	 * Without this they are indistinguishable outside debug builds. */
+	ret = m9x_dp_train(mdev, index, dot_khz);
+	if (!ret)
+		drm_info(&mdev->drm, "head %u: DisplayPort link trained\n",
+			 index);
+	else if (ret == -ENOTCONN)
+		drm_info(&mdev->drm,
+			 "head %u: sink has no AUX channel, driving unconditioned\n",
+			 index);
+	else
+		drm_info(&mdev->drm, "head %u: link training failed (%d), driving anyway\n",
+			 index, ret);
 
 	gate = m9x_read(mdev, M9_REG_PAD_GATE);
 	m9x_write(mdev, M9_REG_PAD_GATE, gate & ~M9_PAD_GATE_OFF(index));
