@@ -88,7 +88,12 @@ Two vendor cases sample with a projector, and they answer differently:
   two.  Together with the probe above, the two-pass form is the mechanism
   (DERIVED).
 
-The other captured two-pass cases are the same shape — a fetch whose
+All six other captured two-pass cases share the pass-1 raster state exactly:
+`88 = 0110fffc`, `8c = 00500100` (`00500200` for `fs-texrect`), sampler word
+`7c = 512` for "none bound", a four or five slot program, and a constant span
+that ends where pass 2's begins.  Pass 2 is always `88 = 0010ffe3`,
+`8c = 00500200` with the sampler bound.  The two passes share one `c2`
+program buffer and one `6c`.  The cases are the same shape — a fetch whose
 coordinate the raster interpolator cannot produce directly:
 `fs-shadow2d`, `fs-tex2d-bias`, `fs-tex2d-swizzle`, `fs-tex3d`,
 `fs-texcube`, `fs-texrect`.
@@ -134,8 +139,12 @@ hardware gives, and `projtexz` fails by design until the divide is fixed.
 Its fragment shader divides a `vec4` varying by its own `w` per fragment,
 samples an ordinary depth `sampler2D` and compares in the shader.  With no
 sampler divide, that needs the vendor's two-pass form: one raster pass that
-computes `(s/q, t/q)` into the registers the next pass's texture unit reads,
-then the pass that fetches and compares.  That is the same job-splitting
+computes the coordinate, then the pass that fetches and compares.  How the
+first pass hands the coordinate to the second is **not established** — the
+captured first pass writes only registers `0x11` and `0x13` and never the
+colour output `0x2d`, so it is not a render to an intermediate surface, but
+nothing confirms that the next pass's texture unit reads those registers.
+That is the first thing to settle.  It is the same job-splitting
 machinery the multi-pass fragment scheduling work needs for `effect2d`,
 `terrain` and the `desktop` blur, and it lives in `m9_draw.c` and
 `m9_context.c`.  The fragment backend can only refuse until it exists, which
