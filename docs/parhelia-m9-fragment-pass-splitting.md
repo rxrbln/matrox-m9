@@ -272,26 +272,79 @@ For a shader that needs `P` passes, in submission order:
 
    There is **no range break between the passes** (CAPTURED, all seven: both
    raster draws live inside range 1, `[0x784,0xd38)`).  What separates them
-   is a draw epilogue and a pass prologue of `e6` words, with two writes of
-   index `0x44`:
-
-   ```text
-   epilogue:  e6=38000000  e6=40004000 44=40004000 44=40004000  e6=0c000000
-   prologue:  e6=604fff9f e6=2c000000 e6=49d000a9 e6=08000000  e6=3 e3=...
-   ```
-
-   The m9x kernel accepts neither: `m9_parse_commands` allows only
-   `e6 = 0x00000003` and `0x42000000`, and index `0x44` is outside
-   `m9_index_allowed`.  A clean-room driver therefore separates its passes
-   with a range break, which is a stronger barrier than the vendor's `e6`
-   block and is already the separator between the preprocessing and raster
-   ranges.  The `43` advance is emitted as captured.
+   is a draw epilogue and a draw prologue of `e6` words, with two writes of
+   index `0x44`.  Section 6.1 decodes them; the m9x driver emits them and
+   the kernel accepts them, and doing so changes nothing about the record
+   (section 6.2).  The `43` advance is emitted as captured.
 
    The full dependency trace of a two-pass case (CAPTURED): `e3` advances by
    `0x10` on every write across the whole submission, and `43` is written
    once per draw with the value of the `e3` immediately before it, so
    consecutive `43` values are `0x20` apart -- `e3=380`, `e3=390` `43=390`,
    `e3=3a0`, draw 1, `e3=3b0` `43=3b0`, `e3=3c0`, draw 2.
+
+### 6.1 The inter-draw transition, decoded
+
+The block is **not** special to a pass boundary: the vendor puts it around
+**every** draw of a native fragment job, the three preprocessing draws
+included (CAPTURED, 343 prologues and 230 epilogues over
+`captures/m9x-vendor-glsl-programs-20260915` and
+`captures/m9x-vendor-openbits-20260917`).  A draw that opens a range carries
+a prologue and no epilogue; a draw inside one carries both.
+
+```text
+epilogue   454545e6  e6 = 38000000                          end the block
+           454444e6  e6 = 40004000  44 = 40004000  44 = 40004000
+           454545e6  e6 = 0c000000                          record writers only
+prologue   45e6e6e6  e6 = 60600060 | 604fff9f               open | resume
+                     e6 = 2c000002 | 2c000000               the matching word
+                     e6 = 49d000nn                          the block length
+           454545e6  e6 = 08000000                          start the block
+```
+
+Reading the fields:
+
+* `e6 = 0x60600060` with `0x2c000002` opens a range's **first** block and
+  `0x604fff9f` with `0x2c000000` a **continuation** block (CAPTURED: all 113
+  range-opening prologues take the first form).  The two words are literal
+  presets; their internal fields are **OPEN**.
+* `44 = 0x40004000`, twice, always behind `e6 = 0x40004000` in the one
+  packet `454444e6` (CAPTURED, 460 writes of `44`, every one that value).
+  This is the same index the Windows late-state helpers `0xfc620` and
+  `0xfcb60` write eight of, which
+  `docs/parhelia-m9-texture-coherency-re.md` describes as address-domain
+  synchronisation with resource completion ordering.
+* `e6 = 0x0c000000` closes the epilogue of a draw that wrote the
+  inter-pass record and of no other: present behind every one of the eight
+  captured `ee190004` producers and absent behind every `68002000` stream
+  target (CAPTURED).
+* `e6 = 0x49d000nn` carries **the length of the block the prologue opens**,
+  in dwords, counted from the prologue's own packet header through the draw
+  packet that ends the block, less one -- and, for a draw that closes its
+  range, up to but not including the draw packet, because the range close
+  bounds it.  That rule reproduces the low byte of **all 343** captured
+  prologues exactly (DERIVED, `tools/m9-command-decode.py` over both capture
+  sets).  Captured lengths run `0x80 .. 0xcc` with bits 15:8 always clear,
+  so the length is read as the low sixteen bits.
+
+Note that the vendor's own stream pads every packet of fewer than four
+values with one `0x45454545` dword, which the m9x driver does not; a
+clean-room emitter therefore computes the length over its own layout.
+
+### 6.2 What emitting it buys: nothing, measured
+
+`m9_parse_commands` now accepts these literals and bounds the length against
+the command stream it has validated, and `m9_draw.c` emits the block around
+every raster draw of a split job.  On the M9128 (MEASURED,
+`docs/parhelia-m9-fragment-pass-hardware.md` section 2):
+
+* a one-pass shader driven through the multi-pass loop **with** the block
+  renders pixel-exact, for four fixtures -- so the engine accepts it;
+* a producing pass that binds the record at `b0` with `b1 = ee190004`
+  **still** stops the engine, with the block emitted exactly as captured.
+
+The transition is therefore not what lets the engine take the record's
+format as a render target.
 
 Correctness gates that the captures do **not** settle, restated from
 `docs/parhelia-m9-five-sampler-schedule-re.md` because they bound what may be
