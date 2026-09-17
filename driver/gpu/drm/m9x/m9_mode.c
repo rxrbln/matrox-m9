@@ -17,13 +17,17 @@
 #include "m9_drv.h"
 #include "m9_reg.h"
 
-/* The pad gate at 0x1cac walks 0xff -> 0xf0 -> 0x05 -> 0x07 -> 0x0f as the
- * vendor's four links come up; no per-bit meaning is established, so nothing
- * is written unless this carries a value to try on hardware. */
+/*
+ * 0x1cac does not accept writes on this board: MEASURED, every value read back
+ * as 0x00000001, including rewriting its own POST value, and only a reboot
+ * restores it.  It reads as status - high nibble a per-pad enable request, low
+ * nibble per-pad up, DERIVED - so this cannot enable a head and is kept only
+ * to try a value on a board that behaves differently.
+ */
 static int m9_pad_gate = -1;
 module_param_named(pad_gate, m9_pad_gate, int, 0600);
 MODULE_PARM_DESC(pad_gate,
-	"Value written to the unresolved 0x1cac pad gate after a link is programmed; -1 leaves it alone");
+	"Value written to 0x1cac after a link is programmed; -1 leaves it alone.  Measured to be ignored on the M9148");
 
 struct m9_pll {
 	u8 b0, b1, b2, b3;
