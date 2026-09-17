@@ -63,9 +63,12 @@ enum node_kind {
    N_CMP,               /* register against a constant, giving 1.0 or 0.0 */
    N_SEL,               /* src[0] against zero picks src[1] or src[2] */
    N_SAT,               /* move in the saturating class, as blending uses */
-   N_GATHER,            /* a result lane per source: src[lane] * src[2] */
    N_LOAD,              /* constant factor moved into a register */
    N_COMPOSE,           /* vec4(texture.xyz, literal), written in place */
+   /* A value whose two lanes name their own source, held on the diagonal
+    * src[l]/lane[l][l]/swz[l][l].  It emits nothing: a reader resolves
+    * through it to the source its own lane reads. */
+   N_PAIR,
 };
 
 struct node {
@@ -81,7 +84,8 @@ struct node {
    int weight;          /* registers its subtree needs, one plus, memoised */
    uint8_t cmp;         /* N_CMP/N_SEL comparison class */
    bool is_cond;        /* holds 1.0 or 0.0, so a select can test it */
-   bool broadcast, bcast_known;  /* both scalars hold the same value */
+   bool broadcast, bcast_known;  /* both scalars of a lane agree */
+   bool uniform, uniform_known;  /* all four scalars hold one value */
    int level;
    int value[2];        /* per lane: 0 xy, 1 zw */
    uint8_t lane[3][2];  /* source lane read for result lane xy, zw */
@@ -288,17 +292,11 @@ node_new(struct ctx *c, enum node_kind kind)
    return NUM(c, nodes, struct node) - 1;
 }
 
-/* Only the scalar select is an operand field some forms lack; which
- * register of the pair an operand comes from is chosen for every form. */
-static bool
-node_swizzled(const struct node *n, unsigned i)
-{
-   return n->swz[i][0] != 1 || n->swz[i][1] != 1;
-}
-
-/* Whether both scalars of a node's result always hold the same value: an
- * operand read through a replicating select contributes one, and so does
- * one whose own two scalars already agree. */
+/* Whether both scalars of every lane of a node's result hold the same value:
+ * an operand read through a replicating select contributes one, and so does
+ * one whose own two scalars already agree.  Nothing that names two different
+ * scalars does: the raster position holds x and y, and the rsq chain carries
+ * its Newton residual in the second scalar of its result. */
 static bool
 node_broadcast(struct ctx *c, int n)
 {
@@ -308,42 +306,101 @@ node_broadcast(struct ctx *c, int n)
    if (nd->bcast_known)
       return nd->broadcast;
    nd->bcast_known = true;
+   nd->broadcast = false;
    switch (nd->kind) {
    case N_LIT:
       nd->broadcast = nd->lit[0] == nd->lit[1] && nd->lit[2] == nd->lit[3];
       break;
-   case N_UBO:
-   case N_VARY:
-   case N_TEX:
-   case N_COMPOSE:
-   case N_GATHER:
-      nd->broadcast = false;
-      break;
-   case N_EXP2:
-   case N_LOG2:
-   case N_RCP:
-   case N_RSQ:
-      nd->broadcast = true;
-      break;
-   default:
+   case N_MUL: case N_ADD: case N_SUB: case N_MAD: case N_MIN: case N_MAX:
+   case N_NEG: case N_FRACT: case N_FLOOR: case N_CEIL: case N_CMP:
+   case N_SEL: case N_SAT: case N_LOAD:
       for (unsigned i = 0; i < 3; i++)
          if (NODES(c)[n].src[i] >= 0) {
             const struct node *m = &NODES(c)[n];
 
-            all &= (m->swz[i][0] == m->swz[i][1] &&
-                    (m->swz[i][0] == 0 || m->swz[i][0] == 3)) ||
+            all &= ((m->swz[i][0] == 0 || m->swz[i][0] == 3) &&
+                    (m->swz[i][1] == 0 || m->swz[i][1] == 3)) ||
                    node_broadcast(c, m->src[i]);
          }
       NODES(c)[n].broadcast = all;
       break;
+   default:
+      break;
    }
    return NODES(c)[n].broadcast;
+}
+
+/* Whether every scalar of a node's result holds the same value, so that a
+ * vector assembled from that one value is the node itself. */
+static bool
+node_uniform(struct ctx *c, int n)
+{
+   struct node *nd = &NODES(c)[n];
+   bool all = true;
+
+   if (nd->uniform_known)
+      return nd->uniform;
+   nd->uniform_known = true;
+   nd->uniform = false;
+   switch (nd->kind) {
+   case N_LIT:
+      nd->uniform = nd->lit[0] == nd->lit[1] && nd->lit[1] == nd->lit[2] &&
+                    nd->lit[2] == nd->lit[3];
+      break;
+   case N_MUL: case N_ADD: case N_SUB: case N_MAD: case N_MIN: case N_MAX:
+   case N_NEG: case N_FRACT: case N_FLOOR: case N_CEIL: case N_CMP:
+   case N_SEL: case N_SAT: case N_LOAD:
+      for (unsigned i = 0; i < 3; i++) {
+         const struct node *m = &NODES(c)[n];
+         int src = m->src[i];
+
+         if (src < 0)
+            continue;
+         /* Both result lanes have to read the same scalars of the operand,
+          * and those scalars have to hold the one value. */
+         all &= (m->lane[i][0] == m->lane[i][1] &&
+                 m->swz[i][0] == m->swz[i][1] &&
+                 (m->swz[i][0] == 0 || m->swz[i][0] == 3 ||
+                  node_broadcast(c, src))) ||
+                node_uniform(c, src);
+      }
+      NODES(c)[n].uniform = all;
+      break;
+   default:
+      break;
+   }
+   return NODES(c)[n].uniform;
+}
+
+/* Two scalar selects read one after the other: bit 1 of a select names the
+ * source scalar of result scalar 0 and bit 0 that of result scalar 1. */
+static unsigned
+swz_compose(unsigned outer, unsigned inner)
+{
+   return ((inner >> (1 - ((outer >> 1) & 1))) & 1) << 1 |
+          ((inner >> (1 - (outer & 1))) & 1);
 }
 
 static bool
 node_is_const(const struct node *n)
 {
    return n->kind == N_UBO || n->kind == N_LIT;
+}
+
+/* A pair carries a scalar select of its own, which the forms without an
+ * operand swizzle field cannot express. */
+static bool
+pair_swizzled(struct ctx *c, int n)
+{
+   const struct node *nd;
+
+   if (n < 0 || NODES(c)[n].kind != N_PAIR)
+      return false;
+   nd = &NODES(c)[n];
+   for (unsigned l = 0; l < 2; l++)
+      if (nd->swz[l][l] != 1 || pair_swizzled(c, nd->src[l]))
+         return true;
+   return false;
 }
 
 static int varying_slot(struct ctx *c, unsigned location);
@@ -588,6 +645,58 @@ set_src(struct node *n, unsigned i, int src, const uint8_t *lane,
    memcpy(n->swz[i], swz, 2);
 }
 
+/* The scalar select an operand read ends up with once the pairs in the way
+ * have been resolved. */
+static unsigned
+composed_swz(struct ctx *c, int n, unsigned lane, unsigned swz)
+{
+   const struct node *s = &NODES(c)[n];
+
+   while (s->kind == N_PAIR) {
+      unsigned next = s->lane[lane][lane];
+
+      swz = swz_compose(swz, s->swz[lane][lane]);
+      s = &NODES(c)[s->src[lane]];
+      lane = next;
+   }
+   return swz;
+}
+
+/* The add class carries a scalar select for its a and its c operand, but
+ * only these combinations of the two are captured: ac800c00, ac800c30 and
+ * ac800d10 for the add, ac800cc0, ac800dd0 and ac800fc0 for the subtract. */
+static bool
+add_form(unsigned a, unsigned cc, bool sub)
+{
+   if (a == 1 && cc == 1)
+      return true;
+   if (!a && !cc)
+      return true;
+   return sub ? (a == 3 && !cc) : (!a && cc == 3);
+}
+
+/* Whether an add of these two operands reads both as they stand.  A
+ * constant b rides in the c field, which carries no select of its own. */
+static bool
+add_reads(struct ctx *c, int a, const uint8_t la[2], const uint8_t sa[2],
+          int b, const uint8_t lb[2], const uint8_t sb[2], bool sub)
+{
+   bool konst = node_is_const(&NODES(c)[b]);
+
+   for (unsigned l = 0; l < 2; l++) {
+      unsigned x = node_is_const(&NODES(c)[a]) ? 1 :
+                   composed_swz(c, a, la[l], sa[l]);
+      unsigned y = konst ? x : composed_swz(c, b, lb[l], sb[l]);
+
+      /* Only the identity select is captured with a constant operand. */
+      if (konst && x != 1)
+         return false;
+      if (!konst && !add_form(x, y, sub))
+         return false;
+   }
+   return true;
+}
+
 /* A constant an operation cannot take directly is moved into a register
  * first, the way the vendor loads a constant multiply factor. */
 static int
@@ -615,7 +724,7 @@ force_identity(struct ctx *c, int n, uint8_t lane[2], uint8_t swz[2])
    static const uint8_t lane_id[2] = { 0, 1 }, swz_id[2] = { 1, 1 };
    int one, m;
 
-   if (n < 0 || cond_is_plain(lane, swz))
+   if (n < 0 || (cond_is_plain(lane, swz) && !pair_swizzled(c, n)))
       return n;
    one = node_new(c, N_LIT);
    if (one < 0)
@@ -641,7 +750,7 @@ deswizzle(struct ctx *c, int n, uint8_t lane[2], uint8_t swz[2])
    static const uint8_t lane_id[2] = { 0, 1 }, swz_id[2] = { 1, 1 };
    int one, m;
 
-   if (n < 0 || !memcmp(swz, swz_id, 2))
+   if (n < 0 || (!memcmp(swz, swz_id, 2) && !pair_swizzled(c, n)))
       return n;
    if (node_is_const(&NODES(c)[n]))
       return n;
@@ -712,7 +821,8 @@ build_alu(struct ctx *c, nir_alu_instr *alu)
          if (a < 0)
             return -1;
       }
-      if (alu->op == nir_op_fadd) {
+      if (alu->op == nir_op_fadd &&
+          !add_reads(c, a, lane[0], swz[0], b, lane[1], swz[1], false)) {
          a = deswizzle(c, a, lane[0], swz[0]);
          b = deswizzle(c, b, lane[1], swz[1]);
          if (a < 0 || b < 0)
@@ -723,9 +833,6 @@ build_alu(struct ctx *c, nir_alu_instr *alu)
          return -1;
       set_src(&NODES(c)[n], 0, a, lane[0], swz[0]);
       set_src(&NODES(c)[n], 1, b, lane[1], swz[1]);
-      if (alu->op == nir_op_fadd &&
-          (node_swizzled(&NODES(c)[n], 0) || node_swizzled(&NODES(c)[n], 1)))
-         return fail(c, "swizzled addition operand"), -1;
       if (alu->op == nir_op_fadd && NODES(c)[b].kind == N_LIT) {
          const float *v = NODES(c)[b].lit;
 
@@ -740,6 +847,7 @@ build_alu(struct ctx *c, nir_alu_instr *alu)
       int a = materialise(c, alu_src_node(c, alu, 0, lane[0], swz[0]),
                           lane[0], swz[0]);
 
+      a = deswizzle(c, a, lane[0], swz[0]);
       if (a < 0)
          return -1;
       n = node_new(c, N_SAT);
@@ -758,6 +866,8 @@ build_alu(struct ctx *c, nir_alu_instr *alu)
                             alu->op == nir_op_ffract ? N_FRACT :
                             alu->op == nir_op_ffloor ? N_FLOOR : N_CEIL;
 
+      if (kind == N_NEG)
+         a = deswizzle(c, a, lane[0], swz[0]);
       if (a < 0)
          return -1;
       n = node_new(c, kind);
@@ -777,8 +887,13 @@ build_alu(struct ctx *c, nir_alu_instr *alu)
        * registers become a + min(b - a, 0) and a + max(b - a, 0), which is
        * exact and built only from forms the corpus shows. */
       if (!node_is_const(&NODES(c)[a]) && !node_is_const(&NODES(c)[b])) {
-         int zero = node_new(c, N_LIT), diff, lim;
+         int zero, diff, lim;
 
+         if (!add_reads(c, b, lane[1], swz[1], a, lane[0], swz[0], true)) {
+            a = deswizzle(c, a, lane[0], swz[0]);
+            b = a < 0 ? -1 : deswizzle(c, b, lane[1], swz[1]);
+         }
+         zero = b < 0 ? -1 : node_new(c, N_LIT);
          if (zero < 0)
             return -1;
          diff = node_new(c, N_SUB);
@@ -791,7 +906,8 @@ build_alu(struct ctx *c, nir_alu_instr *alu)
             return -1;
          set_src(&NODES(c)[lim], 0, diff, lane_id, swz_id);
          set_src(&NODES(c)[lim], 1, zero, lane_id, swz_id);
-         a = deswizzle(c, a, lane[0], swz[0]);
+         if (!add_reads(c, lim, lane_id, swz_id, a, lane[0], swz[0], false))
+            a = deswizzle(c, a, lane[0], swz[0]);
          if (a < 0)
             return -1;
          n = node_new(c, N_ADD);
@@ -819,6 +935,9 @@ build_alu(struct ctx *c, nir_alu_instr *alu)
          memcpy(lane[1], tl, 2);
          memcpy(swz[1], ts, 2);
       }
+      a = deswizzle(c, a, lane[0], swz[0]);
+      if (a < 0)
+         return -1;
       n = node_new(c, alu->op == nir_op_fmin ? N_MIN : N_MAX);
       if (n < 0)
          return -1;
@@ -885,7 +1004,8 @@ build_alu(struct ctx *c, nir_alu_instr *alu)
                       lane[0], swz[0]);
       if (a < 0)
          return -1;
-      zero = node_new(c, N_LIT);
+      a = deswizzle(c, a, lane[0], swz[0]);
+      zero = a < 0 ? -1 : node_new(c, N_LIT);
       if (zero < 0)
          return -1;
       cond = node_new(c, N_CMP);
@@ -926,8 +1046,13 @@ build_alu(struct ctx *c, nir_alu_instr *alu)
       /* The compare unit reads one register and one constant pair, so two
        * registers compare their difference against zero instead. */
       if (!node_is_const(&NODES(c)[a]) && !node_is_const(&NODES(c)[b])) {
-         int diff = node_new(c, N_SUB), zero;
+         int diff, zero;
 
+         if (!add_reads(c, a, lane[0], swz[0], b, lane[1], swz[1], true)) {
+            a = deswizzle(c, a, lane[0], swz[0]);
+            b = a < 0 ? -1 : deswizzle(c, b, lane[1], swz[1]);
+         }
+         diff = b < 0 ? -1 : node_new(c, N_SUB);
          if (diff < 0)
             return -1;
          set_src(&NODES(c)[diff], 0, b, lane[1], swz[1]);
@@ -1129,7 +1254,8 @@ build_alu(struct ctx *c, nir_alu_instr *alu)
          return -1;
       set_src(&NODES(c)[s], 0, a, lane[0], swz[0]);
       set_src(&NODES(c)[s], 1, b, lane[1], swz[1]);
-      cc = deswizzle(c, cc, lane[2], swz[2]);
+      if (!add_reads(c, s, lane_id, swz_id, cc, lane[2], swz[2], false))
+         cc = deswizzle(c, cc, lane[2], swz[2]);
       if (cc < 0)
          return -1;
       n = node_new(c, N_ADD);
@@ -1225,79 +1351,50 @@ build_def(struct ctx *c, nir_def *def)
    return n;
 }
 
-/* One masked term of a gather: result lane l reads component 2*l + t of the
- * vec4, so two terms summed cover any arrangement of four scalars. */
+/* A constant pair moved into a register, every lane of it holding the same
+ * pair, so either lane of the load reads back the same two scalars. */
 static int
-gather_term(struct ctx *c, const int comp_node[4], const unsigned comp_idx[4],
-            const bool is_lit[4], unsigned t)
+load_const(struct ctx *c, int n, unsigned lane, unsigned swz)
+{
+   uint8_t ll[2] = { lane, lane }, ls[2] = { swz, swz };
+   int load = node_new(c, N_LOAD);
+
+   if (load < 0)
+      return -1;
+   set_src(&NODES(c)[load], 0, n, ll, ls);
+   return load;
+}
+
+/* A constant moved into a register, both scalars holding component idx. */
+static int
+load_component(struct ctx *c, int n, unsigned idx)
+{
+   return load_const(c, n, idx / 2, (idx & 1) ? 3 : 0);
+}
+
+/* One scalar of a lane as a masked term: the source read through its own
+ * scalar select, times a factor that is one in that scalar and zero in the
+ * other, so two terms summed hold both scalars. */
+static int
+lane_term(struct ctx *c, int node, unsigned idx, int factor)
 {
    static const uint8_t lane_id[2] = { 0, 1 }, swz_id[2] = { 1, 1 };
-   int lane_node[2], n_mask, n;
-   uint8_t src_lane[2] = { 0, 1 }, src_swz[2] = { 1, 1 };
-   float mask[4] = { 0, 0, 0, 0 };
+   uint8_t lane[2], swz[2];
+   int n;
 
-   for (unsigned l = 0; l < 2; l++) {
-      unsigned k = 2 * l + t;
-
-      lane_node[l] = comp_node[k];
-      if (is_lit[k] || lane_node[l] < 0)
-         continue;
-      mask[k] = 1.0f;
-      src_lane[l] = comp_idx[k] / 2;
-      src_swz[l] = (comp_idx[k] & 1) << 1 | (comp_idx[k] & 1);
+   if (node_is_const(&NODES(c)[node])) {
+      node = load_component(c, node, idx);
+      if (node < 0)
+         return -1;
+      idx = 0;
    }
-   for (unsigned l = 0; l < 2; l++)
-      if (lane_node[l] < 0) {
-         if (lane_node[1 - l] < 0)
-            return -2;          /* nothing of this term is a register */
-         lane_node[l] = lane_node[1 - l];
-         src_lane[l] = src_lane[1 - l];
-         src_swz[l] = src_swz[1 - l];
-      }
-   /* The multiply needs a register operand, so materialise constants. */
-   for (unsigned l = 0; l < 2; l++)
-      if (node_is_const(&NODES(c)[lane_node[l]])) {
-         uint8_t ll[2] = { src_lane[l], src_lane[l] };
-         uint8_t ls[2] = { src_swz[l], src_swz[l] };
-         int load = node_new(c, N_LOAD);
-
-         if (load < 0)
-            return -1;
-         set_src(&NODES(c)[load], 0, lane_node[l], ll, ls);
-         if (lane_node[1 - l] == lane_node[l] &&
-             src_lane[1 - l] == src_lane[l] && src_swz[1 - l] == src_swz[l]) {
-            lane_node[1 - l] = load;
-            src_lane[1 - l] = l;
-            src_swz[1 - l] = 1;
-         }
-         lane_node[l] = load;
-         src_lane[l] = l;
-         src_swz[l] = 1;
-      }
-   n_mask = node_new(c, N_LIT);
-   if (n_mask < 0)
+   lane[0] = lane[1] = idx / 2;
+   swz[0] = swz[1] = (idx & 1) ? 3 : 0;
+   n = node_new(c, N_MUL);
+   if (n < 0)
       return -1;
-   memcpy(NODES(c)[n_mask].lit, mask, sizeof(mask));
-   if (lane_node[0] == lane_node[1]) {
-      uint8_t ll[2] = { src_lane[0], src_lane[1] };
-      uint8_t ls[2] = { src_swz[0], src_swz[1] };
-
-      n = node_new(c, N_MUL);
-      if (n < 0)
-         return -1;
-      set_src(&NODES(c)[n], 0, lane_node[0], ll, ls);
-      set_src(&NODES(c)[n], 1, n_mask, lane_id, swz_id);
-   } else {
-      uint8_t l0[2] = { src_lane[0], 0 }, s0[2] = { src_swz[0], 1 };
-      uint8_t l1[2] = { 0, src_lane[1] }, s1[2] = { 1, src_swz[1] };
-
-      n = node_new(c, N_GATHER);
-      if (n < 0)
-         return -1;
-      set_src(&NODES(c)[n], 0, lane_node[0], l0, s0);
-      set_src(&NODES(c)[n], 1, lane_node[1], l1, s1);
-      set_src(&NODES(c)[n], 2, n_mask, lane_id, swz_id);
-   }
+   set_src(&NODES(c)[n], 0, node, lane, swz);
+   set_src(&NODES(c)[n], 1, factor, lane_id, swz_id);
    return n;
 }
 
@@ -1416,25 +1513,22 @@ build_vec(struct ctx *c, nir_scalar s[4])
       util_dynarray_foreach(&c->gathers, struct gather_key, g)
          if (!memcmp(g->s, s, sizeof(g->s)))
             return g->node;
-   /* General gather: each result lane reads one source through a swizzle,
-    * with literals masked in by a per-lane (1, 0) factor and added back.
-    * The two lanes may read different sources, so a vec4 can be assembled
-    * from several values; a constant source is moved into a register first.
-    * MUL and ADD are captured forms, so this costs slots, not encodings. */
+   /* Each result lane names its own source.  A lane whose two scalars
+    * already sit next to each other in one register costs nothing; one that
+    * mixes two values, or a value and a literal, is summed from a masked
+    * term each, which are the captured multiply and add.  The lanes of a
+    * node only one lane reads are dropped as dead. */
    {
       static const uint8_t lane_id[2] = { 0, 1 }, swz_id[2] = { 1, 1 };
-      int comp_node[4], lane_node[2] = { -1, -1 };
+      int comp_node[4], ln[2], unit[2] = { -1, -1 }, n_add = -1;
       unsigned comp_idx[4];
-      uint8_t src_lane[2] = { 0, 1 }, src_swz[2] = { 1, 1 };
-      bool is_lit[4], need_add = false;
-      float mask[4], addend[4];
-      int n_mask, n_val;
+      uint8_t llane[2], lswz[2];
+      bool is_lit[4];
+      float addend[4];
 
       for (unsigned k = 0; k < 4; k++) {
          is_lit[k] = nir_scalar_is_const(s[k]);
-         mask[k] = is_lit[k] ? 0.0f : 1.0f;
          addend[k] = is_lit[k] ? nir_scalar_as_float(s[k]) : 0.0f;
-         need_add |= is_lit[k];
          comp_node[k] = -1;
          comp_idx[k] = 0;
          if (is_lit[k])
@@ -1448,116 +1542,85 @@ build_vec(struct ctx *c, nir_scalar s[4])
          if (comp_idx[k] > 3)
             return fail(c, "swizzled or composed vector"), -1;
       }
-      /* A lane whose scalars sit in different register pairs, or come from
-       * different values, is built as two masked terms and summed. */
       for (unsigned l = 0; l < 2; l++) {
          unsigned a = 2 * l, b = a + 1;
+         int t[2];
 
-         if (comp_node[a] >= 0 && comp_node[b] >= 0 &&
-             (comp_node[a] != comp_node[b] ||
-              comp_idx[a] / 2 != comp_idx[b] / 2)) {
-            int t0 = gather_term(c, comp_node, comp_idx, is_lit, 0);
-            int t1 = gather_term(c, comp_node, comp_idx, is_lit, 1);
-            int sum;
-
-            if (t0 == -1 || t1 == -1)
-               return -1;
-            if (t0 == -2 || t1 == -2)
-               return fail(c, "swizzled or composed vector"), -1;
-            sum = node_new(c, N_ADD);
-            if (sum < 0)
-               return -1;
-            set_src(&NODES(c)[sum], 0, t0, (const uint8_t[]){ 0, 1 },
-                    (const uint8_t[]){ 1, 1 });
-            set_src(&NODES(c)[sum], 1, t1, (const uint8_t[]){ 0, 1 },
-                    (const uint8_t[]){ 1, 1 });
-            n_val = sum;
-            goto have_value;
+         llane[l] = l;
+         lswz[l] = 1;
+         if (!is_lit[a] && !is_lit[b] && comp_node[a] == comp_node[b] &&
+             comp_idx[a] / 2 == comp_idx[b] / 2) {
+            ln[l] = comp_node[a];
+            llane[l] = comp_idx[a] / 2;
+            lswz[l] = (comp_idx[a] & 1) << 1 | (comp_idx[b] & 1);
+            continue;
          }
-      }
-      for (unsigned l = 0; l < 2; l++) {
-         unsigned a = 2 * l, b = a + 1;
-
-         if (comp_node[a] >= 0 && comp_node[b] >= 0) {
-            lane_node[l] = comp_node[a];
-            src_lane[l] = comp_idx[a] / 2;
-            src_swz[l] = (comp_idx[a] & 1) << 1 | (comp_idx[b] & 1);
-         } else if (comp_node[a] >= 0 || comp_node[b] >= 0) {
-            unsigned only = comp_node[a] >= 0 ? comp_idx[a] : comp_idx[b];
-
-            lane_node[l] = comp_node[a] >= 0 ? comp_node[a] : comp_node[b];
-            src_lane[l] = only / 2;
-            src_swz[l] = (only & 1) << 1 | (only & 1);
-         }
-      }
-      /* A lane of pure literals rides on the other lane's register with a
-       * zero factor. */
-      for (unsigned l = 0; l < 2; l++)
-         if (lane_node[l] < 0) {
-            if (lane_node[1 - l] < 0)
-               return fail(c, "swizzled or composed vector"), -1;
-            lane_node[l] = lane_node[1 - l];
-            src_lane[l] = src_lane[1 - l];
-            src_swz[l] = src_swz[1 - l];
-         }
-      /* The multiply needs a register operand, so materialise constants. */
-      for (unsigned l = 0; l < 2; l++)
-         if (node_is_const(&NODES(c)[lane_node[l]])) {
-            uint8_t ll[2] = { src_lane[l], src_lane[l] };
-            uint8_t ls[2] = { src_swz[l], src_swz[l] };
-            int load = node_new(c, N_LOAD);
-
-            if (load < 0)
+         if (n_add < 0) {
+            n_add = node_new(c, N_LIT);
+            if (n_add < 0)
                return -1;
-            set_src(&NODES(c)[load], 0, lane_node[l], ll, ls);
-            if (lane_node[1 - l] == lane_node[l] &&
-                src_lane[1 - l] == src_lane[l] &&
-                src_swz[1 - l] == src_swz[l]) {
-               lane_node[1 - l] = load;
-               src_lane[1 - l] = l;
-               src_swz[1 - l] = 1;
+            memcpy(NODES(c)[n_add].lit, addend, sizeof(addend));
+         }
+         if (is_lit[a] && is_lit[b]) {
+            /* The whole lane is a constant pair, so one move holds it. */
+            ln[l] = load_const(c, n_add, l, 1);
+            if (ln[l] < 0)
+               return -1;
+            continue;
+         }
+         /* One term per scalar, the literal one folded into the sum. */
+         for (unsigned h = 0; h < 2; h++) {
+            unsigned k = a + h;
+
+            if (is_lit[k]) {
+               t[h] = n_add;
+               continue;
             }
-            lane_node[l] = load;
-            src_lane[l] = l;
-            src_swz[l] = 1;
+            if (unit[h] < 0) {
+               unit[h] = node_new(c, N_LIT);
+               if (unit[h] < 0)
+                  return -1;
+               for (unsigned j = 0; j < 4; j++)
+                  NODES(c)[unit[h]].lit[j] = (j & 1) == h ? 1.0f : 0.0f;
+            }
+            t[h] = lane_term(c, comp_node[k], comp_idx[k], unit[h]);
+            if (t[h] < 0)
+               return -1;
          }
-      n_mask = node_new(c, N_LIT);
-      if (n_mask < 0)
-         return -1;
-      memcpy(NODES(c)[n_mask].lit, mask, sizeof(mask));
-      if (lane_node[0] == lane_node[1]) {
-         uint8_t ll[2] = { src_lane[0], src_lane[1] };
-         uint8_t ls[2] = { src_swz[0], src_swz[1] };
-
-         n_val = node_new(c, N_MUL);
-         if (n_val < 0)
+         ln[l] = node_new(c, N_ADD);
+         if (ln[l] < 0)
             return -1;
-         set_src(&NODES(c)[n_val], 0, lane_node[0], ll, ls);
-         set_src(&NODES(c)[n_val], 1, n_mask, lane_id, swz_id);
-      } else {
-         uint8_t l0[2] = { src_lane[0], 0 }, s0[2] = { src_swz[0], 1 };
-         uint8_t l1[2] = { 0, src_lane[1] }, s1[2] = { 1, src_swz[1] };
-
-         n_val = node_new(c, N_GATHER);
-         if (n_val < 0)
-            return -1;
-         set_src(&NODES(c)[n_val], 0, lane_node[0], l0, s0);
-         set_src(&NODES(c)[n_val], 1, lane_node[1], l1, s1);
-         set_src(&NODES(c)[n_val], 2, n_mask, lane_id, swz_id);
+         /* The add takes its constant on the b side only. */
+         set_src(&NODES(c)[ln[l]], 0, t[is_lit[a]], lane_id, swz_id);
+         set_src(&NODES(c)[ln[l]], 1, t[!is_lit[a]], lane_id, swz_id);
       }
-have_value:
-      if (need_add) {
-         int n_lit = node_new(c, N_LIT), n_add;
+      /* A vector that re-reads one value the way that value already reads
+       * back is that value: no slot assembles it. */
+      if (ln[0] == ln[1] &&
+          ((!llane[0] && llane[1] == 1 &&
+            ((lswz[0] == 1 && lswz[1] == 1) || node_broadcast(c, ln[0]))) ||
+           node_uniform(c, ln[0])))
+         n = ln[0];
+      else {
+         /* The two lanes are separate instructions but one operand slot, so
+          * a lane naming a constant is moved into a register first. */
+         for (unsigned l = 0; l < 2; l++)
+            if (node_is_const(&NODES(c)[ln[l]])) {
+               ln[l] = load_const(c, ln[l], llane[l], lswz[l]);
+               if (ln[l] < 0)
+                  return -1;
+               llane[l] = l;
+               lswz[l] = 1;
+            }
+         n = node_new(c, N_PAIR);
+         if (n < 0)
+            return -1;
+         for (unsigned l = 0; l < 2; l++) {
+            uint8_t lane[2] = { llane[l], llane[l] };
+            uint8_t swz[2] = { lswz[l], lswz[l] };
 
-         if (n_lit < 0)
-            return -1;
-         memcpy(NODES(c)[n_lit].lit, addend, sizeof(addend));
-         n_add = node_new(c, N_ADD);
-         if (n_add < 0)
-            return -1;
-         set_src(&NODES(c)[n_add], 0, n_val, lane_id, swz_id);
-         set_src(&NODES(c)[n_add], 1, n_lit, lane_id, swz_id);
-         n_val = n_add;
+            set_src(&NODES(c)[n], l, ln[l], lane, swz);
+         }
       }
       {
          struct gather_key *g = util_dynarray_grow(&c->gathers,
@@ -1565,10 +1628,10 @@ have_value:
 
          if (g) {
             memcpy(g->s, s, sizeof(g->s));
-            g->node = n_val;
+            g->node = n;
          }
       }
-      return n_val;
+      return n;
    }
 }
 
@@ -1652,6 +1715,14 @@ operand(struct ctx *c, struct lop *l, unsigned i, const struct node *nd,
    const struct node *s = &NODES(c)[nd->src[pos]];
    unsigned lane = nd->lane[pos][l->lane], swz = nd->swz[pos][l->lane];
 
+   /* A pair emits nothing: the lane being read names the real source. */
+   while (s->kind == N_PAIR) {
+      unsigned next = s->lane[lane][lane];
+
+      swz = swz_compose(swz, s->swz[lane][lane]);
+      s = &NODES(c)[s->src[lane]];
+      lane = next;
+   }
    switch (s->kind) {
    case N_TEX:
       l->opreg[i] = s->texel + 2 * lane;
@@ -1968,6 +2039,19 @@ emit_node_lops(struct ctx *c, int n, bool output, bool direct_ba)
       lop_add(c, &l);
       return true;
    }
+   if (nd->kind == N_PAIR) {
+      /* Nothing assembles a pair; only the output needs a move per lane. */
+      for (unsigned lane = 0; output && lane < 2; lane++) {
+         struct lop l;
+
+         lop_init(&l, L_MOV_OUT, lane, n);
+         operand(c, &l, 0, nd, lane);
+         if (l.konst >= 0)
+            l.kind = L_MOVC_OUT;
+         lop_add(c, &l);
+      }
+      return true;
+   }
    for (int step = 0; step < 2; step++) {
       int lane = rg_first ? step : 1 - step;
       struct lop l;
@@ -2002,12 +2086,6 @@ emit_node_lops(struct ctx *c, int n, bool output, bool direct_ba)
             operand(c, &l, 0, nd, 1);
             operand(c, &l, 1, nd, 0);
          }
-         break;
-      case N_GATHER:
-         /* Each result lane multiplies its own source by the lane factor. */
-         lop_init(&l, L_MUL_RC, lane, n);
-         operand(c, &l, 0, nd, lane);
-         operand(c, &l, 1, nd, 2);
          break;
       case N_SAT:
          lop_init(&l, L_SAT, lane, n);
@@ -2159,7 +2237,7 @@ schedule_tree(struct ctx *c, int root)
          }
       }
    }
-   if (r->kind != N_VARY && max_level > 1) {
+   if (r->kind != N_VARY && r->kind != N_PAIR && max_level > 1) {
       struct lop l;
 
       lop_init(&l, L_MOV_OUT, 1, root);
@@ -2185,6 +2263,37 @@ allocate(struct ctx *c)
    static const uint8_t interp_extra[] = { 0x1a, 0x1b, 0x1c, 0x1d, 0x1e, 0x1f };
    uint64_t busy = 0;
 
+   /* Both lanes of a node are emitted, but a lane nothing reads is dead, and
+    * so is whatever only that lane read.  A backward walk marks what the
+    * output still needs; the rest never reaches the register file. */
+   {
+      struct lop *lops = LOPS(c);
+      bool *live = calloc(n ? n : 1, sizeof(bool));
+      unsigned keep = 0;
+
+      if (!live)
+         return fail(c, "out of memory");
+      util_dynarray_foreach(&c->values, struct value, v)
+         v->last = -1;
+      for (int s = n - 1; s >= 0; s--) {
+         if (lops[s].dst >= 0 && VALUES(c)[lops[s].dst].last < 0)
+            continue;
+         live[s] = true;
+         for (unsigned i = 0; i < ARRAY_SIZE(lops[s].opval); i++)
+            if (lops[s].opval[i] >= 0)
+               VALUES(c)[lops[s].opval[i]].last = s;
+         if (lops[s].keep_dst)
+            VALUES(c)[lops[s].dst].last = s;
+      }
+      for (unsigned s = 0; s < n; s++)
+         if (live[s])
+            lops[keep++] = lops[s];
+      free(live);
+      c->lops.size = keep * sizeof(struct lop);
+      n = keep;
+      util_dynarray_foreach(&c->values, struct value, v)
+         v->last = -1;
+   }
    for (unsigned s = 0; s < n; s++) {
       struct lop *l = &LOPS(c)[s];
       bool rg = l->dst < 0 && l->lane == 0 && l->kind != L_INTERP;
@@ -2319,8 +2428,8 @@ allocate(struct ctx *c)
          static const char *const kinds[] = {
             "VARY", "TEX", "UBO", "LIT", "MUL", "ADD", "SUB", "MAD",
             "MIN", "MAX", "NEG", "FRACT", "FLOOR", "CEIL", "EXP2", "LOG2",
-            "RCP", "RSQ", "FRAGCOORD", "CMP", "SEL", "SAT", "GATHER",
-            "LOAD", "COMPOSE",
+            "RCP", "RSQ", "FRAGCOORD", "CMP", "SEL", "SAT",
+            "LOAD", "COMPOSE", "PAIR",
          };
          unsigned count[ARRAY_SIZE(kinds)] = { 0 };
 
@@ -2445,18 +2554,26 @@ encode_lops(struct ctx *c)
          break;
       case L_ADD_RC:
          a = opreg(c, l, 0);
+         if (l->opswz[0] != 1)
+            return fail(c, "swizzled addition operand");
          emit(c, w0_make(a, NONE, e, d, 0, op0),
               w1_make(0xbc800100 | (pair ? 0x10 : 0) |
                       (nd->neg ? 0xc0 : 0), 0x3f, a));
          break;
       case L_ADD_RR:
          a = opreg(c, l, 0);
+         if (!add_form(l->opswz[0], l->opswz[1], nd->kind == N_SUB))
+            return fail(c, "swizzled addition operand");
          emit(c, w0_make(a, NONE, opreg(c, l, 1), d, 0, op0),
-              w1_make(0xac800d10 | (nd->kind == N_SUB ? 0xc0 : 0), has, a));
+              w1_make(0xac800c00 | l->opswz[0] << 8 |
+                      (nd->kind == N_SUB ? 0xc0 : 0) | l->opswz[1] << 4,
+                      has, a));
          break;
       case L_SUB_CR:
          if (!pair)
             return fail(c, "literal minus register");
+         if (l->opswz[0] != 1)
+            return fail(c, "swizzled addition operand");
          emit(c, w0_make(NONE, NONE, opreg(c, l, 0), d, 0, op0),
               w1_make(0xa0800dd0, e, NONE));
          break;
@@ -2511,12 +2628,16 @@ encode_lops(struct ctx *c)
          break;
       }
       case L_MOV_OUT:
+         /* The move class carries the c operand's scalar select at bits
+          * 5:4; all four values appear in the corpus (a2803f00, f10, f20,
+          * f30, every one of them a register move). */
          emit(c, w0_make(NONE, NONE, opreg(c, l, 0), OUT, 0, op0),
-              w1_make(0xa2803f10, NONE, NONE));
+              w1_make(0xa2803f00 | l->opswz[0] << 4, NONE, NONE));
          break;
       case L_MOVC_OUT:
+         /* The constant's scalar select sits where L_MOVC_TMP carries it. */
          emit(c, w0_make(NONE, NONE, NONE, OUT, 0, op0),
-              w1_make(0xa2803300 | (pair ? 0x10 : 0), e, NONE));
+              w1_make(0xa2803300 | kbits << 4, e, NONE));
          break;
       case L_RAW:
          emit(c, l->w0, l->w1);
@@ -3732,6 +3853,9 @@ m9_fs_compile(struct nir_shader *nir, const struct m9_fs_blend *blend,
       NIR_PASS(_, nir, nir_lower_alu_to_scalar, is_transcendental, NULL);
       NIR_PASS(_, nir, nir_opt_vectorize, vectorize_around_chains, NULL);
       NIR_PASS(_, nir, nir_opt_copy_prop);
+      /* Scalarising a vector special function leaves one chain per
+       * component, and the components are often the same argument. */
+      NIR_PASS(_, nir, nir_opt_cse);
       NIR_PASS(_, nir, nir_opt_dce);
       nir_foreach_function_impl(impl, nir) {
          if (!impl->function->is_entrypoint)
