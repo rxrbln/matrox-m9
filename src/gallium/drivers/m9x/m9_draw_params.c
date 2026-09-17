@@ -10,6 +10,7 @@
 #include "m9_passthrough.h"
 
 #include <errno.h>
+#include <math.h>
 #include <string.h>
 
 #include "pipe/p_defines.h"
@@ -80,8 +81,8 @@ m9_draw_params_init(struct m9_draw_params *params, uint32_t width,
    m9_put_float(sys, 27, h / 2);
    m9_put_float(sys, 28, 0.5f);
    m9_put_float(sys, 29, h);
-   m9_put_float(sys, 41, M9_GUARD_BAND / (w / 2) - 1);
-   m9_put_float(sys, 43, -(M9_GUARD_BAND / (h / 2) - 1));
+   m9_put_float(sys, M9_VS_GUARD_X_DWORD, M9_GUARD_BAND / (w / 2) - 1);
+   m9_put_float(sys, M9_VS_GUARD_Y_DWORD, -(M9_GUARD_BAND / (h / 2) - 1));
 
    linked = params->linked_prefix;
    m9_put_float(linked, 0, w / 2);
@@ -206,6 +207,38 @@ uint32_t
 m9_raster_control(bool flat, enum m9_topology topology)
 {
    return m9_raster_control_decl(flat, topology, 5);
+}
+
+uint32_t
+m9_preprocess_control(unsigned decl_count)
+{
+   /* The captured pass-through value is this with five words. */
+   return 0x0008000eu | (decl_count - 1) << 8;
+}
+
+/* The tail applies scale then bias to the divided position; the shipping
+ * words are the framebuffer's own viewport, and a pass whose program emits
+ * clip coordinates needs the viewport actually in force.  The guard band is
+ * the same ratio against the new half extent (the band does not cull:
+ * docs/parhelia-m9-native-vertex-isa.md). */
+void
+m9_draw_params_viewport(struct m9_draw_params *params, const float scale[3],
+                        const float bias[3], uint32_t *prefix)
+{
+   float ax = fabsf(scale[0]), ay = fabsf(scale[1]);
+
+   if (!params || !scale || !bias || !prefix)
+      return;
+   m9_put_float(prefix, M9_VS_VIEWPORT_DWORD, scale[0]);
+   m9_put_float(prefix, M9_VS_VIEWPORT_DWORD + 1, scale[1]);
+   m9_put_float(prefix, M9_VS_DEPTH_SCALE_DWORD, scale[2]);
+   m9_put_float(prefix, M9_VS_BIAS_DWORD, bias[0]);
+   m9_put_float(prefix, M9_VS_BIAS_DWORD + 1, bias[1]);
+   m9_put_float(prefix, M9_VS_DEPTH_BIAS_DWORD, bias[2]);
+   m9_put_float(prefix, M9_VS_GUARD_X_DWORD,
+                ax > 0.0f ? M9_GUARD_BAND / ax - 1.0f : 0.0f);
+   m9_put_float(prefix, M9_VS_GUARD_Y_DWORD,
+                ay > 0.0f ? -(M9_GUARD_BAND / ay - 1.0f) : 0.0f);
 }
 
 uint32_t

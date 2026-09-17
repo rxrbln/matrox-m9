@@ -9,6 +9,7 @@
 #include "m9_draw.h"
 
 #include <errno.h>
+#include <string.h>
 
 #include "util/macros.h"
 
@@ -32,6 +33,14 @@ m9_draw_job_dwords(unsigned draw_count)
 {
    return draw_count ?
           M9_JOB_BASE_DWORDS + M9_JOB_DRAW_DWORDS * (draw_count - 1) : 0;
+}
+
+unsigned
+m9_draw_decl_dwords(unsigned decl_count)
+{
+   /* Four words a packet, one header each; the base job counts the
+    * pass-through declaration's two packets. */
+   return 5 * ((MAX2(decl_count, 1u) + 3) / 4) - 10;
 }
 
 unsigned
@@ -161,17 +170,18 @@ fail:
    return ret;
 }
 
+/* Index-23 words in packets of four, the tail padded with zero. */
 static int
-m9_emit_raster_decl(struct m9_batch *batch, const struct m9_raster_fs *fs)
+m9_emit_decl(struct m9_batch *batch, const uint32_t *words, unsigned count)
 {
-   unsigned words = (fs->decl_count + 3) & ~3u;
+   unsigned padded = (count + 3) & ~3u;
    int ret = 0;
 
-   for (unsigned i = 0; i < words; i += 4) {
+   for (unsigned i = 0; i < padded; i += 4) {
       uint32_t v[4];
 
       for (unsigned j = 0; j < 4; j++)
-         v[j] = i + j < fs->decl_count ? fs->decl[i + j] : 0;
+         v[j] = i + j < count ? words[i + j] : 0;
       EMIT(V(0x23, v[0]), V(0x23, v[1]), V(0x23, v[2]), V(0x23, v[3]));
    }
 fail:
@@ -193,6 +203,14 @@ m9_draw_job_valid(const struct m9_draw_job *job)
       if (!job->units[i].handle)
          return false;
    if (job->index_count && job->index_base % 4)
+      return false;
+   if (job->vs_decl_count &&
+       (!job->vs_decl || !job->vs_record_bytes || job->vs_record_bytes % 4 ||
+        job->vs_decl_count > M9_RASTER_MAX_DECL))
+      return false;
+   if (job->vs_const_pairs &&
+       (job->vs_const_pairs > M9_VS_CONST_MAX_PAIRS ||
+        job->vs_const_pairs > 0x7f))
       return false;
    for (unsigned i = 0; i < job->draw_count; i++) {
       const struct m9_draw_record *d = &job->draws[i];
@@ -216,19 +234,35 @@ m9_batch_emit_draw_job(struct m9_batch *batch, const struct m9_draw_job *job)
    const struct m9_draw_params *p;
    const struct m9_draw_record *d0;
    struct m9_batch_checkpoint checkpoint;
+   uint32_t pass_decl[5], record_bytes;
+   const uint32_t *decl;
+   unsigned decl_count, const_pairs;
    int ret;
 
    if (!batch || !job || batch->sealed || !m9_draw_job_valid(job))
       return -EINVAL;
    p = job->params;
    d0 = &job->draws[0];
+   if (job->vs_decl_count) {
+      decl = job->vs_decl;
+      decl_count = job->vs_decl_count;
+      record_bytes = job->vs_record_bytes;
+   } else {
+      memcpy(pass_decl, job->decl->words, sizeof(job->decl->words));
+      pass_decl[4] = M9_DECL_END;
+      decl = pass_decl;
+      decl_count = ARRAY_SIZE(pass_decl);
+      record_bytes = job->decl->record_bytes;
+   }
+   const_pairs = job->vs_const_pairs ? job->vs_const_pairs :
+                                       M9_VS_CONST_PAIRS;
    m9_batch_checkpoint(batch, &checkpoint);
 
    /* Preprocessing pass: dependency steps 0 and 1. */
    EMIT(V(0xe6, 3), V(0xe3, 0x00));
    EMIT(V(0xe6, 3));
    EMIT(V(0xf0, 0xf0000400), V(0xef, 0x00288800), V(0xd7, 0x000050ae));
-   EMIT(V(0x22, 0x0008040e));
+   EMIT(V(0x22, m9_preprocess_control(decl_count)));
    EMIT(V(0xe6, 3), V(0xe3, 0x10));
    EMIT(R(0xb0, job->transient, VIEW(0), STREAM), V(0xb1, 0x68002000));
    EMIT(R(0xb2, job->transient, VIEW(3), STREAM), V(0xb3, 0x68002000));
@@ -243,20 +277,22 @@ m9_batch_emit_draw_job(struct m9_batch *batch, const struct m9_draw_job *job)
    EMIT(V(0xf5, 0), V(0xf6, 0x7fff7fff), V(0xc4, 0), V(0xc5, 0x7fff7fff));
    EMIT(V(0x88, 0x0300bf00), V(0x89, 0xfe201e92), V(0x8a, 0), V(0xc1, 0));
    EMIT(R(0x00, job->source, 0, SYSTEM), V(0x01, 0xf2fe014f),
-        V(0x10, job->decl->record_bytes));
+        V(0x10, record_bytes));
    EMIT(R(0xc2, job->program, 0, PROGRAM),
         V(0xc3, job->fs ? job->fs->vertex_entry : 4), V(0x8f, 0));
-   EMIT(V(0x8c, 0x00501600), R(0x8d, job->system, 0x10, SYSTEM),
-        R(0x8e, job->system, 0xc0, SYSTEM), V(0x8f, 0));
+   EMIT(V(0x8c, 0x00500000 | const_pairs << 8),
+        R(0x8d, job->system, M9_VS_CONST_OFFSET, SYSTEM),
+        R(0x8e, job->system, M9_VS_CONST_OFFSET + 8 * const_pairs, SYSTEM),
+        V(0x8f, 0));
    ret = m9_emit_units(batch, NULL, 0);
    if (ret)
       goto fail;
    EMIT(V(0xec, 0), V(0xf4, 0x00010004), V(0xea, 0), V(0xeb, 0x46000000));
    EMIT(V(0x30, 0));
    EMIT(V(0x28, 0));
-   EMIT(V(0x23, job->decl->words[0]), V(0x23, job->decl->words[1]),
-        V(0x23, job->decl->words[2]), V(0x23, job->decl->words[3]));
-   EMIT(V(0x23, 0x00004b08), V(0x23, 0), V(0x23, 0), V(0x23, 0));
+   ret = m9_emit_decl(batch, decl, decl_count);
+   if (ret)
+      goto fail;
    ret = m9_emit_linked(batch, job);
    if (ret)
       goto fail;
@@ -309,7 +345,7 @@ m9_batch_emit_draw_job(struct m9_batch *batch, const struct m9_draw_job *job)
    EMIT(V(0xec, 0), V(0xf4, 0), V(0xea, 0), V(0xeb, 0));
    EMIT(V(0x28, 0));
    if (job->fs) {
-      ret = m9_emit_raster_decl(batch, job->fs);
+      ret = m9_emit_decl(batch, job->fs->decl, job->fs->decl_count);
       if (ret)
          goto fail;
    } else {

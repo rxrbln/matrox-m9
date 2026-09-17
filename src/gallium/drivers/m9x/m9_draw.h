@@ -49,12 +49,22 @@ struct m9_draw_job {
    uint32_t clip_min, clip_max;
    /* Native fragment program; NULL keeps the pass-through colour image. */
    const struct m9_raster_fs *fs;
+   /* Native preprocessing declaration: a compiled vertex program declares
+    * its own attributes, more words than the pass-through record and its
+    * own stride.  A zero count keeps decl's four words. */
+   const uint32_t *vs_decl;
+   unsigned vs_decl_count;    /* index-23 words, terminator included */
+   uint32_t vs_record_bytes;
+   unsigned vs_const_pairs;   /* 0 keeps the captured twenty-two */
    /* Raster texture units, texel pair order. */
    const struct m9_texture_unit *units;
    unsigned unit_count;
 };
 
 unsigned m9_draw_job_dwords(unsigned draw_count);
+/* Dwords a declaration of this many words costs beyond the pass-through five
+ * the base job already counts. */
+unsigned m9_draw_decl_dwords(unsigned decl_count);
 unsigned m9_draw_job_relocs(unsigned draw_count, unsigned unit_count);
 unsigned m9_draw_units_dwords(unsigned unit_count);
 unsigned m9_draw_job_dwords_fs(unsigned draw_count, unsigned unit_count);

@@ -51,6 +51,22 @@ enum m9_topology {
 #define M9_RASTER_MAX_DECL        16u
 /* Native fragment constants; the span at +0x1000 is hardware-measured. */
 #define M9_RASTER_CONST_OFFSET    0x1000u
+/* The declaration terminator both passes end their index-23 run with. */
+#define M9_DECL_END               0x00004b08u
+/* The preprocessing constant span starts one pair into the system prefix
+ * (CAPTURED 8d = system + 0x10) and may run up to the linked record. */
+#define M9_VS_CONST_OFFSET        0x10u
+#define M9_VS_CONST_MAX_PAIRS     ((M9_LINKED_OFFSET - M9_VS_CONST_OFFSET) / 8u)
+/* Pairs the captured pass-through program's span holds. */
+#define M9_VS_CONST_PAIRS         22u
+/* Prefix dwords the tail reads as its viewport scale, depth scale, viewport
+ * bias and depth bias: constant pairs 9..12, which is prefix dword 4 + 2p. */
+#define M9_VS_VIEWPORT_DWORD      22u
+#define M9_VS_DEPTH_SCALE_DWORD   24u
+#define M9_VS_BIAS_DWORD          26u
+#define M9_VS_DEPTH_BIAS_DWORD    28u
+#define M9_VS_GUARD_X_DWORD       41u
+#define M9_VS_GUARD_Y_DWORD       43u
 
 /* Raster pass of a native fragment program job. */
 struct m9_raster_fs {
@@ -100,6 +116,14 @@ uint32_t m9_color_mask(unsigned pipe_colormask);
 void m9_scissor_words(uint32_t minx, uint32_t miny, uint32_t maxx,
                       uint32_t maxy, uint32_t *min, uint32_t *max);
 uint32_t m9_raster_control(bool flat, enum m9_topology topology);
+/* Index 22 of the preprocessing pass; bits 11:8 are its declaration word
+ * count minus one, as they are in the raster control. */
+uint32_t m9_preprocess_control(unsigned decl_count);
+/* Rewrites the viewport, depth range and guard band the appended tail reads,
+ * for a pass whose vertex program emits clip coordinates of its own. */
+void m9_draw_params_viewport(struct m9_draw_params *params,
+                             const float scale[3], const float bias[3],
+                             uint32_t *prefix);
 uint32_t m9_raster_control_decl(bool flat, enum m9_topology topology,
                                 unsigned decl_count);
 /* The raster pass keeps three of its ten stream slots for position, c and d,
