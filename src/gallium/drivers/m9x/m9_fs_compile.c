@@ -1510,9 +1510,16 @@ build_vec(struct ctx *c, nir_scalar s[4])
     * code the front end scalarised, and nothing else keys on it, so the
     * assembled node is remembered here. */
    if (!c->no_gather_reuse)
-      util_dynarray_foreach(&c->gathers, struct gather_key, g)
-         if (!memcmp(g->s, s, sizeof(g->s)))
+      util_dynarray_foreach(&c->gathers, struct gather_key, g) {
+         bool same = true;
+
+         /* Field by field: nir_scalar is padded, and the padding of a
+          * local one holds whatever the stack held. */
+         for (unsigned k = 0; k < 4; k++)
+            same &= g->s[k].def == s[k].def && g->s[k].comp == s[k].comp;
+         if (same)
             return g->node;
+      }
    /* Each result lane names its own source.  A lane whose two scalars
     * already sit next to each other in one register costs nothing; one that
     * mixes two values, or a value and a literal, is summed from a masked
