@@ -1,18 +1,29 @@
 // SPDX-License-Identifier: GPL-2.0-only
 /* Copyright 2026 René Rebe <rene@exactco.de> */
 /*
- * Native timing and pixel clock for display controller 0.  The divider search,
- * the register encodings and the vid-reset handshake are the ones recovered
- * for the X driver in xf86-video-parhelia src/parhelia_mode.c and
- * src/parhelia_pll.c; only controller 0 is driven here.
+ * Native timing and pixel clock for the M9's four display controllers.  The
+ * divider search, the register encodings and the vid-reset handshake are the
+ * ones recovered for the X driver in xf86-video-parhelia src/parhelia_mode.c
+ * and src/parhelia_pll.c; the per-head banks, the clock-select rule and the
+ * half-block controllers are measured in
+ * xf86-video-parhelia docs/parhelia-m9148-fourhead-outputs.md.
  */
 #include <linux/delay.h>
+#include <linux/module.h>
 
 #include <drm/drm_modes.h>
 #include <drm/drm_print.h>
 
 #include "m9_drv.h"
 #include "m9_reg.h"
+
+/* The pad gate at 0x1cac walks 0xff -> 0xf0 -> 0x05 -> 0x07 -> 0x0f as the
+ * vendor's four links come up; no per-bit meaning is established, so nothing
+ * is written unless this carries a value to try on hardware. */
+static int m9_pad_gate = -1;
+module_param_named(pad_gate, m9_pad_gate, int, 0600);
+MODULE_PARM_DESC(pad_gate,
+	"Value written to the unresolved 0x1cac pad gate after a link is programmed; -1 leaves it alone");
 
 struct m9_pll {
 	u8 b0, b1, b2, b3;
@@ -72,12 +83,30 @@ static u32 m9_pll_encode(const struct m9_pll *s)
 	       (((u32)(s->b3 - 1) & 0x0f) << 16);
 }
 
+/* The synthesiser a controller is running from, by the measured select rule.
+ * Selects outside the pixel range address a system or board clock. */
+u32 m9x_mode_active_fs(struct m9_head *head)
+{
+	u32 sel = (m9x_read(head->mdev, head->clksel) & M9_CLK_SEL_MASK) >>
+		  M9_CLK_SEL_SHIFT;
+
+	if (sel < M9_FS_PIXEL_FIRST || sel > M9_FS_PIXEL_LAST)
+		return 0;
+	return M9_FS_REG(sel);
+}
+
 static int m9_program_clock(struct m9_head *head, u32 dot_khz)
 {
 	struct m9_pll pll;
 	unsigned int i;
 	u32 word, value;
 
+	if (head->clk_select < M9_FS_PIXEL_FIRST ||
+	    head->clk_select > M9_FS_PIXEL_LAST) {
+		drm_err(&head->mdev->drm, "head %u has no pixel synthesiser\n",
+			head->index);
+		return -EINVAL;
+	}
 	if (!m9_pll_solve(dot_khz, &pll)) {
 		drm_err(&head->mdev->drm, "no PLL divider for %u kHz\n", dot_khz);
 		return -EINVAL;
@@ -121,12 +150,30 @@ static int m9_program_clock(struct m9_head *head, u32 dot_khz)
 	return 0;
 }
 
+/* True while another controller is fetching, which the global vid reset would
+ * interrupt.  The vendor's four-head bring-up issues no strobe at all, so a
+ * head that joins a running set does without one.  DERIVED. */
+static bool m9_other_head_enabled(struct m9_head *head)
+{
+	struct m9x_device *mdev = head->mdev;
+	unsigned int i;
+
+	for (i = 0; i < mdev->heads; i++)
+		if (i != head->index &&
+		    m9x_read(mdev, mdev->head[i].dc + M9_DC_CTRL) &
+		    M9_DC_ENABLE)
+			return true;
+	return false;
+}
+
 /* A global strobe with this controller's timing-block reset held across it. */
 static void m9_apply_vid_reset(struct m9_head *head)
 {
 	bool held = false;
 	u32 value;
 
+	if (m9_other_head_enabled(head))
+		return;
 	value = m9x_read(head->mdev, head->clksel);
 	if (value & M9_CLK_HOLD) {
 		m9x_write(head->mdev, head->clksel, (value & 1) | 0x2e);
@@ -164,10 +211,17 @@ static void m9_program_timing(struct m9_head *head,
 	u32 vss = mode->vsync_start, vse = mode->vsync_end;
 	u32 value;
 
-	value = m9x_read(head->mdev, head->dc + M9_DC_HOLD);
-	m9x_write(head->mdev, head->dc + M9_DC_HOLD, value | M9_DC_HOLD_SET);
-	value = m9x_read(head->mdev, head->dc + M9_DC_HOLD2);
-	m9x_write(head->mdev, head->dc + M9_DC_HOLD2, value & 0x00ffffffu);
+	value = m9x_read(head->mdev, head->hold);
+	/* Copied: the vendor sets these two bits in the companion's hold word
+	 * when a half-block controller comes up. */
+	if (head->half_block)
+		value |= M9_DC_HOLD_COMPANION;
+	m9x_write(head->mdev, head->hold, value | M9_DC_HOLD_SET);
+	if (!head->half_block) {
+		value = m9x_read(head->mdev, head->dc + M9_DC_HOLD2);
+		m9x_write(head->mdev, head->dc + M9_DC_HOLD2,
+			  value & 0x00ffffffu);
+	}
 
 	m9x_write(head->mdev, head->dct + M9_DCT_HBLANK,
 		  ((hd - 1) & M9_DCT_H_MASK) |
@@ -196,6 +250,15 @@ static void m9_program_timing(struct m9_head *head,
 	m9x_write(head->mdev, head->dc + M9_DC_XEND, (hd - 1) << 16);
 	m9x_write(head->mdev, head->dc + M9_DC_YSTART, 0);
 	m9x_write(head->mdev, head->dc + M9_DC_YEND, vd - 1);
+	/* Copied: written for the half-block controllers alone, meaning not
+	 * established. */
+	if (head->half_block) {
+		m9x_write(head->mdev, head->dc + M9_DC_XEND2, (hd - 1) << 16);
+		m9x_write(head->mdev, head->dc + M9_DC_OPAQUE,
+			  M9_DC_OPAQUE_VALUE);
+		m9x_write(head->mdev, head->companion_dct + M9_DCT_HDISPLAY2,
+			  (hd - 1) << 16);
+	}
 	m9x_write(head->mdev, head->dc + M9_DC_PITCH,
 		  (pitch_pixels & M9_DC_PITCH_MASK) | (3u << 16) |
 		  (M9_DC_FORMAT_XRGB8888 << M9_DC_PITCH_FORMAT_SHIFT));
@@ -205,40 +268,54 @@ static void m9_program_timing(struct m9_head *head,
 	value |= (M9_DC_FORMAT_XRGB8888 << M9_DC_FORMAT_SHIFT) | M9_DC_ENABLE;
 	m9x_write(head->mdev, head->dc + M9_DC_CTRL, value);
 
-	value = m9x_read(head->mdev, head->dc + M9_DC_HOLD);
-	m9x_write(head->mdev, head->dc + M9_DC_HOLD, value & ~M9_DC_HOLD_CLR);
-	value = m9x_read(head->mdev, head->dc + M9_DC_HOLD2);
-	m9x_write(head->mdev, head->dc + M9_DC_HOLD2, value | 0xff000000u);
+	value = m9x_read(head->mdev, head->hold);
+	m9x_write(head->mdev, head->hold, value & ~M9_DC_HOLD_CLR);
+	if (!head->half_block) {
+		value = m9x_read(head->mdev, head->dc + M9_DC_HOLD2);
+		m9x_write(head->mdev, head->dc + M9_DC_HOLD2,
+			  value | 0xff000000u);
+	}
 }
 
 /*
- * Route this controller to its digital link.  The board's own setup word for
- * the link is keyed to the pixel clock and comes from the PInS patch table -
- * the values the firmware left are only right for the mode it posted.  Clock
- * source codes are not the controller number: 0..3 encode as 00, 08, 01, 09.
+ * Route this controller to its digital link.  Connector n is wired to link n
+ * and the board's own setup word for it comes from the PInS patch table, keyed
+ * to the pixel clock - the values the firmware left are only right for the mode
+ * it posted.  Clock source codes are not the controller number: controllers
+ * 0..3 encode as 00, 08, 01, 09 (MEASURED, all four in one run).  The companion
+ * format register holds two links in its two halves, so only this link's half
+ * is patched.
  */
 static void m9_program_link(struct m9_head *head,
 			    const struct drm_display_mode *mode)
 {
-	static const u32 source[M9_MAX_HEADS] = { 0x00, 0x08 };
+	static const u32 source[M9_MAX_HEADS] = { 0x00, 0x08, 0x01, 0x09 };
 	struct m9x_device *mdev = head->mdev;
+	unsigned int link = head->index;
 	u32 value;
 
-	m9x_pins_patch(mdev, M9_REG_LINK_FORMAT0, mode->clock);
-	m9x_pins_patch(mdev, M9_REG_LINK_FORMAT1, mode->clock);
-	m9x_pins_patch(mdev, head->link, mode->clock);
+	m9x_pins_patch(mdev, M9_LINK_FORMAT_REG(link), mode->clock,
+		       M9_LINK_FORMAT_MASK(link));
+	m9x_pins_patch(mdev, head->link, mode->clock, ~0u);
 
 	value = m9x_read(mdev, head->link);
 	value &= ~(M9_DVO_SRC_MASK | M9_DVO_HSYNC_NEG | M9_DVO_VSYNC_NEG |
 		   M9_DVO_PATH_OFF);
 	value |= source[head->index];
+	/* Bit 20 tracked the hsync polarity on all four measured modes; bit 22
+	 * did not track the vsync polarity, so its meaning is unestablished and
+	 * this only reproduces what the posted head was found with. */
 	if (mode->flags & DRM_MODE_FLAG_NHSYNC)
 		value |= M9_DVO_HSYNC_NEG;
 	if (mode->flags & DRM_MODE_FLAG_NVSYNC)
 		value |= M9_DVO_VSYNC_NEG;
 	m9x_write(mdev, head->link, value);
-	drm_info(&mdev->drm, "head %u link %#06x = %#010x\n", head->index,
-		 head->link, m9x_read(mdev, head->link));
+	if (m9_pad_gate >= 0)
+		m9x_write(mdev, M9_REG_PAD_GATE, m9_pad_gate);
+	drm_info(&mdev->drm, "head %u link %#06x = %#010x, format %#06x = %#010x\n",
+		 head->index, head->link, m9x_read(mdev, head->link),
+		 M9_LINK_FORMAT_REG(link),
+		 m9x_read(mdev, M9_LINK_FORMAT_REG(link)));
 }
 
 int m9x_mode_program(struct m9_head *head,
@@ -249,6 +326,9 @@ int m9x_mode_program(struct m9_head *head,
 	ret = m9_program_clock(head, mode->clock);
 	if (ret)
 		return ret;
+	/* One watermark word served all four heads and all four modes of the
+	 * measured run; the firmware leaves it zero on every head. */
+	m9x_write(head->mdev, head->watermark, M9_WATERMARK_VALUE);
 	m9_program_timing(head, mode, pitch_pixels);
 	m9_program_link(head, mode);
 	/* The serializers latch their source from a controller that is already
@@ -269,7 +349,8 @@ void m9x_mode_read_current(struct m9_head *head,
 	u32 hsync = m9x_read(head->mdev, head->dct + M9_DCT_HSYNC);
 	u32 vblank = m9x_read(head->mdev, head->dct + M9_DCT_VBLANK);
 	u32 vsync = m9x_read(head->mdev, head->dct + M9_DCT_VSYNC);
-	u32 word = m9x_read(head->mdev, head->fs);
+	u32 fs = m9x_mode_active_fs(head);
+	u32 word = fs ? m9x_read(head->mdev, fs) : 0;
 	u32 b0 = (word & 0x3f) + 1, b1 = ((word >> 6) & 0x1f) + 1;
 	u32 b2 = ((word >> 11) & 0x1f) + 1, b3 = ((word >> 16) & 0x0f) + 1;
 
@@ -282,7 +363,9 @@ void m9x_mode_read_current(struct m9_head *head,
 	mode->vtotal = ((vblank >> 16) & M9_DCT_V_MASK) + 1;
 	mode->vsync_start = (vsync & M9_DCT_V_MASK) + 1;
 	mode->vsync_end = ((vsync >> 16) & M9_DCT_V_MASK) + 1;
-	mode->clock = m9_pll_out(b0, b1, b2, b3);
+	/* A controller the firmware left dark selects no pixel synthesiser, and
+	 * a zero clock is what makes the caller reject the timing. */
+	mode->clock = fs ? m9_pll_out(b0, b1, b2, b3) : 0;
 	mode->type = DRM_MODE_TYPE_DRIVER | DRM_MODE_TYPE_PREFERRED;
 	mode->flags = DRM_MODE_FLAG_PHSYNC | DRM_MODE_FLAG_PVSYNC;
 	drm_mode_set_name(mode);

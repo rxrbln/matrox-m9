@@ -110,10 +110,13 @@
 #define M9_CURSOR_POS_MASK		0x7fffu
 
 #define M9_DCT0				0x1900
+#define M9_DCT_HDISPLAY2		0x000c
 #define M9_DCT_HBLANK			0x0008
 #define M9_DCT_HTOTAL			0x0010
 #define M9_DCT_HSYNC			0x0014
 #define M9_DCT_VBLANK			0x0020
+/* Free-running line counter, confirmed to advance on all four heads. */
+#define M9_DCT_LINE			0x0024
 #define M9_DCT_VTOTAL			0x002c
 #define M9_DCT_VSYNC			0x0030
 #define M9_DCT_VSYNCEND			0x005c
@@ -124,11 +127,14 @@
 #define M9_REG_VGAMISC			0x1fdc
 #define M9_VGAMISC_NATIVE		BIT(16)
 #define M9_REG_DVO0			0x1c9c
+/* Unresolved pad gate: the vendor walks it 0xff -> 0xf0 -> 0x05 -> 0x07 ->
+ * 0x0f as the four links come up, one bit apparently per pad group. */
+#define M9_REG_PAD_GATE			0x1cac
 
 #define M9_IRQ_LOW_VBLANK0		BIT(0)
-/* The second controller's vblank source is not measured; a zero mask keeps
- * that head out of the interrupt path instead of guessing a bit. */
-#define M9_IRQ_LOW_VBLANK1		0u
+/* Only controller 0's vblank source is measured; heads 1..3 default to a zero
+ * mask, which keeps them out of the interrupt path instead of guessing a bit.
+ * m9x.vblank_mask= carries a bit found by walking the mask on hardware. */
 #define M9_IRQ_HIGH_LOW_CASCADE	BIT(31)
 
 #define M9_REQUESTER_DMA_TAG		2u
@@ -152,10 +158,19 @@
 #define M9_HMC_MISCIO_GRANT	BIT(0)
 #define M9_HMC_GRANT_TRIES	2000u
 
-/* Bit-banged DDC: data bit n, output enable at n + 16. */
+/* Bit-banged DDC: data bit n, output enable at n + 16.  Four buses, the even
+ * bit of each pair the clock.  0x1c4c is MISCIO - transmitter resets and the
+ * board identification EEPROM - and carries no monitor EDID. */
 #define M9_DDC			0x1c48
 #define M9_MISCIO		0x1c4c
 #define M9_DDC_OE_SHIFT		16
+#define M9_MISCIO_OE_SHIFT	10
+
+/* External DisplayPort transmitter, one per connector on its own DDC pins.
+ * Its I2C bridge has to be off while the host reads the sink's EDID. */
+#define M9_DP_TX_MAIN		0x00
+#define M9_DP_TX_BRIDGE		BIT(1)
+#define M9_DP_TX_HPD		0x7c
 
 
 /* Native modeset on display controller 0.  Field encodings are the M9's own:
@@ -166,6 +181,15 @@
 #define M9_DC_HOLD_SET			0x00000012u
 #define M9_DC_HOLD_CLR			0x00000032u
 #define M9_DC_HOLD2			0x0090
+/* Controllers 2 and 3 hold only half a page: no hold pair of their own, and
+ * two extra words the vendor writes for them alone.  Copied verbatim from the
+ * four-head run, meaning not established. */
+#define M9_DC_XEND2			0x0010
+#define M9_DC_OPAQUE			0x0064
+#define M9_DC_OPAQUE_VALUE		0x80010000u
+#define M9_DC_HOLD_COMPANION		0x00000300u
+/* One watermark word served all four heads and all four modes. */
+#define M9_WATERMARK_VALUE		0x000203f7u
 #define M9_DC_CTRL_INTERLACE		BIT(12)
 #define M9_DC_PITCH_FORMAT_SHIFT	24
 #define M9_DCT_CTRL			0x0000
@@ -173,14 +197,20 @@
 #define M9_DCT_H_MASK			0x7fffu
 #define M9_DCT_V_MASK			0x3fffu
 
-/* Frequency synthesisers.  0x0e30/34/38 are ~500 MHz system clocks in both
- * the firmware's and the vendor driver's state; the pixel clock of controller
- * 0 is 0x0e48 (MEASURED: the vendor's 1920x1200 capture holds 0x0004d6f6
- * there, which decodes to exactly 154000 kHz, and the firmware's 1024x768
- * holds 0x00063a1d, 65089 kHz).  Field widths are b0 6, b1 5, b2 5, b3 4
- * bits, each stored as value - 1. */
+/*
+ * Frequency synthesisers.  A controller owns no pixel-clock register: its
+ * clock-select word picks one synthesiser, register = 0x0e38 + 4 * select
+ * (MEASURED: one four-head vendor run decodes selects 4/1/2/3 at 0x0e48/3c/
+ * 40/44 to exactly the four heads' mode clocks).  Selects 0, 5 and 6 address
+ * 0x0e38 and 0x0e4c/0x0e50, which carry the system and board clocks and must
+ * never take a pixel word.  Field widths are b0 6, b1 5, b2 5, b3 4 bits,
+ * each stored as value - 1.
+ */
 #define M9_FS_OSC			0x0e24
-#define M9_FS_PIXEL0			0x0e48
+#define M9_FS_BASE			0x0e38
+#define M9_FS_REG(sel)			(M9_FS_BASE + 4 * (sel))
+#define M9_FS_PIXEL_FIRST		1u
+#define M9_FS_PIXEL_LAST		4u
 #define M9_FS_B0_MAX			64u
 #define M9_FS_B1_MAX			32u
 #define M9_FS_B2_MAX			32u
@@ -197,7 +227,6 @@
 #define M9_CLK_HOLD			BIT(0)
 #define M9_CLK_SEL_MASK			0x0000001eu
 #define M9_CLK_SEL_SHIFT		1
-#define M9_CLK_SEL_FS2			4u
 #define M9_REG_SYNCARM			0x1c24
 /* Digital link 0: the vendor sets bit 22 for a negative vsync and leaves the
  * rest of the word alone across a mode change. */
@@ -205,9 +234,12 @@
 #define M9_DVO_VSYNC_NEG		BIT(22)
 #define M9_DVO_SRC_MASK			0x1fu
 #define M9_DVO_PATH_OFF			BIT(18)
-/* Clock-keyed link format registers the board patches alongside the link. */
+/* Clock-keyed link format registers the board patches alongside the link.
+ * 0x1c38 carries links 0 and 1, 0x1c3c links 2 and 3, one 16-bit half each. */
 #define M9_REG_LINK_FORMAT0		0x1c38
 #define M9_REG_LINK_FORMAT1		0x1c3c
+#define M9_LINK_FORMAT_REG(link)	(M9_REG_LINK_FORMAT0 + 4 * ((link) / 2))
+#define M9_LINK_FORMAT_MASK(link)	((link) & 1 ? 0xffff0000u : 0x0000ffffu)
 #define M9_VIDRST_STROBE		BIT(31)
 
 #endif

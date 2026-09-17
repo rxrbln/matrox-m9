@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0-only
 /* Copyright 2026 René Rebe <rene@exactco.de> */
+#include <linux/delay.h>
 #include <linux/interrupt.h>
 #include <linux/iosys-map.h>
 #include <linux/mm.h>
@@ -61,6 +62,21 @@ static bool m9_kms_modeset;
 module_param(m9_kms_modeset, bool, 0400);
 MODULE_PARM_DESC(m9_kms_modeset,
 	"Program the pixel clock and raster timing instead of keeping the firmware's mode");
+
+/*
+ * Only controller 0's vblank source is measured.  Heads 1..3 default to no
+ * mask, which keeps them out of the interrupt path and makes the pipe report
+ * no vblank at all rather than an invented one; their bits can be found by
+ * walking the low interrupt mask on hardware and passed in here.  The per-head
+ * line counter at DCT+0x24 is confirmed to advance on all four heads and is
+ * logged at probe, but is UNTESTED as an interrupt source.
+ */
+static unsigned int m9_vblank_mask[M9_MAX_HEADS] = { M9_IRQ_LOW_VBLANK0 };
+static unsigned int m9_vblank_count = 1;
+module_param_array_named(vblank_mask, m9_vblank_mask, uint, &m9_vblank_count,
+			 0400);
+MODULE_PARM_DESC(vblank_mask,
+	"Per-head low-interrupt vblank bit; only head 0's is measured");
 
 /* The controller's own limits: a surface is at most 2048 in each dimension,
  * and the synthesiser covers this range with the divider search. */
@@ -240,7 +256,7 @@ static int m9_connector_detect(struct drm_connector *connector,
 	const struct drm_edid *edid;
 	bool present;
 
-	edid = head->ddc ? drm_edid_read_ddc(connector, head->ddc) : NULL;
+	edid = m9x_ddc_read_edid(head->mdev, head->ddc_index, connector);
 	present = edid || (head->warm_dc_ctrl & M9_DC_ENABLE);
 	drm_edid_free(edid);
 	return present ? connector_status_connected :
@@ -267,11 +283,10 @@ static int m9_connector_get_modes(struct drm_connector *connector)
 {
 	struct m9_head *head = container_of(connector, struct m9_head,
 					    connector);
-	struct i2c_adapter *ddc = head->ddc;
 	const struct drm_edid *edid;
 	int count = 0;
 
-	edid = ddc ? drm_edid_read_ddc(connector, ddc) : NULL;
+	edid = m9x_ddc_read_edid(head->mdev, head->ddc_index, connector);
 	drm_edid_connector_update(connector, edid);
 	if (edid) {
 		count = drm_edid_connector_add_modes(connector);
@@ -440,6 +455,17 @@ static int m9_scanout_direct_address(struct m9x_device *mdev,
 	return matrox_kms_vram_offset(gem, 1024, limit, address);
 }
 
+/* Format and layout live in the high bits of the pitch word.  A head the
+ * firmware never posted has none to inherit, so it takes the measured tiled
+ * XRGB8888 word every controller of the four-head run was given. */
+static u32 m9_dc_pitch(const struct m9_head *head, u32 pitch_pixels)
+{
+	u32 high = head->posted ? head->warm_dc_pitch & ~M9_DC_PITCH_MASK :
+				  M9_SCANOUT_FORMAT(0);
+
+	return high | (pitch_pixels & M9_DC_PITCH_MASK);
+}
+
 static void m9_program_scanout(struct drm_simple_display_pipe *pipe,
 			       struct drm_framebuffer *fb)
 {
@@ -448,8 +474,7 @@ static void m9_program_scanout(struct drm_simple_display_pipe *pipe,
 	u32 address, pitch;
 
 	if (!m9_scanout_direct_address(mdev, fb, &address)) {
-		pitch = (head->warm_dc_pitch & ~M9_DC_PITCH_MASK) |
-			(fb->pitches[0] / 4);
+		pitch = m9_dc_pitch(head, fb->pitches[0] / 4);
 		wmb();
 		m9x_write(head->mdev, head->dc + M9_DC_START,
 			  address & M9_DC_START_MASK);
@@ -459,7 +484,7 @@ static void m9_program_scanout(struct drm_simple_display_pipe *pipe,
 	if (!fb || m9_scanout_publish(head, fb) ||
 	    m9_scanout_address(head, &address))
 		return;
-	pitch = (head->warm_dc_pitch & ~M9_DC_PITCH_MASK) | (fb->pitches[0] / 4);
+	pitch = m9_dc_pitch(head, fb->pitches[0] / 4);
 	/* Publish CPU writes before the display controller fetches this BO. */
 	wmb();
 	m9x_write(head->mdev, head->dc + M9_DC_START, address & M9_DC_START_MASK);
@@ -779,9 +804,12 @@ static void m9_pipe_enable(struct drm_simple_display_pipe *pipe,
 	m9_program_scanout(pipe, plane_state->fb);
 	m9_pipe_load_gamma(pipe, crtc_state->gamma_lut);
 	/* Re-enable only the proven warm controller bit after the pinned new BO
-	 * is selected.  Preserve the current LUT choice and every opaque bit. */
+	 * is selected.  Preserve the current LUT choice and every opaque bit.
+	 * A head the firmware never posted has no enable bit to preserve, so it
+	 * takes the one this driver just programmed. */
 	ctrl = m9x_read(head->mdev, head->dc + M9_DC_CTRL);
-	ctrl |= head->warm_dc_ctrl & M9_DC_ENABLE;
+	ctrl |= head->posted ? (head->warm_dc_ctrl & M9_DC_ENABLE) :
+			       M9_DC_ENABLE;
 	m9x_write(head->mdev, head->dc + M9_DC_CTRL, ctrl);
 	/* Timing, clocks and the trained DVO/DP path stay untouched. */
 	if (head->vblank_mask)
@@ -1086,14 +1114,28 @@ fail:
 	return ret;
 }
 
-/* Per-head register banks.  Head 0 is the controller the firmware posts;
- * head 1 is its twin, with the symmetric DC, timing, clock, cursor and link
- * banks (parhelia-m9.md).  Only head 0's banks have been exercised. */
+/*
+ * Per-head register banks, MEASURED with four displays attached and all four
+ * controllers driven in one vendor run
+ * (xf86-video-parhelia docs/parhelia-m9148-fourhead-outputs.md).  There is no
+ * fixed stride: heads 2 and 3 occupy the upper half of heads 0's and 1's
+ * timing pages, so their DC block is only 0x80 long, they own no hold pair and
+ * borrow their companion's, and each takes one horizontal word in the
+ * companion's timing page.  Controllers 2 and 3 are still independent heads,
+ * with their own timing block, synthesiser, link and line counter.
+ *
+ * A head owns no pixel-clock register either; clk_select picks its
+ * synthesiser, and the four pixel selects are one per head.
+ */
 static const struct {
-	u32 dc, dct, clksel, fs, link, cursor_bank, clk_select, vblank_mask;
+	u32 dc, dct, clksel, link, cursor_bank, watermark, hold, companion_dct;
+	u8 clk_select;
+	bool half_block;
 } m9_head_banks[M9_MAX_HEADS] = {
-	{ 0x1800, 0x1900, 0x1c00, 0x0e48, 0x1c9c, 0x18c0, 4, M9_IRQ_LOW_VBLANK0 },
-	{ 0x1a00, 0x1b00, 0x1c08, 0x0e4c, 0x1ca0, 0x1ac0, 5, M9_IRQ_LOW_VBLANK1 },
+	{ 0x1800, 0x1900, 0x1c00, 0x1c9c, 0x18c0, 0x1c14, 0x1888, 0, 4, false },
+	{ 0x1a00, 0x1b00, 0x1c08, 0x1ca0, 0x1ac0, 0x1c1c, 0x1a88, 0, 1, false },
+	{ 0x1980, 0x1e00, 0x1c04, 0x1ca4, 0x18e0, 0x1c18, 0x1888, 0x1900, 2, true },
+	{ 0x1b80, 0x1f00, 0x1c0c, 0x1ca8, 0x1ae0, 0x1c20, 0x1a88, 0x1b00, 3, true },
 };
 
 static int m9_head_init(struct m9x_device *mdev, struct m9_head *head,
@@ -1101,6 +1143,7 @@ static int m9_head_init(struct m9x_device *mdev, struct m9_head *head,
 {
 	struct drm_device *drm = &mdev->drm;
 	struct m9_warm_snapshot snapshot;
+	u32 line;
 	int ret;
 
 	head->mdev = mdev;
@@ -1108,11 +1151,16 @@ static int m9_head_init(struct m9x_device *mdev, struct m9_head *head,
 	head->dc = m9_head_banks[index].dc;
 	head->dct = m9_head_banks[index].dct;
 	head->clksel = m9_head_banks[index].clksel;
-	head->fs = m9_head_banks[index].fs;
 	head->link = m9_head_banks[index].link;
 	head->cursor_bank = m9_head_banks[index].cursor_bank;
+	head->watermark = m9_head_banks[index].watermark;
+	head->hold = m9_head_banks[index].hold;
+	head->companion_dct = m9_head_banks[index].companion_dct;
+	head->half_block = m9_head_banks[index].half_block;
 	head->clk_select = m9_head_banks[index].clk_select;
-	head->vblank_mask = m9_head_banks[index].vblank_mask;
+	head->fs = M9_FS_REG(head->clk_select);
+	head->vblank_mask = index < m9_vblank_count ? m9_vblank_mask[index] : 0;
+	head->ddc_index = index;
 	head->ddc = m9x_ddc_adapter(mdev, index);
 
 	m9_capture_warm_snapshot(head, &snapshot);
@@ -1145,9 +1193,14 @@ static int m9_head_init(struct m9x_device *mdev, struct m9_head *head,
 		drm_mode_set_name(&head->warm_mode);
 		head->warm_valid = false;
 	}
-	drm_info(drm, "head %u: DC %#06x timing %#06x clock %#06x link %#06x, "
-		 "found " DRM_MODE_FMT "\n", index, head->dc, head->dct,
-		 head->fs, head->link, DRM_MODE_ARG(&head->warm_mode));
+	line = m9x_read(mdev, head->dct + M9_DCT_LINE);
+	usleep_range(1000, 1200);
+	drm_info(drm, "head %u: DC %#06x timing %#06x synth %#06x link %#06x "
+		 "vblank mask %#x, line %u -> %u, found " DRM_MODE_FMT "\n",
+		 index, head->dc, head->dct, head->fs, head->link,
+		 head->vblank_mask, line,
+		 m9x_read(mdev, head->dct + M9_DCT_LINE),
+		 DRM_MODE_ARG(&head->warm_mode));
 
 	if (m9x_kms_scanout_enabled()) {
 		ret = m9_scanout_init(head);
@@ -1159,9 +1212,12 @@ static int m9_head_init(struct m9x_device *mdev, struct m9_head *head,
 					   NULL, NULL);
 	if (ret)
 		return ret;
-	ret = drm_connector_init(drm, &head->connector,
-				 &matrox_kms_connector_funcs,
-				 DRM_MODE_CONNECTOR_DisplayPort);
+	/* Each connector owns its own bit-banged bus, so userspace sees which
+	 * one carries its EDID. */
+	ret = drm_connector_init_with_ddc(drm, &head->connector,
+					  &matrox_kms_connector_funcs,
+					  DRM_MODE_CONNECTOR_DisplayPort,
+					  head->ddc);
 	if (ret)
 		return ret;
 	drm_connector_helper_add(&head->connector, &m9_connector_helper_funcs);
@@ -1216,8 +1272,9 @@ int m9x_modeset_init(struct m9x_device *mdev)
 	if (ret)
 		return ret;
 	/* One head per DDC bus that the board populates, so a connector always
-	 * owns the bus its display answers on.  A second head is only brought
-	 * up when the driver may program its timing. */
+	 * owns the bus its display answers on and connector n drives link n.
+	 * Heads beyond the posted one are only brought up when the driver may
+	 * program their timing. */
 	mdev->heads = min3(mdev->ddc_count, M9_MAX_HEADS,
 			   m9_kms_modeset ? M9_MAX_HEADS : 1u);
 	if (!mdev->heads)

@@ -22,6 +22,8 @@
 
 #include "m9x_drm.h"
 
+struct drm_connector;
+struct drm_edid;
 struct drm_file;
 struct drm_mode_create_dumb;
 struct iosys_map;
@@ -125,11 +127,16 @@ struct m9_ddc_bus {
 	struct i2c_adapter adapter;
 	struct i2c_algo_bit_data bit;
 	u8 scl, sda;
+	u8 selector;
+	/* Seven-bit address the connector's DisplayPort transmitter answered
+	 * on, taken from the board by probing; 0 when none did. */
+	u8 tx_addr;
 };
 
-/* The M9 has four display controllers; the upper pair are secondary planes
- * composited into the lower pair, so only two are independent heads. */
-#define M9_MAX_HEADS	2u
+/* Four independent display controllers, one per mini-DisplayPort connector:
+ * each has its own timing block, synthesiser, link and line counter
+ * (xf86-video-parhelia docs/parhelia-m9148-fourhead-outputs.md). */
+#define M9_MAX_HEADS	4u
 
 /* One independent display controller with its own register banks, connector
  * and DDC bus. */
@@ -140,9 +147,15 @@ struct m9_head {
 	struct drm_connector connector;
 	struct drm_plane cursor_plane;
 	struct i2c_adapter *ddc;
+	unsigned int ddc_index;
 	bool ddc_probed;
-	/* Register banks of this controller. */
-	u32 dc, dct, clksel, fs, link, cursor_bank;
+	/* Register banks of this controller.  There is no fixed stride; the
+	 * table in m9_kms.c carries the measured bases. */
+	u32 dc, dct, clksel, fs, link, cursor_bank, watermark;
+	/* Controllers 2 and 3 own only a 0x80 DC block and borrow the hold
+	 * pair and one horizontal word from the head they share a page with. */
+	u32 hold, companion_dct;
+	bool half_block;
 	u32 clk_select;
 	u32 vblank_mask;
 	/* The timing the controller was found running, and its opaque bits.
@@ -206,13 +219,17 @@ static inline struct m9x_device *to_m9x(struct drm_device *drm)
 
 void m9x_mode_read_current(struct m9_head *head,
 			   struct drm_display_mode *mode);
+u32 m9x_mode_active_fs(struct m9_head *head);
 int m9x_mode_program(struct m9_head *head,
 		     const struct drm_display_mode *mode, u32 pitch_pixels);
 bool m9x_surface_layout_bytes(u32 width, u32 height, u32 cpp, u64 *size);
 int m9x_ddc_init(struct m9x_device *mdev);
-void m9x_pins_patch(struct m9x_device *mdev, u16 reg, u32 dot_khz);
+void m9x_pins_patch(struct m9x_device *mdev, u16 reg, u32 dot_khz, u32 mask);
 struct i2c_adapter *m9x_ddc_adapter(struct m9x_device *mdev,
 				    unsigned int index);
+const struct drm_edid *m9x_ddc_read_edid(struct m9x_device *mdev,
+					 unsigned int index,
+					 struct drm_connector *connector);
 bool m9x_enabled(void);
 bool m9x_kms_enabled(void);
 bool m9x_kms_scanout_enabled(void);
