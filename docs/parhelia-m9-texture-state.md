@@ -376,7 +376,9 @@ Depth/stencil descriptor codes are also recoverable (`D16=5c`, `D32=7c`,
 from the live Linux vendor ICD sampling `GL_DEPTH_COMPONENT16/32/24` with
 comparison, so depth texture sampling is proven, not merely tabulated — see
 `parhelia-m9-openbits-gl-capture.md`.  In the Linux packet the field sits in
-index `79` bits `31:25`, with `GL_RGBA8` landing on `64` as the control.
+index `79` bits `31:25`, with `GL_RGBA8` landing on `64` as the control.  A
+depth surface rendered by the GPU samples back complemented (`1 - z`), which
+ordinary depth testing hides but a shadow sampler does not.
 
 ### Channel routing
 

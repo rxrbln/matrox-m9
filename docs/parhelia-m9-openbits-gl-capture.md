@@ -42,7 +42,8 @@ MAX_TEXTURE_SIZE              16320     AUX_BUFFERS                      0
 
 ## 1. Shadow compare and depth textures — closed
 
-`GL_DEPTH_COMPONENT16/24/32` textures upload, sample and compare.  The probe
+`GL_DEPTH_COMPONENT16/24/32` textures upload, sample and compare, and a depth
+texture rendered by the GPU samples back complemented (see below).  The probe
 builds an 8x8 depth texture whose texel `(i,j)` holds `(8i+j+0.5)/64` and draws
 an 8x8 cell grid whose comparison reference sweeps a permutation of the same
 range, so every one of the eight functions produces a different fully
@@ -134,11 +135,44 @@ logic is exact and the interpolated `r` coordinate loses precision against the
 stored depth as the value grows.  Shadow mapping should not rely on exact
 equality, which is normal practice anyway.
 
+### A depth buffer rendered by the GPU stores `1 - z` (MEASURED)
+
+The cases above upload the depth texture from the CPU.  The real shadow-map
+path renders it, and there it behaves differently.  `shadowmap_*` attaches a
+`GL_DEPTH_COMPONENT16`/`24` texture to a framebuffer, renders an 8x8 grid of
+quads at a scrambled per-cell window depth, then binds that texture and samples
+it.  Sampling it *without* comparison and reading the value back gives, over
+all 64 cells and both formats:
+
+```text
+max |sampled - (1 - written)| = 0.0029      (8-bit readback quantization)
+max |sampled - written|       = 0.9844
+max |sampled - rotated(i,j)|  = 0.7813
+```
+
+**The stored depth is the complement of the window depth.**  The spatial layout
+is untouched — a 180-degree rotation, which for a linear ramp is
+indistinguishable from complementing, is excluded by the scrambled pattern.
+The same complement explains the comparison results: with comparison enabled on
+a rendered depth texture, 30 of the 31 cells where plain and complemented
+storage disagree came out flipped, the one remainder being the equality
+boundary cell described above.
+
+This is invisible to ordinary depth testing, because the incoming fragment
+depth is complemented too and the comparison sense is preserved, but it is
+exactly visible to a shadow sampler.  A Mesa shadow-map implementation must
+account for it — by complementing the comparison reference, by rendering the
+shadow map with a reversed depth range, or by mirroring the comparison function
+— otherwise the shadow comes out inverted while looking plausible.
+UNTESTED which of the three the vendor stack itself uses, and whether the
+complement is in the depth unit or in the ICD's viewport z mapping.
+
 ### What a driver needs
 
 Allocate the depth texture, put `5c`/`7c`/`7d` into index `79` bits `31:25`,
 set index `0x70 + unit` bit 26, bits `29:27` to the function code and bits
-`11:8` to `2`, and emit an ordinary texture fetch.  Nothing else changes.
+`11:8` to `2`, and emit an ordinary texture fetch.  When the depth texture was
+rendered rather than uploaded, complement the comparison reference as well.
 
 ## 2. More than four fragment samplers — closed
 
