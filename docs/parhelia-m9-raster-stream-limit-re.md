@@ -189,6 +189,16 @@ Two things the probe had to get right, and both cost a debugging round:
   the opaque-black 1x1 unit-0 texture **stops the engine** (`-ETIMEDOUT`, then
   `-EIO` on every later submit, recovered by a reboot).
 
+### Gates
+
+No Mesa file was changed, and `m9-fs-compile-test` is unchanged at 182 corpus
+shaders, 152 supported, required exact 23/23.  For the kernel change,
+`/root/parhelia-cleanroom/raster/m9-user-raster-state` was run once with the
+shipping module and once with the widened one: 799 lines of output, 46 PASS
+and 12 FAIL both times, byte-identical (the twelve are the suite's
+pre-existing mixed-link exploration cases).  The widening only admits index
+values that were refused before; it changes nothing that already ran.
+
 ## 5. What the driver has to change
 
 Nothing in the hardware; six constants, one loop bound, one attribute map and
