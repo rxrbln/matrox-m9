@@ -72,6 +72,34 @@ enum m9_topology {
 #define M9_VS_GUARD_X_DWORD       41u
 #define M9_VS_GUARD_Y_DWORD       43u
 
+/* A per-fragment record carrying values from one raster pass to the next.
+ * The descriptor names the record's stride in dwords and the dword the
+ * operand starts at; the route word emitted at 0x74 + k names where the
+ * remaining components come from, as record dword indices.
+ * DERIVED in docs/parhelia-m9-fragment-pass-routes.md from the seven
+ * captured two-pass GLSL cases and the five-sampler schedule. */
+#define M9_RECORD_ABSENT       0xffu
+#define M9_RECORD_MAX_DWORDS   0xffu
+/* The four values descriptor bits 20:19 take across those captures. */
+enum m9_record_form {
+   M9_RECORD_PAIR = 0x1,      /* ee09: a two-dword operand */
+   M9_RECORD_SLOT = 0x3,      /* ee19: a four-dword slot, or a sampler modifier */
+   M9_RECORD_RESOURCE = 0x2,  /* ee11: a third component that addresses the resource */
+};
+
+uint32_t m9_record_desc(enum m9_record_form form, unsigned stride_dwords,
+                        unsigned offset_dwords);
+/* A coordinate route feeds the sampler slot it precedes; a value route
+ * arrives in the register pair a texel would.  c1..c3 are record dword
+ * indices, M9_RECORD_ABSENT drops a component. */
+uint32_t m9_record_route(bool coordinate, unsigned c1, unsigned c2,
+                         unsigned c3);
+/* An upper bound on the record backing a target of this size needs.  The
+ * engine's per-fragment addressing inside the record is not decoded, so this
+ * covers a linear and a 64-aligned tiled walk alike. */
+uint64_t m9_record_bytes(uint32_t width, uint32_t height,
+                         unsigned stride_dwords);
+
 /* Raster pass of a native fragment program job. */
 struct m9_raster_fs {
    unsigned vertex_entry;                       /* preprocessing c3 */

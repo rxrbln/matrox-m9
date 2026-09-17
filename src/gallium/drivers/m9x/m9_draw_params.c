@@ -13,6 +13,7 @@
 #include <math.h>
 #include <string.h>
 
+#include "util/u_math.h"
 #include "pipe/p_defines.h"
 
 #define M9_GUARD_BAND 15359.0f
@@ -319,6 +320,40 @@ m9_raster_fs_init_textured(struct m9_raster_fs *r, unsigned vertex_entry,
       r->stride[i] = stride[2 * i] |
                      (2 * i + 1 < M9_RASTER_MAX_STREAMS ? stride[2 * i + 1] : 0) << 16;
    return 0;
+}
+
+/* Descriptor format field 0x77 in [31:25] with layout 1, which every
+ * captured record descriptor carries (CAPTURED, all seven two-pass cases and
+ * the five-sampler schedule). */
+#define M9_RECORD_FORMAT 0xee000000u
+
+uint32_t
+m9_record_desc(enum m9_record_form form, unsigned stride_dwords,
+               unsigned offset_dwords)
+{
+   if (!stride_dwords || stride_dwords > M9_RECORD_MAX_DWORDS ||
+       offset_dwords + 2 > stride_dwords)
+      return 0;
+   return M9_RECORD_FORMAT | (uint32_t)form << 19 | 0x00010000u |
+          offset_dwords << 8 | stride_dwords;
+}
+
+uint32_t
+m9_record_route(bool coordinate, unsigned c1, unsigned c2, unsigned c3)
+{
+   return (coordinate ? 0x10u : 0x0cu) | (c1 & 0xff) << 8 |
+          (c2 & 0xff) << 16 | (c3 & 0xff) << 24;
+}
+
+uint64_t
+m9_record_bytes(uint32_t width, uint32_t height, unsigned stride_dwords)
+{
+   uint64_t w = align64(width, 64), h = align64(height, 64);
+
+   if (!width || !height || !stride_dwords ||
+       stride_dwords > M9_RECORD_MAX_DWORDS)
+      return 0;
+   return w * h * stride_dwords * sizeof(uint32_t);
 }
 
 uint32_t

@@ -61,6 +61,22 @@ m9_draw_job_relocs(unsigned draw_count, unsigned unit_count)
    return 30 + unit_count + draw_count * (unit_count + 2);
 }
 
+/* A raster pass of a split shader repeats the whole raster range: its state,
+ * its units and routes, and every draw of the job. */
+unsigned
+m9_draw_pass_dwords(unsigned draw_count, unsigned unit_count,
+                    unsigned route_count)
+{
+   return m9_draw_job_dwords_fs(draw_count, unit_count) + 5 * route_count;
+}
+
+unsigned
+m9_draw_pass_relocs(unsigned draw_count, unsigned unit_count,
+                    unsigned route_count)
+{
+   return m9_draw_job_relocs(draw_count, unit_count) + route_count;
+}
+
 unsigned
 m9_draw_units_dwords(unsigned unit_count)
 {
@@ -69,20 +85,62 @@ m9_draw_units_dwords(unsigned unit_count)
    return 10 + 18 * unit_count;
 }
 
+/* The descriptor-only operands 74..77: a bound route selects the record and
+ * names its base and consumer descriptor behind it, an idle one carries the
+ * captured 0x100.  Ordering follows the vendor's own five-pass block, which
+ * emits 74/78/79 then 75/78/79 (parhelia-m9-five-sampler-schedule-re.md). */
 static int
-m9_emit_units(struct m9_batch *batch, const struct m9_texture_unit *units,
-              unsigned unit_count)
+m9_emit_routes(struct m9_batch *batch, const struct m9_draw_job *job,
+               const struct m9_raster_pass *pass)
 {
+   unsigned routes = pass ? pass->route_count : 0;
    int ret = 0;
 
-   for (unsigned i = 0; i < 4; i++)
-      EMIT(V(0x74 + i, 0x100));
-   for (unsigned i = 0; i < unit_count; i++) {
-      ret = m9_batch_emit_texture_unit(batch, i, &units[i]);
-      if (ret)
-         goto fail;
+   for (unsigned k = 0; k < routes; k++) {
+      EMIT(V(0x74 + k, pass->routes[k].word));
+      EMIT(R(0x78, job->record, 0, TEXTURE), V(0x79, pass->routes[k].desc));
    }
-   for (unsigned i = unit_count; i < 4; i++)
+   for (unsigned k = routes; k < 4; k++)
+      EMIT(V(0x74 + k, 0x100));
+fail:
+   return ret;
+}
+
+static int
+m9_emit_units(struct m9_batch *batch, const struct m9_draw_job *job,
+              const struct m9_raster_pass *pass,
+              const struct m9_texture_unit *units, unsigned unit_count)
+{
+   int ret = m9_emit_routes(batch, job, pass);
+   unsigned bound = 0;
+
+   if (ret)
+      return ret;
+   if (pass) {
+      /* A pass names the application units it samples; a record-writing one
+       * still binds the placeholder, whose slot the engine reads. */
+      for (unsigned i = 0; i < pass->unit_count; i++) {
+         uint8_t sel = pass->unit_index[i];
+         const struct m9_texture_unit *u =
+            sel == M9_PASS_UNIT_PLACEHOLDER ? job->placeholder :
+            sel < unit_count ? &units[sel] : NULL;
+
+         if (!u)
+            return -EINVAL;
+         ret = m9_batch_emit_texture_unit(batch, i, u);
+         if (ret)
+            return ret;
+      }
+      bound = pass->unit_count;
+   } else {
+      for (unsigned i = 0; i < unit_count; i++) {
+         ret = m9_batch_emit_texture_unit(batch, i, &units[i]);
+         if (ret)
+            return ret;
+      }
+      bound = unit_count;
+   }
+   for (unsigned i = bound; i < 4; i++)
       EMIT(V(0x70 + i, 0));
 fail:
    return ret;
@@ -103,11 +161,13 @@ fail:
 
 static uint32_t
 m9_job_raster_control(const struct m9_draw_job *job,
+                      const struct m9_raster_pass *pass,
                       const struct m9_draw_record *d)
 {
-   return job->fs ? m9_raster_control_decl(d->flat, d->topology,
-                                           job->fs->decl_count) :
-                    m9_raster_control(d->flat, d->topology);
+   const struct m9_raster_fs *fs = pass ? &pass->fs : job->fs;
+
+   return fs ? m9_raster_control_decl(d->flat, d->topology, fs->decl_count) :
+               m9_raster_control(d->flat, d->topology);
 }
 
 /* A view the CPU fills lives in system memory and is fetched through the
@@ -143,10 +203,12 @@ m9_stream_offset(const struct m9_draw_job *job, unsigned view)
 
 /* Streams, program entry and constant span of a native raster pass. */
 static int
-m9_emit_raster_fs(struct m9_batch *batch, const struct m9_draw_job *job)
+m9_emit_raster_fs(struct m9_batch *batch, const struct m9_draw_job *job,
+                  const struct m9_raster_pass *pass)
 {
-   const struct m9_raster_fs *fs = job->fs;
-   uint64_t base = M9_RASTER_CONST_OFFSET;
+   const struct m9_raster_fs *fs = pass ? &pass->fs : job->fs;
+   uint64_t base = pass ? pass->const_offset : M9_RASTER_CONST_OFFSET;
+   unsigned entry = pass ? pass->entry : 0;
    int ret = 0;
 
    EMIT(V(0x88, fs->r88), V(0x89, 0xfe207ff8), V(0x8a, 0), V(0xc1, 0));
@@ -162,7 +224,7 @@ m9_emit_raster_fs(struct m9_batch *batch, const struct m9_draw_job *job)
               V(0x10 + pair, fs->stride[pair]));
       }
    }
-   EMIT(R(0xc2, job->program, 0, PROGRAM), V(0xc3, 0), V(0x8f, 0));
+   EMIT(R(0xc2, job->program, 0, PROGRAM), V(0xc3, entry), V(0x8f, 0));
    EMIT(V(0x8c, 0x00500000 | fs->const_count << 8),
         R(0x8d, job->system, base, SYSTEM),
         R(0x8e, job->system, base + 8 * fs->const_count, SYSTEM), V(0x8f, 0));
@@ -188,6 +250,112 @@ fail:
    return ret;
 }
 
+/* One raster range: its state, its units and routes, and every draw of the
+ * job.  A split shader repeats this per pass, advancing the dependency the
+ * vendor advances by 0x20 a pass. */
+static int
+m9_emit_raster_range(struct m9_batch *batch, const struct m9_draw_job *job,
+                     const struct m9_raster_pass *pass, unsigned index,
+                     bool last)
+{
+   const struct m9_draw_params *p = job->params;
+   const struct m9_draw_record *d0 = &job->draws[0];
+   uint32_t dep = 0x20 + M9_PASS_DEPENDENCY_STEP * index;
+   /* A record-writing pass never blends: the destination it would read is
+    * the record, not the application target. */
+   bool blend = job->blend_dest && !(pass && pass->writes_record);
+   int ret = 0;
+
+   EMIT(V(0xe6, 3), V(0xe3, dep));
+   EMIT(V(0xe6, 3));
+   EMIT(V(0xe6, 3), V(0xe3, dep + 0x10));
+   EMIT(V(0x43, dep + 0x10));
+   EMIT(V(0xe6, 0x42000000));
+   EMIT(V(0xf0, m9_raster_class(d0->lines, blend)), V(0xef, d0->cull | job->depth_ef),
+        V(0xd7, m9_raster_d7(d0->topology)));
+   EMIT(V(0x22, m9_job_raster_control(job, pass, d0)));
+   EMIT(V(0xe6, 3), V(0xe3, dep + 0x20));
+   if (pass && pass->writes_record)
+      EMIT(R(0xb0, job->record, 0, STREAM), V(0xb1, pass->record_desc));
+   else
+      EMIT(R(0xb0, job->color, 0, COLOR), V(0xb1, p->color_desc));
+   EMIT(R(0xb8, job->depth, 0, DEPTH), V(0xb9, p->depth_desc));
+   EMIT(R(0xba, job->aux, 0, DEPTH), V(0xbb, p->aux_desc));
+   EMIT(R(0xbe, job->be, 0, STREAM));
+   EMIT(V(0xa8, pass ? pass->depth_control : job->depth_control),
+        V(0xa9, pass ? pass->a9 : 0x08ffff00u), V(0xaa, 0x00ffff00));
+   EMIT(V(0xab, pass && pass->writes_record ? 0xffffffffu : job->color_mask),
+        V(0xac, 0xffffffff), V(0xae, pass ? pass->ae : 0x22444442u));
+   EMIT(V(0xf5, job->clip_min), V(0xf6, job->clip_max), V(0xc4, job->clip_min),
+        V(0xc5, job->clip_max));
+   EMIT(V(0xf1, 0));
+   if (job->fs || pass) {
+      ret = m9_emit_raster_fs(batch, job, pass);
+      if (ret)
+         goto fail;
+   } else {
+      EMIT(V(0x88, 0x0100dff0), V(0x89, 0xfe207ff8), V(0x8a, 0), V(0xc1, 0));
+      EMIT(R(0x00, job->transient, VIEW(0), STREAM),
+           R(0x01, job->transient, VIEW(1), STREAM), V(0x10, 0x00100010));
+      EMIT(R(0x02, job->transient, VIEW(2), STREAM),
+           R(0x03, job->transient, VIEW(3), STREAM), V(0x11, 0x00100006));
+      EMIT(R(0xc2, job->program, 0, PROGRAM), V(0xc3, 0), V(0x8f, 0));
+      EMIT(V(0x8c, 0x00500200), R(0x8d, job->system, 0, SYSTEM),
+           R(0x8e, job->system, 0x10, SYSTEM), V(0x8f, 0));
+   }
+   ret = m9_emit_units(batch, job, pass, job->units, job->unit_count);
+   if (ret)
+      goto fail;
+   EMIT(V(0xec, 0), V(0xf4, 0), V(0xea, 0), V(0xeb, 0));
+   EMIT(V(0x28, 0));
+   if (job->fs || pass) {
+      const struct m9_raster_fs *rfs = pass ? &pass->fs : job->fs;
+
+      ret = m9_emit_decl(batch, rfs->decl, rfs->decl_count);
+      if (ret)
+         goto fail;
+   } else {
+      /* Flat-form color links serve both shadings; 22 bit 14 selects per draw. */
+      EMIT(V(0x23, 0x80100d88), V(0x23, 0x801006b6), V(0x23, 0x00010688),
+           V(0x23, 0x00c231b6));
+      EMIT(V(0x23, 0x00d30688), V(0x23, 0), V(0x23, 0), V(0x23, 0));
+   }
+   ret = m9_emit_linked(batch, job);
+   if (ret)
+      goto fail;
+   for (unsigned i = 0; i < job->draw_count; i++) {
+      const struct m9_draw_record *d = &job->draws[i];
+
+      /* Later draws restate topology, shading, class and cull, and their
+       * texture units whenever the binding moved on. */
+      if (i) {
+         if (d->unit_count != job->draws[i - 1].unit_count ||
+             memcmp(d->units, job->draws[i - 1].units,
+                    d->unit_count * sizeof(d->units[0]))) {
+            ret = m9_emit_units(batch, job, pass, d->units, d->unit_count);
+            if (ret)
+               goto fail;
+         }
+         EMIT(V(0x22, m9_job_raster_control(job, pass, d)),
+              V(0x6a, 0x25010000));
+         EMIT(V(0xf0, m9_raster_class(d->lines, blend)),
+              V(0xef, d->cull | job->depth_ef),
+              V(0xd7, m9_raster_d7(d->topology)), V(0xf4, 0));
+      }
+      ret = d->index_count ?
+            m9_batch_emit_draw16(batch, job->index,
+                                 job->index_base +
+                                 (uint64_t)d->index_first * sizeof(uint16_t),
+                                 d->index_count, 0x20000000) :
+            m9_batch_emit_draw_numeric(batch, d->start, d->count, 0x20000000);
+      if (ret)
+         goto fail;
+   }
+   return last ? 0 : m9_batch_emit_range_break(batch);
+fail:
+   return ret;
+}
+
 static bool
 m9_draw_job_valid(const struct m9_draw_job *job)
 {
@@ -197,7 +365,7 @@ m9_draw_job_valid(const struct m9_draw_job *job)
        !job->draws || !job->draw_count || job->source_vertices % 4 ||
        job->source_vertices > m9_draw_max_source_vertices() ||
        job->unit_count > M9_TEXTURE_MAX_UNITS ||
-       (job->unit_count && (!job->fs || !job->units)))
+       (job->unit_count && ((!job->fs && !job->pass_count) || !job->units)))
       return false;
    for (unsigned i = 0; i < job->unit_count; i++)
       if (!job->units[i].handle)
@@ -212,6 +380,37 @@ m9_draw_job_valid(const struct m9_draw_job *job)
        (job->vs_const_pairs > M9_VS_CONST_MAX_PAIRS ||
         job->vs_const_pairs > 0x7f))
       return false;
+   if (job->pass_count) {
+      /* Every pass but the last renders into the record, so a split job
+       * needs one; the dependency the last pass requests must stay inside
+       * the kernel's window. */
+      if (!job->passes || job->fs ||
+          0x20 + M9_PASS_DEPENDENCY_STEP * job->pass_count + 0x20 >
+          PARHELIA_M9_DEPENDENCY_LIMIT)
+         return false;
+      for (unsigned i = 0; i < job->pass_count; i++) {
+         const struct m9_raster_pass *pass = &job->passes[i];
+
+         if (pass->writes_record != (i + 1 < job->pass_count) ||
+             (pass->writes_record && (!job->record || !pass->record_desc)) ||
+             pass->route_count > M9_TEXTURE_MAX_UNITS ||
+             pass->unit_count > M9_TEXTURE_MAX_UNITS ||
+             pass->route_count + pass->unit_count > M9_TEXTURE_MAX_UNITS)
+            return false;
+         if (pass->route_count && !job->record)
+            return false;
+         for (unsigned k = 0; k < pass->unit_count; k++) {
+            uint8_t sel = pass->unit_index[k];
+
+            if (sel == M9_PASS_UNIT_PLACEHOLDER) {
+               if (!job->placeholder || !job->placeholder->handle)
+                  return false;
+            } else if (sel >= job->unit_count) {
+               return false;
+            }
+         }
+      }
+   }
    for (unsigned i = 0; i < job->draw_count; i++) {
       const struct m9_draw_record *d = &job->draws[i];
 
@@ -284,7 +483,7 @@ m9_batch_emit_draw_job(struct m9_batch *batch, const struct m9_draw_job *job)
         R(0x8d, job->system, M9_VS_CONST_OFFSET, SYSTEM),
         R(0x8e, job->system, M9_VS_CONST_OFFSET + 8 * const_pairs, SYSTEM),
         V(0x8f, 0));
-   ret = m9_emit_units(batch, NULL, 0);
+   ret = m9_emit_units(batch, job, NULL, NULL, 0);
    if (ret)
       goto fail;
    EMIT(V(0xec, 0), V(0xf4, 0x00010004), V(0xea, 0), V(0xeb, 0x46000000));
@@ -305,83 +504,10 @@ m9_batch_emit_draw_job(struct m9_batch *batch, const struct m9_draw_job *job)
    if (ret)
       goto fail;
 
-   /* Raster pass: dependency steps 2 to 4, streams read as [b0,b4,b8,b2]. */
-   EMIT(V(0xe6, 3), V(0xe3, 0x20));
-   EMIT(V(0xe6, 3));
-   EMIT(V(0xe6, 3), V(0xe3, 0x30));
-   EMIT(V(0x43, 0x30));
-   EMIT(V(0xe6, 0x42000000));
-   EMIT(V(0xf0, m9_raster_class(d0->lines, job->blend_dest)), V(0xef, d0->cull | job->depth_ef),
-        V(0xd7, m9_raster_d7(d0->topology)));
-   EMIT(V(0x22, m9_job_raster_control(job, d0)));
-   EMIT(V(0xe6, 3), V(0xe3, 0x40));
-   EMIT(R(0xb0, job->color, 0, COLOR), V(0xb1, p->color_desc));
-   EMIT(R(0xb8, job->depth, 0, DEPTH), V(0xb9, p->depth_desc));
-   EMIT(R(0xba, job->aux, 0, DEPTH), V(0xbb, p->aux_desc));
-   EMIT(R(0xbe, job->be, 0, STREAM));
-   EMIT(V(0xa8, job->depth_control), V(0xa9, 0x08ffff00),
-        V(0xaa, 0x00ffff00));
-   EMIT(V(0xab, job->color_mask), V(0xac, 0xffffffff), V(0xae, 0x22444442));
-   EMIT(V(0xf5, job->clip_min), V(0xf6, job->clip_max), V(0xc4, job->clip_min),
-        V(0xc5, job->clip_max));
-   EMIT(V(0xf1, 0));
-   if (job->fs) {
-      ret = m9_emit_raster_fs(batch, job);
-      if (ret)
-         goto fail;
-   } else {
-      EMIT(V(0x88, 0x0100dff0), V(0x89, 0xfe207ff8), V(0x8a, 0), V(0xc1, 0));
-      EMIT(R(0x00, job->transient, VIEW(0), STREAM),
-           R(0x01, job->transient, VIEW(1), STREAM), V(0x10, 0x00100010));
-      EMIT(R(0x02, job->transient, VIEW(2), STREAM),
-           R(0x03, job->transient, VIEW(3), STREAM), V(0x11, 0x00100006));
-      EMIT(R(0xc2, job->program, 0, PROGRAM), V(0xc3, 0), V(0x8f, 0));
-      EMIT(V(0x8c, 0x00500200), R(0x8d, job->system, 0, SYSTEM),
-           R(0x8e, job->system, 0x10, SYSTEM), V(0x8f, 0));
-   }
-   ret = m9_emit_units(batch, job->units, job->unit_count);
-   if (ret)
-      goto fail;
-   EMIT(V(0xec, 0), V(0xf4, 0), V(0xea, 0), V(0xeb, 0));
-   EMIT(V(0x28, 0));
-   if (job->fs) {
-      ret = m9_emit_decl(batch, job->fs->decl, job->fs->decl_count);
-      if (ret)
-         goto fail;
-   } else {
-      /* Flat-form color links serve both shadings; 22 bit 14 selects per draw. */
-      EMIT(V(0x23, 0x80100d88), V(0x23, 0x801006b6), V(0x23, 0x00010688),
-           V(0x23, 0x00c231b6));
-      EMIT(V(0x23, 0x00d30688), V(0x23, 0), V(0x23, 0), V(0x23, 0));
-   }
-   ret = m9_emit_linked(batch, job);
-   if (ret)
-      goto fail;
-   for (unsigned i = 0; i < job->draw_count; i++) {
-      const struct m9_draw_record *d = &job->draws[i];
-
-      /* Later draws restate topology, shading, class and cull, and their
-       * texture units whenever the binding moved on. */
-      if (i) {
-         if (d->unit_count != job->draws[i - 1].unit_count ||
-             memcmp(d->units, job->draws[i - 1].units,
-                    d->unit_count * sizeof(d->units[0]))) {
-            ret = m9_emit_units(batch, d->units, d->unit_count);
-            if (ret)
-               goto fail;
-         }
-         EMIT(V(0x22, m9_job_raster_control(job, d)),
-              V(0x6a, 0x25010000));
-         EMIT(V(0xf0, m9_raster_class(d->lines, job->blend_dest)),
-              V(0xef, d->cull | job->depth_ef),
-              V(0xd7, m9_raster_d7(d->topology)), V(0xf4, 0));
-      }
-      ret = d->index_count ?
-            m9_batch_emit_draw16(batch, job->index,
-                                 job->index_base +
-                                 (uint64_t)d->index_first * sizeof(uint16_t),
-                                 d->index_count, 0x20000000) :
-            m9_batch_emit_draw_numeric(batch, d->start, d->count, 0x20000000);
+   for (unsigned pi = 0, n = MAX2(job->pass_count, 1u); pi < n; pi++) {
+      ret = m9_emit_raster_range(batch, job,
+                                 job->pass_count ? &job->passes[pi] : NULL,
+                                 pi, pi + 1 == n);
       if (ret)
          goto fail;
    }
