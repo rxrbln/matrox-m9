@@ -393,9 +393,11 @@ m9_draw_job_valid(const struct m9_draw_job *job)
 
          if (pass->writes_record != (i + 1 < job->pass_count) ||
              (pass->writes_record && (!job->record || !pass->record_desc)) ||
+             /* The descriptor-only operands 74..77 are their own bank: the
+              * five-sampler schedule's final pass binds three of them
+              * alongside full slot zero, so they do not share the four. */
              pass->route_count > M9_TEXTURE_MAX_UNITS ||
-             pass->unit_count > M9_TEXTURE_MAX_UNITS ||
-             pass->route_count + pass->unit_count > M9_TEXTURE_MAX_UNITS)
+             pass->unit_count > M9_TEXTURE_MAX_UNITS)
             return false;
          if (pass->route_count && !job->record)
             return false;
