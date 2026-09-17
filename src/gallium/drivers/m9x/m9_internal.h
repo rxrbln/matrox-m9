@@ -121,6 +121,10 @@ struct m9_render_layout {
    uint32_t row_span;
    uint32_t allocation_height;
    uint64_t size;
+   /* The vendor's small resource state.  It is not only an allocation
+    * quantum: a small surface is stored by the aperture address calculator,
+    * so its descriptor must leave the ordinary tiled bit clear. */
+   bool small;
 };
 
 static inline bool
@@ -149,6 +153,7 @@ m9_render_surface_layout(uint32_t width, uint32_t height, uint32_t cpp,
       elements += 8 - tail;
    layout->size = (elements * cpp + byte_quantum - 1) &
                   ~(uint64_t)(byte_quantum - 1);
+   layout->small = small;
    return true;
 }
 

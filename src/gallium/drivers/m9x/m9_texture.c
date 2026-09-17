@@ -121,7 +121,7 @@ m9_texture_layout_init(struct m9_texture_layout *layout,
           * elements a standalone surface reserves push the next level past
           * where the sampler looks for it, and from there the chain reads
           * nothing: a 256x64 texture came out black from level 3 down. */
-         quantum = lvl->width <= 64 && lvl->height <= 64 ? 0x400 : 0x1000;
+         quantum = render.small ? 0x400 : 0x1000;
          lvl->face_bytes = (((uint64_t)render.row_span *
                              render.allocation_height * 4) + quantum - 1) &
                            ~(quantum - 1);
