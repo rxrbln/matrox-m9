@@ -72,12 +72,13 @@ struct node {
    enum node_kind kind;
    int src[3];          /* MUL/ADD a,b; SUB b-a as a,b; MAD b*t + c */
    nir_def *def;
-   unsigned k;          /* varying slot */
+   unsigned k;          /* varying slot, or a uniform load's first component */
    unsigned texel;      /* texel register of the xy lane */
    unsigned ubo_slot;
    float lit[4];
    bool neg;            /* ADD with a negated literal */
    uint8_t cmp;         /* N_CMP/N_SEL comparison class */
+   bool is_cond;        /* holds 1.0 or 0.0, so a select can test it */
    int level;
    int value[2];        /* per lane: 0 xy, 1 zw */
    uint8_t lane[3][2];  /* source lane read for result lane xy, zw */
@@ -352,14 +353,16 @@ build_intrinsic(struct ctx *c, nir_intrinsic_instr *intr)
       /* A narrower load still names the whole vec4 slot; the components
        * above it are simply never read. */
       if (!nir_src_is_const(intr->src[0]) || nir_src_as_uint(intr->src[0]) ||
-          !nir_src_is_const(intr->src[1]) || nir_intrinsic_component(intr) ||
-          intr->def.num_components < 1 || intr->def.num_components > 4)
+          !nir_src_is_const(intr->src[1]) ||
+          nir_intrinsic_component(intr) + intr->def.num_components > 4 ||
+          intr->def.num_components < 1)
          return fail(c, "unsupported uniform access"), -1;
       n = node_new(c, N_UBO);
       if (n < 0)
          return -1;
       NODES(c)[n].ubo_slot = nir_intrinsic_base(intr) +
                              nir_src_as_uint(intr->src[1]);
+      NODES(c)[n].k = nir_intrinsic_component(intr);
       return n;
    default:
       return fail(c, "unsupported intrinsic"), -1;
@@ -508,7 +511,7 @@ bool_src_node(struct ctx *c, nir_alu_instr *alu, unsigned i, uint8_t *lane,
       swz[0] = swz[1] = 0;
    }
    n = build_def(c, s[0].def);
-   if (n >= 0 && NODES(c)[n].kind != N_CMP)
+   if (n >= 0 && !NODES(c)[n].is_cond)
       return fail(c, "unsupported condition"), -1;
    return n;
 }
@@ -833,10 +836,34 @@ build_alu(struct ctx *c, nir_alu_instr *alu)
       b = a < 0 ? -1 : alu_src_node(c, alu, 1, lane[1], swz[1]);
       if (b < 0)
          return -1;
-      /* The compare unit reads one register and one constant pair. */
+      /* The compare unit reads one register and one constant pair, so two
+       * registers compare their difference against zero instead. */
+      if (!node_is_const(&NODES(c)[a]) && !node_is_const(&NODES(c)[b])) {
+         int diff = node_new(c, N_SUB), zero;
+
+         if (diff < 0)
+            return -1;
+         set_src(&NODES(c)[diff], 0, b, lane[1], swz[1]);
+         set_src(&NODES(c)[diff], 1, a, lane[0], swz[0]);
+         zero = node_new(c, N_LIT);
+         if (zero < 0)
+            return -1;
+         n = node_new(c, N_CMP);
+         if (n < 0)
+            return -1;
+         set_src(&NODES(c)[n], 0, diff, lane_id, swz_id);
+         set_src(&NODES(c)[n], 1, zero, lane_id, swz_id);
+         NODES(c)[n].cmp = direct[which];
+         NODES(c)[n].is_cond = true;
+         return n;
+      }
       swap = node_is_const(&NODES(c)[a]);
-      if (swap == node_is_const(&NODES(c)[b]))
-         return fail(c, "unsupported comparison"), -1;
+      if (swap == node_is_const(&NODES(c)[b])) {
+         a = materialise(c, a, lane[0], swz[0]);
+         if (a < 0)
+            return -1;
+         swap = false;
+      }
       if (swap) {
          int t2 = a;
          uint8_t tl[2], ts[2];
@@ -856,6 +883,7 @@ build_alu(struct ctx *c, nir_alu_instr *alu)
       set_src(&NODES(c)[n], 0, a, lane[0], swz[0]);
       set_src(&NODES(c)[n], 1, b, lane[1], swz[1]);
       NODES(c)[n].cmp = swap ? flipped[which] : direct[which];
+      NODES(c)[n].is_cond = true;
       return n;
    }
    case nir_op_inot: {
@@ -866,6 +894,27 @@ build_alu(struct ctx *c, nir_alu_instr *alu)
          return -1;
       if (!cond_is_plain(lane[0], swz[0]))
          return fail(c, "swizzled boolean negate"), -1;
+      if (NODES(c)[cond].kind != N_CMP) {
+         /* A combined condition negates as one minus itself, which the
+          * negate and the add against a literal express between them. */
+         int one = node_new(c, N_LIT), neg;
+
+         if (one < 0)
+            return -1;
+         for (unsigned i = 0; i < 4; i++)
+            NODES(c)[one].lit[i] = 1.0f;
+         neg = node_new(c, N_NEG);
+         if (neg < 0)
+            return -1;
+         set_src(&NODES(c)[neg], 0, cond, lane_id, swz_id);
+         n = node_new(c, N_ADD);
+         if (n < 0)
+            return -1;
+         set_src(&NODES(c)[n], 0, neg, lane_id, swz_id);
+         set_src(&NODES(c)[n], 1, one, lane_id, swz_id);
+         NODES(c)[n].is_cond = true;
+         return n;
+      }
       n = node_new(c, N_CMP);
       if (n < 0)
          return -1;
@@ -874,6 +923,47 @@ build_alu(struct ctx *c, nir_alu_instr *alu)
       NODES(c)[n].level = 0;
       NODES(c)[n].value[0] = NODES(c)[n].value[1] = -1;
       NODES(c)[n].cmp ^= 1;
+      return n;
+   }
+   case nir_op_iand:
+   case nir_op_ior: {
+      /* Conditions hold 1.0 or 0.0, so and is a product and or is the
+       * larger of the two, and both stay conditions. */
+      int q, pp = bool_src_node(c, alu, 0, lane[0], swz[0]);
+
+      q = pp < 0 ? -1 : bool_src_node(c, alu, 1, lane[1], swz[1]);
+      if (q < 0)
+         return -1;
+      if (!cond_is_plain(lane[0], swz[0]) || !cond_is_plain(lane[1], swz[1]))
+         return fail(c, "swizzled boolean operand"), -1;
+      if (alu->op == nir_op_iand) {
+         n = node_new(c, N_MUL);
+         if (n < 0)
+            return -1;
+         set_src(&NODES(c)[n], 0, pp, lane_id, swz_id);
+         set_src(&NODES(c)[n], 1, q, lane_id, swz_id);
+      } else {
+         int zero = node_new(c, N_LIT), diff, lim;
+
+         if (zero < 0)
+            return -1;
+         diff = node_new(c, N_SUB);
+         if (diff < 0)
+            return -1;
+         set_src(&NODES(c)[diff], 0, pp, lane_id, swz_id);
+         set_src(&NODES(c)[diff], 1, q, lane_id, swz_id);
+         lim = node_new(c, N_MAX);
+         if (lim < 0)
+            return -1;
+         set_src(&NODES(c)[lim], 0, diff, lane_id, swz_id);
+         set_src(&NODES(c)[lim], 1, zero, lane_id, swz_id);
+         n = node_new(c, N_ADD);
+         if (n < 0)
+            return -1;
+         set_src(&NODES(c)[n], 0, lim, lane_id, swz_id);
+         set_src(&NODES(c)[n], 1, pp, lane_id, swz_id);
+      }
+      NODES(c)[n].is_cond = true;
       return n;
    }
    case nir_op_b2f32:
@@ -1437,8 +1527,8 @@ static struct kkey
 node_key(const struct node *s, unsigned lane)
 {
    if (s->kind == N_UBO)
-      return key_uniform((s->ubo_slot * 4 + 2 * lane) * 4,
-                         (s->ubo_slot * 4 + 2 * lane + 1) * 4);
+      return key_uniform((s->ubo_slot * 4 + s->k + 2 * lane) * 4,
+                         (s->ubo_slot * 4 + s->k + 2 * lane + 1) * 4);
    return key_literal(s->lit[2 * lane], s->lit[2 * lane + 1]);
 }
 
