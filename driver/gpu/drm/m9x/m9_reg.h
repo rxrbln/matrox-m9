@@ -127,9 +127,20 @@
 #define M9_REG_VGAMISC			0x1fdc
 #define M9_VGAMISC_NATIVE		BIT(16)
 #define M9_REG_DVO0			0x1c9c
-/* Unresolved pad gate: the vendor walks it 0xff -> 0xf0 -> 0x05 -> 0x07 ->
- * 0x0f as the four links come up, one bit apparently per pad group. */
+/*
+ * Per-pad output gate.  MEASURED: the high nibble gates, active high for off,
+ * one bit per pad; the low nibble is read-only status, set while that pad is
+ * driving.  POST leaves 0xe1 - pad 0 ungated and pads 1..3 held off - which is
+ * why a freshly posted board lights exactly one connector however healthy the
+ * other three controllers are.  The gate only takes effect while that pad's
+ * transmitter is initialised with its output enabled: written to a dark,
+ * uninitialised pad it does nothing, which is what made the register look
+ * inert.  Clearing a bit starts the pad; setting it again does not stop one
+ * that is already running.
+ */
 #define M9_REG_PAD_GATE			0x1cac
+#define M9_PAD_GATE_OFF(pad)		BIT(4 + (pad))
+#define M9_PAD_GATE_UP(pad)		BIT(pad)
 
 /*
  * Every head raises three interrupts per frame.  These are the lowest of each
@@ -176,6 +187,10 @@
 #define M9_MISCIO		0x1c4c
 #define M9_DDC_OE_SHIFT		16
 #define M9_MISCIO_OE_SHIFT	10
+/* MISCIO function ID 0x20 + connector is that connector's transmitter reset
+ * line; [WIN] 0x390e0 drives it low for 10 ms and releases it. */
+#define M9_MISCIO_TX_RESET(conn)	(0x20 + (conn))
+#define M9_MISCIO_RESET_US		10000u
 
 /* External DisplayPort transmitter, one per connector on its own DDC pins.
  * Its I2C bridge has to be off while the host reads the sink's EDID. */
@@ -184,6 +199,37 @@
 /* Hotplug lives on the transmitter's second seven-bit address. */
 #define M9_DP_TX_HPD		0x7c
 #define M9_DP_TX_BRIDGE_SETTLE_MS	20u
+/*
+ * Output gate.  MEASURED on the connector the firmware trained: 0x00 lets the
+ * stream out and both 0x10 and 0x30 blank it, which is the opposite of what
+ * the saved binaries' "0x30 when enabled" reads like.  The vendor's captured
+ * sequence passes through 0x30 and closes on 0x00; the closing write is the
+ * one that matters.
+ */
+#define M9_DP_TX_GATE		0x0a
+#define M9_DP_TX_GATE_ON	0x00u
+#define M9_DP_TX_GATE_OFF	0x10u
+#define M9_DP_TX_GATE_ARM	0x30u
+#define M9_DP_TX_POWER		0x74
+#define M9_DP_TX_FAULT		0x75
+#define M9_DP_TX_STATUS		0x76
+#define M9_DP_TX_EVENT		0x77
+#define M9_DP_TX_FAULT_INFO	0x79
+#define M9_DP_TX_PAGE3_MARK	0x26
+/*
+ * Main-stream attributes, 0x10..0x1f, eight little-endian 16-bit fields:
+ * htotal, hstart, hactive, vtotal, vstart, vactive, hsync, vsync, the two sync
+ * widths carrying the polarity in bit 15.  Nothing in the whole vendor X run
+ * writes them - CAPTURED, by decoding every bit-banged transaction on 0x1c48 -
+ * so they report the video this transmitter is actually sending, and are the
+ * one reading available downstream of the CRTC without a person looking at a
+ * panel.  They read zero while the pad is dark.
+ */
+#define M9_DP_TX_MSA		0x10
+#define M9_DP_TX_MSA_BYTES	16u
+#define M9_DP_TX_MSA_SYNC_NEG	BIT(15)
+/* Hotplug byte bit 2 sets while the transmitter is not driving. */
+#define M9_DP_TX_HPD_IDLE	BIT(2)
 
 
 /* Native modeset on display controller 0.  Field encodings are the M9's own:

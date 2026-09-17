@@ -17,6 +17,7 @@
 #include <drm/drm_managed.h>
 #include <drm/drm_print.h>
 
+#include "m9_dp.h"
 #include "m9_drv.h"
 #include "m9_reg.h"
 
@@ -30,7 +31,8 @@
 #define M9_PINS_NAME		0x0030
 #define M9_PINS_NAME_BYTES	15
 #define M9_PINS_DDC_MAP		0x0050	/* 8 function IDs, physical bit order */
-#define M9_PINS_DDC_MAP_BYTES	8
+#define M9_PINS_DDC_MAP_BYTES	M9_PINS_MAP_BYTES
+#define M9_PINS_MISCIO_MAP	0x006c	/* transmitter resets and board GPIOs */
 #define M9_PINS_PATCH_START	0x000e	/* -> register-patch table */
 
 /*
@@ -130,13 +132,44 @@ static void m9_ddc_post_xfer(struct i2c_adapter *adapter)
 	m9_hmc_release(bus->mdev);
 }
 
+/* The MISCIO GPIO register has its own request/grant pair in the same two
+ * board-controller registers, and its own nesting count. */
+static int m9_hmc_miscio_acquire(struct m9x_device *mdev)
+{
+	unsigned int i;
+
+	guard(mutex)(&mdev->ddc_lock);
+	if (mdev->miscio_owned++)
+		return 0;
+	m9x_write(mdev, M9_HMC_REQUEST,
+		  m9x_read(mdev, M9_HMC_REQUEST) & ~M9_HMC_MISCIO_REQUEST);
+	for (i = 0; i < M9_HMC_GRANT_TRIES; i++) {
+		if (m9x_read(mdev, M9_HMC_GRANT) & M9_HMC_MISCIO_GRANT)
+			return 0;
+		usleep_range(1000, 1200);
+	}
+	m9x_write(mdev, M9_HMC_REQUEST,
+		  m9x_read(mdev, M9_HMC_REQUEST) | M9_HMC_MISCIO_REQUEST);
+	mdev->miscio_owned--;
+	return -ETIMEDOUT;
+}
+
+static void m9_hmc_miscio_release(struct m9x_device *mdev)
+{
+	guard(mutex)(&mdev->ddc_lock);
+	if (WARN_ON(!mdev->miscio_owned) || --mdev->miscio_owned)
+		return;
+	m9x_write(mdev, M9_HMC_REQUEST,
+		  m9x_read(mdev, M9_HMC_REQUEST) | M9_HMC_MISCIO_REQUEST);
+}
+
 /* PInS 8.0 keeps eight DDC function IDs in physical-bit order; the abstract
  * DDC selectors are the consecutive pairs (01,02) (03,04) ... (0f,10). */
 static int m9_pins_ddc_bit(const u8 *map, u8 id)
 {
 	unsigned int bit;
 
-	for (bit = 0; bit < M9_PINS_DDC_MAP_BYTES; bit++)
+	for (bit = 0; bit < M9_PINS_MAP_BYTES; bit++)
 		if (map[bit] == id)
 			return bit;
 	return -ENOENT;
@@ -301,6 +334,11 @@ static bool m9_pins_read(struct m9x_device *mdev, u8 *map)
 		return false;
 
 	memcpy(map, rom + base + M9_PINS_DDC_MAP, M9_PINS_DDC_MAP_BYTES);
+	if (M9_PINS_MISCIO_MAP + M9_PINS_MAP_BYTES <= len) {
+		memcpy(mdev->miscio_map, rom + base + M9_PINS_MISCIO_MAP,
+		       M9_PINS_MAP_BYTES);
+		mdev->miscio_valid = true;
+	}
 	m9_pins_string(serial, sizeof(serial), rom + base + M9_PINS_SERIAL);
 	m9_pins_string(name, sizeof(name), rom + base + M9_PINS_NAME);
 	/* Retain the register-patch table: the image is freed here but the link
@@ -314,10 +352,10 @@ static bool m9_pins_read(struct m9x_device *mdev, u8 *map)
 		mdev->pins_patch_len = mdev->pins_patch ? tail : 0;
 	}
 	drm_info(&mdev->drm,
-		 "PInS %#06x at %#zx from %s: board \"%s\" serial \"%s\", DDC map %8ph, %zu patch bytes%s\n",
+		 "PInS %#06x at %#zx from %s: board \"%s\" serial \"%s\", DDC map %8ph, MISCIO map %8ph, %zu patch bytes%s\n",
 		 get_unaligned_le16(rom + base + M9_PINS_VERSION), base,
 		 source ? "the option ROM BAR" : "the shadow BIOS", name,
-		 serial, map, mdev->pins_patch_len,
+		 serial, map, mdev->miscio_map, mdev->pins_patch_len,
 		 m9_pins_checksum(rom + base, len) ? " (bad checksum)" : "");
 	kvfree(rom);
 	return true;
@@ -423,6 +461,258 @@ static void m9_tx_probe(struct m9_ddc_bus *bus)
 	}
 	drm_info(&bus->mdev->drm, "DDC %u: no transmitter answered\n",
 		 bus->selector);
+}
+
+/*
+ * Transmitter bring-up.
+ *
+ * The register/value tables are the vendor's, CAPTURED verbatim from the
+ * saved binaries (xf86-video-parhelia docs/parhelia-m9148-kms-pins-dp-re.md)
+ * and confirmed against the decoded bit-banged I2C of a whole vendor X run,
+ * which applies all three of them to every one of the four transmitters.
+ * The firmware brings up only the connector it posts, so every other pad
+ * reaches a clean-room driver at its power-on defaults and drives nothing
+ * until this runs.  MEASURED, by differencing all four transmitters on a
+ * freshly posted board.
+ */
+struct m9_tx_regval { u8 reg, val; };
+
+static const struct m9_tx_regval m9_tx_common[] = {
+	{ 0x00, 0x22 }, { 0x74, 0x00 }, { 0x78, 0x30 }, { 0x72, 0xa9 },
+	{ 0x27, 0x30 }, { 0x30, 0x32 }, { 0x71, 0x20 }, { 0x2f, 0x82 },
+	{ 0x86, 0xf0 }, { 0x8b, 0x07 }, { 0x02, 0xb6 }, { 0x77, 0xa3 },
+};
+static const struct m9_tx_regval m9_tx_main_pre[] = {
+	{ 0x0a, 0x00 }, { 0x24, 0x01 }, { 0x20, 0x21 }, { 0x76, 0xff },
+	{ 0x78, 0x33 },
+};
+static const struct m9_tx_regval m9_tx_page3[] = {
+	{ 0x24, 0x10 }, { 0x25, 0x04 }, { 0x26, 0x04 },
+};
+
+/* Page 3 answers on the third of the transmitter's consecutive addresses. */
+static int m9_tx_page3_write(struct m9_ddc_bus *bus, u8 reg, u8 val)
+{
+	return m9_tx_xfer(bus, bus->tx_addr + 2, reg, &val, true);
+}
+
+static int m9_tx_page3_read(struct m9_ddc_bus *bus, u8 reg, u8 *val)
+{
+	return m9_tx_xfer(bus, bus->tx_addr + 2, reg, val, false);
+}
+
+static int m9_tx_apply(struct m9_ddc_bus *bus, const struct m9_tx_regval *tab,
+		       unsigned int n, bool page3)
+{
+	unsigned int i;
+	int ret;
+
+	for (i = 0; i < n; i++) {
+		ret = page3 ? m9_tx_page3_write(bus, tab[i].reg, tab[i].val)
+			    : m9_tx_write(bus, tab[i].reg, tab[i].val);
+		if (ret)
+			return ret;
+	}
+	return 0;
+}
+
+/*
+ * Pulse this connector's transmitter reset line.  The line is a MISCIO GPIO
+ * whose physical bit comes from the PInS map, never from a constant: this
+ * board carries function 0x20 + connector at bits 3, 4, 6 and 7.
+ */
+static int m9_tx_reset(struct m9x_device *mdev, unsigned int conn)
+{
+	u32 data, oe, value;
+	int bit, ret;
+
+	if (!mdev->miscio_valid)
+		return -ENOENT;
+	bit = m9_pins_ddc_bit(mdev->miscio_map, M9_MISCIO_TX_RESET(conn));
+	if (bit < 0)
+		return bit;
+	data = BIT(bit);
+	oe = BIT(bit + M9_MISCIO_OE_SHIFT);
+	ret = m9_hmc_miscio_acquire(mdev);
+	if (ret)
+		return ret;
+	value = m9x_read(mdev, M9_MISCIO);
+	m9x_write(mdev, M9_MISCIO, (value | oe) & ~data);
+	m9x_read(mdev, M9_MISCIO);
+	usleep_range(M9_MISCIO_RESET_US, M9_MISCIO_RESET_US + 1000);
+	m9x_write(mdev, M9_MISCIO, value | oe | data);
+	m9x_read(mdev, M9_MISCIO);
+	usleep_range(M9_MISCIO_RESET_US, M9_MISCIO_RESET_US + 1000);
+	m9x_write(mdev, M9_MISCIO, value);
+	m9x_read(mdev, M9_MISCIO);
+	m9_hmc_miscio_release(mdev);
+	return 0;
+}
+
+/*
+ * One transmitter register, by head and page: 0 is the main block, 1 the
+ * hot-plug block and 2 the PHY block, on consecutive seven-bit addresses.
+ * Exported so the DisplayPort training in m9_dp.c reaches the same bus.
+ */
+int m9x_tx_reg(struct m9x_device *mdev, unsigned int index, u8 page, u8 reg,
+	       u8 *val, bool write)
+{
+	struct m9_ddc_bus *bus;
+
+	if (index >= mdev->ddc_count || page > 2)
+		return -ENODEV;
+	bus = &mdev->ddc[index];
+	if (!bus->tx_addr)
+		return -ENXIO;
+	return m9_tx_xfer(bus, bus->tx_addr + page, reg, val, write);
+}
+
+/*
+ * What the transmitter is sending, decoded from its main-stream attributes.
+ * A dark pad reports every field as zero, so this distinguishes a connector
+ * that is carrying a picture from one that only has a healthy CRTC behind it.
+ */
+int m9x_tx_stream(struct m9x_device *mdev, unsigned int index,
+		  struct drm_display_mode *out)
+{
+	u8 msa[M9_DP_TX_MSA_BYTES];
+	struct m9_ddc_bus *bus;
+	unsigned int i;
+	u16 f[8];
+
+	if (index >= mdev->ddc_count)
+		return -ENODEV;
+	bus = &mdev->ddc[index];
+	if (!bus->tx_addr)
+		return -ENXIO;
+	for (i = 0; i < M9_DP_TX_MSA_BYTES; i++)
+		if (m9_tx_read(bus, M9_DP_TX_MSA + i, &msa[i]))
+			return -EIO;
+	for (i = 0; i < ARRAY_SIZE(f); i++)
+		f[i] = get_unaligned_le16(msa + 2 * i);
+	if (!f[0] || !f[2] || !f[3] || !f[5])
+		return -ENOLINK;
+	if (out) {
+		memset(out, 0, sizeof(*out));
+		out->htotal = f[0];
+		out->hdisplay = f[2];
+		out->vtotal = f[3];
+		out->vdisplay = f[5];
+		/* The transmitter counts the blank from the sync edge, so the
+		 * sync start is the total less what it reports as the start of
+		 * active video. */
+		out->hsync_start = f[0] - f[1];
+		out->hsync_end = out->hsync_start +
+				 (f[6] & ~M9_DP_TX_MSA_SYNC_NEG);
+		out->vsync_start = f[3] - f[4];
+		out->vsync_end = out->vsync_start +
+				 (f[7] & ~M9_DP_TX_MSA_SYNC_NEG);
+		out->flags = (f[6] & M9_DP_TX_MSA_SYNC_NEG ?
+			      DRM_MODE_FLAG_NHSYNC : DRM_MODE_FLAG_PHSYNC) |
+			     (f[7] & M9_DP_TX_MSA_SYNC_NEG ?
+			      DRM_MODE_FLAG_NVSYNC : DRM_MODE_FLAG_PVSYNC);
+	}
+	return 0;
+}
+
+/*
+ * Bring one connector's transmitter up and let its pad drive.  Called from the
+ * modeset path after the controller, synthesiser and link are programmed, and
+ * again on every mode change: the transmitter samples the video it is fed, so
+ * retiming the controller under a running link leaves it sending the old
+ * attributes.
+ *
+ * The two steps that are not in the saved binaries, both MEASURED here:
+ * the output gate closes on 0x00 rather than 0x30, and the pad gate bit has to
+ * be cleared afterwards - while the transmitter is initialised and its output
+ * enabled - or the pad stays dark however well the controller runs.
+ */
+int m9x_tx_enable(struct m9x_device *mdev, unsigned int index, u32 dot_khz)
+{
+	struct m9_ddc_bus *bus;
+	u8 value;
+	u32 gate;
+	int ret;
+
+	if (index >= mdev->ddc_count || index >= M9_MAX_HEADS)
+		return -ENODEV;
+	bus = &mdev->ddc[index];
+	if (!bus->tx_addr)
+		return -ENXIO;
+
+	ret = m9_tx_reset(mdev, index);
+	if (ret)
+		drm_dbg_kms(&mdev->drm, "head %u: no transmitter reset line (%d)\n",
+			    index, ret);
+
+	/* Blank before touching the core, as every vendor path does. */
+	ret = m9_tx_write(bus, M9_DP_TX_POWER, 0x20);
+	ret = ret ?: m9_tx_write(bus, M9_DP_TX_POWER, 0xa0);
+	ret = ret ?: m9_tx_write(bus, M9_DP_TX_GATE, M9_DP_TX_GATE_OFF);
+	ret = ret ?: m9_tx_apply(bus, m9_tx_common, ARRAY_SIZE(m9_tx_common),
+				 false);
+	ret = ret ?: m9_tx_apply(bus, m9_tx_main_pre,
+				 ARRAY_SIZE(m9_tx_main_pre), false);
+	ret = ret ?: m9_tx_apply(bus, m9_tx_page3, ARRAY_SIZE(m9_tx_page3),
+				 true);
+	ret = ret ?: m9_tx_write(bus, M9_DP_TX_STATUS, 0xff);
+	ret = ret ?: m9_tx_write(bus, 0x78, 0x33);
+	if (ret) {
+		drm_warn(&mdev->drm, "head %u: transmitter init failed (%d)\n",
+			 index, ret);
+		return ret;
+	}
+	/* The vendor writes the mode word twice, the second without the bit it
+	 * sets on the connectors it is not driving. */
+	m9_tx_write(bus, M9_DP_TX_MAIN, 0x2a);
+	m9_tx_write(bus, M9_DP_TX_MAIN, 0x22);
+	m9_tx_page3_read(bus, M9_DP_TX_PAGE3_MARK, &value);
+	m9_tx_page3_write(bus, M9_DP_TX_PAGE3_MARK, 0x05);
+	m9_tx_page3_write(bus, M9_DP_TX_PAGE3_MARK, 0x04);
+
+	/* Acknowledge whatever the cold part latched, then open the output. */
+	m9_tx_read(bus, M9_DP_TX_EVENT, &value);
+	m9_tx_write(bus, M9_DP_TX_STATUS, 0xa3);
+	m9_tx_read(bus, M9_DP_TX_STATUS, &value);
+	m9_tx_write(bus, M9_DP_TX_STATUS, 0x08);
+	m9_tx_write(bus, M9_DP_TX_GATE, M9_DP_TX_GATE_ARM);
+	m9_tx_write(bus, M9_DP_TX_FAULT, 0x80);
+	m9_tx_write(bus, M9_DP_TX_FAULT, 0x00);
+	ret = m9_tx_write(bus, M9_DP_TX_GATE, M9_DP_TX_GATE_ON);
+	m9_tx_write(bus, M9_DP_TX_STATUS, 0xa3);
+	if (ret)
+		return ret;
+
+	/* DisplayPort mode and link training, with the output gate already
+	 * open: the transmitter's AUX engine and its capability mirror are
+	 * both dead while it is closed
+	 * (xf86-video-parhelia docs/parhelia-m9148-displayport-transmitter-re.md).
+	 * A failure here still opens the pad, so a link the firmware trained
+	 * is not taken down by a training attempt that could not run. */
+	if (m9x_dp_train(mdev, index, dot_khz))
+		drm_dbg_kms(&mdev->drm, "head %u: continuing untrained\n",
+			    index);
+
+	gate = m9x_read(mdev, M9_REG_PAD_GATE);
+	m9x_write(mdev, M9_REG_PAD_GATE, gate & ~M9_PAD_GATE_OFF(index));
+	bus->tx_enabled = true;
+	return 0;
+}
+
+/* Blank one connector's output.  The pad gate is deliberately not restored:
+ * MEASURED, setting a running pad's bit again does not stop it, so the gate is
+ * left where it is and the transmitter does the blanking. */
+void m9x_tx_disable(struct m9x_device *mdev, unsigned int index)
+{
+	struct m9_ddc_bus *bus;
+
+	if (index >= mdev->ddc_count)
+		return;
+	bus = &mdev->ddc[index];
+	if (!bus->tx_addr || !bus->tx_enabled)
+		return;
+	m9_tx_write(bus, M9_DP_TX_GATE, M9_DP_TX_GATE_OFF);
+	bus->tx_enabled = false;
 }
 
 int m9x_ddc_init(struct m9x_device *mdev)

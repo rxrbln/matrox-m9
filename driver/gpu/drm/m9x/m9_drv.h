@@ -119,6 +119,9 @@ struct m9x_transport {
 	struct m9x_triangle_diag *triangle;
 };
 
+/* Both PInS GPIO maps hold eight function IDs in physical-bit order. */
+#define M9_PINS_MAP_BYTES	8u
+
 /* PInS 8.0 pairs the eight DDC function IDs into four selectors. */
 #define M9_DDC_MAX_BUSES	4u
 
@@ -131,6 +134,10 @@ struct m9_ddc_bus {
 	/* Seven-bit address the connector's DisplayPort transmitter answered
 	 * on, taken from the board by probing; 0 when none did. */
 	u8 tx_addr;
+	/* Set once this driver has brought the transmitter up itself, so a
+	 * connector the firmware trained is never blanked by a path that has
+	 * not yet proven it can bring that connector back. */
+	bool tx_enabled;
 };
 
 /* Four independent display controllers, one per mini-DisplayPort connector:
@@ -204,6 +211,10 @@ struct m9x_device {
 	/* Native DDC, shared with the board controller. */
 	struct mutex ddc_lock;
 	unsigned int ddc_owned;
+	unsigned int miscio_owned;
+	/* PInS MISCIO function map, +0x6c/+0x70, in physical-bit order. */
+	u8 miscio_map[M9_PINS_MAP_BYTES];
+	bool miscio_valid;
 	struct m9_ddc_bus ddc[M9_DDC_MAX_BUSES];
 	unsigned int ddc_count;
 	/* Board register patches from PInS, keyed to the pixel clock. */
@@ -234,6 +245,13 @@ struct i2c_adapter *m9x_ddc_adapter(struct m9x_device *mdev,
 const struct drm_edid *m9x_ddc_read_edid(struct m9x_device *mdev,
 					 unsigned int index,
 					 struct drm_connector *connector);
+int m9x_tx_enable(struct m9x_device *mdev, unsigned int index,
+		  u32 dot_khz);
+int m9x_tx_reg(struct m9x_device *mdev, unsigned int index, u8 page, u8 reg,
+	       u8 *val, bool write);
+void m9x_tx_disable(struct m9x_device *mdev, unsigned int index);
+int m9x_tx_stream(struct m9x_device *mdev, unsigned int index,
+		  struct drm_display_mode *out);
 bool m9x_enabled(void);
 bool m9x_kms_enabled(void);
 bool m9x_kms_scanout_enabled(void);

@@ -846,6 +846,46 @@ static void m9_scanout_geometry(struct m9_head *head,
 	head->scanout_bytes = head->scanout_bounce ? bytes : 0;
 }
 
+/*
+ * Drive this head's connector.  The display controller running is not the same
+ * thing as a picture: the connector's external transmitter has to be brought
+ * up and its pad ungated, and it samples the video it is fed, so a retimed
+ * controller needs the bring-up again.  The transmitter reports what it is
+ * sending, which is what decides whether to redo it and what gets logged.
+ */
+static void m9_head_output_enable(struct m9_head *head,
+				  const struct drm_display_mode *mode)
+{
+	struct m9x_device *mdev = head->mdev;
+	struct drm_display_mode sent;
+	int ret;
+
+	ret = m9x_tx_stream(mdev, head->index, &sent);
+	if (!ret && sent.hdisplay == mode->hdisplay &&
+	    sent.vdisplay == mode->vdisplay && sent.htotal == mode->htotal &&
+	    sent.vtotal == mode->vtotal)
+		return;
+
+	ret = m9x_tx_enable(mdev, head->index, mode->clock);
+	if (ret) {
+		drm_warn(&mdev->drm, "head %u: output bring-up failed (%d)\n",
+			 head->index, ret);
+		return;
+	}
+	/* The transmitter needs a moment to lock the feed before it reports. */
+	msleep(50);
+	ret = m9x_tx_stream(mdev, head->index, &sent);
+	if (ret)
+		drm_warn(&mdev->drm,
+			 "head %u: brought up but sending nothing (%d), pad gate %#x\n",
+			 head->index, ret, m9x_read(mdev, M9_REG_PAD_GATE));
+	else
+		drm_info(&mdev->drm, "head %u: sending %ux%u htotal %u vtotal %u, pad gate %#x\n",
+			 head->index, sent.hdisplay, sent.vdisplay,
+			 sent.htotal, sent.vtotal,
+			 m9x_read(mdev, M9_REG_PAD_GATE));
+}
+
 static void m9_pipe_enable(struct drm_simple_display_pipe *pipe,
 			   struct drm_crtc_state *crtc_state,
 			   struct drm_plane_state *plane_state)
@@ -880,7 +920,8 @@ static void m9_pipe_enable(struct drm_simple_display_pipe *pipe,
 	ctrl |= head->posted ? (head->warm_dc_ctrl & M9_DC_ENABLE) :
 			       M9_DC_ENABLE;
 	m9x_write(head->mdev, head->dc + M9_DC_CTRL, ctrl);
-	/* Timing, clocks and the trained DVO/DP path stay untouched. */
+	if (m9_kms_modeset)
+		m9_head_output_enable(head, &crtc_state->mode);
 	if (head->vblank_mask)
 		drm_crtc_vblank_on(&pipe->crtc);
 	drm_dev_exit(idx);
@@ -903,7 +944,11 @@ static void m9_pipe_disable(struct drm_simple_display_pipe *pipe)
 	if (!drm_dev_enter(drm, &idx))
 		return;
 	m9_cursor_suspend(m9_head_of_pipe(pipe));
-	/* The external DP transmitter and raster timing remain trained/running. */
+	/* Blank only a transmitter this driver brought up: the raster timing
+	 * keeps running either way, and a connector the firmware trained is
+	 * left alone until this path has proven it can bring it back. */
+	m9x_tx_disable(m9_head_of_pipe(pipe)->mdev,
+		       m9_head_of_pipe(pipe)->index);
 	matrox_kms_pipe_disable(pipe, m9_pipe_disable_hw);
 	drm_dev_exit(idx);
 }
