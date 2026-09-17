@@ -44,6 +44,15 @@
 #define M9_DP_PLL_RESET		BIT(7)
 
 /*
+ * Output gate bits in M9_DP_TX_GATE.  Bit 4 blanks the stream and leaves AUX
+ * and the trained link alone; bit 5 kills both and needs a full re-train
+ * afterwards, so nothing here ever sets it.  MEASURED, and consistent with the
+ * vendor blank, which is (v & ~0x20) | 0x10.
+ */
+#define M9_DP_GATE_BLANK	BIT(4)
+#define M9_DP_GATE_LINK_OFF	BIT(5)
+
+/*
  * Largest pixel clock in kHz each link carries, by rate then by lane count.
  * The vendor's own table, indexed (rate == 1.62 Gbps ? 0 : 4) + lanes - 1.
  */
@@ -262,11 +271,18 @@ static int m9_dp_caps(struct m9x_device *mdev, unsigned int i, u8 *rate,
 	return 0;
 }
 
+/*
+ * Link rate codes are monotonic, so a plain comparison covers a sink that
+ * advertises more than the transmitter is driven at.  The sink on this board
+ * reports 0x14 (5.4 Gbps) and neither vendor implementation ever writes a rate
+ * above 2.7 Gbps, so that is the cap.  Masking the code with 0x0f, as the
+ * VBIOS does, turns 0x14 into 4 and silently picks 1.62 Gbps.
+ */
 static u8 m9_dp_pick_rate(u8 max_rate, u8 lanes, u32 pixel_khz)
 {
 	unsigned int idx = clamp_t(unsigned int, lanes, 1, 4) - 1;
 
-	if ((max_rate & 0x0f) < M9_DP_RATE_HBR)
+	if (max_rate < M9_DP_RATE_HBR)
 		return M9_DP_RATE_RBR;
 	return pixel_khz > m9_dp_max_khz[0][idx] ? M9_DP_RATE_HBR :
 						   M9_DP_RATE_RBR;
@@ -300,6 +316,11 @@ static int m9_dp_train_once(struct m9x_device *mdev, unsigned int i, u8 rate,
 	u8 v, bw;
 	int ret;
 
+	/* The lane byte goes out as the sink reported it, which is what both
+	 * vendor implementations do: bit 7 is enhanced framing and the chip is
+	 * expected to ignore the rest.  If training fails with "master" on a
+	 * sink reporting bit 6 (TPS3), masking to 0x9f is the first thing to
+	 * try. */
 	ret = m9_dp_wr(mdev, i, 0, M9_DP_LINK_BW, rate);
 	ret = ret ?: m9_dp_wr(mdev, i, 0, M9_DP_LANE_COUNT, lanes);
 	ret = ret ?: m9_dp_wr(mdev, i, 0, M9_DP_PATTERN, 0x00);
