@@ -140,6 +140,40 @@ static bool m9_textured_combiner(u32 value)
 	return (value & 0xf) == 0x3;
 }
 
+/*
+ * The engine transition the vendor puts between two draws of a native
+ * fragment job: an epilogue closing the draw that has ended and a prologue
+ * opening the next (CAPTURED, decoded in
+ * docs/parhelia-m9-fragment-pass-splitting.md section 6).  Every word is a
+ * fixed control literal with no address field.
+ *
+ *   epilogue  e6 = 0x38000000            end the block
+ *             e6 = 0x40004000, 44, 44    publish what it wrote
+ *             e6 = 0x0c000000            only behind a record-writing draw
+ *   prologue  e6 = 0x60600060            open a range's first block
+ *             e6 = 0x604fff9f            open a continuation block
+ *             e6 = 0x2c000002 / 0x2c000000   the matching second word
+ *             e6 = 0x49d00000 | length   see m9_transition_length
+ *             e6 = 0x08000000            start the block
+ */
+static bool m9_transition_control(u32 value)
+{
+	switch (value) {
+	case 0x38000000: case 0x40004000: case 0x0c000000:
+	case 0x60600060: case 0x604fff9f:
+	case 0x2c000000: case 0x2c000002:
+	case 0x08000000:
+		return true;
+	default:
+		return false;
+	}
+}
+
+static bool m9_transition_length(u32 value)
+{
+	return (value & 0xffff0000) == 0x49d00000;
+}
+
 static int m9_parse_commands(const u32 *words, u32 count, u32 *expected,
 			     u32 program_type)
 {
@@ -216,7 +250,40 @@ static int m9_parse_commands(const u32 *words, u32 count, u32 *expected,
 				expected[cursor + i] |= M9_EXPECT_PROGRAM_ENTRY;
 			/* Only the observed pass-separator controls of e6. */
 			if (index[i] == 0xe6) {
-				if (value != 0x00000003 && value != 0x42000000)
+				if (m9_transition_length(value)) {
+					/*
+					 * The inter-draw prologue's third word
+					 * is 0x49d00000 | n, n the length in
+					 * dwords of the command block it opens,
+					 * counted from this packet's own header
+					 * (CAPTURED, exact for all 343 vendor
+					 * prologues in
+					 * captures/m9x-vendor-glsl-programs-20260915
+					 * and captures/m9x-vendor-openbits-20260917).
+					 * The engine follows it through the
+					 * command stream, so bound it by the
+					 * stream the kernel has validated.
+					 */
+					if (cursor - 1 + (value & 0xffff) >
+					    count)
+						return m9_refuse(-EPERM);
+					continue;
+				}
+				if (!m9_transition_control(value) &&
+				    value != 0x00000003 &&
+				    value != 0x42000000)
+					return m9_refuse(-EPERM);
+				continue;
+			}
+			/*
+			 * Index 44 occurs only inside that transition, always
+			 * as the pair behind e6 = 0x40004000 and always with
+			 * that same literal (CAPTURED, 460 writes, no other
+			 * value).  It carries no address and no length, so the
+			 * one literal is all a client can ask for.
+			 */
+			if (index[i] == 0x44) {
+				if (value != 0x40004000)
 					return m9_refuse(-EPERM);
 				continue;
 			}
