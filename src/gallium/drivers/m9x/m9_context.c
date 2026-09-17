@@ -881,6 +881,10 @@ m9_job_native(struct m9_context *ctx, const struct m9_job_key *key,
       pass->depth_control = i ? key->depth_control & ~0x2u :
                                 key->depth_control;
       pass->depth_ef = i ? key->depth_ef & ~0x8000u : key->depth_ef;
+      /* Every captured pass that writes a record carries bit 2 of index
+       * 0x89 and every pass that writes the colour does not (CAPTURED,
+       * fe007ffc against fe007ff8 in both schedules). */
+      pass->r89 = pass->writes_record ? 0xfe007ffcu : 0xfe207ff8u;
       pass->a9 = pass->writes_record && m9_split_coverage ? 0x88ffff00u :
                                                            0x08ffff00u;
       pass->ae = pass->writes_record && m9_split_coverage ? 0x32444442u :

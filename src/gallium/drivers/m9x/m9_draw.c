@@ -238,7 +238,8 @@ m9_emit_raster_fs(struct m9_batch *batch, const struct m9_draw_job *job,
    unsigned entry = pass ? pass->entry : 0;
    int ret = 0;
 
-   EMIT(V(0x88, fs->r88), V(0x89, 0xfe207ff8), V(0x8a, 0), V(0xc1, 0));
+   EMIT(V(0x88, fs->r88), V(0x89, pass && pass->r89 ? pass->r89 : 0xfe207ff8),
+        V(0x8a, 0), V(0xc1, 0));
    for (unsigned pair = 0; 2 * pair < fs->stream_count; pair++) {
       unsigned s = 2 * pair;
 

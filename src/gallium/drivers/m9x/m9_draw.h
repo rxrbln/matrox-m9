@@ -49,6 +49,7 @@ struct m9_raster_pass {
    uint32_t depth_control;    /* raster a8 of this pass */
    uint32_t depth_ef;         /* raster ef depth bits of this pass */
    uint32_t a9, ae;           /* coverage words, which differ on a record pass */
+   uint32_t r89;              /* raster 89; bit 2 marks a record target */
    unsigned route_count;
    struct m9_pass_route routes[M9_TEXTURE_MAX_UNITS];
    /* What each of the pass's texture slots binds, slot by slot: an index
