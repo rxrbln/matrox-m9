@@ -18,7 +18,11 @@ struct nir_shader_compiler_options;
 
 /* The vendor splits beyond six interpolated varying slots per raster pass. */
 #define M9_FS_MAX_VARYINGS 6u
-/* First texel lands in 00/02, the second in 04/06. */
+/* First texel lands in 00/02, the second in 04/06.  A unit is one fetch:
+ * the engine samples at the coordinate it interpolates and the program has
+ * no fetch instruction, so repeated taps of one sampler at different
+ * coordinates take a unit each (CAPTURED, parhelia-m9-native-glsl-corpus.md
+ * section 6).  Only fetches that agree in sampler and coordinate share. */
 #define M9_FS_MAX_TEXTURES 4u
 
 enum m9_fs_const_kind {
@@ -48,9 +52,10 @@ struct m9_fs_coord_term {
  * the coordinate the shader asked for, which is what lets a unit sample at
  * a computed coordinate even though the engine cannot.
  */
+/* The third component is the comparison reference of a shadow fetch. */
 struct m9_fs_coord_affine {
    bool present;
-   struct m9_fs_coord_term scale[2], bias[2];
+   struct m9_fs_coord_term scale[3], bias[3];
 };
 
 struct m9_fs_const {
@@ -86,6 +91,9 @@ struct m9_fs_program {
    uint8_t texcoord_components[M9_FS_MAX_TEXTURES]; /* first coordinate component */
    /* xy divided by w of the same varying; the driver divides per vertex */
    bool texcoord_projective[M9_FS_MAX_TEXTURES];
+   /* The unit compares against a third interpolated component, which the
+    * sampler word selects (docs/parhelia-m9-openbits-gl-capture.md). */
+   bool texcoord_shadow[M9_FS_MAX_TEXTURES];
    struct m9_fs_coord_affine texcoord_affine[M9_FS_MAX_TEXTURES];
    unsigned texture_count;
    uint16_t registers_used;       /* bit per register pair group 08..1f */
@@ -94,6 +102,10 @@ struct m9_fs_program {
 };
 
 extern const struct nir_shader_compiler_options m9_fs_nir_options;
+
+/* Two coordinate transforms that fold to the same per-vertex stream. */
+bool m9_fs_coord_affine_same(const struct m9_fs_coord_affine *a,
+                             const struct m9_fs_coord_affine *b);
 
 /* Marks uniforms used by if conditions as inlinable (screen finalize_nir). */
 void m9_fs_find_inlinable_uniforms(struct nir_shader *nir);

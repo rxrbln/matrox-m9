@@ -598,6 +598,15 @@ coord_parse(nir_scalar s, struct coord_expr *e)
          return false;
       return term_add(&e->bias, &add.bias);
    }
+   case nir_op_fneg: {
+      if (!coord_parse(nir_scalar_chase_alu_src(s, 0), e))
+         return false;
+      e->scale.literal = -e->scale.literal;
+      e->scale.factor = -e->scale.factor;
+      e->bias.literal = -e->bias.literal;
+      e->bias.factor = -e->bias.factor;
+      return true;
+   }
    case nir_op_fadd: {
       struct coord_expr a, b;
 
@@ -628,31 +637,55 @@ coord_is_identity(const struct coord_expr *e)
           e->bias.offset == M9_FS_UNIFORM_ZERO;
 }
 
+/* Field by field: the struct has padding a memcmp would read. */
+bool
+m9_fs_coord_affine_same(const struct m9_fs_coord_affine *a,
+                        const struct m9_fs_coord_affine *b)
+{
+   if (a->present != b->present)
+      return false;
+   for (unsigned i = 0; i < ARRAY_SIZE(a->scale); i++) {
+      if (a->scale[i].literal != b->scale[i].literal ||
+          a->scale[i].factor != b->scale[i].factor ||
+          a->scale[i].offset != b->scale[i].offset ||
+          a->bias[i].literal != b->bias[i].literal ||
+          a->bias[i].factor != b->bias[i].factor ||
+          a->bias[i].offset != b->bias[i].offset)
+         return false;
+   }
+   return true;
+}
+
 static int
 build_tex(struct ctx *c, nir_tex_instr *tex)
 {
    struct m9_fs_program *p = c->p;
    nir_intrinsic_instr *coord;
-   unsigned location;
+   unsigned location, dims;
    int n, ci = nir_tex_instr_src_index(tex, nir_tex_src_coord);
    int pi = nir_tex_instr_src_index(tex, nir_tex_src_projector);
+   int ri = nir_tex_instr_src_index(tex, nir_tex_src_comparator);
    nir_scalar s[2];
 
-   if (p->texture_count >= M9_FS_MAX_TEXTURES)
-      return fail(c, "more textures than the program can bind"), -1;
+   dims = tex->is_shadow ? 3 : 2;
    if (tex->op != nir_texop_tex || tex->sampler_dim != GLSL_SAMPLER_DIM_2D ||
-       tex->is_shadow || tex->is_array || ci < 0 ||
-       tex->num_srcs != (pi < 0 ? 1u : 2u))
+       tex->is_array || ci < 0 || tex->is_shadow != (ri >= 0) ||
+       tex->num_srcs != 1u + (pi >= 0) + (ri >= 0))
       return fail(c, "texture sampling needs a computed coordinate pass"), -1;
    /* Linked vec2 varyings may share one slot: xy or zw of the input.  st
-    * scalarises IO, so the pair can also be two loads of one location. */
-   unsigned coord_comp[2];
-   struct coord_expr ce[2];
+    * scalarises IO, so the pair can also be two loads of one location.
+    * A shadow fetch adds the comparison reference as a third component of
+    * the same stream. */
+   unsigned coord_comp[3];
+   struct coord_expr ce[3];
    struct m9_fs_coord_affine affine = { 0 };
 
-   for (unsigned i = 0; i < 2; i++) {
-      if (!coord_parse(nir_get_scalar(tex->src[ci].src.ssa, i), &ce[i]) ||
-          !ce[i].varying || ce[i].location != ce[0].location)
+   for (unsigned i = 0; i < dims; i++) {
+      nir_scalar src = i < 2 ? nir_get_scalar(tex->src[ci].src.ssa, i) :
+                               nir_get_scalar(tex->src[ri].src.ssa, 0);
+
+      if (!coord_parse(src, &ce[i]) || !ce[i].varying ||
+          ce[i].location != ce[0].location)
          return fail(c, "texture coordinate is not a varying"), -1;
       coord_comp[i] = ce[i].component;
       affine.scale[i] = ce[i].scale;
@@ -667,11 +700,14 @@ build_tex(struct ctx *c, nir_tex_instr *tex)
    }
    if (coord_comp[0] > 2 || coord_comp[1] != coord_comp[0] + 1)
       return fail(c, "texture coordinate is not a varying"), -1;
+   /* The driver moves a pair down to the xy of its stream; a reference is a
+    * third component, so a shadow fetch owns the low half of its slot. */
+   if (tex->is_shadow && (coord_comp[0] || coord_comp[2] != 2))
+      return fail(c, "shadow reference is not the third coordinate"), -1;
    s[0] = nir_scalar_chase_movs(nir_get_scalar(tex->src[ci].src.ssa, 0));
    while (nir_scalar_is_alu(s[0]))
       s[0] = nir_scalar_chase_movs(nir_scalar_chase_alu_src(s[0], 0));
    coord = nir_def_as_intrinsic(s[0].def);
-   p->texcoord_affine[p->texture_count] = affine;
    /* The fixed-function projector is w of the same varying; the driver
     * divides the coordinate stream per vertex. */
    if (pi >= 0) {
@@ -684,15 +720,33 @@ build_tex(struct ctx *c, nir_tex_instr *tex)
           nir_intrinsic_component(nir_def_as_intrinsic(q.def)) + q.comp != 3)
          return fail(c, "texture sampling needs a computed coordinate pass"),
                 -1;
-      p->texcoord_projective[p->texture_count] = true;
    }
    location = nir_intrinsic_io_semantics(coord).location;
+   /* Fetches that agree in sampler and coordinate read one texel pair: a
+    * unit carries a fetch, and two of them would sample the same place. */
+   for (unsigned i = 0; i < p->texture_count; i++)
+      if (p->textures[i] == tex->texture_index && p->texcoords[i] == location &&
+          p->texcoord_components[i] == coord_comp[0] &&
+          p->texcoord_projective[i] == (pi >= 0) &&
+          p->texcoord_shadow[i] == tex->is_shadow &&
+          m9_fs_coord_affine_same(&p->texcoord_affine[i], &affine)) {
+         n = node_new(c, N_TEX);
+         if (n < 0)
+            return -1;
+         NODES(c)[n].texel = 4 * i;
+         return n;
+      }
+   if (p->texture_count >= M9_FS_MAX_TEXTURES)
+      return fail(c, "more texture fetches than one raster pass can bind"), -1;
    /* An even pair is a captured slot half.  An odd pair is repacked per
     * vertex by the driver, which needs one texture to own the stream. */
    for (unsigned i = 0; i < p->texture_count; i++)
       if (p->texcoords[i] == location &&
           ((coord_comp[0] & 1) || (p->texcoord_components[i] & 1)))
          return fail(c, "texture coordinate is not a varying"), -1;
+   p->texcoord_affine[p->texture_count] = affine;
+   p->texcoord_projective[p->texture_count] = pi >= 0;
+   p->texcoord_shadow[p->texture_count] = tex->is_shadow;
    p->textures[p->texture_count] = tex->texture_index;
    p->texcoords[p->texture_count] = location;
    p->texcoord_components[p->texture_count] = coord_comp[0];
@@ -3271,7 +3325,7 @@ assign_texels(struct ctx *c)
    uint8_t textures[M9_FS_MAX_TEXTURES], coords[M9_FS_MAX_TEXTURES];
    uint8_t comps[M9_FS_MAX_TEXTURES], pair_of[M9_FS_MAX_TEXTURES];
    struct m9_fs_coord_affine affine[M9_FS_MAX_TEXTURES];
-   bool projective[M9_FS_MAX_TEXTURES];
+   bool projective[M9_FS_MAX_TEXTURES], shadow[M9_FS_MAX_TEXTURES];
 
    util_dynarray_foreach(&c->nodes, struct node, n) {
       for (unsigned i = 0; i < 3; i++) {
@@ -3279,10 +3333,15 @@ assign_texels(struct ctx *c)
 
          if (!s || s->kind != N_TEX)
             continue;
-         /* A composed alpha overwrites the texel register in place. */
+         /* A composed alpha overwrites the texel register in place, so
+          * another read of the same register sees it, not only another
+          * read of the same node. */
          if (n->kind != N_COMPOSE) {
             util_dynarray_foreach(&c->nodes, struct node, m) {
-               if (m->kind == N_COMPOSE && m->src[0] == n->src[i])
+               const struct node *t = m->kind == N_COMPOSE && m->src[0] >= 0 ?
+                                      &NODES(c)[m->src[0]] : NULL;
+
+               if (t && t->kind == N_TEX && t->texel == s->texel)
                   return fail(c, "texture read with and without composed alpha");
             }
          }
@@ -3304,6 +3363,7 @@ assign_texels(struct ctx *c)
        * another unit's coordinate. */
       affine[i] = p->texcoord_affine[order[i]];
       projective[i] = p->texcoord_projective[order[i]];
+      shadow[i] = p->texcoord_shadow[order[i]];
       pair_of[order[i]] = i;
    }
    memcpy(p->textures, textures, p->texture_count);
@@ -3311,6 +3371,7 @@ assign_texels(struct ctx *c)
    memcpy(p->texcoord_components, comps, p->texture_count);
    memcpy(p->texcoord_affine, affine, sizeof(affine));
    memcpy(p->texcoord_projective, projective, sizeof(projective));
+   memcpy(p->texcoord_shadow, shadow, sizeof(shadow));
    util_dynarray_foreach(&c->nodes, struct node, n) {
       if (n->kind == N_TEX)
          n->texel = 4 * pair_of[n->texel / 4];
