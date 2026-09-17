@@ -59,6 +59,7 @@ enum node_kind {
    N_FRACT, N_FLOOR, N_CEIL,  /* the move family's rounding classes */
    N_EXP2, N_LOG2,      /* scalar chains, the vendor's fs-exp and fs-log */
    N_RCP, N_RSQ,        /* seed plus two Newton steps, fs-smoothstep, fs-sqrt */
+   N_FRAGCOORD,         /* the raster position registers, y flipped */
    N_CMP,               /* register against a constant, giving 1.0 or 0.0 */
    N_SEL,               /* src[0] against zero picks src[1] or src[2] */
    N_SAT,               /* move in the saturating class, as blending uses */
@@ -98,6 +99,7 @@ struct lop {
    int opval[3];        /* register operands as value ids */
    int opreg[3];        /* fixed register operands (texels), -1 if unused */
    int konst;           /* constant operand key, -1 if unused */
+   int kc2;             /* a second constant, in the c field */
    uint8_t opswz[3];    /* register operand swizzles */
    uint8_t kswz;        /* constant operand swizzle */
    uint8_t op0;         /* L_CHAIN destination scalar mask */
@@ -316,8 +318,18 @@ build_intrinsic(struct ctx *c, nir_intrinsic_instr *intr)
       unsigned location = nir_intrinsic_io_semantics(intr).location;
       int k;
 
-      if (location == VARYING_SLOT_POS ||
-          nir_intrinsic_component(intr) + intr->def.num_components > 4)
+      if (location == VARYING_SLOT_POS) {
+         /* The program below matches the vendor's fragcoord case byte for
+          * byte and r88 declares it the same way, but on this hardware the
+          * position registers still read back constant, so the job side
+          * has to publish something the capture does not show.  Refuse
+          * until that is found rather than render a wrong position. */
+         if (!debug_get_bool_option("M9X_FRAGCOORD", false))
+            return fail(c, "gl_FragCoord is not published to the shader"), -1;
+         n = node_new(c, N_FRAGCOORD);
+         return n < 0 ? -1 : (c->p->fragcoord = true, n);
+      }
+      if (nir_intrinsic_component(intr) + intr->def.num_components > 4)
          return fail(c, "unsupported fragment input"), -1;
       if (debug_get_bool_option("M9X_DEBUG_FS", false))
          fprintf(stderr, "m9x fs: input location %u component %u comps %u\n",
@@ -671,9 +683,39 @@ build_alu(struct ctx *c, nir_alu_instr *alu)
 
       if (a < 0 || b < 0)
          return -1;
-      /* The captured form takes one register and one constant. */
-      if (node_is_const(&NODES(c)[a]) == node_is_const(&NODES(c)[b]))
-         return fail(c, "unsupported arithmetic operation"), -1;
+      /* The captured form takes one register and one constant.  Two
+       * registers become a + min(b - a, 0) and a + max(b - a, 0), which is
+       * exact and built only from forms the corpus shows. */
+      if (!node_is_const(&NODES(c)[a]) && !node_is_const(&NODES(c)[b])) {
+         int zero = node_new(c, N_LIT), diff, lim;
+
+         if (zero < 0)
+            return -1;
+         diff = node_new(c, N_SUB);
+         if (diff < 0)
+            return -1;
+         set_src(&NODES(c)[diff], 0, a, lane[0], swz[0]);
+         set_src(&NODES(c)[diff], 1, b, lane[1], swz[1]);
+         lim = node_new(c, alu->op == nir_op_fmin ? N_MIN : N_MAX);
+         if (lim < 0)
+            return -1;
+         set_src(&NODES(c)[lim], 0, diff, lane_id, swz_id);
+         set_src(&NODES(c)[lim], 1, zero, lane_id, swz_id);
+         a = deswizzle(c, a, lane[0], swz[0]);
+         if (a < 0)
+            return -1;
+         n = node_new(c, N_ADD);
+         if (n < 0)
+            return -1;
+         set_src(&NODES(c)[n], 0, lim, lane_id, swz_id);
+         set_src(&NODES(c)[n], 1, a, lane[0], swz[0]);
+         return n;
+      }
+      if (node_is_const(&NODES(c)[a]) && node_is_const(&NODES(c)[b])) {
+         a = materialise(c, a, lane[0], swz[0]);
+         if (a < 0)
+            return -1;
+      }
       if (node_is_const(&NODES(c)[a])) {
          int t = a;
          uint8_t tl[2], ts[2];
@@ -865,6 +907,58 @@ build_alu(struct ctx *c, nir_alu_instr *alu)
       set_src(&NODES(c)[n], 1, b, lane[2], swz[2]);
       set_src(&NODES(c)[n], 2, a, lane[1], swz[1]);
       NODES(c)[n].cmp = 4;
+      return n;
+   }
+   case nir_op_ffma:
+   case nir_op_ffma_weak: {
+      int cc;
+
+      a = alu_src_node(c, alu, 0, lane[0], swz[0]);
+      b = a < 0 ? -1 : alu_src_node(c, alu, 1, lane[1], swz[1]);
+      cc = b < 0 ? -1 : alu_src_node(c, alu, 2, lane[2], swz[2]);
+      if (cc < 0)
+         return -1;
+      if (node_is_const(&NODES(c)[a])) {
+         int t2 = a;
+         uint8_t tl[2], ts[2];
+
+         memcpy(tl, lane[0], 2);
+         memcpy(ts, swz[0], 2);
+         a = b;
+         memcpy(lane[0], lane[1], 2);
+         memcpy(swz[0], swz[1], 2);
+         b = t2;
+         memcpy(lane[1], tl, 2);
+         memcpy(swz[1], ts, 2);
+      }
+      cc = materialise(c, cc, lane[2], swz[2]);
+      a = cc < 0 ? -1 : materialise(c, a, lane[0], swz[0]);
+      if (a < 0)
+         return -1;
+      /* The captured multiply-add takes one constant factor; two register
+       * factors are a multiply and an add. */
+      if (node_is_const(&NODES(c)[b])) {
+         n = node_new(c, N_MAD);
+         if (n < 0)
+            return -1;
+         set_src(&NODES(c)[n], 0, a, lane[0], swz[0]);
+         set_src(&NODES(c)[n], 1, b, lane[1], swz[1]);
+         set_src(&NODES(c)[n], 2, cc, lane[2], swz[2]);
+         return n;
+      }
+      s = node_new(c, N_MUL);
+      if (s < 0)
+         return -1;
+      set_src(&NODES(c)[s], 0, a, lane[0], swz[0]);
+      set_src(&NODES(c)[s], 1, b, lane[1], swz[1]);
+      cc = deswizzle(c, cc, lane[2], swz[2]);
+      if (cc < 0)
+         return -1;
+      n = node_new(c, N_ADD);
+      if (n < 0)
+         return -1;
+      set_src(&NODES(c)[n], 0, s, lane_id, swz_id);
+      set_src(&NODES(c)[n], 1, cc, lane[2], swz[2]);
       return n;
    }
    case nir_op_flrp:
@@ -1396,6 +1490,7 @@ lop_init(struct lop *l, enum lop_kind kind, unsigned lane, int node)
    }
    l->kswz = 1;
    l->konst = -1;
+   l->kc2 = -1;
 }
 
 /* A register operand read through one scalar in both result lanes. */
@@ -1463,6 +1558,60 @@ chain_const(struct ctx *c, const uint32_t bits[2])
    k = key_literal(v[0], v[1]);
    k.pair = true;
    return key_add(c, &k);
+}
+
+/* The raster engine publishes the fragment position in two registers: 7a
+ * holds x and the raw y, 7b holds z.  The vendor floors 7a and then maps y
+ * onto the drawable with a multiply-add, which is the same program its
+ * fragcoord case emits. */
+#define REG_FRAG_XY 0x7au
+#define REG_FRAG_Z  0x7bu
+
+static int
+frag_lop(struct ctx *c, int n, uint32_t w1, unsigned op0, int reg, int val,
+         int konst, int kc2)
+{
+   struct lop l;
+   int dst = value_new(c, false);
+
+   if (dst < 0)
+      return -1;
+   lop_init(&l, L_CHAIN, 0, n);
+   l.w1 = w1;
+   l.op0 = op0;
+   l.opreg[reg >= 0 ? 2 : 1] = reg;
+   l.opval[1] = val;
+   l.konst = konst;
+   l.kc2 = kc2;
+   l.dst = dst;
+   lop_add(c, &l);
+   return dst;
+}
+
+static int chain_const(struct ctx *c, const uint32_t bits[2]);
+
+static bool
+emit_fragcoord(struct ctx *c, int n, struct node *nd)
+{
+   static const uint32_t flip[2] = { 0x3f800000, 0xbf800000 };  /* 1, -1 */
+   static const uint32_t one[2] = { 0x3f800000, 0x3f800000 };
+   static const uint32_t zero[2] = { 0, 0 };
+   struct kkey k;
+   int fl, xy, z, kh;
+
+   memset(&k, 0, sizeof(k));
+   k.kind = M9_FS_CONST_FRAG_Y;
+   k.pair = true;
+   kh = key_add(c, &k);
+   fl = frag_lop(c, n, 0xa28fccd0, 0x1c, REG_FRAG_XY, -1, -1, -1);
+   xy = frag_lop(c, n, 0xb0400150, 0x1c, -1, fl, chain_const(c, flip), kh);
+   z = frag_lop(c, n, 0xb0400150, 0x1c, REG_FRAG_Z, -1,
+                chain_const(c, one), chain_const(c, zero));
+   if (fl < 0 || xy < 0 || z < 0)
+      return false;
+   nd->value[0] = xy;
+   nd->value[1] = z;
+   return true;
 }
 
 /* The special-function chains.  exp2 and log2 evaluate a minimax polynomial
@@ -1582,6 +1731,18 @@ emit_node_lops(struct ctx *c, int n, bool output, bool direct_ba)
    /* The vendor starts with R,G when an operand register is replicated. */
    bool rg_first = nd->kind == N_MUL && replicated_register(c, nd);
 
+   if (nd->kind == N_FRAGCOORD) {
+      if (!emit_fragcoord(c, n, nd))
+         return false;
+      for (unsigned lane = 0; output && lane < 2; lane++) {
+         struct lop l;
+
+         lop_init(&l, L_MOV_OUT, lane, n);
+         l.opval[0] = nd->value[lane];
+         lop_add(c, &l);
+      }
+      return true;
+   }
    if (nd->kind == N_EXP2 || nd->kind == N_LOG2 ||
        nd->kind == N_RCP || nd->kind == N_RSQ) {
       if (!emit_chain(c, n, nd))
@@ -1915,6 +2076,8 @@ encode_lops(struct ctx *c)
 
    /* Constants are numbered backward from the last slot. */
    for (int s = n - 1; s >= 0; s--) {
+      if (LOPS(c)[s].kc2 >= 0)
+         const_ref(c, LOPS(c)[s].kc2);
       if (LOPS(c)[s].konst >= 0)
          const_ref(c, LOPS(c)[s].konst);
    }
@@ -2031,7 +2194,9 @@ encode_lops(struct ctx *c)
          unsigned rb = l->opval[1] >= 0 ? opreg(c, l, 1) : NONE;
          unsigned rc = l->opval[2] >= 0 ? opreg(c, l, 2) : NONE;
 
-         if (l->konst >= 0 && l->kc)
+         if (l->kc2 >= 0)
+            rc = const_ref(c, l->kc2);
+         else if (l->konst >= 0 && l->kc)
             rc = e;
          /* The base word already carries every operand select. */
          emit(c, w0_make(ra, rb, rc, d, l->cls, l->op0),
@@ -2876,9 +3041,7 @@ compile_output(struct ctx *c, nir_def *value, bool discard)
        nir_scalar_alu_op(s[0]) == nir_op_bcsel && tmpl_select(c, s))
       return true;
    reset_output(c);
-   if (fragcoord)
-      return fail(c, "unsupported gl_FragCoord use");
-   if (!discard && (all_const || (s[0].def != s[1].def)) &&
+   if (!discard && !fragcoord && (all_const || (s[0].def != s[1].def)) &&
        tmpl_scalars(c, s))
       return true;
    reset_output(c);
@@ -3253,5 +3416,9 @@ m9_fs_raster_88(const struct m9_fs_program *program)
       r88 &= ~0x30u;
       low = 0xc;
    }
+   if (debug_get_bool_option("M9X_DEBUG_FS", false))
+      fprintf(stderr, "m9x fs: r88 %08x varyings %u textures %u fragcoord %d\n",
+              r88 | low, program->varying_count, program->texture_count,
+              program->fragcoord);
    return r88 | low;
 }
