@@ -37,6 +37,7 @@
 #include "util/u_framebuffer.h"
 #include "util/u_helpers.h"
 #include "util/u_inlines.h"
+#include "util/os_time.h"
 #include "util/u_math.h"
 #include "util/u_memory.h"
 #include "util/u_pack_color.h"
@@ -179,6 +180,91 @@ m9_skip_reason(struct m9_context *ctx, const char *reason)
  * M9X_TEXTURE_DUMP writes each uploaded level 0 out as a PPM. */
 static bool m9_debug_textures;
 static const char *m9_texture_dump;
+
+/* M9X_PROFILE=N reports where the frame went every N frames.  The phases
+ * nest: draw contains emit, emit contains submit, submit contains the
+ * varying gather, the record copy and the submit ioctl. */
+enum m9_prof {
+   M9_PROF_DRAW, M9_PROF_EMIT, M9_PROF_SUBMIT, M9_PROF_VARYING,
+   M9_PROF_RECORDS, M9_PROF_IOCTL, M9_PROF_TARGET, M9_PROF_CLEAR,
+   M9_PROF_TRANSFER, M9_PROF_COUNT,
+};
+
+static const char *const m9_prof_name[M9_PROF_COUNT] = {
+   "draw", "emit", "submit", "varying", "records", "ioctl", "target",
+   "clear", "transfer",
+};
+
+static unsigned m9_profile_period;
+/* M9X_JOB_DRAWS ends a job after that many draws: the frame time against the
+ * job count weighs what one job costs. */
+static unsigned m9_job_draws;
+static uint64_t m9_prof_ns[M9_PROF_COUNT];
+static uint64_t m9_prof_hits[M9_PROF_COUNT];
+static uint64_t m9_prof_records, m9_prof_jobs, m9_prof_varying_bytes;
+static uint64_t m9_prof_draws, m9_prof_split[8];
+static uint64_t m9_prof_indexed, m9_prof_referenced;
+/* M9X_NO_CLEAR drops the clear quad; M9X_CLEAR_REPEAT draws it that many
+ * extra times, which weighs one screen of fill with the frame still correct. */
+static bool m9_no_clear;
+static unsigned m9_clear_repeat;
+static uint64_t m9_prof_frames, m9_prof_wall;
+
+static inline uint64_t
+m9_prof_begin(void)
+{
+   return m9_profile_period ? os_time_get_nano() : 0;
+}
+
+static inline void
+m9_prof_end(enum m9_prof phase, uint64_t start)
+{
+   if (m9_profile_period) {
+      m9_prof_ns[phase] += os_time_get_nano() - start;
+      m9_prof_hits[phase]++;
+   }
+}
+
+/* Called once per frame with the wall time of the whole frame. */
+static void
+m9_prof_frame(void)
+{
+   static uint64_t last;
+   uint64_t now;
+   double f;
+
+   if (!m9_profile_period)
+      return;
+   now = os_time_get_nano();
+   if (last)
+      m9_prof_wall += now - last;
+   last = now;
+   if (++m9_prof_frames < m9_profile_period)
+      return;
+   f = (double)m9_prof_frames;
+   fprintf(stderr, "m9x: %.0f frames %.2f ms/frame: ", f,
+           m9_prof_wall / f / 1e6);
+   for (unsigned i = 0; i < M9_PROF_COUNT; i++)
+      fprintf(stderr, "%s %.2f ", m9_prof_name[i], m9_prof_ns[i] / f / 1e6);
+   fprintf(stderr, "| jobs %.0f draws %.0f records %.0f varying KiB %.1f "
+           "indexed %.0f referenced %.0f splits target %.0f program %.0f "
+           "depth %.0f mask %.0f clip %.0f uniforms %.0f vertices %.0f "
+           "stream %.0f\n",
+           m9_prof_jobs / f, m9_prof_draws / f, m9_prof_records / f,
+           m9_prof_varying_bytes / f / 1024.0, m9_prof_indexed / f,
+           m9_prof_referenced / f, m9_prof_split[0] / f,
+           m9_prof_split[1] / f, m9_prof_split[2] / f, m9_prof_split[3] / f,
+           m9_prof_split[4] / f, m9_prof_split[5] / f, m9_prof_split[6] / f,
+           m9_prof_split[7] / f);
+   memset(m9_prof_ns, 0, sizeof(m9_prof_ns));
+   memset(m9_prof_hits, 0, sizeof(m9_prof_hits));
+   m9_prof_records = m9_prof_jobs = m9_prof_varying_bytes = 0;
+   m9_prof_draws = m9_prof_indexed = m9_prof_referenced = 0;
+   memset(m9_prof_split, 0, sizeof(m9_prof_split));
+   m9_prof_frames = 0;
+   m9_prof_wall = 0;
+}
+
 
 static void
 m9_context_sync(struct m9_context *ctx)
@@ -352,9 +438,9 @@ m9_transfer_offset(const struct m9_resource *resource, unsigned level,
 }
 
 static void *
-m9_transfer_map(struct pipe_context *pctx, struct pipe_resource *pres,
-                unsigned level, unsigned usage, const struct pipe_box *box,
-                struct pipe_transfer **out)
+m9_transfer_map_locked(struct pipe_context *pctx, struct pipe_resource *pres,
+                       unsigned level, unsigned usage,
+                       const struct pipe_box *box, struct pipe_transfer **out)
 {
    struct m9_context *ctx = m9_context(pctx);
    struct m9_resource *resource = (struct m9_resource *)pres;
@@ -465,6 +551,18 @@ m9_transfer_map(struct pipe_context *pctx, struct pipe_resource *pres,
           (uint8_t *)resource->map + offset;
 }
 
+static void *
+m9_transfer_map(struct pipe_context *pctx, struct pipe_resource *pres,
+                unsigned level, unsigned usage, const struct pipe_box *box,
+                struct pipe_transfer **out)
+{
+   uint64_t t_transfer = m9_prof_begin();
+   void *map = m9_transfer_map_locked(pctx, pres, level, usage, box, out);
+
+   m9_prof_end(M9_PROF_TRANSFER, t_transfer);
+   return map;
+}
+
 static void
 m9_transfer_unmap(struct pipe_context *pctx, struct pipe_transfer *ptransfer)
 {
@@ -572,6 +670,8 @@ m9_job_native(struct m9_context *ctx, const struct m9_fs_variant *fs,
    for (unsigned c = 0; c < fs->coord_count; c++)
       coords[c] = fs->coord_location[c] == VARYING_SLOT_COL0 ? 0 :
                   M9_TRANSIENT_CPU_VIEW + cpu++;
+   uint64_t t_varying = m9_prof_begin();
+
    for (unsigned j = 0; j < fs->extra_count; j++) {
       uint8_t *view = (uint8_t *)ctx->transient.map +
                       (M9_TRANSIENT_CPU_VIEW + j) * M9_TRANSIENT_VIEW_BYTES;
@@ -580,6 +680,9 @@ m9_job_native(struct m9_context *ctx, const struct m9_fs_variant *fs,
          memcpy(view + r * M9_TRANSIENT_VERTEX_BYTES,
                 extra + (r * fs->extra_count + j) * 4, 4 * sizeof(float));
    }
+   m9_prof_varying_bytes += (uint64_t)records * fs->extra_count *
+                            M9_TRANSIENT_VERTEX_BYTES;
+   m9_prof_end(M9_PROF_VARYING, t_varying);
    return m9_raster_fs_init_textured(raster, fs->vertex_entry,
                                      m9_fs_raster_88(p),
                                      util_dynarray_num_elements(&p->consts,
@@ -653,10 +756,17 @@ m9_submit_job(struct m9_context *ctx)
    struct m9_raster_fs raster;
    struct m9_draw_job job;
    uint64_t point = 0;
+   uint64_t t_submit;
    int ret;
 
    if (!draws)
       return 0;
+   t_submit = m9_prof_begin();
+   m9_prof_jobs++;
+   m9_prof_records += records;
+   /* One clear of the 35 KiB batch per job: the build below is its only
+    * writer, so clearing it again on the way out was dead work. */
+   m9_batch_init(&ctx->batch);
    /* M9X_ONLY_FIRST / M9X_ONLY_AFTER drop every job of a frame outside that
     * range, which isolates the draws a screen region comes from. */
    if (ctx->frame_jobs++ < ctx->only_after ||
@@ -674,11 +784,14 @@ m9_submit_job(struct m9_context *ctx)
          m9_source_reserve(ctx, (uint64_t)records * M9_RECORD_FLOATS *
                                 sizeof(float));
    if (!ret) {
+      uint64_t t_records = m9_prof_begin();
+
       memcpy(ctx->source.map, ctx->records.data, ctx->records.size);
       memcpy(ctx->system.map, ctx->params.system_prefix,
              sizeof(ctx->params.system_prefix));
       memcpy((uint8_t *)ctx->system.map + M9_LINKED_OFFSET,
              ctx->params.linked_prefix, sizeof(ctx->params.linked_prefix));
+      m9_prof_end(M9_PROF_RECORDS, t_records);
       if (fs)
          ret = m9_job_native(ctx, key->variant, records, &raster);
       job = (struct m9_draw_job) {
@@ -709,19 +822,22 @@ m9_submit_job(struct m9_context *ctx)
          job.program = key->variant->c2.handle;
          job.blend_dest = key->variant->program.blend_dest;
       }
-      m9_batch_init(&ctx->batch);
       if (!ret)
          ret = m9_batch_emit_draw_job(&ctx->batch, &job);
    }
    if (!ret) {
+      uint64_t t_ioctl;
+
       ctx->batch.sealed = true;
       if (ctx->dump_path)
          m9_dump_job(ctx, fs ? key->variant : NULL);
+      t_ioctl = m9_prof_begin();
       ret = ctx->dry_run ?
             m9_batch_validate(ctx->screen, &ctx->command, &ctx->batch,
                               ctx->context_id) :
             m9_batch_submit(ctx->screen, &ctx->command, &ctx->batch,
                             ctx->context_id, &point);
+      m9_prof_end(M9_PROF_IOCTL, t_ioctl);
    }
    if (ret == -EINVAL) {
       /* A refused job is one unsupported state, not a broken context. */
@@ -756,7 +872,7 @@ m9_submit_job(struct m9_context *ctx)
    util_dynarray_clear(&ctx->records);
    util_dynarray_clear(&ctx->draws);
    util_dynarray_clear(&ctx->extra);
-   m9_batch_init(&ctx->batch);
+   m9_prof_end(M9_PROF_SUBMIT, t_submit);
    return ret;
 }
 
@@ -799,7 +915,7 @@ m9_job_reserve(struct m9_context *ctx, const struct m9_job_key *key,
       bool state = memcmp(key, &ctx->job_key,
                           offsetof(struct m9_job_key, units)) != 0;
 
-      if (state && ctx->debug) {
+      if (state && (ctx->debug || m9_profile_period)) {
          const struct m9_job_key *o = &ctx->job_key;
 
          ctx->split_target += key->depth != o->depth || key->aux != o->aux;
@@ -809,12 +925,23 @@ m9_job_reserve(struct m9_context *ctx, const struct m9_job_key *key,
          ctx->split_mask += key->color_mask != o->color_mask;
          ctx->split_clip += key->clip_min != o->clip_min ||
                             key->clip_max != o->clip_max;
+         m9_prof_split[0] += key->depth != o->depth || key->aux != o->aux;
+         m9_prof_split[1] += key->fs != o->fs || key->variant != o->variant;
+         m9_prof_split[2] += key->depth_control != o->depth_control ||
+                             key->depth_ef != o->depth_ef;
+         m9_prof_split[3] += key->color_mask != o->color_mask;
+         m9_prof_split[4] += key->clip_min != o->clip_min ||
+                             key->clip_max != o->clip_max;
       }
       bool uniforms = key->fs && m9_consts_differ(consts, &ctx->job_consts);
       bool vertices_full = records + padded > m9_draw_max_source_vertices();
-      bool stream_full = dwords > M9_MAX_COMMAND_DWORDS;
+      bool stream_full = dwords > M9_MAX_COMMAND_DWORDS ||
+                         (m9_job_draws && draws >= m9_job_draws);
 
       if (state || uniforms || vertices_full || stream_full) {
+         m9_prof_split[5] += !state && uniforms;
+         m9_prof_split[6] += !state && !uniforms && vertices_full;
+         m9_prof_split[7] += !state && !uniforms && !vertices_full;
          ctx->split_state += state;
          ctx->split_uniforms += !state && uniforms;
          ctx->split_vertices += !state && !uniforms && vertices_full;
@@ -877,6 +1004,7 @@ m9_job_commit(struct m9_context *ctx, float *out, float *extra,
          memcpy(extra + i * extra_floats, extra + (vertices - 1) * extra_floats,
                 extra_floats * sizeof(float));
    }
+   m9_prof_draws++;
    draw = util_dynarray_grow(&ctx->draws, struct m9_draw_record, 1);
    if (!draw) {
       /* Shrinking never reallocates; drop the orphaned records. */
@@ -1705,6 +1833,7 @@ m9_render_emit(struct m9_vbuf_render *r, const uint16_t *indices,
    enum m9_topology topology;
    const void *list = NULL;
    struct m9_job_key key;
+   uint64_t t_emit = m9_prof_begin();
    uint32_t cull = 0;
 
    if (!count)
@@ -1757,10 +1886,21 @@ m9_render_emit(struct m9_vbuf_render *r, const uint16_t *indices,
       list = buffer;
       topology = out_prim == MESA_PRIM_LINES ? M9_TOPOLOGY_LINES :
                                                M9_TOPOLOGY_TRIANGLES;
+      if (m9_profile_period && indices) {
+         unsigned lo = 0xffff, hi = 0;
+
+         for (unsigned i = 0; i < count; i++) {
+            lo = MIN2(lo, indices[i]);
+            hi = MAX2(hi, indices[i]);
+         }
+         m9_prof_indexed += out_count;
+         m9_prof_referenced += hi >= lo ? hi - lo + 1 : 0;
+      }
    }
    m9_render_append(r, &key, topology,
                     u_reduced_prim(out_prim) == MESA_PRIM_LINES, cull, list,
                     out_size, start, out_count);
+   m9_prof_end(M9_PROF_EMIT, t_emit);
 }
 
 static void
@@ -1892,9 +2032,12 @@ m9_draw_vbo(struct pipe_context *pctx, const struct pipe_draw_info *info,
                                       data ? data + cb->buffer_offset : NULL,
                                       data ? cb->buffer_size : 0);
    }
+   uint64_t t_draw = m9_prof_begin();
+
    draw_prepare_shader_outputs(ctx->draw);
    draw_vbo(ctx->draw, info, drawid_offset, NULL, draws, 1, 0);
    draw_flush(ctx->draw);
+   m9_prof_end(M9_PROF_DRAW, t_draw);
    for (unsigned i = 0; i < ctx->num_vertex_buffers; i++)
       draw_set_mapped_vertex_buffer(ctx->draw, i, NULL, 0);
    if (indexed)
@@ -1974,10 +2117,11 @@ m9_clear_depth_cpu(struct m9_resource *zs, unsigned buffers, double depth,
 }
 
 static void
-m9_clear(struct pipe_context *pctx, unsigned buffers,
-         uint32_t color_clear_mask, uint8_t stencil_clear_mask,
-         const struct pipe_scissor_state *scissor,
-         const union pipe_color_union *color, double depth, unsigned stencil)
+m9_clear_locked(struct pipe_context *pctx, unsigned buffers,
+                uint32_t color_clear_mask, uint8_t stencil_clear_mask,
+                const struct pipe_scissor_state *scissor,
+                const union pipe_color_union *color, double depth,
+                unsigned stencil)
 {
    static const float zero[4];
    struct m9_context *ctx = m9_context(pctx);
@@ -1988,7 +2132,7 @@ m9_clear(struct pipe_context *pctx, unsigned buffers,
 
    bool colour = (buffers & PIPE_CLEAR_COLOR0) && cbuf;
 
-   if (!ctx->params_valid)
+   if (!ctx->params_valid || m9_no_clear)
       return;
    /* One quad writes both attachments: a clear of colour and depth is what
     * a frame starts with, and two full-screen quads is twice the fill. */
@@ -2029,6 +2173,20 @@ m9_clear(struct pipe_context *pctx, unsigned buffers,
          m9_warn_once(ctx, M9_WARN_CLEAR, "partial stencil clears are not "
                       "implemented");
    }
+}
+
+static void
+m9_clear(struct pipe_context *pctx, unsigned buffers,
+         uint32_t color_clear_mask, uint8_t stencil_clear_mask,
+         const struct pipe_scissor_state *scissor,
+         const union pipe_color_union *color, double depth, unsigned stencil)
+{
+   uint64_t t_clear = m9_prof_begin();
+
+   for (unsigned i = 0; i <= m9_clear_repeat; i++)
+      m9_clear_locked(pctx, buffers, color_clear_mask, stencil_clear_mask,
+                      scissor, color, depth, stencil);
+   m9_prof_end(M9_PROF_CLEAR, t_clear);
 }
 
 static void
@@ -2538,6 +2696,7 @@ m9_update_target(struct m9_context *ctx)
    struct m9_resource *color = ctx->framebuffer.nr_cbufs && cbuf->texture ?
                                m9_res(cbuf->texture) : NULL;
    struct m9_render_layout layout;
+   uint64_t t_target = m9_prof_begin();
    uint32_t w, h;
 
    ctx->params_valid = false;
@@ -2576,6 +2735,7 @@ m9_update_target(struct m9_context *ctx)
       m9_fill_dwords(&ctx->target_aux, M9_HZ_CLEAR);
    }
    ctx->params_valid = true;
+   m9_prof_end(M9_PROF_TARGET, t_target);
 }
 
 static void
@@ -2652,6 +2812,7 @@ m9_context_flush(struct pipe_context *pctx,
    struct pipe_fence_handle *fence = NULL;
 
    (void)flags;
+   m9_prof_frame();
    if (ctx->debug && ++ctx->flush_count % 300 == 0)
       fprintf(stderr, "m9x: after %u frames job splits: state %u uniforms %u "
               "vertices %u stream %u | target %u program %u depth %u mask %u "
@@ -2783,6 +2944,10 @@ m9_context_create(struct pipe_screen *pscreen, void *priv, unsigned flags)
    m9_context_state_init(ctx, screen);
    ctx->base.priv = priv;
    ctx->debug = debug_get_bool_option("M9X_DEBUG", false);
+   m9_profile_period = debug_get_num_option("M9X_PROFILE", 0);
+   m9_job_draws = debug_get_num_option("M9X_JOB_DRAWS", 0);
+   m9_no_clear = debug_get_bool_option("M9X_NO_CLEAR", false);
+   m9_clear_repeat = debug_get_num_option("M9X_CLEAR_REPEAT", 0);
    ctx->dump_path = debug_get_option("M9X_DUMP", NULL);
    m9_debug_textures = debug_get_bool_option("M9X_DEBUG_TEXTURES", false);
    m9_texture_dump = debug_get_option("M9X_TEXTURE_DUMP", NULL);
