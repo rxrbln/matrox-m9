@@ -302,3 +302,71 @@ EEPROM at `0xa0` on the MISCIO bus carries the same serial as PInS `+0x16`
 All five were landed in `drivers/gpu/drm/m9x` together with the shadow-BIOS
 PInS source above; the per-head vblank sources for heads 1..3 are still unknown
 and default to no interrupt.
+
+## All four rasters run under the KMS driver
+
+MEASURED 2026-09-17 on `7.2.4-t2` with `m9x_drm` built from this tree
+(`m9_kms=1 m9_kms_modeset=1 m9_kms_scanout=1`), setting 1024x768 on one CRTC at
+a time and sampling `DCT+0x24` on all four heads:
+
+```
+probe                1924=0000037a 1b24=00000000 1e24=00000000 1f24=00000000
+after CRTC 1 enabled 1924=00000422 1b24=0000018f 1e24=00000000 1f24=00000000
+after CRTC 2 enabled 1924=0000049c 1b24=000000ea 1e24=00000283 1f24=00000000
+after CRTC 3 enabled 1924=0000003f 1b24=00000046 1e24=000001df 1f24=000001e9
+```
+
+Each head's counter starts advancing as its CRTC is enabled and keeps advancing
+after that CRTC is disabled again, since only `DC+0x00` bit 0 is cleared and the
+timing block keeps running.  The heads that "did not raster" in the earlier
+report had simply never had a CRTC enabled: the driver programs timing from
+`m9_pipe_enable`, and the probe-time line-counter log is taken before that.  No
+change to the write order was needed, and none of the global preamble words
+(`0x1c28`, `0x1c24` bit 8, the DACs, the `0x1fcc/0x1fd4/0x1fdc` VGA words) is
+required for a head to raster.
+
+Still at their firmware values after four heads are up, and still unproven as
+picture requirements: `0x1cac = 0xe1` (vendor ends at `0x0f`), `0x1c28 = 0`
+(vendor `0x0f021084`), `0x1c80/0x1c84 = 0x03001400` (vendor `0x01001400`).  The
+`m9x.pad_gate=` parameter writes `0x1cac` for the first of these.
+
+## EDID: two sinks answer the pins, two need the AUX engine
+
+MEASURED 2026-09-17, four displays attached, transmitter main register 0 read
+per bus:
+
+| bus | main reg 0 | direct `0xa0` read | native AUX (DPCD 0) |
+|---|---|---|---|
+| 0 | `0x00` | address NAK | times out |
+| 1 | `0x08` | 13 bytes of zeros, then NAK | times out |
+| 2 | `0x20` | full EDID, VCS "Connector" | times out |
+| 3 | `0x24` | full EDID, LG SDQHD | `12 14 c4 81 01 00 01 80 …` |
+
+So connectors 2 and 3 carry sinks reachable on the DDC pins and the driver reads
+them repeatably; connector 3 additionally answers native AUX.  Connectors 0 and
+1 answer neither in the firmware state, although both EDIDs *were* read once
+each on 2026-09-17 - connector 1 by the two-head build after the transmitter had
+been poked by hand, connector 0 by this build's bridged retry immediately after
+a vendor-resolution X session had been running on it.  Neither is reproducible
+from a cold transmitter.
+
+The transmitter AUX engine itself is confirmed working exactly as
+`parhelia-m9148-kms-pins-dp-re.md` "AUX native transactions" describes
+(`0x7d..0x84` on the main slave, completion in `0x76` bit 5): it returns a valid
+receiver-capability block on bus 3.  On buses 0, 1 and 2 it never asserts
+completion, including after pulsing that connector's MISCIO transmitter-reset
+line and applying the vendor's common / main-pre / page-3 tables verbatim
+(`tools/m9-dp-io.c` `aux`, `auxedid`, `dump`, `block` subcommands).  Reading
+EDID on connectors 0 and 1 therefore needs the full transmitter bring-up -
+reset, detect, initialize, train - not a bridge toggle.  UNTESTED as a remedy.
+
+Two driver defects were found and fixed while measuring this:
+
+* the hotplug byte was read from the transmitter's **main** address, where it is
+  meaningless; the vendor reads it from the next seven-bit address.  All four
+  buses logged `hotplug 0x00`; they now log `0x13 0x07 0x07 0x07`.
+* the EDID path only disabled the transmitter's I2C bridge when it found bit 1
+  of main register 0 already set, which no connector on this board ever is, so
+  the documented lifecycle never ran.  The bridge is now cleared for the read,
+  the read is repeated through the bridge when the pins give nothing, and the
+  register is restored.
