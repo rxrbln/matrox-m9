@@ -58,6 +58,7 @@ enum node_kind {
    N_NEG,               /* move with the W1 negate bit, as fs-neg emits */
    N_FRACT, N_FLOOR, N_CEIL,  /* the move family's rounding classes */
    N_EXP2, N_LOG2,      /* scalar chains, the vendor's fs-exp and fs-log */
+   N_RCP, N_RSQ,        /* seed plus two Newton steps, fs-smoothstep, fs-sqrt */
    N_CMP,               /* register against a constant, giving 1.0 or 0.0 */
    N_SEL,               /* src[0] against zero picks src[1] or src[2] */
    N_SAT,               /* move in the saturating class, as blending uses */
@@ -100,6 +101,8 @@ struct lop {
    uint8_t opswz[3];    /* register operand swizzles */
    uint8_t kswz;        /* constant operand swizzle */
    uint8_t op0;         /* L_CHAIN destination scalar mask */
+   uint8_t cls;         /* L_CHAIN instruction class */
+   bool keep_dst;       /* writes part of a value another lop allocated */
    bool kc;             /* L_CHAIN takes its constant index in the c field */
    uint32_t w0, w1;     /* L_RAW, and the L_CHAIN base word */
 };
@@ -692,18 +695,53 @@ build_alu(struct ctx *c, nir_alu_instr *alu)
       return n;
    }
    case nir_op_fexp2:
-   case nir_op_flog2: {
-      /* The chain is scalar: one seed instruction and its polynomial. */
+   case nir_op_flog2:
+   case nir_op_frcp:
+   case nir_op_frsq:
+   case nir_op_fsqrt: {
+      /* The chain is scalar: one seed instruction and its refinement. */
+      enum node_kind kind = alu->op == nir_op_fexp2 ? N_EXP2 :
+                            alu->op == nir_op_flog2 ? N_LOG2 :
+                            alu->op == nir_op_frcp ? N_RCP : N_RSQ;
+
       if (alu->def.num_components != 1)
-         return fail(c, "vector transcendental"), -1;
+         return fail(c, "vector special function"), -1;
       a = materialise(c, alu_src_node(c, alu, 0, lane[0], swz[0]),
                       lane[0], swz[0]);
       if (a < 0)
          return -1;
-      n = node_new(c, alu->op == nir_op_fexp2 ? N_EXP2 : N_LOG2);
+      n = node_new(c, kind);
       if (n < 0)
          return -1;
       set_src(&NODES(c)[n], 0, a, lane[0], swz[0]);
+      if (alu->op != nir_op_fsqrt)
+         return n;
+      /* sqrt is the argument times its reciprocal square root, with the
+       * zero guard the vendor emits, since rsq(0) is an infinity. */
+      {
+         int zero = node_new(c, N_LIT), cond, mul;
+
+         if (zero < 0)
+            return -1;
+         cond = node_new(c, N_CMP);
+         if (cond < 0)
+            return -1;
+         set_src(&NODES(c)[cond], 0, a, lane[0], swz[0]);
+         set_src(&NODES(c)[cond], 1, zero, lane_id, swz_id);
+         NODES(c)[cond].cmp = 4;
+         mul = node_new(c, N_MUL);
+         if (mul < 0)
+            return -1;
+         set_src(&NODES(c)[mul], 0, n, lane_id, swz_id);
+         set_src(&NODES(c)[mul], 1, a, lane[0], swz[0]);
+         n = node_new(c, N_SEL);
+         if (n < 0)
+            return -1;
+         set_src(&NODES(c)[n], 0, cond, lane_id, swz_id);
+         set_src(&NODES(c)[n], 1, mul, lane_id, swz_id);
+         set_src(&NODES(c)[n], 2, a, lane[0], swz[0]);
+         NODES(c)[n].cmp = 4;
+      }
       return n;
    }
    case nir_op_fabs: {
@@ -1372,30 +1410,47 @@ replicated_register(struct ctx *c, const struct node *nd)
    return false;
 }
 
-/* One instruction of a transcendental chain: the base word is the vendor's,
- * the registers are ours.  A constant index rides in the c field for the
- * UNIT 1 forms and in e for the rest. */
+/* One instruction of a special-function chain: the base word is the
+ * vendor's, the registers are ours.  A constant index rides in the c field
+ * for the UNIT 1 forms and in e for the rest, and extra is whatever operand
+ * select the instruction needs on top of its base. */
 static int
-chain_lop(struct ctx *c, int n, uint32_t w1, unsigned op0, int a, int b,
-          int cc, int konst, bool kc, unsigned swz)
+chain_lop_into(struct ctx *c, int n, uint32_t w1, unsigned op0, int a, int b,
+               int cc, int konst, bool kc, uint32_t extra, unsigned cls,
+               int into)
 {
    struct lop l;
-   int dst = value_new(c, false);
+   int dst = into >= 0 ? into : value_new(c, false);
 
    if (dst < 0)
       return -1;
    lop_init(&l, L_CHAIN, 0, n);
-   l.w1 = w1;
+   l.keep_dst = into >= 0;
+   l.w1 = w1 | extra;
    l.op0 = op0;
+   l.cls = cls;
    l.opval[0] = a;
    l.opval[1] = b;
    l.opval[2] = cc;
    l.konst = konst;
    l.kc = kc;
-   l.kswz = swz;
    l.dst = dst;
    lop_add(c, &l);
    return dst;
+}
+
+static int
+chain_lop_cls(struct ctx *c, int n, uint32_t w1, unsigned op0, int a, int b,
+              int cc, int konst, bool kc, uint32_t extra, unsigned cls)
+{
+   return chain_lop_into(c, n, w1, op0, a, b, cc, konst, kc, extra, cls, -1);
+}
+
+static int
+chain_lop(struct ctx *c, int n, uint32_t w1, unsigned op0, int a, int b,
+          int cc, int konst, bool kc, uint32_t extra)
+{
+   return chain_lop_into(c, n, w1, op0, a, b, cc, konst, kc, extra, 0, -1);
 }
 
 static int
@@ -1410,9 +1465,12 @@ chain_const(struct ctx *c, const uint32_t bits[2])
    return key_add(c, &k);
 }
 
-/* exp2 and log2 evaluate a minimax polynomial after a seed instruction that
- * splits the argument; the coefficients and the wiring are fs-exp's and
- * fs-log's, so the sequence is the vendor's with our registers. */
+/* The special-function chains.  exp2 and log2 evaluate a minimax polynomial
+ * after a seed instruction that splits the argument; rcp and rsq refine a
+ * seed with two Newton steps.  The coefficients and the wiring are the
+ * vendor's (fs-exp, fs-log, fs-smoothstep, fs-sqrt), so each sequence is
+ * the vendor's with our registers.  Every result lands in the first scalar
+ * of a register that both lanes then read. */
 static bool
 emit_chain(struct ctx *c, int n, struct node *nd)
 {
@@ -1424,22 +1482,24 @@ emit_chain(struct ctx *c, int n, struct node *nd)
       { 0xbc188576, 0x3d553bd2 }, { 0xbe0cd266, 0x3e77ab67 },
       { 0xbeb1d173, 0x3ef51608 }, { 0xbf389e52, 0x3fb8aa10 },
    };
+   static const uint32_t rcp_k[2] = { 0x00000000, 0x40000000 };
+   static const uint32_t rsq_clamp[2] = { 0x7f800000, 0xff800000 };
+   static const uint32_t rsq_k[2] = { 0x00000000, 0x40400000 };
    struct lop probe;
-   int src, t0, t1, t2, t3, r;
+   int src, t0 = -1, t1 = -1, t2 = -1, t3 = -1, r;
    unsigned swz;
 
    lop_init(&probe, L_CHAIN, 0, n);
    operand(c, &probe, 0, nd, 0);
    if (probe.konst >= 0)
-      return fail(c, "constant transcendental");
+      return fail(c, "constant special function");
    src = probe.opval[0];
+   if (src < 0)
+      return fail(c, "special function of a texture read");
    swz = probe.opswz[0] == 3 ? 3 : 0;
-   if (src < 0) {
-      /* A texel register is not a value the chain can name. */
-      return fail(c, "transcendental of a texture read");
-   }
-   if (nd->kind == N_EXP2) {
-      t0 = chain_lop(c, n, 0x9e851d40, 0x1c, src, -1, -1, -1, false, swz);
+   switch (nd->kind) {
+   case N_EXP2:
+      t0 = chain_lop(c, n, 0x9e851d40, 0x1c, src, -1, -1, -1, false, swz << 4);
       t1 = chain_lop(c, n, 0x982082d0, 0x1c, t0, t0, -1,
                      chain_const(c, exp_k[0]), true, 0);
       t2 = chain_lop(c, n, 0xa2600cf0, 0x1e, t0, t1, t1,
@@ -1447,9 +1507,11 @@ emit_chain(struct ctx *c, int n, struct node *nd)
       t3 = chain_lop(c, n, 0xa2600cf0, 0x1e, t0, t2, t1,
                      chain_const(c, exp_k[2]), false, 0);
       r = chain_lop(c, n, 0xac2fc0c0, 0x1c, t0, t3, -1, -1, false, 0);
-   } else {
+      break;
+   case N_LOG2: {
       /* The log2 seed reads the first scalar only, so shuffle it there. */
-      int p = chain_lop(c, n, 0xa28ffc00, 0x1d, -1, -1, src, -1, false, swz);
+      int p = chain_lop(c, n, 0xa28ffc00, 0x1d, -1, -1, src, -1, false,
+                        swz << 4);
 
       t0 = chain_lop(c, n, 0x96852ec0, 0x1c, p, -1, -1, -1, false, 0);
       t1 = chain_lop(c, n, 0x944041e0, 0x1c, t0, t0, -1,
@@ -1463,6 +1525,49 @@ emit_chain(struct ctx *c, int n, struct node *nd)
       r = chain_lop(c, n, 0xac4fcf00, 0x1c, t0, t2, t0, -1, false, 0);
       if (p < 0)
          return false;
+      break;
+   }
+   case N_RCP:
+      t0 = chain_lop(c, n, 0xae2ff000, 0x1c, src, -1, -1, -1, false, swz << 8);
+      for (unsigned i = 0; i < 2; i++) {
+         /* The residual reads the argument again, so it needs the same
+          * scalar select the seed took. */
+         t1 = chain_lop_cls(c, n, 0x8c26ac10, 0x1c, src, t0, -1, -1, false,
+                            swz << 8, 5);
+         t0 = chain_lop(c, n, 0xae600300, 0x1c, t0, t1, t1,
+                        chain_const(c, rcp_k), false, 0);
+      }
+      t2 = t3 = t0;
+      r = t0;
+      break;
+   default: {
+      /* The rsq seed reads the first scalar only and clamps through a
+       * constant pair of the two infinities. */
+      int p = chain_lop(c, n, 0xa28ffc00, 0x1c, -1, -1, src, -1, false,
+                        swz << 4);
+
+      t0 = chain_lop_cls(c, n, 0x9e26b090, 0x1c, p, p, -1,
+                         chain_const(c, rsq_clamp), true, 0, 5);
+      /* The seed writes a pair whose second scalar the refinement needs
+       * again next time round, so each step carries it over first and
+       * writes only the first scalar itself. */
+      for (unsigned i = 0; i < 2; i++) {
+         int k = chain_const(c, rsq_k);
+
+         t1 = chain_lop(c, n, 0xac2fcd00, 0x1c, t0, t0, -1, -1, false, 0);
+         t2 = chain_lop(c, n, 0xa28fff30, 0x1e, -1, -1, t0, -1, false, 0);
+         t3 = chain_lop_into(c, n, 0xa2603f00, 0x1d, t0, t1, t1, k, false,
+                             0, 7, t2);
+         if (t1 < 0 || t2 < 0 || t3 < 0)
+            return false;
+         t0 = t2;
+      }
+      t2 = t3 = t0;
+      r = t0;
+      if (p < 0)
+         return false;
+      break;
+   }
    }
    if (t0 < 0 || t1 < 0 || t2 < 0 || t3 < 0 || r < 0)
       return false;
@@ -1477,7 +1582,8 @@ emit_node_lops(struct ctx *c, int n, bool output, bool direct_ba)
    /* The vendor starts with R,G when an operand register is replicated. */
    bool rg_first = nd->kind == N_MUL && replicated_register(c, nd);
 
-   if (nd->kind == N_EXP2 || nd->kind == N_LOG2) {
+   if (nd->kind == N_EXP2 || nd->kind == N_LOG2 ||
+       nd->kind == N_RCP || nd->kind == N_RSQ) {
       if (!emit_chain(c, n, nd))
          return false;
       for (unsigned lane = 0; output && lane < (direct_ba ? 2u : 1u); lane++) {
@@ -1661,8 +1767,10 @@ allocate(struct ctx *c)
          VALUES(c)[l->opval[i]].last = s;
          VALUES(c)[l->opval[i]].rg_read |= rg;
       }
-      if (l->dst >= 0)
+      if (l->dst >= 0 && !l->keep_dst)
          VALUES(c)[l->dst].def = s;
+      else if (l->dst >= 0)
+         VALUES(c)[l->dst].last = MAX2(VALUES(c)[l->dst].last, (int)s);
    }
    for (int s = n - 1; s >= 0; s--) {
       struct lop *l = &LOPS(c)[s];
@@ -1720,7 +1828,7 @@ allocate(struct ctx *c)
       for (unsigned s = 0; s < n; s++) {
          struct lop *l = &LOPS(c)[s];
 
-         if (l->dst >= 0 && VALUES(c)[l->dst].general) {
+         if (l->dst >= 0 && !l->keep_dst && VALUES(c)[l->dst].general) {
             /* 10..13 carry the scratch and interpolation roles, so the
              * general run continues at 14.  Blending reads the destination
              * from 18..1b and takes its interpolation spares from 1c, so it
@@ -1925,9 +2033,9 @@ encode_lops(struct ctx *c)
 
          if (l->konst >= 0 && l->kc)
             rc = e;
-         emit(c, w0_make(ra, rb, rc, d, 0, l->op0),
-              w1_make(l->w1 | l->kswz << 4,
-                      l->konst >= 0 && !l->kc ? e : 0, ra));
+         /* The base word already carries every operand select. */
+         emit(c, w0_make(ra, rb, rc, d, l->cls, l->op0),
+              w1_make(l->w1, l->konst >= 0 && !l->kc ? e : 0, ra));
          break;
       }
       case L_MOV_OUT:
