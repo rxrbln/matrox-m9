@@ -163,8 +163,9 @@ There is no `pow` instruction.  `sqrt` is `x * rsq(x)` with the captured zero
 guard, since `rsq(0)` is an infinity.
 
 Measured against the C library, each for all 76800 pixels:
-`exp2(-v*3)`, `log2(v*3+1)`, `pow(v*0.9+0.1, 2.5)`, `0.25/(v*0.75+0.25)`,
-`inversesqrt(v*3+1)`, `sqrt(v)` and `normalize(v-0.5)`.
+`exp2(-v*3)`, `log2(v*3+1)`, `pow(v*0.9+0.1, 2.5)`,
+`pow(floor(v*4)*0.25, 2.5)`, `0.25/(v*0.75+0.25)`, `inversesqrt(v*3+1)`,
+`sqrt(v)` and `normalize(v-0.5)`.
 
 ## 6. gl_FragCoord (MEASURED)
 
@@ -250,18 +251,21 @@ mechanisms, both layout:
    scheduler with a latency model, and reproducing `fs-log` and `fs-pow` byte
    for byte means reproducing it.  Nothing here was reverse engineered.
 
-**`fs-pow` is 66 slots against the vendor's 64, and carries a real gap.**
-The vendor guards `pow(0, y)`: slots 27, 57, 59 and 60 of its program are
-`op2 = 0x1b`, the register/constant select with class 5, which
-section 3 above records as captured but never used.  The backend emits no guard, so `pow(0, y)` goes through
-`exp2(y * log2(0))` with no protection against the infinity.  The `pow`
-fixture raises `v * 0.9 + 0.1` to 2.5 and so never reaches zero: **the zero
-base is untested**, and it is the one case where the backend's `pow` may be
-not merely differently shaped but wrong.
+**`fs-pow` is 66 slots against the vendor's 64, and its guard turns out not
+to be needed (MEASURED).**  The vendor guards `pow`: slots 27, 57, 59 and 60
+of its program are `op2 = 0x1b`, the register/constant select with class 5,
+which section 3 above records as captured but never used.  The backend emits
+no guard, so `pow(0, y)` goes through `exp2(y * log2(0))` with nothing
+protecting it from the infinity, and the `pow` fixture raises
+`v * 0.9 + 0.1` to 2.5, so it never reached zero.  The new `pow0` fixture
+closes that corner: a floor quantises the varying to 0, 0.25, 0.5 and 0.75,
+so a quarter of the image has a base of exactly zero, and the result matches
+`powf` for all 76800 pixels.  The unguarded chain returns the right answer
+for a zero base on this hardware; whatever corner the vendor's select covers,
+it is not this one.
 
 ## What is still open
 
-- A guard for `pow(0, y)`: the vendor's `op2 = 0x1b` select, section 8.
 - A two-constant add (`b081c10f`), and chain results written straight into
   the scalar of the pair they belong to, which together would take `fs-log`
   from 41 slots to the vendor's 33; and the vendor's chain scheduler, which

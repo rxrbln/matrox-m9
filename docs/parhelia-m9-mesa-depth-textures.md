@@ -192,5 +192,6 @@ ssh root@TARGET 'cd /root/parhelia-m9x-mesa/src &&
 ./m9-mesa-glsl depthtex ; ./m9-mesa-glsl shadow:203 ; ./m9-mesa-glsl depthchan
 ```
 
-The whole fixture list is 89 PASS, 0 FAIL: the 80 cases that passed before
-this work, plus `depthtex` and the eight `shadow:FUNC` cases.
+The whole fixture list is 90 PASS, 0 FAIL (MEASURED 2026-09-17): the 80 cases
+that passed before this work, plus `depthtex`, the eight `shadow:FUNC` cases
+and `pow0`.
