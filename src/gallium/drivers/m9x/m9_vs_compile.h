@@ -38,8 +38,14 @@ struct nir_shader;
  * compiles four, which is what the offline corpus covers. */
 #define M9_VS_HW_ATTRIBUTES  2u
 #define M9_VS_MAX_DECL       16u
-/* One output target beyond the position carries a varying; the register to
- * target rule for any other target set is undecoded. */
+/* Output pair (0x11 + 4j, 0x13 + 4j) goes to the target bound at index
+ * 0xb0 + 2j and register 0x21 to 0xb8, with index 0xef bits 19/21/23
+ * enabling targets 1/2/3 and bit 15 the clip code (CAPTURED, 310 of 310
+ * preprocessing passes: docs/parhelia-m9-vertex-output-target-re.md).  The
+ * appended tail takes three of the four targets -- 0 the varying, 1 the clip
+ * position, 2 the viewport position -- and uses r1c/r1d as temporaries, so
+ * target 3 is unreachable behind it and the one varying stands until
+ * m9_draw.c emits the second preprocessing draw that note specifies. */
 #define M9_VS_MAX_VARYINGS   1u
 /* Constant pairs 9..21 of the span belong to the appended tail, which names
  * them by absolute index; user pairs are 0..8 and 22 upward. */
@@ -50,8 +56,11 @@ struct nir_shader;
 /* Offset of a constant scalar the driver resolves to 0.0. */
 #define M9_VS_UNIFORM_ZERO    0xffffffffu
 
-/* The tail reads the clip position from r00/r01 and the varying from r02;
- * r13 is an output register the head writes itself, as the vendor does. */
+/* The tail reads the clip position from r00/r01 and the varying from r02.
+ * r00, r01 and r02 are ordinary temporaries -- no bound target ever receives
+ * them; the tail's own "r11 = mov r02" is what carries r02 to target 0.
+ * r13 is target 0's high half, which the head writes itself because the tail
+ * does not. */
 #define REG_POS_XY 0x00u
 #define REG_POS_ZW 0x01u
 #define REG_VAR_XY 0x02u
