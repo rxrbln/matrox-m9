@@ -73,7 +73,7 @@ Three fetches of one image at three uniform offsets: three declarations, three
 varyings, one image bound three times.  Feasible once the unit count is raised
 and the affine fold is in.
 
-## The cases that cannot be made to work
+## The cases that need more than one pass
 
 A convolution samples one image at many offsets, and every sample costs a
 unit, because a unit is what carries a coordinate.  There is no dependent
@@ -81,17 +81,27 @@ read to fall back on.
 
 | scene | fetches of one image | verdict |
 |---|---|---|
-| effect2d, 3x3 kernel | 9 | out of reach |
-| effect2d, 5x5 kernel | 25 | out of reach |
-| desktop, blur radius 5 separable | 11 per pass | out of reach |
-| terrain | 6 distinct samplers, plus computed coordinates | out of reach |
-| jellyfish | 2 fetches, but 5 interpolated streams | out of reach |
-| bump-height | 3 fetches, but 6 interpolated streams | out of reach |
+| effect2d, 3x3 kernel | 9 | three passes |
+| effect2d, 5x5 kernel | 25 | nine passes |
+| desktop, blur radius 5 separable | 11 per pass | four passes each |
+| terrain | 6 distinct samplers, plus computed coordinates | two passes |
+| jellyfish | 2 fetches, but 5 interpolated streams | within reach |
+| bump-height | 3 fetches of one image at uniform offsets | compiles |
 
-These are not backend limitations to be worked around; they are what the
-raster engine is.  The desktop blur scene still runs and is still worth
-optimising — it draws its windows, and only the blur passes are refused — but
-its windows will not be blurred on this hardware.
+**Corrected September 17, 2026.**  The counts are right, the verdicts were
+not.  The vendor renders such a shader in several framebuffer passes, to a
+scratch surface bound back through index `78`, one pass per three further
+application textures (`parhelia-m9-openbits-gl-capture.md` section 2,
+CAPTURED up to sixteen samplers).  These scenes are therefore out of reach of
+a *single* pass, and what they need is multi-pass scheduling in the driver,
+which is not implemented.  What is implemented is sharing -- fetches that
+agree in sampler and coordinate take one unit -- and four independent fetches
+in one pass, which is what `bump-height` needs
+(`parhelia-m9-mesa-depth-textures.md` section 1).
+
+The desktop blur scene still runs and is still worth optimising — it draws
+its windows, and only the blur passes are refused — but its windows will not
+be blurred until that schedule is in.
 
 ## Implementation sketch
 
@@ -107,6 +117,9 @@ its windows will not be blurred on this hardware.
 4. Raise `M9_FS_MAX_TEXTURES` to the number of units the declaration form
    supports, which needs the third and any further declaration words
    confirmed against `glamor/xv-planar-3` and the captures.
+
+Steps 1 to 4 are done: `M9_FS_MAX_TEXTURES` is four, the limit one pass has,
+and the fixture is `m9-mesa-glsl texaff`.
 
 A fixture should go in first: sample one image twice, once at a varying and
 once at that varying times a uniform plus a uniform offset, against a CPU
