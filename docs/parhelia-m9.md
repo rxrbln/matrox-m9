@@ -55,8 +55,12 @@ controller-3 clock select and its global vid-reset.**  Any code shared with the 
 parts must be guarded; see `PARHELIA_IS_M9()` / `PARHELIA_IS_CLASSIC()` in
 `parhelia_reg.h`.
 
-Controllers 2 and 3 are **not** independent heads: they are secondary planes
-composited into head 0 / head 1, borrowing those timing blocks.  `[M9WIN]`
+~~Controllers 2 and 3 are not independent heads: they are secondary planes
+composited into head 0 / head 1, borrowing those timing blocks.~~  `[M9WIN]`
+**Refuted on hardware (2026-09-17):** with four displays attached the vendor
+driver gives each of the four controllers its own timing block, its own
+synthesiser, its own link and its own advancing line counter.  See
+`docs/parhelia-m9148-fourhead-outputs.md`.  `[HW]`
 
 ## Display controller
 
@@ -177,10 +181,16 @@ VBIOS trains it at POST; changing the DC timing without re-initialising and
 re-training it drops the link, and **nothing writable in the GPU register file can
 restore it**.  `[M9WIN, HW]`
 
-* I²C slave addresses 0x72 / 0x76 (8-bit write form), bus mask 0x02/0x08/0x20/0x80
-  selecting connector 1..4.  Buses are `0x1c48` / `0x1c4c`.
-* **An HMC microcontroller on the board arbitrates the bus.**  Take the mutex first:
-  write `0x318` bit28 (DDC) or bit29 (MISCIO), poll `0x3b0` bit0/bit1 for the grant.
+* I²C slave addresses 0x72 / 0x76 (8-bit write form) in the saved binaries; **the
+  M9148-E1024LAF answers at 0x10 / 0x12 / 0x14 instead** `[HW]`.  Each connector has
+  its own bit-banged bus on `0x1c48`: clock bit `2n`, data bit `2n+1`, output enable
+  `+16`.  `0x1c4c` is MISCIO — the four transmitter reset lines plus the board
+  identification EEPROM, not a DDC bus.  `docs/parhelia-m9148-fourhead-outputs.md`.
+* **An HMC microcontroller on the board arbitrates the bus.**  Take the mutex first
+  by **clearing** (active low) `0x318` bit29 for the DDC register `0x1c48` or bit28
+  for MISCIO `0x1c4c`, and poll `0x3b0` bit1 / bit0 respectively for the grant.
+  (The earlier "bit28 DDC / bit29 MISCIO" reading here was swapped; corrected from
+  the vendor trace, `docs/parhelia-m9148-fourhead-outputs.md`.)  `[HW]`
   Touching `0x1c4c` without it can hang the machine `[HW]` — it did, twice.
 * Transmitter reset over GPIO on `0x1c4c` (data bits[7:0], output-enable bits[17:10]),
   low 10 ms then high 10 ms, pin from PInS GPIO ids `0x1c+head` / `0x20+head`.

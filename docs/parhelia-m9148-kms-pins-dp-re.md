@@ -356,3 +356,29 @@ cursor path and can lead to a null map in Xorg.  KMS should accept and map the
 small dumb BO while leaving the M9 hardware cursor plane disabled.  Hardware
 enable requires the five live gates listed in `parhelia-m9-cursor-gamma-re.md`;
 the saved binaries cannot resolve the silicon-layout contradiction alone.
+
+## Live validation on an M9148-E1024LAF (2026-09-17)
+
+Measured on the board, with four displays attached; see
+`docs/parhelia-m9148-fourhead-outputs.md` and
+`captures/m9x-vendor-fourhead-20260917/`.
+
+* The PInS `+0x50`/`+0x54` map and the `0x1c48` `BIT(n)` / `BIT(n+16)` encoding
+  are confirmed: this board reads `09 0a 0b 0c 0d 0e 0f 10`, giving four buses
+  at bit pairs `(0,1) (2,3) (4,5) (6,7)`, the **even** bit being the clock.
+  Connector `n` uses bus `n`, proven by EDID content for connectors 2 and 3.
+* The MISCIO map `+0x6c`/`+0x70` reads `01 02 00 20 21 17 22 23`.  The
+  `0x20 + connector` reset fallback is what this board uses (IDs `0x20..0x23`
+  at data bits 3, 4, 6, 7); no `0x1c + connector` function exists here.  The
+  `01`/`02` pair at bits 0 and 1 is a further I2C bus carrying the board
+  identification EEPROM at `0xa0`, not a connector DDC bus.
+* The HMC ownership table above is confirmed by the vendor trace:
+  `0x1c48` = request `BIT(29)` / grant `BIT(1)`, `0x1c4c` = `BIT(28)` / `BIT(0)`,
+  active low.
+* The transmitter register fingerprint and the common/main/page-3 initialisation
+  tables are confirmed verbatim, but the **slave addresses on this board are
+  `0x10` (main), `0x12` and `0x14`**, not `0x72`/`0x76`.  A driver must not
+  hard-code the `0x72`/`0x76` pair.
+* Connector construction from PInS `+0x5c..+0x68` is `42001100 42001200
+  42001300 42001400`: route byte `0x11 + n`, i.e. connector `n` uses link `n`,
+  and the link's source field encodes controller `n` as `0x00/0x08/0x01/0x09`.
