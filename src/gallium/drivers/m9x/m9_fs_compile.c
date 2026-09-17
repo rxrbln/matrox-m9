@@ -465,12 +465,13 @@ alu_src_node(struct ctx *c, nir_alu_instr *alu, unsigned i, uint8_t *lane,
       same &= s[k].def == s[0].def && !nir_scalar_is_const(s[k]);
       identity &= s[k].comp == k;
    }
-   if (same && !identity && s[0].def->num_components == 4) {
+   if (same && !identity && s[0].def->num_components == 4 &&
+       s[0].comp / 2 == s[1].comp / 2 && s[2].comp / 2 == s[3].comp / 2) {
+      /* A swizzle that keeps each result lane inside one source lane is an
+       * operand field; one that crosses them goes through the gather. */
       for (unsigned l = 0; l < 2; l++) {
          unsigned c0 = s[2 * l].comp, c1 = s[2 * l + 1].comp;
 
-         if (c0 / 2 != c1 / 2)
-            return fail(c, "swizzle crosses register lanes"), -1;
          lane[l] = c0 / 2;
          swz[l] = (c0 & 1) << 1 | (c1 & 1);
       }
@@ -2371,9 +2372,12 @@ encode_lops(struct ctx *c)
          break;
       }
       case L_CHAIN: {
-         unsigned ra = l->opval[0] >= 0 ? opreg(c, l, 0) : NONE;
-         unsigned rb = l->opval[1] >= 0 ? opreg(c, l, 1) : NONE;
-         unsigned rc = l->opval[2] >= 0 ? opreg(c, l, 2) : NONE;
+         unsigned ra = l->opval[0] >= 0 || l->opreg[0] >= 0 ?
+                       opreg(c, l, 0) : NONE;
+         unsigned rb = l->opval[1] >= 0 || l->opreg[1] >= 0 ?
+                       opreg(c, l, 1) : NONE;
+         unsigned rc = l->opval[2] >= 0 || l->opreg[2] >= 0 ?
+                       opreg(c, l, 2) : NONE;
 
          if (l->kc2 >= 0)
             rc = const_ref(c, l->kc2);
@@ -3531,6 +3535,15 @@ is_transcendental(const nir_instr *instr, const void *data)
    }
 }
 
+/* Everything but the chains vectorises again afterwards, so the arithmetic
+ * around them goes back to whole vectors instead of being reassembled from
+ * scalars by the gather. */
+static uint8_t
+vectorize_around_chains(const nir_instr *instr, const void *data)
+{
+   return is_transcendental(instr, data) ? 1 : 4;
+}
+
 bool
 m9_fs_compile(struct nir_shader *nir, const struct m9_fs_blend *blend,
               struct m9_fs_program *program, const char **reason)
@@ -3558,6 +3571,7 @@ m9_fs_compile(struct nir_shader *nir, const struct m9_fs_blend *blend,
                nir_var_shader_in | nir_var_shader_out, false);
       NIR_PASS(_, nir, nir_opt_vectorize, NULL, NULL);
       NIR_PASS(_, nir, nir_lower_alu_to_scalar, is_transcendental, NULL);
+      NIR_PASS(_, nir, nir_opt_vectorize, vectorize_around_chains, NULL);
       NIR_PASS(_, nir, nir_opt_copy_prop);
       NIR_PASS(_, nir, nir_opt_dce);
       nir_foreach_function_impl(impl, nir) {
@@ -3617,8 +3631,12 @@ m9_fs_raster_88(const struct m9_fs_program *program)
       low = 0xc;
    }
    if (debug_get_bool_option("M9X_DEBUG_FS", false))
-      fprintf(stderr, "m9x fs: r88 %08x varyings %u textures %u fragcoord %d\n",
-              r88 | low, program->varying_count, program->texture_count,
+      fprintf(stderr, "m9x fs: r88 %08x slots %u consts %u varyings %u "
+              "textures %u fragcoord %d\n", r88 | low,
+              m9_fs_slot_count(program),
+              (unsigned)util_dynarray_num_elements(&program->consts,
+                                                   struct m9_fs_const),
+              program->varying_count, program->texture_count,
               program->fragcoord);
    return r88 | low;
 }
