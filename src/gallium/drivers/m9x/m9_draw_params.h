@@ -95,8 +95,11 @@ uint32_t m9_record_desc(enum m9_record_form form, unsigned stride_dwords,
 uint32_t m9_record_route(bool coordinate, unsigned c1, unsigned c2,
                          unsigned c3);
 /* An upper bound on the record backing a target of this size needs.  The
- * engine's per-fragment addressing inside the record is not decoded, so this
- * covers a linear and a 64-aligned tiled walk alike. */
+ * descriptor carries a stride and a start offset and no pitch or extent at
+ * all, so the record is a flat array the engine indexes by fragment, as the
+ * preprocessing streams are indexed by vertex.  Its granularity -- one
+ * record per fragment, per quad or per sample -- is not decoded, so this
+ * rounds the target out to whole 64-pixel blocks. */
 uint64_t m9_record_bytes(uint32_t width, uint32_t height,
                          unsigned stride_dwords);
 
