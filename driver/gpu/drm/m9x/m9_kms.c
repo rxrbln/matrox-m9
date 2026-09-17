@@ -36,8 +36,19 @@
  * kind 21, the 32-aligned span, and the line count. */
 #define M9_SCANOUT_FORMAT(span)	(0xcc210000u | (span))
 #define M9_SCANOUT_EXTENT(lines)	(0x00010000u | (lines))
+/* Per-head mode limits: the display controller draws at most this raster. */
 #define M9_SCANOUT_MAX_WIDTH	2048u
 #define M9_SCANOUT_MAX_HEIGHT	2048u
+/*
+ * The shared framebuffer an extended desktop spans is a different bound: every
+ * head scans out its own window of it, so it may be as large as all four heads
+ * side by side or stacked.  The scanout pitch field is 14 bits of pixels
+ * (M9_DC_PITCH_MASK), which this stays well inside.
+ */
+#define M9_FB_MAX_WIDTH		(M9_SCANOUT_MAX_WIDTH * M9_MAX_HEADS)
+#define M9_FB_MAX_HEIGHT	(M9_SCANOUT_MAX_HEIGHT * M9_MAX_HEADS)
+/* The scanout address field quantises the start to 128 bytes. */
+#define M9_SCANOUT_START_QUANTUM	128u
 
 static bool m9_kms;
 module_param(m9_kms, bool, 0400);
@@ -87,6 +98,32 @@ MODULE_PARM_DESC(vblank_mask,
 static u32 m9_scanout_pitch(u32 width)
 {
 	return ALIGN(width, 32) * 4;
+}
+
+/*
+ * A tiled surface is stored in bands of M9_TILE_BAND rows, so stepping one
+ * pixel column advances by that column's whole band rather than by four bytes,
+ * and the order inside a band is swizzled.  MEASURED with every pixel of a
+ * 2048x1024 surface located in video memory (xf86-video-parhelia
+ * tools/m9-tile-window.c, docs/m9-tiled-scanout-window.md): only an origin on
+ * a 256-pixel, 64-row boundary is a pure translation of the stored order, and
+ * then the window's first pixel lies exactly here.  Anything else is published
+ * through the copy path instead.
+ */
+#define M9_TILE_BAND		32u
+#define M9_TILE_WINDOW_X	256u
+#define M9_TILE_WINDOW_Y	64u
+
+static bool m9_tiled_window_addressable(u32 window_x, u32 window_y)
+{
+	return IS_ALIGNED(window_x, M9_TILE_WINDOW_X) &&
+	       IS_ALIGNED(window_y, M9_TILE_WINDOW_Y);
+}
+
+static u32 m9_tiled_window_offset(const struct drm_framebuffer *fb,
+				  u32 window_x, u32 window_y)
+{
+	return window_y * fb->pitches[0] + window_x * 4 * M9_TILE_BAND;
 }
 
 static bool m9_kms_lut;
@@ -186,6 +223,21 @@ static int m9_kms_selftest(void)
 		return -EINVAL;
 	if (M9_WARM_PITCH * M9_WARM_HEIGHT != 0x00300000u ||
 	    M9_WARM_RENDER_BYTES != 0x00301000u)
+		return -EINVAL;
+	/* A desktop as wide as every head must still fit the scanout pitch
+	 * field, and a horizontal window offset must be whole 128-byte steps. */
+	if (m9_scanout_pitch(M9_FB_MAX_WIDTH) / 4 > M9_DC_PITCH_MASK ||
+	    !IS_ALIGNED(m9_scanout_pitch(M9_FB_MAX_WIDTH),
+			M9_SCANOUT_START_QUANTUM) ||
+	    !IS_ALIGNED(m9_scanout_pitch(1920), M9_SCANOUT_START_QUANTUM))
+		return -EINVAL;
+	/* A tile-aligned window is also a legal start address, and a window the
+	 * tiling cannot address must take the copy path. */
+	if (!IS_ALIGNED(M9_TILE_WINDOW_X * 4 * M9_TILE_BAND,
+			M9_SCANOUT_START_QUANTUM) ||
+	    !m9_tiled_window_addressable(M9_TILE_WINDOW_X, M9_TILE_WINDOW_Y) ||
+	    m9_tiled_window_addressable(32, 0) ||
+	    m9_tiled_window_addressable(0, M9_TILE_BAND))
 		return -EINVAL;
 	return 0;
 }
@@ -337,15 +389,64 @@ m9_pipe_mode_valid(struct drm_simple_display_pipe *pipe,
 	return MODE_OK;
 }
 
+/*
+ * The plane shows a window of its framebuffer: the destination still covers
+ * the whole raster, but the source may start anywhere inside a larger shared
+ * framebuffer, which is what lets several heads extend one desktop.  The
+ * common helper insists on a zero source origin, so this head's own rule
+ * replaces it.
+ */
+static int m9_plane_window(const struct drm_plane_state *plane_state,
+			   const struct drm_crtc_state *crtc_state,
+			   u32 *window_x, u32 *window_y)
+{
+	const struct drm_framebuffer *fb = plane_state->fb;
+	u32 x, y;
+
+	*window_x = 0;
+	*window_y = 0;
+	if (!fb)
+		return 0;
+	if (!plane_state->crtc || !crtc_state->enable)
+		return -EINVAL;
+	if (plane_state->crtc_x || plane_state->crtc_y ||
+	    plane_state->crtc_w != crtc_state->mode.hdisplay ||
+	    plane_state->crtc_h != crtc_state->mode.vdisplay ||
+	    plane_state->src_w != plane_state->crtc_w << 16 ||
+	    plane_state->src_h != plane_state->crtc_h << 16 ||
+	    ((plane_state->src_x | plane_state->src_y) & 0xffff))
+		return -EINVAL;
+	x = plane_state->src_x >> 16;
+	y = plane_state->src_y >> 16;
+	if (x + plane_state->crtc_w > fb->width ||
+	    y + plane_state->crtc_h > fb->height)
+		return -EINVAL;
+	*window_x = x;
+	*window_y = y;
+	return 0;
+}
+
+/* The window origin of the plane state a commit has already checked. */
+static u32 m9_window_x(const struct drm_plane_state *plane_state)
+{
+	return plane_state ? plane_state->src_x >> 16 : 0;
+}
+
+static u32 m9_window_y(const struct drm_plane_state *plane_state)
+{
+	return plane_state ? plane_state->src_y >> 16 : 0;
+}
+
 static int m9_pipe_check(struct drm_simple_display_pipe *pipe,
 			 struct drm_plane_state *plane_state,
 			 struct drm_crtc_state *crtc_state)
 {
 	struct drm_framebuffer *fb = plane_state->fb;
 	struct drm_gem_object *gem;
+	u32 window_x, window_y;
 	int ret;
 
-	ret = matrox_kms_plane_geometry_check(plane_state, crtc_state);
+	ret = m9_plane_window(plane_state, crtc_state, &window_x, &window_y);
 	if (ret)
 		return ret;
 	if (crtc_state->enable && !m9_kms_modeset &&
@@ -367,11 +468,16 @@ static int m9_pipe_check(struct drm_simple_display_pipe *pipe,
 	if (!m9x_kms_scanout_enabled() ||
 	    fb->format->format != DRM_FORMAT_XRGB8888 || fb->offsets[0] ||
 	    fb->pitches[0] != m9_scanout_pitch(fb->width) ||
-	    fb->width != crtc_state->mode.hdisplay ||
-	    fb->height != crtc_state->mode.vdisplay)
+	    fb->pitches[0] / 4 > M9_DC_PITCH_MASK)
 		return -EINVAL;
 	gem = drm_gem_fb_get_obj(fb, 0);
 	if (!m9x_gem_is_vram(gem))
+		return -EINVAL;
+	/* A tiled framebuffer is described by the surface contract, which spans
+	 * at most M9_SCANOUT_MAX_WIDTH; only a linear one carries a desktop. */
+	if (m9x_gem_vram_tiled(gem) &&
+	    (fb->width > M9_SCANOUT_MAX_WIDTH ||
+	     fb->height > M9_SCANOUT_MAX_HEIGHT))
 		return -EINVAL;
 	return 0;
 }
@@ -389,33 +495,38 @@ static size_t m9_scanout_frame_bytes(const struct m9_head *head)
 	return (size_t)head->scanout_pitch * head->scanout_height;
 }
 
-static int m9_scanout_publish(struct m9_head *head,
-			      struct drm_framebuffer *fb)
+static int m9_scanout_publish(struct m9_head *head, struct drm_framebuffer *fb,
+			      u32 window_x, u32 window_y)
 {
-	size_t frame;
-
 	struct drm_gem_object *gem = drm_gem_fb_get_obj(fb, 0);
 	struct drm_gem_vram_object *src = drm_gem_vram_of_gem(gem);
 	bool tiled = m9x_gem_vram_tiled(gem);
+	struct m9x_device *mdev = head->mdev;
+	u32 span = fb->pitches[0] / 4;
+	size_t row_bytes = (size_t)head->scanout_width * 4;
+	u64 source_bytes = (u64)fb->pitches[0] * fb->height;
 	struct iosys_map map;
 	s64 offset, src_offset = 0;
+	size_t frame;
+	u32 row;
 	int ret;
-
-	struct m9x_device *mdev = head->mdev;
 
 	frame = m9_scanout_frame_bytes(head);
 	if (!head->scanout || !mdev->bar0_window || !head->scanout_bounce ||
 	    !frame || frame > head->scanout_bytes ||
 	    head->scanout->bo.base.size < frame ||
-	    gem->size < frame ||
-	    fb->width != head->scanout_width ||
-	    fb->height != head->scanout_height ||
-	    fb->pitches[0] != head->scanout_pitch)
+	    fb->pitches[0] != m9_scanout_pitch(fb->width) ||
+	    window_x + head->scanout_width > fb->width ||
+	    window_y + head->scanout_height > fb->height ||
+	    gem->size < source_bytes)
 		return -ENODEV;
 	offset = drm_gem_vram_offset(head->scanout);
 	if (offset < 0)
 		return offset;
 	if (tiled) {
+		/* The aperture maps one whole surface de-tiled. */
+		if (source_bytes > M9_ADDRESS_SURFACE_BYTES)
+			return -ENODEV;
 		src_offset = drm_gem_vram_offset(src);
 		if (src_offset < 0)
 			return src_offset;
@@ -425,8 +536,11 @@ static int m9_scanout_publish(struct m9_head *head,
 			return ret;
 		ret = drm_gem_vram_vmap(src, &map);
 		if (!ret) {
-			iosys_map_memcpy_from(head->scanout_bounce, &map, 0,
-					      frame);
+			for (row = 0; row < head->scanout_height; row++)
+				iosys_map_memcpy_from(head->scanout_bounce +
+					(size_t)row * head->scanout_pitch, &map,
+					(size_t)(window_y + row) * fb->pitches[0] +
+					(size_t)window_x * 4, row_bytes);
 			drm_gem_vram_vunmap(src, &map);
 		}
 		ttm_bo_unreserve(&src->bo);
@@ -435,12 +549,20 @@ static int m9_scanout_publish(struct m9_head *head,
 	}
 	mutex_lock(&mdev->transport.lock);
 	m9x_transport_drain_locked(mdev);
-	/* GPU-rendered frames are tiled: de-tile them through the window. */
-	if (tiled)
-		m9x_surface_read_locked(mdev, lower_32_bits(src_offset),
-					M9_SCANOUT_FORMAT(head->scanout_pitch / 4),
-					M9_SCANOUT_EXTENT(head->scanout_height),
-					head->scanout_bounce, frame);
+	/* GPU-rendered frames are tiled: de-tile this head's window out of the
+	 * shared surface one row at a time. */
+	if (tiled) {
+		m9x_address_surface_window(mdev, lower_32_bits(src_offset),
+					   M9_SCANOUT_FORMAT(span),
+					   M9_SCANOUT_EXTENT(fb->height));
+		for (row = 0; row < head->scanout_height; row++)
+			memcpy_fromio(head->scanout_bounce +
+				      (size_t)row * head->scanout_pitch,
+				      (const u8 __iomem *)mdev->bar0_window +
+				      ((size_t)(window_y + row) * span +
+				       window_x) * 4, row_bytes);
+		m9x_address_surface_release(mdev);
+	}
 	m9x_address_surface_window(mdev, lower_32_bits(offset),
 				   M9_SCANOUT_FORMAT(head->scanout_pitch / 4),
 				   M9_SCANOUT_EXTENT(head->scanout_height));
@@ -462,17 +584,30 @@ static int m9_scanout_address(struct m9_head *head, u32 *address)
 				      address);
 }
 
-/* A tiled framebuffer of the scanout geometry can be fetched where it is,
- * which skips the read and write of the whole surface per frame. */
+/* A tiled framebuffer can be fetched where it is, which skips the read and
+ * write of the whole surface per frame. */
 static int m9_scanout_direct_address(struct m9x_device *mdev,
-				     struct drm_framebuffer *fb, u32 *address)
+				     struct drm_framebuffer *fb, u32 window_x,
+				     u32 window_y, u32 *address)
 {
 	struct drm_gem_object *gem = fb ? drm_gem_fb_get_obj(fb, 0) : NULL;
 	u64 limit = min_t(u64, mdev->vram_size - 1, M9_DC_START_MASK);
+	u32 base, offset;
+	int ret;
 
 	if (!m9_kms_direct_scanout || !gem || !m9x_gem_vram_tiled(gem))
 		return -ENODEV;
-	return matrox_kms_vram_offset(gem, 1024, limit, address);
+	if (!m9_tiled_window_addressable(window_x, window_y))
+		return -ENODEV;
+	ret = matrox_kms_vram_offset(gem, 1024, limit, &base);
+	if (ret)
+		return ret;
+	offset = m9_tiled_window_offset(fb, window_x, window_y);
+	if (!IS_ALIGNED(offset, M9_SCANOUT_START_QUANTUM) ||
+	    offset > limit - base)
+		return -ERANGE;
+	*address = base + offset;
+	return 0;
 }
 
 /* Format and layout live in the high bits of the pitch word.  A head the
@@ -487,14 +622,17 @@ static u32 m9_dc_pitch(const struct m9_head *head, u32 pitch_pixels)
 }
 
 static void m9_program_scanout(struct drm_simple_display_pipe *pipe,
-			       struct drm_framebuffer *fb)
+			       struct drm_plane_state *plane_state)
 {
 	struct m9_head *head = m9_head_of_pipe(pipe);
+	struct drm_framebuffer *fb = plane_state ? plane_state->fb : NULL;
 	struct m9x_device *mdev = head->mdev;
+	u32 window_x = m9_window_x(plane_state);
+	u32 window_y = m9_window_y(plane_state);
 	u32 address, pitch;
 	int ret;
 
-	if (!m9_scanout_direct_address(mdev, fb, &address)) {
+	if (!m9_scanout_direct_address(mdev, fb, window_x, window_y, &address)) {
 		pitch = m9_dc_pitch(head, fb->pitches[0] / 4);
 		wmb();
 		m9x_write(head->mdev, head->dc + M9_DC_START,
@@ -507,16 +645,18 @@ static void m9_program_scanout(struct drm_simple_display_pipe *pipe,
 	/* A failed publish leaves the previous frame on screen; the flip still
 	 * retires on the vertical blank, so silence here reads as a working
 	 * flip that never changes the picture. */
-	ret = m9_scanout_publish(head, fb);
+	ret = m9_scanout_publish(head, fb, window_x, window_y);
 	if (!ret && m9_scanout_address(head, &address))
 		ret = -ENXIO;
 	if (ret) {
 		drm_err_ratelimited(&mdev->drm,
-			"head %u: scanout publish failed (%d); the previous frame stays on screen\n",
-			head->index, ret);
+			"head %u: scanout publish of %ux%u+%u+%u failed (%d); the previous frame stays on screen\n",
+			head->index, head->scanout_width, head->scanout_height,
+			window_x, window_y, ret);
 		return;
 	}
-	pitch = m9_dc_pitch(head, fb->pitches[0] / 4);
+	/* The head's own surface holds just this window, at its own span. */
+	pitch = m9_dc_pitch(head, head->scanout_pitch / 4);
 	/* Publish CPU writes before the display controller fetches this BO. */
 	wmb();
 	m9x_write(head->mdev, head->dc + M9_DC_START, address & M9_DC_START_MASK);
@@ -913,7 +1053,7 @@ static void m9_pipe_enable(struct drm_simple_display_pipe *pipe,
 		drm_mode_copy(&head->warm_mode, &crtc_state->mode);
 		head->warm_valid = true;
 	}
-	m9_program_scanout(pipe, plane_state->fb);
+	m9_program_scanout(pipe, plane_state);
 	m9_pipe_load_gamma(pipe, crtc_state->gamma_lut);
 	/* Re-enable only the proven warm controller bit after the pinned new BO
 	 * is selected.  Preserve the current LUT choice and every opaque bit.
@@ -959,8 +1099,8 @@ static void m9_pipe_disable(struct drm_simple_display_pipe *pipe)
 static void m9_pipe_update_scanout(struct drm_simple_display_pipe *pipe,
 				   struct drm_plane_state *old_state)
 {
-	/* Every update republishes the linear image into the tiled surface. */
-	m9_program_scanout(pipe, pipe->plane.state->fb);
+	/* Every update republishes this head's window into its surface. */
+	m9_program_scanout(pipe, pipe->plane.state);
 }
 
 static int m9_fb_dirty(struct drm_framebuffer *fb, struct drm_file *file,
@@ -981,8 +1121,12 @@ static int m9_fb_dirty(struct drm_framebuffer *fb, struct drm_file *file,
 		    head->pipe.plane.state->fb == fb &&
 		    head->pipe.crtc.state && head->pipe.crtc.state->active &&
 		    !(m9_kms_direct_scanout &&
-		      m9x_gem_vram_tiled(drm_gem_fb_get_obj(fb, 0))))
-			ret = m9_scanout_publish(head, fb);
+		      m9x_gem_vram_tiled(drm_gem_fb_get_obj(fb, 0)) &&
+		      m9_tiled_window_addressable(m9_window_x(head->pipe.plane.state),
+						  m9_window_y(head->pipe.plane.state))))
+			ret = m9_scanout_publish(head, fb,
+						 m9_window_x(head->pipe.plane.state),
+						 m9_window_y(head->pipe.plane.state));
 		drm_modeset_unlock(&head->pipe.plane.mutex);
 	}
 	return ret;
@@ -1124,9 +1268,11 @@ static int m9_dumb_create(struct drm_file *file, struct drm_device *drm,
 	/* Geometry the surface constructor cannot describe still gets a plain
 	 * object: nothing reaches DC0 without passing the framebuffer and plane
 	 * checks, which insist on the constructor's own span. */
+	/* A desktop-sized buffer is beyond the surface contract, and is never
+	 * tiled; it still takes the 32-pixel span every window offset and
+	 * surface descriptor is expressed in. */
 	if (!m9x_surface_layout_bytes(args->width, args->height, 4, &bytes))
-		return drm_gem_vram_fill_create_dumb(file, drm, 1,
-						     M9_WARM_PITCH, args);
+		return drm_gem_vram_fill_create_dumb(file, drm, 1, 128, args);
 
 	/*
 	 * The M9148 category-2 constructor adds eight end-pad elements when
@@ -1378,12 +1524,12 @@ int m9x_modeset_init(struct m9x_device *mdev)
 	if (ret)
 		return ret;
 	drm->mode_config.funcs = &m9_mode_config_funcs;
-	/* The scanout size is pinned by m9_fb_create; the framebuffer bounds
-	 * must still admit the small cursor image. */
+	/* Each head scans out a window of the framebuffer, so the framebuffer
+	 * may span every head; the per-head raster limit stays in mode_valid. */
 	drm->mode_config.min_width = 1;
-	drm->mode_config.max_width = M9_SCANOUT_MAX_WIDTH;
+	drm->mode_config.max_width = M9_FB_MAX_WIDTH;
 	drm->mode_config.min_height = 1;
-	drm->mode_config.max_height = M9_SCANOUT_MAX_HEIGHT;
+	drm->mode_config.max_height = M9_FB_MAX_HEIGHT;
 	drm->mode_config.prefer_shadow = 0;
 	drm->mode_config.cursor_width = M9_CURSOR_SIZE;
 	drm->mode_config.cursor_height = M9_CURSOR_SIZE;
