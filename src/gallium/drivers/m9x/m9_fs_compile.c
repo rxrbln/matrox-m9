@@ -403,9 +403,11 @@ build_intrinsic(struct ctx *c, nir_intrinsic_instr *intr)
    case nir_intrinsic_load_ubo_vec4:
       /* A narrower load still names the whole vec4 slot; the components
        * above it are simply never read. */
-      if (!nir_src_is_const(intr->src[0]) || nir_src_as_uint(intr->src[0]) ||
-          !nir_src_is_const(intr->src[1]) ||
-          nir_intrinsic_component(intr) + intr->def.num_components > 4 ||
+      if (!nir_src_is_const(intr->src[0]) || nir_src_as_uint(intr->src[0]))
+         return fail(c, "uniform block other than the first"), -1;
+      if (!nir_src_is_const(intr->src[1]))
+         return fail(c, "indirectly indexed uniform"), -1;
+      if (nir_intrinsic_component(intr) + intr->def.num_components > 4 ||
           intr->def.num_components < 1)
          return fail(c, "unsupported uniform access"), -1;
       n = node_new(c, N_UBO);
