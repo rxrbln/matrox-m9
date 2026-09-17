@@ -81,6 +81,9 @@ struct m9_vertex_decl {
 
 int m9_draw_params_init(struct m9_draw_params *params, uint32_t width,
                         uint32_t height, uint8_t color_format);
+/* Row-major 4x4; object coordinates become clip coordinates. */
+void m9_draw_params_matrix(struct m9_draw_params *params, const float m[16]);
+
 uint64_t m9_hz_bytes(uint32_t width, uint32_t height);
 int m9_vertex_decl_init(struct m9_vertex_decl *decl,
                         unsigned position_components,

@@ -56,12 +56,22 @@ m9_draw_params_init(struct m9_draw_params *params, uint32_t width,
    params->clip_min = 0;
    params->clip_max = width | height << 16;
 
-   /* glOrtho(0,W,0,H,-1,1) with a full viewport and depth range [0,1]; the
-    * remaining words of the captured prefix are size invariant. */
+   /* The vertex program transforms by a matrix in its constant span; the
+    * driver has always supplied glOrtho(0,W,0,H,-1,1) there, because the
+    * vertices reaching it are already in screen space.  The remaining
+    * words of the captured prefix are size invariant. */
    sys = params->system_prefix;
    memcpy(sys, m9_passthrough_system_320x240, sizeof(params->system_prefix));
-   m9_put_float(sys, 9, 2.0f / h);
-   m9_put_float(sys, 14, 2.0f / w);
+   {
+      const float ortho[16] = {
+         2.0f / w, 0.0f,     0.0f, -1.0f,
+         0.0f,     2.0f / h, 0.0f, -1.0f,
+         0.0f,     0.0f,    -1.0f,  0.0f,
+         0.0f,     0.0f,     0.0f,  1.0f,
+      };
+
+      m9_draw_params_matrix(params, ortho);
+   }
    m9_put_float(sys, 22, w / 2);
    m9_put_float(sys, 23, -h / 2);
    m9_put_float(sys, 24, 0.5f);
@@ -83,6 +93,23 @@ m9_draw_params_init(struct m9_draw_params *params, uint32_t width,
    m9_put_float(linked, 6, 0.5f);
    linked[7] = m9_passthrough_linked_320x240[7];
    return 0;
+}
+
+/* The four rows of the transform the vertex program applies, as pairs of
+ * its constant span.  Each row is split: its first two components and its
+ * last two live in different pairs, and the four DP4 slots of the captured
+ * program name them in the order below (MEASURED; see
+ * docs/parhelia-m9-native-vertex-isa.md).  Pair 3 is named by no slot. */
+void
+m9_draw_params_matrix(struct m9_draw_params *params, const float m[16])
+{
+   static const uint8_t dword[8] = { 14, 12, 8, 4, 20, 18, 16, 6 };
+   uint32_t *sys = params->system_prefix;
+
+   for (unsigned half = 0; half < 8; half++) {
+      m9_put_float(sys, dword[half], m[2 * half]);
+      m9_put_float(sys, dword[half] + 1, m[2 * half + 1]);
+   }
 }
 
 uint64_t
