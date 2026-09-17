@@ -412,5 +412,38 @@ slot the pass never declared.
 
 **Driver change still to make:** drive `0x88[27:24]` from the attribute count in
 `m9_draw.c`'s preprocessing block, then raise `M9_VS_HW_ATTRIBUTES` from 2.
-Four attributes is UNTESTED - the probe has no `attr4` variant - so raise it to
-3 on this evidence, or add the variant first.
+
+## The fourth attribute reads exactly too (MEASURED 2026-09-18)
+
+`tools/m9-user-vertex-probe.c` gained the `attr4-*` variants the note above
+asked for: four declared attributes, decoy values in the three below the one
+read, and the read register swept over all four.
+
+The captured stream holds only **eight** index-23 value slots in its
+preprocessing pass, and four attributes need nine words - two per attribute
+plus the terminator.  The first run of the variants therefore wrote no pixel
+at all, because the declaration was never terminated; that is a probe limit,
+not a hardware one.  `submit()` now grows the pass by one single-value
+index-23 packet per missing word and shifts the relocation sites behind it,
+which is also what a driver has to do for any declaration longer than the
+captured one.
+
+| variant | register read | interior correct | decoy |
+|---|---|---|---|
+| `attr4-r46` | attribute 1, the position | 0.0% | 0 |
+| `attr4-r4e` | attribute 2 | 0.0% | 100% |
+| `attr4-r56` | attribute 3 | 0.0% | 100% |
+| `attr4-r5e` | attribute 4 | **100.0%** | 0 |
+
+So `REG_ATTR0 + 8 * (a - 1)` holds through `a = 4`, `88[27:24] = 0xf`
+declares four, and each lower register holds exactly the decoy it was given.
+`M9_VS_HW_ATTRIBUTES` is 4.
+
+Through the driver, `tools/m9-mesa-vs.c` A/B on one board and one run:
+
+| `M9_VS_HW_ATTRIBUTES` | `attr4` | `attr4b` |
+|---|---|---|
+| 3 | native vertex draws 0, draw module 1 | native 0, draw module 1 |
+| 4 | **native vertex draws 1**, draw module 0 | **native 1**, draw module 0 |
+
+both exact in either path, and the whole 14-case native-vertex suite passes.
