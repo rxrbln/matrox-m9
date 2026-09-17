@@ -800,3 +800,55 @@ their training attempts fail for want of a receiver, which is correct
 behaviour, and **no second panel has confirmed a picture**.  The path is
 per-head and identical, so the test is one command once a panel is on another
 port.
+
+## A second connector drives a picture (CONFIRMED 2026-09-17)
+
+The user confirmed a correct image on DP-3 while DP-1 kept its own.  Two heads
+of four now reach a panel, where a freshly POSTed board reaches one.
+
+The run, MEASURED:
+
+```
+kernel detect   DP-3 connected  520x320 mm  24 modes
+m9-heads        DP-3 crtc 51 1920x1200@60
+head 2 link     0x1ca4 = 0x0040a801, format 0x1c3c = 0x30002114
+head 2 mode     1920x1200 60 154000 kHz
+head 2          DP link training failed (-110)
+head 2          sending 1920x1200 htotal 2080 vtotal 1235, pad gate 0xa5
+transmitter MSA 20 08 70 00 80 07 d3 04 20 00 b0 04 20 00 06 80
+                htotal 2080  hstart 112  hactive 1920  vtotal 1235
+                vstart 32  vactive 1200  hsync 32  vsync 6 negative
+```
+
+**The picture arrives although link training reported a timeout**, and that is
+not a contradiction.  This sink answers EDID but never answers AUX:
+
+| | DP-1 | DP-3 |
+|---|---|---|
+| EDID | 13 modes | 24 modes |
+| DPCD over AUX | `12 14 c4 01 01 00 01 80` | `-6`, no completion |
+| lane status `0x202` | `77 77 01 01` | unreachable |
+| mirrors `0x51`/`0x52` | `14`/`c4` | `00`/`00` |
+| training | up, 4 lanes at 1.62 Gbps | timeout `-110` |
+
+EDID and AUX are different paths: EDID comes through the transmitter's I2C
+bridge, AUX is the native DisplayPort channel.  A sink that passes the first
+and not the second is a dual-mode consumer - a passive adapter or a DP++
+dongle - which carries no AUX channel and never link-trains.  DP-1, a native
+DisplayPort 1.2 sink, answers both.  DERIVED from the measurements above; the
+adapter type was not inspected.
+
+So the driver's choice to **open the pad even when training fails** is what
+makes this work, and it is the right default: a link the transmitter can drive
+without training must not be held down by a training attempt that could not
+run.
+
+Two costs this leaves, neither fixed:
+
+* Training spends about **3.4 s** timing out on such a sink, on every modeset
+  that brings that head up (`51.77 s` to `55.14 s` in the log above).  The
+  dual-mode adapter identifier is readable over DDC and would let the driver
+  skip training rather than wait for it.
+* `head 2: scanout publish failed (-19)` still fires once on the first
+  modeset at a mode larger than the firmware's, before the surface is grown.
+  The frame after it is correct; the ordering is not.
