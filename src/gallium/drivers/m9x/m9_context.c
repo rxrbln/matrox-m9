@@ -636,6 +636,20 @@ m9_transfer_unmap(struct pipe_context *pctx, struct pipe_transfer *ptransfer)
 
 /* Two-pass jobs */
 
+/* Swap in the other set of per-job arenas; see m9_context's declaration. */
+static void
+m9_arena_rotate(struct m9_context *ctx)
+{
+   struct m9_resource tmp;
+
+#define ARENA_SWAP(a, b) do { tmp = (a); (a) = (b); (b) = tmp; } while (0)
+   ARENA_SWAP(ctx->source, ctx->source_alt);
+   ARENA_SWAP(ctx->system, ctx->system_alt);
+   ARENA_SWAP(ctx->index, ctx->index_alt);
+   ARENA_SWAP(ctx->cpu_streams, ctx->cpu_streams_alt);
+#undef ARENA_SWAP
+}
+
 static int
 m9_arena_reserve(struct m9_context *ctx, struct m9_resource *arena,
                  uint64_t bytes)
@@ -794,6 +808,8 @@ m9_submit_job(struct m9_context *ctx)
    unsigned index_count = util_dynarray_num_elements(&ctx->indices, uint16_t);
    uint64_t index_base = 0;
 
+   /* Before a single byte of this job is written. */
+   m9_arena_rotate(ctx);
    ret = ctx->lost ? -EIO :
          m9_arena_reserve(ctx, &ctx->source,
                           (uint64_t)records * M9_RECORD_FLOATS *
@@ -3153,6 +3169,11 @@ m9_context_init_fixed(struct m9_context *ctx)
 
    ret = m9_bo_create(screen, M9_SYSTEM_BYTES, 0, M9_RESOURCE_SYSTEM_STATE,
                       &ctx->system);
+   /* The second set of the two arenas that are sized once rather than
+    * grown per job; source and index are reserved on demand. */
+   if (!ret)
+      ret = m9_bo_create(screen, M9_SYSTEM_BYTES, 0, M9_RESOURCE_SYSTEM_STATE,
+                         &ctx->system_alt);
    if (!ret)
       ret = m9_bo_create(screen, M9_PROGRAM_BYTES, PARHELIA_M9_BO_VRAM,
                          M9_RESOURCE_SYSTEM_STATE, &ctx->program);
@@ -3168,6 +3189,11 @@ m9_context_init_fixed(struct m9_context *ctx)
                          (M9_TRANSIENT_VIEWS - M9_TRANSIENT_CPU_VIEW) *
                          M9_TRANSIENT_VIEW_BYTES, 0,
                          M9_RESOURCE_LINEAR_BUFFER, &ctx->cpu_streams);
+   if (!ret)
+      ret = m9_bo_create(screen,
+                         (M9_TRANSIENT_VIEWS - M9_TRANSIENT_CPU_VIEW) *
+                         M9_TRANSIENT_VIEW_BYTES, 0,
+                         M9_RESOURCE_LINEAR_BUFFER, &ctx->cpu_streams_alt);
    if (!ret)
       ret = m9_bo_create(screen, M9_BE_BYTES, PARHELIA_M9_BO_VRAM,
                          M9_RESOURCE_SYSTEM_STATE, &ctx->be);
@@ -3224,6 +3250,10 @@ m9_context_destroy(struct pipe_context *pctx)
    m9_bo_destroy(screen, &ctx->be);
    m9_bo_destroy(screen, &ctx->source);
    m9_bo_destroy(screen, &ctx->index);
+   m9_bo_destroy(screen, &ctx->system_alt);
+   m9_bo_destroy(screen, &ctx->cpu_streams_alt);
+   m9_bo_destroy(screen, &ctx->source_alt);
+   m9_bo_destroy(screen, &ctx->index_alt);
    util_dynarray_foreach(&ctx->target_depths, struct m9_target_depth *, it) {
       m9_bo_destroy(screen, &(*it)->depth);
       m9_bo_destroy(screen, &(*it)->aux);

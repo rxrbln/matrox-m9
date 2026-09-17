@@ -289,6 +289,16 @@ struct m9_context {
 
    /* Fixed two-pass resources and the pending job. */
    struct m9_resource system, program, fragment_db, transient, be, source;
+   /* The four arenas the CPU fills per job are double buffered.  An
+    * asynchronous submit posts its job and returns, so the engine is still
+    * reading the previous job's records, indices, constants and streams
+    * while the next job is built; holding a kernel reference to the object
+    * does not stop the CPU overwriting what is inside it.  The kernel
+    * drains the posted job at the *next* submission, so by the time a
+    * second job has been submitted the first has retired and its set is
+    * free: two sets are enough, and alternating them is exact rather than
+    * a guess about timing. */
+   struct m9_resource system_alt, source_alt, index_alt, cpu_streams_alt;
    /* The raster index run, in its own object: a draw range is a raw bus
     * address, so only this has to be physically contiguous, and keeping it
     * out of the record arena keeps that demand small. */
