@@ -32,6 +32,27 @@ enum m9_fs_const_kind {
 
 #define M9_FS_UNIFORM_ZERO 0xffffffffu
 
+/* One coefficient of a coordinate transform: a constant, optionally plus a
+ * component of the fragment constant buffer scaled by another constant.
+ * That covers a literal, a uniform, and a uniform scaled by a literal,
+ * which is every form the shaders that need this use. */
+struct m9_fs_coord_term {
+   float literal;
+   float factor;
+   uint32_t offset;        /* M9_FS_UNIFORM_ZERO when there is no uniform */
+};
+
+/* A texture coordinate that is an affine function of an interpolated pair:
+ * coordinate = varying * scale + bias.  Interpolation is linear, so folding
+ * this into the varying the raster engine interpolates samples at exactly
+ * the coordinate the shader asked for, which is what lets a unit sample at
+ * a computed coordinate even though the engine cannot.
+ */
+struct m9_fs_coord_affine {
+   bool present;
+   struct m9_fs_coord_term scale[2], bias[2];
+};
+
 struct m9_fs_const {
    enum m9_fs_const_kind kind;
    float value[2];
@@ -65,6 +86,7 @@ struct m9_fs_program {
    uint8_t texcoord_components[M9_FS_MAX_TEXTURES]; /* first coordinate component */
    /* xy divided by w of the same varying; the driver divides per vertex */
    bool texcoord_projective[M9_FS_MAX_TEXTURES];
+   struct m9_fs_coord_affine texcoord_affine[M9_FS_MAX_TEXTURES];
    unsigned texture_count;
    uint16_t registers_used;       /* bit per register pair group 08..1f */
    bool discard, fragcoord, fragdepth;

@@ -1110,6 +1110,22 @@ m9_scissor_key(struct m9_context *ctx, const struct pipe_scissor_state *s,
    return true;
 }
 
+/* One coefficient of a coordinate transform against constant buffer 0. */
+static float
+m9_coord_term(const struct m9_context *ctx, const struct m9_fs_coord_term *t)
+{
+   const struct pipe_constant_buffer *cb = &ctx->fs_constants;
+   const uint8_t *data = cb->user_buffer ? cb->user_buffer :
+                         cb->buffer ? m9_res(cb->buffer)->map : NULL;
+   float v = 0.0f;
+
+   if (t->offset == M9_FS_UNIFORM_ZERO || !data ||
+       (size_t)t->offset + sizeof(float) > cb->buffer_size)
+      return t->literal;
+   memcpy(&v, data + cb->buffer_offset + t->offset, sizeof(v));
+   return t->literal + v * t->factor;
+}
+
 /* Raster constant span values for the current constant buffer 0. */
 static bool
 m9_fs_resolve_consts(struct m9_context *ctx, const struct m9_fs_variant *fs,
@@ -1273,6 +1289,8 @@ m9_job_textures(struct m9_context *ctx, const struct m9_fs_variant *fs,
          m9_texture_unit_placeholder(&key->units[k],
                                      ctx->placeholder_texture.handle);
          key->unit_scale[k][0] = key->unit_scale[k][1] = 1.0f;
+         key->coord_scale[k][0] = key->coord_scale[k][1] = 1.0f;
+         key->coord_bias[k][0] = key->coord_bias[k][1] = 0.0f;
          continue;
       }
       reason = m9_texture_bind_view(view, &bind);
@@ -1294,6 +1312,12 @@ m9_job_textures(struct m9_context *ctx, const struct m9_fs_variant *fs,
          return m9_skip_reason(ctx, reason);
       }
       key->unit_res[k] = view->texture;
+      for (unsigned i = 0; i < 2; i++) {
+         key->coord_scale[k][i] =
+            m9_coord_term(ctx, &p->texcoord_affine[k].scale[i]);
+         key->coord_bias[k][i] =
+            m9_coord_term(ctx, &p->texcoord_affine[k].bias[i]);
+      }
       key->unit_scale[k][0] = (float)m9_res(view->texture)->width / bind.width;
       key->unit_scale[k][1] = (float)m9_res(view->texture)->height / bind.height;
       /* Every wrap mode agrees inside the content; beyond it the hardware
@@ -1433,6 +1457,25 @@ m9_fs_variant_upload(struct m9_context *ctx, struct m9_fs_variant *v,
 }
 
 /* CPU view order: non-colour varyings, then distinct coordinate streams. */
+/* Field by field: the struct has padding a memcmp would read. */
+static bool
+m9_affine_same(const struct m9_fs_coord_affine *a,
+               const struct m9_fs_coord_affine *b)
+{
+   if (a->present != b->present)
+      return false;
+   for (unsigned i = 0; i < 2; i++) {
+      if (a->scale[i].literal != b->scale[i].literal ||
+          a->scale[i].factor != b->scale[i].factor ||
+          a->scale[i].offset != b->scale[i].offset ||
+          a->bias[i].literal != b->bias[i].literal ||
+          a->bias[i].factor != b->bias[i].factor ||
+          a->bias[i].offset != b->bias[i].offset)
+         return false;
+   }
+   return true;
+}
+
 static void
 m9_fs_streams(struct m9_fs_variant *v)
 {
@@ -1444,15 +1487,22 @@ m9_fs_streams(struct m9_fs_variant *v)
    /* Two vec2 coordinate sets are packed into one varying slot, so a stream
     * is a slot *half*: keying it by location alone gave both textures the
     * same coordinates, and the second unit sampled where the first did. */
-    for (unsigned t = 0; t < p->texture_count; t++) {
+    uint8_t c_owner[M9_FS_MAX_TEXTURES] = { 0 };
+
+   for (unsigned t = 0; t < p->texture_count; t++) {
       unsigned half = p->texcoord_components[t] / 2;
       unsigned c = 0;
 
+      /* A unit that transforms its coordinate needs a stream of its own:
+       * sharing one would sample both units at the same place. */
       while (c < v->coord_count &&
              (v->coord_location[c] != p->texcoords[t] ||
-              v->coord_component[c] != half))
+              v->coord_component[c] != half ||
+              !m9_affine_same(&p->texcoord_affine[c_owner[c]],
+                              &p->texcoord_affine[t])))
          c++;
       if (c == v->coord_count) {
+         c_owner[c] = t;
          v->coord_extra[c] = -1;
          v->coord_component[c] = half;
          v->coord_location[v->coord_count++] = p->texcoords[t];
@@ -1756,7 +1806,7 @@ static void
 m9_scale_coords(const struct m9_job_key *key, float *extra)
 {
    const struct m9_fs_variant *v = key->variant;
-   uint32_t divided = 0;
+   uint32_t divided = 0, folded = 0;
 
    uint32_t packed = 0;
 
@@ -1772,6 +1822,14 @@ m9_scale_coords(const struct m9_job_key *key, float *extra)
          extra[4 * j] = extra[4 * j + c];
          extra[4 * j + 1] = extra[4 * j + c + 1];
          packed |= BITFIELD_BIT(j);
+      }
+      if (v->program.texcoord_affine[k].present &&
+          !(folded & BITFIELD_BIT(j))) {
+         extra[4 * j] = extra[4 * j] * key->coord_scale[k][0] +
+                        key->coord_bias[k][0];
+         extra[4 * j + 1] = extra[4 * j + 1] * key->coord_scale[k][1] +
+                            key->coord_bias[k][1];
+         folded |= BITFIELD_BIT(j);
       }
       if (v->program.texcoord_projective[k] && !(divided & BITFIELD_BIT(j))) {
          float q = extra[4 * j + 3];

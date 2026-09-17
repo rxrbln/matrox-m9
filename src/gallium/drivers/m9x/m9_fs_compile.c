@@ -479,6 +479,153 @@ build_intrinsic(struct ctx *c, nir_intrinsic_instr *intr)
    }
 }
 
+/* A texture coordinate component, read as varying * scale + bias.  The
+ * raster engine samples at an interpolated varying and cannot compute a
+ * coordinate, but interpolation is linear, so an affine function of a
+ * varying folds into a varying the driver computes per vertex and the
+ * sample lands exactly where the shader asked. */
+struct coord_expr {
+   bool varying;
+   unsigned location, component;
+   struct m9_fs_coord_term scale, bias;
+};
+
+static bool
+term_is_literal(const struct coord_expr *e)
+{
+   return !e->varying && e->bias.offset == M9_FS_UNIFORM_ZERO &&
+          e->bias.factor == 0.0f && e->scale.literal == 0.0f &&
+          e->scale.factor == 0.0f;
+}
+
+/* A product of two coefficients, which stays in this form only while at
+ * most one of them names a uniform. */
+static bool
+term_mul(struct m9_fs_coord_term *t, const struct m9_fs_coord_term *o)
+{
+   if (t->offset == M9_FS_UNIFORM_ZERO) {
+      float k = t->literal;
+
+      t->literal = o->literal * k;
+      t->factor = o->factor * k;
+      /* A coefficient scaled to nothing no longer names the uniform. */
+      t->offset = t->factor == 0.0f ? M9_FS_UNIFORM_ZERO : o->offset;
+      return true;
+   }
+   if (o->offset != M9_FS_UNIFORM_ZERO)
+      return false;
+   t->literal *= o->literal;
+   t->factor *= o->literal;
+   return true;
+}
+
+static bool
+term_add(struct m9_fs_coord_term *t, const struct m9_fs_coord_term *o)
+{
+   if (o->offset != M9_FS_UNIFORM_ZERO) {
+      /* Two uniform terms would need a wider form than this one. */
+      if (t->offset != M9_FS_UNIFORM_ZERO)
+         return false;
+      t->offset = o->offset;
+      t->factor = o->factor;
+   }
+   t->literal += o->literal;
+   return true;
+}
+
+static bool
+coord_parse(nir_scalar s, struct coord_expr *e)
+{
+   memset(e, 0, sizeof(*e));
+   e->scale.offset = e->bias.offset = M9_FS_UNIFORM_ZERO;
+   s = nir_scalar_chase_movs(s);
+   if (nir_scalar_is_const(s)) {
+      e->bias.literal = nir_scalar_as_float(s);
+      return true;
+   }
+   if (nir_scalar_is_intrinsic(s)) {
+      nir_intrinsic_instr *in = nir_def_as_intrinsic(s.def);
+
+      if (in->intrinsic == nir_intrinsic_load_interpolated_input) {
+         e->varying = true;
+         e->location = nir_intrinsic_io_semantics(in).location;
+         e->component = nir_intrinsic_component(in) + s.comp;
+         e->scale.literal = 1.0f;
+         return true;
+      }
+      if (in->intrinsic == nir_intrinsic_load_ubo_vec4 &&
+          nir_src_is_const(in->src[0]) && !nir_src_as_uint(in->src[0]) &&
+          nir_src_is_const(in->src[1])) {
+         unsigned slot = nir_intrinsic_base(in) + nir_src_as_uint(in->src[1]);
+
+         e->bias.offset = (slot * 4 + nir_intrinsic_component(in) +
+                           s.comp) * 4;
+         e->bias.factor = 1.0f;
+         return true;
+      }
+      return false;
+   }
+   if (!nir_scalar_is_alu(s))
+      return false;
+   switch (nir_scalar_alu_op(s)) {
+   case nir_op_fmul:
+   case nir_op_ffma:
+   case nir_op_ffma_weak: {
+      bool fused = nir_scalar_alu_op(s) != nir_op_fmul;
+      struct coord_expr a, b, add;
+
+      if (!coord_parse(nir_scalar_chase_alu_src(s, 0), &a) ||
+          !coord_parse(nir_scalar_chase_alu_src(s, 1), &b))
+         return false;
+      if (b.varying) {
+         struct coord_expr t = a;
+
+         a = b;
+         b = t;
+      }
+      /* Neither may be a product of two varyings, and the coefficient side
+       * carries its value in its bias, having no varying of its own. */
+      if (b.varying)
+         return false;
+      *e = a;
+      if (!term_mul(&e->scale, &b.bias) || !term_mul(&e->bias, &b.bias))
+         return false;
+      if (!fused)
+         return true;
+      if (!coord_parse(nir_scalar_chase_alu_src(s, 2), &add) || add.varying)
+         return false;
+      return term_add(&e->bias, &add.bias);
+   }
+   case nir_op_fadd: {
+      struct coord_expr a, b;
+
+      if (!coord_parse(nir_scalar_chase_alu_src(s, 0), &a) ||
+          !coord_parse(nir_scalar_chase_alu_src(s, 1), &b))
+         return false;
+      if (b.varying) {
+         struct coord_expr t = a;
+
+         a = b;
+         b = t;
+      }
+      if (b.varying)
+         return false;
+      *e = a;
+      return term_add(&e->bias, &b.bias);
+   }
+   default:
+      return false;
+   }
+}
+
+static bool
+coord_is_identity(const struct coord_expr *e)
+{
+   return e->scale.literal == 1.0f && e->scale.factor == 0.0f &&
+          e->bias.literal == 0.0f && e->bias.factor == 0.0f &&
+          e->bias.offset == M9_FS_UNIFORM_ZERO;
+}
+
 static int
 build_tex(struct ctx *c, nir_tex_instr *tex)
 {
@@ -498,26 +645,31 @@ build_tex(struct ctx *c, nir_tex_instr *tex)
    /* Linked vec2 varyings may share one slot: xy or zw of the input.  st
     * scalarises IO, so the pair can also be two loads of one location. */
    unsigned coord_comp[2];
+   struct coord_expr ce[2];
+   struct m9_fs_coord_affine affine = { 0 };
 
    for (unsigned i = 0; i < 2; i++) {
-      nir_intrinsic_instr *in;
-
-      s[i] = nir_scalar_chase_movs(nir_get_scalar(tex->src[ci].src.ssa, i));
-      if (!nir_scalar_is_intrinsic(s[i]))
+      if (!coord_parse(nir_get_scalar(tex->src[ci].src.ssa, i), &ce[i]) ||
+          !ce[i].varying || ce[i].location != ce[0].location)
          return fail(c, "texture coordinate is not a varying"), -1;
-      in = nir_def_as_intrinsic(s[i].def);
-      if (in->intrinsic != nir_intrinsic_load_interpolated_input ||
-          nir_intrinsic_io_semantics(in).location !=
-          nir_intrinsic_io_semantics(nir_def_as_intrinsic(s[0].def)).location)
-         return fail(c, "texture coordinate is not a varying"), -1;
-      coord_comp[i] = nir_intrinsic_component(in) + s[i].comp;
+      coord_comp[i] = ce[i].component;
+      affine.scale[i] = ce[i].scale;
+      affine.bias[i] = ce[i].bias;
+      affine.present |= !coord_is_identity(&ce[i]);
       if (debug_get_bool_option("M9X_DEBUG_FS", false))
-         fprintf(stderr, "m9x fs: coord %u location %u component %u\n", i,
-                 nir_intrinsic_io_semantics(in).location, coord_comp[i]);
+         fprintf(stderr, "m9x fs: coord %u location %u component %u "
+                 "scale %g+%g@%#x bias %g+%g@%#x\n", i, ce[i].location,
+                 coord_comp[i], ce[i].scale.literal, ce[i].scale.factor,
+                 ce[i].scale.offset, ce[i].bias.literal, ce[i].bias.factor,
+                 ce[i].bias.offset);
    }
    if (coord_comp[0] > 2 || coord_comp[1] != coord_comp[0] + 1)
       return fail(c, "texture coordinate is not a varying"), -1;
+   s[0] = nir_scalar_chase_movs(nir_get_scalar(tex->src[ci].src.ssa, 0));
+   while (nir_scalar_is_alu(s[0]))
+      s[0] = nir_scalar_chase_movs(nir_scalar_chase_alu_src(s[0], 0));
    coord = nir_def_as_intrinsic(s[0].def);
+   p->texcoord_affine[p->texture_count] = affine;
    /* The fixed-function projector is w of the same varying; the driver
     * divides the coordinate stream per vertex. */
    if (pi >= 0) {
@@ -3112,6 +3264,8 @@ assign_texels(struct ctx *c)
    unsigned order[M9_FS_MAX_TEXTURES], replicated = 0;
    uint8_t textures[M9_FS_MAX_TEXTURES], coords[M9_FS_MAX_TEXTURES];
    uint8_t comps[M9_FS_MAX_TEXTURES], pair_of[M9_FS_MAX_TEXTURES];
+   struct m9_fs_coord_affine affine[M9_FS_MAX_TEXTURES];
+   bool projective[M9_FS_MAX_TEXTURES];
 
    util_dynarray_foreach(&c->nodes, struct node, n) {
       for (unsigned i = 0; i < 3; i++) {
@@ -3140,11 +3294,17 @@ assign_texels(struct ctx *c)
       textures[i] = p->textures[order[i]];
       coords[i] = p->texcoords[order[i]];
       comps[i] = p->texcoord_components[order[i]];
+      /* Everything a unit carries moves with it, or a reordered unit reads
+       * another unit's coordinate. */
+      affine[i] = p->texcoord_affine[order[i]];
+      projective[i] = p->texcoord_projective[order[i]];
       pair_of[order[i]] = i;
    }
    memcpy(p->textures, textures, p->texture_count);
    memcpy(p->texcoords, coords, p->texture_count);
    memcpy(p->texcoord_components, comps, p->texture_count);
+   memcpy(p->texcoord_affine, affine, sizeof(affine));
+   memcpy(p->texcoord_projective, projective, sizeof(projective));
    util_dynarray_foreach(&c->nodes, struct node, n) {
       if (n->kind == N_TEX)
          n->texel = 4 * pair_of[n->texel / 4];

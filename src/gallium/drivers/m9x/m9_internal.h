@@ -232,6 +232,10 @@ struct m9_job_key {
    struct pipe_resource *unit_res[M9_TEXTURE_MAX_UNITS];
    /* Content over descriptor size of a sampled render target, s and t. */
    float unit_scale[M9_TEXTURE_MAX_UNITS][2];
+   /* A coordinate the shader computed affinely from a varying, resolved
+    * against the constant buffer and applied per vertex. */
+   float coord_scale[M9_TEXTURE_MAX_UNITS][2];
+   float coord_bias[M9_TEXTURE_MAX_UNITS][2];
    unsigned unit_count;
 };
 
