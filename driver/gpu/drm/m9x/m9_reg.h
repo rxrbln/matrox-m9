@@ -170,7 +170,9 @@
  * Its I2C bridge has to be off while the host reads the sink's EDID. */
 #define M9_DP_TX_MAIN		0x00
 #define M9_DP_TX_BRIDGE		BIT(1)
+/* Hotplug lives on the transmitter's second seven-bit address. */
 #define M9_DP_TX_HPD		0x7c
+#define M9_DP_TX_BRIDGE_SETTLE_MS	20u
 
 
 /* Native modeset on display controller 0.  Field encodings are the M9's own:

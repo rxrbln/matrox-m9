@@ -149,6 +149,10 @@ struct m9_head {
 	struct i2c_adapter *ddc;
 	unsigned int ddc_index;
 	bool ddc_probed;
+	/* EDID of the last detect, so a probe bit-bangs the bus once instead of
+	 * once per detect and once per get_modes. */
+	const struct drm_edid *edid;
+	bool edid_valid;
 	/* Register banks of this controller.  There is no fixed stride; the
 	 * table in m9_kms.c carries the measured bases. */
 	u32 dc, dct, clksel, fs, link, cursor_bank, watermark;

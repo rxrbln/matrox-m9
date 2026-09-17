@@ -389,6 +389,13 @@ static int m9_tx_read(struct m9_ddc_bus *bus, u8 reg, u8 *val)
 	return m9_tx_xfer(bus, bus->tx_addr, reg, val, false);
 }
 
+/* The transmitter answers on three consecutive seven-bit addresses; the vendor
+ * reads hotplug from the second one, not from the main block. */
+static int m9_tx_read_hpd(struct m9_ddc_bus *bus, u8 *val)
+{
+	return m9_tx_xfer(bus, bus->tx_addr + 1, M9_DP_TX_HPD, val, false);
+}
+
 static int m9_tx_write(struct m9_ddc_bus *bus, u8 reg, u8 val)
 {
 	return m9_tx_xfer(bus, bus->tx_addr, reg, &val, true);
@@ -404,8 +411,11 @@ static void m9_tx_probe(struct m9_ddc_bus *bus)
 			       false))
 			continue;
 		bus->tx_addr = m9_tx_candidates[i];
-		if (m9_tx_read(bus, M9_DP_TX_HPD, &val))
+		if (m9_tx_read_hpd(bus, &val))
 			val = 0;
+		/* Reported only.  The board answers 0x13 on the connector its
+		 * transmitter is driving and 0x07 on the others, so nothing
+		 * useful can be gated on it yet. */
 		drm_info(&bus->mdev->drm,
 			 "DDC %u: transmitter at %#04x, hotplug %#04x\n",
 			 bus->selector, bus->tx_addr << 1, val);
@@ -473,9 +483,15 @@ struct i2c_adapter *m9x_ddc_adapter(struct m9x_device *mdev, unsigned int index)
 
 /*
  * The connector's transmitter bridges these same pins onto the DisplayPort AUX
- * channel, and a sink only answers the host's own bit-banging while that bridge
- * is off.  Ownership is held across the whole sequence so the board controller
- * cannot take the bus between the bridge write and the EDID read.
+ * channel (docs/parhelia-m9148-kms-pins-dp-re.md "EDID ownership lifecycle").
+ * Which side of that bridge carries the EDID depends on the sink: a passive
+ * dual-mode adapter answers the pins directly, a native DisplayPort monitor
+ * only through the bridge.  Neither is known in advance, so main register 0
+ * bit 1 is cleared for a direct read and the read is repeated with the bridge
+ * on when the pins give nothing; the register is put back either way.  The
+ * conditional form this replaces only touched the bridge when it was already
+ * on, which no connector on this board ever is.  Ownership is held across the
+ * whole sequence so the board controller cannot take the bus in between.
  */
 const struct drm_edid *m9x_ddc_read_edid(struct m9x_device *mdev,
 					 unsigned int index,
@@ -483,7 +499,7 @@ const struct drm_edid *m9x_ddc_read_edid(struct m9x_device *mdev,
 {
 	const struct drm_edid *edid;
 	struct m9_ddc_bus *bus;
-	bool bridged;
+	bool tx, bridged = false;
 	u8 reg0;
 
 	if (index >= mdev->ddc_count)
@@ -491,13 +507,23 @@ const struct drm_edid *m9x_ddc_read_edid(struct m9x_device *mdev,
 	bus = &mdev->ddc[index];
 	if (m9_hmc_acquire(mdev))
 		return NULL;
-	bridged = bus->tx_addr && !m9_tx_read(bus, M9_DP_TX_MAIN, &reg0) &&
-		  (reg0 & M9_DP_TX_BRIDGE);
-	if (bridged)
+	tx = bus->tx_addr && !m9_tx_read(bus, M9_DP_TX_MAIN, &reg0);
+	if (tx) {
 		m9_tx_write(bus, M9_DP_TX_MAIN, reg0 & ~M9_DP_TX_BRIDGE);
+		msleep(M9_DP_TX_BRIDGE_SETTLE_MS);
+	}
 	edid = drm_edid_read_ddc(connector, &bus->adapter);
-	if (bridged)
+	if (!edid && tx) {
+		m9_tx_write(bus, M9_DP_TX_MAIN, reg0 | M9_DP_TX_BRIDGE);
+		msleep(M9_DP_TX_BRIDGE_SETTLE_MS);
+		edid = drm_edid_read_ddc(connector, &bus->adapter);
+		bridged = true;
+	}
+	if (tx)
 		m9_tx_write(bus, M9_DP_TX_MAIN, reg0);
+	drm_dbg_kms(&mdev->drm, "DDC %u: main %#04x, %s read %s\n",
+		    bus->selector, reg0, bridged ? "bridged" : "direct",
+		    edid ? "found an EDID" : "found nothing");
 	m9_hmc_release(mdev);
 	return edid;
 }

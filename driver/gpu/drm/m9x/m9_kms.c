@@ -253,12 +253,12 @@ static int m9_connector_detect(struct drm_connector *connector,
 {
 	struct m9_head *head = container_of(connector, struct m9_head,
 					    connector);
-	const struct drm_edid *edid;
 	bool present;
 
-	edid = m9x_ddc_read_edid(head->mdev, head->ddc_index, connector);
-	present = edid || (head->warm_dc_ctrl & M9_DC_ENABLE);
-	drm_edid_free(edid);
+	drm_edid_free(head->edid);
+	head->edid = m9x_ddc_read_edid(head->mdev, head->ddc_index, connector);
+	head->edid_valid = true;
+	present = head->edid || (head->warm_dc_ctrl & M9_DC_ENABLE);
 	return present ? connector_status_connected :
 			 connector_status_disconnected;
 }
@@ -283,15 +283,17 @@ static int m9_connector_get_modes(struct drm_connector *connector)
 {
 	struct m9_head *head = container_of(connector, struct m9_head,
 					    connector);
-	const struct drm_edid *edid;
 	int count = 0;
 
-	edid = m9x_ddc_read_edid(head->mdev, head->ddc_index, connector);
-	drm_edid_connector_update(connector, edid);
-	if (edid) {
-		count = drm_edid_connector_add_modes(connector);
-		drm_edid_free(edid);
+	/* detect_ctx already drove the bus; a forced connector skips it. */
+	if (!head->edid_valid) {
+		head->edid = m9x_ddc_read_edid(head->mdev, head->ddc_index,
+					       connector);
+		head->edid_valid = true;
 	}
+	drm_edid_connector_update(connector, head->edid);
+	if (head->edid)
+		count = drm_edid_connector_add_modes(connector);
 	return count + m9_connector_add_warm_mode(connector);
 }
 
@@ -1311,6 +1313,9 @@ void m9x_modeset_fini(struct m9x_device *mdev)
 		struct m9_head *head = &mdev->head[i];
 
 		m9_cursor_fini(head);
+		drm_edid_free(head->edid);
+		head->edid = NULL;
+		head->edid_valid = false;
 		m9x_write(mdev, head->dc + M9_DC_START, head->warm_dc_start);
 		m9x_write(mdev, head->dc + M9_DC_PITCH, head->warm_dc_pitch);
 		m9x_write(mdev, head->dc + M9_DC_CTRL, head->warm_dc_ctrl);
