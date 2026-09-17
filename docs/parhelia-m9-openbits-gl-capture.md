@@ -218,9 +218,21 @@ So:
   case only.
 
 This unblocks the glmark2 scenes that motivated the question: `terrain` (six
-mostly independent samplers) needs two passes, and `effect2d` at 9 and 25 taps
-needs none at all — many taps of one sampler stay in one pass, which
-`taps_49` confirms.
+mostly independent samplers) needs two passes.
+
+**Correction (2026-09-17).**  This paragraph also claimed that `effect2d` at 9
+and 25 taps "needs none at all — many taps of one sampler stay in one pass,
+which `taps_49` confirms".  That pass count is not supported by anything saved
+here.  What the `taps_*` cases establish is only correctness:
+`result-matrix.txt` has `taps_4/9/16/25/49 PASS checked=64 mismatches=0`
+(MEASURED).  No `cap-taps_*` submission was captured, the table above has no
+`taps_*` row, and the number of raster draws the vendor used for them was never
+observed.  `tools/m9x-openbits-probe.c` builds those shaders as
+`a += texture2D(s, uv + vec2(dx, dy) / TS)`, a distinct coordinate per tap,
+which is an independent fetch by the same rule as `indep_*`.  Until a `taps_*`
+submission is captured, budget many taps of one sampler as `ceil(N / 3)` like
+any other independent fetch set.  The split contract a scheduler must emit is
+in `parhelia-m9-fragment-pass-splitting.md`.
 
 ## 3. sRGB sampler decode — closed, negative
 

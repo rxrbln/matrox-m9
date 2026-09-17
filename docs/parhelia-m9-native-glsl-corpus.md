@@ -290,6 +290,15 @@ Longer built-ins are exact, verified sequences in the fixture:
 
   * Draw 2 (`c3=4` or `7`, `7c=02409200`) runs the plain texture program
     (`R,G <- 00`, `B,A <- 02`).
+  * **Draw 1 renders into an intermediate surface (CAPTURED, 2026-09-17).**
+    It binds `b0` to the transient arena rather than to the colour target
+    (`b0=10ec1000 b1=ee190004`), which is why it writes `0x11`/`0x13` and not
+    `0x2d`: those are the output register pairs of bound target 0.  Draw 2
+    binds that surface back through the descriptor-only route `74`/`78`/`79`
+    and its unit samples at the record.  Registers do not survive the draw
+    boundary.  The full contract, including the producer and consumer
+    descriptors and route words of all seven cases, is in
+    `parhelia-m9-fragment-pass-splitting.md`.
   * `fs-texcube` computes `(1, t*2-1, s*2-1)` in its 7-slot first program.
   * `fs-shadow2d`'s second program writes both output halves from 00 with
     `ffc02d1e e6803b2f` / `ffc02d1d a29fff3f`.  Its W1 differs from the plain
