@@ -81,6 +81,7 @@ struct node {
    int weight;          /* registers its subtree needs, one plus, memoised */
    uint8_t cmp;         /* N_CMP/N_SEL comparison class */
    bool is_cond;        /* holds 1.0 or 0.0, so a select can test it */
+   bool broadcast, bcast_known;  /* both scalars hold the same value */
    int level;
    int value[2];        /* per lane: 0 xy, 1 zw */
    uint8_t lane[3][2];  /* source lane read for result lane xy, zw */
@@ -130,6 +131,7 @@ struct ctx {
    struct m9_fs_program *p;
    const struct m9_fs_blend *blend;  /* NULL when unblended */
    struct util_dynarray nodes, lops, values, keys, key_index;
+   struct util_dynarray gathers;  /* vectors already assembled from scalars */
    const char *reason;
    /* Fixed-function alpha test lowered into the shader by st. */
    struct {
@@ -142,6 +144,13 @@ struct ctx {
    bool has_consts;
    bool custom_consts;  /* a template supplies the whole constant span */
    bool depth_first;    /* schedule operands before breadth, for pressure */
+};
+
+#define M9_GATHER_REUSE_WINDOW 24u
+
+struct gather_key {
+   nir_scalar s[4];
+   int node;
 };
 
 #define NODES(c) ((struct node *)(c)->nodes.data)
@@ -280,11 +289,56 @@ node_new(struct ctx *c, enum node_kind kind)
    return NUM(c, nodes, struct node) - 1;
 }
 
+/* Only the scalar select is an operand field some forms lack; which
+ * register of the pair an operand comes from is chosen for every form. */
 static bool
 node_swizzled(const struct node *n, unsigned i)
 {
-   return n->lane[i][0] != 0 || n->lane[i][1] != 1 || n->swz[i][0] != 1 ||
-          n->swz[i][1] != 1;
+   return n->swz[i][0] != 1 || n->swz[i][1] != 1;
+}
+
+/* Whether both scalars of a node's result always hold the same value: an
+ * operand read through a replicating select contributes one, and so does
+ * one whose own two scalars already agree. */
+static bool
+node_broadcast(struct ctx *c, int n)
+{
+   struct node *nd = &NODES(c)[n];
+   bool all = true;
+
+   if (nd->bcast_known)
+      return nd->broadcast;
+   nd->bcast_known = true;
+   switch (nd->kind) {
+   case N_LIT:
+      nd->broadcast = nd->lit[0] == nd->lit[1] && nd->lit[2] == nd->lit[3];
+      break;
+   case N_UBO:
+   case N_VARY:
+   case N_TEX:
+   case N_COMPOSE:
+   case N_GATHER:
+      nd->broadcast = false;
+      break;
+   case N_EXP2:
+   case N_LOG2:
+   case N_RCP:
+   case N_RSQ:
+      nd->broadcast = true;
+      break;
+   default:
+      for (unsigned i = 0; i < 3; i++)
+         if (NODES(c)[n].src[i] >= 0) {
+            const struct node *m = &NODES(c)[n];
+
+            all &= (m->swz[i][0] == m->swz[i][1] &&
+                    (m->swz[i][0] == 0 || m->swz[i][0] == 3)) ||
+                   node_broadcast(c, m->src[i]);
+         }
+      NODES(c)[n].broadcast = all;
+      break;
+   }
+   return NODES(c)[n].broadcast;
 }
 
 static bool
@@ -567,10 +621,17 @@ deswizzle(struct ctx *c, int n, uint8_t lane[2], uint8_t swz[2])
    static const uint8_t lane_id[2] = { 0, 1 }, swz_id[2] = { 1, 1 };
    int one, m;
 
-   if (n < 0 || (!memcmp(lane, lane_id, 2) && !memcmp(swz, swz_id, 2)))
+   if (n < 0 || !memcmp(swz, swz_id, 2))
       return n;
    if (node_is_const(&NODES(c)[n]))
       return n;
+   /* A replicating read of a value that is the same in both scalars needs
+    * no field at all. */
+   if (swz[0] == swz[1] && (swz[0] == 0 || swz[0] == 3) &&
+       node_broadcast(c, n)) {
+      memcpy(swz, swz_id, 2);
+      return n;
+   }
    one = node_new(c, N_LIT);
    if (one < 0)
       return -1;
@@ -1327,6 +1388,18 @@ build_vec(struct ctx *c, nir_scalar s[4])
          return build_def(c, s[0].def);
       }
    }
+   /* The same vector is assembled from the same scalars over and over in
+    * code the front end scalarised, and nothing else keys on it, so the
+    * assembled node is remembered here. */
+   util_dynarray_foreach(&c->gathers, struct gather_key, g) {
+      /* Only a recent one: reusing an assembly from far back would hold
+       * its register alive across everything in between, and the register
+       * file is small enough that that costs more than it saves. */
+      if (!memcmp(g->s, s, sizeof(g->s)) &&
+          g->node + (int)M9_GATHER_REUSE_WINDOW >=
+          (int)NUM(c, nodes, struct node))
+         return g->node;
+   }
    /* General gather: each result lane reads one source through a swizzle,
     * with literals masked in by a per-lane (1, 0) factor and added back.
     * The two lanes may read different sources, so a vec4 can be assembled
@@ -1457,9 +1530,7 @@ build_vec(struct ctx *c, nir_scalar s[4])
          set_src(&NODES(c)[n_val], 2, n_mask, lane_id, swz_id);
       }
 have_value:
-      if (!need_add)
-         return n_val;
-      {
+      if (need_add) {
          int n_lit = node_new(c, N_LIT), n_add;
 
          if (n_lit < 0)
@@ -1470,8 +1541,18 @@ have_value:
             return -1;
          set_src(&NODES(c)[n_add], 0, n_val, lane_id, swz_id);
          set_src(&NODES(c)[n_add], 1, n_lit, lane_id, swz_id);
-         return n_add;
+         n_val = n_add;
       }
+      {
+         struct gather_key *g = util_dynarray_grow(&c->gathers,
+                                                   struct gather_key, 1);
+
+         if (g) {
+            memcpy(g->s, s, sizeof(g->s));
+            g->node = n_val;
+         }
+      }
+      return n_val;
    }
 }
 
@@ -2217,6 +2298,22 @@ allocate(struct ctx *c)
       };
       unsigned i = 0;
 
+      {
+         static const char *const kinds[] = {
+            "VARY", "TEX", "UBO", "LIT", "MUL", "ADD", "SUB", "MAD",
+            "MIN", "MAX", "NEG", "FRACT", "FLOOR", "CEIL", "EXP2", "LOG2",
+            "RCP", "RSQ", "FRAGCOORD", "CMP", "SEL", "SAT", "GATHER",
+            "LOAD", "COMPOSE",
+         };
+         unsigned count[ARRAY_SIZE(kinds)] = { 0 };
+
+         util_dynarray_foreach(&c->nodes, struct node, nd)
+            if (nd->kind < ARRAY_SIZE(kinds))
+               count[nd->kind]++;
+         for (unsigned i = 0; i < ARRAY_SIZE(kinds); i++)
+            if (count[i])
+               fprintf(stderr, "m9x fs: nodes %s %u\n", kinds[i], count[i]);
+      }
       util_dynarray_foreach(&c->values, struct value, v)
          fprintf(stderr, "m9x fs: value %u reg %#x interp %d rg_read %d "
                  "general %d def %d last %d\n", i++, v->reg, v->interp,
@@ -3201,6 +3298,7 @@ reset_output(struct ctx *c)
    c->p->discard = false;
    util_dynarray_clear(&c->keys);
    util_dynarray_clear(&c->key_index);
+   util_dynarray_clear(&c->gathers);
    util_dynarray_clear(&c->p->consts);
    util_dynarray_clear(&c->p->slots);
    util_dynarray_clear(&c->lops);
@@ -3561,6 +3659,7 @@ m9_fs_compile(struct nir_shader *nir, const struct m9_fs_blend *blend,
    util_dynarray_init(&c.values, NULL);
    util_dynarray_init(&c.keys, NULL);
    util_dynarray_init(&c.key_index, NULL);
+   util_dynarray_init(&c.gathers, NULL);
 
    if (nir->info.stage != MESA_SHADER_FRAGMENT) {
       fail(&c, "not a fragment shader");
@@ -3580,6 +3679,7 @@ m9_fs_compile(struct nir_shader *nir, const struct m9_fs_blend *blend,
          ok = compile_impl(&c, impl);
       }
    }
+   util_dynarray_fini(&c.gathers);
    util_dynarray_fini(&c.key_index);
    util_dynarray_fini(&c.nodes);
    util_dynarray_fini(&c.lops);
