@@ -13,6 +13,10 @@
 #define M9_LINKED_PREFIX_DWORDS   8u
 #define M9_PROGRAM_BYTES          0x2000u
 #define M9_PROGRAM_DWORDS         80u
+/* A compiled c2 image is sized from the program it holds, not from the page
+ * the captured pass-through happens to fit in.  The cap is the driver's own
+ * allocation bound; no capture names a hardware program length. */
+#define M9_PROGRAM_MAX_BYTES      0x40000u
 #define M9_FRAGMENT_DB_MIN_BYTES  0x1c000u
 #define M9_TRANSIENT_VIEWS        11u
 /* Views 0..3 belong to the vertex program, 4..6 carry CPU varyings, one per

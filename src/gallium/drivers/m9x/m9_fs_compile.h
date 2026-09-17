@@ -18,11 +18,14 @@ struct nir_shader_compiler_options;
 
 /* The vendor splits beyond six interpolated varying slots per raster pass. */
 #define M9_FS_MAX_VARYINGS 6u
-/* First texel lands in 00/02, the second in 04/06.  A unit is one fetch:
- * the engine samples at the coordinate it interpolates and the program has
- * no fetch instruction, so repeated taps of one sampler at different
- * coordinates take a unit each (CAPTURED, parhelia-m9-native-glsl-corpus.md
- * section 6).  Only fetches that agree in sampler and coordinate share. */
+/* First texel lands in 00/02, the second in 04/06.  A unit is one fetch: the
+ * engine samples at the coordinate it interpolates and the program has no
+ * fetch instruction (CAPTURED, parhelia-m9-native-glsl-corpus.md section 6),
+ * so repeated taps of one sampler at different coordinates take a unit each
+ * (DERIVED from that, and matching the vendor's own indep_2..indep_8 pass
+ * counts).  Only fetches that agree in sampler and coordinate share.  Past
+ * four, the shader has to be split across raster passes; the contract is in
+ * docs/parhelia-m9-fragment-pass-splitting.md. */
 #define M9_FS_MAX_TEXTURES 4u
 
 enum m9_fs_const_kind {

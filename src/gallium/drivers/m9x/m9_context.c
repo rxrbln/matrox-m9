@@ -1551,12 +1551,13 @@ m9_fs_variant_upload(struct m9_context *ctx, struct m9_fs_variant *v,
 {
    const unsigned vs_slots = ARRAY_SIZE(m9_passthrough_c2_program) / 2 - 4;
    unsigned slots = m9_fs_slot_count(&v->program);
+   uint64_t bytes = align64(8ull * (slots + vs_slots), 0x1000);
 
-   if ((slots + vs_slots) * 8 > M9_PROGRAM_BYTES) {
-      *reason = "program exceeds the c2 image";
+   if (bytes > M9_PROGRAM_MAX_BYTES) {
+      *reason = "program exceeds the largest c2 image the driver allocates";
       return false;
    }
-   if (m9_bo_create(ctx->screen, M9_PROGRAM_BYTES, PARHELIA_M9_BO_VRAM,
+   if (m9_bo_create(ctx->screen, bytes, PARHELIA_M9_BO_VRAM,
                     M9_RESOURCE_SYSTEM_STATE, &v->c2)) {
       *reason = "cannot allocate the c2 image";
       return false;
@@ -2360,16 +2361,24 @@ m9_native_vs_c2(struct m9_context *ctx, struct m9_fs_variant *v)
    unsigned fs_slots_count = v ? m9_fs_slot_count(&v->program) :
                                  M9_PASSTHROUGH_FS_SLOTS;
    unsigned entry = 0;
+   uint64_t bytes = align64(8ull * (fs_slots_count +
+                                    m9_vs_slot_count(&vs->program)), 0x1000);
 
    if (image->handle && *serial == vs->serial)
       return image->handle;
+   if (bytes > M9_PROGRAM_MAX_BYTES)
+      return 0;
+   /* A different vertex program binding behind the same fragment slots can
+    * need a longer image than the one already cached. */
+   if (image->handle && image->size < bytes)
+      m9_bo_destroy(ctx->screen, image);
    if (!image->handle &&
-       m9_bo_create(ctx->screen, M9_PROGRAM_BYTES, PARHELIA_M9_BO_VRAM,
+       m9_bo_create(ctx->screen, bytes, PARHELIA_M9_BO_VRAM,
                     M9_RESOURCE_SYSTEM_STATE, image))
       return 0;
    memset(image->map, 0, image->size);
    if (!m9_vs_c2_image(&vs->program, fs_slots, fs_slots_count, image->map,
-                       M9_PROGRAM_BYTES / sizeof(uint32_t), &entry) ||
+                       image->size / sizeof(uint32_t), &entry) ||
        entry != fs_slots_count)
       return 0;
    *serial = vs->serial;
