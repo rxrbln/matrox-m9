@@ -26,6 +26,7 @@
 #include "m9_fs_compile.h"
 #include "m9_internal.h"
 #include "m9_vs_texture.h"
+#include "m9_vs_source.h"
 #include "m9_passthrough.h"
 #include "m9_state.h"
 #include "nir.h"
@@ -91,6 +92,9 @@ struct m9_fs_variant {
    const char *reason;                 /* why the variant is not drawable */
    struct m9_fs_program program;
    struct m9_resource c2;              /* fragment slots, then vertex program */
+   /* The same fragment slots with a compiled vertex program behind them. */
+   struct m9_resource native_c2;
+   uint64_t native_c2_serial;
    unsigned vertex_entry;
    unsigned extra_count;               /* CPU view locations: varyings, then coordinates */
    uint8_t extra_location[M9_FS_MAX_VARYINGS + M9_FS_MAX_TEXTURES];
@@ -201,6 +205,11 @@ static unsigned m9_profile_period;
 /* M9X_JOB_DRAWS ends a job after that many draws: the frame time against the
  * job count weighs what one job costs. */
 static unsigned m9_job_draws;
+/* M9X_NATIVE_VS=0 keeps every vertex shader in the draw module.  On by
+ * default since the whole hardware fixture corpus passes either way
+ * (m9-mesa-vs 14/14, m9-mesa-glsl 90/90, 2026-09-17). */
+static bool m9_native_vs;
+
 /* M9X_INDEXED=0 falls back to one record per index. */
 static bool m9_indexed_draws = true;
 static uint64_t m9_prof_ns[M9_PROF_COUNT];
@@ -672,30 +681,43 @@ m9_varying_is_color(unsigned location)
    return location == VARYING_SLOT_COL0 || location == VARYING_SLOT_COL1;
 }
 
+/* Transient view 0 is the preprocessing pass's own varying target.  The
+ * captured pass-through program puts the primary colour there; a native
+ * vertex program puts its one varying there, whatever its slot. */
+static bool
+m9_varying_from_pass(const struct m9_job_key *key, unsigned location)
+{
+   if (key->vs)
+      return key->vs->has_varying && key->vs->varying_location == location;
+   return location == VARYING_SLOT_COL0;
+}
+
 /* Raster constants and CPU varying views of a native fragment job. */
 static int
-m9_job_native(struct m9_context *ctx, const struct m9_fs_variant *fs,
+m9_job_native(struct m9_context *ctx, const struct m9_job_key *key,
               unsigned records, struct m9_raster_fs *raster)
 {
+   const struct m9_fs_variant *fs = key->variant;
    const struct m9_fs_program *p = &fs->program;
    const float *extra = ctx->extra.data;
    uint32_t views[M9_FS_MAX_VARYINGS], coords[M9_FS_MAX_TEXTURES];
    bool flat[M9_FS_MAX_VARYINGS];
+   unsigned cpu_streams = key->vs ? 0 : fs->extra_count;
    unsigned cpu = 0;
 
    memcpy((uint8_t *)ctx->system.map + M9_RASTER_CONST_OFFSET,
           ctx->job_consts.data, ctx->job_consts.size);
    for (unsigned k = 0; k < p->varying_count; k++) {
       flat[k] = m9_varying_is_color(p->varyings[k].location);
-      views[k] = p->varyings[k].location == VARYING_SLOT_COL0 ? 0 :
+      views[k] = m9_varying_from_pass(key, p->varyings[k].location) ? 0 :
                  M9_TRANSIENT_CPU_VIEW + cpu++;
    }
    for (unsigned c = 0; c < fs->coord_count; c++)
-      coords[c] = fs->coord_location[c] == VARYING_SLOT_COL0 ? 0 :
+      coords[c] = m9_varying_from_pass(key, fs->coord_location[c]) ? 0 :
                   M9_TRANSIENT_CPU_VIEW + cpu++;
    uint64_t t_varying = m9_prof_begin();
 
-   for (unsigned j = 0; j < fs->extra_count; j++) {
+   for (unsigned j = 0; j < cpu_streams; j++) {
       uint8_t *view = (uint8_t *)ctx->cpu_streams.map +
                       j * M9_TRANSIENT_VIEW_BYTES;
 
@@ -703,7 +725,7 @@ m9_job_native(struct m9_context *ctx, const struct m9_fs_variant *fs,
          memcpy(view + r * M9_TRANSIENT_VERTEX_BYTES,
                 extra + (r * fs->extra_count + j) * 4, 4 * sizeof(float));
    }
-   m9_prof_varying_bytes += (uint64_t)records * fs->extra_count *
+   m9_prof_varying_bytes += (uint64_t)records * cpu_streams *
                             M9_TRANSIENT_VERTEX_BYTES;
    m9_prof_end(M9_PROF_VARYING, t_varying);
    return m9_raster_fs_init_textured(raster, fs->vertex_entry,
@@ -771,11 +793,13 @@ m9_dump_job(struct m9_context *ctx, const struct m9_fs_variant *fs)
 static int
 m9_submit_job(struct m9_context *ctx)
 {
-   unsigned records = util_dynarray_num_elements(&ctx->records, float) /
-                      M9_RECORD_FLOATS;
    unsigned draws = util_dynarray_num_elements(&ctx->draws,
                                                struct m9_draw_record);
+   unsigned records = util_dynarray_num_elements(&ctx->records, float) /
+                      ctx->record_floats;
    const struct m9_job_key *key = &ctx->job_key;
+   uint32_t vs_decl[M9_VS_MAX_DECL];
+   unsigned vs_decl_count = 0, vs_const_pairs = 0;
    const struct m9_fs_state *fs = key->fs;
    const struct m9_draw_record *first_draw = ctx->draws.data;
    struct m9_raster_fs raster;
@@ -814,7 +838,7 @@ m9_submit_job(struct m9_context *ctx)
    m9_arena_rotate(ctx);
    ret = ctx->lost ? -EIO :
          m9_arena_reserve(ctx, &ctx->source,
-                          (uint64_t)records * M9_RECORD_FLOATS *
+                          (uint64_t)records * ctx->record_floats *
                           sizeof(float));
    if (!ret && ctx->indices.size)
       ret = m9_arena_reserve(ctx, &ctx->index, ctx->indices.size);
@@ -829,8 +853,26 @@ m9_submit_job(struct m9_context *ctx)
       memcpy((uint8_t *)ctx->system.map + M9_LINKED_OFFSET,
              ctx->params.linked_prefix, sizeof(ctx->params.linked_prefix));
       m9_prof_end(M9_PROF_RECORDS, t_records);
+      if (key->vs) {
+         /* The compiled program replaces the transform: its own constants
+          * take the matrix pairs, and the tail applies the viewport in
+          * force rather than the target's own. */
+         m9_draw_params_viewport(&ctx->params, key->viewport_scale,
+                                 key->viewport_bias, ctx->system.map);
+         vs_decl_count = m9_vs_decl_words(key->vs, vs_decl,
+                                          ARRAY_SIZE(vs_decl));
+         vs_const_pairs =
+            m9_vs_const_span(key->vs, ctx->job_vs_consts.data,
+                             util_dynarray_num_elements(&ctx->job_vs_consts,
+                                                        float),
+                             (uint32_t *)((uint8_t *)ctx->system.map +
+                                          M9_VS_CONST_OFFSET),
+                             2 * M9_VS_CONST_MAX_PAIRS);
+         if (!vs_decl_count || !vs_const_pairs)
+            ret = -EINVAL;
+      }
       if (fs)
-         ret = m9_job_native(ctx, key->variant, records, &raster);
+         ret = m9_job_native(ctx, key, records, &raster);
       job = (struct m9_draw_job) {
          .params = &ctx->params,
          .decl = &ctx->decl,
@@ -862,6 +904,13 @@ m9_submit_job(struct m9_context *ctx)
       if (fs) {
          job.program = key->variant->c2.handle;
          job.blend_dest = key->variant->program.blend_dest;
+      }
+      if (key->vs) {
+         job.program = key->vs_program;
+         job.vs_decl = vs_decl;
+         job.vs_decl_count = vs_decl_count;
+         job.vs_record_bytes = key->vs->record_bytes;
+         job.vs_const_pairs = vs_const_pairs;
       }
       if (!ret)
          ret = m9_batch_emit_draw_job(&ctx->batch, &job);
@@ -939,19 +988,22 @@ m9_consts_differ(const struct util_dynarray *a, const struct util_dynarray *b)
 
 static float *
 m9_job_reserve(struct m9_context *ctx, const struct m9_job_key *key,
-               const struct util_dynarray *consts, unsigned vertices,
-               uint32_t *first, float **extra)
+               const struct util_dynarray *consts,
+               const struct util_dynarray *vs_consts, unsigned record_floats,
+               unsigned vertices, uint32_t *first, float **extra)
 {
    unsigned padded = m9_draw_preprocess_vertices(vertices);
-   unsigned extra_count = key->variant ? key->variant->extra_count : 0;
+   unsigned extra_count = key->variant && !key->vs ?
+                          key->variant->extra_count : 0;
    unsigned dwords;
-   unsigned records = util_dynarray_num_elements(&ctx->records, float) /
-                      M9_RECORD_FLOATS;
    unsigned draws = util_dynarray_num_elements(&ctx->draws,
                                                struct m9_draw_record);
+   unsigned records = draws ?
+                      util_dynarray_num_elements(&ctx->records, float) /
+                      ctx->record_floats : 0;
    float *out;
 
-   if (padded > m9_draw_max_source_vertices())
+   if (padded > m9_draw_max_source_vertices() || !record_floats)
       return NULL;
    /* The bound textures are restated per draw, so they need not end a job;
     * only their extra stream words have to fit the command budget. */
@@ -964,7 +1016,8 @@ m9_job_reserve(struct m9_context *ctx, const struct m9_job_key *key,
 
    dwords = unit_dwords +
             (key->fs ? m9_draw_job_dwords_fs(draws + 1, key->unit_count) :
-                       m9_draw_job_dwords(draws + 1));
+                       m9_draw_job_dwords(draws + 1)) +
+            m9_draw_decl_dwords(key->vs ? 2 * key->vs->attr_count + 1 : 5);
    if (draws) {
       bool state = memcmp(key, &ctx->job_key,
                           offsetof(struct m9_job_key, units)) != 0;
@@ -987,7 +1040,10 @@ m9_job_reserve(struct m9_context *ctx, const struct m9_job_key *key,
          m9_prof_split[4] += key->clip_min != o->clip_min ||
                              key->clip_max != o->clip_max;
       }
-      bool uniforms = key->fs && m9_consts_differ(consts, &ctx->job_consts);
+      bool uniforms = (key->fs && m9_consts_differ(consts, &ctx->job_consts)) ||
+                      (key->vs && m9_consts_differ(vs_consts,
+                                                   &ctx->job_vs_consts)) ||
+                      record_floats != ctx->record_floats;
       bool vertices_full = records + padded > m9_draw_max_source_vertices();
       bool stream_full = dwords > M9_MAX_COMMAND_DWORDS ||
                          m9_draw_job_relocs(draws + 1, key->unit_count) >
@@ -1016,6 +1072,13 @@ m9_job_reserve(struct m9_context *ctx, const struct m9_job_key *key,
          return NULL;
       if (key->fs && consts->size)
          memcpy(ctx->job_consts.data, consts->data, consts->size);
+      util_dynarray_clear(&ctx->job_vs_consts);
+      if (key->vs && vs_consts->size &&
+          !util_dynarray_grow_bytes(&ctx->job_vs_consts, 1, vs_consts->size))
+         return NULL;
+      if (key->vs && vs_consts->size)
+         memcpy(ctx->job_vs_consts.data, vs_consts->data, vs_consts->size);
+      ctx->record_floats = record_floats;
    }
    ctx->job_key = *key;
    ctx->job_unit_dwords = unit_dwords;
@@ -1035,7 +1098,7 @@ m9_job_reserve(struct m9_context *ctx, const struct m9_job_key *key,
       if (!*extra)
          return NULL;
    }
-   out = util_dynarray_grow(&ctx->records, float, padded * M9_RECORD_FLOATS);
+   out = util_dynarray_grow(&ctx->records, float, padded * record_floats);
    if (!out)
       m9_warn_once(ctx, M9_WARN_MEMORY, "out of memory for source records");
    *first = records;
@@ -1049,14 +1112,15 @@ m9_job_commit(struct m9_context *ctx, float *out, float *extra,
               uint32_t cull, bool lines, bool flat)
 {
    unsigned padded = m9_draw_preprocess_vertices(vertices);
-   unsigned extra_floats = 4 * (ctx->job_key.variant ?
+   unsigned extra_floats = 4 * (ctx->job_key.variant && !ctx->job_key.vs ?
                                 ctx->job_key.variant->extra_count : 0);
+   unsigned floats = ctx->record_floats;
    struct m9_draw_record *draw;
 
    /* Pad to the next four-record boundary with the last vertex. */
    for (unsigned i = vertices; i < padded; i++) {
-      memcpy(out + i * M9_RECORD_FLOATS, out + (vertices - 1) * M9_RECORD_FLOATS,
-             M9_RECORD_FLOATS * sizeof(float));
+      memcpy(out + i * floats, out + (vertices - 1) * floats,
+             floats * sizeof(float));
       if (extra)
          memcpy(extra + i * extra_floats, extra + (vertices - 1) * extra_floats,
                 extra_floats * sizeof(float));
@@ -1065,7 +1129,7 @@ m9_job_commit(struct m9_context *ctx, float *out, float *extra,
    draw = util_dynarray_grow(&ctx->draws, struct m9_draw_record, 1);
    if (!draw) {
       /* Shrinking never reallocates; drop the orphaned records. */
-      ctx->records.size = (size_t)first * M9_RECORD_FLOATS * sizeof(float);
+      ctx->records.size = (size_t)first * floats * sizeof(float);
       ctx->extra.size = (size_t)first * extra_floats * sizeof(float);
       ctx->indices.size = (size_t)index_first * sizeof(uint16_t);
       m9_warn_once(ctx, M9_WARN_MEMORY, "out of memory for draw records");
@@ -1073,7 +1137,7 @@ m9_job_commit(struct m9_context *ctx, float *out, float *extra,
    }
    /* M9X_DEBUG_TEXTURES: the screen extent a draw covers and the texture it
     * samples, so a region of the image can be traced back to its texture. */
-   if (m9_debug_textures) {
+   if (m9_debug_textures && !ctx->job_key.vs) {
       float x0 = 1e30f, x1 = -1e30f, y0 = 1e30f, y1 = -1e30f;
 
       /* Records hold window coordinates premultiplied by 1/w. */
@@ -1982,8 +2046,8 @@ m9_render_append_indexed(struct m9_vbuf_render *r, const struct m9_job_key *key,
          m9_index_range(indices, index_size, done, n, &lo, &hi);
       }
       vertices = hi - lo + 1;
-      out = m9_job_reserve(ctx, key, &ctx->key_consts, vertices, &first,
-                           &extra);
+      out = m9_job_reserve(ctx, key, &ctx->key_consts, NULL, M9_RECORD_FLOATS,
+                           vertices, &first, &extra);
       if (!out || (extra && r->extra_count != key->variant->extra_count))
          return;
       /* An odd run is padded to a whole dword so every run stays aligned,
@@ -2042,8 +2106,8 @@ m9_render_append(struct m9_vbuf_render *r, const struct m9_job_key *key,
       unsigned n = MIN2(count - done, max);
       uint32_t first;
       float *extra;
-      float *out = m9_job_reserve(r->ctx, key, &r->ctx->key_consts, n, &first,
-                                  &extra);
+      float *out = m9_job_reserve(r->ctx, key, &r->ctx->key_consts, NULL,
+                                  M9_RECORD_FLOATS, n, &first, &extra);
 
       if (!out)
          return;
@@ -2222,6 +2286,397 @@ m9_render_create(struct m9_context *ctx)
 
 /* Drawing */
 
+/* Native vertex path: a covered vertex shader runs as the preprocessing
+ * program over the raw attributes, so the CPU neither transforms nor clips.
+ * The appended tail divides by w, applies the viewport in force and writes
+ * the four streams the raster pass reads; the one varying it carries is
+ * stream 0, which is why only a primary-colour varying and no CPU-written
+ * texture coordinate can be served this way. */
+
+/* Fragment slots of the captured pass-through image; the vertex program
+ * starts behind them, which is why its preprocessing entry is 4. */
+#define M9_PASSTHROUGH_FS_SLOTS 4u
+
+/* Vertex buffers of one native draw, mapped as the draw module maps them. */
+struct m9_native_vs {
+   struct m9_vs_source_layout layout;
+   const uint8_t *map[PIPE_MAX_ATTRIBS];
+   unsigned size[PIPE_MAX_ATTRIBS];
+   unsigned buffer_count;
+   const void *indices;       /* NULL runs a numeric record range */
+   unsigned index_size;
+   int index_bias;
+   uint32_t first_vertex, vertex_count;   /* the range the records cover */
+   enum m9_topology topology;
+   uint32_t cull;
+   bool lines, flat;
+};
+
+/* Constant pairs the compiled program names, resolved against constant
+ * buffer 0: two floats per user constant, in program order. */
+static bool
+m9_vs_resolve_consts(struct m9_context *ctx, const struct m9_vs_program *p,
+                     struct util_dynarray *out)
+{
+   const struct pipe_constant_buffer *cb = &ctx->vs_constants[0];
+   const uint8_t *data = cb->user_buffer ? cb->user_buffer :
+                         cb->buffer ? m9_res(cb->buffer)->map : NULL;
+   size_t size = data ? cb->buffer_size : 0;
+
+   if (data)
+      data += cb->buffer_offset;
+   util_dynarray_clear(out);
+   util_dynarray_foreach(&p->consts, struct m9_vs_const, k) {
+      for (unsigned lane = 0; lane < 2; lane++) {
+         float v = 0.0f;
+
+         if (k->kind == M9_VS_CONST_UNIFORM &&
+             k->offset[lane] != M9_VS_UNIFORM_ZERO) {
+            if ((size_t)k->offset[lane] + sizeof(float) > size)
+               return m9_skip_reason(ctx, "vertex constants outside the "
+                                     "bound constant buffer; draw skipped");
+            memcpy(&v, data + k->offset[lane], sizeof(v));
+         } else if (k->kind == M9_VS_CONST_LITERAL) {
+            v = k->value[lane];
+         }
+         util_dynarray_append_typed(out, float, v);
+      }
+   }
+   return true;
+}
+
+/* The c2 image a native preprocessing job binds: the fragment slots the
+ * raster pass enters, with the compiled vertex program behind them instead
+ * of the captured one.  One image per fragment variant, rebuilt when a
+ * different vertex program binds. */
+static uint32_t
+m9_native_vs_c2(struct m9_context *ctx, struct m9_fs_variant *v)
+{
+   const struct m9_vs_state *vs = ctx->vs;
+   struct m9_resource *image = v ? &v->native_c2 : &ctx->vs_c2;
+   uint64_t *serial = v ? &v->native_c2_serial : &ctx->vs_c2_serial;
+   const uint32_t *fs_slots = v ? v->program.slots.data :
+                                  m9_passthrough_c2_program;
+   unsigned fs_slots_count = v ? m9_fs_slot_count(&v->program) :
+                                 M9_PASSTHROUGH_FS_SLOTS;
+   unsigned entry = 0;
+
+   if (image->handle && *serial == vs->serial)
+      return image->handle;
+   if (!image->handle &&
+       m9_bo_create(ctx->screen, M9_PROGRAM_BYTES, PARHELIA_M9_BO_VRAM,
+                    M9_RESOURCE_SYSTEM_STATE, image))
+      return 0;
+   memset(image->map, 0, image->size);
+   if (!m9_vs_c2_image(&vs->program, fs_slots, fs_slots_count, image->map,
+                       M9_PROGRAM_BYTES / sizeof(uint32_t), &entry) ||
+       entry != fs_slots_count)
+      return 0;
+   *serial = vs->serial;
+   return image->handle;
+}
+
+static uint32_t
+m9_native_index_at(const void *indices, unsigned size, unsigned i)
+{
+   return size == 4 ? ((const uint32_t *)indices)[i] :
+          size == 2 ? ((const uint16_t *)indices)[i] :
+                      ((const uint8_t *)indices)[i];
+}
+
+static void
+m9_native_index_range(const void *indices, unsigned size, unsigned first,
+                      unsigned count, uint32_t *lo, uint32_t *hi)
+{
+   uint32_t a = UINT32_MAX, b = 0;
+
+   for (unsigned i = 0; i < count; i++) {
+      uint32_t v = m9_native_index_at(indices, size, first + i);
+
+      a = MIN2(a, v);
+      b = MAX2(b, v);
+   }
+   *lo = a;
+   *hi = b;
+}
+
+/* What the fragment shader reads, before any variant of it is compiled: a
+ * texture or a second varying needs CPU-written streams the preprocessing
+ * pass cannot fill.  Resolving the source layout and the job key for a draw
+ * that will fall back anyway is what this avoids. */
+static bool
+m9_native_vs_fs_cheap(const struct m9_context *ctx)
+{
+   const struct shader_info *info;
+
+   if (!ctx->fs || !ctx->fs->nir)
+      return false;
+   info = &ctx->fs->nir->info;
+   return BITSET_IS_EMPTY(info->textures_used) &&
+          util_bitcount64(info->inputs_read &
+                          ~(VARYING_BIT_POS | VARYING_BIT_FACE |
+                            VARYING_BIT_PNTC)) <= 1;
+}
+
+/* Can this draw run the compiled vertex program?  NULL when it can, and a
+ * static reason when the draw module has to keep it.  Everything the emit
+ * path then needs is resolved here, so that path cannot fail on state. */
+static const char *
+m9_native_vs_resolve(struct m9_context *ctx, const struct pipe_draw_info *info,
+                     const struct pipe_draw_start_count_bias *draw,
+                     struct m9_native_vs *out)
+{
+   const struct pipe_rasterizer_state *rast = ctx->rasterizer;
+   const struct m9_vs_program *p;
+   const char *layout_reason = "the vertex elements do not feed the "
+                               "declared attributes";
+   unsigned in_pv, reduced;
+   int64_t low;
+
+   if (!ctx->vs || !ctx->vs->native)
+      return ctx->vs && ctx->vs->reason ? ctx->vs->reason :
+             "no native vertex program";
+   if (!ctx->velems)
+      return "no vertex elements are bound";
+   p = &ctx->vs->program;
+   if (p->attr_count > M9_VS_HW_ATTRIBUTES)
+      return "a third preprocessing attribute is not decoded";
+   if (info->instance_count != 1 || info->start_instance)
+      return "instanced draws are not preprocessed natively";
+   if (info->primitive_restart)
+      return "primitive restart is not preprocessed natively";
+   in_pv = rast && rast->flatshade && rast->flatshade_first ? PV_FIRST :
+                                                              PV_LAST;
+   if (!m9_native_topology(info->mode, in_pv, &out->topology))
+      return "the primitive needs the draw module's index translation";
+   reduced = u_reduced_prim(info->mode);
+   out->cull = 0;
+   if (reduced == MESA_PRIM_TRIANGLES && rast) {
+      if (rast->cull_face == PIPE_FACE_FRONT_AND_BACK)
+         return "both faces are culled";
+      out->cull = m9_cull_ef(rast->cull_face, rast->front_ccw);
+   }
+   out->lines = reduced == MESA_PRIM_LINES;
+   out->flat = rast && rast->flatshade;
+   if (rast && (rast->rasterizer_discard || rast->clip_plane_enable ||
+                rast->clip_halfz || !rast->depth_clip_near ||
+                !rast->depth_clip_far || rast->offset_tri ||
+                rast->offset_line || rast->offset_point ||
+                rast->poly_stipple_enable ||
+                rast->fill_front != PIPE_POLYGON_MODE_FILL ||
+                rast->fill_back != PIPE_POLYGON_MODE_FILL))
+      return "a rasterizer state the hardware pass does not carry";
+   if (out->lines && rast &&
+       (rast->line_width > 1.0f || rast->line_smooth ||
+        rast->line_stipple_enable))
+      return "wide, smooth or stippled lines run through the draw module";
+   if (!m9_vs_source_layout_init(p, ctx->velems->elements, ctx->velems->count,
+                                 ctx->vertex_buffers, ctx->num_vertex_buffers,
+                                 &out->layout, &layout_reason))
+      return layout_reason;
+   out->buffer_count = ctx->num_vertex_buffers;
+   for (unsigned i = 0; i < out->buffer_count && i < PIPE_MAX_ATTRIBS; i++) {
+      const struct pipe_vertex_buffer *vb = &ctx->vertex_buffers[i];
+
+      /* A user buffer has no size the driver knows; the draw module reads
+       * it under the same contract. */
+      out->map[i] = vb->is_user_buffer ? vb->buffer.user :
+                    vb->buffer.resource ? m9_res(vb->buffer.resource)->map :
+                                          NULL;
+      out->size[i] = vb->is_user_buffer || !vb->buffer.resource ? UINT_MAX :
+                     vb->buffer.resource->width0;
+   }
+   out->indices = NULL;
+   out->index_size = info->index_size;
+   out->index_bias = draw->index_bias;
+   if (info->index_size) {
+      const uint8_t *base = info->has_user_indices ? info->index.user :
+                            info->index.resource ?
+                            m9_res(info->index.resource)->map : NULL;
+      uint32_t lo, hi;
+
+      if (!base)
+         return "the index buffer is not mapped";
+      out->indices = base + (size_t)draw->start * info->index_size;
+      if (!info->has_user_indices &&
+          (uint64_t)(draw->start + draw->count) * info->index_size >
+          info->index.resource->width0)
+         return "the index run leaves the index buffer";
+      m9_native_index_range(out->indices, info->index_size, 0, draw->count,
+                            &lo, &hi);
+      low = (int64_t)lo + draw->index_bias;
+      if (low < 0)
+         return "a biased index is negative";
+      out->first_vertex = (uint32_t)low;
+      out->vertex_count = hi - lo + 1;
+   } else {
+      out->first_vertex = draw->start;
+      out->vertex_count = draw->count;
+   }
+   if (!m9_vs_source_in_range(&out->layout, out->size, out->buffer_count,
+                              out->first_vertex, out->vertex_count))
+      return "the draw reads outside the bound vertex buffers";
+   return NULL;
+}
+
+/* What the raster pass of a native preprocessing job can consume.  The pass
+ * writes one varying stream and nothing fills the CPU views, so a fragment
+ * program may read that one varying and no texture coordinate. */
+static const char *
+m9_native_vs_raster_ok(const struct m9_job_key *key,
+                       const struct m9_vs_program *p)
+{
+   const struct m9_fs_program *fp;
+
+   /* The pass-through colour image reads the primary colour from stream 0. */
+   if (!key->fs)
+      return p->has_varying && p->varying_location == VARYING_SLOT_COL0 ?
+             NULL : "the pass-through fragment image needs a primary colour";
+   fp = &key->variant->program;
+   if (fp->texture_count)
+      return "the fragment program samples a texture";
+   if (!fp->varying_count)
+      return NULL;
+   if (fp->varying_count > 1)
+      return "the fragment program reads more than one varying";
+   return p->has_varying && p->varying_location == fp->varyings[0].location ?
+          NULL : "the vertex program does not write the varying read";
+}
+
+static bool
+m9_native_vs_append(struct m9_context *ctx, const struct m9_job_key *key,
+                    const struct m9_native_vs *n, unsigned count)
+{
+   const unsigned max = m9_draw_max_source_vertices();
+   unsigned floats = n->layout.record_dwords;
+   bool list = n->topology == M9_TOPOLOGY_LINES ||
+               n->topology == M9_TOPOLOGY_TRIANGLES;
+   unsigned grain = n->topology == M9_TOPOLOGY_TRIANGLES ? 3 :
+                    n->topology == M9_TOPOLOGY_LINES ? 2 : count;
+
+   if (!n->indices) {
+      if (count > max && !list)
+         return false;
+      for (unsigned done = 0; done < count;) {
+         unsigned k = MIN2(count - done, max / grain * grain);
+         uint32_t first;
+         float *extra, *out;
+
+         out = m9_job_reserve(ctx, key, &ctx->key_consts, &ctx->key_vs_consts,
+                              floats, k, &first, &extra);
+         if (!out ||
+             !m9_vs_source_records(&n->layout, n->map, n->size,
+                                   n->buffer_count, n->first_vertex + done, k,
+                                   out))
+            return true;
+         m9_job_commit(ctx, out, NULL, k, first, 0, 0, n->topology, n->cull,
+                       n->lines, n->flat);
+         done += k;
+      }
+      return true;
+   }
+   for (unsigned done = 0; done < count;) {
+      unsigned k = count - done, vertices;
+      uint32_t lo, hi, first, index_first;
+      float *extra, *out;
+      uint16_t *words;
+
+      m9_native_index_range(n->indices, n->index_size, done, k, &lo, &hi);
+      /* Halve the run until the vertices it spans fit one job's records. */
+      while (hi - lo + 1 > max) {
+         k = k / 2 / grain * grain;
+         if (!k)
+            return true;
+         m9_native_index_range(n->indices, n->index_size, done, k, &lo, &hi);
+      }
+      vertices = hi - lo + 1;
+      out = m9_job_reserve(ctx, key, &ctx->key_consts, &ctx->key_vs_consts,
+                           floats, vertices, &first, &extra);
+      if (!out ||
+          !m9_vs_source_records(&n->layout, n->map, n->size, n->buffer_count,
+                                lo + n->index_bias, vertices, out))
+         return true;
+      index_first = util_dynarray_num_elements(&ctx->indices, uint16_t);
+      words = util_dynarray_grow(&ctx->indices, uint16_t,
+                                 k + (k & 1) + M9_INDEX_TAIL);
+      if (!words) {
+         ctx->records.size = (size_t)first * floats * sizeof(float);
+         m9_warn_once(ctx, M9_WARN_MEMORY, "out of memory for raster indices");
+         return true;
+      }
+      for (unsigned i = 0; i < k; i++)
+         words[i] = first +
+                    m9_native_index_at(n->indices, n->index_size, done + i) -
+                    lo;
+      for (unsigned i = k; i < k + (k & 1) + M9_INDEX_TAIL; i++)
+         words[i] = words[k - 1];
+      m9_prof_indexed += k;
+      m9_prof_referenced += vertices;
+      m9_job_commit(ctx, out, NULL, vertices, first, index_first, k,
+                    n->topology, n->cull, n->lines, n->flat);
+      done += k;
+   }
+   return true;
+}
+
+/* True when the draw was taken by the native path; false leaves it to the
+ * draw module with no change in behaviour. */
+static bool
+m9_native_vs_draw(struct m9_context *ctx, const struct pipe_draw_info *info,
+                  const struct pipe_draw_start_count_bias *draw)
+{
+   struct m9_native_vs n;
+   struct m9_job_key key;
+   const char *reason;
+
+   if (!m9_native_vs || !ctx->vs || !ctx->vs->native ||
+       !m9_native_vs_fs_cheap(ctx)) {
+      if (m9_native_vs)
+         ctx->native_vs_fallbacks++;
+      return false;
+   }
+   reason = m9_native_vs_resolve(ctx, info, draw, &n);
+   if (reason || !m9_job_key_current(ctx, &key)) {
+      if (!reason) {
+         /* The state is unsupported for either path; m9_job_key_current
+          * has named it. */
+         ctx->skipped_draws++;
+         return true;
+      }
+      ctx->native_vs_fallbacks++;
+      if (ctx->debug && ctx->native_vs_fallbacks % 1000 == 1)
+         fprintf(stderr, "m9x: native vertex fallback: %s\n", reason);
+      return false;
+   }
+   reason = m9_native_vs_raster_ok(&key, &ctx->vs->program);
+   if (reason) {
+      ctx->native_vs_fallbacks++;
+      if (ctx->debug && ctx->native_vs_fallbacks % 1000 == 1)
+         fprintf(stderr, "m9x: native vertex fallback: %s\n", reason);
+      return false;
+   }
+   key.vs = &ctx->vs->program;
+   key.vs_program = m9_native_vs_c2(ctx, (struct m9_fs_variant *)key.variant);
+   if (!key.vs_program) {
+      ctx->native_vs_fallbacks++;
+      return false;
+   }
+   for (unsigned i = 0; i < 3; i++) {
+      key.viewport_scale[i] = ctx->viewport.scale[i];
+      key.viewport_bias[i] = ctx->viewport.translate[i];
+   }
+   if (!m9_vs_resolve_consts(ctx, key.vs, &ctx->key_vs_consts)) {
+      ctx->skipped_draws++;
+      return true;
+   }
+   if (!m9_native_vs_append(ctx, &key, &n, draw->count)) {
+      ctx->native_vs_fallbacks++;
+      return false;
+   }
+   ctx->native_vs_draws++;
+   return true;
+}
+
 static void
 m9_draw_vbo(struct pipe_context *pctx, const struct pipe_draw_info *info,
             unsigned drawid_offset,
@@ -2259,6 +2714,9 @@ m9_draw_vbo(struct pipe_context *pctx, const struct pipe_draw_info *info,
                  ctx->lost, ctx->params_valid);
       return;
    }
+   if (ctx->fs && (ctx->fs->passthrough || ctx->fs->native) &&
+       m9_native_vs_draw(ctx, info, &draws[0]))
+      return;
    if (!ctx->fs || (!ctx->fs->passthrough && !ctx->fs->native)) {
       m9_skip_reason(ctx, ctx->fs && ctx->fs->reason ? ctx->fs->reason :
                      "no fragment shader is bound; draw skipped");
@@ -2341,7 +2799,8 @@ m9_clear_quad(struct m9_context *ctx, const struct pipe_scissor_state *scissor,
    key.clip_max = ctx->params.clip_max;
    if (scissor && !m9_scissor_key(ctx, scissor, &key))
       return;
-   out = m9_job_reserve(ctx, &key, NULL, 4, &first, &extra);
+   out = m9_job_reserve(ctx, &key, NULL, NULL, M9_RECORD_FLOATS, 4, &first,
+                        &extra);
    if (!out)
       return;
    for (unsigned i = 0; i < 4; i++) {
@@ -2708,6 +3167,9 @@ m9_set_sampler_views(struct pipe_context *pctx, mesa_shader_stage shader,
                                   views && i < count ? views[i] : NULL);
 }
 
+/* Program identity for the cached c2 images; never zero, never reused. */
+static uint64_t m9_vs_serial;
+
 static unsigned
 m9_vs_type_size(const struct glsl_type *type, bool bindless)
 {
@@ -2759,6 +3221,7 @@ m9_create_vs_state(struct pipe_context *pctx,
       return NULL;
    if (templ->type == PIPE_SHADER_IR_NIR && templ->ir.nir)
       m9_vs_native_init(vs, templ->ir.nir);
+   vs->serial = ++m9_vs_serial;
    vs->draw = draw_create_vertex_shader(ctx->draw, templ);
    if (!vs->draw) {
       if (vs->native)
@@ -2951,6 +3414,7 @@ m9_delete_fs_state(struct pipe_context *pctx, void *state)
    util_dynarray_foreach(&fs->variants, struct m9_fs_variant *, it) {
       if ((*it)->ok) {
          m9_bo_destroy(ctx->screen, &(*it)->c2);
+         m9_bo_destroy(ctx->screen, &(*it)->native_c2);
          m9_fs_program_fini(&(*it)->program);
       }
       FREE(*it);
@@ -2983,6 +3447,7 @@ m9_bind_vertex_elements_state(struct pipe_context *pctx, void *state)
 {
    struct m9_velems *velems = state;
 
+   m9_context(pctx)->velems = velems;
    draw_set_vertex_elements(m9_context(pctx)->draw,
                             velems ? velems->count : 0,
                             velems ? velems->elements : NULL);
@@ -3132,6 +3597,8 @@ static void
 m9_set_viewport_states(struct pipe_context *pctx, unsigned start,
                        unsigned count, const struct pipe_viewport_state *vp)
 {
+   if (!start && count)
+      m9_context(pctx)->viewport = vp[0];
    draw_set_viewport_states(m9_context(pctx)->draw, start, count, vp);
 }
 
@@ -3311,10 +3778,14 @@ m9_context_destroy(struct pipe_context *pctx)
    util_dynarray_fini(&ctx->target_depths);
    ctx->target_depth = ctx->target_aux = NULL;
    m9_bo_destroy(screen, &ctx->placeholder_texture);
+   m9_bo_destroy(screen, &ctx->vs_c2);
    if (ctx->debug)
       fprintf(stderr, "m9x: job splits: state %u uniforms %u vertices %u "
               "stream %u\n", ctx->split_state, ctx->split_uniforms,
               ctx->split_vertices, ctx->split_stream);
+   if (ctx->debug || m9_native_vs)
+      fprintf(stderr, "m9x: native vertex draws %u, draw module %u\n",
+              ctx->native_vs_draws, ctx->native_vs_fallbacks);
    util_dynarray_foreach(&ctx->job_textures, struct pipe_resource *, held)
       pipe_resource_reference(held, NULL);
    util_dynarray_fini(&ctx->job_textures);
@@ -3324,6 +3795,8 @@ m9_context_destroy(struct pipe_context *pctx)
    util_dynarray_fini(&ctx->extra);
    util_dynarray_fini(&ctx->key_consts);
    util_dynarray_fini(&ctx->job_consts);
+   util_dynarray_fini(&ctx->key_vs_consts);
+   util_dynarray_fini(&ctx->job_vs_consts);
    FREE(ctx);
 }
 
@@ -3351,6 +3824,7 @@ m9_context_create(struct pipe_screen *pscreen, void *priv, unsigned flags)
    m9_profile_period = debug_get_num_option("M9X_PROFILE", 0);
    m9_job_draws = debug_get_num_option("M9X_JOB_DRAWS", 0);
    m9_indexed_draws = debug_get_bool_option("M9X_INDEXED", true);
+   m9_native_vs = debug_get_bool_option("M9X_NATIVE_VS", true);
    m9_no_clear = debug_get_bool_option("M9X_NO_CLEAR", false);
    m9_clear_repeat = debug_get_num_option("M9X_CLEAR_REPEAT", 0);
    ctx->dump_path = debug_get_option("M9X_DUMP", NULL);
@@ -3427,6 +3901,7 @@ m9_context_create(struct pipe_screen *pscreen, void *priv, unsigned flags)
    ctx->base.set_debug_callback = u_default_set_debug_callback;
    ctx->base.resource_release = u_default_resource_release;
 
+   ctx->record_floats = M9_RECORD_FLOATS;
    if (m9_vertex_decl_init(&ctx->decl, 4, 4) ||
        m9_command_bo_create(screen, &ctx->command) ||
        m9_context_init_fixed(ctx))

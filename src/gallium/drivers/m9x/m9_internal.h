@@ -221,6 +221,7 @@ struct m9_batch {
 struct draw_context;
 struct m9_fs_state;
 struct m9_fs_variant;
+struct m9_velems;
 struct m9_vs_textures;
 
 /* Pass-level raster state shared by every draw of one two-pass job. */
@@ -229,6 +230,12 @@ struct m9_job_key {
    const struct m9_fs_state *fs;   /* native fragment program or NULL */
    const struct m9_fs_variant *variant;  /* its program for the blend state */
    uint32_t depth_control, depth_ef, color_mask, clip_min, clip_max;
+   /* Native preprocessing program of this job, the c2 image holding it and
+    * the viewport its appended tail applies; NULL runs the draw module's
+    * transformed records through the captured program. */
+   const struct m9_vs_program *vs;
+   uint32_t vs_program;
+   float viewport_scale[3], viewport_bias[3];
    struct m9_texture_unit units[M9_TEXTURE_MAX_UNITS];
    struct pipe_resource *unit_res[M9_TEXTURE_MAX_UNITS];
    /* Content over descriptor size of a sampled render target, s and t. */
@@ -250,6 +257,9 @@ struct m9_vs_state {
    struct m9_vs_program program;
    const char *reason;
    bool native;
+   /* Never reused, so a cached c2 image can name the program it holds
+    * without a pointer that a later allocation could match. */
+   uint64_t serial;
 };
 
 struct m9_context {
@@ -272,6 +282,8 @@ struct m9_context {
    /* Vertex processing runs on the CPU in the Gallium draw module. */
    struct draw_context *draw;
    struct pipe_framebuffer_state framebuffer;
+   struct pipe_viewport_state viewport;
+   struct m9_velems *velems;
    const struct pipe_rasterizer_state *rasterizer;
    const struct pipe_depth_stencil_alpha_state *dsa;
    const struct pipe_blend_state *blend;
@@ -315,6 +327,10 @@ struct m9_context {
    struct util_dynarray target_depths;  /* struct m9_target_depth * */
    uint64_t target_clock;
    struct m9_resource placeholder_texture;  /* 1x1 unit-0 binding */
+   /* Pass-through fragment slots with a native vertex program behind them,
+    * for a draw whose fragment shader keeps the captured colour image. */
+   struct m9_resource vs_c2;
+   uint64_t vs_c2_serial;
    struct m9_draw_params params;
    struct m9_vertex_decl decl;
    bool params_valid;
@@ -324,6 +340,10 @@ struct m9_context {
    struct util_dynarray draws;    /* struct m9_draw_record */
    struct util_dynarray extra;    /* float4 CPU varyings per source record */
    struct util_dynarray key_consts, job_consts;  /* raster constant floats */
+   /* Preprocessing constant pairs, two floats each, in program order. */
+   struct util_dynarray key_vs_consts, job_vs_consts;
+   /* Floats per source record of the pending job. */
+   unsigned record_floats;
    /* References held for every texture the pending job binds, and the stream
     * budget its restated unit blocks have already claimed. */
    struct util_dynarray job_textures;  /* struct pipe_resource * */
@@ -331,6 +351,7 @@ struct m9_context {
    uint32_t warned;
    uint32_t skipped_draws;      /* dropped for an unimplemented state */
    uint32_t submitted_draws;
+   uint32_t native_vs_draws, native_vs_fallbacks;
    /* Kernel window traffic: the de-tiling copies cost a host-aperture
     * access per row, so count both directions and their volume. */
    uint32_t window_reads, window_writes;
