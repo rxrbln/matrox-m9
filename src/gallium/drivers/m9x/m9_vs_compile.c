@@ -1286,6 +1286,7 @@ build_alu(struct ctx *c, nir_alu_instr *alu)
 
 struct input_use {
    unsigned location;
+   unsigned driver_location;
    unsigned components;
 };
 
@@ -1295,6 +1296,7 @@ note_input(struct ctx *c, struct input_use *used, unsigned *count,
 {
    unsigned location = nir_intrinsic_io_semantics(intr).location;
    unsigned comps = nir_intrinsic_component(intr) + intr->def.num_components;
+   unsigned driver = nir_intrinsic_base(intr);
 
    if (!nir_src_is_const(intr->src[0]) || nir_src_as_uint(intr->src[0]))
       return fail(c, "indirect vertex input");
@@ -1309,6 +1311,7 @@ note_input(struct ctx *c, struct input_use *used, unsigned *count,
    if (*count >= M9_VS_MAX_ATTRIBUTES)
       return fail(c, "more than four vertex attributes");
    used[*count].location = location;
+   used[*count].driver_location = driver;
    used[(*count)++].components = comps;
    return true;
 }
@@ -1335,6 +1338,7 @@ declare_attributes(struct ctx *c, const struct input_use *used,
       unsigned reg = REG_ATTR0 + 8 * i;
 
       p->attrs[i].location = used[i].location;
+      p->attrs[i].driver_location = used[i].driver_location;
       p->attrs[i].offset = dword;
       for (unsigned j = 0; j < 4; j++) {
          struct held h;

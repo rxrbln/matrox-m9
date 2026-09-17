@@ -111,7 +111,9 @@ struct m9_vs_const {
  * record, which is the index-23 word pair.  Selectors 0..3 pick a component,
  * 4 is the literal 0.0 and 5 the literal 1.0. */
 struct m9_vs_attr {
-   unsigned location;      /* NIR driver location of the input */
+   unsigned location;      /* gl_vert_attrib semantic of the input */
+   unsigned driver_location;  /* its index among the shader's inputs, which is
+                               * the pipe_vertex_element the draw binds */
    unsigned offset;        /* dword offset of the element in the record */
    uint8_t select[4];
 };
