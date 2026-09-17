@@ -112,7 +112,20 @@ five or more vertex inputs would settle it.
 
 One measured limit of the shipping command stream, not of the hardware: its
 preprocessing pass has room for eight index-`23` words, so three attributes
-(seven words) fit and four (nine words) do not.
+(seven words) fit and four (nine words) do not.  A vendor capture with more
+attributes shows the block is not fixed at eight words — it grows and splits
+into several terminated blocks (`parhelia-m9-openbits-gl-capture.md`).
+
+**Update (2026-09-17, MEASURED on the vendor stack.)**  Fifteen simultaneous
+vertex attributes work: `gl_Vertex` plus fourteen generic ones, each checked
+per attribute and per value over 64 cells.  The sixteenth fails to link even
+though `MAX_VERTEX_ATTRIBS` is 16.  So attribute 3 and every attribute up to 15
+is verified; the earlier probe failure at `0x56/0x57` was a probe problem, not
+a hardware limit.  Two ICD mechanics matter when writing such a probe:
+`glBindAttribLocation` crashes the vendor ICD, and generic attribute arrays
+must live in buffer objects.  The mapping from declaration entry to attribute
+register is still UNDECODED; dumping the compiled C2 program alongside the
+index-`23` words for several attribute counts would close it.
 
 ## 3. The transform (MEASURED)
 

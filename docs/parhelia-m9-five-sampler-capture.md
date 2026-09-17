@@ -60,6 +60,14 @@ at index 78 from `10ec1000`.  All six program/state blocks select the same
 linked record `6c=40c3a281`.  The complete 0x21000-byte resource image is
 unchanged across submission.
 
+**Update (2026-09-17).**  This is the *dependent* case.  With independent
+fetches the compiler packs four into a single pass using all four slots
+`70..73`, and a continuation pass carries three plus the previous pass's
+scratch result, so `N` independent fetches cost one pass for `N <= 4` and
+`ceil(N/3)` above that.  The one-pass-per-sampler behaviour below is a data
+dependency, not a slot limit.  Measured to sixteen samplers and to 49 taps of
+one sampler in `parhelia-m9-openbits-gl-capture.md`.
+
 The vendor compiler therefore implements this five-dependent-sampler shader
 as framebuffer multipass inside one ExecuteDma submission.  Passes 0--3 write
 four rotating views of scratch surface `0x10ec1000`; the final pass samples

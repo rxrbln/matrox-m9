@@ -138,7 +138,10 @@ different path.
 
 Shadow comparison at `0x18bf38` requires sampler `+0x46` bit 8 and sampler
 `+0x08` bit 13, sets backend `+0x10` bit 26, and puts this mapped D3D comparison
-in bits `29:27` [BIN][DER]:
+in bits `29:27` [BIN][DER].  Both fields, and this exact function mapping, are
+CAPTURED live through `GL_ARB_shadow` in index `0x70 + unit`; a comparing fetch
+additionally moves bits `11:8` from `1` to `2`.  See
+`parhelia-m9-openbits-gl-capture.md`.
 
 ```text
 NEVER LESS EQUAL LEQUAL GREATER NOTEQUAL GEQUAL ALWAYS
@@ -369,8 +372,11 @@ resulting joined table; all numeric entries are hexadecimal:
 The same frontend explicitly rejects `R3G3B2`, `A8R3G3B2`, `A8P8`, `P8`,
 `D32F_LOCKABLE`, `D24FS8`, and `CxV8U8` by returning internal ID `-1`.
 Depth/stencil descriptor codes are also recoverable (`D16=5c`, `D32=7c`,
-`D15S1=5d`, and the D24 family=`7d`), but their presence in this generic
-format table does not by itself prove texture sampling support.
+`D15S1=5d`, and the D24 family=`7d`).  `5c`, `7c` and `7d` are now CAPTURED
+from the live Linux vendor ICD sampling `GL_DEPTH_COMPONENT16/32/24` with
+comparison, so depth texture sampling is proven, not merely tabulated — see
+`parhelia-m9-openbits-gl-capture.md`.  In the Linux packet the field sits in
+index `79` bits `31:25`, with `GL_RGBA8` landing on `64` as the control.
 
 ### Channel routing
 

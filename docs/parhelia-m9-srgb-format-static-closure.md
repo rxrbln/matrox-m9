@@ -38,7 +38,10 @@ consumer select texture-coordinate records and are unrelated to sRGB.
 
 Neither saved GL implementation contains `GL_EXT_texture_sRGB` or
 `GL_EXT_framebuffer_sRGB`.  The existing vendor `glxinfo` capture advertises
-neither extension.  Direct3D render-target sRGB is therefore a dormant
+neither extension, and a live `glxinfo` taken from the running vendor stack on
+the M9148 on 2026-09-17 confirms it (`parhelia-m9-openbits-gl-capture.md`):
+no sRGB extension of any kind, so the vendor's own GL never exercises a
+sampler decode path.  Direct3D render-target sRGB is therefore a dormant
 implementation lead for Mesa, not an advertised GL feature.
 
 The public Direct3D mapper accepts 46 named formats and explicitly rejects 13
