@@ -2921,7 +2921,7 @@ m9_native_vs_resolve(struct m9_context *ctx, const struct pipe_draw_info *info,
       return "no vertex elements are bound";
    p = &ctx->vs->program;
    if (p->attr_count > M9_VS_HW_ATTRIBUTES)
-      return "a third preprocessing attribute is not decoded";
+      return "more preprocessing attributes than the declaration can name";
    if (info->instance_count != 1 || info->start_instance)
       return "instanced draws are not preprocessed natively";
    if (info->primitive_restart)

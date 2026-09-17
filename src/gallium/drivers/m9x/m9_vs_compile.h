@@ -33,11 +33,13 @@ struct nir_shader;
  * used to draw from neither its own value nor a decoy; the register rule
  * above was right all along and the declaration was not, because the pass
  * stated a fixed count of two in index 0x88 bits 27:24.  With that count
- * driven from the declaration all three attributes read exactly
- * (MEASURED, docs/parhelia-m9-vertex-output-target-re.md).  A fourth has
- * no probe, so the draw path stops at three; the backend still compiles
- * four, which is what the offline corpus covers. */
-#define M9_VS_HW_ATTRIBUTES  3u
+ * driven from the declaration all three attributes read exactly.  The
+ * fourth reads exactly too (MEASURED on the M9128: attr4-r5e 100% of every
+ * triangle interior, and the three lower registers each hold their own
+ * attribute's decoy), so the draw path reaches the four the register rule
+ * and the four-bit declaration field allow.
+ * docs/parhelia-m9-vertex-output-target-re.md */
+#define M9_VS_HW_ATTRIBUTES  4u
 #define M9_VS_MAX_DECL       16u
 /* Output pair (0x11 + 4j, 0x13 + 4j) goes to the target bound at index
  * 0xb0 + 2j and register 0x21 to 0xb8, with index 0xef bits 19/21/23
