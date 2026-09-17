@@ -580,6 +580,8 @@ int m9x_tx_stream(struct m9x_device *mdev, unsigned int index,
 	unsigned int i;
 	u16 f[8];
 
+	if (out)
+		memset(out, 0, sizeof(*out));
 	if (index >= mdev->ddc_count)
 		return -ENODEV;
 	bus = &mdev->ddc[index];
@@ -593,7 +595,6 @@ int m9x_tx_stream(struct m9x_device *mdev, unsigned int index,
 	if (!f[0] || !f[2] || !f[3] || !f[5])
 		return -ENOLINK;
 	if (out) {
-		memset(out, 0, sizeof(*out));
 		out->htotal = f[0];
 		out->hdisplay = f[2];
 		out->vtotal = f[3];

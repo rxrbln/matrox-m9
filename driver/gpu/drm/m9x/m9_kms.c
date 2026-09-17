@@ -861,6 +861,9 @@ static void m9_head_output_enable(struct m9_head *head,
 	int ret;
 
 	ret = m9x_tx_stream(mdev, head->index, &sent);
+	drm_dbg_kms(&mdev->drm, "head %u: was sending %d %ux%u %u/%u\n",
+		    head->index, ret, sent.hdisplay, sent.vdisplay,
+		    sent.htotal, sent.vtotal);
 	if (!ret && sent.hdisplay == mode->hdisplay &&
 	    sent.vdisplay == mode->vdisplay && sent.htotal == mode->htotal &&
 	    sent.vtotal == mode->vtotal)

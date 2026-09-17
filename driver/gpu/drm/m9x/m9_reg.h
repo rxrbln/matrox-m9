@@ -129,14 +129,20 @@
 #define M9_REG_DVO0			0x1c9c
 /*
  * Per-pad output gate.  MEASURED: the high nibble gates, active high for off,
- * one bit per pad; the low nibble is read-only status, set while that pad is
- * driving.  POST leaves 0xe1 - pad 0 ungated and pads 1..3 held off - which is
- * why a freshly posted board lights exactly one connector however healthy the
- * other three controllers are.  The gate only takes effect while that pad's
- * transmitter is initialised with its output enabled: written to a dark,
- * uninitialised pad it does nothing, which is what made the register look
- * inert.  Clearing a bit starts the pad; setting it again does not stop one
- * that is already running.
+ * one bit per pad.  POST leaves 0xe1 - pad 0 ungated and pads 1..3 held off -
+ * which is why a freshly posted board lights exactly one connector however
+ * healthy the other three controllers are, and clearing a head's bit is what
+ * makes its transmitter start receiving video.  The gate only takes effect
+ * while that pad's transmitter is initialised with its output enabled:
+ * written to a dark, uninitialised pad it does nothing, which is what made
+ * the register look inert.  Clearing a bit starts the pad; setting it again
+ * does not stop one that is already running.
+ *
+ * The low nibble is read-only and changes as pads come up, but its meaning is
+ * NOT established: it has been observed set for a connector with no sink and
+ * clear for one that was demonstrably transmitting, so it is neither a
+ * hot-plug input nor a reliable "this pad is driving" flag.  Nothing gates on
+ * it.
  */
 #define M9_REG_PAD_GATE			0x1cac
 #define M9_PAD_GATE_OFF(pad)		BIT(4 + (pad))
@@ -205,6 +211,13 @@
  * the saved binaries' "0x30 when enabled" reads like.  The vendor's captured
  * sequence passes through 0x30 and closes on 0x00; the closing write is the
  * one that matters.
+ *
+ * MEASURED, and the reason nothing may leave this register blanked: 0x30 also
+ * kills the AUX engine and clears the lane-status mirror at 0x63..0x65, and
+ * the link does not come back when the gate reopens - it has to be trained
+ * again.  0x10 does not; it blanks the stream while AUX keeps answering.  So
+ * a probe that blanks before reading the capability mirror reads zeros and
+ * concludes the sink has no lanes.
  */
 #define M9_DP_TX_GATE		0x0a
 #define M9_DP_TX_GATE_ON	0x00u
