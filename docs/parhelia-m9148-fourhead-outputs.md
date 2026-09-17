@@ -852,3 +852,37 @@ Two costs this leaves, neither fixed:
 * `head 2: scanout publish failed (-19)` still fires once on the first
   modeset at a mode larger than the firmware's, before the surface is grown.
   The frame after it is correct; the ordering is not.
+
+## Confirmed again on a second pair of connectors (2026-09-17)
+
+After a target reset with panels moved to DP-1 and DP-2, the user confirmed a
+picture on **both**.  MEASURED:
+
+```
+DP-1  crtc 37  1920x1200   MSA htotal 2080 hactive 1920 vtotal 1235 vactive 1200
+DP-2  crtc 44  1920x1080   MSA htotal 2200 hactive 1920 vtotal 1125 vactive 1080
+pad gate 0xc1   pads 0 and 1 ungated, pads 2 and 3 held off
+hotplug         ddc0=03 ddc1=03 driving, ddc2=06 ddc3=06 empty
+head 1          DP link training failed (-110)
+head 1          sending 1920x1080 htotal 2200 vtotal 1125, pad gate 0xc3
+```
+
+This is a different head and a different pad from the earlier DP-3 confirmation,
+so the encoder is per-head in fact and not only in shape.  Both connectors were
+brought up from a clean POST, where only pad 0 is ungated.
+
+**Neither sink answers AUX in this configuration** - both report `-6` with all
+mirrors zero - so both are dual-mode consumers and the `-110` training timeouts
+are the correct outcome rather than a failure.  Note that DP-1 answered DPCD and
+trained at four lanes in the earlier session with a different panel on it, so
+the property belongs to the attached sink, not to the connector.
+
+The link-training path therefore cannot be re-exercised while only dual-mode
+sinks are attached.  The earlier verification stands on its own evidence - `DP
+link up, 4 lanes at 1.62 Gbps`, reported only after DPCD `0x202..0x204` read
+back over AUX with align-done and per-lane clock recovery, equalisation and
+symbol lock - but it is not reproducible from the current configuration.
+
+Outstanding on this path: a dual-mode sink costs about **3.4 s per bring-up**
+timing out on training that cannot succeed.  The DP++ adapter identifier is
+readable over DDC and would let the driver skip training outright.  NOT DONE.
