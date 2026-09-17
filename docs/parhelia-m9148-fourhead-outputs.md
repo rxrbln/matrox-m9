@@ -247,6 +247,38 @@ From `captures/m9x-vendor-fourhead-20260917/watch-disp.csv`, MEASURED:
 The sampler polls, so a value overwritten between two passes can be missed; the
 snapshots are authoritative for final state and the trace for order.
 
+## The PInS must come from the shadow BIOS, not the option ROM BAR
+
+The clean-room kernel driver read `09 0a 00 00 0d 0e 00 00` at PInS `+0x50` and
+built two DDC buses, while reading this board's ROM at the same PInS base
+`0x7460` gives `09 0a 0b 0c 0d 0e 0f 10`.  The two reads differ in more than
+those four bytes: the driver also reported 644 patch-table bytes where the
+captured image has 596, so the images themselves are different, not the read.
+
+`captures/m9x-vendor-fourhead-20260917/vbios-shadow.bin` is the copy POST left
+at `0xc0000`.  Its expansion-ROM image is `0xf000` bytes, PCIR `102b:0540`,
+last-image bit set, and both the image checksum and the PInS's own 0x400-byte
+checksum are zero, so the four-bus map is the board's own and internally
+consistent.  MEASURED.  (The `55 aa` image at `0xf000` in that dump is the next
+option ROM the system BIOS packed into the C segment, PCIR `10ec:8168`, and not
+part of the Matrox ROM.)
+
+The vendor X driver does not read the ROM BAR at all.  `m9x_drv.so` calls
+`mmap(NULL, 0x20000, …, fd, 0xc0000)` and aborts with *"Cannot map Shadow
+BIOS"* / *"M-Series Shadow BIOS detected"* / *"BIOS was not run?"* — it takes
+the PInS only from the POSTed RAM copy.  CAPTURED (disassembly at
+`0x288f4d`).
+
+So the flash image is generic and the VBIOS specialises the shadow for the
+board it finds; the flash PInS carries the two-bus map of the smaller M9
+boards.  A driver that reads the ROM BAR silently caps itself at two heads.
+DERIVED — the flash image itself was not dumped, and the alternative that some
+component patched the RAM copy after POST is not excluded; the driver now logs
+which source it used along with the PInS board name and serial, which settles
+it in one boot.  If both sources ever disagree on a board, the identification
+EEPROM at `0xa0` on the MISCIO bus carries the same serial as PInS `+0x16`
+(`KFQ19421` here) and can pick the right image.
+
 ## What a driver change needs
 
 `drivers/gpu/drm/m9x` currently brings up head 0 only.  To extend it:
@@ -267,4 +299,6 @@ snapshots are authoritative for final state and the trace for order.
    counter at `DCT+0x24` is a usable fallback and is confirmed to advance on all
    four heads.  UNTESTED as an IRQ source.
 
-None of these changes were landed; they are proposals.
+All five were landed in `drivers/gpu/drm/m9x` together with the shadow-BIOS
+PInS source above; the per-head vblank sources for heads 1..3 are still unknown
+and default to no interrupt.
