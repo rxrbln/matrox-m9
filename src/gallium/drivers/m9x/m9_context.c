@@ -2623,23 +2623,89 @@ m9_set_sampler_views(struct pipe_context *pctx, mesa_shader_stage shader,
                                   views && i < count ? views[i] : NULL);
 }
 
+static unsigned
+m9_vs_type_size(const struct glsl_type *type, bool bindless)
+{
+   return glsl_count_vec4_slots(type, false, bindless);
+}
+
+/* Compile the native preprocessing program from a clone: the shader the
+ * state tracker handed over belongs to the draw module, which still runs
+ * every vertex.  Nothing reads the result yet -- binding it needs the
+ * source records and the varying stream to come from the vertex program
+ * (docs/parhelia-m9-native-vertex-backend.md section 8). */
+static void
+m9_vs_native_init(struct m9_vs_state *vs, struct nir_shader *src)
+{
+   nir_shader *nir = nir_shader_clone(NULL, src);
+   unsigned location = 0;
+
+   if (!nir)
+      return;
+   if (!nir->info.io_lowered) {
+      nir_foreach_shader_in_variable(var, nir)
+         var->data.driver_location = location++;
+      location = 0;
+      nir_foreach_shader_out_variable(var, nir)
+         var->data.driver_location = location++;
+      NIR_PASS(_, nir, nir_lower_io, nir_var_shader_in | nir_var_shader_out,
+               m9_vs_type_size, (nir_lower_io_options)0);
+   }
+   /* Mesa fuses no multiply and add on its own; the backend folds the
+    * product the hardware's multiply-add can take, and this pass first
+    * gives it the shapes it recognises. */
+   NIR_PASS(_, nir, nir_opt_algebraic_late);
+   NIR_PASS(_, nir, nir_opt_dce);
+   vs->native = m9_vs_compile(nir, &vs->program, &vs->reason);
+   if (getenv("M9X_DEBUG"))
+      fprintf(stderr, "m9x vs: %s\n",
+              vs->native ? "native" : vs->reason ? vs->reason : "unsupported");
+   ralloc_free(nir);
+}
+
 static void *
 m9_create_vs_state(struct pipe_context *pctx,
                    const struct pipe_shader_state *templ)
 {
-   return draw_create_vertex_shader(m9_context(pctx)->draw, templ);
+   struct m9_context *ctx = m9_context(pctx);
+   struct m9_vs_state *vs = CALLOC_STRUCT(m9_vs_state);
+
+   if (!vs)
+      return NULL;
+   if (templ->type == PIPE_SHADER_IR_NIR && templ->ir.nir)
+      m9_vs_native_init(vs, templ->ir.nir);
+   vs->draw = draw_create_vertex_shader(ctx->draw, templ);
+   if (!vs->draw) {
+      if (vs->native)
+         m9_vs_program_fini(&vs->program);
+      FREE(vs);
+      return NULL;
+   }
+   return vs;
 }
 
 static void
 m9_bind_vs_state(struct pipe_context *pctx, void *state)
 {
-   draw_bind_vertex_shader(m9_context(pctx)->draw, state);
+   struct m9_context *ctx = m9_context(pctx);
+   struct m9_vs_state *vs = state;
+
+   ctx->vs = vs;
+   draw_bind_vertex_shader(ctx->draw, vs ? vs->draw : NULL);
 }
 
 static void
 m9_delete_vs_state(struct pipe_context *pctx, void *state)
 {
-   draw_delete_vertex_shader(m9_context(pctx)->draw, state);
+   struct m9_context *ctx = m9_context(pctx);
+   struct m9_vs_state *vs = state;
+
+   if (ctx->vs == vs)
+      ctx->vs = NULL;
+   draw_delete_vertex_shader(ctx->draw, vs->draw);
+   if (vs->native)
+      m9_vs_program_fini(&vs->program);
+   FREE(vs);
 }
 
 /* True when def is the unmodified four-component primary color input. */

@@ -276,6 +276,13 @@ held_of(nir_scalar s)
          h.b = nir_intrinsic_component(intr) + s.comp;
          return h;
       }
+      if (intr->intrinsic == nir_intrinsic_load_ubo) {
+         if (!nir_src_is_const(intr->src[1]))
+            return h;
+         h.kind = HELD_UNIFORM;
+         h.a = (unsigned)nir_src_as_uint(intr->src[1]) + 4 * s.comp;
+         return h;
+      }
       if (intr->intrinsic == nir_intrinsic_load_ubo_vec4) {
          h.kind = HELD_UNIFORM;
          h.a = 16 * (nir_intrinsic_base(intr) +

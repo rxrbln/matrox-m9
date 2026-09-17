@@ -13,6 +13,7 @@
 #include "pipe/p_state.h"
 #include "drm-uapi/m9x_drm.h"
 #include "m9_draw_params.h"
+#include "m9_vs_compile.h"
 #include "m9_texture.h"
 #include "util/simple_mtx.h"
 #include "util/u_dynarray.h"
@@ -241,6 +242,15 @@ struct m9_job_key {
 
 /* Per-context state is complete rather than inherited from the classic
  * Parhelia shadow.  Dirty bits describe only M9 packet groups. */
+/* A vertex shader: the draw module's copy, which every draw still runs, and
+ * the native preprocessing program when the backend covered it. */
+struct m9_vs_state {
+   void *draw;
+   struct m9_vs_program program;
+   const char *reason;
+   bool native;
+};
+
 struct m9_context {
    struct pipe_context base;
    struct m9_screen *screen;
@@ -266,6 +276,7 @@ struct m9_context {
    const struct pipe_blend_state *blend;
    struct pipe_scissor_state scissor;
    struct m9_fs_state *fs;
+   struct m9_vs_state *vs;
    struct pipe_vertex_buffer vertex_buffers[PIPE_MAX_ATTRIBS];
    unsigned num_vertex_buffers;
    struct pipe_constant_buffer vs_constants[PIPE_MAX_CONSTANT_BUFFERS];
