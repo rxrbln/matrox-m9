@@ -409,3 +409,63 @@ holds 14 bits of pixels.  NOT IMPLEMENTED.
 DP-3 read `disconnected` on one probe immediately after DP-2 was attached, then
 `connected` with valid EDID on the next X start without anything being
 replugged.  One transient, not reproduced, cause not established.
+
+## Do all four heads sweep, and does vblank reach the interrupt path?
+
+Two separate questions, answered by two independent paths with
+`tools/m9-scanout-probe.c`: the free-running line counter in each head's
+timing bank (`DCT + 0x24`) says whether the display controller is sweeping,
+and `drmCrtcGetSequence` says whether that head's vertical blank reaches the
+kernel's vblank counter.  MEASURED 2026-09-17 with DP-1, DP-3 and DP-4 held by
+`tools/m9-heads.c` (DP-2 was disconnected for this run):
+
+| head | line counter | range | wraps | rate | vtotal | source of the timing |
+|---:|---|---|---:|---:|---:|---|
+| 0 | `0x1924` | 0..1234 | 60/s | 60.00 Hz | 1234 | DP-1 1920x1200, ours |
+| 1 | `0x1b24` | 0..805 | 60/s | 60.00 Hz | 805 | firmware's posted 1024x768 |
+| 2 | `0x1e24` | 0..1124 | 60/s | 60.00 Hz | 1124 | DP-3 1920x1080, ours |
+| 3 | `0x1f24` | 0..805 | 60/s | 60.00 Hz | 805 | DP-4 1024x768, ours |
+
+**All four sweep**, each at exactly the rate and vtotal of its own timing.
+Head 1 was not programmed in this run at all: it is still running the
+timing the firmware posted, whose `vblank 0x032502ff` is the same word the
+warm snapshot in `m9_kms.c` recognises.  Sampled again after the modes were
+dropped, **all four still advance at 60 Hz** - releasing the framebuffer does
+not stop a timing generator.
+
+Vblank interrupts are a different story:
+
+```
+crtc 37 (index 0)  sequence 314 -> 374  +60 in 1.00s  60.00 Hz
+crtc 44 (index 1)  no vblank: Invalid argument
+crtc 51 (index 2)  no vblank: Invalid argument
+crtc 58 (index 3)  no vblank: Invalid argument
+```
+
+Only head 0 has one, and it is exact.  Heads 1..3 report none **by
+construction**, not by failure: `m9_vblank_mask[]` carries only
+`M9_IRQ_LOW_VBLANK0`, so those heads stay out of the interrupt path rather
+than being given a guessed bit.
+
+The interrupt status word gives the next step and its hazard.  Sampled
+read-only (never acknowledged, so the running driver is undisturbed):
+
+```
+irq low raw 0x08e0: ever high 0xfc03ff6f  changing 0x00000000  mask 0x00000000
+irq low raw 0x08e0: ever high 0xfc03ff6f  changing 0x00000001  mask 0x00000001
+```
+
+The word is W1C and the handler consumes only `raw & mask & owned`, so an
+unmasked source stays latched high forever and a masked one never toggles.
+**Polling cannot identify the remaining bits** - only bit 0 changes, and only
+while the driver has it unmasked.  Twenty-one further bits are latched high
+(`0xfc03ff6f` less bit 0) and any of them could be a head's vertical blank, as
+could a bit of the high interrupt word reached through
+`M9_IRQ_HIGH_LOW_CASCADE`; that the low word carries heads 1..3 at all is an
+assumption, not a measurement.
+
+Finding them means walking `m9x.vblank_mask=` per head and watching whether
+that CRTC's DRM sequence advances at its own refresh rate - which is safe from
+an interrupt storm, because the handler acknowledges exactly what it unmasked.
+Giving each head a different refresh rate disambiguates a candidate set in one
+load.  NOT DONE.
