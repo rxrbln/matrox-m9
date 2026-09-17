@@ -144,9 +144,8 @@ struct ctx {
    bool has_consts;
    bool custom_consts;  /* a template supplies the whole constant span */
    bool depth_first;    /* schedule operands before breadth, for pressure */
+   bool no_gather_reuse;  /* rebuild each assembled vector, for pressure */
 };
-
-#define M9_GATHER_REUSE_WINDOW 24u
 
 struct gather_key {
    nir_scalar s[4];
@@ -379,13 +378,6 @@ build_intrinsic(struct ctx *c, nir_intrinsic_instr *intr)
       int k;
 
       if (location == VARYING_SLOT_POS) {
-         /* The program below matches the vendor's fragcoord case byte for
-          * byte and r88 declares it the same way, but on this hardware the
-          * position registers still read back constant, so the job side
-          * has to publish something the capture does not show.  Refuse
-          * until that is found rather than render a wrong position. */
-         if (!debug_get_bool_option("M9X_FRAGCOORD", false))
-            return fail(c, "gl_FragCoord is not published to the shader"), -1;
          n = node_new(c, N_FRAGCOORD);
          return n < 0 ? -1 : (c->p->fragcoord = true, n);
       }
@@ -1391,15 +1383,10 @@ build_vec(struct ctx *c, nir_scalar s[4])
    /* The same vector is assembled from the same scalars over and over in
     * code the front end scalarised, and nothing else keys on it, so the
     * assembled node is remembered here. */
-   util_dynarray_foreach(&c->gathers, struct gather_key, g) {
-      /* Only a recent one: reusing an assembly from far back would hold
-       * its register alive across everything in between, and the register
-       * file is small enough that that costs more than it saves. */
-      if (!memcmp(g->s, s, sizeof(g->s)) &&
-          g->node + (int)M9_GATHER_REUSE_WINDOW >=
-          (int)NUM(c, nodes, struct node))
-         return g->node;
-   }
+   if (!c->no_gather_reuse)
+      util_dynarray_foreach(&c->gathers, struct gather_key, g)
+         if (!memcmp(g->s, s, sizeof(g->s)))
+            return g->node;
    /* General gather: each result lane reads one source through a swizzle,
     * with literals masked in by a per-lane (1, 0) factor and added back.
     * The two lanes may read different sources, so a vec4 can be assembled
@@ -1746,9 +1733,10 @@ chain_const(struct ctx *c, const uint32_t bits[2])
 }
 
 /* The raster engine publishes the fragment position in two registers: 7a
- * holds x and the raw y, 7b holds z.  The vendor floors 7a and then maps y
- * onto the drawable with a multiply-add, which is the same program its
- * fragcoord case emits. */
+ * holds x and the framebuffer row, 7b holds z.  The vendor floors 7a and
+ * then maps y onto the drawable with a multiply-add against (0, height - 1),
+ * which its lower-left convention needs; the screen advertises an
+ * upper-left origin, so st's wpos transform owns that flip instead. */
 #define REG_FRAG_XY 0x7au
 #define REG_FRAG_Z  0x7bu
 
@@ -1778,23 +1766,16 @@ static int chain_const(struct ctx *c, const uint32_t bits[2]);
 static bool
 emit_fragcoord(struct ctx *c, int n, struct node *nd)
 {
-   static const uint32_t flip[2] = { 0x3f800000, 0xbf800000 };  /* 1, -1 */
    static const uint32_t one[2] = { 0x3f800000, 0x3f800000 };
    static const uint32_t zero[2] = { 0, 0 };
-   struct kkey k;
-   int fl, xy, z, kh;
+   int fl, z;
 
-   memset(&k, 0, sizeof(k));
-   k.kind = M9_FS_CONST_FRAG_Y;
-   k.pair = true;
-   kh = key_add(c, &k);
    fl = frag_lop(c, n, 0xa28fccd0, 0x1c, REG_FRAG_XY, -1, -1, -1);
-   xy = frag_lop(c, n, 0xb0400150, 0x1c, -1, fl, chain_const(c, flip), kh);
    z = frag_lop(c, n, 0xb0400150, 0x1c, REG_FRAG_Z, -1,
                 chain_const(c, one), chain_const(c, zero));
-   if (fl < 0 || xy < 0 || z < 0)
+   if (fl < 0 || z < 0)
       return false;
-   nd->value[0] = xy;
+   nd->value[0] = fl;
    nd->value[1] = z;
    return true;
 }
@@ -2410,8 +2391,13 @@ encode_lops(struct ctx *c)
       case L_MIN_RC:
       case L_MAX_RC:
          a = opreg(c, l, 0);
+         /* The operand occupies both the b and the c field, and only the
+          * captured identity pair is measured, so a swizzle is refused
+          * rather than written into one field of the two. */
+         if (l->opswz[0] != 1)
+            return fail(c, "swizzled minimum or maximum operand");
          emit(c, w0_make(NONE, a, a, d, l->kind == L_MIN_RC ? 2 : 3, op0),
-              w1_make(0xa3200d50 | l->opswz[0] << 6, e, NONE));
+              w1_make(0xa3200d50, e, NONE));
          break;
       case L_MOVC_TMP:
          emit(c, w0_make(NONE, NONE, NONE, d, 0, 0x1c),
@@ -2439,8 +2425,11 @@ encode_lops(struct ctx *c)
               w1_make(0xa0800dd0, e, NONE));
          break;
       case L_MAD:
+         /* Operand slots a, b and c carry a swizzle each at bits 9:8, 7:6
+          * and 5:4; the constant rides in the unused a field. */
          emit(c, w0_make(NONE, opreg(c, l, 0), opreg(c, l, 1), d, 0, op0),
-              w1_make(0xa0400c50 | (pair ? 0x100 : 0), e, NONE));
+              w1_make(0xa0400c00 | kbits << 8 | l->opswz[0] << 6 |
+                      l->opswz[1] << 4, e, NONE));
          break;
       case L_FRACT:
       case L_FLOOR:
@@ -3304,12 +3293,28 @@ reset_output(struct ctx *c)
    util_dynarray_clear(&c->lops);
 }
 
+/* Everything the node graph itself accumulates, so that it can be built
+ * again under a different trade-off. */
+static void
+reset_graph(struct ctx *c)
+{
+   struct m9_fs_program *p = c->p;
+
+   util_dynarray_clear(&c->nodes);
+   util_dynarray_clear(&c->gathers);
+   p->texture_count = 0;
+   p->varying_count = 0;
+   p->fragcoord = false;
+   memset(p->texcoord_projective, 0, sizeof(p->texcoord_projective));
+}
+
+static bool compile_graph(struct ctx *c, nir_scalar s[4], bool discard);
+
 static bool
 compile_output(struct ctx *c, nir_def *value, bool discard)
 {
    nir_scalar s[4];
    bool all_const = true, fragcoord = false;
-   int root;
 
    for (unsigned i = 0; i < 4; i++) {
       s[i] = nir_scalar_chase_movs(nir_get_scalar(value, i));
@@ -3327,8 +3332,27 @@ compile_output(struct ctx *c, nir_def *value, bool discard)
    if (!discard && !fragcoord && (all_const || (s[0].def != s[1].def)) &&
        tmpl_scalars(c, s))
       return true;
-   reset_output(c);
-   root = build_vec(c, s);
+   for (unsigned attempt = 0; attempt < 2; attempt++) {
+      reset_output(c);
+      reset_graph(c);
+      c->depth_first = false;
+      c->no_gather_reuse = attempt > 0;
+      if (compile_graph(c, s, discard))
+         return true;
+      /* Only register pressure is worth another attempt, and only once:
+       * the next one assembles every vector afresh, which is longer but
+       * keeps nothing alive between its uses. */
+      if (c->reason != fail_out_of_temporaries)
+         return false;
+   }
+   return false;
+}
+
+static bool
+compile_graph(struct ctx *c, nir_scalar s[4], bool discard)
+{
+   int root = build_vec(c, s);
+
    if (root < 0 || !assign_texels(c))
       return false;
    if (discard)
