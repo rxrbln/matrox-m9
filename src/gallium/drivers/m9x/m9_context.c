@@ -1819,7 +1819,7 @@ static void
 m9_scale_coords(const struct m9_job_key *key, float *extra)
 {
    const struct m9_fs_variant *v = key->variant;
-   uint32_t divided = 0, folded = 0;
+   uint32_t divided = 0, folded = 0, scaled = 0;
 
    uint32_t packed = 0;
 
@@ -1854,8 +1854,13 @@ m9_scale_coords(const struct m9_job_key *key, float *extra)
          }
          divided |= BITFIELD_BIT(j);
       }
-      extra[4 * j] *= key->unit_scale[k][0];
-      extra[4 * j + 1] *= key->unit_scale[k][1];
+      /* The stream is shared, so its scale is applied once like every other
+       * step here: two units on one coordinate scaled it twice. */
+      if (!(scaled & BITFIELD_BIT(j))) {
+         extra[4 * j] *= key->unit_scale[k][0];
+         extra[4 * j + 1] *= key->unit_scale[k][1];
+         scaled |= BITFIELD_BIT(j);
+      }
    }
 }
 
