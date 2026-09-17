@@ -270,6 +270,7 @@ struct m9_context {
    bool params_valid;
    struct m9_job_key job_key;
    struct util_dynarray records;  /* float source records */
+   struct util_dynarray indices;  /* uint16 raster indices into records */
    struct util_dynarray draws;    /* struct m9_draw_record */
    struct util_dynarray extra;    /* float4 CPU varyings per source record */
    struct util_dynarray key_consts, job_consts;  /* raster constant floats */
