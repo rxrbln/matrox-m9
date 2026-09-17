@@ -271,6 +271,9 @@ static bool m9_split_submit;
 static unsigned m9_split_passes;
 /* M9X_SPLIT_COVERAGE=0 keeps the plain coverage words on a record pass. */
 static bool m9_split_coverage;
+/* M9X_TRANSITION=0 drops the vendor's inter-draw engine transition from a
+ * split job, which separates a fault in that block from one in the record. */
+static bool m9_transition;
 /* M9X_SPLIT enables the multi-pass schedule.  It is off by default: a pass
  * that binds the inter-pass record stalls the engine (MEASURED), so a
  * shader past the four-fetch limit falls back instead of locking the
@@ -1142,6 +1145,9 @@ m9_submit_job(struct m9_context *ctx)
          m9_texture_unit_placeholder(&placeholder,
                                      ctx->placeholder_texture.handle);
          job.placeholder = &placeholder;
+         /* The vendor's inter-draw engine transition, which a single-pass
+          * job never carries so the captured stream stays byte for byte. */
+         job.transition = m9_transition;
       }
       if (key->vs) {
          job.program = key->vs_program;
@@ -2056,7 +2062,9 @@ m9_fs_variant(struct m9_context *ctx, struct m9_fs_state *fs,
             v->relocs_base += m9_draw_job_relocs(0, units) + routes;
             v->relocs_draw += units + 2;
             v->dwords_base += m9_draw_pass_dwords(1, units, routes);
-            v->dwords_draw += M9_JOB_DRAW_DWORDS;
+            /* Plus the engine transition around each restated draw, the
+             * same fourteen dwords m9_draw_pass_dwords budgets. */
+            v->dwords_draw += M9_JOB_DRAW_DWORDS + 14;
          }
          if (m9_variant_relocs(v, 1) > M9_MAX_RELOCS ||
              m9_variant_dwords(v, 1) > M9_MAX_COMMAND_DWORDS) {
@@ -4204,6 +4212,7 @@ m9_context_create(struct pipe_screen *pscreen, void *priv, unsigned flags)
    m9_split_submit = debug_get_bool_option("M9X_SPLIT_SUBMIT", true);
    m9_split_passes = debug_get_num_option("M9X_SPLIT_PASSES", 0);
    m9_split_coverage = debug_get_bool_option("M9X_SPLIT_COVERAGE", true);
+   m9_transition = debug_get_bool_option("M9X_TRANSITION", true);
    m9_split_enable = debug_get_bool_option("M9X_SPLIT", false);
    ctx->dump_from = debug_get_num_option("M9X_DUMP_FROM", 0);
    ctx->dump_count = debug_get_num_option("M9X_DUMP_COUNT", 4096);

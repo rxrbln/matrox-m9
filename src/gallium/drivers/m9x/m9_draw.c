@@ -67,8 +67,11 @@ unsigned
 m9_draw_pass_dwords(unsigned draw_count, unsigned unit_count,
                     unsigned route_count)
 {
-   /* Three more for the index-30 write a consuming pass carries. */
-   return m9_draw_job_dwords_fs(draw_count, unit_count) + 5 * route_count + 3;
+   /* Three more for the index-30 write a consuming pass carries, and up to
+    * fourteen a draw for the engine transition around it: an eight-dword
+    * epilogue and a six-dword prologue. */
+   return m9_draw_job_dwords_fs(draw_count, unit_count) + 5 * route_count + 3 +
+          14 * draw_count;
 }
 
 unsigned
@@ -278,6 +281,77 @@ fail:
    return ret;
 }
 
+/*
+ * The engine transition the vendor puts around every draw of a native
+ * fragment job (CAPTURED, 343 prologues and 230 epilogues over
+ * captures/m9x-vendor-glsl-programs-20260915 and
+ * captures/m9x-vendor-openbits-20260917; decoded in
+ * docs/parhelia-m9-fragment-pass-splitting.md section 6).  The epilogue
+ * closes the draw that has ended, the prologue opens the block of the next.
+ */
+#define M9_TRANSITION_END      0x38000000u  /* end the block that has drawn */
+#define M9_TRANSITION_PUBLISH  0x40004000u  /* e6 and both 44 of the pair */
+#define M9_TRANSITION_RECORD   0x0c000000u  /* only behind a record writer */
+#define M9_TRANSITION_OPEN     0x60600060u  /* a range's first block */
+#define M9_TRANSITION_RESUME   0x604fff9fu  /* a continuation block */
+#define M9_TRANSITION_FIRST    0x2c000002u  /* second word of the first */
+#define M9_TRANSITION_NEXT     0x2c000000u  /* second word of a continuation */
+#define M9_TRANSITION_LENGTH   0x49d00000u  /* | the block length in dwords */
+#define M9_TRANSITION_START    0x08000000u  /* start the block */
+
+/* Close the block a draw has just ended.  The record word follows a draw
+ * that wrote the inter-pass record and no other (CAPTURED: present behind
+ * every one of the eight ee190004 producers, absent behind every 68002000
+ * stream target). */
+static int
+m9_emit_transition_end(struct m9_batch *batch, bool record)
+{
+   int ret = 0;
+
+   EMIT(V(0xe6, M9_TRANSITION_END));
+   EMIT(V(0xe6, M9_TRANSITION_PUBLISH), V(0x44, M9_TRANSITION_PUBLISH),
+        V(0x44, M9_TRANSITION_PUBLISH));
+   if (record)
+      EMIT(V(0xe6, M9_TRANSITION_RECORD));
+fail:
+   return ret;
+}
+
+/* Open the block of the draw about to be emitted, and hand back where its
+ * length word sits so m9_transition_length can fill it in. */
+static int
+m9_emit_transition_start(struct m9_batch *batch, bool first, uint32_t *at)
+{
+   int ret = 0;
+
+   *at = batch->command_count + 3;
+   EMIT(V(0xe6, first ? M9_TRANSITION_OPEN : M9_TRANSITION_RESUME),
+        V(0xe6, first ? M9_TRANSITION_FIRST : M9_TRANSITION_NEXT),
+        V(0xe6, M9_TRANSITION_LENGTH));
+   EMIT(V(0xe6, M9_TRANSITION_START));
+fail:
+   return ret;
+}
+
+/*
+ * The prologue's length word counts the dwords of the block it opens, from
+ * the prologue's own packet header through the draw packet that ends it,
+ * less one; a draw that closes its range stops at the draw packet's header
+ * instead, because the range close bounds it (DERIVED, and exact for all
+ * 343 captured prologues -- tools/m9-command-decode.py over both capture
+ * sets).  Captured lengths run 0x80..0xcc with bits 15:8 clear, so the
+ * field is read as the low sixteen bits.
+ */
+static void
+m9_transition_length(struct m9_batch *batch, uint32_t at, uint32_t draw_at,
+                     bool more)
+{
+   uint32_t length = draw_at - (at - 3) +
+                     (more ? batch->command_count - draw_at - 1 : 0);
+
+   batch->command[at] = M9_TRANSITION_LENGTH | (length & 0xffffu);
+}
+
 /* One raster range: its state, its units and routes, and every draw of the
  * job.  A split shader repeats this per pass, advancing the dependency the
  * vendor advances by 0x20 a pass. */
@@ -292,13 +366,35 @@ m9_emit_raster_range(struct m9_batch *batch, const struct m9_draw_job *job,
    /* A record-writing pass never blends: the destination it would read is
     * the record, not the application target. */
    bool blend = job->blend_dest && !(pass && pass->writes_record);
+   /* Passes that share a preprocessing range follow each other inside one
+    * raster range, so only the first of them opens that range. */
+   bool opens = !index || job->preprocess_per_pass;
+   uint32_t block = 0;
    int ret = 0;
 
+   /* A continuation pass closes the pass before it, which wrote the record
+    * whenever that pass was not the last. */
+   if (job->transition && !opens) {
+      ret = m9_emit_transition_end(batch, job->passes[index - 1].writes_record);
+      if (ret)
+         goto fail;
+   }
+   if (job->transition) {
+      ret = m9_emit_transition_start(batch, opens, &block);
+      if (ret)
+         goto fail;
+   }
    EMIT(V(0xe6, 3), V(0xe3, dep));
-   EMIT(V(0xe6, 3));
-   EMIT(V(0xe6, 3), V(0xe3, dep + 0x10));
+   /* The vendor opens a range with two dependency steps and the 0x42000000
+    * control, and a continuation block inside it with one step and neither
+    * (CAPTURED, both raster draws of all seven two-pass cases). */
+   if (opens) {
+      EMIT(V(0xe6, 3));
+      EMIT(V(0xe6, 3), V(0xe3, dep + 0x10));
+   }
    EMIT(V(0x43, dep + 0x10));
-   EMIT(V(0xe6, 0x42000000));
+   if (opens)
+      EMIT(V(0xe6, 0x42000000));
    uint32_t depth_ef = pass ? pass->depth_ef : job->depth_ef;
 
    EMIT(V(0xf0, m9_raster_class(d0->lines, blend)), V(0xef, d0->cull | depth_ef),
@@ -359,7 +455,19 @@ m9_emit_raster_range(struct m9_batch *batch, const struct m9_draw_job *job,
       goto fail;
    for (unsigned i = 0; i < job->draw_count; i++) {
       const struct m9_draw_record *d = &job->draws[i];
+      uint32_t draw_at;
 
+      /* The vendor's transition sits around every draw, not only around a
+       * pass, so a restated draw closes the block before it and opens its
+       * own (CAPTURED, three draws of one preprocessing range). */
+      if (job->transition && i) {
+         ret = m9_emit_transition_end(batch, pass && pass->writes_record);
+         if (ret)
+            goto fail;
+         ret = m9_emit_transition_start(batch, false, &block);
+         if (ret)
+            goto fail;
+      }
       /* Later draws restate topology, shading, class and cull, and their
        * texture units whenever the binding moved on. */
       if (i) {
@@ -379,6 +487,7 @@ m9_emit_raster_range(struct m9_batch *batch, const struct m9_draw_job *job,
               V(0xef, d->cull | depth_ef),
               V(0xd7, m9_raster_d7(d->topology)), V(0xf4, 0));
       }
+      draw_at = batch->command_count;
       ret = d->index_count ?
             m9_batch_emit_draw16(batch, job->index,
                                  job->index_base +
@@ -391,6 +500,13 @@ m9_emit_raster_range(struct m9_batch *batch, const struct m9_draw_job *job,
                                        d->count, 0x20000000);
       if (ret)
          goto fail;
+      /* A block is the last of its range when no draw and no further pass
+       * follows it inside that range. */
+      if (job->transition)
+         m9_transition_length(batch, block, draw_at,
+                              i + 1 < job->draw_count ||
+                              (!job->preprocess_per_pass &&
+                               index + 1 < job->pass_count));
    }
    return last ? 0 : m9_batch_emit_range_break(batch);
 fail:

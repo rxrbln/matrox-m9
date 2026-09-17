@@ -110,6 +110,10 @@ struct m9_draw_job {
    bool preprocess_per_pass;
    /* Placeholder texture a record-writing pass binds in slot 0. */
    const struct m9_texture_unit *placeholder;
+   /* Emit the vendor's inter-draw engine transition around every raster
+    * draw of a split job.  A single-pass job never carries it, so the
+    * captured stream stays byte for byte what it was. */
+   bool transition;
 };
 
 /* Dwords a restated raster draw costs beyond the first. */
