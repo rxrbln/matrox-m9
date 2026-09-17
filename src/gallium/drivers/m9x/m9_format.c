@@ -43,13 +43,17 @@ m9_format_info(enum pipe_format format, struct m9_format_info *out)
    case PIPE_FORMAT_I8_UNORM:
       info = (struct m9_format_info){ 0x51, 1, M9_FORMAT_TEXTURE };
       break;
+   /* Depth surfaces sample as well as store: the descriptor carries the
+    * same code in either role (docs/parhelia-m9-openbits-gl-capture.md). */
    case PIPE_FORMAT_Z16_UNORM:
-      info = (struct m9_format_info){ 0x5c, 2, M9_FORMAT_DEPTH };
+      info = (struct m9_format_info){ 0x5c, 2,
+         M9_FORMAT_TEXTURE | M9_FORMAT_DEPTH };
       break;
    case PIPE_FORMAT_S8_UINT_Z24_UNORM:
    case PIPE_FORMAT_X8Z24_UNORM:
       /* D24S8 element: depth in bits 31:8, stencil in the low byte. */
-      info = (struct m9_format_info){ 0x7d, 4, M9_FORMAT_DEPTH };
+      info = (struct m9_format_info){ 0x7d, 4,
+         M9_FORMAT_TEXTURE | M9_FORMAT_DEPTH };
       break;
    default:
       return false;

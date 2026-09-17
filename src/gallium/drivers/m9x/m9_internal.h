@@ -234,9 +234,10 @@ struct m9_job_key {
    /* Content over descriptor size of a sampled render target, s and t. */
    float unit_scale[M9_TEXTURE_MAX_UNITS][2];
    /* A coordinate the shader computed affinely from a varying, resolved
-    * against the constant buffer and applied per vertex. */
-   float coord_scale[M9_TEXTURE_MAX_UNITS][2];
-   float coord_bias[M9_TEXTURE_MAX_UNITS][2];
+    * against the constant buffer and applied per vertex.  The third term
+    * is the comparison reference of a shadow fetch. */
+   float coord_scale[M9_TEXTURE_MAX_UNITS][3];
+   float coord_bias[M9_TEXTURE_MAX_UNITS][3];
    unsigned unit_count;
 };
 
