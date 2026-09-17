@@ -200,9 +200,24 @@ m9_is_format_supported(struct pipe_screen *screen, enum pipe_format format,
                                 PIPE_BIND_INDEX_BUFFER |
                                 PIPE_BIND_CONSTANT_BUFFER |
                                 PIPE_BIND_VERTEX_STATE));
-   if (target != PIPE_TEXTURE_1D && target != PIPE_TEXTURE_2D &&
-       target != PIPE_TEXTURE_RECT)
+   switch (target) {
+   case PIPE_TEXTURE_1D:
+   case PIPE_TEXTURE_2D:
+   case PIPE_TEXTURE_RECT:
+      break;
+   case PIPE_TEXTURE_CUBE:
+   case PIPE_TEXTURE_3D:
+      /* A cube face and a volume slice are stored only by the tiled texture
+       * calculator: there is no captured render, depth or scanout placement
+       * for either, and the kernel texture window addresses a plane. */
+      if (bind & ~(PIPE_BIND_SAMPLER_VIEW | PIPE_BIND_LINEAR))
+         return false;
+      if (!m9_texture_format(format, NULL))
+         return false;
+      break;
+   default:
       return false;
+   }
    if (!m9_format_info(format, &info))
       return false;
    if (bind & ~image_bind)
@@ -392,8 +407,20 @@ m9_resource_create(struct pipe_screen *pscreen,
       resource->kind = M9_RESOURCE_LINEAR_BUFFER;
       format.cpp = 1;
    } else {
-      if (!m9_format_info(templ->format, &format) || templ->depth0 != 1 ||
-          templ->array_size != 1 || templ->last_level >= M9_MAX_MIP_LEVELS ||
+      /* The storage family follows from the target, not from a plane path
+       * with the layered targets bolted on: a cube keeps six face
+       * allocations of one chain, a volume feeds its slice to the address
+       * calculator, and a plane has neither. */
+      enum m9_texture_kind kind = m9_texture_kind_for_target(templ->target);
+      bool layered = kind == M9_TEXTURE_KIND_CUBE ||
+                     kind == M9_TEXTURE_KIND_3D;
+      uint32_t depth = kind == M9_TEXTURE_KIND_3D ? templ->depth0 : 1;
+      unsigned layers = kind == M9_TEXTURE_KIND_CUBE ? 6 : 1;
+
+      if (!m9_format_info(templ->format, &format) || !kind ||
+          (kind != M9_TEXTURE_KIND_3D && templ->depth0 != 1) ||
+          templ->array_size != layers ||
+          templ->last_level >= M9_MAX_MIP_LEVELS ||
           templ->width0 > 2048 || templ->height0 > 2048)
          goto fail;
       /* Mesa asks for mipmapped textures that are also render targets.  The
@@ -406,14 +433,27 @@ m9_resource_create(struct pipe_screen *pscreen,
          M9_RESOURCE_LINEAR_COLOR : M9_RESOURCE_LINEAR_TEXTURE;
       if (resource->kind != M9_RESOURCE_LINEAR_TEXTURE && templ->last_level)
          goto fail;
+      /* A face and a slice are reachable only through the tiled calculator:
+       * neither the linear mip storage nor the plane-shaped kernel texture
+       * window can address one. */
+      if (layered && (resource->kind != M9_RESOURCE_LINEAR_TEXTURE ||
+                      m9_resource_bo_flags(templ) != PARHELIA_M9_BO_VRAM ||
+                      !m9_texture_format(templ->format, &texture)))
+         goto fail;
       if (resource->kind == M9_RESOURCE_LINEAR_TEXTURE &&
           m9_resource_bo_flags(templ) == PARHELIA_M9_BO_VRAM &&
-          templ->target != PIPE_TEXTURE_1D &&
+          kind != M9_TEXTURE_KIND_1D &&
           m9_texture_format(templ->format, &texture)) {
          /* Sampled images use the vendor's tiled texture storage. */
-         if (m9_texture_layout_init(&resource->texture, M9_TEXTURE_KIND_2D,
-                                    templ->width0, templ->height0, 1,
+         if (m9_texture_layout_init(&resource->texture, kind,
+                                    templ->width0, templ->height0, depth,
                                     templ->last_level + 1))
+            goto fail;
+         /* A plane falls back to the kernel texture window for the levels
+          * the calculator cannot place; a layered chain has no fallback, so
+          * refuse it rather than write a face or a slice to a wrong
+          * address. */
+         if (layered && !m9_texture_layout_complete(&resource->texture))
             goto fail;
          resource->texture_storage = texture.storage;
          resource->texture_code = texture.code;
@@ -1072,6 +1112,14 @@ m9_screen_create(int fd, const struct pipe_screen_config *config)
    caps = (struct pipe_caps *)&screen->base.caps;
    caps->max_render_targets = 1;
    caps->max_texture_2d_size = 2048;
+   /* A cube face and a volume slice are placed only inside the captured
+    * 32x16 tail, so 16 is the largest extent either target reaches: 16x16
+    * faces render exactly (MEASURED), and so do the volumes inside the
+    * height and depth domain m9_texture.c states.  A volume outside it is
+    * refused by m9_resource_create rather than written to the wrong
+    * place. */
+   caps->max_texture_cube_levels = 5;
+   caps->max_texture_3d_levels = 5;
    caps->max_texture_array_layers = 0;
    caps->max_viewports = 1;
    caps->max_vertex_buffers = 16;

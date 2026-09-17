@@ -1,9 +1,12 @@
 /* SPDX-License-Identifier: MIT */
 /* Copyright 2026 René Rebe <rene@exactco.de> */
 /*
- * Texture placement: only the 32x16 packed tail (levels up to 16x16) has a
- * captured address permutation; other levels report -ENOTSUP and need the
- * kernel texture window (docs/parhelia-m9-texture-storage.md).
+ * Texture placement: the 32x16 packed tail (levels up to 16x16) is the
+ * captured address permutation, and it covers a plane, a cube face and a
+ * volume slice alike -- the face is an allocation stride and the slice is
+ * an input of the address calculator.  Levels outside the tail report
+ * -ENOTSUP and need the kernel texture window, which is plane-only
+ * (docs/parhelia-m9-texture-storage.md).
  */
 #include "m9_texture.h"
 
@@ -51,6 +54,61 @@ m9_texture_format(enum pipe_format format, struct m9_texture_format *out)
    return true;
 }
 
+/* Vendor m9x659 (mode-2 aperture) with the calculator state captured for
+ * the tail: depth 1, category 0, bank masks 0. */
+static uint64_t
+m9_tail_address(unsigned x, unsigned y, unsigned z)
+{
+   uint64_t a = (x & 7) << 2 | (x & 8) << 4 | (y & 3) << 5;
+
+   a |= (((x >> 4) ^ (y >> 2)) & 1) << 8;
+   a |= (((y >> 2) ^ (y >> 4) ^ (x >> 5) ^ z ^ (y >> 3)) & 1) << 9;
+   return a + ((uint64_t)z + (y >> 3)) * 0x400;
+}
+
+/* The tail levels of every face share one atlas and a volume's slice pages
+ * are indexed by the same address bits as rows 8 and up, so whether a chain
+ * fits is a property of its extents, not of its target.  Walk the tail and
+ * keep only the levels whose texels are all distinct inside the allocation:
+ * a level that would overwrite another is left unplaced, and every later
+ * level with it, so that nothing is ever written to a wrong address. */
+static int
+m9_texture_tail_verify(struct m9_texture_layout *layout, int tail)
+{
+   const struct m9_texture_level *first;
+   uint64_t bytes;
+   uint8_t *seen;
+
+   if (tail < 0)
+      return 0;
+   first = &layout->level[tail];
+   bytes = first->face_bytes;
+   seen = calloc((size_t)(bytes / 4), 1);
+   if (!seen)
+      return -ENOMEM;
+   for (unsigned l = tail; l < layout->levels; l++) {
+      const struct m9_texture_level *lvl = &layout->level[l];
+      bool ok = true;
+
+      for (unsigned z = 0; ok && z < lvl->depth; z++)
+         for (unsigned y = 0; ok && y < lvl->height; y++)
+            for (unsigned x = 0; ok && x < lvl->width; x++) {
+               uint64_t a = m9_tail_address(lvl->tail_x + x, lvl->tail_y + y,
+                                            z);
+
+               if (a + 4 > bytes || seen[a / 4])
+                  ok = false;
+               else
+                  seen[a / 4] = 1;
+            }
+      if (!ok)
+         break;
+      layout->placed |= 1u << l;
+   }
+   free(seen);
+   return 0;
+}
+
 int
 m9_texture_layout_init(struct m9_texture_layout *layout,
                        enum m9_texture_kind kind, uint32_t width,
@@ -91,7 +149,7 @@ m9_texture_layout_init(struct m9_texture_layout *layout,
          lvl->offset = offset;
          offset += lvl->face_bytes;
       } else if (lvl->width <= M9_TEXTURE_TAIL_EXTENT &&
-                 lvl->height <= M9_TEXTURE_TAIL_EXTENT && lvl->depth <= 15) {
+                 lvl->height <= M9_TEXTURE_TAIL_EXTENT) {
          unsigned rel;
 
          if (tail < 0) {
@@ -131,38 +189,83 @@ m9_texture_layout_init(struct m9_texture_layout *layout,
       }
    }
    layout->size = offset;
+   if (kind == M9_TEXTURE_KIND_1D)
+      layout->placed = (2u << (levels - 1)) - 1;
+   else if (m9_texture_tail_verify(layout, tail))
+      return -ENOMEM;
    return 0;
+}
+
+enum m9_texture_kind
+m9_texture_kind_for_target(enum pipe_texture_target target)
+{
+   switch (target) {
+   case PIPE_TEXTURE_1D: return M9_TEXTURE_KIND_1D;
+   case PIPE_TEXTURE_2D:
+   case PIPE_TEXTURE_RECT: return M9_TEXTURE_KIND_2D;
+   case PIPE_TEXTURE_CUBE: return M9_TEXTURE_KIND_CUBE;
+   case PIPE_TEXTURE_3D: return M9_TEXTURE_KIND_3D;
+   default: return 0;
+   }
+}
+
+/* MEASURED (tools/m9-mesa-glsl volume:16xHxD on the M9128, 16x16 covering
+ * every smaller extent because a texel's address does not depend on the
+ * level's extent): a volume slice lands where this model puts it for
+ *
+ *   height <= 4   at every depth up to 8,
+ *   height <= 8   at depth 2, 3, 5, 6 and 7 -- but not at 4 or 8,
+ *   height <= 16  only at depth 1, where the volume is a plane.
+ *
+ * Everything else, and every depth above 8, uses an address calculator
+ * state the captures do not cover: 16x8x4 read half its rows from the
+ * slice two pages away, and 16x16x2 read none of its texels correctly. */
+static bool
+m9_volume_agrees(uint32_t height, uint32_t depth)
+{
+   if (depth > 8)
+      return false;
+   if (depth == 1)
+      return height <= M9_TEXTURE_TAIL_EXTENT;
+   if (height <= 4)
+      return true;
+   return height <= 8 && depth != 4 && depth != 8;
+}
+
+bool
+m9_texture_layout_complete(const struct m9_texture_layout *layout)
+{
+   if (!layout || !layout->levels ||
+       layout->placed != (2u << (layout->levels - 1)) - 1)
+      return false;
+   /* Only the base level is sampled -- a tail chain clamps the sampler's
+    * last level to the base -- so the hardware has to agree with this model
+    * there.  The levels above it are written to addresses this layout
+    * proved disjoint from the base, and nothing reads them. */
+   return layout->kind != M9_TEXTURE_KIND_3D ||
+          m9_volume_agrees(layout->level[0].height, layout->level[0].depth);
+}
+
+enum m9_texture_kind
+m9_texture_bind_kind(const struct m9_texture_layout *layout, uint32_t width,
+                     uint32_t height)
+{
+   if (layout && (layout->kind == M9_TEXTURE_KIND_CUBE ||
+                  layout->kind == M9_TEXTURE_KIND_3D ||
+                  layout->kind == M9_TEXTURE_KIND_1D))
+      return layout->kind;
+   /* Reading 128x128 and larger textures as the small kind returned a single
+    * constant texel, so the storage kind must be the one they were written
+    * through (MEASURED). */
+   return width <= 64 && height <= 64 ? M9_TEXTURE_KIND_2D :
+                                        M9_TEXTURE_KIND_RENDER;
 }
 
 bool
 m9_texture_level_placed(const struct m9_texture_layout *layout, unsigned level)
 {
-   const struct m9_texture_level *lvl;
-
-   if (!layout || level >= layout->levels)
-      return false;
-   lvl = &layout->level[level];
-   switch (layout->kind) {
-   case M9_TEXTURE_KIND_1D:
-      return true;
-   case M9_TEXTURE_KIND_3D:
-      /* Slice pages collide with rows 8.. under this calculator state. */
-      return lvl->in_tail && !level && lvl->height <= 8;
-   default:
-      return lvl->in_tail;
-   }
-}
-
-/* Vendor m9x659 (mode-2 aperture) with the calculator state captured for
- * the tail: depth 1, category 0, bank masks 0. */
-static uint64_t
-m9_tail_address(unsigned x, unsigned y, unsigned z)
-{
-   uint64_t a = (x & 7) << 2 | (x & 8) << 4 | (y & 3) << 5;
-
-   a |= (((x >> 4) ^ (y >> 2)) & 1) << 8;
-   a |= (((y >> 2) ^ (y >> 4) ^ (x >> 5) ^ z ^ (y >> 3)) & 1) << 9;
-   return a + ((uint64_t)z + (y >> 3)) * 0x400;
+   return layout && level < layout->levels &&
+          (layout->placed & (1u << level));
 }
 
 int
@@ -188,22 +291,38 @@ m9_texel_offset(const struct m9_texture_layout *layout, unsigned level,
    return 0;
 }
 
+/* Gallium addresses a cube face as the box's z layer, so on a cube the layer
+ * selects the face and every face is one slice deep. */
+static void
+m9_texture_layer(const struct m9_texture_layout *layout, unsigned face,
+                 const struct pipe_box *box, int dz, unsigned *out_face,
+                 unsigned *out_z)
+{
+   bool cube = layout->kind == M9_TEXTURE_KIND_CUBE;
+
+   *out_face = cube ? face + box->z + dz : face;
+   *out_z = cube ? 0 : box->z + dz;
+}
+
 static int
 m9_texture_box_check(const struct m9_texture_layout *layout, unsigned level,
                      unsigned face, const struct pipe_box *box,
                      uint64_t map_size)
 {
+   unsigned f, z;
    uint64_t first, last;
    int ret;
 
    if (!box || box->x < 0 || box->y < 0 || box->z < 0 || box->width <= 0 ||
        box->height <= 0 || box->depth <= 0)
       return -EINVAL;
-   ret = m9_texel_offset(layout, level, face, box->x, box->y, box->z, &first);
-   if (!ret)
-      ret = m9_texel_offset(layout, level, face, box->x + box->width - 1,
-                            box->y + box->height - 1,
-                            box->z + box->depth - 1, &last);
+   m9_texture_layer(layout, face, box, 0, &f, &z);
+   ret = m9_texel_offset(layout, level, f, box->x, box->y, z, &first);
+   if (!ret) {
+      m9_texture_layer(layout, face, box, box->depth - 1, &f, &z);
+      ret = m9_texel_offset(layout, level, f, box->x + box->width - 1,
+                            box->y + box->height - 1, z, &last);
+   }
    if (ret)
       return ret;
    /* The tail and 3-D pages end with the level allocation. */
@@ -240,10 +359,12 @@ m9_texture_store(const struct m9_texture_layout *layout, uint8_t *map,
             break;
          }
          for (int dx = 0; dx < box->width; dx++) {
+            unsigned f, z;
             uint64_t off;
 
-            ret = m9_texel_offset(layout, level, face, box->x + dx,
-                                  box->y + dy, box->z + dz, &off);
+            m9_texture_layer(layout, face, box, dz, &f, &z);
+            ret = m9_texel_offset(layout, level, f, box->x + dx,
+                                  box->y + dy, z, &off);
             if (ret)
                break;
             memcpy(map + off, row + 4 * dx, 4);
@@ -273,10 +394,12 @@ m9_texture_fetch(const struct m9_texture_layout *layout,
    for (int dz = 0; !ret && dz < box->depth; dz++) {
       for (int dy = 0; !ret && dy < box->height; dy++) {
          for (int dx = 0; dx < box->width; dx++) {
+            unsigned f, z;
             uint64_t off;
 
-            ret = m9_texel_offset(layout, level, face, box->x + dx,
-                                  box->y + dy, box->z + dz, &off);
+            m9_texture_layer(layout, face, box, dz, &f, &z);
+            ret = m9_texel_offset(layout, level, f, box->x + dx,
+                                  box->y + dy, z, &off);
             if (ret)
                break;
             memcpy(row + 4 * dx, map + off, 4);

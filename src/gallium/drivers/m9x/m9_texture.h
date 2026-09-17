@@ -52,6 +52,9 @@ struct m9_texture_layout {
    enum m9_texture_kind kind;
    unsigned levels, faces;
    uint64_t size;
+   /* Bit per level whose texels were verified to land on distinct addresses
+    * inside their allocation; other levels have no usable placement. */
+   uint32_t placed;
    struct m9_texture_level level[M9_TEXTURE_MAX_LEVELS];
 };
 
@@ -71,6 +74,18 @@ struct m9_texture_unit {
 };
 
 bool m9_texture_format(enum pipe_format format, struct m9_texture_format *out);
+/* Descriptor kind a Gallium target is stored and sampled as, 0 when the
+ * target has no captured texture storage. */
+enum m9_texture_kind m9_texture_kind_for_target(enum pipe_texture_target target);
+/* Every level of every face has a verified placement.  A cube face and a
+ * volume slice have no other way to reach their storage, so a layout that
+ * is not complete has to be refused rather than placed wrongly. */
+bool m9_texture_layout_complete(const struct m9_texture_layout *layout);
+/* Descriptor kind the sampler binds this storage with: a cube and a volume
+ * name themselves, a plane is the small 2-D kind up to 64 in both
+ * dimensions and the ordinary tiled kind above it. */
+enum m9_texture_kind m9_texture_bind_kind(const struct m9_texture_layout *layout,
+                                          uint32_t width, uint32_t height);
 int m9_texture_layout_init(struct m9_texture_layout *layout,
                            enum m9_texture_kind kind, uint32_t width,
                            uint32_t height, uint32_t depth, unsigned levels);
@@ -79,6 +94,8 @@ bool m9_texture_level_placed(const struct m9_texture_layout *layout,
 int m9_texel_offset(const struct m9_texture_layout *layout, unsigned level,
                     unsigned face, unsigned x, unsigned y, unsigned z,
                     uint64_t *offset);
+/* box->z is the first slice of a volume and the first face of a cube, the
+ * way Gallium addresses a layer; `face` is the face the box starts at. */
 int m9_texture_store(const struct m9_texture_layout *layout, uint8_t *map,
                      uint64_t map_size, enum pipe_format storage,
                      unsigned level, unsigned face, const struct pipe_box *box,
