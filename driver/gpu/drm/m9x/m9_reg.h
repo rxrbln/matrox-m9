@@ -131,10 +131,21 @@
  * 0x0f as the four links come up, one bit apparently per pad group. */
 #define M9_REG_PAD_GATE			0x1cac
 
+/*
+ * Every head raises three interrupts per frame.  These are the lowest of each
+ * head's three, the group the documented head 0 source belongs to.  MEASURED
+ * with tools/m9-irq-scan: the status word latches a source whether or not it
+ * is unmasked, so acknowledging what is set and timing its return gives each
+ * source's frequency, and running every head at a different refresh rate
+ * attributes it.  The other two groups are (2,3,12,13) for heads 0,1 and
+ * (10,11,14,15) for heads 2,3; which of a head's three is the vertical blank
+ * edge proper is not established, and this is the group that reproduces the
+ * documented head 0 bit.
+ */
 #define M9_IRQ_LOW_VBLANK0		BIT(0)
-/* Only controller 0's vblank source is measured; heads 1..3 default to a zero
- * mask, which keeps them out of the interrupt path instead of guessing a bit.
- * m9x.vblank_mask= carries a bit found by walking the mask on hardware. */
+#define M9_IRQ_LOW_VBLANK1		BIT(1)
+#define M9_IRQ_LOW_VBLANK2		BIT(8)
+#define M9_IRQ_LOW_VBLANK3		BIT(9)
 #define M9_IRQ_HIGH_LOW_CASCADE	BIT(31)
 
 #define M9_REQUESTER_DMA_TAG		2u

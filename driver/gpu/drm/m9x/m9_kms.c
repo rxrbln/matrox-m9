@@ -63,20 +63,16 @@ module_param(m9_kms_modeset, bool, 0400);
 MODULE_PARM_DESC(m9_kms_modeset,
 	"Program the pixel clock and raster timing instead of keeping the firmware's mode");
 
-/*
- * Only controller 0's vblank source is measured.  Heads 1..3 default to no
- * mask, which keeps them out of the interrupt path and makes the pipe report
- * no vblank at all rather than an invented one; their bits can be found by
- * walking the low interrupt mask on hardware and passed in here.  The per-head
- * line counter at DCT+0x24 is confirmed to advance on all four heads and is
- * logged at probe, but is UNTESTED as an interrupt source.
- */
-static unsigned int m9_vblank_mask[M9_MAX_HEADS] = { M9_IRQ_LOW_VBLANK0 };
-static unsigned int m9_vblank_count = 1;
+/* All four sources are measured (m9_reg.h).  The parameter stays so a board
+ * that numbers them differently can be corrected without a rebuild. */
+static unsigned int m9_vblank_mask[M9_MAX_HEADS] = {
+	M9_IRQ_LOW_VBLANK0, M9_IRQ_LOW_VBLANK1,
+	M9_IRQ_LOW_VBLANK2, M9_IRQ_LOW_VBLANK3,
+};
+static unsigned int m9_vblank_count = M9_MAX_HEADS;
 module_param_array_named(vblank_mask, m9_vblank_mask, uint, &m9_vblank_count,
 			 0400);
-MODULE_PARM_DESC(vblank_mask,
-	"Per-head low-interrupt vblank bit; only head 0's is measured");
+MODULE_PARM_DESC(vblank_mask, "Per-head low-interrupt vblank bit");
 
 /* The controller's own limits: a surface is at most 2048 in each dimension,
  * and the synthesiser covers this range with the divider search. */
@@ -241,6 +237,19 @@ static struct matrox_kms_irq m9_kms_irq_desc(struct m9x_device *mdev)
 		.owned_mask = owned,
 		.vblank_mask = owned,
 	};
+}
+
+/* Enabling and disabling act on one head: the descriptor's vblank_mask is
+ * what matrox_kms_enable_vblank ORs into the mask register and what disable
+ * clears, so the union would let one head's vblank_put mask every other
+ * head's source. */
+static struct matrox_kms_irq m9_kms_irq_head_desc(struct m9x_device *mdev,
+						  const struct m9_head *head)
+{
+	struct matrox_kms_irq desc = m9_kms_irq_desc(mdev);
+
+	desc.vblank_mask = head->vblank_mask;
+	return desc;
 }
 
 /*
@@ -896,7 +905,7 @@ static int m9_pipe_enable_vblank(struct drm_simple_display_pipe *pipe)
 {
 	struct m9_head *head = m9_head_of_pipe(pipe);
 	struct m9x_device *mdev = head->mdev;
-	struct matrox_kms_irq desc = m9_kms_irq_desc(mdev);
+	struct matrox_kms_irq desc = m9_kms_irq_head_desc(mdev, head);
 	int idx, ret;
 
 	/* A head whose vblank source is not measured never reports one. */
@@ -913,7 +922,7 @@ static void m9_pipe_disable_vblank(struct drm_simple_display_pipe *pipe)
 {
 	struct m9_head *head = m9_head_of_pipe(pipe);
 	struct m9x_device *mdev = head->mdev;
-	struct matrox_kms_irq desc = m9_kms_irq_desc(mdev);
+	struct matrox_kms_irq desc = m9_kms_irq_head_desc(mdev, head);
 	int idx;
 
 	if (!drm_dev_enter(&mdev->drm, &idx))
