@@ -34,6 +34,21 @@ not present among the ordinary public render formats" -- that the engine will
 not take as a render target in this state, not the record's address, its row
 span, its stride, or the program that fills it.
 
+Two further candidates were tested against the hardware and are ruled out
+(MEASURED):
+
+* **index `0x89` bit 2.**  Every captured pass that writes a record carries
+  `89 = fe007ffc` and every pass that writes the colour carries `fe007ff8`,
+  so bit 2 looked like the record enable.  Emitting the captured value
+  verbatim changes nothing: the pass still stalls.  The driver emits it
+  anyway, because it is what the captures hold.
+* **index `0xc0`.**  The vendor clears it behind the texture block of a
+  record pass and of no other pass this tree has decoded.  It is outside the
+  kernel's `m9_index_allowed` (which runs `0xc1 ... 0xc5`), so a job carrying
+  it is refused with `-EPERM`; with the kernel's allow-list widened by one
+  case to accept it, the job reaches the engine and stalls exactly as before.
+  The kernel change was reverted, having bought nothing.
+
 The conclusion is that **binding the record needs something this tree has not
 decoded yet**, most plausibly part of the engine transition the vendor emits
 between its passes and the m9x kernel refuses (section 3).
@@ -55,6 +70,8 @@ log, after which the device needs a reboot.
 | producing pass alone, record object at `b0` with `b1 = ee190004` | stall |
 | the same, with the plain index-`0x88` and the plain coverage words | stall |
 | the same, with `b1 = ee190140` | stall |
+| the same, with index `0x89` = the captured `fe007ffc` | stall |
+| the same, with index `0xc0` cleared and the kernel widened to accept it | stall |
 
 The first row matters as much as the rest: it says the multi-pass emitter
 itself is right.  A pass loop that emits one pass produces a job the hardware
@@ -101,6 +118,13 @@ from `src/scene-effect-2d.cpp` and `src/scene-desktop.cpp` and compiled with
 | `desktop` separable blur, radius 5 | 11 | 4 |
 
 which is the `4 + 3(P-1)` the pass-splitting note predicts.
+
+A glmark2 sweep at 1920x1200 with the schedule off reports 33 scenes, 25 of
+them at or above 60 fps (MEASURED).  The three the splitter would reach --
+both `effect2d` kernels and `desktop`'s separable blur -- report a frame rate
+but are counted invalid, because their draws are skipped: the shaders are
+refused rather than drawn.  `terrain`, `shadow` and `refract` are refused for
+an unrelated reason, a texture coordinate that is not a varying.
 
 Because a record pass stalls the engine, the schedule is behind `M9X_SPLIT=1`
 and a shader that needs it is refused with a reason rather than drawn, so the
