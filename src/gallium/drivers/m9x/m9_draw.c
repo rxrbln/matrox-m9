@@ -43,6 +43,14 @@ m9_draw_job_dwords_fs(unsigned draw_count, unsigned unit_count)
    return m9_draw_job_dwords(draw_count) + 4 + 18 * unit_count;
 }
 
+/* Relocations a job emits: the two passes bind about thirty objects, every
+ * restated unit block one more each, and an indexed draw a start and an end. */
+unsigned
+m9_draw_job_relocs(unsigned draw_count, unsigned unit_count)
+{
+   return 30 + unit_count + draw_count * (unit_count + 2);
+}
+
 unsigned
 m9_draw_units_dwords(unsigned unit_count)
 {
@@ -152,12 +160,19 @@ m9_draw_job_valid(const struct m9_draw_job *job)
    for (unsigned i = 0; i < job->unit_count; i++)
       if (!job->units[i].handle)
          return false;
+   if (job->index_count && job->index_base % 4)
+      return false;
    for (unsigned i = 0; i < job->draw_count; i++) {
       const struct m9_draw_record *d = &job->draws[i];
 
       if (d->start % 4 || !d->count || d->start > job->source_vertices ||
           d->count > job->source_vertices - d->start ||
           !m9_topology_valid(d->topology))
+         return false;
+      /* An indexed draw reads a dword-aligned run inside the stored list. */
+      if (d->index_count &&
+          (d->index_first % 2 || d->index_first > job->index_count ||
+           d->index_count > job->index_count - d->index_first))
          return false;
    }
    return true;
@@ -293,8 +308,12 @@ m9_batch_emit_draw_job(struct m9_batch *batch, const struct m9_draw_job *job)
               V(0xef, d->cull | job->depth_ef),
               V(0xd7, m9_raster_d7(d->topology)), V(0xf4, 0));
       }
-      ret = m9_batch_emit_draw_numeric(batch, d->start, d->count,
-                                       0x20000000);
+      ret = d->index_count ?
+            m9_batch_emit_draw16(batch, job->source,
+                                 job->index_base +
+                                 (uint64_t)d->index_first * sizeof(uint16_t),
+                                 d->index_count, 0x20000000) :
+            m9_batch_emit_draw_numeric(batch, d->start, d->count, 0x20000000);
       if (ret)
          goto fail;
    }

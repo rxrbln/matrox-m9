@@ -199,11 +199,14 @@ static unsigned m9_profile_period;
 /* M9X_JOB_DRAWS ends a job after that many draws: the frame time against the
  * job count weighs what one job costs. */
 static unsigned m9_job_draws;
+/* M9X_INDEXED=0 falls back to one record per index. */
+static bool m9_indexed_draws = true;
 static uint64_t m9_prof_ns[M9_PROF_COUNT];
 static uint64_t m9_prof_hits[M9_PROF_COUNT];
 static uint64_t m9_prof_records, m9_prof_jobs, m9_prof_varying_bytes;
 static uint64_t m9_prof_draws, m9_prof_split[8];
 static uint64_t m9_prof_indexed, m9_prof_referenced;
+static uint64_t m9_prof_refused, m9_prof_skipped, m9_prof_relocs;
 /* M9X_NO_CLEAR drops the clear quad; M9X_CLEAR_REPEAT draws it that many
  * extra times, which weighs one screen of fill with the frame still correct. */
 static bool m9_no_clear;
@@ -247,11 +250,13 @@ m9_prof_frame(void)
    for (unsigned i = 0; i < M9_PROF_COUNT; i++)
       fprintf(stderr, "%s %.2f ", m9_prof_name[i], m9_prof_ns[i] / f / 1e6);
    fprintf(stderr, "| jobs %.0f draws %.0f records %.0f varying KiB %.1f "
+           "refused %.0f skipped %.0f relocs %.0f "
            "indexed %.0f referenced %.0f splits target %.0f program %.0f "
            "depth %.0f mask %.0f clip %.0f uniforms %.0f vertices %.0f "
            "stream %.0f\n",
            m9_prof_jobs / f, m9_prof_draws / f, m9_prof_records / f,
-           m9_prof_varying_bytes / f / 1024.0, m9_prof_indexed / f,
+           m9_prof_varying_bytes / f / 1024.0, m9_prof_refused / f,
+           m9_prof_skipped / f, (double)m9_prof_relocs, m9_prof_indexed / f,
            m9_prof_referenced / f, m9_prof_split[0] / f,
            m9_prof_split[1] / f, m9_prof_split[2] / f, m9_prof_split[3] / f,
            m9_prof_split[4] / f, m9_prof_split[5] / f, m9_prof_split[6] / f,
@@ -260,6 +265,7 @@ m9_prof_frame(void)
    memset(m9_prof_hits, 0, sizeof(m9_prof_hits));
    m9_prof_records = m9_prof_jobs = m9_prof_varying_bytes = 0;
    m9_prof_draws = m9_prof_indexed = m9_prof_referenced = 0;
+   m9_prof_refused = m9_prof_skipped = m9_prof_relocs = 0;
    memset(m9_prof_split, 0, sizeof(m9_prof_split));
    m9_prof_frames = 0;
    m9_prof_wall = 0;
@@ -757,6 +763,7 @@ m9_submit_job(struct m9_context *ctx)
    struct m9_draw_job job;
    uint64_t point = 0;
    uint64_t t_submit;
+   bool built;
    int ret;
 
    if (!draws)
@@ -776,17 +783,22 @@ m9_submit_job(struct m9_context *ctx)
       util_dynarray_clear(&ctx->job_textures);
       ctx->job_unit_dwords = 0;
       util_dynarray_clear(&ctx->records);
+      util_dynarray_clear(&ctx->indices);
       util_dynarray_clear(&ctx->draws);
       util_dynarray_clear(&ctx->extra);
       return 0;
    }
+   uint64_t index_base = (uint64_t)records * M9_RECORD_FLOATS * sizeof(float);
+   unsigned index_count = util_dynarray_num_elements(&ctx->indices, uint16_t);
+
    ret = ctx->lost ? -EIO :
-         m9_source_reserve(ctx, (uint64_t)records * M9_RECORD_FLOATS *
-                                sizeof(float));
+         m9_source_reserve(ctx, index_base + ctx->indices.size);
    if (!ret) {
       uint64_t t_records = m9_prof_begin();
 
       memcpy(ctx->source.map, ctx->records.data, ctx->records.size);
+      memcpy((uint8_t *)ctx->source.map + index_base, ctx->indices.data,
+             ctx->indices.size);
       memcpy(ctx->system.map, ctx->params.system_prefix,
              sizeof(ctx->params.system_prefix));
       memcpy((uint8_t *)ctx->system.map + M9_LINKED_OFFSET,
@@ -807,6 +819,8 @@ m9_submit_job(struct m9_context *ctx)
          .aux = key->aux->handle,
          .be = ctx->be.handle,
          .source_vertices = records,
+         .index_base = (uint32_t)index_base,
+         .index_count = index_count,
          .draws = ctx->draws.data,
          .draw_count = draws,
          .depth_control = key->depth_control,
@@ -825,6 +839,7 @@ m9_submit_job(struct m9_context *ctx)
       if (!ret)
          ret = m9_batch_emit_draw_job(&ctx->batch, &job);
    }
+   built = !ret;
    if (!ret) {
       uint64_t t_ioctl;
 
@@ -845,13 +860,19 @@ m9_submit_job(struct m9_context *ctx)
                    "the kernel refused a job; those draws are skipped");
       m9_skip_reason(ctx, "the kernel refused a job; those draws are skipped");
       ctx->skipped_draws++;
+      m9_prof_refused++;
+      m9_prof_skipped += draws;
       /* Name the refused job so the failing validator check is identifiable. */
       if (ctx->debug)
-         fprintf(stderr, "m9x: refused job: words %u relocs %u bos %u "
-                 "records %u draws %u units %u fs %d blend_dest %d\n",
+         fprintf(stderr, "m9x: refused job (%s): words %u relocs %u bos %u "
+                 "records %u draws %u units %u fs %d blend_dest %d "
+                 "indices %u base %#x first %u+%u\n",
+                 built ? "kernel" : "build",
                  ctx->batch.command_count, ctx->batch.reloc_count,
                  ctx->batch.bo_count, records, draws, key->unit_count,
-                 !!fs, fs ? (int)key->variant->program.blend_dest : -1);
+                 !!fs, fs ? (int)key->variant->program.blend_dest : -1,
+                 index_count, (unsigned)index_base, first_draw->index_first,
+                 first_draw->index_count);
    } else if (ret) {
       if (!ctx->lost)
          fprintf(stderr, "m9x: two-pass job failed (%s); context lost\n",
@@ -859,6 +880,7 @@ m9_submit_job(struct m9_context *ctx)
       ctx->lost = true;
    } else {
       ctx->last_point = point;
+      m9_prof_relocs = MAX2(m9_prof_relocs, ctx->batch.reloc_count);
       if (ctx->debug)
          fprintf(stderr, "m9x: job %u records %u draws a8 %08x ef %08x "
                  "ab %08x clip %08x/%08x -> %#" PRIx64 "\n", records, draws,
@@ -870,6 +892,7 @@ m9_submit_job(struct m9_context *ctx)
    util_dynarray_clear(&ctx->job_textures);
    ctx->job_unit_dwords = 0;
    util_dynarray_clear(&ctx->records);
+   util_dynarray_clear(&ctx->indices);
    util_dynarray_clear(&ctx->draws);
    util_dynarray_clear(&ctx->extra);
    m9_prof_end(M9_PROF_SUBMIT, t_submit);
@@ -936,6 +959,8 @@ m9_job_reserve(struct m9_context *ctx, const struct m9_job_key *key,
       bool uniforms = key->fs && m9_consts_differ(consts, &ctx->job_consts);
       bool vertices_full = records + padded > m9_draw_max_source_vertices();
       bool stream_full = dwords > M9_MAX_COMMAND_DWORDS ||
+                         m9_draw_job_relocs(draws + 1, key->unit_count) >
+                         M9_MAX_RELOCS ||
                          (m9_job_draws && draws >= m9_job_draws);
 
       if (state || uniforms || vertices_full || stream_full) {
@@ -988,7 +1013,8 @@ m9_job_reserve(struct m9_context *ctx, const struct m9_job_key *key,
 
 static void
 m9_job_commit(struct m9_context *ctx, float *out, float *extra,
-              unsigned vertices, uint32_t first, enum m9_topology topology,
+              unsigned vertices, uint32_t first, uint32_t index_first,
+              uint32_t index_count, enum m9_topology topology,
               uint32_t cull, bool lines, bool flat)
 {
    unsigned padded = m9_draw_preprocess_vertices(vertices);
@@ -1010,6 +1036,7 @@ m9_job_commit(struct m9_context *ctx, float *out, float *extra,
       /* Shrinking never reallocates; drop the orphaned records. */
       ctx->records.size = (size_t)first * M9_RECORD_FLOATS * sizeof(float);
       ctx->extra.size = (size_t)first * extra_floats * sizeof(float);
+      ctx->indices.size = (size_t)index_first * sizeof(uint16_t);
       m9_warn_once(ctx, M9_WARN_MEMORY, "out of memory for draw records");
       return;
    }
@@ -1036,6 +1063,8 @@ m9_job_commit(struct m9_context *ctx, float *out, float *extra,
    *draw = (struct m9_draw_record) {
       .start = first,
       .count = vertices,
+      .index_first = index_first,
+      .index_count = index_count,
       .topology = topology,
       .cull = cull,
       .lines = lines,
@@ -1750,6 +1779,94 @@ m9_scale_coords(const struct m9_job_key *key, float *extra)
    }
 }
 
+static inline uint32_t
+m9_index_at(const void *indices, unsigned index_size, unsigned i)
+{
+   return index_size == 4 ? ((const uint32_t *)indices)[i] :
+                            ((const uint16_t *)indices)[i];
+}
+
+/* Lowest and highest vertex a run of indices refers to. */
+static void
+m9_index_range(const void *indices, unsigned index_size, unsigned first,
+               unsigned count, uint32_t *lo, uint32_t *hi)
+{
+   uint32_t a = UINT32_MAX, b = 0;
+
+   for (unsigned i = 0; i < count; i++) {
+      uint32_t v = m9_index_at(indices, index_size, first + i);
+
+      a = MIN2(a, v);
+      b = MAX2(b, v);
+   }
+   *lo = a;
+   *hi = b;
+}
+
+/* An index list preprocesses the vertices it spans once and rasterises them
+ * through a stored index run, instead of one record per index. */
+static void
+m9_render_append_indexed(struct m9_vbuf_render *r, const struct m9_job_key *key,
+                         enum m9_topology topology, bool lines, uint32_t cull,
+                         const void *indices, unsigned index_size,
+                         unsigned count)
+{
+   struct m9_context *ctx = r->ctx;
+   const unsigned max = m9_draw_max_source_vertices();
+   /* A list splits only on a whole primitive. */
+   unsigned grain = topology == M9_TOPOLOGY_TRIANGLES ? 3 :
+                    topology == M9_TOPOLOGY_LINES ? 2 : count;
+
+   for (unsigned done = 0; done < count;) {
+      unsigned n = count - done, vertices;
+      uint32_t lo, hi, first, index_first;
+      float *out, *extra;
+      uint16_t *words;
+
+      m9_index_range(indices, index_size, done, n, &lo, &hi);
+      /* Halve the run until the vertices it spans fit one job's records. */
+      while (hi - lo + 1 > max) {
+         n = n / 2 / grain * grain;
+         if (!n)
+            return;
+         m9_index_range(indices, index_size, done, n, &lo, &hi);
+      }
+      vertices = hi - lo + 1;
+      out = m9_job_reserve(ctx, key, &ctx->key_consts, vertices, &first,
+                           &extra);
+      if (!out || (extra && r->extra_count != key->variant->extra_count))
+         return;
+      /* An odd run is padded to a whole dword, so every run stays aligned. */
+      index_first = util_dynarray_num_elements(&ctx->indices, uint16_t);
+      words = util_dynarray_grow(&ctx->indices, uint16_t, n + (n & 1));
+      if (!words) {
+         ctx->records.size = (size_t)first * M9_RECORD_FLOATS * sizeof(float);
+         if (extra)
+            ctx->extra.size = (size_t)first * 4 * r->extra_count * sizeof(float);
+         m9_warn_once(ctx, M9_WARN_MEMORY, "out of memory for raster indices");
+         return;
+      }
+      for (unsigned v = 0; v < vertices; v++) {
+         float *e = extra ? extra + v * 4 * r->extra_count : NULL;
+
+         m9_render_record(r, lo + v, out + v * M9_RECORD_FLOATS, e);
+         if (e)
+            m9_scale_coords(key, e);
+      }
+      for (unsigned i = 0; i < n; i++)
+         words[i] = first +
+                    m9_index_at(indices, index_size, done + i) - lo;
+      if (n & 1)
+         words[n] = words[n - 1];
+      m9_prof_indexed += n;
+      m9_prof_referenced += vertices;
+      m9_job_commit(ctx, out, extra, vertices, first, index_first, n, topology,
+                    cull, lines,
+                    ctx->rasterizer && ctx->rasterizer->flatshade);
+      done += n;
+   }
+}
+
 static void
 m9_render_append(struct m9_vbuf_render *r, const struct m9_job_key *key,
                  enum m9_topology topology, bool lines, uint32_t cull,
@@ -1760,6 +1877,11 @@ m9_render_append(struct m9_vbuf_render *r, const struct m9_job_key *key,
    bool list = topology == M9_TOPOLOGY_LINES ||
                topology == M9_TOPOLOGY_TRIANGLES;
 
+   if (indices && m9_indexed_draws) {
+      m9_render_append_indexed(r, key, topology, lines, cull, indices,
+                               index_size, count);
+      return;
+   }
    /* Native connected primitives are bounded by max_vertex_buffer_bytes;
     * lists split on any multiple of six. */
    if (count > max && !list)
@@ -1777,16 +1899,14 @@ m9_render_append(struct m9_vbuf_render *r, const struct m9_job_key *key,
          return;
       for (unsigned i = 0; i < n; i++) {
          unsigned index = !indices ? start + done + i :
-                          index_size == 4 ?
-                          ((const uint32_t *)indices)[done + i] :
-                          ((const uint16_t *)indices)[done + i];
+                          m9_index_at(indices, index_size, done + i);
 
          m9_render_record(r, index, out + i * M9_RECORD_FLOATS,
                           extra ? extra + i * 4 * r->extra_count : NULL);
          if (extra)
             m9_scale_coords(key, extra + i * 4 * r->extra_count);
       }
-      m9_job_commit(r->ctx, out, extra, n, first, topology, cull, lines,
+      m9_job_commit(r->ctx, out, extra, n, first, 0, 0, topology, cull, lines,
                     r->ctx->rasterizer && r->ctx->rasterizer->flatshade);
       done += n;
    }
@@ -1886,16 +2006,6 @@ m9_render_emit(struct m9_vbuf_render *r, const uint16_t *indices,
       list = buffer;
       topology = out_prim == MESA_PRIM_LINES ? M9_TOPOLOGY_LINES :
                                                M9_TOPOLOGY_TRIANGLES;
-      if (m9_profile_period && indices) {
-         unsigned lo = 0xffff, hi = 0;
-
-         for (unsigned i = 0; i < count; i++) {
-            lo = MIN2(lo, indices[i]);
-            hi = MAX2(hi, indices[i]);
-         }
-         m9_prof_indexed += out_count;
-         m9_prof_referenced += hi >= lo ? hi - lo + 1 : 0;
-      }
    }
    m9_render_append(r, &key, topology,
                     u_reduced_prim(out_prim) == MESA_PRIM_LINES, cull, list,
@@ -2092,7 +2202,8 @@ m9_clear_quad(struct m9_context *ctx, const struct pipe_scissor_state *scissor,
       for (unsigned c = 0; c < 4; c++)
          rec[4 + c] = CLAMP(rgba[c], 0.0f, 1.0f);
    }
-   m9_job_commit(ctx, out, NULL, 4, first, M9_TOPOLOGY_QUADS, 0, false, true);
+   m9_job_commit(ctx, out, NULL, 4, first, 0, 0, M9_TOPOLOGY_QUADS, 0, false,
+                 true);
 }
 
 static void
@@ -2916,6 +3027,7 @@ m9_context_destroy(struct pipe_context *pctx)
       pipe_resource_reference(held, NULL);
    util_dynarray_fini(&ctx->job_textures);
    util_dynarray_fini(&ctx->records);
+   util_dynarray_fini(&ctx->indices);
    util_dynarray_fini(&ctx->draws);
    util_dynarray_fini(&ctx->extra);
    util_dynarray_fini(&ctx->key_consts);
@@ -2946,6 +3058,7 @@ m9_context_create(struct pipe_screen *pscreen, void *priv, unsigned flags)
    ctx->debug = debug_get_bool_option("M9X_DEBUG", false);
    m9_profile_period = debug_get_num_option("M9X_PROFILE", 0);
    m9_job_draws = debug_get_num_option("M9X_JOB_DRAWS", 0);
+   m9_indexed_draws = debug_get_bool_option("M9X_INDEXED", true);
    m9_no_clear = debug_get_bool_option("M9X_NO_CLEAR", false);
    m9_clear_repeat = debug_get_num_option("M9X_CLEAR_REPEAT", 0);
    ctx->dump_path = debug_get_option("M9X_DUMP", NULL);
@@ -2958,6 +3071,7 @@ m9_context_create(struct pipe_screen *pscreen, void *priv, unsigned flags)
    ctx->only_after = debug_get_num_option("M9X_ONLY_AFTER", 0);
    ctx->dry_run = debug_get_bool_option("M9X_DRYRUN", false);
    util_dynarray_init(&ctx->records, NULL);
+   util_dynarray_init(&ctx->indices, NULL);
    util_dynarray_init(&ctx->draws, NULL);
    util_dynarray_init(&ctx->extra, NULL);
    util_dynarray_init(&ctx->key_consts, NULL);
