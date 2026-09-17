@@ -33,6 +33,10 @@ struct nir_shader_compiler_options;
 #define M9_FS_MAX_PASSES 8u
 /* A texel slot fed by a sampler rather than by an inter-pass record. */
 #define M9_FS_ROUTE_NONE 0xffu
+/* Compiled variants one shader may keep.  A shader specialised on a uniform
+ * -- a loop bound, an if condition -- can be asked for one per value, so the
+ * cache is capped and a further one is refused rather than compiled. */
+#define M9_FS_MAX_VARIANTS 64u
 
 enum m9_fs_const_kind {
    M9_FS_CONST_LITERAL,
