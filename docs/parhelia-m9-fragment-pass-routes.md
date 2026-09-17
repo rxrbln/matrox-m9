@@ -85,12 +85,22 @@ passes owns a four-dword slot, which is why the final pass can still gather
 
 ## 3. What stays open
 
-* How the engine addresses the record **per fragment** -- linear in fragment
-  order, or by screen position with an implied pitch -- is **OPEN**.  The
-  descriptor carries no pitch and no extent, and the five-sampler capture
-  draws only 64x64, so no capture separates the two.  A driver must measure
-  this before it can size the record for a full-screen target; until then it
-  allocates a bound that covers both walks.
+* How the engine addresses the record **per fragment** is narrowed but not
+  closed.  The descriptor is a **flat record array**: it carries a stride and
+  a start offset and no pitch, width or height at all, which is the same
+  shape `docs/parhelia-m9-raster-stream-limit-re.md` section 3 records for
+  the preprocessing output streams
+  (`b1 = 0xee19 | slot * 4 << 8 | slots * 4`, and `vs-varyings-4`'s
+  `ee190014 ee190414 ee190814 ee190c14 ee191014`).  Those are indexed by
+  vertex; a raster record is therefore indexed by the engine's fragment
+  sequence (DERIVED).  What stays **OPEN** is the granularity -- one record
+  per fragment, or per 2x2 quad, or per shaded sample -- and nothing in this
+  tree measures it, so a driver sizes the record for at least one record per
+  covered pixel and measures before trusting a tighter bound.
+* The captured record strides are 2 dwords (8 B) for a one-pair producer,
+  4 dwords (16 B) for a two-pair one, and 16 dwords for the five-sampler
+  schedule's four-slot record.  At 1920x1200 and one record per pixel that
+  is 17.6, 35.2 and 141 MiB respectively (DERIVED).
 * The unobserved fourth `form` value is **OPEN**.
 * Whether a consuming pass may declare interpolated inputs *and* a route at
   the same time is **OPEN**, as the pass-splitting note already records.

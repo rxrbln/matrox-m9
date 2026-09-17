@@ -85,7 +85,7 @@ noted):
 | `a8` | `0038038a` (depth write set) | `00380388` (depth write cleared) |
 | `a9` | `88ffff00` | `08ffff00` |
 | `ae` | `32444442` | `22444442` |
-| `ab`/`ac` | `ffffffff` / `ffffffff` | the application colour mask |
+| `ab`/`ac` | `ffffffff` / `ffffffff` | low 16 bits of `ab` are the colour mask, `ffff` here |
 | `0x74` | `00000100` (idle) | the route word, section 4 |
 | `0x70`/`78`/`79`/`7a`/`7c` | the 1x1 placeholder texture, `7c=00000200` | the application texture, `7c=02409200` or `12409200` |
 | index-23 declaration | one interpolated input `00100d88` plus the fixed trio `00010688 00c231b6 00d30688` | the fixed trio alone, `00000688 00c131b6 00d20688` |
@@ -94,6 +94,40 @@ noted):
 Both passes share **one** `c2` image, **one** `6c` linked record and one
 preprocessing range; the two constant spans are consecutive inside the same
 arena.  The depth and auxiliary surfaces stay bound across both passes.
+
+Three readings of that table need qualifying (CAPTURED, all seven cases
+re-decoded):
+
+* the colour **write mask is the low sixteen bits of `ab`**, and it is
+  `ffff` in both passes of all seven cases.  The captured pass-2 upper
+  halves (`ba51ffff`, `c023ffff`, ...) and `ac` values differ per case with
+  no schedule meaning; they are the process-varying fragment
+  `docs/parhelia-m9-cpu-tnl-raster-state.md` already describes.  A
+  clean-room stream emits `ab = mask | 0xffff0000`, `ac = 0xffffffff`.
+* **depth is off throughout this fixture**: `a8` bit 0 is clear and `ef`'s
+  depth field is zero in both passes.  The `0038038a` / `00380388`
+  difference is the depth-write bit, but it is inert here, so the capture
+  does not show what a depth-**enabled** split must emit.
+* the index-23 rows are right, and incomplete: declaration writes come in
+  groups of four, so the consuming pass emits a fourth `00000000` pad word,
+  and index `22` bits 11:8 hold the declaration word count **minus one**.
+
+Three further facts the table does not carry (CAPTURED):
+
+* index `30 = 0` is emitted in the **consuming** pass only.
+* the producing pass's 1x1 placeholder texture is not a dedicated
+  allocation: the vendor points slot 0 at `113c1000`, an unused slice of the
+  same transient stream arena, read with `79=cc010001 7a=00010001`.
+* the consuming pass **drops stream slot 0 and shifts slots 1..3 down**,
+  address and stride together, because the interpolated input the producer
+  carried is gone.  Producer `(113d0400,0x10) (113fe000,0x10)
+  (1140d400,0x06) (113eec00,0x10)`, consumer `(113fe000,0x10)
+  (1140d400,0x06) (113eec00,0x10)`.
+* the shared `c2` image holds the two fragment programs first and then
+  **three** preprocessing/vertex programs, not one, each with its own `c3`.
+* the two constant spans are literally consecutive -- pass 2's `8d` equals
+  pass 1's `8e` -- and `fs-tex2d-swizzle`'s producer span is **empty**
+  (`8d == 8e`, count 0), which an emitter has to handle.
 
 Note the two facts a scheduler is most likely to get wrong:
 
@@ -144,10 +178,12 @@ Reading the table (DERIVED, and consistent with all seven):
   component for the projector, the LOD bias, the shadow reference, the 3-D `r`
   and the cube's major axis.
 
-The exact field boundaries inside the route word are **OPEN**; the five-sampler
-note declines to name them, and nothing here needs them.  A scheduler should
-emit the captured triple `(producer descriptor, route word, consumer
-descriptor)` as a unit for the shape it is reproducing.
+The exact field boundaries inside the route word are closed in
+`docs/parhelia-m9-fragment-pass-routes.md`: one model rebuilds all twenty
+descriptor and route values of this table and of the five-sampler schedule,
+and the m9x driver checks it offline.  The reading of bit 20 above holds for
+producers only -- the five-sampler consumers read a sixteen-dword record with
+that bit clear -- so bits 20:19 are a form selector, not a size.
 
 ## 5. Pass budget
 
@@ -165,6 +201,27 @@ descriptor)` as a unit for the shape it is reproducing.
   count at index `0x22` (CAPTURED/MEASURED,
   `docs/parhelia-m9-raster-stream-limit-re.md`).  With texture coordinates the
   bound is `2 * varyings + coords + 3 <= 16`.
+
+### The tap counts, measured
+
+Neither the pass count nor the tap count previously recorded for `effect2d`
+is right (MEASURED offline: the shaders glmark2 generates were rebuilt from
+`src/scene-effect-2d.cpp` and `src/scene-desktop.cpp` and compiled with the
+driver's own `m9-fs-compile-test --glsl`, counting `tex` instructions in the
+optimised NIR):
+
+| scene shader | `texture2D` calls in the GLSL | fetches reaching the backend |
+|---|---:|---:|
+| `effect2d kernel=0,1,0;1,-4,1;0,1,0;` | 9 | **5** |
+| `effect2d kernel=1,1,1,1,1;` x3 | 15 | **15** |
+| `desktop` separable blur, radius 5 | 11 per direction | **11** |
+
+The 3x3 edge kernel normalises to `0, .25, 0, .25, -1, .25, 0, .25, 0`, and
+Mesa folds the four `texture2D(...) * 0.0` terms away before the driver sees
+them, so it is a **five**-fetch shader.  glmark2's second default kernel is
+`1,1,1,1,1;1,1,1,1,1;1,1,1,1,1;` -- five columns by **three** rows, fifteen
+taps, not twenty-five; nothing folds.  At four fetches in the first pass and
+three in each continuation that is 2, 5 and 4 passes respectively.
 
 ### A correction to the tap claim
 
@@ -210,8 +267,31 @@ For a shader that needs `P` passes, in submission order:
    depth-write bit cleared, `88 = 0010ffe3`, the route words at `0x74 + k` with
    `0x78`/`0x79` for each record it consumes, then the application textures in
    the remaining full slots.
-5. A range break between passes, and the index-`43` dependency advanced for
-   each (the five-sampler capture advances it by `0x20` per pass).
+5. The index-`43` dependency advanced for each pass; the five-sampler
+   capture and all seven two-pass cases advance it by `0x20`.
+
+   There is **no range break between the passes** (CAPTURED, all seven: both
+   raster draws live inside range 1, `[0x784,0xd38)`).  What separates them
+   is a draw epilogue and a pass prologue of `e6` words, with two writes of
+   index `0x44`:
+
+   ```text
+   epilogue:  e6=38000000  e6=40004000 44=40004000 44=40004000  e6=0c000000
+   prologue:  e6=604fff9f e6=2c000000 e6=49d000a9 e6=08000000  e6=3 e3=...
+   ```
+
+   The m9x kernel accepts neither: `m9_parse_commands` allows only
+   `e6 = 0x00000003` and `0x42000000`, and index `0x44` is outside
+   `m9_index_allowed`.  A clean-room driver therefore separates its passes
+   with a range break, which is a stronger barrier than the vendor's `e6`
+   block and is already the separator between the preprocessing and raster
+   ranges.  The `43` advance is emitted as captured.
+
+   The full dependency trace of a two-pass case (CAPTURED): `e3` advances by
+   `0x10` on every write across the whole submission, and `43` is written
+   once per draw with the value of the `e3` immediately before it, so
+   consecutive `43` values are `0x20` apart -- `e3=380`, `e3=390` `43=390`,
+   `e3=3a0`, draw 1, `e3=3b0` `43=3b0`, `e3=3c0`, draw 2.
 
 Correctness gates that the captures do **not** settle, restated from
 `docs/parhelia-m9-five-sampler-schedule-re.md` because they bound what may be
