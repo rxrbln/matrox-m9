@@ -1196,25 +1196,48 @@ m9_alpha_equivalent(enum pipe_blendfactor f)
    }
 }
 
-/* Blend state as lowered factors, or the reason draws are skipped. */
+/* ZERO * source + ONE * destination leaves the channel as it was. */
+static bool
+m9_blend_keeps_dst(enum pipe_blendfactor src, enum pipe_blendfactor dst)
+{
+   return src == PIPE_BLENDFACTOR_ZERO && dst == PIPE_BLENDFACTOR_ONE;
+}
+
+/* Blend state as lowered factors and the channels the draw writes, or the
+ * reason draws are skipped.  One program factor pair drives all four
+ * channels, so a differing alpha lane is only supported where it keeps the
+ * destination: that lane is masked off in the raster state instead. */
 static const char *
-m9_blend_key(const struct pipe_blend_state *blend, struct m9_fs_blend *out)
+m9_blend_key(const struct pipe_blend_state *blend, struct m9_fs_blend *out,
+             unsigned *colormask)
 {
    const struct pipe_rt_blend_state *rt = blend ? &blend->rt[0] : NULL;
+   enum pipe_blendfactor src, dst;
 
    if (!rt || !rt->blend_enable)
       return NULL;
    if (rt->rgb_func != PIPE_BLEND_ADD || rt->alpha_func != PIPE_BLEND_ADD)
       return "blend equations other than ADD are not implemented; "
              "draw skipped";
-   if (m9_alpha_equivalent(rt->rgb_src_factor) !=
-          m9_alpha_equivalent(rt->alpha_src_factor) ||
-       m9_alpha_equivalent(rt->rgb_dst_factor) !=
-          m9_alpha_equivalent(rt->alpha_dst_factor) ||
-       !m9_blend_factor(rt->rgb_src_factor, &out->src) ||
-       !m9_blend_factor(rt->rgb_dst_factor, &out->dst))
-      return "separate or constant blend factors are not implemented; "
-             "draw skipped";
+   src = rt->rgb_src_factor;
+   dst = rt->rgb_dst_factor;
+   if (m9_alpha_equivalent(src) != m9_alpha_equivalent(rt->alpha_src_factor) ||
+       m9_alpha_equivalent(dst) != m9_alpha_equivalent(rt->alpha_dst_factor)) {
+      if (m9_blend_keeps_dst(rt->alpha_src_factor, rt->alpha_dst_factor)) {
+         if (colormask)
+            *colormask &= ~PIPE_MASK_A;
+      } else if (m9_blend_keeps_dst(src, dst)) {
+         if (colormask)
+            *colormask &= ~PIPE_MASK_RGB;
+         src = m9_alpha_equivalent(rt->alpha_src_factor);
+         dst = m9_alpha_equivalent(rt->alpha_dst_factor);
+      } else {
+         return "separate blend factors are only implemented where one lane "
+                "keeps the destination; draw skipped";
+      }
+   }
+   if (!m9_blend_factor(src, &out->src) || !m9_blend_factor(dst, &out->dst))
+      return "constant blend factors are not implemented; draw skipped";
    return NULL;
 }
 
@@ -1358,11 +1381,12 @@ m9_fs_variant(struct m9_context *ctx, struct m9_fs_state *fs,
 /* Variant of the bound fragment state for the current blend and inlined
  * uniform values. */
 static const struct m9_fs_variant *
-m9_ctx_variant(struct m9_context *ctx, const char **reason)
+m9_ctx_variant(struct m9_context *ctx, const char **reason,
+               unsigned *colormask)
 {
    struct m9_fs_variant want = { .blend = { M9_FS_ONE, M9_FS_ZERO } };
 
-   *reason = m9_blend_key(ctx->blend, &want.blend);
+   *reason = m9_blend_key(ctx->blend, &want.blend, colormask);
    if (*reason)
       return NULL;
    memcpy(want.inline_values, ctx->fs_inline, sizeof(want.inline_values));
@@ -1389,6 +1413,7 @@ m9_job_key_current(struct m9_context *ctx, struct m9_job_key *key)
    const struct pipe_blend_state *blend = ctx->blend;
    const struct pipe_rasterizer_state *rast = ctx->rasterizer;
    struct m9_resource *zs;
+   unsigned colormask;
    bool test, write;
 
    if (ctx->lost)
@@ -1413,17 +1438,18 @@ m9_job_key_current(struct m9_context *ctx, struct m9_job_key *key)
    key->depth_control = m9_depth_control(test, write,
                                          dsa ? dsa->depth_func : PIPE_FUNC_LESS);
    key->depth_ef = m9_depth_ef(test, write);
-   key->color_mask = m9_color_mask(blend ? blend->rt[0].colormask :
-                                           PIPE_MASK_RGBA);
+   colormask = blend ? blend->rt[0].colormask : PIPE_MASK_RGBA;
+   key->color_mask = m9_color_mask(colormask);
    if (ctx->fs && ctx->fs->native && !ctx->fs->passthrough) {
       const char *reason;
 
       key->fs = ctx->fs;
-      key->variant = m9_ctx_variant(ctx, &reason);
+      key->variant = m9_ctx_variant(ctx, &reason, &colormask);
       if (!key->variant) {
          m9_warn_once(ctx, M9_WARN_BLEND, reason);
          return m9_skip_reason(ctx, reason);
       }
+      key->color_mask = m9_color_mask(colormask);
       if (!m9_fs_resolve_consts(ctx, key->variant, &ctx->key_consts) ||
           !m9_job_textures(ctx, key->variant, key))
          return false;
@@ -1464,7 +1490,7 @@ m9_render_get_vertex_info(struct vbuf_render *render)
       draw_emit_vertex_attr(&r->vinfo, EMIT_4F, color);
    r->extra_count = 0;
    if (fs && fs->native && !fs->passthrough)
-      v = m9_ctx_variant(r->ctx, &reason);
+      v = m9_ctx_variant(r->ctx, &reason, NULL);
    if (v) {
       unsigned offset = r->has_color ? 8 : 4;
 
@@ -2513,7 +2539,9 @@ m9_update_target(struct m9_context *ctx)
       return;
    w = color->width;
    h = color->height;
-   if (cbuf->level || !color->tiled ||
+   /* A mipmapped image holds its level 0 in the render surface layout, so it
+    * is a target as it stands; only the base level can be rendered into. */
+   if (cbuf->level || !(color->tiled || m9_texture_renders_level0(color)) ||
        m9_context_set_framebuffer(ctx, color, NULL, w, h) ||
        m9_draw_params_init(&ctx->params, w, h, color->format) ||
        !m9_render_surface_layout(w, h, 4, &layout)) {

@@ -1,4 +1,5 @@
 /* SPDX-License-Identifier: MIT */
+/* Copyright 2026 René Rebe <rene@exactco.de> */
 #include "m9_state.h"
 #include "m9_batch.h"
 #include "m9_format.h"
@@ -29,6 +30,28 @@ m9_context_state_cleanup(struct m9_context *context)
       pipe_resource_reference(&context->textures[i], NULL);
 }
 
+/* A mipmapped colour image is stored as a texture chain, whose level 0 is
+ * placed at offset 0 with the render surface's row span and allocation
+ * height (m9_texture_layout_init), so the engine renders into it in place. */
+bool
+m9_texture_renders_level0(const struct m9_resource *resource)
+{
+   const struct m9_texture_level *base;
+   struct m9_render_layout layout;
+
+   if (!resource || !resource->texture.levels ||
+       resource->kind != M9_RESOURCE_LINEAR_TEXTURE ||
+       resource->texture_code != M9_TEXTURE_CODE_BGRA ||
+       !m9_render_surface_layout(resource->width, resource->height,
+                                 resource->cpp, &layout))
+      return false;
+   base = &resource->texture.level[0];
+   return !base->in_tail && !base->offset && base->width == resource->width &&
+          base->height == resource->height &&
+          (uint64_t)layout.row_span * layout.allocation_height *
+          resource->cpp <= base->face_bytes;
+}
+
 static bool
 m9_framebuffer_resource_valid(const struct m9_resource *resource,
                               enum m9_resource_kind kind)
@@ -37,21 +60,24 @@ m9_framebuffer_resource_valid(const struct m9_resource *resource,
    struct m9_render_layout layout;
    unsigned usage = kind == M9_RESOURCE_LINEAR_COLOR ?
                     M9_FORMAT_COLOR : M9_FORMAT_DEPTH;
-   uint64_t bytes;
+   bool texture;
 
-   if (!resource || !resource->handle || resource->kind != kind ||
+   if (!resource || !resource->handle ||
        resource->domain != M9_BO_VRAM || resource->layout != 1 ||
-       resource->row_span > UINT16_MAX ||
        !resource->width || !resource->height || !resource->cpp ||
        !m9_format_info(resource->base.format, &format) ||
        !(format.usage & usage) || format.cpp != resource->cpp ||
        format.code != resource->format ||
        !m9_render_surface_layout(resource->width, resource->height,
-                                 resource->cpp, &layout) ||
-       resource->row_span != layout.row_span)
+                                 resource->cpp, &layout))
       return false;
-   bytes = layout.size;
-   return bytes <= resource->size;
+   texture = kind == M9_RESOURCE_LINEAR_COLOR &&
+             m9_texture_renders_level0(resource);
+   if (texture)
+      return resource->texture.level[0].face_bytes <= resource->size;
+   return resource->kind == kind && resource->row_span <= UINT16_MAX &&
+          resource->row_span == layout.row_span &&
+          layout.size <= resource->size;
 }
 
 int
