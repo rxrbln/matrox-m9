@@ -2049,7 +2049,14 @@ m9_clear_render_target(struct pipe_context *pctx, struct pipe_surface *dst,
    util_pack_color(color->f, dst->format, &uc);
    if (!dstx && !dsty && width >= resource->width &&
        height >= resource->height) {
-      m9_fill_dwords(resource, uc.ui[0]);
+      /* A mip chain follows level 0 in the same object, so a full clear of
+       * the object would wipe the chain with it. */
+      uint64_t bytes = resource->texture.levels ?
+                       resource->texture.level[0].face_bytes : resource->size;
+      uint32_t *words = resource->map;
+
+      for (uint64_t i = 0; i < bytes / 4; i++)
+         words[i] = uc.ui[0];
    } else if (resource->tiled) {
       const struct pipe_box box = {
          .x = dstx, .y = dsty, .width = width, .height = height, .depth = 1,
