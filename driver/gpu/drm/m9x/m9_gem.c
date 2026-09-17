@@ -22,6 +22,14 @@ module_param(m9_bo_force_paged, bool, 0600);
 MODULE_PARM_DESC(m9_bo_force_paged,
 	"Back non-command DMA32 BOs by page arrays (fragmentation fallback test)");
 
+/* Allocation counters, read back from sysfs to size the per-frame BO churn. */
+static unsigned long m9_bo_vram_creates, m9_bo_vram_kib;
+static unsigned long m9_bo_dma_creates, m9_bo_dma_kib;
+module_param(m9_bo_vram_creates, ulong, 0444);
+module_param(m9_bo_vram_kib, ulong, 0444);
+module_param(m9_bo_dma_creates, ulong, 0444);
+module_param(m9_bo_dma_kib, ulong, 0444);
+
 static void m9_bo_free(struct drm_gem_object *gem)
 {
 	struct m9x_bo *bo = container_of(to_drm_gem_dma_obj(gem),
@@ -319,19 +327,24 @@ m9_vram_bo_create(struct drm_device *drm, size_t size)
 	if (IS_ERR(vram))
 		return ERR_CAST(vram);
 	bo = container_of(vram, struct m9x_vram_bo, vram);
-	ret = ttm_bo_reserve(&vram->bo, true, false, NULL);
-	if (ret)
-		goto err_put;
-	ret = drm_gem_vram_vmap(vram, &map);
-	if (!ret) {
-		iosys_map_memset(&map, 0, 0, size);
-		/* Publish zeroes before exposing the mapping cookie to userspace. */
-		wmb();
-		drm_gem_vram_vunmap(vram, &map);
+	/* A fresh BO lives in the system placement, whose pages TTM hands out
+	 * zeroed; vmapping the object only to memset it again costs a second
+	 * pass over every byte.  Fill only a device placement. */
+	if (vram->bo.resource->mem_type != TTM_PL_SYSTEM) {
+		ret = ttm_bo_reserve(&vram->bo, true, false, NULL);
+		if (ret)
+			goto err_put;
+		ret = drm_gem_vram_vmap(vram, &map);
+		if (!ret) {
+			iosys_map_memset(&map, 0, 0, size);
+			/* Publish zeroes before exposing the mapping cookie. */
+			wmb();
+			drm_gem_vram_vunmap(vram, &map);
+		}
+		ttm_bo_unreserve(&vram->bo);
+		if (ret)
+			goto err_put;
 	}
-	ttm_bo_unreserve(&vram->bo);
-	if (ret)
-		goto err_put;
 	ret = drm_gem_create_mmap_offset(&vram->bo.base);
 	if (ret)
 		goto err_put;
@@ -400,6 +413,8 @@ static int m9_create_bo_ioctl(struct drm_device *drm, void *data,
 			return PTR_ERR(vram_bo);
 		vram_bo->tiled = args->flags & PARHELIA_M9_BO_TILED;
 		gem = &vram_bo->vram.bo.base;
+		m9_bo_vram_creates++;
+		m9_bo_vram_kib += size >> 10;
 	} else {
 		bool command = args->flags & PARHELIA_M9_BO_COMMAND;
 
@@ -412,6 +427,8 @@ static int m9_create_bo_ioctl(struct drm_device *drm, void *data,
 			return PTR_ERR(bo);
 		bo->flags = args->flags;
 		gem = &bo->dma.base;
+		m9_bo_dma_creates++;
+		m9_bo_dma_kib += size >> 10;
 		if (!command) {
 			mutex_lock(&mdev->transport.lock);
 	m9x_transport_drain_locked(mdev);
