@@ -533,12 +533,17 @@ m9_transfer_map_locked(struct pipe_context *pctx, struct pipe_resource *pres,
    struct m9_transfer *transfer;
    uint64_t offset = 0, last;
    unsigned width, height, stride;
+   /* Layers of this level: cube faces, volume slices, one for a plane. */
+   unsigned layers = resource && level < resource->texture.levels ?
+                     resource->texture.faces *
+                     resource->texture.level[level].depth : 1;
 
    if (!resource || !resource->map ||
        ((usage & PIPE_MAP_WRITE) && !resource->map_writable) ||
        !box || !out || box->x < 0 ||
-       box->y < 0 || box->z || box->width < 0 || box->height < 0 ||
-       box->depth != 1 || level > pres->last_level) {
+       box->y < 0 || box->z < 0 || box->width < 0 || box->height < 0 ||
+       box->depth < 1 || (unsigned)box->z + box->depth > layers ||
+       level > pres->last_level) {
       if (ctx->debug && resource && box)
          fprintf(stderr, "m9x: map refused: %s %ux%u target %u level %u/%u "
                  "box %d,%d,%d %dx%dx%d usage %#x map %p writable %d kind %u\n",
@@ -572,7 +577,8 @@ m9_transfer_map_locked(struct pipe_context *pctx, struct pipe_resource *pres,
 
       stride = box->width * util_format_get_blocksize(pres->format);
       transfer->staging = box->width && box->height ?
-                          MALLOC((size_t)stride * box->height) : NULL;
+                          MALLOC((size_t)stride * box->height * box->depth) :
+                          NULL;
       if (preserve) {
          ctx->window_read_usage |= usage;
          ctx->window_reads_explicit += !!(usage & PIPE_MAP_READ);
@@ -631,7 +637,7 @@ m9_transfer_map_locked(struct pipe_context *pctx, struct pipe_resource *pres,
    transfer->base.box = *box;
    transfer->base.stride = stride;
    transfer->base.layer_stride = pres->target == PIPE_BUFFER ? 0 :
-                                 (uintptr_t)stride * height;
+                                 (uintptr_t)stride * box->height;
    *out = &transfer->base;
    return transfer->staging ? transfer->staging :
           (uint8_t *)resource->map + offset;
@@ -1573,8 +1579,10 @@ m9_texture_bind_view(const struct pipe_sampler_view *view,
               m9_res(view->texture)->kind, m9_res(view->texture)->tiled,
               m9_res(view->texture)->texture.levels);
    res = m9_res(view->texture);
-   if (view->target != PIPE_TEXTURE_2D && view->target != PIPE_TEXTURE_RECT)
-      return "only 2-D sampling is implemented; draw skipped";
+   if (view->target != PIPE_TEXTURE_2D && view->target != PIPE_TEXTURE_RECT &&
+       view->target != PIPE_TEXTURE_CUBE && view->target != PIPE_TEXTURE_3D)
+      return "only plane, cube and volume sampling is implemented; "
+             "draw skipped";
    /* View swizzles are lowered into the fragment variant (m9_ctx_variant).
     * A depth view names the sampleable part of a depth image, so compare
     * the descriptor code rather than the pipe format. */
@@ -1614,12 +1622,11 @@ m9_texture_bind_view(const struct pipe_sampler_view *view,
        * the small kind up to 64 in both dimensions, the ordinary tiled kind
        * above it.  Reading 128x128 and larger textures as the small kind
        * returned a single constant texel. */
-      bool small = res->width <= 64 && res->height <= 64;
-
       *bind = (struct m9_texture_bind) {
          .code = res->texture_code,
-         .kind = small ? M9_TEXTURE_KIND_2D : M9_TEXTURE_KIND_RENDER,
-         .width = res->width, .height = res->height, .depth = 1,
+         .kind = m9_texture_bind_kind(&res->texture, res->width, res->height),
+         .width = res->width, .height = res->height,
+         .depth = res->texture.kind == M9_TEXTURE_KIND_3D ? res->depth : 1,
          .last_level = res->base.last_level, .view_last_level = last,
       };
       return NULL;
@@ -2328,7 +2335,7 @@ m9_scale_coords(const struct m9_job_key *key, float *extra)
          packed |= BITFIELD_BIT(j);
       }
       if (p->texcoord_affine[k].present && !(folded & BITFIELD_BIT(j))) {
-         unsigned n = p->texcoord_shadow[k] ? 3 : 2;
+         unsigned n = p->texcoord_shadow[k] || p->texcoord_volume[k] ? 3 : 2;
 
          for (unsigned i = 0; i < n; i++)
             extra[4 * j + i] = extra[4 * j + i] * key->coord_scale[u][i] +
@@ -2341,7 +2348,7 @@ m9_scale_coords(const struct m9_job_key *key, float *extra)
          if (q != 0.0f && q != 1.0f) {
             extra[4 * j] /= q;
             extra[4 * j + 1] /= q;
-            if (p->texcoord_shadow[k])
+            if (p->texcoord_shadow[k] || p->texcoord_volume[k])
                extra[4 * j + 2] /= q;
             extra[4 * j + 3] = 1.0f;
          }

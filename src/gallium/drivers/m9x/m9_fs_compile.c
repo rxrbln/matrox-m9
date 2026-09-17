@@ -729,9 +729,16 @@ build_tex(struct ctx *c, nir_tex_instr *tex)
    int ri = nir_tex_instr_src_index(tex, nir_tex_src_comparator);
    nir_scalar s[2];
 
-   dims = tex->is_shadow ? 3 : 2;
-   if (tex->op != nir_texop_tex || tex->sampler_dim != GLSL_SAMPLER_DIM_2D ||
-       tex->is_array || ci < 0 || tex->is_shadow != (ri >= 0) ||
+   /* A cube and a volume read three coordinate components of one varying,
+    * exactly where a shadow fetch reads its reference. */
+   bool volume = tex->sampler_dim == GLSL_SAMPLER_DIM_3D ||
+                 tex->sampler_dim == GLSL_SAMPLER_DIM_CUBE;
+
+   dims = tex->is_shadow || volume ? 3 : 2;
+   if (tex->op != nir_texop_tex ||
+       (tex->sampler_dim != GLSL_SAMPLER_DIM_2D && !volume) ||
+       tex->is_array || ci < 0 || (volume && tex->is_shadow) ||
+       tex->is_shadow != (ri >= 0) ||
        tex->num_srcs != 1u + (pi >= 0) + (ri >= 0))
       return fail(c, "texture sampling needs a computed coordinate pass"), -1;
    /* Linked vec2 varyings may share one slot: xy or zw of the input.  st
@@ -743,8 +750,9 @@ build_tex(struct ctx *c, nir_tex_instr *tex)
    struct m9_fs_coord_affine affine = { 0 };
 
    for (unsigned i = 0; i < dims; i++) {
-      nir_scalar src = i < 2 ? nir_get_scalar(tex->src[ci].src.ssa, i) :
-                               nir_get_scalar(tex->src[ri].src.ssa, 0);
+      nir_scalar src = i < 2 || volume ?
+                       nir_get_scalar(tex->src[ci].src.ssa, i) :
+                       nir_get_scalar(tex->src[ri].src.ssa, 0);
 
       if (!coord_parse(src, &ce[i]) || !ce[i].varying ||
           ce[i].location != ce[0].location)
@@ -764,7 +772,7 @@ build_tex(struct ctx *c, nir_tex_instr *tex)
       return fail(c, "texture coordinate is not a varying"), -1;
    /* The driver moves a pair down to the xy of its stream; a reference is a
     * third component, so a shadow fetch owns the low half of its slot. */
-   if (tex->is_shadow && (coord_comp[0] || coord_comp[2] != 2))
+   if ((tex->is_shadow || volume) && (coord_comp[0] || coord_comp[2] != 2))
       return fail(c, "shadow reference is not the third coordinate"), -1;
    s[0] = nir_scalar_chase_movs(nir_get_scalar(tex->src[ci].src.ssa, 0));
    while (nir_scalar_is_alu(s[0]))
@@ -792,6 +800,7 @@ build_tex(struct ctx *c, nir_tex_instr *tex)
           p->texcoord_components[i] == coord_comp[0] &&
           p->texcoord_projective[i] == (pi >= 0) &&
           p->texcoord_shadow[i] == tex->is_shadow &&
+          p->texcoord_volume[i] == volume &&
           m9_fs_coord_affine_same(&p->texcoord_affine[i], &affine)) {
          n = node_new(c, N_TEX);
          if (n < 0)
@@ -811,6 +820,7 @@ build_tex(struct ctx *c, nir_tex_instr *tex)
    p->texcoord_affine[p->texture_count] = affine;
    p->texcoord_projective[p->texture_count] = pi >= 0;
    p->texcoord_shadow[p->texture_count] = tex->is_shadow;
+   p->texcoord_volume[p->texture_count] = volume;
    p->textures[p->texture_count] = tex->texture_index;
    p->texcoords[p->texture_count] = location;
    p->texcoord_components[p->texture_count] = coord_comp[0];

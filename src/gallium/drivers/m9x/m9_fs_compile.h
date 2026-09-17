@@ -105,6 +105,9 @@ struct m9_fs_program {
    /* The unit compares against a third interpolated component, which the
     * sampler word selects (docs/parhelia-m9-openbits-gl-capture.md). */
    bool texcoord_shadow[M9_FS_MAX_TEXTURES];
+   /* A cube or volume fetch reads a third interpolated component as the
+    * r coordinate; the unit's form word selects the storage family. */
+   bool texcoord_volume[M9_FS_MAX_TEXTURES];
    struct m9_fs_coord_affine texcoord_affine[M9_FS_MAX_TEXTURES];
    unsigned texture_count;
    uint16_t registers_used;       /* bit per register pair group 08..1f */
