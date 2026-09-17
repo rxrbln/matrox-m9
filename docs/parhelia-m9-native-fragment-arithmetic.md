@@ -190,13 +190,90 @@ computed vectors — which is what every lit shader does — cannot use them.  T
 backend expands those into multiplies and adds instead, and leaves the native
 forms for the one-uniform case.
 
+## 8. Why `fs-log` and `fs-pow` still differ from the capture
+
+The chains are right; the **layout** around them is not, and it is worth
+saying exactly what the remaining difference is, because a plausible-looking
+account of it has already been proposed and is wrong.
+
+**The flagged cause is not a defect (CAPTURED).**  The log2 polynomial slots
+were suspected of writing scalar 0 (`op0 = 0x1d`) while their chained `c`
+operand's select is 2, which by the general rule reads scalar 1 — a step
+reading a scalar its predecessor never wrote.  The vendor's own `fs-log`
+does exactly the same thing: its three step slots are `a260c8a0`, `a26088a0`
+and `a26048a0`, which are the backend's base word `a26008a0` with the
+constant index in `e` and nothing else, `op0 = 0x1d` and `c` select 2
+included.  The backend's chain is instruction for instruction the vendor's,
+in opcode, operand wiring and every select; the single encoding difference in
+the whole chain is the last instruction's destination mask, `0x1c` where the
+vendor writes `0x1d` or `0x1e` (see below).  So the pattern cannot be the
+defect, and the rule that the step class selects its `c` scalar by the bit
+belonging to the destination scalar — bit 4 for a write to scalar 0, bit 5
+for scalar 1 — is what fits all three chains (log2 `0x1d`/select 2, rsq
+`0x1d`/select 0, exp2 `0x1e`/select 3).
+
+**The chains are correct on hardware (MEASURED).**  Against the C library,
+every one of 76800 pixels: `exp2`, `log2`, `pow`, `rcp`, `rsq`, `sqrt` and
+`normalize`, 0 pixels differ, with `m9-mesa-glsl` on the M9.
+
+**What the difference actually is.**  `fs-log` compiles to 41 slots and 12
+constants against the vendor's 33 and 10, and the 8 extra slots are two
+mechanisms, both layout:
+
+1. **Two constants cannot be added in one slot.**  `log(u + 1.0)` is a
+   constant plus a constant, since the vendor holds a uniform in its constant
+   file too.  The vendor's `b081c10f` takes one constant index in `c` and a
+   second in `e` and adds them (`0x13 = k6 + k7`).  The backend has no such
+   form, so it moves 1.0 into a register first and adds register to constant:
+   two extra slots, one per lane.
+
+2. **A chain result is written to both scalars of its own register.**  The
+   vendor ends each chain with `op0 = 0x1d` or `0x1e`, writing the result
+   straight into the scalar of the destination pair where it belongs
+   (`0x13 = (log2 z, log2 w)` from slots 10 and 28, `0x11 = (log2 x, log2 y)`
+   from slots 26 and 29), so assembling the vec4 costs nothing.  The backend
+   writes each chain result to both scalars of a fresh register and then
+   assembles the pairs with the generic gather — a masked multiply per scalar
+   and an add per lane, six slots and the two mask constants `(1,0)` and
+   `(0,1)`.
+
+   41 - 2 - 6 = 33, the vendor's count exactly.
+
+3. **Order.**  Even with both closed, the programs would not match: the
+   vendor interleaves the four chains rather than emitting them one after
+   another, and the interleave is not a fixed pattern.  In `fs-log` the z
+   chain occupies slots 1, 2, 3, 4, 6, 8, 10 and the w chain 5, 7, 9, 11, 12,
+   14, 28 — started four slots apart, then alternating, with the w chain's
+   last instruction deferred by fourteen slots; the x and y chains start two
+   apart.  The four final writes come out in the order low-z, low-x, high-w,
+   high-y, that is every low scalar before every high one.  That is a
+   scheduler with a latency model, and reproducing `fs-log` and `fs-pow` byte
+   for byte means reproducing it.  Nothing here was reverse engineered.
+
+**`fs-pow` is 66 slots against the vendor's 64, and carries a real gap.**
+The vendor guards `pow(0, y)`: slots 27, 57, 59 and 60 of its program are
+`op2 = 0x1b`, the register/constant select with class 5, which
+section 3 above records as captured but never used.  The backend emits no guard, so `pow(0, y)` goes through
+`exp2(y * log2(0))` with no protection against the infinity.  The `pow`
+fixture raises `v * 0.9 + 0.1` to 2.5 and so never reaches zero: **the zero
+base is untested**, and it is the one case where the backend's `pow` may be
+not merely differently shaped but wrong.
+
 ## What is still open
 
+- A guard for `pow(0, y)`: the vendor's `op2 = 0x1b` select, section 8.
+- A two-constant add (`b081c10f`), and chain results written straight into
+  the scalar of the pair they belong to, which together would take `fs-log`
+  from 41 slots to the vendor's 33; and the vendor's chain scheduler, which
+  byte-exactness needs on top of both.
 - The algebra of `op2 = 0x13`, the step shared by all four chains.
 - A register-register min, max or compare, and a fourth rounding class.
 - Whether `op2 = 0x1a` has any usable class other than 4.
 - Dependent texture reads: the raster engine fetches at an interpolated
-  varying, and nothing in the corpus samples at a computed coordinate.
-- `M9_FS_MAX_TEXTURES` is 2, but `glamor/xv-planar-3` binds three, with a
-  third `0x00700d88` declaration and `r88` bit 22 set.  So at least three
-  units exist and the limit is the driver's, not the hardware's.
+  varying.  Seven corpus cases do sample at a computed coordinate, and every
+  one of them is two raster passes — see
+  `parhelia-m9-mesa-projective-textures.md`, which also measures that the
+  sampler performs no divide of its own.
+- `M9_FS_MAX_TEXTURES` is now 4, `glamor/xv-planar-3` binds three with a
+  third `0x00700d88` declaration and `r88` bit 22 set, and the per-pass
+  ceiling is still the driver's rather than the hardware's.

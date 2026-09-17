@@ -91,7 +91,11 @@ The other exact cases are `fs-varying`, `fs-texcoord`, `fs-mul`, `fs-add`,
   transform share one unit, and a fifth distinct fetch is refused, because
   the vendor splits it into another framebuffer pass.  `shadow2D` is
   supported, with the comparison reference as the third component of the
-  coordinate stream (`parhelia-m9-mesa-depth-textures.md`).
+  coordinate stream (`parhelia-m9-mesa-depth-textures.md`).  A projective
+  fetch is accepted only when the projector is component 3 of the same
+  varying, and the driver then divides per vertex, which is exact only while
+  the projector is constant over a primitive; the sampler does no divide of
+  its own (`parhelia-m9-mesa-projective-textures.md`, MEASURED).
 
 ## 3. Vendor layout rules (DERIVED, reproduced OFFLINE)
 

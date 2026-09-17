@@ -174,7 +174,10 @@ difference does not matter, because the comparison is exact with `0688`.
   ordinary `sampler2D` depth texture, and compares in the shader.  The depth
   texture half of that is what this note closes; the per-fragment divide by a
   varying is still refused by the coordinate parser, which folds only
-  per-draw coefficients.  UNTESTED on hardware since this landed.
+  per-draw coefficients.  That refusal is now known to be the right answer
+  and not merely a gap: the sampler performs no divide of its own, so the
+  scene needs the vendor's two-pass computed-coordinate form
+  (`parhelia-m9-mesa-projective-textures.md`, MEASURED).
 
 ## Reproduction
 
