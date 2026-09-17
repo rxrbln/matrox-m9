@@ -31,12 +31,14 @@ m9_vs_source_layout_init(const struct m9_vs_program *program,
                          unsigned element_count,
                          const struct pipe_vertex_buffer *buffers,
                          unsigned buffer_count,
-                         struct m9_vs_source_layout *out)
+                         struct m9_vs_source_layout *out,
+                         const char **reason)
 {
    unsigned dword = 0;
 
+#define REFUSE(why) do { if (reason) *reason = (why); return false; } while (0)
    if (!program || !out || (element_count && !elements))
-      return false;
+      REFUSE("no vertex elements");
    memset(out, 0, sizeof(*out));
    for (unsigned i = 0; i < program->attr_count; i++) {
       const struct m9_vs_attr *a = &program->attrs[i];
@@ -44,33 +46,61 @@ m9_vs_source_layout_init(const struct m9_vs_program *program,
       struct m9_vs_source_attr *s = &out->attr[i];
       unsigned components = 0;
 
-      if (a->driver_location >= element_count)
-         return false;
-      e = &elements[a->driver_location];
-      if (e->vertex_buffer_index >= buffer_count ||
-          buffers[e->vertex_buffer_index].is_user_buffer ||
-          e->instance_divisor || !m9_vs_source_format_ok(e->src_format))
-         return false;
-      /* The declaration's selectors 0..3 pick a source component; 4 and 5 are
-       * the literals the record never carries. */
-      for (unsigned c = 0; c < 4; c++)
-         if (a->select[c] < 4)
-            components = MAX2(components, (unsigned)a->select[c] + 1u);
-      if (components > util_format_get_nr_components(e->src_format))
-         return false;
+      unsigned element = m9_vs_attr_element(program, i);
+
+      if (element >= element_count)
+         REFUSE("an attribute has no vertex element");
+      e = &elements[element];
+      if (e->vertex_buffer_index >= buffer_count)
+         REFUSE("an attribute has no vertex buffer");
+      if (e->instance_divisor)
+         REFUSE("an instanced attribute");
+      if (e->dual_slot)
+         REFUSE("a dual-slot attribute");
+      if (!e->src_stride)
+         REFUSE("a zero-stride attribute");
+      if (!m9_vs_source_format_ok(e->src_format))
+         REFUSE("a vertex format the record cannot carry");
+      /* Components beyond what the element carries unpack to the GL default
+       * already, so a short element serves a wider read. */
+      components = MIN2(a->components, 4u);
       s->buffer = e->vertex_buffer_index;
-      s->src_offset = e->src_offset;
+      s->src_offset = buffers[e->vertex_buffer_index].buffer_offset +
+                      e->src_offset;
       s->stride = e->src_stride;
       s->format = e->src_format;
       s->components = components;
       s->dword = dword;
       if (s->dword != a->offset)
-         return false;
-      dword += components;
+         REFUSE("the record layout disagrees with the declaration");
+      dword += 4;
    }
    out->attr_count = program->attr_count;
    out->record_dwords = dword;
-   return dword && dword == program->record_bytes / 4;
+   if (!dword || dword != program->record_bytes / 4)
+      REFUSE("the record size disagrees with the declaration");
+   return true;
+#undef REFUSE
+}
+
+bool
+m9_vs_source_in_range(const struct m9_vs_source_layout *layout,
+                      const unsigned *buffer_size, unsigned buffer_count,
+                      unsigned first, unsigned count)
+{
+   if (!layout || !buffer_size || !count)
+      return false;
+   for (unsigned a = 0; a < layout->attr_count; a++) {
+      const struct m9_vs_source_attr *s = &layout->attr[a];
+      unsigned texel = util_format_get_blocksize(s->format);
+
+      if (s->buffer >= buffer_count || !s->stride)
+         return false;
+      if ((uint64_t)(first + count - 1) * s->stride + s->src_offset + texel >
+          buffer_size[s->buffer])
+         return false;
+   }
+   return true;
 }
 
 bool
@@ -94,14 +124,17 @@ m9_vs_source_records(const struct m9_vs_source_layout *layout,
       if ((uint64_t)(first + count - 1) * s->stride + s->src_offset + texel >
           buffer_size[s->buffer])
          return false;
+
       for (unsigned v = 0; v < count; v++) {
          const uint8_t *src = buffer_map[s->buffer] +
                               (uint64_t)(first + v) * s->stride + s->src_offset;
+         float *dst = out + (uint64_t)v * layout->record_dwords + s->dword;
          float rgba[4];
 
          unpack->unpack_rgba(rgba, src, 1);
-         memcpy(out + (uint64_t)v * layout->record_dwords + s->dword, rgba,
-                s->components * sizeof(float));
+         for (unsigned c = 0; c < 4; c++)
+            dst[c] = c < s->components ? rgba[c] :
+                     (c == 3 ? 1.0f : 0.0f);
       }
    }
    return true;

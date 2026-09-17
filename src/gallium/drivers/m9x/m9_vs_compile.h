@@ -29,6 +29,14 @@ struct nir_shader;
  * Index 22 bits 11:8 carry the word count minus one, so a pass takes
  * sixteen words; nine, four attributes' worth, is well inside it. */
 #define M9_VS_MAX_ATTRIBUTES 4u
+/* Attributes a preprocessing pass is MEASURED to feed correctly.  The
+ * register rule above is measured for attributes 1 and 2; a third draws
+ * geometry from neither its own value nor a decoy, both in the userspace
+ * probe (docs/parhelia-m9-native-vertex-isa.md section 2) and through this
+ * driver (m9-mesa-vs attr3, 2026-09-17), so the draw path stops at two
+ * until the third attribute's register is decoded.  The backend still
+ * compiles four, which is what the offline corpus covers. */
+#define M9_VS_HW_ATTRIBUTES  2u
 #define M9_VS_MAX_DECL       16u
 /* One output target beyond the position carries a varying; the register to
  * target rule for any other target set is undecoded. */
@@ -108,13 +116,15 @@ struct m9_vs_const {
 };
 
 /* One declared attribute: four selectors over one element of the source
- * record, which is the index-23 word pair.  Selectors 0..3 pick a component,
- * 4 is the literal 0.0 and 5 the literal 1.0. */
+ * record, which is the index-23 word pair.  Each slot selects a record
+ * component; the record always carries four, the GL default (0, 0, 0, 1)
+ * filling in beyond what the shader reads. */
 struct m9_vs_attr {
    unsigned location;      /* gl_vert_attrib semantic of the input */
    unsigned driver_location;  /* its index among the shader's inputs, which is
                                * the pipe_vertex_element the draw binds */
    unsigned offset;        /* dword offset of the element in the record */
+   unsigned components;    /* components the shader reads; the rest default */
    uint8_t select[4];
 };
 
@@ -123,6 +133,7 @@ struct m9_vs_program {
    struct util_dynarray consts;   /* struct m9_vs_const, user pairs in order */
    struct m9_vs_attr attrs[M9_VS_MAX_ATTRIBUTES];
    unsigned attr_count;
+   uint64_t inputs_read;          /* gl_vert_attrib mask of the shader */
    uint32_t record_bytes;
    bool has_varying;
    unsigned varying_location;     /* gl_varying_slot of the one varying */
@@ -134,6 +145,11 @@ bool m9_vs_compile(struct nir_shader *nir, struct m9_vs_program *program,
                    const char **reason);
 void m9_vs_program_fini(struct m9_vs_program *program);
 
+/* The vertex element feeding attribute i.  The state tracker compacts the
+ * inputs the shader reads and builds one element per input in that order
+ * (st_atom_array: bitcount of inputs_read below the attribute), so this is
+ * the index rather than anything the driver may have assigned. */
+unsigned m9_vs_attr_element(const struct m9_vs_program *program, unsigned i);
 /* Constant span pair holding user constant index i. */
 unsigned m9_vs_const_pair(unsigned index);
 /* Pairs the whole span needs, the appended tail included. */
@@ -159,6 +175,12 @@ unsigned m9_vs_c2_image(const struct m9_vs_program *program,
 unsigned m9_vs_constants(const struct m9_vs_program *program,
                          const float *uniforms, unsigned uniform_floats,
                          uint32_t *out, unsigned max_dwords);
+/* The same placement for constants the caller has already resolved: two
+ * floats per user constant, in program order.  Returns the pairs the span
+ * needs, 0 when the span or the values do not fit. */
+unsigned m9_vs_const_span(const struct m9_vs_program *program,
+                          const float *values, unsigned value_floats,
+                          uint32_t *out, unsigned max_dwords);
 
 /* Writes the index-23 source declaration; returns the word count. */
 unsigned m9_vs_decl_words(const struct m9_vs_program *program, uint32_t *out,

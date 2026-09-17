@@ -423,6 +423,15 @@ operand(struct ctx *c, const struct held *a, const struct held *b,
    return true;
 }
 
+unsigned
+m9_vs_attr_element(const struct m9_vs_program *p, unsigned i)
+{
+   if (!p || i >= p->attr_count)
+      return ~0u;
+   return util_bitcount64(p->inputs_read &
+                          BITFIELD64_MASK(p->attrs[i].location));
+}
+
 /* Constant span placement: the tail names pairs 9..21, so user pairs run
  * 0..8 and then 22 upward. */
 unsigned
@@ -620,6 +629,25 @@ emit_minmax(struct ctx *c, unsigned dst, bool maximum, const struct held *a0,
    if (!emit_minmax(c, t, maximum, &th, &th, &zero, &zero))
       return false;
    return emit_add(c, dst, &th, &th, a0, a1, false);
+}
+
+static bool write_pair(struct ctx *c, unsigned reg, const struct held *h0,
+                       const struct held *h1);
+
+/* The transcendental chains take a register operand and refine it; a
+ * compile-time value needs neither, and passing one through the chains
+ * produced a wrong reciprocal (offline case literal-xy, MEASURED). */
+static bool
+fold_transcendental(nir_op op, float v, float *out)
+{
+   switch (op) {
+   case nir_op_frcp: *out = v != 0.0f ? 1.0f / v : INFINITY; break;
+   case nir_op_frsq: *out = v > 0.0f ? 1.0f / sqrtf(v) : INFINITY; break;
+   case nir_op_fsqrt: *out = v > 0.0f ? sqrtf(v) : 0.0f; break;
+   case nir_op_fexp2: *out = exp2f(v); break;
+   default: return false;
+   }
+   return true;
 }
 
 /* Reciprocal: the captured seed, two residuals and two Newton steps
@@ -1183,14 +1211,20 @@ build_alu(struct ctx *c, nir_alu_instr *alu)
             return false;
          break;
       case nir_op_frcp:
-         a0 = src_held(alu, 0, 0);
-         if (!emit_rcp(c, dst, &a0))
-            return false;
-         pair = false;
-         break;
       case nir_op_frsq:
          a0 = src_held(alu, 0, 0);
-         if (!emit_rsq(c, dst, &a0))
+         if (a0.kind == HELD_LIT) {
+            struct held f;
+            float v;
+
+            fold_transcendental(alu->op, a0.lit, &v);
+            f = held_lit(v);
+            if (!write_pair(c, dst, &f, &f))
+               return false;
+            break;
+         }
+         if (!(alu->op == nir_op_frcp ? emit_rcp(c, dst, &a0) :
+                                        emit_rsq(c, dst, &a0)))
             return false;
          pair = false;
          break;
@@ -1203,6 +1237,16 @@ build_alu(struct ctx *c, nir_alu_instr *alu)
          int rr, rc, rm;
 
          a0 = src_held(alu, 0, 0);
+         if (a0.kind == HELD_LIT) {
+            struct held f;
+            float v;
+
+            fold_transcendental(alu->op, a0.lit, &v);
+            f = held_lit(v);
+            if (!write_pair(c, dst, &f, &f))
+               return false;
+            break;
+         }
          rr = reg_alloc_pinned(c, &hr);
          rc = reg_alloc_pinned(c, &hc);
          rm = reg_alloc_pinned(c, &hm);
@@ -1253,6 +1297,16 @@ build_alu(struct ctx *c, nir_alu_instr *alu)
 
          a0 = src_held(alu, 0, c0); a1 = src_held(alu, 0, c1);
          b0 = src_held(alu, 1, 0);
+         if (b0.kind == HELD_LIT) {
+            struct held f;
+            float v;
+
+            fold_transcendental(nir_op_frcp, b0.lit, &v);
+            f = held_lit(v);
+            if (!emit_mul(c, dst, &a0, &a1, &f, &f))
+               return false;
+            break;
+         }
          rr = reg_alloc_pinned(c, &hr);
          if (rr < 0)
             return fail(c, "out of temporaries");
@@ -1340,25 +1394,33 @@ declare_attributes(struct ctx *c, const struct input_use *used,
       p->attrs[i].location = used[i].location;
       p->attrs[i].driver_location = used[i].driver_location;
       p->attrs[i].offset = dword;
+      /* Every slot selects a record component; the record writer puts the
+       * GL default (0, 0, 0, 1) in the components the shader does not read,
+       * so the padded literals the head reuses rest on data rather than on
+       * declaration selectors 4 and 5, which no captured vertex program is
+       * known to read. */
       for (unsigned j = 0; j < 4; j++) {
          struct held h;
 
          memset(&h, 0, sizeof(h));
+         p->attrs[i].select[j] = j;
          if (j < used[i].components) {
-            p->attrs[i].select[j] = j;
             h.kind = HELD_INPUT;
             h.a = used[i].location;
             h.b = j;
          } else {
-            p->attrs[i].select[j] = j == 3 ? 5 : 4;
             h.kind = HELD_LIT;
             h.lit = j == 3 ? 1.0f : 0.0f;
          }
          hold_def(c, reg + j / 2, j % 2, &h);
       }
-      dword += used[i].components;
+      p->attrs[i].components = used[i].components;
+      /* One 16-byte slot per attribute: every captured vendor record puts
+       * its four attributes at dword offsets 0, 4, 8 and 12. */
+      dword += 4;
    }
    p->attr_count = count;
+   p->inputs_read = c->nir->info.inputs_read;
    p->record_bytes = 4 * dword;
 }
 
@@ -1711,6 +1773,22 @@ m9_vs_constants(const struct m9_vs_program *p, const float *uniforms,
          memcpy(&out[2 * pair + lane], &v, sizeof(v));
       }
    }
+   return pairs;
+}
+
+unsigned
+m9_vs_const_span(const struct m9_vs_program *p, const float *values,
+                 unsigned value_floats, uint32_t *out, unsigned max_dwords)
+{
+   unsigned n = util_dynarray_num_elements(&p->consts, struct m9_vs_const);
+   unsigned pairs = m9_vs_const_count(p);
+
+   if (!out || 2 * pairs > max_dwords || value_floats < 2 * n ||
+       (n && !values))
+      return 0;
+   for (unsigned i = 0; i < n; i++)
+      memcpy(&out[2 * m9_vs_const_pair(i)], &values[2 * i],
+             2 * sizeof(*values));
    return pairs;
 }
 
