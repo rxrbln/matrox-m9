@@ -16,6 +16,8 @@
  */
 #include "m9_fs_compile.h"
 
+#include "m9_draw_params.h"
+
 #include <string.h>
 
 #include "nir.h"
@@ -1804,11 +1806,15 @@ varying_slot(struct ctx *c, unsigned location)
          return i;
    /* A location may feed both the texture unit and an interpolation: the
     * driver emits one CPU stream per use from the same draw output. */
-   /* The raster pass has six stream slots and reserves three for position,
-    * c and d, so three are left for interpolated inputs and distinct
-    * texture coordinates together.  More texture units than that is fine
-    * as long as they share coordinates. */
-   if (p->varying_count + p->texture_count >= 3)
+   /* The raster pass reserves three of its ten stream slots for position,
+    * c and d, and its declaration holds sixteen words, which caps the
+    * interpolated inputs at six.  Each texture needs a coordinate stream,
+    * so texture_count bounds coord_count here; the exact layout, with
+    * coordinates that are shared or folded, is re-checked at variant
+    * creation.  The predicate is shared with the emitter so the two
+    * cannot disagree. */
+   if (!m9_raster_fs_layout_ok(p->varying_count + 1, p->texture_count,
+                               p->texture_count))
       return fail(c, "too many interpolated inputs"), -1;
    p->varyings[p->varying_count].location = location;
    p->varyings[p->varying_count].components = 0xf;

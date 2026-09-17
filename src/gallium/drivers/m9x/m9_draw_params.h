@@ -14,10 +14,10 @@
 #define M9_PROGRAM_BYTES          0x2000u
 #define M9_PROGRAM_DWORDS         80u
 #define M9_FRAGMENT_DB_MIN_BYTES  0x1c000u
-#define M9_TRANSIENT_VIEWS        7u
+#define M9_TRANSIENT_VIEWS        11u
 /* Views 0..3 belong to the vertex program, 4..6 carry CPU varyings, one per
- * interpolated input or distinct texture coordinate -- three of them,
- * because the raster pass keeps three of its six stream slots for
+ * interpolated input or distinct texture coordinate -- seven of them,
+ * because the raster pass keeps three of its ten stream slots for
  * position, c and d. */
 #define M9_TRANSIENT_CPU_VIEW     4u
 #define M9_TRANSIENT_VIEW_BYTES   0x16800u
@@ -41,9 +41,14 @@ enum m9_topology {
    M9_TOPOLOGY_POLYGON = 0xd,
 };
 
-/* Kernel-accepted raster streams 00..04 with stride words 10..12. */
-#define M9_RASTER_MAX_STREAMS     6u
-#define M9_RASTER_MAX_DECL        8u
+/* Kernel-accepted raster streams 00..09 with stride words 10..14; the
+ * engine has ten slots and five packed stride words, CAPTURED in the
+ * vendor's own multi-varying programs. */
+#define M9_RASTER_MAX_STREAMS     10u
+/* Index 22 counts declaration words in four bits: at most sixteen.  An
+ * interpolated input costs two and the fixed trio costs three, so six
+ * inputs fit and seven do not -- which is exactly M9_FS_MAX_VARYINGS. */
+#define M9_RASTER_MAX_DECL        16u
 /* Native fragment constants; the span at +0x1000 is hardware-measured. */
 #define M9_RASTER_CONST_OFFSET    0x1000u
 
@@ -54,7 +59,7 @@ struct m9_raster_fs {
    unsigned const_count;
    unsigned stream_count;
    uint32_t stream_view[M9_RASTER_MAX_STREAMS]; /* transient view per stream */
-   uint32_t stride[3];                          /* 10..12 */
+   uint32_t stride[(M9_RASTER_MAX_STREAMS + 1) / 2];  /* 10..14 */
    unsigned decl_count;
    uint32_t decl[M9_RASTER_MAX_DECL];
 };
@@ -97,11 +102,22 @@ void m9_scissor_words(uint32_t minx, uint32_t miny, uint32_t maxx,
 uint32_t m9_raster_control(bool flat, enum m9_topology topology);
 uint32_t m9_raster_control_decl(bool flat, enum m9_topology topology,
                                 unsigned decl_count);
-/* The raster pass keeps three of its six stream slots for position, c and d,
- * and its declaration has eight words; a layout past either cannot be
- * emitted.  Stated once, so the compiler's gate and the emitter agree. */
-bool m9_raster_fs_layout_ok(unsigned varying_count, unsigned coord_count,
-                            unsigned texture_count);
+/* The raster pass keeps three of its ten stream slots for position, c and d,
+ * and its declaration holds sixteen words; a layout past either cannot be
+ * emitted.  Stated once, so the compiler's gate and the emitter agree.
+ *
+ * The declaration bound also caps the interpolated inputs at six without
+ * naming that number: an input costs two words and the fixed trio three,
+ * so 2v + 3 <= 16 gives v <= 6 even with no texture at all.  That is the
+ * same six the fragment unit's interpolation registers stop at. */
+static inline bool
+m9_raster_fs_layout_ok(unsigned varying_count, unsigned coord_count,
+                       unsigned texture_count)
+{
+   return varying_count + coord_count + 3 <= M9_RASTER_MAX_STREAMS &&
+          2 * varying_count + texture_count + 3 <= M9_RASTER_MAX_DECL &&
+          texture_count <= 4;
+}
 int m9_raster_fs_init(struct m9_raster_fs *r, unsigned vertex_entry,
                       uint32_t r88, unsigned const_count,
                       unsigned varying_count, const bool *flat_link,

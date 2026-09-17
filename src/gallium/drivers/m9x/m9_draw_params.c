@@ -216,15 +216,6 @@ m9_raster_control_decl(bool flat, enum m9_topology topology,
    return (flat ? 0x4000u : 0) | 0x2000u | (decl_count - 1) << 8 | topology;
 }
 
-bool
-m9_raster_fs_layout_ok(unsigned varying_count, unsigned coord_count,
-                       unsigned texture_count)
-{
-   return varying_count + coord_count + 3 <= M9_RASTER_MAX_STREAMS &&
-          2 * varying_count + texture_count + 3 <= M9_RASTER_MAX_DECL &&
-          texture_count <= 4;
-}
-
 int
 m9_raster_fs_init(struct m9_raster_fs *r, unsigned vertex_entry,
                   uint32_t r88, unsigned const_count, unsigned varying_count,
@@ -258,12 +249,16 @@ m9_raster_fs_init_textured(struct m9_raster_fs *r, unsigned vertex_entry,
    r->vertex_entry = vertex_entry;
    r->r88 = r88;
    r->const_count = const_count;
-   /* Varying slot k is attribute k+1 as an xy/zw pair on stream k. */
+   /* Varying slot k is an xy/zw pair on stream k.  Attributes 5..8 are the
+    * four texture coordinates, so interpolated inputs take 1..4 and then
+    * 9..10: numbering the fifth k+1 would have claimed texture unit 0's
+    * coordinate (MEASURED). */
    for (unsigned k = 0; k < varying_count; k++) {
       uint32_t link = flat_link[k] ? 0x80000000u : 0;
+      uint32_t attr = k < 4 ? k + 1 : k + 5;
 
-      r->decl[r->decl_count++] = link | (k + 1) << 20 | k << 16 | 0x0d88;
-      r->decl[r->decl_count++] = link | (k + 1) << 20 | k << 16 | 0x06b6;
+      r->decl[r->decl_count++] = link | attr << 20 | k << 16 | 0x0d88;
+      r->decl[r->decl_count++] = link | attr << 20 | k << 16 | 0x06b6;
       r->stream_view[k] = varying_view[k];
       stride[k] = 0x10;
    }
@@ -287,7 +282,7 @@ m9_raster_fs_init_textured(struct m9_raster_fs *r, unsigned vertex_entry,
    stride[streams + 1] = 0x06;
    stride[streams + 2] = 0x10;
    r->stream_count = streams + 3;
-   for (unsigned i = 0; i < 3; i++)
+   for (unsigned i = 0; i < (M9_RASTER_MAX_STREAMS + 1) / 2; i++)
       r->stride[i] = stride[2 * i] |
                      (2 * i + 1 < M9_RASTER_MAX_STREAMS ? stride[2 * i + 1] : 0) << 16;
    return 0;

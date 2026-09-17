@@ -37,10 +37,11 @@ m9_draw_job_dwords(unsigned draw_count)
 unsigned
 m9_draw_job_dwords_fs(unsigned draw_count, unsigned unit_count)
 {
-   /* A fifth stream packet; the declaration stays within two packets.  A
-    * bound unit replaces its zero 70+unit packet by 15 dwords, 20 with the
+   /* Streams reach five packets of 19 dwords where the base has 8, and the
+    * declaration four packets of five where the base has two.  A bound unit
+    * replaces its zero 70+unit packet by 15 dwords, 20 with the
     * placeholder's cleared 82..85. */
-   return m9_draw_job_dwords(draw_count) + 4 + 18 * unit_count;
+   return m9_draw_job_dwords(draw_count) + 21 + 18 * unit_count;
 }
 
 /* Relocations a job emits: the two passes bind about thirty objects, every
@@ -140,7 +141,7 @@ m9_emit_raster_fs(struct m9_batch *batch, const struct m9_draw_job *job)
    int ret = 0;
 
    EMIT(V(0x88, fs->r88), V(0x89, 0xfe207ff8), V(0x8a, 0), V(0xc1, 0));
-   for (unsigned pair = 0; pair < 3 && 2 * pair < fs->stream_count; pair++) {
+   for (unsigned pair = 0; 2 * pair < fs->stream_count; pair++) {
       unsigned s = 2 * pair;
 
       if (s + 1 < fs->stream_count) {
