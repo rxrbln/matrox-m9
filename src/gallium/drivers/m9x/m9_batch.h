@@ -99,6 +99,16 @@ int m9_batch_emit_triangle_raster(struct m9_batch *batch, unsigned width,
                                   bool depth_write);
 int m9_batch_emit_draw32(struct m9_batch *batch, uint32_t handle,
                          uint64_t offset, uint32_t count, uint32_t flags);
+/* MEASURED (fixture "indexed", tools/m9-fillrate.c idxquad): the engine reads
+ * one index half past the last one of a run.  An odd count absorbs that in
+ * the rounding up to a whole dword, but an even one has no slack and loses
+ * its final primitive -- which cost every ioquake3 HUD glyph half of itself.
+ * One dword of repeated indices covers it either way and keeps the next run
+ * dword aligned, and repeating an index can only ever complete a degenerate
+ * triangle, so what the engine reads there is defined rather than whatever
+ * the arena happened to hold. */
+#define M9_INDEX_TAIL 2u
+
 int m9_batch_emit_draw16(struct m9_batch *batch, uint32_t handle,
                          uint64_t offset, uint32_t count, uint32_t flags);
 int m9_batch_emit_draw_numeric(struct m9_batch *batch, uint32_t start,

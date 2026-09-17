@@ -428,7 +428,7 @@ m9_batch_emit_draw16(struct m9_batch *batch, uint32_t handle,
    if (!batch || batch->sealed || !count || (offset & 3) ||
        (flags != 0x20000000u && flags != 0x60000000u))
       return -EINVAL;
-   span = 4ull * ((count + 1ull) / 2ull);
+   span = 4ull * ((count + 1ull) / 2ull) + 2ull * M9_INDEX_TAIL;
    if (span > UINT32_MAX || offset > UINT64_MAX - span)
       return -EOVERFLOW;
    if (batch->command_count + 3 > M9_MAX_COMMAND_DWORDS)

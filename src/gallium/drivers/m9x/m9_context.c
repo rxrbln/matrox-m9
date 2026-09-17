@@ -1921,9 +1921,11 @@ m9_render_append_indexed(struct m9_vbuf_render *r, const struct m9_job_key *key,
                            &extra);
       if (!out || (extra && r->extra_count != key->variant->extra_count))
          return;
-      /* An odd run is padded to a whole dword, so every run stays aligned. */
+      /* An odd run is padded to a whole dword so every run stays aligned,
+       * and M9_INDEX_TAIL halves beyond that repeat the last index. */
       index_first = util_dynarray_num_elements(&ctx->indices, uint16_t);
-      words = util_dynarray_grow(&ctx->indices, uint16_t, n + (n & 1));
+      words = util_dynarray_grow(&ctx->indices, uint16_t,
+                                 n + (n & 1) + M9_INDEX_TAIL);
       if (!words) {
          ctx->records.size = (size_t)first * M9_RECORD_FLOATS * sizeof(float);
          if (extra)
@@ -1941,8 +1943,8 @@ m9_render_append_indexed(struct m9_vbuf_render *r, const struct m9_job_key *key,
       for (unsigned i = 0; i < n; i++)
          words[i] = first +
                     m9_index_at(indices, index_size, done + i) - lo;
-      if (n & 1)
-         words[n] = words[n - 1];
+      for (unsigned i = n; i < n + (n & 1) + M9_INDEX_TAIL; i++)
+         words[i] = words[n - 1];
       m9_prof_indexed += n;
       m9_prof_referenced += vertices;
       m9_job_commit(ctx, out, extra, vertices, first, index_first, n, topology,
