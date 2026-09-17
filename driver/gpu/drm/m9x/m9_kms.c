@@ -64,15 +64,19 @@ MODULE_PARM_DESC(m9_kms_modeset,
 	"Program the pixel clock and raster timing instead of keeping the firmware's mode");
 
 /* All four sources are measured (m9_reg.h).  The parameter stays so a board
- * that numbers them differently can be corrected without a rebuild. */
-static unsigned int m9_vblank_mask[M9_MAX_HEADS] = {
+ * that numbers them differently can be corrected without a rebuild; an entry
+ * left out or given as zero takes the measured bit, so no configuration can
+ * leave an active head without a vertical blank. */
+static const unsigned int m9_vblank_default[M9_MAX_HEADS] = {
 	M9_IRQ_LOW_VBLANK0, M9_IRQ_LOW_VBLANK1,
 	M9_IRQ_LOW_VBLANK2, M9_IRQ_LOW_VBLANK3,
 };
-static unsigned int m9_vblank_count = M9_MAX_HEADS;
+static unsigned int m9_vblank_mask[M9_MAX_HEADS];
+static unsigned int m9_vblank_count;
 module_param_array_named(vblank_mask, m9_vblank_mask, uint, &m9_vblank_count,
 			 0400);
-MODULE_PARM_DESC(vblank_mask, "Per-head low-interrupt vblank bit");
+MODULE_PARM_DESC(vblank_mask,
+	"Per-head low-interrupt vblank bit; 0 keeps the measured one");
 
 /* The controller's own limits: a surface is at most 2048 in each dimension,
  * and the synthesiser covers this range with the divider search. */
@@ -346,6 +350,11 @@ static int m9_pipe_check(struct drm_simple_display_pipe *pipe,
 		return ret;
 	if (crtc_state->enable && !m9_kms_modeset &&
 	    !drm_mode_equal(&crtc_state->mode, &m9_head_of_pipe(pipe)->warm_mode))
+		return -EINVAL;
+	/* A head with no vertical blank cannot complete a flip event: the
+	 * commit never retires and the next rmfb blocks flushing it.  Refuse
+	 * the flip instead, so the caller is told rather than stalled. */
+	if (crtc_state->event && !m9_head_of_pipe(pipe)->vblank_mask)
 		return -EINVAL;
 	if (crtc_state->color_mgmt_changed) {
 		if (crtc_state->gamma_lut &&
@@ -1066,6 +1075,8 @@ irqreturn_t m9x_irq_handler(int irq, void *arg)
 	 * sample had several of them pending while the low mask was zero.
 	 */
 	m9x_write(mdev, M9_REG_IRQ_LOW_ACK, active);
+	/* A head's bit is only unmasked while DRM has vblank enabled on that
+	 * head, so the mask is what ties this to the active scanouts. */
 	for (i = 0; i < mdev->heads; i++)
 		if (active & mdev->head[i].vblank_mask)
 			drm_crtc_handle_vblank(&mdev->head[i].pipe.crtc);
@@ -1170,7 +1181,8 @@ static int m9_head_init(struct m9x_device *mdev, struct m9_head *head,
 	head->half_block = m9_head_banks[index].half_block;
 	head->clk_select = m9_head_banks[index].clk_select;
 	head->fs = M9_FS_REG(head->clk_select);
-	head->vblank_mask = index < m9_vblank_count ? m9_vblank_mask[index] : 0;
+	head->vblank_mask = index < m9_vblank_count && m9_vblank_mask[index] ?
+			    m9_vblank_mask[index] : m9_vblank_default[index];
 	head->ddc_index = index;
 	head->ddc = m9x_ddc_adapter(mdev, index);
 
