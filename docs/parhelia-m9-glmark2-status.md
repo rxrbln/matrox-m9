@@ -21,8 +21,7 @@ fragment backend refuses their shader and the draws are skipped.
 | blocker (the backend's own message) | scenes |
 |---|---|
 | more texture fetches than one raster pass can bind | effect2d x2, desktop blur |
-| program exceeds the c2 image | terrain |
-| texture coordinate is not a varying | shadow, refract |
+| texture coordinate is not a varying | terrain, shadow, refract |
 | indirectly indexed uniform | bump normals |
 | control flow | loop fragment-uniform=true |
 
@@ -43,14 +42,35 @@ consequences meet in the same mechanism:
 with it.  `light-refract.frag` computes coordinates from `refract()` and binds
 three samplers.  Both are therefore the second case, not a parser limitation,
 and both need the pass split that `effect2d`, `desktop` blur and `terrain`
-need.  DERIVED from the shader sources plus the captured fetch model; the
-register handoff between passes is the one unproven step.
+need.
+
+**How a pass hands over is settled, and it is not registers.**  CAPTURED, and
+reproducible from the saved submissions in seconds: in the two-pass family the
+first pass binds `b0 = 10ec1000  b1 = ee190004`, the transient arena rather
+than the colour target, and the second pass binds the colour target at `b0`
+while binding *that same address back as a texture* through
+`74 = 01000310  78 = 10ec1000  79 = ee190204`.  A pass **renders to an
+intermediate surface in memory and the next pass samples it**; fragment
+registers do not survive a raster draw boundary.  An earlier reading here -
+that writing output pair `0x11`/`0x13` and never `0x2d` meant it was *not* a
+render to an intermediate surface - was exactly backwards, because
+`parhelia-m9-raster-stream-limit-re.md` §3 gives the rule that output pair
+`(0x11+4j, 0x13+4j)` goes to the j-th bound target.  The full contract is in
+`parhelia-m9-fragment-pass-splitting.md`.
+
+So the two cases are one feature and want one implementation, not two.
 
 The arithmetic is not the obstacle: all seven transcendental chains (exp2,
 log2, pow, rcp, rsq, sqrt, normalize) are MEASURED exact against the C library,
 0 of 76800 pixels differing, so the projective divide itself is available.
 
 ## The other two
+
+Note `terrain` moved: it was refused for "program exceeds the c2 image", which
+was the driver's own fixed 8 KiB allocation rather than a hardware limit.  With
+the image sized from the compiled program it joins the computed-coordinate
+group.  Note also that plain `[effect2d] <default>` is **not** blocked and
+renders at 222 fps; only the two kernel variants are.
 
 * `bump normals` multiplies a `uniform mat4` by a vec4 - four dot products
   against uniform rows at constant indices.  "Indirectly indexed uniform"
