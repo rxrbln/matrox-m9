@@ -18,10 +18,18 @@
 
 struct nir_shader;
 
-/* The preprocessing packet has room for eight index-23 words, and two words
- * describe one attribute, so three attributes fit and four do not. */
-#define M9_VS_MAX_ATTRIBUTES 3u
-#define M9_VS_MAX_DECL       8u
+/* An index-23 word is dword << 24 | attr << 20 | stream << 16 | selectors:
+ * bits 19:16 name the source stream, which the raster declaration builder
+ * already writes and this backend leaves 0 for its one interleaved record.
+ * Attribute a is register pair 0x46 + 8 * (a - 1), CAPTURED for a = 1..4
+ * (the vendor's fs-* preprocessing passes declare four and read through
+ * 0x5e/0x5f).  The vendor's own numbering skips 5..8 -- those are the four
+ * texture coordinate sets -- and resumes at 9, whose register 0x46 + 64
+ * does not fit the seven-bit operand field, so the rule stops at four.
+ * Index 22 bits 11:8 carry the word count minus one, so a pass takes
+ * sixteen words; nine, four attributes' worth, is well inside it. */
+#define M9_VS_MAX_ATTRIBUTES 4u
+#define M9_VS_MAX_DECL       16u
 /* One output target beyond the position carries a varying; the register to
  * target rule for any other target set is undecoded. */
 #define M9_VS_MAX_VARYINGS   1u
@@ -77,6 +85,16 @@ struct nir_shader;
 #define VS_RSQ_MUL  0xac2fcd00u
 #define VS_RSQ_COPY 0xa28fff30u
 #define VS_RSQ_STEP 0xa2603f00u
+/* exp2.  CAPTURED in the vendor's own vertex programs (ff-fog-exp and
+ * ff-fog-exp2): the seed splits the argument, three slots evaluate a
+ * minimax polynomial whose coefficient pairs are the fragment unit's to the
+ * bit, and a multiply applies the split-off scale.  Unlike the forms above
+ * these words carry their own bits 20:14, so w1_make() is handed 0 for the
+ * three that name no user constant. */
+#define VS_EXP2_SEED 0x9e851d40u  /* argument select at bits 5:4 */
+#define VS_EXP2_POLY 0x982082d0u  /* first coefficient pair in the c field */
+#define VS_EXP2_STEP 0xa2600cf0u  /* coefficient pair in e, writes scalar 1 */
+#define VS_EXP2_SCALE 0xac2fc0c0u
 
 enum m9_vs_const_kind {
    M9_VS_CONST_LITERAL,

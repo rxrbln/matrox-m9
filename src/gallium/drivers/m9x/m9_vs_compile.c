@@ -19,8 +19,15 @@
  * upward.
  *
  * Instruction words marked CAPTURED below are reconstructed byte for byte
- * from m9_passthrough_c2_program; the rest are the fragment unit's own
- * measured forms, which the shared encoding says the vertex unit takes too.
+ * from m9_passthrough_c2_program, or -- the exp2 chain -- from the vendor's
+ * ff-fog-exp vertex programs; the rest are the fragment unit's own measured
+ * forms, which the shared encoding says the vertex unit takes too.
+ *
+ * Logarithm and power are still refused.  No captured vertex program
+ * contains the log2 seed, and the fragment unit's own log2 chain cannot be
+ * validated offline: its three polynomial slots write the first scalar and
+ * read the chained operand's second, so each reads a scalar its predecessor
+ * left unwritten.  Guessing it would compile silently wrong geometry.
  */
 #include "m9_vs_compile.h"
 
@@ -699,6 +706,49 @@ emit_rsq(struct ctx *c, unsigned dst, const struct held *a)
    return true;
 }
 
+/* exp2: the vendor's seed splits the argument, three slots evaluate a
+ * minimax polynomial over the fraction and a multiply applies the scale the
+ * seed split off.  CAPTURED in the vendor's own vertex programs ff-fog-exp
+ * and ff-fog-exp2, words, operand wiring and coefficient pairs alike, so
+ * this is a vertex-unit form rather than one borrowed from the fragment
+ * unit -- the two carry the same bytes here. */
+static bool
+emit_exp2(struct ctx *c, unsigned dst, const struct held *a)
+{
+   static const uint32_t poly[3][2] = {
+      { 0x3af71c15, 0x3c130514 }, { 0x3d64b436, 0x3e75ea9e },
+      { 0x3f317271, 0x3f800000 },
+   };
+   unsigned ra, sa;
+   int e[3], t[4];
+
+   for (unsigned i = 0; i < 3; i++) {
+      e[i] = const_index(c, key_literal(c, uif(poly[i][0]), uif(poly[i][1])));
+      if (e[i] < 0)
+         return fail(c, "constant span overflow");
+   }
+   if (!operand(c, a, a, false, &ra, &sa))
+      return false;
+   for (unsigned i = 0; i < 4; i++) {
+      struct held h = held_temp(c);
+
+      t[i] = reg_alloc_pinned(c, &h);
+      if (t[i] < 0)
+         return fail(c, "out of temporaries");
+   }
+   emit(c, w0_make(ra, NONE, NONE, t[0], 0, 0x1c),
+        w1_make(VS_EXP2_SEED | sa << 4, 0, ra));
+   emit(c, w0_make(t[0], t[0], e[0], t[1], 0, 0x1c),
+        w1_make(VS_EXP2_POLY, 0, t[0]));
+   emit(c, w0_make(t[0], t[1], t[1], t[2], 0, 0x1e),
+        w1_make(VS_EXP2_STEP, e[1], t[0]));
+   emit(c, w0_make(t[0], t[2], t[1], t[3], 0, 0x1e),
+        w1_make(VS_EXP2_STEP, e[2], t[0]));
+   emit(c, w0_make(t[0], t[3], NONE, dst, 0, 0x1c),
+        w1_make(VS_EXP2_SCALE, 0, t[0]));
+   return true;
+}
+
 static bool
 pairable(const struct held *a, const struct held *b)
 {
@@ -1171,6 +1221,32 @@ build_alu(struct ctx *c, nir_alu_instr *alu)
             return false;
          break;
       }
+      case nir_op_fexp2: {
+         struct held h0 = held_temp(c), h1;
+         int r0, r1;
+
+         a0 = src_held(alu, 0, c0); a1 = src_held(alu, 0, c1);
+         /* The chain writes both scalars with one result, so a lane whose
+          * two components differ runs it twice and gathers the pair. */
+         if (held_same(&a0, &a1)) {
+            if (!emit_exp2(c, dst, &a0))
+               return false;
+            break;
+         }
+         r0 = reg_alloc_pinned(c, &h0);
+         if (r0 < 0)
+            return fail(c, "out of temporaries");
+         if (!emit_exp2(c, r0, &a0))
+            return false;
+         h1 = held_temp(c);
+         r1 = reg_alloc_pinned(c, &h1);
+         if (r1 < 0)
+            return fail(c, "out of temporaries");
+         if (!emit_exp2(c, r1, &a1) ||
+             !emit_unary(c, dst, VS_MOV, 0, &h0, &h1, true))
+            return false;
+         break;
+      }
       case nir_op_fdiv: {
          struct held hr = held_temp(c);
          int rr;
@@ -1231,7 +1307,7 @@ note_input(struct ctx *c, struct input_use *used, unsigned *count,
       }
    }
    if (*count >= M9_VS_MAX_ATTRIBUTES)
-      return fail(c, "more than three vertex attributes");
+      return fail(c, "more than four vertex attributes");
    used[*count].location = location;
    used[(*count)++].components = comps;
    return true;
@@ -1240,7 +1316,14 @@ note_input(struct ctx *c, struct input_use *used, unsigned *count,
 /* Attribute a is register pair 0x46 + 8 * (a - 1) and the next register;
  * the first holds selectors 0 and 1, the second selectors 2 and 3.  The
  * declaration pads a short input with the default (0, 0, 0, 1), which makes
- * vec4(attribute.xyz, 1.0) a register the program already has. */
+ * vec4(attribute.xyz, 1.0) a register the program already has.
+ *
+ * Four attributes are the limit: the vendor's fs-* preprocessing passes
+ * declare exactly this, attributes 1..4 at dword offsets of one record, and
+ * their programs read 0x46/0x47 through 0x5e/0x5f (CAPTURED).  Attribute 5
+ * is texture coordinate set 0 and the vendor's own numbering jumps 4 -> 9,
+ * whose register the seven-bit operand field cannot name, so the register
+ * rule does not continue past four. */
 static void
 declare_attributes(struct ctx *c, const struct input_use *used,
                    unsigned count)
@@ -1640,7 +1723,10 @@ m9_vs_decl_words(const struct m9_vs_program *p, uint32_t *out,
 
       /* Two words describe one attribute: slots 0 and 1 fill its first
        * register and slots 2 and 3 its second, 6 leaving a slot to the
-       * paired word. */
+       * paired word.  Bits 19:16 name the source stream and stay 0 here:
+       * every attribute is an element of one interleaved record, which is
+       * the shape the vendor's fs-* passes emit (CAPTURED, four attributes
+       * at dword offsets 4, 0, 8 and 12 of a 64-byte record). */
       out[2 * i] = a->offset << 24 | (i + 1) << 20 | a->select[0] |
                    a->select[1] << 3 | 6 << 6 | 6 << 9;
       out[2 * i + 1] = a->offset << 24 | (i + 1) << 20 | 6 | 6 << 3 |
