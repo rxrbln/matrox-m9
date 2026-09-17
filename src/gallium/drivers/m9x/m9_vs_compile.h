@@ -29,14 +29,15 @@ struct nir_shader;
  * Index 22 bits 11:8 carry the word count minus one, so a pass takes
  * sixteen words; nine, four attributes' worth, is well inside it. */
 #define M9_VS_MAX_ATTRIBUTES 4u
-/* Attributes a preprocessing pass is MEASURED to feed correctly.  The
- * register rule above is measured for attributes 1 and 2; a third draws
- * geometry from neither its own value nor a decoy, both in the userspace
- * probe (docs/parhelia-m9-native-vertex-isa.md section 2) and through this
- * driver (m9-mesa-vs attr3, 2026-09-17), so the draw path stops at two
- * until the third attribute's register is decoded.  The backend still
- * compiles four, which is what the offline corpus covers. */
-#define M9_VS_HW_ATTRIBUTES  2u
+/* Attributes a preprocessing pass is MEASURED to feed correctly.  A third
+ * used to draw from neither its own value nor a decoy; the register rule
+ * above was right all along and the declaration was not, because the pass
+ * stated a fixed count of two in index 0x88 bits 27:24.  With that count
+ * driven from the declaration all three attributes read exactly
+ * (MEASURED, docs/parhelia-m9-vertex-output-target-re.md).  A fourth has
+ * no probe, so the draw path stops at three; the backend still compiles
+ * four, which is what the offline corpus covers. */
+#define M9_VS_HW_ATTRIBUTES  3u
 #define M9_VS_MAX_DECL       16u
 /* Output pair (0x11 + 4j, 0x13 + 4j) goes to the target bound at index
  * 0xb0 + 2j and register 0x21 to 0xb8, with index 0xef bits 19/21/23

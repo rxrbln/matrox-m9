@@ -476,7 +476,13 @@ m9_batch_emit_draw_job(struct m9_batch *batch, const struct m9_draw_job *job)
    EMIT(V(0xa8, 0x1f), V(0xa9, 0), V(0xaa, 0));
    EMIT(V(0xab, 0xffffffff), V(0xac, 0xffffffff), V(0xae, 0x22444442));
    EMIT(V(0xf5, 0), V(0xf6, 0x7fff7fff), V(0xc4, 0), V(0xc5, 0x7fff7fff));
-   EMIT(V(0x88, 0x0300bf00), V(0x89, 0xfe201e92), V(0x8a, 0), V(0xc1, 0));
+   /* Bits 27:24 are the unary count of declared source attributes; the
+    * constant two of the captured pass-through made a third attribute read
+    * a slot the pass never declared (MEASURED, a clean A/B on the M9128,
+    * docs/parhelia-m9-vertex-output-target-re.md).  A declaration holds two
+    * words an attribute plus the terminator. */
+   EMIT(V(0x88, (BITFIELD_MASK((decl_count - 1) / 2) << 24) | 0x0000bf00u),
+        V(0x89, 0xfe201e92), V(0x8a, 0), V(0xc1, 0));
    EMIT(R(0x00, job->source, 0, SYSTEM), V(0x01, 0xf2fe014f),
         V(0x10, record_bytes));
    EMIT(R(0xc2, job->program, 0, PROGRAM),
