@@ -166,7 +166,7 @@ values; the *meanings* are [DER] where the code's use of them fixes them and
 |---|---|---|---|
 | `0x00` | main | r/w | bit 1 = **I2C bridge disabled** (1 = AUX owns the link, 0 = DDC passes through to the sink) [DER]; bit 2 = sink/DP state, see §7 [BIN]; bit 3 = pulsed 1 then 0 as a soft reset [DER] |
 | `0x02` | main | w | `0xb6` from `InitCommon` [BIN]; meaning [INF] |
-| `0x0a` | main | r/w | **output gate and AUX gate**, see §12; bit 4 set = output off and AUX dead, bit 5 = second mute; the X driver writes bits[3:2] = `0b11` for DisplayPort, the VBIOS writes `0x00` [BIN] |
+| `0x0a` | main | r/w | **two gates**, see §11: bit 4 set blanks the stream and leaves AUX and the link alone, bit 5 set kills AUX and the link and needs a re-train; the X driver writes bits[3:2] = `0b11` for DisplayPort, the VBIOS writes `0x00` [BIN] |
 | `0x0c` | main | r | bit 7 distinguishes the two non-DP monitor types [DER] |
 | `0x10`..`0x1f` | main | r | main-stream attributes of the video actually reaching the transmitter, LE 16-bit pairs: `0x10` htotal, `0x12` hstart, `0x14` hactive, `0x16` vtotal, `0x18` vstart, `0x1a` vactive, `0x1c` hsync width, `0x1e` vsync width [MEASURED]. The `LLDP` module never touches them [BIN] |
 | `0x15`,`0x1c`,`0x1e`,`0x1f`,`0x20`,`0x21`,`0x22`,`0x24`,`0x25`,`0x26`,`0x27`,`0x2c`,`0x2d`,`0x2e`,`0x2f`,`0x30` | main | w | configuration written from tables, see §2 |
@@ -438,6 +438,29 @@ There is **no fallback inside this function** [DER]: the retry target is the
 top of step 12 and neither `rate` nor `lane` is modified.  Rate and lane count
 are chosen once, in the prologue.
 
+### The receiver capability this board actually reports
+
+With the link healthy, connector 0's sink reports [MEASURED]:
+
+```
+  0x51 = 0x14     MAX_LINK_RATE  = 5.4 Gbps (DP 1.2 HBR2)
+  0x52 = 0xc4     MAX_LANE_COUNT = 4 lanes, bit 7 enhanced framing,
+                                   bit 6 TPS3 supported
+```
+
+Two implementation notes fall out of that [DER]:
+
+* **The rate code must be compared, not masked.**  The VBIOS computes
+  `(0x51 & 0x0f) == 0x0a`, which turns `0x14` into `4` and silently selects
+  1.62 Gbps.  The X driver's `rate == 0` path has the same shape.  Link rate
+  codes are monotonic, so `0x51 >= 0x0a` is the correct test, capped at
+  2.7 Gbps because neither vendor implementation ever writes `0x14`.
+* **The lane byte goes out raw.**  Both implementations write `0x52`'s whole
+  value into `0x5e`, so bit 6 (TPS3, meaningless in `LANE_COUNT_SET`) is
+  written too [BIN].  That is vendor behaviour and this note keeps it; if
+  training fails with "Master" on such a sink, masking `0x5e` to `0x9f` is the
+  first thing to try [INF].
+
 ### The four failure outcomes, and what each means
 
 | log | test | meaning |
@@ -615,10 +638,12 @@ a full re-initialisation between outer attempts.
 
 These are flagged, not explained away.
 
-**a. The AUX engine at `0x7d`..`0x84` never completes on the board, and
-`0x51`, `0x52`, `0x53`, `0x5c`, `0x63`, `0x64`, `0x65` and `0x8d` all read zero
-[MEASURED].**  This one resolved: §11 has it.  All eight readings are
-downstream of the same gate.
+**a. The AUX engine at `0x7d`..`0x84` did not complete, and `0x51`, `0x52`,
+`0x53`, `0x5c`, `0x63`, `0x64`, `0x65` and `0x8d` all read zero [MEASURED].**
+Resolved: §11 has it.  All eight are downstream of main `0x0a` bit 5, and the
+register window recovered here is confirmed - with the link healthy the same
+registers read `0x51 = 0x14`, `0x52 = 0xc4`, `0x63 = 0x64 = 0x77`,
+`0x65 = 0x81`, `0x8d = 0x44` and AUX answers [MEASURED].
 
 **b. Main register `0x00` bit 2.**  `LLDP_GetMonitorType` returns "DisplayPort
 sink" when this bit is **set** [BIN] - the test is `testb $0x4, v ; jne`.  The
@@ -689,8 +714,8 @@ page-3 I2C handles [BIN].
 
 ### `0x1cac`: two nibbles, two meanings
 
-**Bits [3:0]: one bit per connector, read only** [BIN].  `0x2ee500` exists for
-nothing else:
+**Bits [3:0]: one bit per connector, read only, meaning not established.**
+`0x2ee500` exists for nothing else [BIN]:
 
 ```
   m9x15840(ctx, index):        /* index 0..3 */
@@ -700,19 +725,29 @@ nothing else:
 ```
 
 Its one caller, `0x2e96e0`, resolves the bit index from PInS and then reads it
-[BIN]: on PInS 8 it calls `0x2f94c0` with function id `n + 1` against
+[BIN]: on PInS 8 it calls `0x2f94c0` with function id `index + 1` against
 `PInS+0x58`, which on this board is `01 02 03 04`, so the mapping is the
-identity and bit `n` belongs to connector `n`; on PInS 7 it calls
-`S90GetHpdPinState` instead - a GPIO path that has nothing to do with
-`0x1cac`.  The name of the PInS 7 sibling is the evidence for what the driver
-believes these bits are: **hot-plug detect per connector** [DER].
+identity; on PInS 7 it calls `S90GetHpdPinState` instead - a GPIO path that
+does not touch `0x1cac`.  The name of that PInS 7 sibling is the only evidence
+for what the HAL believes these bits are, and it says hot-plug detect.
 
-That reading disagrees with a measurement which found bit 2 appearing only
-after connector 2's transmitter was initialised, and read the nibble as "this
-pad is driving" [MEASURED].  Both survive if the bit is the connector's
-hot-plug input *seen through the pad*, which is dark until the transmitter is
-powered [INF].  Either way the nibble is an input: nothing in either binary
-writes it deliberately, and the value the VBIOS patch puts there is ignored.
+**That evidence does not carry, and an earlier [DER] claim that the low nibble
+is per-connector hot-plug detect is withdrawn.**  Two reasons:
+
+* `0x2e96e0` **is never called** [BIN].  It has no call site anywhere in
+  `.text`, no entry in any relocation, no function-pointer table, and it is not
+  imported by `libglx.so` or `libGL.so.2.0.0` beside it.  It is a `GLOBAL`
+  symbol of the vendor's shared hardware library, exposed and unused by this X
+  driver, so it says nothing about the M9148.
+* The board contradicts it directly [MEASURED]: after three heads came up the
+  register reads `0x83`, so bits 0 and 1 are set - but connector 1 has no panel
+  attached at all, and bit 2 is clear although connector 2's transmitter was
+  demonstrably sending 1024x768.  It is neither hot-plug detect nor "this pad
+  is driving".
+
+So: the HAL contains a routine that would read this nibble as an HPD source on
+a PInS 8 board; nothing in this driver takes that path; and what the bits mean
+on the M9148 is **not established** [INF].  Nothing should gate on them.
 
 **Bits [7:4]: one gate per link, set turns that link off** [BIN].  Two sites
 fix this:
@@ -727,8 +762,9 @@ fix this:
   otherwise [BIN].
 
 That matches the board: POST leaves `0xe1`, so link 0 is live and links 1, 2
-and 3 are parked - one working output of four [MEASURED].  Bit `4 + n` parks
-link `n`, active high [DER].
+and 3 are parked - one working output of four, and the nibble steps
+`0xe` -> `0xc` -> `0x8` as a driver brings heads up [MEASURED].  Bit `4 + n`
+parks link `n`, active high [DER].
 
 ### `0x1c9c`/`0x1ca0`/`0x1ca4`/`0x1ca8`: the link word
 
@@ -1083,80 +1119,109 @@ sets to blank and the bit it sets to mute, with the DisplayPort mode bits
 cleared, so this reads as **blank**, not as output enable [DER].  The VBIOS
 bring-up's own un-blank is `0x0a = 0x00` at step 9 of `0x906e` [BIN].
 
-## 11. Main register `0x0a`: the output gate is also the AUX gate
+## 11. Main register `0x0a`: two gate bits, only one of them destructive
 
-This is the answer to why the AUX engine at `0x7d`..`0x84` never completes on
-the board, and to why the `0x50`..`0x65` mirror reads zero.
+An earlier revision of this note claimed bit 4 gated the AUX channel.  **That
+is withdrawn.**  The binary and the board together give a different and better
+answer.
 
-The `LLDP` module contains a four-instruction predicate at `0x2dd990` that does
-nothing but read main register `0x0a` and return the inverse of bit 4 [BIN]:
+### What the binary does
+
+`LLDP_Enable` / `LLDP_DisableEncoderOutput` share one core at `0x2dcd00`, and
+its two branches are the whole encoding [BIN]:
 
 ```
-  m9x22643(ctx, dev):
-      read main 0x0a -> v
-      return ((v >> 4) ^ 1) & 1
+  blank   (argument 0):   0x0a = (read 0x0a & ~0x20) | 0x10
+  unblank (argument 1):   0x0a =  read 0x0a & ~0x30
 ```
 
-Its only caller is the output constructor at `0x2e5fc6`: when the head's slot
-is already occupied, the constructor calls it and **skips `LLDP_Reinitialize`
-entirely if it returns non-zero** [BIN] - the classic "this output is already
-live, do not disturb it" guard.
+The blank sets bit 4 and **explicitly clears bit 5** - it is careful never to
+leave bit 5 set.  `LLDP_InitPowerOn` writes `0x0a = 0x0c`, both gate bits clear,
+and the VBIOS writes `0x0a = 0x00` in the same place [BIN].
 
-Of the module's 22 routine names, `LLDP_IsAuxChannelEnabled` (`0x420e`) is the
-only one left unassigned after every other function is identified, and it is
-the only name of this shape - a pure predicate over one register.  So this
-function is `LLDP_IsAuxChannelEnabled` [INF], and therefore **the AUX channel
-is enabled exactly when main `0x0a` bit 4 is clear** [INF].
+The only place either vendor implementation writes bit 5 is the fault path in
+`LLDP_HandleInterrupt`, on interrupt-status bit 3 [BIN]:
 
-The rest of the module is consistent with that without needing the name [DER]:
+```
+  read 0x0a ; write 0x0a |= 0x30      /* both gates                 */
+  write 0x75 = 0x80 ; write 0x75 = 0x00   /* PHY PLL reset           */
+  unblank: 0x0a &= ~0x30
+```
 
-* `LLDP_InitPowerOn` writes `0x0a` with bit 4 **clear** (`0x0c` for a
-  DisplayPort sink), and it runs before every AUX transaction whose result the
-  driver acts on.  The VBIOS writes `0x0a = 0x00` in the same place [BIN].
-* The only AUX call that can execute while bit 4 is set is the `DPCD 0x00600`
-  probe in `LLDP_Reinitialize` step 4a, and that one's failure is explicitly
-  tolerated [BIN].
-* `LLDP_PerformLinkTraining`'s AUX read of `DPCD 0x00100` is *not* tolerated,
-  and by then `0x0a` bit 4 has been cleared.
-* The bit-3 interrupt handler sets `0x0a |= 0x30`, resets the PLL, and then
-  clears both bits again [BIN] - gate off, recover, gate on.
+Note the PLL reset **between** setting and clearing.  The handler does not call
+`LLDP_PerformLinkTraining` on that path; it falls through to the remaining
+status bits [BIN].
 
-Independently [MEASURED]: writing `0x0a = 0x10` or `0x30` on the working
-connector zeroes its main-stream attributes and writing `0x00` brings the mode
-straight back.  The bit gates the stream; the binary says it gates AUX with it.
+### What the board does
 
-**Consequences for anyone probing this chip.**  A probe that blanks the output
-first - which is what both `LLDP_DisableEncoderOutput` and any sensible "put it
-in a known state" routine do - then finds AUX dead, `0x51`, `0x52`, `0x53`,
-`0x63`, `0x64`, `0x65` and `0x8d` reading zero, and concludes the register
-window is wrong.  All six of those are AUX-derived: `0x50`..`0x5b` is the
-receiver-capability mirror the chip fetches over AUX, `0x63`..`0x65` is the
-lane-status mirror it polls over AUX, and `0x8d` is the training master's view
-of both.  One gate explains every one of them.
+[MEASURED] on connector 0, reading the mirrors and issuing a real AUX
+transaction after each write:
 
-`0x0a` also disagrees between the two vendor implementations, and the board
-sides with the ROM: the X driver writes `0x0c` (DisplayPort mode bits set, gate
-open), the VBIOS writes `0x00`, and on this board `0x00` is what lets the
-stream out [MEASURED].  Write `0x00`; if a future board needs the mode bits,
-`0x0c` differs only in bits 3:2 and can be tried without disturbing the gate.
+| `0x0a` | `0x51` | `0x52` | `0x63` | `0x65` | AUX |
+|---|---|---|---|---|---|
+| `0x00` | `14` | `c4` | `77` | `01` | ok |
+| `0x10` | `14` | `c4` | `77` | `01` | **ok** |
+| `0x30` | `14` | `c4` | `00` | `80` | fails |
+| `0x00` | `14` | `c4` | `00` | `00` | ok, but the link is gone |
 
-**The test.**  On the POST-trained connector, in this order:
+So **bit 4 blanks the stream and leaves AUX and the link alone; bit 5 kills
+both, and clearing it again does not bring the link back** - the lane-status
+mirror stayed zero until the next full bring-up.
 
-1. `0x00` - confirm bit 1 is set (I2C bridge off).  If not, set it.
-2. `0x77 = 0xb2` - the interrupt-enable mask, in case `0x76` only latches
-   enabled sources [INF].
-3. `0x0a = 0x00` - open the gate.
-4. Read `0x52`.  A non-zero lane count here, where it read zero before, closes
-   the question with one byte.
-5. If it is still zero, run the mirror prologue (`0xac = 0xe4`, `0xaa &= 0xf0`)
-   and read `0x52` again.
-6. Then a full AUX read of DPCD `0x00000`: `0x7d = 0x00`, `0x7e = 0x00`,
-   `0x7f = 0x90`, `0x80 = 0x00`, `0x76 = 0x20`, `0x83 = 0x01`, poll `0x76` for
-   bit 5, read `0x84` (expect bits 7:5 clear and bits 4:0 = 1), read `0x82`
-   (expect a DPCD revision, `0x10` or `0x11`).
+### Reconciling the two
 
-Steps 3 and 4 are two register writes and one read, and they are the whole
-experiment.
+They agree, once the roles are separated [DER]: bit 4 is the ordinary stream
+blank and bit 5 is a link-destroying gate, which is exactly why the vendor's
+blank clears bit 5 while setting bit 4, and why the only code that sets bit 5
+is a fault path that pulses the PHY PLL before letting go of it.
+
+Two consequences for a driver:
+
+* **Blank with `0x10`, never with `0x30`.**  `0x30` requires a re-initialisation
+  and a re-train afterwards [MEASURED].
+* The recovery the vendor pairs with `0x30` includes a PLL reset that a plain
+  `0x30` -> `0x00` does not.  Whether `0x0a = 0x30`, `0x75 = 0x80`,
+  `0x75 = 0x00`, `0x0a = 0x00` restores the link without a full bring-up is
+  **not established** [INF], and is three writes to find out.
+
+### The predicate at `0x2dd990`, and why its name is withdrawn
+
+The routine is four instructions and the bit is not ambiguous [BIN]:
+
+```
+  2dd9ca:  call  <i2c read>            /* main register 0x0a */
+  2dd9cf:  0f b6 44 24 0f   movzbl 0xf(%rsp),%eax
+  2dd9d4:  c1 e8 04         shr    $0x4,%eax        <- bit 4, not bit 5
+  2dd9d7:  83 f0 01         xor    $0x1,%eax
+  2dd9da:  83 e0 01         and    $0x1,%eax
+```
+
+It returns the inverse of **bit 4**.  Its only caller, the output constructor at
+`0x2e5fc6`, skips `LLDP_Reinitialize` when it returns non-zero, so it is a
+"this output is already live, do not disturb it" test over the blank bit [DER].
+
+I previously named it `LLDP_IsAuxChannelEnabled` on the grounds that it was the
+only unassigned routine name of that shape.  That argument does not hold: after
+every behaviourally-certain identification there are **four** unassigned names
+(`Enable`, `DisableEncoderOutput`, `IsAuxChannelEnabled`, `ResetPll`) and
+**five** unassigned functions (`0x2dcd00`, `0x2dcdb0`, `0x2dd690`, `0x2dd990`,
+`0x2dea10`), so one of the five is a static helper with no event name and the
+pigeonhole gives nothing.  Combined with the board showing bit 4 not gating
+AUX, the name assignment is withdrawn [INF retracted].
+
+If this routine *is* `LLDP_IsAuxChannelEnabled`, then the binary and the board
+disagree about which bit that name refers to, and the binary says bit 4
+unambiguously.  Recorded as a disagreement, not reconciled.
+
+### What the earlier symptom actually was
+
+The eight registers that read zero on a probed board - `0x51`, `0x52`, `0x53`,
+`0x5c`, `0x63`, `0x64`, `0x65`, `0x8d` - are all AUX-derived, and `0x0a = 0x30`
+is exactly what kills them.  `0x8d` reading `0x04` on the trained connector was
+a blanked-state artefact; with the link healthy it reads `0x44`, and
+`(0x8d & 0x70) == 0x40` holds exactly as recovered in §3 [MEASURED].  The
+trained state reads `0x63 = 0x77`, `0x64 = 0x77`, `0x65 = 0x81`, which is the
+`GetLinkStatus` predicate of §3 satisfied.
 
 ## 12. Implementation plan for `drivers/gpu/drm/m9x`
 
@@ -1218,6 +1283,14 @@ so a dark head never feeds a half-locked link - except on a connector the
 firmware already trained, which must not be taken down by a training attempt
 that could not run.
 
+**One hazard in the enable path as it now stands.**  The common bring-up writes
+`0x0a = 0x30` before the PLL pulse and the final `0x0a = 0x00`, which is the
+vendor's fault-recovery shape and is safe *because training follows it*.  But
+bit 5 destroys a link that was already up (§11), so that write commits the
+driver to a successful re-train on every enable, including on the connector the
+firmware trained.  Either keep training reliable on that path, or take the
+`0x30` out and blank with `0x10` alone, which leaves a working link intact.
+
 **Two pieces the LLDP module does not contain, and that the driver still needs**
 
 * **Transmitter reset over MISCIO**, from the VBIOS (§10): PInS `+0x6c`/`+0x70`
@@ -1227,11 +1300,11 @@ that could not run.
   `m9_ddc.c` already parses the PInS DDC map at `+0x50`; the MISCIO map at
   `+0x6c` is the same eight-byte, physical-bit-ordered format.
 * **The pad gate**, `0x1cac` bit `4 + link` (§8): clear it after that link's
-  transmitter is initialised and its output gate is open, and set it as part of
+  transmitter is initialised and unblanked, and set it as part of
   the teardown at the top of a modeset, where the vendor writes `old | 0xf0` to
   park all four.  POST leaves three of the four bits set, and that is the whole
-  reason three connectors are dark.  The low nibble is an input - the driver
-  reads it, never writes it.
+  reason three connectors are dark.  The low nibble is an input whose meaning is
+  not established (§8); nothing should gate on it.
 
 **Three deltas against the bring-up already in `m9_ddc.c`**
 
@@ -1268,8 +1341,8 @@ trained connector and the pad gate cleared [MEASURED].  Those copied values
 make the result unrepeatable on a different sink, so the test that matters is
 whether training *derives* them.  With a sink on connector 2:
 
-1. `0x0a = 0x00` and `0x77 = 0xb2` on connector 2's main page, then read
-   `0x52`.  A non-zero lane count proves §11 and hands you the real lane count
+1. `0x0a = 0x00` (never `0x30`, §11) and `0x77 = 0xb2` on connector 2's main
+   page, then read `0x52`.  A non-zero lane count hands you the real lane count
    in one read.  If it is zero, add the prologue `0xac = 0xe4`,
    `0xaa &= 0xf0` and read again.
 2. With that lane count, run §3 steps 12-16 once, choosing `0x5d` from the
