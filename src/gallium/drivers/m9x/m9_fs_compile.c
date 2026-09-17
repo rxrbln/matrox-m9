@@ -605,6 +605,32 @@ materialise(struct ctx *c, int n, uint8_t lane[2], uint8_t swz[2])
    return load;
 }
 
+/* Copy a value so that it reads back unswizzled, which is what an
+ * operation that hands its operand straight on needs. */
+static int
+force_identity(struct ctx *c, int n, uint8_t lane[2], uint8_t swz[2])
+{
+   static const uint8_t lane_id[2] = { 0, 1 }, swz_id[2] = { 1, 1 };
+   int one, m;
+
+   if (n < 0 || cond_is_plain(lane, swz))
+      return n;
+   one = node_new(c, N_LIT);
+   if (one < 0)
+      return -1;
+   for (unsigned i = 0; i < 4; i++)
+      NODES(c)[one].lit[i] = 1.0f;
+   m = node_new(c, N_MUL);
+   if (m < 0)
+      return -1;
+   set_src(&NODES(c)[m], 0, n, lane, swz);
+   set_src(&NODES(c)[m], 1, one, lane_id, swz_id);
+   NODES(c)[m].is_cond = NODES(c)[n].is_cond;
+   memcpy(lane, lane_id, 2);
+   memcpy(swz, swz_id, 2);
+   return m;
+}
+
 /* The add and mix forms carry no operand swizzle field, so a swizzled
  * register operand is copied through a multiply by one, which does. */
 static int
@@ -951,8 +977,9 @@ build_alu(struct ctx *c, nir_alu_instr *alu)
 
       if (cond < 0)
          return -1;
-      if (!cond_is_plain(lane[0], swz[0]))
-         return fail(c, "swizzled boolean negate"), -1;
+      cond = force_identity(c, cond, lane[0], swz[0]);
+      if (cond < 0)
+         return -1;
       if (NODES(c)[cond].kind != N_CMP) {
          /* A combined condition negates as one minus itself, which the
           * negate and the add against a literal express between them. */
@@ -993,8 +1020,10 @@ build_alu(struct ctx *c, nir_alu_instr *alu)
       q = pp < 0 ? -1 : bool_src_node(c, alu, 1, lane[1], swz[1]);
       if (q < 0)
          return -1;
-      if (!cond_is_plain(lane[0], swz[0]) || !cond_is_plain(lane[1], swz[1]))
-         return fail(c, "swizzled boolean operand"), -1;
+      pp = force_identity(c, pp, lane[0], swz[0]);
+      q = pp < 0 ? -1 : force_identity(c, q, lane[1], swz[1]);
+      if (q < 0)
+         return -1;
       if (alu->op == nir_op_iand) {
          n = node_new(c, N_MUL);
          if (n < 0)
@@ -1032,9 +1061,7 @@ build_alu(struct ctx *c, nir_alu_instr *alu)
 
       if (cond < 0)
          return -1;
-      if (!cond_is_plain(lane[0], swz[0]))
-         return fail(c, "swizzled boolean conversion"), -1;
-      return cond;
+      return force_identity(c, cond, lane[0], swz[0]);
    }
    case nir_op_bcsel: {
       int cond = bool_src_node(c, alu, 0, lane[0], swz[0]);
@@ -1768,14 +1795,21 @@ emit_fragcoord(struct ctx *c, int n, struct node *nd)
 {
    static const uint32_t one[2] = { 0x3f800000, 0x3f800000 };
    static const uint32_t zero[2] = { 0, 0 };
-   int fl, z;
+   static const uint32_t half[2] = { 0x3f000000, 0x3f000000 };
+   int fl, xy, z;
 
+   /* The raster register holds the row and column, and the screen
+    * advertises a half-integer pixel centre, so the floored position is
+    * biased by half.  st's own wpos lowering does whatever flip the
+    * shader asked for, which is why none is applied here. */
    fl = frag_lop(c, n, 0xa28fccd0, 0x1c, REG_FRAG_XY, -1, -1, -1);
+   xy = frag_lop(c, n, 0xb0400150, 0x1c, -1, fl,
+                 chain_const(c, one), chain_const(c, half));
    z = frag_lop(c, n, 0xb0400150, 0x1c, REG_FRAG_Z, -1,
                 chain_const(c, one), chain_const(c, zero));
-   if (fl < 0 || z < 0)
+   if (fl < 0 || xy < 0 || z < 0)
       return false;
-   nd->value[0] = fl;
+   nd->value[0] = xy;
    nd->value[1] = z;
    return true;
 }
