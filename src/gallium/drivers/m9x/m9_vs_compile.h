@@ -124,6 +124,22 @@ unsigned m9_vs_slot_count(const struct m9_vs_program *program);
  * too small. */
 unsigned m9_vs_emit(const struct m9_vs_program *program, uint32_t *out,
                     unsigned max_dwords);
+/* Assembles the c2 image the two-pass job binds: fragment slots first, the
+ * compiled vertex program behind them, as m9_fs_variant_upload lays it out
+ * for the captured program.  Reports the vertex entry slot, which is what
+ * index c3 carries.  Returns the dwords written, 0 if max is too small. */
+unsigned m9_vs_c2_image(const struct m9_vs_program *program,
+                        const uint32_t *fs_slots, unsigned fs_slot_count,
+                        uint32_t *out, unsigned max_dwords,
+                        unsigned *vertex_entry);
+
+/* Resolves the user constants into the preprocessing span, pair p at
+ * out[2 * p], leaving pairs 9..21 untouched for the caller's viewport and
+ * clip words.  Returns the pairs the span needs. */
+unsigned m9_vs_constants(const struct m9_vs_program *program,
+                         const float *uniforms, unsigned uniform_floats,
+                         uint32_t *out, unsigned max_dwords);
+
 /* Writes the index-23 source declaration; returns the word count. */
 unsigned m9_vs_decl_words(const struct m9_vs_program *program, uint32_t *out,
                           unsigned max_words);

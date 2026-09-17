@@ -1577,6 +1577,57 @@ m9_vs_emit(const struct m9_vs_program *p, uint32_t *out, unsigned max_dwords)
 }
 
 unsigned
+m9_vs_c2_image(const struct m9_vs_program *p, const uint32_t *fs_slots,
+               unsigned fs_slot_count, uint32_t *out, unsigned max_dwords,
+               unsigned *vertex_entry)
+{
+   unsigned vs_dwords = m9_vs_slot_count(p) * 2;
+   unsigned total = fs_slot_count * 2 + vs_dwords;
+
+   if (!out || total > max_dwords || (fs_slot_count && !fs_slots))
+      return 0;
+   memcpy(out, fs_slots, fs_slot_count * 2 * sizeof(*out));
+   if (!m9_vs_emit(p, out + fs_slot_count * 2, vs_dwords))
+      return 0;
+   if (vertex_entry)
+      *vertex_entry = fs_slot_count;
+   return total;
+}
+
+static float
+m9_vs_uniform(const float *uniforms, unsigned floats, uint32_t offset)
+{
+   if (offset == M9_VS_UNIFORM_ZERO || offset / 4 >= floats)
+      return 0.0f;
+   return uniforms[offset / 4];
+}
+
+unsigned
+m9_vs_constants(const struct m9_vs_program *p, const float *uniforms,
+                unsigned uniform_floats, uint32_t *out, unsigned max_dwords)
+{
+   const struct m9_vs_const *k =
+      (const struct m9_vs_const *)p->consts.data;
+   unsigned n = util_dynarray_num_elements(&p->consts, struct m9_vs_const);
+   unsigned pairs = m9_vs_const_count(p);
+
+   if (!out || 2 * pairs > max_dwords)
+      return 0;
+   for (unsigned i = 0; i < n; i++) {
+      unsigned pair = m9_vs_const_pair(i);
+
+      for (unsigned lane = 0; lane < 2; lane++) {
+         float v = k[i].kind == M9_VS_CONST_UNIFORM ?
+                   m9_vs_uniform(uniforms, uniform_floats, k[i].offset[lane]) :
+                   k[i].value[lane];
+
+         memcpy(&out[2 * pair + lane], &v, sizeof(v));
+      }
+   }
+   return pairs;
+}
+
+unsigned
 m9_vs_decl_words(const struct m9_vs_program *p, uint32_t *out,
                  unsigned max_words)
 {
