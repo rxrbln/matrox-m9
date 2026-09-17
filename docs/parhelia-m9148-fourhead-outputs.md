@@ -756,5 +756,47 @@ head 2: was sending nothing          -> brought up -> sending 1024x768 1344/806,
 ```
 
 Link training reported failure on both, on connectors with no panel attached.
-**Training has not been exercised against a real sink, and no second panel has
-confirmed a picture.**  That is the open item.
+
+### Training against a real sink (MEASURED 2026-09-17)
+
+The only connector with a panel was the one the firmware had already trained,
+where the driver correctly skips the bring-up.  Blanking it with `0x0a = 0x10`
+first - which stops the stream but leaves AUX answering and the capability
+mirror intact - forces the skip to fail, so a following modeset has to bring
+the transmitter up and train it from cold against a live receiver:
+
+```
+head 0: was sending -67 0x0 0/0
+head 0: DP link up, 4 lanes at 1.62 Gbps
+head 0: sending 1920x1080 htotal 2200 vtotal 1125, pad gate 0x83
+```
+
+That success is **sink-side**, not the transmitter describing itself:
+`m9_dp_train_once` only reports success after reading DPCD `0x202..0x204` from
+the receiver over AUX and requiring align-done with clock recovery, channel
+equalisation and symbol lock on every lane, and after reading DPCD `0x100`
+back and requiring the rate it selected.  The transmitter's own mirror agrees
+afterwards: `0x63 = 0x77`, `0x64 = 0x77`, `0x65 = 0x81`.
+
+Four lanes at 1.62 Gbps is what the sink's capability gives - DPCD `0x001` is
+`0x14` and `0x002` is `0xc4` - and matches the rate the firmware chose.
+
+### A mode change does not drop the link
+
+MEASURED, refuting `docs/parhelia-m9.md`: head 0 was retimed 1024x768 ->
+1920x1080 -> 1024x768 with the link left alone, and the transmitter's
+attributes followed each mode within the modeset while `0x63/0x64/0x65/0x8d`
+stayed `77/77/01/44` throughout.  Re-initialising and re-training on every
+retime is therefore not required.  The driver still checks: it reads what the
+transmitter is sending and only brings the connector up again when that no
+longer matches the mode, which costs one 16-byte I2C read on a modeset that
+needs nothing.
+
+### Open
+
+Only DP-1 has a panel attached, so heads 1..3 have been taken as far as
+"transmitter sending this head's mode with its pad ungated" and no further -
+their training attempts fail for want of a receiver, which is correct
+behaviour, and **no second panel has confirmed a picture**.  The path is
+per-head and identical, so the test is one command once a panel is on another
+port.
