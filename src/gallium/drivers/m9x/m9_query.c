@@ -24,6 +24,19 @@
  * result is waited on only when the application asks for one.  A counter
  * reading that is itself the marker would look pending, which is the vendor's
  * own contract and bounded here by the blocking wait's deadline.
+ *
+ * The kernel validator has to admit index 1e, and admits it only inside a
+ * packet whose other three indices carry the captured literals (kernel
+ * 23fd309).  A module without that refuses the record, and the refusal
+ * surfaces here as a submit failing with -EPERM and the context lost, with
+ * nothing in dmesg -- occvis, occpart and occhid all failed that way against
+ * a stale module on 2026-09-18, and passed against a current one.
+ *
+ * -EPERM with a clean dmesg is worth reading as a signature rather than as a
+ * driver fault: the kernel's own checks refused what was asked for, so the
+ * engine never saw it.  A hardware failure announces itself in dmesg as a
+ * stall or a stream timeout instead.  When a job stops working after a module
+ * swap, check which module is loaded before suspecting the stream.
  */
 #include "m9_query.h"
 
