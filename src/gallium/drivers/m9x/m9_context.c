@@ -2654,7 +2654,8 @@ m9_scale_coords(const struct m9_job_key *key, float *extra)
       const struct m9_fs_program *p = &v->passes.pass[v->slot_pass[u]];
       const struct m9_fs_pass_streams *st = &v->stream[v->slot_pass[u]];
       unsigned k = v->slot_index[u];
-      int j = st->coord_extra[st->texture_coord[k]];
+      unsigned coord = st->texture_coord[k];
+      int j = coord == M9_RASTER_COORD_NONE ? -1 : st->coord_extra[coord];
       unsigned c = p->texcoord_components[k];
 
       if (j < 0)
