@@ -203,6 +203,42 @@ allocate two GPU-visible two-dword snapshots, emit this record at begin and
 end with the normal M9 relocation machinery, wait for both writes, and subtract
 the first end/begin dwords modulo 32 bits.
 
+## What a live query needed beyond the record
+
+The recipe above is necessary but not sufficient.  Building it on the M9128
+under the clean-room Mesa driver (`src/gallium/drivers/m9x/m9_query.c`) needed
+three further things, each **[MEASURED]** on that card rather than recovered
+from the binaries:
+
+1. **The counter is off until the `a7`/`c6` pair names it.**  Emitting only
+   the record -- alone in a job, as a begin/end pair alone in one job, or
+   bracketing a real draw inside one job -- publishes `0/0` every time.  The
+   `a7 = 0x00ffff7f`, `c6 = 0x00ffff09` pair the vendor states in the raster
+   range of every query case, and in none of the seven non-query cases of the
+   same capture, is what makes the record publish a count.  With the pair a
+   100x70 draw reads exactly 7000.  The `a5 = 0`, `d3 = 0` writes and the
+   `2e`/`2f` block of the same capture are *not* needed for the count:
+   neither alone nor together do they make the counter run, and the count is
+   exact without them.
+
+2. **The counter is free running and shared by the context, not reset per
+   job.**  A begin snapshot reads a value that grows over a context's life
+   (0x1528e, 0x2aa08, 0x3d608, 0x17e896 across consecutive cases of one
+   process), so the result is the difference of the two readings and never one
+   of them.  This also means a query may span several jobs, provided the
+   enable pair reaches each of them.
+
+3. **The closing record has to wait for the draws.**  Emitted in stream order
+   behind a draw with no dependency token, it runs while the draw is still
+   rasterising and publishes a partial count: 5919, 5578 and 5297 on three
+   runs of the same 7000-sample draw.  Framing it the way the vendor frames
+   its own -- `e6 = 3, e3 = T` to end the block and raise a token, then
+   `43 = T` to wait on it -- makes the reading exact and repeatable.
+
+The kernel side needed the validator to admit index `1e` as a write-only
+`QUERY` relocation, the three `e6` literals by position inside that one packet
+shape, and the `a7`/`c6` pair by exact value.
+
 ## Remaining capture boundary
 
 The final record encoding, query selector use, 32-bit software wrap rule, and
@@ -221,6 +257,14 @@ value, or both.  A differential capture should verify:
 4. one multisample surface, comparing raw snapshot delta with the ICD's exact
    32-bit post-multiply result and the actual samples-passed definition.
 
-Until those checks pass, advertise the extension only behind an experimental
-capability.  Omitting `GL_ARB_occlusion_query` does not block an initial M9
-Mesa driver; it only removes applications' optional query path.
+Item 2 of that list is now answered **[MEASURED]**: snapshot word 0 changes by
+exactly the visible sample count (7000 for a fully visible 100x70 draw, 4130
+with an occluder over 41 of its columns, 0 for a hidden one), and word 1 is a
+small counter that advances by three per published record rather than a second
+sample statistic.  The wrap and multisample checks are still open, and the
+allocation alignment is taken from the vendor's own `0x20` quantum.
+
+The M9 Mesa driver advertises `occlusion_query` on the strength of the
+measurements above.  A range passing more than 2^32 samples remains outside
+what the 32-bit counter can describe, while core Mesa reports 64 for
+`GL_QUERY_COUNTER_BITS`.
