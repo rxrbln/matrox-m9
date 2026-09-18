@@ -4576,6 +4576,7 @@ struct fs_split {
    unsigned cut_count;
    nir_def *extra;            /* a cut under trial, numbered cut_count */
    unsigned defs;
+   unsigned visited;          /* definitions the last cone walk expanded */
 };
 
 static unsigned
@@ -4608,6 +4609,7 @@ fs_cone_of(struct fs_split *sp, nir_def *def)
    if (cone->done)
       return cone;
    cone->done = true;
+   sp->visited++;
    for (unsigned i = 0; i < sp->cut_count; i++)
       if (sp->cut[i] == def) {
          cone->routes = BITFIELD_BIT(i);
@@ -4636,23 +4638,48 @@ fs_cone_reset(struct fs_split *sp, nir_def *extra)
 {
    memset(sp->cone, 0, (sp->defs + 1) * sizeof(*sp->cone));
    sp->extra = extra;
+   sp->visited = 0;
 }
 
-/* The value a producing pass should hand on: the one absorbing the most
- * fetches while staying inside the four units a pass binds, and leaving the
- * rest of the shader strictly smaller than it was. */
+/* The definitions one value's cone covers: the work a producing pass would
+ * take on, and, subtracted from the whole, the work left to the consumer.
+ * It is what a cut chosen for register pressure is scored on, because a
+ * pass boundary is the only place a live value is spilled. */
+static unsigned
+fs_cone_defs(struct fs_split *sp, nir_def *def, nir_def *extra)
+{
+   fs_cone_reset(sp, extra);
+   fs_cone_of(sp, def);
+   return sp->visited;
+}
+
+/* The value a producing pass should hand on.  Without register pressure
+ * that is the value absorbing the most fetches while staying inside the four
+ * units a pass binds, and leaving the rest of the shader strictly smaller
+ * than it was.
+ *
+ * Under register pressure the fetches are not what runs out: a pass wants
+ * more values live at once than the sixteen general registers hold, and the
+ * only place the engine spills a live value is a pass boundary.  So the cut
+ * is chosen to shorten lifetimes instead -- the one that leaves the widest
+ * of the two halves as narrow as it can, which halves the live range on
+ * both sides of it.  A cut that absorbs no fetch at all is admissible then,
+ * because the work it moves is what the pass could not hold. */
 static nir_def *
 fs_choose_cut(struct fs_split *sp, nir_function_impl *impl, nir_def *out,
-              unsigned limit, nir_def *const *rejected, unsigned rejects)
+              unsigned limit, nir_def *const *rejected, unsigned rejects,
+              bool pressure)
 {
    nir_def *best = NULL;
-   unsigned best_tex = 0, best_rest = ~0u, current;
+   unsigned best_tex = 0, best_rest = ~0u, best_wide = ~0u, current, whole = 0;
 
    fs_cone_reset(sp, NULL);
    /* Progress is measured in fetches left to the rest of the shader, not
     * in units: a cut costs the consumer a unit of its own, so a schedule
     * of one fetch a pass would otherwise look like no progress at all. */
    current = util_bitcount64(fs_cone_of(sp, out)->tex);
+   if (pressure)
+      whole = fs_cone_defs(sp, out, NULL);
    nir_foreach_block(block, impl) {
       nir_foreach_instr(instr, block) {
          nir_def *def = nir_instr_def(instr);
@@ -4669,28 +4696,48 @@ fs_choose_cut(struct fs_split *sp, nir_function_impl *impl, nir_def *out,
             skip |= rejected[i] == def;
          if (skip)
             continue;
+         unsigned mine = 0, left_defs = 0, wide = 0;
+
          fs_cone_reset(sp, NULL);
          cone = fs_cone_of(sp, def);
+         mine = sp->visited;
          tex = util_bitcount64(cone->tex);
-         if (!tex || fs_cone_slots(cone) > limit)
+         if ((!tex && !pressure) || fs_cone_slots(cone) > limit)
             continue;
          fs_cone_reset(sp, def);
          {
             const struct fs_cone *left = fs_cone_of(sp, out);
 
-            if (util_bitcount64(left->tex) >= current)
+            if (!pressure && util_bitcount64(left->tex) >= current)
+               continue;
+            if (util_bitcount64(left->tex) > current)
                continue;
             rest = fs_cone_slots(left);
+            left_defs = sp->visited;
+         }
+         /* Both halves must be strictly smaller than the whole, or the cut
+          * moves nothing and the next pass meets the same ceiling; and the
+          * consumer has to fit the unit pool too, because the cut costs it
+          * a unit of its own. */
+         if (pressure) {
+            if (mine >= whole || left_defs >= whole || rest > limit)
+               continue;
+            wide = MAX2(mine, left_defs);
          }
          if (debug_get_bool_option("M9X_DEBUG_SPLIT", false))
             fprintf(stderr, "m9x split: candidate %%%u comps %u tex %u "
-                    "slots %u rest %u current %u\n", def->index,
-                    def->num_components, tex, fs_cone_slots(cone), rest,
-                    current);
-         if (tex > best_tex || (tex == best_tex && rest < best_rest)) {
+                    "slots %u rest %u current %u defs %u/%u of %u\n",
+                    def->index, def->num_components, tex,
+                    fs_cone_slots(cone), rest, current, mine, left_defs,
+                    whole);
+         if (pressure ? (wide < best_wide ||
+                         (wide == best_wide && tex > best_tex)) :
+                        (tex > best_tex ||
+                         (tex == best_tex && rest < best_rest))) {
             best = def;
             best_tex = tex;
             best_rest = rest;
+            best_wide = wide;
          }
       }
    }
@@ -4706,7 +4753,7 @@ m9_fs_compile_passes(struct nir_shader *nir, const struct m9_fs_blend *blend,
    nir_def *blocker = NULL;
    struct fs_split sp = { .cut = cut };
    unsigned fetches = 0, rejects = 0;
-   bool ok = false;
+   bool ok = false, pressure = false;
 
    *reason = NULL;
    memset(passes, 0, sizeof(*passes));
@@ -4729,10 +4776,24 @@ m9_fs_compile_passes(struct nir_shader *nir, const struct m9_fs_blend *blend,
       return true;
    }
    /* A computed coordinate is a cut, not a refusal: the pass before hands
-    * it over and the consumer's unit samples at the record. */
+    * it over and the consumer's unit samples at the record.  So is running
+    * out of temporaries: the pass wants more values live at once than the
+    * register file holds, and a pass boundary is what spills them. */
+   /* M9X_SPLIT_PRESSURE=1 lets a shader the register file cannot hold be
+    * cut rather than refused.  It is off: with it terrain.frag compiles and
+    * draws, and the split job it produces then stops the engine the way
+    * every alternating-target split job does (MEASURED 2026-09-18,
+    * glmark2 -b terrain, "two-pass job failed (Input/output error)"), which
+    * is worse for the caller than skipping the draws.  Turn it on with the
+    * fixture splitpair:168x168:640x480 rendering. */
+   const bool allow_pressure =
+      debug_get_bool_option("M9X_SPLIT_PRESSURE", false);
+
    if (!force && *reason != fail_too_many_textures &&
+       (*reason != fail_out_of_temporaries || !allow_pressure) &&
        (*reason != fail_coord_not_varying || !blocker))
       return false;
+   pressure = allow_pressure && *reason == fail_out_of_temporaries;
 
    impl = nir_shader_get_entrypoint(nir);
    if (exec_list_length(&impl->body) != 1) {
@@ -4796,7 +4857,7 @@ m9_fs_compile_passes(struct nir_shader *nir, const struct m9_fs_blend *blend,
       if (!v)
          v = fs_choose_cut(&sp, impl, out,
                            force ? force : M9_FS_MAX_TEXTURES, rejected,
-                           rejects);
+                           rejects, pressure);
       if (!v) {
          if (i && fs_compile_pass(nir, blend, &passes->pass[i], NULL, false,
                                   cut, sp.cut_count, reason, NULL)) {
@@ -4834,8 +4895,10 @@ m9_fs_compile_passes(struct nir_shader *nir, const struct m9_fs_blend *blend,
          goto done;
       }
       if (*reason != fail_too_many_textures &&
+          (*reason != fail_out_of_temporaries || !allow_pressure) &&
           (*reason != fail_coord_not_varying || !blocker))
          goto done;
+      pressure = allow_pressure && *reason == fail_out_of_temporaries;
    }
    if (!ok && !*reason)
       *reason = "more raster passes than the driver emits";

@@ -789,14 +789,24 @@ m9_varying_from_pass(const struct m9_job_key *key, unsigned location)
 /* The per-fragment record a split shader hands its values through.  Its
  * granularity is not decoded, so m9_record_bytes covers one record per
  * covered pixel rounded out to whole 64-pixel blocks; the object is grown
- * rather than reallocated per job. */
+ * rather than reallocated per job.
+ *
+ * The object's shape is not what stops the engine on a split draw that
+ * follows one into a target of another size: with a record allocated for
+ * that draw's own target the fixture stalls just the same (MEASURED,
+ * deskblurt:3).  M9X_DEBUG_SPLIT traces what each split draw gets. */
 static bool
 m9_record_grow(struct m9_context *ctx, unsigned dwords, const char **reason)
 {
    struct m9_screen *screen = ctx->screen;
+   const bool trace = debug_get_bool_option("M9X_DEBUG_SPLIT", false);
    uint64_t bytes;
    unsigned want;
    bool ok = true;
+
+   /* M9X_RECORD_FRESH=1 gives every split job an object of its own, which
+    * separates the record from the rest of the per-target state. */
+   const bool fresh = debug_get_bool_option("M9X_RECORD_FRESH", false);
 
    simple_mtx_lock(&screen->record_lock);
    want = MAX2(dwords, screen->record_dwords);
@@ -804,7 +814,7 @@ m9_record_grow(struct m9_context *ctx, unsigned dwords, const char **reason)
    if (!bytes) {
       *reason = "the inter-pass record has no size";
       ok = false;
-   } else if (!screen->record.handle || screen->record.size < bytes ||
+   } else if (fresh || !screen->record.handle || screen->record.size < bytes ||
               screen->record_dwords < dwords) {
       bytes = MAX2(bytes, screen->record.size);
       /* The old object goes first: two records of this size do not fit
@@ -823,7 +833,15 @@ m9_record_grow(struct m9_context *ctx, unsigned dwords, const char **reason)
          ok = false;
       } else {
          screen->record_dwords = want;
+         if (trace)
+            fprintf(stderr, "m9x record: %ux%u stride %u -> %u MiB, new "
+                    "object\n", ctx->params.width, ctx->params.height, want,
+                    (unsigned)(bytes >> 20));
       }
+   } else if (trace) {
+      fprintf(stderr, "m9x record: %ux%u stride %u wants %u MiB, kept %u "
+              "MiB\n", ctx->params.width, ctx->params.height, want,
+              (unsigned)(bytes >> 20), (unsigned)(screen->record.size >> 20));
    }
    simple_mtx_unlock(&screen->record_lock);
    return ok;
@@ -4075,9 +4093,13 @@ m9_target_depth_bind(struct m9_context *ctx, uint32_t w, uint32_t h,
    struct m9_target_depth *entry = NULL, **oldest = NULL;
    uint64_t total = 0;
 
+   /* M9X_TARGET_FRESH=1 refuses to reuse a depth and HZ surface, which
+    * separates that pair from the record and the colour target. */
+   const bool fresh = debug_get_bool_option("M9X_TARGET_FRESH", false);
+
    util_dynarray_foreach(&ctx->target_depths, struct m9_target_depth *, it) {
       total += (*it)->depth.size + (*it)->aux.size;
-      if ((*it)->width == w && (*it)->height == h)
+      if (!fresh && (*it)->width == w && (*it)->height == h)
          entry = *it;
       else if (!oldest || (*it)->used < (*oldest)->used)
          oldest = it;
