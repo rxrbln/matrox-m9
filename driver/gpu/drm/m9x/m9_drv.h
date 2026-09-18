@@ -34,7 +34,10 @@ struct iosys_map;
 #define PARHELIA_M9_COMMAND_BYTES	SZ_32K
 #define PARHELIA_M9_COMMAND_SLOTS	2u
 #define PARHELIA_M9_RESTORE_BYTES	0x00181000u
-#define PARHELIA_M9_MAX_RELOCS		128u
+/* At most one relocation a command dword: m9_validate_relocs refuses a
+ * second on the same dword, so the command image is the real bound and a
+ * submission can never present more sites than it has words. */
+#define PARHELIA_M9_MAX_RELOCS		(PARHELIA_M9_COMMAND_BYTES / sizeof(u32))
 #define PARHELIA_M9_MAX_BOS		128u
 /* Local GPU address of VRAM offset 0; diagnostic, VRAM offsets by default. */
 extern uint m9x_local_gpu_base;

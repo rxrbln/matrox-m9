@@ -556,7 +556,7 @@ m9_validate_relocs(u32 *image, u32 dwords, u32 *expected,
 	u32 i;
 	int ret = 0;
 
-	by_dword = kcalloc(dwords, sizeof(*by_dword), GFP_KERNEL);
+	by_dword = kvcalloc(dwords, sizeof(*by_dword), GFP_KERNEL);
 	required_access = kcalloc(bo_count, sizeof(*required_access), GFP_KERNEL);
 	if (!by_dword || !required_access) {
 		ret = -ENOMEM;
@@ -717,7 +717,7 @@ m9_validate_relocs(u32 *image, u32 dwords, u32 *expected,
 	ret = m9_validate_draw_reloc_pairs(image, dwords, by_dword);
 out:
 	kfree(required_access);
-	kfree(by_dword);
+	kvfree(by_dword);
 	return ret;
 }
 
@@ -846,6 +846,7 @@ static int m9_submit_validate(struct m9x_device *mdev,
 	    args->command_length > PARHELIA_M9_COMMAND_BYTES ||
 	    args->command_length & 3 ||
 	    args->relocation_count > PARHELIA_M9_MAX_RELOCS ||
+	    args->relocation_count > args->command_length / sizeof(u32) ||
 	    args->bo_count > PARHELIA_M9_MAX_BOS ||
 	    (!!args->bo_count != !!args->bos_ptr) ||
 	    (!!args->relocation_count != !!args->relocations_ptr)) {
@@ -868,7 +869,7 @@ static int m9_submit_validate(struct m9x_device *mdev,
 	dwords = args->command_length / sizeof(u32);
 	image = kmemdup((u8 *)command_bo->dma.vaddr + args->command_offset,
 			args->command_length, GFP_KERNEL);
-	expected = kcalloc(dwords, sizeof(*expected), GFP_KERNEL);
+	expected = kvcalloc(dwords, sizeof(*expected), GFP_KERNEL);
 	if (args->bo_count)
 		refs = memdup_user(u64_to_user_ptr(args->bos_ptr),
 				   array_size(args->bo_count, sizeof(*refs)));
@@ -882,9 +883,9 @@ static int m9_submit_validate(struct m9x_device *mdev,
 		goto out;
 	}
 	if (args->relocation_count) {
-		relocs = memdup_user(u64_to_user_ptr(args->relocations_ptr),
-				     array_size(args->relocation_count,
-						sizeof(*relocs)));
+		relocs = vmemdup_array_user(u64_to_user_ptr(args->relocations_ptr),
+					    args->relocation_count,
+					    sizeof(*relocs));
 		if (IS_ERR(relocs)) {
 			ret = PTR_ERR(relocs);
 			relocs = NULL;
@@ -985,9 +986,9 @@ out:
 	kfree(vram_pinned);
 	m9_put_bos(bos, args->bo_count);
 	kfree(bos);
-	kfree(relocs);
+	kvfree(relocs);
 	kfree(refs);
-	kfree(expected);
+	kvfree(expected);
 	kfree(image);
 out_command:
 	drm_gem_object_put(&command_bo->dma.base);
