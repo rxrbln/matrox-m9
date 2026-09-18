@@ -275,6 +275,32 @@ pattern reads back row-exact through the same descriptor.  Xorg modesetting
 with ``AccelMethod none`` and ``ShadowFB on`` scans out through the dirty-fb
 copy; every root-window pixel matches the scanout surface.
 
+Framebuffer console
+-------------------
+
+``drm_client_setup_with_fourcc()`` runs after registration whenever the
+scanout gate is on, so the TTM fbdev helper builds a console out of a dumb
+buffer.  The console therefore takes the copy path, not direct scanout: a
+whole 1024x768 frame costs 647 ms to re-tile through the host aperture, which
+is 1.2 Mpixel/s, so only the rows a dirty rectangle touches are published --
+one console line costs 7.7 ms.  Without that, the blinking cursor alone
+republished the whole frame twice a second.
+
+The default mode is the timing the firmware posted: the connector's probed
+EDID modes lose ``DRM_MODE_TYPE_PREFERRED`` to the warm mode on a head whose
+display controller is enabled, so the console adopts the raster already on
+screen and never triggers the first-modeset-above-the-firmware-mode defect.
+On a head the firmware left dark the EDID's own preference stands.  A
+``video=DP-1:1280x720`` kernel command line overrides both through the
+ordinary DRM path.
+
+Connector detection needs no probe of its own at registration: the fbdev
+client's first ``fill_modes()`` drives it, after which ``status`` reads
+``connected`` and the EDID property carries the 256 bytes the DDC bus
+returned.  A ``stat`` of the sysfs ``edid`` attribute reports zero for any
+connector -- it is a binary attribute with no declared size -- so only its
+contents say whether an EDID was attached.
+
 UAPI boundary
 -------------
 
