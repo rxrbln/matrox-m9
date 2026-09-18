@@ -576,6 +576,112 @@ fail:
    return NULL;
 }
 
+static void m9_resource_destroy(struct pipe_screen *pscreen,
+                                struct pipe_resource *pres);
+
+/*
+ * The modifier describing how a resource is stored.  Only colour targets are
+ * ever exported (m9_resource_get_handle), and only those the kernel tagged
+ * BO_TILED are in the render calculator's storage; the small family below
+ * 64x64 is a different address function and so a different modifier.
+ */
+static uint64_t
+m9_storage_modifier(bool tiled, uint32_t width, uint32_t height)
+{
+   if (!tiled)
+      return DRM_FORMAT_MOD_LINEAR;
+   return width <= 64 && height <= 64 ?
+          DRM_FORMAT_MOD_MATROX_M9_TILED_SMALL :
+          DRM_FORMAT_MOD_MATROX_M9_TILED;
+}
+
+static uint64_t
+m9_resource_modifier(const struct m9_resource *resource)
+{
+   return m9_storage_modifier(resource->tiled, resource->width,
+                              resource->height);
+}
+
+/* Modifiers this screen can hand out and take back, most preferred first. */
+static const uint64_t m9_modifiers[] = {
+   DRM_FORMAT_MOD_MATROX_M9_TILED,
+   DRM_FORMAT_MOD_MATROX_M9_TILED_SMALL,
+   DRM_FORMAT_MOD_LINEAR,
+};
+
+static bool
+m9_modifier_supported(uint64_t modifier)
+{
+   for (unsigned i = 0; i < ARRAY_SIZE(m9_modifiers); i++)
+      if (m9_modifiers[i] == modifier)
+         return true;
+   return false;
+}
+
+static void
+m9_query_dmabuf_modifiers(struct pipe_screen *pscreen, enum pipe_format format,
+                          int max, uint64_t *modifiers,
+                          unsigned int *external_only, int *count)
+{
+   unsigned n = 0;
+
+   /* Only the presentation family is ever stored tiled, so every other
+    * format can be shared linear alone. */
+   for (unsigned i = 0; i < ARRAY_SIZE(m9_modifiers); i++) {
+      if (m9_modifiers[i] != DRM_FORMAT_MOD_LINEAR &&
+          format != PIPE_FORMAT_B8G8R8A8_UNORM &&
+          format != PIPE_FORMAT_B8G8R8X8_UNORM)
+         continue;
+      if (modifiers && (int)n < max)
+         modifiers[n] = m9_modifiers[i];
+      if (external_only && (int)n < max)
+         external_only[n] = 0;
+      n++;
+   }
+   *count = modifiers ? MIN2((int)n, max) : (int)n;
+}
+
+static bool
+m9_is_dmabuf_modifier_supported(struct pipe_screen *pscreen, uint64_t modifier,
+                                enum pipe_format format, bool *external_only)
+{
+   uint64_t list[ARRAY_SIZE(m9_modifiers)];
+   int count = 0;
+
+   m9_query_dmabuf_modifiers(pscreen, format, ARRAY_SIZE(list), list, NULL,
+                             &count);
+   if (external_only)
+      *external_only = false;
+   for (int i = 0; i < count; i++)
+      if (list[i] == modifier)
+         return true;
+   return false;
+}
+
+/*
+ * A resource asked for by modifier.  The storage a template selects is fixed
+ * (m9_resource_create), so this only accepts a list that contains the
+ * modifier that template will actually produce rather than laying anything
+ * out differently.
+ */
+static struct pipe_resource *
+m9_resource_create_with_modifiers(struct pipe_screen *pscreen,
+                                  const struct pipe_resource *templ,
+                                  const uint64_t *modifiers, int count)
+{
+   struct pipe_resource *pres = m9_resource_create(pscreen, templ);
+   uint64_t have;
+
+   if (!pres)
+      return NULL;
+   have = m9_resource_modifier(m9_resource(pres));
+   for (int i = 0; i < count; i++)
+      if (modifiers[i] == have || modifiers[i] == DRM_FORMAT_MOD_INVALID)
+         return pres;
+   m9_resource_destroy(pscreen, pres);
+   return NULL;
+}
+
 static struct pipe_resource *
 m9_resource_from_handle(struct pipe_screen *pscreen,
                         const struct pipe_resource *templ,
@@ -603,9 +709,14 @@ m9_resource_from_handle(struct pipe_screen *pscreen,
        !format.cpp || whandle->stride % format.cpp ||
        whandle->stride / format.cpp > UINT16_MAX ||
        (whandle->modifier != DRM_FORMAT_MOD_INVALID &&
-        whandle->modifier != DRM_FORMAT_MOD_LINEAR))
+        !m9_modifier_supported(whandle->modifier)))
       return NULL;
-   if (templ->bind & (PIPE_BIND_RENDER_TARGET | PIPE_BIND_DEPTH_STENCIL)) {
+   /* A tiled buffer is a render-calculator surface whatever it is bound as:
+    * its stride is the 32-aligned row span and its size the whole padded
+    * allocation, not stride times height. */
+   if ((templ->bind & (PIPE_BIND_RENDER_TARGET | PIPE_BIND_DEPTH_STENCIL)) ||
+       (whandle->modifier != DRM_FORMAT_MOD_INVALID &&
+        whandle->modifier != DRM_FORMAT_MOD_LINEAR)) {
       if (!m9_render_surface_layout(templ->width0, templ->height0,
                                     format.cpp, &render_layout) ||
           whandle->stride / format.cpp != render_layout.row_span)
@@ -674,6 +785,28 @@ m9_resource_from_handle(struct pipe_screen *pscreen,
    resource->mmap_offset = info.mmap_offset;
    resource->domain = M9_BO_VRAM;
    resource->tiled = info.layout == PARHELIA_M9_LAYOUT_TILED;
+   /* The kernel owns the truth about the storage.  An explicit modifier has
+    * to agree with it: a tiled buffer taken in as linear would be read as
+    * rows and come back band structured, which is a scrambled image and not
+    * an error the importer could see.  MOD_INVALID is the legacy path that
+    * negotiated nothing, so there the kernel's answer stands alone. */
+   if (whandle->modifier != DRM_FORMAT_MOD_INVALID &&
+       whandle->modifier != m9_storage_modifier(resource->tiled,
+                                                templ->width0,
+                                                templ->height0)) {
+      ret = -EINVAL;
+      goto fail;
+   }
+   /* Whatever the importer asked to bind it as, tiled storage can only be
+    * addressed by the surface contract it was laid out with. */
+   if (resource->tiled &&
+       (!m9_render_surface_layout(templ->width0, templ->height0, format.cpp,
+                                  &render_layout) ||
+        resource->row_span != render_layout.row_span ||
+        info.size < render_layout.size)) {
+      ret = -EINVAL;
+      goto fail;
+   }
    if (resource->map_fd >= 0) {
       int prot = PROT_READ;
 
@@ -705,6 +838,7 @@ m9_resource_from_handle(struct pipe_screen *pscreen,
    pipe_reference_init(&resource->base.reference, 1);
    resource->kind = templ->bind & PIPE_BIND_DEPTH_STENCIL ?
       M9_RESOURCE_LINEAR_DEPTH :
+      resource->tiled ||
       (templ->bind & (PIPE_BIND_RENDER_TARGET | PIPE_BIND_SCANOUT |
                       PIPE_BIND_DISPLAY_TARGET)) ?
       M9_RESOURCE_LINEAR_COLOR : M9_RESOURCE_LINEAR_TEXTURE;
@@ -753,13 +887,13 @@ m9_resource_get_handle(struct pipe_screen *pscreen, struct pipe_context *ctx,
 
    (void)ctx;
    (void)usage;
-   /* Tiled textures have no linear stride to export. */
+   /* A texture chain has no one stride and no one modifier to export. */
    if (!whandle || !resource->handle || resource->domain == M9_BO_DMA32 ||
        resource->texture.levels)
       return false;
    whandle->stride = resource->row_span * resource->cpp;
    whandle->offset = 0;
-   whandle->modifier = DRM_FORMAT_MOD_LINEAR;
+   whandle->modifier = m9_resource_modifier(resource);
    switch (whandle->type) {
    case WINSYS_HANDLE_TYPE_KMS:
       if (m9_prime_track_export(m9_screen(pscreen), resource))
@@ -1200,6 +1334,11 @@ m9_screen_create(int fd, const struct pipe_screen_config *config)
    screen->base.get_device_vendor = m9_device_vendor;
    screen->base.is_format_supported = m9_is_format_supported;
    screen->base.resource_create = m9_resource_create;
+   screen->base.resource_create_with_modifiers =
+      m9_resource_create_with_modifiers;
+   screen->base.query_dmabuf_modifiers = m9_query_dmabuf_modifiers;
+   screen->base.is_dmabuf_modifier_supported =
+      m9_is_dmabuf_modifier_supported;
    screen->base.resource_from_handle = m9_resource_from_handle;
    screen->base.resource_get_handle = m9_resource_get_handle;
    screen->base.check_resource_capability = m9_check_resource_capability;
