@@ -129,10 +129,49 @@ completes without stopping the engine but draws a wrong image, because the cut
 that path takes is arbitrary rather than one the partitioner would choose.
 Use it to exercise the emitter, not to judge the hand-off.
 
-What stays **OPEN** is the record's granularity -- one record per fragment,
-per 2x2 quad or per shaded sample -- which nothing here measures; the driver
-still sizes the object for one record per covered pixel.  A four-pass shader
-is refused for an unrelated reason, the relocation budget of one submission.
+### 3b. The record's granularity, measured
+
+**The record is a flat array the engine indexes by its own fragment counter
+inside a raster range, one slot a shaded fragment** (MEASURED).  It is not
+per 2x2 quad and not per shaded sample, and it does not follow the target's
+area.
+
+`tools/m9-record-probe.c` renders a five-fetch shader -- which the driver
+splits in two -- over a rectangle of a 320x240 target, sampling a 1:1 NEAREST
+texture whose texel `(x, y)` carries its own coordinates, and dumps the record
+through `M9X_RECORD_DUMP`:
+
+| covered rectangle | fragments | highest record index written |
+|---|---:|---:|
+| 320x240, the whole target | 76800 | 77431 |
+| 160x120, a quarter of it | 19200 | 19495 |
+
+Both rows are the same 320x240 target and the same 81920-slot record, so a
+screen-position index is ruled out: a quarter-coverage draw indexed by
+`y * width + x` would have reached 38239 and would have left the record
+sparse, and instead it filled a dense run ending at 19495.  The count runs
+about 1.5% past the covered pixels, which is the quads a shared triangle edge
+shades twice.
+
+So the object costs `stride * (fragments a pass shades)` and there is no
+granularity to exploit: rounding to whole quads with a measured edge margin
+replaces the 64-pixel alignment the driver guessed at, which is about 5%
+smaller and no longer accidental.  The producers of
+every glmark2 shader the splitter cuts hand over four components, so the
+four-dword slot is not padding either -- a four-pass shader at 1920x1200
+genuinely needs about 106 MiB, and where VRAM cannot hold it the draws are
+still skipped with a named reason.
+
+### 3c. A split job carries one raster draw
+
+**Two restated raster draws in one split job stop the engine** (MEASURED,
+reproduced twice from a freshly booted target with
+`m9-record-probe 320 240 160 120 2`, which draws the same rectangle twice;
+the single-draw run of the same probe renders and dumps its record).  The
+driver now closes a split job after one draw, which also bounds the record:
+its fragment counter then covers a single draw rather than a whole job, so
+the size above is an upper bound rather than a hope.  `M9X_SPLIT_DRAWS`
+raises the limit for re-measurement.
 
 ## 4. What the driver does today
 
@@ -155,6 +194,19 @@ from `src/scene-effect-2d.cpp` and `src/scene-desktop.cpp` and compiled with
 | `desktop` separable blur, radius 5 | 11 | 4 |
 
 which is the `4 + 3(P-1)` the pass-splitting note predicts.
+
+With the relocation budget bounded by the command image rather than by a
+constant, the two scenes it refused now render (MEASURED, 1920x1200, no
+stream timeout):
+
+| scene | passes | fps | outcome |
+|---|---:|---:|---|
+| `effect2d` default | 2 | 222 | renders |
+| `desktop` separable blur | 4 | 35 | renders, where it was refused before |
+
+`desktop`'s run still logs one "cannot allocate the inter-pass record", which
+section 3b explains: at four passes and a large target the object is over
+100 MiB and the honest answer is that the hardware's record costs that.
 
 A glmark2 sweep at 1920x1200 with the schedule off reports 33 scenes, 25 of
 them at or above 60 fps (MEASURED).  `terrain`, `shadow` and `refract` are

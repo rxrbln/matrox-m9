@@ -102,8 +102,51 @@ passes owns a four-dword slot, which is why the final pass can still gather
   schedule's four-slot record.  At 1920x1200 and one record per pixel that
   is 17.6, 35.2 and 141 MiB respectively (DERIVED).
 * The unobserved fourth `form` value is **OPEN**.
-* Whether a consuming pass may declare interpolated inputs *and* a route at
-  the same time is **OPEN**, as the pass-splitting note already records.
+
+## 4. What the glamor captures close
+
+The two items this note and the pass-splitting note left open were open only
+because both were written from `m9x-vendor-glsl-programs-20260915` and the
+five-sampler schedule.  `captures/m9x-vendor-glamor-shaders-20260915` settles
+them (CAPTURED).
+
+* **A consuming pass may declare interpolated inputs and a route at the same
+  time.**  `xv-uyvy`'s final raster pass binds three textures, takes a
+  coordinate route at `75` and another at `76`, and still declares attribute
+  1 and attribute 5 -- so one unit interpolates its own coordinate while two
+  read theirs from the record, alongside an ordinary varying
+  (`22 = 00002403`, `88 = 0170033f`, `75 = 00ff0314` with `79 = ee090204`,
+  `76 = 00ff0118` with `79 = ee090004`).  `glyphs-1x1-normal` is the
+  two-unit form of the same shape and the five-sampler schedule's pass 2
+  declares `00100d88` beside its coordinate route.
+* **The route word's low byte names the slot it feeds: `0x10 + 4k`.**  A
+  census over six capture sets finds `0x10` only at `74` (84 occurrences),
+  `0x14` only at `75` (12) and `0x18` only at `76` (2), with no
+  counter-example; index 3 never appears, so the driver does not extrapolate
+  there.  `m9_record_route` took no index and hard-coded `0x10`, which would
+  have emitted `00ff0110` at `75` where the hardware was captured taking
+  `00ff0114`; it now takes the index.
+* **Component 0 of a route is implicit**: it is the descriptor's own offset
+  field, and the three bytes name the remaining components as record dword
+  indices.  `01000310` with `ee190204` reads `(d2, d3, d0, d1)`;
+  `00ff0314` with `ee090204` reads `(d2, d3)`.  The same encoding serves a
+  value route with kind `0x0c`, and the vendor uses arbitrary, sometimes
+  out-of-order indices there -- the driver's `4s+1, 4s+2, 4s+3` is its own
+  layout choice, not a hardware rule.
+* **Which byte carries a third operand depends on the consumer's form**:
+  `ee09` has none (c2 is `0xff`, c3 `0x00`), `ee19` reads a scalar sampler
+  modifier from component 3 (forced by `fs-tex2d-bias`, whose c2 is `s` and
+  c3 the bias), and `ee11` reads a resource component from component 2
+  (forced by `fs-shadow2d` and `fs-tex3d`, and confirmed by `fs-texcube`'s
+  `03020110` at offset 0 reading `(1.0, 2t-1, 2s-1)`).  A consumer
+  re-describes the producer's bytes with the form it needs, which need not
+  be the producer's.
+
+What stays **OPEN**: a coordinate route at index 3; whether the low byte
+names the route index or the destination unit, which every capture leaves
+indistinguishable because they are always equal; and c2 against c3 for a
+projector specifically, since `fs-tex2d-proj3` is the only captured projector
+and its two candidates both hold 0.5.
 
 <!-- Copyright 2026 René Rebe <rene@exactco.de> -->
 <!-- SPDX-License-Identifier: GPL-2.0 -->
