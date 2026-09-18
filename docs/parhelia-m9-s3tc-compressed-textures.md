@@ -445,3 +445,87 @@ The first target-hardware test remains the one already named in
 the 32 blocks has a unique solid colour detects block order, x/y swap, microtile
 extent and the descriptor code in one image.  On the M9 it must be repeated at
 32x16 for DXT5, because the two families have different microtile heights.
+
+## 12. MEASURED on an M9128
+
+The first hardware data on M9 S3TC storage, from
+`tools/m9-compressed-tiling-probe.c`.  It writes a block image through the
+descriptor-translated surface window with a compressed format code, then
+reads the object's raw bytes back through its CPU mapping, so every block
+names the address it landed on.  Each block carries its own index, and the
+same run against the uncompressed `0xcc` code reproduces the 32-bit address
+calculator the Gallium driver already uses -- `y = 4, x = 0` at `0x300`,
+`A[4:2] = x[2:0]`, `A[6:5] = y[1:0]`, `A7 = x3` -- so the method is checked
+before it is trusted.
+
+### 12.1 The window de-tiles a compressed surface, in blocks
+
+The hardware window takes codes `0x20`, `0x2a` and `0x2e` and presents the
+level as a **linear block image**: window byte offset `(by * blocks_per_row +
+bx) * block_bytes` is block `(bx, by)`.  Every block comes back whole at one
+raw address, which the block reading predicts and a 4-bit-per-texel scanline
+reading does not -- that would split each block across four window rows.  A
+driver therefore does not need the compressed address calculator at all: the
+window places the blocks, exactly as it already does for large uncompressed
+levels.
+
+The measured placement inside a level (DXT1, 8 bytes a block, the first
+twelve block columns of the first eight block rows; the table is the same at
+64 and at 128 texels wide):
+
+```text
+row 0:      0      8     10     18    200    208    210    218    d00 ...
+row 1:     20     28     30     38    220    228    230    238    d20 ...
+row 2:     40     48     50     58    240    248    250    258    d40 ...
+row 3:     60     68     70     78    260    268    270    278    d60 ...
+row 4:    300    308    310    318    100    108    110    118    e00 ...
+```
+
+Inside a 4x4-block microtile the offset is `by*0x20 + bx*0x08`, which is
+section 6's `offset(bx,by)` confirmed, and the microtile is 128 bytes over
+16x16 texels as section 6 derives.  Above it the microtile bases are
+`(BX,BY) = (0,0) 0x000, (1,0) 0x200, (2,0) 0xd00, (0,1) 0x300, (1,1) 0x100,
+(2,1) 0xe00` -- the bank swizzle, which does **not** depend on the surface
+width in the measured range.  DXT3 places 16-byte blocks as `(bx>>1)*0x40 +
+by*0x20 + (bx&1)*0x10` inside a 4x2-block microtile, again as section 6
+derives.  No formula is fitted here, because none is needed.
+
+### 12.2 Allocation
+
+The last byte a level reaches, against the block byte count it holds:
+
+| level | DXT1 last / content | DXT3 last / content |
+|---|---:|---:|
+| 32x16 | 0x280 / 256 | 0x380 / 512 |
+| 32x32 | 0x380 / 512 | 0xb80 / 1024 |
+| 64x16 | 0xf80 / 512 | 0xf80 / 1024 |
+| 64x32 | 0xf80 / 1024 | 0xf80 / 2048 |
+| 64x64 | 0xf80 / 2048 | 0x1000 / 4096 |
+| 96x48 | 0xf80 / 2304 | 0x1b80 / 4608 |
+| 128x32 | 0xf80 / 2048 | 0x1000 / 4096 |
+| 128x128 | 0x2000 / 8192 | 0x4000 / 16384 |
+| 256x256 | 0x8000 / 32768 | 0x10000 / 65536 |
+
+So section 4.3's "exactly the block byte count, no decompression reserve" is
+true only for a level at or above 128x128; below that the swizzle spreads the
+blocks and the level needs up to eight times its content.  Every measured
+case is covered by
+
+```c
+pad_w  = ALIGN(width, 32);
+pad_h  = ALIGN(height, bits_per_texel == 4 ? 64 : 32);
+bytes  = ALIGN(pad_w * pad_h * bits_per_texel / 8, 0x1000);
+```
+
+which is section 4.1's `sel = 1` granularity rows with a 4 KiB quantum -- so
+the open question "are the `sel = 1` rows ever selected" is answered **yes**
+for a tiled compressed level, by measurement.  `ALIGN(content, 0x1000)`
+happens to cover the same cases but is tight at 64x64 DXT3 and 128x32 DXT3,
+where it equals the last byte exactly; the padded rule keeps a margin.
+
+### 12.3 What is still not measured
+
+Nothing here samples a compressed texture.  The storage and the upload path
+are measured; whether the texture unit decodes a block correctly -- the BC1
+punch-through case, DXT3 against DXT5 alpha, and the `79[15:0]` logical
+versus padded width question of section 5.2 -- still needs a draw.
