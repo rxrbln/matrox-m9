@@ -18,6 +18,8 @@
 
 #define M9_SURFACE_MAX_SPAN	2048u
 #define M9_SURFACE_FAMILY	0xcc210000u
+/* Bits the format code occupies in a surface descriptor dword. */
+#define M9_SURFACE_CODE_MASK	0xfe000000u
 #define M9_SURFACE_WAIT		msecs_to_jiffies(10000)
 /* Texture storage kinds: small (<= 64x64) and 32-aligned large levels. */
 #define M9_TEXTURE_KIND_SMALL	0x01u
@@ -30,11 +32,22 @@ struct m9_surface_view {
 	u64 bytes;
 };
 
+/* Packed 32-bit colour codes a render surface may carry: A8R8G8B8 and the
+ * two GigaColor formats, which are the same storage class 2. */
+static bool m9_surface_code_is_packed32(u8 code)
+{
+	return code == 0x66 || code == 0x68 || code == 0x6a;
+}
+
 /* Element size per captured texture format byte, 0 when unsupported. */
 static u32 m9_texture_cpp(u8 format)
 {
 	switch (format) {
 	case 0xc8: case 0xc9: case 0xcc:
+		return 4;
+	/* 10-bit GigaColor is storage class 2 at 32 bits per texel, tiled
+	 * exactly like the BGRA8 family (parhelia-m9-gigacolor-10bit.md). */
+	case 0xd0: case 0xd4:
 		return 4;
 	case 0x9d: case 0x8c: case 0x94: case 0xa2:
 		return 2;
@@ -140,9 +153,15 @@ static int m9_surface_check(const struct drm_parhelia_m9_surface_access *args,
 					    ALIGN(view->height, 32), 32 * 16) *
 				      view->cpp;
 	} else {
-		/* Render targets: the verified cc21 family (format 0x66, bit 21). */
+		/*
+		 * Render targets: the verified 21 family at bit 21, with a
+		 * packed 32-bit colour code -- 0x66 A8R8G8B8 and the two
+		 * 10-bit GigaColor codes, which share its storage class.
+		 */
 		view->cpp = 4;
-		if ((d0 & 0xffff0000) != M9_SURFACE_FAMILY ||
+		if ((d0 & ~M9_SURFACE_CODE_MASK & 0xffff0000) !=
+		    (M9_SURFACE_FAMILY & ~M9_SURFACE_CODE_MASK & 0xffff0000) ||
+		    !m9_surface_code_is_packed32(d0 >> 25) ||
 		    view->span != ALIGN(args->surface_width, 32))
 			return -EINVAL;
 		/* The small family allocates with other height and byte quanta;
@@ -326,6 +345,13 @@ int m9x_surface_selftest(void)
 		return -EINVAL;
 	args.descriptor0 = 0xf0210400;
 	if (m9_surface_check(&args, &view) != -EINVAL)
+		return -EINVAL;
+	/* The two 10-bit GigaColor codes share the 32-bit storage class. */
+	args.descriptor0 = 0xd0210400;
+	if (m9_surface_check(&args, &view) || view.cpp != 4)
+		return -EINVAL;
+	args.descriptor0 = 0xd4210400;
+	if (m9_surface_check(&args, &view) || view.cpp != 4)
 		return -EINVAL;
 	args.descriptor0 = 0xcc210400;
 	args.surface_width = 900;
