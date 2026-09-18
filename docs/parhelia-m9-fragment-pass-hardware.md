@@ -6,150 +6,122 @@ fragment schedule from saved captures.  This note records what happened when
 that schedule was emitted at the M9128 for the first time, through the m9x
 Gallium driver's own pass splitter.
 
-Labels: **MEASURED** read back from the hardware, **OFFLINE** produced by the
-driver's own compiler without a device, **DERIVED** a join, **OPEN** not
-decided.
+Labels: **CAPTURED** read from a saved vendor stream, **MEASURED** read back
+from the hardware, **OFFLINE** produced by the driver's own compiler without a
+device, **DERIVED** a join, **OPEN** not decided.
 
-## 1. The result
+## 1. The result: the record binds, once the pass says where it sits
 
-**A raster pass that binds the inter-pass record as its render target stalls
-the engine, and the descriptor at index `b1` is the only thing that has to
-change for it to stall** (MEASURED).  Everything else a producing pass does
-runs: a fragment program that writes the output register pairs `0x11`/`0x13`
-and never the colour output `0x2d`, the record object itself bound at `b0`,
-the record pass's coverage words, and its index-`0x88`.
+**A raster pass may bind the inter-pass record as its render target.  What the
+engine needs beyond the record descriptor is index `ef` bits 10:9, which place
+the pass inside its multi-pass sequence** (MEASURED).  With that field emitted
+the producing pass runs with the captured producer descriptor `b1 = ee190004`,
+the captured record `89 = fe007ffc`, the record coverage words and the routes,
+and a two-pass schedule runs end to end without stopping the engine.
 
-The isolation is single-variable.  The same job, the same program, the same
-object at `b0`, differing only in `b1`:
+The field is uniform across both independent capture sets (CAPTURED, the
+raster range only; the preprocessing range carries its own unrelated `ef`):
 
-| `b1` | outcome |
+| schedule | `ef` per raster pass |
 |---|---|
-| the colour target's own descriptor, `cc210140` | runs, no stall (MEASURED) |
-| `ee190004`, the producer descriptor of all seven captured two-pass cases | `M9 kernel stream timeout` (MEASURED) |
-| `ee190140`, the same record format over the colour target's row span | `M9 kernel stream timeout` (MEASURED) |
+| every single-pass draw (`fs-color`, `fs-add`, `fs-abs`) | `00000000` |
+| all seven two-pass cases | `00000200` then `00000600` |
+| the five-sampler schedule | `00000200`, `00000400`, `00000400`, `00000400`, `00000600` |
 
-So it is the descriptor's format field -- `0x77` in bits 31:25, the code
-`docs/parhelia-m9-five-sampler-schedule-re.md` records as "an internal code
-not present among the ordinary public render formats" -- that the engine will
-not take as a render target in this state, not the record's address, its row
-span, its stride, or the program that fills it.
+so bits 10:9 hold the pass's place: **0 the only pass, 1 the first of several,
+2 a middle one, 3 the last** (DERIVED, and the only reading that fits both a
+two-pass and a five-pass schedule).  m9x emitted zero there, which told the
+engine every pass was a complete draw on its own.
 
-Two further candidates were tested against the hardware and are ruled out
-(MEASURED):
+This **refutes** the earlier conclusion of this note, that the record
+descriptor's `0x77` format field was what the engine would not take as a
+render target.  Two markers tell the engine a pass writes a record -- the
+`0x77` descriptor at `b1`, and the render format class `4` that index `89`
+carries for target 0 -- and while `ef` left the pass unplaced, **either one
+alone stopped the engine** (MEASURED, section 2).  Neither is a blocker; both
+are consistent descriptions of a mode the pass had not been placed into.
 
-* **index `0x89` bit 2.**  Every captured pass that writes a record carries
-  `89 = fe007ffc` and every pass that writes the colour carries `fe007ff8`,
-  so bit 2 looked like the record enable.  Emitting the captured value
-  verbatim changes nothing: the pass still stalls.  The driver emits it
-  anyway, because it is what the captures hold.
-* **index `0xc0`.**  It is outside the kernel's `m9_index_allowed` (which
-  runs `0xc1 ... 0xc5`), so a job carrying it is refused with `-EPERM`; with
-  the kernel's allow-list widened by one case to accept it, the job reaches
-  the engine and stalls exactly as before.  The kernel change was reverted,
-  having bought nothing.  (The reason it was tried is wrong, and worth
-  correcting: `c0 = 0` is **not** particular to a record pass.  Re-decoding
-  the whole GLSL capture set counts 82 writes of it behind an ordinary
-  `cc210080` colour target against eight behind a record descriptor, and the
-  two raster draws of every two-pass case both carry it -- CAPTURED.)
-* **the `e6`/`44` inter-draw transition.**  Decoded in
-  `docs/parhelia-m9-fragment-pass-splitting.md` section 6.1, accepted by a
-  widened `m9_parse_commands` and emitted around every raster draw of a
-  split job.  A one-pass shader driven through the multi-pass loop with the
-  block renders pixel-exact on all four fixtures, so the engine takes it; a
-  producing pass with the block and `b1 = ee190004` stops the engine exactly
-  as it did without it (MEASURED, section 2).
-
-The conclusion is that **binding the record needs something this tree has not
-decoded yet**, and it is not the engine transition: that was the last part of
-the captured schedule a clean-room driver could not reproduce, and
-reproducing it changes nothing (section 3).
+Index `89` is not a bitfield of enables: `docs/parhelia-m9-mrt-retirement-re.md`
+records it as one three-bit render format class per bound target at bit
+`3*s`.  The record's class is `4` and an ordinary colour target's is `0`, so
+the `fe007ffc`/`fe007ff8` difference the captures show is that class, not a
+record-enable bit.  Bit 21, where m9x's own colour value `fe207ff8` differs
+from the vendor's `fe007ff8`, plays no part: `fe207ffc` stops the engine
+exactly as `fe007ffc` did (MEASURED).
 
 ## 2. The ladder
 
-All rows: M9128 at PCI 01:00.0, kernel 7.2.5-t2, the m9x Gallium driver with
-its pass splitter, fixture `tools/m9-mesa-glsl` case `texaff` at 320x240 with
-one draw, forced into two raster passes with `M9X_FS_FORCE_SPLIT=2` so that
-each producing pass binds one texture -- the shape of the captured
-five-sampler schedule.  "stall" is `M9 kernel stream timeout` in the kernel
-log, after which the device needs a reboot.
+All rows: M9128 at PCI 01:00.0, kernel 7.2.5-t2 at `f930663`, the m9x Gallium
+driver with its pass splitter, fixture `tools/m9-mesa-glsl` case `texaff` at
+320x240 with one draw, forced into two raster passes with
+`M9X_FS_FORCE_SPLIT=2` so that each producing pass binds one texture -- the
+shape of the captured five-sampler schedule.  **Every row was measured on a
+freshly booted target whose engine had first been proved alive by
+`m9-mesa-glsl texture`**, for the reason section 3 gives.
+
+With `ef` left at zero, as the driver emitted it until now:
 
 | configuration | outcome |
 |---|---|
-| one raster pass driven through the multi-pass emitter (`M9X_PASS_LOOP=1`): `texture`, `texaff`, `tex4`, `vary2tex` | pixel-exact PASS |
-| producing pass alone, colour target at `b0`, program writes `0x11`/`0x13` and never `0x2d` | no stall |
-| producing pass alone, record object at `b0` with an ordinary colour descriptor | no stall |
-| producing pass alone, record object at `b0` with `b1 = ee190004` | stall |
-| the same, with the plain index-`0x88` and the plain coverage words | stall |
-| the same, with `b1 = ee190140` | stall |
-| the same, with index `0x89` = the captured `fe007ffc` | stall |
-| the same, with index `0xc0` cleared and the kernel widened to accept it | stall |
-| the same, with the vendor's `e6`/`44` transition around the draw | stall |
-| one pass through the multi-pass emitter **with** that transition: `texture`, `texaff`, `tex4`, `vary2tex` | pixel-exact PASS |
-| both passes in one submission, one raster range, with that transition | stall |
+| one raster pass through the multi-pass emitter (`M9X_PASS_LOOP=1`) | pixel-exact PASS |
+| producing pass alone, colour target at `b0` (`M9X_SPLIT_STAGE=1`) | no stall |
+| record object at `b0`, colour descriptor, colour-pass `89`/`a9`/`ae` (stage 7) | **no stall** |
+| record object at `b0`, colour descriptor, record `89` = `fe007ffc` (stage 4) | stall |
+| the same, with the plain coverage words (`M9X_SPLIT_COVERAGE=0`) | stall |
+| the same, with bit 21 kept set (`M9X_RECORD_89=0xfe207ffc`) | stall |
+| record descriptor `b1 = ee190004`, colour class in `89` (`M9X_RECORD_89=0xfe207ff8`) | stall |
+| record descriptor `b1 = ee190004`, record `89`, the real schedule (stage 3) | stall |
 
-The first row matters as much as the rest: it says the multi-pass emitter
-itself is right.  A pass loop that emits one pass produces a job the hardware
-renders exactly, for an interpolated-varying shader, a four-texture shader and
-a shader with two varyings and a texture alike.
+and with `ef` bits 10:9 emitted:
 
-A note on method, because two measurement sessions were lost to it: **a
-stream timeout leaves the device in a state a module reload does not clear.**
-The reload succeeds, but `m9x_requester` finds `0x400`/`0x404` mismatched,
-refuses bus mastering with `-EBUSY`, and every later job returns "Device or
-resource busy; context lost" without reaching the engine.  A run in that
-state renders nothing and logs no timeout, which reads exactly like a
+| configuration | outcome |
+|---|---|
+| producing pass alone, the real schedule (stage 3, `M9X_SPLIT_PASSES=1`) | **no stall** |
+| both passes, `texaff` and `vary2tex` forced into two passes | **no stall**, values wrong |
+| the whole fragment fixture suite with the schedule off | 97 PASS, 0 FAIL |
+
+Two rows retire earlier readings of this note:
+
+* **the placement hypothesis is ruled out.**  Stage 7 binds the record object
+  at `b0` and changes nothing else, and it renders; where the allocator put
+  the object relative to the colour target does not matter.  The captures say
+  the same: the vendor's record at `0x10ec1000` is the context's *primary
+  temporary resource*, 4 MiB from `TempBufferSize` (`docs/parhelia-m9-be-backing-re.md`),
+  with the `be` resource at `0x112c1000` exactly 4 MiB above it and the first
+  transient at `0x113c1000` (CAPTURED).  Its extent crosses the 16 MiB
+  boundary at `0x11000000`, so the object does not sit inside one 16 MiB
+  window at all and no window rule of the 0528's shape can be read from it.
+* **the old "record object at `b0` with an ordinary colour descriptor runs"
+  row was stale.**  It predates the commit that started emitting the captured
+  record `89`; re-measured at HEAD that configuration carries class `4` and
+  stalls.  The isolation it supported -- that `b1` alone decided -- was
+  therefore not single-variable.
+
+## 3. Method, and what a lost measurement looks like
+
+**A stream timeout leaves the device in a state a module reload does not
+clear.**  The reload succeeds, but `m9x_requester` finds `0x400`/`0x404`
+mismatched, refuses bus mastering with `-EBUSY`, and every later job returns
+"Device or resource busy; context lost" without reaching the engine.  A run in
+that state renders nothing and logs no timeout, which reads exactly like a
 configuration that runs cleanly.  Reboot the target between a stall and the
-next measurement, and check that a known-good fixture renders before
-believing a negative.
+next measurement, and open every session with a known-good fixture.
 
-## 3. The engine transition, and what it does not explain
+The `e6`/`44` inter-draw transition, which this note once put first, is
+decoded (`docs/parhelia-m9-fragment-pass-splitting.md` section 6.1), accepted
+by `m9_parse_commands` and emitted around every raster draw of a split job.
+It is neither the cause nor the cure: a pass loop emitting one pass renders
+pixel-exact with it, and a producing pass stopped the engine with it while
+`ef` was zero (MEASURED).
 
-The block is now decoded (`docs/parhelia-m9-fragment-pass-splitting.md`
-section 6.1), accepted by `m9_parse_commands`, and emitted around every
-raster draw of a split job.  Two measurements settle it:
+## 3a. What is still open
 
-* one pass through the multi-pass emitter **with** the block renders
-  pixel-exact on `texture`, `texaff`, `tex4` and `vary2tex` -- so the kernel
-  passes it and the engine takes it (MEASURED);
-* the producing pass alone, on a freshly booted target, with the block and
-  with `b1 = ee190004`, stops the engine with the same
-  `M9 kernel stream timeout` as before (MEASURED).
-
-**So the transition is ruled out.**  It was the last part of the captured
-schedule this tree could not reproduce, which is why it was the first
-hypothesis; it is not the answer.
-
-What is left untried, in the order the evidence supports:
-
-1. **A capture of the vendor rendering a five-fetch shader on this M9128.**
-   Every two-pass capture in the tree is from a different board at a
-   different resolution, so the comparison carries two unknowns at once.  A
-   same-device, same-resolution capture would let the producing pass be
-   diffed word for word instead of reasoned about.
-2. **Where the record is allowed to live.**  In every captured case the
-   record is the only object below the 16 MiB boundary the rest of the job
-   sits above -- record `0x10ec1000`, colour `0x11f09000`, depth
-   `0x11f21000`, aux `0x11f39000`, streams and programs `0x113x/0x11f4`
-   (CAPTURED).  The 0528 in this same family has a rule of that shape
-   already measured -- its depth surface has to sit in the 16 MiB engine
-   window above its colour target, or the two buffers mix -- so a placement
-   rule on the M9's record is not far-fetched.  The m9x allocator places the
-   record wherever it lands, which for the fixture is the same window as the
-   colour target.  The regularity may equally be an accident of the vendor's
-   allocator; it has never been tested.
-3. **Indices `82..85`.**  The vendor writes `82 = 83 = 84 = 85 = 0` behind
-   the texture block of 89 of the captured GLSL cases, record passes and
-   ordinary colour draws alike (CAPTURED); m9x emits them only for the
-   placeholder unit, so a record pass that binds a real texture leaves them
-   at whatever the context held.  Cheap to test, weak prior: the group is
-   not particular to a record pass, and m9x's own textured single-pass draws
-   omit it and render.
-4. **The record's own extent.**  `ee190004` carries a four-dword record
-   stride and no row span, so how the engine turns a fragment position into
-   a record address is undecided.  The consumer samples the record at the
-   same position, so the addressing must be positional, which means a pitch
-   comes from somewhere this tree has not found -- neither `b1`, nor `be`,
-   nor the clip window has been shown to supply it.
+The passes run; the values they hand over are not right yet.  `texaff` and
+`vary2tex` forced into two passes complete without stopping the engine and
+draw a plausible but wrong image (76786 and 76730 of 76800 pixels differ), so
+the record's addressing, its component order or the consuming route still
+needs closing before a split shader can be trusted.  That is why `M9X_SPLIT`
+stays off by default.
 
 ## 4. What the driver does today
 
@@ -174,15 +146,20 @@ from `src/scene-effect-2d.cpp` and `src/scene-desktop.cpp` and compiled with
 which is the `4 + 3(P-1)` the pass-splitting note predicts.
 
 A glmark2 sweep at 1920x1200 with the schedule off reports 33 scenes, 25 of
-them at or above 60 fps (MEASURED).  The three the splitter would reach --
-both `effect2d` kernels and `desktop`'s separable blur -- report a frame rate
-but are counted invalid, because their draws are skipped: the shaders are
-refused rather than drawn.  `terrain`, `shadow` and `refract` are refused for
-an unrelated reason, a texture coordinate that is not a varying.
+them at or above 60 fps (MEASURED).  `terrain`, `shadow` and `refract` are
+refused for an unrelated reason, a texture coordinate that is not a varying.
 
-Because a record pass stalls the engine, the schedule is behind `M9X_SPLIT=1`
-and a shader that needs it is refused with a reason rather than drawn, so the
-fragment fixture suite is unchanged at 90 PASS, 0 FAIL (MEASURED).  Nothing in
+With `M9X_SPLIT=1` and the sequence field emitted, `effect2d`'s default scene
+draws its five-fetch shader at 1920x1200 and 221 fps with no stream timeout,
+where it was refused before (MEASURED).  `desktop`'s separable blur is still
+refused, and for a new reason now that the passes are emitted: its four
+raster passes need more relocations than one submission carries.  The frame
+rate says the draws retire; it says nothing about the image, and the fixture
+evidence of section 3a says those values are still wrong.
+
+The schedule stays behind `M9X_SPLIT=1` for that reason, and a shader that
+needs it is refused with a reason rather than drawn, so the fragment fixture
+suite is unchanged at 97 PASS, 0 FAIL (MEASURED).  Nothing in
 the Gallium caps advertises the feature: `fs->max_texture_samplers` was already
 8 rather than the four-unit binding limit, so no cap claimed or claims that a
 five-fetch shader renders.
@@ -198,34 +175,31 @@ export LIBGL_DRIVERS_PATH=/root/parhelia-m9x-mesa/dri MESA_LOADER_DRIVER_OVERRID
 # the emitter, one pass at a time: every one of these is pixel-exact
 M9X_PASS_LOOP=1 ./m9-mesa-glsl tex4
 
-# the producing pass alone, with the record descriptor: stalls
+# the producing pass alone, with the record descriptor: runs
 M9X_SPLIT=1 M9X_FS_FORCE_SPLIT=2 M9X_SPLIT_PASSES=1 ./m9-mesa-glsl texaff
-# the same with an ordinary colour descriptor on the same object: runs
-M9X_SPLIT=1 M9X_FS_FORCE_SPLIT=2 M9X_SPLIT_PASSES=1 M9X_SPLIT_STAGE=4 \
-	./m9-mesa-glsl texaff
+# both passes: runs, with the wrong values
+M9X_SPLIT=1 M9X_FS_FORCE_SPLIT=2 ./m9-mesa-glsl texaff
 
-# the five-fetch fixture, dispatched but not listed while the record stalls
+# the five-fetch fixture
 M9X_SPLIT=1 ./m9-mesa-glsl tex5
 ```
 
 `M9X_SPLIT_STAGE` selects which binding a split job makes: 1 leaves the record
 unbound, 2 binds it with the routes idle, 3 is the real schedule, 4 binds the
 record object with a colour descriptor, 5 with the captured two-dword producer
-descriptor, 6 with the record format over the colour target's row span.
-`M9X_RECORD_88` replaces the derived index-`0x88` low byte of a record pass and
+descriptor, 6 with the record format over the colour target's row span, and 7
+with the colour descriptor and the colour pass's own state words, which leaves
+the bound object as the only difference from an ordinary draw.
+`M9X_RECORD_88` replaces the derived index-`0x88` low byte of a record pass,
+`M9X_RECORD_89` replaces the whole of index `0x89`, and
 `M9X_SPLIT_COVERAGE=0` keeps its plain coverage words, so each can be ruled out
 on its own.  `M9X_TRANSITION=0` drops the engine transition of section 3 from a
 split job, which separates a fault in that block from one in the record;
 `M9X_SPLIT_SUBMIT=0` puts every pass of a split shader in one submission, in
 one raster range, which is the vendor's own layout.
 
-```sh
-# the block on its own, with one pass: renders
-M9X_PASS_LOOP=1 ./m9-mesa-glsl texaff
-# the block in front of a record pass: still stalls
-M9X_SPLIT=1 M9X_FS_FORCE_SPLIT=2 M9X_SPLIT_PASSES=1 M9X_TRANSITION=1 \
-	./m9-mesa-glsl texaff
-```
+To reproduce the stall the sequence field cured, build with
+`pass->sequence_ef` cleared; the first ladder of section 2 then returns.
 
 <!-- Copyright 2026 René Rebe <rene@exactco.de> -->
 <!-- SPDX-License-Identifier: GPL-2.0 -->
