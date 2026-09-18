@@ -16,7 +16,8 @@
 struct nir_shader;
 struct nir_shader_compiler_options;
 
-/* The vendor splits beyond six interpolated varying slots per raster pass. */
+/* The interpolation register file stops at six; M9_RASTER_MAX_INTERP in
+ * m9_draw_params.h carries the measurement. */
 #define M9_FS_MAX_VARYINGS 6u
 /* First texel lands in 00/02, the second in 04/06.  A unit is one fetch: the
  * engine samples at the coordinate it interpolates and the program has no

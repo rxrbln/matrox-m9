@@ -4964,6 +4964,8 @@ m9_fs_raster_88(const struct m9_fs_program *program)
                   0xfff0;
    unsigned low = 0;
 
+   /* One bit an interpolated input, and only six of them: setting bit 30
+    * for a seventh made input 4 read garbage (MEASURED). */
    for (unsigned k = 0; k < program->varying_count; k++)
       r88 |= BITFIELD_BIT(24 + k);
    if (program->fragcoord)

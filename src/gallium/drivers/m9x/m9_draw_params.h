@@ -59,10 +59,17 @@ enum m9_topology {
  * engine has ten slots and five packed stride words, CAPTURED in the
  * vendor's own multi-varying programs. */
 #define M9_RASTER_MAX_STREAMS     10u
-/* Index 22 counts declaration words in four bits: at most sixteen.  An
- * interpolated input costs two and the fixed trio costs three, so six
- * inputs fit and seven do not -- which is exactly M9_FS_MAX_VARYINGS. */
+/* Index 22 counts declaration words in four bits: at most sixteen. */
 #define M9_RASTER_MAX_DECL        16u
+/* Interpolated inputs one raster pass can carry.  The declaration budget no
+ * longer sets it: a general interpolant declares in the single xyzw word
+ * attributes 0, 5, 6 and 13 use, which MEASURED exact for one to six inputs
+ * against the CPU reference on the M9128, so an input costs one word rather
+ * than an xy/zw pair.  Six is the interpolation register file: a seventh
+ * declares and rasterizes without stalling but reads garbage, whatever
+ * attribute number it is given (MEASURED, tools/m9-user-raster-streams.c,
+ * docs/parhelia-m9-raster-stream-limit-re.md). */
+#define M9_RASTER_MAX_INTERP      6u
 /* Native fragment constants; the span at +0x1000 is hardware-measured. */
 #define M9_RASTER_CONST_OFFSET    0x1000u
 /* The declaration terminator both passes end their index-23 run with. */
@@ -176,18 +183,14 @@ uint32_t m9_raster_control_decl(bool flat, enum m9_topology topology,
                                 unsigned decl_count);
 /* The raster pass keeps three of its ten stream slots for position, c and d,
  * and its declaration holds sixteen words; a layout past either cannot be
- * emitted.  Stated once, so the compiler's gate and the emitter agree.
- *
- * The declaration bound also caps the interpolated inputs at six without
- * naming that number: an input costs two words and the fixed trio three,
- * so 2v + 3 <= 16 gives v <= 6 even with no texture at all.  That is the
- * same six the fragment unit's interpolation registers stop at. */
+ * emitted.  Stated once, so the compiler's gate and the emitter agree. */
 static inline bool
 m9_raster_fs_layout_ok(unsigned varying_count, unsigned coord_count,
                        unsigned texture_count)
 {
-   return varying_count + coord_count + 3 <= M9_RASTER_MAX_STREAMS &&
-          2 * varying_count + texture_count + 3 <= M9_RASTER_MAX_DECL &&
+   return varying_count <= M9_RASTER_MAX_INTERP &&
+          varying_count + coord_count + 3 <= M9_RASTER_MAX_STREAMS &&
+          varying_count + texture_count + 3 <= M9_RASTER_MAX_DECL &&
           texture_count <= 4;
 }
 int m9_raster_fs_init(struct m9_raster_fs *r, unsigned vertex_entry,

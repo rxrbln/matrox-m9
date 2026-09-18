@@ -302,7 +302,9 @@ m9_raster_fs_init_textured(struct m9_raster_fs *r, unsigned vertex_entry,
    r->vertex_entry = vertex_entry;
    r->r88 = r88;
    r->const_count = const_count;
-   /* Varying slot k is an xy/zw pair on stream k.  Attributes 5..8 are the
+   /* Varying slot k reads stream k as one xyzw word, the form attributes 0,
+    * 5, 6 and 13 declare with; the captured xy/zw pair renders the same
+    * pixels and costs a second word (MEASURED).  Attributes 5..8 are the
     * four texture coordinates, so interpolated inputs take 1..4 and then
     * 9..10: numbering the fifth k+1 would have claimed texture unit 0's
     * coordinate (MEASURED). */
@@ -310,8 +312,7 @@ m9_raster_fs_init_textured(struct m9_raster_fs *r, unsigned vertex_entry,
       uint32_t link = flat_link[k] ? 0x80000000u : 0;
       uint32_t attr = k < 4 ? k + 1 : k + 5;
 
-      r->decl[r->decl_count++] = link | attr << 20 | k << 16 | 0x0d88;
-      r->decl[r->decl_count++] = link | attr << 20 | k << 16 | 0x06b6;
+      r->decl[r->decl_count++] = link | attr << 20 | k << 16 | 0x0688;
       r->stream_view[k] = varying_view[k];
       stride[k] = 0x10;
    }
