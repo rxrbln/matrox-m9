@@ -814,16 +814,23 @@ fail:
    return ret;
 }
 
-/* Index ef of a preprocessing pass.  The fused pass carries the captured
- * 0x00288800: three targets, the clip code at bit 15 and role 8.  The
- * tail-free extra draw enables one bit a target past the first and carries
- * role 2, the first preprocessing draw of a submission -- 0x00000200,
- * 0x00080200, 0x00280200 and 0x00a80200, all four CAPTURED.
- * docs/parhelia-m9-vertex-output-target-re.md sections 1 and 2 */
+/* Index ef of a preprocessing pass.  Bits 11:9 state the draw's place in
+ * the preprocessing chain and bit 15 enables the clip-code output, and the
+ * two move together: the only draw of a chain is 4, the first of several 1,
+ * a later source-record-fed one 2, a route-fed one 3, and the last of
+ * several 7, with bit 15 set exactly for the values that carry bit 11.
+ * That holds in 628 of 628 captured preprocessing passes across six capture
+ * sets with no exception (docs/parhelia-m9-varying-transport-re.md
+ * section 4).  Bits 19/21/23 enable targets 1..3; target 0 is always on. */
+#define M9_PRE_ROLE_FIRST  0x00000200u
+#define M9_PRE_ROLE_ONLY   0x00000800u
+#define M9_PRE_ROLE_LAST   0x00000e00u
+#define M9_PRE_CLIP_CODE   0x00008000u
+
 static uint32_t
-m9_preprocess_ef(unsigned targets)
+m9_preprocess_ef(unsigned targets, uint32_t role)
 {
-   uint32_t ef = 0x00000200u;
+   uint32_t ef = role;
 
    for (unsigned t = 1; t < targets; t++)
       ef |= 0x00080000u << (2 * (t - 1));
@@ -863,7 +870,10 @@ m9_emit_preprocess(struct m9_batch *batch, const struct m9_draw_job *job,
    EMIT(V(0xe6, 3), V(0xe3, base));
    EMIT(V(0xe6, 3));
    EMIT(V(0xf0, 0xf0000400),
-        V(0xef, extra ? m9_preprocess_ef(targets) : 0x00288800),
+        V(0xef, extra ? m9_preprocess_ef(targets, M9_PRE_ROLE_FIRST) :
+                        0x00280000u | M9_PRE_CLIP_CODE |
+                        (job->vs_extra_entry ? M9_PRE_ROLE_LAST :
+                                               M9_PRE_ROLE_ONLY)),
         V(0xd7, 0x000050ae));
    EMIT(V(0x22, m9_preprocess_control(decl_count)));
    EMIT(V(0xe6, 3), V(0xe3, base + 0x10));
