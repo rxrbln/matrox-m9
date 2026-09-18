@@ -268,10 +268,32 @@ advertises `DRM_FORMAT_MOD_LINEAR` for import while no imported linear buffer
 can ever be sampled — an inconsistency in our own stack, and the source of
 `texture is not stored in a captured sampler layout; draw skipped`.
 
-**Not established:** a linear surface with height above 1.  Every captured 1-D
-bind has `7a = 00010001`, and with 16 texels in one row a capture cannot show
-whether the row stride is `79[15:0]` elements or 32-aligned.  No capture
-anywhere carries a kind byte of `00` or `20`.
+Linear 2-D surfaces are captured too, and they are not rare.  Kind byte `00`
+is dimension 0 with layout selector 0 — an ordinary linear 2-D surface — and
+the vendor uses it constantly:
+
+* **Engine writes, with a height.**  In
+  `captures/m9x-vendor-gl2ext-2d-video-modes-20260915/A-gl2ext/copytexsubimage-back/m9x-exec-4268-000021-bm3-in.bin`
+  at `0x8b8`, the rectangle-fill path binds `b0/b1 = 12829000/f0000010` —
+  format `78` (raw 32-bit), kind `00`, width 16 — and launches
+  `f4 = fc = 00280010`, i.e. **16 wide by 40 rows**.  The same allocation is
+  bound later in the frame as the hierarchical-Z surface with
+  `bb = f0010080`.  So one object is addressed once as a 16x40 linear surface
+  and once as a kind `01` 128-wide one, and the engine writes both.
+* **Large linear extents.**  The vertex-output targets are bound at
+  `b0/b2/b4 = 113c1000/113d7800/113ee000` with `68002000`: format `34`
+  (128-bit), kind `00`, width `0x2000` = 8192 elements
+  (`parhelia-m9-vertex-output-target-re.md`).
+* **The sampler accepts kind `00`.**  Every rectangle fill binds
+  `78/79/7a = <base>/f0000001/00010001` — a 1x1 linear 2-D texture.  That is
+  the mandatory unit-0 bind this driver already reproduces.
+
+DERIVED from the fill above: the row stride of a linear surface is the
+descriptor's `[15:0]` width field in elements, not a 32-aligned span.
+
+**Not established:** a linear 2-D surface *sampled* above 1x1.  Every captured
+kind-`00` texture bind is 1x1, and the one large linear sampled surface is
+1-D.  The gap is narrow and one draw closes it.
 
 ## 5. What is implementable, and what each step still needs
 
@@ -290,17 +312,25 @@ In dependency order.  Nothing below is implemented yet.
    the filtering.  Same gate as 1.
 
 3. **Engine-side texture upload.**  The vendor's design is linear CPU staging
-   plus a GPU transfer, and every part of it is now evidenced except the
-   staging surface's shape.  Two routes, cheapest experiment first:
-   * a linear 2-D staging texture — needs the experiment below;
-   * failing that, a linear **1-D** staging texture, which is CAPTURED, with
-     the destination fed one row per draw or in 2048-texel runs.  A 1-D
-     coordinate `u = (y*w + x)/(w*h)` is affine in x and y, so it interpolates
-     as an ordinary varying and needs no shader arithmetic.
+   plus a GPU transfer, and every part of it is now evidenced: linear 2-D
+   surfaces exist and the engine writes them, and the sampler accepts a linear
+   2-D descriptor at 1x1 and a linear 1-D one at 2048 elements.  The one
+   missing step is sampling a linear 2-D surface above 1x1.  If that fails,
+   the fallback is a linear **1-D** staging texture, which is CAPTURED, with
+   the destination fed in 2048-texel runs: the coordinate `u = (y*w + x)/(w*h)`
+   is affine in x and y, so it interpolates as an ordinary varying and needs
+   no shader arithmetic.
 
    The staging buffer in class-1 system memory is worth 1380 MB/s against the
    aperture's measured 260 MB/s (`m9x-frame-cost-breakdown`), and removes the
    ioctl and the transport drain from every upload.
+
+5. **A vertexless clear**, which fell out of this sweep rather than being
+   looked for.  The vendor clears a surface with the `f0/f3/f4/fc` rectangle
+   launch and no geometry at all, binding the target with the raw format code
+   `78` and `90`/`92` as colour and mask.  This driver's full-screen clear is
+   measured at 1.19 ms (`parhelia-m9-fill-rate.md`); whether the rectangle
+   path is cheaper is worth one measurement.
 
 4. **System-memory texture placement** — only after the tiled-in-system-memory
    question in section 3 is answered, and only for the storage kind the answer
@@ -309,18 +339,18 @@ In dependency order.  Nothing below is implemented yet.
 ### The experiments, in the order that costs least
 
 **E1, kernel only, no sampler.**  `m9_surface.c` accepts only kind bytes `01`
-and `21`.  Relax it locally to accept `00` and `20`, write a coordinate-coded
-image through the window over a BO the CPU also reads raw, and compare.  This
-tests the address unit's linear mode directly, in the same block whose
-selector-0 identity view already works.  It answers "is there a linear 2-D
-surface shape, and what is its row stride" without submitting a job.
+and `21`.  Relax it locally to accept `00`, write a coordinate-coded image
+through the window over a BO the CPU also reads raw, and compare.  This tests
+the address unit's linear mode directly, in the same block whose selector-0
+identity view already works, and confirms the row stride is the descriptor's
+width field.  No job is submitted.
 
-**E2, sampler.**  Bind a known-linear BO at `78/79/7a` and sample it:
-`79 = c8180010, 7a = 00010004` (kind `18`, height 4) says whether the captured
-1-D mode extends to rows and at what stride; `c8200040` and `c8000040` at
-`7a = 00010040` test the two candidate linear 2-D kind bytes; `c8010040` over
-the same bytes is the control and must come back scrambled.  Repeat one case
-with bit 21 set to separate the address family from the layout selector.
+**E2, sampler.**  Bind a coordinate-coded linear BO at `78/79/7a` with
+`79 = c8000040`, `7a = 00010040` (kind `00`, 64x64) and sample it; `c8010040`
+over the same bytes is the control and must come back scrambled.  This is the
+one remaining gap.  Repeat once with bit 21 set to separate the address family
+from the layout selector, and once at `7a = 00010004` with kind `18` to see
+whether the 1-D mode also takes rows.
 
 **E3, non-local.**  Extend the kernel's texture relocation to accept a class-1
 GPUVA — the address form is already built for `SYSTEM` and `RESOURCE_6C` — and
