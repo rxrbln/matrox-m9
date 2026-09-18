@@ -114,14 +114,23 @@ It is neither the cause nor the cure: a pass loop emitting one pass renders
 pixel-exact with it, and a producing pass stopped the engine with it while
 `ef` was zero (MEASURED).
 
-## 3a. What is still open
+## 3a. What the hand-off delivers
 
-The passes run; the values they hand over are not right yet.  `texaff` and
-`vary2tex` forced into two passes complete without stopping the engine and
-draw a plausible but wrong image (76786 and 76730 of 76800 pixels differ), so
-the record's addressing, its component order or the consuming route still
-needs closing before a split shader can be trusted.  That is why `M9X_SPLIT`
-stays off by default.
+A shader that genuinely needs two passes hands its values over correctly:
+fixture `tex5`, five texture fetches cut into two raster passes by the
+driver's own splitter, renders **0 of 76800 pixels wrong** (MEASURED).  The
+schedule is therefore on by default and `tex5` is a listed fixture.
+
+`M9X_FS_FORCE_SPLIT=2` is a different thing and its results do not carry:
+forcing a one-fetch shader such as `texaff` or `vary2tex` into two passes
+completes without stopping the engine but draws a wrong image, because the cut
+that path takes is arbitrary rather than one the partitioner would choose.
+Use it to exercise the emitter, not to judge the hand-off.
+
+What stays **OPEN** is the record's granularity -- one record per fragment,
+per 2x2 quad or per shaded sample -- which nothing here measures; the driver
+still sizes the object for one record per covered pixel.  A four-pass shader
+is refused for an unrelated reason, the relocation budget of one submission.
 
 ## 4. What the driver does today
 
@@ -149,17 +158,15 @@ A glmark2 sweep at 1920x1200 with the schedule off reports 33 scenes, 25 of
 them at or above 60 fps (MEASURED).  `terrain`, `shadow` and `refract` are
 refused for an unrelated reason, a texture coordinate that is not a varying.
 
-With `M9X_SPLIT=1` and the sequence field emitted, `effect2d`'s default scene
-draws its five-fetch shader at 1920x1200 and 221 fps with no stream timeout,
-where it was refused before (MEASURED).  `desktop`'s separable blur is still
-refused, and for a new reason now that the passes are emitted: its four
-raster passes need more relocations than one submission carries.  The frame
-rate says the draws retire; it says nothing about the image, and the fixture
-evidence of section 3a says those values are still wrong.
+With the sequence field emitted, `effect2d`'s default scene draws its
+five-fetch shader at 1920x1200 and 221 fps with no stream timeout, where it
+was refused before (MEASURED).  `desktop`'s separable blur is still refused,
+and for a new reason now that the passes are emitted: its four raster passes
+need more relocations than one submission carries.
 
-The schedule stays behind `M9X_SPLIT=1` for that reason, and a shader that
-needs it is refused with a reason rather than drawn, so the fragment fixture
-suite is unchanged at 97 PASS, 0 FAIL (MEASURED).  Nothing in
+The schedule is on by default, `M9X_SPLIT=0` refuses it instead, and the
+fragment fixture suite holds at 97 PASS, 0 FAIL with either setting; `tex5`
+joins the listed cases (MEASURED).  Nothing in
 the Gallium caps advertises the feature: `fs->max_texture_samplers` was already
 8 rather than the four-unit binding limit, so no cap claimed or claims that a
 five-fetch shader renders.
