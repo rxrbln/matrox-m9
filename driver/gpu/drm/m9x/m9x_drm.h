@@ -43,6 +43,12 @@ struct drm_parhelia_m9_create_bo {
 #define PARHELIA_M9_BO_VRAM	0x00000008u
 /* GPU render/scanout color storage, stored tiled; implies BO_VRAM. */
 #define PARHELIA_M9_BO_TILED	0x00000010u
+/*
+ * Video memory the engine alone touches.  It is placed above the host
+ * aperture's identity window, so the object has no mmap cookie and no CPU
+ * mapping is ever possible; requires BO_VRAM and excludes BO_TILED.
+ */
+#define PARHELIA_M9_BO_ENGINE_ONLY 0x00000020u
 
 /* Query storage and the render-node-safe mmap cookie after handle import. */
 struct drm_parhelia_m9_get_bo_info {

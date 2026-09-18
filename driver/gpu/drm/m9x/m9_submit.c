@@ -615,11 +615,11 @@ m9_validate_relocs(u32 *image, u32 dwords, u32 *expected,
 		if (m9_reloc_uses_vram(reloc->kind)) {
 			s64 offset;
 
-			if (!m9x_gem_is_vram(gem)) {
+			if (!m9x_gem_in_vram(gem)) {
 				ret = m9_refuse(-EINVAL);
 				goto out;
 			}
-			offset = drm_gem_vram_offset(drm_gem_vram_of_gem(gem));
+			offset = m9x_gem_vram_offset(gem);
 			if (offset < 0) {
 				ret = offset;
 				goto out;
@@ -931,8 +931,8 @@ static int m9_submit_validate(struct m9x_device *mdev,
 			}
 			bos[i] = &bo->dma.base;
 			m9x_bo_sync_for_device(bo);
-		} else if (m9x_gem_is_vram(bos[i])) {
-			ret = m9x_vram_pin(drm_gem_vram_of_gem(bos[i]));
+		} else if (m9x_gem_in_vram(bos[i])) {
+			ret = m9x_gem_vram_pin(bos[i]);
 			if (ret)
 				goto out;
 			vram_pinned[i] = true;
@@ -981,7 +981,7 @@ out:
 	if (vram_pinned)
 		for (i = 0; i < args->bo_count; i++)
 			if (vram_pinned[i])
-				m9x_vram_unpin(drm_gem_vram_of_gem(bos[i]));
+				m9x_gem_vram_unpin(bos[i]);
 	kfree(vram_pinned);
 	m9_put_bos(bos, args->bo_count);
 	kfree(bos);

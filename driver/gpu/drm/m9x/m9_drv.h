@@ -212,6 +212,10 @@ struct m9x_device {
 	u64 vram_total;
 	/* Low video memory the slot 0 identity window exposes to the CPU. */
 	u64 vram_visible;
+	/* Video memory above that window: engine-addressed, never mapped. */
+	struct mutex engine_vram_lock;
+	struct drm_mm engine_vram;
+	bool engine_vram_ready;
 	struct m9_head head[M9_MAX_HEADS];
 	unsigned int heads;
 	bool kms_initialized;
@@ -319,6 +323,7 @@ int m9x_address_read_root_pte(struct m9x_device *mdev, u32 gpuva, u32 *value);
 u32 m9x_address_pte_word(dma_addr_t dma);
 void m9x_address_surface_window(struct m9x_device *mdev, u32 surface,
 				u32 format, u32 extent);
+void m9x_address_raw_window(struct m9x_device *mdev, u32 vram);
 void m9x_address_surface_release(struct m9x_device *mdev);
 int m9x_submit_triangle_diag(struct m9x_device *mdev, u32 color,
 			     struct drm_gem_vram_object *color_bo, u64 *point,
@@ -337,6 +342,11 @@ bool m9x_gem_is_dma(struct drm_gem_object *gem);
 bool m9x_bo_is_paged(const struct m9x_bo *bo);
 void m9x_bo_sync_for_device(struct m9x_bo *bo);
 bool m9x_gem_is_vram(struct drm_gem_object *gem);
+bool m9x_gem_is_engine_vram(struct drm_gem_object *gem);
+bool m9x_gem_in_vram(struct drm_gem_object *gem);
+int m9x_gem_vram_pin(struct drm_gem_object *gem);
+void m9x_gem_vram_unpin(struct drm_gem_object *gem);
+s64 m9x_gem_vram_offset(struct drm_gem_object *gem);
 bool m9x_gem_vram_tiled(struct drm_gem_object *gem);
 int m9x_surface_access_ioctl(struct drm_device *drm, void *data,
 			     struct drm_file *file);
@@ -347,6 +357,7 @@ struct drm_gem_object *m9x_gem_create_object(struct drm_device *drm,
 					      size_t size);
 int m9x_vram_pin(struct drm_gem_vram_object *bo);
 void m9x_vram_unpin(struct drm_gem_vram_object *bo);
+int m9x_engine_vram_init(struct m9x_device *mdev);
 /* Highest local GPU address the engine may be handed: video memory ends, and
  * the class-1 system window begins, whichever comes first. */
 static inline u64 m9x_vram_gpu_limit(const struct m9x_device *mdev)

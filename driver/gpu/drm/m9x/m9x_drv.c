@@ -178,6 +178,11 @@ static int m9x_pci_probe(struct pci_dev *pci,
 	ret = m9x_address_init(mdev);
 	if (ret)
 		goto err_fini;
+	/* The slot 1 window the engine-memory probe needs exists only once the
+	 * address space owns BAR0. */
+	ret = m9x_engine_vram_init(mdev);
+	if (ret)
+		goto err_fini;
 	ret = m9x_restore_bind(mdev);
 	if (ret)
 		goto err_fini;

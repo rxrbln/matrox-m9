@@ -217,6 +217,14 @@ void m9x_address_surface_window(struct m9x_device *mdev, u32 surface,
 	m9x_read(mdev, M9_ADDRESS_SURFACE_WINDOW);
 }
 
+/* The same slot carrying the untranslated identity format: a linear view of
+ * any video memory address, including memory no permanent window reaches. */
+void m9x_address_raw_window(struct m9x_device *mdev, u32 vram)
+{
+	m9x_address_surface_window(mdev, vram, M9_ADDRESS_CPU_WINDOW_FORMAT,
+				   M9_ADDRESS_CPU_WINDOW_EXTENT);
+}
+
 void m9x_address_surface_release(struct m9x_device *mdev)
 {
 	m9x_write(mdev, M9_ADDRESS_SURFACE_WINDOW, M9_ADDRESS_SLOT_EMPTY);

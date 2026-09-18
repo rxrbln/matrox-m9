@@ -18,12 +18,16 @@
 
 #include "m9_drv.h"
 
-/* The largest object each memory class can ever serve.  A VRAM object has to
- * fit the CPU-visible VRAM the TTM manager owns, a class-1 addressed DMA32
- * object the system address window, and a command object only the 32-bit bus
- * address space its raw fetches use. */
+/* The largest object each memory class can ever serve.  A mapped VRAM object
+ * has to fit the CPU-visible VRAM the TTM manager owns, an engine-only one the
+ * video memory above it, a class-1 addressed DMA32 object the system address
+ * window, and a command object only the 32-bit bus address space its raw
+ * fetches use. */
 static u64 m9_bo_max_size(struct m9x_device *mdev, u32 flags)
 {
+	if (flags & PARHELIA_M9_BO_ENGINE_ONLY)
+		return mdev->engine_vram_ready ?
+			m9x_vram_gpu_limit(mdev) - mdev->vram_visible : 0;
 	if (flags & (PARHELIA_M9_BO_VRAM | PARHELIA_M9_BO_TILED))
 		return mdev->drm.vram_mm->vram_size;
 	if (flags & PARHELIA_M9_BO_COMMAND)
@@ -53,12 +57,15 @@ MODULE_PARM_DESC(m9_bo_force_paged,
 static unsigned long m9_bo_vram_creates, m9_bo_vram_kib;
 static unsigned long m9_bo_dma_creates, m9_bo_dma_kib;
 static unsigned long m9_bo_reserve_creates, m9_bo_paged_creates;
+static unsigned long m9_bo_engine_creates, m9_bo_engine_kib;
 module_param(m9_bo_vram_creates, ulong, 0444);
 module_param(m9_bo_vram_kib, ulong, 0444);
 module_param(m9_bo_dma_creates, ulong, 0444);
 module_param(m9_bo_dma_kib, ulong, 0444);
 module_param(m9_bo_reserve_creates, ulong, 0444);
 module_param(m9_bo_paged_creates, ulong, 0444);
+module_param(m9_bo_engine_creates, ulong, 0444);
+module_param(m9_bo_engine_kib, ulong, 0444);
 
 /* A draw range is fetched by its raw bus address, so a BO the engine reads
  * that way has to be one physically contiguous range.  Above the costly order
@@ -366,6 +373,234 @@ void m9x_vram_unpin(struct drm_gem_vram_object *bo)
 	}
 }
 
+/*
+ * Video memory above the slot 0 identity window.  The engine reaches it
+ * through ordinary local addresses; no host aperture maps it permanently, so
+ * an object placed here is never mmapped and never vmapped.  Every VRAM
+ * object this driver creates stays pinned for as long as it lives, so a range
+ * allocator is the whole manager this memory needs.
+ */
+struct m9x_engine_bo {
+	struct drm_gem_object base;
+	struct drm_mm_node node;
+};
+
+static void m9_engine_bo_free(struct drm_gem_object *gem)
+{
+	struct m9x_engine_bo *bo = container_of(gem, struct m9x_engine_bo, base);
+	struct m9x_device *mdev = to_m9x(gem->dev);
+
+	mutex_lock(&mdev->engine_vram_lock);
+	if (drm_mm_node_allocated(&bo->node))
+		drm_mm_remove_node(&bo->node);
+	mutex_unlock(&mdev->engine_vram_lock);
+	drm_gem_object_release(gem);
+	kfree(bo);
+}
+
+/* No mmap, no vmap and no export: the CPU has no window onto this memory. */
+static const struct drm_gem_object_funcs m9_engine_bo_funcs = {
+	.free = m9_engine_bo_free,
+};
+
+bool m9x_gem_is_engine_vram(struct drm_gem_object *gem)
+{
+	return gem && gem->funcs == &m9_engine_bo_funcs;
+}
+
+bool m9x_gem_in_vram(struct drm_gem_object *gem)
+{
+	return m9x_gem_is_vram(gem) || m9x_gem_is_engine_vram(gem);
+}
+
+/* An engine-only object is placed once and never moves, so pinning it is
+ * already done and releasing the pin costs nothing. */
+int m9x_gem_vram_pin(struct drm_gem_object *gem)
+{
+	if (m9x_gem_is_engine_vram(gem))
+		return 0;
+	return m9x_vram_pin(drm_gem_vram_of_gem(gem));
+}
+
+void m9x_gem_vram_unpin(struct drm_gem_object *gem)
+{
+	if (!m9x_gem_is_engine_vram(gem))
+		m9x_vram_unpin(drm_gem_vram_of_gem(gem));
+}
+
+s64 m9x_gem_vram_offset(struct drm_gem_object *gem)
+{
+	if (m9x_gem_is_engine_vram(gem))
+		return container_of(gem, struct m9x_engine_bo, base)->node.start;
+	return drm_gem_vram_offset(drm_gem_vram_of_gem(gem));
+}
+
+/* Walk a VRAM range through the slot 1 host aperture, a window at a time. */
+static int m9_engine_vram_walk(struct m9x_device *mdev, u64 start, u64 bytes,
+			       void (*step)(void __iomem *win, u64 vram,
+					    size_t len))
+{
+	u64 done;
+
+	if (!mdev->bar0_window)
+		return -ENODEV;
+	mutex_lock(&mdev->transport.lock);
+	for (done = 0; done < bytes; done += M9_ADDRESS_SURFACE_BYTES) {
+		size_t len = min_t(u64, bytes - done, M9_ADDRESS_SURFACE_BYTES);
+
+		m9x_address_raw_window(mdev, lower_32_bits(start + done));
+		step(mdev->bar0_window, start + done, len);
+		/* Complete the write-combined stores before the window moves. */
+		wmb();
+		m9x_address_surface_release(mdev);
+	}
+	mutex_unlock(&mdev->transport.lock);
+	return 0;
+}
+
+static void m9_engine_vram_zero(void __iomem *win, u64 vram, size_t len)
+{
+	memset_io(win, 0, len);
+}
+
+/* Every dword carries the address it lives at, so a readback that lands on
+ * the wrong page reports which page it actually reached. */
+static void m9_engine_vram_stamp(void __iomem *win, u64 vram, size_t len)
+{
+	size_t i;
+
+	for (i = 0; i < len; i += sizeof(u32))
+		iowrite32(lower_32_bits(vram + i), (u8 __iomem *)win + i);
+}
+
+static u32 m9_engine_vram_probe_errors;
+
+static void m9_engine_vram_check(void __iomem *win, u64 vram, size_t len)
+{
+	size_t i;
+
+	for (i = 0; i < len; i += sizeof(u32)) {
+		u32 got = ioread32((u8 __iomem *)win + i);
+
+		if (got != lower_32_bits(vram + i)) {
+			if (!m9_engine_vram_probe_errors)
+				pr_err("m9x: VRAM %#llx reads %#x, not %#x\n",
+				       vram + i, got, lower_32_bits(vram + i));
+			m9_engine_vram_probe_errors++;
+		}
+	}
+}
+
+/*
+ * Before the allocator hands out memory no aperture maps by default, establish
+ * that it is there: stamp the first and last page of the range and one page
+ * every 64 MiB with their own addresses, then read every stamp back.  Aliased
+ * or absent memory reports the address it really reached.
+ */
+static int m9_engine_vram_probe(struct m9x_device *mdev, u64 start, u64 bytes)
+{
+	u64 last = start + bytes - PAGE_SIZE, at;
+	int ret;
+
+	m9_engine_vram_probe_errors = 0;
+	for (at = start; at <= last; at = min(at + SZ_64M, last)) {
+		ret = m9_engine_vram_walk(mdev, at, PAGE_SIZE,
+					  m9_engine_vram_stamp);
+		if (ret)
+			return ret;
+		if (at == last)
+			break;
+	}
+	for (at = start; at <= last; at = min(at + SZ_64M, last)) {
+		ret = m9_engine_vram_walk(mdev, at, PAGE_SIZE,
+					  m9_engine_vram_check);
+		if (ret)
+			return ret;
+		if (at == last)
+			break;
+	}
+	if (m9_engine_vram_probe_errors) {
+		drm_err(&mdev->drm,
+			"%u of the stamped dwords above %#llx read back wrong\n",
+			m9_engine_vram_probe_errors, start);
+		return -EIO;
+	}
+	return 0;
+}
+
+static void m9_engine_vram_release(struct drm_device *drm, void *arg)
+{
+	struct m9x_device *mdev = to_m9x(drm);
+
+	if (mdev->engine_vram_ready)
+		drm_mm_takedown(&mdev->engine_vram);
+	mdev->engine_vram_ready = false;
+}
+
+int m9x_engine_vram_init(struct m9x_device *mdev)
+{
+	u64 limit = m9x_vram_gpu_limit(mdev);
+	int ret;
+
+	ret = drmm_mutex_init(&mdev->drm, &mdev->engine_vram_lock);
+	if (ret)
+		return ret;
+	if (limit <= mdev->vram_visible)
+		return 0;
+	ret = m9_engine_vram_probe(mdev, mdev->vram_visible,
+				   limit - mdev->vram_visible);
+	if (ret) {
+		drm_warn(&mdev->drm,
+			 "video memory above %#llx is unusable; engine-only allocation disabled\n",
+			 mdev->vram_visible);
+		return 0;
+	}
+	drm_mm_init(&mdev->engine_vram, mdev->vram_visible,
+		    limit - mdev->vram_visible);
+	mdev->engine_vram_ready = true;
+	drm_info(&mdev->drm, "engine-only video memory [%#llx,%#llx)\n",
+		 mdev->vram_visible, limit);
+	return drmm_add_action_or_reset(&mdev->drm, m9_engine_vram_release,
+					NULL);
+}
+
+static struct m9x_engine_bo *m9_engine_bo_create(struct m9x_device *mdev,
+						 size_t size)
+{
+	struct m9x_engine_bo *bo;
+	int ret;
+
+	if (!mdev->engine_vram_ready)
+		return ERR_PTR(-ENOMEM);
+	bo = kzalloc_obj(*bo);
+	if (!bo)
+		return ERR_PTR(-ENOMEM);
+	drm_gem_private_object_init(&mdev->drm, &bo->base, size);
+	bo->base.funcs = &m9_engine_bo_funcs;
+	/* Place from the top of video memory down, so the memory next to the
+	 * CPU-visible window stays free for whatever the window has to grow
+	 * into, and the addresses in use are the highest the engine sees. */
+	mutex_lock(&mdev->engine_vram_lock);
+	ret = drm_mm_insert_node_generic(&mdev->engine_vram, &bo->node, size,
+					 PAGE_SIZE, 0, DRM_MM_INSERT_HIGH);
+	mutex_unlock(&mdev->engine_vram_lock);
+	if (ret)
+		goto err_release;
+	/* Hand no previous tenant's pixels to the next client. */
+	ret = m9_engine_vram_walk(mdev, bo->node.start, size,
+				  m9_engine_vram_zero);
+	if (ret)
+		goto err_release;
+	/* Nothing can read this object back, so say where it went. */
+	drm_info(&mdev->drm, "engine-only object at VRAM [%#llx,%#llx)\n",
+		 bo->node.start, bo->node.start + size);
+	return bo;
+
+err_release:
+	m9_engine_bo_free(&bo->base);
+	return ERR_PTR(ret);
+}
+
 /* Individually allocated DMA32 pages, mapped as one scatter-gather table. */
 static struct m9x_bo *m9_paged_bo_create(struct drm_device *drm, size_t size)
 {
@@ -540,9 +775,13 @@ static int m9_create_bo_ioctl(struct drm_device *drm, void *data,
 		return -ENODEV;
 	if (!args->size ||
 	    args->flags & ~(PARHELIA_M9_BO_COMMAND | PARHELIA_M9_BO_VRAM |
-			    PARHELIA_M9_BO_TILED) ||
+			    PARHELIA_M9_BO_TILED |
+			    PARHELIA_M9_BO_ENGINE_ONLY) ||
 	    ((args->flags & PARHELIA_M9_BO_COMMAND) &&
 	     (args->flags & (PARHELIA_M9_BO_VRAM | PARHELIA_M9_BO_TILED))) ||
+	    ((args->flags & PARHELIA_M9_BO_ENGINE_ONLY) &&
+	     (args->flags & (PARHELIA_M9_BO_VRAM | PARHELIA_M9_BO_TILED)) !=
+	      PARHELIA_M9_BO_VRAM) ||
 	    args->handle ||
 	    args->mmap_offset)
 		return -EINVAL;
@@ -555,7 +794,16 @@ static int m9_create_bo_ioctl(struct drm_device *drm, void *data,
 	mutex_unlock(&mdev->transport.lock);
 	if (ret)
 		return ret;
-	if (args->flags & (PARHELIA_M9_BO_VRAM | PARHELIA_M9_BO_TILED)) {
+	if (args->flags & PARHELIA_M9_BO_ENGINE_ONLY) {
+		struct m9x_engine_bo *engine_bo;
+
+		engine_bo = m9_engine_bo_create(mdev, size);
+		if (IS_ERR(engine_bo))
+			return PTR_ERR(engine_bo);
+		gem = &engine_bo->base;
+		m9_bo_engine_creates++;
+		m9_bo_engine_kib += size >> 10;
+	} else if (args->flags & (PARHELIA_M9_BO_VRAM | PARHELIA_M9_BO_TILED)) {
 		struct m9x_vram_bo *vram_bo;
 
 		if (!m9_vram_free_for(mdev, size))
@@ -640,7 +888,7 @@ static int m9_get_bo_info_ioctl(struct drm_device *drm, void *data,
 	gem = drm_gem_object_lookup(file, args->handle);
 	if (!gem)
 		return -ENOENT;
-	if (m9x_gem_is_vram(gem))
+	if (m9x_gem_in_vram(gem))
 		args->memory_class = PARHELIA_M9_MEMORY_CLASS_VRAM;
 	else if (m9x_gem_is_dma(gem))
 		args->memory_class = PARHELIA_M9_MEMORY_CLASS_DMA32;

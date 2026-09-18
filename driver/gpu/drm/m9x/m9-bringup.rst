@@ -186,6 +186,18 @@ offset ``X`` is addressed as ``X`` and receives an identity leaf.  The vendor's
 private pools stay above the BAR at ``0x10000000 + base``.  Windows
 ``360/364`` survive warm reboot; ``f64..f7c`` are reset.
 
+Two pools of video memory follow from that.  Slot 0's identity window exposes
+the low 224 MiB to the CPU, and that is all the DRM VRAM/TTM manager owns,
+because ``drm_gem_vram_helper`` turns any page it manages into a bus address
+inside BAR0.  The memory above it is served by a plain range allocator for
+objects the engine alone touches, which carry no mmap cookie; they are placed
+from the top of memory down and zeroed through the slot 1 window.  A local
+address ends where the memory ends or where the class-1 system window at
+``0x40000000`` begins, whichever comes first -- BAR0's length is not a bound
+on it.  Measured on the M9128: a dword stamped with its own address reads
+back correctly at every 64 MiB from 224 MiB to the top of the 1 GiB, and the
+engine renders a 212 MiB inter-pass record placed at ``0x32bea000``.
+
 First-triangle status
 ---------------------
 

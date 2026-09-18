@@ -464,7 +464,7 @@ void m9x_transport_release_retired(struct work_struct *work)
 			if (!retired->bos[i])
 				continue;
 			if (retired->pinned && retired->pinned[i])
-				m9x_vram_unpin(drm_gem_vram_of_gem(retired->bos[i]));
+				m9x_gem_vram_unpin(retired->bos[i]);
 			drm_gem_object_put(retired->bos[i]);
 		}
 		kfree(retired->bos);
