@@ -511,7 +511,8 @@ static size_t m9_scanout_frame_bytes(const struct m9_head *head)
 }
 
 static int m9_scanout_publish(struct m9_head *head, struct drm_framebuffer *fb,
-			      u32 window_x, u32 window_y)
+			      u32 window_x, u32 window_y, u32 first_row,
+			      u32 rows)
 {
 	struct drm_gem_object *gem = drm_gem_fb_get_obj(fb, 0);
 	struct drm_gem_vram_object *src = drm_gem_vram_of_gem(gem);
@@ -527,6 +528,11 @@ static int m9_scanout_publish(struct m9_head *head, struct drm_framebuffer *fb,
 	int ret;
 
 	frame = m9_scanout_frame_bytes(head);
+	if (first_row >= head->scanout_height)
+		return 0;
+	rows = min(rows, head->scanout_height - first_row);
+	if (!rows)
+		return 0;
 	if (!head->scanout || !mdev->bar0_window || !head->scanout_bounce ||
 	    !frame || frame > head->scanout_bytes ||
 	    head->scanout->bo.base.size < frame ||
@@ -551,7 +557,7 @@ static int m9_scanout_publish(struct m9_head *head, struct drm_framebuffer *fb,
 			return ret;
 		ret = drm_gem_vram_vmap(src, &map);
 		if (!ret) {
-			for (row = 0; row < head->scanout_height; row++)
+			for (row = first_row; row < first_row + rows; row++)
 				iosys_map_memcpy_from(head->scanout_bounce +
 					(size_t)row * head->scanout_pitch, &map,
 					(size_t)(window_y + row) * fb->pitches[0] +
@@ -570,7 +576,7 @@ static int m9_scanout_publish(struct m9_head *head, struct drm_framebuffer *fb,
 		m9x_address_surface_window(mdev, lower_32_bits(src_offset),
 					   M9_SCANOUT_FORMAT(span),
 					   M9_SCANOUT_EXTENT(fb->height));
-		for (row = 0; row < head->scanout_height; row++)
+		for (row = first_row; row < first_row + rows; row++)
 			memcpy_fromio(head->scanout_bounce +
 				      (size_t)row * head->scanout_pitch,
 				      (const u8 __iomem *)mdev->bar0_window +
@@ -581,7 +587,12 @@ static int m9_scanout_publish(struct m9_head *head, struct drm_framebuffer *fb,
 	m9x_address_surface_window(mdev, lower_32_bits(offset),
 				   M9_SCANOUT_FORMAT(head->scanout_pitch / 4),
 				   M9_SCANOUT_EXTENT(head->scanout_height));
-	memcpy_toio(mdev->bar0_window, head->scanout_bounce, frame);
+	/* The window presents the surface de-tiled, so a row range is a
+	 * contiguous span of it. */
+	memcpy_toio((u8 __iomem *)mdev->bar0_window +
+		    (size_t)first_row * head->scanout_pitch,
+		    head->scanout_bounce + (size_t)first_row * head->scanout_pitch,
+		    (size_t)rows * head->scanout_pitch);
 	/* Complete WC stores before the window is released. */
 	wmb();
 	m9x_address_surface_release(mdev);
@@ -660,7 +671,8 @@ static void m9_program_scanout(struct drm_simple_display_pipe *pipe,
 	/* A failed publish leaves the previous frame on screen; the flip still
 	 * retires on the vertical blank, so silence here reads as a working
 	 * flip that never changes the picture. */
-	ret = m9_scanout_publish(head, fb, window_x, window_y);
+	ret = m9_scanout_publish(head, fb, window_x, window_y, 0,
+				 head->scanout_height);
 	if (!ret && m9_scanout_address(head, &address))
 		ret = -ENXIO;
 	if (ret) {
@@ -1118,6 +1130,40 @@ static void m9_pipe_update_scanout(struct drm_simple_display_pipe *pipe,
 	m9_program_scanout(pipe, pipe->plane.state);
 }
 
+/*
+ * The rows of this head's window the damage touches.  A publish rewrites the
+ * whole surface row it copies, so the horizontal extent of a clip does not
+ * narrow the work; the vertical one does, which is what keeps a console line
+ * or a small window update off the cost of a whole frame.
+ */
+static void m9_dirty_rows(const struct m9_head *head,
+			  const struct drm_clip_rect *clips,
+			  unsigned int num_clips, u32 window_y,
+			  u32 *first_row, u32 *rows)
+{
+	u32 top = U32_MAX, bottom = 0;
+	unsigned int i;
+
+	*first_row = 0;
+	*rows = head->scanout_height;
+	if (!clips || !num_clips)
+		return;
+	for (i = 0; i < num_clips; i++) {
+		if (clips[i].y1 >= clips[i].y2)
+			continue;
+		top = min_t(u32, top, clips[i].y1);
+		bottom = max_t(u32, bottom, clips[i].y2);
+	}
+	if (top >= bottom || bottom <= window_y)
+		return;
+	top = top > window_y ? top - window_y : 0;
+	bottom -= window_y;
+	if (top >= head->scanout_height)
+		return;
+	*first_row = top;
+	*rows = min(bottom, head->scanout_height) - top;
+}
+
 static int m9_fb_dirty(struct drm_framebuffer *fb, struct drm_file *file,
 		       unsigned int flags, unsigned int color,
 		       struct drm_clip_rect *clips, unsigned int num_clips)
@@ -1128,8 +1174,10 @@ static int m9_fb_dirty(struct drm_framebuffer *fb, struct drm_file *file,
 
 	for (i = 0; i < mdev->heads; i++) {
 		struct m9_head *head = &mdev->head[i];
+		u32 window_y, first_row, rows;
 
 		drm_modeset_lock(&head->pipe.plane.mutex, NULL);
+		window_y = m9_window_y(head->pipe.plane.state);
 		/* Nothing to publish while the framebuffer is scanned out in
 		 * place. */
 		if (head->pipe.plane.state &&
@@ -1138,10 +1186,13 @@ static int m9_fb_dirty(struct drm_framebuffer *fb, struct drm_file *file,
 		    !(m9_kms_direct_scanout &&
 		      m9x_gem_vram_tiled(drm_gem_fb_get_obj(fb, 0)) &&
 		      m9_tiled_window_addressable(m9_window_x(head->pipe.plane.state),
-						  m9_window_y(head->pipe.plane.state))))
+						  window_y))) {
+			m9_dirty_rows(head, clips, num_clips, window_y,
+				      &first_row, &rows);
 			ret = m9_scanout_publish(head, fb,
 						 m9_window_x(head->pipe.plane.state),
-						 m9_window_y(head->pipe.plane.state));
+						 window_y, first_row, rows);
+		}
 		drm_modeset_unlock(&head->pipe.plane.mutex);
 	}
 	return ret;
