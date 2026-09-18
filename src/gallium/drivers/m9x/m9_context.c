@@ -271,6 +271,12 @@ static bool m9_split_preprocess;
 static bool m9_split_submit;
 /* M9X_SPLIT_PASSES=N emits only the first N passes of a split shader. */
 static unsigned m9_split_passes;
+/* Raster draws one split job restates.  Two of them stop the engine
+ * (MEASURED, docs/parhelia-m9-fragment-pass-hardware.md section 3c), and
+ * one draw also bounds the inter-pass record: its fragment counter then
+ * covers a single draw rather than a whole job.  M9X_SPLIT_DRAWS raises
+ * the limit so it can be re-measured. */
+static unsigned m9_split_draws;
 /* M9X_RECORD_DUMP names a file the inter-pass record is written to after
  * every split job, so the slots the engine touched can be read back and
  * the record's granularity measured rather than assumed. */
@@ -1357,6 +1363,7 @@ m9_job_reserve(struct m9_context *ctx, const struct m9_job_key *key,
       bool stream_full = dwords > M9_MAX_COMMAND_DWORDS ||
                          relocs > M9_MAX_RELOCS ||
                          (passes > 1 && units_differ) ||
+                         (passes > 1 && draws >= m9_split_draws) ||
                          (m9_job_draws && draws >= m9_job_draws);
 
       if (state || uniforms || vertices_full || stream_full) {
@@ -4367,6 +4374,7 @@ m9_context_create(struct pipe_screen *pscreen, void *priv, unsigned flags)
    m9_split_preprocess = debug_get_bool_option("M9X_SPLIT_PREPROCESS", false);
    m9_split_submit = debug_get_bool_option("M9X_SPLIT_SUBMIT", true);
    m9_split_passes = debug_get_num_option("M9X_SPLIT_PASSES", 0);
+   m9_split_draws = debug_get_num_option("M9X_SPLIT_DRAWS", 1);
    m9_record_dump = debug_get_option("M9X_RECORD_DUMP", NULL);
    m9_record_89 = debug_get_num_option("M9X_RECORD_89", 0);
    m9_split_coverage = debug_get_bool_option("M9X_SPLIT_COVERAGE", true);
