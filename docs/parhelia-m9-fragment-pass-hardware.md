@@ -309,10 +309,16 @@ driver refuses is refused for geometry -- `refract` hands over 156 records a
 draw and `terrain` 576, both meshes over part of their target
 (`M9X_SPLIT_TRACE`) -- or for the fragment backend's own limits.  Carrying the
 destination's depth box into the scratch surface would therefore restore
-nothing: `refract`'s missing draw is its bunny under a four-pass shader and
-`terrain`'s its mesh under seven, and no target of any size can be covered by
-either.  What would close them is a fragment backend that compiles those
-shaders into **one** pass, where the coverage requirement does not apply.
+nothing.  **`refract` was then closed by neither route**: its extent test was
+computing the box wrongly, multiplying by w where a record requires a divide,
+so the bunny's extent landed outside the target and the draw was refused for
+covering none of it.  With the divide it is conformant.
+
+`terrain` remains, and for it the statement holds: its mesh under a seven-pass
+shader can cover no target of any size, and what would close it is a fragment
+backend that compiles that shader into **one** pass, where the coverage
+requirement does not apply.  Padding does not rescue it - MEASURED, it stalls
+under `M9X_SPLIT_PAD=1` regardless.
 
 What the path refuses rather than submitting, each with a reason of its own
 (`m9_split_defer`): a draw whose geometry does not fill the box it spans, one

@@ -35,7 +35,7 @@ Four are below 60, each for a different reason:
 | `effect2d` 15-tap | 31 | inter-pass record bandwidth - see `parhelia-m9-record-bandwidth.md` |
 | `desktop` blur | 38 | GPU execution: 26.77 ms a frame, submit 23.13 of it, ioctl 22.84, over 28 jobs and 24 draws with none refused or skipped.  At 0.82 ms a job this is work, not the per-job overhead that dominates `refract` at 0.23 |
 | `terrain` | 21 | INVALID - draws refused: a multi-pass draw over **mesh** geometry, 576 records, which fills no box it could be given |
-| `refract` | 40 alone, SETUP-FAILED inside the full run | INVALID - the same geometry class, 156 records a draw, pre-existing rather than caused by the scratch path |
+| ~~`refract`~~ | 38-40 | **conformant** - it was never the geometry class.  A record carries x and y multiplied by w with w in slot 3, so recovering a screen position **divides**; the extent test multiplied, which agrees only where w is 1 - every fixture it had been written against.  The bunny's computed extent landed at `6694,1583..10158,5042` on a 1920x1200 target, outside it, so the draw was refused for covering none of it.  With the divide, skipped draws go 1 to 0 a frame and CPU varyings 0.4 to 101.6 KiB.  `conv3subw` is the fixture that fails without it.  It still reports SETUP-FAILED inside the full run while passing alone, which is a separate unreleased-resource question |
 
 **The depth attachment is not what refuses them, and carrying the
 destination's depth box into the scratch surface would restore nothing**
