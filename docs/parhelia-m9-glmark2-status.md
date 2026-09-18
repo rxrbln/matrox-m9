@@ -123,13 +123,85 @@ carry a second, distinct fault in the split path **at scene scale** that the
 fixture family does not reach: every `splitpair` and `deskblur` fixture passes.
 Raising the per-shape cache budget so nothing is evicted does not change it.
 
-`desktop` faults on the **first frame** of `glmark2 -b desktop --size
-1920x1200`.  The untested scene-scale properties are a split draw into a target
-far larger than 320x240, and the number of simultaneously live shapes - neither
-of which the fixtures reach.
-
 Because `terrain` needs `M9X_SPLIT_PRESSURE` and that path hits this fault, the
 register-pressure policy stays off by default and `terrain.frag` stays refused.
+
+### What the scene asks for, measured rather than assumed
+
+`M9X_DEBUG_SPLIT` over `glmark2 -b desktop --size 1920x1200` names every split
+draw the scene issues (CAPTURED, 2026-09-18):
+
+```text
+m9x record: 420x420   stride 12 ->   8 MiB, new object
+m9x record: 1920x1200 stride 12 -> 106 MiB, new object
+m9x record: 420x420   stride 12 wants   8 MiB, kept 106 MiB
+m9x record: 1920x1200 stride 12 wants 106 MiB, kept 106 MiB
+... twenty-two more, strictly alternating ...
+m9x: two-pass job failed (Input/output error); context lost
+```
+
+So the scene is **twenty-six split draws alternating two target shapes**,
+420x420 and 1920x1200, with an eleven-tap separable blur the backend cuts into
+**four raster passes** - the stride the driver logs is `4 * (passes - 1)`.  It
+is not the first split draw that stops the engine, and it is not the first
+frame: twenty-six of them render first.
+
+Two things this settles without another run.  The record is **not** refused any
+more - 106 MiB is allocated and kept, so the thirteen refusals of the older log
+are gone.  And the scene keeps exactly **two** live target shapes, so the
+number of simultaneously live shapes is not a property of `desktop` at all.
+
+### The two properties named as untested are both retired
+
+Against a clean checkout of this tree built and deployed under its own prefix,
+`GL_RENDERER` asserted `Matrox M9` on every run (MEASURED, 2026-09-18, twenty
+draws a case):
+
+| case | what it adds | result |
+| --- | --- | --- |
+| `splitpair:320x240:320x240:20:5` | two passes, one shape | renders |
+| `splitpair:320x240:320x240:20:7` | two passes | renders |
+| `splitpair:320x240:320x240:20:9` | three passes, stride 8 | renders |
+| `splitpair:320x240:320x240:20:11` | **four passes**, stride 12 | renders |
+| `splitpair:1920x1200:1920x1200:20:1` | **1920x1200**, no split | renders |
+| `splitpair:1920x1200:1920x1200:20:5` | 1920x1200, two passes, 35 MiB record | renders |
+| `splitpair:1920x1200:1920x1200:20:11` | 1920x1200, four passes, 106 MiB record | renders |
+
+A split draw into a target far larger than 320x240 renders, the scene's own
+pass count renders, and the two together render.  Each on its own is therefore
+**not** what stops the scene.
+
+The `be` object is not the size limit either.  Its mask extent is linear in the
+target's area - 306 dwords at 84x84, 334 at 88x88, 3149 at 320x240, which fits
+`area / 24.495 + 20` to within three dwords (DERIVED from the dumps).  That is
+367 KiB at 1920x1200 against a 1 MiB `M9_BE_BYTES`, and the object would only
+overrun above about 6.4 Mpx - a real latent limit, but not this one.
+
+### What is left, and the fixture that reaches it
+
+What the scene has that no case above has is the **combination**: alternating
+shapes *and* four passes, at the scene's own sizes, with four colour resources
+sharing the window shape and a plain fill between the split draws.  One further
+property comes with the alternation - the scene's first split draw is the
+*small* one, so the shared inter-pass record is allocated at 8 MiB and then
+**replaced** at 106 MiB under jobs already submitted.
+
+`tools/m9-mesa-glsl.c` now reaches every one of these, and the ladder to walk
+in one boot is, in this order so that each control is reached before the step
+expected to stall:
+
+```text
+splitpair:160x120:320x240:20:5     alternating shapes, two passes
+splitpair:160x120:320x240:20:11    alternating shapes, four passes
+splitpair:1920x1200:420x420:20:11  the scene's shapes, record allocated once
+splitpair:420x420:1920x1200:20:11  the scene's shapes, record replaced
+splitdesk:2:1:11:320x240           a plain fill between the split draws
+splitdesk:2:4:11:320x240           four colour resources on one shape
+splitdesk:3:4:11:1920x1200         the scene
+```
+
+`splitdesk:frames:windows:taps:WxH` is the desktop frame at any scale; at
+`1920x1200` its windows are 420x420, the size the scene itself uses.
 
 ## Readings this retires
 
@@ -144,5 +216,12 @@ register-pressure policy stays off by default and `terrain.frag` stays refused.
 * Fixing the `be` per-shape stall was expected to close `desktop` and
   `terrain`.  It did not - both still stop the engine, which is how the second
   scene-scale fault was found.
+* `desktop` was recorded as faulting on the **first frame**.  It does not: the
+  capture above shows twenty-six split draws rendering first.
+* The number of simultaneously live render-target shapes was recorded as an
+  untested scene-scale property.  It is not a scene property: `desktop` keeps
+  two shapes, which `splitpair` already covers.
+* A split draw into a target far larger than 320x240 was the other untested
+  property.  It renders, at two and at four passes.
 * `jellyfish` and `ideas` are 117 and 108 fps here; their 1 fps on the 481 MB
   host was host memory, not a driver defect.
