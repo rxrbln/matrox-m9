@@ -22,6 +22,43 @@ Every run asserts `GL_RENDERER` is `Matrox M9`: a Mesa build configured without
 back to llvmpipe silently, and every fixture still passes against the CPU
 reference.
 
+## The suite is thirty-three benchmarks, not sixteen scenes
+
+MEASURED 2026-09-18.  Every sweep before this one ran the sixteen scene
+*names*; glmark2's default run is **thirty-three parameterised
+benchmarks**, and variants reach paths a bare scene never does.  A driver
+that passes the sixteen can still fail the run, so "12 of 15 above 60"
+overstated where this driver stands.
+
+First partial baseline at 1920x1200, one process per benchmark:
+
+| benchmark | fps | |
+|---|---:|---|
+| `build` x2 | 267, 271 | ok |
+| `texture` nearest / linear / mipmap | 285, 284, 284 | ok, but see below |
+| `shading` gouraud / blinn-phong-inf / phong / cel | 188, 120, 75, 70 | ok |
+| `bump` high-poly / normals / height | 88, 180, 157 | ok |
+| `effect2d` 3x3 | 79 | ok |
+| `effect2d` 15-tap | 31 | BELOW |
+| `pulsar` | 200 | ok |
+| `desktop` blur | - | INVALID, stalls |
+
+Three findings from it:
+
+* **`desktop`'s stall kills the seventeen benchmarks after it**, so half the
+  suite cannot be measured at all until the partial-coverage fix lands.  Its
+  default string is `desktop:windows=4:effect=blur:blur-radius=5:passes=1:separable=true`,
+  which is what "all glmark" has to mean.
+* **`bump:bump-render=normals` runs at 180 fps** where the ledger recorded it
+  as refused for an indirectly indexed uniform.  It was fixed at some point
+  and nobody noticed, because only the bare `bump` scene was ever swept.
+  There may be more stale entries of that kind.
+* **`texture:texture-filter=mipmap` reports 284 fps and is almost certainly
+  wrong**: `m9_blit_convert` resampled a filtered blit NEAREST, so every
+  CPU-built level is a decimation rather than a reduction.  A fast, incorrect
+  result in the "ok" column - which is why a frame-rate sweep cannot answer a
+  conformance question on its own.
+
 ## The scenes that were blocked
 
 All but one now render.  They were blocked on one feature - the fragment
