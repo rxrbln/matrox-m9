@@ -1228,6 +1228,45 @@ m9_job_state_drop(struct m9_context *ctx, const char *warn, const char *why)
 }
 
 /*
+ * Whether the geometry fills the box it spans.  A scratch surface is only a
+ * target the job covers whole if the geometry is a screen-aligned rectangle:
+ * every record sits on a corner of its own extent and all four corners are
+ * drawn, which covers a strip, a fan, a quad and a rectangle cut into two
+ * triangles alike.  A mesh spans a box it does not fill -- refract hands over
+ * 156 records and terrain 576 (MEASURED, M9X_SPLIT_TRACE) -- and rendering one
+ * on a scratch surface of its extent would leave that surface partly uncovered
+ * in exactly the way that stops the engine.
+ */
+static bool
+m9_split_fills_box(const struct m9_context *ctx, unsigned records,
+                   float x0, float y0, float x1, float y1)
+{
+   const struct m9_draw_record *draw = ctx->draws.data;
+   const float *v = ctx->records.data;
+   unsigned corners = 0;
+
+   if (util_dynarray_num_elements(&ctx->draws, struct m9_draw_record) != 1 ||
+       (draw->topology != M9_TOPOLOGY_TRIANGLE_STRIP &&
+        draw->topology != M9_TOPOLOGY_TRIANGLE_FAN &&
+        draw->topology != M9_TOPOLOGY_TRIANGLES &&
+        draw->topology != M9_TOPOLOGY_QUADS &&
+        draw->topology != M9_TOPOLOGY_QUAD_STRIP) ||
+       records < 4 || records > 6 || x1 <= x0 || y1 <= y0)
+      return false;
+   for (unsigned k = 0; k < records; k++) {
+      const float *p = v + (uint64_t)k * ctx->record_floats;
+      float x = p[0] * p[3], y = p[1] * p[3];
+
+      /* The extent is the minimum and maximum of these very values, so a
+       * corner compares exactly and anything inside the box does not. */
+      if ((x != x0 && x != x1) || (y != y0 && y != y1))
+         return false;
+      corners |= 1u << ((x == x1) | (y == y1) << 1);
+   }
+   return corners == 0xf;
+}
+
+/*
  * Hold a multi-pass job whose geometry covers part of its render target
  * aside, to be rendered into a scratch surface of the pixels it does cover
  * and copied into place.  The box is the pixel centres its screen extent
@@ -1250,6 +1289,13 @@ m9_split_defer(struct m9_context *ctx, const struct m9_job_key *key,
    if (!m9_split_scratch)
       return "a multi-pass draw over part of its target, "
              "with the scratch surface turned off";
+   /* The geometry is asked about first, because a draw that does not fill
+    * the box it spans has no scratch surface it could cover whatever else
+    * it carries: the reason a draw is refused then names the one property
+    * that a scratch surface of its own would answer. */
+   if (!m9_split_fills_box(ctx, records, x0, y0, x1, y1))
+      return "a multi-pass draw over part of its target "
+             "whose geometry does not fill the box it spans";
    if (key->depth_ef)
       return "a multi-pass draw over part of its target "
              "that tests or writes depth";
@@ -5197,7 +5243,10 @@ m9_context_destroy(struct pipe_context *pctx)
    struct m9_context *ctx = m9_context(pctx);
    struct m9_screen *screen = ctx->screen;
 
-   if (ctx->debug)
+   /* M9X_SKIP_REPORT=1 names what a context dropped without the whole job
+    * trace M9X_DEBUG carries, which is the only way to read the reasons out
+    * of a benchmark run. */
+   if (ctx->debug || debug_get_bool_option("M9X_SKIP_REPORT", false))
       m9_skip_report(ctx);
    m9_vs_texture_fini(pctx);
    if (ctx->blitter) {
