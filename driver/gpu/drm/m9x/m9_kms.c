@@ -77,7 +77,7 @@ MODULE_PARM_DESC(m9_kms_modeset,
 static char *m9_kms_mode;
 module_param(m9_kms_mode, charp, 0400);
 MODULE_PARM_DESC(m9_kms_mode,
-	"Initial mode per connector as <connector>:<mode>, several separated by whitespace or ';' (e.g. \"DP-1:1280x720\"); the video= command line wins over this");
+	"Initial mode as <connector>:<mode>, or with no connector named for whichever output a display is on; several separated by whitespace or ';' (e.g. \"1280x720\" or \"DP-1:1280x720\").  The video= command line wins over this");
 
 /* All four sources are measured (m9_reg.h).  The parameter stays so a board
  * that numbers them differently can be corrected without a rebuild; an entry
@@ -373,17 +373,36 @@ static int m9_connector_add_warm_mode(struct drm_connector *connector)
  * detected as disconnected - so an entry naming a dark output is ignored
  * instead of forcing it on.  connector->force is deliberately left alone for
  * the same reason.
+ *
+ * An entry with no "<connector>:" prefix applies to every connector that has
+ * no entry of its own, which is how a console follows whichever output a
+ * display is on: only a connected connector reaches this, so the bare mode
+ * lands on the first one the probe helper finds, whatever it is called.  A
+ * named entry still wins, and the connector it names is matched first however
+ * the entries are ordered.
  */
 static void m9_connector_mode_param(struct drm_connector *connector)
 {
-	const char *spec = m9_kms_mode;
+	const char *spec, *bare = NULL;
 	size_t name_len = strlen(connector->name);
+	size_t bare_len = 0;
+	char *entry;
 
-	if (connector->cmdline_mode.specified || !spec)
+	if (connector->cmdline_mode.specified || !m9_kms_mode)
 		return;
+	for (spec = m9_kms_mode; *spec; ) {
+		size_t len = strcspn(spec, "; \t\n");
+
+		if (len && !memchr(spec, ':', len) && !bare) {
+			bare = spec;
+			bare_len = len;
+		}
+		spec += len;
+		spec += strspn(spec, "; \t\n");
+	}
+	spec = m9_kms_mode;
 	while (*spec) {
 		size_t len = strcspn(spec, "; \t\n");
-		char *entry;
 
 		if (len <= name_len + 1 || spec[name_len] != ':' ||
 		    strncmp(spec, connector->name, name_len)) {
@@ -401,6 +420,15 @@ static void m9_connector_mode_param(struct drm_connector *connector)
 		kfree(entry);
 		return;
 	}
+	if (!bare)
+		return;
+	entry = kstrndup(bare, bare_len, GFP_KERNEL);
+	if (entry && !drm_mode_parse_command_line_for_connector(entry,
+					connector, &connector->cmdline_mode))
+		drm_warn(connector->dev,
+			 "[CONNECTOR:%d:%s] cannot parse m9_kms_mode \"%s\"\n",
+			 connector->base.id, connector->name, entry);
+	kfree(entry);
 }
 
 static int m9_connector_get_modes(struct drm_connector *connector)

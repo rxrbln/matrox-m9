@@ -543,7 +543,15 @@ static int m9_tx_reset(struct m9x_device *mdev, unsigned int conn)
 	m9x_write(mdev, M9_MISCIO, value | oe | data);
 	m9x_read(mdev, M9_MISCIO);
 	usleep_range(M9_MISCIO_RESET_US, M9_MISCIO_RESET_US + 1000);
-	m9x_write(mdev, M9_MISCIO, value);
+	/*
+	 * Leave the line driven high rather than restoring the word.  MEASURED:
+	 * the board drives connector 0's line (0x1c4c = 0x0001007b, output
+	 * enable set and the bit high) and leaves connector 1's undriven and
+	 * low, so that transmitter sits in reset and answers nothing on its
+	 * bus; restoring the original word put it straight back there after
+	 * every pulse.
+	 */
+	m9x_write(mdev, M9_MISCIO, value | oe | data);
 	m9x_read(mdev, M9_MISCIO);
 	m9_hmc_miscio_release(mdev);
 	return 0;
@@ -768,8 +776,27 @@ int m9x_ddc_init(struct m9x_device *mdev)
 			return ret;
 		mdev->ddc_count++;
 	}
-	for (pair = 0; pair < mdev->ddc_count; pair++)
+	/*
+	 * A connector POST never drove can have its transmitter still held in
+	 * reset, and one that does not answer I2C has no address for
+	 * m9x_tx_enable to talk to, so the connector is unusable however well
+	 * its controller is programmed.  Pulse the reset line the board
+	 * declares for it and probe once more.  Only a bus that answered
+	 * nothing is touched, so the connector POST trained is left alone.
+	 */
+	for (pair = 0; pair < mdev->ddc_count; pair++) {
 		m9_tx_probe(&mdev->ddc[pair]);
+		if (mdev->ddc[pair].tx_addr)
+			continue;
+		ret = m9_tx_reset(mdev, pair);
+		if (ret) {
+			drm_dbg_kms(&mdev->drm,
+				    "DDC %u: no transmitter reset line (%d)\n",
+				    mdev->ddc[pair].selector, ret);
+			continue;
+		}
+		m9_tx_probe(&mdev->ddc[pair]);
+	}
 	drm_info(&mdev->drm, "%u DDC buses\n", mdev->ddc_count);
 	return 0;
 }
