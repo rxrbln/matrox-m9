@@ -415,6 +415,29 @@ the first pass only, 0 no depth at all in a split job, 2 the arrangement that
 stops the engine, which is how the new fixtures were confirmed to fail before
 the change.
 
+### 6g. What is left: three passes, and `refract`
+
+With depth evaluated once, `shadow` renders at **142 fps** and `effect2d`'s
+3x3 kernel at **84 fps**, both at 1920x1200 with no stream timeout
+(MEASURED).  `refract` and `terrain` still stop the engine.
+
+Their shaders are longer than two passes: `refract` compiles to **four**
+raster passes (109, 151, 100 and 127 slots, textures 0/2/1/1), and no fixture
+had reached past two.  `conv7` and `conv10`, seven and ten taps, are three-
+and four-pass splits.  They do **not** stall -- and they **render wrong**:
+about half the pixels differ, the blue channel far out, with and without a
+depth attachment (MEASURED).  The same binaries render them exactly under
+llvmpipe (0 of 76800), so the reference is right and the backend's hand-over
+between more than two passes is not.  Both are dispatched and deliberately
+unlisted until that is fixed.
+
+So a split past two passes has a correctness fault of its own, and it is not
+what stops `refract`: something else in that scene does, and the remaining
+untested property is the render-target switch it makes between its depth
+pass and its refraction pass.  `terrain` additionally refuses one shader,
+"out of temporaries", so some of its draws are skipped whatever else
+happens.
+
 ## 5. Reproduction
 
 ```sh
