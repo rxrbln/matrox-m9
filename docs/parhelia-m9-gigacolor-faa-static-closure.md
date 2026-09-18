@@ -25,6 +25,10 @@ base `0x10000000`; its file offsets equal RVAs for the cited `.rdata` strings.
 joined facts, and `[OPEN]` an implementation gate which static analysis has not
 closed.
 
+The descriptor field, the storage class, the render class at index `89`, the
+write-mask behaviour and the complete display-controller answer are in
+`parhelia-m9-gigacolor-10bit.md`, which extends this note.
+
 ## Results which correct earlier assumptions
 
 Three tempting interpretations are now resolved:

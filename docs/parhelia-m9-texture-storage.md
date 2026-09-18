@@ -134,6 +134,13 @@ the alpha-less RGB8, RGB5, L8 and D24 codes.  Quantization is
 | DEPTH24 | `fa` | 4 | LE `round(d * 0xffffff) << 8` |
 | DEPTH32 | `f8` | 4 | LE `round(d * 0xffffffff)` |
 
+Compressed (S3TC) and native 10-bit formats are not in this table.  Both are
+decoded in `parhelia-m9-s3tc-compressed-textures.md` and
+`parhelia-m9-gigacolor-10bit.md`: the 10-bit codes `0x68`/`0x6a` are ordinary
+32-bit-per-texel surfaces with this same placement, while the DXT codes
+`0x10`/`0x15`/`0x17` are 4- and 8-bit-per-texel storage classes of their own.
+The format byte is `code << 1 | bit24` in every case.
+
 Pixel-type uploads (`UNSIGNED_SHORT`, `FLOAT`, `4444`, `5551`, `565`, `8888`,
 `8888_REV`) are converted into the RGBA8 layout.  16-bit elements use rows of
 16 elements (`0x20` bytes), and 8-bit elements rows of `0x10` bytes.  This

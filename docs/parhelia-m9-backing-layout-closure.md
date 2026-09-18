@@ -170,9 +170,19 @@ families without claiming a clean source form for those local coarse terms.
 
 These functions return physical byte addresses for logical `(x,y,z)`. For DXT
 the copy routine first rounds the rectangle to 4x4 blocks and the DXT
-calculator operates on block coordinates with 8-byte DXT1 or 16-byte DXT2--5
-payloads. Final bank-bit rotation depends on both controller modes, so a new
-driver must read register `0x0f04` after memory-controller initialization.
+calculator addresses one 8-byte DXT1 or 16-byte DXT2--5 payload per block.
+**Correction (2026-09-18): the coordinates it takes are texels, not block
+indices.** DXT1 uses `(x & 0xC) << 1` and `(y & 0xC) << 3`, so `x[1:0]` and
+`y[1:0]` are discarded and `x[3:2]`/`y[3:2]` become the low block indices;
+`x = 0..3` all return one address and `x = 4` advances by the payload size.
+Under a block-index reading `bx[1:0]` would be dropped and four distinct
+blocks would alias. Pass the texel coordinate of the block's top-left corner.
+The in-block extent is 16x16 texels for DXT1 and 16x8 for DXT2--5, both 128
+bytes, which is exactly the width/height granularity the Windows layout
+constructor uses for storage classes 7 and 6; see
+`parhelia-m9-s3tc-compressed-textures.md`. Final bank-bit rotation depends on
+both controller modes, so a new driver must read register `0x0f04` after
+memory-controller initialization.
 
 ## Mip, face, and slice placement
 

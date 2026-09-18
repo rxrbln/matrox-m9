@@ -94,9 +94,46 @@ Recorded so they are not attempted again.
 ## Needs capture before it can be implemented at all
 
 Listed so they are not mistaken for ready work: multisample and FAA allocation,
-pattern, mask and resolve; native 10-bit GigaColor render and sample; S3TC;
-anisotropic filtering; PBO; and sRGB **sampling** - the write
-path is exact but the sampler decode was never joined.
+pattern, mask and resolve; anisotropic filtering; PBO; and sRGB **sampling** -
+the write path is exact but the sampler decode was never joined.
+
+**S3TC moved out of this list.**  The storage rules are decoded and are
+executable assertions in `tools/m9-texture-resource-evidence.py`
+(`verify_static_compressed_storage`).  DXT1 is hardware code `0x10` at 4 bits
+per texel in storage class 7, DXT2/DXT3 are code `0x15` and DXT4/DXT5 code
+`0x17`, both 8 bits per texel in storage class 6; DXT2 and DXT3 are the same
+hardware format, and so are DXT4 and DXT5.  Descriptor dimensions are texels
+rounded up to whole 4x4 blocks, allocation is
+`padded_w * padded_h * depth * bits_per_texel / 8`, the block is the
+addressing unit of the class-3 DXT calculators (which take *texel*
+coordinates), and blocks upload verbatim - the hardware never decompresses.
+`docs/parhelia-m9-s3tc-compressed-textures.md` is the implementation note.
+What is still capture-gated is narrower: whether `79[15:0]` holds the logical
+or the padded width for a compressed NPOT texture, and BC1 punch-through
+behaviour, since DXT1 RGB and RGBA share one code.
+
+**10-bit GigaColor render and sample moved out of this list.**  `A2B10G10R10`
+is hardware code `0x68` and `A2R10G10B10` code `0x6a`, both 32 bits per texel
+in storage class 2 - allocated and tiled exactly like `B8G8R8A8`, so no new
+layout code is needed.  Both take render class 0 at index `89` bits `3*s`, the
+same class an 8-bit target takes; the per-target 16-bit write mask in `ab`/`ac`
+must be `0xffff`, because that mask is a byte-lane mask and the vendor routes
+10-bit channel masking through the fragment output program instead.
+`docs/parhelia-m9-gigacolor-10bit.md` is the implementation note, and the
+exposure gate is now three hardware results - clear-and-read-back, sample, and
+blend rounding - rather than a missing decode.
+
+**10-bit scanout stays out of scope, with evidence.**  The M9 display
+controller does know the format: `MxMM.sys 0x37b31` lists `0x6a` and `0x68` as
+scanout surface codes, `0x368fe` packs the code into bits `[31:25]` of the
+display surface descriptor, and `0x3dfd0` builds a ten-bit-per-channel gamma
+ramp for code `0x6a`.  But both producers of the mode-record format mask in
+`MxMD.dll` (`0x30352` and `0x105f0`, tables `0x30424` and `0x10704`) map a
+Windows bit depth to `{1,8,0x10,0x20,0x40}` and reject everything else, so the
+10-bit mode arm at `0x302d6` is unreachable, and the `GigaColorRender` /
+`GigaColorFullScreen` registry switches that selected it on Parhelia were
+deleted from this driver.  Do not add a depth-30 visual; render 10-bit and
+scan out 8-bit, which is what the vendor driver itself does.
 
 **Float textures moved out of this list (partly).**  The vendor binds format
 code `0x34` (`A32B32G32R32F`) at texture index `78/79` in
