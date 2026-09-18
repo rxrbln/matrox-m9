@@ -19,7 +19,7 @@ was confirmed against a live vendor GL context.
 | **Separate stencil** | exact face controls and live separate-op packet.  Note the vendor's own API rejects valid LESS/GREATER enums - implement correct core behaviour, do not copy the bug | partial |
 | **Fog coordinates, blend equations** | modes and destination-sensitive results captured; static mapping covers operations 1..5 | partial |
 | **sRGB write** | RT0 `SRGBWRITEENABLE` emits an exact 25-slot shader suffix; clear has the exact CPU encode curve | the backend implements it behind `m9_fs_blend.srgb`, but `m9_format.c` advertises no sRGB colour format, so the state tracker never binds one and the path is unreachable.  Advertising a format is what remains |
-| **Second and further vertex varyings** | output pair `(0x11+4j, 0x13+4j)` feeds the target at `0xb0+2j`, CAPTURED 310/310 passes; target 3 at `b6` is bound by nobody; count declared in `ef` bits 19/21/23 | one varying (`M9_VS_MAX_VARYINGS 1`) |
+| **Second and further vertex varyings** | output pair `(0x11+4j, 0x13+4j)` feeds the target at `0xb0+2j`, CAPTURED 310/310 passes; count declared in `ef` bits 19/21/23; stride and per-target placement are independent descriptor fields (bits 7:0 and 15:8, in dwords), so several preprocessing draws share one packed record and a route-fed final draw de-interleaves it - see `parhelia-m9-varying-transport-re.md` | one varying (`M9_VS_MAX_VARYINGS 1`); the two-draw chain failed on hardware once, retested after the `ef` chain-role fix |
 
 ## Reverse engineered, implementation in progress
 
@@ -162,5 +162,12 @@ query, and cube and 3D textures - are all done.
 4. **sRGB write** - the backend is written; advertising a colour format is all
    that stands between it and being reachable.
 5. **A second vertex varying**, which needs the second preprocessing draw.
+   The first attempt delivered no stream; `ef` bits 11:9 turned out to encode
+   the draw's place in the chain, and the fused pass was left saying "only
+   draw" while a chain was open.  Under retest.  The larger prize sits one
+   step further: a general interpolant costs two raster declaration words
+   (`0d88`+`06b6`) where attributes 0, 5, 6 and 13 cost one (`0688`), so if
+   the one-word form is accepted the per-pass ceiling goes from six
+   interpolants to thirteen.
 6. **The depth pair**: CPU-uploaded depth textures, and
    `glReadPixels(GL_DEPTH_COMPONENT)`.
