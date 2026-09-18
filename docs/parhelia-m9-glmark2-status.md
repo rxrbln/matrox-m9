@@ -22,6 +22,29 @@ Every run asserts `GL_RENDERER` is `Matrox M9`: a Mesa build configured without
 back to llvmpipe silently, and every fixture still passes against the CPU
 reference.
 
+## Standing 2026-09-18: all thirty-three run, twenty-nine above 60 fps
+
+MEASURED at 1920x1200, one process per benchmark, 0 stream timeouts, fixture
+suite 194 cases 194 PASS.  `desktop` draws its blur where it used to stall
+and take the seventeen benchmarks behind it down with it.
+
+Four are below 60, each for a different reason:
+
+| benchmark | fps | why |
+|---|---:|---|
+| `effect2d` 15-tap | 31 | inter-pass record bandwidth - see `parhelia-m9-record-bandwidth.md` |
+| `desktop` blur | 38 | GPU execution: 26.77 ms a frame, submit 23.13 of it, ioctl 22.84, over 28 jobs and 24 draws with none refused or skipped.  At 0.82 ms a job this is work, not the per-job overhead that dominates `refract` at 0.23 |
+| `terrain` | 21 | INVALID - draws refused: a multi-pass draw that tests or writes depth has no depth content in the scratch surface |
+| `refract` | 40 | INVALID - the same depth class, pre-existing rather than caused by the scratch path |
+
+**Carrying the destination's depth box into the scratch surface is the single
+follow-up that would close both `terrain` and `refract`.**
+
+The rest, for the record: texture 284/283/284, build 271/271, shading
+188/121/75/70, bump 89/179/154, effect2d 3x3 79, pulsar 188, desktop shadow
+124, buffer 147/127/130, ideas 102, jellyfish 119, shadow 104, conditionals
+198/123/197, function 146/63, loop 144/144/300.
+
 ## The suite is thirty-three benchmarks, not sixteen scenes
 
 MEASURED 2026-09-18.  Every sweep before this one ran the sixteen scene
