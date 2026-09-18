@@ -11,6 +11,7 @@
 
 #include <errno.h>
 #include <inttypes.h>
+#include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -339,6 +340,10 @@ static unsigned m9_be_clear;
  * object a context and all render with one a target).  M9X_BE_PER_TARGET=0
  * restores the single object, which is how the fixture above was measured. */
 static bool m9_be_per_target = true;
+/* M9X_BLIT_ENGINE=0 keeps every blit off the engine, which is the only way
+ * to reach the CPU resampler from an application that renders into ordinary
+ * colour targets. */
+static bool m9_blit_on_engine = true;
 /* M9X_BE_DUMP names a file the engine state object is written to after every
  * job, so what it accumulates can be read rather than assumed. */
 static const char *m9_be_dump;
@@ -3876,6 +3881,29 @@ m9_engine_drew(struct m9_context *ctx, uint32_t skipped_before)
    return !ctx->lost && ctx->skipped_draws == skipped_before;
 }
 
+/* One bilinear 8-bit texel, with the edge clamped: the reduction a filtered
+ * blit performs when the engine cannot draw it. */
+static void
+m9_bilinear_texel(const uint8_t *src, int width, int height, float u, float v,
+                  uint8_t *out)
+{
+   int x0 = (int)floorf(u), y0 = (int)floorf(v);
+   float fx = u - x0, fy = v - y0;
+   int xa = CLAMP(x0, 0, width - 1), xb = CLAMP(x0 + 1, 0, width - 1);
+   int ya = CLAMP(y0, 0, height - 1), yb = CLAMP(y0 + 1, 0, height - 1);
+   const uint8_t *p00 = src + ((size_t)ya * width + xa) * 4;
+   const uint8_t *p10 = src + ((size_t)ya * width + xb) * 4;
+   const uint8_t *p01 = src + ((size_t)yb * width + xa) * 4;
+   const uint8_t *p11 = src + ((size_t)yb * width + xb) * 4;
+
+   for (unsigned c = 0; c < 4; c++) {
+      float top = p00[c] + (p10[c] - p00[c]) * fx;
+      float bot = p01[c] + (p11[c] - p01[c]) * fx;
+
+      out[c] = (uint8_t)CLAMP(lroundf(top + (bot - top) * fy), 0, 255);
+   }
+}
+
 /* Unscaled colour blit with format conversion through CPU transfers. */
 static bool
 m9_blit_convert(struct pipe_context *pctx, const struct pipe_blit_info *info)
@@ -3900,21 +3928,33 @@ m9_blit_convert(struct pipe_context *pctx, const struct pipe_blit_info *info)
                                 d->height, &dt) : NULL;
    blocksize = util_format_get_blocksize(info->dst.format);
    if (src && dst && (s->width != d->width || s->height != d->height)) {
-      /* Nearest sampling: translate the source, then pick its texels. */
+      /* Translate the source, then resample it.  A filtered blit has to be
+       * filtered here too: picking one texel of four is a decimation, not a
+       * reduction, and it aliases silently. */
+      bool linear = info->filter == PIPE_TEX_FILTER_LINEAR && blocksize == 4;
+
       scaled = MALLOC((size_t)s->width * s->height * blocksize);
       ok = scaled &&
            util_format_translate(info->dst.format, scaled,
                                  s->width * blocksize, 0, 0, info->src.format,
                                  src, st->stride, 0, 0, s->width, s->height);
       for (int y = 0; ok && y < d->height; y++) {
+         float fv = ((float)y + 0.5f) * s->height / d->height - 0.5f;
          int sy = (int)(((int64_t)y * s->height + s->height / 2) / d->height);
 
          for (int x = 0; x < d->width; x++) {
+            float fu = ((float)x + 0.5f) * s->width / d->width - 0.5f;
             int sx = (int)(((int64_t)x * s->width + s->width / 2) / d->width);
+            uint8_t *out = (uint8_t *)dst + (size_t)y * dt->stride +
+                           (size_t)x * blocksize;
 
-            memcpy(dst + (size_t)y * dt->stride + (size_t)x * blocksize,
-                   scaled + ((size_t)MIN2(sy, s->height - 1) * s->width +
-                             MIN2(sx, s->width - 1)) * blocksize, blocksize);
+            if (linear) {
+               m9_bilinear_texel(scaled, s->width, s->height, fu, fv, out);
+               continue;
+            }
+            memcpy(out, scaled + ((size_t)MIN2(sy, s->height - 1) * s->width +
+                                  MIN2(sx, s->width - 1)) * blocksize,
+                   blocksize);
          }
       }
    } else {
@@ -3939,7 +3979,8 @@ m9_blit_engine(struct pipe_context *pctx, const struct pipe_blit_info *info)
    struct m9_context *ctx = m9_context(pctx);
    uint32_t skipped;
 
-   if (!m9_engine_copy_ready(ctx, info->dst.resource, info->dst.level,
+   if (!m9_blit_on_engine ||
+       !m9_engine_copy_ready(ctx, info->dst.resource, info->dst.level,
                              info->src.resource, info->src.level) ||
        info->dst.format != info->dst.resource->format ||
        info->src.format != info->src.resource->format ||
@@ -4884,6 +4925,7 @@ m9_context_create(struct pipe_screen *pscreen, void *priv, unsigned flags)
    m9_be_dump = debug_get_option("M9X_BE_DUMP", NULL);
    m9_be_per_target = debug_get_bool_option("M9X_BE_PER_TARGET", true);
    m9_split_enable = debug_get_bool_option("M9X_SPLIT", true);
+   m9_blit_on_engine = debug_get_bool_option("M9X_BLIT_ENGINE", true);
    ctx->dump_from = debug_get_num_option("M9X_DUMP_FROM", 0);
    ctx->dump_count = debug_get_num_option("M9X_DUMP_COUNT", 4096);
    ctx->only_first = debug_get_num_option("M9X_ONLY_FIRST", UINT_MAX);
