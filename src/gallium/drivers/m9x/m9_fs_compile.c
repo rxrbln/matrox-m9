@@ -3495,9 +3495,10 @@ assign_texels(struct ctx *c)
    unsigned order[M9_FS_MAX_TEXTURES], replicated = 0;
    uint8_t textures[M9_FS_MAX_TEXTURES], coords[M9_FS_MAX_TEXTURES];
    uint8_t comps[M9_FS_MAX_TEXTURES], pair_of[M9_FS_MAX_TEXTURES];
-   uint8_t source[M9_FS_MAX_TEXTURES];
+   uint8_t source[M9_FS_MAX_TEXTURES], coord_source[M9_FS_MAX_TEXTURES];
    struct m9_fs_coord_affine affine[M9_FS_MAX_TEXTURES];
    bool projective[M9_FS_MAX_TEXTURES], shadow[M9_FS_MAX_TEXTURES];
+   bool volume[M9_FS_MAX_TEXTURES];
 
    util_dynarray_foreach(&c->nodes, struct node, n) {
       for (unsigned i = 0; i < 3; i++) {
@@ -3537,8 +3538,18 @@ assign_texels(struct ctx *c)
       projective[i] = p->texcoord_projective[order[i]];
       shadow[i] = p->texcoord_shadow[order[i]];
       source[i] = p->texture_source[order[i]];
+      /* Everything keyed by slot moves, or a reordered unit reads another
+       * unit's route: the coordinate route index has to stay the texel
+       * slot, because the route word names the slot it feeds. */
+      coord_source[i] = p->texcoord_source[order[i]];
+      volume[i] = p->texcoord_volume[order[i]];
       pair_of[order[i]] = i;
    }
+   /* A routed coordinate is emitted at 0x74 + slot and index 3 is captured
+    * nowhere, so a reorder must not push one there. */
+   for (unsigned i = M9_RECORD_MAX_COORD_ROUTE; i < p->texture_count; i++)
+      if (coord_source[i] != M9_FS_ROUTE_NONE)
+         return fail(c, fail_too_many_textures);
    memcpy(p->textures, textures, p->texture_count);
    memcpy(p->texcoords, coords, p->texture_count);
    memcpy(p->texcoord_components, comps, p->texture_count);
@@ -3546,6 +3557,8 @@ assign_texels(struct ctx *c)
    memcpy(p->texcoord_projective, projective, sizeof(projective));
    memcpy(p->texcoord_shadow, shadow, sizeof(shadow));
    memcpy(p->texture_source, source, p->texture_count);
+   memcpy(p->texcoord_source, coord_source, p->texture_count);
+   memcpy(p->texcoord_volume, volume, p->texture_count);
    util_dynarray_foreach(&c->nodes, struct node, n) {
       if (n->kind == N_TEX)
          n->texel = 4 * pair_of[n->texel / 4];
@@ -4850,6 +4863,16 @@ m9_fs_raster_88(const struct m9_fs_program *program)
       r88 |= 0x00080000;
    /* Bits 15:4 flag register pairs 08/09 .. 1e/1f the program leaves unused. */
    r88 &= ~((uint32_t)program->registers_used << 4);
+   /* A texel pair flagged unused is one the engine reuses, and a pass that
+    * binds four units then reads nothing at register 0e: fixture texhi:4:0
+    * renders half its pixels wrong with bit 7 set and pixel-exact with it
+    * cleared (MEASURED, and index 88 swept a bit at a time).  So every
+    * texel pair the bound units occupy is marked live; the ~0x70 below is
+    * the same rule for the pairs a shorter pass reaches.
+    * M9X_TEXEL_HIGH=0 restores the encoding that renders wrong. */
+   if (debug_get_bool_option("M9X_TEXEL_HIGH", true))
+      for (unsigned r = 8; r < 4 * program->texture_count; r += 2)
+         r88 &= ~BITFIELD_BIT(4 + (r - 8) / 2);
    if (program->texture_count > 1) {
       r88 &= ~0x70u;
       low = 0xf;
@@ -4876,6 +4899,11 @@ m9_fs_raster_88(const struct m9_fs_program *program)
       if (override >= 0)
          r88 = (r88 & ~0xffu) | low;
    }
+   /* M9X_R88_AND / M9X_R88_OR sweep index 88 against the hardware, which is
+    * how a field no capture pins is measured rather than guessed. */
+   r88 = (r88 | low) & (uint32_t)debug_get_num_option("M9X_R88_AND", 0xffffffff);
+   r88 |= (uint32_t)debug_get_num_option("M9X_R88_OR", 0);
+   low = 0;
    if (debug_get_bool_option("M9X_DEBUG_FS", false))
       fprintf(stderr, "m9x fs: r88 %08x slots %u consts %u varyings %u "
               "textures %u fragcoord %d\n", r88 | low,
