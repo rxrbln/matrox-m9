@@ -26,6 +26,7 @@ tell a new driver how its own shader names the second one.
 |---|---|
 | one address/descriptor pair a target at `b0 + 2s` | CAPTURED, one to four attachments |
 | render format class a target, raster `89` | CAPTURED, four cases |
+| enable bit a target, raster `ef` | CAPTURED, four cases (**new, below**) |
 | write mask a target, raster `ab` and `ac` | CAPTURED, four cases (**new, below**) |
 | blend a target | BIN, compiled into the target's own program fragment |
 | kernel acceptance of `b0/b2/b4/b6` as `COLOR` | already in `m9_index_reloc_kinds` |
@@ -47,6 +48,7 @@ moves between the four raster draws, with the stale words named:
 | `89` | `fe007ff8` | `fe007fc0` | `fe007e00` | `fe007000` |
 | `ab` | `1aebffff` | `ffffffff` | `ffffffff` | `ffffffff` |
 | `ac` | `00002b4d` | `00002b72` | `0000ffff` | `ffffffff` |
+| `ef` | `00000000` | `00080000` | `00280000` | `00a80000` |
 | `88` | `0110fff0` | `0110ffc8` | `0110ff30` | `0110ff20` |
 | `8c` | `00500600` | `00500700` | `00500800` | `00500900` |
 | `8e - 8d` | `0x30` | `0x38` | `0x40` | `0x48` |
@@ -56,7 +58,32 @@ leftovers of the preceding pass (`mrt_4` has the literal upload word
 `ffff931c` in `b8`), which is what a probe with no depth attachment leaves
 behind, not state.
 
-### 1a. Index `89`, one three-bit class a target (CAPTURED)
+### 1a. Index `ef`, one enable bit a target past the first (CAPTURED)
+
+The four cases differ in `ef` by exactly one bit a target, two apart, from
+bit 19:
+
+```text
+1 target   0x00000000
+2 targets  0x00080000    bit 19
+3 targets  0x00280000    bits 19, 21
+4 targets  0x00a80000    bits 19, 21, 23
+```
+
+Target 0 claims no bit; it is always enabled.  This is the piece a driver
+binding `b2` without it will miss, and no earlier note in this tree records
+it.  `m9_color_enable` in `m9_draw.c` builds it.
+
+Two independent checks, both CAPTURED.  Every single-target vendor raster
+draw in the same capture set leaves all three bits clear: `cap-samplers_4`,
+`cap-shadow_d24_lequal` and `cap-attribs_8` write `ef` as `00000000` or the
+sequence values `00000200`/`00000400`/`00000600`.  And the **preprocessing**
+pass of every one of these submissions, which binds three output streams at
+`b0`, `b2` and `b4`, writes `ef = 00288800` -- bits 19 and 21 set, the two
+bits that name targets 1 and 2, for the two targets it binds past the first.
+The same field, in a pass whose targets are streams rather than colour.
+
+### 1b. Index `89`, one three-bit class a target (CAPTURED)
 
 Bits 14:0 are five three-bit fields.  Field `s` holds the render format
 class of the target bound at `b0 + 2s`, and a field no target claims reads
@@ -74,7 +101,7 @@ what the existing single-target word `fe207ff8` already carries.
 `m9_raster_89` in `m9_draw.c` builds this and keeps bits above 14 from the
 word the pass already carries.
 
-### 1b. Indices `ab` and `ac`, one write mask a target (CAPTURED, new)
+### 1c. Indices `ab` and `ac`, one write mask a target (CAPTURED, new)
 
 `ab` bits 15:0 are target 0's sixteen-bit colour write mask and bits 31:16
 target 1's; `ac` holds targets 2 and 3 the same way.  The four cases fix
@@ -138,7 +165,64 @@ class: the output move carries `cls = 4`, the field is three bits, and
 -- the per-target work in MxMD touches a register, not a class -- but a
 hardware sweep costs the same for both.
 
-### 2a. The probe that would settle it
+### 2a. The probe that settles it, and the two options that drive it
+
+Two debug options exist for exactly this measurement, both off by default.
+
+* `M9X_FS_COLOR_TARGET=p` compiles the one colour output this backend has
+  onto destination `0x2d + p` instead of `0x2d` (`color_dest` in
+  `m9_fs_compile.c`).
+* `M9X_MRT_ALIAS=n` binds the single colour attachment at all `n` target
+  pairs, enables them in `ef` and gives each a class in `89`
+  (`m9_batch_emit_draw_job`).  Nothing else in the driver fills a second
+  target yet, so this is the only way to bind one.
+
+With both set, `m9-mesa-glsl texture` renders correctly only if `0x2d + p`
+reaches target `p`: the write lands in the one surface either way, but only
+if a *bound* target answers to that destination.  With `M9X_FS_COLOR_TARGET`
+alone the image must stay at its clear value, since the target that
+destination names is not bound.
+
+### 2b. What the first runs measured, and what they did not
+
+On the M9128 on 2026-09-18, against a binary md5-verified on both sides and
+with `GL_RENDERER` asserted as `Matrox M9` on every run (MEASURED):
+
+| run | result |
+|---|---|
+| `texture`, nothing set | `0 of 76800 pixels differ: PASS` |
+| `texture`, `M9X_MRT_ALIAS=2`, no `ef` enable bit | `76800 of 76800 differ`, kernel stream timeout |
+| `texture`, `M9X_MRT_ALIAS=2`, with the `ef` enable bit | `76800 of 76800 differ`, kernel stream timeout |
+
+So **binding a second colour target stops the engine**, with the target
+enabled or not, while the same binary renders the single-target case
+pixel-exact.  Each run cost a reboot; after a stream timeout the device
+renders nothing and logs nothing.
+
+That result does not yet name a cause, and three remain open:
+
+* the probe aliases one surface at both target pairs, which a real MRT draw
+  never does;
+* the fragment program writes one output, so the second target is bound and
+  never written -- on the vendor stack the declaration lowerer derives the
+  bound targets *from* the shader's output declarations, so a bound target
+  is always a written one;
+* per-target state still only in the vendor's shader may be missing.  The
+  MRT draws differ in `8c` and the `8d..8e` span as well, by one constant
+  pair a target, which is the blend fragment each target's program carries.
+
+The next measurement therefore needs a real second attachment and a real
+second output, not this probe: the surface side alone is demonstrably not
+enough, which is a stronger statement than the backlog's.  It is also why
+`caps->max_render_targets` stays 1.
+
+One mechanical lesson worth repeating: the first attempt measured a build of
+the shared working tree while two other agents had edits in flight in
+`m9_context.c`, `m9_format.c`, `m9_texture.c` and `m9_internal.h`, and every
+case failed, including cases that had passed an hour earlier.  Rebuilding
+from a clean checkout of HEAD plus this work alone restored the control to
+PASS.  A measurement of a tree three agents are editing measures all three.
+
 
 Bind two RGBA8 attachments whose texels identify their target and their
 cell, compile a shader with two colour outputs, and emit the second one's
@@ -164,11 +248,16 @@ What is **not** done, and why `caps->max_render_targets` stays `1`:
 
 * the fragment backend compiles one colour output; multiple outputs need the
   scheduler to carry a target index through `struct lop` into `encode_lops`,
-  where the destination becomes `OUT + target` instead of `OUT`;
+  where the destination becomes `OUT + target` instead of `OUT`, and the
+  NIR gate at `nir_intrinsic_store_output` must accept `FRAG_RESULT_DATA1`
+  through `DATA3` instead of refusing them;
 * `m9_context.c` binds one `pipe_surface`, so nothing fills the new job
   fields yet;
-* and the destination above is DERIVED.  Advertising four targets before
-  section 2a has run would advertise a guess.
+* the destination above is DERIVED, not measured;
+* and section 2b measured that binding a second target, as the driver now
+  emits it, stops the engine.  Whatever that turns out to be -- the probe's
+  aliasing, a bound target no output writes, or state still undecoded -- it
+  has to be understood before four targets are advertised.
 
 ## 4. The backlog line that was wrong
 
