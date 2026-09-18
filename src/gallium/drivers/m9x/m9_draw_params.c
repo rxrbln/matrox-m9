@@ -13,10 +13,25 @@
 #include <math.h>
 #include <string.h>
 
+#include "util/u_debug.h"
 #include "util/u_math.h"
 #include "pipe/p_defines.h"
 
 #define M9_GUARD_BAND 15359.0f
+
+/* M9X_GUARD=N computes both guard bands from a half-extent of N instead of
+ * the target's own, which separates the guard band from the rest of the
+ * per-shape viewport state.  The geometry stays inside the viewport, so the
+ * image a draw produces is unchanged. */
+static float
+m9_guard(float half_extent)
+{
+   long fixed = debug_get_num_option("M9X_GUARD", 0);
+
+   if (fixed > 0)
+      half_extent = (float)fixed;
+   return half_extent > 0.0f ? M9_GUARD_BAND / half_extent - 1.0f : 0.0f;
+}
 
 static void
 m9_put_float(uint32_t *words, unsigned index, float value)
@@ -82,8 +97,8 @@ m9_draw_params_init(struct m9_draw_params *params, uint32_t width,
    m9_put_float(sys, 27, h / 2);
    m9_put_float(sys, 28, 0.5f);
    m9_put_float(sys, 29, h);
-   m9_put_float(sys, M9_VS_GUARD_X_DWORD, M9_GUARD_BAND / (w / 2) - 1);
-   m9_put_float(sys, M9_VS_GUARD_Y_DWORD, -(M9_GUARD_BAND / (h / 2) - 1));
+   m9_put_float(sys, M9_VS_GUARD_X_DWORD, m9_guard(w / 2));
+   m9_put_float(sys, M9_VS_GUARD_Y_DWORD, -m9_guard(h / 2));
 
    linked = params->linked_prefix;
    m9_put_float(linked, 0, w / 2);
@@ -236,10 +251,8 @@ m9_draw_params_viewport(struct m9_draw_params *params, const float scale[3],
    m9_put_float(prefix, M9_VS_BIAS_DWORD, bias[0]);
    m9_put_float(prefix, M9_VS_BIAS_DWORD + 1, bias[1]);
    m9_put_float(prefix, M9_VS_DEPTH_BIAS_DWORD, bias[2]);
-   m9_put_float(prefix, M9_VS_GUARD_X_DWORD,
-                ax > 0.0f ? M9_GUARD_BAND / ax - 1.0f : 0.0f);
-   m9_put_float(prefix, M9_VS_GUARD_Y_DWORD,
-                ay > 0.0f ? -(M9_GUARD_BAND / ay - 1.0f) : 0.0f);
+   m9_put_float(prefix, M9_VS_GUARD_X_DWORD, m9_guard(ax));
+   m9_put_float(prefix, M9_VS_GUARD_Y_DWORD, -m9_guard(ay));
 }
 
 uint32_t

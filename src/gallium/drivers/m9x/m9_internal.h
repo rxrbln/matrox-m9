@@ -102,6 +102,9 @@ struct m9_target_depth {
    uint32_t width, height;
    uint64_t used;
    struct m9_resource depth, aux;
+   /* The engine's own back-end object, which belongs to a target rather than
+    * to the context: a shape revisited after another finds its own. */
+   struct m9_resource be;
 };
 
 /* Enough for several full-screen pairs, so that a scene alternating a
@@ -316,6 +319,8 @@ struct m9_context {
 
    /* Fixed two-pass resources and the pending job. */
    struct m9_resource system, program, fragment_db, transient, be, source;
+   /* Clip window the engine state object was last cleared for. */
+   uint32_t be_clip;
    /* The four arenas the CPU fills per job are double buffered.  An
     * asynchronous submit posts its job and returns, so the engine is still
     * reading the previous job's records, indices, constants and streams
@@ -337,7 +342,7 @@ struct m9_context {
    /* The depth and HZ pair a target without a depth attachment of its own
     * binds, kept per size: a scene that alternates target sizes would
     * otherwise reallocate and refill them on every switch. */
-   struct m9_resource *target_depth, *target_aux;
+   struct m9_resource *target_depth, *target_aux, *target_be;
    struct util_dynarray target_depths;  /* struct m9_target_depth * */
    uint64_t target_clock;
    struct m9_resource placeholder_texture;  /* 1x1 unit-0 binding */

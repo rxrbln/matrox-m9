@@ -290,6 +290,26 @@ static bool m9_split_coverage;
 /* M9X_RECORD_89 replaces index 0x89 of a record pass, whose low twelve bits
  * are one three-bit render format class per bound target. */
 static unsigned m9_record_89;
+/* M9X_SPLIT_SEQ=0 clears raster ef bits 10:9, which a pass submitted on its
+ * own carries although its range holds no other pass. */
+static bool m9_split_seq;
+/* M9X_SPLIT_30=1 restates index 30 by the pass's place in the sequence
+ * rather than its place inside the submission. */
+static bool m9_split_30;
+/* M9X_BE_CLEAR=1 clears the engine state object ahead of every job, 2 only
+ * when the target's shape changed since the job before it. */
+static unsigned m9_be_clear;
+/* The engine keeps per-target state in the object bound at index be, and a
+ * target revisited after one of another shape stops the engine when it finds
+ * the state of that other shape there (MEASURED: splitpair:84x84:320x240:20,
+ * splitsize3:6 and splitpair:168x168:640x480:20 all stop the engine with one
+ * object a context and all render with one a target).  M9X_BE_PER_TARGET=0
+ * restores the single object, which is how the fixture above was measured. */
+static bool m9_be_per_target = true;
+/* M9X_BE_DUMP names a file the engine state object is written to after every
+ * job, so what it accumulates can be read rather than assumed. */
+static const char *m9_be_dump;
+static unsigned m9_be_seq;
 /* M9X_TRANSITION=0 drops the vendor's inter-draw engine transition from a
  * split job, which separates a fault in that block from one in the record. */
 static bool m9_transition;
@@ -956,9 +976,10 @@ m9_job_native(struct m9_context *ctx, const struct m9_job_key *key,
        * several, 2 a middle one, 3 the last.  Every single-pass draw leaves
        * them clear (CAPTURED, 0x200/0x600 in all seven two-pass cases and
        * 0x200/0x400/0x400/0x400/0x600 in the five-sampler schedule). */
-      pass->sequence_ef = fs->passes.count < 2 ? 0 :
+      pass->sequence_ef = fs->passes.count < 2 || !m9_split_seq ? 0 :
                           !i ? 0x200u :
                           i + 1 < fs->passes.count ? 0x400u : 0x600u;
+      pass->pass_index = i;
       /* Index 0x89 holds one three-bit render format class per bound target
        * at bit 3*s: class 4 for the record and 0 for a colour target
        * (CAPTURED, fe007ffc against fe007ff8 in both schedules). */
@@ -1126,6 +1147,14 @@ m9_submit_job(struct m9_context *ctx)
 
    /* Before a single byte of this job is written. */
    m9_arena_rotate(ctx);
+   /* M9X_BE_CLEAR clears the engine's own state object, which separates
+    * state the engine keeps there from the target that selects it. */
+   if (ctx->be.map &&
+       (m9_be_clear == 1 ||
+        (m9_be_clear == 2 && ctx->be_clip != ctx->params.clip_max))) {
+      memset(ctx->be.map, 0, ctx->be.size);
+      ctx->be_clip = ctx->params.clip_max;
+   }
    ret = ctx->lost ? -EIO :
          m9_arena_reserve(ctx, &ctx->source,
                           (uint64_t)records * copies * ctx->record_floats *
@@ -1197,7 +1226,7 @@ m9_submit_job(struct m9_context *ctx)
          .color = m9_res(ctx->color)->handle,
          .depth = key->depth->handle,
          .aux = key->aux->handle,
-         .be = ctx->be.handle,
+         .be = ctx->target_be ? ctx->target_be->handle : ctx->be.handle,
          .source_vertices = records * copies,
          .index_base = (uint32_t)index_base,
          .index_count = index_count * copies,
@@ -1213,6 +1242,7 @@ m9_submit_job(struct m9_context *ctx)
           * M9X_PASS_LOOP drives a one-pass shader through the loop too,
           * which separates a fault in the loop from one in the record. */
          .fs = pass_count == 1 && !m9_pass_loop ? &passes[0].fs : NULL,
+         .split_30 = m9_split_30,
          .passes = pass_count > 1 || (pass_count && m9_pass_loop) ?
                    passes : NULL,
          .pass_count = pass_count > 1 || (pass_count && m9_pass_loop) ?
@@ -1291,6 +1321,17 @@ m9_submit_job(struct m9_context *ctx)
                                ctx->context_id, &point);
       }
       m9_prof_end(M9_PROF_IOCTL, t_ioctl);
+      if (m9_be_dump && ctx->be.map) {
+         char path[256];
+         FILE *f;
+
+         snprintf(path, sizeof(path), "%s.%u", m9_be_dump, m9_be_seq++);
+         f = fopen(path, "w");
+         if (f) {
+            fwrite(ctx->be.map, 1, ctx->be.size, f);
+            fclose(f);
+         }
+      }
    }
    if (ret == -EINVAL) {
       /* A refused job is one unsupported state, not a broken context. */
@@ -4098,7 +4139,7 @@ m9_target_depth_bind(struct m9_context *ctx, uint32_t w, uint32_t h,
    const bool fresh = debug_get_bool_option("M9X_TARGET_FRESH", false);
 
    util_dynarray_foreach(&ctx->target_depths, struct m9_target_depth *, it) {
-      total += (*it)->depth.size + (*it)->aux.size;
+      total += (*it)->depth.size + (*it)->aux.size + (*it)->be.size;
       if (!fresh && (*it)->width == w && (*it)->height == h)
          entry = *it;
       else if (!oldest || (*it)->used < (*oldest)->used)
@@ -4111,9 +4152,10 @@ m9_target_depth_bind(struct m9_context *ctx, uint32_t w, uint32_t h,
              M9_TARGET_DEPTH_BUDGET) {
          struct m9_target_depth *evict = *oldest;
 
-         total -= evict->depth.size + evict->aux.size;
+         total -= evict->depth.size + evict->aux.size + evict->be.size;
          m9_bo_destroy(ctx->screen, &evict->depth);
          m9_bo_destroy(ctx->screen, &evict->aux);
+         m9_bo_destroy(ctx->screen, &evict->be);
          *oldest = *util_dynarray_pop_ptr(&ctx->target_depths,
                                           struct m9_target_depth *);
          FREE(evict);
@@ -4128,10 +4170,14 @@ m9_target_depth_bind(struct m9_context *ctx, uint32_t w, uint32_t h,
           m9_bo_create(ctx->screen, bytes, PARHELIA_M9_BO_VRAM,
                        M9_RESOURCE_LINEAR_DEPTH, &entry->depth) ||
           m9_bo_create(ctx->screen, m9_hz_bytes(w, h), PARHELIA_M9_BO_VRAM,
-                       M9_RESOURCE_LINEAR_DEPTH, &entry->aux)) {
+                       M9_RESOURCE_LINEAR_DEPTH, &entry->aux) ||
+          (m9_be_per_target &&
+           m9_bo_create(ctx->screen, M9_BE_BYTES, PARHELIA_M9_BO_VRAM,
+                        M9_RESOURCE_SYSTEM_STATE, &entry->be))) {
          if (entry) {
             m9_bo_destroy(ctx->screen, &entry->depth);
             m9_bo_destroy(ctx->screen, &entry->aux);
+            m9_bo_destroy(ctx->screen, &entry->be);
             FREE(entry);
          }
          m9_warn_once(ctx, M9_WARN_MEMORY, "cannot allocate target depth");
@@ -4141,12 +4187,15 @@ m9_target_depth_bind(struct m9_context *ctx, uint32_t w, uint32_t h,
       entry->height = entry->depth.height = h;
       m9_fill_dwords(&entry->depth, 0xffffffff);
       m9_fill_dwords(&entry->aux, M9_HZ_CLEAR);
+      if (entry->be.map)
+         memset(entry->be.map, 0, entry->be.size);
       util_dynarray_append_typed(&ctx->target_depths,
                                  struct m9_target_depth *, entry);
    }
    entry->used = ++ctx->target_clock;
    ctx->target_depth = &entry->depth;
    ctx->target_aux = &entry->aux;
+   ctx->target_be = entry->be.handle ? &entry->be : NULL;
    return true;
 }
 
@@ -4176,6 +4225,13 @@ m9_update_target(struct m9_context *ctx)
                    "A8R8G8B8 surface; draws skipped");
       return;
    }
+   /* M9X_CLIP_ROUND=1 clips to the allocation's row span and height instead
+    * of the declared extent, which separates the clip window from the
+    * viewport constants a target's shape also sets.  The viewport bounds
+    * the geometry, so the image a draw produces is unchanged. */
+   if (debug_get_bool_option("M9X_CLIP_ROUND", false))
+      ctx->params.clip_max = layout.row_span |
+                             layout.allocation_height << 16;
    /* Depth-less targets still bind a depth and HZ BO of their size. */
    if (!m9_target_depth_bind(ctx, w, h, layout.size))
       return;
@@ -4390,10 +4446,12 @@ m9_context_destroy(struct pipe_context *pctx)
    util_dynarray_foreach(&ctx->target_depths, struct m9_target_depth *, it) {
       m9_bo_destroy(screen, &(*it)->depth);
       m9_bo_destroy(screen, &(*it)->aux);
+      m9_bo_destroy(screen, &(*it)->be);
       FREE(*it);
    }
    util_dynarray_fini(&ctx->target_depths);
    ctx->target_depth = ctx->target_aux = NULL;
+   ctx->target_be = NULL;
    m9_bo_destroy(screen, &ctx->placeholder_texture);
    m9_bo_destroy(screen, &ctx->vs_c2);
    if (ctx->debug)
@@ -4459,6 +4517,11 @@ m9_context_create(struct pipe_screen *pscreen, void *priv, unsigned flags)
    m9_record_89 = debug_get_num_option("M9X_RECORD_89", 0);
    m9_split_coverage = debug_get_bool_option("M9X_SPLIT_COVERAGE", true);
    m9_transition = debug_get_bool_option("M9X_TRANSITION", true);
+   m9_split_seq = debug_get_bool_option("M9X_SPLIT_SEQ", true);
+   m9_split_30 = debug_get_bool_option("M9X_SPLIT_30", false);
+   m9_be_clear = debug_get_num_option("M9X_BE_CLEAR", 0);
+   m9_be_dump = debug_get_option("M9X_BE_DUMP", NULL);
+   m9_be_per_target = debug_get_bool_option("M9X_BE_PER_TARGET", true);
    m9_split_enable = debug_get_bool_option("M9X_SPLIT", true);
    ctx->dump_from = debug_get_num_option("M9X_DUMP_FROM", 0);
    ctx->dump_count = debug_get_num_option("M9X_DUMP_COUNT", 4096);
