@@ -160,15 +160,35 @@ A glmark2 sweep at 1920x1200 with the schedule off reports 33 scenes, 25 of
 them at or above 60 fps (MEASURED).  `terrain`, `shadow` and `refract` are
 refused for an unrelated reason, a texture coordinate that is not a varying.
 
-With the sequence field emitted, `effect2d`'s default scene draws its
-five-fetch shader at 1920x1200 and 221 fps with no stream timeout, where it
-was refused before (MEASURED).  `desktop`'s separable blur is still refused,
-and for a new reason now that the passes are emitted: its four raster passes
-need more relocations than one submission carries.
+With the sequence field emitted, the six scenes this note listed as blocked
+sweep at 1920x1200 as follows, with **no stream timeout anywhere**
+(MEASURED):
+
+| scene | passes | fps | outcome |
+|---|---:|---:|---|
+| `effect2d` default | 2 | 222 | draws, where it was refused before |
+| `effect2d` 3x3 Laplacian | 2 | 346 | draws, but see the record size below |
+| `effect2d` 5x3 | 5 | -- | refused: the relocation budget |
+| `desktop` separable blur | 4 | -- | refused: the relocation budget |
+| `terrain`, `shadow`, `refract` | -- | -- | refused: a texture coordinate that is not a varying |
+
+Two limits stand between that and the rest, and neither is the record:
+
+* **the relocation budget of one submission.**  A shader beyond three raster
+  passes needs more relocation sites than `M9_MAX_RELOCS` carries, so the
+  variant is refused at creation.  That is what now stops `desktop` and
+  `effect2d`'s 5x3 kernel.
+* **the record's size.**  The driver sizes it for one record per covered
+  pixel, which is 37 MiB for a two-pass shader at 1920x1200, and a second
+  context asking for one while the first still holds its own failed to
+  allocate during the sweep ("cannot allocate the inter-pass record"), so the
+  Laplacian scene's draws were skipped for part of its run and its 346 fps is
+  not a clean number.  The granularity that would shrink it -- one record per
+  fragment, per 2x2 quad or per shaded sample -- is **OPEN**.
 
 The schedule is on by default, `M9X_SPLIT=0` refuses it instead, and the
 fragment fixture suite holds at 97 PASS, 0 FAIL with either setting; `tex5`
-joins the listed cases (MEASURED).  Nothing in
+joins the listed cases and raises the bar to 98 PASS, 0 FAIL (MEASURED).  Nothing in
 the Gallium caps advertises the feature: `fs->max_texture_samplers` was already
 8 rather than the four-unit binding limit, so no cap claimed or claims that a
 five-fetch shader renders.
