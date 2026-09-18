@@ -248,6 +248,7 @@ static inline struct m9x_device *to_m9x(struct drm_device *drm)
 void m9x_mode_read_current(struct m9_head *head,
 			   struct drm_display_mode *mode);
 u32 m9x_mode_active_fs(struct m9_head *head);
+void m9x_mode_take_native(struct m9x_device *mdev);
 int m9x_mode_program(struct m9_head *head,
 		     const struct drm_display_mode *mode, u32 pitch_pixels);
 bool m9x_surface_layout_bytes(u32 width, u32 height, u32 cpp, u64 *size);
@@ -382,6 +383,18 @@ static inline u32 m9x_read(struct m9x_device *mdev, u32 reg)
 static inline void m9x_write(struct m9x_device *mdev, u32 reg, u32 value)
 {
 	writel(value, (u8 __iomem *)mdev->mmio + reg);
+}
+
+/* The legacy VGA ports are byte wide and four unrelated registers share a
+ * dword, so they may only be accessed one byte at a time. */
+static inline u8 m9x_read8(struct m9x_device *mdev, u32 reg)
+{
+	return readb((u8 __iomem *)mdev->mmio + reg);
+}
+
+static inline void m9x_write8(struct m9x_device *mdev, u32 reg, u8 value)
+{
+	writeb(value, (u8 __iomem *)mdev->mmio + reg);
 }
 
 #endif

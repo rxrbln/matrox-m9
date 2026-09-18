@@ -322,11 +322,82 @@ static void m9_program_link(struct m9_head *head,
 		 m9x_read(mdev, M9_LINK_FORMAT_REG(link)));
 }
 
+/*
+ * Take the output path off the legacy VGA CRTC.  Two registers decide it and
+ * both have to move:
+ *
+ *   - 0x1c10 bit 0 hands the serialisers the VGA CRTC's raster.  MEASURED: with
+ *     it set, a head programmed 1280x720 had its transmitter reporting it was
+ *     sending 640x480 htotal 800 vtotal 525, and putting the bit back after the
+ *     handoff stopped the transmitter sending anything at all.
+ *   - the legacy VGA miscellaneous output register selects the CRTC's clock,
+ *     and POST leaves it on the fixed 25.175 MHz VGA oscillator.  MEASURED:
+ *     with the raster geometry already correct, head 0 ran at 15.0 kHz / 20 Hz
+ *     - 25.175 MHz over a 1650x750 raster - and writing a different word to the
+ *     head's frequency synthesiser did not change that by a single hertz.  The
+ *     clock select alone took it to 45.0 kHz / 60.00 Hz, the programmed
+ *     74250 kHz.  A monitor reports the 20 Hz raster as out of range.
+ *
+ * This is not a rescue path for an unusual boot: the board's own POST leaves
+ * the card this way.  CAPTURED, captures/m9x-vendor-fourhead-20260917: the
+ * post-POST snapshot holds 0x1c10 = 1 and VGA MISC 0x63, and the vendor driver
+ * running four heads holds 0x1c10 = 2 and VGA MISC 0x68.  A boot with vga= set
+ * only hid it, because the BIOS mode set performs the same handoff.
+ *
+ * The order is the vendor's (xf86-video-parhelia docs/parhelia-m9.md, "VGA ->
+ * native handoff").  Two of its steps are left out: 0x1cac latches
+ * 0x00000001 on this board and takes pad 0 dark until a reboot, so it may not
+ * be written at all, and clearing DC0 bit 13 was MEASURED to leave what the
+ * transmitter sends unchanged.  0x1fdc bit 16 was measured not to matter
+ * either but is written because a native card carries it and the warm snapshot
+ * is compared against it.  The clock holds and the sync arm are the vendor's
+ * and are kept as measured; neither is proven to be required.
+ */
+void m9x_mode_take_native(struct m9x_device *mdev)
+{
+	u32 flag = m9x_read(mdev, M9_REG_VGAFLAG);
+	u8 misc = m9x_read8(mdev, M9_REG_VGA_MISC_READ);
+	bool on_vga = flag & M9_VGAFLAG_VGA;
+	unsigned int i;
+
+	if (!on_vga && (misc & M9_VGA_MISC_CLOCK_MASK) == M9_VGA_MISC_CLOCK_SYNTH)
+		return;
+	if (on_vga) {
+		flag &= ~M9_VGAFLAG_VGA;
+		m9x_write(mdev, M9_REG_VGAFLAG, flag);
+		m9x_write(mdev, M9_REG_VGAMISC,
+			  m9x_read(mdev, M9_REG_VGAMISC) | M9_VGAMISC_NATIVE);
+		udelay(10);
+		m9x_write(mdev, M9_REG_VGAFLAG, flag | M9_VGAFLAG_NATIVE);
+	}
+	m9x_write8(mdev, M9_REG_VGA_MISC_WRITE, M9_VGA_MISC_NATIVE);
+	if (on_vga) {
+		/* Every controller's clock is parked across the handoff; each
+		 * head releases its own hold when its clock is programmed. */
+		m9x_write(mdev, M9_CLKSEL0, m9x_read(mdev, M9_CLKSEL0) |
+			  M9_CLK_HANDOFF | M9_CLK_HOLD);
+		for (i = 1; i < M9_CLKSEL_COUNT; i++)
+			m9x_write(mdev, M9_CLKSEL(i),
+				  m9x_read(mdev, M9_CLKSEL(i)) | M9_CLK_HOLD);
+		m9x_write(mdev, M9_REG_SYNCARM,
+			  m9x_read(mdev, M9_REG_SYNCARM) |
+			  M9_SYNCARM_HANDOFF | M9_SYNCARM_RUN);
+		udelay(10);
+	}
+	drm_info(&mdev->drm,
+		 "display path taken from VGA to native: flag %#010x, VGA misc %#04x -> %#04x\n",
+		 m9x_read(mdev, M9_REG_VGAFLAG), misc,
+		 m9x_read8(mdev, M9_REG_VGA_MISC_READ));
+}
+
 int m9x_mode_program(struct m9_head *head,
 		     const struct drm_display_mode *mode, u32 pitch_pixels)
 {
 	int ret;
 
+	/* Nothing scans out a controller while the VGA CRTC owns the path, so
+	 * this comes before any timing is programmed. */
+	m9x_mode_take_native(head->mdev);
 	ret = m9_program_clock(head, mode->clock);
 	if (ret)
 		return ret;

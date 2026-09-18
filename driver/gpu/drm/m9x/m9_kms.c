@@ -1688,6 +1688,12 @@ void m9x_modeset_fini(struct m9x_device *mdev)
 	 * releases the last pinned dumb buffer.  Restoring CTRL also restores
 	 * the firmware's LUT bypass choice, so no driver-programmed gamma table
 	 * remains selected.
+	 *
+	 * Only a head the firmware posted has such a state.  A card booted
+	 * without vga= leaves every controller disabled, so writing that
+	 * snapshot back would disable a controller this driver enabled and
+	 * carry the cold format and LUT bits with it; stopping the fetch is all
+	 * the buffer release needs.
 	 */
 	wmb();
 	for (i = 0; i < mdev->heads; i++) {
@@ -1697,9 +1703,19 @@ void m9x_modeset_fini(struct m9x_device *mdev)
 		drm_edid_free(head->edid);
 		head->edid = NULL;
 		head->edid_valid = false;
-		m9x_write(mdev, head->dc + M9_DC_START, head->warm_dc_start);
-		m9x_write(mdev, head->dc + M9_DC_PITCH, head->warm_dc_pitch);
-		m9x_write(mdev, head->dc + M9_DC_CTRL, head->warm_dc_ctrl);
+		if (head->posted) {
+			m9x_write(mdev, head->dc + M9_DC_START,
+				  head->warm_dc_start);
+			m9x_write(mdev, head->dc + M9_DC_PITCH,
+				  head->warm_dc_pitch);
+			m9x_write(mdev, head->dc + M9_DC_CTRL,
+				  head->warm_dc_ctrl);
+		} else {
+			u32 ctrl = m9x_read(mdev, head->dc + M9_DC_CTRL);
+
+			m9x_write(mdev, head->dc + M9_DC_CTRL,
+				  ctrl & ~M9_DC_ENABLE);
+		}
 		m9_scanout_fini(head);
 	}
 	mdev->kms_initialized = false;

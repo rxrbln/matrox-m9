@@ -121,11 +121,35 @@
 #define M9_DCT_VSYNC			0x0030
 #define M9_DCT_VSYNCEND			0x005c
 
+/*
+ * Output path select, and the global video-reset strobe.  Bit 0 hands the
+ * serialisers the legacy VGA CRTC instead of the display controllers: while it
+ * is set the head sends the VGA raster whatever the controller is programmed
+ * with, and a card the BIOS never POSTed into a VBE mode comes up that way.
+ * MEASURED on a boot without vga=: head 0 programmed 1280x720 while the
+ * transmitter reported 640x480 htotal 800 vtotal 525, and putting bit 0 back
+ * after the handoff stopped the transmitter sending anything at all.
+ * Bit 1 is the native-path flag a POSTed card is found with.
+ */
 #define M9_REG_VGAFLAG			0x1c10
 #define M9_VGAFLAG_VGA			BIT(0)
 #define M9_VGAFLAG_NATIVE		BIT(1)
 #define M9_REG_VGAMISC			0x1fdc
 #define M9_VGAMISC_NATIVE		BIT(16)
+/*
+ * The legacy VGA miscellaneous output register, byte wide, written at 0x1fc2
+ * and read back at 0x1fcc.  Bits 3:2 are the CRTC clock select and 2 is the
+ * one that takes it off the fixed 25.175 MHz VGA oscillator and onto the
+ * frequency synthesiser the clock select names.  MEASURED: with the firmware's
+ * 0x63 left in place, a head programmed 1280x720 at 74250 kHz rastered at
+ * 15.0 kHz / 20 Hz - 25.175 MHz over that raster - whatever was written to the
+ * synthesiser, and 0x68 took it to the programmed 45.0 kHz / 60.00 Hz.
+ */
+#define M9_REG_VGA_MISC_WRITE		0x1fc2
+#define M9_REG_VGA_MISC_READ		0x1fcc
+#define M9_VGA_MISC_CLOCK_MASK		0x0cu
+#define M9_VGA_MISC_CLOCK_SYNTH		0x08u
+#define M9_VGA_MISC_NATIVE		0x68u
 #define M9_REG_DVO0			0x1c9c
 /*
  * Per-pad output gate.  MEASURED: the high nibble gates, active high for off,
@@ -296,10 +320,19 @@
 #define M9_FS_OUT_MIN_KHZ		54000u
 #define M9_FS_OUT_MAX_KHZ		108000u
 #define M9_CLKSEL0			0x1c00
+/* The four clock selects are consecutive; which head owns which is in the
+ * bank table, but the VGA handoff parks all of them. */
+#define M9_CLKSEL_COUNT			4u
+#define M9_CLKSEL(i)			(M9_CLKSEL0 + 4 * (i))
 #define M9_CLK_HOLD			BIT(0)
 #define M9_CLK_SEL_MASK			0x0000001eu
 #define M9_CLK_SEL_SHIFT		1
+/* Set on clock select 0 alone across the VGA handoff; meaning not established,
+ * copied from the vendor sequence. */
+#define M9_CLK_HANDOFF			BIT(25)
 #define M9_REG_SYNCARM			0x1c24
+#define M9_SYNCARM_RUN			BIT(0)
+#define M9_SYNCARM_HANDOFF		BIT(8)
 /* Digital link 0: the vendor sets bit 22 for a negative vsync and leaves the
  * rest of the word alone across a mode change. */
 #define M9_DVO_HSYNC_NEG		BIT(20)
