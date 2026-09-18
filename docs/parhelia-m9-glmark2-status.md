@@ -34,11 +34,21 @@ Four are below 60, each for a different reason:
 |---|---:|---|
 | `effect2d` 15-tap | 31 | inter-pass record bandwidth - see `parhelia-m9-record-bandwidth.md` |
 | `desktop` blur | 38 | GPU execution: 26.77 ms a frame, submit 23.13 of it, ioctl 22.84, over 28 jobs and 24 draws with none refused or skipped.  At 0.82 ms a job this is work, not the per-job overhead that dominates `refract` at 0.23 |
-| `terrain` | 21 | INVALID - draws refused: a multi-pass draw that tests or writes depth has no depth content in the scratch surface |
-| `refract` | 40 | INVALID - the same depth class, pre-existing rather than caused by the scratch path |
+| `terrain` | 21 | INVALID - draws refused: a multi-pass draw over **mesh** geometry, 576 records, which fills no box it could be given |
+| `refract` | 40 alone, SETUP-FAILED inside the full run | INVALID - the same geometry class, 156 records a draw, pre-existing rather than caused by the scratch path |
 
-**Carrying the destination's depth box into the scratch surface is the single
-follow-up that would close both `terrain` and `refract`.**
+**The depth attachment is not what refuses them, and carrying the
+destination's depth box into the scratch surface would restore nothing**
+(MEASURED, `M9X_SKIP_REPORT` over the whole default list): with the geometry
+asked about first, *no* draw anywhere in the thirty-three is refused for
+depth.  A scratch surface is the size of the box the geometry spans, so it
+only helps a draw that **fills** that box -- a rectangle does, a mesh does
+not.  `refract`'s missing draw is its bunny under a four-pass shader and
+`terrain`'s is its mesh under seven, and no target of any size can be covered
+by either, so the multi-pass schedule cannot carry them at all.  What would
+close them is a fragment backend that compiles those shaders into **one**
+pass, where the coverage requirement does not apply; see
+`parhelia-m9-fragment-pass-hardware.md` 3bc.
 
 The rest, for the record: texture 284/283/284, build 271/271, shading
 188/121/75/70, bump 89/179/154, effect2d 3x3 79, pulsar 188, desktop shadow
@@ -96,7 +106,7 @@ multipass path - and on three defects found while implementing it.
 | `effect2d` 15-tap (5 passes) | 25-33 fps | renders, with a 141 MiB record |
 | `shadow` | 143-147 fps | renders |
 | `refract` (4 passes) | 1 fps at 1920x1200, 2 at 640x480 | renders; 95% of the frame is the CPU mipmap of its distance target, not fill |
-| `terrain` | 21 fps at 1920x1200, INVALID | `terrain.frag` still refused for register pressure; `M9X_SPLIT_PRESSURE=1` compiles it into seven passes whose draws **test depth**, which the scratch surface does not carry, so they are refused rather than drawn (2430 in a run) and it stays off |
+| `terrain` | 21 fps at 1920x1200, INVALID | `terrain.frag` still refused for register pressure; `M9X_SPLIT_PRESSURE=1` compiles it into seven passes over **mesh** geometry (576 records a draw), which fills no box a scratch surface could be given, so those draws are refused rather than drawn and it stays off |
 | `desktop` separable blur (4 passes) | 38 fps at 1920x1200 | draws its blur: the partial pass renders on a scratch surface of the pixels it covers and is copied into place (3bc).  The frame is the engine's -- 26.77 ms of which 22.84 is the submit ioctl, against 2.73 draw and 2.66 emit |
 
 The rest of the suite was already above 60 fps and is unchanged; the slowest

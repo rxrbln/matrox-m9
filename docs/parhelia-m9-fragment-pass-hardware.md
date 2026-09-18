@@ -290,12 +290,35 @@ state rather than coverage:
   stopped the engine in its first frames even with the clear.  A scratch
   surface now keys its own depth, HZ and back-end trio.
 
+**A scratch surface only helps a draw that fills the box it spans.**  The
+surface is the size of that box, so the geometry covers it whole only when it
+fills it: a rectangle does, a mesh does not, and handing a mesh a scratch
+surface of its extent leaves that surface partly uncovered in exactly the way
+this section exists to avoid.  The driver checks it rather than assuming --
+every record has to sit on a corner of its own extent with all four corners
+drawn, which covers a strip, a fan, a quad and a rectangle cut into two
+triangles alike -- and asks it **before** the depth attachment, because it is
+the property that decides whether a scratch surface could serve the draw at
+all.
+
+That ordering is what let the refusals be counted, and the count settles a
+question that looked like the next piece of work: **no draw anywhere in
+glmark2's default list of thirty-three is refused for the depth attachment**
+(MEASURED, `M9X_SKIP_REPORT=1` over the whole run).  Every multi-pass draw the
+driver refuses is refused for geometry -- `refract` hands over 156 records a
+draw and `terrain` 576, both meshes over part of their target
+(`M9X_SPLIT_TRACE`) -- or for the fragment backend's own limits.  Carrying the
+destination's depth box into the scratch surface would therefore restore
+nothing: `refract`'s missing draw is its bunny under a four-pass shader and
+`terrain`'s its mesh under seven, and no target of any size can be covered by
+either.  What would close them is a fragment backend that compiles those
+shaders into **one** pass, where the coverage requirement does not apply.
+
 What the path refuses rather than submitting, each with a reason of its own
-(`m9_split_defer`): a draw that **tests or writes depth**, which the scratch
-surface does not carry -- that is `terrain` under `M9X_SPLIT_PRESSURE=1`,
-whose split draws are refused 2430 times in a run and never submitted
-(MEASURED) -- one whose geometry a program of its own preprocesses, one
-carrying a scissor of its own, and one with a vertex behind the eye.
+(`m9_split_defer`): a draw whose geometry does not fill the box it spans, one
+that tests or writes depth, which the scratch surface does not carry, one
+whose geometry a program of its own preprocesses, one carrying a scissor of
+its own, and one with a vertex behind the eye.
 
 MEASURED on the M9128 at 1920x1200, glmark2's own default list of
 thirty-three benchmarks, one process each, no stream timeout:
