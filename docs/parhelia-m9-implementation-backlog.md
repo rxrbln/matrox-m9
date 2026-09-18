@@ -123,7 +123,7 @@ must be `0xffff`, because that mask is a byte-lane mask and the vendor routes
 exposure gate is now three hardware results - clear-and-read-back, sample, and
 blend rounding - rather than a missing decode.
 
-**10-bit scanout stays out of scope, with evidence.**  The M9 display
+**10-bit scanout is in scope.**  The M9 display
 controller does know the format: `MxMM.sys 0x37b31` lists `0x6a` and `0x68` as
 scanout surface codes, `0x368fe` packs the code into bits `[31:25]` of the
 display surface descriptor, and `0x3dfd0` builds a ten-bit-per-channel gamma
@@ -132,8 +132,14 @@ ramp for code `0x6a`.  But both producers of the mode-record format mask in
 Windows bit depth to `{1,8,0x10,0x20,0x40}` and reject everything else, so the
 10-bit mode arm at `0x302d6` is unreachable, and the `GigaColorRender` /
 `GigaColorFullScreen` registry switches that selected it on Parhelia were
-deleted from this driver.  Do not add a depth-30 visual; render 10-bit and
-scan out 8-bit, which is what the vendor driver itself does.
+deleted from this driver.  What is dead is therefore the **vendor driver's
+mode enumeration**, not the silicon: this driver writes that descriptor itself
+and enumerates its own modes, so the path is reachable here.  The remaining
+unknowns are whether the DisplayPort transmitter needs its bit depth stated in
+the MSA and whether the attached panel accepts 30-bit - both answered by
+looking at the panel, not by more disassembly.  UNTESTED, under implementation.
+An earlier version of this paragraph said "do not add a depth-30 visual", which
+mistook the vendor's dead enumeration for a hardware limit.
 
 **Float textures moved out of this list (partly).**  The vendor binds format
 code `0x34` (`A32B32G32R32F`) at texture index `78/79` in
