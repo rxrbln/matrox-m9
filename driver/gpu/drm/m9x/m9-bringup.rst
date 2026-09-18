@@ -281,18 +281,33 @@ Framebuffer console
 ``drm_client_setup_with_fourcc()`` runs after registration whenever the
 scanout gate is on, so the TTM fbdev helper builds a console out of a dumb
 buffer.  The console therefore takes the copy path, not direct scanout: a
-whole 1024x768 frame costs 647 ms to re-tile through the host aperture, which
-is 1.2 Mpixel/s, so only the rows a dirty rectangle touches are published --
-one console line costs 7.7 ms.  Without that, the blinking cursor alone
-republished the whole frame twice a second.
+whole 1024x768 frame costs 647 ms to re-tile through the host aperture, so
+only the rows a dirty rectangle touches are published -- one console line
+costs 7.7 ms there.  Without that, the blinking cursor alone republished the
+whole frame twice a second and held a CPU at 100%.  The cost does not scale
+with pixel count: a whole 1280x720 frame is 395 ms, fewer rows of more bytes
+each, while one console line costs 15.7 ms because fbcon picks a 16x32 font
+at that height and a line is 32 rows rather than 16.
 
-The default mode is the timing the firmware posted: the connector's probed
-EDID modes lose ``DRM_MODE_TYPE_PREFERRED`` to the warm mode on a head whose
-display controller is enabled, so the console adopts the raster already on
-screen and never triggers the first-modeset-above-the-firmware-mode defect.
-On a head the firmware left dark the EDID's own preference stands.  A
-``video=DP-1:1280x720`` kernel command line overrides both through the
-ordinary DRM path.
+The initial mode is chosen in three steps, highest first: a ``video=``
+command line, the ``m9_kms_mode`` module parameter, then the timing the
+firmware posted.  The connector's probed EDID modes lose
+``DRM_MODE_TYPE_PREFERRED`` to the warm mode on a head whose display
+controller is enabled, so the console adopts the raster already on screen and
+never triggers the first-modeset-above-the-firmware-mode defect.  What the
+firmware leaves is not constant: one boot left head 0 native at 1024x768 with
+``DC_CTRL`` ``0x33046001``, another left it on the VGA path at 640x480 with
+``0x33042000``, bit 0 clear.  With the controller disabled there is no timing
+to inherit and the EDID's own preference stands, as it does on a head the
+firmware left dark.
+
+``m9_kms_mode`` exists because a PXE-booted target's command line cannot be
+changed and the module is inserted long after it was parsed.  It carries the
+same ``<connector>:<mode>`` specification, several entries separated by
+whitespace or a semicolon, through the ordinary DRM command-line parser --
+``m9_kms_mode=DP-1:1280x720``.  It is read from ``get_modes``, which the probe
+helper does not call for a disconnected connector, so an entry naming a dark
+output is ignored instead of forcing it on.
 
 Connector detection needs no probe of its own at registration: the fbdev
 client's first ``fill_modes()`` drives it, after which ``status`` reads
