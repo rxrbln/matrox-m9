@@ -44,10 +44,13 @@ m9_format_info(enum pipe_format format, struct m9_format_info *out)
       info = (struct m9_format_info){ 0x51, 1, M9_FORMAT_TEXTURE };
       break;
    /* Depth surfaces sample as well as store: the descriptor carries the
-    * same code in either role (docs/parhelia-m9-openbits-gl-capture.md). */
+    * same code in either role (docs/parhelia-m9-openbits-gl-capture.md).
+    * Z16 samples but does not store: the depth unit needs the hierarchical
+    * surface m9_resource_attach_hz builds, which is decoded for D24S8 only,
+    * so a Z16 attachment silently drew without depth (MEASURED, glmark2
+    * terrain).  Claiming only what works lets st fall back to D24S8. */
    case PIPE_FORMAT_Z16_UNORM:
-      info = (struct m9_format_info){ 0x5c, 2,
-         M9_FORMAT_TEXTURE | M9_FORMAT_DEPTH };
+      info = (struct m9_format_info){ 0x5c, 2, M9_FORMAT_TEXTURE };
       break;
    case PIPE_FORMAT_S8_UINT_Z24_UNORM:
    case PIPE_FORMAT_X8Z24_UNORM:
