@@ -47,9 +47,14 @@ struct nir_shader;
  * preprocessing passes: docs/parhelia-m9-vertex-output-target-re.md).  The
  * appended tail takes three of the four targets -- 0 the varying, 1 the clip
  * position, 2 the viewport position -- and uses r1c/r1d as temporaries, so
- * target 3 is unreachable behind it and the one varying stands until
- * m9_draw.c emits the second preprocessing draw that note specifies. */
-#define M9_VS_MAX_VARYINGS   1u
+ * only one varying fits beside it.  A program with more is compiled a second
+ * time into a tail-free head that writes varyings 1..4 to all four pairs,
+ * and m9_draw.c runs that head as a preprocessing draw of its own ahead of
+ * the fused one. */
+#define M9_VS_MAX_VARYINGS   5u
+/* Varyings the tail-free second head carries; the first stays with the
+ * fused pass, whose target 0 the tail feeds from r02. */
+#define M9_VS_EXTRA_VARYINGS (M9_VS_MAX_VARYINGS - 1u)
 /* Constant pairs 9..21 of the span belong to the appended tail, which names
  * them by absolute index; user pairs are 0..8 and 22 upward. */
 #define M9_VS_TAIL_FIRST_PAIR 9u
@@ -68,6 +73,10 @@ struct nir_shader;
 #define REG_POS_ZW 0x01u
 #define REG_VAR_XY 0x02u
 #define REG_VAR_ZW 0x13u
+/* Output pair j of a preprocessing pass, low register then high; the fused
+ * pass's varying is pair 0, whose low half the tail writes from r02. */
+#define REG_OUT_LO(j) (0x11u + 4u * (j))
+#define REG_OUT_HI(j) (0x13u + 4u * (j))
 /* The partial dot names register 3 in its c field and nothing writes it. */
 #define REG_DOT_C  0x03u
 #define REG_ATTR0  0x46u
@@ -147,10 +156,17 @@ struct m9_vs_program {
    unsigned attr_count;
    uint64_t inputs_read;          /* gl_vert_attrib mask of the shader */
    uint32_t record_bytes;
-   bool has_varying;
-   unsigned varying_location;     /* gl_varying_slot of the one varying */
-   unsigned varying_components;
+   /* Varying 0 rides the fused pass; 1..4 the second head in extra. */
+   struct util_dynarray extra;    /* uint32_t W0, W1 of the second head */
+   unsigned varying_count;
+   unsigned varying_location[M9_VS_MAX_VARYINGS];   /* gl_varying_slot */
+   unsigned varying_components[M9_VS_MAX_VARYINGS];
 };
+
+/* The program's index for a varying slot, or -1 when it writes none.  Index
+ * 0 lands on transient view 0 and index k on the extra pass's target k - 1. */
+int m9_vs_varying_index(const struct m9_vs_program *program,
+                        unsigned location);
 
 /* Returns false with a static reason when the shader is not covered. */
 bool m9_vs_compile(struct nir_shader *nir, struct m9_vs_program *program,
@@ -168,6 +184,9 @@ unsigned m9_vs_const_pair(unsigned index);
 unsigned m9_vs_const_count(const struct m9_vs_program *program);
 /* Instruction slots of the whole program, tail and stop pair included. */
 unsigned m9_vs_slot_count(const struct m9_vs_program *program);
+/* Instruction slots of the second head, stop pair included; 0 when the
+ * program has at most one varying and needs no second preprocessing draw. */
+unsigned m9_vs_extra_slot_count(const struct m9_vs_program *program);
 /* Writes head, tail and stop pair; returns the dwords written, 0 if max is
  * too small. */
 unsigned m9_vs_emit(const struct m9_vs_program *program, uint32_t *out,
@@ -179,7 +198,7 @@ unsigned m9_vs_emit(const struct m9_vs_program *program, uint32_t *out,
 unsigned m9_vs_c2_image(const struct m9_vs_program *program,
                         const uint32_t *fs_slots, unsigned fs_slot_count,
                         uint32_t *out, unsigned max_dwords,
-                        unsigned *vertex_entry);
+                        unsigned *vertex_entry, unsigned *extra_entry);
 
 /* Resolves the user constants into the preprocessing span, pair p at
  * out[2 * p], leaving pairs 9..21 untouched for the caller's viewport and

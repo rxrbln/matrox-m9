@@ -25,6 +25,11 @@
  * stream slots for position, c and d; a shader split across passes needs
  * one view per coordinate of every pass, so the arena holds more. */
 #define M9_TRANSIENT_CPU_VIEW     4u
+/* Views the second preprocessing draw renders varyings 1..4 into.  They sit
+ * on the CPU range on purpose: a native vertex job binds no CPU stream
+ * object, so m9_stream_is_cpu leaves every view of it local, and the arena
+ * has twenty views for both uses. */
+#define M9_TRANSIENT_VS_EXTRA_VIEW 4u
 #define M9_TRANSIENT_VIEW_BYTES   0x16800u
 #define M9_TRANSIENT_VERTEX_BYTES 16u
 #define M9_BE_BYTES               0x100000u

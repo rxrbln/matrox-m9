@@ -28,6 +28,9 @@
 /* Dwords of a single-draw job; each restated raster draw adds
  * M9_JOB_DRAW_DWORDS, which m9_draw.h states. */
 #define M9_JOB_BASE_DWORDS 233u
+/* The second preprocessing draw without its stream targets and its
+ * declaration, which m9_draw_vs_extra_dwords adds. */
+#define M9_JOB_EXTRA_DWORDS 95u
 
 unsigned
 m9_draw_job_dwords(unsigned draw_count)
@@ -136,13 +139,23 @@ m9_draw_units_dwords(unsigned unit_count)
    return 10 + 18 * unit_count;
 }
 
+/* Dependency steps the second preprocessing draw claims: index e3 advances
+ * by 0x10 on every write, and that draw's range writes it twice, exactly as
+ * the fused one does. */
+static uint32_t
+m9_extra_dependency(const struct m9_draw_job *job)
+{
+   return job->vs_extra_entry ? 0x20u : 0u;
+}
+
 /* Dependency token a pass starts at; its raster range begins two steps in
  * when the pass preprocesses for itself, and at the same place otherwise. */
 static uint32_t
 m9_pass_dependency(const struct m9_draw_job *job, unsigned pass)
 {
-   return pass * (job->preprocess_per_pass ? M9_PASS_DEPENDENCY_FULL :
-                                             M9_PASS_DEPENDENCY_STEP);
+   return pass * (job->preprocess_per_pass ?
+                  M9_PASS_DEPENDENCY_FULL + m9_extra_dependency(job) :
+                  M9_PASS_DEPENDENCY_STEP);
 }
 
 /* One step past the last dependency a job's ranges raise: what a record
@@ -152,14 +165,14 @@ m9_draw_job_final_dependency(const struct m9_draw_job *job)
 {
    unsigned last = job->pass_count ? job->pass_count - 1 : 0;
 
-   return m9_pass_dependency(job, last) + 0x50;
+   return m9_pass_dependency(job, last) + m9_extra_dependency(job) + 0x50;
 }
 
 static int m9_emit_preprocess(struct m9_batch *batch,
                               const struct m9_draw_job *job,
                               const uint32_t *decl, unsigned decl_count,
                               uint32_t record_bytes, unsigned const_pairs,
-                              uint32_t base);
+                              uint32_t base, bool extra);
 
 /* The descriptor-only operands 74..77: a bound route selects the record and
  * names its base and consumer descriptor behind it, an idle one carries the
@@ -459,7 +472,8 @@ m9_emit_raster_range(struct m9_batch *batch, const struct m9_draw_job *job,
 {
    const struct m9_draw_params *p = job->params;
    const struct m9_draw_record *d0 = &job->draws[0];
-   uint32_t dep = m9_pass_dependency(job, index) + 0x20;
+   uint32_t dep = m9_pass_dependency(job, index) + m9_extra_dependency(job) +
+                  0x20;
    /* A record-writing pass never blends: the destination it would read is
     * the record, not the application target. */
    bool blend = job->blend_dest && !(pass && pass->writes_record);
@@ -654,13 +668,22 @@ m9_draw_job_valid(const struct m9_draw_job *job)
        (job->vs_const_pairs > M9_VS_CONST_MAX_PAIRS ||
         job->vs_const_pairs > 0x7f))
       return false;
+   /* The second preprocessing draw runs the same declaration and the same
+    * source record, so it only stands with a native vertex program. */
+   if (job->vs_extra_entry &&
+       (!job->vs_decl_count || !job->vs_extra_targets ||
+        job->vs_extra_targets > M9_VS_EXTRA_VARYINGS))
+      return false;
+   for (unsigned t = 0; t < job->vs_extra_targets; t++)
+      if (job->vs_extra_view[t] >= M9_TRANSIENT_VIEWS)
+         return false;
    if (job->pass_count) {
       /* Every pass but the last renders into the record, so a split job
        * needs one; the dependency the last pass requests must stay inside
        * the kernel's window. */
       if (!job->passes || job->fs ||
-          m9_pass_dependency(job, job->pass_count) + 0x40 >
-          PARHELIA_M9_DEPENDENCY_LIMIT)
+          m9_pass_dependency(job, job->pass_count) +
+          m9_extra_dependency(job) + 0x40 > PARHELIA_M9_DEPENDENCY_LIMIT)
          return false;
       for (unsigned i = 0; i < job->pass_count; i++) {
          const struct m9_raster_pass *pass = &job->passes[i];
@@ -762,8 +785,20 @@ m9_batch_emit_draw_job(struct m9_batch *batch, const struct m9_draw_job *job)
       bool brk = job->preprocess_per_pass && pi + 1 < n;
 
       if (!pi || job->preprocess_per_pass) {
+         uint32_t base = m9_pass_dependency(job, pi);
+
+         /* Varyings 1..4 come from a draw of their own, ahead of the fused
+          * pass: the appended tail owns three of the four output targets
+          * and scratches the register behind the fourth. */
+         if (job->vs_extra_entry) {
+            ret = m9_emit_preprocess(batch, job, decl, decl_count,
+                                     record_bytes, const_pairs, base, true);
+            if (ret)
+               goto fail;
+         }
          ret = m9_emit_preprocess(batch, job, decl, decl_count, record_bytes,
-                                  const_pairs, m9_pass_dependency(job, pi));
+                                  const_pairs,
+                                  base + m9_extra_dependency(job), false);
          if (ret)
             goto fail;
       }
@@ -779,24 +814,71 @@ fail:
    return ret;
 }
 
-/* Preprocessing pass: two dependency steps from base. */
+/* Index ef of a preprocessing pass.  The fused pass carries the captured
+ * 0x00288800: three targets, the clip code at bit 15 and role 8.  The
+ * tail-free extra draw enables one bit a target past the first and carries
+ * role 2, the first preprocessing draw of a submission -- 0x00000200,
+ * 0x00080200, 0x00280200 and 0x00a80200, all four CAPTURED.
+ * docs/parhelia-m9-vertex-output-target-re.md sections 1 and 2 */
+static uint32_t
+m9_preprocess_ef(unsigned targets)
+{
+   uint32_t ef = 0x00000200u;
+
+   for (unsigned t = 1; t < targets; t++)
+      ef |= 0x00080000u << (2 * (t - 1));
+   return ef;
+}
+
+unsigned
+m9_draw_vs_extra_dwords(unsigned target_count, unsigned decl_count)
+{
+   /* The draw repeats the preprocessing block without its 0xb8 clip-code
+    * pair, with one address/descriptor packet a target. */
+   return M9_JOB_EXTRA_DWORDS + 3 * target_count +
+          m9_draw_decl_dwords(decl_count) + 10;
+}
+
+unsigned
+m9_draw_vs_extra_relocs(unsigned target_count)
+{
+   /* One a bound target, plus the source record, the program, the two
+    * constant-span ends, the fragment database and the linked record. */
+   return target_count + 6;
+}
+
+/* Preprocessing pass: two dependency steps from base.  The extra form runs
+ * the tail-free head, binding one stream target a varying and no clip code;
+ * everything else -- the declaration, the source record, the constant span
+ * and the linked record -- is the fused pass's own. */
 static int
 m9_emit_preprocess(struct m9_batch *batch, const struct m9_draw_job *job,
                    const uint32_t *decl, unsigned decl_count,
-                   uint32_t record_bytes, unsigned const_pairs, uint32_t base)
+                   uint32_t record_bytes, unsigned const_pairs, uint32_t base,
+                   bool extra)
 {
+   unsigned targets = extra ? job->vs_extra_targets : 0;
    int ret = 0;
 
    EMIT(V(0xe6, 3), V(0xe3, base));
    EMIT(V(0xe6, 3));
-   EMIT(V(0xf0, 0xf0000400), V(0xef, 0x00288800), V(0xd7, 0x000050ae));
+   EMIT(V(0xf0, 0xf0000400),
+        V(0xef, extra ? m9_preprocess_ef(targets) : 0x00288800),
+        V(0xd7, 0x000050ae));
    EMIT(V(0x22, m9_preprocess_control(decl_count)));
    EMIT(V(0xe6, 3), V(0xe3, base + 0x10));
-   EMIT(R(0xb0, job->transient, VIEW(0), STREAM), V(0xb1, 0x68002000));
-   EMIT(R(0xb2, job->transient, VIEW(3), STREAM), V(0xb3, 0x68002000));
-   EMIT(R(0xb4, job->transient, VIEW(1), STREAM), V(0xb5, 0x68002000));
-   EMIT(R(0xb8, job->transient, VIEW(2), STREAM), V(0xb9, 0xb8002000));
-   EMIT(V(0xba, 0x00000020), V(0xbb, 0xf0010040));
+   if (extra) {
+      for (unsigned t = 0; t < targets; t++)
+         EMIT(R(0xb0 + 2 * t, job->transient, VIEW(job->vs_extra_view[t]),
+                STREAM),
+              V(0xb1 + 2 * t, 0x68002000));
+   } else {
+      EMIT(R(0xb0, job->transient, VIEW(0), STREAM), V(0xb1, 0x68002000));
+      EMIT(R(0xb2, job->transient, VIEW(3), STREAM), V(0xb3, 0x68002000));
+      EMIT(R(0xb4, job->transient, VIEW(1), STREAM), V(0xb5, 0x68002000));
+      EMIT(R(0xb8, job->transient, VIEW(2), STREAM), V(0xb9, 0xb8002000));
+      EMIT(V(0xba, 0x00000020), V(0xbb, 0xf0010040));
+   }
    EMIT(V(0xbe, 3));
    EMIT(V(0xad, 0x20), V(0xad, 0x20), V(0xad, 0x20), V(0xad, 0x20));
    EMIT(V(0xaf, 0));
@@ -815,7 +897,8 @@ m9_emit_preprocess(struct m9_batch *batch, const struct m9_draw_job *job,
    /* The vertex program of a split shader sits behind every fragment
     * pass, so its entry comes from the passes when fs is unset. */
    EMIT(R(0xc2, job->program, 0, PROGRAM),
-        V(0xc3, job->fs ? job->fs->vertex_entry :
+        V(0xc3, extra ? job->vs_extra_entry :
+                job->fs ? job->fs->vertex_entry :
                 job->pass_count ? job->passes[0].fs.vertex_entry : 4),
         V(0x8f, 0));
    EMIT(V(0x8c, 0x00500000 | const_pairs << 8),

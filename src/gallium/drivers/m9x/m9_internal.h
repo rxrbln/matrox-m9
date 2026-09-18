@@ -273,6 +273,12 @@ struct m9_job_key {
     * transformed records through the captured program. */
    const struct m9_vs_program *vs;
    uint32_t vs_program;
+   /* Program slot of the tail-free second head, 0 when the program has at
+    * most one varying and needs no second preprocessing draw. */
+   uint32_t vs_extra_entry;
+   /* Stream targets that draw binds: the highest varying index the fragment
+    * program reads, so a varying nothing reads costs no target. */
+   uint32_t vs_extra_targets;
    float viewport_scale[3], viewport_bias[3];
    /* One entry a texture slot of every raster pass: a shader split across
     * passes binds four in each of them. */

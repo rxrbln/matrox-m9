@@ -10,8 +10,11 @@
  * (docs/parhelia-m9-native-vertex-isa.md section 5).
  *
  * What is compiled here is the head of the program: it reads the declared
- * attribute registers, computes the clip position into r00/r01 and one
- * varying into r02/r13.  m9_vs_emit() appends the vendor tail -- the
+ * attribute registers, computes the clip position into r00/r01 and the first
+ * varying into r02/r13.  A shader with more varyings is compiled a second
+ * time into a tail-free head that writes varyings 1..4 to the four output
+ * pairs, which m9_draw.c runs as a preprocessing draw of its own ahead of
+ * the fused one.  m9_vs_emit() appends the vendor tail -- the
  * reciprocal of w, the perspective divide, the viewport scale and bias and
  * the clip code -- verbatim, because one of its instructions is undecoded
  * and it is the same 25 slots in every capture.  The tail names constant
@@ -70,6 +73,7 @@ struct kkey {
 struct ctx {
    nir_shader *nir;
    struct m9_vs_program *p;
+   struct util_dynarray *out;   /* the head being emitted */
    struct util_dynarray keys;
    struct held holds[M9_VS_REGS][2];
    unsigned *last_use;      /* per definition, the instruction that ends it */
@@ -83,6 +87,17 @@ struct ctx {
    unsigned pin_count;
    unsigned temp_seq;
    bool temp_live;
+   /* Output registers of the head being emitted, kept out of the allocation
+    * pool: the tail-free head writes its four pairs at the end and nothing
+    * may take one back as a temporary. */
+   uint8_t reserved[M9_VS_REGS];
+   /* Registers handed out while the current instruction is being emitted.
+    * An operand materialised into one holds a value the liveness model does
+    * not track -- an attribute component, a literal, a uniform -- so without
+    * this the next allocation of the same instruction takes the register
+    * back and both operands read the second value (MEASURED offline: the
+    * (z, z) lane of any three-component add read its second source twice). */
+   uint8_t busy[M9_VS_REGS];
    const char *reason;
 };
 
@@ -112,8 +127,8 @@ w1_make(uint32_t base, unsigned e, unsigned a)
 static void
 emit(struct ctx *c, uint32_t w0, uint32_t w1)
 {
-   util_dynarray_append_typed(&c->p->slots, uint32_t, w0);
-   util_dynarray_append_typed(&c->p->slots, uint32_t, w1);
+   util_dynarray_append_typed(c->out, uint32_t, w0);
+   util_dynarray_append_typed(c->out, uint32_t, w1);
 }
 
 /* Constants */
@@ -187,9 +202,10 @@ held_is_const(const struct held *h)
 /* Registers */
 
 static bool
-reg_in_pool(unsigned r)
+reg_in_pool(const struct ctx *c, unsigned r)
 {
-   return (r >= 0x04u && r <= 0x12u) || (r >= 0x14u && r <= 0x21u);
+   return ((r >= 0x04u && r <= 0x12u) || (r >= 0x14u && r <= 0x21u)) &&
+          !c->reserved[r] && !c->busy[r];
 }
 
 static bool
@@ -209,10 +225,11 @@ static int
 reg_alloc(struct ctx *c)
 {
    for (unsigned r = 0; r < M9_VS_REGS; r++) {
-      if (!reg_in_pool(r) || held_live(c, &c->holds[r][0]) ||
+      if (!reg_in_pool(c, r) || held_live(c, &c->holds[r][0]) ||
           held_live(c, &c->holds[r][1]))
          continue;
       memset(c->holds[r], 0, sizeof(c->holds[r]));
+      c->busy[r] = 1;
       return r;
    }
    return -1;
@@ -1490,13 +1507,73 @@ note_src(nir_src *src, void *data)
    return true;
 }
 
+/* One head: the register file starts at the declared attributes, every ALU
+ * instruction of the block is emitted, and the outputs land last.  A program
+ * with several varyings runs this twice -- once for the fused pass, once for
+ * the tail-free extra pass -- because each is a program of its own and the
+ * hardware has no path from one to the other. */
+static bool
+compile_head(struct ctx *c, nir_block *block, unsigned final,
+             const struct input_use *used, unsigned inputs,
+             nir_intrinsic_instr *position,
+             nir_intrinsic_instr *const *var, unsigned nvar)
+{
+   static const float dflt[4] = { 0.0f, 0.0f, 0.0f, 1.0f };
+
+   memset(c->holds, 0, sizeof(c->holds));
+   memset(c->reserved, 0, sizeof(c->reserved));
+   memset(c->busy, 0, sizeof(c->busy));
+   c->pin_count = 0;
+   c->temp_seq = 0;
+   c->index = 0;
+   c->temp_live = false;
+   if (position) {
+      pin_output(c, position, 0, REG_POS_XY);
+      pin_output(c, position, 2, REG_POS_ZW);
+      pin_output(c, nvar ? var[0] : NULL, 0, REG_VAR_XY);
+      pin_output(c, nvar ? var[0] : NULL, 2, REG_VAR_ZW);
+   } else {
+      for (unsigned j = 0; j < nvar; j++) {
+         c->reserved[REG_OUT_LO(j)] = 1;
+         c->reserved[REG_OUT_HI(j)] = 1;
+         pin_output(c, var[j], 0, REG_OUT_LO(j));
+         pin_output(c, var[j], 2, REG_OUT_HI(j));
+      }
+   }
+   declare_attributes(c, used, inputs);
+   nir_foreach_instr(instr, block) {
+      c->index = instr->index;
+      c->temp_live = true;
+      memset(c->busy, 0, sizeof(c->busy));
+      if (instr->type == nir_instr_type_alu &&
+          !build_alu(c, nir_instr_as_alu(instr)))
+         return false;
+      c->temp_live = false;
+   }
+   c->index = final;
+   c->temp_live = true;
+   memset(c->busy, 0, sizeof(c->busy));
+   if (position) {
+      if (!write_output(c, position, REG_POS_XY, REG_POS_ZW, dflt) ||
+          !write_output(c, nvar ? var[0] : NULL, REG_VAR_XY, REG_VAR_ZW,
+                        dflt))
+         return false;
+   } else {
+      for (unsigned j = 0; j < nvar; j++)
+         if (!write_output(c, var[j], REG_OUT_LO(j), REG_OUT_HI(j), dflt))
+            return false;
+   }
+   c->temp_live = false;
+   return true;
+}
+
 static bool
 compile_impl(struct ctx *c, nir_function_impl *impl)
 {
    struct input_use used[M9_VS_MAX_ATTRIBUTES];
-   nir_intrinsic_instr *position = NULL, *varying = NULL;
-   static const float pos_default[4] = { 0.0f, 0.0f, 0.0f, 1.0f };
-   static const float var_default[4] = { 0.0f, 0.0f, 0.0f, 1.0f };
+   nir_intrinsic_instr *position = NULL;
+   nir_intrinsic_instr *varying[M9_VS_MAX_VARYINGS] = { NULL };
+   unsigned nvar = 0;
    unsigned inputs = 0, final;
    nir_block *block;
 
@@ -1553,11 +1630,16 @@ compile_impl(struct ctx *c, nir_function_impl *impl)
          } else if (location >= VARYING_SLOT_CLIP_DIST0 &&
                     location <= VARYING_SLOT_CULL_DIST1) {
             return fail(c, "clip distance");
-         } else if (varying &&
-                    nir_intrinsic_io_semantics(varying).location != location) {
-            return fail(c, "more than one varying");
          } else {
-            varying = intr;
+            unsigned v;
+
+            for (v = 0; v < nvar; v++)
+               if (nir_intrinsic_io_semantics(varying[v]).location == location)
+                  break;
+            if (v == nvar && nvar >= M9_VS_MAX_VARYINGS)
+               return fail(c, "more than five varyings");
+            varying[v] = intr;
+            nvar += v == nvar;
          }
          break;
       }
@@ -1615,31 +1697,25 @@ compile_impl(struct ctx *c, nir_function_impl *impl)
       nir_foreach_src(instr, note_src, &st);
    }
 
-   pin_output(c, position, 0, REG_POS_XY);
-   pin_output(c, position, 2, REG_POS_ZW);
-   pin_output(c, varying, 0, REG_VAR_XY);
-   pin_output(c, varying, 2, REG_VAR_ZW);
-   declare_attributes(c, used, inputs);
-   nir_foreach_instr(instr, block) {
-      c->index = instr->index;
-      c->temp_live = true;
-      if (instr->type == nir_instr_type_alu &&
-          !build_alu(c, nir_instr_as_alu(instr)))
+   c->out = &c->p->slots;
+   if (!compile_head(c, block, final, used, inputs, position, varying, nvar))
+      return false;
+   /* Varyings 1..4 are a program of their own, run as the preprocessing draw
+    * ahead of the fused one.  It re-emits the whole block: the two heads
+    * share no register file, and the dead lanes cost slots rather than
+    * correctness. */
+   if (nvar > 1) {
+      c->out = &c->p->extra;
+      if (!compile_head(c, block, final, used, inputs, NULL, varying + 1,
+                        nvar - 1))
          return false;
-      c->temp_live = false;
    }
-   c->index = final;
-   c->temp_live = true;
-   if (!write_output(c, position, REG_POS_XY, REG_POS_ZW, pos_default))
-      return false;
-   if (!write_output(c, varying, REG_VAR_XY, REG_VAR_ZW, var_default))
-      return false;
-   c->temp_live = false;
-   if (varying) {
-      c->p->has_varying = true;
-      c->p->varying_location = nir_intrinsic_io_semantics(varying).location;
-      c->p->varying_components =
-         nir_intrinsic_component(varying) + varying->src[0].ssa->num_components;
+   c->p->varying_count = nvar;
+   for (unsigned v = 0; v < nvar; v++) {
+      c->p->varying_location[v] =
+         nir_intrinsic_io_semantics(varying[v]).location;
+      c->p->varying_components[v] = nir_intrinsic_component(varying[v]) +
+                                    varying[v]->src[0].ssa->num_components;
    }
    return true;
 }
@@ -1655,6 +1731,7 @@ m9_vs_compile(struct nir_shader *nir, struct m9_vs_program *p,
    memset(&c, 0, sizeof(c));
    memset(p, 0, sizeof(*p));
    util_dynarray_init(&p->slots, NULL);
+   util_dynarray_init(&p->extra, NULL);
    util_dynarray_init(&p->consts, NULL);
    util_dynarray_init(&c.keys, NULL);
    c.nir = nir;
@@ -1689,8 +1766,18 @@ void
 m9_vs_program_fini(struct m9_vs_program *p)
 {
    util_dynarray_fini(&p->slots);
+   util_dynarray_fini(&p->extra);
    util_dynarray_fini(&p->consts);
    memset(p, 0, sizeof(*p));
+}
+
+int
+m9_vs_varying_index(const struct m9_vs_program *p, unsigned location)
+{
+   for (unsigned v = 0; v < p->varying_count; v++)
+      if (p->varying_location[v] == location)
+         return (int)v;
+   return -1;
 }
 
 unsigned
@@ -1710,6 +1797,14 @@ m9_vs_slot_count(const struct m9_vs_program *p)
 }
 
 unsigned
+m9_vs_extra_slot_count(const struct m9_vs_program *p)
+{
+   unsigned head = util_dynarray_num_elements(&p->extra, uint32_t);
+
+   return head ? head / 2 + 1 : 0;
+}
+
+unsigned
 m9_vs_emit(const struct m9_vs_program *p, uint32_t *out, unsigned max_dwords)
 {
    unsigned head = util_dynarray_num_elements(&p->slots, uint32_t);
@@ -1725,21 +1820,46 @@ m9_vs_emit(const struct m9_vs_program *p, uint32_t *out, unsigned max_dwords)
    return total;
 }
 
+/* The second head carries no tail: it writes its targets and stops. */
+static unsigned
+m9_vs_emit_extra(const struct m9_vs_program *p, uint32_t *out,
+                 unsigned max_dwords)
+{
+   unsigned head = util_dynarray_num_elements(&p->extra, uint32_t);
+   unsigned total = head ? head + 2 : 0;
+
+   if (!total)
+      return 0;
+   if (!out || total > max_dwords)
+      return 0;
+   memcpy(out, p->extra.data, head * sizeof(*out));
+   out[head] = STOP_W0;
+   out[head + 1] = STOP_W1;
+   return total;
+}
+
 unsigned
 m9_vs_c2_image(const struct m9_vs_program *p, const uint32_t *fs_slots,
                unsigned fs_slot_count, uint32_t *out, unsigned max_dwords,
-               unsigned *vertex_entry)
+               unsigned *vertex_entry, unsigned *extra_entry)
 {
    unsigned vs_dwords = m9_vs_slot_count(p) * 2;
-   unsigned total = fs_slot_count * 2 + vs_dwords;
+   unsigned extra_dwords = m9_vs_extra_slot_count(p) * 2;
+   unsigned total = fs_slot_count * 2 + vs_dwords + extra_dwords;
 
    if (!out || total > max_dwords || (fs_slot_count && !fs_slots))
       return 0;
    memcpy(out, fs_slots, fs_slot_count * 2 * sizeof(*out));
    if (!m9_vs_emit(p, out + fs_slot_count * 2, vs_dwords))
       return 0;
+   if (extra_dwords &&
+       !m9_vs_emit_extra(p, out + fs_slot_count * 2 + vs_dwords,
+                         extra_dwords))
+      return 0;
    if (vertex_entry)
       *vertex_entry = fs_slot_count;
+   if (extra_entry)
+      *extra_entry = extra_dwords ? fs_slot_count + vs_dwords / 2 : 0;
    return total;
 }
 

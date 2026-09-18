@@ -6,6 +6,7 @@
 #include "m9_batch.h"
 #include "m9_draw_params.h"
 #include "m9_texture.h"
+#include "m9_vs_compile.h"
 
 /* One raster draw; start is a four-record boundary of the source.  A draw
  * with index_count reads that many 16-bit indices from the source object at
@@ -118,6 +119,14 @@ struct m9_draw_job {
    unsigned vs_decl_count;    /* index-23 words, terminator included */
    uint32_t vs_record_bytes;
    unsigned vs_const_pairs;   /* 0 keeps the captured twenty-two */
+   /* Second preprocessing draw: the tail-free head that writes varyings
+    * 1..4.  It runs ahead of the fused pass in a range of its own, binding
+    * one stream target a varying and no clip code.  A zero entry leaves the
+    * job at the single preprocessing draw.
+    * docs/parhelia-m9-vertex-output-target-re.md section 4 */
+   unsigned vs_extra_entry;   /* program slot the draw enters at c3 */
+   unsigned vs_extra_targets; /* 1..4 stream targets it binds */
+   uint32_t vs_extra_view[M9_VS_EXTRA_VARYINGS];  /* transient view each takes */
    /* Raster texture units, texel pair order. */
    const struct m9_texture_unit *units;
    unsigned unit_count;
@@ -146,6 +155,10 @@ unsigned m9_draw_job_dwords(unsigned draw_count);
 /* Dwords a declaration of this many words costs beyond the pass-through five
  * the base job already counts. */
 unsigned m9_draw_decl_dwords(unsigned decl_count);
+/* Dwords and relocations the second preprocessing draw costs, per raster
+ * pass that preprocesses for itself. */
+unsigned m9_draw_vs_extra_dwords(unsigned target_count, unsigned decl_count);
+unsigned m9_draw_vs_extra_relocs(unsigned target_count);
 unsigned m9_draw_job_relocs(unsigned draw_count, unsigned unit_count);
 /* Dwords and relocations each colour attachment past the first costs: one
  * address/descriptor packet and its COLOR relocation, per raster pass. */
