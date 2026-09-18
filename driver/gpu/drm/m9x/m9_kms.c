@@ -32,9 +32,17 @@
 #define M9_WARM_RENDER_BYTES	0x00301000u
 #define M9_WARM_CLOCK_KHZ	65000u
 /* Scanout surfaces use the tiled 0x21 layout; DC pitch and window descriptor. */
-/* Surface descriptor of the programmed scanout: format cc, ordinary tiled
- * kind 21, the 32-aligned span, and the line count. */
-#define M9_SCANOUT_FORMAT(span)	(0xcc210000u | (span))
+/* Surface descriptor of the programmed scanout: the 7-bit format code in
+ * bits 31:25, ordinary tiled kind 21, the 32-aligned span, and the line
+ * count.  The display controller consumes the very same field as the 3-D
+ * descriptor (docs/parhelia-m9-gigacolor-10bit.md 2, 5.1). */
+#define M9_SCANOUT_CODE_A8R8G8B8	0x66u
+#define M9_SCANOUT_CODE_A2B10G10R10	0x68u
+#define M9_SCANOUT_CODE_A2R10G10B10	0x6au
+#define M9_SCANOUT_CODE_MASK	0xfe000000u
+#define M9_SCANOUT_DESC(code, span) \
+	(((u32)(code) << 25) | 0x00210000u | (span))
+#define M9_SCANOUT_FORMAT(span)	M9_SCANOUT_DESC(M9_SCANOUT_CODE_A8R8G8B8, (span))
 #define M9_SCANOUT_EXTENT(lines)	(0x00010000u | (lines))
 /* Per-head mode limits: the display controller draws at most this raster. */
 #define M9_SCANOUT_MAX_WIDTH	2048u
@@ -98,6 +106,27 @@ MODULE_PARM_DESC(vblank_mask,
  * and the synthesiser covers this range with the divider search. */
 #define M9_CLOCK_MIN_KHZ	20000u
 #define M9_CLOCK_MAX_KHZ	200000u
+
+/*
+ * Scanout format code of a DRM fourcc.  A dword's lowest channel names the
+ * hardware format: XRGB8888 and XRGB2101010 carry blue at bit 0 (A8R8G8B8,
+ * A2R10G10B10), XBGR2101010 carries red there (A2B10G10R10).
+ */
+static u8 m9_scanout_code(u32 fourcc)
+{
+	switch (fourcc) {
+	case DRM_FORMAT_XRGB8888:
+		return M9_SCANOUT_CODE_A8R8G8B8;
+	case DRM_FORMAT_XRGB2101010:
+	case DRM_FORMAT_ARGB2101010:
+		return M9_SCANOUT_CODE_A2R10G10B10;
+	case DRM_FORMAT_XBGR2101010:
+	case DRM_FORMAT_ABGR2101010:
+		return M9_SCANOUT_CODE_A2B10G10R10;
+	default:
+		return 0;
+	}
+}
 
 /* Every scanout surface is allocated with a 32-aligned row span. */
 static u32 m9_scanout_pitch(u32 width)
@@ -623,7 +652,7 @@ static int m9_pipe_check(struct drm_simple_display_pipe *pipe,
 	if (!fb)
 		return 0;
 	if (!m9x_kms_scanout_enabled() ||
-	    fb->format->format != DRM_FORMAT_XRGB8888 || fb->offsets[0] ||
+	    !m9_scanout_code(fb->format->format) || fb->offsets[0] ||
 	    fb->pitches[0] != m9_scanout_pitch(fb->width) ||
 	    fb->pitches[0] / 4 > M9_DC_PITCH_MASK)
 		return -EINVAL;
@@ -712,8 +741,14 @@ static int m9_scanout_publish(struct m9_head *head, struct drm_framebuffer *fb,
 	}
 	mutex_lock(&mdev->transport.lock);
 	m9x_transport_drain_locked(mdev);
-	/* GPU-rendered frames are tiled: de-tile this head's window out of the
-	 * shared surface one row at a time. */
+	/*
+	 * GPU-rendered frames are tiled: de-tile this head's window out of the
+	 * shared surface one row at a time.  The window descriptor names the
+	 * 8-bit code for every pixel format here, because all of them are the
+	 * same 32-bit storage class and only the class selects the tiling
+	 * (docs/parhelia-m9-gigacolor-10bit.md 3.2); the pixel format the
+	 * controller reads is the one m9_dc_pitch programs.
+	 */
 	if (tiled) {
 		m9x_address_surface_window(mdev, lower_32_bits(src_offset),
 					   M9_SCANOUT_FORMAT(span),
@@ -781,11 +816,14 @@ static int m9_scanout_direct_address(struct m9x_device *mdev,
 /* Format and layout live in the high bits of the pitch word.  A head the
  * firmware never posted has none to inherit, so it takes the measured tiled
  * XRGB8888 word every controller of the four-head run was given. */
-static u32 m9_dc_pitch(const struct m9_head *head, u32 pitch_pixels)
+static u32 m9_dc_pitch(const struct m9_head *head, u32 pitch_pixels, u8 code)
 {
 	u32 high = head->posted ? head->warm_dc_pitch & ~M9_DC_PITCH_MASK :
 				  M9_SCANOUT_FORMAT(0);
 
+	/* The code is the descriptor's own field, and a posted head inherits
+	 * the firmware's 8-bit one, so state it rather than keep it. */
+	high = (high & ~M9_SCANOUT_CODE_MASK) | ((u32)code << 25);
 	return high | (pitch_pixels & M9_DC_PITCH_MASK);
 }
 
@@ -801,7 +839,8 @@ static void m9_program_scanout(struct drm_simple_display_pipe *pipe,
 	int ret;
 
 	if (!m9_scanout_direct_address(mdev, fb, window_x, window_y, &address)) {
-		pitch = m9_dc_pitch(head, fb->pitches[0] / 4);
+		pitch = m9_dc_pitch(head, fb->pitches[0] / 4,
+				    m9_scanout_code(fb->format->format));
 		wmb();
 		m9x_write(head->mdev, head->dc + M9_DC_START,
 			  address & M9_DC_START_MASK);
@@ -824,8 +863,10 @@ static void m9_program_scanout(struct drm_simple_display_pipe *pipe,
 			window_x, window_y, ret);
 		return;
 	}
-	/* The head's own surface holds just this window, at its own span. */
-	pitch = m9_dc_pitch(head, head->scanout_pitch / 4);
+	/* The head's own surface holds just this window, at its own span, and
+	 * carries the framebuffer's pixel format verbatim. */
+	pitch = m9_dc_pitch(head, head->scanout_pitch / 4,
+			    m9_scanout_code(fb->format->format));
 	/* Publish CPU writes before the display controller fetches this BO. */
 	wmb();
 	m9x_write(head->mdev, head->dc + M9_DC_START, address & M9_DC_START_MASK);
@@ -1449,6 +1490,13 @@ static bool m9_plane_mod_supported(struct drm_plane *plane, u32 format,
 
 static const u32 m9_formats[] = {
 	DRM_FORMAT_XRGB8888,
+	/* Native 10-bit GigaColor scanout: the display controller takes the
+	 * format code in the same descriptor field as the 3-D engine
+	 * (docs/parhelia-m9-gigacolor-10bit.md 5.1). */
+	DRM_FORMAT_XRGB2101010,
+	DRM_FORMAT_ARGB2101010,
+	DRM_FORMAT_XBGR2101010,
+	DRM_FORMAT_ABGR2101010,
 };
 
 /* The cursor image never reaches DC0 as a scanout, so it needs no dirty
@@ -1484,7 +1532,7 @@ m9_fb_create(struct drm_device *drm, struct drm_file *file,
 		    mode_cmd->height > M9_CURSOR_SIZE)
 			return ERR_PTR(-EINVAL);
 		funcs = &m9_cursor_fb_funcs;
-	} else if (info->format == DRM_FORMAT_XRGB8888) {
+	} else if (m9_scanout_code(info->format)) {
 		funcs = &m9_fb_funcs;
 	} else {
 		drm_dbg_kms(drm, "fb refused: %ux%u format %p4cc unsupported\n",
