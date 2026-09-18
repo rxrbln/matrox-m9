@@ -45,10 +45,50 @@ depth.  A scratch surface is the size of the box the geometry spans, so it
 only helps a draw that **fills** that box -- a rectangle does, a mesh does
 not.  `refract`'s missing draw is its bunny under a four-pass shader and
 `terrain`'s is its mesh under seven, and no target of any size can be covered
-by either, so the multi-pass schedule cannot carry them at all.  What would
-close them is a fragment backend that compiles those shaders into **one**
-pass, where the coverage requirement does not apply; see
+by either, so the multi-pass schedule cannot carry them at all.  A single-pass
+compilation would sidestep the coverage requirement, and **neither shader can
+be compiled in one pass on this hardware** -- see below; see also
 `parhelia-m9-fragment-pass-hardware.md` 3bc.
+
+### Where their passes come from
+
+OFFLINE, `M9_FS_SPLIT=1 m9-fs-compile-test --glsl` on glmark2's own shaders:
+
+```text
+light-refract.frag passes 4
+    pass 0 units 0 samplers 0 varyings 3 record 1/2  routes coord
+    pass 1 units 1 samplers 1 varyings 2 record 1/2  routes -1 coord 0
+    pass 2 units 2 samplers 2 varyings 2 record 1/2  routes -1 -1 coord 1 0
+    pass 3 units 1 samplers 1 varyings 2 record 0/0  routes -1 coord 2
+```
+
+**`refract` is a dependent texture chain, and nothing else.**  Its three
+fetches would fit one pass -- four units are available and it uses four across
+all four passes -- and every pass compiles, so neither the unit count nor the
+register file is the constraint.  Each fetch's coordinate is computed from the
+*previous fetch's result*: `DistanceMap` positions the read of `NormalMap`,
+which positions the read of `ImageMap`.  A raster pass can only take a
+coordinate that is affine in a varying, computed per vertex, or one handed to
+it through the inter-pass record, so a fully dependent chain costs one pass per
+sampler (already recorded in `parhelia-m9-fragment-pass-splitting.md` 5,
+MEASURED from the vendor capture).  **No compiler can make this one pass**; it
+would need the engine to sample with a coordinate computed inside the pass,
+which it cannot do.
+
+**`terrain` is both, plus a chain.**  It is refused before any splitting for
+**out of temporaries** -- the register file, not the unit count -- and it binds
+five distinct samplers against four units; with `M9X_SPLIT_PRESSURE=1` it
+compiles into seven passes, three of which carry no sampler at all and exist
+only to route values forward.  Its normal map feeds the lighting, so it has a
+dependent link as well.
+
+So aiming backend work at *fewer passes* will not close either scene.  The only
+route that would is making a multi-pass job over geometry that does not cover
+its target legal, which is the hardware limit in 3bb.  One idea nobody has
+tried: a split job carries exactly one raster draw (3c), so the covering
+geometry would have to be appended to that same draw -- extra triangles that
+cover the target and are rejected before they write, if rasterised coverage
+rather than written pixels is what the back end counts.  **UNTESTED.**
 
 The rest, for the record: texture 284/283/284, build 271/271, shading
 188/121/75/70, bump 89/179/154, effect2d 3x3 79, pulsar 188, desktop shadow
