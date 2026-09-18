@@ -209,8 +209,9 @@ m9_skip_report(struct m9_context *ctx)
            ctx->window_reads, ctx->window_read_bytes >> 10, ctx->window_writes,
            ctx->window_write_bytes >> 10, ctx->map_usage_seen,
            ctx->window_read_usage, ctx->window_reads_explicit);
-   fprintf(stderr, "m9x: %u copies and blits on the engine\n",
-           ctx->engine_blits);
+   fprintf(stderr, "m9x: %u copies and blits on the engine, %u split draws "
+           "padded to their target's extent\n", ctx->engine_blits,
+           ctx->padded_draws);
    for (unsigned i = 0; i < ctx->skip_reasons; i++)
       fprintf(stderr, "m9x: context %u: %u draws skipped: %s\n",
               ctx->context_id, ctx->skip_reason[i].draws,
@@ -327,9 +328,18 @@ static bool m9_split_scratch;
  * them. */
 static bool m9_split_seed;
 static unsigned m9_split_copy;
-/* M9X_SPLIT_BE=0 leaves the engine's back-end object alone across the scratch
- * path, 2 clears the destination's as well as the scratch's. */
+/* The engine's back-end object ahead of a multi-pass job.  3 clears the one
+ * every multi-pass job binds, which is what a scene drawing several targets a
+ * frame needs; 2 and 1 narrow it to the scratch path's own objects and 0
+ * leaves it alone. */
 static unsigned m9_split_be;
+/* M9X_SPLIT_PAD=1 pads a partial multi-pass draw out to its target's extent
+ * and narrows the clip window to the pixels it covers, which is what the
+ * engine counts as covering a target (MEASURED, conv3pad / conv3frame /
+ * conv3subpad).  It is off by default: the fixture suite stops the engine at
+ * conv3rep with it on, so the mechanism is proved but not yet a path a scene
+ * can be trusted to, and M9X_SPLIT_BE=3 belongs with it. */
+static bool m9_split_pad_enable;
 /* M9X_RECORD_DUMP names a file the inter-pass record is written to after
  * every split job, so the slots the engine touched can be read back and
  * the record's granularity measured rather than assumed. */
@@ -1243,6 +1253,186 @@ m9_job_state_drop(struct m9_context *ctx, const char *warn, const char *why)
    util_dynarray_clear(&ctx->extra);
 }
 
+/* The padding a partial draw reaches its target's extent with: four
+ * rectangles a pixel wide along the four edges, each as two triangles of each
+ * winding so that no cull state can remove them. */
+#define M9_PAD_RECTS 4u
+#define M9_PAD_RECORDS (M9_PAD_RECTS * 6u)
+#define M9_PAD_INDICES (M9_PAD_RECTS * 12u)
+
+static bool
+m9_push_tri(struct util_dynarray *a, unsigned i0, unsigned i1, unsigned i2)
+{
+   uint16_t *w = util_dynarray_grow(a, uint16_t, 3);
+
+   if (!w)
+      return false;
+   w[0] = i0;
+   w[1] = i1;
+   w[2] = i2;
+   return true;
+}
+
+/* The triangle list a draw's topology describes, as record indices. */
+static bool
+m9_pad_expand(struct util_dynarray *out, const struct m9_draw_record *d,
+              const uint16_t *src)
+{
+   unsigned n = d->index_count ? d->index_count : d->count;
+
+#define AT(k) (src ? src[d->index_first + (k)] : d->start + (k))
+   switch (d->topology) {
+   case M9_TOPOLOGY_TRIANGLES:
+      for (unsigned k = 0; k + 3 <= n; k += 3)
+         if (!m9_push_tri(out, AT(k), AT(k + 1), AT(k + 2)))
+            return false;
+      return true;
+   case M9_TOPOLOGY_TRIANGLE_STRIP:
+      for (unsigned k = 0; k + 3 <= n; k++)
+         if (!m9_push_tri(out, AT(k + (k & 1)), AT(k + 1 - (k & 1)),
+                          AT(k + 2)))
+            return false;
+      return true;
+   case M9_TOPOLOGY_TRIANGLE_FAN:
+      for (unsigned k = 1; k + 2 <= n; k++)
+         if (!m9_push_tri(out, AT(0), AT(k), AT(k + 1)))
+            return false;
+      return true;
+   case M9_TOPOLOGY_QUADS:
+      for (unsigned k = 0; k + 4 <= n; k += 4)
+         if (!m9_push_tri(out, AT(k), AT(k + 1), AT(k + 2)) ||
+             !m9_push_tri(out, AT(k), AT(k + 2), AT(k + 3)))
+            return false;
+      return true;
+   case M9_TOPOLOGY_QUAD_STRIP:
+      for (unsigned k = 0; k + 4 <= n; k += 2)
+         if (!m9_push_tri(out, AT(k), AT(k + 1), AT(k + 3)) ||
+             !m9_push_tri(out, AT(k), AT(k + 3), AT(k + 2)))
+            return false;
+      return true;
+   default:
+      return false;
+   }
+#undef AT
+}
+
+/* One padding rectangle, six records in triangle-list order. */
+static void
+m9_pad_records(float *out, unsigned floats, float x0, float y0, float x1,
+               float y1)
+{
+   static const uint8_t corner[6][2] = {
+      { 0, 0 }, { 1, 0 }, { 1, 1 }, { 0, 0 }, { 1, 1 }, { 0, 1 },
+   };
+
+   for (unsigned i = 0; i < 6; i++) {
+      float *p = out + i * floats;
+
+      memset(p, 0, floats * sizeof(float));
+      p[0] = corner[i][0] ? x1 : x0;
+      p[1] = corner[i][1] ? y1 : y0;
+      p[3] = 1.0f;   /* w: the padding does not project */
+   }
+}
+
+/*
+ * Pad a partial multi-pass draw out to its render target's extent and narrow
+ * the clip window to the pixels it covers.  The engine counts the geometry a
+ * job *rasterises*, not the pixels it writes: a draw covering the whole target
+ * renders with its writes scissored down to a rectangle, a draw padded only
+ * along the target's four edges renders too, and a draw covering everything
+ * but a rectangle in the middle renders -- so interior coverage is not what is
+ * counted (MEASURED, conv3pad, conv3frame, conv3subpad and conv3hole against
+ * conv3sub).  The padding is four rectangles a pixel wide at the edges, two
+ * triangles of each winding apiece so that no cull state removes them, and the
+ * clip window keeps every one of their fragments out of the image.
+ */
+static bool
+m9_split_pad(struct m9_context *ctx, const struct m9_job_key *key,
+             unsigned *records, uint32_t *cx0, uint32_t *cy0, uint32_t *cx1,
+             uint32_t *cy1, float x0, float y0, float x1, float y1)
+{
+   struct m9_draw_record *draw = ctx->draws.data;
+   unsigned floats = ctx->record_floats;
+   unsigned extra_floats = 4 * (key->variant && !key->vs ?
+                                key->variant->extra_count : 0);
+   unsigned copies = key->variant && key->fs ? key->variant->passes.count : 1;
+   uint32_t w = ctx->params.width, h = ctx->params.height;
+   struct util_dynarray idx = {0};
+   uint32_t bx0, by0, bx1, by1;
+   unsigned base = *records, count;
+   uint16_t *tail;
+   float *out;
+
+   /* The padding is written in screen space, which is what a record carries
+    * only when the draw module transformed it. */
+   if (!m9_split_pad_enable || key->vs || ctx->lost ||
+       util_dynarray_num_elements(&ctx->draws, struct m9_draw_record) != 1 ||
+       (base + M9_PAD_RECORDS) * copies > m9_draw_max_source_vertices())
+      return false;
+   /* The clip window keeps the pixels the geometry covers and nothing else:
+    * the centres its extent encloses, held inside the window in force. */
+   bx0 = MAX2((int32_t)ceilf(x0 - 0.5f), 0);
+   bx1 = MIN2((uint32_t)MAX2((int32_t)ceilf(x1 - 0.5f), 0), w);
+   by0 = MAX2((int32_t)ceilf((float)h - y1 - 0.5f), 0);
+   by1 = MIN2((uint32_t)MAX2((int32_t)ceilf((float)h - y0 - 0.5f), 0), h);
+   bx0 = MAX2(bx0, *cx0);
+   by0 = MAX2(by0, *cy0);
+   bx1 = MIN2(bx1, *cx1);
+   by1 = MIN2(by1, *cy1);
+   if (bx1 <= bx0 || by1 <= by0)
+      return false;
+   if (!m9_pad_expand(&idx, draw, ctx->indices.size ? ctx->indices.data : NULL))
+      goto fail;
+   for (unsigned r = 0; r < M9_PAD_RECTS; r++) {
+      unsigned p = base + r * 6;
+
+      if (!m9_push_tri(&idx, p, p + 1, p + 2) ||
+          !m9_push_tri(&idx, p + 3, p + 4, p + 5) ||
+          !m9_push_tri(&idx, p + 2, p + 1, p) ||
+          !m9_push_tri(&idx, p + 5, p + 4, p + 3))
+         goto fail;
+   }
+   count = util_dynarray_num_elements(&idx, uint16_t);
+   /* The engine reads one index half past the last of a run (M9_INDEX_TAIL). */
+   tail = util_dynarray_grow(&idx, uint16_t, (count & 1) + M9_INDEX_TAIL);
+   if (!tail)
+      goto fail;
+   for (unsigned i = 0; i < (count & 1) + M9_INDEX_TAIL; i++)
+      tail[i] = ((const uint16_t *)idx.data)[count - 1];
+   out = util_dynarray_grow(&ctx->records, float, M9_PAD_RECORDS * floats);
+   if (!out)
+      goto fail;
+   m9_pad_records(out, floats, 0, (float)h - 1, (float)w, (float)h);
+   m9_pad_records(out + 6 * floats, floats, 0, 0, (float)w, 1);
+   m9_pad_records(out + 12 * floats, floats, 0, 0, 1, (float)h);
+   m9_pad_records(out + 18 * floats, floats, (float)w - 1, 0, (float)w,
+                  (float)h);
+   if (extra_floats) {
+      float *ex = util_dynarray_grow(&ctx->extra, float,
+                                     M9_PAD_RECORDS * extra_floats);
+
+      if (!ex)
+         goto fail;
+      memset(ex, 0, M9_PAD_RECORDS * extra_floats * sizeof(float));
+   }
+   util_dynarray_fini(&ctx->indices);
+   ctx->indices = idx;
+   draw->topology = M9_TOPOLOGY_TRIANGLES;
+   draw->index_first = 0;
+   draw->index_count = count;
+   *records = base + M9_PAD_RECORDS;
+   *cx0 = bx0;
+   *cy0 = by0;
+   *cx1 = bx1;
+   *cy1 = by1;
+   ctx->padded_draws++;
+   return true;
+fail:
+   util_dynarray_fini(&idx);
+   return false;
+}
+
 /*
  * Whether the geometry fills the box it spans.  A scratch surface is only a
  * target the job covers whole if the geometry is a screen-aligned rectangle:
@@ -1271,7 +1461,8 @@ m9_split_fills_box(const struct m9_context *ctx, unsigned records,
       return false;
    for (unsigned k = 0; k < records; k++) {
       const float *p = v + (uint64_t)k * ctx->record_floats;
-      float x = p[0] * p[3], y = p[1] * p[3];
+      float iw = p[3] > 0.0f ? 1.0f / p[3] : 1.0f;
+      float x = p[0] * iw, y = p[1] * iw;
 
       /* The extent is the minimum and maximum of these very values, so a
        * corner compares exactly and anything inside the box does not. */
@@ -1380,9 +1571,11 @@ m9_submit_job(struct m9_context *ctx)
    uint32_t split_x1 = key->clip_max & 0xffffu;
    uint32_t split_y0 = key->clip_min >> 16;
    uint32_t split_y1 = key->clip_max >> 16;
-   /* The record holds x and y before the perspective divide and 1/w in its
-    * fourth slot, so the screen extent needs the product; the clip window
-    * counts rows from the top and the record from the bottom. */
+   /* A record holds x and y multiplied by w with w itself in the fourth slot
+    * (m9_render_record), so the screen extent needs the quotient -- the
+    * product is the same number only where w is 1, which is every draw that
+    * does not project.  The clip window counts rows from the top and the
+    * record from the bottom. */
    float x0 = 0, x1 = 0, y0 = 0, y1 = 0;
    bool partial = false;
    uint64_t point = 0;
@@ -1409,11 +1602,12 @@ m9_submit_job(struct m9_context *ctx)
          if (records) {
             const float *v = ctx->records.data;
 
-            x0 = x1 = v[0] * v[3];
-            y0 = y1 = v[1] * v[3];
+            x0 = x1 = v[3] > 0.0f ? v[0] / v[3] : v[0];
+            y0 = y1 = v[3] > 0.0f ? v[1] / v[3] : v[1];
             for (unsigned k = 1; k < records; k++) {
                const float *p = v + (uint64_t)k * ctx->record_floats;
-               float x = p[0] * p[3], y = p[1] * p[3];
+               float iw = p[3] > 0.0f ? 1.0f / p[3] : 1.0f;
+               float x = p[0] * iw, y = p[1] * iw;
 
                x0 = MIN2(x0, x); x1 = MAX2(x1, x);
                y0 = MIN2(y0, y); y1 = MAX2(y1, y);
@@ -1452,12 +1646,16 @@ m9_submit_job(struct m9_context *ctx)
                    x1 < (float)ctx->params.width - 0.5f ||
                    y1 < (float)ctx->params.height - 0.5f;
       }
-      if (partial && !m9_split_partial) {
-         /* The draw covers the whole of a scratch surface of the box it
-          * covers here, which is the schedule the engine runs; the job is
-          * held until the driver is outside the draw module and can copy
-          * the result into place.  M9X_SPLIT_SCRATCH=0 refuses it instead,
-          * and M9X_SPLIT_PARTIAL=1 submits it as it stands. */
+      /* Three answers to a draw that covers part of its target, in the order
+       * they cost: pad it out to the target's extent and narrow the clip
+       * window to the pixels it covers, which is what the engine counts;
+       * hold it for a scratch surface of those pixels and copy that into
+       * place; or refuse it by name.  M9X_SPLIT_PAD=0 and M9X_SPLIT_SCRATCH=0
+       * step down the list, and M9X_SPLIT_PARTIAL=1 submits it as it
+       * stands. */
+      if (partial && !m9_split_partial &&
+          !m9_split_pad(ctx, key, &records, &split_x0, &split_y0, &split_x1,
+                        &split_y1, x0, y0, x1, y1)) {
          const char *held = m9_split_defer(ctx, key, records, x0, y0, x1, y1);
 
          if (!held)
@@ -1515,8 +1713,11 @@ m9_submit_job(struct m9_context *ctx)
       memset(be_bound->map, 0, be_bound->size);
       ctx->be_clip = ctx->params.clip_max;
    }
-   /* M9X_SPLIT_BE=3 clears it ahead of every multi-pass job rather than only
-    * the one the scratch path submits. */
+   /* The object a multi-pass job binds is cleared ahead of it: one that finds
+    * what draws into another target left behind stops the engine, and a scene
+    * with four windows walks between targets several times a frame (MEASURED,
+    * splitdesk:8:4:11:1920x1200:1:420x420 stalls without this and renders 32
+    * frames with it).  M9X_SPLIT_BE=0 leaves it alone. */
    if (m9_split_be > 2 && pass_count > 1 && be_bound->map)
       memset(be_bound->map, 0, be_bound->size);
    ret = ctx->lost ? -EIO :
@@ -4626,9 +4827,9 @@ m9_scratch_copy(struct m9_context *ctx, struct pipe_resource *dst,
 }
 
 /* Move a held job's records into the scratch surface's own screen space.  A
- * record carries x and y multiplied by w with 1/w beside them, so a screen
- * translation divides by that slot, and it counts rows from the bottom where
- * the box counts them from the top. */
+ * record carries x and y multiplied by w with w itself beside them, so a
+ * screen translation multiplies by that slot, and it counts rows from the
+ * bottom where the box counts them from the top. */
 static void
 m9_scratch_records(struct m9_context *ctx, const struct m9_deferred_job *d)
 {
@@ -4639,7 +4840,7 @@ m9_scratch_records(struct m9_context *ctx, const struct m9_deferred_job *d)
 
    for (unsigned k = 0; k < records; k++) {
       float *p = (float *)ctx->records.data + (uint64_t)k * ctx->record_floats;
-      float w = 1.0f / p[3];
+      float w = p[3] > 0.0f ? p[3] : 1.0f;
 
       p[0] -= dx * w;
       p[1] += dy * w;
@@ -5650,6 +5851,7 @@ m9_context_create(struct pipe_screen *pscreen, void *priv, unsigned flags)
    m9_split_seed = debug_get_bool_option("M9X_SPLIT_SEED", true);
    m9_split_copy = debug_get_num_option("M9X_SPLIT_COPY", 1);
    m9_split_be = debug_get_num_option("M9X_SPLIT_BE", 1);
+   m9_split_pad_enable = debug_get_bool_option("M9X_SPLIT_PAD", false);
    m9_record_dump = debug_get_option("M9X_RECORD_DUMP", NULL);
    m9_split_draws = debug_get_num_option("M9X_SPLIT_DRAWS", 1);
    m9_record_89 = debug_get_num_option("M9X_RECORD_89", 0);
