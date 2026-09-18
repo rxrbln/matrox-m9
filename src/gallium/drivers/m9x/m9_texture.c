@@ -432,6 +432,28 @@ m9_texture_wrap(unsigned wrap, bool *ok)
    }
 }
 
+/* The four border fields carry the channels in the descriptor format's own
+ * order, because the vendor converts the border through the same resource
+ * format join as a texel (docs/parhelia-m9-texture-state.md, 0x187b50 and
+ * 0x18be15).  CAPTURED: the c8 (RGBA8) border case of
+ * captures/m9x-linux-texture-resources-20260914 requested (0.125, 0.25, 0.75,
+ * 1) and emitted 7e=40002000 7f=ff00bf00, whose 7e[15:8] is the requested
+ * red, and its preserved frame renders (32, 64, 191) -- so for an
+ * RGBA-ordered code red belongs in 7e[15:8].  MEASURED on the M9128: a cc
+ * (BGRA8) surface with the same encoding returns red and blue exchanged,
+ * which is that same field read as blue.
+ *
+ * out[k] is the pipe channel the hardware reads from field k: 7e[15:8],
+ * 7e[31:24], 7f[15:8], 7f[31:24]. */
+static void
+m9_texture_border_order(uint8_t code, uint8_t out[4])
+{
+   static const uint8_t rgba[4] = { 0, 1, 2, 3 };
+   static const uint8_t bgra[4] = { 2, 1, 0, 3 };
+
+   memcpy(out, code == M9_TEXTURE_CODE_BGRA ? bgra : rgba, 4);
+}
+
 static unsigned
 m9_texture_lod(float lod)
 {
@@ -451,6 +473,7 @@ m9_texture_unit_init(struct m9_texture_unit *unit, uint32_t handle,
    };
    bool ok = true, mip, linear_min, shadow;
    unsigned form, lo = 0, hi = 511, border[4];
+   uint8_t order[4];
    uint32_t filter;
    long bias;
 
@@ -499,8 +522,9 @@ m9_texture_unit_init(struct m9_texture_unit *unit, uint32_t handle,
    for (unsigned c = 0; c < 4; c++)
       border[c] = (unsigned)lroundf(CLAMP(s->border_color.f[c], 0.0f, 1.0f) *
                                     255.0f);
-   unit->w7e = border[1] << 24 | border[0] << 8;
-   unit->w7f = border[3] << 24 | border[2] << 8;
+   m9_texture_border_order(bind->code, order);
+   unit->w7e = border[order[1]] << 24 | border[order[0]] << 8;
+   unit->w7f = border[order[3]] << 24 | border[order[2]] << 8;
    unit->w80 = 0xffffffffu;
    unit->w81 = 0;
    return ok ? 0 : -EINVAL;
