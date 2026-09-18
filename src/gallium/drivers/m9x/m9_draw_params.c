@@ -412,8 +412,23 @@ m9_draw_preprocess_vertices(uint32_t raster_vertices)
    return (raster_vertices + 3) & ~3u;
 }
 
+static uint32_t m9_job_vertices = M9_JOB_VERTICES_DEFAULT;
+
+void
+m9_draw_set_job_vertices(uint32_t vertices)
+{
+   m9_job_vertices = CLAMP(vertices, M9_JOB_VERTICES_MIN,
+                           M9_JOB_VERTICES_MAX) & ~3u;
+}
+
 uint32_t
 m9_draw_max_source_vertices(void)
 {
-   return M9_TRANSIENT_VIEW_BYTES / M9_TRANSIENT_VERTEX_BYTES & ~3u;
+   return m9_job_vertices;
+}
+
+uint32_t
+m9_transient_view_bytes(void)
+{
+   return m9_job_vertices * M9_TRANSIENT_VERTEX_BYTES;
 }

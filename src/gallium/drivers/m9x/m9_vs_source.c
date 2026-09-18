@@ -139,3 +139,38 @@ m9_vs_source_records(const struct m9_vs_source_layout *layout,
    }
    return true;
 }
+
+bool
+m9_vs_source_records_gather(const struct m9_vs_source_layout *layout,
+                            const uint8_t *const *buffer_map,
+                            const unsigned *buffer_size,
+                            unsigned buffer_count, unsigned first,
+                            const uint32_t *vertex, unsigned count, float *out)
+{
+   if (!layout || !buffer_map || !buffer_size || !vertex || !out)
+      return false;
+   for (unsigned a = 0; a < layout->attr_count; a++) {
+      const struct m9_vs_source_attr *s = &layout->attr[a];
+      const struct util_format_unpack_description *unpack =
+         util_format_unpack_description(s->format);
+      unsigned texel = util_format_get_blocksize(s->format);
+
+      if (s->buffer >= buffer_count || !buffer_map[s->buffer] || !unpack ||
+          !unpack->unpack_rgba || !s->stride)
+         return false;
+      for (unsigned v = 0; v < count; v++) {
+         uint64_t at = (uint64_t)first + vertex[v];
+         const uint8_t *src;
+         float *dst = out + (uint64_t)v * layout->record_dwords + s->dword;
+         float rgba[4];
+
+         if (at * s->stride + s->src_offset + texel > buffer_size[s->buffer])
+            return false;
+         src = buffer_map[s->buffer] + at * s->stride + s->src_offset;
+         unpack->unpack_rgba(rgba, src, 1);
+         for (unsigned c = 0; c < 4; c++)
+            dst[c] = c < s->components ? rgba[c] : (c == 3 ? 1.0f : 0.0f);
+      }
+   }
+   return true;
+}

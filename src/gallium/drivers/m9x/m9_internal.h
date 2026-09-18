@@ -92,6 +92,9 @@ struct m9_resource {
    uint8_t texture_code;
    uint32_t texture_unplaced;  /* levels whose content could not be stored */
    uint32_t levels_written;    /* levels a transfer has actually written */
+   /* Bumped whenever this driver hands out a writable mapping, so
+    * anything derived from the contents can tell they have moved on. */
+   uint64_t generation;
    bool bind_logged;
    void *map;
    /* Hierarchical-Z metadata owned by a D24S8 depth image. */
@@ -434,6 +437,9 @@ struct m9_context {
    /* References held for every texture the pending job binds, and the stream
     * budget its restated unit blocks have already claimed. */
    struct util_dynarray job_textures;  /* struct pipe_resource * */
+   /* Welded unindexed draws, kept across frames.  struct m9_weld_entry *. */
+   struct util_dynarray weld_cache;
+   uint64_t weld_clock;
    unsigned job_unit_dwords;
    uint32_t warned;
    uint32_t skipped_draws;      /* dropped for an unimplemented state */

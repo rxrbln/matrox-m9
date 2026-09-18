@@ -17,7 +17,7 @@
 #define V(i, v) { .index = (i), .value = (v) }
 #define R(i, h, o, k) { .index = (i), .handle = (h), .offset = (o), \
                         .kind = PARHELIA_M9_RELOC_##k }
-#define VIEW(n) ((uint64_t)(n) * M9_TRANSIENT_VIEW_BYTES)
+#define VIEW(n) ((uint64_t)(n) * m9_transient_view_bytes())
 #define EMIT(...) do { \
    const struct m9_packet_value packet_[] = { __VA_ARGS__ }; \
    ret = m9_batch_emit_packet(batch, packet_, ARRAY_SIZE(packet_)); \

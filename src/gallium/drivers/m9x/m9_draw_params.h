@@ -201,6 +201,25 @@ uint32_t m9_raster_d7(enum m9_topology topology);
 uint32_t m9_raster_class(bool lines, bool blend_dest);
 bool m9_topology_valid(unsigned topology);
 uint32_t m9_draw_preprocess_vertices(uint32_t raster_vertices);
+/* Source records one job preprocesses, and the stride of the transient
+ * stream views that hold them.  The vendor's 0x16800 is its own partition
+ * of a 0x5a000 context resource, and its five-stream captures repartition
+ * the same resource at 0x12400 (docs/parhelia-m9-transient-arena-re.md):
+ * the view stride is a driver allocation, not a hardware extent.  Because
+ * one job's records are its raster index space, the ceiling is bounded by
+ * the 16-bit index.  M9X_JOB_VERTICES moves it, so one binary weighs the
+ * per-job cost against the records a job carries. */
+#define M9_JOB_VERTICES_MIN 256u
+#define M9_JOB_VERTICES_MAX 65532u
+/* Twice the vendor's partition.  MEASURED on refract at 1920x1200, two cells
+ * of one binary agreeing on records (209188) and skipped draws (1): 46 jobs
+ * and 25.10 ms at 5760 against 28 jobs and 24.64 ms here.  Past this the
+ * scene gets worse rather than better, because a larger ceiling admits a
+ * draw that is then refused downstream for partial coverage.
+ * M9X_JOB_VERTICES=5760 restores the vendor's own partition. */
+#define M9_JOB_VERTICES_DEFAULT 11520u
+void m9_draw_set_job_vertices(uint32_t vertices);
 uint32_t m9_draw_max_source_vertices(void);
+uint32_t m9_transient_view_bytes(void);
 
 #endif

@@ -57,4 +57,15 @@ bool m9_vs_source_records(const struct m9_vs_source_layout *layout,
                           const unsigned *buffer_size, unsigned buffer_count,
                           unsigned first, unsigned count, float *out);
 
+/* The same, for count vertices named one at a time by vertex[] rather than by
+ * a contiguous run: a welded draw's unique records come from scattered
+ * corners of the original.  Every named vertex is bounds-checked, because
+ * unlike a run its highest member is not known in advance. */
+bool m9_vs_source_records_gather(const struct m9_vs_source_layout *layout,
+                                 const uint8_t *const *buffer_map,
+                                 const unsigned *buffer_size,
+                                 unsigned buffer_count, unsigned first,
+                                 const uint32_t *vertex, unsigned count,
+                                 float *out);
+
 #endif

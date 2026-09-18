@@ -27,6 +27,7 @@
 #include "m9_fs_compile.h"
 #include "m9_internal.h"
 #include "m9_vs_texture.h"
+#include "m9_weld.h"
 #include "m9_vs_source.h"
 #include "m9_passthrough.h"
 #include "m9_query.h"
@@ -257,6 +258,12 @@ static unsigned m9_profile_period;
 /* M9X_JOB_DRAWS ends a job after that many draws: the frame time against the
  * job count weighs what one job costs. */
 static unsigned m9_job_draws;
+/* M9X_JOB_VERTICES sets the source records one job preprocesses.  Every draw
+ * of a mesh scene fills the ceiling and so ends its job, which is what makes
+ * one job a draw; the vendor's own 5760 is its partition of a context
+ * resource rather than an engine extent (m9_draw_params.h).  Setting it back
+ * to 5760 restores one job per draw in the same binary; the frame profile
+ * names the ceiling in force. */
 /* M9X_NATIVE_VS=0 keeps every vertex shader in the draw module.  On by
  * default since the whole hardware fixture corpus passes either way
  * (m9-mesa-vs 14/14, m9-mesa-glsl 90/90, 2026-09-17). */
@@ -380,7 +387,7 @@ static uint64_t m9_prof_ns[M9_PROF_COUNT];
 static uint64_t m9_prof_hits[M9_PROF_COUNT];
 static uint64_t m9_prof_records, m9_prof_jobs, m9_prof_varying_bytes;
 static uint64_t m9_prof_draws, m9_prof_split[8];
-static uint64_t m9_prof_indexed, m9_prof_referenced;
+static uint64_t m9_prof_indexed, m9_prof_referenced, m9_prof_welded_corners;
 static uint64_t m9_prof_refused, m9_prof_skipped, m9_prof_relocs;
 /* M9X_NO_CLEAR drops the clear quad; M9X_CLEAR_REPEAT draws it that many
  * extra times, which weighs one screen of fill with the frame still correct. */
@@ -420,19 +427,20 @@ m9_prof_frame(void)
    if (++m9_prof_frames < m9_profile_period)
       return;
    f = (double)m9_prof_frames;
-   fprintf(stderr, "m9x: %.0f frames %.2f ms/frame: ", f,
-           m9_prof_wall / f / 1e6);
+   fprintf(stderr, "m9x: %.0f frames %.2f ms/frame (job vertices %u): ", f,
+           m9_prof_wall / f / 1e6, m9_draw_max_source_vertices());
    for (unsigned i = 0; i < M9_PROF_COUNT; i++)
       fprintf(stderr, "%s %.2f ", m9_prof_name[i], m9_prof_ns[i] / f / 1e6);
    fprintf(stderr, "| jobs %.0f draws %.0f records %.0f varying KiB %.1f "
            "refused %.0f skipped %.0f relocs %.0f "
-           "indexed %.0f referenced %.0f splits target %.0f program %.0f "
+           "indexed %.0f referenced %.0f welded %.0f splits target %.0f program %.0f "
            "depth %.0f mask %.0f clip %.0f uniforms %.0f vertices %.0f "
            "stream %.0f\n",
            m9_prof_jobs / f, m9_prof_draws / f, m9_prof_records / f,
            m9_prof_varying_bytes / f / 1024.0, m9_prof_refused / f,
            m9_prof_skipped / f, (double)m9_prof_relocs, m9_prof_indexed / f,
-           m9_prof_referenced / f, m9_prof_split[0] / f,
+           m9_prof_referenced / f, m9_prof_welded_corners / f,
+           m9_prof_split[0] / f,
            m9_prof_split[1] / f, m9_prof_split[2] / f, m9_prof_split[3] / f,
            m9_prof_split[4] / f, m9_prof_split[5] / f, m9_prof_split[6] / f,
            m9_prof_split[7] / f);
@@ -440,6 +448,7 @@ m9_prof_frame(void)
    memset(m9_prof_hits, 0, sizeof(m9_prof_hits));
    m9_prof_records = m9_prof_jobs = m9_prof_varying_bytes = 0;
    m9_prof_draws = m9_prof_indexed = m9_prof_referenced = 0;
+   m9_prof_welded_corners = 0;
    m9_prof_refused = m9_prof_skipped = m9_prof_relocs = 0;
    memset(m9_prof_split, 0, sizeof(m9_prof_split));
    m9_prof_frames = 0;
@@ -751,6 +760,11 @@ m9_transfer_map(struct pipe_context *pctx, struct pipe_resource *pres,
    uint64_t t_transfer = m9_prof_begin();
    void *map = m9_transfer_map_locked(pctx, pres, level, usage, box, out);
 
+   /* A writable mapping moves the contents on, both when it is handed out
+    * and when the writer gives it back: an entry built while the mapping was
+    * open is retired by the second bump. */
+   if (map && (usage & PIPE_MAP_WRITE))
+      m9_res(pres)->generation++;
    m9_prof_end(M9_PROF_TRANSFER, t_transfer);
    return map;
 }
@@ -760,6 +774,8 @@ m9_transfer_unmap(struct pipe_context *pctx, struct pipe_transfer *ptransfer)
 {
    struct m9_transfer *transfer = (struct m9_transfer *)ptransfer;
 
+   if (ptransfer->usage & PIPE_MAP_WRITE)
+      m9_res(ptransfer->resource)->generation++;
    if (transfer->staging && m9_res(ptransfer->resource)->texture.levels) {
       struct m9_resource *resource = m9_res(ptransfer->resource);
       uint32_t bit = 1u << ptransfer->level;
@@ -950,7 +966,7 @@ m9_job_native(struct m9_context *ctx, const struct m9_job_key *key,
    t_varying = m9_prof_begin();
    for (unsigned j = 0; j < cpu_streams; j++) {
       uint8_t *view = (uint8_t *)ctx->cpu_streams.map +
-                      j * M9_TRANSIENT_VIEW_BYTES;
+                      j * m9_transient_view_bytes();
 
       for (unsigned r = 0; r < records; r++)
          memcpy(view + r * M9_TRANSIENT_VERTEX_BYTES,
@@ -1509,6 +1525,13 @@ m9_submit_job(struct m9_context *ctx)
                           sizeof(float));
    if (!ret && ctx->indices.size)
       ret = m9_arena_reserve(ctx, &ctx->index, ctx->indices.size * copies);
+   /* The CPU stream views are reserved for the varyings this job actually
+    * gathers, so the job's record ceiling costs system memory only where a
+    * fragment program reads them. */
+   if (!ret && fs && key->variant->extra_count)
+      ret = m9_arena_reserve(ctx, &ctx->cpu_streams,
+                             (uint64_t)key->variant->extra_count *
+                             m9_transient_view_bytes());
    if (!ret) {
       uint64_t t_records = m9_prof_begin();
 
@@ -3584,6 +3607,256 @@ m9_native_vs_raster_ok(const struct m9_job_key *key,
           NULL : "the vertex program does not write the varying read";
 }
 
+/* A welded draw kept across frames.  Welding costs one hash pass over every
+ * corner, so it pays only where the same buffer is drawn again: the entry
+ * names the vertex buffers it was built from and the generation each carried,
+ * and any write through this driver's transfer path retires it.  An entry
+ * whose reuse did not repay the indices it costs is kept as a refusal, so a
+ * buffer that cannot be welded is hashed once rather than every frame. */
+struct m9_weld_entry {
+   struct m9_weld weld;
+   struct m9_vs_source_layout layout;
+   struct pipe_resource *buffer[PIPE_MAX_ATTRIBS];
+   uint64_t generation[PIPE_MAX_ATTRIBS];
+   unsigned buffer_count;
+   uint32_t first_vertex, count;
+   uint64_t used;
+   bool refused;
+};
+
+/* M9X_WELD=0 draws every unindexed run as it arrives, which is the setting
+ * the welded frame time is reported against. */
+static bool m9_weld_enable = true;
+/* Corners below this are not worth a cache slot: the hash pass costs more
+ * than the records it would save. */
+#define M9_WELD_MIN_CORNERS 512u
+/* Records the welded form must save to be worth its index run. */
+#define M9_WELD_MIN_RATIO 2u
+/* Bytes of welded index and source runs the context keeps. */
+#define M9_WELD_BUDGET (16u << 20)
+
+static uint64_t m9_weld_bytes(const struct m9_weld_entry *e)
+{
+   return ((uint64_t)e->weld.count + e->weld.unique) * sizeof(uint32_t);
+}
+
+static void
+m9_weld_entry_free(struct m9_weld_entry *entry)
+{
+   for (unsigned i = 0; i < entry->buffer_count; i++)
+      pipe_resource_reference(&entry->buffer[i], NULL);
+   m9_weld_fini(&entry->weld);
+   FREE(entry);
+}
+
+static void
+m9_weld_cache_fini(struct m9_context *ctx)
+{
+   util_dynarray_foreach(&ctx->weld_cache, struct m9_weld_entry *, e)
+      m9_weld_entry_free(*e);
+   util_dynarray_fini(&ctx->weld_cache);
+}
+
+/* The entry matches when it was built from the same records: the same layout
+ * over the same run of the same buffers, each still at the generation it
+ * carried.  A buffer with no resource of its own -- the state tracker's
+ * upload of a client array -- has no identity to key on and is never welded. */
+static bool
+m9_weld_entry_current(const struct m9_context *ctx,
+                      const struct m9_weld_entry *e,
+                      const struct m9_native_vs *n, unsigned count)
+{
+   if (e->first_vertex != n->first_vertex || e->count != count ||
+       e->buffer_count != n->buffer_count ||
+       memcmp(&e->layout, &n->layout, sizeof(e->layout)))
+      return false;
+   for (unsigned i = 0; i < e->buffer_count; i++) {
+      const struct pipe_vertex_buffer *vb = &ctx->vertex_buffers[i];
+
+      if (!e->buffer[i])
+         continue;
+      if (vb->is_user_buffer || vb->buffer.resource != e->buffer[i] ||
+          m9_res(e->buffer[i])->generation != e->generation[i])
+         return false;
+   }
+   return true;
+}
+
+/* Every buffer the layout reads, so a write to one this draw does not read
+ * cannot retire the entry. */
+static bool
+m9_weld_buffers_keyable(const struct m9_context *ctx,
+                        const struct m9_native_vs *n, bool *read)
+{
+   memset(read, 0, sizeof(*read) * PIPE_MAX_ATTRIBS);
+   for (unsigned a = 0; a < n->layout.attr_count; a++) {
+      unsigned b = n->layout.attr[a].buffer;
+
+      if (b >= n->buffer_count || b >= PIPE_MAX_ATTRIBS)
+         return false;
+      /* A client array is uploaded afresh, so its identity says nothing. */
+      if (ctx->vertex_buffers[b].is_user_buffer ||
+          !ctx->vertex_buffers[b].buffer.resource)
+         return false;
+      read[b] = true;
+   }
+   return n->layout.attr_count != 0;
+}
+
+static void
+m9_weld_trim(struct m9_context *ctx, uint64_t want)
+{
+   uint64_t held = 0;
+
+   util_dynarray_foreach(&ctx->weld_cache, struct m9_weld_entry *, e)
+      held += m9_weld_bytes(*e);
+   while (held + want > M9_WELD_BUDGET) {
+      struct m9_weld_entry **all = ctx->weld_cache.data;
+      unsigned n = util_dynarray_num_elements(&ctx->weld_cache,
+                                              struct m9_weld_entry *);
+      unsigned oldest = 0;
+
+      if (!n)
+         return;
+      for (unsigned i = 1; i < n; i++)
+         if (all[i]->used < all[oldest]->used)
+            oldest = i;
+      held -= m9_weld_bytes(all[oldest]);
+      m9_weld_entry_free(all[oldest]);
+      all[oldest] = all[n - 1];
+      ctx->weld_cache.size -= sizeof(*all);
+   }
+}
+
+/* The welded form of this draw, or NULL to draw it as it arrived. */
+static const struct m9_weld *
+m9_weld_lookup(struct m9_context *ctx, const struct m9_native_vs *n,
+               unsigned count)
+{
+   bool read[PIPE_MAX_ATTRIBS];
+   struct m9_weld_entry *entry;
+   float *records;
+   uint64_t bytes;
+
+   if (!m9_weld_enable || count < M9_WELD_MIN_CORNERS ||
+       !m9_weld_buffers_keyable(ctx, n, read))
+      return NULL;
+   util_dynarray_foreach(&ctx->weld_cache, struct m9_weld_entry *, held) {
+      if (!m9_weld_entry_current(ctx, *held, n, count))
+         continue;
+      (*held)->used = ++ctx->weld_clock;
+      return (*held)->refused ? NULL : &(*held)->weld;
+   }
+   entry = CALLOC_STRUCT(m9_weld_entry);
+   records = entry ? malloc((size_t)count * n->layout.record_dwords *
+                            sizeof(float)) : NULL;
+   if (!records ||
+       !m9_vs_source_records(&n->layout, n->map, n->size, n->buffer_count,
+                             n->first_vertex, count, records) ||
+       !m9_weld_build(&entry->weld, records, count,
+                      n->layout.record_dwords)) {
+      free(records);
+      FREE(entry);
+      return NULL;
+   }
+   free(records);
+   /* A run whose records barely repeat costs an index for every corner and
+    * saves little; the entry stays as a refusal so it is not rebuilt. */
+   entry->refused = (uint64_t)entry->weld.unique * M9_WELD_MIN_RATIO >
+                    entry->weld.count;
+   if (entry->refused)
+      m9_weld_fini(&entry->weld);
+   entry->layout = n->layout;
+   entry->first_vertex = n->first_vertex;
+   entry->count = count;
+   entry->buffer_count = n->buffer_count;
+   for (unsigned i = 0; i < n->buffer_count && i < PIPE_MAX_ATTRIBS; i++) {
+      if (!read[i])
+         continue;
+      pipe_resource_reference(&entry->buffer[i],
+                              ctx->vertex_buffers[i].buffer.resource);
+      entry->generation[i] = m9_res(entry->buffer[i])->generation;
+   }
+   bytes = m9_weld_bytes(entry);
+   m9_weld_trim(ctx, bytes);
+   entry->used = ++ctx->weld_clock;
+   {
+      struct m9_weld_entry **slot =
+         util_dynarray_grow(&ctx->weld_cache, struct m9_weld_entry *, 1);
+
+      if (!slot) {
+         m9_weld_entry_free(entry);
+         return NULL;
+      }
+      *slot = entry;
+   }
+   return entry->refused ? NULL : &entry->weld;
+}
+
+/* One welded run: the unique records of the window a chunk of corners spans,
+ * drawn through an index run over them. */
+static bool
+m9_native_vs_append_welded(struct m9_context *ctx,
+                           const struct m9_job_key *key,
+                           const struct m9_native_vs *n,
+                           const struct m9_weld *weld, unsigned count)
+{
+   const unsigned max = m9_draw_max_source_vertices();
+   unsigned floats = n->layout.record_dwords;
+   unsigned grain = n->topology == M9_TOPOLOGY_TRIANGLES ? 3 :
+                    n->topology == M9_TOPOLOGY_LINES ? 2 : count;
+
+   /* A job cannot carry a primitive whose own window of unique records is
+    * wider than its record ceiling, and a mesh's corner order is not its
+    * adjacency order: bunny.obj has a triangle joining vertices 34729 apart
+    * in first-use numbering, so welding it is infeasible below that and
+    * exact at one job above it (MEASURED offline, tools weldsim over the
+    * model's own records).  Decline before anything is committed, so the
+    * caller draws the run unwelded instead. */
+   if (grain < count ? weld->widest > max : weld->unique > max)
+      return false;
+   for (unsigned done = 0; done < count;) {
+      unsigned k, vertices;
+      uint32_t lo, hi, first, index_first;
+      float *extra, *out;
+      uint16_t *words;
+
+      k = m9_weld_run(weld, done, max, grain, &lo, &hi);
+      if (!k)
+         return true;
+      vertices = hi - lo + 1;
+      out = m9_job_reserve(ctx, key, &ctx->key_consts, &ctx->key_vs_consts,
+                           floats, vertices, &first, &extra);
+      if (!out ||
+          !m9_vs_source_records_gather(&n->layout, n->map, n->size,
+                                       n->buffer_count, n->first_vertex,
+                                       weld->source + lo, vertices, out))
+         return true;
+      index_first = util_dynarray_num_elements(&ctx->indices, uint16_t);
+      words = util_dynarray_grow(&ctx->indices, uint16_t,
+                                 k + (k & 1) + M9_INDEX_TAIL);
+      if (!words) {
+         ctx->records.size = (size_t)first * floats * sizeof(float);
+         m9_warn_once(ctx, M9_WARN_MEMORY, "out of memory for raster indices");
+         return true;
+      }
+      for (unsigned i = 0; i < k; i++)
+         words[i] = first + (weld->index[done + i] - lo);
+      for (unsigned i = k; i < k + (k & 1) + M9_INDEX_TAIL; i++)
+         words[i] = words[k - 1];
+      m9_prof_indexed += k;
+      m9_prof_referenced += vertices;
+      /* Counted per use, not per cache build: the frame profile then says
+       * how many corners a frame are drawn welded rather than how many were
+       * hashed once at startup. */
+      m9_prof_welded_corners += k;
+      m9_job_commit(ctx, out, NULL, vertices, first, index_first, k,
+                    n->topology, n->cull, n->lines, n->flat);
+      done += k;
+   }
+   return true;
+}
+
 static bool
 m9_native_vs_append(struct m9_context *ctx, const struct m9_job_key *key,
                     const struct m9_native_vs *n, unsigned count)
@@ -3596,6 +3869,12 @@ m9_native_vs_append(struct m9_context *ctx, const struct m9_job_key *key,
                     n->topology == M9_TOPOLOGY_LINES ? 2 : count;
 
    if (!n->indices) {
+      const struct m9_weld *weld = m9_weld_lookup(ctx, n, count);
+
+      /* A welded run draws its unique records through an index run, so the
+       * whole mesh is not rebuilt one corner at a time. */
+      if (weld && m9_native_vs_append_welded(ctx, key, n, weld, count))
+         return true;
       if (count > max && !list)
          return false;
       for (unsigned done = 0; done < count;) {
@@ -4265,6 +4544,7 @@ m9_resource_copy_region(struct pipe_context *pctx, struct pipe_resource *dst,
       if (m9_engine_drew(ctx, skipped))
          return;
    }
+   m9_res(dst)->generation++;
    util_resource_copy_region(pctx, dst, dst_level, dstx, dsty, dstz, src,
                              src_level, src_box);
 }
@@ -5202,19 +5482,16 @@ m9_context_init_fixed(struct m9_context *ctx)
       ret = m9_bo_create(screen, db_bytes, PARHELIA_M9_BO_VRAM,
                          M9_RESOURCE_SYSTEM_STATE, &ctx->fragment_db);
    if (!ret)
-      ret = m9_bo_create(screen, M9_TRANSIENT_VIEWS * M9_TRANSIENT_VIEW_BYTES,
+      ret = m9_bo_create(screen,
+                         M9_TRANSIENT_VIEWS * m9_transient_view_bytes(),
                          PARHELIA_M9_BO_VRAM, M9_RESOURCE_SYSTEM_STATE,
                          &ctx->transient);
    if (!ret)
-      ret = m9_bo_create(screen,
-                         (M9_TRANSIENT_VIEWS - M9_TRANSIENT_CPU_VIEW) *
-                         M9_TRANSIENT_VIEW_BYTES, 0,
-                         M9_RESOURCE_LINEAR_BUFFER, &ctx->cpu_streams);
+      ret = m9_bo_create(screen, 4096, 0, M9_RESOURCE_LINEAR_BUFFER,
+                         &ctx->cpu_streams);
    if (!ret)
-      ret = m9_bo_create(screen,
-                         (M9_TRANSIENT_VIEWS - M9_TRANSIENT_CPU_VIEW) *
-                         M9_TRANSIENT_VIEW_BYTES, 0,
-                         M9_RESOURCE_LINEAR_BUFFER, &ctx->cpu_streams_alt);
+      ret = m9_bo_create(screen, 4096, 0, M9_RESOURCE_LINEAR_BUFFER,
+                         &ctx->cpu_streams_alt);
    if (!ret)
       ret = m9_bo_create(screen, M9_BE_BYTES, PARHELIA_M9_BO_VRAM,
                          M9_RESOURCE_SYSTEM_STATE, &ctx->be);
@@ -5260,6 +5537,7 @@ m9_context_destroy(struct pipe_context *pctx)
    }
    if (ctx->base.stream_uploader)
       u_upload_destroy(ctx->base.stream_uploader);
+   m9_weld_cache_fini(ctx);
    util_unreference_framebuffer_state(&ctx->framebuffer);
    util_set_vertex_buffers_count(ctx->vertex_buffers, &ctx->num_vertex_buffers,
                                  NULL, 0);
@@ -5346,7 +5624,10 @@ m9_context_create(struct pipe_screen *pscreen, void *priv, unsigned flags)
    ctx->debug = debug_get_bool_option("M9X_DEBUG", false);
    m9_profile_period = debug_get_num_option("M9X_PROFILE", 0);
    m9_job_draws = debug_get_num_option("M9X_JOB_DRAWS", 0);
+   m9_draw_set_job_vertices(debug_get_num_option("M9X_JOB_VERTICES",
+                                                 M9_JOB_VERTICES_DEFAULT));
    m9_indexed_draws = debug_get_bool_option("M9X_INDEXED", true);
+   m9_weld_enable = debug_get_bool_option("M9X_WELD", true);
    m9_native_vs = debug_get_bool_option("M9X_NATIVE_VS", true);
    m9_no_clear = debug_get_bool_option("M9X_NO_CLEAR", false);
    m9_clear_repeat = debug_get_num_option("M9X_CLEAR_REPEAT", 0);
