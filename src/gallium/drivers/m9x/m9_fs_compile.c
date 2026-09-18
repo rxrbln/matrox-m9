@@ -50,6 +50,16 @@ const nir_shader_compiler_options m9_fs_nir_options = {
 #define MARKER  0x40000000u
 #define NONE    0x7fu
 #define OUT     0x2du
+/* The destination a colour output writes.  Target p is derived to own
+ * OUT + p from the vendor's per-target output registers; M9X_FS_COLOR_TARGET
+ * moves the one output this backend compiles onto another target's
+ * destination so that derivation can be measured against a target aliased
+ * into the same surface.  docs/parhelia-m9-mrt-routing.md */
+static unsigned
+color_dest(void)
+{
+   return OUT + (debug_get_num_option("M9X_FS_COLOR_TARGET", 0) & 3);
+}
 #define REG_S0  0x11u
 #define REG_S1  0x13u
 #define REG_I   0x1au
@@ -2902,7 +2912,7 @@ encode_lops(struct ctx *c)
        * producing pass of the seven two-pass cases). */
       bool record = out && c->record_out;
       unsigned d = !out ? (unsigned)VALUES(c)[l->dst].reg :
-                   record ? (l->lane ? REG_S1 : REG_S0) : OUT;
+                   record ? (l->lane ? REG_S1 : REG_S0) : color_dest();
       unsigned op0 = out && !record ? (l->lane ? 0x1e : 0x1d) : 0x1c;
       unsigned e = l->konst >= 0 ? const_ref(c, l->konst) : 0;
       bool pair = l->konst >= 0 && KEYS(c)[l->konst].pair;
@@ -3695,34 +3705,34 @@ blend_lane(struct ctx *c, uint32_t *used, unsigned lane, unsigned s,
 
    if (fs.term != B_REG && fd.term == B_ZERO) {
       /* ZERO/ZERO */
-      blend_emit(c, w0_make(NONE, s, NONE, OUT, 4, op0),
+      blend_emit(c, w0_make(NONE, s, NONE, color_dest(), 4, op0),
                  w1_make(0xa0200040, k0, NONE));
    } else if (fs.term == B_ZERO && fd.term == B_ONE) {
-      blend_emit(c, w0_make(NONE, d, NONE, OUT, 4, op0),
+      blend_emit(c, w0_make(NONE, d, NONE, color_dest(), 4, op0),
                  w1_make(0xa0200040, k1, NONE));
    } else if (fs.term == B_ONE && fd.term == B_ONE) {
-      blend_emit(c, w0_make(NONE, s, d, OUT, 4, op0),
+      blend_emit(c, w0_make(NONE, s, d, color_dest(), 4, op0),
                  w1_make(0xa0400c50, k1, NONE));
    } else if (fs.term != B_REG && fd.term == B_INV) {
       /* S * K + D * (1 - r) */
-      blend_emit(c, w0_make(s, fd.reg, d, OUT, 4, op0),
+      blend_emit(c, w0_make(s, fd.reg, d, color_dest(), 4, op0),
                  w1_make(0xa4e00040 | fd.swz << 10,
                          fs.term == B_ONE ? k1 : k0, s));
    } else if (fs.term == B_ZERO) {
-      blend_emit(c, w0_make(fd.reg, d, NONE, OUT, 4, op0),
+      blend_emit(c, w0_make(fd.reg, d, NONE, color_dest(), 4, op0),
                  w1_make(0xac200040 | fd.swz << 8, NONE, fd.reg));
    } else if (fs.term == B_ONE) {
-      blend_emit(c, w0_make(fd.reg, d, s, OUT, 4, op0),
+      blend_emit(c, w0_make(fd.reg, d, s, color_dest(), 4, op0),
                  w1_make(0xac400c50 | fd.swz << 8, NONE, fd.reg));
    } else if (fd.term == B_ZERO) {
-      blend_emit(c, w0_make(fs.reg, s, NONE, OUT, 4, op0),
+      blend_emit(c, w0_make(fs.reg, s, NONE, color_dest(), 4, op0),
                  w1_make(0xac200040 | fs.swz << 8, NONE, fs.reg));
    } else if (fd.term == B_ONE) {
-      blend_emit(c, w0_make(fs.reg, s, d, OUT, 4, op0),
+      blend_emit(c, w0_make(fs.reg, s, d, color_dest(), 4, op0),
                  w1_make(0xac400c50 | fs.swz << 8, NONE, fs.reg));
    } else if (fd.term == B_INV) {
       /* r.swz * S + D * (1 - S.swz), the inverted operand is S itself */
-      blend_emit(c, w0_make(fs.reg, s, d, OUT, 4, op0),
+      blend_emit(c, w0_make(fs.reg, s, d, color_dest(), 4, op0),
                  w1_make(0xa4a00040 | fd.swz << 10 | fs.swz << 8, NONE,
                          fs.reg));
    } else {
@@ -3730,7 +3740,7 @@ blend_lane(struct ctx *c, uint32_t *used, unsigned lane, unsigned s,
          return false;
       blend_emit(c, w0_make(fd.reg, d, NONE, t, 0, 0x1c),
                  w1_make(0xac200040 | fd.swz << 8, NONE, fd.reg));
-      blend_emit(c, w0_make(fs.reg, s, t, OUT, 4, op0),
+      blend_emit(c, w0_make(fs.reg, s, t, color_dest(), 4, op0),
                  w1_make(0xac400c50 | fs.swz << 8, NONE, fs.reg));
    }
    return true;
@@ -3774,7 +3784,7 @@ redirect_output(struct ctx *c, uint32_t *used, int s[2])
       uint32_t *w0 = &w[2 * i];
       unsigned op0 = *w0 & 0x1f;
 
-      if ((*w0 >> 8 & 0x7f) != OUT)
+      if ((*w0 >> 8 & 0x7f) != color_dest())
          continue;
       if (op0 != 0x1d && op0 != 0x1e)
          return fail(c, "internal: partial colour write");
@@ -3872,7 +3882,8 @@ static void
 output_temps(struct ctx *c, const int s[2])
 {
    for (unsigned lane = 0; lane < 2; lane++)
-      emit(c, w0_make(NONE, NONE, s[lane], OUT, 0, 0x1d + lane), 0xa29fff1f);
+      emit(c, w0_make(NONE, NONE, s[lane], color_dest(), 0, 0x1d + lane),
+           0xa29fff1f);
 }
 
 /* Output assembly */

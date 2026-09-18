@@ -12,6 +12,7 @@
 #include <string.h>
 
 #include "util/macros.h"
+#include "util/u_debug.h"
 
 #define V(i, v) { .index = (i), .value = (v) }
 #define R(i, h, o, k) { .index = (i), .handle = (h), .offset = (o), \
@@ -290,6 +291,20 @@ m9_stream_offset(const struct m9_draw_job *job, unsigned view)
      .kind = m9_stream_is_cpu(job, view) ? PARHELIA_M9_RELOC_SYSTEM :      \
              PARHELIA_M9_RELOC_STREAM }
 
+/* Raster ef enables every colour target past the first, one bit every two
+ * from bit 19 (CAPTURED: 0, 0x00080000, 0x00280000 and 0x00a80000 for one,
+ * two, three and four attachments).  Target 0 is always enabled and claims
+ * no bit.  docs/parhelia-m9-mrt-routing.md */
+static uint32_t
+m9_color_enable(unsigned color_count)
+{
+   uint32_t ef = 0;
+
+   for (unsigned s = 1; s < color_count; s++)
+      ef |= 0x00080000u << (2 * (s - 1));
+   return ef;
+}
+
 /* Raster 89 of one pass: a record-writing pass keeps the word it carries,
  * and a colour pass packs one render format class per bound target. */
 static uint32_t
@@ -470,7 +485,9 @@ m9_emit_raster_range(struct m9_batch *batch, const struct m9_draw_job *job,
    uint32_t depth_ef = pass ? pass->depth_ef : job->depth_ef;
 
    EMIT(V(0xf0, m9_raster_class(d0->lines, blend)),
-        V(0xef, d0->cull | depth_ef | (pass ? pass->sequence_ef : 0)),
+        V(0xef, d0->cull | depth_ef | (pass ? pass->sequence_ef : 0) |
+                (pass && pass->writes_record ? 0 :
+                 m9_color_enable(job->color_count))),
         V(0xd7, m9_raster_d7(d0->topology)));
    EMIT(V(0x22, m9_job_raster_control(job, pass, d0)));
    EMIT(V(0xe6, 3), V(0xe3, dep + 0x20));
@@ -686,8 +703,27 @@ m9_batch_emit_draw_job(struct m9_batch *batch, const struct m9_draw_job *job)
    unsigned decl_count, const_pairs;
    int ret;
 
+   struct m9_draw_job aliased;
+   /* M9X_MRT_ALIAS binds the single colour attachment at every target pair
+    * as well, so a probe can tell whether a fragment output reached a given
+    * target's destination without a second allocation: the write lands only
+    * if that target is both bound and named.
+    * docs/parhelia-m9-mrt-routing.md */
+   unsigned alias = (unsigned)debug_get_num_option("M9X_MRT_ALIAS", 0);
+
    if (!batch || !job || batch->sealed || !m9_draw_job_valid(job))
       return -EINVAL;
+   if (alias > 1 && !job->color_count) {
+      aliased = *job;
+      aliased.color_count = MIN2(alias, M9_DRAW_MAX_COLOR);
+      for (unsigned s = 1; s < aliased.color_count; s++) {
+         aliased.color_extra[s - 1] = job->color;
+         aliased.color_extra_desc[s - 1] = job->params->color_desc;
+      }
+      memset(aliased.color_class, 0, sizeof(aliased.color_class));
+      aliased.color_mask_hi = 0xffffffff;
+      job = &aliased;
+   }
    p = job->params;
    d0 = &job->draws[0];
    if (job->vs_decl_count) {
