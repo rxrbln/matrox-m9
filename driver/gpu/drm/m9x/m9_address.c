@@ -723,6 +723,16 @@ int m9x_address_commit_gpuva(struct m9x_device *mdev, u32 gpuva)
 	return -ENOENT;
 }
 
+/* Span of the class-1 system window: the largest DMA32 object it can name. */
+u64 m9x_address_system_span(struct m9x_device *mdev)
+{
+	struct m9x_address_space *address = mdev->transport.address;
+
+	if (!address || !address->system_mm_ready)
+		return 0;
+	return address->layout.system_end - M9_ADDRESS_SYSTEM_BASE;
+}
+
 static int m9_address_reserve_system(struct m9x_device *mdev,
 				     struct drm_mm_node *node, u32 bytes)
 {

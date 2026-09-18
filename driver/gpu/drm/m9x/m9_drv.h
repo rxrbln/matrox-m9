@@ -304,6 +304,7 @@ int m9x_address_map_system_sgt(struct m9x_device *mdev,
 			       struct drm_mm_node *node, struct sg_table *sgt,
 			       u32 bytes);
 void m9x_address_unmap_system(struct m9x_device *mdev, struct drm_mm_node *node);
+u64 m9x_address_system_span(struct m9x_device *mdev);
 int m9x_address_restore_region(struct m9x_device *mdev,
 			       struct iosys_map *map, u32 *base);
 int m9x_address_publish_restore(struct m9x_device *mdev);

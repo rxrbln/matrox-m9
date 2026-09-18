@@ -14,10 +14,35 @@
 #include <drm/drm_print.h>
 #include <drm/drm_gem_ttm_helper.h>
 #include <drm/drm_gem_vram_helper.h>
+#include <drm/ttm/ttm_resource.h>
 
 #include "m9_drv.h"
 
-#define M9_BO_MAX_SIZE	SZ_32M
+/* The largest object each memory class can ever serve.  A VRAM object has to
+ * fit the CPU-visible VRAM the TTM manager owns, a class-1 addressed DMA32
+ * object the system address window, and a command object only the 32-bit bus
+ * address space its raw fetches use. */
+static u64 m9_bo_max_size(struct m9x_device *mdev, u32 flags)
+{
+	if (flags & (PARHELIA_M9_BO_VRAM | PARHELIA_M9_BO_TILED))
+		return mdev->drm.vram_mm->vram_size;
+	if (flags & PARHELIA_M9_BO_COMMAND)
+		return SZ_4G;
+	return m9x_address_system_span(mdev);
+}
+
+/* The driver never evicts: every VRAM object is pinned whole for as long as a
+ * client holds it, so one larger than the unused VRAM can never become
+ * resident.  Say so at create, while the client can still take another path,
+ * instead of letting the pin fail once a job is already built. */
+static bool m9_vram_free_for(struct m9x_device *mdev, u64 size)
+{
+	struct ttm_resource_manager *man =
+		ttm_manager_type(&mdev->drm.vram_mm->bdev, TTM_PL_VRAM);
+
+	return size <= mdev->drm.vram_mm->vram_size -
+			ttm_resource_manager_usage(man);
+}
 
 static bool m9_bo_force_paged;
 module_param(m9_bo_force_paged, bool, 0600);
@@ -513,13 +538,15 @@ static int m9_create_bo_ioctl(struct drm_device *drm, void *data,
 
 	if (!m9x_enabled())
 		return -ENODEV;
-	if (!args->size || args->size > M9_BO_MAX_SIZE ||
+	if (!args->size ||
 	    args->flags & ~(PARHELIA_M9_BO_COMMAND | PARHELIA_M9_BO_VRAM |
 			    PARHELIA_M9_BO_TILED) ||
 	    ((args->flags & PARHELIA_M9_BO_COMMAND) &&
 	     (args->flags & (PARHELIA_M9_BO_VRAM | PARHELIA_M9_BO_TILED))) ||
 	    args->handle ||
 	    args->mmap_offset)
+		return -EINVAL;
+	if (args->size > m9_bo_max_size(mdev, args->flags))
 		return -EINVAL;
 	size = PAGE_ALIGN(args->size);
 	mutex_lock(&mdev->transport.lock);
@@ -531,6 +558,8 @@ static int m9_create_bo_ioctl(struct drm_device *drm, void *data,
 	if (args->flags & (PARHELIA_M9_BO_VRAM | PARHELIA_M9_BO_TILED)) {
 		struct m9x_vram_bo *vram_bo;
 
+		if (!m9_vram_free_for(mdev, size))
+			return -ENOMEM;
 		vram_bo = m9_vram_bo_create(drm, size);
 		if (IS_ERR(vram_bo))
 			return PTR_ERR(vram_bo);
