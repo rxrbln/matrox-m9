@@ -74,6 +74,11 @@ module_param(m9_kms_modeset, bool, 0400);
 MODULE_PARM_DESC(m9_kms_modeset,
 	"Program the pixel clock and raster timing instead of keeping the firmware's mode");
 
+static char *m9_kms_mode;
+module_param(m9_kms_mode, charp, 0400);
+MODULE_PARM_DESC(m9_kms_mode,
+	"Initial mode per connector as <connector>:<mode>, several separated by whitespace or ';' (e.g. \"DP-1:1280x720\"); the video= command line wins over this");
+
 /* All four sources are measured (m9_reg.h).  The parameter stays so a board
  * that numbers them differently can be corrected without a rebuild; an entry
  * left out or given as zero takes the measured bit, so no configuration can
@@ -359,11 +364,52 @@ static int m9_connector_add_warm_mode(struct drm_connector *connector)
 	return 1;
 }
 
+/*
+ * The same specification video= carries, for a system whose boot arguments
+ * cannot be changed: the module is inserted long after the kernel command line
+ * was fixed, so a parameter is the only channel left.  It fills in only where
+ * the command line said nothing, which keeps video= ahead of it, and it is read
+ * from get_modes, which the probe helper does not call for a connector that
+ * detected as disconnected - so an entry naming a dark output is ignored
+ * instead of forcing it on.  connector->force is deliberately left alone for
+ * the same reason.
+ */
+static void m9_connector_mode_param(struct drm_connector *connector)
+{
+	const char *spec = m9_kms_mode;
+	size_t name_len = strlen(connector->name);
+
+	if (connector->cmdline_mode.specified || !spec)
+		return;
+	while (*spec) {
+		size_t len = strcspn(spec, "; \t\n");
+		char *entry;
+
+		if (len <= name_len + 1 || spec[name_len] != ':' ||
+		    strncmp(spec, connector->name, name_len)) {
+			spec += len;
+			spec += strspn(spec, "; \t\n");
+			continue;
+		}
+		entry = kstrndup(spec + name_len + 1, len - name_len - 1,
+				 GFP_KERNEL);
+		if (entry && !drm_mode_parse_command_line_for_connector(entry,
+					connector, &connector->cmdline_mode))
+			drm_warn(connector->dev,
+				 "[CONNECTOR:%d:%s] cannot parse m9_kms_mode \"%s\"\n",
+				 connector->base.id, connector->name, entry);
+		kfree(entry);
+		return;
+	}
+}
+
 static int m9_connector_get_modes(struct drm_connector *connector)
 {
 	struct m9_head *head = container_of(connector, struct m9_head,
 					    connector);
 	int count = 0;
+
+	m9_connector_mode_param(connector);
 
 	/* detect_ctx already drove the bus; a forced connector skips it. */
 	if (!head->edid_valid) {
@@ -1527,10 +1573,14 @@ static int m9_head_init(struct m9x_device *mdev, struct m9_head *head,
 	}
 	line = m9x_read(mdev, head->dct + M9_DCT_LINE);
 	usleep_range(1000, 1200);
+	/* The control word says whether the firmware left this head scanning
+	 * out through the display controller, which is what decides whether
+	 * its timing is offered as the default mode. */
 	drm_info(drm, "head %u: DC %#06x timing %#06x synth %#06x link %#06x "
-		 "vblank mask %#x, line %u -> %u, found " DRM_MODE_FMT "\n",
+		 "vblank mask %#x, ctrl %#010x, line %u -> %u, found "
+		 DRM_MODE_FMT "\n",
 		 index, head->dc, head->dct, head->fs, head->link,
-		 head->vblank_mask, line,
+		 head->vblank_mask, head->warm_dc_ctrl, line,
 		 m9x_read(mdev, head->dct + M9_DCT_LINE),
 		 DRM_MODE_ARG(&head->warm_mode));
 
