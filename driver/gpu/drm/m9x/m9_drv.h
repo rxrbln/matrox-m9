@@ -181,6 +181,10 @@ struct m9_head {
 	/* m9_kms_mode named a size with no refresh, so the timing is resolved
 	 * from the sink's own list rather than left to list order. */
 	bool mode_param_size_only;
+	/* The driver has brought this head's transmitter up for the sink
+	 * currently attached.  Cleared whenever the connector is probed,
+	 * because a probe is the point at which the sink may have changed. */
+	bool tx_ready;
 	/* True only for the controller the firmware actually posted; any other
 	 * head owns no link routing or clock until the driver programs it. */
 	bool posted;

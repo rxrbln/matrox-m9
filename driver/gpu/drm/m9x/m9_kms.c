@@ -329,6 +329,7 @@ static int m9_connector_detect(struct drm_connector *connector,
 	drm_edid_free(head->edid);
 	head->edid = m9x_ddc_read_edid(head->mdev, head->ddc_index, connector);
 	head->edid_valid = true;
+	head->tx_ready = false;
 	present = head->edid || (head->warm_dc_ctrl & M9_DC_ENABLE);
 	/* Logged on every probe so a sink that answers HPD but not I2C is
 	 * visible in the record rather than silently absent.  Nothing is
@@ -1172,7 +1173,12 @@ static void m9_head_output_enable(struct m9_head *head,
 	drm_dbg_kms(&mdev->drm, "head %u: was sending %d %ux%u %u/%u\n",
 		    head->index, ret, sent.hdisplay, sent.vdisplay,
 		    sent.htotal, sent.vtotal);
-	if (!ret && sent.hdisplay == mode->hdisplay &&
+	/* The geometry the transmitter reports is not evidence that the link
+	 * is up: the MSA registers keep their values with the link down, so
+	 * after a cable change they still describe the sink that has gone.
+	 * Skip the bring-up only for a head this driver has already brought up
+	 * for the sink now attached -- tx_ready is cleared on every probe. */
+	if (!ret && head->tx_ready && sent.hdisplay == mode->hdisplay &&
 	    sent.vdisplay == mode->vdisplay && sent.htotal == mode->htotal &&
 	    sent.vtotal == mode->vtotal)
 		return;
@@ -1183,6 +1189,7 @@ static void m9_head_output_enable(struct m9_head *head,
 			 head->index, ret);
 		return;
 	}
+	head->tx_ready = true;
 	/* The transmitter needs a moment to lock the feed before it reports. */
 	msleep(50);
 	ret = m9x_tx_stream(mdev, head->index, &sent);
