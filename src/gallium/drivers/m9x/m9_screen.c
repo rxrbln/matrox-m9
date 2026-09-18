@@ -1300,6 +1300,11 @@ m9_screen_create(int fd, const struct pipe_screen_config *config)
    caps->glsl_feature_level_compatibility = 120;
    caps->essl_feature_level = 100;
    caps->npot_textures = true;
+   /* Rectangle targets: unnormalized coordinates reach the driver, which
+    * folds the reciprocal of the sampled span into them per vertex
+    * (m9_job_textures).  The engine itself normalizes over the descriptor
+    * extent and has no unnormalized mode. */
+   caps->texrect = true;
    /* No fixed-function alpha test: st lowers it into the fragment shader. */
    caps->alpha_test = false;
    /* ES 2.0 for glamor; factors lower into the fragment program, and

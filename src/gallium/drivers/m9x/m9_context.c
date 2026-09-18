@@ -1956,6 +1956,7 @@ m9_job_textures(struct m9_context *ctx, const struct m9_fs_variant *fs,
                                                  ctx->fs_samplers[slot] : NULL;
       struct m9_texture_bind bind;
       const char *reason;
+      float span[2];
 
       /* An incomplete unit samples the opaque black placeholder. */
       if (!view || !view->texture) {
@@ -2002,14 +2003,46 @@ m9_job_textures(struct m9_context *ctx, const struct m9_fs_variant *fs,
          key->coord_bias[u][i] =
             m9_coord_term(ctx, &p->texcoord_affine[k].bias[i]);
       }
-      key->unit_scale[u][0] = (float)m9_res(view->texture)->width / bind.width;
-      key->unit_scale[u][1] = (float)m9_res(view->texture)->height / bind.height;
+      /* Content over the span the descriptor addresses: a render target of
+       * unaligned width carries padding the coordinate has to skip. */
+      span[0] = (float)m9_res(view->texture)->width / bind.width;
+      span[1] = (float)m9_res(view->texture)->height / bind.height;
+      /* A rectangle target carries its coordinate in texels.  The engine has
+       * no unnormalized addressing mode - the vendor's 13x7 rectangle emits
+       * the descriptor words of a 13x7 2-D texture and folds 1/13 and 1/7
+       * into a shader constant instead (CAPTURED) - so the reciprocal of the
+       * addressed span is folded into the coordinate here. */
+      if (view->target == PIPE_TEXTURE_RECT) {
+         key->unit_scale[u][0] = 1.0f / bind.width;
+         key->unit_scale[u][1] = 1.0f / bind.height;
+      } else {
+         key->unit_scale[u][0] = span[0];
+         key->unit_scale[u][1] = span[1];
+      }
+      /* m9_scale_coords() applies the scale per vertex to a CPU coordinate
+       * stream.  A coordinate an earlier raster pass produced reaches the
+       * fetch through the inter-pass record instead, where there is no
+       * vertex to apply it to, so a unit that needs a scale and is steered
+       * by a route is refused rather than sampled at the wrong texel.  This
+       * covers every rectangle and the render target of unaligned width that
+       * could already reach it. */
+      if (key->unit_scale[u][0] != 1.0f || key->unit_scale[u][1] != 1.0f) {
+         const struct m9_fs_pass_streams *st = &fs->stream[fs->slot_pass[u]];
+         unsigned c = st->texture_coord[k];
+
+         if (c == M9_RASTER_COORD_NONE || st->coord_extra[c] < 0)
+            reason = "a scaled texture coordinate that no CPU stream carries "
+                     "cannot be applied; draw skipped";
+      }
       /* Every wrap mode agrees inside the content; beyond it the hardware
-       * wraps or clamps at the aligned span, including its padding. */
-      if (key->unit_scale[u][0] != 1.0f &&
-          sampler->wrap_s != PIPE_TEX_WRAP_CLAMP_TO_EDGE &&
-          sampler->wrap_s != PIPE_TEX_WRAP_CLAMP_TO_BORDER &&
-          sampler->wrap_s != PIPE_TEX_WRAP_CLAMP)
+       * wraps or clamps at the aligned span, including its padding.  A
+       * rectangle only ever clamps and its content edge is the one the
+       * extension defines, so a padded span is reported for it as well. */
+      if (span[0] != 1.0f &&
+          (view->target == PIPE_TEXTURE_RECT ||
+           (sampler->wrap_s != PIPE_TEX_WRAP_CLAMP_TO_EDGE &&
+            sampler->wrap_s != PIPE_TEX_WRAP_CLAMP_TO_BORDER &&
+            sampler->wrap_s != PIPE_TEX_WRAP_CLAMP)))
          m9_warn_once(ctx, M9_WARN_WRAP, "render targets of unaligned width "
                       "wrap at their 32-aligned span; samples outside the "
                       "content read padding");

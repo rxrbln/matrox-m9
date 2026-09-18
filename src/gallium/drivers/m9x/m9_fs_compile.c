@@ -746,6 +746,18 @@ build_route(struct ctx *c, unsigned pass)
    return n;
 }
 
+/* A rectangle target samples exactly as a plane.  The engine has no
+ * unnormalized addressing mode: the vendor's 13x7 rectangle emits the same
+ * descriptor words a 13x7 2-D texture does and folds 1/width and 1/height
+ * into a shader constant instead (CAPTURED, captures/m9x-linux-texture-
+ * resources-20260914/phase2/case-02).  This driver folds the same reciprocal
+ * into the coordinate per vertex, in m9_job_textures. */
+static bool
+sampler_dim_plane(enum glsl_sampler_dim dim)
+{
+   return dim == GLSL_SAMPLER_DIM_2D || dim == GLSL_SAMPLER_DIM_RECT;
+}
+
 /* A fetch whose coordinate an earlier pass produced: the unit binds its own
  * texture and sampler and samples where the record says, which is what lets
  * a coordinate the fragment stage computes reach a fetch the engine issues
@@ -766,7 +778,7 @@ build_coord_route(struct ctx *c, nir_tex_instr *tex, unsigned pass)
     * byte of the route word carries it is settled for neither a projector
     * nor an array, so those keep failing rather than guessing. */
    if (tex->op != nir_texop_tex || tex->is_shadow || tex->is_array ||
-       tex->sampler_dim != GLSL_SAMPLER_DIM_2D ||
+       !sampler_dim_plane(tex->sampler_dim) ||
        nir_tex_instr_src_index(tex, nir_tex_src_projector) >= 0 ||
        tex->num_srcs != 1)
       return fail(c, "a routed texture coordinate must be a plain 2-D pair"),
@@ -821,7 +833,7 @@ build_tex(struct ctx *c, nir_tex_instr *tex)
 
    dims = tex->is_shadow || volume ? 3 : 2;
    if (tex->op != nir_texop_tex ||
-       (tex->sampler_dim != GLSL_SAMPLER_DIM_2D && !volume) ||
+       (!sampler_dim_plane(tex->sampler_dim) && !volume) ||
        tex->is_array || ci < 0 || (volume && tex->is_shadow) ||
        tex->is_shadow != (ri >= 0) ||
        tex->num_srcs != 1u + (pi >= 0) + (ri >= 0))
