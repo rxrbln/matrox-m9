@@ -810,8 +810,8 @@ m9_record_grow(struct m9_context *ctx, unsigned dwords, const char **reason)
       /* The old object goes first: two records of this size do not fit
        * beside each other. */
       m9_bo_destroy(screen, &screen->record);
-      if (m9_bo_create(screen, bytes, PARHELIA_M9_BO_VRAM,
-                       M9_RESOURCE_LINEAR_COLOR, &screen->record)) {
+      if (m9_bo_create_engine_only(screen, bytes, M9_RESOURCE_LINEAR_COLOR,
+                                   &screen->record)) {
          /* Name the size: a record is tens of MiB and which stride asked
           * for it is the difference between a driver fault and the
           * hardware's own cost. */

@@ -57,17 +57,21 @@ m9_bo_create(struct m9_screen *screen, uint64_t size, uint32_t flags,
       return -errno;
    memset(resource, 0, sizeof(*resource));
    resource->map_fd = -1;
-   resource->map = mmap(NULL, create.size, PROT_READ | PROT_WRITE, MAP_SHARED,
-                        screen->fd, create.mmap_offset);
-   if (resource->map == MAP_FAILED) {
-      int error = errno;
-      struct drm_gem_close close_bo = { .handle = create.handle };
+   /* Engine-only storage lives above the host aperture and carries no mmap
+    * cookie; it is never touched from here. */
+   if (!(flags & PARHELIA_M9_BO_ENGINE_ONLY)) {
+      resource->map = mmap(NULL, create.size, PROT_READ | PROT_WRITE,
+                           MAP_SHARED, screen->fd, create.mmap_offset);
+      if (resource->map == MAP_FAILED) {
+         int error = errno;
+         struct drm_gem_close close_bo = { .handle = create.handle };
 
-      resource->map = NULL;
-      ioctl(screen->fd, DRM_IOCTL_GEM_CLOSE, &close_bo);
-      return -error;
+         resource->map = NULL;
+         ioctl(screen->fd, DRM_IOCTL_GEM_CLOSE, &close_bo);
+         return -error;
+      }
+      resource->map_writable = true;
    }
-   resource->map_writable = true;
    resource->handle = create.handle;
    resource->kind = kind;
    resource->size = create.size;
@@ -77,6 +81,30 @@ m9_bo_create(struct m9_screen *screen, uint64_t size, uint32_t flags,
    resource->tiled = flags & PARHELIA_M9_BO_TILED;
    resource->handle_owned = true;
    return 0;
+}
+
+/*
+ * Storage the engine alone reads and writes.  It is placed in the video memory
+ * no host aperture maps, of which there is far more than the CPU-visible
+ * window holds; a kernel without that placement still serves it from the
+ * window.
+ */
+int
+m9_bo_create_engine_only(struct m9_screen *screen, uint64_t size,
+                         unsigned kind, struct m9_resource *resource)
+{
+   /* M9X_ENGINE_VRAM=0 keeps the object in the mapped window, which separates
+    * a fault in the placement from one in what uses the object. */
+   const char *enable = getenv("M9X_ENGINE_VRAM");
+   int ret = -EINVAL;
+
+   if (!enable || strcmp(enable, "0"))
+      ret = m9_bo_create(screen, size,
+                         PARHELIA_M9_BO_VRAM | PARHELIA_M9_BO_ENGINE_ONLY,
+                         kind, resource);
+   if (ret)
+      ret = m9_bo_create(screen, size, PARHELIA_M9_BO_VRAM, kind, resource);
+   return ret;
 }
 
 void
