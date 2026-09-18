@@ -182,6 +182,13 @@ struct m9_screen {
    bool execute_submit;
    simple_mtx_t import_lock;
    struct m9_prime_import *imports;
+   /* One inter-pass record serves the whole screen.  The engine runs one job
+    * at a time and a record lives only inside one job's raster passes, so a
+    * second context needs no second copy -- and at 1920x1200 a copy is tens
+    * of MiB, which a third glmark2 scene could not allocate (MEASURED). */
+   simple_mtx_t record_lock;
+   struct m9_resource record;
+   unsigned record_dwords;
    /* Fixed-fragment database firmware bound through index 69. */
    uint8_t *fragment_db;
    size_t fragment_db_size;
@@ -334,10 +341,6 @@ struct m9_context {
    struct util_dynarray target_depths;  /* struct m9_target_depth * */
    uint64_t target_clock;
    struct m9_resource placeholder_texture;  /* 1x1 unit-0 binding */
-   /* Per-fragment record a shader split across raster passes hands its
-    * values over through; grown to the largest target and stride seen. */
-   struct m9_resource record;
-   unsigned record_dwords;
    bool record_written;               /* a split job ran since the last flush */
    /* Pass-through fragment slots with a native vertex program behind them,
     * for a draw whose fragment shader keeps the captured colour image. */

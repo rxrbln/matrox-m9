@@ -789,25 +789,34 @@ m9_varying_from_pass(const struct m9_job_key *key, unsigned location)
 static bool
 m9_record_grow(struct m9_context *ctx, unsigned dwords, const char **reason)
 {
-   uint64_t bytes = m9_record_bytes(ctx->params.width, ctx->params.height,
-                                    dwords);
+   struct m9_screen *screen = ctx->screen;
+   uint64_t bytes;
+   unsigned want;
+   bool ok = true;
 
+   simple_mtx_lock(&screen->record_lock);
+   want = MAX2(dwords, screen->record_dwords);
+   bytes = m9_record_bytes(ctx->params.width, ctx->params.height, want);
    if (!bytes) {
       *reason = "the inter-pass record has no size";
-      return false;
+      ok = false;
+   } else if (!screen->record.handle || screen->record.size < bytes ||
+              screen->record_dwords < dwords) {
+      bytes = MAX2(bytes, screen->record.size);
+      /* The old object goes first: two records of this size do not fit
+       * beside each other. */
+      m9_bo_destroy(screen, &screen->record);
+      if (m9_bo_create(screen, bytes, PARHELIA_M9_BO_VRAM,
+                       M9_RESOURCE_LINEAR_COLOR, &screen->record)) {
+         *reason = "cannot allocate the inter-pass record";
+         screen->record_dwords = 0;
+         ok = false;
+      } else {
+         screen->record_dwords = want;
+      }
    }
-   if (ctx->record.handle && ctx->record.size >= bytes &&
-       ctx->record_dwords >= dwords)
-      return true;
-   m9_bo_destroy(ctx->screen, &ctx->record);
-   if (m9_bo_create(ctx->screen, bytes, PARHELIA_M9_BO_VRAM,
-                    M9_RESOURCE_LINEAR_COLOR, &ctx->record)) {
-      *reason = "cannot allocate the inter-pass record";
-      ctx->record_dwords = 0;
-      return false;
-   }
-   ctx->record_dwords = dwords;
-   return true;
+   simple_mtx_unlock(&screen->record_lock);
+   return ok;
 }
 
 /* Raster constants, CPU varying views and per-pass state of a native
@@ -1169,7 +1178,7 @@ m9_submit_job(struct m9_context *ctx)
           * passes index the pool and a draw cannot restate it. */
          job.units = key->unit_count ? key->units : NULL;
          job.unit_count = key->unit_count;
-         job.record = ctx->record.handle;
+         job.record = ctx->screen->record.handle;
          /* M9X_SPLIT_PREPROCESS=0 keeps one preprocessing range for the
           * whole job, which is what the vendor emits; the default runs one
           * ahead of every raster pass. */
@@ -4190,15 +4199,16 @@ m9_context_flush(struct pipe_context *pctx,
               ctx->split_mask, ctx->split_clip);
    ctx->frame_jobs = 0;
    m9_context_sync(ctx);
-   if (m9_record_dump && ctx->record_written && ctx->record.map) {
+   if (m9_record_dump && ctx->record_written && ctx->screen->record.map) {
+      const struct m9_resource *rec = &ctx->screen->record;
       FILE *f = fopen(m9_record_dump, "wb");
 
       if (f) {
-         fwrite(ctx->record.map, 1, ctx->record.size, f);
+         fwrite(rec->map, 1, rec->size, f);
          fclose(f);
       }
       fprintf(stderr, "m9x: record %u bytes stride %u target %ux%u -> %s\n",
-              (unsigned)ctx->record.size, ctx->record_dwords,
+              (unsigned)rec->size, ctx->screen->record_dwords,
               ctx->params.width, ctx->params.height, m9_record_dump);
       ctx->record_written = false;
    }
@@ -4315,7 +4325,6 @@ m9_context_destroy(struct pipe_context *pctx)
    util_dynarray_fini(&ctx->target_depths);
    ctx->target_depth = ctx->target_aux = NULL;
    m9_bo_destroy(screen, &ctx->placeholder_texture);
-   m9_bo_destroy(screen, &ctx->record);
    m9_bo_destroy(screen, &ctx->vs_c2);
    if (ctx->debug)
       fprintf(stderr, "m9x: job splits: state %u uniforms %u vertices %u "

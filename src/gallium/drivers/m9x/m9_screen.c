@@ -903,6 +903,8 @@ m9_destroy(struct pipe_screen *pscreen)
       screen->imports = entry->next;
       FREE(entry);
    }
+   m9_bo_destroy(screen, &screen->record);
+   simple_mtx_destroy(&screen->record_lock);
    simple_mtx_destroy(&screen->import_lock);
    FREE(screen->fragment_db);
    close(screen->fd);
@@ -1099,6 +1101,7 @@ m9_screen_create(int fd, const struct pipe_screen_config *config)
    if (screen->fd < 0)
       goto fail;
    simple_mtx_init(&screen->import_lock, mtx_plain);
+   simple_mtx_init(&screen->record_lock, mtx_plain);
    screen->chip_id = M9_PCI_ID;
    screen->uapi_version = 1;
    screen->validate_submit = true;

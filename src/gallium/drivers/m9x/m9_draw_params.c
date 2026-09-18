@@ -347,15 +347,22 @@ m9_record_route(bool coordinate, unsigned c1, unsigned c2, unsigned c3)
           (c2 & 0xff) << 16 | (c3 & 0xff) << 24;
 }
 
+/* One record a shaded fragment, indexed by the engine's own fragment counter
+ * inside a raster range (MEASURED, docs/parhelia-m9-fragment-pass-hardware.md
+ * section 3b: a 320x240 draw reached index 77431 and a 160x120 one 19495 on
+ * the same target, so the count follows the fragments a pass shades and not
+ * the target's area).  Fragments are shaded in whole 2x2 quads and a shared
+ * primitive edge shades its quads twice, so round out to quads and carry two
+ * quad rows and columns of edge overdraw. */
 uint64_t
 m9_record_bytes(uint32_t width, uint32_t height, unsigned stride_dwords)
 {
-   uint64_t w = align64(width, 64), h = align64(height, 64);
+   uint64_t w = align64(width, 2), h = align64(height, 2);
 
    if (!width || !height || !stride_dwords ||
        stride_dwords > M9_RECORD_MAX_DWORDS)
       return 0;
-   return w * h * stride_dwords * sizeof(uint32_t);
+   return (w * h + 4 * (w + h) + 64) * stride_dwords * sizeof(uint32_t);
 }
 
 uint32_t
