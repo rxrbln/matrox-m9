@@ -268,6 +268,9 @@ static bool m9_pass_loop;
 static unsigned m9_split_stage;
 /* M9X_SPLIT_PREPROCESS runs the preprocessing range ahead of every pass. */
 static bool m9_split_preprocess;
+/* M9X_SPLIT_DEPTH: 1 the caller's depth state in the first raster pass only,
+ * 0 no depth at all in a split job, 2 the schedule that stops the engine. */
+static unsigned m9_split_depth;
 /* M9X_SPLIT_SUBMIT=0 puts every pass of a split shader in one submission. */
 static bool m9_split_submit;
 /* M9X_SPLIT_PASSES=N emits only the first N passes of a split shader. */
@@ -914,14 +917,23 @@ m9_job_native(struct m9_context *ctx, const struct m9_job_key *key,
                           (ctx->params.color_desc & 0xffffu) :
                           m9_record_desc(M9_RECORD_SLOT, fs->record_dwords,
                                          fs->record_offset[i]);
-      /* The first pass writes depth and the later ones only test against
-       * what it left (CAPTURED, a8 0038038a then 00380388 in all seven
-       * two-pass cases; inert there, since their depth is off).  A shader
-       * that both tests and writes is therefore refused at variant
-       * creation rather than scheduled against its own result. */
-      pass->depth_control = i ? key->depth_control & ~0x2u :
-                                key->depth_control;
-      pass->depth_ef = i ? key->depth_ef & ~0x8000u : key->depth_ef;
+      /* Only the first pass of a split sequence drives the depth unit.
+       * Leaving the test on in a continuation pass stops the engine
+       * (MEASURED: conv3nowrited and conv3d both time out, conv3notestd
+       * renders), and the captured schedules restate a8 with the write bit
+       * cleared after the first pass, so the sequence evaluates depth once
+       * and the passes behind it inherit that coverage.  M9X_SPLIT_DEPTH
+       * selects the schedule: 1 the first pass only, 0 no depth at all,
+       * 2 the schedule that stops the engine. */
+      bool pass_depth = m9_split_depth == 0 ? fs->passes.count < 2 : !i;
+
+      pass->depth_control = pass_depth ? key->depth_control :
+                            m9_depth_control(false, false, PIPE_FUNC_LESS);
+      pass->depth_ef = pass_depth ? key->depth_ef : 0;
+      if (m9_split_depth == 2 && i) {
+         pass->depth_control = key->depth_control & ~0x2u;
+         pass->depth_ef = key->depth_ef & ~0x8000u;
+      }
       /* Bits 10:9 of ef place a raster pass in its sequence: 1 the first of
        * several, 2 a middle one, 3 the last.  Every single-pass draw leaves
        * them clear (CAPTURED, 0x200/0x600 in all seven two-pass cases and
@@ -4417,6 +4429,7 @@ m9_context_create(struct pipe_screen *pscreen, void *priv, unsigned flags)
    m9_pass_loop = debug_get_bool_option("M9X_PASS_LOOP", false);
    m9_split_stage = debug_get_num_option("M9X_SPLIT_STAGE", 3);
    m9_split_preprocess = debug_get_bool_option("M9X_SPLIT_PREPROCESS", false);
+   m9_split_depth = debug_get_num_option("M9X_SPLIT_DEPTH", 1);
    m9_split_submit = debug_get_bool_option("M9X_SPLIT_SUBMIT", true);
    m9_split_passes = debug_get_num_option("M9X_SPLIT_PASSES", 0);
    m9_record_dump = debug_get_option("M9X_RECORD_DUMP", NULL);
