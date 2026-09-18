@@ -279,10 +279,10 @@ static unsigned m9_record_89;
 /* M9X_TRANSITION=0 drops the vendor's inter-draw engine transition from a
  * split job, which separates a fault in that block from one in the record. */
 static bool m9_transition;
-/* M9X_SPLIT enables the multi-pass schedule.  It is off by default: a pass
- * that binds the inter-pass record stalls the engine (MEASURED), so a
- * shader past the four-fetch limit falls back instead of locking the
- * device up. */
+/* M9X_SPLIT=0 refuses the multi-pass schedule instead of emitting it.  It is
+ * on: with each pass placed in its sequence at index ef the engine takes the
+ * inter-pass record as a render target, and a five-fetch shader renders
+ * pixel-exact (MEASURED). */
 static bool m9_split_enable;
 /* M9X_INDEXED=0 falls back to one record per index. */
 static bool m9_indexed_draws = true;
@@ -4349,7 +4349,7 @@ m9_context_create(struct pipe_screen *pscreen, void *priv, unsigned flags)
    m9_record_89 = debug_get_num_option("M9X_RECORD_89", 0);
    m9_split_coverage = debug_get_bool_option("M9X_SPLIT_COVERAGE", true);
    m9_transition = debug_get_bool_option("M9X_TRANSITION", true);
-   m9_split_enable = debug_get_bool_option("M9X_SPLIT", false);
+   m9_split_enable = debug_get_bool_option("M9X_SPLIT", true);
    ctx->dump_from = debug_get_num_option("M9X_DUMP_FROM", 0);
    ctx->dump_count = debug_get_num_option("M9X_DUMP_COUNT", 4096);
    ctx->only_first = debug_get_num_option("M9X_ONLY_FIRST", UINT_MAX);
