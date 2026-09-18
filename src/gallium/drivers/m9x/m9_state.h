@@ -24,6 +24,7 @@ int m9_context_set_framebuffer(struct m9_context *context,
                                unsigned width, unsigned height);
 void m9_context_set_depth(struct m9_context *context, bool test, bool write);
 bool m9_texture_renders_level0(const struct m9_resource *resource);
+bool m9_resource_is_color_target(const struct m9_resource *resource);
 int m9_resource_clear_linear(struct m9_resource *resource, uint32_t value,
                              unsigned x, unsigned y,
                              unsigned width, unsigned height);

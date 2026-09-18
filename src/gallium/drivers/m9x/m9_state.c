@@ -80,6 +80,14 @@ m9_framebuffer_resource_valid(const struct m9_resource *resource,
           layout.size <= resource->size;
 }
 
+/* Whether the engine can bind this resource as colour target 0, which is
+ * what a copy needs of its destination. */
+bool
+m9_resource_is_color_target(const struct m9_resource *resource)
+{
+   return m9_framebuffer_resource_valid(resource, M9_RESOURCE_LINEAR_COLOR);
+}
+
 int
 m9_context_set_framebuffer(struct m9_context *context,
                            struct m9_resource *color,

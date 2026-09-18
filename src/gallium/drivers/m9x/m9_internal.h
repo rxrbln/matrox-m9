@@ -299,6 +299,8 @@ struct m9_context {
 
    /* Vertex processing runs on the CPU in the Gallium draw module. */
    struct draw_context *draw;
+   /* Copies and blits run on the raster back end as a textured quad. */
+   struct blitter_context *blitter;
    struct pipe_framebuffer_state framebuffer;
    struct pipe_viewport_state viewport;
    struct m9_velems *velems;
@@ -374,6 +376,8 @@ struct m9_context {
    unsigned job_unit_dwords;
    uint32_t warned;
    uint32_t skipped_draws;      /* dropped for an unimplemented state */
+   uint32_t engine_blits;       /* copies and blits the raster engine drew */
+   bool queries_enabled;        /* pipe set_active_query_state, recorded */
    uint32_t submitted_draws;
    uint32_t native_vs_draws, native_vs_fallbacks;
    /* Kernel window traffic: the de-tiling copies cost a host-aperture

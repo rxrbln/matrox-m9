@@ -32,7 +32,9 @@
 #include "m9_state.h"
 #include "nir.h"
 #include "nir_builder.h"
+#include "nir/tgsi_to_nir.h"
 #include "tgsi/tgsi_from_mesa.h"
+#include "util/u_blitter.h"
 #include "util/u_debug.h"
 #include "util/u_debug_cb.h"
 #include "util/format/u_format.h"
@@ -204,6 +206,8 @@ m9_skip_report(struct m9_context *ctx)
            ctx->window_reads, ctx->window_read_bytes >> 10, ctx->window_writes,
            ctx->window_write_bytes >> 10, ctx->map_usage_seen,
            ctx->window_read_usage, ctx->window_reads_explicit);
+   fprintf(stderr, "m9x: %u copies and blits on the engine\n",
+           ctx->engine_blits);
    for (unsigned i = 0; i < ctx->skip_reasons; i++)
       fprintf(stderr, "m9x: context %u: %u draws skipped: %s\n",
               ctx->context_id, ctx->skip_reason[i].draws,
@@ -3625,6 +3629,87 @@ m9_clear_depth_stencil(struct pipe_context *pctx, struct pipe_surface *dst,
    m9_clear_depth_cpu(resource, clear_flags, depth, stencil);
 }
 
+/* The three storage kinds m9_texture_bind_view accepts, for a level-0 plane:
+ * a tiled texture chain, a depth surface and a tiled colour target. */
+static bool
+m9_resource_samplable(const struct m9_resource *res)
+{
+   if (!res || (res->base.target != PIPE_TEXTURE_2D &&
+                res->base.target != PIPE_TEXTURE_RECT))
+      return false;
+   if (res->texture.levels)
+      return !(res->texture_unplaced & 1);
+   if (res->kind == M9_RESOURCE_LINEAR_DEPTH && res->format)
+      return true;
+   return res->tiled && res->kind == M9_RESOURCE_LINEAR_COLOR &&
+          (res->base.format == PIPE_FORMAT_B8G8R8A8_UNORM ||
+           res->base.format == PIPE_FORMAT_B8G8R8X8_UNORM);
+}
+
+/*
+ * A copy on the raster back end.  The engine writes whatever layout its
+ * destination descriptor names, so a copy is a textured quad: the destination
+ * binds as colour target 0 and the source as a texture unit.  CAPTURED in the
+ * vendor's own glamor CopyArea and its shadow map; see
+ * docs/parhelia-m9-texture-upload-and-copy-re.md.
+ */
+static bool
+m9_engine_copy_ready(const struct m9_context *ctx,
+                     const struct pipe_resource *dst, unsigned dst_level,
+                     const struct pipe_resource *src, unsigned src_level)
+{
+   const struct m9_resource *d = m9_res((struct pipe_resource *)dst);
+   const struct m9_resource *sr = m9_res((struct pipe_resource *)src);
+
+   /* Only level 0 is a render surface: the chain above it is packed by the
+    * texture calculator and has no target shape (m9_update_target). */
+   return ctx->blitter && !ctx->lost && !ctx->query_active &&
+          dst && src && !dst_level &&
+          dst->nr_samples <= 1 && src->nr_samples <= 1 &&
+          dst->target != PIPE_BUFFER && src->target != PIPE_BUFFER &&
+          dst->depth0 == 1 && dst->array_size == 1 &&
+          src_level <= src->last_level &&
+          !util_format_is_depth_or_stencil(dst->format) &&
+          !util_format_is_depth_or_stencil(src->format) &&
+          m9_resource_is_color_target(d) && m9_resource_samplable(sr);
+}
+
+/* Save the state util_blitter overwrites.  The driver keeps no geometry,
+ * tessellation or stream-output state, so those savers are not called. */
+static void
+m9_blitter_save(struct m9_context *ctx)
+{
+   struct blitter_context *b = ctx->blitter;
+
+   util_blitter_save_vertex_buffers(b, ctx->vertex_buffers,
+                                    ctx->num_vertex_buffers);
+   util_blitter_save_vertex_elements(b, ctx->velems);
+   util_blitter_save_vertex_shader(b, ctx->vs);
+   util_blitter_save_fragment_shader(b, ctx->fs);
+   util_blitter_save_rasterizer(b, (void *)ctx->rasterizer);
+   util_blitter_save_viewport(b, &ctx->viewport);
+   util_blitter_save_scissor(b, &ctx->scissor);
+   util_blitter_save_blend(b, (void *)ctx->blend);
+   util_blitter_save_depth_stencil_alpha(b, (void *)ctx->dsa);
+   util_blitter_save_framebuffer(b, &ctx->framebuffer);
+   util_blitter_save_fragment_sampler_states(b, M9_TEXTURE_MAX_UNITS,
+                                             (void **)ctx->fs_samplers);
+   util_blitter_save_fragment_sampler_views(b, M9_TEXTURE_MAX_UNITS,
+                                            ctx->fs_views);
+}
+
+/*
+ * Run one blitter operation and report whether the engine actually drew it.
+ * A draw the backend cannot express is dropped with a warning rather than
+ * failing, which would leave the destination silently unwritten, so the
+ * caller falls back to the CPU path whenever the skip count moved.
+ */
+static bool
+m9_engine_drew(struct m9_context *ctx, uint32_t skipped_before)
+{
+   return !ctx->lost && ctx->skipped_draws == skipped_before;
+}
+
 /* Unscaled colour blit with format conversion through CPU transfers. */
 static bool
 m9_blit_convert(struct pipe_context *pctx, const struct pipe_blit_info *info)
@@ -3680,10 +3765,77 @@ m9_blit_convert(struct pipe_context *pctx, const struct pipe_blit_info *info)
    return ok;
 }
 
+/* The engine samples the source, so it filters, scales and scissors; the CPU
+ * path does none of those and silently sampled a filtered blit nearest. */
+static bool
+m9_blit_engine(struct pipe_context *pctx, const struct pipe_blit_info *info)
+{
+   struct m9_context *ctx = m9_context(pctx);
+   uint32_t skipped;
+
+   if (!m9_engine_copy_ready(ctx, info->dst.resource, info->dst.level,
+                             info->src.resource, info->src.level) ||
+       info->dst.format != info->dst.resource->format ||
+       info->src.format != info->src.resource->format ||
+       (info->mask & PIPE_MASK_RGBA) != PIPE_MASK_RGBA ||
+       info->swizzle_enable || info->render_condition_enable ||
+       info->src.box.depth != 1 || info->dst.box.depth != 1)
+      return false;
+   skipped = ctx->skipped_draws;
+   m9_blitter_save(ctx);
+   util_blitter_blit(ctx->blitter, info, NULL);
+   ctx->engine_blits++;
+   if (ctx->debug)
+      fprintf(stderr, "m9x: engine blit %dx%d -> %dx%d filter %u: %s\n",
+              info->src.box.width, info->src.box.height, info->dst.box.width,
+              info->dst.box.height, info->filter,
+              m9_engine_drew(ctx, skipped) ? "drawn" : "skipped");
+   return m9_engine_drew(ctx, skipped);
+}
+
+/*
+ * u_blitter brackets its draws with this, and calls it unconditionally.  The
+ * flag is recorded rather than acted on: the occlusion counter is job state
+ * this driver only sets while a query is live, and the engine copy path
+ * refuses to run inside a live query at all (m9_engine_copy_ready), so no
+ * internal draw can reach a counted job.
+ */
+static void
+m9_set_active_query_state(struct pipe_context *pctx, bool enable)
+{
+   m9_context(pctx)->queries_enabled = enable;
+}
+
+static void
+m9_resource_copy_region(struct pipe_context *pctx, struct pipe_resource *dst,
+                        unsigned dst_level, unsigned dstx, unsigned dsty,
+                        unsigned dstz, struct pipe_resource *src,
+                        unsigned src_level, const struct pipe_box *src_box)
+{
+   struct m9_context *ctx = m9_context(pctx);
+   uint32_t skipped;
+
+   if (src_box && !dstz && !src_box->z && src_box->depth == 1 &&
+       m9_engine_copy_ready(ctx, dst, dst_level, src, src_level) &&
+       util_format_get_blocksize(dst->format) ==
+       util_format_get_blocksize(src->format)) {
+      skipped = ctx->skipped_draws;
+      m9_blitter_save(ctx);
+      util_blitter_copy_texture(ctx->blitter, dst, dst_level, dstx, dsty,
+                                dstz, src, src_level, src_box);
+      ctx->engine_blits++;
+      if (m9_engine_drew(ctx, skipped))
+         return;
+   }
+   util_resource_copy_region(pctx, dst, dst_level, dstx, dsty, dstz, src,
+                             src_level, src_box);
+}
+
 static void
 m9_blit(struct pipe_context *pctx, const struct pipe_blit_info *info)
 {
-   if (!util_try_blit_via_copy_region(pctx, info, false) &&
+   if (!m9_blit_engine(pctx, info) &&
+       !util_try_blit_via_copy_region(pctx, info, false) &&
        !m9_blit_convert(pctx, info))
       m9_warn_once(m9_context(pctx), M9_WARN_BLIT, "scaled, scissored or "
                    "filtered blits are not implemented");
@@ -4026,8 +4178,23 @@ m9_create_fs_state(struct pipe_context *pctx,
 
    if (!fs)
       return NULL;
-   if (templ->type == PIPE_SHADER_IR_NIR) {
+   /* u_blitter and the other Gallium helpers build their shaders with ureg,
+    * which hands them over as TGSI.  Without this they reached neither the
+    * passthrough nor the native backend and every draw using one was
+    * dropped, which is what kept copies and blits off the engine. */
+   if (templ->type == PIPE_SHADER_IR_TGSI && templ->tokens) {
+      fs->nir = tgsi_to_nir(templ->tokens, pctx->screen, false);
+      /* The converter leaves IO as variables and derefs; the backend reads
+       * the lowered intrinsics the state tracker hands it. */
+      if (fs->nir && !fs->nir->info.io_lowered) {
+         NIR_PASS(_, fs->nir, nir_lower_vars_to_ssa);
+         nir_lower_io_passes(fs->nir, false);
+         NIR_PASS(_, fs->nir, nir_remove_dead_variables,
+                  nir_var_shader_in | nir_var_shader_out, NULL);
+      }
+   } else if (templ->type == PIPE_SHADER_IR_NIR)
       fs->nir = templ->ir.nir;
+   if (fs->nir) {
       fs->passthrough = m9_fs_passthrough(fs->nir);
       if (!fs->passthrough)
          m9_fs_native_init(m9_context(pctx), fs);
@@ -4432,6 +4599,10 @@ m9_context_destroy(struct pipe_context *pctx)
    if (ctx->debug)
       m9_skip_report(ctx);
    m9_vs_texture_fini(pctx);
+   if (ctx->blitter) {
+      util_blitter_destroy(ctx->blitter);
+      ctx->blitter = NULL;
+   }
    if (ctx->draw) {
       m9_context_sync(ctx);
       draw_destroy(ctx->draw);
@@ -4563,7 +4734,7 @@ m9_context_create(struct pipe_screen *pscreen, void *priv, unsigned flags)
    ctx->base.clear_render_target = m9_clear_render_target;
    ctx->base.clear_depth_stencil = m9_clear_depth_stencil;
    ctx->base.blit = m9_blit;
-   ctx->base.resource_copy_region = util_resource_copy_region;
+   ctx->base.resource_copy_region = m9_resource_copy_region;
    ctx->base.flush_resource = m9_flush_resource;
    ctx->base.create_blend_state = m9_create_blend_state;
    ctx->base.bind_blend_state = m9_bind_blend_state;
@@ -4600,6 +4771,7 @@ m9_context_create(struct pipe_screen *pscreen, void *priv, unsigned flags)
    ctx->base.set_blend_color = m9_set_blend_color;
    ctx->base.set_stencil_ref = m9_set_stencil_ref;
    ctx->base.set_sample_mask = m9_set_sample_mask;
+   ctx->base.set_active_query_state = m9_set_active_query_state;
    ctx->base.set_polygon_stipple = m9_set_polygon_stipple;
    ctx->base.buffer_map = m9_transfer_map;
    ctx->base.buffer_unmap = m9_transfer_unmap;
@@ -4638,6 +4810,12 @@ m9_context_create(struct pipe_screen *pscreen, void *priv, unsigned flags)
    if (!ctx->base.stream_uploader)
       goto fail;
    ctx->base.const_uploader = ctx->base.stream_uploader;
+   /* Copies and blits draw, so the blitter is built last, once every entry
+    * point it calls is installed.  A context without one still works: every
+    * caller falls back to the CPU transfer path. */
+   /* M9X_ENGINE_BLIT=0 keeps every copy and blit on the CPU transfer path. */
+   if (debug_get_bool_option("M9X_ENGINE_BLIT", true))
+      ctx->blitter = util_blitter_create(&ctx->base);
    return &ctx->base;
 fail:
    m9_context_destroy(&ctx->base);
