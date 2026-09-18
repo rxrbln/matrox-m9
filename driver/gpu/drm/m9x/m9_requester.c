@@ -343,6 +343,43 @@ MODULE_PARM_DESC(fence_spins, "writeback polls before the fence wait sleeps");
  * usleep_range() interval, and the register read that checks for a dead
  * engine cost a bus round trip on every pass.
  */
+/*
+ * Where the engine stopped, in the command image we submitted.
+ *
+ * 0x400 is written once per slot with the slot's own page-aligned base, but
+ * reads back as the fetch pointer -- which is why a stalled device shows
+ * 0x400 and 0x404 mismatched.  Subtracting the slot base turns it into a byte
+ * offset into the dwords this driver wrote, so a timeout names the packet the
+ * engine died on rather than leaving it to hand arithmetic on two addresses.
+ * The surrounding dwords are printed straight, for tools/m9-command-decode.py.
+ */
+static void m9_report_stall_point(struct m9x_device *mdev,
+				  const struct m9x_transport *transport)
+{
+	u32 head = m9x_read(mdev, M9_REG_COMMAND_BASE) & ~(u32)M9_REQUESTER_DMA_TAG;
+	u32 base = lower_32_bits(m9_command_slot_bus(transport));
+	const u32 *slot = m9_command_slot_cpu(transport);
+	unsigned int i, first, last, off;
+
+	if (head < base || head - base >= PARHELIA_M9_COMMAND_BYTES) {
+		dev_err(&mdev->pdev->dev,
+			"M9 stall point: fetch %#x outside slot %#x+%u\n",
+			head, base, (unsigned int)PARHELIA_M9_COMMAND_BYTES);
+		return;
+	}
+	off = (head - base) / sizeof(u32);
+	first = off > 8 ? off - 8 : 0;
+	last = min(off + 4, (unsigned int)(transport->command_offset /
+					   sizeof(u32)));
+	dev_err(&mdev->pdev->dev,
+		"M9 stall point: dword %u of %u submitted (byte %#x of slot)\n",
+		off, (unsigned int)(transport->command_offset / sizeof(u32)),
+		head - base);
+	for (i = first; i < last; i++)
+		dev_err(&mdev->pdev->dev, "M9 stall  %c[%4u] %08x\n",
+			i == off ? '>' : ' ', i, slot[i]);
+}
+
 static int m9_fence_wait_locked(struct m9x_device *mdev, u32 target)
 {
 	struct m9x_transport *transport = &mdev->transport;
@@ -385,6 +422,7 @@ static int m9_fence_wait_locked(struct m9x_device *mdev, u32 target)
 				m9x_read(mdev, M9_REG_FRONTEND_KICK),
 				m9x_read(mdev, M9_REG_COMMAND_BASE),
 				m9x_read(mdev, M9_REG_COMMAND_END));
+			m9_report_stall_point(mdev, transport);
 			dev_err(&mdev->pdev->dev,
 				"M9 timeout windows: 360/364=%#x/%#x f64/f68=%#x/%#x f74/f78/f7c=%#x/%#x/%#x 132c/1330/1334=%#x/%#x/%#x\n",
 				m9x_read(mdev, M9_REG_TRANSLATION_BASE),
