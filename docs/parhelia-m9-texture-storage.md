@@ -240,8 +240,19 @@ without changing the ABI size:
   slice placement, the height/depth domain the captured calculator state
   actually covers, and what the driver advertises are in
   `parhelia-m9-cube-volume-textures.md`.
-* **Not implemented.**  A base level above 0 (the vendor re-lays the chain),
-  swizzled views, and 1-D sampling.
+* **A base level above 0 is a LOD clamp** (MEASURED on the M9128).  The
+  descriptor addresses the whole chain from one base, so a view with
+  `first_level = N` keeps the chain resident and pins `7d`'s low bound to
+  `N * 32`; no re-based copy is needed.  A packed tail level cannot be
+  re-based this way and is refused, because the tail has no placement of its
+  own.
+* **A level is a render target** (MEASURED on the M9128).  Every level
+  outside the packed tail is laid out by `m9_render_surface_layout` at its
+  own extent, on a 256-aligned chain offset, and the colour attachment is
+  relocated there -- which is what `glGenerateMipmap` needs to build the
+  chain with draws instead of CPU transfers.  `m9_texture_renders_level`
+  names the levels this holds for; the fixtures are `genmip:WxH[:rt]`.
+* **Not implemented.**  Swizzled views and 1-D sampling.
 
 ## 7. Hardware test plan (T2 OS, clean-room kernel)
 
