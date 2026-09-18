@@ -822,6 +822,31 @@ struct i2c_adapter *m9x_ddc_adapter(struct m9x_device *mdev, unsigned int index)
  * on, which no connector on this board ever is.  Ownership is held across the
  * whole sequence so the board controller cannot take the bus in between.
  */
+/*
+ * Hot-plug detect as the transmitter reports it, for a connector whose sink
+ * will not answer I2C.  A DisplayPort sink asserts HPD whether or not its
+ * EDID EEPROM can be reached over the pins, so detection that rests on an
+ * EDID read alone reports a connected display as absent.  Returns the raw
+ * register so the caller can log it: the field's meaning is not fully
+ * decoded, and the value is evidence rather than a verdict.
+ */
+int m9x_ddc_hpd(struct m9x_device *mdev, unsigned int index, u8 *val)
+{
+	struct m9_ddc_bus *bus;
+	int ret;
+
+	if (index >= mdev->ddc_count)
+		return -ENODEV;
+	bus = &mdev->ddc[index];
+	if (!bus->tx_addr)
+		return -ENODEV;
+	if (m9_hmc_acquire(mdev))
+		return -EBUSY;
+	ret = m9_tx_read_hpd(bus, val);
+	m9_hmc_release(mdev);
+	return ret;
+}
+
 const struct drm_edid *m9x_ddc_read_edid(struct m9x_device *mdev,
 					 unsigned int index,
 					 struct drm_connector *connector)

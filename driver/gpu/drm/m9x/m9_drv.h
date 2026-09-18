@@ -259,6 +259,7 @@ int m9x_ddc_init(struct m9x_device *mdev);
 void m9x_pins_patch(struct m9x_device *mdev, u16 reg, u32 dot_khz, u32 mask);
 struct i2c_adapter *m9x_ddc_adapter(struct m9x_device *mdev,
 				    unsigned int index);
+int m9x_ddc_hpd(struct m9x_device *mdev, unsigned int index, u8 *val);
 const struct drm_edid *m9x_ddc_read_edid(struct m9x_device *mdev,
 					 unsigned int index,
 					 struct drm_connector *connector);

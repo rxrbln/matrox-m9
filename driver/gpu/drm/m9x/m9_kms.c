@@ -324,11 +324,23 @@ static int m9_connector_detect(struct drm_connector *connector,
 	struct m9_head *head = container_of(connector, struct m9_head,
 					    connector);
 	bool present;
+	u8 hpd;
 
 	drm_edid_free(head->edid);
 	head->edid = m9x_ddc_read_edid(head->mdev, head->ddc_index, connector);
 	head->edid_valid = true;
 	present = head->edid || (head->warm_dc_ctrl & M9_DC_ENABLE);
+	/* Logged on every probe so a sink that answers HPD but not I2C is
+	 * visible in the record rather than silently absent.  Nothing is
+	 * gated on the value yet: the board answers 0x13 on the connector its
+	 * transmitter drives and 0x07 on the others, and which bit carries
+	 * presence is not established. */
+	if (!m9x_ddc_hpd(head->mdev, head->ddc_index, &hpd))
+		drm_dbg_kms(connector->dev,
+			    "[CONNECTOR:%d:%s] DDC %u hotplug %#04x, EDID %s\n",
+			    connector->base.id, connector->name,
+			    head->ddc_index, hpd,
+			    head->edid ? "read" : "absent");
 	return present ? connector_status_connected :
 			 connector_status_disconnected;
 }
