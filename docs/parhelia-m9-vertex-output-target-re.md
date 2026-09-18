@@ -447,3 +447,75 @@ Through the driver, `tools/m9-mesa-vs.c` A/B on one board and one run:
 | 4 | **native vertex draws 1**, draw module 0 | **native 1**, draw module 0 |
 
 both exact in either path, and the whole 14-case native-vertex suite passes.
+
+## Section 4's two-draw plan does not deliver its streams (MEASURED 2026-09-19)
+
+The plan of section 4 was implemented in full and run on the dual-DisplayPort
+M9128 at 192.168.1.111.  **The driver side works and the engine does not.**
+The vertex backend compiles up to five varyings and the second head verifies
+against the NIR reference offline, but every draw whose fragment shader reads
+a varying the extra preprocessing draw writes renders **nothing**, and the
+submission comes back `EBUSY` with the context lost.
+
+What was built, all of it as section 4 specifies: `M9_VS_MAX_VARYINGS` 5; a
+second, tail-free head writing varyings 1..4 to `(0x11, 0x13)` ..
+`(0x1d, 0x1f)` and stopping; a preprocessing draw of its own ahead of the
+fused one, binding one stream target a varying at `0xb0 + 2k` with
+`0x68002000`, no `0xb8`, no `0x21`, `ef = 0x00000200` plus one enabled bit a
+target past the first, closed with a numeric draw and a range break; two
+dependency steps for that range and every range behind it shifted by `0x20`;
+varying `k >= 1` on transient view `M9_TRANSIENT_VS_EXTRA_VIEW + k - 1`, with
+the job binding no CPU stream object so those views stay local.
+
+| case | varyings | targets the extra draw binds | result |
+|---|---|---|---|
+| `vary2` | 2 declared, **1 after the linker packs two `vec2`s into one slot** | none | exact |
+| `vary3` | 3 | 2 | **nothing rendered, context lost** |
+| `vary4` | 4 | 3 | **nothing rendered** |
+| `vary5` | 5 | 4 | **nothing rendered, context lost** |
+
+Every one of the four is exact through the draw module in the same binary
+(`M9X_VS_VARYINGS=1`), against the same software reference, so the fixtures
+and their references are sound and the vertex transform is not what differs.
+`vary2` is not evidence that one target works: GLSL varying packing leaves it
+with a single varying, so its job emits no second draw at all.  **No
+configuration has been observed in which the extra draw delivered a stream.**
+
+Two hypotheses were tested and refuted:
+
+* **index `0x88`'s pair mask.**  The fused pass's captured `0xbf00` leaves
+  pair 14 -- registers `0x1c`/`0x1d` -- clear, and the tail-free head writes
+  `0x1d` as target 3, so carrying `0xbf00` over looked like the cause.  Every
+  captured head pass declares a run of pairs up to 15 instead (`0xffff`,
+  `0xfffe`, `0xfffc`, `0xfff8`, `0xfff0`, `0xffe0`).  Emitting `0xffff`
+  changed nothing.
+* **the barrier between the two preprocessing draws.**  A range break is what
+  section 4 proposed, the vendor using an engine transition the kernel
+  refuses.  `M9X_VS_EXTRA_BREAK=0`, both draws inside one range, changed
+  nothing.
+
+What the captures say that section 4 did not draw out, and the strongest
+remaining lead: **no vendor head pass writes four targets into four separate
+stream views.**  Re-reading the corpus target by target:
+
+| pass | targets | where they point |
+|---|---|---|
+| fused, 3 targets + clip code (`ff-color` `c3=04`) | `b0 b2 b4 b8` | four separate views `0x16800` apart, `desc 68002000` |
+| head, 4 targets (`fs-abs` `c3=07`, 83 instances) | `b0 b2 b4 b6` | **one** buffer `0x10ec1000`, `desc ee1900/0410/0810/0c10` -- four dword offsets of one interleaved record |
+| head, 4 targets (`vs-varyings-4` `c3=18`) | `b0 b2 b4 b6` | **one** buffer, `desc ee190014/0414/0814/0c14` |
+| gather, 4 targets (`vs-varyings-4` `c3=27`) | `b0 b2 b4 b6 b8` | separate views, `desc 68002000`, but route-fed from `0x74..0x77` |
+
+So the separate-view form with `68002000` is captured only for the fused pass
+and for a route-fed gather pass, never for a source-record-fed head pass
+writing more than one target.  The vendor's own multi-target head passes write
+**one interleaved record**, and the raster stage then reads it as several
+streams at dword offsets of one address.  That is the shape the next attempt
+should emit, and it needs the raster stream builder to bind several slots to
+one object at different offsets with a common stride rather than one view
+each -- which `m9_raster_fs_init_textured` does not express today.
+
+Status in the tree: the vertex backend, the second head, the extra draw and
+the view mapping are all present and covered by tests; the driver's default
+cap is **one varying** (`M9X_VS_VARYINGS`, `m9_context.c`), so the extra draw
+is emitted only when the knob is raised.  The fixtures `vary3`, `vary4` and
+`vary5` in `tools/m9-mesa-glsl.c` are the reproducer.
