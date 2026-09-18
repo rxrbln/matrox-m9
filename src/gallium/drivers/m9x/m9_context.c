@@ -809,6 +809,12 @@ m9_record_grow(struct m9_context *ctx, unsigned dwords, const char **reason)
       m9_bo_destroy(screen, &screen->record);
       if (m9_bo_create(screen, bytes, PARHELIA_M9_BO_VRAM,
                        M9_RESOURCE_LINEAR_COLOR, &screen->record)) {
+         /* Name the size: a record is tens of MiB and which stride asked
+          * for it is the difference between a driver fault and the
+          * hardware's own cost. */
+         fprintf(stderr, "m9x: inter-pass record of %u MiB for %ux%u stride "
+                 "%u refused\n", (unsigned)(bytes >> 20),
+                 ctx->params.width, ctx->params.height, want);
          *reason = "cannot allocate the inter-pass record";
          screen->record_dwords = 0;
          ok = false;
