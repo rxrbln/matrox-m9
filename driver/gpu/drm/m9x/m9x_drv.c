@@ -6,8 +6,11 @@
 #include <linux/module.h>
 #include <linux/pci.h>
 
+#include <drm/clients/drm_client_setup.h>
 #include <drm/drm_atomic_helper.h>
 #include <drm/drm_drv.h>
+#include <drm/drm_fbdev_ttm.h>
+#include <drm/drm_fourcc.h>
 #include <drm/drm_gem_ttm_helper.h>
 #include <drm/drm_gem_vram_helper.h>
 #include <drm/drm_ioctl.h>
@@ -58,6 +61,7 @@ static const struct drm_driver m9x_kms_driver = {
 	.debugfs_init = drm_vram_mm_debugfs_init,
 	.dumb_create = m9x_dumb_create,
 	.dumb_map_offset = drm_gem_ttm_dumb_map_offset,
+	DRM_FBDEV_TTM_DRIVER_OPS,
 	M9X_DRM_DRIVER_COMMON,
 };
 
@@ -211,6 +215,10 @@ static int m9x_pci_probe(struct pci_dev *pci,
 	if (ret)
 		goto err_modeset;
 	pci_set_drvdata(pci, drm);
+	/* The console draws into a dumb buffer, which only the scanout path
+	 * can publish, so it follows that gate rather than KMS alone. */
+	if (m9x_kms_scanout_enabled())
+		drm_client_setup_with_fourcc(drm, DRM_FORMAT_XRGB8888);
 	return 0;
 
 err_modeset:

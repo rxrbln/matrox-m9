@@ -328,18 +328,33 @@ static int m9_connector_detect(struct drm_connector *connector,
 			 connector_status_disconnected;
 }
 
-/* The warm mode the firmware left is always offered: it is the only timing
- * the pipe can currently program, and it must remain available when the
- * display has no EDID. */
+/*
+ * The warm mode the firmware left is always offered: it is the only timing
+ * the pipe can currently program without m9_kms_modeset, and it must remain
+ * available when the display has no EDID.
+ *
+ * It is also the default.  A head the firmware posted is already showing this
+ * timing, so an in-kernel client that adopts it needs no modeset at all; the
+ * EDID's own preference stays in the list as an ordinary mode, and a
+ * video=<connector>:<mode> command line still overrides both.  A head the
+ * firmware left dark has no timing to prefer, so the EDID's stands.
+ */
 static int m9_connector_add_warm_mode(struct drm_connector *connector)
 {
 	struct m9_head *head = container_of(connector, struct m9_head,
 					    connector);
-	struct drm_display_mode *mode;
+	struct drm_display_mode *mode, *probed;
+	bool posted = head->warm_valid &&
+		      (head->warm_dc_ctrl & M9_DC_ENABLE);
 
 	mode = drm_mode_duplicate(connector->dev, &head->warm_mode);
 	if (!mode)
 		return 0;
+	if (posted)
+		list_for_each_entry(probed, &connector->probed_modes, head)
+			probed->type &= ~DRM_MODE_TYPE_PREFERRED;
+	else
+		mode->type &= ~DRM_MODE_TYPE_PREFERRED;
 	drm_mode_probed_add(connector, mode);
 	return 1;
 }
@@ -1531,6 +1546,7 @@ int m9x_modeset_init(struct m9x_device *mdev)
 	drm->mode_config.min_height = 1;
 	drm->mode_config.max_height = M9_FB_MAX_HEIGHT;
 	drm->mode_config.prefer_shadow = 0;
+	drm->mode_config.preferred_depth = 24;
 	drm->mode_config.cursor_width = M9_CURSOR_SIZE;
 	drm->mode_config.cursor_height = M9_CURSOR_SIZE;
 
