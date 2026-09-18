@@ -156,7 +156,19 @@ shades twice.
 So the object costs `stride * (fragments a pass shades)` and there is no
 granularity to exploit: rounding to whole quads with a measured edge margin
 replaces the 64-pixel alignment the driver guessed at, which is about 5%
-smaller and no longer accidental.  The producers of
+smaller and no longer accidental.
+
+**What actually refuses the record is the driver's VRAM pool, not its size**
+(MEASURED).  `effect2d`'s 3x3 kernel asks for **35 MiB at 1920x1200 with a
+stride of 4** and is refused on a card with `0x40000000` bytes -- 1 GiB -- of
+VRAM, because `drmm_vram_helper_init` gives TTM only
+`min(BAR0, M9_ADDRESS_CPU_BYTES)` = **224 MiB**, the identity-mapped part of
+BAR0, which the scanout surfaces, framebuffers, textures and render targets
+already occupy.  Sharing one record across the screen instead of one a
+context does not help, because a single scene cannot get its first one.
+Reaching the rest of the card means allocating VRAM through the surface
+window at `[224M, 256M)` rather than the identity view, which is a
+VRAM-addressing change and not a record change.  The producers of
 every glmark2 shader the splitter cuts hand over four components, so the
 four-dword slot is not padding either -- a four-pass shader at 1920x1200
 genuinely needs about 106 MiB, and where VRAM cannot hold it the draws are
@@ -244,6 +256,44 @@ joins the listed cases and raises the bar to 98 PASS, 0 FAIL (MEASURED).  Nothin
 the Gallium caps advertises the feature: `fs->max_texture_samplers` was already
 8 rather than the four-unit binding limit, so no cap claimed or claims that a
 five-fetch shader renders.
+
+## 6. A coordinate the fragment stage computes
+
+The engine samples before the program runs, so a coordinate computed in the
+fragment stage cannot feed a fetch in the same pass -- which is what refuses
+`terrain`, `shadow` and `refract` with "texture coordinate is not a varying".
+It can feed one in the **next** pass, through a coordinate route, and
+`docs/parhelia-m9-fragment-pass-routes.md` section 4 decodes that from the
+captures.  m9x emits one behind `M9X_COORD_ROUTE`; it is **off by default**.
+
+Where it stands (MEASURED, fixture `coordroute`, which samples at the product
+of two varyings so that no affine fold can reach it):
+
+| step | outcome |
+|---|---|
+| the splitter cuts at the computed coordinate | `shadow.frag` becomes two passes, `light-refract.frag` four (OFFLINE) |
+| the consuming unit keeps the interpolated selector word `00040118` | **stops the engine** |
+| the routed selector word `0004111c` | **no stall**, the schedule runs |
+| the producing pass writes the coordinate | **correct**: read back with `M9X_RECORD_DUMP`, the first fragment holds `s = 0.001561` and `t = 0.002081`, exactly `(0.5/320, 0.5/240)` |
+| the consuming unit samples there | **wrong place**, 76794 of 76800 pixels differ |
+
+So the schedule, the selector word, the route word and the producer are all
+right and what remains is the record's lane layout on the consuming side.
+Two readings were tried and both are retired: narrowing a one-pair producer
+to the two dwords every captured one-pair producer uses (`ee090002`) **stops
+the engine** and also breaks `tex5`, which the four-dword slot renders
+pixel-exact; and the consumer's own descriptor already matches `xv-uyvy`'s
+`ee090004` byte for byte.
+
+Because it renders rather than stalls, leaving it on would turn three scenes
+from a refusal with a named reason into silently wrong pixels, so the
+compiler refuses a routed coordinate unless `M9X_COORD_ROUTE` is set and the
+fixture is dispatched but not listed.
+
+`terrain` is assessable only at runtime -- the offline harness's synthetic
+vertex shader will not link -- and at 1920x1200 it is refused five times over
+for the coordinate, and separately needs a D24S8 depth attachment of the
+target size (MEASURED).
 
 ## 5. Reproduction
 

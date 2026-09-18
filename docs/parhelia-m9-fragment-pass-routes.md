@@ -142,6 +142,18 @@ them (CAPTURED).
   re-describes the producer's bytes with the form it needs, which need not
   be the producer's.
 
+* **A unit the record steers names its route in its own selector word.**
+  Index `0x70 + i` carries `0x18` in its low byte for a unit that
+  interpolates its own coordinate and `0x1c + k` with bit 12 set for one
+  whose coordinate comes from route `k`: the five-sampler schedule's pass 0
+  is `00040118` and its passes 1..4 are `0004111c`, and `xv-uyvy` binds
+  `70 = 00040118` for its interpolated unit beside `71 = 0004111d` and
+  `72 = 0004111e` for the two routed at `75` and `76` (CAPTURED).  **Emitting
+  the interpolated `0x18` on a routed unit stops the engine** (MEASURED,
+  m9x's first coordinate route); with `0x1c + k` the engine takes the
+  schedule and runs.  Nothing else about the unit changes -- it keeps its
+  own `0x78`/`0x79`/`0x7a` texture packet and its `0x7c` sampler word.
+
 What stays **OPEN**: a coordinate route at index 3; whether the low byte
 names the route index or the destination unit, which every capture leaves
 indistinguishable because they are always equal; and c2 against c3 for a
