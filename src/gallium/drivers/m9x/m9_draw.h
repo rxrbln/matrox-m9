@@ -49,6 +49,7 @@ struct m9_raster_pass {
    uint32_t depth_control;    /* raster a8 of this pass */
    uint32_t depth_ef;         /* raster ef depth bits of this pass */
    uint32_t sequence_ef;      /* raster ef bits 10:9: this pass's place */
+   unsigned pass_index;       /* its place in the sequence, across submissions */
    uint32_t a9, ae;           /* coverage words, which differ on a record pass */
    uint32_t r89;              /* raster 89: a render format class per target */
    unsigned route_count;
@@ -60,6 +61,9 @@ struct m9_raster_pass {
    unsigned unit_count;       /* slots described, the rest are cleared */
    uint8_t unit_index[M9_TEXTURE_MAX_UNITS];
 };
+
+/* Colour attachments the raster stage binds: b0/b1 through b6/b7. */
+#define M9_DRAW_MAX_COLOR 4u
 
 #define M9_PASS_UNIT_PLACEHOLDER 0xffu
 #define M9_PASS_UNIT_NONE        0xfeu
@@ -75,6 +79,13 @@ struct m9_draw_job {
    uint32_t transient;     /* VRAM, M9_TRANSIENT_VIEWS stream views */
    uint32_t cpu_streams;   /* DMA32, the views the CPU writes */
    uint32_t color, depth, aux;
+   /* Colour attachments 1..3, each with its own descriptor, bound at
+    * b2/b3 .. b6/b7 behind job->color's b0/b1.  A count of zero or one
+    * leaves the job at the single target job->color names.
+    * docs/parhelia-m9-mrt-routing.md */
+   uint32_t color_extra[M9_DRAW_MAX_COLOR - 1];
+   uint32_t color_extra_desc[M9_DRAW_MAX_COLOR - 1];
+   unsigned color_count;
    uint32_t be;
    uint32_t source_vertices;  /* padded record count, multiple of four */
    uint32_t index;            /* DMA32 raster indices, contiguous */
@@ -84,7 +95,11 @@ struct m9_draw_job {
    unsigned draw_count;
    uint32_t depth_control;    /* raster a8 */
    uint32_t depth_ef;         /* raster ef depth bits */
-   uint32_t color_mask;       /* raster ab */
+   uint32_t color_mask;       /* raster ab: target 0 low, target 1 high */
+   uint32_t color_mask_hi;    /* raster ac: target 2 low, target 3 high */
+   /* Render format class of each bound target, packed into raster 89 by
+    * m9_raster_89; a zero count keeps the single-target word. */
+   uint8_t color_class[M9_DRAW_MAX_COLOR];
    bool blend_dest;           /* the fragment program blends the destination */
    uint32_t clip_min, clip_max;
    /* Native fragment program; NULL keeps the pass-through colour image. */
@@ -105,6 +120,7 @@ struct m9_draw_job {
    const struct m9_raster_pass *passes;
    unsigned pass_count;
    uint32_t record;           /* VRAM inter-pass record surface */
+   bool split_30;             /* index 30 follows the pass's own place */
    /* Run the preprocessing pass again ahead of every raster pass: the
     * raster stage drains the streams it produced, so a second pass over
     * the same job finds nothing left unless they are produced again. */
@@ -124,6 +140,21 @@ unsigned m9_draw_job_dwords(unsigned draw_count);
  * the base job already counts. */
 unsigned m9_draw_decl_dwords(unsigned decl_count);
 unsigned m9_draw_job_relocs(unsigned draw_count, unsigned unit_count);
+/* Dwords and relocations each colour attachment past the first costs: one
+ * address/descriptor packet and its COLOR relocation, per raster pass. */
+#define M9_DRAW_COLOR_DWORDS 3u
+unsigned m9_draw_color_dwords(unsigned color_count, unsigned pass_count);
+unsigned m9_draw_color_relocs(unsigned color_count, unsigned pass_count);
+/* Raster 89: the render format class of every bound target packed three bits
+ * at a time from bit 0, with 7 in each unbound field.  base supplies the bits
+ * above 14, which no capture varies.  A count of zero returns base unchanged.
+ * docs/parhelia-m9-mrt-routing.md */
+uint32_t m9_raster_89(uint32_t base, const uint8_t *color_class,
+                      unsigned color_count);
+/* Raster ab and ac: one sixteen-bit write mask a target, ab holding targets
+ * 0 and 1 and ac targets 2 and 3.  m9_color_mask builds one target's word. */
+uint32_t m9_color_mask_pair(const uint32_t *mask, unsigned count,
+                            unsigned first);
 unsigned m9_draw_units_dwords(unsigned unit_count);
 unsigned m9_draw_job_dwords_fs(unsigned draw_count, unsigned unit_count);
 /* Dwords and relocations one extra raster pass of a split shader costs. */

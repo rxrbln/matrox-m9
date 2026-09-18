@@ -81,6 +81,52 @@ m9_draw_pass_relocs(unsigned draw_count, unsigned unit_count,
    return m9_draw_job_relocs(draw_count, unit_count) + route_count;
 }
 
+/* A colour attachment past the first costs one address/descriptor packet in
+ * every raster pass; a job with no explicit pass count still has one. */
+unsigned
+m9_draw_color_dwords(unsigned color_count, unsigned pass_count)
+{
+   unsigned extra = color_count > 1 ? color_count - 1 : 0;
+
+   return extra * M9_DRAW_COLOR_DWORDS * MAX2(pass_count, 1u);
+}
+
+unsigned
+m9_draw_color_relocs(unsigned color_count, unsigned pass_count)
+{
+   unsigned extra = color_count > 1 ? color_count - 1 : 0;
+
+   return extra * MAX2(pass_count, 1u);
+}
+
+/* Five three-bit fields; the bound targets fill them from bit 0 and every
+ * field a target does not claim reads 7.  The fifth is 7 in every captured
+ * value, one to four targets alike. */
+uint32_t
+m9_raster_89(uint32_t base, const uint8_t *color_class, unsigned color_count)
+{
+   uint32_t word = base & ~0x7fffu;
+
+   if (!color_count)
+      return base;
+   for (unsigned s = 0; s < 5; s++) {
+      unsigned cls = s < color_count && s < M9_DRAW_MAX_COLOR ?
+                     color_class[s] & 7u : 7u;
+
+      word |= cls << (3 * s);
+   }
+   return word;
+}
+
+uint32_t
+m9_color_mask_pair(const uint32_t *mask, unsigned count, unsigned first)
+{
+   uint32_t low = first < count ? mask[first] & 0xffffu : 0xffffu;
+   uint32_t high = first + 1 < count ? mask[first + 1] & 0xffffu : 0xffffu;
+
+   return low | high << 16;
+}
+
 unsigned
 m9_draw_units_dwords(unsigned unit_count)
 {
@@ -244,6 +290,17 @@ m9_stream_offset(const struct m9_draw_job *job, unsigned view)
      .kind = m9_stream_is_cpu(job, view) ? PARHELIA_M9_RELOC_SYSTEM :      \
              PARHELIA_M9_RELOC_STREAM }
 
+/* Raster 89 of one pass: a record-writing pass keeps the word it carries,
+ * and a colour pass packs one render format class per bound target. */
+static uint32_t
+m9_job_r89(const struct m9_draw_job *job, const struct m9_raster_pass *pass,
+           uint32_t base)
+{
+   if ((pass && pass->writes_record) || job->color_count < 2)
+      return base;
+   return m9_raster_89(base, job->color_class, job->color_count);
+}
+
 /* Streams, program entry and constant span of a native raster pass. */
 static int
 m9_emit_raster_fs(struct m9_batch *batch, const struct m9_draw_job *job,
@@ -254,7 +311,9 @@ m9_emit_raster_fs(struct m9_batch *batch, const struct m9_draw_job *job,
    unsigned entry = pass ? pass->entry : 0;
    int ret = 0;
 
-   EMIT(V(0x88, fs->r88), V(0x89, pass && pass->r89 ? pass->r89 : 0xfe207ff8),
+   EMIT(V(0x88, fs->r88),
+        V(0x89, m9_job_r89(job, pass, pass && pass->r89 ? pass->r89 :
+                                      0xfe207ff8)),
         V(0x8a, 0), V(0xc1, 0));
    for (unsigned pair = 0; 2 * pair < fs->stream_count; pair++) {
       unsigned s = 2 * pair;
@@ -415,17 +474,27 @@ m9_emit_raster_range(struct m9_batch *batch, const struct m9_draw_job *job,
         V(0xd7, m9_raster_d7(d0->topology)));
    EMIT(V(0x22, m9_job_raster_control(job, pass, d0)));
    EMIT(V(0xe6, 3), V(0xe3, dep + 0x20));
-   if (pass && pass->writes_record)
+   if (pass && pass->writes_record) {
       EMIT(R(0xb0, job->record, 0, STREAM), V(0xb1, pass->record_desc));
-   else
+   } else {
       EMIT(R(0xb0, job->color, 0, COLOR), V(0xb1, p->color_desc));
+      /* Target s takes the pair at b0 + 2s with its own descriptor
+       * (CAPTURED, one to four attachments). */
+      for (unsigned s = 1; s < job->color_count; s++)
+         EMIT(R(0xb0 + 2 * s, job->color_extra[s - 1], 0, COLOR),
+              V(0xb1 + 2 * s, job->color_extra_desc[s - 1]));
+   }
    EMIT(R(0xb8, job->depth, 0, DEPTH), V(0xb9, p->depth_desc));
    EMIT(R(0xba, job->aux, 0, DEPTH), V(0xbb, p->aux_desc));
    EMIT(R(0xbe, job->be, 0, STREAM));
    EMIT(V(0xa8, pass ? pass->depth_control : job->depth_control),
         V(0xa9, pass ? pass->a9 : 0x08ffff00u), V(0xaa, 0x00ffff00));
+   /* ab carries targets 0 and 1, ac targets 2 and 3 (CAPTURED: one target
+    * leaves ab's upper half stale, four write ffffffff in both). */
    EMIT(V(0xab, pass && pass->writes_record ? 0xffffffffu : job->color_mask),
-        V(0xac, 0xffffffff), V(0xae, pass ? pass->ae : 0x22444442u));
+        V(0xac, pass && pass->writes_record ? 0xffffffffu :
+                job->color_count > 2 ? job->color_mask_hi : 0xffffffffu),
+        V(0xae, pass ? pass->ae : 0x22444442u));
    EMIT(V(0xf5, job->clip_min), V(0xf6, job->clip_max), V(0xc4, job->clip_min),
         V(0xc5, job->clip_max));
    EMIT(V(0xf1, 0));
@@ -434,7 +503,8 @@ m9_emit_raster_range(struct m9_batch *batch, const struct m9_draw_job *job,
       if (ret)
          goto fail;
    } else {
-      EMIT(V(0x88, 0x0100dff0), V(0x89, 0xfe207ff8), V(0x8a, 0), V(0xc1, 0));
+      EMIT(V(0x88, 0x0100dff0), V(0x89, m9_job_r89(job, pass, 0xfe207ff8)),
+           V(0x8a, 0), V(0xc1, 0));
       EMIT(R(0x00, job->transient, VIEW(0), STREAM),
            R(0x01, job->transient, VIEW(1), STREAM), V(0x10, 0x00100010));
       EMIT(R(0x02, job->transient, VIEW(2), STREAM),
@@ -449,7 +519,7 @@ m9_emit_raster_range(struct m9_batch *batch, const struct m9_draw_job *job,
    EMIT(V(0xec, 0), V(0xf4, 0), V(0xea, 0), V(0xeb, 0));
    /* Index 30 is written by a pass that consumes a record, and by no
     * other raster pass (CAPTURED, both schedules). */
-   if (index)
+   if (job->split_30 && pass ? pass->pass_index != 0 : index != 0)
       EMIT(V(0x30, 0));
    EMIT(V(0x28, 0));
    if (job->fs || pass) {
@@ -533,6 +603,7 @@ m9_draw_job_valid(const struct m9_draw_job *job)
    if (!job->params || !job->decl || !job->source || !job->system ||
        !job->program || !job->fragment_db || !job->transient ||
        !job->color || !job->depth || !job->aux || !job->be ||
+       job->color_count > M9_DRAW_MAX_COLOR ||
        !job->draws || !job->draw_count || job->source_vertices % 4 ||
        job->source_vertices > m9_draw_max_source_vertices() ||
        job->unit_count > (job->pass_count ? M9_DRAW_MAX_UNITS :
@@ -541,6 +612,9 @@ m9_draw_job_valid(const struct m9_draw_job *job)
       return false;
    for (unsigned i = 0; i < job->unit_count; i++)
       if (!job->units[i].handle)
+         return false;
+   for (unsigned s = 1; s < job->color_count; s++)
+      if (!job->color_extra[s - 1])
          return false;
    if (job->index_count && job->index_base % 4)
       return false;
