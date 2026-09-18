@@ -50,7 +50,6 @@ struct m9_raster_pass {
    uint32_t depth_ef;         /* raster ef depth bits of this pass */
    uint32_t sequence_ef;      /* raster ef bits 10:9: this pass's place */
    unsigned pass_index;       /* its place in the sequence, across submissions */
-   unsigned pass_index;       /* its place in the sequence, across submissions */
    uint32_t a9, ae;           /* coverage words, which differ on a record pass */
    uint32_t r89;              /* raster 89: a render format class per target */
    unsigned route_count;
@@ -121,7 +120,6 @@ struct m9_draw_job {
    const struct m9_raster_pass *passes;
    unsigned pass_count;
    uint32_t record;           /* VRAM inter-pass record surface */
-   bool split_30;             /* index 30 follows the pass's own place */
    bool split_30;             /* index 30 follows the pass's own place */
    /* Run the preprocessing pass again ahead of every raster pass: the
     * raster stage drains the streams it produced, so a second pass over
