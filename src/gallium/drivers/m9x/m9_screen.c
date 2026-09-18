@@ -248,6 +248,18 @@ m9_is_format_supported(struct pipe_screen *screen, enum pipe_format format,
    }
    if (!m9_format_info(format, &info))
       return false;
+   /* M9X_GIGA_ORDER=0x68|0x6a hides the other 10-bit code, so a fixture can
+    * reach the channel order the state tracker does not prefer.  Both are
+    * the same storage; only the descriptor code differs. */
+   if ((info.code == M9_COLOR_FORMAT_A2B10G10R10 ||
+        info.code == M9_COLOR_FORMAT_A2R10G10B10)) {
+      static int giga_order = -1;
+
+      if (giga_order < 0)
+         giga_order = (int)debug_get_num_option("M9X_GIGA_ORDER", 0);
+      if (giga_order && info.code != giga_order)
+         return false;
+   }
    if (bind & ~image_bind)
       return false;
    if ((bind & PIPE_BIND_BLENDABLE) && !(bind & PIPE_BIND_RENDER_TARGET))
@@ -514,9 +526,12 @@ m9_resource_create(struct pipe_screen *pscreen,
    } else if (!resource->handle) {
       create.size = size;
       create.flags = m9_resource_bo_flags(templ);
-      /* GPU color targets carry the kernel's immutable tiled layout tag. */
+      /* GPU color targets carry the kernel's immutable tiled layout tag.
+       * A 10-bit target is the same class 2 storage, so it is tagged too. */
       if (resource->kind == M9_RESOURCE_LINEAR_COLOR &&
-          format.code == M9_COLOR_FORMAT_A8R8G8B8)
+          (format.code == M9_COLOR_FORMAT_A8R8G8B8 ||
+           format.code == M9_COLOR_FORMAT_A2B10G10R10 ||
+           format.code == M9_COLOR_FORMAT_A2R10G10B10))
          create.flags = PARHELIA_M9_BO_TILED;
       if (ioctl(screen->fd, DRM_IOCTL_PARHELIA_M9_CREATE_BO, &create))
          goto fail;

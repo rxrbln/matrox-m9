@@ -51,7 +51,12 @@ m9_draw_params_init(struct m9_draw_params *params, uint32_t width,
    float w = width, h = height;
    uint32_t *sys, *linked;
 
-   if (!params || color_format != M9_COLOR_FORMAT_A8R8G8B8 ||
+   /* A 10-bit colour target is the same 32-bit class 2 surface as the 8-bit
+    * one, and takes render class 0 at index 89 like any packed colour target
+    * (docs/parhelia-m9-gigacolor-10bit.md 3.2, 4.1). */
+   if (!params || (color_format != M9_COLOR_FORMAT_A8R8G8B8 &&
+                   color_format != M9_COLOR_FORMAT_A2B10G10R10 &&
+                   color_format != M9_COLOR_FORMAT_A2R10G10B10) ||
        !m9_render_surface_layout(width, height, 4, &layout))
       return -EINVAL;
    memset(params, 0, sizeof(*params));

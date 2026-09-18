@@ -46,6 +46,17 @@ m9_texture_format(enum pipe_format format, struct m9_texture_format *out)
    case PIPE_FORMAT_B8G8R8A8_UNORM:
       info = (struct m9_texture_format){ PIPE_FORMAT_B8G8R8A8_UNORM, 0xcc };
       break;
+   /* 10-bit GigaColor is storage class 2 at 32 bits per texel: the same
+    * placement as the BGRA8 family, so the element is stored as it comes
+    * (docs/parhelia-m9-gigacolor-10bit.md 3.2). */
+   case PIPE_FORMAT_R10G10B10A2_UNORM:
+      info = (struct m9_texture_format){ PIPE_FORMAT_R10G10B10A2_UNORM,
+                                         M9_TEXTURE_CODE_A2B10G10R10 };
+      break;
+   case PIPE_FORMAT_B10G10R10A2_UNORM:
+      info = (struct m9_texture_format){ PIPE_FORMAT_B10G10R10A2_UNORM,
+                                         M9_TEXTURE_CODE_A2R10G10B10 };
+      break;
    default:
       return false;
    }
@@ -451,7 +462,10 @@ m9_texture_border_order(uint8_t code, uint8_t out[4])
    static const uint8_t rgba[4] = { 0, 1, 2, 3 };
    static const uint8_t bgra[4] = { 2, 1, 0, 3 };
 
-   memcpy(out, code == M9_TEXTURE_CODE_BGRA ? bgra : rgba, 4);
+   /* A2R10G10B10 carries blue at bit 0, the same channel order as the
+    * BGRA8 code; A2B10G10R10 carries red there, like the RGBA8 one. */
+   memcpy(out, code == M9_TEXTURE_CODE_BGRA ||
+               code == M9_TEXTURE_CODE_A2R10G10B10 ? bgra : rgba, 4);
 }
 
 static unsigned

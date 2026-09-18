@@ -25,6 +25,9 @@
 #define M9_TEXTURE_LOD_DEFAULT 0x0ff80000u
 /* Descriptor format code of the BGRA render-target family. */
 #define M9_TEXTURE_CODE_BGRA 0xccu
+/* 10-bit GigaColor descriptor bytes: the 7-bit code doubled (79[31:25]). */
+#define M9_TEXTURE_CODE_A2B10G10R10 0xd0u
+#define M9_TEXTURE_CODE_A2R10G10B10 0xd4u
 
 /* Descriptor 79[23:16]. */
 enum m9_texture_kind {

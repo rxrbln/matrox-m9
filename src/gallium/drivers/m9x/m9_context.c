@@ -2408,14 +2408,18 @@ m9_texture_bind_view(const struct pipe_sampler_view *view,
     * scaled coordinates (m9_job_textures). */
    if (res->tiled && res->kind == M9_RESOURCE_LINEAR_COLOR &&
        (res->base.format == PIPE_FORMAT_B8G8R8A8_UNORM ||
-        res->base.format == PIPE_FORMAT_B8G8R8X8_UNORM)) {
+        res->base.format == PIPE_FORMAT_B8G8R8X8_UNORM ||
+        res->base.format == PIPE_FORMAT_R10G10B10A2_UNORM ||
+        res->base.format == PIPE_FORMAT_B10G10R10A2_UNORM)) {
       /* The small family is addressed by the 2-D kind, like a small texture:
        * reading it as the ordinary tiled kind returns only the first 16x16
        * texels, which is 1/16 of a 64x64 surface and 1/4 of a 32x32 one. */
       bool small = res->width <= 64 && res->height <= 64;
 
+      /* The descriptor byte is the surface's own 7-bit code doubled, which
+       * is 0xcc for the BGRA8 family and 0xd0/0xd4 for the 10-bit one. */
       *bind = (struct m9_texture_bind) {
-         .code = 0xcc,
+         .code = (uint8_t)(res->format << 1),
          .kind = small ? M9_TEXTURE_KIND_2D : M9_TEXTURE_KIND_RENDER,
          .width = small ? res->width : (res->width + 31) & ~31u,
          .height = res->height, .depth = 1,
@@ -2998,6 +3002,15 @@ m9_job_key_current(struct m9_context *ctx, struct m9_job_key *key)
       m9_warn_once(ctx, M9_WARN_BLEND, "blending needs a native fragment "
                    "program; drawing opaque");
    }
+   /* ab/ac gate whole byte lanes, which cannot describe a 10-bit channel:
+    * the vendor writes 0xffff for such a target and expresses the mask in
+    * the fragment output instead (docs/parhelia-m9-gigacolor-10bit.md 4.2).
+    * Until that lowering exists, a partial mask is refused rather than
+    * applied to the wrong bits. */
+   if (ctx->color && m9_res(ctx->color)->format != M9_COLOR_FORMAT_A8R8G8B8 &&
+       key->color_mask != 0xffffffffu)
+      return m9_skip_reason(ctx, "a partial colour mask on a 10-bit target "
+                            "needs the fragment output lowering; draw skipped");
    if (rast && rast->scissor)
       return m9_scissor_key(ctx, &ctx->scissor, key);
    key->clip_min = ctx->params.clip_min;

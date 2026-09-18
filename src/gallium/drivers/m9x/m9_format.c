@@ -2,6 +2,8 @@
 /* Copyright 2026 René Rebe <rene@exactco.de> */
 #include "m9_format.h"
 
+#include "m9_draw_params.h"
+
 bool
 m9_format_info(enum pipe_format format, struct m9_format_info *out)
 {
@@ -39,6 +41,18 @@ m9_format_info(enum pipe_format format, struct m9_format_info *out)
       break;
    case PIPE_FORMAT_L8A8_UNORM:
       info = (struct m9_format_info){ 0x51, 2, M9_FORMAT_TEXTURE };
+      break;
+   /* 10-bit GigaColor: storage class 2 at 32 bits per texel, allocated and
+    * tiled exactly like B8G8R8A8, and the same code in the sampler and the
+    * target role (docs/parhelia-m9-gigacolor-10bit.md).  R10G10B10A2 puts
+    * red at bit 0, which is D3D A2B10G10R10. */
+   case PIPE_FORMAT_R10G10B10A2_UNORM:
+      info = (struct m9_format_info){ M9_COLOR_FORMAT_A2B10G10R10, 4,
+         M9_FORMAT_TEXTURE | M9_FORMAT_COLOR };
+      break;
+   case PIPE_FORMAT_B10G10R10A2_UNORM:
+      info = (struct m9_format_info){ M9_COLOR_FORMAT_A2R10G10B10, 4,
+         M9_FORMAT_TEXTURE | M9_FORMAT_COLOR };
       break;
    case PIPE_FORMAT_I8_UNORM:
       info = (struct m9_format_info){ 0x51, 1, M9_FORMAT_TEXTURE };

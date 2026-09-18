@@ -318,6 +318,24 @@ m9_stream_offset(const struct m9_draw_job *job, unsigned view)
  * from bit 19 (CAPTURED: 0, 0x00080000, 0x00280000 and 0x00a80000 for one,
  * two, three and four attachments).  Target 0 is always enabled and claims
  * no bit.  docs/parhelia-m9-mrt-routing.md */
+/*
+ * CAPTURED (docs/parhelia-m9-gl15-ff-capture.md): ef[7:0] is 0x55 with
+ * dithering off and 0x00 with it on.  MEASURED (fixture giga10clear): with
+ * dithering on a 10-bit target spreads a colour that falls between two
+ * levels over both of them -- green 682/1023 came back 681 on half the
+ * surface and 682 on the other half, and the two-bit alpha likewise.  Ten
+ * bits already resolve what dithering exists to hide, so a GigaColor target
+ * takes the off word, as the vendor's own Parhelia path does.
+ */
+static uint32_t
+m9_dither_ef(uint32_t color_desc)
+{
+   uint8_t code = color_desc >> 25;
+
+   return code == M9_COLOR_FORMAT_A2B10G10R10 ||
+          code == M9_COLOR_FORMAT_A2R10G10B10 ? 0x55u : 0;
+}
+
 static uint32_t
 m9_color_enable(unsigned color_count)
 {
@@ -510,6 +528,7 @@ m9_emit_raster_range(struct m9_batch *batch, const struct m9_draw_job *job,
 
    EMIT(V(0xf0, m9_raster_class(d0->lines, blend)),
         V(0xef, d0->cull | depth_ef | (pass ? pass->sequence_ef : 0) |
+                m9_dither_ef(p->color_desc) |
                 (pass && pass->writes_record ? 0 :
                  m9_color_enable(job->color_count))),
         V(0xd7, m9_raster_d7(d0->topology)));
@@ -610,7 +629,7 @@ m9_emit_raster_range(struct m9_batch *batch, const struct m9_draw_job *job,
          EMIT(V(0x22, m9_job_raster_control(job, pass, d)),
               V(0x6a, 0x25010000));
          EMIT(V(0xf0, m9_raster_class(d->lines, blend)),
-              V(0xef, d->cull | depth_ef),
+              V(0xef, d->cull | depth_ef | m9_dither_ef(p->color_desc)),
               V(0xd7, m9_raster_d7(d->topology)), V(0xf4, 0));
       }
       draw_at = batch->command_count;

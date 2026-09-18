@@ -35,6 +35,10 @@
 #define M9_BE_BYTES               0x100000u
 
 #define M9_COLOR_FORMAT_A8R8G8B8  0x66u
+/* Native 10-bit GigaColor, one code in both the sampler and the target role
+ * (docs/parhelia-m9-gigacolor-10bit.md). */
+#define M9_COLOR_FORMAT_A2B10G10R10 0x68u
+#define M9_COLOR_FORMAT_A2R10G10B10 0x6au
 #define M9_DEPTH_FORMAT_D24S8     0x7du
 #define M9_HZ_FORMAT              0x78u
 #define M9_HZ_CLEAR               0x007ff000u
