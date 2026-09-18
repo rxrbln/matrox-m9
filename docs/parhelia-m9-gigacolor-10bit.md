@@ -480,6 +480,51 @@ refuses a partial colour mask on a 10-bit target rather than applying it to
 the wrong bits.  The full mask, which is what `0xffff` means, is what every
 measurement above ran under.
 
+### 9.4 Scanout
+
+The display controller takes its pixel format from bits `[31:25]` of the
+surface descriptor, which on this head is the high half of the pitch word at
+DC bank `+0x58`.  Nothing else had to change: a 10-bit pixel is four bytes,
+the same 32-bit storage class the scanout allocation already sizes.
+
+MEASURED on the M9128, head 0 on DP-1 at 1920x1200, with the clean-room KMS
+driver advertising `XR24 XR30 AR30 XB30 AB30` on the primary plane:
+
+* every modeset completes and the DisplayPort link retrains;
+* the pitch word read back **while the head is scanning out** is
+  `0xcc210780` for `XR24`, `0xd4210780` for `XR30` and `AR30` and
+  `0xd0210780` for `XB30` and `AB30` -- codes `0x66`, `0x6a` and `0x68`;
+* nothing in dmesg, and the 3-D engine is undisturbed afterwards.
+
+The whole chain from GL to the CRTC works (`tools/m9-gigacolor-scanout.c`):
+GBM reports `XR30`/`AR30`/`XB30`/`AB30` supported for
+`SCANOUT|RENDERING`, EGL offers **six 30-bit configs** out of twelve
+(`10/10/10/2` with native visual `AR30` and `10/10/10/0` with `XR30`), a GL
+context on one of them renders an interpolated ramp into the GBM buffer, and
+the buffer maps back with **1024 distinct codes across 1920 pixels and no
+non-monotonic step** -- an 8-bit target could resolve at most 256.
+`drmModeAddFB2` and `drmModeSetCrtc` then take it.
+
+So a 30-bit EGL config does fall out of advertising the formats on both
+sides.  EGL offers only the `AR30`/`XR30` orders: Mesa builds its GBM config
+list from a fixed visual table that has no `XB30`/`AB30` entry, which is a
+Mesa property and not a hardware one -- the DRM plane takes all four and the
+controller is programmed with the right code for each.  A depth-30 **X**
+visual needs the X server and its DDX at depth 30 as well and was not tried.
+
+**UNTESTED: what the panel makes of the 30-bit pixels.**  No capture on this
+bench sees the M9's DisplayPort output, so this is the one claim that still
+needs a look at the monitor.  It is also where the last open question sits --
+whether the transmitter has to be told its bit depth.  The link-format
+register `0x1c38` is patched from the PInS table keyed on pixel clock alone
+and carries no colour-depth field this driver knows of; it read
+`0x111d011d` identically for 8-bit and 10-bit modesets.  Reproduce with
+
+```sh
+flock -w 600 /root/tmp/m9-hw.lock -c \
+  'HOLD=60 FORMATS="XR24 XR30" /root/tmp/giga-scanout.sh'
+```
+
 ### 9.5 Still open
 
 * `79[24]` for a 10-bit descriptor: the driver writes the code doubled with
@@ -490,3 +535,9 @@ measurement above ran under.
 * Sampler *filtering* precision at ten bits: every case above samples
   `GL_NEAREST`.  A `GL_LINEAR` fetch of a 10-bit texture is not measured.
 * Blend factors other than `SRC_ALPHA`/`ONE_MINUS_SRC_ALPHA`.
+* What the panel shows (section 9.4), and whether the DisplayPort
+  transmitter needs its bit depth stated.
+* A converting blit out of a 10-bit surface: `glReadPixels` asks st for a
+  blit into an `R10G10B10A2` staging image, the driver declines it as a
+  scaled/converting blit, and the read comes back untouched rather than
+  falling back.  `tools/m9-gigacolor-scanout.c` maps the buffer instead.
