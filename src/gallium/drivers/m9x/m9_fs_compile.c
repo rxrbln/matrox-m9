@@ -2775,8 +2775,29 @@ allocate(struct ctx *c)
                VALUES(c)[l->dst].reg = next_general++;
             else if (num_freed)
                VALUES(c)[l->dst].reg = freed[--num_freed];
-            else
+            else {
+               /* Name what the shader wanted: the pool it draws from and the
+                * most values live at once, so a refusal separates a real
+                * ceiling from a waste of the file. */
+               if (debug_get_bool_option("M9X_DEBUG_SPLIT", false)) {
+                  unsigned peak = 0, held = 0;
+
+                  for (unsigned t = 0; t < n; t++) {
+                     unsigned live = 0;
+
+                     util_dynarray_foreach(&c->values, struct value, v)
+                        live += v->general && v->def <= (int)t &&
+                                v->last >= (int)t;
+                     peak = MAX2(peak, live);
+                  }
+                  util_dynarray_foreach(&c->values, struct value, v)
+                     held += v->general && v->reg >= 0;
+                  fprintf(stderr, "m9x split: out of temporaries at slot %u "
+                          "of %u, pool %02x..0f and 14..1f, placed %u, "
+                          "peak live %u\n", s, n, base, held, peak);
+               }
                return fail(c, fail_out_of_temporaries);
+            }
          }
          util_dynarray_foreach(&c->values, struct value, v)
             if (v->general && v->reg >= 0 && num_freed < ARRAY_SIZE(freed) &&
