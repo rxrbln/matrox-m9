@@ -494,8 +494,57 @@ Two things this retires: the pass count was never the variable, and the
 inter-pass hand-over -- record, routes and sequence field alike -- was
 correct past two passes all along.
 
-`terrain` additionally refuses one shader, "out of temporaries", so some of
-its draws are skipped whatever else happens.
+### 6i. What still stops `refract` and `desktop`, and what it is not
+
+`refract` and `desktop`'s blur still stop the engine with the rule of
+section 6h emitted, and neither is the pass count.  Five fixtures were
+written to take one property at a time; every one of them renders **0 of
+76800 pixels wrong** with no stream timeout (MEASURED, one boot, 320x240,
+`m9x_drm-bocap`, `M9X_ENGINE_VRAM=0` so the VRAM work cannot enter the
+result):
+
+| fixture | the property it adds | passes |
+| --- | --- | ---: |
+| `conv13`, `conv16` | a longer split, plain and against a depth attachment | 4, 5 |
+| `coordchain` | a chain of computed coordinates, so every pass but the first consumes a coordinate route and every pass but the last produces one | 4 |
+| `convrtt`, `convrttin` | a split draw either side of a render-target switch, reading an offscreen target and writing one | 2, 4, 5 |
+| `convrtt2` | a split draw sampling what the previous split draw wrote, which is what a separable blur does | 2, 4 |
+| `convuni` | uniform tap offsets and uniform weights, two of them shared, which is how glmark2 writes its blur | 2 |
+
+So the pass count to five, the coordinate-route chain, the render-target
+switch in both directions, a split draw feeding another split draw, and a
+uniform-driven convolution are all **retired** as candidates.
+
+What the two scenes themselves say (MEASURED, one boot a row, 640x480):
+
+| row | outcome |
+| --- | --- |
+| `refract` at 640x480 and at 1920x1200 | stops the engine at both, so the record's size is not it |
+| `desktop:effect=blur:blur-radius=1:separable=true` (three taps, one pass) | 772 fps, renders |
+| `desktop:...blur-radius=2` (five taps, **two** passes) | stops the engine |
+| the same with `M9X_SPLIT=0` | 846 fps, renders, the blur draws skipped |
+| the same with `M9X_SPLIT_SUBMIT=0` | stops the engine |
+
+`desktop` therefore stops at a **two-pass** split -- the same count as
+`conv3`, `convoff`, `convrtt` and every other split fixture that renders --
+and the control run pins the fault in the split job rather than elsewhere in
+the scene.  It is not the wrong-pixel fault of section 6h either: that one
+never stalled and is fixed, and `desktop` stalls with the fix in place.
+What is left is a property of those two scenes' draws that no fixture has
+yet: the remaining differences are the geometry they draw, the size of the
+offscreen target against the drawable, and the compositing state around the
+blur.
+
+`terrain` no longer stops the engine (MEASURED, 1920x1200, 0 stream
+timeouts).  It refuses one shader instead, `terrain.frag`, and its draws are
+skipped: that refusal is a **real register-pressure ceiling**.  Under
+`M9X_DEBUG_SPLIT` the allocator now names what it wanted, and the passes ask
+for **25 to 33 values live at once** against a pool of 16 registers
+(`0c..0f` and `14..1f`, three texture units bound) or 20 (two units); the
+widest pool a pass can have is 28, at no texture units at all (OFFLINE).
+So it is about 1.7x over, not an accounting slip, and what would answer it
+is a cut chosen to shorten lifetimes rather than to absorb fetches -- the
+splitter cuts only at values that absorb texture fetches today.
 
 ## 5. Reproduction
 
