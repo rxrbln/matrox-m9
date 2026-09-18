@@ -41,12 +41,14 @@ First partial baseline at 1920x1200, one process per benchmark:
 | `effect2d` 3x3 | 79 | ok |
 | `effect2d` 15-tap | 31 | BELOW |
 | `pulsar` | 200 | ok |
-| `desktop` blur | - | INVALID, stalls |
+| `desktop` blur | 38 | BELOW, and it renders its blur |
 
 Three findings from it:
 
-* **`desktop`'s stall kills the seventeen benchmarks after it**, so half the
-  suite cannot be measured at all until the partial-coverage fix lands.  Its
+* **`desktop`'s stall used to kill the seventeen benchmarks after it.**  The
+  scratch surface closed that (`parhelia-m9-fragment-pass-hardware.md` 3bc):
+  the whole list of thirty-three now runs in one go with no stream timeout,
+  29 of them at or above 60 fps, and `desktop` draws its blur at 38 fps.  Its
   default string is `desktop:windows=4:effect=blur:blur-radius=5:passes=1:separable=true`,
   which is what "all glmark" has to mean.
 * **`bump:bump-render=normals` runs at 180 fps** where the ledger recorded it
@@ -71,8 +73,8 @@ multipass path - and on three defects found while implementing it.
 | `effect2d` 15-tap (5 passes) | 25-33 fps | renders, with a 141 MiB record |
 | `shadow` | 143-147 fps | renders |
 | `refract` (4 passes) | 1 fps at 1920x1200, 2 at 640x480 | renders; 95% of the frame is the CPU mipmap of its distance target, not fill |
-| `terrain` | 9 fps at 1920x1200 | `terrain.frag` still refused for register pressure; `M9X_SPLIT_PRESSURE=1` compiles it into seven passes over mesh geometry, which covers part of its target, so it stays off |
-| `desktop` separable blur (4 passes) | 61 fps at 1920x1200 | its vertical blur is skipped: that draw covers part of its target, which a multi-pass job cannot do (`parhelia-m9-fragment-pass-hardware.md` 3bb).  It no longer stops the engine |
+| `terrain` | 21 fps at 1920x1200, INVALID | `terrain.frag` still refused for register pressure; `M9X_SPLIT_PRESSURE=1` compiles it into seven passes whose draws **test depth**, which the scratch surface does not carry, so they are refused rather than drawn (2430 in a run) and it stays off |
+| `desktop` separable blur (4 passes) | 38 fps at 1920x1200 | draws its blur: the partial pass renders on a scratch surface of the pixels it covers and is copied into place (3bc).  The frame is the engine's -- 26.77 ms of which 22.84 is the submit ioctl, against 2.73 draw and 2.66 emit |
 
 The rest of the suite was already above 60 fps and is unchanged; the slowest
 were `function medium` 62, `shading cel` 70, `shading phong` 87.

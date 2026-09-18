@@ -242,10 +242,70 @@ smaller rectangle stopped it as well.  A driver cannot rely on a count, so the
 driver refuses the schedule outright; `M9X_SPLIT_PARTIAL=1` submits it again
 for the probe.
 
-The fix that would let these draws render is to give the job a target it does
-cover: render it into a scratch surface the size of the geometry's bounding
-box and copy that into place with the engine blit, which is a whole-target
-draw on both halves.  That is **UNTESTED** and not implemented here.
+The fix that lets these draws render is to give the job a target it does
+cover: render it into a scratch surface the size of the pixels the geometry
+covers and copy that into place with the engine copy, which is a whole-target
+draw on both halves.  That is implemented and measured in 3bc.
+
+### 3bc. The scratch surface a partial draw is rendered on
+
+A multi-pass job whose geometry covers part of its target is held until the
+driver is outside the draw module, and then rendered into a **scratch colour
+surface of exactly the pixels it covers**, which it covers whole, and copied
+into place (`m9_deferred_run`).  The destination seeds the scratch first, so
+blending, a partial colour mask and geometry that does not fill its own box
+all read and keep what the destination held, and the copy back writes only the
+box.  `M9X_SPLIT_SCRATCH=0` refuses the draw instead, which is the behaviour
+3bb describes, and `M9X_SPLIT_PARTIAL=1` still submits it as it stands.
+
+The box is the pixel centres the geometry's screen extent encloses --
+`ceil(x - 0.5)` at both ends -- and not the rounded-out bounding box.  That is
+what makes the geometry cover the scratch surface *exactly* however the draw
+sits inside a pixel, which a rounded-out box does not: the scene's own blur
+quad at x 808.4 leaves the column at 808 half covered, which is the same
+partial coverage again.  The origin is whole, so the translated records keep
+the target's own pixel grid and the copy back is a plain 1:1 rectangle.  A
+record carries x and y multiplied by w with 1/w beside them and counts rows
+from the bottom, so the translation is `p[0] -= x_box / p[3]` and
+`p[1] += (H_scratch + y_box - H_target) / p[3]`.
+
+Two hardware requirements were measured on the way, both of them back-end
+state rather than coverage:
+
+* **A multi-pass job needs the back-end object it binds cleared when draws
+  into another target have run since that object was last used.**  The scratch
+  path walks the engine between two targets on every draw, and without the
+  clear it stops the engine at the **ninth** such draw (MEASURED:
+  `splitdesk:12:1:5:1920x1200:5:420x420` stalls, `M9X_SPLIT_PARTIAL=1` on the
+  same case renders 12, `M9X_BE_CLEAR=1` and `=2` both render 32).  With
+  `async_submit=0` the failure is reported at the submission *after* the
+  scratch job and the kernel's fetch pointer reaches that job's fence target
+  with the writeback one step short, so it is the same back-end hang as 3bb.
+  `M9X_BE_CLEAR=1` for *every* job is not a usable form of this: the
+  `texture` fixture itself stops the engine under it (MEASURED).
+* **The pair a scratch surface binds has to be its own.**  Back-end objects
+  were kept per target *shape* (3bb), which is not enough here: `desktop`'s
+  window target is exactly the size of the box its blur covers, so the scene's
+  own target and the scratch surface shared the engine state and the scene
+  stopped the engine in its first frames even with the clear.  A scratch
+  surface now keys its own depth, HZ and back-end trio.
+
+What the path refuses rather than submitting, each with a reason of its own
+(`m9_split_defer`): a draw that **tests or writes depth**, which the scratch
+surface does not carry -- that is `terrain` under `M9X_SPLIT_PRESSURE=1`,
+whose split draws are refused 2430 times in a run and never submitted
+(MEASURED) -- one whose geometry a program of its own preprocesses, one
+carrying a scissor of its own, and one with a vertex behind the eye.
+
+MEASURED on the M9128 at 1920x1200, glmark2's own default list of
+thirty-three benchmarks, one process each, no stream timeout:
+`desktop:windows=4:effect=blur:blur-radius=5:passes=1:separable=true` draws
+its blur at **38 fps** where it used to stop the engine and take the seventeen
+benchmarks after it with it, and 29 of the 33 are at or above 60 fps.  The
+frame is the engine's, not the driver's: 26.77 ms/frame of which submit 23.13
+and ioctl 22.84, against draw 2.73, emit 2.66 and transfer 0.00
+(`M9X_PROFILE`), over 28 jobs and 24 draws a frame with nothing refused or
+skipped.
 
 ### 3c. A split job carries one raster draw
 
