@@ -10,8 +10,10 @@ the resource identity, the D3DCOLOR clear packing and the multisample side;
 this note adds the descriptor field, the storage class, the render class, the
 write-mask behaviour and the complete display-controller answer.
 
-Labels: **CAPTURED** = read directly from a saved binary, **DERIVED** = a
-deterministic join of CAPTURED facts, **INF** = inferred and not established.
+Labels: **MEASURED** = read back from this silicon, **CAPTURED** = read
+directly from a saved binary, **DERIVED** = a deterministic join of CAPTURED
+facts, **INF** = inferred and not established.  Section 9 holds what was
+measured on an M9128; where it contradicts the static reading, it wins.
 
 `MxMD.dll`, `MxMM.sys` and `MxMDI.dll` addresses are virtual addresses.
 `MxMD.dll` and `MxMM.sys` have image base `0x10000` with section RVA equal to
@@ -29,8 +31,8 @@ to the 10-bit value.
 
 | role | 10-bit reachable in this driver? | evidence |
 |---|---|---|
-| texture / sampler source | yes | format table, descriptor builder, D3D operation matrix (section 3) |
-| colour render target | yes | same code, selector 8, render class 0, native clear packer (sections 3, 4) |
+| texture / sampler source | yes, **MEASURED** | format table, descriptor builder, D3D operation matrix (section 3); section 9.1 |
+| colour render target | yes, **MEASURED** | same code, selector 8, render class 0, native clear packer (sections 3, 4); section 9.2 |
 | OpenGL texture | yes, behind a device cap bit | `MxMGLX` `GL_RGB10`/`GL_RGB10_A2` (section 6) |
 | OpenGL framebuffer | no | 72 static pixel formats, none above 8 bits per channel (section 6) |
 | display scanout | **not selectable by the vendor driver; the silicon path is complete** | bpp-to-mode-mask table has no 30-bit input (section 5), but the scanout surface code, its descriptor packing and a ten-bit LUT ramp all exist - see below |
@@ -409,3 +411,82 @@ d1 = ((uint32_t)code << 25) | (kind << 16) | width;   /* index 79 / b1 */
 The first three are the exposure gate.  Until they pass, a Gallium driver must
 not advertise either format, and the KMS driver must not offer a depth-30
 visual.
+
+## 9. MEASURED on an M9128
+
+Everything here was read back from the hardware through
+`tools/m9-mesa-glsl` against the clean-room Gallium driver and the clean-room
+kernel module, with `GL_RENDERER` asserted to be `Matrox M9` on every case.
+The fixture data is traceable: red names the texel's column and the row's low
+two bits, green names the row, so every one of the 1024 levels of every
+channel is exercised and a texel identifies itself.
+
+Gallium's `PIPE_FORMAT_R10G10B10A2_UNORM` carries red at bit 0, so it is D3D
+`A2B10G10R10`, code `0x68`; `B10G10R10A2_UNORM` carries blue at bit 0 and is
+`A2R10G10B10`, code `0x6a`.  Both were exercised: the driver's
+`M9X_GIGA_ORDER` debug option hides one so the state tracker has to take the
+other, and every case below passes either way.  Section 7's mapping is
+confirmed.
+
+### 9.1 The sampler delivers ten bits (`giga10tex`)
+
+Two 10-bit textures are uploaded, identical except that one has the low two
+bits of every colour channel cleared, and the fragment program renders their
+difference amplified by 256.  A sampler that truncated to eight bits would
+render the difference as zero.  The image is exact, every pixel: the low two
+bits survive the upload, the tiled storage and the fetch.  The two alpha bits
+come back as the four distinct values as well.
+
+### 9.2 The render target keeps ten bits (`giga10rt`)
+
+The same 10-bit texture is copied through a `GL_RGB10_A2` renderbuffer and
+read back with `GL_UNSIGNED_INT_2_10_10_10_REV`.  Exact, every pixel, over
+all 1024 levels of each channel.  Storage class 2 with the 32-bit layout,
+render class 0 at index `89` and the descriptor code in `b1[31:25]` are
+therefore all correct as section 3 and section 4 give them; no new layout
+code was needed, which is what section 3.2 predicted.
+
+### 9.3 The write conversion rounds, and the raster dithers
+
+The first clear measurement looked like a truncation: a clear to `682/1023`
+green came back as `681`.  It is not.  `ef[7:0]` is `0x55` with dithering off
+and `0x00` with it on (CAPTURED, `parhelia-m9-gl15-ff-capture.md`), and the
+driver was leaving it on; with dithering on the surface came back `681` on
+exactly half its pixels and `682` on the other half, and the two-bit alpha
+likewise spread over two values on 1.6% of the surface.  That is a spatial
+dither between the two levels the value falls between.
+
+With `ef[7:0] = 0x55` every pixel holds the nearest level.  A clear to
+`343`, `685` and `1021` -- none of which is on the 255-step ladder an 8-bit
+write is confined to -- comes back exactly, on every pixel.  So:
+
+* the float-to-10-bit conversion **rounds to nearest**, not truncates;
+* the raster **dithers a 10-bit target by default**, which a driver wanting
+  the nearest level has to turn off, exactly as the vendor's Parhelia path
+  does for its own GigaColor target.
+
+Blending `SRC_ALPHA`/`ONE_MINUS_SRC_ALPHA` over an off-ladder destination
+lands within one level of a software reference computed at ten bits, and the
+destination it reads back is the off-ladder value, so the destination read
+keeps ten bits too.  This closes the "blend-factor rounding at ten bits" open
+question for that pair of factors; the remaining factors are not measured.
+
+### 9.4 Write masks
+
+`ab`/`ac` gate whole byte lanes, so they cannot describe a channel that
+straddles a byte boundary; section 4.2 has the vendor expressing the mask in
+the fragment output instead.  That lowering is not implemented, so the driver
+refuses a partial colour mask on a 10-bit target rather than applying it to
+the wrong bits.  The full mask, which is what `0xffff` means, is what every
+measurement above ran under.
+
+### 9.5 Still open
+
+* `79[24]` for a 10-bit descriptor: the driver writes the code doubled with
+  bit 24 clear and everything above works, so the bit is not required; what
+  it would mean is still unknown.
+* Stream index `0x93` and its 30-bit mask (section 4.3): the driver never
+  emits that index, so nothing was measured.
+* Sampler *filtering* precision at ten bits: every case above samples
+  `GL_NEAREST`.  A `GL_LINEAR` fetch of a 10-bit texture is not measured.
+* Blend factors other than `SRC_ALPHA`/`ONE_MINUS_SRC_ALPHA`.
