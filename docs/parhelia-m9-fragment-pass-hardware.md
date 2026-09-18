@@ -421,22 +421,81 @@ With depth evaluated once, `shadow` renders at **142 fps** and `effect2d`'s
 3x3 kernel at **84 fps**, both at 1920x1200 with no stream timeout
 (MEASURED).  `refract` and `terrain` still stop the engine.
 
-Their shaders are longer than two passes: `refract` compiles to **four**
-raster passes (109, 151, 100 and 127 slots, textures 0/2/1/1), and no fixture
-had reached past two.  `conv7` and `conv10`, seven and ten taps, are three-
-and four-pass splits.  They do **not** stall -- and they **render wrong**:
-about half the pixels differ, the blue channel far out, with and without a
-depth attachment (MEASURED).  The same binaries render them exactly under
-llvmpipe (0 of 76800), so the reference is right and the backend's hand-over
-between more than two passes is not.  Both are dispatched and deliberately
-unlisted until that is fixed.
+`refract` compiles to **four** raster passes (109, 151, 100 and 127 slots,
+textures 0/2/1/1).  `conv7` and `conv10`, seven and ten taps, rendered about
+half their pixels wrong, the blue channel far out, with and without a depth
+attachment, and never stalled; the same binaries rendered them exactly under
+llvmpipe.  Section 6h is what that turned out to be, and it was not the
+pass count.
 
-So a split past two passes has a correctness fault of its own, and it is not
-what stops `refract`: something else in that scene does, and the remaining
-untested property is the render-target switch it makes between its depth
-pass and its refraction pass.  `terrain` additionally refuses one shader,
-"out of temporaries", so some of its draws are skipped whatever else
-happens.
+### 6h. What renders a split wrong is a four-unit pass, not a split
+
+**`conv7` is a two-pass split and `conv10` a three-pass one** -- the same
+count as `conv3`, which rendered pixel-exact throughout (MEASURED, the record
+stride the driver logs is `4 * (passes - 1)`: 4 for `conv7`, 8 for `conv10`;
+OFFLINE, `m9-fs-compile-test --glsl` with `M9_FS_SPLIT=1` reports 2 and 3
+passes and the driver's own `M9X_DEBUG_FS` slot and unit counts match it
+exactly).  The earlier reading of three and four passes was wrong, and with
+it the conclusion that a hand-over past two passes was at fault.
+
+What `conv7` and `conv10` have that `conv3` does not is a **consuming pass
+that binds four texture units and reads the high register of the last texel
+slot**.  A pass's texel slot `k` occupies registers `4k` and `4k + 2`, the
+first holding r and g and the second b and a, so a four-unit pass reads b or
+a of its last slot out of register `0x0e`.  Fixtures that do only that,
+with no split, no record and no route, reproduce the fault exactly
+(MEASURED, one boot, 320x240):
+
+| fixture | units | texel register read | result |
+| --- | ---: | --- | --- |
+| `texhi:2:0`, `texhi:2:1` | 2 | `06`, `02` | 0 of 76800 wrong |
+| `texhi:3:0` .. `texhi:3:2` | 3 | `0a`, `06`, `02` | 0 of 76800 wrong |
+| `texhi:4:1` .. `texhi:4:3` | 4 | `0a`, `06`, `02` | 0 of 76800 wrong |
+| `texhi:4:0` | 4 | **`0e`** | **37822 of 76800 wrong** |
+| `tex4b` (every unit's b), `texlohi4` (`0c` and `0e`) | 4 | `0e` among them | **wrong** |
+
+`texhi:N:P` binds N units to one traceable texture and reads the blue channel
+of exactly one fetch, the one at output component P; `assign_texels` puts
+fetch `i` in slot `N-1-i`, so P is the only variable and it names the
+register.  Reading `0c` as well does not rescue `0e` (`texlohi4`), and the
+value that arrives there is not another unit's texel but leftover data.
+
+**What decides it is index `88` bit 7** (MEASURED, swept a bit at a time
+against `texhi:4:0` with `M9X_R88_AND`/`M9X_R88_OR`, which the backend now
+carries for exactly this purpose):
+
+| index `88` | `texhi:4:0` |
+| --- | --- |
+| as emitted, bit 7 set | 37850 of 76800 wrong |
+| `OR 0x40`, bit 6 set as well | **0 of 76800** |
+| `AND ~0x80`, bit 7 cleared | **0 of 76800** |
+| every other single bit, `0x10`..`0x80000` and `0x1000000`..`0x8000000` | unchanged |
+
+Bits 15:4 flag the register pairs `08/09` .. `1e/1f` the program leaves
+unused, and a pair flagged unused is one the engine reuses.  A four-unit pass
+was declaring the pair at `0e/0f` free while its own program read a texel
+out of it.  Clearing bit 7 says what is true; setting bit 6 works as well,
+which reads as the field being taken as a run from the top rather than as
+independent pairs, and the honest statement is the one the driver now emits:
+**every texel pair the bound units occupy is marked live.**  The record path
+already did so by accident -- a producing pass ORs `0x0c << texture_count`,
+which for four units sets bits 6 and 7 -- and that is why `conv3`'s four-unit
+**producer** read `0e` correctly all along while a four-unit colour pass did
+not.
+
+With the rule emitted, `conv7` and `conv10` render **0 of 76800 pixels
+wrong**, plain and with a depth attachment, and both are listed, as are the
+eleven single-pass fixtures above.  The fragment fixture suite holds at
+**132 PASS, 0 FAIL** (MEASURED).  `M9X_TEXEL_HIGH=0` restores the encoding
+that renders wrong, which is how each of these fixtures was confirmed to
+fail before the change.
+
+Two things this retires: the pass count was never the variable, and the
+inter-pass hand-over -- record, routes and sequence field alike -- was
+correct past two passes all along.
+
+`terrain` additionally refuses one shader, "out of temporaries", so some of
+its draws are skipped whatever else happens.
 
 ## 5. Reproduction
 
