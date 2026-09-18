@@ -113,6 +113,7 @@ struct m9_fs_variant {
    struct m9_fs_passes passes;
    unsigned entry[M9_FS_MAX_PASSES];   /* c2 slot each pass enters at */
    unsigned record_dwords;             /* stride of the inter-pass record */
+   uint8_t record_offset[M9_FS_MAX_PASSES];  /* each producer's slot start */
    struct m9_resource c2;              /* fragment slots, then vertex program */
    /* The same fragment slots with a compiled vertex program behind them. */
    struct m9_resource native_c2;
@@ -271,16 +272,16 @@ static bool m9_split_preprocess;
 static bool m9_split_submit;
 /* M9X_SPLIT_PASSES=N emits only the first N passes of a split shader. */
 static unsigned m9_split_passes;
-/* Raster draws one split job restates.  Two of them stop the engine
- * (MEASURED, docs/parhelia-m9-fragment-pass-hardware.md section 3c), and
- * one draw also bounds the inter-pass record: its fragment counter then
- * covers a single draw rather than a whole job.  M9X_SPLIT_DRAWS raises
- * the limit so it can be re-measured. */
-static unsigned m9_split_draws;
 /* M9X_RECORD_DUMP names a file the inter-pass record is written to after
  * every split job, so the slots the engine touched can be read back and
  * the record's granularity measured rather than assumed. */
 static const char *m9_record_dump;
+/* Raster draws one split job restates.  Two of them stop the engine
+ * (MEASURED, docs/parhelia-m9-fragment-pass-hardware.md), and one draw
+ * also bounds the record: its fragment counter then covers a single
+ * draw's fragments rather than a whole job's.  M9X_SPLIT_DRAWS raises
+ * it so the limit can be re-measured. */
+static unsigned m9_split_draws;
 /* M9X_SPLIT_COVERAGE=0 keeps the plain coverage words on a record pass. */
 static bool m9_split_coverage;
 /* M9X_RECORD_89 replaces index 0x89 of a record pass, whose low twelve bits
@@ -903,10 +904,10 @@ m9_job_native(struct m9_context *ctx, const struct m9_job_key *key,
                           m9_record_desc(M9_RECORD_PAIR, 2, 0) :
                           m9_split_stage == 6 ?
                           m9_record_desc(M9_RECORD_SLOT, fs->record_dwords,
-                                         4 * i) |
+                                         fs->record_offset[i]) |
                           (ctx->params.color_desc & 0xffffu) :
                           m9_record_desc(M9_RECORD_SLOT, fs->record_dwords,
-                                         4 * i);
+                                         fs->record_offset[i]);
       /* The first pass writes depth and the later ones only test against
        * what it left (CAPTURED, a8 0038038a then 00380388 in all seven
        * two-pass cases; inert there, since their depth is off).  A shader
@@ -939,20 +940,34 @@ m9_job_native(struct m9_context *ctx, const struct m9_job_key *key,
       for (unsigned k = 0; k < M9_TEXTURE_MAX_UNITS; k++)
          pass->routes[k].word = 0x100;
       for (unsigned k = 0; k < p->texture_count; k++) {
+         unsigned src;
+
          pass->unit_index[k] = st->unit[k];
-         if (p->texture_source[k] == M9_FS_ROUTE_NONE ||
-             m9_split_stage == 1 || m9_split_stage == 2 ||
+         if (m9_split_stage == 1 || m9_split_stage == 2 ||
              m9_split_stage == 4)
+            continue;
+         /* A coordinate route redirects where this unit samples and leaves
+          * its texture and sampler alone: the record's first dword is the
+          * descriptor's own offset and the second is named in the word
+          * (CAPTURED, docs/parhelia-m9-fragment-pass-routes.md). */
+         if (p->texcoord_source[k] != M9_FS_ROUTE_NONE) {
+            src = fs->record_offset[p->texcoord_source[k]];
+            pass->routes[k].word =
+               m9_record_route(true, k, src + 1, M9_RECORD_ABSENT, 0);
+            pass->routes[k].desc = m9_record_desc(M9_RECORD_PAIR,
+                                                  fs->record_dwords, src);
+            pass->route_count = MAX2(pass->route_count, k + 1);
+            continue;
+         }
+         if (p->texture_source[k] == M9_FS_ROUTE_NONE)
             continue;
          /* A routed value arrives in the texel registers of its own slot,
           * so route index and texel slot are the same k. */
+         src = fs->record_offset[p->texture_source[k]];
          pass->routes[k].word =
-            m9_record_route(false, 4 * p->texture_source[k] + 1,
-                            4 * p->texture_source[k] + 2,
-                            4 * p->texture_source[k] + 3);
+            m9_record_route(false, k, src + 1, src + 2, src + 3);
          pass->routes[k].desc = m9_record_desc(M9_RECORD_SLOT,
-                                               fs->record_dwords,
-                                               4 * p->texture_source[k]);
+                                               fs->record_dwords, src);
          pass->route_count = MAX2(pass->route_count, k + 1);
       }
       /* A record-writing pass that samples nothing still binds unit 0:
@@ -1953,6 +1968,17 @@ m9_fs_streams(struct m9_fs_variant *v)
             st->unit[t] = M9_PASS_UNIT_NONE;
             continue;
          }
+         /* A unit the record steers samples its own texture and declares no
+          * coordinate of its own. */
+         if (p->texcoord_source[t] != M9_FS_ROUTE_NONE) {
+            st->texture_coord[t] = M9_RASTER_COORD_NONE;
+            if (v->slot_count >= M9_DRAW_MAX_UNITS)
+               return false;
+            st->unit[t] = v->slot_count;
+            v->slot_pass[v->slot_count] = i;
+            v->slot_index[v->slot_count++] = t;
+            continue;
+         }
          half = p->texcoord_components[t] / 2;
          /* A unit that transforms its coordinate needs a stream of its own:
           * sharing one would sample both units at the same place. */
@@ -2086,8 +2112,12 @@ m9_fs_variant(struct m9_context *ctx, struct m9_fs_state *fs,
    ralloc_free(clone);
    if (v->ok) {
       /* Every pass but the last hands a four-dword slot to the ones after
-       * it, so the record's stride is four dwords a producer. */
+       * it, so the record's stride is four dwords a producer.  Narrowing a
+       * one-pair producer to the two dwords the captures show stops the
+       * engine (MEASURED), so the width stays four. */
       v->record_dwords = 4 * (v->passes.count - 1);
+      for (unsigned i = 0; i + 1 < v->passes.count; i++)
+         v->record_offset[i] = 4 * i;
       if (!m9_fs_streams(v)) {
          v->reason = "more CPU varying streams or texture slots than a job "
                      "binds";
@@ -4383,8 +4413,8 @@ m9_context_create(struct pipe_screen *pscreen, void *priv, unsigned flags)
    m9_split_preprocess = debug_get_bool_option("M9X_SPLIT_PREPROCESS", false);
    m9_split_submit = debug_get_bool_option("M9X_SPLIT_SUBMIT", true);
    m9_split_passes = debug_get_num_option("M9X_SPLIT_PASSES", 0);
-   m9_split_draws = debug_get_num_option("M9X_SPLIT_DRAWS", 1);
    m9_record_dump = debug_get_option("M9X_RECORD_DUMP", NULL);
+   m9_split_draws = debug_get_num_option("M9X_SPLIT_DRAWS", 1);
    m9_record_89 = debug_get_num_option("M9X_RECORD_89", 0);
    m9_split_coverage = debug_get_bool_option("M9X_SPLIT_COVERAGE", true);
    m9_transition = debug_get_bool_option("M9X_TRANSITION", true);

@@ -341,9 +341,13 @@ m9_record_desc(enum m9_record_form form, unsigned stride_dwords,
 }
 
 uint32_t
-m9_record_route(bool coordinate, unsigned c1, unsigned c2, unsigned c3)
+m9_record_route(bool coordinate, unsigned index, unsigned c1, unsigned c2,
+                unsigned c3)
 {
-   return (coordinate ? 0x10u : 0x0cu) | (c1 & 0xff) << 8 |
+   /* A coordinate route names the slot it feeds in its own low byte:
+    * 0x10 at 0x74, 0x14 at 0x75, 0x18 at 0x76 (CAPTURED, 84/12/2 occurrences
+    * with no counter-example).  A value route is 0x0c at every index. */
+   return (coordinate ? 0x10u + 4 * index : 0x0cu) | (c1 & 0xff) << 8 |
           (c2 & 0xff) << 16 | (c3 & 0xff) << 24;
 }
 

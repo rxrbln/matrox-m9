@@ -157,7 +157,20 @@ m9_emit_units(struct m9_batch *batch, const struct m9_draw_job *job,
              sel < unit_count ? &units[sel] : NULL;
          if (!u)
             return -EINVAL;
-         ret = m9_batch_emit_texture_unit(batch, i, u);
+         /* A unit the record steers names its route in its own selector
+          * word rather than reading an interpolated stream: low byte
+          * 0x1c + k and bit 12, against 0x18 for an interpolated
+          * coordinate (CAPTURED, the five-sampler schedule's 0004111c and
+          * xv-uyvy's 0004111d/0004111e). */
+         if (i < pass->route_count &&
+             (pass->routes[i].word & 0xffu) == 0x10u + 4 * i) {
+            struct m9_texture_unit routed = *u;
+
+            routed.w70 = (routed.w70 & ~0xffu) | 1u << 12 | (0x1cu + i);
+            ret = m9_batch_emit_texture_unit(batch, i, &routed);
+         } else {
+            ret = m9_batch_emit_texture_unit(batch, i, u);
+         }
          if (ret)
             return ret;
       }

@@ -153,6 +153,9 @@ struct ctx {
    nir_def *cut[M9_FS_MAX_PASSES];
    unsigned cut_count;
    nir_def *root;       /* value this pass computes, NULL the shader output */
+   /* The computed coordinate that stopped this pass, for the splitter to
+    * cut at: the pass before hands it over and the unit samples at it. */
+   nir_def *coord_blocker;
    bool record_out;     /* write 0x11/0x13 for a later pass, not the colour */
    bool custom_consts;  /* a template supplies the whole constant span */
    bool depth_first;    /* schedule operands before breadth, for pressure */
@@ -173,6 +176,21 @@ struct gather_key {
 static const char fail_out_of_temporaries[] = "out of temporaries";
 static const char fail_too_many_textures[] =
    "more texture fetches than one raster pass can bind";
+/* The engine samples before the program runs, so a coordinate the fragment
+ * stage computes cannot feed a fetch in the same pass.  It can feed one in
+ * the next, through a coordinate route, so this failure names a cut rather
+ * than an unsupported shader. */
+static const char fail_coord_not_varying[] = "texture coordinate is not a varying";
+
+unsigned
+m9_fs_coord_route_count(const struct m9_fs_program *program)
+{
+   unsigned n = 0;
+
+   for (unsigned i = 0; i < program->texture_count; i++)
+      n += program->texcoord_source[i] != M9_FS_ROUTE_NONE;
+   return n;
+}
 
 unsigned
 m9_fs_sampler_count(const struct m9_fs_program *program)
@@ -718,6 +736,66 @@ build_route(struct ctx *c, unsigned pass)
    return n;
 }
 
+/* A fetch whose coordinate an earlier pass produced: the unit binds its own
+ * texture and sampler and samples where the record says, which is what lets
+ * a coordinate the fragment stage computes reach a fetch the engine issues
+ * before the program runs (CAPTURED, the seven two-pass GLSL cases and the
+ * five-sampler chain). */
+static int
+build_coord_route(struct ctx *c, nir_tex_instr *tex, unsigned pass)
+{
+   struct m9_fs_program *p = c->p;
+   int n;
+
+   /* Off by default: the engine takes the route and runs, but the values
+    * the consuming unit samples at are wrong, so a shader that would use
+    * one is still refused rather than drawn incorrectly.  M9X_COORD_ROUTE
+    * turns it on for the measurement that will settle the record's lane
+    * layout (docs/parhelia-m9-fragment-pass-hardware.md section 6). */
+   if (!debug_get_bool_option("M9X_COORD_ROUTE", false))
+      return fail(c, fail_coord_not_varying), -1;
+   /* Only the plain two-component form is decoded.  A third routed
+    * component is a sampler modifier or a resource coordinate and which
+    * byte of the route word carries it is settled for neither a projector
+    * nor an array, so those keep failing rather than guessing. */
+   if (tex->op != nir_texop_tex || tex->is_shadow || tex->is_array ||
+       tex->sampler_dim != GLSL_SAMPLER_DIM_2D ||
+       nir_tex_instr_src_index(tex, nir_tex_src_projector) >= 0 ||
+       tex->num_srcs != 1)
+      return fail(c, "a routed texture coordinate must be a plain 2-D pair"),
+             -1;
+   for (unsigned i = 0; i < p->texture_count; i++)
+      if (p->texcoord_source[i] == pass &&
+          p->textures[i] == tex->texture_index) {
+         n = node_new(c, N_TEX);
+         if (n >= 0)
+            NODES(c)[n].texel = 4 * i;
+         return n;
+      }
+   /* The route word names the slot it feeds in its own low byte and index 3
+    * is never captured, so a routed coordinate stays inside 0..2. */
+   if (p->texture_count >= M9_FS_MAX_TEXTURES ||
+       p->texture_count >= M9_RECORD_MAX_COORD_ROUTE)
+      return fail(c, fail_too_many_textures), -1;
+   p->textures[p->texture_count] = tex->texture_index;
+   p->texture_source[p->texture_count] = M9_FS_ROUTE_NONE;
+   p->texcoord_source[p->texture_count] = pass;
+   n = node_new(c, N_TEX);
+   if (n < 0)
+      return -1;
+   NODES(c)[n].texel = 4 * p->texture_count++;
+   return n;
+}
+
+/* Names the coordinate the splitter should cut at, then fails. */
+static int
+fail_coord(struct ctx *c, nir_def *coord)
+{
+   if (!c->coord_blocker)
+      c->coord_blocker = coord;
+   return fail(c, fail_coord_not_varying), -1;
+}
+
 static int
 build_tex(struct ctx *c, nir_tex_instr *tex)
 {
@@ -741,6 +819,10 @@ build_tex(struct ctx *c, nir_tex_instr *tex)
        tex->is_shadow != (ri >= 0) ||
        tex->num_srcs != 1u + (pi >= 0) + (ri >= 0))
       return fail(c, "texture sampling needs a computed coordinate pass"), -1;
+   /* An earlier pass already handed this coordinate over. */
+   for (unsigned i = 0; i < c->cut_count; i++)
+      if (c->cut[i] == tex->src[ci].src.ssa)
+         return build_coord_route(c, tex, i);
    /* Linked vec2 varyings may share one slot: xy or zw of the input.  st
     * scalarises IO, so the pair can also be two loads of one location.
     * A shadow fetch adds the comparison reference as a third component of
@@ -756,7 +838,7 @@ build_tex(struct ctx *c, nir_tex_instr *tex)
 
       if (!coord_parse(src, &ce[i]) || !ce[i].varying ||
           ce[i].location != ce[0].location)
-         return fail(c, "texture coordinate is not a varying"), -1;
+         return fail_coord(c, tex->src[ci].src.ssa);
       coord_comp[i] = ce[i].component;
       affine.scale[i] = ce[i].scale;
       affine.bias[i] = ce[i].bias;
@@ -769,7 +851,7 @@ build_tex(struct ctx *c, nir_tex_instr *tex)
                  ce[i].bias.offset);
    }
    if (coord_comp[0] > 2 || coord_comp[1] != coord_comp[0] + 1)
-      return fail(c, "texture coordinate is not a varying"), -1;
+      return fail_coord(c, tex->src[ci].src.ssa);
    /* The driver moves a pair down to the xy of its stream; a reference is a
     * third component, so a shadow fetch owns the low half of its slot. */
    if ((tex->is_shadow || volume) && (coord_comp[0] || coord_comp[2] != 2))
@@ -816,7 +898,7 @@ build_tex(struct ctx *c, nir_tex_instr *tex)
       if (p->texture_source[i] == M9_FS_ROUTE_NONE &&
           p->texcoords[i] == location &&
           ((coord_comp[0] & 1) || (p->texcoord_components[i] & 1)))
-         return fail(c, "texture coordinate is not a varying"), -1;
+         return fail_coord(c, tex->src[ci].src.ssa);
    p->texcoord_affine[p->texture_count] = affine;
    p->texcoord_projective[p->texture_count] = pi >= 0;
    p->texcoord_shadow[p->texture_count] = tex->is_shadow;
@@ -4374,7 +4456,8 @@ fs_srgb(nir_shader *nir, const struct m9_fs_blend *blend, const char **reason)
 static bool
 fs_compile_pass(nir_shader *nir, const struct m9_fs_blend *blend,
                 struct m9_fs_program *program, nir_def *root, bool record_out,
-                nir_def *const *cuts, unsigned cut_count, const char **reason)
+                nir_def *const *cuts, unsigned cut_count, const char **reason,
+                nir_def **coord_blocker)
 {
    /* ONE/ZERO is the unblended program, as the vendor emits it. */
    bool opaque = !blend || (blend->src == M9_FS_ONE && blend->dst == M9_FS_ZERO);
@@ -4386,6 +4469,8 @@ fs_compile_pass(nir_shader *nir, const struct m9_fs_blend *blend,
    memset(program, 0, sizeof(*program));
    memset(program->texture_source, M9_FS_ROUTE_NONE,
           sizeof(program->texture_source));
+   memset(program->texcoord_source, M9_FS_ROUTE_NONE,
+          sizeof(program->texcoord_source));
    program->writes_record = record_out;
    program->record_components = root ? root->num_components : 4;
    for (unsigned i = 0; i < cut_count; i++)
@@ -4414,6 +4499,8 @@ fs_compile_pass(nir_shader *nir, const struct m9_fs_blend *blend,
    util_dynarray_fini(&c.lops);
    util_dynarray_fini(&c.values);
    util_dynarray_fini(&c.keys);
+   if (coord_blocker)
+      *coord_blocker = c.coord_blocker;
    if (!ok) {
       *reason = c.reason ? c.reason : "unsupported shader";
       m9_fs_program_fini(program);
@@ -4431,7 +4518,8 @@ m9_fs_compile(struct nir_shader *nir, const struct m9_fs_blend *blend,
          return memset(program, 0, sizeof(*program)), false;
       fs_prepare(nir);
    }
-   return fs_compile_pass(nir, blend, program, NULL, false, NULL, 0, reason);
+   return fs_compile_pass(nir, blend, program, NULL, false, NULL, 0, reason,
+                          NULL);
 }
 
 /* Splitting one shader across raster passes */
@@ -4581,6 +4669,7 @@ m9_fs_compile_passes(struct nir_shader *nir, const struct m9_fs_blend *blend,
 {
    nir_function_impl *impl = NULL;
    nir_def *out = NULL, *cut[M9_FS_MAX_PASSES], *rejected[M9_FS_MAX_PASSES];
+   nir_def *blocker = NULL;
    struct fs_split sp = { .cut = cut };
    unsigned fetches = 0, rejects = 0;
    bool ok = false;
@@ -4601,11 +4690,14 @@ m9_fs_compile_passes(struct nir_shader *nir, const struct m9_fs_blend *blend,
    fs_prepare(nir);
    if (!force &&
        fs_compile_pass(nir, blend, &passes->pass[0], NULL, false, NULL, 0,
-                       reason)) {
+                       reason, &blocker)) {
       passes->count = 1;
       return true;
    }
-   if (!force && *reason != fail_too_many_textures)
+   /* A computed coordinate is a cut, not a refusal: the pass before hands
+    * it over and the consumer's unit samples at the record. */
+   if (!force && *reason != fail_too_many_textures &&
+       (*reason != fail_coord_not_varying || !blocker))
       return false;
 
    impl = nir_shader_get_entrypoint(nir);
@@ -4651,15 +4743,29 @@ m9_fs_compile_passes(struct nir_shader *nir, const struct m9_fs_blend *blend,
    }
    for (passes->count = 0; passes->count + 1 < M9_FS_MAX_PASSES; ) {
       unsigned i = passes->count;
-      nir_def *v;
+      nir_def *v = NULL;
+      bool taken = false;
 
-      /* A pass binds four units, the records it reads among them. */
-      v = fs_choose_cut(&sp, impl, out,
-                        force ? force : M9_FS_MAX_TEXTURES, rejected,
-                        rejects);
+      /* A coordinate the engine cannot interpolate is cut where it is
+       * computed; anything else is cut where it absorbs the most fetches. */
+      if (blocker) {
+         bool skip = false;
+
+         for (unsigned k = 0; k < sp.cut_count; k++)
+            skip |= cut[k] == blocker;
+         for (unsigned k = 0; k < rejects; k++)
+            skip |= rejected[k] == blocker;
+         if (!skip && blocker != out)
+            v = blocker;
+      }
+      taken = v != NULL;
+      if (!v)
+         v = fs_choose_cut(&sp, impl, out,
+                           force ? force : M9_FS_MAX_TEXTURES, rejected,
+                           rejects);
       if (!v) {
          if (i && fs_compile_pass(nir, blend, &passes->pass[i], NULL, false,
-                                  cut, sp.cut_count, reason)) {
+                                  cut, sp.cut_count, reason, NULL)) {
             passes->count++;
             ok = true;
             goto done;
@@ -4668,17 +4774,24 @@ m9_fs_compile_passes(struct nir_shader *nir, const struct m9_fs_blend *blend,
          goto done;
       }
       if (!fs_compile_pass(nir, NULL, &passes->pass[i], v, true, cut,
-                           sp.cut_count, reason)) {
+                           sp.cut_count, reason, &blocker)) {
+         /* A producer that cannot compute the coordinate either is cut at
+          * the coordinate *it* stopped on, one link deeper in the chain. */
+         if (*reason == fail_coord_not_varying && blocker && blocker != v)
+            continue;
          if (rejects >= ARRAY_SIZE(rejected))
             goto done;
          rejected[rejects++] = v;
+         if (taken)
+            blocker = NULL;
          continue;
       }
       cut[sp.cut_count++] = v;
       passes->count++;
       rejects = 0;
+      blocker = NULL;
       if (fs_compile_pass(nir, blend, &passes->pass[passes->count], NULL,
-                          false, cut, sp.cut_count, reason) &&
+                          false, cut, sp.cut_count, reason, &blocker) &&
           (!force ||
            m9_fs_sampler_count(&passes->pass[passes->count]) <= force ||
            passes->count + 1 >= M9_FS_MAX_PASSES - 1)) {
@@ -4686,7 +4799,8 @@ m9_fs_compile_passes(struct nir_shader *nir, const struct m9_fs_blend *blend,
          ok = true;
          goto done;
       }
-      if (*reason != fail_too_many_textures)
+      if (*reason != fail_too_many_textures &&
+          (*reason != fail_coord_not_varying || !blocker))
          goto done;
    }
    if (!ok && !*reason)

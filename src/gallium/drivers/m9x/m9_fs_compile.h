@@ -127,6 +127,13 @@ struct m9_fs_program {
     * of the program treats it as one.
     * docs/parhelia-m9-fragment-pass-routes.md */
    uint8_t texture_source[M9_FS_MAX_TEXTURES];
+   /* A texel slot whose *coordinate* comes from the record rather than from
+    * an interpolated varying: the index of the pass that produced it, or
+    * M9_FS_ROUTE_NONE.  The unit keeps its own texture and sampler; only
+    * where it samples changes, which is how a coordinate the fragment stage
+    * computes reaches a fetch the engine issues before the program runs
+    * (CAPTURED, docs/parhelia-m9-fragment-pass-routes.md). */
+   uint8_t texcoord_source[M9_FS_MAX_TEXTURES];
    /* The program hands its result to a later pass through registers
     * 0x11/0x13 instead of writing the colour output 0x2d. */
    bool writes_record;
@@ -167,6 +174,8 @@ bool m9_fs_compile(struct nir_shader *nir, const struct m9_fs_blend *blend,
 bool m9_fs_compile_passes(struct nir_shader *nir,
                           const struct m9_fs_blend *blend,
                           struct m9_fs_passes *passes, const char **reason);
+/* Texel slots the pass samples at a coordinate an earlier pass produced. */
+unsigned m9_fs_coord_route_count(const struct m9_fs_program *program);
 void m9_fs_passes_fini(struct m9_fs_passes *passes);
 /* Texel slots the pass fills from a sampler rather than from a record. */
 unsigned m9_fs_sampler_count(const struct m9_fs_program *program);

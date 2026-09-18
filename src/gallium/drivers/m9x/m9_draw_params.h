@@ -93,8 +93,11 @@ uint32_t m9_record_desc(enum m9_record_form form, unsigned stride_dwords,
 /* A coordinate route feeds the sampler slot it precedes; a value route
  * arrives in the register pair a texel would.  c1..c3 are record dword
  * indices, M9_RECORD_ABSENT drops a component. */
-uint32_t m9_record_route(bool coordinate, unsigned c1, unsigned c2,
-                         unsigned c3);
+uint32_t m9_record_route(bool coordinate, unsigned index, unsigned c1,
+                         unsigned c2, unsigned c3);
+/* Route indices a coordinate route is captured at.  Index 3 never appears,
+ * so the driver does not extrapolate the low byte there. */
+#define M9_RECORD_MAX_COORD_ROUTE 3u
 /* An upper bound on the record backing a target of this size needs.  The
  * descriptor carries a stride and a start offset and no pitch or extent at
  * all, so the record is a flat array the engine indexes by fragment, as the
