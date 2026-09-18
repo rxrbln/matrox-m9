@@ -101,6 +101,9 @@ struct m9_resource {
 struct m9_target_depth {
    uint32_t width, height;
    uint64_t used;
+   /* The pair a scratch surface binds is its own: the engine state below
+    * belongs to one surface, not to every target of its shape. */
+   bool scratch;
    struct m9_resource depth, aux;
    /* The engine's own back-end object, which belongs to a target rather than
     * to the context: a shape revisited after another finds its own. */
@@ -282,6 +285,38 @@ struct m9_job_key {
    unsigned unit_count;
 };
 
+/* Everything m9_submit_job consumes of one pending job, so that a job can be
+ * held aside while another is built and submitted. */
+struct m9_job_state {
+   struct m9_job_key key;
+   struct util_dynarray records, indices, draws, extra;
+   struct util_dynarray job_textures, job_consts, job_vs_consts;
+   unsigned record_floats, job_unit_dwords;
+};
+
+/* A multi-pass job whose geometry covers part of its render target stops the
+ * engine, so it is held here until the driver is outside the draw module and
+ * can render it into a scratch surface of the pixels it does cover -- which
+ * it covers whole -- and copy that into place. */
+struct m9_deferred_job {
+   bool pending;
+   struct pipe_resource *dst;       /* reference held */
+   uint32_t x, y, width, height;    /* the covered box, rows from the top */
+   uint32_t target_height;          /* the height its records were made in */
+   struct m9_job_state state;
+};
+
+/* A scratch colour surface, kept per shape: a split job renders into one of
+ * exactly the size of the box it covers. */
+struct m9_scratch_target {
+   struct pipe_resource *res;
+   uint64_t used;
+};
+
+/* Enough for a few window-sized boxes; beyond that a shape is one the context
+ * has stopped drawing. */
+#define M9_SCRATCH_BUDGET (24u << 20)
+
 /* Per-context state is complete rather than inherited from the classic
  * Parhelia shadow.  Dirty bits describe only M9 packet groups. */
 /* A vertex shader: the draw module's copy, which every draw still runs, and
@@ -380,6 +415,13 @@ struct m9_context {
    struct m9_vertex_decl decl;
    bool params_valid;
    struct m9_job_key job_key;
+   /* The split job held for the scratch path, the surfaces it renders into
+    * and a guard against running one inside another. */
+   struct m9_deferred_job deferred;
+   struct util_dynarray scratch_targets;  /* struct m9_scratch_target * */
+   uint64_t scratch_clock;
+   bool in_scratch;
+   bool scratch_bind;   /* the target being bound is a scratch surface */
    struct util_dynarray records;  /* float source records */
    struct util_dynarray indices;  /* uint16 raster indices into records */
    struct util_dynarray draws;    /* struct m9_draw_record */

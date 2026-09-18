@@ -174,6 +174,7 @@ struct m9_vbuf_render {
 };
 
 static int m9_submit_job(struct m9_context *ctx);
+static void m9_deferred_run(struct m9_context *ctx);
 
 static inline struct m9_context *
 m9_context(struct pipe_context *pctx)
@@ -309,6 +310,19 @@ static unsigned m9_split_clip;
 /* M9X_SPLIT_PARTIAL=1 submits a multi-pass job whose draw covers only part of
  * its render target, which is the schedule that stops the engine. */
 static bool m9_split_partial;
+/* M9X_SPLIT_SCRATCH=0 refuses such a job instead of rendering it into a
+ * scratch surface of the box it covers and copying that into place. */
+static bool m9_split_scratch;
+/* M9X_SPLIT_SEED=0 leaves the scratch surface unseeded, which separates the
+ * copy in from the copy out; the image is then right only where the geometry
+ * fills its own box.  M9X_SPLIT_COPY=2 copies through CPU transfers rather
+ * than on the engine, which separates the copies from the job between
+ * them. */
+static bool m9_split_seed;
+static unsigned m9_split_copy;
+/* M9X_SPLIT_BE=0 leaves the engine's back-end object alone across the scratch
+ * path, 2 clears the destination's as well as the scratch's. */
+static unsigned m9_split_be;
 /* M9X_RECORD_DUMP names a file the inter-pass record is written to after
  * every split job, so the slots the engine touched can be read back and
  * the record's granularity measured rather than assumed. */
@@ -439,6 +453,9 @@ m9_context_sync(struct m9_context *ctx)
    if (ctx->draw)
       draw_flush(ctx->draw);
    m9_submit_job(ctx);
+   /* Outside the draw module: a job held for the scratch path runs here,
+    * before anything this sync was called for reads the target. */
+   m9_deferred_run(ctx);
 }
 
 static void
@@ -1141,6 +1158,146 @@ m9_dump_job(struct m9_context *ctx, const struct m9_fs_variant *fs)
    fclose(out);
 }
 
+static void
+m9_dynarray_swap(struct util_dynarray *a, struct util_dynarray *b)
+{
+   struct util_dynarray t = *a;
+
+   *a = *b;
+   *b = t;
+}
+
+/* Exchange the pending job with one held aside, so the driver can build and
+ * submit a job while another waits. */
+static void
+m9_job_state_swap(struct m9_context *ctx, struct m9_job_state *s)
+{
+   struct m9_job_key key = ctx->job_key;
+   unsigned floats = ctx->record_floats, dwords = ctx->job_unit_dwords;
+
+   ctx->job_key = s->key;
+   ctx->record_floats = s->record_floats;
+   ctx->job_unit_dwords = s->job_unit_dwords;
+   s->key = key;
+   s->record_floats = floats;
+   s->job_unit_dwords = dwords;
+   m9_dynarray_swap(&ctx->records, &s->records);
+   m9_dynarray_swap(&ctx->indices, &s->indices);
+   m9_dynarray_swap(&ctx->draws, &s->draws);
+   m9_dynarray_swap(&ctx->extra, &s->extra);
+   m9_dynarray_swap(&ctx->job_textures, &s->job_textures);
+   m9_dynarray_swap(&ctx->job_consts, &s->job_consts);
+   m9_dynarray_swap(&ctx->job_vs_consts, &s->job_vs_consts);
+}
+
+static void
+m9_job_state_fini(struct m9_job_state *s)
+{
+   util_dynarray_foreach(&s->job_textures, struct pipe_resource *, held)
+      pipe_resource_reference(held, NULL);
+   util_dynarray_fini(&s->records);
+   util_dynarray_fini(&s->indices);
+   util_dynarray_fini(&s->draws);
+   util_dynarray_fini(&s->extra);
+   util_dynarray_fini(&s->job_textures);
+   util_dynarray_fini(&s->job_consts);
+   util_dynarray_fini(&s->job_vs_consts);
+   memset(s, 0, sizeof(*s));
+}
+
+/* Drop the job held in this state with a named reason, releasing what it
+ * holds; the caller has already swapped it into the context. */
+static void
+m9_job_state_drop(struct m9_context *ctx, const char *warn, const char *why)
+{
+   unsigned draws = util_dynarray_num_elements(&ctx->draws,
+                                               struct m9_draw_record);
+
+   m9_warn_once(ctx, M9_WARN_FS, warn);
+   m9_skip_reason(ctx, why);
+   ctx->skipped_draws += draws;
+   m9_prof_skipped += draws;
+   util_dynarray_foreach(&ctx->job_textures, struct pipe_resource *, held)
+      pipe_resource_reference(held, NULL);
+   util_dynarray_clear(&ctx->job_textures);
+   ctx->job_unit_dwords = 0;
+   util_dynarray_clear(&ctx->records);
+   util_dynarray_clear(&ctx->indices);
+   util_dynarray_clear(&ctx->draws);
+   util_dynarray_clear(&ctx->extra);
+}
+
+/*
+ * Hold a multi-pass job whose geometry covers part of its render target
+ * aside, to be rendered into a scratch surface of the pixels it does cover
+ * and copied into place.  The box is the pixel centres its screen extent
+ * encloses, which is what the geometry covers exactly however it is offset
+ * inside a pixel, and its origin is whole so that the translated records keep
+ * the target's own pixel grid.  A record counts rows from the bottom where
+ * the box counts them from the top.
+ */
+static const char *
+m9_split_defer(struct m9_context *ctx, const struct m9_job_key *key,
+               unsigned records, float x0, float y0, float x1, float y1)
+{
+   struct m9_deferred_job *d = &ctx->deferred;
+   int32_t w = ctx->params.width, h = ctx->params.height;
+   int32_t max = ctx->screen->base.caps.max_texture_2d_size;
+   int32_t bx0, by0, bx1, by1;
+
+   /* Named one by one, because the reason a draw is refused is what the skip
+    * report has to carry. */
+   if (!m9_split_scratch)
+      return "a multi-pass draw over part of its target, "
+             "with the scratch surface turned off";
+   if (key->depth_ef)
+      return "a multi-pass draw over part of its target "
+             "that tests or writes depth";
+   if (key->vs)
+      return "a multi-pass draw over part of its target "
+             "whose geometry a program of its own preprocesses";
+   if (key->clip_min != ctx->params.clip_min ||
+       key->clip_max != ctx->params.clip_max)
+      return "a multi-pass draw over part of its target "
+             "that carries a scissor of its own";
+   if (d->pending || ctx->in_scratch)
+      return "a multi-pass draw over part of its target "
+             "while another is already held";
+   if (!ctx->blitter || ctx->query_active || !ctx->color || !records ||
+       ctx->lost)
+      return "a multi-pass draw over part of its target "
+             "with no scratch surface to copy into place";
+   /* Every record has to be in front of the eye: the translation divides by
+    * the slot the perspective divide multiplies. */
+   for (unsigned k = 0; k < records; k++)
+      if (((const float *)ctx->records.data)[(uint64_t)k * ctx->record_floats +
+                                             3] <= 0.0f)
+         return "a multi-pass draw over part of its target "
+                "with a vertex behind the eye";
+   bx0 = CLAMP((int32_t)ceilf(x0 - 0.5f), 0, w);
+   bx1 = CLAMP((int32_t)ceilf(x1 - 0.5f), 0, w);
+   by0 = CLAMP((int32_t)ceilf((float)h - y1 - 0.5f), 0, h);
+   by1 = CLAMP((int32_t)ceilf((float)h - y0 - 0.5f), 0, h);
+   if (bx1 <= bx0 || by1 <= by0)
+      return "a multi-pass draw over part of its target "
+             "covering no whole pixel";
+   if (bx1 - bx0 > max || by1 - by0 > max)
+      return "a multi-pass draw over part of its target "
+             "covering more pixels than an image holds";
+   pipe_resource_reference(&d->dst, ctx->color);
+   d->x = bx0;
+   d->y = by0;
+   d->width = bx1 - bx0;
+   d->height = by1 - by0;
+   d->target_height = ctx->params.height;
+   /* The state swapped in is empty, but its record stride divides in
+    * m9_submit_job before that job's draw count is looked at. */
+   d->state.record_floats = ctx->record_floats;
+   m9_job_state_swap(ctx, &d->state);
+   d->pending = true;
+   return NULL;
+}
+
 static int
 m9_submit_job(struct m9_context *ctx)
 {
@@ -1161,6 +1318,10 @@ m9_submit_job(struct m9_context *ctx)
    uint32_t split_x1 = key->clip_max & 0xffffu;
    uint32_t split_y0 = key->clip_min >> 16;
    uint32_t split_y1 = key->clip_max >> 16;
+   /* The record holds x and y before the perspective divide and 1/w in its
+    * fourth slot, so the screen extent needs the product; the clip window
+    * counts rows from the top and the record from the bottom. */
+   float x0 = 0, x1 = 0, y0 = 0, y1 = 0;
    bool partial = false;
    uint64_t point = 0;
    uint64_t t_submit;
@@ -1183,12 +1344,6 @@ m9_submit_job(struct m9_context *ctx)
       uint64_t area = (uint64_t)ctx->params.width * ctx->params.height;
 
       if (m9_split_trace || m9_split_clip || !m9_split_partial) {
-         /* The record holds x and y before the perspective divide and 1/w
-          * in its fourth slot, so the screen extent needs the product; the
-          * clip window counts rows from the top and the record from the
-          * bottom. */
-         float x0 = 0, x1 = 0, y0 = 0, y1 = 0;
-
          if (records) {
             const float *v = ctx->records.data;
 
@@ -1236,22 +1391,19 @@ m9_submit_job(struct m9_context *ctx)
                    y1 < (float)ctx->params.height - 0.5f;
       }
       if (partial && !m9_split_partial) {
-         m9_warn_once(ctx, M9_WARN_FS,
-                      "a multi-pass fragment shader needs a draw that covers "
-                      "its whole render target; draws skipped");
-         m9_skip_reason(ctx, "a multi-pass fragment shader over part of its "
-                        "render target");
-         ctx->skipped_draws += draws;
-         m9_prof_skipped += draws;
-         util_dynarray_foreach(&ctx->job_textures, struct pipe_resource *,
-                               held)
-            pipe_resource_reference(held, NULL);
-         util_dynarray_clear(&ctx->job_textures);
-         ctx->job_unit_dwords = 0;
-         util_dynarray_clear(&ctx->records);
-         util_dynarray_clear(&ctx->indices);
-         util_dynarray_clear(&ctx->draws);
-         util_dynarray_clear(&ctx->extra);
+         /* The draw covers the whole of a scratch surface of the box it
+          * covers here, which is the schedule the engine runs; the job is
+          * held until the driver is outside the draw module and can copy
+          * the result into place.  M9X_SPLIT_SCRATCH=0 refuses it instead,
+          * and M9X_SPLIT_PARTIAL=1 submits it as it stands. */
+         const char *held = m9_split_defer(ctx, key, records, x0, y0, x1, y1);
+
+         if (!held)
+            return 0;
+         m9_job_state_drop(ctx,
+                           "a multi-pass fragment shader needs a draw that "
+                           "covers its whole render target; draws skipped",
+                           held);
          return 0;
       }
       if ((m9_split_skip_above && area > m9_split_skip_above) ||
@@ -1301,6 +1453,10 @@ m9_submit_job(struct m9_context *ctx)
       memset(be_bound->map, 0, be_bound->size);
       ctx->be_clip = ctx->params.clip_max;
    }
+   /* M9X_SPLIT_BE=3 clears it ahead of every multi-pass job rather than only
+    * the one the scratch path submits. */
+   if (m9_split_be > 2 && pass_count > 1 && be_bound->map)
+      memset(be_bound->map, 0, be_bound->size);
    ret = ctx->lost ? -EIO :
          m9_arena_reserve(ctx, &ctx->source,
                           (uint64_t)records * copies * ctx->record_floats *
@@ -3526,6 +3682,9 @@ m9_draw_vbo(struct pipe_context *pctx, const struct pipe_draw_info *info,
    struct m9_context *ctx = m9_context(pctx);
    bool indexed = info->index_size;
 
+   /* A job held for the scratch path reaches the engine before this draw,
+    * which was recorded after it. */
+   m9_deferred_run(ctx);
    if (num_draws > 1) {
       util_draw_multi(pctx, info, drawid_offset, indirect, draws, num_draws);
       return;
@@ -3744,6 +3903,9 @@ m9_clear(struct pipe_context *pctx, unsigned buffers,
 {
    uint64_t t_clear = m9_prof_begin();
 
+   /* A job held for the scratch path is copied into place before the clear
+    * that follows it, not over it. */
+   m9_deferred_run(m9_context(pctx));
    for (unsigned i = 0; i <= m9_clear_repeat; i++)
       m9_clear_locked(pctx, buffers, color_clear_mask, stencil_clear_mask,
                       scissor, color, depth, stencil);
@@ -4059,6 +4221,203 @@ m9_resource_copy_region(struct pipe_context *pctx, struct pipe_resource *dst,
    }
    util_resource_copy_region(pctx, dst, dst_level, dstx, dsty, dstz, src,
                              src_level, src_box);
+}
+
+/* The scratch colour surface of exactly this shape, allocated once and kept:
+ * a split job has to cover the whole of the target it renders into, so the
+ * surface is the size of the box and not a larger one reused. */
+static struct pipe_resource *
+m9_scratch_target(struct m9_context *ctx, uint32_t w, uint32_t h,
+                  enum pipe_format format)
+{
+   struct m9_scratch_target *entry = NULL, **oldest = NULL;
+   uint64_t total = 0, bytes = (uint64_t)w * h * 4;
+   struct pipe_resource templ = {0};
+
+   util_dynarray_foreach(&ctx->scratch_targets, struct m9_scratch_target *,
+                         it) {
+      const struct pipe_resource *res = (*it)->res;
+
+      total += (uint64_t)res->width0 * res->height0 * 4;
+      if (res->width0 == w && res->height0 == h && res->format == format)
+         entry = *it;
+      else if (!oldest || (*it)->used < (*oldest)->used)
+         oldest = it;
+   }
+   /* Release the shape used longest ago before adding another, so a context
+    * that walks through many boxes does not grow without end. */
+   while (!entry && oldest && total + bytes > M9_SCRATCH_BUDGET) {
+      struct m9_scratch_target *evict = *oldest;
+
+      total -= (uint64_t)evict->res->width0 * evict->res->height0 * 4;
+      pipe_resource_reference(&evict->res, NULL);
+      *oldest = *util_dynarray_pop_ptr(&ctx->scratch_targets,
+                                       struct m9_scratch_target *);
+      FREE(evict);
+      oldest = NULL;
+      util_dynarray_foreach(&ctx->scratch_targets, struct m9_scratch_target *,
+                            it)
+         if (!oldest || (*it)->used < (*oldest)->used)
+            oldest = it;
+   }
+   if (!entry) {
+      templ.target = PIPE_TEXTURE_2D;
+      templ.format = format;
+      templ.width0 = w;
+      templ.height0 = h;
+      templ.depth0 = 1;
+      templ.array_size = 1;
+      templ.usage = PIPE_USAGE_DEFAULT;
+      templ.bind = PIPE_BIND_RENDER_TARGET | PIPE_BIND_SAMPLER_VIEW;
+      entry = CALLOC_STRUCT(m9_scratch_target);
+      if (!entry)
+         return NULL;
+      entry->res = ctx->screen->base.resource_create(&ctx->screen->base,
+                                                     &templ);
+      if (!entry->res) {
+         FREE(entry);
+         return NULL;
+      }
+      util_dynarray_append_typed(&ctx->scratch_targets,
+                                 struct m9_scratch_target *, entry);
+   }
+   entry->used = ++ctx->scratch_clock;
+   return entry->res;
+}
+
+/* One copy of the scratch path, on the engine or through CPU transfers. */
+static void
+m9_scratch_copy(struct m9_context *ctx, struct pipe_resource *dst,
+                unsigned dx, unsigned dy, struct pipe_resource *src,
+                const struct pipe_box *box)
+{
+   struct pipe_context *pctx = &ctx->base;
+
+   if (m9_split_copy == 2)
+      util_resource_copy_region(pctx, dst, 0, dx, dy, 0, src, 0, box);
+   else
+      pctx->resource_copy_region(pctx, dst, 0, dx, dy, 0, src, 0, box);
+}
+
+/* Move a held job's records into the scratch surface's own screen space.  A
+ * record carries x and y multiplied by w with 1/w beside them, so a screen
+ * translation divides by that slot, and it counts rows from the bottom where
+ * the box counts them from the top. */
+static void
+m9_scratch_records(struct m9_context *ctx, const struct m9_deferred_job *d)
+{
+   unsigned records = util_dynarray_num_elements(&ctx->records, float) /
+                      ctx->record_floats;
+   float dx = (float)d->x;
+   float dy = (float)d->height + (float)d->y - (float)d->target_height;
+
+   for (unsigned k = 0; k < records; k++) {
+      float *p = (float *)ctx->records.data + (uint64_t)k * ctx->record_floats;
+      float w = 1.0f / p[3];
+
+      p[0] -= dx * w;
+      p[1] += dy * w;
+   }
+}
+
+/*
+ * Render a held multi-pass job into a scratch surface it covers whole and
+ * copy it into place.  The destination seeds the scratch first, so blending,
+ * a partial colour mask and geometry that does not fill its own box all read
+ * and keep what the destination held.  This runs where the driver is outside
+ * the draw module, because the two copies are ordinary blitter draws: the job
+ * pending now is held aside in turn, since it was recorded after this one and
+ * has to reach the engine after it.
+ */
+static void
+m9_deferred_run(struct m9_context *ctx)
+{
+   struct m9_deferred_job *d = &ctx->deferred;
+   struct pipe_context *pctx = &ctx->base;
+   struct pipe_framebuffer_state target_fb = {0}, fb = {0};
+   struct m9_job_state saved = {0};
+   struct pipe_resource *scratch;
+   struct pipe_box box;
+   const char *why = NULL;
+   bool engine = false;
+
+   if (!d->pending || ctx->in_scratch)
+      return;
+   d->pending = false;
+   ctx->in_scratch = true;
+   saved.record_floats = ctx->record_floats;
+   m9_job_state_swap(ctx, &saved);
+   util_copy_framebuffer_state(&target_fb, &ctx->framebuffer);
+   scratch = ctx->lost ? NULL :
+             m9_scratch_target(ctx, d->width, d->height, d->dst->format);
+   if (!scratch) {
+      why = "no scratch surface for a multi-pass draw over part of its "
+            "render target";
+   } else {
+      u_box_2d(d->x, d->y, d->width, d->height, &box);
+      if (m9_split_seed)
+         m9_scratch_copy(ctx, scratch, 0, 0, d->dst, &box);
+      fb.width = d->width;
+      fb.height = d->height;
+      fb.nr_cbufs = 1;
+      fb.cbufs[0].texture = scratch;
+      fb.cbufs[0].format = scratch->format;
+      /* The depth pair and the engine's back-end object this binds are the
+       * scratch surface's own: the scene's own targets of the same shape --
+       * desktop's window is the size of the box its blur covers -- would
+       * otherwise share the engine state with it. */
+      ctx->scratch_bind = true;
+      pctx->set_framebuffer_state(pctx, &fb);
+      ctx->scratch_bind = false;
+      if (!ctx->params_valid)
+         why = "a scratch surface for a multi-pass draw over part of its "
+               "render target is not a valid render target";
+   }
+   m9_job_state_swap(ctx, &d->state);
+   if (why) {
+      m9_job_state_drop(ctx, why, why);
+   } else {
+      /* The scratch surface brings its own depth pair, back-end object and
+       * clip window, and the geometry moves with it. */
+      ctx->job_key.depth = ctx->target_depth;
+      ctx->job_key.aux = ctx->target_aux;
+      ctx->job_key.clip_min = ctx->params.clip_min;
+      ctx->job_key.clip_max = ctx->params.clip_max;
+      m9_scratch_records(ctx, d);
+      /* The engine keeps per-target state in the back-end object, and a
+       * multi-pass job that finds in it what the draws into another target
+       * left behind stops the engine: the scratch path stalls at the ninth
+       * draw without this and renders 32 with it (MEASURED, splitdesk:32:1:5:
+       * 1920x1200:5:420x420 against M9X_BE_CLEAR).  The object the job binds
+       * is cleared ahead of it. */
+      if (m9_split_be && ctx->target_be && ctx->target_be->map)
+         memset(ctx->target_be->map, 0, ctx->target_be->size);
+      m9_submit_job(ctx);
+   }
+   m9_job_state_swap(ctx, &d->state);
+   if (scratch) {
+      pctx->set_framebuffer_state(pctx, &target_fb);
+      if (m9_split_be > 1 && ctx->target_be && ctx->target_be->map)
+         memset(ctx->target_be->map, 0, ctx->target_be->size);
+      if (!why) {
+         uint32_t drew = ctx->engine_blits;
+
+         u_box_2d(0, 0, d->width, d->height, &box);
+         m9_scratch_copy(ctx, d->dst, d->x, d->y, scratch, &box);
+         engine = ctx->engine_blits > drew;
+      }
+   }
+   util_unreference_framebuffer_state(&target_fb);
+   pipe_resource_reference(&d->dst, NULL);
+   m9_job_state_swap(ctx, &saved);
+   m9_job_state_fini(&saved);
+   ctx->in_scratch = false;
+   if (ctx->debug)
+      fprintf(stderr, "m9x: split job %ux%u at %u,%u of %u rows: %s\n",
+              d->width, d->height, d->x, d->y, d->target_height,
+              why ? why : engine ? "drawn on a scratch surface, copied back "
+              "on the engine" : "drawn on a scratch surface, copied back "
+              "through transfers");
 }
 
 static void
@@ -4545,7 +4904,8 @@ m9_target_depth_bind(struct m9_context *ctx, uint32_t w, uint32_t h,
 
    util_dynarray_foreach(&ctx->target_depths, struct m9_target_depth *, it) {
       total += (*it)->depth.size + (*it)->aux.size + (*it)->be.size;
-      if (!fresh && (*it)->width == w && (*it)->height == h)
+      if (!fresh && (*it)->width == w && (*it)->height == h &&
+          (*it)->scratch == ctx->scratch_bind)
          entry = *it;
       else if (!oldest || (*it)->used < (*oldest)->used)
          oldest = it;
@@ -4588,6 +4948,7 @@ m9_target_depth_bind(struct m9_context *ctx, uint32_t w, uint32_t h,
          m9_warn_once(ctx, M9_WARN_MEMORY, "cannot allocate target depth");
          return false;
       }
+      entry->scratch = ctx->scratch_bind;
       entry->width = entry->depth.width = w;
       entry->height = entry->depth.height = h;
       m9_fill_dwords(&entry->depth, 0xffffffff);
@@ -4882,6 +5243,14 @@ m9_context_destroy(struct pipe_context *pctx)
    util_dynarray_fini(&ctx->target_depths);
    ctx->target_depth = ctx->target_aux = NULL;
    ctx->target_be = NULL;
+   util_dynarray_foreach(&ctx->scratch_targets, struct m9_scratch_target *,
+                         it) {
+      pipe_resource_reference(&(*it)->res, NULL);
+      FREE(*it);
+   }
+   util_dynarray_fini(&ctx->scratch_targets);
+   pipe_resource_reference(&ctx->deferred.dst, NULL);
+   m9_job_state_fini(&ctx->deferred.state);
    m9_bo_destroy(screen, &ctx->placeholder_texture);
    m9_bo_destroy(screen, &ctx->vs_c2);
    if (ctx->debug)
@@ -4947,6 +5316,10 @@ m9_context_create(struct pipe_screen *pscreen, void *priv, unsigned flags)
    m9_split_trace = debug_get_bool_option("M9X_SPLIT_TRACE", false);
    m9_split_clip = debug_get_num_option("M9X_SPLIT_CLIP", 0);
    m9_split_partial = debug_get_bool_option("M9X_SPLIT_PARTIAL", false);
+   m9_split_scratch = debug_get_bool_option("M9X_SPLIT_SCRATCH", true);
+   m9_split_seed = debug_get_bool_option("M9X_SPLIT_SEED", true);
+   m9_split_copy = debug_get_num_option("M9X_SPLIT_COPY", 1);
+   m9_split_be = debug_get_num_option("M9X_SPLIT_BE", 1);
    m9_record_dump = debug_get_option("M9X_RECORD_DUMP", NULL);
    m9_split_draws = debug_get_num_option("M9X_SPLIT_DRAWS", 1);
    m9_record_89 = debug_get_num_option("M9X_RECORD_89", 0);
