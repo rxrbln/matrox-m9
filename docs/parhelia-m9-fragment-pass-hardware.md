@@ -174,6 +174,79 @@ four-dword slot is not padding either -- a four-pass shader at 1920x1200
 genuinely needs about 106 MiB, and where VRAM cannot hold it the draws are
 still skipped with a named reason.
 
+### 3bb. A split job must cover the whole of its render target
+
+**A multi-pass job whose geometry leaves part of its render target uncovered
+stops the engine** (MEASURED, 2026-09-18, M9128).  This is the fault that took
+glmark2's `desktop` scene down, and none of the properties the earlier rounds
+named is the discriminator.
+
+What the scene actually issues, traced from the scene itself (CAPTURED,
+`M9X_SPLIT_TRACE`):
+
+```text
+m9x splitjob 10: 420x420   passes 2 draws 1 records 4 extent 0,0..420,420
+m9x splitjob 11: 1920x1200 passes 2 draws 1 records 4 extent 1230,390..1650,810
+```
+
+The 420x420 job covers its target; the 1920x1200 job covers a 420x420
+rectangle of it, because glmark2's `RenderWindowBlur::render_to` blurs the
+window *back out* over the screen at the window's own position.  Dropping only
+the large-target jobs renders the scene at 90 fps over 7208 split jobs
+(MEASURED, `M9X_SPLIT_SKIP_ABOVE=200000`), so the partial one is the whole of
+the fault.
+
+Corrections to what was recorded before:
+
+* The pass count is **not** the variable.  `desktop:effect=shadow` renders at
+  124 fps and `blur-radius=1` at 96 fps because neither splits; `blur-radius=2`
+  splits into **two** passes (record stride 4) and stops the engine, as
+  radius 5's four passes do (MEASURED).
+* The target size is **not** a threshold.  A partial-coverage job stops the
+  engine at 320x240 as well; a smaller target only makes it less likely per
+  draw (MEASURED: `splitdesk:3:4:5:320x240:1` rendered once and stopped the
+  engine on the repeat).
+* The record is **not** involved.  `M9X_SPLIT_STAGE=1` leaves the record
+  unbound and the routes idle and the fixture stops the engine just the same
+  (MEASURED).
+
+Everything else measured against the fixture and refuted: the sequence words
+cleared (`M9X_SPLIT_SEQ=0`), the vendor transition dropped (`M9X_TRANSITION=0`,
+which renders once and stops the engine on the repeat), index 30 restated,
+one submission for every pass (`M9X_SPLIT_SUBMIT=0`), a record of its own per
+job (`M9X_RECORD_FRESH=1`), a depth pair of its own (`M9X_TARGET_FRESH=1`),
+the engine-only placement (`M9X_ENGINE_VRAM=0`), the back-end object cleared
+before every job (`M9X_BE_CLEAR=1`, after fixing it to clear the object the
+job binds rather than the context's own), one back-end object for the context
+(`M9X_BE_PER_TARGET=0`), the depth schedule (`M9X_SPLIT_DEPTH=0`), the
+coverage words (`M9X_SPLIT_COVERAGE=0`), the clip window rounded to the
+allocation (`M9X_CLIP_ROUND=1`) and the clip window narrowed to the geometry
+in both axes (`M9X_SPLIT_CLIP`).
+
+Two controls bound it from the other side.  A **single-pass** shader over the
+same rectangle renders 64 draws over, and the same partial geometry drawn as
+two triangles rather than a strip stops the engine exactly as the strip does
+(MEASURED), so neither partial coverage nor the topology is the fault on its
+own: it is the multi-pass schedule over part of a target.  Only
+`M9X_SPLIT_PASSES=1`, which emits the producing pass and drops the consumer,
+renders.
+
+It is a **back-end** hang.  The fetch pointer read back from
+`M9_REG_COMMAND_BASE` reaches the end of the submission -- dword 171 of 171 --
+and the writeback fence never retires, so the stream the parser sees is
+well formed and the engine hung executing it.
+
+The count a context survives is not sharp: 1, 2, 8, 10, 12, 16 and 20 partial
+draws at 1920x1200 rendered, 24 and 32 stopped the engine, and 32 draws of a
+smaller rectangle stopped it as well.  A driver cannot rely on a count, so the
+driver refuses the schedule outright; `M9X_SPLIT_PARTIAL=1` submits it again
+for the probe.
+
+The fix that would let these draws render is to give the job a target it does
+cover: render it into a scratch surface the size of the geometry's bounding
+box and copy that into place with the engine blit, which is a whole-target
+draw on both halves.  That is **UNTESTED** and not implemented here.
+
 ### 3c. A split job carries one raster draw
 
 **Two restated raster draws in one split job stop the engine** (MEASURED,

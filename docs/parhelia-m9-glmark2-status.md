@@ -33,9 +33,9 @@ multipass path - and on three defects found while implementing it.
 | `effect2d` 3x3 kernel (2 passes) | 86-89 fps | renders |
 | `effect2d` 15-tap (5 passes) | 25-33 fps | renders, with a 141 MiB record |
 | `shadow` | 143-147 fps | renders |
-| `refract` (4 passes) | 1 fps at 1920x1200, 2 at 640x480 | renders |
-| `terrain` | - | scene renders; `terrain.frag` refused for register pressure, and the policy that compiles it hits the scene-scale stall below |
-| `desktop` separable blur (4 passes) | - | stops the engine, after twenty-six split draws render |
+| `refract` (4 passes) | 1 fps at 1920x1200, 2 at 640x480 | renders; 95% of the frame is the CPU mipmap of its distance target, not fill |
+| `terrain` | 9 fps at 1920x1200 | `terrain.frag` still refused for register pressure; `M9X_SPLIT_PRESSURE=1` compiles it into seven passes over mesh geometry, which covers part of its target, so it stays off |
+| `desktop` separable blur (4 passes) | 61 fps at 1920x1200 | its vertical blur is skipped: that draw covers part of its target, which a multi-pass job cannot do (`parhelia-m9-fragment-pass-hardware.md` 3bb).  It no longer stops the engine |
 
 The rest of the suite was already above 60 fps and is unchanged; the slowest
 were `function medium` 62, `shading cel` 70, `shading phong` 87.
@@ -53,9 +53,43 @@ therefore holds **14.4** such operations.
 | `desktop` 11-tap separable blur over composited windows | ~23 | ~43 fps |
 
 These are not failures and no scheduling reaches 60 fps on them at this size.
-Correct rendering at an honest rate is the deliverable.  `refract`'s 1 fps is
-likewise fill-bound: its distance target is the canvas at 2x and its shader
-takes four passes.
+Correct rendering at an honest rate is the deliverable.
+
+### `refract` is not fill-bound, and that reading is withdrawn
+
+`refract` was recorded here as fill-bound.  It is not, and the arithmetic said
+so before the measurement did: four raster passes into a distance target the
+driver clamps to 2048x1280 is about sixteen full-screen operations, 18.5 ms,
+some 54 fps, against a measured 1 fps.
+
+The driver's own phase profile names the missing second (MEASURED,
+`M9X_PROFILE=4` at 1920x1200):
+
+```text
+m9x: 4 frames 1065.62 ms/frame: draw 8.05 emit 0.11 submit 8.08 varying 0.00
+     records 0.45 ioctl 7.25 target 0.01 clear 0.00 transfer 1014.03
+     | jobs 40 draws 40 ...
+```
+
+**95.2% of the frame is a CPU transfer**, and the GPU half of it is 8 ms.  Ten
+draws a frame is the whole of the scene's submission cost.
+
+The transfer is the mipmap chain of the distance target.  `scene-refract.cpp`
+calls `glGenerateMipmap` on its 2048x1280 colour render target once a frame
+(CAPTURED, `RefractPrivate::draw`), the driver implements no
+`generate_mipmap`, and `m9_update_target` refuses a target whose level is not
+zero, so the state tracker falls back to mapping the texture and building
+every level on the CPU -- through the de-tiling transfer path.
+
+The size scaling confirms it (MEASURED): at a 640x480 canvas the distance
+target is 1280x960, 2.13x smaller in area than the 2048x1280 the 1920x1200
+canvas clamps to, and the transfer falls from 1014 ms to 473 ms, a ratio of
+2.14.  The cost is proportional to that texture's area and to nothing else.
+
+So the ceiling for `refract` is not the fill rate; it is a per-frame CPU
+readback of a render target.  Rendering the mipmap chain on the engine -- or
+allowing a non-zero level as a render target so `util_gen_mipmap` can -- is
+what this scene needs.  **UNTESTED**, not implemented.
 
 ## What was actually wrong, in the order it was found
 
