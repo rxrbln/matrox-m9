@@ -1326,6 +1326,61 @@ and one value differs [DER]:
 `m9_dp.c` writes all three as part of entering DisplayPort mode, so the common
 path in `m9_ddc.c` need not change.
 
+## A connector POST never drove is held in reset
+
+MEASURED 2026-09-18 on the **two-port** `128-E1024LAF` (serial `KFP35758`), which
+is a different board from the four-port `UM9148-E1024LAF` above.
+
+Its second connector answered **nothing at all** on its DDC bus - not the sink at
+`0xa0`, not the transmitter at `0x10`/`0x12`/`0x14`/`0x16` - while the first
+connector answered all four transmitter pages.  Probing all four conventional bit
+pairs (clock `2n`, data `2n+1`) found devices only on bits 0/1, so the pins were
+never the problem and the PInS map is right.
+
+The cause is the transmitter reset line.  `0x1c4c = 0x0001007b`: MISCIO function
+`0x20` (connector 0) sits at bit 6 with its **output enable set and the bit
+high**, while function `0x21` (connector 1) at bit 7 is **undriven and reads
+low** - that transmitter is held in reset, so it cannot answer I2C.  Pulsing the
+line and then *restoring* the register word, as `m9_tx_reset()` did, drops an
+undriven line straight back into reset before any probe can run.  Leaving it
+**driven high** after the pulse is what releases it:
+
+```
+connector 1 transmitter at 0x10, hotplug 0x07   (was: no transmitter answered)
+DP-2 connected, EDID 1920x1200
+```
+
+So "no transmitter answered" on a connector POST did not touch is a reset-line
+state, not a missing device or a wrong bus.
+
+**Still open on that board:** with the transmitter released, head 1's controller
+rasters at the programmed rate and `LLDP` training reports success, but the
+transmitter's main-stream attributes read zero - no video is reaching it.
+Neither routing link 1 nor link 2 from controller 1, nor clearing the
+corresponding `0x1cac` pad-gate bits, changed that.  Note also that `0x1cac`
+**does** accept writes in this state (`0x81` was written and read back), which
+contradicts the earlier "latches `0x00000001`" measurement in
+`drivers/gpu/drm/m9x/m9_mode.c`; that behaviour is evidently state dependent.
+
+This board's own output-descriptor table (PInS `+0x0c`..`+0x0e`, format in §10)
+decodes to six records rather than twelve:
+
+```
+  75a4 1a 31 10 00 10 00 07 00     75bc 1a 33 20 00 10 00 09 00
+  75ac 1b 31 10 00 12 00 07 00     75c4 1b 33 20 00 12 00 09 00
+  75b4 1c 31 10 00 14 00 07 00     75cc 1c 33 20 00 14 00 09 00
+```
+
+Byte 2 high nibble gives connectors 0 and 1, byte 6 gives DDC bus selectors
+`0x07` and `0x09` - and the selector-to-pin-pair relation is `pair = selector + 3`,
+so `0x07` is bits 0/1 and `0x09` is bits 4/5, exactly the two pairs PInS `+0x50`
+names (`09 0a 00 00 0d 0e 00 00`).  Byte 1 is `0x31`/`0x33` where the four-port
+board has `0x11`..`0x14`; if its low nibble is still the link code + 1, this board
+routes connector 1 to **link 2**, not link 1, which the driver's
+connector-n-to-link-n assumption does not express.  That reading is DERIVED and
+was **not** confirmed: writing link 2 with controller 1 as its source did not make
+the transmitter send.
+
 **Connector to bus and slave, from the board rather than by probing**
 
 PInS `+0x0c`/`+0x0e` bracket the output-descriptor table (§10), whose records

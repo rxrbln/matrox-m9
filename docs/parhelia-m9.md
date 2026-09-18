@@ -124,8 +124,12 @@ Linux driver, and `[M9WIN]` could not resolve the mapping at all.
 
 ## VGA → native handoff
 
-Clearing `0x1c10` bit0 is **one of nine steps**; on its own the chip keeps scanning
-the mode POST left behind and every DC register write is ignored.  `[M9WIN 0x36f90]`
+**POST always leaves the card here.**  `[HW, CAPTURED]`  The post-POST snapshot in
+`captures/m9x-vendor-fourhead-20260917/post-baseline2.csv` holds `0x1c10 = 1` and
+VGA MISC `0x63`, and the vendor driver running four heads holds `0x1c10 = 2` and
+VGA MISC `0x68`.  A Linux boot with `vga=` merely hid it, because the BIOS mode
+set performs the same handoff; without `vga=` the driver must do it itself or the
+head keeps sending the VGA raster.
 
 ```
 already native  <=>  (0x1c10 & 2) && !(0x1c10 & 1) && (0x1fdc & 0x10000)
@@ -137,6 +141,24 @@ already native  <=>  (0x1c10 & 2) && !(0x1c10 & 1) && (0x1fdc & 0x10000)
 0x1c24 |= 0x101           ; wait 10 us
 0x1800 &= ~0x2000
 ```
+
+**Which of those steps actually matter, MEASURED 2026-09-18 on the M9148 with a
+1280x720 mode programmed on head 0:**
+
+| step | effect |
+|---|---|
+| `0x1c10 &= ~1` | **decisive for the raster.**  With the bit set the transmitter reported `640x480 htotal 800 vtotal 525`; clearing it gave `1280x720 htotal 1650 vtotal 750`.  Setting it back afterwards stopped the transmitter sending anything at all. |
+| **VGA MISC = `0x68`** | **decisive for the clock.**  Bits [3:2] are the CRTC clock select and POST leaves them `00`, the fixed **25.175 MHz VGA oscillator**.  With the geometry already right the head rastered at **15.0 kHz / 20 Hz**, and writing a different divider word to its synthesiser (locked, verified) did not change it by a hertz; sweeping `0x1c00`'s select over 0..7 gave the same 20 Hz for every pixel select.  `0x68` took it to **45.0 kHz / 60.00 Hz**, the programmed 74250 kHz.  A monitor reports the 20 Hz raster as *out of range*, which is the whole visible symptom. |
+| `0x1fdc |= 0x10000` | no measured effect on what is sent; written anyway because a native card carries it. |
+| `0x1cac |= 0xf0` | **must not be written blind** — see the pad-gate note below. |
+| `0x1c00/04/08/0c` holds, `0x1c24 |= 0x101` | kept as measured, not proven to be required. |
+| `0x1800 &= ~0x2000` | no measured effect; the POSTed control word has bit 13 *set*. |
+
+The register is byte wide: VGA MISC is written at `0x1fc2` and reads back at
+`0x1fcc`, and three unrelated VGA ports share the dword at `0x1fc0`, so it may
+only be accessed 8 bits at a time.
+
+Landed in `drivers/gpu/drm/m9x` as `m9x_mode_take_native()`.
 
 Video reset is a global strobe rather than the P690's per-module one:
 
