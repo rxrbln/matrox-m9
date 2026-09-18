@@ -583,5 +583,63 @@ one raster range, which is the vendor's own layout.
 To reproduce the stall the sequence field cured, build with
 `pass->sequence_ef` cleared; the first ladder of section 2 then returns.
 
+## 6. A split draw that returns to an earlier render-target shape
+
+MEASURED 2026-09-18 on the M9128, one boot a row, the engine proved alive
+before and after each case by a plain draw the fixture then checks.  What
+stops the engine in glmark2's `desktop` is not the pass count, the shader or
+the record: it is the **third** split draw of a sequence whose render target
+alternates between two particular shapes.
+
+| case | split draws | targets | result |
+| --- | --- | --- | --- |
+| `splitsame:20` | 20 | 320x240 twice | renders |
+| `splitpair:96x96:3` .. `:20` | 3, 20 | 96x96 / 320x240 | renders |
+| `splitpair:88x88:20` | 20 | 88x88 / 320x240 | renders |
+| `splitpair:84x96:20`, `:96x84:20` | 20 | .. / 320x240 | renders |
+| `splitpair:128x128:20`, `:160x120:20`, `:320x120:20` | 20 | .. / 320x240 | renders |
+| `splitsize3:3` | 3 | 84x84, 320x240, 160x120 | renders |
+| `splitpair:84x84:2` | 2 | 84x84 / 320x240 | renders |
+| `splitpair:84x84:3` | 3 | 84x84 / 320x240 | **stops the engine** |
+| `splitpair:168x168:640x480:20` | 20 | the scene's own shapes | **stops the engine** |
+| `deskblur` | 2 | one desktop frame | renders (13 of 76800 differ) |
+| `deskblur:3` / `deskblurt:3` | 6 / 3 | the blur pair repeated | **stops the engine** |
+
+`84x84` and `88x88` have the same render layout - row span 96, allocation
+height 96, same allocation size - so the layout is not what separates them;
+only the declared width and height differ.
+
+Retired as the cause, each by a fixture that still stalls with it changed:
+
+- the record object's size (the stalling draw keeps a record ten times larger
+  than it needs, and stalls just the same),
+- the record object's shape (a record allocated for the stalling draw's own
+  target stalls too),
+- a fresh record object per split job (`M9X_RECORD_FRESH=1`),
+- a fresh depth and HZ surface per target bind (`M9X_TARGET_FRESH=1`),
+- the depth schedule (`M9X_SPLIT_DEPTH=0`),
+- the preprocessing schedule (`M9X_SPLIT_PREPROCESS=1`),
+- the engine transition (`M9X_TRANSITION=0` renders once in four runs, so it
+  is a flake and not a cure - it must be run more than once),
+- asynchrony: `deskblurf`, which retires every split job with `glFinish`
+  before the next binds another target, stalls the same way.
+
+`M9X_SPLIT_PASSES=1`, which emits only the first raster pass of each split
+shader, **renders**: it takes a second raster pass to reach the fault, and
+`M9X_SPLIT_STAGE=1`, which leaves the record unbound and the routes idle,
+still stalls - so the second pass reaches it without the record.
+
+Every fixture named here is in `tools/m9-mesa-glsl.c` and runs without X in
+about three seconds:
+
+```sh
+./m9-mesa-glsl splitpair:168x168:640x480:20   # the scene's own shapes
+./m9-mesa-glsl splitpair:WxH:W2xH2:N          # any pair, any draw count
+./m9-mesa-glsl deskblur                       # one glmark2 desktop frame
+```
+
+They are dispatched but not listed in the suite, because they stop the
+engine; list them the moment the alternating-target split renders.
+
 <!-- Copyright 2026 René Rebe <rene@exactco.de> -->
 <!-- SPDX-License-Identifier: GPL-2.0 -->
