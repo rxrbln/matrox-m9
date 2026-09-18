@@ -23,7 +23,9 @@ those.
 
 2. *"No linear buffer can be sampled."*  **Refuted, CAPTURED.**  The same bind
    carries `79 = 68180800`: descriptor kind `0x18`, whose layout selector is
-   zero, which is the plain row-major layout.
+   zero, which is the plain row-major layout.  Read the whole of section 4
+   before acting on that: a linear **1-D** texture is sampled, and a linear
+   **2-D** one is MEASURED not to be.
 
 3. *"Our uploads are CPU-side because the physical address permutation inside
    a block was never recovered."*  **Refuted twice.**  The permutation *is*
@@ -291,15 +293,35 @@ the vendor uses it constantly:
 DERIVED from the fill above: the row stride of a linear surface is the
 descriptor's `[15:0]` width field in elements, not a 32-aligned span.
 
-**Not established:** a linear 2-D surface *sampled* above 1x1.  Every captured
-kind-`00` texture bind is 1x1, and the one large linear sampled surface is
-1-D.  The gap is narrow and one draw closes it.
+**Settled on hardware, and the answer is no.**  MEASURED on the M9128,
+2026-09-18.  A probe (`M9X_TEX_FORCE`, `M9X_LINEAR_TEX`) keeps a sampled
+single-level image in the texture layout and switches only its storage and
+its kind byte, so nothing else about the path changes:
+
+| case | storage | kind | result |
+|---|---|---:|---|
+| `tex:16x16` | tiled, written through the raw map | `01` | **PASS** |
+| `texture` 128x128 | tiled, written through the kernel window | `21` | **PASS** |
+| `tex:16x16` | linear | `00`, `08`, `10`, `18`, `20` | all **FAIL** |
+| `texture` 128x128 | linear | `00`, `20` | **FAIL** |
+| `texture` 128x128 | linear | `01`, `21` (wrong-kind controls) | **FAIL** |
+
+Every failure is 76800 of 76800 pixels.  The `tex:16x16` tiled case is the
+control that matters: it writes through the *same* raw mapping the linear
+cases use and samples correctly, so the write route is engine-faithful and the
+layout is the only variable left.
+
+So the sampler reads the blocked layouts and the captured linear 1-D, and does
+not read a linear 2-D surface at any of the five dimension encodings.  That is
+consistent with the captures, where every sampled linear surface is either 1-D
+or 1x1, while the linear 2-D surfaces the engine writes -- the hierarchical-Z
+plane and the vertex-output targets -- are never sampled.
 
 ## 5. What is implementable, and what each step still needs
 
-In dependency order.  Nothing below is implemented yet.
+In dependency order, with what the hardware said on 2026-09-18.
 
-1. **Engine-side `resource_copy_region` and unfiltered `blit`.**  Fully
+1. **DONE.**  Engine-side `resource_copy_region` and `blit`.  Fully
    supported by section 2: a raster draw with the destination level bound as
    colour target 0 and the source bound as a texture unit, both with
    descriptors this driver already computes.  Needs no new decode.  Hardware
@@ -308,18 +330,19 @@ In dependency order.  Nothing below is implemented yet.
    engine write into the packed tail is checked against the CPU formula rather
    than assumed to agree with it.
 
-2. **Filtered and scaled blit** on the same mechanism, since the sampler does
-   the filtering.  Same gate as 1.
+2. **DONE.**  Filtered and scaled blit on the same mechanism, since the
+   sampler does the filtering.
 
-3. **Engine-side texture upload.**  The vendor's design is linear CPU staging
+3. **BLOCKED by E2.**  Engine-side texture upload.  The vendor's design is linear CPU staging
    plus a GPU transfer, and every part of it is now evidenced: linear 2-D
    surfaces exist and the engine writes them, and the sampler accepts a linear
    2-D descriptor at 1x1 and a linear 1-D one at 2048 elements.  The one
-   missing step is sampling a linear 2-D surface above 1x1.  If that fails,
-   the fallback is a linear **1-D** staging texture, which is CAPTURED, with
-   the destination fed in 2048-texel runs: the coordinate `u = (y*w + x)/(w*h)`
-   is affine in x and y, so it interpolates as an ordinary varying and needs
-   no shader arithmetic.
+   missing step was sampling a linear 2-D surface above 1x1, and it is
+   MEASURED not to work.  What remains is a linear **1-D** staging texture,
+   which is CAPTURED: fed in runs of up to 2048 texels, with the coordinate
+   `u = (y*w + x)/(w*h)`, which is affine in x and y and so interpolates as an
+   ordinary varying and needs no shader arithmetic.  That is the shape of the
+   next attempt, and it needs the kernel relocation rule below as well.
 
    The staging buffer in class-1 system memory is worth 1380 MB/s against the
    aperture's measured 260 MB/s (`m9x-frame-cost-breakdown`), and removes the
@@ -332,9 +355,61 @@ In dependency order.  Nothing below is implemented yet.
    measured at 1.19 ms (`parhelia-m9-fill-rate.md`); whether the rectangle
    path is cheaper is worth one measurement.
 
-4. **System-memory texture placement** — only after the tiled-in-system-memory
+4. **BLOCKED by E2.**  System-memory texture placement — only after the tiled-in-system-memory
    question in section 3 is answered, and only for the storage kind the answer
    covers.
+
+### What was measured, 2026-09-18
+
+**E2 (linear 2-D sampling): negative**, in the table in section 4.  This kills
+the linear staging route for uploads, and with it system-memory *texture*
+placement: the only captured non-local texture is linear and one-dimensional,
+and there is no linear 2-D layout to put a 2-D texture in.
+
+**E4 (engine copy and blit): positive, and implemented.**  `resource_copy_region`
+and `blit` run on the raster back end through `util_blitter`, with the CPU
+transfer path kept as the fallback.  Fixtures `blitlin` and `blitlin:32x128`
+magnify with `GL_LINEAR`; they fail on the pre-change binary with 76776 and
+76720 of 76800 pixels wrong, because the CPU path ignored the filter and
+sampled nearest, and are exact afterwards.  165 of 165 fixtures pass.
+
+Taking the engine path needed one unrelated fix.  `util_blitter` builds its
+shaders with `ureg`, which delivers them as **TGSI**, and `m9_create_fs_state`
+only reached the native backend for NIR.  Every blitter draw was dropped with
+a null reason, so the engine path looked available and silently did nothing.
+TGSI is now converted and its IO lowered.  Any Gallium helper shader was
+affected by this, not just the blitter.
+
+**E1 (the kernel window's linear mode): not run, superseded.**  Its question
+was whether a linear 2-D surface shape exists at all.  The captures already
+answer that -- the engine writes kind `00` surfaces 16 wide by 40 rows and
+8192 elements wide -- and E2 answers the part that governs a driver, which is
+whether the *sampler* reads one.  Running E1 would cost a kernel change and a
+reboot to refine a question no longer on the path to an implementation.
+
+**E3 (a non-local texture base): not run, blocked by E2.**  Extending the
+kernel's texture relocation to a class-1 GPUVA only pays off for a layout the
+sampler can read from there, and the single captured case is a linear 1-D
+lookup table.
+
+### The kernel's texture relocation rule
+
+`m9_reloc_uses_vram()` in `m9_submit.c` lists `PARHELIA_M9_RELOC_TEXTURE`, and
+a kernel selftest asserts it, so a texture base must be in VRAM.  **That is
+stricter than the hardware**: the vendor binds `78 = 40c3a001`, a class-1
+system GPUVA with the `|1` tag, 84 times in
+`captures/m9x-vendor-glamor-shaders-20260915`.  The correct rule is the one
+the stream slots `00..09` already use -- the address class is in the tag, not
+in the slot -- so index `78` should accept a VRAM base untagged **or** a
+class-1 GPUVA as `bo->system.start + target_offset | 1`, exactly as
+`PARHELIA_M9_RELOC_SYSTEM` resolves it.
+
+It is left unchanged here on purpose: relaxing it without a use would widen
+what a submission may reference for no measured gain, and the only use the
+evidence supports is a linear 1-D texture, which this driver cannot yet
+produce.  The selftest assertion is the part to watch, because it will keep
+the restriction alive long after the evidence has moved; it should be
+rewritten to assert the rule above when the 1-D path lands.
 
 ### The experiments, in the order that costs least
 
