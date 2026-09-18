@@ -747,12 +747,9 @@ build_coord_route(struct ctx *c, nir_tex_instr *tex, unsigned pass)
    struct m9_fs_program *p = c->p;
    int n;
 
-   /* Off by default: the engine takes the route and runs, but the values
-    * the consuming unit samples at are wrong, so a shader that would use
-    * one is still refused rather than drawn incorrectly.  M9X_COORD_ROUTE
-    * turns it on for the measurement that will settle the record's lane
-    * layout (docs/parhelia-m9-fragment-pass-hardware.md section 6). */
-   if (!debug_get_bool_option("M9X_COORD_ROUTE", false))
+   /* M9X_COORD_ROUTE=0 refuses the route instead, so a scene can be
+    * measured with and without it. */
+   if (!debug_get_bool_option("M9X_COORD_ROUTE", true))
       return fail(c, fail_coord_not_varying), -1;
    /* Only the plain two-component form is decoded.  A third routed
     * component is a sampler modifier or a resource coordinate and which
@@ -3023,13 +3020,16 @@ encode_lops(struct ctx *c)
       case L_MOV_OUT:
          /* The move class carries the c operand's scalar select at bits
           * 5:4; all four values appear in the corpus (a2803f00, f10, f20,
-          * f30, every one of them a register move). */
-         emit(c, w0_make(NONE, NONE, opreg(c, l, 0), OUT, 0, op0),
+          * f30, every one of them a register move).  The destination is d,
+          * not the colour output: a producing pass hands its root over in
+          * 0x11/0x13, and writing 0x2d instead sent it through the colour
+          * path, which packed it as two halves a pixel (MEASURED). */
+         emit(c, w0_make(NONE, NONE, opreg(c, l, 0), d, 0, op0),
               w1_make(0xa2803f00 | l->opswz[0] << 4, NONE, NONE));
          break;
       case L_MOVC_OUT:
          /* The constant's scalar select sits where L_MOVC_TMP carries it. */
-         emit(c, w0_make(NONE, NONE, NONE, OUT, 0, op0),
+         emit(c, w0_make(NONE, NONE, NONE, d, 0, op0),
               w1_make(0xa2803300 | kbits << 4, e, NONE));
          break;
       case L_RAW:
