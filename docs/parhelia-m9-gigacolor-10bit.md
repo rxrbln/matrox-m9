@@ -33,7 +33,7 @@ to the 10-bit value.
 | colour render target | yes | same code, selector 8, render class 0, native clear packer (sections 3, 4) |
 | OpenGL texture | yes, behind a device cap bit | `MxMGLX` `GL_RGB10`/`GL_RGB10_A2` (section 6) |
 | OpenGL framebuffer | no | 72 static pixel formats, none above 8 bits per channel (section 6) |
-| display scanout | **no** - dead code only | bpp-to-mode-mask table has no 30-bit input (section 5) |
+| display scanout | **not selectable by the vendor driver; the silicon path is complete** | bpp-to-mode-mask table has no 30-bit input (section 5), but the scanout surface code, its descriptor packing and a ten-bit LUT ramp all exist - see below |
 
 ## 2. One 7-bit format-code space, shared by all three consumers (CAPTURED)
 
@@ -212,6 +212,19 @@ This is a native 10-bit clear word, not a replicated 8-bit dword.
 ## 5. The display controller
 
 ### 5.1 The hardware knows a 10-bit scanout format (CAPTURED)
+
+**This driver is not bound by the vendor's mode table.**  What section 5 shows
+dead is the Windows driver's *mode enumeration* - it never offers a 30-bit
+mode, so nothing downstream is ever asked for one.  The hardware path behind
+it is whole: a scanout surface code exists for the 10-bit formats, `0x368fe`
+packs it into bits `[31:25]` of the display-controller surface descriptor, and
+`0x3dfd0` builds a ten-bit-per-channel ramp for a LUT that is physically ten
+bits wide.  This driver writes that descriptor itself and enumerates its own
+modes, so 10-bit scanout is **testable here** by writing the code and looking
+at the panel.  DisplayPort carries 30-bit colour, and this driver already
+trains the link, so the remaining unknowns are whether the transmitter needs
+its bit depth stating in the MSA and whether the panel accepts it - both
+questions a measurement answers.  UNTESTED.
 
 `MxMM.sys 0x37b31` maps a display format id (1..12) to a scanout surface code:
 
