@@ -55,13 +55,17 @@ static bool m9_index_allowed(u8 index)
 	switch (index) {
 	case 0x00 ... 0x09:
 	case 0x10 ... 0x14: case 0x18: case 0x19:
+	/* The occlusion snapshot address; see m9_query_packet. */
+	case 0x1e:
 	case 0x22: case 0x23: case 0x28: case 0x30:
 	case 0x68 ... 0x6c:
 	case 0x70 ... 0x87:
 	case 0x88 ... 0x8a: case 0x8c ... 0x9f:
+	/* The occlusion counter enable pair, a7 with c6. */
+	case 0xa7:
 	case 0xa8 ... 0xaf:
 	case 0xb0 ... 0xbb: case 0xbe:
-	case 0xc1 ... 0xc5:
+	case 0xc1 ... 0xc5: case 0xc6:
 	case 0xd7: case 0xea ... 0xec: case 0xef ... 0xf1:
 	case 0xf4 ... 0xf6:
 		return true;
@@ -86,6 +90,8 @@ static u32 m9_index_reloc_kinds(u8 index)
 	 * with the packed strides in 10..14. */
 	case 0x00 ... 0x09:
 		return M9_RELOC_BIT(SYSTEM) | M9_RELOC_BIT(STREAM);
+	case 0x1e:
+		return M9_RELOC_BIT(QUERY);
 	case 0x69:
 		return M9_RELOC_BIT(RESOURCE_69);
 	case 0x6c:
@@ -174,6 +180,47 @@ static bool m9_transition_length(u32 value)
 	return (value & 0xffff0000) == 0x49d00000;
 }
 
+/*
+ * The occlusion snapshot record (CAPTURED, the begin and end packets of
+ * captures/m9x-linux-gl2-core-results-20260914 query-visible, query-partial
+ * and query-hidden, each query-draw/bm.bin):
+ * one indexed packet of exactly four values -- 1e naming the address the
+ * engine publishes the counter pair to, then three fixed e6 control literals
+ * selecting source pair 0/1 and ending the record.  Matching the shape and
+ * the literals by position keeps both out of the rest of the stream.
+ */
+#define M9_QUERY_INDEX		0x1eu
+/*
+ * A snapshot is two published dwords.  The vendor's own allocation aligns and
+ * sizes it by 0x20 (CAPTURED, allocation records 44..46 of the same capture),
+ * so that is what a query target has to leave inside the object.
+ */
+#define M9_QUERY_BYTES		0x20u
+
+static const u32 m9_query_literal[3] = {
+	0x64000004, 0x64000101, 0x40008000,
+};
+
+static bool m9_query_packet(const u8 *index, unsigned int values)
+{
+	return index[0] == M9_QUERY_INDEX && values == 4 &&
+	       index[1] == 0xe6 && index[2] == 0xe6 && index[3] == 0xe6;
+}
+
+/*
+ * The pair that names the occlusion counter.  The vendor states it inside
+ * every range of a job carrying a query and inside no other (CAPTURED); with
+ * it the record publishes the sample count, without it a zero (MEASURED).
+ * Neither word carries an address, and only the exact raster-range pair is
+ * accepted.
+ */
+static bool m9_query_enable(u8 index, u32 value)
+{
+	if (index == 0xa7)
+		return value == 0x00ffff7f;
+	return index == 0xc6 && value == 0x00ffff09;
+}
+
 static int m9_parse_commands(const u32 *words, u32 count, u32 *expected,
 			     u32 program_type)
 {
@@ -248,6 +295,20 @@ static int m9_parse_commands(const u32 *words, u32 count, u32 *expected,
 				texture = true;
 			if (index[i] == 0xc3)
 				expected[cursor + i] |= M9_EXPECT_PROGRAM_ENTRY;
+			/* A query record's three literals are fixed and
+			 * positional, and 1e occurs in no other record. */
+			if (m9_query_packet(index, values)) {
+				if (i) {
+					if (value != m9_query_literal[i - 1])
+						return m9_refuse(-EPERM);
+					continue;
+				}
+			} else if (index[i] == M9_QUERY_INDEX) {
+				return m9_refuse(-EPERM);
+			}
+			if ((index[i] == 0xa7 || index[i] == 0xc6) &&
+			    !m9_query_enable(index[i], value))
+				return m9_refuse(-EPERM);
 			/* Only the observed pass-separator controls of e6. */
 			if (index[i] == 0xe6) {
 				if (m9_transition_length(value)) {
@@ -336,6 +397,9 @@ static u32 m9_reloc_access(u32 kind)
 	case PARHELIA_M9_RELOC_PROGRAM:
 	case PARHELIA_M9_RELOC_STREAM:
 		return PARHELIA_M9_BO_READ | PARHELIA_M9_BO_WRITE;
+	/* The engine only publishes the counter pair; it reads nothing back. */
+	case PARHELIA_M9_RELOC_QUERY:
+		return PARHELIA_M9_BO_WRITE;
 	case PARHELIA_M9_RELOC_SYSTEM:
 	case PARHELIA_M9_RELOC_TEXTURE:
 	case PARHELIA_M9_RELOC_RESOURCE_69:
@@ -422,6 +486,8 @@ static u32 m9_reloc_alignment(u32 kind)
 		return 4096;
 	case PARHELIA_M9_RELOC_RESOURCE_6C:
 		return 128;
+	case PARHELIA_M9_RELOC_QUERY:
+		return M9_QUERY_BYTES;
 	default:
 		return 4;
 	}
@@ -434,7 +500,8 @@ static bool m9_reloc_uses_vram(u32 kind)
 	       kind == PARHELIA_M9_RELOC_TEXTURE ||
 	       kind == PARHELIA_M9_RELOC_RESOURCE_69 ||
 	       kind == PARHELIA_M9_RELOC_PROGRAM ||
-	       kind == PARHELIA_M9_RELOC_STREAM;
+	       kind == PARHELIA_M9_RELOC_STREAM ||
+	       kind == PARHELIA_M9_RELOC_QUERY;
 }
 
 static int m9_vram_gpu_address(u64 limit, u64 offset, u64 target_offset,
@@ -596,6 +663,14 @@ m9_validate_relocs(u32 *image, u32 dwords, u32 *expected,
 			    reloc->kind == PARHELIA_M9_RELOC_SYSTEM;
 		if (!gem || reloc->target_offset > gem->size ||
 		    (!end_reloc && reloc->target_offset == gem->size)) {
+			ret = m9_refuse(-EINVAL);
+			goto out;
+		}
+		/* A whole snapshot is published, so the object has to hold one
+		 * from the offset on; the test above only keeps its first
+		 * byte inside. */
+		if (reloc->kind == PARHELIA_M9_RELOC_QUERY &&
+		    gem->size - reloc->target_offset < M9_QUERY_BYTES) {
 			ret = m9_refuse(-EINVAL);
 			goto out;
 		}
@@ -1057,6 +1132,9 @@ int m9x_submit_selftest(void)
 			     0x45454543, 0x20 };
 	u32 bad_dependency[] = { 0x454545e3, 0x21 };
 	u32 untextured_combiner[] = { 0x45454588, 0x0110dfe3 };
+	u32 query[] = { 0xe6e6e61e, 0, 0x64000004, 0x64000101, 0x40008000 };
+	u32 bad_query[] = { 0xe6e6e61e, 0, 0x64000004, 0x64000101, 0x40008001 };
+	u32 bare_query[] = { 0x4545451e, 0 };
 	u32 expected[ARRAY_SIZE(dependency)] = {};
 	u32 *inline_expected;
 	int ret;
@@ -1097,6 +1175,9 @@ int m9x_submit_selftest(void)
 	    m9_reloc_access(PARHELIA_M9_RELOC_RESOURCE_69) !=
 	    PARHELIA_M9_BO_READ ||
 	    m9_reloc_access(PARHELIA_M9_RELOC_FENCE) ||
+	    m9_reloc_access(PARHELIA_M9_RELOC_QUERY) != PARHELIA_M9_BO_WRITE ||
+	    m9_reloc_alignment(PARHELIA_M9_RELOC_QUERY) != M9_QUERY_BYTES ||
+	    !m9_reloc_uses_vram(PARHELIA_M9_RELOC_QUERY) ||
 	    !m9_reloc_uses_vram(PARHELIA_M9_RELOC_COLOR) ||
 	    !m9_reloc_uses_vram(PARHELIA_M9_RELOC_DEPTH) ||
 	    !m9_reloc_uses_vram(PARHELIA_M9_RELOC_TEXTURE) ||
@@ -1115,6 +1196,20 @@ int m9x_submit_selftest(void)
 	memset(expected, 0, sizeof(expected));
 	if (m9_parse_commands(bad_dependency, ARRAY_SIZE(bad_dependency),
 			      expected, PARHELIA_M9_PROGRAM_NONE) != -EPERM)
+		return m9_refuse(-EINVAL);
+	memset(expected, 0, sizeof(expected));
+	if (m9_parse_commands(query, ARRAY_SIZE(query), expected,
+			      PARHELIA_M9_PROGRAM_NONE) ||
+	    expected[1] != M9_RELOC_BIT(QUERY) || expected[2] || expected[3] ||
+	    expected[4])
+		return m9_refuse(-EINVAL);
+	memset(expected, 0, sizeof(expected));
+	if (m9_parse_commands(bad_query, ARRAY_SIZE(bad_query), expected,
+			      PARHELIA_M9_PROGRAM_NONE) != -EPERM)
+		return m9_refuse(-EINVAL);
+	memset(expected, 0, sizeof(expected));
+	if (m9_parse_commands(bare_query, ARRAY_SIZE(bare_query), expected,
+			      PARHELIA_M9_PROGRAM_NONE) != -EPERM)
 		return m9_refuse(-EINVAL);
 	memset(expected, 0, sizeof(expected));
 	if (m9_parse_commands(untextured_combiner, ARRAY_SIZE(untextured_combiner),
