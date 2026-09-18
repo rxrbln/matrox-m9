@@ -13,6 +13,10 @@ does draw.  A fault raised *after* the last scene's result is charged to the
 run, since submission is asynchronous and the error surfaces later than the job
 that caused it.
 
+Sweep one scene per process: glmark2 segfaults (rc=139, client-side, no stream
+timeout) moving from the 15-tap `effect2d` scene to `shadow` within one
+process, and `shadow` run alone is 142 fps.
+
 Every run asserts `GL_RENDERER` is `Matrox M9`: a Mesa build configured without
 `--cross-file cross-t2-llvm.ini` links against the host libdrm and X, EGL falls
 back to llvmpipe silently, and every fixture still passes against the CPU
@@ -30,8 +34,8 @@ multipass path - and on three defects found while implementing it.
 | `effect2d` 15-tap (5 passes) | 25-33 fps | renders, with a 141 MiB record |
 | `shadow` | 143-147 fps | renders |
 | `refract` (4 passes) | 1 fps at 1920x1200, 2 at 640x480 | renders |
-| `terrain` | - | scene renders; `terrain.frag` is refused for register pressure and those draws are skipped |
-| `desktop` separable blur (4 passes) | - | stops the engine |
+| `terrain` | - | scene renders; `terrain.frag` refused for register pressure, and the policy that compiles it hits the scene-scale stall below |
+| `desktop` separable blur (4 passes) | - | stops the engine on the first frame |
 
 The rest of the suite was already above 60 fps and is unchanged; the slowest
 were `function medium` 62, `shading cel` 70, `shading phong` 87.
@@ -86,20 +90,46 @@ command stream.
    BAR0's length rather than any hardware limit, and four clamps compared
    engine addresses against the aperture instead of the memory.
 
+6. **The engine keeps per-target state in the object bound at index `be`.**
+   A split draw returning to an earlier render-target shape read the state a
+   target of another shape had left there, and the engine stopped.  Fixed with
+   one `be` object per render-target shape, allocated beside the depth and HZ
+   pair.
+
+   The decisive evidence was CAPTURED rather than reasoned: dumping the stream
+   over `splitpair:84x84:320x240:3` shows the stalling third draw's two
+   submissions are **byte for byte identical** to the first draw's - command
+   dwords, relocations and BO list all equal.  Nothing the driver emitted
+   separated the draw that renders from the draw that stops the engine, which
+   is what turned the search towards state the engine carries between jobs.
+   Against the rendering `88x88` case the only differing dword in the entire
+   stream is the clip/scissor word.  Dumping `be` after each job then showed
+   the engine writing a mask over the first 16 KiB whose extent is
+   proportional to the target's area - 306 dwords for 84x84, 334 for 88x88,
+   3149 for 320x240, always contiguous from offset 0.
+
+   Two negatives worth keeping: one `be` per *colour resource* stalls where one
+   per *shape* passes, so the engine wants sharing by shape rather than
+   per-surface isolation; and clearing `be` every job passes at 3 draws and
+   stalls at 20, which is exactly why the probes use 20 draws - a rare event
+   must not be able to hide.
+
 ## What still stalls
 
-A split draw that returns to an earlier render-target shape - the third draw of
-an alternating pair.  Reduced to `m9-mesa-glsl splitpair:168x168:640x480:20`,
-three seconds and no X server needed.  `84x84` and `88x88` share a render
-layout (row span 96, allocation height 96, same size) yet only one pair stalls,
-so the declared dimensions and not the layout are what differ.  One raster pass
-renders; leaving the record unbound and the routes idle still stalls, so the
-fault is in what the second pass programs about the target, not in the
-hand-over.
+`desktop` and `terrain` (with `M9X_SPLIT_PRESSURE=1`) still stop the engine
+with `two-pass job failed (Input/output error); context lost`, on an
+attributable build under the hardware lock, **after** the `be` fix.  So they
+carry a second, distinct fault in the split path **at scene scale** that the
+fixture family does not reach: every `splitpair` and `deskblur` fixture passes.
+Raising the per-shape cache budget so nothing is evicted does not change it.
 
-It blocks `desktop`, and blocks enabling `M9X_SPLIT_PRESSURE`, whose
-cut-where-lifetimes-are-narrow policy is implemented and lets `terrain.frag`
-compile - the job it produces hits this same stall, so it ships off by default.
+`desktop` faults on the **first frame** of `glmark2 -b desktop --size
+1920x1200`.  The untested scene-scale properties are a split draw into a target
+far larger than 320x240, and the number of simultaneously live shapes - neither
+of which the fixtures reach.
+
+Because `terrain` needs `M9X_SPLIT_PRESSURE` and that path hits this fault, the
+register-pressure policy stays off by default and `terrain.frag` stays refused.
 
 ## Readings this retires
 
@@ -111,5 +141,8 @@ compile - the job it produces hits this same stall, so it ships off by default.
   context.
 * `desktop`'s 37 fps was never the 4-pass path: its log showed the 106 MiB
   record refused thirteen times, so that number was the fallback.
+* Fixing the `be` per-shape stall was expected to close `desktop` and
+  `terrain`.  It did not - both still stop the engine, which is how the second
+  scene-scale fault was found.
 * `jellyfish` and `ideas` are 117 and 108 fps here; their 1 fps on the 481 MB
   host was host memory, not a driver defect.
