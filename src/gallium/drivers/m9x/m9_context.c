@@ -448,7 +448,8 @@ m9_surface_access(struct m9_context *ctx, const struct m9_resource *resource,
                   uint32_t op, const struct pipe_box *box, uint8_t *data)
 {
    const struct m9_surface_desc desc = {
-      .row_span = resource->row_span, .height = resource->height,
+      .row_span = resource->row_span,
+      .height = m9_surface_even_height(resource->height),
       .layers = 1, .layout = 1, .address_offset = true,
       .format = resource->format,
    };
@@ -463,8 +464,9 @@ m9_surface_access(struct m9_context *ctx, const struct m9_resource *resource,
       .descriptor0 = small ?
          M9_TEXTURE_CODE_BGRA << 24 | M9_TEXTURE_KIND_2D << 16 |
          resource->width : m9_surface_desc0(&desc),
-      .descriptor1 = small ? 1u << 16 | resource->height :
-                             m9_surface_desc1(&desc),
+      .descriptor1 = small ?
+         1u << 16 | m9_surface_even_height(resource->height) :
+         m9_surface_desc1(&desc),
       .flags = small ? PARHELIA_M9_ACCESS_TEXTURE : 0,
       .surface_width = resource->width,
       .x = box->x,
@@ -503,7 +505,7 @@ m9_texture_window(struct m9_context *ctx, const struct m9_resource *resource,
       .descriptor0 = (uint32_t)resource->texture_code << 24 |
                      (small ? M9_TEXTURE_KIND_2D :
                               M9_TEXTURE_KIND_RENDER) << 16 | span,
-      .descriptor1 = 1u << 16 | lvl->height,
+      .descriptor1 = 1u << 16 | m9_surface_even_height(lvl->height),
       .surface_width = span,
       .x = box->x,
       .y = box->y,

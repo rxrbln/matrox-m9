@@ -146,6 +146,20 @@ struct m9_render_layout {
    bool small;
 };
 
+/* The CPU surface window mis-places the last row of a surface whose height is
+ * odd.  MEASURED on the M9128: row 256/row_span -- the first row of the second
+ * 1 KiB page -- comes back holding row height-1 instead, in both storage
+ * families and at every width, while the raster engine and the sampler place
+ * the very same surface correctly (rtt:64x23 is exact where tex:64x23 is not).
+ * A window therefore addresses an even number of rows.  The extra row is never
+ * written and never sampled; the allocation reserves it so the kernel's own
+ * size contract agrees. */
+static inline uint32_t
+m9_surface_even_height(uint32_t height)
+{
+   return (height + 1) & ~1u;
+}
+
 static inline bool
 m9_render_surface_layout(uint32_t width, uint32_t height, uint32_t cpp,
                          struct m9_render_layout *layout)
@@ -158,6 +172,8 @@ m9_render_surface_layout(uint32_t width, uint32_t height, uint32_t cpp,
    if (!layout || !width || !height || width > 2048 || height > 2048 ||
        (cpp != 2 && cpp != 4))
       return false;
+   /* Lay the surface out for the even height its window addresses. */
+   height = m9_surface_even_height(height);
    byte_quantum = cpp == 4 ? (small ? 0x400 : 0x1000) :
                              (small ? 0x200 : 0x800);
    layout->row_span = (width + 31) & ~31u;
