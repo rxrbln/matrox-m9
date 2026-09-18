@@ -7,6 +7,7 @@
  * Size and state dependent words come from m9_draw_params.
  */
 #include "m9_draw.h"
+#include "m9_faa.h"
 
 #include <errno.h>
 #include <string.h>
@@ -556,6 +557,13 @@ m9_emit_raster_range(struct m9_batch *batch, const struct m9_draw_job *job,
         V(0xac, pass && pass->writes_record ? 0xffffffffu :
                 job->color_count > 2 ? job->color_mask_hi : 0xffffffffu),
         V(0xae, pass ? pass->ae : 0x22444442u));
+   /* The captured stream carries the multisample pair in preprocessing
+    * alone; restating it here tests whether the raster range needs it. */
+   if (job->faa.set && job->faa.raster) {
+      EMIT(V(0xad, job->faa.ad), V(0xad, job->faa.ad), V(0xad, job->faa.ad),
+           V(0xad, job->faa.ad));
+      EMIT(V(0xaf, job->faa.af));
+   }
    EMIT(V(0xf5, job->clip_min), V(0xf6, job->clip_max), V(0xc4, job->clip_min),
         V(0xc5, job->clip_max));
    EMIT(V(0xf1, 0));
@@ -909,8 +917,10 @@ m9_emit_preprocess(struct m9_batch *batch, const struct m9_draw_job *job,
       EMIT(V(0xba, 0x00000020), V(0xbb, 0xf0010040));
    }
    EMIT(V(0xbe, 3));
-   EMIT(V(0xad, 0x20), V(0xad, 0x20), V(0xad, 0x20), V(0xad, 0x20));
-   EMIT(V(0xaf, 0));
+   uint32_t faa_ad = job->faa.set ? job->faa.ad : M9_FAA_AD_OFF;
+
+   EMIT(V(0xad, faa_ad), V(0xad, faa_ad), V(0xad, faa_ad), V(0xad, faa_ad));
+   EMIT(V(0xaf, job->faa.set ? job->faa.af : M9_FAA_AF_OFF));
    EMIT(V(0xa8, 0x1f), V(0xa9, 0), V(0xaa, 0));
    EMIT(V(0xab, 0xffffffff), V(0xac, 0xffffffff), V(0xae, 0x22444442));
    EMIT(V(0xf5, 0), V(0xf6, 0x7fff7fff), V(0xc4, 0), V(0xc5, 0x7fff7fff));

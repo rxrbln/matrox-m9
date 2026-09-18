@@ -1845,6 +1845,12 @@ m9_submit_job(struct m9_context *ctx)
          .units = first_draw->unit_count ? first_draw->units : NULL,
          .unit_count = first_draw->unit_count,
       };
+      if (m9_faa_active(&ctx->screen->faa)) {
+         job.faa.set = true;
+         job.faa.raster = ctx->screen->faa.raster;
+         job.faa.ad = m9_faa_ad(&ctx->screen->faa, m9_res(ctx->color)->size);
+         job.faa.af = m9_faa_af(&ctx->screen->faa);
+      }
       if (fs) {
          job.program = key->variant->c2.handle;
          job.blend_dest = m9_fs_final(key->variant)->blend_dest;
@@ -2041,7 +2047,10 @@ m9_job_reserve(struct m9_context *ctx, const struct m9_job_key *key,
             m9_draw_decl_dwords(key->vs ? 2 * key->vs->attr_count + 1 : 5) +
             (key->vs && key->vs_extra_entry ?
              m9_draw_vs_extra_dwords(key->vs_extra_targets,
-                                     2 * key->vs->attr_count + 1) : 0);
+                                     2 * key->vs->attr_count + 1) : 0) +
+            (m9_faa_active(&ctx->screen->faa) &&
+             ctx->screen->faa.raster ?
+             M9_FAA_RASTER_DWORDS * MAX2(passes, 1u) : 0);
    if (draws) {
       bool state = memcmp(key, &ctx->job_key,
                           offsetof(struct m9_job_key, units)) != 0;

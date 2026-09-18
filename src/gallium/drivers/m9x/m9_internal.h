@@ -13,6 +13,7 @@
 #include "pipe/p_state.h"
 #include "drm-uapi/m9x_drm.h"
 #include "m9_draw_params.h"
+#include "m9_faa.h"
 #include "m9_vs_compile.h"
 #include "m9_texture.h"
 #include "util/simple_mtx.h"
@@ -217,6 +218,8 @@ struct m9_screen {
    /* Fixed-fragment database firmware bound through index 69. */
    uint8_t *fragment_db;
    size_t fragment_db_size;
+   /* Multisample state of the engine; off until a measurement earns it. */
+   struct m9_faa faa;
 };
 
 struct m9_fence {

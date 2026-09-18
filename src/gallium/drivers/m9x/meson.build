@@ -2,8 +2,8 @@
 # Copyright 2026 René Rebe <rene@exactco.de>
 
 m9x_batch_files = files(
-  'm9_batch.c', 'm9_draw.c', 'm9_draw_params.c', 'm9_format.c', 'm9_state.c',
-  'm9_texture.c', 'm9_weld.c',
+  'm9_batch.c', 'm9_draw.c', 'm9_draw_params.c', 'm9_faa.c', 'm9_format.c',
+  'm9_state.c', 'm9_texture.c', 'm9_weld.c',
 )
 
 libm9x_batch = static_library(

@@ -1291,6 +1291,7 @@ m9_screen_create(int fd, const struct pipe_screen_config *config)
    simple_mtx_init(&screen->import_lock, mtx_plain);
    simple_mtx_init(&screen->record_lock, mtx_plain);
    screen->chip_id = M9_PCI_ID;
+   m9_faa_init(&screen->faa, (uint16_t)screen->chip_id);
    screen->uapi_version = 1;
    screen->validate_submit = true;
    screen->execute_submit = m9_probe_user_submit(screen);

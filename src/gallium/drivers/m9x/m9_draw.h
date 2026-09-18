@@ -147,6 +147,13 @@ struct m9_draw_job {
     * draw of a split job.  A single-pass job never carries it, so the
     * captured stream stays byte for byte what it was. */
    bool transition;
+   /* Multisample pair: ad four times and af once, built by m9_faa.c.  A job
+    * that leaves set clear emits the off form the captured stream carries. */
+   struct {
+      bool set;
+      bool raster;   /* restate the pair in the raster range as well */
+      uint32_t ad, af;
+   } faa;
 };
 
 /* Dwords a restated raster draw costs beyond the first. */
