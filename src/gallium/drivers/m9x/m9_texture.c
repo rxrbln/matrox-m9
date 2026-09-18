@@ -57,6 +57,14 @@ m9_texture_format(enum pipe_format format, struct m9_texture_format *out)
       info = (struct m9_texture_format){ PIPE_FORMAT_B10G10R10A2_UNORM,
                                          M9_TEXTURE_CODE_A2R10G10B10 };
       break;
+   case PIPE_FORMAT_R10G10B10X2_UNORM:
+      info = (struct m9_texture_format){ PIPE_FORMAT_R10G10B10X2_UNORM,
+                                         M9_TEXTURE_CODE_A2B10G10R10 };
+      break;
+   case PIPE_FORMAT_B10G10R10X2_UNORM:
+      info = (struct m9_texture_format){ PIPE_FORMAT_B10G10R10X2_UNORM,
+                                         M9_TEXTURE_CODE_A2R10G10B10 };
+      break;
    default:
       return false;
    }

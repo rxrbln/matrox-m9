@@ -54,6 +54,16 @@ m9_format_info(enum pipe_format format, struct m9_format_info *out)
       info = (struct m9_format_info){ M9_COLOR_FORMAT_A2R10G10B10, 4,
          M9_FORMAT_TEXTURE | M9_FORMAT_COLOR };
       break;
+   /* The X2 orders are the same words with the two alpha bits ignored,
+    * which is what a scanout buffer asks for. */
+   case PIPE_FORMAT_R10G10B10X2_UNORM:
+      info = (struct m9_format_info){ M9_COLOR_FORMAT_A2B10G10R10, 4,
+         M9_FORMAT_TEXTURE | M9_FORMAT_COLOR };
+      break;
+   case PIPE_FORMAT_B10G10R10X2_UNORM:
+      info = (struct m9_format_info){ M9_COLOR_FORMAT_A2R10G10B10, 4,
+         M9_FORMAT_TEXTURE | M9_FORMAT_COLOR };
+      break;
    case PIPE_FORMAT_I8_UNORM:
       info = (struct m9_format_info){ 0x51, 1, M9_FORMAT_TEXTURE };
       break;

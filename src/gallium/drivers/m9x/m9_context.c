@@ -2410,7 +2410,9 @@ m9_texture_bind_view(const struct pipe_sampler_view *view,
        (res->base.format == PIPE_FORMAT_B8G8R8A8_UNORM ||
         res->base.format == PIPE_FORMAT_B8G8R8X8_UNORM ||
         res->base.format == PIPE_FORMAT_R10G10B10A2_UNORM ||
-        res->base.format == PIPE_FORMAT_B10G10R10A2_UNORM)) {
+        res->base.format == PIPE_FORMAT_B10G10R10A2_UNORM ||
+        res->base.format == PIPE_FORMAT_R10G10B10X2_UNORM ||
+        res->base.format == PIPE_FORMAT_B10G10R10X2_UNORM)) {
       /* The small family is addressed by the 2-D kind, like a small texture:
        * reading it as the ordinary tiled kind returns only the first 16x16
        * texels, which is 1/16 of a 64x64 surface and 1/4 of a 32x32 one. */

@@ -181,6 +181,20 @@ static int m9_fd(struct pipe_screen *screen)
    return m9_screen(screen)->fd;
 }
 
+/* Formats the display controller scans out: the 8-bit BGRX/BGRA family and
+ * the two 10-bit GigaColor orders, which reach the controller through the
+ * same descriptor field (docs/parhelia-m9-gigacolor-10bit.md 5.1). */
+static bool
+m9_presentation_format(enum pipe_format format)
+{
+   return format == PIPE_FORMAT_B8G8R8X8_UNORM ||
+          format == PIPE_FORMAT_B8G8R8A8_UNORM ||
+          format == PIPE_FORMAT_B10G10R10X2_UNORM ||
+          format == PIPE_FORMAT_B10G10R10A2_UNORM ||
+          format == PIPE_FORMAT_R10G10B10X2_UNORM ||
+          format == PIPE_FORMAT_R10G10B10A2_UNORM;
+}
+
 static bool
 m9_presentation_template(const struct pipe_resource *templ)
 {
@@ -194,8 +208,7 @@ m9_presentation_template(const struct pipe_resource *templ)
           templ->height0 <= 2048 && templ->depth0 == 1 &&
           templ->array_size == 1 && !templ->last_level &&
           templ->nr_samples <= 1 && templ->nr_storage_samples <= 1 &&
-          (templ->format == PIPE_FORMAT_B8G8R8X8_UNORM ||
-           templ->format == PIPE_FORMAT_B8G8R8A8_UNORM) &&
+          m9_presentation_format(templ->format) &&
           (templ->bind & (PIPE_BIND_SCANOUT | PIPE_BIND_DISPLAY_TARGET)) &&
           !(templ->bind & ~(presentation | PIPE_BIND_RENDER_TARGET |
                             PIPE_BIND_BLENDABLE | PIPE_BIND_SAMPLER_VIEW |
@@ -276,9 +289,7 @@ m9_is_format_supported(struct pipe_screen *screen, enum pipe_format format,
    if (bind & PIPE_BIND_SHADER_IMAGE)
       return false;
    if (bind & (PIPE_BIND_SCANOUT | PIPE_BIND_DISPLAY_TARGET))
-      return target == PIPE_TEXTURE_2D &&
-             (format == PIPE_FORMAT_B8G8R8X8_UNORM ||
-              format == PIPE_FORMAT_B8G8R8A8_UNORM) &&
+      return target == PIPE_TEXTURE_2D && m9_presentation_format(format) &&
              !(bind & ~(PIPE_BIND_SCANOUT | PIPE_BIND_DISPLAY_TARGET |
                         PIPE_BIND_SHARED | PIPE_BIND_RENDER_TARGET |
                         PIPE_BIND_BLENDABLE | PIPE_BIND_SAMPLER_VIEW |
