@@ -310,34 +310,57 @@ The two readings retired earlier stay retired; neither was the fault.
 reach.  `coordroutev` adds an interpolated varying to the consuming pass, so
 a unit steered by the record sits beside an ordinary attribute declaration --
 the shape every glmark2 scene that needs a route has, and the one `xv-uyvy`
-captures.  Both render **0 of 76800 pixels wrong** and both are listed; the
-fragment suite is **101 PASS, 0 FAIL** (MEASURED).
+captures.  Both render **0 of 76800 pixels wrong** and both are listed.
 
-### 6d. What still blocks the three scenes
+Sixteen further cases cover a split shader against a depth attachment, the
+state every windowed scene draws under; section 6f is what they found.
+`convoff` takes five fetches at one interpolated coordinate plus four
+constant texel offsets and `conv3` sums the same five taps with per-tap
+weights, which is exactly the shape glmark2's `effect2d` compiles to;
+`conv3rep` repeats the split job sixteen times and `conv3mix` puts an
+ordinary single-pass draw between the repeats.  `conv3notest` and
+`conv3nowrite` separate the attachment from the test and the write, and
+`conv3zover` and `conv3zunder` check that the test still decides which of an
+overlapping split draw and plain draw survives.  Each is listed twice, plain
+and with the `d` suffix that binds the attachment.
+
+### 6d. What blocked the scenes: depth, not the route
 
 With the coordinate no longer refused, `shadow`, `refract` and `terrain` all
-build their multi-pass schedule, reach the engine, and **the engine stops**
-(MEASURED, 640x480 and 1920x1200, kernel `m9x_drm-bocap` so the record
-allocates): `m9x: two-pass job failed (Input/output error); context lost`,
-with one `M9 kernel stream timeout` in the kernel log.  The submission that
-reports the error is the one *after* the stalled job, because submission is
-asynchronous.
+built their multi-pass schedule, reached the engine, and **the engine
+stopped** (MEASURED, 640x480 and 1920x1200, kernel `m9x_drm-bocap` so the
+record allocates): `m9x: two-pass job failed (Input/output error); context
+lost`, with one `M9 kernel stream timeout` in the kernel log.  The submission
+that reports the error is the one *after* the stalled job, because submission
+is asynchronous.
+
+Two earlier readings of `effect2d` were taken to contradict each other.  They
+do not: they are different scenes.  Measured on one binary, one boot each:
+
+| case | 640x480 | 1920x1200 |
+| --- | --- | --- |
+| `effect2d` default (identity kernel, one tap) | 1262 fps, clean | 220 fps, clean |
+| `effect2d:kernel=0,1,0;1,-4,1;0,1,0;` (5 taps, splits) | stream timeout | stream timeout |
+| `effect2d:kernel=1,1,1,1,1;...` (15 taps) | stream timeout | record refused, falls back |
+
+So the scene that renders and the scene that stalls were never the same
+scene, and `effect2d` with a real kernel belongs with `shadow`, `refract` and
+`terrain` rather than against them.  It is also the smallest of them: one
+full-screen quad, no indexed geometry, no render-target switching.  That
+retired real geometry and target switching as candidates and left the depth
+attachment, which is the one thing `effect2d` still shares with the other
+three and no fixture had.
 
 It is not the coordinate route itself and not the record's size:
 
-* `effect2d` at 1920x1200, whose 3x3 kernel the splitter cuts in two and
-  which routes **values**, renders at **221 fps with no stream timeout**
-  (MEASURED, through the invalidating parser).
 * `coordroute` and `coordroutev`, which route a **coordinate**, render
   pixel-exact at 320x240 under EGL.
 * Neither `M9X_SPLIT_PREPROCESS=0` nor `M9X_TRANSITION=0` changes the scene
   result (MEASURED).
 
-So what the scenes add over the fixtures is real geometry, a depth
-attachment, and render-target switching, and which of those stops the engine
-is **OPEN**.  A stall leaves the device in a state a module reload does not
-clear, so every row above was taken on a freshly booted target whose engine
-had first been proved alive by `m9-mesa-glsl texture`.
+A stall leaves the device in a state a module reload does not clear, so every
+row above was taken on a freshly booted target whose engine had first been
+proved alive by `m9-mesa-glsl texture`.
 
 ### 6e. `terrain`'s depth attachment
 
@@ -354,6 +377,43 @@ The driver now claims Z16 for sampling only.  st falls back, `terrain` gets
 `x8z24_unorm` at the target size and the warning is gone (MEASURED), and
 fixture `depthtex16` -- a D16 depth texture, unlisted until now for exactly
 this reason -- renders 0 of 76800 pixels wrong and is listed.
+
+### 6f. A split job evaluates depth once, in its first pass
+
+Closing the gap from the working side named it in four fixtures (MEASURED,
+one boot each, `m9x_drm-bocap`):
+
+| fixture | what it adds | result |
+| --- | --- | --- |
+| `conv3`, `convoff` | five taps, split, no depth attachment | render |
+| `conv3rep`, `conv3mix` | the split job sixteen times, interleaved | render |
+| `conv3notestd` | depth attachment bound, `GL_DEPTH_TEST` off | renders |
+| `conv3nowrited` | depth test on, depth writes masked off | **stream timeout** |
+| `conv3d`, `convoffd` | depth test and write on | **stream timeout** |
+
+So neither the attachment nor the depth write is the fault: **the depth test
+enabled in a continuation raster pass stops the engine.**  The schedule the
+driver emitted gave the first pass the caller's depth state and left the
+later passes testing without writing, and both of the arrangements that keep
+the test alive past the first pass time out:
+
+* first pass tests and writes, later passes test only -- stops the engine;
+* first pass with depth off, last pass tests and writes -- stops the engine;
+* the caller's depth state in the **first pass only**, later passes with
+  `a8 = 0038038a` and no depth bits in `ef` -- **renders**.
+
+The passes of a split shader are one fragment pipeline in sequence, not
+independent draws, and the sequence evaluates depth once at its head; the
+passes behind it inherit that coverage.  That also fits the captures, whose
+later passes restate `a8` with only the write bit cleared.  `conv3zoverd` and
+`conv3zunderd` check that the test still decides: a split draw in front
+occludes a later plain draw and a split draw behind is rejected, both
+pixel-exact.
+
+`M9X_SPLIT_DEPTH` selects the schedule -- 1 (default) the caller's state in
+the first pass only, 0 no depth at all in a split job, 2 the arrangement that
+stops the engine, which is how the new fixtures were confirmed to fail before
+the change.
 
 ## 5. Reproduction
 

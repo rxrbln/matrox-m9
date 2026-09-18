@@ -107,7 +107,16 @@ re-decoded):
 * **depth is off throughout this fixture**: `a8` bit 0 is clear and `ef`'s
   depth field is zero in both passes.  The `0038038a` / `00380388`
   difference is the depth-write bit, but it is inert here, so the capture
-  does not show what a depth-**enabled** split must emit.
+  does not show what a depth-**enabled** split must emit.  Measured
+  separately: only the **first** pass of a sequence may drive the depth
+  unit.  A continuation pass that keeps the depth test alive stops the
+  engine, whether or not it also writes (MEASURED, fixtures `conv3d`,
+  `convoffd` and `conv3nowrited` all time out against that schedule while
+  `conv3notestd` renders).  The driver therefore emits the caller's `a8`
+  and `ef` in pass 0 and `a8 = 0038038a` with no `ef` depth bits in every
+  pass behind it; `conv3zoverd` and `conv3zunderd` confirm the test still
+  decides the result.  This is the "at most once" depth gate of section 6,
+  and the hardware enforces it by stopping rather than by mis-rendering.
 * the index-23 rows are right, and incomplete: declaration writes come in
   groups of four, so the consuming pass emits a fourth `00000000` pad word,
   and index `22` bits 11:8 hold the declaration word count **minus one**.
