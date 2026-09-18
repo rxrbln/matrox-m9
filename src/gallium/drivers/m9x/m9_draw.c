@@ -397,7 +397,8 @@ m9_emit_raster_range(struct m9_batch *batch, const struct m9_draw_job *job,
       EMIT(V(0xe6, 0x42000000));
    uint32_t depth_ef = pass ? pass->depth_ef : job->depth_ef;
 
-   EMIT(V(0xf0, m9_raster_class(d0->lines, blend)), V(0xef, d0->cull | depth_ef),
+   EMIT(V(0xf0, m9_raster_class(d0->lines, blend)),
+        V(0xef, d0->cull | depth_ef | (pass ? pass->sequence_ef : 0)),
         V(0xd7, m9_raster_d7(d0->topology)));
    EMIT(V(0x22, m9_job_raster_control(job, pass, d0)));
    EMIT(V(0xe6, 3), V(0xe3, dep + 0x20));

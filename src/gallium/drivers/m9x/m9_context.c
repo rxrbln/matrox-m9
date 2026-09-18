@@ -260,8 +260,10 @@ static bool m9_pass_loop;
  * at a time.  1 leaves the record unbound and the routes idle, 2 binds the
  * record and keeps the routes idle, 3 is the real schedule, 4 binds the
  * record object with an ordinary colour descriptor, 5 with the captured
- * two-dword producer descriptor and 6 with the record format over the
- * colour target's row span. */
+ * two-dword producer descriptor, 6 with the record format over the
+ * colour target's row span and 7 with the colour descriptor and the plain
+ * colour-pass state words, which leaves the bound object as the only
+ * difference from stage 1. */
 static unsigned m9_split_stage;
 /* M9X_SPLIT_PREPROCESS runs the preprocessing range ahead of every pass. */
 static bool m9_split_preprocess;
@@ -271,6 +273,9 @@ static bool m9_split_submit;
 static unsigned m9_split_passes;
 /* M9X_SPLIT_COVERAGE=0 keeps the plain coverage words on a record pass. */
 static bool m9_split_coverage;
+/* M9X_RECORD_89 replaces index 0x89 of a record pass, whose low twelve bits
+ * are one three-bit render format class per bound target. */
+static unsigned m9_record_89;
 /* M9X_TRANSITION=0 drops the vendor's inter-draw engine transition from a
  * split job, which separates a fault in that block from one in the record. */
 static bool m9_transition;
@@ -873,7 +878,8 @@ m9_job_native(struct m9_context *ctx, const struct m9_job_key *key,
        * descriptor, which separates the 0x77 record format from the
        * allocation it names. */
       pass->record_desc = !pass->writes_record ? 0 :
-                          m9_split_stage == 4 ? ctx->params.color_desc :
+                          m9_split_stage == 4 ||
+                          m9_split_stage == 7 ? ctx->params.color_desc :
                           m9_split_stage == 5 ?
                           m9_record_desc(M9_RECORD_PAIR, 2, 0) :
                           m9_split_stage == 6 ?
@@ -890,14 +896,26 @@ m9_job_native(struct m9_context *ctx, const struct m9_job_key *key,
       pass->depth_control = i ? key->depth_control & ~0x2u :
                                 key->depth_control;
       pass->depth_ef = i ? key->depth_ef & ~0x8000u : key->depth_ef;
-      /* Every captured pass that writes a record carries bit 2 of index
-       * 0x89 and every pass that writes the colour does not (CAPTURED,
-       * fe007ffc against fe007ff8 in both schedules). */
-      pass->r89 = pass->writes_record ? 0xfe007ffcu : 0xfe207ff8u;
-      pass->a9 = pass->writes_record && m9_split_coverage ? 0x88ffff00u :
-                                                           0x08ffff00u;
-      pass->ae = pass->writes_record && m9_split_coverage ? 0x32444442u :
-                                                           0x22444442u;
+      /* Bits 10:9 of ef place a raster pass in its sequence: 1 the first of
+       * several, 2 a middle one, 3 the last.  Every single-pass draw leaves
+       * them clear (CAPTURED, 0x200/0x600 in all seven two-pass cases and
+       * 0x200/0x400/0x400/0x400/0x600 in the five-sampler schedule). */
+      pass->sequence_ef = fs->passes.count < 2 ? 0 :
+                          !i ? 0x200u :
+                          i + 1 < fs->passes.count ? 0x400u : 0x600u;
+      /* Index 0x89 holds one three-bit render format class per bound target
+       * at bit 3*s: class 4 for the record and 0 for a colour target
+       * (CAPTURED, fe007ffc against fe007ff8 in both schedules). */
+      /* Stage 7 keeps the colour pass's own state words, so only the
+       * object bound at b0 separates it from an ordinary draw. */
+      bool record_state = pass->writes_record && m9_split_stage != 7;
+
+      pass->r89 = m9_record_89 && pass->writes_record ? m9_record_89 :
+                  record_state ? 0xfe007ffcu : 0xfe207ff8u;
+      pass->a9 = record_state && m9_split_coverage ? 0x88ffff00u :
+                                                     0x08ffff00u;
+      pass->ae = record_state && m9_split_coverage ? 0x32444442u :
+                                                     0x22444442u;
       pass->unit_count = p->texture_count;
       for (unsigned k = 0; k < M9_TEXTURE_MAX_UNITS; k++)
          pass->routes[k].word = 0x100;
@@ -4328,6 +4346,7 @@ m9_context_create(struct pipe_screen *pscreen, void *priv, unsigned flags)
    m9_split_preprocess = debug_get_bool_option("M9X_SPLIT_PREPROCESS", false);
    m9_split_submit = debug_get_bool_option("M9X_SPLIT_SUBMIT", true);
    m9_split_passes = debug_get_num_option("M9X_SPLIT_PASSES", 0);
+   m9_record_89 = debug_get_num_option("M9X_RECORD_89", 0);
    m9_split_coverage = debug_get_bool_option("M9X_SPLIT_COVERAGE", true);
    m9_transition = debug_get_bool_option("M9X_TRANSITION", true);
    m9_split_enable = debug_get_bool_option("M9X_SPLIT", false);
