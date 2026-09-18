@@ -305,6 +305,9 @@ struct m9_context {
    uint64_t last_point;
    uint64_t dirty;
    struct pipe_resource *color;
+   /* Byte offset of the bound colour level inside that object; a mip level
+    * above zero is a render surface of its own at its chain offset. */
+   uint64_t color_offset;
    struct pipe_resource *depth;
    /* Texture units referenced by the pending job. */
    struct pipe_resource *textures[M9_TEXTURE_MAX_UNITS];

@@ -344,6 +344,10 @@ static bool m9_be_per_target = true;
  * to reach the CPU resampler from an application that renders into ordinary
  * colour targets. */
 static bool m9_blit_on_engine = true;
+/* M9X_LEVEL_TARGET=0 refuses a mip level above zero as a render target, so
+ * one binary measures a chain built by the engine against the same chain
+ * built by the CPU transfer path. */
+static bool m9_level_targets = true;
 /* M9X_BE_DUMP names a file the engine state object is written to after every
  * job, so what it accumulates can be read rather than assumed. */
 static const char *m9_be_dump;
@@ -1366,6 +1370,7 @@ m9_submit_job(struct m9_context *ctx)
          .transient = ctx->transient.handle,
          .cpu_streams = ctx->cpu_streams.handle,
          .color = m9_res(ctx->color)->handle,
+         .color_offset = ctx->color_offset,
          .depth = key->depth->handle,
          .aux = key->aux->handle,
          .be = ctx->target_be ? ctx->target_be->handle : ctx->be.handle,
@@ -1846,7 +1851,7 @@ m9_texture_bind_view(const struct pipe_sampler_view *view,
                      struct m9_texture_bind *bind)
 {
    struct m9_resource *res;
-   unsigned last;
+   unsigned first, last;
 
    static unsigned res_debug_once;
 
@@ -1873,11 +1878,16 @@ m9_texture_bind_view(const struct pipe_sampler_view *view,
           !m9_format_info(res->base.format, &b) || a.code != b.code)
          return "sampler view format differs from the texture; draw skipped";
    }
-   /* The vendor re-lays the chain from the base level; not implemented. */
-   if (view->u.tex.first_level)
-      return "a base level above 0 needs a re-based texture copy; "
-             "draw skipped";
-   last = MIN2(view->u.tex.last_level, res->base.last_level);
+   /*
+    * A base level above 0 is a LOD clamp, not a second allocation: the
+    * descriptor addresses every level from one base, so pinning 7d's low
+    * bound to the view's first level samples that level alone.  Only a
+    * chain carries other levels; every other storage holds level 0.
+    */
+   first = view->u.tex.first_level;
+   if (first && (!res->texture.levels || first > res->base.last_level))
+      return "a base level above 0 needs a mip chain; draw skipped";
+   last = MAX2(MIN2(view->u.tex.last_level, res->base.last_level), first);
    /* The tail page packs every level of 16 texels or less into one captured
     * placement, which only matches the chain it was captured from: on other
     * shapes those levels sample nothing.  Stop at the last level with a
@@ -1885,6 +1895,11 @@ m9_texture_bind_view(const struct pipe_sampler_view *view,
    if (res->texture.levels)
       while (last && res->texture.level[last].in_tail)
          last--;
+   /* Level 0 of a small image is stored in the tail and sampled from it; a
+    * level above 0 in the tail has no placement the driver can name. */
+   if (first > last || (first && res->texture.level[first].in_tail))
+      return "a re-based view of a packed tail level has no placement of "
+             "its own; draw skipped";
    if (res->texture.levels) {
       if (res->texture_unplaced & ((2u << last) - 1))
          return "texture levels beyond the captured 32x16 tail need the "
@@ -1907,7 +1922,8 @@ m9_texture_bind_view(const struct pipe_sampler_view *view,
          .kind = m9_texture_bind_kind(&res->texture, res->width, res->height),
          .width = res->width, .height = res->height,
          .depth = res->texture.kind == M9_TEXTURE_KIND_3D ? res->depth : 1,
-         .last_level = res->base.last_level, .view_last_level = last,
+         .last_level = res->base.last_level, .view_first_level = first,
+         .view_last_level = last,
       };
       return NULL;
    }
@@ -3800,16 +3816,21 @@ m9_clear_depth_stencil(struct pipe_context *pctx, struct pipe_surface *dst,
    m9_clear_depth_cpu(resource, clear_flags, depth, stencil);
 }
 
-/* The three storage kinds m9_texture_bind_view accepts, for a level-0 plane:
- * a tiled texture chain, a depth surface and a tiled colour target. */
+/* The three storage kinds m9_texture_bind_view accepts for a plane: a tiled
+ * texture chain, whose level is re-based by the LOD clamp, a depth surface
+ * and a tiled colour target, which both hold level 0 alone. */
 static bool
-m9_resource_samplable(const struct m9_resource *res)
+m9_resource_samplable(const struct m9_resource *res, unsigned level)
 {
    if (!res || (res->base.target != PIPE_TEXTURE_2D &&
                 res->base.target != PIPE_TEXTURE_RECT))
       return false;
    if (res->texture.levels)
-      return !(res->texture_unplaced & 1);
+      return level < res->texture.levels && level <= res->base.last_level &&
+             (!level || !res->texture.level[level].in_tail) &&
+             !(res->texture_unplaced & (1u << level));
+   if (level)
+      return false;
    if (res->kind == M9_RESOURCE_LINEAR_DEPTH && res->format)
       return true;
    return res->tiled && res->kind == M9_RESOURCE_LINEAR_COLOR &&
@@ -3832,17 +3853,19 @@ m9_engine_copy_ready(const struct m9_context *ctx,
    const struct m9_resource *d = m9_res((struct pipe_resource *)dst);
    const struct m9_resource *sr = m9_res((struct pipe_resource *)src);
 
-   /* Only level 0 is a render surface: the chain above it is packed by the
-    * texture calculator and has no target shape (m9_update_target). */
+   /* A destination level is a render surface when the chain laid it out as
+    * one; the packed tail levels are not (m9_texture_renders_level). */
    return ctx->blitter && !ctx->lost && !ctx->query_active &&
-          dst && src && !dst_level &&
+          dst && src &&
           dst->nr_samples <= 1 && src->nr_samples <= 1 &&
           dst->target != PIPE_BUFFER && src->target != PIPE_BUFFER &&
           dst->depth0 == 1 && dst->array_size == 1 &&
           src_level <= src->last_level &&
           !util_format_is_depth_or_stencil(dst->format) &&
           !util_format_is_depth_or_stencil(src->format) &&
-          m9_resource_is_color_target(d) && m9_resource_samplable(sr);
+          (!dst_level || m9_level_targets) &&
+          m9_resource_is_color_target(d, dst_level) &&
+          m9_resource_samplable(sr, src_level);
 }
 
 /* Save the state util_blitter overwrites.  The driver keeps no geometry,
@@ -4590,17 +4613,27 @@ m9_update_target(struct m9_context *ctx)
    struct m9_render_layout layout;
    uint64_t t_target = m9_prof_begin();
    uint32_t w, h;
+   unsigned level;
 
    ctx->params_valid = false;
    pipe_resource_reference(&ctx->color, NULL);
+   ctx->color_offset = 0;
    if (!color)
       return;
-   w = color->width;
-   h = color->height;
-   /* A mipmapped image holds its level 0 in the render surface layout, so it
-    * is a target as it stands; only the base level can be rendered into. */
-   if (cbuf->level || !(color->tiled || m9_texture_renders_level0(color)) ||
-       m9_context_set_framebuffer(ctx, color, NULL, w, h) ||
+   /* Every level of a mipmapped image outside the packed tail is laid out as
+    * a render surface of its own extent at its chain offset, so it is a
+    * target as it stands (m9_texture_renders_level); level 0 is additionally
+    * the whole of a plain tiled surface. */
+   level = cbuf->level;
+   if (level && !(m9_level_targets && m9_texture_renders_level(color, level))) {
+      m9_warn_once(ctx, M9_WARN_TARGET, "mip level is not a render surface; "
+                   "draws skipped");
+      return;
+   }
+   w = level ? color->texture.level[level].width : color->width;
+   h = level ? color->texture.level[level].height : color->height;
+   if (!(level || color->tiled || m9_texture_renders_level(color, 0)) ||
+       m9_context_set_framebuffer(ctx, color, NULL, level, w, h) ||
        m9_draw_params_init(&ctx->params, w, h, color->format) ||
        !m9_render_surface_layout(w, h, 4, &layout)) {
       m9_warn_once(ctx, M9_WARN_TARGET, "render target is not a tiled "
@@ -4925,6 +4958,7 @@ m9_context_create(struct pipe_screen *pscreen, void *priv, unsigned flags)
    m9_be_dump = debug_get_option("M9X_BE_DUMP", NULL);
    m9_be_per_target = debug_get_bool_option("M9X_BE_PER_TARGET", true);
    m9_split_enable = debug_get_bool_option("M9X_SPLIT", true);
+   m9_level_targets = debug_get_bool_option("M9X_LEVEL_TARGET", true);
    m9_blit_on_engine = debug_get_bool_option("M9X_BLIT_ENGINE", true);
    ctx->dump_from = debug_get_num_option("M9X_DUMP_FROM", 0);
    ctx->dump_count = debug_get_num_option("M9X_DUMP_COUNT", 4096);

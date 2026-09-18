@@ -64,6 +64,7 @@ struct m9_texture_bind {
    enum m9_texture_kind kind;
    uint32_t width, height, depth;
    unsigned last_level;       /* resident levels above the base */
+   unsigned view_first_level; /* relative to the base */
    unsigned view_last_level;  /* relative to the base */
 };
 

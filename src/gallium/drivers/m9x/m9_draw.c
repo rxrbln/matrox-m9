@@ -504,7 +504,8 @@ m9_emit_raster_range(struct m9_batch *batch, const struct m9_draw_job *job,
    if (pass && pass->writes_record) {
       EMIT(R(0xb0, job->record, 0, STREAM), V(0xb1, pass->record_desc));
    } else {
-      EMIT(R(0xb0, job->color, 0, COLOR), V(0xb1, p->color_desc));
+      EMIT(R(0xb0, job->color, job->color_offset, COLOR),
+           V(0xb1, p->color_desc));
       /* Target s takes the pair at b0 + 2s with its own descriptor
        * (CAPTURED, one to four attachments). */
       for (unsigned s = 1; s < job->color_count; s++)

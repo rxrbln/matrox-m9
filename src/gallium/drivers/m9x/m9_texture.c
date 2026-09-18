@@ -480,9 +480,13 @@ m9_texture_unit_init(struct m9_texture_unit *unit, uint32_t handle,
    if (!unit || !handle || !bind || !s || !bind->width ||
        bind->width > 0xffff || !bind->height || bind->height > 0xffff ||
        !bind->depth || bind->depth > 0xfff || bind->last_level > 15 ||
-       bind->view_last_level > bind->last_level)
+       bind->view_last_level > bind->last_level ||
+       bind->view_first_level > bind->view_last_level)
       return -EINVAL;
-   mip = s->min_mip_filter != PIPE_TEX_MIPFILTER_NONE;
+   /* A view based above level 0 keeps the chain resident and pins the LOD
+    * range to it: the descriptor addresses every level from one base, so a
+    * re-based view is a clamp rather than a second allocation. */
+   mip = s->min_mip_filter != PIPE_TEX_MIPFILTER_NONE || bind->view_first_level;
    linear_min = s->min_img_filter == PIPE_TEX_FILTER_LINEAR;
    filter = (linear_min ? 0x2 : 0) | 0x200 |
             (s->mag_img_filter == PIPE_TEX_FILTER_LINEAR ? 0x10 : 0);
@@ -492,7 +496,7 @@ m9_texture_unit_init(struct m9_texture_unit *unit, uint32_t handle,
       if (s->mag_img_filter == PIPE_TEX_FILTER_LINEAR && !linear_min &&
           s->min_mip_filter == PIPE_TEX_MIPFILTER_NEAREST)
          filter |= 0x400;
-      lo = m9_texture_lod(s->min_lod);
+      lo = MAX2(m9_texture_lod(s->min_lod), bind->view_first_level * 32);
       if (bind->view_last_level < bind->last_level)
          hi = MIN2(hi, bind->view_last_level * 32);
       if (s->max_lod < (float)bind->last_level)

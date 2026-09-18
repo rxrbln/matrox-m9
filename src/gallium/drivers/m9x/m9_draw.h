@@ -79,6 +79,8 @@ struct m9_draw_job {
    uint32_t transient;     /* VRAM, M9_TRANSIENT_VIEWS stream views */
    uint32_t cpu_streams;   /* DMA32, the views the CPU writes */
    uint32_t color, depth, aux;
+   /* Byte offset of the colour level inside job->color's object. */
+   uint64_t color_offset;
    /* Colour attachments 1..3, each with its own descriptor, bound at
     * b2/b3 .. b6/b7 behind job->color's b0/b1.  A count of zero or one
     * leaves the job at the single target job->color names.

@@ -30,36 +30,46 @@ m9_context_state_cleanup(struct m9_context *context)
       pipe_resource_reference(&context->textures[i], NULL);
 }
 
-/* A mipmapped colour image is stored as a texture chain, whose level 0 is
- * placed at offset 0 with the render surface's row span and allocation
- * height (m9_texture_layout_init), so the engine renders into it in place. */
+/*
+ * A mipmapped colour image is stored as a texture chain whose every level
+ * outside the packed tail is laid out by m9_render_surface_layout at its own
+ * extent (m9_texture_layout_init), and the BGRA family is the one the
+ * render-target address calculator also stores, so the engine renders into
+ * such a level in place.  The tail levels share one 32x16 atlas at an origin
+ * inside the parent allocation and have no surface shape of their own.
+ */
 bool
-m9_texture_renders_level0(const struct m9_resource *resource)
+m9_texture_renders_level(const struct m9_resource *resource, unsigned level)
 {
-   const struct m9_texture_level *base;
+   const struct m9_texture_level *lvl;
    struct m9_render_layout layout;
 
-   if (!resource || !resource->texture.levels ||
+   if (!resource || level >= resource->texture.levels ||
+       resource->texture.kind != M9_TEXTURE_KIND_2D ||
+       resource->texture.faces != 1 ||
        resource->kind != M9_RESOURCE_LINEAR_TEXTURE ||
-       resource->texture_code != M9_TEXTURE_CODE_BGRA ||
-       !m9_render_surface_layout(resource->width, resource->height,
-                                 resource->cpp, &layout))
+       resource->texture_code != M9_TEXTURE_CODE_BGRA)
       return false;
-   base = &resource->texture.level[0];
-   return !base->in_tail && !base->offset && base->width == resource->width &&
-          base->height == resource->height &&
-          (uint64_t)layout.row_span * layout.allocation_height *
-          resource->cpp <= base->face_bytes;
+   lvl = &resource->texture.level[level];
+   /* The colour attachment is relocated with a 256-aligned byte offset. */
+   if (lvl->in_tail || (lvl->offset & 255) || lvl->depth != 1 ||
+       !m9_render_surface_layout(lvl->width, lvl->height, resource->cpp,
+                                 &layout))
+      return false;
+   return (uint64_t)layout.row_span * layout.allocation_height *
+          resource->cpp <= lvl->face_bytes &&
+          lvl->offset + lvl->face_bytes <= resource->size;
 }
 
 static bool
 m9_framebuffer_resource_valid(const struct m9_resource *resource,
-                              enum m9_resource_kind kind)
+                              enum m9_resource_kind kind, unsigned level)
 {
    struct m9_format_info format;
    struct m9_render_layout layout;
    unsigned usage = kind == M9_RESOURCE_LINEAR_COLOR ?
                     M9_FORMAT_COLOR : M9_FORMAT_DEPTH;
+   uint32_t width, height;
    bool texture;
 
    if (!resource || !resource->handle ||
@@ -67,40 +77,52 @@ m9_framebuffer_resource_valid(const struct m9_resource *resource,
        !resource->width || !resource->height || !resource->cpp ||
        !m9_format_info(resource->base.format, &format) ||
        !(format.usage & usage) || format.cpp != resource->cpp ||
-       format.code != resource->format ||
-       !m9_render_surface_layout(resource->width, resource->height,
-                                 resource->cpp, &layout))
+       format.code != resource->format)
       return false;
    texture = kind == M9_RESOURCE_LINEAR_COLOR &&
-             m9_texture_renders_level0(resource);
+             m9_texture_renders_level(resource, level);
+   width = texture ? resource->texture.level[level].width : resource->width;
+   height = texture ? resource->texture.level[level].height : resource->height;
+   if (!m9_render_surface_layout(width, height, resource->cpp, &layout))
+      return false;
    if (texture)
-      return resource->texture.level[0].face_bytes <= resource->size;
-   return resource->kind == kind && resource->row_span <= UINT16_MAX &&
+      return true;
+   /* A plain render surface holds one level, so only level 0 is a target. */
+   return !level && resource->kind == kind &&
+          resource->row_span <= UINT16_MAX &&
           resource->row_span == layout.row_span &&
           layout.size <= resource->size;
 }
 
-/* Whether the engine can bind this resource as colour target 0, which is
- * what a copy needs of its destination. */
+/* Whether the engine can bind this level as colour target 0, which is what a
+ * copy needs of its destination. */
 bool
-m9_resource_is_color_target(const struct m9_resource *resource)
+m9_resource_is_color_target(const struct m9_resource *resource,
+                            unsigned level)
 {
-   return m9_framebuffer_resource_valid(resource, M9_RESOURCE_LINEAR_COLOR);
+   return m9_framebuffer_resource_valid(resource, M9_RESOURCE_LINEAR_COLOR,
+                                        level);
 }
 
 int
 m9_context_set_framebuffer(struct m9_context *context,
                            struct m9_resource *color,
-                           struct m9_resource *depth,
+                           struct m9_resource *depth, unsigned level,
                            unsigned width, unsigned height)
 {
+   uint32_t level_width, level_height;
+
    if (!context || !m9_framebuffer_resource_valid(
-                          color, M9_RESOURCE_LINEAR_COLOR) ||
-       !width || !height || width > color->width || height > color->height ||
+                          color, M9_RESOURCE_LINEAR_COLOR, level))
+      return -EINVAL;
+   level_width = level ? color->texture.level[level].width : color->width;
+   level_height = level ? color->texture.level[level].height : color->height;
+   if (!width || !height || width > level_width || height > level_height ||
        (depth && (!m9_framebuffer_resource_valid(
-                             depth, M9_RESOURCE_LINEAR_DEPTH) ||
+                             depth, M9_RESOURCE_LINEAR_DEPTH, 0) ||
                   width > depth->width || height > depth->height)))
       return -EINVAL;
+   context->color_offset = level ? color->texture.level[level].offset : 0;
    pipe_resource_reference(&context->color, &color->base);
    pipe_resource_reference(&context->depth, depth ? &depth->base : NULL);
    context->framebuffer_width = width;
