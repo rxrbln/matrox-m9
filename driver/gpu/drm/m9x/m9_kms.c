@@ -576,7 +576,7 @@ static int m9_scanout_publish(struct m9_head *head, struct drm_framebuffer *fb,
 
 static int m9_scanout_address(struct m9_head *head, u32 *address)
 {
-	u64 limit = min_t(u64, head->mdev->vram_size - 1, M9_DC_START_MASK);
+	u64 limit = min_t(u64, head->mdev->vram_total - 1, M9_DC_START_MASK);
 
 	if (!head->scanout)
 		return -ENODEV;
@@ -591,7 +591,7 @@ static int m9_scanout_direct_address(struct m9x_device *mdev,
 				     u32 window_y, u32 *address)
 {
 	struct drm_gem_object *gem = fb ? drm_gem_fb_get_obj(fb, 0) : NULL;
-	u64 limit = min_t(u64, mdev->vram_size - 1, M9_DC_START_MASK);
+	u64 limit = min_t(u64, mdev->vram_total - 1, M9_DC_START_MASK);
 	u32 base, offset;
 	int ret;
 

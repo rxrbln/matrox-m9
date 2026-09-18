@@ -437,11 +437,9 @@ static bool m9_reloc_uses_vram(u32 kind)
 	       kind == PARHELIA_M9_RELOC_STREAM;
 }
 
-static int m9_vram_gpu_address(u64 vram_size, u64 offset, u64 target_offset,
+static int m9_vram_gpu_address(u64 limit, u64 offset, u64 target_offset,
 			       u64 *address)
 {
-	u64 limit = min_t(u64, vram_size, M9_VRAM_GPU_SIZE);
-
 	if (offset >= limit ||
 	    check_add_overflow(offset, target_offset, address) ||
 	    *address >= limit ||
@@ -498,7 +496,7 @@ static int m9_submit_first_triangle(struct m9x_device *mdev,
 		ret = offset;
 		goto out_unreserve;
 	}
-	ret = m9_vram_gpu_address(mdev->vram_size, offset,
+	ret = m9_vram_gpu_address(m9x_vram_gpu_limit(mdev), offset,
 				  M9_TRIANGLE_COLOR_BYTES - 1, &address);
 	if (ret)
 		goto out_unreserve;
@@ -626,8 +624,9 @@ m9_validate_relocs(u32 *image, u32 dwords, u32 *expected,
 				ret = offset;
 				goto out;
 			}
-			ret = m9_vram_gpu_address(mdev->vram_size, offset,
-						  reloc->target_offset, &address);
+			ret = m9_vram_gpu_address(m9x_vram_gpu_limit(mdev),
+						  offset, reloc->target_offset,
+						  &address);
 			if (ret)
 				goto out;
 		} else {

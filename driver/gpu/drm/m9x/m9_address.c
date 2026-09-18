@@ -23,7 +23,6 @@
 #include "m9_reg.h"
 
 #define M9_ADDRESS_COMPACT_ORIGIN	0x00801000u
-#define M9_ADDRESS_SYSTEM_BASE		0x40000000u
 /* The primary child indexes every VRAM page plus 0x8000 further pages. */
 #define M9_ADDRESS_EXTRA_PAGES		0x8000u
 #define M9_ADDRESS_TRANSLATION_WINDOW	0x00080000u
@@ -383,8 +382,9 @@ int m9x_address_init(struct m9x_device *mdev)
 	if (!address)
 		return -ENOMEM;
 	layout = &address->layout;
-	address->local_pages = min_t(u64, mdev->vram_size,
-				     M9_VRAM_GPU_SIZE) >> PAGE_SHIFT;
+	/* The service pools and the translation root live in low video memory,
+	 * so the layout is bounded by the memory itself, not by the aperture. */
+	address->local_pages = m9x_vram_gpu_limit(mdev) >> PAGE_SHIFT;
 	ret = m9_address_layout_init(mdev->vram_total,
 				     (u64)address->local_pages << PAGE_SHIFT,
 				     layout);
@@ -395,7 +395,7 @@ int m9x_address_init(struct m9x_device *mdev)
 			 "M9 %#llx-byte layout has no class-1 system slots\n",
 			 mdev->vram_total);
 	/* Kernel surface transfers map the slot 1 window above the identity. */
-	if (mdev->vram_size >= M9_ADDRESS_CPU_BYTES + M9_ADDRESS_SURFACE_BYTES) {
+	if (mdev->bar0_bytes >= M9_ADDRESS_CPU_BYTES + M9_ADDRESS_SURFACE_BYTES) {
 		mdev->bar0_window = devm_ioremap_wc(&mdev->pdev->dev,
 				pci_resource_start(mdev->pdev, 0) + M9_ADDRESS_CPU_BYTES,
 				M9_ADDRESS_SURFACE_BYTES);

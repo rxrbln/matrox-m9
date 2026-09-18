@@ -687,7 +687,7 @@ static int m9_triangle_alloc_vram(struct m9x_device *mdev,
 	offset = drm_gem_vram_offset(vram);
 	if (offset < 0 || check_add_overflow((u64)offset, (u64)alloc_bytes,
 				     &offset_end) ||
-	    offset_end > min_t(u64, mdev->vram_size, M9_VRAM_GPU_SIZE) ||
+	    offset_end > m9x_vram_gpu_limit(mdev) ||
 	    check_add_overflow(M9_VRAM_GPU_BASE, (u64)offset, &bus) ||
 	    bus > U32_MAX || (bus & (spec->alignment - 1))) {
 		ret = offset < 0 ? (int)offset : -ERANGE;

@@ -140,29 +140,33 @@ static int m9x_pci_probe(struct pci_dev *pci,
 		return PTR_ERR(mdev);
 	drm = &mdev->drm;
 	mdev->pdev = pci;
-	mdev->vram_size = pci_resource_len(pci, 0);
+	mdev->bar0_bytes = pci_resource_len(pci, 0);
 	mmio_bar = pci_resource_len(pci, 1) ? 1 : 2;
 	if (!(pci_resource_flags(pci, 0) & IORESOURCE_MEM) ||
 	    !(pci_resource_flags(pci, mmio_bar) & IORESOURCE_MEM) ||
-	    !mdev->vram_size || pci_resource_len(pci, mmio_bar) < 0x2000)
+	    !mdev->bar0_bytes || pci_resource_len(pci, mmio_bar) < 0x2000)
 		return dev_err_probe(&pci->dev, -ENODEV,
 				     "invalid framebuffer/MMIO BAR layout\n");
 	mdev->mmio = pcim_iomap(pci, mmio_bar, 0);
 	if (!mdev->mmio)
 		return dev_err_probe(&pci->dev, -ENOMEM, "cannot map MMIO BAR\n");
 
-	mdev->vram_total = m9x_pins_memory_size(pci, mdev->vram_size);
+	mdev->vram_total = m9x_pins_memory_size(pci, mdev->bar0_bytes);
+	/* The CPU sees whichever is smallest: the aperture's identity window,
+	 * the aperture, or the memory that is actually there. */
+	mdev->vram_visible = min3((u64)mdev->bar0_bytes,
+				  (u64)M9_ADDRESS_CPU_BYTES, mdev->vram_total);
 	dev_info(&pci->dev,
-		 "M9/Phoenix: %pa-byte framebuffer BAR0, %#llx-byte VRAM, MMIO BAR%u\n",
-		 &mdev->vram_size, mdev->vram_total, mmio_bar);
+		 "M9/Phoenix: %pa-byte framebuffer BAR0, %#llx-byte VRAM (%#llx CPU-visible), MMIO BAR%u\n",
+		 &mdev->bar0_bytes, mdev->vram_total, mdev->vram_visible,
+		 mmio_bar);
 	/*
 	 * The render requester also needs the pinned low-VRAM translation root,
 	 * including when KMS exposure is disabled.
 	 */
 	/* TTM only sees the slot 0 identity range; the BAR top is the window. */
 	ret = drmm_vram_helper_init(drm, pci_resource_start(pci, 0),
-				    min_t(u64, mdev->vram_size,
-					  M9_ADDRESS_CPU_BYTES));
+				    mdev->vram_visible);
 	if (ret)
 		return ret;
 	ret = m9x_dma_reserve_init(mdev);

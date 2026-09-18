@@ -42,7 +42,8 @@ struct iosys_map;
 /* Local GPU address of VRAM offset 0; diagnostic, VRAM offsets by default. */
 extern uint m9x_local_gpu_base;
 #define M9_VRAM_GPU_BASE		((u64)m9x_local_gpu_base)
-#define M9_VRAM_GPU_SIZE		0x10000000ull
+/* Class-1 system resources start here, so a local VRAM address ends here. */
+#define M9_ADDRESS_SYSTEM_BASE		0x40000000u
 /* BAR0 [0,224M) is the identity VRAM view, [224M,256M) the surface window. */
 #define M9_ADDRESS_CPU_BYTES		0x0e000000u
 #define M9_ADDRESS_SURFACE_BYTES	0x02000000u
@@ -204,8 +205,13 @@ struct m9x_device {
 	struct drm_device drm;
 	struct pci_dev *pdev;
 	void __iomem *mmio;
-	resource_size_t vram_size;
+	/* Length of the BAR0 aperture, which says nothing about how much video
+	 * memory the board carries. */
+	resource_size_t bar0_bytes;
+	/* Video memory the board reports through PInS. */
 	u64 vram_total;
+	/* Low video memory the slot 0 identity window exposes to the CPU. */
+	u64 vram_visible;
 	struct m9_head head[M9_MAX_HEADS];
 	unsigned int heads;
 	bool kms_initialized;
@@ -341,6 +347,16 @@ struct drm_gem_object *m9x_gem_create_object(struct drm_device *drm,
 					      size_t size);
 int m9x_vram_pin(struct drm_gem_vram_object *bo);
 void m9x_vram_unpin(struct drm_gem_vram_object *bo);
+/* Highest local GPU address the engine may be handed: video memory ends, and
+ * the class-1 system window begins, whichever comes first. */
+static inline u64 m9x_vram_gpu_limit(const struct m9x_device *mdev)
+{
+	u64 base = M9_VRAM_GPU_BASE;
+
+	if (base >= M9_ADDRESS_SYSTEM_BASE)
+		return 0;
+	return min_t(u64, mdev->vram_total, M9_ADDRESS_SYSTEM_BASE - base);
+}
 int m9x_modeset_init(struct m9x_device *mdev);
 void m9x_modeset_fini(struct m9x_device *mdev);
 irqreturn_t m9x_irq_handler(int irq, void *arg);
