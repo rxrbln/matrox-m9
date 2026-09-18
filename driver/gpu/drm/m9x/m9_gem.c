@@ -12,6 +12,7 @@
 #include <drm/drm_gem_dma_helper.h>
 #include <drm/drm_managed.h>
 #include <drm/drm_print.h>
+#include <drm/drm_prime.h>
 #include <drm/drm_gem_ttm_helper.h>
 #include <drm/drm_gem_vram_helper.h>
 #include <drm/ttm/ttm_resource.h>
@@ -198,9 +199,32 @@ static void m9_bo_free(struct drm_gem_object *gem)
 	kfree(bo);
 }
 
+/* One contiguous range, including the sub-range case where the backing came
+ * from the driver's own DMA32 reserve: that reserve is itself one coherent
+ * allocation, so the pair the BO holds describes its own part of it. */
+static struct sg_table *m9_bo_get_sg_table(struct drm_gem_object *gem)
+{
+	struct m9x_bo *bo = container_of(to_drm_gem_dma_obj(gem),
+					 struct m9x_bo, dma);
+	struct sg_table *sgt;
+	int ret;
+
+	sgt = kzalloc_obj(*sgt);
+	if (!sgt)
+		return ERR_PTR(-ENOMEM);
+	ret = dma_get_sgtable(drm_dev_dma_dev(gem->dev), sgt, bo->dma.vaddr,
+			      bo->dma.dma_addr, gem->size);
+	if (ret) {
+		kfree(sgt);
+		return ERR_PTR(ret);
+	}
+	return sgt;
+}
+
 static const struct drm_gem_object_funcs m9_bo_funcs = {
 	.free = m9_bo_free,
 	.print_info = drm_gem_dma_object_print_info,
+	.get_sg_table = m9_bo_get_sg_table,
 	.vmap = drm_gem_dma_object_vmap,
 	.mmap = drm_gem_dma_object_mmap,
 	.vm_ops = &drm_gem_dma_vm_ops,
@@ -263,8 +287,20 @@ static void m9_paged_bo_vunmap(struct drm_gem_object *gem,
 	vunmap(map->vaddr);
 }
 
+/* The importer maps the pages for its own device; bo->sgt stays this
+ * driver's own mapping and is not handed out. */
+static struct sg_table *m9_paged_bo_get_sg_table(struct drm_gem_object *gem)
+{
+	struct m9x_bo *bo = container_of(to_drm_gem_dma_obj(gem),
+					 struct m9x_bo, dma);
+
+	return drm_prime_pages_to_sg(gem->dev, bo->pages,
+				     gem->size >> PAGE_SHIFT);
+}
+
 static const struct drm_gem_object_funcs m9_paged_bo_funcs = {
 	.free = m9_paged_bo_free,
+	.get_sg_table = m9_paged_bo_get_sg_table,
 	.vmap = m9_paged_bo_vmap,
 	.vunmap = m9_paged_bo_vunmap,
 	.mmap = m9_paged_bo_mmap,
@@ -302,6 +338,13 @@ static void m9_vram_bo_vunmap(struct drm_gem_object *gem,
 	drm_gem_vram_vunmap(drm_gem_vram_of_gem(gem), map);
 }
 
+/*
+ * No get_sg_table: this memory is the framebuffer BAR, not pages, so there is
+ * no scatterlist a foreign device could map.  Sharing it with another device
+ * would need peer-to-peer DMA.  Export to a dma_buf and import back into this
+ * same device -- which is what a compositor on this GPU does -- go through
+ * DRM core and need no hook (MEASURED).
+ */
 static const struct drm_gem_object_funcs m9_vram_bo_funcs = {
 	.free = m9_vram_bo_free,
 	.vmap = m9_vram_bo_vmap,
@@ -398,9 +441,21 @@ static void m9_engine_bo_free(struct drm_gem_object *gem)
 	kfree(bo);
 }
 
-/* No mmap, no vmap and no export: the CPU has no window onto this memory. */
+/*
+ * No mmap, no vmap and no export: the CPU has no window onto this memory.
+ * DRM core's default export hands out a dma_buf for any object, so refuse
+ * here -- MEASURED, PRIME_HANDLE_TO_FD returned a working fd for an
+ * engine-only object, which no importer could ever map.
+ */
+static struct dma_buf *m9_engine_bo_export(struct drm_gem_object *gem,
+					   int flags)
+{
+	return ERR_PTR(-EINVAL);
+}
+
 static const struct drm_gem_object_funcs m9_engine_bo_funcs = {
 	.free = m9_engine_bo_free,
+	.export = m9_engine_bo_export,
 };
 
 bool m9x_gem_is_engine_vram(struct drm_gem_object *gem)

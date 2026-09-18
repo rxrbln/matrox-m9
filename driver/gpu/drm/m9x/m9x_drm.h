@@ -67,6 +67,46 @@ struct drm_parhelia_m9_get_bo_info {
 #define PARHELIA_M9_LAYOUT_TILED	1u
 
 /*
+ * Format modifiers for the storage m9_render_surface_layout() produces.
+ *
+ * Matrox has no vendor namespace in drm_fourcc.h, so 0x4d ('M') is this
+ * out-of-tree driver's own choice; it is deliberately far from the
+ * sequentially allocated upstream ids (0x00..0x0c at the time of writing) and
+ * carries no upstream registration.  Treat it as private to this driver until
+ * a namespace is allocated.
+ *
+ * The modifier names the surface's *shape* contract, which is all an importer
+ * can act on: the texel order inside a band is the render address
+ * calculator's own and is not an affine function of the coordinates
+ * (MEASURED), so a modifier cannot describe it and no importer may assume it.
+ * A buffer carrying one of these must be read back through the engine (the
+ * surface-access ioctl or a sampler bound with the matching descriptor kind),
+ * never as linear rows.
+ */
+#define DRM_FORMAT_MOD_VENDOR_MATROX	0x4d
+#define fourcc_mod_matrox_code(val) \
+	((((__u64)DRM_FORMAT_MOD_VENDOR_MATROX) << 56) | \
+	 ((val) & 0x00ffffffffffffffULL))
+
+/*
+ * The ordinary render tiling, used above 64 texels in either dimension:
+ * the row span is padded to 32 texels, the allocation height to 32 rows, and
+ * the whole surface to 4 KiB at 32 bpp (2 KiB at 16 bpp).  This is the
+ * storage a colour target, a scanout surface and an FBO sampled through
+ * descriptor kind 0x21 all carry.
+ */
+#define DRM_FORMAT_MOD_MATROX_M9_TILED		fourcc_mod_matrox_code(1)
+/*
+ * The distinct family the aperture address calculator stores at 64x64 and
+ * below: the row span is still padded to 32 texels, but the allocation height
+ * is padded to 8 rows at 32 bpp (4 at 16 bpp, and 16 rows up to 16x16) and
+ * the surface to 1 KiB (512 bytes at 16 bpp).  Reading it with the ordinary
+ * kind returns only the first 16x16 texels (MEASURED), so it cannot share one
+ * modifier with the tiling above.
+ */
+#define DRM_FORMAT_MOD_MATROX_M9_TILED_SMALL	fourcc_mod_matrox_code(2)
+
+/*
  * De-tiled CPU access to a rectangle of a TILED VRAM BO.  descriptor0/1 are
  * the surface's cc21xxxx descriptor and layers << 16 | height; the user
  * buffer holds top-down rows of BGRX dwords, data_stride bytes per row.
