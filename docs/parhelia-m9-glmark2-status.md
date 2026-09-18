@@ -35,7 +35,7 @@ multipass path - and on three defects found while implementing it.
 | `shadow` | 143-147 fps | renders |
 | `refract` (4 passes) | 1 fps at 1920x1200, 2 at 640x480 | renders |
 | `terrain` | - | scene renders; `terrain.frag` refused for register pressure, and the policy that compiles it hits the scene-scale stall below |
-| `desktop` separable blur (4 passes) | - | stops the engine on the first frame |
+| `desktop` separable blur (4 passes) | - | stops the engine, after twenty-six split draws render |
 
 The rest of the suite was already above 60 fps and is unchanged; the slowest
 were `function medium` 62, `shading cel` 70, `shading phong` 87.
