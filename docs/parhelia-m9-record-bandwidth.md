@@ -57,6 +57,17 @@ routed coordinate, which is the good case; a schedule where a later pass
 reads an earlier pass's output directly is not, and would need its own
 slot.  Liveness answers that per shader rather than by assumption.
 
+## The stride is a descriptor field, not a consequence of the pass count
+
+The record descriptor carries an independent dword stride in bits 7:0 and an
+independent dword offset in bits 15:8, and vendor preprocessing records use
+strides of 4, 10, 12, 16, 20 and 60 dwords with fields packed at arbitrary
+dword offsets and in two widths (CAPTURED,
+`docs/parhelia-m9-varying-transport-re.md` section 3).  So the liveness
+allocation above needs no new hardware capability at all: it is a different
+pair of numbers in the same two fields the driver already emits through
+`m9_record_desc()`.
+
 ## Open
 
 Whether 8.8 GB/s is itself reachable is unknown: this board's memory

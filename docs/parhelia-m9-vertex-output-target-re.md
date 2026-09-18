@@ -118,9 +118,14 @@ target the declaration does not enable is simply using it as a temporary —
 `vs-builtin-light`, `vs-lighting` and `vs-texlod` all write `0x1d`/`0x1f`
 with `ef` bit 23 clear, and only three targets bound.
 
-Bits 11:9 also vary, and they are **not decoded**.  They correlate with the
-pass's role in the chain, and bit 11 is set in all 310 passes that set bit 15
-and in none that do not:
+Bits 11:9 are **decoded** in
+`docs/parhelia-m9-varying-transport-re.md` section 4: bits 10:9 say where the
+draw's vertex inputs come from -- 1 opens a chain on the source record, 2
+continues it there, 3 reads the intermediate record through the `0x74`
+routes, 0 is a draw that is the whole chain -- and bit 11 marks the draw that
+produces the final vertex outputs, which is why it moves with the clip-code
+enable at bit 15.  The five values below are all five combinations that
+occur:
 
 | pass role | `ef[11:8]` | example |
 |---|---|---|
@@ -364,10 +369,10 @@ machine is restarted.
 
 ## 6. What is still open
 
-* `ef[11:9]`, the five-valued pass-role field of section 2.  The driver's new
-  first draw is given `2`, which is the captured value for a head pass that
-  precedes another preprocessing draw; if the geometry does not appear, `4`
-  is the only other head-pass value in the corpus and the A/B costs one run.
+* ~~`ef[11:9]`, the five-valued pass-role field of section 2.~~  Decoded in
+  `docs/parhelia-m9-varying-transport-re.md` section 4, and the first thing
+  to re-test: the extra draw's `1` was right and the fused pass's `4` was
+  wrong, because a chain that opens must close with `7`.
 * `88[15:0]`, the register-pair mask: a "pairs the program uses" reading fits
   215 of 310 passes and fails the other 95 in both directions.  Whether it is
   a correctness requirement or a scheduling hint is undecided; the driver
@@ -494,9 +499,9 @@ Two hypotheses were tested and refuted:
   refuses.  `M9X_VS_EXTRA_BREAK=0`, both draws inside one range, changed
   nothing.
 
-What the captures say that section 4 did not draw out, and the strongest
-remaining lead: **no vendor head pass writes four targets into four separate
-stream views.**  Re-reading the corpus target by target:
+What the captures say that section 4 did not draw out: **no vendor head pass
+writes four targets into four separate stream views.**  Re-reading the corpus
+target by target:
 
 | pass | targets | where they point |
 |---|---|---|
@@ -508,11 +513,29 @@ stream views.**  Re-reading the corpus target by target:
 So the separate-view form with `68002000` is captured only for the fused pass
 and for a route-fed gather pass, never for a source-record-fed head pass
 writing more than one target.  The vendor's own multi-target head passes write
-**one interleaved record**, and the raster stage then reads it as several
-streams at dword offsets of one address.  That is the shape the next attempt
-should emit, and it needs the raster stream builder to bind several slots to
-one object at different offsets with a common stride rather than one view
-each -- which `m9_raster_fs_init_textured` does not express today.
+**one packed record**, which a later route-fed draw reads back.
+
+**The inference drawn here, that the raster stage then reads that record as
+several streams at dword offsets of one address, is wrong.**
+`docs/parhelia-m9-varying-transport-re.md` section 5 surveys 814 captured
+raster passes: every stream stride is `0x10` except the clip code's `6`, so
+the raster stage only ever reads a flat 16-byte-per-vertex array an
+interpolant, and every multi-draw preprocessing chain ends in a draw that
+de-interleaves the record into exactly those.  `m9_raster_fs_init_textured`
+does not need to express anything new.
+
+The lead that replaces it is index `ef` itself.  Bits 11:9 of a preprocessing
+pass state the draw's place in its chain and move with the clip-code enable at
+bit 15, in 628 of 628 captured passes with no exception: the only draw of a
+chain is `4`, the first of several `1`, a later source-record-fed one `2`, a
+route-fed one `3` and the last of several `7`.  The run above emitted `1` for
+the extra draw and left the fused pass at `4`, *the only draw of a chain* --
+a chain that opens and never closes, which is not a state the grammar has.
+The vendor's word for a fused-shaped final draw behind one other
+preprocessing draw is `0x00288e00`, and `captures/m9x-vendor-openbits-20260917/cap-attribs_14`
+carries it with the same three bound targets and clip code this driver binds.
+`m9_draw.c` now emits it (`M9_PRE_ROLE_LAST`), offline-gated and untested on
+hardware; the fixtures below are the run that settles it.
 
 Status in the tree: the vertex backend, the second head, the extra draw and
 the view mapping are all present and covered by tests; the driver's default

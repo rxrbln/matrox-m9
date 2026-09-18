@@ -72,6 +72,16 @@ words counted by index `22` bits 11:8.
 So the driver's `M9_RASTER_MAX_STREAMS = 6` and `M9_RASTER_MAX_DECL = 8` are
 both under-counts of what the vendor emits, by four slots and seven words.
 
+### One declaration word or two
+
+An interpolated input costs two declaration words (`0d88` for `x,y` and
+`06b6` for `z,w`) and the rasterizer position, the clip position, the clip
+code and a sampler coordinate cost one each.  That per-word cost, not the
+attribute numbering, is what the 16-word budget spends; whether a general
+interpolant may also use the one-word `0688` form -- which would take this
+ceiling from six to thirteen -- is untested and is experiment 3 of
+`docs/parhelia-m9-varying-transport-re.md` section 8.
+
 ### The attribute numbers are a fixed functional space
 
 CAPTURED across the corpus: attribute 0 is the rasterizer position, 5..8 are
@@ -117,12 +127,17 @@ register pair `(0x11 + 4j, 0x13 + 4j)` goes to the `j`-th bound target,
 `vs-varyings-4`'s second preprocessing pass writes `r11/r13, r15/r17, r19/r1b,
 r1d/r1f` with `b0,b2,b4,b6` bound.
 
-**Intermediate results are one interleaved arena.**  The target descriptor
-`b1/b3/b5/b7` is `0xee19 | slot * 4 << 8 | total_slots * 4`: each vertex record
-is `total_slots * 16` bytes and slot *s* sits at `s * 16`.  `vs-varyings-4`
-uses five slots (`ee190014 ee190414 ee190814 ee190c14 ee191014`),
-`vs-varyings-2` three (`ee19000c ee19040c ee19080c`), `vs-varyings-max`
-fifteen (`...3c`).
+**Intermediate results are one packed record.**  The target descriptor
+`b1/b3/b5/b7` names a form in bits 20:19 (1 = a two-dword field, 3 = a
+four-dword one), the field's **dword offset** in bits 15:8 and the record's
+**dword stride** in bits 7:0.  `vs-varyings-4` packs five four-dword fields
+into twenty dwords (`ee190014 ee190414 ee190814 ee190c14 ee191014`),
+`vs-varyings-2` three into twelve (`ee19000c ee19040c ee19080c`) and
+`vs-varyings-max` fifteen into sixty (`...3c`), so those read as slots — but
+the fields are not slots.  `cap-attribs_14` packs `ee19020a ee19060a
+ee09000a`, a two-dword field at dword 0 and two four-dword fields at dwords 2
+and 6 of a ten-dword record, which no slot rule produces.  See
+`docs/parhelia-m9-varying-transport-re.md` section 3.
 
 **A later pass binds up to four of those slots as sources and sees them as
 low-numbered registers.**  Binding `k` is index `0x74 + k` with `0x78` the

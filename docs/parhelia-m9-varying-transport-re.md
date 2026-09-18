@@ -1,0 +1,454 @@
+<!-- Copyright 2026 René Rebe <rene@exactco.de> -->
+<!-- SPDX-License-Identifier: GPL-2.0 -->
+# M9 varying transport: how interpolated values reach the raster stage
+
+This note closes how the M-series carries interpolated values from the
+preprocessing (vertex) stage to the raster (fragment) stage, why the
+clean-room driver's second preprocessing draw delivered nothing on hardware,
+and what the vendor's own ceiling is.
+
+Labels: **STATIC** is read out of a vendor binary at a named address;
+**CAPTURED** is read out of a saved vendor command stream or the runtime
+values a saved fixture recorded; **DERIVED** is a join of those, with the
+join given; **MEASURED** is an earlier hardware result, cited by its note;
+**OPEN** is undecided.  Nothing in this note was run on hardware.
+
+Re-derivable with:
+
+```sh
+S="captures/m9x-vendor-glsl-programs-20260915
+   captures/m9x-vendor-glamor-shaders-20260915
+   captures/m9x-vendor-gl2ext-2d-video-modes-20260915
+   captures/m9x-vendor-glamor-blend-20260915
+   captures/m9x-linux-gl2-special-20260914
+   captures/m9x-linux-five-sampler-20260914
+   captures/m9x-linux-ff-tnl-20260914
+   captures/m9x-vendor-openbits-20260917"
+python3 tools/m9-varying-transport-evidence.py --chain  $S   # the pass grammar
+python3 tools/m9-varying-transport-evidence.py --record $S   # the record encoding
+python3 tools/m9-varying-transport-evidence.py --raster $S   # what raster reads
+python3 tools/m9-vertex-output-target-evidence.py \
+        captures/m9x-vendor-openbits-20260917/cap-attribs_14   # the clean witness
+```
+
+The binary reads below are `MSerX/MxMGLX.dll` from
+`xddm32_210_00_105_se_u_nowhql/`, the M-series OpenGL ICD, image base
+`0x10000000`, `.text` at file offset `0x1000`.
+
+## 0. Result, in one paragraph
+
+An interpolated value reaches the raster stage as **its own flat array, one
+16-byte entry a vertex, bound as a raster stream slot** — never as a field of
+a shared record.  Everything upstream of that is a *preprocessing chain*: one
+or more draws that hand values to each other through a **packed intermediate
+record**, addressed by dword and read back through the route bindings at
+`0x74 + k`.  A draw states its place in that chain in **index `ef` bits 11:9**
+and that field moves with the clip-code enable at bit 15; 628 of 628 captured
+preprocessing passes obey it with no exception.  The clean-room driver's
+extra preprocessing draw told the engine "the first draw of a chain" and then
+left the fused pass saying "the only draw of a chain", which is not a state
+the grammar has — the same class of failure the raster splitter had before
+`ef` bits 10:9 were emitted (MEASURED,
+`docs/parhelia-m9-fragment-pass-hardware.md` section 1).  The vendor's own
+ceiling is **14 varyings**, a compare against `0xe` in the GLSL linker.
+
+## 1. There are two different records; keep them apart
+
+Earlier notes use "the record" for two objects that share only their
+descriptor encoding.
+
+* the **inter-pass record** of a split *fragment* program: one entry a
+  fragment, written by one raster pass and read by the next, four dwords a
+  hand-over, the object `docs/parhelia-m9-fragment-pass-hardware.md` and
+  `docs/parhelia-m9-record-bandwidth.md` are about;
+* the **intermediate record** of a *preprocessing* chain: one entry a vertex,
+  written by one preprocessing draw and read by a later one through `0x74`.
+
+Both are named by the same descriptor word (section 3), and the driver's
+`m9_record_desc()` / `m9_record_route()` already build it.  Neither is what
+the raster stage reads for an interpolated input: that is always a separate
+16-byte-stride stream (section 5).
+
+## 2. What one raster pass can consume (CAPTURED)
+
+Unchanged from `docs/parhelia-m9-raster-stream-limit-re.md`, which MEASURED
+six four-component inputs in one pass: the binding limit is index `22`
+bits 11:8, the declaration word count minus one, so at most **16 declaration
+words**.  The corpus holds 814 raster passes, 556 of which carry a
+declaration of their own rather than inheriting one, and they add the
+per-word cost that note did not separate out:
+
+| declared as | words | occurrences |
+|---|---|---|
+| rasterizer position, attribute 0, `x,y,z,w` | 1 | 556 |
+| clip position, attribute 13, `x,y,z,w` | 1 | 556 |
+| clip code, attribute 12, `-,-,-,x` | 1 | 556 |
+| an interpolated input, attributes 1..4 and 9..10, `x,y,-,-` **plus** `-,-,z,w` | 2 | 227 + 73 |
+| a sampler coordinate, attributes 5..8, `x,y,z,w` or `x,y,z,-` or `x,y,-,-` | 1 | 13 + 16 + 74 |
+
+so the fixed trio costs three words and thirteen are left: six interpolated
+inputs (12 words) and one sampler coordinate, or fewer inputs and more
+coordinates.  **No captured pass ever declares an interpolated input in the
+single `0688` word that attributes 0, 5, 6 and 13 use** — see section 8, this
+is the cheapest untested way to double the per-pass ceiling.
+
+## 3. The intermediate record: descriptor and routes (CAPTURED)
+
+A preprocessing draw binds up to four output targets at `b0, b2, b4, b6`,
+each an address at the even index and a descriptor at the odd one, plus the
+clip code at `b8` (`docs/parhelia-m9-vertex-output-target-re.md` section 1).
+A target descriptor is either the constant `0x68002000`, meaning a separate
+flat stream view, or a record descriptor:
+
+```text
+bits 31:25  0x77         format class
+bits 20:19  form         1 = two dwords (0xee09), 3 = four dwords (0xee19)
+bit  16     1
+bits 15:8   dword offset of this target's first dword inside the record
+bits  7:0   record stride in dwords
+```
+
+which is exactly `m9_record_desc()` in `m9_draw_params.c`.  The route binding
+a later draw reads it back with is `0x74 + k` for the selector word, `0x78`
+for the record's base address and `0x79` for a descriptor of the same shape:
+
+```text
+route word  bits  7:0   0x0c for a value route, 0x10 + 4k for a coordinate route
+            bits 15:8   record dword feeding component 1
+            bits 23:16  record dword feeding component 2
+            bits 31:24  record dword feeding component 3
+```
+
+component 0 comes from the descriptor's own offset field.  The program then
+reads route `k` as the register pair `(0x00 + 4k, 0x02 + 4k)`, low register
+components 0 and 1, high register components 2 and 3.
+
+### The record is packed by dword, not by slot
+
+The witness is `captures/m9x-vendor-openbits-20260917/cap-attribs_14`, a
+fourteen-attribute fixture whose preprocessing chain is two draws.  Its first
+draw binds three targets into **one** ten-dword record:
+
+```text
+seq 26 c3=04 ef=00280200 88=0300fff8 22=0008040e
+   target b0 = 10ec1000 desc ee19020a     form 3, dwords 2..5
+   target b2 = 10ec1000 desc ee19060a     form 3, dwords 6..9
+   target b4 = 10ec1000 desc ee09000a     form 1, dwords 0..1
+```
+
+and the second reads them back:
+
+```text
+seq 26 c3=26 ef=00288e00 88=3f703f3f 22=00080c0e
+   route 74 = 0302010c base 10ec1000 desc ee19000a    components 0,1,2,3
+   route 75 = 0908050c base 10ec1000 desc ee19040a    components 4,5,8,9
+   route 76 = 0000070c base 10ec1000 desc ee09060a    components 6,7
+```
+
+Three facts fall straight out, and each refutes a "four-dword slots" reading:
+a target may start at **any** dword (2, 6 and 0 here, not multiples of four);
+a target may be **two** dwords wide (`b4`, form 1); and the stride is the
+exact sum of the packed fields, `2 + 4 + 4 = 10`.  The same ten-dword shape
+carries two `vec2` texture coordinates in 54 glamor composite passes
+(`composite-stub-texture-texture-normal`, targets at dwords 0 and 4, routes
+gathering `4,5,8,9` and `6,7,8,9`).
+
+### Observed ranges
+
+Across 628 preprocessing passes the record descriptor takes 35 distinct
+values: form 1 and form 3, dword offsets `0, 2, 4, 6, 8, 10, 12, 16, 20, 24,
+28, 32, 36, 40, 44, 48, 52, 56` and strides `4, 10, 12, 16, 20, 60`.  The
+widest is `vs-varyings-max`, fifteen four-dword fields in a sixty-dword
+record.  Both fields are one byte wide in the driver's existing reading
+(`M9_RECORD_MAX_DWORDS` is `0xff`); the captures prove offset ≥ 56 and
+stride ≥ 60 and say nothing above that (**OPEN**).
+
+## 4. A preprocessing draw states its place in the chain: `ef` bits 11:9
+
+CAPTURED, 628 of 628 passes over six capture sets, produced by
+`tools/m9-varying-transport-evidence.py --chain`:
+
+| place in chain | `ef[10:9]` | `ef[11]` | `ef[15]` | route-fed | passes |
+|---|---|---|---|---|---|
+| the only draw | 0 | 1 | 1 | no | 170 |
+| the first of several | 1 | 0 | 0 | no | 151 |
+| a middle one, source-record-fed | 2 | 0 | 0 | no | 4 |
+| a middle one, route-fed | 3 | 0 | 0 | yes | 152 |
+| the last of several | 3 | 1 | 1 | yes | 151 |
+
+There is no sixth row.  Read as fields: **bits 10:9 name where the draw's
+vertex inputs come from** — 1 opens a chain on the source record, 2 continues
+it on the source record, 3 reads the intermediate record through `0x74`, 0 is
+a draw that is the whole chain — and **bit 11 marks the draw that produces
+the final vertex outputs**, which is the same draw that enables the clip code
+at bit 15.  The two never occur apart.  "Route-fed" here means a route word
+other than the idle `0x00000100` *with a non-zero stride* in its descriptor;
+108 single-draw passes carry the degenerate `0x0000010c` with
+`0x79 = 0xee090000`, stride zero, which feeds nothing.
+
+This is the preprocessing counterpart of the raster half's `ef` bits 10:9,
+whose absence MEASURED-ly stopped the engine until
+`docs/parhelia-m9-fragment-pass-hardware.md` section 1 emitted it.
+
+### Why the clean-room driver's extra preprocessing draw delivered nothing
+
+MEASURED (commit `cb65eafc`, appendix of
+`docs/parhelia-m9-vertex-output-target-re.md`): every draw whose fragment
+shader read a varying the extra preprocessing draw wrote rendered nothing and
+came back `EBUSY` with the context lost.
+
+DERIVED: `m9_draw.c` gave the extra draw `ef = 0x00000200 | targets`, chain
+place 1, correctly — and left the fused pass at the constant `0x00288800`,
+chain place 0 with bit 11 and bit 15, which says *the only draw of a chain*.
+A chain that opens and never closes is not one of the five rows above.  The
+vendor's value for a fused-shaped final draw behind one other preprocessing
+draw is **`0x00288e00`** — three targets, the clip code, place 3 with bit 11
+— and `cap-attribs_14`'s second draw carries exactly that word, with exactly
+the same three bound targets and clip code the m9x fused pass binds.  The fix
+is one term; section 7.
+
+Two hypotheses the same measurement already refuted — index `0x88`'s
+register-pair mask, and the barrier between the two draws — are recorded in
+that appendix and are not revisited here.
+
+## 5. The raster stage never reads the intermediate record (CAPTURED)
+
+`tools/m9-varying-transport-evidence.py --raster` over 814 raster passes
+finds nine distinct stream-stride tuples and **every stride in every one of
+them is `0x10`**, except the clip code's `6` and a trailing zero pad:
+
+```text
+  10 6 10                                  468
+  10 10 6 10                               272
+  10 10 10 6 10                             38
+  10 10 10 10 10 6 10                        1
+  10 10 10 10 10 10 10 6 10                  2
+  ...
+```
+
+So an interpolated input is always a flat 16-byte-per-vertex array of its
+own, and every multi-draw preprocessing chain ends in a draw that
+*de-interleaves*: it reads the packed record through `0x74` and writes each
+value out to its own `0x68002000` stream view.  `vs-varyings-4` is the
+clearest case — its third draw is nine slots long and is a pure gather,
+`r11 = mov r00`, `r13 = mov r02` … `r1f = mov r0e`, four inputs into four
+targets — and its raster pass then binds four separate addresses
+`113e8000 113db000 113ce000 113c1000` at stride `0x10`.
+
+This **refutes** the lead recorded at the end of
+`docs/parhelia-m9-vertex-output-target-re.md`, that the raster stream builder
+needs to express "several slots bound to one object at different offsets with
+a common stride".  It does not: the vendor never asks the raster stage to do
+that.  Whether the hardware *could* — the stream stride is a real 16-bit byte
+stride, proven by the clip code's 6 against everything else's 16 — is
+**OPEN** and is one of the two experiments in section 8.
+
+## 6. The vendor's ceiling is fourteen varyings (STATIC)
+
+`MxMGLX.dll`, the GLSL linker's varying pass at `0x1055db40`.  It opens by
+clearing a map and a high-water mark:
+
+```text
+0x1055db4b  8d8ff45b0000   lea  ecx, [edi + 0x5bf4]
+0x1055db51  8d87bc5b0000   lea  eax, [edi + 0x5bbc]
+0x1055db60  c700ffffffff   mov  dword [eax], 0xffffffff
+0x1055db66  83c004         add  eax, 4
+0x1055db69  3bc1           cmp  eax, ecx
+0x1055db6b  75f3           jne  0x1055db60
+0x1055db74  c70100000000   mov  dword [ecx], 0
+```
+
+`0x5bf4 - 0x5bbc` is `0x38`, so the map is **14 dwords**.  For each varying
+the fragment shader reads it finds the vertex shader's declaration, checks
+type and size, and then checks the allocation:
+
+```text
+0x1055dcef  8b10           mov  edx, dword [eax]        ; the varying's base slot
+0x1055dcf1  035500         add  edx, dword [ebp]        ; + its size in slots
+0x1055dcf4  83fa0e         cmp  edx, 0xe                ; 14
+0x1055dcf7  0f8777010000   ja   0x1055de74              ; -> "Not enough resources
+                                                        ;     to allocate varyings."
+```
+
+and then writes the vertex-to-fragment slot map one slot at a time,
+`map[fs_base + k] = vs_base + k`:
+
+```text
+0x1055dd3d  8b4c242c       mov  ecx, dword [esp + 0x2c]
+0x1055dd41  8b11           mov  edx, dword [ecx]
+0x1055dd43  8b07           mov  eax, dword [edi]
+0x1055dd4d  899481bc5b..   mov  dword [ecx + eax*4 + 0x5bbc], edx
+```
+
+The unit is a four-component slot: `vs-varyings-max` declares fourteen
+`vec4` varyings and links with an empty log (CAPTURED, its `case.json`), and
+fifteen would not fit the map.  The ICD nevertheless advertises
+`GL_MAX_VARYING_FLOATS = 60`, fifteen slots (CAPTURED, the same field in all
+112 `case.json` files of the GLSL corpus, and already recorded in
+`docs/parhelia-m9-opengl2-static-closure.md`): **the advertised limit is one
+slot above what the linker will allocate.**  The ICD builds its GLSL preamble
+from a limits structure whose field order the emitter at `0x10689080` fixes —
+`+0x00` lights, `+0x04` clip planes, `+0x08` texture units, `+0x0c` texture
+coords, `+0x10` vertex attribs, `+0x14` vertex uniform components, `+0x18`
+varying floats, `+0x1c` vertex texture image units, `+0x20` combined, `+0x24`
+texture image units, `+0x28` fragment uniform components, `+0x2c` draw
+buffers — but the structure is filled at run time and the values are not
+static constants in the image (**OPEN**).
+
+Fourteen is also what the transport does: `vs-varyings-max`'s preprocessing
+chain is nine draws through a sixty-dword record, and its raster half is
+three passes carrying 2, 6 and 6 inputs.
+
+The Parhelia ICD `MtxPar/MTXOGL.dll` contains none of this — no
+`gl_MaxVaryingFloats` preamble, no varying linker, no
+`GL_ARB_shading_language_100` in its extension string (STATIC).  The varying
+transport decoded here is M-series only, so a Parhelia cross-check cannot
+separate family-specific fields from general ones for this feature.
+
+## 7. What changed in the driver
+
+One term, in `m9_draw.c`'s preprocessing block, gated behind the same
+`M9X_VS_VARYINGS` knob that already defaults to one varying, so no default
+behaviour moves:
+
+* `m9_preprocess_ef()` takes the chain role instead of hardcoding place 1;
+* the fused pass emits `0x00280000 | clip code | M9_PRE_ROLE_LAST` when an
+  extra preprocessing draw precedes it and `… | M9_PRE_ROLE_ONLY` when it
+  does not — `0x00288e00` and `0x00288800`, both CAPTURED, the first as
+  `cap-attribs_14` seq 26 `c3=26` and the second as every single-draw pass;
+* `m9_batch_test.c`'s `test_vs_extra_preprocess` asserts the fused pass moves
+  from one to the other when the extra draw appears.
+
+`m9-batch-test`, `m9-vs-compile-test` (23/23 compiled and verified, 2/2
+refused) and `m9-fs-compile-test` (182 corpus shaders, 157 supported,
+required exact 23/23) all pass (OFFLINE).
+
+**This is a hypothesis with a captured witness, not a fix with a result.**
+It needs the `vary3`/`vary4`/`vary5` fixtures of `tools/m9-mesa-glsl.c` run
+with `M9X_VS_VARYINGS` raised, on the card, by whoever owns it.  If the
+draws still deliver nothing, section 8's first experiment is next and the
+chain place was not the only thing missing.
+
+What is deliberately **not** changed: the extra draw still writes separate
+`0x68002000` stream views rather than a packed record.  That is a deviation
+from the vendor, which always writes a record from a chain-opening draw, but
+it is a deviation the raster side can consume, and changing both variables at
+once would make the hardware run uninformative.
+
+## 8. The experiments worth the card time, in order
+
+1. **The chain role alone** (section 7).  `M9X_VS_VARYINGS=5`, fixtures
+   `vary3`..`vary5`.  Cost: one run.  If it renders, the varying count goes
+   to five with no further hardware work.
+2. **The vendor chain shape**, if 1 fails: the extra draw writes a packed
+   record (`m9_record_desc(M9_RECORD_SLOT, 4 * n, 4 * k)` for varying `k` of
+   `n`), and a third draw with place 3 and no clip code gathers it through
+   `0x74 + k` / `0x78` / `0x79` into the separate stream views, exactly as
+   `vs-varyings-4`'s `c3=27` does.  The gather program is four register-pair
+   moves and a stop and the encoders already exist; what is new is emitting
+   routes from a preprocessing range and a third native vertex entry.
+   `m9_index_allowed()` must admit `0x74..0x79` there.
+3. **The single-word interpolant declaration** (section 2).  Change
+   `m9_raster_fs_init_textured()` to emit one `attr << 20 | k << 16 | 0x0688`
+   word per varying instead of the `0d88`/`06b6` pair, and re-run
+   `tools/m9-user-raster-streams.c`, which already sweeps one to six inputs
+   and compares every interior pixel against a CPU reference.  If six still
+   read exactly, the per-pass declaration budget carries **thirteen**
+   interpolated inputs instead of six, which would let the driver drop from
+   three raster passes to one for any shader up to thirteen varyings and
+   remove the largest single source of inter-pass record traffic
+   (`docs/parhelia-m9-record-bandwidth.md`).  This is the highest-value
+   single experiment in this note and it costs one run of an existing probe.
+4. **A sampler-only varying through a coordinate attribute.**  A varying
+   whose only use is a texture coordinate can be declared as attribute
+   `5 + unit` in one word (CAPTURED, `fs-tex2d`), where the same value used
+   arithmetically is promoted to attribute 1 and two words (CAPTURED,
+   `fs-texcoord`: `gl_FragColor = gl_TexCoord[0]` declares attribute 1).
+   The driver already emits the attribute-5 form for texture coordinates it
+   knows about, so this is a compiler classification change, not a new
+   encoding.
+5. **A wider raster stream stride**, only if 2 and 3 both hold: bind several
+   raster streams into one packed record at different byte offsets with a
+   common stride, which the stream binding expresses today (the clip code
+   already runs at stride 6) and which no vendor pass uses.  It would remove
+   the de-interleaving draw altogether.
+
+## 9. The seven questions
+
+1. **How many interpolants can one raster pass consume, and is four floats
+   the maximum record?**  Six four-component inputs per raster pass
+   (MEASURED, `docs/parhelia-m9-raster-stream-limit-re.md`), bounded by the
+   16-word declaration budget at `22[11:8]`, not by any record width.  The
+   four-float figure in the brief belongs to the *fragment* inter-pass record
+   and is not a varying limit at all; the *preprocessing* record is a packed
+   array of up to 60 captured dwords with a one-byte stride field.  The
+   vendor's driver-wide varying limit is 14 slots (STATIC, `cmp edx, 0xe` at
+   `MxMGLX.dll` `0x1055dcf4`) while it advertises 60 floats = 15 slots
+   (CAPTURED).
+2. **How does the vendor emit more interpolants than one pass holds?**  Not
+   (a) and not (d).  It is (b) and (c) together, one level up from where the
+   brief puts them: **several preprocessing draws share one packed
+   intermediate record**, each writing up to four fields of it at its own
+   dword offset, and a final route-fed draw de-interleaves the record into
+   one flat 16-byte-stride stream an interpolant.  The raster stage is then
+   split only when the *declaration* budget runs out, at six inputs a pass —
+   `vs-varyings-max`'s fourteen varyings are nine preprocessing draws and
+   three raster passes.
+3. **What does the preprocessing pass write, field by field?**  Target `j`
+   is the register pair `(0x11 + 4j, 0x13 + 4j)`; the low register supplies
+   components 0 and 1 and the high register components 2 and 3, and the
+   descriptor places them at `offset .. offset + 3` dwords of the record, or
+   at `offset .. offset + 1` for a form-1 target.  `vs-texlod` proves the
+   order: its first draw writes `r13 = texcoord.xy` into a four-dword record
+   at offset 0, and its second draw's route reads dword **2** as the sampler
+   coordinate.  The `x*w`, `y*w`, `w` model is the *fragment* inter-pass
+   record's and is not touched here.
+4. **Which field states the count, which the stride?**  Count: index `ef`
+   bits 19, 21 and 23 enable targets 1..3, target 0 is always on, and bit 15
+   enables the clip code (`docs/parhelia-m9-vertex-output-target-re.md`
+   section 2).  Stride: the target descriptor's bits 7:0, in dwords —
+   **an independent field, not a function of the pass count**.  Per-target
+   placement: the same descriptor's bits 15:8.  On the raster side the count
+   is `22[11:8] + 1` declaration words and each stream carries its own
+   16-bit byte stride at `0x10 + k/2`.
+5. **Ordering and packing rules.**  Per component, at dword granularity, in
+   the order the compiler chooses — `cap-attribs_14` packs a two-dword field
+   at dwords 0..1 and two four-dword fields at 2..5 and 6..9 of a ten-dword
+   record, and the glamor composites pack two `vec2` coordinates into dwords
+   4..5 and 6..7 and share dwords 8..9 as the unread upper half of both.
+   Position and `w` occupy no fixed slot of that record: the clip position,
+   the viewport position and the clip code are written by the chain's final
+   draw into stream views of their own, at `b2`, `b4` and `b8`, and cost the
+   raster side three declaration words rather than any record space.
+6. **Are texture coordinate iterators a cheaper transport?**  Yes, but only
+   for values a sampler consumes.  Attributes 5..8 declare in **one**
+   declaration word (`0688`, `0c88` or `0d88`) against two for a general
+   interpolant, so they are half the declaration budget; they are the same
+   16-byte-stride stream underneath, so they save no record bandwidth at
+   all.  A value used arithmetically is promoted to attribute 1..4/9..10 and
+   two words — `fs-tex2d` declares attribute 5, `fs-texcoord` declares the
+   same coordinate as attribute 1 (CAPTURED).  So routing smooth user
+   varyings through them is possible exactly when the fragment program only
+   samples with them, which the driver can already classify.
+7. **Anything that cuts the pass count.**  Three things, in order of value:
+   the single-word `0688` declaration for a general interpolant, which would
+   take the per-pass ceiling from six to thirteen and is one probe run away
+   (section 8.3); the sampler-coordinate classification of 6, which frees one
+   declaration word per texture-fed varying; and allocating the *fragment*
+   inter-pass record's slots by liveness rather than one a hand-over, which
+   `docs/parhelia-m9-record-bandwidth.md` already costs out and which the
+   descriptor's independent offset and stride fields make expressible.
+
+## 10. Corrections this note makes to other documents
+
+* `docs/parhelia-m9-raster-stream-limit-re.md` section 3 described the
+  intermediate record as `0xee19 | slot * 4 << 8 | total_slots * 4`, i.e. as
+  an array of four-dword slots.  It is a packed array of dwords with a
+  two-dword form as well as a four-dword one; corrected in place.
+* `docs/parhelia-m9-vertex-output-target-re.md`'s closing lead — that the
+  raster stream builder must bind several slots to one interleaved object —
+  is refuted by section 5; corrected in place, with the chain-role reading
+  that replaces it.
+* `docs/parhelia-m9-record-bandwidth.md` treats the record stride as a
+  function of the pass count.  It is an independent descriptor field, so a
+  liveness allocation needs no new hardware capability; noted in place.
