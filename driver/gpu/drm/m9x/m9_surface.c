@@ -29,8 +29,28 @@ struct m9_surface_view {
 	u32 span;
 	u32 height;
 	u32 cpp;
+	/* Addressing units of one row and of the surface.  For an ordinary
+	 * format these are the texel span and height; for an S3TC one they
+	 * are the block counts, because a compressed surface is addressed by
+	 * whole 4x4 blocks (docs/parhelia-m9-s3tc-compressed-textures.md). */
+	u32 elements;
+	u32 rows;
 	u64 bytes;
 };
+
+/* Bytes one S3TC block occupies, 0 when the code is not compressed.  DXT1 is
+ * 4 bits a texel and DXT2..5 are 8 (79[31:24] = 0x20, 0x2a, 0x2e). */
+static u32 m9_compressed_block_bytes(u8 format)
+{
+	switch (format) {
+	case 0x20:
+		return 8;
+	case 0x2a: case 0x2e:
+		return 16;
+	default:
+		return 0;
+	}
+}
 
 /* Packed 32-bit colour codes a render surface may carry: A8R8G8B8 and the
  * two GigaColor formats, which are the same storage class 2. */
@@ -127,7 +147,27 @@ static int m9_surface_check(const struct drm_parhelia_m9_surface_access *args,
 	    view->height > M9_SURFACE_MAX_SPAN || !view->span ||
 	    view->span > M9_SURFACE_MAX_SPAN)
 		return -EINVAL;
-	if (texture) {
+	view->elements = view->span;
+	view->rows = view->height;
+	if (texture && m9_compressed_block_bytes(d0 >> 24)) {
+		/*
+		 * An S3TC level is addressed by whole blocks: the descriptor
+		 * still counts texels, but the window's linear view is the
+		 * block image, so x/y/width/height come in blocks.  This is
+		 * the probe path for the compressed tiling; nothing in the
+		 * driver stack uses it yet.
+		 */
+		view->cpp = m9_compressed_block_bytes(d0 >> 24);
+		view->elements = view->span / 4;
+		view->rows = view->height / 4;
+		if (!IS_ALIGNED(args->offset, 0x100) ||
+		    view->span != args->surface_width ||
+		    !IS_ALIGNED(view->span, 32) || !IS_ALIGNED(view->height, 4) ||
+		    ((d0 >> 16) & 0xff) != M9_TEXTURE_KIND_LARGE)
+			return -EINVAL;
+		view->bytes = (u64)view->elements * view->rows * view->cpp;
+		view->bytes = ALIGN(view->bytes, 0x1000);
+	} else if (texture) {
 		u8 kind = (d0 >> 16) & 0xff;
 
 		/* Texture levels: captured format bytes and storage kinds only. */
@@ -170,9 +210,9 @@ static int m9_surface_check(const struct drm_parhelia_m9_surface_access *args,
 		view->bytes = (u64)view->span * 4 * view->height;
 	}
 	if (check_add_overflow(args->x, args->width, &end) ||
-	    end > args->surface_width ||
+	    end > view->elements ||
 	    check_add_overflow(args->y, args->height, &end) ||
-	    end > view->height || view->bytes > M9_ADDRESS_SURFACE_BYTES)
+	    end > view->rows || view->bytes > M9_ADDRESS_SURFACE_BYTES)
 		return -EINVAL;
 	need = (u64)(args->height - 1) * args->data_stride +
 	       (u64)args->width * view->cpp;
@@ -269,8 +309,8 @@ static int m9_surface_access(struct m9x_device *mdev, struct drm_file *file,
 					   args->descriptor0, args->descriptor1);
 		for (row = 0; row < args->height; row++) {
 			void __iomem *rows = (u8 __iomem *)mdev->bar0_window +
-				((u64)(args->y + row) * view.span + args->x) *
-				view.cpp;
+				((u64)(args->y + row) * view.elements +
+				 args->x) * view.cpp;
 
 			if (write)
 				memcpy_toio(rows, kbuf + row * row_bytes, row_bytes);
