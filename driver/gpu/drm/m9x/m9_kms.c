@@ -1407,6 +1407,46 @@ static const struct drm_simple_display_pipe_funcs m9_pipe_funcs = {
 	.disable_vblank = m9_pipe_disable_vblank,
 };
 
+/*
+ * Scanout surfaces on this chip are tiled, and the GL path now describes them
+ * with the driver's own modifiers rather than claiming they are linear.  A
+ * plane that advertises none rejects every addfb2 carrying one, whatever the
+ * plane check would have made of the buffer: X could not create a single
+ * framebuffer and presented nothing at all.  LINEAR stays in the list for the
+ * dumb buffers the fbdev client and Xorg's probes allocate.
+ *
+ * The list is what IN_FORMATS reports, so a modifier-aware client also stops
+ * being told tiled scanout is unsupported.
+ */
+static const u64 m9_format_modifiers[] = {
+	DRM_FORMAT_MOD_MATROX_M9_TILED,
+	DRM_FORMAT_MOD_MATROX_M9_TILED_SMALL,
+	DRM_FORMAT_MOD_LINEAR,
+	DRM_FORMAT_MOD_INVALID,
+};
+
+/*
+ * drm_simple_kms_helper's own predicate returns true for DRM_FORMAT_MOD_LINEAR
+ * and nothing else, so a simple pipe rejects every tiled framebuffer however
+ * its modifier list is declared -- X could not create one and presented
+ * nothing.  drm_plane_has_format() consults this through the plane's funcs at
+ * call time, so replacing the pointer after the pipe is built is enough to
+ * admit the buffers.  The IN_FORMATS blob is still the one built during init,
+ * which lists LINEAR alone; correcting what userspace enumerates needs the
+ * real CRTC and plane that replacing the simple pipe would bring.
+ */
+static bool m9_plane_mod_supported(struct drm_plane *plane, u32 format,
+				   u64 modifier)
+{
+	unsigned int i;
+
+	for (i = 0; i < ARRAY_SIZE(m9_format_modifiers); i++)
+		if (m9_format_modifiers[i] == modifier)
+			return m9_format_modifiers[i] != DRM_FORMAT_MOD_INVALID;
+	return false;
+}
+
+
 static const u32 m9_formats[] = {
 	DRM_FORMAT_XRGB8888,
 };
@@ -1432,8 +1472,13 @@ m9_fb_create(struct drm_device *drm, struct drm_file *file,
 	 * cursor image and the small probe buffers Xorg uses to settle on a
 	 * depth, and keeps the tail allowance for the warm scanout itself. */
 	if (mode_cmd->offsets[0] ||
-	    mode_cmd->pitches[0] < (u64)mode_cmd->width * 4)
+	    mode_cmd->pitches[0] < (u64)mode_cmd->width * 4) {
+		drm_dbg_kms(drm,
+			    "fb refused: %ux%u pitch %u offset %u (pitch below width)\n",
+			    mode_cmd->width, mode_cmd->height,
+			    mode_cmd->pitches[0], mode_cmd->offsets[0]);
 		return ERR_PTR(-EINVAL);
+	}
 	if (info->format == DRM_FORMAT_ARGB8888) {
 		if (mode_cmd->width > M9_CURSOR_SIZE ||
 		    mode_cmd->height > M9_CURSOR_SIZE)
@@ -1442,6 +1487,8 @@ m9_fb_create(struct drm_device *drm, struct drm_file *file,
 	} else if (info->format == DRM_FORMAT_XRGB8888) {
 		funcs = &m9_fb_funcs;
 	} else {
+		drm_dbg_kms(drm, "fb refused: %ux%u format %p4cc unsupported\n",
+			    mode_cmd->width, mode_cmd->height, &info->format);
 		return ERR_PTR(-EINVAL);
 	}
 	need = (u64)mode_cmd->pitches[0] * mode_cmd->height;
@@ -1454,6 +1501,12 @@ m9_fb_create(struct drm_device *drm, struct drm_file *file,
 	if (!gem)
 		return ERR_PTR(-ENOENT);
 	if (!m9x_gem_is_vram(gem) || gem->size < need) {
+		drm_dbg_kms(drm,
+			    "fb refused: %ux%u pitch %u, vram %d, object %zu < %llu needed (scanout pitch %u)\n",
+			    mode_cmd->width, mode_cmd->height,
+			    mode_cmd->pitches[0], m9x_gem_is_vram(gem),
+			    gem->size, need,
+			    m9_scanout_pitch(mode_cmd->width));
 		fb = ERR_PTR(-EINVAL);
 		goto out_put;
 	}
@@ -1693,9 +1746,14 @@ static int m9_head_init(struct m9x_device *mdev, struct m9_head *head,
 	}
 	ret = drm_simple_display_pipe_init(drm, &head->pipe, &m9_pipe_funcs,
 					   m9_formats, ARRAY_SIZE(m9_formats),
-					   NULL, NULL);
+					   m9_format_modifiers, NULL);
 	if (ret)
 		return ret;
+	head->plane_funcs = *head->pipe.plane.funcs;
+	head->plane_funcs.format_mod_supported = m9_plane_mod_supported;
+	head->pipe.plane.funcs = &head->plane_funcs;
+	drm_info(drm, "head %u: plane takes tiled and linear framebuffers\n",
+		 head->index);
 	/* Each connector owns its own bit-banged bus, so userspace sees which
 	 * one carries its EDID. */
 	ret = drm_connector_init_with_ddc(drm, &head->connector,

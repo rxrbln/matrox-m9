@@ -185,6 +185,9 @@ struct m9_head {
 	 * currently attached.  Cleared whenever the connector is probed,
 	 * because a probe is the point at which the sink may have changed. */
 	bool tx_ready;
+	/* Copy of the simple-pipe plane's callbacks with the modifier
+	 * predicate replaced; the helper's own accepts LINEAR alone. */
+	struct drm_plane_funcs plane_funcs;
 	/* True only for the controller the firmware actually posted; any other
 	 * head owns no link routing or clock until the driver programs it. */
 	bool posted;
