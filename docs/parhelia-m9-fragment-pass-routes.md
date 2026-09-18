@@ -154,6 +154,26 @@ them (CAPTURED).
   schedule and runs.  Nothing else about the unit changes -- it keeps its
   own `0x78`/`0x79`/`0x7a` texture packet and its `0x7c` sampler word.
 
+## 5. What a record slot holds
+
+**A producer's slot is four dwords of 32-bit float a fragment** (MEASURED,
+`M9X_RECORD_DUMP` after m9x's own `coordroute` and `tex5` fixtures).
+Component 0 sits at the descriptor's own offset dword, and the route word's
+`c1`..`c3` name the dwords the rest sit in, exactly as section 2 reads them.
+
+This was worth measuring because the format is not the descriptor's to
+choose: a producing pass writes its root through registers `0x11` and `0x13`,
+and a pass that writes the colour output `0x2d` instead sends the same value
+down the colour path, which packs it into the render target's pixel format.
+m9x did that by accident and the record came back as four dwords a **2x2
+quad**, one pixel's `(s, t)` as two half-precision values a dword -- correct
+values in a storage the route cannot address.  Read as a float, that dword is
+about 1.6e-24, so a routed coordinate arrived as `(0, 0)` and the unit
+sampled texel `(0, 0)` for every pixel.  So **the register a producing pass
+writes, not the descriptor, decides the record's element format**, and a
+driver that emits the captured descriptors can still produce an unreadable
+record.
+
 What stays **OPEN**: a coordinate route at index 3; whether the low byte
 names the route index or the destination unit, which every capture leaves
 indistinguishable because they are always equal; and c2 against c3 for a

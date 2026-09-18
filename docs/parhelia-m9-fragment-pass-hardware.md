@@ -260,40 +260,100 @@ five-fetch shader renders.
 ## 6. A coordinate the fragment stage computes
 
 The engine samples before the program runs, so a coordinate computed in the
-fragment stage cannot feed a fetch in the same pass -- which is what refuses
+fragment stage cannot feed a fetch in the same pass -- which is what refused
 `terrain`, `shadow` and `refract` with "texture coordinate is not a varying".
 It can feed one in the **next** pass, through a coordinate route, and
 `docs/parhelia-m9-fragment-pass-routes.md` section 4 decodes that from the
-captures.  m9x emits one behind `M9X_COORD_ROUTE`; it is **off by default**.
+captures.  **m9x emits one by default and the fixtures render pixel-exact**;
+`M9X_COORD_ROUTE=0` refuses a routed coordinate instead.
 
-Where it stands (MEASURED, fixture `coordroute`, which samples at the product
-of two varyings so that no affine fold can reach it):
+### 6a. What the route needed, and what was wrong
 
 | step | outcome |
 |---|---|
 | the splitter cuts at the computed coordinate | `shadow.frag` becomes two passes, `light-refract.frag` four (OFFLINE) |
-| the consuming unit keeps the interpolated selector word `00040118` | **stops the engine** |
-| the routed selector word `0004111c` | **no stall**, the schedule runs |
-| the producing pass writes the coordinate | **correct**: read back with `M9X_RECORD_DUMP`, the first fragment holds `s = 0.001561` and `t = 0.002081`, exactly `(0.5/320, 0.5/240)` |
-| the consuming unit samples there | **wrong place**, 76794 of 76800 pixels differ |
+| the consuming unit keeps the interpolated selector word `00040118` | **stops the engine** (MEASURED) |
+| the routed selector word `0004111c` | **no stall**, the schedule runs (MEASURED) |
+| the producing pass wrote the coordinate | correct values, **wrong storage**: `M9X_RECORD_DUMP` held `18431665` at slot 0, two half-precision values a dword |
+| the consuming unit sampled there | texel `(0, 0)` for **every** pixel (MEASURED, 76794 of 76800 differing; the six that matched are the pixels whose own answer is texel `(0, 0)`) |
+| the producer's root written to `0x11`/`0x13` instead of `0x2d` | the record holds 32-bit floats and the fixture renders **0 of 76800 pixels wrong** (MEASURED) |
 
-So the schedule, the selector word, the route word and the producer are all
-right and what remains is the record's lane layout on the consuming side.
-Two readings were tried and both are retired: narrowing a one-pair producer
-to the two dwords every captured one-pair producer uses (`ee090002`) **stops
-the engine** and also breaks `tex5`, which the four-dword slot renders
-pixel-exact; and the consumer's own descriptor already matches `xv-uyvy`'s
-`ee090004` byte for byte.
+**The fault was in the driver's own encoder, not in the route.**  A pass that
+hands a value to the next one writes it through registers `0x11` and `0x13`,
+and `encode_lops` computes that destination -- but the two move classes
+(`L_MOV_OUT`, `L_MOVC_OUT`) ignored it and wrote the literal colour output
+`0x2d`.  Any producing pass whose root reaches the output through a plain
+move therefore went down the colour path, which packs a fragment into the
+render target's pixel format: the record came back as four dwords a 2x2 quad,
+each holding one pixel's `(s, t)` as two half-precision values.  `tex5`'s
+producer, whose root arrives through arithmetic, wrote the same record as
+four 32-bit floats a fragment and rendered pixel-exact all along, which is
+why one route worked and the other did not.
 
-Because it renders rather than stalls, leaving it on would turn three scenes
-from a refusal with a named reason into silently wrong pixels, so the
-compiler refuses a routed coordinate unless `M9X_COORD_ROUTE` is set and the
-fixture is dispatched but not listed.
+Read as a float, `0x18431665` is 1.6e-24, so both components arrived as zero
+and the unit sampled texel `(0, 0)` everywhere -- a whole-image failure, not
+an off-by-one lane.
+
+### 6b. The record's layout, closed
+
+**A producer's record slot is four dwords of 32-bit float a fragment**
+(MEASURED, `M9X_RECORD_DUMP` after `coordroute`: `3acca3d0 3b993d6d ...` =
+`0.001561, 0.004677, ...`, and after `tex5`).  Component 0 is at the
+descriptor's own offset dword and the route word's `c1` names the dword the
+second component sits in -- exactly the layout the driver already emitted, so
+**nothing about the route word, the selector word or the descriptor changed**.
+The two readings retired earlier stay retired; neither was the fault.
+
+### 6c. Fixtures
+
+`coordroute` samples at the product of two varyings, which no affine fold can
+reach.  `coordroutev` adds an interpolated varying to the consuming pass, so
+a unit steered by the record sits beside an ordinary attribute declaration --
+the shape every glmark2 scene that needs a route has, and the one `xv-uyvy`
+captures.  Both render **0 of 76800 pixels wrong** and both are listed; the
+fragment suite is **101 PASS, 0 FAIL** (MEASURED).
+
+### 6d. What still blocks the three scenes
+
+With the coordinate no longer refused, `shadow`, `refract` and `terrain` all
+build their multi-pass schedule, reach the engine, and **the engine stops**
+(MEASURED, 640x480 and 1920x1200, kernel `m9x_drm-bocap` so the record
+allocates): `m9x: two-pass job failed (Input/output error); context lost`,
+with one `M9 kernel stream timeout` in the kernel log.  The submission that
+reports the error is the one *after* the stalled job, because submission is
+asynchronous.
+
+It is not the coordinate route itself and not the record's size:
+
+* `effect2d` at 1920x1200, whose 3x3 kernel the splitter cuts in two and
+  which routes **values**, renders at **221 fps with no stream timeout**
+  (MEASURED, through the invalidating parser).
+* `coordroute` and `coordroutev`, which route a **coordinate**, render
+  pixel-exact at 320x240 under EGL.
+* Neither `M9X_SPLIT_PREPROCESS=0` nor `M9X_TRANSITION=0` changes the scene
+  result (MEASURED).
+
+So what the scenes add over the fixtures is real geometry, a depth
+attachment, and render-target switching, and which of those stops the engine
+is **OPEN**.  A stall leaves the device in a state a module reload does not
+clear, so every row above was taken on a freshly booted target whose engine
+had first been proved alive by `m9-mesa-glsl texture`.
+
+### 6e. `terrain`'s depth attachment
 
 `terrain` is assessable only at runtime -- the offline harness's synthetic
-vertex shader will not link -- and at 1920x1200 it is refused five times over
-for the coordinate, and separately needs a D24S8 depth attachment of the
-target size (MEASURED).
+vertex shader will not link.  It asked for a **Z16** depth attachment at the
+target size (MEASURED, `m9x: resource 640x480 levels 1 kind 3 tex 0 format
+z16_unorm bind 0x9`), and the driver advertised Z16 as a depth format while
+rendering depth only into D24S8, because only D24S8 carries the hierarchical
+surface `m9_resource_attach_hz` builds.  Every depth clear and depth test on
+that attachment was therefore dropped with "depth clear needs a D24S8
+attachment of the target size".
+
+The driver now claims Z16 for sampling only.  st falls back, `terrain` gets
+`x8z24_unorm` at the target size and the warning is gone (MEASURED), and
+fixture `depthtex16` -- a D16 depth texture, unlisted until now for exactly
+this reason -- renders 0 of 76800 pixels wrong and is listed.
 
 ## 5. Reproduction
 
