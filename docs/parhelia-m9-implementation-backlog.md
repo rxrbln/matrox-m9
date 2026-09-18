@@ -14,7 +14,6 @@ was confirmed against a live vendor GL context.
 
 | feature | evidence | driver today |
 |---|---|---|
-| **MRT, four render targets** | exact descriptors, relocations, masks and blend; one to four attachments verified on live GL 2026-09-17 with 64-256 cell checks and zero mismatches, surviving framebuffer destroy and rebuild | `caps->max_render_targets = 1` |
 | **Occlusion query** | exact fixed selector pair, modulo-32 result, begin/end retirement, live 16384/8192/0 visible/partial/hidden with asynchronous availability and reuse | not implemented |
 | **Cube textures** | all six face and orientation tests pass, exact descriptor and per-mip per-face base formula | not advertised |
 | **3D textures** | 7x5x4 slices, R repeat, exact volume descriptor and full-depth mip recurrence | not advertised |
@@ -30,6 +29,7 @@ was confirmed against a live vendor GL context.
 | feature | state |
 |---|---|
 | Framebuffer multipass fragment | raster emitter, descriptor and route model committed and verified; compiler-side splitter in progress.  Unblocks `effect2d` x2, `desktop`, `terrain`, `shadow`, `refract` |
+| MRT, four render targets | surface side implemented and pinned offline: four `b0 + 2s` pairs with `COLOR` relocations, one render format class a target in `89`, one write mask a target across `ab` and `ac`.  What remains is a fragment backend that compiles more than one colour output, and the native destination that names target p, which is DERIVED as `0x2d + p` and not yet measured.  `caps->max_render_targets` stays 1 until it is.  `docs/parhelia-m9-mrt-routing.md` |
 
 ## Known defects, cause understood
 
@@ -60,9 +60,7 @@ path is exact but the sampler decode was never joined.
 
 ## Suggested order
 
-1. **MRT** - fully verified on live hardware, the descriptor work is decoded,
-   and the driver currently advertises one target while the hardware does four.
-2. **Third vertex attribute** - four lines in `m9_draw.c`, already measured.
-3. **Occlusion query** - self-contained, exact.
-4. **Cube and 3D textures** - captured, and they widen GL 2.1 conformance.
-5. **The projective divide defect** - before anything relaxes that refusal.
+1. **Third vertex attribute** - four lines in `m9_draw.c`, already measured.
+2. **Occlusion query** - self-contained, exact.
+3. **Cube and 3D textures** - captured, and they widen GL 2.1 conformance.
+4. **The projective divide defect** - before anything relaxes that refusal.

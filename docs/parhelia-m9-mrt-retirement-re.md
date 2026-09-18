@@ -46,6 +46,13 @@ GLSL color export to RT0..RT3, and proof that every Linux MRT attachment enters
 the exact `m9x954` resource vector whose backing fence is updated. Those gaps
 prevent a narrower root-cause claim and make RT1..RT3 unsafe to expose.
 
+The first of the two is narrowed, not closed, in
+`docs/parhelia-m9-mrt-routing.md`: three sites in MxMD build a target's two
+virtual output registers as `0xffec + 2p` and `0xffed + 2p`, which with the
+measured single-target destination `0x2d` gives `0x2d + p` as the physical
+selector (DERIVED).  That note also closes the per-target write mask, which
+lives in raster `ab` and `ac`, from the 2026-09-17 captures.
+
 ## Preserved probe boundary
 
 `tools/m9x-gl2-core-result-matrix.c` creates four distinct 32 by 32 RGBA8
