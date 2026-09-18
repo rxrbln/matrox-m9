@@ -330,6 +330,61 @@ and ioctl 22.84, against draw 2.73, emit 2.66 and transfer 0.00
 (`M9X_PROFILE`), over 28 jobs and 24 draws a frame with nothing refused or
 skipped.
 
+### 3bd. What the back end counts as covering a target
+
+**The geometry a job rasterises, not the pixels it writes** (MEASURED,
+2026-09-18, M9128).  Four fixtures against `conv3sub`, which stops the engine:
+
+| case | what it draws | result |
+|---|---|---|
+| `conv3pad` | the whole target, writes scissored to the sub-rectangle | renders |
+| `conv3padz` | the sub-rectangle in front, the rest behind the cleared depth | renders |
+| `conv3frame` | the sub-rectangle and a **one-pixel frame** at the target's edges | renders, image exact |
+| `conv3subpad` | the same padded to the whole of the rest of the target | renders, image exact |
+| `conv3hole` | the target covered except a rectangle in the middle | renders |
+
+So padding that is scissored out counts, padding the depth test rejects
+counts, and a hole in the middle is not counted against the job at all -- it is
+reaching the target's **extent** that matters, and a frame a pixel wide is
+enough.  `conv3hole` renders fourteen of its 76800 pixels with the blue
+channel about one tap high along a shared triangle edge, which is not the
+coverage question and is the reason it is dispatchable by name rather than
+part of the suite.
+
+`M9X_SPLIT_PAD=1` implements the consequence: the draw is padded with four
+rectangles a pixel wide at the target's edges, two triangles of each winding
+apiece so no cull state removes them, its topology expanded into one indexed
+triangle list, and the clip window narrowed to the pixels the geometry covers.
+Twenty-four records, against a scratch surface and two copies.
+
+**It is off by default**, because it is not yet a path a scene can be trusted
+to.  It needs the back-end object cleared ahead of *every* multi-pass job
+rather than only the scratch path's own (`M9X_SPLIT_BE=3`): without that, four
+windows of `desktop`'s blur stop the engine
+(`splitdesk:8:4:11:1920x1200:1:420x420` stalls, and renders 32 frames with
+it).  With both on, the fixture suite stops the engine at `conv3rep`, and
+`terrain` under `M9X_SPLIT_PRESSURE=1` stops it as well -- so padding does not
+make a seven-pass mesh schedule safe either.  Whatever `conv3rep` hits is the
+next thing to find; the mechanism itself is proved by the table above.
+
+### 3be. A record's screen position is the quotient, not the product
+
+A record carries x and y **multiplied by w** with w itself in the fourth slot
+(`m9_render_record`), so reading a screen position back divides.  The
+partial-coverage test multiplied, which is the same number only where w is 1 --
+every 2-D draw, which was every fixture it had been written against.  A
+projecting draw came out w squared too large: `refract` handed over a bunny at
+`6694,1583..10158,5042` on a 1920x1200 target, its extent fell outside the
+target entirely, and the draw was refused as covering none of it.  The scene
+rendered a frame short of one of its two bunny passes and reported 40 fps for
+it.
+
+With the divide, `refract` draws both passes: skipped draws go from one a
+frame to none and its CPU varyings from 0.4 KiB a frame to 101.6 (MEASURED,
+`M9X_PROFILE`).  `conv3subw` is the fixture that fails without it -- `conv3sub`
+at w = 2, the same pixels and the same image, and a record whose fourth slot
+is not 1.
+
 ### 3c. A split job carries one raster draw
 
 **Two restated raster draws in one split job stop the engine** (MEASURED,
