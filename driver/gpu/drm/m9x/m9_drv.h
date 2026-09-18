@@ -178,6 +178,9 @@ struct m9_head {
 	 * registers decode to an empty raster rather than a mode. */
 	struct drm_display_mode warm_mode;
 	bool warm_valid;
+	/* m9_kms_mode named a size with no refresh, so the timing is resolved
+	 * from the sink's own list rather than left to list order. */
+	bool mode_param_size_only;
 	/* True only for the controller the firmware actually posted; any other
 	 * head owns no link routing or clock until the driver programs it. */
 	bool posted;

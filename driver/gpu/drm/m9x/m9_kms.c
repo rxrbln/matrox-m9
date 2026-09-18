@@ -344,6 +344,11 @@ static int m9_connector_detect(struct drm_connector *connector,
  * video=<connector>:<mode> command line still overrides both.  A head the
  * firmware left dark has no timing to prefer, so the EDID's stands.
  */
+static struct m9_head *head_of_connector(struct drm_connector *connector)
+{
+	return container_of(connector, struct m9_head, connector);
+}
+
 static int m9_connector_add_warm_mode(struct drm_connector *connector)
 {
 	struct m9_head *head = container_of(connector, struct m9_head,
@@ -390,6 +395,7 @@ static void m9_connector_mode_param(struct drm_connector *connector)
 
 	if (connector->cmdline_mode.specified || !m9_kms_mode)
 		return;
+	head_of_connector(connector)->mode_param_size_only = false;
 	for (spec = m9_kms_mode; *spec; ) {
 		size_t len = strcspn(spec, "; \t\n");
 
@@ -417,6 +423,9 @@ static void m9_connector_mode_param(struct drm_connector *connector)
 			drm_warn(connector->dev,
 				 "[CONNECTOR:%d:%s] cannot parse m9_kms_mode \"%s\"\n",
 				 connector->base.id, connector->name, entry);
+		else if (entry)
+			head_of_connector(connector)->mode_param_size_only =
+				!connector->cmdline_mode.refresh_specified;
 		kfree(entry);
 		return;
 	}
@@ -428,7 +437,51 @@ static void m9_connector_mode_param(struct drm_connector *connector)
 		drm_warn(connector->dev,
 			 "[CONNECTOR:%d:%s] cannot parse m9_kms_mode \"%s\"\n",
 			 connector->base.id, connector->name, entry);
+	else if (entry)
+		head_of_connector(connector)->mode_param_size_only =
+			!connector->cmdline_mode.refresh_specified;
 	kfree(entry);
+}
+
+/*
+ * A specification naming only a size leaves the choice of timing to
+ * drm_connector_pick_cmdline_mode(), which takes the first list entry of that
+ * size -- and inside get_modes the probed list is still in the order the sink
+ * happened to report.  The same parameter MEASURED 1280x720 at 60 Hz against
+ * one sink and at 50 Hz through another, and a sink that will not lock the
+ * timing it is handed shows nothing while every register reports success.
+ *
+ * drm_mode_sort() is the kernel's own preference order -- the EDID's preferred
+ * timing first, then larger, then higher refresh -- so sorting and taking the
+ * first match of that size resolves it the way the rest of DRM would, rather
+ * than by a rule of our own.  The probe helper sorts connector->modes again
+ * later; sorting the probed list here is only an ordering, and costs nothing.
+ */
+static void m9_connector_mode_param_refresh(struct drm_connector *connector)
+{
+	struct m9_head *head = head_of_connector(connector);
+	const struct drm_display_mode *mode;
+
+	if (!head->mode_param_size_only ||
+	    connector->cmdline_mode.refresh_specified)
+		return;
+	drm_mode_sort(&connector->probed_modes);
+	list_for_each_entry(mode, &connector->probed_modes, head) {
+		if (mode->hdisplay != connector->cmdline_mode.xres ||
+		    mode->vdisplay != connector->cmdline_mode.yres)
+			continue;
+		connector->cmdline_mode.refresh = drm_mode_vrefresh(mode);
+		connector->cmdline_mode.refresh_specified = true;
+		drm_info(connector->dev,
+			 "[CONNECTOR:%d:%s] m9_kms_mode %ux%u resolved to %d Hz (%s)\n",
+			 connector->base.id, connector->name,
+			 connector->cmdline_mode.xres,
+			 connector->cmdline_mode.yres,
+			 connector->cmdline_mode.refresh,
+			 (mode->type & DRM_MODE_TYPE_PREFERRED) ?
+				"EDID preferred" : "best the sink offers");
+		return;
+	}
 }
 
 static int m9_connector_get_modes(struct drm_connector *connector)
@@ -448,7 +501,9 @@ static int m9_connector_get_modes(struct drm_connector *connector)
 	drm_edid_connector_update(connector, head->edid);
 	if (head->edid)
 		count = drm_edid_connector_add_modes(connector);
-	return count + m9_connector_add_warm_mode(connector);
+	count += m9_connector_add_warm_mode(connector);
+	m9_connector_mode_param_refresh(connector);
+	return count;
 }
 
 static const struct drm_connector_helper_funcs m9_connector_helper_funcs = {
