@@ -280,6 +280,34 @@ static unsigned m9_split_depth;
 static bool m9_split_submit;
 /* M9X_SPLIT_PASSES=N emits only the first N passes of a split shader. */
 static unsigned m9_split_passes;
+/* M9X_SPLIT_SKIP_ABOVE / M9X_SPLIT_SKIP_BELOW drop a split job by the area of
+ * its target, and M9X_SPLIT_TRACE names every split job it emits. */
+static uint64_t m9_split_skip_above, m9_split_skip_below;
+static bool m9_split_trace;
+/* Round a screen coordinate out to the grain and hold it inside the window. */
+static uint32_t
+m9_clip_floor(float v, uint32_t grain, uint32_t lo, uint32_t hi)
+{
+   uint32_t u = v > 0 ? (uint32_t)v / grain * grain : 0;
+
+   return CLAMP(u, lo, hi);
+}
+
+static uint32_t
+m9_clip_ceil(float v, uint32_t grain, uint32_t lo, uint32_t hi)
+{
+   uint32_t u = v > 0 ? ((uint32_t)(v + 0.9999f) + grain - 1) / grain * grain : 0;
+
+   return CLAMP(u, MIN2(lo, hi), hi);
+}
+
+/* M9X_SPLIT_CLIP=N narrows a split job's clip window to the column span its
+ * geometry covers, rounded out to N pixels: a split draw that leaves part of
+ * a row of its target uncovered stops the engine (MEASURED). */
+static unsigned m9_split_clip;
+/* M9X_SPLIT_PARTIAL=1 submits a multi-pass job whose draw covers only part of
+ * its render target, which is the schedule that stops the engine. */
+static bool m9_split_partial;
 /* M9X_RECORD_DUMP names a file the inter-pass record is written to after
  * every split job, so the slots the engine touched can be read back and
  * the record's granularity measured rather than assumed. */
@@ -1118,6 +1146,11 @@ m9_submit_job(struct m9_context *ctx)
    struct m9_texture_unit placeholder;
    unsigned pass_count = fs ? key->variant->passes.count : 0;
    struct m9_draw_job job;
+   uint32_t split_x0 = key->clip_min & 0xffffu;
+   uint32_t split_x1 = key->clip_max & 0xffffu;
+   uint32_t split_y0 = key->clip_min >> 16;
+   uint32_t split_y1 = key->clip_max >> 16;
+   bool partial = false;
    uint64_t point = 0;
    uint64_t t_submit;
    bool built;
@@ -1131,6 +1164,99 @@ m9_submit_job(struct m9_context *ctx)
    /* One clear of the 35 KiB batch per job: the build below is its only
     * writer, so clearing it again on the way out was dead work. */
    m9_batch_init(&ctx->batch);
+   /* M9X_SPLIT_SKIP_ABOVE / M9X_SPLIT_SKIP_BELOW drop a split job whose
+    * target area is outside the range, which names which of a scene's split
+    * shapes stops the engine.  M9X_SPLIT_TRACE names every split job with the
+    * shape, clip window and draw extent it carries. */
+   if (pass_count > 1) {
+      uint64_t area = (uint64_t)ctx->params.width * ctx->params.height;
+
+      if (m9_split_trace || m9_split_clip || !m9_split_partial) {
+         /* The record holds x and y before the perspective divide and 1/w
+          * in its fourth slot, so the screen extent needs the product; the
+          * clip window counts rows from the top and the record from the
+          * bottom. */
+         float x0 = 0, x1 = 0, y0 = 0, y1 = 0;
+
+         if (records) {
+            const float *v = ctx->records.data;
+
+            x0 = x1 = v[0] * v[3];
+            y0 = y1 = v[1] * v[3];
+            for (unsigned k = 1; k < records; k++) {
+               const float *p = v + (uint64_t)k * ctx->record_floats;
+               float x = p[0] * p[3], y = p[1] * p[3];
+
+               x0 = MIN2(x0, x); x1 = MAX2(x1, x);
+               y0 = MIN2(y0, y); y1 = MAX2(y1, y);
+            }
+         }
+         if (m9_split_clip) {
+            uint32_t lox = key->clip_min & 0xffffu;
+            uint32_t hix = key->clip_max & 0xffffu;
+            uint32_t loy = key->clip_min >> 16;
+            uint32_t hiy = key->clip_max >> 16;
+            float top = (float)ctx->params.height - y1;
+            float bot = (float)ctx->params.height - y0;
+            uint32_t a = m9_split_clip;
+
+            split_x0 = m9_clip_floor(x0, a, lox, hix);
+            split_x1 = m9_clip_ceil(x1, a, split_x0 + a, hix);
+            split_y0 = m9_clip_floor(top, a, loy, hiy);
+            split_y1 = m9_clip_ceil(bot, a, split_y0 + a, hiy);
+         }
+         if (m9_split_trace)
+            fprintf(stderr, "m9x splitjob %llu: %ux%u passes %u draws %u "
+                    "records %u extent %.0f,%.0f..%.0f,%.0f clip %08x\n",
+                    (unsigned long long)m9_prof_jobs, ctx->params.width,
+                    ctx->params.height, pass_count, draws, records,
+                    x0, y0, x1, y1, ctx->params.clip_max);
+         /* A multi-pass job whose geometry leaves part of its render target
+          * uncovered stops the engine, and no binding it carries changes
+          * that: the record unbound, the sequence words cleared, the
+          * back-end object cleared, a target and a record of its own and
+          * the clip window narrowed to the geometry all stall alike
+          * (MEASURED, splitdesk:32:1:5:1920x1200:5:420x420 against the
+          * whole-target case, which renders).  The draw is skipped with a
+          * reason rather than submitted; M9X_SPLIT_PARTIAL=1 submits it, so
+          * the probe that reproduces the fault still can. */
+         partial = !records || x0 > 0.5f || y0 > 0.5f ||
+                   x1 < (float)ctx->params.width - 0.5f ||
+                   y1 < (float)ctx->params.height - 0.5f;
+      }
+      if (partial && !m9_split_partial) {
+         m9_warn_once(ctx, M9_WARN_FS,
+                      "a multi-pass fragment shader needs a draw that covers "
+                      "its whole render target; draws skipped");
+         m9_skip_reason(ctx, "a multi-pass fragment shader over part of its "
+                        "render target");
+         ctx->skipped_draws += draws;
+         m9_prof_skipped += draws;
+         util_dynarray_foreach(&ctx->job_textures, struct pipe_resource *,
+                               held)
+            pipe_resource_reference(held, NULL);
+         util_dynarray_clear(&ctx->job_textures);
+         ctx->job_unit_dwords = 0;
+         util_dynarray_clear(&ctx->records);
+         util_dynarray_clear(&ctx->indices);
+         util_dynarray_clear(&ctx->draws);
+         util_dynarray_clear(&ctx->extra);
+         return 0;
+      }
+      if ((m9_split_skip_above && area > m9_split_skip_above) ||
+          (m9_split_skip_below && area < m9_split_skip_below)) {
+         util_dynarray_foreach(&ctx->job_textures, struct pipe_resource *,
+                               held)
+            pipe_resource_reference(held, NULL);
+         util_dynarray_clear(&ctx->job_textures);
+         ctx->job_unit_dwords = 0;
+         util_dynarray_clear(&ctx->records);
+         util_dynarray_clear(&ctx->indices);
+         util_dynarray_clear(&ctx->draws);
+         util_dynarray_clear(&ctx->extra);
+         return 0;
+      }
+   }
    /* M9X_ONLY_FIRST / M9X_ONLY_AFTER drop every job of a frame outside that
     * range, which isolates the draws a screen region comes from. */
    if (ctx->frame_jobs++ < ctx->only_after ||
@@ -1153,11 +1279,15 @@ m9_submit_job(struct m9_context *ctx)
    /* Before a single byte of this job is written. */
    m9_arena_rotate(ctx);
    /* M9X_BE_CLEAR clears the engine's own state object, which separates
-    * state the engine keeps there from the target that selects it. */
-   if (ctx->be.map &&
+    * state the engine keeps there from the target that selects it.  It
+    * clears the object the job actually binds: with a back-end object a
+    * target, clearing the context's own left the bound one untouched. */
+   struct m9_resource *be_bound = ctx->target_be ? ctx->target_be : &ctx->be;
+
+   if (be_bound->map &&
        (m9_be_clear == 1 ||
         (m9_be_clear == 2 && ctx->be_clip != ctx->params.clip_max))) {
-      memset(ctx->be.map, 0, ctx->be.size);
+      memset(be_bound->map, 0, be_bound->size);
       ctx->be_clip = ctx->params.clip_max;
    }
    ret = ctx->lost ? -EIO :
@@ -1240,8 +1370,8 @@ m9_submit_job(struct m9_context *ctx)
          .depth_control = key->depth_control,
          .depth_ef = key->depth_ef,
          .color_mask = key->color_mask,
-         .clip_min = key->clip_min,
-         .clip_max = key->clip_max,
+         .clip_min = split_y0 << 16 | split_x0,
+         .clip_max = split_y1 << 16 | split_x1,
          /* One pass is emitted through the single-pass path, so the
           * captured stream is unchanged; more become a pass loop.
           * M9X_PASS_LOOP drives a one-pass shader through the loop too,
@@ -4702,6 +4832,11 @@ m9_context_create(struct pipe_screen *pscreen, void *priv, unsigned flags)
    m9_split_depth = debug_get_num_option("M9X_SPLIT_DEPTH", 1);
    m9_split_submit = debug_get_bool_option("M9X_SPLIT_SUBMIT", true);
    m9_split_passes = debug_get_num_option("M9X_SPLIT_PASSES", 0);
+   m9_split_skip_above = debug_get_num_option("M9X_SPLIT_SKIP_ABOVE", 0);
+   m9_split_skip_below = debug_get_num_option("M9X_SPLIT_SKIP_BELOW", 0);
+   m9_split_trace = debug_get_bool_option("M9X_SPLIT_TRACE", false);
+   m9_split_clip = debug_get_num_option("M9X_SPLIT_CLIP", 0);
+   m9_split_partial = debug_get_bool_option("M9X_SPLIT_PARTIAL", false);
    m9_record_dump = debug_get_option("M9X_RECORD_DUMP", NULL);
    m9_split_draws = debug_get_num_option("M9X_SPLIT_DRAWS", 1);
    m9_record_89 = debug_get_num_option("M9X_RECORD_89", 0);
