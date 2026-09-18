@@ -145,6 +145,16 @@ m9_pass_dependency(const struct m9_draw_job *job, unsigned pass)
                                              M9_PASS_DEPENDENCY_STEP);
 }
 
+/* One step past the last dependency a job's ranges raise: what a record
+ * emitted behind the job has to wait for. */
+uint32_t
+m9_draw_job_final_dependency(const struct m9_draw_job *job)
+{
+   unsigned last = job->pass_count ? job->pass_count - 1 : 0;
+
+   return m9_pass_dependency(job, last) + 0x50;
+}
+
 static int m9_emit_preprocess(struct m9_batch *batch,
                               const struct m9_draw_job *job,
                               const uint32_t *decl, unsigned decl_count,

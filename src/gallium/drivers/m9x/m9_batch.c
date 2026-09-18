@@ -195,6 +195,9 @@ m9_reloc_kind_access(enum drm_parhelia_m9_reloc_kind kind)
    case PARHELIA_M9_RELOC_PROGRAM:
    case PARHELIA_M9_RELOC_STREAM:
       return PARHELIA_M9_BO_READ | PARHELIA_M9_BO_WRITE;
+   /* A snapshot is published, never read back by the engine. */
+   case PARHELIA_M9_RELOC_QUERY:
+      return PARHELIA_M9_BO_WRITE;
    case PARHELIA_M9_RELOC_SYSTEM:
    case PARHELIA_M9_RELOC_TEXTURE:
    case PARHELIA_M9_RELOC_RESOURCE_69:

@@ -234,6 +234,7 @@ struct m9_batch {
 };
 
 struct draw_context;
+struct m9_query;
 struct m9_fs_state;
 struct m9_fs_variant;
 struct m9_velems;
@@ -351,6 +352,9 @@ struct m9_context {
     * for a draw whose fragment shader keeps the captured colour image. */
    struct m9_resource vs_c2;
    uint64_t vs_c2_serial;
+   /* The query whose range this job falls inside, and the snapshots its
+    * stream opens and closes with. */
+   struct m9_query *query_active, *query_begin, *query_end;
    struct m9_draw_params params;
    struct m9_vertex_decl decl;
    bool params_valid;

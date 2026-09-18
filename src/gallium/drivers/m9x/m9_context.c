@@ -28,6 +28,7 @@
 #include "m9_vs_texture.h"
 #include "m9_vs_source.h"
 #include "m9_passthrough.h"
+#include "m9_query.h"
 #include "m9_state.h"
 #include "nir.h"
 #include "nir_builder.h"
@@ -1280,8 +1281,15 @@ m9_submit_job(struct m9_context *ctx)
          job.vs_record_bytes = key->vs->record_bytes;
          job.vs_const_pairs = vs_const_pairs;
       }
+      /* A query's snapshot records bracket this job's draws inside its own
+       * stream, where the closing one can wait for them to retire. */
+      if (!ret)
+         ret = m9_query_job_prologue(ctx, &ctx->batch);
       if (!ret)
          ret = m9_batch_emit_draw_job(&ctx->batch, &job);
+      if (!ret)
+         ret = m9_query_job_epilogue(ctx, &ctx->batch,
+                                     m9_draw_job_final_dependency(&job));
    }
    built = !ret;
    if (!ret) {
@@ -4307,6 +4315,17 @@ m9_set_polygon_stipple(struct pipe_context *pctx,
 
 /* Context */
 
+/* Submits the pending draws, so that a record emitted after this call runs
+ * behind them; occlusion queries bracket their range with one. */
+int
+m9_context_flush_job(struct pipe_context *pctx)
+{
+   struct m9_context *ctx = m9_context(pctx);
+
+   m9_context_sync(ctx);
+   return ctx->lost ? -EIO : 0;
+}
+
 static void
 m9_context_flush(struct pipe_context *pctx,
                  struct pipe_fence_handle **out_fence, unsigned flags)
@@ -4592,6 +4611,7 @@ m9_context_create(struct pipe_screen *pscreen, void *priv, unsigned flags)
    ctx->base.clear_buffer = u_default_clear_buffer;
    ctx->base.set_debug_callback = u_default_set_debug_callback;
    ctx->base.resource_release = u_default_resource_release;
+   m9_query_init(&ctx->base);
 
    ctx->record_floats = M9_RECORD_FLOATS;
    if (m9_vertex_decl_init(&ctx->decl, 4, 4) ||

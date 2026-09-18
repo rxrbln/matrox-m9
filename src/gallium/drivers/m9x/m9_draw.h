@@ -168,6 +168,7 @@ unsigned m9_draw_pass_relocs(unsigned draw_count, unsigned unit_count,
  * at PARHELIA_M9_DEPENDENCY_LIMIT. */
 #define M9_PASS_DEPENDENCY_STEP 0x30u
 #define M9_PASS_DEPENDENCY_FULL 0x50u
+uint32_t m9_draw_job_final_dependency(const struct m9_draw_job *job);
 int m9_batch_emit_draw_job(struct m9_batch *batch,
                            const struct m9_draw_job *job);
 

@@ -1325,6 +1325,10 @@ m9_screen_create(int fd, const struct pipe_screen_config *config)
     * it set_inlinable_constants is never called and every specialised variant
     * compiles against zeros. */
    caps->call_finalize_nir_in_linker = true;
+   /* The engine publishes a samples-passed counter around a range of draws
+    * (m9_query.c); the count is exact and the result is read from memory,
+    * so nothing about it stalls the engine. */
+   caps->occlusion_query = true;
    caps->dmabuf = DRM_PRIME_CAP_IMPORT | DRM_PRIME_CAP_EXPORT;
    screen->base.destroy = m9_destroy;
    screen->base.finalize_nir = m9_finalize_nir;
