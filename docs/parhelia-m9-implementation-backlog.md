@@ -65,7 +65,8 @@ Recorded so they are not attempted again.
 
 | feature | state |
 |---|---|
-| Extended desktop across heads | register analysis done - pitch is 14 bits **in pixels** so 7680 fits with room, scanout start is 128-byte aligned giving 32-pixel horizontal granularity, and `mode_config.max_width` 2048 is a driver constant not a hardware limit.  Needs `drm_simple_display_pipe` replaced by a real CRTC and plane.  **Open:** whether a horizontal start offset addresses a *tiled* surface correctly |
+| Extended desktop across heads | **implemented**: `m9_plane_window()` scans out a per-head window of a shared framebuffer, and `mode_config.max_width/height` are raised.  It is still built on `drm_simple_display_pipe` - that turned out not to be the blocker the note assumed; our own three checks were.  **Open:** whether a horizontal start offset addresses a *tiled* surface correctly.  Only 256-pixel and 64-row origins are pure translations, because tiled surfaces are stored in bands of 32 rows and the horizontal term is `x * 4 * 32` |
+| Framebuffer console | **implemented**: stock `drm_client_setup_with_fourcc` + `DRM_FBDEV_TTM_DRIVER_OPS`, gated on `m9_kms_scanout`.  Default mode is the raster the card was POSTed with, or the EDID preferred mode on a head the firmware left dark; `m9_kms_mode="DP-1:1280x720"` pins it, below `video=` in precedence.  The buffer is a linear dumb buffer, so every publish re-tiles through the aperture: 395 ms a whole frame at 720p, 15.7 ms a console line.  `m9_fb_dirty()` honours its clip rectangles, without which the blinking cursor alone held a CPU at 100% system time |
 | Dumb-buffer page flip cost | MEASURED ~440k pixels/s, a whole-frame de-tiling copy, so 0.19 fps at 1920x1200.  Direct scanout needs a tiled BO, which only the GL path allocates |
 | DP++ dual-mode detection | early exit implemented; reading the adapter identifier over DDC would skip training outright |
 
@@ -86,7 +87,22 @@ tiled placement and filtering of float texels are still uncaptured.  See
 
 ## Suggested order
 
-1. **Third vertex attribute** - four lines in `m9_draw.c`, already measured.
-2. **Occlusion query** - self-contained, exact.
-3. **Cube and 3D textures** - captured, and they widen GL 2.1 conformance.
-4. **The projective divide defect** - before anything relaxes that refusal.
+Items 1-3 of the previous list - the third vertex attribute, the occlusion
+query, and cube and 3D textures - are all done.
+
+1. **The scene-scale split fault.**  The last thing between `desktop` and
+   `terrain` and honest frame rates, and the ladder that reaches it is staged
+   and runs in one boot.
+2. **MRT.**  The surface side is done and pinned offline; what remains is a
+   fragment backend that compiles more than one colour output, and measuring
+   the destination that names target p rather than trusting the DERIVED
+   `0x2d + p`.  Bind and shader must land together - a bound target must be a
+   written target, so neither half measures anything alone.
+3. **The projective divide defect** - before anything relaxes that refusal,
+   because loosening the check without fixing the divide turns a refusal into
+   a silently wrong picture.
+4. **sRGB write** - the backend is written; advertising a colour format is all
+   that stands between it and being reachable.
+5. **A second vertex varying**, which needs the second preprocessing draw.
+6. **The depth pair**: CPU-uploaded depth textures, and
+   `glReadPixels(GL_DEPTH_COMPONENT)`.
