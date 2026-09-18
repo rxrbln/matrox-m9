@@ -889,8 +889,20 @@ m9_emit_preprocess(struct m9_batch *batch, const struct m9_draw_job *job,
     * constant two of the captured pass-through made a third attribute read
     * a slot the pass never declared (MEASURED, a clean A/B on the M9128,
     * docs/parhelia-m9-vertex-output-target-re.md).  A declaration holds two
-    * words an attribute plus the terminator. */
-   EMIT(V(0x88, (BITFIELD_MASK((decl_count - 1) / 2) << 24) | 0x0000bf00u),
+    * words an attribute plus the terminator.
+    *
+    * Bits 15:0 are a register-pair mask, and the fused pass's captured
+    * 0xbf00 leaves pair 14 -- registers 0x1c/0x1d -- clear, because its
+    * appended tail only scratches them.  The tail-free head writes 0x1d as
+    * target 3, and with 0xbf00 carried over the engine stopped on every
+    * four-target draw and retired none of them (MEASURED: fixture vary5
+    * failed with "two-pass job failed (Device or resource busy)" while the
+    * same draw with one, two or three targets rendered exactly).  Every
+    * captured head pass declares a run of pairs up to 15 instead --
+    * 0xffff, 0xfffe, 0xfffc, 0xfff8, 0xfff0, 0xffe0 -- so the extra draw
+    * claims them all, which is the captured 0x0100ffff. */
+   EMIT(V(0x88, (BITFIELD_MASK((decl_count - 1) / 2) << 24) |
+                (extra ? 0x0000ffffu : 0x0000bf00u)),
         V(0x89, 0xfe201e92), V(0x8a, 0), V(0xc1, 0));
    EMIT(R(0x00, job->source, 0, SYSTEM), V(0x01, 0xf2fe014f),
         V(0x10, record_bytes));
@@ -921,7 +933,11 @@ m9_emit_preprocess(struct m9_batch *batch, const struct m9_draw_job *job,
    /* One covering preprocessing draw serves every raster draw. */
    ret = m9_batch_emit_draw_numeric(batch, 0, job->source_vertices,
                                     0x20000000);
-   if (!ret)
+   /* M9X_VS_EXTRA_BREAK=0 keeps both preprocessing draws inside one range.
+    * The vendor separates its own preprocessing draws with an engine
+    * transition the kernel refuses, so which barrier belongs between them
+    * is undecided (docs/parhelia-m9-vertex-output-target-re.md section 4). */
+   if (!ret && !(extra && !debug_get_bool_option("M9X_VS_EXTRA_BREAK", true)))
       ret = m9_batch_emit_range_break(batch);
 fail:
    return ret;

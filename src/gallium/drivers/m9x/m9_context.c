@@ -265,10 +265,16 @@ static unsigned m9_job_draws;
  * resource rather than an engine extent (m9_draw_params.h).  Setting it back
  * to 5760 restores one job per draw in the same binary; the frame profile
  * names the ceiling in force. */
-/* M9X_VS_VARYINGS caps the varyings a native preprocessing job may carry:
- * 1 is the single fused draw the driver emitted before the second
- * preprocessing draw existed, so one binary compares the two. */
-static unsigned m9_native_vs_varyings = M9_VS_MAX_VARYINGS;
+/* M9X_VS_VARYINGS caps the varyings a native preprocessing job may carry.
+ * The default is 1, the single fused draw, because the second preprocessing
+ * draw does not yet deliver its streams on this board: every fixture whose
+ * fragment shader reads a varying the extra draw writes renders nothing and
+ * leaves the context lost (MEASURED on the M9128, fixtures vary3, vary4 and
+ * vary5 against their own software reference; the same cases are exact
+ * through the draw module).  Raising it emits that draw, which is what the
+ * next investigation needs; 5 is what the vertex backend compiles.
+ * docs/parhelia-m9-vertex-output-target-re.md */
+static unsigned m9_native_vs_varyings = 1;
 /* M9X_NATIVE_VS=0 keeps every vertex shader in the draw module.  On by
  * default since the whole hardware fixture corpus passes either way
  * (m9-mesa-vs 14/14, m9-mesa-glsl 90/90, 2026-09-17). */
@@ -5907,8 +5913,7 @@ m9_context_create(struct pipe_screen *pscreen, void *priv, unsigned flags)
    m9_weld_enable = debug_get_bool_option("M9X_WELD", true);
    m9_native_vs = debug_get_bool_option("M9X_NATIVE_VS", true);
    m9_native_vs_varyings = MIN2((unsigned)
-      debug_get_num_option("M9X_VS_VARYINGS", M9_VS_MAX_VARYINGS),
-      M9_VS_MAX_VARYINGS);
+      debug_get_num_option("M9X_VS_VARYINGS", 1), M9_VS_MAX_VARYINGS);
    m9_no_clear = debug_get_bool_option("M9X_NO_CLEAR", false);
    m9_clear_repeat = debug_get_num_option("M9X_CLEAR_REPEAT", 0);
    ctx->dump_path = debug_get_option("M9X_DUMP", NULL);
