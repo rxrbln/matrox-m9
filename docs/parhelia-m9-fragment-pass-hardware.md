@@ -17,7 +17,9 @@ engine needs beyond the record descriptor is index `ef` bits 10:9, which place
 the pass inside its multi-pass sequence** (MEASURED).  With that field emitted
 the producing pass runs with the captured producer descriptor `b1 = ee190004`,
 the captured record `89 = fe007ffc`, the record coverage words and the routes,
-and a two-pass schedule runs end to end without stopping the engine.
+a two-pass schedule runs end to end without stopping the engine, and fixture
+`tex5` -- five texture fetches the driver's own splitter cuts into two raster
+passes -- renders pixel-exact.
 
 The field is uniform across both independent capture sets (CAPTURED, the
 raster range only; the preprocessing range carries its own unrelated `ef`):
