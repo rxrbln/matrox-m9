@@ -37,6 +37,15 @@ Four are below 60, each for a different reason:
 | `terrain` | 21 | INVALID - draws refused: a multi-pass draw over **mesh** geometry, 576 records, which fills no box it could be given |
 | ~~`refract`~~ | 38-40 | **conformant** - it was never the geometry class.  A record carries x and y multiplied by w with w in slot 3, so recovering a screen position **divides**; the extent test multiplied, which agrees only where w is 1 - every fixture it had been written against.  The bunny's computed extent landed at `6694,1583..10158,5042` on a 1920x1200 target, outside it, so the draw was refused for covering none of it.  With the divide, skipped draws go 1 to 0 a frame and CPU varyings 0.4 to 101.6 KiB.  `conv3subw` is the fixture that fails without it.  It still reports SETUP-FAILED inside the full run while passing alone, which is a separate unreleased-resource question |
 
+**Open: which `refract` measurement is current.**  A second measurement on
+2026-09-19 (`M9X_PROFILE=4`, 1920x1200) reported `refract` at 19.89 ms a frame
+with **`skipped 1` and 0.3 KiB of CPU varyings**, 400 native against 2801 draw
+module -- the *before* numbers of the row above, from a build made in a
+different tree.  Nothing was reverted in `m9x` that would restore them, so the
+likely cause is that build not carrying `2f752ee`.  Until a fresh rebuild of
+current `m9x` HEAD is rerun on the card, treat 0 skipped / 101.6 KiB as the
+figure to reproduce and this as unreconciled, not as two valid results.
+
 **The depth attachment is not what refuses them, and carrying the
 destination's depth box into the scratch surface would restore nothing**
 (MEASURED, `M9X_SKIP_REPORT` over the whole default list): with the geometry
