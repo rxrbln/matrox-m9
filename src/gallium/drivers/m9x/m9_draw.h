@@ -72,6 +72,11 @@ struct m9_raster_pass {
 struct m9_draw_job {
    const struct m9_draw_params *params;
    const struct m9_vertex_decl *decl;
+   /* Preprocessing source stream 0 of the ten the engine has: slots 00..09
+    * take a SYSTEM relocation and a byte stride in the packed words 10..14,
+    * so a later zero-copy path can bind an application vertex buffer per
+    * attribute instead of one packed record (m9_draw_params.c builds the
+    * raster side that way, and index 23 bits 19:16 name the stream). */
    uint32_t source;        /* DMA32 source records */
    uint32_t system;        /* DMA32 8d/8e constants and 6c record */
    uint32_t program;       /* VRAM c2 pass-through program */
