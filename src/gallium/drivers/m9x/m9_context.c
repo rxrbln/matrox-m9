@@ -271,6 +271,10 @@ static bool m9_split_preprocess;
 static bool m9_split_submit;
 /* M9X_SPLIT_PASSES=N emits only the first N passes of a split shader. */
 static unsigned m9_split_passes;
+/* M9X_RECORD_DUMP names a file the inter-pass record is written to after
+ * every split job, so the slots the engine touched can be read back and
+ * the record's granularity measured rather than assumed. */
+static const char *m9_record_dump;
 /* M9X_SPLIT_COVERAGE=0 keeps the plain coverage words on a record pass. */
 static bool m9_split_coverage;
 /* M9X_RECORD_89 replaces index 0x89 of a record pass, whose low twelve bits
@@ -1252,6 +1256,7 @@ m9_submit_job(struct m9_context *ctx)
       ctx->lost = true;
    } else {
       ctx->last_point = point;
+      ctx->record_written |= pass_count > 1;
       m9_prof_relocs = MAX2(m9_prof_relocs, ctx->batch.reloc_count);
       if (ctx->debug)
          fprintf(stderr, "m9x: job %u records %u draws a8 %08x ef %08x "
@@ -2099,10 +2104,13 @@ m9_fs_variant(struct m9_context *ctx, struct m9_fs_state *fs,
              * same fourteen dwords m9_draw_pass_dwords budgets. */
             v->dwords_draw += M9_JOB_DRAW_DWORDS + 14;
          }
-         if (m9_variant_relocs(v, 1) > M9_MAX_RELOCS ||
-             m9_variant_dwords(v, 1) > M9_MAX_COMMAND_DWORDS) {
+         if (m9_variant_relocs(v, 1) > M9_MAX_RELOCS) {
             v->reason = "the raster passes of this shader need more "
                         "relocations than one submission carries";
+            v->ok = false;
+         } else if (m9_variant_dwords(v, 1) > M9_MAX_COMMAND_DWORDS) {
+            v->reason = "the raster passes of this shader need more "
+                        "command words than one submission carries";
             v->ok = false;
          }
       }
@@ -4175,6 +4183,18 @@ m9_context_flush(struct pipe_context *pctx,
               ctx->split_mask, ctx->split_clip);
    ctx->frame_jobs = 0;
    m9_context_sync(ctx);
+   if (m9_record_dump && ctx->record_written && ctx->record.map) {
+      FILE *f = fopen(m9_record_dump, "wb");
+
+      if (f) {
+         fwrite(ctx->record.map, 1, ctx->record.size, f);
+         fclose(f);
+      }
+      fprintf(stderr, "m9x: record %u bytes stride %u target %ux%u -> %s\n",
+              (unsigned)ctx->record.size, ctx->record_dwords,
+              ctx->params.width, ctx->params.height, m9_record_dump);
+      ctx->record_written = false;
+   }
    if (out_fence) {
       if (!ctx->lost)
          fence = m9_fence_create(ctx->last_point, true);
@@ -4266,6 +4286,7 @@ m9_context_destroy(struct pipe_context *pctx)
    for (unsigned i = 0; i < PIPE_MAX_SAMPLERS; i++)
       pipe_sampler_view_reference(&ctx->fs_views[i], NULL);
    m9_context_state_cleanup(ctx);
+   m9_batch_fini(&ctx->batch);
    m9_command_bo_destroy(screen, &ctx->command);
    m9_bo_destroy(screen, &ctx->system);
    m9_bo_destroy(screen, &ctx->program);
@@ -4346,6 +4367,7 @@ m9_context_create(struct pipe_screen *pscreen, void *priv, unsigned flags)
    m9_split_preprocess = debug_get_bool_option("M9X_SPLIT_PREPROCESS", false);
    m9_split_submit = debug_get_bool_option("M9X_SPLIT_SUBMIT", true);
    m9_split_passes = debug_get_num_option("M9X_SPLIT_PASSES", 0);
+   m9_record_dump = debug_get_option("M9X_RECORD_DUMP", NULL);
    m9_record_89 = debug_get_num_option("M9X_RECORD_89", 0);
    m9_split_coverage = debug_get_bool_option("M9X_SPLIT_COVERAGE", true);
    m9_transition = debug_get_bool_option("M9X_TRANSITION", true);

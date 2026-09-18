@@ -5,6 +5,7 @@
 
 #include <errno.h>
 #include <limits.h>
+#include <stdlib.h>
 #include <string.h>
 #include <sys/ioctl.h>
 
@@ -51,10 +52,25 @@ m9_batch_rollback(struct m9_batch *batch,
       batch->bos[i].flags = checkpoint->bo_flags[i];
 }
 
+/* Resets a batch for reuse, keeping the relocation array it already grew.
+ * A batch is zeroed by its owner before the first call. */
 void
 m9_batch_init(struct m9_batch *batch)
 {
+   struct drm_parhelia_m9_reloc *relocs = batch->relocs;
+   uint32_t capacity = batch->reloc_capacity;
+
    memset(batch, 0, sizeof(*batch));
+   batch->relocs = relocs;
+   batch->reloc_capacity = capacity;
+}
+
+void
+m9_batch_fini(struct m9_batch *batch)
+{
+   free(batch->relocs);
+   batch->relocs = NULL;
+   batch->reloc_count = batch->reloc_capacity = 0;
 }
 
 int
@@ -142,8 +158,20 @@ m9_batch_add_reloc(struct m9_batch *batch, uint32_t command_dword,
        ((access & PARHELIA_M9_RELOC_PACKED16_ODD) &&
         kind != PARHELIA_M9_RELOC_DRAW16_END))
       return -EINVAL;
-   if (batch->reloc_count == M9_MAX_RELOCS)
-      return -ENOSPC;
+   if (batch->reloc_count >= batch->reloc_capacity) {
+      struct drm_parhelia_m9_reloc *grown;
+      uint32_t want;
+
+      if (batch->reloc_count >= M9_MAX_RELOCS)
+         return -ENOSPC;
+      want = MAX3(2 * batch->reloc_capacity, 64u, batch->reloc_count + 1);
+      want = MIN2(want, M9_MAX_RELOCS);
+      grown = realloc(batch->relocs, want * sizeof(*grown));
+      if (!grown)
+         return -ENOMEM;
+      batch->relocs = grown;
+      batch->reloc_capacity = want;
+   }
    ret = m9_batch_add_bo(batch, handle, bo_access);
    if (ret)
       return ret;

@@ -21,8 +21,12 @@
 #define M9_PCI_ID 0x0540u
 #define M9_PACKET_STOP 0x45u
 #define M9_MAX_COMMAND_DWORDS 8192u
-#define M9_MAX_RELOCS 128u
-#define M9_MAX_BOS 64u
+/* Relocation sites one submission may present.  The kernel takes at most
+ * one a command dword, so the command image is the only real bound; the
+ * batch grows its array and never refuses a job the stream still fits. */
+#define M9_MAX_RELOCS M9_MAX_COMMAND_DWORDS
+/* Objects one submission may reference; the kernel's own ceiling. */
+#define M9_MAX_BOS 128u
 #define M9_MAX_MIP_LEVELS 13u
 #define M9_MAX_SKIP_REASONS 16u
 
@@ -209,10 +213,11 @@ enum m9_program_mode {
 
 struct m9_batch {
    uint32_t command[M9_MAX_COMMAND_DWORDS];
-   struct drm_parhelia_m9_reloc relocs[M9_MAX_RELOCS];
+   /* Grown on demand; a batch must be zeroed before its first init. */
+   struct drm_parhelia_m9_reloc *relocs;
    struct drm_parhelia_m9_bo_ref bos[M9_MAX_BOS];
    uint32_t command_count;
-   uint32_t reloc_count;
+   uint32_t reloc_count, reloc_capacity;
    uint32_t bo_count;
    enum m9_program_mode program_mode;
    bool sealed;
@@ -333,6 +338,7 @@ struct m9_context {
     * values over through; grown to the largest target and stride seen. */
    struct m9_resource record;
    unsigned record_dwords;
+   bool record_written;               /* a split job ran since the last flush */
    /* Pass-through fragment slots with a native vertex program behind them,
     * for a draw whose fragment shader keeps the captured colour image. */
    struct m9_resource vs_c2;
