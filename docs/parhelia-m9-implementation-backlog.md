@@ -65,8 +65,16 @@ Recorded so they are not attempted again.
 
 Listed so they are not mistaken for ready work: multisample and FAA allocation,
 pattern, mask and resolve; native 10-bit GigaColor render and sample; S3TC;
-float textures; anisotropic filtering; PBO; and sRGB **sampling** - the write
+anisotropic filtering; PBO; and sRGB **sampling** - the write
 path is exact but the sampler decode was never joined.
+
+**Float textures moved out of this list (partly).**  The vendor binds format
+code `0x34` (`A32B32G32R32F`) at texture index `78/79` in
+`captures/m9x-vendor-glamor-shaders-20260915/gradient-{linear,radial}-18`,
+so a 128-bit float texel is a real sampler format, not a table entry.  What is
+captured is one linear 1-D lookup with NEAREST filtering from system memory;
+tiled placement and filtering of float texels are still uncaptured.  See
+`parhelia-m9-texture-upload-and-copy-re.md`.
 
 ## Suggested order
 

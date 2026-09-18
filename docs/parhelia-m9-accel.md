@@ -5,6 +5,25 @@
 > roles contradictory within this file.  Use the packet payload findings as RE
 > leads only.  See `parhelia-m9-3d-submission.md` and
 > `parhelia-m9-parhelia-3d-comparison.md` before implementing an engine backend.
+>
+> **Settled 2026-09-18 against the captures** (see
+> `parhelia-m9-texture-upload-and-copy-re.md`).  A sweep of all 606 decodable
+> vendor submissions in `captures/` establishes three things about this file:
+>
+> * The surface roles are `b0/b1`..`b6/b7` = colour attachments 0..3,
+>   `b8/b9` = depth, `ba/bb` = hierarchical Z.  Both the "RT0 = `0xb8/0xb9`"
+>   table and the later "CORRECTION: the 2D destination is `0x12d8/0x12dc`"
+>   section below are **wrong**; `0xb6/0xb7` is colour attachment 3, not a
+>   copy source.
+> * The **copy** encoding below is never exercised by any capture: index
+>   `0x2a` and the literal templates `0x4545FCF3`/`0x45FCF2F3` do not occur in
+>   any of the 781 saved command images, and `0xf2` is zero in all 478 of its
+>   writes.  Treat it as an unverified STATIC lead.
+> * The `f0/f3/f4/fc` launch **is** captured, as a vertexless **rectangle
+>   fill/clear** with `fc` repeating the `f4` extent.  That part is real.
+>
+> The captured surface-to-surface copy is an ordinary textured quad:
+> destination at `b0/b1`, source at `78/79/7a`, launched by a draw record.
 
 Reverse-engineered from the vendor Linux driver
 `m9xdriver-x86_64-1.4.3-.../xserver/1_13_0/m9x_drv.so` (source file `PLOS_exa.cpp`).

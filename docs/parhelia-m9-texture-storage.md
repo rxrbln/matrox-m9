@@ -258,3 +258,22 @@ without changing the ABI size:
 7. A 64x64 texture must warn and skip the draw without locking up.
 8. Kernel texture window: step 7 of section 5, then repeat 5 with 64x64 and
    128x128 textures.
+
+## 8. The kind byte is two fields, and one of its values is linear
+
+Added 2026-09-18; the evidence is in `parhelia-m9-texture-upload-and-copy-re.md`.
+`79[23:16]` is not an enum.  `[18:16]` is the allocation-layout selector
+(0 = row-major, 1 = blocked), `[20:19]` the dimension (0 2-D, 1 cube, 2 volume,
+3 1-D, 4 large 2-D) and `[21]` the local/aperture address family.  So kind `18`
+is "1-D, **linear**", which is why its texels sit at `4*x`, and kinds `01` and
+`21` differ only in the dimension and address-family bits.
+
+Two consequences this note previously ruled out:
+
+* the sampler reads **linear** storage — kind `18` is the captured proof, and
+  a linear 2-D shape (kind byte `00` or `20`) has simply never been captured
+  either way;
+* a texture base may live in **system memory** — the vendor binds
+  `78 = 40c3a001`, a class-1 GPUVA, with `79 = 68180800` (format `34`
+  `A32B32G32R32F`, kind `18`, 2048 elements), to lower a dynamically indexed
+  GLSL uniform array.
