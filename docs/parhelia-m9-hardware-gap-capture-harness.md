@@ -311,3 +311,32 @@ both checked.
 
 <!-- Copyright 2026 Rene Rebe <rene@exactco.de> -->
 <!-- SPDX-License-Identifier: GPL-2.0-only -->
+
+
+## A fixture must not compute its own reference in the shader
+
+MEASURED 2026-09-18.  A fixture that derived per-texel reference values from
+`gl_FragCoord` arithmetic came back one 1/255 step low on **13415 of 61440**
+texels.  The fragment unit is fixed point and cannot reconstruct exact 1/255
+steps from coordinate maths, so the reference was wrong rather than the
+driver.
+
+Upload the traceable data and copy it 1:1 with a nearest filter instead.  Any
+fixture that generates its reference in the shader will produce a false FAIL,
+and a false FAIL costs more than a missing test because it sends the next
+reader hunting a defect that is not there.
+
+## A green suite does not prove the hardware ran
+
+MEASURED 2026-09-18.  A Mesa build configured without
+`--cross-file cross-t2-llvm.ini` links against the host libdrm and X
+libraries; `libEGL_mesa` then fails `dri2_create_screen`, EGL falls back to
+**llvmpipe**, and every fixture still reports PASS because the harness
+compares against a CPU reference.  Assert `GL_RENDERER` is `Matrox M9` on
+every run and count the cases that are not.
+
+Related: a build of the shared Mesa tree compiles **every other agent's
+uncommitted edits** into the binary under test.  One such build failed every
+case, including untextured ones, with zero stream timeouts, while the shared
+prefix passed at the same moment; rebuilding from `git archive HEAD` plus the
+change under test alone restored the control to PASS.

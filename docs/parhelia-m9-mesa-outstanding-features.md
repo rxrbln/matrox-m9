@@ -10,6 +10,16 @@ one is blocked on a decode the readiness table itself lists as open, and one
 turned out to be attacking the wrong half of the driver.  This note records
 what was measured, so the next attempt starts from evidence.
 
+**Status 2026-09-18.**  Two of the four have moved since this note was
+written.  MRT's surface side is implemented and the target-enable field in
+index `ef` is now CAPTURED, but binding a second colour target stops the
+engine and the fragment destination for target p is still only DERIVED -
+`parhelia-m9-mrt-routing.md` supersedes section 1 below.  The occlusion query
+is being implemented.  Sections 3 and 4 stand.  The conclusion of this note -
+that MRT is blocked on the fragment output export rather than on target
+binding - was confirmed, and the backlog entry claiming MRT was fully reverse
+engineered was wrong: the vendor's MRT fragment programs were never captured.
+
 Labels: **MEASURED** is a hardware result on the dual-DisplayPort M9128;
 **CAPTURED** is read from a saved vendor stream or binary in this tree;
 **DERIVED** is joined from those; **UNTESTED** is named where it is.

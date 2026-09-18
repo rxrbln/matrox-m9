@@ -5,7 +5,7 @@ what the **vendor hardware** does, what we have **reverse engineered**, and
 what **this driver actually implements**.  Only the third column decides
 whether a feature works today.
 
-Checked against the driver source on 2026-09-17.
+Checked against the driver source on 2026-09-18.
 
 ## Reverse engineered and verified, not implemented
 
@@ -14,22 +14,28 @@ was confirmed against a live vendor GL context.
 
 | feature | evidence | driver today |
 |---|---|---|
-| **Occlusion query** | exact fixed selector pair, modulo-32 result, begin/end retirement, live 16384/8192/0 visible/partial/hidden with asynchronous availability and reuse | not implemented |
-| **Cube textures** | all six face and orientation tests pass, exact descriptor and per-mip per-face base formula | not advertised |
-| **3D textures** | 7x5x4 slices, R repeat, exact volume descriptor and full-depth mip recurrence | not advertised |
-| **Rectangle textures** | unnormalized sampling passes; level 1, repeat and mip filters raise the required errors | not advertised |
+| **Occlusion query** | exact fixed selector pair, modulo-32 result, begin/end retirement, live 16384/8192/0 visible/partial/hidden with asynchronous availability and reuse | implementation in progress (`m9_query.c`) |
+| **Rectangle textures** | unnormalized sampling passes; level 1, repeat and mip filters raise the required errors | `PIPE_TEXTURE_RECT` is accepted by `m9_is_format_supported`; no fixture covers it, so UNTESTED |
 | **Separate stencil** | exact face controls and live separate-op packet.  Note the vendor's own API rejects valid LESS/GREATER enums - implement correct core behaviour, do not copy the bug | partial |
 | **Fog coordinates, blend equations** | modes and destination-sensitive results captured; static mapping covers operations 1..5 | partial |
-| **sRGB write** | RT0 `SRGBWRITEENABLE` emits an exact 25-slot shader suffix; clear has the exact CPU encode curve | not implemented |
-| **Third vertex attribute** | MEASURED 2026-09-17: `88[27:24]` is the unary count of declared source attributes; `m9_draw.c` hardcodes two.  100% correct readback once declared | `M9_VS_HW_ATTRIBUTES 2` |
-| **Second and further vertex varyings** | output pair `(0x11+4j, 0x13+4j)` feeds the target at `0xb0+2j`, CAPTURED 310/310 passes; target 3 at `b6` is bound by nobody; count declared in `ef` bits 19/21/23 | one varying |
+| **sRGB write** | RT0 `SRGBWRITEENABLE` emits an exact 25-slot shader suffix; clear has the exact CPU encode curve | the backend implements it behind `m9_fs_blend.srgb`, but `m9_format.c` advertises no sRGB colour format, so the state tracker never binds one and the path is unreachable.  Advertising a format is what remains |
+| **Second and further vertex varyings** | output pair `(0x11+4j, 0x13+4j)` feeds the target at `0xb0+2j`, CAPTURED 310/310 passes; target 3 at `b6` is bound by nobody; count declared in `ef` bits 19/21/23 | one varying (`M9_VS_MAX_VARYINGS 1`) |
 
 ## Reverse engineered, implementation in progress
 
 | feature | state |
 |---|---|
-| Framebuffer multipass fragment | raster emitter, descriptor and route model committed and verified; compiler-side splitter in progress.  Unblocks `effect2d` x2, `desktop`, `terrain`, `shadow`, `refract` |
+| Framebuffer multipass fragment | **implemented and on by default.**  The missing state was index `ef` bits 10:9, a pass's place in the sequence (0 only, 1 first, 2 middle, 3 last).  The record is four 32-bit floats a fragment, indexed by the engine's fragment counter.  Depth is evaluated in the **first** raster pass only.  Scene results in `parhelia-m9-glmark2-status.md`; what still stalls is a split draw returning to an earlier render-target shape |
 | MRT, four render targets | surface side implemented and pinned offline: four `b0 + 2s` pairs with `COLOR` relocations, one render format class a target in `89`, one write mask a target across `ab` and `ac`.  What remains is a fragment backend that compiles more than one colour output, and the native destination that names target p, which is DERIVED as `0x2d + p` and not yet measured.  `caps->max_render_targets` stays 1 until it is.  `docs/parhelia-m9-mrt-routing.md` |
+
+## Established as unreachable on this hardware
+
+Recorded so they are not attempted again.
+
+| feature | why |
+|---|---|
+| **R8, RG8** | MEASURED: the M9 narrow family is luminance/alpha only (`0x30` L8, `0x31` A4L4, `0x33` A8, `0x50` L16, `0x51` A8L8); the firmware's 52-record format table holds no R8 or R8G8, and there is no sampler swizzle field - the format code *is* the swizzle.  Added experimentally with storage expanded into the RGBA8 family, an imported R8 plane samples nothing: "texture is not stored in a captured sampler layout".  `GL_RED` additionally needs R8 as a render target, for which no code exists.  Advertising it would make EGL accept an NV12 or R8 import and return black |
+| **Sampling any linear imported buffer** | MEASURED as part of the above: only the driver's own tiled texture storage and tiled BGRA render surfaces sample.  This is what puts NV12 plane sampling out of reach regardless of format codes |
 
 ## Known defects, cause understood
 
@@ -38,7 +44,8 @@ was confirmed against a live vendor GL context.
 | Projective fetch whose projector varies across a primitive divides per **vertex** | MEASURED wrong in 75373 of 76800 pixels.  Currently masked by an accidental refusal, so loosening that check without fixing the divide turns a refusal into a silently wrong picture |
 | One constant span per job | a per-object transform ends the job; cost the native vertex path 10% on `ideas` and 5% on `pulsar` |
 | `emit_rcp` with a literal operand returns 4x too large | worked around by folding literals at compile time; root cause open |
-| D16 depth attachments draw with no depth | only D24S8 gets a depth descriptor |
+| ~~D16 depth attachments draw with no depth~~ | **resolved**: Z16 is now claimed for sampling only, so the state tracker falls back to `x8z24_unorm` and a depth attachment always carries the hierarchical surface |
+| A split draw that returns to an earlier render-target shape stops the engine | reduced to `m9-mesa-glsl splitpair:168x168:640x480:20`, three seconds without X.  Two alternating draws render, the third stalls; `84x84` and `88x88` share a render layout yet only one pair stalls, so the declared dimensions and not the layout are what differ.  Blocks `desktop`, and blocks turning on `M9X_SPLIT_PRESSURE` which is what `terrain` needs |
 | CPU-uploaded depth textures never reach the sampler | tiled surface, linear transfer |
 | `glReadPixels(GL_DEPTH_COMPONENT)` returns the first map's value forever | pre-existing, not understood |
 | First modeset above the firmware's mode logs `scanout publish failed (-19)` | the frame after is correct; the ordering is not |
