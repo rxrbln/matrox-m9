@@ -97,12 +97,15 @@ bool m9_faa_active(const struct m9_faa *faa);
 uint32_t m9_faa_coverage_fixed(float coverage);
 uint32_t m9_faa_ad(const struct m9_faa *faa, uint64_t color_bytes);
 uint32_t m9_faa_af(const struct m9_faa *faa);
-/* The and/or pair that edits the AA mode into an index-ae word. */
-void m9_faa_ae_edit(const struct m9_faa *faa, uint32_t *and_mask,
-                    uint32_t *or_mask);
-void m9_faa_ef_edit(const struct m9_faa *faa, uint32_t *and_mask,
-                    uint32_t *or_mask);
-void m9_faa_f0_edit(const struct m9_faa *faa, uint32_t *and_mask,
-                    uint32_t *or_mask);
+/* Every index this state edits rather than replaces, in one object: a
+ * caller that fills it cannot wire one index and forget another, which is
+ * how ef and f0 came to be written as zero. */
+struct m9_faa_edits {
+   uint32_t ae_and, ae_or;
+   uint32_t ef_and, ef_or;
+   uint32_t f0_and, f0_or;
+};
+
+void m9_faa_edits(const struct m9_faa *faa, struct m9_faa_edits *edits);
 
 #endif

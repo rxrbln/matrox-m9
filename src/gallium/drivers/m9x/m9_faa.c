@@ -65,42 +65,27 @@ m9_faa_coverage_fixed(float coverage)
 }
 
 void
-m9_faa_ae_edit(const struct m9_faa *faa, uint32_t *and_mask, uint32_t *or_mask)
+m9_faa_edits(const struct m9_faa *faa, struct m9_faa_edits *edits)
 {
-   *and_mask = 0xffffffffu;
-   *or_mask = 0;
+   *edits = (struct m9_faa_edits) {
+      .ae_and = 0xffffffffu, .ef_and = 0xffffffffu, .f0_and = 0xffffffffu,
+   };
    if (!m9_faa_active(faa))
       return;
    if (faa->ae_mode >= 0) {
-      *and_mask &= ~0x70u;
-      *or_mask |= ((uint32_t)faa->ae_mode & 7u) << 4;
+      edits->ae_and &= ~0x70u;
+      edits->ae_or |= ((uint32_t)faa->ae_mode & 7u) << 4;
    }
    if (faa->ae_bit28)
-      *or_mask |= 0x10000000u;
-}
-
-void
-m9_faa_ef_edit(const struct m9_faa *faa, uint32_t *and_mask, uint32_t *or_mask)
-{
-   *and_mask = 0xffffffffu;
-   *or_mask = 0;
-   if (!m9_faa_active(faa) || faa->ef_mode < 0)
-      return;
-   *and_mask &= ~0xe0000000u;
-   *or_mask |= ((uint32_t)faa->ef_mode & 7u) << 29;
-}
-
-void
-m9_faa_f0_edit(const struct m9_faa *faa, uint32_t *and_mask, uint32_t *or_mask)
-{
-   *and_mask = 0xffffffffu;
-   *or_mask = 0;
-   if (!m9_faa_active(faa))
-      return;
+      edits->ae_or |= 0x10000000u;
+   if (faa->ef_mode >= 0) {
+      edits->ef_and &= ~0xe0000000u;
+      edits->ef_or |= ((uint32_t)faa->ef_mode & 7u) << 29;
+   }
    if (faa->f0_bit15)
-      *or_mask |= 0x00008000u;
+      edits->f0_or |= 0x00008000u;
    if (faa->f0_bit24)
-      *or_mask |= 0x01000000u;
+      edits->f0_or |= 0x01000000u;
 }
 
 uint32_t

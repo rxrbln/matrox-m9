@@ -342,19 +342,19 @@ m9_stream_offset(const struct m9_draw_job *job, unsigned view)
 static uint32_t
 m9_job_ae(const struct m9_draw_job *job, uint32_t base)
 {
-   return job->faa.set ? (base & job->faa.ae_and) | job->faa.ae_or : base;
+   return job->faa.set ? (base & job->faa.edit.ae_and) | job->faa.edit.ae_or : base;
 }
 
 static uint32_t
 m9_job_ef(const struct m9_draw_job *job, uint32_t base)
 {
-   return job->faa.set ? (base & job->faa.ef_and) | job->faa.ef_or : base;
+   return job->faa.set ? (base & job->faa.edit.ef_and) | job->faa.edit.ef_or : base;
 }
 
 static uint32_t
 m9_job_f0(const struct m9_draw_job *job, uint32_t base)
 {
-   return job->faa.set ? (base & job->faa.f0_and) | job->faa.f0_or : base;
+   return job->faa.set ? (base & job->faa.edit.f0_and) | job->faa.edit.f0_or : base;
 }
 
 static uint32_t

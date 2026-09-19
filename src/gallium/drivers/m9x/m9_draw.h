@@ -5,6 +5,7 @@
 
 #include "m9_batch.h"
 #include "m9_draw_params.h"
+#include "m9_faa.h"
 #include "m9_texture.h"
 #include "m9_vs_compile.h"
 
@@ -159,13 +160,9 @@ struct m9_draw_job {
       bool set;
       bool raster;   /* restate the pair in the raster range as well */
       uint32_t ad, af;
-      /* Index ae carries the AA mode in bits 6:4, so it is edited rather
-       * than replaced: a pass keeps the rest of its own word. */
-      uint32_t ae_and, ae_or;
-      /* Index ef bits 31:29 carry the same field on the Windows side, and
-       * index f0 two flags beside it; both are edits, not replacements. */
-      uint32_t ef_and, ef_or;
-      uint32_t f0_and, f0_or;
+      /* ae bits 6:4, ef bits 31:29 and two f0 flags are edited rather than
+       * replaced, so a pass keeps the rest of its own word. */
+      struct m9_faa_edits edit;
    } faa;
 };
 

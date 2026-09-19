@@ -2053,7 +2053,10 @@ m9_submit_job(struct m9_context *ctx)
          job.faa.raster = ctx->screen->faa.raster;
          job.faa.ad = m9_faa_ad(&ctx->screen->faa, m9_res(ctx->color)->size);
          job.faa.af = m9_faa_af(&ctx->screen->faa);
-         m9_faa_ae_edit(&ctx->screen->faa, &job.faa.ae_and, &job.faa.ae_or);
+         /* One call fills every edited index: wiring ae alone left ef and
+          * f0 written as zero, which cleared the cull, depth and format
+          * bits the pass built and rendered nothing (MEASURED). */
+         m9_faa_edits(&ctx->screen->faa, &job.faa.edit);
       }
       if (fs) {
          job.program = key->variant->c2.handle;
