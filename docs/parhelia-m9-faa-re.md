@@ -417,6 +417,13 @@ storage that is missing:
 |---|---|
 | mode 6 or 7 with `af` bit 11, alpha to coverage | stream timeout |
 | mode 6 with a D24S8 depth/stencil attachment | stream timeout, nothing rendered |
+| **mode 7 with a D24S8 depth/stencil attachment** | **stream timeout, nothing rendered** |
+
+The depth refusal is not a property of the mode *value*.  Mode 7 is the value
+the vendor's compiler produces when a depth companion exists, and it stops
+the engine beside an ordinary depth attachment exactly as mode 6 does
+[MEASURED, `faarectd`, one reboot].  So what the unit wants is the companion
+surface itself, not a different mode selector.
 
 The depth case is the more telling of the two: the mode value itself is
 chosen by whether a *depth companion* surface exists (`[edi+0x18]` in section
@@ -543,9 +550,32 @@ A driver that multiplies a hardware count by the sample count in order to
 report samples believes the hardware counts **pixels**.  `MxMD`'s Direct3D
 type-9 result applies no such scaling (`0x1199ef`).
 
-What the counter does while the unit is actually multisampling is [OPEN] and
-is measured by the same `faaocc` fixture the moment the enable is found - it
-prints the ratio of count to covered pixels.
+### With the unit on [MEASURED]
+
+`faaocc` attaches depth and so cannot run with the unit on.  `faaoccnz` is
+the same measurement with no depth attachment, which is the only way to ask
+the question at all.  Both arms are deterministic over three runs:
+
+| probe | mode | counter | pixels the readback shows written |
+|---|---|---:|---:|
+| rectangle 240x200 | off | 48000 | 48000 |
+| diagonal triangle | off | 24000 | 24000 |
+| rectangle 240x200 | `ef[31:29] = 6` | **42400** | 42040 |
+| diagonal triangle | `ef[31:29] = 6` | **21170** | 21210 |
+
+The counter is **not** multiplied by a sample count: it stays within 0.9% of
+the pixels the engine actually wrote, and is nowhere near two or four times
+either that or the unclipped 48000.  So with the unit enabled but no
+fragment store bound, the counter still counts at pixel rate.  This is
+consistent with section 7's vendor evidence - the vendor's GL layer
+multiplies the hardware count by `GL_SAMPLES` precisely because the hardware
+counts pixels.
+
+It does not yet answer what the counter would do with fragments actually
+accumulating, because none are: the small residuals (+360 on the rectangle,
+-40 on the triangle) are the reserved lane being counted or not at block
+edges, and they are the size of a rounding effect, not of a factor.  The
+measurement is repeated once the store of section 4b is bound.
 
 ## 8. Sample positions
 
@@ -617,18 +647,43 @@ the instrument for it is built and calibrated.
    surface is multisampled [STATIC, whole-`.text` header scan of both the
    Windows and the Linux image].  The one packet-name string in either image
    is `RESET_FRAG_PTR`, issued after every blit rather than at a resolve.
-8. **What an occlusion query counts.**  **PARTIALLY CLOSED.**  With
-   multisampling off the M9 counter counts pixels exactly [MEASURED]; the
-   vendor's GL layer multiplies by `GL_SAMPLES`, so the vendor believes the
-   same, and the M-series Linux driver does it too at `0x6bb034..0x6bb04e`
-   [STATIC, two independent images].  The multisampled case cannot be run
-   yet: a query fixture attaches depth, and a depth attachment with the unit
-   enabled stops the engine [MEASURED].
+8. **What an occlusion query counts.**  **CLOSED as far as the hardware can
+   be asked today, negative.**  With multisampling off the M9 counter counts
+   pixels exactly [MEASURED]; the vendor's GL layer multiplies by
+   `GL_SAMPLES`, so the vendor believes the same, and the M-series Linux
+   driver does it too at `0x6bb034..0x6bb04e` [STATIC, two independent
+   images].  With the unit enabled the counter is still at pixel rate -
+   42400 against 42040 written pixels, 21170 against 21210 - and is not two
+   or four times anything [MEASURED, `faaoccnz`, section 7].  The question
+   is reopened only if a bound fragment store changes it.
 9. **A depth format chosen for the internal 0x10/0x11 GigaColor
    resources.**  **CLOSED, negative, confirmed.**  No such branch exists.
    Depth does participate in multisampling, but as a *presence* test: the
    depth companion at `[edi+0x18]` selects between the 6/7 and 4/5 rows of
    the section 4 table.  It selects no depth *format*.
+
+## 9b. A driver fault this cost, and the guard against it [MEASURED]
+
+The first run of this pass reproduced none of section 4b: with
+`M9X_FAA_EF_MODE=6` the M9128 rendered **nothing at all** - 0 of 48000
+interior pixels, 0 of 12000 inside the triangle - and did not stop the
+engine, which reads exactly like a unit refusing to draw.
+
+The cause was in this driver.  `m9_context.c` filled the and/or pair of
+index `ae` and left those of `ef` and `f0` at zero, so an active job wrote
+both of those indices as literal 0 and cleared the cull, depth and
+render-format bits the pass had built.  The unit test could not see it
+because it hand-filled the three and-masks itself.
+
+The three per-index helpers are now one `m9_faa_edits()` that fills every
+edited index at once, and the unit test asks that function rather than
+writing masks of its own.  With that fixed, `ef[31:29] = 6` reproduces
+section 4b exactly: 42040 of 48000 and 21170 of 24000, 5960 and 1500 pixels
+skipped at x a multiple of four and y even.
+
+The lesson generalises past this feature: **a state that edits several
+command indices must fill them from one object**, or a later index is
+silently written as zero and the hardware is blamed for it.
 
 ## 10. What this driver implements
 
