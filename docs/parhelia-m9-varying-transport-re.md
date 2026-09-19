@@ -563,9 +563,16 @@ were believed.
 
 | mode | `vary3` | stream timeout | the card afterwards |
 |---|---|---|---|
-| 0 | nothing rendered, 76800 of 76800 pixels differ | none | stops rendering |
-| 1 | nothing rendered | none | stops rendering |
-| 2 | nothing rendered | none | stops rendering |
+| 0 | nothing rendered, 76800 of 76800 pixels differ | once yes, once no | stops rendering |
+| 1 | nothing rendered | none logged | stops rendering |
+| 2 | nothing rendered | none logged | stops rendering |
+
+Mode 0 was run twice against the same library, each run bracketed by its own
+passing `texture`, and the two disagree on the timeout alone: one logged
+`M9 kernel stream timeout` and the other logged nothing, with the same
+pixels and the same dead card either way.  **So a run that logs no timeout
+has not therefore completed.**  Only the fixture that follows says whether
+the engine still executes, which is why every step here ends with one.
 
 `vary3` is the minimal case: Mesa folds its third varying into the second as a
 swizzle, so its raster pass reads two interpolants and its extra draw binds a
