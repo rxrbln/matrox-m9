@@ -4,8 +4,8 @@
 
 MEASURED at 1920x1200 on the M9128, one X server and one process a benchmark,
 `M9X_SKIP_REPORT=1`, **0 stream timeouts**, fixture suite **228 of 228 PASS**
-before the sweep.  Each of the three had been reporting a frame rate for a
-picture it did not draw.
+both before and after the sweep.  Each of the three had been reporting a frame
+rate for a picture it did not draw.
 
 | benchmark | before: fps, draws skipped a frame | after: fps, skipped | what it was |
 |---|---|---|---|
@@ -38,6 +38,10 @@ histogram has exactly that pair -- **76 over 26.7% of pixels and 38 over
 3.0%**, one being half the other, with 68% black background.  So the map
 carries real depth and the shadow is drawn.
 
+The distinct-colour count is **not** comparable between runs here: these
+scenes animate, and a capture 6 s in is at a different phase from one at 5 s
+or 8 s.  The histogram pair is what carries the reading.
+
 `jellyfish` is the blended scene, 232951 distinct colours over a blue
 distribution centred near 160-165.  `loop` is the `fract` noise pattern, 256
 luminance levels thinly spread over the grid with the background black.
@@ -47,8 +51,10 @@ in the suite covered any of the three shapes: `depthonly` renders a shadow
 map into a framebuffer with no colour attachment (the existing `depthtex`
 always attached a colour texture as well), `blendheavy` blends a shader whose
 body names the whole register pool, and `loopuni:0`, `:5` and `:24` draw a
-loop over a uniform bound.  Each was checked against the build before its fix
-as a negative control.
+loop over a uniform bound.  `blendheavy` and the `loopuni` cases carry an
+OFFLINE negative control -- the same shader is refused by the build before the
+fix; `depthonly` has none, because the refusal it guards was in the driver's
+framebuffer path rather than in the compiler the offline test drives.
 
 
 ## Superseded: standing 2026-09-19 (merged): the whole thirty-three on one build
