@@ -52,7 +52,7 @@ llvmpipe frame of the same variant:
 | | frame mean r, g, b | 8x8 tile difference |
 |---|---|---:|
 | before | 68.6, 43.6, 113.8 | 58.6 of 255 |
-| **after** | **92.6, 89.7, 79.9** | **21.9 of 255** |
+| **after** | **92.5, 89.6, 79.8** | **21.8 of 255** |
 | llvmpipe | 95.0, 88.8, 31.7 | -- |
 
 Red and green now match; the frame has the reference's relief, its grass and
