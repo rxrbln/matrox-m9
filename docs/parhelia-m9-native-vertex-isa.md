@@ -309,8 +309,10 @@ per-axis limits `(w, w * gx)` and `(w, -w * gy)` — `gx` and `gy` are exactly
 `e = 0x05`, class 2 `<=`) against pair 17 `(+inf, -inf)`, one for the clip
 `xy` and one for the clip `zw`, so they are finiteness tests.  Slots 32, 33 and
 35 are a three-source form at `op2 = 0x00` with W1 `0x8c01cd10`, classes 0, 1
-and 2, whose arithmetic is **UNDECODED**; slot 36 is a DP3 over the two compare
-results, slot 37 the fragment note's select (`op2 = 0x1a`, register condition,
+and 2, whose arithmetic is **UNDECODED**; slot 36 is a two-component dot of the
+two compare results plus a constant, the `op2 = 0x0d` register-register dot
+`docs/parhelia-m9-vertex-isa-gaps.md` section 6 decodes (it was called a DP3
+here before that form was read); slot 37 the fragment note's select (`op2 = 0x1a`, register condition,
 class 0) between `r0d` and pair 21 `(1.25, 1.5)`, and slot 38 an `op2 = 0x04`
 write into `r21`.
 
@@ -367,9 +369,16 @@ captured fragment program.
 3. The **safe temporary range**.  The vendor writes `0x00..0x21` freely in
    vertex programs, unlike the fragment unit where class-0 destinations
    `0x00/0x01` lock the engine; that difference is CAPTURED, not measured.
-4. Whether the vertex unit has the fragment unit's **special-function chains**
-   (exp2, log2, rsq) — `vs-lighting` and `vs-math` contain a reciprocal-square-
-   root shape but they were not decoded here.
+4. ~~Whether the vertex unit has the fragment unit's **special-function
+   chains**~~ — settled in `docs/parhelia-m9-vertex-isa-gaps.md` section 6:
+   `exp2` and the **reciprocal-square-root chain** are both CAPTURED on the
+   vertex unit (the rsq seed `op2 = 0x11` class 5 and its step `op2 = 0x13`
+   class 7, in `vs-lighting`, `vs-math` and `vs-builtin-light`, which is the
+   shape those two cases carry).  `log2` is CAPTURED in fragment programs
+   only and stays OPEN, with the probe that would settle it in section 4 of
+   that note.  There is **no sine and no cosine instruction** at all: the
+   vendor lowers both to a `fract` range reduction and a polynomial whose
+   coefficients sit in its compiler's constant pool.
 
 None of that is needed for the immediate win, which is section 3 alone.
 

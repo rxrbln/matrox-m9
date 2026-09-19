@@ -228,12 +228,20 @@ the vertex unit**:
 | compare against a constant pair | 0x00, UNIT 1 | s14 |
 | reciprocal seed, residual, Newton step | 0x11, 0x01 cls 5, 0x13 | s15, s17, s18 |
 
-Taken from the fragment unit's measured forms, which section 5 of the ISA
-document says the vertex unit shares, but **not captured in a vertex program**:
-multiply-add with a register addend, add and subtract of two registers,
-minimum and maximum, negate, saturate, fract/floor/ceil, select, and the
-reciprocal-square-root chain.  These are UNTESTED on the vertex unit and are
-what a hardware run has to confirm first.
+CAPTURED in a vertex program as well, which
+`docs/parhelia-m9-vertex-isa-gaps.md` section 6 establishes over the whole
+corpus: multiply-add over three registers (`op2 = 0x02`, `e = 0x3f`),
+**maximum** (`op2 = 0x19` class 3), **negate** (`op2 = 0x15`), **select**
+(`op2 = 0x1a` class 4) and the **reciprocal-square-root chain** (seed
+`op2 = 0x11` class 5, step `op2 = 0x13` class 7), all in `vs-lighting`,
+`vs-math`, `vs-builtin-light`, `ff-fog-exp` and `ff-fog-exp2`.
+
+Still taken from the fragment unit's measured forms and **not captured in a
+vertex program**: add and subtract of two registers, **minimum**
+(`op2 = 0x19` class 2), saturate and fract/floor/ceil.  Those four are
+UNTESTED on the vertex unit in the sense that no capture states them; the
+backend has emitted them on the default path since 2026-09-17, so a form that
+did nothing would have shown as a wrong scene rather than silently.
 
 Absolute value is a compare, a negate and a select, and square root is the
 argument times its reciprocal square root with the vendor's zero guard --
@@ -261,6 +269,15 @@ both the shapes the fragment backend already uses.
   both ways costs two.  A third needs the second preprocessing draw, which
   has never delivered a stream on this board.
 * **One basic block.**  Control flow is refused.
+* **No sine or cosine by default.**  Neither has an instruction: the vendor
+  lowers both, and `docs/parhelia-m9-vertex-isa-gaps.md` section 1 carries the
+  coefficient table it lowers them with, read out of `MSerX/MxMD.dll`.  The
+  same reduction and polynomial are rebuilt here from forms the backend
+  already emits, behind `M9X_VS_SINCOS`, **default off** until the engine has
+  run the sequence.
+* **No integer arithmetic**, and none exists; `iand`, `ior` and `inot` over a
+  one-bit definition are accepted as the float lowerings the fragment backend
+  uses, and a 32-bit bitwise operation is refused.
 * **No logarithm or power.**  `exp2` is CAPTURED on the vertex unit -- the
   vendor's own `ff-fog-exp` and `ff-fog-exp2` vertex programs carry the seed,
   polynomial, two steps and scale with the same words, the same operand wiring
