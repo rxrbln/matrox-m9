@@ -401,6 +401,15 @@ static unsigned m9_be_clear;
  * splitsize3:6 and splitpair:168x168:640x480:20 all stop the engine with one
  * object a context and all render with one a target).  M9X_BE_PER_TARGET=0
  * restores the single object, which is how the fixture above was measured. */
+/* M9X_BE_REUSE=0 clears the back-end object ahead of every split job, which
+ * is what it did before the shape was remembered. */
+static bool m9_be_reuse;
+/* M9X_BE_SHAPE_CLIP=0 keeps the clip window out of that comparison. */
+static bool m9_be_shape_clip = true;
+/* Bytes of the back-end object a clear writes; 0 is the whole of it.  The
+ * object is a megabyte of VRAM and the clear is CPU write-combined, so how
+ * much of it the engine actually reads is worth a frame rate. */
+static unsigned m9_be_clear_bytes;
 static bool m9_be_per_target = true;
 /* A posted job retires only at the next submission, so the engine can still
  * be reading the object a CPU clear overwrites.  M9X_BE_SWAP=0 zeroes it in
@@ -1823,6 +1832,53 @@ m9_split_defer(struct m9_context *ctx, const struct m9_job_key *key,
  *
  * M9X_BE_SWAP=0 zeroes in place, which is what the clear did before.
  */
+/* Bytes of the back-end object a clear has to write.  Its mask extent is
+ * linear in the target's area -- 306 dwords at 84x84, 334 at 88x88 and 3149
+ * at 320x240, which fits area / 24.495 + 20 to within three dwords (DERIVED
+ * from the dumps, docs/parhelia-m9-glmark2-status.md) -- so a full-screen
+ * target uses about 367 KiB of the megabyte the object is allocated at.  The
+ * span below is that relation with the divisor rounded down and 16 KiB of
+ * margin, clamped to the allocation; M9X_BE_CLEAR_BYTES overrides it. */
+static uint64_t
+m9_be_clear_span(const struct m9_context *ctx, const struct m9_resource *be)
+{
+   const struct m9_target_depth *entry = ctx->target_entry;
+   uint64_t area = entry && entry->width && entry->height ?
+                   (uint64_t)entry->width * entry->height :
+                   (uint64_t)ctx->params.width * ctx->params.height;
+   uint64_t bytes = m9_be_clear_bytes ? m9_be_clear_bytes :
+                    (area / 6 + (16u << 10) + 0xfff) & ~0xfffull;
+
+   return MIN2(bytes, be->size);
+}
+
+/* Compared field by field rather than with memcmp, whose answer would depend
+ * on the padding of an aggregate initialiser.  M9X_BE_SHAPE_CLIP=0 leaves the
+ * clip window out of the comparison: a padded split job narrows it to the
+ * pixels its own geometry covers, so a mesh cut into many jobs changes it
+ * every time and nothing else about the shape moves. */
+static bool
+m9_be_shape_same(const struct m9_be_shape *a, const struct m9_be_shape *b)
+{
+   return a->variant == b->variant && a->color == b->color &&
+          a->color_offset == b->color_offset && a->depth == b->depth &&
+          a->aux == b->aux && a->color_desc == b->color_desc &&
+          a->depth_desc == b->depth_desc && a->color_count == b->color_count &&
+          a->passes == b->passes &&
+          (!m9_be_shape_clip ||
+           (a->clip_min == b->clip_min && a->clip_max == b->clip_max));
+}
+
+/* Where the shape of the object in force is remembered: a target that owns a
+ * back-end pair keeps its own, the context keeps the one for ctx->be. */
+static struct m9_be_shape *
+m9_be_shape_slot(struct m9_context *ctx)
+{
+   struct m9_target_depth *entry = ctx->target_entry;
+
+   return entry && m9_be_per_target ? &entry->be_shape : &ctx->be_shape;
+}
+
 static void
 m9_be_zero(struct m9_context *ctx)
 {
@@ -1830,9 +1886,10 @@ m9_be_zero(struct m9_context *ctx)
    struct m9_resource *be;
    uint64_t t_be = m9_prof_begin();
 
+   m9_be_shape_slot(ctx)->valid = false;
    if (!entry || !m9_be_per_target) {
       if (ctx->be.map)
-         memset(ctx->be.map, 0, ctx->be.size);
+         memset(ctx->be.map, 0, m9_be_clear_span(ctx, &ctx->be));
       m9_prof_end(M9_PROF_BE, t_be);
       return;
    }
@@ -1852,7 +1909,7 @@ m9_be_zero(struct m9_context *ctx)
    }
    be = &entry->be[entry->be_slot];
    if (be->map)
-      memset(be->map, 0, be->size);
+      memset(be->map, 0, m9_be_clear_span(ctx, be));
    ctx->target_be = be->handle ? be : NULL;
    m9_prof_end(M9_PROF_BE, t_be);
 }
@@ -2042,9 +2099,38 @@ m9_submit_job(struct m9_context *ctx)
     * with four windows walks between targets several times a frame (MEASURED,
     * splitdesk:8:4:11:1920x1200:1:420x420 stalls without this and renders 32
     * frames with it).  M9X_SPLIT_BE=0 leaves it alone. */
-   if (m9_split_be > 2 && pass_count > 1) {
-      m9_be_zero(ctx);
+   {
+      /* Every job the engine runs leaves its state in the object it binds, so
+       * the shape is remembered for each of them and a split job clears only
+       * when what is there is not its own.  M9X_BE_REUSE=0 clears ahead of
+       * every split job, which is what it did before (a megabyte of VRAM
+       * writes a job: 82 of refract's 200 ms a frame, MEASURED). */
+      struct m9_be_shape shape = {
+         .valid = true,
+         .variant = key->variant,
+         .color = ctx->color ? m9_res(ctx->color)->handle : 0,
+         .color_offset = (uint32_t)ctx->color_offset,
+         .depth = key->depth ? key->depth->handle : 0,
+         .aux = key->aux ? key->aux->handle : 0,
+         .color_desc = ctx->params.color_desc,
+         .depth_desc = ctx->params.depth_desc,
+         .clip_min = split_y0 << 16 | split_x0,
+         .clip_max = split_y1 << 16 | split_x1,
+         .color_count = ctx->color_count,
+         .passes = pass_count,
+      };
+      struct m9_be_shape *held = m9_be_shape_slot(ctx);
+      bool differs = !held->valid || !m9_be_shape_same(held, &shape);
+
+      if (m9_split_be > 2 && pass_count > 1 &&
+          (differs || !m9_be_reuse || !ctx->target_be)) {
+         m9_be_zero(ctx);
+         held = m9_be_shape_slot(ctx);
+         differs = true;
+      }
       be_bound = ctx->target_be ? ctx->target_be : &ctx->be;
+      if (differs)
+         *held = be_bound->map ? shape : (struct m9_be_shape) {0};
    }
    ret = ctx->lost ? -EIO :
          m9_arena_reserve(ctx, &ctx->source,
@@ -6674,6 +6760,9 @@ m9_context_create(struct pipe_screen *pscreen, void *priv, unsigned flags)
    m9_be_dump = debug_get_option("M9X_BE_DUMP", NULL);
    m9_be_per_target = debug_get_bool_option("M9X_BE_PER_TARGET", true);
    m9_be_swap = debug_get_bool_option("M9X_BE_SWAP", true);
+   m9_be_reuse = debug_get_bool_option("M9X_BE_REUSE", true);
+   m9_be_shape_clip = debug_get_bool_option("M9X_BE_SHAPE_CLIP", true);
+   m9_be_clear_bytes = debug_get_num_option("M9X_BE_CLEAR_BYTES", 0);
    m9_record_liveness = debug_get_bool_option("M9X_RECORD_LIVENESS", true);
    m9_split_enable = debug_get_bool_option("M9X_SPLIT", true);
    m9_level_targets = debug_get_bool_option("M9X_LEVEL_TARGET", true);

@@ -110,6 +110,17 @@ struct m9_resource {
    struct m9_resource *hz;
 };
 
+/* What the engine's back-end object last carried.  It keeps per-target state
+ * there, and a job that finds another shape's state stops the engine, so the
+ * object is cleared when this changes rather than ahead of every job. */
+struct m9_be_shape {
+   bool valid;
+   const struct m9_fs_variant *variant;
+   uint32_t color, color_offset, depth, aux;
+   uint32_t color_desc, depth_desc, clip_min, clip_max;
+   unsigned color_count, passes;
+};
+
 struct m9_target_depth {
    uint32_t width, height;
    uint64_t used;
@@ -125,6 +136,7 @@ struct m9_target_depth {
     * the first time a target of this shape wants a clear. */
    struct m9_resource be[2];
    unsigned be_slot;
+   struct m9_be_shape be_shape;
 };
 
 /* Enough for several full-screen pairs, so that a scene alternating a
@@ -453,6 +465,7 @@ struct m9_context {
    struct m9_resource *target_depth, *target_aux, *target_be;
    struct util_dynarray target_depths;  /* struct m9_target_depth * */
    struct m9_target_depth *target_entry;  /* the one bound, for its be pair */
+   struct m9_be_shape be_shape;       /* of ctx->be, when no entry owns one */
    uint64_t target_clock;
    struct m9_resource placeholder_texture;  /* 1x1 unit-0 binding */
    bool record_written;               /* a split job ran since the last flush */
