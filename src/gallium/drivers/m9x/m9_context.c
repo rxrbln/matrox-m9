@@ -446,6 +446,10 @@ static uint64_t m9_prof_records, m9_prof_jobs, m9_prof_varying_bytes;
 static uint64_t m9_prof_draws, m9_prof_split[8];
 static uint64_t m9_prof_indexed, m9_prof_referenced, m9_prof_welded_corners;
 static uint64_t m9_prof_refused, m9_prof_skipped, m9_prof_relocs;
+/* Draws the native vertex path took and the draws it left to the draw
+ * module, since the last profile line: a benchmark that never destroys its
+ * drawing context reports nothing at all otherwise. */
+static uint64_t m9_prof_native, m9_prof_module;
 /* M9X_NO_CLEAR drops the clear quad; M9X_CLEAR_REPEAT draws it that many
  * extra times, which weighs one screen of fill with the frame still correct. */
 static bool m9_no_clear;
@@ -496,7 +500,7 @@ m9_prof_frame(void)
            "refused %.0f skipped %.0f relocs %.0f "
            "indexed %.0f referenced %.0f welded %.0f splits target %.0f program %.0f "
            "depth %.0f mask %.0f clip %.0f uniforms %.0f vertices %.0f "
-           "stream %.0f\n",
+           "stream %.0f | native %.0f draw module %.0f\n",
            m9_prof_jobs / f, m9_prof_draws / f, m9_prof_records / f,
            m9_prof_varying_bytes / f / 1024.0, m9_prof_refused / f,
            m9_prof_skipped / f, (double)m9_prof_relocs, m9_prof_indexed / f,
@@ -504,13 +508,14 @@ m9_prof_frame(void)
            m9_prof_split[0] / f,
            m9_prof_split[1] / f, m9_prof_split[2] / f, m9_prof_split[3] / f,
            m9_prof_split[4] / f, m9_prof_split[5] / f, m9_prof_split[6] / f,
-           m9_prof_split[7] / f);
+           m9_prof_split[7] / f, (double)m9_prof_native, (double)m9_prof_module);
    memset(m9_prof_ns, 0, sizeof(m9_prof_ns));
    memset(m9_prof_hits, 0, sizeof(m9_prof_hits));
    m9_prof_records = m9_prof_jobs = m9_prof_varying_bytes = 0;
    m9_prof_draws = m9_prof_indexed = m9_prof_referenced = 0;
    m9_prof_welded_corners = 0;
    m9_prof_refused = m9_prof_skipped = m9_prof_relocs = 0;
+   m9_prof_native = m9_prof_module = 0;
    memset(m9_prof_split, 0, sizeof(m9_prof_split));
    m9_prof_frames = 0;
    m9_prof_wall = 0;
@@ -4944,6 +4949,7 @@ static void
 m9_native_vs_note(struct m9_context *ctx, const char *reason)
 {
    ctx->native_vs_fallbacks++;
+   m9_prof_module++;
    if (!reason)
       return;
    util_dynarray_foreach(&ctx->native_vs_reasons, struct m9_native_vs_reason,
@@ -5024,6 +5030,7 @@ m9_native_vs_draw(struct m9_context *ctx, const struct pipe_draw_info *info,
       fprintf(stderr, "m9x: native vertex draw taken, %u varyings, fused "
               "pair %d\n", key.vs->varying_count, (int)key.vs_fused_pair);
    ctx->native_vs_draws++;
+   m9_prof_native++;
    return true;
 }
 
