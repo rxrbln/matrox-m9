@@ -1,6 +1,145 @@
 # glmark2 on the m9x driver: where the 60 fps goal actually stands
 
-## Standing 2026-09-19 (fourth): the register allocator, and terrain's colour
+## Standing 2026-09-19 (fifth): what a split job's back-end clear cost
+
+MEASURED at 1920x1200 on the M9128, glmark2's default thirty-three, **one
+process a benchmark in one X session** -- which is sound again since the m9x
+shared-handle table began closing what it opened, and the control run one
+server a benchmark agrees -- `M9X_SKIP_REPORT=1`, **0 stream timeouts**, the
+known-good `texture` fixture passing before and after, both hardware lock
+files held across the whole cycle.  **Not one "draws skipped" line in any of
+the thirty-three.**
+
+| benchmark | fps | standing before |
+|---|---:|---:|
+| `build` vbo=false / vbo=true | 274, 296 | 273, 294 |
+| `texture` nearest / linear / mipmap | 285, 284, 285 | 283, 282, 283 |
+| `shading` gouraud / blinn-phong-inf / phong / cel | 242, 149, 89, 83 | 242, 149, 88, 82 |
+| **`bump`** high-poly / normals / height | **135**, 183, 165 | **105**, 182, 164 |
+| `effect2d` 3x3 / 15-tap | 84, 33 | 84, 33 |
+| `pulsar` | 221 | 219 |
+| **`desktop`** blur / shadow | **44**, 125 | **37**, 124 |
+| `buffer` map / subdata / interleaved | 154, 154, 154 | 153, 153, 153 |
+| `ideas` | 111 | 110 |
+| `jellyfish` | 77 | 77 |
+| `terrain` | 1 (1831 ms) | 1 (2041 ms) |
+| `shadow` | 118 | 111 |
+| **`refract`** | **8** (132 ms) | **5** (216 ms) |
+| `conditionals` 0/0, 0/5, 5/0 | 230, 143, 229 | 229, 142, 228 |
+| `function` low / medium | 169, 72 | 168, 72 |
+| `loop` no-loop / uniform=false / uniform=true | 167, 167, 160 | 166, 166, 159 |
+
+Nothing regressed; four scenes moved and each is attributed below.  Offline
+gates from the build directory they were built in, exit codes read rather than
+last lines (`tools/m9-offline-gates.sh`): `m9-batch-test` rc=0,
+`m9-vs-compile-test` rc=0, `m9-fs-compile-test` rc=0.  Fixture suite **263
+cases, 247 PASS, 16 FAIL, 0 non-M9, 0 stream timeouts**; the sixteen are the
+ten `dxt*`, the four `giga10*` and `mrt10:2`/`mrt10:4`, which
+`docs/parhelia-m9-mrt-routing.md` 2f already records as needing the GigaColor
+kernel module -- the same sixteen features, none of them this work.
+
+### Where `refract`'s frame went, and where it goes now
+
+MEASURED at 1920x1200, `M9X_PROFILE=20`, one binary a row:
+
+| | ms/frame | fps | jobs | ioctl | be | varying | KiB gathered |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| before | 210.8 | 5 | 130 | 81.1 | 82.0 | 15.9 | 118983 |
+| after | 128.0 | 8 | 70 | 74.7 | 16.1 | 7.0 | 29574 |
+
+**The frame was never mostly submission.**  `M9X_DRYRUN=1` validates the same
+command stream in the kernel and does not execute it; the ioctl phase is then
+**4.6 ms** where the live one is 75, and the whole frame is 94.6 ms where the
+live one is 166.  So the call itself costs about 5 ms and the other 70 is the
+engine drawing, which is why the ioctl phase **does not move with the job
+count**: 81.1 ms at 130 jobs, 76.0 at 70, 82.8 at 55.  The CPU and GPU halves
+add rather than overlap, and the CPU half is what this work cut.
+
+**82 of the 210 ms were one memset.**  A split job cleared the engine's
+back-end object ahead of itself, every time, because a job that finds another
+shape's state there stops the engine.  The object is a megabyte of VRAM and the
+clear is a CPU write-combined store, so it cost about 0.63 ms a job.  Two
+things bound it:
+
+* **the shape it carries is remembered**, for every job the engine runs, and a
+  split job clears only when what is there is not its own.  This does not fire
+  on `refract`: a padded split job narrows the clip window to the pixels its
+  own geometry covers, so a mesh cut into seventy jobs changes it seventy
+  times -- and the clip window is genuinely part of what the object holds.
+  With `M9X_BE_SHAPE_CLIP=0`, which leaves it out of the comparison, the engine
+  stops and the stream times out (MEASURED).  It does fire for `desktop`,
+  whose sixteen split jobs a frame now spend **1.49 ms** in the clear.
+* **the clear is sized by the extent the object uses**, not by the allocation.
+  The mask extent is linear in the target's area, `area / 24.495 + 20` dwords
+  (DERIVED from the dumps, below), 367 KiB at 1920x1200 against a 1 MiB
+  `M9_BE_BYTES`.  MEASURED on `refract` at 23040 job vertices, one binary with
+  `M9X_BE_CLEAR_BYTES` the only variable and every cell rendering with the
+  fixture passing after it: **be 41.68 ms at 1 MiB, 20.99 at 512 KiB, 15.09 at
+  384 KiB, 10.66 at 256 KiB**.  The driver now writes the relation with the
+  divisor rounded down and 16 KiB of margin.
+
+**The record ceiling is the second lever, and its failure at the maximum is
+explained.**  MEASURED on `refract`, `M9X_JOB_VERTICES` the only variable, no
+draw skipped in any cell: 130 jobs and 210.8 ms at 11520, 70 and 166.5 at
+23040, 67 and 165.9 at 32768, 55 and 165.5 at 46080.  The default is now
+23040.  `65532` -- the most the 16-bit raster index allows -- **exhausts
+VRAM**: the transient stream views are `20 * ceiling * 16` bytes, 21 MiB there
+against 3.7 at the old default, and the run reports "cannot allocate target
+depth" and "cannot allocate the c2 image", draws nothing and times the stream
+out (MEASURED).  It is **VRAM, not system memory** -- this target has 16 GB --
+so the note that blamed 481 MB is replaced rather than merely withdrawn.
+
+**`bump` high-poly gains from the ceiling for a different reason: the weld.**
+MEASURED, one binary, the ceiling the only variable: at 11520 the scene is 14
+jobs of 144004 records and 105 fps; at 23040 its 144000-corner mesh fits one
+indexed run, welds to 40219 referenced vertices, and it is **3 jobs of 40224
+records and 135 fps**.  `refract` welds the same way at 46080 (208998 corners
+to 34835 referenced) but gains nothing by it, because its cost is not the
+records.
+
+**The varying gather is a quarter of what it was.**  A split job preprocesses
+one copy of its geometry a raster pass, so pass `i` reads records at the first
+copy's index plus `i * records`, and the CPU-gathered varying views were
+replicated behind the first set to match.  The copies are unnecessary: the view
+a pass binds is a relocation of its own, so the gather is written once at the
+tail of the view and each pass's base is pulled back by exactly its own copy's
+offset.  MEASURED with this as the only change: 118294 to 29574 KiB a frame,
+17.47 to 6.94 ms, and the frame 166.45 to 154.02 ms.
+
+**Several draws to a job was already the driver's behaviour.**  MEASURED with
+`M9X_PROFILE=100`: `ideas` puts **351 draws into 20 jobs** a frame and
+`shading=phong` 7 into 3.  Where the two are 1:1 it is because a mesh draw
+fills the record ceiling on its own, or because the job is split and a split
+job carries exactly one raster draw.  Every one of `refract`'s 70 jobs is
+split, so this lever could not have reached it.
+
+**What now bounds `refract`, plainly.**  Of its 128 ms: the engine 75, the
+back-end clear 16, the draw module and the record fill about 24, the varying
+gather 7, the record copy 4, the command build 2.  Removing **every** remaining
+CPU cost would leave 75 ms, which is **13 fps**.  The scene is a dependent
+texture chain that the engine cannot run in one pass, so it rasterises its
+208998-corner mesh four times a frame; 60 fps needs the pass count or the
+fragment cost to fall, not the submission path.
+
+### The picture
+
+CAPTURED off scanout at 1920x1200, `xwd` of the root window at 5 s and 8 s,
+against an llvmpipe frame of the same scene at the same seconds (`Xvfb :77`,
+`LIBGL_ALWAYS_SOFTWARE=1`, the T2 `glmark2`, `maim`).  The scene animates, so
+the two renderers are at different phases and the 8 s pair is the one where
+they nearly coincide:
+
+| | distinct colours | mean r,g,b | 8x8 tile difference |
+|---|---:|---|---:|
+| M9, 8 s | 57051 | 15.2, 12.6, 19.4 | **1.5 of 255** vs llvmpipe |
+| llvmpipe, 8 s | 54667 | 14.9, 12.2, 18.7 | -- |
+| M9 before this work, 8 s | 55671 | 14.9, 12.4, 19.0 | **1.0 of 255** vs the M9 after |
+
+So the frame the faster driver draws is the frame the slower one drew, and
+both are the reference's.
+
+
+## Superseded: standing 2026-09-19 (fourth): the register allocator, and terrain's colour
 
 MEASURED at 1920x1200 on the M9128, **one X server and one process a
 benchmark** (`tools/m9x-glmark-default-suite-fresh-x.sh`),

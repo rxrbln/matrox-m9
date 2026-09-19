@@ -457,13 +457,27 @@ arena and through one index run per copy, so the records it can carry are
 - 2856 of 11520 at four passes, 1620 at seven.  Two consequences:
 
 * A mesh under a split shader is cut into many single-draw jobs.  refract's
-  208998 corners at four passes are 103 jobs a frame as the draw module's own
-  blocks divide them (MEASURED, `M9X_SPLIT_TRACE=2`), and that job count is
-  what the scene's frame time now is.
+  208998 corners at four passes were 103 jobs a frame as the draw module's own
+  blocks divided them at the old 11520 ceiling, and 70 at the 23040 the driver
+  now defaults to (MEASURED).  That job count is **not** the scene's frame
+  time: what a job cost was the clear of the engine's back-end object it took,
+  a megabyte of VRAM written by the CPU, and with the clear sized by the extent
+  the object uses the same 70 jobs cost 16 ms a frame rather than 82
+  (`docs/parhelia-m9-glmark2-status.md`, the fifth standing).
 * `records * passes` also has to fit the **16-bit** index space, because each
   copy's indices are the first copy's plus `i * records`.  So the ceiling
   cannot usefully exceed 65536 however much memory there is, and 16384 records
-  a job is the most a four-pass shader can ever hold.
+  a job is the most a four-pass shader can ever hold.  **VRAM stops it first on
+  this board**: the transient stream views are `20 * ceiling * 16` bytes, so
+  65532 asks for 21 MiB of them and a 1920x1200 run then reports "cannot
+  allocate target depth", draws nothing and times the stream out (MEASURED).
+  23040, which is 7.4 MiB of views, is where the gain is taken: 130 jobs and
+  210.8 ms a frame at 11520 against 70 and 166.5 here, 55 and 165.5 at 46080.
+* The **CPU-gathered varying views need no copy a pass.**  Pass `i` reads at
+  the first copy's index plus `i * records`, so the gather is written once at
+  the tail of the view and each pass's stream relocation is pulled back by its
+  own copy's offset; the pull-back is never negative because `passes * records`
+  is the view's own ceiling.
 
 Producers that sized their runs by the whole ceiling had them refused here and
 dropped the geometry silently; `m9_job_max_vertices()` is the single statement
