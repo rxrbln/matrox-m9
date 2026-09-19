@@ -184,10 +184,12 @@ struct m9_vs_const {
 struct m9_vs_output {
    uint8_t location;       /* gl_varying_slot the value comes from */
    uint8_t component;      /* first of the pair; coordinate streams only */
-   /* Which coordinate stream of the fragment variant this is.  Two streams
-    * may take the same pair of the same varying and differ only in the
-    * transform the sampler folds into it, so the index is what names one. */
+   /* Which coordinate stream of which raster pass this is.  Two streams may
+    * take the same pair of the same varying and differ only in the
+    * transform the sampler folds into it, and every pass numbers its own
+    * coordinate streams from zero, so the pair is what names one. */
    uint8_t coord;
+   uint8_t pass;
    bool coordinate;
 };
 
@@ -237,10 +239,10 @@ int m9_vs_varying_index(const struct m9_vs_program *program,
 
 /* The stream index a raster input arrives on, or -1 when the program writes
  * no such stream: a varying is named by its location and a coordinate by
- * the fragment variant's stream index.  Index 0 lands on transient view 0
- * and index k on the extra pass's target k - 1. */
+ * the raster pass it belongs to and that pass's own stream index.  Index 0
+ * lands on transient view 0 and index k on the extra pass's target k - 1. */
 int m9_vs_stream_index(const struct m9_vs_program *program, unsigned location,
-                       unsigned coord, bool coordinate);
+                       unsigned pass, unsigned coord, bool coordinate);
 
 /* Returns false with a static reason when the shader is not covered.
  * outputs names the streams the program must write; NULL asks for one

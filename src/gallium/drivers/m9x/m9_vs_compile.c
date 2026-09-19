@@ -1917,14 +1917,15 @@ m9_vs_varying_index(const struct m9_vs_program *p, unsigned location)
 
 int
 m9_vs_stream_index(const struct m9_vs_program *p, unsigned location,
-                   unsigned coord, bool coordinate)
+                   unsigned pass, unsigned coord, bool coordinate)
 {
    for (unsigned v = 0; v < p->outputs.count; v++) {
       const struct m9_vs_output *o = &p->outputs.stream[v];
 
       if (o->coordinate != coordinate)
          continue;
-      if (coordinate ? o->coord == coord : o->location == location)
+      if (coordinate ? o->coord == coord && o->pass == pass :
+                       o->location == location)
          return (int)v;
    }
    return -1;

@@ -299,15 +299,22 @@ static unsigned m9_native_vs_varyings = M9_VS_FUSED_VARYINGS;
 /* M9X_VS_TEXTURE=1 lets a native preprocessing job produce a texture
  * coordinate stream itself.  It is MEASURED correct -- the texpair, rtt300
  * and rtt:64x23 fixtures are pixel-exact through it and glmark2's texture
- * scene draws the same picture as the draw module and as llvmpipe -- and
- * MEASURED not to pay: over glmark2's default thirty-three at 1920x1200 it
- * takes texture x3 fully native and costs them 292 -> 234 fps, and
- * desktop:shadow 128 -> 124.  Both costs are named in
- * docs/parhelia-m9-glmark2-status.md.  Off until they are fixed.  It gates
- * the thing that costs -- a pass that has to produce a coordinate stream --
- * not any fragment program that samples, so a draw whose coordinate an
- * earlier raster pass produced is decided on its own merits. */
+ * scene draws the same picture -- and MEASURED not to pay: over the default
+ * thirty-three at 1920x1200 it takes texture x3 fully native and costs them
+ * 292 -> 234 fps, and desktop:shadow 128 -> 124.  Both costs are named in
+ * docs/parhelia-m9-glmark2-status.md.  Off until they are fixed; a draw
+ * whose coordinate an earlier raster pass produced does not need a stream
+ * and is not gated by this. */
 static bool m9_native_vs_texture;
+/* M9X_VS_SPLIT=1 lets a native preprocessing job carry a fragment program
+ * the engine runs as several raster passes.  The layout below is the union
+ * over the passes, which for a shader that hands a coordinate between them
+ * is one stream -- glmark2's shadow is that shape -- but the hardware
+ * refuses it: the coordroute fixture, a two-pass job whose second pass
+ * takes its coordinate from the inter-pass record, renders nothing at all
+ * (MEASURED on the M9128, 76800 of 76800 pixels differ, no stream timeout,
+ * the card alive afterwards).  Off until that is understood. */
+static bool m9_native_vs_split;
 /* M9X_NATIVE_VS=0 keeps every vertex shader in the draw module.  On by
  * default since the whole hardware fixture corpus passes either way
  * (m9-mesa-vs 14/14, m9-mesa-glsl 90/90, 2026-09-17). */
@@ -1089,13 +1096,13 @@ m9_varying_is_color(unsigned location)
  * draw's targets 0..2. */
 static int
 m9_pass_varying_view(const struct m9_job_key *key, unsigned location,
-                     unsigned coord, bool coordinate)
+                     unsigned pass, unsigned coord, bool coordinate)
 {
    int index;
 
    if (!key->vs)
       return location == VARYING_SLOT_COL0 ? 0 : -1;
-   index = m9_vs_stream_index(key->vs, location, coord, coordinate);
+   index = m9_vs_stream_index(key->vs, location, pass, coord, coordinate);
    return index <= 0 ? index :
           (int)M9_TRANSIENT_VS_EXTRA_VIEW + index - 1;
 }
@@ -1290,7 +1297,7 @@ m9_job_native(struct m9_context *ctx, const struct m9_job_key *key,
       /* A varying the preprocessing pass itself writes comes from stream
        * view 0; everything else the CPU gathers into a view of its own. */
       for (unsigned k = 0; k < p->varying_count; k++) {
-         int view = m9_pass_varying_view(key, p->varyings[k].location, 0,
+         int view = m9_pass_varying_view(key, p->varyings[k].location, i, 0,
                                          false);
 
          flat[k] = m9_varying_is_color(p->varyings[k].location);
@@ -1299,7 +1306,8 @@ m9_job_native(struct m9_context *ctx, const struct m9_job_key *key,
                                     st->varying_extra[k];
       }
       for (unsigned c = 0; c < st->coord_count; c++) {
-         int view = m9_pass_varying_view(key, st->coord_location[c], c, true);
+         int view = m9_pass_varying_view(key, st->coord_location[c], i, c,
+                                         true);
 
          coords[c] = st->coord_extra[c] < 0 || view >= 0 ?
                      MAX2(view, 0) : M9_TRANSIENT_CPU_VIEW +
@@ -4358,10 +4366,11 @@ struct m9_native_vs {
  * Two units sharing a stream agree in transform and span -- m9_job_key
  * refuses a draw where they do not -- so the first is enough. */
 static unsigned
-m9_coord_stream_slot(const struct m9_fs_variant *v, unsigned coord)
+m9_coord_stream_slot(const struct m9_fs_variant *v, unsigned pass,
+                     unsigned coord)
 {
-   const struct m9_fs_pass_streams *st = &v->stream[v->passes.count - 1];
-   const struct m9_fs_program *fp = m9_fs_final(v);
+   const struct m9_fs_pass_streams *st = &v->stream[pass];
+   const struct m9_fs_program *fp = &v->passes.pass[pass];
 
    for (unsigned k = 0; k < fp->texture_count; k++)
       if (st->texture_coord[k] == coord && st->unit[k] < M9_DRAW_MAX_UNITS)
@@ -4375,10 +4384,11 @@ m9_coord_stream_slot(const struct m9_fs_variant *v, unsigned coord)
  * are only resolved for a unit that carries one, so a plain fetch scales by
  * the span alone. */
 static void
-m9_vs_coord_coefficients(const struct m9_job_key *key, unsigned coord,
-                         unsigned part, float *out)
+m9_vs_coord_coefficients(const struct m9_job_key *key, unsigned pass,
+                         unsigned coord, unsigned part, float *out)
 {
-   unsigned k = key->variant ? m9_coord_stream_slot(key->variant, coord) : ~0u;
+   unsigned k = key->variant && pass < key->variant->passes.count ?
+                m9_coord_stream_slot(key->variant, pass, coord) : ~0u;
    const struct m9_fs_program *fp;
    bool affine;
    unsigned u;
@@ -4386,9 +4396,9 @@ m9_vs_coord_coefficients(const struct m9_job_key *key, unsigned coord,
    out[0] = out[1] = part == M9_VS_COORD_SCALE ? 1.0f : 0.0f;
    if (k == ~0u)
       return;
-   fp = m9_fs_final(key->variant);
+   fp = &key->variant->passes.pass[pass];
    affine = fp->texcoord_affine[k].present;
-   u = key->variant->stream[key->variant->passes.count - 1].unit[k];
+   u = key->variant->stream[pass].unit[k];
    for (unsigned i = 0; i < 2; i++) {
       float span = key->unit_scale[u][i];
 
@@ -4416,8 +4426,10 @@ m9_vs_resolve_consts(struct m9_context *ctx, const struct m9_job_key *key,
       float pair[2] = { 0.0f, 0.0f };
 
       if (k->kind == M9_VS_CONST_COORD) {
-         m9_vs_coord_coefficients(key, p->outputs.stream[k->coord_stream].coord,
-                                  k->coord_part, pair);
+         const struct m9_vs_output *o = &p->outputs.stream[k->coord_stream];
+
+         m9_vs_coord_coefficients(key, o->pass, o->coord, k->coord_part,
+                                  pair);
          util_dynarray_append_typed(out, float, pair[0]);
          util_dynarray_append_typed(out, float, pair[1]);
          continue;
@@ -4700,48 +4712,56 @@ m9_native_vs_layout(const struct m9_job_key *key, const struct m9_vs_program *p,
       };
       return NULL;
    }
-   fp = m9_fs_final(key->variant);
-   if (key->variant->passes.count > 1)
+   if (key->variant->passes.count > 1 && !m9_native_vs_split)
       return "the fragment program runs as several raster passes";
-   if (fp->varying_count > M9_VS_MAX_VARYINGS)
-      return "the fragment program reads more varyings than the "
-             "preprocessing pass writes";
-   st = &key->variant->stream[key->variant->passes.count - 1];
-   for (unsigned k = 0; k < fp->varying_count; k++) {
-      struct m9_vs_output stream = { .location = fp->varyings[k].location };
+   /* Every raster pass interpolates what it reads, so the streams are the
+    * union over the passes: a value handed between them travels through the
+    * inter-pass record and costs none. */
+   for (unsigned i = 0; i < key->variant->passes.count; i++) {
+      fp = &key->variant->passes.pass[i];
+      st = &key->variant->stream[i];
+      if (fp->varying_count > M9_VS_MAX_VARYINGS)
+         return "the fragment program reads more varyings than the "
+                "preprocessing pass writes";
+      for (unsigned k = 0; k < fp->varying_count; k++) {
+         struct m9_vs_output stream = { .location = fp->varyings[k].location };
 
-      if (m9_vs_varying_index(p, stream.location) < 0)
-         return "the vertex program does not write a varying the fragment "
-                "program reads";
-      reason = m9_native_vs_add_stream(out, &stream);
-      if (reason)
-         return reason;
-   }
-   /* A projector varies per fragment and the stream can only carry a
-    * per-vertex divide, and a shadow or volume fetch reads a third
-    * interpolated component the two-scalar stream does not hold. */
-   for (unsigned k = 0; k < fp->texture_count; k++) {
-      if (st->texture_coord[k] == M9_RASTER_COORD_NONE)
-         return "a texture coordinate an earlier raster pass produced";
-      if (fp->texcoord_projective[k])
-         return "the texture coordinate is divided by a projector";
-      if (fp->texcoord_shadow[k] || fp->texcoord_volume[k])
-         return "the texture coordinate carries a third component";
-   }
-   if (st->coord_count && !m9_native_vs_texture)
-      return "the fragment program samples at a coordinate stream "
-             "(M9X_VS_TEXTURE)";
-   for (unsigned c = 0; c < st->coord_count; c++) {
-      struct m9_vs_output stream = { .location = st->coord_location[c],
-                                     .component = st->coord_component[c],
-                                     .coord = c, .coordinate = true };
+         if (m9_vs_varying_index(p, stream.location) < 0)
+            return "the vertex program does not write a varying the fragment "
+                   "program reads";
+         reason = m9_native_vs_add_stream(out, &stream);
+         if (reason)
+            return reason;
+      }
+      /* A projector varies per fragment and the stream can only carry a
+       * per-vertex divide, and a shadow or volume fetch reads a third
+       * interpolated component the two-scalar stream does not hold.  A slot
+       * an earlier pass feeds -- its texel or its coordinate -- interpolates
+       * nothing and needs no stream. */
+      for (unsigned k = 0; k < fp->texture_count; k++) {
+         if (st->texture_coord[k] == M9_RASTER_COORD_NONE)
+            continue;
+         if (fp->texcoord_projective[k])
+            return "the texture coordinate is divided by a projector";
+         if (fp->texcoord_shadow[k] || fp->texcoord_volume[k])
+            return "the texture coordinate carries a third component";
+      }
+      if (st->coord_count && !m9_native_vs_texture)
+         return "the fragment program samples at a coordinate stream "
+                "(M9X_VS_TEXTURE)";
+      for (unsigned c = 0; c < st->coord_count; c++) {
+         struct m9_vs_output stream = { .location = st->coord_location[c],
+                                        .component = st->coord_component[c],
+                                        .coord = c, .pass = i,
+                                        .coordinate = true };
 
-      if (m9_vs_varying_index(p, stream.location) < 0)
-         return "the vertex program does not write the varying a texture "
-                "coordinate comes from";
-      reason = m9_native_vs_add_stream(out, &stream);
-      if (reason)
-         return reason;
+         if (m9_vs_varying_index(p, stream.location) < 0)
+            return "the vertex program does not write the varying a texture "
+                   "coordinate comes from";
+         reason = m9_native_vs_add_stream(out, &stream);
+         if (reason)
+            return reason;
+      }
    }
    return NULL;
 }
@@ -7049,6 +7069,7 @@ m9_context_create(struct pipe_screen *pscreen, void *priv, unsigned flags)
       debug_get_num_option("M9X_VS_VARYINGS", M9_VS_FUSED_VARYINGS),
       M9_VS_MAX_VARYINGS);
    m9_native_vs_texture = debug_get_bool_option("M9X_VS_TEXTURE", false);
+   m9_native_vs_split = debug_get_bool_option("M9X_VS_SPLIT", false);
 
    m9_no_clear = debug_get_bool_option("M9X_NO_CLEAR", false);
    m9_mrt_mask_all = debug_get_bool_option("M9X_MRT_MASK_ALL", false);
