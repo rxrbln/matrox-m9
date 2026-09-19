@@ -38,13 +38,14 @@ split cases ok.  The fragment gate's summary line reads "required exact
 which is how a refusal of `split shared-coordinate-stream` was first missed
 here.
 
-Fixture suite on the same build: **256 cases, 242 PASS, 14 FAIL, 0 non-M9, 0
-stream timeouts**, the engine proved before and after.  The fourteen are the
-`dxt*` family, which the driver refuses with "texture levels beyond the
-captured 32x16 tail need the kernel texture window", and the four `giga10*`
-cases; all fourteen fail identically with `M9X_RA_RESET=0 M9X_CHECK_RA=0`, so
-they are the state of those two features and not the allocator (MEASURED,
-`dxt1`, `giga10clear` and `giga10tex` run both ways one after the other).
+Fixture suite: **256 cases, 242 PASS, 14 FAIL, 0 non-M9, 0 stream timeouts**,
+the engine proved before and after, and the same tally on the build before and
+after the interpolation-register scope fix.  The fourteen are the ten `dxt*`
+cases, which the driver refuses with "texture levels beyond the captured 32x16
+tail need the kernel texture window", and the four `giga10*`; all fourteen
+fail identically with `M9X_RA_RESET=0 M9X_CHECK_RA=0`, so they are the state
+of those two features and not the allocator (MEASURED, `dxt1`, `giga10clear`
+and `giga10tex` run both ways one after the other).
 
 **Nothing regressed.**  Every row matches the standing below it within
 run-to-run noise, and the allocator change -- which touches every fragment
