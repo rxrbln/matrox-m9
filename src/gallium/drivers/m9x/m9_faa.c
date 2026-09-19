@@ -2,6 +2,7 @@
 /* Copyright 2026 René Rebe <rene@exactco.de> */
 
 #include <math.h>
+#include <stdio.h>
 
 #include "util/u_debug.h"
 
@@ -21,12 +22,27 @@ m9_faa_init(struct m9_faa *faa, uint16_t device_id)
    faa->coverage = (float)debug_get_num_option("M9X_FAA_COVERAGE", 256) /
                    256.0f;
    faa->coverage_invert = debug_get_bool_option("M9X_FAA_INVERT", false);
-   faa->af_flags = (uint32_t)debug_get_num_option("M9X_FAA_AF_FLAGS", 0) &
-                   3u;
+   faa->sample_coverage = debug_get_bool_option("M9X_FAA_SAMPLE_COVERAGE",
+                                                false);
+   faa->alpha_to_coverage =
+      debug_get_bool_option("M9X_FAA_ALPHA_TO_COVERAGE", false);
+   faa->ae_mode = (int)debug_get_num_option("M9X_FAA_AE_MODE", -1);
+   faa->ae_bit28 = debug_get_bool_option("M9X_FAA_AE_BIT28", false);
    faa->ad_force = (uint32_t)debug_get_num_option("M9X_FAA_AD", -1);
    faa->af_force = (uint32_t)debug_get_num_option("M9X_FAA_AF", -1);
    faa->ad_forced = faa->ad_force != 0xffffffffu;
    faa->af_forced = faa->af_force != 0xffffffffu;
+   faa->trace = debug_get_bool_option("M9X_DEBUG", false);
+   if (faa->trace)
+      fprintf(stderr, "m9x: faa chip %d enable %d raster %d coverage %u "
+              "invert %d sc %d a2c %d forced ad %d/%08x af %d/%08x\n",
+              faa->chip, faa->enable, faa->raster,
+              m9_faa_coverage_fixed(faa->coverage), faa->coverage_invert,
+              faa->sample_coverage, faa->alpha_to_coverage, faa->ad_forced,
+              faa->ad_force, faa->af_forced, faa->af_force);
+   if (faa->trace)
+      fprintf(stderr, "m9x: faa ae mode %d bit28 %d\n", faa->ae_mode,
+              faa->ae_bit28);
 }
 
 bool
@@ -44,6 +60,21 @@ m9_faa_coverage_fixed(float coverage)
    return (uint32_t)lrintf(clamped * 256.0f) & 0x1ffu;
 }
 
+void
+m9_faa_ae_edit(const struct m9_faa *faa, uint32_t *and_mask, uint32_t *or_mask)
+{
+   *and_mask = 0xffffffffu;
+   *or_mask = 0;
+   if (!m9_faa_active(faa))
+      return;
+   if (faa->ae_mode >= 0) {
+      *and_mask &= ~0x70u;
+      *or_mask |= ((uint32_t)faa->ae_mode & 7u) << 4;
+   }
+   if (faa->ae_bit28)
+      *or_mask |= 0x10000000u;
+}
+
 uint32_t
 m9_faa_ad(const struct m9_faa *faa, uint64_t color_bytes)
 {
@@ -59,6 +90,12 @@ m9_faa_ad(const struct m9_faa *faa, uint64_t color_bytes)
    units = color_bytes >> 5;
    if (units > 0xfffffu)
       units = 0xfffffu;
+   if (faa->trace && !faa->traced) {
+      ((struct m9_faa *)faa)->traced = true;
+      fprintf(stderr, "m9x: faa ad %08x from %llu colour bytes, af %08x\n",
+              (uint32_t)units, (unsigned long long)color_bytes,
+              m9_faa_af(faa));
+   }
    return (uint32_t)units;
 }
 
@@ -73,6 +110,10 @@ m9_faa_af(const struct m9_faa *faa)
       return M9_FAA_AF_OFF;
    af = m9_faa_coverage_fixed(faa->coverage);
    if (faa->coverage_invert)
+      af |= 0x200u;
+   if (faa->sample_coverage)
+      af |= 0x400u;
+   if (faa->alpha_to_coverage)
       af |= 0x800u;
-   return af | faa->af_flags << 12;
+   return af;
 }

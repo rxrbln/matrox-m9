@@ -1852,6 +1852,7 @@ m9_submit_job(struct m9_context *ctx)
          job.faa.raster = ctx->screen->faa.raster;
          job.faa.ad = m9_faa_ad(&ctx->screen->faa, m9_res(ctx->color)->size);
          job.faa.af = m9_faa_af(&ctx->screen->faa);
+         m9_faa_ae_edit(&ctx->screen->faa, &job.faa.ae_and, &job.faa.ae_or);
       }
       if (fs) {
          job.program = key->variant->c2.handle;

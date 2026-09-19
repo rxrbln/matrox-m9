@@ -153,6 +153,9 @@ struct m9_draw_job {
       bool set;
       bool raster;   /* restate the pair in the raster range as well */
       uint32_t ad, af;
+      /* Index ae carries the AA mode in bits 6:4, so it is edited rather
+       * than replaced: a pass keeps the rest of its own word. */
+      uint32_t ae_and, ae_or;
    } faa;
 };
 

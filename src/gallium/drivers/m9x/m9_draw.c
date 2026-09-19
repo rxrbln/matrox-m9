@@ -328,6 +328,14 @@ m9_stream_offset(const struct m9_draw_job *job, unsigned view)
  * bits already resolve what dithering exists to hide, so a GigaColor target
  * takes the off word, as the vendor's own Parhelia path does.
  */
+/* Index ae with this job's AA mode edited in; an inactive job keeps the
+ * captured word. */
+static uint32_t
+m9_job_ae(const struct m9_draw_job *job, uint32_t base)
+{
+   return job->faa.set ? (base & job->faa.ae_and) | job->faa.ae_or : base;
+}
+
 static uint32_t
 m9_dither_ef(uint32_t color_desc)
 {
@@ -556,7 +564,7 @@ m9_emit_raster_range(struct m9_batch *batch, const struct m9_draw_job *job,
    EMIT(V(0xab, pass && pass->writes_record ? 0xffffffffu : job->color_mask),
         V(0xac, pass && pass->writes_record ? 0xffffffffu :
                 job->color_count > 2 ? job->color_mask_hi : 0xffffffffu),
-        V(0xae, pass ? pass->ae : 0x22444442u));
+        V(0xae, m9_job_ae(job, pass ? pass->ae : 0x22444442u)));
    /* The captured stream carries the multisample pair in preprocessing
     * alone; restating it here tests whether the raster range needs it. */
    if (job->faa.set && job->faa.raster) {
@@ -922,7 +930,8 @@ m9_emit_preprocess(struct m9_batch *batch, const struct m9_draw_job *job,
    EMIT(V(0xad, faa_ad), V(0xad, faa_ad), V(0xad, faa_ad), V(0xad, faa_ad));
    EMIT(V(0xaf, job->faa.set ? job->faa.af : M9_FAA_AF_OFF));
    EMIT(V(0xa8, 0x1f), V(0xa9, 0), V(0xaa, 0));
-   EMIT(V(0xab, 0xffffffff), V(0xac, 0xffffffff), V(0xae, 0x22444442));
+   EMIT(V(0xab, 0xffffffff), V(0xac, 0xffffffff),
+        V(0xae, m9_job_ae(job, 0x22444442u)));
    EMIT(V(0xf5, 0), V(0xf6, 0x7fff7fff), V(0xc4, 0), V(0xc5, 0x7fff7fff));
    /* Bits 27:24 are the unary count of declared source attributes; the
     * constant two of the captured pass-through made a third attribute read

@@ -32,16 +32,37 @@ struct m9_faa {
     * The captured vendor stream carries it in preprocessing only; a sticky
     * register makes that sufficient, which is what M9X_FAA_RASTER tests. */
    bool raster;
-   /* Auxiliary state 25: a float the engine takes as af[8:0] in 1.8 fixed
-    * point.  Its reset value is 1.0f and gives 0x100. */
+   /* af[8:0] is auxiliary state 25, a float in 1.8 fixed point whose reset
+    * value 1.0f gives 0x100, fed by the vendor OpenGL driver from
+    * glSampleCoverage; af[9] is auxiliary state 24, that call's invert
+    * flag; af[10] and af[11] are bits 2 and 1 of auxiliary state 23, which
+    * the vendor ICD packs from GL_SAMPLE_COVERAGE and
+    * GL_SAMPLE_ALPHA_TO_COVERAGE.  The master multisample enable is bit 0
+    * of that same auxiliary word and does NOT reach af; it is carried by a
+    * dword this driver does not yet write.
+    *
+    * MEASURED on the M9128: every af bit is inert except bit 11, which
+    * stops the engine -- so the word is live silicon, and what is missing
+    * is the enable, not the af construction. */
    float coverage;
-   bool coverage_invert;  /* af bit 11 */
-   uint32_t af_flags;     /* af bits 13:12 */
+   bool coverage_invert;    /* af bit 9 */
+   bool sample_coverage;    /* af bit 10 */
+   bool alpha_to_coverage;  /* af bit 11, stops the engine on its own */
    /* Raw overrides, for probes that sweep a field the meaning of which is
     * not yet known.  A sweep must be able to reach a value the formula
     * cannot produce, or it cannot test the formula. */
+   /* Index ae bits 6:4 are the engine's AA mode selector: the vendor's
+    * compiler writes 7 with multisampling off, 4 with it on, 5 with it on
+    * beside a depth companion, and 3 when the target has no allocation
+    * (STATIC, MxMD.dll 0x139521..0x139594 and the M-series Linux driver's
+    * m9x29045 at 0x3c82d0..0x3c8310, which agree row for row).  Bit 28 is
+    * set by the same lowerer.  A negative mode leaves the captured word
+    * alone, which is the default. */
+   int ae_mode;
+   bool ae_bit28;
    bool ad_forced, af_forced;
    uint32_t ad_force, af_force;
+   bool trace, traced;
 };
 
 /* ad and af as the engine is left when multisampling is off: the seed form
@@ -65,5 +86,8 @@ bool m9_faa_active(const struct m9_faa *faa);
 uint32_t m9_faa_coverage_fixed(float coverage);
 uint32_t m9_faa_ad(const struct m9_faa *faa, uint64_t color_bytes);
 uint32_t m9_faa_af(const struct m9_faa *faa);
+/* The and/or pair that edits the AA mode into an index-ae word. */
+void m9_faa_ae_edit(const struct m9_faa *faa, uint32_t *and_mask,
+                    uint32_t *or_mask);
 
 #endif
