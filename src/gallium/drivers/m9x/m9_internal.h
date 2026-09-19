@@ -110,8 +110,13 @@ struct m9_target_depth {
    bool scratch;
    struct m9_resource depth, aux;
    /* The engine's own back-end object, which belongs to a target rather than
-    * to the context: a shape revisited after another finds its own. */
-   struct m9_resource be;
+    * to the context: a shape revisited after another finds its own.  There
+    * are two because a job posted asynchronously retires only at the next
+    * submission: a clear swaps to the spare and zeroes that, so the engine
+    * is never reading the object the CPU overwrites.  The spare is allocated
+    * the first time a target of this shape wants a clear. */
+   struct m9_resource be[2];
+   unsigned be_slot;
 };
 
 /* Enough for several full-screen pairs, so that a scene alternating a
@@ -413,6 +418,7 @@ struct m9_context {
     * otherwise reallocate and refill them on every switch. */
    struct m9_resource *target_depth, *target_aux, *target_be;
    struct util_dynarray target_depths;  /* struct m9_target_depth * */
+   struct m9_target_depth *target_entry;  /* the one bound, for its be pair */
    uint64_t target_clock;
    struct m9_resource placeholder_texture;  /* 1x1 unit-0 binding */
    bool record_written;               /* a split job ran since the last flush */
