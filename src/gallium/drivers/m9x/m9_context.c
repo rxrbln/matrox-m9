@@ -3680,6 +3680,10 @@ m9_render_append(struct m9_vbuf_render *r, const struct m9_job_key *key,
    const unsigned max = m9_job_max_vertices(key);
    bool list = topology == M9_TOPOLOGY_LINES ||
                topology == M9_TOPOLOGY_TRIANGLES;
+   /* A list splits only on a whole primitive: the ceiling is a multiple of
+    * four, which is not a multiple of three for every pass count. */
+   unsigned grain = topology == M9_TOPOLOGY_TRIANGLES ? 3 :
+                    topology == M9_TOPOLOGY_LINES ? 2 : 1;
 
    if (indices && m9_indexed_draws) {
       m9_render_append_indexed(r, key, topology, lines, cull, indices,
@@ -3693,7 +3697,7 @@ m9_render_append(struct m9_vbuf_render *r, const struct m9_job_key *key,
       return;
    }
    for (unsigned done = 0; done < count;) {
-      unsigned n = MIN2(count - done, max);
+      unsigned n = MIN2(count - done, max / grain * grain);
       uint32_t first;
       float *extra;
       float *out = m9_job_reserve(r->ctx, key, &r->ctx->key_consts, NULL,
