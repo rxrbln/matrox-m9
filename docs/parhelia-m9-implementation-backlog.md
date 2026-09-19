@@ -83,6 +83,7 @@ Recorded so they are not attempted again.
 | The X server holds three full-screen buffers of every GL client that has exited | MEASURED 2026-09-19 off the VRAM manager: 6840 pages a client in one session, all of them returned when X exits, so it is the server and not the kernel or the client.  By the sixteenth benchmark of glmark2's default list a 1920x1200 render target can no longer be allocated, `desktop`'s blur targets are refused with `GL_FRAMEBUFFER_UNSUPPORTED`, and the benchmark reports **96 fps for a picture it did not draw** - no skipped draw, no timeout, nothing a parser can catch.  Reproduced on demand with fifteen `build` clients ahead of it; `desktop` first in the same session gives 38.  `tools/m9x-glmark-default-suite-fresh-x.sh` starts one X server a benchmark because of this |
 | glmark2 exits with rc=139 moving from the 15-tap `effect2d` scene to `shadow` in one process | client-side, no stream timeout; `shadow` alone is 142 fps.  Sweep one scene per process until understood |
 | A framebuffer with **no colour attachment** has no raster parameters, so every draw into it is skipped | `m9_update_target` gives up as soon as `nr_cbufs` is zero, and `m9_submit_job` then skips the draw with "no valid raster parameters".  glmark2's `shadow` renders its shadow map into a depth-only FBO, so **1446 draws a frame are skipped and the shadow map is never drawn** (MEASURED 2026-09-19, `M9X_SKIP_REPORT`, on the padded path where the coverage refusals are gone).  The scene still reports 145 fps, which is why this was hidden behind the coverage refusals until those were closed |
+| A fragment pass with more constants than the engine holds stops the card, and nothing bounds it | MEASURED 2026-09-19 with the new `fsconst:N` fixture, which grows the constant count at a fixed slot count: `fsconst:24` (209 slots, **56** constants) renders every pixel exactly, `fsconst:30` (257 slots, **68** constants) fails all 76800 and logs a stream timeout.  A captured vendor pass carries 39 (`m9_fs_corpus.h` entry 189 pass 2), so the ceiling is between 56 and 68 and is not decoded.  `m9_raster_fs_init_textured` refuses only above 127, so a shader in that band stops the engine rather than being split or refused.  No glmark2 scene reaches it today -- terrain's largest pass holds 42 -- which is why it is a backlog item and not a fix |
 | CPU-uploaded depth textures never reach the sampler | tiled surface, linear transfer |
 | `glReadPixels(GL_DEPTH_COMPONENT)` returns the first map's value forever | pre-existing, not understood |
 | First modeset above the firmware's mode logs `scanout publish failed (-19)` | the frame after is correct; the ordering is not |
@@ -236,14 +237,48 @@ query, and cube and 3D textures - are all done.
    `docs/parhelia-m9-fragment-pass-splitting.md` section 8.5.
 
    What that leaves is the **new top of this list**: **`terrain`'s picture is
-   moved but not right.**  CAPTURED on scanout at 1920x1200 and 800x500, the
-   distinct-colour count over the root window goes from 1297 to 104000 and
-   the frame from a flat near-white wash to a lit landscape with relief and
-   detail -- but the scene is blue-dominant where the reference is brown and
-   green, and the near field carries a regular striped block pattern fixed in
-   screen pixels that the far field does not.  It has **no fixture yet**, and
-   that is the first thing to build: every `coordconv` and `conv` case now
-   passes, so whatever is left is a shape none of them has.
+   moved but not right**, and it is **two** defects, not one.  The scene's
+   own options separate them (CAPTURED 2026-09-19 at 1920x1200, one X server
+   a variant, against llvmpipe frames of the same variants taken on the build
+   host):
+
+   * `terrain:bloom=false:tilt-shift=false` -- the terrain drawn straight to
+     the window, no offscreen target and no post-processing -- has the
+     silhouette and the relief exact and the **colour wrong**: the far field
+     saturated blue, the near field dark green with saturated red patches.
+     Turning the bloom pair on changes nothing about it.
+   * The **striped blocks appear only with the tilt-shift blur**, the nine-tap
+     pass.  They are invisible in the far field because the far field is a
+     saturated constant there, so fix the colour first: the blur's input is
+     the wrong picture.
+
+   The colour fault is **inside `pointSpecular`**.  Nineteen probes of
+   `terrain.frag` -- the stock shader with one diagnostic value appended, run
+   on the card and under llvmpipe on the same scene -- separate cleanly:
+   every probe that contains `pointSpecular` is wrong and every one that does
+   not is right, `pointSpecularWeight` and `pointDiffuseWeight` and their
+   product included.  `pointLightColor[0] * uSpecularColor *
+   pointSpecularWeight * pointDiffuseWeight * 8` comes back with **red and
+   green saturated and blue carrying the product**, and both colour uniforms
+   are `(1, 1, 1)`, so the scalar multiply reached one register pair of the
+   result and not the other.
+   `docs/parhelia-m9-fragment-pass-splitting.md` 8.4 and 8.4a.
+
+   **Program size is not the cause** -- that reading is measured and retired.
+   `fschain:40` is 337 slots and exact, and glmark2's own simplex noise
+   compiles to a 1701-slot single pass in the same scene and draws correctly.
+
+   **It still has no fixture.**  Five families were built for it and all pass
+   on the card: `chainvec:OP`, `chainlit:OP`, `chainvec2:OP`, `chainmany:N`
+   and `speclit`.  `filefs` was added with them -- it renders a fragment
+   shader named by `M9_GLSL_FS` against a vertex shader from `M9_GLSL_VS` and
+   compares the readback with a raw frame from `M9_GLSL_REF` -- and through
+   it **terrain.frag itself is correct**, 14 of 76800 pixels at tolerance 24,
+   which is chain precision.  The driver compiles it to **two** raster passes
+   there and to **one pass of 205 slots, two texture units and four
+   interpolated inputs** in glmark2.  The trigger is the schedule glmark2's
+   own vertex shader and geometry produce, not the shader text, and the next
+   step is to make the fixture take that schedule.
 
 2. **MRT.**  The surface side is done and pinned offline; what remains is a
    fragment backend that compiles more than one colour output, and measuring
