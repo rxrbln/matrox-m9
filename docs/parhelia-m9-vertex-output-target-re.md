@@ -652,20 +652,20 @@ no stream timeout in the hold, and the known-good fixture passes after.
 
 ### The fixture suite
 
-263 cases at the cap of two: 244 PASS, 19 FAIL, 0 non-M9, 0 stream timeouts.
-The nineteen are the sixteen the last recorded run had -- the ten `dxt*`
-("texture levels beyond the captured 32x16 tail need the kernel texture
-window"), the four `giga10*`, `mrt10:2` and `mrt10:4` -- plus `conv16d`,
-`conv3mixd` and `conv3zunder`.  Those three **pass in isolation on this build
-and on the base build alike** (MEASURED, both prefixes in one hold), so they
-are an ordering effect inside a suite run and not this change; `mrt10:2`
-fails identically on both.
+At the cap of two the m9-mesa-glsl suite fails exactly the sixteen cases the
+last recorded run does -- the ten `dxt*` ("texture levels beyond the captured
+32x16 tail need the kernel texture window"), the four `giga10*`, `mrt10:2`
+and `mrt10:4` -- with 0 non-M9 and 0 stream timeouts.  One earlier run of the
+same suite also failed `conv16d`, `conv3mixd` and `conv3zunder`; those three
+**pass in isolation on this build and on the base build alike** (MEASURED,
+both prefixes in one hold) and passed in the later full run, so they are an
+ordering effect inside a suite run rather than this change.
 
 ### What is still open
 
-Dropping attribute 13 was MEASURED only on geometry inside the clip volume.
 `vary3big` draws the same two varyings on a quad three times the target, with
 every attribute extrapolated along its own triangle's plane so the reference
-image is unchanged; that is the case that says whether the declaration costs
-the clipping.  Geometry behind the eye -- `w <= 0` -- is not covered by any
-fixture in this tree and stays **OPEN**.
+image is unchanged, and it is **exact** (MEASURED) -- so eight ninths of the
+geometry outside the target costs the picture nothing without the clip
+position.  What that does not cover is geometry behind the eye, `w <= 0`, for
+which no fixture in this tree has a reference; that stays **OPEN**.
