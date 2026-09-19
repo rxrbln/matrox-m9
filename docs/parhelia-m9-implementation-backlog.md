@@ -245,42 +245,61 @@ query, and cube and 3D textures - are all done.
    host):
 
    * `terrain:bloom=false:tilt-shift=false` -- the terrain drawn straight to
-     the window, no offscreen target and no post-processing -- has the
-     silhouette and the relief exact and the **colour wrong**: the far field
-     saturated blue, the near field dark green with saturated red patches.
-     Turning the bloom pair on changes nothing about it.
+     the window, no offscreen target and no post-processing -- had the
+     silhouette and the relief exact and the **colour wrong**.
    * The **striped blocks appear only with the tilt-shift blur**, the nine-tap
-     pass.  They are invisible in the far field because the far field is a
-     saturated constant there, so fix the colour first: the blur's input is
-     the wrong picture.
+     pass, and are still open.
 
-   The colour fault is **inside `pointSpecular`**.  Nineteen probes of
-   `terrain.frag` -- the stock shader with one diagnostic value appended, run
-   on the card and under llvmpipe on the same scene -- separate cleanly:
-   every probe that contains `pointSpecular` is wrong and every one that does
-   not is right, `pointSpecularWeight` and `pointDiffuseWeight` and their
-   product included.  `pointLightColor[0] * uSpecularColor *
-   pointSpecularWeight * pointDiffuseWeight * 8` comes back with **red and
-   green saturated and blue carrying the product**, and both colour uniforms
-   are `(1, 1, 1)`, so the scalar multiply reached one register pair of the
-   result and not the other.
-   `docs/parhelia-m9-fragment-pass-splitting.md` 8.4 and 8.4a.
+   **The `pointSpecular` half is closed (2026-09-19, third).**  It was the
+   fragment **register allocator carrying its placement across compilation
+   attempts** (`compile_output()` makes two): `reset_output()` and
+   `reset_graph()` clear the lops and the nodes but not `c->values`, `allocate()` reset only `v->last`, and its free
+   scan then matched the previous attempt's values and pushed registers it
+   still held live values in back into the pool.  `pointLightColor[0] *
+   uSpecularColor`'s xy lane sat in `0x1f` from slot 34 to slot 171 with
+   sixteen later values handed the same register; its zw lane sat in the
+   scratch register `0x13` and survived, which is why red and green came back
+   saturated and blue carried the product.  `allocate()` now starts from no
+   placement and refuses a pass in which two live ranges share a register;
+   an interpolated input's register joins the general pool at its last read,
+   which is what keeps the honest allocation inside the file.
+   `M9X_RA_RESET=0` and `M9X_CHECK_RA=0` are the negative controls.
+   MEASURED: the probe goes from 38400 of 76800 pixels differing to 470, and
+   the scene's frame mean from 68.6, 43.6, 113.8 to **92.6, 89.7, 79.9**
+   against llvmpipe's 95.0, 88.8, 31.7 -- an 8x8 tile difference of 21.9 of
+   255 where it was 58.6.  `docs/parhelia-m9-fragment-pass-splitting.md` 8.4b.
+
+   **What is left of the colour is a blue excess, and it is localised.**
+   Every term of terrain's colour now matches llvmpipe on the card --
+   the texture mix 2.9, `totalDiffuse` 7.3, `pointSpecular` 9.8 and the whole
+   lighting sum 9.7 of 255 -- and the stock shader is 21.9 because of its
+   last line, the **product of the record the texture mix is carried in with
+   a vector the consuming pass computes**.  A record times a literal (1.7), a
+   literal times a computed vector (7.6) and a record times a uniform product
+   (2.0) are all right; a record times `totalDiffuse` is 9.6 and blue is 38.5
+   against 22.6.  Narrowed to one component, `.x` is 4.2, `.y` 4.1, `.w` 8.6
+   and **`.z` is 17.8** -- and the card's `.z` frame sits 3.7 to 4.4 from the
+   `.y` frame, the distance a correct probe sits from its own reference.  The
+   third component of a narrowed record comes back as the second.  Keeping
+   all four components in the record makes it right again.  The next step is
+   a fixture that writes a record of four traceable values and reads each
+   back; a vendor capture of a producing pass with four different dwords
+   would settle whether the producer or the consumer is at fault, and
+   `m9_fs_corpus.h` holds none.
+   `docs/parhelia-m9-fragment-pass-splitting.md` 8.4c.
 
    **Program size is not the cause** -- that reading is measured and retired.
    `fschain:40` is 337 slots and exact, and glmark2's own simplex noise
    compiles to a 1701-slot single pass in the same scene and draws correctly.
+   **Index 88 is not the cause of the `pointSpecular` fault either**: the
+   probe that renders exactly and the probe that does not compile to the same
+   one-pass shape and carry the same `0f30030f`.
 
-   **It still has no fixture.**  Five families were built for it and all pass
-   on the card: `chainvec:OP`, `chainlit:OP`, `chainvec2:OP`, `chainmany:N`
-   and `speclit`.  `filefs` was added with them -- it renders a fragment
-   shader named by `M9_GLSL_FS` against a vertex shader from `M9_GLSL_VS` and
-   compares the readback with a raw frame from `M9_GLSL_REF` -- and through
-   it **terrain.frag itself is correct**, 14 of 76800 pixels at tolerance 24,
-   which is chain precision.  The driver compiles it to **two** raster passes
-   there and to **one pass of 205 slots, two texture units and four
-   interpolated inputs** in glmark2.  The trigger is the schedule glmark2's
-   own vertex shader and geometry produce, not the shader text, and the next
-   step is to make the fixture take that schedule.
+   **It has a fixture now.**  `filefs` reproduces it in seconds once the
+   fixture's vertex shader stops letting the linker pack terrain's five
+   varyings into two slots: a vertex shader whose five varyings all vary in
+   every component gives four slots and an emitted fragment program
+   byte-identical to the one terrain's own vertex shader produces.
 
 2. **MRT.**  The surface side is done and pinned offline; what remains is a
    fragment backend that compiles more than one colour output, and measuring
