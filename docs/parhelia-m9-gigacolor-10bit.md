@@ -525,6 +525,9 @@ flock -w 600 /root/tmp/m9-hw.lock -c \
   'HOLD=60 FORMATS="XR24 XR30" /root/tmp/giga-scanout.sh'
 ```
 
+The whole fixture suite, with these cases and the S3TC ones in it, is **221
+of 221** on the M9128 with `GL_RENDERER` asserted on every case.
+
 ### 9.5 Still open
 
 * `79[24]` for a 10-bit descriptor: the driver writes the code doubled with
