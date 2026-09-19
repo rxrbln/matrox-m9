@@ -1,5 +1,81 @@
 # glmark2 on the m9x driver: where the 60 fps goal actually stands
 
+## Read this first: two standings below, measured on different builds
+
+The **seventh** standing measures the second varying (`M9X_VS_VARYINGS` now 2)
+with one process a benchmark; the **sixth** measures the whole default run in
+one `glmark2` invocation on the build before it.  Neither supersedes the other
+and they have **not** been swept together.  UNTESTED as a combination.
+
+## Standing 2026-09-19 (seventh): the second varying moves two scenes onto the engine
+
+MEASURED at 1920x1200 on the M9128, glmark2's default thirty-three, one
+process a benchmark in one X session a sweep, `M9X_SKIP_REPORT=1`,
+`M9X_PROFILE=400`, **0 stream timeouts**, both hardware lock files held
+across the whole cycle, and the m9-mesa-glsl suite run in the same hold with
+its usual sixteen failures and nothing else.
+
+The native/draw-module column is the profile line's own count of draws the
+compiled vertex program took against draws the Gallium draw module
+transformed on the CPU, summed over the sweep.  `-` is a benchmark whose
+frame count never reached a profile window.
+
+| benchmark | cap 1 fps | cap 1 native/module | cap 2 fps | cap 2 native/module |
+|---|---:|---|---:|---|
+| `build` vbo=false / vbo=true | 274, 295 | 2397/0, 2797/0 | 274, 294 | 2397/0, 2797/0 |
+| `texture` nearest / linear / mipmap | 284, 283, 284 | 0/2797 each | 284, 283, 284 | 0/2797 each |
+| `shading` gouraud | 241 | 2397/0 | 241 | 2397/0 |
+| `shading` blinn-phong-inf | 149 | 1197/0 | 149 | 1197/0 |
+| **`shading` phong** | 89 | **0/797** | **95** | **797/0** |
+| **`shading` cel** | 83 | **0/797** | **88** | **797/0** |
+| `bump` high-poly / normals / height | 135, 182, 165 | 1197/0, 0/1597, 0/1598 | 135, 182, 165 | same |
+| `effect2d` 3x3 / 15-tap | 85, 33 | 0/797, - | 85, 33 | same |
+| `pulsar` | 220 | 9985/0 | 220 | 9985/0 |
+| `desktop` blur / shadow | 44, 123 | 0/5573, 0/31155 | 44, 123 | same |
+| `buffer` map / subdata / interleaved | 154, 154, 154 | 0/1197 each | 154, 154, 154 | same |
+| `ideas` | 109 | 120627/99452 | 109 | 120951/98876 |
+| `jellyfish` | 77 | 397/398 | 77 | 397/398 |
+| `terrain` | 1 | - | 1 | - |
+| `shadow` | 118 | 1594/797 | 118 | 1594/797 |
+| `refract` | 8 | - | 8 | - |
+| `conditionals` 0/0, 0/5, 5/0 | 229, 142, 228 | 1997/0, 1197/0, 1997/0 | 229, 142, 228 | same |
+| `function` low / medium | 169, 72 | 1597/0, 397/0 | 169, 72 | same |
+| `loop` no-loop / uniform=false / uniform=true | 167, 167, 159 | 0/1597, 0/1597, 0/1197 | 167, 167, 159 | same |
+
+**`shading:phong` and `shading:cel` are the whole delta**, and they are
+complete: every draw of both moves from the draw module to the compiled
+vertex program, and both gain about 6 fps.  Nothing else changes by more
+than 1 fps in either direction, and no benchmark loses a draw.
+
+### What still keeps the rest on the CPU, by its own words
+
+The driver now tallies its refusals by reason.  Across the thirty-three:
+
+* **the fragment program samples a texture** -- `texture` x3, `bump:normals`,
+  `bump:height`, `effect2d` x2, `desktop` x2, `shadow` in part, `terrain`,
+  `refract`, `jellyfish` in part.  This, and not the varying cap, is what
+  holds most of the list.  A coordinate stream is transformed per vertex on
+  the CPU today: the pair is packed down, the sampler's affine transform
+  folded in, a projector divided out and the aligned span scaled.
+* **control flow** -- `loop` x3 and `buffer` x3, whose vertex shaders the
+  native backend does not compile.
+* **the varying read is past the M9X_VS_VARYINGS cap** -- `ideas` in part,
+  `jellyfish` in part, `terrain`, `refract`, `bump:height`: three varyings
+  and up, which one preprocessing draw cannot carry
+  (`docs/parhelia-m9-vertex-output-target-re.md`).
+
+### The texture coordinate was tried and does not pay yet
+
+A build that admits a textured fragment program whose coordinate needs none
+of the CPU's per-vertex work was run over the same thirty-three (MEASURED).
+It takes `bump:normals` fully native, 182 -> 184 fps, and part of `desktop`,
+and it **costs** `desktop:shadow` 123 -> 119 fps, where the job then splits
+between native and draw-module draws.  The two reasons that keep the rest
+are named by the driver itself: `texture:*` refuses with "the texture
+coordinate is not the varying's first pair" and `desktop:shadow` with "the
+texture coordinate needs a per-vertex span scale".  Until the vertex program
+can place the pair and apply the span, the change is a wash, so it is not in
+the tree.
 ## Standing 2026-09-19 (sixth): the whole default run in ONE invocation
 
 MEASURED at 1920x1200 on the M9128, **`glmark2 --size 1920x1200` with no

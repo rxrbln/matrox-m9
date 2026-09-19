@@ -570,10 +570,102 @@ was then built in full and run, and it renders nothing either
 now been refused.
 
 **The second preprocessing draw needs something that is not in any capture
-this tree holds.**  The varying cap stays at one, and the next step on this
-feature is a new vendor capture of a multi-draw chain, not a further reading
-of the ones here.  One defect was found on the way and is worth keeping: the
+this tree holds.**  The next step on *that* route is a new vendor capture of
+a multi-draw chain, not a further reading of the ones here -- and the second
+varying no longer waits on it: the section below carries two of them in the
+single fused draw, which raises the cap to two.  One defect was found on the way and is worth keeping: the
 tail-free head never carried the slot marker at W1 of slot `n - 4` that every
 captured native program has, because the fused pass inherits it from its
 appended tail.  Both tail-free programs place it now, and the gather the
 driver emits is byte for byte the vendor's own.
+
+## Two varyings in one draw, on the clip position's target (MEASURED 2026-09-19)
+
+The fifth and sixth experiments on this feature were run on the
+dual-DisplayPort M9128 at 192.168.1.111, each hold bracketed by the native
+`varying` fixture, each stall followed by a reboot and a module reload before
+the next measurement.  **One of them works**, and it needs no engine state
+the driver was not already emitting.
+
+### Output target 3 is refused, in every shape tried
+
+The obvious free target is 3: the appended tail writes targets 0, 1 and 2 and
+scratches `r1c`/`r1d`, and `r1d` is target 3's low half.  Moving that scratch
+to `r1e` -- two decoded register fields, the destination at W0 bits 14:8 of
+tail slot 23 and the `a` operand at W0 bits 31:29 of slot 24 -- frees the
+pair, and `r1e` is an ordinary temporary in the vendor's own fused passes
+(CAPTURED, `vs-texlod` `c3=08` writes `0x1c`, `0x1d`, `0x1e` and `0x1f`).
+
+**That edit is sound**: with it forced on every program, `varying` and `mul`
+are pixel-exact and take the native path -- the driver says so itself under
+`M9X_DEBUG` -- and `texture`, which falls back to the draw module, is exact
+too (MEASURED).  What fails is enabling the target.
+
+| configuration, all with `ef` bit 23 set | result |
+|---|---|
+| clip code bound as usual, mask `0x3f00` | stream timeout |
+| clip code bound, mask `0xff00` | stream timeout |
+| clip code bound, mask `0xffff` | stream timeout |
+| clip code bound, index `ba = 0` | stream timeout |
+| clip code dropped, `b8` simply not restated | stream timeout |
+| chain role forced to the captured head word `0x00a80200` | stream timeout |
+| four targets into one packed record, `ee19` descriptors | stream timeout |
+| clip code disabled the vendor's way, `b8 = 0`, `b9 = 0xb8010001`, `ba = 0` | **runs**, wrong values |
+
+and `ef` bit 23 clear -- the target bound at `b6` but not enabled -- renders
+wrongly and does **not** stall, so the binding is harmless and the enable is
+what the engine refuses.  This is exactly what the corpus says: of 628
+captured preprocessing passes, the 91 that enable target 3 carry `ef`
+`0x00a80200`, `0x00a80400` or `0x00a80600` and **not one of them enables the
+clip code at bit 15**; 87 of the 91 state the disabled clip-code form
+`b8 = 0`, `b9 = 0xb8010001` explicitly.  A pass may have its fourth output
+target or its clip code, not both.
+
+### The clip position is what the raster stage can do without
+
+The raster pass declares three fixed attributes beside its interpolants:
+0 the rasterizer position, 12 the clip code at stride 6, 13 the clip
+position.  Dropping either of the latter two from the declaration and its
+stream renders **the same pixels** (MEASURED, the `varying` fixture, three
+targets, known-good before and after).  So the target the fused pass can
+spare is **1**, the clip position's, whose register pair is `0x15`/`0x17`.
+
+The two tail slots that write it -- slots 5 and 7 of the appended tail --
+have no reader, and the tail's scratch `r1c` is written afresh further down
+before anything reads it, so pointing both destinations at `r1c` frees the
+pair and leaves index `88` exactly the captured `0x0300bf00`.  The head then
+writes the second varying into `0x15`/`0x17`, `b2` is bound to that varying's
+transient view instead of the clip position's, and the raster pass declares
+no attribute 13.
+
+**Nothing else changes**: `ef` stays `0x00288800`, three targets and the clip
+code, the packet count is identical, and the pass is the same one the
+one-varying job has always run.
+
+| fixture | cap | result |
+|---|---|---|
+| `varying` | 1 | exact, native, 1 varying |
+| `vary3` (two packed varyings) | 2 | **exact, native, 2 varyings** |
+| `varying` again | 1 | exact, native |
+
+no stream timeout in the hold, and the known-good fixture passes after.
+
+### The fixture suite
+
+At the cap of two the m9-mesa-glsl suite fails exactly the sixteen cases the
+last recorded run does -- the ten `dxt*` ("texture levels beyond the captured
+32x16 tail need the kernel texture window"), the four `giga10*`, `mrt10:2`
+and `mrt10:4` -- with 0 non-M9 and 0 stream timeouts.  One earlier run of the
+same suite also failed `conv16d`, `conv3mixd` and `conv3zunder`; those three
+**pass in isolation on this build and on the base build alike** (MEASURED,
+both prefixes in one hold) and passed in the later full run, so they are an
+ordering effect inside a suite run rather than this change.
+
+### What is still open
+
+`vary3big` draws the same two varyings on a quad three times the target, with
+every attribute extrapolated along its own triangle's plane so the reference
+image is unchanged, and it is **exact** (MEASURED) -- so eight ninths of the
+geometry outside the target costs the picture nothing without the clip
+position.  What that does not cover is geometry behind the eye, `w <= 0`, for
+which no fixture in this tree has a reference; that stays **OPEN**.

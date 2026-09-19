@@ -299,6 +299,29 @@ with all eight bits set every input did.  Forcing the six-input mask
 seventh wrong, which is how the register-file limit above was separated from
 this one.  The field holds six inputs and no more.
 
+## 7. The fixed trio is really a pair (MEASURED 2026-09-19)
+
+Every captured raster pass declares three attributes beside its interpolants
+-- 0 the rasterizer position, 12 the clip code at stride 6, 13 the clip
+position -- and 556 of 556 carry all three.  Two of them are optional as far
+as the pixels go: dropping **either** attribute 12 or attribute 13 from the
+declaration and its stream renders the same image, MEASURED on the M9128 with
+the `varying` fixture through the m9x driver, the known-good fixture passing
+before and after.
+
+That matters because a preprocessing pass has four output targets and its
+appended tail spends three of them.  Dropping attribute 13 frees output
+target 1 -- the clip position's -- for a second varying, which is how the
+driver now carries two of them in one draw
+(`docs/parhelia-m9-vertex-output-target-re.md`).  Attribute 12 would free
+nothing: the clip code rides index `b8`, not one of the four targets, and a
+pass that enables output target 3 instead stalls the engine in every shape
+tried.
+
+The measurement covers geometry inside the clip volume only; what the clip
+position buys for geometry that needs clipping is **OPEN**, and the
+`vary3big` fixture is the case that asks it.
+
 ## Reproduction
 
 ```sh
