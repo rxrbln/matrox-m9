@@ -23,8 +23,10 @@ case with a fragment shader:
    `m9_fs_nir_options`;
 2. link it;
 3. lower it as st/mesa does (uniforms to `load_ubo_vec4`, samplers);
-4. run the backend;
-5. compare the program with the captured slots from raster `c3` up to the
+4. lower its integers to floats, as `m9_fs_lower_integers` does in the
+   driver's `finalize_nir` (section 7);
+5. run the backend;
+6. compare the program with the captured slots from raster `c3` up to the
    vertex entry, and the constants bit for bit, with uniform values taken from
    the harness inputs.
 
@@ -150,8 +152,10 @@ The other exact cases are `fs-varying`, `fs-texcoord`, `fs-mul`, `fs-add`,
   and projective and shadow sampling are supported.
 * **Conditionals and loops.**  Conditional `discard`, `if`/ternary,
   `step`/compare/select forms, and loops that NIR does not unroll.  The
-  exceptions are glamor's stipple compare templates and conditions on
-  inlinable uniforms (`parhelia-m9-glamor-shader-coverage.md`).
+  exceptions are glamor's stipple compare templates, conditions on inlinable
+  uniforms and a loop whose bound is one, which unrolls
+  (`parhelia-m9-glamor-shader-coverage.md`,
+  `parhelia-m9-fragment-uniform-specialisation.md`).
 * **Unary and other built-ins.**
   * unary: `min`, `max`, `abs`, `floor`, `ceil`, `fract`, `sign`, negation;
   * multi-slot built-ins: dot products, `normalize`, `length`, `cross`,
@@ -231,8 +235,13 @@ vendor rel_sampler stub, which has `cls 5` sample slots, and are not evaluated.
 
 **Backend (OFFLINE).**
 * `m9_fs_compile()` takes an optional `struct m9_fs_blend`.
-* After encoding, colour writes are redirected to two free temporaries with
-  `cls 4`.
+* After encoding, colour writes are redirected to two temporaries with
+  `cls 4`.  A temporary is free if no slot names it at all, or if the last
+  slot that names it is at or before the one writing that colour lane: the
+  lanes are written last, so such a register is dead from there on.  Taking
+  only the never-named ones refused every shader that used the whole pool --
+  glmark2's `jellyfish` among them, and thirteen of the 182 corpus shaders
+  under `SRC_ALPHA/INV_SRC_ALPHA` (OFFLINE, 133 supported to 146).
 * Each lane then gets `S·fs + D·fd`, built only from the forms above:
   * fused `op2 07` for a constant source factor with an inverted destination
     factor;
@@ -291,3 +300,24 @@ python3 src/gallium/drivers/m9x/m9_fs_corpus_gen.py \
 objs-m9x/src/gallium/drivers/m9x/m9-fs-compile-test      # M9_FS_VERBOSE=1 for diffs
 M9_FS_DUMP=pr-temp-chain objs-m9x/src/gallium/drivers/m9x/m9-fs-compile-test
 ```
+
+## 7. Integers (MEASURED)
+
+The screen declares `no_integers`, and Mesa answers that by storing an
+integer uniform in the constant buffer **as a float**
+(`uniform_int_float`, `src/mesa/main/uniform_query.cpp`).  A driver that
+declares it is the one that lowers its own NIR to match: gallivm does it for
+the vertex path the draw module runs, and `m9_fs_lower_integers()` does it
+for the fragment path, in `finalize_nir` so that every later pass -- uniform
+specialisation included -- sees the float form.
+
+NIR types a UBO load's element index as an integer, so the pass converts the
+constant column indices of a matrix uniform too; they address the buffer, and
+are put back with `f2i32` and folded.  Without that repair the `matuni`
+fixture resolves constants past the bound buffer (MEASURED on the M9128).
+
+Against the build before the lowering, the whole 182-case corpus differs in
+three lines: `fs-loop-uniform` compiles instead of being refused for control
+flow, `glamor/xv-uyvy`'s refusal moves from `i2f32` to `ftrunc`, and the
+tally goes from 157 to 158 supported.  59 exact and required exact 23/23 are
+unchanged, so no program the vendor captured is altered by it.
