@@ -222,6 +222,12 @@ struct m9_screen {
    simple_mtx_t record_lock;
    struct m9_resource record;
    unsigned record_dwords;
+   /* The multisample fragment store: a buffer group of its own, sized from
+    * the target the probe renders into and shared by the screen the way the
+    * inter-pass record is.  Allocated only while a bind index is named. */
+   simple_mtx_t faa_store_lock;
+   struct m9_resource faa_store, faa_store_aux;
+   uint32_t faa_store_width, faa_store_height;
    /* Fixed-fragment database firmware bound through index 69. */
    uint8_t *fragment_db;
    size_t fragment_db_size;

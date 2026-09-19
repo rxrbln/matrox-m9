@@ -1120,11 +1120,52 @@ m9_destroy(struct pipe_screen *pscreen)
       FREE(entry);
    }
    m9_bo_destroy(screen, &screen->record);
+   m9_faa_store_report(screen);
+   m9_bo_destroy(screen, &screen->faa_store);
+   m9_bo_destroy(screen, &screen->faa_store_aux);
+   simple_mtx_destroy(&screen->faa_store_lock);
    simple_mtx_destroy(&screen->record_lock);
    simple_mtx_destroy(&screen->import_lock);
    FREE(screen->fragment_db);
    close(screen->fd);
    FREE(pscreen);
+}
+
+/*
+ * What the engine put in the multisample fragment store.  Every dword was
+ * filled with its own index, so a write is identifiable wherever it landed.
+ * Printed once, from whichever teardown path runs first.
+ */
+static struct m9_screen *m9_faa_check_screen;
+
+void
+m9_faa_store_report(struct m9_screen *screen)
+{
+   const uint32_t *words;
+   uint64_t count, changed = 0, shown = 0;
+
+   if (!screen || !screen->faa.store_check || !screen->faa_store.map)
+      return;
+   words = screen->faa_store.map;
+   count = screen->faa_store.size / 4;
+   for (uint64_t k = 0; k < count; k++)
+      if (words[k] != m9_faa_store_pattern(k)) {
+         changed++;
+         if (shown < 8) {
+            fprintf(stderr, "m9x: faa store dword %llu %08x -> %08x\n",
+                    (unsigned long long)k, m9_faa_store_pattern(k), words[k]);
+            shown++;
+         }
+      }
+   fprintf(stderr, "m9x: faa store %llu of %llu dwords changed\n",
+           (unsigned long long)changed, (unsigned long long)count);
+   screen->faa.store_check = false;
+}
+
+static void
+m9_faa_store_atexit(void)
+{
+   m9_faa_store_report(m9_faa_check_screen);
 }
 
 /* The draw module's exec path runs vertex programs as non-integer TGSI. */
@@ -1318,8 +1359,15 @@ m9_screen_create(int fd, const struct pipe_screen_config *config)
       goto fail;
    simple_mtx_init(&screen->import_lock, mtx_plain);
    simple_mtx_init(&screen->record_lock, mtx_plain);
+   simple_mtx_init(&screen->faa_store_lock, mtx_plain);
    screen->chip_id = M9_PCI_ID;
    m9_faa_init(&screen->faa, (uint16_t)screen->chip_id);
+   /* The report has to survive a client that exits without tearing the
+    * screen down, which is what the probe fixture does. */
+   if (screen->faa.store_check) {
+      m9_faa_check_screen = screen;
+      atexit(m9_faa_store_atexit);
+   }
    screen->uapi_version = 1;
    screen->validate_submit = true;
    screen->execute_submit = m9_probe_user_submit(screen);

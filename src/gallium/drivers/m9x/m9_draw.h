@@ -163,6 +163,11 @@ struct m9_draw_job {
       /* ae bits 6:4, ef bits 31:29 and two f0 flags are edited rather than
        * replaced, so a pass keeps the rest of its own word. */
       struct m9_faa_edits edit;
+      /* The fragment store and the index its address is written to.  A
+       * negative index binds nothing, which is the default. */
+      int bind_index;
+      bool bind_reset;
+      uint32_t store;
    } faa;
 };
 

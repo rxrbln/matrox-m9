@@ -26,4 +26,6 @@ struct pipe_context *m9_context_create(struct pipe_screen *screen, void *priv,
                                        unsigned flags);
 struct pipe_fence_handle *m9_fence_create(uint64_t point, bool signaled);
 
+void m9_faa_store_report(struct m9_screen *screen);
+
 #endif

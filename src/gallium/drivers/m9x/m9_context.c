@@ -1084,6 +1084,67 @@ m9_record_grow(struct m9_context *ctx, unsigned dwords, const char **reason)
    return ok;
 }
 
+/*
+ * The multisample fragment store.  Its size is the vendor's own (STATIC,
+ * MxMD.dll 0xac7e0): about 16.55 bytes a pixel capped at 32 MiB, and a
+ * second buffer a sixteenth of that.  It is allocated only while the probe
+ * names a bind index, and grows with the largest target seen.
+ */
+static bool
+m9_faa_store_grow(struct m9_context *ctx)
+{
+   struct m9_screen *screen = ctx->screen;
+   uint32_t width, height;
+   uint64_t bytes, aux;
+   bool ok = true;
+
+   if (screen->faa.bind_index < 0)
+      return true;
+   simple_mtx_lock(&screen->faa_store_lock);
+   width = MAX2(ctx->params.width, screen->faa_store_width);
+   height = MAX2(ctx->params.height, screen->faa_store_height);
+   bytes = m9_faa_fragment_bytes(width, height);
+   aux = m9_faa_fragment_aux_bytes(width, height);
+   if (!bytes || !aux) {
+      ok = false;
+   } else if (!screen->faa_store.handle || screen->faa_store.size < bytes) {
+      m9_bo_destroy(screen, &screen->faa_store);
+      m9_bo_destroy(screen, &screen->faa_store_aux);
+      /* A checked store has to be readable, so it goes in the mapped
+       * window rather than the engine-only video memory above it. */
+      if ((screen->faa.store_check ?
+           m9_bo_create(screen, bytes, PARHELIA_M9_BO_VRAM,
+                        M9_RESOURCE_LINEAR_BUFFER, &screen->faa_store) :
+           m9_bo_create_engine_only(screen, bytes, M9_RESOURCE_LINEAR_BUFFER,
+                                    &screen->faa_store)) ||
+          m9_bo_create_engine_only(screen, aux, M9_RESOURCE_LINEAR_BUFFER,
+                                   &screen->faa_store_aux)) {
+         fprintf(stderr, "m9x: multisample fragment store of %u KiB for "
+                 "%ux%u refused\n", (unsigned)(bytes >> 10), width, height);
+         m9_bo_destroy(screen, &screen->faa_store);
+         m9_bo_destroy(screen, &screen->faa_store_aux);
+         ok = false;
+      } else {
+         screen->faa_store_width = width;
+         screen->faa_store_height = height;
+         if (screen->faa.store_check && screen->faa_store.map) {
+            uint32_t *words = screen->faa_store.map;
+
+            for (uint64_t k = 0; k < screen->faa_store.size / 4; k++)
+               words[k] = m9_faa_store_pattern(k);
+         }
+         if (screen->faa.trace)
+            fprintf(stderr, "m9x: faa store %ux%u -> %u + %u bytes\n",
+                    width, height, (unsigned)bytes, (unsigned)aux);
+      }
+   } else {
+      screen->faa_store_width = width;
+      screen->faa_store_height = height;
+   }
+   simple_mtx_unlock(&screen->faa_store_lock);
+   return ok;
+}
+
 /* Raster constants, CPU varying views and per-pass state of a native
  * fragment job.  A shader the engine runs in one pass produces one entry,
  * which the emitter drives through its single-pass path unchanged. */
@@ -2057,6 +2118,11 @@ m9_submit_job(struct m9_context *ctx)
           * f0 written as zero, which cleared the cull, depth and format
           * bits the pass built and rendered nothing (MEASURED). */
          m9_faa_edits(&ctx->screen->faa, &job.faa.edit);
+         if (m9_faa_store_grow(ctx)) {
+            job.faa.bind_index = ctx->screen->faa.bind_index;
+            job.faa.bind_reset = ctx->screen->faa.bind_reset;
+            job.faa.store = ctx->screen->faa_store.handle;
+         }
       }
       if (fs) {
          job.program = key->variant->c2.handle;
@@ -2278,9 +2344,7 @@ m9_job_reserve(struct m9_context *ctx, const struct m9_job_key *key,
             (key->vs && key->vs_extra_entry ?
              m9_draw_vs_extra_dwords(key->vs_extra_targets,
                                      2 * key->vs->attr_count + 1) : 0) +
-            (m9_faa_active(&ctx->screen->faa) &&
-             ctx->screen->faa.raster ?
-             M9_FAA_RASTER_DWORDS * MAX2(passes, 1u) : 0);
+            m9_faa_raster_dwords(&ctx->screen->faa) * MAX2(passes, 1u);
    if (draws) {
       bool state = memcmp(key, &ctx->job_key,
                           offsetof(struct m9_job_key, units)) != 0;
@@ -2312,7 +2376,9 @@ m9_job_reserve(struct m9_context *ctx, const struct m9_job_key *key,
                          m9_variant_relocs(key->variant, draws + 1) :
                          m9_draw_job_relocs(draws + 1, key->unit_count)) +
                         (key->vs && key->vs_extra_entry ?
-                         m9_draw_vs_extra_relocs(key->vs_extra_targets) : 0);
+                         m9_draw_vs_extra_relocs(key->vs_extra_targets) : 0) +
+                        m9_faa_raster_relocs(&ctx->screen->faa) *
+                        MAX2(passes, 1u);
       /* A split shader binds one unit pool for the whole job, so a draw
        * that needs another set starts a job of its own. */
       bool stream_full = dwords > M9_MAX_COMMAND_DWORDS ||
@@ -6261,6 +6327,7 @@ m9_context_destroy(struct pipe_context *pctx)
     * of a benchmark run. */
    if (ctx->debug || debug_get_bool_option("M9X_SKIP_REPORT", false))
       m9_skip_report(ctx);
+   m9_faa_store_report(screen);
    m9_vs_texture_fini(pctx);
    if (ctx->blitter) {
       util_blitter_destroy(ctx->blitter);

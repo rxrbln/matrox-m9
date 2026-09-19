@@ -153,7 +153,7 @@ m9_batch_add_reloc(struct m9_batch *batch, uint32_t command_dword,
    int ret;
 
    if (!batch || command_dword >= batch->command_count ||
-       kind > PARHELIA_M9_RELOC_STREAM || batch->sealed || !bo_access ||
+       kind > PARHELIA_M9_RELOC_FRAGMENT || batch->sealed || !bo_access ||
        access & ~(access_mask | PARHELIA_M9_RELOC_PACKED16_ODD) ||
        ((access & PARHELIA_M9_RELOC_PACKED16_ODD) &&
         kind != PARHELIA_M9_RELOC_DRAW16_END))
@@ -194,6 +194,7 @@ m9_reloc_kind_access(enum drm_parhelia_m9_reloc_kind kind)
    case PARHELIA_M9_RELOC_DEPTH:
    case PARHELIA_M9_RELOC_PROGRAM:
    case PARHELIA_M9_RELOC_STREAM:
+   case PARHELIA_M9_RELOC_FRAGMENT:
       return PARHELIA_M9_BO_READ | PARHELIA_M9_BO_WRITE;
    /* A snapshot is published, never read back by the engine. */
    case PARHELIA_M9_RELOC_QUERY:

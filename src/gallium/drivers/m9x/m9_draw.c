@@ -587,6 +587,17 @@ m9_emit_raster_range(struct m9_batch *batch, const struct m9_draw_job *job,
         V(0xac, pass && pass->writes_record ? 0xffffffffu :
                 job->color_count > 2 ? job->color_mask_hi : 0xffffffffu),
         V(0xae, m9_job_ae(job, pass ? pass->ae : 0x22444442u)));
+   /* RESET_FRAG_PTR, byte for byte what the vendor emits: e6 = 3 twice, then
+    * a1 = a3 = a4 = 0 (STATIC, MxMD.dll 0xfabc7).  No address goes to any of
+    * a0..a6 in any vendor image, so this is a control, not a binding. */
+   if (job->faa.set && job->faa.bind_reset) {
+      EMIT(V(0xe6, 3), V(0xe6, 3));
+      EMIT(V(0xa1, 0), V(0xa3, 0), V(0xa4, 0));
+   }
+   /* The store's address at whatever index a measurement names.  Nothing in
+    * the vendor images writes one, so this stays a probe. */
+   if (job->faa.set && job->faa.bind_index >= 0 && job->faa.store)
+      EMIT(R((uint8_t)job->faa.bind_index, job->faa.store, 0, FRAGMENT));
    /* The captured stream carries the multisample pair in preprocessing
     * alone; restating it here tests whether the raster range needs it. */
    if (job->faa.set && job->faa.raster) {

@@ -71,6 +71,18 @@ struct m9_faa {
     * Index f0 bit 15 and bit 24 come from the same compiled dword. */
    int ef_mode;
    bool f0_bit15, f0_bit24;
+   /* The fragment store probe.  bind_index is the command index the store's
+    * address is written to; the vendor writes a1, a3 and a4 under its only
+    * packet-name string, RESET_FRAG_PTR, and no captured stream carries any
+    * of them, so which one binds the store is a measurement, not a fact.
+    * A negative index binds nothing and allocates nothing. */
+   int bind_index;
+   bool bind_reset;   /* write a1 = a3 = a4 = 0 beside it */
+   /* Fill the store with a traceable pattern and report which dwords the
+    * engine changed.  Every dword carries its own index, so a write is
+    * identifiable wherever it lands, and the store is kept in the mapped
+    * window so the CPU can read it back. */
+   bool store_check;
    bool ad_forced, af_forced;
    uint32_t ad_force, af_force;
    bool trace, traced;
@@ -85,6 +97,26 @@ struct m9_faa {
 /* Dwords a raster range costs when it restates the pair: four ad values and
  * one af value, one packet header each. */
 #define M9_FAA_RASTER_DWORDS 7u
+/* Dwords the RESET_FRAG_PTR block costs: e6 twice, then a1/a3/a4. */
+#define M9_FAA_RESET_DWORDS 7u
+/* Dwords a store binding costs: one header and one address. */
+#define M9_FAA_BIND_DWORDS 2u
+/* Dwords and relocations this state adds to one raster pass. */
+unsigned m9_faa_raster_dwords(const struct m9_faa *faa);
+unsigned m9_faa_raster_relocs(const struct m9_faa *faa);
+/* The pattern dword of a store word, so a write anywhere is traceable. */
+uint32_t m9_faa_store_pattern(uint64_t dword_index);
+
+/*
+ * The multisample fragment store is a buffer group of its own, not an
+ * enlargement of the colour allocation (STATIC, MxMD.dll 0xac7e0: the main
+ * buffer is width * height * 0x158 scaled by 0.385 and divided by eight,
+ * capped at 32 MiB, and a second buffer is a sixteenth of it).  That is
+ * about 16.55 bytes a pixel.
+ */
+#define M9_FAA_FRAGMENT_CAP_BYTES 0x2000000u
+uint64_t m9_faa_fragment_bytes(uint32_t width, uint32_t height);
+uint64_t m9_faa_fragment_aux_bytes(uint32_t width, uint32_t height);
 
 void m9_faa_init(struct m9_faa *faa, uint16_t device_id);
 /* Whether a job has to carry the pair at all: a raw override drives it
