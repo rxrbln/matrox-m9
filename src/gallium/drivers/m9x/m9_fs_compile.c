@@ -2892,11 +2892,15 @@ allocate(struct ctx *c)
          /* An interpolated input's register is an ordinary one written once
           * by its own slot, so it joins the pool at its last read rather
           * than staying reserved for the length of the program -- but only
-          * as far up the file as the fresh run itself reaches, so blending
-          * keeps 18..1f to itself. */
+          * where the fresh run would hand it out itself: 10..13 carry the
+          * scratch roles, which the backward scan places from, and four
+          * bound units put base there (MEASURED: the split
+          * shared-coordinate-stream case then holds 0x11 as a general
+          * temporary and as scratch at once). */
          util_dynarray_foreach(&c->values, struct value, v)
             if ((v->general ||
-                 (v->interp && v->reg <= (c->blend ? 0x17 : 0x1f))) &&
+                 (v->interp && (v->reg < 0x10 || v->reg > 0x13) &&
+                  v->reg <= (c->blend ? 0x17 : 0x1f))) &&
                 v->reg >= 0 && num_freed < ARRAY_SIZE(freed) &&
                 (v->last == (int)s || (v->def == (int)s && v->last < 0)))
                freed[num_freed++] = v->reg;
