@@ -124,6 +124,8 @@ w1_make(uint32_t base, unsigned e, unsigned a)
    return base | (e & 0x7fu) << 14 | (a & 0x7fu) >> 3;
 }
 
+static void compile_gather(struct m9_vs_program *p, unsigned varyings);
+
 static void
 emit(struct ctx *c, uint32_t w0, uint32_t w1)
 {
@@ -1709,6 +1711,7 @@ compile_impl(struct ctx *c, nir_function_impl *impl)
       if (!compile_head(c, block, final, used, inputs, NULL, varying + 1,
                         nvar - 1))
          return false;
+      compile_gather(c->p, nvar - 1);
    }
    c->p->varying_count = nvar;
    for (unsigned v = 0; v < nvar; v++) {
@@ -1732,6 +1735,7 @@ m9_vs_compile(struct nir_shader *nir, struct m9_vs_program *p,
    memset(p, 0, sizeof(*p));
    util_dynarray_init(&p->slots, NULL);
    util_dynarray_init(&p->extra, NULL);
+   util_dynarray_init(&p->gather, NULL);
    util_dynarray_init(&p->consts, NULL);
    util_dynarray_init(&c.keys, NULL);
    c.nir = nir;
@@ -1767,6 +1771,7 @@ m9_vs_program_fini(struct m9_vs_program *p)
 {
    util_dynarray_fini(&p->slots);
    util_dynarray_fini(&p->extra);
+   util_dynarray_fini(&p->gather);
    util_dynarray_fini(&p->consts);
    memset(p, 0, sizeof(*p));
 }
@@ -1801,7 +1806,15 @@ m9_vs_extra_slot_count(const struct m9_vs_program *p)
 {
    unsigned head = util_dynarray_num_elements(&p->extra, uint32_t);
 
-   return head ? head / 2 + 1 : 0;
+   return head ? MAX2(head / 2 + 1, 4u) : 0;
+}
+
+unsigned
+m9_vs_gather_slot_count(const struct m9_vs_program *p)
+{
+   unsigned body = util_dynarray_num_elements(&p->gather, uint32_t);
+
+   return body ? MAX2(body / 2 + 1, 4u) : 0;
 }
 
 unsigned
@@ -1820,32 +1833,59 @@ m9_vs_emit(const struct m9_vs_program *p, uint32_t *out, unsigned max_dwords)
    return total;
 }
 
-/* The second head carries no tail: it writes its targets and stops. */
-static unsigned
-m9_vs_emit_extra(const struct m9_vs_program *p, uint32_t *out,
-                 unsigned max_dwords)
+/* The gather draw: one register-pair move a varying, from the route the
+ * record feeds (0x00 + 4k, 0x02 + 4k) to the output pair the target reads
+ * (CAPTURED, vs-varyings-4's c3=27 is four such moves and a stop). */
+static void
+compile_gather(struct m9_vs_program *p, unsigned varyings)
 {
-   unsigned head = util_dynarray_num_elements(&p->extra, uint32_t);
-   unsigned total = head ? head + 2 : 0;
+   for (unsigned k = 0; k < varyings; k++) {
+      util_dynarray_append_typed(&p->gather, uint32_t,
+         w0_make(NONE, NONE, M9_VS_ROUTE_LO(k), REG_OUT_LO(k), 0, 0x1c));
+      util_dynarray_append_typed(&p->gather, uint32_t,
+         w1_make(VS_MOV | 1u << 4, NONE, NONE));
+      util_dynarray_append_typed(&p->gather, uint32_t,
+         w0_make(NONE, NONE, M9_VS_ROUTE_HI(k), REG_OUT_HI(k), 0, 0x1c));
+      util_dynarray_append_typed(&p->gather, uint32_t,
+         w1_make(VS_MOV | 1u << 4, NONE, NONE));
+   }
+}
 
-   if (!total)
+/* The second head carries no tail: it writes its targets and stops. */
+/* Every captured native program marks W1 of slot n - 4, the fragment half's
+ * finish_slots() rule (m9_fs_compile.c), and a program shorter than four
+ * slots is padded with stops to reach it.  The fused pass inherits the mark
+ * from its appended tail, which sits exactly four slots from the end; a
+ * tail-free program has to place it itself. */
+static unsigned
+m9_vs_emit_body(const struct util_dynarray *body, uint32_t *out,
+                unsigned max_dwords)
+{
+   unsigned head = util_dynarray_num_elements(body, uint32_t);
+   unsigned slots = head ? MAX2(head / 2 + 1, 4u) : 0;
+
+   if (!slots || !out || 2 * slots > max_dwords)
       return 0;
-   if (!out || total > max_dwords)
-      return 0;
-   memcpy(out, p->extra.data, head * sizeof(*out));
-   out[head] = STOP_W0;
-   out[head + 1] = STOP_W1;
-   return total;
+   memcpy(out, body->data, head * sizeof(*out));
+   for (unsigned i = head / 2; i < slots; i++) {
+      out[2 * i] = STOP_W0;
+      out[2 * i + 1] = STOP_W1;
+   }
+   out[2 * (slots - 4) + 1] |= 0x40000000u;
+   return 2 * slots;
 }
 
 unsigned
 m9_vs_c2_image(const struct m9_vs_program *p, const uint32_t *fs_slots,
                unsigned fs_slot_count, uint32_t *out, unsigned max_dwords,
-               unsigned *vertex_entry, unsigned *extra_entry)
+               unsigned *vertex_entry, unsigned *extra_entry,
+               unsigned *gather_entry)
 {
    unsigned vs_dwords = m9_vs_slot_count(p) * 2;
    unsigned extra_dwords = m9_vs_extra_slot_count(p) * 2;
-   unsigned total = fs_slot_count * 2 + vs_dwords + extra_dwords;
+   unsigned gather_dwords = m9_vs_gather_slot_count(p) * 2;
+   unsigned total = fs_slot_count * 2 + vs_dwords + extra_dwords +
+                    gather_dwords;
 
    if (!out || total > max_dwords || (fs_slot_count && !fs_slots))
       return 0;
@@ -1853,13 +1893,21 @@ m9_vs_c2_image(const struct m9_vs_program *p, const uint32_t *fs_slots,
    if (!m9_vs_emit(p, out + fs_slot_count * 2, vs_dwords))
       return 0;
    if (extra_dwords &&
-       !m9_vs_emit_extra(p, out + fs_slot_count * 2 + vs_dwords,
-                         extra_dwords))
+       !m9_vs_emit_body(&p->extra, out + fs_slot_count * 2 + vs_dwords,
+                        extra_dwords))
+      return 0;
+   if (gather_dwords &&
+       !m9_vs_emit_body(&p->gather,
+                        out + fs_slot_count * 2 + vs_dwords + extra_dwords,
+                        gather_dwords))
       return 0;
    if (vertex_entry)
       *vertex_entry = fs_slot_count;
    if (extra_entry)
       *extra_entry = extra_dwords ? fs_slot_count + vs_dwords / 2 : 0;
+   if (gather_entry)
+      *gather_entry = gather_dwords ?
+                      fs_slot_count + (vs_dwords + extra_dwords) / 2 : 0;
    return total;
 }
 
