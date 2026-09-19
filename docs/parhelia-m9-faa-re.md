@@ -429,7 +429,12 @@ reboot and was retaken only after `m9-mesa-glsl texture` passed again.
 The drop is independent of everything else the pair carries: the same 42040
 comes back for coverage values 0, 32, 64, 128, 192, 255 and 256 of 256, with
 the invert bit, with the sample-coverage bit, and with `ad` forced to zero
-(eleven runs, one sweep, guarded by a known-good fixture at the start).
+(eleven runs, one sweep, guarded by a known-good fixture at the start).  It
+is caused by the mode field **alone**: with `ad` and `af` forced back to
+their off forms, `0x20` and `0`, and only `ef[31:29] = 6` written, the same
+42040 and the same 5960 skipped pixels come back [MEASURED].  So the mode
+field is the enable and the pair is state the enabled unit consumes, not the
+other way round.
 
 So `ef[31:29]` is the first field of this feature that the M9128 demonstrably
 obeys, and the coverage word still has no effect - which is what one expects
