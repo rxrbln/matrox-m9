@@ -337,6 +337,22 @@ static bool m9_coord_share;
  * (MEASURED on the M9128, 76800 of 76800 pixels differ, no stream timeout,
  * the card alive afterwards).  Off until that is understood. */
 static bool m9_native_vs_split;
+/* M9X_VS_SPECIALISE=0 compiles a vertex shader without substituting the
+ * inlinable uniform values, which is the form the backend refused for
+ * control flow before those values were used.  A diagnostic: it is what a
+ * measurement of the specialisation is read against. */
+static bool m9_vs_specialise = true;
+/* M9X_VS_MAX_SLOTS bounds the compiled program a native preprocessing job
+ * will run; a longer one stays in the draw module.  MEASURED at 1920x1200,
+ * duration=5, one library and one X server: every default glmark2 benchmark
+ * the engine already takes compiles to at most 79 slots, and the one shape
+ * past that -- glmark2's buffer scene, four clip-space transforms and three
+ * edge distances at 299 slots -- runs fully native at 4096 and loses frame
+ * rate doing it: map 136 -> 101, subdata 136 -> 100, interleaved 136 -> 99,
+ * against a control whose unchanged rows sit at 1.000.  The bound sits in
+ * that gap; what exactly makes the long program lose is not established, so
+ * it is a knob rather than a cost model. */
+static unsigned m9_vs_max_slots = 128;
 /* M9X_NATIVE_VS=0 keeps every vertex shader in the draw module.  On by
  * default since the whole hardware fixture corpus passes either way
  * (m9-mesa-vs 14/14, m9-mesa-glsl 90/90, 2026-09-17). */
@@ -6354,8 +6370,9 @@ m9_vs_native_init(struct m9_vs_state *vs, struct nir_shader *src)
     * tracker's own shader, which gallivm lowers for itself. */
    m9_nir_lower_integers(nir);
    vs->src = nir;
-   vs->inline_count = MIN2(src->info.num_inlinable_uniforms,
-                           MAX_INLINABLE_UNIFORMS);
+   vs->inline_count = m9_vs_specialise ?
+                      MIN2(src->info.num_inlinable_uniforms,
+                           MAX_INLINABLE_UNIFORMS) : 0;
 }
 
 /* The specialisation for one set of values, compiled on first use and kept.
@@ -6392,13 +6409,18 @@ m9_vs_spec_for(struct m9_vs_state *vs, const uint32_t *values)
       NIR_PASS(_, nir, nir_opt_dce);
       spec->native = m9_vs_compile(nir, NULL, &spec->program, &spec->reason);
    }
+   if (spec->native && m9_vs_slot_count(&spec->program) > m9_vs_max_slots) {
+      m9_vs_program_fini(&spec->program);
+      spec->native = false;
+      spec->reason = "the compiled vertex program is past M9X_VS_MAX_SLOTS";
+   }
    if (!spec->reason)
       spec->reason = "no native vertex program";
    if (spec->native)
       spec->nir = nir;
    else if (nir)
       ralloc_free(nir);
-   if (getenv("M9X_DEBUG")) {
+   if (vs->src && getenv("M9X_DEBUG")) {
       fprintf(stderr, "m9x vs: %s", spec->native ? "native" : spec->reason);
       for (unsigned i = 0; i < vs->inline_count; i++)
          fprintf(stderr, " dw%u=%08x",
@@ -7254,6 +7276,8 @@ m9_context_create(struct pipe_screen *pscreen, void *priv, unsigned flags)
    m9_indexed_draws = debug_get_bool_option("M9X_INDEXED", true);
    m9_weld_enable = debug_get_bool_option("M9X_WELD", true);
    m9_native_vs = debug_get_bool_option("M9X_NATIVE_VS", true);
+   m9_vs_max_slots = debug_get_num_option("M9X_VS_MAX_SLOTS", 128);
+   m9_vs_specialise = debug_get_bool_option("M9X_VS_SPECIALISE", true);
    m9_native_vs_varyings = MIN2((unsigned)
       debug_get_num_option("M9X_VS_VARYINGS", M9_VS_FUSED_VARYINGS),
       M9_VS_MAX_VARYINGS);

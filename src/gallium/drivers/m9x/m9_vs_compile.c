@@ -88,6 +88,9 @@ struct ctx {
    } pins[4];
    unsigned pin_count;
    unsigned temp_seq;
+   /* Temporaries of earlier instructions are dead: only one raised past
+    * this mark belongs to the instruction being emitted. */
+   unsigned temp_base;
    bool temp_live;
    /* Output registers of the head being emitted, kept out of the allocation
     * pool: the tail-free head writes its four pairs at the end and nothing
@@ -234,7 +237,7 @@ held_live(struct ctx *c, const struct held *h)
    case HELD_DEF:
       return h->a < c->def_count && c->last_use[h->a] >= c->index;
    case HELD_TEMP:
-      return c->temp_live;
+      return c->temp_live && h->a > c->temp_base;
    default:
       return false;
    }
@@ -1644,6 +1647,7 @@ compile_head(struct ctx *c, nir_block *block, unsigned final,
    memset(c->busy, 0, sizeof(c->busy));
    c->pin_count = 0;
    c->temp_seq = 0;
+   c->temp_base = 0;
    c->index = 0;
    c->temp_live = false;
    if (position) {
@@ -1682,6 +1686,7 @@ compile_head(struct ctx *c, nir_block *block, unsigned final,
    nir_foreach_instr(instr, block) {
       c->index = instr->index;
       c->temp_live = true;
+      c->temp_base = c->temp_seq;
       memset(c->busy, 0, sizeof(c->busy));
       if (instr->type == nir_instr_type_alu &&
           !build_alu(c, nir_instr_as_alu(instr)))
@@ -1690,6 +1695,7 @@ compile_head(struct ctx *c, nir_block *block, unsigned final,
    }
    c->index = final;
    c->temp_live = true;
+   c->temp_base = c->temp_seq;
    memset(c->busy, 0, sizeof(c->busy));
    if (position) {
       if (!write_output(c, position, REG_POS_XY, REG_POS_ZW, dflt))
