@@ -3161,6 +3161,29 @@ m9_fs_variant(struct m9_context *ctx, struct m9_fs_state *fs,
    ralloc_free(clone);
    if (v->ok) {
       m9_record_layout(v);
+      /* M9X_SPLIT_TRACE names the schedule the driver actually built, which
+       * the offline test cannot: st hands the backend scalarised NIR. */
+      if (m9_split_trace) {
+         fprintf(stderr, "m9x schedule: %u passes, record %u dwords\n",
+                 v->passes.count, v->record_dwords);
+         for (unsigned i = 0; i < v->passes.count; i++) {
+            const struct m9_fs_program *p = &v->passes.pass[i];
+
+            fprintf(stderr, "m9x   pass %u slots %u units %u varyings %u "
+                    "record %d offset %u routes", i, m9_fs_slot_count(p),
+                    p->texture_count, p->varying_count, (int)p->writes_record,
+                    v->record_offset[i]);
+            for (unsigned k = 0; k < p->texture_count; k++)
+               fprintf(stderr, " %d", p->texture_source[k] == M9_FS_ROUTE_NONE ?
+                       -1 : (int)p->texture_source[k]);
+            fprintf(stderr, " coord");
+            for (unsigned k = 0; k < p->texture_count; k++)
+               fprintf(stderr, " %d",
+                       p->texcoord_source[k] == M9_FS_ROUTE_NONE ? -1 :
+                       (int)p->texcoord_source[k]);
+            fprintf(stderr, "\n");
+         }
+      }
       if (!m9_fs_streams(v)) {
          v->reason = "more CPU varying streams or texture slots than a job "
                      "binds";
