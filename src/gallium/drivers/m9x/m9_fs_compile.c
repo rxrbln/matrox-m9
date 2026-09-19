@@ -3016,11 +3016,15 @@ allocate(struct ctx *c)
          /* An interpolated input's register is an ordinary one written once
           * by its own slot, so it joins the pool at its last read rather
           * than staying reserved for the length of the program -- but only
-          * as far up the file as the fresh run itself reaches, so blending
-          * keeps 18..1f to itself. */
+          * where the fresh run would hand it out itself: 10..13 carry the
+          * scratch roles, which the backward scan places from, and four
+          * bound units put base there (MEASURED: the split
+          * shared-coordinate-stream case then holds 0x11 as a general
+          * temporary and as scratch at once). */
          util_dynarray_foreach(&c->values, struct value, v)
             if ((v->general ||
-                 (v->interp && v->reg <= (c->blend ? 0x17 : 0x1f))) &&
+                 (v->interp && (v->reg < 0x10 || v->reg > 0x13) &&
+                  v->reg <= (c->blend ? 0x17 : 0x1f))) &&
                 v->reg >= 0 && num_freed < ARRAY_SIZE(freed) &&
                 (v->last == (int)s || (v->def == (int)s && v->last < 0)))
                freed[num_freed++] = v->reg;
@@ -3030,10 +3034,16 @@ allocate(struct ctx *c)
       if (v->reg < 0 && v->last >= 0)
          return fail(c, "internal: unallocated value");
    }
-   /* Two values may share a register only if one is dead before the other
-    * is written.  A pass that breaks this renders every pixel, silently and
-    * wrong, so it is refused here and the splitter cuts instead.
-    * M9X_CHECK_RA=0 turns the check off to measure what it is catching. */
+   /* Two values may share a register only if one is dead before the other is
+    * written.  This cannot fire for register pressure -- the fresh run hands
+    * each register out once and the free list only after a last read, and
+    * running out returns fail_out_of_temporaries above -- so it fires only
+    * when the free-list bookkeeping is wrong, which is a driver defect and
+    * not a shape the hardware cannot take.  It is therefore a hard refusal
+    * rather than a cut: a pass that breaks it renders every pixel silently
+    * wrong, and reporting it as pressure would hide the defect behind extra
+    * passes.  M9X_CHECK_RA=0 turns it off to measure what it is catching and
+    * M9X_DEBUG_SPLIT names the registers. */
    if (debug_get_bool_option("M9X_CHECK_RA", true)) {
       util_dynarray_foreach(&c->values, struct value, v) {
          if (v->reg < 0 || v->last < 0)
@@ -3041,8 +3051,13 @@ allocate(struct ctx *c)
          util_dynarray_foreach(&c->values, struct value, w) {
             if (w <= v || w->reg != v->reg || w->last < 0)
                continue;
-            if (v->def < w->last && w->def < v->last)
+            if (v->def < w->last && w->def < v->last) {
+               if (debug_get_bool_option("M9X_DEBUG_SPLIT", false))
+                  fprintf(stderr, "m9x split: register %#x held by [%d,%d] "
+                          "and [%d,%d]\n", v->reg, v->def, v->last,
+                          w->def, w->last);
                return fail(c, "internal: register held by two values");
+            }
          }
       }
    }
