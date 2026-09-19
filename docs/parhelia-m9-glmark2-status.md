@@ -175,9 +175,20 @@ the distinct-colour count over the root window goes from **1297 to 104000**
 and the frame from a flat near-white wash to a lit landscape with relief and
 detail, but the scene is blue-dominant where the reference is brown and
 green, and the near field carries a regular striped block pattern fixed in
-screen pixels.  So the frame rate of 1 fps is still not a result for it, and
-what remains has **no fixture yet**
-(`docs/parhelia-m9-fragment-pass-splitting.md` 8.4).
+screen pixels.  So the frame rate of 1 fps is still not a result for it.
+
+**Those are two defects, and the scene's own options separate them**
+(CAPTURED 2026-09-19 at 1920x1200, one X server a variant, against llvmpipe
+frames of the same four variants taken on the build host).  With both
+post-processing effects off -- `terrain:bloom=false:tilt-shift=false`, the
+terrain drawn straight to the window -- the silhouette and the relief are
+exact and the **colour is still wrong**: the far field saturated blue, the
+near field dark green with saturated red patches.  Turning the bloom pair on
+changes nothing about it.  The **striped blocks appear only with the
+tilt-shift blur**, which is the nine-tap pass, and they are not visible in
+the far field because the far field is a saturated constant there.  Fix the
+colour first: the blur's input is the wrong picture.
+`docs/parhelia-m9-fragment-pass-splitting.md` 8.4 and 8.4a.
 
 ## Superseded: standing 2026-09-19 (second), the resource splitter alone
 

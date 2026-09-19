@@ -464,10 +464,116 @@ the frame from a flat near-white wash to a lit landscape, but the whole scene
 is blue-dominant where the reference is brown and green, and the near field
 carries a **regular striped block pattern** fixed in screen pixels that the
 far field does not.  So `coordconv:4` was one of terrain's defects and not
-all of them; what is left is **OPEN** and has no fixture yet.  The earlier
-reading that the body comes back with R and G exactly zero is withdrawn: it
-described a frame captured at a different point of the run, and the channels
-of the present frame are all non-zero.
+all of them.  The earlier reading that the body comes back with R and G
+exactly zero is withdrawn: it described a frame captured at a different point
+of the run, and the channels of the present frame are all non-zero.
+
+**The two symptoms are two scenes, and the scene option separates them.**
+`terrain` is a chain: the terrain itself to an offscreen target, a bloom
+pair, then a nine-tap tilt-shift blur to the window, and each half of the
+chain can be turned off from the command line.  CAPTURED at 1920x1200, one X
+server and one process a variant, the known-good fixture rendering after
+each, against llvmpipe frames of the same four variants taken on the build
+host (`tools/` has no capture of its own for that; `maim` off an `Xvfb`
+root):
+
+| variant | picture |
+|---|---|
+| `terrain:bloom=false:tilt-shift=false` | silhouette and relief exact, **colour wrong**: the far field saturated blue, the near field dark green with saturated red patches |
+| `terrain:bloom=true:tilt-shift=false` | the same colour fault, no stripes |
+| `terrain:bloom=false:tilt-shift=true` | the same colour fault **and** the striped blocks |
+| `terrain` (both) | both |
+
+So the **colour** fault is in `terrain.frag` drawn straight to the window,
+before any offscreen target or post-processing pass exists, and the
+**striped blocks** are the tilt-shift blur alone.  They are two defects, not
+one, and the colour one is first because the blur's input is the wrong
+picture.
+
+### 8.4a Where the colour fault is, and what it is not
+
+A ladder of terrain.frag variants -- the stock shader with one diagnostic
+value written to `gl_FragColor` after the real line, so the schedule stays a
+terrain schedule -- was run on the card and against llvmpipe on the same
+scene, with `--data-path` pointing at a tree whose only difference is that
+one file.  Frame means, MEASURED 2026-09-19 at 1920x1200, one X server and
+one process a probe:
+
+| probe | card vs llvmpipe |
+|---|---|
+| `colDiffuse1`, `colDiffuse2`, `tDisplacement`, their mix, `specularTex` | matches |
+| `normalTex`, `normal`, `lVector`, the half vector | matches |
+| `pointDotNormalHalf`, `pointDiffuseWeight`, `pointSpecularWeight` | matches |
+| `pointSpecularWeight * pointDiffuseWeight * 8` | matches |
+| `uDiffuseColor * pointDiffuseWeight` | matches |
+| `pointDiffuse` = `pointLightColor[0] * uDiffuseColor * pointDiffuseWeight` | matches |
+| `totalDiffuse`, `ambientLightColor * uAmbientColor` | matches |
+| **`pointLightColor[0] * uSpecularColor * pointSpecularWeight * pointDiffuseWeight * 8`** | **250, 248, 16 against 32, 30, 26** |
+| **`pointSpecular * 8`** | **wrong, the mean 4.2x the reference** |
+| **`totalDiffuse + totalSpecular`** | **wrong** |
+| **`totalDiffuse + ambientLightColor * uAmbientColor + totalSpecular`** | **a flat 135, 136, 255 over the whole mesh** |
+
+Every failing probe contains `pointSpecular` and every passing one does not.
+Both of its scalars are right on their own and their product is right; what
+is wrong is that product multiplied by the two uniform colour vectors, and
+the way it is wrong names the shape: the light and material colours are
+both `(1, 1, 1)`, so the correct value is the product itself, and the card
+returns **red and green saturated with blue carrying the product**.  On a
+machine whose registers are pairs, that is the scalar multiply reaching one
+pair of the result and not the other.  The flat `135, 136, 255` of the last
+row is the same thing seen through the sum: red and green are
+`ambientLightColor * uAmbientColor` exactly and blue saturates.
+
+**Program size is not the cause, and the reading that it was is retired.**
+The probes that fail are also the longest -- 207 to 222 slots against 160
+and fewer for every passing one -- and that correlation was taken for the
+cause until it was measured.  `tools/m9-mesa-glsl.c` gained `fschain:N` and
+`fsconst:N` for it: both rotate a pair of varyings N times, so a given N is
+the same slot count either way, and only the constant count differs.
+MEASURED on the M9128: `fschain:40` is **337 slots and renders every pixel
+exactly**, and glmark2's own simplex-noise shader compiles to a **1701-slot**
+single pass in the same scene and draws the height map correctly.  There is
+no slot ceiling anywhere near the failing probes.
+
+`fsconst` did find a ceiling, in the **constant count**, and it is far above
+what terrain asks for: `fsconst:24` (209 slots, 56 constants) renders
+exactly and **`fsconst:30` (257 slots, 68 constants) fails every one of
+76800 pixels and stops the engine**.  A captured vendor pass carries 39
+constants (`m9_fs_corpus.h`, entry 189 pass 2), so the limit lies between 56
+and 68 and is not decoded further here.  The driver does not bound the
+constant count at all today (`m9_raster_fs_init_textured` refuses only above
+127), so a shader between those two numbers will stop the card; that is a
+separate defect from terrain's and is listed in the backlog.
+
+The fault is **not** the integer-uniform lowering merged the same day: the
+whole ladder was re-run on a tree rebased onto `cfaaf3a`, and
+`terrain:bloom=false:tilt-shift=false` comes back with the same frame to
+three figures -- mean 68.6, 43.6, 113.8 against llvmpipe's 95.0, 88.8, 31.7,
+and the same 58.6 of 255 mean difference over an 8x8 tiling.
+
+**What no fixture has reproduced yet.**  Five new fixture families were
+built for this and all of them render exactly on the card: `chainvec:OP` and
+`chainlit:OP` (a special function's result multiplied into a uniform or
+literal vector, for pow, exp2, log2, rcp and rsq), `chainvec2:OP` (the same
+with two uniform vectors, the shape `pointSpecular` has), `chainmany:N` (N
+pow chains in one program), and `speclit` (terrain's specular term reduced
+to a fixture: a normal from a texture through a tangent frame, four
+normalizations, a pow with a uniform exponent, times two uniform vectors).
+`filefs` was added with them: it renders a fragment shader named by
+`M9_GLSL_FS` against a vertex shader named by `M9_GLSL_VS` and compares the
+readback with a raw frame from `M9_GLSL_REF`, which is how a shader too big
+to write a CPU reference for is A/B-ed against llvmpipe in seconds instead
+of against a benchmark run in minutes.
+
+Run through `filefs`, **terrain.frag itself is correct**: the stock shader
+with the failing probe appended, with terrain's own uniform names and
+values, differs from llvmpipe on 14 of 76800 pixels -- chain precision, not
+the fault.  The driver compiles it to **two** raster passes there and to
+**one pass of 205 slots, two texture units and four interpolated inputs** in
+glmark2 (CAPTURED, `M9X_SPLIT_TRACE=1` in both).  So the trigger is not the
+shader text alone: it is that text under the schedule glmark2's own vertex
+shader and geometry produce, and the next step is to make the fixture take
+that schedule.
 
 ### 8.5 The defect `coordconv:4` isolated: index 88's two fields overlap
 

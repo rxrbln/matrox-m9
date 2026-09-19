@@ -85,6 +85,7 @@ Recorded so they are not attempted again.
 | ~~A framebuffer with **no colour attachment** has no raster parameters, so every draw into it is skipped~~ | **resolved 2026-09-19.**  Every raster parameter is derived from a colour surface (`m9_draw_params_init` builds the depth and HZ descriptors from the same shape), so a depth-only framebuffer now takes a surface of its own shape out of the scratch pool `m9_deferred_run` already allocates from, and the job masks colour writes off - which is what GL does with them, so nothing reads it.  MEASURED: glmark2 `shadow` goes from 1447 draws a frame skipped at 145 fps to **0 skipped**, and the frame rate to what drawing the shadow map costs |
 | ~~A blended shader that names the whole register file has no temporaries for the colour lanes~~ | **resolved 2026-09-19.**  The blend path took its two saturated colour temporaries only from registers no slot of the program named at all, and freed the general ones after choosing them; a register whose last mention is at or before the slot writing its colour lane is dead from there on and carries the lane instead.  OFFLINE under `SRC_ALPHA/INV_SRC_ALPHA`: 133 of 182 corpus shaders supported to 146, all thirteen "out of temporaries for blending" refusals closed.  MEASURED: glmark2 `jellyfish` 1245 draws a frame skipped at 125 fps to **0 skipped** at 77 |
 | ~~A fragment shader reads an integer uniform as the float Mesa stored~~ | **resolved 2026-09-19.**  The screen declares no integer support, so Mesa keeps an integer uniform in the constant buffer as a float (`uniform_int_float`); gallivm lowers the vertex path's NIR to match because the shader declares `no_integers`, and the fragment path did neither.  MEASURED with `M9X_FS_INLINE_TRACE=1`: `loop:fragment-uniform=true` receives `dw0=40a00000`, the float 5.0, where its `ige` wanted the integer 5, so the trip count was 1084227584 and the loop was refused as control flow.  `m9_fs_lower_integers()` runs `nir_lower_int_to_float`, and a UBO element index is put back with `f2i32` - without that the `matuni` fixture resolves constants past the bound buffer.  glmark2 `loop:fragment-uniform=true` 3446 draws a frame skipped at 345 fps to **0 skipped** at 159 |
+| A fragment pass with more constants than the engine holds stops the card, and nothing bounds it | MEASURED 2026-09-19 with the new `fsconst:N` fixture, which grows the constant count at a fixed slot count: `fsconst:24` (209 slots, **56** constants) renders every pixel exactly, `fsconst:30` (257 slots, **68** constants) fails all 76800 and logs a stream timeout.  A captured vendor pass carries 39 (`m9_fs_corpus.h` entry 189 pass 2), so the ceiling is between 56 and 68 and is not decoded.  `m9_raster_fs_init_textured` refuses only above 127, so a shader in that band stops the engine rather than being split or refused.  No glmark2 scene reaches it today -- terrain's largest pass holds 42 -- which is why it is a backlog item and not a fix |
 | CPU-uploaded depth textures never reach the sampler | tiled surface, linear transfer |
 | `glReadPixels(GL_DEPTH_COMPONENT)` returns the first map's value forever | pre-existing, not understood |
 | First modeset above the firmware's mode logs `scanout publish failed (-19)` | the frame after is correct; the ordering is not |
@@ -238,14 +239,48 @@ query, and cube and 3D textures - are all done.
    `docs/parhelia-m9-fragment-pass-splitting.md` section 8.5.
 
    What that leaves is the **new top of this list**: **`terrain`'s picture is
-   moved but not right.**  CAPTURED on scanout at 1920x1200 and 800x500, the
-   distinct-colour count over the root window goes from 1297 to 104000 and
-   the frame from a flat near-white wash to a lit landscape with relief and
-   detail -- but the scene is blue-dominant where the reference is brown and
-   green, and the near field carries a regular striped block pattern fixed in
-   screen pixels that the far field does not.  It has **no fixture yet**, and
-   that is the first thing to build: every `coordconv` and `conv` case now
-   passes, so whatever is left is a shape none of them has.
+   moved but not right**, and it is **two** defects, not one.  The scene's
+   own options separate them (CAPTURED 2026-09-19 at 1920x1200, one X server
+   a variant, against llvmpipe frames of the same variants taken on the build
+   host):
+
+   * `terrain:bloom=false:tilt-shift=false` -- the terrain drawn straight to
+     the window, no offscreen target and no post-processing -- has the
+     silhouette and the relief exact and the **colour wrong**: the far field
+     saturated blue, the near field dark green with saturated red patches.
+     Turning the bloom pair on changes nothing about it.
+   * The **striped blocks appear only with the tilt-shift blur**, the nine-tap
+     pass.  They are invisible in the far field because the far field is a
+     saturated constant there, so fix the colour first: the blur's input is
+     the wrong picture.
+
+   The colour fault is **inside `pointSpecular`**.  Nineteen probes of
+   `terrain.frag` -- the stock shader with one diagnostic value appended, run
+   on the card and under llvmpipe on the same scene -- separate cleanly:
+   every probe that contains `pointSpecular` is wrong and every one that does
+   not is right, `pointSpecularWeight` and `pointDiffuseWeight` and their
+   product included.  `pointLightColor[0] * uSpecularColor *
+   pointSpecularWeight * pointDiffuseWeight * 8` comes back with **red and
+   green saturated and blue carrying the product**, and both colour uniforms
+   are `(1, 1, 1)`, so the scalar multiply reached one register pair of the
+   result and not the other.
+   `docs/parhelia-m9-fragment-pass-splitting.md` 8.4 and 8.4a.
+
+   **Program size is not the cause** -- that reading is measured and retired.
+   `fschain:40` is 337 slots and exact, and glmark2's own simplex noise
+   compiles to a 1701-slot single pass in the same scene and draws correctly.
+
+   **It still has no fixture.**  Five families were built for it and all pass
+   on the card: `chainvec:OP`, `chainlit:OP`, `chainvec2:OP`, `chainmany:N`
+   and `speclit`.  `filefs` was added with them -- it renders a fragment
+   shader named by `M9_GLSL_FS` against a vertex shader from `M9_GLSL_VS` and
+   compares the readback with a raw frame from `M9_GLSL_REF` -- and through
+   it **terrain.frag itself is correct**, 14 of 76800 pixels at tolerance 24,
+   which is chain precision.  The driver compiles it to **two** raster passes
+   there and to **one pass of 205 slots, two texture units and four
+   interpolated inputs** in glmark2.  The trigger is the schedule glmark2's
+   own vertex shader and geometry produce, not the shader text, and the next
+   step is to make the fixture take that schedule.
 
 2. **MRT.**  The surface side is done and pinned offline; what remains is a
    fragment backend that compiles more than one colour output, and measuring
