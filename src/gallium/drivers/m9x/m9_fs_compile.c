@@ -3835,16 +3835,72 @@ program_registers(struct ctx *c, uint32_t *used, const char *reason)
    return true;
 }
 
+/* The last slot naming each register, so a value the program stops reading
+ * before a colour write can carry that lane's saturated copy instead. */
+static void
+program_last_touch(struct ctx *c, int *last)
+{
+   const uint32_t *w = (const uint32_t *)c->p->slots.data;
+   unsigned n = m9_fs_slot_count(c->p);
+
+   for (unsigned r = 0; r < 0x20; r++)
+      last[r] = -1;
+   for (unsigned i = 0; i < n; i++) {
+      uint32_t w0 = w[2 * i], w1 = w[2 * i + 1];
+      const unsigned field[4] = { slot_a(w0, w1), w0 >> 22 & 0x7f,
+                                  w0 >> 15 & 0x7f, w0 >> 8 & 0x7f };
+
+      for (unsigned f = 0; f < 4; f++)
+         if (field[f] < 0x20)
+            last[field[f]] = (int)i;
+   }
+}
+
+/* A temporary out of the pool, admitting registers the caller knows are dead
+ * even though the program named them. */
+static int
+blend_temp_dead(struct ctx *c, uint32_t *used, uint32_t dead)
+{
+   uint32_t busy = *used;
+   int r;
+
+   *used &= ~dead;
+   r = blend_temp(c, used);
+   *used |= busy;
+   return r;
+}
+
 /* Send both colour lanes to saturated temporaries instead of the output. */
 static bool
 redirect_output(struct ctx *c, uint32_t *used, int s[2])
 {
    uint32_t *w = (uint32_t *)c->p->slots.data;
    unsigned n = m9_fs_slot_count(c->p);
+   int last[0x20], first[2] = { -1, -1 };
+   uint32_t taken = 0;
 
-   for (unsigned lane = 0; lane < 2; lane++)
-      if ((s[lane] = blend_temp(c, used)) < 0)
+   program_last_touch(c, last);
+   for (unsigned i = 0; i < n; i++) {
+      unsigned op0 = w[2 * i] & 0x1f;
+
+      if ((w[2 * i] >> 8 & 0x7f) == color_dest() &&
+          (op0 == 0x1d || op0 == 0x1e) && first[op0 - 0x1d] < 0)
+         first[op0 - 0x1d] = (int)i;
+   }
+   for (unsigned lane = 0; lane < 2; lane++) {
+      uint32_t dead = 0;
+
+      /* The slot that writes the lane reads its own sources first, so a
+       * register dead at that slot carries the lane from there on.  Texel
+       * pairs are the engine's, not the program's, and stay reserved. */
+      if (first[lane] >= 0)
+         for (unsigned r = 4 * c->p->texture_count; r < 0x20; r++)
+            if (last[r] <= first[lane] && !(taken & BITFIELD_BIT(r)))
+               dead |= BITFIELD_BIT(r);
+      if ((s[lane] = blend_temp_dead(c, used, dead)) < 0)
          return false;
+      taken |= BITFIELD_BIT(s[lane]);
+   }
    for (unsigned i = 0; i < n; i++) {
       uint32_t *w0 = &w[2 * i];
       unsigned op0 = *w0 & 0x1f;
