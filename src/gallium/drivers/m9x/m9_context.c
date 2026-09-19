@@ -3133,6 +3133,18 @@ m9_fs_variant(struct m9_context *ctx, struct m9_fs_state *fs,
       return NULL;
    }
 
+   /* M9X_FS_INLINE_TRACE=1 names the uniforms a shader is specialised on and
+    * the values the state tracker sent, which is what a refusal for control
+    * flow has to be read against. */
+   if (debug_get_bool_option("M9X_FS_INLINE_TRACE", false)) {
+      fprintf(stderr, "m9x: fs variant: %u inlinable uniform(s)",
+              fs->nir->info.num_inlinable_uniforms);
+      for (unsigned i = 0; i < fs->nir->info.num_inlinable_uniforms; i++)
+         fprintf(stderr, " dw%u=%08x",
+                 fs->nir->info.inlinable_uniform_dw_offsets[i],
+                 want->inline_values[i]);
+      fprintf(stderr, "\n");
+   }
    *reason = "out of memory";
    v = CALLOC_STRUCT(m9_fs_variant);
    clone = v ? nir_shader_clone(NULL, fs->nir) : NULL;
