@@ -347,13 +347,14 @@ static unsigned m9_split_copy;
  * frame needs; 2 and 1 narrow it to the scratch path's own objects and 0
  * leaves it alone. */
 static unsigned m9_split_be;
-/* M9X_SPLIT_PAD=1 pads a partial multi-pass draw out to its target's extent
- * and narrows the clip window to the pixels it covers, which is what the
- * engine counts as covering a target (MEASURED, conv3pad / conv3frame /
- * conv3subpad).  It is off by default: the fixture suite stops the engine at
- * conv3rep with it on, so the mechanism is proved but not yet a path a scene
- * can be trusted to, and M9X_SPLIT_BE=3 belongs with it. */
-static bool m9_split_pad_enable;
+/* M9X_SPLIT_PAD=0 refuses a partial multi-pass draw to the scratch surface
+ * instead of padding it out to its target's extent and narrowing the clip
+ * window to the pixels it covers, which is what the engine counts as covering
+ * a target (MEASURED, conv3pad / conv3frame / conv3subpad).  Padding is on by
+ * default because it carries a draw a scratch surface cannot -- one whose
+ * geometry does not fill the box it spans -- and it needs M9X_SPLIT_BE=3
+ * beside it, which stops the engine without it (MEASURED). */
+static bool m9_split_pad_enable = true;
 /* M9X_RECORD_DUMP names a file the inter-pass record is written to after
  * every split job, so the slots the engine touched can be read back and
  * the record's granularity measured rather than assumed. */
@@ -6081,8 +6082,8 @@ m9_context_create(struct pipe_screen *pscreen, void *priv, unsigned flags)
    m9_split_scratch = debug_get_bool_option("M9X_SPLIT_SCRATCH", true);
    m9_split_seed = debug_get_bool_option("M9X_SPLIT_SEED", true);
    m9_split_copy = debug_get_num_option("M9X_SPLIT_COPY", 1);
-   m9_split_be = debug_get_num_option("M9X_SPLIT_BE", 1);
-   m9_split_pad_enable = debug_get_bool_option("M9X_SPLIT_PAD", false);
+   m9_split_be = debug_get_num_option("M9X_SPLIT_BE", 3);
+   m9_split_pad_enable = debug_get_bool_option("M9X_SPLIT_PAD", true);
    m9_record_dump = debug_get_option("M9X_RECORD_DUMP", NULL);
    m9_split_draws = debug_get_num_option("M9X_SPLIT_DRAWS", 1);
    m9_record_89 = debug_get_num_option("M9X_RECORD_89", 0);
