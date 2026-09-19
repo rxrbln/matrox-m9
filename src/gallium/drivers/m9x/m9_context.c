@@ -306,6 +306,18 @@ static unsigned m9_native_vs_varyings = M9_VS_FUSED_VARYINGS;
  * whose coordinate an earlier raster pass produced does not need a stream
  * and is not gated by this. */
 static bool m9_native_vs_texture;
+/* M9X_VS_COORD_PAIR=1 lets a coordinate stream take the second output
+ * target beside an interpolated varying.  Off by default: the one
+ * benchmark that needs both -- glmark2 texture -- costs 0.14 ms a
+ * megapixel more on the engine that way, and why is not established
+ * (docs/parhelia-m9-glmark2-status.md).  A coordinate that is the pass's
+ * only stream pays nothing and is always taken. */
+static bool m9_native_vs_coord_pair;
+/* M9X_NO_CULL=1 clears the ef cull bits of a native draw.  A diagnostic:
+ * the draw module removes back-facing triangles on the CPU before it hands
+ * a draw over and the native path does not, so this says whether the engine
+ * removes them itself. */
+static bool m9_no_cull;
 /* M9X_VS_SPLIT=1 lets a native preprocessing job carry a fragment program
  * the engine runs as several raster passes.  The layout below is the union
  * over the passes, which for a shader that hands a coordinate between them
@@ -4594,7 +4606,8 @@ m9_native_vs_resolve(struct m9_context *ctx, const struct pipe_draw_info *info,
    if (reduced == MESA_PRIM_TRIANGLES && rast) {
       if (rast->cull_face == PIPE_FACE_FRONT_AND_BACK)
          return "both faces are culled";
-      out->cull = m9_cull_ef(rast->cull_face, rast->front_ccw);
+      out->cull = m9_no_cull ? 0 :
+                  m9_cull_ef(rast->cull_face, rast->front_ccw);
    }
    out->lines = reduced == MESA_PRIM_LINES;
    out->flat = rast && rast->flatshade;
@@ -4797,6 +4810,9 @@ m9_native_vs_layout(const struct m9_job_key *key, const struct m9_vs_program *p,
          if (reason)
             return reason;
          coeff += stream.coeff_record && out->count > had;
+         if (out->count > 1 && !m9_native_vs_coord_pair)
+            return "a texture coordinate beside another stream needs the "
+                   "second output target (M9X_VS_COORD_PAIR)";
       }
    }
    return NULL;
@@ -7119,7 +7135,9 @@ m9_context_create(struct pipe_screen *pscreen, void *priv, unsigned flags)
    m9_native_vs_varyings = MIN2((unsigned)
       debug_get_num_option("M9X_VS_VARYINGS", M9_VS_FUSED_VARYINGS),
       M9_VS_MAX_VARYINGS);
-   m9_native_vs_texture = debug_get_bool_option("M9X_VS_TEXTURE", false);
+   m9_native_vs_texture = debug_get_bool_option("M9X_VS_TEXTURE", true);
+   m9_native_vs_coord_pair = debug_get_bool_option("M9X_VS_COORD_PAIR", false);
+   m9_no_cull = debug_get_bool_option("M9X_NO_CULL", false);
    m9_native_vs_split = debug_get_bool_option("M9X_VS_SPLIT", false);
 
    m9_no_clear = debug_get_bool_option("M9X_NO_CLEAR", false);
