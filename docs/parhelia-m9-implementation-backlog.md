@@ -74,7 +74,7 @@ Recorded so they are not attempted again.
 | `emit_rcp` with a literal operand returns 4x too large | worked around by folding literals at compile time; root cause open |
 | ~~D16 depth attachments draw with no depth~~ | **resolved**: Z16 is now claimed for sampling only, so the state tracker falls back to `x8z24_unorm` and a depth attachment always carries the hierarchical surface |
 | ~~A split draw that returns to an earlier render-target shape stops the engine~~ | **resolved**: the engine keeps per-target state in the object at index `be`, and a revisited shape read what another shape left there.  One `be` object per render-target shape.  Sharing by shape is what the engine wants - one per colour *resource* still stalls |
-| ~~`desktop` and `terrain` stop the engine at scene scale~~ | **resolved 2026-09-19.**  It was none of the three suspects.  The driver cleared the engine's back-end state object with a CPU `memset` while a job that bound it was still executing: a job posted asynchronously retires only at the **next** submission (CAPTURED from the kernel), and the scratch path's seed copy is a draw into the very surface whose object is cleared next.  A race, which is why the count a context survived was never sharp.  A target shape now keeps two back-end objects and a clear swaps to the spare.  MEASURED, one binary, `M9X_SPLIT_BE=3`, `M9X_BE_SWAP` the only variable: `conv3rep` fails 76800 of 76800 pixels and stops the engine without it, passes three runs over with it.  `desktop` renders at 38 fps with nothing refused; `terrain` does not stop the engine either, and what refuses it is the fragment backend (below) |
+| ~~`desktop` and `terrain` stop the engine at scene scale~~ | **resolved 2026-09-19.**  It was none of the three suspects.  The driver cleared the engine's back-end state object with a CPU `memset` while a job that bound it was still executing: a job posted asynchronously retires only at the **next** submission (CAPTURED from the kernel), and the scratch path's seed copy is a draw into the very surface whose object is cleared next.  A race, which is why the count a context survived was never sharp.  A target shape now keeps two back-end objects and a clear swaps to the spare.  MEASURED, one binary, `M9X_SPLIT_BE=3`, `M9X_BE_SWAP` the only variable: `conv3rep` fails 76800 of 76800 pixels and stops the engine without it, passes three runs over with it.  `desktop` renders at 38 fps with nothing refused; `terrain` does not stop the engine either, and what refused it was the fragment backend, which no longer does (item 1 below) |
 | ~~No picture when the machine boots without the BIOS VBE POSTing the card~~ | **resolved** (`7c7e80c`).  Two corrections came with it.  The display-controller enable bit was never the mechanism - `m9_program_timing()` already sets it, and the controller was enabled while nothing looked at it.  And this is not an unusual boot: CAPTURED from `captures/m9x-vendor-fourhead-20260917/`, POST always leaves the card on the VGA CRTC (`1c10 = 1`, VGA MISC `0x63`) and the vendor driver leaves `1c10 = 2`, MISC `0x68`.  `vga=0x318` merely hid it, because the BIOS mode set performs the same handoff.  Two registers decide it: `0x1c10` bit 0 selects the VGA raster, and the legacy VGA miscellaneous output register's bits 3:2 are the CRTC clock select, which POST leaves on the fixed **25.175 MHz VGA oscillator** - so with correct geometry the head rastered at **20.00 Hz** and writing `0x0e48` did not move it by a hertz.  MISC `0x68` gives the programmed clock.  MEASURED cold: 1280x720 at 60.00 Hz, line rate 45.0 kHz.  The monitor reporting "out of range" was the decisive datum - the DisplayPort MSA carries geometry only and read correct throughout, so no log would have shown it |
 | `m9x_ddc_init()` compacts the PInS DDC map, so a head can read EDID from one socket and light another | this board reports `DDC map 09 0a 00 00 0d 0e 00 00` - populated pairs at positions 0 and **2**.  Compaction packs them into slots 0 and 1 and `head->ddc_index` becomes the head index, while `head->link` still comes from the bank table.  Whenever the map has holes, "DP-2" reads the third selector pair and drives pad 1.  A strong candidate for why outputs 2-4 have always behaved differently from output 1 |
 | A module swap leaves the device returning `-EBUSY` for everything, and only a reboot clears it | distinct from a stream timeout: it follows an ordinary reload with no stall, and made one control run read as a failure of the change under test |
@@ -212,19 +212,41 @@ tiled placement and filtering of float texels are still uncaptured.  See
 Items 1-3 of the previous list - the third vertex attribute, the occlusion
 query, and cube and 3D textures - are all done.
 
-1. ~~**The scene-scale split fault.**~~  **Closed 2026-09-19** (the back-end
-   clear race, above).  What it leaves is a different item: **`terrain`'s
-   fragment shader**.  It is refused by the backend, not by the split path --
-   MEASURED with `M9X_SPLIT_PRESSURE=1 M9X_SPLIT_PAD=1 M9X_SPLIT_BE=3`, the
-   scene renders 1055 padded split draws a frame with no stream timeout, and
-   still skips 14 draws a frame for "more texture fetches than one raster
-   pass can bind" (five distinct samplers against four units) and 2 for
-   geometry that does not fill the box it spans.  So the coverage rule is no
-   longer what blocks it.  What is needed is a splitter that cuts a shader
-   for the **sampler count** as well as for a computed coordinate and the
-   register file; `M9X_FS_FORCE_SPLIT` is not that -- forcing at 2, 3 or 4
-   samplers a pass makes it worse, refusing 106 to 109 draws a frame for "no
-   value splits this shader into raster passes" (MEASURED 2026-09-19).
+1. ~~**The scene-scale split fault.**~~  **Closed 2026-09-19.**
+   ~~**`terrain`'s fragment shader.**~~  **Closed 2026-09-19 (second).**  The
+   splitter partitions a shader by the resources a raster pass holds -- texel
+   slots, the register file, the six interpolation registers -- and `terrain`
+   goes from 24 refused draws a frame to **0**, with no stream timeout
+   (MEASURED, default knobs).  `docs/parhelia-m9-fragment-pass-splitting.md`
+   section 8.
+
+   What it leaves is a **different** item, and the new top of this list:
+   **a computed-coordinate schedule past three taps renders wrong pixels.**
+   `terrain` draws every draw and its body still comes back with R and G
+   exactly zero, in a pattern fixed in screen pixels rather than in texture
+   space (MEASURED at two resolutions), so it is the inter-pass record.
+   The reproduction is a new fixture, `coordconv:N` in
+   `tools/m9-mesa-glsl.c`: N taps at whole-texel offsets around a base
+   coordinate the fragment stage computes, checked pixel by pixel against a
+   CPU reference.
+
+   ```text
+   coordconv:2   PASS   3 passes, 2 record slots
+   coordconv:3   PASS   4 passes, 3 record slots
+   coordconv:4   FAIL   54092 of 76800 pixels, 6 passes, 5 record slots
+   ```
+
+   Ruled out, each with one variable (MEASURED): the record slot count
+   (`conv7/10/13/16` pass exactly at 1 to 4 slots with
+   `M9X_RECORD_LIVENESS=0`, and `coordconv:4` fails identically either way),
+   the pass count (`conv16` is five passes and exact), and the splitter's
+   choice of cuts (`M9X_SPLIT_RANK=1` gives the same schedule).  What is left
+   and **OPEN**: `coordconv:4` is the first schedule whose *producing* pass
+   consumes a coordinate route, and the first to mix a value route with
+   coordinate routes in one pass; every captured producing pass carries
+   `0x74 = 00000100`, idle.  `refract`'s black frame is the same family --
+   four passes, three record slots, every coordinate computed -- so the two
+   are probably one item.
 2. **MRT.**  The surface side is done and pinned offline; what remains is a
    fragment backend that compiles more than one colour output, and measuring
    the destination that names target p rather than trusting the DERIVED

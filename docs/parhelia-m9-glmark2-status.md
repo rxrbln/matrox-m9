@@ -1,5 +1,41 @@
 # glmark2 on the m9x driver: where the 60 fps goal actually stands
 
+## Standing 2026-09-19 (second): `terrain` draws every draw, and its picture is still wrong
+
+MEASURED at 1920x1200 on the M9128, `tools/m9x-glmark-default-suite-fresh-x.sh`,
+`M9X_SKIP_REPORT=1`, 0 stream timeouts.
+
+| scene | before | after |
+|---|---|---|
+| `terrain` | 1 fps, **24 draws a frame refused** by the fragment backend | 1 fps, **0 draws skipped**, mesh silhouette and sky on the monitor, body wrong |
+
+What changed is the fragment splitter: it now partitions a shader by the
+resources a raster pass holds -- texel slots, the register file and the six
+interpolation registers -- rather than by the fetch count alone, and three
+defects in front of that are fixed (the coordinate's varying location was
+read from the wrong intrinsic, two units could not share a varying location
+at an odd component, and the layout gate counted a coordinate stream a
+sampler).  `docs/parhelia-m9-fragment-pass-splitting.md` section 8.
+
+**`terrain` is not conformant and the frame rate is not a result.**  The
+terrain body comes back with R and G exactly zero.  The pattern is fixed in
+screen pixels -- the same block size at 1920x1200 and at 480x300 (MEASURED,
+both captured) -- so it is the inter-pass record, not texture sampling.
+
+The defect is isolated to a fixture that did not exist before:
+**`coordconv:4` fails, 54092 of 76800 pixels, against a CPU reference**, while
+`coordconv:2` and `coordconv:3` pass exactly.  It is glmark2's tilt-shift
+blur in miniature -- N taps around a base coordinate the fragment stage
+computes, one producing pass a tap -- and `terrain` presents through the
+nine-tap form of it.  It is not the record slot count, not the pass count and
+not the choice of cuts; each of those is ruled out with one variable in
+section 8.5 of the splitting note.
+
+**This very likely also explains `refract`'s black frame**, which is the same
+family: four passes, three record slots, every coordinate computed.
+
+## Superseded: standing 2026-09-19 (first)
+
 **MEASURED 2026-09-18** at 1920x1200 on the dual-DisplayPort M9128 (subsystem
 102b:22c0, 1 GiB VRAM) in the 16 GB host, one head driven, stock X server with
 the image's glamor, Mesa built with LLVM JIT (`draw-use-llvm`).
@@ -22,7 +58,7 @@ Every run asserts `GL_RENDERER` is `Matrox M9`: a Mesa build configured without
 back to llvmpipe silently, and every fixture still passes against the CPU
 reference.
 
-## Standing 2026-09-19: all thirty-three run, twenty-nine above 60 fps, four still skip draws
+### All thirty-three run, twenty-nine above 60 fps, four still skip draws
 
 MEASURED at 1920x1200, **one X server and one process a benchmark**
 (`tools/m9x-glmark-default-suite-fresh-x.sh`, and see why below), the padded
@@ -47,7 +83,7 @@ channel difference.
 | `buffer` map / subdata / interleaved | 153, 154, 154 | none |
 | `ideas` | 111 | none |
 | `jellyfish` | 125 | **1244**, out of temporaries for blending |
-| **`terrain`** | **1** | **24**, five samplers against four units and the register file |
+| **`terrain`** | **1** | **24**, five samplers against four units and the register file -- **0 as of the second standing above** |
 | `shadow` | 145 | **1446**, a depth-only framebuffer has no raster parameters |
 | **`refract`** | **39** | none |
 | `conditionals` 0/0, 0/5, 5/0 | 229, 142, 228 | none |
