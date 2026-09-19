@@ -48,6 +48,10 @@ struct m9_raster_pass {
     * what preprocessing produced, so every pass reads a copy of its own. */
    uint32_t vertex_offset;    /* records before this pass's copy */
    uint32_t index_offset;     /* bytes before its copy of the index run */
+   /* Bytes ahead of a CPU-gathered stream view for this pass.  The gather
+    * is written once at the tail of the view and each pass's base is pulled
+    * back by its own vertex_offset, so one copy serves every pass. */
+   uint32_t cpu_stream_offset;
    uint32_t depth_control;    /* raster a8 of this pass */
    uint32_t depth_ef;         /* raster ef depth bits of this pass */
    uint32_t sequence_ef;      /* raster ef bits 10:9: this pass's place */

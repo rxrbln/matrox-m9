@@ -312,15 +312,17 @@ m9_stream_handle(const struct m9_draw_job *job, unsigned view)
 }
 
 static uint64_t
-m9_stream_offset(const struct m9_draw_job *job, unsigned view)
+m9_stream_offset(const struct m9_draw_job *job,
+                 const struct m9_raster_pass *pass, unsigned view)
 {
    return m9_stream_is_cpu(job, view) ?
-          VIEW(view - M9_TRANSIENT_CPU_VIEW) : VIEW(view);
+          VIEW(view - M9_TRANSIENT_CPU_VIEW) +
+          (pass ? pass->cpu_stream_offset : 0) : VIEW(view);
 }
 
-#define STREAM_RELOC(job, slot, view)                                      \
+#define STREAM_RELOC(job, pass, slot, view)                                \
    { .index = (slot), .handle = m9_stream_handle(job, view),               \
-     .offset = m9_stream_offset(job, view),                                \
+     .offset = m9_stream_offset(job, pass, view),                          \
      .kind = m9_stream_is_cpu(job, view) ? PARHELIA_M9_RELOC_SYSTEM :      \
              PARHELIA_M9_RELOC_STREAM }
 
@@ -405,11 +407,11 @@ m9_emit_raster_fs(struct m9_batch *batch, const struct m9_draw_job *job,
       unsigned s = 2 * pair;
 
       if (s + 1 < fs->stream_count) {
-         EMIT(STREAM_RELOC(job, s, fs->stream_view[s]),
-              STREAM_RELOC(job, s + 1, fs->stream_view[s + 1]),
+         EMIT(STREAM_RELOC(job, pass, s, fs->stream_view[s]),
+              STREAM_RELOC(job, pass, s + 1, fs->stream_view[s + 1]),
               V(0x10 + pair, fs->stride[pair]));
       } else {
-         EMIT(STREAM_RELOC(job, s, fs->stream_view[s]),
+         EMIT(STREAM_RELOC(job, pass, s, fs->stream_view[s]),
               V(0x10 + pair, fs->stride[pair]));
       }
    }

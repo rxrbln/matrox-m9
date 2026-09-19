@@ -1192,22 +1192,25 @@ m9_job_native(struct m9_context *ctx, const struct m9_job_key *key,
     * captured two-pass and five-sampler schedules lay them out. */
    memcpy((uint8_t *)ctx->system.map + M9_RASTER_CONST_OFFSET,
           ctx->job_consts.data, ctx->job_consts.size);
+   /* Each pass draws its own copy of the geometry, one record range after
+    * another, so its record index is the first copy's plus i * records.  The
+    * gather is written once at the tail of the view and each pass's base is
+    * pulled back by its own copy's offset, which lands every pass on that one
+    * copy: what used to be passes copies of the varyings is now one. */
+   uint64_t gather_at = (uint64_t)(fs->passes.count - 1) * records *
+                        M9_TRANSIENT_VERTEX_BYTES;
+
    t_varying = m9_prof_begin();
    for (unsigned j = 0; j < cpu_streams; j++) {
       uint8_t *view = (uint8_t *)ctx->cpu_streams.map +
-                      j * m9_transient_view_bytes();
+                      j * m9_transient_view_bytes() + gather_at;
 
       for (unsigned r = 0; r < records; r++)
          memcpy(view + r * M9_TRANSIENT_VERTEX_BYTES,
                 extra + (r * fs->extra_count + j) * 4, 4 * sizeof(float));
-      /* Each pass draws its own copy of the geometry, so its varyings are
-       * repeated behind the first set. */
-      for (unsigned i = 1; i < fs->passes.count; i++)
-         memcpy(view + (uint64_t)i * records * M9_TRANSIENT_VERTEX_BYTES,
-                view, (uint64_t)records * M9_TRANSIENT_VERTEX_BYTES);
    }
    m9_prof_varying_bytes += (uint64_t)records * cpu_streams *
-                            fs->passes.count * M9_TRANSIENT_VERTEX_BYTES;
+                            M9_TRANSIENT_VERTEX_BYTES;
    m9_prof_end(M9_PROF_VARYING, t_varying);
 
    for (unsigned i = 0; i < fs->passes.count; i++) {
@@ -1247,6 +1250,9 @@ m9_job_native(struct m9_context *ctx, const struct m9_job_key *key,
       pass->entry = fs->entry[i];
       pass->vertex_offset = i * records;
       pass->index_offset = i * index_bytes;
+      pass->cpu_stream_offset = gather_at -
+                                (uint64_t)i * records *
+                                M9_TRANSIENT_VERTEX_BYTES;
       pass->const_offset = const_offset;
       const_offset += 8ull * consts;
       pass->writes_record = p->writes_record && m9_split_stage != 1;
