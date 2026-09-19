@@ -21,7 +21,7 @@ bytes; **CAPTURED** is read from a saved vendor command stream; **DERIVED** is
 a join of those, with the join given; **MEASURED** is a hardware result;
 **OPEN** names what is not settled and the one experiment that would settle it.
 
-Run `python3 tools/m9-vertex-isa-gap-evidence.py` to re-derive every STATIC,
+Run `python3 tools/m9-vertex-isa-gap-evidence.py` (47 checks) to re-derive every STATIC,
 CAPTURED and DERIVED claim below.  It ends with negative controls that must
 find a planted fault, so a pass cannot be a stale one.  The vendor package is
 not in the repository, so pass `--dll` when `xddm32_*/MSerX/MxMD.dll` lives
@@ -209,8 +209,8 @@ slots and 4813 vertex slots.  The opcodes that appear in **only one** stage:
 | `0x0c` | fragment only, 4 slots | `fs-sin` | the sine's combining step (§1.3) |
 | `0x03` | fragment only, 3 slots | `fs-cross` | the cross product's step, arithmetic **OPEN** |
 | `0x16` | fragment only, 1 slot | `fs-loop-break` | control flow |
-| `0x1b` | fragment only | `fs-pow`, `fs-ternary`, `fs-discard-*` | the register/constant select |
-| `0x1e` | fragment only | `fs-discard-*`, `ff-alpha-test` | the kill |
+| `0x1b` | fragment only, 13 slots | `fs-pow`, `fs-ternary`, `fs-discard-*` | the register/constant select |
+| `0x1e` | fragment only, 7 slots | `fs-discard-*`, `ff-alpha-test` | the kill |
 | `0x02` with two registers and a constant addend | fragment only, 4 slots | `fs-sin` | see §1.4 |
 | `0x14` `hi=9` `W1[13:12]=2` | fragment only, 8 slots | `fs-log`, `fs-pow` | **the log2 seed** |
 
