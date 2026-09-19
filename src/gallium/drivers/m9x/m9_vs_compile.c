@@ -44,6 +44,7 @@
 #include <string.h>
 
 #include "nir.h"
+#include "util/u_debug.h"
 #include "util/u_math.h"
 #include "util/u_memory.h"
 
@@ -817,6 +818,68 @@ emit_exp2(struct ctx *c, unsigned dst, const struct held *a)
    return true;
 }
 
+/* sine and cosine: no instruction computes either.  The vendor's own
+ * fragment program fs-sin reduces the argument modulo 2*pi with a fract and
+ * evaluates a degree-four minimax polynomial in x*x, and the coefficients it
+ * loads sit in the Windows compiler's constant pool right beside the exp2 and
+ * log2 ones (docs/parhelia-m9-vertex-isa-gaps.md).  The same reduction and
+ * polynomial are rebuilt here from forms the vertex unit already runs, so
+ * this needs no encoding the backend did not already emit.
+ *
+ * The vendor holds the polynomial halved, because its combining instruction
+ * doubles; folded back to sin(x) = x * P(x*x) the coefficients are these,
+ * worst error 6.9e-5 against the C library over the whole reduced range. */
+static const float m9_vs_sin_poly[5] = {
+   2.14787088e-06f, -1.92649924e-04f, 8.30898434e-03f,
+   -0.166624382f, 0.999958754f,
+};
+
+static bool
+emit_sincos(struct ctx *c, unsigned dst, const struct held *a0,
+            const struct held *a1, bool cosine)
+{
+   /* The vendor's own reduction constants, byte for byte. */
+   const struct held inv = held_lit(0.159154937f);
+   const struct held phase = held_lit(cosine ? 0.75f : 0.5f);
+   const struct held two_pi = held_lit(6.28318548f);
+   const struct held neg_pi = held_lit(-3.14159274f);
+   struct held ht = held_temp(c), hx = held_temp(c), hy = held_temp(c);
+   struct held hp = held_temp(c);
+   int rt, rx, ry, rp;
+
+   rt = reg_alloc_pinned(c, &ht);
+   rx = reg_alloc_pinned(c, &hx);
+   ry = reg_alloc_pinned(c, &hy);
+   rp = reg_alloc_pinned(c, &hp);
+   if (rt < 0 || rx < 0 || ry < 0 || rp < 0)
+      return fail(c, "out of temporaries");
+   /* cos(x) is sin(x + pi/2), which the phase of the reduction carries. */
+   if (!emit_mad(c, rt, a0, a1, &inv, &inv, &phase, &phase) ||
+       !emit_unary(c, rt, VS_FRACT, 0, &ht, &ht, true) ||
+       !emit_mad(c, rx, &ht, &ht, &two_pi, &two_pi, &neg_pi, &neg_pi) ||
+       !emit_mul(c, ry, &hx, &hx, &hx, &hx))
+      return false;
+   {
+      const struct held k0 = held_lit(m9_vs_sin_poly[0]);
+      const struct held k1 = held_lit(m9_vs_sin_poly[1]);
+
+      if (!emit_mad(c, rp, &hy, &hy, &k0, &k0, &k1, &k1))
+         return false;
+   }
+   for (unsigned i = 2; i < 5; i++) {
+      const struct held k = held_lit(m9_vs_sin_poly[i]);
+      struct held hm = held_temp(c);
+      int rm = reg_alloc_pinned(c, &hm);
+
+      if (rm < 0)
+         return fail(c, "out of temporaries");
+      if (!emit_mul(c, rm, &hp, &hp, &hy, &hy) ||
+          !emit_add(c, rp, &hm, &hm, &k, &k, false))
+         return false;
+   }
+   return emit_mul(c, dst, &hx, &hx, &hp, &hp);
+}
+
 static bool
 pairable(const struct held *a, const struct held *b)
 {
@@ -1328,6 +1391,27 @@ build_alu(struct ctx *c, nir_alu_instr *alu)
             return fail(c, "out of temporaries");
          if (!emit_exp2(c, r1, &a1) ||
              !emit_unary(c, dst, VS_MOV, 0, &h0, &h1, true))
+            return false;
+         break;
+      }
+      case nir_op_fsin:
+      case nir_op_fcos: {
+         /* Off by default: the sequence is verified offline against the NIR
+          * reference only, never yet on the engine. */
+         if (!debug_get_bool_option("M9X_VS_SINCOS", false))
+            return fail(c, nir_op_infos[alu->op].name);
+         a0 = src_held(alu, 0, c0); a1 = src_held(alu, 0, c1);
+         if (a0.kind == HELD_LIT && a1.kind == HELD_LIT) {
+            struct held f0 = held_lit(alu->op == nir_op_fsin ?
+                                      sinf(a0.lit) : cosf(a0.lit));
+            struct held f1 = held_lit(alu->op == nir_op_fsin ?
+                                      sinf(a1.lit) : cosf(a1.lit));
+
+            if (!write_pair(c, dst, &f0, &f1))
+               return false;
+            break;
+         }
+         if (!emit_sincos(c, dst, &a0, &a1, alu->op == nir_op_fcos))
             return false;
          break;
       }
