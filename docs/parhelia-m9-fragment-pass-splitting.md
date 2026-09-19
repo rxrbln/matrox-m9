@@ -545,6 +545,12 @@ constant count at all today (`m9_raster_fs_init_textured` refuses only above
 127), so a shader between those two numbers will stop the card; that is a
 separate defect from terrain's and is listed in the backlog.
 
+The fault is **not** the integer-uniform lowering merged the same day: the
+whole ladder was re-run on a tree rebased onto `cfaaf3a`, and
+`terrain:bloom=false:tilt-shift=false` comes back with the same frame to
+three figures -- mean 68.6, 43.6, 113.8 against llvmpipe's 95.0, 88.8, 31.7,
+and the same 58.6 of 255 mean difference over an 8x8 tiling.
+
 **What no fixture has reproduced yet.**  Five new fixture families were
 built for this and all of them render exactly on the card: `chainvec:OP` and
 `chainlit:OP` (a special function's result multiplied into a uniform or
