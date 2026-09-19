@@ -23,6 +23,7 @@
 #include "nir.h"
 #include "nir_builder.h"
 #include "util/u_math.h"
+#include "util/bitset.h"
 
 const nir_shader_compiler_options m9_fs_nir_options = {
    .fdot_replicates = false,
@@ -190,6 +191,7 @@ static const char fail_too_many_textures[] =
  * stage computes cannot feed a fetch in the same pass.  It can feed one in
  * the next, through a coordinate route, so this failure names a cut rather
  * than an unsupported shader. */
+static const char fail_too_many_interp[] = "too many interpolated inputs";
 static const char fail_coord_not_varying[] = "texture coordinate is not a varying";
 
 unsigned
@@ -199,6 +201,34 @@ m9_fs_coord_route_count(const struct m9_fs_program *program)
 
    for (unsigned i = 0; i < program->texture_count; i++)
       n += program->texcoord_source[i] != M9_FS_ROUTE_NONE;
+   return n;
+}
+
+/* Coordinate streams the pass interpolates, keyed as m9_fs_streams keys
+ * them: units that agree in location, first component, projector and
+ * transform read one stream, so a pass can bind more units than it has
+ * streams left for. */
+unsigned
+m9_fs_coord_stream_count(const struct m9_fs_program *p)
+{
+   unsigned n = 0;
+
+   for (unsigned i = 0; i < p->texture_count; i++) {
+      bool shared = false;
+
+      if (p->texture_source[i] != M9_FS_ROUTE_NONE ||
+          p->texcoord_source[i] != M9_FS_ROUTE_NONE)
+         continue;
+      for (unsigned k = 0; k < i; k++)
+         shared |= p->texture_source[k] == M9_FS_ROUTE_NONE &&
+                   p->texcoord_source[k] == M9_FS_ROUTE_NONE &&
+                   p->texcoords[k] == p->texcoords[i] &&
+                   p->texcoord_components[k] == p->texcoord_components[i] &&
+                   p->texcoord_projective[k] == p->texcoord_projective[i] &&
+                   m9_fs_coord_affine_same(&p->texcoord_affine[k],
+                                           &p->texcoord_affine[i]);
+      n += !shared;
+   }
    return n;
 }
 
@@ -819,12 +849,10 @@ static int
 build_tex(struct ctx *c, nir_tex_instr *tex)
 {
    struct m9_fs_program *p = c->p;
-   nir_intrinsic_instr *coord;
    unsigned location, dims;
    int n, ci = nir_tex_instr_src_index(tex, nir_tex_src_coord);
    int pi = nir_tex_instr_src_index(tex, nir_tex_src_projector);
    int ri = nir_tex_instr_src_index(tex, nir_tex_src_comparator);
-   nir_scalar s[2];
 
    /* A cube and a volume read three coordinate components of one varying,
     * exactly where a shadow fetch reads its reference. */
@@ -875,10 +903,11 @@ build_tex(struct ctx *c, nir_tex_instr *tex)
     * third component, so a shadow fetch owns the low half of its slot. */
    if ((tex->is_shadow || volume) && (coord_comp[0] || coord_comp[2] != 2))
       return fail(c, "shadow reference is not the third coordinate"), -1;
-   s[0] = nir_scalar_chase_movs(nir_get_scalar(tex->src[ci].src.ssa, 0));
-   while (nir_scalar_is_alu(s[0]))
-      s[0] = nir_scalar_chase_movs(nir_scalar_chase_alu_src(s[0], 0));
-   coord = nir_def_as_intrinsic(s[0].def);
+   /* The parse already names the varying the coordinate interpolates.
+    * Chasing operand 0 of the transform instead lands on the uniform when
+    * the shader writes scale * varying + bias with the scale first, and the
+    * stream would then be built from whatever location that load reads. */
+   location = ce[0].location;
    /* The fixed-function projector is w of the same varying; the driver
     * divides the coordinate stream per vertex. */
    if (pi >= 0) {
@@ -887,12 +916,11 @@ build_tex(struct ctx *c, nir_tex_instr *tex)
 
       if (!nir_scalar_is_intrinsic(q) ||
           nir_intrinsic_io_semantics(nir_def_as_intrinsic(q.def)).location !=
-          nir_intrinsic_io_semantics(coord).location ||
+          location ||
           nir_intrinsic_component(nir_def_as_intrinsic(q.def)) + q.comp != 3)
          return fail(c, "texture sampling needs a computed coordinate pass"),
                 -1;
    }
-   location = nir_intrinsic_io_semantics(coord).location;
    /* Fetches that agree in sampler and coordinate read one texel pair: a
     * unit carries a fetch, and two of them would sample the same place. */
    for (unsigned i = 0; i < p->texture_count; i++)
@@ -911,13 +939,10 @@ build_tex(struct ctx *c, nir_tex_instr *tex)
       }
    if (p->texture_count >= M9_FS_MAX_TEXTURES)
       return fail(c, fail_too_many_textures), -1;
-   /* An even pair is a captured slot half.  An odd pair is repacked per
-    * vertex by the driver, which needs one texture to own the stream. */
-   for (unsigned i = 0; i < p->texture_count; i++)
-      if (p->texture_source[i] == M9_FS_ROUTE_NONE &&
-          p->texcoords[i] == location &&
-          ((coord_comp[0] & 1) || (p->texcoord_components[i] & 1)))
-         return fail_coord(c, tex->src[ci].src.ssa);
+   /* A pair anywhere but the low components is moved down per vertex into
+    * the stream's own CPU view, and the built-in colour stream has none. */
+   if (coord_comp[0] && location == VARYING_SLOT_COL0)
+      return fail_coord(c, tex->src[ci].src.ssa);
    p->texcoord_affine[p->texture_count] = affine;
    p->texcoord_projective[p->texture_count] = pi >= 0;
    p->texcoord_shadow[p->texture_count] = tex->is_shadow;
@@ -2051,8 +2076,8 @@ varying_slot(struct ctx *c, unsigned location)
     * creation.  The predicate is shared with the emitter so the two
     * cannot disagree. */
    if (!m9_raster_fs_layout_ok(p->varying_count + 1,
-                               m9_fs_sampler_count(p), p->texture_count))
-      return fail(c, "too many interpolated inputs"), -1;
+                               m9_fs_coord_stream_count(p), p->texture_count))
+      return fail(c, fail_too_many_interp), -1;
    p->varyings[p->varying_count].location = location;
    p->varyings[p->varying_count].components = 0xf;
    return p->varying_count++;
@@ -4579,22 +4604,40 @@ m9_fs_compile(struct nir_shader *nir, const struct m9_fs_blend *blend,
                           NULL);
 }
 
-/* Splitting one shader across raster passes */
+/* Splitting one shader across raster passes
+ *
+ * A pass holds four texture units, six interpolation registers inside ten
+ * stream slots, and sixteen general register pairs.  Whichever of the three
+ * a shader runs past is what the cut is chosen for: the producing pass
+ * computes one value, hands it over through the inter-pass record, and the
+ * consumer reads it back in a texel slot
+ * (docs/parhelia-m9-fragment-pass-splitting.md).
+ */
 
-/* Fetches a shader may hold while it is being split, one bit each. */
-#define M9_FS_SPLIT_FETCHES 64u
+/* The resource a pass ran out of, and so what a cut has to shrink. */
+enum fs_cut_kind {
+   FS_CUT_TEX,      /* texture units */
+   FS_CUT_REGS,     /* the register file: values live at once */
+   FS_CUT_INTERP,   /* interpolation registers and stream slots */
+};
 
-/* What one value reaches: the fetches below it, and the records of earlier
- * passes it reads instead of recomputing them. */
+/* What one value reaches: the fetches below it, the varyings it
+ * interpolates, and the records of earlier passes it reads instead of
+ * recomputing them.  The two bitsets are slices of one pool sized from the
+ * shader, so neither the fetch count nor the varying count is capped here. */
 struct fs_cone {
-   uint64_t tex;
-   uint32_t routes;
+   BITSET_WORD *tex;
+   BITSET_WORD *vary;
+   uint32_t routes;     /* one bit a producing pass, bounded by M9_FS_MAX_PASSES */
    bool done;
 };
 
 struct fs_split {
-   struct fs_cone *cone;      /* per SSA definition index */
-   uint8_t *fetch;            /* fetch number of a texture definition */
+   struct fs_cone *cone;      /* per SSA definition index, plus the accumulator */
+   BITSET_WORD *pool;
+   unsigned tex_words, vary_words;
+   unsigned *fetch;           /* fetch number of a texture definition */
+   unsigned *varying;         /* varying number of an interpolated input */
    nir_def *const *cut;
    unsigned cut_count;
    nir_def *extra;            /* a cut under trial, numbered cut_count */
@@ -4603,31 +4646,63 @@ struct fs_split {
 };
 
 static unsigned
-fs_cone_slots(const struct fs_cone *cone)
+fs_bits(const BITSET_WORD *set, unsigned words)
 {
-   return util_bitcount64(cone->tex) + util_bitcount(cone->routes);
+   unsigned n = 0;
+
+   for (unsigned i = 0; i < words; i++)
+      n += util_bitcount(set[i]);
+   return n;
+}
+
+static unsigned
+fs_cone_fetches(const struct fs_split *sp, const struct fs_cone *cone)
+{
+   return fs_bits(cone->tex, sp->tex_words);
+}
+
+static unsigned
+fs_cone_varyings(const struct fs_split *sp, const struct fs_cone *cone)
+{
+   return fs_bits(cone->vary, sp->vary_words);
+}
+
+/* Texel slots the cone needs: one a fetch and one a record it reads. */
+static unsigned
+fs_cone_slots(const struct fs_split *sp, const struct fs_cone *cone)
+{
+   return fs_cone_fetches(sp, cone) + util_bitcount(cone->routes);
 }
 
 static const struct fs_cone *fs_cone_of(struct fs_split *sp, nir_def *def);
 
+/* nir_foreach_src carries one pointer, and the walk needs the cone it is
+ * filling beside the split state. */
+struct fs_cone_walk {
+   struct fs_split *sp;
+   struct fs_cone *cone;
+};
+
 static bool
 fs_cone_src(nir_src *src, void *data)
 {
-   struct fs_split *sp = data;
-   const struct fs_cone *sub = fs_cone_of(sp, src->ssa);
-   struct fs_cone *cone = sp->cone + sp->defs;  /* the accumulator */
+   struct fs_cone_walk *w = data;
+   const struct fs_cone *sub = fs_cone_of(w->sp, src->ssa);
 
-   cone->tex |= sub->tex;
-   cone->routes |= sub->routes;
+   for (unsigned i = 0; i < w->sp->tex_words; i++)
+      w->cone->tex[i] |= sub->tex[i];
+   for (unsigned i = 0; i < w->sp->vary_words; i++)
+      w->cone->vary[i] |= sub->vary[i];
+   w->cone->routes |= sub->routes;
    return true;
 }
 
 static const struct fs_cone *
 fs_cone_of(struct fs_split *sp, nir_def *def)
 {
-   struct fs_cone *cone = &sp->cone[def->index], *acc = sp->cone + sp->defs;
+   struct fs_cone *cone = &sp->cone[def->index];
+   struct fs_cone_walk walk = { .sp = sp, .cone = cone };
    nir_instr *instr;
-   struct fs_cone saved;
 
    if (cone->done)
       return cone;
@@ -4644,22 +4719,23 @@ fs_cone_of(struct fs_split *sp, nir_def *def)
    }
    instr = nir_def_instr(def);
    if (instr->type == nir_instr_type_tex)
-      cone->tex = BITFIELD64_BIT(sp->fetch[def->index]);
-   /* One accumulator serves the walk; recursion saves and restores it. */
-   saved = *acc;
-   acc->tex = cone->tex;
-   acc->routes = cone->routes;
-   nir_foreach_src(instr, fs_cone_src, sp);
-   cone->tex = acc->tex;
-   cone->routes = acc->routes;
-   *acc = saved;
+      BITSET_SET(cone->tex, sp->fetch[def->index]);
+   if (sp->varying[def->index] != ~0u)
+      BITSET_SET(cone->vary, sp->varying[def->index]);
+   nir_foreach_src(instr, fs_cone_src, &walk);
    return cone;
 }
 
 static void
 fs_cone_reset(struct fs_split *sp, nir_def *extra)
 {
-   memset(sp->cone, 0, (sp->defs + 1) * sizeof(*sp->cone));
+   unsigned words = sp->tex_words + sp->vary_words;
+
+   memset(sp->pool, 0, (sp->defs + 1) * words * sizeof(*sp->pool));
+   for (unsigned i = 0; i <= sp->defs; i++) {
+      sp->cone[i].routes = 0;
+      sp->cone[i].done = false;
+   }
    sp->extra = extra;
    sp->visited = 0;
 }
@@ -4676,39 +4752,76 @@ fs_cone_defs(struct fs_split *sp, nir_def *def, nir_def *extra)
    return sp->visited;
 }
 
-/* The value a producing pass should hand on.  Without register pressure
- * that is the value absorbing the most fetches while staying inside the four
- * units a pass binds, and leaving the rest of the shader strictly smaller
- * than it was.
+/* One half of a candidate cut, measured against what a pass can hold.  A
+ * record the half reads back may either take a texel slot of its own or
+ * steer the coordinate of a fetch that already has one, so the slots it
+ * needs lie between max(tex, routes) and tex + routes; which it is only
+ * settles once the pass is compiled. */
+struct fs_half {
+   unsigned tex, vary, routes, defs;
+};
+
+static unsigned
+fs_half_slots_max(const struct fs_half *h)
+{
+   return h->tex + h->routes;
+}
+
+static unsigned
+fs_half_slots_min(const struct fs_half *h)
+{
+   return MAX2(h->tex, h->routes);
+}
+
+/* The coordinate streams a half needs are bounded by its fetches, which is
+ * what the layout gate re-checks exactly once the pass is compiled. */
+static bool
+fs_half_fits(const struct fs_half *h, unsigned limit, bool least)
+{
+   unsigned slots = least ? fs_half_slots_min(h) : fs_half_slots_max(h);
+
+   return slots <= limit && m9_raster_fs_layout_ok(h->vary, h->tex, slots);
+}
+
+static void
+fs_half_of(struct fs_split *sp, const struct fs_cone *cone, struct fs_half *h)
+{
+   h->tex = fs_cone_fetches(sp, cone);
+   h->vary = fs_cone_varyings(sp, cone);
+   h->routes = util_bitcount(cone->routes);
+   h->defs = sp->visited;
+}
+
+/* The value a producing pass should hand on.
  *
- * Under register pressure the fetches are not what runs out: a pass wants
- * more values live at once than the sixteen general registers hold, and the
- * only place the engine spills a live value is a pass boundary.  So the cut
- * is chosen to shorten lifetimes instead -- the one that leaves the widest
- * of the two halves as narrow as it can, which halves the live range on
- * both sides of it.  A cut that absorbs no fetch at all is admissible then,
- * because the work it moves is what the pass could not hold. */
+ * Cutting for texture units takes the value absorbing the most fetches that
+ * still fits the four a pass binds, leaving the rest of the shader strictly
+ * smaller than it was.  Progress is measured in fetches left to the rest,
+ * not in units: a cut costs the consumer a unit of its own, so a schedule
+ * of one fetch a pass would otherwise look like no progress at all.
+ *
+ * Cutting for the register file or for the interpolation registers is the
+ * other way round: the fetches are not what runs out, so the cut is scored
+ * on the widest of the two halves and a cut that absorbs no fetch at all is
+ * admissible -- the work it moves is what the pass could not hold. */
 static nir_def *
 fs_choose_cut(struct fs_split *sp, nir_function_impl *impl, nir_def *out,
               unsigned limit, nir_def *const *rejected, unsigned rejects,
-              bool pressure)
+              enum fs_cut_kind kind)
 {
    nir_def *best = NULL;
-   unsigned best_tex = 0, best_rest = ~0u, best_wide = ~0u, current, whole = 0;
+   struct fs_half whole;
+   unsigned best_tex = 0, best_rest = ~0u, best_wide = ~0u;
 
    fs_cone_reset(sp, NULL);
-   /* Progress is measured in fetches left to the rest of the shader, not
-    * in units: a cut costs the consumer a unit of its own, so a schedule
-    * of one fetch a pass would otherwise look like no progress at all. */
-   current = util_bitcount64(fs_cone_of(sp, out)->tex);
-   if (pressure)
-      whole = fs_cone_defs(sp, out, NULL);
+   fs_half_of(sp, fs_cone_of(sp, out), &whole);
+   whole.defs = sp->visited;
    nir_foreach_block(block, impl) {
       nir_foreach_instr(instr, block) {
          nir_def *def = nir_instr_def(instr);
-         const struct fs_cone *cone;
-         unsigned tex, rest;
+         struct fs_half prod, cons;
          bool skip = false;
+         unsigned wide;
 
          if (!def || def == out || def->bit_size != 32 ||
              def->num_components > 4)
@@ -4719,52 +4832,132 @@ fs_choose_cut(struct fs_split *sp, nir_function_impl *impl, nir_def *out,
             skip |= rejected[i] == def;
          if (skip)
             continue;
-         unsigned mine = 0, left_defs = 0, wide = 0;
 
          fs_cone_reset(sp, NULL);
-         cone = fs_cone_of(sp, def);
-         mine = sp->visited;
-         tex = util_bitcount64(cone->tex);
-         if ((!tex && !pressure) || fs_cone_slots(cone) > limit)
+         fs_half_of(sp, fs_cone_of(sp, def), &prod);
+         if (!fs_half_fits(&prod, limit, false))
+            continue;
+         if (kind == FS_CUT_TEX && !prod.tex)
             continue;
          fs_cone_reset(sp, def);
-         {
-            const struct fs_cone *left = fs_cone_of(sp, out);
-
-            if (!pressure && util_bitcount64(left->tex) >= current)
+         fs_half_of(sp, fs_cone_of(sp, out), &cons);
+         /* The consumer is admitted on the fewest slots its records could
+          * take: a cut that still leaves it over is not fatal, the loop
+          * simply cuts again. */
+         if (!fs_half_fits(&cons, limit, true))
+            continue;
+         /* Both halves must be strictly smaller than the whole in the
+          * resource that ran out, or the cut moves nothing and the next
+          * pass meets the same ceiling. */
+         switch (kind) {
+         case FS_CUT_TEX:
+            if (cons.tex >= whole.tex)
                continue;
-            if (util_bitcount64(left->tex) > current)
+            break;
+         case FS_CUT_REGS:
+            if (cons.tex > whole.tex || prod.defs >= whole.defs ||
+                cons.defs >= whole.defs)
                continue;
-            rest = fs_cone_slots(left);
-            left_defs = sp->visited;
+            break;
+         case FS_CUT_INTERP:
+            if (cons.tex > whole.tex ||
+                (prod.vary >= whole.vary && cons.vary >= whole.vary))
+               continue;
+            break;
          }
-         /* Both halves must be strictly smaller than the whole, or the cut
-          * moves nothing and the next pass meets the same ceiling; and the
-          * consumer has to fit the unit pool too, because the cut costs it
-          * a unit of its own. */
-         if (pressure) {
-            if (mine >= whole || left_defs >= whole || rest > limit)
-               continue;
-            wide = MAX2(mine, left_defs);
-         }
+         wide = kind == FS_CUT_INTERP ? MAX2(prod.vary, cons.vary)
+                                      : MAX2(prod.defs, cons.defs);
          if (debug_get_bool_option("M9X_DEBUG_SPLIT", false))
-            fprintf(stderr, "m9x split: candidate %%%u comps %u tex %u "
-                    "slots %u rest %u current %u defs %u/%u of %u\n",
-                    def->index, def->num_components, tex,
-                    fs_cone_slots(cone), rest, current, mine, left_defs,
-                    whole);
-         if (pressure ? (wide < best_wide ||
-                         (wide == best_wide && tex > best_tex)) :
-                        (tex > best_tex ||
-                         (tex == best_tex && rest < best_rest))) {
+            fprintf(stderr, "m9x split: candidate %%%u kind %u comps %u "
+                    "tex %u/%u vary %u/%u slots %u/%u defs %u/%u of %u\n",
+                    def->index, kind, def->num_components, prod.tex, cons.tex,
+                    prod.vary, cons.vary, fs_half_slots_max(&prod),
+                    fs_half_slots_min(&cons), prod.defs, cons.defs,
+                    whole.defs);
+         if (kind == FS_CUT_TEX ? (prod.tex > best_tex ||
+                                   (prod.tex == best_tex &&
+                                    fs_half_slots_min(&cons) < best_rest))
+                                : (wide < best_wide ||
+                                   (wide == best_wide && prod.tex > best_tex))) {
             best = def;
-            best_tex = tex;
-            best_rest = rest;
+            best_tex = prod.tex;
+            best_rest = fs_half_slots_min(&cons);
             best_wide = wide;
          }
       }
    }
    return best;
+}
+
+/* Which resource a refusal names, and so whether a cut can answer it. */
+static bool
+fs_cut_kind_of(const char *reason, const nir_def *blocker,
+               enum fs_cut_kind *kind)
+{
+   if (reason == fail_too_many_textures)
+      return *kind = FS_CUT_TEX, true;
+   if (reason == fail_out_of_temporaries)
+      return *kind = FS_CUT_REGS, true;
+   if (reason == fail_too_many_interp)
+      return *kind = FS_CUT_INTERP, true;
+   /* A computed coordinate is a cut, not a refusal: the pass before hands
+    * it over and the consumer's unit samples at the record. */
+   if (reason == fail_coord_not_varying && blocker)
+      return *kind = FS_CUT_TEX, true;
+   return false;
+}
+
+/* Numbers the fetches and the interpolated inputs the cone walk tracks, and
+ * refuses what the pass loop cannot schedule. */
+static bool
+fs_split_index(struct fs_split *sp, nir_function_impl *impl, nir_def **out,
+               const char **reason)
+{
+   unsigned fetches = 0, varyings = 0;
+   uint8_t *location = NULL;
+
+   for (unsigned i = 0; i < sp->defs; i++)
+      sp->varying[i] = ~0u;
+   location = calloc(sp->defs ? sp->defs : 1, sizeof(*location));
+   if (!location)
+      return *reason = "out of memory", false;
+   nir_foreach_block(block, impl) {
+      nir_foreach_instr(instr, block) {
+         nir_intrinsic_instr *intr;
+         unsigned loc;
+
+         if (instr->type == nir_instr_type_tex) {
+            sp->fetch[nir_instr_as_tex(instr)->def.index] = fetches++;
+            continue;
+         }
+         if (instr->type != nir_instr_type_intrinsic)
+            continue;
+         intr = nir_instr_as_intrinsic(instr);
+         if (intr->intrinsic == nir_intrinsic_terminate ||
+             intr->intrinsic == nir_intrinsic_terminate_if) {
+            free(location);
+            return *reason = "a split shader cannot discard", false;
+         }
+         if (intr->intrinsic == nir_intrinsic_store_output) {
+            *out = intr->src[0].ssa;
+            continue;
+         }
+         if (intr->intrinsic != nir_intrinsic_load_input &&
+             intr->intrinsic != nir_intrinsic_load_interpolated_input)
+            continue;
+         loc = nir_intrinsic_io_semantics(intr).location;
+         sp->varying[intr->def.index] = varyings;
+         for (unsigned i = 0; i < varyings; i++)
+            if (location[i] == loc)
+               sp->varying[intr->def.index] = i;
+         if (sp->varying[intr->def.index] == varyings)
+            location[varyings++] = loc;
+      }
+   }
+   free(location);
+   sp->tex_words = BITSET_WORDS(MAX2(fetches, 1));
+   sp->vary_words = BITSET_WORDS(MAX2(varyings, 1));
+   return true;
 }
 
 bool
@@ -4775,8 +4968,9 @@ m9_fs_compile_passes(struct nir_shader *nir, const struct m9_fs_blend *blend,
    nir_def *out = NULL, *cut[M9_FS_MAX_PASSES], *rejected[M9_FS_MAX_PASSES];
    nir_def *blocker = NULL;
    struct fs_split sp = { .cut = cut };
-   unsigned fetches = 0, rejects = 0;
-   bool ok = false, pressure = false;
+   unsigned rejects = 0, words;
+   enum fs_cut_kind kind = FS_CUT_TEX;
+   bool ok = false;
 
    *reason = NULL;
    memset(passes, 0, sizeof(*passes));
@@ -4798,25 +4992,8 @@ m9_fs_compile_passes(struct nir_shader *nir, const struct m9_fs_blend *blend,
       passes->count = 1;
       return true;
    }
-   /* A computed coordinate is a cut, not a refusal: the pass before hands
-    * it over and the consumer's unit samples at the record.  So is running
-    * out of temporaries: the pass wants more values live at once than the
-    * register file holds, and a pass boundary is what spills them. */
-   /* M9X_SPLIT_PRESSURE=1 lets a shader the register file cannot hold be
-    * cut rather than refused.  It is off: with it terrain.frag compiles and
-    * draws, and the split job it produces then stops the engine the way
-    * every alternating-target split job does (MEASURED 2026-09-18,
-    * glmark2 -b terrain, "two-pass job failed (Input/output error)"), which
-    * is worse for the caller than skipping the draws.  Turn it on with the
-    * fixture splitpair:168x168:640x480 rendering. */
-   const bool allow_pressure =
-      debug_get_bool_option("M9X_SPLIT_PRESSURE", false);
-
-   if (!force && *reason != fail_too_many_textures &&
-       (*reason != fail_out_of_temporaries || !allow_pressure) &&
-       (*reason != fail_coord_not_varying || !blocker))
+   if (!force && !fs_cut_kind_of(*reason, blocker, &kind))
       return false;
-   pressure = allow_pressure && *reason == fail_out_of_temporaries;
 
    impl = nir_shader_get_entrypoint(nir);
    if (exec_list_length(&impl->body) != 1) {
@@ -4827,33 +5004,22 @@ m9_fs_compile_passes(struct nir_shader *nir, const struct m9_fs_blend *blend,
    sp.defs = impl->ssa_alloc;
    sp.cone = calloc(sp.defs + 1, sizeof(*sp.cone));
    sp.fetch = calloc(sp.defs ? sp.defs : 1, sizeof(*sp.fetch));
-   if (!sp.cone || !sp.fetch) {
+   sp.varying = calloc(sp.defs ? sp.defs : 1, sizeof(*sp.varying));
+   if (!sp.cone || !sp.fetch || !sp.varying) {
       *reason = "out of memory";
       goto done;
    }
-   nir_foreach_block(block, impl) {
-      nir_foreach_instr(instr, block) {
-         nir_intrinsic_instr *intr;
-
-         if (instr->type == nir_instr_type_tex) {
-            if (fetches >= M9_FS_SPLIT_FETCHES) {
-               *reason = "more texture fetches than the splitter tracks";
-               goto done;
-            }
-            sp.fetch[nir_instr_as_tex(instr)->def.index] = fetches++;
-            continue;
-         }
-         if (instr->type != nir_instr_type_intrinsic)
-            continue;
-         intr = nir_instr_as_intrinsic(instr);
-         if (intr->intrinsic == nir_intrinsic_terminate ||
-             intr->intrinsic == nir_intrinsic_terminate_if) {
-            *reason = "a split shader cannot discard";
-            goto done;
-         }
-         if (intr->intrinsic == nir_intrinsic_store_output)
-            out = intr->src[0].ssa;
-      }
+   if (!fs_split_index(&sp, impl, &out, reason))
+      goto done;
+   words = sp.tex_words + sp.vary_words;
+   sp.pool = calloc((sp.defs + 1) * words, sizeof(*sp.pool));
+   if (!sp.pool) {
+      *reason = "out of memory";
+      goto done;
+   }
+   for (unsigned i = 0; i <= sp.defs; i++) {
+      sp.cone[i].tex = sp.pool + i * words;
+      sp.cone[i].vary = sp.cone[i].tex + sp.tex_words;
    }
    if (!out) {
       *reason = "no color output";
@@ -4865,7 +5031,8 @@ m9_fs_compile_passes(struct nir_shader *nir, const struct m9_fs_blend *blend,
       bool taken = false;
 
       /* A coordinate the engine cannot interpolate is cut where it is
-       * computed; anything else is cut where it absorbs the most fetches. */
+       * computed; anything else is cut where the resource that ran out
+       * says. */
       if (blocker) {
          bool skip = false;
 
@@ -4880,7 +5047,7 @@ m9_fs_compile_passes(struct nir_shader *nir, const struct m9_fs_blend *blend,
       if (!v)
          v = fs_choose_cut(&sp, impl, out,
                            force ? force : M9_FS_MAX_TEXTURES, rejected,
-                           rejects, pressure);
+                           rejects, kind);
       if (!v) {
          if (i && fs_compile_pass(nir, blend, &passes->pass[i], NULL, false,
                                   cut, sp.cut_count, reason, NULL)) {
@@ -4917,17 +5084,16 @@ m9_fs_compile_passes(struct nir_shader *nir, const struct m9_fs_blend *blend,
          ok = true;
          goto done;
       }
-      if (*reason != fail_too_many_textures &&
-          (*reason != fail_out_of_temporaries || !allow_pressure) &&
-          (*reason != fail_coord_not_varying || !blocker))
+      if (!force && !fs_cut_kind_of(*reason, blocker, &kind))
          goto done;
-      pressure = allow_pressure && *reason == fail_out_of_temporaries;
    }
    if (!ok && !*reason)
       *reason = "more raster passes than the driver emits";
 done:
    free(sp.cone);
    free(sp.fetch);
+   free(sp.varying);
+   free(sp.pool);
    if (!ok)
       m9_fs_passes_fini(passes);
    return ok;

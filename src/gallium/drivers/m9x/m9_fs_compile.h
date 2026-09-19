@@ -180,6 +180,9 @@ unsigned m9_fs_coord_route_count(const struct m9_fs_program *program);
 void m9_fs_passes_fini(struct m9_fs_passes *passes);
 /* Texel slots the pass fills from a sampler rather than from a record. */
 unsigned m9_fs_sampler_count(const struct m9_fs_program *program);
+/* Coordinate streams the pass interpolates; units that agree in location,
+ * component, projector and transform share one. */
+unsigned m9_fs_coord_stream_count(const struct m9_fs_program *program);
 void m9_fs_program_fini(struct m9_fs_program *program);
 unsigned m9_fs_slot_count(const struct m9_fs_program *program);
 uint32_t m9_fs_raster_88(const struct m9_fs_program *program);

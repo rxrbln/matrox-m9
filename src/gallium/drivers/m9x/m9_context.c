@@ -95,7 +95,7 @@ struct m9_fs_state {
 struct m9_fs_pass_streams {
    unsigned coord_count;               /* distinct texture coordinate streams */
    uint8_t coord_location[M9_FS_MAX_TEXTURES];
-   uint8_t coord_component[M9_FS_MAX_TEXTURES];  /* slot half the stream carries */
+   uint8_t coord_component[M9_FS_MAX_TEXTURES];  /* first component the stream carries */
    int8_t coord_extra[M9_FS_MAX_TEXTURES];     /* CPU view of a coordinate stream, -1 for COL0 */
    uint8_t texture_coord[M9_FS_MAX_TEXTURES];  /* coordinate stream per texel pair */
    int8_t varying_extra[M9_FS_MAX_VARYINGS];   /* CPU view of an interpolated input */
@@ -2881,10 +2881,11 @@ m9_fs_streams(struct m9_fs_variant *v)
    for (unsigned i = 0; i < v->passes.count; i++) {
       const struct m9_fs_program *p = &v->passes.pass[i];
       struct m9_fs_pass_streams *st = &v->stream[i];
-      /* Two vec2 coordinate sets are packed into one varying slot, so a
-       * stream is a slot *half*: keying it by location alone gave both
-       * textures the same coordinates, and the second unit sampled where
-       * the first did. */
+      /* Two vec2 coordinate sets are packed into one varying slot and a pair
+       * may straddle the halves, so a stream is keyed by the component it
+       * starts at: keying it by location alone gave both textures the same
+       * coordinates, and keying it by the slot half made a pair at
+       * component 0 and one at component 1 share a stream they do not. */
       uint8_t c_owner[M9_FS_MAX_TEXTURES] = { 0 };
 
       for (unsigned k = 0; k < p->varying_count; k++) {
@@ -2897,7 +2898,7 @@ m9_fs_streams(struct m9_fs_variant *v)
          v->extra_location[v->extra_count++] = p->varyings[k].location;
       }
       for (unsigned t = 0; t < p->texture_count; t++) {
-         unsigned half, c = 0;
+         unsigned first, c = 0;
 
          /* A slot an earlier pass feeds through the record interpolates
           * nothing and binds no texture of its own. */
@@ -2917,19 +2918,21 @@ m9_fs_streams(struct m9_fs_variant *v)
             v->slot_index[v->slot_count++] = t;
             continue;
          }
-         half = p->texcoord_components[t] / 2;
+         first = p->texcoord_components[t];
          /* A unit that transforms its coordinate needs a stream of its own:
           * sharing one would sample both units at the same place. */
          while (c < st->coord_count &&
                 (st->coord_location[c] != p->texcoords[t] ||
-                 st->coord_component[c] != half ||
+                 st->coord_component[c] != first ||
+                 p->texcoord_projective[c_owner[c]] !=
+                 p->texcoord_projective[t] ||
                  !m9_fs_coord_affine_same(&p->texcoord_affine[c_owner[c]],
                                          &p->texcoord_affine[t])))
             c++;
          if (c == st->coord_count) {
             c_owner[c] = t;
             st->coord_extra[c] = -1;
-            st->coord_component[c] = half;
+            st->coord_component[c] = first;
             st->coord_location[st->coord_count++] = p->texcoords[t];
             if (p->texcoords[t] != VARYING_SLOT_COL0) {
                if (v->extra_count >= M9_FS_MAX_EXTRA)
