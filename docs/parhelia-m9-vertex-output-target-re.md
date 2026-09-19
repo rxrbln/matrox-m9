@@ -524,7 +524,8 @@ interpolant, and every multi-draw preprocessing chain ends in a draw that
 de-interleaves the record into exactly those.  `m9_raster_fs_init_textured`
 does not need to express anything new.
 
-The lead that replaces it is index `ef` itself.  Bits 11:9 of a preprocessing
+The lead that replaces it is index `ef` itself — which was emitted, run, and
+**refuted**; see the closing section below.  Bits 11:9 of a preprocessing
 pass state the draw's place in its chain and move with the clip-code enable at
 bit 15, in 628 of 628 captured passes with no exception: the only draw of a
 chain is `4`, the first of several `1`, a later source-record-fed one `2`, a
@@ -542,3 +543,28 @@ the view mapping are all present and covered by tests; the driver's default
 cap is **one varying** (`M9X_VS_VARYINGS`, `m9_context.c`), so the extra draw
 is emitted only when the knob is raised.  The fixtures `vary3`, `vary4` and
 `vary5` in `tools/m9-mesa-glsl.c` are the reproducer.
+
+## The chain role does not deliver either (MEASURED 2026-09-19)
+
+`M9X_VS_VARYINGS=5` on the M9128 with the chain-role word in place, each run
+opened by a passing `texture` fixture: `vary3`, `vary4` and `vary5` render
+every pixel wrong and stall the engine with a kernel stream timeout.  `vary3`
+was re-run alone after a reboot and failed identically, so it is not a side
+effect of an earlier stall.  The submission was dumped on the card and carries
+exactly the intended words — `ef = 0x00000200` on the extra draw and
+`ef = 0x00288e00` on the fused pass.
+
+Two corrections to the table above.  Mesa's varying optimiser now folds
+`vary3`'s third varying into the second as a swizzle, so `vary3` declares two
+interpolants and its extra draw binds **one** target, not two; the minimal
+second preprocessing draw is what fails.  And the failure's outward shape is a
+**kernel stream timeout**, which the `EBUSY`/context-lost of the earlier run
+is the downstream symptom of.
+
+So three hypotheses are now refuted: index `0x88`'s pair mask, the barrier
+between the draws, and the chain role.  What remains is the one deviation the
+driver still keeps from every captured chain — the extra draw writes separate
+`0x68002000` stream views instead of a packed intermediate record read back
+through `0x74 + k` by a third, route-fed gather draw.  That is experiment 2 of
+`docs/parhelia-m9-varying-transport-re.md` section 8 and it is the only lead
+left.

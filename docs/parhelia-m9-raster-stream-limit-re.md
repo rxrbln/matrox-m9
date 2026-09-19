@@ -12,9 +12,11 @@ This note establishes what the engine actually carries, decodes the vendor's
 multi-pass contract for the shaders that need more, and records the hardware
 run that settles it.
 
-Labels: **MEASURED** is an M9148 (`102b:0540`) result read back from the colour
-surface and compared against a CPU reference for every pixel, through
-`tools/m9-user-raster-streams.c` on September 17, 2026; **CAPTURED** is read
+Labels: **MEASURED** is a result read back from the colour surface and
+compared against a CPU reference for every pixel, through
+`tools/m9-user-raster-streams.c` — sections 4 and 5 on an M9148
+(`102b:0540`) on September 17, 2026, section 6 on an M9128 on September 19;
+**CAPTURED** is read
 from the vendor command streams in `captures/m9x-vendor-glsl-programs-20260915`;
 **DERIVED** is inferred from those; **UNTESTED** is named where it is.
 
@@ -30,13 +32,12 @@ the six inputs in turn, with no input aliasing another.
 Three was a limit of the driver's own constants and of the kernel validator's
 index whitelist.  Nothing about it was a hardware property.
 
-The ceiling above six is not a stream-slot count: it is the declaration-word
-count field of index `22`, four bits wide at 11:8, so at most sixteen words.
-An interpolated input costs two declaration words and the fixed trio
-(position, clip code, clip position) costs three, so `2 * 6 + 3 = 15` fits and
-`2 * 7 + 3 = 17` does not.  This is exactly where the vendor's own compiler
-stops: `vs-varyings-max`, a shader with fourteen varyings, is split into
-**three raster passes** carrying 2, 6 and 6 inputs (CAPTURED).
+The ceiling above six is **the fragment unit's interpolation registers**, and
+not the declaration-word count field of index `22` as this note first
+concluded — section 6 measures both halves of that.  Six is also exactly where
+the vendor's own compiler stops: `vs-varyings-max`, a shader with fourteen
+varyings, is split into **three raster passes** carrying 2, 6 and 6 inputs
+(CAPTURED).
 
 ## 1. What a vendor raster pass binds (CAPTURED)
 
@@ -237,10 +238,66 @@ one kernel whitelist.
 6. `m9_context.c`: the transient-view gate follows `M9_TRANSIENT_VIEWS`, and
    the local `views[]`/`flat[]` arrays are already `M9_FS_MAX_VARYINGS` wide.
 
-What stays refused: seven or more interpolated inputs in one pass, which the
-declaration-count field cannot express, and which the vendor answers with the
-multi-pass split of section 3.  With four texture coordinates the declaration
-limit binds first: `2 * varying + coord + 3 <= 16`.
+What stays refused: seven or more interpolated inputs in one pass, which
+section 6 MEASURES as an engine limit rather than an encoding one, and which
+the vendor answers with the multi-pass split of section 3.  Since the driver
+emits the one-word declaration the budget reads `varying + texture + 3 <= 16`,
+which no six-input layout reaches, so only the ten stream slots and the six
+interpolation registers bind.
+
+## 6. One declaration word an input, and what six really is (MEASURED 2026-09-19)
+
+Run on the dual-DisplayPort M9128 at 192.168.1.111 with
+`tools/m9-user-raster-streams.c`, every interior pixel against the same CPU
+reference, one process a step under the hardware lock.
+
+### The single-word form carries a general interpolant
+
+The low twelve bits of a declaration word are four three-bit component
+selectors, so the captured pair `0x0d88` + `0x06b6` reads `x,y` and then
+`-,-,z,w`, and the single word `0x0688` attributes 0, 5, 6 and 13 use reads
+`x,y,z,w` outright.  No captured pass ever declares a general interpolant that
+way.  The hardware accepts it:
+
+| declaration form | inputs swept | index 22 at six inputs | result |
+|---|---|---|---|
+| `0d88` + `06b6` a pair | 1..6 | `0x2e03`, fifteen words | 21 of 21 exact |
+| `0688`, one word | 1..6 | `0x2803`, nine words | 21 of 21 exact |
+
+`M9RS_STREAM` dumps of both forms confirm the difference reached the engine:
+the one-word pass declares `00100688 00210688 00320688 00430688 00940688
+00a50688` for attributes 1, 2, 3, 4, 9 and 10 against streams 0..5, then the
+fixed trio, where the pair form spends two words on each.
+The whole `m9-mesa-glsl` fixture suite is **211 of 211** with the driver
+emitting it.
+
+So six inputs cost nine declaration words rather than fifteen and the
+sixteen-word budget stops binding: a pass can carry six interpolants beside
+all four texture units.
+
+### A seventh input has no register
+
+With seven inputs declared the seventh never reads its stream, whatever
+attribute number the four-bit field is given — 11, 14, 15 and 5 were each
+tried and each read nothing that matches any bound view.  The first six stay
+exact.  Reordering the attributes says why: declaring attributes
+`1,2,3,4,9,11,10` against streams 0..6 made the program's read of input 5
+return **stream 6**, and `1,2,3,4,10,11,9` made it return stream 4 — the
+interpolation registers `0x40 + 8 * i` are handed out in **ascending attribute
+order** among the declared inputs, and there are exactly six of them.  The
+seventh register, `0x70`, reads garbage.
+
+The failure is quiet: the pass rasterizes, writes every pixel it should, and
+returns no error; only the values are wrong.  No stream timeout, no `EBUSY`.
+
+### Index 88 bits 31:24 are not eight interpolant flags
+
+`m9_fs_raster_88()` sets one bit from 24 up an interpolated input.  With a
+seventh input and bit 30 set, **input 4** also stopped reading its stream;
+with all eight bits set every input did.  Forcing the six-input mask
+`0x3f10dff0` on a seven-input pass left the first six exact and only the
+seventh wrong, which is how the register-file limit above was separated from
+this one.  The field holds six inputs and no more.
 
 ## Reproduction
 
@@ -259,4 +316,5 @@ flock -w 1800 /root/tmp/m9-hw.lock ./m9-user-raster-streams 1 6
 
 The probe takes `first` and `last` input counts, and reads
 `M9RS_DUMP`, `M9RS_STREAM`, `M9RS_VIEW0_TRANSIENT`, `M9RS_NO_TEXTURE`,
-`M9RS_CLS` and `M9RS_R88` for bisecting against the captured configuration.
+`M9RS_CLS`, `M9RS_R88`, `M9RS_ONEWORD` and `M9RS_ATTRS` for bisecting against
+the captured configuration.

@@ -11,7 +11,9 @@ Labels: **STATIC** is read out of a vendor binary at a named address;
 **CAPTURED** is read out of a saved vendor command stream or the runtime
 values a saved fixture recorded; **DERIVED** is a join of those, with the
 join given; **MEASURED** is an earlier hardware result, cited by its note;
-**OPEN** is undecided.  Nothing in this note was run on hardware.
+**OPEN** is undecided.  Nothing in this note was run on hardware when it was
+written; section 11 records the two runs that since settled its experiments 1
+and 3.
 
 Re-derivable with:
 
@@ -86,11 +88,13 @@ per-word cost that note did not separate out:
 | an interpolated input, attributes 1..4 and 9..10, `x,y,-,-` **plus** `-,-,z,w` | 2 | 227 + 73 |
 | a sampler coordinate, attributes 5..8, `x,y,z,w` or `x,y,z,-` or `x,y,-,-` | 1 | 13 + 16 + 74 |
 
-so the fixed trio costs three words and thirteen are left: six interpolated
-inputs (12 words) and one sampler coordinate, or fewer inputs and more
-coordinates.  **No captured pass ever declares an interpolated input in the
-single `0688` word that attributes 0, 5, 6 and 13 use** — see section 8, this
-is the cheapest untested way to double the per-pass ceiling.
+so with the captured pair form the fixed trio costs three words and thirteen
+are left: six interpolated inputs (12 words) and one sampler coordinate, or
+fewer inputs and more coordinates.  **No captured pass ever declares an
+interpolated input in the single `0688` word that attributes 0, 5, 6 and 13
+use** — and the hardware takes it anyway, one word an input, MEASURED in
+section 11.  It does not double the ceiling: six is the interpolation register
+file, not the declaration budget.
 
 ## 3. The intermediate record: descriptor and routes (CAPTURED)
 
@@ -196,6 +200,11 @@ MEASURED (commit `cb65eafc`, appendix of
 `docs/parhelia-m9-vertex-output-target-re.md`): every draw whose fragment
 shader read a varying the extra preprocessing draw wrote rendered nothing and
 came back `EBUSY` with the context lost.
+
+The chain role below is **not** what was missing: emitting it changed nothing
+on hardware (MEASURED, section 11).  The reading of `ef` bits 11:9 stands as a
+capture survey; what it does not do is make the driver's chain-opening draw
+deliver.
 
 DERIVED: `m9_draw.c` gave the extra draw `ef = 0x00000200 | targets`, chain
 place 1, correctly — and left the fused pass at the constant `0x00288800`,
@@ -323,11 +332,9 @@ behaviour moves:
 refused) and `m9-fs-compile-test` (182 corpus shaders, 157 supported,
 required exact 23/23) all pass (OFFLINE).
 
-**This is a hypothesis with a captured witness, not a fix with a result.**
-It needs the `vary3`/`vary4`/`vary5` fixtures of `tools/m9-mesa-glsl.c` run
-with `M9X_VS_VARYINGS` raised, on the card, by whoever owns it.  If the
-draws still deliver nothing, section 8's first experiment is next and the
-chain place was not the only thing missing.
+**This was a hypothesis with a captured witness, and the hardware refused
+it** — section 11.  The chain place was not the only thing missing, so
+section 8's second experiment is what is next.
 
 What is deliberately **not** changed: the extra draw still writes separate
 `0x68002000` stream views rather than a packed record.  That is a deviation
@@ -337,9 +344,8 @@ once would make the hardware run uninformative.
 
 ## 8. The experiments worth the card time, in order
 
-1. **The chain role alone** (section 7).  `M9X_VS_VARYINGS=5`, fixtures
-   `vary3`..`vary5`.  Cost: one run.  If it renders, the varying count goes
-   to five with no further hardware work.
+1. ~~**The chain role alone** (section 7).~~  RUN AND REFUTED, section 11:
+   `M9X_VS_VARYINGS=5` still delivers nothing and now stalls the engine.
 2. **The vendor chain shape**, if 1 fails: the extra draw writes a packed
    record (`m9_record_desc(M9_RECORD_SLOT, 4 * n, 4 * k)` for varying `k` of
    `n`), and a third draw with place 3 and no clip code gathers it through
@@ -348,17 +354,12 @@ once would make the hardware run uninformative.
    moves and a stop and the encoders already exist; what is new is emitting
    routes from a preprocessing range and a third native vertex entry.
    `m9_index_allowed()` must admit `0x74..0x79` there.
-3. **The single-word interpolant declaration** (section 2).  Change
-   `m9_raster_fs_init_textured()` to emit one `attr << 20 | k << 16 | 0x0688`
-   word per varying instead of the `0d88`/`06b6` pair, and re-run
-   `tools/m9-user-raster-streams.c`, which already sweeps one to six inputs
-   and compares every interior pixel against a CPU reference.  If six still
-   read exactly, the per-pass declaration budget carries **thirteen**
-   interpolated inputs instead of six, which would let the driver drop from
-   three raster passes to one for any shader up to thirteen varyings and
-   remove the largest single source of inter-pass record traffic
-   (`docs/parhelia-m9-record-bandwidth.md`).  This is the highest-value
-   single experiment in this note and it costs one run of an existing probe.
+3. ~~**The single-word interpolant declaration** (section 2).~~  RUN, section
+   11.  The hardware takes the one-word form and the driver now emits it, so
+   an input costs one declaration word.  It does **not** carry thirteen
+   inputs: a seventh has no interpolation register.  The gain is that the
+   declaration budget stops binding at all, so six interpolants and four
+   texture units now fit one pass.
 4. **A sampler-only varying through a coordinate attribute.**  A varying
    whose only use is a texture coordinate can be declared as attribute
    `5 + unit` in one word (CAPTURED, `fs-tex2d`), where the same value used
@@ -378,7 +379,9 @@ once would make the hardware run uninformative.
 1. **How many interpolants can one raster pass consume, and is four floats
    the maximum record?**  Six four-component inputs per raster pass
    (MEASURED, `docs/parhelia-m9-raster-stream-limit-re.md`), bounded by the
-   16-word declaration budget at `22[11:8]`, not by any record width.  The
+   fragment unit's six interpolation registers — not by the 16-word
+   declaration budget at `22[11:8]`, which an input costs one word of, and
+   not by any record width.  The
    four-float figure in the brief belongs to the *fragment* inter-pass record
    and is not a varying limit at all; the *preprocessing* record is a packed
    array of up to 60 captured dwords with a one-byte stride field.  The
@@ -431,9 +434,10 @@ once would make the hardware run uninformative.
    varyings through them is possible exactly when the fragment program only
    samples with them, which the driver can already classify.
 7. **Anything that cuts the pass count.**  Three things, in order of value:
-   the single-word `0688` declaration for a general interpolant, which would
-   take the per-pass ceiling from six to thirteen and is one probe run away
-   (section 8.3); the sampler-coordinate classification of 6, which frees one
+   the single-word `0688` declaration for a general interpolant, MEASURED and
+   implemented (section 11), which does not raise the six-input ceiling but
+   frees every declaration word a pass was spending on its inputs; the
+   sampler-coordinate classification of 6, which frees one
    declaration word per texture-fed varying; and allocating the *fragment*
    inter-pass record's slots by liveness rather than one a hand-over, which
    `docs/parhelia-m9-record-bandwidth.md` already costs out and which the
@@ -452,3 +456,63 @@ once would make the hardware run uninformative.
 * `docs/parhelia-m9-record-bandwidth.md` treats the record stride as a
   function of the pass count.  It is an independent descriptor field, so a
   liveness allocation needs no new hardware capability; noted in place.
+
+## 11. The two hardware runs (MEASURED 2026-09-19)
+
+Both on the dual-DisplayPort M9128 at 192.168.1.111, module
+`/root/tmp/m9x_drm.ko`, each run opened with a known-good fixture to prove the
+engine alive and each stall followed by a reboot before the next measurement.
+
+### Experiment 1: the chain role does not make the second draw deliver
+
+`M9X_VS_VARYINGS=5`, `tools/m9-mesa-glsl.c` fixtures, one process a case, the
+Mesa build of commit `8763f81` verified on the card by dumping its own
+submission: the extra draw carries `ef = 0x00000200` (`M9_PRE_ROLE_FIRST`) and
+the fused pass `ef = 0x00288e00` (`M9_PRE_ROLE_LAST`), which is the word
+section 7 added.
+
+| cap | case | result |
+|---|---|---|
+| 1 | `texture` | exact — the engine is alive |
+| 1 | `varying`, `vary2`, `vary3`, `vary4`, `vary5` | all exact through the draw module |
+| 5 | `varying`, `vary2` | exact; neither emits an extra draw |
+| 5 | `vary3` | **every pixel wrong, kernel stream timeout** |
+| 5 | `vary4` | every pixel wrong, stream timeout |
+| 5 | `vary5` | the context is already gone |
+
+`vary3` was re-run alone after a reboot, behind a passing `texture`, and
+failed the same way, so the result is not a side effect of an earlier stall.
+
+The run also corrects the fixture table in
+`docs/parhelia-m9-vertex-output-target-re.md`: Mesa's varying optimiser now
+folds `vary3`'s third varying into the second as a swizzle, so its raster pass
+declares **two** interpolants and its extra preprocessing draw binds **one**
+target.  The minimal possible second preprocessing draw — a single stream
+target — is therefore what fails.
+
+**What this kills.**  The chain-role hypothesis of sections 4 and 7: `ef` bits
+11:9 were not the missing term.  With `0x88`'s pair mask and the barrier
+between the draws already refuted (that note's appendix), what is left is the
+deviation section 7 deliberately kept: the extra draw writes separate
+`0x68002000` stream views where every captured chain-opening draw writes a
+packed intermediate record that a later route-fed draw de-interleaves.
+Section 8's experiment 2 is next, and it is now the only remaining lead.  The
+driver's default stays at one varying.
+
+### Experiment 3: the one-word declaration works, and six is the register file
+
+`tools/m9-user-raster-streams.c`, extended past six inputs and given
+`M9RS_ONEWORD` and `M9RS_ATTRS`.  Full tables in
+`docs/parhelia-m9-raster-stream-limit-re.md` section 6; in short:
+
+* one `0x0688` word an interpolant renders exactly what the `0d88`/`06b6`
+  pair does, 21 of 21 sweep cases, and drops six inputs from fifteen
+  declaration words to nine;
+* a seventh input reads garbage whatever attribute number it is given, because
+  the interpolation registers `0x40 + 8 * i` are handed out in ascending
+  attribute order and there are six of them;
+* index `88` bits 31:24 hold six interpolant flags, not eight: setting the
+  seventh corrupts input 4 and setting all eight corrupts every input.
+
+The driver emits the one-word form as of the Mesa commit "one declaration word
+an interpolated input"; the whole `m9-mesa-glsl` suite is 211 of 211 with it.
