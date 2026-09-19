@@ -271,8 +271,10 @@ static unsigned m9_job_draws;
  * fragment shader reads a varying the extra draw writes renders nothing and
  * leaves the context lost (MEASURED on the M9128, fixtures vary3, vary4 and
  * vary5 against their own software reference; the same cases are exact
- * through the draw module).  Raising it emits that draw, which is what the
- * next investigation needs; 5 is what the vertex backend compiles.
+ * through the draw module).  Giving the fused pass its chain role did not
+ * change that: the same fixtures now stall the engine outright (MEASURED
+ * 2026-09-19).  Raising it emits that draw, which is what the next
+ * investigation needs; 5 is what the vertex backend compiles.
  * docs/parhelia-m9-vertex-output-target-re.md */
 static unsigned m9_native_vs_varyings = 1;
 /* M9X_NATIVE_VS=0 keeps every vertex shader in the draw module.  On by
