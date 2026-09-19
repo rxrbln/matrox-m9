@@ -260,12 +260,13 @@ static const char *m9_texture_dump;
 enum m9_prof {
    M9_PROF_DRAW, M9_PROF_EMIT, M9_PROF_SUBMIT, M9_PROF_VARYING,
    M9_PROF_RECORDS, M9_PROF_IOCTL, M9_PROF_TARGET, M9_PROF_CLEAR,
-   M9_PROF_TRANSFER, M9_PROF_COUNT,
+   M9_PROF_TRANSFER, M9_PROF_BE, M9_PROF_BATCH, M9_PROF_EXTENT,
+   M9_PROF_COUNT,
 };
 
 static const char *const m9_prof_name[M9_PROF_COUNT] = {
    "draw", "emit", "submit", "varying", "records", "ioctl", "target",
-   "clear", "transfer",
+   "clear", "transfer", "be", "batch", "extent",
 };
 
 static unsigned m9_profile_period;
@@ -1821,10 +1822,12 @@ m9_be_zero(struct m9_context *ctx)
 {
    struct m9_target_depth *entry = ctx->target_entry;
    struct m9_resource *be;
+   uint64_t t_be = m9_prof_begin();
 
    if (!entry || !m9_be_per_target) {
       if (ctx->be.map)
          memset(ctx->be.map, 0, ctx->be.size);
+      m9_prof_end(M9_PROF_BE, t_be);
       return;
    }
    if (m9_be_swap) {
@@ -1845,6 +1848,7 @@ m9_be_zero(struct m9_context *ctx)
    if (be->map)
       memset(be->map, 0, be->size);
    ctx->target_be = be->handle ? be : NULL;
+   m9_prof_end(M9_PROF_BE, t_be);
 }
 
 static int
@@ -1902,6 +1906,8 @@ m9_submit_job(struct m9_context *ctx)
       uint64_t area = (uint64_t)ctx->params.width * ctx->params.height;
 
       if (m9_split_trace || m9_split_clip || !m9_split_partial) {
+         uint64_t t_extent = m9_prof_begin();
+
          if (records) {
             const float *v = ctx->records.data;
 
@@ -1948,6 +1954,7 @@ m9_submit_job(struct m9_context *ctx)
          partial = !records || x0 > 0.5f || y0 > 0.5f ||
                    x1 < (float)ctx->params.width - 0.5f ||
                    y1 < (float)ctx->params.height - 0.5f;
+         m9_prof_end(M9_PROF_EXTENT, t_extent);
       }
       /* Three answers to a draw that covers part of its target, in the order
        * they cost: pad it out to the target's extent and narrow the clip
@@ -2220,8 +2227,12 @@ m9_submit_job(struct m9_context *ctx)
        * stream, where the closing one can wait for them to retire. */
       if (!ret)
          ret = m9_query_job_prologue(ctx, &ctx->batch);
-      if (!ret)
+      if (!ret) {
+         uint64_t t_batch = m9_prof_begin();
+
          ret = m9_batch_emit_draw_job(&ctx->batch, &job);
+         m9_prof_end(M9_PROF_BATCH, t_batch);
+      }
       if (!ret)
          ret = m9_query_job_epilogue(ctx, &ctx->batch,
                                      m9_draw_job_final_dependency(&job));
@@ -2248,10 +2259,13 @@ m9_submit_job(struct m9_context *ctx)
                       copies;
 
       for (unsigned pi = 1; !ret && m9_split_submit && pi < emit; pi++) {
+         uint64_t t_batch = m9_prof_begin();
+
          m9_batch_init(&ctx->batch);
          job.passes = &passes[pi];
          job.pass_count = 1;
          ret = m9_batch_emit_draw_job(&ctx->batch, &job);
+         m9_prof_end(M9_PROF_BATCH, t_batch);
          if (ret)
             break;
          ctx->batch.sealed = true;
