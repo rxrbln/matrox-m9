@@ -68,6 +68,7 @@ struct kkey {
    enum m9_vs_const_kind kind;
    float v[2];
    uint32_t off[2];
+   uint8_t coord_stream, coord_part;
    bool pair;
 };
 
@@ -172,6 +173,21 @@ key_uniform(struct ctx *c, uint32_t off0, uint32_t off1)
    k.off[0] = off0;
    k.off[1] = off1;
    k.pair = off0 != off1;
+   return key_add(c, &k);
+}
+
+/* One coefficient pair of a coordinate stream: the driver resolves its two
+ * floats per job from the sampler transform and the addressed span. */
+static int
+key_coord(struct ctx *c, unsigned stream, unsigned part)
+{
+   struct kkey k;
+
+   memset(&k, 0, sizeof(k));
+   k.kind = M9_VS_CONST_COORD;
+   k.coord_stream = stream;
+   k.coord_part = part;
+   k.pair = true;
    return key_add(c, &k);
 }
 
@@ -1492,6 +1508,45 @@ write_output(struct ctx *c, nir_intrinsic_instr *store, unsigned reg_xy,
           write_pair(c, reg_zw, &h[2], &h[3]);
 }
 
+/* A coordinate stream: the pair the sampler reads, taken from wherever in
+ * the varying it sits and scaled and biased by the driver's own pair, which
+ * is the packing, the affine fold and the render-target span the CPU used
+ * to apply per vertex.  The high register is never read; it is written all
+ * the same so the stream entry carries no stale register. */
+static bool
+write_coord_output(struct ctx *c, nir_intrinsic_instr *store, unsigned stream,
+                   unsigned component, unsigned reg_xy, unsigned reg_zw)
+{
+   struct held h0, h1;
+   unsigned rb, sb;
+   int scale, bias, es, eb;
+
+   /* Both scalars have to be values the shader stores; a component it
+    * leaves at the GL default is not a coordinate. */
+   if (!store || component < nir_intrinsic_component(store) ||
+       component + 2 > nir_intrinsic_component(store) +
+                       store->src[0].ssa->num_components)
+      return fail(c, "the texture coordinate reaches past the varying the "
+                  "vertex shader writes");
+   h0 = out_held(store, component, 0.0f);
+   h1 = out_held(store, component + 1, 0.0f);
+
+   scale = key_coord(c, stream, M9_VS_COORD_SCALE);
+   bias = key_coord(c, stream, M9_VS_COORD_BIAS);
+   es = const_index(c, scale);
+   eb = const_index(c, bias);
+   if (es < 0 || eb < 0)
+      return fail(c, "constant span overflow");
+   if (!operand(c, &h0, &h1, false, &rb, &sb))
+      return false;
+   emit(c, w0_make(NONE, rb, eb, reg_xy, 0, 0x1c),
+        w1_make(VS_MAD_RKK | 1u << 8 | sb << 6, es, NONE));
+   memset(c->holds[reg_xy], 0, sizeof(c->holds[reg_xy]));
+   emit_move(c, reg_zw, 0x1c, reg_xy, 1);
+   memset(c->holds[reg_zw], 0, sizeof(c->holds[reg_zw]));
+   return true;
+}
+
 /* Compilation */
 
 struct use_state {
@@ -1510,6 +1565,20 @@ note_src(nir_src *src, void *data)
    return true;
 }
 
+/* Output stream j of this head, whichever kind it is. */
+static bool
+write_stream(struct ctx *c, nir_intrinsic_instr *store,
+             const struct m9_vs_output *ostream, unsigned base, unsigned j,
+             unsigned reg_xy, unsigned reg_zw, bool present)
+{
+   static const float dflt[4] = { 0.0f, 0.0f, 0.0f, 1.0f };
+
+   if (present && ostream[j].coordinate)
+      return write_coord_output(c, store, base + j, ostream[j].component,
+                                reg_xy, reg_zw);
+   return write_output(c, present ? store : NULL, reg_xy, reg_zw, dflt);
+}
+
 /* One head: the register file starts at the declared attributes, every ALU
  * instruction of the block is emitted, and the outputs land last.  A program
  * with several varyings runs this twice -- once for the fused pass, once for
@@ -1519,7 +1588,8 @@ static bool
 compile_head(struct ctx *c, nir_block *block, unsigned final,
              const struct input_use *used, unsigned inputs,
              nir_intrinsic_instr *position,
-             nir_intrinsic_instr *const *var, unsigned nvar)
+             nir_intrinsic_instr *const *var,
+             const struct m9_vs_output *ostream, unsigned base, unsigned nvar)
 {
    static const float dflt[4] = { 0.0f, 0.0f, 0.0f, 1.0f };
 
@@ -1531,18 +1601,22 @@ compile_head(struct ctx *c, nir_block *block, unsigned final,
    c->index = 0;
    c->temp_live = false;
    if (position) {
+      bool coord0 = nvar && ostream[0].coordinate;
+
       pin_output(c, position, 0, REG_POS_XY);
       pin_output(c, position, 2, REG_POS_ZW);
-      pin_output(c, nvar ? var[0] : NULL, 0, REG_VAR_XY);
-      pin_output(c, nvar ? var[0] : NULL, 2, REG_VAR_ZW);
-      /* The second varying takes the clip position's output pair, which
+      pin_output(c, nvar && !coord0 ? var[0] : NULL, 0, REG_VAR_XY);
+      pin_output(c, nvar && !coord0 ? var[0] : NULL, 2, REG_VAR_ZW);
+      /* The second stream takes the clip position's output pair, which
        * m9_vs_emit frees by pointing the tail's two writes to it at the
        * tail's own scratch. */
       if (nvar > 1) {
          c->reserved[REG_OUT_LO(M9_VS_FUSED_PAIR)] = 1;
          c->reserved[REG_OUT_HI(M9_VS_FUSED_PAIR)] = 1;
-         pin_output(c, var[1], 0, REG_OUT_LO(M9_VS_FUSED_PAIR));
-         pin_output(c, var[1], 2, REG_OUT_HI(M9_VS_FUSED_PAIR));
+         if (!ostream[1].coordinate) {
+            pin_output(c, var[1], 0, REG_OUT_LO(M9_VS_FUSED_PAIR));
+            pin_output(c, var[1], 2, REG_OUT_HI(M9_VS_FUSED_PAIR));
+         }
       }
    } else {
       /* Every output pair is reserved, not just the ones this head writes:
@@ -1552,10 +1626,11 @@ compile_head(struct ctx *c, nir_block *block, unsigned final,
          c->reserved[REG_OUT_LO(j)] = 1;
          c->reserved[REG_OUT_HI(j)] = 1;
       }
-      for (unsigned j = 0; j < nvar; j++) {
-         pin_output(c, var[j], 0, REG_OUT_LO(j));
-         pin_output(c, var[j], 2, REG_OUT_HI(j));
-      }
+      for (unsigned j = 0; j < nvar; j++)
+         if (!ostream[j].coordinate) {
+            pin_output(c, var[j], 0, REG_OUT_LO(j));
+            pin_output(c, var[j], 2, REG_OUT_HI(j));
+         }
    }
    declare_attributes(c, used, inputs);
    nir_foreach_instr(instr, block) {
@@ -1571,17 +1646,20 @@ compile_head(struct ctx *c, nir_block *block, unsigned final,
    c->temp_live = true;
    memset(c->busy, 0, sizeof(c->busy));
    if (position) {
-      if (!write_output(c, position, REG_POS_XY, REG_POS_ZW, dflt) ||
-          !write_output(c, nvar ? var[0] : NULL, REG_VAR_XY, REG_VAR_ZW,
-                        dflt))
+      if (!write_output(c, position, REG_POS_XY, REG_POS_ZW, dflt))
+         return false;
+      if (!write_stream(c, nvar ? var[0] : NULL, ostream, base, 0,
+                        REG_VAR_XY, REG_VAR_ZW, nvar != 0))
          return false;
       if (nvar > 1 &&
-          !write_output(c, var[1], REG_OUT_LO(M9_VS_FUSED_PAIR),
-                        REG_OUT_HI(M9_VS_FUSED_PAIR), dflt))
+          !write_stream(c, var[1], ostream, base, 1,
+                        REG_OUT_LO(M9_VS_FUSED_PAIR),
+                        REG_OUT_HI(M9_VS_FUSED_PAIR), true))
          return false;
    } else {
       for (unsigned j = 0; j < nvar; j++)
-         if (!write_output(c, var[j], REG_OUT_LO(j), REG_OUT_HI(j), dflt))
+         if (!write_stream(c, var[j], ostream, base, j, REG_OUT_LO(j),
+                           REG_OUT_HI(j), true))
             return false;
    }
    c->temp_live = false;
@@ -1589,12 +1667,15 @@ compile_head(struct ctx *c, nir_block *block, unsigned final,
 }
 
 static bool
-compile_impl(struct ctx *c, nir_function_impl *impl)
+compile_impl(struct ctx *c, nir_function_impl *impl,
+             const struct m9_vs_outputs *want)
 {
    struct input_use used[M9_VS_MAX_ATTRIBUTES];
    nir_intrinsic_instr *position = NULL;
+   nir_intrinsic_instr *stored[M9_VS_MAX_VARYINGS] = { NULL };
    nir_intrinsic_instr *varying[M9_VS_MAX_VARYINGS] = { NULL };
-   unsigned nvar = 0;
+   struct m9_vs_outputs out;
+   unsigned nstored = 0, nvar = 0;
    unsigned inputs = 0, final;
    nir_block *block;
 
@@ -1654,13 +1735,12 @@ compile_impl(struct ctx *c, nir_function_impl *impl)
          } else {
             unsigned v;
 
-            for (v = 0; v < nvar; v++)
-               if (nir_intrinsic_io_semantics(varying[v]).location == location)
-                  break;
-            if (v == nvar && nvar >= M9_VS_MAX_VARYINGS)
+            for (v = 0; v < nstored; v++)
+               if (nir_intrinsic_io_semantics(stored[v]).location == location)
+                  return fail(c, "a varying stored more than once");
+            if (nstored >= M9_VS_MAX_VARYINGS)
                return fail(c, "more than five varyings");
-            varying[v] = intr;
-            nvar += v == nvar;
+            stored[nstored++] = intr;
          }
          break;
       }
@@ -1671,6 +1751,28 @@ compile_impl(struct ctx *c, nir_function_impl *impl)
    }
    if (!position)
       return fail(c, "no position output");
+   /* The streams this program writes: the caller's, or one an output the
+    * shader stores, which is what every non-textured job asks for. */
+   memset(&out, 0, sizeof(out));
+   if (want) {
+      if (want->count > M9_VS_MAX_VARYINGS)
+         return fail(c, "more output streams than the passes carry");
+      out = *want;
+   } else {
+      for (unsigned v = 0; v < nstored; v++)
+         out.stream[out.count++] = (struct m9_vs_output) {
+            .location = nir_intrinsic_io_semantics(stored[v]).location,
+         };
+   }
+   for (unsigned j = 0; j < out.count; j++) {
+      for (unsigned v = 0; v < nstored; v++)
+         if (nir_intrinsic_io_semantics(stored[v]).location ==
+             out.stream[j].location)
+            varying[j] = stored[v];
+      if (!varying[j])
+         return fail(c, "a stream the shader writes no varying for");
+   }
+   nvar = out.count;
 
    nir_foreach_instr(instr, block) {
       nir_alu_instr *alu;
@@ -1719,7 +1821,8 @@ compile_impl(struct ctx *c, nir_function_impl *impl)
    }
 
    c->out = &c->p->slots;
-   if (!compile_head(c, block, final, used, inputs, position, varying, nvar))
+   if (!compile_head(c, block, final, used, inputs, position, varying,
+                     out.stream, 0, nvar))
       return false;
    /* Varyings past the two the fused pass carries are a program of their
     * own, run as the preprocessing draw ahead of it.  It re-emits the whole
@@ -1729,23 +1832,26 @@ compile_impl(struct ctx *c, nir_function_impl *impl)
       c->out = &c->p->extra;
       if (!compile_head(c, block, final, used, inputs, NULL,
                         varying + M9_VS_FUSED_VARYINGS,
-                        nvar - M9_VS_FUSED_VARYINGS))
+                        out.stream + M9_VS_FUSED_VARYINGS,
+                        M9_VS_FUSED_VARYINGS, nvar - M9_VS_FUSED_VARYINGS))
          return false;
       compile_gather(c->p, nvar - M9_VS_FUSED_VARYINGS);
    }
+   c->p->outputs = out;
    c->p->varying_count = nvar;
    for (unsigned v = 0; v < nvar; v++) {
-      c->p->varying_location[v] =
-         nir_intrinsic_io_semantics(varying[v]).location;
-      c->p->varying_components[v] = nir_intrinsic_component(varying[v]) +
-                                    varying[v]->src[0].ssa->num_components;
+      c->p->varying_location[v] = out.stream[v].location;
+      c->p->varying_components[v] =
+         out.stream[v].coordinate ? 2 :
+         nir_intrinsic_component(varying[v]) +
+         varying[v]->src[0].ssa->num_components;
    }
    return true;
 }
 
 bool
-m9_vs_compile(struct nir_shader *nir, struct m9_vs_program *p,
-              const char **reason)
+m9_vs_compile(struct nir_shader *nir, const struct m9_vs_outputs *outputs,
+              struct m9_vs_program *p, const char **reason)
 {
    nir_function_impl *impl;
    struct ctx c;
@@ -1762,7 +1868,8 @@ m9_vs_compile(struct nir_shader *nir, struct m9_vs_program *p,
    c.p = p;
    impl = nir->info.stage == MESA_SHADER_VERTEX ?
           nir_shader_get_entrypoint(nir) : NULL;
-   ok = impl ? compile_impl(&c, impl) : fail(&c, "not a vertex shader");
+   ok = impl ? compile_impl(&c, impl, outputs) :
+        fail(&c, "not a vertex shader");
    if (ok) {
       util_dynarray_foreach(&c.keys, struct kkey, k) {
          struct m9_vs_const *out =
@@ -1774,6 +1881,8 @@ m9_vs_compile(struct nir_shader *nir, struct m9_vs_program *p,
          out->value[1] = k->pair ? k->v[1] : k->v[0];
          out->offset[0] = k->off[0];
          out->offset[1] = k->pair ? k->off[1] : k->off[0];
+         out->coord_stream = k->coord_stream;
+         out->coord_part = k->coord_part;
       }
    }
    if (reason)
@@ -1800,8 +1909,24 @@ int
 m9_vs_varying_index(const struct m9_vs_program *p, unsigned location)
 {
    for (unsigned v = 0; v < p->varying_count; v++)
-      if (p->varying_location[v] == location)
+      if (p->varying_location[v] == location &&
+          !p->outputs.stream[v].coordinate)
          return (int)v;
+   return -1;
+}
+
+int
+m9_vs_stream_index(const struct m9_vs_program *p, unsigned location,
+                   unsigned coord, bool coordinate)
+{
+   for (unsigned v = 0; v < p->outputs.count; v++) {
+      const struct m9_vs_output *o = &p->outputs.stream[v];
+
+      if (o->coordinate != coordinate)
+         continue;
+      if (coordinate ? o->coord == coord : o->location == location)
+         return (int)v;
+   }
    return -1;
 }
 

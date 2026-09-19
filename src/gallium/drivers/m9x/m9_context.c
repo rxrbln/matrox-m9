@@ -279,6 +279,8 @@ static unsigned m9_job_draws;
  * resource rather than an engine extent (m9_draw_params.h).  Setting it back
  * to 5760 restores one job per draw in the same binary; the frame profile
  * names the ceiling in force. */
+static uint64_t m9_vs_serial;
+
 /* M9X_VS_VARYINGS caps the varyings a native preprocessing job may carry.
  * The default is 2, which the single fused draw carries on its own: the
  * second varying takes output target 1, the clip position's, whose two tail
@@ -1074,13 +1076,14 @@ m9_varying_is_color(unsigned location)
  * fused pass's own target 3, varyings 2..4 from the second preprocessing
  * draw's targets 0..2. */
 static int
-m9_pass_varying_view(const struct m9_job_key *key, unsigned location)
+m9_pass_varying_view(const struct m9_job_key *key, unsigned location,
+                     unsigned coord, bool coordinate)
 {
    int index;
 
    if (!key->vs)
       return location == VARYING_SLOT_COL0 ? 0 : -1;
-   index = m9_vs_varying_index(key->vs, location);
+   index = m9_vs_stream_index(key->vs, location, coord, coordinate);
    return index <= 0 ? index :
           (int)M9_TRANSIENT_VS_EXTRA_VIEW + index - 1;
 }
@@ -1275,7 +1278,8 @@ m9_job_native(struct m9_context *ctx, const struct m9_job_key *key,
       /* A varying the preprocessing pass itself writes comes from stream
        * view 0; everything else the CPU gathers into a view of its own. */
       for (unsigned k = 0; k < p->varying_count; k++) {
-         int view = m9_pass_varying_view(key, p->varyings[k].location);
+         int view = m9_pass_varying_view(key, p->varyings[k].location, 0,
+                                         false);
 
          flat[k] = m9_varying_is_color(p->varyings[k].location);
          views[k] = st->varying_extra[k] < 0 || view >= 0 ?
@@ -1283,7 +1287,7 @@ m9_job_native(struct m9_context *ctx, const struct m9_job_key *key,
                                     st->varying_extra[k];
       }
       for (unsigned c = 0; c < st->coord_count; c++) {
-         int view = m9_pass_varying_view(key, st->coord_location[c]);
+         int view = m9_pass_varying_view(key, st->coord_location[c], c, true);
 
          coords[c] = st->coord_extra[c] < 0 || view >= 0 ?
                      MAX2(view, 0) : M9_TRANSIENT_CPU_VIEW +
@@ -4338,11 +4342,55 @@ struct m9_native_vs {
    bool lines, flat;
 };
 
+/* The texel slot of the final raster pass a coordinate stream feeds, or ~0.
+ * Two units sharing a stream agree in transform and span -- m9_job_key
+ * refuses a draw where they do not -- so the first is enough. */
+static unsigned
+m9_coord_stream_slot(const struct m9_fs_variant *v, unsigned coord)
+{
+   const struct m9_fs_pass_streams *st = &v->stream[v->passes.count - 1];
+   const struct m9_fs_program *fp = m9_fs_final(v);
+
+   for (unsigned k = 0; k < fp->texture_count; k++)
+      if (st->texture_coord[k] == coord && st->unit[k] < M9_DRAW_MAX_UNITS)
+         return k;
+   return ~0u;
+}
+
+/* The multiply-add a coordinate stream applies, which is what m9_scale_coords
+ * does per vertex on the CPU: the sampler's own affine transform, then the
+ * span the render target's descriptor addresses.  The transform's own terms
+ * are only resolved for a unit that carries one, so a plain fetch scales by
+ * the span alone. */
+static void
+m9_vs_coord_coefficients(const struct m9_job_key *key, unsigned coord,
+                         unsigned part, float *out)
+{
+   unsigned k = key->variant ? m9_coord_stream_slot(key->variant, coord) : ~0u;
+   const struct m9_fs_program *fp;
+   bool affine;
+   unsigned u;
+
+   out[0] = out[1] = part == M9_VS_COORD_SCALE ? 1.0f : 0.0f;
+   if (k == ~0u)
+      return;
+   fp = m9_fs_final(key->variant);
+   affine = fp->texcoord_affine[k].present;
+   u = key->variant->stream[key->variant->passes.count - 1].unit[k];
+   for (unsigned i = 0; i < 2; i++) {
+      float span = key->unit_scale[u][i];
+
+      out[i] = part == M9_VS_COORD_SCALE ?
+               (affine ? key->coord_scale[u][i] : 1.0f) * span :
+               (affine ? key->coord_bias[u][i] : 0.0f) * span;
+   }
+}
+
 /* Constant pairs the compiled program names, resolved against constant
  * buffer 0: two floats per user constant, in program order. */
 static bool
-m9_vs_resolve_consts(struct m9_context *ctx, const struct m9_vs_program *p,
-                     struct util_dynarray *out)
+m9_vs_resolve_consts(struct m9_context *ctx, const struct m9_job_key *key,
+                     const struct m9_vs_program *p, struct util_dynarray *out)
 {
    const struct pipe_constant_buffer *cb = &ctx->vs_constants[0];
    const uint8_t *data = cb->user_buffer ? cb->user_buffer :
@@ -4353,6 +4401,15 @@ m9_vs_resolve_consts(struct m9_context *ctx, const struct m9_vs_program *p,
       data += cb->buffer_offset;
    util_dynarray_clear(out);
    util_dynarray_foreach(&p->consts, struct m9_vs_const, k) {
+      float pair[2] = { 0.0f, 0.0f };
+
+      if (k->kind == M9_VS_CONST_COORD) {
+         m9_vs_coord_coefficients(key, p->outputs.stream[k->coord_stream].coord,
+                                  k->coord_part, pair);
+         util_dynarray_append_typed(out, float, pair[0]);
+         util_dynarray_append_typed(out, float, pair[1]);
+         continue;
+      }
       for (unsigned lane = 0; lane < 2; lane++) {
          float v = 0.0f;
 
@@ -4388,9 +4445,9 @@ m9_vs_fused_pair(const struct m9_vs_program *p)
  * different vertex program binds. */
 static uint32_t
 m9_native_vs_c2(struct m9_context *ctx, struct m9_fs_variant *v,
+                const struct m9_vs_variant *vs,
                 unsigned *extra_entry, unsigned *gather_entry)
 {
-   const struct m9_vs_state *vs = ctx->vs;
    struct m9_resource *image = v ? &v->native_c2 : &ctx->vs_c2;
    uint64_t *serial = v ? &v->native_c2_serial : &ctx->vs_c2_serial;
    const uint32_t *fs_slots = v ? m9_fs_final(v)->slots.data :
@@ -4460,12 +4517,12 @@ m9_native_index_range(const void *indices, unsigned size, unsigned first,
 }
 
 /* What the fragment shader reads, before any variant of it is compiled: the
- * preprocessing stage fills one stream a varying and nothing else, so a
- * shader that reads more of them than the pass can produce, or that samples
- * a texture -- whose coordinate stream the CPU still transforms, packing,
- * folding, dividing and scaling it -- falls back here.  Resolving the
- * source layout and the job key for a draw that will fall back anyway is
- * what this avoids. */
+ * preprocessing stage fills one stream an input, so a shader that reads more
+ * input locations than the pass has targets falls back here.  A texture
+ * coordinate is a stream of its own and can cost a target beyond them, which
+ * only the compiled variant says; this is the cheap half, and it is what
+ * keeps a draw that will fall back anyway from resolving its source layout
+ * and its job key. */
 static bool
 m9_native_vs_fs_cheap(const struct m9_context *ctx)
 {
@@ -4474,8 +4531,7 @@ m9_native_vs_fs_cheap(const struct m9_context *ctx)
    if (!ctx->fs || !ctx->fs->nir)
       return false;
    info = &ctx->fs->nir->info;
-   return BITSET_IS_EMPTY(info->textures_used) &&
-          util_bitcount64(info->inputs_read &
+   return util_bitcount64(info->inputs_read &
                           ~(VARYING_BIT_POS | VARYING_BIT_FACE |
                             VARYING_BIT_PNTC)) <= m9_native_vs_varyings;
 }
@@ -4581,78 +4637,121 @@ m9_native_vs_resolve(struct m9_context *ctx, const struct pipe_draw_info *info,
    return NULL;
 }
 
-/* The highest varying index the fragment program reads, or -1: a varying
- * the vertex program writes and nothing reads costs neither a target nor a
- * view. */
-static int
-m9_native_vs_top_varying(const struct m9_job_key *key,
-                         const struct m9_vs_program *p)
-{
-   const struct m9_fs_program *fp;
-   int top = -1;
-
-   if (!key->fs)
-      return -1;
-   fp = m9_fs_final(key->variant);
-   for (unsigned k = 0; k < fp->varying_count; k++)
-      top = MAX2(top, m9_vs_varying_index(p, fp->varyings[k].location));
-   return top;
-}
-
-/* Stream targets the second preprocessing draw has to bind: one a varying
- * index past the two the fused pass carries on its own targets 0 and 3.
- * Zero leaves the job at its single preprocessing draw. */
+/* Stream targets the second preprocessing draw has to bind: one a stream
+ * past the two the fused pass carries on its own targets 0 and 1.  Zero
+ * leaves the job at its single preprocessing draw.  The layout carries only
+ * streams the raster pass reads, so its count is what the targets cost. */
 static unsigned
-m9_native_vs_extra_targets(int top)
+m9_native_vs_extra_targets(const struct m9_vs_program *p)
 {
-   return top >= (int)M9_VS_FUSED_VARYINGS ?
-          (unsigned)top + 1u - M9_VS_FUSED_VARYINGS : 0;
+   return p->outputs.count > M9_VS_FUSED_VARYINGS ?
+          p->outputs.count - M9_VS_FUSED_VARYINGS : 0;
 }
 
-/* The stream a native preprocessing job can hand the raster pass: one the
- * vertex program writes, inside the cap.  NULL when it can. */
+/* Adds one stream to the layout, or names why it does not fit. */
 static const char *
-m9_native_vs_stream_ok(const struct m9_vs_program *p, unsigned location)
+m9_native_vs_add_stream(struct m9_vs_outputs *out,
+                        const struct m9_vs_output *stream)
 {
-   int index = m9_vs_varying_index(p, location);
-
-   if (index < 0)
-      return "the vertex program does not write a varying the fragment "
-             "program reads";
-   if ((unsigned)index >= m9_native_vs_varyings)
+   for (unsigned j = 0; j < out->count; j++)
+      if (!memcmp(&out->stream[j], stream, sizeof(*stream)))
+         return NULL;
+   if (out->count >= M9_VS_MAX_VARYINGS ||
+       out->count >= m9_native_vs_varyings)
       return "the varying read is past the M9X_VS_VARYINGS cap";
+   out->stream[out->count++] = *stream;
    return NULL;
 }
 
-/* What the raster pass of a native preprocessing job can consume.  The
- * preprocessing pass writes one stream a varying and nothing fills the CPU
- * views, so every varying and every texture coordinate the fragment program
- * reads has to be one the vertex program produces unchanged. */
+/* The output streams a native preprocessing job has to write: one an
+ * interpolated input of the raster pass, and one a texture coordinate --
+ * which the vertex program places and transforms itself, so the CPU views
+ * the draw module fills are not needed.  NULL when the layout is buildable,
+ * a static reason otherwise.  p is the shader's own program, consulted only
+ * for the varyings it writes; the layout is what a second compile of it
+ * produces. */
 static const char *
-m9_native_vs_raster_ok(const struct m9_job_key *key,
-                       const struct m9_vs_program *p)
+m9_native_vs_layout(const struct m9_job_key *key, const struct m9_vs_program *p,
+                    struct m9_vs_outputs *out)
 {
+   const struct m9_fs_pass_streams *st;
    const struct m9_fs_program *fp;
    const char *reason;
 
+   memset(out, 0, sizeof(*out));
    /* The pass-through colour image reads the primary colour from stream 0. */
-   if (!key->fs)
-      return m9_vs_varying_index(p, VARYING_SLOT_COL0) == 0 ?
-             NULL : "the pass-through fragment image needs a primary colour";
+   if (!key->fs) {
+      if (m9_vs_varying_index(p, VARYING_SLOT_COL0) < 0)
+         return "the pass-through fragment image needs a primary colour";
+      out->stream[out->count++] = (struct m9_vs_output) {
+         .location = VARYING_SLOT_COL0,
+      };
+      return NULL;
+   }
    fp = m9_fs_final(key->variant);
    if (key->variant->passes.count > 1)
       return "the fragment program runs as several raster passes";
-   if (fp->texture_count)
-      return "the fragment program samples a texture";
    if (fp->varying_count > M9_VS_MAX_VARYINGS)
       return "the fragment program reads more varyings than the "
              "preprocessing pass writes";
+   st = &key->variant->stream[key->variant->passes.count - 1];
    for (unsigned k = 0; k < fp->varying_count; k++) {
-      reason = m9_native_vs_stream_ok(p, fp->varyings[k].location);
+      struct m9_vs_output stream = { .location = fp->varyings[k].location };
+
+      if (m9_vs_varying_index(p, stream.location) < 0)
+         return "the vertex program does not write a varying the fragment "
+                "program reads";
+      reason = m9_native_vs_add_stream(out, &stream);
+      if (reason)
+         return reason;
+   }
+   /* A projector varies per fragment and the stream can only carry a
+    * per-vertex divide, and a shadow or volume fetch reads a third
+    * interpolated component the two-scalar stream does not hold. */
+   for (unsigned k = 0; k < fp->texture_count; k++) {
+      if (st->texture_coord[k] == M9_RASTER_COORD_NONE)
+         return "a texture coordinate an earlier raster pass produced";
+      if (fp->texcoord_projective[k])
+         return "the texture coordinate is divided by a projector";
+      if (fp->texcoord_shadow[k] || fp->texcoord_volume[k])
+         return "the texture coordinate carries a third component";
+   }
+   for (unsigned c = 0; c < st->coord_count; c++) {
+      struct m9_vs_output stream = { .location = st->coord_location[c],
+                                     .component = st->coord_component[c],
+                                     .coord = c, .coordinate = true };
+
+      if (m9_vs_varying_index(p, stream.location) < 0)
+         return "the vertex program does not write the varying a texture "
+                "coordinate comes from";
+      reason = m9_native_vs_add_stream(out, &stream);
       if (reason)
          return reason;
    }
    return NULL;
+}
+
+/* The compiled program for one output layout, compiled on first use and
+ * kept with the shader; a refused layout is kept with its reason so the
+ * same pair is not compiled again every draw. */
+static struct m9_vs_variant *
+m9_native_vs_variant(struct m9_vs_state *vs, const struct m9_vs_outputs *out)
+{
+   struct m9_vs_variant *v;
+
+   util_dynarray_foreach(&vs->variants, struct m9_vs_variant *, it)
+      if (!memcmp(&(*it)->outputs, out, sizeof(*out)))
+         return *it;
+   v = CALLOC_STRUCT(m9_vs_variant);
+   if (!v)
+      return NULL;
+   v->outputs = *out;
+   v->serial = ++m9_vs_serial;
+   v->ok = vs->nir && m9_vs_compile(vs->nir, out, &v->program, &v->reason);
+   if (!v->reason)
+      v->reason = "the vertex program was not compiled for these streams";
+   util_dynarray_append_typed(&vs->variants, struct m9_vs_variant *, v);
+   return v;
 }
 
 /* A welded draw kept across frames.  Welding costs one hash pass over every
@@ -5056,18 +5155,26 @@ m9_native_vs_draw(struct m9_context *ctx, const struct pipe_draw_info *info,
       m9_native_vs_note(ctx, reason);
       return false;
    }
-   reason = m9_native_vs_raster_ok(&key, &ctx->vs->program);
+   struct m9_vs_outputs outputs;
+   struct m9_vs_variant *variant;
+
+   reason = m9_native_vs_layout(&key, &ctx->vs->program, &outputs);
    if (reason) {
       m9_native_vs_note(ctx, reason);
       return false;
    }
-   key.vs = &ctx->vs->program;
+   variant = m9_native_vs_variant(ctx->vs, &outputs);
+   if (!variant || !variant->ok) {
+      m9_native_vs_note(ctx, variant ? variant->reason :
+                        "the vertex program could not be compiled");
+      return false;
+   }
+   key.vs = &variant->program;
    key.vs_program = m9_native_vs_c2(ctx, (struct m9_fs_variant *)key.variant,
-                                    &key.vs_extra_entry, &key.vs_gather_entry);
-   int top_varying = m9_native_vs_top_varying(&key, key.vs);
-
+                                    variant, &key.vs_extra_entry,
+                                    &key.vs_gather_entry);
    key.vs_fused_pair = m9_vs_fused_pair(key.vs);
-   key.vs_extra_targets = m9_native_vs_extra_targets(top_varying);
+   key.vs_extra_targets = m9_native_vs_extra_targets(key.vs);
    if (!key.vs_extra_targets)
       key.vs_extra_entry = key.vs_gather_entry = 0;
    if (!key.vs_program) {
@@ -5078,7 +5185,7 @@ m9_native_vs_draw(struct m9_context *ctx, const struct pipe_draw_info *info,
       key.viewport_scale[i] = ctx->viewport.scale[i];
       key.viewport_bias[i] = ctx->viewport.translate[i];
    }
-   if (!m9_vs_resolve_consts(ctx, key.vs, &ctx->key_vs_consts)) {
+   if (!m9_vs_resolve_consts(ctx, &key, key.vs, &ctx->key_vs_consts)) {
       ctx->skipped_draws++;
       return true;
    }
@@ -6033,12 +6140,27 @@ m9_set_sampler_views(struct pipe_context *pctx, mesa_shader_stage shader,
 }
 
 /* Program identity for the cached c2 images; never zero, never reused. */
-static uint64_t m9_vs_serial;
 
 static unsigned
 m9_vs_type_size(const struct glsl_type *type, bool bindless)
 {
    return glsl_count_vec4_slots(type, false, bindless);
+}
+
+static void
+m9_vs_state_fini(struct m9_vs_state *vs)
+{
+   util_dynarray_foreach(&vs->variants, struct m9_vs_variant *, it) {
+      if ((*it)->ok)
+         m9_vs_program_fini(&(*it)->program);
+      FREE(*it);
+   }
+   util_dynarray_fini(&vs->variants);
+   if (vs->native)
+      m9_vs_program_fini(&vs->program);
+   if (vs->nir)
+      ralloc_free(vs->nir);
+   FREE(vs);
 }
 
 /* Compile the native preprocessing program from a clone: the shader the
@@ -6068,11 +6190,14 @@ m9_vs_native_init(struct m9_vs_state *vs, struct nir_shader *src)
     * gives it the shapes it recognises. */
    NIR_PASS(_, nir, nir_opt_algebraic_late);
    NIR_PASS(_, nir, nir_opt_dce);
-   vs->native = m9_vs_compile(nir, &vs->program, &vs->reason);
+   vs->native = m9_vs_compile(nir, NULL, &vs->program, &vs->reason);
    if (getenv("M9X_DEBUG"))
       fprintf(stderr, "m9x vs: %s\n",
               vs->native ? "native" : vs->reason ? vs->reason : "unsupported");
-   ralloc_free(nir);
+   if (vs->native)
+      vs->nir = nir;
+   else
+      ralloc_free(nir);
 }
 
 static void *
@@ -6087,11 +6212,10 @@ m9_create_vs_state(struct pipe_context *pctx,
    if (templ->type == PIPE_SHADER_IR_NIR && templ->ir.nir)
       m9_vs_native_init(vs, templ->ir.nir);
    vs->serial = ++m9_vs_serial;
+   util_dynarray_init(&vs->variants, NULL);
    vs->draw = draw_create_vertex_shader(ctx->draw, templ);
    if (!vs->draw) {
-      if (vs->native)
-         m9_vs_program_fini(&vs->program);
-      FREE(vs);
+      m9_vs_state_fini(vs);
       return NULL;
    }
    return vs;
@@ -6116,9 +6240,7 @@ m9_delete_vs_state(struct pipe_context *pctx, void *state)
    if (ctx->vs == vs)
       ctx->vs = NULL;
    draw_delete_vertex_shader(ctx->draw, vs->draw);
-   if (vs->native)
-      m9_vs_program_fini(&vs->program);
-   FREE(vs);
+   m9_vs_state_fini(vs);
 }
 
 /* True when def is the unmodified four-component primary color input. */

@@ -378,14 +378,30 @@ struct m9_scratch_target {
  * Parhelia shadow.  Dirty bits describe only M9 packet groups. */
 /* A vertex shader: the draw module's copy, which every draw still runs, and
  * the native preprocessing program when the backend covered it. */
-struct m9_vs_state {
-   void *draw;
+/* The program compiled for one output-stream layout.  A textured job asks
+ * for the coordinate streams its fragment variant reads, so the layout is a
+ * property of the pair rather than of the vertex shader, and a shader drawn
+ * with several fragment programs keeps one of these per layout. */
+struct m9_vs_variant {
+   struct m9_vs_outputs outputs;
    struct m9_vs_program program;
    const char *reason;
-   bool native;
+   bool ok;
    /* Never reused, so a cached c2 image can name the program it holds
     * without a pointer that a later allocation could match. */
    uint64_t serial;
+};
+
+struct m9_vs_state {
+   void *draw;
+   /* The lowered clone the backend consumed, kept so a further layout can
+    * be compiled from it. */
+   struct nir_shader *nir;
+   struct m9_vs_program program;
+   const char *reason;
+   bool native;
+   uint64_t serial;
+   struct util_dynarray variants;   /* struct m9_vs_variant * */
 };
 
 struct m9_context {

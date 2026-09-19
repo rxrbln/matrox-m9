@@ -154,12 +154,43 @@ struct nir_shader;
 enum m9_vs_const_kind {
    M9_VS_CONST_LITERAL,
    M9_VS_CONST_UNIFORM,    /* two constant-buffer components */
+   /* The coefficients of a coordinate stream, which the driver resolves per
+    * job from the sampler's own transform and the addressed span. */
+   M9_VS_CONST_COORD,
 };
+
+/* Which half of a coordinate stream's multiply-add a constant pair is. */
+#define M9_VS_COORD_SCALE 0u
+#define M9_VS_COORD_BIAS  1u
 
 struct m9_vs_const {
    enum m9_vs_const_kind kind;
    float value[2];
    uint32_t offset[2];     /* constant buffer 0 byte offsets */
+   uint8_t coord_stream;   /* M9_VS_CONST_COORD: the stream it belongs to */
+   uint8_t coord_part;     /* M9_VS_COORD_SCALE or M9_VS_COORD_BIAS */
+};
+
+/* One stream a compiled program writes to an output target.  A varying
+ * stream carries four components of the varying, the shape the raster stage
+ * interpolates as an ordinary input.  A coordinate stream carries the two
+ * components a sampler reads, taken from wherever in the varying they sit
+ * and put through the multiply-add that used to run per vertex on the CPU:
+ * the sampler's own affine transform and the render target's addressed
+ * span.  Its coefficients are constant pairs the driver fills per job. */
+struct m9_vs_output {
+   uint8_t location;       /* gl_varying_slot the value comes from */
+   uint8_t component;      /* first of the pair; coordinate streams only */
+   /* Which coordinate stream of the fragment variant this is.  Two streams
+    * may take the same pair of the same varying and differ only in the
+    * transform the sampler folds into it, so the index is what names one. */
+   uint8_t coord;
+   bool coordinate;
+};
+
+struct m9_vs_outputs {
+   struct m9_vs_output stream[M9_VS_MAX_VARYINGS];
+   unsigned count;
 };
 
 /* One declared attribute: four selectors over one element of the source
@@ -188,9 +219,12 @@ struct m9_vs_program {
     * stream views the raster stage reads, one register-pair move a
     * varying (CAPTURED, vs-varyings-4's c3=27). */
    struct util_dynarray gather;
+   /* Output streams, one an output target.  varying_count is their number,
+    * whatever kind they are. */
    unsigned varying_count;
    unsigned varying_location[M9_VS_MAX_VARYINGS];   /* gl_varying_slot */
    unsigned varying_components[M9_VS_MAX_VARYINGS];
+   struct m9_vs_outputs outputs;
 };
 
 /* The program's index for a varying slot, or -1 when it writes none.  Index
@@ -198,9 +232,19 @@ struct m9_vs_program {
 int m9_vs_varying_index(const struct m9_vs_program *program,
                         unsigned location);
 
-/* Returns false with a static reason when the shader is not covered. */
-bool m9_vs_compile(struct nir_shader *nir, struct m9_vs_program *program,
-                   const char **reason);
+/* The stream index a raster input arrives on, or -1 when the program writes
+ * no such stream: a varying is named by its location and a coordinate by
+ * the fragment variant's stream index.  Index 0 lands on transient view 0
+ * and index k on the extra pass's target k - 1. */
+int m9_vs_stream_index(const struct m9_vs_program *program, unsigned location,
+                       unsigned coord, bool coordinate);
+
+/* Returns false with a static reason when the shader is not covered.
+ * outputs names the streams the program must write; NULL asks for one
+ * varying stream per varying the shader stores, in store order. */
+bool m9_vs_compile(struct nir_shader *nir,
+                   const struct m9_vs_outputs *outputs,
+                   struct m9_vs_program *program, const char **reason);
 void m9_vs_program_fini(struct m9_vs_program *program);
 
 /* The vertex element feeding attribute i.  The state tracker compacts the
