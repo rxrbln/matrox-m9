@@ -27,8 +27,11 @@ reference.
 MEASURED at 1920x1200, **one X server and one process a benchmark**
 (`tools/m9x-glmark-default-suite-fresh-x.sh`, and see why below), the padded
 split path on by default, `M9X_SKIP_REPORT=1`, 0 stream timeouts, fixture
-suite 211 cases 207 PASS (the four failures are the `giga10` cases, which want
-a kernel newer than the module under test).
+suite 211 cases 207 PASS.  The four failures are the `giga10` cases and belong
+to the **module**, not to this build: MEASURED, the same Mesa binary against a
+kernel carrying the 10-bit surface-window commits passes `giga10tex`,
+`giga10rt` and `giga10blend` exactly and leaves only `giga10clear` reporting a
+channel difference.
 
 | benchmark | fps | draws skipped a frame |
 |---|---:|---|
