@@ -46,12 +46,37 @@ MODULE_PARM_DESC(m9_user_submit,
 	"Execute validated userspace M9 command streams (bring-up only)");
 
 /*
+ * Command indices the multisample fragment-store probe may write, one bit an
+ * index over a0..a6 (bit n admits 0xa0 + n).  The default of zero leaves the
+ * validator exactly as it ships.
+ *
+ * The vendor writes a1, a3 and a4 under the only packet-name string in its
+ * image, RESET_FRAG_PTR, and a1 once with a sentinel (STATIC, MxMD.dll
+ * 0xfab30 and 0x764e6); but no saved vendor stream writes any of them
+ * (CAPTURED, 1206 decoded submissions), so none is admitted outright.  A
+ * measurement that names the index which binds the store earns an entry in
+ * m9_index_allowed() below, and this parameter goes away with it.
+ */
+static uint m9_faa_probe_mask;
+module_param_named(faa_probe_mask, m9_faa_probe_mask, uint, 0644);
+MODULE_PARM_DESC(faa_probe_mask,
+	"bitmask over indices a0..a6 the multisample probe may write");
+
+static bool m9_faa_probe_index(u8 index)
+{
+	return index >= 0xa0 && index <= 0xa6 &&
+	       (m9_faa_probe_mask & BIT(index - 0xa0));
+}
+
+/*
  * This is deliberately the captured-triangle whitelist, not all 256 indexed
  * registers. General execution remains disabled while the masks for these
  * state words are being reduced.
  */
 static bool m9_index_allowed(u8 index)
 {
+	if (m9_faa_probe_index(index))
+		return true;
 	switch (index) {
 	case 0x00 ... 0x09:
 	case 0x10 ... 0x14: case 0x18: case 0x19:
@@ -75,7 +100,7 @@ static bool m9_index_allowed(u8 index)
 }
 
 #define M9_RELOC_BIT(kind)	BIT(PARHELIA_M9_RELOC_##kind)
-#define M9_RELOC_KIND_MASK	GENMASK(PARHELIA_M9_RELOC_STREAM, 0)
+#define M9_RELOC_KIND_MASK	GENMASK(PARHELIA_M9_RELOC_FRAGMENT, 0)
 /* Non-reloc markers in the per-dword expectation mask. */
 #define M9_EXPECT_DEPENDENCY	BIT(31)
 #define M9_EXPECT_OPTIONAL	BIT(30)
@@ -111,7 +136,9 @@ static u32 m9_index_reloc_kinds(u8 index)
 	case 0xc2:
 		return M9_RELOC_BIT(PROGRAM);
 	default:
-		return 0;
+		/* A probed index may carry the store's address or a literal. */
+		return m9_faa_probe_index(index) ?
+			M9_RELOC_BIT(FRAGMENT) : 0;
 	}
 }
 
@@ -123,6 +150,9 @@ static bool m9_index_literal(u8 index, u32 value)
 {
 	if (index >= 0x01 && index <= 0x04)
 		return true;
+	/* RESET_FRAG_PTR writes the probed indices as zero, with no address. */
+	if (m9_faa_probe_index(index))
+		return value < PAGE_SIZE;
 	return (index == 0xba || index == 0xbe || index == 0xc2) &&
 	       value < PAGE_SIZE;
 }
@@ -396,6 +426,8 @@ static u32 m9_reloc_access(u32 kind)
 	case PARHELIA_M9_RELOC_DEPTH:
 	case PARHELIA_M9_RELOC_PROGRAM:
 	case PARHELIA_M9_RELOC_STREAM:
+	/* The store is the engine's own scratch: it writes and reads it. */
+	case PARHELIA_M9_RELOC_FRAGMENT:
 		return PARHELIA_M9_BO_READ | PARHELIA_M9_BO_WRITE;
 	/* The engine only publishes the counter pair; it reads nothing back. */
 	case PARHELIA_M9_RELOC_QUERY:
@@ -483,6 +515,8 @@ static u32 m9_reloc_alignment(u32 kind)
 		return 256;
 	case PARHELIA_M9_RELOC_RESOURCE_69:
 	case PARHELIA_M9_RELOC_PROGRAM:
+	/* Page alignment until a measurement says what the unit needs. */
+	case PARHELIA_M9_RELOC_FRAGMENT:
 		return 4096;
 	case PARHELIA_M9_RELOC_RESOURCE_6C:
 		return 128;
@@ -501,7 +535,8 @@ static bool m9_reloc_uses_vram(u32 kind)
 	       kind == PARHELIA_M9_RELOC_RESOURCE_69 ||
 	       kind == PARHELIA_M9_RELOC_PROGRAM ||
 	       kind == PARHELIA_M9_RELOC_STREAM ||
-	       kind == PARHELIA_M9_RELOC_QUERY;
+	       kind == PARHELIA_M9_RELOC_QUERY ||
+	       kind == PARHELIA_M9_RELOC_FRAGMENT;
 }
 
 static int m9_vram_gpu_address(u64 limit, u64 offset, u64 target_offset,
@@ -643,7 +678,7 @@ m9_validate_relocs(u32 *image, u32 dwords, u32 *expected,
 		if (reloc->kind == PARHELIA_M9_RELOC_DRAW16_END)
 			permitted_flags |= PARHELIA_M9_RELOC_PACKED16_ODD;
 		if (reloc->command_dword >= dwords ||
-		    reloc->kind > PARHELIA_M9_RELOC_STREAM ||
+		    reloc->kind > PARHELIA_M9_RELOC_FRAGMENT ||
 		    !(expected[reloc->command_dword] & BIT(reloc->kind)) ||
 		    reloc->kind == PARHELIA_M9_RELOC_FENCE ||
 		    reloc->kind == PARHELIA_M9_RELOC_SPECIAL ||

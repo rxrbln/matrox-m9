@@ -163,6 +163,9 @@ enum drm_parhelia_m9_reloc_kind {
 	PARHELIA_M9_RELOC_SYSTEM,
 	PARHELIA_M9_RELOC_PROGRAM,
 	PARHELIA_M9_RELOC_STREAM,
+	/* The multisample fragment store; admitted only while the probe mask
+	 * names the index that binds it. */
+	PARHELIA_M9_RELOC_FRAGMENT,
 };
 
 /*
