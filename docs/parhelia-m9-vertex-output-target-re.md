@@ -596,9 +596,10 @@ tail slot 23 and the `a` operand at W0 bits 31:29 of slot 24 -- frees the
 pair, and `r1e` is an ordinary temporary in the vendor's own fused passes
 (CAPTURED, `vs-texlod` `c3=08` writes `0x1c`, `0x1d`, `0x1e` and `0x1f`).
 
-**That edit is sound**: with it forced on every program, `varying`, `mul` and
-`texture` are pixel-exact and native (MEASURED).  What fails is enabling the
-target.
+**That edit is sound**: with it forced on every program, `varying` and `mul`
+are pixel-exact and take the native path -- the driver says so itself under
+`M9X_DEBUG` -- and `texture`, which falls back to the draw module, is exact
+too (MEASURED).  What fails is enabling the target.
 
 | configuration, all with `ef` bit 23 set | result |
 |---|---|
@@ -648,6 +649,17 @@ one-varying job has always run.
 | `varying` again | 1 | exact, native |
 
 no stream timeout in the hold, and the known-good fixture passes after.
+
+### The fixture suite
+
+263 cases at the cap of two: 244 PASS, 19 FAIL, 0 non-M9, 0 stream timeouts.
+The nineteen are the sixteen the last recorded run had -- the ten `dxt*`
+("texture levels beyond the captured 32x16 tail need the kernel texture
+window"), the four `giga10*`, `mrt10:2` and `mrt10:4` -- plus `conv16d`,
+`conv3mixd` and `conv3zunder`.  Those three **pass in isolation on this build
+and on the base build alike** (MEASURED, both prefixes in one hold), so they
+are an ordering effect inside a suite run and not this change; `mrt10:2`
+fails identically on both.
 
 ### What is still open
 
