@@ -231,10 +231,17 @@ native program writing the clear colour to every bound destination.
   requires one internal format across the colour attachments, and only
   `ARB_framebuffer_object`, which needs GL 3.0, relaxes it.  The driver
   advertises GL 2.0, so an RGBA8 target beside an RGB10_A2 one is reported
-  incomplete by Mesa before the driver sees it (MEASURED, `mrt10:2`); the
-  same fixture passes against llvmpipe at GL 4.6.  The surface side is ready
-  for it: `89` carries a render format class a target and both packed 32-bit
-  colour formats take class 0.
+  incomplete by Mesa before the driver sees it (MEASURED); the same
+  framebuffer is complete against llvmpipe at GL 4.6.  The surface side is
+  ready for it: `89` carries a render format class a target and both packed
+  32-bit colour formats take class 0.  What *can* be asked -- whether a
+  target of the other packed format works at all -- is `mrt10:2` and
+  `mrt10:4`, which bind every attachment as RGB10_A2.  Both pass against
+  llvmpipe.  On the card they need the kernel module the GigaColor work
+  built: under the baseline module the **single-target** `giga10` fixture
+  fails the same way, "de-tiled render target access failed" out of the
+  tiled read ioctl, so the multiple-target version would measure the module
+  rather than MRT.  It is left for a run under that module.
 * **A bound target the shader does not write** is left undefined by GL.  The
   driver gates every byte lane of such a target off, which is stricter than
   GL asks, so it keeps its contents.  MEASURED with `mrt:4:5` (four bound,
@@ -255,7 +262,7 @@ fixture passing before and after every run:
 | `mrt:4` | all four, 0 of 76800 |
 | `mrt:4:5` | all four exact: 0 and 2 carry their shader's value, 1 and 3 their clear |
 | `mrtcolor:2` | one `gl_FragColor` in both draw buffers, 0 of 76800 each |
-| `mrt10:2` | framebuffer incomplete before the driver sees it, section 2e |
+| `mrt10:2`, `mrt10:4` | not evaluated: the baseline kernel module fails the single-target `giga10` fixture too, section 2e |
 
 The ladder above was taken holding **both** hardware locks, with the
 known-good `texture` fixture passing before and after it.  That matters: the
