@@ -523,9 +523,51 @@ for a tiled compressed level, by measurement.  `ALIGN(content, 0x1000)`
 happens to cover the same cases but is tight at 64x64 DXT3 and 128x32 DXT3,
 where it equals the last byte exactly; the padded rule keeps a margin.
 
-### 12.3 What is still not measured
+### 12.3 Sampling
 
-Nothing here samples a compressed texture.  The storage and the upload path
-are measured; whether the texture unit decodes a block correctly -- the BC1
-punch-through case, DXT3 against DXT5 alpha, and the `79[15:0]` logical
-versus padded width question of section 5.2 -- still needs a draw.
+The Gallium driver stores a level through the window and samples it, and the
+fixture `tools/m9-mesa-glsl` builds the blocks itself: block *n* gets the
+endpoint pair `(37n+1, 91n+0x2345)` as RGB565 and a selector pattern
+`(tx + ty + n) & 3` that uses all four codes, so a decoder that ignored the
+selector bits, swapped the block axes or mis-ordered the blocks would not
+reproduce the reference.  Never a solid fill.
+
+MEASURED on an M9128, every case pixel-exact against a software BC1 decode
+within one 5-bit endpoint step:
+
+| case | what it covers |
+|---|---|
+| `dxt1` 64x32, `dxt1:132x64`, `dxt1:256x128`, `dxt1:32x16` | four-colour DXT1 at the small and the tiled storage sizes |
+| `dxt1pt` | every block on the punch-through side of the endpoint condition |
+| `dxt3`, `dxt3:128x68` | explicit four-bit alpha, code `0x2a` |
+| `dxt5`, `dxt5:52x28` | interpolated three-bit alpha, code `0x2e` |
+| `dxt1:128x68`, `dxt1:68x36`, `dxt1:52x28` | heights that do not reach a whole microtile, widths that are not their span |
+
+Three of the document's open questions are answered:
+
+* **`79[15:0]` carries the logical width, not the padded one.**
+  `dxt1:132x64` samples exactly with `132` in the descriptor while its
+  storage span is `160`.  The Linux capture's reading is the right one and
+  the Windows builder's `layout+0x184` is not what a sampler needs
+  (section 5.2).
+* **The sampler follows standard BC1 punch-through.**  `dxt1pt` puts every
+  block on the `color0 <= color1` side, and the three-colour decode with a
+  transparent fourth code is what comes back, alpha included.
+* **The `sel = 1` granularity rows are selected for a tiled compressed
+  level** (section 12.2), and the storage kind is the one the level was
+  written through: the small 2-D kind up to 64 in both dimensions and the
+  ordinary tiled kind above it, exactly as for an uncompressed level.  A
+  64x32 level read as the tiled kind came back wrong in red and green while
+  the same blocks read as the small kind are exact.
+
+The level's height must reach a whole microtile in the *window* descriptor
+-- 16 texel rows for DXT1 and 8 for DXT2..5 -- or the last rows come back
+wrong; the rows past the level are never written, so the padding costs
+nothing.  The sampler descriptor keeps the logical height.
+
+### 12.4 What is still not measured
+
+* Mip chains: only level 0 is stored and only level 0 is advertised.
+* Cube faces and volume slices, which section 11 also lists.
+* `79[24]`: the driver leaves it clear and everything above works.
+* sRGB decode, which has no recovered encoding for this sampler.
