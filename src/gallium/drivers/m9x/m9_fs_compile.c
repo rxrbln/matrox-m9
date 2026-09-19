@@ -4801,9 +4801,11 @@ fs_half_of(struct fs_split *sp, const struct fs_cone *cone, struct fs_half *h)
  * progress.
  *
  * Cutting for the register file or for the interpolation registers is the
- * other way round: the slots are not what runs out, so the cut is scored
- * on the widest of the two halves and a cut that absorbs no fetch at all is
- * admissible -- the work it moves is what the pass could not hold. */
+ * other way round: the slots are not what runs out, so a cut that absorbs
+ * no fetch at all is admissible -- the work it moves is what the pass could
+ * not hold.  Such a cut is scored on the records it leaves the consumer
+ * reading, because a record that stays live costs its four dwords of stride
+ * for every fragment of every pass, and only then on the widest half. */
 static nir_def *
 fs_choose_cut(struct fs_split *sp, nir_function_impl *impl, nir_def *out,
               unsigned limit, nir_def *const *rejected, unsigned rejects,
@@ -4815,7 +4817,6 @@ fs_choose_cut(struct fs_split *sp, nir_function_impl *impl, nir_def *out,
 
    fs_cone_reset(sp, NULL);
    fs_half_of(sp, fs_cone_of(sp, out), &whole);
-   whole.defs = sp->visited;
    nir_foreach_block(block, impl) {
       nir_foreach_instr(instr, block) {
          nir_def *def = nir_instr_def(instr);
