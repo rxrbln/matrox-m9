@@ -596,9 +596,12 @@ which is the captured grammar in every field this note decoded.
 Four shapes have now been refused by the hardware: index `0x88`'s register
 pair mask, the barrier between the draws, the chain role in `ef`, and the
 packed record with its route-fed gather.  **The second preprocessing draw
-needs something that is not in any capture this tree holds**, and the
-driver's varying cap stays at one.  Anything further should start from a new
-capture of a vendor chain rather than from another reading of the ones here.
+needs something that is not in any capture this tree holds.**  Anything
+further on *that* route should start from a new capture of a vendor chain
+rather than from another reading of the ones here.
+
+The second varying did not need it: section 13 carries two of them in the
+**one** preprocessing draw the driver already runs.
 
 ### A note on method
 
@@ -609,3 +612,42 @@ submitted stream is what caught it: the dump held two preprocessing draws
 where the build under test emits three.  Every result above is from a run
 whose stream was decoded and matched the intended shape first.  A pixel
 result on this path is worth nothing without that check.
+
+## 13. Two varyings in one draw, without a chain (MEASURED 2026-09-19)
+
+The cap is **two**, not one, and the draw that carries them is the fused pass
+the driver has always emitted -- same `ef`, same index `88`, same three bound
+targets and clip code, same packet count.
+
+Two facts make it work, both measured on the M9128 with a known-good fixture
+before and after each hold:
+
+* **A preprocessing pass may enable output target 3 or the clip code, not
+  both.**  Eight configurations with `ef` bit 23 set were run -- clip code
+  bound with pair masks `0x3f00`, `0xff00` and `0xffff`, index `ba` at 0, the
+  clip code left unstated, the chain role forced to the captured head word,
+  and all four targets written into one packed record -- and every one stalls
+  the engine.  Binding `b6` without setting bit 23 does not stall.  The one
+  that runs is the clip code disabled the vendor's own way, `b8 = 0`,
+  `b9 = 0xb8010001`, `ba = 0`.  That is exactly what the corpus shows: none
+  of the 91 captured four-target passes enables bit 15.
+* **The raster stage does not need the clip position.**  Dropping attribute
+  13's declaration and its stream from a three-target pass renders the same
+  pixels, as does dropping the clip code at attribute 12.  556 of 556
+  captured raster passes declare all three anyway.
+
+So the spare target is **1**, not 3.  Its register pair `0x15`/`0x17` is
+written by two tail slots with no reader; pointing both at the tail's own
+scratch `r1c` -- one decoded field each -- frees the pair for the head, and
+index `88` stays the captured `0x0300bf00` because `r1c` was already a
+declared temporary.  `b2` then binds the second varying's transient view and
+the raster pass declares no attribute 13.
+
+`vary3`, whose two `vec4` varyings Mesa packs into two slots and whose
+fragment shader reads every component of both in products, is pixel-exact
+through this path with `M9X_VS_VARYINGS=2`.
+
+**What this does not reach.**  A third varying still needs a second
+preprocessing draw, and that draw has still never delivered a stream.  The
+tail writes targets 0, 1 and 2 and the fourth cannot be enabled beside the
+clip code, so **two is the ceiling of one draw**.
