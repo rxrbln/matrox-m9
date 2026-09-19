@@ -28,6 +28,9 @@ m9_faa_init(struct m9_faa *faa, uint16_t device_id)
       debug_get_bool_option("M9X_FAA_ALPHA_TO_COVERAGE", false);
    faa->ae_mode = (int)debug_get_num_option("M9X_FAA_AE_MODE", -1);
    faa->ae_bit28 = debug_get_bool_option("M9X_FAA_AE_BIT28", false);
+   faa->ef_mode = (int)debug_get_num_option("M9X_FAA_EF_MODE", -1);
+   faa->f0_bit15 = debug_get_bool_option("M9X_FAA_F0_BIT15", false);
+   faa->f0_bit24 = debug_get_bool_option("M9X_FAA_F0_BIT24", false);
    faa->ad_force = (uint32_t)debug_get_num_option("M9X_FAA_AD", -1);
    faa->af_force = (uint32_t)debug_get_num_option("M9X_FAA_AF", -1);
    faa->ad_forced = faa->ad_force != 0xffffffffu;
@@ -41,8 +44,9 @@ m9_faa_init(struct m9_faa *faa, uint16_t device_id)
               faa->sample_coverage, faa->alpha_to_coverage, faa->ad_forced,
               faa->ad_force, faa->af_forced, faa->af_force);
    if (faa->trace)
-      fprintf(stderr, "m9x: faa ae mode %d bit28 %d\n", faa->ae_mode,
-              faa->ae_bit28);
+      fprintf(stderr, "m9x: faa ae mode %d bit28 %d ef mode %d f0 %d/%d\n",
+              faa->ae_mode, faa->ae_bit28, faa->ef_mode, faa->f0_bit15,
+              faa->f0_bit24);
 }
 
 bool
@@ -73,6 +77,30 @@ m9_faa_ae_edit(const struct m9_faa *faa, uint32_t *and_mask, uint32_t *or_mask)
    }
    if (faa->ae_bit28)
       *or_mask |= 0x10000000u;
+}
+
+void
+m9_faa_ef_edit(const struct m9_faa *faa, uint32_t *and_mask, uint32_t *or_mask)
+{
+   *and_mask = 0xffffffffu;
+   *or_mask = 0;
+   if (!m9_faa_active(faa) || faa->ef_mode < 0)
+      return;
+   *and_mask &= ~0xe0000000u;
+   *or_mask |= ((uint32_t)faa->ef_mode & 7u) << 29;
+}
+
+void
+m9_faa_f0_edit(const struct m9_faa *faa, uint32_t *and_mask, uint32_t *or_mask)
+{
+   *and_mask = 0xffffffffu;
+   *or_mask = 0;
+   if (!m9_faa_active(faa))
+      return;
+   if (faa->f0_bit15)
+      *or_mask |= 0x00008000u;
+   if (faa->f0_bit24)
+      *or_mask |= 0x01000000u;
 }
 
 uint32_t

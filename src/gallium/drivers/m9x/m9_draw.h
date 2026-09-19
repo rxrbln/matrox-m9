@@ -156,6 +156,10 @@ struct m9_draw_job {
       /* Index ae carries the AA mode in bits 6:4, so it is edited rather
        * than replaced: a pass keeps the rest of its own word. */
       uint32_t ae_and, ae_or;
+      /* Index ef bits 31:29 carry the same field on the Windows side, and
+       * index f0 two flags beside it; both are edits, not replacements. */
+      uint32_t ef_and, ef_or;
+      uint32_t f0_and, f0_or;
    } faa;
 };
 

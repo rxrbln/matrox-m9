@@ -60,6 +60,17 @@ struct m9_faa {
     * alone, which is the default. */
    int ae_mode;
    bool ae_bit28;
+   /* Index ef bits 31:29 are the same AA mode field on the Windows side:
+    * the vendor lowerer places compiled state +0x04 bits 6:4 there
+    * (STATIC, MxMD.dll 0x18233e shl 0x19 into surface shadow +0xb8, merged
+    * at 0xfaef6 and emitted at 0xfc1ed in the header 0x45d7eff0 packet --
+    * indices f0, ef, d7, which is the packet this driver already emits).
+    * The vendor lowers the ad/af pair only when that field is neither 0 nor
+    * 3 (0x18263d, 0x182646), so on this driver, which leaves it at 0, the
+    * pair the engine receives is one the vendor would never have sent.
+    * Index f0 bit 15 and bit 24 come from the same compiled dword. */
+   int ef_mode;
+   bool f0_bit15, f0_bit24;
    bool ad_forced, af_forced;
    uint32_t ad_force, af_force;
    bool trace, traced;
@@ -88,6 +99,10 @@ uint32_t m9_faa_ad(const struct m9_faa *faa, uint64_t color_bytes);
 uint32_t m9_faa_af(const struct m9_faa *faa);
 /* The and/or pair that edits the AA mode into an index-ae word. */
 void m9_faa_ae_edit(const struct m9_faa *faa, uint32_t *and_mask,
+                    uint32_t *or_mask);
+void m9_faa_ef_edit(const struct m9_faa *faa, uint32_t *and_mask,
+                    uint32_t *or_mask);
+void m9_faa_f0_edit(const struct m9_faa *faa, uint32_t *and_mask,
                     uint32_t *or_mask);
 
 #endif

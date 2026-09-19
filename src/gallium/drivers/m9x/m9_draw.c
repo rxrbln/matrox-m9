@@ -337,6 +337,18 @@ m9_job_ae(const struct m9_draw_job *job, uint32_t base)
 }
 
 static uint32_t
+m9_job_ef(const struct m9_draw_job *job, uint32_t base)
+{
+   return job->faa.set ? (base & job->faa.ef_and) | job->faa.ef_or : base;
+}
+
+static uint32_t
+m9_job_f0(const struct m9_draw_job *job, uint32_t base)
+{
+   return job->faa.set ? (base & job->faa.f0_and) | job->faa.f0_or : base;
+}
+
+static uint32_t
 m9_dither_ef(uint32_t color_desc)
 {
    uint8_t code = color_desc >> 25;
@@ -535,11 +547,12 @@ m9_emit_raster_range(struct m9_batch *batch, const struct m9_draw_job *job,
       EMIT(V(0xe6, 0x42000000));
    uint32_t depth_ef = pass ? pass->depth_ef : job->depth_ef;
 
-   EMIT(V(0xf0, m9_raster_class(d0->lines, blend)),
-        V(0xef, d0->cull | depth_ef | (pass ? pass->sequence_ef : 0) |
+   EMIT(V(0xf0, m9_job_f0(job, m9_raster_class(d0->lines, blend))),
+        V(0xef, m9_job_ef(job,
+                d0->cull | depth_ef | (pass ? pass->sequence_ef : 0) |
                 m9_dither_ef(p->color_desc) |
                 (pass && pass->writes_record ? 0 :
-                 m9_color_enable(job->color_count))),
+                 m9_color_enable(job->color_count)))),
         V(0xd7, m9_raster_d7(d0->topology)));
    EMIT(V(0x22, m9_job_raster_control(job, pass, d0)));
    EMIT(V(0xe6, 3), V(0xe3, dep + 0x20));
@@ -904,6 +917,8 @@ m9_emit_preprocess(struct m9_batch *batch, const struct m9_draw_job *job,
 
    EMIT(V(0xe6, 3), V(0xe3, base));
    EMIT(V(0xe6, 3));
+   /* The AA mode edit belongs to the raster range: it is lowered from the
+    * surface shadow, and a preprocessing pass binds no render target. */
    EMIT(V(0xf0, 0xf0000400),
         V(0xef, extra ? m9_preprocess_ef(targets, M9_PRE_ROLE_FIRST) :
                         0x00280000u | M9_PRE_CLIP_CODE |
