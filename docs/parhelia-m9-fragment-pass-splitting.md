@@ -592,13 +592,30 @@ terrain's own vertex shader leaves every component varying, which fills
 **four** slots.  A fixture vertex shader that writes the same five varyings
 with no constant component -- `tools/m9-terrain-fixture.vert`, two normalized
 vectors built from all four attributes, their cross product, `vUv` and a view
-position -- compiles `p-ps3.frag` -- the failing
-probe -- to `1 pass, 178 slots, 33 consts, 2 units, 4 varyings, 88
-0f30030f`, and the emitted program is **byte-identical** to the one
-terrain's own vertex shader produces (OFFLINE, `M9_FS_PROGRAM=1` dumps
-compared).  The defect then reproduces through `filefs` in seconds:
-**38400 of 76800 pixels differ**, red and green wrong on 38393 of them,
-blue on 222 and alpha on none (MEASURED 2026-09-19 on the M9128).
+position -- compiles `p-ps3.frag`, the failing probe, to `1 pass, 178 slots,
+33 consts, 2 units, 4 varyings, 88 0f30030f`, and the emitted program is
+**byte-identical** to the one terrain's own vertex shader produces (OFFLINE,
+`M9_FS_PROGRAM=1` dumps compared).
+
+**Matching the schedule is not enough on its own, and that is worth saying.**
+Whether the frame shows the clobber depends on what the clobbered register
+happens to be carrying, which is a matter of the varying *values*.
+`tools/m9-terrain-fixture-clobber.vert` has the same schedule and the values
+that show it; MEASURED through `filefs` on the M9128, one reference a
+shader, `M9X_RA_RESET=0 M9X_CHECK_RA=0` against the fix:
+
+| fixture vertex shader | placement carried over | fixed |
+|---|---:|---:|
+| `m9-terrain-fixture-clobber.vert` | **24712** of 76800 | **470** |
+| `m9-terrain-fixture.vert` | 2145 | 2839 |
+
+so only the first is a regression test; the second is the clean schedule
+match.  The residual of both is the specular highlight's boundary, which a
+`pow` of exponent 30 makes one pixel wide -- all three channels differ
+together and alpha never does, where the defect itself put red and green
+wrong on 38393 pixels and blue on 222.  That 38400-pixel reading was taken
+on the tree before the multisample-state rebase and is not comparable with
+the numbers above; it is kept only because it is what named the channels.
 
 **Index 88 is not the cause here, and that reading is retired for this
 defect.**  `p-swdw8`, which renders exactly, and `p-ps3`, which does not,
@@ -643,12 +660,27 @@ length of the program -- it is an ordinary register written once by its own
 slot -- which returns six registers to a four-varying pass.  Blending keeps
 `18..1f` to itself.  With that, `p-ps3` is one pass again.
 
+**The check earned itself immediately.**  The interpolation-register reuse
+below was pushing *every* interpolated input's register onto the general free
+list, and four bound units put `base` at `0x10`, so an interpolated value is
+placed in `0x10` or `0x11` -- and `0x11` is `REG_S0`, which the backward scan
+hands out on its own.  `m9-fs-compile-test`'s `split shared-coordinate-stream`
+case, four units sharing one transformed stream with four more interpolants,
+then held `0x11` as a general temporary and as scratch at once (`v79 [70,74]`
+against `v82 [73,75]`, `v109 [97,107]` against `v117 [105,107]`) and the check
+refused the shader rather than let it render.  An interpolation register now
+rejoins the pool only outside `10..13`, the band the fresh run itself skips;
+the case is back to one pass and four fetches, and the reuse that matters --
+`1a..1f` -- is unchanged, so terrain's probe still compiles to one pass.  That
+shape is **supported**, not refused: it was this reuse and not a capability
+limit.
+
 MEASURED on the M9128 after the change, engine proved with a known-good
 fixture before and after each and no stream timeout:
 
 | | before | after |
 |---|---|---|
-| `p-ps3` through `filefs` | 38400 of 76800 differ | **470** (tol 8), 372 (tol 16), all channels equal |
+| `p-ps3` through the clobber fixture | 24712 of 76800 differ | **470** (tol 8), all channels equal |
 | `terrain.frag` through `filefs` | 76800 of 76800 differ | 62030 |
 | `terrain:bloom=false:tilt-shift=false` frame mean | 68.6, 43.6, 113.8 | **92.6, 89.7, 79.9** (llvmpipe 95.0, 88.8, 31.7) |
 | 8x8 tile difference | 58.6 of 255 | **21.9 of 255** |

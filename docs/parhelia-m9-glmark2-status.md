@@ -29,13 +29,32 @@ fragment store and the fragment register allocation fix
 | `function` low / medium | 168, 72 | none |
 | `loop` no-loop / uniform=false / uniform=true | 166, 166, 159 | none |
 
-Fixture suite on the same build: **256 cases, 242 PASS, 14 FAIL, 0 non-M9, 0
-stream timeouts**, the engine proved before and after.  The fourteen are the
-`dxt*` family, which the driver refuses with "texture levels beyond the
-captured 32x16 tail need the kernel texture window", and the four `giga10*`
-cases; all fourteen fail identically with `M9X_RA_RESET=0 M9X_CHECK_RA=0`, so
-they are the state of those two features and not the allocator (MEASURED,
-`dxt1`, `giga10clear` and `giga10tex` run both ways one after the other).
+Offline gates, run from the build directory they were built in and their exit
+codes read rather than their last line (`tools/m9-offline-gates.sh`, which
+refuses a gate the build directory says is out of date): `m9-batch-test`
+rc=0, `m9-vs-compile-test` rc=0, `m9-fs-compile-test` rc=0 with all four
+split cases ok.  The fragment gate's summary line reads "required exact
+23/23" even when a case above it has failed, so only the exit code says so --
+which is how a refusal of `split shared-coordinate-stream` was first missed
+here.
+
+Fixture suite: **256 cases, 242 PASS, 14 FAIL, 0 non-M9, 0 stream timeouts**,
+the engine proved before and after, and the same tally on the build before and
+after the interpolation-register scope fix.  The fourteen are the ten `dxt*`
+cases, which the driver refuses with "texture levels beyond the captured 32x16
+tail need the kernel texture window", and the four `giga10*`; all fourteen
+fail identically with `M9X_RA_RESET=0 M9X_CHECK_RA=0`, so they are the state
+of those two features and not the allocator (MEASURED, `dxt1`, `giga10clear`
+and `giga10tex` run both ways one after the other).
+
+The list was run twice, once on the build that carried the interference check
+alone and once on the build that also scopes the interpolation-register reuse
+to `14..1f`, and **every one of the thirty-three came back with the same frame
+rate on both** -- 273, 294, 283, 282, 283, 242, 149, 88, 82, 105, 182, 164,
+84, 33, 219, 37, 124, 153, 153, 153, 110, 77, 1, 111, 5, 229, 142, 228, 168,
+72, 166, 166, 159 -- with no draws skipped and 0 stream timeouts either time.
+The scope fix tightens allocation, so it could in principle have forced a cut
+somewhere; it did not.
 
 **Nothing regressed.**  Every row matches the standing below it within
 run-to-run noise, and the allocator change -- which touches every fragment
@@ -52,7 +71,7 @@ llvmpipe frame of the same variant:
 | | frame mean r, g, b | 8x8 tile difference |
 |---|---|---:|
 | before | 68.6, 43.6, 113.8 | 58.6 of 255 |
-| **after** | **92.6, 89.7, 79.9** | **21.9 of 255** |
+| **after** | **92.5, 89.6, 79.8** | **21.8 of 255** |
 | llvmpipe | 95.0, 88.8, 31.7 | -- |
 
 Red and green now match; the frame has the reference's relief, its grass and

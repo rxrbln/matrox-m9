@@ -265,8 +265,8 @@ query, and cube and 3D textures - are all done.
    an interpolated input's register joins the general pool at its last read,
    which is what keeps the honest allocation inside the file.
    `M9X_RA_RESET=0` and `M9X_CHECK_RA=0` are the negative controls.
-   MEASURED: the probe goes from 38400 of 76800 pixels differing to 470, and
-   the scene's frame mean from 68.6, 43.6, 113.8 to **92.6, 89.7, 79.9**
+   MEASURED: the probe goes from 24712 of 76800 pixels differing to 470, and
+   the scene's frame mean from 68.6, 43.6, 113.8 to **92.5, 89.6, 79.8**
    against llvmpipe's 95.0, 88.8, 31.7 -- an 8x8 tile difference of 21.9 of
    255 where it was 58.6.  `docs/parhelia-m9-fragment-pass-splitting.md` 8.4b.
 
@@ -300,7 +300,11 @@ query, and cube and 3D textures - are all done.
    fixture's vertex shader stops letting the linker pack terrain's five
    varyings into two slots: a vertex shader whose five varyings all vary in
    every component gives four slots and an emitted fragment program
-   byte-identical to the one terrain's own vertex shader produces.
+   byte-identical to the one terrain's own vertex shader produces.  Matching
+   the schedule is not sufficient on its own -- the clobbered register has to
+   be carrying something the frame shows -- so the regression test is
+   `tools/m9-terrain-fixture-clobber.vert`, which separates 24712 from 470
+   where `tools/m9-terrain-fixture.vert` gives 2145 and 2839.
 
 2. **MRT is done** (2026-09-19) and is no longer on this list.  What it left
    behind, in rough order: an engine-side clear of the attachments past the
