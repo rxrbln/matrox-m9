@@ -672,41 +672,114 @@ The rest, for the record: texture 284/283/284, build 271/271, shading
 124, buffer 147/127/130, ideas 102, jellyfish 119, shadow 104, conditionals
 198/123/197, function 146/63, loop 144/144/300.
 
-## One X server for the whole list is not an honest sweep
+## One X session runs the whole list
 
-**MEASURED 2026-09-19.**  The X server keeps **three full-screen buffers of
-every GL client that has exited**, and releases them only when X itself does.
-Read straight off the VRAM manager (`/sys/kernel/debug/dri/*/vram-mm`) with
-one X session and five identical `build` clients in a row:
+**Resolved 2026-09-19.**  It was never the X server.  glamor, DRI3 and Present
+all released the client's pixmaps; the m9x Gallium driver kept the kernel
+handle underneath them.
+
+The driver holds a per-screen table of shared GEM handles
+(`struct m9_prime_import`) so that two resources naming one dmabuf share a
+handle and a refcount.  `m9_prime_import_get()` creates that handle with
+`drmPrimeFDToHandle()`; `m9_prime_import_put()` unlinked and freed the entry
+when the last reference went and **never closed the handle**.  An open handle
+keeps its buffer object alive until the file description closes -- for
+glamor's screen, until the X server exits.  So every dmabuf the server
+imported for a DRI3 client stayed resident, and the client's exit freed
+nothing.  The entry now records whether this screen created the handle and
+closes it with the last reference; a handle the caller owns, such as a KMS
+handle taken in and handed back out, is still left alone.
+
+MEASURED at 1920x1200 on the M9128, one X session and five identical `build`
+clients in a row, read off `/sys/kernel/debug/dri/0/vram-mm` in pages, the two
+builds differing only in that commit:
+
+| | before the fix | after the fix |
+|---|---:|---:|
+| before X | used 11754  free 45590 | used 11754  free 45590 |
+| X up, no client | used 17572  free 39772 | used 17572  free 39772 |
+| after client 1 | used 24413  free 32931 | used 19853  free 37491 |
+| after client 2 | used 31253  free 26091 | used 19853  free 37491 |
+| after client 3 | used 38093  free 19251 | used 19853  free 37491 |
+| after client 4 | used 44933  free 12411 | used 19853  free 37491 |
+| after client 5 | used 51773  free  5571 | used 19853  free 37491 |
+| after X exit | used 11754  free 45590 | used 11754  free 45590 |
+
+6840 pages a client become none.  The 2281 pages the first client does add are
+one surface and they are not per client: the table is flat from the first
+client to the fifth.  `build` reports 294-295 fps on both builds, so the
+release costs nothing.
+
+The three are named by the driver's own trace.  With `M9X_DEBUG_RESOURCE=1` on
+the X server, each client contributes exactly three lines and, on the fixed
+build, three releases:
 
 ```text
-before X            used 11754  free 45590
-X up, no client     used 17572  free 39772
-after client 1      used 24413  free 32931
-after client 2      used 31253  free 26091
-after client 3      used 38093  free 19251
-after client 4      used 44933  free 12411
-after client 5      used 51773  free  5571
-after X exit        used 11754  free 45590
+m9x: import handle 23 type 2 1920x1200 b8g8r8x8_unorm 9338880 bytes
+m9x: shared handle 23 released, closed
 ```
 
-6840 pages a client, exactly three 1920x1200x4 surfaces, and every one of them
-comes back when X goes.  So it is the **server**, not the kernel and not a
-client leak: a client's DRI3 buffer chain outlives it.
+9338880 bytes is 2280 pages, three of them 6840; `type 2` is
+`WINSYS_HANDLE_TYPE_FD`.  So they are the client's DRI3 back buffer chain,
+imported into the server as dmabufs by glamor -- 1920x1216 after the render
+surface's height padding, not 1920x1200.
 
-The consequence is a measurement trap, not only a defect.  By the sixteenth
-benchmark of the default list there is no room for a 1920x1200 render target,
-`desktop`'s blur targets are refused with `glCheckFramebufferStatus` =
-`GL_FRAMEBUFFER_UNSUPPORTED`, and glmark2 reports **96 fps for a picture it
-did not draw** - with no skipped draw, no stream timeout and no lost context,
-so the parser cannot catch it.  Reproduced on demand: fifteen `build` clients
-and then `desktop` gives 96 fps; `desktop` first in the same session gives 38.
-It does not depend on what the fifteen clients were.
+What it used to cost: by the sixteenth benchmark of the default list there was no room for a 1920x1200 render target,
+`desktop`'s blur targets were refused with `glCheckFramebufferStatus` =
+`GL_FRAMEBUFFER_UNSUPPORTED`, and glmark2 reported **96 fps for a picture it
+did not draw** -- no skipped draw, no stream timeout, no lost context, so no
+log parser could catch it.
 
-`tools/m9x-glmark-default-suite-fresh-x.sh` starts **one X server per
-benchmark** for this reason, and is what the numbers here are measured with.
-`tools/m9x-glmark-default-suite.sh` runs inside one session and is only safe
-for a short list.
+**`tools/m9x-glmark-default-suite.sh` -- one X session, one process a
+benchmark -- is the sweep to use.**  `tools/m9x-glmark-default-suite-fresh-x.sh`
+starts one X server per benchmark and remains the control: the numbers in this
+file from before 2026-09-19 were taken with it, and it is still what to reach
+for when a benchmark has to start from a known server state.
+
+MEASURED 2026-09-19, the whole default list at 1920x1200 with
+`M9X_SKIP_REPORT=1`, **one X session against one server per benchmark**, the
+two run within minutes of each other on the same card:
+
+| n | benchmark | one session | one server each |
+|---:|---|---:|---:|
+| 1-2 | `build` vbo=false / vbo=true | 273, 295 | 273, 294 |
+| 3-5 | `texture` nearest / linear / mipmap | 284, 283, 283 | 283, 282, 283 |
+| 6-9 | `shading` gouraud / blinn-phong-inf / phong / cel | 243, 150, 89, 82 | 242, 149, 88, 82 |
+| 10-12 | `bump` high-poly / normals / height | 105, 182, 165 | 105, 182, 164 |
+| 13-14 | `effect2d` 3x3 / 15-tap | 84, 33 | 84, 33 |
+| 15 | `pulsar` | 220 | 219 |
+| **16-17** | **`desktop` blur / shadow** | **37, 124** | **37, 124** |
+| 18-20 | `buffer` map / subdata / interleaved | 153, 154, 154 | 153, 153, 153 |
+| 21 | `ideas` | 111 | 110 |
+| 22 | `jellyfish` | 77 | 77 |
+| 23 | `terrain` | 1 | 1 |
+| 24 | `shadow` | 111 | 111 |
+| 25 | `refract` | 5 | 5 |
+| 26-28 | `conditionals` 0/0, 0/5, 5/0 | 229, 142, 228 | 229, 142, 228 |
+| 29-30 | `function` low / medium | 169, 72 | 168, 72 |
+| 31-33 | `loop` no-loop / uniform=false / uniform=true | 167, 167, 159 | 166, 166, 159 |
+
+No row differs by more than 1 fps, **`desktop` at position 16 reports 37 and
+not 96**, no `glCheckFramebufferStatus` failure, no lost context and **0
+stream timeouts** in either sweep.  A second one-session sweep after a reboot
+repeated it: 274, 297, 285, 284, 285, 244, 150, 89, 83, 105, 183, 165, 84, 33,
+221, **37**, 125, 154, 154, 154, 110, 77, 1, 112, 5, 230, 143, 229, 169, 72,
+167, 167, 160 -- at most 3 fps above the control, and nothing missing.
+
+A known-good fixture was run **after** the one-session sweep, in the same
+hardware lock hold: `m9-mesa-glsl`, **263 cases, 247 PASS, 16 FAIL, 0 non-M9,
+0 stream timeouts**.  The sixteen are the ten `dxt*` cases ("texture levels
+beyond the captured 32x16 tail need the kernel texture window"), the four
+`giga10*`, and `mrt10:2` and `mrt10:4`; all sixteen fail identically on the
+build without this commit, so none of them is the handle release.
+
+One caveat about the skip report, which applies to both sweeps equally: with
+`M9X_SKIP_REPORT=1` a glmark2 run prints `0 seen, 0 skipped` twice and nothing
+else, because glmark2 exits without destroying the context that did the
+drawing, and the report is written from `m9_context_destroy()`.  So it proves
+that the contexts which *were* destroyed dropped nothing; it is not a count of
+the benchmark's own draws.  The one-session and one-server sweeps print the
+identical 66 lines, so the comparison above is like for like.
 
 ## The suite is thirty-three benchmarks, not sixteen scenes
 
