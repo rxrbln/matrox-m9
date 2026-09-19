@@ -4767,20 +4767,15 @@ fs_half_slots_max(const struct fs_half *h)
    return h->tex + h->routes;
 }
 
-static unsigned
-fs_half_slots_min(const struct fs_half *h)
-{
-   return MAX2(h->tex, h->routes);
-}
-
-/* The coordinate streams a half needs are bounded by its fetches, which is
- * what the layout gate re-checks exactly once the pass is compiled. */
+/* A producing pass has to fit what a pass holds.  The consumer does not:
+ * one still over a limit is cut again on the next turn of the loop, and
+ * requiring it to fit rejects every cut of a shader that needs more than
+ * two passes.  The coordinate streams and the declaration budget are left
+ * to the layout gate, which sees the compiled pass rather than a cone. */
 static bool
-fs_half_fits(const struct fs_half *h, unsigned limit, bool least)
+fs_half_fits(const struct fs_half *h, unsigned limit)
 {
-   unsigned slots = least ? fs_half_slots_min(h) : fs_half_slots_max(h);
-
-   return slots <= limit && m9_raster_fs_layout_ok(h->vary, h->tex, slots);
+   return fs_half_slots_max(h) <= limit && h->vary <= M9_RASTER_MAX_INTERP;
 }
 
 static void
@@ -4794,20 +4789,25 @@ fs_half_of(struct fs_split *sp, const struct fs_cone *cone, struct fs_half *h)
 
 /* The value a producing pass should hand on.
  *
- * Cutting for texture units takes the value absorbing the most fetches that
+ * Cutting for texel slots takes the value absorbing the most of them that
  * still fits the four a pass binds, leaving the rest of the shader strictly
- * smaller than it was.  Progress is measured in fetches left to the rest,
- * not in units: a cut costs the consumer a unit of its own, so a schedule
- * of one fetch a pass would otherwise look like no progress at all.
+ * smaller than it was.  A slot is a fetch *or* a record an earlier pass
+ * wrote, because the consumer binds both the same way: a shader whose
+ * fetches are all placed can still need more slots than a pass has, purely
+ * to read its own records back, and the cut that answers that is a gather
+ * -- a pass that reads several records and writes one.  Scoring on fetches
+ * alone made no gather admissible and left such a shader refused.  A cut
+ * costs the consumer a slot of its own, so it has to absorb two to be
+ * progress.
  *
  * Cutting for the register file or for the interpolation registers is the
- * other way round: the fetches are not what runs out, so the cut is scored
+ * other way round: the slots are not what runs out, so the cut is scored
  * on the widest of the two halves and a cut that absorbs no fetch at all is
  * admissible -- the work it moves is what the pass could not hold. */
 static nir_def *
 fs_choose_cut(struct fs_split *sp, nir_function_impl *impl, nir_def *out,
               unsigned limit, nir_def *const *rejected, unsigned rejects,
-              enum fs_cut_kind kind)
+              enum fs_cut_kind kind, bool forced)
 {
    nir_def *best = NULL;
    struct fs_half whole;
@@ -4821,7 +4821,7 @@ fs_choose_cut(struct fs_split *sp, nir_function_impl *impl, nir_def *out,
          nir_def *def = nir_instr_def(instr);
          struct fs_half prod, cons;
          bool skip = false;
-         unsigned wide;
+         unsigned wide, taken, left;
 
          if (!def || def == out || def->bit_size != 32 ||
              def->num_components > 4)
@@ -4835,23 +4835,21 @@ fs_choose_cut(struct fs_split *sp, nir_function_impl *impl, nir_def *out,
 
          fs_cone_reset(sp, NULL);
          fs_half_of(sp, fs_cone_of(sp, def), &prod);
-         if (!fs_half_fits(&prod, limit, false))
+         if (!fs_half_fits(&prod, limit))
             continue;
-         if (kind == FS_CUT_TEX && !prod.tex)
-            continue;
+         taken = fs_half_slots_max(&prod);
          fs_cone_reset(sp, def);
          fs_half_of(sp, fs_cone_of(sp, out), &cons);
-         /* The consumer is admitted on the fewest slots its records could
-          * take: a cut that still leaves it over is not fatal, the loop
-          * simply cuts again. */
-         if (!fs_half_fits(&cons, limit, true))
-            continue;
+         left = fs_half_slots_max(&cons);
          /* Both halves must be strictly smaller than the whole in the
           * resource that ran out, or the cut moves nothing and the next
           * pass meets the same ceiling. */
          switch (kind) {
          case FS_CUT_TEX:
-            if (cons.tex >= whole.tex)
+            /* Forcing exercises the captured shape on a shader that needs no
+             * split, where one absorbed fetch is the whole point. */
+            if (forced ? (!prod.tex || cons.tex >= whole.tex)
+                       : (taken < 2 || left >= fs_half_slots_max(&whole)))
                continue;
             break;
          case FS_CUT_REGS:
@@ -4871,21 +4869,30 @@ fs_choose_cut(struct fs_split *sp, nir_function_impl *impl, nir_def *out,
             fprintf(stderr, "m9x split: candidate %%%u kind %u comps %u "
                     "tex %u/%u vary %u/%u slots %u/%u defs %u/%u of %u\n",
                     def->index, kind, def->num_components, prod.tex, cons.tex,
-                    prod.vary, cons.vary, fs_half_slots_max(&prod),
-                    fs_half_slots_min(&cons), prod.defs, cons.defs,
+                    prod.vary, cons.vary, taken, left, prod.defs, cons.defs,
                     whole.defs);
-         if (kind == FS_CUT_TEX ? (prod.tex > best_tex ||
-                                   (prod.tex == best_tex &&
-                                    fs_half_slots_min(&cons) < best_rest))
-                                : (wide < best_wide ||
-                                   (wide == best_wide && prod.tex > best_tex))) {
+         /* M9X_SPLIT_RANK=1 scores a register-file cut on the widest half
+          * instead, which schedules the same shader with more records live
+          * at once; it is how the record-slot ceiling is measured against a
+          * fixture that passes either way otherwise. */
+         bool better = kind == FS_CUT_TEX ?
+            (taken > best_tex || (taken == best_tex && left < best_rest)) :
+            (debug_get_bool_option("M9X_SPLIT_RANK", false) ?
+             (wide < best_wide || (wide == best_wide && taken > best_tex)) :
+             (left < best_rest || (left == best_rest && wide < best_wide)));
+
+         if (better) {
             best = def;
-            best_tex = prod.tex;
-            best_rest = fs_half_slots_min(&cons);
+            best_tex = taken;
+            best_rest = left;
             best_wide = wide;
          }
       }
    }
+   if (debug_get_bool_option("M9X_DEBUG_SPLIT", false))
+      fprintf(stderr, "m9x split: kind %u whole tex %u routes %u vary %u "
+              "defs %u -> %s\n", kind, whole.tex, whole.routes, whole.vary,
+              whole.defs, best ? "cut" : "no candidate");
    return best;
 }
 
@@ -5047,7 +5054,7 @@ m9_fs_compile_passes(struct nir_shader *nir, const struct m9_fs_blend *blend,
       if (!v)
          v = fs_choose_cut(&sp, impl, out,
                            force ? force : M9_FS_MAX_TEXTURES, rejected,
-                           rejects, kind);
+                           rejects, kind, force != 0);
       if (!v) {
          if (i && fs_compile_pass(nir, blend, &passes->pass[i], NULL, false,
                                   cut, sp.cut_count, reason, NULL)) {
