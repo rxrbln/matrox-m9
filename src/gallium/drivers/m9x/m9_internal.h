@@ -28,6 +28,9 @@
 #define M9_MAX_RELOCS M9_MAX_COMMAND_DWORDS
 /* Objects one submission may reference; the kernel's own ceiling. */
 #define M9_MAX_BOS 128u
+/* Colour targets one draw binds; m9_draw.h states it as M9_DRAW_MAX_COLOR
+ * and m9_draw.h cannot be included before this header's own definitions. */
+#define M9_MAX_COLOR 4u
 #define M9_MAX_MIP_LEVELS 13u
 #define M9_MAX_SKIP_REASONS 16u
 
@@ -284,6 +287,13 @@ struct m9_job_key {
    const struct m9_fs_state *fs;   /* native fragment program or NULL */
    const struct m9_fs_variant *variant;  /* its program for the blend state */
    uint32_t depth_control, depth_ef, color_mask, clip_min, clip_max;
+   /* Raster ac: the write masks of colour targets 2 and 3. */
+   uint32_t color_mask_hi;
+   /* The job binds colour target 0 alone, whatever the framebuffer holds.
+    * The clear quad runs the fixed-function program, whose one colour output
+    * reaches target 0: binding the rest would leave the engine writing
+    * undefined data into attachments it has no program for. */
+   bool single_target;
    /* Native preprocessing program of this job, the c2 image holding it and
     * the viewport its appended tail applies; NULL runs the draw module's
     * transformed records through the captured program. */
@@ -371,6 +381,16 @@ struct m9_context {
    /* Byte offset of the bound colour level inside that object; a mip level
     * above zero is a render surface of its own at its chain offset. */
    uint64_t color_offset;
+   /* Colour attachments past the first: the resource, its b1 descriptor and
+    * its render format class, one a target.  color_count counts them all,
+    * target 0 included.  M9_DRAW_MAX_COLOR is m9_draw.h's, which cannot be
+    * included here: it includes m9_batch.h, which this header defines.
+    * docs/parhelia-m9-mrt-routing.md */
+   struct pipe_resource *color_extra[M9_MAX_COLOR - 1];
+   uint32_t color_extra_desc[M9_MAX_COLOR - 1];
+   uint8_t color_class[M9_MAX_COLOR];
+   uint8_t color_format[M9_MAX_COLOR];
+   unsigned color_count;
    struct pipe_resource *depth;
    /* Texture units referenced by the pending job. */
    struct pipe_resource *textures[M9_TEXTURE_MAX_UNITS];

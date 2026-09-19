@@ -39,6 +39,36 @@ m9_put_float(uint32_t *words, unsigned index, float value)
    memcpy(&words[index], &value, sizeof(value));
 }
 
+/* A 10-bit colour target is the same 32-bit class 2 surface as the 8-bit
+ * one, and takes render class 0 at index 89 like any packed colour target
+ * (docs/parhelia-m9-gigacolor-10bit.md 3.2, 4.1).  Every colour attachment
+ * of a multiple-target framebuffer takes its b1 descriptor from here. */
+int
+m9_color_surface_desc(uint32_t width, uint32_t height, uint8_t color_format,
+                      uint32_t *desc_out)
+{
+   struct m9_surface_desc desc = {
+      .height = height, .layers = 1, .layout = 1,
+      .format = color_format,
+   };
+   struct m9_render_layout layout;
+
+   if (!desc_out || (color_format != M9_COLOR_FORMAT_A8R8G8B8 &&
+                     color_format != M9_COLOR_FORMAT_A2B10G10R10 &&
+                     color_format != M9_COLOR_FORMAT_A2R10G10B10) ||
+       !m9_render_surface_layout(width, height, 4, &layout))
+      return -EINVAL;
+   desc.row_span = layout.row_span;
+   /* Measured: a surface of 64x64 or less is stored by the aperture
+    * calculator, which is what its allocation size and the sampler both
+    * assume.  Rendering it with the ordinary tiled bit set wrote rows
+    * through the other permutation, and sampling the result returned a
+    * shuffled image (rtt64, rtt32). */
+   desc.address_offset = !layout.small;
+   *desc_out = m9_surface_desc0(&desc);
+   return 0;
+}
+
 int
 m9_draw_params_init(struct m9_draw_params *params, uint32_t width,
                     uint32_t height, uint8_t color_format)
@@ -50,26 +80,18 @@ m9_draw_params_init(struct m9_draw_params *params, uint32_t width,
    struct m9_render_layout layout;
    float w = width, h = height;
    uint32_t *sys, *linked;
+   uint32_t color_desc;
 
-   /* A 10-bit colour target is the same 32-bit class 2 surface as the 8-bit
-    * one, and takes render class 0 at index 89 like any packed colour target
-    * (docs/parhelia-m9-gigacolor-10bit.md 3.2, 4.1). */
-   if (!params || (color_format != M9_COLOR_FORMAT_A8R8G8B8 &&
-                   color_format != M9_COLOR_FORMAT_A2B10G10R10 &&
-                   color_format != M9_COLOR_FORMAT_A2R10G10B10) ||
+   if (!params || m9_color_surface_desc(width, height, color_format,
+                                        &color_desc) ||
        !m9_render_surface_layout(width, height, 4, &layout))
       return -EINVAL;
    memset(params, 0, sizeof(*params));
    params->width = width;
    params->height = height;
    desc.row_span = layout.row_span;
-   /* Measured: a surface of 64x64 or less is stored by the aperture
-    * calculator, which is what its allocation size and the sampler both
-    * assume.  Rendering it with the ordinary tiled bit set wrote rows
-    * through the other permutation, and sampling the result returned a
-    * shuffled image (rtt64, rtt32). */
    desc.address_offset = !layout.small;
-   params->color_desc = m9_surface_desc0(&desc);
+   params->color_desc = color_desc;
    desc.format = M9_DEPTH_FORMAT_D24S8;
    params->depth_desc = m9_surface_desc0(&desc);
    desc.format = M9_HZ_FORMAT;
@@ -291,7 +313,7 @@ m9_raster_fs_init_textured(struct m9_raster_fs *r, unsigned vertex_entry,
 
    if (!r || !m9_raster_fs_layout_ok(varying_count, coord_count,
                                      texture_count) ||
-       const_count > 0x7f ||
+       const_count > M9_RASTER_MAX_CONSTS ||
        (coord_count && !coord_view) || (texture_count && !texture_coord))
       return -EINVAL;
    for (unsigned k = 0; k < texture_count; k++)

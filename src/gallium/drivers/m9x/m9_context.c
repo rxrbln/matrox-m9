@@ -105,9 +105,17 @@ struct m9_fs_pass_streams {
    uint8_t unit[M9_FS_MAX_TEXTURES];
 };
 
+/* m9_internal.h states the colour target bound as M9_MAX_COLOR because it
+ * cannot include m9_draw.h; the two must agree. */
+static_assert(M9_MAX_COLOR == M9_DRAW_MAX_COLOR,
+              "colour target bound stated twice");
+
 /* A fragment state specialised on blend state and inlined uniform values. */
 struct m9_fs_variant {
    struct m9_fs_blend blend;
+   /* Colour targets bound when this variant was compiled: gl_FragColor is
+    * broadcast to all of them, so the program is specialised on the count. */
+   unsigned targets;
    uint32_t inline_values[MAX_INLINABLE_UNIFORMS];
    uint8_t swizzle[PIPE_MAX_SAMPLERS][4];  /* view swizzle per sampler, applied in NIR */
    uint32_t depth_texture;             /* samplers bound to a depth surface */
@@ -431,6 +439,10 @@ static uint64_t m9_prof_refused, m9_prof_skipped, m9_prof_relocs;
 /* M9X_NO_CLEAR drops the clear quad; M9X_CLEAR_REPEAT draws it that many
  * extra times, which weighs one screen of fill with the frame still correct. */
 static bool m9_no_clear;
+/* M9X_MRT_MASK_ALL leaves a bound target the shader does not write open, so
+ * a destination sweep sees where an output lands rather than where the mask
+ * lets it.  docs/parhelia-m9-mrt-routing.md */
+static bool m9_mrt_mask_all;
 static unsigned m9_clear_repeat;
 static uint64_t m9_prof_frames, m9_prof_wall;
 
@@ -2109,6 +2121,9 @@ m9_submit_job(struct m9_context *ctx)
          .depth_control = key->depth_control,
          .depth_ef = key->depth_ef,
          .color_mask = key->color_mask,
+         .color_mask_hi = key->color_mask_hi,
+         .color_count = key->single_target ? MIN2(ctx->color_count, 1u) :
+                                             ctx->color_count,
          .clip_min = split_y0 << 16 | split_x0,
          .clip_max = split_y1 << 16 | split_x1,
          /* One pass is emitted through the single-pass path, so the
@@ -2124,6 +2139,11 @@ m9_submit_job(struct m9_context *ctx)
          .units = first_draw->unit_count ? first_draw->units : NULL,
          .unit_count = first_draw->unit_count,
       };
+      for (unsigned s = 1; s < job.color_count; s++) {
+         job.color_extra[s - 1] = m9_res(ctx->color_extra[s - 1])->handle;
+         job.color_extra_desc[s - 1] = ctx->color_extra_desc[s - 1];
+      }
+      memcpy(job.color_class, ctx->color_class, sizeof(job.color_class));
       if (m9_faa_active(&ctx->screen->faa)) {
          job.faa.set = true;
          job.faa.raster = ctx->screen->faa.raster;
@@ -3216,6 +3236,7 @@ m9_fs_variant(struct m9_context *ctx, struct m9_fs_state *fs,
    util_dynarray_foreach(&fs->variants, struct m9_fs_variant *, it) {
       if ((*it)->blend.src == want->blend.src &&
           (*it)->blend.dst == want->blend.dst &&
+          (*it)->targets == want->targets &&
           !memcmp((*it)->inline_values, want->inline_values, inline_bytes) &&
           (*it)->depth_texture == want->depth_texture &&
           !memcmp((*it)->swizzle, want->swizzle, sizeof(want->swizzle))) {
@@ -3251,6 +3272,8 @@ m9_fs_variant(struct m9_context *ctx, struct m9_fs_state *fs,
       return NULL;
    }
    v->blend = want->blend;
+   v->targets = want->targets;
+   m9_fs_lower_fragcolor(clone, v->targets);
    memcpy(v->inline_values, want->inline_values, inline_bytes);
    memcpy(v->swizzle, want->swizzle, sizeof(v->swizzle));
    v->depth_texture = want->depth_texture;
@@ -3387,7 +3410,8 @@ static const struct m9_fs_variant *
 m9_ctx_variant(struct m9_context *ctx, const char **reason,
                unsigned *colormask)
 {
-   struct m9_fs_variant want = { .blend = { M9_FS_ONE, M9_FS_ZERO } };
+   struct m9_fs_variant want = { .blend = { M9_FS_ONE, M9_FS_ZERO },
+                                 .targets = MAX2(ctx->color_count, 1u) };
 
    *reason = m9_blend_key(ctx->blend, &want.blend, colormask);
    if (*reason)
@@ -3446,6 +3470,7 @@ m9_job_key_current(struct m9_context *ctx, struct m9_job_key *key)
    key->depth_ef = m9_depth_ef(test, write);
    colormask = blend ? blend->rt[0].colormask : PIPE_MASK_RGBA;
    key->color_mask = m9_color_mask(colormask);
+   key->color_mask_hi = 0xffffffffu;
    if (ctx->fs && ctx->fs->native && !ctx->fs->passthrough) {
       const char *reason;
 
@@ -3472,10 +3497,43 @@ m9_job_key_current(struct m9_context *ctx, struct m9_job_key *key)
     * the fragment output instead (docs/parhelia-m9-gigacolor-10bit.md 4.2).
     * Until that lowering exists, a partial mask is refused rather than
     * applied to the wrong bits. */
-   if (ctx->color && m9_res(ctx->color)->format != M9_COLOR_FORMAT_A8R8G8B8 &&
-       key->color_mask != 0xffffffffu)
-      return m9_skip_reason(ctx, "a partial colour mask on a 10-bit target "
-                            "needs the fragment output lowering; draw skipped");
+   if (ctx->color_count < 2) {
+      if (ctx->color &&
+          m9_res(ctx->color)->format != M9_COLOR_FORMAT_A8R8G8B8 &&
+          key->color_mask != 0xffffffffu)
+         return m9_skip_reason(ctx, "a partial colour mask on a 10-bit "
+                               "target needs the fragment output lowering; "
+                               "draw skipped");
+   } else {
+      /* One sixteen-bit mask a target, targets 0 and 1 in ab and 2 and 3 in
+       * ac.  A bound target the shader leaves unwritten keeps its contents:
+       * every byte lane of its mask is gated off, so binding it is safe
+       * without the program naming it. */
+      const struct m9_fs_program *final = key->variant ?
+                                          m9_fs_final(key->variant) : NULL;
+      uint32_t masks[M9_DRAW_MAX_COLOR];
+
+      if (!final)
+         return m9_skip_reason(ctx, "more than one colour target needs a "
+                               "native fragment program; draw skipped");
+      if (final->target_count > ctx->color_count)
+         return m9_skip_reason(ctx, "the shader writes a colour target the "
+                               "framebuffer does not bind; draw skipped");
+      for (unsigned s = 0; s < ctx->color_count; s++) {
+         unsigned cm = blend && blend->independent_blend_enable ?
+                       blend->rt[s].colormask : colormask;
+
+         masks[s] = m9_color_mask((final->target_mask & BITFIELD_BIT(s)) ||
+                                  m9_mrt_mask_all ? cm : 0) & 0xffffu;
+         if (ctx->color_format[s] != M9_COLOR_FORMAT_A8R8G8B8 &&
+             masks[s] != 0xffffu)
+            return m9_skip_reason(ctx, "a partial colour mask on a 10-bit "
+                                  "target needs the fragment output "
+                                  "lowering; draw skipped");
+      }
+      key->color_mask = m9_color_mask_pair(masks, ctx->color_count, 0);
+      key->color_mask_hi = m9_color_mask_pair(masks, ctx->color_count, 2);
+   }
    if (rast && rast->scissor)
       return m9_scissor_key(ctx, &ctx->scissor, key);
    key->clip_min = ctx->params.clip_min;
@@ -4918,6 +4976,9 @@ m9_clear_quad(struct m9_context *ctx, const struct pipe_scissor_state *scissor,
    key.depth_control = m9_depth_control(depth, depth, PIPE_FUNC_ALWAYS);
    key.depth_ef = m9_depth_ef(depth, depth);
    key.color_mask = m9_color_mask(colormask);
+   /* Only a multiple-target framebuffer needs the flag, so a single-target
+    * clear keeps the key it had and still merges with the draws around it. */
+   key.single_target = ctx->color_count > 1;
    key.clip_min = ctx->params.clip_min;
    key.clip_max = ctx->params.clip_max;
    if (scissor && !m9_scissor_key(ctx, scissor, &key))
@@ -4961,6 +5022,48 @@ m9_clear_depth_cpu(struct m9_resource *zs, unsigned buffers, double depth,
       m9_fill_dwords(zs->hz, M9_HZ_CLEAR);
 }
 
+static void m9_clear_render_target(struct pipe_context *pctx,
+                                   struct pipe_surface *dst,
+                                   const union pipe_color_union *color,
+                                   unsigned dstx, unsigned dsty,
+                                   unsigned width, unsigned height,
+                                   bool render_condition_enabled);
+
+/* Colour attachments past the first.  The quad clear runs the fixed-function
+ * program, whose one colour output reaches target 0 alone, so the rest are
+ * filled on the CPU: a solid colour is the same word in tiled order as in
+ * linear order, which is what makes the fill correct without the engine.  A
+ * single-target framebuffer -- every frame of every benchmark here -- does
+ * none of this. */
+static void
+m9_clear_color_extra(struct pipe_context *pctx, unsigned buffers,
+                     uint32_t color_clear_mask,
+                     const struct pipe_scissor_state *scissor,
+                     const union pipe_color_union *color, bool full)
+{
+   struct m9_context *ctx = m9_context(pctx);
+
+   for (unsigned p = 1; p < ctx->color_count; p++) {
+      struct pipe_surface *dst = &ctx->framebuffer.cbufs[p];
+
+      if (!(buffers & (PIPE_CLEAR_COLOR0 << p)) || !dst->texture)
+         continue;
+      /* Four channel mask bits a draw buffer. */
+      if (((color_clear_mask >> (4 * p)) & 0xf) != PIPE_MASK_RGBA) {
+         m9_warn_once(ctx, M9_WARN_CLEAR, "a masked clear of a colour "
+                      "attachment past the first is not implemented");
+         continue;
+      }
+      m9_clear_render_target(pctx, dst, color,
+                             full ? 0 : scissor->minx,
+                             full ? 0 : scissor->miny,
+                             full ? ctx->framebuffer.width :
+                                    scissor->maxx - scissor->minx,
+                             full ? ctx->framebuffer.height :
+                                    scissor->maxy - scissor->miny, false);
+   }
+}
+
 static void
 m9_clear_locked(struct pipe_context *pctx, unsigned buffers,
                 uint32_t color_clear_mask, uint8_t stencil_clear_mask,
@@ -4985,6 +5088,8 @@ m9_clear_locked(struct pipe_context *pctx, unsigned buffers,
        !(buffers & PIPE_CLEAR_STENCIL)) {
       m9_clear_quad(ctx, full ? NULL : scissor, color_clear_mask, color->f,
                     true, depth);
+      m9_clear_color_extra(pctx, buffers, color_clear_mask, scissor, color,
+                           full);
       return;
    }
    /* The quad clear rasterises in tiled space and covers the drawable, not
@@ -4994,6 +5099,8 @@ m9_clear_locked(struct pipe_context *pctx, unsigned buffers,
    if (colour)
       m9_clear_quad(ctx, full ? NULL : scissor, color_clear_mask,
                     color->f, false, 0);
+   m9_clear_color_extra(pctx, buffers, color_clear_mask, scissor, color,
+                        full);
    if (!(buffers & PIPE_CLEAR_DEPTHSTENCIL))
       return;
    if (!zs) {
@@ -6117,6 +6224,44 @@ m9_depth_only_color(struct m9_context *ctx)
    return res ? m9_res(res) : NULL;
 }
 
+/* Colour attachments past the first.  Every target renders through the same
+ * clip window and viewport, so they share one extent; each keeps its own
+ * descriptor and render format class (raster 89), which is how a target of
+ * another packed 32-bit format is bound alongside an A8R8G8B8 one.
+ * docs/parhelia-m9-mrt-routing.md */
+static bool
+m9_update_color_extra(struct m9_context *ctx, uint32_t w, uint32_t h)
+{
+   unsigned bound = MIN2(ctx->framebuffer.nr_cbufs, M9_DRAW_MAX_COLOR);
+
+   for (unsigned s = 1; s < bound; s++) {
+      const struct pipe_surface *cbuf = &ctx->framebuffer.cbufs[s];
+      struct m9_resource *res = cbuf->texture ? m9_res(cbuf->texture) : NULL;
+      uint32_t desc;
+
+      /* A gap in the attachment list would leave a bound target no surface
+       * answers for, so the run stops at the first one. */
+      if (!res || cbuf->level || res->width != w || res->height != h ||
+          !(res->tiled || m9_texture_renders_level(res, 0)) ||
+          m9_color_surface_desc(w, h, res->format, &desc)) {
+         m9_warn_once(ctx, M9_WARN_TARGET, "a colour attachment past the "
+                      "first is not a tiled render surface of the target "
+                      "size; draws skipped");
+         return false;
+      }
+      pipe_resource_reference(&ctx->color_extra[s - 1], cbuf->texture);
+      ctx->color_extra_desc[s - 1] = desc;
+      ctx->color_format[s] = res->format;
+      ctx->color_count = s + 1;
+   }
+   if (ctx->framebuffer.nr_cbufs > M9_DRAW_MAX_COLOR) {
+      m9_warn_once(ctx, M9_WARN_TARGET, "more colour attachments than the "
+                   "engine binds; draws skipped");
+      return false;
+   }
+   return true;
+}
+
 static void
 m9_update_target(struct m9_context *ctx)
 {
@@ -6131,6 +6276,11 @@ m9_update_target(struct m9_context *ctx)
    ctx->params_valid = false;
    ctx->color_discard = false;
    pipe_resource_reference(&ctx->color, NULL);
+   for (unsigned s = 0; s < ARRAY_SIZE(ctx->color_extra); s++)
+      pipe_resource_reference(&ctx->color_extra[s], NULL);
+   memset(ctx->color_class, 0, sizeof(ctx->color_class));
+   memset(ctx->color_format, 0, sizeof(ctx->color_format));
+   ctx->color_count = 0;
    ctx->color_offset = 0;
    if (!color) {
       color = m9_depth_only_color(ctx);
@@ -6167,6 +6317,10 @@ m9_update_target(struct m9_context *ctx)
                              layout.allocation_height << 16;
    /* Depth-less targets still bind a depth and HZ BO of their size. */
    if (!m9_target_depth_bind(ctx, w, h, layout.size))
+      return;
+   ctx->color_count = 1;
+   ctx->color_format[0] = color->format;
+   if (!m9_update_color_extra(ctx, w, h))
       return;
    ctx->params_valid = true;
    m9_prof_end(M9_PROF_TARGET, t_target);
@@ -6467,6 +6621,7 @@ m9_context_create(struct pipe_screen *pscreen, void *priv, unsigned flags)
    m9_native_vs_varyings = MIN2((unsigned)
       debug_get_num_option("M9X_VS_VARYINGS", 1), M9_VS_MAX_VARYINGS);
    m9_no_clear = debug_get_bool_option("M9X_NO_CLEAR", false);
+   m9_mrt_mask_all = debug_get_bool_option("M9X_MRT_MASK_ALL", false);
    m9_clear_repeat = debug_get_num_option("M9X_CLEAR_REPEAT", 0);
    ctx->dump_path = debug_get_option("M9X_DUMP", NULL);
    m9_debug_textures = debug_get_bool_option("M9X_DEBUG_TEXTURES", false);
