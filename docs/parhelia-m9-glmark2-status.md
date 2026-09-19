@@ -1,17 +1,64 @@
 # glmark2 on the m9x driver: where the 60 fps goal actually stands
 
-## Read this first: two standings below, and neither is the merged tree
+## Standing 2026-09-19 (merged): the whole thirty-three on one build
 
-The two "Standing 2026-09-19" sections were measured on **different builds
-that were never tested together**.  The `terrain` sweep does not carry
-`refract`'s record-ceiling fix (`22c0352`), and the `refract` sweep does not
-carry the resource splitter.  Both branches are now merged, the merged tree
-builds and passes the offline gates, but **no hardware sweep of the union has
-been run**.  Until one is, read each table as evidence about its own build:
-`terrain` 0 skipped draws with an incorrect picture, `refract` correct at 5 fps.
-UNTESTED as a combination.
+The two sweeps below it were measured on **different builds that were never
+tested together** -- the `terrain` sweep without `refract`'s record-ceiling
+fix (`22c0352`), the `refract` sweep without the resource splitter.  Both are
+merged, and this is the hardware sweep of the union.  It is the only standing
+to read as current; both of those are superseded.
 
-## Standing 2026-09-19 (second): `terrain` draws every draw, and its picture is still wrong
+MEASURED at 1920x1200 on the M9128, **one X server and one process a
+benchmark** (`tools/m9x-glmark-default-suite-fresh-x.sh`),
+`M9X_SKIP_REPORT=1`, all thirty-three completed, **0 stream timeouts**, with a
+known-good fixture passing before and after each sweep.  Two columns: the
+merged tree as it was, and the same tree carrying the index-88 fix that
+closes `coordconv:4` (`docs/parhelia-m9-fragment-pass-splitting.md` 8.5).
+Fixture suite: **224 of 224 PASS** on the merged tree and **228 of 228** with
+the fix, which lists `coordconv:4`, `:5`, `:6` and `:4d` as well.
+
+| benchmark | merged, fps | with the fix, fps | draws skipped a frame |
+|---|---:|---:|---|
+| `build` vbo=false / vbo=true | 273, 295 | 273, 294 | none |
+| `texture` nearest / linear / mipmap | 284, 283, 283 | 284, 283, 283 | none |
+| `shading` gouraud / blinn-phong-inf / phong / cel | 243, 149, 88, 83 | 243, 150, 88, 83 | none |
+| `bump` high-poly / normals / height | 105, 182, 164 | 105, 182, 164 | none |
+| `effect2d` 3x3 / 15-tap | 84, 33 | 84, 33 | none |
+| `pulsar` | 220 | 220 | none |
+| `desktop` blur / shadow | 37, 124 | 37, 124 | none |
+| `buffer` map / subdata / interleaved | 153, 153, 154 | 153, 153, 154 | none |
+| `ideas` | 110 | 110 | none |
+| `jellyfish` | 125 | 125 | **1245**, out of temporaries for blending |
+| **`terrain`** | **1** | **1** | **none** |
+| `shadow` | 145 | 145 | **1447**, a depth-only framebuffer has no raster parameters |
+| **`refract`** | **5** | **5** | none |
+| `conditionals` 0/0, 0/5, 5/0 | 229, 142, 228 | 229, 142, 228 | none |
+| `function` low / medium | 169, 72 | 168, 72 | none |
+| `loop` no-loop / uniform=false / uniform=true | 167, 167, 345 | 167, 167, 345 | **3446** on uniform=true, control flow |
+
+**Nothing regressed in the union.**  Every row of both sweeps matches both
+earlier standings within run-to-run noise; `terrain` still skips nothing and
+`refract` is still 5 fps.  The three scenes that skip draws skip them for the
+fragment-backend reasons they did before, none of which is the split path.
+
+`refract` is still **correct**: CAPTURED off scanout at 1920x1200, the
+refracting bunny over black, 174602 distinct colours on the merged tree and
+190375 with the fix against the 181662 of the llvmpipe reference.
+
+`terrain` is **not**, and the fix moves it without closing it.  CAPTURED off
+scanout at 1920x1200 and 800x500 with a known-good fixture passing after:
+the distinct-colour count over the root window goes from **1297 to 104000**
+and the frame from a flat near-white wash to a lit landscape with relief and
+detail, but the scene is blue-dominant where the reference is brown and
+green, and the near field carries a regular striped block pattern fixed in
+screen pixels.  So the frame rate of 1 fps is still not a result for it, and
+what remains has **no fixture yet**
+(`docs/parhelia-m9-fragment-pass-splitting.md` 8.4).
+
+## Superseded: standing 2026-09-19 (second), the resource splitter alone
+
+The merged standing above replaces this; it was measured without `refract`'s
+record-ceiling fix.  `terrain`'s picture is no longer what this says.
 
 MEASURED at 1920x1200 on the M9128, `tools/m9x-glmark-default-suite-fresh-x.sh`,
 `M9X_SKIP_REPORT=1`, 0 stream timeouts.
@@ -97,7 +144,10 @@ Every run asserts `GL_RENDERER` is `Matrox M9`: a Mesa build configured without
 back to llvmpipe silently, and every fixture still passes against the CPU
 reference.
 
-## Standing 2026-09-19 (later): `refract` renders, and costs 5 fps to do it
+## Superseded: standing 2026-09-19 (later), the record ceiling alone
+
+The merged standing above replaces this; it was measured without the resource
+splitter, which is why `terrain` still skips 24 draws here.
 
 MEASURED at 1920x1200, **one X server and one process a benchmark**
 (`tools/m9x-glmark-default-suite-fresh-x.sh`), `M9X_SKIP_REPORT=1`, the whole

@@ -456,10 +456,18 @@ MEASURED on the M9128 at 1920x1200, `glmark2 -b terrain`:
 | frame rate | 1 fps | 1 fps |
 | picture | a flat clear | the mesh silhouette and the sky, with the body wrong |
 
-The body comes back with R and G **exactly zero** and a pattern whose block
-size does not change between 1920x1200 and 480x300 (MEASURED, both
-captures), so it is fixed in screen pixels and belongs to the inter-pass
-record rather than to texture sampling.
+CAPTURED on scanout after the index-88 fix of 8.5, 1920x1200 and 800x500,
+10 s into the run, a known-good fixture passing after it: **the mesh is
+there, with relief and detail, and the picture is still not right.**  The
+distinct-colour count over the root window goes from 1297 to **104000** and
+the frame from a flat near-white wash to a lit landscape, but the whole scene
+is blue-dominant where the reference is brown and green, and the near field
+carries a **regular striped block pattern** fixed in screen pixels that the
+far field does not.  So `coordconv:4` was one of terrain's defects and not
+all of them; what is left is **OPEN** and has no fixture yet.  The earlier
+reading that the body comes back with R and G exactly zero is withdrawn: it
+described a frame captured at a different point of the run, and the channels
+of the present frame are all non-zero.
 
 ### 8.5 The defect `coordconv:4` isolated: index 88's two fields overlap
 
@@ -500,8 +508,15 @@ than the encoder dropping a flag both captures carry.  Which of the two
 readings is right -- the flags shift and the pairs are therefore unusable, or
 the shift rule is wrong beyond one unit -- is **not settled by this tree**;
 what settles it is a capture of a vendor producing pass that binds two or
-more units, and none exists.  The fix is correct under either reading,
-because under both the pass must not keep a value where the word says free.
+more units, and none exists.
+
+A naive "a flagged pair is clobbered" is not the whole story either: a
+**four-unit** producer's 88 is `00f003cf`, bits 6 and 7 set, which flags the
+pairs `0c/0d` and `0e/0f` -- where texel slot 3 lives -- and `conv7`,
+`conv10` and `conv16` all render exactly (MEASURED).  Only the two-unit case
+is measured to matter.  The reservation is kept because it is measured to
+close the defect and to cost nothing in 228 fixtures, not because the field
+is decoded.
 
 MEASURED after the change, one process a case, no stream timeout, a
 known-good fixture passing after each:
@@ -532,15 +547,25 @@ is fixed.
 ### 8.6 Reproduction
 
 ```sh
-# the schedule a shader needs, with its record slots
-M9_FS_SPLIT=1 objs-m9x-llvm/src/gallium/drivers/m9x/m9-fs-compile-test \
+# the schedule a shader needs, with its record slots; M9_FS_SCALAR=1 hands
+# the backend the scalarised NIR the driver gets, M9_FS_PROGRAM=1 prints
+# each pass's slot words and M9_FS_CONSTS=1 its constants, which is how the
+# tap a pass carries is named
+M9_FS_SCALAR=1 M9_FS_SPLIT=1 M9_FS_PROGRAM=1 M9_FS_CONSTS=1 \
+        objs-m9x-llvm/src/gallium/drivers/m9x/m9-fs-compile-test \
         --glsl terrain.vert terrain.frag
 
-# the failing fixture, on the target, inside the lock
+# the fixture on the target, inside the lock; M9X_SPLIT_TRACE=2 names the
+# schedule the driver itself built, which is not always the offline one
 flock -w 600 /root/tmp/m9-hw.lock env \
         LD_LIBRARY_PATH=$P/lib:$P/dri LIBGL_DRIVERS_PATH=$P/dri \
-        MESA_LOADER_DRIVER_OVERRIDE=m9x $P/src/m9-mesa-glsl coordconv:4
+        MESA_LOADER_DRIVER_OVERRIDE=m9x M9X_SPLIT_TRACE=2 \
+        M9_GLSL_RAW=/root/tmp/cc4.raw $P/src/m9-mesa-glsl coordconv:4
 ```
+
+`M9_GLSL_RAW` keeps the readback, bottom row first as RGBA, so the error can
+be fitted against the CPU reference off the target -- which is what named the
+channel, the sign and the single tap.
 
 <!-- Copyright 2026 René Rebe <rene@exactco.de> -->
 <!-- SPDX-License-Identifier: GPL-2.0 -->

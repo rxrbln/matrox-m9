@@ -194,8 +194,12 @@ Which field wins at those bits is **OPEN**: no capture has a producing pass
 that binds two or more units, so whether the flags really shift that far, or
 the `0x0c << units` rule is only right for the zero- and one-unit producers
 it was derived from, is undecided.  A capture of a vendor producer with two
-bound units settles it.  The driver reserves the pairs either way, because
-under both readings a live value must not sit where the word says free.
+bound units settles it.  A four-unit producer is a counter-example to the
+simplest reading: its 88 is `00f003cf`, flagging the pairs texel slot 3 lives
+in, and `conv7`, `conv10` and `conv16` render exactly (MEASURED).  The driver
+reserves the pairs for the two-unit case because that is what is measured to
+close `coordconv:4` at no cost to 228 fixtures, not because the field is
+decoded.
 
 ## 7. What stays open
 
