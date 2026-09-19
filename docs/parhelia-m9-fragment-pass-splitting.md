@@ -584,9 +584,9 @@ folding and varying compaction pack terrain's five varyings into **two**
 slots and the fragment shader reads `VARYING_SLOT_VAR0` and `VAR1` only.
 terrain's own vertex shader leaves every component varying, which fills
 **four** slots.  A fixture vertex shader that writes the same five varyings
-with no constant component (`tools/` has it as the terr3 `terrvs.vert`
-shape: two normalized vectors built from all four attributes, their cross
-product, `vUv` and a view position) compiles `p-ps3.frag` -- the failing
+with no constant component -- `tools/m9-terrain-fixture.vert`, two normalized
+vectors built from all four attributes, their cross product, `vUv` and a view
+position -- compiles `p-ps3.frag` -- the failing
 probe -- to `1 pass, 178 slots, 33 consts, 2 units, 4 varyings, 88
 0f30030f`, and the emitted program is **byte-identical** to the one
 terrain's own vertex shader produces (OFFLINE, `M9_FS_PROGRAM=1` dumps
@@ -600,7 +600,7 @@ compile to the same one-pass shape and carry the **same** index 88,
 `0f30030f` (OFFLINE).  Nothing in 88 separates them.
 
 **The cause is that the register allocator carried its placement across
-compilation attempts.**  `compile_value()` makes up to two attempts and
+compilation attempts.**  `compile_output()` makes up to two attempts and
 `emit_root()` a depth-first retry between them; `reset_output()` clears the
 lops and `reset_graph()` the nodes, but neither clears `c->values`, and
 `allocate()` reset only `v->last`.  Its free scan matches every value with

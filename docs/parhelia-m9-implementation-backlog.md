@@ -252,8 +252,8 @@ query, and cube and 3D textures - are all done.
 
    **The `pointSpecular` half is closed (2026-09-19, third).**  It was the
    fragment **register allocator carrying its placement across compilation
-   attempts**: `reset_output()` and `reset_graph()` clear the lops and the
-   nodes but not `c->values`, `allocate()` reset only `v->last`, and its free
+   attempts** (`compile_output()` makes two): `reset_output()` and
+   `reset_graph()` clear the lops and the nodes but not `c->values`, `allocate()` reset only `v->last`, and its free
    scan then matched the previous attempt's values and pushed registers it
    still held live values in back into the pool.  `pointLightColor[0] *
    uSpecularColor`'s xy lane sat in `0x1f` from slot 34 to slot 171 with
