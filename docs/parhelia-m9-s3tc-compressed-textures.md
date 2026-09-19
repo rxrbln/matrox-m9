@@ -198,7 +198,13 @@ allocation   = ALIGN(size_bytes, T_G);                              /* +0x180 */
 (`0x463af..0x46416`); an ordinary texture takes the zero path.  For DXT1 the
 result is `padded_w * padded_h / 2` bytes and for DXT2..5 `padded_w *
 padded_h` bytes - exactly the block byte counts, with no decompression reserve
-(DERIVED).  This is the rule to implement.
+(DERIVED).
+
+**Do not implement this as written.**  Section 12.2 measures that a level
+below 128x128 reaches well past its block byte count, and section 12.5
+measures that the stride from one level of a chain to the next is neither
+this product nor that reach.  Section 12.5 is the rule to implement; this is
+what the Windows binary computes for a standalone surface.
 
 A second, looser transform exists at `0xa3ba0` for the Direct3D-visible
 surface description (`0xa3de6..0xa3e28` DXT1, `0xa3e72..0xa3eb2` DXT2..5).  It
@@ -315,7 +321,12 @@ zero-tiled mode uses the single linear DXT routine `m9x990`, and surface flag
 `+0x154` bit 6 selects the override `m9x382` shared with uncompressed formats
 (CAPTURED).
 
-## 7. Mip chain (CAPTURED)
+## 7. Mip chain (CAPTURED, superseded by section 12.5)
+
+The static reading below is what the Windows binary implies.  **Section 12.5
+measures the chain on an M9128 and the measured rule differs**: the stride is
+not `size[L-1]` of section 4.3, and the padding granularities depend on the
+storage kind the level is written through.  Implement section 12.5.
 
 The chain rules are the uncompressed ones, applied to texel extents:
 
@@ -568,9 +579,108 @@ nothing.  The sampler descriptor keeps the logical height.
 The whole fixture suite, with the S3TC and the 10-bit GigaColor cases in it,
 is **221 of 221** on the M9128 with `GL_RENDERER` asserted on every case.
 
-### 12.4 What is still not measured
+### 12.5 The mip chain, MEASURED
 
-* Mip chains: only level 0 is stored and only level 0 is advertised.
+The sampler computes each level's address itself, from level 0's extent and
+the format alone: moving a level with the Gallium driver's
+`M9X_DXT_LEVEL_OFFSETS` override does not move the level above it.  A chain
+can therefore only be placed where the hardware looks for it, and the sweep
+that finds each level is the measurement -- the fixture writes level *L* at a
+candidate offset, pins the sampler's LOD to *L* and compares the decode.
+
+```c
+/* the level's own storage kind, as in section 12.3 */
+span32 = ALIGN(w, 32);
+lines  = ALIGN(h, bits_per_texel == 4 ? 16 : 8);
+small  = span32 <= 64 && lines <= 64;
+
+/* what the next level starts after */
+stride = small ? span32 * h * bits_per_texel / 8
+               : ALIGN(w, 64) * ALIGN(h, bits_per_texel == 4 ? 64 : 32)
+                              * bits_per_texel / 8;
+offset[L] = ALIGN(offset[L-1] + stride[L-1], 0x200);
+```
+
+The measured bases, each found by a sweep in 0x100 or 0x200 steps (the
+window's own surface address quantises to 0x200, so two adjacent candidates
+can both pass):
+
+| chain | level | extent | base | what it settles |
+|---|---:|---|---:|---|
+| 64x32 DXT1 | 1 | 32x16 | `0x400` | the stride is the content, not the 4 KiB reach |
+| 64x32 DXT1 | 2 | 16x8 | `0x600` | a level of 0x100 bytes still advances by 0x200 |
+| 64x16 DXT1 | 1 | 32x8 | `0x200` | a small level's height is not padded |
+| 64x64 DXT1 | 2 | 16x16 | `0xa00` | a 32x32 small level advances by 0x200 |
+| 64x32 DXT3 | 1 | 32x16 | `0x800` | the 8-bit family doubles it |
+| 64x32 DXT3 | 2 | 16x8 | `0xa00` | |
+| 256x64 DXT1 | 1 | 128x32 | `0x2000` | |
+| 256x64 DXT1 | 2 | 64x16 | `0x3000` | a tiled level pads its height to 64 |
+| 132x68 DXT1 | 1 | 66x34 | `0x3000` | a tiled level pads its width to **64**, not 32 |
+| 256x256 DXT3 | 4 | 16x16 | `0x15400` | the tail follows a 32x32 level by 0x400 |
+
+Two things the earlier sections get wrong:
+
+* **The width granularity of a tiled level is 64 texels, not the 32 the
+  window descriptor carries.**  A 132-wide DXT1 level is stored through a
+  160-column window and advances the chain by 192 columns.  Section 4.1's
+  `T_W` `sel = 1` row is the one selected, as section 12.2 already found for
+  the height.
+* **A small-kind level is charged its own height**, with no microtile
+  padding.  The 0x200 per-level alignment absorbs the difference in every
+  case, because 0x200 bytes is exactly one microtile row group at both
+  spans.
+
+**The packed tail of section 4.2 is real for compressed levels.**  Every
+level of 16 texels or less in both dimensions shares one 32x16-texel surface
+at the uncompressed capture's origins, X `[0,16,24,16,24]` and Y
+`[0,0,0,8,8]`; a chain never has more than five such levels.  The tail base
+is the next 0x200-aligned offset after the last level with a surface of its
+own, and each tail level is written through the window as a sub-rectangle of
+that shared surface -- span 32, height 16, the small storage kind, and the
+level's origin in blocks.  Level 2 of a 64x32 DXT1 chain is the only base all
+five of its levels sample from, so the tail is measured here rather than
+inherited.
+
+The allocation still has to hold the bank swizzle's reach of section 12.2,
+which below 128x128 is several times a level's own bytes, so an object is
+sized by the larger of the stride and that padded bound.
+
+MEASURED on an M9128, every level pixel-exact against a software BC decode
+(fixture `dxtmip1`, `dxtmip1pt`, `dxtmip3`, `dxtmip5`, with the same `:WxH`
+suffix the single-level cases take): 15 chains over DXT1, DXT3 and DXT5 at
+256x256, 256x128, 256x64, 128x128, 132x68, 64x64, 64x32 and 52x28, 155 levels
+in all, with the ten single-level `dxt*` cases and a known-good fixture
+passing in the same run.  The whole `m9-mesa-glsl` suite is 276 of 276.
+
+### 12.6 A level of 64 columns or less that is too tall for the small kind
+
+`dxt1:64x128` and `dxt1:32x128` do **not** sample correctly, with or without
+a chain: 15 of every 16 pixels are wrong at 64 columns and 7 of every 8 at
+32.  Such a level's height puts it past the small storage kind, and the tiled
+kind does not address a surface that narrow the way the window writes it.
+Padding the window span to 64 columns does not help.
+
+The Gallium driver refuses that level, and names it, rather than sampling it
+wrong.  This is the one compressed shape known not to work; it is not a
+mip-chain property and no single-level fixture covered it either.  Closing it
+needs a sweep of the window span and storage kind for a tall narrow level,
+which nothing in the captures constrains.
+
+### 12.7 The kernel module has to match this tree
+
+The window path for a compressed level is kernel-side
+(`drivers/gpu/drm/m9x/m9_surface.c`, commits *address an S3TC level through
+the surface window* and *a small S3TC level takes the small storage kind*).
+With a module built before them, every compressed level store returns
+`-EINVAL`, every compressed texture stays empty and every textured draw is
+refused -- which is exactly how a stale module on the test target turned
+ioquake3 into a black window with one line in the log.  MEASURED: the ten
+`dxt*` fixtures fail against such a module and pass against one built from
+this tree.
+
+### 12.8 What is still not measured
+
 * Cube faces and volume slices, which section 11 also lists.
 * `79[24]`: the driver leaves it clear and everything above works.
 * sRGB decode, which has no recovered encoding for this sampler.
+* The narrow-tall level of section 12.6.
