@@ -104,6 +104,42 @@ The rest, for the record: texture 284/283/284, build 271/271, shading
 124, buffer 147/127/130, ideas 102, jellyfish 119, shadow 104, conditionals
 198/123/197, function 146/63, loop 144/144/300.
 
+## One X server for the whole list is not an honest sweep
+
+**MEASURED 2026-09-19.**  The X server keeps **three full-screen buffers of
+every GL client that has exited**, and releases them only when X itself does.
+Read straight off the VRAM manager (`/sys/kernel/debug/dri/*/vram-mm`) with
+one X session and five identical `build` clients in a row:
+
+```text
+before X            used 11754  free 45590
+X up, no client     used 17572  free 39772
+after client 1      used 24413  free 32931
+after client 2      used 31253  free 26091
+after client 3      used 38093  free 19251
+after client 4      used 44933  free 12411
+after client 5      used 51773  free  5571
+after X exit        used 11754  free 45590
+```
+
+6840 pages a client, exactly three 1920x1200x4 surfaces, and every one of them
+comes back when X goes.  So it is the **server**, not the kernel and not a
+client leak: a client's DRI3 buffer chain outlives it.
+
+The consequence is a measurement trap, not only a defect.  By the sixteenth
+benchmark of the default list there is no room for a 1920x1200 render target,
+`desktop`'s blur targets are refused with `glCheckFramebufferStatus` =
+`GL_FRAMEBUFFER_UNSUPPORTED`, and glmark2 reports **96 fps for a picture it
+did not draw** - with no skipped draw, no stream timeout and no lost context,
+so the parser cannot catch it.  Reproduced on demand: fifteen `build` clients
+and then `desktop` gives 96 fps; `desktop` first in the same session gives 38.
+It does not depend on what the fifteen clients were.
+
+`tools/m9x-glmark-default-suite-fresh-x.sh` starts **one X server per
+benchmark** for this reason, and is what the numbers here are measured with.
+`tools/m9x-glmark-default-suite.sh` runs inside one session and is only safe
+for a short list.
+
 ## The suite is thirty-three benchmarks, not sixteen scenes
 
 MEASURED 2026-09-18.  Every sweep before this one ran the sixteen scene
