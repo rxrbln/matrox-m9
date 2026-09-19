@@ -1096,7 +1096,8 @@ m9_flush_frontbuffer(struct pipe_screen *screen, struct pipe_context *ctx,
       __sync_synchronize();
 }
 
-/* Uniforms selecting glamor's control flow are inlined per value set. */
+/* The fragment NIR is brought to the float-only form the screen declares, and
+ * the uniforms selecting control flow are marked for inlining per value set. */
 static void
 m9_finalize_nir(struct pipe_screen *pscreen, struct nir_shader *nir,
                 bool optimize)
