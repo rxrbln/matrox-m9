@@ -2685,13 +2685,38 @@ reg_busy(uint64_t busy, unsigned reg)
    return busy & BITFIELD64_BIT(reg);
 }
 
+/* The register pairs a producing pass may not hold a live value in.
+ *
+ * Index 88 carries two fields over one range of bits: bits 15:4 flag the
+ * register pairs 08/09..1e/1f the engine may reuse, and a record-writing
+ * pass sets two more flags one place higher for every unit it binds
+ * (m9_fs_raster_88).  From two units up those flags land inside the pair
+ * field and mark pairs the program is using as free, which is the fault
+ * texhi:4:0 measures for an ordinary pass.  So the allocator keeps those
+ * pairs empty rather than the encoder dropping a flag the captures carry.
+ */
+static uint64_t
+record_reserved(const struct ctx *c)
+{
+   unsigned units = c->p->texture_count;
+   uint64_t reserved = 0;
+
+   if (!c->record_out)
+      return 0;
+   for (unsigned bit = 2 + units; bit <= 3 + units; bit++)
+      if (bit >= 4 && bit <= 15)
+         reserved |= 3ull << (0x08 + 2 * (bit - 4));
+   return reserved;
+}
+
 static bool
 allocate(struct ctx *c)
 {
    unsigned n = NUM(c, lops, struct lop);
    unsigned base = 4 * c->p->texture_count, next_general;
    static const uint8_t interp_extra[] = { 0x1a, 0x1b, 0x1c, 0x1d, 0x1e, 0x1f };
-   uint64_t busy = 0;
+   const uint64_t reserved = record_reserved(c);
+   uint64_t busy = reserved;
 
    /* Both lanes of a node are emitted, but a lane nothing reads is dead, and
     * so is whatever only that lane read.  A backward walk marks what the
@@ -2800,6 +2825,7 @@ allocate(struct ctx *c)
       util_dynarray_foreach(&c->values, struct value, v)
          if (v->reg >= 0)
             taken |= BITFIELD64_BIT(v->reg);
+      taken |= reserved;
 
       for (unsigned s = 0; s < n; s++) {
          struct lop *l = &LOPS(c)[s];
@@ -2812,6 +2838,8 @@ allocate(struct ctx *c)
              * fits the file is laid out the way the vendor lays it out. */
             if (next_general == 0x10)
                next_general = 0x14;
+            while (next_general < 0x20u && reg_busy(reserved, next_general))
+               next_general++;
             while (next_general > (c->blend ? 0x17u : 0x19u) &&
                    next_general < 0x20u &&
                    (c->blend || reg_busy(taken, next_general)))
