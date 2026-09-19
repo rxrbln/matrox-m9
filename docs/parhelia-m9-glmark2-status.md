@@ -1,5 +1,80 @@
 # glmark2 on the m9x driver: where the 60 fps goal actually stands
 
+## Read this first: two standings below, and neither is the merged tree
+
+The two "Standing 2026-09-19" sections were measured on **different builds
+that were never tested together**.  The `terrain` sweep does not carry
+`refract`'s record-ceiling fix (`22c0352`), and the `refract` sweep does not
+carry the resource splitter.  Both branches are now merged, the merged tree
+builds and passes the offline gates, but **no hardware sweep of the union has
+been run**.  Until one is, read each table as evidence about its own build:
+`terrain` 0 skipped draws with an incorrect picture, `refract` correct at 5 fps.
+UNTESTED as a combination.
+
+## Standing 2026-09-19 (second): `terrain` draws every draw, and its picture is still wrong
+
+MEASURED at 1920x1200 on the M9128, `tools/m9x-glmark-default-suite-fresh-x.sh`,
+`M9X_SKIP_REPORT=1`, 0 stream timeouts.
+
+| scene | before | after |
+|---|---|---|
+| `terrain` | 1 fps, **24 draws a frame refused** by the fragment backend | 1 fps, **0 draws skipped**, mesh silhouette and sky on the monitor, body wrong |
+
+What changed is the fragment splitter: it now partitions a shader by the
+resources a raster pass holds -- texel slots, the register file and the six
+interpolation registers -- rather than by the fetch count alone, and three
+defects in front of that are fixed (the coordinate's varying location was
+read from the wrong intrinsic, two units could not share a varying location
+at an odd component, and the layout gate counted a coordinate stream a
+sampler).  `docs/parhelia-m9-fragment-pass-splitting.md` section 8.
+
+**`terrain` is not conformant and the frame rate is not a result.**  The
+terrain body comes back with R and G exactly zero.  The pattern is fixed in
+screen pixels -- the same block size at 1920x1200 and at 480x300 (MEASURED,
+both captured) -- so it is the inter-pass record, not texture sampling.
+
+The defect is isolated to a fixture that did not exist before:
+**`coordconv:4` fails, 54092 of 76800 pixels, against a CPU reference**, while
+`coordconv:2` and `coordconv:3` pass exactly.  It is glmark2's tilt-shift
+blur in miniature -- N taps around a base coordinate the fragment stage
+computes, one producing pass a tap -- and `terrain` presents through the
+nine-tap form of it.  It is not the record slot count, not the pass count and
+not the choice of cuts; each of those is ruled out with one variable in
+section 8.5 of the splitting note.
+
+**This very likely also explains `refract`'s black frame**, which is the same
+family: four passes, three record slots, every coordinate computed.
+
+### The whole list, re-run (MEASURED 2026-09-19, one X server a benchmark)
+
+`tools/m9x-glmark-default-suite-fresh-x.sh`, 1920x1200, `M9X_SKIP_REPORT=1`,
+**0 stream timeouts**, all thirty-three completed.
+
+| benchmark | fps | draws skipped |
+|---|---:|---|
+| `build` vbo=false / vbo=true | 273, 296 | none |
+| `texture` nearest / linear / mipmap | 284, 283, 283 | none |
+| `shading` gouraud / blinn-phong-inf / phong / cel | 243, 149, 88, 83 | none |
+| `bump` high-poly / normals / height | 105, 182, 164 | none |
+| `effect2d` 3x3 / 15-tap | 84, 33 | none |
+| `pulsar` | 221 | none |
+| `desktop` blur / shadow | 37, 124 | none |
+| `buffer` map / subdata / interleaved | 153, 153, 154 | none |
+| `ideas` | 110 | none |
+| `jellyfish` | 125 | 1244, out of temporaries for blending |
+| **`terrain`** | **1** | **none** (was 24) |
+| `shadow` | 145 | 1447, no valid raster parameters |
+| `refract` | 39 | none |
+| `conditionals` 0/0, 5/0, 0/5 | 229, 142, 228 | none |
+| `function` low / medium | 168, 72 | none |
+| `loop` no-loop / uniform=false / uniform=true | 167, 166, 345 | 3445 on uniform=true, control flow |
+
+Every row matches the previous standing within run-to-run noise.  `terrain`
+is the only change, and the three scenes that still skip draws skip them for
+the reasons they did before.
+
+## Superseded: standing 2026-09-19 (first)
+
 **MEASURED 2026-09-18** at 1920x1200 on the dual-DisplayPort M9128 (subsystem
 102b:22c0, 1 GiB VRAM) in the 16 GB host, one head driven, stock X server with
 the image's glamor, Mesa built with LLVM JIT (`draw-use-llvm`).
@@ -139,6 +214,7 @@ reach it on this target: MEASURED, 0 jobs, 0 draws, nothing drawn and a stream
 timeout, which is the 481 MB of system RAM rather than the rule.
 
 ## Superseded: standing 2026-09-19, before `refract`'s geometry was delivered
+### All thirty-three run, twenty-nine above 60 fps, four still skip draws
 
 MEASURED at 1920x1200, **one X server and one process a benchmark**
 (`tools/m9x-glmark-default-suite-fresh-x.sh`, and see why below), the padded
@@ -163,7 +239,7 @@ channel difference.
 | `buffer` map / subdata / interleaved | 153, 154, 154 | none |
 | `ideas` | 111 | none |
 | `jellyfish` | 125 | **1244**, out of temporaries for blending |
-| **`terrain`** | **1** | **24**, five samplers against four units and the register file |
+| **`terrain`** | **1** | **24**, five samplers against four units and the register file -- **0 as of the second standing above** |
 | `shadow` | 145 | **1446**, a depth-only framebuffer has no raster parameters |
 | **`refract`** | **39** | none |
 | `conditionals` 0/0, 0/5, 5/0 | 229, 142, 228 | none |

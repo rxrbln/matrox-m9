@@ -376,5 +376,141 @@ python3 tools/m9-command-decode.py --execute \
 python3 tools/m9-glsl-program-extract.py $c
 ```
 
+## 8. The splitter as implemented, and what it does not yet buy (2026-09-19)
+
+The m9x backend now partitions a shader by **the resources a raster pass
+holds**, not by the fetch count alone, and the three defects that stood in
+front of that are fixed.  What that buys and what it does not is measured
+below.
+
+### 8.1 The three resources, and the cut for each
+
+`m9_fs_compile_passes()` compiles the whole shader, reads the refusal, and
+cuts for whichever resource ran out:
+
+| refusal | cut | scored on |
+|---|---|---|
+| more texture fetches than one raster pass can bind | texel slots | the slots the producer absorbs, at least two, leaving the consumer strictly fewer than the whole |
+| out of temporaries | the register file | the records the consumer is left reading, then the widest half |
+| too many interpolated inputs | the interpolation registers | the widest half's interpolant count |
+| texture coordinate is not a varying | the coordinate itself | -- the blocker names the cut |
+
+A **texel slot is a fetch or a record**, because the consumer binds both the
+same way.  Scoring the unit cut on fetches alone made no *gather* admissible
+-- a pass that reads several records and writes one -- so a shader whose
+fetches were all placed could still be refused for needing more slots than a
+pass has just to read its own records back (MEASURED on the card, glmark2
+`terrain`: five cuts, then a remainder with no fetch at all, five records and
+no candidate).
+
+A register-file cut is scored on **the records the consumer must read back**
+rather than on the widest half, because a record that stays live costs its
+four dwords of stride for every fragment of every pass.  `terrain.frag` goes
+from seven passes over six record slots to four over three on that change
+alone (OFFLINE).  `M9X_SPLIT_RANK=1` restores the widest-half score.
+
+Register-file cuts are on by default; the `M9X_SPLIT_PRESSURE` knob that
+gated them is gone.
+
+### 8.2 Three defects the splitter was standing behind
+
+* **The coordinate's varying location was re-derived by chasing operand 0**
+  of the transform, which lands on the *uniform* load for the common
+  `scale * varying + bias` written with the scale first.  The stream was then
+  built from whatever location that load happened to read -- 2, the built-in
+  secondary colour, for every one of `terrain.frag`'s four transformed
+  fetches.  The parse already names the varying; it is used.
+* **Two units could not read one varying location** when the coordinate pair
+  starts at an odd component.  That was a stand-in for the driver keying a
+  coordinate stream by the slot *half*, which also gave a pair at component 0
+  and one at component 1 the same stream.  The stream is keyed by the
+  component it starts at, and the refusal is narrowed to the one location
+  with no CPU view, `VARYING_SLOT_COL0`.
+* **The layout gate counted one coordinate stream per sampler.**  Four units
+  sharing one transformed stream therefore left room for two interpolants
+  instead of four.  It counts the streams the emitter builds
+  (`m9_fs_coord_stream_count`).
+
+Each is checked by a case in `m9-fs-compile-test`, and each case fails when
+its change is reverted (OFFLINE, all three reverted in turn).
+
+### 8.3 Two driver defects a deep split found
+
+* `m9_vbuf_render::extra_offset` was sized for the CPU views of a **single
+  pass**.  A split variant has a view per interpolated input and per
+  coordinate stream of every pass, so a seven-pass shader wrote eight entries
+  past it and crashed in `ralloc_size` on the next allocation (MEASURED).
+* A partial multi-pass draw whose covered box encloses **no pixel centre**
+  was refused and charged to the skip count.  It writes nothing -- MEASURED
+  on `terrain`, two draws a frame spanning a band 0.37 pixels high -- so it
+  is dropped without being counted.
+
+### 8.4 What it buys: every draw, and still the wrong picture
+
+MEASURED on the M9128 at 1920x1200, `glmark2 -b terrain`:
+
+| | before | after |
+|---|---|---|
+| draws skipped a frame | 24 | **0** |
+| stream timeouts | 0 | 0 |
+| frame rate | 1 fps | 1 fps |
+| picture | a flat clear | the mesh silhouette and the sky, with the body wrong |
+
+The body comes back with R and G **exactly zero** and a pattern whose block
+size does not change between 1920x1200 and 480x300 (MEASURED, both
+captures), so it is fixed in screen pixels and belongs to the inter-pass
+record rather than to texture sampling.
+
+### 8.5 The remaining defect, isolated: `coordconv:4`
+
+`tools/m9-mesa-glsl.c` gains **`coordconv:N`**: N taps at whole-texel offsets
+around a base coordinate the fragment stage computes, so every tap takes a
+coordinate route.  It is glmark2's tilt-shift blur in fixture form, and it is
+checked against a CPU reference pixel by pixel.
+
+```text
+coordchain     0 of 76800 pixels differ: PASS     3 passes, chained routes
+coordconv:2    0 of 76800 pixels differ: PASS     3 passes, 2 record slots
+coordconv:3    0 of 76800 pixels differ: PASS     4 passes, 3 record slots
+coordconv:4    54092 of 76800 pixels differ: FAIL 6 passes, 5 record slots
+```
+
+MEASURED 2026-09-19, one process a case, no stream timeout in any of them.
+`terrain`'s blur pair is `coordconv:9` in this family -- fourteen passes --
+so this is why the scene draws every draw and still shows the wrong picture.
+
+What the failure is **not** (each MEASURED, one variable):
+
+* **not the record slot count.**  `conv7/10/13/16` pass exactly with
+  `M9X_RECORD_LIVENESS=0`, which gives them 1, 2, 3 and 4 slots instead of 1
+  and 2, and `coordconv:4` fails identically with the knob either way.
+* **not the pass count.**  `conv16` is five passes and exact; `coordconv:4`
+  is six.
+* **not the splitter's choice of cuts.**  `M9X_SPLIT_RANK=1` produces the
+  same schedule for it.
+
+What is left, and is **OPEN**: `coordconv:4` is the first schedule in which a
+pass that *writes a record* also *consumes a coordinate route*, and the first
+in which one pass mixes a value route with coordinate routes.  Every captured
+producing pass carries `0x74 = 00000100`, idle, and no route at all
+(section 3), so both shapes are uncaptured.  `M9X_FS_FORCE_SPLIT=2` on
+`coordconv:3` builds a schedule with the first shape and **passes**, but the
+driver's NIR is scalarised where the offline test's is not, so that run does
+not prove the schedules were the same; naming the driver's own schedule is
+the next step.
+
+### 8.6 Reproduction
+
+```sh
+# the schedule a shader needs, with its record slots
+M9_FS_SPLIT=1 objs-m9x-llvm/src/gallium/drivers/m9x/m9-fs-compile-test \
+        --glsl terrain.vert terrain.frag
+
+# the failing fixture, on the target, inside the lock
+flock -w 600 /root/tmp/m9-hw.lock env \
+        LD_LIBRARY_PATH=$P/lib:$P/dri LIBGL_DRIVERS_PATH=$P/dri \
+        MESA_LOADER_DRIVER_OVERRIDE=m9x $P/src/m9-mesa-glsl coordconv:4
+```
+
 <!-- Copyright 2026 René Rebe <rene@exactco.de> -->
 <!-- SPDX-License-Identifier: GPL-2.0 -->
