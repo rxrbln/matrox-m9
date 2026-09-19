@@ -94,9 +94,23 @@ Recorded so they are not attempted again.
 
 ## Needs capture before it can be implemented at all
 
-Listed so they are not mistaken for ready work: multisample and FAA allocation,
-pattern, mask and resolve; anisotropic filtering; PBO; and sRGB **sampling** -
-the write path is exact but the sampler decode was never joined.
+Listed so they are not mistaken for ready work: anisotropic filtering; PBO;
+and sRGB **sampling** - the write path is exact but the sampler decode was
+never joined.
+
+**Multisampling moved out of this list, and no longer needs a Windows
+capture.**  The state is decoded and partly measured: the two dwords at
+command indices `ad` and `af` are built by `m9_faa.c`, `af[8:0]` is the
+sample coverage value in 1.8 fixed point with its invert, coverage-enable and
+alpha-to-coverage flags at bits 9, 10 and 11, and the enable is a three-bit
+mode field in index `ef` bits 31:29.  MEASURED on the M9128: modes 6 and 7
+make the engine reserve one lane of every 4x2 pixel block and write nothing
+into it, while alpha to coverage and a depth attachment each stop the engine.
+What remains is not a capture but an allocation - the vendor's separate
+multisample buffer group of about 16.55 bytes a pixel - and the command index
+that binds it, for which `0xa1/0xa3/0xa4` are the named candidates and a
+kernel whitelist change is the prerequisite.  Evidence, probes and the nine
+answered gates are in `parhelia-m9-faa-re.md`.
 
 **S3TC moved out of this list.**  The storage rules are decoded and are
 executable assertions in `tools/m9-texture-resource-evidence.py`

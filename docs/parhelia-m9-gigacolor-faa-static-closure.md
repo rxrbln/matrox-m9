@@ -1,5 +1,25 @@
 # M9 GigaColor and FAA static closure
 
+> **Correction, 2026-09-19.**  The multisampling half of this note is
+> superseded by `parhelia-m9-faa-re.md`, which carries the hardware
+> measurements as well.  Four statements below are wrong and are corrected
+> there, with the instruction bytes:
+>
+> * the three AF flag bits are at **9, 10 and 11**, not 11, 12 and 13, and
+>   the old AF's low twelve bits are discarded, not preserved - the
+>   construction shifts right by three at `0x13933c` before it shifts right
+>   by five;
+> * **"AD bits 6:4" do not exist**: `0x139521..0x139594` writes nested
+>   compiled state `+0x04`, a different dword, which the lowerer sends as
+>   **index `ef` bits 31:29**, and which the M9128 obeys;
+> * **auxiliary state 25 is `GL_SAMPLE_COVERAGE_VALUE`**, named from the
+>   vendor ICD's own `glSampleCoverage` sink, so AF`[8:0]` is that value in
+>   1.8 fixed point; 24 is its invert flag and 23 the multisample mode word;
+> * the 16-bit word at `+0x358 + 2*target` is the per-target **colour write
+>   mask**, four ARGB nibbles, not an AA output mask.
+>
+> The GigaColor half of this note stands unchanged.
+
 This note records the implementation evidence for native 10-bit color and
 multisampling in the saved 32-bit M-Series Windows driver. It deliberately
 separates Direct3D declarations, internal resource metadata, final command
