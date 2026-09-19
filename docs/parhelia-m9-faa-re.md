@@ -567,9 +567,22 @@ a known-good fixture runs before and after every case.
 | `RESET_FRAG_PTR`: `e6 = 3`, `e6 = 3`, `a1 = a3 = a4 = 0` | 42040 | 0 | - |
 | the store's address at `a0`, `a1`, `a2`, `a3`, `a4`, `a5`, `a6`, one at a time | 42040 each | 0 | **0 of 318464** each |
 | the store at `bc` and the second buffer at `bd` | 42040 | 0 | **0 of 318464** |
-| the same, with a companion surface at `b8`/`b9` at descriptor formats `0x7d`, `0x79`, `0x59`, `0x6b` | 42040 each | 0 | **0 of 318464** each |
+| the same, with a companion surface at `b8`/`b9`, every one of the 128 descriptor format codes | 42040 for 120 of them, **48000** for `0x38`..`0x3f` | 0 | **0 of 318464** each |
 
-No case was refused by the kernel and none stopped the engine.  So the two
+No case was refused by the kernel and none stopped the engine.
+
+The one thing in that table that is not flat is the last row, and it is worth
+stating precisely because it is easy to misread as success.  **Descriptor
+format codes `0x38`..`0x3f` at `b8` make the reserved lane come back**: with
+the enable set to 6 the rectangle renders all 48000 of its pixels again and
+the diagonal triangle 24120.  But `faaedge` still reports **zero** partial
+levels, `faapos` and `faaposy` still print the single-sampled staircase (18
+steps at 255, then 0), and the store is still untouched, with or without it
+bound.  So that format class does not make the unit antialias; it makes the
+unit stop reserving, which is what one expects of a surface class the depth
+and fragment stage treats as absent.  It is a fact about the lane, not about
+multisampling: **what is bound at `b8` decides whether the lane is reserved,
+and no value of it has yet made the unit accumulate anything.**  So the two
 addresses `0xfbd8e` names are **necessary but not sufficient**: the unit
 accepts them, keeps reserving its lane, and accumulates nothing.  What is
 still missing is whatever tells it the surfaces are multisampled - the
