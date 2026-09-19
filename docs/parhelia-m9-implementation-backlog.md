@@ -69,6 +69,7 @@ Recorded so they are not attempted again.
 | **One job per draw is the driver's submission model, and it is now the dominant cost** | MEASURED on `refract` after its transfer was removed: 25.13 ms a frame, of which **submit 11.66 (ioctl 10.78)** and **draw 7.87** are 78%, while rendering proper is no longer the constraint.  `m9_prof_jobs` reports **46 jobs a frame, 40 of them the scene's own draws** at roughly 0.23 ms of ioctl each.  A hypothesis that batching the generated mip chain would recover the time is **refuted**: the chain is 6 of those 46 jobs, worth about 1.2 ms of the 8.4 ms that 60 fps needs.  The lever is driver-wide - several draws to a job - and wants its own measurement.  The remaining 7.87 ms is CPU T&L in the draw module, which is the native vertex backend's |
 | A filtered **engine** blit whose reduction is not an exact halving loses pixels | MEASURED with plain level-0 textures, so it is not the mip plumbing: `blitlin:75x37` differs in 2452 pixels and `blitcpu:75x37` in 75138, while the exact halvings `74x37`, `76x38` and `150x75` are all exact - and `blitlin:100x40`, ratio 2.5, is **also exact**, so the rule is not simply "non-exact ratio".  Not pinned down; the two failing mip cases are unlisted with the evidence rather than left green.  Every level `refract` samples is an exact halving, which is why its chain is exact |
 | `refract` spends 95% of its frame in a CPU transfer | MEASURED, `M9X_PROFILE=4` at 1920x1200: `1065.62 ms/frame: draw 8.05, submit 8.08, ioctl 7.25, transfer 1014.03`.  The scene calls `glGenerateMipmap` on its distance target once a frame; the driver implements no `generate_mipmap` and refused a target whose level is not zero, so the state tracker built every level on the CPU through the de-tiling path.  **Fixed** (`386e0ce`): 1 fps to **39 fps**, transfer 1014.68 to 0.52 ms, attributed on one binary with `M9X_LEVEL_TARGET=0` reproducing the old path.  A base level above zero turned out to be a **LOD clamp** rather than a second allocation, so pinning the view's low bound samples that level alone.  The scene is still **not conformant**: one draw a frame is refused by the partial-coverage gate.  Cost is proportional to that texture's area and nothing else (a 2.13x smaller target gives a 2.14x smaller transfer).  The refusal turned out to be **missing plumbing, not a storage constraint** - a level already is a render surface; what was absent was a byte offset on the colour relocation and a level in the framebuffer state.  The packed tail levels of 16x16 and below genuinely are not surfaces |
+| `m9_fs_raster_88()` treats index `88` bits 31:24 as eight per-interpolant flags | They are not.  MEASURED: setting bit 30 for a seventh input made **input 4** read garbage as well, and setting all eight corrupted every input, while forcing the six-input mask `0x3f10dff0` on a seven-input pass left the first six exact.  The `BITFIELD_BIT(24 + k)` loop is correct only because varyings are capped at six, which is now explicit.  Raising that cap without decoding these bits would corrupt inputs the shader never touched |
 | `emit_rcp` with a literal operand returns 4x too large | worked around by folding literals at compile time; root cause open |
 | ~~D16 depth attachments draw with no depth~~ | **resolved**: Z16 is now claimed for sampling only, so the state tracker falls back to `x8z24_unorm` and a depth attachment always carries the hierarchical surface |
 | ~~A split draw that returns to an earlier render-target shape stops the engine~~ | **resolved**: the engine keeps per-target state in the object at index `be`, and a revisited shape read what another shape left there.  One `be` object per render-target shape.  Sharing by shape is what the engine wants - one per colour *resource* still stalls |
@@ -168,12 +169,21 @@ query, and cube and 3D textures - are all done.
 4. **sRGB write** - the backend is written; advertising a colour format is all
    that stands between it and being reachable.
 5. **A second vertex varying**, which needs the second preprocessing draw.
-   The first attempt delivered no stream; `ef` bits 11:9 turned out to encode
-   the draw's place in the chain, and the fused pass was left saying "only
-   draw" while a chain was open.  Under retest.  The larger prize sits one
-   step further: a general interpolant costs two raster declaration words
-   (`0d88`+`06b6`) where attributes 0, 5, 6 and 13 cost one (`0688`), so if
-   the one-word form is accepted the per-pass ceiling goes from six
-   interpolants to thirteen.
+   Three hypotheses are now refuted on hardware: index `0x88`'s pair mask, a
+   barrier between the two draws, and `ef` bits 11:9 as the draw's place in
+   the chain.  The minimal case fails - `vary3`'s extra draw binds a *single*
+   stream target and still stalls the engine.  The one lead left is that every
+   captured chain-opening draw writes a **packed intermediate record** that a
+   later route-fed draw de-interleaves, where ours writes separate
+   `0x68002000` stream views.
+   **The one-word declaration is settled and gave no ceiling raise.**  MEASURED:
+   the hardware accepts `0688` for a general interpolant exactly, taking six
+   inputs from 15 declaration words to 9 - but the ceiling is **six either
+   way**, because the interpolation registers `0x40 + 8*i` are handed out in
+   ascending attribute order and there are exactly six; `0x70` reads garbage.
+   The projected rise to thirteen was wrong: the declaration budget was never
+   what bound.  The win is that six interpolants now fit beside all four
+   texture units, where the pair form left no words.  A seventh input fails
+   **quietly** - every pixel written, no error, wrong values.
 6. **The depth pair**: CPU-uploaded depth textures, and
    `glReadPixels(GL_DEPTH_COMPONENT)`.
