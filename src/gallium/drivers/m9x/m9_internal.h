@@ -91,6 +91,8 @@ struct m9_resource {
    struct m9_texture_layout texture;
    enum pipe_format texture_storage;
    uint8_t texture_code;
+   /* Bytes a 4x4 block occupies; 0 unless the image is S3TC. */
+   uint8_t block_bytes;
    uint32_t texture_unplaced;  /* levels whose content could not be stored */
    uint32_t levels_written;    /* levels a transfer has actually written */
    /* Bumped whenever this driver hands out a writable mapping, so

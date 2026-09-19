@@ -73,6 +73,83 @@ m9_texture_format(enum pipe_format format, struct m9_texture_format *out)
    return true;
 }
 
+bool
+m9_texture_compressed(enum pipe_format format, uint8_t *code,
+                      uint8_t *block_bytes)
+{
+   uint8_t c, b;
+
+   switch (format) {
+   case PIPE_FORMAT_DXT1_RGB:
+   case PIPE_FORMAT_DXT1_RGBA:
+      c = M9_TEXTURE_CODE_DXT1;
+      b = 8;
+      break;
+   case PIPE_FORMAT_DXT3_RGBA:
+      c = M9_TEXTURE_CODE_DXT3;
+      b = 16;
+      break;
+   case PIPE_FORMAT_DXT5_RGBA:
+      c = M9_TEXTURE_CODE_DXT5;
+      b = 16;
+      break;
+   default:
+      return false;
+   }
+   if (code)
+      *code = c;
+   if (block_bytes)
+      *block_bytes = b;
+   return true;
+}
+
+uint64_t
+m9_texture_compressed_bytes(uint32_t width, uint32_t height,
+                            uint8_t block_bytes)
+{
+   /* Section 4.1's sel = 1 granularity rows, which the measurement of
+    * section 12.2 selects: width to 32 texels, height to 64 for the 4-bit
+    * family and 32 for the 8-bit one, then a 4 KiB object quantum. */
+   uint64_t pad_w = (width + 31) & ~31u;
+   uint64_t pad_h = block_bytes == 8 ? ((height + 63) & ~63u) :
+                                       ((height + 31) & ~31u);
+   uint64_t bytes = pad_w * pad_h * block_bytes / 16;
+
+   return (bytes + 0xfff) & ~0xfffull;
+}
+
+int
+m9_texture_layout_compressed(struct m9_texture_layout *layout, uint32_t width,
+                             uint32_t height, unsigned levels,
+                             uint8_t block_bytes)
+{
+   uint64_t offset = 0;
+
+   if (!layout || !width || !height || !levels ||
+       levels > M9_TEXTURE_MAX_LEVELS || width > 2048 || height > 2048 ||
+       (block_bytes != 8 && block_bytes != 16))
+      return -EINVAL;
+   memset(layout, 0, sizeof(*layout));
+   layout->kind = M9_TEXTURE_KIND_2D;
+   layout->levels = levels;
+   layout->faces = 1;
+   layout->block_bytes = block_bytes;
+   for (unsigned l = 0; l < levels; l++) {
+      struct m9_texture_level *lvl = &layout->level[l];
+
+      /* A level below one block still occupies a whole block. */
+      lvl->width = MAX2(width >> l, 4);
+      lvl->height = MAX2(height >> l, 4);
+      lvl->depth = 1;
+      lvl->face_bytes = m9_texture_compressed_bytes(lvl->width, lvl->height,
+                                                    block_bytes);
+      lvl->offset = offset;
+      offset += lvl->face_bytes;
+   }
+   layout->size = offset;
+   return 0;
+}
+
 /* Vendor m9x659 (mode-2 aperture) with the calculator state captured for
  * the tail: depth 1, category 0, bank masks 0. */
 static uint64_t

@@ -25,6 +25,12 @@
 #define M9_TEXTURE_LOD_DEFAULT 0x0ff80000u
 /* Descriptor format code of the BGRA render-target family. */
 #define M9_TEXTURE_CODE_BGRA 0xccu
+/* S3TC descriptor bytes.  Three codes, not five: DXT2 decodes as DXT3 and
+ * DXT4 as DXT5 (docs/parhelia-m9-s3tc-compressed-textures.md 1). */
+#define M9_TEXTURE_CODE_DXT1 0x20u
+#define M9_TEXTURE_CODE_DXT3 0x2au
+#define M9_TEXTURE_CODE_DXT5 0x2eu
+
 /* 10-bit GigaColor descriptor bytes: the 7-bit code doubled (79[31:25]). */
 #define M9_TEXTURE_CODE_A2B10G10R10 0xd0u
 #define M9_TEXTURE_CODE_A2R10G10B10 0xd4u
@@ -55,6 +61,10 @@ struct m9_texture_layout {
    enum m9_texture_kind kind;
    unsigned levels, faces;
    uint64_t size;
+   /* Bytes one 4x4 S3TC block occupies; 0 for an ordinary format.  A
+    * compressed level has no placement of its own -- the surface window
+    * places its blocks -- so `placed` stays clear for every level. */
+   uint8_t block_bytes;
    /* Bit per level whose texels were verified to land on distinct addresses
     * inside their allocation; other levels have no usable placement. */
    uint32_t placed;
@@ -78,6 +88,17 @@ struct m9_texture_unit {
 };
 
 bool m9_texture_format(enum pipe_format format, struct m9_texture_format *out);
+/* Descriptor code and block size of an S3TC format, false for every other. */
+bool m9_texture_compressed(enum pipe_format format, uint8_t *code,
+                           uint8_t *block_bytes);
+/* Bytes a compressed level of this extent needs.  MEASURED: below 128x128
+ * the bank swizzle spreads the blocks well past their own byte count
+ * (docs/parhelia-m9-s3tc-compressed-textures.md 12.2). */
+uint64_t m9_texture_compressed_bytes(uint32_t width, uint32_t height,
+                                     uint8_t block_bytes);
+int m9_texture_layout_compressed(struct m9_texture_layout *layout,
+                                 uint32_t width, uint32_t height,
+                                 unsigned levels, uint8_t block_bytes);
 /* Descriptor kind a Gallium target is stored and sampled as, 0 when the
  * target has no captured texture storage. */
 enum m9_texture_kind m9_texture_kind_for_target(enum pipe_texture_target target);

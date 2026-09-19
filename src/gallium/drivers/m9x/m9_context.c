@@ -539,6 +539,93 @@ m9_surface_access(struct m9_context *ctx, const struct m9_resource *resource,
                 &access) ? -errno : 0;
 }
 
+/*
+ * MEASURED (fixture dxt1:WxH): a compressed level is stored through the
+ * window at its 32-aligned span, and its height has to reach a whole
+ * microtile -- 16 texel rows for the 4-bit family and 8 for the 8-bit one
+ * (docs/parhelia-m9-s3tc-compressed-textures.md 12.1).  128x68 and 68x36
+ * came back wrong along their last rows until the descriptor stated the
+ * padded height; the rows past the level are simply never written.
+ */
+static uint32_t
+m9_compressed_span(uint32_t width)
+{
+   return (width + 31) & ~31u;
+}
+
+static uint32_t
+m9_compressed_lines(uint32_t height, uint32_t block_bytes)
+{
+   uint32_t grain = block_bytes == 8 ? 16u : 8u;
+
+   return (height + grain - 1) & ~(grain - 1);
+}
+
+/*
+ * A compressed level is moved through the very same window, in whole 4x4
+ * blocks: the descriptor counts texels and the window's linear view is the
+ * block image, which the hardware places itself (MEASURED,
+ * docs/parhelia-m9-s3tc-compressed-textures.md 12.1).  Nothing is converted
+ * -- the blocks travel verbatim, as section 8 requires.
+ */
+static int
+m9_texture_window_blocks(struct m9_context *ctx,
+                         const struct m9_resource *resource, unsigned level,
+                         bool write, const struct pipe_box *box,
+                         uint8_t *data, unsigned stride)
+{
+   const struct m9_texture_level *lvl = &resource->texture.level[level];
+   uint32_t block = resource->texture.block_bytes;
+   uint32_t span = m9_compressed_span(lvl->width);
+   uint32_t lines = m9_compressed_lines(lvl->height, block);
+   bool small = span <= 64 && lines <= 64;
+   uint32_t cols = ((uint32_t)box->width + 3) / 4;
+   uint32_t rows = ((uint32_t)box->height + 3) / 4;
+   size_t bytes = (size_t)cols * rows * block;
+   uint8_t *image = MALLOC(bytes);
+   struct drm_parhelia_m9_surface_access access = {
+      .handle = resource->handle,
+      .op = write ? PARHELIA_M9_ACCESS_WRITE : PARHELIA_M9_ACCESS_READ,
+      .descriptor0 = (uint32_t)resource->texture_code << 24 |
+                     (small ? M9_TEXTURE_KIND_2D :
+                              M9_TEXTURE_KIND_RENDER) << 16 | span,
+      .descriptor1 = 1u << 16 | lines,
+      .surface_width = span,
+      .x = (uint32_t)box->x / 4,
+      .y = (uint32_t)box->y / 4,
+      .width = cols,
+      .height = rows,
+      .data_stride = cols * block,
+      .data_ptr = (uintptr_t)image,
+      .data_size = bytes,
+      .flags = PARHELIA_M9_ACCESS_TEXTURE,
+      .offset = (uint32_t)lvl->offset,
+   };
+   int ret = image && cols && rows && !(box->x & 3) && !(box->y & 3) &&
+             lvl->offset <= UINT32_MAX ? 0 : -EINVAL;
+
+   if (!ret && write)
+      for (uint32_t r = 0; r < rows; r++)
+         memcpy(image + (size_t)r * cols * block, data + (size_t)r * stride,
+                (size_t)cols * block);
+   if (!ret && write) {
+      ctx->window_writes++;
+      ctx->window_write_bytes += bytes;
+   } else if (!ret) {
+      ctx->window_reads++;
+      ctx->window_read_bytes += bytes;
+   }
+   if (!ret && ioctl(ctx->screen->fd, DRM_IOCTL_PARHELIA_M9_SURFACE_ACCESS,
+                     &access))
+      ret = -errno;
+   if (!ret && !write)
+      for (uint32_t r = 0; r < rows; r++)
+         memcpy(data + (size_t)r * stride, image + (size_t)r * cols * block,
+                (size_t)cols * block);
+   FREE(image);
+   return ret;
+}
+
 static int
 m9_texture_window(struct m9_context *ctx, const struct m9_resource *resource,
                   unsigned level, bool write, const struct pipe_box *box,
@@ -618,6 +705,9 @@ m9_texture_access(struct m9_context *ctx, struct m9_resource *resource,
 {
    const struct m9_texture_layout *layout = &resource->texture;
 
+   if (layout->block_bytes)
+      return m9_texture_window_blocks(ctx, resource, level, write, box, data,
+                                      stride);
    if (!m9_texture_level_placed(layout, level))
       return m9_texture_window(ctx, resource, level, write, box, data, stride);
    return write ?
@@ -706,9 +796,13 @@ m9_transfer_map_locked(struct pipe_context *pctx, struct pipe_resource *pres,
                                   PIPE_MAP_DISCARD_WHOLE_RESOURCE)) &&
                        !(usage & PIPE_MAP_WRITE));
 
-      stride = box->width * util_format_get_blocksize(pres->format);
+      /* A compressed box is in texels and its rows are block rows. */
+      stride = util_format_get_stride(pres->format, box->width);
       transfer->staging = box->width && box->height ?
-                          MALLOC((size_t)stride * box->height * box->depth) :
+                          MALLOC((size_t)stride *
+                                 util_format_get_nblocksy(pres->format,
+                                                          box->height) *
+                                 box->depth) :
                           NULL;
       if (preserve) {
          ctx->window_read_usage |= usage;
@@ -1853,8 +1947,6 @@ m9_submit_job(struct m9_context *ctx)
          job.faa.ad = m9_faa_ad(&ctx->screen->faa, m9_res(ctx->color)->size);
          job.faa.af = m9_faa_af(&ctx->screen->faa);
          m9_faa_ae_edit(&ctx->screen->faa, &job.faa.ae_and, &job.faa.ae_or);
-         m9_faa_ef_edit(&ctx->screen->faa, &job.faa.ef_and, &job.faa.ef_or);
-         m9_faa_f0_edit(&ctx->screen->faa, &job.faa.f0_and, &job.faa.f0_or);
       }
       if (fs) {
          job.program = key->variant->c2.handle;
@@ -2393,6 +2485,31 @@ m9_texture_bind_view(const struct pipe_sampler_view *view,
        * the small kind up to 64 in both dimensions, the ordinary tiled kind
        * above it.  Reading 128x128 and larger textures as the small kind
        * returned a single constant texel. */
+      /* A compressed level is stored and sampled through the ordinary
+       * tiled kind, at its texel extent rounded up to whole blocks
+       * (docs/parhelia-m9-s3tc-compressed-textures.md 5.1). */
+      if (res->texture.block_bytes) {
+         /* MEASURED: the storage kind is the one the level was written
+          * through -- the small 2-D kind up to 64 in both dimensions and
+          * the ordinary tiled kind above it -- while the extent stays the
+          * logical one rounded up to whole blocks.  dxt1:132x64, whose
+          * logical width is not its 32-aligned span, samples exactly,
+          * which is what settles section 5.2's open question in favour of
+          * the logical width. */
+         uint32_t span = m9_compressed_span(res->width);
+         uint32_t lines = m9_compressed_lines(res->height,
+                                              res->texture.block_bytes);
+         bool small = span <= 64 && lines <= 64;
+
+         *bind = (struct m9_texture_bind) {
+            .code = res->texture_code,
+            .kind = small ? M9_TEXTURE_KIND_2D : M9_TEXTURE_KIND_RENDER,
+            .width = (res->width + 3) & ~3u,
+            .height = (res->height + 3) & ~3u,
+            .depth = 1,
+         };
+         return NULL;
+      }
       *bind = (struct m9_texture_bind) {
          .code = res->texture_code,
          .kind = m9_texture_bind_kind(&res->texture, res->width, res->height),

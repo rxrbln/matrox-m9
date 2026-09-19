@@ -259,6 +259,14 @@ m9_is_format_supported(struct pipe_screen *screen, enum pipe_format format,
    default:
       return false;
    }
+   /* S3TC: a sampler source only.  The vendor's own operation table gives
+    * the DXT rows no render-target, mipmap-generation or display bit
+    * (docs/parhelia-m9-s3tc-compressed-textures.md 9), and nothing here
+    * writes a compressed surface with the raster engine.  The sRGB variants
+    * are absent because no sRGB decode is recovered for this sampler. */
+   if (m9_texture_compressed(format, NULL, NULL))
+      return target == PIPE_TEXTURE_2D && samples <= 1 &&
+             !(bind & ~(PIPE_BIND_SAMPLER_VIEW | PIPE_BIND_LINEAR));
    if (!m9_format_info(format, &info))
       return false;
    /* M9X_GIGA_ORDER=0x68|0x6a hides the other 10-bit code, so a fixture can
@@ -468,6 +476,23 @@ m9_resource_create(struct pipe_screen *pscreen,
       uint32_t depth = kind == M9_TEXTURE_KIND_3D ? templ->depth0 : 1;
       unsigned layers = kind == M9_TEXTURE_KIND_CUBE ? 6 : 1;
 
+      /* A compressed image is stored by the surface window in whole
+       * blocks; it has no cpp and takes none of the layouts below. */
+      if (m9_texture_compressed(templ->format, &texture.code,
+                                &resource->block_bytes)) {
+         if (kind != M9_TEXTURE_KIND_2D || templ->last_level ||
+             m9_resource_bo_flags(templ) != PARHELIA_M9_BO_VRAM ||
+             m9_texture_layout_compressed(&resource->texture, templ->width0,
+                                          templ->height0, 1,
+                                          resource->block_bytes))
+            goto fail;
+         resource->kind = M9_RESOURCE_LINEAR_TEXTURE;
+         resource->texture_storage = templ->format;
+         resource->texture_code = texture.code;
+         resource->row_span = (templ->width0 + 31) & ~31u;
+         size = resource->texture.size;
+         goto allocate;
+      }
       if (!m9_format_info(templ->format, &format) || !kind ||
           (kind != M9_TEXTURE_KIND_3D && templ->depth0 != 1) ||
           templ->array_size != layers ||
@@ -525,6 +550,7 @@ m9_resource_create(struct pipe_screen *pscreen,
          size = render_layout.size;
       }
    }
+allocate:
    if (templ->target == PIPE_BUFFER) {
       /* Only the CPU draw module reads Gallium buffers; no kernel BO, so no
        * contiguous DMA32 allocation (vbo_save asks for 1 MiB). */
