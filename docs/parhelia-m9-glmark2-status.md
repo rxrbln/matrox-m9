@@ -36,6 +36,31 @@ control this is read against.  Running the list in one process changes no
 frame rate: the per-benchmark sweep was never measuring anything different,
 it was only working around the crash below.
 
+Offline gates from the build directory they were built in, exit codes read
+rather than last lines (`tools/m9-offline-gates.sh`): `m9-batch-test` rc=0,
+`m9-vs-compile-test` rc=0, `m9-fs-compile-test` rc=0.  Fixture suite on the
+same library, on a freshly rebooted card: **263 cases, 247 PASS, 16 FAIL, 0
+non-M9, 0 stream timeouts** -- the same sixteen as the standing below, the
+ten `dxt*`, the four `giga10*` and `mrt10:2`/`mrt10:4`.  The deployed library
+is byte-identical to a second build of the same tree (md5
+`6e8cfd2b081c42c349276120dd6e21b9`, verified on the target before the run).
+
+`tools/m9x-glmark-default-suite.sh` was then run as a script, against the
+same library: **33 scenes, rc=0, 0 stream timeouts**, 29 at or above 60 fps
+and the four below being the 15-tap `effect2d`, `desktop` blur, `terrain` and
+`refract`; `texture` passing after it.
+
+### A long session costs the run after it, and it is not a stream timeout
+
+CAPTURED once, worth naming because it looks exactly like a driver fault: the
+same script run after the 263-case fixture suite, without a reboot in
+between, lost **28 draws to "job failed, context lost"** and died at the
+twentieth benchmark on an X `BadValue`, with **0 stream timeouts** in dmesg.
+What dmesg did carry is `m9x: no contiguous DMA32 for 5529600 bytes;
+scattered pages`.  After a reboot the identical command is the clean 33 above.
+So a benchmark run that follows a long GL session is not a control for
+anything; reboot first.
+
 ### The rc=139 between scenes was ours, and what it was
 
 CAPTURED under gdb, the pre-fix library, one invocation: the client takes
