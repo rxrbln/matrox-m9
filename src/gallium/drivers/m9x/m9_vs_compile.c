@@ -1307,6 +1307,32 @@ build_alu(struct ctx *c, nir_alu_instr *alu)
             return false;
          break;
       }
+      case nir_op_inot: {
+         /* A condition holds 1.0 or 0.0, so its complement is one minus
+          * it.  Only a Boolean is accepted: there is no integer ALU. */
+         struct held one = held_lit(1.0f);
+
+         if (alu->def.bit_size != 1)
+            return fail(c, "integer not");
+         a0 = src_held(alu, 0, c0); a1 = src_held(alu, 0, c1);
+         if (!emit_add(c, dst, &one, &one, &a0, &a1, true))
+            return false;
+         break;
+      }
+      case nir_op_iand:
+      case nir_op_ior:
+         /* And is the product of two conditions, or the larger of them;
+          * both are exact for 1.0 and 0.0 and stay conditions. */
+         if (alu->def.bit_size != 1)
+            return fail(c, "integer bitwise operation");
+         a0 = src_held(alu, 0, c0); a1 = src_held(alu, 0, c1);
+         b0 = src_held(alu, 1, c0); b1 = src_held(alu, 1, c1);
+         if (alu->op == nir_op_iand ?
+             !emit_mul(c, dst, &a0, &a1, &b0, &b1) :
+             !emit_minmax(c, dst, true, &a0, &a1, &b0, &b1))
+            return false;
+         break;
+      case nir_op_b2f16:
       case nir_op_b2f32:
       case nir_op_mov:
          a0 = src_held(alu, 0, c0); a1 = src_held(alu, 0, c1);
