@@ -449,6 +449,26 @@ its fragment counter then covers a single draw rather than a whole job, so
 the size above is an upper bound rather than a hope.  `M9X_SPLIT_DRAWS`
 raises the limit for re-measurement.
 
+### 3d. A split job's records are the ceiling over the pass count
+
+A split job preprocesses **one copy of the geometry per raster pass**, from one
+arena and through one index run per copy, so the records it can carry are
+`m9_draw_max_source_vertices() / passes` less the padding a partial draw needs
+- 2856 of 11520 at four passes, 1620 at seven.  Two consequences:
+
+* A mesh under a split shader is cut into many single-draw jobs.  refract's
+  208998 corners at four passes are 103 jobs a frame as the draw module's own
+  blocks divide them (MEASURED, `M9X_SPLIT_TRACE=2`), and that job count is
+  what the scene's frame time now is.
+* `records * passes` also has to fit the **16-bit** index space, because each
+  copy's indices are the first copy's plus `i * records`.  So the ceiling
+  cannot usefully exceed 65536 however much memory there is, and 16384 records
+  a job is the most a four-pass shader can ever hold.
+
+Producers that sized their runs by the whole ceiling had them refused here and
+dropped the geometry silently; `m9_job_max_vertices()` is the single statement
+of the rule (`98be636`).
+
 ## 4. What the driver does today
 
 The compiler-side splitter is implemented and gated off.  `m9_fs_compile_passes`

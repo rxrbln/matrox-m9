@@ -22,7 +22,119 @@ Every run asserts `GL_RENDERER` is `Matrox M9`: a Mesa build configured without
 back to llvmpipe silently, and every fixture still passes against the CPU
 reference.
 
-## Standing 2026-09-19: all thirty-three run, twenty-nine above 60 fps, four still skip draws
+## Standing 2026-09-19 (later): `refract` renders, and costs 5 fps to do it
+
+MEASURED at 1920x1200, **one X server and one process a benchmark**
+(`tools/m9x-glmark-default-suite-fresh-x.sh`), `M9X_SKIP_REPORT=1`, the whole
+thirty-three in one sweep, **0 stream timeouts**, no
+`glCheckFramebufferStatus` failure and no lost context anywhere in the run.
+The only row that moved is `refract`; every other benchmark is within a frame
+a second of the sweep below, which is the control this is read against.
+
+| benchmark | fps | draws skipped a frame |
+|---|---:|---|
+| `build` vbo=false / vbo=true | 270, 294 | none |
+| `texture` nearest / linear / mipmap | 284, 283, 283 | none |
+| `shading` gouraud / blinn-phong-inf / phong / cel | 242, 149, 88, 83 | none |
+| `bump` high-poly / normals / height | 105, 182, 164 | none |
+| `effect2d` 3x3 | 84 | none |
+| **`effect2d` 15-tap** | **33** | none |
+| `pulsar` | 220 | none |
+| **`desktop` blur** | **37** | none |
+| `desktop` shadow | 124 | none |
+| `buffer` map / subdata / interleaved | 153, 153, 153 | none |
+| `ideas` | 111 | none |
+| `jellyfish` | 125 | **1244**, out of temporaries for blending |
+| **`terrain`** | **1** | **24**, five samplers against four units and the register file |
+| `shadow` | 145 | **1447**, a depth-only framebuffer has no raster parameters |
+| **`refract`** | **5** | none - **and the picture is right** |
+| `conditionals` 0/0, 0/5, 5/0 | 229, 142, 228 | none |
+| `function` low / medium | 168, 72 | none |
+| `loop` no-loop / uniform=false / uniform=true | 166, 166, 344 | **3437** on uniform=true, control flow |
+
+Twenty-nine of the thirty-three are at or above 60 fps, as before; `refract`
+was already below it at 39 and is further below now.  That is a real cost and
+it is named in the backlog, but it buys the first correct frame this scene has
+ever produced on the card.
+
+### What `refract` was doing, and what it does now
+
+**The black frame was never the split path.**  A split shader preprocesses one
+copy of the geometry per raster pass, so `m9_job_reserve` refuses a run of more
+than `ceiling/passes` source records - 2856 of the 11520 ceiling for a
+four-pass shader.  Every producer sized its runs by the **whole** ceiling, and
+on the refusal simply returned.  The draw module handed refract's main pass
+over in runs of 11520, **every one of them was refused**, and the frame carried
+the tail alone.
+
+MEASURED with `M9X_SPLIT_TRACE=2`, which names every job and not only the split
+ones - one frame of `refract`, in order:
+
+```text
+m9x job 33: 2048x1280 passes 0 draws 1 records 4      the distance target's clear
+m9x job 34..51: 2048x1280 passes 1 draws 1 records 11520   the depth pass, 18 jobs
+m9x job 52: 2048x1280 passes 1 draws 1 records 1640        its tail
+m9x job 53..58: 1024x640 .. 32x20 passes 1 records 4       the generated mip chain
+m9x job 59: 1920x1200 passes 4 draws 1 records 156         the main pass, ENTIRE
+```
+
+The depth pass draws all 208998 corners of `bunny.obj` (69666 triangles, one
+record a corner); the main pass, over the same mesh, carried **156**.  52
+triangles of 69666, which is a black screen.
+
+This **predates the padded split path**.  The control was run: the 2026-09-18
+deployment at `/root/parhelia-m9x-mesa`, built before `a47dcf5`, `4cd7d1d` and
+`15dbebf`, renders `refract` at **1 distinct colour** in 2.3 M pixels while
+reporting `draws skipped` for coverage.  So this is a scene that had **never
+rendered**, not a regression from those three; the padded path removed the
+coverage refusal and exposed the record loss underneath it.
+
+`m9_job_max_vertices()` (`98be636`) is that ceiling in one place - the pass
+count and the padding a partial draw needs - and `m9_job_reserve`, the draw
+module's two append paths and the three native vertex paths all use it.  A run
+that still does not fit is **tallied as a skipped draw**, so this class of loss
+cannot be silent again.
+
+CAPTURED off scanout with the fix, `xwd` of the root window at 5 s and again at
+8 s of a 1920x1200 run, the known-good fixture rendering after it in the same
+session:
+
+| | distinct colours | mean r,g,b |
+|---|---:|---|
+| 2026-09-18 control, 5 s | 1 | 0, 0, 0 |
+| HEAD before the fix, 5 s / 8 s | 15 / 4 | 0, 0, 0 |
+| **with the fix, 5 s** | **223965** | 21.6, 18.1, 26.0 |
+| with the fix, 8 s | 194363 | 17.8, 15.8, 22.9 |
+| llvmpipe reference, same size | 181662 | - |
+
+The picture is the refracting bunny over black, and it matches the software
+reference in structure and colour; the distinct-colour ratio against it is
+1.23.
+
+### The cost, and where it comes from
+
+MEASURED, `M9X_PROFILE=20` at 1920x1200 with the fix:
+
+```text
+m9x: 20 frames 212.10 ms/frame (job vertices 11520): draw 194.11 emit 184.21
+     submit 186.90 varying 16.21 records 4.04 ioctl 81.24 | jobs 130 draws 130
+     records 418084 varying KiB 118982.6 refused 0 skipped 0
+```
+
+130 jobs a frame against 28 while it was dropping the geometry, 81 ms of submit
+ioctl at 0.62 ms a job, and 116 MiB of CPU varying gather - the varyings are
+repeated once per raster pass behind the first set, so a four-pass job pays for
+its geometry four times.
+
+The job count is forced by the hardware rule, not by a choice: a split job
+carries exactly one raster draw (3c), and its records are capped at
+`ceiling/passes`.  The only lever inside that rule is a larger record ceiling,
+and the 16-bit index space caps `records * passes` at 65536, so 16384 records a
+job and about 13 jobs for this mesh.  `M9X_JOB_VERTICES=65532` does **not**
+reach it on this target: MEASURED, 0 jobs, 0 draws, nothing drawn and a stream
+timeout, which is the 481 MB of system RAM rather than the rule.
+
+## Superseded: standing 2026-09-19, before `refract`'s geometry was delivered
 
 MEASURED at 1920x1200, **one X server and one process a benchmark**
 (`tools/m9x-glmark-default-suite-fresh-x.sh`, and see why below), the padded
@@ -85,7 +197,9 @@ context lost` and 6536 fps, and benchmarks 17 to 33 all exit rc=1.
   2.3 million pixels, mean 0, CAPTURED at 5 s and again at 8 s, with the same
   capture showing `pulsar` at 88075 distinct colours and `texture` at 15096.
   So "0 skipped draws" is not conformance, and the ledger's "refract is
-  conformant" is withdrawn.
+  conformant" is withdrawn.  *(Closed below: the geometry was being dropped
+  by a producer that sized its runs by the whole record ceiling rather than
+  by a split job's share of it.)*
 * **`shadow` was never 143-147 fps for a complete picture.**  That number is
   what it reaches now, drawing the pass it used to skip; the 295 fps it
   reported before was the scene without it.
@@ -113,6 +227,10 @@ different tree.  Nothing was reverted in `m9x` that would restore them, so the
 likely cause is that build not carrying `2f752ee`.  Until a fresh rebuild of
 current `m9x` HEAD is rerun on the card, treat 0 skipped / 101.6 KiB as the
 figure to reproduce and this as unreconciled, not as two valid results.
+**Closed 2026-09-19**: a fresh rebuild of `m9x` HEAD reproduced 0 skipped and
+101.6 KiB exactly, so that reading stands and the 0.3 KiB one was the older
+build.  Both, however, describe a frame that drew 156 of 208998 records; with
+the ceiling respected the figure is 118982 KiB (see the standing section).
 
 **The depth attachment is not what refuses them, and carrying the
 destination's depth box into the scratch surface would restore nothing**
@@ -122,7 +240,12 @@ depth.  A scratch surface is the size of the box the geometry spans, so it
 only helps a draw that **fills** that box -- a rectangle does, a mesh does
 not.  `refract`'s missing draw is its bunny under a four-pass shader and
 `terrain`'s is its mesh under seven, and no target of any size can be covered
-by either, so the multi-pass schedule cannot carry them at all.  A single-pass
+by either, so the multi-pass schedule cannot carry them at all.  *(Superseded
+for `refract`: the padded path does carry it - the geometry reaches the
+target's extent through four thin rectangles while the clip window keeps the
+pixels it covers - and what was left of the scene after that was a producer
+dropping the runs that did not fit a split job's record ceiling.  See the
+standing section at the top.)*  A single-pass
 compilation would sidestep the coverage requirement, and **neither shader can
 be compiled in one pass on this hardware** -- see below; see also
 `parhelia-m9-fragment-pass-hardware.md` 3bc.
@@ -479,7 +602,9 @@ splitdesk:3:4:11:1920x1200         the scene
   reported those as contradictory results for the same scene.
 * `refract` was reported as stalling.  It does not - it had simply never been
   measured, and completes with no timeout, no skipped draws and no lost
-  context.
+  context.  It was, however, drawing 156 of its 208998 records until
+  `98be636`, so "completes with no skipped draws" was true and still meant a
+  black screen.
 * `desktop`'s 37 fps was never the 4-pass path: its log showed the 106 MiB
   record refused thirteen times, so that number was the fallback.
 * Fixing the `be` per-shape stall was expected to close `desktop` and
