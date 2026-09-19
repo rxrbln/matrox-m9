@@ -42,6 +42,36 @@ The distinct-colour count is **not** comparable between runs here: these
 scenes animate, and a capture 6 s in is at a different phase from one at 5 s
 or 8 s.  The histogram pair is what carries the reading.
 
+The software reference agrees on exactly the part the shadow map decides.
+CAPTURED through the system Mesa under the same X server, 6 s in:
+
+| luminance band | M9 | software |
+|---|---:|---:|
+| 0, background | 68.35% | 64.46% |
+| **38, shadowed floor** | **2.99%** | **3.13%** |
+| **76, lit floor** | **26.65%** | **26.44%** |
+| 61-95 other than 76 | 0.47% | 1.22% |
+| above 95 | 0.21% | 2.87% |
+
+`jellyfish` agrees with its reference throughout: 232951 distinct colours
+against 231066, mean 68.8/105.1/199.9 against 67.9/103.3/196.0.  `loop`
+uniform=true agrees on the mean, 44.5 against 44.6.
+
+**Open, and not one of the three:** `shadow`'s bright band is missing on the
+M9 -- 0.21% of pixels above luminance 95 where the reference has 2.87%, and
+0.47% against 1.22% in 61-95, with the difference showing up as background.
+The floor and its shadow are exact; what the reference draws and the M9 does
+not is the lit model that casts it, which `shadow.vert` does not shade
+(`Color = MaterialDiffuse`, one flat value) -- the horse is drawn with
+`light-basic.vert/frag` instead.  This is a separate defect from the
+depth-only framebuffer and it was invisible while every draw into that
+framebuffer was being skipped.  **The capture that would attribute it** is
+`shadow` on the build before these fixes, beside `shading=gouraud` on both
+builds, since `gouraud` uses the same `light-basic` pair; it was prepared
+(`/root/tmp/skip3-run5.sh` against the `/root/parhelia-m9x-skipbase` prefix)
+but did not run, because the target was rebooted for other work before it
+reached the head of the hardware lock.
+
 `jellyfish` is the blended scene, 232951 distinct colours over a blue
 distribution centred near 160-165.  `loop` is the `fract` noise pattern, 256
 luminance levels thinly spread over the grid with the background black.
