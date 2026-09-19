@@ -160,10 +160,15 @@ static int m9_surface_check(const struct drm_parhelia_m9_surface_access *args,
 		view->cpp = m9_compressed_block_bytes(d0 >> 24);
 		view->elements = view->span / 4;
 		view->rows = view->height / 4;
+		u8 kind = (d0 >> 16) & 0xff;
+
 		if (!IS_ALIGNED(args->offset, 0x100) ||
 		    view->span != args->surface_width ||
-		    !IS_ALIGNED(view->span, 32) || !IS_ALIGNED(view->height, 4) ||
-		    ((d0 >> 16) & 0xff) != M9_TEXTURE_KIND_LARGE)
+		    !IS_ALIGNED(view->height, 4) ||
+		    (kind == M9_TEXTURE_KIND_SMALL ?
+		     view->span > 64 || view->height > 64 :
+		     kind != M9_TEXTURE_KIND_LARGE ||
+		     !IS_ALIGNED(view->span, 32)))
 			return -EINVAL;
 		view->bytes = (u64)view->elements * view->rows * view->cpp;
 		view->bytes = ALIGN(view->bytes, 0x1000);
@@ -209,10 +214,14 @@ static int m9_surface_check(const struct drm_parhelia_m9_surface_access *args,
 		 * contract, and the window extent stays the linear view. */
 		view->bytes = (u64)view->span * 4 * view->height;
 	}
+	/* A render target keeps its declared width as the bound; only a
+	 * texture's addressing units are the view's elements, which for a
+	 * compressed level are blocks rather than texels. */
 	if (check_add_overflow(args->x, args->width, &end) ||
-	    end > view->elements ||
+	    end > (texture ? view->elements : args->surface_width) ||
 	    check_add_overflow(args->y, args->height, &end) ||
-	    end > view->rows || view->bytes > M9_ADDRESS_SURFACE_BYTES)
+	    end > (texture ? view->rows : view->height) ||
+	    view->bytes > M9_ADDRESS_SURFACE_BYTES)
 		return -EINVAL;
 	need = (u64)(args->height - 1) * args->data_stride +
 	       (u64)args->width * view->cpp;
