@@ -13,10 +13,11 @@ compiler's own contracts, what each form rests on, and what is not covered.
 The driver runs the compiled program on the GPU: section 8 records the
 integration, what it measures and what it still cannot do.
 
-Twenty-seven vertex shaders, glmark2's `bump-poly.vert` among them, compile
-and verify offline (OFFLINE, `m9-vs-compile-test`), four of them with a
+Twenty-nine vertex shaders, glmark2's `bump-poly.vert` among them, compile
+and verify offline (OFFLINE, `m9-vs-compile-test`), six of them with a
 coordinate stream (section 4a) compiled beside the default layout and checked
-stream by stream.  `mvp * position` with a
+stream by stream -- four with the coefficients in the job's constant span and
+two with them in the source record.  `mvp * position` with a
 colour varying compiles to **36 slots, the same length the vendor compiler
 emits for it**, with the transform in the vendor's own eight instructions.
 
@@ -134,13 +135,40 @@ high = low                                    VS_MOV, so the stream entry
 ```
 
 `c` is wherever the linker put the pair, including the straddling `c = 1`
-that glmark2's texture scene links to, where the two scalars sit in
-different registers and the operand builder's two gather moves fetch them.
-`k_scale` and `k_bias` are constant pairs of a kind of their own
-(`M9_VS_CONST_COORD`); `m9_vs_resolve_consts()` fills them per job with
-`sampler transform * span` and `sampler bias * span`, the same numbers
-`m9_scale_coords` applied.  A stream therefore costs one multiply-add, one
-move and two constant pairs.
+where the two scalars sit in different registers and the operand builder's
+two gather moves fetch them.
+
+**Where the coefficients come from decides whether two draws can share a
+job.**  As constant pairs of their own kind (`M9_VS_CONST_COORD`,
+resolved per job by `m9_vs_resolve_consts()`) they are part of the job's
+constant span, and `m9_job_reserve()` ends a job when that span changes --
+so a scene that samples render targets of different addressed spans got one
+job a draw.  glmark2's `desktop:shadow` is exactly that scene and it cost
+4 fps.
+
+So a stream whose layout says `coeff_record` takes them from a
+**source-record slot** instead: one more declared attribute, four floats the
+record writer puts in every record of the draw
+(`struct m9_vs_source_attr::value`, filled from `m9_vs_coord_coefficients()`
+in `m9_native_vs_records()`), and two register instructions in place of the
+constant multiply-add:
+
+```text
+t    = (V[c], V[c+1]) * A[0..1]               VS_MUL_RR, CAPTURED s23
+low  = t + A[2..3]                            VS_ADD_RR
+high = low                                    VS_MOV
+```
+
+Records are per draw already, so a draw with its own span appends records to
+the pending job rather than ending it.  The slot is spent whenever one of
+the four attributes is free -- not when the coefficients happen to differ,
+because whether they differ is a property of the draw and a layout that
+followed it would recompile, and split the job, every time a scene mixed a
+padded render target with an ordinary texture.  A shader that already
+declares four attributes keeps the constant route.
+
+A coordinate stream therefore costs one multiply-add, one move and two
+constant pairs, or one multiply, one add, one move and one record slot.
 
 What stays refused, each with its own reason: a **projective** coordinate,
 whose per-vertex divide is wrong in 75373 of 76800 pixels (MEASURED, fixture
@@ -149,8 +177,25 @@ volume** fetch, which reads a third interpolated component; a coordinate an
 earlier raster pass produced; and a fragment program split across raster
 passes.
 
+**A coordinate inside a varying the pass already interpolates costs no
+stream at all.**  The raster declaration word's low twelve bits are four
+component selectors, so the sampler's attribute can be declared over the
+varying's own stream slot reading components `c` and `c + 1`
+(`m9_coord_select()`), and the layout drops the coordinate stream entirely.
+It applies where the coefficients are the identity -- a shared stream
+carries the varying's own values, unscaled -- which is the common shape and
+glmark2's `texture` among it.  MEASURED on the M9128: six textured fixtures
+exact either way, and `texture` native at the draw module's own frame rate
+(`docs/parhelia-m9-raster-stream-limit-re.md`).  `M9X_COORD_SHARE=0` puts
+the separate stream back.
+
 `M9X_VS_TEXTURE=0` puts every sampling draw back in the draw module, which
-is the A/B arm of this change rather than a gate.
+is the A/B arm of this change rather than a gate.  `M9X_VS_COORD_PAIR=1`
+lifts the one gate that is left: a coordinate stream that cannot share --
+because it scales, or because its varying is not one the pass
+interpolates -- takes the second output target beside another stream, and
+that shape costs frame rate on the one benchmark measured with it
+(`docs/parhelia-m9-glmark2-status.md`).
 
 ## 5. Instruction forms and their provenance
 
@@ -182,7 +227,8 @@ both the shapes the fragment backend already uses.
 
 ## 6. Limits
 
-* **Four attributes.**  Index `22` carries the declaration word count minus one
+* **Four attributes**, the coefficient slot of a record-routed coordinate
+  stream (section 4a) counted among them.  Index `22` carries the declaration word count minus one
   in bits 11:8 -- four bits, so **sixteen words per pass**, not eight.  Four
   attributes are CAPTURED in one pass: every `fs-*` case of the vendor corpus
   declares four in nine index-`23` words over one 64-byte record and its vertex
@@ -231,7 +277,15 @@ A case that names an output layout is compiled a second time with it and
 every stream of that program is checked against the same reference: a
 varying stream against the varying, a coordinate stream against
 `varying[component..component+1] * scale + bias` with the coefficients the
-driver would resolve.
+driver would resolve, whichever route carries them.
+
+Until 2026-09-19 the coordinate cases checked **nothing of the kind**: the
+`COORD_STREAM()` initialiser named four of `struct m9_vs_output`'s five
+fields, so `true` landed in `pass` and `coordinate` stayed false, and each
+of them compiled an ordinary varying stream -- no case produced an
+`M9_VS_CONST_COORD` pair at all.  The gate was green because it was
+verifying the wrong program.  Corrected, the four cases compile real
+coordinate streams and two more cover the record route.
 
 The simulator treats the reciprocal and reciprocal-square-root seeds as exact.
 Newton refinement from an exact seed is a fixed point, so the chains still have
@@ -417,9 +471,10 @@ isolates it.
   board (`parhelia-m9-varying-transport-re.md` section 12).
 * **A projective texture coordinate** and a shadow or volume fetch's third
   component (section 4a).
-* **A coordinate stream** and a **split fragment program**, both built and
-  both off by default -- the first because it costs frame rate, the second
-  because the engine draws nothing from it (section 4a).
+* **A coordinate stream beside another stream**, which needs the second
+  output target, and a **split fragment program**, which the engine draws
+  nothing from (section 4a).  A coordinate stream on its own is on by
+  default.
 * **One basic block**, the backend's own limit.
 * Instanced draws, primitive restart, user clip planes, polygon offset,
   polygon or line stipple, wide or smooth lines, non-fill polygon modes and

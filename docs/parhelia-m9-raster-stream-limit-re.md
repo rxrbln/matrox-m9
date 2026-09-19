@@ -251,6 +251,25 @@ Run on the dual-DisplayPort M9128 at 192.168.1.111 with
 `tools/m9-user-raster-streams.c`, every interior pixel against the same CPU
 reference, one process a step under the hardware lock.
 
+### A non-zero first selector reads a pair out of another attribute's stream
+(MEASURED 2026-09-19)
+
+The same twelve bits answer the other question they raise.  A texture
+coordinate attribute declared over **the stream slot an interpolated varying
+already uses**, with selectors `c | (c + 1) << 3 | 6 << 6 | 6 << 9`, reads
+that varying's components `c` and `c + 1` as its `s` and `t` and leaves `r`
+and `q` unwritten.  MEASURED through the m9x driver on the M9128
+(`M9X_COORD_SHARE=1`): `texture`, `texpair` -- the sampled pair at components
+1 and 2 of an interpolated varying, which is what glmark2's texture scene
+links -- `vary2tex`, `vary2blend`, `rtt300` and `texaff` are each **0 of
+76800 pixels different** against their CPU reference, exactly as they are
+with a coordinate stream of its own, with no stream timeout either way.
+
+That is what lets a preprocessing pass carry a textured draw on **one**
+output target: the coordinate rides the varying's stream instead of taking
+the clip position's target.  It applies only where the coordinate needs no
+scale or bias, because a shared stream carries the varying's own values.
+
 ### The single-word form carries a general interpolant
 
 The low twelve bits of a declaration word are four three-bit component

@@ -1,11 +1,109 @@
 # glmark2 on the m9x driver: where the 60 fps goal actually stands
 
-## Read this first: two standings below, measured on different builds
+## Read this first: three standings below, measured on different builds
 
-The **seventh** standing measures the second varying (`M9X_VS_VARYINGS` now 2)
-with one process a benchmark; the **sixth** measures the whole default run in
-one `glmark2` invocation on the build before it.  Neither supersedes the other
-and they have **not** been swept together.  UNTESTED as a combination.
+The **eighth** is the current one: the coordinate stream's coefficients moved
+out of the per-job constant span, `M9X_VS_TEXTURE` on by default, glmark2's
+default thirty-three in one invocation an arm.  The **seventh** measures the
+second varying (`M9X_VS_VARYINGS` now 2) with one process a benchmark on the
+build before it; the **sixth** measures the whole default run in one
+`glmark2` invocation on the build before that.  The older two are kept as the
+measurements they were and are not swept together with the eighth.
+
+## Standing 2026-09-19 (eighth): the textured draws run on the engine
+
+MEASURED on the M9128 at 1920x1200, one hold of both hardware lock files on
+a freshly rebooted card, module `/root/tmp/dxtmip-m9x_drm.ko` named
+explicitly, **one X server and one `glmark2` invocation an arm** against one
+deployed library (md5 `08a16d74`) carrying both arms behind its knobs,
+`M9X_SKIP_REPORT=1 M9X_PROFILE=40`, **`duration=5` on every benchmark** --
+half glmark2's own default, which is what the older standings below were
+taken at, so the frame rates are not directly comparable with them.  33 of
+33 results and rc=0 in each arm, **0 stream timeouts**, and `texture`,
+`texpair`, `rtt300` and `vary2tex` exact before and after.
+
+Two arms: **default** is what ships (`M9X_VS_TEXTURE=1`), **off** is
+`M9X_VS_TEXTURE=0`, every sampling draw back in the draw module, which is
+what shipped before.
+
+@@TABLE@@
+
+### Three things changed, and each was measured on its own
+
+**1. A coordinate's coefficients moved out of the per-job constant span.**
+They were constant pairs the driver filled per job, so a draw that sampled a
+differently addressed render target ended the job.  They now ride a
+source-record slot -- one more declared attribute, four floats the record
+writer puts in every record of the draw -- and records are per draw already
+(`docs/parhelia-m9-native-vertex-backend.md` section 4a).  MEASURED on
+`desktop:shadow`, whose four windows are render targets of a width the
+descriptor rounds up to 32:
+
+| | jobs a frame | uniform splits a frame | fps |
+|---|---:|---:|---:|
+| coefficients in the constant span | **16.00** | **8.25** | 124 |
+| coefficients in the source record | **6.67** | **0.00** | 131 |
+| draw module, for comparison | 5.67 | 0.00 | 129 |
+
+**2. A sampler reads its pair out of the varying's own stream.**  The raster
+declaration word's low twelve bits are four component selectors, and nothing
+captured ever uses a non-zero first one.  The hardware accepts it: a texture
+coordinate attribute declared over the stream slot an interpolated varying
+already uses, with selectors `c | (c+1) << 3 | 6 << 6 | 6 << 9`, reads that
+varying's components `c` and `c+1`.  MEASURED through the driver's own
+pixel-exact fixtures, six of them -- `texture`, `texpair`, `vary2tex`,
+`vary2blend`, `rtt300`, `texaff` -- each **0 of 76800 pixels different**
+with sharing on, exactly as with a coordinate stream of its own
+(`docs/parhelia-m9-raster-stream-limit-re.md`).
+
+That is what `texture` needed.  The scene links its sampled pair at
+components 1 and 2 of a varying the fragment program also interpolates, so
+the coordinate used to cost a second output target and with it the clip
+position; now it costs nothing and the pass carries one stream.  MEASURED at
+1920x1200, one hold, one library:
+
+| `texture` linear | fps | ioctl ms a frame |
+|---|---:|---:|
+| draw module | 307 | 3.171 |
+| native, coordinate stream of its own | 288 | 3.414 |
+| native, shared with the varying | **308** | 3.174 |
+
+**3. What the separate stream costs, for the record.**  Before the sharing
+route existed, the two-stream shape cost `texture` frame rate and it was not
+the second output target as a fixed per-pass cost: the job count is **2 a
+frame in both arms at every size** and the CPU half is 0.00 on the native
+arm, while the excess is in the GPU half and scales with the rendered area
+(MEASURED over four sizes, one benchmark a size):
+
+| size | megapixels | off, ioctl ms | native, ioctl ms | excess |
+|---|---:|---:|---:|---:|
+| 240x150 | 0.036 | 0.123 | 0.154 | +0.031 |
+| 480x300 | 0.144 | 0.314 | 0.360 | +0.046 |
+| 960x600 | 0.576 | 0.929 | 1.037 | +0.108 |
+| 1920x1200 | 2.304 | 3.333 | 4.142 | +0.809 |
+
+`0.026 ms + 0.139 ms a megapixel` fits the first three to a thousandth.  A
+coordinate stream that cannot share -- because it scales, or because its
+varying is not one the pass interpolates -- still takes that second target,
+so it stays refused behind `M9X_VS_COORD_PAIR=1`.
+
+### The engine does not act on the cull bits (MEASURED)
+
+Both paths state the same cull bits in index `ef`, and **clearing them
+changes nothing**: `M9X_NO_CULL=1` on three native scenes at 1920x1200 moves
+neither the frame rate nor the ioctl phase by more than the noise --
+`bump:normals` 191 fps and 5.125 ms against 191 and 5.130, `texture` 288 and
+3.417 against 289 and 3.404, `build` 322 and 2.856 against 323 and 2.840.
+If the engine were removing back-facing triangles, taking the bits away
+would have made it rasterise them.
+
+That matters because the draw module removes them on the **CPU** before it
+hands a draw over and the native path does not: `texture`'s cube reaches the
+engine as 22 source records a frame through the draw module -- varying
+between 16 and 40 with the rotation -- and as a fixed 40 natively.  So every
+native draw of a closed mesh rasterises its hidden half.  Why index `ef`'s
+cull field is inert is **OPEN**, and it is the next thing to settle: it
+would pay on every native scene, not only the textured ones.
 
 ## Standing 2026-09-19 (seventh): the second varying moves two scenes onto the engine
 
@@ -53,10 +151,9 @@ The driver now tallies its refusals by reason.  Across the thirty-three:
 
 * **the fragment program samples a texture** -- `texture` x3, `bump:normals`,
   `bump:height`, `effect2d` x2, `desktop` x2, `shadow` in part, `terrain`,
-  `refract`, `jellyfish` in part.  This, and not the varying cap, is what
-  holds most of the list.  A coordinate stream is transformed per vertex on
-  the CPU today: the pair is packed down, the sampler's affine transform
-  folded in, a projector divided out and the aligned span scaled.
+  `refract`, `jellyfish` in part.  This, and not the varying cap, was what
+  held most of the list on the build this standing measures; the eighth
+  standing above is what changed it.
 * **control flow** -- `loop` x3 and `buffer` x3, whose vertex shaders the
   native backend does not compile.
 * **the varying read is past the M9X_VS_VARYINGS cap** -- `ideas` in part,
@@ -75,8 +172,10 @@ constant pairs the driver fills per job with the sampler's transform times
 the render target's addressed span
 (`docs/parhelia-m9-native-vertex-backend.md` section 4a).
 
-**It is correct and it does not pay.**  `M9X_VS_TEXTURE` therefore defaults
-to 0.
+**It is correct and, as it stood that day, it did not pay.**  What it cost
+and why is the eighth standing below, which also carries the fix and the
+default the driver ships now; the numbers in this seventh standing are the
+build *before* that fix and are kept as the measurement they were.
 
 MEASURED on the M9128, 2026-09-19, one hold of both hardware lock files,
 module `/root/tmp/dxtmip-m9x_drm.ko` named explicitly, glmark2's default
