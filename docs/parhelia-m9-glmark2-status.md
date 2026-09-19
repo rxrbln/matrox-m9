@@ -22,7 +22,72 @@ Every run asserts `GL_RENDERER` is `Matrox M9`: a Mesa build configured without
 back to llvmpipe silently, and every fixture still passes against the CPU
 reference.
 
-## Standing 2026-09-18: all thirty-three run, twenty-nine above 60 fps
+## Standing 2026-09-19: all thirty-three run, twenty-nine above 60 fps, four still skip draws
+
+MEASURED at 1920x1200, **one X server and one process a benchmark**
+(`tools/m9x-glmark-default-suite-fresh-x.sh`, and see why below), the padded
+split path on by default, `M9X_SKIP_REPORT=1`, 0 stream timeouts, fixture
+suite 211 cases 207 PASS (the four failures are the `giga10` cases, which want
+a kernel newer than the module under test).
+
+| benchmark | fps | draws skipped a frame |
+|---|---:|---|
+| `build` vbo=false / vbo=true | 273, 294 | none |
+| `texture` nearest / linear / mipmap | 284, 283, 283 | none |
+| `shading` gouraud / blinn-phong-inf / phong / cel | 243, 149, 88, 83 | none |
+| `bump` high-poly / normals / height | 105, 182, 164 | none |
+| `effect2d` 3x3 | 84 | none |
+| **`effect2d` 15-tap** | **33** | none |
+| `pulsar` | 220 | none |
+| **`desktop` blur** | **37** | none |
+| `desktop` shadow | 124 | none |
+| `buffer` map / subdata / interleaved | 153, 154, 154 | none |
+| `ideas` | 111 | none |
+| `jellyfish` | 125 | **1244**, out of temporaries for blending |
+| **`terrain`** | **1** | **24**, five samplers against four units and the register file |
+| `shadow` | 145 | **1446**, a depth-only framebuffer has no raster parameters |
+| **`refract`** | **39** | none |
+| `conditionals` 0/0, 0/5, 5/0 | 229, 142, 228 | none |
+| `function` low / medium | 168, 72 | none |
+| `loop` no-loop / uniform=false / uniform=true | 166, 167, 345 | **3444** on uniform=true, control flow |
+
+Twenty-nine of the thirty-three are at or above 60 fps and twenty-nine draw
+every draw they are given.  The four that skip draws are `jellyfish`,
+`terrain`, `shadow` and `loop:fragment-uniform=true`, each for a **fragment
+backend** reason rather than anything in the split path.
+
+**A frame rate with skipped draws is not a result.**  Two of these were only
+found because `M9X_SKIP_REPORT` was on: `shadow` reported 295 fps while
+skipping 2942 draws a frame and `loop:fragment-uniform=true` reports 345 fps
+while skipping 3444.  Both look like the fastest scenes in the list.
+
+### What changed on 2026-09-19
+
+| scene | before | after | why |
+|---|---|---|---|
+| `shadow` | 295 fps, 2942 draws a frame skipped | 145 fps, none for coverage | the padded split path carries a multi-pass draw whose geometry does not fill the box it spans.  CAPTURED on scanout at the same point of the run: the same 1786 distinct colours at **twice the mean luminance**, 11.2 to 22.2, which is the pass it was dropping |
+| `refract` | 41 fps, 403 draws a frame skipped | 39 fps, none | the same |
+| `desktop` | stops the engine inside the full list, taking the seventeen benchmarks behind it down | 37 fps, whole list completes | the back-end object is swapped rather than cleared under a live job |
+| the list | ends at benchmark 16 | all 33 complete, 0 stream timeouts | the same |
+
+The `desktop` row is not a reconstruction: the **control was run**.  Against
+the build of 2026-09-18 on the same target, same harness and same module,
+`desktop` at position 16 reports `two-pass job failed (Input/output error);
+context lost` and 6536 fps, and benchmarks 17 to 33 all exit rc=1.
+
+### Two readings this retires
+
+* **`refract` is not conformant** even now.  It skips no draws and reports
+  39 fps, and the frame on the monitor is **black** - 16 distinct colours in
+  2.3 million pixels, mean 0, CAPTURED at 5 s and again at 8 s, with the same
+  capture showing `pulsar` at 88075 distinct colours and `texture` at 15096.
+  So "0 skipped draws" is not conformance, and the ledger's "refract is
+  conformant" is withdrawn.
+* **`shadow` was never 143-147 fps for a complete picture.**  That number is
+  what it reaches now, drawing the pass it used to skip; the 295 fps it
+  reported before was the scene without it.
+
+## Superseded: standing 2026-09-18
 
 MEASURED at 1920x1200, one process per benchmark, 0 stream timeouts, fixture
 suite 194 cases 194 PASS.  `desktop` draws its blur where it used to stall
