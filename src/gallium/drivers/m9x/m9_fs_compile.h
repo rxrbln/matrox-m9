@@ -30,8 +30,13 @@ struct nir_shader_compiler_options;
 #define M9_FS_MAX_TEXTURES 4u
 /* Raster passes one shader may be split across.  A pass binds four units,
  * the first of which a continuation spends on the record it reads, so eight
- * passes cover every corpus shader the backend otherwise supports. */
-#define M9_FS_MAX_PASSES 8u
+ * cover every corpus shader the backend otherwise supports -- but a shader
+ * whose coordinates the engine cannot interpolate costs one producing pass
+ * a fetch, and glmark2's nine-tap tilt-shift blur needs fourteen.  MEASURED
+ * on the card: a fourteen-pass job builds, submits and draws with no stream
+ * timeout.  Its *pixels* are another matter -- see the coordconv:4 fixture
+ * and docs/parhelia-m9-fragment-pass-splitting.md section 8. */
+#define M9_FS_MAX_PASSES 16u
 /* A texel slot fed by a sampler rather than by an inter-pass record. */
 #define M9_FS_ROUTE_NONE 0xffu
 /* Compiled variants one shader may keep.  A shader specialised on a uniform
