@@ -296,6 +296,11 @@ static uint64_t m9_vs_serial;
  * Raising the knob past 2 emits the extra draw; 5 is what the vertex
  * backend compiles.  docs/parhelia-m9-vertex-output-target-re.md */
 static unsigned m9_native_vs_varyings = M9_VS_FUSED_VARYINGS;
+/* M9X_VS_TEXTURE=0 keeps every draw whose fragment program samples in the
+ * draw module, which is what the path did before the vertex program could
+ * place and scale a coordinate stream itself.  It is the A/B arm of that
+ * change, not a gate. */
+static bool m9_native_vs_texture = true;
 /* M9X_NATIVE_VS=0 keeps every vertex shader in the draw module.  On by
  * default since the whole hardware fixture corpus passes either way
  * (m9-mesa-vs 14/14, m9-mesa-glsl 90/90, 2026-09-17). */
@@ -4691,6 +4696,8 @@ m9_native_vs_layout(const struct m9_job_key *key, const struct m9_vs_program *p,
    fp = m9_fs_final(key->variant);
    if (key->variant->passes.count > 1)
       return "the fragment program runs as several raster passes";
+   if (fp->texture_count && !m9_native_vs_texture)
+      return "the fragment program samples a texture";
    if (fp->varying_count > M9_VS_MAX_VARYINGS)
       return "the fragment program reads more varyings than the "
              "preprocessing pass writes";
@@ -4742,6 +4749,11 @@ m9_native_vs_variant(struct m9_vs_state *vs, const struct m9_vs_outputs *out)
    util_dynarray_foreach(&vs->variants, struct m9_vs_variant *, it)
       if (!memcmp(&(*it)->outputs, out, sizeof(*out)))
          return *it;
+   /* One layout a fragment variant this shader is drawn with; a further one
+    * falls back rather than compiling without bound. */
+   if (util_dynarray_num_elements(&vs->variants, struct m9_vs_variant *) >=
+       M9_VS_MAX_VARIANTS)
+      return NULL;
    v = CALLOC_STRUCT(m9_vs_variant);
    if (!v)
       return NULL;
@@ -7028,6 +7040,7 @@ m9_context_create(struct pipe_screen *pscreen, void *priv, unsigned flags)
    m9_native_vs_varyings = MIN2((unsigned)
       debug_get_num_option("M9X_VS_VARYINGS", M9_VS_FUSED_VARYINGS),
       M9_VS_MAX_VARYINGS);
+   m9_native_vs_texture = debug_get_bool_option("M9X_VS_TEXTURE", true);
 
    m9_no_clear = debug_get_bool_option("M9X_NO_CLEAR", false);
    m9_mrt_mask_all = debug_get_bool_option("M9X_MRT_MASK_ALL", false);

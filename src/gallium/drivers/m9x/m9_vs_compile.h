@@ -66,6 +66,9 @@ struct nir_shader;
 #define M9_VS_FUSED_PAIR     1u
 /* Varyings the tail-free second head carries, at its own targets 0 upward. */
 #define M9_VS_EXTRA_VARYINGS (M9_VS_MAX_VARYINGS - M9_VS_FUSED_VARYINGS)
+/* Compiled programs one vertex shader keeps, one an output layout: a shader
+ * drawn with many fragment variants asks for one per distinct stream set. */
+#define M9_VS_MAX_VARIANTS 64u
 /* Constant pairs 9..21 of the span belong to the appended tail, which names
  * them by absolute index; user pairs are 0..8 and 22 upward. */
 #define M9_VS_TAIL_FIRST_PAIR 9u
