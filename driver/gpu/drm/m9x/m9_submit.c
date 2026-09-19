@@ -46,26 +46,34 @@ MODULE_PARM_DESC(m9_user_submit,
 	"Execute validated userspace M9 command streams (bring-up only)");
 
 /*
- * Command indices the multisample fragment-store probe may write, one bit an
- * index over a0..a6 (bit n admits 0xa0 + n).  The default of zero leaves the
- * validator exactly as it ships.
+ * Command indices the multisample fragment-store probe may write.  The list
+ * is empty by default, so the validator is byte for byte what it ships.
  *
  * The vendor writes a1, a3 and a4 under the only packet-name string in its
- * image, RESET_FRAG_PTR, and a1 once with a sentinel (STATIC, MxMD.dll
- * 0xfab30 and 0x764e6); but no saved vendor stream writes any of them
- * (CAPTURED, 1206 decoded submissions), so none is admitted outright.  A
- * measurement that names the index which binds the store earns an entry in
- * m9_index_allowed() below, and this parameter goes away with it.
+ * image, RESET_FRAG_PTR (STATIC, MxMD.dll 0xfab30, 0xacadb), and no saved
+ * vendor stream writes any of them (CAPTURED, 1206 decoded submissions).
+ * MEASURED on the M9128: with the unit enabled the engine accepts the store's
+ * address at every one of a0..a6, renders identically and writes nothing into
+ * the store, so none of them binds it and none has earned a permanent entry
+ * in m9_index_allowed().  The parameter stays so the search can continue, and
+ * goes away with the index that closes it.
  */
-static uint m9_faa_probe_mask;
-module_param_named(faa_probe_mask, m9_faa_probe_mask, uint, 0644);
-MODULE_PARM_DESC(faa_probe_mask,
-	"bitmask over indices a0..a6 the multisample probe may write");
+#define M9_FAA_PROBE_MAX 16
+static ushort m9_faa_probe_indices[M9_FAA_PROBE_MAX];
+static unsigned int m9_faa_probe_count;
+module_param_array_named(faa_probe_indices, m9_faa_probe_indices, ushort,
+			 &m9_faa_probe_count, 0644);
+MODULE_PARM_DESC(faa_probe_indices,
+	"command indices the multisample fragment-store probe may write");
 
 static bool m9_faa_probe_index(u8 index)
 {
-	return index >= 0xa0 && index <= 0xa6 &&
-	       (m9_faa_probe_mask & BIT(index - 0xa0));
+	unsigned int i;
+
+	for (i = 0; i < m9_faa_probe_count && i < M9_FAA_PROBE_MAX; i++)
+		if (m9_faa_probe_indices[i] == index)
+			return true;
+	return false;
 }
 
 /*
@@ -150,9 +158,11 @@ static bool m9_index_literal(u8 index, u32 value)
 {
 	if (index >= 0x01 && index <= 0x04)
 		return true;
-	/* RESET_FRAG_PTR writes the probed indices as zero, with no address. */
+	/* A probed index carries either a store address or a literal: the
+	 * vendor writes zero at it, and a surface pair puts a descriptor at
+	 * the index behind the address. */
 	if (m9_faa_probe_index(index))
-		return value < PAGE_SIZE;
+		return true;
 	return (index == 0xba || index == 0xbe || index == 0xc2) &&
 	       value < PAGE_SIZE;
 }
