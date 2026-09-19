@@ -46,16 +46,51 @@ or 8 s.  The histogram pair is what carries the reading.
 distribution centred near 160-165.  `loop` is the `fract` noise pattern, 256
 luminance levels thinly spread over the grid with the background black.
 
-Three fixtures were added with these fixes, because none of the 228 already
-in the suite covered any of the three shapes: `depthonly` renders a shadow
-map into a framebuffer with no colour attachment (the existing `depthtex`
-always attached a colour texture as well), `blendheavy` blends a shader whose
-body names the whole register pool, and `loopuni:0`, `:5` and `:24` draw a
-loop over a uniform bound.  `blendheavy` and the `loopuni` cases carry an
-OFFLINE negative control -- the same shader is refused by the build before the
-fix; `depthonly` has none, because the refusal it guards was in the driver's
-framebuffer path rather than in the compiler the offline test drives.
+Five fixtures were added with these fixes, because none of the 228 already in
+the suite covered any of the three shapes: `depthonly` renders a shadow map
+into a framebuffer with no colour attachment (the existing `depthtex` always
+attached a colour texture as well), `blendheavy` blends a shader whose body
+names the whole register pool, and `loopuni:0`, `:5` and `:24` draw a loop
+over a uniform bound.  The suite is **233 of 233 PASS** with them, and each of
+the five differs in **0 of 76800 pixels** from its CPU reference (MEASURED).
 
+`blendheavy` and the `loopuni` cases carry an OFFLINE negative control -- the
+same shader is refused by the build before the fix; `depthonly` has none,
+because the refusal it guards was in the driver's framebuffer path rather
+than in the compiler the offline test drives.
+
+
+### The whole thirty-three on this build
+
+MEASURED afterwards on the same binary, `tools/m9x-glmark-default-suite-fresh-x.sh`
+at 1920x1200 with `M9X_SKIP_REPORT=1`: all thirty-three completed rc=0, **0
+stream timeouts**, and **not one "draws skipped" line in any of the
+thirty-three logs**.  The fixture suite ahead of the sweep was 233 of 233.
+
+| benchmark | fps |
+|---|---:|
+| `build` vbo=false / vbo=true | 273, 295 |
+| `texture` nearest / linear / mipmap | 284, 283, 283 |
+| `shading` gouraud / blinn-phong-inf / phong / cel | 243, 149, 88, 83 |
+| `bump` high-poly / normals / height | 105, 182, 164 |
+| `effect2d` 3x3 / 15-tap | 84, **33** |
+| `pulsar` | 220 |
+| `desktop` blur / shadow | **37**, 124 |
+| `buffer` map / subdata / interleaved | 153, 153, 154 |
+| `ideas` | 110 |
+| **`jellyfish`** | **77** |
+| **`terrain`** | **1** |
+| **`shadow`** | **111** |
+| **`refract`** | **5** |
+| `conditionals` 0/0, 0/5, 5/0 | 229, 142, 228 |
+| `function` low / medium | 168, 72 |
+| `loop` no-loop / uniform=false / **uniform=true** | 167, 167, **159** |
+
+Every row outside the three is identical to the standing below it, so the
+integer lowering -- which touches every fragment shader the driver compiles --
+changed nothing else that a frame rate can see.  Four are still under 60 fps
+(`effect2d` 15-tap, `desktop` blur, `terrain`, `refract`), each for a reason
+recorded below; none of them skips a draw.
 
 ## Superseded: standing 2026-09-19 (merged): the whole thirty-three on one build
 
