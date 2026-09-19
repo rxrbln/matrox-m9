@@ -165,9 +165,13 @@ struct m9_draw_job {
       struct m9_faa_edits edit;
       /* The fragment store and the index its address is written to.  A
        * negative index binds nothing, which is the default. */
+      bool store_bind;
       int bind_index;
+      int64_t bind_desc;
       bool bind_reset;
-      uint32_t store;
+      uint32_t store, store_aux;
+      /* Bound at b8/b9 in place of the depth attachment; zero keeps it. */
+      uint32_t companion, companion_desc;
    } faa;
 };
 

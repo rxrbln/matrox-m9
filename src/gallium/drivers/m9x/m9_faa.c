@@ -31,7 +31,11 @@ m9_faa_init(struct m9_faa *faa, uint16_t device_id)
    faa->ef_mode = (int)debug_get_num_option("M9X_FAA_EF_MODE", -1);
    faa->f0_bit15 = debug_get_bool_option("M9X_FAA_F0_BIT15", false);
    faa->f0_bit24 = debug_get_bool_option("M9X_FAA_F0_BIT24", false);
+   faa->store_bind = debug_get_bool_option("M9X_FAA_STORE", false);
+   faa->companion_format =
+      (int)debug_get_num_option("M9X_FAA_COMPANION", -1);
    faa->bind_index = (int)debug_get_num_option("M9X_FAA_BIND_INDEX", -1);
+   faa->bind_desc = debug_get_num_option("M9X_FAA_BIND_DESC", -1);
    faa->bind_reset = debug_get_bool_option("M9X_FAA_BIND_RESET", false);
    faa->store_check = debug_get_bool_option("M9X_FAA_STORE_CHECK", false);
    faa->ad_force = (uint32_t)debug_get_num_option("M9X_FAA_AD", -1);
@@ -47,8 +51,8 @@ m9_faa_init(struct m9_faa *faa, uint16_t device_id)
               faa->sample_coverage, faa->alpha_to_coverage, faa->ad_forced,
               faa->ad_force, faa->af_forced, faa->af_force);
    if (faa->trace)
-      fprintf(stderr, "m9x: faa store bind index %d reset %d\n",
-              faa->bind_index, faa->bind_reset);
+      fprintf(stderr, "m9x: faa store bind index %d desc %lld reset %d\n",
+              faa->bind_index, (long long)faa->bind_desc, faa->bind_reset);
    if (faa->trace)
       fprintf(stderr, "m9x: faa ae mode %d bit28 %d ef mode %d f0 %d/%d\n",
               faa->ae_mode, faa->ae_bit28, faa->ef_mode, faa->f0_bit15,
@@ -128,6 +132,7 @@ m9_faa_raster_dwords(const struct m9_faa *faa)
    if (!m9_faa_active(faa))
       return 0;
    return (faa->raster ? M9_FAA_RASTER_DWORDS : 0) +
+          (faa->store_bind ? M9_FAA_STORE_DWORDS : 0) +
           (faa->bind_reset ? M9_FAA_RESET_DWORDS : 0) +
           (faa->bind_index >= 0 ? M9_FAA_BIND_DWORDS : 0);
 }
@@ -135,7 +140,8 @@ m9_faa_raster_dwords(const struct m9_faa *faa)
 unsigned
 m9_faa_raster_relocs(const struct m9_faa *faa)
 {
-   return m9_faa_active(faa) && faa->bind_index >= 0 ? 1 : 0;
+   return m9_faa_active(faa) ?
+          (faa->bind_index >= 0 ? 1u : 0u) + (faa->store_bind ? 2u : 0u) : 0;
 }
 
 uint32_t

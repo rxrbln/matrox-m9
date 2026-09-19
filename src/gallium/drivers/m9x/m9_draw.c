@@ -576,7 +576,11 @@ m9_emit_raster_range(struct m9_batch *batch, const struct m9_draw_job *job,
          EMIT(R(0xb0 + 2 * s, job->color_extra[s - 1], 0, COLOR),
               V(0xb1 + 2 * s, job->color_extra_desc[s - 1]));
    }
-   EMIT(R(0xb8, job->depth, 0, DEPTH), V(0xb9, p->depth_desc));
+   if (job->faa.set && job->faa.companion)
+      EMIT(R(0xb8, job->faa.companion, 0, DEPTH),
+           V(0xb9, job->faa.companion_desc));
+   else
+      EMIT(R(0xb8, job->depth, 0, DEPTH), V(0xb9, p->depth_desc));
    EMIT(R(0xba, job->aux, 0, DEPTH), V(0xbb, p->aux_desc));
    EMIT(R(0xbe, job->be, 0, STREAM));
    EMIT(V(0xa8, pass ? pass->depth_control : job->depth_control),
@@ -594,10 +598,21 @@ m9_emit_raster_range(struct m9_batch *batch, const struct m9_draw_job *job,
       EMIT(V(0xe6, 3), V(0xe6, 3));
       EMIT(V(0xa1, 0), V(0xa3, 0), V(0xa4, 0));
    }
-   /* The store's address at whatever index a measurement names.  Nothing in
-    * the vendor images writes one, so this stays a probe. */
-   if (job->faa.set && job->faa.bind_index >= 0 && job->faa.store)
-      EMIT(R((uint8_t)job->faa.bind_index, job->faa.store, 0, FRAGMENT));
+   /* The store, bound as the vendor's emitter binds it. */
+   if (job->faa.set && job->faa.store_bind && job->faa.store &&
+       job->faa.store_aux)
+      EMIT(R(0xbc, job->faa.store, 0, FRAGMENT),
+           R(0xbd, job->faa.store_aux, 0, FRAGMENT));
+   /* The store's address at whatever index a measurement names, for the
+    * search that found bc/bd and for the ones still open. */
+   if (job->faa.set && job->faa.bind_index >= 0 && job->faa.store) {
+      if (job->faa.bind_desc >= 0)
+         EMIT(R((uint8_t)job->faa.bind_index, job->faa.store, 0, FRAGMENT),
+              V((uint8_t)(job->faa.bind_index + 1),
+                (uint32_t)job->faa.bind_desc));
+      else
+         EMIT(R((uint8_t)job->faa.bind_index, job->faa.store, 0, FRAGMENT));
+   }
    /* The captured stream carries the multisample pair in preprocessing
     * alone; restating it here tests whether the raster range needs it. */
    if (job->faa.set && job->faa.raster) {

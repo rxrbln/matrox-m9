@@ -76,7 +76,22 @@ struct m9_faa {
     * packet-name string, RESET_FRAG_PTR, and no captured stream carries any
     * of them, so which one binds the store is a measurement, not a fact.
     * A negative index binds nothing and allocates nothing. */
+   /* Bind the store the way the vendor's emitter does: index bc takes the
+    * main buffer's address and bd the sixteenth-size one (STATIC, MxMD.dll
+    * 0xfbd8e, header 0x4545bdbc, relocation kinds 9 and 0x0a; the same two
+    * indices and kinds appear in the M-series Linux driver at 0x4b09a3). */
+   bool store_bind;
+   /* The w x h companion surface the vendor allocates beside the store and
+    * binds at b8/b9 in place of the ordinary depth surface (STATIC, MxMD.dll
+    * 0xaab42 fills the same shadow slot the b8/b9 packet at 0xfbbbf reads).
+    * A negative value keeps the depth attachment; otherwise this is the
+    * descriptor format code the companion is bound with, which no static
+    * evidence names and which the probe sweeps. */
+   int companion_format;
    int bind_index;
+   /* A surface on this engine is an address and a descriptor at the next
+    * index; a negative value writes the address alone. */
+   int64_t bind_desc;
    bool bind_reset;   /* write a1 = a3 = a4 = 0 beside it */
    /* Fill the store with a traceable pattern and report which dwords the
     * engine changed.  Every dword carries its own index, so a write is
@@ -100,7 +115,9 @@ struct m9_faa {
 /* Dwords the RESET_FRAG_PTR block costs: e6 twice, then a1/a3/a4. */
 #define M9_FAA_RESET_DWORDS 7u
 /* Dwords a store binding costs: one header and one address. */
-#define M9_FAA_BIND_DWORDS 2u
+#define M9_FAA_BIND_DWORDS 3u
+/* Dwords the bc/bd store pair costs: one header and two addresses. */
+#define M9_FAA_STORE_DWORDS 3u
 /* Dwords and relocations this state adds to one raster pass. */
 unsigned m9_faa_raster_dwords(const struct m9_faa *faa);
 unsigned m9_faa_raster_relocs(const struct m9_faa *faa);

@@ -1098,7 +1098,8 @@ m9_faa_store_grow(struct m9_context *ctx)
    uint64_t bytes, aux;
    bool ok = true;
 
-   if (screen->faa.bind_index < 0)
+   if (screen->faa.bind_index < 0 && !screen->faa.store_bind &&
+       screen->faa.companion_format < 0)
       return true;
    simple_mtx_lock(&screen->faa_store_lock);
    width = MAX2(ctx->params.width, screen->faa_store_width);
@@ -1136,6 +1137,20 @@ m9_faa_store_grow(struct m9_context *ctx)
          if (screen->faa.trace)
             fprintf(stderr, "m9x: faa store %ux%u -> %u + %u bytes\n",
                     width, height, (unsigned)bytes, (unsigned)aux);
+      }
+      /* The companion is the target's own shape at eight bytes a pixel, so
+       * no format the sweep tries can overrun it. */
+      if (ok && screen->faa.companion_format >= 0 &&
+          (!screen->faa_companion.handle ||
+           screen->faa_companion.size < (uint64_t)width * height * 8)) {
+         m9_bo_destroy(screen, &screen->faa_companion);
+         if (m9_bo_create_engine_only(screen, (uint64_t)width * height * 8,
+                                      M9_RESOURCE_LINEAR_DEPTH,
+                                      &screen->faa_companion)) {
+            fprintf(stderr, "m9x: multisample companion for %ux%u refused\n",
+                    width, height);
+            ok = false;
+         }
       }
    } else {
       screen->faa_store_width = width;
@@ -2119,7 +2134,21 @@ m9_submit_job(struct m9_context *ctx)
           * bits the pass built and rendered nothing (MEASURED). */
          m9_faa_edits(&ctx->screen->faa, &job.faa.edit);
          if (m9_faa_store_grow(ctx)) {
+            job.faa.store_bind = ctx->screen->faa.store_bind;
+            if (ctx->screen->faa.companion_format >= 0) {
+               struct m9_surface_desc desc = {
+                  .row_span = ctx->params.depth_desc & 0xffffu,
+                  .height = ctx->params.height, .layers = 1, .layout = 1,
+                  .format = (uint8_t)ctx->screen->faa.companion_format,
+                  .address_offset = true,
+               };
+
+               job.faa.companion = ctx->screen->faa_companion.handle;
+               job.faa.companion_desc = m9_surface_desc0(&desc);
+            }
+            job.faa.store_aux = ctx->screen->faa_store_aux.handle;
             job.faa.bind_index = ctx->screen->faa.bind_index;
+            job.faa.bind_desc = ctx->screen->faa.bind_desc;
             job.faa.bind_reset = ctx->screen->faa.bind_reset;
             job.faa.store = ctx->screen->faa_store.handle;
          }

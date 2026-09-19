@@ -226,7 +226,7 @@ struct m9_screen {
     * the target the probe renders into and shared by the screen the way the
     * inter-pass record is.  Allocated only while a bind index is named. */
    simple_mtx_t faa_store_lock;
-   struct m9_resource faa_store, faa_store_aux;
+   struct m9_resource faa_store, faa_store_aux, faa_companion;
    uint32_t faa_store_width, faa_store_height;
    /* Fixed-fragment database firmware bound through index 69. */
    uint8_t *fragment_db;
