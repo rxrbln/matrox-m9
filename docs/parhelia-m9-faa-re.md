@@ -284,14 +284,19 @@ find the lowerer and emitter of nested `+0x00`/`+0x04` the way `0x1826a5` and
 `0xfbe09` were found for `+0x1b0`/`+0x1b4`, then write that index with the
 field values above and rerun `faaedge`.
 
-A second candidate exists [STATIC]: `MxMD.dll` contains exactly one packet
-name string, `RESET_FRAG_PTR` at `0x1f4924`, emitted by `0xfab30` as
+`a1`, `a3` and `a4` are the fragment-pointer registers themselves, and they
+never carry an address [STATIC, section 4c].  `MxMD.dll` contains exactly one
+packet name string, `RESET_FRAG_PTR` at `0x1f4924`, emitted by `0xfab30` as
 `e6 = 3`, `e6 = 3`, then `a1 = 0`, `a3 = 0`, `a4 = 0`; a sibling at `0x764e6`
-writes `a1 = 0x28041968`.  Index `0xad` shares a static index-group table
+writes `a1 = 0x28041968`, which is a don't-care filler constant and not an
+address (see section 4c).  Index `0xad` shares a static index-group table
 entry with `0xa1/0xa3/0xa4` (`0x65514 c7 05 d0 f5 20 00 a1 a3 a4 ad`).  The
-emitter has no recoverable caller - it is reached only through a vtable slot
-- so its role is [OPEN].  Note that `0xa0..0xa6` are outside this project's
-kernel command whitelist, so testing it needs a kernel change.
+emitter is slot 7 of vtable `0x1f48e8`, installed by the constructor at
+`0xf7eb0`, and `MxMD.dll` contains no direct call to it [STATIC]; the
+M-series Linux driver has the same function at `0x889e50`, reached only from
+a dispatch table at `0x121ecf0`.  `0xa0..0xa6` are outside this project's
+kernel command whitelist, so testing it needed a kernel change; that change
+was made, bounded, and the answer is a clean negative (section 4c).
 
 **The captures give that lead no support at all** [CAPTURED, item 0 of
 `tools/m9-faa-capture-evidence.py --stream`]: over 1206 decoded vendor
@@ -471,9 +476,127 @@ its main buffer as
 
 about 16.55 bytes a pixel, plus a second buffer of a sixteenth that size, plus
 a surface of the same width and height, plus the resource into which the
-`a1/a3/a4` sentinel block is written [STATIC].  None of that exists in this
-driver, and the indices that would address it are outside the kernel's command
-whitelist, so the next step is an allocation and a binding, not another sweep.
+`a1/a3/a4` sentinel block is written [STATIC].  Sections 4c and 4d allocate
+all of that, bind it where the vendor binds it, and report what the M9128
+then did.
+
+## 4c. The store, its four objects and where they are bound
+
+### The allocator, fully decomposed [STATIC]
+
+`0xac7e0` makes **four** objects, through allocation-request structs at
+`[ebp-0x3c]` whose fields are `+0x00` flags, `+0x04` pool, `+0x08` format,
+`+0x18` width, `+0x1c` height:
+
+| # | result field | flags | format | shape |
+|---|---|---|---|---|
+| 1 | `[esi+0x08]` main fragment store | `0x8002` | 8 | `0x400` per row, rows from the byte count rounded to 1 KiB |
+| 2 | `[esi+0x10]` second buffer | `0x8002` | 8 | the same, on `size >> 4` - or a flat 2 MiB when device flag `[dev+0x1c]` bit 0 is set (`0xac8f2`) |
+| 3 | `[esi+0x04]` AA companion surface | `0x1000002` | 5 | the source surface's own width and height |
+| 4 | `[esi+0x18]` sentinel resource | `0x8202` | 0 | 5 dwords by 1 |
+
+The second buffer is hung off the first (`0xac974` writes it into
+`[main+0x414]`, `0xac968` sets `[main+0x418] = 1`).  Allocation flag bit 24 of
+the companion sets `surface+0x234 = 2` and `surface+0x3d0 = 1` through the
+capability check at `0x477f0`, which is a sample-count field [DERIVED]; flag
+bit 1 makes the allocator build a linked companion of descriptor kind 9
+cross-linked at `+0x380/+0x384/+0x388` [STATIC].
+
+The Linux vendor driver names the object: its surviving assert strings carry
+`virtual Pnx::RsFragPtrsBuffer* LinuxDevice::CreateFragPtrsBuffer(MUINT32,
+Pnx::RsResourceType::Pool)` at `0xe91600`, a sibling of
+`LinuxDevice::CreateZBuffer`.  **The multisample fragment store is
+`RsFragPtrsBuffer`, a fragment-pointer buffer** [STATIC].
+
+### The indices that bind it [STATIC]
+
+Emitter `0xfb920` - the same function that writes the `ad`/`af` pair - builds
+the surface packets from a hardware shadow block at `[unit+0xb4]`
+(`0x1e97b` fixes it at `devstate+0xc98+0x3768`), which `0xaa750` fills from
+the four objects above:
+
+```
+000fbbbf  c7 40 04 b8 b9 45 45   header 0x4545b9b8
+          reloc kind 6, pair [edi+0x68]   -> b8 = AA companion surface address
+          [edi+0x70]                      -> b9 = its descriptor word
+000fbc18  c7 40 04 ba bb 45 45   header 0x4545bbba   (kind 7, [edi+0x74])
+000fbc74  c7 40 04 be 45 45 45   header 0x454545be   (kind 8, [edi+0x8c])
+000fbd8e  c7 40 04 bc bd 45 45   header 0x4545bdbc
+000fbd96  6a 09 / 8d 87 80...    reloc kind 9,    pair [edi+0x80] -> bc = store
+000fbdc4  6a 0a / 8d 8f 94...    reloc kind 0x0a, pair [edi+0x94] -> bd = second buffer
+```
+
+`0xaa986` files the main store under descriptor kind `0x0e` into shadow
+`+0x80/+0x84/+0x88`, `0xaa9fa` the second buffer under the same kind into
+`+0x94/+0x98`, and `0xaab42` the companion under kind `0x0d` into
+`+0x68/+0x6c/+0x70`.  The M-series Linux driver emits both packets with the
+same indices and the same relocation kinds (`0x4b09a3` and `0x4b077f`).
+
+So the binding is:
+
+| index | carries |
+|---|---|
+| `b8` / `b9` | the AA companion surface and its descriptor - **the slot this driver binds the ordinary depth surface in** |
+| `ba` / `bb` | the linked kind-9 companion and its descriptor |
+| `bc` | the fragment store's address |
+| `bd` | the second, sixteenth-size buffer's address |
+| `a1`, `a3`, `a4` | the fragment-pointer registers themselves |
+
+That last row is the correction to section 4's second candidate.  `0xfc8f0`
+emits three records of header `0x4545421a` whose index-`0x42` payloads are
+`0xa1000009`, `0xa3000009` and `0xa4000009` beside a relocated address at
+index `0x1a`, at offsets `+8`, `+0xc` and `+0x10` of the 20-byte sentinel
+resource - a save and restore block for those three registers [STATIC,
+`0xfca1f`, `0xfcaa2`, `0xfcb0c`; the same code is in the Linux driver at
+`0x498c16`].  `0x28041968` is the vendor's don't-care filler payload, a date,
+used the same way at `0xfcd2c` beside `0x26041981` and `0x07111983`
+[STATIC]; **no index in `a0..a6` ever receives an address in any vendor
+image.**
+
+### What the M9128 did with all of it [MEASURED]
+
+Everything below was run with the enable set, `ef[31:29] = 6`, the store
+allocated at the vendor's own size and the fragment probe reporting how many
+of its dwords the engine changed.  Every dword of the store is filled with
+its own index before the draw, so a write anywhere in it is identifiable, and
+a known-good fixture runs before and after every case.
+
+| what was bound | faarect interior | partial levels | store dwords written |
+|---|---:|---:|---:|
+| nothing (the enable alone) | 42040 of 48000 | 0 | - |
+| `RESET_FRAG_PTR`: `e6 = 3`, `e6 = 3`, `a1 = a3 = a4 = 0` | 42040 | 0 | - |
+| the store's address at `a0`, `a1`, `a2`, `a3`, `a4`, `a5`, `a6`, one at a time | 42040 each | 0 | **0 of 318464** each |
+| the store at `bc` and the second buffer at `bd` | 42040 | 0 | **0 of 318464** |
+| the same, with a companion surface at `b8`/`b9` at descriptor formats `0x7d`, `0x79`, `0x59`, `0x6b` | 42040 each | 0 | **0 of 318464** each |
+
+No case was refused by the kernel and none stopped the engine.  So the two
+addresses `0xfbd8e` names are **necessary but not sufficient**: the unit
+accepts them, keeps reserving its lane, and accumulates nothing.  What is
+still missing is whatever tells it the surfaces are multisampled - the
+allocation-flag bit 24 of the companion reaches `surface+0x234`, which the
+descriptor builder `0x467e0` does **not** read, so it must leave the driver
+through some other word [DERIVED].
+
+A blind search for that word was run and came back empty.  The store's
+address was written, one index at a time, at every index outside the kernel
+whitelist in the 3D state neighbourhood - `6d`, `6e`, `6f`, `8b`, `bf`, `c0`,
+`c7`..`d6`, `d8`..`e2`, `e4`, `e5`, `e7`..`e9`, `ed`, `ee`, `f2`, `f3`, `f7`
+- and **not one produced a single write into the store** [MEASURED].  Three
+of them stop the engine (`f8`, `f9`, `fa`) and six suppress the draw entirely
+without stopping it (`c8`..`cd`); the rest are inert.
+
+### The capture that would close it
+
+One vendor stream captured with multisampling actually enabled.  On Windows
+that is two registry values (section 6); on the M-series Linux driver the
+`FragSize` option exists but the allocator does not, so Windows is the only
+side that can produce it.  In the saved DMA buffer, the header dword
+`0x4545bdbc` is followed by the store and second-buffer addresses and the
+header `0x4545b9b8` by the companion surface and its descriptor; every other
+word of that submission is then the answer to what this note still calls
+[OPEN].  Without it the remaining fields are a search over the whole command
+space, and the search above shows that a single address at a single index is
+not enough to find them.
 
 ## 5. What the M-series does not have
 
@@ -616,7 +739,8 @@ the instrument for it is built and calibrated.
    twenty AD values including the true extent render identically [MEASURED].
    Multisample storage is a **separate buffer group** allocated by
    `MxMD.dll 0xac7e0` at about 16.55 bytes a pixel and capped at 32 MiB
-   (section 4b), not an enlargement of the colour allocation.
+   (sections 4b and 4c), not an enlargement of the colour allocation.  The
+   vendor's own name for it is `Pnx::RsFragPtrsBuffer` [STATIC].
 2. **AD bits 6:4.**  **CLOSED, and the field is on hardware.**  They are not
    AD bits at all; they are bits 6:4 of nested compiled state `+0x04`, which
    the lowerer shifts into surface shadow `+0xb8` bits 31:29 and the emitter
@@ -638,25 +762,22 @@ the instrument for it is built and calibrated.
    suppression - and the word it clears is the colour write mask [STATIC].
    Arbitrary per-sample coverage is not implemented by the vendor; inversion
    is AF bit 9.
-6. **Physical fragment order and sample positions.**  **OPEN, and now
-   bounded.**  Hard static negative (section 8), and on hardware the unit
+6. **Physical fragment order and sample positions.**  **OPEN, and bounded
+   from both sides.**  Hard static negative (section 8); on hardware the unit
    reserves one lane of every 4x2 pixel block at a fixed screen-space phase
-   (x a multiple of four, y even) while producing no blending [MEASURED].
-   That is the shape of the fragment storage, not of the sample pattern; the
-   sample positions themselves stay open until the fragment store is
-   allocated and bound, and the probe that reads them off a staircase is
-   built and calibrated.
+   (x a multiple of four, y even) and produces no blending - `faapos` and
+   `faaposy` print the single-sampled staircase, 18 steps at 255 then 0, with
+   the enable set [MEASURED].  Nothing accumulates, so there is nothing to
+   read positions off; the probe that would read them is built and calibrated
+   against a four-sample software attachment.
 7. **The resolve, and the fence before the destination is reused.**
-   **OPEN**, and now for a concrete reason: nothing is accumulated to
-   resolve.  With the unit enabled the engine reserves a lane and writes
-   nothing into it [MEASURED], because the separate multisample buffer group
-   of section 4b is never allocated.  Statically, no call edge from
-   multisample surface state to a resolve packet was recovered: the AD/AF
-   emission is gated only by a surface-shadow dirty bit, never by a
-   multisample condition, and no emitter selects a different index because a
-   surface is multisampled [STATIC, whole-`.text` header scan of both the
-   Windows and the Linux image].  The one packet-name string in either image
-   is `RESET_FRAG_PTR`, issued after every blit rather than at a resolve.
+   **OPEN.**  Nothing is accumulated to resolve.  The store is now allocated
+   at the vendor's size and bound at the two indices the vendor's emitter
+   names, `bc` and `bd`, with the companion surface at `b8`/`b9`; the engine
+   accepts all of it and writes **zero** store dwords (section 4c)
+   [MEASURED].  Statically, no call edge from multisample surface state to a
+   resolve packet was recovered [STATIC, whole-`.text` header scan of both
+   the Windows and the Linux image].
 8. **What an occlusion query counts.**  **CLOSED as far as the hardware can
    be asked today, negative.**  With multisampling off the M9 counter counts
    pixels exactly [MEASURED]; the vendor's GL layer multiplies by
@@ -664,13 +785,15 @@ the instrument for it is built and calibrated.
    driver does it too at `0x6bb034..0x6bb04e` [STATIC, two independent
    images].  With the unit enabled the counter is still at pixel rate -
    42400 against 42040 written pixels, 21170 against 21210 - and is not two
-   or four times anything [MEASURED, `faaoccnz`, section 7].  The question
-   is reopened only if a bound fragment store changes it.
+   or four times anything [MEASURED, `faaoccnz`, section 7].
 9. **A depth format chosen for the internal 0x10/0x11 GigaColor
    resources.**  **CLOSED, negative, confirmed.**  No such branch exists.
    Depth does participate in multisampling, but as a *presence* test: the
    depth companion at `[edi+0x18]` selects between the 6/7 and 4/5 rows of
-   the section 4 table.  It selects no depth *format*.
+   the section 4 table.  It selects no depth *format*.  MEASURED: mode 7,
+   the value that means "a depth companion exists", stops the engine beside
+   an ordinary depth attachment exactly as mode 6 does, so what the unit
+   wants is the companion surface of section 4c and not a mode selector.
 
 ## 9b. A driver fault this cost, and the guard against it [MEASURED]
 
@@ -701,37 +824,65 @@ silently written as zero and the hardware is blamed for it.
 dispatched on the chip family, and `m9_draw.c` emits them where the captures
 put them - in the preprocessing range, 819 of 819, and in no raster range
 [CAPTURED].  `M9X_FAA_RASTER` restates them in the raster range so that can be
-tested rather than assumed.
+tested rather than assumed.  `m9_faa_edits()` fills every index this state
+edits in one call, for the reason section 9b gives.
+
+`m9_faa_fragment_bytes()` is the vendor's own size arithmetic in 64 bits:
+`min(trunc(w * h * 344 * 0.38499999046325684) >> 3, 32 MiB)`, with the second
+buffer a sixteenth of it.  That is 16.555 bytes a pixel, and it is already at
+the cap by 1920x1200.
 
 Everything is off by default and **no capability changed**:
 `m9_is_format_supported` still refuses every multisampled format and
-`pipe_screen` still reports no multisample support.  That stays true until a
-measurement earns the change, which on the evidence above means until the
-enable of section 4 is found and `faaedge` reports partial levels on the
-M9128.
+`pipe_screen` still reports no multisample support.  **The hardware has not
+earned the change.**  With the unit enabled it reserves one lane of every 4x2
+pixel block and writes nothing into it, `faaedge` reports zero partial levels,
+the sub-pixel staircases of `faapos` and `faaposy` are bit-identical to the
+single-sampled ones, and the fragment store stays untouched with every
+binding the vendor's own emitter names.  A driver that advertised
+`GL_SAMPLES = 2` here would lose an eighth of every primitive's pixels and
+antialias nothing.  The caps change belongs in the same commit as the
+measurement that shows `faaedge` reporting partial levels, and not before.
 
-`M9X_FAA_AD` and `M9X_FAA_AF` force raw words, because a sweep that cannot
-reach a value the formula does not produce cannot test the formula.
+### The probes, and what each one is for
 
-`M9X_FAA_EF_MODE` writes the AA mode field into the raster range.  Modes 6
-and 7 are the ones the silicon obeys.
+| variable | what it does |
+|---|---|
+| `M9X_FAA` | the master switch for this path; nothing below has any effect without it |
+| `M9X_FAA_EF_MODE` | the AA mode field, index `ef` bits 31:29, in the raster range.  6 and 7 are the values the silicon obeys |
+| `M9X_FAA_AD`, `M9X_FAA_AF` | force raw words, because a sweep that cannot reach a value the formula does not produce cannot test the formula |
+| `M9X_FAA_COVERAGE`, `_INVERT`, `_SAMPLE_COVERAGE`, `_ALPHA_TO_COVERAGE` | the `af` fields of section 3 |
+| `M9X_FAA_STORE` | bind the fragment store at `bc` and the second buffer at `bd`, as the vendor's emitter does |
+| `M9X_FAA_COMPANION=<format>` | replace the depth attachment at `b8`/`b9` with a companion surface of the target's shape, described with that format code |
+| `M9X_FAA_BIND_RESET` | emit `RESET_FRAG_PTR` exactly as the vendor does |
+| `M9X_FAA_BIND_INDEX`, `M9X_FAA_BIND_DESC` | write the store's address at one arbitrary index, for the search of section 4c |
+| `M9X_FAA_STORE_CHECK` | keep the store in the CPU-mapped window, fill every dword with its own index, and report at teardown how many the engine changed |
 
-**Three settings stop the engine on this hardware**: `M9X_FAA_ALPHA_TO_COVERAGE`
-with or without a mode, any mode value written into the preprocessing range,
-and mode 6 or 7 beside a depth attachment.  A stopped engine is not cleared
-by a module reload - the machine has to be rebooted, the module reloaded with
-`KO=` named explicitly, `/dev/dri` checked, and a known-good fixture rerun
-before any later measurement can be trusted.
+The kernel side is `faa_probe_indices`, a module parameter listing the command
+indices the probe may write.  **It is empty by default**, so the shipping
+validator is byte for byte what it was, and no index has earned a permanent
+entry in `m9_index_allowed()`: `bc` and `bd` are the two the vendor uses, and
+on this hardware they are accepted and inert.  `PARHELIA_M9_RELOC_FRAGMENT` is
+the relocation kind a probed index may carry; it needs a read/write VRAM
+object and page alignment.
+
+**Settings that stop the engine on this hardware** [MEASURED]:
+`M9X_FAA_ALPHA_TO_COVERAGE` with or without a mode; any mode value written
+into the preprocessing range; and mode 6 **or 7** beside an ordinary D24S8
+depth attachment.  A stopped engine is not cleared by a module reload - the
+machine has to be rebooted, the module reloaded with `KO=` named explicitly,
+`/dev/dri` checked, and a known-good fixture rerun before any later
+measurement can be trusted.
 
 ### The next step, stated precisely
 
-Not another sweep.  Allocate the buffer group of section 4b - about 16.55
-bytes a pixel, a second buffer a sixteenth of that, and a same-size surface -
-and find the command index that binds it.  The candidate register block is
-`0xa1/0xa3/0xa4`, which share a static index-group table entry with `0xad`
-(`MxMD.dll 0x65514 c7 05 d0 f5 20 00 a1 a3 a4 ad`) and which the vendor
-writes as `a1 = 0x28041968, a1 = 0, a3 = 0, a4 = 0` once at context creation
-and as `a1 = a3 = a4 = 0` after every blit, under the only packet-name string
-in the image, `RESET_FRAG_PTR`.  Those indices are outside this project's
-kernel command whitelist, so that step needs a kernel change, and it has
-deliberately not been made on the evidence so far.
+Not another sweep: section 4c ran the sweep, over `a0..a6` and over every
+unallocated index in the 3D state neighbourhood, and every one of them is
+inert or destructive, never productive.  What is needed is **one vendor
+submission captured with multisampling actually on**.  Turning it on is two
+registry values on the Windows side (section 6); the M-series Linux driver
+carries the `FragSize` option but not the allocator, so it cannot produce the
+capture.  In that submission, `0x4545bdbc` and `0x4545b9b8` name the two
+packets this driver already emits, and every other word of it is the state
+this note still calls [OPEN]: what marks a surface as multisampled, what the
+resolve is, and where the sample positions come from.
