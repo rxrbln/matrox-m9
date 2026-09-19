@@ -90,6 +90,51 @@ because the refusal it guards was in the driver's framebuffer path rather
 than in the compiler the offline test drives.
 
 
+### The whole thirty-three with four render targets advertised
+
+MEASURED 2026-09-19 after `caps->max_render_targets` was raised from 1 to 4
+and the fragment constant count was bounded at the measured-good 56: all
+thirty-three completed, **0 stream timeouts**, and **not one "draws skipped"
+line in any of the thirty-three logs**.  One X server and one process each,
+1920x1200, `M9X_SKIP_REPORT=1`, every benchmark holding **both** hardware
+lock files (see the backlog entry; a first attempt without that had another
+agent's `glmark2` on the same X server and halved two rows).
+
+| benchmark | fps | standing |
+|---|---:|---:|
+| `build` vbo=false / vbo=true | 273, 295 | 273, 295 |
+| `texture` nearest / linear / mipmap | 283, 282, 283 | 284, 283, 283 |
+| `shading` gouraud / blinn-phong-inf / phong / cel | 242, 149, 88, 83 | 243, 149, 88, 83 |
+| `bump` high-poly / normals / height | 105, 182, 164 | 105, 182, 164 |
+| `effect2d` 3x3 / 15-tap | 84, 33 | 84, 33 |
+| `pulsar` | 219 | 220 |
+| `desktop` blur / shadow | 37, 124 | 37, 124 |
+| `buffer` map / subdata / interleaved | 153, 153, 153 | 153, 153, 154 |
+| `ideas` | 109 | 110 |
+| `jellyfish` | 77 | 77 |
+| `terrain` | 1 | 1 |
+| `shadow` | 111 | 111 |
+| `refract` | 5 | 5 |
+| `conditionals` 0/0, 0/5, 5/0 | 229, 142, 228 | 229, 142, 228 |
+| `function` low / medium | 168, 72 | 168, 72 |
+| `loop` no-loop / uniform=false / uniform=true | 166, 166, 159 | 167, 167, 159 |
+
+Every row is within one frame a second of the standing below it.  Nothing in
+the MRT work is on a single-target path: the fragment backend's one-output
+schedule is unchanged and its corpus result is identical, the clear binds
+target 0 alone exactly as before when the framebuffer holds one attachment,
+and the raised cap only changes what `GL_MAX_DRAW_BUFFERS` reports to a
+client that asks.  The constant bound is the one change that could have
+refused a shader here, and no scene reaches it -- the largest pass in the
+thirty-three holds 42 constants against the bound's 56.
+
+The MRT fixtures alongside it, same binary, same locks, known-good fixture
+before and after: `mrt:2`, `mrt:3`, `mrt:4`, `mrt:4:5` and `mrtcolor:2` all
+**0 of 76800 pixels differing on every target**, and `fsconst:30` -- 68
+constants, which used to fail all 76800 pixels and log a stream timeout --
+now reports "a job could not be built; those draws are skipped" and leaves
+the engine alive.
+
 ### The whole thirty-three on this build
 
 MEASURED afterwards on the same binary, `tools/m9x-glmark-default-suite-fresh-x.sh`
