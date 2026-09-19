@@ -508,7 +508,7 @@ carries exactly one raster draw (3c), and its records are capped at
 and the 16-bit index space caps `records * passes` at 65536, so 16384 records a
 job and about 13 jobs for this mesh.  `M9X_JOB_VERTICES=65532` does **not**
 reach it on this target: MEASURED, 0 jobs, 0 draws, nothing drawn and a stream
-timeout, which is the 481 MB of system RAM rather than the rule.
+timeout, the cause of which is **not** established - this target has 16 GB (MEASURED), so the earlier memory attribution is withdrawn.
 
 ## Superseded: standing 2026-09-19, before `refract`'s geometry was delivered
 ### All thirty-three run, twenty-nine above 60 fps, four still skip draws
