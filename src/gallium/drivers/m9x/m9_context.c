@@ -3620,8 +3620,10 @@ m9_render_append_indexed(struct m9_vbuf_render *r, const struct m9_job_key *key,
       /* Halve the run until the vertices it spans fit one job's records. */
       while (hi - lo + 1 > max) {
          n = n / 2 / grain * grain;
-         if (!n)
+         if (!n) {
+            m9_render_drop(ctx);
             return;
+         }
          m9_index_range(indices, index_size, done, n, &lo, &hi);
       }
       vertices = hi - lo + 1;
@@ -4421,8 +4423,10 @@ m9_native_vs_append_welded(struct m9_context *ctx,
       uint16_t *words;
 
       k = m9_weld_run(weld, done, max, grain, &lo, &hi);
-      if (!k)
+      if (!k) {
+         m9_render_drop(ctx);
          return true;
+      }
       vertices = hi - lo + 1;
       out = m9_job_reserve(ctx, key, &ctx->key_consts, &ctx->key_vs_consts,
                            floats, vertices, &first, &extra);
@@ -4508,8 +4512,10 @@ m9_native_vs_append(struct m9_context *ctx, const struct m9_job_key *key,
       /* Halve the run until the vertices it spans fit one job's records. */
       while (hi - lo + 1 > max) {
          k = k / 2 / grain * grain;
-         if (!k)
+         if (!k) {
+            m9_render_drop(ctx);
             return true;
+         }
          m9_native_index_range(n->indices, n->index_size, done, k, &lo, &hi);
       }
       vertices = hi - lo + 1;
