@@ -235,8 +235,21 @@ query, and cube and 3D textures - are all done.
    a silently wrong picture.
 4. **sRGB write** - the backend is written; advertising a colour format is all
    that stands between it and being reachable.
-5. **A second vertex varying**, which needs the second preprocessing draw.
-   Three hypotheses are now refuted on hardware: index `0x88`'s pair mask, a
+5. **A second vertex varying** is **stalled pending a new vendor capture.**
+   Four shapes have now been refused on hardware: the pair mask at index
+   `0x88`, the barrier between the two draws, the chain role in `ef`, and the
+   packed record with its route-fed gather.  The last was emitted in the
+   captured grammar in every field the RE decoded - `ef=00000200` head with
+   `b1=ee190004`, `ef=00000600` gather, `ef=00288e00` fused - and the card
+   still renders nothing.  The second preprocessing draw needs something that
+   is in no capture this tree holds, so the next step is a **new vendor
+   capture of a multi-draw chain**, not a fifth hypothesis.  Two things
+   survive the negative result: no kernel change is needed, because
+   `m9_index_allowed()` already admits `0x74..0x79` in a preprocessing range;
+   and the tail-free head was never marking W1 of slot `n-4`, which every
+   captured native program does.  With that mark the four-varying gather is
+   byte for byte the vendor's own entry 39 of `vs-varyings-4`.
+   The superseded history: three hypotheses were refuted on hardware: index `0x88`'s pair mask, a
    barrier between the two draws, and `ef` bits 11:9 as the draw's place in
    the chain.  The minimal case fails - `vary3`'s extra draw binds a *single*
    stream target and still stalls the engine.  The one lead left is that every
