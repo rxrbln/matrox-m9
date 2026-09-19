@@ -34,6 +34,34 @@ section 8.5 of the splitting note.
 **This very likely also explains `refract`'s black frame**, which is the same
 family: four passes, three record slots, every coordinate computed.
 
+### The whole list, re-run (MEASURED 2026-09-19, one X server a benchmark)
+
+`tools/m9x-glmark-default-suite-fresh-x.sh`, 1920x1200, `M9X_SKIP_REPORT=1`,
+**0 stream timeouts**, all thirty-three completed.
+
+| benchmark | fps | draws skipped |
+|---|---:|---|
+| `build` vbo=false / vbo=true | 273, 296 | none |
+| `texture` nearest / linear / mipmap | 284, 283, 283 | none |
+| `shading` gouraud / blinn-phong-inf / phong / cel | 243, 149, 88, 83 | none |
+| `bump` high-poly / normals / height | 105, 182, 164 | none |
+| `effect2d` 3x3 / 15-tap | 84, 33 | none |
+| `pulsar` | 221 | none |
+| `desktop` blur / shadow | 37, 124 | none |
+| `buffer` map / subdata / interleaved | 153, 153, 154 | none |
+| `ideas` | 110 | none |
+| `jellyfish` | 125 | 1244, out of temporaries for blending |
+| **`terrain`** | **1** | **none** (was 24) |
+| `shadow` | 145 | 1447, no valid raster parameters |
+| `refract` | 39 | none |
+| `conditionals` 0/0, 5/0, 0/5 | 229, 142, 228 | none |
+| `function` low / medium | 168, 72 | none |
+| `loop` no-loop / uniform=false / uniform=true | 167, 166, 345 | 3445 on uniform=true, control flow |
+
+Every row matches the previous standing within run-to-run noise.  `terrain`
+is the only change, and the three scenes that still skip draws skip them for
+the reasons they did before.
+
 ## Superseded: standing 2026-09-19 (first)
 
 **MEASURED 2026-09-18** at 1920x1200 on the dual-DisplayPort M9128 (subsystem
