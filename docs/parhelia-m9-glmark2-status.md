@@ -29,6 +29,14 @@ fragment store and the fragment register allocation fix
 | `function` low / medium | 168, 72 | none |
 | `loop` no-loop / uniform=false / uniform=true | 166, 166, 159 | none |
 
+Fixture suite on the same build: **256 cases, 242 PASS, 14 FAIL, 0 non-M9, 0
+stream timeouts**, the engine proved before and after.  The fourteen are the
+`dxt*` family, which the driver refuses with "texture levels beyond the
+captured 32x16 tail need the kernel texture window", and the four `giga10*`
+cases; all fourteen fail identically with `M9X_RA_RESET=0 M9X_CHECK_RA=0`, so
+they are the state of those two features and not the allocator (MEASURED,
+`dxt1`, `giga10clear` and `giga10tex` run both ways one after the other).
+
 **Nothing regressed.**  Every row matches the standing below it within
 run-to-run noise, and the allocator change -- which touches every fragment
 program the driver compiles -- costs no frame rate anywhere.  `terrain` is
