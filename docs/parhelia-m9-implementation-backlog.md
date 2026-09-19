@@ -123,9 +123,21 @@ rounded up to whole 4x4 blocks, allocation is
 addressing unit of the class-3 DXT calculators (which take *texel*
 coordinates), and blocks upload verbatim - the hardware never decompresses.
 `docs/parhelia-m9-s3tc-compressed-textures.md` is the implementation note.
-What is still capture-gated is narrower: whether `79[15:0]` holds the logical
-or the padded width for a compressed NPOT texture, and BC1 punch-through
-behaviour, since DXT1 RGB and RGBA share one code.
+**Implemented, MEASURED and advertised** for `PIPE_BIND_SAMPLER_VIEW` on
+`PIPE_TEXTURE_2D`.  The decisive find is that the descriptor-translated
+surface window **de-tiles a compressed level itself**, presenting it as a
+linear block image, so no compressed address calculator was needed at all -
+the driver reuses the path large uncompressed levels take.  Both remaining
+questions closed: `79[15:0]` carries the **logical** width (`dxt1:132x64`
+samples exactly with 132 in the descriptor against a span of 160), and the
+sampler follows standard BC1 punch-through.  Two rules had to be measured
+rather than derived: the storage kind is the one the level was *written*
+through, and the window descriptor's height must reach a whole microtile - 16
+texel rows for DXT1, 8 for DXT2..5.  And §4.3 of the note was wrong below
+128x128: "exactly the block byte count, no decompression reserve" holds only
+at 128x128 and above, while below it the bank swizzle spreads blocks over up
+to eight times their content.  Not measured, so not advertised: render
+targets, mip chains, cube faces, volume slices, sRGB variants, `79[24]`.
 
 **10-bit GigaColor render and sample moved out of this list.**  `A2B10G10R10`
 is hardware code `0x68` and `A2R10G10B10` code `0x6a`, both 32 bits per texel
@@ -134,9 +146,22 @@ layout code is needed.  Both take render class 0 at index `89` bits `3*s`, the
 same class an 8-bit target takes; the per-target 16-bit write mask in `ab`/`ac`
 must be `0xffff`, because that mask is a byte-lane mask and the vendor routes
 10-bit channel masking through the fragment output program instead.
-`docs/parhelia-m9-gigacolor-10bit.md` is the implementation note, and the
-exposure gate is now three hardware results - clear-and-read-back, sample, and
-blend rounding - rather than a missing decode.
+`docs/parhelia-m9-gigacolor-10bit.md` is the implementation note.
+**Implemented, MEASURED and advertised** for `SAMPLER_VIEW`, `RENDER_TARGET`,
+`SCANOUT`, `DISPLAY_TARGET` and `SHARED`: the sampler keeps ten bits, the
+render target keeps ten bits over all 1024 levels of every channel, and blend
+reads its destination at ten bits.  The note was wrong where it met the
+hardware.  A clear to 682/1023 reading back 681 looked like a truncating
+conversion; it is a **spatial dither** - 681 on exactly half the surface and
+682 on the other - and `ef[7:0]` is `0x55` off / `0x00` on.  With it off the
+conversion **rounds to nearest**.  The driver now programs `0x55` for a 10-bit
+target, as the vendor's Parhelia path does.  Neither the dither nor the
+rounding rule was in the note.  Still open: a **partial colour mask** on a
+10-bit target is refused rather than applied, because `ab`/`ac` gate byte
+lanes and the vendor's fragment-output lowering is not implemented; and a
+**converting blit out of a 10-bit surface silently returns nothing** -
+`glReadPixels` asks for a blit into an `R10G10B10A2` staging image, the driver
+declines it, and the read comes back untouched instead of falling back.
 
 **10-bit scanout is in scope.**  The M9 display
 controller does know the format: `MxMM.sys 0x37b31` lists `0x6a` and `0x68` as
@@ -152,9 +177,24 @@ mode enumeration**, not the silicon: this driver writes that descriptor itself
 and enumerates its own modes, so the path is reachable here.  The remaining
 unknowns are whether the DisplayPort transmitter needs its bit depth stated in
 the MSA and whether the attached panel accepts 30-bit - both answered by
-looking at the panel, not by more disassembly.  UNTESTED, under implementation.
-An earlier version of this paragraph said "do not add a depth-30 visual", which
-mistook the vendor's dead enumeration for a hardware limit.
+looking at the panel, not by more disassembly.  An earlier version of this
+paragraph said "do not add a depth-30 visual", which mistook the vendor's dead
+enumeration for a hardware limit.
+**Implemented and MEASURED up to the controller; UNTESTED on the panel.**  The
+plane advertises `XR24 XR30 AR30 XB30 AB30`, every modeset completes, the link
+retrains, and the display-controller pitch word read *while the head is
+scanning out* is `0xcc210780` for XR24, `0xd4210780` for XR30/AR30 and
+`0xd0210780` for XB30/AB30 - codes `0x66`, `0x6a`, `0x68`.  GBM takes all four
+for `SCANOUT|RENDERING`, six of twelve EGL configs are 30-bit, and a
+GL-rendered ramp maps back with 1024 distinct codes across 1920 pixels with no
+non-monotonic step.  EGL offers only the AR30/XR30 orders because Mesa's GBM
+config list has no XB30/AB30 entry - a Mesa property, not a hardware one.  A
+depth-30 **X** visual additionally needs the server and DDX at depth 30 and
+was not tried.  What no instrument on this bench can answer is what the panel
+makes of the pixels: link-format register `0x1c38` is patched from the PInS
+table on pixel clock alone and reads `0x111d011d` identically for 8-bit and
+10-bit modesets, so the transmitter bit-depth question is unresolved and needs
+a human looking at the monitor.
 
 **Float textures moved out of this list (partly).**  The vendor binds format
 code `0x34` (`A32B32G32R32F`) at texture index `78/79` in
