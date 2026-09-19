@@ -5936,6 +5936,7 @@ m9_context_create(struct pipe_screen *pscreen, void *priv, unsigned flags)
    m9_job_draws = debug_get_num_option("M9X_JOB_DRAWS", 0);
    m9_draw_set_job_vertices(debug_get_num_option("M9X_JOB_VERTICES",
                                                  M9_JOB_VERTICES_DEFAULT));
+   m9_draw_set_vs_record(debug_get_num_option("M9X_VS_RECORD", 1));
    m9_indexed_draws = debug_get_bool_option("M9X_INDEXED", true);
    m9_weld_enable = debug_get_bool_option("M9X_WELD", true);
    m9_native_vs = debug_get_bool_option("M9X_NATIVE_VS", true);

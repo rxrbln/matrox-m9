@@ -230,6 +230,10 @@ uint32_t m9_draw_preprocess_vertices(uint32_t raster_vertices);
  * draw that is then refused downstream for partial coverage.
  * M9X_JOB_VERTICES=5760 restores the vendor's own partition. */
 #define M9_JOB_VERTICES_DEFAULT 11520u
+/* The target descriptor the second preprocessing draw binds, and the knob
+ * that selects it (m9_draw_params.c). */
+void m9_draw_set_vs_record(unsigned mode);
+uint32_t m9_vs_extra_desc(void);
 void m9_draw_set_job_vertices(uint32_t vertices);
 uint32_t m9_draw_max_source_vertices(void);
 uint32_t m9_transient_view_bytes(void);

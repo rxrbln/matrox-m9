@@ -418,6 +418,27 @@ m9_draw_preprocess_vertices(uint32_t raster_vertices)
    return (raster_vertices + 3) & ~3u;
 }
 
+/* Every captured chain-opening preprocessing draw writes an intermediate
+ * record; the first clean-room implementation bound separate stream views
+ * instead, which is the last untested difference after the pair mask, the
+ * barrier and the chain role were each refuted on hardware.  A record of
+ * stride four holds one four-dword field at dword zero, so the bytes a
+ * target writes are exactly where the separate view put them and only the
+ * descriptor's class changes.  M9X_VS_RECORD=0 restores the stream view. */
+static unsigned m9_vs_record = 1;
+
+void
+m9_draw_set_vs_record(unsigned mode)
+{
+   m9_vs_record = mode;
+}
+
+uint32_t
+m9_vs_extra_desc(void)
+{
+   return m9_vs_record ? m9_record_desc(M9_RECORD_SLOT, 4, 0) : 0x68002000u;
+}
+
 static uint32_t m9_job_vertices = M9_JOB_VERTICES_DEFAULT;
 
 void

@@ -916,7 +916,7 @@ m9_emit_preprocess(struct m9_batch *batch, const struct m9_draw_job *job,
       for (unsigned t = 0; t < targets; t++)
          EMIT(R(0xb0 + 2 * t, job->transient, VIEW(job->vs_extra_view[t]),
                 STREAM),
-              V(0xb1 + 2 * t, 0x68002000));
+              V(0xb1 + 2 * t, m9_vs_extra_desc()));
    } else {
       EMIT(R(0xb0, job->transient, VIEW(0), STREAM), V(0xb1, 0x68002000));
       EMIT(R(0xb2, job->transient, VIEW(3), STREAM), V(0xb3, 0x68002000));
