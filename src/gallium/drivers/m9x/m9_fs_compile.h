@@ -30,8 +30,13 @@ struct nir_shader_compiler_options;
 #define M9_FS_MAX_TEXTURES 4u
 /* Raster passes one shader may be split across.  A pass binds four units,
  * the first of which a continuation spends on the record it reads, so eight
- * passes cover every corpus shader the backend otherwise supports. */
-#define M9_FS_MAX_PASSES 8u
+ * cover every corpus shader the backend otherwise supports -- but a shader
+ * whose coordinates the engine cannot interpolate costs one producing pass
+ * a fetch, and glmark2's nine-tap tilt-shift blur needs fourteen.  MEASURED
+ * on the card: a fourteen-pass job builds, submits and draws with no stream
+ * timeout.  Its *pixels* are another matter -- see the coordconv:4 fixture
+ * and docs/parhelia-m9-fragment-pass-splitting.md section 8. */
+#define M9_FS_MAX_PASSES 16u
 /* A texel slot fed by a sampler rather than by an inter-pass record. */
 #define M9_FS_ROUTE_NONE 0xffu
 /* Compiled variants one shader may keep.  A shader specialised on a uniform
@@ -180,6 +185,9 @@ unsigned m9_fs_coord_route_count(const struct m9_fs_program *program);
 void m9_fs_passes_fini(struct m9_fs_passes *passes);
 /* Texel slots the pass fills from a sampler rather than from a record. */
 unsigned m9_fs_sampler_count(const struct m9_fs_program *program);
+/* Coordinate streams the pass interpolates; units that agree in location,
+ * component, projector and transform share one. */
+unsigned m9_fs_coord_stream_count(const struct m9_fs_program *program);
 void m9_fs_program_fini(struct m9_fs_program *program);
 unsigned m9_fs_slot_count(const struct m9_fs_program *program);
 uint32_t m9_fs_raster_88(const struct m9_fs_program *program);
