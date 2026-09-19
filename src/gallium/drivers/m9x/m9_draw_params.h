@@ -237,13 +237,16 @@ uint32_t m9_draw_preprocess_vertices(uint32_t raster_vertices);
  * per-job cost against the records a job carries. */
 #define M9_JOB_VERTICES_MIN 256u
 #define M9_JOB_VERTICES_MAX 65532u
-/* Twice the vendor's partition.  MEASURED on refract at 1920x1200, two cells
- * of one binary agreeing on records (209188) and skipped draws (1): 46 jobs
- * and 25.10 ms at 5760 against 28 jobs and 24.64 ms here.  Past this the
- * scene gets worse rather than better, because a larger ceiling admits a
- * draw that is then refused downstream for partial coverage.
+/* Four times the vendor's partition.  MEASURED on refract at 1920x1200, one
+ * binary with this the only variable and no draw skipped in any cell: 130
+ * jobs and 210.8 ms a frame at 11520, 70 jobs and 166.5 ms here, 67 and 165.9
+ * at 32768, 55 and 165.5 at 46080.  The gain is the back-end clear a split
+ * job takes, which is why it stops paying past this.  65532 -- the most the
+ * 16-bit raster index allows -- exhausts VRAM instead: the transient views
+ * are 20 * ceiling * 16 bytes, 21 MiB there, and the run reports "cannot
+ * allocate target depth", draws nothing and times the stream out (MEASURED).
  * M9X_JOB_VERTICES=5760 restores the vendor's own partition. */
-#define M9_JOB_VERTICES_DEFAULT 11520u
+#define M9_JOB_VERTICES_DEFAULT 23040u
 /* How the second preprocessing draw hands its varyings on, and the words
  * that shape follows (m9_draw_params.c). */
 void m9_draw_set_vs_record(unsigned mode);
