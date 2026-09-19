@@ -64,18 +64,43 @@ The driver now tallies its refusals by reason.  Across the thirty-three:
   and up, which one preprocessing draw cannot carry
   (`docs/parhelia-m9-vertex-output-target-re.md`).
 
-### The texture coordinate was tried and does not pay yet
+### The texture coordinate: what was tried, and what replaced it
 
-A build that admits a textured fragment program whose coordinate needs none
-of the CPU's per-vertex work was run over the same thirty-three (MEASURED).
-It takes `bump:normals` fully native, 182 -> 184 fps, and part of `desktop`,
-and it **costs** `desktop:shadow` 123 -> 119 fps, where the job then splits
-between native and draw-module draws.  The two reasons that keep the rest
-are named by the driver itself: `texture:*` refuses with "the texture
-coordinate is not the varying's first pair" and `desktop:shadow` with "the
-texture coordinate needs a per-vertex span scale".  Until the vertex program
-can place the pair and apply the span, the change is a wash, so it is not in
-the tree.
+A build that admitted only the textured fragment programs whose coordinate
+needs none of the CPU's per-vertex work was run over the same thirty-three
+(MEASURED).  It took `bump:normals` fully native, 182 -> 184 fps, and part of
+`desktop`, and it **cost** `desktop:shadow` 123 -> 119 fps, where the job
+then split between native and draw-module draws.  The two reasons that kept
+the rest were named by the driver itself: `texture:*` refused with "the
+texture coordinate is not the varying's first pair" and `desktop:shadow`
+with "the texture coordinate needs a per-vertex span scale".  That build was
+a wash and was not kept.
+
+**Both are now the vertex program's own work** (`m9x: the vertex program
+places and scales a texture coordinate itself`,
+`docs/parhelia-m9-native-vertex-backend.md` section 4a): a coordinate stream
+is an output target of its own, carrying
+`(V[c], V[c+1]) * scale + bias` in one captured multiply-add whose two
+constant pairs the driver fills per job with the sampler's transform times
+the render target's addressed span.  `c` is wherever the linker put the pair,
+so the straddling `c = 1` the `texture` scene links to costs two gather moves
+and nothing else.
+
+What that reaches, read off the fragment backend offline for each scene's own
+shaders (OFFLINE, `m9-fs-compile-test --glsl`):
+
+| scene | streams the raster pass reads | verdict |
+|---|---|---|
+| `texture` x3 | varying VAR0 + coordinate VAR0 at component **1** | fits the two targets |
+| `bump:normals` | one coordinate at component 0, no varying | fits |
+| `desktop` | one coordinate at component 0, no varying | fits; the span is why it used to refuse |
+| `desktop:blur`, `effect2d` x2, `shadow` | several raster passes | still refused |
+| `bump:height`, `jellyfish`, `terrain`, `refract`, `ideas` | three streams and up | still refused |
+| `loop` x3, `buffer` x3 | control flow in the vertex shader | still refused |
+
+**UNTESTED on hardware**: no frame rate or draw count below has been
+re-measured against it.  `M9X_VS_TEXTURE=0` restores the old refusal, so one
+deployed library gives both arms of the comparison.
 ## Standing 2026-09-19 (sixth): the whole default run in ONE invocation
 
 MEASURED at 1920x1200 on the M9128, **`glmark2 --size 1920x1200` with no

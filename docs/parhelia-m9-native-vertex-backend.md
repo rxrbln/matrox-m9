@@ -13,8 +13,10 @@ compiler's own contracts, what each form rests on, and what is not covered.
 The driver runs the compiled program on the GPU: section 8 records the
 integration, what it measures and what it still cannot do.
 
-Eighteen vertex shaders, glmark2's `bump-poly.vert` among them, compile and
-verify offline (OFFLINE, `m9-vs-compile-test`).  `mvp * position` with a
+Twenty-seven vertex shaders, glmark2's `bump-poly.vert` among them, compile
+and verify offline (OFFLINE, `m9-vs-compile-test`), four of them with a
+coordinate stream (section 4a) compiled beside the default layout and checked
+stream by stream.  `mvp * position` with a
 colour varying compiles to **36 slots, the same length the vendor compiler
 emits for it**, with the transform in the vendor's own eight instructions.
 
@@ -94,11 +96,61 @@ constant side is the same operand on every lane.  `mat4 * vec4` -- which GLSL
 gives as a linear combination of columns, not as dot products -- therefore
 compiles to one multiply and three multiply-adds per lane, the vendor's eight.
 
+**Coordinate placement and scaling.**  See section 4a; it is the second
+thing Mesa does not do for a driver, and it is what lets a textured draw run
+its transform on the engine at all.
+
 **Output pinning.**  When both scalars of an output register come from one
 lane that a single instruction writes whole, that instruction writes the
 output register itself and the two moves disappear.  A lane written by a dot
 product, a reciprocal or a reciprocal square root is excluded: those forms
 write the first scalar only.
+
+## 4a. Output streams, and the coordinate one
+
+`m9_vs_compile()` takes the streams the program must write -- `struct
+m9_vs_outputs`, one entry an output target -- rather than deriving them from
+the varyings the shader stores.  The layout belongs to the (vertex shader,
+fragment variant) pair, because it is the fragment variant that says which
+varyings the raster pass interpolates and which pair of which varying each
+sampler reads, so the shader keeps one compiled program per layout
+(`struct m9_vs_variant`).  Passing NULL asks for the old shape, one varying
+stream a stored varying in store order, which is what the offline corpus and
+the pass-through colour image use.
+
+A **varying stream** is what it always was: the four components of the
+varying into the target's register pair, low register components 0 and 1.
+
+A **coordinate stream** carries the two scalars a sampler reads.  The CPU
+used to produce it per vertex in `m9_scale_coords` -- pack the pair down out
+of the varying, fold the sampler's affine transform in, divide by a
+projector, scale to the render target's addressed span -- and the program now
+does all of it but the divide, in one instruction:
+
+```text
+low  = (V[c], V[c+1]) * k_scale + k_bias      VS_MAD_RKK, CAPTURED s26
+high = low                                    VS_MOV, so the stream entry
+                                              carries no stale register
+```
+
+`c` is wherever the linker put the pair, including the straddling `c = 1`
+that glmark2's texture scene links to, where the two scalars sit in
+different registers and the operand builder's two gather moves fetch them.
+`k_scale` and `k_bias` are constant pairs of a kind of their own
+(`M9_VS_CONST_COORD`); `m9_vs_resolve_consts()` fills them per job with
+`sampler transform * span` and `sampler bias * span`, the same numbers
+`m9_scale_coords` applied.  A stream therefore costs one multiply-add, one
+move and two constant pairs.
+
+What stays refused, each with its own reason: a **projective** coordinate,
+whose per-vertex divide is wrong in 75373 of 76800 pixels (MEASURED, fixture
+`projtexz`) and which a two-scalar stream cannot express; a **shadow or
+volume** fetch, which reads a third interpolated component; a coordinate an
+earlier raster pass produced; and a fragment program split across raster
+passes.
+
+`M9X_VS_TEXTURE=0` puts every sampling draw back in the draw module, which
+is the A/B arm of this change rather than a gate.
 
 ## 5. Instruction forms and their provenance
 
@@ -141,8 +193,13 @@ both the shapes the fragment backend already uses.
   `b`/`c`/`d` operand fields.  The linear rule provably stops at four.  (The
   vendor stack does run fifteen attributes, so beyond four it must use another
   mechanism; no capture isolates it.)
-* **One varying.**  The driver's four-target configuration carries one varying
-  vector; the register-to-target rule for any other target set is UNDECODED.
+* **Two output streams.**  The fused pass binds output targets 0 and 1 -- the
+  second is the clip position's, which the raster stage does not need
+  (MEASURED, `parhelia-m9-varying-transport-re.md` section 13) -- so one
+  preprocessing draw carries two.  A stream is either a varying the raster
+  pass interpolates or a texture coordinate (section 4a), and a varying read
+  both ways costs two.  A third needs the second preprocessing draw, which
+  has never delivered a stream on this board.
 * **One basic block.**  Control flow is refused.
 * **No logarithm or power.**  `exp2` is CAPTURED on the vertex unit -- the
   vendor's own `ff-fog-exp` and `ff-fog-exp2` vertex programs carry the seed,
@@ -169,6 +226,12 @@ evaluations of the same random inputs:
 2. the emitted program, run through a simulator that decodes the instruction
    words the backend wrote -- the attribute declaration included, so the
    selectors are checked as well.
+
+A case that names an output layout is compiled a second time with it and
+every stream of that program is checked against the same reference: a
+varying stream against the varying, a coordinate stream against
+`varying[component..component+1] * scale + bias` with the coefficients the
+driver would resolve.
 
 The simulator treats the reciprocal and reciprocal-square-root seeds as exact.
 Newton refinement from an exact seed is a fixed point, so the chains still have
@@ -328,44 +391,33 @@ GLSL.  **The defect inside `emit_rcp()` itself is not root-caused**; a probe
 that materialises a literal into a register and runs the chain over it is
 what would settle it.
 
-### 8.6 Only two attributes reach the hardware correctly
+### 8.6 Four attributes reach the hardware, and how the third was fixed
 
-`m9_vs_source_layout_init()` will lay out four attributes and the offline
-corpus verifies four, but the **draw path stops at two**
-(`M9_VS_HW_ATTRIBUTES`).  With three or four attributes declared over one
-interleaved record the engine draws, without any timeout, from data that is
-neither the attribute's own nor anything recognisable: `m9-mesa-vs attr3`,
-`attr4` and `attr4b` each miss every one of 67156 checked pixels by up to
-255/255, while the same geometry through the draw module is exact.  A third
-attribute feeding the *position* puts the geometry elsewhere entirely, so it
-is not only the colour path that is wrong.
+`M9_VS_HW_ATTRIBUTES` is **four**.  A third and a fourth attribute used to
+draw from neither their own value nor a decoy -- `m9-mesa-vs attr3`, `attr4`
+and `attr4b` missed every one of 67156 checked pixels -- and the register
+rule `0x46 + 8 * (a - 1)` was right all along: the pass stated a **fixed
+count of two** in index `0x88` bits 27:24.  With that count driven from the
+declaration all four attributes read exactly (MEASURED on the M9128:
+`attr4-r5e` is 100 % of every triangle interior and the three lower
+registers each hold their own attribute's decoy;
+`docs/parhelia-m9-vertex-output-target-re.md` carries the run).
 
-This reproduces, through Mesa and a compiled program, what the userspace probe
-of `parhelia-m9-native-vertex-isa.md` section 2 found from the other side:
-"either a third preprocessing attribute needs something the probe does not
-set, or its registers are not `0x56/0x57` in a three-attribute declaration".
-Two independent paths now agree that the rule `0x46 + 8 * (a - 1)` is right
-for attributes 1 and 2 and wrong, or incomplete, from three.
-
-The vendor's own multi-attribute declarations (`parhelia-m9-openbits-gl-capture.md`)
-suggest where to look: they leave the dword field zero, put each GL attribute
-on its own **stream**, and pack two GL attributes into one hardware attribute
-register pair -- three GL attributes become two hardware attributes, four
-become three.  Whether hardware attribute 3 needs a second stream binding, a
-different register, or something else, no capture isolates.  The experiment
-that would settle it is the one that document already names: dump the compiled
-c2 vertex program alongside the index-`23` words for the same attribute counts
-and join each declaration entry to the register the program reads.
+Five is refused for a decoded reason: the vendor's attribute numbering skips
+5..8, the four texture coordinate sets, and resumes at 9, whose register
+`0x46 + 64` does not fit the seven-bit operand fields.  The vendor stack does
+run fifteen attributes, so beyond four it uses another mechanism; no capture
+isolates it.
 
 ### 8.7 What the path still cannot do
 
-* **One varying, so no texture.**  The pass has one varying target and it is
-  transient view 0; a texture coordinate needs a stream of its own, and the
-  CPU views the draw module fills cannot be filled here.  Every textured draw
-  therefore falls back, which is why Quake III does not move.  Decoding a
-  second preprocessing output target is worth more to this driver than
-  anything else in this list.
-* **Three attributes** (section 8.6).
+* **Two output streams**, so a shader whose raster pass reads three -- two
+  varyings and a coordinate, say -- falls back.  A third needs the second
+  preprocessing draw, and that draw has never delivered a stream on this
+  board (`parhelia-m9-varying-transport-re.md` section 12).
+* **A projective texture coordinate**, a shadow or volume fetch's third
+  component, a coordinate an earlier raster pass produced, and a fragment
+  program split across raster passes (section 4a).
 * **One basic block**, the backend's own limit.
 * Instanced draws, primitive restart, user clip planes, polygon offset,
   polygon or line stipple, wide or smooth lines, non-fill polygon modes and

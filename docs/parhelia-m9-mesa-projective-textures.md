@@ -106,6 +106,12 @@ which its own comment calls exact only "while q is constant over a
 primitive".  Nothing refuses the case where it is not, and the result is
 silently wrong.
 
+A draw the compiled vertex program takes refuses a projective coordinate
+outright ("the texture coordinate is divided by a projector"): its
+coordinate stream is a two-scalar multiply-add with no divide in it
+(`docs/parhelia-m9-native-vertex-backend.md` section 4a), so the defect
+below belongs to the draw-module path alone.
+
 `m9-mesa-glsl projtexz` measures it.  It is `projtex` with `v_proj.z` made
 live so the linker keeps the varying four components wide and the projector
 stays in component 3 — the only shape the backend accepts:

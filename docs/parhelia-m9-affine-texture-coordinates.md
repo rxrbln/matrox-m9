@@ -121,6 +121,16 @@ be blurred until that schedule is in.
 Steps 1 to 4 are done: `M9_FS_MAX_TEXTURES` is four, the limit one pass has,
 and the fixture is `m9-mesa-glsl texaff`.
 
+**Where the fold runs.**  Through the Gallium draw module it is
+`m9_scale_coords`, per vertex on the CPU, beside the component packing, the
+projector divide and the render target's span scale.  A draw the compiled
+vertex program takes does not go through that: the preprocessing pass writes
+the coordinate as a stream of its own, the fold and the span riding one
+multiply-add against constant pairs the driver fills per job
+(`docs/parhelia-m9-native-vertex-backend.md` section 4a).  The two produce
+the same stream; only the projector divide is still CPU-only, and a native
+job refuses it.
+
 A fixture should go in first: sample one image twice, once at a varying and
 once at that varying times a uniform plus a uniform offset, against a CPU
 reference that computes the same two texels.
