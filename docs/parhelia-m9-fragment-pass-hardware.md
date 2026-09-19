@@ -363,15 +363,62 @@ apiece so no cull state removes them, its topology expanded into one indexed
 triangle list, and the clip window narrowed to the pixels the geometry covers.
 Twenty-four records, against a scratch surface and two copies.
 
-**It is off by default**, because it is not yet a path a scene can be trusted
-to.  It needs the back-end object cleared ahead of *every* multi-pass job
-rather than only the scratch path's own (`M9X_SPLIT_BE=3`): without that, four
-windows of `desktop`'s blur stop the engine
+**It is off by default**, but the reason it could not be trusted has been
+found and fixed.  It needs the back-end object cleared ahead of *every*
+multi-pass job rather than only the scratch path's own (`M9X_SPLIT_BE=3`):
+without that, four windows of `desktop`'s blur stop the engine
 (`splitdesk:8:4:11:1920x1200:1:420x420` stalls, and renders 32 frames with
-it).  With both on, the fixture suite stops the engine at `conv3rep`, and
-`terrain` under `M9X_SPLIT_PRESSURE=1` stops it as well -- so padding does not
-make a seven-pass mesh schedule safe either.  Whatever `conv3rep` hits is the
-next thing to find; the mechanism itself is proved by the table above.
+it).  With both on, the fixture suite used to stop the engine at `conv3rep`.
+
+**What `conv3rep` hit was the clear, not the padding** -- see 3bf.  With the
+back-end object swapped rather than zeroed under a job in flight, MEASURED
+2026-09-19 with `M9X_SPLIT_PAD=1 M9X_SPLIT_BE=3`: `conv3`, `conv3sub`,
+`conv3subw`, `conv3small`, `conv3strip`, `conv3mag`, `conv3rep`, `conv3mix`,
+`convrtt`, `convrttin`, `convrtt2`, `conv3notest`, `conv3nowrite` and
+`texture` all pass pixel-exact with no stream timeout, and `desktop` runs its
+whole benchmark on the padded path at **37 fps over 16 jobs a frame** where
+the scratch path takes 28 -- no draw refused, no draw skipped, no timeout.
+So padding is now a working path; it is not yet the default because it is not
+faster (the frame is the engine's either way) and the scratch path is the one
+the thirty-three benchmarks were measured on.
+
+`terrain` under `M9X_SPLIT_PRESSURE=1` also **no longer stops the engine**
+with padding and the swap: MEASURED 2026-09-19, 1055 split draws a frame are
+padded and drawn, and what is left is the fragment backend refusing 14 draws
+a frame for five samplers against four units and 2 for geometry that does not
+fill the box it spans.  So padding *does* carry a seven-pass mesh schedule;
+what blocks `terrain` is the compiler, not the coverage rule.
+
+### 3bf. A back-end object cleared under a job in flight
+
+**A job posted asynchronously retires only at the next submission**
+(CAPTURED from the kernel: `m9_submit_execute` opens with
+`m9x_transport_drain_locked`, and the comment on
+`m9x_submit_user_stream_locked` says why -- "the command image and the engine
+state are shared, so a job posted earlier has to retire before this one is
+built").  The Mesa driver's clear of the back-end object is a plain CPU
+`memset` of a VRAM mapping, so it overwrites state the engine may still be
+reading.  The scratch path makes that certain rather than likely: its seed
+copy is a draw into the very surface whose object is cleared next.
+
+That is what "the boundary is not sharp" always meant -- 1, 2, 8, 10, 12, 16
+and 20 partial draws rendering and 24 and 32 stopping the engine is a race,
+not a count.
+
+**There is no drain to take.**  `m9x_submit_noop` -- the only fence a client
+can post -- writes the shared command image *without* draining first, so
+asking for a fence to order the clear corrupts the job in flight instead of
+waiting for it.  MEASURED: a build that posted a no-op fence before each
+clear took the whole machine off the network mid-`desktop`.
+
+So a target shape keeps **two** back-end objects and a clear swaps to the
+spare and zeroes that, which the engine cannot be reading because the job in
+flight bound the other one.  The spare is allocated the first time a shape
+wants a clear.  MEASURED, one binary, `M9X_SPLIT_BE=3`, `M9X_BE_SWAP` the
+only variable: with the swap off, `conv3rep` fails 76800 of 76800 pixels on
+its first run and takes the engine with it; with it on, `conv3rep` passes
+three times over and `conv3`, `conv3mix`, `conv3sub` and `texture` pass
+behind it, no timeout.
 
 ### 3be. A record's screen position is the quotient, not the product
 

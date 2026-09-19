@@ -1,10 +1,27 @@
 <!-- Copyright 2026 René Rebe <rene@exactco.de> -->
 <!-- SPDX-License-Identifier: GPL-2.0 -->
-# The inter-pass record's traffic, and why it bounds a multi-pass scene
+# The inter-pass record's traffic, and why it does **not** bound a scene
 
-DERIVED 2026-09-18 from the driver's own stride rule and a MEASURED frame
-rate.  Not yet confirmed against a memory-bandwidth measurement, which is
-the one thing that would settle it - see the open question at the end.
+**The reading this note was written to support is REFUTED.**  Slots are now
+allocated by liveness, which halves the stride for every shader of three
+passes or more, and MEASURED 2026-09-19 on the M9128 at 1920x1200, one
+binary with `M9X_RECORD_LIVENESS` the only variable:
+
+| scene | stride | record | fps |
+|---|---:|---:|---:|
+| `desktop` blur | 12 -> 8 dwords | 8 -> 5 MiB | 38 -> 38 |
+| `effect2d` 15-tap | 16 -> 8 dwords | 141 -> 70 MiB | 33 -> 33 |
+
+Halving the traffic moved neither scene by a frame.  So neither is bound by
+the record, and `parhelia-m9-fill-rate.md` had it right: they are bound by
+fragment execution.  What the halving buys is **allocation** -- a 141 MiB
+record has been refused on this card before now and a 70 MiB one is not --
+and that is the reason to keep it.
+
+The arithmetic below is retained because it is correct as arithmetic; what
+was wrong was reading a frame rate off it.  The original text follows.
+
+## The original reading (DERIVED 2026-09-18, refuted above)
 
 ## The arithmetic
 
@@ -22,13 +39,14 @@ Every hand-over is written once and read once, so at 1920x1200:
 which is 9.1 GB/s of record traffic alone - before a texture read or a
 colour write.  Reaching 60 fps would need 17.7 GB/s from the record alone.
 
-That also retires the fill-rate explanation for this scene: the model gives
-19 full-screen operations at 1.157 ms, so 45 fps, and the scene runs at 31.
-The model was not measuring what it appeared to.  (The same model was
-already refuted outright on `refract`, which turned out to be 95% CPU
-transfer.)
+That was read as retiring the fill-rate explanation for this scene.  It does
+not: the scene runs at the same 33 fps with the stride at 8 dwords and at 16
+(MEASURED, above), so the record was never the constraint.  The fill-rate
+model's 19 full-screen operations at 1.157 ms give 45 fps against a measured
+33, which is the right order; the arithmetic here happened to land near the
+same number for a different reason.
 
-## Why the stride can be smaller
+## Why the stride is smaller (implemented)
 
 A slot per hand-over is only necessary if a pass can read an output older
 than its immediate predecessor.  When the pass graph is a **chain** - pass
@@ -44,7 +62,9 @@ count:
 For two passes the present rule is already minimal and must be kept: a
 ping-pong would double it.  So the rule is **allocate slots by liveness**,
 which degenerates to `min(4 * (passes - 1), 8)` for a chain and gives each
-value its own slot only where one is genuinely live across another.
+value its own slot only where one is genuinely live across another.  That is
+what `m9_record_layout()` does, and the measured strides above are its
+output.
 
 This halves the traffic for the cases that need it and halves the record
 with it - 141 MiB to 70 MiB for the five-pass case, 105 to 70 for the
@@ -70,8 +90,9 @@ pair of numbers in the same two fields the driver already emits through
 
 ## Open
 
-Whether 8.8 GB/s is itself reachable is unknown: this board's memory
-bandwidth has not been measured.  Until it is, the honest statement is that
-the five-pass scene is bandwidth-bound rather than fill-bound, that the
-present stride rule costs twice what a chain needs, and that whether 60 fps
-is reachable after halving it is an open question rather than a promise.
+This board's memory bandwidth has still not been measured.  It no longer
+matters for these two scenes: halving their record traffic changed neither
+frame rate, so whatever the bandwidth is, it is not what they are waiting
+for.  It would still be worth knowing before any future reading attributes a
+cost to memory traffic on arithmetic alone - which is the mistake this note
+records.
