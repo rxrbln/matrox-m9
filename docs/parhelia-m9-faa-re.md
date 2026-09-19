@@ -605,12 +605,13 @@ the instrument for it is built and calibrated.
    **OPEN**, and now for a concrete reason: nothing is accumulated to
    resolve.  With the unit enabled the engine reserves a lane and writes
    nothing into it [MEASURED], because the separate multisample buffer group
-   of section 4b is never allocated.  No call edge from multisample surface state to a resolve packet
-   was recovered; the AD/AF emission is gated only by a surface-shadow dirty
-   bit, never by a multisample condition, and no emitter selects a different
-   index because a surface is multisampled [STATIC, whole-`.text` header
-   scan].  Nothing resolves on the M9128 because nothing multisamples yet
-   [MEASURED].
+   of section 4b is never allocated.  Statically, no call edge from
+   multisample surface state to a resolve packet was recovered: the AD/AF
+   emission is gated only by a surface-shadow dirty bit, never by a
+   multisample condition, and no emitter selects a different index because a
+   surface is multisampled [STATIC, whole-`.text` header scan of both the
+   Windows and the Linux image].  The one packet-name string in either image
+   is `RESET_FRAG_PTR`, issued after every blit rather than at a resolve.
 8. **What an occlusion query counts.**  **PARTIALLY CLOSED.**  With
    multisampling off the M9 counter counts pixels exactly [MEASURED]; the
    vendor's GL layer multiplies by `GL_SAMPLES`, so the vendor believes the
