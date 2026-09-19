@@ -50,10 +50,13 @@ enum m9_bo_domain {
    M9_BO_VRAM,
 };
 
+/* One GEM handle shared by every resource that imported or exported it; the
+ * entry closes a handle this screen created once the last resource goes. */
 struct m9_prime_import {
    struct m9_prime_import *next;
    uint32_t handle;
    uint32_t references;
+   bool owns_handle;
 };
 
 struct m9_mip_level {

@@ -339,6 +339,7 @@ m9_prime_import_get(struct m9_screen *screen, int fd,
    }
    entry->handle = handle;
    entry->references = 1;
+   entry->owns_handle = true;
    entry->next = screen->imports;
    screen->imports = entry;
    resource->handle = handle;
@@ -402,6 +403,7 @@ m9_prime_track_export(struct m9_screen *screen, struct m9_resource *resource)
    }
    entry->handle = resource->handle;
    entry->references = 1;
+   entry->owns_handle = resource->handle_owned;
    entry->next = screen->imports;
    screen->imports = entry;
    resource->prime_import = entry;
@@ -420,6 +422,13 @@ m9_prime_import_put(struct m9_screen *screen, struct m9_prime_import *entry)
          continue;
       if (--entry->references == 0) {
          *link = entry->next;
+         if (entry->owns_handle) {
+            struct drm_gem_close close_bo = { .handle = entry->handle };
+            ioctl(screen->fd, DRM_IOCTL_GEM_CLOSE, &close_bo);
+         }
+         if (getenv("M9X_DEBUG_RESOURCE"))
+            fprintf(stderr, "m9x: shared handle %u released%s\n",
+                    entry->handle, entry->owns_handle ? ", closed" : "");
          FREE(entry);
       }
       break;
@@ -837,6 +846,11 @@ m9_resource_from_handle(struct pipe_screen *pscreen,
    resource->mmap_offset = info.mmap_offset;
    resource->domain = M9_BO_VRAM;
    resource->tiled = info.layout == PARHELIA_M9_LAYOUT_TILED;
+   if (getenv("M9X_DEBUG_RESOURCE"))
+      fprintf(stderr, "m9x: import handle %u type %u %ux%u %s %llu bytes\n",
+              resource->handle, whandle->type, templ->width0, templ->height0,
+              util_format_short_name(templ->format),
+              (unsigned long long)info.size);
    /* The kernel owns the truth about the storage.  An explicit modifier has
     * to agree with it: a tiled buffer taken in as linear would be read as
     * rows and come back band structured, which is a scrambled image and not
@@ -1115,8 +1129,11 @@ m9_destroy(struct pipe_screen *pscreen)
 
    while (screen->imports) {
       struct m9_prime_import *entry = screen->imports;
+      struct drm_gem_close close_bo = { .handle = entry->handle };
 
       screen->imports = entry->next;
+      if (entry->owns_handle)
+         ioctl(screen->fd, DRM_IOCTL_GEM_CLOSE, &close_bo);
       FREE(entry);
    }
    m9_bo_destroy(screen, &screen->record);
