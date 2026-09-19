@@ -28,6 +28,9 @@ MEASURED at 1920x1200, **one X server and one process a benchmark**
 (`tools/m9x-glmark-default-suite-fresh-x.sh`), `M9X_SKIP_REPORT=1`, the whole
 thirty-three in one sweep, **0 stream timeouts**, no
 `glCheckFramebufferStatus` failure and no lost context anywhere in the run.
+Fixture suite alongside it: **221 cases, 221 PASS, 0 FAIL, 0 non-M9** against
+the module carrying the 10-bit surface-window commits, so the four `giga10`
+failures of the sweep below are closed as well.
 The only row that moved is `refract`; every other benchmark is within a frame
 a second of the sweep below, which is the control this is read against.
 
@@ -109,7 +112,8 @@ session:
 
 The picture is the refracting bunny over black, and it matches the software
 reference in structure and colour; the distinct-colour ratio against it is
-1.23.
+1.23.  Reproduced on the final binary (`22c0352`) after a fresh module load:
+227978 at 5 s, 194812 at 8 s, fixture after it, 0 stream timeouts.
 
 ### The cost, and where it comes from
 
