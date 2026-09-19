@@ -40,6 +40,7 @@
 #define STOP_W0    0xffff801cu
 #define STOP_W1    0xa01fc00fu
 
+#include <assert.h>
 #include <string.h>
 
 #include "nir.h"
@@ -1534,10 +1535,24 @@ compile_head(struct ctx *c, nir_block *block, unsigned final,
       pin_output(c, position, 2, REG_POS_ZW);
       pin_output(c, nvar ? var[0] : NULL, 0, REG_VAR_XY);
       pin_output(c, nvar ? var[0] : NULL, 2, REG_VAR_ZW);
+      /* The second varying takes the clip position's output pair, which
+       * m9_vs_emit frees by pointing the tail's two writes to it at the
+       * tail's own scratch. */
+      if (nvar > 1) {
+         c->reserved[REG_OUT_LO(M9_VS_FUSED_PAIR)] = 1;
+         c->reserved[REG_OUT_HI(M9_VS_FUSED_PAIR)] = 1;
+         pin_output(c, var[1], 0, REG_OUT_LO(M9_VS_FUSED_PAIR));
+         pin_output(c, var[1], 2, REG_OUT_HI(M9_VS_FUSED_PAIR));
+      }
    } else {
-      for (unsigned j = 0; j < nvar; j++) {
+      /* Every output pair is reserved, not just the ones this head writes:
+       * a pair above its varying count belongs to an unbound target and
+       * must not end up holding a temporary. */
+      for (unsigned j = 0; j < M9_VS_MAX_ROUTES; j++) {
          c->reserved[REG_OUT_LO(j)] = 1;
          c->reserved[REG_OUT_HI(j)] = 1;
+      }
+      for (unsigned j = 0; j < nvar; j++) {
          pin_output(c, var[j], 0, REG_OUT_LO(j));
          pin_output(c, var[j], 2, REG_OUT_HI(j));
       }
@@ -1559,6 +1574,10 @@ compile_head(struct ctx *c, nir_block *block, unsigned final,
       if (!write_output(c, position, REG_POS_XY, REG_POS_ZW, dflt) ||
           !write_output(c, nvar ? var[0] : NULL, REG_VAR_XY, REG_VAR_ZW,
                         dflt))
+         return false;
+      if (nvar > 1 &&
+          !write_output(c, var[1], REG_OUT_LO(M9_VS_FUSED_PAIR),
+                        REG_OUT_HI(M9_VS_FUSED_PAIR), dflt))
          return false;
    } else {
       for (unsigned j = 0; j < nvar; j++)
@@ -1702,16 +1721,17 @@ compile_impl(struct ctx *c, nir_function_impl *impl)
    c->out = &c->p->slots;
    if (!compile_head(c, block, final, used, inputs, position, varying, nvar))
       return false;
-   /* Varyings 1..4 are a program of their own, run as the preprocessing draw
-    * ahead of the fused one.  It re-emits the whole block: the two heads
-    * share no register file, and the dead lanes cost slots rather than
-    * correctness. */
-   if (nvar > 1) {
+   /* Varyings past the two the fused pass carries are a program of their
+    * own, run as the preprocessing draw ahead of it.  It re-emits the whole
+    * block: the two heads share no register file, and the dead lanes cost
+    * slots rather than correctness. */
+   if (nvar > M9_VS_FUSED_VARYINGS) {
       c->out = &c->p->extra;
-      if (!compile_head(c, block, final, used, inputs, NULL, varying + 1,
-                        nvar - 1))
+      if (!compile_head(c, block, final, used, inputs, NULL,
+                        varying + M9_VS_FUSED_VARYINGS,
+                        nvar - M9_VS_FUSED_VARYINGS))
          return false;
-      compile_gather(c->p, nvar - 1);
+      compile_gather(c->p, nvar - M9_VS_FUSED_VARYINGS);
    }
    c->p->varying_count = nvar;
    for (unsigned v = 0; v < nvar; v++) {
@@ -1817,8 +1837,30 @@ m9_vs_gather_slot_count(const struct m9_vs_program *p)
    return body ? MAX2(body / 2 + 1, 4u) : 0;
 }
 
+/* Frees output pair 1 for a varying by pointing the two tail slots that
+ * write the clip position at the tail's own scratch register.  One decoded
+ * field each, the destination at W0 bits 14:8; nothing reads either
+ * destination again and the scratch is written afresh further down, so the
+ * clip code the tail ends with is unchanged.  The slot count and the marker
+ * at n - 4 are untouched, and so is index 88's pair mask. */
+static void
+tail_free_pair(uint32_t *tail)
+{
+   static const unsigned slot[2] = { M9_VS_TAIL_CLIPPOS_LO,
+                                     M9_VS_TAIL_CLIPPOS_HI };
+
+   for (unsigned i = 0; i < 2; i++) {
+      uint32_t *w = &tail[2 * slot[i]];
+
+      assert(((w[0] >> 8) & 0x7f) == (i ? REG_OUT_HI(M9_VS_FUSED_PAIR) :
+                                          REG_OUT_LO(M9_VS_FUSED_PAIR)));
+      w[0] = (w[0] & ~0x7f00u) | M9_VS_TAIL_SCRATCH << 8;
+   }
+}
+
 unsigned
-m9_vs_emit(const struct m9_vs_program *p, uint32_t *out, unsigned max_dwords)
+m9_vs_emit(const struct m9_vs_program *p, uint32_t *out, unsigned max_dwords,
+           bool fused_pair)
 {
    unsigned head = util_dynarray_num_elements(&p->slots, uint32_t);
    unsigned total = head + 2 * (M9_VS_TAIL_SLOTS + 1);
@@ -1828,6 +1870,8 @@ m9_vs_emit(const struct m9_vs_program *p, uint32_t *out, unsigned max_dwords)
    memcpy(out, p->slots.data, head * sizeof(*out));
    memcpy(out + head, &m9_passthrough_c2_program[2 * M9_VS_TAIL_FIRST_SLOT],
           2 * M9_VS_TAIL_SLOTS * sizeof(*out));
+   if (fused_pair)
+      tail_free_pair(out + head);
    out[head + 2 * M9_VS_TAIL_SLOTS] = STOP_W0;
    out[head + 2 * M9_VS_TAIL_SLOTS + 1] = STOP_W1;
    return total;
@@ -1878,7 +1922,7 @@ m9_vs_emit_body(const struct util_dynarray *body, uint32_t *out,
 unsigned
 m9_vs_c2_image(const struct m9_vs_program *p, const uint32_t *fs_slots,
                unsigned fs_slot_count, uint32_t *out, unsigned max_dwords,
-               unsigned *vertex_entry, unsigned *extra_entry,
+               bool fused_pair, unsigned *vertex_entry, unsigned *extra_entry,
                unsigned *gather_entry)
 {
    unsigned vs_dwords = m9_vs_slot_count(p) * 2;
@@ -1890,7 +1934,7 @@ m9_vs_c2_image(const struct m9_vs_program *p, const uint32_t *fs_slots,
    if (!out || total > max_dwords || (fs_slot_count && !fs_slots))
       return 0;
    memcpy(out, fs_slots, fs_slot_count * 2 * sizeof(*out));
-   if (!m9_vs_emit(p, out + fs_slot_count * 2, vs_dwords))
+   if (!m9_vs_emit(p, out + fs_slot_count * 2, vs_dwords, fused_pair))
       return 0;
    if (extra_dwords &&
        !m9_vs_emit_body(&p->extra, out + fs_slot_count * 2 + vs_dwords,

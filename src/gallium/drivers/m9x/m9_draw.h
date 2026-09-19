@@ -124,8 +124,13 @@ struct m9_draw_job {
    unsigned vs_decl_count;    /* index-23 words, terminator included */
    uint32_t vs_record_bytes;
    unsigned vs_const_pairs;   /* 0 keeps the captured twenty-two */
+   /* Transient view the fused pass's own fourth output target writes; zero
+    * leaves that target unbound, because view 0 is always target 0's.  The
+    * target is index 0xb6 and its register pair 0x1d/0x1f, which the
+    * appended tail leaves once m9_vs_emit moves its scratch to r1e. */
+   uint32_t vs_fused_view;
    /* Second preprocessing draw: the tail-free head that writes varyings
-    * 1..4.  It runs ahead of the fused pass in a range of its own, binding
+    * 2..4.  It runs ahead of the fused pass in a range of its own, binding
     * one stream target a varying and no clip code.  A zero entry leaves the
     * job at the single preprocessing draw.
     * docs/parhelia-m9-vertex-output-target-re.md section 4 */

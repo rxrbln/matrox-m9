@@ -297,7 +297,7 @@ m9_raster_fs_init(struct m9_raster_fs *r, unsigned vertex_entry,
 {
    return m9_raster_fs_init_textured(r, vertex_entry, r88, const_count,
                                      varying_count, flat_link, varying_view,
-                                     0, NULL, 0, NULL);
+                                     0, NULL, 0, NULL, true);
 }
 
 int
@@ -306,7 +306,7 @@ m9_raster_fs_init_textured(struct m9_raster_fs *r, unsigned vertex_entry,
                            unsigned varying_count, const bool *flat_link,
                            const uint32_t *varying_view, unsigned coord_count,
                            const uint32_t *coord_view, unsigned texture_count,
-                           const uint8_t *texture_coord)
+                           const uint8_t *texture_coord, bool clip_position)
 {
    uint32_t stride[M9_RASTER_MAX_STREAMS] = { 0 };
    unsigned streams = varying_count + coord_count;
@@ -349,16 +349,25 @@ m9_raster_fs_init_textured(struct m9_raster_fs *r, unsigned vertex_entry,
          r->decl[r->decl_count++] = (5 + k) << 20 |
                                     (varying_count + texture_coord[k]) << 16 |
                                     0x0688;
+   /* Attribute 0 is the rasterizer position, 12 the clip code and 13 the
+    * clip position; 556 of 556 captured raster passes declare all three.
+    * The clip position is the one the pass can do without -- the same
+    * pixels come out with its declaration dropped (MEASURED) -- which is
+    * what frees the preprocessing pass's output target 1 for a varying. */
    r->decl[r->decl_count++] = streams << 16 | 0x0688;
-   r->decl[r->decl_count++] = 0x00c00000u | (streams + 1) << 16 | 0x31b6;
-   r->decl[r->decl_count++] = 0x00d00000u | (streams + 2) << 16 | 0x0688;
    r->stream_view[streams] = 1;
-   r->stream_view[streams + 1] = 2;
-   r->stream_view[streams + 2] = 3;
    stride[streams] = 0x10;
+   r->decl[r->decl_count++] = 0x00c00000u | (streams + 1) << 16 | 0x31b6;
+   r->stream_view[streams + 1] = 2;
    stride[streams + 1] = 0x06;
-   stride[streams + 2] = 0x10;
-   r->stream_count = streams + 3;
+   streams++;
+   if (clip_position) {
+      r->decl[r->decl_count++] = 0x00d00000u | (streams + 1) << 16 | 0x0688;
+      r->stream_view[streams + 1] = 3;
+      stride[streams + 1] = 0x10;
+      streams++;
+   }
+   r->stream_count = streams + 1;
    for (unsigned i = 0; i < (M9_RASTER_MAX_STREAMS + 1) / 2; i++)
       r->stride[i] = stride[2 * i] |
                      (2 * i + 1 < M9_RASTER_MAX_STREAMS ? stride[2 * i + 1] : 0) << 16;

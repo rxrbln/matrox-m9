@@ -46,15 +46,26 @@ struct nir_shader;
  * enabling targets 1/2/3 and bit 15 the clip code (CAPTURED, 310 of 310
  * preprocessing passes: docs/parhelia-m9-vertex-output-target-re.md).  The
  * appended tail takes three of the four targets -- 0 the varying, 1 the clip
- * position, 2 the viewport position -- and uses r1c/r1d as temporaries, so
- * only one varying fits beside it.  A program with more is compiled a second
- * time into a tail-free head that writes varyings 1..4 to all four pairs,
- * and m9_draw.c runs that head as a preprocessing draw of its own ahead of
- * the fused one. */
+ * position, 2 the viewport position.  Target 3 cannot be the fourth: a pass
+ * that enables it and the clip code together stalls the engine, which is
+ * why no captured pass carries both (MEASURED, five configurations).  What
+ * the raster stage does not need is the **clip position**, attribute 13 --
+ * dropping its declaration renders the same pixels (MEASURED) -- so target
+ * 1 is the one the fused pass has spare, and the two tail slots that write
+ * it are pointed at the tail's own scratch instead.  The fused pass then
+ * carries two varyings in one draw, in the captured three-target shape with
+ * ef and index 88 byte for byte unchanged.  A program with more is compiled
+ * a second time into a tail-free head that writes varyings 2..4, and
+ * m9_draw.c runs that head as a preprocessing draw of its own ahead of the
+ * fused one. */
 #define M9_VS_MAX_VARYINGS   5u
-/* Varyings the tail-free second head carries; the first stays with the
- * fused pass, whose target 0 the tail feeds from r02. */
-#define M9_VS_EXTRA_VARYINGS (M9_VS_MAX_VARYINGS - 1u)
+/* Varyings the fused pass carries itself, on output targets 0 and 1. */
+#define M9_VS_FUSED_VARYINGS 2u
+/* The output target the fused pass's second varying takes, the clip
+ * position's. */
+#define M9_VS_FUSED_PAIR     1u
+/* Varyings the tail-free second head carries, at its own targets 0 upward. */
+#define M9_VS_EXTRA_VARYINGS (M9_VS_MAX_VARYINGS - M9_VS_FUSED_VARYINGS)
 /* Constant pairs 9..21 of the span belong to the appended tail, which names
  * them by absolute index; user pairs are 0..8 and 22 upward. */
 #define M9_VS_TAIL_FIRST_PAIR 9u
@@ -92,6 +103,14 @@ struct nir_shader;
 /* Slots 14..38 of the captured program, then the stop pair. */
 #define M9_VS_TAIL_FIRST_SLOT 14u
 #define M9_VS_TAIL_SLOTS      25u
+/* The tail's own scratch register and the two tail slots that write the
+ * clip position into output pair 1.  Nothing reads those two destinations
+ * again, and the scratch is written afresh at tail slot 10 before anything
+ * reads it, so pointing them there frees the pair for a varying and leaves
+ * index 88's pair mask exactly the captured 0xbf00. */
+#define M9_VS_TAIL_SCRATCH   0x1cu
+#define M9_VS_TAIL_CLIPPOS_LO 5u
+#define M9_VS_TAIL_CLIPPOS_HI 7u
 
 /* Instruction forms.  Bits 20:14 (the constant index) and 3:0 (the high
  * bits of the a operand) are clear; w1_make() fills them in. */
@@ -202,16 +221,17 @@ unsigned m9_vs_extra_slot_count(const struct m9_vs_program *program);
  * second head. */
 unsigned m9_vs_gather_slot_count(const struct m9_vs_program *program);
 /* Writes head, tail and stop pair; returns the dwords written, 0 if max is
- * too small. */
+ * too small.  fused_pair moves the tail's scratch off target 3's low half,
+ * which the caller asks for exactly when it binds that target. */
 unsigned m9_vs_emit(const struct m9_vs_program *program, uint32_t *out,
-                    unsigned max_dwords);
+                    unsigned max_dwords, bool fused_pair);
 /* Assembles the c2 image the two-pass job binds: fragment slots first, the
  * compiled vertex program behind them, as m9_fs_variant_upload lays it out
  * for the captured program.  Reports the vertex entry slot, which is what
  * index c3 carries.  Returns the dwords written, 0 if max is too small. */
 unsigned m9_vs_c2_image(const struct m9_vs_program *program,
                         const uint32_t *fs_slots, unsigned fs_slot_count,
-                        uint32_t *out, unsigned max_dwords,
+                        uint32_t *out, unsigned max_dwords, bool fused_pair,
                         unsigned *vertex_entry, unsigned *extra_entry,
                         unsigned *gather_entry);
 

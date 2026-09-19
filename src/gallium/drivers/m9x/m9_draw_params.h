@@ -222,7 +222,8 @@ int m9_raster_fs_init_textured(struct m9_raster_fs *r, unsigned vertex_entry,
                                unsigned coord_count,
                                const uint32_t *coord_view,
                                unsigned texture_count,
-                               const uint8_t *texture_coord);
+                               const uint8_t *texture_coord,
+                               bool clip_position);
 uint32_t m9_raster_d7(enum m9_topology topology);
 uint32_t m9_raster_class(bool lines, bool blend_dest);
 bool m9_topology_valid(unsigned topology);
