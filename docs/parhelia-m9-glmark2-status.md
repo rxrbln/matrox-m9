@@ -32,9 +32,9 @@ Four are below 60, each for a different reason:
 
 | benchmark | fps | why |
 |---|---:|---|
-| `effect2d` 15-tap | 31 | inter-pass record bandwidth - see `parhelia-m9-record-bandwidth.md` |
+| `effect2d` 15-tap | 31-33 | fragment execution.  The record-bandwidth reading is **refuted**: halving its stride from 16 dwords to 8 -- and its record from 141 MiB to 70 -- left it at the same 33 fps (MEASURED 2026-09-19, one binary, `M9X_RECORD_LIVENESS` the only variable).  `parhelia-m9-fill-rate.md` had it right |
 | `desktop` blur | 38 | GPU execution: 26.77 ms a frame, submit 23.13 of it, ioctl 22.84, over 28 jobs and 24 draws with none refused or skipped.  At 0.82 ms a job this is work, not the per-job overhead that dominates `refract` at 0.23 |
-| `terrain` | 21 | INVALID - draws refused: a multi-pass draw over **mesh** geometry, 576 records, which fills no box it could be given |
+| `terrain` | 1 | INVALID - draws refused by the **fragment backend**, not by the coverage rule: five distinct samplers against four units, and the register file.  MEASURED 2026-09-19 |
 | ~~`refract`~~ | 38-40 | **conformant** - it was never the geometry class.  A record carries x and y multiplied by w with w in slot 3, so recovering a screen position **divides**; the extent test multiplied, which agrees only where w is 1 - every fixture it had been written against.  The bunny's computed extent landed at `6694,1583..10158,5042` on a 1920x1200 target, outside it, so the draw was refused for covering none of it.  With the divide, skipped draws go 1 to 0 a frame and CPU varyings 0.4 to 101.6 KiB.  `conv3subw` is the fixture that fails without it.  It still reports SETUP-FAILED inside the full run while passing alone, which is a separate unreleased-resource question |
 
 **Open: which `refract` measurement is current.**  A second measurement on
@@ -269,17 +269,27 @@ command stream.
    stalls at 20, which is exactly why the probes use 20 draws - a rare event
    must not be able to hide.
 
-## What still stalls
+## What still stalled, and what it was
 
-`desktop` and `terrain` (with `M9X_SPLIT_PRESSURE=1`) still stop the engine
-with `two-pass job failed (Input/output error); context lost`, on an
-attributable build under the hardware lock, **after** the `be` fix.  So they
-carry a second, distinct fault in the split path **at scene scale** that the
-fixture family does not reach: every `splitpair` and `deskblur` fixture passes.
-Raising the per-shape cache budget so nothing is evicted does not change it.
+**Closed 2026-09-19.**  The scene-scale fault was the driver clearing the
+engine's back-end state object with a CPU `memset` while a job that bound it
+was still executing: a job posted asynchronously retires only at the *next*
+submission (CAPTURED from the kernel), and the scratch path's seed copy is a
+draw into the very surface whose object is cleared next.  A race, which is
+why the count a context survived was never sharp and why every reproduction
+attempt gave a different number.  A target shape now keeps two back-end
+objects and a clear swaps to the spare
+(`parhelia-m9-fragment-pass-hardware.md` 3bf).
 
-Because `terrain` needs `M9X_SPLIT_PRESSURE` and that path hits this fault, the
-register-pressure policy stays off by default and `terrain.frag` stays refused.
+MEASURED with `M9X_SPLIT_BE=3`, one binary, `M9X_BE_SWAP` the only variable:
+`conv3rep` fails 76800 of 76800 pixels and stops the engine without the swap,
+and passes three runs over with it.
+
+`desktop` renders its blur at **38 fps** with nothing refused or skipped
+(MEASURED 2026-09-19, one process, no stream timeout), so the row above that
+said it stops the engine is retired.  `terrain` does not stop the engine
+either -- it is **refused by the fragment backend**, which is a different
+problem and is stated below.
 
 ### What the scene asks for, measured rather than assumed
 
