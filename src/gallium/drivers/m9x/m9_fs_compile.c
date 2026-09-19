@@ -52,14 +52,40 @@ const nir_shader_compiler_options m9_fs_nir_options = {
 #define NONE    0x7fu
 #define OUT     0x2du
 /* The destination a colour output writes.  Target p is derived to own
- * OUT + p from the vendor's per-target output registers; M9X_FS_COLOR_TARGET
- * moves the one output this backend compiles onto another target's
- * destination so that derivation can be measured against a target aliased
- * into the same surface.  docs/parhelia-m9-mrt-routing.md */
+ * OUT + p from the vendor's per-target output registers; M9X_FS_MRT_DEST
+ * selects the candidate under measurement (0 destination OUT + p, 1 routing
+ * class 4 + p on the output move, 2 destination OUT + 2p) and
+ * M9X_FS_COLOR_TARGET shifts every output by one target so a single-output
+ * shader can name a target other than its own.
+ * docs/parhelia-m9-mrt-routing.md */
 static unsigned
-color_dest(void)
+mrt_dest_mode(void)
 {
-   return OUT + (debug_get_num_option("M9X_FS_COLOR_TARGET", 0) & 3);
+   return (unsigned)debug_get_num_option("M9X_FS_MRT_DEST", 0);
+}
+
+static unsigned
+color_dest(unsigned target)
+{
+   unsigned p = (target +
+                 (unsigned)debug_get_num_option("M9X_FS_COLOR_TARGET", 0)) & 3;
+
+   switch (mrt_dest_mode()) {
+   case 1:  return OUT;
+   case 2:  return OUT + 2 * p;
+   default: return OUT + p;
+   }
+}
+
+/* The output move's instruction class.  Class 4 is what a blended output
+ * carries, so the class candidate seats target p at 4 + p. */
+static unsigned
+color_cls(unsigned target)
+{
+   unsigned p = (target +
+                 (unsigned)debug_get_num_option("M9X_FS_COLOR_TARGET", 0)) & 3;
+
+   return mrt_dest_mode() == 1 ? 4 + p : 0;
 }
 #define REG_S0  0x11u
 #define REG_S1  0x13u
@@ -125,6 +151,7 @@ struct lop {
    uint8_t kswz;        /* constant operand swizzle */
    uint8_t op0;         /* L_CHAIN destination scalar mask */
    uint8_t cls;         /* L_CHAIN instruction class */
+   uint8_t target;      /* colour target this output lop names */
    bool keep_dst;       /* writes part of a value another lop allocated */
    bool kc;             /* L_CHAIN takes its constant index in the c field */
    uint32_t w0, w1;     /* L_RAW, and the L_CHAIN base word */
@@ -164,6 +191,11 @@ struct ctx {
    nir_def *cut[M9_FS_MAX_PASSES];
    unsigned cut_count;
    nir_def *root;       /* value this pass computes, NULL the shader output */
+   /* One colour output a target, in target order.  More than one is an MRT
+    * shader: every root shares the pass's expression graph and each is
+    * moved to its own target's destination. */
+   nir_def *target_def[M9_FS_MAX_TARGETS];
+   unsigned target_count;
    /* The computed coordinate that stopped this pass, for the splitter to
     * cut at: the pass before hands it over and the unit samples at it. */
    nir_def *coord_blocker;
@@ -2625,20 +2657,78 @@ schedule_operands(struct ctx *c, int n, int root, bool direct_ba)
    return emit_node_lops(c, n, n == root, direct_ba);
 }
 
+/* Move one target's root value to that target's colour destination.  A leaf
+ * root holds no register of its own: a fetch is read out of its texel pair,
+ * a constant straight from the constant span, and a composed vector out of
+ * the texel pair whose second scalar the literal already replaced. */
 static bool
-schedule_tree(struct ctx *c, int root)
+output_target(struct ctx *c, int root, unsigned target)
 {
-   struct node *r = &NODES(c)[root];
-   int max_level = node_level(c, root);
+   const struct node *nd;
+
+   if (root < 0)
+      return true;
+   nd = &NODES(c)[root];
+   for (unsigned lane = 0; lane < 2; lane++) {
+      struct lop l;
+
+      lop_init(&l, L_MOV_OUT, lane, root);
+      l.target = target;
+      switch (nd->kind) {
+      case N_TEX:
+         l.opreg[0] = nd->texel + 2 * lane;
+         break;
+      case N_COMPOSE:
+         l.opreg[0] = NODES(c)[nd->src[0]].texel + 2 * lane;
+         break;
+      case N_UBO:
+      case N_LIT: {
+         struct kkey k = node_key(nd, lane);
+
+         l.kind = L_MOVC_OUT;
+         l.konst = key_add(c, &k);
+         break;
+      }
+      case N_PAIR:
+         operand(c, &l, 0, nd, lane);
+         if (l.konst >= 0)
+            l.kind = L_MOVC_OUT;
+         break;
+      default:
+         if (nd->value[lane] < 0)
+            return fail(c, "internal: target root holds no value");
+         l.opval[0] = nd->value[lane];
+         break;
+      }
+      lop_add(c, &l);
+   }
+   return true;
+}
+
+/* Schedule one expression graph holding one root a colour target.  A single
+ * root writes the output as it is computed, which is what the captured
+ * programs do; several roots are computed into registers first, so a value
+ * two targets share costs one evaluation, and each is then moved to its own
+ * target's destination. */
+static bool
+schedule_forest(struct ctx *c, const int *roots, unsigned targets)
+{
+   bool single = targets == 1;
+   int root = single ? roots[0] : -1;
+   int max_level = 0;
    unsigned count = NUM(c, nodes, struct node);
 
-   if (r->kind == N_TEX || node_is_const(r))
+   for (unsigned p = 0; p < targets; p++)
+      if (roots[p] >= 0)
+         max_level = MAX2(max_level, node_level(c, roots[p]));
+   if (single && (NODES(c)[root].kind == N_TEX ||
+                  node_is_const(&NODES(c)[root])))
       return fail(c, "internal: leaf root");
    /* Interpolations: highest varying slot first. */
    for (int k = c->p->varying_count - 1; k >= 0; k--) {
       for (unsigned i = 0; i < count; i++) {
          if (NODES(c)[i].kind == N_VARY && NODES(c)[i].k == (unsigned)k &&
-             !emit_node_lops(c, i, i == (unsigned)root, true))
+             !emit_node_lops(c, i, (int)i == root, true))
             return false;
       }
    }
@@ -2653,8 +2743,10 @@ schedule_tree(struct ctx *c, int root)
       /* A value dies as soon as its last reader runs, so emitting each
        * operand immediately before the operation that reads it keeps far
        * fewer alive at once than sweeping the graph one level at a time. */
-      if (!schedule_operands(c, root, root, max_level == 1))
-         return false;
+      for (unsigned p = 0; p < targets; p++)
+         if (roots[p] >= 0 &&
+             !schedule_operands(c, roots[p], root, max_level == 1))
+            return false;
    } else {
       for (int level = 1; level <= max_level; level++) {
          for (unsigned i = 0; i < count; i++) {
@@ -2662,19 +2754,33 @@ schedule_tree(struct ctx *c, int root)
 
             if (nd->kind != N_VARY && nd->kind != N_LOAD &&
                 nd->kind != N_COMPOSE && nd->level - 1 == level &&
-                !emit_node_lops(c, i, i == (unsigned)root, max_level == 1))
+                !emit_node_lops(c, i, (int)i == root, max_level == 1))
                return false;
          }
       }
    }
-   if (r->kind != N_VARY && r->kind != N_PAIR && max_level > 1) {
-      struct lop l;
+   if (single) {
+      struct node *r = &NODES(c)[root];
 
-      lop_init(&l, L_MOV_OUT, 1, root);
-      l.opval[0] = r->value[1];
-      lop_add(c, &l);
+      if (r->kind != N_VARY && r->kind != N_PAIR && max_level > 1) {
+         struct lop l;
+
+         lop_init(&l, L_MOV_OUT, 1, root);
+         l.opval[0] = r->value[1];
+         lop_add(c, &l);
+      }
+      return true;
    }
+   for (unsigned p = 0; p < targets; p++)
+      if (!output_target(c, roots[p], p))
+         return false;
    return true;
+}
+
+static bool
+schedule_tree(struct ctx *c, int root)
+{
+   return schedule_forest(c, &root, 1);
 }
 
 /* Register allocation */
@@ -2977,7 +3083,8 @@ encode_lops(struct ctx *c)
        * producing pass of the seven two-pass cases). */
       bool record = out && c->record_out;
       unsigned d = !out ? (unsigned)VALUES(c)[l->dst].reg :
-                   record ? (l->lane ? REG_S1 : REG_S0) : color_dest();
+                   record ? (l->lane ? REG_S1 : REG_S0) :
+                            color_dest(l->target);
       unsigned op0 = out && !record ? (l->lane ? 0x1e : 0x1d) : 0x1c;
       unsigned e = l->konst >= 0 ? const_ref(c, l->konst) : 0;
       bool pair = l->konst >= 0 && KEYS(c)[l->konst].pair;
@@ -3120,12 +3227,14 @@ encode_lops(struct ctx *c)
           * not the colour output: a producing pass hands its root over in
           * 0x11/0x13, and writing 0x2d instead sent it through the colour
           * path, which packed it as two halves a pixel (MEASURED). */
-         emit(c, w0_make(NONE, NONE, opreg(c, l, 0), d, 0, op0),
+         emit(c, w0_make(NONE, NONE, opreg(c, l, 0), d,
+                         out && !record ? color_cls(l->target) : 0, op0),
               w1_make(0xa2803f00 | l->opswz[0] << 4, NONE, NONE));
          break;
       case L_MOVC_OUT:
          /* The constant's scalar select sits where L_MOVC_TMP carries it. */
-         emit(c, w0_make(NONE, NONE, NONE, d, 0, op0),
+         emit(c, w0_make(NONE, NONE, NONE, d,
+                         out && !record ? color_cls(l->target) : 0, op0),
               w1_make(0xa2803300 | kbits << 4, e, NONE));
          break;
       case L_RAW:
@@ -3770,34 +3879,34 @@ blend_lane(struct ctx *c, uint32_t *used, unsigned lane, unsigned s,
 
    if (fs.term != B_REG && fd.term == B_ZERO) {
       /* ZERO/ZERO */
-      blend_emit(c, w0_make(NONE, s, NONE, color_dest(), 4, op0),
+      blend_emit(c, w0_make(NONE, s, NONE, color_dest(0), 4, op0),
                  w1_make(0xa0200040, k0, NONE));
    } else if (fs.term == B_ZERO && fd.term == B_ONE) {
-      blend_emit(c, w0_make(NONE, d, NONE, color_dest(), 4, op0),
+      blend_emit(c, w0_make(NONE, d, NONE, color_dest(0), 4, op0),
                  w1_make(0xa0200040, k1, NONE));
    } else if (fs.term == B_ONE && fd.term == B_ONE) {
-      blend_emit(c, w0_make(NONE, s, d, color_dest(), 4, op0),
+      blend_emit(c, w0_make(NONE, s, d, color_dest(0), 4, op0),
                  w1_make(0xa0400c50, k1, NONE));
    } else if (fs.term != B_REG && fd.term == B_INV) {
       /* S * K + D * (1 - r) */
-      blend_emit(c, w0_make(s, fd.reg, d, color_dest(), 4, op0),
+      blend_emit(c, w0_make(s, fd.reg, d, color_dest(0), 4, op0),
                  w1_make(0xa4e00040 | fd.swz << 10,
                          fs.term == B_ONE ? k1 : k0, s));
    } else if (fs.term == B_ZERO) {
-      blend_emit(c, w0_make(fd.reg, d, NONE, color_dest(), 4, op0),
+      blend_emit(c, w0_make(fd.reg, d, NONE, color_dest(0), 4, op0),
                  w1_make(0xac200040 | fd.swz << 8, NONE, fd.reg));
    } else if (fs.term == B_ONE) {
-      blend_emit(c, w0_make(fd.reg, d, s, color_dest(), 4, op0),
+      blend_emit(c, w0_make(fd.reg, d, s, color_dest(0), 4, op0),
                  w1_make(0xac400c50 | fd.swz << 8, NONE, fd.reg));
    } else if (fd.term == B_ZERO) {
-      blend_emit(c, w0_make(fs.reg, s, NONE, color_dest(), 4, op0),
+      blend_emit(c, w0_make(fs.reg, s, NONE, color_dest(0), 4, op0),
                  w1_make(0xac200040 | fs.swz << 8, NONE, fs.reg));
    } else if (fd.term == B_ONE) {
-      blend_emit(c, w0_make(fs.reg, s, d, color_dest(), 4, op0),
+      blend_emit(c, w0_make(fs.reg, s, d, color_dest(0), 4, op0),
                  w1_make(0xac400c50 | fs.swz << 8, NONE, fs.reg));
    } else if (fd.term == B_INV) {
       /* r.swz * S + D * (1 - S.swz), the inverted operand is S itself */
-      blend_emit(c, w0_make(fs.reg, s, d, color_dest(), 4, op0),
+      blend_emit(c, w0_make(fs.reg, s, d, color_dest(0), 4, op0),
                  w1_make(0xa4a00040 | fd.swz << 10 | fs.swz << 8, NONE,
                          fs.reg));
    } else {
@@ -3805,7 +3914,7 @@ blend_lane(struct ctx *c, uint32_t *used, unsigned lane, unsigned s,
          return false;
       blend_emit(c, w0_make(fd.reg, d, NONE, t, 0, 0x1c),
                  w1_make(0xac200040 | fd.swz << 8, NONE, fd.reg));
-      blend_emit(c, w0_make(fs.reg, s, t, color_dest(), 4, op0),
+      blend_emit(c, w0_make(fs.reg, s, t, color_dest(0), 4, op0),
                  w1_make(0xac400c50 | fs.swz << 8, NONE, fs.reg));
    }
    return true;
@@ -3883,7 +3992,7 @@ redirect_output(struct ctx *c, uint32_t *used, int s[2])
    for (unsigned i = 0; i < n; i++) {
       unsigned op0 = w[2 * i] & 0x1f;
 
-      if ((w[2 * i] >> 8 & 0x7f) == color_dest() &&
+      if ((w[2 * i] >> 8 & 0x7f) == color_dest(0) &&
           (op0 == 0x1d || op0 == 0x1e) && first[op0 - 0x1d] < 0)
          first[op0 - 0x1d] = (int)i;
    }
@@ -3905,7 +4014,7 @@ redirect_output(struct ctx *c, uint32_t *used, int s[2])
       uint32_t *w0 = &w[2 * i];
       unsigned op0 = *w0 & 0x1f;
 
-      if ((*w0 >> 8 & 0x7f) != color_dest())
+      if ((*w0 >> 8 & 0x7f) != color_dest(0))
          continue;
       if (op0 != 0x1d && op0 != 0x1e)
          return fail(c, "internal: partial colour write");
@@ -4003,7 +4112,7 @@ static void
 output_temps(struct ctx *c, const int s[2])
 {
    for (unsigned lane = 0; lane < 2; lane++)
-      emit(c, w0_make(NONE, NONE, s[lane], color_dest(), 0, 0x1d + lane),
+      emit(c, w0_make(NONE, NONE, s[lane], color_dest(0), 0, 0x1d + lane),
            0xa29fff1f);
 }
 
@@ -4156,6 +4265,42 @@ compile_graph(struct ctx *c, nir_scalar s[4], bool discard)
    }
 }
 
+/* Every colour target of an MRT shader shares one expression graph, so a
+ * value two of them read is computed once, and each root is moved to its own
+ * target's destination.  A target the shader leaves unwritten keeps no root;
+ * the driver masks that target's writes off. */
+static bool
+compile_targets(struct ctx *c)
+{
+   int roots[M9_FS_MAX_TARGETS];
+
+   for (unsigned attempt = 0; attempt < 2; attempt++) {
+      reset_output(c);
+      reset_graph(c);
+      c->depth_first = attempt > 0;
+      c->no_gather_reuse = false;
+      for (unsigned p = 0; p < c->target_count; p++) {
+         nir_scalar s[4];
+
+         roots[p] = -1;
+         if (!c->target_def[p])
+            continue;
+         for (unsigned i = 0; i < 4; i++)
+            s[i] = nir_scalar_chase_movs(nir_get_scalar(c->target_def[p], i));
+         roots[p] = build_vec(c, s);
+         if (roots[p] < 0)
+            return false;
+      }
+      if (assign_texels(c) &&
+          schedule_forest(c, roots, c->target_count) && allocate(c))
+         return true;
+      if (c->reason != fail_out_of_temporaries)
+         return false;
+      c->reason = NULL;
+   }
+   return fail(c, fail_out_of_temporaries);
+}
+
 static bool
 compile_impl(struct ctx *c, nir_function_impl *impl)
 {
@@ -4186,15 +4331,22 @@ compile_impl(struct ctx *c, nir_function_impl *impl)
             break;
          case nir_intrinsic_store_output: {
             unsigned location = nir_intrinsic_io_semantics(intr).location;
+            unsigned target = location == FRAG_RESULT_COLOR ? 0 :
+                              location >= FRAG_RESULT_DATA0 &&
+                              location < FRAG_RESULT_DATA0 + M9_FS_MAX_TARGETS ?
+                              location - FRAG_RESULT_DATA0 : M9_FS_MAX_TARGETS;
 
-            if ((location != FRAG_RESULT_COLOR &&
-                 location != FRAG_RESULT_DATA0) || store ||
+            if (target >= M9_FS_MAX_TARGETS || c->target_def[target] ||
                 nir_intrinsic_write_mask(intr) != 0xf ||
                 !nir_src_is_const(intr->src[1]) ||
                 nir_src_as_uint(intr->src[1]) ||
                 intr->src[0].ssa->num_components != 4)
                return fail(c, "unsupported fragment output");
-            store = intr;
+            c->target_def[target] = intr->src[0].ssa;
+            c->target_count = MAX2(c->target_count, target + 1);
+            c->p->target_mask |= 1u << target;
+            if (!target)
+               store = intr;
             break;
          }
          case nir_intrinsic_load_interpolated_input:
@@ -4211,8 +4363,25 @@ compile_impl(struct ctx *c, nir_function_impl *impl)
          first &= intr->intrinsic == nir_intrinsic_terminate;
       }
    }
-   if (!store && !c->root)
+   if (!c->target_count && !c->root)
       return fail(c, "no color output");
+   c->p->target_count = c->root ? 0 : c->target_count;
+   c->p->target_mask = c->root ? 0 : c->p->target_mask;
+   if (!c->root && c->target_count > 1) {
+      /* Blending, the alpha test and discard are lowered into the one
+       * colour output the captured programs carry; none of the three has a
+       * per-target form here. */
+      if (kill || discard)
+         return fail(c, "a multiple-target shader cannot discard");
+      if (c->blend)
+         return fail(c, "blending with more than one colour target");
+      if (!compile_targets(c) || !encode_lops(c))
+         return false;
+      finish_slots(c);
+      if (!c->custom_consts)
+         const_tail(c);
+      return true;
+   }
    if (c->root) {
       /* A producing pass computes one value for the record; the discard and
        * alpha-test templates belong to the pass that writes the colour. */
@@ -4621,6 +4790,46 @@ srgb_store(nir_builder *b, nir_intrinsic_instr *intr, void *data)
                             srgb_encode(b, nir_channel(b, v, 2)),
                             nir_channel(b, v, 3)));
    return true;
+}
+
+/* gl_FragColor is written into every bound draw buffer.  st hands the
+ * backend IO intrinsics rather than variables, so nir_lower_fragcolor, which
+ * rewrites store_deref, finds nothing; the broadcast copies the store. */
+static bool
+fragcolor_store(nir_builder *b, nir_intrinsic_instr *intr, void *data)
+{
+   unsigned targets = *(const unsigned *)data;
+   nir_io_semantics sem = nir_intrinsic_io_semantics(intr);
+
+   if (intr->intrinsic != nir_intrinsic_store_output ||
+       sem.location != FRAG_RESULT_COLOR)
+      return false;
+   b->cursor = nir_after_instr(&intr->instr);
+   for (unsigned p = 1; p < targets; p++) {
+      nir_io_semantics copy = sem;
+
+      copy.location = FRAG_RESULT_DATA0 + p;
+      nir_store_output(b, intr->src[0].ssa, intr->src[1].ssa,
+                       .write_mask = nir_intrinsic_write_mask(intr),
+                       .src_type = nir_intrinsic_src_type(intr),
+                       .io_semantics = copy,
+                       .base = nir_intrinsic_base(intr) + p);
+      b->shader->info.outputs_written |=
+         BITFIELD64_BIT(FRAG_RESULT_DATA0 + p);
+   }
+   sem.location = FRAG_RESULT_DATA0;
+   nir_intrinsic_set_io_semantics(intr, sem);
+   b->shader->info.outputs_written &= ~BITFIELD64_BIT(FRAG_RESULT_COLOR);
+   b->shader->info.outputs_written |= BITFIELD64_BIT(FRAG_RESULT_DATA0);
+   return true;
+}
+
+void
+m9_fs_lower_fragcolor(nir_shader *nir, unsigned targets)
+{
+   if (targets > 1)
+      NIR_PASS(_, nir, nir_shader_intrinsics_pass, fragcolor_store,
+               nir_metadata_control_flow, &targets);
 }
 
 void
@@ -5061,6 +5270,14 @@ fs_split_index(struct fs_split *sp, nir_function_impl *impl, nir_def **out,
             return *reason = "a split shader cannot discard", false;
          }
          if (intr->intrinsic == nir_intrinsic_store_output) {
+            /* The cut machinery follows the cone of one output.  A shader
+             * writing several colour targets is refused rather than split
+             * along the last of them. */
+            if (*out) {
+               free(location);
+               return *reason = "a multiple-target shader does not split "
+                                "across raster passes", false;
+            }
             *out = intr->src[0].ssa;
             continue;
          }

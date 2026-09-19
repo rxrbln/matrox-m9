@@ -37,6 +37,10 @@ struct nir_shader_compiler_options;
  * timeout.  Its *pixels* are another matter -- see the coordconv:4 fixture
  * and docs/parhelia-m9-fragment-pass-splitting.md section 8. */
 #define M9_FS_MAX_PASSES 16u
+/* Colour targets one fragment program may write.  Target p renders into the
+ * surface bound at raster b0 + 2p and owns one native destination of its
+ * own; docs/parhelia-m9-mrt-routing.md carries the measurement. */
+#define M9_FS_MAX_TARGETS 4u
 /* A texel slot fed by a sampler rather than by an inter-pass record. */
 #define M9_FS_ROUTE_NONE 0xffu
 /* Compiled variants one shader may keep.  A shader specialised on a uniform
@@ -145,6 +149,11 @@ struct m9_fs_program {
    bool writes_record;
    /* Scalars it hands on, 1..4; the record slot rounds up to a pair. */
    unsigned record_components;
+   /* Colour targets the program writes: one bit a target and the highest
+    * written one plus one.  A bound target the shader leaves alone keeps its
+    * bit clear and the driver masks its writes off. */
+   uint8_t target_mask;
+   unsigned target_count;
 };
 
 /* One fragment shader as the raster passes the engine runs it in.  Pass i
@@ -163,6 +172,10 @@ bool m9_fs_coord_affine_same(const struct m9_fs_coord_affine *a,
 /* Rewrites the colour output with the vendor's sRGB transfer curve.  Exposed
  * so the offline test can check the lowering against a reference encode. */
 void m9_fs_lower_srgb(struct nir_shader *nir);
+
+/* Writes gl_FragColor into every one of this many colour targets, which is
+ * what GL does with a shader that names only the one output. */
+void m9_fs_lower_fragcolor(struct nir_shader *nir, unsigned targets);
 
 /* Marks uniforms used by if conditions as inlinable (screen finalize_nir). */
 void m9_fs_lower_integers(struct nir_shader *nir);

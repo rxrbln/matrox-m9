@@ -827,27 +827,8 @@ m9_batch_emit_draw_job(struct m9_batch *batch, const struct m9_draw_job *job)
    unsigned decl_count, const_pairs;
    int ret;
 
-   struct m9_draw_job aliased;
-   /* M9X_MRT_ALIAS binds the single colour attachment at every target pair
-    * as well, so a probe can tell whether a fragment output reached a given
-    * target's destination without a second allocation: the write lands only
-    * if that target is both bound and named.
-    * docs/parhelia-m9-mrt-routing.md */
-   unsigned alias = (unsigned)debug_get_num_option("M9X_MRT_ALIAS", 0);
-
    if (!batch || !job || batch->sealed || !m9_draw_job_valid(job))
       return -EINVAL;
-   if (alias > 1 && !job->color_count) {
-      aliased = *job;
-      aliased.color_count = MIN2(alias, M9_DRAW_MAX_COLOR);
-      for (unsigned s = 1; s < aliased.color_count; s++) {
-         aliased.color_extra[s - 1] = job->color;
-         aliased.color_extra_desc[s - 1] = job->params->color_desc;
-      }
-      memset(aliased.color_class, 0, sizeof(aliased.color_class));
-      aliased.color_mask_hi = 0xffffffff;
-      job = &aliased;
-   }
    p = job->params;
    d0 = &job->draws[0];
    if (job->vs_decl_count) {

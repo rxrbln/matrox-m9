@@ -76,6 +76,13 @@ enum m9_topology {
 #define M9_RASTER_MAX_INTERP      6u
 /* Native fragment constants; the span at +0x1000 is hardware-measured. */
 #define M9_RASTER_CONST_OFFSET    0x1000u
+/* Constant pairs one raster pass may carry.  MEASURED on the M9128: 56 pairs
+ * (fsconst:24) renders every pixel exactly and 68 (fsconst:30) fails all
+ * 76800 and stops the engine, so the ceiling lies between the two and the
+ * driver stays at the highest measured-good count.  Index 8c carries the
+ * count in eight bits, which is why the field alone admitted 127.
+ * docs/parhelia-m9-fragment-pass-splitting.md */
+#define M9_RASTER_MAX_CONSTS      56u
 /* The declaration terminator both passes end their index-23 run with. */
 #define M9_DECL_END               0x00004b08u
 /* The preprocessing constant span starts one pair into the system prefix
@@ -161,6 +168,9 @@ struct m9_vertex_decl {
 
 int m9_draw_params_init(struct m9_draw_params *params, uint32_t width,
                         uint32_t height, uint8_t color_format);
+/* The b1 descriptor of one colour attachment of this extent and format. */
+int m9_color_surface_desc(uint32_t width, uint32_t height,
+                          uint8_t color_format, uint32_t *desc);
 /* Row-major 4x4; object coordinates become clip coordinates. */
 void m9_draw_params_matrix(struct m9_draw_params *params, const float m[16]);
 
