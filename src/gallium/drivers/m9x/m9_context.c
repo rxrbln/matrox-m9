@@ -25,6 +25,7 @@
 #include "m9_draw.h"
 #include "m9_format.h"
 #include "m9_fs_compile.h"
+#include "m9_specialise.h"
 #include "m9_internal.h"
 #include "m9_vs_texture.h"
 #include "m9_weld.h"
@@ -3511,7 +3512,7 @@ m9_fs_variant(struct m9_context *ctx, struct m9_fs_state *fs,
    memcpy(v->swizzle, want->swizzle, sizeof(v->swizzle));
    v->depth_texture = want->depth_texture;
    if (inline_bytes)
-      m9_fs_inline_uniforms(clone, v->inline_values);
+      m9_nir_inline_uniforms(clone, v->inline_values);
    {
       nir_lower_tex_options tex = { 0 };
 
@@ -4606,12 +4607,12 @@ m9_native_vs_resolve(struct m9_context *ctx, const struct pipe_draw_info *info,
    unsigned in_pv, reduced;
    int64_t low;
 
-   if (!ctx->vs || !ctx->vs->native)
-      return ctx->vs && ctx->vs->reason ? ctx->vs->reason :
+   if (!ctx->vs || !ctx->vs->cur || !ctx->vs->cur->native)
+      return ctx->vs && ctx->vs->cur ? ctx->vs->cur->reason :
              "no native vertex program";
    if (!ctx->velems)
       return "no vertex elements are bound";
-   p = &ctx->vs->program;
+   p = &ctx->vs->cur->program;
    if (p->attr_count > M9_VS_HW_ATTRIBUTES)
       return "more preprocessing attributes than the declaration can name";
    if (info->instance_count != 1 || info->start_instance)
@@ -4859,7 +4860,7 @@ m9_native_vs_layout(const struct m9_job_key *key, const struct m9_vs_program *p,
  * kept with the shader; a refused layout is kept with its reason so the
  * same pair is not compiled again every draw. */
 static struct m9_vs_variant *
-m9_native_vs_variant(struct m9_vs_state *vs, const struct m9_vs_outputs *out)
+m9_native_vs_variant(struct m9_vs_spec *vs, const struct m9_vs_outputs *out)
 {
    struct m9_vs_variant *v;
 
@@ -5254,6 +5255,8 @@ m9_native_vs_note(struct m9_context *ctx, const char *reason)
       fprintf(stderr, "m9x: native vertex fallback: %s\n", reason);
 }
 
+static void m9_vs_select_spec(struct m9_context *ctx);
+
 /* True when the draw was taken by the native path; false leaves it to the
  * draw module with no change in behaviour. */
 static bool
@@ -5264,12 +5267,17 @@ m9_native_vs_draw(struct m9_context *ctx, const struct pipe_draw_info *info,
    struct m9_job_key key;
    const char *reason;
 
-   if (!m9_native_vs || !ctx->vs || !ctx->vs->native ||
+   if (m9_native_vs)
+      m9_vs_select_spec(ctx);
+   if (!m9_native_vs || !ctx->vs || !ctx->vs->cur || !ctx->vs->cur->native ||
        !m9_native_vs_fs_cheap(ctx)) {
       if (m9_native_vs)
          m9_native_vs_note(ctx, !ctx->vs ? "no vertex shader is bound" :
-                                !ctx->vs->native ?
-                                ctx->vs->reason :
+                                !ctx->vs->cur ?
+                                "more vertex shader specialisations than the "
+                                "cache holds" :
+                                !ctx->vs->cur->native ?
+                                ctx->vs->cur->reason :
                                 "the fragment side is not worth a native job");
       return false;
    }
@@ -5287,12 +5295,12 @@ m9_native_vs_draw(struct m9_context *ctx, const struct pipe_draw_info *info,
    struct m9_vs_outputs outputs;
    struct m9_vs_variant *variant;
 
-   reason = m9_native_vs_layout(&key, &ctx->vs->program, &outputs);
+   reason = m9_native_vs_layout(&key, &ctx->vs->cur->program, &outputs);
    if (reason) {
       m9_native_vs_note(ctx, reason);
       return false;
    }
-   variant = m9_native_vs_variant(ctx->vs, &outputs);
+   variant = m9_native_vs_variant(ctx->vs->cur, &outputs);
    if (!variant || !variant->ok) {
       m9_native_vs_note(ctx, variant ? variant->reason :
                         "the vertex program could not be compiled");
@@ -6292,18 +6300,29 @@ m9_vs_type_size(const struct glsl_type *type, bool bindless)
 }
 
 static void
-m9_vs_state_fini(struct m9_vs_state *vs)
+m9_vs_spec_free(struct m9_vs_spec *spec)
 {
-   util_dynarray_foreach(&vs->variants, struct m9_vs_variant *, it) {
+   util_dynarray_foreach(&spec->variants, struct m9_vs_variant *, it) {
       if ((*it)->ok)
          m9_vs_program_fini(&(*it)->program);
       FREE(*it);
    }
-   util_dynarray_fini(&vs->variants);
-   if (vs->native)
-      m9_vs_program_fini(&vs->program);
-   if (vs->nir)
-      ralloc_free(vs->nir);
+   util_dynarray_fini(&spec->variants);
+   if (spec->native)
+      m9_vs_program_fini(&spec->program);
+   if (spec->nir)
+      ralloc_free(spec->nir);
+   FREE(spec);
+}
+
+static void
+m9_vs_state_fini(struct m9_vs_state *vs)
+{
+   util_dynarray_foreach(&vs->specs, struct m9_vs_spec *, it)
+      m9_vs_spec_free(*it);
+   util_dynarray_fini(&vs->specs);
+   if (vs->src)
+      ralloc_free(vs->src);
    FREE(vs);
 }
 
@@ -6329,19 +6348,81 @@ m9_vs_native_init(struct m9_vs_state *vs, struct nir_shader *src)
       NIR_PASS(_, nir, nir_lower_io, nir_var_shader_in | nir_var_shader_out,
                m9_vs_type_size, (nir_lower_io_options)0);
    }
-   /* Mesa fuses no multiply and add on its own; the backend folds the
-    * product the hardware's multiply-add can take, and this pass first
-    * gives it the shapes it recognises. */
-   NIR_PASS(_, nir, nir_opt_algebraic_late);
-   NIR_PASS(_, nir, nir_opt_dce);
-   vs->native = m9_vs_compile(nir, NULL, &vs->program, &vs->reason);
-   if (getenv("M9X_DEBUG"))
-      fprintf(stderr, "m9x vs: %s\n",
-              vs->native ? "native" : vs->reason ? vs->reason : "unsupported");
-   if (vs->native)
-      vs->nir = nir;
-   else
+   /* The screen declares no integer support, so Mesa stores an integer
+    * uniform as a float; the clone is lowered to match before a loop bound
+    * can read as the number it is.  The draw module runs the state
+    * tracker's own shader, which gallivm lowers for itself. */
+   m9_nir_lower_integers(nir);
+   vs->src = nir;
+   vs->inline_count = MIN2(src->info.num_inlinable_uniforms,
+                           MAX_INLINABLE_UNIFORMS);
+}
+
+/* The specialisation for one set of values, compiled on first use and kept.
+ * A shader with no inlinable uniform has exactly one. */
+static struct m9_vs_spec *
+m9_vs_spec_for(struct m9_vs_state *vs, const uint32_t *values)
+{
+   const size_t bytes = vs->inline_count * sizeof(*values);
+   struct m9_vs_spec *spec;
+   nir_shader *nir;
+
+   util_dynarray_foreach(&vs->specs, struct m9_vs_spec *, it)
+      if (!memcmp((*it)->values, values, bytes))
+         return *it;
+   /* A shader specialised on a uniform can be asked for one per value, so
+    * the cache is capped and a further set is refused rather than evicting
+    * a program a queued job still names. */
+   if (util_dynarray_num_elements(&vs->specs, struct m9_vs_spec *) >=
+       M9_VS_MAX_SPECS)
+      return NULL;
+   spec = CALLOC_STRUCT(m9_vs_spec);
+   if (!spec)
+      return NULL;
+   util_dynarray_init(&spec->variants, NULL);
+   memcpy(spec->values, values, bytes);
+   nir = vs->src ? nir_shader_clone(NULL, vs->src) : NULL;
+   if (nir) {
+      if (vs->inline_count)
+         m9_nir_inline_uniforms(nir, spec->values);
+      /* After the loop unrolls, so the copies of its body are fused too:
+       * Mesa fuses no multiply and add on its own and the backend folds
+       * only the product the hardware's multiply-add can take. */
+      NIR_PASS(_, nir, nir_opt_algebraic_late);
+      NIR_PASS(_, nir, nir_opt_dce);
+      spec->native = m9_vs_compile(nir, NULL, &spec->program, &spec->reason);
+   }
+   if (!spec->reason)
+      spec->reason = "no native vertex program";
+   if (spec->native)
+      spec->nir = nir;
+   else if (nir)
       ralloc_free(nir);
+   if (getenv("M9X_DEBUG")) {
+      fprintf(stderr, "m9x vs: %s", spec->native ? "native" : spec->reason);
+      for (unsigned i = 0; i < vs->inline_count; i++)
+         fprintf(stderr, " dw%u=%08x",
+                 vs->src->info.inlinable_uniform_dw_offsets[i],
+                 spec->values[i]);
+      fprintf(stderr, "\n");
+   }
+   util_dynarray_append_typed(&vs->specs, struct m9_vs_spec *, spec);
+   return spec;
+}
+
+/* Point the shader at the specialisation the context's uniform values ask
+ * for, which is what every native decision below is then taken against. */
+static void
+m9_vs_select_spec(struct m9_context *ctx)
+{
+   struct m9_vs_state *vs = ctx->vs;
+
+   if (!vs)
+      return;
+   if (vs->cur && !memcmp(vs->cur->values, ctx->vs_inline,
+                          vs->inline_count * sizeof(*ctx->vs_inline)))
+      return;
+   vs->cur = m9_vs_spec_for(vs, ctx->vs_inline);
 }
 
 static void *
@@ -6353,10 +6434,10 @@ m9_create_vs_state(struct pipe_context *pctx,
 
    if (!vs)
       return NULL;
+   util_dynarray_init(&vs->specs, NULL);
    if (templ->type == PIPE_SHADER_IR_NIR && templ->ir.nir)
       m9_vs_native_init(vs, templ->ir.nir);
    vs->serial = ++m9_vs_serial;
-   util_dynarray_init(&vs->variants, NULL);
    vs->draw = draw_create_vertex_shader(ctx->draw, templ);
    if (!vs->draw) {
       m9_vs_state_fini(vs);
@@ -6624,9 +6705,13 @@ static void
 m9_set_inlinable_constants(struct pipe_context *pctx, mesa_shader_stage shader,
                            uint num_values, uint32_t *values)
 {
+   struct m9_context *ctx = m9_context(pctx);
+   const unsigned n = MIN2(num_values, MAX_INLINABLE_UNIFORMS);
+
    if (shader == MESA_SHADER_FRAGMENT)
-      memcpy(m9_context(pctx)->fs_inline, values,
-             MIN2(num_values, MAX_INLINABLE_UNIFORMS) * sizeof(*values));
+      memcpy(ctx->fs_inline, values, n * sizeof(*values));
+   else if (shader == MESA_SHADER_VERTEX)
+      memcpy(ctx->vs_inline, values, n * sizeof(*values));
 }
 
 /* The depth and HZ pair for a target of this size, allocated once and kept.

@@ -177,13 +177,6 @@ void m9_fs_lower_srgb(struct nir_shader *nir);
  * what GL does with a shader that names only the one output. */
 void m9_fs_lower_fragcolor(struct nir_shader *nir, unsigned targets);
 
-/* Marks uniforms used by if conditions as inlinable (screen finalize_nir). */
-void m9_fs_lower_integers(struct nir_shader *nir);
-void m9_fs_find_inlinable_uniforms(struct nir_shader *nir);
-/* Inlines constant buffer words for the inlinable uniforms and folds the
- * control flow that depended on them. */
-void m9_fs_inline_uniforms(struct nir_shader *nir, const uint32_t *values);
-
 /* Returns false with a static reason when the shader is not covered.  A NULL
  * blend, or ONE/ZERO, writes the colour unblended. */
 bool m9_fs_compile(struct nir_shader *nir, const struct m9_fs_blend *blend,

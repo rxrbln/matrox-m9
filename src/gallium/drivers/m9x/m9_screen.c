@@ -2,6 +2,7 @@
 /* Copyright 2026 René Rebe <rene@exactco.de> */
 #include "m9_screen.h"
 #include "m9_fs_compile.h"
+#include "m9_specialise.h"
 #include "m9x_public.h"
 
 #include <errno.h>
@@ -1111,16 +1112,22 @@ m9_flush_frontbuffer(struct pipe_screen *screen, struct pipe_context *ctx,
       __sync_synchronize();
 }
 
-/* The fragment NIR is brought to the float-only form the screen declares, and
- * the uniforms selecting control flow are marked for inlining per value set. */
+/* The uniforms selecting control flow are marked for inlining per value set,
+ * which is what makes the state tracker send their values.  The fragment NIR
+ * is also brought here to the float-only form the screen declares; the vertex
+ * shader is not, because the draw module runs this very shader and gallivm
+ * does that lowering for itself -- the native backend lowers its own clone. */
 static void
 m9_finalize_nir(struct pipe_screen *pscreen, struct nir_shader *nir,
                 bool optimize)
 {
    (void)pscreen;
    (void)optimize;
-   m9_fs_lower_integers(nir);
-   m9_fs_find_inlinable_uniforms(nir);
+   if (nir->info.stage == MESA_SHADER_FRAGMENT)
+      m9_nir_lower_integers(nir);
+   if (nir->info.stage == MESA_SHADER_FRAGMENT ||
+       nir->info.stage == MESA_SHADER_VERTEX)
+      m9_nir_find_inlinable_uniforms(nir);
 }
 
 static void

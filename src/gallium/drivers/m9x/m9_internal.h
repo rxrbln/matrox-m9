@@ -392,16 +392,32 @@ struct m9_vs_variant {
    uint64_t serial;
 };
 
-struct m9_vs_state {
-   void *draw;
-   /* The lowered clone the backend consumed, kept so a further layout can
-    * be compiled from it. */
+/* The shader compiled against one set of inlinable uniform values.  Neither
+ * backend has control flow, so a loop whose bound is a uniform only reaches
+ * the engine once that value is substituted and the loop unrolls; the values
+ * are fixed per draw, so one of these is kept per set the context sends. */
+struct m9_vs_spec {
+   uint32_t values[MAX_INLINABLE_UNIFORMS];
+   /* The lowered, specialised clone the backend consumed, kept so a further
+    * layout can be compiled from it. */
    struct nir_shader *nir;
    struct m9_vs_program program;
    const char *reason;
    bool native;
-   uint64_t serial;
    struct util_dynarray variants;   /* struct m9_vs_variant * */
+};
+
+struct m9_vs_state {
+   void *draw;
+   /* The lowered clone before specialisation, and the dwords the values
+    * that specialise it come from. */
+   struct nir_shader *src;
+   unsigned inline_count;
+   struct util_dynarray specs;      /* struct m9_vs_spec * */
+   /* The specialisation the draws being emitted run; never NULL once a
+    * draw has selected one. */
+   struct m9_vs_spec *cur;
+   uint64_t serial;
 };
 
 struct m9_context {
@@ -452,6 +468,7 @@ struct m9_context {
    struct pipe_constant_buffer vs_constants[PIPE_MAX_CONSTANT_BUFFERS];
    struct pipe_constant_buffer fs_constants;
    uint32_t fs_inline[MAX_INLINABLE_UNIFORMS];  /* fragment inlinable uniforms */
+   uint32_t vs_inline[MAX_INLINABLE_UNIFORMS];  /* vertex inlinable uniforms */
    struct pipe_sampler_view *fs_views[PIPE_MAX_SAMPLERS];
    const struct pipe_sampler_state *fs_samplers[PIPE_MAX_SAMPLERS];
    /* Vertex-stage sampling, done by the draw module (m9_vs_texture.c). */

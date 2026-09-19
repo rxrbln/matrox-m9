@@ -69,6 +69,10 @@ struct nir_shader;
 /* Compiled programs one vertex shader keeps, one an output layout: a shader
  * drawn with many fragment variants asks for one per distinct stream set. */
 #define M9_VS_MAX_VARIANTS 64u
+/* Specialisations on distinct inlinable uniform value sets one shader keeps.
+ * A further set falls back to the draw module rather than evicting a program
+ * a queued job still names. */
+#define M9_VS_MAX_SPECS 16u
 /* Constant pairs 9..21 of the span belong to the appended tail, which names
  * them by absolute index; user pairs are 0..8 and 22 upward. */
 #define M9_VS_TAIL_FIRST_PAIR 9u
