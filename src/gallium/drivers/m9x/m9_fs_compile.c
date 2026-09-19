@@ -18,6 +18,8 @@
 
 #include "m9_draw_params.h"
 
+#include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 #include "nir.h"
@@ -52,40 +54,46 @@ const nir_shader_compiler_options m9_fs_nir_options = {
 #define NONE    0x7fu
 #define OUT     0x2du
 /* The destination a colour output writes.  Target p is derived to own
- * OUT + p from the vendor's per-target output registers; M9X_FS_MRT_DEST
- * selects the candidate under measurement (0 destination OUT + p, 1 routing
- * class 4 + p on the output move, 2 destination OUT + 2p) and
+ * OUT + 4p.  MEASURED on the M9128 by binding four targets, writing one
+ * output and reading which surface received it: 0x2d reaches target 0,
+ * 0x30 and 0x31 target 1, 0x34 and 0x35 target 2, 0x38 and 0x39 target 3,
+ * and 0x32, 0x33 and the rest reach none of them -- two destinations a
+ * target, four apart, of which the captured single-target program uses the
+ * odd one.  The sweep that measured it is still here: M9X_FS_MRT_BASE and
+ * M9X_FS_MRT_STEP move every target, M9X_FS_MRT_DESTp names one outright,
+ * M9X_FS_MRT_CLS tests the competing routing class, and
  * M9X_FS_COLOR_TARGET shifts every output by one target so a single-output
  * shader can name a target other than its own.
  * docs/parhelia-m9-mrt-routing.md */
 static unsigned
-mrt_dest_mode(void)
-{
-   return (unsigned)debug_get_num_option("M9X_FS_MRT_DEST", 0);
-}
-
-static unsigned
 color_dest(unsigned target)
 {
+   unsigned base = (unsigned)debug_get_num_option("M9X_FS_MRT_BASE", OUT);
+   unsigned step = (unsigned)debug_get_num_option("M9X_FS_MRT_STEP", 4);
    unsigned p = (target +
                  (unsigned)debug_get_num_option("M9X_FS_COLOR_TARGET", 0)) & 3;
+   char name[20];
+   const char *one;
 
-   switch (mrt_dest_mode()) {
-   case 1:  return OUT;
-   case 2:  return OUT + 2 * p;
-   default: return OUT + p;
-   }
+   /* M9X_FS_MRT_DESTp names one target's destination outright, which is how
+    * a sweep moves one target while the rest stay where they are known to
+    * land. */
+   snprintf(name, sizeof(name), "M9X_FS_MRT_DEST%u", p);
+   one = getenv(name);
+   return (one ? (unsigned)strtoul(one, NULL, 0) : base + step * p) & 0x7fu;
 }
 
 /* The output move's instruction class.  Class 4 is what a blended output
- * carries, so the class candidate seats target p at 4 + p. */
+ * carries, so the competing candidate seats target p at M9X_FS_MRT_CLS + p
+ * and leaves every target on one destination. */
 static unsigned
 color_cls(unsigned target)
 {
+   unsigned cls = (unsigned)debug_get_num_option("M9X_FS_MRT_CLS", 0);
    unsigned p = (target +
                  (unsigned)debug_get_num_option("M9X_FS_COLOR_TARGET", 0)) & 3;
 
-   return mrt_dest_mode() == 1 ? 4 + p : 0;
+   return cls ? (cls + p) & 7u : 0;
 }
 #define REG_S0  0x11u
 #define REG_S1  0x13u
@@ -2895,10 +2903,20 @@ allocate(struct ctx *c)
                   reg = interp_extra[r];
             if (reg < 0)
                return fail(c, "out of interpolation registers");
+         /* The scratch pair is the colour output's own staging, which is
+          * why a single-target program may not hold a value there across
+          * its last slot.  A program with several colour outputs writes
+          * more than one output move, so the pair is unusable throughout:
+          * M9X_FS_MRT_SCRATCH=1 puts it back, which is how that was
+          * measured.  docs/parhelia-m9-mrt-routing.md */
          } else if (!c->record_out && s != (int)n - 1 &&
+                    (c->target_count < 2 ||
+                     debug_get_bool_option("M9X_FS_MRT_SCRATCH", false)) &&
                     !reg_busy(busy, REG_S0)) {
             reg = REG_S0;
          } else if (!c->record_out && s != (int)n - 1 &&
+                    (c->target_count < 2 ||
+                     debug_get_bool_option("M9X_FS_MRT_SCRATCH", false)) &&
                     !reg_busy(busy, REG_S1)) {
             reg = REG_S1;
          } else {

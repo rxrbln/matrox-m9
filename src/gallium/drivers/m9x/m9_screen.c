@@ -1378,7 +1378,15 @@ m9_screen_create(int fd, const struct pipe_screen_config *config)
    screen->base.nir_options[MESA_SHADER_FRAGMENT] = &m9_fs_nir_options;
    m9_init_shader_caps(screen);
    caps = (struct pipe_caps *)&screen->base.caps;
-   caps->max_render_targets = 1;
+   /* Four colour targets: b0 + 2s a target with its own descriptor, class
+    * and write mask, and one native destination a target in the fragment
+    * program.  M9X_MAX_RENDER_TARGETS holds it back to one, which is how a
+    * run separates an MRT fault from anything else.
+    * docs/parhelia-m9-mrt-routing.md */
+   caps->max_render_targets =
+      CLAMP((unsigned)debug_get_num_option("M9X_MAX_RENDER_TARGETS",
+                                           M9_MAX_COLOR),
+            1u, M9_MAX_COLOR);
    caps->max_texture_2d_size = 2048;
    /* A cube face and a volume slice are placed only inside the captured
     * 32x16 tail, so 16 is the largest extent either target reaches: 16x16

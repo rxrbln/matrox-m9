@@ -439,6 +439,10 @@ static uint64_t m9_prof_refused, m9_prof_skipped, m9_prof_relocs;
 /* M9X_NO_CLEAR drops the clear quad; M9X_CLEAR_REPEAT draws it that many
  * extra times, which weighs one screen of fill with the frame still correct. */
 static bool m9_no_clear;
+/* M9X_MRT_MASK_ALL leaves a bound target the shader does not write open, so
+ * a destination sweep sees where an output lands rather than where the mask
+ * lets it.  docs/parhelia-m9-mrt-routing.md */
+static bool m9_mrt_mask_all;
 static unsigned m9_clear_repeat;
 static uint64_t m9_prof_frames, m9_prof_wall;
 
@@ -3518,8 +3522,8 @@ m9_job_key_current(struct m9_context *ctx, struct m9_job_key *key)
          unsigned cm = blend && blend->independent_blend_enable ?
                        blend->rt[s].colormask : colormask;
 
-         masks[s] = m9_color_mask(final->target_mask & BITFIELD_BIT(s) ?
-                                  cm : 0) & 0xffffu;
+         masks[s] = m9_color_mask((final->target_mask & BITFIELD_BIT(s)) ||
+                                  m9_mrt_mask_all ? cm : 0) & 0xffffu;
          if (ctx->color_format[s] != M9_COLOR_FORMAT_A8R8G8B8 &&
              masks[s] != 0xffffu)
             return m9_skip_reason(ctx, "a partial colour mask on a 10-bit "
@@ -5014,6 +5018,48 @@ m9_clear_depth_cpu(struct m9_resource *zs, unsigned buffers, double depth,
       m9_fill_dwords(zs->hz, M9_HZ_CLEAR);
 }
 
+static void m9_clear_render_target(struct pipe_context *pctx,
+                                   struct pipe_surface *dst,
+                                   const union pipe_color_union *color,
+                                   unsigned dstx, unsigned dsty,
+                                   unsigned width, unsigned height,
+                                   bool render_condition_enabled);
+
+/* Colour attachments past the first.  The quad clear runs the fixed-function
+ * program, whose one colour output reaches target 0 alone, so the rest are
+ * filled on the CPU: a solid colour is the same word in tiled order as in
+ * linear order, which is what makes the fill correct without the engine.  A
+ * single-target framebuffer -- every frame of every benchmark here -- does
+ * none of this. */
+static void
+m9_clear_color_extra(struct pipe_context *pctx, unsigned buffers,
+                     uint32_t color_clear_mask,
+                     const struct pipe_scissor_state *scissor,
+                     const union pipe_color_union *color, bool full)
+{
+   struct m9_context *ctx = m9_context(pctx);
+
+   for (unsigned p = 1; p < ctx->color_count; p++) {
+      struct pipe_surface *dst = &ctx->framebuffer.cbufs[p];
+
+      if (!(buffers & (PIPE_CLEAR_COLOR0 << p)) || !dst->texture)
+         continue;
+      /* Four channel mask bits a draw buffer. */
+      if (((color_clear_mask >> (4 * p)) & 0xf) != PIPE_MASK_RGBA) {
+         m9_warn_once(ctx, M9_WARN_CLEAR, "a masked clear of a colour "
+                      "attachment past the first is not implemented");
+         continue;
+      }
+      m9_clear_render_target(pctx, dst, color,
+                             full ? 0 : scissor->minx,
+                             full ? 0 : scissor->miny,
+                             full ? ctx->framebuffer.width :
+                                    scissor->maxx - scissor->minx,
+                             full ? ctx->framebuffer.height :
+                                    scissor->maxy - scissor->miny, false);
+   }
+}
+
 static void
 m9_clear_locked(struct pipe_context *pctx, unsigned buffers,
                 uint32_t color_clear_mask, uint8_t stencil_clear_mask,
@@ -5038,6 +5084,8 @@ m9_clear_locked(struct pipe_context *pctx, unsigned buffers,
        !(buffers & PIPE_CLEAR_STENCIL)) {
       m9_clear_quad(ctx, full ? NULL : scissor, color_clear_mask, color->f,
                     true, depth);
+      m9_clear_color_extra(pctx, buffers, color_clear_mask, scissor, color,
+                           full);
       return;
    }
    /* The quad clear rasterises in tiled space and covers the drawable, not
@@ -5047,6 +5095,8 @@ m9_clear_locked(struct pipe_context *pctx, unsigned buffers,
    if (colour)
       m9_clear_quad(ctx, full ? NULL : scissor, color_clear_mask,
                     color->f, false, 0);
+   m9_clear_color_extra(pctx, buffers, color_clear_mask, scissor, color,
+                        full);
    if (!(buffers & PIPE_CLEAR_DEPTHSTENCIL))
       return;
    if (!zs) {
@@ -6567,6 +6617,7 @@ m9_context_create(struct pipe_screen *pscreen, void *priv, unsigned flags)
    m9_native_vs_varyings = MIN2((unsigned)
       debug_get_num_option("M9X_VS_VARYINGS", 1), M9_VS_MAX_VARYINGS);
    m9_no_clear = debug_get_bool_option("M9X_NO_CLEAR", false);
+   m9_mrt_mask_all = debug_get_bool_option("M9X_MRT_MASK_ALL", false);
    m9_clear_repeat = debug_get_num_option("M9X_CLEAR_REPEAT", 0);
    ctx->dump_path = debug_get_option("M9X_DUMP", NULL);
    m9_debug_textures = debug_get_bool_option("M9X_DEBUG_TEXTURES", false);
