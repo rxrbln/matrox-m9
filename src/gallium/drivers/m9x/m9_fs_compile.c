@@ -5199,7 +5199,9 @@ m9_fs_raster_88(const struct m9_fs_program *program)
     * producers follow it: 0110fffc where the producer samples nothing
     * (the seven two-pass cases, 0xfff0 | 0x0c) and 0110dffb where it
     * samples one (the five-sampler schedule, 0xffe3 | 0x18).  Two points
-    * fix the rule; beyond one unit it is UNTESTED. */
+    * fix the rule; beyond one unit it is UNTESTED.  From two units up the
+    * flags land inside the register-pair field above, which record_reserved
+    * keeps empty rather than dropping a flag the captures carry. */
    if (program->writes_record) {
       /* M9X_RECORD_88 replaces the derived low nibbles, so the value can
        * be swept against the hardware. */
