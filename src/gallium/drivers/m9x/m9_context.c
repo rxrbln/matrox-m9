@@ -176,6 +176,8 @@ struct m9_vbuf_render {
 
 static int m9_submit_job(struct m9_context *ctx);
 static void m9_deferred_run(struct m9_context *ctx);
+/* Back-end objects swapped rather than zeroed under a job in flight. */
+static uint64_t m9_be_swaps;
 
 static inline struct m9_context *
 m9_context(struct pipe_context *pctx)
@@ -210,8 +212,8 @@ m9_skip_report(struct m9_context *ctx)
            ctx->window_write_bytes >> 10, ctx->map_usage_seen,
            ctx->window_read_usage, ctx->window_reads_explicit);
    fprintf(stderr, "m9x: %u copies and blits on the engine, %u split draws "
-           "padded to their target's extent\n", ctx->engine_blits,
-           ctx->padded_draws);
+           "padded to their target's extent, %" PRIu64 " state swaps\n",
+           ctx->engine_blits, ctx->padded_draws, m9_be_swaps);
    for (unsigned i = 0; i < ctx->skip_reasons; i++)
       fprintf(stderr, "m9x: context %u: %u draws skipped: %s\n",
               ctx->context_id, ctx->skip_reason[i].draws,
@@ -345,13 +347,14 @@ static unsigned m9_split_copy;
  * frame needs; 2 and 1 narrow it to the scratch path's own objects and 0
  * leaves it alone. */
 static unsigned m9_split_be;
-/* M9X_SPLIT_PAD=1 pads a partial multi-pass draw out to its target's extent
- * and narrows the clip window to the pixels it covers, which is what the
- * engine counts as covering a target (MEASURED, conv3pad / conv3frame /
- * conv3subpad).  It is off by default: the fixture suite stops the engine at
- * conv3rep with it on, so the mechanism is proved but not yet a path a scene
- * can be trusted to, and M9X_SPLIT_BE=3 belongs with it. */
-static bool m9_split_pad_enable;
+/* M9X_SPLIT_PAD=0 refuses a partial multi-pass draw to the scratch surface
+ * instead of padding it out to its target's extent and narrowing the clip
+ * window to the pixels it covers, which is what the engine counts as covering
+ * a target (MEASURED, conv3pad / conv3frame / conv3subpad).  Padding is on by
+ * default because it carries a draw a scratch surface cannot -- one whose
+ * geometry does not fill the box it spans -- and it needs M9X_SPLIT_BE=3
+ * beside it, which stops the engine without it (MEASURED). */
+static bool m9_split_pad_enable = true;
 /* M9X_RECORD_DUMP names a file the inter-pass record is written to after
  * every split job, so the slots the engine touched can be read back and
  * the record's granularity measured rather than assumed. */
@@ -383,6 +386,13 @@ static unsigned m9_be_clear;
  * object a context and all render with one a target).  M9X_BE_PER_TARGET=0
  * restores the single object, which is how the fixture above was measured. */
 static bool m9_be_per_target = true;
+/* A posted job retires only at the next submission, so the engine can still
+ * be reading the object a CPU clear overwrites.  M9X_BE_SWAP=0 zeroes it in
+ * place instead of swapping to a spare. */
+static bool m9_be_swap = true;
+/* M9X_RECORD_LIVENESS=0 gives every hand-over a slot of its own, which is
+ * what the record cost before slots were reused. */
+static bool m9_record_liveness = true;
 /* M9X_BLIT_ENGINE=0 keeps every blit off the engine, which is the only way
  * to reach the CPU resampler from an application that renders into ordinary
  * colour targets. */
@@ -1669,6 +1679,50 @@ m9_split_defer(struct m9_context *ctx, const struct m9_job_key *key,
    return NULL;
 }
 
+/*
+ * Present the engine with an empty back-end state object.  A job posted
+ * asynchronously retires only at the *next* submission, so the engine can
+ * still be reading the object a CPU clear overwrites -- the scratch path's
+ * seed copy is a draw into the very surface whose object is cleared next.
+ * Zeroing the object in place is therefore a race, and there is no drain to
+ * take: the kernel's no-op fence writes the shared command image without
+ * retiring the posted job first.  So a target keeps two objects and a clear
+ * swaps to the spare and zeroes that, which the engine cannot be reading
+ * because the job in flight bound the other one.
+ *
+ * M9X_BE_SWAP=0 zeroes in place, which is what the clear did before.
+ */
+static void
+m9_be_zero(struct m9_context *ctx)
+{
+   struct m9_target_depth *entry = ctx->target_entry;
+   struct m9_resource *be;
+
+   if (!entry || !m9_be_per_target) {
+      if (ctx->be.map)
+         memset(ctx->be.map, 0, ctx->be.size);
+      return;
+   }
+   if (m9_be_swap) {
+      unsigned spare = entry->be_slot ^ 1u;
+
+      /* The spare is allocated the first time a shape wants a clear, so a
+       * target that never clears costs one object as before. */
+      if (!entry->be[spare].handle &&
+          m9_bo_create(ctx->screen, M9_BE_BYTES, PARHELIA_M9_BO_VRAM,
+                       M9_RESOURCE_SYSTEM_STATE, &entry->be[spare]))
+         entry->be[spare].handle = 0;
+      if (entry->be[spare].handle) {
+         entry->be_slot = spare;
+         m9_be_swaps++;
+      }
+   }
+   be = &entry->be[entry->be_slot];
+   if (be->map)
+      memset(be->map, 0, be->size);
+   ctx->target_be = be->handle ? be : NULL;
+}
+
 static int
 m9_submit_job(struct m9_context *ctx)
 {
@@ -1828,7 +1882,8 @@ m9_submit_job(struct m9_context *ctx)
    if (be_bound->map &&
        (m9_be_clear == 1 ||
         (m9_be_clear == 2 && ctx->be_clip != ctx->params.clip_max))) {
-      memset(be_bound->map, 0, be_bound->size);
+      m9_be_zero(ctx);
+      be_bound = ctx->target_be ? ctx->target_be : &ctx->be;
       ctx->be_clip = ctx->params.clip_max;
    }
    /* The object a multi-pass job binds is cleared ahead of it: one that finds
@@ -1836,8 +1891,10 @@ m9_submit_job(struct m9_context *ctx)
     * with four windows walks between targets several times a frame (MEASURED,
     * splitdesk:8:4:11:1920x1200:1:420x420 stalls without this and renders 32
     * frames with it).  M9X_SPLIT_BE=0 leaves it alone. */
-   if (m9_split_be > 2 && pass_count > 1 && be_bound->map)
-      memset(be_bound->map, 0, be_bound->size);
+   if (m9_split_be > 2 && pass_count > 1) {
+      m9_be_zero(ctx);
+      be_bound = ctx->target_be ? ctx->target_be : &ctx->be;
+   }
    ret = ctx->lost ? -EIO :
          m9_arena_reserve(ctx, &ctx->source,
                           (uint64_t)records * copies * ctx->record_floats *
@@ -2911,6 +2968,69 @@ m9_depth_channel_instr(nir_builder *b, nir_instr *instr, void *data)
 
 /* Program of fs for a blend state and inlined uniform values, compiled on
  * first use; refused variants stay cached with their reason. */
+/*
+ * Where each producing pass writes in the inter-pass record.  A hand-over is
+ * live from the pass that writes it to the last pass that reads it, so slots
+ * are reused once nothing reads them: a chain, where every pass reads only
+ * its predecessor, needs two slots whatever its length instead of one a
+ * producer.  The descriptor carries stride and offset as independent fields
+ * (docs/parhelia-m9-varying-transport-re.md 3), so this asks nothing new of
+ * the engine, and it halves both the record and the traffic through it for
+ * the four- and five-pass shaders that are bandwidth bound.
+ *
+ * A slot stays four dwords wide: narrowing a one-pair producer to the two
+ * the captures show stops the engine (MEASURED).
+ */
+static void
+m9_record_layout(struct m9_fs_variant *v)
+{
+   unsigned count = v->passes.count;
+   /* The last pass that reads producer i, and the first producer index at
+    * which a slot is free again. */
+   unsigned last[M9_FS_MAX_PASSES], free_at[M9_FS_MAX_PASSES];
+   unsigned slots = 0;
+
+   memset(v->record_offset, 0, sizeof(v->record_offset));
+   if (count < 2) {
+      v->record_dwords = 0;
+      return;
+   }
+   for (unsigned i = 0; i < count; i++) {
+      last[i] = i;
+      free_at[i] = 0;
+   }
+   for (unsigned j = 0; j < count; j++) {
+      const struct m9_fs_program *p = &v->passes.pass[j];
+
+      for (unsigned k = 0; k < p->texture_count; k++) {
+         uint8_t src = p->texture_source[k];
+
+         if (src != M9_FS_ROUTE_NONE && src < count)
+            last[src] = MAX2(last[src], j);
+         src = p->texcoord_source[k];
+         if (src != M9_FS_ROUTE_NONE && src < count)
+            last[src] = MAX2(last[src], j);
+      }
+   }
+   for (unsigned i = 0; i + 1 < count; i++) {
+      unsigned slot = 0;
+
+      if (!v->passes.pass[i].writes_record)
+         continue;
+      if (m9_record_liveness) {
+         while (slot < slots && free_at[slot] > i)
+            slot++;
+      } else {
+         slot = slots;
+      }
+      if (slot == slots)
+         slots++;
+      free_at[slot] = last[i] + 1;
+      v->record_offset[i] = 4 * slot;
+   }
+   v->record_dwords = 4 * slots;
+}
+
 static const struct m9_fs_variant *
 m9_fs_variant(struct m9_context *ctx, struct m9_fs_state *fs,
               const struct m9_fs_variant *want, const char **reason)
@@ -2985,13 +3105,7 @@ m9_fs_variant(struct m9_context *ctx, struct m9_fs_state *fs,
       fprintf(stderr, "m9x: variant refused: %s\n", v->reason);
    ralloc_free(clone);
    if (v->ok) {
-      /* Every pass but the last hands a four-dword slot to the ones after
-       * it, so the record's stride is four dwords a producer.  Narrowing a
-       * one-pair producer to the two dwords the captures show stops the
-       * engine (MEASURED), so the width stays four. */
-      v->record_dwords = 4 * (v->passes.count - 1);
-      for (unsigned i = 0; i + 1 < v->passes.count; i++)
-         v->record_offset[i] = 4 * i;
+      m9_record_layout(v);
       if (!m9_fs_streams(v)) {
          v->reason = "more CPU varying streams or texture slots than a job "
                      "binds";
@@ -5145,15 +5259,15 @@ m9_deferred_run(struct m9_context *ctx)
        * draw without this and renders 32 with it (MEASURED, splitdesk:32:1:5:
        * 1920x1200:5:420x420 against M9X_BE_CLEAR).  The object the job binds
        * is cleared ahead of it. */
-      if (m9_split_be && ctx->target_be && ctx->target_be->map)
-         memset(ctx->target_be->map, 0, ctx->target_be->size);
+      if (m9_split_be)
+         m9_be_zero(ctx);
       m9_submit_job(ctx);
    }
    m9_job_state_swap(ctx, &d->state);
    if (scratch) {
       pctx->set_framebuffer_state(pctx, &target_fb);
-      if (m9_split_be > 1 && ctx->target_be && ctx->target_be->map)
-         memset(ctx->target_be->map, 0, ctx->target_be->size);
+      if (m9_split_be > 1)
+         m9_be_zero(ctx);
       if (!why) {
          uint32_t drew = ctx->engine_blits;
 
@@ -5658,7 +5772,8 @@ m9_target_depth_bind(struct m9_context *ctx, uint32_t w, uint32_t h,
    const bool fresh = debug_get_bool_option("M9X_TARGET_FRESH", false);
 
    util_dynarray_foreach(&ctx->target_depths, struct m9_target_depth *, it) {
-      total += (*it)->depth.size + (*it)->aux.size + (*it)->be.size;
+      total += (*it)->depth.size + (*it)->aux.size + (*it)->be[0].size +
+               (*it)->be[1].size;
       if (!fresh && (*it)->width == w && (*it)->height == h &&
           (*it)->scratch == ctx->scratch_bind)
          entry = *it;
@@ -5672,10 +5787,12 @@ m9_target_depth_bind(struct m9_context *ctx, uint32_t w, uint32_t h,
              M9_TARGET_DEPTH_BUDGET) {
          struct m9_target_depth *evict = *oldest;
 
-         total -= evict->depth.size + evict->aux.size + evict->be.size;
+         total -= evict->depth.size + evict->aux.size + evict->be[0].size +
+                  evict->be[1].size;
          m9_bo_destroy(ctx->screen, &evict->depth);
          m9_bo_destroy(ctx->screen, &evict->aux);
-         m9_bo_destroy(ctx->screen, &evict->be);
+         m9_bo_destroy(ctx->screen, &evict->be[0]);
+         m9_bo_destroy(ctx->screen, &evict->be[1]);
          *oldest = *util_dynarray_pop_ptr(&ctx->target_depths,
                                           struct m9_target_depth *);
          FREE(evict);
@@ -5693,11 +5810,11 @@ m9_target_depth_bind(struct m9_context *ctx, uint32_t w, uint32_t h,
                        M9_RESOURCE_LINEAR_DEPTH, &entry->aux) ||
           (m9_be_per_target &&
            m9_bo_create(ctx->screen, M9_BE_BYTES, PARHELIA_M9_BO_VRAM,
-                        M9_RESOURCE_SYSTEM_STATE, &entry->be))) {
+                        M9_RESOURCE_SYSTEM_STATE, &entry->be[0]))) {
          if (entry) {
             m9_bo_destroy(ctx->screen, &entry->depth);
             m9_bo_destroy(ctx->screen, &entry->aux);
-            m9_bo_destroy(ctx->screen, &entry->be);
+            m9_bo_destroy(ctx->screen, &entry->be[0]);
             FREE(entry);
          }
          m9_warn_once(ctx, M9_WARN_MEMORY, "cannot allocate target depth");
@@ -5708,15 +5825,17 @@ m9_target_depth_bind(struct m9_context *ctx, uint32_t w, uint32_t h,
       entry->height = entry->depth.height = h;
       m9_fill_dwords(&entry->depth, 0xffffffff);
       m9_fill_dwords(&entry->aux, M9_HZ_CLEAR);
-      if (entry->be.map)
-         memset(entry->be.map, 0, entry->be.size);
+      if (entry->be[0].map)
+         memset(entry->be[0].map, 0, entry->be[0].size);
       util_dynarray_append_typed(&ctx->target_depths,
                                  struct m9_target_depth *, entry);
    }
    entry->used = ++ctx->target_clock;
    ctx->target_depth = &entry->depth;
    ctx->target_aux = &entry->aux;
-   ctx->target_be = entry->be.handle ? &entry->be : NULL;
+   ctx->target_entry = entry;
+   ctx->target_be = entry->be[entry->be_slot].handle ?
+                    &entry->be[entry->be_slot] : NULL;
    return true;
 }
 
@@ -5993,12 +6112,14 @@ m9_context_destroy(struct pipe_context *pctx)
    util_dynarray_foreach(&ctx->target_depths, struct m9_target_depth *, it) {
       m9_bo_destroy(screen, &(*it)->depth);
       m9_bo_destroy(screen, &(*it)->aux);
-      m9_bo_destroy(screen, &(*it)->be);
+      m9_bo_destroy(screen, &(*it)->be[0]);
+      m9_bo_destroy(screen, &(*it)->be[1]);
       FREE(*it);
    }
    util_dynarray_fini(&ctx->target_depths);
    ctx->target_depth = ctx->target_aux = NULL;
    ctx->target_be = NULL;
+   ctx->target_entry = NULL;
    util_dynarray_foreach(&ctx->scratch_targets, struct m9_scratch_target *,
                          it) {
       pipe_resource_reference(&(*it)->res, NULL);
@@ -6080,8 +6201,8 @@ m9_context_create(struct pipe_screen *pscreen, void *priv, unsigned flags)
    m9_split_scratch = debug_get_bool_option("M9X_SPLIT_SCRATCH", true);
    m9_split_seed = debug_get_bool_option("M9X_SPLIT_SEED", true);
    m9_split_copy = debug_get_num_option("M9X_SPLIT_COPY", 1);
-   m9_split_be = debug_get_num_option("M9X_SPLIT_BE", 1);
-   m9_split_pad_enable = debug_get_bool_option("M9X_SPLIT_PAD", false);
+   m9_split_be = debug_get_num_option("M9X_SPLIT_BE", 3);
+   m9_split_pad_enable = debug_get_bool_option("M9X_SPLIT_PAD", true);
    m9_record_dump = debug_get_option("M9X_RECORD_DUMP", NULL);
    m9_split_draws = debug_get_num_option("M9X_SPLIT_DRAWS", 1);
    m9_record_89 = debug_get_num_option("M9X_RECORD_89", 0);
@@ -6092,6 +6213,8 @@ m9_context_create(struct pipe_screen *pscreen, void *priv, unsigned flags)
    m9_be_clear = debug_get_num_option("M9X_BE_CLEAR", 0);
    m9_be_dump = debug_get_option("M9X_BE_DUMP", NULL);
    m9_be_per_target = debug_get_bool_option("M9X_BE_PER_TARGET", true);
+   m9_be_swap = debug_get_bool_option("M9X_BE_SWAP", true);
+   m9_record_liveness = debug_get_bool_option("M9X_RECORD_LIVENESS", true);
    m9_split_enable = debug_get_bool_option("M9X_SPLIT", true);
    m9_level_targets = debug_get_bool_option("M9X_LEVEL_TARGET", true);
    m9_blit_on_engine = debug_get_bool_option("M9X_BLIT_ENGINE", true);
