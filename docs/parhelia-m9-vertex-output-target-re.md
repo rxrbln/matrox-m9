@@ -561,10 +561,19 @@ second preprocessing draw is what fails.  And the failure's outward shape is a
 **kernel stream timeout**, which the `EBUSY`/context-lost of the earlier run
 is the downstream symptom of.
 
-So three hypotheses are now refuted: index `0x88`'s pair mask, the barrier
-between the draws, and the chain role.  What remains is the one deviation the
-driver still keeps from every captured chain — the extra draw writes separate
-`0x68002000` stream views instead of a packed intermediate record read back
-through `0x74 + k` by a third, route-fed gather draw.  That is experiment 2 of
-`docs/parhelia-m9-varying-transport-re.md` section 8 and it is the only lead
-left.
+So three hypotheses were refuted here: index `0x88`'s pair mask, the barrier
+between the draws, and the chain role.  The one deviation left — separate
+`0x68002000` stream views where every captured chain writes a packed
+intermediate record that a route-fed draw reads back through `0x74 + k` —
+was then built in full and run, and it renders nothing either
+(`docs/parhelia-m9-varying-transport-re.md` section 12).  Four shapes have
+now been refused.
+
+**The second preprocessing draw needs something that is not in any capture
+this tree holds.**  The varying cap stays at one, and the next step on this
+feature is a new vendor capture of a multi-draw chain, not a further reading
+of the ones here.  One defect was found on the way and is worth keeping: the
+tail-free head never carried the slot marker at W1 of slot `n - 4` that every
+captured native program has, because the fused pass inherits it from its
+appended tail.  Both tail-free programs place it now, and the gather the
+driver emits is byte for byte the vendor's own.

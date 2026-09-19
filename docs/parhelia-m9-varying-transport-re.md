@@ -346,14 +346,12 @@ once would make the hardware run uninformative.
 
 1. ~~**The chain role alone** (section 7).~~  RUN AND REFUTED, section 11:
    `M9X_VS_VARYINGS=5` still delivers nothing and now stalls the engine.
-2. **The vendor chain shape**, if 1 fails: the extra draw writes a packed
-   record (`m9_record_desc(M9_RECORD_SLOT, 4 * n, 4 * k)` for varying `k` of
-   `n`), and a third draw with place 3 and no clip code gathers it through
-   `0x74 + k` / `0x78` / `0x79` into the separate stream views, exactly as
-   `vs-varyings-4`'s `c3=27` does.  The gather program is four register-pair
-   moves and a stop and the encoders already exist; what is new is emitting
-   routes from a preprocessing range and a third native vertex entry.
-   `m9_index_allowed()` must admit `0x74..0x79` there.
+2. ~~**The vendor chain shape**, if 1 fails.~~  BUILT AND RUN, section 12.
+   The head writes the packed record, a third draw at place 3 with no clip
+   code gathers it through `0x74 + k` / `0x78` / `0x79`, and its program is
+   byte for byte `vs-varyings-4`'s `c3=27`.  No kernel change was needed
+   after all: the raster half already binds `0x78` with a TEXTURE
+   relocation, which the preprocessing half can reuse.  It renders nothing.
 3. ~~**The single-word interpolant declaration** (section 2).~~  RUN, section
    11.  The hardware takes the one-word form and the driver now emits it, so
    an input costs one declaration word.  It does **not** carry thirteen
@@ -492,12 +490,12 @@ target — is therefore what fails.
 
 **What this kills.**  The chain-role hypothesis of sections 4 and 7: `ef` bits
 11:9 were not the missing term.  With `0x88`'s pair mask and the barrier
-between the draws already refuted (that note's appendix), what is left is the
+between the draws already refuted (that note's appendix), what was left is the
 deviation section 7 deliberately kept: the extra draw writes separate
 `0x68002000` stream views where every captured chain-opening draw writes a
-packed intermediate record that a later route-fed draw de-interleaves.
-Section 8's experiment 2 is next, and it is now the only remaining lead.  The
-driver's default stays at one varying.
+packed intermediate record that a later route-fed draw de-interleaves.  That
+was section 8's experiment 2, it was built and run, and it does not deliver
+either -- section 12.  The driver's default stays at one varying.
 
 ### Experiment 3: the one-word declaration works, and six is the register file
 
@@ -516,3 +514,91 @@ driver's default stays at one varying.
 
 The driver emits the one-word form as of the Mesa commit "one declaration word
 an interpolated input"; the whole `m9-mesa-glsl` suite is 211 of 211 with it.
+
+## 12. The packed intermediate record does not deliver (MEASURED 2026-09-19)
+
+The last untested difference between the clean-room chain and every captured
+one was the shape of the hand-over.  It was built in full and run on the
+M9128.  **It renders nothing, and neither do the two smaller steps toward
+it.**
+
+### What was built
+
+`M9X_VS_RECORD` selects three shapes, all emitted only above
+`M9X_VS_VARYINGS=1`:
+
+| mode | the head's targets | between head and fused pass |
+|---|---|---|
+| 0 | one separate `0x68002000` stream view a varying | nothing |
+| 1 | those views, with a record descriptor | nothing |
+| 2 | one packed record, `ee19`, stride `4n`, offset `4k` | a route-fed gather draw |
+
+Mode 2 is the captured chain: the gather runs at chain place 3 with neither
+bit 11 nor the clip code (`ef = 0x00000600` plus its target enables), binds
+one route at `0x74 + k` with the record's base at `0x78` and a descriptor of
+the same shape at `0x79`, and writes each varying out to its own
+`0x68002000` view, which the raster pass then reads unchanged.
+
+Two findings came out of building it, both worth keeping whatever the result:
+
+* **No kernel change was needed.**  Section 8 expected `m9_index_allowed()`
+  to have to admit `0x74..0x79` in a preprocessing range.  It already does,
+  and the raster half already binds `0x78` with a **TEXTURE** relocation, so
+  the preprocessing half binds the record the same way.
+* **Every captured native program marks W1 of slot `n - 4`**, the same rule
+  `m9_fs_compile.c`'s `finish_slots()` applies to fragment programs, and pads
+  to four slots to have one.  The fused pass inherits that mark from its
+  appended tail, which sits exactly four slots from the end, so it was never
+  noticed missing -- but **the tail-free second head has carried no mark
+  since it was written**.  Both tail-free programs place it now.  With it,
+  the four-varying gather the driver emits is byte for byte the vendor's own
+  entry 39 of `vs-varyings-4`, which `m9-vs-compile-test` now asserts.
+
+### The runs
+
+Each step was a fresh boot, and each is one hold of the hardware lock:
+a known-good `texture` fixture, then the case, then `texture` again.  Every
+step's submitted stream was dumped from the card and decoded before its pixels
+were believed.
+
+| mode | `vary3` | stream timeout | the card afterwards |
+|---|---|---|---|
+| 0 | nothing rendered, 76800 of 76800 pixels differ | none | stops rendering |
+| 1 | nothing rendered | none | stops rendering |
+| 2 | nothing rendered | none | stops rendering |
+
+`vary3` is the minimal case: Mesa folds its third varying into the second as a
+swizzle, so its raster pass reads two interpolants and its extra draw binds a
+**single** target.  The same fixture is exact through the draw module in the
+same binary.
+
+The mode-2 stream the card ran, decoded from its own dump:
+
+```text
+[  7] ef = 00000200   head,   c3 = 30, b1 = ee190004   (record, stride 4, offset 0)
+[120] ef = 00000600   gather, c3 = 37, b1 = 68002000
+      74 = 0302010c   78 = <record base>   79 = ee190004
+[237] ef = 00288e00   fused,  c3 = 0d
+[369] ef = 00000000   raster pass
+```
+
+which is the captured grammar in every field this note decoded.
+
+### The conclusion
+
+Four shapes have now been refused by the hardware: index `0x88`'s register
+pair mask, the barrier between the draws, the chain role in `ef`, and the
+packed record with its route-fed gather.  **The second preprocessing draw
+needs something that is not in any capture this tree holds**, and the
+driver's varying cap stays at one.  Anything further should start from a new
+capture of a vendor chain rather than from another reading of the ones here.
+
+### A note on method
+
+The first attempt at modes 1 and 2 was run against a **stale deployment** --
+a generated deploy script had not been rewritten as intended, so the target
+kept an older library and reproduced the older failure exactly.  Dumping the
+submitted stream is what caught it: the dump held two preprocessing draws
+where the build under test emits three.  Every result above is from a run
+whose stream was decoded and matched the intended shape first.  A pixel
+result on this path is worth nothing without that check.
