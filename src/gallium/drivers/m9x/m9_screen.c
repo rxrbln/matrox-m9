@@ -1103,6 +1103,7 @@ m9_finalize_nir(struct pipe_screen *pscreen, struct nir_shader *nir,
 {
    (void)pscreen;
    (void)optimize;
+   m9_fs_lower_integers(nir);
    m9_fs_find_inlinable_uniforms(nir);
 }
 

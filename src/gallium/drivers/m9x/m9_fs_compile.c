@@ -4380,6 +4380,17 @@ loop_bound_uniforms(struct exec_list *body, bool in_loop, uint16_t *dw,
    }
 }
 
+/* The screen advertises no integer support, so Mesa stores an integer uniform
+ * in the constant buffer as a float (uniform_query.cpp, uniform_int_float).
+ * A driver that declares no_integers is the one that lowers its own NIR to
+ * match, which gallivm already does for the vertex path. */
+void
+m9_fs_lower_integers(nir_shader *nir)
+{
+   if (nir->info.stage == MESA_SHADER_FRAGMENT && nir->options->no_integers)
+      NIR_PASS(_, nir, nir_lower_int_to_float);
+}
+
 void
 m9_fs_find_inlinable_uniforms(nir_shader *nir)
 {

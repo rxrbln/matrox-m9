@@ -165,6 +165,7 @@ bool m9_fs_coord_affine_same(const struct m9_fs_coord_affine *a,
 void m9_fs_lower_srgb(struct nir_shader *nir);
 
 /* Marks uniforms used by if conditions as inlinable (screen finalize_nir). */
+void m9_fs_lower_integers(struct nir_shader *nir);
 void m9_fs_find_inlinable_uniforms(struct nir_shader *nir);
 /* Inlines constant buffer words for the inlinable uniforms and folds the
  * control flow that depended on them. */
