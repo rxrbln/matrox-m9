@@ -47,6 +47,15 @@ fail identically with `M9X_RA_RESET=0 M9X_CHECK_RA=0`, so they are the state
 of those two features and not the allocator (MEASURED, `dxt1`, `giga10clear`
 and `giga10tex` run both ways one after the other).
 
+The list was run twice, once on the build that carried the interference check
+alone and once on the build that also scopes the interpolation-register reuse
+to `14..1f`, and **every one of the thirty-three came back with the same frame
+rate on both** -- 273, 294, 283, 282, 283, 242, 149, 88, 82, 105, 182, 164,
+84, 33, 219, 37, 124, 153, 153, 153, 110, 77, 1, 111, 5, 229, 142, 228, 168,
+72, 166, 166, 159 -- with no draws skipped and 0 stream timeouts either time.
+The scope fix tightens allocation, so it could in principle have forced a cut
+somewhere; it did not.
+
 **Nothing regressed.**  Every row matches the standing below it within
 run-to-run noise, and the allocator change -- which touches every fragment
 program the driver compiles -- costs no frame rate anywhere.  `terrain` is
