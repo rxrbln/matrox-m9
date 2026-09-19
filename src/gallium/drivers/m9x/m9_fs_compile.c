@@ -4380,6 +4380,20 @@ loop_bound_uniforms(struct exec_list *body, bool in_loop, uint16_t *dw,
    }
 }
 
+/* NIR types a UBO load's element index as an integer, so nir_lower_int_to_float
+ * converts the constant ones with everything else; they address the buffer and
+ * have to stay integers.  The buffer index in src[0] is untyped and is left
+ * alone, the way gallivm's own fixup leaves it. */
+static bool
+fs_ubo_offset_int(nir_builder *b, nir_intrinsic_instr *intr, void *data)
+{
+   if (intr->intrinsic != nir_intrinsic_load_ubo_vec4)
+      return false;
+   b->cursor = nir_before_instr(&intr->instr);
+   nir_src_rewrite(&intr->src[1], nir_f2i32(b, intr->src[1].ssa));
+   return true;
+}
+
 /* The screen advertises no integer support, so Mesa stores an integer uniform
  * in the constant buffer as a float (uniform_query.cpp, uniform_int_float).
  * A driver that declares no_integers is the one that lowers its own NIR to
@@ -4387,8 +4401,13 @@ loop_bound_uniforms(struct exec_list *body, bool in_loop, uint16_t *dw,
 void
 m9_fs_lower_integers(nir_shader *nir)
 {
-   if (nir->info.stage == MESA_SHADER_FRAGMENT && nir->options->no_integers)
-      NIR_PASS(_, nir, nir_lower_int_to_float);
+   if (nir->info.stage != MESA_SHADER_FRAGMENT || !nir->options->no_integers)
+      return;
+   NIR_PASS(_, nir, nir_lower_int_to_float);
+   NIR_PASS(_, nir, nir_shader_intrinsics_pass, fs_ubo_offset_int,
+            nir_metadata_control_flow, NULL);
+   NIR_PASS(_, nir, nir_opt_constant_folding);
+   NIR_PASS(_, nir, nir_opt_dce);
 }
 
 void
