@@ -389,6 +389,9 @@ static bool m9_be_per_target = true;
  * be reading the object a CPU clear overwrites.  M9X_BE_SWAP=0 zeroes it in
  * place instead of swapping to a spare. */
 static bool m9_be_swap = true;
+/* M9X_RECORD_LIVENESS=0 gives every hand-over a slot of its own, which is
+ * what the record cost before slots were reused. */
+static bool m9_record_liveness = true;
 /* M9X_BLIT_ENGINE=0 keeps every blit off the engine, which is the only way
  * to reach the CPU resampler from an application that renders into ordinary
  * colour targets. */
@@ -2845,6 +2848,69 @@ m9_depth_channel_instr(nir_builder *b, nir_instr *instr, void *data)
 
 /* Program of fs for a blend state and inlined uniform values, compiled on
  * first use; refused variants stay cached with their reason. */
+/*
+ * Where each producing pass writes in the inter-pass record.  A hand-over is
+ * live from the pass that writes it to the last pass that reads it, so slots
+ * are reused once nothing reads them: a chain, where every pass reads only
+ * its predecessor, needs two slots whatever its length instead of one a
+ * producer.  The descriptor carries stride and offset as independent fields
+ * (docs/parhelia-m9-varying-transport-re.md 3), so this asks nothing new of
+ * the engine, and it halves both the record and the traffic through it for
+ * the four- and five-pass shaders that are bandwidth bound.
+ *
+ * A slot stays four dwords wide: narrowing a one-pair producer to the two
+ * the captures show stops the engine (MEASURED).
+ */
+static void
+m9_record_layout(struct m9_fs_variant *v)
+{
+   unsigned count = v->passes.count;
+   /* The last pass that reads producer i, and the first producer index at
+    * which a slot is free again. */
+   unsigned last[M9_FS_MAX_PASSES], free_at[M9_FS_MAX_PASSES];
+   unsigned slots = 0;
+
+   memset(v->record_offset, 0, sizeof(v->record_offset));
+   if (count < 2) {
+      v->record_dwords = 0;
+      return;
+   }
+   for (unsigned i = 0; i < count; i++) {
+      last[i] = i;
+      free_at[i] = 0;
+   }
+   for (unsigned j = 0; j < count; j++) {
+      const struct m9_fs_program *p = &v->passes.pass[j];
+
+      for (unsigned k = 0; k < p->texture_count; k++) {
+         uint8_t src = p->texture_source[k];
+
+         if (src != M9_FS_ROUTE_NONE && src < count)
+            last[src] = MAX2(last[src], j);
+         src = p->texcoord_source[k];
+         if (src != M9_FS_ROUTE_NONE && src < count)
+            last[src] = MAX2(last[src], j);
+      }
+   }
+   for (unsigned i = 0; i + 1 < count; i++) {
+      unsigned slot = 0;
+
+      if (!v->passes.pass[i].writes_record)
+         continue;
+      if (m9_record_liveness) {
+         while (slot < slots && free_at[slot] > i)
+            slot++;
+      } else {
+         slot = slots;
+      }
+      if (slot == slots)
+         slots++;
+      free_at[slot] = last[i] + 1;
+      v->record_offset[i] = 4 * slot;
+   }
+   v->record_dwords = 4 * slots;
+}
+
 static const struct m9_fs_variant *
 m9_fs_variant(struct m9_context *ctx, struct m9_fs_state *fs,
               const struct m9_fs_variant *want, const char **reason)
@@ -2919,13 +2985,7 @@ m9_fs_variant(struct m9_context *ctx, struct m9_fs_state *fs,
       fprintf(stderr, "m9x: variant refused: %s\n", v->reason);
    ralloc_free(clone);
    if (v->ok) {
-      /* Every pass but the last hands a four-dword slot to the ones after
-       * it, so the record's stride is four dwords a producer.  Narrowing a
-       * one-pair producer to the two dwords the captures show stops the
-       * engine (MEASURED), so the width stays four. */
-      v->record_dwords = 4 * (v->passes.count - 1);
-      for (unsigned i = 0; i + 1 < v->passes.count; i++)
-         v->record_offset[i] = 4 * i;
+      m9_record_layout(v);
       if (!m9_fs_streams(v)) {
          v->reason = "more CPU varying streams or texture slots than a job "
                      "binds";
@@ -6033,6 +6093,8 @@ m9_context_create(struct pipe_screen *pscreen, void *priv, unsigned flags)
    m9_be_clear = debug_get_num_option("M9X_BE_CLEAR", 0);
    m9_be_dump = debug_get_option("M9X_BE_DUMP", NULL);
    m9_be_per_target = debug_get_bool_option("M9X_BE_PER_TARGET", true);
+   m9_be_swap = debug_get_bool_option("M9X_BE_SWAP", true);
+   m9_record_liveness = debug_get_bool_option("M9X_RECORD_LIVENESS", true);
    m9_split_enable = debug_get_bool_option("M9X_SPLIT", true);
    m9_level_targets = debug_get_bool_option("M9X_LEVEL_TARGET", true);
    m9_blit_on_engine = debug_get_bool_option("M9X_BLIT_ENGINE", true);
