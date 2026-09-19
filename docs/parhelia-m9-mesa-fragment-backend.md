@@ -155,7 +155,7 @@ The other exact cases are `fs-varying`, `fs-texcoord`, `fs-mul`, `fs-add`,
   exceptions are glamor's stipple compare templates, conditions on inlinable
   uniforms and a loop whose bound is one, which unrolls
   (`parhelia-m9-glamor-shader-coverage.md`,
-  `parhelia-m9-fragment-uniform-specialisation.md`).
+  `parhelia-m9-uniform-specialisation.md`).
 * **Unary and other built-ins.**
   * unary: `min`, `max`, `abs`, `floor`, `ceil`, `fract`, `sign`, negation;
   * multi-slot built-ins: dot products, `normalize`, `length`, `cross`,

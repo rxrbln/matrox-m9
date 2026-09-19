@@ -1,14 +1,109 @@
 # glmark2 on the m9x driver: where the 60 fps goal actually stands
 
-## Read this first: three standings below, measured on different builds
+## Read this first: four standings below, measured on different builds
 
-The **eighth** is the current one: the coordinate stream's coefficients moved
-out of the per-job constant span, `M9X_VS_TEXTURE` on by default, glmark2's
-default thirty-three in one invocation an arm.  The **seventh** measures the
-second varying (`M9X_VS_VARYINGS` now 2) with one process a benchmark on the
-build before it; the **sixth** measures the whole default run in one
-`glmark2` invocation on the build before that.  The older two are kept as the
-measurements they were and are not swept together with the eighth.
+The **ninth** is the current one: the vertex program specialised on the
+uniform that bounds its loop, and the register a dead intermediate used to
+hold given back.  The **eighth** is the build before it -- the coordinate
+stream's coefficients moved out of the per-job constant span,
+`M9X_VS_TEXTURE` on by default.  The **seventh** measures the second varying
+(`M9X_VS_VARYINGS` now 2) with one process a benchmark on the build before
+that; the **sixth** measures the whole default run in one `glmark2`
+invocation on the build before *that*.  The older ones are kept as the
+measurements they were and are not swept together with the ninth.
+
+## Standing 2026-09-20 (ninth): eighteen of the thirty-three run every vertex on the engine
+
+MEASURED on the M9128 at 1920x1200 on a **freshly rebooted card**, module
+`/root/tmp/dxtmip-m9x_drm.ko` named explicitly, **one X server and one
+`glmark2` invocation an arm** against one deployed library (md5 `22eff4de`)
+carrying all three arms behind its knobs, both hardware lock files held
+across the whole cycle, `M9X_SKIP_REPORT=1`, `M9X_PROFILE=40`,
+**`duration=5`** on every benchmark.  33 of 33 results and rc=0 in every arm,
+**0 stream timeouts**, and `texture`, `texpair`, `rtt300` and `vary2tex`
+exact before and after the whole sweep.
+
+Three arms of the same library, in this order:
+
+* **default** -- what ships: the vertex program is specialised on its
+  inlinable uniforms, and `M9X_VS_MAX_SLOTS` is 128;
+* **off** -- `M9X_VS_SPECIALISE=0 M9X_VS_MAX_SLOTS=80`, which is the reach
+  the build before this one had, and is the control;
+* **4096** -- `M9X_VS_MAX_SLOTS=4096`, no program-length bound at all, which
+  is what the bound is there to prevent.
+
+| benchmark | off fps | off native/module | default fps | default native/module | 4096 fps | 4096 native/module |
+|---|---:|---|---:|---|---:|---|
+| `build` use-vbo=false | 229 | 1117/0 | 229 | 1117/0 | 229 | 1117/0 |
+| `build` use-vbo=true | 285 | 1437/0 | 286 | 1437/0 | 285 | 1437/0 |
+| `texture` nearest | 290 | 1437/0 | 289 | 1437/0 | 290 | 1437/0 |
+| `texture` linear | 289 | 1437/0 | 289 | 1437/0 | 289 | 1437/0 |
+| `texture` mipmap | 289 | 1477/0 | 289 | 1437/0 | 289 | 1477/0 |
+| `shading` gouraud | 231 | 1117/0 | 231 | 1157/0 | 231 | 1117/0 |
+| `shading` blinn-phong-inf | 147 | 757/0 | 147 | 757/0 | 147 | 757/0 |
+| `shading` phong | 95 | 477/0 | 95 | 477/0 | 95 | 477/0 |
+| `shading` cel | 88 | 437/0 | 88 | 437/0 | 88 | 437/0 |
+| `bump` high-poly | 113 | 557/0 | 113 | 557/0 | 113 | 557/0 |
+| `bump` normals | 183 | 917/0 | 183 | 917/0 | 183 | 917/0 |
+| `bump` height | 161 | 16/782 | 161 | 11/787 | 161 | 16/782 |
+| `effect2d` 3x3 | 79 | 0/397 | 86 | 0/437 | 81 | 0/397 |
+| `effect2d` 15-tap | 33 | 0/157 | 33 | 0/157 | 33 | 0/157 |
+| `pulsar` | 219 | 5450/27 | 219 | 5290/19 | 219 | 5395/38 |
+| `desktop` blur | 42 | 1185/1561 | 42 | 1392/1617 | 42 | 1174/1473 |
+| `desktop` shadow | 128 | 16271/132 | 128 | 16411/76 | 128 | 16051/220 |
+| `buffer` map | 136 | 416/661 | 136 | 234/668 | **101** | 1192/0 |
+| `buffer` subdata | 136 | 0/677 | 136 | 0/677 | **100** | 477/0 |
+| `buffer` interleaved map | 136 | 0/677 | 136 | 0/677 | **99** | 517/0 |
+| `ideas` | 103 | 62158/82958 | 103 | 62649/84805 | 103 | 62735/86605 |
+| `jellyfish` | 73 | 1369/7068 | 74 | 1047/4933 | 74 | 863/3713 |
+| `terrain` | 1 | 0/0 | 1 | 0/0 | 1 | 0/0 |
+| `shadow` | 106 | 1079/672 | 106 | 1083/672 | 106 | 1005/632 |
+| `refract` | 4 | 0/0 | 4 | 0/0 | 4 | 78/39 |
+| `conditionals` fs 0:vs 0 | 226 | 1119/125 | 226 | 1116/122 | 226 | 1115/120 |
+| `conditionals` fs 5:vs 0 | 141 | 717/0 | 141 | 717/0 | 141 | 717/0 |
+| `conditionals` fs 0:vs 5 | 226 | 1117/0 | 226 | 1117/0 | 226 | 1117/0 |
+| `function` low | 166 | 837/0 | 166 | 837/0 | 166 | 837/0 |
+| `function` medium | 72 | 357/0 | 72 | 357/0 | 72 | 357/0 |
+| `loop` no-loop | 161 | 22/775 | **166** | 837/0 | 166 | 837/0 |
+| `loop` uniform=false | 161 | 0/797 | **166** | 837/0 | 166 | 837/0 |
+| `loop` uniform=true | 154 | 0/797 | **159** | 797/0 | 159 | 797/0 |
+
+**Fifteen of the thirty-three are fully native in the off arm and eighteen
+with the default** -- a plain count of the benchmarks whose every counted
+draw took the compiled vertex program, nothing rounded up.  The three that
+moved are the three `loop` benchmarks, and all three moved for one reason:
+`vertex-loop` and `vertex-uniform` both default to true in glmark2, so every
+one of them hands the driver a loop whose bound is the uniform `VertexLoops`.
+`docs/parhelia-m9-uniform-specialisation.md` carries that, and it is the same
+mechanism the fragment stage already used, not a branch unit.
+
+**Read the frame rates against the control in the same sweep.**  The thirty
+benchmarks that take the **identical path** in the default and off arms are
+the control, and this sweep is unusually quiet: twenty-seven of them are
+equal to the frame rate, `build use-vbo=true` and `texture nearest` differ by
+one, `jellyfish` by one, and the single loud row is `effect2d 3x3` at 1.089.
+Their default/off ratio averages **1.003**.  The three rows that moved onto
+the engine sit at **1.031, 1.031 and 1.032** -- above the control, not inside
+its noise.  **Nothing that moved lost frame rate, and the rows that moved
+gained about three per cent.**
+
+The 4096 arm is why the default caps the program length.  It takes a
+twenty-first benchmark set fully native -- the three `buffer` rows -- and
+each of them **loses about a quarter of its frame rate**: 136 to 101, 100 and
+99 against a control that is otherwise equal row for row.  glmark2's buffer
+vertex shader is four clip-space transforms and three edge distances, 299
+slots where every program the engine already wins on is at most 79, and what
+exactly makes the long program lose is not established.  `M9X_VS_MAX_SLOTS`
+is therefore a bound placed in the gap between the two measured ends, not a
+cost model.
+
+That shader only reaches the backend at all because a register held by a dead
+intermediate is now given back (`parhelia-m9-native-vertex-backend.md`
+section 1): before that the allocator ran out with 28 of its 29 registers
+held by intermediates of instructions that had long since finished, and the
+`buffer` and `bump:height` shaders were refused as "out of temporaries".
+`bump:height` compiles now too, but its draws still fall back for a reason
+further down the path -- it writes four varyings.
 
 ## Standing 2026-09-19 (eighth): the textured draws run on the engine
 

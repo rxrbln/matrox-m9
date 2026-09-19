@@ -1,5 +1,13 @@
 # M9 native control-flow lowering: static closure delta
 
+> **Not on the driver's path.**  Neither native backend emits a branch.  The
+> control flow the benchmarks actually reach the driver with -- an `if` on a
+> uniform, a loop whose bound is a uniform -- is closed by specialising the
+> program on the value the draw carries, which folds or unrolls it to one
+> block (`parhelia-m9-uniform-specialisation.md`).  What follows is the
+> recovered vendor-compiler closure, kept for the day a shader needs a branch
+> that no uniform decides.
+
 This note records the exact control-flow joins recovered from the saved Windows
 Direct3D compiler and keeps them separate from the still-unknown external
 linked-resource layout.  Addresses are virtual addresses in `MxMD.dll`.

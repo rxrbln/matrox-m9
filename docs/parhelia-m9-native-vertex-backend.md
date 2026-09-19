@@ -47,7 +47,21 @@ Its interface to the head is exactly:
 the vendor program writes it, so the compiler does not either.  Everything the
 tail writes -- `r04`..`r0f`, `r19`, `r1b`..`r1d`, `r21` -- is free for the head,
 which runs first.  The temporary pool is `r04`..`r12` and `r14`..`r21`, 29
-registers.
+registers; `0x22` upward is not CAPTURED as writable and nothing here widens
+the pool on a guess.
+
+A register is reclaimed when nothing live holds it: a NIR definition dies
+past its last use, and an *intermediate* of the instruction being emitted
+dies when that instruction ends.  The second half of that rule was missing
+until 2026-09-20 -- every intermediate stayed live for the whole program,
+so a register that had once carried one was never handed out again.  The
+allocator ran out at 28 of its 29 registers held by dead intermediates on
+glmark2's `buffer` vertex shader (four clip-space transforms and three edge
+distances), which is what `c->temp_base` fixes: only a temporary raised
+past the mark the current instruction started at is live.  OFFLINE over the
+whole `m9-vs-compile-test` corpus the change costs one slot in one case
+(`five-varyings`, 46+20 to 46+21) and every case still verifies against the
+NIR reference.
 
 ## 2. Constants
 
@@ -478,7 +492,13 @@ isolates it.
   coordinate that is its pass's only stream, and one that shares an
   interpolated varying's stream through the declaration's selectors, are
   both on by default.
-* **One basic block**, the backend's own limit.
+* **One basic block**, the backend's own limit.  A branch or a loop the
+  bound of which is a *uniform* is not that case: the value is fixed by the
+  time the draw is submitted, so the program is specialised on it and folds
+  or unrolls to one block.  That is what takes glmark2's three `loop`
+  benchmarks onto the engine -- `vertex-loop` and `vertex-uniform` both
+  default to true there -- and `parhelia-m9-uniform-specialisation.md`
+  carries it for both stages.
 * Instanced draws, primitive restart, user clip planes, polygon offset,
   polygon or line stipple, wide or smooth lines, non-fill polygon modes and
   vertex-stage sampling all fall back.
