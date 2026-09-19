@@ -103,13 +103,29 @@ m9_texture_compressed(enum pipe_format format, uint8_t *code,
    return true;
 }
 
+bool
+m9_texture_compressed_small(uint32_t width, uint32_t height,
+                            uint8_t block_bytes)
+{
+   /* The storage kind a level is written and sampled through: the small
+    * 2-D kind up to 64 in both the 32-aligned span and the microtile-
+    * aligned height, the ordinary tiled kind above it (MEASURED). */
+   uint32_t span = (width + 31) & ~31u;
+   uint32_t lines = block_bytes == 8 ? ((height + 15) & ~15u) :
+                                       ((height + 7) & ~7u);
+
+   return span <= 64 && lines <= 64;
+}
+
 uint64_t
 m9_texture_compressed_bytes(uint32_t width, uint32_t height,
                             uint8_t block_bytes)
 {
    /* Section 4.1's sel = 1 granularity rows, which the measurement of
     * section 12.2 selects: width to 32 texels, height to 64 for the 4-bit
-    * family and 32 for the 8-bit one, then a 4 KiB object quantum. */
+    * family and 32 for the 8-bit one, then a 4 KiB object quantum.  This
+    * is an allocation bound -- how far the bank swizzle spreads a level --
+    * not the stride the chain advances by. */
    uint64_t pad_w = (width + 31) & ~31u;
    uint64_t pad_h = block_bytes == 8 ? ((height + 63) & ~63u) :
                                        ((height + 31) & ~31u);
@@ -118,16 +134,85 @@ m9_texture_compressed_bytes(uint32_t width, uint32_t height,
    return (bytes + 0xfff) & ~0xfffull;
 }
 
+uint64_t
+m9_texture_compressed_level_bytes(uint32_t width, uint32_t height,
+                                  uint8_t block_bytes)
+{
+   /*
+    * MEASURED (fixture dxtmip*, sweeping M9X_DXT_LEVEL_OFFSETS): the
+    * sampler computes every level's address itself from level 0's extent,
+    * so a chain can only be placed where the sweep finds it.  Three rules
+    * cover every shape measured:
+    *
+    *   a tiled level is charged a span of 64 texels and a height of
+    *   section 4.1's sel = 1 granularity -- 64 rows for the 4-bit family,
+    *   32 for the 8-bit one.  132x68 DXT1 advances by 0x3000, which is
+    *   192x128 and not the 160 the window descriptor carries.
+    *
+    *   a small-kind level is charged its 32-aligned span and its own
+    *   height: the 32x32 level of a 64x64 DXT1 chain advances by 0x200.
+    *
+    * The 4 KiB quantum of m9_texture_compressed_bytes() is an allocation
+    * bound, not a stride; using it as one put every level past 64x64 where
+    * nothing reads it.
+    */
+   bool small = m9_texture_compressed_small(width, height, block_bytes);
+   uint64_t span = small ? ((width + 31) & ~31u) : ((width + 63) & ~63u);
+   uint64_t rows = small ? height :
+                   block_bytes == 8 ? ((height + 63) & ~63u) :
+                                      ((height + 31) & ~31u);
+
+   return span * rows * block_bytes / 16;
+}
+
+/*
+ * M9X_DXT_LEVEL_OFFSETS="0,1000,3000" places a compressed chain by hand, in
+ * hex bytes, one entry a level.  It is how the hardware's own level bases
+ * were measured: the sampler addresses every level from one base and picks
+ * the level's address itself, so a chain can only be placed where a sweep
+ * finds it.  Levels past the list keep their computed offset.
+ */
+static void
+m9_compressed_offsets_override(struct m9_texture_layout *layout)
+{
+   const char *env = getenv("M9X_DXT_LEVEL_OFFSETS");
+   uint64_t end = 0;
+   char *next;
+
+   if (!env)
+      return;
+   for (unsigned l = 0; l < layout->levels && *env; l++) {
+      uint64_t off = strtoull(env, &next, 16);
+
+      if (next == env)
+         break;
+      layout->level[l].offset = off & ~0xffull;
+      env = *next ? next + 1 : next;
+   }
+   for (unsigned l = 0; l < layout->levels; l++)
+      end = MAX2(end, layout->level[l].offset + layout->level[l].face_bytes);
+   layout->size = end;
+}
+
 int
 m9_texture_layout_compressed(struct m9_texture_layout *layout, uint32_t width,
                              uint32_t height, unsigned levels,
                              uint8_t block_bytes)
 {
-   uint64_t offset = 0;
+   static const uint8_t tail_x[5] = { 0, 16, 24, 16, 24 };
+   static const uint8_t tail_y[5] = { 0, 0, 0, 8, 8 };
+   uint32_t max_dim = MAX2(width, height);
+   unsigned chain = 1;
+   uint64_t offset = 0, end = 0;
+   int tail = -1;
 
    if (!layout || !width || !height || !levels ||
        levels > M9_TEXTURE_MAX_LEVELS || width > 2048 || height > 2048 ||
        (block_bytes != 8 && block_bytes != 16))
+      return -EINVAL;
+   while (max_dim >>= 1)
+      chain++;
+   if (levels > chain)
       return -EINVAL;
    memset(layout, 0, sizeof(*layout));
    layout->kind = M9_TEXTURE_KIND_2D;
@@ -136,17 +221,55 @@ m9_texture_layout_compressed(struct m9_texture_layout *layout, uint32_t width,
    layout->block_bytes = block_bytes;
    for (unsigned l = 0; l < levels; l++) {
       struct m9_texture_level *lvl = &layout->level[l];
+      uint32_t w = MAX2(width >> l, 1), h = MAX2(height >> l, 1);
 
-      /* A level below one block still occupies a whole block. */
-      lvl->width = MAX2(width >> l, 4);
-      lvl->height = MAX2(height >> l, 4);
+      /* A level below one block still occupies a whole block, so that is
+       * the extent the window writes and the allocation holds. */
+      lvl->width = MAX2(w, 4);
+      lvl->height = MAX2(h, 4);
       lvl->depth = 1;
-      lvl->face_bytes = m9_texture_compressed_bytes(lvl->width, lvl->height,
-                                                    block_bytes);
-      lvl->offset = offset;
-      offset += lvl->face_bytes;
+      offset = (offset + 0x1ff) & ~0x1ffull;   /* per-level alignment */
+      if (w <= M9_TEXTURE_TAIL_EXTENT && h <= M9_TEXTURE_TAIL_EXTENT) {
+         unsigned rel;
+
+         /* MEASURED: the levels of 16 texels or less share one 32x16
+          * surface, at the same origins the uncompressed capture proves --
+          * level 2 of a 64x32 DXT1 chain is the only base the sampler
+          * accepts for all five of them. */
+         if (tail < 0) {
+            tail = (int)l;
+            lvl->offset = offset;
+            lvl->face_bytes = m9_texture_compressed_level_bytes(
+               M9_COMPRESSED_TAIL_WIDTH, M9_COMPRESSED_TAIL_HEIGHT,
+               block_bytes);
+            offset += lvl->face_bytes;
+         } else {
+            lvl->offset = layout->level[tail].offset;
+            lvl->face_bytes = layout->level[tail].face_bytes;
+         }
+         rel = l - (unsigned)tail;
+         if (rel >= ARRAY_SIZE(tail_x))
+            return -EINVAL;
+         lvl->tail_x = tail_x[rel];
+         lvl->tail_y = tail_y[rel];
+         lvl->in_tail = true;
+      } else {
+         lvl->offset = offset;
+         lvl->face_bytes = m9_texture_compressed_level_bytes(w, h,
+                                                             block_bytes);
+         offset += lvl->face_bytes;
+      }
+      /* The stride is what the sampler walks; the object still has to hold
+       * the bank swizzle's reach, which below 128x128 is several times a
+       * level's own bytes (section 12.2). */
+      end = MAX2(end, lvl->offset +
+                      MAX2(lvl->face_bytes,
+                           m9_texture_compressed_bytes(lvl->width,
+                                                       lvl->height,
+                                                       block_bytes)));
    }
-   layout->size = offset;
+   layout->size = (end + 0xfff) & ~0xfffull;
+   m9_compressed_offsets_override(layout);
    return 0;
 }
 

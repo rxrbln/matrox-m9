@@ -597,12 +597,28 @@ m9_compressed_span(uint32_t width)
    return (width + 31) & ~31u;
 }
 
+
 static uint32_t
 m9_compressed_lines(uint32_t height, uint32_t block_bytes)
 {
    uint32_t grain = block_bytes == 8 ? 16u : 8u;
 
    return (height + grain - 1) & ~(grain - 1);
+}
+
+/* MEASURED: the storage kind is the one the level was written through --
+ * the small 2-D kind up to 64 in both dimensions, the ordinary tiled kind
+ * above it.  M9X_DXT_LEVEL_KIND forces one of the two, which is how a
+ * chain's levels were checked against both. */
+static enum m9_texture_kind
+m9_compressed_kind(uint32_t span, uint32_t lines)
+{
+   int force = debug_get_num_option("M9X_DXT_LEVEL_KIND", 0);
+
+   if (force)
+      return force == 1 ? M9_TEXTURE_KIND_2D : M9_TEXTURE_KIND_RENDER;
+   return span <= 64 && lines <= 64 ? M9_TEXTURE_KIND_2D :
+                                      M9_TEXTURE_KIND_RENDER;
 }
 
 /*
@@ -620,23 +636,27 @@ m9_texture_window_blocks(struct m9_context *ctx,
 {
    const struct m9_texture_level *lvl = &resource->texture.level[level];
    uint32_t block = resource->texture.block_bytes;
-   uint32_t span = m9_compressed_span(lvl->width);
-   uint32_t lines = m9_compressed_lines(lvl->height, block);
-   bool small = span <= 64 && lines <= 64;
+   /* A tail level is a window into the shared 32x16 surface at its own
+    * origin, not a surface of its own. */
+   uint32_t span = lvl->in_tail ? M9_COMPRESSED_TAIL_WIDTH :
+                                  m9_compressed_span(lvl->width);
+   uint32_t lines = lvl->in_tail ? M9_COMPRESSED_TAIL_HEIGHT :
+                                   m9_compressed_lines(lvl->height, block);
+   enum m9_texture_kind kind = m9_compressed_kind(span, lines);
    uint32_t cols = ((uint32_t)box->width + 3) / 4;
    uint32_t rows = ((uint32_t)box->height + 3) / 4;
+
    size_t bytes = (size_t)cols * rows * block;
    uint8_t *image = MALLOC(bytes);
    struct drm_parhelia_m9_surface_access access = {
       .handle = resource->handle,
       .op = write ? PARHELIA_M9_ACCESS_WRITE : PARHELIA_M9_ACCESS_READ,
       .descriptor0 = (uint32_t)resource->texture_code << 24 |
-                     (small ? M9_TEXTURE_KIND_2D :
-                              M9_TEXTURE_KIND_RENDER) << 16 | span,
+                     (uint32_t)kind << 16 | span,
       .descriptor1 = 1u << 16 | lines,
       .surface_width = span,
-      .x = (uint32_t)box->x / 4,
-      .y = (uint32_t)box->y / 4,
+      .x = ((uint32_t)box->x + lvl->tail_x) / 4,
+      .y = ((uint32_t)box->y + lvl->tail_y) / 4,
       .width = cols,
       .height = rows,
       .data_stride = cols * block,
@@ -647,6 +667,13 @@ m9_texture_window_blocks(struct m9_context *ctx,
    };
    int ret = image && cols && rows && !(box->x & 3) && !(box->y & 3) &&
              lvl->offset <= UINT32_MAX ? 0 : -EINVAL;
+
+   /* MEASURED: a level of 64 columns or less that is too tall for the small
+    * kind does not come back from the window -- 64x128 and 32x128 DXT1
+    * return the wrong texels in fifteen of every sixteen -- so its content
+    * cannot be stored and the level is refused rather than sampled wrong. */
+   if (!ret && kind != M9_TEXTURE_KIND_2D && span <= 64)
+      ret = -ENOTSUP;
 
    if (!ret && write)
       for (uint32_t r = 0; r < rows; r++)
@@ -972,6 +999,13 @@ m9_transfer_unmap(struct pipe_context *pctx, struct pipe_transfer *ptransfer)
 
          if (store) {
             resource->texture_unplaced |= bit;
+            if (!(m9_context(pctx)->warned & M9_WARN_TRANSFER))
+               fprintf(stderr, "m9x: texture %u %ux%u %s level %u (%ux%u) "
+                       "cannot be stored (%d); it will not be sampled\n",
+                       resource->handle, resource->width, resource->height,
+                       util_format_short_name(resource->base.format),
+                       ptransfer->level, resource->texture.level[ptransfer->level].width,
+                       resource->texture.level[ptransfer->level].height, store);
             m9_warn_once(m9_context(pctx), M9_WARN_TRANSFER,
                          "texture level cannot be stored: no captured "
                          "placement and no kernel texture window");
@@ -2774,6 +2808,19 @@ m9_fs_resolve_consts(struct m9_context *ctx, const struct m9_fs_variant *fs,
    return true;
 }
 
+/* Name the level the sampler cannot reach, once a resource: a texture that
+ * silently loses its upper levels renders a wrong image rather than nothing. */
+static void
+m9_texture_level_refused(struct m9_resource *res, unsigned level)
+{
+   if (res->level_refused)
+      return;
+   res->level_refused = true;
+   fprintf(stderr, "m9x: texture %u %ux%u %s: level %u holds no content; the "
+           "sampler is clamped below it\n", res->handle, res->width,
+           res->height, util_format_short_name(res->base.format), level);
+}
+
 /* Unit words of a sampler view, or the reason it cannot be sampled. */
 static struct m9_context *m9_debug_ctx;
 
@@ -2823,18 +2870,32 @@ m9_texture_bind_view(const struct pipe_sampler_view *view,
     * placement, which only matches the chain it was captured from: on other
     * shapes those levels sample nothing.  Stop at the last level with a
     * placement of its own until the tail's own contract is measured. */
-   if (res->texture.levels)
+   /* A compressed chain's tail is measured -- every one of its five levels
+    * samples from the shared surface -- so only an uncompressed chain stops
+    * at the last level with a placement of its own. */
+   if (res->texture.levels && !res->texture.block_bytes)
       while (last && res->texture.level[last].in_tail)
          last--;
    /* Level 0 of a small image is stored in the tail and sampled from it; a
     * level above 0 in the tail has no placement the driver can name. */
-   if (first > last || (first && res->texture.level[first].in_tail))
+   if (first > last || (first && !res->texture.block_bytes &&
+                        res->texture.level[first].in_tail))
       return "a re-based view of a packed tail level has no placement of "
              "its own; draw skipped";
    if (res->texture.levels) {
-      if (res->texture_unplaced & ((2u << last) - 1))
-         return "texture levels beyond the captured 32x16 tail need the "
-                "kernel texture window; draw skipped";
+      /* A level whose content could not be stored samples whatever the
+       * object was allocated with.  Refuse that level rather than the whole
+       * draw: clamp the view to the last level below the first unplaced one
+       * and keep sampling the levels that do hold their content. */
+      for (unsigned l = first; l <= last; l++)
+         if (res->texture_unplaced & (1u << l)) {
+            if (l == first)
+               return "the view's base texture level could not be stored; "
+                      "draw skipped";
+            m9_texture_level_refused(res, l);
+            last = l - 1;
+            break;
+         }
       /* A level nothing ever wrote samples whatever the object was
        * allocated with, which is why such a texture comes out black. */
       if (m9_debug_textures && !res->bind_logged) {
@@ -2852,24 +2913,23 @@ m9_texture_bind_view(const struct pipe_sampler_view *view,
        * tiled kind, at its texel extent rounded up to whole blocks
        * (docs/parhelia-m9-s3tc-compressed-textures.md 5.1). */
       if (res->texture.block_bytes) {
-         /* MEASURED: the storage kind is the one the level was written
-          * through -- the small 2-D kind up to 64 in both dimensions and
-          * the ordinary tiled kind above it -- while the extent stays the
-          * logical one rounded up to whole blocks.  dxt1:132x64, whose
-          * logical width is not its 32-aligned span, samples exactly,
-          * which is what settles section 5.2's open question in favour of
-          * the logical width. */
+         /* MEASURED: the storage kind is the one level 0 was written
+          * through, while the extent stays the logical one rounded up to
+          * whole blocks.  dxt1:132x64, whose logical width is not its
+          * 32-aligned span, samples exactly, which is what settles section
+          * 5.2's open question in favour of the logical width. */
          uint32_t span = m9_compressed_span(res->width);
          uint32_t lines = m9_compressed_lines(res->height,
                                               res->texture.block_bytes);
-         bool small = span <= 64 && lines <= 64;
 
          *bind = (struct m9_texture_bind) {
             .code = res->texture_code,
-            .kind = small ? M9_TEXTURE_KIND_2D : M9_TEXTURE_KIND_RENDER,
+            .kind = m9_compressed_kind(span, lines),
             .width = (res->width + 3) & ~3u,
             .height = (res->height + 3) & ~3u,
             .depth = 1,
+            .last_level = res->base.last_level, .view_first_level = first,
+            .view_last_level = last,
          };
          return NULL;
       }
@@ -5054,7 +5114,10 @@ m9_draw_vbo(struct pipe_context *pctx, const struct pipe_draw_info *info,
    m9_vs_texture_refresh(pctx);
    /* Count at the entry point: a draw dropped here never reaches the
     * vbuf render, and a killed client never destroys its context. */
-   if (ctx->debug && ++ctx->submitted_draws % 200 == 0) {
+   /* Counted for every run, not only a debug one: the per-frame skip rate
+    * below is the only signal an application gets that it is rendering
+    * nothing. */
+   if (++ctx->submitted_draws % 200 == 0 && ctx->debug) {
       fprintf(stderr, "m9x: %u draws seen, %u dropped before submission\n",
               ctx->submitted_draws, ctx->skipped_draws);
       m9_skip_report(ctx);
@@ -5400,7 +5463,8 @@ m9_resource_samplable(const struct m9_resource *res, unsigned level)
       return false;
    if (res->texture.levels)
       return level < res->texture.levels && level <= res->base.last_level &&
-             (!level || !res->texture.level[level].in_tail) &&
+             (!level || res->texture.block_bytes ||
+              !res->texture.level[level].in_tail) &&
              !(res->texture_unplaced & (1u << level));
    if (level)
       return false;
@@ -6573,6 +6637,41 @@ m9_set_polygon_stipple(struct pipe_context *pctx,
 
 /* Context */
 
+/*
+ * A frame that skips most of its draws renders nothing while the application
+ * burns CPU for it, and one line at the first skip does not say that.  Report
+ * the share of the frame that was dropped, and its dominant reason, on the
+ * first bad frame and then at a widening interval, so the signal is
+ * proportional to the damage without becoming the damage itself.
+ */
+static void
+m9_frame_skip_report(struct m9_context *ctx)
+{
+   unsigned seen = ctx->submitted_draws - ctx->frame_draws_base;
+   unsigned skipped = ctx->skipped_draws - ctx->frame_skipped_base;
+   const char *worst = NULL;
+   uint32_t worst_draws = 0;
+   unsigned run;
+
+   ctx->frame_draws_base = ctx->submitted_draws;
+   ctx->frame_skipped_base = ctx->skipped_draws;
+   if (seen < 8 || skipped * 4 < seen * 3) {
+      ctx->skipped_frames = 0;
+      return;
+   }
+   run = ++ctx->skipped_frames;
+   if (run & (run - 1))
+      return;
+   for (unsigned i = 0; i < ctx->skip_reasons; i++)
+      if (ctx->skip_reason[i].draws > worst_draws) {
+         worst_draws = ctx->skip_reason[i].draws;
+         worst = ctx->skip_reason[i].reason;
+      }
+   fprintf(stderr, "m9x: frame %u skipped %u of its %u draws (%u frames in a "
+           "row); most often: %s\n", ctx->flush_count, skipped, seen,
+           run, worst ? worst : "unrecorded");
+}
+
 /* Submits the pending draws, so that a record emitted after this call runs
  * behind them; occlusion queries bracket their range with one. */
 int
@@ -6593,6 +6692,7 @@ m9_context_flush(struct pipe_context *pctx,
 
    (void)flags;
    m9_prof_frame();
+   m9_frame_skip_report(ctx);
    if (ctx->debug && ++ctx->flush_count % 300 == 0)
       fprintf(stderr, "m9x: after %u frames job splits: state %u uniforms %u "
               "vertices %u stream %u | target %u program %u depth %u mask %u "

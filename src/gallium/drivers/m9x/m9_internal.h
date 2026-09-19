@@ -100,6 +100,7 @@ struct m9_resource {
    /* Bytes a 4x4 block occupies; 0 unless the image is S3TC. */
    uint8_t block_bytes;
    uint32_t texture_unplaced;  /* levels whose content could not be stored */
+   bool level_refused;         /* a clamped level was already named */
    uint32_t levels_written;    /* levels a transfer has actually written */
    /* Bumped whenever this driver hands out a writable mapping, so
     * anything derived from the contents can tell they have moved on. */
@@ -540,6 +541,10 @@ struct m9_context {
    unsigned frame_jobs, only_first, only_after;
    unsigned split_state, split_uniforms, split_vertices, split_stream;
    unsigned flush_count;
+   /* Draw totals at the last frame boundary, so a frame's own skip rate can
+    * be reported without a second set of counters. */
+   uint32_t frame_draws_base, frame_skipped_base;
+   unsigned skipped_frames;   /* consecutive frames over the skip threshold */
    unsigned split_target, split_program, split_depth, split_mask, split_clip;
 };
 

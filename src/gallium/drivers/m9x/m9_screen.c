@@ -489,10 +489,11 @@ m9_resource_create(struct pipe_screen *pscreen,
        * blocks; it has no cpp and takes none of the layouts below. */
       if (m9_texture_compressed(templ->format, &texture.code,
                                 &resource->block_bytes)) {
-         if (kind != M9_TEXTURE_KIND_2D || templ->last_level ||
+         if (kind != M9_TEXTURE_KIND_2D ||
              m9_resource_bo_flags(templ) != PARHELIA_M9_BO_VRAM ||
              m9_texture_layout_compressed(&resource->texture, templ->width0,
-                                          templ->height0, 1,
+                                          templ->height0,
+                                          templ->last_level + 1,
                                           resource->block_bytes))
             goto fail;
          resource->kind = M9_RESOURCE_LINEAR_TEXTURE;

@@ -21,6 +21,9 @@
 #define M9_DRAW_MAX_UNITS 32u
 /* Levels up to 16x16 share one 32x16 packed tail. */
 #define M9_TEXTURE_TAIL_EXTENT 16u
+/* Texel extent of that tail surface, which a compressed chain shares too. */
+#define M9_COMPRESSED_TAIL_WIDTH 32u
+#define M9_COMPRESSED_TAIL_HEIGHT 16u
 #define M9_TEXTURE_TAIL_BYTES 0x800u
 #define M9_TEXTURE_LOD_DEFAULT 0x0ff80000u
 /* Descriptor format code of the BGRA render-target family. */
@@ -96,6 +99,14 @@ bool m9_texture_compressed(enum pipe_format format, uint8_t *code,
  * (docs/parhelia-m9-s3tc-compressed-textures.md 12.2). */
 uint64_t m9_texture_compressed_bytes(uint32_t width, uint32_t height,
                                      uint8_t block_bytes);
+/* Bytes one level of a compressed chain advances the next by.  MEASURED:
+ * the level's own block bytes over its 32-aligned span and its
+ * microtile-aligned height, with no object quantum. */
+uint64_t m9_texture_compressed_level_bytes(uint32_t width, uint32_t height,
+                                           uint8_t block_bytes);
+/* True where a compressed level takes the small 2-D storage kind. */
+bool m9_texture_compressed_small(uint32_t width, uint32_t height,
+                                 uint8_t block_bytes);
 int m9_texture_layout_compressed(struct m9_texture_layout *layout,
                                  uint32_t width, uint32_t height,
                                  unsigned levels, uint8_t block_bytes);
