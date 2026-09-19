@@ -289,6 +289,11 @@ struct m9_job_key {
    uint32_t depth_control, depth_ef, color_mask, clip_min, clip_max;
    /* Raster ac: the write masks of colour targets 2 and 3. */
    uint32_t color_mask_hi;
+   /* The job binds colour target 0 alone, whatever the framebuffer holds.
+    * The clear quad runs the fixed-function program, whose one colour output
+    * reaches target 0: binding the rest would leave the engine writing
+    * undefined data into attachments it has no program for. */
+   bool single_target;
    /* Native preprocessing program of this job, the c2 image holding it and
     * the viewport its appended tail applies; NULL runs the draw module's
     * transformed records through the captured program. */

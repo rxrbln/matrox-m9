@@ -2122,7 +2122,8 @@ m9_submit_job(struct m9_context *ctx)
          .depth_ef = key->depth_ef,
          .color_mask = key->color_mask,
          .color_mask_hi = key->color_mask_hi,
-         .color_count = ctx->color_count,
+         .color_count = key->single_target ? MIN2(ctx->color_count, 1u) :
+                                             ctx->color_count,
          .clip_min = split_y0 << 16 | split_x0,
          .clip_max = split_y1 << 16 | split_x1,
          /* One pass is emitted through the single-pass path, so the
@@ -2138,7 +2139,7 @@ m9_submit_job(struct m9_context *ctx)
          .units = first_draw->unit_count ? first_draw->units : NULL,
          .unit_count = first_draw->unit_count,
       };
-      for (unsigned s = 1; s < ctx->color_count; s++) {
+      for (unsigned s = 1; s < job.color_count; s++) {
          job.color_extra[s - 1] = m9_res(ctx->color_extra[s - 1])->handle;
          job.color_extra_desc[s - 1] = ctx->color_extra_desc[s - 1];
       }
@@ -4975,6 +4976,9 @@ m9_clear_quad(struct m9_context *ctx, const struct pipe_scissor_state *scissor,
    key.depth_control = m9_depth_control(depth, depth, PIPE_FUNC_ALWAYS);
    key.depth_ef = m9_depth_ef(depth, depth);
    key.color_mask = m9_color_mask(colormask);
+   /* Only a multiple-target framebuffer needs the flag, so a single-target
+    * clear keeps the key it had and still merges with the draws around it. */
+   key.single_target = ctx->color_count > 1;
    key.clip_min = ctx->params.clip_min;
    key.clip_max = ctx->params.clip_max;
    if (scissor && !m9_scissor_key(ctx, scissor, &key))
