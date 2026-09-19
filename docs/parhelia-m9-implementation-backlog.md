@@ -221,33 +221,30 @@ query, and cube and 3D textures - are all done.
    (MEASURED, default knobs).  `docs/parhelia-m9-fragment-pass-splitting.md`
    section 8.
 
-   What it leaves is a **different** item, and the new top of this list:
-   **a computed-coordinate schedule past three taps renders wrong pixels.**
-   `terrain` draws every draw and its body still comes back with R and G
-   exactly zero, in a pattern fixed in screen pixels rather than in texture
-   space (MEASURED at two resolutions), so it is the inter-pass record.
-   The reproduction is a new fixture, `coordconv:N` in
-   `tools/m9-mesa-glsl.c`: N taps at whole-texel offsets around a base
-   coordinate the fragment stage computes, checked pixel by pixel against a
-   CPU reference.
+   ~~**A computed-coordinate schedule past three taps renders wrong
+   pixels.**~~  **Closed 2026-09-19 (third).**  The reproduction was a new
+   fixture, `coordconv:N` in `tools/m9-mesa-glsl.c`: N taps at whole-texel
+   offsets around a base coordinate the fragment stage computes, checked
+   pixel by pixel against a CPU reference.  `coordconv:4` failed on 54092 of
+   76800 pixels, **blue alone and always short**, by exactly
+   `w * (red - blue)` of the one tap its two-unit producing pass weights at
+   0.5.  Index 88 carries two fields over one range of bits, and from two
+   bound units up a record-writing pass's flags land on the register pairs
+   the engine may reuse -- marking that pass's own scratch free.  The
+   allocator keeps those pairs empty; `coordconv:4`, `:5` and `:6` are exact
+   and listed, fixture suite 228 of 228.
+   `docs/parhelia-m9-fragment-pass-splitting.md` section 8.5.
 
-   ```text
-   coordconv:2   PASS   3 passes, 2 record slots
-   coordconv:3   PASS   4 passes, 3 record slots
-   coordconv:4   FAIL   54092 of 76800 pixels, 6 passes, 5 record slots
-   ```
+   What that leaves is the **new top of this list**: **`terrain`'s picture is
+   moved but not right.**  CAPTURED on scanout at 1920x1200 and 800x500, the
+   distinct-colour count over the root window goes from 1297 to 104000 and
+   the frame from a flat near-white wash to a lit landscape with relief and
+   detail -- but the scene is blue-dominant where the reference is brown and
+   green, and the near field carries a regular striped block pattern fixed in
+   screen pixels that the far field does not.  It has **no fixture yet**, and
+   that is the first thing to build: every `coordconv` and `conv` case now
+   passes, so whatever is left is a shape none of them has.
 
-   Ruled out, each with one variable (MEASURED): the record slot count
-   (`conv7/10/13/16` pass exactly at 1 to 4 slots with
-   `M9X_RECORD_LIVENESS=0`, and `coordconv:4` fails identically either way),
-   the pass count (`conv16` is five passes and exact), and the splitter's
-   choice of cuts (`M9X_SPLIT_RANK=1` gives the same schedule).  What is left
-   and **OPEN**: `coordconv:4` is the first schedule whose *producing* pass
-   consumes a coordinate route, and the first to mix a value route with
-   coordinate routes in one pass; every captured producing pass carries
-   `0x74 = 00000100`, idle.  `refract`'s black frame is the same family --
-   four passes, three record slots, every coordinate computed -- so the two
-   are probably one item.
 2. **MRT.**  The surface side is done and pinned offline; what remains is a
    fragment backend that compiles more than one colour output, and measuring
    the destination that names target p rather than trusting the DERIVED
