@@ -461,43 +461,73 @@ size does not change between 1920x1200 and 480x300 (MEASURED, both
 captures), so it is fixed in screen pixels and belongs to the inter-pass
 record rather than to texture sampling.
 
-### 8.5 The remaining defect, isolated: `coordconv:4`
+### 8.5 The defect `coordconv:4` isolated: index 88's two fields overlap
 
 `tools/m9-mesa-glsl.c` gains **`coordconv:N`**: N taps at whole-texel offsets
 around a base coordinate the fragment stage computes, so every tap takes a
 coordinate route.  It is glmark2's tilt-shift blur in fixture form, and it is
-checked against a CPU reference pixel by pixel.
+checked against a CPU reference pixel by pixel.  `coordconv:4` was the first
+of the family to fail: **54092 of 76800 pixels** (MEASURED 2026-09-19).
+
+**The cause is index 88, which carries two fields over one range of bits.**
+Bits 15:4 flag the register pairs `08/09`..`1e/1f` the engine may reuse, and
+a record-writing pass sets two more flags one place higher for every unit it
+binds -- `0x0c << units`, which section 3 derives from the two captured
+producers (zero units, `0110fffc`, and one, `0110dffb`).  **From two units up
+those record flags land inside the pair field**, and they are OR-ed in after
+`registers_used` has cleared the pairs the program is actually holding values
+in.  `coordconv:4`'s producing pass binds two units and carried both taps'
+blue through registers `08` and `0a`; its 88 was `0030fb3f`, bits 4 and 5
+set, declaring both of those pairs free.  That is the same fault `texhi:4:0`
+measures for an ordinary pass.
+
+The failure names itself precisely, which is what settled it:
+
+| | |
+|---|---|
+| channels wrong | **blue only** -- 54092 pixels, R wrong on 150 (rounding), G and A exact |
+| sign | always short, by 3..11 of 255 |
+| fitted error | exactly `w * (red - blue)` of the **one tap the two-unit producing pass weights at 0.5** |
+
+Red and green being exact means every tap sampled the right texel, so the
+coordinate routes were all correct and only a value in flight was lost.  Blue
+is component 2, which lives in the high register of a pair; red is component
+0, in the low one.
+
+**The fix is in the allocator, not the encoder**: a producing pass keeps no
+live value in the pairs its own 88 marks free (`record_reserved`), rather
+than the encoder dropping a flag both captures carry.  Which of the two
+readings is right -- the flags shift and the pairs are therefore unusable, or
+the shift rule is wrong beyond one unit -- is **not settled by this tree**;
+what settles it is a capture of a vendor producing pass that binds two or
+more units, and none exists.  The fix is correct under either reading,
+because under both the pass must not keep a value where the word says free.
+
+MEASURED after the change, one process a case, no stream timeout, a
+known-good fixture passing after each:
 
 ```text
-coordchain     0 of 76800 pixels differ: PASS     3 passes, chained routes
-coordconv:2    0 of 76800 pixels differ: PASS     3 passes, 2 record slots
-coordconv:3    0 of 76800 pixels differ: PASS     4 passes, 3 record slots
-coordconv:4    54092 of 76800 pixels differ: FAIL 6 passes, 5 record slots
+coordchain     0 of 76800 pixels differ: PASS   4 passes, chained routes
+coordconv:2    0 of 76800 pixels differ: PASS   3 passes, 2 record slots
+coordconv:3    0 of 76800 pixels differ: PASS   4 passes, 3 record slots
+coordconv:4    0 of 76800 pixels differ: PASS   6 passes, 5 record slots
+coordconv:5    0 of 76800 pixels differ: PASS
+coordconv:6    0 of 76800 pixels differ: PASS
+conv7/10/13/16 0 of 76800 pixels differ: PASS
 ```
 
-MEASURED 2026-09-19, one process a case, no stream timeout in any of them.
-`terrain`'s blur pair is `coordconv:9` in this family -- fourteen passes --
-so this is why the scene draws every draw and still shows the wrong picture.
+`coordconv:4`, `:5`, `:6` and `coordconv:4d` are now listed in the suite.
 
-What the failure is **not** (each MEASURED, one variable):
-
-* **not the record slot count.**  `conv7/10/13/16` pass exactly with
-  `M9X_RECORD_LIVENESS=0`, which gives them 1, 2, 3 and 4 slots instead of 1
-  and 2, and `coordconv:4` fails identically with the knob either way.
-* **not the pass count.**  `conv16` is five passes and exact; `coordconv:4`
-  is six.
-* **not the splitter's choice of cuts.**  `M9X_SPLIT_RANK=1` produces the
-  same schedule for it.
-
-What is left, and is **OPEN**: `coordconv:4` is the first schedule in which a
-pass that *writes a record* also *consumes a coordinate route*, and the first
-in which one pass mixes a value route with coordinate routes.  Every captured
-producing pass carries `0x74 = 00000100`, idle, and no route at all
-(section 3), so both shapes are uncaptured.  `M9X_FS_FORCE_SPLIT=2` on
-`coordconv:3` builds a schedule with the first shape and **passes**, but the
-driver's NIR is scalarised where the offline test's is not, so that run does
-not prove the schedules were the same; naming the driver's own schedule is
-the next step.
+**Two readings this retires.**  The 2026-09-19 note offered "`coordconv:4` is
+the first schedule in which a pass that writes a record also consumes a
+coordinate route, and the first in which one pass mixes a value route with
+coordinate routes" as the open lead.  Both are wrong: `coordchain`'s own
+pass 1 does exactly that -- `record 1, routes -1 0, coord 0 -1`, a producing
+pass with a coordinate route on unit 0 and a value route on unit 1 -- and
+`coordchain` passes (MEASURED, `M9X_SPLIT_TRACE=2` names the driver's own
+schedule).  The same note suggested this also explained `refract`'s black
+frame; that was found independently to be the record ceiling (`98be636`) and
+is fixed.
 
 ### 8.6 Reproduction
 

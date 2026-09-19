@@ -174,6 +174,31 @@ writes, not the descriptor, decides the record's element format**, and a
 driver that emits the captured descriptors can still produce an unreadable
 record.
 
+## 6. The record flags overlap the register-pair field
+
+A record-writing pass sets two flags in index 88 one place higher for every
+unit it binds (`0x0c << units`, `docs/parhelia-m9-fragment-pass-splitting.md`
+section 3).  Index 88 also flags, at bits 15:4, the register pairs
+`08/09`..`1e/1f` the engine may reuse.  **From two units up the record flags
+land inside that field.**  A two-unit producer's flags are bits 4 and 5, the
+pairs `08/09` and `0a/0b`, which is exactly where the register allocator's
+general run starts for two bound units (`4 * units`).
+
+MEASURED, `coordconv:4`: the producing pass carried both its taps' blue
+through registers `08` and `0a` with 88 `= 0030fb3f`, and blue came back
+short on 54092 of 76800 pixels -- by exactly `w * (red - blue)` of the tap
+that pass weights at 0.5, with red, green and alpha exact.  Keeping those
+pairs empty renders the fixture exact.
+
+Which field wins at those bits is **OPEN**: no capture has a producing pass
+that binds two or more units, so whether the flags really shift that far, or
+the `0x0c << units` rule is only right for the zero- and one-unit producers
+it was derived from, is undecided.  A capture of a vendor producer with two
+bound units settles it.  The driver reserves the pairs either way, because
+under both readings a live value must not sit where the word says free.
+
+## 7. What stays open
+
 What stays **OPEN**: a coordinate route at index 3; whether the low byte
 names the route index or the destination unit, which every capture leaves
 indistinguishable because they are always equal; and c2 against c3 for a
