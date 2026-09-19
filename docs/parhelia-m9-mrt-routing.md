@@ -230,6 +230,32 @@ colour to every bound destination.
   as a failure, and why the byte-lane mask does not fully protect one target
   while it fully protects another is **OPEN**.
 
+## 2f. What the fixture ladder measures, and one instability worth naming
+
+MEASURED on the M9128 on 2026-09-19, against a library md5-verified on both
+sides, `GL_RENDERER` asserted as `Matrox M9`, and the known-good `texture`
+fixture passing before and after every run:
+
+| case | result |
+|---|---|
+| `mrt:2` | both targets, 0 of 76800 pixels differ |
+| `mrt:3` | all three, 0 of 76800 |
+| `mrt:4` | all four, 0 of 76800 |
+| `mrt:4:5` | targets 0 and 2 exact; 1 and 3 hold their clear, bar 750 pixels of target 1 that GL leaves undefined |
+| `mrtcolor:2` | one `gl_FragColor` in both draw buffers, 0 of 76800 each |
+| `mrt10:2` | framebuffer incomplete before the driver sees it, section 2e |
+
+The ladder was run twice in one session on a clean boot and passed both
+times.  **Twice, on boots the box had already stalled on**, the same binary
+failed every target of `mrt:2` or `mrt:3` and logged a stream timeout, and
+after a clean reboot the same cases passed again.  Both of those boots had a
+`stream timeout` already in `dmesg` from another agent's work, or had had an
+X server killed mid-benchmark.  That is consistent with the standing rule
+that a stalled device renders nothing afterwards, but it is not proof that
+MRT is innocent: a multiple-target job is the heaviest one this driver
+builds, and nothing here separates "the card was already sick" from "MRT is
+the first thing to notice it".  It is recorded rather than explained.
+
 ## 3. What the driver now does
 
 `m9_draw.c` binds up to four colour attachments: `job->color` at `b0/b1` and
