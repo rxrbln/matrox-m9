@@ -654,6 +654,21 @@ length of the program -- it is an ordinary register written once by its own
 slot -- which returns six registers to a four-varying pass.  Blending keeps
 `18..1f` to itself.  With that, `p-ps3` is one pass again.
 
+**The check earned itself immediately.**  The interpolation-register reuse
+below was pushing *every* interpolated input's register onto the general free
+list, and four bound units put `base` at `0x10`, so an interpolated value is
+placed in `0x10` or `0x11` -- and `0x11` is `REG_S0`, which the backward scan
+hands out on its own.  `m9-fs-compile-test`'s `split shared-coordinate-stream`
+case, four units sharing one transformed stream with four more interpolants,
+then held `0x11` as a general temporary and as scratch at once (`v79 [70,74]`
+against `v82 [73,75]`, `v109 [97,107]` against `v117 [105,107]`) and the check
+refused the shader rather than let it render.  An interpolation register now
+rejoins the pool only outside `10..13`, the band the fresh run itself skips;
+the case is back to one pass and four fetches, and the reuse that matters --
+`1a..1f` -- is unchanged, so terrain's probe still compiles to one pass.  That
+shape is **supported**, not refused: it was this reuse and not a capability
+limit.
+
 MEASURED on the M9128 after the change, engine proved with a known-good
 fixture before and after each and no stream timeout:
 

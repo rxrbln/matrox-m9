@@ -29,6 +29,15 @@ fragment store and the fragment register allocation fix
 | `function` low / medium | 168, 72 | none |
 | `loop` no-loop / uniform=false / uniform=true | 166, 166, 159 | none |
 
+Offline gates, run from the build directory they were built in and their exit
+codes read rather than their last line (`tools/m9-offline-gates.sh`, which
+refuses a gate the build directory says is out of date): `m9-batch-test`
+rc=0, `m9-vs-compile-test` rc=0, `m9-fs-compile-test` rc=0 with all four
+split cases ok.  The fragment gate's summary line reads "required exact
+23/23" even when a case above it has failed, so only the exit code says so --
+which is how a refusal of `split shared-coordinate-stream` was first missed
+here.
+
 Fixture suite on the same build: **256 cases, 242 PASS, 14 FAIL, 0 non-M9, 0
 stream timeouts**, the engine proved before and after.  The fourteen are the
 `dxt*` family, which the driver refuses with "texture levels beyond the
