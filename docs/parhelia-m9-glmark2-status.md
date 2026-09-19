@@ -43,7 +43,9 @@ fragment-backend reasons they did before, none of which is the split path.
 
 `refract` is still **correct**: CAPTURED off scanout at 1920x1200, the
 refracting bunny over black, 174602 distinct colours on the merged tree and
-190375 with the fix against the 181662 of the llvmpipe reference.
+190375 with the fix -- the same range as the 181662 the llvmpipe reference
+gave in the superseded standing below, which was not re-measured here
+because llvmpipe drew no frame in ten seconds at either size.
 
 `terrain` is **not**, and the fix moves it without closing it.  CAPTURED off
 scanout at 1920x1200 and 800x500 with a known-good fixture passing after:
