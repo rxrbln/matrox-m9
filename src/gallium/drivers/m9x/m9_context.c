@@ -3353,6 +3353,10 @@ m9_job_key_current(struct m9_context *ctx, struct m9_job_key *key)
       m9_warn_once(ctx, M9_WARN_BLEND, "blending needs a native fragment "
                    "program; drawing opaque");
    }
+   /* GL discards colour writes into a framebuffer without a colour
+    * attachment, and the surface bound for one is scratch. */
+   if (ctx->color_discard)
+      key->color_mask = m9_color_mask(0);
    /* ab/ac gate whole byte lanes, which cannot describe a 10-bit channel:
     * the vendor writes 0xffff for such a target and expresses the mask in
     * the fragment output instead (docs/parhelia-m9-gigacolor-10bit.md 4.2).
@@ -5982,6 +5986,27 @@ m9_target_depth_bind(struct m9_context *ctx, uint32_t w, uint32_t h,
    return true;
 }
 
+/* Every raster parameter is derived from a colour surface
+ * (m9_draw_params_init), so a framebuffer with a depth attachment alone is
+ * given one out of the scratch pool.  GL discards colour writes into such a
+ * framebuffer, so the job masks them off and nothing reads the surface. */
+static struct m9_resource *
+m9_depth_only_color(struct m9_context *ctx)
+{
+   struct pipe_resource *res;
+
+   if (!ctx->framebuffer.zsbuf.texture || !ctx->framebuffer.width ||
+       !ctx->framebuffer.height)
+      return NULL;
+   res = m9_scratch_target(ctx, ctx->framebuffer.width,
+                           ctx->framebuffer.height,
+                           PIPE_FORMAT_B8G8R8A8_UNORM);
+   if (!res)
+      m9_warn_once(ctx, M9_WARN_MEMORY, "no colour surface for a depth-only "
+                   "framebuffer; draws skipped");
+   return res ? m9_res(res) : NULL;
+}
+
 static void
 m9_update_target(struct m9_context *ctx)
 {
@@ -5994,15 +6019,20 @@ m9_update_target(struct m9_context *ctx)
    unsigned level;
 
    ctx->params_valid = false;
+   ctx->color_discard = false;
    pipe_resource_reference(&ctx->color, NULL);
    ctx->color_offset = 0;
-   if (!color)
-      return;
+   if (!color) {
+      color = m9_depth_only_color(ctx);
+      if (!color)
+         return;
+      ctx->color_discard = true;
+   }
    /* Every level of a mipmapped image outside the packed tail is laid out as
     * a render surface of its own extent at its chain offset, so it is a
     * target as it stands (m9_texture_renders_level); level 0 is additionally
     * the whole of a plain tiled surface. */
-   level = cbuf->level;
+   level = ctx->color_discard ? 0 : cbuf->level;
    if (level && !(m9_level_targets && m9_texture_renders_level(color, level))) {
       m9_warn_once(ctx, M9_WARN_TARGET, "mip level is not a render surface; "
                    "draws skipped");

@@ -437,6 +437,8 @@ struct m9_context {
    struct m9_draw_params params;
    struct m9_vertex_decl decl;
    bool params_valid;
+   /* The colour surface is scratch for a depth-only framebuffer. */
+   bool color_discard;
    struct m9_job_key job_key;
    /* The split job held for the scratch path, the surfaces it renders into
     * and a guard against running one inside another. */
