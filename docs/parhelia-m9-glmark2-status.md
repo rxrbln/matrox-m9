@@ -42,6 +42,14 @@ carries real depth and the shadow is drawn.
 distribution centred near 160-165.  `loop` is the `fract` noise pattern, 256
 luminance levels thinly spread over the grid with the background black.
 
+Three fixtures were added with these fixes, because none of the 228 already
+in the suite covered any of the three shapes: `depthonly` renders a shadow
+map into a framebuffer with no colour attachment (the existing `depthtex`
+always attached a colour texture as well), `blendheavy` blends a shader whose
+body names the whole register pool, and `loopuni:0`, `:5` and `:24` draw a
+loop over a uniform bound.  Each was checked against the build before its fix
+as a negative control.
+
 
 ## Superseded: standing 2026-09-19 (merged): the whole thirty-three on one build
 
