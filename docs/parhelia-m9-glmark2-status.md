@@ -1,5 +1,93 @@
 # glmark2 on the m9x driver: where the 60 fps goal actually stands
 
+## Standing 2026-09-19 (sixth): the whole default run in ONE invocation
+
+MEASURED at 1920x1200 on the M9128, **`glmark2 --size 1920x1200` with no
+`-b` at all -- one process, one GL context, glmark2's own default
+thirty-three in glmark2's own order** -- `M9X_SKIP_REPORT=1`, exit code
+**0**, **33 of 33 results**, **0 stream timeouts**, the known-good `texture`
+fixture passing **before and after**, both hardware lock files held across
+the whole cycle.  **Not one "draws skipped" line in any of the thirty-three.**
+`tools/m9x-glmark-default-suite.sh` runs it this way now; the
+one-server-a-benchmark control stays at
+`tools/m9x-glmark-default-suite-fresh-x.sh`.
+
+| benchmark | fps, one invocation | standing before, one process a benchmark |
+|---|---:|---:|
+| `build` vbo=false / vbo=true | 274, 295 | 274, 296 |
+| `texture` nearest / linear / mipmap | 284, 284, 284 | 285, 284, 285 |
+| `shading` gouraud / blinn-phong-inf / phong / cel | 242, 149, 89, 83 | 242, 149, 89, 83 |
+| `bump` high-poly / normals / height | 135, 182, 165 | 135, 183, 165 |
+| `effect2d` 3x3 / 15-tap | 84, 33 | 84, 33 |
+| `pulsar` | 222 | 221 |
+| `desktop` blur / shadow | 44, 124 | 44, 125 |
+| `buffer` map / subdata / interleaved | 154, 154, 154 | 154, 154, 154 |
+| `ideas` | 111 | 111 |
+| `jellyfish` | 77 | 77 |
+| `terrain` | 1 (1835 ms) | 1 (1831 ms) |
+| `shadow` | 118 | 118 |
+| `refract` | 8 (131 ms) | 8 (132 ms) |
+| `conditionals` 0/0, 0/5, 5/0 | 230, 143, 229 | 230, 143, 229 |
+| `function` low / medium | 169, 72 | 169, 72 |
+| `loop` no-loop / uniform=false / uniform=true | 167, 167, 160 | 167, 167, 160 |
+
+Every row is within one frame a second of the standing below, which is the
+control this is read against.  Running the list in one process changes no
+frame rate: the per-benchmark sweep was never measuring anything different,
+it was only working around the crash below.
+
+### The rc=139 between scenes was ours, and what it was
+
+CAPTURED under gdb, the pre-fix library, one invocation: the client takes
+**SIGSEGV after the fourteenth result** -- the 15-tap `effect2d` -- and every
+frame of the stack is inside the driver:
+
+```
+#0  ralloc_free ()            libgallium
+#1  m9_render_destroy ()      libgallium
+#2  vbuf_destroy ()           libgallium
+#3  draw_destroy ()           libgallium
+#4  m9_context_destroy ()     libgallium
+#5  st_destroy_context_priv ()
+...  MakeContextCurrent
+```
+
+glmark2 destroys the scene's GL context when it moves on, so the crash is at
+`glXMakeContextCurrent` time, which is why it reads as "moving between
+scenes".  The minimal pair is the 15-tap `effect2d` followed by **`pulsar`**
+-- the next benchmark in the default order -- and it reproduces in about
+forty seconds (CAPTURED); the backlog's "to `shadow`" named the next
+benchmark of a `-b` sweep, not of the default list.
+
+The fault is a **fixed-size array**.  `m9_vbuf_render::extra_offset` was
+declared `int extra_offset[M9_FS_MAX_VARYINGS + M9_FS_MAX_TEXTURES]`, the
+CPU views of **one** fragment pass, and `struct util_dynarray indices`
+followed it in the struct.  A split variant has a view per interpolated input
+and per coordinate stream of *every* pass, so the emit loop wrote up to eight
+entries past the array and into that dynarray's `data` and `mem_ctx`.  The
+15-tap `effect2d` is such a split shader.  Nothing faults while the job runs;
+the corrupted dynarray is freed at context teardown, and
+`util_dynarray_fini()` then calls `ralloc_free()` on the garbage.
+
+**Fixed in the Mesa m9x driver by `d14b711`** (2026-09-19 07:43), which sized
+the array `M9_FS_MAX_EXTRA` as part of the terrain work -- that commit records
+the same overflow surfacing the other way, in `ralloc_size` on the *next*
+allocation during `m9_render_emit`.  DERIVED by bisecting the driver on the
+minimal pair, one build a step, each deployed by hash: `22c0352` CRASH,
+`d14b711` CLEAN, `98be636` CRASH, `900c8ad` CLEAN, and current main CLEAN over
+the whole thirty-three.  It is **not** an upstream glmark2 bug, so no
+workaround is kept.
+
+Two measurement notes the bisect cost a run each to learn.  The driver's
+"rendering needs kernel user submit (`m9_user_submit=1`) and firmware
+`m9x/rsfragptrs-normal.bin`" message is also what `m9_probe_user_submit()`
+prints when its **allocation** fails -- a card another client has filled, or
+a module the box auto-loaded without the parameter -- so it does not by
+itself mean the driver is too old for the module.  And a stalled engine makes
+the `conv13`, `conv16` and `convrtt:*` fixtures fail all 76800 pixels; all of
+them pass on a card that has just been rebooted, so that band is a state
+signal, not a regression.
+
 ## Standing 2026-09-19 (fifth): what a split job's back-end clear cost
 
 MEASURED at 1920x1200 on the M9128, glmark2's default thirty-three, **one
@@ -540,9 +628,11 @@ does draw.  A fault raised *after* the last scene's result is charged to the
 run, since submission is asynchronous and the error surfaces later than the job
 that caused it.
 
-Sweep one scene per process: glmark2 segfaults (rc=139, client-side, no stream
-timeout) moving from the 15-tap `effect2d` scene to `shadow` within one
-process, and `shadow` run alone is 142 fps.
+glmark2 used to segfault (rc=139, client-side, no stream timeout) moving off
+the 15-tap `effect2d` scene within one process, which is why the list was
+swept one scene per process.  That was the driver's `extra_offset` overflow,
+fixed by `d14b711`; the default list has run in one invocation since
+(standing at the top of this file).
 
 Every run asserts `GL_RENDERER` is `Matrox M9`: a Mesa build configured without
 `--cross-file cross-t2-llvm.ini` links against the host libdrm and X, EGL falls
