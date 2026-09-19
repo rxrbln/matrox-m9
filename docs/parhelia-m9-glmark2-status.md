@@ -1,6 +1,65 @@
 # glmark2 on the m9x driver: where the 60 fps goal actually stands
 
-## Standing 2026-09-19: the three scenes that were not drawing everything
+## Standing 2026-09-19 (fourth): the register allocator, and terrain's colour
+
+MEASURED at 1920x1200 on the M9128, **one X server and one process a
+benchmark** (`tools/m9x-glmark-default-suite-fresh-x.sh`),
+`M9X_SKIP_REPORT=1`, all thirty-three completed, **0 stream timeouts**, a
+known-good fixture passing before and after the sweep, the hardware lock held
+across the whole cycle.  The tree is the merged one plus the multisample
+fragment store and the fragment register allocation fix
+(`docs/parhelia-m9-fragment-pass-splitting.md` 8.4b).
+
+| benchmark | fps | draws skipped a frame |
+|---|---:|---|
+| `build` vbo=false / vbo=true | 273, 294 | none |
+| `texture` nearest / linear / mipmap | 283, 282, 283 | none |
+| `shading` gouraud / blinn-phong-inf / phong / cel | 242, 149, 88, 82 | none |
+| `bump` high-poly / normals / height | 105, 182, 164 | none |
+| `effect2d` 3x3 / 15-tap | 84, 33 | none |
+| `pulsar` | 219 | none |
+| `desktop` blur / shadow | 37, 124 | none |
+| `buffer` map / subdata / interleaved | 153, 153, 153 | none |
+| `ideas` | 110 | none |
+| `jellyfish` | 77 | none |
+| **`terrain`** | **1** (2041 ms a frame) | none |
+| `shadow` | 111 | none |
+| `refract` | 5 | none |
+| `conditionals` 0/0, 0/5, 5/0 | 229, 142, 228 | none |
+| `function` low / medium | 168, 72 | none |
+| `loop` no-loop / uniform=false / uniform=true | 166, 166, 159 | none |
+
+**Nothing regressed.**  Every row matches the standing below it within
+run-to-run noise, and the allocator change -- which touches every fragment
+program the driver compiles -- costs no frame rate anywhere.  `terrain` is
+unchanged at 1 fps, and its schedule is longer than it was (ten raster passes
+offline where the placement that carried over let it fit in three), so the
+frame rate it reports is bought with correct registers rather than shared
+ones.
+
+**`terrain`'s colour is most of the way home and the rest is named.**
+CAPTURED at 1920x1200, `terrain:bloom=false:tilt-shift=false`, against an
+llvmpipe frame of the same variant:
+
+| | frame mean r, g, b | 8x8 tile difference |
+|---|---|---:|
+| before | 68.6, 43.6, 113.8 | 58.6 of 255 |
+| **after** | **92.6, 89.7, 79.9** | **21.9 of 255** |
+| llvmpipe | 95.0, 88.8, 31.7 | -- |
+
+Red and green now match; the frame has the reference's relief, its grass and
+its dirt, and what is left is a blue excess on the lit pixels.  Every term of
+the colour is correct on its own -- the texture mix 2.9, `totalDiffuse` 7.3,
+`pointSpecular` 9.8 and the whole lighting sum 9.7 of 255, the last of which
+was the flat 135, 136, 255 this file used to record.  The remainder is one
+step, the **product of the record the texture mix is carried in with a vector
+the consuming pass computes**, and it is the third component of a narrowed
+record that comes back wrong.
+`docs/parhelia-m9-fragment-pass-splitting.md` 8.4b and 8.4c.
+
+The **striped blocks of the tilt-shift blur are untouched** and still open.
+
+## Superseded: standing 2026-09-19: the three scenes that were not drawing everything
 
 MEASURED at 1920x1200 on the M9128, one X server and one process a benchmark,
 `M9X_SKIP_REPORT=1`, **0 stream timeouts**, fixture suite **228 of 228 PASS**
