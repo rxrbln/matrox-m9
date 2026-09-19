@@ -575,6 +575,141 @@ shader text alone: it is that text under the schedule glmark2's own vertex
 shader and geometry produce, and the next step is to make the fixture take
 that schedule.
 
+### 8.4b The fixture takes glmark2's schedule, and the fault is the allocator
+
+**The varying layout was the whole of the difference.**  The fixture's own
+vertex shader writes `vTangent = vec3(col.r, col.g, 0.5)` and
+`vNormal = vec3(0.25, col.b, col.r)`, so the linker's cross-stage constant
+folding and varying compaction pack terrain's five varyings into **two**
+slots and the fragment shader reads `VARYING_SLOT_VAR0` and `VAR1` only.
+terrain's own vertex shader leaves every component varying, which fills
+**four** slots.  A fixture vertex shader that writes the same five varyings
+with no constant component (`tools/` has it as the terr3 `terrvs.vert`
+shape: two normalized vectors built from all four attributes, their cross
+product, `vUv` and a view position) compiles `p-ps3.frag` -- the failing
+probe -- to `1 pass, 178 slots, 33 consts, 2 units, 4 varyings, 88
+0f30030f`, and the emitted program is **byte-identical** to the one
+terrain's own vertex shader produces (OFFLINE, `M9_FS_PROGRAM=1` dumps
+compared).  The defect then reproduces through `filefs` in seconds:
+**38400 of 76800 pixels differ**, red and green wrong on 38393 of them,
+blue on 222 and alpha on none (MEASURED 2026-09-19 on the M9128).
+
+**Index 88 is not the cause here, and that reading is retired for this
+defect.**  `p-swdw8`, which renders exactly, and `p-ps3`, which does not,
+compile to the same one-pass shape and carry the **same** index 88,
+`0f30030f` (OFFLINE).  Nothing in 88 separates them.
+
+**The cause is that the register allocator carried its placement across
+compilation attempts.**  `compile_value()` makes up to two attempts and
+`emit_root()` a depth-first retry between them; `reset_output()` clears the
+lops and `reset_graph()` the nodes, but neither clears `c->values`, and
+`allocate()` reset only `v->last`.  Its free scan matches every value with
+`v->general && v->reg >= 0 && (v->last == s || (v->def == s && v->last <
+0))`, so on the last attempt it matched the **previous** attempt's values --
+their `reg` and `def` still set, their `last` reset to -1 -- and pushed
+their registers into the free list while this attempt still held live values
+in them.  Traced on `p-ps3.frag`: three `allocate()` runs, and in the third
+the scan frees `v13 reg 0x0a`, `v36 reg 0x18`, `v38 reg 0x1f` and thirty
+more that the run had never placed (OFFLINE, a temporary trace in the
+allocator).
+
+The damage is exactly the shape the frame showed.  81 pairs of live ranges
+shared a register in that pass; the one that mattered is **`v311`, the xy
+lane of `pointLightColor[0] * uSpecularColor`, in `0x1f` from slot 34 to
+slot 171**, with sixteen later values handed the same register.  The zw
+lane, `v310`, went to the scratch register `0x13` and was never disturbed --
+which is why red and green came back saturated and blue carried the product.
+
+`allocate()` now clears `reg`, `def`, `last`, `general` and `rg_read` on
+every value before it places any, and checks afterwards that no register is
+held by two values whose live ranges overlap; a pass that breaks that is
+refused so the splitter cuts instead of rendering every pixel silently
+wrong.  `M9X_RA_RESET=0` restores the placement that carried over and
+`M9X_CHECK_RA=0` turns the check off: with the reset off the check refuses
+`terrain.frag`, and with both off the compiler still emits the three-pass
+schedule that shares registers (OFFLINE, both measured).
+
+Honest allocation costs registers, and terrain's probe was two short of its
+fifteen live values, so the splitter cut and the cut was refused for "special
+function of a texture read".  An **interpolated input's register now joins
+the general pool at its last read** rather than staying reserved for the
+length of the program -- it is an ordinary register written once by its own
+slot -- which returns six registers to a four-varying pass.  Blending keeps
+`18..1f` to itself.  With that, `p-ps3` is one pass again.
+
+MEASURED on the M9128 after the change, engine proved with a known-good
+fixture before and after each and no stream timeout:
+
+| | before | after |
+|---|---|---|
+| `p-ps3` through `filefs` | 38400 of 76800 differ | **470** (tol 8), 372 (tol 16), all channels equal |
+| `terrain.frag` through `filefs` | 76800 of 76800 differ | 62030 |
+| `terrain:bloom=false:tilt-shift=false` frame mean | 68.6, 43.6, 113.8 | **92.6, 89.7, 79.9** (llvmpipe 95.0, 88.8, 31.7) |
+| 8x8 tile difference | 58.6 of 255 | **21.9 of 255** |
+
+Red and green now match llvmpipe; the picture has the reference's relief,
+its grass and its dirt, and what is left is a blue excess on the lit pixels.
+
+### 8.4c What is left: the third component of a narrowed record
+
+MEASURED 2026-09-19 at 1920x1200, one X server and one glmark2 process a
+probe, each against an llvmpipe frame of the **same** probe captured on the
+build host, scored as the mean 8x8 tile difference:
+
+| probe, replacing terrain.frag's last line | tile difference | note |
+|---|---|---|
+| `texmix`, the diffuse mix alone | 2.9 | correct |
+| `td` = `totalDiffuse` | 7.3 | correct |
+| `ps` = `pointSpecular * 8` | 9.8 | correct |
+| `light` = `totalDiffuse + ambient + totalSpecular` | 9.7 | **correct** -- this was the flat 135, 136, 255 |
+| `orig`, the stock shader | **21.9** | blue 79.8 against 31.7 |
+| `gl_FragColor.xyz * vec3(0.4)` | 1.7 | a record times a literal |
+| `vec3(0.4) * light` | 7.6 | a literal times a computed vector |
+| `gl_FragColor.xyz * (ambientLightColor * uAmbientColor)` | 2.0 | a record times a uniform product |
+| `gl_FragColor.xyz * totalDiffuse` | **9.6** | blue 38.5 against 22.6 |
+
+So every term of terrain's colour is right on its own and the fault is in
+the **product of the record the texture mix is carried in with a vector the
+consuming pass computes**.  Narrowing that product to one component names
+it:
+
+| probe | tile difference |
+|---|---|
+| `vec3(gl_FragColor.x * totalDiffuse.x)` | 4.2 |
+| `vec3(gl_FragColor.y * totalDiffuse.x)` | 4.1 |
+| `vec3(gl_FragColor.z * totalDiffuse.x)` | **17.8** |
+| `vec3(gl_FragColor.w * totalDiffuse.x)` | 8.6 |
+
+and the wrong frame is not wrong in an arbitrary way: the card's `.z` frame
+sits **3.7 to 4.4** from the `.y` frame -- the same distance a correct probe
+sits from its own reference -- and **17.8** from its own.  **The third
+component of the record comes back as the second.**  It is not a lane of the
+output: `gl_FragColor.zyx * totalDiffuse` is wrong in red, where `.z` went.
+And it needs the record narrowed: `vec3(gl_FragColor.z * totalDiffuse.x,
+gl_FragColor.y * totalDiffuse.x, gl_FragColor.x * totalDiffuse.x)`, which
+keeps all four components in the record, matches llvmpipe to within the
+noise of the measure (mean |R-G| 20.44 against 21.35, |G-B| 8.18 against
+8.20, in one frame so there is no animation phase to explain it away).
+
+What the offline dumps say about that pair of passes, and what they do not:
+the producing pass of the `.z` probe reads the zw halves of its three texel
+quads with the identity swizzle and writes `MOV_OUT` from one value into
+both `0x11` and `0x13`, so by the compiler's model the record holds
+`(z, w, z, w)`; the consuming pass reads texel register 4 with the
+replicate-first-scalar swizzle, which by the same model is `z`.  The `.x`
+probe's producing pass differs only in that its value is a broadcast, so
+every dword of its record is the same and no substitution could show.  The
+model and the hardware disagree and this tree does not settle which half is
+wrong.
+
+**What would settle it** is a capture of a vendor two-pass program whose
+producing pass writes a record with four *different* dwords and whose
+consumer reads more than the first -- `m9_fs_corpus.h` has no such pair --
+or a fixture that writes a record of four traceable values and reads each
+back in turn, which is the cheaper of the two and is the next step.  Until
+then the reading "the consumer reads the record's dword 2 where the producer
+put it" is UNTESTED, and only the input/output behaviour above is MEASURED.
+
 ### 8.5 The defect `coordconv:4` isolated: index 88's two fields overlap
 
 `tools/m9-mesa-glsl.c` gains **`coordconv:N`**: N taps at whole-texel offsets
