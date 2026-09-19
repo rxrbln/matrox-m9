@@ -30,6 +30,10 @@
  * object, so m9_stream_is_cpu leaves every view of it local, and the arena
  * has twenty views for both uses. */
 #define M9_TRANSIENT_VS_EXTRA_VIEW 4u
+/* The packed intermediate record the head writes sits above those views and
+ * spans one view a varying, since a view holds sixteen bytes a vertex and a
+ * record field is four dwords. */
+#define M9_TRANSIENT_VS_RECORD_VIEW 8u
 #define M9_TRANSIENT_VIEW_BYTES   0x16800u
 #define M9_TRANSIENT_VERTEX_BYTES 16u
 #define M9_BE_BYTES               0x100000u
@@ -230,10 +234,12 @@ uint32_t m9_draw_preprocess_vertices(uint32_t raster_vertices);
  * draw that is then refused downstream for partial coverage.
  * M9X_JOB_VERTICES=5760 restores the vendor's own partition. */
 #define M9_JOB_VERTICES_DEFAULT 11520u
-/* The target descriptor the second preprocessing draw binds, and the knob
- * that selects it (m9_draw_params.c). */
+/* How the second preprocessing draw hands its varyings on, and the words
+ * that shape follows (m9_draw_params.c). */
 void m9_draw_set_vs_record(unsigned mode);
-uint32_t m9_vs_extra_desc(void);
+unsigned m9_vs_record_mode(void);
+uint32_t m9_vs_extra_desc(unsigned target, unsigned targets);
+uint32_t m9_vs_gather_route(unsigned target);
 void m9_draw_set_job_vertices(uint32_t vertices);
 uint32_t m9_draw_max_source_vertices(void);
 uint32_t m9_transient_view_bytes(void);

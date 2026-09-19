@@ -1888,8 +1888,12 @@ m9_submit_job(struct m9_context *ctx)
           * varyings 1..4 into the views above M9_TRANSIENT_VS_EXTRA_VIEW. */
          job.cpu_streams = 0;
          job.vs_extra_entry = key->vs_extra_entry;
+         /* Only the packed record needs the draw that de-interleaves it. */
+         job.vs_gather_entry = m9_vs_record_mode() >= 2 ?
+                               key->vs_gather_entry : 0;
          job.vs_extra_targets = key->vs_extra_entry ?
                                 key->vs_extra_targets : 0;
+         job.vs_record_view = M9_TRANSIENT_VS_RECORD_VIEW;
          for (unsigned t = 0; t < job.vs_extra_targets; t++)
             job.vs_extra_view[t] = M9_TRANSIENT_VS_EXTRA_VIEW + t;
       }
@@ -3669,7 +3673,7 @@ m9_vs_resolve_consts(struct m9_context *ctx, const struct m9_vs_program *p,
  * different vertex program binds. */
 static uint32_t
 m9_native_vs_c2(struct m9_context *ctx, struct m9_fs_variant *v,
-                unsigned *extra_entry)
+                unsigned *extra_entry, unsigned *gather_entry)
 {
    const struct m9_vs_state *vs = ctx->vs;
    struct m9_resource *image = v ? &v->native_c2 : &ctx->vs_c2;
@@ -3678,16 +3682,20 @@ m9_native_vs_c2(struct m9_context *ctx, struct m9_fs_variant *v,
                                   m9_passthrough_c2_program;
    unsigned fs_slots_count = v ? m9_fs_slot_count(m9_fs_final(v)) :
                                  M9_PASSTHROUGH_FS_SLOTS;
-   unsigned entry = 0, extra = 0;
+   unsigned entry = 0, extra = 0, gather = 0;
    uint64_t bytes = align64(8ull * (fs_slots_count +
                                     m9_vs_slot_count(&vs->program) +
-                                    m9_vs_extra_slot_count(&vs->program)),
+                                    m9_vs_extra_slot_count(&vs->program) +
+                                    m9_vs_gather_slot_count(&vs->program)),
                             0x1000);
 
-   /* The second head sits behind the first, so its slot follows from the
-    * fragment slots this variant put in front of both. */
+   /* The second head sits behind the first and the gather behind that, so
+    * both slots follow from the fragment slots this variant put in front. */
    *extra_entry = m9_vs_extra_slot_count(&vs->program) ?
                   fs_slots_count + m9_vs_slot_count(&vs->program) : 0;
+   *gather_entry = m9_vs_gather_slot_count(&vs->program) ?
+                   fs_slots_count + m9_vs_slot_count(&vs->program) +
+                   m9_vs_extra_slot_count(&vs->program) : 0;
    if (image->handle && *serial == vs->serial)
       return image->handle;
    if (bytes > M9_PROGRAM_MAX_BYTES)
@@ -3702,8 +3710,10 @@ m9_native_vs_c2(struct m9_context *ctx, struct m9_fs_variant *v,
       return 0;
    memset(image->map, 0, image->size);
    if (!m9_vs_c2_image(&vs->program, fs_slots, fs_slots_count, image->map,
-                       image->size / sizeof(uint32_t), &entry, &extra) ||
-       entry != fs_slots_count || extra != *extra_entry)
+                       image->size / sizeof(uint32_t), &entry, &extra,
+                       &gather) ||
+       entry != fs_slots_count || extra != *extra_entry ||
+       gather != *gather_entry)
       return 0;
    *serial = vs->serial;
    return image->handle;
@@ -4283,10 +4293,10 @@ m9_native_vs_draw(struct m9_context *ctx, const struct pipe_draw_info *info,
    }
    key.vs = &ctx->vs->program;
    key.vs_program = m9_native_vs_c2(ctx, (struct m9_fs_variant *)key.variant,
-                                    &key.vs_extra_entry);
+                                    &key.vs_extra_entry, &key.vs_gather_entry);
    key.vs_extra_targets = m9_native_vs_extra_targets(&key, key.vs);
    if (!key.vs_extra_targets)
-      key.vs_extra_entry = 0;
+      key.vs_extra_entry = key.vs_gather_entry = 0;
    if (!key.vs_program) {
       ctx->native_vs_fallbacks++;
       return false;

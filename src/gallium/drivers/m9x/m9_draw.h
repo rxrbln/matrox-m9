@@ -127,6 +127,12 @@ struct m9_draw_job {
    unsigned vs_extra_entry;   /* program slot the draw enters at c3 */
    unsigned vs_extra_targets; /* 1..4 stream targets it binds */
    uint32_t vs_extra_view[M9_VS_EXTRA_VARYINGS];  /* transient view each takes */
+   /* The route-fed draw between the head and the fused pass: it reads the
+    * head's packed record through 0x74 + k and writes each varying out to
+    * the stream view above, which is what every captured chain does.  Zero
+    * leaves the head writing those views itself. */
+   unsigned vs_gather_entry;
+   uint32_t vs_record_view;   /* transient view the packed record starts at */
    /* Raster texture units, texel pair order. */
    const struct m9_texture_unit *units;
    unsigned unit_count;

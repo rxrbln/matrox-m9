@@ -77,6 +77,13 @@ struct nir_shader;
  * pass's varying is pair 0, whose low half the tail writes from r02. */
 #define REG_OUT_LO(j) (0x11u + 4u * (j))
 #define REG_OUT_HI(j) (0x13u + 4u * (j))
+/* Route k of a record-fed draw arrives in this register pair, components 0
+ * and 1 in the low register and 2 and 3 in the high one (CAPTURED,
+ * docs/parhelia-m9-varying-transport-re.md section 3). */
+#define M9_VS_ROUTE_LO(k) (0x00u + 4u * (k))
+#define M9_VS_ROUTE_HI(k) (0x02u + 4u * (k))
+/* Routes a preprocessing draw can bind, indices 0x74..0x77. */
+#define M9_VS_MAX_ROUTES 4u
 /* The partial dot names register 3 in its c field and nothing writes it. */
 #define REG_DOT_C  0x03u
 #define REG_ATTR0  0x46u
@@ -158,6 +165,10 @@ struct m9_vs_program {
    uint32_t record_bytes;
    /* Varying 0 rides the fused pass; 1..4 the second head in extra. */
    struct util_dynarray extra;    /* uint32_t W0, W1 of the second head */
+   /* The route-fed draw that de-interleaves the head's record into the
+    * stream views the raster stage reads, one register-pair move a
+    * varying (CAPTURED, vs-varyings-4's c3=27). */
+   struct util_dynarray gather;
    unsigned varying_count;
    unsigned varying_location[M9_VS_MAX_VARYINGS];   /* gl_varying_slot */
    unsigned varying_components[M9_VS_MAX_VARYINGS];
@@ -187,6 +198,9 @@ unsigned m9_vs_slot_count(const struct m9_vs_program *program);
 /* Instruction slots of the second head, stop pair included; 0 when the
  * program has at most one varying and needs no second preprocessing draw. */
 unsigned m9_vs_extra_slot_count(const struct m9_vs_program *program);
+/* Instruction slots of the gather draw, stop pair included; 0 with no
+ * second head. */
+unsigned m9_vs_gather_slot_count(const struct m9_vs_program *program);
 /* Writes head, tail and stop pair; returns the dwords written, 0 if max is
  * too small. */
 unsigned m9_vs_emit(const struct m9_vs_program *program, uint32_t *out,
@@ -198,7 +212,8 @@ unsigned m9_vs_emit(const struct m9_vs_program *program, uint32_t *out,
 unsigned m9_vs_c2_image(const struct m9_vs_program *program,
                         const uint32_t *fs_slots, unsigned fs_slot_count,
                         uint32_t *out, unsigned max_dwords,
-                        unsigned *vertex_entry, unsigned *extra_entry);
+                        unsigned *vertex_entry, unsigned *extra_entry,
+                        unsigned *gather_entry);
 
 /* Resolves the user constants into the preprocessing span, pair p at
  * out[2 * p], leaving pairs 9..21 untouched for the caller's viewport and

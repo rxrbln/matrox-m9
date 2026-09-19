@@ -279,6 +279,9 @@ struct m9_job_key {
    /* Program slot of the tail-free second head, 0 when the program has at
     * most one varying and needs no second preprocessing draw. */
    uint32_t vs_extra_entry;
+   /* Program slot of the route-fed draw that de-interleaves the second
+    * head's record into the stream views the raster stage reads. */
+   uint32_t vs_gather_entry;
    /* Stream targets that draw binds: the highest varying index the fragment
     * program reads, so a varying nothing reads costs no target. */
    uint32_t vs_extra_targets;

@@ -418,14 +418,13 @@ m9_draw_preprocess_vertices(uint32_t raster_vertices)
    return (raster_vertices + 3) & ~3u;
 }
 
-/* Every captured chain-opening preprocessing draw writes an intermediate
- * record; the first clean-room implementation bound separate stream views
- * instead, which is the last untested difference after the pair mask, the
- * barrier and the chain role were each refuted on hardware.  A record of
- * stride four holds one four-dword field at dword zero, so the bytes a
- * target writes are exactly where the separate view put them and only the
- * descriptor's class changes.  M9X_VS_RECORD=0 restores the stream view. */
-static unsigned m9_vs_record = 1;
+/* How the second preprocessing draw hands its varyings on.  0 is the shape
+ * the first implementation bound, one separate stream view a varying, which
+ * hardware refused; 1 keeps those views and only makes the descriptor a
+ * record, which it also refused; 2 is the captured chain -- one packed
+ * record the head writes and a route-fed draw de-interleaves into the views
+ * the raster stage reads (docs/parhelia-m9-varying-transport-re.md). */
+static unsigned m9_vs_record = 2;
 
 void
 m9_draw_set_vs_record(unsigned mode)
@@ -433,10 +432,29 @@ m9_draw_set_vs_record(unsigned mode)
    m9_vs_record = mode;
 }
 
-uint32_t
-m9_vs_extra_desc(void)
+unsigned
+m9_vs_record_mode(void)
 {
-   return m9_vs_record ? m9_record_desc(M9_RECORD_SLOT, 4, 0) : 0x68002000u;
+   return m9_vs_record;
+}
+
+uint32_t
+m9_vs_extra_desc(unsigned target, unsigned targets)
+{
+   if (!m9_vs_record)
+      return 0x68002000u;
+   if (m9_vs_record == 1)
+      return m9_record_desc(M9_RECORD_SLOT, 4, 0);
+   return m9_record_desc(M9_RECORD_SLOT, 4 * targets, 4 * target);
+}
+
+uint32_t
+m9_vs_gather_route(unsigned target)
+{
+   /* Component 0 comes from the descriptor's own offset; 1..3 are the
+    * dwords behind it. */
+   return m9_record_route(false, target, 4 * target + 1, 4 * target + 2,
+                          4 * target + 3);
 }
 
 static uint32_t m9_job_vertices = M9_JOB_VERTICES_DEFAULT;
