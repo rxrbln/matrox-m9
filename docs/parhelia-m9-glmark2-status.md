@@ -64,43 +64,115 @@ The driver now tallies its refusals by reason.  Across the thirty-three:
   and up, which one preprocessing draw cannot carry
   (`docs/parhelia-m9-vertex-output-target-re.md`).
 
-### The texture coordinate: what was tried, and what replaced it
+### The texture coordinate: built, measured, and off
 
-A build that admitted only the textured fragment programs whose coordinate
-needs none of the CPU's per-vertex work was run over the same thirty-three
-(MEASURED).  It took `bump:normals` fully native, 182 -> 184 fps, and part of
-`desktop`, and it **cost** `desktop:shadow` 123 -> 119 fps, where the job
-then split between native and draw-module draws.  The two reasons that kept
-the rest were named by the driver itself: `texture:*` refused with "the
-texture coordinate is not the varying's first pair" and `desktop:shadow`
-with "the texture coordinate needs a per-vertex span scale".  That build was
-a wash and was not kept.
-
-**Both are now the vertex program's own work** (`m9x: the vertex program
-places and scales a texture coordinate itself`,
-`docs/parhelia-m9-native-vertex-backend.md` section 4a): a coordinate stream
-is an output target of its own, carrying
-`(V[c], V[c+1]) * scale + bias` in one captured multiply-add whose two
+Both obstacles the earlier experiment named -- "the texture coordinate is
+not the varying's first pair" and "the texture coordinate needs a
+per-vertex span scale" -- are now the vertex program's own work.  A
+coordinate stream is an output target of its own carrying
+`(V[c], V[c+1]) * scale + bias` in one captured multiply-add, whose two
 constant pairs the driver fills per job with the sampler's transform times
-the render target's addressed span.  `c` is wherever the linker put the pair,
-so the straddling `c = 1` the `texture` scene links to costs two gather moves
-and nothing else.
+the render target's addressed span
+(`docs/parhelia-m9-native-vertex-backend.md` section 4a).
 
-What that reaches, read off the fragment backend offline for each scene's own
-shaders (OFFLINE, `m9-fs-compile-test --glsl`):
+**It is correct and it does not pay.**  `M9X_VS_TEXTURE` therefore defaults
+to 0.
 
-| scene | streams the raster pass reads | verdict |
-|---|---|---|
-| `texture` x3 | varying VAR0 + coordinate VAR0 at component **1** | fits the two targets |
-| `bump:normals` | one coordinate at component 0, no varying | fits |
-| `desktop` | one coordinate at component 0, no varying | fits; the span is why it used to refuse |
-| `desktop:blur`, `effect2d` x2, `shadow` | several raster passes | still refused |
-| `bump:height`, `jellyfish`, `terrain`, `refract`, `ideas` | three streams and up | still refused |
-| `loop` x3, `buffer` x3 | control flow in the vertex shader | still refused |
+MEASURED on the M9128, 2026-09-19, one hold of both hardware lock files,
+module `/root/tmp/dxtmip-m9x_drm.ko` named explicitly, glmark2's default
+thirty-three at 1920x1200 in **one invocation an arm** of the same
+deployed library (md5 `fd11173c`), `M9X_SKIP_REPORT=1 M9X_PROFILE=400`,
+33 of 33 results and rc=0 both arms, **0 stream timeouts**, and `texture`,
+`texpair`, `rtt300` and `vary2tex` exact before and after.  The X server
+ran the off arm throughout, so what moves below is the benchmark client's
+own draws.
 
-**UNTESTED on hardware**: no frame rate or draw count below has been
-re-measured against it.  `M9X_VS_TEXTURE=0` restores the old refusal, so one
-deployed library gives both arms of the comparison.
+| benchmark | off fps | off native/module | on fps | on native/module |
+|---|---:|---|---:|---|
+| `build` vbo=false / vbo=true | 280, 303 | 2797/0, 2797/0 | 281, 303 | unchanged |
+| **`texture`** nearest / linear / mipmap | 292, 292, 292 | 226/2571, 0/3197, 0/2797 | **234, 234, 233** | **2397/0 each** |
+| `shading` gouraud | 247 | 2221/176 | 247 | 2397/0 |
+| `shading` blinn-phong-inf / phong / cel | 151, 95, 88 | 1597/0, 797/0, 797/0 | 151, 95, 88 | unchanged |
+| `bump` high-poly | 137 | 1597/0 | 137 | 1597/0 |
+| **`bump` normals** | 185 | 151/1446 | **186** | **1597/0** |
+| `bump` height | 167 | 0/1998 | 167 | 269/1329 |
+| `effect2d` 3x3 / 15-tap | 88, 34 | 0/797, 0/397 | 88, 34 | still refused |
+| `pulsar` | 227 | 9595/78 | 227 | 10235/347 |
+| **`desktop`** blur | 47 | 1730/6329 | 47 | 2169/1433 |
+| **`desktop`** shadow | 128 | 0/30927 | **124** | **25311/2340** |
+| `buffer` map / subdata / interleaved | 156 each | 0/4147, 0/1597, 0/1197 | 156 each | 8476/1271, unchanged, unchanged |
+| `ideas` | 108 | 121170/103791 | 109 | 129698/157793 |
+| `jellyfish` | 77 | 13217/83148 | 78 | 5075/29163 |
+| `terrain` / `refract` | 1, 8 | -, - | 1, 8 | -, - |
+| `shadow` | 119 | 2138/1406 | 119 | 2319/1399 |
+| `conditionals` 0/0, 0/5, 5/0 | 234, 144, 233 | 2636/782, 1597/0, 2397/0 | 234, 147, 241 | unchanged |
+| `function` low / medium | 171, 73 | 1597/0, 797/0 | 175, 74 | unchanged |
+| `loop` no-loop / uniform=false / uniform=true | 169, 169, 162 | 66/1531, 0/1597, 0/1597 | 174, 174, 166 | still refused |
+
+Two caveats on the counts.  The profile window is 400 frames and its
+counters reset at every print, so a scene is charged the windows that
+closed while it ran and a boundary can carry up to one window of the
+previous scene -- which is what `texture:nearest`'s 226 in the off arm is.
+And `terrain` and `refract` never reach a window at all.
+
+**Where the frame rate goes, from the profile's own phases:**
+
+* `texture` -- the CPU half goes to **zero**, `draw 0.58` and `emit 0.57` ms
+  a frame become `0.00`, and the GPU half **rises**, `ioctl 3.35` ->
+  `4.2..4.6` ms a frame.  The scene draws forty vertices and was already
+  GPU-bound at 3.4 ms a frame, so there was no CPU time to win and the
+  engine now does more.  Why it does more is **not established**: the
+  preprocessing pass runs a compiled 40-slot transform instead of the
+  pass-through and binds two output targets instead of one, but neither has
+  been isolated.  `bump:normals`, textured and native on a **single**
+  stream, gains rather than loses, which points at the second target.
+* `desktop:shadow` -- the CPU half falls by **7.5 ms a frame** to zero, and
+  the job count triples, 5..6 -> 16 a frame, on **eleven uniform splits a
+  frame where there were none**.  Each window is a render target with its
+  own addressed span, the coefficients live in the vertex program's per-job
+  constant span, and a draw that changes that span ends the job.  This is
+  the same mechanism that cost `ideas` and `pulsar` when the native path
+  first landed (`parhelia-m9-native-vertex-backend.md` 8.3), reached by a
+  new route.
+
+**The pictures are right.**  `texpair` -- a float varying ahead of the
+coordinate, so the sampled pair lands at components 1 and 2 of one varying
+slot, exactly what `texture` links to -- is 0 of 76800 pixels different
+against its CPU reference, and so are `rtt300` and `rtt:64x23`, a 300-wide
+and a 64x23 render target addressed over a 32-aligned span.  Screenshots of
+`texture:texture-filter=linear` on both arms and from llvmpipe show the same
+crate with the same mapping and the same lighting (the rotation phase
+differs because the frame rates do, which is why the pixel-exact fixture is
+the evidence and the screenshot is the corroboration).
+
+**What would make it pay**, in the order the measurements point:
+
+1. Get the coefficients out of the per-job constant span, or out of the job
+   key, so a per-draw span stops ending the job.  That is `desktop`'s whole
+   cost and it is the larger of the two.
+2. Explain the GPU-side cost of `texture`.  The controlled comparison is
+   already in the table: one stream gains, two lose.  Removing the second
+   target is possible without any vertex-program change if the **raster
+   declaration's selectors** can place the pair -- the field is
+   `s0 | s1 << 3 | s2 << 6 | s3 << 9` and the coordinate form `0x0688` is
+   selectors 0,1,2,3 -- which would let the coordinate share the varying's
+   own stream.  No captured raster declaration uses a non-zero `s0`, so it
+   needs a probe of its own; `tools/m9-user-raster-streams.c` is where it
+   goes.
+
+### A split fragment program on the native path is refused by the hardware
+
+Also MEASURED, 2026-09-19, and also left off (`M9X_VS_SPLIT`).  A shader the
+engine runs as several raster passes can express its streams as the union
+over the passes -- for glmark2's `shadow`, whose first pass computes the
+coordinate its second takes from the inter-pass record, that union is a
+single varying stream, and `m9_job_native` already loops over the passes.
+Built and run, **the engine draws nothing**: the `coordroute` fixture, the
+two-pass shape `shadow` compiles to, takes the native path and differs in
+76800 of 76800 pixels, with no stream timeout logged and the card alive
+afterwards.  The next probe is the submitted stream of a two-pass native
+job decoded against the same job through the draw module.
+
 ## Standing 2026-09-19 (sixth): the whole default run in ONE invocation
 
 MEASURED at 1920x1200 on the M9128, **`glmark2 --size 1920x1200` with no

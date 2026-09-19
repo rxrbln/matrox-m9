@@ -415,9 +415,11 @@ isolates it.
   varyings and a coordinate, say -- falls back.  A third needs the second
   preprocessing draw, and that draw has never delivered a stream on this
   board (`parhelia-m9-varying-transport-re.md` section 12).
-* **A projective texture coordinate**, a shadow or volume fetch's third
-  component, a coordinate an earlier raster pass produced, and a fragment
-  program split across raster passes (section 4a).
+* **A projective texture coordinate** and a shadow or volume fetch's third
+  component (section 4a).
+* **A coordinate stream** and a **split fragment program**, both built and
+  both off by default -- the first because it costs frame rate, the second
+  because the engine draws nothing from it (section 4a).
 * **One basic block**, the backend's own limit.
 * Instanced draws, primitive restart, user clip planes, polygon offset,
   polygon or line stipple, wide or smooth lines, non-fill polygon modes and

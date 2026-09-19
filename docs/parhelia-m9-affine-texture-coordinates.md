@@ -128,8 +128,11 @@ vertex program takes does not go through that: the preprocessing pass writes
 the coordinate as a stream of its own, the fold and the span riding one
 multiply-add against constant pairs the driver fills per job
 (`docs/parhelia-m9-native-vertex-backend.md` section 4a).  The two produce
-the same stream; only the projector divide is still CPU-only, and a native
-job refuses it.
+the same stream -- MEASURED, the `texaff` fixture is pixel-exact through
+either -- and only the projector divide is still CPU-only, which a native
+job refuses.  The native route is off by default all the same: it costs
+frame rate on three of glmark2's benchmarks, for reasons
+`docs/parhelia-m9-glmark2-status.md` measures phase by phase.
 
 A fixture should go in first: sample one image twice, once at a varying and
 once at that varying times a uniform plus a uniform offset, against a CPU
