@@ -367,6 +367,65 @@ ratio 2).  The staircases are unchanged, so nothing has moved sub-pixel.  It
 is therefore a **deterministic drop of roughly one pixel in eight, with no
 blending** [MEASURED].
 
+### Which pixels, exactly [MEASURED]
+
+The probe reports the positions of the pixels that were not written.  They
+are not scattered:
+
+```
+faarect, 240x200 at (8,8), ef[31:29] = 7
+  missing 5960 of 48000; row counts 180..240
+  distinct row counts    180:60  181:40  240:100
+  missing x mod 32  795 0 0 0  795 0 0 0  794 0 0 0  795 0 0 0  695 0 0 0 ...
+  missing y mod 32  417 0 417 0  417 0 417 0  358 0 358 0  357 0 358 0 ...
+  skipped pixel values  ff000000:5960   (clear ff000000)
+```
+
+Every missing pixel has **x a multiple of four and y even**, in absolute
+screen coordinates; half the rows are untouched at 240 and the other half
+carry 180 or 181.  The same phase appears inside the diagonal triangle - a
+120x100 region wholly inside it is missing 1500 of 12000 at exactly the same
+offsets - so the pattern is fixed in screen space and is not a property of
+the primitive.
+
+The skipped pixels hold the clear value byte for byte, so nothing was written
+there: **the engine reserves one lane of every 4x2 pixel block and writes
+nothing into it.**  That is what a fragment unit does when it has been
+switched on and has nowhere to put fragments.
+
+### Which mode values are live [MEASURED]
+
+| `ef[31:29]` | what the vendor's compiler means by it | M9128 |
+|---:|---|---|
+| 0 | not an AA state; the vendor refuses to lower ad/af | (this driver's previous behaviour) |
+| 1, 2, 3 | AA off, or an unbacked target | renders unchanged, 48000 |
+| 4, 5 | AA on, master multisample enable clear | renders unchanged, 48000 |
+| **6** | AA on, master enable set, no depth companion | **drops the 4x2 lane** |
+| **7** | AA on, master enable set, depth companion | **drops the 4x2 lane** |
+
+The two values the silicon obeys are exactly the two the vendor's compiler
+produces when the master `GL_MULTISAMPLE` enable is set (the truth table of
+section 4 takes its `B = 0` rows only when validator `+0x174` bit 14 is set),
+which is an independent check that the field has been identified correctly.
+
+### What the unit still refuses [MEASURED]
+
+Two combinations stop the engine even with the mode set, and both name the
+storage that is missing:
+
+| combination | result |
+|---|---|
+| mode 6 or 7 with `af` bit 11, alpha to coverage | stream timeout |
+| mode 6 with a D24S8 depth/stencil attachment | stream timeout, nothing rendered |
+
+The depth case is the more telling of the two: the mode value itself is
+chosen by whether a *depth companion* surface exists (`[edi+0x18]` in section
+4), and the vendor OpenGL driver has a function named
+`CreateDepthAA64Buffer` for making one.  Binding an ordinary depth attachment
+while the unit is on, with no such companion, stops the engine.  A stopped
+engine is not cleared by a module reload; each of these measurements cost a
+reboot and was retaken only after `m9-mesa-glsl texture` passed again.
+
 The drop is independent of everything else the pair carries: the same 42040
 comes back for coverage values 0, 32, 64, 128, 192, 255 and 256 of 256, with
 the invert bit, with the sample-coverage bit, and with `ad` forced to zero
@@ -513,10 +572,12 @@ the instrument for it is built and calibrated.
    Multisample storage is a **separate buffer group** allocated by
    `MxMD.dll 0xac7e0` at about 16.55 bytes a pixel and capped at 32 MiB
    (section 4b), not an enlargement of the colour allocation.
-2. **AD bits 6:4.**  **CLOSED as a correction.**  They are not AD bits at
-   all; they are bits 6:4 of nested compiled state `+0x04`, with the truth
-   table of section 4 [STATIC].  AD's only fallback form is `0x20`.  The
-   command index that carries `+0x04` is [OPEN].
+2. **AD bits 6:4.**  **CLOSED, and the field is on hardware.**  They are not
+   AD bits at all; they are bits 6:4 of nested compiled state `+0x04`, which
+   the lowerer shifts into surface shadow `+0xb8` bits 31:29 and the emitter
+   sends as **index `ef` bits 31:29** [STATIC, section 4b].  AD's only
+   fallback form is `0x20`.  MEASURED: values 6 and 7 change what the M9128
+   renders and 1 to 5 do not.
 3. **Reserved opcode 5 / auxiliary ID 25.**  **CLOSED.**  It is
    `GL_SAMPLE_COVERAGE_VALUE`, named from the vendor ICD's own
    `glSampleCoverage` sink [STATIC]; AF`[8:0]` is that value in 1.8 fixed
@@ -532,11 +593,19 @@ the instrument for it is built and calibrated.
    suppression - and the word it clears is the colour write mask [STATIC].
    Arbitrary per-sample coverage is not implemented by the vendor; inversion
    is AF bit 9.
-6. **Physical fragment order and sample positions.**  **OPEN.**  Hard static
-   negative (section 8).  The measuring probe is built and calibrated; it
-   runs the moment gate 2's index is known.
+6. **Physical fragment order and sample positions.**  **OPEN, and now
+   bounded.**  Hard static negative (section 8), and on hardware the unit
+   reserves one lane of every 4x2 pixel block at a fixed screen-space phase
+   (x a multiple of four, y even) while producing no blending [MEASURED].
+   That is the shape of the fragment storage, not of the sample pattern; the
+   sample positions themselves stay open until the fragment store is
+   allocated and bound, and the probe that reads them off a staircase is
+   built and calibrated.
 7. **The resolve, and the fence before the destination is reused.**
-   **OPEN.**  No call edge from multisample surface state to a resolve packet
+   **OPEN**, and now for a concrete reason: nothing is accumulated to
+   resolve.  With the unit enabled the engine reserves a lane and writes
+   nothing into it [MEASURED], because the separate multisample buffer group
+   of section 4b is never allocated.  No call edge from multisample surface state to a resolve packet
    was recovered; the AD/AF emission is gated only by a surface-shadow dirty
    bit, never by a multisample condition, and no emitter selects a different
    index because a surface is multisampled [STATIC, whole-`.text` header
@@ -545,8 +614,10 @@ the instrument for it is built and calibrated.
 8. **What an occlusion query counts.**  **PARTIALLY CLOSED.**  With
    multisampling off the M9 counter counts pixels exactly [MEASURED]; the
    vendor's GL layer multiplies by `GL_SAMPLES`, so the vendor believes the
-   same [STATIC].  The multisampled case is [OPEN] and is one `faaocc` run
-   away.
+   same, and the M-series Linux driver does it too at `0x6bb034..0x6bb04e`
+   [STATIC, two independent images].  The multisampled case cannot be run
+   yet: a query fixture attaches depth, and a depth attachment with the unit
+   enabled stops the engine [MEASURED].
 9. **A depth format chosen for the internal 0x10/0x11 GigaColor
    resources.**  **CLOSED, negative, confirmed.**  No such branch exists.
    Depth does participate in multisampling, but as a *presence* test: the
@@ -571,7 +642,25 @@ M9128.
 `M9X_FAA_AD` and `M9X_FAA_AF` force raw words, because a sweep that cannot
 reach a value the formula does not produce cannot test the formula.
 
-**Do not set `M9X_FAA_ALPHA_TO_COVERAGE` on this hardware**: it stops the
-engine, and a stopped engine is not cleared by a module reload - the machine
-has to be rebooted and a known-good fixture rerun before any later
-measurement can be trusted.
+`M9X_FAA_EF_MODE` writes the AA mode field into the raster range.  Modes 6
+and 7 are the ones the silicon obeys.
+
+**Three settings stop the engine on this hardware**: `M9X_FAA_ALPHA_TO_COVERAGE`
+with or without a mode, any mode value written into the preprocessing range,
+and mode 6 or 7 beside a depth attachment.  A stopped engine is not cleared
+by a module reload - the machine has to be rebooted, the module reloaded with
+`KO=` named explicitly, `/dev/dri` checked, and a known-good fixture rerun
+before any later measurement can be trusted.
+
+### The next step, stated precisely
+
+Not another sweep.  Allocate the buffer group of section 4b - about 16.55
+bytes a pixel, a second buffer a sixteenth of that, and a same-size surface -
+and find the command index that binds it.  The candidate register block is
+`0xa1/0xa3/0xa4`, which share a static index-group table entry with `0xad`
+(`MxMD.dll 0x65514 c7 05 d0 f5 20 00 a1 a3 a4 ad`) and which the vendor
+writes as `a1 = 0x28041968, a1 = 0, a3 = 0, a4 = 0` once at context creation
+and as `a1 = a3 = a4 = 0` after every blit, under the only packet-name string
+in the image, `RESET_FRAG_PTR`.  Those indices are outside this project's
+kernel command whitelist, so that step needs a kernel change, and it has
+deliberately not been made on the evidence so far.
