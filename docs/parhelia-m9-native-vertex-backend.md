@@ -365,7 +365,8 @@ BITFIELD64_MASK(location))`.  `m9_vs_attr_element()` is that map.
   whatever its slot, instead of only `VARYING_SLOT_COL0`, and no CPU stream
   is written at all.
 
-### 8.3 Results (MEASURED, M9148, 2026-09-17)
+### 8.3 Results (MEASURED, M9148, 2026-09-17; superseded for the textured
+scenes by `docs/parhelia-m9-glmark2-status.md`'s eighth standing)
 
 `tools/m9-mesa-vs.c` renders each case into a 320x240 RGBA8 FBO and compares
 every pixel a full pixel inside a predicted triangle against a CPU reference
@@ -472,9 +473,11 @@ isolates it.
 * **A projective texture coordinate** and a shadow or volume fetch's third
   component (section 4a).
 * **A coordinate stream beside another stream**, which needs the second
-  output target, and a **split fragment program**, which the engine draws
-  nothing from (section 4a).  A coordinate stream on its own is on by
-  default.
+  output target and which `M9X_VS_COORD_PAIR=1` allows, and a **split
+  fragment program**, which the engine draws nothing from (section 4a).  A
+  coordinate that is its pass's only stream, and one that shares an
+  interpolated varying's stream through the declaration's selectors, are
+  both on by default.
 * **One basic block**, the backend's own limit.
 * Instanced draws, primitive restart, user clip planes, polygon offset,
   polygon or line stipple, wide or smooth lines, non-fill polygon modes and
