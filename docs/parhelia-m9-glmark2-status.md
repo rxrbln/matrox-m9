@@ -16,17 +16,67 @@ MEASURED on the M9128 at 1920x1200, one hold of both hardware lock files on
 a freshly rebooted card, module `/root/tmp/dxtmip-m9x_drm.ko` named
 explicitly, **one X server and one `glmark2` invocation an arm** against one
 deployed library (md5 `08a16d74`) carrying both arms behind its knobs,
-`M9X_SKIP_REPORT=1 M9X_PROFILE=40`, **`duration=5` on every benchmark** --
-half glmark2's own default, which is what the older standings below were
-taken at, so the frame rates are not directly comparable with them.  33 of
-33 results and rc=0 in each arm, **0 stream timeouts**, and `texture`,
-`texpair`, `rtt300` and `vary2tex` exact before and after.
+`M9X_SKIP_REPORT=1 M9X_PROFILE=400`, glmark2's own default list at its own
+default duration.  33 of 33 results and rc=0 in each arm, **0 stream
+timeouts**, and `texture`, `texpair`, `rtt300` and `vary2tex` exact before
+and after.
 
 Two arms: **default** is what ships (`M9X_VS_TEXTURE=1`), **off** is
 `M9X_VS_TEXTURE=0`, every sampling draw back in the draw module, which is
 what shipped before.
 
-@@TABLE@@
+| benchmark | off fps | off native/module | default fps | default native/module |
+|---|---:|---|---:|---|
+| `build` use-vbo=false | 231 | 1997/0 | 231 | 1997/0 |
+| `build` use-vbo=true | 288 | 2797/0 | 288 | 2797/0 |
+| `texture` nearest | 290 | 390/2807 | 291 | 3197/0 |
+| `texture` linear | 290 | 0/2797 | 291 | 2797/0 |
+| `texture` mipmap | 290 | 0/2797 | 291 | 2797/0 |
+| `shading` gouraud | 231 | 2105/292 | 231 | 2397/0 |
+| `shading` blinn-phong-inf | 144 | 1597/0 | 144 | 1597/0 |
+| `shading` phong | 93 | 797/0 | 93 | 797/0 |
+| `shading` cel | 86 | 797/0 | 86 | 797/0 |
+| `bump` high-poly | 114 | 1197/0 | 114 | 1197/0 |
+| `bump` normals | 182 | 170/1427 | 185 | 1997/0 |
+| `bump` height | 164 | 0/1998 | 164 | 46/1552 |
+| `effect2d` 3x3 | 87 | 0/797 | 87 | 0/797 |
+| `effect2d` 15-tap | 34 | 0/397 | 34 | 0/397 |
+| `pulsar` | 226 | 9810/35 | 227 | 9525/92 |
+| `desktop` blur | 43 | 1470/1457 | 43 | 2031/329 |
+| `desktop` shadow | 130 | 0/37667 | 128 | 33931/3052 |
+| `buffer` map | 141 | 0/1747 | 138 | 1534/1138 |
+| `buffer` subdata | 141 | 0/1597 | 138 | 0/1597 |
+| `buffer` interleaved map | 141 | 0/1197 | 138 | 0/1197 |
+| `ideas` | 109 | 129310/143014 | 107 | 130314/165267 |
+| `jellyfish` | 77 | 7007/41973 | 77 | 3281/17268 |
+| `terrain` | 1 | 0/0 | 1 | 0/0 |
+| `shadow` | 110 | 2276/1376 | 107 | 1570/970 |
+| `refract` | 4 | 0/0 | 4 | 0/0 |
+| `conditionals` fs 0:vs 0 | 235 | 2409/254 | 227 | 2691/529 |
+| `conditionals` fs 5:vs 0 | 144 | 1197/0 | 141 | 1597/0 |
+| `conditionals` fs 0:vs 5 | 235 | 2397/0 | 227 | 1997/0 |
+| `function` low | 172 | 1597/0 | 167 | 1597/0 |
+| `function` medium | 73 | 797/0 | 72 | 797/0 |
+| `loop` no-loop | 167 | 237/1360 | 162 | 263/1334 |
+| `loop` uniform=false | 167 | 0/1597 | 162 | 0/1597 |
+| `loop` uniform=true | 160 | 0/1597 | 155 | 0/1597 |
+
+**Ten of the thirty-three are fully native in the off arm and fifteen with
+the default** -- a plain count of the benchmarks whose every counted draw
+took the compiled vertex program, nothing rounded up.  The five that moved
+are `texture` x3, `shading:gouraud` and `bump:normals`.
+
+**Read the frame rates against the control in the same run.**  A whole-arm
+drift of a few per cent is real here: of the thirty-three, **eighteen take
+the identical path in both arms** -- wholly native or wholly draw module in
+each -- and their default/off ratio averages **0.989**, spanning 0.966 to
+1.000 with the default arm running first.  Every benchmark whose path
+*changed* sits inside that band or above it: `texture` 1.003, `bump:normals`
+1.016, `pulsar` 1.004, `gouraud` 1.000, `bump:height` 1.000, `desktop:blur`
+1.000, `jellyfish` 1.000, `desktop:shadow` 0.985, `ideas` 0.982,
+`shadow` 0.973.  **Nothing falls below what an unchanged benchmark does in
+the same run**, and a sweep with the arms in the opposite order puts the
+default above the off arm on every row.
 
 ### Three things changed, and each was measured on its own
 
