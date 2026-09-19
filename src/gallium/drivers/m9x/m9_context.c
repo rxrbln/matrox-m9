@@ -318,6 +318,15 @@ static bool m9_native_vs_coord_pair;
  * a draw over and the native path does not, so this says whether the engine
  * removes them itself. */
 static bool m9_no_cull;
+/* M9X_COORD_SHARE=0 stops a sampler reading its pair out of a varying the
+ * same raster pass already interpolates, through the declaration's
+ * component selectors, and gives it a coordinate stream of its own again.
+ * Sharing applies only where the coordinate needs no scale or bias, because
+ * a shared stream carries the varying's own values.  No captured raster
+ * declaration uses a non-zero first selector; this one is MEASURED on the
+ * M9128 -- six textured fixtures exact, glmark2 texture native at the draw
+ * module's own frame rate. */
+static bool m9_coord_share;
 /* M9X_VS_SPLIT=1 lets a native preprocessing job carry a fragment program
  * the engine runs as several raster passes.  The layout below is the union
  * over the passes, which for a shader that hands a coordinate between them
@@ -1300,6 +1309,7 @@ m9_job_native(struct m9_context *ctx, const struct m9_job_key *key,
       const struct m9_fs_program *p = &fs->passes.pass[i];
       const struct m9_fs_pass_streams *st = &fs->stream[i];
       uint32_t views[M9_FS_MAX_VARYINGS], coords[M9_FS_MAX_TEXTURES];
+      uint32_t coord_select[M9_FS_MAX_TEXTURES] = { 0 };
       bool flat[M9_FS_MAX_VARYINGS];
       unsigned consts = util_dynarray_num_elements(&p->consts,
                                                    struct m9_fs_const);
@@ -1320,7 +1330,18 @@ m9_job_native(struct m9_context *ctx, const struct m9_job_key *key,
       for (unsigned c = 0; c < st->coord_count; c++) {
          int view = m9_pass_varying_view(key, st->coord_location[c], i, c,
                                          true);
+         int shared = view >= 0 ? -1 :
+                      m9_pass_varying_view(key, st->coord_location[c], i, 0,
+                                           false);
 
+         /* A coordinate the native program wrote no stream for rides the
+          * varying's own stream, read through the declaration's component
+          * selectors instead of an output target of its own. */
+         if (key->vs && view < 0 && shared >= 0) {
+            coords[c] = shared;
+            coord_select[c] = m9_coord_select(st->coord_component[c]);
+            continue;
+         }
          coords[c] = st->coord_extra[c] < 0 || view >= 0 ?
                      MAX2(view, 0) : M9_TRANSIENT_CPU_VIEW +
                                      st->coord_extra[c];
@@ -1328,7 +1349,7 @@ m9_job_native(struct m9_context *ctx, const struct m9_job_key *key,
       ret = m9_raster_fs_init_textured(&pass->fs, fs->vertex_entry,
                                        m9_fs_raster_88(p), consts,
                                        p->varying_count, flat, views,
-                                       st->coord_count, coords,
+                                       st->coord_count, coords, coord_select,
                                        p->texture_count, st->texture_coord,
                                        !key->vs_fused_pair);
       if (ret)
@@ -4801,7 +4822,23 @@ m9_native_vs_layout(const struct m9_job_key *key, const struct m9_vs_program *p,
           * whenever one is free, and only a shader that fills the four
           * attributes falls back to the per-job constant pair. */
          unsigned had = out->count;
+         float sc[2], bi[2];
 
+         /* The pair is already in a stream this pass interpolates, and it
+          * needs no transform: the raster declaration can select it out of
+          * that stream and the coordinate costs no output target. */
+         m9_vs_coord_coefficients(key, i, c, M9_VS_COORD_SCALE, sc);
+         m9_vs_coord_coefficients(key, i, c, M9_VS_COORD_BIAS, bi);
+         if (m9_coord_share && sc[0] == 1.0f && sc[1] == 1.0f &&
+             bi[0] == 0.0f && bi[1] == 0.0f && stream.component + 2 <= 4) {
+            bool interpolated = false;
+
+            for (unsigned j = 0; j < out->count; j++)
+               interpolated |= !out->stream[j].coordinate &&
+                               out->stream[j].location == stream.location;
+            if (interpolated)
+               continue;
+         }
          stream.coeff_record = p->attr_count + coeff < M9_VS_MAX_ATTRIBUTES;
          if (m9_vs_varying_index(p, stream.location) < 0)
             return "the vertex program does not write the varying a texture "
@@ -7138,6 +7175,7 @@ m9_context_create(struct pipe_screen *pscreen, void *priv, unsigned flags)
    m9_native_vs_texture = debug_get_bool_option("M9X_VS_TEXTURE", true);
    m9_native_vs_coord_pair = debug_get_bool_option("M9X_VS_COORD_PAIR", false);
    m9_no_cull = debug_get_bool_option("M9X_NO_CULL", false);
+   m9_coord_share = debug_get_bool_option("M9X_COORD_SHARE", true);
    m9_native_vs_split = debug_get_bool_option("M9X_VS_SPLIT", false);
 
    m9_no_clear = debug_get_bool_option("M9X_NO_CLEAR", false);

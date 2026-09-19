@@ -214,13 +214,28 @@ int m9_raster_fs_init(struct m9_raster_fs *r, unsigned vertex_entry,
 /* A texel slot whose value comes from a record, not from a sampler: it
  * links no coordinate stream and declares no attribute. */
 #define M9_RASTER_COORD_NONE 0xffu
-/* Texture k links coordinate stream texture_coord[k] as attribute 5+k. */
+/* The declaration word's low twelve bits are four three-bit component
+ * selectors, 6 leaving a slot unwritten; 0x0688 is the plain 0,1,2,3 every
+ * captured coordinate attribute uses.  This reads the pair at component c
+ * of a stream and nothing else, which is how a coordinate shares the
+ * varying's own stream instead of taking an output target of its own. */
+static inline uint32_t
+m9_coord_select(unsigned component)
+{
+   return component + 2 > 4 ? 0x0688u :
+          component | (component + 1) << 3 | 6u << 6 | 6u << 9;
+}
+
+/* Texture k links coordinate stream texture_coord[k] as attribute 5+k.
+ * coord_select, when given, carries one selector word a coordinate stream;
+ * zero there is the plain 0x0688. */
 int m9_raster_fs_init_textured(struct m9_raster_fs *r, unsigned vertex_entry,
                                uint32_t r88, unsigned const_count,
                                unsigned varying_count, const bool *flat_link,
                                const uint32_t *varying_view,
                                unsigned coord_count,
                                const uint32_t *coord_view,
+                               const uint32_t *coord_select,
                                unsigned texture_count,
                                const uint8_t *texture_coord,
                                bool clip_position);

@@ -297,7 +297,7 @@ m9_raster_fs_init(struct m9_raster_fs *r, unsigned vertex_entry,
 {
    return m9_raster_fs_init_textured(r, vertex_entry, r88, const_count,
                                      varying_count, flat_link, varying_view,
-                                     0, NULL, 0, NULL, true);
+                                     0, NULL, NULL, 0, NULL, true);
 }
 
 int
@@ -305,7 +305,9 @@ m9_raster_fs_init_textured(struct m9_raster_fs *r, unsigned vertex_entry,
                            uint32_t r88, unsigned const_count,
                            unsigned varying_count, const bool *flat_link,
                            const uint32_t *varying_view, unsigned coord_count,
-                           const uint32_t *coord_view, unsigned texture_count,
+                           const uint32_t *coord_view,
+                           const uint32_t *coord_select,
+                           unsigned texture_count,
                            const uint8_t *texture_coord, bool clip_position)
 {
    uint32_t stride[M9_RASTER_MAX_STREAMS] = { 0 };
@@ -345,10 +347,13 @@ m9_raster_fs_init_textured(struct m9_raster_fs *r, unsigned vertex_entry,
    /* Captured fs-tex2d/-two, pr-tex-mul-color: texture k reads its
     * coordinate stream as attribute 5+k, xyzw. */
    for (unsigned k = 0; k < texture_count; k++)
-      if (texture_coord[k] != M9_RASTER_COORD_NONE)
+      if (texture_coord[k] != M9_RASTER_COORD_NONE) {
+         uint32_t select = coord_select ? coord_select[texture_coord[k]] : 0;
+
          r->decl[r->decl_count++] = (5 + k) << 20 |
                                     (varying_count + texture_coord[k]) << 16 |
-                                    0x0688;
+                                    (select ? select : 0x0688u);
+      }
    /* Attribute 0 is the rasterizer position, 12 the clip code and 13 the
     * clip position; 556 of 556 captured raster passes declare all three.
     * The clip position is the one the pass can do without -- the same
