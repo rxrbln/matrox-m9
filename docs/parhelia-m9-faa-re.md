@@ -291,8 +291,18 @@ writes `a1 = 0x28041968`.  Index `0xad` shares a static index-group table
 entry with `0xa1/0xa3/0xa4` (`0x65514 c7 05 d0 f5 20 00 a1 a3 a4 ad`).  The
 emitter has no recoverable caller - it is reached only through a vtable slot
 - so its role is [OPEN].  Note that `0xa0..0xa6` are outside this project's
-kernel command whitelist, so testing it needs a kernel change; that change
-has deliberately **not** been made on a lead this thin.
+kernel command whitelist, so testing it needs a kernel change.
+
+**The captures give that lead no support at all** [CAPTURED, item 0 of
+`tools/m9-faa-capture-evidence.py --stream`]: over 1206 decoded vendor
+submissions the *only* index in `a0..a6` ever written is `a5`, eight times,
+always zero, and always in the same place - inside the four occlusion-query
+captures, paired with `d3` in a single `4545d3a5` packet behind a dependency
+marker, which is the query sequence and not this feature.  `a1`, `a3` and
+`a4` appear in **no** captured stream.  That is consistent with the vendor's
+shipping configuration having multisampling off (section 6), and it means a
+whitelist change for those indices rests on the static evidence alone, with
+no captured packet to check an emitted one against.
 
 ## 4b. The enable is index ef bits 31:29, and it is live [MEASURED]
 
