@@ -143,17 +143,20 @@ function.
 MEASURED on the M9128 on 2026-09-19, `GL_RENDERER` asserted as `Matrox M9`
 on every run and a known-good `texture` fixture passing after each:
 
-| destination | surface it reaches |
-|---|---|
-| `0x2d` | target 0 |
-| `0x30`, `0x31` | target 1 |
-| `0x34`, `0x35` | target 2 |
-| `0x38`, `0x39` | target 3 |
-| `0x2e`, `0x2f`, `0x32`, `0x33`, `0x36`, `0x37`, `0x3a`..`0x40` | none |
+| destination | surface it reaches | how |
+|---|---|---|
+| `0x2d` | target 0 | the single-output probe, and every captured program |
+| `0x30` | target 1 | the single-output probe |
+| `0x34` | target 2 | the single-output probe |
+| `0x38` | target 3 | the single-output probe |
+| `0x31`, `0x35`, `0x39` | targets 1, 2, 3 | the multiple-output ladder renders them exactly |
+| `0x2e`, `0x2f`, `0x32`, `0x33`, `0x36`, `0x37`, `0x3a`..`0x40` | none | the single-output probe finds no surface holding the value |
 
-So **target p owns the destination pair `0x2c + 4p` and `0x2d + 4p`**, four
-apart, and the captured single-target program uses the odd one of target 0's
-pair.  The driver emits `0x2d + 4p`.
+So **target p owns a destination pair four apart**: `0x2d + 4p` is measured
+for all four targets, `0x2c + 4p` follows for p = 1, 2 and 3 from the even
+halves that also land, and `0x2c` itself is DERIVED rather than measured --
+nothing needs it, because the captured single-target program uses `0x2d` and
+the driver emits `0x2d + 4p`.
 
 `0x2d + p` -- this note's earlier DERIVED value -- is refuted outright:
 `0x2e` reaches no surface at all.  The virtual registers `0xffec + 2p` and
