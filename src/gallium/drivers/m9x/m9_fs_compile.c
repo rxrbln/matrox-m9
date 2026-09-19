@@ -2718,6 +2718,21 @@ allocate(struct ctx *c)
    const uint64_t reserved = record_reserved(c);
    uint64_t busy = reserved;
 
+   /* A retry re-emits the lops against the values already in the array, so
+    * every placement here starts from none: a value an earlier attempt put
+    * in a register would otherwise hand that register back to the free list
+    * while this attempt still holds a live value in it.
+    * M9X_RA_RESET=0 restores the placement that carries over, which is what
+    * the interference check below is measured against. */
+   if (debug_get_bool_option("M9X_RA_RESET", true))
+      util_dynarray_foreach(&c->values, struct value, v) {
+         v->reg = -1;
+         v->def = -1;
+         v->last = -1;
+         v->general = false;
+         v->rg_read = false;
+      }
+
    /* Both lanes of a node are emitted, but a lane nothing reads is dead, and
     * so is whatever only that lane read.  A backward walk marks what the
     * output still needs; the rest never reaches the register file. */
@@ -2874,8 +2889,15 @@ allocate(struct ctx *c)
                return fail(c, fail_out_of_temporaries);
             }
          }
+         /* An interpolated input's register is an ordinary one written once
+          * by its own slot, so it joins the pool at its last read rather
+          * than staying reserved for the length of the program -- but only
+          * as far up the file as the fresh run itself reaches, so blending
+          * keeps 18..1f to itself. */
          util_dynarray_foreach(&c->values, struct value, v)
-            if (v->general && v->reg >= 0 && num_freed < ARRAY_SIZE(freed) &&
+            if ((v->general ||
+                 (v->interp && v->reg <= (c->blend ? 0x17 : 0x1f))) &&
+                v->reg >= 0 && num_freed < ARRAY_SIZE(freed) &&
                 (v->last == (int)s || (v->def == (int)s && v->last < 0)))
                freed[num_freed++] = v->reg;
       }
@@ -2883,6 +2905,22 @@ allocate(struct ctx *c)
    util_dynarray_foreach(&c->values, struct value, v) {
       if (v->reg < 0 && v->last >= 0)
          return fail(c, "internal: unallocated value");
+   }
+   /* Two values may share a register only if one is dead before the other
+    * is written.  A pass that breaks this renders every pixel, silently and
+    * wrong, so it is refused here and the splitter cuts instead.
+    * M9X_CHECK_RA=0 turns the check off to measure what it is catching. */
+   if (debug_get_bool_option("M9X_CHECK_RA", true)) {
+      util_dynarray_foreach(&c->values, struct value, v) {
+         if (v->reg < 0 || v->last < 0)
+            continue;
+         util_dynarray_foreach(&c->values, struct value, w) {
+            if (w <= v || w->reg != v->reg || w->last < 0)
+               continue;
+            if (v->def < w->last && w->def < v->last)
+               return fail(c, "internal: register held by two values");
+         }
+      }
    }
    /* Both lanes of every node are emitted, but a value no lane reads is an
     * interpolation the raster engine still steps through.  Drop those. */
