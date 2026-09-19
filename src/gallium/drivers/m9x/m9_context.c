@@ -308,9 +308,10 @@ static bool m9_split_submit;
 /* M9X_SPLIT_PASSES=N emits only the first N passes of a split shader. */
 static unsigned m9_split_passes;
 /* M9X_SPLIT_SKIP_ABOVE / M9X_SPLIT_SKIP_BELOW drop a split job by the area of
- * its target, and M9X_SPLIT_TRACE names every split job it emits. */
+ * its target, and M9X_SPLIT_TRACE names every split job it emits; 2 names
+ * every job, so a scene's split jobs can be counted against its whole. */
 static uint64_t m9_split_skip_above, m9_split_skip_below;
-static bool m9_split_trace;
+static unsigned m9_split_trace;
 /* Round a screen coordinate out to the grain and hold it inside the window. */
 static uint32_t
 m9_clip_floor(float v, uint32_t grain, uint32_t lo, uint32_t hi)
@@ -1760,6 +1761,13 @@ m9_submit_job(struct m9_context *ctx)
 
    if (!draws)
       return 0;
+   if (m9_split_trace > 1)
+      fprintf(stderr, "m9x job %llu: %ux%u passes %u draws %u records %u "
+              "colour %08x depth %08x clip %08x\n",
+              (unsigned long long)m9_prof_jobs + 1, ctx->params.width,
+              ctx->params.height, pass_count, draws, records,
+              ctx->params.color_desc, ctx->params.depth_desc,
+              ctx->params.clip_max);
    t_submit = m9_prof_begin();
    m9_prof_jobs++;
    m9_prof_records += records;
@@ -2168,6 +2176,24 @@ m9_consts_differ(const struct util_dynarray *a, const struct util_dynarray *b)
    return a->size != b->size || (a->size && memcmp(a->data, b->data, a->size));
 }
 
+/* Source records one job can hold under this key.  A split shader
+ * preprocesses one copy of the geometry per raster pass, so its share of the
+ * transient stream views is the ceiling divided by the pass count, less the
+ * padding a partial draw reaches its target's extent with.  Every producer
+ * bounds its runs by this, not by the whole ceiling: a run sized for the
+ * whole one is refused by m9_job_reserve below, and the geometry is then
+ * lost. */
+static unsigned
+m9_job_max_vertices(const struct m9_job_key *key)
+{
+   unsigned copies = key->variant && key->fs ? key->variant->passes.count : 1;
+   unsigned max = m9_draw_max_source_vertices() / MAX2(copies, 1u);
+
+   if (copies > 1)
+      max = max > M9_PAD_RECORDS ? max - M9_PAD_RECORDS : 0;
+   return max & ~3u;
+}
+
 static float *
 m9_job_reserve(struct m9_context *ctx, const struct m9_job_key *key,
                const struct util_dynarray *consts,
@@ -2187,8 +2213,9 @@ m9_job_reserve(struct m9_context *ctx, const struct m9_job_key *key,
 
    /* A split shader preprocesses one copy of the geometry a pass. */
    unsigned copies = key->variant && key->fs ? key->variant->passes.count : 1;
+   unsigned ceiling = m9_job_max_vertices(key);
 
-   if (padded * copies > m9_draw_max_source_vertices() || !record_floats)
+   if (padded > ceiling || !record_floats)
       return NULL;
    /* The bound textures are restated per draw, so they need not end a job;
     * only their extra stream words have to fit the command budget. */
@@ -2238,8 +2265,7 @@ m9_job_reserve(struct m9_context *ctx, const struct m9_job_key *key,
                       (key->vs && m9_consts_differ(vs_consts,
                                                    &ctx->job_vs_consts)) ||
                       record_floats != ctx->record_floats;
-      bool vertices_full = (records + padded) * copies >
-                           m9_draw_max_source_vertices();
+      bool vertices_full = records + padded > ceiling;
       unsigned relocs = (passes > 1 ?
                          m9_variant_relocs(key->variant, draws + 1) :
                          m9_draw_job_relocs(draws + 1, key->unit_count)) +
@@ -3557,6 +3583,19 @@ m9_index_range(const void *indices, unsigned index_size, unsigned first,
    *hi = b;
 }
 
+/* Geometry a producer could not place in a job.  It used to be dropped
+ * without a word, which is how a mesh under a split shader lost every run but
+ * its last; the skip report names it now. */
+static void
+m9_render_drop(struct m9_context *ctx)
+{
+   m9_warn_once(ctx, M9_WARN_FS,
+                "a draw's records did not fit one job; draws skipped");
+   m9_skip_reason(ctx, "a draw's records did not fit one job");
+   ctx->skipped_draws++;
+   m9_prof_skipped++;
+}
+
 /* An index list preprocesses the vertices it spans once and rasterises them
  * through a stored index run, instead of one record per index. */
 static void
@@ -3566,7 +3605,7 @@ m9_render_append_indexed(struct m9_vbuf_render *r, const struct m9_job_key *key,
                          unsigned count)
 {
    struct m9_context *ctx = r->ctx;
-   const unsigned max = m9_draw_max_source_vertices();
+   const unsigned max = m9_job_max_vertices(key);
    /* A list splits only on a whole primitive. */
    unsigned grain = topology == M9_TOPOLOGY_TRIANGLES ? 3 :
                     topology == M9_TOPOLOGY_LINES ? 2 : count;
@@ -3588,8 +3627,10 @@ m9_render_append_indexed(struct m9_vbuf_render *r, const struct m9_job_key *key,
       vertices = hi - lo + 1;
       out = m9_job_reserve(ctx, key, &ctx->key_consts, NULL, M9_RECORD_FLOATS,
                            vertices, &first, &extra);
-      if (!out || (extra && r->extra_count != key->variant->extra_count))
+      if (!out || (extra && r->extra_count != key->variant->extra_count)) {
+         m9_render_drop(ctx);
          return;
+      }
       /* An odd run is padded to a whole dword so every run stays aligned,
        * and M9_INDEX_TAIL halves beyond that repeat the last index. */
       index_first = util_dynarray_num_elements(&ctx->indices, uint16_t);
@@ -3636,7 +3677,7 @@ m9_render_append(struct m9_vbuf_render *r, const struct m9_job_key *key,
                  const void *indices, unsigned index_size, unsigned start,
                  unsigned count)
 {
-   const unsigned max = m9_draw_max_source_vertices();
+   const unsigned max = m9_job_max_vertices(key);
    bool list = topology == M9_TOPOLOGY_LINES ||
                topology == M9_TOPOLOGY_TRIANGLES;
 
@@ -3647,8 +3688,10 @@ m9_render_append(struct m9_vbuf_render *r, const struct m9_job_key *key,
    }
    /* Native connected primitives are bounded by max_vertex_buffer_bytes;
     * lists split on any multiple of six. */
-   if (count > max && !list)
+   if (count > max && !list) {
+      m9_render_drop(r->ctx);
       return;
+   }
    for (unsigned done = 0; done < count;) {
       unsigned n = MIN2(count - done, max);
       uint32_t first;
@@ -3656,10 +3699,10 @@ m9_render_append(struct m9_vbuf_render *r, const struct m9_job_key *key,
       float *out = m9_job_reserve(r->ctx, key, &r->ctx->key_consts, NULL,
                                   M9_RECORD_FLOATS, n, &first, &extra);
 
-      if (!out)
+      if (!out || (extra && r->extra_count != key->variant->extra_count)) {
+         m9_render_drop(r->ctx);
          return;
-      if (extra && r->extra_count != key->variant->extra_count)
-         return;
+      }
       for (unsigned i = 0; i < n; i++) {
          unsigned index = !indices ? start + done + i :
                           m9_index_at(indices, index_size, done + i);
@@ -4353,7 +4396,7 @@ m9_native_vs_append_welded(struct m9_context *ctx,
                            const struct m9_native_vs *n,
                            const struct m9_weld *weld, unsigned count)
 {
-   const unsigned max = m9_draw_max_source_vertices();
+   const unsigned max = m9_job_max_vertices(key);
    unsigned floats = n->layout.record_dwords;
    unsigned grain = n->topology == M9_TOPOLOGY_TRIANGLES ? 3 :
                     n->topology == M9_TOPOLOGY_LINES ? 2 : count;
@@ -4382,8 +4425,10 @@ m9_native_vs_append_welded(struct m9_context *ctx,
       if (!out ||
           !m9_vs_source_records_gather(&n->layout, n->map, n->size,
                                        n->buffer_count, n->first_vertex,
-                                       weld->source + lo, vertices, out))
+                                       weld->source + lo, vertices, out)) {
+         m9_render_drop(ctx);
          return true;
+      }
       index_first = util_dynarray_num_elements(&ctx->indices, uint16_t);
       words = util_dynarray_grow(&ctx->indices, uint16_t,
                                  k + (k & 1) + M9_INDEX_TAIL);
@@ -4413,7 +4458,7 @@ static bool
 m9_native_vs_append(struct m9_context *ctx, const struct m9_job_key *key,
                     const struct m9_native_vs *n, unsigned count)
 {
-   const unsigned max = m9_draw_max_source_vertices();
+   const unsigned max = m9_job_max_vertices(key);
    unsigned floats = n->layout.record_dwords;
    bool list = n->topology == M9_TOPOLOGY_LINES ||
                n->topology == M9_TOPOLOGY_TRIANGLES;
@@ -4439,8 +4484,10 @@ m9_native_vs_append(struct m9_context *ctx, const struct m9_job_key *key,
          if (!out ||
              !m9_vs_source_records(&n->layout, n->map, n->size,
                                    n->buffer_count, n->first_vertex + done, k,
-                                   out))
+                                   out)) {
+            m9_render_drop(ctx);
             return true;
+         }
          m9_job_commit(ctx, out, NULL, k, first, 0, 0, n->topology, n->cull,
                        n->lines, n->flat);
          done += k;
@@ -4466,8 +4513,10 @@ m9_native_vs_append(struct m9_context *ctx, const struct m9_job_key *key,
                            floats, vertices, &first, &extra);
       if (!out ||
           !m9_vs_source_records(&n->layout, n->map, n->size, n->buffer_count,
-                                lo + n->index_bias, vertices, out))
+                                lo + n->index_bias, vertices, out)) {
+         m9_render_drop(ctx);
          return true;
+      }
       index_first = util_dynarray_num_elements(&ctx->indices, uint16_t);
       words = util_dynarray_grow(&ctx->indices, uint16_t,
                                  k + (k & 1) + M9_INDEX_TAIL);
@@ -6209,7 +6258,7 @@ m9_context_create(struct pipe_screen *pscreen, void *priv, unsigned flags)
    m9_split_passes = debug_get_num_option("M9X_SPLIT_PASSES", 0);
    m9_split_skip_above = debug_get_num_option("M9X_SPLIT_SKIP_ABOVE", 0);
    m9_split_skip_below = debug_get_num_option("M9X_SPLIT_SKIP_BELOW", 0);
-   m9_split_trace = debug_get_bool_option("M9X_SPLIT_TRACE", false);
+   m9_split_trace = debug_get_num_option("M9X_SPLIT_TRACE", 0);
    m9_split_clip = debug_get_num_option("M9X_SPLIT_CLIP", 0);
    m9_split_partial = debug_get_bool_option("M9X_SPLIT_PARTIAL", false);
    m9_split_scratch = debug_get_bool_option("M9X_SPLIT_SCRATCH", true);
