@@ -257,16 +257,25 @@ fixture passing before and after every run:
 | `mrtcolor:2` | one `gl_FragColor` in both draw buffers, 0 of 76800 each |
 | `mrt10:2` | framebuffer incomplete before the driver sees it, section 2e |
 
-The ladder was run twice in one session on a clean boot and passed both
-times.  **Twice, on boots the box had already stalled on**, the same binary
-failed every target of `mrt:2` or `mrt:3` and logged a stream timeout, and
-after a clean reboot the same cases passed again.  Both of those boots had a
-`stream timeout` already in `dmesg` from another agent's work, or had had an
-X server killed mid-benchmark.  That is consistent with the standing rule
-that a stalled device renders nothing afterwards, but it is not proof that
-MRT is innocent: a multiple-target job is the heaviest one this driver
-builds, and nothing here separates "the card was already sick" from "MRT is
-the first thing to notice it".  It is recorded rather than explained.
+The ladder above was taken holding **both** hardware locks, with the
+known-good `texture` fixture passing before and after it.  That matters: the
+target carries two lock files, `/tmp/m9-hw.lock` and `/root/tmp/m9-hw.lock`,
+and they do not exclude each other, so three agents were running on one card
+believing they each held it.  It was seen directly -- another agent's
+`glmark2` rendering **on this session's own X server**, halving two
+benchmark frame rates -- and it is the explanation for the results this note
+originally recorded as an unexplained instability: two runs on which `mrt:2`
+or `mrt:3` failed every target and logged a stream timeout, and one on which
+the card rendered nothing at all with no timeout and even the control
+failed.  Every one of those was retaken under both locks and passed.
+
+Anything measured on this target without both locks held is suspect.  The
+destination map in section 2b, the scratch-pair ladder in section 2c and the
+fixture ladder here were all retaken under both locks with a control after;
+the two negative controls -- `M9X_FS_MRT_STEP=1`, the DERIVED `0x2d + p`, and
+`M9X_FS_MRT_SCRATCH=1`, the pair put back -- reproduce their exact original
+signatures there, `mrt:2` target 1 wrong for the first and `mrt:4` target 2
+wrong for the second.
 
 ## 3. What the driver now does
 
