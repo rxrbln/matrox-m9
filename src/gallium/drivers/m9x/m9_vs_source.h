@@ -21,6 +21,12 @@ struct m9_vs_source_attr {
    enum pipe_format format;
    unsigned components;    /* components the shader reads */
    unsigned dword;         /* dword offset of the element in the record */
+   /* A slot no vertex element feeds: value[] goes into every record of the
+    * draw.  The caller fills it -- a coordinate stream's scale and bias --
+    * between the layout and the records. */
+   bool constant;
+   uint8_t coeff_stream;
+   float value[4];
 };
 
 struct m9_vs_source_layout {

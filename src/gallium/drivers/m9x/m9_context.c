@@ -4570,8 +4570,6 @@ m9_native_vs_resolve(struct m9_context *ctx, const struct pipe_draw_info *info,
 {
    const struct pipe_rasterizer_state *rast = ctx->rasterizer;
    const struct m9_vs_program *p;
-   const char *layout_reason = "the vertex elements do not feed the "
-                               "declared attributes";
    unsigned in_pv, reduced;
    int64_t low;
 
@@ -4612,10 +4610,6 @@ m9_native_vs_resolve(struct m9_context *ctx, const struct pipe_draw_info *info,
        (rast->line_width > 1.0f || rast->line_smooth ||
         rast->line_stipple_enable))
       return "wide, smooth or stippled lines run through the draw module";
-   if (!m9_vs_source_layout_init(p, ctx->velems->elements, ctx->velems->count,
-                                 ctx->vertex_buffers, ctx->num_vertex_buffers,
-                                 &out->layout, &layout_reason))
-      return layout_reason;
    out->buffer_count = ctx->num_vertex_buffers;
    for (unsigned i = 0; i < out->buffer_count && i < PIPE_MAX_ATTRIBS; i++) {
       const struct pipe_vertex_buffer *vb = &ctx->vertex_buffers[i];
@@ -4654,6 +4648,38 @@ m9_native_vs_resolve(struct m9_context *ctx, const struct pipe_draw_info *info,
    } else {
       out->first_vertex = draw->start;
       out->vertex_count = draw->count;
+   }
+   return NULL;
+}
+
+/* The source records of one draw, built from the program the chosen output
+ * layout compiled: a coefficient slot has no vertex element, and its four
+ * floats are the multiply-add the sampler's transform and the target's
+ * addressed span come to. */
+static const char *
+m9_native_vs_records(struct m9_context *ctx, const struct m9_job_key *key,
+                     const struct m9_vs_program *p, struct m9_native_vs *out)
+{
+   const char *reason = "the vertex elements do not feed the declared "
+                        "attributes";
+
+   if (p->attr_count > M9_VS_HW_ATTRIBUTES)
+      return "more preprocessing attributes than the declaration can name";
+   if (!m9_vs_source_layout_init(p, ctx->velems->elements, ctx->velems->count,
+                                 ctx->vertex_buffers, ctx->num_vertex_buffers,
+                                 &out->layout, &reason))
+      return reason;
+   for (unsigned i = 0; i < out->layout.attr_count; i++) {
+      struct m9_vs_source_attr *a = &out->layout.attr[i];
+      const struct m9_vs_output *o;
+
+      if (!a->constant)
+         continue;
+      o = &p->outputs.stream[a->coeff_stream];
+      m9_vs_coord_coefficients(key, o->pass, o->coord, M9_VS_COORD_SCALE,
+                               a->value);
+      m9_vs_coord_coefficients(key, o->pass, o->coord, M9_VS_COORD_BIAS,
+                               a->value + 2);
    }
    if (!m9_vs_source_in_range(&out->layout, out->size, out->buffer_count,
                               out->first_vertex, out->vertex_count))
@@ -4701,6 +4727,7 @@ m9_native_vs_layout(const struct m9_job_key *key, const struct m9_vs_program *p,
    const struct m9_fs_pass_streams *st;
    const struct m9_fs_program *fp;
    const char *reason;
+   unsigned coeff = 0;   /* record slots the coordinate streams have taken */
 
    memset(out, 0, sizeof(*out));
    /* The pass-through colour image reads the primary colour from stream 0. */
@@ -4754,13 +4781,22 @@ m9_native_vs_layout(const struct m9_job_key *key, const struct m9_vs_program *p,
                                         .component = st->coord_component[c],
                                         .coord = c, .pass = i,
                                         .coordinate = true };
+         /* Whether the coefficients move is a property of the draw, not of
+          * the shader, and a layout that followed them would recompile --
+          * and split the job -- every time a scene mixed a padded render
+          * target with an ordinary texture.  So the record slot is spent
+          * whenever one is free, and only a shader that fills the four
+          * attributes falls back to the per-job constant pair. */
+         unsigned had = out->count;
 
+         stream.coeff_record = p->attr_count + coeff < M9_VS_MAX_ATTRIBUTES;
          if (m9_vs_varying_index(p, stream.location) < 0)
             return "the vertex program does not write the varying a texture "
                    "coordinate comes from";
          reason = m9_native_vs_add_stream(out, &stream);
          if (reason)
             return reason;
+         coeff += stream.coeff_record && out->count > had;
       }
    }
    return NULL;
@@ -5209,6 +5245,11 @@ m9_native_vs_draw(struct m9_context *ctx, const struct pipe_draw_info *info,
                         "the vertex program could not be compiled");
       return false;
    }
+   reason = m9_native_vs_records(ctx, &key, &variant->program, &n);
+   if (reason) {
+      m9_native_vs_note(ctx, reason);
+      return false;
+   }
    key.vs = &variant->program;
    key.vs_program = m9_native_vs_c2(ctx, (struct m9_fs_variant *)key.variant,
                                     variant, &key.vs_extra_entry,
@@ -5233,9 +5274,19 @@ m9_native_vs_draw(struct m9_context *ctx, const struct pipe_draw_info *info,
       m9_native_vs_note(ctx, "the native job would not take the draw");
       return false;
    }
-   if (ctx->debug && !ctx->native_vs_draws)
+   if (ctx->debug && !ctx->native_vs_draws) {
       fprintf(stderr, "m9x: native vertex draw taken, %u varyings, fused "
-              "pair %d\n", key.vs->varying_count, (int)key.vs_fused_pair);
+              "pair %d, %u attributes\n", key.vs->varying_count,
+              (int)key.vs_fused_pair, key.vs->attr_count);
+      for (unsigned j = 0; j < key.vs->outputs.count; j++) {
+         const struct m9_vs_output *o = &key.vs->outputs.stream[j];
+
+         fprintf(stderr, "m9x:   stream %u %s varying %u component %u%s\n", j,
+                 o->coordinate ? "coordinate" : "interpolated", o->location,
+                 o->component, o->coeff_record ? " coefficients in record" :
+                 o->coordinate ? " coefficients in the constant span" : "");
+      }
+   }
    ctx->native_vs_draws++;
    m9_prof_native++;
    return true;

@@ -45,8 +45,21 @@ m9_vs_source_layout_init(const struct m9_vs_program *program,
       const struct pipe_vertex_element *e;
       struct m9_vs_source_attr *s = &out->attr[i];
       unsigned components = 0;
+      unsigned element;
 
-      unsigned element = m9_vs_attr_element(program, i);
+      /* A coefficient slot has no element: the caller writes its four
+       * floats into every record of the draw. */
+      if (a->constant) {
+         s->constant = true;
+         s->coeff_stream = a->coeff_stream;
+         s->components = 4;
+         s->dword = dword;
+         if (s->dword != a->offset)
+            REFUSE("the record layout disagrees with the declaration");
+         dword += 4;
+         continue;
+      }
+      element = m9_vs_attr_element(program, i);
 
       if (element >= element_count)
          REFUSE("an attribute has no vertex element");
@@ -92,8 +105,11 @@ m9_vs_source_in_range(const struct m9_vs_source_layout *layout,
       return false;
    for (unsigned a = 0; a < layout->attr_count; a++) {
       const struct m9_vs_source_attr *s = &layout->attr[a];
-      unsigned texel = util_format_get_blocksize(s->format);
+      unsigned texel;
 
+      if (s->constant)
+         continue;
+      texel = util_format_get_blocksize(s->format);
       if (s->buffer >= buffer_count || !s->stride)
          return false;
       if ((uint64_t)(first + count - 1) * s->stride + s->src_offset + texel >
@@ -113,10 +129,17 @@ m9_vs_source_records(const struct m9_vs_source_layout *layout,
       return false;
    for (unsigned a = 0; a < layout->attr_count; a++) {
       const struct m9_vs_source_attr *s = &layout->attr[a];
-      const struct util_format_unpack_description *unpack =
-         util_format_unpack_description(s->format);
-      unsigned texel = util_format_get_blocksize(s->format);
+      const struct util_format_unpack_description *unpack;
+      unsigned texel;
 
+      if (s->constant) {
+         for (unsigned v = 0; v < count; v++)
+            memcpy(out + (uint64_t)v * layout->record_dwords + s->dword,
+                   s->value, sizeof(s->value));
+         continue;
+      }
+      unpack = util_format_unpack_description(s->format);
+      texel = util_format_get_blocksize(s->format);
       if (s->buffer >= buffer_count || !buffer_map[s->buffer] || !unpack ||
           !unpack->unpack_rgba || !s->stride)
          return false;
@@ -151,10 +174,17 @@ m9_vs_source_records_gather(const struct m9_vs_source_layout *layout,
       return false;
    for (unsigned a = 0; a < layout->attr_count; a++) {
       const struct m9_vs_source_attr *s = &layout->attr[a];
-      const struct util_format_unpack_description *unpack =
-         util_format_unpack_description(s->format);
-      unsigned texel = util_format_get_blocksize(s->format);
+      const struct util_format_unpack_description *unpack;
+      unsigned texel;
 
+      if (s->constant) {
+         for (unsigned v = 0; v < count; v++)
+            memcpy(out + (uint64_t)v * layout->record_dwords + s->dword,
+                   s->value, sizeof(s->value));
+         continue;
+      }
+      unpack = util_format_unpack_description(s->format);
+      texel = util_format_get_blocksize(s->format);
       if (s->buffer >= buffer_count || !buffer_map[s->buffer] || !unpack ||
           !unpack->unpack_rgba || !s->stride)
          return false;

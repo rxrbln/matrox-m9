@@ -462,7 +462,8 @@ operand(struct ctx *c, const struct held *a, const struct held *b,
 unsigned
 m9_vs_attr_element(const struct m9_vs_program *p, unsigned i)
 {
-   if (!p || i >= p->attr_count)
+   /* A coefficient slot is fed by the driver, not by an element. */
+   if (!p || i >= p->attr_count || p->attrs[i].constant)
       return ~0u;
    return util_bitcount64(p->inputs_read &
                           BITFIELD64_MASK(p->attrs[i].location));
@@ -1378,6 +1379,9 @@ struct input_use {
    unsigned location;
    unsigned driver_location;
    unsigned components;
+   /* A coefficient slot no vertex element feeds, and the coordinate stream
+    * it belongs to; -1 for an ordinary input. */
+   int coeff_stream;
 };
 
 static bool
@@ -1402,6 +1406,7 @@ note_input(struct ctx *c, struct input_use *used, unsigned *count,
       return fail(c, "more than four vertex attributes");
    used[*count].location = location;
    used[*count].driver_location = driver;
+   used[*count].coeff_stream = -1;
    used[(*count)++].components = comps;
    return true;
 }
@@ -1451,6 +1456,8 @@ declare_attributes(struct ctx *c, const struct input_use *used,
          hold_def(c, reg + j / 2, j % 2, &h);
       }
       p->attrs[i].components = used[i].components;
+      p->attrs[i].constant = used[i].coeff_stream >= 0;
+      p->attrs[i].coeff_stream = (uint8_t)MAX2(used[i].coeff_stream, 0);
       /* One 16-byte slot per attribute: every captured vendor record puts
        * its four attributes at dword offsets 0, 4, 8 and 12. */
       dword += 4;
@@ -1508,6 +1515,29 @@ write_output(struct ctx *c, nir_intrinsic_instr *store, unsigned reg_xy,
           write_pair(c, reg_zw, &h[2], &h[3]);
 }
 
+/* The coefficient slot a coordinate stream takes in the source record, or
+ * -1 when its pair is a constant of the job's span instead. */
+static int
+coeff_attr(const struct m9_vs_program *p, unsigned stream)
+{
+   for (unsigned i = 0; i < p->attr_count; i++)
+      if (p->attrs[i].constant && p->attrs[i].coeff_stream == stream)
+         return (int)i;
+   return -1;
+}
+
+static struct held
+held_coeff(unsigned stream, unsigned comp)
+{
+   struct held h;
+
+   memset(&h, 0, sizeof(h));
+   h.kind = HELD_INPUT;
+   h.a = M9_VS_COEFF_ATTRIB + stream;
+   h.b = comp;
+   return h;
+}
+
 /* A coordinate stream: the pair the sampler reads, taken from wherever in
  * the varying it sits and scaled and biased by the driver's own pair, which
  * is the packing, the affine fold and the render-target span the CPU used
@@ -1531,16 +1561,32 @@ write_coord_output(struct ctx *c, nir_intrinsic_instr *store, unsigned stream,
    h0 = out_held(store, component, 0.0f);
    h1 = out_held(store, component + 1, 0.0f);
 
-   scale = key_coord(c, stream, M9_VS_COORD_SCALE);
-   bias = key_coord(c, stream, M9_VS_COORD_BIAS);
-   es = const_index(c, scale);
-   eb = const_index(c, bias);
-   if (es < 0 || eb < 0)
-      return fail(c, "constant span overflow");
-   if (!operand(c, &h0, &h1, false, &rb, &sb))
-      return false;
-   emit(c, w0_make(NONE, rb, eb, reg_xy, 0, 0x1c),
-        w1_make(VS_MAD_RKK | 1u << 8 | sb << 6, es, NONE));
+   /* Coefficients in the record: the multiply and the add are both
+    * register forms, which costs one slot over the constant multiply-add
+    * and lets two draws of different spans share a job. */
+   if (coeff_attr(c->p, stream) >= 0) {
+      struct held s0 = held_coeff(stream, 0), s1 = held_coeff(stream, 1);
+      struct held b0 = held_coeff(stream, 2), b1 = held_coeff(stream, 3);
+      struct held ht = held_temp(c);
+      int t = reg_alloc_pinned(c, &ht);
+
+      if (t < 0)
+         return fail(c, "out of temporaries");
+      if (!emit_mul(c, t, &h0, &h1, &s0, &s1) ||
+          !emit_add(c, reg_xy, &ht, &ht, &b0, &b1, false))
+         return false;
+   } else {
+      scale = key_coord(c, stream, M9_VS_COORD_SCALE);
+      bias = key_coord(c, stream, M9_VS_COORD_BIAS);
+      es = const_index(c, scale);
+      eb = const_index(c, bias);
+      if (es < 0 || eb < 0)
+         return fail(c, "constant span overflow");
+      if (!operand(c, &h0, &h1, false, &rb, &sb))
+         return false;
+      emit(c, w0_make(NONE, rb, eb, reg_xy, 0, 0x1c),
+           w1_make(VS_MAD_RKK | 1u << 8 | sb << 6, es, NONE));
+   }
    memset(c->holds[reg_xy], 0, sizeof(c->holds[reg_xy]));
    emit_move(c, reg_zw, 0x1c, reg_xy, 1);
    memset(c->holds[reg_zw], 0, sizeof(c->holds[reg_zw]));
@@ -1773,6 +1819,21 @@ compile_impl(struct ctx *c, nir_function_impl *impl,
          return fail(c, "a stream the shader writes no varying for");
    }
    nvar = out.count;
+   /* A coordinate stream whose coefficients move between draws reads them
+    * from a record slot of its own, so that a draw sampling a differently
+    * addressed target appends records to the pending job instead of ending
+    * it on a changed constant span. */
+   for (unsigned j = 0; j < out.count; j++) {
+      if (!out.stream[j].coordinate || !out.stream[j].coeff_record)
+         continue;
+      if (inputs >= M9_VS_MAX_ATTRIBUTES)
+         return fail(c, "no record slot left for a coordinate's "
+                     "coefficients");
+      used[inputs].location = M9_VS_COEFF_ATTRIB + j;
+      used[inputs].driver_location = 0;
+      used[inputs].components = 4;
+      used[inputs++].coeff_stream = (int)j;
+   }
 
    nir_foreach_instr(instr, block) {
       nir_alu_instr *alu;

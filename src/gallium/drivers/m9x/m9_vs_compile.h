@@ -166,6 +166,11 @@ enum m9_vs_const_kind {
 #define M9_VS_COORD_SCALE 0u
 #define M9_VS_COORD_BIAS  1u
 
+/* Synthetic attribute semantic of a coordinate stream's coefficient slot,
+ * past every gl_vert_attrib, so the register model tells it from a real
+ * input.  Stream j takes M9_VS_COEFF_ATTRIB + j. */
+#define M9_VS_COEFF_ATTRIB 0x100u
+
 struct m9_vs_const {
    enum m9_vs_const_kind kind;
    float value[2];
@@ -191,6 +196,11 @@ struct m9_vs_output {
    uint8_t coord;
    uint8_t pass;
    bool coordinate;
+   /* Take the multiply-add's coefficients from a source-record slot the
+    * driver fills per draw instead of from the per-job constant span.  A
+    * draw that samples a differently addressed target then appends records
+    * to the pending job rather than ending it. */
+   bool coeff_record;
 };
 
 struct m9_vs_outputs {
@@ -209,6 +219,11 @@ struct m9_vs_attr {
    unsigned offset;        /* dword offset of the element in the record */
    unsigned components;    /* components the shader reads; the rest default */
    uint8_t select[4];
+   /* A slot no vertex element feeds: the driver writes its four floats into
+    * every record of the draw.  coeff_stream names the coordinate stream
+    * whose scale (components 0, 1) and bias (2, 3) it carries. */
+   bool constant;
+   uint8_t coeff_stream;
 };
 
 struct m9_vs_program {
