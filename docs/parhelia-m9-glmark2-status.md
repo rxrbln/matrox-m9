@@ -1,6 +1,49 @@
 # glmark2 on the m9x driver: where the 60 fps goal actually stands
 
-## Standing 2026-09-19 (merged): the whole thirty-three on one build
+## Standing 2026-09-19: the three scenes that were not drawing everything
+
+MEASURED at 1920x1200 on the M9128, one X server and one process a benchmark,
+`M9X_SKIP_REPORT=1`, **0 stream timeouts**, fixture suite **228 of 228 PASS**
+before the sweep.  Each of the three had been reporting a frame rate for a
+picture it did not draw.
+
+| benchmark | before: fps, draws skipped a frame | after: fps, skipped | what it was |
+|---|---|---|---|
+| `shadow` | 145, **1447** | 111, **0** | a depth-only framebuffer derived no raster parameters |
+| `jellyfish` | 125, **1245** | 77, **0** | the blend path took only registers the program never named |
+| `loop` uniform=true | 345, **3446** | 159, **0** | the loop bound arrived as the float encoding of 5 |
+
+The frame rates fall because the work is now being done.  `loop` at
+159 fps sits beside the 167 fps of `loop:fragment-uniform=false`, which
+is the same picture with the bound written as a literal, so the specialised
+variant is doing the same five iterations.
+
+### The pictures, not only the tallies
+
+CAPTURED off scanout at 1920x1200, `xwd` of the root window 6 s into each run,
+one X server a scene:
+
+| scene | distinct colours | mean r,g,b |
+|---|---:|---|
+| `shadow` | 805 | 22.5, 22.5, 22.5 |
+| `jellyfish` | 232951 | 68.8, 105.1, 199.9 |
+| `loop` uniform=true | 1786 | 44.5, 44.5, 44.5 |
+
+`shadow` is the one worth reading closely, because a frame rate and a skip
+tally cannot tell an empty shadow map from a full one: the fragment shader
+samples the map and multiplies the lit colour by **0.5** where the surface is
+farther from the light than the stored depth, and with an empty map
+(`light_distance` = 1.0) that branch is never taken.  The capture's luminance
+histogram has exactly that pair -- **76 over 26.7% of pixels and 38 over
+3.0%**, one being half the other, with 68% black background.  So the map
+carries real depth and the shadow is drawn.
+
+`jellyfish` is the blended scene, 232951 distinct colours over a blue
+distribution centred near 160-165.  `loop` is the `fract` noise pattern, 256
+luminance levels thinly spread over the grid with the background black.
+
+
+## Superseded: standing 2026-09-19 (merged): the whole thirty-three on one build
 
 The two sweeps below it were measured on **different builds that were never
 tested together** -- the `terrain` sweep without `refract`'s record-ceiling
