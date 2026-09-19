@@ -199,7 +199,7 @@ One more shape stops the engine and is worth recording: **four colour
 outputs all writing one destination** (`M9X_FS_MRT_STEP=0`) produced a kernel
 stream timeout and cost a reboot.  The driver never emits it.
 
-## 2d. What the clear does
+## 2d. What the clear does, and the garbage it used to leave
 
 The quad clear runs the fixed-function program, whose one colour output
 reaches target 0 alone, so a `glClear` of a multiple-target framebuffer left
@@ -207,9 +207,23 @@ every other attachment holding whatever was in its object.  `m9_clear_locked`
 now fills the attachments past the first on the CPU: a solid colour is the
 same word in tiled order as in linear order, which is what makes that correct
 without the engine.  A single-target framebuffer -- every frame of every
-benchmark in this tree -- does none of it.  An engine-side clear of the extra
-targets is still open, and would want a native program writing the clear
-colour to every bound destination.
+benchmark in this tree -- does none of it.
+
+That alone was not enough, and the difference is a measurement worth keeping.
+The clear quad's *job* still bound every attachment the framebuffer held, so
+the engine ran a program with one colour output against four enabled targets
+and wrote undefined data into the three it had no output for -- racing the
+CPU fill that was supposed to have cleared them.  It showed as a few hundred
+altered pixels in target 1 and none in targets 2 and 3, which is exactly what
+the clear job's own mask words predict: `ab`'s upper half left target 1 open
+while `ac`, zero in a key the clear memsets, gated targets 2 and 3 off.  The
+count moved between runs, which is the race.  The clear job now binds target
+0 alone (`m9_job_key.single_target`), and `mrt:4:5` renders **0 of 76800
+differing on all four targets**, the two unwritten ones holding their clear
+exactly (MEASURED).
+
+An engine-side clear of the extra targets is still open, and would want a
+native program writing the clear colour to every bound destination.
 
 ## 2e. Two limits the GL version imposes, not the engine
 
@@ -224,11 +238,9 @@ colour to every bound destination.
 * **A bound target the shader does not write** is left undefined by GL.  The
   driver gates every byte lane of such a target off, which is stricter than
   GL asks, so it keeps its contents.  MEASURED with `mrt:4:5` (four bound,
-  targets 0 and 2 written): targets 0 and 2 are exact and target 3 keeps its
-  clear exactly, while target 1 came back with 868 of 76800 pixels altered.
-  That is inside what GL leaves undefined, so it is reported and not counted
-  as a failure, and why the byte-lane mask does not fully protect one target
-  while it fully protects another is **OPEN**.
+  targets 0 and 2 written): all four are exact, the two the shader leaves
+  alone holding their clear colour to the pixel.  It took a second fix to get
+  there -- see below.
 
 ## 2f. What the fixture ladder measures, and one instability worth naming
 
@@ -241,7 +253,7 @@ fixture passing before and after every run:
 | `mrt:2` | both targets, 0 of 76800 pixels differ |
 | `mrt:3` | all three, 0 of 76800 |
 | `mrt:4` | all four, 0 of 76800 |
-| `mrt:4:5` | targets 0 and 2 exact; 1 and 3 hold their clear, bar 750 pixels of target 1 that GL leaves undefined |
+| `mrt:4:5` | all four exact: 0 and 2 carry their shader's value, 1 and 3 their clear |
 | `mrtcolor:2` | one `gl_FragColor` in both draw buffers, 0 of 76800 each |
 | `mrt10:2` | framebuffer incomplete before the driver sees it, section 2e |
 
