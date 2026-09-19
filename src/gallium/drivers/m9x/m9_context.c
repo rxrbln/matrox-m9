@@ -170,7 +170,10 @@ struct m9_vbuf_render {
    uint16_t vertex_size;
    bool has_color;
    unsigned extra_count;
-   int extra_offset[M9_FS_MAX_VARYINGS + M9_FS_MAX_TEXTURES];  /* float offset, -1 if unwritten */
+   /* One per CPU view of the whole variant, not of one pass: a split
+    * shader has a view per interpolated input and per coordinate stream of
+    * every pass, which a one-pass bound is eight short of. */
+   int extra_offset[M9_FS_MAX_EXTRA];  /* float offset, -1 if unwritten */
    struct util_dynarray indices;
 };
 
@@ -1362,6 +1365,20 @@ m9_job_state_fini(struct m9_job_state *s)
    memset(s, 0, sizeof(*s));
 }
 
+/* Release what the held job holds, without charging it to anything. */
+static void
+m9_job_state_clear(struct m9_context *ctx)
+{
+   util_dynarray_foreach(&ctx->job_textures, struct pipe_resource *, held)
+      pipe_resource_reference(held, NULL);
+   util_dynarray_clear(&ctx->job_textures);
+   ctx->job_unit_dwords = 0;
+   util_dynarray_clear(&ctx->records);
+   util_dynarray_clear(&ctx->indices);
+   util_dynarray_clear(&ctx->draws);
+   util_dynarray_clear(&ctx->extra);
+}
+
 /* Drop the job held in this state with a named reason, releasing what it
  * holds; the caller has already swapped it into the context. */
 static void
@@ -1374,14 +1391,7 @@ m9_job_state_drop(struct m9_context *ctx, const char *warn, const char *why)
    m9_skip_reason(ctx, why);
    ctx->skipped_draws += draws;
    m9_prof_skipped += draws;
-   util_dynarray_foreach(&ctx->job_textures, struct pipe_resource *, held)
-      pipe_resource_reference(held, NULL);
-   util_dynarray_clear(&ctx->job_textures);
-   ctx->job_unit_dwords = 0;
-   util_dynarray_clear(&ctx->records);
-   util_dynarray_clear(&ctx->indices);
-   util_dynarray_clear(&ctx->draws);
-   util_dynarray_clear(&ctx->extra);
+   m9_job_state_clear(ctx);
 }
 
 /* The padding a partial draw reaches its target's extent with: four
@@ -1481,7 +1491,8 @@ m9_pad_records(float *out, unsigned floats, float x0, float y0, float x1,
 static bool
 m9_split_pad(struct m9_context *ctx, const struct m9_job_key *key,
              unsigned *records, uint32_t *cx0, uint32_t *cy0, uint32_t *cx1,
-             uint32_t *cy1, float x0, float y0, float x1, float y1)
+             uint32_t *cy1, float x0, float y0, float x1, float y1,
+             bool *empty)
 {
    struct m9_draw_record *draw = ctx->draws.data;
    unsigned floats = ctx->record_floats;
@@ -1499,8 +1510,16 @@ m9_split_pad(struct m9_context *ctx, const struct m9_job_key *key,
     * only when the draw module transformed it. */
    if (!m9_split_pad_enable || key->vs || ctx->lost ||
        util_dynarray_num_elements(&ctx->draws, struct m9_draw_record) != 1 ||
-       (base + M9_PAD_RECORDS) * copies > m9_draw_max_source_vertices())
+       (base + M9_PAD_RECORDS) * copies > m9_draw_max_source_vertices()) {
+      if (m9_split_trace)
+         fprintf(stderr, "m9x pad: refused enable %d vs %d lost %d draws %u "
+                 "records %u copies %u max %u\n", m9_split_pad_enable,
+                 key->vs != NULL, ctx->lost,
+                 (unsigned)util_dynarray_num_elements(&ctx->draws,
+                                                      struct m9_draw_record),
+                 base, copies, m9_draw_max_source_vertices());
       return false;
+   }
    /* The clip window keeps the pixels the geometry covers and nothing else:
     * the centres its extent encloses, held inside the window in force. */
    bx0 = MAX2((int32_t)ceilf(x0 - 0.5f), 0);
@@ -1511,8 +1530,17 @@ m9_split_pad(struct m9_context *ctx, const struct m9_job_key *key,
    by0 = MAX2(by0, *cy0);
    bx1 = MIN2(bx1, *cx1);
    by1 = MIN2(by1, *cy1);
-   if (bx1 <= bx0 || by1 <= by0)
+   /* The geometry encloses no pixel centre -- MEASURED on terrain, a band
+    * 0.37 pixels high -- so the draw writes nothing and there is nothing to
+    * pad it out to.  Dropping it loses no pixel, and it is not a draw the
+    * driver failed to carry. */
+   if (bx1 <= bx0 || by1 <= by0) {
+      if (m9_split_trace)
+         fprintf(stderr, "m9x pad: empty box %u,%u..%u,%u from "
+                 "%.2f,%.2f..%.2f,%.2f\n", bx0, by0, bx1, by1, x0, y0, x1, y1);
+      *empty = true;
       return false;
+   }
    if (!m9_pad_expand(&idx, draw, ctx->indices.size ? ctx->indices.data : NULL))
       goto fail;
    for (unsigned r = 0; r < M9_PAD_RECTS; r++) {
@@ -1560,6 +1588,10 @@ m9_split_pad(struct m9_context *ctx, const struct m9_job_key *key,
    ctx->padded_draws++;
    return true;
 fail:
+   if (m9_split_trace)
+      fprintf(stderr, "m9x pad: failed topology %u indices %u count %u "
+              "records %u\n", draw->topology, draw->index_count, draw->count,
+              base);
    util_dynarray_fini(&idx);
    return false;
 }
@@ -1828,11 +1860,18 @@ m9_submit_job(struct m9_context *ctx)
        * place; or refuse it by name.  M9X_SPLIT_PAD=0 and M9X_SPLIT_SCRATCH=0
        * step down the list, and M9X_SPLIT_PARTIAL=1 submits it as it
        * stands. */
+      bool empty = false;
+
       if (partial && !m9_split_partial &&
           !m9_split_pad(ctx, key, &records, &split_x0, &split_y0, &split_x1,
-                        &split_y1, x0, y0, x1, y1)) {
-         const char *held = m9_split_defer(ctx, key, records, x0, y0, x1, y1);
+                        &split_y1, x0, y0, x1, y1, &empty)) {
+         const char *held;
 
+         if (empty) {
+            m9_job_state_clear(ctx);
+            return 0;
+         }
+         held = m9_split_defer(ctx, key, records, x0, y0, x1, y1);
          if (!held)
             return 0;
          m9_job_state_drop(ctx,
@@ -3111,8 +3150,14 @@ m9_fs_variant(struct m9_context *ctx, struct m9_fs_state *fs,
       v->reason = "the multi-pass schedule is not enabled (M9X_SPLIT)";
       v->ok = false;
    }
-   if (!v->ok && ctx->debug)
+   /* M9X_FS_REFUSED=1 prints the shader a variant was refused for, which
+    * M9X_DEBUG also does but behind the whole job trace. */
+   if (!v->ok && (ctx->debug ||
+                  debug_get_bool_option("M9X_FS_REFUSED", false))) {
       fprintf(stderr, "m9x: variant refused: %s\n", v->reason);
+      if (!ctx->debug)
+         nir_print_shader(clone, stderr);
+   }
    ralloc_free(clone);
    if (v->ok) {
       m9_record_layout(v);
