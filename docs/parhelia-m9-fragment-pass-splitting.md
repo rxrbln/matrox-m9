@@ -540,10 +540,16 @@ what terrain asks for: `fsconst:24` (209 slots, 56 constants) renders
 exactly and **`fsconst:30` (257 slots, 68 constants) fails every one of
 76800 pixels and stops the engine**.  A captured vendor pass carries 39
 constants (`m9_fs_corpus.h`, entry 189 pass 2), so the limit lies between 56
-and 68 and is not decoded further here.  The driver does not bound the
-constant count at all today (`m9_raster_fs_init_textured` refuses only above
-127), so a shader between those two numbers will stop the card; that is a
-separate defect from terrain's and is listed in the backlog.
+and 68 and is not decoded further here.  The driver now bounds the count at
+the highest measured-good 56 (`M9_RASTER_MAX_CONSTS`, checked in
+`m9_raster_fs_init_textured`, which used to refuse only above the field's
+127).  MEASURED on the card with the bound in place, both locks held and a
+known-good fixture passing after: `fsconst:24` still renders every pixel
+exactly, and `fsconst:30` now prints "a job could not be built; those draws
+are skipped" and leaves the engine alive -- where before it failed all 76800
+pixels *and* logged a stream timeout that cost a reboot.  Splitting on the
+constant count, rather than refusing, is the remaining work and is listed in
+the backlog.
 
 The fault is **not** the integer-uniform lowering merged the same day: the
 whole ladder was re-run on a tree rebased onto `cfaaf3a`, and

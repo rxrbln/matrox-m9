@@ -41,17 +41,23 @@ value or invoke submission slot `+0x100`; the destructor loop only updates the
 wrap-aware completion view and polls **[BIN][DER]**. A missing or impossible
 producer completion can consequently spin forever.
 
-Two joins remain absent: the final native instruction field that routes each
-GLSL color export to RT0..RT3, and proof that every Linux MRT attachment enters
-the exact `m9x954` resource vector whose backing fence is updated. Those gaps
-prevent a narrower root-cause claim and make RT1..RT3 unsafe to expose.
+The first of the two joins is now closed, and not statically: the native
+destination that routes a colour export to RT0..RT3 was MEASURED on the card
+on 2026-09-19 as the pair `0x2c + 4p` / `0x2d + 4p`, by binding four targets
+with every write mask open and asking which surface a single output's
+destination reached (`docs/parhelia-m9-mrt-routing.md` section 2).  The second
+-- proof that every *Linux vendor* MRT attachment enters the `m9x954` resource
+vector -- remains absent, and is moot for the new driver, which replaces that
+ABI with its own explicit per-job BO list: every colour attachment is added
+through `m9_batch_add_reloc` with `COLOR` and read/write access, which is what
+section "Safe contract for the new driver" asks for.
 
-The first of the two is narrowed, not closed, in
-`docs/parhelia-m9-mrt-routing.md`: three sites in MxMD build a target's two
-virtual output registers as `0xffec + 2p` and `0xffed + 2p`, which with the
-measured single-target destination `0x2d` gives `0x2d + p` as the physical
-selector (DERIVED).  That note also closes the per-target write mask, which
-lives in raster `ab` and `ac`, from the 2026-09-17 captures.
+`docs/parhelia-m9-mrt-routing.md` carries the measurement.  The three MxMD
+sites that build a target's two virtual output registers as `0xffec + 2p` and
+`0xffed + 2p` are still the only static evidence; the DERIVED reading of them
+as a physical `0x2d + p` was **wrong** -- `0x2e` reaches no surface -- and the
+physical step is four, not one.  That note also closes the per-target write
+mask, which lives in raster `ab` and `ac`, from the 2026-09-17 captures.
 
 ## Preserved probe boundary
 
@@ -222,8 +228,11 @@ job contract:
    BOs pinned until reset makes access safe; never replace recovery with an
    unbounded close loop or free a possibly active BO.
 
-Until the two missing joins and the live retirement tests below pass, expose
-RT0 only:
+The new driver now exposes four targets (`caps->max_render_targets = 4`,
+MEASURED 2026-09-19).  What follows is the gate that applied while the
+routing was unknown, kept because the *kernel-side* clauses are still the
+contract command validation has to hold to; expose RT0 only when any of them
+is not met:
 
 * report `PIPE_CAP_MAX_RENDER_TARGETS = 1`, `GL_MAX_DRAW_BUFFERS = 1`, and
   `GL_MAX_COLOR_ATTACHMENTS = 1`;
@@ -236,7 +245,13 @@ RT0 only:
 
 ## Exact gates for enabling RT1..RT3
 
-The following work remains. None can be claimed from the current artifacts:
+Gates 1, 3 and 4 are met (MEASURED 2026-09-19, `docs/parhelia-m9-mrt-routing.md`):
+the native colour-export selector is measured and joined to the declaration
+slot, an RT-only job was decoded from the driver's own stream dump with
+`b2/b3`, the `COLOR` relocation, the index-89 format field and the RT1 colour
+export in it, and every target was read back independently with sentinel
+values that identify their target.  Gate 2 is moot for this driver, which
+replaced the vendor ABI with an explicit per-job BO list.  What remains:
 
 1. Recover or differentially capture the native color-export selector for
    locations 0..3 and join it to the MxMD declaration slot. The descriptor,
