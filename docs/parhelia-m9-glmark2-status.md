@@ -2,8 +2,11 @@
 
 ## Read this first: five standings below, measured on different builds
 
-The **tenth** is the current one: the vertex sine on by default and the
-vertex subtract's two operand fields put the right way round.  The **ninth**
+The **eleventh** is the current one: `M9X_VS_MAX_SLOTS` raised from 128 to
+188 where the vertex stage's own cost steps, and the constant span bounded at
+the 63 pairs the engine takes.  The **tenth** is the build before it: the
+vertex sine on by default and the vertex subtract's two operand fields put
+the right way round.  The **ninth**
 is the build before it: the vertex program specialised on the
 uniform that bounds its loop, and the register a dead intermediate used to
 hold given back.  The **eighth** is the build before it -- the coordinate
@@ -13,6 +16,33 @@ stream's coefficients moved out of the per-job constant span,
 that; the **sixth** measures the whole default run in one `glmark2`
 invocation on the build before *that*.  The older ones are kept as the
 measurements they were and are not swept together with the ninth.
+
+## Standing 2026-09-20 (eleventh): the length bound raised, and nothing moved
+
+MEASURED on the M9128 at 1920x1200 on a **freshly rebooted card**, module
+`/root/tmp/dxtmip-m9x_drm.ko` named explicitly, **one X server and one
+`glmark2` invocation an arm** against one deployed library (md5 `6b1fdaad`)
+carrying both arms behind the knob, both hardware lock files held across the
+whole cycle, `M9X_SKIP_REPORT=1`, `M9X_PROFILE=40`, `duration=5` on every
+benchmark.  **33 of 33 results and rc=0 in both arms, 0 stream timeouts**,
+and `texture`, `texpair`, `rtt300`, `vary2tex`, `vssin` and `vsbool` each
+0 of 76800 pixels different before and after the sweep.  The fixture suite
+on the same card is **298 cases, 298 PASS, 0 FAIL, 0 non-M9**, which includes
+the seven new vertex chain and span cases.
+
+`M9X_VS_MAX_SLOTS=128` against `M9X_VS_MAX_SLOTS=188`, the new default:
+**twenty-seven of the thirty-three rows are equal to the frame rate**, and
+the loudest four are `effect2d 3x3` 1.049, `buffer subdata` 1.048,
+`blinn-phong-inf` 0.986 and `jellyfish` 0.986 -- the sweep's own noise.  The
+mean ratio is 1.000.
+
+**Nothing changed path, and that is the result.**  No glmark2 vertex shader
+compiles to between 129 and 188 slots, so the raised bound admits none of
+them; the three `buffer` rows stay in the draw module because their shader is
+**299 slots**, still past the bound and still measured to lose there.
+`bump:height` compiles to 224 slots and stays out for the same reason.  The
+bound moved to where the measurement puts it, and this sweep is the proof
+that moving it took nothing with it.
 
 ## Standing 2026-09-20 (tenth): the vertex sine on the engine, and no regression
 
@@ -168,10 +198,19 @@ twenty-first benchmark set fully native -- the three `buffer` rows -- and
 each of them **loses about a quarter of its frame rate**: 136 to 101, 100 and
 99 against a control that is otherwise equal row for row.  glmark2's buffer
 vertex shader is four clip-space transforms and three edge distances, 299
-slots where every program the engine already wins on is at most 79, and what
-exactly makes the long program lose is not established.  `M9X_VS_MAX_SLOTS`
-is therefore a bound placed in the gap between the two measured ends, not a
-cost model.
+slots where every program the engine already wins on is at most 79.
+
+**What makes the long program lose is now measured**
+(`docs/parhelia-m9-vertex-isa-gaps.md` section 1.8): the engine's own vertex
+stage costs about twice as much per vertex past a step between 186 and 191
+slots, and at 299 slots it costs more than the entire host transform it
+replaces.  MEASURED at 1920x1200 on the three `buffer` rows in one
+invocation an arm, `M9X_PROFILE=200`: the draw-module arm is 6.40 ms a frame
+with `draw 2.96 emit 1.92`, and the native arm is **10.03 ms** with **`draw
+0.00 emit 0.00`**.  The host half goes to zero and the frame still gets 3.6 ms
+slower.  `M9X_VS_MAX_SLOTS` is therefore **188**, the highest length measured
+to run below that step -- a cost bound, not a correctness one: the engine
+renders a 5161-slot program exactly.
 
 That shader only reaches the backend at all because a register held by a dead
 intermediate is now given back (`parhelia-m9-native-vertex-backend.md`
@@ -181,13 +220,17 @@ held by intermediates of instructions that had long since finished, and the
 `bump:height` compiles now too, but its draws still fall back for a reason
 further down the path -- it writes four varyings.
 
-**The bound is worse than a cost model elsewhere.**  MEASURED on 2026-09-20
-with the vertex sine on: `M9X_VS_MAX_SLOTS=4096` lets ioquake3's eight
+**That run did not fail for its length.**  MEASURED on 2026-09-20 with the
+vertex sine on: `M9X_VS_MAX_SLOTS=4096` lets ioquake3's eight
 `deformVertexes` programs run, and the engine answers `two-pass job failed
 (Input/output error); context lost`, after which the game renders nothing and
-reports 380 fps of it, and the run leaves a kernel stream timeout behind.  So
-past some length these programs do not merely lose frame rate, they do not
-complete -- `docs/parhelia-m9-vertex-isa-gaps.md` section 1.6.
+reports 380 fps of it, and the run leaves a kernel stream timeout behind.
+The resource those programs exhaust is the **constant span**, not the
+program store: the engine takes 63 constant pairs and stops at 65, and those
+eight need 68 to 82.  The driver bounds the span as well now
+(`M9_VS_MAX_CONST_PAIRS`), which is what keeps a raised length bound from
+reaching that configuration -- `docs/parhelia-m9-vertex-isa-gaps.md`
+sections 1.7 to 1.9.
 
 ## Standing 2026-09-19 (eighth): the textured draws run on the engine
 

@@ -243,8 +243,9 @@ steady-state phase profile is the same to the hundredth of a millisecond --
 `draw 1.67 emit 1.52 ioctl 5.23` at 5.87.  Nothing moved onto the engine, so
 nothing could move.
 
-**Lifting the bound does not work.**  `M9X_VS_MAX_SLOTS=4096` with the sine
-on lets all eight run, and the engine refuses them:
+**Lifting the bound did not work, and §1.7 says why it could not have.**
+`M9X_VS_MAX_SLOTS=4096` with the sine on lets all eight run, and the engine
+refuses them:
 
 ```text
 m9x: two-pass job failed (Input/output error); context lost
@@ -253,17 +254,27 @@ m9x: two-pass job failed (Input/output error); context lost
 after which the game renders nothing and reports 380.5 fps of it -- the
 profile for those frames is `native 0 draw module 0` with every phase at
 0.00 ms, which is what an empty frame costs.  That run left **one kernel
-stream timeout**, and everything measured after it in the same session is
-discarded as taken across a damaged card (the card was rebooted and
-re-proved with the fixture suite before anything else was measured).
+stream timeout**.
 
-So the 128-slot bound is load-bearing here, and what stands between
-ioquake3's waving surfaces and the engine is no longer the sine.  What it is
-instead is **OPEN**: the compiled length of those eight programs is not
-recorded, nor is the point between 128 and 4096 where the two-pass job stops
-completing, nor whether the failure is the length itself or something else
-these programs contain.  The measurement that would settle it is a sweep of
-`M9X_VS_MAX_SLOTS` in that range with a known-good fixture after each step.
+What the eight cost is now recorded.  MEASURED 2026-09-20 on the M9128, the
+same timedemo, `M9X_DEBUG=1`; the backend's debug line states the compiled
+length and the constant span of every program it compiles, refused or not:
+
+| programs | slots | constant pairs | of which uniform |
+|---:|---:|---:|---:|
+| 4 | 138 | 68, 69, 69, 69 | 44 |
+| 1 | 146 | 70 | 45 |
+| 1 | 180 | 74 | 47 |
+| 1 | 180 | 75 | 47 |
+| 1 | 206 | 82 | 54 |
+
+Read against §1.7: every one of them is far inside what the engine will run
+for length -- it runs a **5161-slot** program exactly -- and every one of
+them is past the **63 constant pairs** the engine's span will take.  Seven of
+the eight are inside the raised length bound and are refused for the span
+alone; only the 206-slot one is past both.  So the 4096 run handed the engine
+five spans of 68 to 82 pairs, which is the configuration §1.7 stops the card
+with on purpose.
 
 **The picture.**  MEASURED, and not from the frame rate: the demo was played
 in real time on both arms and frozen with `SIGSTOP`, and the screen read
@@ -289,6 +300,145 @@ neither does the backend's own sequence: §1.6 measures the eight programs
 being refused for their length the moment the sine stops refusing them, and
 Mesa's expansion is longer than the backend's twelve slots, so it would reach
 that bound sooner.
+
+### 1.7 The wall is the constant span, not the program length (MEASURED)
+
+Two synthetic programs settle it, on the pattern `fschain:N`/`fsconst:N` used
+for the raster stage.  `vschain:N` and `vsconst:N` in `tools/m9-mesa-glsl.c`
+rotate a pair of values N times **in the vertex shader** and interpolate the
+result; a rotation is linear, so the reference is the same per-pixel one the
+fragment chain uses.  `vschain` cycles three angles and holds the span at 27
+pairs while the length grows; `vsconst` gives every step its own angle, so
+the span grows with the length.  Whichever fails first names the resource.
+MEASURED on the M9128, one process a case, a known-good native-vertex fixture
+(`vssin`) run after every case:
+
+| case | slots | span | result |
+|---|---:|---:|---|
+| `vschain:64` | 361 | 27 | 0 of 76800 differ |
+| `vschain:256` | 1321 | 27 | 0 of 76800 differ |
+| `vschain:512` | 2601 | 27 | 0 of 76800 differ |
+| `vschain:1024` | **5161** | 27 | **0 of 76800 differ** |
+| `vsconst:16` | 121 | 53 | 0 of 76800 differ |
+| `vsconst:20` | 141 | 61 | 0 of 76800 differ |
+| `vsconst:21` | 146 | **63** | **0 of 76800 differ** |
+| `vsconst:22` | 151 | **65** | **76800 of 76800 differ, kernel stream timeout** |
+| `vshalf:21` | 149 | 65 | 76800 of 76800 differ, kernel stream timeout |
+
+**There is no length ceiling within reach.**  A 5161-slot program renders
+every pixel exactly.  There is a **span ceiling between 63 and 65 pairs**, and
+it is sharp: 63 is exact and 65 stops the engine, reproduced on two programs
+of different length, each on a freshly rebooted card.
+
+**And it is the span the job hands the engine, not the constants the program
+names.**  `M9X_VS_CONST_PAD=K` appends K unnamed pairs to the span, which
+changes index `8c`'s count and index `8e`'s end address and nothing else.
+MEASURED with `vschain:8` -- 81 slots naming 27 pairs, the same program in
+every arm:
+
+| pad | span | result |
+|---:|---:|---|
+| 0 | 27 | 0 of 76800 differ |
+| 20 | 47 | 0 of 76800 differ |
+| 36 | **63** | **0 of 76800 differ** |
+| 38 | **65** | **76800 of 76800 differ, kernel stream timeout** |
+
+So the resource is the span the engine loads from `8d..8e`.  Neither the
+field nor the layout explains it: `8c` carries the count in eight bits, and
+the span may run to pair 93 before it reaches the linked record at `0x300`.
+The raster stage's own ceiling, measured earlier between 56 and 68 pairs, is
+consistent with the same 64-pair file (DERIVED; the raster bracket was never
+narrowed).  `M9_VS_MAX_CONST_PAIRS` is **63**, the highest measured-good
+count, and `M9X_VS_MAX_CONST_PAIRS` is the knob over it.
+
+### 1.8 What a long program costs, and where the length bound belongs
+
+The length bound is a **cost** bound, and it now has numbers.  `vsperf:N` in
+`tools/m9-mesa-glsl.c` runs the same chain over 20000 vertices a draw, sixty
+draws with a `glFinish()` around them, on a two-row strip of slivers so the
+raster stage has almost nothing to do.  MEASURED on the M9128, five processes
+a point where a point is quoted twice:
+
+| slots | native ms/draw | draw module ms/draw |
+|---:|---:|---:|
+| 111 | 0.697 | 0.862 |
+| 141 | 0.789 | — |
+| 161 | 0.849 | 0.930 |
+| 181 | 0.910 (x5 identical) | 0.983 |
+| 186 | 0.925 (x5 identical) | — |
+| **191** | **1.78 - 2.06** | — |
+| 196 | 1.83 - 2.10 | — |
+| 201 | 1.87 | 1.297 |
+| 681 | 5.466 | 2.028 |
+
+**A step of about two, between 186 and 191 slots.**  It is repeatable to the
+millisecond below the step and reproduces above it, and it is a property of
+the vertex program rather than of the image it sits in: with a four-step
+fragment chain in front of it in the same `c2` image the step lands between
+**188 and 193** slots -- 188 costs 1.290 ms and 193 costs 2.14 - 2.38 -- so
+the fragment program in front moves it by less than the instrument's own
+granularity.  Below the step native beats the draw module at every length
+measured; above it native loses outright (201 slots: 1.87 against 1.30 ms).
+
+glmark2's `buffer` scene is the same statement at scene scale.  MEASURED at
+1920x1200, one X server, one deployed library, `M9X_PROFILE=200`:
+
+| arm | ms/frame | draw | emit | ioctl | vertex path |
+|---|---:|---:|---:|---:|---|
+| `M9X_VS_MAX_SLOTS=128` | 6.40 | 2.96 | 1.92 | 4.09 | draw module 200 |
+| `M9X_VS_MAX_SLOTS=4096` | 10.03 | **0.00** | **0.00** | 4.98 | native 200 |
+
+The host half goes to **zero** -- 4.88 ms of transform and emit a frame -- and
+the frame still gets **3.6 ms slower**, so the 299-slot program costs the
+engine more than the whole host transform it replaces.  That is what the
+quarter of the frame rate the `buffer` rows lost was.
+
+`M9X_VS_MAX_SLOTS` is therefore **188**, the highest length measured to run
+below the step, in both instruments.  It is not a correctness bound -- §1.7
+runs 5161 slots exactly -- and it is not a cost model either, because a
+length is only a proxy for what a program costs; it is the measured point
+where the engine stops being the cheaper place to run one.
+
+### 1.9 What ioquake3 still needs (OPEN, and it is not the length)
+
+With the bound at 188 and the span bound at 63, the timedemo tally reads:
+
+```text
+5 m9x vs: native
+7 m9x vs: the vertex program's constant span is past M9X_VS_MAX_CONST_PAIRS
+1 m9x vs: the compiled vertex program is past M9X_VS_MAX_SLOTS
+2 m9x vs: more than four vertex attributes
+```
+
+MEASURED at 1280x1024, `cl_renderer opengl2`, `bench` timedemo, one X server
+an arm on a freshly rebooted card: **64.3 fps in both arms**, and the
+steady-state profile is `draw 1.75 emit 1.52 ioctl 5.28` at 5.99 ms/frame
+against `draw 1.77 emit 1.53 ioctl 5.26` at 6.01.  Nothing moved onto the
+engine, so nothing could move.  (The 70.4/70.5 fps of §1.6 was another
+session: the previous library, re-run in this one, also reports 64.3, so the
+six frames a second are the card's day and not the change.)
+
+What would move them is **getting the span under 63 pairs**, and the
+breakdown above says where it would have to come from: 44 to 54 of the 55 to
+69 user pairs a program names are **uniforms**, not literals.  Three routes
+exist and none is measured:
+
+* the appended tail owns pairs 9..21 unconditionally, so a user program has
+  9 + 42 = **51** pairs available out of 64 -- the tail's thirteen are a
+  seventh of the file spent on a viewport transform;
+* a pair holds two scalars and is addressed by one swizzle, `0` for a
+  broadcast and `1` for the two halves.  Two broadcast constants could share
+  a pair if a swizzle selects the second half alone; that encoding is **not
+  captured** and guessing it is how the operand fields were got wrong before
+  (§8);
+* the uniforms are what they are, but ioquake3's generic opengl2 shader is
+  specialised on some of them already (`M9X_VS_SPECIALISE`), and a value the
+  backend can inline stops being a pair.
+
+Until one of those lands, ioquake3's `deformVertexes` surfaces stay in the
+draw module, and they stay there for the **constant span** -- not the sine,
+which is accepted, and not the length, which is now inside the bound for
+seven of the eight.
 
 ## 2. There is no integer ALU (STATIC, and a lowering)
 
