@@ -48,6 +48,48 @@
 #include "util/u_math.h"
 #include "util/u_memory.h"
 
+/* The NIR the vertex stage is handed, here rather than in the screen so the
+ * offline gate compiles the very options the driver does. */
+const nir_shader_compiler_options m9_vs_nir_options = {
+   .lower_bitops = true,
+   .lower_scmp = true,
+   .lower_flrp32 = true,
+   .lower_flrp64 = true,
+   .lower_fsat = true,
+   .lower_bitfield_insert = true,
+   .lower_bitfield_extract = true,
+   .lower_fdph = true,
+   .lower_fmod = true,
+   .lower_hadd = true,
+   .lower_uadd_sat = true,
+   .lower_usub_sat = true,
+   .lower_iadd_sat = true,
+   .lower_pack_snorm_2x16 = true,
+   .lower_pack_snorm_4x8 = true,
+   .lower_pack_unorm_2x16 = true,
+   .lower_pack_unorm_4x8 = true,
+   .lower_pack_half_2x16 = true,
+   .lower_pack_split = true,
+   .lower_unpack_snorm_2x16 = true,
+   .lower_unpack_snorm_4x8 = true,
+   .lower_unpack_unorm_2x16 = true,
+   .lower_unpack_unorm_4x8 = true,
+   .lower_unpack_half_2x16 = true,
+   .lower_extract_byte = true,
+   .lower_extract_word = true,
+   .lower_uadd_carry = true,
+   .lower_usub_borrow = true,
+   .lower_mul_2x32_64 = true,
+   .lower_ifind_msb = true,
+   .max_unroll_iterations = 32,
+   .lower_uniforms_to_ubo = true,
+   .lower_device_index_to_zero = true,
+   .support_indirect_inputs = (uint8_t)BITFIELD_MASK(MESA_SHADER_STAGES),
+   .support_indirect_outputs = (uint8_t)BITFIELD_MASK(MESA_SHADER_STAGES),
+   .no_integers = true,
+   .has_fused_comp_and_csel = true,
+};
+
 enum held_kind {
    HELD_NONE,
    HELD_INPUT,     /* a component of a vertex attribute, or a declared

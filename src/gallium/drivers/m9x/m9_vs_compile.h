@@ -17,6 +17,11 @@
 #include "util/u_dynarray.h"
 
 struct nir_shader;
+struct nir_shader_compiler_options;
+
+/* The options the vertex stage's NIR is produced under; the screen names
+ * them and the offline gate compiles against the same struct. */
+extern const struct nir_shader_compiler_options m9_vs_nir_options;
 
 /* An index-23 word is dword << 24 | attr << 20 | stream << 16 | selectors:
  * bits 19:16 name the source stream, which the raster declaration builder
