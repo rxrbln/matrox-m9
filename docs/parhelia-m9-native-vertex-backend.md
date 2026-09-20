@@ -236,12 +236,24 @@ corpus: multiply-add over three registers (`op2 = 0x02`, `e = 0x3f`),
 `op2 = 0x11` class 5, step `op2 = 0x13` class 7), all in `vs-lighting`,
 `vs-math`, `vs-builtin-light`, `ff-fog-exp` and `ff-fog-exp2`.
 
-Still taken from the fragment unit's measured forms and **not captured in a
-vertex program**: add and subtract of two registers, **minimum**
-(`op2 = 0x19` class 2), saturate and fract/floor/ceil.  Those four are
-UNTESTED on the vertex unit in the sense that no capture states them; the
-backend has emitted them on the default path since 2026-09-17, so a form that
-did nothing would have shown as a wrong scene rather than silently.
+Captured in no vertex program, but **MEASURED on the vertex unit** by
+`tools/m9-mesa-glsl.c`'s `vsprim:*` probes on 2026-09-20: add and subtract of
+two registers (`vsprim:sub`), **minimum** (`op2 = 0x19` class 2) and maximum
+against a constant (`vsprim:minmax`), each exact in all 1200 cells.  Saturate
+and fract/floor/ceil remain stated by no capture; `fract` is exercised by
+every vertex sine and measured exact through it
+(`docs/parhelia-m9-vertex-isa-gaps.md` section 1.5).
+
+This paragraph used to argue that because the backend had emitted these forms
+on the default path since 2026-09-17, "a form that did nothing would have
+shown as a wrong scene rather than silently".  That was wrong, and the
+subtract is the counter-example: its two operand fields were swapped for days
+without a wrong scene, because nothing on the default path reached one.  The
+form computes **the `a` operand minus the `c` one**; a comparison against a
+register, the complement of a condition and both halves of a two-register
+minimum or maximum were all inverted by it, and each of those is rare in the
+vertex programs that were running.  `docs/parhelia-m9-vertex-isa-gaps.md`
+section 8 has the measurement.
 
 Absolute value is a compare, a negate and a select, and square root is the
 argument times its reciprocal square root with the vendor's zero guard --

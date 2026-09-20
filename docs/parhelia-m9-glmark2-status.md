@@ -1,8 +1,10 @@
 # glmark2 on the m9x driver: where the 60 fps goal actually stands
 
-## Read this first: four standings below, measured on different builds
+## Read this first: five standings below, measured on different builds
 
-The **ninth** is the current one: the vertex program specialised on the
+The **tenth** is the current one: the vertex sine on by default and the
+vertex subtract's two operand fields put the right way round.  The **ninth**
+is the build before it: the vertex program specialised on the
 uniform that bounds its loop, and the register a dead intermediate used to
 hold given back.  The **eighth** is the build before it -- the coordinate
 stream's coefficients moved out of the per-job constant span,
@@ -11,6 +13,68 @@ stream's coefficients moved out of the per-job constant span,
 that; the **sixth** measures the whole default run in one `glmark2`
 invocation on the build before *that*.  The older ones are kept as the
 measurements they were and are not swept together with the ninth.
+
+## Standing 2026-09-20 (tenth): the vertex sine on the engine, and no regression
+
+MEASURED on the M9128 at 1920x1200 on a **freshly rebooted card**, module
+`/root/tmp/dxtmip-m9x_drm.ko` named explicitly, **one X server and one
+`glmark2` invocation an arm** against one deployed library (md5 `1582bf8b`)
+carrying both arms behind its knob, both hardware lock files held across the
+whole cycle, `M9X_SKIP_REPORT=1`, `M9X_PROFILE=40`, **`duration=5`** on every
+benchmark.  **33 of 33 results and rc=0 in both arms, 0 stream timeouts**,
+and `texture`, `texpair`, `rtt300`, `vary2tex`, `vssin` and `vsbool` each
+0 of 76800 pixels different before and after the whole sweep.
+
+The library is the ninth standing's plus two changes: `fsin`/`fcos` compile
+natively by default, and the vertex subtract no longer swaps its two operand
+fields, which fixes every register comparison, every complement of a
+condition and both halves of a two-register minimum and maximum
+(`docs/parhelia-m9-vertex-isa-gaps.md` section 8).  The arms are
+**`M9X_VS_SINCOS=1`**, what ships now, and **`M9X_VS_SINCOS=0`**, the
+control.
+
+This sweep is a **guard, not an expectation**.  One glmark2 vertex shader
+uses a sine -- `jellyfish.vert`, twice -- and no other does, so the two arms
+should agree almost everywhere, and they do.
+
+| benchmark | sincos=1 fps | sincos=0 fps |
+|---|---:|---:|
+| `build` use-vbo=false | 279 | 279 |
+| `build` use-vbo=true | 300 | 300 |
+| `texture` nearest / linear / mipmap | 292 / 291 / 291 | 292 / 291 / 291 |
+| `shading` gouraud | 248 | 248 |
+| `shading` blinn-phong-inf | 154 | 153 |
+| `shading` phong / cel | 98 / 91 | 98 / 91 |
+| `bump` high-poly / normals / height | 135 / 185 / 164 | 135 / 185 / 164 |
+| `effect2d` 3x3 / 15-tap | 87 / 34 | 87 / 34 |
+| `pulsar` | 224 | 222 |
+| `desktop` blur / shadow | 47 / 128 | 47 / 128 |
+| `buffer` map | 155 | 155 |
+| `buffer` subdata | **139** | **155** |
+| `buffer` interleaved map | 155 | 155 |
+| `ideas` | 108 | 108 |
+| `jellyfish` | 76 | 75 |
+| `terrain` | 1 | 1 |
+| `shadow` | 118 | 118 |
+| `refract` | 8 | 8 |
+| `conditionals` fs0:vs0 / fs5:vs0 / fs0:vs5 | 234 / 144 / 233 | 234 / 144 / 233 |
+| `function` low / medium | 171 / 73 | 171 / 73 |
+| `loop` no-loop / uniform=false / uniform=true | 171 / 171 / 163 | 171 / 171 / 163 |
+
+**Thirty of the thirty-three are equal to the frame rate.**  `jellyfish`, the
+one benchmark with a vertex sine, is 76 against 75; `shading
+blinn-phong-inf` and `pulsar` differ by one and two on shaders with no sine
+in them, which is this sweep's noise.
+
+The one row worth naming is **`buffer` subdata, 139 with the sine on against
+155 with it off**.  Its vertex shader contains no sine, so the knob cannot
+reach it; the other two `buffer` rows are 155 in both arms, and all three
+were 136 in the ninth standing.  UNTESTED whether it repeats: it is recorded
+as an unexplained single row rather than swept under the noise, and a rerun
+of the three `buffer` rows alone would settle it.
+
+Nothing regressed, nothing that moved lost frame rate, and the sine costs
+nothing where it is not used.
 
 ## Standing 2026-09-20 (ninth): eighteen of the thirty-three run every vertex on the engine
 

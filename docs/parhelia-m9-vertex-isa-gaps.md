@@ -12,16 +12,17 @@ lowering the fragment backend already has, or whether the hardware lacks the
 operation outright.
 
 It was opened because ioquake3's opengl2 renderer is almost entirely on the
-CPU vertex path: of its fifteen vertex programs, eight are refused on `fsin`,
-two on more than four vertex attributes, and five compile natively (MEASURED
-by the caller of this work, not re-derived here).
+CPU vertex path: of its fifteen vertex programs, eight were refused on `fsin`,
+two on more than four vertex attributes, and five compiled natively (MEASURED
+by the caller of this work).  Sections 1.5, 2 and 9 record what happened when
+the offline answers were put on the engine.
 
 Labels: **STATIC** is read from a named address of a named binary, with the
 bytes; **CAPTURED** is read from a saved vendor command stream; **DERIVED** is
 a join of those, with the join given; **MEASURED** is a hardware result;
 **OPEN** names what is not settled and the one experiment that would settle it.
 
-Run `python3 tools/m9-vertex-isa-gap-evidence.py` (47 checks) to re-derive every STATIC,
+Run `python3 tools/m9-vertex-isa-gap-evidence.py` (48 checks) to re-derive every STATIC,
 CAPTURED and DERIVED claim below.  It ends with negative controls that must
 find a planted fault, so a pass cannot be a stale one.  The vendor package is
 not in the repository, so pass `--dll` when `xddm32_*/MSerX/MxMD.dll` lives
@@ -32,16 +33,26 @@ quietly passing.
 
 | refused | verdict | where it stands |
 |---|---|---|
-| `fsin`, `fcos` | **no instruction exists**; the vendor lowers it | implemented behind `M9X_VS_SINCOS`, verified offline, never run on the engine |
+| `fsin`, `fcos` | **no instruction exists**; the vendor lowers it | implemented, **on by default**; MEASURED on the M9128, worst error 7.085e-05 (§1.5) |
 | `flog2`, and so `fpow` | an instruction exists on the fragment unit; not seen on the vertex unit | OPEN, one hardware probe (§4) |
-| `iand`, `ior`, `inot`, `b2f16` | **no integer ALU exists**; they are float lowerings | implemented, verified offline, no new instruction word |
+| `iand`, `ior`, `inot`, `b2f16` | **no integer ALU exists**; they are float lowerings | implemented and on by default, but they drew a **wrong picture** until §8; MEASURED exact since |
 | `flrp` | a float lowering, and the driver's own NIR options already lower it | nothing to do (§5) |
 | register-register dot | **an instruction exists and already runs**, `op2 = 0x0d` | DERIVED, not yet used by either backend (§6) |
+| `fcsel_gt` | the select's own comparison class would give it | **refused today**, and `x > 0.0 ? a : b` is a common shape (§9) |
 
-Two further findings fell out and are recorded because they change what the
-existing notes say: several forms the backend note calls "untested on the
-vertex unit" are in fact CAPTURED there (§6), and the offline gate compiles
-NIR that differs from what the driver hands the backend (§7).
+**What running it on the engine found.**  Everything above had been verified
+offline only.  The sine was right the first time the card drew it; the
+Boolean combinators were not, and neither were `min` and `max` of two
+registers, because those stand on a subtract whose two operand fields the
+vertex backend had the wrong way round (§8).  Offline evidence could not see
+it: the gate's simulator held the same belief as the compiler.
+
+Three further findings are recorded because they change what the existing
+notes say: several forms the backend note calls "untested on the vertex unit"
+are in fact CAPTURED there (§6); `min` against a constant, which no capture
+states on the vertex unit, is MEASURED there (§6); and the offline gate used
+to compile NIR that differs from what the driver hands the backend, which is
+now fixed (§7).
 
 ## 1. There is no sine and no cosine (STATIC, CAPTURED, DERIVED)
 
@@ -157,9 +168,58 @@ verified against the NIR reference — which evaluates the true `sinf` — withi
 the polynomial's own 1.5e-4 bound, and `sincos-default-off` is still refused
 with the reason `fsin` when the knob is unset.
 
-**The knob stays off until the engine has run it.**  Nothing about the
-sequence is hardware evidence: every instruction form in it is one the backend
-already emits and has run, but the sequence has not.
+**The knob is on by default since the engine ran it** (§1.5).  It still
+refuses when set to 0, which is how a fixture says which path drew a picture.
+
+### 1.5 What the engine made of it (MEASURED)
+
+`tools/m9-mesa-glsl.c` carries three cases.  The target is cut into 40x30
+cells of 8x8 pixels and each cell carries its own argument **in a vertex
+attribute** -- not a uniform, which the backend would fold on the host with
+the C library's own sine -- so one draw sweeps 1200 arguments and every pixel
+names the one that drew it.  1152 cells step across `[-4pi, 4pi]` and the
+last 48 are the reduction's edges one by one: every quarter-turn from
+`-4pi` to `4pi`, each approached from either side, zero, `1e-7`, and `+-20`
+and `+-50`, where the reduction's own multiply starts losing bits.
+
+* `vssin` writes `sin` and `cos` into two channels and is checked pixel by
+  pixel against the C library.
+* `vssinerr` subtracts the C library's answer **in the shader**, from a second
+  attribute component, and multiplies what is left by 1024, so an 8-bit
+  channel resolves the error to `1/(255*1024)` = 3.8e-06.  The readback then
+  states the error rather than passing a window.
+* `vssinerr:cal` offsets that reference by 1e-4.  It is the control that says
+  an error of that size would have been seen.
+
+MEASURED on the M9128, 2026-09-20, one process a case, `M9X_DEBUG=1`:
+
+```text
+vssin      M9X_VS_SINCOS=1   0 of 76800 pixels differ: PASS   m9x vs: native
+vssin      M9X_VS_SINCOS=0   0 of 76800 pixels differ: PASS   m9x vs: fsin
+vssinerr   M9X_VS_SINCOS=1   worst sin 7.085e-05, cos 7.085e-05,
+                             mean -3.4e-08 / -2.8e-07, step 3.8e-06
+vssinerr   M9X_VS_SINCOS=0   worst sin 1.915e-06, cos 1.915e-06, mean 0
+vssinerr:cal                 worst 1.704e-04, mean -9.99e-05 / -1.00e-04
+```
+
+Read in order: the picture is exact on both paths and the debug line says
+which one drew it, so the fixture distinguishes them rather than passing
+either way.  The **worst error on the engine is 7.085e-05**, and the mean is
+under 3e-07, so there is no systematic bias.  The offline figure for the same
+polynomial is 6.925e-05, over a denser sweep of a wider range, so the engine's
+own rounding is worth a couple of parts in 1e-06 and no more -- the claim the
+offline work made holds on the silicon.
+
+The `M9X_VS_SINCOS=0` arm is the instrument's own noise floor: the draw module
+computes the sine on the CPU and comes back one quantisation step from the
+reference, 1.915e-06, which is as close as this fixture can see.  The engine's
+7.085e-05 is thirty-seven of those steps, so it is a measurement and not the
+readback's rounding.  The calibration arm moves the mean by exactly the 1e-4
+planted in it, which says an error that size would have been seen.
+
+`vssinerr`'s bound in the fixture is 3e-4 plus the planted offset; the
+offline gate carries the same two shapes as `vssin-fixture` and
+`vssinerr-fixture`, so the gate and the card compile the same text.
 
 A second, cheaper route exists and is worth knowing about: Mesa's own
 `nir_shader_compiler_options::lower_sincos` expands `fsin` and `fcos` into
@@ -187,12 +247,39 @@ previously joined:
 
 So the vertex backend's missing `iand`/`ior`/`inot` were never an encoding
 gap; they were a lowering the fragment backend had and the vertex backend did
-not.  `m9_vs_compile.c` now has them, **on by default because they emit no
-instruction word the backend did not already emit** — a product, a maximum and
-a subtract.  Only a one-bit definition is accepted; a 32-bit bitwise operation
-still fails with `integer bitwise operation`, because nothing here implements
-one.  `b2f16` joins `b2f32`.  Offline: `bool-ops` verifies a conjunction, a
+not.  `m9_vs_compile.c` now has them, **on by default** — a product, a
+maximum and a subtract, no instruction word the backend did not already emit.
+Only a one-bit definition is accepted; a 32-bit bitwise operation still fails
+with `integer bitwise operation`, because nothing here implements one.
+`b2f16` joins `b2f32`.  Offline: `bool-ops` verifies a conjunction, a
 negation and a disjunction against the NIR reference.
+
+**That default was not earned by the offline evidence, and the card said so.**
+The first time the engine drew the `vsbool` fixture -- a conjunction, a
+disjunction, a negation and a nesting of all three over all eight
+combinations of three conditions -- **76800 of 76800 pixels were wrong**,
+while the draw module drew the same shader exactly.  The cause was not the
+lowering: `or` is a maximum of two registers, a maximum of two registers is
+built on a subtract, and the subtract had its two operand fields the wrong
+way round (§8).  With that fixed, MEASURED on the M9128:
+
+```text
+vsbool        0 of 76800 pixels differ: PASS   m9x vs: native
+vsprim:bool   0 of 76800 pixels differ: PASS   m9x vs: native
+```
+
+and the same picture from the draw module, so the default is justified
+**now** and was not before.  `vsbool` reads the combinators through a select
+and `vsprim:bool` reads them as values -- `float(p && q) * 0.6 + 0.2` -- which
+matters, because a select only asks whether a condition is non-zero while the
+lowerings need it to be exactly 1.0 or 0.0.  The model underneath is measured
+too: `vsprim:cmp` puts `float(x > 0.0)`, `float(x < 0.0)`, `float(x > y)` and
+`float(x >= 0.0)` in its four channels and all four are exact in all 1200
+cells, so **the vertex compare does write 1.0 and 0.0**, against a constant
+and against a register alike.
+
+The general lesson is recorded in §8: a value model verified against a
+simulator that shares the compiler's beliefs is not verified.
 
 Shifts and integer compares were looked for and are not there: no captured
 program of either stage contains an opcode that is not accounted for by the
@@ -254,7 +341,8 @@ with a known-good fixture afterwards.
 emits, and the fragment backend lowers it exactly so.  The vertex backend
 never sees it: `m9_vs_nir_options` sets `lower_flrp32` and `lower_flrp64`, so
 Mesa expands it before the backend is called.  Nothing to implement.  The
-offline test does **not** set those options, which is one item of §7.
+offline test compiles the driver's own options now, so it does not see
+`flrp` either (§7).
 
 ## 6. What the vertex unit is now known to run
 
@@ -274,8 +362,11 @@ CAPTURED there after all (slot counts are vertex heads, epilogue stripped):
 That closes open item 4 of the ISA note for `rsq`: the vertex unit has the
 reciprocal-square-root chain, byte for byte the fragment unit's, in the
 vendor's own `normalize()` programs.  **Minimum** (`op2 = 0x19` class 2) is
-still fragment-only, which is why the backend's two-register minimum lowering
-stays as it is.
+captured in no vertex program, but it is **MEASURED on the vertex unit**:
+`vsprim:minmax` puts `min(x, 0.25)` and `max(x, 0.0)` against a constant in
+two of its four channels and both were exact in all 1200 cells, while the
+two-register forms in the other two channels were wrong (§8).  So class 2
+runs there; what was wrong was the lowering around it, not the instruction.
 
 ### A register-register dot product exists: `op2 = 0x0d` (DERIVED)
 
@@ -319,29 +410,130 @@ path to ioquake3, so it is recorded rather than done.  What stays **OPEN** is
 whether the `c` field is read at all: every captured instance has `c == a`, so
 a form with `c != a` is untested and must not be emitted.
 
-## 7. The offline gate does not compile what the driver compiles
+## 7. The offline gate compiled what the driver did not (FIXED)
 
-`m9_vs_compile_test.cpp` builds its own `nir_shader_compiler_options` rather
-than using the driver's `m9_vs_nir_options` from `m9_screen.c`, and the two
-disagree on four options that change which opcodes reach the backend:
+`m9_vs_compile_test.cpp` used to build its own `nir_shader_compiler_options`
+rather than use the driver's, and the two disagreed on five options that
+change which opcodes reach the backend:
 
-| option | driver | offline test | effect |
+| option | driver | the offline test, before | effect |
 |---|---|---|---|
 | `lower_sincos` | unset | **set** | the test could never see `fsin` at all |
-| `lower_flrp32`/`64` | set | unset | the test can see `flrp`, the driver cannot |
+| `lower_flrp32`/`64` | set | unset | the test could see `flrp`, the driver cannot |
 | `lower_fsat` | set | unset | the backend's `fsat` path is dead in the driver |
 | `lower_scmp` | set | unset | different comparison shapes |
-| `float_mul_add32` | unset | `has_ffma` | the test gets `ffma`, the driver gets `fmul` plus `fadd` and relies on the backend's own fusion |
+| `float_mul_add32` | unset | `has_ffma` | the test got `ffma`, the driver gets `fmul` plus `fadd` and relies on the backend's own fusion |
 
 The first row is why a sine could pass through this gate unnoticed for as long
 as it did: **the gate that is supposed to say what the backend accepts could
-not, by construction, ever have presented it with a sine.**  This work worked
-around it — the three new cases set `lower_sincos` per case — rather than
-fixing the divergence, because aligning all five options changes what every
-existing case compiles and belongs in its own change.  The fix is for the test
-to include the driver's option struct instead of restating it.
+not, by construction, ever have presented it with a sine.**
 
-## 8. Reproduction
+Fixed the way the fragment side already worked: the options live beside the
+backend that consumes them.  `m9_vs_nir_options` moved out of `m9_screen.c`
+into `m9_vs_compile.c`, is declared in `m9_vs_compile.h`, and the gate uses
+that struct.  Nothing else moved with it -- the same cases compile, verify and
+are refused, with the same reasons -- so the divergence cost nothing to close.
+
+## 8. The vertex subtract had its two operand fields swapped (MEASURED)
+
+This is what running the offline work on the engine found, and it had been
+shipping.
+
+**The instruction.**  The register-register add, `VS_ADD_RR`
+(`0xac800c00`), carries a negate at `W1[7:6]`.  The subtract form computes
+**the `a` operand minus the `c` one**.  Two independent statements:
+
+* MEASURED on the M9128 (below).
+* The fragment backend, whose subtract is measured correct over the whole
+  corpus, already encodes it that way: `m9_fs_compile.c` case `N_SUB` puts
+  the node's *second* source in the `a` field and its first in the `c` field
+  to compute `b - a`.
+
+The vertex backend swapped the two fields, so **every** use of the form
+computed `b - a` where `a - b` was meant.  Three things used it:
+
+| use | what it became |
+|---|---|
+| a comparison against a register (`flt`/`fge`/`feq`/`fneu` with a non-constant operand) | the comparison inverted |
+| `inot`, the complement of a condition | `a - 1`, so -1 for true; still non-zero, so a select still worked, but the value is not a condition any more |
+| `min` and `max` of two registers, built as `a + minmax(b - a, 0)` | `a + minmax(a - b, 0)`, which is neither |
+
+and `ior` is a maximum, so the Boolean combinators were wrong through the
+third row rather than any fault of their own.
+
+**The measurement.**  `tools/m9-mesa-glsl.c` `vsprim:minmax` sweeps a pair of
+attribute values over the 40x30 cell grid and puts four results in the four
+channels: `max(x, y)`, `min(x, y)`, `max(x, 0.0)` and `min(x, 0.25)`.
+MEASURED on the M9128 before the fix:
+
+```text
+cells wrong, per channel:  max(x,y) 1172   min(x,y) 1173
+                           max(x,0) 0      min(x,0.25) 0    of 1200
+```
+
+The two constant-operand channels are exact, so the `MINMAX` instruction is
+right; the two register-register channels are wrong, so the construction
+around it is.  Cell by cell the readback is `a + minmax(a - b, 0)` to within
+the channel's own 8-bit step: x = +0.026, y = +0.172 came back 0.025 where
+`max` is 0.172 and `a + max(a - b, 0)` is 0.026; x = -0.026, y = -0.310 came
+back 0.250 where `max` is -0.026 and the swapped expression is 0.259.  No
+other reading of the three instructions produces either number.
+
+The same model accounts for the `vsbool` picture exactly: all eight
+combinations of three conditions, four expressions each, thirty-two readings,
+every one of them what the swapped subtract predicts and none what the
+shader says.
+
+**Why offline evidence could not see it.**  `m9_vs_compile_test.cpp`
+simulates each emitted instruction, and its `VS_ADD_RR` held the same belief
+the compiler did, so compiler and simulator agreed with each other and both
+disagreed with the silicon.  The simulator now carries the measured order,
+and with the old compiler restored the gate fails `bool-ops`, `prim-cmp`,
+`prim-minmax` and `prim-bool` -- the negative control that says the gate can
+now see this class of fault.
+
+**Why nothing else had shown it.**  `docs/parhelia-m9-native-vertex-backend.md`
+section 5 argued that add and subtract of two registers, though captured in no
+vertex program, "would have shown as a wrong scene rather than silently"
+because the backend had emitted them on the default path for days.  That
+argument does not hold, for two reasons, and the sentence is corrected in
+place there.
+
+* The *add* had run; the *subtract* reaches the default path only through a
+  comparison against a register, the complement of a condition, or a minimum
+  or maximum of two computed values, and none of those is common in a vertex
+  program short enough to compile here.
+* Nothing that ran **checks pixels**.  glmark2 reports a frame rate and no
+  picture, and the `m9-mesa-glsl` corpus, which does check every pixel, had
+  no vertex-stage minimum, maximum or register comparison in it until the
+  `vsprim:*` cases were added -- which is why it passed 280 of 280 with this
+  defect in the library.
+
+The four `vsprim:*` probes exist so that the next such question is one run
+rather than an inference: each channel is one primitive, so a failure names
+the primitive instead of the shader.
+
+## 9. `fcsel_gt` is refused, and the shape is everywhere
+
+Not fixed here, recorded because it is the next thing in the way.
+
+With `has_fused_comp_and_csel` set, Mesa folds `x > 0.0 ? a : b` into
+`nir_op_fcsel_gt`, and the vertex backend refuses it: `prim-cmp` and
+`prim-bool` in their original select form were both refused for `fcsel_gt`,
+and the driver said the same on the card (`m9x vs: fcsel_gt`).  The probes
+had to be reshaped to `float(cmp) * k + c` to reach the backend at all --
+which is the stricter test anyway, because a select hides a condition holding
+anything other than 1.0 or 0.0.
+
+The instruction is there.  `emit_sel` already emits `op2 = 0x1a` with a
+comparison class, CAPTURED on the vertex unit at class 4, and the backend
+uses class 4 (condition equals zero) for `bcsel`.  Class 3 is "greater than
+zero" in the same table, which is `fcsel_gt` exactly, and class 1 is
+"greater or equal", which is `fcsel_ge`.  What is missing is two cases in
+`build_alu`, and a hardware run to confirm that classes 1 and 3 mean on the
+vertex unit what they mean on the fragment unit.  **OPEN.**
+
+## 10. Reproduction
 
 ```sh
 # every STATIC, CAPTURED and DERIVED claim above, with its negative controls
@@ -352,6 +544,18 @@ python3 tools/m9-vertex-isa-gap-evidence.py \
 /home/ai/tmp/m9x-ninja-llvm.sh src/gallium/drivers/m9x/m9-vs-compile-test
 tools/m9-offline-gates.sh objs-m9x-llvm        # read the exit code, not the last line
 
-# the three new cases on their own
-M9_VS_PROGRAM=1 objs-m9x-llvm/src/gallium/drivers/m9x/m9-vs-compile-test
+# one case's compiled words, which is how section 8 was read
+M9_VS_SLOTS=prim-minmax objs-m9x-llvm/src/gallium/drivers/m9x/m9-vs-compile-test
+```
+
+On the card, one process a case, `M9X_DEBUG=1` so the `m9x vs:` line says
+which path drew the picture:
+
+```sh
+for c in vssin vssinerr vssinerr:cal vsbool \
+         vsprim:sub vsprim:cmp vsprim:minmax vsprim:bool; do
+        M9X_DEBUG=1 m9-mesa-glsl "$c"                  # the native path
+        M9X_DEBUG=1 M9X_NATIVE_VS=0 m9-mesa-glsl "$c"  # the draw module's own
+done
+M9X_VS_SINCOS=0 m9-mesa-glsl vssin    # refused for fsin, same picture
 ```
