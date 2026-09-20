@@ -33,7 +33,7 @@ quietly passing.
 
 | refused | verdict | where it stands |
 |---|---|---|
-| `fsin`, `fcos` | **no instruction exists**; the vendor lowers it | implemented, **on by default**; MEASURED on the M9128, worst error 7.085e-05 (§1.5) |
+| `fsin`, `fcos` | **no instruction exists**; the vendor lowers it | implemented, **on by default**; MEASURED on the M9128, worst error 7.085e-05 (§1.5).  ioquake3's eight are no longer refused for it, and are refused for the program length instead (§1.6) |
 | `flog2`, and so `fpow` | an instruction exists on the fragment unit; not seen on the vertex unit | OPEN, one hardware probe (§4) |
 | `iand`, `ior`, `inot`, `b2f16` | **no integer ALU exists**; they are float lowerings | implemented and on by default, but they drew a **wrong picture** until §8; MEASURED exact since |
 | `flrp` | a float lowering, and the driver's own NIR options already lower it | nothing to do (§5) |
@@ -157,7 +157,7 @@ against two constants, a `fract`, a multiply-add, a square and a Horner chain
 are all forms the vertex backend already emits.  **So `fsin` and `fcos` are a
 lowering, not an encoding to find, and the recommendation is to lower them.**
 
-`m9_vs_compile.c` now does, behind `M9X_VS_SINCOS`, **default off**:
+`m9_vs_compile.c` now does, behind `M9X_VS_SINCOS`, **default on**:
 `emit_sincos()` builds the vendor's reduction and the folded polynomial from
 `emit_mad`, `emit_unary(VS_FRACT)`, `emit_mul` and `emit_add`.  `cos(x)` is
 `sin(x + pi/2)`, which the phase of the reduction carries (0.75 in place of
@@ -221,13 +221,74 @@ planted in it, which says an error that size would have been seen.
 offline gate carries the same two shapes as `vssin-fixture` and
 `vssinerr-fixture`, so the gate and the card compile the same text.
 
-A second, cheaper route exists and is worth knowing about: Mesa's own
+### 1.6 ioquake3: the sine is accepted, and the next wall is the program length
+
+This work was opened for ioquake3's opengl2 renderer, so that is where it is
+read.  MEASURED on the M9128, `bench` timedemo at 1280x1024, `cl_renderer
+opengl2`, one X server an arm, on a freshly rebooted card:
+
+| arm | timedemo | native | refused for the sine | refused for the length | refused for the attributes |
+|---|---:|---:|---:|---:|---:|
+| `M9X_VS_SINCOS=0` | 70.4 fps | 5 | **8** | 0 | 2 |
+| `M9X_VS_SINCOS=1` | 70.5 fps | 5 | 0 | **8** | 2 |
+
+**The same eight programs.**  With the sine accepted they compile, and the
+backend then refuses them for being longer than `M9X_VS_MAX_SLOTS`, which is
+128 by default.  A scalar sine is 12 slots and the `deformVertexes` shaders
+carry several, so the sine is what pushed them over.
+
+The frame rate is therefore **unchanged**: 70.5 against 70.4, and the
+steady-state phase profile is the same to the hundredth of a millisecond --
+`draw 1.67 emit 1.52 ioctl 5.23` at 5.80 ms/frame against
+`draw 1.67 emit 1.52 ioctl 5.23` at 5.87.  Nothing moved onto the engine, so
+nothing could move.
+
+**Lifting the bound does not work.**  `M9X_VS_MAX_SLOTS=4096` with the sine
+on lets all eight run, and the engine refuses them:
+
+```text
+m9x: two-pass job failed (Input/output error); context lost
+```
+
+after which the game renders nothing and reports 380.5 fps of it -- the
+profile for those frames is `native 0 draw module 0` with every phase at
+0.00 ms, which is what an empty frame costs.  That run left **one kernel
+stream timeout**, and everything measured after it in the same session is
+discarded as taken across a damaged card (the card was rebooted and
+re-proved with the fixture suite before anything else was measured).
+
+So the 128-slot bound is load-bearing here, and what stands between
+ioquake3's waving surfaces and the engine is no longer the sine.  What it is
+instead is **OPEN**: the compiled length of those eight programs is not
+recorded, nor is the point between 128 and 4096 where the two-pass job stops
+completing, nor whether the failure is the length itself or something else
+these programs contain.  The measurement that would settle it is a sweep of
+`M9X_VS_MAX_SLOTS` in that range with a known-good fixture after each step.
+
+**The picture.**  MEASURED, and not from the frame rate: the demo was played
+in real time on both arms and frozen with `SIGSTOP`, and the screen read
+through the host aperture with the scanout descriptor
+(`tools/m9-x-scanout-compare`), not through a glamor readback.  The gameplay
+frame shows the level, its statues, its sky, the floor inlay and the weapon
+in hand, all correct, on both arms, and the two differ only where the demo
+has advanced one tick between them -- the HUD ammo counter reads 108 against
+107 and two moving items have moved.  Every static surface is identical.
+The sine changes no pixel here, because no program that uses it reaches the
+engine.
+
+A second route exists and was considered: Mesa's own
 `nir_shader_compiler_options::lower_sincos` expands `fsin` and `fcos` into
 `ffract`, `fmul`, `fsub`, `fabs` and `ffma`, all of which the backend already
-accepts, so setting that one flag in `m9_vs_nir_options` would unblock
-ioquake3 with no backend code at all.  Its approximation is about sixteen
-times coarser (worst error near 1.1e-3 against 6.9e-5), which is why the
-vendor's own polynomial was implemented instead.
+accepts, so that one flag in `m9_vs_nir_options` would have needed no backend
+code.  Its approximation is about sixteen times coarser (worst error near
+1.1e-3 against 6.9e-5), which is why the vendor's own polynomial was
+implemented instead.
+
+This note used to say that flag "would unblock ioquake3".  It would not, and
+neither does the backend's own sequence: §1.6 measures the eight programs
+being refused for their length the moment the sine stops refusing them, and
+Mesa's expansion is longer than the backend's twelve slots, so it would reach
+that bound sooner.
 
 ## 2. There is no integer ALU (STATIC, and a lowering)
 

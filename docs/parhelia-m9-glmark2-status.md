@@ -23,7 +23,9 @@ carrying both arms behind its knob, both hardware lock files held across the
 whole cycle, `M9X_SKIP_REPORT=1`, `M9X_PROFILE=40`, **`duration=5`** on every
 benchmark.  **33 of 33 results and rc=0 in both arms, 0 stream timeouts**,
 and `texture`, `texpair`, `rtt300`, `vary2tex`, `vssin` and `vsbool` each
-0 of 76800 pixels different before and after the whole sweep.
+0 of 76800 pixels different before and after the whole sweep.  The fixture
+suite alongside it is **291 cases, 291 PASS, 0 FAIL, 0 non-M9** on a freshly
+booted card, which includes the eight new vertex cases.
 
 The library is the ninth standing's plus two changes: `fsin`/`fcos` compile
 natively by default, and the vertex subtract no longer swaps its two operand
@@ -50,7 +52,7 @@ should agree almost everywhere, and they do.
 | `pulsar` | 224 | 222 |
 | `desktop` blur / shadow | 47 / 128 | 47 / 128 |
 | `buffer` map | 155 | 155 |
-| `buffer` subdata | **139** | **155** |
+| `buffer` subdata | 139 | 155 |
 | `buffer` interleaved map | 155 | 155 |
 | `ideas` | 108 | 108 |
 | `jellyfish` | 76 | 75 |
@@ -66,12 +68,22 @@ one benchmark with a vertex sine, is 76 against 75; `shading
 blinn-phong-inf` and `pulsar` differ by one and two on shaders with no sine
 in them, which is this sweep's noise.
 
-The one row worth naming is **`buffer` subdata, 139 with the sine on against
-155 with it off**.  Its vertex shader contains no sine, so the knob cannot
-reach it; the other two `buffer` rows are 155 in both arms, and all three
-were 136 in the ninth standing.  UNTESTED whether it repeats: it is recorded
-as an unexplained single row rather than swept under the noise, and a rerun
-of the three `buffer` rows alone would settle it.
+One row read oddly in the sweep and was chased down: **`buffer` subdata, 139
+with the sine on against 155 with it off**, where the other two `buffer` rows
+were 155 in both arms and all three had been 136 in the ninth standing.  Its
+vertex shader contains no sine, so the knob cannot reach it.  MEASURED
+afterwards on the same card, the three `buffer` benchmarks **alone**, two
+passes an arm in one X session:
+
+```text
+pass 1 sincos=1: 136 136 136      pass 1 sincos=0: 136 136 136
+pass 2 sincos=1: 136 136 136      pass 2 sincos=0: 136 136 136
+```
+
+All four passes agree with each other and with the ninth standing, so the
+139 and the 155s are what these three rows do **after seventeen other
+benchmarks in the same `glmark2` process**, not what the knob does.  Read the
+`buffer` rows of a full-run sweep with that in mind.
 
 Nothing regressed, nothing that moved lost frame rate, and the sine costs
 nothing where it is not used.
@@ -168,6 +180,14 @@ held by intermediates of instructions that had long since finished, and the
 `buffer` and `bump:height` shaders were refused as "out of temporaries".
 `bump:height` compiles now too, but its draws still fall back for a reason
 further down the path -- it writes four varyings.
+
+**The bound is worse than a cost model elsewhere.**  MEASURED on 2026-09-20
+with the vertex sine on: `M9X_VS_MAX_SLOTS=4096` lets ioquake3's eight
+`deformVertexes` programs run, and the engine answers `two-pass job failed
+(Input/output error); context lost`, after which the game renders nothing and
+reports 380 fps of it, and the run leaves a kernel stream timeout behind.  So
+past some length these programs do not merely lose frame rate, they do not
+complete -- `docs/parhelia-m9-vertex-isa-gaps.md` section 1.6.
 
 ## Standing 2026-09-19 (eighth): the textured draws run on the engine
 
