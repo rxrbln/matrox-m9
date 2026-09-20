@@ -84,6 +84,19 @@ extern const struct nir_shader_compiler_options m9_vs_nir_options;
 #define M9_VS_TAIL_LAST_PAIR  21u
 #define M9_VS_TAIL_PAIRS      (M9_VS_TAIL_LAST_PAIR + 1u - M9_VS_TAIL_FIRST_PAIR)
 #define M9_VS_MAX_CONSTS      0x7fu
+/* Constant pairs a preprocessing pass may carry.  MEASURED on the M9128: a
+ * 63-pair span (vsconst:21) renders every pixel exactly and a 65-pair one
+ * fails all 76800 and stops the engine -- twice, on two programs of
+ * different length -- while a 5161-slot program with 27 pairs is exact, so
+ * the span and not the length is what the ceiling belongs to.  It is the
+ * span the job hands the engine and not the constants the program names:
+ * an 81-slot program naming 27 pairs is exact with the span padded to 63
+ * and stops the engine at 65 (M9X_VS_CONST_PAD, which changes index 8c's
+ * count and 8e's end address and nothing else).  Index 8c carries the count
+ * in eight bits and the span may run to pair 93 before it reaches the
+ * linked record, so neither field nor layout is what stops it.
+ * docs/parhelia-m9-vertex-isa-gaps.md */
+#define M9_VS_MAX_CONST_PAIRS 63u
 /* Offset of a constant scalar the driver resolves to 0.0. */
 #define M9_VS_UNIFORM_ZERO    0xffffffffu
 

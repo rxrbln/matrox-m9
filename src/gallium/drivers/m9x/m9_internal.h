@@ -403,6 +403,9 @@ struct m9_vs_spec {
    struct nir_shader *nir;
    struct m9_vs_program program;
    const char *reason;
+   /* What the compiled program cost, kept after a refusal discards it so the
+    * debug line can state the length and the span a bound turned away. */
+   unsigned slots, consts, literals, uniforms;
    bool native;
    struct util_dynarray variants;   /* struct m9_vs_variant * */
 };

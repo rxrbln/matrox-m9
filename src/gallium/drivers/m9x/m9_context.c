@@ -343,16 +343,27 @@ static bool m9_native_vs_split;
  * measurement of the specialisation is read against. */
 static bool m9_vs_specialise = true;
 /* M9X_VS_MAX_SLOTS bounds the compiled program a native preprocessing job
- * will run; a longer one stays in the draw module.  MEASURED at 1920x1200,
- * duration=5, one library and one X server: every default glmark2 benchmark
- * the engine already takes compiles to at most 79 slots, and the one shape
- * past that -- glmark2's buffer scene, four clip-space transforms and three
- * edge distances at 299 slots -- runs fully native at 4096 and loses frame
- * rate doing it: map 136 -> 101, subdata 136 -> 100, interleaved 136 -> 99,
- * against a control whose unchanged rows sit at 1.000.  The bound sits in
- * that gap; what exactly makes the long program lose is not established, so
- * it is a knob rather than a cost model. */
-static unsigned m9_vs_max_slots = 128;
+ * will run; a longer one stays in the draw module.  It is a cost bound and
+ * not a correctness one: the engine runs a 5161-slot program and renders
+ * every pixel of it exactly (MEASURED, vschain:1024).  What it bounds is a
+ * step in the vertex stage's own cost, MEASURED with vsperf:N over 20000
+ * vertices a draw -- 188 slots costs 0.910 to 1.290 ms a draw depending on
+ * the fragment program beside it and 191 costs 1.78 to 2.38, about twice as
+ * much, and the step lands between the same two lengths whether the
+ * fragment program in the image is four slots or forty.  Past it the engine
+ * loses to the draw module outright (201 slots: 1.87 against 1.30 ms), and
+ * glmark2's 299-slot buffer scene loses 36% of its frame rate with the host
+ * at zero -- 6.40 -> 10.03 ms a frame, draw 2.96 and emit 1.92 both to 0.00.
+ * Below the step native wins at every length measured.
+ * docs/parhelia-m9-vertex-isa-gaps.md */
+static unsigned m9_vs_max_slots = 188;
+/* M9X_VS_MAX_CONST_PAIRS bounds the constant span a native preprocessing job
+ * carries; past it the engine stops rather than drawing (M9_VS_MAX_CONST_PAIRS
+ * records the measurement).  M9X_VS_CONST_PAD appends that many unnamed pairs
+ * to the span, which is how the span's own size is measured apart from the
+ * count of constants a program names. */
+static unsigned m9_vs_max_const_pairs = M9_VS_MAX_CONST_PAIRS;
+static unsigned m9_vs_const_pad;
 /* M9X_NATIVE_VS=0 keeps every vertex shader in the draw module.  On by
  * default since the whole hardware fixture corpus passes either way
  * (m9-mesa-vs 14/14, m9-mesa-glsl 90/90, 2026-09-17). */
@@ -2295,6 +2306,14 @@ m9_submit_job(struct m9_context *ctx)
                              (uint32_t *)((uint8_t *)ctx->system.map +
                                           M9_VS_CONST_OFFSET),
                              2 * M9_VS_CONST_MAX_PAIRS);
+         if (vs_const_pairs && m9_vs_const_pad) {
+            unsigned pad = MIN2(vs_const_pairs + m9_vs_const_pad,
+                                M9_VS_CONST_MAX_PAIRS);
+
+            memset((uint8_t *)ctx->system.map + M9_VS_CONST_OFFSET +
+                   8 * vs_const_pairs, 0, 8 * (pad - vs_const_pairs));
+            vs_const_pairs = pad;
+         }
          if (!vs_decl_count || !vs_const_pairs)
             ret = -EINVAL;
       }
@@ -4872,6 +4891,19 @@ m9_native_vs_layout(const struct m9_job_key *key, const struct m9_vs_program *p,
    return NULL;
 }
 
+/* Why the engine would not run this compiled program, or NULL.  Both bounds
+ * are measured ends rather than decoded fields, so both are knobs. */
+static const char *
+m9_vs_program_refusal(const struct m9_vs_program *p)
+{
+   if (m9_vs_slot_count(p) > m9_vs_max_slots)
+      return "the compiled vertex program is past M9X_VS_MAX_SLOTS";
+   if (m9_vs_const_count(p) > m9_vs_max_const_pairs)
+      return "the vertex program's constant span is past "
+             "M9X_VS_MAX_CONST_PAIRS";
+   return NULL;
+}
+
 /* The compiled program for one output layout, compiled on first use and
  * kept with the shader; a refused layout is kept with its reason so the
  * same pair is not compiled again every draw. */
@@ -4894,6 +4926,12 @@ m9_native_vs_variant(struct m9_vs_spec *vs, const struct m9_vs_outputs *out)
    v->outputs = *out;
    v->serial = ++m9_vs_serial;
    v->ok = vs->nir && m9_vs_compile(vs->nir, out, &v->program, &v->reason);
+   /* A coordinate stream costs the layout constants the specialisation had
+    * none of, so the bounds are taken again here. */
+   if (v->ok && (v->reason = m9_vs_program_refusal(&v->program))) {
+      m9_vs_program_fini(&v->program);
+      v->ok = false;
+   }
    if (!v->reason)
       v->reason = "the vertex program was not compiled for these streams";
    util_dynarray_append_typed(&vs->variants, struct m9_vs_variant *, v);
@@ -6409,10 +6447,20 @@ m9_vs_spec_for(struct m9_vs_state *vs, const uint32_t *values)
       NIR_PASS(_, nir, nir_opt_dce);
       spec->native = m9_vs_compile(nir, NULL, &spec->program, &spec->reason);
    }
-   if (spec->native && m9_vs_slot_count(&spec->program) > m9_vs_max_slots) {
+   if (spec->native) {
+      spec->slots = m9_vs_slot_count(&spec->program) +
+                    m9_vs_extra_slot_count(&spec->program) +
+                    m9_vs_gather_slot_count(&spec->program);
+      spec->consts = m9_vs_const_count(&spec->program);
+      util_dynarray_foreach(&spec->program.consts, struct m9_vs_const, k)
+         if (k->kind == M9_VS_CONST_LITERAL)
+            spec->literals++;
+         else if (k->kind == M9_VS_CONST_UNIFORM)
+            spec->uniforms++;
+   }
+   if (spec->native && (spec->reason = m9_vs_program_refusal(&spec->program))) {
       m9_vs_program_fini(&spec->program);
       spec->native = false;
-      spec->reason = "the compiled vertex program is past M9X_VS_MAX_SLOTS";
    }
    if (!spec->reason)
       spec->reason = "no native vertex program";
@@ -6422,6 +6470,9 @@ m9_vs_spec_for(struct m9_vs_state *vs, const uint32_t *values)
       ralloc_free(nir);
    if (vs->src && getenv("M9X_DEBUG")) {
       fprintf(stderr, "m9x vs: %s", spec->native ? "native" : spec->reason);
+      if (spec->slots)
+         fprintf(stderr, " slots=%u consts=%u lit=%u uni=%u", spec->slots,
+                 spec->consts, spec->literals, spec->uniforms);
       for (unsigned i = 0; i < vs->inline_count; i++)
          fprintf(stderr, " dw%u=%08x",
                  vs->src->info.inlinable_uniform_dw_offsets[i],
@@ -7276,7 +7327,10 @@ m9_context_create(struct pipe_screen *pscreen, void *priv, unsigned flags)
    m9_indexed_draws = debug_get_bool_option("M9X_INDEXED", true);
    m9_weld_enable = debug_get_bool_option("M9X_WELD", true);
    m9_native_vs = debug_get_bool_option("M9X_NATIVE_VS", true);
-   m9_vs_max_slots = debug_get_num_option("M9X_VS_MAX_SLOTS", 128);
+   m9_vs_max_slots = debug_get_num_option("M9X_VS_MAX_SLOTS", 188);
+   m9_vs_max_const_pairs = debug_get_num_option("M9X_VS_MAX_CONST_PAIRS",
+                                                M9_VS_MAX_CONST_PAIRS);
+   m9_vs_const_pad = debug_get_num_option("M9X_VS_CONST_PAD", 0);
    m9_vs_specialise = debug_get_bool_option("M9X_VS_SPECIALISE", true);
    m9_native_vs_varyings = MIN2((unsigned)
       debug_get_num_option("M9X_VS_VARYINGS", M9_VS_FUSED_VARYINGS),
