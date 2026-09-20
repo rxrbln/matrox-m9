@@ -1467,9 +1467,12 @@ build_alu(struct ctx *c, nir_alu_instr *alu)
       }
       case nir_op_fsin:
       case nir_op_fcos: {
-         /* Off by default: the sequence is verified offline against the NIR
-          * reference only, never yet on the engine. */
-         if (!debug_get_bool_option("M9X_VS_SINCOS", false))
+         /* MEASURED on the M9128: worst error 7.085e-05 against the C
+          * library over 1200 arguments spanning [-4pi, 4pi] and the edges
+          * of the reduction (docs/parhelia-m9-vertex-isa-gaps.md).  The
+          * knob still refuses it, which is how the fixture names the path
+          * that drew a picture. */
+         if (!debug_get_bool_option("M9X_VS_SINCOS", true))
             return fail(c, nir_op_infos[alu->op].name);
          a0 = src_held(alu, 0, c0); a1 = src_held(alu, 0, c1);
          if (a0.kind == HELD_LIT && a1.kind == HELD_LIT) {
