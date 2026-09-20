@@ -598,15 +598,18 @@ emit_mad(struct ctx *c, unsigned dst, const struct held *b0,
    return true;
 }
 
-/* a + b, or a - b with negate: the subtract form computes the c operand
- * minus the a operand, so the two swap fields. */
+/* a + b, or a - b with negate.  The subtract form computes the a operand
+ * minus the c one: MEASURED on the M9128, and the fragment backend, whose
+ * own subtract is measured correct, encodes it that way too
+ * (m9_fs_compile.c, N_SUB).  The vertex backend used to swap the two
+ * fields, which inverted every register comparison, every complement and
+ * both halves of a two-register minimum and maximum. */
 static bool
 emit_add(struct ctx *c, unsigned dst, const struct held *a0,
          const struct held *a1, const struct held *b0, const struct held *b1,
          bool negate)
 {
-   const struct held *f0 = negate ? b0 : a0, *f1 = negate ? b1 : a1;
-   const struct held *g0 = negate ? a0 : b0, *g1 = negate ? a1 : b1;
+   const struct held *f0 = a0, *f1 = a1, *g0 = b0, *g1 = b1;
    unsigned ra, rb, sa, sb;
 
    /* A constant addend rides the captured multiply-add against one. */
