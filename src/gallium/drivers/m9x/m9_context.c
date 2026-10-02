@@ -656,6 +656,59 @@ m9_surface_access(struct m9_context *ctx, const struct m9_resource *resource,
                 &access) ? -errno : 0;
 }
 
+static bool
+m9_depth_windowed(const struct m9_resource *resource)
+{
+   return resource->kind == M9_RESOURCE_LINEAR_DEPTH &&
+          resource->format == M9_DEPTH_FORMAT_D24S8 && resource->cpp == 4 &&
+          !resource->texture.levels;
+}
+
+/*
+ * A D24S8 surface is stored in the render tiling, so the raw mapping shows
+ * 8x4 blocks rather than rows (MEASURED, zprobe).  It is reached through the
+ * window in the kind the sampler binds it with, at a 32-aligned span for
+ * both kinds, and the ioctl also drains the job in flight, which a raw read
+ * never waited for.  The kernel window takes the colour code, whose 32-bit
+ * element is moved verbatim: depth and stencil read back exact at 1x1 to
+ * 640x240 (MEASURED).
+ */
+static int
+m9_depth_access(struct m9_context *ctx, const struct m9_resource *resource,
+                uint32_t op, const struct pipe_box *box, uint8_t *data,
+                unsigned stride)
+{
+   bool small = resource->width <= 64 && resource->height <= 64;
+   uint32_t span = (resource->width + 31) & ~31u;
+   struct drm_parhelia_m9_surface_access access = {
+      .handle = resource->handle,
+      .op = op,
+      .descriptor0 = M9_TEXTURE_CODE_BGRA << 24 |
+                     (small ? M9_TEXTURE_KIND_2D : M9_TEXTURE_KIND_RENDER) << 16 |
+                     span,
+      .descriptor1 = 1u << 16 | m9_surface_even_height(resource->height),
+      .flags = PARHELIA_M9_ACCESS_TEXTURE,
+      .surface_width = span,
+      .x = box->x,
+      .y = box->y,
+      .width = box->width,
+      .height = box->height,
+      .data_stride = stride,
+      .data_ptr = (uintptr_t)data,
+      .data_size = (uint64_t)stride * box->height,
+   };
+   int ret = ioctl(ctx->screen->fd, DRM_IOCTL_PARHELIA_M9_SURFACE_ACCESS,
+                   &access) ? -errno : 0;
+
+   if (ret && ctx->debug)
+      fprintf(stderr, "m9x: depth window %s %ux%u box %d,%d %dx%d d0 %08x "
+              "d1 %08x: %s\n", op == PARHELIA_M9_ACCESS_WRITE ? "store" :
+              "fetch", resource->width, resource->height, box->x, box->y,
+              box->width, box->height, access.descriptor0, access.descriptor1,
+              strerror(-ret));
+   return ret;
+}
+
 /*
  * MEASURED (fixture dxt1:WxH): a compressed level is stored through the
  * window at its 32-aligned span, and its height has to reach a whole
@@ -960,7 +1013,7 @@ m9_transfer_map_locked(struct pipe_context *pctx, struct pipe_resource *pres,
          FREE(transfer);
          return NULL;
       }
-   } else if (resource->tiled) {
+   } else if (resource->tiled || m9_depth_windowed(resource)) {
       bool preserve = (usage & PIPE_MAP_READ) ||
                       (!(usage & (PIPE_MAP_DISCARD_RANGE |
                                   PIPE_MAP_DISCARD_WHOLE_RESOURCE)) &&
@@ -971,9 +1024,13 @@ m9_transfer_map_locked(struct pipe_context *pctx, struct pipe_resource *pres,
       transfer->staging = box->width && box->height ?
                           MALLOC((size_t)stride * box->height) : NULL;
       if (!transfer->staging ||
-          (preserve && m9_surface_access(ctx, resource,
-                                         PARHELIA_M9_ACCESS_READ, box,
-                                         transfer->staging))) {
+          (preserve && (resource->tiled ?
+                        m9_surface_access(ctx, resource,
+                                          PARHELIA_M9_ACCESS_READ, box,
+                                          transfer->staging) :
+                        m9_depth_access(ctx, resource,
+                                        PARHELIA_M9_ACCESS_READ, box,
+                                        transfer->staging, stride)))) {
          m9_warn_once(ctx, M9_WARN_TRANSFER,
                       "de-tiled render target access failed");
          FREE(transfer->staging);
@@ -1086,6 +1143,22 @@ m9_transfer_unmap(struct pipe_context *pctx, struct pipe_transfer *ptransfer)
             resource->texture_unplaced &= ~bit;
             resource->levels_written |= bit;
          }
+      }
+      FREE(transfer->staging);
+   } else if (transfer->staging && !m9_res(ptransfer->resource)->tiled) {
+      struct m9_resource *zs = m9_res(ptransfer->resource);
+
+      if (ptransfer->usage & PIPE_MAP_WRITE) {
+         if (m9_depth_access(m9_context(pctx), zs, PARHELIA_M9_ACCESS_WRITE,
+                             &ptransfer->box, transfer->staging,
+                             ptransfer->stride))
+            m9_warn_once(m9_context(pctx), M9_WARN_TRANSFER,
+                         "depth/stencil window write failed");
+         /* The vendor resets the hierarchical plane after a CPU depth write
+          * (docs/parhelia-m9-hierarchical-z-static-closure.md); the window
+          * write drained the engine, so nothing reads it meanwhile. */
+         if (zs->hz)
+            m9_fill_dwords(zs->hz, M9_HZ_CLEAR);
       }
       FREE(transfer->staging);
    } else if (transfer->staging) {
