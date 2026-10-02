@@ -3932,7 +3932,8 @@ m9_ctx_variant(struct m9_context *ctx, const char **reason,
 static void m9_fs_native_init(struct m9_context *ctx, struct m9_fs_state *fs);
 
 /* The captured pass-through image cannot blend: a blended draw of that
- * shader compiles it for the native backend, whose tail does. */
+ * shader compiles it for the native backend, whose tail does, except for
+ * lines. */
 static bool
 m9_fs_use_native(struct m9_context *ctx)
 {
@@ -3940,7 +3941,8 @@ m9_fs_use_native(struct m9_context *ctx)
 
    if (!fs || !fs->passthrough)
       return fs && fs->native;
-   if (!ctx->blend || !ctx->blend->rt[0].blend_enable)
+   /* Blended lines have no captured raster class; they stay opaque. */
+   if (!ctx->blend || !ctx->blend->rt[0].blend_enable || ctx->lines)
       return false;
    if (!fs->native_tried) {
       fs->native_tried = true;
@@ -4187,6 +4189,8 @@ static void
 m9_render_set_primitive(struct vbuf_render *render, enum mesa_prim prim)
 {
    m9_vbuf_render(render)->prim = prim;
+   m9_vbuf_render(render)->ctx->lines =
+      u_reduced_prim(prim) == MESA_PRIM_LINES;
 }
 
 static void
@@ -5630,6 +5634,7 @@ m9_native_vs_draw(struct m9_context *ctx, const struct pipe_draw_info *info,
                                 "the fragment side is not worth a native job");
       return false;
    }
+   ctx->lines = u_reduced_prim(info->mode) == MESA_PRIM_LINES;
    reason = m9_native_vs_resolve(ctx, info, draw, &n);
    if (reason || !m9_job_key_current(ctx, &key)) {
       if (!reason) {
