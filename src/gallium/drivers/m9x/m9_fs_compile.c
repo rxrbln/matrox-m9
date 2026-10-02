@@ -2040,7 +2040,8 @@ build_vec(struct ctx *c, nir_scalar s[4])
          if (NODES(c)[x].kind == N_COMPOSE && NODES(c)[x].lit[0] == 1.0f) {
             rgb = x;
          } else if (NODES(c)[x].kind != N_TEX) {
-            return fail(c, "swizzled or composed vector"), -1;
+            /* a computed colour, e.g. a decoded texel: lane by lane */
+            goto lanes;
          } else {
             util_dynarray_foreach(&c->nodes, struct node, it) {
                if (it->kind == N_COMPOSE && it->src[0] == x &&
@@ -2066,6 +2067,7 @@ build_vec(struct ctx *c, nir_scalar s[4])
          return n;
       }
    }
+lanes:
    {
       bool identity = true;
 
