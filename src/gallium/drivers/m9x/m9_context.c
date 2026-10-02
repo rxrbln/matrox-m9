@@ -667,9 +667,9 @@ m9_depth_windowed(const struct m9_resource *resource)
 /*
  * A D24S8 surface is stored in the render tiling, so the raw mapping shows
  * 8x4 blocks rather than rows (MEASURED, zprobe).  It is reached through the
- * window in the kind the sampler binds it with, at a 32-aligned span for
- * both kinds, and the ioctl also drains the job in flight, which a raw read
- * never waited for.  The kernel window takes the colour code, whose 32-bit
+ * window in the kind the sampler binds it with, at the depth row span, and
+ * the ioctl also drains the job in flight, which a raw read never waited
+ * for.  The kernel window takes the colour code, whose 32-bit
  * element is moved verbatim: depth and stencil read back exact at 1x1 to
  * 640x240 (MEASURED).
  */
