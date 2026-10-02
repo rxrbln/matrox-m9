@@ -711,12 +711,11 @@ m9_query_dmabuf_modifiers(struct pipe_screen *pscreen, enum pipe_format format,
 {
    unsigned n = 0;
 
-   /* Only the presentation family is ever stored tiled, so every other
-    * format can be shared linear alone. */
+   /* Only the presentation family, 8 and 10 bit, is ever stored tiled, so
+    * every other format can be shared linear alone. */
    for (unsigned i = 0; i < ARRAY_SIZE(m9_modifiers); i++) {
       if (m9_modifiers[i] != DRM_FORMAT_MOD_LINEAR &&
-          format != PIPE_FORMAT_B8G8R8A8_UNORM &&
-          format != PIPE_FORMAT_B8G8R8X8_UNORM)
+          !m9_presentation_format(format))
          continue;
       if (modifiers && (int)n < max)
          modifiers[n] = m9_modifiers[i];
