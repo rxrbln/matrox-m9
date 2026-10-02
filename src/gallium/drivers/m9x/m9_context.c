@@ -2134,7 +2134,7 @@ m9_submit_job(struct m9_context *ctx)
    const struct m9_draw_record *first_draw = ctx->draws.data;
    struct m9_raster_pass passes[M9_FS_MAX_PASSES];
    struct m9_texture_unit placeholder;
-   unsigned pass_count = fs ? key->variant->passes.count : 0;
+   unsigned pass_count;
    struct m9_draw_job job;
    uint32_t split_x0 = key->clip_min & 0xffffu;
    uint32_t split_x1 = key->clip_max & 0xffffu;
@@ -2152,8 +2152,11 @@ m9_submit_job(struct m9_context *ctx)
    bool built;
    int ret;
 
+   /* An empty job's key may name a shader or variant deleted since the
+    * last submit; nothing reads it until a draw replaces the key. */
    if (!draws)
       return 0;
+   pass_count = fs ? key->variant->passes.count : 0;
    if (m9_split_trace > 1)
       fprintf(stderr, "m9x job %llu: %ux%u passes %u draws %u records %u "
               "colour %08x depth %08x clip %08x\n",
