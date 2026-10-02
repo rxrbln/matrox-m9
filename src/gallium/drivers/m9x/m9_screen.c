@@ -1441,6 +1441,9 @@ m9_screen_create(int fd, const struct pipe_screen_config *config)
    caps->max_point_size = caps->max_point_size_aa = 255.0f;
    caps->max_line_width = caps->max_line_width_aa = 255.0f;
    caps->point_size_granularity = caps->line_width_granularity = 0.1f;
+   /* The draw module names a sprite coordinate by its TEXCOORD semantic, the
+    * one it scans fragment inputs with; GENERIC bits never matched one. */
+   caps->tgsi_texcoord = true;
    caps->compute = false;
    /* Run finalize_nir at link time, so the inlinable uniforms the fragment
     * backend marks reach gl_program::info and st sends their values; without
