@@ -948,7 +948,9 @@ dot_pairable(const struct held b[4], unsigned n)
 }
 
 /* A dot product of a register pair against a constant pair: the partial
- * writes the first scalar and the completion adds it. */
+ * writes the first scalar and the completion adds it.  The partial's c field
+ * names a constant pair whose first scalar it subtracts (MEASURED), so it
+ * names a zero pair; the vendor's c = 3 relied on its pair 3 being zero. */
 static bool
 emit_dot(struct ctx *c, unsigned dst, const struct held a[4],
          const struct held b[4], unsigned n)
@@ -959,18 +961,21 @@ emit_dot(struct ctx *c, unsigned dst, const struct held a[4],
    const struct held *b2 = n > 2 ? &b[2] : &zero;
    const struct held *b3 = n > 3 ? &b[3] : &zero;
    unsigned ra, sa, kswz;
-   int key, e, t;
+   int key, e, ez, t;
    struct held h;
 
    if (!const_pair(c, &b[0], &b[1], &key, &kswz))
       return false;
    e = const_index(c, key);
-   if (e < 0)
+   if (!const_pair(c, &zero, &zero, &key, &kswz))
+      return false;
+   ez = const_index(c, key);
+   if (e < 0 || ez < 0)
       return fail(c, "constant span overflow");
    if (!operand(c, &a[0], &a[1], true, &ra, &sa))
       return false;
    if (n <= 2) {
-      emit(c, w0_make(NONE, ra, REG_DOT_C, dst, 0, 0x1d),
+      emit(c, w0_make(NONE, ra, ez, dst, 0, 0x1d),
            w1_make(VS_DOT_P, e, NONE));
       return true;
    }
@@ -978,7 +983,7 @@ emit_dot(struct ctx *c, unsigned dst, const struct held a[4],
    t = reg_alloc_pinned(c, &h);
    if (t < 0)
       return fail(c, "out of temporaries");
-   emit(c, w0_make(NONE, ra, REG_DOT_C, t, 0, 0x1d), w1_make(VS_DOT_P, e, NONE));
+   emit(c, w0_make(NONE, ra, ez, t, 0, 0x1d), w1_make(VS_DOT_P, e, NONE));
    if (!const_pair(c, b2, b3, &key, &kswz))
       return false;
    e = const_index(c, key);

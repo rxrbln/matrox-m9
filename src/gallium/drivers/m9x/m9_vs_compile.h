@@ -120,8 +120,6 @@ extern const struct nir_shader_compiler_options m9_vs_nir_options;
 #define M9_VS_ROUTE_HI(k) (0x02u + 4u * (k))
 /* Routes a preprocessing draw can bind, indices 0x74..0x77. */
 #define M9_VS_MAX_ROUTES 4u
-/* The partial dot names register 3 in its c field and nothing writes it. */
-#define REG_DOT_C  0x03u
 #define REG_ATTR0  0x46u
 #define M9_VS_REGS 0x60u
 
@@ -153,7 +151,7 @@ extern const struct nir_shader_compiler_options m9_vs_nir_options;
 #define VS_MINMAX   0xa3200d50u  /* class 2 minimum, 3 maximum             */
 #define VS_CMP      0x90000010u  /* CAPTURED s14: constant pair in c, e=5  */
 #define VS_SEL      0xaf400c00u
-#define VS_DOT_P    0xbe000d00u  /* CAPTURED s5:  partial, d = b . k       */
+#define VS_DOT_P    0xbe000d00u  /* CAPTURED s5:  d = b . k - kc.s0 (c pair) */
 #define VS_DOT_C    0xadc00c00u  /* CAPTURED s7:  d = b . k + c[swz << 4]  */
 #define VS_RCP_SEED 0xae203000u  /* CAPTURED s15                           */
 #define VS_RCP_RES  0x8c26ac10u  /* CAPTURED s17, class 5, e already set   */
