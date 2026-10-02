@@ -138,6 +138,7 @@ uint64_t m9_record_bytes(uint32_t width, uint32_t height,
 struct m9_raster_fs {
    unsigned vertex_entry;                       /* preprocessing c3 */
    uint32_t r88;
+   uint32_t r89;                                /* 0: the colour pass default */
    unsigned const_count;
    unsigned stream_count;
    uint32_t stream_view[M9_RASTER_MAX_STREAMS]; /* transient view per stream */

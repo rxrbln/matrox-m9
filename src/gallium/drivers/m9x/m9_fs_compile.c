@@ -147,6 +147,7 @@ enum lop_kind {
    L_FRACT, L_FLOOR, L_CEIL, L_CMP, L_SEL, L_CHAIN,
    L_MIN_RC, L_MAX_RC, L_NEG, L_SAT,
    L_MOV_OUT, L_MOVC_OUT, L_MOVC_TMP, L_MOVC_SECOND, L_RAW,
+   L_DEPTH,
 };
 
 struct lop {
@@ -214,6 +215,7 @@ struct ctx {
    bool custom_consts;  /* a template supplies the whole constant span */
    bool depth_first;    /* schedule operands before breadth, for pressure */
    bool no_gather_reuse;  /* rebuild each assembled vector, for pressure */
+   bool outputs_last;     /* outputs moved last: keep the scratch pair free */
 };
 
 struct gather_key {
@@ -2884,7 +2886,8 @@ output_target(struct ctx *c, int root, unsigned target)
  * two targets share costs one evaluation, and each is then moved to its own
  * target's destination. */
 static bool
-schedule_forest(struct ctx *c, const int *roots, unsigned targets)
+schedule_forest(struct ctx *c, const int *roots, unsigned targets,
+                unsigned outputs)
 {
    bool single = targets == 1;
    int root = single ? roots[0] : -1;
@@ -2944,7 +2947,7 @@ schedule_forest(struct ctx *c, const int *roots, unsigned targets)
       }
       return true;
    }
-   for (unsigned p = 0; p < targets; p++)
+   for (unsigned p = 0; p < outputs; p++)
       if (!output_target(c, roots[p], p))
          return false;
    return true;
@@ -2953,7 +2956,7 @@ schedule_forest(struct ctx *c, const int *roots, unsigned targets)
 static bool
 schedule_tree(struct ctx *c, int root)
 {
-   return schedule_forest(c, &root, 1);
+   return schedule_forest(c, &root, 1, 1);
 }
 
 /* Register allocation */
@@ -3089,12 +3092,12 @@ allocate(struct ctx *c)
           * more than one output move, so the pair is unusable throughout:
           * M9X_FS_MRT_SCRATCH=1 puts it back, which is how that was
           * measured.  docs/parhelia-m9-mrt-routing.md */
-         } else if (!c->record_out && s != (int)n - 1 &&
+         } else if (!c->record_out && s != (int)n - 1 && !c->outputs_last &&
                     (c->target_count < 2 ||
                      debug_get_bool_option("M9X_FS_MRT_SCRATCH", false)) &&
                     !reg_busy(busy, REG_S0)) {
             reg = REG_S0;
-         } else if (!c->record_out && s != (int)n - 1 &&
+         } else if (!c->record_out && s != (int)n - 1 && !c->outputs_last &&
                     (c->target_count < 2 ||
                      debug_get_bool_option("M9X_FS_MRT_SCRATCH", false)) &&
                     !reg_busy(busy, REG_S1)) {
@@ -3244,6 +3247,7 @@ allocate(struct ctx *c)
          "FRACT", "FLOOR", "CEIL", "CMP", "SEL", "CHAIN",
          "MIN_RC", "MAX_RC", "NEG", "SAT",
          "MOV_OUT", "MOVC_OUT", "MOVC_TMP", "MOVC_SECOND", "RAW",
+         "DEPTH",
       };
       unsigned i = 0;
 
@@ -3475,6 +3479,12 @@ encode_lops(struct ctx *c)
          break;
       case L_RAW:
          emit(c, l->w0, l->w1);
+         break;
+      case L_DEPTH:
+         /* gl_FragDepth, the upper clamp of fs-fragdepth into 0x21. */
+         a = opreg(c, l, 0);
+         emit(c, w0_make(a, a, a, 0x21, 0, 0x1d),
+              w1_make(0xa3200f50, e, a));
          break;
       }
    }
@@ -4910,7 +4920,8 @@ compile_targets(struct ctx *c)
             return false;
       }
       if (assign_texels(c) &&
-          schedule_forest(c, roots, c->target_count) && allocate(c))
+          schedule_forest(c, roots, c->target_count, c->target_count) &&
+          allocate(c))
          return true;
       if (c->reason != fail_out_of_temporaries)
          return false;
@@ -4919,10 +4930,132 @@ compile_targets(struct ctx *c)
    return fail(c, fail_out_of_temporaries);
 }
 
+/* The scalar a value holds in scalar 0 of a register lane: a constant is
+ * moved into a register first, and a texel or an assembled pair copied
+ * through a multiply by one, so the extra slots below read one value. */
+static int
+scalar_node(struct ctx *c, nir_scalar sc, unsigned *lane, unsigned *swz)
+{
+   static const uint8_t lane_id[2] = { 0, 1 }, swz_id[2] = { 1, 1 };
+   unsigned comp;
+   int n;
+
+   if (nir_scalar_is_const(sc)) {
+      n = node_new(c, N_LIT);
+      if (n < 0)
+         return -1;
+      for (unsigned i = 0; i < 4; i++)
+         NODES(c)[n].lit[i] = nir_scalar_as_float(sc);
+      *lane = 0;
+      *swz = 0;
+      return load_component(c, n, 0);
+   }
+   n = build_def(c, sc.def);
+   if (n < 0)
+      return -1;
+   comp = sc.comp + def_comp_base(sc.def);
+   if (node_is_const(&NODES(c)[n])) {
+      *lane = 0;
+      *swz = 0;
+      return load_component(c, n, comp);
+   }
+   *lane = comp / 2;
+   *swz = comp & 1 ? 3 : 0;
+   if (NODES(c)[n].kind == N_TEX || NODES(c)[n].kind == N_COMPOSE ||
+       NODES(c)[n].kind == N_PAIR) {
+      uint8_t ll[2] = { *lane, *lane }, ls[2] = { *swz, *swz };
+      int one = node_new(c, N_LIT), m;
+
+      if (one < 0)
+         return -1;
+      for (unsigned i = 0; i < 4; i++)
+         NODES(c)[one].lit[i] = 1.0f;
+      m = node_new(c, N_MUL);
+      if (m < 0)
+         return -1;
+      set_src(&NODES(c)[m], 0, n, ll, ls);
+      set_src(&NODES(c)[m], 1, one, lane_id, swz_id);
+      *lane = 0;
+      *swz = 0;
+      return m;
+   }
+   return n;
+}
+
+/* The colour together with gl_FragDepth, which the captured single-output
+ * forms do not carry.  Both share one graph; the colour is moved out
+ * first and the depth written last, as fs-fragdepth does, with the scratch
+ * pair kept free.  A shader that writes no colour gets an undefined (zero)
+ * one.  Depth is clamped to [0, 1] and written to destination 0x21 exactly
+ * as fs-fragdepth and fs-fragdepth-const do (CAPTURED, readback MEASURED by
+ * the vendor). */
+static bool
+compile_extras(struct ctx *c, nir_def *colour, nir_def *depth)
+{
+   static const uint32_t range[2] = { 0, 0x3f800000 };            /* 0, 1 */
+
+   c->outputs_last = true;
+   for (unsigned attempt = 0; attempt < 2; attempt++) {
+      int roots[2], dn = -1;
+      unsigned count = 1, dlane = 0, dswz = 0;
+      struct lop l;
+
+      reset_output(c);
+      reset_graph(c);
+      c->depth_first = attempt > 0;
+      c->no_gather_reuse = false;
+      if (colour) {
+         nir_scalar s[4];
+
+         for (unsigned i = 0; i < 4; i++)
+            s[i] = nir_scalar_chase_movs(nir_get_scalar(colour, i));
+         roots[0] = build_vec(c, s);
+      } else {
+         /* GL leaves the colour of a shader that writes none undefined. */
+         roots[0] = node_new(c, N_LIT);
+      }
+      if (roots[0] < 0)
+         return false;
+      if (depth) {
+         dn = scalar_node(c, nir_scalar_chase_movs(nir_get_scalar(depth, 0)),
+                          &dlane, &dswz);
+         if (dn < 0)
+            return false;
+         roots[count++] = dn;
+      }
+      if (!assign_texels(c) || !schedule_forest(c, roots, count, 0))
+         return false;
+      if (!output_target(c, roots[0], 0))
+         return false;
+      if (depth) {
+         /* Scalar 0 reads as the identity select, as the vendor writes it. */
+         unsigned sel = dswz == 3 ? 3 : 1;
+         int v = NODES(c)[dn].value[dlane], t;
+
+         t = chain_lop_cls(c, dn, 0xa3200c00 | sel << 6 | sel << 4, 0x1d, v,
+                           v, v, chain_const(c, range), false, 0, 3);
+         if (t < 0)
+            return false;
+         lop_init(&l, L_DEPTH, 0, dn);
+         l.opval[0] = t;
+         l.konst = chain_const(c, range);
+         lop_add(c, &l);
+      }
+      if (allocate(c)) {
+         c->p->fragdepth = depth != NULL;
+         return true;
+      }
+      if (c->reason != fail_out_of_temporaries)
+         return false;
+   }
+   return false;
+}
+
 static bool
 compile_impl(struct ctx *c, nir_function_impl *impl)
 {
    nir_intrinsic_instr *store = NULL, *kill = NULL;
+   nir_def *depth = NULL;
    bool discard = false, first = true;
    int colour[2] = { -1, -1 };
 
@@ -4954,6 +5087,13 @@ compile_impl(struct ctx *c, nir_function_impl *impl)
                               location < FRAG_RESULT_DATA0 + M9_FS_MAX_TARGETS ?
                               location - FRAG_RESULT_DATA0 : M9_FS_MAX_TARGETS;
 
+            if (location == FRAG_RESULT_DEPTH && !depth &&
+                (nir_intrinsic_write_mask(intr) & 1) &&
+                nir_src_is_const(intr->src[1]) &&
+                !nir_src_as_uint(intr->src[1])) {
+               depth = intr->src[0].ssa;
+               break;
+            }
             if (target >= M9_FS_MAX_TARGETS || c->target_def[target] ||
                 nir_intrinsic_write_mask(intr) != 0xf ||
                 !nir_src_is_const(intr->src[1]) ||
@@ -4981,8 +5121,10 @@ compile_impl(struct ctx *c, nir_function_impl *impl)
          first &= intr->intrinsic == nir_intrinsic_terminate;
       }
    }
-   if (!c->target_count && !c->root)
+   if (!c->target_count && !c->root && !depth)
       return fail(c, "no color output");
+   if (depth && (c->root || c->target_count > 1 || discard || kill))
+      return fail(c, "gl_FragDepth beside several outputs or a discard");
    c->p->target_count = c->root ? 0 : c->target_count;
    c->p->target_mask = c->root ? 0 : c->p->target_mask;
    if (!c->root && c->target_count > 1) {
@@ -5014,11 +5156,18 @@ compile_impl(struct ctx *c, nir_function_impl *impl)
          const_tail(c);
       return true;
    }
-   if (kill && match_alpha_test(c, kill, store->src[0].ssa))
+   if (depth) {
+      if (!compile_extras(c, store ? store->src[0].ssa : NULL, depth))
+         return false;
+   } else if (kill && match_alpha_test(c, kill, store->src[0].ssa)) {
       c->alpha.enabled = true;
-   else if (kill && (discard || !tmpl_stipple(c, kill, store->src[0].ssa)))
+   } else if (kill && (discard || !tmpl_stipple(c, kill, store->src[0].ssa))) {
+      /* The GLSL kill slot acts on predicate state the captures set with
+       * forms not decoded (fs-discard-cond slots 3, 5 and 9); measured,
+       * it does not follow its operand, so a computed discard is refused. */
       return fail(c, "unsupported conditional discard");
-   if ((!kill || c->alpha.enabled) &&
+   }
+   if (!depth && store && (!kill || c->alpha.enabled) &&
        !compile_output(c, store->src[0].ssa, discard))
       return false;
    c->has_consts |= discard;

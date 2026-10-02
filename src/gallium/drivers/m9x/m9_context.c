@@ -458,6 +458,7 @@ static bool m9_split_coverage;
 /* M9X_RECORD_89 replaces index 0x89 of a record pass, whose low twelve bits
  * are one three-bit render format class per bound target. */
 static unsigned m9_record_89;
+static bool m9_fragdepth_state;
 /* M9X_SPLIT_SEQ=0 clears raster ef bits 10:9, which a pass submitted on its
  * own carries although its range holds no other pass. */
 static bool m9_split_seq;
@@ -1551,6 +1552,16 @@ m9_job_native(struct m9_context *ctx, const struct m9_job_key *key,
 
       pass->r89 = m9_record_89 && pass->writes_record ? m9_record_89 :
                   record_state ? 0xfe007ffcu : 0xfe207ff8u;
+      /* A program writing gl_FragDepth sets the fifth class field to 1 and
+       * takes the depth unit from 0x7000 to 0x6800 with test and write on
+       * (CAPTURED, fs-fragdepth: 89 fe001ff8, ef 6800).  M9X_FRAGDEPTH=0
+       * leaves both as for interpolated depth, for measurement. */
+      if (p->fragdepth && m9_fragdepth_state) {
+         pass->r89 = (pass->r89 & ~0x7000u) | 0x1000u;
+         pass->fs.r89 = pass->r89;
+         if (pass->depth_ef)
+            pass->depth_ef = (pass->depth_ef & ~0x9000u) | 0x0800u;
+      }
       /* The stencil test runs with the depth test, in the first pass. */
       pass->a9 = (pass_depth && key->stencil ? key->stencil_a9 :
                                                M9_STENCIL_A9_OFF) |
@@ -2469,7 +2480,9 @@ m9_submit_job(struct m9_context *ctx)
          .draws = ctx->draws.data,
          .draw_count = draws,
          .depth_control = key->depth_control,
-         .depth_ef = key->depth_ef,
+         /* A single pass carries its own depth bits for gl_FragDepth. */
+         .depth_ef = pass_count == 1 && !ret ? passes[0].depth_ef :
+                                                key->depth_ef,
          .stencil = key->stencil,
          .stencil_a9 = key->stencil_a9,
          .stencil_aa = key->stencil_aa,
@@ -7986,6 +7999,7 @@ m9_context_create(struct pipe_screen *pscreen, void *priv, unsigned flags)
    m9_record_dump = debug_get_option("M9X_RECORD_DUMP", NULL);
    m9_split_draws = debug_get_num_option("M9X_SPLIT_DRAWS", 1);
    m9_record_89 = debug_get_num_option("M9X_RECORD_89", 0);
+   m9_fragdepth_state = debug_get_bool_option("M9X_FRAGDEPTH", true);
    m9_split_coverage = debug_get_bool_option("M9X_SPLIT_COVERAGE", true);
    m9_transition = debug_get_bool_option("M9X_TRANSITION", true);
    m9_split_seq = debug_get_bool_option("M9X_SPLIT_SEQ", true);
