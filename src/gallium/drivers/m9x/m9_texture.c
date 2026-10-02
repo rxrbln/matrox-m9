@@ -613,6 +613,14 @@ m9_texture_box_check(const struct m9_texture_layout *layout, unsigned level,
           map_size ? -EINVAL : 0;
 }
 
+/* Texels x..x+7 of an 8-aligned run are 32 contiguous bytes in every
+ * placement (A[4:2] = x[2:0], and no higher bit reads x[2:0]). */
+static unsigned
+m9_texel_run(unsigned x, int left)
+{
+   return !(x & 7) && left >= 8 ? 8 : 1;
+}
+
 int
 m9_texture_store(const struct m9_texture_layout *layout, uint8_t *map,
                  uint64_t map_size, enum pipe_format storage,
@@ -640,8 +648,8 @@ m9_texture_store(const struct m9_texture_layout *layout, uint8_t *map,
             ret = -EINVAL;
             break;
          }
-         for (int dx = 0; dx < box->width; dx++) {
-            unsigned f, z;
+         for (int dx = 0; dx < box->width;) {
+            unsigned f, z, n = m9_texel_run(box->x + dx, box->width - dx);
             uint64_t off;
 
             m9_texture_layer(layout, face, box, dz, &f, &z);
@@ -649,7 +657,8 @@ m9_texture_store(const struct m9_texture_layout *layout, uint8_t *map,
                                   box->y + dy, z, &off);
             if (ret)
                break;
-            memcpy(map + off, row + 4 * dx, 4);
+            memcpy(map + off, row + 4 * dx, 4 * n);
+            dx += n;
          }
       }
    }
@@ -675,8 +684,8 @@ m9_texture_fetch(const struct m9_texture_layout *layout,
       return -ENOMEM;
    for (int dz = 0; !ret && dz < box->depth; dz++) {
       for (int dy = 0; !ret && dy < box->height; dy++) {
-         for (int dx = 0; dx < box->width; dx++) {
-            unsigned f, z;
+         for (int dx = 0; dx < box->width;) {
+            unsigned f, z, n = m9_texel_run(box->x + dx, box->width - dx);
             uint64_t off;
 
             m9_texture_layer(layout, face, box, dz, &f, &z);
@@ -684,7 +693,8 @@ m9_texture_fetch(const struct m9_texture_layout *layout,
                                   box->y + dy, z, &off);
             if (ret)
                break;
-            memcpy(row + 4 * dx, map + off, 4);
+            memcpy(row + 4 * dx, map + off, 4 * n);
+            dx += n;
          }
          if (!ret && !util_format_translate(dst_format,
                                             dst + ((size_t)dz * box->height +
