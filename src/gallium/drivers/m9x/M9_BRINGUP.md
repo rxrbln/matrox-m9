@@ -70,7 +70,10 @@ depth row span (the colour code moves the 32-bit element verbatim; exact
 at 1x1 to 640x240), which also drains the engine; a CPU write resets the
 hierarchical plane.  The depth unit tests the last partial 64-column group
 wrongly when the depth row span is only 32-aligned (piglit hiz at 400, 416
-and 352 wide), so depth surfaces above 64x64 take a 64-aligned span.
+and 352 wide), and writes stencil into the wrong cells of small surfaces
+12 to 30 wide, so every depth surface takes a 64-aligned span.  Colour
+targets of 64x64 and below are read through the small kind at their
+32-aligned span; at the texel width a 60x60 target came back sheared.
 Blits the engine refuses (depth/stencil, masks, scissors, mirroring,
 scaling) run on the CPU; a half-size mirrored scissored D24S8 blit is
 exact.
