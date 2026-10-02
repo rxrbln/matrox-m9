@@ -17,6 +17,9 @@ extensions, GLX).  Results on nano under `/root/tmp/piglit/results-m9x/`.
 | m9x b1298cb (+ fragment compiler) | 262 | 22 | 0 | 1 | 165 |
 | m9x c4dd850 (+ render targets, GLX, sRGB/GL 2.1, discard) | 269 | 17 | 0 | 1 | 163 |
 
+Patches: `patches/` carries the driver state as of m9x 6780573, kernel
+f587517, plus `mesa-generic-fixes/` (5 commits, format-patch).
+
 Later merges (fog, exact 10-bit uploads, constant coordinates, derivatives,
 shadow/projective fetches, variable indexing, native vertex fixes; m9x
 5ef40cb + outer mesa 3ceb09e) are measured per agent only.  Non-core, first
@@ -56,12 +59,35 @@ glsl-1.20 tests into real results.
   job"), gl-1.0-dlist-bitmap and scissor-bitmap (also seen intermittently on
   c4dd850); owner to be found among the fog/10-bit/fs3/vs merges.
 * GL_DITHER is ignored for 8-bit targets (`m9_dither_ef`), see the logic-op doc.
-* Polygon stipple: vendor form captured (`raster/batch.tgz`
-  g56/polygon_stipple; 79=ea010020, 70=0004111c, an extra draw at c3=4 not
-  decoded).
+* Polygon stipple: the vendor form is decoded (CAPTURED, g56/polygon_stipple,
+  submission 13), not implemented.  It is a two-pass job: pass 0 (c3=0)
+  draws the quad into a record surface (b0=10ec1000, b1=ee090002) with a
+  4-slot program `fffd191c e28fccdf | e640911c b040015f` reading
+  gl_FragCoord (7a) and writing roughly 1 + (x+0.5)/32; pass 1 (c3=4) routes
+  that record (74=00ff0110, 78=10ec1000, 79=ee090002) into unit 0
+  (70=0004111c, 78=11ec1000, 79=ea010020, 7a=00010020, 7c=00009200,
+  7d=0ff80000), samples a 32x32 float texture of +1/-1 in a tiled order, and
+  kills through the GLSL kill slot (cls 5) after a 6-slot select tail;
+  ef=00000655.  So the vendor stipple is kill-based and will likely show the
+  kill lane artifact.  The vendor writes c7 at the head and tail of that
+  range; do not reproduce it.  Pass 0's constants are not decoded yet.
+* GL_DITHER: ef[7:0] = 0x55 is dither off, 0x00 on (CAPTURED, fragops
+  dither cases); `m9_dither_ef()` should take the rasterizer's dither flag.
 * Cube faces above 16x16 as render targets: placement not measured.
 * Single-pass multi-target blending: destination registers of targets 1..3
   not captured.
 * Native vertex temporaries `0x11`/`0x15`/`0x17`/`0x19`/`0x1b`/`0x1f`
   (`parhelia-m9-native-vertex-backend.md`).
-* Fragment refusals: interpolation registers, control flow, value splits.
+* Fragment refusals: six vec4 interpolants per raster pass is a MEASURED
+  engine limit (`parhelia-m9-raster-stream-limit-re.md` section 6: registers
+  0x40+8i, i=0..5; a seventh reads garbage); the vendor splits into passes
+  (vs-varyings-max: 14 varyings as 2/6/6), so the open question is why the
+  splitter's interpolant cut does not fire.  Per-fragment TXB is CAPTURED
+  (fs-tex2d-bias, two-pass with the LOD as the route's third component) and
+  implementable.  Control flow, value splits and the shadow reference clamp
+  are not started.
+* Regressions after c4dd850: only max-samplers (+ border) is real (passes
+  5/5 on c4dd850); bisect candidates a535381, fs3 32eabe7..b885bdd, vs
+  4687f1b..5ef40cb, 6780573.  dlist-bitmap and scissor-bitmap fail 5/5 on a
+  fresh c4dd850 build too, rastercolor 2/5, so they are not caused by the
+  merges; they passed in int4 before a reboot (environment or state, open).

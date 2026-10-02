@@ -176,9 +176,12 @@ the m9x commit messages and `src/gallium/drivers/m9x/M9_BRINGUP.md`.
   exp2(2.4*log2(...))`, ~57 slots per unit; worst error 0.23 of an 8-bit
   step), which gives GL 2.1.
 
-**Still refused:** out of interpolation registers, control flow that
+**Still refused:** more than six interpolated vec4 inputs in one pass (an
+engine limit; the vendor splits passes), out of interpolation registers in
+the splitter, control flow that
 specialisation does not fold, "no value splits this shader", a per-fragment
-texture bias (TXB from a varying; not captured), the shadow reference clamp
+texture bias (TXB from a varying; CAPTURED as a two-pass bias route, not yet
+implemented), the shadow reference clamp
 for fixed-point depth, dual-source blending, sRGB render targets, and logic
 ops (captured, `parhelia-m9-logic-op.md`, not yet implemented).
 
