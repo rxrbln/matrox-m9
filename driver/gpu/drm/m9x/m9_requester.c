@@ -659,6 +659,9 @@ int m9x_submit_noop(struct m9x_device *mdev, u64 *point)
 	if (!m9_render_diag)
 		return -EACCES;
 	mutex_lock(&mdev->transport.lock);
+	/* A posted job is retired first: its target is matched exactly, and
+	 * this fence would move the writeback past it. */
+	m9x_transport_drain_locked(mdev);
 	if (mdev->transport.wedged) {
 		ret = -EIO;
 		goto out_unlock;

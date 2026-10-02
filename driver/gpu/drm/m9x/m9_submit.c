@@ -911,9 +911,17 @@ static u32 *m9_frame_records(const u32 *image, const u32 *expected, u32 dwords,
 	return framed;
 }
 
+/*
+ * Execute a validated image.  A posted job takes over its objects inside the
+ * same hold of the transport lock that posts it: released and taken again,
+ * another submitter could drain this job and post its own in between, and the
+ * objects would be handed to that job or released while this one still reads
+ * them.
+ */
 static int m9_submit_execute(struct m9x_device *mdev, const u32 *image,
 			     const u32 *expected, u32 dwords, u64 *point,
-			     bool async)
+			     bool async, struct drm_gem_object ***bos,
+			     bool **pinned, u32 count)
 {
 	u32 *framed, *range_ends, framed_dwords, ranges, max_token, target;
 	int ret;
@@ -940,6 +948,14 @@ static int m9_submit_execute(struct m9x_device *mdev, const u32 *image,
 					    target + max_token + 0x10, point,
 					    async);
 	kvfree(framed);
+	if (async && mdev->transport.async_pending &&
+	    !mdev->transport.async_bos) {
+		mdev->transport.async_bos = *bos;
+		mdev->transport.async_pinned = *pinned;
+		mdev->transport.async_count = count;
+		*bos = NULL;
+		*pinned = NULL;
+	}
 out_unlock:
 	mutex_unlock(&mdev->transport.lock);
 	kvfree(range_ends);
@@ -1079,24 +1095,12 @@ static int m9_submit_validate(struct m9x_device *mdev,
 	 * retires: the point of posting without waiting is that the next job
 	 * is built while this one still reads them.
 	 */
-	if (!ret && execute) {
-		bool async = m9_async_submit && !mdev->transport.wedged;
-
+	if (!ret && execute)
 		ret = m9_submit_execute(mdev, image, expected, dwords,
-					&args->out_point, async);
-		if (!ret && async) {
-			mutex_lock(&mdev->transport.lock);
-			if (mdev->transport.async_pending &&
-			    !mdev->transport.async_bos) {
-				mdev->transport.async_bos = bos;
-				mdev->transport.async_pinned = vram_pinned;
-				mdev->transport.async_count = args->bo_count;
-				bos = NULL;
-				vram_pinned = NULL;
-			}
-			mutex_unlock(&mdev->transport.lock);
-		}
-	}
+					&args->out_point,
+					m9_async_submit &&
+					!mdev->transport.wedged,
+					&bos, &vram_pinned, args->bo_count);
 out:
 	if (vram_pinned)
 		for (i = 0; i < args->bo_count; i++)
