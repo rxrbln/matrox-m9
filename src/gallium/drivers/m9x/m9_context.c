@@ -5034,6 +5034,10 @@ m9_native_vs_resolve(struct m9_context *ctx, const struct pipe_draw_info *info,
                 rast->fill_front != PIPE_POLYGON_MODE_FILL ||
                 rast->fill_back != PIPE_POLYGON_MODE_FILL))
       return "a rasterizer state the hardware pass does not carry";
+   /* The back colours are chosen per primitive, which the draw module's
+    * two-sided stage does and the preprocessing program does not. */
+   if (rast && rast->light_twoside)
+      return "two-sided colour is chosen in the draw module";
    if (out->lines && rast &&
        (rast->line_width > 1.0f || rast->line_smooth ||
         rast->line_stipple_enable))
