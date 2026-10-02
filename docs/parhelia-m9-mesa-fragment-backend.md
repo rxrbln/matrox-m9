@@ -143,35 +143,77 @@ The other exact cases are `fs-varying`, `fs-texcoord`, `fs-mul`, `fs-add`,
   * Strides are packed pairwise into `10..12`.
   * `m9-batch-test` checks these words against the corpus.
 
-## 4. Not supported (compile fails, draw skipped)
+## 4. Coverage as of 2026-10-02
 
-* **Computed texture coordinates.**  Bias, cube, 3-D, rectangle and swizzled
-  coordinates.  The vendor uses an extra raster pass for them.  A coordinate
-  that is an affine function of a varying with per-draw coefficients is
-  folded into the varying instead (`parhelia-m9-affine-texture-coordinates.md`),
-  and projective and shadow sampling are supported.
-* **Conditionals and loops.**  Conditional `discard`, `if`/ternary,
-  `step`/compare/select forms, and loops that NIR does not unroll.  The
-  exceptions are glamor's stipple compare templates, conditions on inlinable
-  uniforms and a loop whose bound is one, which unrolls
-  (`parhelia-m9-glamor-shader-coverage.md`,
-  `parhelia-m9-uniform-specialisation.md`).
-* **Unary and other built-ins.**
-  * unary: `min`, `max`, `abs`, `floor`, `ceil`, `fract`, `sign`, negation;
-  * multi-slot built-ins: dot products, `normalize`, `length`, `cross`,
-    division and the exp/log/pow/sqrt/sin families;
-  * derivatives, `gl_FrontFacing` and `gl_FragDepth`.
-* **Vector shapes.**  Swizzles that cross register lanes, partial writemasks,
-  vec2/vec3 arithmetic and matrices.  Lane-preserving swizzles on
-  multiplication operands and `vec4(texture.xyz, literal)` are supported.
-* **Varyings.**  More than two interpolated streams; a texture coordinate that
-  is also used arithmetically.
-* **Textures in the driver.**  Sampling compiles and matches offline, but the
-  driver still refuses it until the texture storage layout is measured.  The
-  `78/79/7a/7c` binding from the GL 1.5 capture
-  (`parhelia-m9-gl15-ff-capture.md`) is the source for that step.
-* **gl_FragCoord in the driver.**  The screen advertises an upper-left origin,
-  so st/mesa inserts a y-flip transform and the template does not match.
+The list this section used to carry predates the piglit campaign of
+2026-10-02; most of it is implemented now.  Details and measurements are in
+the m9x commit messages and `src/gallium/drivers/m9x/M9_BRINGUP.md`.
+
+**Added (MEASURED on the M9148 unless noted):**
+
+* booleans: `b2b1`/bool uniforms as select conditions, `ball`/`bany`
+  reductions scalarised, boolean `ieq`/`ine`/`ixor` compared as floats,
+  `fsign`/`ftrunc` lowered in NIR;
+* `gl_FrontFacing` (fs-frontfacing form, `op2 = 0x02` on `7b` against
+  (-0.5, 0.5); CW front is a `face_flip` variant), all 12 window/FBO x
+  native/draw-module x winding cases;
+* `gl_FragDepth`: `op2 = 0x19` class 3 clamp to [0,1], then class 0 into
+  destination `0x21`, with raster `r89` fifth class field 1 and `ef` 0x6800;
+* 1-D textures as planes one texel high; constant/uniform coordinates
+  through the per-vertex transform bias; coordinate components gathered in
+  any order (shadow reference not in z, cube/volume order, texture2DProj
+  vec3); a literal/uniform bias folded into the sampler LOD bias;
+* derivatives through the captured DDX/DDY slot (`ffff9100 a00fc00f`, then
+  `W1 = 8c020c00 | y<<14 | aswz<<8 | aswz<<4`).  They are **per 2x2 quad**:
+  dFdx from the quad's first engine row, dFdy from its left column, so the
+  GL_NICEST per-pixel accuracy tests stay WARN (hardware);
+* computed discard (section 4a below);
+* blending: SUBTRACT, REVERSE_SUBTRACT, MIN, MAX, constant-colour factors
+  (constant re-upload, no recompile), separate RGB/alpha factors,
+  SRC_ALPHA_SATURATE; destination alpha of an alpha-less target reads one;
+  several colour targets are blended one target per pass;
+* sRGB texture decode after the fetch (`c <= 0.04045 ? c/12.92 :
+  exp2(2.4*log2(...))`, ~57 slots per unit; worst error 0.23 of an 8-bit
+  step), which gives GL 2.1.
+
+**Still refused:** out of interpolation registers, control flow that
+specialisation does not fold, "no value splits this shader", a per-fragment
+texture bias (TXB from a varying; not captured), the shadow reference clamp
+for fixed-point depth, dual-source blending, sRGB render targets, and logic
+ops (captured, `parhelia-m9-logic-op.md`, not yet implemented).
+
+### 4a. The kill slot (MEASURED 2026-10-02)
+
+The GLSL kill is `w0_make(a, 7f, 7f, 0x40, cls, 0x1c)` with W1
+`0xafdfc000 | aswz<<8 | a>>3`.  It kills where `(0 cls v)` holds for the
+scalar the a-swizzle picks: cls0 v>0, cls1 v<=0, cls2 v>=0, cls3 v<0,
+cls4 v==0, cls5 v!=0.  No predicate setup is needed; the fixed-function
+alpha kill (b operand, W1 `a3c0000f`) is a different instruction.  A shader
+that discards every fragment skips its draw (exact by the GL spec).
+
+**Open artifact:** in up to three lanes of a 2x2 quad the kill result of the
+quad two places earlier in the span is applied (lane x odd, y even is never
+affected), 60-160 pixels per 64^2/128^2 draw.  It also hits the alpha-test
+path and a replay of the vendor's own fs-discard-cond, whose vendor
+readback is exact -- so some engine state differs from the vendor's.  The
+ruled-out list is in `M9_BRINGUP.md` and `BUGS.md`; an MMIO snapshot of the
+vendor stack rendering fs-discard-cond (on the 2.6.30 vendor host, not
+nano) would settle it.
+
+**Never write index `c7` (0x131c) mid-job:** it stalled the engine
+(2026-10-02, only reachable by relaxing the kernel validator).
+
+### 4b. Fragment register roles
+
+| register | role | basis |
+|---|---|---|
+| `00`, `02` | texture results arrive here; there is no separate texture-load slot | CAPTURED |
+| `10`..`13` | scratch and interpolation | established |
+| `18`..`1b` | destination colour when blending or for logic ops; a blended program's general run stops at `0x17` | MEASURED |
+| `1c` | interpolation spare | established |
+| `21` | depth output (`gl_FragDepth`) | CAPTURED |
+| `7b` | front-facing value | CAPTURED |
+| `7d`, `7e` | specials the logic-op tail reads | CAPTURED |
 
 ## 5. Driver wiring (UNTESTED)
 

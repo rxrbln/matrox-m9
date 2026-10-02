@@ -169,8 +169,13 @@ the other half.  With `A` the attribute's first register and `B` its second —
 `0xbe000d0f | e << 14` for the partial and `0xadc00c0f | e << 14` for the
 completion, `0xadc00c3f | e << 14` when the completion takes the partial's
 second scalar (operand swizzle 3 at bits 5:4, exactly the encoding of the
-fragment note).  The `c = 0x03` of the partial is a fixed part of that form:
-register 3 is read by it and written by nothing in the driver's program.
+fragment note).  **Corrected 2026-10-02 (MEASURED):** the partial's `c` field
+is a constant pair index, not a register: it computes `d.s0 = b . k[e] - k[c].s0`
+(probes with binary-weighted operands; a pair holding 0.25 subtracts exactly
+0.25).  The vendor's `c = 0x03` works only because its pair 3 holds zero; a
+compiled program must name a zero literal pair there.  The partial results
+land in `0x11` and `0x15` and are read by the completion within one or two
+slots -- the only vendor use of those registers in this program.
 
 Both dot operands are read whole, so the operand swizzle is 0 on the `b` field
 of all four.  `e` names a constant pair, and that pair is a **row half**:

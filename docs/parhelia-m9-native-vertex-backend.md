@@ -43,12 +43,35 @@ Its interface to the head is exactly:
 | `r02` | varying x, y -- the tail moves it to the output register `0x11` |
 | `r13` | varying z, w -- an output register the head writes itself, as the vendor does |
 
-`r03` is reserved: the partial dot names it in its `c` field and nothing in
-the vendor program writes it, so the compiler does not either.  Everything the
+`r03` is reserved: nothing in the vendor program writes it.  The original
+reason -- that the partial dot names it in its `c` field -- is wrong: `c` is a
+constant pair index (`parhelia-m9-native-vertex-isa.md` section 3), so `r03` is
+probably free, but that is UNTESTED and it stays reserved.  Everything the
 tail writes -- `r04`..`r0f`, `r19`, `r1b`..`r1d`, `r21` -- is free for the head,
-which runs first.  The temporary pool is `r04`..`r12` and `r14`..`r21`, 29
+which runs first.  The temporary pool was `r04`..`r12` and `r14`..`r21`, 29
 registers; `0x22` upward is not CAPTURED as writable and nothing here widens
 the pool on a guess.
+
+**Since 2026-10-02 the pool is 23 registers.**  `0x11`, `0x15`, `0x17`, `0x19`,
+`0x1b` and `0x1f` read back wrong when used as temporaries (MEASURED by
+steering a reciprocal across the pool: seeded in any of those six it is wrong,
+in `0x12`, `0x14`, `0x16`, `0x18`, `0x1a`, `0x1c`..`0x1e` or `0x20` it is right;
+padding slots after the write does not help, so it is not latency).  The
+mechanism is OPEN.  DERIVED hint: they are odd registers from `0x11` up, `0x11`
+is the varying x,y output the tail fills, and the vendor uses `0x11`/`0x15`
+only as partial-dot results read within two slots -- consistent with output or
+accumulator registers that do not hold a value.  Not fitting yet: `0x13` (an
+output) works as a temporary, and `0x1d` is in the tail's write set.  A probe
+writing known values to each odd register and reading both the register and
+the varying output would settle it and may return registers to the pool.
+
+Two more 2026-10-02 corrections (MEASURED): the partial dot subtracts
+`k[c].s0` (it now names a zero literal pair), and `frcp`, `frsq`, `fsqrt` and
+the `fdiv` divisor read source component 0 in every lane, so each component
+runs its own chain.  All three were invisible offline because the simulator
+modelled them the same wrong way; it is corrected (`divide-vector`,
+`rsq-sqrt-vector`, `dot-varying` cases).  71 glsl `vs-*` piglit tests failed
+only on the native path; 73 of the 85 failing ones pass now.
 
 A register is reclaimed when nothing live holds it: a NIR definition dies
 past its last use, and an *intermediate* of the instruction being emitted
@@ -223,7 +246,7 @@ the vertex unit**:
 | multiply register by constant | 0x01 | s30 |
 | multiply register by register | 0x01 | s23 |
 | multiply-add, both addend and multiplier constant | 0x02 | s26 |
-| partial dot against a constant pair | 0x10 | s5 |
+| partial dot, subtracting `k[c].s0` | 0x10 | s5 |
 | dot completion | 0x0e | s7, s12 |
 | compare against a constant pair | 0x00, UNIT 1 | s14 |
 | reciprocal seed, residual, Newton step | 0x11, 0x01 cls 5, 0x13 | s15, s17, s18 |
