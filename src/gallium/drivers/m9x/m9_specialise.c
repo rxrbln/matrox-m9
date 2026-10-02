@@ -250,6 +250,9 @@ m9_nir_inline_uniforms(nir_shader *nir, const uint32_t *values)
       NIR_PASS(progress, nir, nir_opt_peephole_select,
                &(nir_opt_peephole_select_options){ .limit = 8 });
       NIR_PASS(progress, nir, nir_opt_copy_prop);
+      /* A variable index st lowered to a ladder of compares folds to one
+       * constant index, so the temporary array becomes plain values. */
+      NIR_PASS(progress, nir, nir_lower_vars_to_ssa);
       NIR_PASS(progress, nir, nir_opt_algebraic);
       NIR_PASS(progress, nir, nir_opt_cse);
       NIR_PASS(progress, nir, nir_opt_dce);
