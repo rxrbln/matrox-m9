@@ -4054,6 +4054,28 @@ m9_job_key_current(struct m9_context *ctx, struct m9_job_key *key)
    return true;
 }
 
+/* The native pass does not clip to the view volume, so x and y are held to
+ * the viewport rectangle: pixel centres outside it belong to no primitive. */
+static bool
+m9_viewport_clip(const struct m9_context *ctx, struct m9_job_key *key)
+{
+   const struct pipe_viewport_state *vp = &ctx->viewport;
+   float ax = fabsf(vp->scale[0]), ay = fabsf(vp->scale[1]);
+   float x0 = ceilf(vp->translate[0] - ax - 0.5f);
+   float x1 = ceilf(vp->translate[0] + ax - 0.5f);
+   float y0 = ceilf(vp->translate[1] - ay - 0.5f);
+   float y1 = ceilf(vp->translate[1] + ay - 0.5f);
+   uint32_t lox = key->clip_min & 0xffffu, loy = key->clip_min >> 16;
+   uint32_t hix = key->clip_max & 0xffffu, hiy = key->clip_max >> 16;
+
+   lox = MAX2(lox, (uint32_t)CLAMP(x0, 0.0f, (float)hix));
+   loy = MAX2(loy, (uint32_t)CLAMP(y0, 0.0f, (float)hiy));
+   hix = MIN2(hix, (uint32_t)CLAMP(x1, (float)lox, (float)hix));
+   hiy = MIN2(hiy, (uint32_t)CLAMP(y1, (float)loy, (float)hiy));
+   m9_scissor_words(lox, loy, hix, hiy, &key->clip_min, &key->clip_max);
+   return lox < hix && loy < hiy;
+}
+
 /* vbuf render */
 
 static inline struct m9_vbuf_render *
@@ -5592,6 +5614,9 @@ m9_native_vs_draw(struct m9_context *ctx, const struct pipe_draw_info *info,
    }
    struct m9_vs_outputs outputs;
    struct m9_vs_variant *variant;
+
+   if (!m9_viewport_clip(ctx, &key))
+      return true;
 
    reason = m9_native_vs_layout(&key, &ctx->vs->cur->program, &outputs);
    if (reason) {
