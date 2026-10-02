@@ -820,15 +820,24 @@ coord_is_identity(const struct coord_expr *e)
           e->bias.offset == M9_FS_UNIFORM_ZERO;
 }
 
+static bool
+coord_term_same(const struct m9_fs_coord_term *a,
+                const struct m9_fs_coord_term *b)
+{
+   return a->literal == b->literal && a->factor == b->factor &&
+          a->offset == b->offset && a->reciprocal == b->reciprocal;
+}
+
 /* Field by field: the struct has padding a memcmp would read. */
 bool
 m9_fs_coord_affine_same(const struct m9_fs_coord_affine *a,
                         const struct m9_fs_coord_affine *b)
 {
-   if (a->present != b->present)
+   if (a->present != b->present || a->swizzled != b->swizzled)
       return false;
    for (unsigned i = 0; i < ARRAY_SIZE(a->scale); i++) {
-      if (a->scale[i].literal != b->scale[i].literal ||
+      if ((a->swizzled && a->comp[i] != b->comp[i]) ||
+          a->scale[i].literal != b->scale[i].literal ||
           a->scale[i].factor != b->scale[i].factor ||
           a->scale[i].offset != b->scale[i].offset ||
           a->scale[i].reciprocal != b->scale[i].reciprocal ||
@@ -946,6 +955,7 @@ build_tex(struct ctx *c, nir_tex_instr *tex)
    int n, ci = nir_tex_instr_src_index(tex, nir_tex_src_coord);
    int pi = nir_tex_instr_src_index(tex, nir_tex_src_projector);
    int ri = nir_tex_instr_src_index(tex, nir_tex_src_comparator);
+   int bi = nir_tex_instr_src_index(tex, nir_tex_src_bias);
 
    /* A cube and a volume read three coordinate components of one varying,
     * exactly where a shadow fetch reads its reference. */
@@ -956,12 +966,12 @@ build_tex(struct ctx *c, nir_tex_instr *tex)
    bool line = tex->sampler_dim == GLSL_SAMPLER_DIM_1D;
 
    dims = tex->is_shadow || volume ? 3 : line ? 1 : 2;
-   if (tex->op != nir_texop_tex ||
+   if ((tex->op != nir_texop_tex && tex->op != nir_texop_txb) ||
+       (tex->op == nir_texop_txb) != (bi >= 0) ||
        (!sampler_dim_plane(tex->sampler_dim) && !volume && !line) ||
        tex->is_array || ci < 0 || (volume && tex->is_shadow) ||
-       (line && tex->is_shadow) ||
        tex->is_shadow != (ri >= 0) ||
-       tex->num_srcs != 1u + (pi >= 0) + (ri >= 0))
+       tex->num_srcs != 1u + (pi >= 0) + (ri >= 0) + (bi >= 0))
       return fail(c, "texture sampling needs a computed coordinate pass"), -1;
    /* An earlier pass already handed this coordinate over. */
    for (unsigned i = 0; i < c->cut_count; i++)
@@ -972,17 +982,28 @@ build_tex(struct ctx *c, nir_tex_instr *tex)
     * A shadow fetch adds the comparison reference as a third component of
     * the same stream. */
    unsigned coord_comp[3];
-   struct coord_expr ce[3], qe;
+   struct coord_expr ce[3], qe, be;
    struct m9_fs_coord_affine affine = { 0 };
    int first = -1;
+   bool natural;
 
    if (pi >= 0 && !coord_parse(nir_get_scalar(tex->src[pi].src.ssa, 0), &qe))
+      return fail(c, "texture sampling needs a computed coordinate pass"), -1;
+   /* Only a bias that is constant over the draw folds into the sampler. */
+   if (bi >= 0 && (!coord_parse(nir_get_scalar(tex->src[bi].src.ssa, 0), &be) ||
+                   be.varying))
       return fail(c, "texture sampling needs a computed coordinate pass"), -1;
    for (unsigned i = 0; i < dims; i++) {
       nir_scalar src = i < 2 || volume ?
                        nir_get_scalar(tex->src[ci].src.ssa, i) :
                        nir_get_scalar(tex->src[ri].src.ssa, 0);
 
+      /* A line's second coordinate is the constant row set below. */
+      if (line && i == 1) {
+         memset(&ce[i], 0, sizeof(ce[i]));
+         ce[i].scale.offset = ce[i].bias.offset = M9_FS_UNIFORM_ZERO;
+         continue;
+      }
       if (!coord_parse(src, &ce[i]))
          return fail_coord(c, tex->src[ci].src.ssa);
       if (first < 0 && ce[i].varying)
@@ -1020,19 +1041,39 @@ build_tex(struct ctx *c, nir_tex_instr *tex)
       affine.bias[1].offset = M9_FS_UNIFORM_ZERO;
       affine.present = true;
    }
-   if (coord_comp[0] > 2 || coord_comp[1] != coord_comp[0] + 1)
-      return fail_coord(c, tex->src[ci].src.ssa);
-   /* The driver moves a pair down to the xy of its stream; a reference is a
-    * third component, so a shadow fetch owns the low half of its slot. */
-   if ((tex->is_shadow || volume) && (coord_comp[0] || coord_comp[2] != 2))
-      return fail(c, "shadow reference is not the third coordinate"), -1;
+   if (pi >= 0 && qe.varying && qe.location != location)
+      return fail(c, "texture sampling needs a computed coordinate pass"), -1;
+   natural = coord_comp[0] <= 2 && coord_comp[1] == coord_comp[0] + 1 &&
+             (!(tex->is_shadow || volume) ||
+              (!coord_comp[0] && coord_comp[2] == 2)) &&
+             (pi < 0 || !qe.varying || qe.component == 3);
+   /* Any other order of one varying's components is gathered into the
+    * stream per vertex.  A plain pair keeps the coordinate pass it had,
+    * and the colour stream has no CPU view to gather in. */
+   if (!natural && (tex->is_shadow || volume || line || pi >= 0) &&
+       location != VARYING_SLOT_COL0) {
+      affine.swizzled = true;
+      affine.present = true;
+      for (unsigned i = 0; i < dims; i++)
+         affine.comp[i] = coord_comp[i];
+      affine.comp[3] = pi >= 0 && qe.varying ? qe.component : 3;
+      coord_comp[0] = 0;
+   } else {
+      if (coord_comp[0] > 2 || coord_comp[1] != coord_comp[0] + 1)
+         return fail_coord(c, tex->src[ci].src.ssa);
+      /* The driver moves a pair down to the xy of its stream; a reference
+       * is a third component, so a shadow fetch owns the low half of its
+       * slot. */
+      if ((tex->is_shadow || volume) && (coord_comp[0] || coord_comp[2] != 2))
+         return fail(c, "shadow reference is not the third coordinate"), -1;
+      if (pi >= 0 && qe.varying && qe.component != 3)
+         return fail(c, "texture sampling needs a computed coordinate pass"),
+                -1;
+   }
    /* The projector is w of the same varying or a per-draw constant, taken
     * through the transform's fourth term; the driver divides the
     * coordinate stream per vertex. */
    if (pi >= 0) {
-      if (qe.varying && (qe.location != location || qe.component != 3))
-         return fail(c, "texture sampling needs a computed coordinate pass"),
-                -1;
       affine.scale[3] = qe.scale;
       affine.bias[3] = qe.bias;
       affine.present |= !qe.varying || !coord_is_identity(&qe);
@@ -1046,7 +1087,9 @@ build_tex(struct ctx *c, nir_tex_instr *tex)
           p->texcoord_projective[i] == (pi >= 0) &&
           p->texcoord_shadow[i] == tex->is_shadow &&
           p->texcoord_volume[i] == volume &&
-          m9_fs_coord_affine_same(&p->texcoord_affine[i], &affine)) {
+          m9_fs_coord_affine_same(&p->texcoord_affine[i], &affine) &&
+          p->texcoord_biased[i] == (bi >= 0) &&
+          (bi < 0 || coord_term_same(&p->texcoord_lod_bias[i], &be.bias))) {
          n = node_new(c, N_TEX);
          if (n < 0)
             return -1;
@@ -1060,6 +1103,9 @@ build_tex(struct ctx *c, nir_tex_instr *tex)
    if (coord_comp[0] && location == VARYING_SLOT_COL0)
       return fail_coord(c, tex->src[ci].src.ssa);
    p->texcoord_affine[p->texture_count] = affine;
+   p->texcoord_biased[p->texture_count] = bi >= 0;
+   if (bi >= 0)
+      p->texcoord_lod_bias[p->texture_count] = be.bias;
    p->texcoord_projective[p->texture_count] = pi >= 0;
    p->texcoord_shadow[p->texture_count] = tex->is_shadow;
    p->texcoord_volume[p->texture_count] = volume;

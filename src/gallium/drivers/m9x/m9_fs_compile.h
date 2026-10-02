@@ -86,6 +86,10 @@ struct m9_fs_coord_term {
 struct m9_fs_coord_affine {
    bool present;
    struct m9_fs_coord_term scale[4], bias[4];
+   /* Term i reads varying component comp[i] instead of first + i (and
+    * the projector w); the driver gathers them per vertex. */
+   bool swizzled;
+   uint8_t comp[4];
 };
 
 /* Coordinate stream of a fetch that reads no varying: the driver feeds it
@@ -151,6 +155,10 @@ struct m9_fs_program {
     * r coordinate; the unit's form word selects the storage family. */
    bool texcoord_volume[M9_FS_MAX_TEXTURES];
    struct m9_fs_coord_affine texcoord_affine[M9_FS_MAX_TEXTURES];
+   /* A per-draw constant LOD bias the fetch adds (texture2D's bias
+    * argument); the driver folds it into the unit's sampler bias. */
+   bool texcoord_biased[M9_FS_MAX_TEXTURES];
+   struct m9_fs_coord_term texcoord_lod_bias[M9_FS_MAX_TEXTURES];
    unsigned texture_count;
    uint16_t registers_used;       /* bit per register pair group 08..1f */
    bool discard, fragcoord, fragdepth, face;

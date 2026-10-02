@@ -3291,12 +3291,23 @@ m9_job_textures(struct m9_context *ctx, const struct m9_fs_variant *fs,
          reason = "sampled unit has no sampler state; draw skipped";
       /* The backend samples a line at a constant t: clamping t to the one
        * row keeps a border colour or a wrap out of it. */
-      struct pipe_sampler_state line_sampler;
+      struct pipe_sampler_state line_sampler, biased;
 
       if (!reason && view->target == PIPE_TEXTURE_1D) {
          line_sampler = *sampler;
          line_sampler.wrap_t = PIPE_TEX_WRAP_CLAMP_TO_EDGE;
          sampler = &line_sampler;
+      }
+      /* The fetch's own bias is constant over the draw, so it adds to the
+       * sampler's; GL clamps the sum to the advertised range. */
+      if (!reason && p->texcoord_biased[k]) {
+         float max = ctx->screen->base.caps.max_texture_lod_bias;
+
+         biased = *sampler;
+         biased.lod_bias = CLAMP(sampler->lod_bias +
+                                 m9_coord_term(ctx, &p->texcoord_lod_bias[k]),
+                                 -max, max);
+         sampler = &biased;
       }
       /* The comparison needs no compensation: a depth surface the engine
        * rendered compares against the plain window depth, exactly, for
@@ -4359,23 +4370,42 @@ m9_render_record(const struct m9_vbuf_render *r, unsigned index, float *out,
       out[4 + c] = r->has_color ? CLAMP(v[4 + c], 0.0f, 1.0f) : 1.0f;
 }
 
-/* Extra slots whose coordinate m9_scale_coords divides by a projector. */
-static uint32_t
-m9_proj_slots(const struct m9_job_key *key)
+/* An extra slot m9_scale_coords divides by a projector: the vertex
+ * component the projector reads and the transform it takes first. */
+struct m9_proj_slot {
+   unsigned j, comp;
+   float scale, bias;
+};
+
+static unsigned
+m9_proj_slots(const struct m9_job_key *key,
+              struct m9_proj_slot out[M9_DRAW_MAX_UNITS])
 {
    const struct m9_fs_variant *v = key->variant;
-   uint32_t mask = 0;
+   uint32_t seen = 0;
+   unsigned n = 0;
 
    for (unsigned u = 0; v && u < v->slot_count; u++) {
       const struct m9_fs_program *p = &v->passes.pass[v->slot_pass[u]];
       const struct m9_fs_pass_streams *st = &v->stream[v->slot_pass[u]];
       unsigned k = v->slot_index[u];
-      int j = st->coord_extra[st->texture_coord[k]];
+      const struct m9_fs_coord_affine *a = &p->texcoord_affine[k];
+      int j;
 
-      if (j >= 0 && p->texcoord_projective[k])
-         mask |= BITFIELD_BIT(j);
+      if (st->texture_coord[k] == M9_RASTER_COORD_NONE ||
+          !p->texcoord_projective[k])
+         continue;
+      j = st->coord_extra[st->texture_coord[k]];
+      if (j < 0 || (seen & BITFIELD_BIT(j)))
+         continue;
+      seen |= BITFIELD_BIT(j);
+      out[n].j = j;
+      out[n].comp = a->swizzled ? a->comp[3] : 3;
+      out[n].scale = a->present ? key->coord_scale[u][3] : 1.0f;
+      out[n].bias = a->present ? key->coord_bias[u][3] : 0.0f;
+      n++;
    }
-   return mask;
+   return n;
 }
 
 /* Vertices one primitive of this topology owns alone, or zero for a strip,
@@ -4413,6 +4443,15 @@ m9_scale_coords(const struct m9_job_key *key, float *extra)
 
       if (j < 0)
          continue;
+      /* Components in another order are gathered from the vertex. */
+      if (p->texcoord_affine[k].swizzled && !(packed & BITFIELD_BIT(j))) {
+         float v[4];
+
+         for (unsigned i = 0; i < 4; i++)
+            v[i] = extra[4 * j + p->texcoord_affine[k].comp[i]];
+         memcpy(extra + 4 * j, v, sizeof(v));
+         packed |= BITFIELD_BIT(j);
+      }
       /* A stream carries one pair; anything but the low one is moved down,
        * since the program reads its coordinate attribute as xy. */
       if (c && !(packed & BITFIELD_BIT(j))) {
@@ -4483,29 +4522,36 @@ m9_proj_constant(const struct m9_job_key *key, enum m9_topology topology,
                  const void *indices, unsigned index_size, unsigned offset,
                  uint32_t lo, unsigned count)
 {
-   uint32_t mask = m9_proj_slots(key);
+   struct m9_proj_slot slot[M9_DRAW_MAX_UNITS];
+   unsigned slots = m9_proj_slots(key, slot);
    unsigned span = m9_topology_group(topology);
 
-   if (!mask || !extra_count)
+   if (!slots || !extra_count)
       return true;
    if (!span)
       span = count;
    for (unsigned base = 0; base + span <= count; base += span) {
-      u_foreach_bit(j, mask) {
+      for (unsigned s = 0; s < slots; s++) {
+         const struct m9_proj_slot *ps = &slot[s];
          unsigned i0 = indices ?
                        m9_index_at(indices, index_size, offset + base) - lo :
                        base;
-         float q = extra[(size_t)i0 * 4 * extra_count + 4 * j + 3];
+         float q = ps->scale == 0.0f ? ps->bias :
+                   extra[(size_t)i0 * 4 * extra_count + 4 * ps->j + ps->comp] *
+                   ps->scale + ps->bias;
          float tol = M9_PROJ_TOLERANCE * MAX2(fabsf(q), 1.0f);
 
+         if (ps->scale == 0.0f)
+            continue;
          for (unsigned k = 1; k < span; k++) {
             unsigned i = indices ?
                          m9_index_at(indices, index_size,
                                      offset + base + k) - lo :
                          base + k;
+            float qk = extra[(size_t)i * 4 * extra_count + 4 * ps->j +
+                             ps->comp] * ps->scale + ps->bias;
 
-            if (fabsf(extra[(size_t)i * 4 * extra_count + 4 * j + 3] - q) >
-                tol)
+            if (fabsf(qk - q) > tol)
                return false;
          }
       }
@@ -5289,6 +5335,8 @@ m9_native_vs_layout(const struct m9_job_key *key, const struct m9_vs_program *p,
             continue;
          if (fp->texcoord_projective[k])
             return "the texture coordinate is divided by a projector";
+         if (fp->texcoord_affine[k].swizzled)
+            return "the texture coordinate reorders its components";
          if (fp->texcoord_shadow[k] || fp->texcoord_volume[k])
             return "the texture coordinate carries a third component";
       }
