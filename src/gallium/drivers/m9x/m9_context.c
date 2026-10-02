@@ -5639,21 +5639,6 @@ m9_clear_depth_cpu(struct m9_resource *zs, unsigned buffers, double depth,
       m9_fill_dwords(zs->hz, M9_HZ_CLEAR);
 }
 
-static void
-m9_clear_stencil_rect_cpu(struct m9_resource *zs, unsigned x, unsigned y,
-                          unsigned width, unsigned height, unsigned stencil)
-{
-   width = MIN2(width, zs->width - MIN2(x, zs->width));
-   height = MIN2(height, zs->height - MIN2(y, zs->height));
-   for (unsigned row = y; row < y + height; row++) {
-      uint32_t *words = (uint32_t *)zs->map +
-                        (size_t)row * zs->row_span + x;
-
-      for (unsigned col = 0; col < width; col++)
-         words[col] = (words[col] & ~0xffu) | (stencil & 0xff);
-   }
-}
-
 static void m9_clear_render_target(struct pipe_context *pctx,
                                    struct pipe_surface *dst,
                                    const union pipe_color_union *color,
@@ -5847,13 +5832,10 @@ m9_clear_depth_stencil(struct pipe_context *pctx, struct pipe_surface *dst,
       m9_clear_depth_cpu(resource, clear_flags, depth, stencil);
       return;
    }
-   /* The low byte is stencil, which the hierarchical buffer does not hold;
-    * a partial CPU depth write would leave that buffer stale. */
-   if (clear_flags & PIPE_CLEAR_STENCIL)
-      m9_clear_stencil_rect_cpu(resource, dstx, dsty, width, height, stencil);
-   if (clear_flags & PIPE_CLEAR_DEPTH)
-      m9_warn_once(ctx, M9_WARN_CLEAR, "a partial depth clear of an unbound "
-                   "surface is not implemented");
+   /* The CPU sees neither the engine's D24S8 element order (stencil
+    * readback is wrong, MEASURED) nor the hierarchical buffer. */
+   m9_warn_once(ctx, M9_WARN_CLEAR, "a partial depth/stencil clear of an "
+                "unbound surface is not implemented");
 }
 
 /* The three storage kinds m9_texture_bind_view accepts for a plane: a tiled
