@@ -40,8 +40,10 @@
  */
 #include "m9_query.h"
 
+#include <errno.h>
 #include <sched.h>
 #include <stdio.h>
+#include <string.h>
 
 #include "m9_batch.h"
 #include "m9_screen.h"
@@ -76,7 +78,13 @@ struct m9_query {
    bool failed;
    bool begin_emitted, end_emitted;
    uint32_t count;
+   /* Snapshot pairs around jobs inside the range that pass no samples,
+    * M9_QUERY_PAGE_SLOTS a page; their differences are subtracted. */
+   struct util_dynarray pages;  /* struct m9_resource */
+   unsigned pause_slots;
 };
+
+#define M9_QUERY_PAGE_SLOTS (M9_QUERY_OBJECT_BYTES / M9_QUERY_SLOT_BYTES)
 
 static bool m9_query_debug;
 
@@ -117,6 +125,56 @@ m9_query_slot_published(const struct m9_query *q, uint64_t offset)
    return m9_query_slot(q, offset)[0] != M9_QUERY_PENDING;
 }
 
+/* Pause snapshot k: its page and the offset inside it. */
+static struct m9_resource *
+m9_query_pause_page(struct m9_query *q, unsigned k, uint64_t *offset)
+{
+   *offset = (uint64_t)(k % M9_QUERY_PAGE_SLOTS) * M9_QUERY_SLOT_BYTES;
+   return util_dynarray_element(&q->pages, struct m9_resource,
+                                k / M9_QUERY_PAGE_SLOTS);
+}
+
+static volatile uint32_t *
+m9_query_pause_slot(struct m9_query *q, unsigned k)
+{
+   uint64_t offset;
+   struct m9_resource *page = m9_query_pause_page(q, k, &offset);
+
+   __sync_synchronize();
+   return (volatile uint32_t *)((uint8_t *)page->map + offset);
+}
+
+/* Two fresh pause snapshots, a page added when the last one is full. */
+static int
+m9_query_pause_reserve(struct m9_context *ctx, struct m9_query *q)
+{
+   unsigned pages = util_dynarray_num_elements(&q->pages,
+                                               struct m9_resource);
+
+   if (q->pause_slots + 2 > pages * M9_QUERY_PAGE_SLOTS) {
+      struct m9_resource *page =
+         util_dynarray_grow(&q->pages, struct m9_resource, 1);
+
+      if (!page)
+         return -ENOMEM;
+      memset(page, 0, sizeof(*page));
+      if (m9_bo_create(ctx->screen, M9_QUERY_OBJECT_BYTES,
+                       PARHELIA_M9_BO_VRAM, M9_RESOURCE_LINEAR_BUFFER, page) ||
+          !page->map) {
+         (void)util_dynarray_pop_ptr(&q->pages, struct m9_resource);
+         return -ENOMEM;
+      }
+   }
+   for (unsigned k = q->pause_slots; k < q->pause_slots + 2; k++) {
+      volatile uint32_t *slot = m9_query_pause_slot(q, k);
+
+      for (unsigned i = 0; i < M9_QUERY_SLOT_BYTES / sizeof(uint32_t); i++)
+         slot[i] = M9_QUERY_PENDING;
+   }
+   __sync_synchronize();
+   return 0;
+}
+
 /*
  * A snapshot record, framed the way the vendor frames one (CAPTURED): the
  * open block is ended and raises a dependency token, the record waits on that
@@ -127,8 +185,8 @@ m9_query_slot_published(const struct m9_query *q, uint64_t offset)
  * unframed -- which is what the record in front of a job's draws wants.
  */
 static int
-m9_query_emit_one(struct m9_batch *batch, struct m9_query *q, uint64_t offset,
-                  uint32_t token)
+m9_query_emit_one(struct m9_batch *batch, const struct m9_resource *bo,
+                  uint64_t offset, uint32_t token)
 {
    const struct m9_packet_value block_end[] = {
       { .index = 0xe6, .value = 3 },
@@ -140,7 +198,7 @@ m9_query_emit_one(struct m9_batch *batch, struct m9_query *q, uint64_t offset,
       { .index = 0x43, .value = token },
    };
    const struct m9_packet_value record[] = {
-      { .index = 0x1e, .handle = q->bo.handle, .offset = offset,
+      { .index = 0x1e, .handle = bo->handle, .offset = offset,
         .kind = PARHELIA_M9_RELOC_QUERY },
       { .index = 0xe6, .value = 0x64000004 },
       { .index = 0xe6, .value = 0x64000101 },
@@ -195,11 +253,27 @@ m9_query_job_prologue(struct m9_context *ctx, struct m9_batch *batch)
    struct m9_query *q = ctx->query_begin;
    int ret;
 
+   if (ctx->query_exclude) {
+      struct m9_query *x = ctx->query_exclude;
+      struct m9_resource *page;
+      uint64_t offset;
+
+      ret = m9_query_pause_reserve(ctx, x);
+      /* The counter runs on in these jobs; stating the pair here as well
+       * makes the snapshots publish what it counted. */
+      if (!ret)
+         ret = m9_query_enable_counter(batch);
+      if (ret)
+         return ret;
+      page = m9_query_pause_page(x, x->pause_slots, &offset);
+      ctx->query_exclude_slot = x->pause_slots;
+      return m9_query_emit_one(batch, page, offset, 0);
+   }
    if (!ctx->query_active)
       return 0;
    ret = m9_query_enable_counter(batch);
    if (!ret && q)
-      ret = m9_query_emit_one(batch, q, M9_QUERY_BEGIN, 0);
+      ret = m9_query_emit_one(batch, &q->bo, M9_QUERY_BEGIN, 0);
    if (ret)
       return ret;
    if (q) {
@@ -216,9 +290,21 @@ m9_query_job_epilogue(struct m9_context *ctx, struct m9_batch *batch,
    struct m9_query *q = ctx->query_end;
    int ret;
 
+   if (ctx->query_exclude) {
+      struct m9_query *x = ctx->query_exclude;
+      unsigned k = ctx->query_exclude_slot + 1;
+      struct m9_resource *page;
+      uint64_t offset;
+
+      page = m9_query_pause_page(x, k, &offset);
+      ret = m9_query_emit_one(batch, page, offset, token);
+      if (!ret)
+         x->pause_slots = k + 1;
+      return ret;
+   }
    if (!q)
       return 0;
-   ret = m9_query_emit_one(batch, q, M9_QUERY_END, token);
+   ret = m9_query_emit_one(batch, &q->bo, M9_QUERY_END, token);
    if (ret)
       return ret;
    ctx->query_end = NULL;
@@ -242,9 +328,9 @@ m9_query_close_alone(struct m9_context *ctx, struct m9_query *q)
    m9_batch_init(batch);
    ret = m9_query_enable_counter(batch);
    if (!ret && !q->begin_emitted)
-      ret = m9_query_emit_one(batch, q, M9_QUERY_BEGIN, 0);
+      ret = m9_query_emit_one(batch, &q->bo, M9_QUERY_BEGIN, 0);
    if (!ret)
-      ret = m9_query_emit_one(batch, q, M9_QUERY_END, 0);
+      ret = m9_query_emit_one(batch, &q->bo, M9_QUERY_END, 0);
    if (ret) {
       m9_batch_init(batch);
       return ret;
@@ -296,6 +382,9 @@ m9_destroy_query(struct pipe_context *pctx, struct pipe_query *pq)
 
    if (!q)
       return;
+   util_dynarray_foreach(&q->pages, struct m9_resource, page)
+      m9_bo_destroy(ctx->screen, page);
+   util_dynarray_fini(&q->pages);
    m9_bo_destroy(ctx->screen, &q->bo);
    FREE(q);
 }
@@ -309,6 +398,7 @@ m9_begin_query(struct pipe_context *pctx, struct pipe_query *pq)
    q->active = q->ended = q->have_result = q->failed = false;
    q->begin_emitted = q->end_emitted = false;
    q->count = 0;
+   q->pause_slots = 0;
    /* Reuse starts from a clean pair: a stale published value would read as
     * an available result the moment the object is asked for one. */
    m9_query_reset_slot(q, M9_QUERY_BEGIN);
@@ -357,6 +447,9 @@ m9_end_query(struct pipe_context *pctx, struct pipe_query *pq)
 static bool
 m9_query_available(struct m9_query *q)
 {
+   for (unsigned k = 0; k < q->pause_slots; k++)
+      if (m9_query_pause_slot(q, k)[0] == M9_QUERY_PENDING)
+         return false;
    return m9_query_slot_published(q, M9_QUERY_BEGIN) &&
           m9_query_slot_published(q, M9_QUERY_END);
 }
@@ -370,6 +463,9 @@ m9_query_collect(struct m9_query *q)
    /* The counter is 32 bits wide and free running, so the samples a range
     * passed is the unsigned wrapping difference, not the raw reading. */
    q->count = end - begin;
+   for (unsigned k = 0; k + 1 < q->pause_slots; k += 2)
+      q->count -= m9_query_pause_slot(q, k + 1)[0] -
+                  m9_query_pause_slot(q, k)[0];
    q->have_result = true;
    if (m9_query_debug)
       fprintf(stderr, "m9x: query begin %08x/%08x end %08x/%08x count %u\n",
@@ -416,6 +512,34 @@ m9_get_query_result(struct pipe_context *pctx, struct pipe_query *pq,
    else
       result->b = q->count != 0;
    return true;
+}
+
+/* A clear passes no samples, but the counter keeps running once a job of the
+ * range enabled it.  The jobs in between go out with snapshots of their own,
+ * whose difference the result subtracts; before the range's first record
+ * nothing has to be subtracted. */
+void
+m9_query_pause(struct m9_context *ctx)
+{
+   struct m9_query *q = ctx->query_active;
+
+   if (!q || ctx->query_paused)
+      return;
+   m9_context_flush_job(&ctx->base);
+   ctx->query_paused = q;
+   ctx->query_active = NULL;
+   ctx->query_exclude = q->begin_emitted ? q : NULL;
+}
+
+void
+m9_query_resume(struct m9_context *ctx)
+{
+   if (!ctx->query_paused)
+      return;
+   m9_context_flush_job(&ctx->base);
+   ctx->query_exclude = NULL;
+   ctx->query_active = ctx->query_paused;
+   ctx->query_paused = NULL;
 }
 
 void

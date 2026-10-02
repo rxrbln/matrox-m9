@@ -538,6 +538,10 @@ struct m9_context {
    /* The query whose range this job falls inside, and the snapshots its
     * stream opens and closes with. */
    struct m9_query *query_active, *query_begin, *query_end;
+   /* A query paused around work that passes no samples, and the one whose
+    * range that work falls inside: its jobs are bracketed for subtraction. */
+   struct m9_query *query_paused, *query_exclude;
+   unsigned query_exclude_slot;
    struct m9_draw_params params;
    struct m9_vertex_decl decl;
    bool params_valid;

@@ -6152,14 +6152,18 @@ m9_clear(struct pipe_context *pctx, unsigned buffers,
          const struct pipe_scissor_state *scissor,
          const union pipe_color_union *color, double depth, unsigned stencil)
 {
+   struct m9_context *ctx = m9_context(pctx);
    uint64_t t_clear = m9_prof_begin();
 
    /* A job held for the scratch path is copied into place before the clear
     * that follows it, not over it. */
-   m9_deferred_run(m9_context(pctx));
+   m9_deferred_run(ctx);
+   /* A clear passes no samples. */
+   m9_query_pause(ctx);
    for (unsigned i = 0; i <= m9_clear_repeat; i++)
       m9_clear_locked(pctx, buffers, color_clear_mask, stencil_clear_mask,
                       scissor, color, depth, stencil);
+   m9_query_resume(ctx);
    m9_prof_end(M9_PROF_CLEAR, t_clear);
 }
 
