@@ -37,11 +37,14 @@ m9_context_state_cleanup(struct m9_context *context)
  * (m9_texture_layout_init) -- and the BGRA family is the one the
  * render-target address calculator also stores, so the engine renders into
  * such a level in place.  The tail levels share one 32x16 atlas at an origin
- * inside the parent allocation and have no surface shape of their own.
+ * inside the parent allocation and have no surface shape of their own.  The
+ * 10-bit family shares that placement, so a level renders in place wherever
+ * its texture code is the render format's own.
  */
 bool
 m9_texture_renders_level(const struct m9_resource *resource, unsigned level)
 {
+   struct m9_format_info format;
    const struct m9_texture_level *lvl;
    struct m9_render_layout layout;
 
@@ -49,7 +52,9 @@ m9_texture_renders_level(const struct m9_resource *resource, unsigned level)
        resource->texture.kind != M9_TEXTURE_KIND_2D ||
        resource->texture.faces != 1 ||
        resource->kind != M9_RESOURCE_LINEAR_TEXTURE ||
-       resource->texture_code != M9_TEXTURE_CODE_BGRA)
+       resource->texture_code != (uint8_t)(resource->format << 1) ||
+       !m9_format_info(resource->base.format, &format) ||
+       !(format.usage & M9_FORMAT_COLOR))
       return false;
    lvl = &resource->texture.level[level];
    /* The colour attachment is relocated with a 256-aligned byte offset. */
