@@ -3092,22 +3092,12 @@ m9_texture_bind_view(const struct pipe_sampler_view *view,
    if (first && (!res->texture.levels || first > res->base.last_level))
       return "a base level above 0 needs a mip chain; draw skipped";
    last = MAX2(MIN2(view->u.tex.last_level, res->base.last_level), first);
-   /* The tail page packs every level of 16 texels or less into one captured
-    * placement, which only matches the chain it was captured from: on other
-    * shapes those levels sample nothing.  Stop at the last level with a
-    * placement of its own until the tail's own contract is measured. */
-   /* A compressed chain's tail is measured -- every one of its five levels
-    * samples from the shared surface -- so only an uncompressed chain stops
-    * at the last level with a placement of its own. */
-   if (res->texture.levels && !res->texture.block_bytes)
-      while (last && res->texture.level[last].in_tail)
-         last--;
-   /* Level 0 of a small image is stored in the tail and sampled from it; a
-    * level above 0 in the tail has no placement the driver can name. */
-   if (first > last || (first && !res->texture.block_bytes &&
-                        res->texture.level[first].in_tail))
-      return "a re-based view of a packed tail level has no placement of "
-             "its own; draw skipped";
+   /* The tail levels sample from the shared atlas wherever the chain
+    * places it (MEASURED, every level of 32x32 to 256x64 and the NPOT
+    * chains 17x9 .. 128x40), once a small level advances the chain by its
+    * aperture pages rather than by the surface contract. */
+   if (first > last)
+      return "a re-based view beyond the chain; draw skipped";
    if (res->texture.levels) {
       /* A level whose content could not be stored samples whatever the
        * object was allocated with.  Refuse that level rather than the whole

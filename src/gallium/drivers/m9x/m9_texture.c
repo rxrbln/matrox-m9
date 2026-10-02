@@ -770,11 +770,15 @@ m9_texture_unit_init(struct m9_texture_unit *unit, uint32_t handle,
       if (s->mag_img_filter == PIPE_TEX_FILTER_LINEAR && !linear_min &&
           s->min_mip_filter == PIPE_TEX_MIPFILTER_NEAREST)
          filter |= 0x400;
-      lo = MAX2(m9_texture_lod(s->min_lod), bind->view_first_level * 32);
+      /* The sampler's LOD counts from level 0, Gallium's from the view's
+       * base level. */
+      unsigned base = bind->view_first_level * 32;
+
+      lo = MIN2(base + m9_texture_lod(s->min_lod), 511u);
       if (bind->view_last_level < bind->last_level)
          hi = MIN2(hi, bind->view_last_level * 32);
-      if (s->max_lod < (float)bind->last_level)
-         hi = MIN2(hi, m9_texture_lod(s->max_lod));
+      if (s->max_lod + bind->view_first_level < (float)bind->last_level)
+         hi = MIN2(hi, base + m9_texture_lod(s->max_lod));
    }
    bias = CLAMP(lroundf(s->lod_bias * 32.0f), -512, 511);
    shadow = s->compare_mode == PIPE_TEX_COMPARE_R_TO_TEXTURE;
