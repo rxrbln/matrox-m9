@@ -134,6 +134,9 @@ struct m9_fs_blend {
    /* A differs from R,G,B: alpha_src/alpha_dst/alpha_func apply to it. */
    bool separate;
    uint8_t alpha_src, alpha_dst, alpha_func;
+   /* A GL logic op other than COPY (PIPE_LOGICOP_*) replaces the blend. */
+   bool logic;
+   uint8_t logic_func;
 };
 
 bool m9_fs_blend_same(const struct m9_fs_blend *a, const struct m9_fs_blend *b);
@@ -163,6 +166,7 @@ struct m9_fs_program {
    uint16_t registers_used;       /* bit per register pair group 08..1f */
    bool discard, fragcoord, fragdepth, face;
    bool blend_dest;               /* raster f0 c5008200: destination blend */
+   bool logic_op;                 /* raster ef[7:0] 0xaa: logic-op tail */
    /* A texel slot fed by the record a previous raster pass wrote: the index
     * of the pass that produced it, M9_FS_ROUTE_NONE for an ordinary fetch.
     * A routed value arrives in the register pair a texel does, so the rest

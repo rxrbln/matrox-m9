@@ -189,6 +189,7 @@ struct m9_vbuf_render {
     * every pass, which a one-pass bound is eight short of. */
    int extra_offset[M9_FS_MAX_EXTRA];  /* float offset, -1 if unwritten */
    struct util_dynarray indices;
+   struct util_dynarray quads;         /* lines expanded to triangles */
 };
 
 static int m9_submit_job(struct m9_context *ctx);
@@ -2557,6 +2558,7 @@ m9_submit_job(struct m9_context *ctx)
       if (fs) {
          job.program = key->variant->c2.handle;
          job.blend_dest = m9_fs_final(key->variant)->blend_dest;
+         job.logic_op = m9_fs_final(key->variant)->logic_op;
       }
       if (pass_count > 1 || (pass_count && m9_pass_loop)) {
          /* The unit pool of a split job is the key's, not a draw's: its
@@ -3516,18 +3518,39 @@ m9_blend_part_key(const struct m9_blend_part *p, uint8_t *src, uint8_t *dst,
    return NULL;
 }
 
+/* A logic op that needs the fragment tail: everything but COPY. */
+static bool
+m9_logic_tail(const struct pipe_blend_state *blend)
+{
+   return blend && blend->logicop_enable &&
+          blend->logicop_func != PIPE_LOGICOP_COPY;
+}
+
 /* Blend state as lowered factors and the channels the draw writes, or the
  * reason draws are skipped.  A group that keeps the destination is masked
  * off in the raster state, which keeps the program to one equation; A gets
  * its own only where both groups write. */
 static const char *
 m9_blend_key(const struct pipe_blend_state *blend, struct m9_fs_blend *out,
-             unsigned *colormask, bool no_dst_alpha)
+             unsigned *colormask, bool no_dst_alpha,
+             enum pipe_format color_format)
 {
    const struct pipe_rt_blend_state *rt = blend ? &blend->rt[0] : NULL;
    struct m9_blend_part rgb, a, rgb_a;
    const char *reason;
 
+   /* GL's logic op replaces blending; COPY is the plain write. */
+   if (blend && blend->logicop_enable) {
+      if (blend->logicop_func == PIPE_LOGICOP_COPY)
+         return NULL;
+      if (color_format != PIPE_FORMAT_B8G8R8A8_UNORM &&
+          color_format != PIPE_FORMAT_B8G8R8X8_UNORM)
+         return "the logic-op tail is captured for 8-bit targets only; "
+                "draw skipped";
+      out->logic = true;
+      out->logic_func = blend->logicop_func;
+      return NULL;
+   }
    if (!rt || !rt->blend_enable)
       return NULL;
    rgb = m9_blend_part(rt->rgb_func, rt->rgb_src_factor, rt->rgb_dst_factor,
@@ -4048,7 +4071,8 @@ m9_ctx_variant(struct m9_context *ctx, const char **reason,
    enum pipe_format cf = ctx->framebuffer.cbufs[0].format;
 
    *reason = m9_blend_key(ctx->blend, &want.blend, colormask,
-                          cf != PIPE_FORMAT_NONE && !util_format_has_alpha(cf));
+                          cf != PIPE_FORMAT_NONE && !util_format_has_alpha(cf),
+                          cf);
    if (*reason)
       return NULL;
    memcpy(want.inline_values, ctx->fs_inline, sizeof(want.inline_values));
@@ -4088,8 +4112,10 @@ m9_fs_use_native(struct m9_context *ctx)
 
    if (!fs || !fs->passthrough)
       return fs && fs->native;
-   /* Blended lines have no captured raster class; they stay opaque. */
-   if (!ctx->blend || !ctx->blend->rt[0].blend_enable || ctx->lines)
+   /* Blended lines have no captured raster class; they stay opaque.
+    * Logic-op lines are drawn as quads (m9_render_line_quads). */
+   if (!m9_logic_tail(ctx->blend) &&
+       (!ctx->blend || !ctx->blend->rt[0].blend_enable || ctx->lines))
       return false;
    if (!fs->native_tried) {
       fs->native_tried = true;
@@ -4766,6 +4792,84 @@ m9_render_scratch(struct m9_vbuf_render *r, size_t bytes)
    return util_dynarray_grow_bytes(&r->indices, 1, bytes);
 }
 
+/* The line raster class with a destination read is not captured, so a
+ * logic-op line is drawn as the quad draw's wide-line stage builds: offset
+ * across the major axis, shifted half a pixel along it, two triangles. */
+static void
+m9_render_line_quads(struct m9_vbuf_render *r, const struct m9_job_key *key,
+                     const uint16_t *indices, unsigned start, unsigned count)
+{
+   const struct pipe_rasterizer_state *rast = r->ctx->rasterizer;
+   const unsigned in_pv = m9_flat_pv(rast, r->prim);
+   const bool flat = rast && rast->flatshade;
+   const bool center = !rast || rast->half_pixel_center;
+   const float half = 0.5f * (rast ? rast->line_width : 1.0f);
+   const float bias = center ? 0.125f : 0.0f;
+   const unsigned vs = r->vertex_size;
+   enum mesa_prim out_prim;
+   unsigned out_size, out_count;
+   uint8_t *saved, *out;
+   void *list;
+
+   if (indices) {
+      u_translate_func translate;
+
+      if (u_index_translator(BITFIELD_BIT(MESA_PRIM_LINES), r->prim, 2, count,
+                             in_pv, PV_FIRST, PR_DISABLE, &out_prim, &out_size,
+                             &out_count, &translate) == U_TRANSLATE_ERROR ||
+          !(list = m9_render_scratch(r, (size_t)out_count * out_size)))
+         return;
+      translate(indices, 0, count, out_count, 0, list);
+   } else {
+      u_generate_func generate;
+
+      if (u_index_generator(BITFIELD_BIT(MESA_PRIM_LINES), r->prim, start,
+                            count, in_pv, PV_FIRST, &out_prim, &out_size,
+                            &out_count, &generate) == U_TRANSLATE_ERROR ||
+          !(list = m9_render_scratch(r, (size_t)out_count * out_size)))
+         return;
+      generate(start, out_count, list);
+   }
+   util_dynarray_clear(&r->quads);
+   out = util_dynarray_grow_bytes(&r->quads, 6 * (out_count / 2), vs);
+   if (!out) {
+      m9_warn_once(r->ctx, M9_WARN_MEMORY, "out of memory for line quads");
+      return;
+   }
+   for (unsigned l = 0; l + 1 < out_count; l += 2) {
+      const uint8_t *v[2] = {
+         r->vertices + (size_t)m9_index_at(list, out_size, l) * vs,
+         r->vertices + (size_t)m9_index_at(list, out_size, l + 1) * vs,
+      };
+      const float *p0 = (const float *)v[0], *p1 = (const float *)v[1];
+      const bool xmajor = fabsf(p0[0] - p1[0]) > fabsf(p0[1] - p1[1]);
+      const unsigned along = xmajor ? 0 : 1;
+      const float shift = !center ? 0.0f : p0[along] < p1[along] ? -0.5f : 0.5f;
+      /* Corners 0, 1 at the first end, 2, 3 at the second; tris 023, 031. */
+      static const uint8_t order[6] = { 0, 2, 3, 0, 3, 1 };
+
+      for (unsigned i = 0; i < 6; i++) {
+         unsigned corner = order[i];
+         uint8_t *dst = out + ((size_t)l * 3 + i) * vs;
+         float *pos = (float *)dst;
+         float side = corner & 1 ? half : -half;
+
+         memcpy(dst, v[corner >> 1], vs);
+         /* The first vertex provokes after the translation above. */
+         if (flat)
+            memcpy(dst + 4 * sizeof(float), v[0] + 4 * sizeof(float),
+                   vs - 4 * sizeof(float));
+         pos[along] += shift;
+         pos[!along] += xmajor ? side - bias : side + bias;
+      }
+   }
+   saved = r->vertices;
+   r->vertices = r->quads.data;
+   m9_render_append(r, key, M9_TOPOLOGY_TRIANGLES, false, 0, NULL, 0, 0,
+                    3 * out_count);
+   r->vertices = saved;
+}
+
 static void
 m9_render_emit(struct m9_vbuf_render *r, const uint16_t *indices,
                unsigned start, unsigned count)
@@ -4797,6 +4901,12 @@ m9_render_emit(struct m9_vbuf_render *r, const uint16_t *indices,
               ctx->submitted_draws, ctx->skipped_draws);
    if (u_reduced_prim(prim) == MESA_PRIM_POINTS) {
       m9_warn_once(ctx, M9_WARN_POINTS, "unexpanded points are not drawn");
+      return;
+   }
+   if (u_reduced_prim(prim) == MESA_PRIM_LINES &&
+       m9_logic_tail(ctx->blend)) {
+      m9_render_line_quads(r, &key, indices, start, count);
+      m9_prof_end(M9_PROF_EMIT, t_emit);
       return;
    }
    if (u_reduced_prim(prim) == MESA_PRIM_TRIANGLES && rast) {
@@ -4866,6 +4976,7 @@ m9_render_destroy(struct vbuf_render *render)
    struct m9_vbuf_render *r = m9_vbuf_render(render);
 
    util_dynarray_fini(&r->indices);
+   util_dynarray_fini(&r->quads);
    free(r->vertices);
    FREE(r);
 }
@@ -4892,6 +5003,7 @@ m9_render_create(struct m9_context *ctx)
    r->base.release_vertices = m9_render_release_vertices;
    r->base.destroy = m9_render_destroy;
    util_dynarray_init(&r->indices, NULL);
+   util_dynarray_init(&r->quads, NULL);
    return r;
 }
 
@@ -5175,6 +5287,8 @@ m9_native_vs_resolve(struct m9_context *ctx, const struct pipe_draw_info *info,
        (rast->line_width > 1.0f || rast->line_smooth ||
         rast->line_stipple_enable))
       return "wide, smooth or stippled lines run through the draw module";
+   if (out->lines && m9_logic_tail(ctx->blend))
+      return "logic-op lines are drawn as quads through the draw module";
    out->buffer_count = ctx->num_vertex_buffers;
    for (unsigned i = 0; i < out->buffer_count && i < PIPE_MAX_ATTRIBS; i++) {
       const struct pipe_vertex_buffer *vb = &ctx->vertex_buffers[i];

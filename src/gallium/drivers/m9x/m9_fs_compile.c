@@ -18,6 +18,8 @@
 
 #include "m9_draw_params.h"
 
+#include "pipe/p_defines.h"
+
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -4325,7 +4327,7 @@ blend_part_opaque(unsigned src, unsigned dst, unsigned func)
 static bool
 blend_opaque(const struct m9_fs_blend *b)
 {
-   return blend_part_opaque(b->src, b->dst, b->func) &&
+   return !b->logic && blend_part_opaque(b->src, b->dst, b->func) &&
           (!b->separate ||
            blend_part_opaque(b->alpha_src, b->alpha_dst, b->alpha_func));
 }
@@ -4335,6 +4337,8 @@ m9_fs_blend_same(const struct m9_fs_blend *a, const struct m9_fs_blend *b)
 {
    return a->src == b->src && a->dst == b->dst && a->srgb == b->srgb &&
           a->func == b->func && a->separate == b->separate &&
+          a->logic == b->logic &&
+          (!a->logic || a->logic_func == b->logic_func) &&
           (!a->separate || (a->alpha_src == b->alpha_src &&
                             a->alpha_dst == b->alpha_dst &&
                             a->alpha_func == b->alpha_func));
@@ -4810,6 +4814,209 @@ blend_append(struct ctx *c, const int have[2])
    /* The pad pair precedes the (0,1), (1,0.5) tail. */
    return blend_lane(c, &used, 1, s[1], s[1], consts + 1, consts + 2) &&
           blend_lane(c, &used, 0, s[0], s[1], consts + 1, consts + 2);
+}
+
+/* Logic op (CAPTURED, captures/m9x-linux-gl15-ff-20260915 fragops cases
+ * logic_*, each exact at 144 points): every function but COPY appends this
+ * tail.  Vendor slots 0 and 6 move the colour lanes into 00 and 03; the rest
+ * converts colour and destination (18/1a) to integers, applies one bitwise
+ * slot per lane (35/36) and writes 2d.  The marker is finish_slots' job. */
+static const uint32_t logic_tail[39][2] = {
+   { 0x1e62009c, 0xae003c18 }, { 0xdfff9b1c, 0xac8201cf },
+   { 0xffff9d1c, 0xa280731f }, { 0xbfff941c, 0xac8201cf },
+   { 0xffff881c, 0xa280731f }, { 0xffff8a1c, 0xa280331f },
+   { 0x5e62839c, 0xae003c18 }, { 0x403f843c, 0xaf024141 },
+   { 0x823f891c, 0xaec07140 }, { 0xe27f8a1c, 0xa020815f },
+   { 0xffc50b1c, 0xa29fccdf }, { 0xe2ff8c5c, 0xa300c14f },
+   { 0xe33f8d1c, 0xa021015f }, { 0xffc68e1c, 0xa29fccdf },
+   { 0x9fc70f1c, 0xac9fcdd1 }, { 0xe507951c, 0xa0414d5f },
+   { 0xffca961c, 0xa29fccdf }, { 0xffff971c, 0xa280331f },
+   { 0xe5bf851c, 0xa021815f }, { 0xe0ff9c3c, 0xaf024142 },
+   { 0x877f9e1c, 0xaec07143 }, { 0xe7bf9f1c, 0xa020815f },
+   { 0xffcfa01c, 0xa29fccdf }, { 0xe83fa15c, 0xa300c14f },
+   { 0xe87f901c, 0xa021015f }, { 0xffc8121c, 0xa29fccdf },
+   { 0x3fc9191c, 0xac9fcdd4 }, { 0xe6cc991c, 0xa0414d5f },
+   { 0xffcc991c, 0xa29fccdf }, { 0xffff811c, 0xa282b30f },
+   { 0xe67f871c, 0xa021815f }, { 0xbfc0851c, 0xac9fcd10 },
+   { 0xffc0871c, 0xac9fcd10 }, { 0x1fc0861c, 0xac9fcd13 },
+   { 0x5fc0881c, 0xac9fcd13 }, { 0xa1bf851c, 0xaedfcd70 },
+   { 0xe23f871c, 0xaedfcd70 }, { 0xbfc0ad1d, 0xac9fcdd0 },
+   { 0xffc0ad1e, 0xac9fcdd0 },
+};
+
+/* The tail's constants 0..8 in its own order; (0, 1), (1, 0.5) follow. */
+static const uint32_t logic_consts[9][2] = {
+   { 0x38800006, 0x38800006 }, { 0x3ffff000, 0x3ffff000 },
+   { 0x47800000, 0x47800000 }, { 0x477fff00, 0x477fff00 },
+   { 0x3b800000, 0x3b800000 }, { 0x40800000, 0x40800000 },
+   { 0x37800006, 0x37800006 }, { 0x3ffff088, 0x3ffff088 },
+   { 0x44800000, 0x00000000 },
+};
+
+/* Slots 35/36 per PIPE_LOGICOP_*: W0 class and W1[15:4]; COPY has no tail. */
+static const uint16_t logic_func_word[16][2] = {
+   [PIPE_LOGICOP_CLEAR] = { 0, 0xc14 },
+   [PIPE_LOGICOP_NOR] = { 6, 0xc14 },
+   [PIPE_LOGICOP_AND_INVERTED] = { 0, 0xc17 },
+   [PIPE_LOGICOP_COPY_INVERTED] = { 6, 0xc17 },
+   [PIPE_LOGICOP_AND_REVERSE] = { 0, 0xcd4 },
+   [PIPE_LOGICOP_INVERT] = { 6, 0xcd4 },
+   [PIPE_LOGICOP_XOR] = { 0, 0xcd7 },
+   [PIPE_LOGICOP_NAND] = { 6, 0xcd7 },
+   [PIPE_LOGICOP_AND] = { 0, 0xf14 },
+   [PIPE_LOGICOP_EQUIV] = { 6, 0xf14 },
+   [PIPE_LOGICOP_NOOP] = { 0, 0xf17 },
+   [PIPE_LOGICOP_OR_INVERTED] = { 6, 0xf17 },
+   [PIPE_LOGICOP_OR_REVERSE] = { 6, 0xfd4 },
+   [PIPE_LOGICOP_OR] = { 0, 0xfd7 },
+   [PIPE_LOGICOP_SET] = { 6, 0xfd7 },
+};
+
+#define LOGIC_REGS 0x22u      /* the tail's temporaries span 00..21 */
+#define LOGIC_FLAT LOGIC_REGS /* the constant standing in for 7d/7e */
+#define LOGIC_DITHER_R 0x7du  /* 1024 + an 8x8 ordered dither, R,G and B,A */
+
+static bool
+logic_tail_reg(unsigned r)
+{
+   return r <= LOGIC_FLAT && r != REG_DST && r != REG_DST + 2;
+}
+
+/* Replay the tail with the colour lanes in s[], every other temporary
+ * renamed by live range around the texel pairs, constants relocated.  The
+ * vendor's tail dithers the source by 7d/7e (MEASURED: 1024 plus 0..63 per
+ * channel, an 8x8 pattern), which moves exact source bytes by one and keeps
+ * XOR from erasing what it drew; a constant replaces both. */
+static bool
+logic_append(struct ctx *c, const int have[2])
+{
+   const unsigned func = c->blend->logic_func;
+   uint32_t tail[ARRAY_SIZE(logic_tail) + 1][2];
+   int first[LOGIC_FLAT + 1], last[LOGIC_FLAT + 1], map[LOGIC_FLAT + 1];
+   int busy_until[LOGIC_REGS];
+   const unsigned kflat = ARRAY_SIZE(logic_consts);
+   unsigned base, n = 0;
+   uint32_t used;
+   int s[2] = { have[0], have[1] };
+   struct m9_fs_const *k;
+
+   if (func >= ARRAY_SIZE(logic_func_word) || func == PIPE_LOGICOP_COPY)
+      return fail(c, "internal: logic op without a tail");
+   if (c->custom_consts)
+      return fail(c, "logic op with a constant template");
+   if (!program_registers(c, &used,
+                          "logic op with a program using registers 18..1b"))
+      return false;
+   if (s[0] < 0 && !redirect_output(c, &used, s))
+      return false;
+   base = NUM(c, p->consts, struct m9_fs_const);
+   if (base + kflat + 3 > NONE)
+      return fail(c, "logic op: out of constants");
+   /* The working tail: vendor slots 0 and 6 are the colour moves the
+    * program already made; the flat value loads, in slot 2's form, ahead of
+    * every read. */
+   tail[n][0] = (logic_tail[2][0] & ~(0x7fu << 8)) | LOGIC_FLAT << 8;
+   tail[n][1] = (logic_tail[2][1] & ~(0x7fu << 14)) | kflat << 14;
+   n++;
+   for (unsigned i = 1; i < ARRAY_SIZE(logic_tail); i++) {
+      uint32_t w0 = logic_tail[i][0], w1 = logic_tail[i][1] & ~MARKER;
+
+      if (i == 6)
+         continue;
+      /* (0, 1) and (1, 0.5) follow the flat value. */
+      if ((w1 >> 14 & 0x7f) != NONE && (w1 >> 14 & 0x7f) >= kflat)
+         w1 += 1u << 14;
+      if (slot_a(w0, w1) == LOGIC_DITHER_R ||
+          slot_a(w0, w1) == LOGIC_DITHER_R + 1) {
+         w0 = (w0 & 0x1fffffffu) | (LOGIC_FLAT & 7u) << 29;
+         w1 = (w1 & ~0xfu) | LOGIC_FLAT >> 3;
+      }
+      if (i == 35 || i == 36) {
+         w0 = (w0 & ~(7u << 5)) | (uint32_t)logic_func_word[func][0] << 5;
+         w1 = (w1 & ~0xfff0u) | (uint32_t)logic_func_word[func][1] << 4;
+      }
+      tail[n][0] = w0;
+      tail[n][1] = w1;
+      n++;
+   }
+   for (unsigned r = 0; r <= LOGIC_FLAT; r++)
+      first[r] = last[r] = map[r] = -1;
+   for (unsigned i = 0; i < n; i++) {
+      const uint32_t w0 = tail[i][0], w1 = tail[i][1];
+      const unsigned src[3] = { slot_a(w0, w1), w0 >> 22 & 0x7f,
+                                w0 >> 15 & 0x7f };
+      const unsigned d = w0 >> 8 & 0x7f;
+
+      for (unsigned f = 0; f < 3; f++)
+         if (logic_tail_reg(src[f]))
+            last[src[f]] = i;
+      if (logic_tail_reg(d)) {
+         if (first[d] < 0)
+            first[d] = i;
+         last[d] = MAX2(last[d], (int)i);
+      }
+   }
+   for (unsigned r = 0; r < LOGIC_REGS; r++)
+      busy_until[r] = -1;
+   /* Texel pairs stay the engine's; the colour lanes live until read. */
+   for (unsigned r = 0; r < MIN2(4 * c->p->texture_count, LOGIC_REGS); r++)
+      busy_until[r] = n;
+   map[0x00] = s[0];
+   map[0x03] = s[1];
+   busy_until[s[0]] = MAX2(busy_until[s[0]], last[0x00]);
+   busy_until[s[1]] = MAX2(busy_until[s[1]], last[0x03]);
+   for (unsigned i = 0; i < n; i++) {
+      const unsigned d = tail[i][0] >> 8 & 0x7f;
+      int pick = -1;
+
+      if (!logic_tail_reg(d) || map[d] >= 0)
+         continue;
+      /* The vendor's own register when it is free, else the lowest. */
+      if (d < LOGIC_REGS && busy_until[d] < first[d])
+         pick = d;
+      for (unsigned r = 0; pick < 0 && r < LOGIC_REGS; r++)
+         if (logic_tail_reg(r) && busy_until[r] < first[d])
+            pick = r;
+      if (pick < 0)
+         return fail(c, "logic op: out of temporaries beside the texel pairs");
+      map[d] = pick;
+      busy_until[pick] = last[d];
+   }
+   k = util_dynarray_grow(&c->p->consts, struct m9_fs_const,
+                          kflat + 1);
+   if (!k)
+      return fail(c, "out of memory");
+   memset(k, 0, (kflat + 1) * sizeof(*k));
+   for (unsigned i = 0; i < ARRAY_SIZE(logic_consts); i++) {
+      k[i].kind = M9_FS_CONST_LITERAL;
+      memcpy(&k[i].value[0], &logic_consts[i][0], 4);
+      memcpy(&k[i].value[1], &logic_consts[i][1], 4);
+   }
+   /* The middle of the dither range: every source byte exact for all
+    * fifteen functions from 1030 to 1072 (MEASURED). */
+   k[kflat].kind = M9_FS_CONST_LITERAL;
+   k[kflat].value[0] = k[kflat].value[1] = 1056.0f;
+   for (unsigned i = 0; i < n; i++) {
+      uint32_t w0 = tail[i][0], w1 = tail[i][1];
+      unsigned a = slot_a(w0, w1), b = w0 >> 22 & 0x7f, cf = w0 >> 15 & 0x7f;
+      unsigned d = w0 >> 8 & 0x7f, e = w1 >> 14 & 0x7f;
+
+      a = logic_tail_reg(a) ? (unsigned)map[a] : a;
+      b = logic_tail_reg(b) ? (unsigned)map[b] : b;
+      cf = logic_tail_reg(cf) ? (unsigned)map[cf] : cf;
+      d = logic_tail_reg(d) ? (unsigned)map[d] : d;
+      if (e != NONE)
+         e += base;
+      emit(c, w0_make(a, b, cf, d, w0 >> 5 & 7, w0 & 0x1f),
+           w1_make(w1 & ~(0x7fu << 14 | 0xfu), e, a));
+   }
+   /* The vendor declares every register pair and r88 bit 19. */
+   c->p->registers_used = 0xfff;
+   c->p->fragcoord = true;
+   c->p->blend_dest = true;
+   c->p->logic_op = true;
+   c->has_consts = true;
+   return true;
 }
 
 /* Alpha test (captures/m9x-linux-gl15-ff-20260915, cases alpha_*): the
@@ -5395,10 +5602,11 @@ compile_impl_kills(struct ctx *c, nir_function_impl *impl,
       if (!c->blend)
          output_temps(c, colour);
    }
-   if (c->blend && !blend_append(c, colour))
+   if (c->blend && !(c->blend->logic ? logic_append(c, colour) :
+                                       blend_append(c, colour)))
       return false;
    finish_slots(c);
-   if (c->blend) {
+   if (c->blend && !c->blend->logic) {
       struct m9_fs_const *pad = util_dynarray_grow(&c->p->consts,
                                                    struct m9_fs_const, 1);
 

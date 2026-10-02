@@ -118,6 +118,7 @@ struct m9_draw_job {
     * m9_raster_89; a zero count keeps the single-target word. */
    uint8_t color_class[M9_DRAW_MAX_COLOR];
    bool blend_dest;           /* the fragment program blends the destination */
+   bool logic_op;             /* ... through the logic-op tail */
    uint32_t clip_min, clip_max;
    /* Native fragment program; NULL keeps the pass-through colour image. */
    const struct m9_raster_fs *fs;

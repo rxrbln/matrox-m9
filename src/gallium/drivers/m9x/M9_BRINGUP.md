@@ -86,9 +86,18 @@ converts both colours with constants 2^-14, 65535, 65536, 1/256, 4 and 2^-16,
 applies one bitwise instruction (op2 0x16) per register pair and writes
 0x2d.  The four tails are identical except slots 35/36: xor W1 ..cd70,
 and ..f140 (m1 1111, m2 1100, lo 4), or ..fd70, invert ..cd40 with cls 6.
-Not implemented: op2 0x18, 0x16, 0x01 and 0x02 of the conversion are not
-decoded, so the tail could only be replayed verbatim with relocated
-registers and constants, and the other eleven functions are not captured.
+
+Implemented (logic_append): the fragops capture
+(captures/m9x-linux-gl15-ff-20260915 part-2, logic_*) holds all sixteen;
+the fifteen tails differ only in W0 cls (0, or 6 to complement) and
+W1[15:4] of slots 35/36.  The tail is replayed with relocated registers and
+constants; its conversion forms stay undecoded.  7d/7e hold 1024 plus an
+8x8 ordered dither value per channel (MEASURED), which the vendor adds to
+the source -- the capture's one-lower "srcq" bytes.  The driver loads the
+constant 1056 in their place: every source and destination byte is then
+exact for all fifteen functions (MEASURED, logicprobe).  Width-1 lines
+under a logic op are drawn as quads, the line class with a destination
+read not being captured.
 
 ## Implemented foundation
 

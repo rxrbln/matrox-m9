@@ -538,6 +538,7 @@ m9_emit_raster_range(struct m9_batch *batch, const struct m9_draw_job *job,
    /* A record-writing pass never blends: the destination it would read is
     * the record, not the application target. */
    bool blend = job->blend_dest && !(pass && pass->writes_record);
+   bool logic = blend && job->logic_op;
    /* Passes that share a preprocessing range follow each other inside one
     * raster range, so only the first of them opens that range. */
    bool opens = !index || job->preprocess_per_pass;
@@ -572,7 +573,8 @@ m9_emit_raster_range(struct m9_batch *batch, const struct m9_draw_job *job,
    EMIT(V(0xf0, m9_job_f0(job, m9_raster_class(d0->lines, blend))),
         V(0xef, m9_job_ef(job,
                 d0->cull | depth_ef | (pass ? pass->sequence_ef : 0) |
-                m9_dither_ef(p->color_desc) |
+                /* ef[7:0] is 0xaa under a logic op (CAPTURED, logic_*) */
+                (logic ? 0xaau : m9_dither_ef(p->color_desc)) |
                 (pass && pass->writes_record ? 0 :
                  m9_color_enable(job->color_count)))),
         V(0xd7, m9_raster_d7(d0->topology)));
@@ -709,7 +711,8 @@ m9_emit_raster_range(struct m9_batch *batch, const struct m9_draw_job *job,
          EMIT(V(0x22, m9_job_raster_control(job, pass, d)),
               V(0x6a, 0x25010000));
          EMIT(V(0xf0, m9_raster_class(d->lines, blend)),
-              V(0xef, d->cull | depth_ef | m9_dither_ef(p->color_desc)),
+              V(0xef, d->cull | depth_ef |
+                      (logic ? 0xaau : m9_dither_ef(p->color_desc))),
               V(0xd7, m9_raster_d7(d->topology)), V(0xf4, 0));
       }
       draw_at = batch->command_count;
