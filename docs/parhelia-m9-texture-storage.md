@@ -295,3 +295,37 @@ Two consequences this note previously ruled out:
   `78 = 40c3a001`, a class-1 GPUVA, with `79 = 68180800` (format `34`
   `A32B32G32R32F`, kind `18`, 2048 elements), to lower a dynamically indexed
   GLSL uniform array.
+
+## 9. Mip chains and small surfaces, MEASURED 2026-10-02
+
+* **A small level advances the chain by its aperture pages.**  A level of at
+  most 64 in both dimensions is stored by the aperture calculator, and the
+  sampler finds the next level `ceil(h / 8)` 1 KiB pages on at span 32 and
+  `ceil(h / 4)` at span 64 -- not the render surface contract, whose 8-row
+  height quantum is larger when the height is not a multiple of 8 at span
+  64.  `M9X_TEXTURE_ADDRCODE` on a 100x37 chain read level 2 from `0x9400`
+  (50x18 advanced by `0x1400`, the layout had `0x1800`).  POT chains are
+  unchanged (64x64: tail at `0x5000`).
+* **The tail levels sample wherever the chain places the atlas.**  With the
+  rule above, every level of 16x16, 17x9, 1x16, 32x32, 32x64, 64x32, 40x31,
+  36x60, 50x18, 64x20, 60x120, 100x37, 128x40, 128x128 and 256x64 samples
+  exactly (`tools/m9-texlevel.c`: texels name column, row and level, one
+  level forced by MIN_LOD = MAX_LOD).  The earlier clamp to the first tail
+  level, and the refusal of a view based on a tail level, are gone.
+* **`7d`'s bounds count from the descriptor's level 0**, Gallium's min/max
+  LOD from the view's base level: a view based on level B uses
+  `lo = 32 * (B + min_lod)`, `hi = 32 * (B + max_lod)`.  Views based on
+  levels 1..4, tail levels included, sample the level asked for.
+* **The small CPU window carries the 32-aligned span.**  Reading or writing
+  a small render target through the window with its own width returned
+  zeros for 1x1/4x4/9x9 BGRA images (st's blit upload target), which broke
+  every later copy of such a level.
+* **Both calculators place 2-D levels too.**  The aperture calculator at
+  span 64 reproduces the captured 64x64 basis, and `m9x474` the 128+ basis
+  (`x5 -> 0x780` texels).  Placing every 2-D level on the CPU with them
+  sampled exactly in 44 level probes up to 2048x8 and 1024x1024, but was
+  not faster than the kernel window on the VX900 host, so the driver keeps
+  the window for levels above the tail.
+* **DEPTH24 chains.**  A mipmapped depth image is stored as a texture with
+  code `fa` (X8Z24/S8Z24 as is, Z16 widened); its levels sample their own
+  depth.  The window moves such a level as `c8`.

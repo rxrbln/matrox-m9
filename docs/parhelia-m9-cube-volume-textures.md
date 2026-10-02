@@ -146,3 +146,57 @@ orientations render exactly, at every extent up to the tail's 16x16.
 * A face or a slice above the 16x16 tail.  The kernel texture window would
   have to take a face and a slice, which its plane-shaped descriptor cannot
   express today.
+
+## 8. Superseded 2026-10-02: the calculator state is static, and volumes are unbounded
+
+Sections 2, 3 (the volume half), 5 and 7 describe a model with the
+calculator state captured for a plane.  That state is not captured but
+static, and with it every measured volume is exact.
+
+**Aperture calculator state (STATIC).**  `m9x611` (KernelLibraries.o
+`0x23150`) fills the `m9x659` state from the surface: `depth` (+0x8) is the
+slice count; the category flag (+0xc) is set when the aligned width is a
+multiple of twice the 32-bit horizontal quantum, i.e. when the 32-aligned
+span is a multiple of 64; `mask1` (+0x18) is set for an even depth and
+`mask3` (+0x1c) for a multiple of 4:
+
+```text
+page = (y4 * [D even] + 2 * y2 * [D % 4 == 0]) ^ z  +  (y >> (3 - cat)) * D
+A    = low bits as before + page * 0x400
+```
+
+With D = 1 and span 32 this is the captured tail.  It explains the old
+failure grid exactly: at depth 4 and 8 page bit 1 is `z1 ^ y2`, and at
+16x16x2 the rows from 8 on are `(y >> 3) * 2` pages away.  Allocation: one
+1 KiB page per slice for every 8 rows at span 32 (4 at span 64), so a tail
+volume takes `0x800 * D`.
+
+**Local calculator for deep or wide volumes (MEASURED).**  From 16 slices
+on, and for any slice wider than 64, the sampler addresses the volume with
+the local calculator `m9x474` over 32-aligned extents -- one 4 KiB tile per
+32x32 texels of a slice, `tile = (z * (H/32) + y/32) * (W/32) + x/32`.  A
+level of depth 16 is also no longer a tail level (the vendor trigger is
+"adjusted depth at most 15").
+
+**How it was measured.**  `M9X_TEXTURE_ADDRCODE=1` (Mesa m9x) overwrites a
+stored texture object with each dword's own index after the upload, so a
+sampled colour names the address read.  Decoding `m9-mesa-glsl volume:WxHxD`
+readbacks (`M9_GLSL_RAW`) against both calculators: 1x1x16, 4x4x16,
+16x16x16/32, 64x64x16, 33x17x20, 8x8x24, 128x8x4/16, 96x8x2, 256x4x2,
+128x64x3 match `m9x474` and 16x16x8, 48x40x9 match `m9x659` (the only
+mismatches are one-texel s shifts at strip edges, from the fixture's
+coordinate snapping, which the pixel check tolerates).
+
+**Result (MEASURED, every pixel):** `volume:16x{4,8,16}x{1..8}`, 16x16x15,
+16x16x16, 16x16x32, 1x1x16, 4x4x16, 8x8x24, 33x5x7, 33x17x20, 64x8x3,
+64x64x4/16/64, 100x30x5, 128x8x4, 128x64x3, 256x4x2 exact; piglit tex3d,
+tex3d-npot, tex3d-maxsize, texwrap 3D (four variants), getteximage-targets
+3D and copyteximage 3D pass.  `max_texture_3d_levels` is 9 (256; the
+largest volume is 64 MiB).  Mip levels of a volume above the base are
+placed by the vendor recurrence and sampled, but only levels 0 of the
+listed shapes were measured.
+
+st asks for a render bind on GL_RGBA with packed types and does not retry
+without it, so cube and volume formats accept RENDER_TARGET; the image is
+still a texture, a face or slice is refused as a target, and st's upload
+blit into a volume is split into one blit per slice.
