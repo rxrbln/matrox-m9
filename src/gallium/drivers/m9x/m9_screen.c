@@ -558,8 +558,11 @@ m9_resource_create(struct pipe_screen *pscreen,
          resource->row_span = resource->mip.level[0].row_span;
          size = resource->mip.size;
       } else {
-         if (!m9_render_surface_layout(templ->width0, templ->height0,
-                                       format.cpp, &render_layout))
+         if (!(resource->kind == M9_RESOURCE_LINEAR_DEPTH && format.cpp == 4 ?
+               m9_depth_surface_layout(templ->width0, templ->height0,
+                                       &render_layout) :
+               m9_render_surface_layout(templ->width0, templ->height0,
+                                        format.cpp, &render_layout)))
             goto fail;
          resource->row_span = render_layout.row_span;
          size = render_layout.size;

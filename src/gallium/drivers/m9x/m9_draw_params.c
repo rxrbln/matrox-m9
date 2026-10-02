@@ -69,6 +69,21 @@ m9_color_surface_desc(uint32_t width, uint32_t height, uint8_t color_format,
    return 0;
 }
 
+/*
+ * The depth unit tests the last partial 64-column group of a surface against
+ * wrong values when the row span is only 32-aligned: in piglit's hiz scene at
+ * 400, 416 and 352 wide a farther triangle won there, and a 64-aligned span
+ * removes every such pixel (MEASURED).  The vendor aligns its depth layouts
+ * the same way (parhelia-m9-hierarchical-z-static-closure.md, +0x16c).
+ */
+uint32_t
+m9_depth_row_span(uint32_t width, uint32_t height)
+{
+   if (width <= 64 && height <= 64)
+      return (width + 31) & ~31u;
+   return (width + 63) & ~63u;
+}
+
 int
 m9_draw_params_init(struct m9_draw_params *params, uint32_t width,
                     uint32_t height, uint8_t color_format)
@@ -93,6 +108,7 @@ m9_draw_params_init(struct m9_draw_params *params, uint32_t width,
    desc.address_offset = !layout.small;
    params->color_desc = color_desc;
    desc.format = M9_DEPTH_FORMAT_D24S8;
+   desc.row_span = m9_depth_row_span(width, height);
    params->depth_desc = m9_surface_desc0(&desc);
    desc.format = M9_HZ_FORMAT;
    desc.address_offset = false;
@@ -159,8 +175,8 @@ m9_draw_params_matrix(struct m9_draw_params *params, const float m[16])
 uint64_t
 m9_hz_bytes(uint32_t width, uint32_t height)
 {
-   /* One word per 8x4 cell of the 32-aligned tiled grid. */
-   uint64_t cells = ((width + 31ull) & ~31ull) / 8 *
+   /* One word per 8x4 cell of the depth surface's tiled grid. */
+   uint64_t cells = (uint64_t)m9_depth_row_span(width, height) / 8 *
                     (((height + 31ull) & ~31ull) / 4);
 
    return (cells * 4 + 0xfff) & ~0xfffull;

@@ -679,7 +679,7 @@ m9_depth_access(struct m9_context *ctx, const struct m9_resource *resource,
                 unsigned stride)
 {
    bool small = resource->width <= 64 && resource->height <= 64;
-   uint32_t span = (resource->width + 31) & ~31u;
+   uint32_t span = m9_depth_row_span(resource->width, resource->height);
    struct drm_parhelia_m9_surface_access access = {
       .handle = resource->handle,
       .op = op,
@@ -3156,7 +3156,8 @@ m9_texture_bind_view(const struct pipe_sampler_view *view,
       *bind = (struct m9_texture_bind) {
          .code = (uint8_t)(res->format << 1),
          .kind = small ? M9_TEXTURE_KIND_2D : M9_TEXTURE_KIND_RENDER,
-         .width = small ? res->width : (res->width + 31) & ~31u,
+         .width = small ? res->width :
+                  m9_depth_row_span(res->width, res->height),
          .height = res->height, .depth = 1,
       };
       return NULL;
@@ -7441,7 +7442,8 @@ m9_update_target(struct m9_context *ctx)
       ctx->params.clip_max = layout.row_span |
                              layout.allocation_height << 16;
    /* Depth-less targets still bind a depth and HZ BO of their size. */
-   if (!m9_target_depth_bind(ctx, w, h, layout.size))
+   if (!m9_depth_surface_layout(w, h, &layout) ||
+       !m9_target_depth_bind(ctx, w, h, layout.size))
       return;
    ctx->color_count = 1;
    ctx->color_format[0] = color->format;

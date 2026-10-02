@@ -175,6 +175,7 @@ int m9_color_surface_desc(uint32_t width, uint32_t height,
 void m9_draw_params_matrix(struct m9_draw_params *params, const float m[16]);
 
 uint64_t m9_hz_bytes(uint32_t width, uint32_t height);
+uint32_t m9_depth_row_span(uint32_t width, uint32_t height);
 int m9_vertex_decl_init(struct m9_vertex_decl *decl,
                         unsigned position_components,
                         unsigned color_components);

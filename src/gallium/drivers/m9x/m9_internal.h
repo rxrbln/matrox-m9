@@ -225,6 +225,17 @@ m9_render_surface_layout(uint32_t width, uint32_t height, uint32_t cpp,
    return true;
 }
 
+/* A depth surface at its own row span, which may exceed the colour one. */
+static inline bool
+m9_depth_surface_layout(uint32_t width, uint32_t height,
+                        struct m9_render_layout *layout)
+{
+   uint32_t span = m9_depth_row_span(width, height);
+
+   return m9_render_surface_layout(span > width ? span : width, height, 4,
+                                   layout);
+}
+
 struct m9_screen {
    struct pipe_screen base;
    int fd;
