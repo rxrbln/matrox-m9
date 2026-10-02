@@ -551,6 +551,14 @@ struct m9_context {
    uint64_t scratch_clock;
    bool in_scratch;
    bool scratch_bind;   /* the target being bound is a scratch surface */
+   /* A colour level the engine cannot render in place renders into a tiled
+    * proxy that is seeded from and written back to that level of `tex`. */
+   struct {
+      struct pipe_resource *tex, *scratch;
+      unsigned level, layer;
+      uint64_t generation;  /* of tex when the proxy last matched it */
+      bool bound, busy;
+   } proxy;
    struct util_dynarray records;  /* float source records */
    struct util_dynarray indices;  /* uint16 raster indices into records */
    struct util_dynarray draws;    /* struct m9_draw_record */

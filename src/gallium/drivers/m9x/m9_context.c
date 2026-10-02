@@ -188,6 +188,8 @@ struct m9_vbuf_render {
 };
 
 static int m9_submit_job(struct m9_context *ctx);
+static void m9_proxy_writeback(struct m9_context *ctx);
+static void m9_proxy_reseed(struct m9_context *ctx);
 static void m9_deferred_run(struct m9_context *ctx);
 /* Back-end objects swapped rather than zeroed under a job in flight. */
 static uint64_t m9_be_swaps;
@@ -1086,6 +1088,9 @@ m9_transfer_map(struct pipe_context *pctx, struct pipe_resource *pres,
                 struct pipe_transfer **out)
 {
    uint64_t t_transfer = m9_prof_begin();
+   /* The proxy of a bound level holds what was rendered there. */
+   if (pres == m9_context(pctx)->proxy.tex)
+      m9_proxy_writeback(m9_context(pctx));
    void *map = m9_transfer_map_locked(pctx, pres, level, usage, box, out);
 
    if (!map && m9_context(pctx)->debug)
@@ -1207,6 +1212,9 @@ m9_transfer_unmap(struct pipe_context *pctx, struct pipe_transfer *ptransfer)
    } else if (ptransfer->usage & PIPE_MAP_WRITE) {
       __sync_synchronize();
    }
+   if ((ptransfer->usage & PIPE_MAP_WRITE) &&
+       ptransfer->resource == m9_context(pctx)->proxy.tex)
+      m9_proxy_reseed(m9_context(pctx));
    pipe_resource_reference(&ptransfer->resource, NULL);
    FREE(transfer);
 }
@@ -6608,6 +6616,8 @@ m9_resource_copy_region(struct pipe_context *pctx, struct pipe_resource *dst,
    struct m9_context *ctx = m9_context(pctx);
    uint32_t skipped;
 
+   if (src == ctx->proxy.tex || dst == ctx->proxy.tex)
+      m9_proxy_writeback(ctx);
    if (src_box && !dstz && !src_box->z && src_box->depth == 1 &&
        m9_engine_copy_ready(ctx, dst, dst_level, src, src_level) &&
        util_format_get_blocksize(dst->format) ==
@@ -6617,8 +6627,11 @@ m9_resource_copy_region(struct pipe_context *pctx, struct pipe_resource *dst,
       util_blitter_copy_texture(ctx->blitter, dst, dst_level, dstx, dsty,
                                 dstz, src, src_level, src_box);
       ctx->engine_blits++;
-      if (m9_engine_drew(ctx, skipped))
+      if (m9_engine_drew(ctx, skipped)) {
+         if (dst == ctx->proxy.tex)
+            m9_proxy_reseed(ctx);
          return;
+      }
    }
    m9_res(dst)->generation++;
    util_resource_copy_region(pctx, dst, dst_level, dstx, dsty, dstz, src,
@@ -6838,12 +6851,19 @@ m9_blit(struct pipe_context *pctx, const struct pipe_blit_info *info)
       }
       return;
    }
+   struct m9_context *ctx = m9_context(pctx);
+   bool proxied = info->dst.resource == ctx->proxy.tex;
+
+   if (proxied || info->src.resource == ctx->proxy.tex)
+      m9_proxy_writeback(ctx);
    if (!m9_blit_engine(pctx, info) &&
        !util_try_blit_via_copy_region(pctx, info, false) &&
        !m9_blit_convert(pctx, info) &&
        !m9_blit_cpu(pctx, info))
       m9_warn_once(m9_context(pctx), M9_WARN_BLIT, "blit of a compressed, "
                    "swizzled or blended kind is not implemented");
+   if (proxied)
+      m9_proxy_reseed(ctx);
 }
 
 static void
@@ -7560,6 +7580,92 @@ m9_update_color_extra(struct m9_context *ctx, uint32_t w, uint32_t h)
    return true;
 }
 
+/* Copy the proxy's content into the level it stands for. */
+static void
+m9_proxy_writeback(struct m9_context *ctx)
+{
+   struct pipe_resource *scratch = ctx->proxy.scratch;
+   struct pipe_box box;
+
+   if (!ctx->proxy.bound || ctx->proxy.busy)
+      return;
+   ctx->proxy.busy = true;
+   u_box_2d(0, 0, scratch->width0, scratch->height0, &box);
+   util_resource_copy_region(&ctx->base, ctx->proxy.tex, ctx->proxy.level, 0,
+                             0, ctx->proxy.layer, scratch, 0, &box);
+   ctx->proxy.generation = m9_res(ctx->proxy.tex)->generation;
+   ctx->proxy.busy = false;
+}
+
+/* Copy the level into the proxy again, after something else wrote it. */
+static void
+m9_proxy_reseed(struct m9_context *ctx)
+{
+   struct pipe_resource *scratch = ctx->proxy.scratch;
+   struct pipe_box box;
+
+   if (!ctx->proxy.bound || ctx->proxy.busy)
+      return;
+   ctx->proxy.busy = true;
+   u_box_3d(0, 0, ctx->proxy.layer, scratch->width0, scratch->height0, 1,
+            &box);
+   util_resource_copy_region(&ctx->base, scratch, 0, 0, 0, 0, ctx->proxy.tex,
+                             ctx->proxy.level, &box);
+   ctx->proxy.generation = m9_res(ctx->proxy.tex)->generation;
+   ctx->proxy.busy = false;
+}
+
+static void
+m9_proxy_release(struct m9_context *ctx)
+{
+   m9_proxy_writeback(ctx);
+   ctx->proxy.bound = false;
+}
+
+/* The tiled surface standing in for a colour level the engine cannot render
+ * in place.  Its content stays authoritative while the texture's generation
+ * is the one it was last matched to, so rebinding it costs no seed. */
+static struct m9_resource *
+m9_proxy_bind(struct m9_context *ctx, struct pipe_resource *tex,
+              unsigned level, unsigned layer)
+{
+   struct m9_format_info info;
+   uint32_t w = u_minify(tex->width0, level), h = u_minify(tex->height0, level);
+   struct pipe_resource *scratch = ctx->proxy.scratch;
+   bool same;
+
+   if (m9_res(tex)->kind != M9_RESOURCE_LINEAR_TEXTURE ||
+       m9_res(tex)->texture.block_bytes || level > tex->last_level ||
+       !m9_format_info(tex->format, &info) || !(info.usage & M9_FORMAT_COLOR))
+      return NULL;
+   if (!scratch || scratch->width0 != w || scratch->height0 != h ||
+       scratch->format != tex->format) {
+      struct pipe_resource templ = {
+         .target = PIPE_TEXTURE_2D, .format = tex->format,
+         .width0 = w, .height0 = h, .depth0 = 1, .array_size = 1,
+         .usage = PIPE_USAGE_DEFAULT,
+         .bind = PIPE_BIND_RENDER_TARGET | PIPE_BIND_SAMPLER_VIEW,
+      };
+
+      pipe_resource_reference(&ctx->proxy.scratch, NULL);
+      pipe_resource_reference(&ctx->proxy.tex, NULL);
+      scratch = ctx->screen->base.resource_create(&ctx->screen->base, &templ);
+      if (!scratch)
+         return NULL;
+      ctx->proxy.scratch = scratch;
+   }
+   same = ctx->proxy.tex == tex && ctx->proxy.level == level &&
+          ctx->proxy.layer == layer &&
+          ctx->proxy.generation == m9_res(tex)->generation;
+   pipe_resource_reference(&ctx->proxy.tex, tex);
+   ctx->proxy.level = level;
+   ctx->proxy.layer = layer;
+   ctx->proxy.bound = true;
+   if (!same)
+      m9_proxy_reseed(ctx);
+   return m9_res(scratch);
+}
+
 static void
 m9_update_target(struct m9_context *ctx)
 {
@@ -7571,6 +7677,7 @@ m9_update_target(struct m9_context *ctx)
    uint32_t w, h;
    unsigned level;
 
+   m9_proxy_release(ctx);
    ctx->params_valid = false;
    ctx->color_discard = false;
    pipe_resource_reference(&ctx->color, NULL);
@@ -7591,6 +7698,19 @@ m9_update_target(struct m9_context *ctx)
     * target as it stands (m9_texture_renders_level); level 0 is additionally
     * the whole of a plain tiled surface. */
    level = ctx->color_discard ? 0 : cbuf->level;
+   if (!ctx->color_discard &&
+       (cbuf->first_layer ||
+        (level ? !(m9_level_targets &&
+                   m9_texture_renders_level(color, level)) :
+                 !(color->tiled || m9_texture_renders_level(color, 0))))) {
+      struct m9_resource *proxy = m9_proxy_bind(ctx, cbuf->texture, level,
+                                                cbuf->first_layer);
+
+      if (proxy) {
+         color = proxy;
+         level = 0;
+      }
+   }
    if (level && !(m9_level_targets && m9_texture_renders_level(color, level))) {
       m9_warn_once(ctx, M9_WARN_TARGET, "mip level is not a render surface; "
                    "draws skipped");
@@ -7852,6 +7972,7 @@ m9_context_destroy(struct pipe_context *pctx)
    }
    if (ctx->draw) {
       m9_context_sync(ctx);
+      m9_proxy_release(ctx);
       draw_destroy(ctx->draw);
       ctx->draw = NULL;
    }
@@ -7866,6 +7987,8 @@ m9_context_destroy(struct pipe_context *pctx)
    pipe_resource_reference(&ctx->fs_constants.buffer, NULL);
    for (unsigned i = 0; i < PIPE_MAX_SAMPLERS; i++)
       pipe_sampler_view_reference(&ctx->fs_views[i], NULL);
+   pipe_resource_reference(&ctx->proxy.tex, NULL);
+   pipe_resource_reference(&ctx->proxy.scratch, NULL);
    m9_context_state_cleanup(ctx);
    m9_batch_fini(&ctx->batch);
    m9_command_bo_destroy(screen, &ctx->command);
