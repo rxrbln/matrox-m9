@@ -2156,7 +2156,7 @@ fnv1a(uint32_t h, const void *data, size_t size)
 }
 
 /* M9X_VS_DUMP=1: one line a compiled program, so two builds can be shown to
- * emit the same words for the same shader and layout. */
+ * emit the same words for the same shader and layout; 2 adds the words. */
 static void
 dump_program(const nir_shader *nir, const struct m9_vs_outputs *outputs,
              const struct m9_vs_program *p)
@@ -2183,6 +2183,10 @@ dump_program(const nir_shader *nir, const struct m9_vs_outputs *outputs,
            (unsigned)util_dynarray_num_elements(&p->consts, struct m9_vs_const),
            maxreg,
            h);
+   if (debug_get_num_option("M9X_VS_DUMP", 0) > 1)
+      for (unsigned i = 0; i + 1 < n; i += 2)
+         fprintf(stderr, "m9x vs dump: %08x %3u  %08x %08x\n", h, i / 2, w[i],
+                 w[i + 1]);
 }
 
 bool
@@ -2221,7 +2225,7 @@ m9_vs_compile(struct nir_shader *nir, const struct m9_vs_outputs *outputs,
          out->coord_part = k->coord_part;
       }
    }
-   if (ok && debug_get_bool_option("M9X_VS_DUMP", false))
+   if (ok && debug_get_num_option("M9X_VS_DUMP", 0) > 0)
       dump_program(nir, outputs, p);
    if (reason)
       *reason = ok ? NULL : (c.reason ? c.reason : "unknown");
