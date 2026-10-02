@@ -45,7 +45,7 @@ Gaps: texturing, blending, stencil, alpha test and non-pass-through fragment
 shaders (draws are skipped with a warning), perspective-correct color
 interpolation (records carry w = 1), render sizes other than 320x240 are
 covered by the measured formulas but not yet run through Mesa, surface access
-excludes targets with both sides <= 64, and depth readback is raw tiled data.
+excludes targets with both sides <= 64.
 
 Stencil (2026-10-02) is the fixed-function depth unit's: `a8` bit 5 enables
 it, bit 6 the second face, function/sfail/zfail/zpass at bits 9:7..18:16 for
@@ -57,9 +57,35 @@ through the same quad as depth.  The alpha test is lowered by st into the
 fragment program (`M9_FS_CONST_ALPHA_REF`).
 On the M9148 (MEASURED 2026-10-02, colour-gated probe, window and D24S8
 FBO): scissored/masked and combined clears, EQUAL/INCR/ZERO and two-sided
-stencil with CCW and CW front faces are right.  Stencil read back by the
-CPU is not (piglit readpixels, masked-clear, gl-2.0-two-sided-stencil), and
-stencil DrawPixels needs a fragment program without a colour output.
+stencil with CCW and CW front faces are right.  Stencil DrawPixels needs a
+fragment program without a colour output.
+
+Depth/stencil pixel paths (MEASURED 2026-10-02, `zprobe`: every depth value
+encodes its own pixel, every stencil value its 8x8 cell).  D24S8 is stored
+in the render tiling (8x4 blocks), depth and stencil in one element, so the
+raw mapping is not rows; and a raw read did not wait for the asynchronously
+posted job, so about 5400 of 40000 elements still held the previous clear.
+Transfers now go through the surface window in the sampler's kind at the
+depth row span (the colour code moves the 32-bit element verbatim; exact
+at 1x1 to 640x240), which also drains the engine; a CPU write resets the
+hierarchical plane.  The depth unit tests the last partial 64-column group
+wrongly when the depth row span is only 32-aligned (piglit hiz at 400, 416
+and 352 wide), so depth surfaces above 64x64 take a 64-aligned span.
+Blits the engine refuses (depth/stencil, masks, scissors, mirroring,
+scaling) run on the CPU; a half-size mirrored scissored D24S8 blit is
+exact.
+
+Logic ops (CAPTURED, captures/m9x-vendor-gl2ext-2d-video-modes-20260915
+logic-xor/and/or/invert against logic-copy): there is no logic-op state
+word.  The vendor appends a 39-slot tail to the fragment program that
+reads the destination (18/1a, `ef` 0xaa and `f0` c5008200 as for blending),
+converts both colours with constants 2^-14, 65535, 65536, 1/256, 4 and 2^-16,
+applies one bitwise instruction (op2 0x16) per register pair and writes
+0x2d.  The four tails are identical except slots 35/36: xor W1 ..cd70,
+and ..f140 (m1 1111, m2 1100, lo 4), or ..fd70, invert ..cd40 with cls 6.
+Not implemented: op2 0x18, 0x16, 0x01 and 0x02 of the conversion are not
+decoded, so the tail could only be replayed verbatim with relocated
+registers and constants, and the other eleven functions are not captured.
 
 ## Implemented foundation
 
