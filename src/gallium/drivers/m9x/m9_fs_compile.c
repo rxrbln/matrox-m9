@@ -147,7 +147,7 @@ enum lop_kind {
    L_FRACT, L_FLOOR, L_CEIL, L_CMP, L_SEL, L_CHAIN,
    L_MIN_RC, L_MAX_RC, L_NEG, L_SAT,
    L_MOV_OUT, L_MOVC_OUT, L_MOVC_TMP, L_MOVC_SECOND, L_RAW,
-   L_DEPTH,
+   L_DEPTH, L_KILL,
 };
 
 struct lop {
@@ -3249,7 +3249,7 @@ allocate(struct ctx *c)
          "FRACT", "FLOOR", "CEIL", "CMP", "SEL", "CHAIN",
          "MIN_RC", "MAX_RC", "NEG", "SAT",
          "MOV_OUT", "MOVC_OUT", "MOVC_TMP", "MOVC_SECOND", "RAW",
-         "DEPTH",
+         "DEPTH", "KILL",
       };
       unsigned i = 0;
 
@@ -3487,6 +3487,13 @@ encode_lops(struct ctx *c)
          a = opreg(c, l, 0);
          emit(c, w0_make(a, a, a, 0x21, 0, 0x1d),
               w1_make(0xa3200f50, e, a));
+         break;
+      case L_KILL:
+         /* The GLSL kill slot of fs-discard-*: kills where (0 cls v) holds
+          * for the scalar the a select picks (MEASURED, all six classes). */
+         a = opreg(c, l, 0);
+         emit(c, w0_make(a, NONE, NONE, 0x40, l->cls, 0x1c),
+              w1_make(0xafdfc000 | l->opswz[0] << 8, 0, a));
          break;
       }
    }
@@ -4984,21 +4991,36 @@ scalar_node(struct ctx *c, nir_scalar sc, unsigned *lane, unsigned *swz)
    return n;
 }
 
-/* The colour together with gl_FragDepth, which the captured single-output
- * forms do not carry.  Both share one graph; the colour is moved out
- * first and the depth written last, as fs-fragdepth does, with the scratch
- * pair kept free.  A shader that writes no colour gets an undefined (zero)
- * one.  Depth is clamped to [0, 1] and written to destination 0x21 exactly
- * as fs-fragdepth and fs-fragdepth-const do (CAPTURED, readback MEASURED by
- * the vendor). */
+/* The colour together with gl_FragDepth and any number of discards, which
+ * the captured single-output forms do not carry.  All share one graph; the
+ * kills come first, then the colour, and the depth is written last, as
+ * fs-fragdepth does, with the scratch pair kept free.  A shader that writes
+ * no colour gets an undefined (zero) one.  Depth is clamped to [0, 1] and
+ * written to destination 0x21 exactly as fs-fragdepth and
+ * fs-fragdepth-const do (CAPTURED, readback MEASURED by the vendor).
+ *
+ * A discard condition holds 1.0 or 0.0, so the fs-discard-* kill slot in
+ * class 5 (kill where the scalar is not zero) takes it as it is; an
+ * unconditional discard kills on a literal one. */
 static bool
-compile_extras(struct ctx *c, nir_def *colour, nir_def *depth)
+compile_extras(struct ctx *c, nir_def *colour,
+               const struct util_dynarray *kills, nir_def *depth)
 {
    static const uint32_t range[2] = { 0, 0x3f800000 };            /* 0, 1 */
+   unsigned nkill = kills ? util_dynarray_num_elements(kills,
+                                                       nir_intrinsic_instr *) : 0;
+   int *roots = malloc((2 + nkill) * sizeof(int));
+   unsigned *klane = malloc((1 + nkill) * 2 * sizeof(unsigned));
+   bool ok = false;
 
+   if (!roots || !klane) {
+      free(roots);
+      free(klane);
+      return fail(c, "out of memory");
+   }
    c->outputs_last = true;
-   for (unsigned attempt = 0; attempt < 2; attempt++) {
-      int roots[2], dn = -1;
+   for (unsigned attempt = 0; attempt < 2 && !ok; attempt++) {
+      int dn = -1;
       unsigned count = 1, dlane = 0, dswz = 0;
       struct lop l;
 
@@ -5017,18 +5039,55 @@ compile_extras(struct ctx *c, nir_def *colour, nir_def *depth)
          roots[0] = node_new(c, N_LIT);
       }
       if (roots[0] < 0)
-         return false;
+         break;
+      for (unsigned k = 0; k < nkill; k++) {
+         nir_intrinsic_instr *intr =
+            *util_dynarray_element(kills, nir_intrinsic_instr *, k);
+         int kn;
+
+         if (intr->intrinsic == nir_intrinsic_terminate) {
+            kn = node_new(c, N_LIT);
+            if (kn < 0)
+               break;
+            for (unsigned i = 0; i < 4; i++)
+               NODES(c)[kn].lit[i] = 1.0f;
+            klane[2 * k] = klane[2 * k + 1] = 0;
+            kn = load_component(c, kn, 0);
+         } else {
+            kn = scalar_node(c, nir_scalar_chase_movs(
+                                   nir_get_scalar(intr->src[0].ssa, 0)),
+                             &klane[2 * k], &klane[2 * k + 1]);
+            if (kn >= 0 && NODES(c)[kn].kind == N_FACE) {
+               kn = face_value(c, kn);
+               klane[2 * k] = klane[2 * k + 1] = 0;
+            }
+         }
+         if (kn < 0)
+            break;
+         roots[count++] = kn;
+      }
+      if (count != 1 + nkill)
+         break;
       if (depth) {
          dn = scalar_node(c, nir_scalar_chase_movs(nir_get_scalar(depth, 0)),
                           &dlane, &dswz);
          if (dn < 0)
-            return false;
+            break;
          roots[count++] = dn;
       }
       if (!assign_texels(c) || !schedule_forest(c, roots, count, 0))
-         return false;
+         break;
+      for (unsigned k = 0; k < nkill; k++) {
+         int kn = roots[1 + k];
+
+         lop_init(&l, L_KILL, 0, kn);
+         l.opval[0] = NODES(c)[kn].value[klane[2 * k]];
+         l.opswz[0] = klane[2 * k + 1];
+         l.cls = 5;
+         lop_add(c, &l);
+      }
       if (!output_target(c, roots[0], 0))
-         return false;
+         break;
       if (depth) {
          /* Scalar 0 reads as the identity select, as the vendor writes it. */
          unsigned sel = dswz == 3 ? 3 : 1;
@@ -5037,7 +5096,7 @@ compile_extras(struct ctx *c, nir_def *colour, nir_def *depth)
          t = chain_lop_cls(c, dn, 0xa3200c00 | sel << 6 | sel << 4, 0x1d, v,
                            v, v, chain_const(c, range), false, 0, 3);
          if (t < 0)
-            return false;
+            break;
          lop_init(&l, L_DEPTH, 0, dn);
          l.opval[0] = t;
          l.konst = chain_const(c, range);
@@ -5045,20 +5104,40 @@ compile_extras(struct ctx *c, nir_def *colour, nir_def *depth)
       }
       if (allocate(c)) {
          c->p->fragdepth = depth != NULL;
-         return true;
+         c->p->discard = nkill > 0;
+         ok = true;
+      } else if (c->reason != fail_out_of_temporaries) {
+         break;
       }
-      if (c->reason != fail_out_of_temporaries)
-         return false;
    }
-   return false;
+   free(roots);
+   free(klane);
+   return ok;
 }
+
+static bool compile_impl_kills(struct ctx *c, nir_function_impl *impl,
+                               struct util_dynarray *kills);
 
 static bool
 compile_impl(struct ctx *c, nir_function_impl *impl)
 {
+   struct util_dynarray kills;
+   bool ok;
+
+   util_dynarray_init(&kills, NULL);
+   ok = compile_impl_kills(c, impl, &kills);
+   util_dynarray_fini(&kills);
+   return ok;
+}
+
+/* kills collects every discard, conditional or not, in program order. */
+static bool
+compile_impl_kills(struct ctx *c, nir_function_impl *impl,
+                   struct util_dynarray *kills)
+{
    nir_intrinsic_instr *store = NULL, *kill = NULL;
    nir_def *depth = NULL;
-   bool discard = false, first = true;
+   bool discard = false, first = true, general = false;
    int colour[2] = { -1, -1 };
 
    if (exec_list_length(&impl->body) != 1)
@@ -5072,15 +5151,16 @@ compile_impl(struct ctx *c, nir_function_impl *impl)
          intr = nir_instr_as_intrinsic(instr);
          switch (intr->intrinsic) {
          case nir_intrinsic_terminate:
-            /* Only an unconditional discard ahead of all other code. */
-            if (!first || discard)
-               return fail(c, "conditional discard");
+            /* The captured templates take one unconditional discard ahead
+             * of all other code; anything else kills in the general form. */
+            general |= !first || discard;
             discard = true;
+            util_dynarray_append_typed(kills, nir_intrinsic_instr *, intr);
             break;
          case nir_intrinsic_terminate_if:
-            if (kill)
-               return fail(c, "more than one conditional discard");
+            general |= kill != NULL;
             kill = intr;
+            util_dynarray_append_typed(kills, nir_intrinsic_instr *, intr);
             break;
          case nir_intrinsic_store_output: {
             unsigned location = nir_intrinsic_io_semantics(intr).location;
@@ -5123,10 +5203,11 @@ compile_impl(struct ctx *c, nir_function_impl *impl)
          first &= intr->intrinsic == nir_intrinsic_terminate;
       }
    }
-   if (!c->target_count && !c->root && !depth)
+   if (!c->target_count && !c->root && !depth && !kill && !discard)
       return fail(c, "no color output");
-   if (depth && (c->root || c->target_count > 1 || discard || kill))
-      return fail(c, "gl_FragDepth beside several outputs or a discard");
+   if (depth && (c->root || c->target_count > 1))
+      return fail(c, "gl_FragDepth beside several outputs");
+   general |= (kill && discard) || ((kill || discard) && (depth || !store));
    c->p->target_count = c->root ? 0 : c->target_count;
    c->p->target_mask = c->root ? 0 : c->p->target_mask;
    if (!c->root && c->target_count > 1) {
@@ -5158,20 +5239,25 @@ compile_impl(struct ctx *c, nir_function_impl *impl)
          const_tail(c);
       return true;
    }
-   if (depth) {
-      if (!compile_extras(c, store ? store->src[0].ssa : NULL, depth))
-         return false;
-   } else if (kill && match_alpha_test(c, kill, store->src[0].ssa)) {
+   /* The alpha test, the stipple and the discard-then-varying templates
+    * keep their captured forms; every other discard takes the general one. */
+   if (!general && kill && match_alpha_test(c, kill, store->src[0].ssa))
       c->alpha.enabled = true;
-   } else if (kill && (discard || !tmpl_stipple(c, kill, store->src[0].ssa))) {
-      /* The GLSL kill slot acts on predicate state the captures set with
-       * forms not decoded (fs-discard-cond slots 3, 5 and 9); measured,
-       * it does not follow its operand, so a computed discard is refused. */
-      return fail(c, "unsupported conditional discard");
+   else if (!general && kill && !tmpl_stipple(c, kill, store->src[0].ssa))
+      general = true;
+   if (!general && !depth && store && (!kill || c->alpha.enabled) &&
+       !compile_output(c, store->src[0].ssa, discard)) {
+      if (!discard)
+         return false;
+      general = true;
    }
-   if (!depth && store && (!kill || c->alpha.enabled) &&
-       !compile_output(c, store->src[0].ssa, discard))
-      return false;
+   if (general || depth) {
+      c->alpha.enabled = false;
+      if (!compile_extras(c, store ? store->src[0].ssa : NULL,
+                          general ? kills : NULL, depth))
+         return false;
+      discard = false;
+   }
    c->has_consts |= discard;
    if (!encode_lops(c))
       return false;
