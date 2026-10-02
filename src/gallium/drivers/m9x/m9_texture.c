@@ -4,9 +4,9 @@
  * Texture placement: the 32x16 packed tail (levels up to 16x16) is the
  * captured address permutation, and it covers a plane, a cube face and a
  * volume slice alike -- the face is an allocation stride and the slice is
- * an input of the address calculator.  Levels outside the tail report
- * -ENOTSUP and need the kernel texture window, which is plane-only
- * (docs/parhelia-m9-texture-storage.md).
+ * an input of the address calculator.  Every volume level is placed by the
+ * vendor calculators.  Plane levels outside the tail report -ENOTSUP and
+ * go through the kernel texture window (docs/parhelia-m9-texture-storage.md).
  */
 #include "m9_texture.h"
 
@@ -273,49 +273,96 @@ m9_texture_layout_compressed(struct m9_texture_layout *layout, uint32_t width,
    return 0;
 }
 
-/* Vendor m9x659 (mode-2 aperture) with the calculator state captured for
- * the tail: depth 1, category 0, bank masks 0. */
+/*
+ * Vendor m9x659, the mode-2 aperture calculator, with the state its
+ * initializer m9x611 derives from the surface (STATIC, KernelLibraries.o
+ * 0x23150): `depth` is the slice count, the category flag is set when the
+ * 32-aligned span is a multiple of 64 (twice the 32-bit horizontal quantum),
+ * and the two masks are set for an even and a multiple-of-4 depth.  With
+ * depth 1 and span 32 this is the captured tail placement.
+ */
 static uint64_t
-m9_tail_address(unsigned x, unsigned y, unsigned z)
+m9_aperture_address(unsigned x, unsigned y, unsigned z, unsigned depth,
+                    unsigned span)
 {
+   unsigned cat = !(span & 63);
+   unsigned page = ((y >> 4) & !(depth & 1)) + 2 * ((y >> 2) & !(depth & 3));
    uint64_t a = (x & 7) << 2 | (x & 8) << 4 | (y & 3) << 5;
 
    a |= (((x >> 4) ^ (y >> 2)) & 1) << 8;
    a |= (((y >> 2) ^ (y >> 4) ^ (x >> 5) ^ z ^ (y >> 3)) & 1) << 9;
-   return a + ((uint64_t)z + (y >> 3)) * 0x400;
+   return a + ((uint64_t)(page ^ z) + (uint64_t)(y >> (3 - cat)) * depth) *
+              0x400;
 }
 
-/* The tail levels of every face share one atlas and a volume's slice pages
- * are indexed by the same address bits as rows 8 and up, so whether a chain
- * fits is a property of its extents, not of its target.  Walk the tail and
- * keep only the levels whose texels are all distinct inside the allocation:
- * a level that would overwrite another is left unplaced, and every later
- * level with it, so that nothing is ever written to a wrong address. */
-static int
-m9_texture_tail_verify(struct m9_texture_layout *layout, int tail)
+/* Vendor m9x474, the mode-2 local calculator (STATIC), over the 32-aligned
+ * extents: one 4 KiB tile per 32x32 texels of a slice. */
+static uint64_t
+m9_local_address(unsigned x, unsigned y, unsigned z, unsigned width,
+                 unsigned height)
 {
-   const struct m9_texture_level *first;
-   uint64_t bytes;
-   uint8_t *seen;
+   uint64_t tile = ((uint64_t)z * (height >> 5) + (y >> 5)) * (width >> 5) +
+                   (x >> 5);
+   uint64_t a = (x & 7) << 2 | (x & 8) << 4 | (y & 3) << 5;
 
-   if (tail < 0)
-      return 0;
-   first = &layout->level[tail];
-   bytes = first->face_bytes;
-   seen = calloc((size_t)(bytes / 4), 1);
-   if (!seen)
-      return -ENOMEM;
-   for (unsigned l = tail; l < layout->levels; l++) {
+   a |= (((x >> 4) ^ (y >> 2)) & 1) << 8;
+   a |= ((z ^ (y >> 3) ^ (x >> 5) ^ (y >> 2)) & 1) << 9;
+   a |= (((y >> 4) ^ (x >> 7) ^ (x >> 5) ^ (x >> 6) ^ (z >> 1)) & 1) << 10;
+   a |= (((x >> 7) ^ (x >> 5) ^ (y >> 5) ^ (y >> 3)) & 1) << 11;
+   return (tile << 12) + a;
+}
+
+/* Address of a texel of a calculator-placed level, relative to its face. */
+static uint64_t
+m9_level_address(const struct m9_texture_layout *layout,
+                 const struct m9_texture_level *lvl, unsigned x, unsigned y,
+                 unsigned z)
+{
+   if (lvl->in_tail)
+      return m9_aperture_address(lvl->tail_x + x, lvl->tail_y + y, z,
+                                 layout->tail_depth,
+                                 M9_COMPRESSED_TAIL_WIDTH);
+   if (lvl->local)
+      return m9_local_address(x, y, z, (lvl->width + 31) & ~31u,
+                              (lvl->height + 31) & ~31u);
+   return m9_aperture_address(x, y, z, lvl->depth, (lvl->width + 31) & ~31u);
+}
+
+/* Keep only the calculator-placed levels whose texels are all distinct
+ * inside their allocation; the tail levels share the first one's atlas.  A
+ * level that would overwrite another is left unplaced, and every later level
+ * with it, so that nothing is ever written to a wrong address. */
+static int
+m9_texture_verify(struct m9_texture_layout *layout, uint32_t candidates)
+{
+   uint8_t *seen = NULL;
+   uint64_t seen_bytes = 0, seen_offset = UINT64_MAX;
+   int ret = 0;
+
+   for (unsigned l = 0; l < layout->levels; l++) {
       const struct m9_texture_level *lvl = &layout->level[l];
+      uint64_t bytes = lvl->face_bytes;
       bool ok = true;
 
+      if (!(candidates & (1u << l)))
+         continue;
+      /* A new region unless this tail level shares the previous atlas. */
+      if (lvl->offset != seen_offset) {
+         free(seen);
+         seen = calloc((size_t)(bytes / 4), 1);
+         if (!seen) {
+            ret = -ENOMEM;
+            break;
+         }
+         seen_bytes = bytes;
+         seen_offset = lvl->offset;
+      }
       for (unsigned z = 0; ok && z < lvl->depth; z++)
          for (unsigned y = 0; ok && y < lvl->height; y++)
             for (unsigned x = 0; ok && x < lvl->width; x++) {
-               uint64_t a = m9_tail_address(lvl->tail_x + x, lvl->tail_y + y,
-                                            z);
+               uint64_t a = m9_level_address(layout, lvl, x, y, z);
 
-               if (a + 4 > bytes || seen[a / 4])
+               if (a + 4 > seen_bytes || seen[a / 4])
                   ok = false;
                else
                   seen[a / 4] = 1;
@@ -325,7 +372,7 @@ m9_texture_tail_verify(struct m9_texture_layout *layout, int tail)
       layout->placed |= 1u << l;
    }
    free(seen);
-   return 0;
+   return ret;
 }
 
 int
@@ -336,6 +383,7 @@ m9_texture_layout_init(struct m9_texture_layout *layout,
    static const uint8_t tail_x[5] = { 0, 16, 24, 16, 24 };
    static const uint8_t tail_y[5] = { 0, 0, 0, 8, 8 };
    uint32_t max_dim = MAX3(width, height, depth);
+   uint32_t candidates = 0;
    unsigned chain = 1;
    uint64_t offset = 0;
    int tail = -1;
@@ -367,15 +415,17 @@ m9_texture_layout_init(struct m9_texture_layout *layout,
          lvl->face_bytes = ((uint64_t)lvl->width * 4 + 255) & ~255ull;
          lvl->offset = offset;
          offset += lvl->face_bytes;
+         candidates |= 1u << l;
       } else if (lvl->width <= M9_TEXTURE_TAIL_EXTENT &&
-                 lvl->height <= M9_TEXTURE_TAIL_EXTENT) {
+                 lvl->height <= M9_TEXTURE_TAIL_EXTENT &&
+                 lvl->depth < M9_TEXTURE_TAIL_EXTENT) {
          unsigned rel;
 
          if (tail < 0) {
             tail = l;
-            /* Every 3-D slice advances the calculator by one 1 KiB page. */
-            lvl->face_bytes = M9_TEXTURE_TAIL_BYTES +
-                              ((uint64_t)lvl->depth - 1) * 0x400;
+            /* The 32x16 atlas is one 2 KiB page pair per slice. */
+            layout->tail_depth = lvl->depth;
+            lvl->face_bytes = (uint64_t)M9_TEXTURE_TAIL_BYTES * lvl->depth;
             lvl->offset = offset;
             offset += layout->faces * lvl->face_bytes;
          } else {
@@ -386,6 +436,26 @@ m9_texture_layout_init(struct m9_texture_layout *layout,
          lvl->tail_x = tail_x[rel];
          lvl->tail_y = tail_y[rel];
          lvl->in_tail = true;
+         candidates |= 1u << l;
+      } else if (kind == M9_TEXTURE_KIND_3D) {
+         uint32_t span = (lvl->width + 31) & ~31u;
+         unsigned rows = span & 63 ? 8 : 4;
+
+         /* MEASURED (M9X_TEXTURE_ADDRCODE): the sampler addresses a volume
+          * of 16 slices or more, or wider than 64, with the local
+          * calculator, and every other one with the aperture calculator. */
+         lvl->local = lvl->depth >= 16 || span > 64;
+         if (lvl->local)
+            lvl->face_bytes = (uint64_t)span * ((lvl->height + 31) & ~31u) *
+                              lvl->depth * 4;
+         else
+            /* One 1 KiB page per slice for every 8 (span 32) or 4 (span 64)
+             * rows. */
+            lvl->face_bytes = (uint64_t)DIV_ROUND_UP(lvl->height, rows) *
+                              lvl->depth * 0x400;
+         lvl->offset = offset;
+         offset += lvl->face_bytes;
+         candidates |= 1u << l;
       } else {
          struct m9_render_layout render;
 
@@ -402,7 +472,6 @@ m9_texture_layout_init(struct m9_texture_layout *layout,
          lvl->face_bytes = (((uint64_t)render.row_span *
                              render.allocation_height * 4) + quantum - 1) &
                            ~(quantum - 1);
-         lvl->face_bytes *= lvl->depth;
          lvl->offset = offset;
          offset += layout->faces * lvl->face_bytes;
       }
@@ -410,7 +479,7 @@ m9_texture_layout_init(struct m9_texture_layout *layout,
    layout->size = offset;
    if (kind == M9_TEXTURE_KIND_1D)
       layout->placed = (2u << (levels - 1)) - 1;
-   else if (m9_texture_tail_verify(layout, tail))
+   else if (m9_texture_verify(layout, candidates))
       return -ENOMEM;
    return 0;
 }
@@ -428,41 +497,11 @@ m9_texture_kind_for_target(enum pipe_texture_target target)
    }
 }
 
-/* MEASURED (tools/m9-mesa-glsl volume:16xHxD on the M9128, 16x16 covering
- * every smaller extent because a texel's address does not depend on the
- * level's extent): a volume slice lands where this model puts it for
- *
- *   height <= 4   at every depth up to 8,
- *   height <= 8   at depth 2, 3, 5, 6 and 7 -- but not at 4 or 8,
- *   height <= 16  only at depth 1, where the volume is a plane.
- *
- * Everything else, and every depth above 8, uses an address calculator
- * state the captures do not cover: 16x8x4 read half its rows from the
- * slice two pages away, and 16x16x2 read none of its texels correctly. */
-static bool
-m9_volume_agrees(uint32_t height, uint32_t depth)
-{
-   if (depth > 8)
-      return false;
-   if (depth == 1)
-      return height <= M9_TEXTURE_TAIL_EXTENT;
-   if (height <= 4)
-      return true;
-   return height <= 8 && depth != 4 && depth != 8;
-}
-
 bool
 m9_texture_layout_complete(const struct m9_texture_layout *layout)
 {
-   if (!layout || !layout->levels ||
-       layout->placed != (2u << (layout->levels - 1)) - 1)
-      return false;
-   /* Only the base level is sampled -- a tail chain clamps the sampler's
-    * last level to the base -- so the hardware has to agree with this model
-    * there.  The levels above it are written to addresses this layout
-    * proved disjoint from the base, and nothing reads them. */
-   return layout->kind != M9_TEXTURE_KIND_3D ||
-          m9_volume_agrees(layout->level[0].height, layout->level[0].depth);
+   return layout && layout->levels &&
+          layout->placed == (2u << (layout->levels - 1)) - 1;
 }
 
 enum m9_texture_kind
@@ -506,7 +545,7 @@ m9_texel_offset(const struct m9_texture_layout *layout, unsigned level,
       *offset = lvl->offset + 4ull * x;
    else
       *offset = lvl->offset + face * lvl->face_bytes +
-                m9_tail_address(lvl->tail_x + x, lvl->tail_y + y, z);
+                m9_level_address(layout, lvl, x, y, z);
    return 0;
 }
 

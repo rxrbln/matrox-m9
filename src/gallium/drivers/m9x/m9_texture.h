@@ -58,6 +58,8 @@ struct m9_texture_level {
    uint32_t width, height, depth;
    uint16_t tail_x, tail_y;
    bool in_tail;
+   /* Placed by the local calculator (m9x474) instead of the aperture one. */
+   bool local;
 };
 
 struct m9_texture_layout {
@@ -68,6 +70,8 @@ struct m9_texture_layout {
     * compressed level has no placement of its own -- the surface window
     * places its blocks -- so `placed` stays clear for every level. */
    uint8_t block_bytes;
+   /* Slice count the shared tail atlas is addressed with. */
+   uint32_t tail_depth;
    /* Bit per level whose texels were verified to land on distinct addresses
     * inside their allocation; other levels have no usable placement. */
    uint32_t placed;

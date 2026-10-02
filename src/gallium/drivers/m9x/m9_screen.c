@@ -1380,14 +1380,12 @@ m9_screen_create(int fd, const struct pipe_screen_config *config)
                                            M9_MAX_COLOR),
             1u, M9_MAX_COLOR);
    caps->max_texture_2d_size = 2048;
-   /* A cube face and a volume slice are placed only inside the captured
-    * 32x16 tail, so 16 is the largest extent either target reaches: 16x16
-    * faces render exactly (MEASURED), and so do the volumes inside the
-    * height and depth domain m9_texture.c states.  A volume outside it is
-    * refused by m9_resource_create rather than written to the wrong
-    * place. */
+   /* A cube face is placed only inside the captured 32x16 tail, so 16 is
+    * the largest face (MEASURED).  A volume is placed by the vendor address
+    * calculators at any extent (MEASURED to 256x4x2, 128x64x3, 64x64x64);
+    * 256 keeps the largest one at 64 MiB of VRAM. */
    caps->max_texture_cube_levels = 5;
-   caps->max_texture_3d_levels = 5;
+   caps->max_texture_3d_levels = 9;
    caps->max_texture_array_layers = 0;
    caps->max_viewports = 1;
    caps->max_vertex_buffers = 16;
