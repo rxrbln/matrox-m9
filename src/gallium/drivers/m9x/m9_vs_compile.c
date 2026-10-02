@@ -266,10 +266,20 @@ held_is_const(const struct held *h)
 
 /* Registers */
 
+/* The output-pair registers 0x11, 0x15, 0x17, 0x19, 0x1b and 0x1f read
+ * back wrong as temporaries (MEASURED: a reciprocal seeded in any of them,
+ * a scalar moved into one from a register, multiply-adds through 0x11 and
+ * 0x15; the same in 0x12, 0x14, 0x16, 0x18, 0x1a, 0x1c..0x1e or 0x20 is
+ * right).  0x13 was never in the pool. */
+#define M9_VS_BAD_TEMPS (BITFIELD64_BIT(0x11) | BITFIELD64_BIT(0x15) | \
+                         BITFIELD64_BIT(0x17) | BITFIELD64_BIT(0x19) | \
+                         BITFIELD64_BIT(0x1b) | BITFIELD64_BIT(0x1f))
+
 static bool
 reg_in_pool(const struct ctx *c, unsigned r)
 {
    return ((r >= 0x04u && r <= 0x12u) || (r >= 0x14u && r <= 0x21u)) &&
+          !(M9_VS_BAD_TEMPS & BITFIELD64_BIT(r)) &&
           !c->reserved[r] && !c->busy[r];
 }
 
