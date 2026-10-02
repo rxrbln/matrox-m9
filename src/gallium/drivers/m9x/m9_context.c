@@ -3912,6 +3912,32 @@ m9_fs_variant(struct m9_context *ctx, struct m9_fs_state *fs,
    return v->ok ? v : NULL;
 }
 
+/* The view swizzle relative to what the sampler returns.  A format kept in
+ * the 8-bit RGBA storage holds its natural RGBA value there (an L8 texel is
+ * stored L,L,L,1, and the alpha-less code returns alpha 1), so a view
+ * channel that selects the value the format puts there anyway -- st's XXX1
+ * on L8, XYZ1 on an X8 format -- is the identity and needs no lowering in
+ * the fragment program. */
+static void
+m9_view_swizzle(const struct pipe_sampler_view *view, uint8_t out[4])
+{
+   const uint8_t swz[4] = { view->swizzle_r, view->swizzle_g,
+                            view->swizzle_b, view->swizzle_a };
+   const struct util_format_description *desc =
+      util_format_description(view->format);
+   const struct m9_resource *res = view->texture ? m9_res(view->texture) : NULL;
+   uint8_t code = res && res->texture.levels && !res->texture.block_bytes ?
+                  res->texture_code : 0;
+   bool plain = (code == 0xc8 || code == 0xc9 || code == M9_TEXTURE_CODE_BGRA) &&
+                desc && view->format == res->base.format;
+
+   for (unsigned c = 0; c < 4; c++) {
+      unsigned src = swz[c] <= PIPE_SWIZZLE_W ? desc->swizzle[swz[c]] : swz[c];
+
+      out[c] = plain && src == desc->swizzle[c] ? PIPE_SWIZZLE_X + c : swz[c];
+   }
+}
+
 /* Variant of the bound fragment state for the current blend and inlined
  * uniform values. */
 static const struct m9_fs_variant *
@@ -3935,10 +3961,7 @@ m9_ctx_variant(struct m9_context *ctx, const char **reason,
          if (view->texture &&
              util_format_is_depth_or_stencil(view->texture->format))
             want.depth_texture |= BITFIELD_BIT(s);
-         want.swizzle[s][0] = view->swizzle_r;
-         want.swizzle[s][1] = view->swizzle_g;
-         want.swizzle[s][2] = view->swizzle_b;
-         want.swizzle[s][3] = view->swizzle_a;
+         m9_view_swizzle(view, want.swizzle[s]);
       } else {
          for (unsigned c = 0; c < 4; c++)
             want.swizzle[s][c] = PIPE_SWIZZLE_X + c;
