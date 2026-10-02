@@ -55,6 +55,11 @@ depth test (CAPTURED, vendor GL fixed-state and gl15 fragops corpora, whose
 readbacks pass).  `m9_stencil_words` packs it; clears replace stencil
 through the same quad as depth.  The alpha test is lowered by st into the
 fragment program (`M9_FS_CONST_ALPHA_REF`).
+On the M9148 (MEASURED 2026-10-02, colour-gated probe, window and D24S8
+FBO): scissored/masked and combined clears, EQUAL/INCR/ZERO and two-sided
+stencil with CCW and CW front faces are right.  Stencil read back by the
+CPU is not (piglit readpixels, masked-clear, gl-2.0-two-sided-stencil), and
+stencil DrawPixels needs a fragment program without a colour output.
 
 ## Implemented foundation
 
