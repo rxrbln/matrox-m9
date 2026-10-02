@@ -83,7 +83,7 @@ struct m9_fs_state {
    struct draw_fragment_shader *draw;
    nir_shader *nir;
    bool passthrough;
-   bool native, warned;
+   bool native, native_tried, warned;
    const char *reason;
    struct util_dynarray variants;      /* struct m9_fs_variant * */
 };
@@ -3929,6 +3929,26 @@ m9_ctx_variant(struct m9_context *ctx, const char **reason,
    return m9_fs_variant(ctx, ctx->fs, &want, reason);
 }
 
+static void m9_fs_native_init(struct m9_context *ctx, struct m9_fs_state *fs);
+
+/* The captured pass-through image cannot blend: a blended draw of that
+ * shader compiles it for the native backend, whose tail does. */
+static bool
+m9_fs_use_native(struct m9_context *ctx)
+{
+   struct m9_fs_state *fs = ctx->fs;
+
+   if (!fs || !fs->passthrough)
+      return fs && fs->native;
+   if (!ctx->blend || !ctx->blend->rt[0].blend_enable)
+      return false;
+   if (!fs->native_tried) {
+      fs->native_tried = true;
+      m9_fs_native_init(ctx, fs);
+   }
+   return fs->native;
+}
+
 static bool
 m9_job_key_current(struct m9_context *ctx, struct m9_job_key *key)
 {
@@ -3984,7 +4004,7 @@ m9_job_key_current(struct m9_context *ctx, struct m9_job_key *key)
    colormask = blend ? blend->rt[0].colormask : PIPE_MASK_RGBA;
    key->color_mask = m9_color_mask(colormask);
    key->color_mask_hi = 0xffffffffu;
-   if (ctx->fs && ctx->fs->native && !ctx->fs->passthrough) {
+   if (m9_fs_use_native(ctx)) {
       const char *reason;
 
       key->fs = ctx->fs;
@@ -4101,7 +4121,7 @@ m9_render_get_vertex_info(struct vbuf_render *render)
    if (r->has_color)
       draw_emit_vertex_attr(&r->vinfo, EMIT_4F, color);
    r->extra_count = 0;
-   if (fs && fs->native && !fs->passthrough)
+   if (m9_fs_use_native(r->ctx))
       v = m9_ctx_variant(r->ctx, &reason, NULL);
    if (v) {
       unsigned offset = r->has_color ? 8 : 4;
