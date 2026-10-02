@@ -191,6 +191,7 @@ struct m9_draw_job {
 /* Dwords a restated raster draw costs beyond the first. */
 #define M9_JOB_DRAW_DWORDS 11u
 unsigned m9_draw_job_dwords(unsigned draw_count);
+unsigned m9_draw_framed_dwords(unsigned dwords, unsigned restated_draws);
 /* Dwords a declaration of this many words costs beyond the pass-through five
  * the base job already counts. */
 unsigned m9_draw_decl_dwords(unsigned decl_count);

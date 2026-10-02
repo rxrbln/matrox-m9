@@ -22,6 +22,9 @@
 #define M9_PCI_ID 0x0540u
 #define M9_PACKET_STOP 0x45u
 #define M9_MAX_COMMAND_DWORDS 8192u
+/* The kernel frames every packet with a count word into a 32 KiB stream
+ * image that also holds an 8-byte prefix and a 44-byte footer. */
+#define M9_MAX_FRAMED_DWORDS ((32768u - 8u - 44u) / 4u)
 /* Relocation sites one submission may present.  The kernel takes at most
  * one a command dword, so the command image is the only real bound; the
  * batch grows its array and never refuses a job the stream still fits. */

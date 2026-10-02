@@ -40,6 +40,17 @@ m9_draw_job_dwords(unsigned draw_count)
           M9_JOB_BASE_DWORDS + M9_JOB_DRAW_DWORDS * (draw_count - 1) : 0;
 }
 
+/* Upper bound of the kernel's framed size of a job: a restated draw is two
+ * packets and a draw header, and every other packet holds at least one value. */
+unsigned
+m9_draw_framed_dwords(unsigned dwords, unsigned restated_draws)
+{
+   unsigned draw = M9_JOB_DRAW_DWORDS * restated_draws;
+   unsigned rest = dwords > draw ? dwords - draw : 0;
+
+   return dwords + 2 * restated_draws + (rest + 1) / 2;
+}
+
 unsigned
 m9_draw_decl_dwords(unsigned decl_count)
 {

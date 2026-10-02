@@ -2807,6 +2807,8 @@ m9_job_reserve(struct m9_context *ctx, const struct m9_job_key *key,
       /* A split shader binds one unit pool for the whole job, so a draw
        * that needs another set starts a job of its own. */
       bool stream_full = dwords > M9_MAX_COMMAND_DWORDS ||
+                         m9_draw_framed_dwords(dwords, draws) >
+                         M9_MAX_FRAMED_DWORDS ||
                          relocs > M9_MAX_RELOCS ||
                          (passes > 1 && units_differ) ||
                          (passes > 1 && draws >= m9_split_draws) ||
