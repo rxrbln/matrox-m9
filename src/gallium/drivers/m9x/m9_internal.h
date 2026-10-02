@@ -480,6 +480,9 @@ struct m9_context {
    struct pipe_blend_color blend_color;  /* resolved into fragment constants */
    struct pipe_scissor_state scissor;
    struct m9_fs_state *fs;
+   /* The handle the state tracker bound, which a draw stage may wrap. */
+   void *fs_handle;
+   void (*bind_fs_wrapped)(struct pipe_context *, void *);
    struct m9_vs_state *vs;
    struct pipe_vertex_buffer vertex_buffers[PIPE_MAX_ATTRIBS];
    unsigned num_vertex_buffers;

@@ -6155,7 +6155,7 @@ m9_blitter_save(struct m9_context *ctx)
                                     ctx->num_vertex_buffers);
    util_blitter_save_vertex_elements(b, ctx->velems);
    util_blitter_save_vertex_shader(b, ctx->vs);
-   util_blitter_save_fragment_shader(b, ctx->fs);
+   util_blitter_save_fragment_shader(b, ctx->fs_handle);
    util_blitter_save_rasterizer(b, (void *)ctx->rasterizer);
    util_blitter_save_viewport(b, &ctx->viewport);
    util_blitter_save_scissor(b, &ctx->scissor);
@@ -7225,6 +7225,16 @@ m9_bind_fs_state(struct pipe_context *pctx, void *state)
    draw_bind_fragment_shader(ctx->draw, fs ? fs->draw : NULL);
 }
 
+/* Outermost fragment shader bind: records the handle the blitter restores. */
+static void
+m9_bind_fs_handle(struct pipe_context *pctx, void *state)
+{
+   struct m9_context *ctx = m9_context(pctx);
+
+   ctx->fs_handle = state;
+   ctx->bind_fs_wrapped(pctx, state);
+}
+
 static void
 m9_delete_fs_state(struct pipe_context *pctx, void *state)
 {
@@ -7996,6 +8006,8 @@ m9_context_create(struct pipe_screen *pscreen, void *priv, unsigned flags)
    draw_wide_point_threshold(ctx->draw, 0.0f);
    /* Smooth lines become quads whose shader computes their coverage. */
    draw_install_aaline_stage(ctx->draw, &ctx->base);
+   ctx->bind_fs_wrapped = ctx->base.bind_fs_state;
+   ctx->base.bind_fs_state = m9_bind_fs_handle;
    draw_set_constant_buffer_stride(ctx->draw, sizeof(float));
    ctx->base.stream_uploader = u_upload_create_default(&ctx->base);
    if (!ctx->base.stream_uploader)
