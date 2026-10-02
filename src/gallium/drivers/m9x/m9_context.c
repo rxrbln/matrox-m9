@@ -6001,6 +6001,55 @@ static void m9_clear_render_target(struct pipe_context *pctx,
                                    unsigned width, unsigned height,
                                    bool render_condition_enabled);
 
+/* A clear that keeps some channels: read, merge the cleared channels' bits
+ * of the packed colour and write back, through the transfer path that
+ * knows every storage the attachment may have. */
+static void
+m9_clear_masked_cpu(struct m9_context *ctx, struct pipe_surface *dst,
+                    const union pipe_color_union *color, unsigned mask,
+                    unsigned x, unsigned y, unsigned w, unsigned h)
+{
+   const struct util_format_description *desc =
+      util_format_description(dst->format);
+   struct pipe_transfer *xfer;
+   union util_color uc;
+   struct pipe_box box;
+   uint32_t bits = 0;
+   uint8_t *map;
+
+   if (!mask || !w || !h)
+      return;
+   if (!desc || desc->block.bits != 32 ||
+       desc->layout != UTIL_FORMAT_LAYOUT_PLAIN) {
+      m9_warn_once(ctx, M9_WARN_CLEAR, "a masked clear of a colour "
+                   "attachment past the first needs a 32-bit format");
+      return;
+   }
+   for (unsigned c = 0; c < 4; c++) {
+      unsigned ch = desc->swizzle[c];
+
+      if ((mask & (1u << c)) && ch <= PIPE_SWIZZLE_W)
+         bits |= BITFIELD_RANGE(desc->channel[ch].shift,
+                                desc->channel[ch].size);
+   }
+   util_pack_color(color->f, dst->format, &uc);
+   u_box_3d(x, y, dst->first_layer, w, h, 1, &box);
+   map = ctx->base.texture_map(&ctx->base, dst->texture, dst->level,
+                               PIPE_MAP_READ | PIPE_MAP_WRITE, &box, &xfer);
+   if (!map) {
+      m9_warn_once(ctx, M9_WARN_CLEAR, "a masked clear of a colour "
+                   "attachment past the first could not map it");
+      return;
+   }
+   for (unsigned row = 0; row < h; row++) {
+      uint32_t *p = (uint32_t *)(map + (size_t)row * xfer->stride);
+
+      for (unsigned col = 0; col < w; col++)
+         p[col] = (p[col] & ~bits) | (uc.ui[0] & bits);
+   }
+   ctx->base.texture_unmap(&ctx->base, xfer);
+}
+
 /* Colour attachments past the first.  The quad clear runs the fixed-function
  * program, whose one colour output reaches target 0 alone, so the rest are
  * filled on the CPU: a solid colour is the same word in tiled order as in
@@ -6021,9 +6070,16 @@ m9_clear_color_extra(struct pipe_context *pctx, unsigned buffers,
       if (!(buffers & (PIPE_CLEAR_COLOR0 << p)) || !dst->texture)
          continue;
       /* Four channel mask bits a draw buffer. */
-      if (((color_clear_mask >> (4 * p)) & 0xf) != PIPE_MASK_RGBA) {
-         m9_warn_once(ctx, M9_WARN_CLEAR, "a masked clear of a colour "
-                      "attachment past the first is not implemented");
+      unsigned mask = (color_clear_mask >> (4 * p)) & 0xf;
+
+      if (mask != PIPE_MASK_RGBA) {
+         m9_clear_masked_cpu(ctx, dst, color, mask,
+                             full ? 0 : scissor->minx,
+                             full ? 0 : scissor->miny,
+                             full ? ctx->framebuffer.width :
+                                    scissor->maxx - scissor->minx,
+                             full ? ctx->framebuffer.height :
+                                    scissor->maxy - scissor->miny);
          continue;
       }
       m9_clear_render_target(pctx, dst, color,
