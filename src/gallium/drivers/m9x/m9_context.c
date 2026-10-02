@@ -5934,6 +5934,38 @@ m9_draw_vbo(struct pipe_context *pctx, const struct pipe_draw_info *info,
    if (num_draws && !indirect &&
        m9_mrt_blend_split(ctx, info, drawid_offset, draws))
       return;
+   /* The byte-lane write mask cannot gate a 10-bit channel, and the vendor
+    * masks such a target in the program instead (gigacolor-10bit.md 4.2).
+    * Without blending that is a blend by the constant mask itself: each
+    * channel takes src * m + dst * (1 - m) with m exactly 0 or 1. */
+   if (!ctx->mrt_select && ctx->color_count == 1 && ctx->color &&
+       m9_res(ctx->color)->format != M9_COLOR_FORMAT_A8R8G8B8 &&
+       ctx->blend && !ctx->blend->rt[0].blend_enable &&
+       ctx->blend->rt[0].colormask &&
+       ctx->blend->rt[0].colormask != PIPE_MASK_RGBA) {
+      const struct pipe_blend_state *blend = ctx->blend;
+      const struct pipe_blend_color color = ctx->blend_color;
+      unsigned mask = blend->rt[0].colormask;
+
+      ctx->mrt_blend = *blend;
+      ctx->mrt_blend.rt[0] = (struct pipe_rt_blend_state) {
+         .blend_enable = 1,
+         .rgb_func = PIPE_BLEND_ADD,
+         .rgb_src_factor = PIPE_BLENDFACTOR_CONST_COLOR,
+         .rgb_dst_factor = PIPE_BLENDFACTOR_INV_CONST_COLOR,
+         .alpha_func = PIPE_BLEND_ADD,
+         .alpha_src_factor = PIPE_BLENDFACTOR_CONST_ALPHA,
+         .alpha_dst_factor = PIPE_BLENDFACTOR_INV_CONST_ALPHA,
+         .colormask = PIPE_MASK_RGBA,
+      };
+      for (unsigned c = 0; c < 4; c++)
+         ctx->blend_color.color[c] = mask & (1u << c) ? 1.0f : 0.0f;
+      ctx->blend = &ctx->mrt_blend;
+      m9_draw_vbo(pctx, info, drawid_offset, indirect, draws, num_draws);
+      ctx->blend = blend;
+      ctx->blend_color = color;
+      return;
+   }
    m9_vs_texture_refresh(pctx);
    /* Count at the entry point: a draw dropped here never reaches the
     * vbuf render, and a killed client never destroys its context. */
