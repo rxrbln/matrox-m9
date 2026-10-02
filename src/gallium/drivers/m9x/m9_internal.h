@@ -481,6 +481,11 @@ struct m9_context {
    struct pipe_stencil_ref stencil_ref;
    const struct pipe_blend_state *blend;
    struct pipe_blend_color blend_color;  /* resolved into fragment constants */
+   /* Blending into several colour targets draws one target a pass: 1 + the
+    * target being drawn, and the states that pass binds. */
+   unsigned mrt_select;
+   struct pipe_blend_state mrt_blend;
+   struct pipe_depth_stencil_alpha_state mrt_dsa;
    struct pipe_scissor_state scissor;
    struct m9_fs_state *fs;
    /* The handle the state tracker bound, which a draw stage may wrap. */

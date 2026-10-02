@@ -117,6 +117,8 @@ struct m9_fs_variant {
    /* Colour targets bound when this variant was compiled: gl_FragColor is
     * broadcast to all of them, so the program is specialised on the count. */
    unsigned targets;
+   /* 1 + the one colour output an MRT blend pass keeps, 0 for all. */
+   unsigned select;
    uint32_t inline_values[MAX_INLINABLE_UNIFORMS];
    uint8_t swizzle[PIPE_MAX_SAMPLERS][4];  /* view swizzle per sampler, applied in NIR */
    uint32_t depth_texture;             /* samplers bound to a depth surface */
@@ -3760,6 +3762,28 @@ m9_retired_variants_free(struct m9_context *ctx)
    util_dynarray_clear(&ctx->retired_fs_variants);
 }
 
+/* Keep the one colour output an MRT blend pass draws, as output 0. */
+static bool
+m9_select_store(nir_builder *b, nir_intrinsic_instr *intr, void *data)
+{
+   const unsigned keep = *(const unsigned *)data - 1;
+   nir_io_semantics sem;
+
+   (void)b;
+   if (intr->intrinsic != nir_intrinsic_store_output)
+      return false;
+   sem = nir_intrinsic_io_semantics(intr);
+   if (sem.location < FRAG_RESULT_DATA0)
+      return false;
+   if (sem.location != FRAG_RESULT_DATA0 + keep) {
+      nir_instr_remove(&intr->instr);
+      return true;
+   }
+   sem.location = FRAG_RESULT_DATA0;
+   nir_intrinsic_set_io_semantics(intr, sem);
+   return true;
+}
+
 static const struct m9_fs_variant *
 m9_fs_variant(struct m9_context *ctx, struct m9_fs_state *fs,
               const struct m9_fs_variant *want, const char **reason)
@@ -3772,6 +3796,7 @@ m9_fs_variant(struct m9_context *ctx, struct m9_fs_state *fs,
    util_dynarray_foreach(&fs->variants, struct m9_fs_variant *, it) {
       if (m9_fs_blend_same(&(*it)->blend, &want->blend) &&
           (*it)->targets == want->targets &&
+          (*it)->select == want->select &&
           !memcmp((*it)->inline_values, want->inline_values, inline_bytes) &&
           (*it)->depth_texture == want->depth_texture &&
           (*it)->face_flip == want->face_flip &&
@@ -3824,6 +3849,10 @@ m9_fs_variant(struct m9_context *ctx, struct m9_fs_state *fs,
    }
    v->blend = want->blend;
    v->targets = want->targets;
+   v->select = want->select;
+   if (v->select)
+      NIR_PASS(_, clone, nir_shader_intrinsics_pass, m9_select_store,
+               nir_metadata_control_flow, &v->select);
    m9_fs_lower_fragcolor(clone, v->targets);
    memcpy(v->inline_values, want->inline_values, inline_bytes);
    memcpy(v->swizzle, want->swizzle, sizeof(v->swizzle));
@@ -3991,7 +4020,8 @@ m9_ctx_variant(struct m9_context *ctx, const char **reason,
                unsigned *colormask)
 {
    struct m9_fs_variant want = { .blend = { M9_FS_ONE, M9_FS_ZERO },
-                                 .targets = MAX2(ctx->color_count, 1u) };
+                                 .targets = MAX2(ctx->color_count, 1u),
+                                 .select = ctx->mrt_select };
 
    enum pipe_format cf = ctx->framebuffer.cbufs[0].format;
 
@@ -5812,6 +5842,83 @@ m9_draw_vbo(struct pipe_context *pctx, const struct pipe_draw_info *info,
             unsigned drawid_offset,
             const struct pipe_draw_indirect_info *indirect,
             const struct pipe_draw_start_count_bias *draws,
+            unsigned num_draws);
+
+/*
+ * The blend tail reads the destination of colour target 0 alone; where the
+ * other targets' destinations reach the program is not captured.  A draw
+ * that blends into several targets is therefore drawn once a target, each
+ * pass binding that target alone and keeping that output.  Passes after the
+ * first test depth for equality without writing it and stay out of an
+ * occlusion query, so they shade exactly the fragments the first one kept.
+ */
+static bool
+m9_mrt_blend_split(struct m9_context *ctx, const struct pipe_draw_info *info,
+                   unsigned drawid_offset,
+                   const struct pipe_draw_start_count_bias *draw)
+{
+   const struct pipe_blend_state *blend = ctx->blend;
+   const struct pipe_depth_stencil_alpha_state *dsa = ctx->dsa;
+   struct pipe_framebuffer_state saved = {0}, fb;
+   uint64_t outputs;
+   bool any = false, first = true;
+   unsigned n = ctx->color_count;
+
+   if (ctx->mrt_select || n < 2 || !blend || !ctx->fs)
+      return false;
+   for (unsigned s = 0; s < n; s++)
+      any |= blend->rt[blend->independent_blend_enable ? s : 0].blend_enable;
+   if (!any)
+      return false;
+   if (dsa && (dsa->stencil[0].enabled || dsa->stencil[1].enabled)) {
+      m9_skip_reason(ctx, "blending into several colour targets under a "
+                     "stencil test; draw skipped");
+      ctx->skipped_draws++;
+      return true;
+   }
+   outputs = ctx->fs->nir->info.outputs_written;
+   util_copy_framebuffer_state(&saved, &ctx->framebuffer);
+   for (unsigned p = 0; p < n; p++) {
+      if (!(outputs & (BITFIELD64_BIT(FRAG_RESULT_COLOR) |
+                       BITFIELD64_BIT(FRAG_RESULT_DATA0 + p))))
+         continue;
+      fb = saved;
+      fb.nr_cbufs = 1;
+      fb.cbufs[0] = saved.cbufs[p];
+      ctx->mrt_blend = *blend;
+      ctx->mrt_blend.independent_blend_enable = false;
+      ctx->mrt_blend.rt[0] = blend->rt[blend->independent_blend_enable ? p :
+                                                                       0];
+      ctx->blend = &ctx->mrt_blend;
+      if (!first) {
+         if (dsa && dsa->depth_enabled) {
+            ctx->mrt_dsa = *dsa;
+            ctx->mrt_dsa.depth_writemask = 0;
+            ctx->mrt_dsa.depth_func = PIPE_FUNC_EQUAL;
+            ctx->dsa = &ctx->mrt_dsa;
+         }
+         m9_query_pause(ctx);
+      }
+      ctx->base.set_framebuffer_state(&ctx->base, &fb);
+      ctx->mrt_select = p + 1;
+      m9_draw_vbo(&ctx->base, info, drawid_offset, NULL, draw, 1);
+      ctx->mrt_select = 0;
+      if (!first)
+         m9_query_resume(ctx);
+      ctx->blend = blend;
+      ctx->dsa = dsa;
+      first = false;
+   }
+   ctx->base.set_framebuffer_state(&ctx->base, &saved);
+   util_unreference_framebuffer_state(&saved);
+   return true;
+}
+
+static void
+m9_draw_vbo(struct pipe_context *pctx, const struct pipe_draw_info *info,
+            unsigned drawid_offset,
+            const struct pipe_draw_indirect_info *indirect,
+            const struct pipe_draw_start_count_bias *draws,
             unsigned num_draws)
 {
    struct m9_context *ctx = m9_context(pctx);
@@ -5824,6 +5931,9 @@ m9_draw_vbo(struct pipe_context *pctx, const struct pipe_draw_info *info,
       util_draw_multi(pctx, info, drawid_offset, indirect, draws, num_draws);
       return;
    }
+   if (num_draws && !indirect &&
+       m9_mrt_blend_split(ctx, info, drawid_offset, draws))
+      return;
    m9_vs_texture_refresh(pctx);
    /* Count at the entry point: a draw dropped here never reaches the
     * vbuf render, and a killed client never destroys its context. */
