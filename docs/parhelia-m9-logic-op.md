@@ -3,8 +3,9 @@
 <!-- Copyright 2026 René Rebe <rene@exactco.de> -->
 <!-- SPDX-License-Identifier: GPL-2.0 -->
 
-Status 2026-10-02: **CAPTURED and decoded, not yet implemented** in the m9x
-Mesa driver (an implementation was started on m9x main 5ef40cb).
+Status 2026-10-02: **implemented** in m9x 6780573; all 15 non-COPY functions
+are exact on hardware (MEASURED: 16384 channel checks per function, texture and
+vertex-colour sources, GL_DITHER on and off).
 
 ## No state word
 
@@ -63,3 +64,22 @@ read, which is **not captured**; drawing them as quads avoids it.
 
 Piglit: gl-1.1-xor, gl-1.1-xor-copypixels and the LogicOp part of
 gl-1.0-no-op-paths.
+
+## Dither in the captured tail (MEASURED)
+
+Replayed verbatim the tail is *not* exact: `7d`/`7e` hold 1024 plus an 8x8
+ordered dither value per channel, which the tail adds to the source colour,
+moving exact bytes by one in 2-4% of channels (the vendor's own capture shows
+the same "one lower" deviation).  The driver loads the constant 1056 instead;
+every value 1030..1072 is exact, 1024 and 1087 are not.  The tail is never
+dithered, which GL permits.
+
+Refused: 10-bit targets (only the 8-bit tail is captured), several colour
+targets, constant templates, and programs out of constants or temporaries.
+Width-1 lines are drawn as quads.  gl-1.1-xor passes; gl-1.0-logicop passes all
+16 subtests (its multisample subtests skip).
+
+Follow-up: `m9_dither_ef` always returns dither-on for 8-bit targets, so the
+plain COPY path from vertex colours is one low in places and GL_DITHER is
+ignored; gl-1.1-xor-copypixels fails its first check (before any logic op)
+probably for that reason.

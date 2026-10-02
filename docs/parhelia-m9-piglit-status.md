@@ -50,7 +50,12 @@ glsl-1.20 tests into real results.
 * Kill lane artifact (early-z, occlusion-query-discard, pbo, dlist-bitmap):
   vendor MMIO snapshot during fs-discard-cond
   (`parhelia-m9-mesa-fragment-backend.md` section 4a).
-* Logic ops: captured, implementation in progress (`parhelia-m9-logic-op.md`).
+* Logic ops: implemented and exact (m9x 6780573).  Core on 5ef40cb+logic:
+  271 pass / 15 fail.  Regressions after c4dd850 seen on both 5ef40cb and
+  5ef40cb+logic: max-samplers (+ border, "a draw's records did not fit one
+  job"), gl-1.0-dlist-bitmap and scissor-bitmap (also seen intermittently on
+  c4dd850); owner to be found among the fog/10-bit/fs3/vs merges.
+* GL_DITHER is ignored for 8-bit targets (`m9_dither_ef`), see the logic-op doc.
 * Polygon stipple: vendor form captured (`raster/batch.tgz`
   g56/polygon_stipple; 79=ea010020, 70=0004111c, an extra draw at c3=4 not
   decoded).
