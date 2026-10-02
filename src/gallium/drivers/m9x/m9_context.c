@@ -6151,8 +6151,6 @@ m9_resource_samplable(const struct m9_resource *res, unsigned level)
       return false;
    if (res->texture.levels)
       return level < res->texture.levels && level <= res->base.last_level &&
-             (!level || res->texture.block_bytes ||
-              !res->texture.level[level].in_tail) &&
              !(res->texture_unplaced & (1u << level));
    if (level)
       return false;

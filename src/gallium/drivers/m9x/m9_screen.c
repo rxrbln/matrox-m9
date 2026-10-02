@@ -252,8 +252,13 @@ m9_is_format_supported(struct pipe_screen *screen, enum pipe_format format,
    case PIPE_TEXTURE_3D:
       /* A cube face and a volume slice are stored only by the tiled texture
        * calculator: there is no captured render, depth or scanout placement
-       * for either, and the kernel texture window addresses a plane. */
-      if (bind & ~(PIPE_BIND_SAMPLER_VIEW | PIPE_BIND_LINEAR))
+       * for either, and the kernel texture window addresses a plane.  st
+       * asks for RENDER_TARGET speculatively, and without retrying, for the
+       * formats GL requires (GL_RGBA with a packed 4444/5551/8888 type), so
+       * accept the bind; m9_update_target refuses a face or slice as a
+       * target. */
+      if (bind & ~(PIPE_BIND_SAMPLER_VIEW | PIPE_BIND_LINEAR |
+                   PIPE_BIND_RENDER_TARGET))
          return false;
       if (!m9_texture_format(format, NULL))
          return false;
@@ -520,8 +525,8 @@ m9_resource_create(struct pipe_screen *pscreen,
        * Mesa only asks for speculatively. */
       resource->kind = templ->bind & PIPE_BIND_DEPTH_STENCIL ?
          M9_RESOURCE_LINEAR_DEPTH :
-         (templ->bind & PIPE_BIND_RENDER_TARGET) && !templ->last_level ?
-         M9_RESOURCE_LINEAR_COLOR : M9_RESOURCE_LINEAR_TEXTURE;
+         (templ->bind & PIPE_BIND_RENDER_TARGET) && !templ->last_level &&
+         !layered ? M9_RESOURCE_LINEAR_COLOR : M9_RESOURCE_LINEAR_TEXTURE;
       if (resource->kind != M9_RESOURCE_LINEAR_TEXTURE && templ->last_level)
          goto fail;
       /* A face and a slice are reachable only through the tiled calculator:
@@ -633,6 +638,8 @@ fail:
               "bind %#x usage %u\n", templ->width0, templ->height0,
               templ->last_level + 1, util_format_short_name(templ->format),
               templ->bind, templ->usage);
+   if (templ->target != PIPE_BUFFER && getenv("M9X_ABORT_REFUSED"))
+      abort();
    m9_resource_release_hz(screen, resource);
    if (resource->map && !resource->handle)
       align_free(resource->map);
