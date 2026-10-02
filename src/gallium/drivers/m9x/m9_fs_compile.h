@@ -148,7 +148,7 @@ struct m9_fs_program {
    struct m9_fs_coord_affine texcoord_affine[M9_FS_MAX_TEXTURES];
    unsigned texture_count;
    uint16_t registers_used;       /* bit per register pair group 08..1f */
-   bool discard, fragcoord, fragdepth;
+   bool discard, fragcoord, fragdepth, face;
    bool blend_dest;               /* raster f0 c5008200: destination blend */
    /* A texel slot fed by the record a previous raster pass wrote: the index
     * of the pass that produced it, M9_FS_ROUTE_NONE for an ordinary fetch.
@@ -195,6 +195,9 @@ void m9_fs_lower_srgb(struct nir_shader *nir);
 /* Writes gl_FragColor into every one of this many colour targets, which is
  * what GL does with a shader that names only the one output. */
 void m9_fs_lower_fragcolor(struct nir_shader *nir, unsigned targets);
+
+/* Inverts gl_FrontFacing, for a clockwise front face. */
+void m9_fs_flip_face(struct nir_shader *nir);
 
 /* Returns false with a static reason when the shader is not covered.  A NULL
  * blend, or ONE/ZERO, writes the colour unblended. */

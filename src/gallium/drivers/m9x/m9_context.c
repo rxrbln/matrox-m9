@@ -120,6 +120,7 @@ struct m9_fs_variant {
    uint32_t inline_values[MAX_INLINABLE_UNIFORMS];
    uint8_t swizzle[PIPE_MAX_SAMPLERS][4];  /* view swizzle per sampler, applied in NIR */
    uint32_t depth_texture;             /* samplers bound to a depth surface */
+   bool face_flip;                     /* gl_FrontFacing inverted: CW front */
    bool ok;
    const char *reason;                 /* why the variant is not drawable */
    /* The raster passes the shader runs as; one for everything the engine
@@ -3739,6 +3740,7 @@ m9_fs_variant(struct m9_context *ctx, struct m9_fs_state *fs,
           (*it)->targets == want->targets &&
           !memcmp((*it)->inline_values, want->inline_values, inline_bytes) &&
           (*it)->depth_texture == want->depth_texture &&
+          (*it)->face_flip == want->face_flip &&
           !memcmp((*it)->swizzle, want->swizzle, sizeof(want->swizzle))) {
          struct m9_fs_variant **last =
             util_dynarray_last_ptr(&fs->variants, struct m9_fs_variant *);
@@ -3792,6 +3794,9 @@ m9_fs_variant(struct m9_context *ctx, struct m9_fs_state *fs,
    memcpy(v->inline_values, want->inline_values, inline_bytes);
    memcpy(v->swizzle, want->swizzle, sizeof(v->swizzle));
    v->depth_texture = want->depth_texture;
+   v->face_flip = want->face_flip;
+   if (v->face_flip)
+      m9_fs_flip_face(clone);
    if (inline_bytes)
       m9_nir_inline_uniforms(clone, v->inline_values);
    {
@@ -3961,6 +3966,12 @@ m9_ctx_variant(struct m9_context *ctx, const char **reason,
    if (*reason)
       return NULL;
    memcpy(want.inline_values, ctx->fs_inline, sizeof(want.inline_values));
+   /* The facing register's front is GL's counter-clockwise; st states the
+    * winding against a viewport it inverts for window buffers. */
+   if (ctx->rasterizer &&
+       (ctx->fs->nir->info.inputs_read & VARYING_BIT_FACE))
+      want.face_flip = ctx->rasterizer->front_ccw ==
+                       (ctx->viewport.scale[1] > 0.0f);
    for (unsigned s = 0; s < PIPE_MAX_SAMPLERS; s++) {
       const struct pipe_sampler_view *view = ctx->fs_views[s];
 

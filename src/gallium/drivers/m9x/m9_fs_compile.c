@@ -36,6 +36,8 @@ const nir_shader_compiler_options m9_fs_nir_options = {
    .lower_fdph = true,
    .lower_fpow = true,
    .lower_fmod = true,
+   .lower_fsign = true,
+   .lower_ftrunc = true,
    .lower_sincos = true,
    .lower_uniforms_to_ubo = true,
    .force_indirect_unrolling = nir_var_all,
@@ -116,6 +118,7 @@ enum node_kind {
     * src[l]/lane[l][l]/swz[l][l].  It emits nothing: a reader resolves
     * through it to the source its own lane reads. */
    N_PAIR,
+   N_FACE,              /* gl_FrontFacing: zero in scalar 0 for a back face */
 };
 
 struct node {
@@ -554,8 +557,22 @@ build_intrinsic(struct ctx *c, nir_intrinsic_instr *intr)
       int k;
 
       if (location == VARYING_SLOT_POS) {
+         if (c->p->face)
+            return fail(c, "gl_FragCoord beside gl_FrontFacing"), -1;
          n = node_new(c, N_FRAGCOORD);
          return n < 0 ? -1 : (c->p->fragcoord = true, n);
+      }
+      /* Register 7b holds the facing unless the raster position is
+       * declared, when it holds z; the two together are not captured. */
+      if (location == VARYING_SLOT_FACE) {
+         if (c->p->fragcoord)
+            return fail(c, "gl_FrontFacing beside gl_FragCoord"), -1;
+         n = node_new(c, N_FACE);
+         if (n < 0)
+            return -1;
+         NODES(c)[n].is_cond = true;
+         c->p->face = true;
+         return n;
       }
       if (nir_intrinsic_component(intr) + intr->def.num_components > 4)
          return fail(c, "unsupported fragment input"), -1;
@@ -1225,6 +1242,38 @@ deswizzle(struct ctx *c, int n, uint8_t lane[2], uint8_t swz[2])
    return m;
 }
 
+/* A facing condition is only zero or not; where a value of exactly one or
+ * zero is needed, a select between the two literals produces it. */
+static int
+face_value(struct ctx *c, int n)
+{
+   static const uint8_t lane_s0[2] = { 0, 0 }, swz_s0[2] = { 0, 0 };
+   uint8_t lane[2][2] = { { 0, 1 }, { 0, 1 } }, swz[2][2] = { { 1, 1 }, { 1, 1 } };
+   int lit[2], sel;
+
+   if (n < 0 || NODES(c)[n].kind != N_FACE)
+      return n;
+   for (unsigned i = 0; i < 2; i++) {
+      lit[i] = node_new(c, N_LIT);
+      if (lit[i] < 0)
+         return -1;
+      for (unsigned k = 0; k < 4; k++)
+         NODES(c)[lit[i]].lit[k] = i ^ NODES(c)[n].neg ? 1.0f : 0.0f;
+      lit[i] = materialise(c, lit[i], lane[i], swz[i]);
+      if (lit[i] < 0)
+         return -1;
+   }
+   sel = node_new(c, N_SEL);
+   if (sel < 0)
+      return -1;
+   set_src(&NODES(c)[sel], 0, n, lane_s0, swz_s0);
+   set_src(&NODES(c)[sel], 1, lit[0], lane[0], swz[0]);
+   set_src(&NODES(c)[sel], 2, lit[1], lane[1], swz[1]);
+   NODES(c)[sel].cmp = 4;
+   NODES(c)[sel].is_cond = true;
+   return sel;
+}
+
 static int
 build_alu(struct ctx *c, nir_alu_instr *alu)
 {
@@ -1553,6 +1602,15 @@ build_alu(struct ctx *c, nir_alu_instr *alu)
 
       if (cond < 0)
          return -1;
+      /* The opposite facing selects the other way round. */
+      if (NODES(c)[cond].kind == N_FACE) {
+         n = node_new(c, N_FACE);
+         if (n < 0)
+            return -1;
+         NODES(c)[n].neg = !NODES(c)[cond].neg;
+         NODES(c)[n].is_cond = true;
+         return n;
+      }
       cond = force_identity(c, cond, lane[0], swz[0]);
       if (cond < 0)
          return -1;
@@ -1594,6 +1652,8 @@ build_alu(struct ctx *c, nir_alu_instr *alu)
       int q, pp = bool_src_node(c, alu, 0, lane[0], swz[0]);
 
       q = pp < 0 ? -1 : bool_src_node(c, alu, 1, lane[1], swz[1]);
+      pp = face_value(c, pp);
+      q = pp < 0 ? -1 : face_value(c, q);
       if (q < 0)
          return -1;
       pp = force_identity(c, pp, lane[0], swz[0]);
@@ -1633,11 +1693,39 @@ build_alu(struct ctx *c, nir_alu_instr *alu)
    case nir_op_b2f32:
    case nir_op_b2f16: {
       /* The compare unit already produces 1.0 and 0.0. */
-      int cond = bool_src_node(c, alu, 0, lane[0], swz[0]);
+      int cond = face_value(c, bool_src_node(c, alu, 0, lane[0], swz[0]));
 
       if (cond < 0)
          return -1;
       return force_identity(c, cond, lane[0], swz[0]);
+   }
+   case nir_op_b2b1: {
+      /* Without native integers a 32-bit boolean is a uniform holding 1.0
+       * or 0.0 (UniformBooleanTrue) or the facing input; b2b1 is its test
+       * against zero, which is what a select already makes. */
+      nir_def *src = alu->src[0].src.ssa;
+
+      for (unsigned k = 0; k < alu->def.num_components; k++)
+         if (alu->src[0].swizzle[k] != k)
+            return fail(c, "unsupported condition"), -1;
+      if (src->num_components != alu->def.num_components)
+         return fail(c, "unsupported condition"), -1;
+      n = build_def(c, src);
+      if (n < 0)
+         return -1;
+      if (NODES(c)[n].kind == N_UBO) {
+         static const uint8_t lane_id[2] = { 0, 1 }, swz_id[2] = { 1, 1 };
+
+         memcpy(lane[0], lane_id, 2);
+         memcpy(swz[0], swz_id, 2);
+         n = materialise(c, n, lane[0], swz[0]);
+         if (n < 0)
+            return -1;
+         NODES(c)[n].is_cond = true;
+      }
+      if (!NODES(c)[n].is_cond)
+         return fail(c, "unsupported condition"), -1;
+      return n;
    }
    case nir_op_bcsel: {
       int cond = bool_src_node(c, alu, 0, lane[0], swz[0]);
@@ -1650,6 +1738,19 @@ build_alu(struct ctx *c, nir_alu_instr *alu)
       b = a < 0 ? -1 : materialise(c, b, lane[2], swz[2]);
       if (b < 0)
          return -1;
+      if (NODES(c)[cond].kind == N_FACE && NODES(c)[cond].neg) {
+         int t2 = a;
+         uint8_t tl[2], ts[2];
+
+         memcpy(tl, lane[1], 2);
+         memcpy(ts, swz[1], 2);
+         a = b;
+         memcpy(lane[1], lane[2], 2);
+         memcpy(swz[1], swz[2], 2);
+         b = t2;
+         memcpy(lane[2], tl, 2);
+         memcpy(swz[2], ts, 2);
+      }
       n = node_new(c, N_SEL);
       if (n < 0)
          return -1;
@@ -2374,6 +2475,29 @@ emit_fragcoord(struct ctx *c, int n, struct node *nd)
    return true;
 }
 
+/* gl_FrontFacing, as fs-frontfacing reads it: the multiply-add form against
+ * (-0.5, 0.5) leaves scalar 0 zero for a back face and the vendor selects on
+ * it (CAPTURED, readback MEASURED).  Every facing node reads the one slot. */
+static bool
+emit_face(struct ctx *c, int n, struct node *nd)
+{
+   static const uint32_t k[2] = { 0xbf000000, 0x3f000000 };
+   int key, dst;
+
+   util_dynarray_foreach(&c->nodes, struct node, it)
+      if (it->kind == N_FACE && it->value[0] >= 0) {
+         nd->value[0] = nd->value[1] = it->value[0];
+         return true;
+      }
+   key = chain_const(c, k);
+   dst = frag_lop(c, n, 0xb0400030, 0x1d, -1, -1, key, key);
+   if (dst < 0)
+      return false;
+   LOPS(c)[NUM(c, lops, struct lop) - 1].opreg[1] = REG_FRAG_Z;
+   nd->value[0] = nd->value[1] = dst;
+   return true;
+}
+
 /* The special-function chains.  exp2 and log2 evaluate a minimax polynomial
  * after a seed instruction that splits the argument; rcp and rsq refine a
  * seed with two Newton steps.  The coefficients and the wiring are the
@@ -2493,6 +2617,18 @@ emit_node_lops(struct ctx *c, int n, bool output, bool direct_ba)
 
    if (nd->kind == N_FRAGCOORD) {
       if (!emit_fragcoord(c, n, nd))
+         return false;
+      for (unsigned lane = 0; output && lane < 2; lane++) {
+         struct lop l;
+
+         lop_init(&l, L_MOV_OUT, lane, n);
+         l.opval[0] = nd->value[lane];
+         lop_add(c, &l);
+      }
+      return true;
+   }
+   if (nd->kind == N_FACE) {
+      if (!emit_face(c, n, nd))
          return false;
       for (unsigned lane = 0; output && lane < 2; lane++) {
          struct lop l;
@@ -3104,7 +3240,7 @@ allocate(struct ctx *c)
             "VARY", "TEX", "UBO", "LIT", "MUL", "ADD", "SUB", "MAD",
             "MIN", "MAX", "NEG", "FRACT", "FLOOR", "CEIL", "EXP2", "LOG2",
             "RCP", "RSQ", "FRAGCOORD", "CMP", "SEL", "SAT",
-            "LOAD", "COMPOSE", "PAIR",
+            "LOAD", "COMPOSE", "PAIR", "FACE",
          };
          unsigned count[ARRAY_SIZE(kinds)] = { 0 };
 
@@ -4618,6 +4754,7 @@ reset_graph(struct ctx *c)
    p->varying_count = 0;
    memset(p->texture_source, M9_FS_ROUTE_NONE, sizeof(p->texture_source));
    p->fragcoord = false;
+   p->face = false;
    memset(p->texcoord_projective, 0, sizeof(p->texcoord_projective));
 }
 
@@ -4917,10 +5054,46 @@ is_transcendental(const nir_instr *instr, const void *data)
    case nir_op_fdot2:
    case nir_op_fdot3:
    case nir_op_fdot4:
+   /* Vector equality reduces to per-component compares and and/or. */
+   case nir_op_ball_fequal2: case nir_op_ball_fequal3: case nir_op_ball_fequal4:
+   case nir_op_ball_iequal2: case nir_op_ball_iequal3: case nir_op_ball_iequal4:
+   case nir_op_bany_fnequal2: case nir_op_bany_fnequal3:
+   case nir_op_bany_fnequal4:
+   case nir_op_bany_inequal2: case nir_op_bany_inequal3:
+   case nir_op_bany_inequal4:
       return true;
    default:
       return false;
    }
+}
+
+/* Without native integers only booleans reach the integer compares, and a
+ * condition here holds 1.0 or 0.0, so they compare as floats. */
+static bool
+lower_bool_int(nir_builder *b, nir_alu_instr *alu, void *data)
+{
+   nir_op op;
+
+   (void)data;
+   switch (alu->op) {
+   case nir_op_ieq:
+      op = nir_op_feq;
+      break;
+   case nir_op_ine:
+   case nir_op_ixor:
+      op = nir_op_fneu;
+      break;
+   default:
+      return false;
+   }
+   if (alu->def.bit_size != 1 || nir_src_bit_size(alu->src[0].src) != 1)
+      return false;
+   b->cursor = nir_before_instr(&alu->instr);
+   nir_def_replace(&alu->def,
+                   nir_build_alu2(b, op,
+                                  nir_b2f32(b, nir_ssa_for_alu_src(b, alu, 0)),
+                                  nir_b2f32(b, nir_ssa_for_alu_src(b, alu, 1))));
+   return true;
 }
 
 /* Everything but the chains vectorises again afterwards, so the arithmetic
@@ -4946,6 +5119,8 @@ fs_prepare(nir_shader *nir)
             nir_var_shader_in | nir_var_shader_out, false);
    NIR_PASS(_, nir, nir_opt_vectorize, NULL, NULL);
    NIR_PASS(_, nir, nir_lower_alu_to_scalar, is_transcendental, NULL);
+   NIR_PASS(_, nir, nir_shader_alu_pass, lower_bool_int,
+            nir_metadata_control_flow, NULL);
    NIR_PASS(_, nir, nir_opt_vectorize, vectorize_around_chains, NULL);
    NIR_PASS(_, nir, nir_opt_copy_prop);
    /* Scalarising a vector special function leaves one chain per component,
@@ -5054,6 +5229,38 @@ m9_fs_lower_fragcolor(nir_shader *nir, unsigned targets)
    if (targets > 1)
       NIR_PASS(_, nir, nir_shader_intrinsics_pass, fragcolor_store,
                nir_metadata_control_flow, &targets);
+}
+
+/* The facing register reads a counter-clockwise primitive as front facing
+ * whatever the draw buffer orientation (MEASURED with glsl-fs-frontfacing,
+ * window and FBO, native and draw-module vertices), so a clockwise front
+ * face tests the opposite way round. */
+static bool
+flip_face(nir_builder *b, nir_alu_instr *alu, void *data)
+{
+   nir_scalar s;
+   nir_def *flipped;
+
+   (void)data;
+   if (alu->op != nir_op_b2b1)
+      return false;
+   s = nir_scalar_chase_movs(nir_get_scalar(alu->src[0].src.ssa, 0));
+   if (!nir_scalar_is_intrinsic(s) ||
+       nir_def_as_intrinsic(s.def)->intrinsic != nir_intrinsic_load_input ||
+       nir_intrinsic_io_semantics(nir_def_as_intrinsic(s.def)).location !=
+       VARYING_SLOT_FACE)
+      return false;
+   b->cursor = nir_after_instr(&alu->instr);
+   flipped = nir_inot(b, &alu->def);
+   nir_def_rewrite_uses_after(&alu->def, flipped);
+   return true;
+}
+
+void
+m9_fs_flip_face(nir_shader *nir)
+{
+   NIR_PASS(_, nir, nir_shader_alu_pass, flip_face, nir_metadata_control_flow,
+            NULL);
 }
 
 void
