@@ -5518,6 +5518,64 @@ fs_srgb(nir_shader *nir, const struct m9_fs_blend *blend, const char **reason)
    return true;
 }
 
+/* M9X_FS_PROBE=file replaces a compiled single-pass program with a native
+ * one for hardware probes; lines "s W0 W1", "k BITS0 BITS1" (literal pair),
+ * "u OFF0 OFF1" (uniform pair), "v LOCATION MASK", "r REGS", "d 0|1". */
+static void
+fs_probe_override(struct m9_fs_program *p)
+{
+   const char *path = getenv("M9X_FS_PROBE");
+   char line[256];
+   bool vary = false;
+   FILE *f;
+
+   if (!path || !(f = fopen(path, "r")))
+      return;
+   util_dynarray_clear(&p->slots);
+   util_dynarray_clear(&p->consts);
+   while (fgets(line, sizeof(line), f)) {
+      unsigned a, b;
+
+      if (sscanf(line, "s %x %x", &a, &b) == 2) {
+         util_dynarray_append_typed(&p->slots, uint32_t, a);
+         util_dynarray_append_typed(&p->slots, uint32_t, b);
+      } else if (sscanf(line, "k %x %x", &a, &b) == 2 ||
+                 sscanf(line, "u %x %x", &a, &b) == 2) {
+         struct m9_fs_const *k = util_dynarray_grow(&p->consts,
+                                                    struct m9_fs_const, 1);
+
+         memset(k, 0, sizeof(*k));
+         if (line[0] == 'k') {
+            k->kind = M9_FS_CONST_LITERAL;
+            memcpy(&k->value[0], &a, 4);
+            memcpy(&k->value[1], &b, 4);
+         } else {
+            k->kind = M9_FS_CONST_UNIFORM;
+            k->offset[0] = a;
+            k->offset[1] = b;
+         }
+      } else if (sscanf(line, "v %x %x", &a, &b) == 2) {
+         if (!vary)
+            p->varying_count = 0;
+         vary = true;
+         if (p->varying_count < M9_FS_MAX_VARYINGS) {
+            p->varyings[p->varying_count].location = a;
+            p->varyings[p->varying_count++].components = b;
+         }
+      } else if (sscanf(line, "r %x", &a) == 1) {
+         p->registers_used = a;
+      } else if (sscanf(line, "d %u", &a) == 1) {
+         p->discard = a;
+      }
+   }
+   fclose(f);
+   fprintf(stderr, "m9x fs: probe %s: %u slots %u consts %u varyings\n",
+           path, m9_fs_slot_count(p),
+           (unsigned)util_dynarray_num_elements(&p->consts,
+                                                struct m9_fs_const),
+           p->varying_count);
+}
+
 /* One raster pass: the shader output, or the value root a producing pass
  * hands on, with the values earlier passes produced available as routes. */
 static bool
@@ -5572,6 +5630,8 @@ fs_compile_pass(nir_shader *nir, const struct m9_fs_blend *blend,
       *reason = c.reason ? c.reason : "unsupported shader";
       m9_fs_program_fini(program);
       memset(program, 0, sizeof(*program));
+   } else if (!record_out && !cut_count) {
+      fs_probe_override(program);
    }
    return ok;
 }
