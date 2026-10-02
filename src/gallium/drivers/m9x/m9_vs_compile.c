@@ -2079,6 +2079,46 @@ compile_impl(struct ctx *c, nir_function_impl *impl,
    return true;
 }
 
+static uint32_t
+fnv1a(uint32_t h, const void *data, size_t size)
+{
+   const uint8_t *b = data;
+
+   for (size_t i = 0; i < size; i++)
+      h = (h ^ b[i]) * 16777619u;
+   return h;
+}
+
+/* M9X_VS_DUMP=1: one line a compiled program, so two builds can be shown to
+ * emit the same words for the same shader and layout. */
+static void
+dump_program(const nir_shader *nir, const struct m9_vs_outputs *outputs,
+             const struct m9_vs_program *p)
+{
+   const uint32_t *w = p->slots.data;
+   unsigned n = util_dynarray_num_elements(&p->slots, uint32_t), maxreg = 0;
+   uint32_t h = 2166136261u, lh = 2166136261u;
+
+   for (unsigned i = 0; i + 1 < n; i += 2)
+      maxreg = MAX2(maxreg, w[i] >> 8 & 0x7f);
+   h = fnv1a(h, p->slots.data, p->slots.size);
+   h = fnv1a(h, p->extra.data, p->extra.size);
+   h = fnv1a(h, p->gather.data, p->gather.size);
+   h = fnv1a(h, p->consts.data, p->consts.size);
+   if (outputs)
+      lh = fnv1a(lh, outputs, sizeof(*outputs));
+   fprintf(stderr, "m9x vs dump: src %02x%02x%02x%02x layout %08x slots %u+%u+%u "
+           "consts %u maxreg %02x words %08x\n",
+           nir->info.source_blake3[0], nir->info.source_blake3[1],
+           nir->info.source_blake3[2], nir->info.source_blake3[3],
+           outputs ? lh : 0, n / 2,
+           (unsigned)util_dynarray_num_elements(&p->extra, uint32_t) / 2,
+           (unsigned)util_dynarray_num_elements(&p->gather, uint32_t) / 2,
+           (unsigned)util_dynarray_num_elements(&p->consts, struct m9_vs_const),
+           maxreg,
+           h);
+}
+
 bool
 m9_vs_compile(struct nir_shader *nir, const struct m9_vs_outputs *outputs,
               struct m9_vs_program *p, const char **reason)
@@ -2115,6 +2155,8 @@ m9_vs_compile(struct nir_shader *nir, const struct m9_vs_outputs *outputs,
          out->coord_part = k->coord_part;
       }
    }
+   if (ok && debug_get_bool_option("M9X_VS_DUMP", false))
+      dump_program(nir, outputs, p);
    if (reason)
       *reason = ok ? NULL : (c.reason ? c.reason : "unknown");
    util_dynarray_fini(&c.keys);
