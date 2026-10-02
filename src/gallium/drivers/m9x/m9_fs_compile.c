@@ -5723,6 +5723,33 @@ fs_compile_pass(nir_shader *nir, const struct m9_fs_blend *blend,
 }
 
 bool
+m9_fs_kills_all(const struct nir_shader *nir)
+{
+   nir_foreach_function_impl(impl, nir) {
+      if (!impl->function->is_entrypoint)
+         continue;
+      /* Only blocks of the top level run for every fragment. */
+      foreach_list_typed(nir_cf_node, node, node, &impl->body) {
+         if (node->type != nir_cf_node_block)
+            continue;
+         nir_foreach_instr(instr, nir_cf_node_as_block(node)) {
+            nir_intrinsic_instr *intr;
+
+            if (instr->type != nir_instr_type_intrinsic)
+               continue;
+            intr = nir_instr_as_intrinsic(instr);
+            if (intr->intrinsic == nir_intrinsic_terminate ||
+                (intr->intrinsic == nir_intrinsic_terminate_if &&
+                 nir_src_is_const(intr->src[0]) &&
+                 nir_src_as_bool(intr->src[0])))
+               return true;
+         }
+      }
+   }
+   return false;
+}
+
+bool
 m9_fs_compile(struct nir_shader *nir, const struct m9_fs_blend *blend,
               struct m9_fs_program *program, const char **reason)
 {

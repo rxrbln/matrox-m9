@@ -83,6 +83,7 @@ struct m9_fs_state {
    struct draw_fragment_shader *draw;
    nir_shader *nir;
    bool passthrough;
+   bool kill_all;                      /* every fragment is discarded */
    bool native, native_tried, warned;
    const char *reason;
    struct util_dynarray variants;      /* struct m9_fs_variant * */
@@ -5943,6 +5944,11 @@ m9_draw_vbo(struct pipe_context *pctx, const struct pipe_draw_info *info,
       util_draw_multi(pctx, info, drawid_offset, indirect, draws, num_draws);
       return;
    }
+   /* A discarded fragment updates nothing -- colour, depth, stencil or the
+    * occlusion count -- so a shader that discards all of them draws
+    * nothing, exactly, without the kill slot's lane artifact (M9_BRINGUP). */
+   if (ctx->fs && ctx->fs->kill_all)
+      return;
    if (num_draws && !indirect &&
        m9_mrt_blend_split(ctx, info, drawid_offset, draws))
       return;
@@ -7541,6 +7547,7 @@ m9_create_fs_state(struct pipe_context *pctx,
    } else if (templ->type == PIPE_SHADER_IR_NIR)
       fs->nir = templ->ir.nir;
    if (fs->nir) {
+      fs->kill_all = m9_fs_kills_all(fs->nir);
       fs->passthrough = m9_fs_passthrough(fs->nir);
       if (!fs->passthrough)
          m9_fs_native_init(m9_context(pctx), fs);

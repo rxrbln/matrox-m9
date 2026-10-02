@@ -201,6 +201,9 @@ void m9_fs_lower_srgb_texture(struct nir_shader *nir, uint32_t mask);
  * what GL does with a shader that names only the one output. */
 void m9_fs_lower_fragcolor(struct nir_shader *nir, unsigned targets);
 
+/* The shader discards every fragment it runs for, unconditionally. */
+bool m9_fs_kills_all(const struct nir_shader *nir);
+
 /* Inverts gl_FrontFacing, for a clockwise front face. */
 void m9_fs_flip_face(struct nir_shader *nir);
 
