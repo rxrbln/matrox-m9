@@ -4513,6 +4513,17 @@ m9_render_append(struct m9_vbuf_render *r, const struct m9_job_key *key,
    }
 }
 
+/* The provoking vertex flat shading takes; quads keep the last one whatever
+ * the convention, since quads_follow_provoking_vertex_convention is unset. */
+static unsigned
+m9_flat_pv(const struct pipe_rasterizer_state *rast, enum mesa_prim prim)
+{
+   if (prim == MESA_PRIM_QUADS || prim == MESA_PRIM_QUAD_STRIP)
+      return PV_LAST;
+   return rast && rast->flatshade && rast->flatshade_first ? PV_FIRST :
+                                                             PV_LAST;
+}
+
 static bool
 m9_native_topology(enum mesa_prim prim, unsigned in_pv,
                    enum m9_topology *topology)
@@ -4548,8 +4559,7 @@ m9_render_emit(struct m9_vbuf_render *r, const uint16_t *indices,
    const unsigned lists = BITFIELD_BIT(MESA_PRIM_LINES) |
                           BITFIELD_BIT(MESA_PRIM_TRIANGLES);
    enum mesa_prim prim = r->prim, out_prim = r->prim;
-   unsigned in_pv = rast && rast->flatshade && rast->flatshade_first ?
-                    PV_FIRST : PV_LAST;
+   unsigned in_pv = m9_flat_pv(rast, prim);
    unsigned out_size = 0, out_count = count;
    enum m9_topology topology;
    const void *list = NULL;
@@ -4920,8 +4930,7 @@ m9_native_vs_resolve(struct m9_context *ctx, const struct pipe_draw_info *info,
       return "instanced draws are not preprocessed natively";
    if (info->primitive_restart)
       return "primitive restart is not preprocessed natively";
-   in_pv = rast && rast->flatshade && rast->flatshade_first ? PV_FIRST :
-                                                              PV_LAST;
+   in_pv = m9_flat_pv(rast, info->mode);
    if (!m9_native_topology(info->mode, in_pv, &out->topology))
       return "the primitive needs the draw module's index translation";
    reduced = u_reduced_prim(info->mode);
