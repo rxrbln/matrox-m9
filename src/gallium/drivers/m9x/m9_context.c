@@ -254,6 +254,7 @@ m9_skip_reason(struct m9_context *ctx, const char *reason)
  * M9X_TEXTURE_DUMP writes each uploaded level 0 out as a PPM. */
 static bool m9_debug_textures;
 static const char *m9_texture_dump;
+static bool m9_texture_addrcode;
 
 /* M9X_PROFILE=N reports where the frame went every N frames.  The phases
  * nest: draw contains emit, emit contains submit, submit contains the
@@ -1081,6 +1082,14 @@ m9_transfer_map(struct pipe_context *pctx, struct pipe_resource *pres,
    uint64_t t_transfer = m9_prof_begin();
    void *map = m9_transfer_map_locked(pctx, pres, level, usage, box, out);
 
+   if (!map && m9_context(pctx)->debug)
+      fprintf(stderr, "m9x: transfer map failed: %s %ux%ux%u target %u bind "
+              "%#x level %u usage %#x box %d,%d,%d %dx%dx%d\n",
+              util_format_short_name(pres->format), pres->width0,
+              pres->height0, pres->depth0, pres->target, pres->bind, level,
+              usage, box->x, box->y, box->z, box->width, box->height,
+              box->depth);
+
    /* A writable mapping moves the contents on, both when it is handed out
     * and when the writer gives it back: an entry built while the mapping was
     * open is retired by the second bump. */
@@ -1131,6 +1140,15 @@ m9_transfer_unmap(struct pipe_context *pctx, struct pipe_transfer *ptransfer)
             }
          }
 
+         /* M9X_TEXTURE_ADDRCODE=1 overwrites the whole object with each
+          * dword's own index, so a sampled colour names the address the
+          * sampler read (a placement probe, not a rendering mode). */
+         if (m9_texture_addrcode && !store) {
+            uint32_t *w = resource->map;
+
+            for (uint64_t i = 0; i < resource->size / 4; i++)
+               w[i] = (uint32_t)(i & 0xffffff) | 0xff000000u;
+         }
          if (store) {
             resource->texture_unplaced |= bit;
             if (!(m9_context(pctx)->warned & M9_WARN_TRANSFER))
@@ -7880,6 +7898,7 @@ m9_context_create(struct pipe_screen *pscreen, void *priv, unsigned flags)
    ctx->dump_path = debug_get_option("M9X_DUMP", NULL);
    m9_debug_textures = debug_get_bool_option("M9X_DEBUG_TEXTURES", false);
    m9_texture_dump = debug_get_option("M9X_TEXTURE_DUMP", NULL);
+   m9_texture_addrcode = debug_get_bool_option("M9X_TEXTURE_ADDRCODE", false);
    m9_debug_ctx = ctx;
    m9_pass_loop = debug_get_bool_option("M9X_PASS_LOOP", false);
    m9_split_stage = debug_get_num_option("M9X_SPLIT_STAGE", 3);
