@@ -271,7 +271,7 @@ m9_is_format_supported(struct pipe_screen *screen, enum pipe_format format,
     * the DXT rows no render-target, mipmap-generation or display bit
     * (docs/parhelia-m9-s3tc-compressed-textures.md 9), and nothing here
     * writes a compressed surface with the raster engine.  The sRGB variants
-    * are absent because no sRGB decode is recovered for this sampler. */
+    * are the same blocks, decoded by the fragment program. */
    if (m9_texture_compressed(format, NULL, NULL))
       return target == PIPE_TEXTURE_2D && samples <= 1 &&
              !(bind & ~(PIPE_BIND_SAMPLER_VIEW | PIPE_BIND_LINEAR));

@@ -5450,6 +5450,57 @@ m9_fs_lower_srgb(nir_shader *nir)
             nir_metadata_control_flow, NULL);
 }
 
+/* sRGB texel decode
+ *
+ * No sampler decode is known (the vendor stores D3DSAMP_SRGBTEXTURE but
+ * nothing consumes it), so the texel is stored as its UNORM twin and the
+ * GL curve is applied after the fetch, from the same compare, select,
+ * log2, exp2 and multiply-add forms the encode uses:
+ *
+ *   c <= 0.04045 ? c / 12.92 : pow((c + 0.055) / 1.055, 2.4)
+ */
+static nir_def *
+srgb_decode(nir_builder *b, nir_def *c)
+{
+   nir_def *t = nir_fadd_imm(b, nir_fmul_imm(b, c, 1.0 / 1.055),
+                             0.055 / 1.055);
+   nir_def *hi = nir_fexp2(b, nir_fmul_imm(b, nir_flog2(b, t), 2.4));
+   nir_def *lo = nir_fmul_imm(b, c, 1.0 / 12.92);
+
+   return nir_bcsel(b, nir_flt(b, nir_imm_floatN_t(b, 0.04045, 32), c), hi,
+                    lo);
+}
+
+static bool
+srgb_texel(nir_builder *b, nir_tex_instr *tex, void *data)
+{
+   uint32_t mask = *(const uint32_t *)data;
+   nir_def *v, *res;
+
+   if (tex->texture_index >= 32 || !(mask & BITFIELD_BIT(tex->texture_index)) ||
+       nir_tex_instr_is_query(tex) || tex->is_shadow ||
+       tex->def.num_components != 4 ||
+       nir_alu_type_get_base_type(tex->dest_type) != nir_type_float)
+      return false;
+   b->cursor = nir_after_instr(&tex->instr);
+   v = &tex->def;
+   /* One vec3 decode: per-channel scalars leave three results that only a
+    * composed vector, which the backend refuses, puts back together. */
+   res = srgb_decode(b, nir_trim_vector(b, v, 3));
+   res = nir_vec4(b, nir_channel(b, res, 0), nir_channel(b, res, 1),
+                  nir_channel(b, res, 2), nir_channel(b, v, 3));
+   nir_def_rewrite_uses_after(v, res);
+   return true;
+}
+
+void
+m9_fs_lower_srgb_texture(nir_shader *nir, uint32_t mask)
+{
+   if (mask)
+      NIR_PASS(_, nir, nir_shader_tex_pass, srgb_texel,
+               nir_metadata_control_flow, &mask);
+}
+
 /* GL blends an sRGB target in linear space, which needs the destination
  * decoded before the blend and encoded after it.  Decode is not implemented,
  * so a blended sRGB draw is refused rather than blended in encoded space. */

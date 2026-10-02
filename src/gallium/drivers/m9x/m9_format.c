@@ -9,6 +9,16 @@ m9_format_info(enum pipe_format format, struct m9_format_info *out)
 {
    struct m9_format_info info;
 
+   /* An sRGB image is its UNORM twin, decoded after the fetch by the
+    * fragment program (m9_fs_lower_srgb_texture); never a target. */
+   if (util_format_is_srgb(format)) {
+      if (!m9_format_info(util_format_linear(format), &info))
+         return false;
+      info.usage &= M9_FORMAT_TEXTURE;
+      if (out)
+         *out = info;
+      return info.usage != 0;
+   }
    switch (format) {
    case PIPE_FORMAT_B8G8R8A8_UNORM:
       info = (struct m9_format_info){ 0x66, 4,

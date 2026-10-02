@@ -123,6 +123,7 @@ struct m9_fs_variant {
    uint8_t swizzle[PIPE_MAX_SAMPLERS][4];  /* view swizzle per sampler, applied in NIR */
    uint32_t depth_texture;             /* samplers bound to a depth surface */
    bool face_flip;                     /* gl_FrontFacing inverted: CW front */
+   uint32_t srgb_texture;              /* samplers whose view decodes sRGB */
    bool ok;
    const char *reason;                 /* why the variant is not drawable */
    /* The raster passes the shader runs as; one for everything the engine
@@ -845,6 +846,8 @@ m9_texture_window(struct m9_context *ctx, const struct m9_resource *resource,
     * first 16 columns of a 32-wide surface.  Passing the texel width instead
     * left narrow levels with no window shape at all and their draws were
     * dropped. */
+   /* An sRGB image stores its UNORM twin's bytes; the fetch decodes. */
+   enum pipe_format texel = util_format_linear(resource->base.format);
    uint32_t span = (lvl->width + 31) & ~31u;
    bool small = span <= 64 && lvl->height <= 64;
    size_t bytes = (size_t)box->width * box->height * 4;
@@ -877,7 +880,7 @@ m9_texture_window(struct m9_context *ctx, const struct m9_resource *resource,
 
    if (!ret && write &&
        !util_format_translate(resource->texture_storage, rows, box->width * 4,
-                              0, 0, resource->base.format, data, stride, 0, 0,
+                              0, 0, texel, data, stride, 0, 0,
                               box->width, box->height))
       ret = -EINVAL;
    if (!ret) {
@@ -901,7 +904,7 @@ m9_texture_window(struct m9_context *ctx, const struct m9_resource *resource,
                  strerror(-ret));
    }
    if (!ret && !write &&
-       !util_format_translate(resource->base.format, data, stride, 0, 0,
+       !util_format_translate(texel, data, stride, 0, 0,
                               resource->texture_storage, rows, box->width * 4,
                               0, 0, box->width, box->height))
       ret = -EINVAL;
@@ -916,6 +919,7 @@ m9_texture_access(struct m9_context *ctx, struct m9_resource *resource,
                   uint8_t *data, unsigned stride)
 {
    const struct m9_texture_layout *layout = &resource->texture;
+   enum pipe_format texel = util_format_linear(resource->base.format);
 
    if (layout->block_bytes)
       return m9_texture_window_blocks(ctx, resource, level, write, box, data,
@@ -925,10 +929,10 @@ m9_texture_access(struct m9_context *ctx, struct m9_resource *resource,
    return write ?
       m9_texture_store(layout, resource->map, resource->size,
                        resource->texture_storage, level, 0, box,
-                       resource->base.format, data, stride) :
+                       texel, data, stride) :
       m9_texture_fetch(layout, resource->map, resource->size,
                        resource->texture_storage, level, 0, box,
-                       resource->base.format, data, stride);
+                       texel, data, stride);
 }
 
 static uint64_t
@@ -3800,6 +3804,7 @@ m9_fs_variant(struct m9_context *ctx, struct m9_fs_state *fs,
           !memcmp((*it)->inline_values, want->inline_values, inline_bytes) &&
           (*it)->depth_texture == want->depth_texture &&
           (*it)->face_flip == want->face_flip &&
+          (*it)->srgb_texture == want->srgb_texture &&
           !memcmp((*it)->swizzle, want->swizzle, sizeof(want->swizzle))) {
          struct m9_fs_variant **last =
             util_dynarray_last_ptr(&fs->variants, struct m9_fs_variant *);
@@ -3860,6 +3865,7 @@ m9_fs_variant(struct m9_context *ctx, struct m9_fs_state *fs,
    v->face_flip = want->face_flip;
    if (v->face_flip)
       m9_fs_flip_face(clone);
+   v->srgb_texture = want->srgb_texture;
    if (inline_bytes)
       m9_nir_inline_uniforms(clone, v->inline_values);
    {
@@ -3878,6 +3884,9 @@ m9_fs_variant(struct m9_context *ctx, struct m9_fs_state *fs,
       if (tex.swizzle_result)
          NIR_PASS(_, clone, nir_lower_tex, &tex);
    }
+   /* Decode before the view swizzle: it rewrites the uses after the fetch,
+    * the swizzle among them, so GL's swizzle reads the decoded texel. */
+   m9_fs_lower_srgb_texture(clone, v->srgb_texture);
    /* After the view swizzle: nir_lower_tex rewrites every use of the fetch,
     * this one included, so a channel pick before it reads the swizzled
     * value instead of the texel. */
@@ -4043,6 +4052,8 @@ m9_ctx_variant(struct m9_context *ctx, const char **reason,
          if (view->texture &&
              util_format_is_depth_or_stencil(view->texture->format))
             want.depth_texture |= BITFIELD_BIT(s);
+         if (util_format_is_srgb(view->format))
+            want.srgb_texture |= BITFIELD_BIT(s);
          m9_view_swizzle(view, want.swizzle[s]);
       } else {
          for (unsigned c = 0; c < 4; c++)

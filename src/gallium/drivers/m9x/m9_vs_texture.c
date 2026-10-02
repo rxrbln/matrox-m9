@@ -100,8 +100,11 @@ m9_vs_map_view(struct pipe_context *pctx, struct m9_vs_textures *vs,
          mapped = false;
          break;
       }
-      util_format_translate(view->format, vs->linear[slot] + mip_offsets[level],
-                            row_stride[level], 0, 0, res->format, src,
+      /* Bytes only: the draw module decodes an sRGB view itself. */
+      util_format_translate(util_format_linear(view->format),
+                            vs->linear[slot] + mip_offsets[level],
+                            row_stride[level], 0, 0,
+                            util_format_linear(res->format), src,
                             transfer->stride, 0, 0, box.width, box.height);
       pipe_texture_unmap(pctx, transfer);
    }

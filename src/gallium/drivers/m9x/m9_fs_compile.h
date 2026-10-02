@@ -118,7 +118,7 @@ enum m9_fs_blend_func {
 struct m9_fs_blend {
    uint8_t src, dst;              /* enum m9_fs_factor, R,G,B (and A) */
    /* The colour target stores sRGB, so the program encodes what it writes.
-    * Sampler-side decode is not implemented, so a blended sRGB draw -- which
+    * Destination decode is not implemented, so a blended sRGB draw -- which
     * would have to decode the destination -- is refused. */
    bool srgb;
    uint8_t func;                  /* enum m9_fs_blend_func */
@@ -191,6 +191,11 @@ bool m9_fs_coord_affine_same(const struct m9_fs_coord_affine *a,
 /* Rewrites the colour output with the vendor's sRGB transfer curve.  Exposed
  * so the offline test can check the lowering against a reference encode. */
 void m9_fs_lower_srgb(struct nir_shader *nir);
+
+/* Decodes the RGB of every fetch from a texture unit in the mask from sRGB
+ * to linear after the sample; alpha stays linear.  Run it after the view
+ * swizzle lowering so the swizzle reads the decoded texel. */
+void m9_fs_lower_srgb_texture(struct nir_shader *nir, uint32_t mask);
 
 /* Writes gl_FragColor into every one of this many colour targets, which is
  * what GL does with a shader that names only the one output. */

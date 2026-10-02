@@ -26,6 +26,8 @@ m9_texture_format(enum pipe_format format, struct m9_texture_format *out)
 {
    struct m9_texture_format info;
 
+   /* sRGB is stored as its UNORM twin and decoded by the program. */
+   format = util_format_linear(format);
    /* Beyond 4x4 only 32-bit placement is captured: narrower formats are
     * expanded into the RGBA8 (c8) or alpha-less RGB8 (c9) layout. */
    switch (format) {
@@ -90,6 +92,7 @@ m9_texture_compressed(enum pipe_format format, uint8_t *code,
 {
    uint8_t c, b;
 
+   format = util_format_linear(format);
    switch (format) {
    case PIPE_FORMAT_DXT1_RGB:
    case PIPE_FORMAT_DXT1_RGBA:
