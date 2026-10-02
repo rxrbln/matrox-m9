@@ -282,3 +282,47 @@ These gaps must remain visible in capability and execution gates:
 The Mesa loader maps PCI ID `0x0540` exclusively to `m9x`; the Parhelia map
 contains only the P-series IDs.  Keep `include/drm-uapi/m9x_drm.h`
 synchronized with the kernel UAPI header.
+
+## Fragment kill slot (2026-10-02)
+
+**Semantics (MEASURED on the M9148, traceable s = x patterns, 64² and 128²).**
+The GLSL kill slot of the `fs-discard-*` captures is
+`W0 = a[2:0]<<29 | 7f<<22 | 7f<<15 | 0x40<<8 | cls<<5 | 0x1c`,
+`W1 = 0xafdfc000 | aswz<<8 | a>>3`.  It kills where `(0 cls v)` holds for
+the scalar its a select picks (0 the first, 3 the second): cls 0 kills
+v > 0, 1 v <= 0, 2 v >= 0, 3 v < 0, 4 v == 0, 5 v != 0, all six checked
+with a 1.0/0.0 and with a signed operand.  It follows its operand and needs
+none of the predicate forms the vendor wraps around it (`fs-discard-cond`
+slots 3, 5 and 9); compare + kill is enough.  The fixed-function alpha kill
+(b operand, W1 `a3c0000f`) is a different instruction.  The vendor's
+`fs-discard-cond` program, injected unchanged with `M9X_FS_PROBE`, renders
+the right split on our stack.
+
+**Lane artifact (MEASURED, cause OPEN).**  With every kill form -- ours, the
+alpha-test template and the vendor's own program replayed -- up to three
+lanes of a 2x2 quad take the kill result of the quad two places earlier
+along the span; lane (x odd, y even) is never affected.  So the first pixels
+after a kill/keep transition are wrong (escapes at span starts, wrong kills
+just past a boundary): 60-160 pixels a 64² or 128² draw, a fixed count per
+program and geometry with varying positions.  The vendor's own
+`readback-rgba.bin` of `fs-discard-cond` and `fs-discard-all`
+(captures/m9x-vendor-glsl-programs-20260915) is exact, so some state differs.
+Ruled out, no change: r88 low bits, r89 `fe007ff8`, d7 `200068c0`,
+non-indexed draws, the transition block (`M9X_PASS_LOOP`), the BE knobs,
+FBO against window, small against tiled layout, a depth buffer, kill slot
+placement, ALU slots between compare and kill or after the kill,
+`hierarchical_z=N`, `async_submit=N` and display power.  Two kill slots make
+it worse.  Interpolation, a non-kill step colour and predicate-conditional
+output moves are exact.  What settles it: an MMIO snapshot of the engine and
+pixel-pipe configuration (`tools/m9x-mmio-snapshot.c`) taken while the vendor
+stack renders `fs-discard-cond` (the 2.6.30 image; nano cannot run it),
+diffed against our kernel's engine init.
+
+Because of it a shader that discards unconditionally skips its draws
+(exact: a discarded fragment updates nothing), and only conditional discards
+use the kill slot.
+
+**Do not write index `c7` mid-job.**  The vendor writes `c7 = 0x00003fc0`
+at the head of its jobs; emitting it in front of `88` in a raster range
+(allowed through `faa_probe_indices`) stalled the engine with a kernel
+stream timeout (2026-10-02, nano), which only a power cycle recovers.
