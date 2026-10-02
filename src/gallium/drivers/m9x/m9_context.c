@@ -6535,6 +6535,11 @@ m9_blit_convert(struct pipe_context *pctx, const struct pipe_blit_info *info)
    unsigned blocksize;
    uint8_t *scaled = NULL;
 
+   /* util_format_translate widens 8-bit channels by bit replication, GL
+    * rounds c * 1023 / 255; the float path of m9_blit_cpu does that. */
+   if (util_format_get_component_bits(info->dst.format,
+                                      UTIL_FORMAT_COLORSPACE_RGB, 0) > 8)
+      return false;
    if (info->mask != PIPE_MASK_RGBA || info->scissor_enable ||
        info->render_condition_enable || info->alpha_blend ||
        s->depth != 1 || d->depth != 1 || s->width <= 0 || s->height <= 0 ||
@@ -6792,8 +6797,16 @@ m9_blit_engine(struct pipe_context *pctx, const struct pipe_blit_info *info)
 {
    struct m9_context *ctx = m9_context(pctx);
    uint32_t skipped;
+   /* The engine's writes into a 10-bit surface are one code high in a
+    * quarter of the texels, by position (MEASURED, 8-bit RGBA uploads into
+    * GL_RGB10/GL_RGB10_A2), so an unscaled copy into one runs on the CPU. */
+   bool wide_copy =
+      util_format_get_component_bits(info->dst.format,
+                                     UTIL_FORMAT_COLORSPACE_RGB, 0) > 8 &&
+      info->src.box.width == info->dst.box.width &&
+      info->src.box.height == info->dst.box.height;
 
-   if (!m9_blit_on_engine ||
+   if (!m9_blit_on_engine || wide_copy ||
        !m9_engine_copy_ready(ctx, info->dst.resource, info->dst.level,
                              info->src.resource, info->src.level) ||
        info->dst.format != info->dst.resource->format ||
