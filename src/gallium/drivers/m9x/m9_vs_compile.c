@@ -820,6 +820,30 @@ emit_rsq(struct ctx *c, unsigned dst, const struct held *a)
    return true;
 }
 
+/* One scalar of a reciprocal or reciprocal square root, as a literal when
+ * the argument is one, else in the first scalar of a fresh temporary. */
+static bool
+scalar_chain(struct ctx *c, nir_op op, const struct held *a, struct held *out)
+{
+   int r;
+
+   if (a->kind == HELD_LIT) {
+      float v;
+
+      fold_transcendental(op, a->lit, &v);
+      *out = held_lit(v);
+      return true;
+   }
+   *out = held_temp(c);
+   r = reg_alloc_pinned(c, out);
+   if (r < 0)
+      return fail(c, "out of temporaries");
+   if (!(op == nir_op_frcp ? emit_rcp(c, r, a) : emit_rsq(c, r, a)))
+      return false;
+   memset(&c->holds[r][1], 0, sizeof(c->holds[r][1]));
+   return true;
+}
+
 /* exp2: the vendor's seed splits the argument, three slots evaluate a
  * minimax polynomial over the fraction and a multiply applies the scale the
  * seed split off.  CAPTURED in the vendor's own vertex programs ff-fog-exp
@@ -1391,7 +1415,15 @@ build_alu(struct ctx *c, nir_alu_instr *alu)
          break;
       case nir_op_frcp:
       case nir_op_frsq:
-         a0 = src_held(alu, 0, 0);
+         a0 = src_held(alu, 0, c0); a1 = src_held(alu, 0, c1);
+         if (!held_same(&a0, &a1)) {
+            /* The chain writes one scalar: each component runs it. */
+            if (!scalar_chain(c, alu->op, &a0, &x0) ||
+                !scalar_chain(c, alu->op, &a1, &x1) ||
+                !emit_unary(c, dst, VS_MOV, 0, &x0, &x1, true))
+               return false;
+            break;
+         }
          if (a0.kind == HELD_LIT) {
             struct held f;
             float v;
@@ -1415,31 +1447,47 @@ build_alu(struct ctx *c, nir_alu_instr *alu)
          const struct held *sel[3][2];
          int rr, rc, rm;
 
-         a0 = src_held(alu, 0, 0);
-         if (a0.kind == HELD_LIT) {
-            struct held f;
-            float v;
+         struct held hr1;
 
-            fold_transcendental(alu->op, a0.lit, &v);
-            f = held_lit(v);
-            if (!write_pair(c, dst, &f, &f))
+         a0 = src_held(alu, 0, c0); a1 = src_held(alu, 0, c1);
+         if (a0.kind == HELD_LIT && a1.kind == HELD_LIT) {
+            struct held f0, f1;
+            float v0, v1;
+
+            fold_transcendental(alu->op, a0.lit, &v0);
+            fold_transcendental(alu->op, a1.lit, &v1);
+            f0 = held_lit(v0);
+            f1 = held_lit(v1);
+            if (!write_pair(c, dst, &f0, &f1))
                return false;
             break;
          }
-         rr = reg_alloc_pinned(c, &hr);
-         rc = reg_alloc_pinned(c, &hc);
-         rm = reg_alloc_pinned(c, &hm);
-         if (rr < 0 || rc < 0 || rm < 0)
-            return fail(c, "out of temporaries");
-         if (!emit_rsq(c, rr, &a0))
-            return false;
-         memset(&c->holds[rr][1], 0, sizeof(c->holds[rr][1]));
-         if (!emit_cmp(c, rc, 4, &a0, &a0, &zero, &zero) ||
-             !emit_mul(c, rm, &hr, &hr, &a0, &a0))
+         if (!held_same(&a0, &a1)) {
+            if (!scalar_chain(c, nir_op_frsq, &a0, &hr) ||
+                !scalar_chain(c, nir_op_frsq, &a1, &hr1))
+               return false;
+            rc = reg_alloc_pinned(c, &hc);
+            rm = reg_alloc_pinned(c, &hm);
+            if (rc < 0 || rm < 0)
+               return fail(c, "out of temporaries");
+         } else {
+            rr = reg_alloc_pinned(c, &hr);
+            rc = reg_alloc_pinned(c, &hc);
+            rm = reg_alloc_pinned(c, &hm);
+            if (rr < 0 || rc < 0 || rm < 0)
+               return fail(c, "out of temporaries");
+            if (!emit_rsq(c, rr, &a0))
+               return false;
+            memset(&c->holds[rr][1], 0, sizeof(c->holds[rr][1]));
+            hr1 = hr;
+         }
+         if (!emit_cmp(c, rc, 4, &a0, &a1, &zero, &zero) ||
+             !emit_mul(c, rm, &hr, &hr1, &a0, &a1))
             return false;
          sel[0][0] = sel[0][1] = &hc;
          sel[1][0] = sel[1][1] = &hm;
-         sel[2][0] = sel[2][1] = &a0;
+         sel[2][0] = &a0;
+         sel[2][1] = &a1;
          if (!emit_sel(c, dst, 4, sel))
             return false;
          break;
@@ -1499,7 +1547,15 @@ build_alu(struct ctx *c, nir_alu_instr *alu)
          int rr;
 
          a0 = src_held(alu, 0, c0); a1 = src_held(alu, 0, c1);
-         b0 = src_held(alu, 1, 0);
+         b0 = src_held(alu, 1, c0); b1 = src_held(alu, 1, c1);
+         if (!held_same(&b0, &b1)) {
+            /* Each divisor component gets its own reciprocal. */
+            if (!scalar_chain(c, nir_op_frcp, &b0, &x0) ||
+                !scalar_chain(c, nir_op_frcp, &b1, &x1) ||
+                !emit_mul(c, dst, &a0, &a1, &x0, &x1))
+               return false;
+            break;
+         }
          if (b0.kind == HELD_LIT) {
             struct held f;
             float v;
