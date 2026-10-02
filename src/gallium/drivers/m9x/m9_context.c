@@ -1441,8 +1441,12 @@ m9_job_native(struct m9_context *ctx, const struct m9_job_key *key,
 
       pass->r89 = m9_record_89 && pass->writes_record ? m9_record_89 :
                   record_state ? 0xfe007ffcu : 0xfe207ff8u;
-      pass->a9 = record_state && m9_split_coverage ? 0x88ffff00u :
-                                                     0x08ffff00u;
+      /* The stencil test runs with the depth test, in the first pass. */
+      pass->a9 = (pass_depth && key->stencil ? key->stencil_a9 :
+                                               M9_STENCIL_A9_OFF) |
+                 (record_state && m9_split_coverage ? 0x80000000u : 0);
+      pass->aa = pass_depth && key->stencil ? key->stencil_aa :
+                                              M9_STENCIL_AA_OFF;
       pass->ae = record_state && m9_split_coverage ? 0x32444442u :
                                                      0x22444442u;
       pass->unit_count = p->texture_count;
@@ -2353,6 +2357,9 @@ m9_submit_job(struct m9_context *ctx)
          .draw_count = draws,
          .depth_control = key->depth_control,
          .depth_ef = key->depth_ef,
+         .stencil = key->stencil,
+         .stencil_a9 = key->stencil_a9,
+         .stencil_aa = key->stencil_aa,
          .color_mask = key->color_mask,
          .color_mask_hi = key->color_mask_hi,
          .color_count = key->single_target ? MIN2(ctx->color_count, 1u) :
@@ -2809,6 +2816,24 @@ m9_context_depth(struct m9_context *ctx)
 
    return zs && zs->hz && !zsbuf->level && zs->width == ctx->params.width &&
           zs->height == ctx->params.height ? zs : NULL;
+}
+
+static bool
+m9_zs_has_stencil(const struct m9_context *ctx)
+{
+   return util_format_has_stencil(
+      util_format_description(ctx->framebuffer.zsbuf.format));
+}
+
+static void
+m9_stencil_face(const struct pipe_stencil_state *s, uint8_t ref,
+                struct m9_stencil_face *f)
+{
+   *f = (struct m9_stencil_face) {
+      .func = s->func, .fail_op = s->fail_op, .zfail_op = s->zfail_op,
+      .zpass_op = s->zpass_op, .ref = ref, .valuemask = s->valuemask,
+      .writemask = s->writemask,
+   };
 }
 
 static bool
@@ -3713,7 +3738,7 @@ m9_job_key_current(struct m9_context *ctx, struct m9_job_key *key)
    const struct pipe_rasterizer_state *rast = ctx->rasterizer;
    struct m9_resource *zs;
    unsigned colormask;
-   bool test, write;
+   bool test, write, stencil;
 
    if (ctx->lost)
       return m9_skip_reason(ctx, "the context is lost; draw skipped");
@@ -3728,15 +3753,35 @@ m9_job_key_current(struct m9_context *ctx, struct m9_job_key *key)
       test = false;
    }
    write = test && dsa->depth_writemask;
-   if (dsa && (dsa->stencil[0].enabled || dsa->alpha_enabled))
-      m9_warn_once(ctx, M9_WARN_STENCIL, "stencil and alpha test are not "
-                   "implemented");
+   stencil = dsa && dsa->stencil[0].enabled;
+   if (stencil && (!zs || !m9_zs_has_stencil(ctx))) {
+      m9_warn_once(ctx, M9_WARN_STENCIL,
+                   "stencil test needs a D24S8 attachment of the target "
+                   "size; drawing without stencil");
+      stencil = false;
+   }
+   /* st lowers the alpha test into the shader (caps->alpha_test). */
+   if (dsa && dsa->alpha_enabled)
+      m9_warn_once(ctx, M9_WARN_STENCIL, "a DSA alpha test is ignored");
    memset(key, 0, sizeof(*key));
    key->depth = zs ? zs : ctx->target_depth;
    key->aux = zs ? zs->hz : ctx->target_aux;
    key->depth_control = m9_depth_control(test, write,
                                          dsa ? dsa->depth_func : PIPE_FUNC_LESS);
-   key->depth_ef = m9_depth_ef(test, write);
+   key->depth_ef = m9_depth_ef(test || stencil, write);
+   key->stencil_a9 = M9_STENCIL_A9_OFF;
+   key->stencil_aa = M9_STENCIL_AA_OFF;
+   if (stencil) {
+      struct m9_stencil_face front, back;
+      bool two = dsa->stencil[1].enabled;
+
+      m9_stencil_face(&dsa->stencil[0], ctx->stencil_ref.ref_value[0], &front);
+      m9_stencil_face(&dsa->stencil[1], ctx->stencil_ref.ref_value[1], &back);
+      key->stencil = true;
+      m9_stencil_words(key->depth_control, &front, two ? &back : NULL,
+                       !rast || rast->front_ccw, &key->depth_control,
+                       &key->stencil_a9, &key->stencil_aa);
+   }
    colormask = blend ? blend->rt[0].colormask : PIPE_MASK_RGBA;
    key->color_mask = m9_color_mask(colormask);
    key->color_mask_hi = 0xffffffffu;
@@ -5510,10 +5555,12 @@ m9_scissor_full(const struct m9_context *ctx,
                  s->maxy >= ctx->params.height);
 }
 
-/* The vendor rectangle-draw clear: a full-target quad inside the scissor. */
+/* The vendor rectangle-draw clear: a full-target quad inside the scissor.
+ * Stencil is replaced through the stencil unit, smask as its write mask. */
 static void
 m9_clear_quad(struct m9_context *ctx, const struct pipe_scissor_state *scissor,
-              unsigned colormask, const float *rgba, bool depth, double z)
+              unsigned colormask, const float *rgba, bool depth, double z,
+              bool stencil, unsigned sref, uint8_t smask)
 {
    const float w = ctx->params.width, h = ctx->params.height;
    const float corner[4][2] = { { 0, 0 }, { w, 0 }, { w, h }, { 0, h } };
@@ -5525,11 +5572,26 @@ m9_clear_quad(struct m9_context *ctx, const struct pipe_scissor_state *scissor,
    if (ctx->lost || !ctx->params_valid)
       return;
    depth = depth && zs;
+   stencil = stencil && zs && smask && m9_zs_has_stencil(ctx);
    memset(&key, 0, sizeof(key));
    key.depth = zs ? zs : ctx->target_depth;
    key.aux = zs ? zs->hz : ctx->target_aux;
    key.depth_control = m9_depth_control(depth, depth, PIPE_FUNC_ALWAYS);
-   key.depth_ef = m9_depth_ef(depth, depth);
+   key.depth_ef = m9_depth_ef(depth || stencil, depth);
+   key.stencil_a9 = M9_STENCIL_A9_OFF;
+   key.stencil_aa = M9_STENCIL_AA_OFF;
+   if (stencil) {
+      const struct m9_stencil_face face = {
+         .func = PIPE_FUNC_ALWAYS, .fail_op = PIPE_STENCIL_OP_REPLACE,
+         .zfail_op = PIPE_STENCIL_OP_REPLACE,
+         .zpass_op = PIPE_STENCIL_OP_REPLACE,
+         .ref = sref & 0xff, .valuemask = 0xff, .writemask = smask,
+      };
+
+      key.stencil = true;
+      m9_stencil_words(key.depth_control, &face, NULL, true,
+                       &key.depth_control, &key.stencil_a9, &key.stencil_aa);
+   }
    key.color_mask = m9_color_mask(colormask);
    /* Only a multiple-target framebuffer needs the flag, so a single-target
     * clear keeps the key it had and still merges with the draws around it. */
@@ -5575,6 +5637,21 @@ m9_clear_depth_cpu(struct m9_resource *zs, unsigned buffers, double depth,
    }
    if ((buffers & PIPE_CLEAR_DEPTH) && zs->hz)
       m9_fill_dwords(zs->hz, M9_HZ_CLEAR);
+}
+
+static void
+m9_clear_stencil_rect_cpu(struct m9_resource *zs, unsigned x, unsigned y,
+                          unsigned width, unsigned height, unsigned stencil)
+{
+   width = MIN2(width, zs->width - MIN2(x, zs->width));
+   height = MIN2(height, zs->height - MIN2(y, zs->height));
+   for (unsigned row = y; row < y + height; row++) {
+      uint32_t *words = (uint32_t *)zs->map +
+                        (size_t)row * zs->row_span + x;
+
+      for (unsigned col = 0; col < width; col++)
+         words[col] = (words[col] & ~0xffu) | (stencil & 0xff);
+   }
 }
 
 static void m9_clear_render_target(struct pipe_context *pctx,
@@ -5634,15 +5711,18 @@ m9_clear_locked(struct pipe_context *pctx, unsigned buffers,
    bool full = m9_scissor_full(ctx, scissor);
 
    bool colour = (buffers & PIPE_CLEAR_COLOR0) && cbuf;
+   bool zclear = zs && (buffers & PIPE_CLEAR_DEPTH);
+   bool sclear = zs && (buffers & PIPE_CLEAR_STENCIL) && stencil_clear_mask &&
+                 m9_zs_has_stencil(ctx);
+   const struct pipe_scissor_state *rect = full ? NULL : scissor;
 
    if (!ctx->params_valid || m9_no_clear)
       return;
-   /* One quad writes both attachments: a clear of colour and depth is what
+   /* One quad writes every attachment: a clear of colour and depth is what
     * a frame starts with, and two full-screen quads is twice the fill. */
-   if (colour && zs && (buffers & PIPE_CLEAR_DEPTH) &&
-       !(buffers & PIPE_CLEAR_STENCIL)) {
-      m9_clear_quad(ctx, full ? NULL : scissor, color_clear_mask, color->f,
-                    true, depth);
+   if (colour && (zclear || sclear)) {
+      m9_clear_quad(ctx, rect, color_clear_mask, color->f, zclear, depth,
+                    sclear, stencil, stencil_clear_mask);
       m9_clear_color_extra(pctx, buffers, color_clear_mask, scissor, color,
                            full);
       return;
@@ -5652,8 +5732,8 @@ m9_clear_locked(struct pipe_context *pctx, unsigned buffers,
     * uncached writes per frame and reaches past the drawable into the rest
     * of a shared screen surface. */
    if (colour)
-      m9_clear_quad(ctx, full ? NULL : scissor, color_clear_mask,
-                    color->f, false, 0);
+      m9_clear_quad(ctx, rect, color_clear_mask, color->f, false, 0,
+                    false, 0, 0);
    m9_clear_color_extra(pctx, buffers, color_clear_mask, scissor, color,
                         full);
    if (!(buffers & PIPE_CLEAR_DEPTHSTENCIL))
@@ -5663,23 +5743,11 @@ m9_clear_locked(struct pipe_context *pctx, unsigned buffers,
                    "of the target size");
       return;
    }
-   /* The quad clear runs on the GPU; only stencil still needs the CPU. */
-   if (!(buffers & PIPE_CLEAR_STENCIL) && (buffers & PIPE_CLEAR_DEPTH)) {
-      /* The quad writes depth through the engine, which keeps the
-       * hierarchical buffer with it; only a CPU depth write has to reset it
-       * by hand.  Doing it here cost a stall and a megabyte of uncached
-       * writes per frame. */
-      m9_clear_quad(ctx, full ? NULL : scissor, 0, zero, true, depth);
-   } else if (full && (!(buffers & PIPE_CLEAR_STENCIL) ||
-                       stencil_clear_mask == 0xff)) {
-      m9_context_sync(ctx);
-      m9_clear_depth_cpu(zs, buffers, depth, stencil);
-   } else if (buffers & PIPE_CLEAR_DEPTH) {
-      m9_clear_quad(ctx, full ? NULL : scissor, 0, zero, true, depth);
-      if (buffers & PIPE_CLEAR_STENCIL)
-         m9_warn_once(ctx, M9_WARN_CLEAR, "partial stencil clears are not "
-                      "implemented");
-   }
+   /* The engine keeps the hierarchical buffer with the depth it writes;
+    * only a CPU depth write would have to reset it by hand. */
+   if (zclear || sclear)
+      m9_clear_quad(ctx, rect, 0, zero, zclear, depth, sclear, stencil,
+                    stencil_clear_mask);
 }
 
 static void
@@ -5753,16 +5821,39 @@ m9_clear_depth_stencil(struct pipe_context *pctx, struct pipe_surface *dst,
    struct m9_resource *resource = m9_res(dst->texture);
 
    (void)render_condition_enabled;
-   if (dst->level || !resource->map)
+   if (dst->level || !resource->map || !width || !height)
       return;
-   m9_context_sync(ctx);
-   if (dstx || dsty || width < resource->width || height < resource->height ||
-       resource->format != M9_DEPTH_FORMAT_D24S8) {
-      m9_warn_once(ctx, M9_WARN_CLEAR, "partial or non-D24S8 depth clears "
-                   "are not implemented");
+   /* The bound attachment clears on the engine, inside the rectangle. */
+   if (m9_context_depth(ctx) == resource && ctx->params_valid &&
+       dst->format == ctx->framebuffer.zsbuf.format) {
+      const struct pipe_scissor_state rect = {
+         .minx = dstx, .miny = dsty,
+         .maxx = dstx + width, .maxy = dsty + height,
+      };
+      static const float zero[4];
+
+      m9_clear_quad(ctx, &rect, 0, zero, clear_flags & PIPE_CLEAR_DEPTH,
+                    depth, clear_flags & PIPE_CLEAR_STENCIL, stencil, 0xff);
       return;
    }
-   m9_clear_depth_cpu(resource, clear_flags, depth, stencil);
+   if (resource->format != M9_DEPTH_FORMAT_D24S8) {
+      m9_warn_once(ctx, M9_WARN_CLEAR, "a non-D24S8 depth clear is not "
+                   "implemented");
+      return;
+   }
+   m9_context_sync(ctx);
+   if (!dstx && !dsty && width >= resource->width &&
+       height >= resource->height) {
+      m9_clear_depth_cpu(resource, clear_flags, depth, stencil);
+      return;
+   }
+   /* The low byte is stencil, which the hierarchical buffer does not hold;
+    * a partial CPU depth write would leave that buffer stale. */
+   if (clear_flags & PIPE_CLEAR_STENCIL)
+      m9_clear_stencil_rect_cpu(resource, dstx, dsty, width, height, stencil);
+   if (clear_flags & PIPE_CLEAR_DEPTH)
+      m9_warn_once(ctx, M9_WARN_CLEAR, "a partial depth clear of an unbound "
+                   "surface is not implemented");
 }
 
 /* The three storage kinds m9_texture_bind_view accepts for a plane: a tiled
@@ -7040,8 +7131,7 @@ m9_set_blend_color(struct pipe_context *pctx,
 static void
 m9_set_stencil_ref(struct pipe_context *pctx, const struct pipe_stencil_ref ref)
 {
-   (void)pctx;
-   (void)ref;
+   m9_context(pctx)->stencil_ref = ref;
 }
 
 static void

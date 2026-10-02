@@ -586,7 +586,10 @@ m9_emit_raster_range(struct m9_batch *batch, const struct m9_draw_job *job,
    EMIT(R(0xba, job->aux, 0, DEPTH), V(0xbb, p->aux_desc));
    EMIT(R(0xbe, job->be, 0, STREAM));
    EMIT(V(0xa8, pass ? pass->depth_control : job->depth_control),
-        V(0xa9, pass ? pass->a9 : 0x08ffff00u), V(0xaa, 0x00ffff00));
+        V(0xa9, pass ? pass->a9 :
+                job->stencil ? job->stencil_a9 : M9_STENCIL_A9_OFF),
+        V(0xaa, pass ? pass->aa :
+                job->stencil ? job->stencil_aa : M9_STENCIL_AA_OFF));
    /* ab carries targets 0 and 1, ac targets 2 and 3 (CAPTURED: one target
     * leaves ab's upper half stale, four write ffffffff in both). */
    EMIT(V(0xab, pass && pass->writes_record ? 0xffffffffu : job->color_mask),

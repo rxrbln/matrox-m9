@@ -180,6 +180,21 @@ int m9_vertex_decl_init(struct m9_vertex_decl *decl,
                         unsigned color_components);
 uint32_t m9_depth_control(bool test, bool write, unsigned pipe_func);
 uint32_t m9_depth_ef(bool test, bool write);
+
+/* a9/aa with the stencil test off (CAPTURED, vendor GL baseline). */
+#define M9_STENCIL_A9_OFF 0x08ffff00u
+#define M9_STENCIL_AA_OFF 0x00ffff00u
+
+/* One stencil face: PIPE_FUNC_* and PIPE_STENCIL_OP_* values. */
+struct m9_stencil_face {
+   unsigned func, fail_op, zfail_op, zpass_op;
+   uint8_t ref, valuemask, writemask;
+};
+
+/* Adds the stencil test to a depth a8; back NULL is one-sided. */
+void m9_stencil_words(uint32_t depth_a8, const struct m9_stencil_face *front,
+                      const struct m9_stencil_face *back, bool front_ccw,
+                      uint32_t *a8, uint32_t *a9, uint32_t *aa);
 uint32_t m9_cull_ef(unsigned pipe_cull_face, bool front_ccw);
 uint32_t m9_color_mask(unsigned pipe_colormask);
 void m9_scissor_words(uint32_t minx, uint32_t miny, uint32_t maxx,

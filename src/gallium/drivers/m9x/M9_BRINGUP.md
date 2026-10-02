@@ -47,6 +47,15 @@ interpolation (records carry w = 1), render sizes other than 320x240 are
 covered by the measured formulas but not yet run through Mesa, surface access
 excludes targets with both sides <= 64, and depth readback is raw tiled data.
 
+Stencil (2026-10-02) is the fixed-function depth unit's: `a8` bit 5 enables
+it, bit 6 the second face, function/sfail/zfail/zpass at bits 9:7..18:16 for
+clockwise faces and 21:19..30:28 for counter-clockwise ones, `a9`/`aa` the
+ref/value-mask/write-mask bytes of those faces, `ef` 0x7000 even without the
+depth test (CAPTURED, vendor GL fixed-state and gl15 fragops corpora, whose
+readbacks pass).  `m9_stencil_words` packs it; clears replace stencil
+through the same quad as depth.  The alpha test is lowered by st into the
+fragment program (`M9_FS_CONST_ALPHA_REF`).
+
 ## Implemented foundation
 
 The following userspace foundation is ready for the first executable

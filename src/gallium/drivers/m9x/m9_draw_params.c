@@ -215,6 +215,58 @@ m9_depth_ef(bool test, bool write)
    return test ? (write ? 0x0000f000 : 0x00007000) : 0;
 }
 
+/* Function code, then sfail, zfail and zpass codes, three bits each. */
+static uint32_t
+m9_stencil_quartet(const struct m9_stencil_face *f)
+{
+   static const uint8_t op[8] = {
+      [PIPE_STENCIL_OP_KEEP] = 0, [PIPE_STENCIL_OP_REPLACE] = 1,
+      [PIPE_STENCIL_OP_INVERT] = 2, [PIPE_STENCIL_OP_ZERO] = 3,
+      [PIPE_STENCIL_OP_INCR_WRAP] = 4, [PIPE_STENCIL_OP_DECR_WRAP] = 5,
+      [PIPE_STENCIL_OP_INCR] = 6, [PIPE_STENCIL_OP_DECR] = 7,
+   };
+
+   return (m9_depth_control(true, false, f->func) >> 2 & 7) |
+          (uint32_t)op[f->fail_op & 7] << 3 |
+          (uint32_t)op[f->zfail_op & 7] << 6 |
+          (uint32_t)op[f->zpass_op & 7] << 9;
+}
+
+static uint32_t
+m9_stencil_triplet(const struct m9_stencil_face *f)
+{
+   return (uint32_t)f->writemask << 16 | (uint32_t)f->valuemask << 8 | f->ref;
+}
+
+/* a8 bit 5 enables the test, bit 6 the second face; the quartet at bit 7
+ * and a9 serve clockwise faces, the one at bit 19 and aa counter-clockwise
+ * faces, in the winding m9_cull_ef culls by (CAPTURED, vendor GL
+ * fixed-state cases 29..31, 45..59, 85/86 and the gl15 two-sided cases). */
+void
+m9_stencil_words(uint32_t depth_a8, const struct m9_stencil_face *front,
+                 const struct m9_stencil_face *back, bool front_ccw,
+                 uint32_t *a8, uint32_t *a9, uint32_t *aa)
+{
+   const struct m9_stencil_face *cw = front, *ccw = NULL;
+
+   *a8 = depth_a8;
+   *a9 = M9_STENCIL_A9_OFF;
+   *aa = M9_STENCIL_AA_OFF;
+   if (!front)
+      return;
+   if (back) {
+      cw = front_ccw ? back : front;
+      ccw = front_ccw ? front : back;
+   }
+   /* One-sided keeps the second quartet at ALWAYS/KEEP, as the vendor. */
+   *a8 = (depth_a8 & 0x1fu) | 0x20u | (ccw ? 0x40u : 0) |
+         m9_stencil_quartet(cw) << 7 |
+         (ccw ? m9_stencil_quartet(ccw) : 7u) << 19;
+   *a9 = 0x08000000u | m9_stencil_triplet(cw);
+   if (ccw)
+      *aa = m9_stencil_triplet(ccw);
+}
+
 uint32_t
 m9_cull_ef(unsigned pipe_cull_face, bool front_ccw)
 {

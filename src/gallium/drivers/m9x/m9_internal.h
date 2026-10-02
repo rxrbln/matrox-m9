@@ -303,6 +303,8 @@ struct m9_job_key {
    const struct m9_fs_state *fs;   /* native fragment program or NULL */
    const struct m9_fs_variant *variant;  /* its program for the blend state */
    uint32_t depth_control, depth_ef, color_mask, clip_min, clip_max;
+   bool stencil;
+   uint32_t stencil_a9, stencil_aa;
    /* Raster ac: the write masks of colour targets 2 and 3. */
    uint32_t color_mask_hi;
    /* The job binds colour target 0 alone, whatever the framebuffer holds.
@@ -462,6 +464,7 @@ struct m9_context {
    struct m9_velems *velems;
    const struct pipe_rasterizer_state *rasterizer;
    const struct pipe_depth_stencil_alpha_state *dsa;
+   struct pipe_stencil_ref stencil_ref;
    const struct pipe_blend_state *blend;
    struct pipe_scissor_state scissor;
    struct m9_fs_state *fs;

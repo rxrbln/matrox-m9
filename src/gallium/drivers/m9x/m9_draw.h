@@ -57,6 +57,7 @@ struct m9_raster_pass {
    uint32_t sequence_ef;      /* raster ef bits 10:9: this pass's place */
    unsigned pass_index;       /* its place in the sequence, across submissions */
    uint32_t a9, ae;           /* coverage words, which differ on a record pass */
+   uint32_t aa;               /* second stencil face */
    uint32_t r89;              /* raster 89: a render format class per target */
    unsigned route_count;
    struct m9_pass_route routes[M9_TEXTURE_MAX_UNITS];
@@ -108,6 +109,9 @@ struct m9_draw_job {
    unsigned draw_count;
    uint32_t depth_control;    /* raster a8 */
    uint32_t depth_ef;         /* raster ef depth bits */
+   /* Raster a9/aa stencil faces; unset emits the test-off words. */
+   bool stencil;
+   uint32_t stencil_a9, stencil_aa;
    uint32_t color_mask;       /* raster ab: target 0 low, target 1 high */
    uint32_t color_mask_hi;    /* raster ac: target 2 low, target 3 high */
    /* Render format class of each bound target, packed into raster 89 by
