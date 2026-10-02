@@ -6212,6 +6212,201 @@ m9_blit_convert(struct pipe_context *pctx, const struct pipe_blit_info *info)
    return ok;
 }
 
+/* The source coordinate of destination column (or row) i: GL samples a blit
+ * at the pixel centre mapped through the two boxes, mirrored when their
+ * extents differ in sign. */
+static float
+m9_blit_coord(int i, int d0, int dsize, int s0, int ssize)
+{
+   return s0 + ((float)i + 0.5f - d0) * (float)ssize / (float)dsize;
+}
+
+static int
+m9_blit_tap(float u, int limit)
+{
+   return CLAMP((int)floorf(u), 0, limit - 1);
+}
+
+/* Inclusive source range a destination span [a, b) reads, one texel wider
+ * on each side for a filtered blit. */
+static void
+m9_blit_src_span(int a, int b, int d0, int dsize, int s0, int ssize,
+                 int limit, bool linear, int *lo, int *hi)
+{
+   float u0 = m9_blit_coord(a, d0, dsize, s0, ssize);
+   float u1 = m9_blit_coord(b - 1, d0, dsize, s0, ssize);
+   int pad = linear ? 1 : 0;
+
+   *lo = m9_blit_tap(MIN2(u0, u1) - pad, limit);
+   *hi = m9_blit_tap(MAX2(u0, u1) + pad, limit);
+}
+
+/*
+ * Every blit the engine and the copy paths refuse, on the CPU: depth and
+ * stencil, partial channel masks, scissors, mirroring and scaling.  The
+ * source rectangle is unpacked first, so a copy within one surface (CopyPixels)
+ * reads the old content however the two boxes overlap.
+ */
+static bool
+m9_blit_cpu(struct pipe_context *pctx, const struct pipe_blit_info *info)
+{
+   const struct pipe_box *s = &info->src.box, *d = &info->dst.box;
+   enum pipe_format sf = info->src.format, df = info->dst.format;
+   struct pipe_resource *sres = info->src.resource, *dres = info->dst.resource;
+   int sw = u_minify(sres->width0, info->src.level);
+   int sh = u_minify(sres->height0, info->src.level);
+   int dw = u_minify(dres->width0, info->dst.level);
+   int dh = u_minify(dres->height0, info->dst.level);
+   bool zs = info->mask & (PIPE_MASK_Z | PIPE_MASK_S);
+   bool do_z = (info->mask & PIPE_MASK_Z) &&
+               util_format_has_depth(util_format_description(sf)) &&
+               util_format_has_depth(util_format_description(df));
+   bool do_s = (info->mask & PIPE_MASK_S) &&
+               util_format_has_stencil(util_format_description(sf)) &&
+               util_format_has_stencil(util_format_description(df));
+   unsigned cmask = info->mask & PIPE_MASK_RGBA;
+   bool linear = info->filter == PIPE_TEX_FILTER_LINEAR && !zs &&
+                 !util_format_is_pure_integer(sf);
+   int x0 = MIN2(d->x, d->x + d->width), x1 = MAX2(d->x, d->x + d->width);
+   int y0 = MIN2(d->y, d->y + d->height), y1 = MAX2(d->y, d->y + d->height);
+   int sx0, sx1, sy0, sy1, w, h, rw, rh;
+   struct pipe_transfer *st = NULL, *dt = NULL;
+   uint32_t *src = NULL, *row = NULL, *z = NULL;
+   uint8_t *sbuf = NULL, *s8 = NULL;
+   const uint8_t *smap;
+   uint8_t *dmap;
+   bool ok = false;
+
+   if (s->depth != 1 || d->depth != 1 || !s->width || !s->height ||
+       !d->width || !d->height || info->swizzle_enable ||
+       info->alpha_blend || (zs && cmask) || (!zs && !cmask) ||
+       (zs && !do_z && !do_s) ||
+       util_format_is_compressed(sf) || util_format_is_compressed(df) ||
+       (!zs && (util_format_is_depth_or_stencil(sf) ||
+                util_format_is_depth_or_stencil(df) ||
+                util_format_is_pure_integer(sf) !=
+                util_format_is_pure_integer(df))))
+      return false;
+   x0 = MAX2(x0, 0);
+   y0 = MAX2(y0, 0);
+   x1 = MIN2(x1, dw);
+   y1 = MIN2(y1, dh);
+   if (info->scissor_enable) {
+      x0 = MAX2(x0, (int)info->scissor.minx);
+      y0 = MAX2(y0, (int)info->scissor.miny);
+      x1 = MIN2(x1, (int)info->scissor.maxx);
+      y1 = MIN2(y1, (int)info->scissor.maxy);
+   }
+   if (x0 >= x1 || y0 >= y1)
+      return true;
+   w = x1 - x0;
+   h = y1 - y0;
+   m9_blit_src_span(x0, x1, d->x, d->width, s->x, s->width, sw, linear,
+                    &sx0, &sx1);
+   m9_blit_src_span(y0, y1, d->y, d->height, s->y, s->height, sh, linear,
+                    &sy0, &sy1);
+   rw = sx1 - sx0 + 1;
+   rh = sy1 - sy0 + 1;
+
+   smap = pipe_texture_map(pctx, sres, info->src.level, s->z, PIPE_MAP_READ,
+                           sx0, sy0, rw, rh, &st);
+   if (!smap)
+      return false;
+   /* The source as unpacked words: four per texel for colour, one 32-bit
+    * normalised depth and one stencil byte for depth/stencil. */
+   if (zs) {
+      z = do_z ? MALLOC((size_t)rw * rh * 4) : NULL;
+      sbuf = do_s ? MALLOC((size_t)rw * rh) : NULL;
+      ok = (!do_z || z) && (!do_s || sbuf);
+      for (int y = 0; ok && y < rh; y++) {
+         const uint8_t *p = smap + (size_t)y * st->stride;
+
+         if (do_z)
+            util_format_unpack_z_32unorm(sf, z + (size_t)y * rw, p, rw);
+         if (do_s)
+            util_format_unpack_s_8uint(sf, sbuf + (size_t)y * rw, p, rw);
+      }
+   } else {
+      src = MALLOC((size_t)rw * rh * 16);
+      ok = src;
+      if (ok)
+         util_format_unpack_rgba_rect(sf, src, rw * 16, smap, st->stride,
+                                      rw, rh);
+   }
+   pipe_texture_unmap(pctx, st);
+   /* Read back what the blit keeps: the other half of a packed depth/stencil
+    * texel, or the channels outside the mask. */
+   dmap = ok ? pipe_texture_map(pctx, dres, info->dst.level, d->z,
+                                PIPE_MAP_READ_WRITE, x0, y0, w, h, &dt) : NULL;
+   ok = dmap != NULL;
+   row = ok ? MALLOC((size_t)w * 16) : NULL;
+   s8 = ok && do_s ? MALLOC(w) : NULL;
+   ok = row && (!do_s || s8);
+   for (int y = 0; ok && y < h; y++) {
+      uint8_t *p = dmap + (size_t)y * dt->stride;
+      float v = m9_blit_coord(y0 + y, d->y, d->height, s->y, s->height);
+      int ty = m9_blit_tap(v, sh) - sy0;
+
+      if (zs) {
+         for (int x = 0; x < w; x++) {
+            float u = m9_blit_coord(x0 + x, d->x, d->width, s->x, s->width);
+            size_t i = (size_t)ty * rw + m9_blit_tap(u, sw) - sx0;
+
+            if (do_z)
+               row[x] = z[i];
+            if (do_s)
+               s8[x] = sbuf[i];
+         }
+         if (do_z)
+            util_format_pack_z_32unorm(df, p, row, w);
+         if (do_s)
+            util_format_pack_s_8uint(df, p, s8, w);
+         continue;
+      }
+      if (cmask != PIPE_MASK_RGBA)
+         util_format_unpack_rgba(df, row, p, w);
+      for (int x = 0; x < w; x++) {
+         float u = m9_blit_coord(x0 + x, d->x, d->width, s->x, s->width);
+         uint32_t texel[4];
+
+         if (linear) {
+            /* Bilinear with the edge clamped, on unpacked floats. */
+            float fu = u - 0.5f, fv = v - 0.5f;
+            int ax = m9_blit_tap(fu, sw) - sx0, ay = m9_blit_tap(fv, sh) - sy0;
+            int bx = m9_blit_tap(fu + 1.0f, sw) - sx0;
+            int by = m9_blit_tap(fv + 1.0f, sh) - sy0;
+            float wx = fu - floorf(fu), wy = fv - floorf(fv);
+            const float *f = (const float *)src;
+
+            for (unsigned c = 0; c < 4; c++) {
+               float t = f[((size_t)ay * rw + ax) * 4 + c] * (1 - wx) +
+                         f[((size_t)ay * rw + bx) * 4 + c] * wx;
+               float b = f[((size_t)by * rw + ax) * 4 + c] * (1 - wx) +
+                         f[((size_t)by * rw + bx) * 4 + c] * wx;
+               float r = t * (1 - wy) + b * wy;
+
+               memcpy(&texel[c], &r, 4);
+            }
+         } else {
+            memcpy(texel, src + ((size_t)ty * rw + m9_blit_tap(u, sw) - sx0) * 4,
+                   16);
+         }
+         for (unsigned c = 0; c < 4; c++)
+            if (cmask & (1u << c))
+               row[x * 4 + c] = texel[c];
+      }
+      util_format_pack_rgba(df, p, row, w);
+   }
+   if (dt)
+      pipe_texture_unmap(pctx, dt);
+   FREE(s8);
+   FREE(row);
+   FREE(src);
+   FREE(z);
+   FREE(sbuf);
+   return ok;
+}
+
 /* The engine samples the source, so it filters, scales and scissors; the CPU
  * path does none of those and silently sampled a filtered blit nearest. */
 static bool
@@ -6482,9 +6677,10 @@ m9_blit(struct pipe_context *pctx, const struct pipe_blit_info *info)
 {
    if (!m9_blit_engine(pctx, info) &&
        !util_try_blit_via_copy_region(pctx, info, false) &&
-       !m9_blit_convert(pctx, info))
-      m9_warn_once(m9_context(pctx), M9_WARN_BLIT, "scaled, scissored or "
-                   "filtered blits are not implemented");
+       !m9_blit_convert(pctx, info) &&
+       !m9_blit_cpu(pctx, info))
+      m9_warn_once(m9_context(pctx), M9_WARN_BLIT, "blit of a compressed, "
+                   "swizzled or blended kind is not implemented");
 }
 
 static void
