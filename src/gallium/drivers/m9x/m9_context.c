@@ -2919,6 +2919,13 @@ m9_fs_resolve_consts(struct m9_context *ctx, const struct m9_fs_variant *fs,
             memcpy(&v, data + k->offset[0], sizeof(v));
             v *= 256.0f;
             break;
+         case M9_FS_CONST_BLEND_COLOR:
+         case M9_FS_CONST_BLEND_COLOR_INV:
+            /* GL clamps the colour for a fixed-point target. */
+            v = SATURATE(ctx->blend_color.color[k->offset[lane] & 3]);
+            if (k->kind == M9_FS_CONST_BLEND_COLOR_INV)
+               v = 1.0f - v;
+            break;
          }
          util_dynarray_append_typed(out, float, v);
       }
@@ -3244,6 +3251,11 @@ m9_blend_factor(enum pipe_blendfactor f, uint8_t *out)
       { PIPE_BLENDFACTOR_INV_SRC_COLOR, M9_FS_INV_SRC_COLOR },
       { PIPE_BLENDFACTOR_DST_COLOR, M9_FS_DST_COLOR },
       { PIPE_BLENDFACTOR_INV_DST_COLOR, M9_FS_INV_DST_COLOR },
+      { PIPE_BLENDFACTOR_CONST_COLOR, M9_FS_CONST_COLOR },
+      { PIPE_BLENDFACTOR_INV_CONST_COLOR, M9_FS_INV_CONST_COLOR },
+      { PIPE_BLENDFACTOR_CONST_ALPHA, M9_FS_CONST_ALPHA },
+      { PIPE_BLENDFACTOR_INV_CONST_ALPHA, M9_FS_INV_CONST_ALPHA },
+      { PIPE_BLENDFACTOR_SRC_ALPHA_SATURATE, M9_FS_SRC_ALPHA_SATURATE },
    };
 
    for (unsigned i = 0; i < ARRAY_SIZE(map); i++) {
@@ -3255,7 +3267,22 @@ m9_blend_factor(enum pipe_blendfactor f, uint8_t *out)
    return false;
 }
 
-/* The alpha lane of SRC_COLOR is SRC_ALPHA. */
+static bool
+m9_blend_func(enum pipe_blend_func f, uint8_t *out)
+{
+   switch (f) {
+   case PIPE_BLEND_ADD: *out = M9_FS_FUNC_ADD; return true;
+   case PIPE_BLEND_SUBTRACT: *out = M9_FS_FUNC_SUBTRACT; return true;
+   case PIPE_BLEND_REVERSE_SUBTRACT:
+      *out = M9_FS_FUNC_REVERSE_SUBTRACT;
+      return true;
+   case PIPE_BLEND_MIN: *out = M9_FS_FUNC_MIN; return true;
+   case PIPE_BLEND_MAX: *out = M9_FS_FUNC_MAX; return true;
+   default: return false;
+   }
+}
+
+/* What a factor means in the alpha channel. */
 static enum pipe_blendfactor
 m9_alpha_equivalent(enum pipe_blendfactor f)
 {
@@ -3264,53 +3291,90 @@ m9_alpha_equivalent(enum pipe_blendfactor f)
    case PIPE_BLENDFACTOR_INV_SRC_COLOR: return PIPE_BLENDFACTOR_INV_SRC_ALPHA;
    case PIPE_BLENDFACTOR_DST_COLOR: return PIPE_BLENDFACTOR_DST_ALPHA;
    case PIPE_BLENDFACTOR_INV_DST_COLOR: return PIPE_BLENDFACTOR_INV_DST_ALPHA;
+   case PIPE_BLENDFACTOR_CONST_COLOR: return PIPE_BLENDFACTOR_CONST_ALPHA;
+   case PIPE_BLENDFACTOR_INV_CONST_COLOR: return PIPE_BLENDFACTOR_INV_CONST_ALPHA;
+   case PIPE_BLENDFACTOR_SRC_ALPHA_SATURATE: return PIPE_BLENDFACTOR_ONE;
    default: return f;
    }
 }
 
+/* One channel group's equation; MIN and MAX ignore the factors. */
+struct m9_blend_part {
+   enum pipe_blend_func func;
+   enum pipe_blendfactor src, dst;
+};
+
+static struct m9_blend_part
+m9_blend_part(enum pipe_blend_func func, enum pipe_blendfactor src,
+              enum pipe_blendfactor dst, bool alpha)
+{
+   if (func == PIPE_BLEND_MIN || func == PIPE_BLEND_MAX)
+      return (struct m9_blend_part){ func, PIPE_BLENDFACTOR_ONE,
+                                     PIPE_BLENDFACTOR_ONE };
+   if (alpha) {
+      src = m9_alpha_equivalent(src);
+      dst = m9_alpha_equivalent(dst);
+   }
+   return (struct m9_blend_part){ func, src, dst };
+}
+
 /* ZERO * source + ONE * destination leaves the channel as it was. */
 static bool
-m9_blend_keeps_dst(enum pipe_blendfactor src, enum pipe_blendfactor dst)
+m9_blend_keeps_dst(const struct m9_blend_part *p)
 {
-   return src == PIPE_BLENDFACTOR_ZERO && dst == PIPE_BLENDFACTOR_ONE;
+   return (p->func == PIPE_BLEND_ADD ||
+           p->func == PIPE_BLEND_REVERSE_SUBTRACT) &&
+          p->src == PIPE_BLENDFACTOR_ZERO && p->dst == PIPE_BLENDFACTOR_ONE;
+}
+
+static const char *
+m9_blend_part_key(const struct m9_blend_part *p, uint8_t *src, uint8_t *dst,
+                  uint8_t *func)
+{
+   if (!m9_blend_func(p->func, func))
+      return "unknown blend equation; draw skipped";
+   if (!m9_blend_factor(p->src, src) || !m9_blend_factor(p->dst, dst))
+      return "dual-source blend factors are not implemented; draw skipped";
+   return NULL;
 }
 
 /* Blend state as lowered factors and the channels the draw writes, or the
- * reason draws are skipped.  One program factor pair drives all four
- * channels, so a differing alpha lane is only supported where it keeps the
- * destination: that lane is masked off in the raster state instead. */
+ * reason draws are skipped.  A group that keeps the destination is masked
+ * off in the raster state, which keeps the program to one equation; A gets
+ * its own only where both groups write. */
 static const char *
 m9_blend_key(const struct pipe_blend_state *blend, struct m9_fs_blend *out,
              unsigned *colormask)
 {
    const struct pipe_rt_blend_state *rt = blend ? &blend->rt[0] : NULL;
-   enum pipe_blendfactor src, dst;
+   struct m9_blend_part rgb, a, rgb_a;
+   const char *reason;
 
    if (!rt || !rt->blend_enable)
       return NULL;
-   if (rt->rgb_func != PIPE_BLEND_ADD || rt->alpha_func != PIPE_BLEND_ADD)
-      return "blend equations other than ADD are not implemented; "
-             "draw skipped";
-   src = rt->rgb_src_factor;
-   dst = rt->rgb_dst_factor;
-   if (m9_alpha_equivalent(src) != m9_alpha_equivalent(rt->alpha_src_factor) ||
-       m9_alpha_equivalent(dst) != m9_alpha_equivalent(rt->alpha_dst_factor)) {
-      if (m9_blend_keeps_dst(rt->alpha_src_factor, rt->alpha_dst_factor)) {
+   rgb = m9_blend_part(rt->rgb_func, rt->rgb_src_factor, rt->rgb_dst_factor,
+                       false);
+   a = m9_blend_part(rt->alpha_func, rt->alpha_src_factor,
+                     rt->alpha_dst_factor, true);
+   rgb_a = m9_blend_part(rt->rgb_func, rt->rgb_src_factor, rt->rgb_dst_factor,
+                         true);
+   if (rgb_a.func != a.func || rgb_a.src != a.src || rgb_a.dst != a.dst) {
+      if (m9_blend_keeps_dst(&a)) {
          if (colormask)
             *colormask &= ~PIPE_MASK_A;
-      } else if (m9_blend_keeps_dst(src, dst)) {
+      } else if (m9_blend_keeps_dst(&rgb)) {
          if (colormask)
             *colormask &= ~PIPE_MASK_RGB;
-         src = m9_alpha_equivalent(rt->alpha_src_factor);
-         dst = m9_alpha_equivalent(rt->alpha_dst_factor);
+         rgb = a;
       } else {
-         return "separate blend factors are only implemented where one lane "
-                "keeps the destination; draw skipped";
+         out->separate = true;
       }
    }
-   if (!m9_blend_factor(src, &out->src) || !m9_blend_factor(dst, &out->dst))
-      return "constant blend factors are not implemented; draw skipped";
-   return NULL;
+   reason = m9_blend_part_key(&rgb, &out->src, &out->dst, &out->func);
+   if (!reason && out->separate)
+      reason = m9_blend_part_key(&a, &out->alpha_src, &out->alpha_dst,
+                                 &out->alpha_func);
+   return reason;
 }
 
 static bool
@@ -3528,8 +3592,7 @@ m9_fs_variant(struct m9_context *ctx, struct m9_fs_state *fs,
    nir_shader *clone;
 
    util_dynarray_foreach(&fs->variants, struct m9_fs_variant *, it) {
-      if ((*it)->blend.src == want->blend.src &&
-          (*it)->blend.dst == want->blend.dst &&
+      if (m9_fs_blend_same(&(*it)->blend, &want->blend) &&
           (*it)->targets == want->targets &&
           !memcmp((*it)->inline_values, want->inline_values, inline_bytes) &&
           (*it)->depth_texture == want->depth_texture &&
@@ -7106,8 +7169,8 @@ static void
 m9_set_blend_color(struct pipe_context *pctx,
                    const struct pipe_blend_color *color)
 {
-   (void)pctx;
-   (void)color;
+   /* Resolved into the fragment constants at the next draw; no recompile. */
+   m9_context(pctx)->blend_color = *color;
 }
 
 static void

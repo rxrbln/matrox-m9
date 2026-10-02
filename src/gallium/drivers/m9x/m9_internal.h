@@ -466,6 +466,7 @@ struct m9_context {
    const struct pipe_depth_stencil_alpha_state *dsa;
    struct pipe_stencil_ref stencil_ref;
    const struct pipe_blend_state *blend;
+   struct pipe_blend_color blend_color;  /* resolved into fragment constants */
    struct pipe_scissor_state scissor;
    struct m9_fs_state *fs;
    struct m9_vs_state *vs;

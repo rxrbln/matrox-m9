@@ -55,6 +55,10 @@ enum m9_fs_const_kind {
    /* Alpha-test reference, both lanes scaled by 256 (MEASURED with the
     * vendor kill program: the reference is constant pair 0). */
    M9_FS_CONST_ALPHA_REF,
+   /* Blend colour channel offset[lane], or one minus it; resolved at
+    * draw time so a colour change needs no recompile. */
+   M9_FS_CONST_BLEND_COLOR,
+   M9_FS_CONST_BLEND_COLOR_INV,
 };
 
 #define M9_FS_UNIFORM_ZERO 0xffffffffu
@@ -94,21 +98,36 @@ struct m9_fs_varying {
    uint8_t components;     /* component mask read by the program */
 };
 
-/* Blend factors lowered into the program, applied to R,G,B and A alike with
- * the ADD equation (captures/m9x-vendor-glamor-blend-20260915). */
+/* Blend factors lowered into the program.  The classic forms are the
+ * vendor's (captures/m9x-vendor-glamor-blend-20260915); everything else is
+ * built from the multiply, multiply-add, minimum and move forms. */
 enum m9_fs_factor {
    M9_FS_ZERO, M9_FS_ONE, M9_FS_SRC_ALPHA, M9_FS_INV_SRC_ALPHA,
    M9_FS_DST_ALPHA, M9_FS_INV_DST_ALPHA, M9_FS_SRC_COLOR, M9_FS_INV_SRC_COLOR,
    M9_FS_DST_COLOR, M9_FS_INV_DST_COLOR,
+   M9_FS_CONST_COLOR, M9_FS_INV_CONST_COLOR,
+   M9_FS_CONST_ALPHA, M9_FS_INV_CONST_ALPHA,
+   M9_FS_SRC_ALPHA_SATURATE,
+};
+
+enum m9_fs_blend_func {
+   M9_FS_FUNC_ADD, M9_FS_FUNC_SUBTRACT, M9_FS_FUNC_REVERSE_SUBTRACT,
+   M9_FS_FUNC_MIN, M9_FS_FUNC_MAX,
 };
 
 struct m9_fs_blend {
-   uint8_t src, dst;              /* enum m9_fs_factor */
+   uint8_t src, dst;              /* enum m9_fs_factor, R,G,B (and A) */
    /* The colour target stores sRGB, so the program encodes what it writes.
     * Sampler-side decode is not implemented, so a blended sRGB draw -- which
     * would have to decode the destination -- is refused. */
    bool srgb;
+   uint8_t func;                  /* enum m9_fs_blend_func */
+   /* A differs from R,G,B: alpha_src/alpha_dst/alpha_func apply to it. */
+   bool separate;
+   uint8_t alpha_src, alpha_dst, alpha_func;
 };
+
+bool m9_fs_blend_same(const struct m9_fs_blend *a, const struct m9_fs_blend *b);
 
 struct m9_fs_program {
    struct util_dynarray slots;    /* uint32_t W0, W1 */

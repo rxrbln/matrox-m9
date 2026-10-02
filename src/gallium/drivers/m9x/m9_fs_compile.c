@@ -3848,7 +3848,7 @@ assign_texels(struct ctx *c)
 #define SWZ_ALPHA 3u
 #define SWZ_LANE 1u
 
-enum bterm { B_ZERO, B_ONE, B_REG, B_INV };
+enum bterm { B_ZERO, B_ONE, B_REG, B_INV, B_KONST };
 
 struct bfactor {
    enum bterm term;
@@ -3991,6 +3991,371 @@ blend_lane(struct ctx *c, uint32_t *used, unsigned lane, unsigned s,
    return true;
 }
 
+/* The general blend, built from the multiply (ac200040, a0200040),
+ * multiply-add (ac400c50, a0400c50), constant-minus-register (a0800dd0),
+ * minimum/maximum (a3200d50) and saturating move forms the backend already
+ * emits.  Products land in temporaries; only the last slot of a lane writes
+ * the output, in the saturating class. */
+
+struct bdest {
+   unsigned reg, op0, cls;
+};
+
+struct btail {
+   uint32_t *used;
+   unsigned base;           /* first constant the tail may add */
+   unsigned k0, k1, kz;     /* (0, 1), (1, 0.5) and the (0, 0) pad */
+   int sat;                 /* SRC_ALPHA_SATURATE factor, -1 until built */
+   unsigned s_ba;
+};
+
+static bool
+blend_part_opaque(unsigned src, unsigned dst, unsigned func)
+{
+   return (func == M9_FS_FUNC_ADD || func == M9_FS_FUNC_SUBTRACT) &&
+          src == M9_FS_ONE && dst == M9_FS_ZERO;
+}
+
+static bool
+blend_opaque(const struct m9_fs_blend *b)
+{
+   return blend_part_opaque(b->src, b->dst, b->func) &&
+          (!b->separate ||
+           blend_part_opaque(b->alpha_src, b->alpha_dst, b->alpha_func));
+}
+
+bool
+m9_fs_blend_same(const struct m9_fs_blend *a, const struct m9_fs_blend *b)
+{
+   return a->src == b->src && a->dst == b->dst && a->srgb == b->srgb &&
+          a->func == b->func && a->separate == b->separate &&
+          (!a->separate || (a->alpha_src == b->alpha_src &&
+                            a->alpha_dst == b->alpha_dst &&
+                            a->alpha_func == b->alpha_func));
+}
+
+/* One ADD factor pair for all four channels, minus the two inverted colour
+ * factors the vendor's forms do not cover: blend_lane's domain. */
+static bool
+blend_classic(const struct m9_fs_blend *b)
+{
+   bool src_reg = b->src >= M9_FS_SRC_ALPHA;
+
+   return !b->separate && b->func == M9_FS_FUNC_ADD &&
+          b->src <= M9_FS_INV_DST_COLOR && b->dst <= M9_FS_INV_DST_COLOR &&
+          b->src != M9_FS_INV_SRC_COLOR && b->src != M9_FS_INV_DST_COLOR &&
+          !(b->dst == M9_FS_INV_DST_COLOR && src_reg);
+}
+
+static bool
+blend_part_reads_dst(unsigned src, unsigned dst, unsigned func)
+{
+   return func == M9_FS_FUNC_MIN || func == M9_FS_FUNC_MAX ||
+          src != M9_FS_ZERO || dst != M9_FS_ZERO;
+}
+
+/* The constant at or after base holding these values, appended if new. */
+static int
+blend_const(struct ctx *c, unsigned base, enum m9_fs_const_kind kind,
+            float v0, float v1, uint32_t o0, uint32_t o1)
+{
+   struct m9_fs_const want, *k;
+   unsigned n = NUM(c, p->consts, struct m9_fs_const);
+
+   memset(&want, 0, sizeof(want));
+   want.kind = kind;
+   want.value[0] = v0;
+   want.value[1] = v1;
+   want.offset[0] = o0;
+   want.offset[1] = o1;
+   for (unsigned i = base; i < n; i++)
+      if (!memcmp((struct m9_fs_const *)c->p->consts.data + i, &want,
+                  sizeof(want)))
+         return i;
+   k = util_dynarray_grow(&c->p->consts, struct m9_fs_const, 1);
+   if (!k)
+      return fail(c, "out of memory"), -1;
+   *k = want;
+   return n;
+}
+
+static int
+blend_literal(struct ctx *c, struct btail *t, float v)
+{
+   return blend_const(c, t->base, M9_FS_CONST_LITERAL, v, v, 0, 0);
+}
+
+/* o = f * x */
+static void
+bt_prod(struct ctx *c, struct btail *t, struct bfactor f, unsigned x,
+        struct bdest o)
+{
+   switch (f.term) {
+   case B_REG:
+      emit(c, w0_make(f.reg, x, NONE, o.reg, o.cls, o.op0),
+           w1_make(0xac200040 | f.swz << 8, NONE, f.reg));
+      break;
+   case B_KONST:
+      emit(c, w0_make(NONE, x, NONE, o.reg, o.cls, o.op0),
+           w1_make(0xa0200040 | f.swz << 8, f.reg, NONE));
+      break;
+   default:
+      emit(c, w0_make(NONE, x, NONE, o.reg, o.cls, o.op0),
+           w1_make(0xa0200040, f.term == B_ONE ? t->k1 : t->k0, NONE));
+      break;
+   }
+}
+
+/* o = f * x + y */
+static void
+bt_mad(struct ctx *c, struct btail *t, struct bfactor f, unsigned x,
+       unsigned y, struct bdest o)
+{
+   switch (f.term) {
+   case B_REG:
+      emit(c, w0_make(f.reg, x, y, o.reg, o.cls, o.op0),
+           w1_make(0xac400c50 | f.swz << 8, NONE, f.reg));
+      break;
+   case B_KONST:
+      emit(c, w0_make(NONE, x, y, o.reg, o.cls, o.op0),
+           w1_make(0xa0400c50 | f.swz << 8, f.reg, NONE));
+      break;
+   case B_ONE:
+      emit(c, w0_make(NONE, x, y, o.reg, o.cls, o.op0),
+           w1_make(0xa0400c50, t->k1, NONE));
+      break;
+   default:
+      bt_prod(c, t, (struct bfactor){ B_ONE }, y, o);
+      break;
+   }
+}
+
+static struct bdest
+bt_temp(int r)
+{
+   return (struct bdest){ (unsigned)r, 0x1c, 0 };
+}
+
+/* temp = (1, 1) - reg, the captured literal-minus-register form */
+static int
+bt_inv_reg(struct ctx *c, struct btail *t, unsigned reg)
+{
+   int one = blend_literal(c, t, 1.0f);
+   int r = one < 0 ? -1 : blend_temp(c, t->used);
+
+   if (r >= 0)
+      emit(c, w0_make(NONE, NONE, reg, r, 0, 0x1c),
+           w1_make(0xa0800dd0, one, NONE));
+   return r;
+}
+
+/* min(As, 1 - Ad) as b + min(a - b, 0), replicated. */
+static int
+bt_saturate(struct ctx *c, struct btail *t)
+{
+   int neg = blend_literal(c, t, -1.0f);
+   int a, diff, m, f;
+
+   if (t->sat >= 0)
+      return t->sat;
+   if (neg < 0 || (a = blend_inv_alpha(c, t->used, REG_DST + 2, t->k1)) < 0 ||
+       (diff = blend_temp(c, t->used)) < 0 ||
+       (m = blend_temp(c, t->used)) < 0 || (f = blend_temp(c, t->used)) < 0)
+      return -1;
+   emit(c, w0_make(NONE, a, t->s_ba, diff, 0, 0x1c),
+        w1_make(0xa0400c00 | 1u << 6 | SWZ_ALPHA << 4, neg, NONE));
+   emit(c, w0_make(NONE, diff, diff, m, 2, 0x1c), w1_make(0xa3200d50, t->kz, NONE));
+   emit(c, w0_make(NONE, m, a, f, 0, 0x1c), w1_make(0xa0400c50, t->k1, NONE));
+   return t->sat = f;
+}
+
+static bool
+bt_factor(struct ctx *c, struct btail *t, unsigned f, unsigned lane,
+          unsigned s, struct bfactor *out)
+{
+   const unsigned d = REG_DST + 2 * lane;
+   int r = 0;
+
+   switch (f) {
+   case M9_FS_ZERO: *out = (struct bfactor){ B_ZERO }; return true;
+   case M9_FS_ONE: *out = (struct bfactor){ B_ONE }; return true;
+   case M9_FS_SRC_ALPHA:
+      *out = (struct bfactor){ B_REG, t->s_ba, SWZ_ALPHA };
+      return true;
+   case M9_FS_DST_ALPHA:
+      *out = (struct bfactor){ B_REG, REG_DST + 2, SWZ_ALPHA };
+      return true;
+   case M9_FS_SRC_COLOR:
+      *out = (struct bfactor){ B_REG, s, SWZ_LANE };
+      return true;
+   case M9_FS_DST_COLOR:
+      *out = (struct bfactor){ B_REG, d, SWZ_LANE };
+      return true;
+   case M9_FS_INV_SRC_ALPHA:
+   case M9_FS_INV_DST_ALPHA:
+      r = blend_inv_alpha(c, t->used, f == M9_FS_INV_SRC_ALPHA ? t->s_ba :
+                          REG_DST + 2, t->k1);
+      *out = (struct bfactor){ B_REG, (unsigned)r, SWZ_ALPHA };
+      break;
+   case M9_FS_INV_SRC_COLOR:
+   case M9_FS_INV_DST_COLOR:
+      r = bt_inv_reg(c, t, f == M9_FS_INV_SRC_COLOR ? s : d);
+      *out = (struct bfactor){ B_REG, (unsigned)r, SWZ_LANE };
+      break;
+   case M9_FS_CONST_COLOR:
+   case M9_FS_INV_CONST_COLOR:
+   case M9_FS_CONST_ALPHA:
+   case M9_FS_INV_CONST_ALPHA: {
+      bool alpha = f == M9_FS_CONST_ALPHA || f == M9_FS_INV_CONST_ALPHA;
+      bool inv = f == M9_FS_INV_CONST_COLOR || f == M9_FS_INV_CONST_ALPHA;
+
+      r = blend_const(c, t->base, inv ? M9_FS_CONST_BLEND_COLOR_INV :
+                      M9_FS_CONST_BLEND_COLOR, 0.0f, 0.0f,
+                      alpha ? 3 : 2 * lane, alpha ? 3 : 2 * lane + 1);
+      *out = (struct bfactor){ B_KONST, (unsigned)r, SWZ_LANE };
+      break;
+   }
+   case M9_FS_SRC_ALPHA_SATURATE:
+      r = bt_saturate(c, t);
+      *out = (struct bfactor){ B_REG, (unsigned)r, SWZ_LANE };
+      break;
+   default:
+      return fail(c, "unknown blend factor");
+   }
+   return r >= 0;
+}
+
+/* One blend equation for a lane, written to o. */
+static bool
+bt_part(struct ctx *c, struct btail *t, unsigned lane, unsigned s,
+        unsigned src, unsigned dst, unsigned func, struct bdest o)
+{
+   const unsigned d = REG_DST + 2 * lane;
+   struct bfactor fs, fd, fp, fn;
+   unsigned p, n, tn;
+   int r, neg;
+
+   if (func == M9_FS_FUNC_MIN || func == M9_FS_FUNC_MAX) {
+      /* D + min(S - D, 0): only the register-constant minimum is captured. */
+      int diff, m;
+
+      if ((neg = blend_literal(c, t, -1.0f)) < 0 ||
+          (diff = blend_temp(c, t->used)) < 0 ||
+          (m = blend_temp(c, t->used)) < 0)
+         return false;
+      bt_mad(c, t, (struct bfactor){ B_KONST, (unsigned)neg, 0 }, d, s,
+             bt_temp(diff));
+      emit(c, w0_make(NONE, diff, diff, m, func == M9_FS_FUNC_MIN ? 2 : 3,
+                      0x1c), w1_make(0xa3200d50, t->kz, NONE));
+      bt_mad(c, t, (struct bfactor){ B_ONE }, m, d, o);
+      return true;
+   }
+   if (!bt_factor(c, t, src, lane, s, &fs) ||
+       !bt_factor(c, t, dst, lane, s, &fd))
+      return false;
+   if (func == M9_FS_FUNC_ADD) {
+      if (fd.term == B_ZERO) {
+         bt_prod(c, t, fs, s, o);
+      } else if (fs.term == B_ZERO) {
+         bt_prod(c, t, fd, d, o);
+      } else if (fd.term == B_ONE) {
+         bt_mad(c, t, fs, s, d, o);
+      } else if (fs.term == B_ONE) {
+         bt_mad(c, t, fd, d, s, o);
+      } else {
+         if ((r = blend_temp(c, t->used)) < 0)
+            return false;
+         bt_prod(c, t, fd, d, bt_temp(r));
+         bt_mad(c, t, fs, s, r, o);
+      }
+      return true;
+   }
+   /* P - N, the negated term scaled by -1 in a multiply-add */
+   if (func == M9_FS_FUNC_SUBTRACT) {
+      fp = fs, p = s, fn = fd, n = d;
+   } else {
+      fp = fd, p = d, fn = fs, n = s;
+   }
+   if (fn.term == B_ZERO) {
+      bt_prod(c, t, fp, p, o);
+      return true;
+   }
+   if ((neg = blend_literal(c, t, -1.0f)) < 0)
+      return false;
+   tn = n;
+   if (fn.term != B_ONE) {
+      if ((r = blend_temp(c, t->used)) < 0)
+         return false;
+      bt_prod(c, t, fn, n, bt_temp(r));
+      tn = r;
+   }
+   fn = (struct bfactor){ B_KONST, (unsigned)neg, 0 };
+   if (fp.term == B_ZERO) {
+      bt_prod(c, t, fn, tn, o);
+   } else if (fp.term == B_ONE) {
+      bt_mad(c, t, fn, tn, p, o);
+   } else {
+      if ((r = blend_temp(c, t->used)) < 0)
+         return false;
+      bt_prod(c, t, fp, p, bt_temp(r));
+      bt_mad(c, t, fn, tn, r, o);
+   }
+   return true;
+}
+
+static unsigned
+blend_alpha_factor(unsigned f)
+{
+   switch (f) {
+   case M9_FS_SRC_COLOR: return M9_FS_SRC_ALPHA;
+   case M9_FS_INV_SRC_COLOR: return M9_FS_INV_SRC_ALPHA;
+   case M9_FS_DST_COLOR: return M9_FS_DST_ALPHA;
+   case M9_FS_INV_DST_COLOR: return M9_FS_INV_DST_ALPHA;
+   case M9_FS_CONST_COLOR: return M9_FS_CONST_ALPHA;
+   case M9_FS_INV_CONST_COLOR: return M9_FS_INV_CONST_ALPHA;
+   case M9_FS_SRC_ALPHA_SATURATE: return M9_FS_ONE;
+   default: return f;
+   }
+}
+
+/* B,A lane: the alpha scalar gets its own equation when it differs, written
+ * into a temporary under the second-scalar mask and moved out saturated. */
+static bool
+bt_lane(struct ctx *c, struct btail *t, unsigned lane, unsigned s)
+{
+   const struct m9_fs_blend *b = c->blend;
+   const struct bdest out = { color_dest(0), 0x1d + lane, 4 };
+   unsigned as = blend_alpha_factor(b->separate ? b->alpha_src : b->src);
+   unsigned ad = blend_alpha_factor(b->separate ? b->alpha_dst : b->dst);
+   unsigned af = b->separate ? b->alpha_func : b->func;
+   int r;
+
+   if (lane == 0 || (!b->separate && b->src != M9_FS_SRC_ALPHA_SATURATE &&
+                     b->dst != M9_FS_SRC_ALPHA_SATURATE))
+      return bt_part(c, t, lane, s, b->src, b->dst, b->func, out);
+   if ((r = blend_temp(c, t->used)) < 0 ||
+       !bt_part(c, t, lane, s, b->src, b->dst, b->func, bt_temp(r)) ||
+       !bt_part(c, t, lane, s, as, ad, af,
+                (struct bdest){ (unsigned)r, 0x1e, 0 }))
+      return false;
+   emit(c, w0_make(NONE, NONE, r, out.reg, 4, out.op0),
+        w1_make(0xa2803f10, NONE, NONE));
+   return true;
+}
+
+static bool
+blend_general(struct ctx *c, uint32_t used, const int s[2], unsigned base,
+              unsigned extra)
+{
+   struct btail t = {
+      .used = &used, .base = base, .kz = base + extra,
+      .k0 = base + extra + 1, .k1 = base + extra + 2, .sat = -1,
+      .s_ba = (unsigned)s[1],
+   };
+
+   return bt_lane(c, &t, 1, s[1]) && bt_lane(c, &t, 0, s[0]);
+}
+
 /* Registers the encoded program reads or writes, plus the texel pairs.  A
  * reason rejects programs touching 18..1b, which only blending needs free. */
 static bool
@@ -4118,8 +4483,24 @@ blend_append(struct ctx *c, const int have[2])
       used |= BITFIELD_BIT(s[lane]);
    /* 88 bit 4 clears whenever the destination is blended. */
    c->p->registers_used |= BITFIELD_BIT(0);
-   c->p->blend_dest = c->blend->src != M9_FS_ZERO ||
-                      c->blend->dst != M9_FS_ZERO;
+   c->p->blend_dest =
+      blend_part_reads_dst(c->blend->src, c->blend->dst, c->blend->func) ||
+      (c->blend->separate &&
+       blend_part_reads_dst(c->blend->alpha_src, c->blend->alpha_dst,
+                            c->blend->alpha_func));
+   if (!blend_classic(c->blend)) {
+      unsigned slots = m9_fs_slot_count(c->p);
+      uint16_t regs = c->p->registers_used;
+
+      /* The constants the tail adds sit in front of the pad and the fixed
+       * tail, so a first pass counts them and the second emits for real. */
+      if (!blend_general(c, used, s, consts, 0))
+         return false;
+      c->p->slots.size = 2 * slots * sizeof(uint32_t);
+      c->p->registers_used = regs;
+      return blend_general(c, used, s, consts,
+                           NUM(c, p->consts, struct m9_fs_const) - consts);
+   }
    /* The pad pair precedes the (0,1), (1,0.5) tail. */
    return blend_lane(c, &used, 1, s[1], s[1], consts + 1, consts + 2) &&
           blend_lane(c, &used, 0, s[0], s[1], consts + 1, consts + 2);
@@ -4673,7 +5054,7 @@ fs_srgb(nir_shader *nir, const struct m9_fs_blend *blend, const char **reason)
 {
    if (!blend || !blend->srgb)
       return true;
-   if (blend->src != M9_FS_ONE || blend->dst != M9_FS_ZERO) {
+   if (!blend_opaque(blend)) {
       *reason = "blending into an sRGB target (destination decode is not "
                 "implemented)";
       return false;
@@ -4691,7 +5072,7 @@ fs_compile_pass(nir_shader *nir, const struct m9_fs_blend *blend,
                 nir_def **coord_blocker)
 {
    /* ONE/ZERO is the unblended program, as the vendor emits it. */
-   bool opaque = !blend || (blend->src == M9_FS_ONE && blend->dst == M9_FS_ZERO);
+   bool opaque = !blend || blend_opaque(blend);
    struct ctx c = { .nir = nir, .p = program, .blend = opaque ? NULL : blend,
                     .root = root, .record_out = record_out,
                     .cut_count = cut_count };
