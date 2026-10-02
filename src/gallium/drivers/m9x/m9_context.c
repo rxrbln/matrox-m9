@@ -592,6 +592,8 @@ m9_prof_frame(void)
 }
 
 
+static void m9_retired_variants_free(struct m9_context *ctx);
+
 static void
 m9_context_sync(struct m9_context *ctx)
 {
@@ -601,6 +603,7 @@ m9_context_sync(struct m9_context *ctx)
    /* Outside the draw module: a job held for the scratch path runs here,
     * before anything this sync was called for reads the target. */
    m9_deferred_run(ctx);
+   m9_retired_variants_free(ctx);
 }
 
 static void
@@ -3304,9 +3307,21 @@ struct m9_blend_part {
    enum pipe_blendfactor src, dst;
 };
 
+/* A target without alpha reads its destination alpha as one. */
+static enum pipe_blendfactor
+m9_dst_alpha_one(enum pipe_blendfactor f)
+{
+   switch (f) {
+   case PIPE_BLENDFACTOR_DST_ALPHA: return PIPE_BLENDFACTOR_ONE;
+   case PIPE_BLENDFACTOR_INV_DST_ALPHA: return PIPE_BLENDFACTOR_ZERO;
+   case PIPE_BLENDFACTOR_SRC_ALPHA_SATURATE: return PIPE_BLENDFACTOR_ZERO;
+   default: return f;
+   }
+}
+
 static struct m9_blend_part
 m9_blend_part(enum pipe_blend_func func, enum pipe_blendfactor src,
-              enum pipe_blendfactor dst, bool alpha)
+              enum pipe_blendfactor dst, bool alpha, bool no_dst_alpha)
 {
    if (func == PIPE_BLEND_MIN || func == PIPE_BLEND_MAX)
       return (struct m9_blend_part){ func, PIPE_BLENDFACTOR_ONE,
@@ -3314,6 +3329,10 @@ m9_blend_part(enum pipe_blend_func func, enum pipe_blendfactor src,
    if (alpha) {
       src = m9_alpha_equivalent(src);
       dst = m9_alpha_equivalent(dst);
+   }
+   if (no_dst_alpha) {
+      src = m9_dst_alpha_one(src);
+      dst = m9_dst_alpha_one(dst);
    }
    return (struct m9_blend_part){ func, src, dst };
 }
@@ -3344,7 +3363,7 @@ m9_blend_part_key(const struct m9_blend_part *p, uint8_t *src, uint8_t *dst,
  * its own only where both groups write. */
 static const char *
 m9_blend_key(const struct pipe_blend_state *blend, struct m9_fs_blend *out,
-             unsigned *colormask)
+             unsigned *colormask, bool no_dst_alpha)
 {
    const struct pipe_rt_blend_state *rt = blend ? &blend->rt[0] : NULL;
    struct m9_blend_part rgb, a, rgb_a;
@@ -3353,11 +3372,11 @@ m9_blend_key(const struct pipe_blend_state *blend, struct m9_fs_blend *out,
    if (!rt || !rt->blend_enable)
       return NULL;
    rgb = m9_blend_part(rt->rgb_func, rt->rgb_src_factor, rt->rgb_dst_factor,
-                       false);
+                       false, no_dst_alpha);
    a = m9_blend_part(rt->alpha_func, rt->alpha_src_factor,
-                     rt->alpha_dst_factor, true);
+                     rt->alpha_dst_factor, true, no_dst_alpha);
    rgb_a = m9_blend_part(rt->rgb_func, rt->rgb_src_factor, rt->rgb_dst_factor,
-                         true);
+                         true, no_dst_alpha);
    if (rgb_a.func != a.func || rgb_a.src != a.src || rgb_a.dst != a.dst) {
       if (m9_blend_keeps_dst(&a)) {
          if (colormask)
@@ -3582,6 +3601,25 @@ m9_record_layout(struct m9_fs_variant *v)
    v->record_dwords = 4 * slots;
 }
 
+static void
+m9_fs_variant_free(struct m9_context *ctx, struct m9_fs_variant *v)
+{
+   if (v->ok) {
+      m9_bo_destroy(ctx->screen, &v->c2);
+      m9_bo_destroy(ctx->screen, &v->native_c2);
+      m9_fs_passes_fini(&v->passes);
+   }
+   FREE(v);
+}
+
+static void
+m9_retired_variants_free(struct m9_context *ctx)
+{
+   util_dynarray_foreach(&ctx->retired_fs_variants, struct m9_fs_variant *, it)
+      m9_fs_variant_free(ctx, *it);
+   util_dynarray_clear(&ctx->retired_fs_variants);
+}
+
 static const struct m9_fs_variant *
 m9_fs_variant(struct m9_context *ctx, struct m9_fs_state *fs,
               const struct m9_fs_variant *want, const char **reason)
@@ -3597,16 +3635,31 @@ m9_fs_variant(struct m9_context *ctx, struct m9_fs_state *fs,
           !memcmp((*it)->inline_values, want->inline_values, inline_bytes) &&
           (*it)->depth_texture == want->depth_texture &&
           !memcmp((*it)->swizzle, want->swizzle, sizeof(want->swizzle))) {
-         *reason = (*it)->reason;
-         return (*it)->ok ? *it : NULL;
+         struct m9_fs_variant **last =
+            util_dynarray_last_ptr(&fs->variants, struct m9_fs_variant *);
+
+         v = *it;
+         /* Least recently used first, so eviction takes the oldest. */
+         if (it != last) {
+            memmove(it, it + 1, (char *)last - (char *)it);
+            *last = v;
+         }
+         *reason = v->reason;
+         return v->ok ? v : NULL;
       }
    }
-   /* A shader specialised on a uniform can be asked for one variant per
-    * value, so the cache is capped and a further one is refused. */
+   /* Blend state and uniform specialisation each ask for variants, so the
+    * cache is capped and the least recently used one is evicted. */
    if (util_dynarray_num_elements(&fs->variants, struct m9_fs_variant *) >=
        M9_FS_MAX_VARIANTS) {
-      *reason = "more shader variants than the cache holds";
-      return NULL;
+      struct m9_fs_variant **first = fs->variants.data;
+
+      /* The draw module may be mid-draw here, so a pending or held job that
+       * names it keeps it until the next sync. */
+      util_dynarray_append_typed(&ctx->retired_fs_variants,
+                                 struct m9_fs_variant *, *first);
+      memmove(first, first + 1, fs->variants.size - sizeof(*first));
+      fs->variants.size -= sizeof(*first);
    }
 
    /* M9X_FS_INLINE_TRACE=1 names the uniforms a shader is specialised on and
@@ -3770,7 +3823,10 @@ m9_ctx_variant(struct m9_context *ctx, const char **reason,
    struct m9_fs_variant want = { .blend = { M9_FS_ONE, M9_FS_ZERO },
                                  .targets = MAX2(ctx->color_count, 1u) };
 
-   *reason = m9_blend_key(ctx->blend, &want.blend, colormask);
+   enum pipe_format cf = ctx->framebuffer.cbufs[0].format;
+
+   *reason = m9_blend_key(ctx->blend, &want.blend, colormask,
+                          cf != PIPE_FORMAT_NONE && !util_format_has_alpha(cf));
    if (*reason)
       return NULL;
    memcpy(want.inline_values, ctx->fs_inline, sizeof(want.inline_values));
@@ -6847,14 +6903,8 @@ m9_delete_fs_state(struct pipe_context *pctx, void *state)
 
    if (ctx->job_key.fs == fs)
       m9_context_sync(ctx);
-   util_dynarray_foreach(&fs->variants, struct m9_fs_variant *, it) {
-      if ((*it)->ok) {
-         m9_bo_destroy(ctx->screen, &(*it)->c2);
-         m9_bo_destroy(ctx->screen, &(*it)->native_c2);
-         m9_fs_passes_fini(&(*it)->passes);
-      }
-      FREE(*it);
-   }
+   util_dynarray_foreach(&fs->variants, struct m9_fs_variant *, it)
+      m9_fs_variant_free(ctx, *it);
    util_dynarray_fini(&fs->variants);
    draw_delete_fragment_shader(ctx->draw, fs->draw);
    ralloc_free(fs->nir);
@@ -7426,6 +7476,8 @@ m9_context_destroy(struct pipe_context *pctx)
    util_dynarray_fini(&ctx->indices);
    util_dynarray_fini(&ctx->draws);
    util_dynarray_fini(&ctx->extra);
+   m9_retired_variants_free(ctx);
+   util_dynarray_fini(&ctx->retired_fs_variants);
    util_dynarray_fini(&ctx->key_consts);
    util_dynarray_fini(&ctx->job_consts);
    util_dynarray_fini(&ctx->key_vs_consts);
@@ -7529,6 +7581,7 @@ m9_context_create(struct pipe_screen *pscreen, void *priv, unsigned flags)
    util_dynarray_init(&ctx->draws, NULL);
    util_dynarray_init(&ctx->extra, NULL);
    util_dynarray_init(&ctx->key_consts, NULL);
+   util_dynarray_init(&ctx->retired_fs_variants, NULL);
    util_dynarray_init(&ctx->job_consts, NULL);
 
    m9_vs_texture_init(&ctx->base);

@@ -538,6 +538,8 @@ struct m9_context {
    struct util_dynarray draws;    /* struct m9_draw_record */
    struct util_dynarray extra;    /* float4 CPU varyings per source record */
    struct util_dynarray key_consts, job_consts;  /* raster constant floats */
+   /* Evicted fragment variants a pending job may still name; freed at sync. */
+   struct util_dynarray retired_fs_variants;
    /* Preprocessing constant pairs, two floats each, in program order. */
    struct util_dynarray key_vs_consts, job_vs_consts;
    /* Floats per source record of the pending job. */
