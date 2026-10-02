@@ -2163,7 +2163,24 @@ value_new(struct ctx *c, bool interp)
 static void
 lop_add(struct ctx *c, const struct lop *l)
 {
-   util_dynarray_append_typed(&c->lops, struct lop, *l);
+   struct lop *added = util_dynarray_grow(&c->lops, struct lop, 1);
+
+   *added = *l;
+   /* These forms have no constant select field and read the pair as it
+    * stands, so a selected scalar becomes a constant of its own. */
+   if ((l->kind == L_ADD_RC || l->kind == L_SUB_CR || l->kind == L_MIN_RC ||
+        l->kind == L_MAX_RC) && l->konst >= 0 && l->kswz != 1 &&
+       KEYS(c)[l->konst].pair &&
+       (KEYS(c)[l->konst].kind == M9_FS_CONST_UNIFORM ||
+        KEYS(c)[l->konst].kind == M9_FS_CONST_LITERAL)) {
+      struct kkey k = KEYS(c)[l->konst];
+      unsigned s0 = (l->kswz >> 1) & 1, s1 = l->kswz & 1;
+
+      k = k.kind == M9_FS_CONST_UNIFORM ? key_uniform(k.off[s0], k.off[s1]) :
+                                          key_literal(k.v[s0], k.v[s1]);
+      added->konst = key_add(c, &k);
+      added->kswz = 1;
+   }
 }
 
 /* Constant key of lane of a uniform or literal node. */
