@@ -7994,6 +7994,8 @@ m9_context_create(struct pipe_screen *pscreen, void *priv, unsigned flags)
    draw_set_render(ctx->draw, &render->base);
    /* Points become two triangles; the native point path is unverified. */
    draw_wide_point_threshold(ctx->draw, 0.0f);
+   /* Smooth lines become quads whose shader computes their coverage. */
+   draw_install_aaline_stage(ctx->draw, &ctx->base);
    draw_set_constant_buffer_stride(ctx->draw, sizeof(float));
    ctx->base.stream_uploader = u_upload_create_default(&ctx->base);
    if (!ctx->base.stream_uploader)
