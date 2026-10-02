@@ -6782,6 +6782,19 @@ m9_deferred_run(struct m9_context *ctx)
 static void
 m9_blit(struct pipe_context *pctx, const struct pipe_blit_info *info)
 {
+   /* A layered blit -- st's upload of a whole volume, say -- is one blit
+    * per slice: nothing below takes a box deeper than one layer. */
+   if (info->src.box.depth == info->dst.box.depth && info->dst.box.depth > 1) {
+      struct pipe_blit_info slice = *info;
+
+      slice.src.box.depth = slice.dst.box.depth = 1;
+      for (int k = 0; k < info->dst.box.depth; k++) {
+         slice.src.box.z = info->src.box.z + k;
+         slice.dst.box.z = info->dst.box.z + k;
+         m9_blit(pctx, &slice);
+      }
+      return;
+   }
    if (!m9_blit_engine(pctx, info) &&
        !util_try_blit_via_copy_region(pctx, info, false) &&
        !m9_blit_convert(pctx, info) &&
