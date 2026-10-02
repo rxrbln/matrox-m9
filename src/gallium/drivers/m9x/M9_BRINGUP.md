@@ -326,3 +326,29 @@ use the kill slot.
 at the head of its jobs; emitting it in front of `88` in a raster range
 (allowed through `faa_probe_indices`) stalled the engine with a kernel
 stream timeout (2026-10-02, nano), which only a power cycle recovers.
+
+## Native vertex backend corrections (2026-10-02)
+
+The glsl-1.10 `vs-*` built-in failures were all the native vertex path
+(`M9X_NATIVE_VS=0` passed them), from three defects the offline simulator
+shared with the compiler:
+
+* **Partial dot (`op2 0x10`) subtracts a constant.**  Its c field is a
+  constant pair index: `d.s0 = b . k[e] - k[c].s0` (MEASURED: pair 3 as the
+  subtrahend in every dot/length/normalize/`vec * mat` probe, 0.25 in a
+  0.25 pair subtracts 0.25, a register index in c is wrong).  The vendor's
+  `c = 3` works only while its pair 3 holds zero; the backend names a zero
+  literal pair now.
+* **frcp/frsq/fsqrt/fdiv read component 0 in every lane**, so vector
+  reciprocals and divisors repeated the first component.  Each component
+  runs its own chain now (OFFLINE corpus `divide-vector`, `rsq-sqrt-vector`).
+* **Registers 0x11, 0x15, 0x17, 0x19, 0x1b, 0x1f read back wrong as
+  temporaries** (MEASURED by steering a reciprocal over the pool; 0x12, 0x14,
+  0x16, 0x18, 0x1a, 0x1c..0x1e, 0x20 are right; not a latency, padding does
+  not help; mechanism OPEN).  They left the pool, which is 23 registers;
+  `exp2-vector` and `glmark-buffer-wireframe` run out and fall back.
+
+`M9X_VS_DUMP=1` prints a hash line a compiled program (2 adds the words);
+the ioquake3 opengl2 programs that run natively and all 99 glamor corpus
+vertex programs compile to the same words as before.
+`m9-vs-compile-test` takes `M9_VS_EXTRA=<vs[---fs]>` for a single shader.
