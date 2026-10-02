@@ -1402,6 +1402,10 @@ m9_screen_create(int fd, const struct pipe_screen_config *config)
    caps->max_texture_cube_levels = 5;
    caps->max_texture_3d_levels = 9;
    caps->max_texture_array_layers = 0;
+   /* 7d[9:0] is a signed bias with five fraction bits (CAPTURED,
+    * docs/parhelia-m9-gl15-ff-capture.md), which m9_texture_unit_init
+    * clamps to -16 .. 15.97. */
+   caps->max_texture_lod_bias = 15.0f;
    caps->max_viewports = 1;
    caps->max_vertex_buffers = 16;
    caps->max_vertex_attrib_stride = 2048;
