@@ -632,17 +632,21 @@ m9_surface_access(struct m9_context *ctx, const struct m9_resource *resource,
     * the small 2-D kind reproduces it exactly, which is the same kind the
     * sampler binds for that size. */
    bool small = resource->width <= 64 && resource->height <= 64;
+   /* The small kind addresses its rows at the 32-aligned span as well; at
+    * the texel width a 60x60 target read back sheared (MEASURED, zprobe
+    * cmap at 60x60, 20x60 and 33x17). */
+   uint32_t small_span = resource->row_span;
    struct drm_parhelia_m9_surface_access access = {
       .handle = resource->handle,
       .op = op,
       .descriptor0 = small ?
          M9_TEXTURE_CODE_BGRA << 24 | M9_TEXTURE_KIND_2D << 16 |
-         resource->width : m9_surface_desc0(&desc),
+         small_span : m9_surface_desc0(&desc),
       .descriptor1 = small ?
          1u << 16 | m9_surface_even_height(resource->height) :
          m9_surface_desc1(&desc),
       .flags = small ? PARHELIA_M9_ACCESS_TEXTURE : 0,
-      .surface_width = resource->width,
+      .surface_width = small ? small_span : resource->width,
       .x = box->x,
       .y = box->y,
       .width = box->width,
@@ -3156,8 +3160,7 @@ m9_texture_bind_view(const struct pipe_sampler_view *view,
       *bind = (struct m9_texture_bind) {
          .code = (uint8_t)(res->format << 1),
          .kind = small ? M9_TEXTURE_KIND_2D : M9_TEXTURE_KIND_RENDER,
-         .width = small ? res->width :
-                  m9_depth_row_span(res->width, res->height),
+         .width = m9_depth_row_span(res->width, res->height),
          .height = res->height, .depth = 1,
       };
       return NULL;
