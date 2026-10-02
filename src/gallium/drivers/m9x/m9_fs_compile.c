@@ -119,6 +119,7 @@ enum node_kind {
     * through it to the source its own lane reads. */
    N_PAIR,
    N_FACE,              /* gl_FrontFacing: zero in scalar 0 for a back face */
+   N_DDX, N_DDY,        /* screen-space derivative, fs-dfdx / fs-dfdy */
 };
 
 struct node {
@@ -148,6 +149,7 @@ enum lop_kind {
    L_MIN_RC, L_MAX_RC, L_NEG, L_SAT,
    L_MOV_OUT, L_MOVC_OUT, L_MOVC_TMP, L_MOVC_SECOND, L_RAW,
    L_DEPTH, L_KILL,
+   L_DERIV,             /* two idle slots, then the derivative; cls the axis */
 };
 
 struct lop {
@@ -530,6 +532,8 @@ static int varying_slot(struct ctx *c, unsigned location);
 static int build_route(struct ctx *c, unsigned pass);
 static int build_vec(struct ctx *c, nir_scalar s[4]);
 static int build_def(struct ctx *c, nir_def *def);
+static void set_src(struct node *n, unsigned i, int src, const uint8_t *lane,
+                    const uint8_t *swz);
 
 /* st scalarises IO, so a load carries the first varying component it reads. */
 static unsigned
@@ -593,6 +597,36 @@ build_intrinsic(struct ctx *c, nir_intrinsic_instr *intr)
       if (n < 0)
          return -1;
       NODES(c)[n].k = k;
+      return n;
+   }
+   case nir_intrinsic_ddx:
+   case nir_intrinsic_ddx_fine:
+   case nir_intrinsic_ddx_coarse:
+   case nir_intrinsic_ddy:
+   case nir_intrinsic_ddy_fine:
+   case nir_intrinsic_ddy_coarse: {
+      static const uint8_t lane_id[2] = { 0, 1 }, swz_id[2] = { 1, 1 };
+      bool y = intr->intrinsic == nir_intrinsic_ddy ||
+               intr->intrinsic == nir_intrinsic_ddy_fine ||
+               intr->intrinsic == nir_intrinsic_ddy_coarse;
+      nir_def *src = intr->src[0].ssa;
+      nir_scalar s[4];
+      int a;
+
+      for (unsigned k = 0; k < 4; k++)
+         s[k] = nir_get_scalar(src, MIN2(k, src->num_components - 1));
+      a = build_vec(c, s);
+      if (a < 0)
+         return -1;
+      /* A constant does not change across the quad. */
+      if (node_is_const(&NODES(c)[a])) {
+         n = node_new(c, N_LIT);
+         return n;
+      }
+      n = node_new(c, y ? N_DDY : N_DDX);
+      if (n < 0)
+         return -1;
+      set_src(&NODES(c)[n], 0, a, lane_id, swz_id);
       return n;
    }
    case nir_intrinsic_load_ubo_vec4:
@@ -2679,6 +2713,27 @@ emit_node_lops(struct ctx *c, int n, bool output, bool direct_ba)
       }
       return true;
    }
+   /* A derivative writes a register of its own, never the output. */
+   if (nd->kind == N_DDX || nd->kind == N_DDY) {
+      for (int lane = 1; lane >= 0; lane--) {
+         struct lop l;
+
+         lop_init(&l, L_DERIV, lane, n);
+         l.cls = nd->kind == N_DDY;
+         operand(c, &l, 0, nd, 0);
+         nd->value[lane] = value_new(c, false);
+         l.dst = nd->value[lane];
+         lop_add(c, &l);
+      }
+      for (unsigned lane = 0; output && lane < (direct_ba ? 2u : 1u); lane++) {
+         struct lop l;
+
+         lop_init(&l, L_MOV_OUT, lane, n);
+         l.opval[0] = nd->value[lane];
+         lop_add(c, &l);
+      }
+      return true;
+   }
    if (nd->kind == N_COMPOSE) {
       struct lop l;
       struct kkey k = key_literal(nd->lit[0], nd->lit[0]);
@@ -3260,7 +3315,7 @@ allocate(struct ctx *c)
          "FRACT", "FLOOR", "CEIL", "CMP", "SEL", "CHAIN",
          "MIN_RC", "MAX_RC", "NEG", "SAT",
          "MOV_OUT", "MOVC_OUT", "MOVC_TMP", "MOVC_SECOND", "RAW",
-         "DEPTH", "KILL",
+         "DEPTH", "KILL", "DERIV",
       };
       unsigned i = 0;
 
@@ -3269,7 +3324,7 @@ allocate(struct ctx *c)
             "VARY", "TEX", "UBO", "LIT", "MUL", "ADD", "SUB", "MAD",
             "MIN", "MAX", "NEG", "FRACT", "FLOOR", "CEIL", "EXP2", "LOG2",
             "RCP", "RSQ", "FRAGCOORD", "CMP", "SEL", "SAT",
-            "LOAD", "COMPOSE", "PAIR", "FACE",
+            "LOAD", "COMPOSE", "PAIR", "FACE", "DDX", "DDY",
          };
          unsigned count[ARRAY_SIZE(kinds)] = { 0 };
 
@@ -3505,6 +3560,16 @@ encode_lops(struct ctx *c)
          a = opreg(c, l, 0);
          emit(c, w0_make(a, NONE, NONE, 0x40, l->cls, 0x1c),
               w1_make(0xafdfc000 | l->opswz[0] << 8, 0, a));
+         break;
+      case L_DERIV:
+         /* fs-dfdx, fs-dfdy and fs-fwidth: two idle slots precede every
+          * derivative, W1 bit 14 picks y, and the c select repeats a's. */
+         a = opreg(c, l, 0);
+         emit(c, 0xffff9100u, 0xa00fc00fu);
+         emit(c, 0xffff9100u, 0xa00fc00fu);
+         emit(c, w0_make(a, NONE, NONE, d, 0, op0),
+              w1_make(0x8c020c00u | l->cls << 14 | l->opswz[0] << 8 |
+                      l->opswz[0] << 4, 0, a));
          break;
       }
    }
@@ -5206,6 +5271,12 @@ compile_impl_kills(struct ctx *c, nir_function_impl *impl,
          case nir_intrinsic_load_ubo_vec4:
             break;
          case nir_intrinsic_load_input:
+         case nir_intrinsic_ddx:
+         case nir_intrinsic_ddx_fine:
+         case nir_intrinsic_ddx_coarse:
+         case nir_intrinsic_ddy:
+         case nir_intrinsic_ddy_fine:
+         case nir_intrinsic_ddy_coarse:
             break;
          default:
             /* intrinsic names are static strings */
