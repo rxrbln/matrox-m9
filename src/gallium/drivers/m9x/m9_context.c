@@ -1140,6 +1140,13 @@ m9_transfer_unmap(struct pipe_context *pctx, struct pipe_transfer *ptransfer)
             }
          }
 
+         if (m9_debug_textures)
+            fprintf(stderr, "m9x: store texture %u %s level %u box %d,%d,%d "
+                    "%dx%dx%d: %d\n", resource->handle,
+                    util_format_short_name(resource->base.format),
+                    ptransfer->level, ptransfer->box.x, ptransfer->box.y,
+                    ptransfer->box.z, ptransfer->box.width,
+                    ptransfer->box.height, ptransfer->box.depth, store);
          /* M9X_TEXTURE_ADDRCODE=1 overwrites the whole object with each
           * dword's own index, so a sampled colour names the address the
           * sampler read (a placement probe, not a rendering mode). */
@@ -3257,6 +3264,12 @@ m9_job_textures(struct m9_context *ctx, const struct m9_fs_variant *fs,
          m9_warn_once(ctx, M9_WARN_TEXTURE, reason);
          return m9_skip_reason(ctx, reason);
       }
+      if (m9_debug_textures)
+         fprintf(stderr, "m9x: unit %u handle %u 70=%08x 79=%08x 7a=%08x "
+                 "7c=%08x 7d=%08x levels %u..%u\n", u, key->units[u].handle,
+                 key->units[u].w70, key->units[u].w79, key->units[u].w7a,
+                 key->units[u].w7c, key->units[u].w7d,
+                 view->u.tex.first_level, view->u.tex.last_level);
       key->unit_res[u] = view->texture;
       for (unsigned i = 0; i < 3; i++) {
          key->coord_scale[u][i] =
