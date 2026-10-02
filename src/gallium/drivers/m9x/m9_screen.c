@@ -260,7 +260,8 @@ m9_is_format_supported(struct pipe_screen *screen, enum pipe_format format,
       if (bind & ~(PIPE_BIND_SAMPLER_VIEW | PIPE_BIND_LINEAR |
                    PIPE_BIND_RENDER_TARGET))
          return false;
-      if (!m9_texture_format(format, NULL))
+      if (!m9_texture_format(format, NULL) ||
+          util_format_is_depth_or_stencil(format))
          return false;
       break;
    default:
@@ -527,6 +528,10 @@ m9_resource_create(struct pipe_screen *pscreen,
          M9_RESOURCE_LINEAR_DEPTH :
          (templ->bind & PIPE_BIND_RENDER_TARGET) && !templ->last_level &&
          !layered ? M9_RESOURCE_LINEAR_COLOR : M9_RESOURCE_LINEAR_TEXTURE;
+      /* A mipmapped depth image is a sampler source only, like a
+       * mipmapped colour one: store the chain as a texture. */
+      if (resource->kind == M9_RESOURCE_LINEAR_DEPTH && templ->last_level)
+         resource->kind = M9_RESOURCE_LINEAR_TEXTURE;
       if (resource->kind != M9_RESOURCE_LINEAR_TEXTURE && templ->last_level)
          goto fail;
       /* A face and a slice are reachable only through the tiled calculator:

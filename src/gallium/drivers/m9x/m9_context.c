@@ -848,7 +848,11 @@ m9_texture_window(struct m9_context *ctx, const struct m9_resource *resource,
       .op = write ? PARHELIA_M9_ACCESS_WRITE : PARHELIA_M9_ACCESS_READ,
       /* The kernel window takes the small kind with both dimensions up to
        * 64, and the large kind only with a 32-aligned span. */
-      .descriptor0 = (uint32_t)resource->texture_code << 24 |
+      /* The window places 32-bit elements alike whatever they hold, and
+       * the kernel takes only colour codes for it. */
+      .descriptor0 = (uint32_t)(resource->texture_code ==
+                                M9_TEXTURE_CODE_DEPTH24 ? 0xc8 :
+                                resource->texture_code) << 24 |
                      (small ? M9_TEXTURE_KIND_2D :
                               M9_TEXTURE_KIND_RENDER) << 16 | span,
       .descriptor1 = 1u << 16 | m9_surface_even_height(lvl->height),

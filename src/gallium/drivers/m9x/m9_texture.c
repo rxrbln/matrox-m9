@@ -65,6 +65,17 @@ m9_texture_format(enum pipe_format format, struct m9_texture_format *out)
       info = (struct m9_texture_format){ PIPE_FORMAT_B10G10R10X2_UNORM,
                                          M9_TEXTURE_CODE_A2R10G10B10 };
       break;
+   /* DEPTH24 is a 32-bit element, LE d << 8, with the ordinary placement
+    * (CAPTURED, docs/parhelia-m9-texture-storage.md 3); a 16-bit depth is
+    * widened into it like the narrow colour formats. */
+   case PIPE_FORMAT_X8Z24_UNORM:
+   case PIPE_FORMAT_S8_UINT_Z24_UNORM:
+      info = (struct m9_texture_format){ format, M9_TEXTURE_CODE_DEPTH24 };
+      break;
+   case PIPE_FORMAT_Z16_UNORM:
+      info = (struct m9_texture_format){ PIPE_FORMAT_X8Z24_UNORM,
+                                         M9_TEXTURE_CODE_DEPTH24 };
+      break;
    default:
       return false;
    }
