@@ -89,6 +89,7 @@ struct m9_texture_bind {
    unsigned last_level;       /* resident levels above the base */
    unsigned view_first_level; /* relative to the base */
    unsigned view_last_level;  /* relative to the base */
+   bool srgb;                 /* the program decodes this unit's texels */
 };
 
 struct m9_texture_unit {

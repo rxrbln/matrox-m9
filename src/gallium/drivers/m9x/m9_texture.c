@@ -19,6 +19,7 @@
 
 #include "pipe/p_defines.h"
 #include "util/format/u_format.h"
+#include "util/format_srgb.h"
 #include "util/macros.h"
 
 bool
@@ -825,9 +826,15 @@ m9_texture_unit_init(struct m9_texture_unit *unit, uint32_t handle,
    /* Raw DEPTH16 sampling. */
    if (bind->code == 0xb8 && !shadow)
       unit->w7c |= 1u << 31;
-   for (unsigned c = 0; c < 4; c++)
-      border[c] = (unsigned)lroundf(CLAMP(s->border_color.f[c], 0.0f, 1.0f) *
-                                    255.0f);
+   /* GL does not decode the border, so an sRGB unit stores it encoded and
+    * the program's decode returns it. */
+   for (unsigned c = 0; c < 4; c++) {
+      float v = CLAMP(s->border_color.f[c], 0.0f, 1.0f);
+
+      border[c] = bind->srgb && c < 3 ?
+                  util_format_linear_float_to_srgb_8unorm(v) :
+                  (unsigned)lroundf(v * 255.0f);
+   }
    m9_texture_border_order(bind->code, order);
    unit->w7e = border[order[1]] << 24 | border[order[0]] << 8;
    unit->w7f = border[order[3]] << 24 | border[order[2]] << 8;

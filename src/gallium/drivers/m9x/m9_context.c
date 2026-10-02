@@ -3278,6 +3278,7 @@ m9_job_textures(struct m9_context *ctx, const struct m9_fs_variant *fs,
          continue;
       }
       reason = m9_texture_bind_view(view, &bind);
+      bind.srgb = !reason && util_format_is_srgb(view->format);
 
       if (reason && view && view->texture && ctx->debug)
          fprintf(stderr, "m9x: unit %u view %s on %s swizzle %u%u%u%u: %s\n",
