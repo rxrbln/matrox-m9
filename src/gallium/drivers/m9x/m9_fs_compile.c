@@ -938,18 +938,36 @@ build_tex(struct ctx *c, nir_tex_instr *tex)
     * A shadow fetch adds the comparison reference as a third component of
     * the same stream. */
    unsigned coord_comp[3];
-   struct coord_expr ce[3];
+   struct coord_expr ce[3], qe;
    struct m9_fs_coord_affine affine = { 0 };
+   int first = -1;
 
+   if (pi >= 0 && !coord_parse(nir_get_scalar(tex->src[pi].src.ssa, 0), &qe))
+      return fail(c, "texture sampling needs a computed coordinate pass"), -1;
    for (unsigned i = 0; i < dims; i++) {
       nir_scalar src = i < 2 || volume ?
                        nir_get_scalar(tex->src[ci].src.ssa, i) :
                        nir_get_scalar(tex->src[ri].src.ssa, 0);
 
-      if (!coord_parse(src, &ce[i]) || !ce[i].varying ||
-          ce[i].location != ce[0].location)
+      if (!coord_parse(src, &ce[i]))
          return fail_coord(c, tex->src[ci].src.ssa);
-      coord_comp[i] = ce[i].component;
+      if (first < 0 && ce[i].varying)
+         first = i;
+   }
+   /* A component that reads no varying is a per-draw constant: it rides
+    * in the transform's bias, at the component its position names. */
+   if (first >= 0) {
+      location = ce[first].location;
+      if (ce[first].component < (unsigned)first)
+         return fail_coord(c, tex->src[ci].src.ssa);
+   } else {
+      location = pi >= 0 && qe.varying ? qe.location : M9_FS_COORD_CONSTANT;
+   }
+   for (unsigned i = 0; i < dims; i++) {
+      if (ce[i].varying && ce[i].location != location)
+         return fail_coord(c, tex->src[ci].src.ssa);
+      coord_comp[i] = ce[i].varying ? ce[i].component :
+                      first >= 0 ? ce[first].component - first + i : i;
       affine.scale[i] = ce[i].scale;
       affine.bias[i] = ce[i].bias;
       affine.present |= !coord_is_identity(&ce[i]);
@@ -974,23 +992,16 @@ build_tex(struct ctx *c, nir_tex_instr *tex)
     * third component, so a shadow fetch owns the low half of its slot. */
    if ((tex->is_shadow || volume) && (coord_comp[0] || coord_comp[2] != 2))
       return fail(c, "shadow reference is not the third coordinate"), -1;
-   /* The parse already names the varying the coordinate interpolates.
-    * Chasing operand 0 of the transform instead lands on the uniform when
-    * the shader writes scale * varying + bias with the scale first, and the
-    * stream would then be built from whatever location that load reads. */
-   location = ce[0].location;
-   /* The fixed-function projector is w of the same varying; the driver
-    * divides the coordinate stream per vertex. */
+   /* The projector is w of the same varying or a per-draw constant, taken
+    * through the transform's fourth term; the driver divides the
+    * coordinate stream per vertex. */
    if (pi >= 0) {
-      nir_scalar q = nir_scalar_chase_movs(
-         nir_get_scalar(tex->src[pi].src.ssa, 0));
-
-      if (!nir_scalar_is_intrinsic(q) ||
-          nir_intrinsic_io_semantics(nir_def_as_intrinsic(q.def)).location !=
-          location ||
-          nir_intrinsic_component(nir_def_as_intrinsic(q.def)) + q.comp != 3)
+      if (qe.varying && (qe.location != location || qe.component != 3))
          return fail(c, "texture sampling needs a computed coordinate pass"),
                 -1;
+      affine.scale[3] = qe.scale;
+      affine.bias[3] = qe.bias;
+      affine.present |= !qe.varying || !coord_is_identity(&qe);
    }
    /* Fetches that agree in sampler and coordinate read one texel pair: a
     * unit carries a fetch, and two of them would sample the same place. */

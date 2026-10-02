@@ -3272,7 +3272,7 @@ m9_job_textures(struct m9_context *ctx, const struct m9_fs_variant *fs,
          m9_texture_unit_placeholder(&key->units[u],
                                      ctx->placeholder_texture.handle);
          key->unit_scale[u][0] = key->unit_scale[u][1] = 1.0f;
-         for (unsigned i = 0; i < 3; i++) {
+         for (unsigned i = 0; i < 4; i++) {
             key->coord_scale[u][i] = 1.0f;
             key->coord_bias[u][i] = 0.0f;
          }
@@ -3318,7 +3318,7 @@ m9_job_textures(struct m9_context *ctx, const struct m9_fs_variant *fs,
                  key->units[u].w7c, key->units[u].w7d,
                  view->u.tex.first_level, view->u.tex.last_level);
       key->unit_res[u] = view->texture;
-      for (unsigned i = 0; i < 3; i++) {
+      for (unsigned i = 0; i < 4; i++) {
          key->coord_scale[u][i] =
             m9_coord_term(ctx, &p->texcoord_affine[k].scale[i]);
          key->coord_bias[u][i] =
@@ -4266,12 +4266,16 @@ m9_render_get_vertex_info(struct vbuf_render *render)
 
       for (unsigned j = 0; j < v->extra_count; j++) {
          unsigned location = v->extra_location[j];
-         unsigned name, index;
+         unsigned name = 0, index = 0;
          int output;
 
          /* The draw module scans shader outputs with need_texcoord set. */
-         tgsi_get_gl_varying_semantic(location, true, &name, &index);
-         output = draw_find_shader_output(r->ctx->draw, name, index);
+         if (location == M9_FS_COORD_CONSTANT) {
+            output = -1;
+         } else {
+            tgsi_get_gl_varying_semantic(location, true, &name, &index);
+            output = draw_find_shader_output(r->ctx->draw, name, index);
+         }
          if (r->ctx->debug)
             fprintf(stderr, "m9x: CPU varying %u location %u semantic %u/%u "
                     "draw output %d\n", j, location, name, index, output);
@@ -4419,9 +4423,15 @@ m9_scale_coords(const struct m9_job_key *key, float *extra)
       if (p->texcoord_affine[k].present && !(folded & BITFIELD_BIT(j))) {
          unsigned n = p->texcoord_shadow[k] || p->texcoord_volume[k] ? 3 : 2;
 
-         for (unsigned i = 0; i < n; i++)
-            extra[4 * j + i] = extra[4 * j + i] * key->coord_scale[u][i] +
+         for (unsigned i = 0; i < 4; i++) {
+            /* A constant term ignores the stream, whatever it holds. */
+            if (i >= n && (i < 3 || !p->texcoord_projective[k]))
+               continue;
+            extra[4 * j + i] = key->coord_scale[u][i] == 0.0f ?
+                               key->coord_bias[u][i] :
+                               extra[4 * j + i] * key->coord_scale[u][i] +
                                key->coord_bias[u][i];
+         }
          folded |= BITFIELD_BIT(j);
       }
       if (p->texcoord_projective[k] && !(divided & BITFIELD_BIT(j))) {

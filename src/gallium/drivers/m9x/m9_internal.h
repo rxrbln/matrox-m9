@@ -352,9 +352,10 @@ struct m9_job_key {
    float unit_scale[M9_DRAW_MAX_UNITS][2];
    /* A coordinate the shader computed affinely from a varying, resolved
     * against the constant buffer and applied per vertex.  The third term
-    * is the comparison reference of a shadow fetch. */
-   float coord_scale[M9_DRAW_MAX_UNITS][3];
-   float coord_bias[M9_DRAW_MAX_UNITS][3];
+    * is the comparison reference of a shadow fetch, the fourth the
+    * projector. */
+   float coord_scale[M9_DRAW_MAX_UNITS][4];
+   float coord_bias[M9_DRAW_MAX_UNITS][4];
    unsigned unit_count;
 };
 

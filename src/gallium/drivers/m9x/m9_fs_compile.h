@@ -81,11 +81,16 @@ struct m9_fs_coord_term {
  * the coordinate the shader asked for, which is what lets a unit sample at
  * a computed coordinate even though the engine cannot.
  */
-/* The third component is the comparison reference of a shadow fetch. */
+/* The third component is the comparison reference of a shadow fetch, the
+ * fourth the projector of a projective one. */
 struct m9_fs_coord_affine {
    bool present;
-   struct m9_fs_coord_term scale[3], bias[3];
+   struct m9_fs_coord_term scale[4], bias[4];
 };
+
+/* Coordinate stream of a fetch that reads no varying: the driver feeds it
+ * (0, 0, 0, 1) and the transform's bias carries the coordinate. */
+#define M9_FS_COORD_CONSTANT 0xfeu
 
 struct m9_fs_const {
    enum m9_fs_const_kind kind;
