@@ -454,8 +454,11 @@ m9_resource_create(struct pipe_screen *pscreen,
       return NULL;
    resource->map_fd = -1;
    /* Renderbuffers always request SAMPLER_VIEW; depth images are never
-    * sampled on this path, so do not advertise depth textures for them. */
-   if (!m9_is_format_supported(pscreen, templ->format, templ->target,
+    * sampled on this path, so do not advertise depth textures for them.
+    * A buffer is CPU memory: st binds a pixel pack/unpack buffer as
+    * RENDER_TARGET | SAMPLER_VIEW for GPU paths this driver never takes. */
+   if (templ->target != PIPE_BUFFER &&
+       !m9_is_format_supported(pscreen, templ->format, templ->target,
                                templ->nr_samples, templ->nr_storage_samples,
                                templ->bind & PIPE_BIND_DEPTH_STENCIL ?
                                templ->bind & ~PIPE_BIND_SAMPLER_VIEW :
