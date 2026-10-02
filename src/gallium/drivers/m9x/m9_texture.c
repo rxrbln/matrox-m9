@@ -385,7 +385,7 @@ m9_texture_layout_init(struct m9_texture_layout *layout,
    uint32_t max_dim = MAX3(width, height, depth);
    uint32_t candidates = 0;
    unsigned chain = 1;
-   uint64_t offset = 0;
+   uint64_t offset = 0, end = 0;
    int tail = -1;
 
    if (!layout || !width || !height || !depth || !levels ||
@@ -472,11 +472,24 @@ m9_texture_layout_init(struct m9_texture_layout *layout,
          lvl->face_bytes = (((uint64_t)render.row_span *
                              render.allocation_height * 4) + quantum - 1) &
                            ~(quantum - 1);
+         /* MEASURED (M9X_TEXTURE_ADDRCODE, 100x37): the sampler advances
+          * past a small level by the aperture calculator's 1 KiB pages --
+          * 8 rows at span 32, 4 at span 64 -- so 50x18 takes 0x1400, not
+          * the 0x1800 the surface contract allocates. */
+         if (render.small)
+            lvl->face_bytes = (uint64_t)DIV_ROUND_UP(lvl->height,
+                                                     render.row_span & 63 ?
+                                                     8 : 4) * 0x400;
+         /* The kernel window still checks the surface contract's extent. */
+         end = MAX2(end, offset + layout->faces *
+                         ((((uint64_t)render.row_span *
+                            render.allocation_height * 4) + quantum - 1) &
+                          ~(quantum - 1)));
          lvl->offset = offset;
          offset += layout->faces * lvl->face_bytes;
       }
    }
-   layout->size = offset;
+   layout->size = MAX2(offset, end);
    if (kind == M9_TEXTURE_KIND_1D)
       layout->placed = (2u << (levels - 1)) - 1;
    else if (m9_texture_verify(layout, candidates))

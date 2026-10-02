@@ -32,8 +32,9 @@ m9_context_state_cleanup(struct m9_context *context)
 
 /*
  * A mipmapped colour image is stored as a texture chain whose every level
- * outside the packed tail is laid out by m9_render_surface_layout at its own
- * extent (m9_texture_layout_init), and the BGRA family is the one the
+ * outside the packed tail is laid out at its own extent -- a large level by
+ * m9_render_surface_layout, a small one by the aperture calculator's pages
+ * (m9_texture_layout_init) -- and the BGRA family is the one the
  * render-target address calculator also stores, so the engine renders into
  * such a level in place.  The tail levels share one 32x16 atlas at an origin
  * inside the parent allocation and have no surface shape of their own.
@@ -56,8 +57,11 @@ m9_texture_renders_level(const struct m9_resource *resource, unsigned level)
        !m9_render_surface_layout(lvl->width, lvl->height, resource->cpp,
                                  &layout))
       return false;
-   return (uint64_t)layout.row_span * layout.allocation_height *
-          resource->cpp <= lvl->face_bytes &&
+   /* A small level is stored by the aperture calculator, whose rows end
+    * with the level's own 1 KiB pages rather than the contract height. */
+   return (layout.small ||
+           (uint64_t)layout.row_span * layout.allocation_height *
+           resource->cpp <= lvl->face_bytes) &&
           lvl->offset + lvl->face_bytes <= resource->size;
 }
 
