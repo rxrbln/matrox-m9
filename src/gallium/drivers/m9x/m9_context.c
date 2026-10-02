@@ -3080,9 +3080,11 @@ m9_texture_bind_view(const struct pipe_sampler_view *view,
               m9_res(view->texture)->kind, m9_res(view->texture)->tiled,
               m9_res(view->texture)->texture.levels);
    res = m9_res(view->texture);
+   /* A line is stored as a plane one texel high. */
    if (view->target != PIPE_TEXTURE_2D && view->target != PIPE_TEXTURE_RECT &&
-       view->target != PIPE_TEXTURE_CUBE && view->target != PIPE_TEXTURE_3D)
-      return "only plane, cube and volume sampling is implemented; "
+       view->target != PIPE_TEXTURE_CUBE && view->target != PIPE_TEXTURE_3D &&
+       view->target != PIPE_TEXTURE_1D)
+      return "only line, plane, cube and volume sampling is implemented; "
              "draw skipped";
    /* View swizzles are lowered into the fragment variant (m9_ctx_variant).
     * A depth view names the sampleable part of a depth image, so compare
@@ -3256,6 +3258,15 @@ m9_job_textures(struct m9_context *ctx, const struct m9_fs_variant *fs,
                  view->swizzle_a, reason);
       if (!reason && !sampler)
          reason = "sampled unit has no sampler state; draw skipped";
+      /* The backend samples a line at a constant t: clamping t to the one
+       * row keeps a border colour or a wrap out of it. */
+      struct pipe_sampler_state line_sampler;
+
+      if (!reason && view->target == PIPE_TEXTURE_1D) {
+         line_sampler = *sampler;
+         line_sampler.wrap_t = PIPE_TEX_WRAP_CLAMP_TO_EDGE;
+         sampler = &line_sampler;
+      }
       /* The comparison needs no compensation: a depth surface the engine
        * rendered compares against the plain window depth, exactly, for
        * every one of the eight functions (MEASURED, m9-mesa-glsl

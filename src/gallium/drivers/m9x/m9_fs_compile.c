@@ -915,11 +915,15 @@ build_tex(struct ctx *c, nir_tex_instr *tex)
     * exactly where a shadow fetch reads its reference. */
    bool volume = tex->sampler_dim == GLSL_SAMPLER_DIM_3D ||
                  tex->sampler_dim == GLSL_SAMPLER_DIM_CUBE;
+   /* A line is sampled as a plane one texel high; the driver clamps t to
+    * that row, so the second coordinate is a constant. */
+   bool line = tex->sampler_dim == GLSL_SAMPLER_DIM_1D;
 
-   dims = tex->is_shadow || volume ? 3 : 2;
+   dims = tex->is_shadow || volume ? 3 : line ? 1 : 2;
    if (tex->op != nir_texop_tex ||
-       (!sampler_dim_plane(tex->sampler_dim) && !volume) ||
+       (!sampler_dim_plane(tex->sampler_dim) && !volume && !line) ||
        tex->is_array || ci < 0 || (volume && tex->is_shadow) ||
+       (line && tex->is_shadow) ||
        tex->is_shadow != (ri >= 0) ||
        tex->num_srcs != 1u + (pi >= 0) + (ri >= 0))
       return fail(c, "texture sampling needs a computed coordinate pass"), -1;
@@ -953,6 +957,14 @@ build_tex(struct ctx *c, nir_tex_instr *tex)
                  coord_comp[i], ce[i].scale.literal, ce[i].scale.factor,
                  ce[i].scale.offset, ce[i].bias.literal, ce[i].bias.factor,
                  ce[i].bias.offset);
+   }
+   if (line) {
+      coord_comp[1] = coord_comp[0] + 1;
+      affine.scale[1].literal = 0.0f;
+      affine.scale[1].offset = M9_FS_UNIFORM_ZERO;
+      affine.bias[1].literal = 0.5f;
+      affine.bias[1].offset = M9_FS_UNIFORM_ZERO;
+      affine.present = true;
    }
    if (coord_comp[0] > 2 || coord_comp[1] != coord_comp[0] + 1)
       return fail_coord(c, tex->src[ci].src.ssa);
@@ -5068,13 +5080,25 @@ is_transcendental(const nir_instr *instr, const void *data)
 }
 
 /* Without native integers only booleans reach the integer compares, and a
- * condition here holds 1.0 or 0.0, so they compare as floats. */
+ * condition here holds 1.0 or 0.0, so they compare as floats.  The integer
+ * lowering turns f2i into ftrunc after st's own algebraic pass has run, so
+ * truncation is lowered here as well: floor above zero, ceil below. */
 static bool
 lower_bool_int(nir_builder *b, nir_alu_instr *alu, void *data)
 {
    nir_op op;
 
    (void)data;
+   if (alu->op == nir_op_ftrunc) {
+      nir_def *x;
+
+      b->cursor = nir_before_instr(&alu->instr);
+      x = nir_ssa_for_alu_src(b, alu, 0);
+      nir_def_replace(&alu->def,
+                      nir_bcsel(b, nir_flt_imm(b, x, 0.0), nir_fceil(b, x),
+                                nir_ffloor(b, x)));
+      return true;
+   }
    switch (alu->op) {
    case nir_op_ieq:
       op = nir_op_feq;
@@ -5111,6 +5135,8 @@ vectorize_around_chains(const nir_instr *instr, const void *data)
 static void
 fs_prepare(nir_shader *nir)
 {
+   bool lowered = false;
+
    /* st lowers uniforms to UBO loads after its last folding pass, so a
     * constant slot index arrives as an iadd of two constants; without this
     * every matrix uniform looks indirectly indexed. */
@@ -5119,8 +5145,11 @@ fs_prepare(nir_shader *nir)
             nir_var_shader_in | nir_var_shader_out, false);
    NIR_PASS(_, nir, nir_opt_vectorize, NULL, NULL);
    NIR_PASS(_, nir, nir_lower_alu_to_scalar, is_transcendental, NULL);
-   NIR_PASS(_, nir, nir_shader_alu_pass, lower_bool_int,
+   NIR_PASS(lowered, nir, nir_shader_alu_pass, lower_bool_int,
             nir_metadata_control_flow, NULL);
+   /* A boolean literal compared that way folds to 1.0 or 0.0. */
+   if (lowered)
+      NIR_PASS(_, nir, nir_opt_constant_folding);
    NIR_PASS(_, nir, nir_opt_vectorize, vectorize_around_chains, NULL);
    NIR_PASS(_, nir, nir_opt_copy_prop);
    /* Scalarising a vector special function leaves one chain per component,

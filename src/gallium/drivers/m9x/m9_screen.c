@@ -491,6 +491,10 @@ m9_resource_create(struct pipe_screen *pscreen,
        * allocations of one chain, a volume feeds its slice to the address
        * calculator, and a plane has neither. */
       enum m9_texture_kind kind = m9_texture_kind_for_target(templ->target);
+      /* A line is stored and sampled as a plane one texel high, which keeps
+       * it on the measured plane storage, uploads and mip chain. */
+      if (kind == M9_TEXTURE_KIND_1D)
+         kind = M9_TEXTURE_KIND_2D;
       bool layered = kind == M9_TEXTURE_KIND_CUBE ||
                      kind == M9_TEXTURE_KIND_3D;
       uint32_t depth = kind == M9_TEXTURE_KIND_3D ? templ->depth0 : 1;
