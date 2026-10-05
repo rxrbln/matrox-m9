@@ -942,3 +942,14 @@ Next: implement the genuine OS reserved-mapping service contract, then
 observe FindAdapter's actual M9 PCI/resource requests before attempting
 D3D multisample allocation/binding. Missing M9 register or firmware inputs
 must remain explicit boundaries; P690 register behavior must not fill them.
+
+The optional `--os-mapping` follow-on models bounded virtual-address reservation
+and ownership, independently of any M9 bus address. It resolves the reserved
+MDL mapping function names to explicit stop-only endpoints: invoking either
+without a real MDL/PFN model stops instead of returning fake mapping success.
+With bounded host pool allocation, FindAdapter advances to the concrete
+`KeInitializeMutex` import at1066d; no PCI/MMIO operation has been modeled or
+executed. `os-mapping-trace.json` retains this separate boundary. The default
+baseline capture still stops at the original mapping-routine query, allowing
+its proof to be rerun without the optional adapter. This is host-service setup,
+not initialized M9 hardware or recovered multisample allocation admission.
