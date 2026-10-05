@@ -984,3 +984,20 @@ stops there. This identifies a real M9 device-input boundary, rather than a
 missing VideoPortMapMemory implementation. Existing Linux M9148 register
 snapshots require explicit cold-state/register provenance before replay; their
 values cannot be presumed valid Windows initialization or completion state.
+
+### Captured initial serial control and real bootstrap rejection
+
+Both retained M9148 `pre-mode*/mmio-live.bin` snapshots read BAR2+0x304 as zero.
+The harness now supplies that captured initial control and separately models
+only the serial READ protocol grounded in MxMM.sys: 0x448ef sends opcode03 and
+24-bit address; 0x449ca writes MOSI bit8, 0x44a93/0x44ac1 toggle clock bit4,
+0x44960/0x4499c select/deselect bit0, and 0x44a3a samples MISO bit16 MSB-first.
+Unknown opcodes and reads beyond the captured ROM stop. The independent
+`check-serial-rom.py` proves bit order and bounds. No engine status is modeled.
+
+`captured-bar2-bootstrap-trace.json` records FindAdapter returning status87,
+not success. The actual decision chain 0x5d68f has flags2; helper0x589b0 returns1,
+0x116c1 returns0, 0x11b73 returns1, then 0x11484 returns16 at0x5d6e6. This causes
+rejection; HwInitialize is correctly skipped. No serial ROM transaction has
+executed in this run yet. The next concrete investigation is the 0x11484
+bootstrap requirement, rather than overriding its result or admission gate.
