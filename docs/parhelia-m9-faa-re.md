@@ -3,7 +3,7 @@
 Copyright 2026 René Rebe <rene@exactco.de>
 SPDX-License-Identifier: GPL-2.0
 
-This note closes the multisampling investigation for the M-series (M9/P690)
+This note closes the multisampling investigation for M9 (PCI `102b:0540`, M9128/M9148, `MSerX` images)
 as far as it can be closed without booting Windows, and records exactly what
 the M9128 did when the recovered state was written to it.
 
@@ -899,3 +899,46 @@ capture.  In that submission, `0x4545bdbc` and `0x4545b9b8` name the two
 packets this driver already emits, and every other word of it is the state
 this note still calls [OPEN]: what marks a surface as multisampled, what the
 resolve is, and where the sample positions come from.
+
+## 2026-10-06 independent M9 emulator milestone
+
+`tools/m9emu/faa-trace.py` loads the actual `MSerX/MxMD.dll` and
+`MxMM.sys` in separate PE32 instances; it hashes those images plus
+`MxMGLX.dll`. Its declared PCI identity guard accepts only102b:0540. This
+is not a captured PCI/PCIR bootstrap and does not emulate M9 silicon. It
+imports the generic PE32/Windows host services, never the Parhelia/P690
+hardware model, miniport adapter or initialized snapshots. P6902539/MtxPser
+and LX identities are rejected rather than treated as M9.
+
+**EXECUTED VENDOR CODE, CONTROLLED HOST ABI:** `MxMD.dll` entry10510
+returns1 and registers35 DDI callbacks. `MxMM.sys` DriverEntry55e05 returns0
+and calls VideoPortInitialize with actual FindAdapter55ebd and
+HwInitialize56304. FindAdapter currently stops honestly at24ba1 requesting
+`MmAllocateMappingAddress` through an unimplemented system-routine lookup.
+No unsupported callback is forced to succeed. Subsequent adapter hardware,
+registry, resource ownership and D3D initialization remain open.
+
+The complete actual surface emitterfb920 executes with a controlled
+shadow/command-buffer owner: AD2800 is written four times, followed by
+AF100 once, then its dirty bit80 clears. This is dynamic execution of the
+existing static emitter contract, not an API-created multisample surface.
+The complete reset emitterfab30 additionally produces exactly
+`[6,4545e6e6,3,3,45a4a3a1,0,0,0]`, with its actual RESET_FRAG_PTR begin/end
+label callbacks observed. The controlled callback sinks only record labels;
+they do not supply GPU status or claim a valid reset dispatch. Neither
+execution establishes sample allocation, FAA admission, resolve order or
+physical retirement. No M9 hardware was accessed.
+
+Run with the established Unicorn environment:
+
+```sh
+/home/ai/tmp/faaemu/venv/bin/python tools/m9emu/faa-trace.py \
+  --pci-id 102b:0540 --out captures/m9-faa-emulator-20261006/trace.json
+python3 tools/m9emu/check-trace.py
+```
+
+Retained hashes and actual output are in the M9-named capture directory.
+Next: implement the genuine OS reserved-mapping service contract, then
+observe FindAdapter's actual M9 PCI/resource requests before attempting
+D3D multisample allocation/binding. Missing M9 register or firmware inputs
+must remain explicit boundaries; P690 register behavior must not fill them.
