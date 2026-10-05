@@ -1001,3 +1001,23 @@ not success. The actual decision chain 0x5d68f has flags2; helper0x589b0 returns
 rejection; HwInitialize is correctly skipped. No serial ROM transaction has
 executed in this run yet. The next concrete investigation is the 0x11484
 bootstrap requirement, rather than overriding its result or admission gate.
+
+### Serial identification boundary and control correction
+
+Further source tracing corrects the earlier serial model: MxMM 0x44960 sets
+control bit0 to **select** the flash, and 0x4499c clears it to deselect. The
+previous opposite polarity supplied no flash data and produced status87; that
+rejection is a harness artifact, not an unsupported M9148 revision. At0x303d5
+that zero-filled firmware result reached the PInS-version check at0x1157a.
+The corrected bit-order test now uses this actual select polarity.
+
+The real FindAdapter path first calls flash identification 0x4472b. It emits
+opcode0x15, samples two bytes at0x44766/0x44775 and checks first byte0x1f.
+Alternative paths send opcode0xab with three zero bytes (expect0x10), then test
+other identities. The harness stops at the first actual opcode0x15 rather than
+inventing its response. `serial-identity-boundary-trace.json` retains this
+executed boundary. The captured ROM image proves firmware contents, not flash
+manufacturer/status responses; `board-eeprom-miscio.txt` is a separate slave
+0xa0 EEPROM and cannot supply SPI identity. Required next genuine input is the
+M9148 serial-flash identification response, or a retained vendor-process flash
+object populated by these calls. No M9 target operation has been attempted.
