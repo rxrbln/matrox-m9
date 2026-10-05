@@ -975,3 +975,12 @@ input hashes plus the request. Next required work is an independent M9 register
 mapping model with captured read provenance; a P690 register model is unsuitable.
 Controlled AD/AF and RESET_FRAG_PTR command producers still pass. This progress
 is command generation and bootstrap evidence, not FAA admission or retirement.
+
+The next bounded run supplies only the virtual BAR2 mapping (OS address glue)
+and intercepts **every** device read/write before it can consume invented data.
+`bar2-first-access-trace.json` records the first genuine access: 32-bit read at
+BAR2+0x304, executing MxMM.sys PC 0x2a3c5. No value is supplied and initialization
+stops there. This identifies a real M9 device-input boundary, rather than a
+missing VideoPortMapMemory implementation. Existing Linux M9148 register
+snapshots require explicit cold-state/register provenance before replay; their
+values cannot be presumed valid Windows initialization or completion state.
