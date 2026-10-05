@@ -953,3 +953,25 @@ executed. `os-mapping-trace.json` retains this separate boundary. The default
 baseline capture still stops at the original mapping-routine query, allowing
 its proof to be rerun without the optional adapter. This is host-service setup,
 not initialized M9 hardware or recovered multisample allocation admission.
+
+### NT synchronization and captured M9148 device-input progress
+
+The independent MSerX harness now implements single-thread recursive mutexes,
+notification/synchronization events and bounded mapping-address reservations.
+Unsignaled event waits stop rather than fabricate GPU completion. The executable
+`tools/m9emu/check-nt-host.py` checks recursion, release ownership, event reset,
+zero-timeout and refusal to invent completion.
+
+`--os-mapping --device-inputs` supplies captured M9148 PCI 102b:0540 configuration
+from `m9x-cold-init-20260915-v1` and validates the genuine 128 KiB ROM shadow from
+`m9x-vendor-fourhead-20260917` (matching PCIR identity, image checksum). These are
+separate captures, not a single Windows startup snapshot. Assigned BAR sizes and
+legacy VGA access grants model OS resource ownership; no register values or
+engine completion are supplied. The miniport reaches actual VideoPortMapMemory
+at caller 0x6c9cf, requesting BAR2 0xfebfe000/8192 bytes, address-space flags 4.
+This supersedes the earlier routine-import stop, but FindAdapter/HwInitialize
+are not yet complete. `synchronization-device-trace.json` retains exact image and
+input hashes plus the request. Next required work is an independent M9 register
+mapping model with captured read provenance; a P690 register model is unsuitable.
+Controlled AD/AF and RESET_FRAG_PTR command producers still pass. This progress
+is command generation and bootstrap evidence, not FAA admission or retirement.
