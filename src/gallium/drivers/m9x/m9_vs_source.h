@@ -35,6 +35,15 @@ struct m9_vs_source_layout {
    unsigned record_dwords;  /* floats per source record */
 };
 
+/* Proves a stored output component is exactly one, either a literal or a
+ * direct input component whose bound format unpacks to the GL default one.
+ * Other expressions and components present in the source remain unproved. */
+bool m9_vs_output_is_one(struct nir_shader *nir,
+                         const struct m9_vs_program *program,
+                         const struct pipe_vertex_element *elements,
+                         unsigned element_count, unsigned location,
+                         unsigned component);
+
 /* Resolves each attribute the program declared to the vertex element that
  * feeds it.  Returns false when the draw cannot be served natively: an
  * attribute with no element, a format the record cannot carry, or an

@@ -10,6 +10,7 @@
 
 #include <string.h>
 
+#include "nir.h"
 #include "util/format/u_format.h"
 #include "util/u_math.h"
 
@@ -23,6 +24,82 @@ m9_vs_source_format_ok(enum pipe_format format)
    return d && !util_format_is_compressed(format) &&
           d->colorspace == UTIL_FORMAT_COLORSPACE_RGB &&
           util_format_get_blocksize(format) <= 16;
+}
+
+bool
+m9_vs_output_is_one(struct nir_shader *nir,
+                    const struct m9_vs_program *program,
+                    const struct pipe_vertex_element *elements,
+                    unsigned element_count, unsigned location,
+                    unsigned component)
+{
+   nir_intrinsic_instr *store = NULL;
+
+   if (!nir || !program || !elements || component >= 4)
+      return false;
+   nir_function_impl *entry = nir_shader_get_entrypoint(nir);
+
+   if (!entry || exec_list_length(&entry->body) != 1)
+      return false;
+   nir_foreach_function_impl(impl, nir) {
+      nir_foreach_block(block, impl) {
+         nir_foreach_instr(instr, block) {
+            if (instr->type != nir_instr_type_intrinsic)
+               continue;
+            nir_intrinsic_instr *intr = nir_instr_as_intrinsic(instr);
+
+            if (intr->intrinsic != nir_intrinsic_store_output ||
+                nir_intrinsic_io_semantics(intr).location != location)
+               continue;
+            unsigned first = nir_intrinsic_component(intr);
+
+            if (component < first ||
+                component - first >= intr->src[0].ssa->num_components ||
+                !(nir_intrinsic_write_mask(intr) & BITFIELD_BIT(component - first)))
+               continue;
+            if (store || !nir_src_is_const(intr->src[1]) ||
+                nir_src_as_uint(intr->src[1]))
+               return false;
+            store = intr;
+         }
+      }
+   }
+   if (!store)
+      return false;
+   nir_scalar s = nir_scalar_chase_movs(nir_get_scalar(store->src[0].ssa,
+                                  component - nir_intrinsic_component(store)));
+
+   if (s.def->bit_size != 32)
+      return false;
+   if (nir_scalar_is_const(s))
+      return nir_scalar_as_float(s) == 1.0f;
+   if (!nir_scalar_is_intrinsic(s))
+      return false;
+   nir_intrinsic_instr *input = nir_def_as_intrinsic(s.def);
+
+   if (input->intrinsic != nir_intrinsic_load_input ||
+       !nir_src_is_const(input->src[0]) || nir_src_as_uint(input->src[0]))
+      return false;
+   unsigned input_location = nir_intrinsic_io_semantics(input).location;
+   unsigned input_component = nir_intrinsic_component(input) + s.comp;
+
+   if (input_component >= 4)
+      return false;
+   for (unsigned i = 0; i < program->attr_count; i++) {
+      if (program->attrs[i].constant ||
+          program->attrs[i].location != input_location)
+         continue;
+      unsigned element = m9_vs_attr_element(program, i);
+
+      if (element >= element_count ||
+          !m9_vs_source_format_ok(elements[element].src_format))
+         return false;
+      const struct util_format_description *format =
+         util_format_description(elements[element].src_format);
+
+      return format->swizzle[input_component] == PIPE_SWIZZLE_1;
+   }
+   return false;
 }
 
 bool

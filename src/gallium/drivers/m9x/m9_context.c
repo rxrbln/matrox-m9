@@ -5447,7 +5447,8 @@ m9_native_vs_add_stream(struct m9_vs_outputs *out,
  * for the varyings it writes; the layout is what a second compile of it
  * produces. */
 static const char *
-m9_native_vs_layout(const struct m9_job_key *key, const struct m9_vs_program *p,
+m9_native_vs_layout(struct m9_context *ctx, const struct m9_job_key *key,
+                    const struct m9_vs_program *p,
                     struct m9_vs_outputs *out)
 {
    const struct m9_fs_pass_streams *st;
@@ -5494,8 +5495,23 @@ m9_native_vs_layout(const struct m9_job_key *key, const struct m9_vs_program *p,
       for (unsigned k = 0; k < fp->texture_count; k++) {
          if (st->texture_coord[k] == M9_RASTER_COORD_NONE)
             continue;
-         if (fp->texcoord_projective[k])
-            return "the texture coordinate is divided by a projector";
+         if (fp->texcoord_projective[k]) {
+            const struct m9_fs_coord_affine *a = &fp->texcoord_affine[k];
+            unsigned u = st->unit[k];
+            bool one = u < key->unit_count &&
+                       (!a->present ||
+                        key->coord_scale[u][3] + key->coord_bias[u][3] == 1.0f) &&
+                       m9_vs_output_is_one(ctx->vs->cur->nir, p,
+                          ctx->velems->elements, ctx->velems->count,
+                          fp->texcoords[k], a->swizzled ? a->comp[3] : 3);
+
+            /* Fixed-function two-component arrays provide q=1 through
+             * their source format, even though the FS still names a
+             * projector.  The actual VS producer and bound format must
+             * prove that value before the per-vertex divide is omitted. */
+            if (!one)
+               return "the texture coordinate is divided by a projector";
+         }
          if (fp->texcoord_affine[k].swizzled)
             return "the texture coordinate reorders its components";
          if (fp->texcoord_shadow[k] || fp->texcoord_volume[k])
@@ -6074,7 +6090,7 @@ m9_native_vs_draw(struct m9_context *ctx, const struct pipe_draw_info *info,
    if (!m9_viewport_clip(ctx, &key))
       return true;
 
-   reason = m9_native_vs_layout(&key, &ctx->vs->cur->program, &outputs);
+   reason = m9_native_vs_layout(ctx, &key, &ctx->vs->cur->program, &outputs);
    if (reason) {
       m9_native_vs_note(ctx, reason);
       return false;
