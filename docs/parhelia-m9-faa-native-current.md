@@ -731,3 +731,35 @@ This checkpoint proves actual vendor allocation outputs and sentinel CPU
 initialization on modeled OS-owned storage. Pool6 semantic initialization,
 HZ/companion GPU clears, enabled FAA draw/resolve and normal display admission
 remain open. No rendered FAA fragment is claimed.
+
+### Owned addresses translated by actual command emitters
+
+The owned-resource runner now also executes actualfb920/fce50 and the real
+stream relocation routines25680/24870 using the allocated references above.
+Stream storage and its reference-recording callback are controlled CPU caller
+ABI inputs; the callback supplies no resource allocation or GPU completion.
+`tools/check-m9-faa-owned-commands.py` verifies the backing provenance and
+encoded address offsets against the generated capture.
+
+Actualfb920 binds pool6 at index24 using kind2b, and main/auxiliary at BC/BD
+using kinds9/a. All three payloads preserve the allocated GPU address's low
+bit1 tag. It emits E6 payload `6dc00000 00000001 00000001`.
+
+Actualfce50 uses distinct cached references: sentinel at shadow7c/80, pool6 at
+84/88. Pool6 restoration produces kind2c/2f payloads `(pool6+284)|1` and
+`(pool6+2c4)|1`. The A1/A3/A4 fragment-pointer save uses kind30 and sentinel
+offsets8/c/10. The sentinel's input pairs contain tag40000000 plus the offset,
+and point to the real wrapper+74 relocation record. Actual25680 reads that
+record's cached encoded GPU address and produces `(sentinel+offset)|1`.
+The CPU wrapper/backing addresses therefore do not enter the GPU stream.
+This context path's E6 payload is `6dc00000 42000000 000000a1`, followed by
+the final save E6 `40008000`; it differs from the fb920 binding operation.
+
+The sentinel's second initialization word28041968 is a literal immediate:
+pinned instruction0xacae1 bytes `c7 40 04 68 19 04 28` encode
+`mov [eax+4],0x28041968`. It is reused by the reset path at0xacb9b. Its
+numerical overlap with this model's heap range does not make it an owner
+pointer or an address relocation; the native initialization should retain
+the literal value. This proof closes command address translation and the
+sentinel literal provenance, while HZ clear construction and rendered FAA
+remain separate outstanding requirements.
