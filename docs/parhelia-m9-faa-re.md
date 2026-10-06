@@ -1996,8 +1996,9 @@ ABI/normal D3D policy (`19c5699d`) and joined frame/public frontend API.
 This provides a complete CPU command-production/submission sequence and an
 honest hardware-response boundary. Executable native translation must preserve
 all referenced resource/program backing, address domains and lifetime through
-observed retirement. It must not copy synthetic OS addresses, count envelopes,
-unspecified RAM contents, or the blocked completion result into native packets.
+observed retirement. It must not copy synthetic OS addresses or unspecified RAM contents into native
+packets, and must not invent the blocked completion result. Counted secondary
+images require their genuine typed pointer/export contract, described below.
 
 The refreshed retirement capture uses native joined-frame API `b954cf25`, whose
 passive hooks start before queue initialization. All six stages are required:
@@ -2016,3 +2017,33 @@ available for typed native translation.
 This ownership manifest does not make the counted secondary draw image a raw
 indexed command stream, nor establish that ordinary DP2 state correctly retains
 FAA companion/depth/MRT participation. Those are separate execution gates.
+
+
+### Counted secondary image is exported unchanged (2026-10-06)
+
+Passive observers execute the genuine nested queue pop `MxMD!24b10` and its
+pointer exporter `24c73..24d45` during the joined CPU frame. The triangle image
+has queue depth1/kind1, 760bytes (190DWORDs). Forty-three count records consume
+187DWORDs using stride `count+2`: the count word precedes `count+1` following
+words, which can contain more than one indexed packet. The final three words
+are the actual primitive `[23000001,0,4]`.
+
+The primary stream is restored to depth0/kind0. Its genuine exporter writes
+`[45452d2c,01042002,010422fa]`: actual buffer translation plus CPU start/end,
+start address selector2, and end mode2 from the saved secondary kind. Hashes
+before and after pop/export are identical:
+`318d65e10d7c9f667646bc1e550b2d3676f69c353a2248507c31a6d67f5d4ede`.
+There is no CPU strip, conversion or copy between these two observations; the
+primary pointer references the same counted image. Thus blanket removal of
+count words or insertion into the raw indexed ABI would discard the actual
+vendor submission contract. A private replay must preserve the bounded typed
+secondary image and its pointer/mode semantics. Hardware interpretation and
+correct FAA draw target participation still require proof; neither is claimed
+from this CPU trace.
+
+Reproduce with `tools/m9emu/check-counted-submit.py --runtime-tools tools/faaemu`
+and actual PCI inventory/resources. The passive helper is
+`tools/m9emu/m9_counted_submit.py`; its retained output is
+`captures/m9128-device-inputs-20261006/counted-secondary-submit.json`.
+Runtime dependencies are the same genuine full-frame helper `b954cf25` and
+ordinary option/allocator ABI `19c5699d`; no target access or GPU reply is added.
