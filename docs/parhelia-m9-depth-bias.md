@@ -68,11 +68,26 @@ this proof; this is vendor hardware evidence, not our new native test.
 ## Implementation scope and validation
 
 The candidate retains native GPU preprocessing and enables raster bias for
-filled triangles with a valid D24 attachment, finite factor/units, scaled
+filled triangles with enabled depth testing, a valid D24 attachment, finite
+factor/units, scaled
 units and clamp zero. Other offset modes, split raster shaders and explicit
 fragment-depth writers retain the existing CPU path. Bias words are part of
 the job state key and command budget. CPU-transformed draws never receive
 this hardware bias a second time. Preprocessing EF remains unchanged.
+
+With depth testing disabled, ordinary colour-only draws remain native and
+emit no bias pair or EF26, even with a D24 attachment and offset enabled.
+If the fragment program reads fragment position, the existing CPU offset
+stage remains responsible for its pre-shading z; offset is not blindly
+ignored for that program. The single-pass schedule itself preserves the
+key EF26 (its depth selection is schedule-based, not `depth_enabled`), so
+there was no demonstrated single-pass bit-loss. This tightening limits
+hardware activation to the state proved by vendor captures.
+
+The real attachment admission is D24: `m9_format.c` only advertises depth
+storage for `S8_UINT_Z24_UNORM` and `X8Z24_UNORM`, code 7d/cpp4, and
+`m9_screen.c` attaches HZ only for that code. Z16 is sampler-only and cannot
+satisfy the required attachment/HZ predicate.
 
 Kernel admission accepts only the finite two-scalar D0/D1 packet in that
 order, with no relocation expectation; D0 and D1 stay outside the general
@@ -91,6 +106,10 @@ Offline checks completed:
 * New `m9-mesa-glsl polyoffsetd`: llvmpipe 26.2.4 **0/76800 wrong pixels**.
   Sixteen cells cover coplanar and sloped geometry, both signs, units and
   slope magnitudes, zero, disable after nonzero state and Q3's exact -1/-2.
+  `polyoffsetnotestd` keeps the same D24 attachment but disables depth testing;
+  all 32 draws must render, with the final green overlays everywhere. Its
+  llvmpipe reference also passes 0/76800. The no-depth-attachment control
+  `polyoffset` passes 0/76800 as well.
 
 **M9 native validation is pending** a controlled reboot with the typed
 kernel update and this Mesa candidate. No 100% native Q3 claim or FPS gain
@@ -106,7 +125,8 @@ python3 tools/m9-kernel-depth-bias-check.py /path/to/kernel/m9x
 ```
 
 Native bounded workflow: compile this fixture, run `polyoffsetd` with FAA
-off and `M9X_DEBUG=1 M9X_NATIVE_VS=1`, then one ordinary texture control.
+off and `M9X_DEBUG=1 M9X_NATIVE_VS=1`, then `polyoffsetnotestd` and one
+ordinary texture control.
 The depth fixture must pass all pixels and show no native fallback or
 skipped draw. A short Q3 gameplay profile after that can establish whether
 the exact remaining offset draw has become native; no repeated timedemo
