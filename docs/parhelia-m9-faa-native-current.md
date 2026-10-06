@@ -963,3 +963,32 @@ admitted as client-written VRAM. Pool6 initial GPU-written state and additional
 shader/constant resource write provenance remain explicit translation work.
 The sibling retirement trace executes the same returned frame through the final
 counter/flush and stops before the first GPU status read; it supplies no completion.
+
+### Surface admission and triangle coherence correction
+
+The preceding joined CPU-caller trace is **not a coherent FAA rendering frame**.
+Although the shared AA shadow keeps `0x1f`, the actual public triangle compiler
+replaces the previously bound FAA companion/HZ with ordinary depth state and
+selects default MRT outputs. It emits `AD=20`, `AF=0`, `F0=f0000400`,
+`EF=00288800`, and a direct `23000001` launch. Those writes cannot establish
+an antialiased final color draw. Do not replay that image as an FAA hardware test.
+
+The missing normal graph publication is now dynamically recovered separately:
+`tools/m9-vendor-faa-surface-activation.py` executes real `a77c0` on a genuine
+sampled color wrapper (`01000002`, profile12/class2/hfmt66/32-bit). It returns1,
+sets surface flags `+428 bit8`, `+270=1`, and owner `+420/+3c=1`; real `a787d`
+calls `ac7e0` with the graph destination **surface-owner+1c**, and real `a78cc`
+executes backing registry insertion. No graph field is hand-published.
+`docs/traces/m9-vendor-faa-surface-activation-20261006.json` retains all five
+returned resources and exact caller/owner addresses. Primary profile12 is a
+valid class2 color profile; its previous use was not by itself the admission bug.
+
+The activated wrapper still has public resource handle `+bc=0`, and public
+`753e0` consequently cannot select it through initial `2d740` target binding.
+The normal `7a6e0→a3780→885e0` surface association/handle publisher is the next
+join. Actual DP2 render-state and viewport requests are supported as explicit
+caller inputs in the draw fixture; they do not replace normal resource owners.
+A direct GPU-address lookup in BAR0 validity is not sufficient to classify
+pool6/sentinel initialization: the GPU virtual address must first be joined to
+its actual CPU mapping/physical aperture domain. No empty validity mask is
+currently admitted as evidence that the resources are uninitialized.
