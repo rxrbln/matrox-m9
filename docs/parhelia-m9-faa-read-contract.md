@@ -52,7 +52,7 @@ The subsequent actual CPU-copy preparation now stops before the common-buffer
 read at `4e2fc`, with no counter value supplied. The actual tiled address helper
 below is independently verified against all81920 padded pixel coordinates.
 See [the full unfinished source and mapping ledger](parhelia-m9-faa-output-inputs-re.md).
-Correct hardware retirement and rendered pixels remain separate qualifications.
+Linear DMA interpretation is disproved. Correct hardware retirement and rendered pixels remain separate qualifications.
 
 `tools/m9-vendor-faa-read-contract.py` runs the source helper against retained
 OS/MDL owners with strict stops at the first wait or CPU copy. It requires the
@@ -73,3 +73,13 @@ underlying DMA allocation is a linear pixel array. A correct native pixel
 read must use the actual tiled coordinate contract or expose raw tiled bytes
 explicitly. The source helper pins that function and records these CPU-only
 address calculations without reading any pixel.
+
+The native `m9_faa_output_offset` implementation is compared against actual
+`8c4a0` execution for **all81920** pixels of the full320×256 backing, using
+`m9x/tests/faa-output-cpu.py`. Every address matches, and the offsets are an
+exact bijection onto the327680-byte allocation. Visible readback excludes the
+last16rows. The retained
+[coordinate proof](../captures/m9128-device-inputs-20261006/normal-faa-output-coordinate-proof.json)
+records count, helper bytes and address-map checksum, rather than a large
+array of repeated events. Refused coordinates leave the output argument
+unchanged. This is a CPU address proof and makes no claim about GPU pixels.
