@@ -52,9 +52,12 @@ Both masks08 and10 (bits3/4) must be set. It then searches table1f1df0, stride18
 through offset378, for the requested hardware format in one of its three
 format/flag pairs with flag mask02. Constructor51990 calls it at51a3c only when
 request flag01000000 is present. If admitted, flag02000000 chooses selector3;
-otherwise the normal AA request selects2 and marks resource+3d0. The actual
-M9128 initialized getter value remains required; controlled builder inputs are
-not a substitute for this capability owner.
+otherwise the normal AA request selects2 and marks resource+3d0. The actual configured MD owner now executes that getter at62310, returning
+101f8, and genuine477f0 admits3d (result1) while rejecting an absent80 format
+(result0). No helper return is patched. The CPU host's unsupported feature
+transport exercises vendor defaults; normal M9128 initialized ownership and
+physical allocation are still the native/bootstrap agents' join. This closes
+the configured-owner selector2 predicate, not a hardware execution result.
 
 The old claim that flag2 creates a linked kind9 companion was too broad.
 Actual517f0 requires request-format9 and height1, as well as other shape gates.
