@@ -1631,3 +1631,32 @@ heap after MD initialization would overwrite genuine MD-owned writes.
 CPU allocation ownership and the destructive-replay refusal. The artifact is
 `captures/m9128-device-inputs-20261006/shared-platform.json`. This proves CPU
 ownership only; it does not admit FAA surfaces or submit GPU work.
+
+### Normal aperture OS mapping and the remaining refresh boundary
+
+**EMULATED, ACTUAL INPUTS:** normal MD `85d50` (initializer table `1f2520`)
+issues `230458`, four input bytes and sixteen output bytes. MM `7014b ->
+702cf` executes its real mapping policy and selects `0x08000000` bytes on
+the controlled Windows `0x500` host. `69c84` calls real GetDeviceBase with
+physical `0xd0000000` and flags `0xc`, constructs an aperture MDL, builds
+PFNs `0xd0000..0xd7fff`, frees the temporary view and maps a reserved
+write-combined alias. The bounded OS host chooses guest VA `0x60000000`;
+it is not a captured vendor VA. Every initial aperture byte is unknown, and
+guest reads fail until CPU execution has written those bytes. The full PFN
+array is allocated; the x86 MDL.Size retains its 16-bit field.
+
+The output buffer contains the mapped address and 128 MiB length **before**
+the final adapter refresh `10fe6 -> 25978 -> 36f90`. The latter presently
+stops at `344ab` clearing HMC `318` bit30. Consequently the IOCTL has not
+returned, MD `hardware+10` remains zero and `platform+a0` remains the
+pre-mapping BAR aperture size. `check-aperture-owner.py` proves this boundary
+and checks actual PFNs, unknown-content refusal and CPU-written readback.
+A populated response buffer is not successful normal publication.
+
+**STATIC:** `344ab` requests/releases DDC ownership via `341bb/342cb`.
+`341bb:34219` clears `318` bit29; `34251` checks `(3b0 & 2) == 2`;
+`342cb:34307` sets bit29 on release. `capture-hmc.c --ddc` performs only
+this bounded request/grant/readback/restore, with no GPIO/data/transmitter
+writes, no force-grant or polling. The original default bit28 path remains.
+`check-capture-hmc.py` validates both masks/grant predicates and restoration
+on failures against CPU files. Actual DDC capture is pending parent owner.
