@@ -1776,3 +1776,31 @@ Capture: `captures/m9128-device-inputs-20261006/faa-allocation-extents-clear-bou
 The replay uses `--runtime-tools tools/faaemu` in the canonical repository;
 the isolated worktree used the native-agent helper directory explicitly.
 Normal display admission and full `85d50` mapper completion remain unproved.
+
+### Genuine queue/resource context publishers and HZ clear shadow
+
+`m9_queue_context.initialize(e,state)` now executes real ordinary module
+`1a260` followed by resource enable module `1ff90`; both return1. The former
+executes genuine `22e30` and publishes queue owner at hardware `+3600`.
+The latter calls `1e490`; real `1e670` binds clear context `+b4` to owning
+resource `+1160`, and `1e67c` binds clear context `+b8` to resource `+1220`.
+These are genuine ownership writes, replacing the previously absent module
+lifecycle, without inserting shadow pointers into guest state.
+
+`check-faa-allocation-extents.py --initialize-context --advance-clear` now
+continues the original `ac7e0` frame through `b4fe0`/`b5030` to `b54ee`.
+The actual HZ-clear CPU shadow, resource reference, clear value and rectangle
+are retained in `faa-clear-owned-context.json`. The hook stops immediately
+before genuine queue job dispatch. Queue `+30` dispatcher remains null;
+no activation return, GPU clear result or completion is provided. This is
+actual command-state preparation, not an emitted GPU packet or rendered HZ.
+
+Independent exploration of genuine queue activation `230f0` returned0:
+`23cb0` successfully allocates its first real command buffer through `5c160`,
+then the second allocation returns0. Its actual candidate request is
+pool1 / 2MiB, then pool0 / raw `3a6300` bytes. The activation failure is
+retained as a CPU allocator/lifecycle boundary; it must not be overwritten
+with a successful reply or described as a GPU completion issue. Its exact
+heap/configuration dependency and the later dispatcher/currentjob publisher
+remain open. No full normal display admission is implied by the independently
+executed ordinary module CPU paths.
