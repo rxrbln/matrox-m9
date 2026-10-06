@@ -59,31 +59,70 @@ wait. Empty fences and NULL fences remain immediately complete.
 This is a correctness prerequisite, not a demonstrated FPS improvement. The
 single shared secondary/BO ownership protocol is unchanged.
 
+## Implicit buffer dependencies and automatic completion
+
+The next kernel slice reserves all user BOs using the standard DRM_EXEC WW
+locking helper, with READ/WRITE usage from the validated BO reference list.
+It waits foreign implicit hazards and propagates their errors. Own M9 timeline
+dependencies remain in the ordered primary stream; the existing single-slot
+drain establishes their retirement. A per-job fence is published into every
+participating reservation before the actual doorbell. Unposted errors signal
+an error fence immediately. A completed synchronous job signals normally.
+Posted but unfinished work transfers its fence, pins, BO references, and a
+preallocated retirement record under the same transport lock as posting.
+
+A completion worker observes the exact real hardware writeback even if no
+next submit/readback occurs. It drops transport locking while sleeping and
+never takes a BO reservation. Only real matching completion signals a job
+and schedules ownership release. Its watchdog failure preserves an unsignaled
+fence and all outstanding refs/pins, marks the transport wedged, and stops
+polling. Teardown stops/cancels the worker before disabling host DMA; only
+then can it release quarantine and signal a failure fence. The retirement
+record is allocated before posting, avoiding an allocation failure during
+ordinary user-job retirement.
+
+Private triangle resources finish allocation before user WW reservations are
+acquired, so TTM reservations during first resource construction cannot nest
+under the user reservation set. `DRM_M9X` now selects `DRM_EXEC`. The full
+module compiles and its dependency metadata includes `drm_exec`; deployment
+must load/install the matching module if it is not already available.
+
+The M9 simple-pipe funcs omit `prepare_fb`, so the standard simple KMS helper
+calls `drm_gem_plane_helper_prepare_fb`. That helper supplies the framebuffer
+implicit dependency. The newly published render fence therefore reaches the
+existing KMS dependency path; no unproven display command is added. Native
+presentation qualification still requires the target owner's new-module run.
+
 ## Focused verification
 
 `tools/m9-completion-check.py KERNEL_M9X MESA_M9X` extracts the actual kernel
 timeline/wait functions and Mesa fence create/finish functions, compiles them
 with controlled writeback, clock, drain and ioctl adapters, then exercises
-60 cases under AddressSanitizer and UndefinedBehaviorSanitizer. It checks ABI
+73 cases under AddressSanitizer and UndefinedBehaviorSanitizer. It checks ABI
 layout equality, async unsignaled posting, zero/finite/infinite-bounded waits,
 exact writeback matching, delayed completion, lock contention, invalid ioctl
 inputs, unplug/disabled-device admission, interrupts/device errors,
 64-bit wrap, cached completion, older-kernel fallback, and actual failed-drain
 BO/pin quarantine versus real retirement, and actual user-submit ownership
 transfer across unposted errors, sync timeouts, async posts, sync completion
-and an error after real completion. LeakSanitizer is
+and an error after real completion. It also covers implicit publication while
+reservations are held, completion without a next submit, watchdog quarantine,
+worker stop/unplug, foreign-vs-own hazards, foreign errors and reservation
+failure before posting. WW implementation and hardware access are adapters,
+not a claimed emulation of DRM_EXEC's kernel implementation. LeakSanitizer is
 disabled because the workspace sandbox uses ptrace; every allocated test
-fence is freed explicitly. Actual modified kernel objects compile, Mesa batch
+fence is freed explicitly. Actual modified kernel objects/full module compile, Mesa batch
 suite and context/screen objects compile. Native validation remains pending
-the target owner's next controlled kernel deployment.
+the target owner's next controlled kernel deployment. The read-only
+`tools/m9-wait-point.c` checks the new ioctl's capability query and five invalid
+inputs without submitting any command; it compiles with Wall/Wextra/Werror.
 
 ## Next required slices, still open
 
-1. Publish real per-job `dma_resv` fences and signal from observed completion
-   even when no next submit arrives. KMS/foreign consumers must receive a true
-   dependency. Reserve/lock all participating BOs before publication, preserve
-   f587 same-posting-lock pin ownership, and wait only foreign hazards that
-   cannot be satisfied by the ordered M9 stream.
+1. Native-qualify the implemented `dma_resv` publication/automatic completion
+   slice, including the last frame's dependency and read-only WAIT_POINT probe.
+   It preserves f587 same-posting-lock pin ownership; no fence is signaled from
+   a merely returned target.
 2. Timed-out async jobs now retain their pending owner, BO references and pins;
    new submits honor a drain error, and fini releases quarantine only after
    clearing PCI bus mastering. This is tested against the actual drain function.
