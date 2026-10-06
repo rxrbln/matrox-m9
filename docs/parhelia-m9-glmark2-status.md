@@ -1,5 +1,18 @@
 # glmark2 on the m9x driver: where the 60 fps goal actually stands
 
+## 2026-10-06: full 4608-vertex route renders correctly at1024x768
+
+The same Mesa c7b8a6e/DSOdc6e40b6 now passes both complete1024x768 palettes:
+zero wrong pixels of786432 each, maximum channel error1. Full4608-vertex
+four-stage textured/depth chains retire4c0/5e0 without GPU timeout, queue
+empty/wedged0, six native GPU user vertex draws and zero user CPU fallback.
+This is a substantial physical rendering correction for the previously
+wedging layout. Its overall fixture still rejects the assumed dense CPU
+record layout; actual complete bytes are retained for tiled component-plane
+and extent proof. Defaultcap2 remains. Next qualify actual glmark2 scenes,
+radial multipass and optional Q3 lighting; no FPS gain is claimed yet.
+[Exact full-size evidence](../tests/m9-gl2-packed-order-full-hardware-20261006/README.md).
+
 ## 2026-10-06: packed publication fix gives correct textured/depth pixels
 
 Mesa c7b8a6e follows the vendor GLSL high-before-low packed output schedule,
