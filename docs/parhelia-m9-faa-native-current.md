@@ -253,12 +253,13 @@ publishes the device through the real registered-card list. This enabled
 configuration run also passes. These are selected genuine module initializers
 on controlled CPU ABI owners, not a completed hardware startup.
 
-Configuration startup additionally requests miniport feature IOCTL `0x23212c`
-with selectors5,31,32,22 (input8/output8 bytes, second input DWORD0). Their
-actual hardware responses remain unacquired. The helper explicitly returns
-an unsupported error, exercising vendor defaults; it accepts a separate
-feature handler for genuine responses. No hardware-format capability,
-MMIO status, command completion or FAA admission is supplied by this helper.
+Configuration startup additionally requests miniport property IOCTL `0x23212c`
+with selectors5,31,32,22 (input8/output8 bytes, second input DWORD0).
+The original helper explicitly returns an unsupported error, exercising
+vendor defaults; it accepts a separate query handler. These requests were
+initially called feature queries, but actual miniport descriptor mapping below
+proves they are registry properties. No hardware-format capability, MMIO
+status, command completion or FAA admission is supplied by this helper.
 
 `--process` additionally executes the real module initializer `0x64800`,
 which calls `0xbb800` and the actual default-option decoder `0x64530`.
@@ -297,3 +298,33 @@ allocation after adapter capability acquisition. Returning an enabled mask
 or only filling the manager collection would skip this real admission test.
 The current fixture has an empty collection and never attempts these
 allocations, so its early rejection still proves no M9128 restriction.
+
+### Real miniport property dispatch closes the four configuration queries
+
+`--miniport-defaults` executes actual MD `0x61f70` and forwards its four
+IOCTL `0x23212c` requests into a separate genuine MM emulator. Actual MM
+`0x6ca3e` initializes each property from the real descriptor table
+`0x55450`; real normal dispatch `0x70eab -> 0x71428 -> 0x5a228 -> 0x6cbbd`
+performs registry access. The host explicitly reports missing Windows registry
+keys; it supplies no values. Actual MM callback `0x7279d` and default logic
+produce these replies, which are copied verbatim back to MD:
+
+| Selector | Real property | Actual default DWORD | Reply second DWORD |
+| --- | --- | --- | --- |
+| 5 | System.BusMastering | ffffffff | 1 |
+| 31 | User.LargeCursor | 0 | 1 |
+| 32 | User.ForceHardwareColorCursor | 1 | 1 |
+| 22 | System.MmEqualUnit | 0 | 1 |
+
+Both FAA option cases complete the ordinary MD configuration/process owner
+initializers; the enabled case also completes profile publication and card
+registration. [The dynamic capture](traces/m9-vendor-miniport-property-defaults-20261006.json)
+records actual default replies and actual registry keys. These four replies
+are now obtained from vendor code rather than replacing them with unsupported
+errors. The controlled miniport CPU owners are still not hardware initialized.
+
+Static MM dispatch also resolves MD query2's IOCTL `0x23231c`, selector1:
+`0x5d927 -> 0x5dc7b -> 0x5e0eb` reads runtime profile property0x19 and
+returns owner `+0x48`, updated when that property's `+0x14` value is4.
+This is a runtime policy state, not a direct GPU capability register. Its real
+runtime profile remains uninitialized; no successful reply is substituted.
