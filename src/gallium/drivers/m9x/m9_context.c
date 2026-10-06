@@ -984,6 +984,35 @@ m9_transfer_offset(const struct m9_resource *resource, unsigned level,
    return ((uint64_t)box->y * resource->row_span + box->x) * resource->cpp;
 }
 
+static bool
+m9_transfer_sync(struct m9_context *ctx, const struct m9_resource *resource,
+                  unsigned usage)
+{
+   if (usage & PIPE_MAP_UNSYNCHRONIZED)
+      return true;
+   if (resource->base.target == PIPE_BUFFER && !resource->handle) {
+      /* Gallium buffers are CPU allocations. Native draws have already
+       * copied their inputs into job-owned records, indices and constants.
+       * Consume any draw-module CPU reads before the application can write,
+       * but keep those independent GPU jobs batched and in flight. */
+      if (ctx->draw)
+         draw_flush(ctx->draw);
+   } else if (resource->base.target != PIPE_BUFFER ||
+              ctx->screen->queued_submit) {
+      m9_context_sync(ctx);
+   }
+   if (ctx->screen->queued_submit) {
+      if (ctx->lost)
+         return false;
+      if (!(resource->base.target == PIPE_BUFFER && !resource->handle) &&
+          m9_wait_for_point(ctx->screen, ctx->last_point)) {
+         ctx->lost = true;
+         return false;
+      }
+   }
+   return true;
+}
+
 static void *
 m9_transfer_map_locked(struct pipe_context *pctx, struct pipe_resource *pres,
                        unsigned level, unsigned usage,
@@ -1021,15 +1050,8 @@ m9_transfer_map_locked(struct pipe_context *pctx, struct pipe_resource *pres,
    if ((unsigned)box->x > width || (unsigned)box->width > width - box->x ||
        (unsigned)box->y > height || (unsigned)box->height > height - box->y)
       return NULL;
-   /* Pending jobs may still write render and depth targets. */
-   if (!(usage & PIPE_MAP_UNSYNCHRONIZED) &&
-       (pres->target != PIPE_BUFFER || ctx->screen->queued_submit))
-      m9_context_sync(ctx);
-   if (!(usage & PIPE_MAP_UNSYNCHRONIZED) && ctx->screen->queued_submit &&
-       (ctx->lost || m9_wait_for_point(ctx->screen, ctx->last_point))) {
-      ctx->lost = true;
+   if (!m9_transfer_sync(ctx, resource, usage))
       return NULL;
-   }
    transfer = CALLOC_STRUCT(m9_transfer);
    if (!transfer)
       return NULL;
