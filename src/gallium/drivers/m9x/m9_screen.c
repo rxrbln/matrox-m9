@@ -1411,8 +1411,11 @@ m9_screen_create(int fd, const struct pipe_screen_config *config)
    screen->validate_submit = true;
    screen->execute_submit = m9_probe_user_submit(screen);
    struct drm_parhelia_m9_wait_point completion_probe = {0};
-   screen->wait_point = !ioctl(screen->fd, DRM_IOCTL_PARHELIA_M9_WAIT_POINT,
-                               &completion_probe);
+   int completion_status = ioctl(screen->fd, DRM_IOCTL_PARHELIA_M9_WAIT_POINT,
+                                  &completion_probe);
+   /* A valid zero-time query can lose the transport lock to another
+    * context. ETIME still establishes the completion ioctl's presence. */
+   screen->wait_point = !completion_status || errno == ETIME;
    m9_load_fragment_db(screen);
    screen->base.get_screen_fd = m9_fd;
    u_init_pipe_screen_caps(&screen->base, 1);
