@@ -1008,3 +1008,36 @@ admission. The first real draw now reaches render-target validation `75788`,
 which requires the ordinary `hardware+fea8[head]` owner. The earlier handle0
 fixture skipped this branch. Triangle emission and coherent FAA rendering are
 still unproved at this checkpoint; no executable Linux FAA frame is admitted.
+
+### Coherent surface-owned FAA triangle command production
+
+The genuine ordinary `20810` target-owner publisher now returns1 after real
+MM `2322a0` dispatch using measured M9128 DC-bank inputs. The normal frame
+fixture activates the actual primary-owned graph through `a77c0`, associates
+its actual handle through bounded `7a770`, and reuses those DD owners through
+public `bec70` context creation and DP2 drawing. It supplies the real DP2
+viewport and render-state requests. It does not call the old standalone
+graph initializer or manually insert an AA binder between context and drawing.
+
+The real triangle has **two ordered launches**, both `23000001`: an ordinary
+helper operation with count4, then the FAA operation with count3. The second
+operation retains primary `B0=e81001`, companion `B8=1021001/B9=7a220140`,
+HZ `BA=10b9001/BB=f0010140`, main `BC=ed1001`, auxiliary `BD=1008001`, and
+`AD=9b04` (returned main extent `136080 >> 5`). Its actual mode words are
+`F0=c4008600`, `EF=f8004055`, `A8=38038e`, and `AF=0`. A `63000001` launch
+must not be assumed mandatory when the genuine vendor producer emits these
+two `23000001` operations.
+
+The companion descriptor comes from real `aab42→467e0` **selector13**, cached
+at layout `a4/a8/ac` with validity bit `200000`. The HZ descriptor uses
+selector12 at `98/9c/a0` with bit `100000`. Requiring companion selector12
+would reject the genuine producer despite correct graph bindings.
+
+`tools/check-m9-faa-coherence.py` validates exact actual CPU-write provenance
+for every exported byte, real registry/handle retention, both ordered launches,
+the final target/FAA graph addresses, companion13/HZ12 descriptors, capacity,
+and the actual second AA shadow. The normal-frame and normal-coherence traces
+retain the positive receipt. This proves coherent **CPU command production**
+through the real output/resolve caller. Public `bf0e0` display admission,
+kernel executable translation, GPU execution/retirement, antialiasing and a
+Linux screenshot remain separate validation gates.
