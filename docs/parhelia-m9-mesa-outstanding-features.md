@@ -2,6 +2,12 @@
 <!-- SPDX-License-Identifier: GPL-2.0 -->
 # M9 Mesa driver: what four recorded features actually cost to land
 
+**Historical scope:** This September 18 investigation predates the working
+four-target MRT, query and multiple-varying implementations. Use the
+[October 6 M9 topic ledger](parhelia-m9-current-topics.md) for the current
+queue; the sections below preserve the original evidence and implementation
+boundaries at their stated date.
+
 Four features were queued for the m9x Gallium driver on the strength of
 `docs/parhelia-m9-driver-readiness.md`: multiple render targets, the
 occlusion query, several constant spans per job, and a second vertex

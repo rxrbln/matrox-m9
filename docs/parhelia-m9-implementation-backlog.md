@@ -7,6 +7,13 @@ whether a feature works today.
 
 Checked against the driver source on 2026-09-18.
 
+**Current queue:** [M9 open topics, 2026-10-06](parhelia-m9-current-topics.md)
+reconciles this historical ledger against source 6780573 and the October 2
+piglit results. In particular, multiple varyings, four MRT targets,
+occlusion queries and sRGB support have landed. Vertex log2 remains open;
+fragment log2 is implemented. Preserve the dated evidence below rather than
+reopening completed work from its older status rows.
+
 ## Reverse engineered and verified, not implemented
 
 These need no further capture.  The evidence is in the tree and in most cases
