@@ -7,6 +7,11 @@
 #include "util/u_debug.h"
 
 #include "m9_faa.h"
+#include "m9_draw_params.h"
+
+const uint32_t m9_faa_sentinel_init[M9_FAA_SENTINEL_INIT_DWORDS] = {
+   0xa4a3a1a1, 0x28041968, 0, 0, 0,
+};
 
 void
 m9_faa_init(struct m9_faa *faa, uint16_t device_id)
@@ -142,6 +147,39 @@ m9_faa_companion_layout(uint32_t width, uint32_t height,
       .descriptor = 0x7a020000u | row |
                     (width <= 64 && height <= 32 ? 0 : 0x00200000u),
    };
+   return true;
+}
+
+bool
+m9_faa_graph_layout(uint32_t width, uint32_t height,
+                     struct m9_faa_graph_layout *layout)
+{
+   struct m9_faa_companion_layout companion;
+
+   if (!layout || !m9_faa_companion_layout(width, height, &companion))
+      return false;
+   *layout = (struct m9_faa_graph_layout) {
+      .width = width, .height = height,
+      /* Genuine backing extent includes its independent128-byte rounding.
+       * Keep it here even when the kernel rounds the GEM to a larger page. */
+      .main_bytes = (m9_faa_fragment_bytes(width, height) + 127) & ~127ull,
+      .auxiliary_bytes = (m9_faa_fragment_aux_bytes(width, height) + 127) & ~127ull,
+      .companion_bytes = companion.size,
+      .hz_bytes = m9_hz_bytes(width, height),
+      .companion_row_span = companion.row_span,
+      .companion_desc = companion.descriptor,
+      .hz_desc = 0xf0010000u | m9_depth_row_span(width, height),
+   };
+   return true;
+}
+
+bool
+m9_faa_store_ad(uint32_t seed, uint64_t logical_bytes, uint32_t *ad)
+{
+   if (!ad || !logical_bytes || (logical_bytes & 127) ||
+       logical_bytes > M9_FAA_FRAGMENT_CAP_BYTES + 128ull)
+      return false;
+   *ad = (seed & ~0x1fffffu) | (uint32_t)(logical_bytes >> 5);
    return true;
 }
 

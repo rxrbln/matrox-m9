@@ -114,6 +114,15 @@ struct m9_resource {
    struct m9_resource *hz;
 };
 
+/* One surface-owned FAA graph. The indirect command pool belongs to the
+ * kernel's trusted producer and is deliberately absent from this group.
+ * initialized becomes true only after the real GPU initialization retires. */
+struct m9_faa_graph {
+   struct m9_faa_graph_layout layout;
+   struct m9_resource main, auxiliary, companion, hz, sentinel;
+   bool initialized;
+};
+
 /* What the engine's back-end object last carried.  It keeps per-target state
  * there, and a job that finds another shape's state stops the engine, so the
  * object is cleared when this changes rather than ahead of every job. */

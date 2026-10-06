@@ -183,6 +183,8 @@ struct m9_draw_job {
     * that leaves set clear emits the off form the captured stream carries. */
    struct {
       bool set;
+      /* Complete surface-owned graph, admitted separately from raw probes. */
+      bool graph;
       bool raster;   /* restate the pair in the raster range as well */
       uint32_t ad, af;
       /* ae bits 6:4, ef bits 31:29 and two f0 flags are edited rather than
@@ -197,6 +199,8 @@ struct m9_draw_job {
       uint32_t store, store_aux;
       /* Bound at b8/b9 in place of the depth attachment; zero keeps it. */
       uint32_t companion, companion_desc;
+      /* FAA's own HZ attachment, independent of ordinary depth metadata. */
+      uint32_t hz, hz_desc;
    } faa;
 };
 

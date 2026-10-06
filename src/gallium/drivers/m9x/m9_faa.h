@@ -148,6 +148,24 @@ struct m9_faa_companion_layout {
 bool m9_faa_companion_layout(uint32_t width, uint32_t height,
                              struct m9_faa_companion_layout *layout);
 
+/* Logical vendor extents are distinct from a GEM allocation's page padding.
+ * In particular aab89 reads the main store extent, not the colour extent. */
+struct m9_faa_graph_layout {
+   uint32_t width, height;
+   uint64_t main_bytes, auxiliary_bytes, companion_bytes, hz_bytes;
+   uint32_t companion_row_span, companion_desc, hz_desc;
+};
+bool m9_faa_graph_layout(uint32_t width, uint32_t height,
+                         struct m9_faa_graph_layout *layout);
+/* Genuine aab89..aaba3 replaces low21 bits and preserves the seed's rest. */
+bool m9_faa_store_ad(uint32_t seed, uint64_t logical_bytes, uint32_t *ad);
+
+#define M9_FAA_SENTINEL_BYTES 128u
+#define M9_FAA_SENTINEL_INIT_DWORDS 5u
+/* Actual ac7e0/acae1 literals, including the immediate28041968, not a CPU
+ * pointer. Only these20 bytes are initialized by the CPU. */
+extern const uint32_t m9_faa_sentinel_init[M9_FAA_SENTINEL_INIT_DWORDS];
+
 void m9_faa_init(struct m9_faa *faa, uint16_t device_id);
 /* Whether a job has to carry the pair at all: a raw override drives it
  * without the enable, so a probe can sweep a field the formula cannot

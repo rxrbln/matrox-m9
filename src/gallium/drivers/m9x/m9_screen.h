@@ -10,6 +10,7 @@ struct pipe_screen;
 struct pipe_screen_config;
 struct m9_resource;
 struct m9_screen;
+struct m9_faa_graph;
 
 struct pipe_screen *m9_screen_create(int fd,
                                      const struct pipe_screen_config *config);
@@ -18,6 +19,11 @@ int m9_bo_create(struct m9_screen *screen, uint64_t size, uint32_t flags,
 int m9_bo_create_engine_only(struct m9_screen *screen, uint64_t size,
                              unsigned kind, struct m9_resource *resource);
 void m9_bo_destroy(struct m9_screen *screen, struct m9_resource *resource);
+/* Caller owns a zeroed graph and retires its GPU users before destruction.
+ * Creation publishes all five buffers together, or leaves the graph intact. */
+int m9_faa_graph_create(struct m9_screen *screen, uint32_t width,
+                        uint32_t height, struct m9_faa_graph *graph);
+void m9_faa_graph_destroy(struct m9_screen *screen, struct m9_faa_graph *graph);
 int m9_command_bo_create(struct m9_screen *screen,
                          struct m9_resource *resource);
 void m9_command_bo_destroy(struct m9_screen *screen,
