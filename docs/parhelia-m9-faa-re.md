@@ -1835,3 +1835,50 @@ passes explicit CPU registry inputs to the native agent's normal configuration
 helper. Default callers are unchanged. Nondefault calls require helper API
 commit `b5c839ca` (or its canonical integration), which exposes
 `m9_md_runtime.initialize(...,registry_settings=None)`.
+
+### 2026-10-06: ordinary miniport owner closes queue activation
+
+The previous queue failure was an incomplete CPU owner/OS contract, not evidence
+that the vendor's ordinary queue cannot activate. Genuine module `58bb0` (normal
+initialization table `1f2508`) publishes `hardware+fe84[head]` as the address of
+`hardware+fe94[head]`, whose DWORD is the PDEV's opaque OS adapter handle. The
+normal caller prefix `2dedc..2deeb` copies its handle argument into `device+20`.
+The new fixture executes that bounded prefix with a controlled OS handle and
+runs the actual module; it does not claim full `2dea0`/display admission.
+
+The actual PCI/DMA query `734a5 -> 6b184` publishes platform`+184=350207` before
+MD allocator construction. Inputs are the captured PCI catalog and read-only
+resource snapshot. The host bridge's BAR0 sizing reply of zero is explicitly a
+**model inference** from its zero captured BAR0 and zero resource descriptor;
+no physical BAR probe was run. Two host BAR0 writes and the GPU's PCI`+88` bit10
+write happen only in the controlled CPU PCI shadow. There are no GPU replies.
+
+With the real, FAA-admitting `System.MmFlags=101b8` option, queue candidates are
+pools1/2/0. Pool1 is disabled by that policy. Pool2 now follows
+`a14f0 -> a1c40 -> a1450 -> a11e0 -> 19b20 -> 58c90`, which finds the newly
+published I/O owner. Real MD `232284` requests (24-byte input/output) execute
+MM `7165f -> 734e6` and actual vendor allocation code. The Windows
+`MmAllocateContiguousMemory` host supplies owned synthetic system RAM, with
+separate lifetime and physical translation; these addresses are not native GPU
+addresses or physical-capture claims. Thirty-two genuine allocation replies
+succeed. Native helper commit `4efc3dd9` adds the exact CPU debug-allocation ABI
+at allocator vtable`+10` (size/file/line), needed by `f829e`.
+
+**Actual `230f0 -> f8120` returns1**, with a live TaskMgr at queue`+30`.
+`check-queue-system-dma.py --mm-flags 0x101b8` independently verifies every
+reply against its actual OS allocation owner. The retained capture is
+`captures/m9128-device-inputs-20261006/queue-system-dma.json`.
+
+Correction to the earlier terminal class1-rejection interpretation: although
+`39450` returns0 for class1, `455c0` has an explicit alternative at `4588b`.
+With the real miniport I/O owner, default `101f8` reaches
+`458a7 -> 19d60 -> IOCTL23306c` (8-byte input/12-byte output). That OS mapping
+contract is still a separate boundary. A zero I/O-owner slot had prevented it
+before. Do not describe the class1 predicate alone as a permanent rejection,
+force its return, or replace the vendor's mapping replies.
+
+This closes genuine CPU queue activation on the conditional allocator fixture.
+It does not establish normal hardware/display initialization, executed DMA,
+FAA fragments, resolve completion or retirement. The next required proof is
+one complete FAA frame through this returned queue, stopping at the first
+unknown GPU reply.
