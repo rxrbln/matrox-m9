@@ -181,6 +181,10 @@ enum drm_parhelia_m9_reloc_kind {
 	/* The multisample fragment store; admitted only while the probe mask
 	 * names the index that binds it. */
 	PARHELIA_M9_RELOC_FRAGMENT,
+	/* Vendor kind2b: tagged VRAM pool6 state storage at index24.
+	 * Validation requires the complete captured surface-binding record.
+	 * Execution awaits a kernel-owned pool initialization contract. */
+	PARHELIA_M9_RELOC_FAA_POOL,
 };
 
 /*

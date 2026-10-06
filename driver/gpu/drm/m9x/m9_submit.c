@@ -108,7 +108,7 @@ static bool m9_index_allowed(u8 index)
 }
 
 #define M9_RELOC_BIT(kind)	BIT(PARHELIA_M9_RELOC_##kind)
-#define M9_RELOC_KIND_MASK	GENMASK(PARHELIA_M9_RELOC_FRAGMENT, 0)
+#define M9_RELOC_KIND_MASK	GENMASK(PARHELIA_M9_RELOC_FAA_POOL, 0)
 /* Non-reloc markers in the per-dword expectation mask. */
 #define M9_EXPECT_DEPENDENCY	BIT(31)
 #define M9_EXPECT_OPTIONAL	BIT(30)
@@ -269,6 +269,25 @@ static bool m9_depth_bias_packet(const u8 *index, unsigned int values)
 	return values == 2 && index[0] == 0xd0 && index[1] == 0xd1;
 }
 
+/* Actual MSerX fb920 -> 25680/24870 with allocated pool6 and stores.
+ * Index24 and the three E6 literals form one indivisible binding record.
+ * This does not admit the separate indirect context-restore/save grammar:
+ * its command backing needs a kernel-owned initialization/lifetime contract. */
+#define M9_FAA_SURFACE_DWORDS 9u
+#define M9_FAA_POOL_BYTES 0x580u
+
+static int m9_parse_faa_surface(const u32 *words, u32 count, u32 *expected)
+{
+	if (count < M9_FAA_SURFACE_DWORDS ||
+	    words[0] != 0x45454524 || words[2] != 0x45e6e6e6 ||
+	    words[3] != 0x6dc00000 || words[4] != 1 || words[5] != 1 ||
+	    words[6] != 0x4545bdbc)
+		return m9_refuse(-EPERM);
+	expected[1] = M9_RELOC_BIT(FAA_POOL);
+	expected[7] = expected[8] = M9_RELOC_BIT(FRAGMENT);
+	return 0;
+}
+
 static int m9_parse_commands(const u32 *words, u32 count, u32 *expected,
 			     u32 program_type)
 {
@@ -282,6 +301,16 @@ static int m9_parse_commands(const u32 *words, u32 count, u32 *expected,
 
 		if (header == 0x45454545)
 			continue;
+		if (header == 0x45454524) {
+			int ret = m9_parse_faa_surface(words + cursor - 1,
+						     count - cursor + 1,
+							     expected + cursor - 1);
+
+			if (ret)
+				return ret;
+			cursor += M9_FAA_SURFACE_DWORDS - 1;
+			continue;
+		}
 		if (header == PARHELIA_M9_RANGE_BREAK) {
 			if (cursor >= count || words[cursor] ||
 			    (textured && !texture))
@@ -454,6 +483,7 @@ static u32 m9_reloc_access(u32 kind)
 	case PARHELIA_M9_RELOC_STREAM:
 	/* The store is the engine's own scratch: it writes and reads it. */
 	case PARHELIA_M9_RELOC_FRAGMENT:
+	case PARHELIA_M9_RELOC_FAA_POOL:
 		return PARHELIA_M9_BO_READ | PARHELIA_M9_BO_WRITE;
 	/* The engine only publishes the counter pair; it reads nothing back. */
 	case PARHELIA_M9_RELOC_QUERY:
@@ -548,6 +578,8 @@ static u32 m9_reloc_alignment(u32 kind)
 		return 128;
 	case PARHELIA_M9_RELOC_QUERY:
 		return M9_QUERY_BYTES;
+	case PARHELIA_M9_RELOC_FAA_POOL:
+		return 128;
 	default:
 		return 4;
 	}
@@ -562,7 +594,34 @@ static bool m9_reloc_uses_vram(u32 kind)
 	       kind == PARHELIA_M9_RELOC_PROGRAM ||
 	       kind == PARHELIA_M9_RELOC_STREAM ||
 	       kind == PARHELIA_M9_RELOC_QUERY ||
-	       kind == PARHELIA_M9_RELOC_FRAGMENT;
+	       kind == PARHELIA_M9_RELOC_FRAGMENT ||
+	       kind == PARHELIA_M9_RELOC_FAA_POOL;
+}
+
+static bool m9_reloc_tagged_vram(u32 kind)
+{
+	/* Actual kind9/a store and kind2b pool getters return GPU address|1,
+	 * even though the backing allocation kind is VRAM. This tag must not
+	 * select the SYSTEM compact-leaf address domain. */
+	return kind == PARHELIA_M9_RELOC_FRAGMENT ||
+	       kind == PARHELIA_M9_RELOC_FAA_POOL;
+}
+
+static bool m9_reloc_executable(u32 kind)
+{
+	/* Pool6 participates in indirect context commands. The traced binding
+	 * is available for validation, but arbitrary client-owned backing must
+	 * not execute before a kernel-owned pool producer is implemented. */
+	return kind != PARHELIA_M9_RELOC_FAA_POOL;
+}
+
+static u32 m9_reloc_minimum_bytes(u32 kind)
+{
+	if (kind == PARHELIA_M9_RELOC_QUERY)
+		return M9_QUERY_BYTES;
+	if (kind == PARHELIA_M9_RELOC_FAA_POOL)
+		return M9_FAA_POOL_BYTES;
+	return 0;
 }
 
 static int m9_vram_gpu_address(u64 limit, u64 offset, u64 target_offset,
@@ -704,7 +763,7 @@ m9_validate_relocs(u32 *image, u32 dwords, u32 *expected,
 		if (reloc->kind == PARHELIA_M9_RELOC_DRAW16_END)
 			permitted_flags |= PARHELIA_M9_RELOC_PACKED16_ODD;
 		if (reloc->command_dword >= dwords ||
-		    reloc->kind > PARHELIA_M9_RELOC_FRAGMENT ||
+		    reloc->kind > PARHELIA_M9_RELOC_FAA_POOL ||
 		    !(expected[reloc->command_dword] & BIT(reloc->kind)) ||
 		    reloc->kind == PARHELIA_M9_RELOC_FENCE ||
 		    reloc->kind == PARHELIA_M9_RELOC_SPECIAL ||
@@ -727,11 +786,10 @@ m9_validate_relocs(u32 *image, u32 dwords, u32 *expected,
 			ret = m9_refuse(-EINVAL);
 			goto out;
 		}
-		/* A whole snapshot is published, so the object has to hold one
-		 * from the offset on; the test above only keeps its first
-		 * byte inside. */
-		if (reloc->kind == PARHELIA_M9_RELOC_QUERY &&
-		    gem->size - reloc->target_offset < M9_QUERY_BYTES) {
+		/* Snapshot and pool records need their complete owned extent,
+		 * including the pool's128-byte guard, beyond the target offset. */
+		if (gem->size - reloc->target_offset <
+		    m9_reloc_minimum_bytes(reloc->kind)) {
 			ret = m9_refuse(-EINVAL);
 			goto out;
 		}
@@ -805,7 +863,8 @@ m9_validate_relocs(u32 *image, u32 dwords, u32 *expected,
 		    reloc->kind == PARHELIA_M9_RELOC_DRAW16_END)
 			address |= M9_COMMAND_SYSTEM_TAG;
 		else if (reloc->kind == PARHELIA_M9_RELOC_RESOURCE_6C ||
-			 reloc->kind == PARHELIA_M9_RELOC_SYSTEM)
+			 reloc->kind == PARHELIA_M9_RELOC_SYSTEM ||
+			 m9_reloc_tagged_vram(reloc->kind))
 			address |= 1;
 		if (reloc->kind == PARHELIA_M9_RELOC_DRAW16_END &&
 		    reloc->flags & PARHELIA_M9_RELOC_PACKED16_ODD)
@@ -1043,6 +1102,12 @@ static int m9_submit_validate(struct m9x_device *mdev,
 			goto out;
 		}
 	}
+	if (execute)
+		for (i = 0; i < args->relocation_count; i++)
+			if (!m9_reloc_executable(relocs[i].kind)) {
+				ret = m9_refuse(-EOPNOTSUPP);
+				goto out;
+			}
 	if (args->bo_count) {
 		bos = kcalloc(args->bo_count, sizeof(*bos), GFP_KERNEL);
 		vram_pinned = kcalloc(args->bo_count, sizeof(*vram_pinned),
