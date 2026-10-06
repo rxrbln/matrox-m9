@@ -38,8 +38,10 @@ FAA companion allocation now matches28 genuine vendor geometry/descriptor
 cases (fb4e710). Main and auxiliary stores now use genuine linear rows and
 independent32-byte guards, even at the32MiB budget cap (7443ff6/d8819db).
 Actual-C helpers match six independently captured vendor cases; ownership
-sanitizers, complete batch suite and DSO build pass. These newer allocation
-fixes have no FAA-on rendering proof and are not yet native-deployed.
+sanitizers, complete batch suite and DSO build pass. The corrected resources now pass native1920x1200→2048x1536→1920x1200
+same-context growth with AA mode off, strict readbacks and texture controls;
+see [guarded-resource proof](../tests/m9-faa-guards-native-20261006/README.md).
+They have no FAA-on rendering proof.
 
 The [October 2 piglit status](parhelia-m9-piglit-status.md) supersedes the
 September 18 backlog where they disagree. The glmark2 standing is still the

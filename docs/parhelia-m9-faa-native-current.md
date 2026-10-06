@@ -616,5 +616,7 @@ Native source7443ff6 now corrects main/ordinary auxiliary extents together,
 with source regression d8819db retaining guards after BO page rounding.
 Actual-C six-case vendor comparison, ownership ASAN/UBSAN, full batch suite
 and DSO build pass. Root independently reran the genuine vendor layout
-producer with retained current-board PCI inputs. This source is not yet
-native-deployed; backing/init/completeFAA command state remain open.
+producer with retained current-board PCI inputs. This source now passes current-M9128 same-context guarded BO growth with
+AA raster mode off, then ordinary texture; see
+[resource proof](../tests/m9-faa-guards-native-20261006/README.md).
+Backing/init/completeFAA command state remain open.
