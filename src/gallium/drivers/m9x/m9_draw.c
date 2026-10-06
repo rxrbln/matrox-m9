@@ -754,6 +754,12 @@ m9_draw_job_valid(const struct m9_draw_job *job)
                                            M9_TEXTURE_MAX_UNITS) ||
        (job->unit_count && ((!job->fs && !job->pass_count) || !job->units)))
       return false;
+   /* A requested binding cannot silently disappear while the job keeps
+    * its FAA mode edits. Refuse it before emitting any command words. */
+   if (job->faa.set &&
+       ((job->faa.store_bind && (!job->faa.store || !job->faa.store_aux)) ||
+        (job->faa.bind_index >= 0 && !job->faa.store)))
+      return false;
    for (unsigned i = 0; i < job->unit_count; i++)
       if (!job->units[i].handle)
          return false;

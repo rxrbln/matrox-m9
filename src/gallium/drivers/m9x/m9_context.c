@@ -1348,7 +1348,7 @@ m9_record_grow(struct m9_context *ctx, unsigned dwords, const char **reason)
  * The multisample fragment store.  Its size is the vendor's own (STATIC,
  * MxMD.dll 0xac7e0): about 16.55 bytes a pixel capped at 32 MiB, and a
  * second buffer a sixteenth of that.  It is allocated only while the probe
- * names a bind index, and grows with the largest target seen.
+ * requests a store or companion, and grows with the largest target seen.
  */
 static bool
 m9_faa_store_grow(struct m9_context *ctx)
@@ -1356,6 +1356,7 @@ m9_faa_store_grow(struct m9_context *ctx)
    struct m9_screen *screen = ctx->screen;
    uint32_t width, height;
    uint64_t bytes, aux;
+   struct m9_resource store = {0}, store_aux = {0}, companion = {0};
    bool ok = true;
 
    if (screen->faa.bind_index < 0 && !screen->faa.store_bind &&
@@ -1368,54 +1369,67 @@ m9_faa_store_grow(struct m9_context *ctx)
    aux = m9_faa_fragment_aux_bytes(width, height);
    if (!bytes || !aux) {
       ok = false;
-   } else if (!screen->faa_store.handle || screen->faa_store.size < bytes) {
-      m9_bo_destroy(screen, &screen->faa_store);
-      m9_bo_destroy(screen, &screen->faa_store_aux);
+   } else if (!screen->faa_store.handle || screen->faa_store.size < bytes ||
+              !screen->faa_store_aux.handle || screen->faa_store_aux.size < aux) {
       /* A checked store has to be readable, so it goes in the mapped
        * window rather than the engine-only video memory above it. */
       if ((screen->faa.store_check ?
            m9_bo_create(screen, bytes, PARHELIA_M9_BO_VRAM,
-                        M9_RESOURCE_LINEAR_BUFFER, &screen->faa_store) :
+                        M9_RESOURCE_LINEAR_BUFFER, &store) :
            m9_bo_create_engine_only(screen, bytes, M9_RESOURCE_LINEAR_BUFFER,
-                                    &screen->faa_store)) ||
+                                    &store)) ||
           m9_bo_create_engine_only(screen, aux, M9_RESOURCE_LINEAR_BUFFER,
-                                   &screen->faa_store_aux)) {
+                                   &store_aux)) {
          fprintf(stderr, "m9x: multisample fragment store of %u KiB for "
                  "%ux%u refused\n", (unsigned)(bytes >> 10), width, height);
-         m9_bo_destroy(screen, &screen->faa_store);
-         m9_bo_destroy(screen, &screen->faa_store_aux);
          ok = false;
-      } else {
-         screen->faa_store_width = width;
-         screen->faa_store_height = height;
-         if (screen->faa.store_check && screen->faa_store.map) {
-            uint32_t *words = screen->faa_store.map;
+      }
+   }
+   /* At the fragment-store cap, the target and companion can still grow.
+    * A failed companion allocation can also need a retry with no store
+    * growth. Test its ownership independently of the store's size. */
+   if (ok && screen->faa.companion_format >= 0 &&
+       (!screen->faa_companion.handle ||
+        screen->faa_companion.size < (uint64_t)width * height * 8)) {
+      if (m9_bo_create_engine_only(screen, (uint64_t)width * height * 8,
+                                  M9_RESOURCE_LINEAR_DEPTH, &companion)) {
+         fprintf(stderr, "m9x: multisample companion for %ux%u refused\n",
+                 width, height);
+         ok = false;
+      }
+   }
+   /* Publish the complete requested group only after every allocation
+    * succeeds. Failure preserves the previous usable group and its extent;
+    * a later draw can retry without dangling or partially replaced handles. */
+   if (ok) {
+      if (store.handle) {
+         if (screen->faa.store_check && store.map) {
+            uint32_t *words = store.map;
 
-            for (uint64_t k = 0; k < screen->faa_store.size / 4; k++)
+            for (uint64_t k = 0; k < store.size / 4; k++)
                words[k] = m9_faa_store_pattern(k);
          }
+         m9_bo_destroy(screen, &screen->faa_store);
+         m9_bo_destroy(screen, &screen->faa_store_aux);
+         screen->faa_store = store;
+         screen->faa_store_aux = store_aux;
+         store = (struct m9_resource){0};
+         store_aux = (struct m9_resource){0};
          if (screen->faa.trace)
             fprintf(stderr, "m9x: faa store %ux%u -> %u + %u bytes\n",
                     width, height, (unsigned)bytes, (unsigned)aux);
       }
-      /* The companion is the target's own shape at eight bytes a pixel, so
-       * no format the sweep tries can overrun it. */
-      if (ok && screen->faa.companion_format >= 0 &&
-          (!screen->faa_companion.handle ||
-           screen->faa_companion.size < (uint64_t)width * height * 8)) {
+      if (companion.handle) {
          m9_bo_destroy(screen, &screen->faa_companion);
-         if (m9_bo_create_engine_only(screen, (uint64_t)width * height * 8,
-                                      M9_RESOURCE_LINEAR_DEPTH,
-                                      &screen->faa_companion)) {
-            fprintf(stderr, "m9x: multisample companion for %ux%u refused\n",
-                    width, height);
-            ok = false;
-         }
+         screen->faa_companion = companion;
+         companion = (struct m9_resource){0};
       }
-   } else {
       screen->faa_store_width = width;
       screen->faa_store_height = height;
    }
+   m9_bo_destroy(screen, &store);
+   m9_bo_destroy(screen, &store_aux);
+   m9_bo_destroy(screen, &companion);
    simple_mtx_unlock(&screen->faa_store_lock);
    return ok;
 }
@@ -2535,7 +2549,12 @@ m9_submit_job(struct m9_context *ctx)
           * f0 written as zero, which cleared the cull, depth and format
           * bits the pass built and rendered nothing (MEASURED). */
          m9_faa_edits(&ctx->screen->faa, &job.faa.edit);
-         if (m9_faa_store_grow(ctx)) {
+         if (!m9_faa_store_grow(ctx)) {
+            /* An explicitly requested FAA group must never degrade to AA
+             * mode bits without its backing resources. Do not emit or
+             * submit this job, even when an older smaller group survives. */
+            ret = -EINVAL;
+         } else {
             job.faa.store_bind = ctx->screen->faa.store_bind;
             if (ctx->screen->faa.companion_format >= 0) {
                struct m9_surface_desc desc = {
