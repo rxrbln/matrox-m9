@@ -1009,9 +1009,11 @@ int m9x_address_map_system(struct m9x_device *mdev, struct drm_mm_node *node,
 			m9x_address_bind_dma(mdev, node->start, dma, bytes));
 }
 
-/* Source-owned ac1f0 kind6 output: 80-page system resource, flags30.
- * Ordinary coherent/SG mappings keep their existing policy unchanged. */
-int m9x_address_map_faa_output(struct m9x_device *mdev,
+/* Source-owned 101f8 flags30 class1 owners: command buffers, geometry and
+ * ordinary kind6 output. Their actual retained mapped prefixes are bounded
+ * by 80 pages; backing allocation tails are not promoted to GPU inputs.
+ * Ordinary coherent/SG/counter flags110 mappings retain their A policy. */
+int m9x_address_map_faa_system(struct m9x_device *mdev,
                              struct drm_mm_node *node,
                              dma_addr_t dma, u32 bytes)
 {
@@ -1020,7 +1022,8 @@ int m9x_address_map_faa_output(struct m9x_device *mdev,
 
 	lockdep_assert_held(&mdev->transport.lock);
 	if (!m9x_faa_diag_enabled() || !a || !a->layout.secondary_bytes ||
-	    bytes != 0x50000 || mdev->pdev->device != 0x0540 ||
+	    !bytes || bytes > 0x50000 || !IS_ALIGNED(bytes, PAGE_SIZE) ||
+	    mdev->pdev->device != 0x0540 ||
 	    mdev->pdev->revision != 1 || mdev->pdev->subsystem_device != 0x22c0)
 		return -EINVAL;
 	ret = m9_address_reserve_system(mdev, node, bytes);
@@ -1028,6 +1031,15 @@ int m9x_address_map_faa_output(struct m9x_device *mdev,
 		return ret;
 	return m9_address_finish_system(mdev, node,
 		m9_address_bind_dma_policy(mdev, node->start, dma, bytes, true));
+}
+
+/* The output-only entry retains its stricter 320x256 allocation contract. */
+int m9x_address_map_faa_output(struct m9x_device *mdev,
+			     struct drm_mm_node *node, dma_addr_t dma, u32 bytes)
+{
+	if (bytes != 0x50000)
+		return -EINVAL;
+	return m9x_address_map_faa_system(mdev, node, dma, bytes);
 }
 
 /* The same for a mapped page array: one binding per DMA segment. */

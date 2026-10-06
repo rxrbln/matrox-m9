@@ -27,6 +27,7 @@ struct m9_faa_owner_spec {
 	/* Per-owner domain/policy; historical DMA-physical owners stay false.
 	 * Only a source-closed generated output template may select these. */
 	bool system, flags30;
+	u32 mapped_bytes;
 };
 struct m9_faa_span {
 	u32 owner, offset, blob_offset, bytes;
@@ -136,8 +137,10 @@ static int m9_faa_allocate(struct m9x_device *mdev, struct m9_faa_owner *o,
 
 	o->bytes = PAGE_ALIGN(spec->bytes);
 	if (!spec->local) {
-		if (spec->flags30 && (!spec->system ||
-		    spec - m9_faa_owner_specs != M9_FAA_OUTPUT_OWNER))
+		if ((spec->flags30 && !spec->system) ||
+		    (spec->system && (!spec->mapped_bytes ||
+		     !IS_ALIGNED(spec->mapped_bytes, PAGE_SIZE) ||
+		     spec->mapped_bytes > o->bytes)))
 			return -EINVAL;
 		o->cpu = dma_alloc_coherent(&mdev->pdev->dev, o->bytes,
 					    &o->dma, GFP_KERNEL);
@@ -149,10 +152,10 @@ static int m9_faa_allocate(struct m9x_device *mdev, struct m9_faa_owner *o,
 		o->base = lower_32_bits(o->dma);
 		if (spec->system) {
 			ret = spec->flags30 ?
-				m9x_address_map_faa_output(mdev, &o->system_node,
-						  o->dma, o->bytes) :
+				m9x_address_map_faa_system(mdev, &o->system_node,
+						  o->dma, spec->mapped_bytes) :
 				m9x_address_map_system(mdev, &o->system_node,
-						      o->dma, o->bytes);
+						      o->dma, spec->mapped_bytes);
 			if (ret)
 				return ret;
 			o->base = o->system_node.start;
@@ -672,7 +675,9 @@ int m9x_faa_submit_diag(struct m9x_device *mdev, u32 color,
 		dst = &r->owner[f->dst];
 		if (dst->vram || !dst->cpu || !IS_ALIGNED(f->offset, 4) ||
 		    f->offset > m9_faa_owner_specs[f->dst].bytes - 4 ||
-		    f->addend > m9_faa_owner_specs[f->src].bytes ||
+		    f->addend > (m9_faa_owner_specs[f->src].system ?
+			m9_faa_owner_specs[f->src].mapped_bytes :
+			m9_faa_owner_specs[f->src].bytes) ||
 		    check_add_overflow(r->owner[f->src].base, f->addend, &address) ||
 		    get_unaligned_le32((u8 *)dst->cpu + f->offset) != f->captured) {
 			ret = -EINVAL;
