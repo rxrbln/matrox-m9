@@ -1167,6 +1167,12 @@ int m9x_faa_output_read(struct m9x_device *mdev, struct drm_file *file,
 		ret = t->wedged ? -EIO : -ENODATA;
 		goto unlock;
 	}
+	/* Actual aff90 calls 2cb40(resource, 0, 1). After its query/write
+	 * waits succeed, 2cba8 kicks the frontend before selecting the kind1
+	 * CPU alias and copying pixels. Keep that transition after the live
+	 * retirement/owner gates; a pre-submit kick is a different ordering.
+	 */
+	m9x_write(mdev, M9_REG_FRONTEND_KICK, 1);
 	/* WC loads need a CPU read barrier after the retained retirement
 	 * gate; dma_rmb alone is a compiler barrier on x86. */
 	rmb();
@@ -1184,7 +1190,7 @@ int m9x_faa_output_read(struct m9x_device *mdev, struct drm_file *file,
 			       (u8 *)output->cpu + offset, 4);
 		}
 	dev_info(&mdev->pdev->dev,
-		 "M9 FAA output read: point=%#llx system=%#x descriptor=c8210140/100f0 RGBA 320x240\n",
+		 "M9 FAA output read: point=%#llx system=%#x descriptor=c8210140/100f0 RGBA 320x240 post_wait_kick=1\n",
 		 r->output_point, output->base);
 unlock:
 	mutex_unlock(&t->lock);
