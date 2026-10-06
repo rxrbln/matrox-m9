@@ -222,15 +222,12 @@ static const char *m9_fence_get_timeline_name(struct dma_fence *fence)
 	return "m9-requester";
 }
 
-static void m9_fence_release(struct dma_fence *fence)
-{
-	kfree(container_of(fence, struct m9x_fence, base));
-}
-
+/* base is the allocation's first member. The core default release performs
+ * kfree_rcu; omitting custom release/wait also lets signaled fences detach
+ * driver ops before a dma_resv-held fence outlives this module. */
 static const struct dma_fence_ops m9_fence_ops = {
 	.get_driver_name = m9_fence_get_driver_name,
 	.get_timeline_name = m9_fence_get_timeline_name,
-	.release = m9_fence_release,
 };
 
 static u64 m9_extend_fence(struct m9x_transport *m9, u32 raw);
