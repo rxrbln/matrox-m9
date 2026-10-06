@@ -539,6 +539,56 @@ m9_transition_length(struct m9_batch *batch, uint32_t at, uint32_t draw_at,
    batch->command[at] = M9_TRANSITION_LENGTH | (length & 0xffffu);
 }
 
+/* The actual GLSL FIRST/CONT/MIDDLE/LAST preprocessing producer opens
+ * FIRST, CONT and MIDDLE with OPEN, but LAST with RESUME. Only FIRST
+ * carries FIRST instead of NEXT. These are stage roles, not range count. */
+static int
+m9_emit_pre_transition_start(struct m9_batch *batch, enum m9_pre_kind kind,
+                             uint32_t *at)
+{
+   int ret = 0;
+
+   *at = batch->command_count + 3;
+   EMIT(V(0xe6, kind == M9_PRE_FUSED ? M9_TRANSITION_RESUME :
+                                     M9_TRANSITION_OPEN),
+        V(0xe6, kind == M9_PRE_PRIMARY ? M9_TRANSITION_FIRST :
+                                       M9_TRANSITION_NEXT),
+        V(0xe6, M9_TRANSITION_LENGTH));
+   EMIT(V(0xe6, M9_TRANSITION_START));
+fail:
+   return ret;
+}
+
+/* Unlike raw batch words, the actual vendor length includes the outer
+ * count the kernel inserts before every indexed packet. Count those
+ * packets from the prologue's header, excluding its preceding count.
+ * The last stage stops at the numeric draw header; all others include its
+ * three words. No range break or earlier draw belongs inside this block. */
+static int
+m9_pre_transition_length(struct m9_batch *batch, uint32_t at,
+                          uint32_t draw_at, bool more)
+{
+   unsigned first = at - 3, cursor = first, packets = 0;
+
+   if (at < 3 || draw_at > batch->command_count || first >= draw_at)
+      return -EINVAL;
+   while (cursor < draw_at) {
+      uint32_t header = batch->command[cursor];
+      unsigned n = 0;
+      while (n < 4 && ((header >> (8 * n)) & 0xffu) != M9_PACKET_STOP)
+         n++;
+      if (!n || n + 1 > draw_at - cursor)
+         return -EINVAL;
+      cursor += n + 1;
+      packets++;
+   }
+   unsigned length = draw_at - first + packets - 1 + (more ? 3 : 0);
+   if (length > 0xffffu)
+      return -E2BIG;
+   batch->command[at] = M9_TRANSITION_LENGTH | length;
+   return 0;
+}
+
 /* One raster range: its state, its units and routes, and every draw of the
  * job.  A split shader repeats this per pass, advancing the dependency the
  * vendor advances by 0x20 a pass. */
@@ -1057,7 +1107,11 @@ m9_draw_vs_producer_dwords(unsigned decl_count)
    /* One three-target source producer, plus final routes 0..2. The older
     * extra/gather upper bound already charges the longer source declaration
     * for the gather, so changing it to the terminator only cannot exceed it. */
-   return M9_JOB_EXTRA_DWORDS + 9 + m9_draw_decl_dwords(decl_count) + 10 + 12;
+   /* Four six-word prologues, three six-word publications, the FIRST
+    * record edge and three continuation dependency writes: fifty words.
+    * Removed range breaks and redundant e6 writes only reduce this bound. */
+   return M9_JOB_EXTRA_DWORDS + 9 + m9_draw_decl_dwords(decl_count) + 10 + 12 +
+          50;
 }
 
 unsigned
@@ -1090,9 +1144,23 @@ m9_emit_preprocess(struct m9_batch *batch, const struct m9_draw_job *job,
    unsigned targets = primary ? 3u : extra ? job->vs_extra_targets : 0;
    unsigned fields = job->vs_extra_targets + 3;
    int ret = 0;
+   uint32_t transition_at = 0;
 
+   if (chain) {
+      if (!primary) {
+         ret = m9_emit_transition_end(batch, kind == M9_PRE_HEAD);
+         if (ret)
+            goto fail;
+      }
+      ret = m9_emit_pre_transition_start(batch, kind, &transition_at);
+      if (ret)
+         goto fail;
+   }
    EMIT(V(0xe6, 3), V(0xe3, base));
-   EMIT(V(0xe6, 3));
+   if (chain && !primary)
+      EMIT(V(0x43, base));
+   else
+      EMIT(V(0xe6, 3));
    /* The AA mode edit belongs to the raster range: it is lowered from the
     * surface shadow, and a preprocessing pass binds no render target. */
    EMIT(V(0xf0, 0xf0000400),
@@ -1235,14 +1303,17 @@ m9_emit_preprocess(struct m9_batch *batch, const struct m9_draw_job *job,
             goto fail;
       }
    } else {
+      uint32_t draw_at = batch->command_count;
       ret = m9_batch_emit_draw_numeric(batch, 0, job->source_vertices,
                                        0x20000000);
+      if (!ret && chain)
+         ret = m9_pre_transition_length(batch, transition_at, draw_at, extra);
    }
-   /* M9X_VS_EXTRA_BREAK=0 keeps both preprocessing draws inside one range.
-    * The vendor separates its own preprocessing draws with an engine
-    * transition the kernel refuses, so which barrier belongs between them
-    * is undecided (docs/parhelia-m9-vertex-output-target-re.md section 4). */
-   if (!ret && !(extra && !debug_get_bool_option("M9X_VS_EXTRA_BREAK", true)))
+   /* The source-proven route chain stays in one preprocessing range.
+    * LAST closes that range without another publication. The legacy extra
+    * path retains its existing explicit range-break option. */
+   if (!ret && (chain ? !extra :
+                !(extra && !debug_get_bool_option("M9X_VS_EXTRA_BREAK", true))))
       ret = m9_batch_emit_range_break(batch);
 fail:
    return ret;
