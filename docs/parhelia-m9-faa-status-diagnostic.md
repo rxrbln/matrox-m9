@@ -131,5 +131,22 @@ Its first8f0 sample is01000000; second is0. Both have optional-drain30000
 clear, high pending8f4=7100, rawlow8e0=5003fc6c and lowmask8e8=1, yielding
 zero enabled low pending. Neither sample isffffffff. These raw pending words
 are not attributed to address faults, invalid commands or FAA errors. No
-before/after FAA comparison exists in this checkpoint; root owns any further
-physical observation.
+before/after FAA comparison was part of that normal-control checkpoint.
+
+## Actual FAA before/after observation, 2026-10-07
+
+Root subsequently ran the unchanged516990f public-red candidate on fresh
+bootd3f40c04-11a2-4807-8cf9-f5f99c3d03e2. The bounded observer reads8f0 twice
+before submission (0,0) and twice after real140 retirement and the output
+reader's post-wait kick (0,01000000). The optional-drain mask30000 is clear
+in all four samples.8f4=7100,8e0=5003fc6c,8e8=1 match the normal control.
+Actual FAA output is still black,0colored/0partial/8326bad interior pixels;
+CPU positive mapping passes76800pixels and transport reports raw141,
+empty queue and wedged0.
+
+This observation finds no persistent optional-drain condition at those
+points. It does not exclude transient conditions or decode unknown fault
+bits. No new wait, acknowledgement, register toggle or shader change follows.
+Complete source/artifact identities, logs and actual PPM are in the
+[hardware archive](../tests/m9-faa-status-hardware-20261007/README.md).
+All proof was copied before the mandatory recovery power cycle.
