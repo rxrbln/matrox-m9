@@ -79,3 +79,23 @@ python3 tools/m9-native-faa-template.py \
   --kernel-header /path/to/kernel/drivers/gpu/drm/m9x/m9_faa_native_data.h
 python3 tools/check-m9-native-faa-template.py
 ```
+
+## Reusable ordering and the remaining M9 mapping distinction
+
+The current Parhelia/P690 implementation provides app-level ordering rules:
+drain pending draws before helper state changes, resolve the old FAA owner
+before framebuffer rebinding, retain color/depth/samplers and private buffers
+through resolve/final retirement, then restore ordinary bindings. Its packet
+words and FAA fence opcodes are family-specific and are not M9 packet templates.
+The private M9 producer already preserves captured scratch/draw/resolve
+chronology and retains owners across real completion under the transport lock.
+Those application ownership rules remain necessary when generic M9 FAA is wired.
+
+Actual target read-only inspection now shows GPUprimary1422000 has a correct
+GPU leaf and a correct root for its leaf-storage page, but its direct CPU-root
+entry is zero. The genuine2cb40 mapper copies the primary leaf into the0360
+root child at indexsurfaceGPU>>12 before publishing {GPU|1,F0220140,10100}.
+This is not a0f64-table copy. The missing direct CPU-root join is independently
+visible in tests/m9-faa-cpu-map-20261006/proof/address-observe.txt. Its exact
+flush/copy proof and native implementation are in progress. GPU rendering
+qualification still requires actual image evidence after the mapping fix.
