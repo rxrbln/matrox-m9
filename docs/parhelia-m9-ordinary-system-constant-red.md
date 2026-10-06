@@ -103,5 +103,18 @@ Every real owner must be allocated. The external caller color BO remains only
 the ioctl reservation/readback lifetime token; it must not replace the actual
 SYSTEM render target. No absent owner may be indexed, no companion clear may
 be called, and exact primary bytes must be 4644. The existing explicitly
-gated RGBA ordinary-output reader and `--expect-red` oracle fit the actual
-descriptor and geometry. Hardware qualification and pixels remain pending.
+gated RGBA ordinary-output reader matches the actual descriptor and geometry.
+Use the explicit `--expect-ordinary-system-red` oracle for this unsampled
+control. It preserves the actual positive CPU control, real retirement,
+interior/exterior, expected red channel and 9300..10000 colored-pixel checks.
+Only FAA's minimum of 50 partially covered pixels is excluded. Existing default
+FAA green and `--expect-red` modes retain that minimum and their original
+checks. The switch changes only the readback verdict, never GPU state.
+
+The offline fixture extracts the actual production CLI, per-pixel statements
+and verdict and exercises 24 pass/fail cases without DRM or GPU calls:
+
+```sh
+/home/ai/tmp/faaemu/venv/bin/python tools/check-m9-image-oracles-cpu.py \
+  --source tools/m9-native-faa-image.c
+```
