@@ -15,8 +15,8 @@ logical extent from main's retained backing object. The complete known GPU
 stream and native fixup table preserve those fields. This audit does not
 interpret the device's opaque main/AA records as pixels or claim a view fix.
 
-There is an additional earlier resolve input. `fce50` calls `fc8f0` with its
-saved sentinel and pool pairs. `fc9c4`, `fca5b`, `fcae1` derive sentinel offsets
+There is an additional earlier state-save operation. `fce50` calls `fc8f0`
+with its saved sentinel and pool pairs. `fc9c4`, `fca5b`, `fcae1` derive sentinel offsets
 `8`, `12`, `16`; actual kind30 callbacks use encoder `256f1`. The three bindings
 precede the final main/AA rebind and trigger. Their source control words are
 `a1000009`, `a3000009`, `a4000009`, followed by `40008000`. These controls are
@@ -24,6 +24,21 @@ pinned shipping immediates, not guessed addresses or a decoded GPU record ABI.
 The native table correctly derives all three pointers from its live retained
 sentinel owner. The initial source-known words at these offsets are zero;
 the actual GPU-produced values must be observed rather than supplied.
+
+The first sentinel DWORD `a4a3a1a1` encodes the indexed-header byte sequence
+`A1,A1,A3,A4`. Its complete initial20B record is header, `28041968`, zero,
+zero, zero. The triangle's actual `fcb60` range binding joins this retained
+sentinel `+0/+20`, through kinds2C/2E. The save controls choose A1/A3/A4 and
+their address slots match the corresponding payload positions in this record.
+The exact hardware meaning of those selected state fields is not proven here.
+
+Crucially, the **final ordinary-output resolve emits no sentinel range**.
+Its ordinary temporary destination takes `abc84..abcdf`'s null sentinel path,
+and the new `fcb60` shadow skips that range. The only resolve range joins the
+distinct pool at `+284/+2c4`, kinds2C/2F. The earlier manual sampled-primary
+resolve lifecycle cannot be substituted for this flow. Saved sentinel words
+are produced-state evidence; they are not a demonstrated final resolve filter
+input. The source/native checker now asserts this distinction explicitly.
 
 The qualified public-red and post-triangle raw archives retain the main, AA,
 pool and preprocessing buffers, but omit these exact sentinel words. Their
@@ -59,4 +74,4 @@ The companion kernel change logs `min(20, observed extent)` raw bytes for
 every admitted owner using its existing first observation chunk. There is no
 hardcoded sentinel index/address, additional GPU read, command or memory
 write. This is a narrowly discriminating observation of a previously missing
-resolve input, not an FAA implementation change or image claim.
+produced-state record, not an FAA implementation change or image claim.
