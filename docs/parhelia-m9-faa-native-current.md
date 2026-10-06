@@ -8,21 +8,18 @@ Ordinary textured rendering and the deployed driver are validated. FAA
 rendering is not yet validated. This note is separate from P690
 `102b:2539` evidence.
 
-Current physical checkpoint: kernel `20df96d` on M9128 boot `9666bcd7`.
-All five private SYSTEM owners verify WB->WC80/80/64/64/64pages before
-publication, following the actual vendor cache request. The virtual primary
-retires at `0x1d0`, but the image remains entirely black. Both raw output and
-scratch SYSTEM backings remain zero through verified WC aliases. Main/AA
-fragment hashes match earlier failures; required write-event channel00 reaches
-1d1/0. No timeout or cache-preparation refusal occurs. The cache-contract fix
-is retained; no rendering success or application FAA is claimed.
-See [the complete WC test](../tests/m9-faa-wc-20261006/README.md).
-Next source-derived candidate isolates the Windows frame's initialization
-from the extra Linux M9148 sequence0 predecessor. Remaining fragment/resolve
-interpretation is still under source audit. Earlier
-[virtual-primary](../tests/m9-faa-virtual-primary-20261006/README.md) and
-[physical-clone](../tests/m9-faa-ordinary-output-20261006/README.md) failures
-remain historical evidence. FAA stays disabled for applications.
+Current physical checkpoint: kernel `8664d0c`, M9128 boot `40e7a2fa`.
+The source-owned context experiment omits the extra Linux sequence0 GPU
+submission, preserves the fresh CPU seed10 and reaches actual retirement140.
+Verified WC mapping remains active for all five private SYSTEM owners.
+The image is still entirely black; the full ordinary output backing remains
+zero, and main/AA hashes match prior failures. CPU mapping control passes
+76800pixels. No GPU timeout occurs. Neither WC nor the extra Linux submission
+explains this failure. Full vendor cold initialization equivalence and actual
+fragment/resolve dependencies remain under audit. FAA stays disabled for apps.
+See [the source initialization test](../tests/m9-faa-source-init-20261006/README.md),
+[previous WC test](../tests/m9-faa-wc-20261006/README.md), and
+[bounded raw-store interpretation](parhelia-m9-faa-store-record-audit.md).
 
 Earlier sampled-destination tests below are historical evidence.
 
