@@ -565,3 +565,37 @@ helper0x477f0 for hardwareformat3d returns1, confirming the companion's
 required config masks and format-table flag from vendor code. This admission
 is not allocation success. The AA surface constructor, VRAM backing, full
 normal pixel-format admission, render and resolve remain to be joined.
+
+### Main and auxiliary stores have exact linear rows and a32-byte guard
+
+`tools/m9-vendor-faa-store-requests.py` executes actual0xac7e0 with a real
+vendor-constructed CPU surface and controlled caller geometry, using the
+retained normal MM runtime and actual published MD profiles. The
+[request capture](traces/m9-vendor-faa-store-requests-20261006.json) stops
+before its first0x51870 allocation. Main request flags8002, format8 and
+profile12 (class2/hardware66/32bits) are actual constructor outputs.
+
+The main budget is `min(floor(width*height*344*0.38499999046325684)>>3,
+32MiB)`. Actual request width is1024; rows are
+`max(1,floor((budget+1023)/4096))`. The320x242 case has budget1282019,
+remainder4067, and requests313 rows: simply flooring budget/4096 would
+incorrectly give312. Tiny1x1 and2x2 requests both preserve one row.
+
+The [layout capture](traces/m9-vendor-faa-store-layout-20261006.json)
+executes the real0x19560 scalar prefix against the captured M9128 cleanroom
+postinit f04=0448803e, then actual0xac7e0→0x51990→0x45eb0 until layout
+completes, before physical backing. Real manager+24/+28 become2/1. This
+is an explicit CPU MMIO model of the actual cleanroom baseline, not a
+claim about vendor cold state or completed memory-manager initialization.
+The resulting store is linear (layoutflag1), with exact requested rows and
+extent `1024*rows*4+32`. At1024x768 this is13017120 bytes, and the
+32MiB budget cap still requires33554464 bytes including the guard.
+
+Auxiliary static producer0xac8ec..0xac94d uses the same profile/width,
+with budget `main_budget>>4`, or fixed2MiB when device+1c bit0 is set.
+The capture executes its genuine0x45eb0 layout separately with those
+conditional inputs, without fabricating a successful main allocation to
+reach the later constructor. At1024x768 the ordinary auxiliary layout is
+1024x198/811040 bytes; the fixed branch is1024x512/2097184 bytes.
+Both include the32-byte guard. These are conditional builder proofs;
+full auxiliary allocation, contents and lifetime remain unproved.
