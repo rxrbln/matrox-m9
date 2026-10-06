@@ -1421,3 +1421,11 @@ fields8/1ac/1b0/204 are still zero before GPIO-dependent initialization.
 `partial_capability_record`. This is an allocated, incompletely initialized
 record; zero`+204` must **not** be used as evidence of unsupported M9128 FAA
 or fed to normal ICD admission as initialized capability data.
+
+The next trace admits only the **first** idle GPIO1c4c read from actual
+`gpio-idle.txt`, returning300db once. This reveals genuine producer
+`42e2b..42e4a` requesting1c4c=308d9; execution stops **before** that write.
+The baseline is consumed and cannot become a synthetic slave ACK/data
+response after any GPIO change. The still-open128-byte board-config read
+belongs to normal type13 creation, immediately before real `31f90` initializes
+type14 and its `+204` capability mask; native agent traces that consumer.
