@@ -1372,7 +1372,7 @@ m9_faa_store_grow(struct m9_context *ctx)
 {
    struct m9_screen *screen = ctx->screen;
    uint32_t width, height;
-   uint64_t bytes, aux;
+   uint64_t bytes, aux, companion_bytes;
    struct m9_resource store = {0}, store_aux = {0}, companion = {0};
    bool ok = true;
 
@@ -1384,10 +1384,19 @@ m9_faa_store_grow(struct m9_context *ctx)
    height = MAX2(ctx->params.height, screen->faa_store_height);
    bytes = m9_faa_fragment_bytes(width, height);
    aux = m9_faa_fragment_aux_bytes(width, height);
+   companion_bytes = (uint64_t)width * height * 8;
+   if (screen->faa.companion_format == 0x3d) {
+      struct m9_faa_companion_layout layout;
+
+      if (!m9_faa_companion_layout(width, height, &layout))
+         ok = false;
+      else
+         companion_bytes = layout.size;
+   }
    if (!bytes || !aux) {
       ok = false;
-   } else if (!screen->faa_store.handle || screen->faa_store.size < bytes ||
-              !screen->faa_store_aux.handle || screen->faa_store_aux.size < aux) {
+   } else if (ok && (!screen->faa_store.handle || screen->faa_store.size < bytes ||
+                     !screen->faa_store_aux.handle || screen->faa_store_aux.size < aux)) {
       /* A checked store has to be readable, so it goes in the mapped
        * window rather than the engine-only video memory above it. */
       if ((screen->faa.store_check ?
@@ -1407,8 +1416,8 @@ m9_faa_store_grow(struct m9_context *ctx)
     * growth. Test its ownership independently of the store's size. */
    if (ok && screen->faa.companion_format >= 0 &&
        (!screen->faa_companion.handle ||
-        screen->faa_companion.size < (uint64_t)width * height * 8)) {
-      if (m9_bo_create_engine_only(screen, (uint64_t)width * height * 8,
+        screen->faa_companion.size < companion_bytes)) {
+      if (m9_bo_create_engine_only(screen, companion_bytes,
                                   M9_RESOURCE_LINEAR_DEPTH, &companion)) {
          fprintf(stderr, "m9x: multisample companion for %ux%u refused\n",
                  width, height);
@@ -2602,6 +2611,15 @@ m9_submit_job(struct m9_context *ctx)
 
                job.faa.companion = ctx->screen->faa_companion.handle;
                job.faa.companion_desc = m9_surface_desc0(&desc);
+               if (ctx->screen->faa.companion_format == 0x3d) {
+                  struct m9_faa_companion_layout layout;
+
+                  if (!m9_faa_companion_layout(ctx->params.width,
+                                               ctx->params.height, &layout))
+                     ret = -EINVAL;
+                  else
+                     job.faa.companion_desc = layout.descriptor;
+               }
             }
             job.faa.store_aux = ctx->screen->faa_store_aux.handle;
             job.faa.bind_index = ctx->screen->faa.bind_index;

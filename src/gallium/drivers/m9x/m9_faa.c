@@ -96,6 +96,34 @@ m9_faa_fragment_aux_bytes(uint32_t width, uint32_t height)
    return m9_faa_fragment_bytes(width, height) >> 4;
 }
 
+bool
+m9_faa_companion_layout(uint32_t width, uint32_t height,
+                         struct m9_faa_companion_layout *layout)
+{
+   if (!layout || !width || !height || width > 2048 || height > 2048)
+      return false;
+   uint32_t row = (width + 63) & ~63u;
+   uint32_t rows = (height + 15) & ~15u;
+   uint64_t tail = (uint64_t)(rows - height) * row + row - width;
+   uint64_t elements = (uint64_t)row * rows;
+
+   /* Genuine45eb0 reserves four 64-bit elements beyond the last visible
+    * pixel. Existing row/height padding already supplies some or all of
+    * that guard:319x240 needs24 bytes,320x240 needs32,321x240 needs none. */
+   if (tail < 4)
+      elements += 4 - tail;
+   *layout = (struct m9_faa_companion_layout) {
+      .size = elements * 8,
+      .row_span = row,
+      .allocation_height = rows,
+      /* Genuine467e0 selector13: format3d, sample-layout2, ordinary tile
+       * state except the width<=64,height<=32 small allocation family. */
+      .descriptor = 0x7a020000u | row |
+                    (width <= 64 && height <= 32 ? 0 : 0x00200000u),
+   };
+   return true;
+}
+
 void
 m9_faa_edits(const struct m9_faa *faa, struct m9_faa_edits *edits)
 {

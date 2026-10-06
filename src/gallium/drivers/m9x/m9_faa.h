@@ -135,6 +135,17 @@ uint32_t m9_faa_store_pattern(uint64_t dword_index);
 uint64_t m9_faa_fragment_bytes(uint32_t width, uint32_t height);
 uint64_t m9_faa_fragment_aux_bytes(uint32_t width, uint32_t height);
 
+/* MSerX profile49, hardware format3d, admitted sample selector2. The
+ * companion has its own alignment, small-surface state and end guard;
+ * ordinary 32-bit depth layout cannot describe it. Recovered on M9128
+ * with shared f04 fields2/1; allocation does not establish FAA rendering. */
+struct m9_faa_companion_layout {
+   uint64_t size;
+   uint32_t row_span, allocation_height, descriptor;
+};
+bool m9_faa_companion_layout(uint32_t width, uint32_t height,
+                             struct m9_faa_companion_layout *layout);
+
 void m9_faa_init(struct m9_faa *faa, uint16_t device_id);
 /* Whether a job has to carry the pair at all: a raw override drives it
  * without the enable, so a probe can sweep a field the formula cannot
