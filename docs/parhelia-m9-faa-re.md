@@ -1493,3 +1493,44 @@ error sequence and records no output bytes. Tests are CPU protocol proof only,
 not actual board capabilities. The model rejects addresses other than A0/A1,
 uncaptured subaddresses, EEPROM data writes and multi-byte/master-ACK reads;
 actual physical replies must be separately admitted before bootstrap uses it.
+
+### Genuine context restore and fragment-pointer save packets, 2026-10-06
+
+Root executed actual dirty-state dispatcher `fce50 -> fc8f0`, including real
+stream-vtable slot98=`24f20` and genuine relocation methods `25680/24870`.
+The fixture controls owner/stream storage and direct address pairs; its sole
+callback records resource-reference ABI arguments without admitting resources.
+No command generator or relocation encoder is stubbed. Actual physical
+allocation, API ownership, contents and GPU completion remain unproved.
+
+The first pair at shadow7c/80 supplies the three pointer-save destinations;
+the second at84/88 supplies the context-restore source. Both must be nonnull.
+For controlled save addressS and restore addressR, the actual raw output is:
+
+```text
+45454524 R
+453ce6e6 6dc00000 42000000 000000a1
+44444444 30081898 30081898 30081898 30081898
+44444444 30081898 30081898 30081898 30081898
+45452f2e R+284 R+2c5
+4545421a S+8  a1000009
+4545421a S+c  a3000009
+45e6421a S+10 a4000009 40008000
+```
+
+Offsets above are hexadecimal. The second2f payload includes the genuine
+kind2f encoder's low control bit; it is not a plainR+2c4 address. Relocation
+kinds are2b/2c/2f/30/30/30, all flags1. Actual resource-reference callbacks
+are `(0,R,1)`, `(284,R,1)`, `(0,S,0)`. These eight packets/29GPUwords include
+context restoration before the previously static pointer-save block. They
+are distinct from `fb920`'s index24/E6x3/BCBD binding and `fab30`'s reset.
+They do not establish a separate FAA resolve operation.
+
+`context-fragment-state.json` preserves all five actual executions. Strict
+command decoding and `check-context-fragment-state.py` verify complete words,
+actual encoder writes, absent-first/second-pair omissions, clean dirty-state
+omission and execution with identical nonnull pairs. Allcases clear dirtybit8;
+samepair does not suppress the command block. The context shadow's resource
+producers must still join the genuine API lifecycle before native use. Existing
+Linux grammar lacks several of these forms; adding guessed addresses or a
+broad E6 whitelist would not implement the required resource/lifetime contract.
