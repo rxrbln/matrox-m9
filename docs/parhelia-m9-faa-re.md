@@ -1485,3 +1485,11 @@ NACK, early/middle/final deadline, missing grant and no-write refusal paths.
 Only `completed` bytes are usable. If the actual card NACKs its first request,
 its untouched zero output array is **not** a128-byte capability blob; preserve
 that genuine failure and let the vendor producer take its real fallback.
+
+The separate bounded `GPIOEEPROM` model has now round-tripped synthetic byte
+values0..127 through the genuine vendor routines, recording exactly128
+A0/offset/A1/STOP transactions. Its first-NACK model executes the actual51-word
+error sequence and records no output bytes. Tests are CPU protocol proof only,
+not actual board capabilities. The model rejects addresses other than A0/A1,
+uncaptured subaddresses, EEPROM data writes and multi-byte/master-ACK reads;
+actual physical replies must be separately admitted before bootstrap uses it.
