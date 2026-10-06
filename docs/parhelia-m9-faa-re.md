@@ -1601,3 +1601,33 @@ returns1 after8250 actual-catalog PCI reads and1190 actual registry/default
 queries. The record is `normal-runtime-host.json`; it does not claim adapter
 admission, full display initialization, FAA resource backing or a draw. Native
 owner construction can now consume this real CPU runtime graph directly.
+
+### Actual normal shared CPU platform publication (2026-10-06)
+
+**EMULATED, ACTUAL INPUTS:** `m9_shared_platform.initialize()` now executes MD
+`84890` through MM `71d8e` / `61e82`, with the retained genuine M9128 miniport
+owner and completed normal CPU runtime. The actual 20-byte `233038` response
+publishes the exact MM-created shared hardware context, platform and shared
+owner. MD `84914`, `84928`, `8493f`, `84942`, `8494b` and `8496e` publish
+`device+c`, `device+10`, `device+8`, `hardware+8`, `hardware+4` and the
+per-head owner. No host-provided success response or capability flags intervene.
+
+The hardware context is a zeroed `0x145b0` CPU allocation. Its real allocation
+chain `61f20 -> 11df2 -> [55cac]` selects actual MM `590e7`, then `2471b` /
+`ExAllocatePoolWithTag` in this initialized function table. The generic
+VideoPort pool ABI also has bounded CPU allocation/free support, independently
+checked; it is not the allocator selected by this captured path.
+
+The real platform already contains `+98=0xd0000000`, `+a0=0x10000000`, from
+actual captured PCI BAR0. These describe a 256 MiB aperture, **not** the
+installed 1 GiB VRAM. `+78=0x500` retains the explicitly controlled Windows
+5.0 bootstrap host input. `hardware+10` is still zero: its normal mapping
+publisher remains required before shared GPU allocator initialization.
+
+The helper imports exact MM heap bytes at their original guest addresses
+**before** MD publication and refuses a second import. Recopying the whole
+heap after MD initialization would overwrite genuine MD-owned writes.
+`check-shared-platform.py` passes actual publication, aperture provenance,
+CPU allocation ownership and the destructive-replay refusal. The artifact is
+`captures/m9128-device-inputs-20261006/shared-platform.json`. This proves CPU
+ownership only; it does not admit FAA surfaces or submit GPU work.
