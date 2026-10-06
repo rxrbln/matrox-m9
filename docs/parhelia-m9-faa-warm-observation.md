@@ -28,6 +28,21 @@ the helper's later writes out of their complete board-owned transaction.
 
 ## Existing observation and minimum new boundary
 
+The parent collected the actual fresh boundary in
+[observation.json](../tests/m9-fresh-warm-entry-20261006/observation.json):
+M9128 PCI `102b:0540`, subsystem `102b:22c0`, boot
+`df3986cd-a4c0-4a4a-a5bc-3fa13a41b5d3`, kernel `7.2.5-t2`, native module absent,
+before X/service submission. The read-only helper SHA256 is
+`9f5937ff0bb1eb38492806869fe9009b75f248b2a868331401c1d5277c7afc82`.
+The words are `1c10=00000001`, `1fdc=04000000`. The source direct-return
+predicate is false. This qualifies that exact branch observation, not execution
+of the warm or cold transaction. The retained raw output repeats `1c10` through
+a display alias; both observations agree, and no additional target read was
+performed to remove that formatting duplicate.
+
+See [the full warm/native ordering audit](parhelia-m9-faa-warm-native-order.md)
+for the source-selected transaction and its distinct native ordering.
+
 The retained `adapter-refresh-idle.json` observes `1c10=00000002` and
 `1fdc=04010000` on M9128 LP PCIe x16, PCI `102b:0540`, subsystem `102b:22c0`,
 boot `815d4dcc-e895-45c3-85ec-b54fda4fce04`. The stated scope is an idle
