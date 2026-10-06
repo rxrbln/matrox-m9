@@ -11,6 +11,15 @@ must record the actual adapter/subsystem identity, boot, kernel and Mesa hashes.
 Older M9128 or M9148 measurements remain labelled with their original board.
 P690, Parhelia and LX packet meanings do not establish an M9 command.
 
+Current nano deployment is now qualified on M9128 102b:0540/22c0,
+kernel7.2.5-t2, boot815d4dcc. See the
+[deployment proof](../tests/m9-native-deployment-20261006/README.md) and
+[integrated sampler/FAA-resource proof](../tests/m9-faa-sampler-integration-20261006/README.md).
+Ordinary texture/depth, queries, four MRT targets and accelerated GLX pass.
+One1024x768/vsync-off texture scene reports717FPS; this is not a whole-suite
+performance result. The sampler specialization regression now passes with
+zero skips on driverd1f2b12. FAA mode remains unproved and unadvertised.
+
 The [October 2 piglit status](parhelia-m9-piglit-status.md) supersedes the
 September 18 backlog where they disagree. The glmark2 standing is still the
 September 20 **M9128 at 1920x1200** result, not a current nano benchmark. Root
@@ -28,10 +37,10 @@ an agent running simultaneously.
 
 | order | scope | actual remaining gap | next useful proof |
 |---|---|---|---|
-| 0 | deployment and baseline | New nano installation has not been qualified by this ledger | Verify `102b:0540`, loader `m9x`, firmware, module/DSO provenance, renderer, a plain textured/depth fixture and post-test engine health at 1024x768 |
+| 0 | deployment and baseline | Qualified on current M9128; broader scenes remain | Retain the pinned deployment and post-test health proof when testing each new candidate |
 | 1 | FAA vendor emulation | Real M9 emitters were executed; complete API-created FAA resource/draw/resolve was not | Complete miniport initialization from genuine device responses, then capture FAA-off/on allocation, complete packets, program images and retirement |
 | 1 | FAA implementation and native probe | Existing diagnostic state does not prove multisampling: previously zero of 318464 store dwords changed | Compare the vendor-owned resource/enable/reset/resolve graph, test one edge scene, read back store writes and resolved edge coverage; follow with depth and texture controls |
-| 2 | max-samplers regression | October 2 `max-samplers` and border variants exceed the owned job-record budget on later merges but pass on c4dd850 | Reproduce one failing shader, trace `m9_job_max_vertices`, producer run length and pass count against the earlier build; fix the responsible budget/splitting layer |
+| 2 | max-samplers regression | Main regression closed: stale CPU record layout after fragment specialization; border variants remain to check | Native old build fails eight fragment draws; d8fa015 passes32seen/zero skips without capacity changes. Run a bounded border variant next |
 | 2 | kill/early-z state | Three quad lanes use an earlier quad's kill outcome with our instruction and an unchanged vendor program | Obtain genuine vendor engine MMIO while `fs-discard-cond` runs and compare initialization plus job-head controls |
 | 3 | interpolation splitting | A raster pass has six interpolants; vendor schedules fourteen as 2/6/6; current splitter contains an interpolation cut but piglit still reports refusals | Feed the precise failing piglit NIR through the offline compiler, expose the first refusal, add the smallest bounded native record-routing proof |
 | 3 | per-fragment TXB | Uniform/draw-constant bias works; varying bias is explicitly refused | Implement the captured two-pass coordinate-plus-LOD record form and prove mip selection with a varying bias image |
@@ -93,20 +102,29 @@ These are controls for deployment, not new open feature implementations:
 
 ## FAA evidence boundary
 
-The separate worktree `wip/m9-faa-emulator` contains the current M9-specific
-execution evidence through commit **b080d1498f7f66ed2047bf4371e2cfd0a843b5d4**.
+The separate worktree `wip/m9-faa-emulator` contains M9-specific execution
+evidence now integrated into this RE tree through **a0a84a8b**.
 It uses the genuine MSerX `MxMD.dll`, `MxMGLX.dll` and `MxMM.sys` for
 `102b:0540`. Its actual `0xfb920` AD/AF emitter and `0xfab30`
 `RESET_FRAG_PTR` emitter ran under the established PE/Unicorn emulator with
 controlled ABI owners. These are real instructions, but the owners are not
 the result of a fully initialized multisampled API surface.
 
-The latest preserved bootstrap boundary is serial-flash identification
-opcode `0x15`; the genuine manufacturer/status response is missing. The
-earlier FindAdapter 87 was an emulator chip-select polarity error and does
-not establish an unsupported device. Full FindAdapter/HwInitialize, FAA
-admission, allocation, draw, resolve and physical store retirement have not
-been proved. The partial trace must not be called a complete FAA capture.
+Genuine SPI identity responses were recovered from retained vendor-X trace
+echoes and checked against1123ROM bytes. The actual miniport now passes flash
+identity and PInS parsing. A bounded ownership model grounded in nano's
+request/grant/restore capture progresses to GPIO1c4c. The earlier FindAdapter87
+was an emulator chip-select error. Full FindAdapter/HwInitialize, configured
+FAA allocation, draw, resolve and physical store retirement remain unproved.
+
+The genuine surface emitter additionally executes conditional index24,
+E6=[6dc00000,1,1], thenBC/BD when the device-owned per-slot resource exists;
+the null owner skips that whole block. These packets are missing from the
+Linux FAA diagnostic, but the resource producer/physical type must be joined
+before replay. Normal shipping Windows configuration and API routes exist:
+OGL\\Multisample nonzero plus3D\\AAMode bit0 enables32-bit WGL pixel formats
+advertising eight samples. That establishes static reachability, not a fully
+initialized API draw. Dead debug strings are separate weaker evidence.
 
 Current diagnostic source separates `ad`/`af`, the `ef[31:29]` AA mode,
 `f0` control bits, `bc`/`bd` store bindings, `b8` companion and reset state.
