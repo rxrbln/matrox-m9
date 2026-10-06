@@ -188,7 +188,8 @@ uncaptured input. `target-owner-boundary.json` records this honest boundary;
 its MMIO event's read `value=0` is the hook's placeholder, **not an observed
 register value**. The function has not returned and its four target owners
 have not been published. A captured initial control input is the next proof,
-with any later hardware access remaining a separate explicit boundary.
+with any later hardware access remaining a separate explicit boundary. This
+negative receipt is retained as the pre-capture baseline.
 
 The MM private target box is `20231850`, while the MD shared target box is
 `202305ec`. Their different ownership is observed through the real
@@ -196,3 +197,26 @@ dispatch/constructor fields. No wholesale heap copy or strategy-pointer
 mirroring is needed or performed; doing so would overwrite genuine MD
 state with unrelated MM objects. This owner proof remains CPU-only and is
 not FAA draw coherence, native execution or an FAA image.
+
+The subsequent captured-input replay closes this constructor boundary.
+`captures/m9128-device-inputs-20261006/dc-banks-idle-e4611b75.csv`, supplied by
+the sole target owner, has SHA256
+`d457b823156d033a9ea84c87bae1d311f8dfede8aef991ebd8ec5b657f6bf8db`.
+It records 128 aligned DC-bank values; active DC0 control is `33046001`.
+`initialize(..., dc_snapshot=path)` admits only this pinned capture, initial
+reads, and the finite control save/disable values used by actual `1f2ac`.
+The portable consumer already exists in canonical `device-inputs.py`
+(`7e8c1c7a`); no uncaptured hardware input or out-of-tree runtime patch is
+needed. The replay only reads DC0 control twice, with no MMIO writes.
+
+The actual function now returns 1, publishes the four `1f2c3c` validators,
+and sets `device+6998` to the current-head owner. It also publishes its fifth
+shared owner at `hardware+feb8` and selects it through `device+699c`.
+This fifth owner uses target selector 4, genuinely produced at `20930`; it
+is not a fifth display head. Four unchanged MM `7165f/16a49` calls return
+0 with status 0 and returned-byte count 0. The final two scalar requests
+disable the shared/current target strategy as part of normal `20a80` setup.
+`target-owner-returned.json` retains all four requests, owner assertions,
+observed publication PCs and the two captured reads. This is sufficient to
+join the normal vendor draw validator; retained FAA draw bindings and a
+native FAA image remain separate gates.
