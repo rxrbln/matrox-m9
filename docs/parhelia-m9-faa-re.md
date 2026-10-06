@@ -2047,3 +2047,35 @@ and actual PCI inventory/resources. The passive helper is
 `captures/m9128-device-inputs-20261006/counted-secondary-submit.json`.
 Runtime dependencies are the same genuine full-frame helper `b954cf25` and
 ordinary option/allocator ABI `19c5699d`; no target access or GPU reply is added.
+
+
+### Sentinel CPU alias and actual page-copy fallback (2026-10-06)
+
+The sentinel's raw resource layout `+15c` is GPU address `1b49000`, published
+from backing `+20` by `4dfe0`. Backing `+10` is a different allocator-relative
+address (`cc8000`), and the actual public CPU map returns `60eb0000`. The
+existing BAR0 view is `60000000`, making its CPU aperture offset `eb0000`.
+Looking up initialized bytes at GPU offset `1b49000` therefore gives a false
+negative: the CPU writes are retained at their actual aperture alias.
+
+The genuine mapping chain is wrapper `+38` virtual slot14 (`a66c0`) through
+wrapper `+48` slot1c (`a8d60`) to `55850`, `2cb40` and `27170`. The sentinel has
+no staging-resource branch (`174/2a4/2b8/3d0/3d4/3e4` are zero). Its actual map
+owner invokes `26830 -> 26a7a -> 1cab0 -> 597a0 -> 59410`. Source index is
+`1b49`, destination alias index `eb0`, count1. The CPU-written source PTE
+`1b49008` at `60407d24` is copied to `60904ac0`; the destination previously held
+`eb0008`. Crucially, actual `1c120` returns0 and the real CPU fallback loop
+`594a0` publishes `1b49008`. This is CPU page-table publication, not a supplied
+GPU copy result or completion. The physical hardware's aperture interpretation
+is not emulated; the exact real PTE, returned map and owning sentinel relation
+are retained together.
+
+Twenty bytes at that returned CPU alias are genuinely initialized as
+`[a4a3a1a1,28041968,0,0,0]`. The remaining108bytes of its128byte extent remain
+unknown. Pool6 initialization is a separate contract; this result gives no
+permission to fill its unspecified bytes with presumed vendor state.
+`tools/m9emu/m9_page_alias.py` observes the real producer and verifies the
+source PTE and initializer against sparse CPU-write validity. It neither
+remaps a resource after posted work nor supplies a device status reply.
+`check-page-alias.py` reproduces the proof; output is
+`captures/m9128-device-inputs-20261006/sentinel-page-alias.json`.
