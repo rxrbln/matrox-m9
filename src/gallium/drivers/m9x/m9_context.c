@@ -458,6 +458,7 @@ static bool m9_split_pad_enable = true;
  * the record's granularity measured rather than assumed. */
 static const char *m9_record_dump;
 static const char *m9_vs_record_dump;
+static bool m9_dump_native_inputs_enable;
 /* Raster draws one split job restates.  Two of them stop the engine
  * (MEASURED, docs/parhelia-m9-fragment-pass-hardware.md), and one draw
  * also bounds the record: its fragment counter then covers a single
@@ -1770,6 +1771,180 @@ m9_job_c2_owner(const struct m9_context *ctx, const struct m9_fs_variant *fs,
    return NULL;
 }
 
+/* Read-only proof is bounded independently of application/environment input.
+ * Malformed or missing owners refuse the diagnostic, never replace data. */
+static bool
+m9_native_inputs_valid(const struct m9_context *ctx,
+                       const struct m9_draw_job *job,
+                       const struct m9_resource *image, unsigned slots)
+{
+   uint64_t source_bytes = (uint64_t)job->source_vertices * job->vs_record_bytes;
+   if (!job->vs_producer_entry || !job->vs_gather_entry ||
+       !job->source_vertices || job->source_vertices % 4 ||
+       job->source_vertices > 65532u || !job->vs_record_bytes ||
+       job->vs_record_bytes % 16 ||
+       job->vs_record_bytes > M9_VS_MAX_ATTRIBUTES * 16u ||
+       !ctx->source.map || ctx->source.handle != job->source ||
+       !job->source || source_bytes > ctx->source.size ||
+       !image || !image->map || image->handle != job->program ||
+       !job->program || !slots || slots > 4096u || 8ull * slots > image->size ||
+       !ctx->system.map || !job->system || ctx->system.handle != job->system ||
+       !job->vs_const_pairs || job->vs_const_pairs > M9_VS_CONST_MAX_PAIRS ||
+       M9_VS_CONST_OFFSET > ctx->system.size ||
+       8ull * job->vs_const_pairs > ctx->system.size - M9_VS_CONST_OFFSET ||
+       !job->vs_decl || !job->vs_decl_count || job->vs_decl_count > M9_VS_MAX_DECL ||
+       !job->draws || !job->draw_count || job->draw_count > 4096u ||
+       job->index_count > 65536u ||
+       (job->index_count && (!ctx->index.map || !job->index ||
+        ctx->index.handle != job->index || job->index_base > ctx->index.size ||
+        2ull * job->index_count > ctx->index.size - job->index_base)) ||
+       !job->transient || ctx->transient.handle != job->transient ||
+       !m9_vs_record_fits(job->source_vertices, job->vs_extra_targets + 3u,
+                          job->vs_record_view, m9_transient_view_bytes(),
+                          ctx->transient.size))
+      return false;
+   if (job->vs_const_run_count &&
+       (!job->vs_const_runs || job->vs_const_run_count > M9_VS_MAX_CONST_RUNS))
+      return false;
+   unsigned end = 0;
+   for (unsigned i = 0; i < job->vs_const_run_count; i++) {
+      const struct m9_vs_const_run *run = &job->vs_const_runs[i];
+      if (run->first != end || !run->count || run->count % 4 ||
+          end > job->source_vertices || run->count > job->source_vertices - end ||
+          !run->const_pairs || run->const_pairs > M9_VS_CONST_MAX_PAIRS ||
+          run->const_offset % 8 || run->const_offset > ctx->system.size ||
+          8ull * run->const_pairs > ctx->system.size - run->const_offset)
+         return false;
+      end += run->count;
+   }
+   if (job->vs_const_run_count && end != job->source_vertices)
+      return false;
+   for (unsigned i = 0; i < job->draw_count; i++) {
+      const struct m9_draw_record *d = &job->draws[i];
+      if (!d->count || d->start > job->source_vertices ||
+          d->count > job->source_vertices - d->start)
+         return false;
+      if (d->index_count) {
+         uint64_t halves = (uint64_t)d->index_count + (d->index_count & 1u) +
+                           M9_INDEX_TAIL;
+         if (d->index_first > job->index_count ||
+             halves > job->index_count - d->index_first ||
+             ((uint64_t)job->index_base + 2ull * d->index_first) % 4)
+            return false;
+      }
+   }
+   return true;
+}
+
+static bool
+m9_dump_native_inputs(const struct m9_context *ctx,
+                       const struct m9_draw_job *job,
+                       const struct m9_resource *image, unsigned slots,
+                       unsigned seq)
+{
+   char path[4096];
+   if (!ctx->dump_path || !m9_native_inputs_valid(ctx, job, image, slots))
+      return false;
+   int n = snprintf(path, sizeof(path), "%s.native-context-%u-job-%u.inputs",
+                    ctx->dump_path, ctx->context_id, seq);
+   if (n < 0 || (size_t)n >= sizeof(path))
+      return false;
+   /* A second context/process cannot replace an earlier proof file. */
+   FILE *out = fopen(path, "wx");
+   if (!out)
+      return false;
+   fprintf(out, "NATIVE_INPUTS 1 context %u job %u vertices %u stride %u "
+           "fields %u record-view %u source %u index %u index-base %u "
+           "index-halves %u C2 %u slots %u entries %u/%u/%u\n",
+           ctx->context_id, seq, job->source_vertices, job->vs_record_bytes,
+           job->vs_extra_targets + 3u, job->vs_record_view, job->source,
+           job->index, job->index_base, job->index_count, job->program, slots,
+           job->vs_producer_entry, job->vs_extra_entry, job->vs_gather_entry);
+   fprintf(out, "OWNER SOURCE %u bytes %" PRIu64 " SYSTEM %u bytes %" PRIu64
+           " INDEX %u bytes %" PRIu64 " C2 %u bytes %" PRIu64
+           " TRANSIENT %u bytes %" PRIu64 "\n",
+           ctx->source.handle, ctx->source.size, ctx->system.handle, ctx->system.size,
+           ctx->index.handle, ctx->index.size, image->handle, image->size,
+           ctx->transient.handle, ctx->transient.size);
+   for (unsigned i = 0; i < job->vs_decl_count; i++)
+      fprintf(out, "DECL %u %08x\n", i, job->vs_decl[i]);
+   const uint32_t *words = image->map;
+   for (unsigned i = 0; i < slots; i++)
+      fprintf(out, "C2 %u %08x %08x\n", i, words[2*i], words[2*i+1]);
+   words = ctx->source.map;
+   unsigned source_dwords = job->source_vertices * (job->vs_record_bytes / 4);
+   for (unsigned i = 0; i < source_dwords; i++)
+      fprintf(out, "SOURCE %u %08x\n", i, words[i]);
+   unsigned runs = MAX2(job->vs_const_run_count, 1u);
+   for (unsigned i = 0; i < runs; i++) {
+      struct m9_vs_const_run single = { .first = 0, .count = job->source_vertices,
+         .const_offset = M9_VS_CONST_OFFSET, .const_pairs = job->vs_const_pairs };
+      const struct m9_vs_const_run *run = job->vs_const_run_count ?
+                                         &job->vs_const_runs[i] : &single;
+      fprintf(out, "RUN %u first %u count %u offset %u pairs %u\n", i,
+              run->first, run->count, run->const_offset, run->const_pairs);
+      words = (const uint32_t *)((const uint8_t *)ctx->system.map + run->const_offset);
+      for (unsigned k = 0; k < 2u * run->const_pairs; k++)
+         fprintf(out, "CONST %u %u %08x\n", i, k, words[k]);
+   }
+   for (unsigned i = 0; i < job->draw_count; i++) {
+      const struct m9_draw_record *d = &job->draws[i];
+      fprintf(out, "DRAW %u start %u count %u index-first %u index-count %u "
+              "topology %u cull %08x flat %u lines %u\n", i, d->start, d->count,
+              d->index_first, d->index_count, d->topology, d->cull, d->flat, d->lines);
+   }
+   const uint16_t *indices = job->index_count ?
+      (const uint16_t *)((const uint8_t *)ctx->index.map + job->index_base) : NULL;
+   unsigned outside = 0;
+   for (unsigned i = 0; i < job->index_count; i++) {
+      fprintf(out, "INDEX %u %u\n", i, indices[i]);
+      outside += indices[i] >= job->source_vertices;
+   }
+   fprintf(out, "END source-dwords %u index-halves %u index-outside-source %u\n",
+           source_dwords, job->index_count, outside);
+   bool written = !ferror(out);
+   if (fclose(out)) written = false;
+   if (!written) unlink(path);
+   return written;
+}
+
+static bool
+m9_clear_native_retirement(const char *record)
+{
+   char path[4096];
+   int n = snprintf(path, sizeof(path), "%s.meta", record);
+   return n >= 0 && (size_t)n < sizeof(path) &&
+          (!unlink(path) || errno == ENOENT);
+}
+
+/* Called only after the real wait succeeded and the actual owner was read. */
+static bool
+m9_dump_native_retirement(const struct m9_context *ctx, const char *record,
+                          uint64_t bytes)
+{
+   char path[4096];
+   int n = snprintf(path, sizeof(path), "%s.meta", record);
+   if (n < 0 || (size_t)n >= sizeof(path))
+      return false;
+   FILE *out = fopen(path, "w");
+   if (!out)
+      return false;
+   fprintf(out, "RETIRED_NATIVEVS 1 context %u job %u producer-point %" PRIu64
+           " waited-point %" PRIu64 " vertices %u fields %u view %u bytes %" PRIu64
+           " source %u index %u C2 %u inputs-dumped %u\n",
+           ctx->context_id, ctx->vs_record_job_seq, ctx->vs_record_point,
+           ctx->last_point, ctx->vs_record_vertices, ctx->vs_record_fields,
+           ctx->vs_record_view, bytes, ctx->vs_record_source,
+           ctx->vs_record_index, ctx->vs_record_program, ctx->vs_record_inputs_dumped);
+   if (ctx->dump_path && ctx->vs_record_inputs_dumped)
+      fprintf(out, "INPUTS %s.native-context-%u-job-%u.inputs\n", ctx->dump_path,
+              ctx->context_id, ctx->vs_record_job_seq);
+   bool written = !ferror(out);
+   if (fclose(out)) written = false;
+   if (!written) unlink(path);
+   return written;
+}
+
 /* Job words, relocations, fragment slots and constants for offline decode. */
 static void
 m9_dump_job(struct m9_context *ctx, const struct m9_fs_variant *fs,
@@ -1779,6 +1954,8 @@ m9_dump_job(struct m9_context *ctx, const struct m9_fs_variant *fs,
    /* M9X_DUMP_FROM / M9X_DUMP_COUNT select a window of jobs by their running
     * number, so a long run leaves one decodable stretch from mid-game. */
    unsigned seq = ctx->dump_seq++;
+   ctx->dump_native_valid = false;
+   ctx->dump_native_seq = seq;
    FILE *out;
 
    if (seq < ctx->dump_from || seq >= ctx->dump_from + ctx->dump_count)
@@ -1817,6 +1994,12 @@ m9_dump_job(struct m9_context *ctx, const struct m9_fs_variant *fs,
       const struct m9_resource *image = m9_job_c2_owner(ctx, fs, job->program);
       unsigned slots = job->vs_producer_entry + m9_vs_producer_slot_count(vs);
       unsigned final_entry = job->vs_extra_entry - m9_vs_slot_count(vs);
+      if (m9_dump_native_inputs_enable) {
+         ctx->dump_native_valid = m9_dump_native_inputs(ctx, job, image, slots, seq);
+         if (!ctx->dump_native_valid)
+            fprintf(stderr, "m9x: native input proof refused context %u job %u\n",
+                    ctx->context_id, seq);
+      }
       fprintf(out, "NATIVEVS vertices %u stride %u C2 %u slots %u "
               "entries %u/%u/%u/%u masks %04x/%04x record-view %u fields %u\n",
               job->source_vertices, job->vs_record_bytes,
@@ -2975,6 +3158,12 @@ m9_submit_job(struct m9_context *ctx)
          ctx->vs_record_vertices = job.source_vertices;
          ctx->vs_record_fields = job.vs_extra_targets + 3;
          ctx->vs_record_view = job.vs_record_view;
+         ctx->vs_record_job_seq = ctx->dump_native_seq;
+         ctx->vs_record_inputs_dumped = ctx->dump_native_valid;
+         ctx->vs_record_point = point;
+         ctx->vs_record_source = job.source;
+         ctx->vs_record_index = job.index;
+         ctx->vs_record_program = job.program;
          if (ctx->debug)
             fprintf(stderr, "m9x: native route chain fields %u vertices %u "
                     "entries %u/%u/%u/%u masks %04x/%04x -> %#" PRIx64 "\n",
@@ -8953,6 +9142,12 @@ m9_context_flush(struct pipe_context *pctx,
               ctx->params.width, ctx->params.height, m9_record_dump);
       ctx->record_written = false;
    }
+   if (m9_dump_native_inputs_enable && m9_vs_record_dump &&
+       !ctx->lost && ctx->vs_record_vertices) {
+      /* An unsuccessful new retirement must not inherit an older job link. */
+      if (!m9_clear_native_retirement(m9_vs_record_dump))
+         fprintf(stderr, "m9x: could not remove prior native retirement metadata\n");
+   }
    if (m9_vs_record_dump && !ctx->lost && ctx->vs_record_vertices &&
        m9_wait_for_point(ctx->screen, ctx->last_point)) {
       fprintf(stderr, "m9x: native packed record completion failed; context lost\n");
@@ -8980,7 +9175,10 @@ m9_context_flush(struct pipe_context *pctx,
          if (f) {
             bool written = fwrite(header, sizeof(header), 1, f) == 1 &&
                fwrite((const uint8_t *)ctx->transient.map + offset, bytes, 1, f) == 1;
-            fclose(f);
+            if (fclose(f)) written = false;
+            if (written && m9_dump_native_inputs_enable &&
+                !m9_dump_native_retirement(ctx, m9_vs_record_dump, bytes))
+               fprintf(stderr, "m9x: native retired record metadata publication failed\n");
             if (written)
                fprintf(stderr, "m9x: native packed record fields %u vertices %u "
                        "bytes %" PRIu64 " -> %s\n", fields, ctx->vs_record_vertices,
@@ -9255,6 +9453,7 @@ m9_context_create(struct pipe_screen *pscreen, void *priv, unsigned flags)
    m9_split_pad_enable = debug_get_bool_option("M9X_SPLIT_PAD", true);
    m9_record_dump = debug_get_option("M9X_RECORD_DUMP", NULL);
    m9_vs_record_dump = debug_get_option("M9X_VS_RECORD_DUMP", NULL);
+   m9_dump_native_inputs_enable = debug_get_bool_option("M9X_DUMP_NATIVE_INPUTS", false);
    m9_split_draws = debug_get_num_option("M9X_SPLIT_DRAWS", 1);
    m9_record_89 = debug_get_num_option("M9X_RECORD_89", 0);
    m9_fragdepth_state = debug_get_bool_option("M9X_FRAGDEPTH", true);

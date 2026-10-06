@@ -655,6 +655,10 @@ struct m9_context {
    uint32_t native_vs_blitter_draws, native_vs_blitter_fallbacks;
    /* Last successfully submitted packed-record producer, for opt-in proof. */
    uint32_t vs_record_vertices, vs_record_fields, vs_record_view;
+   uint32_t vs_record_job_seq;
+   uint32_t vs_record_source, vs_record_index, vs_record_program;
+   uint64_t vs_record_point;
+   bool vs_record_inputs_dumped;
    /* Why the native vertex path refused, one entry a reason: the reasons
     * are static strings, so the pointer identifies them. */
    struct util_dynarray native_vs_reasons;
@@ -676,6 +680,8 @@ struct m9_context {
    const char *dump_path;   /* M9X_DUMP: append every job's words */
    bool dry_run;            /* M9X_DRYRUN: validate jobs, never execute */
    unsigned dump_seq;
+   unsigned dump_native_seq;
+   bool dump_native_valid;
    unsigned dump_from, dump_count;
    unsigned frame_jobs, only_first, only_after;
    unsigned split_state, split_uniforms, split_vertices, split_stream;
