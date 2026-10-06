@@ -1190,3 +1190,26 @@ width is `ceil(bytes/4)` and height is `ceil(width/1024)`, with other dimensions
 both zero for `8002`; this selects the mapped getter branch if that request
 successfully reaches a valid low-level resource. Pool-6 allocation and its
 initial data are still open and must be captured before native index24 use.
+
+`76540` has no direct `E8` callers: it is normal owner vtable `1f3850` slot
+`44`. Initializer `11be20` calls that slot at `11c0be` with pool6 and byte
+count `500` (1280), stores the result at owner`+78`, and passes it to `109310`.
+That setter binds context`+2514` subshadow`+50` and sets its dirty bit8. This
+is ordinary context initialization, not proof of an FAA-only resource.
+
+`tools/m9emu/pool6-request.py` executes the genuine vtable method with those
+arguments and explicit owner/profile markers, stopping **before** low-level
+`a3870`. The actual final request has flags`8002`, format0, width320 at`+18`,
+height1 at`+1c` and dimensions1 at`+20/+24`. The pointer at`+4` derives from
+hardware`+1015c + 2060`; its real profile and address domain remain unproven.
+Request`+c/+28` are not initialized by this producer and are omitted from
+the reported initialized fields rather than treating host stack zeros as
+vendor data. There is no fake successful allocation callback.
+
+A second case uses a separately constructed cached interface at real slot
+`hw+fed8+slot*144`. Two genuine method calls perform no allocation and return
+interface`+58`, incrementing interface`+5c` from1 to3. This proves the cached
+reference increment contract, not completed vendor retirement. Captured
+`pool6-request.json` and `check-pool6-request.py` preserve both cases. Actual
+allocation domain, initialized data, release path and the enabled surface
+resource graph remain the next requirements.
