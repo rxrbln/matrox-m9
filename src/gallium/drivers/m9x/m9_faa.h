@@ -129,7 +129,9 @@ uint32_t m9_faa_store_pattern(uint64_t dword_index);
  * enlargement of the colour allocation (STATIC, MxMD.dll 0xac7e0: the main
  * buffer is width * height * 0x158 scaled by 0.385 and divided by eight,
  * capped at 32 MiB, and a second buffer is a sixteenth of it).  That is
- * about 16.55 bytes a pixel.
+ * about 16.55 bytes a pixel as a budget. Each actual profile12 allocation
+ * rounds that budget to 1024-element linear rows and includes its own
+ * 32-byte guard, even at the budget cap. The helpers return guarded extents.
  */
 #define M9_FAA_FRAGMENT_CAP_BYTES 0x2000000u
 uint64_t m9_faa_fragment_bytes(uint32_t width, uint32_t height);

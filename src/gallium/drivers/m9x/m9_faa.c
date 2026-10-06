@@ -78,8 +78,8 @@ m9_faa_coverage_fixed(float coverage)
  * The vendor's own arithmetic, in the order the allocator performs it: the
  * 32-bit product first, then the float scale, then the shift and the cap.
  */
-uint64_t
-m9_faa_fragment_bytes(uint32_t width, uint32_t height)
+static uint64_t
+m9_faa_fragment_budget(uint32_t width, uint32_t height)
 {
    /* 64-bit throughout: the vendor's 32-bit product wraps above about
     * 12.5 megapixels, and the cap is reached long before that anyway. */
@@ -90,10 +90,31 @@ m9_faa_fragment_bytes(uint32_t width, uint32_t height)
                                              : scaled;
 }
 
+static uint64_t
+m9_faa_fragment_extent(uint64_t budget)
+{
+   /* Actual ac7e0 uses profile12/format66, a 1024-element linear row and
+    * max(1, ((budget+1023)>>10)/4) rows. Genuine45eb0 appends32 bytes,
+    * including at the32MiB budget cap. This is not a tiled depth layout. */
+   uint64_t rows = (budget + 1023) >> 12;
+
+   return (rows ? rows : 1) * 4096 + 32;
+}
+
+uint64_t
+m9_faa_fragment_bytes(uint32_t width, uint32_t height)
+{
+   return width && height ?
+      m9_faa_fragment_extent(m9_faa_fragment_budget(width, height)) : 0;
+}
+
 uint64_t
 m9_faa_fragment_aux_bytes(uint32_t width, uint32_t height)
 {
-   return m9_faa_fragment_bytes(width, height) >> 4;
+   /* The sixteenth applies to the byte budget, before row rounding and
+    * the auxiliary resource's independent guard. */
+   return width && height ?
+      m9_faa_fragment_extent(m9_faa_fragment_budget(width, height) >> 4) : 0;
 }
 
 bool
