@@ -278,40 +278,56 @@ static int m9_faa_verify_upload(struct m9x_device *mdev,
 	return 0;
 }
 
-/* Bounded observations before submit and after actual retirement. Includes stores, HZ,
- * pool and sentinel, but never claims unknown initial contents were zero or
- * that a nonzero byte proves a GPU store. Caller color has its separate
- * descriptor-aware readback and is not mapped here. No allocation is written.
+/* Bounded observations before submit and after actual retirement. Includes
+ * local stores and retained SYSTEM mapped prefixes, but never claims unknown
+ * initial contents were zero or that a nonzero byte proves a GPU store.
+ * Unmapped allocation tails are excluded. No allocation is written.
  */
 static void m9_faa_observe(struct m9x_device *mdev,
 			 struct m9x_faa_replay *r, bool before)
 {
 	const u32 budget = 16 * 1024 * 1024;
 	u8 data[256];
-	u32 i, offset, count, j, total = 0;
+	u32 i, offset, count, j, local_total = 0, system_total = 0;
 
 	for (i = 0; i < ARRAY_SIZE(r->owner); i++) {
-		if (!r->owner[i].vram)
+		const struct m9_faa_owner_spec *spec = &m9_faa_owner_specs[i];
+		u32 bytes, *total;
+
+		if (r->owner[i].vram) {
+			bytes = spec->bytes;
+			total = &local_total;
+		} else if (spec->system && r->owner[i].cpu) {
+			bytes = spec->mapped_bytes;
+			total = &system_total;
+		} else {
 			continue;
-		if (m9_faa_owner_specs[i].bytes > budget - total) {
+		}
+		if (bytes > r->owner[i].bytes || bytes > budget - *total) {
 			dev_err(&mdev->pdev->dev, "M9 FAA observation exceeds %u-byte budget\n",
 				budget);
 			return;
 		}
-		total += m9_faa_owner_specs[i].bytes;
+		*total += bytes;
 	}
-	/* Order publication/completion observations before BAR reads. */
+	/* Order publication/completion observations before BAR and DMA reads. */
 	rmb();
+	dma_rmb();
 	for (i = 0; i < ARRAY_SIZE(r->owner); i++) {
 		struct m9_faa_owner *o = &r->owner[i];
-		u32 bytes = m9_faa_owner_specs[i].bytes;
+		const struct m9_faa_owner_spec *spec = &m9_faa_owner_specs[i];
+		u32 bytes = o->vram ? spec->bytes : spec->mapped_bytes;
 		u32 hash = 0x811c9dc5, nonzero = 0, nonzero_words = 0;
+		const char *domain = o->vram ? "BAR" : "DMA";
 
-		if (!o->vram)
+		if (!o->vram && (!spec->system || !o->cpu))
 			continue;
 		for (offset = 0; offset < bytes; offset += count) {
 			count = min_t(u32, sizeof(data), bytes - offset);
-			iosys_map_memcpy_from(data, &o->map, offset, count);
+			if (o->vram)
+				iosys_map_memcpy_from(data, &o->map, offset, count);
+			else
+				memcpy(data, (u8 *)o->cpu + offset, count);
 			hash = m9_faa_hash(hash, data, count);
 			for (j = 0; j < count; j++)
 				nonzero += !!data[j];
@@ -324,14 +340,14 @@ static void m9_faa_observe(struct m9x_device *mdev,
 			r->before_nonzero_words[i] = nonzero_words;
 		}
 		dev_info(&mdev->pdev->dev,
-			 "M9 FAA %s BAR observation: owner=%u captured=%#x native=%#x bytes=%u fnv=%#x nonzero_bytes=%u nonzero_words=%u\n",
+			 "M9 FAA %s %s observation: owner=%u captured=%#x native=%#x bytes=%u fnv=%#x nonzero_bytes=%u nonzero_words=%u\n",
 			 before ? "before submit" : "retired",
-			 i, m9_faa_owner_specs[i].captured, o->base, bytes,
+			 domain, i, spec->captured, o->base, bytes,
 			 hash, nonzero, nonzero_words);
 		if (!before && r->baseline_valid)
 			dev_info(&mdev->pdev->dev,
-				 "M9 FAA BAR delta: owner=%u before_fnv=%#x after_fnv=%#x hash_changed=%u before_nonzero_bytes=%u after_nonzero_bytes=%u before_nonzero_words=%u after_nonzero_words=%u\n",
-				 i, r->before_hash[i], hash, r->before_hash[i] != hash,
+				 "M9 FAA %s delta: owner=%u before_fnv=%#x after_fnv=%#x hash_changed=%u before_nonzero_bytes=%u after_nonzero_bytes=%u before_nonzero_words=%u after_nonzero_words=%u\n",
+				 domain, i, r->before_hash[i], hash, r->before_hash[i] != hash,
 				 r->before_nonzero[i], nonzero,
 				 r->before_nonzero_words[i], nonzero_words);
 	}
