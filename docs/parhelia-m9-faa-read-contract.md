@@ -48,10 +48,11 @@ before submission. Draw still uses the sampled primary. Resolve uses the
 actual admitted ordinary destination descriptor and owner. The native stream
 and indirect sources must be compared against this actual output capture,
 including typed operands, timeline, clear page runs and command lengths.
-Reading linear DMA bytes as pixels is not yet proved: the subsequent actual
-`afbe0` CPU copy/translation contract remains to be traced up to its first
-missing GPU input. Correct hardware retirement and rendered pixels remain
-separate qualifications.
+The subsequent actual CPU-copy preparation now stops before the common-buffer
+read at `4e2fc`, with no counter value supplied. The actual tiled address helper
+below is independently verified against all81920 padded pixel coordinates.
+See [the full unfinished source and mapping ledger](parhelia-m9-faa-output-inputs-re.md).
+Correct hardware retirement and rendered pixels remain separate qualifications.
 
 `tools/m9-vendor-faa-read-contract.py` runs the source helper against retained
 OS/MDL owners with strict stops at the first wait or CPU copy. It requires the

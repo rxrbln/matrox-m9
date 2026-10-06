@@ -8,7 +8,10 @@ vendor-source checks pass. One short physical M9128 run at1024x768,
 FAAoff/vblank_mode0, enters native1/drawmodule0, then loses the context:
 `two-pass job failed (Input/output error)`. The kernel reports an actual
 stream timeout. Printed68FPS is invalid and there is no measured gain.
-The improvement is retained; native runtime closure remains open.
+The improvement is retained. Mesa f437a9b corrects a source-proven early
+finish marker copied into the register-dot opcode: actual vendor head dots
+omit bit30 and the tail owns it. Marker-placement regressions, numeric geometry
+references and the full DSO link pass; corrected GPU dispatch remains untested.
 See [the complete hardware proof](../tests/m9-gl2-wireframe-20261006/README.md).
 A separate one-run basic Quake3GL2 timedemo on the same Mesa/kernel
 completed387frames/10.1seconds/**38.3FPS**,1024x768windowed,FAAoff/vsync0.

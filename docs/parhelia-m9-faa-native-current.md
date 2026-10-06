@@ -8,6 +8,16 @@ Ordinary textured rendering and the deployed driver are validated. FAA
 rendering is not yet validated. This note is separate from P690
 `102b:2539` evidence.
 
+Current implementation checkpoint: kernel153f782/10bfccd adds the separately
+owned system output and explicit retired RGBA readback. All81920 source/native
+tiled coordinates, both mapping policies, readback refusal cases and the full
+module build pass. This remains inactive with the old sampled template.
+[The new real output inputs](parhelia-m9-faa-output-inputs-re.md) retain90 typed
+operands and per-owner virtual mapping policies; final flush/retirement,
+direct operands and generated native commands are still being integrated.
+No new hardware FAA image passes. See
+[the integrated foundation proof](../tests/m9-faa-output-foundation-20261006/README.md).
+
 Current authoritative private replay and hardware evidence are in
 [the native replay note](parhelia-m9-native-faa-replay.md). Kernel `bcccb66`
 includes the complete normal-surface capture with 30 owners, 53 typed addresses,
