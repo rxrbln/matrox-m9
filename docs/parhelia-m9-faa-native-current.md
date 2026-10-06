@@ -16,7 +16,14 @@ the older full FAA sequence, rather than only matching its hashes. These
 opaque writes do not yet prove shader colors or correct fragments. Full FAA
 ordinary output remains black. See [init-only evidence](../tests/m9-faa-init-only-hardware-20261006/README.md)
 and [post-draw evidence](../tests/m9-faa-post-triangle-hardware-20261006/README.md).
-The next discriminator uses a fresh public constant-red source capture.
+The fresh public constant-red hardware control also retires140 without a
+GPU timeout, but ordinary output remains entirely zero. Main changes from
+green1041 to601 nonzero DWORDs:880 bytes change in440 aligned groups.
+Complete AA and preprocessing buffers remain byte-identical. This proves
+color-dependent main-store behavior, not its record ABI or correct resolved
+pixels. The actual source profiles differ only at four raster-c0 bytes;
+remaining resolve/program/pool and SYSTEM output ownership are under audit.
+See [complete red hardware evidence](../tests/m9-faa-constant-red-hardware-20261006/README.md).
 The hardware readback helper accepts `DEVICE OUTPUT.ppm --expect-red` to
 select its independent expected channel; this option does not change the
 shader, submission or GPU stores. The default green oracle and strict
