@@ -261,6 +261,14 @@ static bool m9_query_enable(u8 index, u32 value)
 	return index == 0xc6 && value == 0x00ffff09;
 }
 
+/* M9 vendor raster capture and MSerX 0xf7280 emit D0/D1 as one
+ * scalar pair: normalized D24 units followed by slope factor. Neither
+ * word is an address. Keep both outside the general index whitelist. */
+static bool m9_depth_bias_packet(const u8 *index, unsigned int values)
+{
+	return values == 2 && index[0] == 0xd0 && index[1] == 0xd1;
+}
+
 static int m9_parse_commands(const u32 *words, u32 count, u32 *expected,
 			     u32 program_type)
 {
@@ -321,6 +329,14 @@ static int m9_parse_commands(const u32 *words, u32 count, u32 *expected,
 				cursor + i < M9_RESOURCE69_COUNT_FREE_DWORDS &&
 				index[i] >= 0x60 && index[i] <= 0x67;
 
+			if (index[i] == 0xd0 || index[i] == 0xd1) {
+				if (!m9_depth_bias_packet(index, values) ||
+				    (value & 0x7f800000) == 0x7f800000)
+					return m9_refuse(-EPERM);
+				/* Finite IEEE-754 scalars admit no relocation. */
+				expected[cursor + i] = 0;
+				continue;
+			}
 			/* Dependency tokens are rebased onto the kernel target. */
 			if (index[i] == 0xe3 || index[i] == 0x43) {
 				if (value & 0xf ||
@@ -1184,6 +1200,14 @@ int m9x_submit_selftest(void)
 	u32 query[] = { 0xe6e6e61e, 0, 0x64000004, 0x64000101, 0x40008000 };
 	u32 bad_query[] = { 0xe6e6e61e, 0, 0x64000004, 0x64000101, 0x40008001 };
 	u32 bare_query[] = { 0x4545451e, 0 };
+	u32 depth_bias[] = { 0x4545d1d0, 0x33800001, 0xc0000000 };
+	u32 bad_bias[][4] = {
+		{ 0x454545d0, 0x34000001 }, /* unpaired units */
+		{ 0x4545d0d1, 0, 0 },     /* wrong order */
+		{ 0x45d1d022, 0, 0, 0 },  /* mixed state packet */
+		{ 0x4545d1d0, 0x7f800000, 0 }, /* infinite units */
+		{ 0x4545d1d0, 0, 0xffc00000 }, /* NaN factor */
+	};
 	u32 expected[ARRAY_SIZE(dependency)] = {};
 	u32 *inline_expected;
 	int ret;
@@ -1233,6 +1257,19 @@ int m9x_submit_selftest(void)
 	    !m9_reloc_uses_vram(PARHELIA_M9_RELOC_RESOURCE_69) ||
 	    m9_reloc_uses_vram(PARHELIA_M9_RELOC_DRAW32_START))
 		return m9_refuse(-EINVAL);
+	if (m9_parse_commands(depth_bias, ARRAY_SIZE(depth_bias), expected,
+			      PARHELIA_M9_PROGRAM_NONE) ||
+	    expected[1] || expected[2])
+		return m9_refuse(-EINVAL);
+	for (unsigned int i = 0; i < ARRAY_SIZE(bad_bias); i++) {
+		unsigned int n = i == 0 ? 2 : i == 2 ? 4 : 3;
+
+		memset(expected, 0, sizeof(expected));
+		if (m9_parse_commands(bad_bias[i], n, expected,
+				      PARHELIA_M9_PROGRAM_NONE) != -EPERM)
+			return m9_refuse(-EINVAL);
+	}
+	memset(expected, 0, sizeof(expected));
 	if (m9_parse_commands(good, ARRAY_SIZE(good), expected,
 			      PARHELIA_M9_PROGRAM_NONE))
 		return m9_refuse(-EINVAL);
