@@ -1,5 +1,18 @@
 # glmark2 on the m9x driver: where the 60 fps goal actually stands
 
+## 2026-10-06: wireframe compiles natively; physical dispatch fails
+
+Mesa465b546 reduces the installed buffer wireframe vertex shader from299
+slots to188, within the unchanged default188 limit. Compiler/reference and
+vendor-source checks pass. One short physical M9128 run at1024x768,
+FAAoff/vblank_mode0, enters native1/drawmodule0, then loses the context:
+`two-pass job failed (Input/output error)`. The kernel reports an actual
+stream timeout. Printed68FPS is invalid and there is no measured gain.
+The improvement is retained; native runtime closure remains open.
+See [the complete hardware proof](../tests/m9-gl2-wireframe-20261006/README.md).
+Historical standings below use older builds and different resolutions.
+
+
 ## Read this first: five standings below, measured on different builds
 
 The **eleventh** is the current one: `M9X_VS_MAX_SLOTS` raised from 128 to
