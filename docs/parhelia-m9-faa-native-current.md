@@ -328,3 +328,15 @@ Static MM dispatch also resolves MD query2's IOCTL `0x23231c`, selector1:
 returns owner `+0x48`, updated when that property's `+0x14` value is4.
 This is a runtime policy state, not a direct GPU capability register. Its real
 runtime profile remains uninitialized; no successful reply is substituted.
+
+The normal option-matrix helper now uses these actual module publications
+too: `0x61f70` and `0x64800`, with genuine miniport property dispatch, supply
+the configuration queried by actual MD `0xd3e70 -> 0xd4180` and ICD
+`0x10048d10`. Its earlier manual raw/derived attachment and zeroed process
+snapshot have been removed. [The updated four-case capture](traces/m9-vendor-faa-options-owned-20261006.json)
+reproduces enable gates0/0/0/1, 39 fallback formats, samples0 and the same
+empty-collection rejection. The default process policy fields in the MD
+response now come from the real decoder as well. The active query-owner
+wrapper remains a controlled ABI input, and full hardware startup, display
+collection population and real surface allocation remain unproved. The
+capability-boundary mode still stops at the identical genuine query2 request.
