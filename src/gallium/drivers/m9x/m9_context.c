@@ -530,6 +530,8 @@ static uint64_t m9_prof_refused, m9_prof_skipped, m9_prof_relocs;
  * module, since the last profile line: a benchmark that never destroys its
  * drawing context reports nothing at all otherwise. */
 static uint64_t m9_prof_native, m9_prof_module;
+static const char *m9_native_fallback_dump;
+static unsigned m9_native_fallback_dump_count;
 
 /* Reasons have static storage.  Keep cumulative context totals for teardown
  * and a separate cursor for the bounded profile interval report. */
@@ -5939,6 +5941,65 @@ m9_native_vs_append(struct m9_context *ctx, const struct m9_job_key *key,
  * strings, so the pointer identifies one and the list stays as long as the
  * distinct reasons a run meets. */
 static void
+m9_native_vs_dump_reason(struct m9_context *ctx, const char *reason)
+{
+   char path[1024];
+   FILE *f;
+
+   /* Only the first occurrence of each reason reaches here.  Opt-in and
+    * bounded across contexts: enough to join a failed layout to its actual
+    * shaders and input defaults without tracing thousands of draw calls. */
+   if (!m9_native_fallback_dump || m9_native_fallback_dump_count >= 8 ||
+       !ctx->vs || !ctx->vs->cur || !ctx->vs->cur->nir || !ctx->fs)
+      return;
+   if (snprintf(path, sizeof(path), "%s-%u.txt", m9_native_fallback_dump,
+                m9_native_fallback_dump_count++) >= sizeof(path))
+      return;
+   f = fopen(path, "w");
+   if (!f)
+      return;
+   fprintf(f, "reason: %s\nvertex elements:\n", reason);
+   for (unsigned i = 0; ctx->velems && i < ctx->velems->count; i++) {
+      const struct pipe_vertex_element *e = &ctx->velems->elements[i];
+
+      fprintf(f, "  %u format %s buffer %u offset %u stride %u divisor %u\n",
+              i, util_format_name(e->src_format), e->vertex_buffer_index,
+              e->src_offset, e->src_stride, e->instance_divisor);
+   }
+   if (ctx->vs->cur->native) {
+      const struct m9_vs_program *p = &ctx->vs->cur->program;
+
+      fprintf(f, "native attributes: inputs %#" PRIx64 "\n", p->inputs_read);
+      for (unsigned i = 0; i < p->attr_count; i++)
+         fprintf(f, "  %u element %u components %u constant %u\n", i,
+                 m9_vs_attr_element(p, i), p->attrs[i].components,
+                 p->attrs[i].constant);
+   }
+   for (unsigned stage = 0; stage < 2; stage++) {
+      const struct pipe_constant_buffer *cb = stage ? &ctx->fs_constants :
+                                                   &ctx->vs_constants[0];
+      const uint8_t *data = cb->user_buffer ? cb->user_buffer :
+                           cb->buffer ? m9_res(cb->buffer)->map : NULL;
+      unsigned words = data ? MIN2(cb->buffer_size / 4, 256u) : 0;
+
+      fprintf(f, "%s constants: bytes %u captured words %u\n",
+              stage ? "fragment" : "vertex", cb->buffer_size, words);
+      for (unsigned i = 0; i < words; i++) {
+         uint32_t bits;
+
+         memcpy(&bits, data + cb->buffer_offset + 4 * i, sizeof(bits));
+         fprintf(f, "  dw%u %08x\n", i, bits);
+      }
+   }
+   fprintf(f, "\nvertex NIR:\n");
+   nir_print_shader(ctx->vs->cur->nir, f);
+   fprintf(f, "\nfragment NIR before specialization:\n");
+   nir_print_shader(ctx->fs->nir, f);
+   fclose(f);
+   fprintf(stderr, "m9x: native fallback shader/state -> %s\n", path);
+}
+
+static void
 m9_native_vs_note(struct m9_context *ctx, const char *reason)
 {
    ctx->native_vs_fallbacks++;
@@ -5955,6 +6016,7 @@ m9_native_vs_note(struct m9_context *ctx, const char *reason)
 
    util_dynarray_append_typed(&ctx->native_vs_reasons,
                               struct m9_native_vs_reason, add);
+   m9_native_vs_dump_reason(ctx, reason);
    if (ctx->debug)
       fprintf(stderr, "m9x: native vertex fallback: %s\n", reason);
 }
@@ -8536,6 +8598,7 @@ m9_context_create(struct pipe_screen *pscreen, void *priv, unsigned flags)
    m9_indexed_draws = debug_get_bool_option("M9X_INDEXED", true);
    m9_weld_enable = debug_get_bool_option("M9X_WELD", true);
    m9_native_vs = debug_get_bool_option("M9X_NATIVE_VS", true);
+   m9_native_fallback_dump = debug_get_option("M9X_NATIVE_FALLBACK_DUMP", NULL);
    m9_vs_max_slots = debug_get_num_option("M9X_VS_MAX_SLOTS", 188);
    m9_vs_max_const_pairs = debug_get_num_option("M9X_VS_MAX_CONST_PAIRS",
                                                 M9_VS_MAX_CONST_PAIRS);
