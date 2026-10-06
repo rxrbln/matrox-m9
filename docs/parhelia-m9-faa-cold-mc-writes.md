@@ -1,0 +1,89 @@
+# M9128 cold MC producer and bounded postcondition observation
+
+The original Linux `0540` MC defaults and setup producers can execute on the
+actual SPI-verified M9128 PInS without any supplied hardware read. This closes
+their board-dependent write inventory; it does not establish the Windows cold
+caller, a completed Linux cold boot, or an FAA failure cause.
+
+`check-faa-cold-mc-writes.py` executes unchanged `m9x9754` (`2d2640`),
+`m9x21748` (`2d28c0`), their original patch enumeration/lookup, indirect encoder
+and branches. The fixture's sole owner pointer and raw PInS are admitted CPU
+inputs. CPU reads outside those fields and the execution stack are rejected.
+Accessors are write-only recording sinks; their writes never change a model
+or become a readback shadow. The original verifier (`2d26f0`) stops before
+its first hardware read: call `2d2714`, accessor `2b8ad0`, register `f28`.
+No GPU or MC status value is supplied.
+
+The input is the physical capture `spi-pins-physical.json`, SHA256
+`08435025305a774318cef7542d8e5fa4c6b223480007b7b108a7877f1a1cae2d`:
+`102b:0540`, revision 1, subsystem `102b:22c0`. Its completed SPI read at
+`7460` provides all 1024 bytes, including the patch table. This uses the M9128
+board rather than an M9148 PInS or old vendor trace.
+
+The retained inventory records 76 accessor writes and four delays. Each event
+has the actual original call/jump PC, accessor PC, return PC, register and
+computed data. Each patch producer also records its caller, fallback, class,
+and the independently decoded physical PInS record. Direct patches have full
+masks in this admitted board case. Indirect data is written to `f1c` before
+the original `11000 + f00 + index` selector is written to `f18`; those two
+events remain separate and ordered.
+
+Some important computed outputs are:
+
+| Field | Actual board producer | Fallback in the same producer |
+| --- | ---: | ---: |
+| `f58` | `42088000` | `32000000` |
+| `f5c` | `10601060` | `00000000` |
+| `f2c` | `02c8eca7` | `02c8e8a7` |
+| `f30` | `33a63f74` | `23a63474` |
+| `f34` | `0268d605` | `026655a3` |
+| `f38` | `0000006d` | `0000002b` |
+| `f04` | `0448803e` | `0440803e` |
+| indirect `ff` | `00000005` | `00000001` |
+| indirect `1a..1d` | `00000000` | `ffffffff` |
+
+Actual PInS `+46` bit 0 is one, selecting the tail that needs no MMIO-zero
+read. `f14` is derived from the original patch, packed by the original code,
+and follows the ordered `42 / 02000042 / 04000042 / 01000042 /
+05000042 / 09000042 / 42` writes. Then `f10` becomes `000c7300` and `f14`
+becomes `10000042`; the tail publishes `f08=04f3c000` and `f0c=00200000`.
+These are computed outputs of this bounded board case, not portable native
+constants or permission to apply the sequence piecemeal.
+
+The outer transaction's original calls are `2f5f75→2d2640`,
+`2f5f7f→2d2510` (indirect control zero), `2f5f87→2d1d40` (system clocks),
+`2f5f8f→2d28c0`, and `2f5f97→2d26f0`. It first saves/holds four display
+clocks and disables four display controllers, then restores those eight
+words on both return paths. The separately executed producers in this
+fixture do not bypass or claim execution of that enclosing transaction.
+The current native address service's later `f04/f0c` updates and per-mode
+pixel PLL do not constitute execution of this complete cold transaction.
+Whether firmware has already established equivalent MC/system-clock state
+is an observational question; ordinary SYSTEM output and FAA color response
+do not prove every cold prerequisite.
+
+`m9-cold-mc-read-only.c` provides that bounded first observation. It checks
+the actual PCI identity, records boot ID, opens `resource2` read-only, maps
+only its first 4096 bytes with `PROT_READ`, and reads exactly 19 direct MC
+fields: `f04/f08/f0c/f10/f14/f28/f2c/f30/f34/f38/f3c/f40/f44/f48/f4c/f54/
+f58/f5c/f60`. It performs no selector write, interrupt acknowledgment, MC
+write, reset or submission. These direct fields are source controller data
+or the original verifier's read; the probe deliberately excludes indirect
+selector/data reads because selecting a record requires writes. An idle
+read of `f28` only classifies the current source predicate: `ffffffff`
+is the special early return; otherwise `((word >> 16) & 11)==1` is the
+initial status condition. It cannot prove the destructive aperture test or
+earlier initialization chronology.
+
+Reproduce the CPU proof from this worktree:
+
+```sh
+/home/ai/tmp/faaemu/venv/bin/python tools/m9emu/check-faa-cold-mc-writes.py \
+  --image /home/ai/src/parhelia/xf86-video-parhelia/m9xdriver-x86_64-1.4.3-80847-20140908-build_98/xserver/1_13_0/m9x_drv.so \
+  --pins-capture captures/m9128-device-inputs-20261006/spi-pins-physical.json \
+  --out /tmp/m9-faa-cold-mc-writes.json
+cc -O2 -Wall -Wextra -Werror tools/m9-cold-mc-read-only.c -o /tmp/m9-cold-mc-read-only
+```
+
+Only the root hardware owner may run the read-only probe under the existing
+device locks. No native cold write candidate is included in this checkpoint.
