@@ -91,7 +91,9 @@ Helper `0x756f0` returns the 144-byte slot entry at `hw+0xfebc`, placing
 that resource at entry `+0x1c`. Allocator `0x76540` reuses it only on its
 pool6 path; when absent it calls `0xa3870` with an allocation request and
 publishes the result to entry `+0x1c` at `0x7661a`. Its request uses flags
-`0x8002`, request-format `0x1a`, width derived from `(bytes+3)>>2`, and
+`0x8002`, final request-format0 (the earlier `0x1a` write at `0x7656e`
+is overwritten at `0x765e3` before allocation), width derived from
+`(bytes+3)>>2`, and
 rows derived from `(width+1023)>>10`. The request-format and descriptor-kind
 namespaces must not be conflated with texture format-table IDs.
 
@@ -147,3 +149,49 @@ pixel format is a real retail-code route to investigate. Merely setting
 The registry root and an exposed PowerDesk UI control have not been verified
 in this round. No initialized normal-API allocation, enabled submission or
 native M9 antialiased image has yet been established by this static chain.
+
+
+### Dynamic normal-option proof (2026-10-06)
+
+`tools/m9-vendor-faa-options.py` now executes the actual MSerX binaries,
+verifying both SHA256s before running. Its CPU host is isolated in
+`tools/faaemu/m9_options_host.py`. The committed compact result is
+[the four-case matrix](traces/m9-vendor-faa-options-20261006.json); the full
+output additionally records every pixel format and published sample value.
+
+The complete raw configuration constructor `0xb8ea0` builds 97 descriptors;
+the complete derived-owner constructor `0x5fa70` succeeds. Their actual
+DWORD getters issue IOCTL `0x232104` with keys `3D.AAMode` and
+`OGL.Multisample`. The fixture supplies bounded Windows registry responses,
+including explicit missing-property errors that exercise real defaults.
+The actual descriptor and derived-wrapper code, MD dispatch
+`0xd3e70 -> 0xd4180`, and ICD query `0x10048d10` all execute. Neither the
+query response nor ICD AA globals are supplied by a host callback.
+
+| AAMode | OGL Multisample | Actual ICD FAA enable gate |
+| --- | --- | --- |
+| missing (default80000842) | missing (default0) | 0 |
+| 80000842 | 1 | 0 |
+| 80000843 | 0 | 0 |
+| 80000843 | 1 | 1 |
+
+The genuine ICD CRT attach `0x1072ada8`, device-manager constructor
+`0x1002ae30`, complete ordinary pixel-format enumeration `0x10043900` and
+WGL attribute construction `0x10046f20` also finish. However, this manager
+has not acquired genuine adapter capabilities. Its hardware-format branch
+`0x10043f18/0x10043f2a/0x10043f32` is never reached. Enumeration returns
+39 baseline/fallback formats, all actually publishing WGL sample buffers0
+and samples0 in all four cases. Three appended formats have `pf+0x74=1`
+when OGL Multisample is enabled, while still publishing samples0. Therefore
+that flag alone must not be treated as proof of multisample advertisement.
+
+This closes dynamic option parsing and the real configuration query, not
+normal enabled FAA pixel-format admission. Host services cover ordinary CPU
+allocation/TLS/charset and a 1024x768, 32-bit GDI display. The MD query owner
+and per-process default snapshot are controlled ABI fixtures; no initialized
+GPU, created AA surface, submission, or retirement is represented. Genuine
+ICD capability acquisition and the specific hardware-candidate rejection
+must be traced next to distinguish an uninitialized fixture from an actual
+M9128 capability restriction. Do not infer retail M9 FAA support merely from
+the enabled ICD option gate, and do not infer permanent M9128 rejection from
+this incomplete owner.
