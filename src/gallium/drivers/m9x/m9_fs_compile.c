@@ -234,6 +234,8 @@ struct gather_key {
 #define NUM(c, a, t) util_dynarray_num_elements(&(c)->a, t)
 
 static const char fail_out_of_temporaries[] = "out of temporaries";
+static const char fail_out_of_interp_registers[] =
+   "out of interpolation registers";
 static const char fail_too_many_textures[] =
    "more texture fetches than one raster pass can bind";
 /* The engine samples before the program runs, so a coordinate the fragment
@@ -3201,7 +3203,7 @@ allocate(struct ctx *c)
                if (!reg_busy(busy, interp_extra[r]))
                   reg = interp_extra[r];
             if (reg < 0)
-               return fail(c, "out of interpolation registers");
+               return fail(c, fail_out_of_interp_registers);
          /* The scratch pair is the colour output's own staging, which is
           * why a single-target program may not hold a value there across
           * its last slot.  A program with several colour outputs writes
@@ -6398,7 +6400,11 @@ fs_cut_kind_of(const char *reason, const nir_def *blocker,
 {
    if (reason == fail_too_many_textures)
       return *kind = FS_CUT_TEX, true;
-   if (reason == fail_out_of_temporaries)
+   /* Interpolation values occupy a restricted part of the register file.
+    * Their lifetime can exhaust it even with fewer than six inputs, so
+    * split their work just as for general temporary pressure. */
+   if (reason == fail_out_of_temporaries ||
+       reason == fail_out_of_interp_registers)
       return *kind = FS_CUT_REGS, true;
    if (reason == fail_too_many_interp)
       return *kind = FS_CUT_INTERP, true;
