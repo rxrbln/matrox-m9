@@ -1080,7 +1080,8 @@ the driver's global null pair`20d51c/20d520`, genuine execution emits:
 4. BC/BD, relocation kinds9/10 from shadow`+0x80/+0x94`.
 5. AD four times and AF once.
 
-The precise middle words are:
+The precise middle **software capture-envelope** words are (the leading
+1/3/2 counts are not GPU command dwords; raw mode is proved below):
 
 ```text
 00000001 45454524 <controlled address marker>
@@ -1213,3 +1214,34 @@ reference increment contract, not completed vendor retirement. Captured
 `pool6-request.json` and `check-pool6-request.py` preserve both cases. Actual
 allocation domain, initialized data, release path and the enabled surface
 resource graph remain the next requirements.
+
+### Software capture envelopes versus raw GPU commands
+
+The emitter's stream modes must not be conflated. At `fbb9e..fbbb3`, real
+`fb920` tests stream`+10 == 1` and stream`+14 != 0`, then writes a count2
+before B8/B9. Otherwise `fbbb5` subtracts4 from the cursor before the same
+header/payload stores. The latter consumes the reserved count slot and
+directly generates raw indexed GPU words. The index24/E6/BCBD and AD/AF
+blocks use the same mode branch. The returned cursor is already exactly
+after the last payload: **do not subtract4 again when exporting it**.
+
+`surface-packets.py` now independently executes both modes of the actual
+emitter; `full-surface-packets.json` keeps old envelope `cases` separately
+from raw `gpu_cases`. `resource-address.py` also calls the actual emitter
+again in raw mode after each real getter case and records `gpu_words` and
+`gpu_relocations`. These words are not produced by Python count stripping.
+Both checkers parse raw output with the existing strict
+`m9-command-decode.py` indexed-packet grammar. The dirty40 block has exactly
+three GPU packets and nine dwords:
+
+```text
+45454524 <one 32-bit relocated address>
+45e6e6e6 6dc00000 00000001 00000001
+4545bdbc <32-bit store address> <32-bit second-buffer address>
+```
+
+The first payload is relocation kind`2b`, flags1; the E6 header contains
+three index-E6 writes, not a leading GPU count3. Enveloped fixtures are
+intermediate software records and must never be submitted directly through
+the cleanroom raw command ABI. This establishes the actual emitter's raw
+grammar; a complete initialized vendor submit/export lifecycle remains open.
