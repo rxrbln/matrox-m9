@@ -317,6 +317,29 @@ hardware capability, allocation reply, WGL multisampled format or complete
 draw is admitted by this controlled caller fixture. It proves the exact
 normal resource-request envelope to join to MD's real allocation handler.
 
+Actual MD normal operation0x10 dispatch is
+`DrvEscape0x3d7e0 -> 0x972e0 -> 0x921c0 -> 0x7cc50`. The operation table
+entry targets `0x97523`. Full dispatch still requires a genuine ICD client
+owner (display `+0x70`, request `+8`) and initialized adapter admission;
+the controlled display caller above does not supply that owner.
+
+`tools/m9-vendor-faa-allocation-translation.py` feeds the exact ICD-produced
+descriptor into real MD leaf `0x7cc50`, with profiles genuinely published
+by `0x4ed00`. Actual `0xc4d90 -> 0xc51c0` translation reaches `0xc6220`
+before allocation. [The dynamic off/on capture](traces/m9-vendor-faa-primary-md-translation-20261006.json)
+shows allocation flags2 versus0x20000002, allocation type7, width1024,
+height768 and profile index12 (class2, hardware format0x66, 32 bits).
+The surface descriptor flags are0x44 versus0x400044. Thus the request AA
+bit0x02000000 survives real conversion as allocator flag0x20000000;
+it does not disappear in ordinary translation.
+
+This is a controlled client-wrapper CPU leaf proof, not full DrvEscape or
+resource admission. It stops before `0xc6220` and supplies no allocation
+reply. Static continuation of the primary allocation first requires actual
+device `+0x69bc`, its display/resource owner `+0x54`, and device `+0x69a4`
+constructor owner `+0x1074`. These ordinary owner initializers remain to
+be joined to genuine hardware startup before a complete FAA sequence claim.
+
 ### Real miniport property dispatch closes the four configuration queries
 
 `--miniport-defaults` executes actual MD `0x61f70` and forwards its four
