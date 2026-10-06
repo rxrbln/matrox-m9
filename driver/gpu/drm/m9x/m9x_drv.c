@@ -3,12 +3,16 @@
 #include <linux/dma-mapping.h>
 #include <linux/aperture.h>
 #include <linux/interrupt.h>
+#include <linux/ktime.h>
+#include <linux/mm.h>
 #include <linux/module.h>
 #include <linux/pci.h>
+#include <linux/seq_file.h>
 
 #include <drm/clients/drm_client_setup.h>
 #include <drm/drm_atomic_helper.h>
 #include <drm/drm_drv.h>
+#include <drm/drm_debugfs.h>
 #include <drm/drm_fbdev_ttm.h>
 #include <drm/drm_fourcc.h>
 #include <drm/drm_gem_ttm_helper.h>
@@ -41,12 +45,99 @@ static const struct drm_ioctl_desc m9x_ioctls[] = {
 			  DRM_RENDER_ALLOW),
 };
 
+struct m9_transport_snapshot {
+	u64 sampled_ns, submitted, completed, async_point;
+	u32 raw[4], generation, next, last, epoch;
+	u32 queue_head, queue_count, queue_peak, async_target;
+	u32 command_slot, command_offset;
+	bool armed, wedged, async_pending, bus_master;
+};
+
+/* Sample owned CPU memory even after the watchdog quarantines the engine.
+ * Do not observe/extend completion or release a job here. Successful probe
+ * owns fence_cpu as a PAGE_SIZE dmam allocation before debugfs registration;
+ * unplug waits for this device critical section before fini/devres release.
+ * trylock refuses a busy transport instead of adding another wait. */
+static int m9_transport_snapshot_read(struct m9x_device *mdev,
+				     struct m9_transport_snapshot *out)
+{
+	struct m9x_transport *t = &mdev->transport;
+	int idx, ret = 0;
+
+	if (!drm_dev_enter(&mdev->drm, &idx))
+		return -ENODEV;
+	if (!mutex_trylock(&t->lock)) {
+		ret = -EBUSY;
+		goto exit;
+	}
+	/* Fini sets async_stop under this lock before releasing any owner.
+	 * No pointer is exported or dereferenced after that boundary. */
+	if (t->async_stop || !t->fence_cpu) {
+		ret = -ENODEV;
+		goto unlock;
+	}
+	BUILD_BUG_ON(sizeof(out->raw) > PAGE_SIZE);
+	for (unsigned int i = 0; i < ARRAY_SIZE(out->raw); i++)
+		out->raw[i] = READ_ONCE(((u32 *)t->fence_cpu)[i]);
+	out->sampled_ns = ktime_get_ns();
+	out->submitted = t->submitted_point;
+	out->completed = t->completed_point;
+	out->async_point = t->async_point;
+	out->generation = t->generation;
+	out->next = t->next_fence;
+	out->last = t->last_fence;
+	out->epoch = t->fence_epoch;
+	out->queue_head = t->queue_head;
+	out->queue_count = t->queue_count;
+	out->queue_peak = t->queue_peak;
+	out->async_target = t->async_target;
+	out->command_slot = t->command_slot;
+	out->command_offset = t->command_offset;
+	out->armed = t->transport_armed;
+	out->wedged = t->wedged;
+	out->async_pending = t->async_pending;
+	out->bus_master = t->bus_master_enabled;
+unlock:
+	mutex_unlock(&t->lock);
+exit:
+	drm_dev_exit(idx);
+	return ret;
+}
+
+static int m9_transport_snapshot_show(struct seq_file *m, void *unused)
+{
+	struct drm_debugfs_entry *entry = m->private;
+	struct m9_transport_snapshot s;
+	int ret = m9_transport_snapshot_read(to_m9x(entry->dev), &s);
+
+	if (ret)
+		return ret;
+	seq_printf(m, "sampled_ns=%llu raw00=%08x raw04=%08x raw08=%08x raw0c=%08x\n",
+		   s.sampled_ns, s.raw[0], s.raw[1], s.raw[2], s.raw[3]);
+	seq_printf(m, "submitted=%#llx completed=%#llx next=%#x last=%#x epoch=%#x generation=%u\n",
+		   s.submitted, s.completed, s.next, s.last, s.epoch, s.generation);
+	seq_printf(m, "queue_head=%u queue_count=%u queue_peak=%u async_pending=%u async_target=%#x async_point=%#llx\n",
+		   s.queue_head, s.queue_count, s.queue_peak, s.async_pending,
+		   s.async_target, s.async_point);
+	seq_printf(m, "armed=%u wedged=%u bus_master=%u command_slot=%u command_offset=%u\n",
+		   s.armed, s.wedged, s.bus_master, s.command_slot, s.command_offset);
+	return 0;
+}
+
+static void m9x_debugfs_init(struct drm_minor *minor)
+{
+	drm_vram_mm_debugfs_init(minor);
+	drm_debugfs_add_file(minor->dev, "m9_transport_snapshot",
+			     m9_transport_snapshot_show, NULL);
+}
+
 /* Mesa selects the independent M9X Gallium driver from this DRM name. */
 #define M9X_DRM_DRIVER_COMMON						\
 	.fops = &m9x_fops,						\
 	.ioctls = m9x_ioctls,						\
 	.num_ioctls = ARRAY_SIZE(m9x_ioctls),				\
 	.gem_create_object = m9x_gem_create_object,			\
+	.debugfs_init = m9x_debugfs_init,				\
 	.name = "m9x",							\
 	.desc = "Matrox M9/Phoenix clean-room driver",			\
 	.major = 1,							\
@@ -60,7 +151,6 @@ static const struct drm_driver m9x_render_driver = {
 static const struct drm_driver m9x_kms_driver = {
 	.driver_features = DRIVER_GEM | DRIVER_RENDER | DRIVER_MODESET |
 			   DRIVER_ATOMIC,
-	.debugfs_init = drm_vram_mm_debugfs_init,
 	.dumb_create = m9x_dumb_create,
 	.dumb_map_offset = drm_gem_ttm_dumb_map_offset,
 	DRM_FBDEV_TTM_DRIVER_OPS,
