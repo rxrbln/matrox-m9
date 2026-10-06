@@ -620,3 +620,25 @@ producer with retained current-board PCI inputs. This source now passes current-
 AA raster mode off, then ordinary texture; see
 [resource proof](../tests/m9-faa-guards-native-20261006/README.md).
 Backing/init/completeFAA command state remain open.
+
+### Two E6 operations and the cached sentinel address are distinct
+
+The fb920 binding operation's actual raw E6 GPU payload is
+`[6dc00000,1,1]`; the complete context restore path's actual raw payload is
+`[6dc00000,42000000,a1]`. Both have passed the real25680/24870 encoders in
+the integrated resource-address/context-fragment-state captures. Their
+trailing values are distinct GPU words, not interchangeable recorder metadata.
+The shared first opcode does not justify substituting one complete operation
+for the other.
+
+Actual AA binder0xaa750 obtains the sentinel resource (`AA graph+0x18`,
+passed at binder array+0x0c) through its kind5 getter and places that address
+at context shadow+74/+78 (aa819..aa82d). It obtains the independent per-head
+pool6 resource at hardware+fed8+head*144 and places that address at shadow
++84/+88 (aad07..aad68), also duplicating it into AA state+9c/+a0 for fb920.
+The real restore emitter0xfcb60 later copies the current sentinel74/78 into
+cached7c/80 (fce05..fce39). The save emitter0xfce50 passes cached7c/80 and
+pool6 84/88 into0xfc8f0. These are separate resource references; the store,
+sentinel and per-head pool6 must preserve their own ownership and lifetime.
+This resolves the static producer split. Full allocated-resource dynamic
+admission remains unproved.
