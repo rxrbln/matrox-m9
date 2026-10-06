@@ -1936,3 +1936,23 @@ The serial-bounded FindAdapter elapsed allowance is now 30 seconds instead of
 could otherwise expire before reaching the genuine EEPROM branch. This changes
 host scheduling tolerance only; actual device absence/failure boundaries and
 captured physical input guards remain intact.
+
+The returned initialization capture additionally joins actual CPU DMA bytes to
+genuine submission writes. `24d60` calls `24530`; `24601` computes the current
+buffer's physical end from its real translation and CPU cursor, and `2461e`
+writes it to BAR2`+404`. Direct clear tails `b55af` and `b62c0` also publish
+that end. The initialization run posts `01002174`, `010021b4`, and
+`01002238` in its synthetic OS physical namespace. All are inside its genuine
+first contiguous allocation (`physical=01001000`, extent `41000`); the CPU-written
+stream starts at offset `428` and ends at `1238`. The retained bytes are actual
+indexed DMA words, not the earlier software count envelopes: in this live queue
+mode the producers take their branch that omits those envelope DWORDs.
+
+The allocator's strict MMIO read hook remains installed after `19420`. It
+records genuine writes, permits only its three captured configuration-register
+reads, and refuses all unknown reads. All retained MMIO events during these
+three initialization clears are writes. A submitted end pointer does not
+create a completion reply. The CPU return proves command construction/posting
+against the MMIO model, not hardware execution. No subsequent MM IOCTL reads
+of MD-written command RAM occurred in this run; the request count remains the
+32 genuine allocation calls.
