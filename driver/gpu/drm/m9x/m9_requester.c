@@ -469,10 +469,16 @@ int m9x_transport_drain_locked(struct m9x_device *mdev)
 	lockdep_assert_held(&transport->lock);
 	if (!transport->async_pending)
 		return 0;
-	transport->async_pending = false;
+	if (transport->wedged)
+		return -EIO;
 	ret = m9_fence_wait_locked(mdev, transport->async_target);
-	if (!ret)
-		transport->completed_point = transport->async_point;
+	/* A timeout does not stop DMA. Keep the outstanding refs and pins
+	 * quarantined until fini disables bus mastering, or this owner really
+	 * retires. Never schedule object release merely because a wait failed. */
+	if (ret)
+		return ret;
+	transport->async_pending = false;
+	transport->completed_point = transport->async_point;
 	if (!transport->async_bos)
 		return ret;
 	/*
@@ -916,6 +922,9 @@ void m9x_fini(struct m9x_device *mdev)
 {
 	struct drm_gem_vram_object *color;
 	struct m9x_fence *fence;
+	struct drm_gem_object **bos;
+	bool *pinned;
+	u32 count, i;
 
 	mutex_lock(&mdev->transport.lock);
 	/* Retire a posted job and let go of what it was reading before the
@@ -926,11 +935,27 @@ void m9x_fini(struct m9x_device *mdev)
 	pci_clear_master(mdev->pdev);
 	mdev->transport.bus_master_enabled = false;
 	mdev->transport.transport_armed = false;
+	/* Failed user jobs retain their own arrays, not the diagnostic color
+	 * quarantine. Host DMA is stopped before either ownership is released. */
+	bos = mdev->transport.async_bos;
+	pinned = mdev->transport.async_pinned;
+	count = mdev->transport.async_count;
+	mdev->transport.async_bos = NULL;
+	mdev->transport.async_pinned = NULL;
+	mdev->transport.async_count = 0;
+	mdev->transport.async_pending = false;
 	fence = mdev->transport.quarantined_fence;
 	mdev->transport.quarantined_fence = NULL;
 	color = mdev->transport.quarantined_color;
 	mdev->transport.quarantined_color = NULL;
 	mutex_unlock(&mdev->transport.lock);
+	for (i = 0; bos && i < count; i++) {
+		if (pinned && pinned[i])
+			m9x_gem_vram_unpin(bos[i]);
+		drm_gem_object_put(bos[i]);
+	}
+	kfree(bos);
+	kfree(pinned);
 	m9x_triangle_fini(mdev);
 	if (fence) {
 		dma_fence_set_error(&fence->base, -EIO);

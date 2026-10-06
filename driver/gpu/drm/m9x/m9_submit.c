@@ -1005,7 +1005,9 @@ static int m9_submit_execute(struct m9x_device *mdev, const u32 *image,
 	if (!range_ends)
 		return -ENOMEM;
 	mutex_lock(&mdev->transport.lock);
-	m9x_transport_drain_locked(mdev);
+	ret = m9x_transport_drain_locked(mdev);
+	if (ret)
+		goto out_unlock;
 	ret = m9x_engine_ready_locked(mdev);
 	if (ret)
 		goto out_unlock;
