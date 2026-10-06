@@ -306,22 +306,17 @@ static uint64_t m9_vs_serial;
  * Raising the knob past 2 emits the extra draw; 5 is what the vertex
  * backend compiles.  docs/parhelia-m9-vertex-output-target-re.md */
 static unsigned m9_native_vs_varyings = M9_VS_FUSED_VARYINGS;
-/* M9X_VS_TEXTURE=1 lets a native preprocessing job produce a texture
- * coordinate stream itself.  It is MEASURED correct -- the texpair, rtt300
- * and rtt:64x23 fixtures are pixel-exact through it and glmark2's texture
- * scene draws the same picture -- and MEASURED not to pay: over the default
- * thirty-three at 1920x1200 it takes texture x3 fully native and costs them
- * 292 -> 234 fps, and desktop:shadow 128 -> 124.  Both costs are named in
- * docs/parhelia-m9-glmark2-status.md.  Off until they are fixed; a draw
- * whose coordinate an earlier raster pass produced does not need a stream
- * and is not gated by this. */
+/* Native preprocessing produces texture coordinates by default; =0 is
+ * the CPU diagnostic arm.  The measured coordinate-sharing and record
+ * coefficient paths retain GPU transforms without the older extra stream
+ * and uniform-split costs.  docs/parhelia-m9-native-vertex-backend.md */
 static bool m9_native_vs_texture;
-/* M9X_VS_COORD_PAIR=1 lets a coordinate stream take the second output
- * target beside an interpolated varying.  Off by default: the one
- * benchmark that needs both -- glmark2 texture -- costs 0.14 ms a
- * megapixel more on the engine that way, and why is not established
- * (docs/parhelia-m9-glmark2-status.md).  A coordinate that is the pass's
- * only stream pays nothing and is always taken. */
+/* A coordinate beside another stream takes the measured second output
+ * target by default; =0 retains the CPU diagnostic arm.  M9128 ffarray is
+ * pixel-exact through this form and unit-projector Quake3 moves about 63%
+ * of its draws onto the GPU.  Its new per-object uniform splits currently
+ * offset the CPU transform saving, so FPS is unchanged; retain GPU coverage
+ * and address that submission cost. */
 static bool m9_native_vs_coord_pair;
 /* M9X_NO_CULL=1 clears the ef cull bits of a native draw.  A diagnostic:
  * the draw module removes back-facing triangles on the CPU before it hands
@@ -8632,7 +8627,7 @@ m9_context_create(struct pipe_screen *pscreen, void *priv, unsigned flags)
       debug_get_num_option("M9X_VS_VARYINGS", M9_VS_FUSED_VARYINGS),
       M9_VS_MAX_VARYINGS);
    m9_native_vs_texture = debug_get_bool_option("M9X_VS_TEXTURE", true);
-   m9_native_vs_coord_pair = debug_get_bool_option("M9X_VS_COORD_PAIR", false);
+   m9_native_vs_coord_pair = debug_get_bool_option("M9X_VS_COORD_PAIR", true);
    m9_no_cull = debug_get_bool_option("M9X_NO_CULL", false);
    m9_coord_share = debug_get_bool_option("M9X_COORD_SHARE", true);
    m9_native_vs_split = debug_get_bool_option("M9X_VS_SPLIT", false);
