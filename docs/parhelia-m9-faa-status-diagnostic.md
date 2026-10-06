@@ -115,3 +115,21 @@ producer's exact runtime/bridge/scatter/PCI/DC arguments. It installs only
 passive observers and the unchanged pre-read counter boundary. The actual
 configuration, owner lifetimes, queue writes and independent footer remain
 source-produced.
+
+## Actual normal-render control, 2026-10-07
+
+Root collected the guarded helper after a successful GL2 bump run and a
+clean normal FAA-off run on boot6d6d22e6-4788-4491-a665-9b12701edd38.
+The unmodified JSON and receipt are retained in
+`tests/m9-faa-status-normal-20261007`. JSON SHA256 is
+`74ec03f7620a54db2a7090246ad106145b4d8c5d6bd8076d012beaed8e57ccc5`;
+the receipt verifies the helper SHA above and real submitted/completed84ac0,
+raw84ac1, empty queue and wedged0. This is a NORMAL control, not a private
+FAA result or a vendor cold-state observation.
+
+Its first8f0 sample is01000000; second is0. Both have optional-drain30000
+clear, high pending8f4=7100, rawlow8e0=5003fc6c and lowmask8e8=1, yielding
+zero enabled low pending. Neither sample isffffffff. These raw pending words
+are not attributed to address faults, invalid commands or FAA errors. No
+before/after FAA comparison exists in this checkpoint; root owns any further
+physical observation.
