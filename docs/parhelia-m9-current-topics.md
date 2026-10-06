@@ -19,8 +19,12 @@ record decoding and unusual batch-size bounds remain under investigation;
 default varyingcap2 is unchanged. Actual glmark2 buffer wireframe now also
 completes with34native draws/0module/0skipped, noGPUtimeout and an empty
 queue. Its single1024x768/vblank0/FAAoff run reports about34FPS; screenshot
-and independent application image fidelity are still unqualified. Bump,
-radial multipass and optional Q3 lighting remain application-test targets.
+and independent wireframe image fidelity are still unqualified. Bump-height
+now retires170GPU user draws with healthy completion, but the actual captured
+image shows stretched triangles. Its85FPS printout is invalid as a rendering
+benchmark. Narrower packed-layout diagnosis, radial multipass and optional
+Q3 lighting remain open. See
+[bump image failure](../tests/m9-gl2-bump-packed-hardware-20261006/README.md).
 Latest basic Q3GL2 checkpoint remains38.9FPS; the historical GL1 numbers
 below describe a different renderer/profile. See
 [wireframe evidence](../tests/m9-gl2-wireframe-packed-hardware-20261006/README.md)

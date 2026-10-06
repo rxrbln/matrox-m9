@@ -1,5 +1,16 @@
 # glmark2 on the m9x driver: where the 60 fps goal actually stands
 
+## 2026-10-06: bump-height retires but actual image fails
+
+The next1024x768 bump-height run completes170GPU user draws/0CPU user
+fallback with healthy142c0 retirement and noGPUtimeout. Its actual X window
+capture shows stretched triangles reaching toward the screen edges. This
+is an image failure; printed85FPS is not a validated rendering benchmark.
+The six-field standalone pixel proof does not qualify this narrower app
+layout. Packed transport/coordinate/stride diagnosis remains open; no cause
+is yet established. Defaultcap2 stays unchanged.
+[Exact failed image and evidence](../tests/m9-gl2-bump-packed-hardware-20261006/README.md).
+
 ## 2026-10-06: actual buffer wireframe now completes on the GPU
 
 One short1024x768 windowed run with Mesa c7b8a6e/DSOdc6e40b6,
