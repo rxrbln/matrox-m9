@@ -80,9 +80,13 @@ Blob SHA256 is
 header SHA256 is
 `deb884f88dc54377bd32d1654de5a55b1321dd0c985abbecbd160fa4501facee`.
 The plan pins all four source artifact hashes and the baseline manifest hash.
-A future kernel control must select these complete tables and a distinct
-firmware filename, with existing private gates and ownership maintained.
-This checkpoint does not change or activate a kernel profile.
+Kernel6adb92f now selects these complete tables with the default-n
+CONFIG_DRM_M9X_FAA_CONSTANT_SHADER_CONTROL build option and distinct firmware
+m9x/faa-constant-green-known-inputs.bin. Existing private gates/ownership are
+maintained. Both profile builds and actual ownership fixtures pass.
+[Physical qualification](../tests/m9-faa-constant-green-hardware-20261006/README.md)
+reaches140 without GPUtimeout, but all visible pixels are black and main/AA
+hashes match the interpolating baseline. The control did not resolve FAA.
 
 Validation passes the complete source control checker and the unchanged
 baseline checker. Regenerating the baseline still gives its exact original

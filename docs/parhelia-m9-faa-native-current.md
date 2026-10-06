@@ -8,17 +8,18 @@ Ordinary textured rendering and the deployed driver are validated. FAA
 rendering is not yet validated. This note is separate from P690
 `102b:2539` evidence.
 
-Current physical checkpoint: kernel `8664d0c`, M9128 boot `40e7a2fa`.
-The source-owned context experiment omits the extra Linux sequence0 GPU
-submission, preserves the fresh CPU seed10 and reaches actual retirement140.
-Verified WC mapping remains active for all five private SYSTEM owners.
-The image is still entirely black; the full ordinary output backing remains
-zero, and main/AA hashes match prior failures. CPU mapping control passes
-76800pixels. No GPU timeout occurs. Neither WC nor the extra Linux submission
-explains this failure. Full vendor cold initialization equivalence and actual
-fragment/resolve dependencies remain under audit. FAA stays disabled for apps.
-See [the source initialization test](../tests/m9-faa-source-init-20261006/README.md),
-[previous WC test](../tests/m9-faa-wc-20261006/README.md), and
+Current physical checkpoint: whole public constant-green control kernel6adb92f
+CONTROL=y, M9128 boot6750cc38. The source-owned context reaches real140
+with verified WC mappings, but the image is still entirely black. Main/AA
+hashes match the interpolating baseline exactly; all ordinary SYSTEMoutput
+bytes remain zero. CPU mapping control passes76800pixels, no GPUtimeout.
+The complete source constant shader replacement did not fix pixels, weakening
+interpolation/setup as the sole cause. Full vendor cold initialization and
+remaining resolve state/ownership dependencies are still under source audit.
+FAA stays disabled for apps; no successful FAA picture is claimed.
+See [the actual constant shader control](../tests/m9-faa-constant-green-hardware-20261006/README.md),
+[its source and separate profile](parhelia-m9-faa-output-constant-green.md),
+[previous source-init test](../tests/m9-faa-source-init-20261006/README.md), and
 [bounded raw-store interpretation](parhelia-m9-faa-store-record-audit.md).
 
 Earlier sampled-destination tests below are historical evidence.
