@@ -1199,10 +1199,11 @@ That setter binds context`+2514` subshadow`+50` and sets its dirty bit8. This
 is ordinary context initialization, not proof of an FAA-only resource.
 
 `tools/m9emu/pool6-request.py` executes the genuine vtable method with those
-arguments and explicit owner/profile markers, stopping **before** low-level
+arguments and an explicit hardware/cache owner, stopping **before** low-level
 `a3870`. The actual final request has flags`8002`, format0, width320 at`+18`,
 height1 at`+1c` and dimensions1 at`+20/+24`. The pointer at`+4` derives from
-hardware`+1015c + 2060`; its real profile and address domain remain unproven.
+hardware`+1015c + 2060`; its selected profile entry is now constructed below,
+while the physical address domain remains unproven.
 Request`+c/+28` are not initialized by this producer and are omitted from
 the reported initialized fields rather than treating host stack zeros as
 vendor data. There is no fake successful allocation callback.
@@ -1210,9 +1211,10 @@ vendor data. There is no fake successful allocation callback.
 A second case uses a separately constructed cached interface at real slot
 `hw+fed8+slot*144`. Two genuine method calls perform no allocation and return
 interface`+58`, incrementing interface`+5c` from1 to3. This proves the cached
-reference increment contract, not completed vendor retirement. Captured
+reference increment contract; bounded context release is also executed below,
+while final hardware retirement remains unproven. Captured
 `pool6-request.json` and `check-pool6-request.py` preserve both cases. Actual
-allocation domain, initialized data, release path and the enabled surface
+allocation domain, initialized data, final hardware release and the enabled surface
 resource graph remain the next requirements.
 
 ### Software capture envelopes versus raw GPU commands
@@ -1265,3 +1267,27 @@ jumptable byte9 at `24993`, reaching `24930`: the encoder restores the low2
 bits and writes **one complete 32-bit payload**. There is no kind2b-specific
 address truncation. This closes encoding and indirection, not the allocation's
 physical domain, contents, lifetime or normal enabled FAA admission.
+
+### Pool6 profile construction and bounded context release
+
+The normal paired module startup table has profile initializer `4ed00` at
+`1f25f8`. It allocates `31bc` bytes, calls `4ede0` and publishes the returned
+profile collection at hardware`+1015c`. Constructor `4ede0` initializes86
+entries, each `94` bytes, by calling actual `4fe00`. Pool6 offset`2060` is
+therefore entry56 decimal. The fixture now executes real owner constructor
+`751f0` and actual `4fe00` for that selected entry, rather than substituting
+profile data. This produces class5, hardware format`78`, bits-per-element32,
+metadata pointer`1e6ca0`, flags`+c=0` and sentinel`+2c=ffffffff`. These are
+actual selected-entry outputs; the complete collection constructor still
+requires configured-owner methods for other entries. Physical allocation and
+the profile's memory-domain consequences remain open.
+
+After two actual cached acquisitions, `pool6-request.py` now executes actual
+context binder `109310` and complete context destructor `11c190` on two
+controlled context owners. Each binder stores the returned subinterface at
+context`+2514` subshadow`+50`, sets dirtybit8 and returns1. Destructor
+`11c4a9..11c4dd` decrements subinterface`+4` (interface`+5c`), clears owner`+78`
+and returns1. The two releases take refs3 to2 to1 while preserving the
+device-slot cache. This proves ordinary context reference lifetime; it never
+reaches the last-reference virtual teardown or establishes device shutdown,
+GPU completion, allocation contents or enabled FAA surface admission.
