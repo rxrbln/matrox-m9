@@ -1365,3 +1365,28 @@ deadline failure within each of the three transactions, and no-write refusal
 for active controls, wrong identity and already expired deadlines. Actual
 target bytes must match the retained board's ROM header before identity
 responses are admitted to the bootstrap model.
+
+### Actual shared resource owner creation before VRAM inputs
+
+Ordinary module initializer `19420` publishes device`+6988` from
+hardware`+35f8` shared owner`+4`. If that shared owner is missing, it calls
+actual `19560` with EAX=device. `shared-resource-owner.py` now executes real
+`61f70`, `4ed00`, `27230` then `19560`, using root's separately captured idle
+M9128 cleanroom postinit BAR2`+f04=0448803e` baseline (SHA
+`f7ed34bdf7855e12d7e68220661209b098cca91ddb84524799f5d9949a511611`).
+The captured`+3a8=00010a05` is retained but has not been read by this execution.
+This is conditional execution from current cleanroom state, not a capture of
+the vendor's cold hardware initialization or initialized capability owners.
+
+Real `19560` allocates/zeros a2c-byte shared owner, publishes it at
+hardware`+35f8`, then reads f04 and records fields`+24=2` and`+28=1` from its
+actual bit extraction. It writes f04 unchanged, then exact ordered MMIO:
+344=0,348=0,34c=0,350=0,354=03020100,334=0,338=40,33c=80,340=c0,330=1000.
+Those writes are actual vendor instructions in emulator memory, never target
+writes. `check-shared-resource-owner.py` verifies the exact order and values.
+At `196e1` execution stops before using unproven platform`+98/+a0` and
+hardware`+10` VRAM descriptor inputs. That boundary precedes real25a70/44b90
+backing-allocator ownership and its device`+6988` publication. Profile
+construction, address encoding and ordinary context refcounts are proved;
+physical allocation domain, resource contents and enabled surface admission
+remain open.
