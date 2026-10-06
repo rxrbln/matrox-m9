@@ -1534,3 +1534,28 @@ samepair does not suppress the command block. The context shadow's resource
 producers must still join the genuine API lifecycle before native use. Existing
 Linux grammar lacks several of these forms; adding guessed addresses or a
 broad E6 whitelist would not implement the required resource/lifetime contract.
+
+### Actual EEPROM consumed; genuine capability owner retained
+
+`M9128Inputs` now admits the physically completed128-byte GPIO EEPROM payload
+while retaining helperrc1 and its20 GPIO readback delta as separate evidence.
+Actual normal GPIO routines perform129 reads: offset0 probe followed by128
+profile bytes. Genuine `31f90 -> 3265f` accepts header825d3 and fills the
+real type14 record: +8=464b0034 (chipWORD34), +1ac=1b, +1b0=1, +204=2.
+SerialKFP35758 matches the installed board. This establishes the populated
+record, not normalFAA admission, complete adapter initialization or rendering.
+
+`m9128_bootstrap.initialize()` retains the real emulator, miniport/profile/
+configuration-instance/shared-owner pointers for downstream genuine CPU
+constructors. It does not replace failed startup with a fabricated ready
+adapter. The actual FindAdapter next stops before GPIO7 control3007b, delta80,
+from transmitter-reset routine390e0/391ec. This next output operation is
+separate from the already-completed capability EEPROM transaction.
+
+Real `38414` interprets actual captured PInS function17 as data-mask20 and
+output-enable8000. Physical saved300fb has8000 clear, so20 is an input pad
+readback, rather than a mismatched enabled output latch. Function21 maps
+data80/OE20000. Raw helperrc1 remains retained; no broad restore-mask change
+and no physical transmitter reset is authorized by this CPU decode itself.
+The conditional software continuation, if used, must retain its own scope
+and cannot answer uncaptured DDC or transmitter slave responses.
