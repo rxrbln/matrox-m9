@@ -87,3 +87,24 @@ cc -O2 -Wall -Wextra -Werror tools/m9-cold-mc-read-only.c -o /tmp/m9-cold-mc-rea
 
 Only the root hardware owner may run the read-only probe under the existing
 device locks. No native cold write candidate is included in this checkpoint.
+
+The root owner subsequently ran that helper on actual boot
+`e6d15c3d-4b9e-4a4d-99af-e44810d2080f` and verified binary SHA256
+`f386e997c8cb3feb36d77bb2ad30993963d90c91dca203a2ec3ddd128ef2c582`.
+The exact JSON is retained as `cold-mc-current-observation.json`.
+`check-faa-cold-mc-observation.py` derives the source's last direct writes
+from the instruction inventory and compares the exact register set: 17 of
+18 source-written direct values agree. `f28=00010000` satisfies the
+original verifier's initial status condition, without proving its aperture
+test or cold history.
+
+The sole differing direct field is `f14`: source's last write `10000042`,
+current read `00d00042`, XOR `10d00000` (bits 28, 23, 22 and 20). In this
+full-mask PInS case, the original `2d23c0` lookup reads CPU patch records,
+not hardware `f14`; setup never polls `f14` after writing. The source uses
+`f28` for the status condition. It does not establish whether those upper
+`f14` readback bits are persistent controls, status or effects of later
+firmware activity. This difference therefore does not justify a register
+write or explain FAA output. The closely matching MC image weakens a
+missing direct-MC-image explanation while system-clock and enclosing cold
+lifetime proof remain separate.
