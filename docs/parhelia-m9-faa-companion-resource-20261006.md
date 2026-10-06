@@ -115,3 +115,19 @@ profile outputs, independent linked-request controls, conditional dimension
 matrix and byte-pinned producer/consumer spans. This closes geometry and
 corrects the ownership graph; physical domain/contents, final lifetime and
 normal enabled submission remain open.
+
+## Expanded guard and alignment reference
+
+Root's `aa-layout-matrix.py` executes genuine45eb0 on28 small/odd/standard
+shapes with the same unbacked format3d/mode1/selector2/flags120 and separately
+retained f04-derived fields2/1. Every case agrees with row-span aligned64,
+allocation-height aligned16 and extent `(row*rows + max(0,4-tail))*8`, where
+`tail=(rows-height)*row+row-width`. The guard is four stored elements minus
+available padding, rather than an unconditional32-byte addition. For319x240
+the request is96018;320x240 is96020;321x240 isb4000. Exact1920x1200 needs
+1194020,2048x1536 needs1800020. Native growth must reserve this guard and
+padding, independent of the32MiB fragment-store cap.
+
+This reference extends the shape proof; it still supplies no GPU backing or
+initial contents. Existing diagnostic companion allocation and descriptor
+construction remain to be corrected coherently with the full resource graph.
