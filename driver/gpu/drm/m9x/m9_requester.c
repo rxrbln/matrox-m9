@@ -1018,6 +1018,14 @@ void m9x_fini(struct m9x_device *mdev)
 	color = mdev->transport.quarantined_color;
 	mdev->transport.quarantined_color = NULL;
 	mutex_unlock(&mdev->transport.lock);
+	/* A last VRAM put can wait its reservation fences (TTM's allocation
+	 * failure fallback). DMA is already stopped, so publish the failure
+	 * before releasing an object that carries this very fence. */
+	if (user_fence) {
+		dma_fence_set_error(&user_fence->base, -EIO);
+		dma_fence_signal(&user_fence->base);
+		dma_fence_put(&user_fence->base);
+	}
 	for (i = 0; bos && i < count; i++) {
 		if (pinned && pinned[i])
 			m9x_gem_vram_unpin(bos[i]);
@@ -1026,11 +1034,6 @@ void m9x_fini(struct m9x_device *mdev)
 	kfree(bos);
 	kfree(pinned);
 	kfree(retired);
-	if (user_fence) {
-		dma_fence_set_error(&user_fence->base, -EIO);
-		dma_fence_signal(&user_fence->base);
-		dma_fence_put(&user_fence->base);
-	}
 	m9x_triangle_fini(mdev);
 	if (fence) {
 		dma_fence_set_error(&fence->base, -EIO);
