@@ -10,6 +10,12 @@ FAAoff/vblank_mode0, enters native1/drawmodule0, then loses the context:
 stream timeout. Printed68FPS is invalid and there is no measured gain.
 The improvement is retained; native runtime closure remains open.
 See [the complete hardware proof](../tests/m9-gl2-wireframe-20261006/README.md).
+A separate one-run basic Quake3GL2 timedemo on the same Mesa/kernel
+completed387frames/10.1seconds/**38.3FPS**,1024x768windowed,FAAoff/vsync0.
+HDR/toneMap/normal/specular/deluxe mapping are0; optional full lighting and
+independent image fidelity remain unproved. No matching before/after gain
+is claimed. See [the exact profile and logs](../tests/m9-q3-gl2-20261006/README.md).
+
 Historical standings below use older builds and different resolutions.
 
 
