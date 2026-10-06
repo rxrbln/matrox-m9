@@ -8,6 +8,23 @@ Ordinary textured rendering and the deployed driver are validated. FAA
 rendering is not yet validated. This note is separate from P690
 `102b:2539` evidence.
 
+Latest deep-review hardware checkpoint,2026-10-07: kernel516990f repairs
+the genuine output mapper's omitted post-wait314frontend kick. Original
+ac1f0 stack continuation proves that ordering with the same-profile actual
+retired counters; it emits no additional command-buffer words or backend
+status reads. One freshboot4692a5d2 public-red test executes the new kick
+after real140 retirement but still reads an entirely black image. The
+source-proven ordering repair is retained; it is insufficient to fix FAA.
+[Actual post-wait kick qualification](../tests/m9-faa-postwait-kick-hardware-20261007/README.md)
+and [original CPU continuation](parhelia-m9-faa-output-postwait-continuation.md).
+
+The board-specific cold audit independently executes original Windows and
+Linux MC producers on verified physical M9128 PInS: all76writes/4delays
+match. Current observations match17directMCfields and all desired system
+clock selectors; f14upper readback semantics remain unclassified. This
+narrows cold-state discrepancies but proves no FAA-specific prerequisite
+or cold-register fix. [Actual board cold-state evidence](parhelia-m9-faa-cold-mc-writes.md).
+
 Latest physical FAA checkpoint,2026-10-07: kernel2ede11f adds only bounded
 raw prefixes from existing owner observation reads. Exclusive public-red
 module06aa7d9b/blob2cccc5f1/helper55d0c901 on freshbootdf6def67 reaches
