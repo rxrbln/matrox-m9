@@ -507,3 +507,25 @@ diagnostic forces layout1 and reserves width*height*8 without those end guards;
 odd/small dimensions also require the vendor's alignment arithmetic. Actual
 sample2 admission, physical backing/content and complete command lifecycle
 remain necessary before promoting this recipe to a native enabled FAA result.
+### Normal miniport runtime initialization completes with actual PCI inputs
+
+The [normal-runtime capture](traces/m9-vendor-runtime-normal-20261006.json)
+executes actual `0x568e7` to return1, after real capability publication
+`0x15551`. Its inputs retain the actual M9128 EEPROM-derived record and the
+complete same-boot Nano PCI device and assigned-bus catalogs. The PCI host
+returns captured configuration bytes, explicit absent device vendor IDs, or
+absent-bus status; it stops on uncaptured bytes. It supplies no PCI writes.
+Actual vendor code issues8250 PCI reads and1190 registry requests. The initially
+empty CPU registry retains only the driver's own generated12-byte D00 value.
+
+The resulting collection at202672b4 is published from owner202672b0. Runtime
+type/index0 are actual initializer outputs. The sibling's bounded OS MDL host
+provides synthetic system-RAM pages and reports the optional Windows Extio
+manager absent; those pages are not GPU or VRAM addresses. This establishes
+normal CPU runtime construction, including the missing configuration records
+used by MD resource constructors. Complete adapter initialization, surface
+allocation, draw and FAA resolve remain unproved.
+
+Reproduce with `tools/m9-vendor-runtime-owner.py --normal --pci-inventory
+PATH --bootstrap-tools PATH`, using the captured actual PCI inventory and
+`tools/m9emu` bootstrap/NT-host dependencies (434e1ed9 or its integration).
