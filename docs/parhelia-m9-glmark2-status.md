@@ -18,8 +18,9 @@ The next1024x768 bump-height run completes170GPU user draws/0CPU user
 fallback with healthy142c0 retirement and noGPUtimeout. Its actual X window
 capture shows stretched triangles reaching toward the screen edges. This
 is an image failure; printed85FPS is not a validated rendering benchmark.
-The six-field standalone pixel proof does not qualify this narrower app
-layout. Packed transport/coordinate/stride diagnosis remains open; no cause
+Actual metadata also has six fields, with264source vertices and indexed
+rasterization; the standalone non-indexed proof does not qualify this workload.
+Packed transport/coordinate/index diagnosis remains open; no cause
 is yet established. Defaultcap2 stays unchanged.
 [Exact failed image and evidence](../tests/m9-gl2-bump-packed-hardware-20261006/README.md).
 

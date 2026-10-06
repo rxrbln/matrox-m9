@@ -41,6 +41,10 @@ red capture and native plan.
 
 Run the strict audit from this repository with the Unicorn/pefile Python:
 
+The established local interpreter is `/home/ai/tmp/faaemu/venv/bin/python`.
+Root independently ran the audit with that interpreter and reproduced the
+two complete source checks and whole changed-byte classification below.
+
 ```sh
 python tools/m9emu/check-faa-output-allocation-control.py \
   --baseline-manifest captures/m9128-device-inputs-20261006/normal-faa-output-constant-red-input-manifest-101f8.json \

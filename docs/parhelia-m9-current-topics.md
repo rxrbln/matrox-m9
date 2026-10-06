@@ -27,7 +27,7 @@ queue. Its single1024x768/vblank0/FAAoff run reports about34FPS; screenshot
 and independent wireframe image fidelity are still unqualified. Bump-height
 now retires170GPU user draws with healthy completion, but the actual captured
 image shows stretched triangles. Its85FPS printout is invalid as a rendering
-benchmark. Narrower packed-layout diagnosis, radial multipass and optional
+benchmark. Indexed packed-workload diagnosis, radial multipass and optional
 Q3 lighting remain open. See
 [bump image failure](../tests/m9-gl2-bump-packed-hardware-20261006/README.md).
 Latest basic Q3GL2 checkpoint remains38.9FPS; the historical GL1 numbers
