@@ -64,11 +64,12 @@ single shared secondary/BO ownership protocol is unchanged.
 `tools/m9-completion-check.py KERNEL_M9X MESA_M9X` extracts the actual kernel
 timeline/wait functions and Mesa fence create/finish functions, compiles them
 with controlled writeback, clock, drain and ioctl adapters, then exercises
-37 cases under AddressSanitizer and UndefinedBehaviorSanitizer. It checks ABI
+43 cases under AddressSanitizer and UndefinedBehaviorSanitizer. It checks ABI
 layout equality, async unsignaled posting, zero/finite/infinite-bounded waits,
 exact writeback matching, delayed completion, lock contention, invalid ioctl
 inputs, unplug/disabled-device admission, interrupts/device errors,
-64-bit wrap, cached completion and older-kernel fallback. LeakSanitizer is
+64-bit wrap, cached completion, older-kernel fallback, and actual failed-drain
+BO/pin quarantine versus real retirement. LeakSanitizer is
 disabled because the workspace sandbox uses ptrace; every allocated test
 fence is freed explicitly. Actual modified kernel objects compile, Mesa batch
 suite and context/screen objects compile. Native validation remains pending
@@ -81,9 +82,12 @@ the target owner's next controlled kernel deployment.
    dependency. Reserve/lock all participating BOs before publication, preserve
    f587 same-posting-lock pin ownership, and wait only foreign hazards that
    cannot be satisfied by the ordered M9 stream.
-2. Quarantine timed-out outstanding job BOs until host DMA is stopped. Existing
-   drain clears its pending owner and releases refs even on its watchdog error;
-   this must be corrected before extending implicit fence lifetime.
+2. Timed-out async jobs now retain their pending owner, BO references and pins;
+   new submits honor a drain error, and fini releases quarantine only after
+   clearing PCI bus mastering. This is tested against the actual drain function.
+   Synchronous user submission failure after posting still needs the same
+   ownership transfer; the next slice must report the true doorbell result from
+   user-stream framing and distinguish an unposted failure from active DMA.
 3. Provide at least four independent secondary command slots and retirement
    ownership vectors. The current shared 32 KiB secondary cannot be rewritten
    with a previous reader in flight. Primary append capacity alone does not
