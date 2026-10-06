@@ -8091,12 +8091,34 @@ m9_bind_vs_state(struct pipe_context *pctx, void *state)
    draw_bind_vertex_shader(ctx->draw, vs ? vs->draw : NULL);
 }
 
+static bool
+m9_vs_state_owns_program(const struct m9_vs_state *vs,
+                         const struct m9_vs_program *program)
+{
+   if (!program)
+      return false;
+   util_dynarray_foreach(&vs->specs, struct m9_vs_spec *, spec) {
+      if (program == &(*spec)->program)
+         return true;
+      util_dynarray_foreach(&(*spec)->variants, struct m9_vs_variant *, variant) {
+         if (program == &(*variant)->program)
+            return true;
+      }
+   }
+   return false;
+}
+
 static void
 m9_delete_vs_state(struct pipe_context *pctx, void *state)
 {
    struct m9_context *ctx = m9_context(pctx);
    struct m9_vs_state *vs = state;
 
+   /* Native records bypass draw's flush. Encode and submit their job while
+    * its specialization/layout data is still alive, as FS deletion does.
+    * Posted C2 images retain their separate BO lifetime. */
+   if (m9_vs_state_owns_program(vs, ctx->job_key.vs))
+      m9_context_sync(ctx);
    if (ctx->vs == vs)
       ctx->vs = NULL;
    draw_delete_vertex_shader(ctx->draw, vs->draw);
