@@ -4,7 +4,7 @@
 # M9 open topics and evidence, 2026-10-06
 
 This ledger reconciles the independent M9 (`102b:0540`, `m9x`) userspace
-source at **d8819db** (native-tested bd24336), the October 2 piglit results, and the feature-specific
+source at **408e866** (native resource-tested7443ff6; last timedemo bd24336), the October 2 piglit results, and the feature-specific
 RE notes. It is a work queue, not a new hardware result. The user has installed
 an M9 in nano for deployment and FAA testing; results from that new installation
 must record the actual adapter/subsystem identity, boot, kernel and Mesa hashes.
@@ -34,6 +34,11 @@ references, including depth, with actual3/49 constant runs per job. One new
 see [batching proof](../tests/m9-uniform-runs-native-20261006/README.md).
 ea97652 enables the tested path by default. Remaining CPU draw is triangle
 polygon offset (factor=-1,units=-2), about0.8% of calls/0.03ms per frame.
+Native D24 polygon offset is now implemented in0b101e9/c74a519, with typed
+kernel admission in7da488d. Source408e866 probes that admission without GPU
+execution and retains CPU fallback on older kernels. The DSO build and batch
+suite pass; native depth-bias qualification still needs the new module.
+The99.2% and56.6FPS measurements above predate this feature.
 FAA companion allocation now matches28 genuine vendor geometry/descriptor
 cases (fb4e710). Main and auxiliary stores now use genuine linear rows and
 independent32-byte guards, even at the32MiB budget cap (7443ff6/d8819db).
@@ -58,10 +63,17 @@ target owner and FAA investigators, then rotate the remaining topic agents.
 Each row is a separate scope; an inventory is not evidence that every row has
 an agent running simultaneously.
 
+There are currently three background agents: `m9_faa_emulator` traces the
+shared allocator and platform/OS contracts; `m9_faa_native` traces the FAA
+resource graph, initialization, binding and lifetime; `m9_open_topics` works
+on asynchronous completion and presentation. Root integrates their results
+and owns physical tests. Remaining shader, texture and conformance traces
+are queued. Some have partial vendor evidence, but they are not all closed.
+
 | order | scope | actual remaining gap | next useful proof |
 |---|---|---|---|
 | 0 | deployment and baseline | Qualified on current M9128; broader scenes remain | Retain the pinned deployment and post-test health proof when testing each new candidate |
-| 1 | FAA vendor emulation | Real M9 emitters were executed; complete API-created FAA resource/draw/resolve was not | Complete miniport initialization from genuine device responses, then capture FAA-off/on allocation, complete packets, program images and retirement |
+| 1 | FAA vendor emulation | Genuine conditional19420 allocator now returns1 using OS-owned BAR0 mapping and actual CPU synchronization counters; normal miniport/mapper completion and API-created FAA draw/resolve remain open | Capture the real allocated FAA graph and initialization, then complete packets, program images and retirement without invented GPU replies |
 | 1 | FAA implementation and native probe | Existing diagnostic state does not prove multisampling: previously zero of 318464 store dwords changed | Compare the vendor-owned resource/enable/reset/resolve graph, test one edge scene, read back store writes and resolved edge coverage; follow with depth and texture controls |
 | 2 | max-samplers regression | Base and border cases closed: stale CPU record layout after fragment specialization | Both native cases pass32seen/zero skips after d8fa015, without capacity changes |
 | 2 | kill/early-z state | Three quad lanes use an earlier quad's kill outcome with our instruction and an unchanged vendor program | Obtain genuine vendor engine MMIO while `fs-discard-cond` runs and compare initialization plus job-head controls |
@@ -72,8 +84,8 @@ an agent running simultaneously.
 | 4 | complex split scenes | glmark2 terrain remains incorrect/slow in the recorded standing; partial split coverage is implemented, not a blanket missing feature | Capture one bounded terrain/split case against a reference with skip accounting and identify the first bad intermediate rather than reporting its FPS as conformant |
 | 4 | texture layout and filtered copies | Cube faces larger than 16 are not placed; non-halving filtered engine copies have known failures | Trace the vendor cube address/layout calculator above the packed tail; use existing `blitlin:75x37`, `blitlin:74x37` and `blitlin:100x40` controls for the copy issue |
 | 4 | MRT blending and combined operations | Four unblended targets work; blending has per-target replay, but single-pass destination reads for RT1..3 and combined stencil/discard/split cases remain open | Capture destination-read registers and program image for RT1..3 blend, and verify each target plus retained BO membership |
-| 5 | performance and GPU geometry | Current bd24336 at1024x768/vsync0:56.6FPS,99.2% native calls;55jobs/frame,zero uniform splits | Texture-pair packing, unit-q and constant-run batching measured; retain them, close GPU polygon offset and reduce remaining submission costs |
-| 5 | presentation and async submission | Existing presentation/submit features need current-board measurement; this ledger does not establish an extra async ABI gap | Check current kernel/DDX implementation and one fullscreen/windowed swap trace before changing the framebuffer or retirement model |
+| 5 | performance and GPU geometry | Last measured bd24336 at1024x768/vsync0:56.6FPS,99.2% native calls;55jobs/frame,zero uniform splits. GPU polygon offset implemented, native qualification pending | Qualify typed depth bias with the new kernel, then reduce remaining submission costs; retain measured packing and batching |
+| 5 | presentation and async submission | Current kernel permits one outstanding job; Mesa fences assume synchronous completion and submitted BOs lack dma_resv completion fences | Implement real completion/wait and implicit presentation synchronization, then separately owned secondary slots and CPU arenas before admitting multiple outstanding jobs |
 | 6 | 10-bit masks and conversion | Unblended single-target partial masks use a constant-color blend fallback; already-blended and multiple-target partial masks remain refused, and converting readback needs current retest | Prove the existing unblended mask fallback, implement captured mask lowering for combined cases, then test converting readback and linear filtering |
 | 6 | 10-bit display verification | M9128 KMS/GBM/EGL 30-bit path passed; panel precision and transmitter depth remain unverified | Repeat on the installed board and inspect the physical output; keep raw storage precision distinct from panel output precision |
 | 7 | query and kernel lifetime/recovery | Query counter wrap, split-pass sample accounting and fault/recovery boundaries require targeted qualification | Audit the current kernel first, then submit a bounded wrap/lifetime test to the target owner; no unsupported arbitrary requester state |
@@ -132,13 +144,22 @@ populates type14. Both SPI payloads and EEPROM responses are from this board;
 full adapter initialization is still incomplete. Retained live MM owners and
 actual25-device PCI/assigned-bus inventory advance the normal runtime profile
 constructor. Actual configured companion477f0(format3d) admits sample2; this
-is a constructor prerequisite, not completed normal resource backing or FAA.
+is a constructor prerequisite, not a native FAA rendering result.
+
+The genuine conditional shared allocator now returns1 and publishes its
+resource owners using the actual OS-owned aperture mapping. Its128-byte
+synchronization counter comes from a real vendor CPU producer backed by
+bounded synthetic OS system RAM, not a GPU response. Integratedb0b416c8
+passes independent shared-allocator and common-buffer ownership checks.
+Normal85d50 mapper publication remains incomplete. See the
+[allocator evidence boundary](parhelia-m9-faa-re.md).
 
 [Companion recipe proof](parhelia-m9-faa-companion-resource-20261006.md) corrects
 the old linked-format9 BA/BB interpretation: AA uses64-bit format3d/layout2
-and its own optional HZ plane. The normal1024x768 allocation extent is600020;
-current diagnostic reserves600000 andforceslayout1. Ordinary context pool6
-is a distinct1280-byte resource, still without admitted physical backing.
+and its own optional HZ plane. The1024x768 preallocation extent is600020;
+sourcefb4e710 now includes that guard and the actual sample-layout2 descriptor.
+Ordinary context pool6 is a distinct1280-byte resource; its allocated graph
+and initialization are being traced before native binding is implemented.
 
 Actual fce50/fc8f0/24f20 command execution now captures full contextrestore
 thenA1/A3/A4save:29GPUwords,6genuine relocations, strict negative controls.
@@ -151,7 +172,7 @@ performance agent continues independently. Root owns all target tests.
 ## FAA evidence boundary
 
 The separate worktree `wip/m9-faa-emulator` contains M9-specific execution
-evidence now integrated into this RE tree through **a0a84a8b**.
+evidence now integrated into this RE tree through **b0b416c8**.
 It uses the genuine MSerX `MxMD.dll`, `MxMGLX.dll` and `MxMM.sys` for
 `102b:0540`. Its actual `0xfb920` AD/AF emitter and `0xfab30`
 `RESET_FRAG_PTR` emitter ran under the established PE/Unicorn emulator with
