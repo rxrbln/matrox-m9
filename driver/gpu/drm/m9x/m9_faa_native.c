@@ -554,6 +554,17 @@ static void m9_faa_observe(struct m9x_device *mdev,
 				iosys_map_memcpy_from(data, &o->map, offset, count);
 			else
 				memcpy(data, (u8 *)o->cpu + offset, count);
+			if (!offset) {
+				u32 prefix = min_t(u32, 20, count);
+
+				/* Reuse the already bounded observation read. This
+				 * is raw evidence, including unknown source bytes;
+				 * no owner role or GPU record meaning is assigned. */
+				dev_info(&mdev->pdev->dev,
+					 "M9 FAA %s %s raw prefix: owner=%u native=%#x bytes=%u hex=%*phN\n",
+					 before ? "before submit" : "retired",
+					 domain, i, o->base, prefix, (int)prefix, data);
+			}
 			hash = m9_faa_hash(hash, data, count);
 			for (j = 0; j < count; j++)
 				nonzero += !!data[j];
