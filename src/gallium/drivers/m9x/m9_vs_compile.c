@@ -894,6 +894,14 @@ emit_exp2(struct ctx *c, unsigned dst, const struct held *a)
         w1_make(VS_EXP2_STEP, e[2], t[0]));
    emit(c, w0_make(t[0], t[3], NONE, dst, 0, 0x1c),
         w1_make(VS_EXP2_SCALE, 0, t[0]));
+   /* The final scale consumed every scratch value in this scalar chain.
+    * These four pinned HELD_TEMP pairs are distinct from the caller's
+    * result and every source SSA value; retain those older identities while
+    * letting the next vector component reuse just this chain's scratch. */
+   for (unsigned i = 0; i < ARRAY_SIZE(t); i++) {
+      memset(c->holds[t[i]], 0, sizeof(c->holds[t[i]]));
+      c->busy[t[i]] = 0;
+   }
    return true;
 }
 
