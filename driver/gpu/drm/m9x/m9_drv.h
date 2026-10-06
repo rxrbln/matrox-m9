@@ -111,6 +111,9 @@ struct m9x_transport {
 	u32 command_slot;
 	u32 command_offset;
 	bool transport_armed;
+	/* One-shot FAA owns the live virtual primary until bus-master teardown.
+	 * Ordinary command-slot cursors cannot be reused in this namespace. */
+	bool faa_virtual_primary;
 	bool bus_master_enabled;
 	bool engine_transitioned;
 	bool restore_ready;
@@ -335,6 +338,10 @@ int m9x_submit_kernel_stream_locked(struct m9x_device *mdev,
 				    const u32 *commands, u32 dwords,
 				    u32 target, u64 *point, bool *doorbell_posted,
 				    bool async);
+int m9x_submit_faa_virtual_primary_locked(struct m9x_device *mdev,
+				 const struct drm_mm_node *node, dma_addr_t dma,
+				 u32 bytes, u32 target, u64 *point,
+				 bool *doorbell_posted);
 struct m9x_fence *m9x_fence_create_target_locked(struct m9x_device *mdev,
 						 u32 target);
 int m9x_submit_kernel_queue_locked(struct m9x_device *mdev,

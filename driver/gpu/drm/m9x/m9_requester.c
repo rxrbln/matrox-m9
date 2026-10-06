@@ -271,6 +271,8 @@ int m9x_transport_arm_locked(struct m9x_device *mdev)
 	int ret;
 
 	lockdep_assert_held(&mdev->transport.lock);
+	if (transport->faa_virtual_primary)
+		return -EACCES;
 	if (mdev->transport.transport_armed)
 		return 0;
 	ret = m9x_transport_enable_bus_master_locked(mdev);
@@ -823,6 +825,73 @@ int m9x_submit_kernel_stream_locked(struct m9x_device *mdev,
 {
 	return m9_submit_kernel_stream_common(mdev, commands, dwords, target,
 					     point, doorbell_posted, async, false);
+}
+
+/* Actual MxMD 23a09 selects the retained flags30/B primary GPUVA|1;
+ * 2461e posts its untagged end-exclusive GPUVA. This private synchronous
+ * request consumes the already published owner, without a physical clone.
+ * The caller retains that allocation and mapping through real retirement
+ * or, on failure after publication, through bus-master teardown. */
+int m9x_submit_faa_virtual_primary_locked(struct m9x_device *mdev,
+				 const struct drm_mm_node *node, dma_addr_t dma,
+				 u32 bytes, u32 target, u64 *point,
+				 bool *doorbell_posted)
+{
+	struct m9x_transport *t = &mdev->transport;
+	u32 base, end, page, pte;
+	int ret;
+
+	lockdep_assert_held(&t->lock);
+	if (doorbell_posted)
+		*doorbell_posted = false;
+	if (!m9x_faa_diag_enabled() || !t->faa || t->faa_virtual_primary ||
+	    !t->transport_armed || !t->fence_cpu || !point || !node ||
+	    !drm_mm_node_allocated(node) || !bytes || !IS_ALIGNED(bytes, 4) ||
+	    bytes > PARHELIA_M9_COMMAND_BYTES || bytes > node->size ||
+	    !IS_ALIGNED(node->start, PAGE_SIZE) ||
+	    !IS_ALIGNED(node->size, PAGE_SIZE) || node->size > 0x50000 ||
+	    node->start < 0x40000000 || node->start >= 0x41000000 ||
+	    node->size > 0x41000000 - node->start ||
+	    upper_32_bits(dma) || !IS_ALIGNED(dma, PAGE_SIZE) ||
+	    (u64)dma + node->size > (u64)U32_MAX + 1 || !target || (target & 15))
+		return -EINVAL;
+	if (t->wedged)
+		return -EIO;
+	ret = m9x_transport_drain_locked(mdev);
+	if (ret)
+		return ret;
+	if (m9_fence_reached(READ_ONCE(((u32 *)t->fence_cpu)[0]), target))
+		return -EAGAIN;
+	base = node->start;
+	if (check_add_overflow(base, bytes, &end))
+		return -ERANGE;
+	/* Reject an uncommitted or differently cached mapping before touching
+	 * requester controls. The allocated node bounds the consumed prefix. */
+	for (page = 0; page < DIV_ROUND_UP(bytes, PAGE_SIZE); page++) {
+		ret = m9x_address_read_pte(mdev, base + page * PAGE_SIZE, &pte);
+		if (ret)
+			return ret;
+		if (pte != (m9x_address_pte_word(dma + page * PAGE_SIZE) | 1u))
+			return -ESTALE;
+	}
+	/* The flags30 owner was committed before engine activation, and its
+	 * final variable-length command bytes are coherent CPU writes. */
+	dma_wmb();
+	t->faa_virtual_primary = true;
+	m9x_write(mdev, M9_REG_COMMAND_BASE, base | 1u);
+	m9x_read(mdev, M9_REG_COMMAND_BASE);
+	m9x_write(mdev, M9_REG_COMMAND_END, end);
+	m9x_read(mdev, M9_REG_COMMAND_END);
+	if (doorbell_posted)
+		*doorbell_posted = true;
+	dev_info(&mdev->pdev->dev,
+		 "M9 FAA virtual primary: base=%#x end=%#x bytes=%u policy=b\n",
+		 base | 1u, end, bytes);
+	ret = m9_fence_wait_locked(mdev, target);
+	if (ret)
+		return ret;
+	*point = m9_extend_fence(t, READ_ONCE(((u32 *)t->fence_cpu)[0]));
+	return 0;
 }
 
 int m9x_submit_kernel_queue_locked(struct m9x_device *mdev,

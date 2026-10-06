@@ -822,14 +822,24 @@ int m9x_faa_submit_diag(struct m9x_device *mdev, u32 color,
 	/* Baseline follows real initialization and every pointer/counter patch,
 	 * but precedes this immutable stream's first GPU publication. */
 	m9_faa_observe(mdev, r, true);
-	/* The generated output table rejects primary self-references. The
-	 * ordinary transport owns and posts its coherent physical-tag2 clone;
-	 * no source GPUVA is used as a native physical primary address. All
-	 * indirect secondary/geometry operands retain their independently
-	 * published class1/B owners and exact source endpoint encodings. */
-	ret = m9x_submit_kernel_stream_locked(mdev,
-			r->owner[M9_FAA_PRIMARY_OWNER].cpu, r->primary_bytes / 4,
-			target, point, &posted, false);
+	/* Source23a09/2461e consume this live class1/B owner directly. Its
+	 * final size includes the regenerated inline clear and shifted suffix.
+	 * No transport clone substitutes a physical domain for this primary. */
+	if (!m9_faa_owner_specs[M9_FAA_PRIMARY_OWNER].system ||
+	    !m9_faa_owner_specs[M9_FAA_PRIMARY_OWNER].flags30 ||
+	    r->owner[M9_FAA_PRIMARY_OWNER].vram ||
+	    !r->owner[M9_FAA_PRIMARY_OWNER].cpu ||
+	    r->owner[M9_FAA_PRIMARY_OWNER].base !=
+			r->owner[M9_FAA_PRIMARY_OWNER].system_node.start ||
+	    r->owner[M9_FAA_PRIMARY_OWNER].system_node.size !=
+			m9_faa_owner_specs[M9_FAA_PRIMARY_OWNER].mapped_bytes) {
+		ret = -EINVAL;
+		goto unlock;
+	}
+	ret = m9x_submit_faa_virtual_primary_locked(mdev,
+			&r->owner[M9_FAA_PRIMARY_OWNER].system_node,
+			r->owner[M9_FAA_PRIMARY_OWNER].dma, r->primary_bytes,
+			target, point, &posted);
 	*color_active = posted && ret;
 	if (!ret) {
 		t->next_fence = target + 0x10;
