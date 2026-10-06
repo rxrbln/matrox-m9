@@ -39,6 +39,21 @@ allocation kind0 or6 and does not apply to this allocation-kind1 destination.
 support the existing retained DMA-alias read design, but the capture does
 not prove a returned copy, all subsequent wait behavior, or pixel visibility.
 
+The retained `temporary_after_resolve.backing_hex_90` closes the expected
+resource deadlines: backing `28/2c=0/0` (read), `30/34=140/0` (write), and
+`38/3c=0/0` (query). Actual `66940` reads the query pair. Static `66970(arg2)`
+chooses the maximum of the read/write pairs, here `140/0`. The first observed
+`4e250` query reads common+20, but the later static `4e130` write wait reads
+**common+0**, the same location as the independent `23bc3` retirement wait.
+The fresh actual queue getter observation pins platform `+34` to that
+common-buffer CPU base. A platform field offset is not a byte offset in the
+DMA page: physical platform `+18/+30/+48` publish common+20/+0/+40 to
+`1068/106c/1070`, respectively. Thus this resource's static write wait asks
+for the same final source timeline `140` and same counter location used by
+the native diagnostic. A separate common+40 wait is not established here.
+This describes expected CPU state and source branch selection, with no
+counter read or successful write wait supplied.
+
 The first native ordinary output image remains black after real retirement.
 Its FAA fragment and companion hashes match the preceding run exactly, so
 this proof does not revive the disproved vertex-delivery hypothesis. The
