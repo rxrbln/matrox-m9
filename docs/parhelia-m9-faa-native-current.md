@@ -21,6 +21,22 @@ After copying proof and mandatory power cycle, root restored validatednormal
 observer73/module997c1e0e on freshboot6d6d22e6, user submissions enabled,
 privateFAAoff, next20/raw10/10, emptyqueue/unarmed/busmaster0/wedged0.
 
+Subsequent normal GL2 testing on that same boot completed84ac0/raw84ac1;
+the latest read-only check retains an empty queue and wedged0. The archived
+[normal status control](../tests/m9-faa-status-normal-20261007/observation.json)
+is FAA-off evidence only, not a sampled-render fault diagnosis.
+The [BM program audit](parhelia-m9-faa-bm-program-options.md) closes actual
+locked defaults and retained program owners: both options are one, while
+the final mode9 resolver explicitly emits four inline instruction pairs.
+No missing resident firmware initialization follows from those names.
+
+The public SURFACEBLT prototype reaches its genuine normal copy dispatcher
+but has not reached `aa750` or a new FAA output sequence. Root's static
+review distinguishes `aa750`'s AA mode1f from `abc20`'s output mode1d;
+retaining a sentinel in the former does not prove it is the required output
+operation. Actual graph direction and public admission remain under review.
+No new FAA hardware candidate or working image is claimed by this trace.
+
 The board-specific cold audit independently executes original Windows and
 Linux MC producers on verified physical M9128 PInS: all76writes/4delays
 match. Current observations match17directMCfields and all desired system

@@ -42,7 +42,8 @@ same DSO reports417FPS/2.400ms,1251GPUuser draws/0CPUuser and healthy84ac0.
 The qualification's37FPS includes dumps/readback and is not a code-speedup
 baseline; older34/43/85FPS runs had incorrect geometry. A full independent
 application pixel comparison and broader shader coverage remain open.
-[Complex bump qualification](parhelia-m9-complex-bump-mask-hardware.md).
+[Complex bump qualification](parhelia-m9-complex-bump-mask-hardware.md) and
+[archived clean measurement](../captures/m9x-glmark-bump-clean-bench-20261007/README.md).
 A separate indexed264-vertex variableZ/W fixture physically passes both
 6336record components and both65536pixel palettes with GPU transforms.
 [Exact indexed variableZ/W proof](../captures/m9x-native-variable-zw-264-20261007/README.md). Indexed app qualification, radial
@@ -64,7 +65,17 @@ FAA public red constants change actual main-store contents, but final output
 remains black. Kernel516990f preserves the vendor's omitted post-wait314kick;
 one fresh hardware test still reads black after the kick, so the retained
 ordering correction is insufficient. Deep review now traces the genuine
-public surface-blit graph and its source sentinel, plus mode9 prerequisites.
+public surface-blit admission and operation direction, plus mode9 prerequisites.
+The new public SURFACEBLT prototype returns success through the normal copy
+dispatcher but has not reached the sampled helper; it is not a corrected
+resolve candidate. The helper `aa750` publishes AA mode `1f`, whereas the
+ordinary-output helper `abc20` publishes `1d`. Its sentinel binding alone
+does not establish that it resolves sampled data to ordinary pixels.
+The actual BM option audit proves both options are locked to one and select
+resource-backed program transport; final mode9 explicitly selects four
+inline instruction pairs. No missing resident firmware initialization or
+native enable toggle follows from these option names.
+[BM program ownership](parhelia-m9-faa-bm-program-options.md).
 This is not working FAA. A genuine ordinary SYSTEM red control
 now has a complete source plan and exclusive kernelprofilea6c0b5e:23live
 owners,30addressfields,16timelines, noFAAactivation/resolve/companionclear.
@@ -78,15 +89,13 @@ capture. [Actual ordinary hardware proof](../tests/m9-ordinary-system-red-hardwa
 [current FAA evidence](parhelia-m9-faa-native-current.md) and
 [SYSTEM admission](parhelia-m9-faa-output-system-admission.md).
 
-After archiving the ordinary control and mandatory power cycle, fresh normal
-target bootc44237c9 uses observer73c2a45/user submissions on/privateFAAoff. Mesa883280f includes CPU-only maps, completion cache, retained bounds and
-full input capture; new5f78a2d additionally stages mixed scalars before full
-packed register-pair copies. Host79reference/5refusal/vendor/batch/fullDSO
-checks pass. One short physical bump run retires34nativeuser draws with
-emptyqueue/peak2/wedged0/noGPUtimeout, but its exact final record still fails:
-all264X/Y pass,156Z/W pairs fail. Paired publication is retained as a
-source-contract improvement; it is not a sufficient fix. The prior actual two-frame bump run
-retires17140/raw17141, queueempty/peak1/wedged0 immediately and2s later.
+Current normal target boot is `6d6d22e6-4788-4491-a665-9b12701edd38`,
+observer kernel73c2a45, user submissions enabled and private FAA disabled.
+The post-benchmark read-only check still reports submitted/completed84ac0,
+raw84ac1, empty queue and wedged0. Current qualified Mesa05c7c29 retains
+the earlier map, completion-cache, packed publication, dependency and wait
+improvements. The earlier 34FPS run with156wrong Z/W pairs is superseded by
+the correct bump qualification above; it remains historical failure evidence.
 Private control tests require fresh boot and evidence archiving before
 mandatory recovery. Root owns all target runs.
 
