@@ -16,6 +16,12 @@ the first GPU completion read at23bc3. No GPU reply or FAA image was supplied.
 The remaining native work is the complete trusted state-buffer lifecycle,
 including companion HZ, indirect saved state and resolve. Historical probes
 below explain earlier gaps; the joined-frame section records the current trace.
+Followup review found that the public triangle overwrites the manually bound
+FAA companion/HZ with ordinary context state. Root independently confirmed
+the B8/BA address changes. Thus the CPU replay PASS does not yet prove that
+this draw participates in the FAA graph or issues its raster launch. Correct
+context admission/target-state lowering and the count-prefixed secondary
+consumer remain required before executing this stream on the GPU.
 
 `tools/m9-faa-smoke.sh` runs the current instrument at 320x240, its fixed
 measurement size. Application performance checks remain at 1024x768. Run it

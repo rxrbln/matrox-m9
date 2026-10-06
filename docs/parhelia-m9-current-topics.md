@@ -76,7 +76,7 @@ are queued. Some have partial vendor evidence, but they are not all closed.
 | order | scope | actual remaining gap | next useful proof |
 |---|---|---|---|
 | 0 | deployment and baseline | Qualified on current M9128; broader scenes remain | Retain the pinned deployment and post-test health proof when testing each new candidate |
-| 1 | FAA vendor emulation | Joined queue/context initialization→FAA clear/bind→triangle→resolve→final DMA post independently replayed; first genuine GPU status read remains unanswered | Finish operand/backing provenance for executable translation; preserve the first GPU read boundary without inventing completion |
+| 1 | FAA vendor emulation | CPU sequence through final DMA post independently replays, but DP2 triangle overwrites manually bound FAA companion/HZ; raster launch and secondary count-format consumer remain unresolved | Join actual FAA draw-context target state and assert graph preservation/raster launch; derive real secondary packing before executable translation |
 | 1 | FAA implementation and native probe | Existing diagnostic state does not prove multisampling: previously zero of 318464 store dwords changed | Compare the vendor-owned resource/enable/reset/resolve graph, test one edge scene, read back store writes and resolved edge coverage; follow with depth and texture controls |
 | 2 | max-samplers regression | Base and border cases closed: stale CPU record layout after fragment specialization | Both native cases pass32seen/zero skips after d8fa015, without capacity changes |
 | 2 | kill/early-z state | Three quad lanes use an earlier quad's kill outcome with our instruction and an unchanged vendor program | Obtain genuine vendor engine MMIO while `fs-discard-cond` runs and compare initialization plus job-head controls |
@@ -154,6 +154,14 @@ stops before status load23bc3 from the actual common-buffer physical02007000.
 No GPU completion or subsequent release is supplied. Kernel-owned indirect
 state initialization and complete operand/backing provenance remain executable
 translation requirements. This is CPU evidence, not a rendered FAA image.
+Subsequent review found the public DP2 triangle replaces the FAA companion/HZ
+after manual aa750 binding. Root confirmed B8 changes01a51001→012a8801 and
+BA01ae9001→0, with ordinary descriptors. Mode1f alone is insufficient.
+The joined sequence is therefore not yet a semantically coherent FAA frame;
+23000001 alone does not prove the63000001 raster launch. Native agent owns
+the actual FAA context/target-state join; emulator owns the count-prefixed
+secondary consumer contract. The strict checker must additionally assert FAA
+attachment identities and raster execution before porting.
 Canonical5661c4f4 now activates the real vendor queue with32 owned system-DMA
 allocations through genuine MM handlers and bounded synthetic OS RAM, using
 the genuine FAA-admitting MmFlags101b8 option. Root independently replayed
