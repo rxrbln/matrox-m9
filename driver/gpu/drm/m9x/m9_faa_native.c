@@ -13,6 +13,12 @@
 #include <linux/overflow.h>
 #include <linux/slab.h>
 #include <linux/unaligned.h>
+#include <linux/vmalloc.h>
+
+#ifdef CONFIG_X86_64
+#include <asm/memtype.h>
+#include <asm/set_memory.h>
+#endif
 #include <linux/uaccess.h>
 
 #include <drm/drm_file.h>
@@ -54,6 +60,9 @@ struct m9_faa_owner {
 	void *cpu;
 	dma_addr_t dma;
 	u32 base, bytes;
+	/* True from the first attempted attribute change until verified WB
+	 * restoration. A failed/partial CPA change still needs restoration. */
+	bool cpu_wc;
 	struct drm_mm_node system_node;
 };
 struct m9x_faa_replay {
@@ -90,9 +99,109 @@ static struct m9_faa_owner *m9_faa_output_owner(struct m9x_faa_replay *r)
 	return &r->owner[M9_FAA_OUTPUT_OWNER];
 }
 
-static void m9_faa_release(struct m9x_device *mdev, struct m9x_faa_replay *r)
+/* The captured flags30 raw-MDL owners all select MmWriteCombined through
+ * real 23306c input word1=0. Linux coherent DMA may return a WB direct alias
+ * even with DMA_ATTR_WRITE_COMBINE, so establish and verify that CPU contract
+ * before publishing any of these private owners. Ordinary DMA and the shared
+ * flags110 completion-page alias retain their existing cache attributes.
+ */
+static int m9_faa_dma_cache_check(struct m9_faa_owner *o, bool wc)
+{
+#ifdef CONFIG_X86_64
+	unsigned long start = (unsigned long)o->cpu;
+	unsigned long expected = cachemode2protval(wc ? _PAGE_CACHE_MODE_WC :
+						     _PAGE_CACHE_MODE_WB);
+	u32 offset;
+
+	if (!pat_enabled() || !o->cpu || is_vmalloc_addr(o->cpu) ||
+	    !virt_addr_valid(o->cpu) || !IS_ALIGNED(start, PAGE_SIZE) ||
+	    !o->bytes || !IS_ALIGNED(o->bytes, PAGE_SIZE) ||
+	    o->bytes > INT_MAX || start > ULONG_MAX - o->bytes)
+		return -EOPNOTSUPP;
+	for (offset = 0; offset < o->bytes; offset += PAGE_SIZE) {
+		unsigned long address = start + offset;
+		unsigned int level;
+		pte_t *entry = lookup_address(address, &level);
+		unsigned long prot;
+
+		if (!virt_addr_valid((void *)address) || !entry ||
+		    !pte_present(*entry) || level < PG_LEVEL_4K ||
+		    level > PG_LEVEL_1G)
+			return -EFAULT;
+		prot = pte_val(*entry);
+		if (level != PG_LEVEL_4K)
+			prot = protval_large_2_4k(prot);
+		if ((prot & _PAGE_CACHE_MASK) != expected)
+			return -EUCLEAN;
+	}
+	return 0;
+#else
+	return -EOPNOTSUPP;
+#endif
+}
+
+static int m9_faa_dma_prepare_wc(struct m9x_device *mdev,
+				 struct m9_faa_owner *o)
+{
+#ifdef CONFIG_X86_64
+	int ret = m9_faa_dma_cache_check(o, false);
+
+	if (ret)
+		return ret;
+	/* CPA can fail after changing a subset of pages. Retain restoration
+	 * ownership before entering it, including on its error paths. */
+	o->cpu_wc = true;
+	ret = set_memory_wc((unsigned long)o->cpu, o->bytes >> PAGE_SHIFT);
+	if (!ret)
+		ret = m9_faa_dma_cache_check(o, true);
+	if (ret) {
+		dev_err(&mdev->pdev->dev,
+			"M9 FAA CPU WC preparation refused bytes=%x error=%d\n",
+			o->bytes, ret);
+		return ret;
+	}
+	dev_info(&mdev->pdev->dev,
+		 "M9 FAA CPU cache verified WB->WC bytes=%x pages=%u before publication\n",
+		 o->bytes, o->bytes >> PAGE_SHIFT);
+	return 0;
+#else
+	return -EOPNOTSUPP;
+#endif
+}
+
+static bool m9_faa_dma_restore_wb(struct m9_faa_owner *o)
+{
+	if (!o->cpu_wc)
+		return true;
+#ifdef CONFIG_X86_64
+	if (set_memory_wb((unsigned long)o->cpu, o->bytes >> PAGE_SHIFT) ||
+	    m9_faa_dma_cache_check(o, false))
+		return false;
+	o->cpu_wc = false;
+	return true;
+#else
+	return false;
+#endif
+}
+
+static bool m9_faa_release(struct m9x_device *mdev, struct m9x_faa_replay *r)
 {
 	u32 i;
+
+	/* Failed preparation has no submitted FAA work. Attempted owners may
+	 * change attributes only once requester teardown stopped bus mastering.
+	 * Restore every changed allocation before freeing any owner, so a CPA
+	 * failure cannot return WC or partly converted pages to the allocator.
+	 */
+	if (r->attempted && mdev->transport.bus_master_enabled)
+		goto quarantine;
+	for (i = 0; i < ARRAY_SIZE(r->owner); i++)
+		if (!m9_faa_dma_restore_wb(&r->owner[i])) {
+			dev_err(&mdev->pdev->dev,
+				"M9 FAA CPU WB restore failed owner=%u bytes=%x; allocations retained\n",
+				i, r->owner[i].bytes);
+			goto quarantine;
+		}
 
 	if (drm_mm_node_allocated(&r->counter_node))
 		m9x_address_unmap_system(mdev, &r->counter_node);
@@ -114,6 +223,13 @@ static void m9_faa_release(struct m9x_device *mdev, struct m9x_faa_replay *r)
 	if (r->output_color)
 		drm_gem_object_put(r->output_color);
 	kfree(r);
+	return true;
+quarantine:
+	mdev->transport.wedged = true;
+	mdev->transport.faa = r;
+	dev_err(&mdev->pdev->dev,
+		"M9 FAA CPU cache owners quarantined; no DMA allocation freed\n");
+	return false;
 }
 
 static void m9_faa_release_failed_prepare(struct m9x_device *mdev,
@@ -148,8 +264,8 @@ void m9x_faa_fini(struct m9x_device *mdev)
 			if (drm_mm_node_allocated(&r->owner[i].system_node))
 				m9x_address_unmap_system(mdev, &r->owner[i].system_node);
 		mutex_unlock(&mdev->transport.lock);
-		m9_faa_release(mdev, mdev->transport.faa);
-		mdev->transport.faa = NULL;
+		if (m9_faa_release(mdev, r))
+			mdev->transport.faa = NULL;
 	}
 }
 
@@ -176,6 +292,11 @@ static int m9_faa_allocate(struct m9x_device *mdev, struct m9_faa_owner *o,
 		    (u64)o->dma + o->bytes > U32_MAX)
 			return -ERANGE;
 		o->base = lower_32_bits(o->dma);
+		if (spec->system && spec->flags30) {
+			ret = m9_faa_dma_prepare_wc(mdev, o);
+			if (ret)
+				return ret;
+		}
 		if (spec->system) {
 			ret = spec->flags30 ?
 				m9x_address_map_faa_system(mdev, &o->system_node,
@@ -252,7 +373,8 @@ static int m9_faa_verify_upload(struct m9x_device *mdev,
 	u8 data[256];
 	u32 i, offset, count, j;
 
-	/* These TTM mappings may be WC. dma_wmb() alone is only a compiler
+	/* TTM mappings and admitted SYSTEM owners may be WC. dma_wmb()
+	 * alone is only a compiler
 	 * barrier on x86 and does not publish outstanding WC VRAM writes.
 	 */
 	wmb();
@@ -930,6 +1052,9 @@ int m9x_faa_output_read(struct m9x_device *mdev, struct drm_file *file,
 		ret = t->wedged ? -EIO : -ENODATA;
 		goto unlock;
 	}
+	/* WC loads need a CPU read barrier after the retained retirement
+	 * gate; dma_rmb alone is a compiler barrier on x86. */
+	rmb();
 	dma_rmb();
 	for (y = 0; y < 240; y++)
 		for (x = 0; x < 320; x++) {
