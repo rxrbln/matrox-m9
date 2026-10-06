@@ -44,7 +44,23 @@ struct m9_faa_fixup {
 struct m9_faa_tracker {
 	u32 owner, offset, captured;
 };
-#ifdef M9_FAA_CONSTANT_SHADER_CONTROL
+#if (defined(M9_FAA_CONSTANT_SHADER_CONTROL) + \
+     defined(M9_FAA_INIT_ONLY_CONTROL) + \
+     defined(M9_FAA_POST_TRIANGLE_CONTROL)) > 1
+#error "Select only one complete private FAA source profile"
+#endif
+
+#if defined(M9_FAA_INIT_ONLY_CONTROL)
+/* Independent vendor queue finish at the returned context constructor.
+ * No triangle or output request, and no invented output owner. */
+#include "m9_faa_init_only_data.h"
+#define M9_FAA_INPUT_FIRMWARE "m9x/faa-init-only-known-inputs.bin"
+#elif defined(M9_FAA_POST_TRIANGLE_CONTROL)
+/* Independent vendor queue finish after the returned public triangle,
+ * before output/resolve. Its final counter is in its counted secondary. */
+#include "m9_faa_post_triangle_data.h"
+#define M9_FAA_INPUT_FIRMWARE "m9x/faa-post-triangle-known-inputs.bin"
+#elif defined(M9_FAA_CONSTANT_SHADER_CONTROL)
 /* Whole independently captured public CREATEPS/SETCONST/SETPS flow. The
  * input blob and all owner/fixup tables are one source profile; never splice
  * shader bytes or captured secondary lengths into the normal profile. */

@@ -34,3 +34,30 @@ config DRM_M9X_FAA_CONSTANT_SHADER_CONTROL
 	  m9x/faa-constant-green-known-inputs.bin. This isolates the interpolation
 	  setup dependency while preserving the source vertex and raster state.
 	  It still requires m9_faa_diag=1 and does not enable application FAA.
+
+choice
+	prompt "Private M9128 FAA source phase control"
+	depends on DRM_M9X && X86_64 && !DRM_M9X_FAA_CONSTANT_SHADER_CONTROL
+	optional
+	help
+	  Select one independently recovered vendor queue finish instead of the
+	  complete output flow. These controls separate initialization, public
+	  triangle rendering and subsequent resolve effects. Both are disabled
+	  by default, require m9_faa_diag=1 and retain the private one-shot gates.
+	  Neither phase has an ordinary output owner or enables application FAA.
+
+config DRM_M9X_FAA_INIT_ONLY_CONTROL
+	bool "After context initialization, before the public triangle"
+	help
+	  Use the complete initialization-only source profile and separate
+	  m9x/faa-init-only-known-inputs.bin firmware. Its real queue finish
+	  observes initialization effects without triangle or resolve work.
+
+config DRM_M9X_FAA_POST_TRIANGLE_CONTROL
+	bool "After the public triangle, before output and resolve"
+	help
+	  Use the complete post-triangle source profile and separate
+	  m9x/faa-post-triangle-known-inputs.bin firmware. Its own counted
+	  secondary finish observes draw effects before the output request.
+
+endchoice
