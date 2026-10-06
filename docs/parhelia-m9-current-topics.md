@@ -22,7 +22,9 @@ d1f2b12, a new-board baseline. The sampler base and border regressions pass.
 Driver5ad6c17 additionally passes the actual advertised varying-limit test,
 after compiler splitting and padding overlap fixes. See the
 [interpolation proof](../tests/m9-interpolation-native-20261006/README.md).
-FAA mode remains unproved and unadvertised.
+FAA mode remains unproved and unadvertised. One current5ad6c17 Quake3
+profile is49.5FPS, with zero native vertex draws and CPU transforms throughout
+gameplay; see [rendering-path profile](../tests/m9-q3-profile-20261006/README.md).
 
 The [October 2 piglit status](parhelia-m9-piglit-status.md) supersedes the
 September 18 backlog where they disagree. The glmark2 standing is still the
@@ -53,7 +55,7 @@ an agent running simultaneously.
 | 4 | complex split scenes | glmark2 terrain remains incorrect/slow in the recorded standing; partial split coverage is implemented, not a blanket missing feature | Capture one bounded terrain/split case against a reference with skip accounting and identify the first bad intermediate rather than reporting its FPS as conformant |
 | 4 | texture layout and filtered copies | Cube faces larger than 16 are not placed; non-halving filtered engine copies have known failures | Trace the vendor cube address/layout calculator above the packed tail; use existing `blitlin:75x37`, `blitlin:74x37` and `blitlin:100x40` controls for the copy issue |
 | 4 | MRT blending and combined operations | Four unblended targets work; blending has per-target replay, but single-pass destination reads for RT1..3 and combined stencil/discard/split cases remain open | Capture destination-read registers and program image for RT1..3 blend, and verify each target plus retained BO membership |
-| 5 | performance and GPU geometry | Per-object uniform spans still end jobs; native cull bits have not removed hidden faces; complex shaders remain expensive | Profile one 1024x768 scene, compare complete rendering and native/module counts; pursue vendor-proved preprocessing constant spans and the missing cull condition |
+| 5 | performance and GPU geometry | Current1024x768 Quake3 profile49.5FPS: zero native vertex draws, CPU transforms throughout; about54jobs/frame with program/depth splits dominant | Identify precise native VS refusal from the recorded workload; retain the two-stream physical limit while admitting valid specialized layouts, then pursue submission costs and vendor-proved stream routing |
 | 5 | presentation and async submission | Existing presentation/submit features need current-board measurement; this ledger does not establish an extra async ABI gap | Check current kernel/DDX implementation and one fullscreen/windowed swap trace before changing the framebuffer or retirement model |
 | 6 | 10-bit masks and conversion | Unblended single-target partial masks use a constant-color blend fallback; already-blended and multiple-target partial masks remain refused, and converting readback needs current retest | Prove the existing unblended mask fallback, implement captured mask lowering for combined cases, then test converting readback and linear filtering |
 | 6 | 10-bit display verification | M9128 KMS/GBM/EGL 30-bit path passed; panel precision and transmitter depth remain unverified | Repeat on the installed board and inspect the physical output; keep raw storage precision distinct from panel output precision |
@@ -68,8 +70,9 @@ These are controls for deployment, not new open feature implementations:
   indexing, shadow/depth sampling, and framebuffer pass splitting exist.
   Native VS defaults on, with CPU draw fallback for refused shaders. Native
   program length is bounded at 188 slots and its constant span at 63 pairs.
-* Native VS transports up to five varyings (`m9_vs_compile.h`), rather than
-  the one varying in the old backlog. Native FS has six interpolation
+* Native VS compiles up to five varyings (`m9_vs_compile.h`); the default
+  fused hardware path uses two output streams. Three or more require an
+  additional preprocessing draw that remains unqualified on this board. Native FS has six interpolation
   registers, four fetch units and up to sixteen raster passes. API sampler
   declarations advertise eight so unused variants can link.
 * `FS_CUT_INTERP` is implemented in `m9_fs_compile.c`; the open item is the
