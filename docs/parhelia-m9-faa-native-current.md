@@ -766,12 +766,11 @@ remain separate outstanding requirements.
 
 ### First-use sentinel restore precedes cached state save
 
-The same owned-resource capture now executes actualfce90 context construction,
+The same owned-resource capture now executes actualfbfc0 fragment construction,
 then fce50 before any restore, actualfcb60 with the allocated current sentinel,
 and finally fce50 using the cache published by that real restore. Context
-construction initializes current74/78 and cached7c/80 to null. Its84/88 words
-are generic default register state until the caller publishes a resource;
-they are not a constructor-created pool6 pointer. The fixture supplies the
+construction initializes current74/78, cached7c/80 and pool684/88 to null.
+The fixture supplies the
 real allocated pool6 pair as an explicit caller binding.
 
 Before the first restore, fce50 emits zero bytes despite its dirtybit8 being
@@ -795,3 +794,45 @@ This checkpoint executes actual CPU constructors, counter/reference handling
 and command production. It supplies no GPU completion or fabricated counter
 readback. The commands have not been executed by hardware here, so pool6 GPU
 state acquisition semantics and complete enabled draw/resolve remain open.
+
+Constructor attribution correction: the initial first-use fixture called
+fce90, the large shader-state constructor. The reproducible runner and capture
+now use the actual fragment-control constructorfbfc0, whose ordinary callers
+are1edf6/1f226/1f650. This also establishes a null initial pool6 pair, rather
+than interpreting unrelated shader default words at84/88 as resource state.
+The actualfcb60/fce50 command encoding and cached-sentinel behavior are unchanged.
+
+### Real allocated AA binder joins surface and fragment controls
+
+With `--binder`, the owned-resource runner executes ordinary1a260/1ff90
+queue/context publishers and realaa750 with the actual allocated FAA graph.
+A separate genuinea3870 request creates the primary resource using explicit
+profile12/format0/geometry caller inputs. The binder stops at0xaadcc after
+publishing CPU shadows and before queue activation; it neither resumes the
+interrupted HZ clear nor supplies successful GPU results.
+
+The actual main+414 and companion+38c links identify the allocated auxiliary
+and HZ objects. Aa750 copies the actual sentinel to current74/78, leaves cached
+7c/80 null, and copies actual pool6 to84/88. This independently joins the
+first-use policy above to genuine binder output, rather than pre-seeding a
+cached resource. The runner then executes actualfb920 andfc0e0 with explicit
+stream storage and a reference-recording CPU callback only.
+
+At320x240 actualfb920 produces41 raw GPU words: a genuine counter packet,
+primary B0/B1, companion B8/B9 (`address|1`, `7a220140`), HZ BA/BB
+(`address|1`, `f0010140`), index24/E6/BCBD, and remaining surface state.
+The four AD writes hold `9b04`, the actual main stored extent136080 divided
+by32, while the AF write is0 in this capture. These are capacity/surface
+fields. They must not be conflated with fragment-control shadow20/28.
+
+Actualfc0e0 consumes those separate fragment fields and emits
+`45d7eff0 e0000400 20007000 00000000`: the controls target **F0/EF**, with
+D7 last. Calling the shadow28/20 values AD/AF would name the wrong registers.
+The independent [1024x768 capture](traces/m9-vendor-faa-owned-binder-1024x768-20261006.json)
+and the320x240 owned-resource capture both pass the address/provenance checker.
+The emitted queued counter values are model-session outputs, not native
+constants or fabricated completed counters.
+
+This establishes the allocated CPU binder and actual packet mapping. Queue
+activation, HZ initialization execution, kernel-private indirect state
+ownership, enabled draw/resolve and hardware FAA rendering remain open.
