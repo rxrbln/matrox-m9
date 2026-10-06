@@ -1,0 +1,59 @@
+# M9128 ordinary restore initializer
+
+The actual Windows allocator and queue activation select initializer `0x656c0`,
+type one, with 1,024 records. Its complete CPU-produced `0x181000`-byte image
+matches the native FAA virtual restore grammar. This closes the initial image
+and selected variant, not GPU-saved state or Windows cold/PDEV admission.
+
+The retained passive capture is
+`captures/m9128-device-inputs-20261006/normal-faa-restore-inherited-image.json`.
+Check it against the vendor binary and current native prefix/record arrays:
+
+```sh
+/home/ai/tmp/faaemu/venv/bin/python tools/m9emu/check-faa-restore-inherited-image.py \
+  --capture captures/m9128-device-inputs-20261006/normal-faa-restore-inherited-image.json \
+  --native-source /home/ai/src/parhelia/src.linux.x86-64-desktop.260909.123559.3725172/linux-7.2/drivers/gpu/drm/m9x/m9_requester.c
+```
+
+The checker also supports `--out`, using the actual M9128 inventory/resources,
+`--runtime-tools` and `--bridge-tools`. It invokes the existing allocator with
+registry `System.MmFlags=0x101f8`, `DirectX.D3DEnable=1`, then the actual ordinary
+queue activation. Passive instruction hooks record the selected initializer,
+full-fill inputs and every record DWORD store. It supplies no GPU completion.
+
+At `0x653ee..0x653f5`, the actual CPU fills the entire owner with `0x45454545`.
+Call `0x653f8` produces the 248-byte prefix. The branch at `0x653fd` chooses
+`0x65910` only for type two; the observed type-one owner calls `0x656c0` at
+`0x65418`. No alternate initializer was observed. The known fill is thus an
+actual CPU producer, not inferred from zero-filled emulator backing.
+
+At `0x658a4`, 20,480 observed DWORD stores cover all 20-word records. Record
+placement is owner `+0x700+i*0x600`; work placement is live GPU base
+`+0x200+i*0x600`. Record one alone uses variant `0x0c000000`; the remaining
+records use `0x62000000`. Fields 9, 14 and 19 use the live resource's tag one;
+field 10 is `work+0x400|1`. These match native's private virtual-restore
+preparation. The checker rebuilds pointers from the observed live base and
+native immutable arrays, then compares the complete image, including filled
+gaps and tail. Historical captured addresses are never native inputs.
+
+The full-image SHA-256 in this run is
+`dcdb24d2f050271a6dfc172dac862885c43c0ea5ed7417a3c286308b727aacba`.
+It is placement-specific evidence, not a portable image to upload.
+
+## Separate device-enable boundary
+
+The conditional allocator/queue fixture does not execute all of Windows
+`DrvEnableSurface` (`0x10820`). That caller separately enters `0x10d10`, which
+issues zero-length request `0x23201c` at `0x10d29`. The actual miniport route
+is `0x6c770 -> 0x708de -> 0x70938 -> 0x70a41`. Its admitted chain calls
+`0x5ed49`, `0x5e909`, `0x5f036`, `0x5d475` and `0x5ea66(1)` with intermediate
+failure checks. This is distinct from request `0x233054`, which was already
+closed as miniport owner bookkeeping.
+
+That separate chain touches head/profile/resource collections and display
+state; its complete actual board admission and hardware effects are still
+unproved. It is not evidence for an omitted FAA-only enable bit or a license
+to copy inherited MMIO values. Requester arming, partition controls, service
+windows and the restore image are already accounted for by their own source
+producers. The remaining boundary needs a genuine device-enable/cold-state
+contract with board inputs, rather than a changed restore variant.
