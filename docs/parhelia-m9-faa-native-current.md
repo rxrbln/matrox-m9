@@ -101,6 +101,21 @@ dispatch/retirement semantics. Replaying a guessed index24 address would
 not answer those questions. The emulator agent is executing the complete
 conditional emitter with recorded callback arguments separately.
 
+The real interface getter is also identified. Resource-interface constructor
+`0xa32a0` installs vtable `0x1f3a90`, whose slot `+0x5c` is `0xa6740`.
+Its descriptor-kind5 dispatch entry `0xa68fc+5*4` targets `0xa6776`, which
+selects layout selector2. It invokes descriptor builder `0x467e0` on
+`[interface+0xc0]+0x3c` if the selector's valid bit is absent, then reads
+that selector's address at layout `+0x20`. For an ordinary directly backed
+resource (`interface+0xa4/+0xa8` zero), it returns an address pair
+`{0, address}`. The indirect branch returns `{0x40000000, &interface+0x74}`,
+with that reference carrying the allocation object and address offset
+(`0xa6811..0xa682b`). A relocation recorder must resolve that branch through
+the genuine allocation owner; treating its host pointer as a GPU address
+would fabricate a binding. This identifies the getter contract statically,
+but not the per-slot resource's purpose, initialized lifetime or physical
+extent.
+
 ## Is vendor FAA reachable through normal options?
 
 The saved retail MSerX binaries contain a normal configuration-to-pixel-format
