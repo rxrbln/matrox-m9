@@ -51,7 +51,10 @@ Mesa marks a nonzero submitted point unsignaled, probes this ioctl without
 posting, and uses it in `fence_finish`. Successful completion is cached with
 atomic accesses. Kernel errors, early timeouts and short completion progress
 remain unsignaled. On older kernels a zero-time poll returns false; an explicit
-positive wait uses the existing synchronous NOOP_FENCE drain. That older ABI
+positive wait attempts the existing synchronous NOOP_FENCE drain. This requires
+`m9_render_diag=Y`; with the target's normal old `N` configuration it returns
+EACCES and the fence remains unsignaled. It is a conditional compatibility
+fallback, not general completion support for old kernels. That older ABI
 cannot enforce an arbitrary finite caller timeout, so this compatibility path
 can run up to its existing watchdog. The new ioctl does enforce its bounded
 wait. Empty fences and NULL fences remain immediately complete.
@@ -77,7 +80,10 @@ never takes a BO reservation. Only real matching completion signals a job
 and schedules ownership release. Its watchdog failure preserves an unsignaled
 fence and all outstanding refs/pins, marks the transport wedged, and stops
 polling. Teardown stops/cancels the worker before disabling host DMA; only
-then can it release quarantine and signal a failure fence. The retirement
+then can it signal a failure fence and release quarantine. Failure signaling
+precedes BO unpin/last-put: TTM's failed reservation-copy/OOM fallback can wait
+30*HZ on an object's reservation fences during last-ref release, so putting
+the object before signaling its own fence could stall teardown. The retirement
 record is allocated before posting, avoiding an allocation failure during
 ordinary user-job retirement.
 
@@ -98,7 +104,7 @@ presentation qualification still requires the target owner's new-module run.
 `tools/m9-completion-check.py KERNEL_M9X MESA_M9X` extracts the actual kernel
 timeline/wait functions and Mesa fence create/finish functions, compiles them
 with controlled writeback, clock, drain and ioctl adapters, then exercises
-73 cases under AddressSanitizer and UndefinedBehaviorSanitizer. It checks ABI
+75 cases under AddressSanitizer and UndefinedBehaviorSanitizer. It checks ABI
 layout equality, async unsignaled posting, zero/finite/infinite-bounded waits,
 exact writeback matching, delayed completion, lock contention, invalid ioctl
 inputs, unplug/disabled-device admission, interrupts/device errors,
@@ -108,7 +114,8 @@ transfer across unposted errors, sync timeouts, async posts, sync completion
 and an error after real completion. It also covers implicit publication while
 reservations are held, completion without a next submit, watchdog quarantine,
 worker stop/unplug, foreign-vs-own hazards, foreign errors and reservation
-failure before posting. WW implementation and hardware access are adapters,
+failure before posting, and the actual fini function's stop-DMA / signal-failure /
+last-BO-release order with a TTM self-wait adapter. WW implementation and hardware access are adapters,
 not a claimed emulation of DRM_EXEC's kernel implementation. LeakSanitizer is
 disabled because the workspace sandbox uses ptrace; every allocated test
 fence is freed explicitly. Actual modified kernel objects/full module compile, Mesa batch
