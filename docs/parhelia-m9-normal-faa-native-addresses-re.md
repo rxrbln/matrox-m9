@@ -37,6 +37,33 @@ wait index43 tokens `f0` and `130`. They bypass `25680`; their precise stage,
 DMA slot and chronological CPU-write sequence are retained. The final CPU
 wait desires `150` and stops before its first counter load.
 
+Four shader-loader E3 fields also carry the current timeline low without OR1.
+They follow selector E6=`04000001` and bypass `2557b` as well as `25680`:
+
+| Primary DMA offset | CPU store | Current timeline low |
+| --- | --- | --- |
+| `124` | `f5898` | `30` |
+| `4f0` | `f5898` | `50` |
+| `fbc` | `f5b30` | `50` |
+| `1510` | `f5898` | `140` |
+
+Immediately before each store, the actual indirect calls at `f5893` or
+`f5b2b` invoke queue vtable slot `+70`, resolving to `25860`. Its pinned
+instructions follow `(queue+2c)->4` to the platform and return its `+38`
+low and `+3c` high in EAX/EDX. The passive observer records the source fields,
+callee and instruction bytes before the call, then proves that the immediate
+E3 store matches the returned low. All four observed high words are zero.
+These are timeline values with low control bits zero; native rebasing must
+preserve that form. Their GPU-side selector effects are not supplied.
+
+The complete normal timeline inventory is therefore **26 fields**: twenty
+completion tokens, four selected E3 fields and two GPU waits. E3 coverage is
+18 primary fields plus six counted-secondary fields. The checker pins all
+observed CPU producer sites and exact DMA slots; a generic register decoder
+alone does not establish coverage inside the inline program-upload grammar.
+The earlier 22-field checkpoint omitted these four shader-loader stores and
+must not be used for native execution.
+
 The actual common buffer is system DMA `2007000`, 159 bytes. CPU writes
 prove its first128 bytes, including literal16 at offsets `0,20,40,60` and
 zeros elsewhere in this prefix. Its last31 bytes remain unknown. The
