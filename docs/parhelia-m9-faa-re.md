@@ -1332,3 +1332,36 @@ also returns1, links device`+69c0` and publishes global`20d1cc`; the normal
 device-init loop at`2e03a..2e056` calls it from paired module table`1f2638`.
 These CPU ownership steps do not substitute for initialized physical
 capability owners or prove M9128 FAA admission.
+
+### Bounded actual-board SPI identity capture helper
+
+`tools/m9emu/capture-spi.c` is prepared for root's review and sole-owner,
+locked idle-target execution; it has **not** yet run on the GPU. The helper
+requires PCI102b0540 rev1 subsystem102b22c0 and inactive CS/clock/MOSI/1000
+controls. It changes only BAR2`+304`, issuing read-only flash commands15,
+AB000000 (only if command15's first byte is not1f, matching vendor fallback)
+and03000000 with an8-byte known-ROM read. The read protocol includes the
+genuine1000 control transitions; it is not a simplified three-signal SPI loop.
+
+Actual MSerX miniport `4472b` emits15 at`44757`, reads two bytes, then
+conditionally emitsAB/three dummy bytes at`447d6..447f5` and reads two bytes.
+Actual ROM producer `448ef` sends03/address24 and reads its requested count.
+Their shared helpers are `44960` (clock-low, set1000, CSassert), `44aef`
+(clear1000), `449ca` (eight MSB-first MOSI/clock cycles), `44a3a` (eight
+clock cycles with MISO16 samples), `44b20` (set1000) and `4499c` (CSrelease).
+`spi-protocol.py` independently executes those real functions with a clearly
+controlled zero-MISO negative fixture. Its retained `spi-protocol.json` has
+196 identity/fallback writes and230 ROM-read writes. The capture helper's
+426 emitted words are checked word-for-word against that genuine execution.
+These zero response bytes are **not** captured M9128 flash data.
+
+The helper checks a1-second monotonic deadline before every write. All fallible
+setup precedes writes, asynchronous signals are blocked during transactions,
+and every transaction error reaches unconditional saved-control restoration
+before output/unmapping. Input-only MISO bit16 is excluded from the restoration
+comparison. `check-capture-spi.py` uses ordinary temporary files, never PCI:
+it verifies exact vendor writes, restoration on known-ROM mismatch and forced
+deadline failure within each of the three transactions, and no-write refusal
+for active controls, wrong identity and already expired deadlines. Actual
+target bytes must match the retained board's ROM header before identity
+responses are admitted to the bootstrap model.
