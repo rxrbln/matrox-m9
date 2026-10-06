@@ -1021,3 +1021,43 @@ manufacturer/status responses; `board-eeprom-miscio.txt` is a separate slave
 0xa0 EEPROM and cannot supply SPI identity. Required next genuine input is the
 M9148 serial-flash identification response, or a retained vendor-process flash
 object populated by these calls. No M9 target operation has been attempted.
+
+### Genuine serial identity recovered from retained vendor-X traffic
+
+The previous identity boundary is now crossed without a new hardware operation.
+The pinned genuine M9148 `xinit-mmio.jsonl` already records MISO bit16 in
+vendor GPIO read-modify-write arguments at rising clock edges. The independent
+decoder `tools/m9emu/serial-inputs.py` verifies the trace hash, vendor-image hash,
+and phase/bit ordering against **15 separate known ROM reads, 1123 bytes**,
+including `PCIR`, PCI identity, the `0x7ffc` PInS pointer and the complete
+1024-byte PInS record. Two chained-image probe reads do not match the retained
+ROM shadow and are explicitly excluded from that verification. These echoes
+are derived physical inputs, not directly logged read return values.
+
+The first captured transaction (seq14) sends `15`, returning `ff ff`; the next
+(seq76) sends `ab 00 00 00`, returning **`bf 49`**. Genuine MxMM recognizes
+that alternative at `0x44858/0x44861` and builds the serial descriptor with
+manufacturer `bf`, granularity1 and size`0x20000`. The two-byte response is
+bounded; an unknown opcode or additional uncaptured identity byte still stops.
+These inputs are from a historical M9148 boot, not the current nano boot, and
+do not establish a current board's flash identity if its model differs.
+
+With optional `--serial-inputs`, the actual FindAdapter executes flash identity
+and ROM READs at `0`, `0x7ffc`, `0x7460`, `0x7464`, `0x7462`, `0x7460`.
+It passes firmware discovery and next stops at its real **BAR2+0x318 read**
+(MxMM PC`0x2a3c5`). `captured-identity-bootstrap-trace.json` retains exact
+provenance, transactions and stop. The larger bounded instruction budget only
+allows the bit-banged PInS copy to finish; it supplies no GPU completion or
+unknown register value. FindAdapter/HwInitialize and a genuine API-created
+FAA allocation/draw/resolve remain incomplete.
+
+```sh
+/home/ai/tmp/faaemu/venv/bin/python tools/m9emu/faa-trace.py \
+  --pci-id 102b:0540 --os-mapping --device-inputs --serial-inputs \
+  --out captures/m9-faa-emulator-20261006/captured-identity-bootstrap-trace.json
+/home/ai/tmp/faaemu/venv/bin/python tools/m9emu/check-serial-rom.py
+python3 tools/m9emu/check-captured-identity.py
+```
+
+Next inspect the genuine `0x318/0x3b0` ownership protocol. Captured baseline
+values alone cannot stand in for every subsequent grant/acknowledgement state.
