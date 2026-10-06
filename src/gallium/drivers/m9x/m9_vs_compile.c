@@ -39,11 +39,13 @@
 #define NONE       0x7fu
 #define STOP_W0    0xffff801cu
 #define STOP_W1    0xa01fc00fu
+#define FOLD_NEG   2
 
 #include <assert.h>
 #include <string.h>
 
 #include "nir.h"
+#include "nir_schedule.h"
 #include "util/u_debug.h"
 #include "util/u_math.h"
 #include "util/u_memory.h"
@@ -122,7 +124,7 @@ struct ctx {
    struct util_dynarray keys;
    struct held holds[M9_VS_REGS][2];
    unsigned *last_use;      /* per definition, the instruction that ends it */
-   int8_t *fold;            /* per definition: the product's constant side */
+   int8_t *fold;            /* product's constant side, or FOLD_NEG */
    unsigned def_count;
    unsigned index;          /* instruction being emitted */
    /* Lanes whose result the output registers take directly. */
@@ -503,8 +505,12 @@ operand(struct ctx *c, const struct held *a, const struct held *b,
 {
    int dst;
 
-   if (find_pair(c, a, b, identity_only, reg, swz))
+   if (find_pair(c, a, b, identity_only, reg, swz)) {
+      /* A reused input/literal pair has no SSA last-use protection.  Keep
+       * the next operand's materialization from taking it back. */
+      c->busy[*reg] = 1;
       return true;
+   }
    dst = reg_alloc(c);
    if (dst < 0)
       return fail(c, "out of temporaries");
@@ -1244,6 +1250,20 @@ build_dot(struct ctx *c, nir_alu_instr *alu, unsigned n, unsigned dst,
       return emit_dot(c, dst, a, b, n);
    if (a_const && dot_pairable(a, n))
       return emit_dot(c, dst, b, a, n);
+   if (n == 2) {
+      /* Actual vendor vertex tail s36 and vs-math/lighting use this form.
+       * Both pairs are read whole; the c field must remain equal to a. */
+      unsigned ra, rb, sa, sb;
+      int zero = key_literal(c, 0.0f, 0.0f), e = const_index(c, zero);
+      if (e < 0)
+         return fail(c, "constant span overflow");
+      if (!operand(c, &a[0], &a[1], true, &ra, &sa) ||
+          !operand(c, &b[0], &b[1], true, &rb, &sb))
+         return false;
+      emit(c, w0_make(ra, rb, ra, dst, 0, 0x1d),
+           w1_make(VS_DOT_RR, e, ra));
+      return true;
+   }
    *pair = true;
    return dot_expand(c, dst, a, b, n);
 }
@@ -1329,6 +1349,24 @@ fusable_mul(nir_alu_instr *alu, unsigned i, unsigned n)
    return mul;
 }
 
+/* Subtraction is the existing measured a - c form.  A single-use negate
+ * can ride it without writing a separate negative register pair. */
+static nir_alu_instr *
+fusable_neg(nir_alu_instr *alu, unsigned i, unsigned n)
+{
+   nir_def *def = alu->src[i].src.ssa;
+   nir_instr *instr = nir_def_instr(def);
+   if (instr->type != nir_instr_type_alu || !list_is_singular(&def->uses))
+      return NULL;
+   nir_alu_instr *neg = nir_instr_as_alu(instr);
+   if (neg->op != nir_op_fneg || neg->def.num_components != n)
+      return NULL;
+   for (unsigned j = 0; j < n; j++)
+      if (alu->src[i].swizzle[j] != j)
+         return NULL;
+   return neg;
+}
+
 /* The multiplier operand of a fusable product, or -1. */
 static int
 mul_const_side(nir_alu_instr *mul, unsigned c0, unsigned c1)
@@ -1378,7 +1416,8 @@ build_alu(struct ctx *c, nir_alu_instr *alu)
 
          for (unsigned i = 0; i < 2 && side < 0; i++) {
             mul = fusable_mul(alu, i, n);
-            side = mul ? c->fold[mul->def.index] : -1;
+            side = mul && c->fold[mul->def.index] < FOLD_NEG ?
+                   c->fold[mul->def.index] : -1;
             other = 1 - i;
          }
          if (side >= 0) {
@@ -1393,9 +1432,23 @@ build_alu(struct ctx *c, nir_alu_instr *alu)
                return false;
             break;
          }
-         a0 = src_held(alu, 0, c0); a1 = src_held(alu, 0, c1);
-         b0 = src_held(alu, 1, c0); b1 = src_held(alu, 1, c1);
-         if (!emit_add(c, dst, &a0, &a1, &b0, &b1, false))
+         nir_alu_instr *neg = NULL;
+         for (unsigned i = 0; i < 2; i++) {
+            neg = fusable_neg(alu, i, n);
+            if (neg && c->fold[neg->def.index] == FOLD_NEG) {
+               other = 1 - i;
+               break;
+            }
+            neg = NULL;
+         }
+         if (neg) {
+            a0 = src_held(alu, other, c0); a1 = src_held(alu, other, c1);
+            b0 = src_held(neg, 0, c0); b1 = src_held(neg, 0, c1);
+         } else {
+            a0 = src_held(alu, 0, c0); a1 = src_held(alu, 0, c1);
+            b0 = src_held(alu, 1, c0); b1 = src_held(alu, 1, c1);
+         }
+         if (!emit_add(c, dst, &a0, &a1, &b0, &b1, neg != NULL))
             return false;
          break;
       }
@@ -2255,6 +2308,7 @@ compile_impl(struct ctx *c, nir_function_impl *impl,
       alu = nir_instr_as_alu(instr);
       if (alu->op != nir_op_fadd)
          continue;
+      bool fused = false;
       for (unsigned i = 0; i < 2; i++) {
          nir_alu_instr *mul = fusable_mul(alu, i, alu->def.num_components);
          unsigned lanes = (alu->def.num_components + 1) / 2;
@@ -2272,7 +2326,17 @@ compile_impl(struct ctx *c, nir_function_impl *impl,
          }
          if (mul && side >= 0) {
             c->fold[mul->def.index] = side;
+            fused = true;
             break;
+         }
+      }
+      if (!fused) {
+         for (unsigned i = 0; i < 2; i++) {
+            nir_alu_instr *neg = fusable_neg(alu, i, alu->def.num_components);
+            if (neg) {
+               c->fold[neg->def.index] = FOLD_NEG;
+               break;
+            }
          }
       }
    }
@@ -2366,6 +2430,68 @@ dump_program(const nir_shader *nir, const struct m9_vs_outputs *outputs,
                  w[i + 1]);
 }
 
+/* Component folding exposes the fixed-zero cross-product lanes and unused
+ * matrix components of geometry shaders.  Keep ordinary scalar/vector math
+ * on its existing path; only a register dot needs this preparation. */
+static bool
+geometry_dots(nir_shader *nir)
+{
+   nir_foreach_function_impl(impl, nir) {
+      nir_foreach_block(block, impl) {
+         nir_foreach_instr(instr, block) {
+            if (instr->type != nir_instr_type_alu)
+               continue;
+            nir_alu_instr *alu = nir_instr_as_alu(instr);
+            if ((alu->op == nir_op_fdot2 || alu->op == nir_op_fdot3 ||
+                 alu->op == nir_op_fdot4) &&
+                !nir_src_is_const(alu->src[0].src) &&
+                !nir_src_is_const(alu->src[1].src))
+               return true;
+         }
+      }
+   }
+   return false;
+}
+
+static bool
+geometry_scalar(const nir_instr *instr, const void *data)
+{
+   (void)data;
+   const nir_alu_instr *alu = nir_instr_as_alu(instr);
+   return alu->def.num_components > 1;
+}
+
+static void
+prepare_geometry(nir_shader *nir)
+{
+   nir_function_impl *impl = nir_shader_get_entrypoint(nir);
+
+   if (exec_list_length(&impl->body) != 1 || !geometry_dots(nir))
+      return;
+   /* Use Mesa's own reciprocal/sqrt contraction rules and fast-math guards;
+    * restore the shader's shared compiler options before returning. */
+   const nir_shader_compiler_options *original = nir->options;
+   nir_shader_compiler_options options = *original;
+   options.lower_fdiv = true;
+   nir->options = &options;
+   NIR_PASS(_, nir, nir_lower_alu_to_scalar, geometry_scalar, NULL);
+   bool progress;
+   do {
+      progress = false;
+      NIR_PASS(progress, nir, nir_opt_constant_folding);
+      NIR_PASS(progress, nir, nir_opt_algebraic);
+      NIR_PASS(progress, nir, nir_opt_copy_prop);
+      NIR_PASS(progress, nir, nir_opt_cse);
+      NIR_PASS(progress, nir, nir_opt_dce);
+   } while (progress);
+   NIR_PASS(_, nir, nir_opt_vectorize, NULL, NULL);
+   /* Repacking enables the two-scalar native instructions; schedule the
+    * resulting graph for the existing finite temporary pool. */
+   const nir_schedule_options schedule = {.threshold = 36, .fallback = true};
+   nir_schedule(nir, &schedule);
+   nir->options = original;
+}
+
 bool
 m9_vs_compile(struct nir_shader *nir, const struct m9_vs_outputs *outputs,
               struct m9_vs_program *p, const char **reason)
@@ -2383,8 +2509,10 @@ m9_vs_compile(struct nir_shader *nir, const struct m9_vs_outputs *outputs,
    util_dynarray_init(&c.keys, NULL);
    c.nir = nir;
    c.p = p;
-   if (nir->info.stage == MESA_SHADER_VERTEX)
+   if (nir->info.stage == MESA_SHADER_VERTEX) {
       m9_nir_lower_alu_if(nir);
+      prepare_geometry(nir);
+   }
    impl = nir->info.stage == MESA_SHADER_VERTEX ?
           nir_shader_get_entrypoint(nir) : NULL;
    ok = impl ? compile_impl(&c, impl, outputs) :
