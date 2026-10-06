@@ -354,6 +354,9 @@ static int m9_surface_access(struct m9x_device *mdev, struct drm_file *file,
 							      view.bytes);
 			if (ret)
 				goto out_transport;
+			ret = m9x_address_cpu_local_prepare(mdev, surface, view.bytes);
+			if (ret)
+				goto out_transport;
 			surface |= 1;
 		}
 		m9x_address_surface_window(mdev, surface,

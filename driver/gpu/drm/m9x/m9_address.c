@@ -942,6 +942,62 @@ int m9x_address_check_local_identity(struct m9x_device *mdev, u32 base, u32 byte
 	return 0;
 }
 
+/* Genuine M9128 26830 -> 597a0 -> 59410 CPU-map publication copies
+ * primary leaves into the 0360 root child at the surface page indices.
+ * Those direct CPU entries differ from the root entries which map the
+ * primary table's own storage.  A local GPU identity check alone proves
+ * only the latter.  Caller owns the pinned surface and transport lock. */
+int m9x_address_cpu_local_prepare(struct m9x_device *mdev, u32 base, u32 bytes)
+{
+	struct m9x_address_space *a = mdev->transport.address;
+	u64 end = (u64)base + bytes;
+	u32 address, slot, root_slot, leaf, installed;
+	int ret;
+
+	lockdep_assert_held(&mdev->transport.lock);
+	ret = m9x_address_check_local_identity(mdev, base, bytes);
+	if (ret)
+		return ret;
+	/* The real CPU child is 0x40000 bytes (65536 page entries).  The
+	 * published window can include a second child, which is not this join. */
+	if (end > (u64)M9_ADDRESS_TRANSLATION_BYTES / sizeof(u32) * PAGE_SIZE ||
+	    a->layout.translation_base > a->layout.translation_limit ||
+	    a->layout.translation_limit - a->layout.translation_base <
+					M9_ADDRESS_TRANSLATION_BYTES - sizeof(u32))
+		return -ERANGE;
+	if (m9x_read(mdev, M9_REG_TRANSLATION_BASE) !=
+			(a->layout.translation_base & 0xfffff00cu) ||
+	    m9x_read(mdev, M9_REG_TRANSLATION_LIMIT) !=
+			a->layout.translation_limit)
+		return -ESTALE;
+	/* Validate every destination before changing any entry.  Preserve a
+	 * live nonidentity namespace rather than replacing its mapping. */
+	for (address = base; address < end; address += PAGE_SIZE) {
+		slot = m9_address_identity_slot(address);
+		leaf = iosys_map_rd(&a->map, slot, u32);
+		root_slot = a->layout.translation_base +
+				(address >> PAGE_SHIFT) * sizeof(u32);
+		installed = iosys_map_rd(&a->map, root_slot, u32);
+		if (installed && installed != leaf)
+			return -EEXIST;
+	}
+	for (address = base; address < end; address += PAGE_SIZE) {
+		slot = m9_address_identity_slot(address);
+		root_slot = a->layout.translation_base +
+				(address >> PAGE_SHIFT) * sizeof(u32);
+		iosys_map_wr(&a->map, root_slot, u32,
+			     iosys_map_rd(&a->map, slot, u32));
+	}
+	/* Actual 594b6 -> 59af0 packed token 0x30000c8f emits f,0,c.
+	 * Complete the CPU mirror before publishing a tagged aperture slot. */
+	wmb();
+	m9x_write(mdev, M9_REG_FRONTEND_STATE, 0x0f);
+	m9x_write(mdev, M9_REG_FRONTEND_STATE, 0x00);
+	m9x_write(mdev, M9_REG_FRONTEND_STATE, 0x0c);
+	m9x_read(mdev, M9_REG_FRONTEND_STATE);
+	return 0;
+}
+
 int m9x_address_read_pte(struct m9x_device *mdev, u32 gpuva, u32 *value)
 {
 	struct m9x_address_space *address = mdev->transport.address;
