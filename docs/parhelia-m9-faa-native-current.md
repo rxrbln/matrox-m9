@@ -885,3 +885,33 @@ pending-resource bookkeeping. This branch and write are **static pinned image
 provenance**, not executed compiler evidence in the bounded output capture.
 Capturing FAA bindings alone omits this rectangle operation; the full-frame
 queue trace must also reach the actual trigger and retirement boundary.
+
+## Normal D3D option and CPU frontend prerequisites (2026-10-06)
+
+The ordinary raw descriptor at `b9557` names `DirectX.D3DEnable`; default0
+leaves the `78480→77130` callback advertisement disabled. Supplying the real
+registry option1 during genuine `61f70` enables callback flags0x0c and the
+actual `DrawPrimitives2=beeb0` entry. Enabling that option also causes a real
+`23231c`, selector1 runtime-policy query during configuration. Ordinary D3D
+module setup subsequently queries selector2. Both execute actual MM
+`5d927→5dc7b→5e0eb` on the retained miniport owner and return0, four bytes,
+value0 in the current actual runtime. These queries belong to `5d927`, **not**
+the registry/property dispatcher `70eab`; no capability reply is substituted.
+This is normal option/callback reachability, not a complete FAA frame or GPU
+rendering claim.
+
+The real `bec70` context callback uses the registry owners published by
+ordinary module `79ed0` (`head+20/+24`). Its `beb40` call creates typed
+resource collections through genuine `7a170/c04e0`, then passes them to
+`753e0`. The returned queue TaskMgr permits actual `11b9b0` vertex/backend
+construction. That construction calls `7b3e0`, whose genuine CPU allocator
+ABI is vtable+8 `(size,flags,tag)`; bounded host support now retains those CPU
+allocations (observed flags2, tag0x58544d44). The queue itself previously
+needed vtable+10 `(size,file,line)` from actual `f829e`.
+
+An initial `f5969` failure in both clear and context construction was a fixture
+ordering defect: shader setup `1ff90→1e490→f5d60` consumes `queue+30`.
+The genuine required order is `1a260→230f0(return1)→1ff90`; constructing
+shader state before activation passed a null TaskMgr. The corrected full
+clear/draw/output capture is still the integration gate. No null shader
+owner, successful vendor return or GPU retirement is supplied by hand.
