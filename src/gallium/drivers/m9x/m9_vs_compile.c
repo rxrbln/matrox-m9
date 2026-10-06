@@ -124,6 +124,7 @@ struct ctx {
    struct util_dynarray keys;
    struct held holds[M9_VS_REGS][2];
    unsigned *last_use;      /* per definition, the instruction that ends it */
+   bool *head_live;         /* split head's pure ALU dependencies */
    int8_t *fold;            /* product's constant side, or FOLD_NEG */
    unsigned def_count;
    unsigned index;          /* instruction being emitted */
@@ -2073,6 +2074,73 @@ note_src(nir_src *src, void *data)
    return true;
 }
 
+static bool
+note_head_src(nir_src *src, void *data)
+{
+   struct ctx *c = data;
+
+   c->head_live[src->ssa->index] = true;
+   return true;
+}
+
+static void
+head_root(struct ctx *c, nir_intrinsic_instr *store, unsigned final)
+{
+   if (!store)
+      return;
+   struct use_state st = { c, final };
+
+   nir_foreach_src(&store->instr, note_head_src, c);
+   nir_foreach_src(&store->instr, note_src, &st);
+}
+
+/* The two preprocessing heads have independent registers and selected
+ * output targets.  Walk backwards from those targets in the already
+ * validated single SSA block; only pure ALU can be omitted.  Keep the
+ * original NIR, declarations and full intrinsic/control-flow guards. */
+static void
+head_dependencies(struct ctx *c, nir_block *block, unsigned final,
+                  nir_intrinsic_instr *position,
+                  nir_intrinsic_instr *const *var,
+                  const struct m9_vs_output *ostream, unsigned nvar)
+{
+   if (!c->head_live)
+      return;
+   memset(c->head_live, 0, (c->def_count + 1) * sizeof(*c->head_live));
+   memset(c->last_use, 0, (c->def_count + 1) * sizeof(*c->last_use));
+   head_root(c, position, final);
+   unsigned count = position ? MIN2(nvar, M9_VS_FUSED_VARYINGS) : nvar;
+
+   for (unsigned j = 0; j < count; j++) {
+      head_root(c, var[j], final);
+      /* A coordinate route can carry a pair from a different varying.
+       * write_coord_output reads that stored source as well. */
+      if (ostream[j].coordinate && ostream[j].paired) {
+         nir_foreach_instr(instr, block) {
+            if (instr->type != nir_instr_type_intrinsic)
+               continue;
+            nir_intrinsic_instr *intr = nir_instr_as_intrinsic(instr);
+            if (intr->intrinsic == nir_intrinsic_store_output &&
+                nir_intrinsic_io_semantics(intr).location ==
+                ostream[j].pair_location)
+               head_root(c, intr, final);
+         }
+      }
+   }
+   nir_foreach_instr_reverse(instr, block) {
+      if (instr->type != nir_instr_type_alu)
+         continue;
+      nir_alu_instr *alu = nir_instr_as_alu(instr);
+      if (!c->head_live[alu->def.index])
+         continue;
+      struct use_state st = { c, instr->index };
+      if (c->fold[alu->def.index] >= 0 || nir_op_is_vec_or_mov(alu->op))
+         st.idx = c->last_use[alu->def.index];
+      nir_foreach_src(instr, note_head_src, c);
+      nir_foreach_src(instr, note_src, &st);
+   }
+}
+
 /* Output stream j of this head, whichever kind it is. */
 static bool
 write_stream(struct ctx *c, nir_intrinsic_instr *store,
@@ -2087,8 +2155,8 @@ write_stream(struct ctx *c, nir_intrinsic_instr *store,
    return write_output(c, present ? store : NULL, reg_xy, reg_zw, dflt);
 }
 
-/* One head: the register file starts at the declared attributes, every ALU
- * instruction of the block is emitted, and the outputs land last.  A program
+/* One head: the register file starts at the declared attributes, its live
+ * ALU dependencies are emitted, and the outputs land last.  A program
  * with several varyings runs this twice -- once for the fused pass, once for
  * the tail-free extra pass -- because each is a program of its own and the
  * hardware has no path from one to the other. */
@@ -2109,6 +2177,7 @@ compile_head(struct ctx *c, nir_block *block, unsigned final,
    c->temp_base = 0;
    c->index = 0;
    c->temp_live = false;
+   head_dependencies(c, block, final, position, var, ostream, nvar);
    if (position) {
       bool coord0 = nvar && ostream[0].coordinate;
 
@@ -2148,6 +2217,7 @@ compile_head(struct ctx *c, nir_block *block, unsigned final,
       c->temp_base = c->temp_seq;
       memset(c->busy, 0, sizeof(c->busy));
       if (instr->type == nir_instr_type_alu &&
+          (!c->head_live || c->head_live[nir_instr_as_alu(instr)->def.index]) &&
           !build_alu(c, nir_instr_as_alu(instr)))
          return false;
       c->temp_live = false;
@@ -2284,6 +2354,11 @@ compile_impl(struct ctx *c, nir_function_impl *impl,
          return fail(c, "a stream the shader writes no varying for");
    }
    nvar = out.count;
+   if (nvar > M9_VS_FUSED_VARYINGS) {
+      c->head_live = calloc(c->def_count + 1, sizeof(*c->head_live));
+      if (!c->head_live)
+         return fail(c, "out of memory");
+   }
    /* A coordinate stream whose coefficients move between draws reads them
     * from a record slot of its own, so that a draw sampling a differently
     * addressed target appends records to the pending job instead of ending
@@ -2362,9 +2437,8 @@ compile_impl(struct ctx *c, nir_function_impl *impl,
                      out.stream, 0, nvar))
       return false;
    /* Varyings past the two the fused pass carries are a program of their
-    * own, run as the preprocessing draw ahead of it.  It re-emits the whole
-    * block: the two heads share no register file, and the dead lanes cost
-    * slots rather than correctness. */
+    * own, run as the preprocessing draw ahead of it.  Each independently
+    * emits the SSA dependencies of its output targets. */
    if (nvar > M9_VS_FUSED_VARYINGS) {
       c->out = &c->p->extra;
       if (!compile_head(c, block, final, used, inputs, NULL,
@@ -2538,6 +2612,7 @@ m9_vs_compile(struct nir_shader *nir, const struct m9_vs_outputs *outputs,
       *reason = ok ? NULL : (c.reason ? c.reason : "unknown");
    util_dynarray_fini(&c.keys);
    free(c.last_use);
+   free(c.head_live);
    free(c.fold);
    if (!ok)
       m9_vs_program_fini(p);
