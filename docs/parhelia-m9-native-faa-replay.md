@@ -99,3 +99,18 @@ This is not a0f64-table copy. The missing direct CPU-root join is independently
 visible in tests/m9-faa-cpu-map-20261006/proof/address-observe.txt. Its exact
 flush/copy proof and native implementation are in progress. GPU rendering
 qualification still requires actual image evidence after the mapping fix.
+
+## CPU mapping repaired; downstream image still fails
+
+The physical kernel1b4dd67 run on bootfd7798f9 passes all76800 positive
+patternpixels with exactF0220140/10100/GPU|1 and completes postretirement
+readback without timeout. All117648 knownVRAMsourcebytes verifyexactly.
+The FAAstream retires1e0, but output remains black. Before/after private
+owner observations and readonly output extraction now prove GPUpreprocess
+produces the three correctpositions and greenRGBA varyings. Pool/sentinel,
+auxiliary andHZ change; mainfragmentstore remains unchangedzero. The next
+question is downstream fragment/raster/FAA output, rather than missing VS
+geometry or a broken CPUmapper. Actualbytes/logs/image are retained in
+tests/m9-faa-root-join-20261006. Kernel82b4dd2 extends directroot constructor
+identities to supportedlocalBARpages using actualvendorinitializer evidence;
+its nativeFAAqualification is pending. No appFAA success is claimed.
