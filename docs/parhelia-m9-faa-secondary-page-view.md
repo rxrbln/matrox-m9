@@ -18,8 +18,10 @@ shape. The real selected child supplies `+1c=60501000`, `+20=501000`, and
 
 For each page, actual guest stores at `5bad1/5bae6/5baed` produce words
 `{page_address|8,0,0}` at offsets `0/4/8` of a sixteen-byte record. The fourth
-word is retained: it is zero in the captured initialized owner and this loop
-does not write it. The destination is exactly
+word is retained: it reads as zero in the emulator, but neither this allocation
+loop nor the independently observed initializer writes it. That value is
+unknown GPU backing, not a CPU-known initialized zero. Each allocation therefore
+proves twelve known bytes and four unknown bytes per record. The destination is exactly
 `60501000 + 16*(GPU_address>>12)`. Both surfaces produce eighty records and
 240 DWORD stores. Neither descriptor flags nor page records encode a difference
 between layout kinds one and two.
@@ -64,7 +66,7 @@ python3 tools/check-m9-faa-mmu-admission.py
 ```
 
 The checker verifies every record, actual source descriptor and child, all 240
-stores per surface, the retained fourth word, ordered flush calls/MMIO, and
+stores per surface, the explicit unknown fourth-word boundary, ordered flush calls/MMIO, and
 negative corrupt-address/value/metadata controls. It supplies no GPU reply,
 completion, texture bytes, or pixel output.
 
