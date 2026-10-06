@@ -8,7 +8,23 @@ Ordinary textured rendering and the deployed driver are validated. FAA
 rendering is not yet validated. This note is separate from P690
 `102b:2539` evidence.
 
-Current physical checkpoint: whole public constant-green control kernel6adb92f
+Current physical checkpoint: complete source init-only and post-public-draw
+controls kernel d2821c3 retire B0 and120 respectively without a GPU timeout.
+Init-only main/AA/pool remain zero; post-draw main1041/AA1404 changes already
+occur before any output resolve. Complete main/AA/preprocessing bytes equal
+the older full FAA sequence, rather than only matching its hashes. These
+opaque writes do not yet prove shader colors or correct fragments. Full FAA
+ordinary output remains black. See [init-only evidence](../tests/m9-faa-init-only-hardware-20261006/README.md)
+and [post-draw evidence](../tests/m9-faa-post-triangle-hardware-20261006/README.md).
+The next discriminator uses a fresh public constant-red source capture.
+The hardware readback helper accepts `DEVICE OUTPUT.ppm --expect-red` to
+select its independent expected channel; this option does not change the
+shader, submission or GPU stores. The default green oracle and strict
+interior/exterior/partial-coverage requirements remain. Actual oracle
+statement checks cover synthetic CPU-only red/green, wrong colors, black
+interior, partial edges and exterior rejection; no GPU result is invented.
+
+Previous physical checkpoint: whole public constant-green control kernel6adb92f
 CONTROL=y, M9128 boot6750cc38. The source-owned context reaches real140
 with verified WC mappings, but the image is still entirely black. Main/AA
 hashes match the interpolating baseline exactly; all ordinary SYSTEMoutput
