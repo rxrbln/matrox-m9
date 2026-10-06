@@ -375,6 +375,17 @@ pseudo-handle; it stops before any device reply or returned handles, and
 does not admit a capability collection. Reserved/high-half stack bytes in
 the request remain unspecified and must not be interpreted as device flags.
 
+Both client and primary boundary fixtures now construct the display owner
+with actual `0x10039d10`, using the vendor's0x218 allocation size, rather
+than treating a zeroed wrapper as its constructor. The ordinary manager
+`0x1002d010` allocates it and calls that exact constructor at `0x1002d1c3`;
+subsequent `0x1003a180` metadata initialization and collection insertion
+require the genuine query2 reply retained in manager `+0x220`. These
+fixtures deliberately stop short of that hardware admission: only the DC
+and desktop rectangle are controlled CPU caller inputs. All three boundary
+captures pass with the real display constructor; no successful device reply
+or capability flags are added.
+
 ### Real miniport property dispatch closes the four configuration queries
 
 `--miniport-defaults` executes actual MD `0x61f70` and forwards its four
