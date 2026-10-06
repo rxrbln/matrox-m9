@@ -1283,6 +1283,19 @@ m9_probe_user_submit(struct m9_screen *screen)
          m9_batch_init(batch);
          ok = !m9_batch_emit_packet(batch, &be, 1) &&
               !m9_batch_validate(screen, &command, batch, 0);
+         if (ok) {
+            const struct m9_packet_value bias[] = {
+               { .index = 0xd0, .value = 0 },
+               { .index = 0xd1, .value = 0 },
+            };
+
+            /* Older kernels execute STREAM but do not admit depth bias.
+             * Probe only their typed parser; no GPU commands execute. */
+            m9_batch_init(batch);
+            screen->native_depth_bias =
+               !m9_batch_emit_packet(batch, bias, ARRAY_SIZE(bias)) &&
+               !m9_batch_validate(screen, &command, batch, 0);
+         }
          m9_bo_destroy(screen, &stream);
       }
       m9_command_bo_destroy(screen, &command);

@@ -246,6 +246,7 @@ struct m9_screen {
    uint32_t uapi_version;
    bool validate_submit;
    bool execute_submit;
+   bool native_depth_bias;
    simple_mtx_t import_lock;
    struct m9_prime_import *imports;
    /* One inter-pass record serves the whole screen.  The engine runs one job

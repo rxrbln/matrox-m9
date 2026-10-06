@@ -5476,6 +5476,8 @@ m9_native_vs_resolve(struct m9_context *ctx, const struct pipe_draw_info *info,
        ctx->dsa && ctx->dsa->depth_enabled) {
       uint32_t units, factor;
 
+      if (!ctx->screen->native_depth_bias)
+         return "the kernel does not admit native depth bias";
       if (!m9_context_depth(ctx))
          return "native polygon offset needs a D24 depth attachment";
       if (rast->offset_clamp || rast->offset_units_unscaled)
