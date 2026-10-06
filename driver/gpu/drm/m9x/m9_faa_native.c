@@ -973,8 +973,9 @@ int m9x_faa_submit_diag(struct m9x_device *mdev, u32 color,
  * retired, or fresh source admission retained the initial CPU seed;
  * the two additional tracker words belong to this same
  * retained coherent common buffer, not captured host physical memory.
- * Only the actual known128-byte initializer is reproduced; the low seed
- * equals the already observed GPU retirement and does not publish success. */
+ * Only the actual known128-byte initializer is reproduced. The low seed
+ * retains observed retirement, or the fresh CPU origin10; it never advances
+ * a completion counter or publishes GPU success. */
 	memset(t->fence_cpu, 0, 128);
 	WRITE_ONCE(((u32 *)t->fence_cpu)[0], base);
 	WRITE_ONCE(((u32 *)t->fence_cpu)[0x20 / 4], base);
