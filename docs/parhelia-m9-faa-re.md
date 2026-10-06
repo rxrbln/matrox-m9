@@ -1460,3 +1460,28 @@ is now an admitted input. SerialROM rejects any SPI03 byte outside those actual
 captured ranges, even within shadow bounds. This verifies consumed PInS data;
 the remaining shadow is not asserted equal to flash. Bootstrap still stops
 before the first unproven GPIO write; board capabilities remain uninitialized.
+
+### Bounded GPIO capability source capture (2026-10-06)
+
+Passive hooks on the real bootstrap prove the first `30f5f` request is kind2,
+addressA0, bus9, subtype6, offset0, read1 byte. Actual context at432e5 uses
+1c4c, clock input2/direction800, data input1/direction400, callbacks
+42d0f/42d37/42d5f/42d5f, and frequency50000/period10000. Actual44bba integer
+conversion yields half/quarter delays9/4us; clock-stretch retries use10us.
+
+`capture-gpio.c` performs only the normal read grammar: START, A0/ACK,
+one subaddress byte/ACK, repeated START, A1/ACK, one data byte/master NACK, STOP,
+for fixed offsets0..127. Sending a subaddress selects a read; no EEPROM data
+write or flash programming command is sent. Every one of its22784 successful
+GPIO words equals actual MxMM routine execution with an explicit zero-data/ACK
+fixture. Its first-slave-NACK path equals all51 genuine vendor writes, including
+STOP. These controlled protocol fixtures are **not physical card data**.
+
+The helper requires M9128rev1/22c0 and idle GPIO lines, acquires captured miscIO
+ownership by clearing318bit28, checks3b0grant, and limits activity to three
+seconds. It restores1c4c controls and318 before reporting every error; input
+pins0/1 are excluded from the GPIO restoration comparison. Checker covers ACK,
+NACK, early/middle/final deadline, missing grant and no-write refusal paths.
+Only `completed` bytes are usable. If the actual card NACKs its first request,
+its untouched zero output array is **not** a128-byte capability blob; preserve
+that genuine failure and let the vendor producer take its real fallback.
