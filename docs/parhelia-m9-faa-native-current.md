@@ -195,3 +195,43 @@ must be traced next to distinguish an uninitialized fixture from an actual
 M9128 capability restriction. Do not infer retail M9 FAA support merely from
 the enabled ICD option gate, and do not infer permanent M9128 rejection from
 this incomplete owner.
+
+
+### Exact fallback rejection and first normal capability request
+
+The option helper now records the actual capability source and rejection.
+In each case `0x10044330` leaves the mask at builder stack `+0x0c` zero;
+six hardware candidates execute `test cl,1` at `0x10043d8f` and branch
+away at `0x10043d92`. They never reach the AA gate. The producer traverses
+the ICD manager's display/capability collection `+0x1b8/+0x1dc`; the
+constructor-only fixture has not populated that collection. This is
+incomplete capability acquisition, not a demonstrated PCI0540 restriction.
+
+Run `tools/m9-vendor-faa-options.py --capability-boundary` to continue the
+actual normal acquisition function `0x1002d4b0` with a bounded CPU display
+inventory matching Nano's M9128 (PCI102b:0540rev1). This supplies ordinary
+EnumDisplayDevices/GDI monitor metadata, not hardware capabilities. The
+actual code reaches its first adapter query and deliberately stops before
+any reply. The committed request is
+[the capability boundary capture](traces/m9-vendor-faa-capability-boundary-20261006.json):
+
+* Escape `0x186a0` (100000), input32 bytes, output244 (`0xf4`) bytes.
+* Input hex:
+  `020000000100000000000000000000000000000000d9dadb0000000000000000`.
+* `MxMD` ordinary `DrvEscape` at `0x3d7e0` routes this to `0x972e0`.
+  Request operation2 dispatches to `0x966a0`. Its actual response producer
+  reads derived configuration `hw+0xfe70`, the registered card-owner list
+  `0x20d1cc`, per-process options and an actual miniport IOCTL `0x23231c`.
+  Those owners must be initialized before returning a response.
+* The actual card registration method `0x27230` prepends its argument
+  through `device+0x69c0` to `0x20d1cc`. It is an entry in the ordinary
+  paired module initialization table (`0x1f2638`), invoked by the startup
+  loop `0x2e03a..0x2e056`; it is not a standalone proof of initialized
+  adapter capabilities or a virtual-method table.
+
+No hardware capability reply is fabricated. The first missing reply is now
+an exact normal API request with an identified retail-code producer. Native
+Linux Nano cannot directly supply a Windows vendor DrvEscape result; the
+emulated display-device initialization and miniport must provide its genuine
+ownership and query inputs. The current capture does not establish that
+M9128 admits or permanently rejects normal FAA pixel formats.
