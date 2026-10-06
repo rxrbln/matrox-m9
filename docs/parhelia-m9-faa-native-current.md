@@ -8,6 +8,36 @@ Ordinary textured rendering and the deployed driver are validated. FAA
 rendering is not yet validated. This note is separate from P690
 `102b:2539` evidence.
 
+Latest physical FAA checkpoint,2026-10-07: kernel2ede11f adds only bounded
+raw prefixes from existing owner observation reads. Exclusive public-red
+module06aa7d9b/blob2cccc5f1/helper55d0c901 on freshbootdf6def67 reaches
+real140 retirement, but all327680ordinary SYSTEM output bytes remain zero.
+CPU positive control passes76800pixels; strict FAA image remains blackFAIL.
+All30 observed retained-owner prefixes and actual PPM/logs are archived in
+[the exact saved-state hardware proof](../tests/m9-faa-prefix-hardware-20261007/README.md).
+External caller color is excluded from the31spec observer array.
+
+The live sentinel preserves its indexed header and acquires saved words
+24a/0/0 at offsets8/c/10; its filler at4 becomes zero. These are actual
+produced-state observations, not a decoded FAA record ABI or corruption
+claim. A source correction distinguishes the actual triangle sentinel20B
+range from the final ordinary-output pool64B range: this profile emits no
+fresh sentinel range in final resolve.
+[Exact draw/save/resolve source joins](parhelia-m9-faa-draw-resolve-views.md).
+Independent review finds all eight shared shader/RS/constants/geometry
+images byte-identical to the physically passing ordinary SYSTEM red control,
+and all nonzero callbacks uniquely bounded.
+[Independent input review](../tests/m9-faa-red-shared-input-review-20261007/README.md).
+The genuine PCI/MM→MD flags2 publisher also generates byte-identical GPU
+inputs; it is retained as a producer correction, with no repeated image test.
+[Flags source proof](parhelia-m9-faa-pdev-flags-publisher.md).
+
+Root copied all proof before mandatory power-off/power-on and restored the
+validated normal observer73 on freshe6d15c3d, privateFAAoff/user submissions
+on, empty unarmed queue and wedged0. Deep review continues actual pool
+save/restore, the original post-wait output flow and M9128 cold prerequisites.
+No sufficient FAA fix or application FAA rendering is established.
+
 Current physical checkpoint,2026-10-07: the genuine **ordinary SYSTEM red**
 control physically PASSES on M9128. It has no FAA activation, sampled store,
 companion clear or resolve. Public source admission uses its actual target
