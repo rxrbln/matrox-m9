@@ -235,3 +235,27 @@ Linux Nano cannot directly supply a Windows vendor DrvEscape result; the
 emulated display-device initialization and miniport must provide its genuine
 ownership and query inputs. The current capture does not establish that
 M9128 admits or permanently rejects normal FAA pixel formats.
+
+### Actual ordinary module configuration ownership
+
+`tools/m9-vendor-config-owner.py` and reusable `faaemu/m9_config_owner.py`
+execute the real ordinary module initializer `0x61f70`, rather than manually
+attaching its two individual constructors. The initializer allocates,
+refreshes and publishes raw configuration at `hw+0xfe74`, derived
+configuration at `hw+0xfe70`, and per-device configuration at `device+0x5c`.
+Its 72 real registry requests produce the expected default FAA842/0 or
+explicitly configured843/1 values. Both runs pass.
+
+`--profiles --register` additionally executes actual allocation-profile
+publisher `0x4ed00` and actual card registrar `0x27230`. The former publishes
+the same real profile owner at `hw+0x1015c` and `device+0x69a8`; the latter
+publishes the device through the real registered-card list. This enabled
+configuration run also passes. These are selected genuine module initializers
+on controlled CPU ABI owners, not a completed hardware startup.
+
+Configuration startup additionally requests miniport feature IOCTL `0x23212c`
+with selectors5,31,32,22 (input8/output8 bytes, second input DWORD0). Their
+actual hardware responses remain unacquired. The helper explicitly returns
+an unsupported error, exercising vendor defaults; it accepts a separate
+feature handler for genuine responses. No hardware-format capability,
+MMIO status, command completion or FAA admission is supplied by this helper.
