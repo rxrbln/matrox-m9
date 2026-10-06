@@ -498,9 +498,13 @@ then did.
 The second buffer is hung off the first (`0xac974` writes it into
 `[main+0x414]`, `0xac968` sets `[main+0x418] = 1`).  Allocation flag bit 24 of
 the companion sets `surface+0x234 = 2` and `surface+0x3d0 = 1` through the
-capability check at `0x477f0`, which is a sample-count field [DERIVED]; flag
-bit 1 makes the allocator build a linked companion of descriptor kind 9
-cross-linked at `+0x380/+0x384/+0x388` [STATIC].
+capability check at `0x477f0`, which is a sample-count field [DERIVED].
+**Correction (2026-10-06):** the linked request-kind9 recursion is conditional
+on request-format9 and height1 in `517f0`. This AA request has format5 and
+does not take that branch. Its profile is entry49 (offset1c54), class4,
+hardware format3d, 64 stored bits. The optional BA/BB resource is its HZ
+plane at `+38c`, enabled by `+39c`, rather than the linked request-kind9
+resource. See [the bounded companion proof](parhelia-m9-faa-companion-resource-20261006.md).
 
 The Linux vendor driver names the object: its surviving assert strings carry
 `virtual Pnx::RsFragPtrsBuffer* LinuxDevice::CreateFragPtrsBuffer(MUINT32,
@@ -537,7 +541,7 @@ So the binding is:
 | index | carries |
 |---|---|
 | `b8` / `b9` | the AA companion surface and its descriptor - **the slot this driver binds the ordinary depth surface in** |
-| `ba` / `bb` | the linked kind-9 companion and its descriptor |
+| `ba` / `bb` | the AA companion's optional HZ plane and selector12 descriptor |
 | `bc` | the fragment store's address |
 | `bd` | the second, sixteenth-size buffer's address |
 | `a1`, `a3`, `a4` | the fragment-pointer registers themselves |

@@ -45,8 +45,8 @@ restored those pixels without antialiasing. Repeating those sweeps is not
 an implementation step. Alpha-to-coverage, mode bits in preprocessing, and
 mode6/7 with ordinary D24S8 are established hangs.
 
-The missing contract includes the companion's linked kind9 resource and
-`ba/bb` descriptor, sentinel ownership/save and restore, admission from
+The missing contract includes the companion's optional HZ plane and its
+`ba/bb` selector12 descriptor, sentinel ownership/save and restore, admission from
 the initialized vendor context, resolve and destination retirement. The
 ordinary implementation binds `ba/bb` to its ordinary auxiliary depth
 resource; replacing only `b8/b9` is not proof of the vendor's complete AA
@@ -468,3 +468,21 @@ the observed result of M9128's still-incomplete serial transaction. Do not
 replace its hardware transaction with a synthetic absent profile. The only
 `d3250800` occurrence in the captured M9128 ROM, offset0xb057, is the
 immediate operand of a BIOS compare instruction, not a captured profile blob.
+
+
+### Pool6 backing boundary and corrected companion recipe
+
+The new [bounded resource proof](parhelia-m9-faa-companion-resource-20261006.md)
+executes the actual pool6 request through genuine low-level geometry creation,
+ending before its absent shared backing owner. It establishes a linear320x1,
+1280-byte resource with no admitted physical address, not a successful pool6
+allocation. It also corrects the older linked-kind9 companion claim: the actual
+AA profile49 is class4/hardware3d/64-bit and its request-format5 refuses that
+recursion. BA/BB names optional HZ through selector12.
+
+Conditional real layout/descriptor builders produce B9=7a220140 and extent96020
+for320x240/sample2, and B9=7a220400/extent600020 for1024x768. The existing native
+diagnostic forces layout1 and reserves width*height*8 without those end guards;
+odd/small dimensions also require the vendor's alignment arithmetic. Actual
+sample2 admission, physical backing/content and complete command lifecycle
+remain necessary before promoting this recipe to a native enabled FAA result.
