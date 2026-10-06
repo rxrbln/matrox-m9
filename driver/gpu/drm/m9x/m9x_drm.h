@@ -132,6 +132,10 @@ struct drm_parhelia_m9_get_bo_info {
 #define PARHELIA_M9_ACCESS_READ		1u
 #define PARHELIA_M9_ACCESS_WRITE	2u
 #define PARHELIA_M9_ACCESS_TEXTURE	(1u << 0)
+/* Private retired FAA output only: descriptor c8210140/100f0, 320x240
+ * RGBA rows. The handle identifies the exact original sampled color BO;
+ * it does not expose its sampled storage through a different descriptor. */
+#define PARHELIA_M9_ACCESS_FAA_OUTPUT	(1u << 1)
 
 struct drm_parhelia_m9_surface_access {
 	__u32 handle;

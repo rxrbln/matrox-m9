@@ -13,6 +13,9 @@
 #include <linux/overflow.h>
 #include <linux/slab.h>
 #include <linux/unaligned.h>
+#include <linux/uaccess.h>
+
+#include <drm/drm_file.h>
 
 #include "m9_drv.h"
 #include "m9_reg.h"
@@ -21,6 +24,9 @@
 struct m9_faa_owner_spec {
 	u32 captured, bytes;
 	bool local;
+	/* Per-owner domain/policy; historical DMA-physical owners stay false.
+	 * Only a source-closed generated output template may select these. */
+	bool system, flags30;
 };
 struct m9_faa_span {
 	u32 owner, offset, blob_offset, bytes;
@@ -32,6 +38,11 @@ struct m9_faa_tracker {
 	u32 owner, offset, captured;
 };
 #include "m9_faa_native_data.h"
+/* The older sampled-destination template has no ordinary output owner.
+ * It must never be advertised as a completed ac1f0 output contract. */
+#ifndef M9_FAA_OUTPUT_OWNER
+#define M9_FAA_OUTPUT_OWNER U32_MAX
+#endif
 
 struct m9_faa_owner {
 	struct drm_gem_vram_object *vram;
@@ -39,11 +50,16 @@ struct m9_faa_owner {
 	void *cpu;
 	dma_addr_t dma;
 	u32 base, bytes;
+	struct drm_mm_node system_node;
 };
 struct m9x_faa_replay {
 	struct m9_faa_owner owner[ARRAY_SIZE(m9_faa_owner_specs)];
 	bool prepared, attempted, baseline_valid;
 	u32 primary_bytes;
+	struct drm_gem_object *output_color;
+	u64 output_point;
+	u32 output_generation;
+	bool output_retired;
 	u32 before_hash[ARRAY_SIZE(m9_faa_owner_specs)];
 	u32 before_nonzero[ARRAY_SIZE(m9_faa_owner_specs)];
 	u32 before_nonzero_words[ARRAY_SIZE(m9_faa_owner_specs)];
@@ -60,6 +76,13 @@ bool m9x_faa_diag_enabled(void)
 	return m9_faa_diag;
 }
 
+static struct m9_faa_owner *m9_faa_output_owner(struct m9x_faa_replay *r)
+{
+	if (M9_FAA_OUTPUT_OWNER >= ARRAY_SIZE(r->owner))
+		return NULL;
+	return &r->owner[M9_FAA_OUTPUT_OWNER];
+}
+
 static void m9_faa_release(struct m9x_device *mdev, struct m9x_faa_replay *r)
 {
 	u32 i;
@@ -67,6 +90,8 @@ static void m9_faa_release(struct m9x_device *mdev, struct m9x_faa_replay *r)
 	for (i = 0; i < ARRAY_SIZE(r->owner); i++) {
 		struct m9_faa_owner *o = &r->owner[i];
 
+		if (drm_mm_node_allocated(&o->system_node))
+			m9x_address_unmap_system(mdev, &o->system_node);
 		if (o->vram) {
 			ttm_bo_reserve(&o->vram->bo, false, false, NULL);
 			drm_gem_vram_vunmap(o->vram, &o->map);
@@ -77,6 +102,8 @@ static void m9_faa_release(struct m9x_device *mdev, struct m9x_faa_replay *r)
 			dma_free_coherent(&mdev->pdev->dev, o->bytes, o->cpu, o->dma);
 		}
 	}
+	if (r->output_color)
+		drm_gem_object_put(r->output_color);
 	kfree(r);
 }
 
@@ -84,6 +111,16 @@ static void m9_faa_release(struct m9x_device *mdev, struct m9x_faa_replay *r)
 void m9x_faa_fini(struct m9x_device *mdev)
 {
 	if (mdev->transport.faa) {
+		/* Remove address nodes under their lock, but drop the caller's
+		 * GEM reference outside it: its last release takes this lock. */
+		struct m9x_faa_replay *r = mdev->transport.faa;
+		u32 i;
+
+		mutex_lock(&mdev->transport.lock);
+		for (i = 0; i < ARRAY_SIZE(r->owner); i++)
+			if (drm_mm_node_allocated(&r->owner[i].system_node))
+				m9x_address_unmap_system(mdev, &r->owner[i].system_node);
+		mutex_unlock(&mdev->transport.lock);
 		m9_faa_release(mdev, mdev->transport.faa);
 		mdev->transport.faa = NULL;
 	}
@@ -99,6 +136,9 @@ static int m9_faa_allocate(struct m9x_device *mdev, struct m9_faa_owner *o,
 
 	o->bytes = PAGE_ALIGN(spec->bytes);
 	if (!spec->local) {
+		if (spec->flags30 && (!spec->system ||
+		    spec - m9_faa_owner_specs != M9_FAA_OUTPUT_OWNER))
+			return -EINVAL;
 		o->cpu = dma_alloc_coherent(&mdev->pdev->dev, o->bytes,
 					    &o->dma, GFP_KERNEL);
 		if (!o->cpu)
@@ -107,6 +147,16 @@ static int m9_faa_allocate(struct m9x_device *mdev, struct m9_faa_owner *o,
 		    (u64)o->dma + o->bytes > U32_MAX)
 			return -ERANGE;
 		o->base = lower_32_bits(o->dma);
+		if (spec->system) {
+			ret = spec->flags30 ?
+				m9x_address_map_faa_output(mdev, &o->system_node,
+						  o->dma, o->bytes) :
+				m9x_address_map_system(mdev, &o->system_node,
+						      o->dma, o->bytes);
+			if (ret)
+				return ret;
+			o->base = o->system_node.start;
+		}
 		return 0;
 	}
 	vram = drm_gem_vram_create(&mdev->drm, o->bytes, 1);
@@ -662,6 +712,21 @@ int m9x_faa_submit_diag(struct m9x_device *mdev, u32 color,
 		 "M9 FAA companion clear: base=%#x bytes=%#x inline_words=%u primary_bytes=%u\n",
 		 r->owner[M9_FAA_CLEAR_OWNER].base, M9_FAA_CLEAR_BYTES,
 		 (r->primary_bytes - M9_FAA_PRIMARY_BYTES) / 4 + 19, r->primary_bytes);
+	/* Only a generated source-closed ordinary-output template owns this
+	 * object. A successful older sampled resolve is not an output read. */
+	if (m9_faa_output_owner(r)) {
+		struct m9_faa_owner *output = m9_faa_output_owner(r);
+
+		if (!m9_faa_owner_specs[M9_FAA_OUTPUT_OWNER].system ||
+		    !m9_faa_owner_specs[M9_FAA_OUTPUT_OWNER].flags30 ||
+		    output->bytes != 0x50000 || !output->cpu ||
+		    !drm_mm_node_allocated(&output->system_node)) {
+			ret = -EINVAL;
+			goto unlock;
+		}
+		drm_gem_object_get(&color_bo->bo.base);
+		r->output_color = &color_bo->bo.base;
+	}
 	fence = m9x_fence_create_target_locked(mdev, target);
 	if (!fence) {
 		ret = -ENOMEM;
@@ -695,6 +760,11 @@ int m9x_faa_submit_diag(struct m9x_device *mdev, u32 color,
 	*color_active = posted && ret;
 	if (!ret) {
 		t->next_fence = target + 0x10;
+		if (m9_faa_output_owner(r)) {
+			r->output_generation = t->generation;
+			r->output_point = *point;
+			r->output_retired = true;
+		}
 		m9_faa_observe(mdev, r, false);
 		dev_info(&mdev->pdev->dev,
 			 "M9 FAA normal frame retired: point=%#llx primary=%#x descriptor=cc220140 320x240\n",
@@ -716,5 +786,75 @@ unlock:
 	if (fence)
 		dma_fence_put(&fence->base);
 	mutex_unlock(&t->lock);
+	return ret;
+}
+
+/* Explicit internal ac1f0 output contract, below unjoined public Lock
+ * admission. This never reinterprets the sampled F022 host-aperture view.
+ * The actual kind6 flags30 system owner is read through its retained DMA
+ * alias after real retirement; 8b020/8c4a0 supplies each source address. */
+int m9x_faa_output_read(struct m9x_device *mdev, struct drm_file *file,
+		       const struct drm_parhelia_m9_surface_access *args)
+{
+	struct m9x_transport *t = &mdev->transport;
+	struct m9x_faa_replay *r;
+	struct m9_faa_owner *output;
+	struct drm_gem_object *gem;
+	u8 *pixels;
+	u64 end;
+	u32 x, y, offset;
+	int ret = 0;
+
+	if (!m9_faa_diag || args->flags != PARHELIA_M9_ACCESS_FAA_OUTPUT ||
+	    args->op != PARHELIA_M9_ACCESS_READ || args->offset ||
+	    args->descriptor0 != 0xc8210140 || args->descriptor1 != 0x100f0 ||
+	    args->surface_width != 320 || args->width != 320 || args->height != 240 ||
+	    args->x || args->y || args->data_stride != 1280 ||
+	    args->data_size < 320 * 240 * 4 ||
+	    check_add_overflow(args->data_ptr, (u64)(320 * 240 * 4), &end))
+		return -EINVAL;
+	gem = drm_gem_object_lookup(file, args->handle);
+	if (!gem)
+		return -ENOENT;
+	pixels = kvmalloc(320 * 240 * 4, GFP_KERNEL);
+	if (!pixels) {
+		ret = -ENOMEM;
+		goto put;
+	}
+	mutex_lock(&t->lock);
+	r = t->faa;
+	output = r ? m9_faa_output_owner(r) : NULL;
+	if (t->wedged || !r || !output || !r->output_retired ||
+	    r->output_color != gem || r->output_generation != t->generation ||
+	    !r->output_point || !output->cpu || output->bytes != 0x50000 ||
+	    !drm_mm_node_allocated(&output->system_node) ||
+	    output->system_node.size != output->bytes ||
+	    output->system_node.start != output->base) {
+		ret = t->wedged ? -EIO : -ENODATA;
+		goto unlock;
+	}
+	dma_rmb();
+	for (y = 0; y < 240; y++)
+		for (x = 0; x < 320; x++) {
+			ret = m9_faa_output_offset(x, y, &offset);
+			if (ret || offset > output->bytes - 4) {
+				ret = -ERANGE;
+				goto unlock;
+			}
+			/* Hardware format64 is A8B8G8R8: little-endian RGBA.
+			 * There is no CPU color synthesis or sampled-data decoder. */
+			memcpy(pixels + (y * 320 + x) * 4,
+			       (u8 *)output->cpu + offset, 4);
+		}
+	dev_info(&mdev->pdev->dev,
+		 "M9 FAA output read: point=%#llx system=%#x descriptor=c8210140/100f0 RGBA 320x240\n",
+		 r->output_point, output->base);
+unlock:
+	mutex_unlock(&t->lock);
+	if (!ret && copy_to_user(u64_to_user_ptr(args->data_ptr), pixels, 320 * 240 * 4))
+		ret = -EFAULT;
+	kvfree(pixels);
+put:
+	drm_gem_object_put(gem);
 	return ret;
 }

@@ -272,6 +272,8 @@ static int m9_surface_access(struct m9x_device *mdev, struct drm_file *file,
 	u8 *kbuf;
 	int ret;
 
+	if (args->flags & PARHELIA_M9_ACCESS_FAA_OUTPUT)
+		return m9x_faa_output_read(mdev, file, args);
 	ret = m9_surface_check(args, &view);
 	if (ret)
 		return ret;

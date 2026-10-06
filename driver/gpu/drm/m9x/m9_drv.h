@@ -383,6 +383,8 @@ int m9x_faa_submit_diag(struct m9x_device *mdev, u32 color,
 			struct drm_gem_vram_object *color_bo, u64 *point,
 			bool *color_active);
 void m9x_faa_fini(struct m9x_device *mdev);
+int m9x_faa_output_read(struct m9x_device *mdev, struct drm_file *file,
+		       const struct drm_parhelia_m9_surface_access *args);
 int m9x_triangle_prepare_user(struct m9x_device *mdev);
 int m9x_triangle_prepare_queue(struct m9x_device *mdev);
 int m9x_engine_ready_locked(struct m9x_device *mdev);
