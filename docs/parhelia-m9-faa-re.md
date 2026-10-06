@@ -1450,3 +1450,13 @@ controlled zero-MISO actual MxMM448ef execution, **not hardware data**; the
 checker compares every C helper write to this independent vendor execution and
 checks restoration after failures inside the PInS transactions. Root must
 review and run under the existing idle-target locks before admitting payload.
+
+Root's sole-locked physical `--pins` capture subsequently completed all six
+reads: 21416 writes, saved304=restored304=0, timeout0, rc0. Every one of the
+1288 bytes matches the actual M9128 legacy shadow, including the full 1024-byte
+PInS block at7460. `spi-pins-physical.json` SHA256
+`08435025305a774318cef7542d8e5fa4c6b223480007b7b108a7877f1a1cae2d`
+is now an admitted input. SerialROM rejects any SPI03 byte outside those actual
+captured ranges, even within shadow bounds. This verifies consumed PInS data;
+the remaining shadow is not asserted equal to flash. Bootstrap still stops
+before the first unproven GPIO write; board capabilities remain uninitialized.
