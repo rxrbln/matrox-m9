@@ -1,5 +1,16 @@
 # glmark2 on the m9x driver: where the 60 fps goal actually stands
 
+## 2026-10-06: preserved small GL2 record and pixels fail; next palette stalls
+
+Same healthy normal boot and unchanged driver/DSO, improved fixture: first
+chain3a0 retires with wrong records and256/256 wrong pixels. Clear400 retires,
+second chain4c0 times out; raw401/completed400/wedged1 remains unchanged2s
+later. No late completion observed. Thus small single-draw retirement does
+not prove sustained health. The fixture copied stale palette0 data after
+the timeout; that file is labelled explicitly. Canonical6859cdc fixes record
+freshness and root host checks pass; driver cause remains open.
+[Actual retained record/pixel evidence](../tests/m9-gl2-record-capture-hardware-20261006/README.md).
+
 ## 2026-10-06: tiny four-stage route retires, record oracle rejects output
 
 Fresh normal M9128 boot, Mesa dc1db2e and kernel73c2a45: the full optional
