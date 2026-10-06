@@ -175,6 +175,30 @@ m9_nir_find_inlinable_uniforms(nir_shader *nir)
    NIR_PASS(_, nir, nir_opt_constant_folding);
    nir_foreach_function_impl(impl, nir) {
       nir_foreach_block(block, impl) {
+         /* Mesa turns short uniform-decided branches into selects before
+          * finalising NIR.  They need the same constant-buffer values as
+          * an if: inlining them removes the inactive expression and its
+          * inputs without adding hardware control flow. */
+         nir_foreach_instr(instr, block) {
+            if (instr->type != nir_instr_type_alu)
+               continue;
+            nir_alu_instr *alu = nir_instr_as_alu(instr);
+
+            if (alu->op != nir_op_bcsel)
+               continue;
+            for (unsigned c = 0; c < alu->def.num_components; c++) {
+               uint16_t trial[MAX_INLINABLE_UNIFORMS];
+               unsigned n = count;
+               nir_scalar condition = nir_scalar_chase_alu_src(
+                  nir_get_scalar(&alu->def, c), 0);
+
+               memcpy(trial, dw, sizeof(dw));
+               if (cond_dwords(condition, trial, &n, 0)) {
+                  memcpy(dw, trial, sizeof(dw));
+                  count = n;
+               }
+            }
+         }
          nir_if *nif = nir_block_get_following_if(block);
          uint16_t trial[MAX_INLINABLE_UNIFORMS];
          unsigned n = count;

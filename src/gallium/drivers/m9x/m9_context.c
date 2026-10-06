@@ -530,6 +530,14 @@ static uint64_t m9_prof_refused, m9_prof_skipped, m9_prof_relocs;
  * module, since the last profile line: a benchmark that never destroys its
  * drawing context reports nothing at all otherwise. */
 static uint64_t m9_prof_native, m9_prof_module;
+
+/* Reasons have static storage.  Keep cumulative context totals for teardown
+ * and a separate cursor for the bounded profile interval report. */
+struct m9_native_vs_reason {
+   const char *reason;
+   uint32_t count;
+   uint32_t profile_count;
+};
 /* M9X_NO_CLEAR drops the clear quad; M9X_CLEAR_REPEAT draws it that many
  * extra times, which weighs one screen of fill with the frame still correct. */
 static bool m9_no_clear;
@@ -557,7 +565,7 @@ m9_prof_end(enum m9_prof phase, uint64_t start)
 
 /* Called once per frame with the wall time of the whole frame. */
 static void
-m9_prof_frame(void)
+m9_prof_frame(struct m9_context *ctx)
 {
    static uint64_t last;
    uint64_t now;
@@ -589,6 +597,14 @@ m9_prof_frame(void)
            m9_prof_split[1] / f, m9_prof_split[2] / f, m9_prof_split[3] / f,
            m9_prof_split[4] / f, m9_prof_split[5] / f, m9_prof_split[6] / f,
            m9_prof_split[7] / f, (double)m9_prof_native, (double)m9_prof_module);
+   util_dynarray_foreach(&ctx->native_vs_reasons, struct m9_native_vs_reason,
+                         it) {
+      uint32_t count = it->count - it->profile_count;
+
+      if (count)
+         fprintf(stderr, "m9x: profile draw module %u: %s\n", count, it->reason);
+      it->profile_count = it->count;
+   }
    memset(m9_prof_ns, 0, sizeof(m9_prof_ns));
    memset(m9_prof_hits, 0, sizeof(m9_prof_hits));
    m9_prof_records = m9_prof_jobs = m9_prof_varying_bytes = 0;
@@ -5242,13 +5258,11 @@ m9_native_index_range(const void *indices, unsigned size, unsigned first,
    *hi = b;
 }
 
-/* What the fragment shader reads, before any variant of it is compiled: the
- * preprocessing stage fills one stream an input, so a shader that reads more
- * input locations than the pass has targets falls back here.  A texture
- * coordinate is a stream of its own and can cost a target beyond them, which
- * only the compiled variant says; this is the cheap half, and it is what
- * keeps a draw that will fall back anyway from resolving its source layout
- * and its job key. */
+/* Reject shaders whose inputs cannot fit before resolving the source layout
+ * and job key.  Uniform specialisation can remove entire input locations,
+ * so its unspecialised input mask is not a lower bound on the streams a draw
+ * needs.  Those shaders reach m9_native_vs_layout, which checks the actual
+ * compiled variant against the same output-target cap. */
 static bool
 m9_native_vs_fs_cheap(const struct m9_context *ctx)
 {
@@ -5257,7 +5271,8 @@ m9_native_vs_fs_cheap(const struct m9_context *ctx)
    if (!ctx->fs || !ctx->fs->nir)
       return false;
    info = &ctx->fs->nir->info;
-   return util_bitcount64(info->inputs_read &
+   return info->num_inlinable_uniforms ||
+          util_bitcount64(info->inputs_read &
                           ~(VARYING_BIT_POS | VARYING_BIT_FACE |
                             VARYING_BIT_PNTC)) <= m9_native_vs_varyings;
 }
@@ -5923,11 +5938,6 @@ m9_native_vs_append(struct m9_context *ctx, const struct m9_job_key *key,
 /* Tallies why a draw went to the draw module.  The reasons are static
  * strings, so the pointer identifies one and the list stays as long as the
  * distinct reasons a run meets. */
-struct m9_native_vs_reason {
-   const char *reason;
-   uint32_t count;
-};
-
 static void
 m9_native_vs_note(struct m9_context *ctx, const char *reason)
 {
@@ -5941,7 +5951,7 @@ m9_native_vs_note(struct m9_context *ctx, const char *reason)
          it->count++;
          return;
       }
-   struct m9_native_vs_reason add = { reason, 1 };
+   struct m9_native_vs_reason add = { reason, 1, 0 };
 
    util_dynarray_append_typed(&ctx->native_vs_reasons,
                               struct m9_native_vs_reason, add);
@@ -5972,7 +5982,8 @@ m9_native_vs_draw(struct m9_context *ctx, const struct pipe_draw_info *info,
                                 "cache holds" :
                                 !ctx->vs->cur->native ?
                                 ctx->vs->cur->reason :
-                                "the fragment side is not worth a native job");
+                                "unspecialised fragment inputs exceed the "
+                                "native output cap");
       return false;
    }
    ctx->lines = u_reduced_prim(info->mode) == MESA_PRIM_LINES;
@@ -8308,7 +8319,7 @@ m9_context_flush(struct pipe_context *pctx,
    struct pipe_fence_handle *fence = NULL;
 
    (void)flags;
-   m9_prof_frame();
+   m9_prof_frame(ctx);
    m9_frame_skip_report(ctx);
    if (ctx->debug && ++ctx->flush_count % 300 == 0)
       fprintf(stderr, "m9x: after %u frames job splits: state %u uniforms %u "

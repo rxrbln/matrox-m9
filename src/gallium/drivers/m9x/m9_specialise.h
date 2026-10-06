@@ -20,12 +20,12 @@ struct nir_shader;
  * the screen advertises. */
 void m9_nir_lower_integers(struct nir_shader *nir);
 
-/* Mark the constant-buffer dwords that decide this shader's control flow,
+/* Mark the constant-buffer dwords that decide control flow or a select,
  * so the state tracker sends their values through set_inlinable_constants. */
 void m9_nir_find_inlinable_uniforms(struct nir_shader *nir);
 
 /* Substitute those values and fold, which unrolls a uniform-bounded loop
- * and removes a uniform-decided branch. */
+ * and removes a uniform-decided branch or select. */
 void m9_nir_inline_uniforms(struct nir_shader *nir, const uint32_t *values);
 
 #endif
