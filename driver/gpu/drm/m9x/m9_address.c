@@ -972,6 +972,8 @@ static int m9_address_reserve_system(struct m9x_device *mdev,
 	struct m9x_address_space *address = mdev->transport.address;
 
 	lockdep_assert_held(&mdev->transport.lock);
+	if (mdev->transport.wedged)
+		return -EIO;
 	if (!address || !address->system_mm_ready)
 		return -ENODEV;
 	if (!bytes)
@@ -1082,7 +1084,11 @@ void m9x_address_unmap_system(struct m9x_device *mdev, struct drm_mm_node *node)
 			i++;
 			continue;
 		}
-		if (binding->published) {
+		/* A failed companion readback leaves FRONTEND_STATE=5 frozen.
+		 * Removing CPU bookkeeping must not activate that corrupt image,
+		 * including later bindings after an invalidation itself wedges.
+		 * Teardown stops bus mastering before releasing reachable owners. */
+		if (binding->published && !mdev->transport.wedged) {
 			for (page = 0; page < binding->bytes >> PAGE_SHIFT; page++)
 				iosys_map_wr(&address->map,
 					     m9_address_identity_slot(&address->layout, binding->gpuva +

@@ -116,6 +116,22 @@ static void m9_faa_release(struct m9x_device *mdev, struct m9x_faa_replay *r)
 	kfree(r);
 }
 
+static void m9_faa_release_failed_prepare(struct m9x_device *mdev,
+					struct m9x_faa_replay *r)
+{
+	lockdep_assert_held(&mdev->transport.lock);
+	if (mdev->transport.wedged) {
+		/* Publication may already have exposed these DMA/local owners.
+		 * Keep them through the freeze; requester teardown first disables
+		 * PCI bus mastering, then m9x_faa_fini drops their ownership. */
+		mdev->transport.faa = r;
+		dev_err(&mdev->pdev->dev,
+			"M9 FAA failed preparation retained until DMA shutdown\n");
+		return;
+	}
+	m9_faa_release(mdev, r);
+}
+
 /* Called by requester teardown only after PCI bus mastering has stopped. */
 void m9x_faa_fini(struct m9x_device *mdev)
 {
@@ -447,7 +463,7 @@ int m9x_faa_prepare_diag(struct m9x_device *mdev)
 	ret = 0;
 	goto release_fw;
 free:
-	m9_faa_release(mdev, r);
+	m9_faa_release_failed_prepare(mdev, r);
 release_fw:
 	release_firmware(fw);
 unlock:
