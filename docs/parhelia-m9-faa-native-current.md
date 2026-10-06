@@ -631,8 +631,8 @@ trailing values are distinct GPU words, not interchangeable recorder metadata.
 The shared first opcode does not justify substituting one complete operation
 for the other.
 
-Actual AA binder0xaa750 obtains the sentinel resource (`AA graph+0x18`,
-passed at binder array+0x0c) through its kind5 getter and places that address
+Actual AA binder0xaa750 obtains the control resource passed at binder
+array+0x0c through its kind5 getter and places that address
 at context shadow+74/+78 (aa819..aa82d). It obtains the independent per-head
 pool6 resource at hardware+fed8+head*144 and places that address at shadow
 +84/+88 (aad07..aad68), also duplicating it into AA state+9c/+a0 for fb920.
@@ -640,5 +640,7 @@ The real restore emitter0xfcb60 later copies the current sentinel74/78 into
 cached7c/80 (fce05..fce39). The save emitter0xfce50 passes cached7c/80 and
 pool6 84/88 into0xfc8f0. These are separate resource references; the store,
 sentinel and per-head pool6 must preserve their own ownership and lifetime.
-This resolves the static producer split. Full allocated-resource dynamic
-admission remains unproved.
+This resolves the static shadow producer split. The caller-array ownership
+join to the sentinel allocated by0xac7e0 at its interface+18 still requires
+the complete resource graph; no pointer alias is assumed. Full allocated
+resource admission remains unproved.
