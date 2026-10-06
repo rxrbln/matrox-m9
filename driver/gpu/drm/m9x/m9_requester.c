@@ -4,10 +4,13 @@
 #include <linux/dma-mapping.h>
 #include <linux/iosys-map.h>
 #include <linux/jiffies.h>
+#include <linux/ktime.h>
 #include <linux/mm.h>
 #include <linux/module.h>
+#include <linux/sched/signal.h>
 #include <linux/slab.h>
 
+#include <drm/drm_drv.h>
 #include <drm/drm_managed.h>
 
 #include "m9_drv.h"
@@ -468,6 +471,8 @@ int m9x_transport_drain_locked(struct m9x_device *mdev)
 		return 0;
 	transport->async_pending = false;
 	ret = m9_fence_wait_locked(mdev, transport->async_target);
+	if (!ret)
+		transport->completed_point = transport->async_point;
 	if (!transport->async_bos)
 		return ret;
 	/*
@@ -578,6 +583,8 @@ int m9x_submit_kernel_stream_locked(struct m9x_device *mdev,
 		raw = READ_ONCE(writeback[0]);
 	}
 	extended = m9_extend_fence(transport, raw);
+	if (async)
+		transport->async_point = extended;
 	if (point)
 		*point = extended;
 	return 0;
@@ -590,7 +597,10 @@ static u64 m9_extend_fence(struct m9x_transport *m9, u32 raw)
 	if (low < m9->last_fence)
 		m9->fence_epoch++;
 	m9->last_fence = low;
-	return ((u64)m9->fence_epoch << 32) | low;
+	m9->submitted_point = ((u64)m9->fence_epoch << 32) | low;
+	if (!m9->async_pending)
+		m9->completed_point = m9->submitted_point;
+	return m9->submitted_point;
 }
 
 static u32 m9_next_fence_target(struct m9x_transport *m9)
@@ -604,6 +614,85 @@ static u32 m9_next_fence_target(struct m9x_transport *m9)
 static bool m9_fence_reached(u32 raw, u32 target)
 {
 	return (raw & ~0xfu) == target;
+}
+
+/* Completion is derived from an observed writeback, never the token merely
+ * returned at posting. The transport lock preserves the single pending
+ * owner while a wait observes it; no command/requester register is written. */
+static int m9_wait_point_locked(struct m9x_device *mdev,
+				struct drm_parhelia_m9_wait_point *args)
+{
+	struct m9x_transport *t = &mdev->transport;
+	u64 start = ktime_get_ns();
+	u64 limit = min_t(u64, args->timeout_ns,
+			 (u64)max(m9_fence_timeout_ms, 1u) * NSEC_PER_MSEC);
+	int ret;
+
+	lockdep_assert_held(&t->lock);
+	if ((args->point & 0xf) || args->point > t->submitted_point)
+		return -EINVAL;
+	for (;;) {
+		args->completed_point = t->completed_point;
+		if (args->point <= t->completed_point)
+			return 0;
+		if (t->wedged)
+			return -EIO;
+		if (t->async_pending &&
+		    m9_fence_reached(READ_ONCE(((u32 *)t->fence_cpu)[0]),
+				     t->async_target)) {
+			dma_rmb();
+			ret = m9x_transport_drain_locked(mdev);
+			if (ret)
+				return ret;
+			continue;
+		}
+		if (!limit || ktime_get_ns() - start >= limit)
+			return -ETIME;
+		if (signal_pending(current))
+			return -ERESTARTSYS;
+		usleep_range(10, 30);
+	}
+}
+
+int m9x_wait_point_ioctl(struct drm_device *drm, void *data,
+			struct drm_file *file)
+{
+	struct drm_parhelia_m9_wait_point *args = data;
+	struct drm_parhelia_m9_wait_point wait = *args;
+	struct m9x_device *mdev = to_m9x(drm);
+	u64 start, elapsed, limit;
+	int idx, ret;
+
+	if (!m9x_enabled())
+		return -ENODEV;
+	if (args->flags || args->pad || args->completed_point)
+		return -EINVAL;
+	if (!drm_dev_enter(drm, &idx))
+		return -ENODEV;
+	start = ktime_get_ns();
+	limit = min_t(u64, args->timeout_ns,
+			 (u64)max(m9_fence_timeout_ms, 1u) * NSEC_PER_MSEC);
+	/* A zero-time poll must not block behind another submit's drain.
+	 * Account contention against the same finite/watchdog wait budget. */
+	while (!mutex_trylock(&mdev->transport.lock)) {
+		if (!limit || ktime_get_ns() - start >= limit) {
+			ret = -ETIME;
+			goto out_exit;
+		}
+		if (signal_pending(current)) {
+			ret = -ERESTARTSYS;
+			goto out_exit;
+		}
+		usleep_range(10, 30);
+	}
+	elapsed = ktime_get_ns() - start;
+	wait.timeout_ns = elapsed < limit ? limit - elapsed : 0;
+	ret = m9_wait_point_locked(mdev, &wait);
+	args->completed_point = wait.completed_point;
+	mutex_unlock(&mdev->transport.lock);
+out_exit:
+	drm_dev_exit(idx);
+	return ret;
 }
 
 static int m9_requester_selftest(void)

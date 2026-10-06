@@ -29,6 +29,8 @@ MODULE_PARM_DESC(m9_local_gpu_base,
 	"Diagnostic GPU address of VRAM offset 0 for local render resources");
 
 static const struct drm_ioctl_desc m9x_ioctls[] = {
+	DRM_IOCTL_DEF_DRV(PARHELIA_M9_WAIT_POINT, m9x_wait_point_ioctl,
+			  DRM_RENDER_ALLOW),
 	DRM_IOCTL_DEF_DRV(PARHELIA_M9_CREATE_BO, m9x_create_bo_ioctl,
 			  DRM_RENDER_ALLOW),
 	DRM_IOCTL_DEF_DRV(PARHELIA_M9_SUBMIT, m9x_submit_ioctl,

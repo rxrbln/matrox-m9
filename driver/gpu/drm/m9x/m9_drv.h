@@ -110,6 +110,8 @@ struct m9x_transport {
 	 */
 	bool async_pending;
 	u32 async_target;
+	u64 async_point;
+	u64 submitted_point, completed_point;
 	struct drm_gem_object **async_bos;
 	bool *async_pinned;
 	u32 async_count;
@@ -304,6 +306,8 @@ struct m9_retired {
 
 void m9x_transport_release_retired(struct work_struct *work);
 int m9x_transport_drain_locked(struct m9x_device *mdev);
+int m9x_wait_point_ioctl(struct drm_device *drm, void *data,
+			struct drm_file *file);
 int m9x_submit_kernel_stream_locked(struct m9x_device *mdev,
 				    const u32 *commands, u32 dwords,
 				    u32 target, u64 *point, bool *doorbell_posted,

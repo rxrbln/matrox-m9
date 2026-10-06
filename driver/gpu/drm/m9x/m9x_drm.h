@@ -10,6 +10,7 @@
 #define DRM_PARHELIA_M9_SUBMIT		0x0a
 #define DRM_PARHELIA_M9_GET_BO_INFO	0x0b
 #define DRM_PARHELIA_M9_SURFACE_ACCESS	0x0c
+#define DRM_PARHELIA_M9_WAIT_POINT	0x0d
 
 #define DRM_IOCTL_PARHELIA_M9_CREATE_BO \
 	DRM_IOWR(DRM_COMMAND_BASE + DRM_PARHELIA_M9_CREATE_BO, \
@@ -23,6 +24,20 @@
 #define DRM_IOCTL_PARHELIA_M9_SURFACE_ACCESS \
 	DRM_IOWR(DRM_COMMAND_BASE + DRM_PARHELIA_M9_SURFACE_ACCESS, \
 		 struct drm_parhelia_m9_surface_access)
+
+/* Query/wait never posts a command. timeout_ns=0 polls, U64_MAX waits up
+ * to the driver's bounded watchdog. point=0 is a capability/last-observed-progress
+ * query. flags and pad must be zero. -ETIME leaves work pending. */
+struct drm_parhelia_m9_wait_point {
+	__u64 point;
+	__u64 timeout_ns;
+	__u64 completed_point;
+	__u32 flags;
+	__u32 pad;
+};
+#define DRM_IOCTL_PARHELIA_M9_WAIT_POINT \
+	DRM_IOWR(DRM_COMMAND_BASE + DRM_PARHELIA_M9_WAIT_POINT, \
+		 struct drm_parhelia_m9_wait_point)
 
 /*
  * M9 command and staging objects are immutable DMA32 allocations unless
