@@ -144,6 +144,119 @@ static void m9_faa_write(struct m9_faa_owner *o, u32 offset,
 		memcpy((u8 *)o->cpu + offset, source, bytes);
 }
 
+/* FNV is a compact observational label; admission uses byte-exact equality. */
+static u32 m9_faa_hash(u32 hash, const u8 *bytes, u32 count)
+{
+	u32 i;
+
+	for (i = 0; i < count; i++)
+		hash = (hash ^ bytes[i]) * 0x01000193;
+	return hash;
+}
+
+/* Read only firmware-proven local spans. Unknown allocation tails remain
+ * untouched and are not admitted as source bytes by this check. This checks
+ * the upload through its BAR mapping; GPU identity leaves are checked later.
+ */
+static int m9_faa_verify_upload(struct m9x_device *mdev,
+			      struct m9x_faa_replay *r,
+			      const struct firmware *fw)
+{
+	u32 expected[ARRAY_SIZE(r->owner)] = { 0 };
+	u32 observed[ARRAY_SIZE(r->owner)] = { 0 };
+	u32 known[ARRAY_SIZE(r->owner)] = { 0 };
+	u8 data[256];
+	u32 i, offset, count, j;
+
+	/* These TTM mappings may be WC. dma_wmb() alone is only a compiler
+	 * barrier on x86 and does not publish outstanding WC VRAM writes.
+	 */
+	wmb();
+	for (i = 0; i < ARRAY_SIZE(m9_faa_spans); i++) {
+		const struct m9_faa_span *s = &m9_faa_spans[i];
+		struct m9_faa_owner *o = &r->owner[s->owner];
+
+		if (!o->vram)
+			continue;
+		if (!known[s->owner]) {
+			expected[s->owner] = 0x811c9dc5;
+			observed[s->owner] = 0x811c9dc5;
+		}
+		for (offset = 0; offset < s->bytes; offset += count) {
+			const u8 *source = fw->data + s->blob_offset + offset;
+
+			count = min_t(u32, sizeof(data), s->bytes - offset);
+			iosys_map_memcpy_from(data, &o->map, s->offset + offset, count);
+			if (memcmp(data, source, count)) {
+				for (j = 0; j < count; j++)
+					if (data[j] != source[j])
+						break;
+				dev_err(&mdev->pdev->dev,
+					"M9 FAA upload mismatch: owner=%u base=%#x offset=%#x expected=%#x observed=%#x\n",
+					s->owner, o->base, s->offset + offset + j,
+					source[j], data[j]);
+				return -EIO;
+			}
+			expected[s->owner] = m9_faa_hash(expected[s->owner], source, count);
+			observed[s->owner] = m9_faa_hash(observed[s->owner], data, count);
+		}
+		known[s->owner] += s->bytes;
+	}
+	for (i = 0; i < ARRAY_SIZE(r->owner); i++)
+		if (known[i])
+			dev_info(&mdev->pdev->dev,
+				 "M9 FAA known upload verified: owner=%u base=%#x bytes=%u expected_fnv=%#x observed_fnv=%#x\n",
+				 i, r->owner[i].base, known[i], expected[i], observed[i]);
+	return 0;
+}
+
+/* One bounded observation after actual retirement. Includes stores, HZ,
+ * pool and sentinel, but never claims unknown initial contents were zero or
+ * that a nonzero byte proves a GPU store. Caller color has its separate
+ * descriptor-aware readback and is not mapped here. No allocation is written.
+ */
+static void m9_faa_observe_retired(struct m9x_device *mdev,
+				 struct m9x_faa_replay *r)
+{
+	const u32 budget = 16 * 1024 * 1024;
+	u8 data[256];
+	u32 i, offset, count, j, total = 0;
+
+	for (i = 0; i < ARRAY_SIZE(r->owner); i++) {
+		if (!r->owner[i].vram)
+			continue;
+		if (m9_faa_owner_specs[i].bytes > budget - total) {
+			dev_err(&mdev->pdev->dev, "M9 FAA retired observation exceeds %u-byte budget\n",
+				budget);
+			return;
+		}
+		total += m9_faa_owner_specs[i].bytes;
+	}
+	/* Order the real completion observation before BAR reads. */
+	rmb();
+	for (i = 0; i < ARRAY_SIZE(r->owner); i++) {
+		struct m9_faa_owner *o = &r->owner[i];
+		u32 bytes = m9_faa_owner_specs[i].bytes;
+		u32 hash = 0x811c9dc5, nonzero = 0, nonzero_words = 0;
+
+		if (!o->vram)
+			continue;
+		for (offset = 0; offset < bytes; offset += count) {
+			count = min_t(u32, sizeof(data), bytes - offset);
+			iosys_map_memcpy_from(data, &o->map, offset, count);
+			hash = m9_faa_hash(hash, data, count);
+			for (j = 0; j < count; j++)
+				nonzero += !!data[j];
+			for (j = 0; j + sizeof(u32) <= count; j += sizeof(u32))
+				nonzero_words += !!get_unaligned_le32(data + j);
+		}
+		dev_info(&mdev->pdev->dev,
+			 "M9 FAA retired BAR observation: owner=%u captured=%#x native=%#x bytes=%u fnv=%#x nonzero_bytes=%u nonzero_words=%u\n",
+			 i, m9_faa_owner_specs[i].captured, o->base, bytes,
+			 hash, nonzero, nonzero_words);
+	}
+}
+
 /* Allocations precede the caller's color BO reservation, as in ordinary
  * FIRST_TRIANGLE. Every private owner survives both publication and timeout. */
 int m9x_faa_prepare_diag(struct m9x_device *mdev)
@@ -219,6 +332,9 @@ int m9x_faa_prepare_diag(struct m9x_device *mdev)
 		m9_faa_write(&r->owner[s->owner], s->offset,
 			     fw->data + s->blob_offset, s->bytes);
 	}
+	ret = m9_faa_verify_upload(mdev, r, fw);
+	if (ret)
+		goto free;
 	r->prepared = true;
 	mdev->transport.faa = r;
 	dev_info(&mdev->pdev->dev, "M9 FAA private inputs: %zu owners, %u known bytes, 53 address/26 tracker fixups\n",
@@ -373,7 +489,8 @@ int m9x_faa_submit_diag(struct m9x_device *mdev, u32 color,
 	WRITE_ONCE(((u32 *)t->fence_cpu)[0x20 / 4], base);
 	WRITE_ONCE(((u32 *)t->fence_cpu)[0x40 / 4], base);
 	WRITE_ONCE(((u32 *)t->fence_cpu)[0x60 / 4], base);
-	dma_wmb();
+	/* Publish coherent command/counter words and any prior WC writes. */
+	wmb();
 	m9x_write(mdev, M9_REG_FENCE0_ADDRESS, lower_32_bits(t->fence_bus + 0x20) | 2);
 	m9x_write(mdev, M9_REG_FENCE2_ADDRESS, lower_32_bits(t->fence_bus + 0x40) | 2);
 	/* Genuine normal activation selects the virtual restore descriptor.
@@ -386,6 +503,7 @@ int m9x_faa_submit_diag(struct m9x_device *mdev, u32 color,
 	*color_active = posted && ret;
 	if (!ret) {
 		t->next_fence = target + 0x10;
+		m9_faa_observe_retired(mdev, r);
 		dev_info(&mdev->pdev->dev,
 			 "M9 FAA normal frame retired: point=%#llx primary=%#x descriptor=cc220140 320x240\n",
 			 *point, color);
