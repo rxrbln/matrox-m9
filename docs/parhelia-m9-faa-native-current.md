@@ -529,3 +529,26 @@ allocation, draw and FAA resolve remain unproved.
 Reproduce with `tools/m9-vendor-runtime-owner.py --normal --pci-inventory
 PATH --bootstrap-tools PATH`, using the captured actual PCI inventory and
 `tools/m9emu` bootstrap/NT-host dependencies (434e1ed9 or its integration).
+
+### Real MD resource and engine constructors now admit the retained runtime
+
+The [MD runtime-owner capture](traces/m9-vendor-md-runtime-owners-20261006.json)
+retains the real MM heap addresses and forwards the MD configuration's four
+property requests through that initialized miniport's actual0x70eab dispatch.
+The MD device/hardware wrappers remain controlled CPU caller ABI objects;
+no hardware startup, GPU status or capabilities are substituted.
+
+With that real shared runtime, actual MD0x273a0 returns1 and publishes
+resident engine `device+6990`. Actual0x1f990 executes the complete0x1cb90
+resource constructor and publishes `device+69a4`, including the real typed
+primary factory at owner+1074: wrapper0xb78f0 delegates to0xb6850. This
+supersedes the earlier runtime-null stops for these constructors. The
+resource module's later platform policy call0x1fca0→0x62170 remains a
+separate boundary requiring the actual platform owner at hardware+4.
+The capture stops before that call; it does not claim full module startup.
+
+Actual derived config+338 virtual getter returns101f8; actual admission
+helper0x477f0 for hardwareformat3d returns1, confirming the companion's
+required config masks and format-table flag from vendor code. This admission
+is not allocation success. The AA surface constructor, VRAM backing, full
+normal pixel-format admission, render and resolve remain to be joined.
