@@ -594,7 +594,7 @@ int m9x_address_construct_manager(struct m9x_device *mdev)
 {
 	struct m9x_address_space *address = mdev->transport.address;
 	const struct m9_address_layout *layout;
-	u32 page, value;
+	u32 page, value, cpu_root_pages;
 
 	if (!address || !address->mapped || !address->service_ready ||
 	    !address->windows_published)
@@ -605,13 +605,21 @@ int m9x_address_construct_manager(struct m9x_device *mdev)
 
 	/*
 	 * Exact fresh-service m9x53 construction.  m9x1027 first clears the
-	 * primary child.  Selector-zero m9x328 then CPU-mirrors one identity
-	 * entry for every page in the root allocation into the child selected by
-	 * 0x360/0x364.
+	 * primary child.  The M9128 5b6c2 initializer publishes direct CPU-root
+	 * identity entries over all 256 MiB of BAR0, not just the root allocation.
+	 * Restrict the native extent to supported local BAR pages and the
+	 * observed 0x40000-byte root child.  The capture uses MmFlags=0x101b8;
+	 * this plain identity loop does not introduce its optional companion
+	 * table into the existing Linux 0x100e8 service construction.
 	 */
+	cpu_root_pages = min_t(u64, address->local_pages,
+			min_t(u64, mdev->bar0_bytes >> PAGE_SHIFT,
+			      M9_ADDRESS_TRANSLATION_BYTES / sizeof(u32)));
+	if (cpu_root_pages < layout->root_bytes >> PAGE_SHIFT)
+		return -ERANGE;
 	iosys_map_memset(&address->map, M9_ADDRESS_COMPACT_ORIGIN, 0,
 			 layout->primary_bytes);
-	for (page = 0; page < layout->root_bytes >> PAGE_SHIFT; page++)
+	for (page = 0; page < cpu_root_pages; page++)
 		iosys_map_wr(&address->map,
 			     layout->translation_base + page * sizeof(u32),
 			     u32, m9_address_root_pte_word(page));
