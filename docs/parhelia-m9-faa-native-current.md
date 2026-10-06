@@ -661,3 +661,22 @@ is CPU ABI evidence. Its wrapper pointers and source ownership flag are supplied
 caller inputs; it supplies no successful GPU allocator outputs and proves no
 normal display admission, backing allocation, or rendered result. The separate
 per-head pool6 binding at context84/88 remains a different resource.
+
+### Genuine optional HZ request and initialization boundary
+
+`tools/m9-vendor-faa-hz-request.py` executes real0x54be0 against the actual
+configured/runtime graph and controlled companion geometry/profile fields.
+The genuine configuration334 getter returns7, admitting bit4 for the 64-bit
+companion. The [request capture](traces/m9-vendor-faa-hz-requests-20261006.json)
+shows flags2, logical format0xb, profile56(class5/hardwareformat0x78/32bits),
+width ceil(companionwidth/8), height ceil(companionheight/4), units/depth1.
+320x240 produces40x60;1024x768 produces128x192. No backing reply is supplied.
+
+The ordinary constructor invokes0x54be0 at0x51d68 when profileclass4 and
+resourceformat5 match, setting companion+39c first. If the helper fails, actual
+0x51d74 clears that flag and continues; this is a vendor optional-resource
+fallback, not proof of the present native renderer. On success0x54cd3 invokes
+0x55070, which calls0x54e80 then0xb4fe0 to issue a clear using depth0..1 and
+mask4. Capturing that real initialization command stream still requires the
+returned shared allocator and resource backing; the request proof does not
+claim HZ contents, completion or FAA rendering.
