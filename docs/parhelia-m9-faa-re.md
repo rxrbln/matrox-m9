@@ -1429,3 +1429,14 @@ The baseline is consumed and cannot become a synthetic slave ACK/data
 response after any GPIO change. The still-open128-byte board-config read
 belongs to normal type13 creation, immediately before real `31f90` initializes
 type14 and its `+204` capability mask; native agent traces that consumer.
+
+### Actual M9128 SPI read lengths (2026-10-06)
+
+The passive `SerialROM.read_ranges` log records completed READ03 transactions
+without changing the producer or its data: `(address,length)` is
+`(0,256), (0x7ffc,2), (0x7460,2), (0x7464,2), (0x7462,2), (0x7460,1024)`.
+The genuine bootstrap consumes 1288 bytes over these six reads. Physical SPI
+verification currently covers only the first eight bytes; all remaining ROM
+payload is the actual board's legacy shadow, explicitly provisional for flash
+equality. These bounded ranges, rather than a full ROM dump, are sufficient
+for the next physical flash comparison. GPIO capability data is still unsupplied.
