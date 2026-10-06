@@ -495,7 +495,7 @@ int m9x_faa_submit_diag(struct m9x_device *mdev, u32 color,
 	for (i = 0; i < ARRAY_SIZE(r->owner); i++) {
 		if (!m9_faa_owner_specs[i].local)
 			continue;
-		ret = m9x_address_check_local_identity(mdev, r->owner[i].base,
+		ret = m9x_address_local_prepare(mdev, r->owner[i].base,
 				PAGE_ALIGN(m9_faa_owner_specs[i].bytes));
 		if (ret) {
 			dev_err(&mdev->pdev->dev, "M9 FAA identity leaf refused: owner=%u base=%#x ret=%d\n",

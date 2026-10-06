@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0-only
 /* Copyright 2026 Rene Rebe <rene@exactco.de> */
 /*
- * M9148 compact translation table and address-window ownership.
+ * M9 translation tables and address-window ownership.
  *
  * The Linux vendor driver reserves one monolithic low-VRAM image sized from
  * the PInS memory size, not from BAR0.  Its hardware addresses are offsets
@@ -23,6 +23,9 @@
 #include "m9_reg.h"
 
 #define M9_ADDRESS_COMPACT_ORIGIN	0x00801000u
+#define M9_ADDRESS_FAA_COMPACT_ORIGIN	0x00401000u
+#define M9_ADDRESS_FAA_PRIMARY_BYTES	0x00104000u
+#define M9_ADDRESS_SECONDARY_STRIDE	0x10u
 /* The primary child indexes every VRAM page plus 0x8000 further pages. */
 #define M9_ADDRESS_EXTRA_PAGES		0x8000u
 #define M9_ADDRESS_TRANSLATION_WINDOW	0x00080000u
@@ -61,6 +64,9 @@ struct m9_address_layout {
 	u32 root_bytes;
 	u32 system_end;
 	u32 pool_base[M9_ADDRESS_SERVICE_POOLS];
+	u32 primary_base;
+	u32 secondary_base;
+	u32 secondary_bytes;
 };
 
 struct m9x_address_binding {
@@ -91,17 +97,25 @@ struct m9x_address_space {
 };
 
 static int m9_address_layout_init(u64 vram_total, u64 local_bytes,
-				  struct m9_address_layout *layout)
+				  bool faa, struct m9_address_layout *layout)
 {
-	u64 primary, translation, pte, restore, root, base, end = 0;
+	u64 origin, primary, secondary, translation, pte, restore, root, base, end = 0;
 	unsigned int i;
 
 	if (!vram_total || !IS_ALIGNED(vram_total, SZ_1M) ||
 	    vram_total > SZ_4G)
 		return -EINVAL;
-	primary = ((vram_total >> PAGE_SHIFT) + M9_ADDRESS_EXTRA_PAGES) *
-		  sizeof(u32);
-	translation = M9_ADDRESS_COMPACT_ORIGIN + primary;
+	/* The private profile is the actual M9128 Windows MmFlags=100f8/101f8
+	 * constructor under the retained CPU fixture's 16-MiB system policy.
+	 * That policy observation does not measure the target's installed RAM.
+	 * It is deliberately bounded; other profiles retain the Linux layout. */
+	if (faa && vram_total != SZ_1G)
+		return -EOPNOTSUPP;
+	origin = faa ? M9_ADDRESS_FAA_COMPACT_ORIGIN : M9_ADDRESS_COMPACT_ORIGIN;
+	primary = faa ? M9_ADDRESS_FAA_PRIMARY_BYTES :
+		((vram_total >> PAGE_SHIFT) + M9_ADDRESS_EXTRA_PAGES) * sizeof(u32);
+	secondary = faa ? primary * 4 : 0;
+	translation = origin + primary + secondary;
 	pte = translation + M9_ADDRESS_TRANSLATION_WINDOW;
 	restore = pte + primary;
 	root = restore + M9_ADDRESS_RESTORE_RESERVE;
@@ -115,7 +129,10 @@ static int m9_address_layout_init(u64 vram_total, u64 local_bytes,
 		return -ERANGE;
 
 	layout->primary_bytes = primary;
-	layout->primary_limit = translation - PAGE_SIZE;
+	layout->primary_base = origin;
+	layout->primary_limit = origin + primary - PAGE_SIZE;
+	layout->secondary_base = secondary ? origin + primary : 0;
+	layout->secondary_bytes = secondary;
 	layout->translation_base = translation;
 	layout->translation_limit = pte - PAGE_SIZE;
 	layout->pte_base = pte;
@@ -245,11 +262,14 @@ static void m9_address_invalidate_service_bank(struct m9x_device *mdev)
 
 static void m9_address_activate(struct m9x_device *mdev)
 {
+	struct m9x_address_space *address = mdev->transport.address;
+	bool secondary = address && address->layout.secondary_bytes;
+
 	/* Make the BAR/WC leaves visible before the front-end activation. */
 	wmb();
 	m9x_write(mdev, M9_REG_FRONTEND_STATE, 0x0f);
-	m9x_write(mdev, M9_REG_FRONTEND_STATE, 0x01);
-	m9x_write(mdev, M9_REG_FRONTEND_STATE, 0x00);
+	m9x_write(mdev, M9_REG_FRONTEND_STATE, secondary ? 0 : 1);
+	m9x_write(mdev, M9_REG_FRONTEND_STATE, secondary ? 1 : 0);
 	m9x_read(mdev, M9_REG_FRONTEND_STATE);
 }
 
@@ -264,9 +284,10 @@ static u32 m9_address_root_pte_word(u32 page)
 	return (page << PAGE_SHIFT) | 0x8u;
 }
 
-static u32 m9_address_identity_slot(u32 address)
+static u32 m9_address_identity_slot(const struct m9_address_layout *layout,
+				    u32 address)
 {
-	return M9_ADDRESS_COMPACT_ORIGIN +
+	return layout->primary_base +
 	       (address >> PAGE_SHIFT) * sizeof(u32);
 }
 
@@ -280,7 +301,106 @@ static int m9_address_slot(const struct m9_address_layout *layout, u32 gpuva,
 	 * m9x887 reads this same public resource address from object +0x48 and
 	 * stores its page number in the descriptor consumed by m9x328.
 	 */
-	*offset = m9_address_identity_slot(gpuva);
+	*offset = m9_address_identity_slot(layout, gpuva);
+	return 0;
+}
+
+/* Same source descriptor as the compact publisher, with a 16-byte stride.
+ * Local mappings produce DWORD0..2 and retain the unknown DWORD3. Genuine
+ * scatter mappings instead produce all four words: PTE,0,page_count,0. */
+static int m9_address_secondary_slot(const struct m9_address_layout *layout,
+				     u32 gpuva, u32 *slot)
+{
+	u64 offset = (u64)layout->secondary_base +
+		     (gpuva >> PAGE_SHIFT) * M9_ADDRESS_SECONDARY_STRIDE;
+	u64 end = (u64)layout->secondary_base + layout->secondary_bytes;
+
+	if (!layout->secondary_bytes || !IS_ALIGNED(gpuva, PAGE_SIZE) ||
+	    offset + M9_ADDRESS_SECONDARY_STRIDE > end ||
+	    end > layout->translation_base)
+		return -ERANGE;
+	*slot = offset;
+	return 0;
+}
+
+static int m9_address_secondary_publish(struct m9x_device *mdev,
+				       u32 gpuva, u32 bytes, bool dma,
+				       bool invalidate)
+{
+	struct m9x_address_space *a = mdev->transport.address;
+	u32 pages = bytes >> PAGE_SHIFT, slot, page;
+	u64 end = (u64)gpuva + bytes;
+
+	if (!a->layout.secondary_bytes)
+		return 0;
+	if (!bytes || !IS_ALIGNED(bytes, PAGE_SIZE) ||
+	    end > (u64)U32_MAX + 1 ||
+	    m9_address_secondary_slot(&a->layout, gpuva, &slot) ||
+	    m9_address_secondary_slot(&a->layout, end - PAGE_SIZE, &slot))
+		return -ERANGE;
+	if (!invalidate) {
+		for (page = 0; page < pages; page++) {
+			u32 source = m9_address_identity_slot(&a->layout,
+				gpuva + page * PAGE_SIZE);
+			u32 pte = iosys_map_rd(&a->map, source, u32);
+
+			/* Native coherent DMA retains its proven nibble a. The
+			 * actual flags110 counter path is its source counterpart;
+			 * do not import queue flags30's different nibble b. */
+			if ((pte & 0xf) != (dma ? 0xa : 0x8))
+				return -EINVAL;
+		}
+	}
+	/* Actual secondary pre/post lists 10000005 / 20000028. */
+	wmb();
+	m9x_write(mdev, M9_REG_FRONTEND_STATE, 5);
+	for (page = 0; page < pages; page++) {
+		u32 address = gpuva + page * PAGE_SIZE;
+		u32 source = m9_address_identity_slot(&a->layout, address);
+		u32 destination = a->layout.secondary_base +
+			(address >> PAGE_SHIFT) * M9_ADDRESS_SECONDARY_STRIDE;
+
+		iosys_map_wr(&a->map, destination, u32,
+			invalidate ? 0 : iosys_map_rd(&a->map, source, u32));
+		if (!invalidate) {
+			iosys_map_wr(&a->map, destination + 4, u32, 0);
+			iosys_map_wr(&a->map, destination + 8, u32, dma ? pages : 0);
+			if (dma)
+				iosys_map_wr(&a->map, destination + 12, u32, 0);
+		}
+	}
+	wmb();
+	/* Admit every produced word before the secondary post-list. The local
+	 * fourth word is unknown and deliberately excluded from this readback. */
+	for (page = 0; page < pages; page++) {
+		u32 address = gpuva + page * PAGE_SIZE;
+		u32 source = m9_address_identity_slot(&a->layout, address);
+		u32 destination = a->layout.secondary_base +
+			(address >> PAGE_SHIFT) * M9_ADDRESS_SECONDARY_STRIDE;
+		u32 expected = invalidate ? 0 : iosys_map_rd(&a->map, source, u32);
+		u32 words = invalidate ? 1 : (dma ? 4 : 3);
+		u32 values[] = { expected, 0, dma ? pages : 0, 0 };
+		u32 word;
+
+		for (word = 0; word < words; word++) {
+			u32 observed = iosys_map_rd(&a->map,
+				destination + word * sizeof(u32), u32);
+
+			if (observed == values[word])
+				continue;
+			dev_err(&mdev->pdev->dev,
+				"M9 companion refused: GPU=%#x pages=%u page=%u word=%u observed=%#x expected=%#x\n",
+				gpuva, pages, page, word, observed, values[word]);
+			/* Keep the pre-list freeze after a corrupt mirror. No
+			 * success post-list or later job may observe it. */
+			mdev->transport.wedged = true;
+			mdev->transport.generation++;
+			return -EIO;
+		}
+	}
+	m9x_write(mdev, M9_REG_FRONTEND_STATE, 0);
+	m9x_write(mdev, M9_REG_FRONTEND_STATE, 2);
+	m9x_read(mdev, M9_REG_FRONTEND_STATE);
 	return 0;
 }
 
@@ -292,18 +412,20 @@ static int m9_address_selftest(void)
 	} cases[] = {
 		{ SZ_256M, { 0x60000, 0x860000, 0x861000, 0x8e0000, 0x8e1000,
 			     0x60000, 0x940000, 0x941000, 0xd41000, 0x18000000,
-			     { 0xd41000, 0x1141000, 0x1241000, 0x12a1000 } } },
+			     { 0xd41000, 0x1141000, 0x1241000, 0x12a1000 },
+			     0x801000, 0, 0 } },
 		/* Live vendor M9148-E1024LAF readback. */
 		{ SZ_1G, { 0x120000, 0x920000, 0x921000, 0x9a0000, 0x9a1000,
 			   0x120000, 0xac0000, 0xac1000, 0xec1000, 0x48000000,
-			   { 0xec1000, 0x12c1000, 0x13c1000, 0x1421000 } } },
+			   { 0xec1000, 0x12c1000, 0x13c1000, 0x1421000 },
+			   0x801000, 0, 0 } },
 	};
 	struct m9_address_layout layout;
 	u32 offset;
 	unsigned int i;
 
 	for (i = 0; i < ARRAY_SIZE(cases); i++)
-		if (m9_address_layout_init(cases[i].vram, SZ_256M, &layout) ||
+		if (m9_address_layout_init(cases[i].vram, SZ_256M, false, &layout) ||
 		    memcmp(&layout, &cases[i].expect, sizeof(layout)))
 			return -EINVAL;
 	if (m9_address_slot(&layout, 0x40000000, &offset) ||
@@ -314,12 +436,32 @@ static int m9_address_selftest(void)
 	    offset != 0x00920ffc ||
 	    !m9_address_slot(&layout, 0x3ffff000, &offset) ||
 	    !m9_address_slot(&layout, 0x48000000, &offset) ||
-	    m9_address_identity_slot(0x10ec1000) != 0x00844b04 ||
-	    m9_address_identity_slot(0x00ac1000) != 0x00803b04 ||
+	    m9_address_identity_slot(&layout, 0x10ec1000) != 0x00844b04 ||
+	    m9_address_identity_slot(&layout, 0x00ac1000) != 0x00803b04 ||
 	    m9x_address_pte_word((dma_addr_t)0x0232a000) != 0x0232a00a ||
 	    m9x_address_pte_word((dma_addr_t)0xab12345000ULL) != 0x12345aba ||
 	    m9_address_root_pte_word(0x923) != 0x00923008 ||
 	    m9_address_root_pte_word(0xec0) != 0x00ec0008)
+		return -EINVAL;
+	if (m9_address_layout_init(SZ_1G, SZ_256M, true, &layout) ||
+	    layout.primary_base != 0x401000 || layout.primary_bytes != 0x104000 ||
+	    layout.primary_limit != 0x504000 ||
+	    layout.secondary_base != 0x505000 || layout.secondary_bytes != 0x410000 ||
+	    layout.translation_base != 0x915000 || layout.translation_limit != 0x994000 ||
+	    layout.pte_base != 0x995000 || layout.pte_bytes != 0x104000 ||
+	    layout.pte_limit != 0xa98000 || layout.restore_base != 0xa99000 ||
+	    layout.root_bytes != 0xe99000 || layout.system_end != 0x41000000 ||
+	    m9_address_slot(&layout, 0x40000000, &offset) || offset != 0x501000 ||
+	    m9_address_slot(&layout, 0x40fff000, &offset) || offset != 0x504ffc ||
+	    !m9_address_slot(&layout, 0x41000000, &offset) ||
+	    offset >= layout.secondary_base)
+		return -EINVAL;
+	if (m9_address_secondary_slot(&layout, 0x40000000, &offset) ||
+	    offset != 0x905000 ||
+	    m9_address_secondary_slot(&layout, 0x40fff000, &offset) ||
+	    offset != 0x914ff0 ||
+	    !m9_address_secondary_slot(&layout, 0x41000000, &offset) ||
+	    !m9_address_layout_init(SZ_256M, SZ_256M, true, &layout))
 		return -EINVAL;
 	return 0;
 }
@@ -372,6 +514,22 @@ static int m9_address_vram_selftest(struct m9x_device *mdev,
 	return 0;
 }
 
+static void m9_address_clear_root_image(struct m9x_address_space *address)
+{
+	const struct m9_address_layout *layout = &address->layout;
+
+	if (layout->secondary_bytes) {
+		/* The secondary constructor clears only DWORD0 of each record.
+		 * Keep its unknown backing outside the preliminary root clear. */
+		iosys_map_memset(&address->map, 0, 0, layout->secondary_base);
+		iosys_map_memset(&address->map,
+			layout->secondary_base + layout->secondary_bytes, 0,
+			layout->root_bytes - layout->secondary_base - layout->secondary_bytes);
+	} else {
+		iosys_map_memset(&address->map, 0, 0, layout->root_bytes);
+	}
+}
+
 int m9x_address_init(struct m9x_device *mdev)
 {
 	struct m9x_address_space *address;
@@ -390,12 +548,17 @@ int m9x_address_init(struct m9x_device *mdev)
 	if (!address)
 		return -ENOMEM;
 	layout = &address->layout;
+	if (m9x_faa_diag_enabled() &&
+	    (mdev->pdev->device != 0x0540 || mdev->pdev->revision != 1 ||
+	     mdev->pdev->subsystem_device != 0x22c0 ||
+	     mdev->bar0_bytes != SZ_256M || m9x_local_gpu_base))
+		return -EOPNOTSUPP;
 	/* The service pools and the translation root live in low video memory,
 	 * so the layout is bounded by the memory itself, not by the aperture. */
 	address->local_pages = m9x_vram_gpu_limit(mdev) >> PAGE_SHIFT;
 	ret = m9_address_layout_init(mdev->vram_total,
 				     (u64)address->local_pages << PAGE_SHIFT,
-				     layout);
+				     m9x_faa_diag_enabled(), layout);
 	if (ret)
 		return ret;
 	if (layout->system_end <= M9_ADDRESS_SYSTEM_BASE)
@@ -440,7 +603,7 @@ int m9x_address_init(struct m9x_device *mdev)
 		m9x_address_fini(mdev);
 		return ret;
 	}
-	iosys_map_memset(&address->map, 0, 0, layout->root_bytes);
+	m9_address_clear_root_image(address);
 	/* Publish the cleared low-VRAM manager image before handing it to HW. */
 	wmb();
 	if (layout->system_end > M9_ADDRESS_SYSTEM_BASE) {
@@ -451,10 +614,14 @@ int m9x_address_init(struct m9x_device *mdev)
 	mdev->transport.address = address;
 	dev_info(&mdev->pdev->dev,
 		 "M9 %#llx-byte VRAM layout: root [0,%#x) primary %#x/%#x translation %#x/%#x tail %#x/%#x restore %#x system <%#x\n",
-		 mdev->vram_total, layout->root_bytes, M9_ADDRESS_COMPACT_ORIGIN,
+		 mdev->vram_total, layout->root_bytes, layout->primary_base,
 		 layout->primary_limit, layout->translation_base,
 		 layout->translation_limit, layout->pte_base, layout->pte_limit,
 		 layout->restore_base, layout->system_end);
+	if (layout->secondary_bytes)
+		dev_info(&mdev->pdev->dev,
+			 "M9 private companion view: GPU=%#x bytes=%#x stride=16 local-known=12 local-unknown=4 DMA-known=16\n",
+			 layout->secondary_base, layout->secondary_bytes);
 	return 0;
 
 out_unpin:
@@ -572,16 +739,22 @@ int m9x_address_publish(struct m9x_device *mdev)
 	layout = &address->layout;
 
 	/* Exact direct-MMIO range publication (m9x53/m9x421). */
-	m9x_write(mdev, M9_REG_SURFACE_BASE2, M9_ADDRESS_COMPACT_ORIGIN);
-	m9x_write(mdev, M9_REG_SURFACE_BASE3, M9_ADDRESS_COMPACT_ORIGIN);
+	m9x_write(mdev, M9_REG_SURFACE_BASE2, layout->primary_base);
+	m9x_write(mdev, M9_REG_SURFACE_BASE3, layout->primary_base);
 	m9x_write(mdev, M9_REG_SURFACE_LIMIT1, layout->primary_limit);
+	if (layout->secondary_bytes) {
+		m9x_write(mdev, M9_REG_SURFACE_BASE0, layout->secondary_base);
+		m9x_write(mdev, M9_REG_SURFACE_BASE1, layout->secondary_base);
+		m9x_write(mdev, M9_REG_SURFACE_LIMIT0,
+			  layout->secondary_base + layout->secondary_bytes - PAGE_SIZE);
+	}
 	m9x_write(mdev, M9_REG_TRANSLATION_BASE,
 		  layout->translation_base & 0xfffff00cu);
 	m9x_write(mdev, M9_REG_TRANSLATION_LIMIT, layout->translation_limit);
 	m9x_write(mdev, M9_REG_PTE_BASE, layout->pte_base);
 	m9x_write(mdev, M9_REG_PTE_LIMIT, layout->pte_limit);
-	m9x_write(mdev, M9_REG_LOCAL_BASE0, M9_ADDRESS_COMPACT_ORIGIN);
-	m9x_write(mdev, M9_REG_LOCAL_BASE1, M9_ADDRESS_COMPACT_ORIGIN);
+	m9x_write(mdev, M9_REG_LOCAL_BASE0, layout->primary_base);
+	m9x_write(mdev, M9_REG_LOCAL_BASE1, layout->primary_base);
 	m9x_write(mdev, M9_REG_LOCAL_LIMIT, layout->primary_limit);
 
 	/* The cold m9x421 path only writes MMIO; it emits no E6/22 stream. */
@@ -609,16 +782,24 @@ int m9x_address_construct_manager(struct m9x_device *mdev)
 	 * identity entries over all 256 MiB of BAR0, not just the root allocation.
 	 * Restrict the native extent to supported local BAR pages and the
 	 * observed 0x40000-byte root child.  The capture uses MmFlags=0x101b8;
-	 * this plain identity loop does not introduce its optional companion
-	 * table into the existing Linux 0x100e8 service construction.
+	 * The ordinary Linux profile retains its compact-only construction;
+	 * the private bit-6 companion profile uses the separately proven sparse
+	 * secondary initializer before the same direct CPU-root identity loop.
 	 */
 	cpu_root_pages = min_t(u64, address->local_pages,
 			min_t(u64, mdev->bar0_bytes >> PAGE_SHIFT,
 			      M9_ADDRESS_TRANSLATION_BYTES / sizeof(u32)));
 	if (cpu_root_pages < layout->root_bytes >> PAGE_SHIFT)
 		return -ERANGE;
-	iosys_map_memset(&address->map, M9_ADDRESS_COMPACT_ORIGIN, 0,
+	iosys_map_memset(&address->map, layout->primary_base, 0,
 			 layout->primary_bytes);
+	/* Genuine 5bcf0 constructor: clear only the first DWORD at stride16,
+	 * without the per-allocation pre/post lists. */
+	for (page = 0; page < layout->secondary_bytes / M9_ADDRESS_SECONDARY_STRIDE;
+	     page++)
+		iosys_map_wr(&address->map,
+			layout->secondary_base + page * M9_ADDRESS_SECONDARY_STRIDE,
+			u32, 0);
 	for (page = 0; page < cpu_root_pages; page++)
 		iosys_map_wr(&address->map,
 			     layout->translation_base + page * sizeof(u32),
@@ -631,7 +812,7 @@ int m9x_address_construct_manager(struct m9x_device *mdev)
 	for (page = 0; page < address->local_pages; page++) {
 		u32 local = (u32)M9_VRAM_GPU_BASE + (page << PAGE_SHIFT);
 
-		iosys_map_wr(&address->map, m9_address_identity_slot(local),
+		iosys_map_wr(&address->map, m9_address_identity_slot(layout, local),
 			     u32, m9_address_root_pte_word(local >> PAGE_SHIFT));
 	}
 	m9_address_activate(mdev);
@@ -663,6 +844,7 @@ static int m9_address_publish_binding(struct m9x_device *mdev,
 {
 	u32 pages = binding->bytes >> PAGE_SHIFT;
 	u32 page;
+	int ret;
 
 	if (binding->published)
 		return 0;
@@ -679,7 +861,25 @@ static int m9_address_publish_binding(struct m9x_device *mdev,
 			     m9x_address_pte_word(binding->dma +
 						     page * PAGE_SIZE));
 	}
+	if (address->layout.secondary_bytes) {
+		wmb();
+		for (page = 0; page < pages; page++) {
+			u32 slot;
+
+			ret = m9_address_slot(&address->layout,
+				binding->gpuva + page * PAGE_SIZE, &slot);
+			if (ret)
+				return ret;
+			if (iosys_map_rd(&address->map, slot, u32) !=
+			    m9x_address_pte_word(binding->dma + page * PAGE_SIZE))
+				return -EIO;
+		}
+	}
 	m9_address_activate(mdev);
+	ret = m9_address_secondary_publish(mdev, binding->gpuva,
+					   binding->bytes, true, false);
+	if (ret)
+		return ret;
 	/* m9x810 completes every mode-1 allocation with this front-end kick. */
 	m9x_write(mdev, M9_REG_FRONTEND_KICK, 1);
 	binding->published = true;
@@ -835,10 +1035,12 @@ void m9x_address_unmap_system(struct m9x_device *mdev, struct drm_mm_node *node)
 		if (binding->published) {
 			for (page = 0; page < binding->bytes >> PAGE_SHIFT; page++)
 				iosys_map_wr(&address->map,
-					     m9_address_identity_slot(binding->gpuva +
+					     m9_address_identity_slot(&address->layout, binding->gpuva +
 								      page * PAGE_SIZE),
 					     u32, 0);
 			m9_address_activate(mdev);
+			m9_address_secondary_publish(mdev, binding->gpuva,
+						     binding->bytes, true, true);
 		}
 		address->bindings[i] = address->bindings[--address->binding_count];
 	}
@@ -861,6 +1063,7 @@ int m9x_address_publish_restore(struct m9x_device *mdev)
 {
 	struct m9x_address_space *address = mdev->transport.address;
 	u32 base, page;
+	int ret;
 
 	if (!address || !address->mapped || !address->service_ready ||
 	    !address->windows_published || !address->manager_ready)
@@ -871,10 +1074,14 @@ int m9x_address_publish_restore(struct m9x_device *mdev)
 	base = address->layout.restore_base;
 	for (page = 0; page < PARHELIA_M9_RESTORE_BYTES >> PAGE_SHIFT; page++)
 		iosys_map_wr(&address->map,
-			     m9_address_identity_slot(base) + page * sizeof(u32),
+			     m9_address_identity_slot(&address->layout, base) + page * sizeof(u32),
 			     u32, m9_address_root_pte_word((base >> PAGE_SHIFT) +
 							  page));
 	m9_address_activate(mdev);
+	ret = m9_address_secondary_publish(mdev, base,
+					 PARHELIA_M9_RESTORE_BYTES, false, false);
+	if (ret)
+		return ret;
 	m9x_write(mdev, M9_REG_FRONTEND_KICK, 1);
 	address->restore_published = true;
 	return 0;
@@ -884,6 +1091,7 @@ int m9x_address_finalize_service(struct m9x_device *mdev)
 {
 	struct m9x_address_space *address = mdev->transport.address;
 	u32 i;
+	int ret;
 
 	if (!address || !address->service_ready || !address->manager_ready ||
 	    !mdev->transport.transport_armed)
@@ -900,7 +1108,7 @@ int m9x_address_finalize_service(struct m9x_device *mdev)
 	for (i = 0; i < M9_ADDRESS_SERVICE_POOLS; i++) {
 		u32 local = address->layout.pool_base[i];
 		u32 pages = DIV_ROUND_UP(m9_service_pool_bytes[i], PAGE_SIZE);
-		u32 slot = m9_address_identity_slot(local);
+		u32 slot = m9_address_identity_slot(&address->layout, local);
 		u32 page;
 
 		for (page = 0; page < pages; page++)
@@ -908,6 +1116,10 @@ int m9x_address_finalize_service(struct m9x_device *mdev)
 				     u32, m9_address_root_pte_word(
 					(local >> PAGE_SHIFT) + page));
 		m9_address_activate(mdev);
+		ret = m9_address_secondary_publish(mdev, local,
+						   pages << PAGE_SHIFT, false, false);
+		if (ret)
+			return ret;
 		dev_info(&mdev->pdev->dev,
 			 "M9 mode-0 service pool %u: GPU=%#x bytes=%#x PTE=%#x/%#x\n",
 			 i, local, m9_service_pool_bytes[i], slot,
@@ -925,7 +1137,8 @@ int m9x_address_finalize_service(struct m9x_device *mdev)
  * manager already publishes identity leaves for every BAR-visible VRAM
  * page. Verify that explicit join, rather than assuming raw local and
  * virtual addresses have the same meaning. No mapping is changed here. */
-int m9x_address_check_local_identity(struct m9x_device *mdev, u32 base, u32 bytes)
+static int m9_address_check_local_compact(struct m9x_device *mdev,
+					 u32 base, u32 bytes)
 {
 	struct m9x_address_space *a = mdev->transport.address;
 	u64 end = (u64)base + bytes;
@@ -937,8 +1150,8 @@ int m9x_address_check_local_identity(struct m9x_device *mdev, u32 base, u32 byte
 	    end > ((u64)a->local_pages << PAGE_SHIFT))
 		return -ERANGE;
 	for (address = base; address < end; address += PAGE_SIZE) {
-		slot = m9_address_identity_slot(address);
-		if (slot > M9_ADDRESS_COMPACT_ORIGIN + a->layout.primary_bytes - sizeof(u32) ||
+		slot = m9_address_identity_slot(&a->layout, address);
+		if (slot > a->layout.primary_base + a->layout.primary_bytes - sizeof(u32) ||
 		    iosys_map_rd(&a->map, slot, u32) != (address | 8u))
 			return -EFAULT;
 		page = slot >> PAGE_SHIFT;
@@ -948,6 +1161,58 @@ int m9x_address_check_local_identity(struct m9x_device *mdev, u32 base, u32 byte
 			return -EFAULT;
 	}
 	return 0;
+}
+
+int m9x_address_check_local_identity(struct m9x_device *mdev, u32 base, u32 bytes)
+{
+	struct m9x_address_space *a = mdev->transport.address;
+	u64 end = (u64)base + bytes;
+	u32 address, slot;
+	int ret = m9_address_check_local_compact(mdev, base, bytes);
+
+	if (ret || !a->layout.secondary_bytes)
+		return ret;
+	for (address = base; address < end; address += PAGE_SIZE) {
+		if (m9_address_secondary_slot(&a->layout, address, &slot) ||
+		    iosys_map_rd(&a->map, slot, u32) != (address | 8u) ||
+		    iosys_map_rd(&a->map, slot + 4, u32) ||
+		    iosys_map_rd(&a->map, slot + 8, u32))
+			return -EFAULT;
+	}
+	return 0;
+}
+
+/* The private caller owns each pinned local range. Reproduce its actual
+ * compact then secondary allocation publication, keeping DWORD3 untouched.
+ * Validate every first word before changing any mapping. */
+int m9x_address_local_prepare(struct m9x_device *mdev, u32 base, u32 bytes)
+{
+	struct m9x_address_space *a = mdev->transport.address;
+	u64 end = (u64)base + bytes;
+	u32 address, slot, value;
+	int ret = m9_address_check_local_compact(mdev, base, bytes);
+
+	if (ret || !a->layout.secondary_bytes)
+		return ret;
+	/* Matching known records already satisfy this owned publication. */
+	if (!m9x_address_check_local_identity(mdev, base, bytes))
+		return 0;
+	for (address = base; address < end; address += PAGE_SIZE) {
+		ret = m9_address_secondary_slot(&a->layout, address, &slot);
+		if (ret)
+			return ret;
+		value = iosys_map_rd(&a->map, slot, u32);
+		if (value && value != (address | 8u))
+			return -EEXIST;
+	}
+	for (address = base; address < end; address += PAGE_SIZE)
+		iosys_map_wr(&a->map, m9_address_identity_slot(&a->layout, address),
+			     u32, address | 8u);
+	m9_address_activate(mdev);
+	ret = m9_address_secondary_publish(mdev, base, bytes, false, false);
+	if (!ret)
+		ret = m9x_address_check_local_identity(mdev, base, bytes);
+	return ret;
 }
 
 /* Genuine M9128 26830 -> 597a0 -> 59410 CPU-map publication copies
@@ -963,7 +1228,7 @@ int m9x_address_cpu_local_prepare(struct m9x_device *mdev, u32 base, u32 bytes)
 	int ret;
 
 	lockdep_assert_held(&mdev->transport.lock);
-	ret = m9x_address_check_local_identity(mdev, base, bytes);
+	ret = m9x_address_local_prepare(mdev, base, bytes);
 	if (ret)
 		return ret;
 	/* The real CPU child is 0x40000 bytes (65536 page entries).  The
@@ -981,7 +1246,7 @@ int m9x_address_cpu_local_prepare(struct m9x_device *mdev, u32 base, u32 bytes)
 	/* Validate every destination before changing any entry.  Preserve a
 	 * live nonidentity namespace rather than replacing its mapping. */
 	for (address = base; address < end; address += PAGE_SIZE) {
-		slot = m9_address_identity_slot(address);
+		slot = m9_address_identity_slot(&a->layout, address);
 		leaf = iosys_map_rd(&a->map, slot, u32);
 		root_slot = a->layout.translation_base +
 				(address >> PAGE_SHIFT) * sizeof(u32);
@@ -990,7 +1255,7 @@ int m9x_address_cpu_local_prepare(struct m9x_device *mdev, u32 base, u32 bytes)
 			return -EEXIST;
 	}
 	for (address = base; address < end; address += PAGE_SIZE) {
-		slot = m9_address_identity_slot(address);
+		slot = m9_address_identity_slot(&a->layout, address);
 		root_slot = a->layout.translation_base +
 				(address >> PAGE_SHIFT) * sizeof(u32);
 		iosys_map_wr(&a->map, root_slot, u32,
@@ -1004,6 +1269,15 @@ int m9x_address_cpu_local_prepare(struct m9x_device *mdev, u32 base, u32 bytes)
 	m9x_write(mdev, M9_REG_FRONTEND_STATE, 0x0c);
 	m9x_read(mdev, M9_REG_FRONTEND_STATE);
 	return 0;
+}
+
+int m9x_address_compact_slot(struct m9x_device *mdev, u32 gpuva, u32 *slot)
+{
+	struct m9x_address_space *a = mdev->transport.address;
+
+	if (!a || !a->mapped || !slot)
+		return -EINVAL;
+	return m9_address_slot(&a->layout, gpuva, slot);
 }
 
 int m9x_address_read_pte(struct m9x_device *mdev, u32 gpuva, u32 *value)

@@ -361,7 +361,9 @@ int m9x_address_restore_region(struct m9x_device *mdev,
 			       struct iosys_map *map, u32 *base);
 int m9x_address_publish_restore(struct m9x_device *mdev);
 int m9x_address_read_pte(struct m9x_device *mdev, u32 gpuva, u32 *value);
+int m9x_address_compact_slot(struct m9x_device *mdev, u32 gpuva, u32 *slot);
 int m9x_address_check_local_identity(struct m9x_device *mdev, u32 base, u32 bytes);
+int m9x_address_local_prepare(struct m9x_device *mdev, u32 base, u32 bytes);
 int m9x_address_cpu_local_prepare(struct m9x_device *mdev, u32 base, u32 bytes);
 int m9x_address_read_root_pte(struct m9x_device *mdev, u32 gpuva, u32 *value);
 u32 m9x_address_pte_word(dma_addr_t dma);

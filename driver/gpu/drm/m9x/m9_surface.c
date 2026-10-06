@@ -350,10 +350,8 @@ static int m9_surface_access(struct m9x_device *mdev, struct drm_file *file,
 		u32 surface = lower_32_bits(offset + args->offset);
 
 		if (view.captured_cpu_view) {
-			ret = m9x_address_check_local_identity(mdev, surface,
-							      view.bytes);
-			if (ret)
-				goto out_transport;
+			/* The owned new color range needs its secondary mapping
+			 * before the full identity contract can be checked. */
 			ret = m9x_address_cpu_local_prepare(mdev, surface, view.bytes);
 			if (ret)
 				goto out_transport;

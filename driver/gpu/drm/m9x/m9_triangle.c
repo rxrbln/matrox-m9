@@ -1175,7 +1175,7 @@ static int m9_triangle_log_secondary_mapping(struct m9x_device *mdev)
 {
 	const struct m9_triangle_resource *secondary =
 		&mdev->transport.triangle->resource[M9_TRI_SECONDARY];
-	u32 expected, expected_root, pte, root, root_page;
+	u32 expected, expected_root, pte, root, slot;
 	int ret;
 
 	ret = m9x_address_read_pte(mdev, secondary->gpuva, &pte);
@@ -1185,9 +1185,10 @@ static int m9_triangle_log_secondary_mapping(struct m9x_device *mdev)
 	if (ret)
 		return ret;
 	expected = m9x_address_pte_word(secondary->bus);
-	root_page = (0x00801000u +
-		     (secondary->gpuva >> PAGE_SHIFT) * sizeof(u32)) >> PAGE_SHIFT;
-	expected_root = (root_page << PAGE_SHIFT) | 0x8u;
+	ret = m9x_address_compact_slot(mdev, secondary->gpuva, &slot);
+	if (ret)
+		return ret;
+	expected_root = (slot & PAGE_MASK) | 0x8u;
 	dev_info(&mdev->pdev->dev,
 		 "M9 secondary probe: gpuva=%#x dma=%pad root=%#x/%#x pte=%#x/%#x primary={%#x,%#x,%#x}\n",
 		 secondary->gpuva, &secondary->bus, root,
