@@ -26,6 +26,7 @@
 #define M9_TEXTURE_KIND_LARGE	0x21u
 
 struct m9_surface_view {
+	bool captured_cpu_view;
 	u32 span;
 	u32 height;
 	u32 cpp;
@@ -135,6 +136,8 @@ static int m9_surface_check(const struct drm_parhelia_m9_surface_access *args,
 	u32 d0 = args->descriptor0, d1 = args->descriptor1, end;
 	u64 need;
 
+	view->captured_cpu_view = false;
+
 	if ((args->flags & ~PARHELIA_M9_ACCESS_TEXTURE) ||
 	    (!texture && args->offset) ||
 	    (args->op != PARHELIA_M9_ACCESS_READ &&
@@ -206,10 +209,19 @@ static int m9_surface_check(const struct drm_parhelia_m9_surface_access *args,
 		view->cpp = 4;
 		bool faa_probe = m9x_faa_diag_enabled() && d0 == 0xcc220140 &&
 			args->surface_width == 320 && view->height == 240;
+		/* Actual 2cb40 -> 27170 -> 26830 CPU mapper, selector 1:
+		 * the sampled CPU format differs from engine B1, and its
+		 * extent includes the allocation's 256 rows. */
+		view->captured_cpu_view = m9x_faa_diag_enabled() &&
+			d0 == 0xf0220140 && d1 == 0x00010100 &&
+			args->surface_width == 320 && args->width == 320 &&
+			args->height == 240 && !args->x && !args->y;
 
-		if ((!faa_probe && (d0 & ~M9_SURFACE_CODE_MASK & 0xffff0000) !=
+		if ((!faa_probe && !view->captured_cpu_view &&
+		     (d0 & ~M9_SURFACE_CODE_MASK & 0xffff0000) !=
 		     (M9_SURFACE_FAMILY & ~M9_SURFACE_CODE_MASK & 0xffff0000)) ||
-		    !m9_surface_code_is_packed32(d0 >> 25) ||
+		    (!view->captured_cpu_view &&
+		     !m9_surface_code_is_packed32(d0 >> 25)) ||
 		    view->span != ALIGN(args->surface_width, 32))
 			return -EINVAL;
 		/* The small family allocates with other height and byte quanta;
@@ -285,6 +297,10 @@ static int m9_surface_access(struct m9x_device *mdev, struct drm_file *file,
 	}
 	if (texture)
 		min_size = (u64)args->offset + view.bytes;
+	else if (view.captured_cpu_view)
+		/* The observed primary is exactly 0x50000 allocated bytes;
+		 * padded host height is not a new logical render height. */
+		min_size = view.bytes;
 	else if (!m9x_surface_layout_bytes(args->surface_width, view.height, 4,
 					  &min_size))
 		min_size = U64_MAX;
@@ -317,7 +333,16 @@ static int m9_surface_access(struct m9x_device *mdev, struct drm_file *file,
 	if (mdev->transport.wedged) {
 		ret = -EIO;
 	} else {
-		m9x_address_surface_window(mdev, lower_32_bits(offset + args->offset),
+		u32 surface = lower_32_bits(offset + args->offset);
+
+		if (view.captured_cpu_view) {
+			ret = m9x_address_check_local_identity(mdev, surface,
+							      view.bytes);
+			if (ret)
+				goto out_transport;
+			surface |= 1;
+		}
+		m9x_address_surface_window(mdev, surface,
 					   args->descriptor0, args->descriptor1);
 		for (row = 0; row < args->height; row++) {
 			void __iomem *rows = (u8 __iomem *)mdev->bar0_window +
@@ -334,6 +359,7 @@ static int m9_surface_access(struct m9x_device *mdev, struct drm_file *file,
 			wmb();
 		m9x_address_surface_release(mdev);
 	}
+out_transport:
 	mutex_unlock(&mdev->transport.lock);
 out_unreserve:
 	ttm_bo_unreserve(&vram->bo);
