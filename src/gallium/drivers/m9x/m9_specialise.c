@@ -50,12 +50,15 @@ m9_nir_lower_alu_if(nir_shader *nir)
     * the same forms for larger arithmetic if/else arms rather than require
     * a uniform condition or a hardware branch.  A finite limit preserves
     * NIR's speculation checks: unlike limit=~0 it rejects texture fetches,
-    * discards, stores and guarded indirect loads.  The native slot/register
-    * limits still apply to the resulting straight-line program. */
+    * discards, stores and guarded indirect loads. Reciprocal and other
+    * special-function arithmetic have native implementations too; Mesa's
+    * expensive-ALU preference must not force those branches onto the CPU.
+    * The finite bound and native slot/register limits still apply. */
    do {
       progress = false;
       NIR_PASS(progress, nir, nir_opt_peephole_select,
-               &(nir_opt_peephole_select_options){ .limit = 64 });
+               &(nir_opt_peephole_select_options){ .limit = 64,
+                                                  .expensive_alu_ok = true });
       if (!progress)
          break;
       NIR_PASS(progress, nir, nir_opt_remove_phis);
