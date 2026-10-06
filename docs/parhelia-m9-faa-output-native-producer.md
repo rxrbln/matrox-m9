@@ -1,0 +1,70 @@
+# Private ordinary FAA output producer
+
+The new producer uses the actual retained `101f8` internal `ac1f0` output
+request and its independent final-queue flush. The original CPU-copy call
+remains stopped at the first missing GPU input (`4e2fc`). A separate real
+`23b80` request produces its own completion/footer and post, stopping before
+the `23bc3` GPU status load. No completion is supplied to either caller, and
+this does not close public `a74b0` admission for the sampled primary.
+
+The signed source is `normal-faa-output-flush-{input-manifest,source,contract,
+addresses}-101f8.json`. It emits 5,584 primary bytes before the independent
+flush and 5,596 after its genuine 12-byte footer. Its final timeline is
+`140`, with 51 address sites and 25 timeline sites. The old sampled-resolve
+template's 5,676 bytes, 53/26 sites and `150` final timeline do not describe
+this operation.
+
+`tools/m9-native-faa-output-template.py` first checks the whole fresh source
+manifest, then coalesces actual resource backing aliases and joins each
+command/geometry slot to its live MDL mapping. It derives 31 native owners
+and 124,928 source-known input bytes. The ordinary kind6 output is a separate
+80-page SYSTEM owner; its pixels stay entirely absent from the firmware.
+Each actual flags30 SYSTEM owner has its own live class1 mapping and B PTE
+grammar, with known `[0, mapped_pages, 0]` companion metadata. Mapped prefixes
+bound every GPU operand; unused host-allocation tails are not copied or
+promoted to inputs. Direct secondary starts use the actual selector1, while
+their counted end fields preserve the independently produced tag2 encoding.
+
+The producer locates the companion clear by actual `b60ab/b6101/b6143/b61ae`
+CPU writes. Its same-run `b6028` flag is zero, its real resource extent is
+151 pages, and the source words are compared against the actual isolated
+vendor instructions. Native alignment regenerates page groups and counts;
+the already relocated suffix moves once and the submitted length follows
+the resulting packet size.
+
+The native primary submission uses the existing transport's retained
+coherent physical-tag2 command clone. The fresh template is required to
+have no references to its primary owner, so copying the relocated words
+does not leave a GPUVA pointing to the source command image. Native command
+base/end derive exclusively from that transport allocation and current
+cursor. Secondary and geometry fetches retain their separate class1/B
+owners. The source class1 primary address is never used as a physical post.
+
+The source `106c` producer is a mapped flags110/A counter proxy. Native code
+therefore retains a one-page class1 alias of the transport's existing
+completion DMA page, and publishes that alias with tag1. It allocates no
+independent counter and never frees the transport's shared page. Source
+`1068/1070` retain their separately observed physical-tag2 fields at offsets
+`20/40`. The native initializer uses only the real previously observed
+retirement as its seed. The transport must already be armed; its primary
+submit helper consequently preserves this actual counter publication.
+
+After real native retirement, explicit `PARHELIA_M9_ACCESS_FAA_OUTPUT` READ
+accepts only the exact original color GEM object, matching transport
+generation, and the bounded `c8210140/100f0` 320x240 output contract. It reads
+the retained output DMA alias through the actual `8b020 -> 8c4a0` address
+calculation. Hardware format64 is A8B8G8R8, so user rows are RGBA. This is
+separate from the sampled F022 host-aperture roundtrip. The image oracle
+preserves that 76,800-pixel positive control, then explicitly reads the
+ordinary output and writes its RGBA pixels to PPM.
+
+The native fixture `m9x/tests/faa-output-template-cpu.py` compiles the actual
+encoder and variable-clear helpers with the generated ownership tables. It
+checks all 51 address sites and 25 timeline sites at two distinct native
+placements, compares page clears with vendor instructions at all eight page
+alignments, checks footer/length and complete prefix/suffix/secondary/geometry
+preservation, leaves unknown output bytes untouched, and rejects damaged
+source clear words and undersized owners before mutation. The source
+checker, reader/companion fixtures and complete kernel module build pass.
+Actual native retirement and correct ordinary output pixels still require
+the separate physical qualification. Application FAA remains disabled.
