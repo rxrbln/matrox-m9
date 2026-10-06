@@ -1,5 +1,17 @@
 # glmark2 on the m9x driver: where the 60 fps goal actually stands
 
+## 2026-10-06: tiny four-stage route retires, record oracle rejects output
+
+Fresh normal M9128 boot, Mesa dc1db2e and kernel73c2a45: the full optional
+five-stream chain completes at16x16/one cell/24 padded vertices. Actual220
+retirement, raw221, wedged0 and no GPUtimeout are observed. The guarded
+2304-byte packed dump fails its first field value (0.12890625 vs expected-2),
+so no pixel qualification or speed gain follows. The full4608-vertex run
+below still fails. Submitted C2/source/constants and read-only transport
+observations are retained; raw packed file was unlinked by the fixture and
+needs explicit preservation in the next diagnostic.
+[Actual minimal hardware proof](../tests/m9-gl2-minimal-hardware-20261006/README.md).
+
 ## 2026-10-06: bounded reciprocal/root branches support radial GPU passes
 
 Mesa3948308 admits the unchanged captured radial shader with two/four stops
