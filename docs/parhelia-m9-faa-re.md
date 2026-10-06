@@ -1563,3 +1563,19 @@ data80/OE20000. Raw helperrc1 remains retained; no broad restore-mask change
 and no physical transmitter reset is authorized by this CPU decode itself.
 The conditional software continuation, if used, must retain its own scope
 and cannot answer uncaptured DDC or transmitter slave responses.
+
+### Conditional display-output continuation after actual capability decode
+
+`output-controls.py` retains the same real miniport graph but separately models
+only already-enabled output pads described by actual PInS function20/21. Real
+390e0/391ec emits GPIO7 low/high words3007b/300fb, with genuine10ms delays.
+These are explicitly **software output-control echoes**, not physical reset
+captures or external transmitter replies. The ordinary bootstrap defaults to
+the earlier GPIO7 boundary; actual EEPROM/capability evidence stays separate.
+
+The next normal request is kind23/address10/bus13/subtype0, read offset0 byte1;
+it first requests DDC ownership318=50000003 (bit29, versus EEPROM bit28).
+Execution stops there because the current actual miscIO capture proves only
+bit28. No DDC grant, transmitter identity, or success reply is invented. The
+native CPU runtime/configuration publishers can use the retained actual owner
+without requiring a physical display-reset detour.
