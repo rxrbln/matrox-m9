@@ -19,6 +19,14 @@ HDR/toneMap/normal/specular/deluxe mapping are0; optional full lighting and
 independent image fidelity remain unproved. No matching before/after gain
 is claimed. See [the exact profile and logs](../tests/m9-q3-gl2-20261006/README.md).
 
+Mesa `b6bedfb` additionally slices pure ALU work per independent vertex head.
+Installed bump-height3-stream cost230->134 slots; five-stream237->164.
+Packed coordinate dependencies,512 numeric transform/normalization trials,
+75/75 references,5 refusals and full canonical DSO link pass. Default varying
+cap remains2; optional multi-varying route-fed transport is still being
+implemented. This is retained GPU-work reduction with no measured FPS claim.
+See [the integration evidence](../tests/m9-vs-output-dependencies-20261006/README.md).
+
 Historical standings below use older builds and different resolutions.
 
 
