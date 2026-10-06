@@ -539,6 +539,7 @@ struct m9_native_vs_reason {
    const char *reason;
    uint32_t count;
    uint32_t profile_count;
+   bool dumped;
 };
 /* M9X_NO_CLEAR drops the clear quad; M9X_CLEAR_REPEAT draws it that many
  * extra times, which weighs one screen of fill with the frame still correct. */
@@ -5940,24 +5941,25 @@ m9_native_vs_append(struct m9_context *ctx, const struct m9_job_key *key,
 /* Tallies why a draw went to the draw module.  The reasons are static
  * strings, so the pointer identifies one and the list stays as long as the
  * distinct reasons a run meets. */
-static void
+static bool
 m9_native_vs_dump_reason(struct m9_context *ctx, const char *reason)
 {
    char path[1024];
    FILE *f;
 
-   /* Only the first occurrence of each reason reaches here.  Opt-in and
-    * bounded across contexts: enough to join a failed layout to its actual
+   /* One representative of each reason, after a completed profile interval
+    * when profiling is enabled.  Opt-in and bounded across contexts: enough
+    * to join a failed layout to its actual
     * shaders and input defaults without tracing thousands of draw calls. */
    if (!m9_native_fallback_dump || m9_native_fallback_dump_count >= 8 ||
        !ctx->vs || !ctx->vs->cur || !ctx->vs->cur->nir || !ctx->fs)
-      return;
+      return false;
    if (snprintf(path, sizeof(path), "%s-%u.txt", m9_native_fallback_dump,
                 m9_native_fallback_dump_count++) >= sizeof(path))
-      return;
+      return false;
    f = fopen(path, "w");
    if (!f)
-      return;
+      return false;
    fprintf(f, "reason: %s\nvertex elements:\n", reason);
    for (unsigned i = 0; ctx->velems && i < ctx->velems->count; i++) {
       const struct pipe_vertex_element *e = &ctx->velems->elements[i];
@@ -5997,6 +5999,7 @@ m9_native_vs_dump_reason(struct m9_context *ctx, const char *reason)
    nir_print_shader(ctx->fs->nir, f);
    fclose(f);
    fprintf(stderr, "m9x: native fallback shader/state -> %s\n", path);
+   return true;
 }
 
 static void
@@ -6010,13 +6013,18 @@ m9_native_vs_note(struct m9_context *ctx, const char *reason)
                          it)
       if (it->reason == reason) {
          it->count++;
+         if (m9_native_fallback_dump && !it->dumped &&
+             (!m9_profile_period || it->profile_count))
+            it->dumped = m9_native_vs_dump_reason(ctx, reason);
          return;
       }
-   struct m9_native_vs_reason add = { reason, 1, 0 };
+   struct m9_native_vs_reason add = { reason, 1, 0, false };
+
+   if (!m9_profile_period)
+      add.dumped = m9_native_vs_dump_reason(ctx, reason);
 
    util_dynarray_append_typed(&ctx->native_vs_reasons,
                               struct m9_native_vs_reason, add);
-   m9_native_vs_dump_reason(ctx, reason);
    if (ctx->debug)
       fprintf(stderr, "m9x: native vertex fallback: %s\n", reason);
 }
