@@ -32,13 +32,14 @@ vendor instructions. Native alignment regenerates page groups and counts;
 the already relocated suffix moves once and the submitted length follows
 the resulting packet size.
 
-The native primary submission uses the existing transport's retained
-coherent physical-tag2 command clone. The fresh template is required to
-have no references to its primary owner, so copying the relocated words
-does not leave a GPUVA pointing to the source command image. Native command
-base/end derive exclusively from that transport allocation and current
-cursor. Secondary and geometry fetches retain their separate class1/B
-owners. The source class1 primary address is never used as a physical post.
+The native primary submission now follows the actual source class1/B owner
+through its retained mapped GPUVA. The private helper validates consumed page
+leaves, publishes coherent command writes and derives400=base|1 and404 from
+the rebuilt stream length. It uses the existing real synchronous completion
+wait/extension. Persistent private requester ownership rejects later ordinary
+arm/rearm/submission instead of assuming the physical slot is still selected.
+The owner and mapping survive completion or timeout through DMA teardown.
+Source and actual-helper proof live in kernelm9x/tests/faa-virtual-primary.md.
 
 The source `106c` producer is a mapped flags110/A counter proxy. Native code
 therefore retains a one-page class1 alias of the transport's existing
@@ -73,3 +74,10 @@ See [the hardware evidence](../tests/m9-faa-ordinary-output-20261006/README.md).
 SYSTEM mapped-prefix pre/post observations are being added; primary virtual
 fetch versus physical clone remains a behavioral difference to qualify.
 Application FAA remains disabled.
+
+Kernel `03c30b3` also retires the source-faithful virtual primary, but all
+visible and padded output CPU-alias bytes remain zero and unchanged. The
+source-required write-event channel reaches its native rebased target.
+[Physical qualification still fails](../tests/m9-faa-virtual-primary-20261006/README.md);
+no extra cache operation or hardware-enable value is justified without source
+proof. Application FAA remains disabled.

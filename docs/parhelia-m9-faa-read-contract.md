@@ -95,3 +95,11 @@ pixels are black and the image oracle fails. This is a failed rendering
 qualification, not successful FAA. Raw SYSTEM prefix deltas were not observed
 in that run; [logs and image](../tests/m9-faa-ordinary-output-20261006/README.md)
 preserve this limitation.
+
+The subsequent source-faithful virtual-primary test (`03c30b3`, boot
+`a4a2ad1d`) also reaches real1d0 retirement and returns an entirely black
+image. Before/after raw327680-byte SYSTEM output CPU aliases remain zero;
+this does not independently prove DRAM visibility. The actual source query
+wait usescommon20/event0; its write wait usescommon00/event140, rebased to
+native1d0 and observed as1d1/0. There is no source-proved separate40 wait.
+See [the complete physical observations](../tests/m9-faa-virtual-primary-20261006/README.md).
