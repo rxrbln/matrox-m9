@@ -380,6 +380,27 @@ reads the same genuine device `+0x10` shared runtime owner. Thus both
 missing resource branches depend on initialized runtime configuration;
 neither requires an invented factory pointer or an extra FAA registry gate.
 
+Actual M9128 bootstrap now retains the genuine decoded EEPROM record and
+miniport object through `tools/m9emu/m9128_bootstrap.py`. On that exact
+object, `tools/m9-vendor-runtime-owner.py` executes real MM `0x15551`,
+which copies record fields `+0x204/+0x1ac/+0x1b0` into shared
+`+0x21f040/+0x21f044/+0x21f048`: the actual values are2/0x1b/1.
+Real `0x5de58` allocates the ordinary0x1ee400 CPU runtime owner and
+`0x5fa80` publishes its collection at shared `+0x21f05c`. The
+[runtime ownership capture](traces/m9-vendor-runtime-owner-20261006.json)
+asserts exact copied fields and the genuine resident pointer, with no
+manufactured capabilities or populated configuration profile.
+
+Full ordinary runtime initialization is `0x568e7`. Bounded execution with
+an initially empty emulated Windows registry executes the vendor's own
+default property creation and writes its generated `D00` value, then stops
+at `0x5816f -> 0x580fb -> 0x6ad45 -> 0x6dc80 -> 0x5e20e -> 0x24745`:
+`HalGetBusDataByOffset(type4,bus0,slot0,offset0,length4)` needs the actual
+Nano host-chipset PCI inventory. The existing capture covers the M9128 on
+bus1 only. No missing host bridge or initialized profile is substituted.
+This next normal runtime dependency remains separate from the later
+uncaptured transmitter-reset GPIO in complete FindAdapter startup.
+
 The genuine ICD client publisher is `0x1003a2a0`. Actual
 `0x1003d480 -> 0x1003b270 -> 0x1003d510` sends operation4, ExtEscape186a0
 input0x38/output0x10; only a successful actual reply would publish client
