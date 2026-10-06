@@ -79,3 +79,25 @@ time shares. Projector semantics must be proved before changing that guard.
   engine work. These intervals cannot independently attribute all ioctl time
   to Present or vblank; vsync is disabled. Root should inspect active fallback
   and shader-driven job boundaries before changing presentation synchronization.
+
+## Dominant gameplay fallback, identified after the coverage fixture
+
+The bounded gameplay reason report after the select fix has approximately
+7534 CPU calls per interval: 4774 projective-coordinate refusals, 2700 original
+fragment inputs exceeding the output cap, and 60 unsupported raster-state
+calls. No native Quake3 draws occurred. The first item is about 63 percent of
+calls and is the immediate investigation target; a coordinate-pair gate was
+not reached in this report.
+
+A projector of exactly one needs no divide, but this must be proved from the
+actual specialized vertex output and draw's input defaults, not assumed from
+the application's use of 2-D textures. The optional bounded fallback dump
+retains both shader NIR, vertex element formats and constants after a completed
+profile interval. `m9-mesa-glsl ffarray` is the corresponding fixed-function
+MODULATE fixture using a two-component client texture coordinate array. Its
+missing q is one by the existing source-record unpack contract. The existing
+`ff` immediate-mode test is unchanged. Both use the independently computed
+texture-times-interpolated-color reference. The new fixture host build passes;
+GPU coverage and a projector guard change remain pending producer proof and
+native readback. A shader or four-component source with genuinely varying q
+must retain the guard.
