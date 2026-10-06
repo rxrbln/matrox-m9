@@ -6423,10 +6423,25 @@ m9_native_vs_dump_reason(struct m9_context *ctx, const char *reason)
    return true;
 }
 
+/* Keep aggregate performance counters intact. Qualification can separately
+ * require user shaders to use native vertices while observing utility copies. */
+static void
+m9_native_vs_count(struct m9_context *ctx, bool native)
+{
+   bool internal = ctx->blitter && ctx->blitter->running;
+   if (native) {
+      ctx->native_vs_draws++;
+      ctx->native_vs_blitter_draws += internal;
+   } else {
+      ctx->native_vs_fallbacks++;
+      ctx->native_vs_blitter_fallbacks += internal;
+   }
+}
+
 static void
 m9_native_vs_note(struct m9_context *ctx, const char *reason)
 {
-   ctx->native_vs_fallbacks++;
+   m9_native_vs_count(ctx, false);
    m9_prof_module++;
    if (!reason)
       return;
@@ -6579,7 +6594,7 @@ m9_native_vs_draw(struct m9_context *ctx, const struct pipe_draw_info *info,
                  o->coordinate ? " coefficients in the constant span" : "");
       }
    }
-   ctx->native_vs_draws++;
+   m9_native_vs_count(ctx, true);
    m9_prof_native++;
    return true;
 }
@@ -9108,6 +9123,10 @@ m9_context_destroy(struct pipe_context *pctx)
    if (ctx->debug || m9_native_vs) {
       fprintf(stderr, "m9x: native vertex draws %u, draw module %u\n",
               ctx->native_vs_draws, ctx->native_vs_fallbacks);
+      fprintf(stderr, "m9x: native vertex scope user %u module %u blitter %u module %u\n",
+              ctx->native_vs_draws - ctx->native_vs_blitter_draws,
+              ctx->native_vs_fallbacks - ctx->native_vs_blitter_fallbacks,
+              ctx->native_vs_blitter_draws, ctx->native_vs_blitter_fallbacks);
       util_dynarray_foreach(&ctx->native_vs_reasons,
                             struct m9_native_vs_reason, it)
          fprintf(stderr, "m9x:   draw module %8u: %s\n", it->count,

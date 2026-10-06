@@ -646,6 +646,9 @@ struct m9_context {
    bool queries_enabled;        /* pipe set_active_query_state, recorded */
    uint32_t submitted_draws;
    uint32_t native_vs_draws, native_vs_fallbacks;
+   /* Subsets of the aggregate counters, identified only while the actual
+    * driver-owned util_blitter operation holds its running flag. */
+   uint32_t native_vs_blitter_draws, native_vs_blitter_fallbacks;
    /* Last successfully submitted packed-record producer, for opt-in proof. */
    uint32_t vs_record_vertices, vs_record_fields, vs_record_view;
    /* Why the native vertex path refused, one entry a reason: the reasons
