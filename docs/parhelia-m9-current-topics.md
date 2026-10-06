@@ -42,15 +42,24 @@ FAA public red constants change actual main-store contents, but final output
 remains black. This is not working FAA. A genuine ordinary SYSTEM red control
 now has a complete source plan and exclusive kernelprofilea6c0b5e:23live
 owners,30addressfields,16timelines, noFAAactivation/resolve/companionclear.
-Actual encoder placement/alignment and absent-clear controls pass; root is
-preparing its fresh-boot hardware discriminator. No output pixels are copied
-from a capture. [Ordinary SYSTEM control](parhelia-m9-ordinary-system-constant-red.md),
+Actual encoder placement/alignment and absent-clear controls pass. The
+fresh-boot ordinary control now physically PASSES:9520red pixels, zero
+interior/exterior/wrongchannel errors and reald0 retirement. The complete
+SYSTEMoutput changes from allzero to9520nonzero words. This qualifies the
+ordinary write/readback contract for this descriptor; sampled rendering and
+resolve remain the FAA investigation. No output pixels are copied from a
+capture. [Actual ordinary hardware proof](../tests/m9-ordinary-system-red-hardware-20261007/README.md). [Ordinary SYSTEM control](parhelia-m9-ordinary-system-constant-red.md),
 [current FAA evidence](parhelia-m9-faa-native-current.md) and
 [SYSTEM admission](parhelia-m9-faa-output-system-admission.md).
 
-Healthy normal target boot3cd3b20a uses observer73c2a45/user submissions
-on/privateFAAoff. Current Mesa883280f includes CPU-only maps, completion
-cache, retained bounds and full input capture; actual two-frame bump run
+After archiving the ordinary control and mandatory power cycle, fresh normal
+target bootc44237c9 uses observer73c2a45/user submissions on/privateFAAoff. Mesa883280f includes CPU-only maps, completion cache, retained bounds and
+full input capture; new5f78a2d additionally stages mixed scalars before full
+packed register-pair copies. Host79reference/5refusal/vendor/batch/fullDSO
+checks pass. One short physical bump run retires34nativeuser draws with
+emptyqueue/peak2/wedged0/noGPUtimeout, but its exact final record still fails:
+all264X/Y pass,156Z/W pairs fail. Paired publication is retained as a
+source-contract improvement; it is not a sufficient fix. The prior actual two-frame bump run
 retires17140/raw17141, queueempty/peak1/wedged0 immediately and2s later.
 Private control tests require fresh boot and evidence archiving before
 mandatory recovery. Root owns all target runs.

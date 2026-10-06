@@ -1,5 +1,20 @@
 # glmark2 on the m9x driver: where the 60 fps goal actually stands
 
+## 2026-10-07: paired publication follows vendor form but Z/W still fail
+
+Mesa5f78a2d stages mixed output scalars in an ordinary temporary before a
+complete packed register-pair MOV, matching the actual vendor source corpus.
+Host79reference/5refusal/batch/fullDSO checks pass. One short1024x768
+physical height-bump test retires34native user draws/zero CPU user fallback,
+real3d00/raw3d01, queueempty/peak2/wedged0 immediately and2s later. Its exact
+last retired job69 record still fails: all264X/Y values match,156Z/W pairs
+fail in ranges12..107 and204..263, all1440indices valid. This is not a
+sufficient corruption fix; source-proven publication improvement is retained.
+The captured350ms X-window image is black, with possible startup timing;
+no image qualification or FPS gain/regression follows. Full proof is copied
+at /tmp/m9-gl2-paired-output-20261007/proof; GL2 agent is archiving and
+investigating writer/record-bank ownership. Default varyingcap2 unchanged.
+
 ## 2026-10-07: actual bump inputs narrow the position corruption
 
 Current Mesa883280f/DSOb29 retains complete source vertices, indices,
