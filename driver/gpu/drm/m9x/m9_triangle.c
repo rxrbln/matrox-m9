@@ -1500,7 +1500,8 @@ int m9x_engine_ready_locked(struct m9x_device *mdev)
  */
 int m9x_submit_user_stream_locked(struct m9x_device *mdev, const u32 *records,
 				  u32 dwords, const u32 *range_ends, u32 ranges,
-				  u32 target, u64 *point, bool async)
+				  u32 target, u64 *point, bool async,
+				  bool *doorbell_posted)
 {
 	const struct m9_triangle_layout *layout = &m9_triangle_external_layout;
 	struct m9x_triangle_diag *diag = mdev->transport.triangle;
@@ -1511,6 +1512,8 @@ int m9x_submit_user_stream_locked(struct m9x_device *mdev, const u32 *records,
 	int ret;
 
 	lockdep_assert_held(&mdev->transport.lock);
+	if (doorbell_posted)
+		*doorbell_posted = false;
 	if (!diag || !diag->context_initialized || !ranges ||
 	    range_ends[ranges - 1] != dwords)
 		return -EINVAL;
@@ -1561,7 +1564,7 @@ int m9x_submit_user_stream_locked(struct m9x_device *mdev, const u32 *records,
 		start = end;
 	}
 	ret = m9x_submit_kernel_stream_locked(mdev, primary, 3 * (ranges + 1),
-					      target, point, NULL, async);
+					      target, point, doorbell_posted, async);
 	kfree(primary);
 	if (ret)
 		return ret;

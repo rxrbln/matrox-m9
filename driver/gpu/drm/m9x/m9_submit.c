@@ -998,7 +998,9 @@ static int m9_submit_execute(struct m9x_device *mdev, const u32 *image,
 			     bool async, struct drm_gem_object ***bos,
 			     bool **pinned, u32 count)
 {
-	u32 *framed, *range_ends, framed_dwords, ranges, max_token, target;
+	u32 *framed, *range_ends, framed_dwords, ranges, max_token, target, final;
+	u64 issued;
+	bool posted = false;
 	int ret;
 
 	range_ends = kvcalloc(dwords / 2 + 1, sizeof(*range_ends), GFP_KERNEL);
@@ -1020,18 +1022,31 @@ static int m9_submit_execute(struct m9x_device *mdev, const u32 *image,
 		goto out_unlock;
 	}
 	/* The completion target follows every userspace dependency token. */
+	final = target + max_token + 0x10;
+	issued = ((u64)(mdev->transport.fence_epoch +
+			 (final < mdev->transport.last_fence)) << 32) | final;
 	ret = m9x_submit_user_stream_locked(mdev, framed, framed_dwords,
 					    range_ends, ranges,
-					    target + max_token + 0x10, point,
-					    async);
+					    final, point, async, &posted);
 	kvfree(framed);
-	if (async && mdev->transport.async_pending &&
+	/* Synchronous failure after the real doorbell can also leave DMA
+	 * active. A failure before posting owns no GPU readers; a retired
+	 * job whose guard check failed can likewise release its objects. */
+	if (posted && mdev->transport.completed_point < issued &&
 	    !mdev->transport.async_bos) {
+		mdev->transport.async_pending = true;
+		mdev->transport.async_target = final;
+		mdev->transport.async_point = issued;
+		mdev->transport.submitted_point = issued;
 		mdev->transport.async_bos = *bos;
 		mdev->transport.async_pinned = *pinned;
 		mdev->transport.async_count = count;
 		*bos = NULL;
 		*pinned = NULL;
+		if (ret && !mdev->transport.wedged) {
+			mdev->transport.wedged = true;
+			mdev->transport.generation++;
+		}
 	}
 out_unlock:
 	mutex_unlock(&mdev->transport.lock);

@@ -348,7 +348,8 @@ int m9x_triangle_prepare_diag(struct m9x_device *mdev);
 int m9x_engine_ready_locked(struct m9x_device *mdev);
 int m9x_submit_user_stream_locked(struct m9x_device *mdev, const u32 *records,
 				  u32 dwords, const u32 *range_ends, u32 ranges,
-				  u32 target, u64 *point, bool async);
+				  u32 target, u64 *point, bool async,
+				  bool *doorbell_posted);
 int m9x_triangle_selftest(void);
 void m9x_triangle_fini(struct m9x_device *mdev);
 int m9x_submit_selftest(void);
