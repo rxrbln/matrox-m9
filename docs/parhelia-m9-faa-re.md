@@ -1956,3 +1956,45 @@ create a completion reply. The CPU return proves command construction/posting
 against the MMIO model, not hardware execution. No subsequent MM IOCTL reads
 of MD-written command RAM occurred in this run; the request count remains the
 32 genuine allocation calls.
+
+### 2026-10-06: joined frame reaches the genuine first retirement read
+
+The native agent's reusable `m9_faa_frame.initialize(...)` joins the real public
+D3D context, full `ac7e0` allocation/initialization, actual `aa750` binding,
+public `beeb0` DP2 triangle, and returned `abc20` output. CPU callback success
+alone does not prove GPU rendering. The new retirement helper consumes the same
+returned emulator/owned graph; it does not rebuild an unrelated shader shadow.
+
+Real final queue callee `23b80` has normal direct callers `10919` and `1a5e8`.
+With the genuinely returned queue's final reference `+94=1`, it calls the real
+queued-completion producer `25370` and flush `24d60 -> 24530`. In the retained
+320x240 frame the final completion packet is exactly the three DMA words
+`4545e3e6,00000001,00000131`; the desired completion count is `130` after low
+four-bit masking. Actual `2461e` posts final physical end `01002780` to BAR2
+`+404`. The genuine first system-DMA owner is physical `01001000`, extent
+`41000`, so the posted end is offset `1780`. Its final CPU-written packet
+covers offset `1774..177f`.
+
+The helper stops **before** instruction `23bc3` (`8b09`, `mov ecx,[ecx]`).
+The preceding real instruction loads the status pointer from platform
+counter-owner`+4`. This pointer is `20464000`, owned by the genuine live
+159-byte common buffer, at synthetic physical address `02007000`. The required
+next input is an actual GPU-written completion counter. No status value,
+retirement return, resource release, or successful GPU response is supplied.
+The whole normal PDEV/display caller remains outside this conditional CPU
+fixture; the real final queue callee and its actual operands are executed.
+
+`m9_faa_retirement.capture(frame)` captures the final CPU-written DMA spans,
+actual MMIO posts, their unique owned-buffer translations and first status-load
+boundary. `check-faa-retirement.py` verifies the joined context/init/bind/draw/
+resolve stages, live final queue reference, posted buffer bounds, and refusal
+to execute the GPU status load. Capture:
+`captures/m9128-device-inputs-20261006/faa-frame-retirement.json`. Its runtime
+helper dependencies include the native agent's actual tagged CPU-allocation
+ABI/normal D3D policy (`19c5699d`) and joined frame/public frontend API.
+
+This provides a complete CPU command-production/submission sequence and an
+honest hardware-response boundary. Executable native translation must preserve
+all referenced resource/program backing, address domains and lifetime through
+observed retirement. It must not copy synthetic OS addresses, count envelopes,
+unspecified RAM contents, or the blocked completion result into native packets.
