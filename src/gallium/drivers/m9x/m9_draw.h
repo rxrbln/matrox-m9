@@ -116,6 +116,8 @@ struct m9_draw_job {
    unsigned draw_count;
    uint32_t depth_control;    /* raster a8 */
    uint32_t depth_ef;         /* raster ef depth bits */
+   bool depth_bias;           /* native triangle D24 offset, raster only */
+   uint32_t depth_bias_units, depth_bias_factor;
    /* Raster a9/aa stencil faces; unset emits the test-off words. */
    bool stencil;
    uint32_t stencil_a9, stencil_aa;
@@ -200,6 +202,11 @@ struct m9_draw_job {
 
 /* Dwords a restated raster draw costs beyond the first. */
 #define M9_JOB_DRAW_DWORDS 11u
+#define M9_DEPTH_BIAS_EF (1u << 26)
+#define M9_DEPTH_BIAS_DWORDS 3u
+/* Captured D0 units are divided by 2^24-1; D1 is the raw slope factor. */
+bool m9_draw_depth_bias(float factor, float units,
+                         uint32_t *units_bits, uint32_t *factor_bits);
 unsigned m9_draw_job_dwords(unsigned draw_count);
 unsigned m9_draw_framed_dwords(unsigned dwords, unsigned restated_draws);
 /* Dwords a declaration of this many words costs beyond the pass-through five

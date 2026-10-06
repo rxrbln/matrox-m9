@@ -2599,6 +2599,9 @@ m9_submit_job(struct m9_context *ctx)
          /* A single pass carries its own depth bits for gl_FragDepth. */
          .depth_ef = pass_count == 1 && !ret ? passes[0].depth_ef :
                                                 key->depth_ef,
+         .depth_bias = key->depth_bias,
+         .depth_bias_units = key->depth_bias_units,
+         .depth_bias_factor = key->depth_bias_factor,
          .stencil = key->stencil,
          .stencil_a9 = key->stencil_a9,
          .stencil_aa = key->stencil_aa,
@@ -2930,7 +2933,8 @@ m9_job_reserve(struct m9_context *ctx, const struct m9_job_key *key,
             (key->vs && key->vs_extra_entry ?
              m9_draw_vs_extra_dwords(key->vs_extra_targets,
                                      2 * key->vs->attr_count + 1) : 0) +
-            m9_faa_raster_dwords(&ctx->screen->faa) * MAX2(passes, 1u);
+            m9_faa_raster_dwords(&ctx->screen->faa) * MAX2(passes, 1u) +
+            (key->depth_bias ? M9_DEPTH_BIAS_DWORDS : 0);
    /* Every additional run adds a five-word constant packet and a numeric
     * three-word launch. Framing is charged by the existing upper bound. */
    dwords += new_vs_runs ? 8 * (new_vs_runs - 1) : 0;
@@ -5462,12 +5466,23 @@ m9_native_vs_resolve(struct m9_context *ctx, const struct pipe_draw_info *info,
    out->flat = rast && rast->flatshade;
    if (rast && (rast->rasterizer_discard || rast->clip_plane_enable ||
                 rast->clip_halfz || !rast->depth_clip_near ||
-                !rast->depth_clip_far || rast->offset_tri ||
+                !rast->depth_clip_far ||
                 rast->offset_line || rast->offset_point ||
                 rast->poly_stipple_enable ||
                 rast->fill_front != PIPE_POLYGON_MODE_FILL ||
                 rast->fill_back != PIPE_POLYGON_MODE_FILL))
       return "a rasterizer state the hardware pass does not carry";
+   if (rast && rast->offset_tri && reduced == MESA_PRIM_TRIANGLES) {
+      uint32_t units, factor;
+
+      if (!m9_context_depth(ctx))
+         return "native polygon offset needs a D24 depth attachment";
+      if (rast->offset_clamp || rast->offset_units_unscaled)
+         return "native polygon offset needs unclamped scaled D24 units";
+      if (!m9_draw_depth_bias(rast->offset_scale, rast->offset_units,
+                              &units, &factor))
+         return "native polygon offset needs finite factor and units";
+   }
    /* The back colours are chosen per primitive, which the draw module's
     * two-sided stage does and the preprocessing program does not. */
    if (rast && rast->light_twoside)
@@ -6301,6 +6316,23 @@ m9_native_vs_draw(struct m9_context *ctx, const struct pipe_draw_info *info,
    if (reason) {
       m9_native_vs_note(ctx, reason);
       return false;
+   }
+   if (ctx->rasterizer && ctx->rasterizer->offset_tri &&
+       u_reduced_prim(info->mode) == MESA_PRIM_TRIANGLES) {
+      /* The captured scalar pair applies to one hardware raster pass.
+       * Preserve the draw module for split/explicit-fragment-depth paths
+       * until their interaction with raster bias has been captured. */
+      if (key.variant && (key.variant->passes.count > 1 ||
+                          key.variant->passes.pass[0].fragdepth)) {
+         m9_native_vs_note(ctx,
+                          "native polygon offset needs one raster depth pass");
+         return false;
+      }
+      key.depth_bias = m9_draw_depth_bias(ctx->rasterizer->offset_scale,
+                                         ctx->rasterizer->offset_units,
+                                         &key.depth_bias_units,
+                                         &key.depth_bias_factor);
+      key.depth_ef |= M9_DEPTH_BIAS_EF;
    }
    key.vs = &variant->program;
    key.vs_program = m9_native_vs_c2(ctx, (struct m9_fs_variant *)key.variant,

@@ -317,6 +317,8 @@ struct m9_job_key {
    const struct m9_fs_state *fs;   /* native fragment program or NULL */
    const struct m9_fs_variant *variant;  /* its program for the blend state */
    uint32_t depth_control, depth_ef, color_mask, clip_min, clip_max;
+   bool depth_bias;
+   uint32_t depth_bias_units, depth_bias_factor;
    bool stencil;
    uint32_t stencil_a9, stencil_aa;
    /* Raster ac: the write masks of colour targets 2 and 3. */

@@ -10,6 +10,7 @@
 #include "m9_faa.h"
 
 #include <errno.h>
+#include <math.h>
 #include <string.h>
 
 #include "util/macros.h"
@@ -32,6 +33,19 @@
 /* The second preprocessing draw without its stream targets and its
  * declaration, which m9_draw_vs_extra_dwords adds. */
 #define M9_JOB_EXTRA_DWORDS 95u
+
+bool
+m9_draw_depth_bias(float factor, float units, uint32_t *units_bits,
+                   uint32_t *factor_bits)
+{
+   float normalized = units / 16777215.0f;
+
+   if (!isfinite(factor) || !isfinite(units) || !isfinite(normalized))
+      return false;
+   memcpy(units_bits, &normalized, sizeof(normalized));
+   memcpy(factor_bits, &factor, sizeof(factor));
+   return true;
+}
 
 unsigned
 m9_draw_job_dwords(unsigned draw_count)
@@ -677,6 +691,10 @@ m9_emit_raster_range(struct m9_batch *batch, const struct m9_draw_job *job,
            V(0x23, 0x00c231b6));
       EMIT(V(0x23, 0x00d30688), V(0x23, 0), V(0x23, 0), V(0x23, 0));
    }
+   /* MSerX 0xf7280 and the Linux M9 offset capture place this scalar
+    * pair after the raster declaration, before the linked draw record. */
+   if (job->depth_bias)
+      EMIT(V(0xd0, job->depth_bias_units), V(0xd1, job->depth_bias_factor));
    ret = m9_emit_linked(batch, job);
    if (ret)
       goto fail;
@@ -753,6 +771,11 @@ m9_draw_job_valid(const struct m9_draw_job *job)
        job->unit_count > (job->pass_count ? M9_DRAW_MAX_UNITS :
                                            M9_TEXTURE_MAX_UNITS) ||
        (job->unit_count && ((!job->fs && !job->pass_count) || !job->units)))
+      return false;
+   if (job->depth_bias &&
+       (!(job->depth_ef & M9_DEPTH_BIAS_EF) || job->pass_count > 1 ||
+        (job->depth_bias_units & 0x7f800000u) == 0x7f800000u ||
+        (job->depth_bias_factor & 0x7f800000u) == 0x7f800000u))
       return false;
    /* A requested binding cannot silently disappear while the job keeps
     * its FAA mode edits. Refuse it before emitting any command words. */
@@ -856,6 +879,10 @@ m9_draw_job_valid(const struct m9_draw_job *job)
       if (d->start % 4 || !d->count || d->start > job->source_vertices ||
           d->count > job->source_vertices - d->start ||
           !m9_topology_valid(d->topology))
+         return false;
+      if (job->depth_bias &&
+          (d->topology == M9_TOPOLOGY_LINES ||
+           d->topology == M9_TOPOLOGY_LINE_STRIP))
          return false;
       /* An indexed draw reads a dword-aligned run inside the stored list. */
       if (d->index_count &&
