@@ -108,3 +108,26 @@ firmware activity. This difference therefore does not justify a register
 write or explain FAA output. The closely matching MC image weakens a
 missing direct-MC-image explanation while system-clock and enclosing cold
 lifetime proof remain separate.
+
+The original system-clock prefix is now separately executed by
+`check-faa-cold-clock-inputs.py` on the same physical PInS bytes. The known
+CPU field `board+42c` is `PInS+140`, producing `e24=70000000`, followed by
+the actual 100-microsecond delay. It stops before the first `e00` read at
+call `2d1dd9`/return `2d1dde`; neither that read nor later PLL status polls
+receive a reply. The original pure predicate `2d1660`, executing its actual
+jump table on the nine desired selector words at `PInS+11c`, admits system
+synthesizers 0, 1 and 2 and rejects 3 and 4. Their PInS target fields are
+each 500000 kHz. This establishes the board's desired source inputs, not
+hardware clock programming, frequency readback or a separate FAA clock.
+
+The probe now additionally supports `--system-clocks`, reading exactly 13
+source-bound fields: `e00..e24` in four-byte steps, plus `e30/e34/e38`.
+This mode changes the bounded read list only. Source SHA256 is
+`e0e7d1898306fc50f4dfa6ce1f51f83e8ae0d16f2adb69a8ecf03e95d77d4d81`,
+compiled helper SHA256
+`347ab1f8c8f6ca5c2f129ac0b48b81709e04a9357fa3ec08e618dc5d490241ac`.
+The prior 19-field observation retains the earlier exact helper identity.
+These are Linux `0540` cold-producer inputs and boundaries; the Windows MD
+assumed-cold/callback admission remains a separate open contract. A later
+current-board clock read cannot substitute for a PLL status read following
+an unexecuted cold write.

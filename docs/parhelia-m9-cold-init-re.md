@@ -240,12 +240,15 @@ state and waits 100 microseconds.  It saves `0x0e00..0x0e20`, puts each of the
 nine clock selectors in hold, writes `0x00020000` to all nine, and waits 1000
 microseconds [BIN].
 
-It compares the desired system clock assignments cached at board offsets
-`+0x408..+0x428`.  Matching synthesizers 0..4 are programmed through
-`m9x12171` with PInS clock records at `PInS+0xf8..+0x108`; synthesizers 5 and 6
-use `m9x2741` with `PInS+0x10c/+0x110`.  After 100 microseconds it restores the
-nine selectors with their enable/hold bits and waits another 100 microseconds
-[BIN].
+It compares the desired system clock assignments at board offsets
+`+0x408..+0x428` (`PInS+0x11c..+0x13c`). `m9x15901` (`2d1660`) tests
+whether the nine desired selectors use synthesizers 0..4; `m9x2741`
+(`2d1910`) is another pure source-compatibility predicate for the later
+selection checks. It does not program a synthesizer. The admitted programming
+branches call `m9x12171` with the PInS target records. After 100 microseconds
+it restores the nine selectors with their enable/hold bits and waits another
+100 microseconds [BIN]. For an original-instruction execution on actual
+SPI-verified M9128 inputs, see the [bounded clock proof](parhelia-m9-faa-cold-mc-writes.md).
 
 The divider format and frequency equation already recovered for this family are:
 
