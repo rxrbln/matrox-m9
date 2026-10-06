@@ -131,3 +131,45 @@ These are Linux `0540` cold-producer inputs and boundaries; the Windows MD
 assumed-cold/callback admission remains a separate open contract. A later
 current-board clock read cannot substitute for a PLL status read following
 an unexecuted cold write.
+
+The Windows counterpart is independently executed by
+`check-faa-windows-cold-mc-writes.py`. Its bounded ABI owner contains the same
+verified raw PInS at `owner→board+250`. Original defaults `41892`, setup
+`4191e`, patch lookup `41dff/383c5`, indirect producer `41dcc` and tail
+branches execute unchanged. All 76 emitted register/data pairs and the four
+10-microsecond delays equal the Linux actual-board producer in order.
+Original verifier `41c61` stops before its `f28` read at call `41c7d`,
+accessor `2a3a3`, return `41c82`. No unknown CPU owner field or hardware
+status is supplied. `windows-cold-mc-writes.json` retains each original
+call PC and the pinned body hashes.
+
+The actual Windows `0540` dispatch sets `EBX=540` at `289c8` and calls
+transaction `2ebd1` at `28aed`. Its original calls are defaults at `2ecf2`,
+indirect control zero at `2ecff`, system clocks `401d8` at `2ed05`, setup
+at `2ed0c`, and verifier at `2ed13`. The transaction saves/holds the same
+four clocks and disables the same four display controllers before these
+calls; it restores their saved words afterward. This closes the source
+grammar for both vendor families used here. It does not supply the missing
+FindAdapter GPIO/HMC inputs, invoke an unobserved callback, or claim the
+actual Windows cold dispatch was admitted on the native boot.
+
+Root's additional 13-field observation on the same `e6d15c3d` boot is retained
+as `cold-clock-current-observation.json`. All nine desired selectors and the
+source oscillator word agree. Feeding only that actual oscillator word to
+the original CPU predicate `2d15e4` branches to `2d163f`, skipping its
+oscillator reinitialization writes. All three selected synthesizer words are
+`010063dd`: the proved divider encoding decodes to fields `30/16/13/1`.
+At the producer's 27000-kHz reference this derives approximately
+498461.538 kHz, versus the board target of 500000 kHz. That is an arithmetic
+interpretation of the observed word, not a measured clock, a claim about
+PLL post-write status or evidence of an FAA-specific bank. The old M9148
+capture's different divider word was not used as an expected M9128 value.
+
+Together these checks rule out a missing published direct MC image or
+missing desired system-clock selector image as an observed discrepancy on
+this boot. They do not establish every indirect MC record, oscillator
+frequency measurement, full cold transition or a private FAA unit enable.
+The only observed direct-MC distinction remains the unclassified `f14`
+upper readback bits; no source-proven rendering dependency has yet joined
+them to sampled mode 9. The observations therefore support further producer
+and consumer tracing, not a cold-register write candidate.
