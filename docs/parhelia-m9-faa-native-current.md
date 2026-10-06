@@ -552,10 +552,13 @@ resource constructor and publishes `device+69a4`, including the real typed
 primary factory at owner+1074: wrapper0xb78f0 delegates to0xb6850. This
 supersedes the earlier runtime-null stops for these constructors. The
 resource module's later platform policy call0x1fca0→0x62170 now completes
-with that genuine platform owner. It stops at the following1fca5 publication
-because hardware+35fc requires the real shared memory manager. Actual
-display/resource module0x7abc0 also returns1 and publishes head+54. The
-capture does not claim complete resource module or adapter startup.
+with that genuine platform owner. Actual normal policy-owner module0x849a0
+constructs and publishes hardware+35fc; it is separate from the memory
+manager at+35f8. Executing0x849a0 before the other resource modules lets
+all four complete with return1:0x849a0,0x273a0,0x7abc0,0x1f990. Actual
+0x7abc0 publishes head+54; full0x1f990 publishes its actual typed factory.
+These selected ordinary modules do not complete all adapter startup.
+
 
 Actual derived config+338 virtual getter returns101f8; actual admission
 helper0x477f0 for hardwareformat3d returns1, confirming the companion's
