@@ -8,7 +8,30 @@ Ordinary textured rendering and the deployed driver are validated. FAA
 rendering is not yet validated. This note is separate from P690
 `102b:2539` evidence.
 
-Current physical checkpoint: complete source init-only and post-public-draw
+Current physical checkpoint,2026-10-07: the genuine **ordinary SYSTEM red**
+control physically PASSES on M9128. It has no FAA activation, sampled store,
+companion clear or resolve. Public source admission uses its actual target
+constructor and manager publisher; all addresses come from live retained owners.
+The native frame retiresd0,9520pixels are red/full, zero interior/exterior/
+wrongchannel errors, partial0 as expected for single-sample rendering. Entire
+SYSTEMoutput327680bytes changes from allzero to19040nonzero bytes/9520words.
+Positive CPU mapping control passes76800pixels. Full23owner/domain/extent/
+derivedtimeline/actualPPM joins independently pass. Exact modulea6c0b5e,
+firmware7c64b4af and helper55d0c901 are retained in the
+[hardware proof](../tests/m9-ordinary-system-red-hardware-20261007/README.md).
+
+This qualifies the ordinary SYSTEM target-write and readback contract for
+this source descriptor. The previous sampled FAA red control still has a
+black final output. Its remaining investigation is the sampled draw/resolve
+consumer flow and prerequisites; the ordinary control is not an FAA demo.
+The explicit `--expect-ordinary-system-red` readback option omits only the
+FAA partial-coverage minimum. Existing FAA green/red modes retain their
+strict geometry, channel and partial-edge tests.24actualproduction CPU
+oracle controls pass. No captured output pixels seed native memory.
+After archiving the proof, root power-cycled and restored normalobserver73
+with user submissions on/private FAA off, freshbootc44237c9.
+
+Previous physical checkpoint: complete source init-only and post-public-draw
 controls kernel d2821c3 retire B0 and120 respectively without a GPU timeout.
 Init-only main/AA/pool remain zero; post-draw main1041/AA1404 changes already
 occur before any output resolve. Complete main/AA/preprocessing bytes equal
@@ -22,7 +45,8 @@ green1041 to601 nonzero DWORDs:880 bytes change in440 aligned groups.
 Complete AA and preprocessing buffers remain byte-identical. This proves
 color-dependent main-store behavior, not its record ABI or correct resolved
 pixels. The actual source profiles differ only at four raster-c0 bytes;
-remaining resolve/program/pool and SYSTEM output ownership are under audit.
+remaining resolve/program/pool prerequisites are under audit; the ordinary
+SYSTEM write/read contract is separately qualified above.
 See [complete red hardware evidence](../tests/m9-faa-constant-red-hardware-20261006/README.md).
 The hardware readback helper accepts `DEVICE OUTPUT.ppm --expect-red` to
 select its independent expected channel; this option does not change the
