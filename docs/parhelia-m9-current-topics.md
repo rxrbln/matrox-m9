@@ -32,14 +32,17 @@ IN_FORMATS blobs advertise no formats for their custom tiled modifiers,
 while LINEAR advertises all five. Async page-flip capabilities remain zero.
 [Present observer](parhelia-m9-present-cost-observer.md).
 
-Bump-height remains an image failure, despite healthy retirement; its85FPS
-printout is invalid as a rendering benchmark. A new complete two-frame
-capture retains264vertices/1440valid indices/all constants and retired
-records. Actual X/Y positions match, while128Z/W pairs are corrupt in
-specific ranges. Paired publication follows the vendor MOV form but still fails156Z/W
-pairs in its actual candidate. Most incorrect expectedW values are absent
-from the entire retained buffer. Logical writer views are disjoint; the
-complex shader register and availability-mask contract remains unresolved.
+Complex bump clip corruption is now fixed in the qualified native path.
+Mesa05c7c29 applies the actual vendor finalizer's coupled-output pair rule:
+bump FIRST maskfc00 replacesfe00 while shader instruction bodies stay
+unchanged. Actual264vertices pass all1056clip components and1440index bounds;
+the PNG shows a textured, lit object, with156GPUuser draws and0CPUuser.
+One separate capture-free1024x768/windowed/one-head/FAAoff/vsync0 run of the
+same DSO reports417FPS/2.400ms,1251GPUuser draws/0CPUuser and healthy84ac0.
+The qualification's37FPS includes dumps/readback and is not a code-speedup
+baseline; older34/43/85FPS runs had incorrect geometry. A full independent
+application pixel comparison and broader shader coverage remain open.
+[Complex bump qualification](parhelia-m9-complex-bump-mask-hardware.md).
 A separate indexed264-vertex variableZ/W fixture physically passes both
 6336record components and both65536pixel palettes with GPU transforms.
 [Exact indexed variableZ/W proof](../captures/m9x-native-variable-zw-264-20261007/README.md). Indexed app qualification, radial
@@ -58,7 +61,11 @@ run does not independently qualify asynchronous overlap; previous queue
 peak and async target are historical. No measured FPS gain is claimed.
 
 FAA public red constants change actual main-store contents, but final output
-remains black. This is not working FAA. A genuine ordinary SYSTEM red control
+remains black. Kernel516990f preserves the vendor's omitted post-wait314kick;
+one fresh hardware test still reads black after the kick, so the retained
+ordering correction is insufficient. Deep review now traces the genuine
+public surface-blit graph and its source sentinel, plus mode9 prerequisites.
+This is not working FAA. A genuine ordinary SYSTEM red control
 now has a complete source plan and exclusive kernelprofilea6c0b5e:23live
 owners,30addressfields,16timelines, noFAAactivation/resolve/companionclear.
 Actual encoder placement/alignment and absent-clear controls pass. The

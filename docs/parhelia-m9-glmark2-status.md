@@ -1,5 +1,34 @@
 # glmark2 on the m9x driver: where the 60 fps goal actually stands
 
+## 2026-10-07: complex bump clip coordinates pass; clean run reaches 417 FPS
+
+Canonical Mesa `05c7c29` follows the actual vendor finalizer's coupled
+output-pair availability rule. One 1024x768 height-bump qualification passes
+all 1056 clip-coordinate components for 264 vertices and all 1440 index
+bounds, with 156 GPU user draws and zero CPU user transforms. The captured
+window shows the textured, lit bump object. The exact record, source inputs,
+independent matrix oracle and PNG are in
+[the hardware archive](../captures/m9x-glmark-bump-coupled-mask-20261007/README.md).
+This closes the observed complex bump position corruption; it is not a full
+independent pixel reference for every varying or fragment result.
+
+The captured run reports 37 FPS with complete input/program dumps and record
+readback. At the user's performance request, one separate three-second run
+of the same DSO without that instrumentation reports **417 FPS / 2.400 ms**,
+1024x768 windowed, one display head, FAA/vsync off, RECORD2/VARYINGS5/QUEUE1.
+It completes 1251 GPU user draws, zero CPU user transforms, and retires
+`84ac0`/raw `84ac1` with an empty, healthy queue immediately and two seconds
+later. The factor relative to 37 FPS is diagnostic overhead, not a measured
+code speedup. Prior 34/43/85 FPS bump diagnostics had incorrect geometry and
+do not establish a valid clean rendering baseline. This clean run does not
+contain a second pixel capture; image and clip evidence belong to the
+separate qualification with the same binary.
+
+The source mask fix preserves shader instructions, component slicing and
+BE-owner synchronization. Default varying cap remains two; broader packed
+shader coverage, the full EE19 binding policy and other GL2 scenes remain
+open. [Source and hardware scope](parhelia-m9-complex-bump-mask-hardware.md).
+
 ## 2026-10-07: indexed variableZ/W and forced-clear fixtures pass
 
 The actual indexed264-vertex diagnostic with vertex-varying perspectiveW
