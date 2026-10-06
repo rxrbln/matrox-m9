@@ -38,10 +38,29 @@ image. The observed layout-independent records rule out deriving a
 kind-two-only metadata encoding from this loop. Hardware selection and the
 default-restore pointer tags remain separate proof obligations.
 
+The genuine hardware-format admission supplies a stronger link than the
+layout-independent page records. `477f0` obtains `MmFlags` through the actual
+configuration getter: `47812` tests bit three (`test al,8`) and `4781f` tests
+bit four (`test al,10`). Either clear bit returns zero before the format table
+search. Actual caller-registry controls `100e8` and `101a8` both return zero
+for the companion hardware format `3d`; genuine `101b8` returns one. In the
+positive case, the format-table search sets `EDI=1` and the shared return at
+`4786a` moves it to `EAX`. In both negative cases `EDI` remains zero. Clearing
+only bit four (`101b8` to `101a8`) isolates the second-view admission condition
+without changing the other allocator flags. The fixture refuses initialization
+after the negative result; the trace does not bypass that real refusal.
+
+This proves that the Windows format-admission path requires the manager and
+secondary-view mode. Combining its sampled FAA format/profile with the native
+Linux compact-only mode omits an admitted prerequisite. It still does not
+identify a hardware register that selects a table for tiled raster writes or
+establish that publishing the second view will produce a visible FAA image.
+
 Validate the retained genuine observation with:
 
 ```sh
 python3 tools/check-m9-faa-secondary-pages.py
+python3 tools/check-m9-faa-mmu-admission.py
 ```
 
 The checker verifies every record, actual source descriptor and child, all 240
