@@ -18,6 +18,7 @@
 #include <linux/unaligned.h>
 
 #include "m9_drv.h"
+#include "m9_private_stream.h"
 #include "m9_reg.h"
 
 #define M9_TRIANGLE_WIDTH		320u
@@ -1586,6 +1587,7 @@ int m9x_submit_user_stream_locked(struct m9x_device *mdev, const u32 *records,
 	u32 footer_bytes = footer_end - footer_start;
 	u32 body_end, secondary, start, used, i, *primary, *previous_used;
 	u8 *image;
+	struct m9_private_stream_owner owner;
 	int ret;
 
 	lockdep_assert_held(&mdev->transport.lock);
@@ -1637,16 +1639,21 @@ int m9x_submit_user_stream_locked(struct m9x_device *mdev, const u32 *records,
 	if (!primary)
 		return -ENOMEM;
 	start = M9_TRIANGLE_SECONDARY_PREFIX;
+	owner = (struct m9_private_stream_owner) {
+		.address = secondary,
+		.bytes = M9_TRIANGLE_SECONDARY_BYTES,
+		.domain = M9_PRIVATE_STREAM_CLASS1,
+	};
 	for (i = 0; i <= ranges; i++) {
 		u32 end = i < ranges ?
 			M9_TRIANGLE_SECONDARY_PREFIX + range_ends[i] * sizeof(u32) :
 			body_end + footer_bytes;
 
-		primary[3 * i] = 0x45452d2c;
-		primary[3 * i + 1] = (secondary + start) |
-				     M9_TRIANGLE_SECONDARY_START_TAG;
-		primary[3 * i + 2] = (secondary + end) |
-				     M9_TRIANGLE_SECONDARY_END_TAG;
+		ret = m9_private_stream_range(primary + 3 * i, &owner, start, end);
+		if (ret) {
+			kfree(primary);
+			return ret;
+		}
 		start = end;
 	}
 	if (secondary_slot < M9_QUEUE_SLOTS)
