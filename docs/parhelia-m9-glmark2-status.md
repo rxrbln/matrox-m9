@@ -1,5 +1,16 @@
 # glmark2 on the m9x driver: where the 60 fps goal actually stands
 
+## 2026-10-06: current default Q3GL2 hardware regression passes
+
+Mesaebe263e current default path completes one short native Q3GL2 timedemo:
+**387frames/9.9seconds/38.9FPS**,1024x768windowed, FAAoff/vsync0, basic
+HDR/toneMap/normal/specular/deluxe mapping0 profile. NoGPUtimeout/contextloss.
+This is close to prior38.3FPS; no convincing speed gain is established.
+Actual current DSO8d62f1ac... and genuine legacy DRI entrypoint were checked.
+See [exact current hardware proof](../tests/m9-q3-gl2-current-20261006/README.md).
+Optional four-stage five-stream qualification still fails below; default
+rendering success does not qualify that route or all optional lighting.
+
 ## 2026-10-06: complete optional route pipeline integrated; pixels pending
 
 Canonical Mesa58674dc derives all four stages for three to five streams from
