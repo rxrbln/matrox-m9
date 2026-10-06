@@ -87,3 +87,42 @@ The check executes all sixteen original controls, joins actual native/Mesa/
 Xserver source gates, verifies archived identity and hashes, and independently
 decodes raw physical IN_FORMATS blobs. The original leaf is CPU-only;
 the physical observation proves metadata only. No target operation is run.
+
+
+## Complete original setter control
+
+`tools/m9-display-start-caller-check.py` now executes the **whole** original
+`H2OCeSetDisplayStartAddress` API `m9x15699` at `2b6200` through its original
+return. Its diagnostic-table entry is `0x203`. The supplied controls own their
+CPU descriptor and row storage; the original `2ca310` lookup computes row
+addresses and validates counts. The API updates the selected live surface
+row's base, finds its route/timing/rectangle rows, and enters `m9x6104` at
+`2eba40`. That dispatcher positively tests device `0540` and selects
+`PhxSetDisplayStart` at `2f2830`. Parameters are computed by both original
+producer helpers before the original write leaf runs. This is an actual
+source execution with synthetic CPU rows, not a genuine whole boot or GL swap.
+
+Eight complete controls cover all four original route kinds and interlace
+on/off. Derived START, bounds and final configuration words are checked from
+those owned dimensions and base. A bounds failure returns the actual nonzero
+CPU error with no write. An unsupported device returns zero with no write,
+which itself shows that a zero API return is not a physical flip-success
+indicator. A strict read-trap negative stops at the original read service
+before supplying any reply. Every positive control has only the void
+write-service semantic sink; no other function is replaced or given a return.
+
+The apparent before/after calls at `2d1050` execute the original diagnostic
+control, record-building and formatting code. Their disabled CPU control is
+explicit in the fixture. The whole setter returns after programming: this
+bounded admitted path has no render-fence read, hardware latch read, scanout
+completion event or old-backing release. Four other direct calls into the
+family dispatcher are in the same `m9x7332` controller routine at `2ed6d0`,
+entered by `m9x11412` at `2b652f`. The setter's external API caller scheduling
+and any separate flip queue remain unjoined. The correct next hardware
+contract investigation is that external scheduling/completion mechanism;
+this CPU-returned setter must not be used as an async completion event.
+
+```sh
+/home/ai/tmp/faaemu/venv/bin/python tools/m9-display-start-caller-check.py \
+  --out /tmp/m9-display-start-caller.json
+```
