@@ -1660,3 +1660,38 @@ this bounded request/grant/readback/restore, with no GPIO/data/transmitter
 writes, no force-grant or polling. The original default bit28 path remains.
 `check-capture-hmc.py` validates both masks/grant predicates and restoration
 on failures against CPU files. Actual DDC capture is pending parent owner.
+
+### Actual idle ownership and conditional aperture refresh (2026-10-06)
+
+**PHYSICAL:** the same M9128 boot's bounded bit29 request saved/restored
+`318=70000003`, requested `50000003`, and observed `3b0=ffff` before,
+during and after acquisition. The canonical `ddc-hmc-physical.json` has
+SHA256 `f06fe16cd0d29b5a3b88e665238681d90acc361bbf876ea24d7b9505ab7f7059`.
+The read-only adapter, PCI-refresh and clock-control snapshots accompany it;
+their exact hashes are enforced by `m9_aperture_owner.initialize()`.
+
+**EMULATED, CONDITIONAL:** optional refresh inputs explicitly combine the
+retained partial-cold CPU owners with cleanroom postinit hardware observations.
+The helper records this hybrid scope, retains the previous HMC state, and
+admits only the proven bit29 grant plus actual344ab bit30 control writes.
+It does not claim uninterrupted vendor FindAdapter completion. Actual
+`1c10=2` and `1fdc=04010000` take the genuine reset-skip branch. Actual2e7a2
+then saves/restores the captured PCI DWORDs, e4c/e50 and358. The CPU PCI host
+accepts only bytes identical to captured PCI configuration; no physical write
+is performed.
+
+Actual3471b and2ea11 then emit finite clock-control transforms. Saved registers
+are seeded from actual idle captures, while write-only constants initially
+remain unreadable until genuine guest code writes them. Actual2eb3c emits
+8fc=0,8f8=032f7f1f,8dc=0,3a8=00020a05. These are software control echoes,
+never fabricated PLL lock, engine idle or draw completion. The refreshed
+checker reaches actual2ebd1's unknown read1800 and refuses it. It verifies the
+real BAR0 PFNs, unknown-content refusal and CPU-written readback throughout.
+The artifact is `aperture-refresh-boundary.json`; normal hardware+10 is still
+unpublished.
+
+**STATIC:** the unconditional final702cf call10fe6 reaches more than mapping
+bookkeeping: after saved display controls, actual2ebd1 invokes41892,4191e and
+41c61, including DRAM programming/readback. A populated16-byte response
+buffer is consequently still insufficient to claim normal mapper completion.
+Unknown post-programming hardware replies remain explicit boundaries.
