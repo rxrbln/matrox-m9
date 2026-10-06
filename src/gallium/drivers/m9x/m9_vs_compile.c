@@ -133,6 +133,7 @@ struct ctx {
       unsigned def, lane, reg;
    } pins[2 * M9_VS_MAX_ROUTES];
    unsigned pin_count;
+   bool packed_outputs;    /* EE19 source targets publish high before low */
    unsigned temp_seq;
    /* Temporaries of earlier instructions are dead: only one raised past
     * this mark belongs to the instruction being emitted. */
@@ -1327,6 +1328,36 @@ pin_lookup(struct ctx *c, unsigned def, unsigned lane)
    return -1;
 }
 
+/* Keep direct ALU pins when both halves can be scheduled together. Independent
+ * halves wait for the final stores. The captured GLSL source producers write
+ * EE19 high halves before low halves; this is not a rule for flat targets or
+ * every other vendor program family. */
+static void
+pin_packed_output(struct ctx *c, nir_intrinsic_instr *store,
+                  unsigned lo, unsigned hi)
+{
+   if (!store || nir_intrinsic_component(store) ||
+       store->src[0].ssa->num_components != 4 ||
+       nir_intrinsic_write_mask(store) != 15)
+      return;
+   nir_scalar s[4];
+   for (unsigned i = 0; i < 4; i++)
+      s[i] = nir_scalar_chase_movs(nir_get_scalar(store->src[0].ssa, i));
+   for (unsigned i = 1; i < 4; i++)
+      if (s[i].def != s[0].def || s[i].comp != s[0].comp + i)
+         return;
+   /* Published output registers cannot serve a later ALU or another output.
+    * Keep a normal temporary unless this full definition has one direct
+    * store owner. The ordinary pinning policy remains unchanged. */
+   if (s[0].comp || s[0].def != store->src[0].ssa ||
+       !list_is_singular(&s[0].def->uses))
+      return;
+   pin_output(c, store, 2, hi);
+   if (pin_lookup(c, s[0].def->index, 1) != (int)hi)
+      return;
+   pin_output(c, store, 0, lo);
+}
+
 /* Mesa has no pass that fuses a multiply and an add, and the hardware's
  * multiply-add takes its multiplier from a constant pair, which is what a
  * matrix column is: fold one here when the product feeds nothing else. */
@@ -1391,7 +1422,14 @@ build_alu(struct ctx *c, nir_alu_instr *alu)
       return true;
    if (alu->def.bit_size != 32 && alu->def.bit_size != 1)
       return fail(c, "narrow definition");
-   for (unsigned lane = 0; lane < lanes; lane++) {
+   int low_pin = pin_lookup(c, alu->def.index, 0);
+   bool high_first = c->packed_outputs && lanes == 2 &&
+                     low_pin >= (int)REG_OUT_LO(0) &&
+                     low_pin <= (int)REG_OUT_LO(M9_VS_MAX_ROUTES - 1) &&
+                     (low_pin - REG_OUT_LO(0)) % 4 == 0 &&
+                     pin_lookup(c, alu->def.index, 1) == low_pin + 2;
+   for (unsigned step = 0; step < lanes; step++) {
+      unsigned lane = high_first ? lanes - 1 - step : step;
       unsigned c0 = 2 * lane, c1 = MIN2(2 * lane + 1, n - 1);
       struct held a0, a1, b0, b1, x0, x1;
       bool pair = true;
@@ -1946,6 +1984,9 @@ write_output(struct ctx *c, nir_intrinsic_instr *store, unsigned reg_xy,
 
    for (unsigned j = 0; j < 4; j++)
       h[j] = out_held(store, j, dflt[j]);
+   if (c->packed_outputs)
+      return write_pair(c, reg_zw, &h[2], &h[3]) &&
+             write_pair(c, reg_xy, &h[0], &h[1]);
    return write_pair(c, reg_xy, &h[0], &h[1]) &&
           write_pair(c, reg_zw, &h[2], &h[3]);
 }
@@ -1987,6 +2028,16 @@ write_coord_output(struct ctx *c, nir_intrinsic_instr *store, unsigned stream,
    unsigned rb, sb;
    int scale, bias, es, eb;
    unsigned component = output->component;
+   unsigned result_reg = reg_xy;
+   if (c->packed_outputs) {
+      /* Keep the packed low output as the final store; do not read it back
+       * while preparing its companion high half. */
+      struct held result = held_temp(c);
+      int reg = reg_alloc_pinned(c, &result);
+      if (reg < 0)
+         return fail(c, "out of temporaries");
+      result_reg = reg;
+   }
 
    /* Both scalars have to be values the shader stores; a component it
     * leaves at the GL default is not a coordinate. */
@@ -2010,7 +2061,7 @@ write_coord_output(struct ctx *c, nir_intrinsic_instr *store, unsigned stream,
       if (t < 0)
          return fail(c, "out of temporaries");
       if (!emit_mul(c, t, &h0, &h1, &s0, &s1) ||
-          !emit_add(c, reg_xy, &ht, &ht, &b0, &b1, false))
+          !emit_add(c, result_reg, &ht, &ht, &b0, &b1, false))
          return false;
    } else {
       scale = key_coord(c, stream, M9_VS_COORD_SCALE);
@@ -2021,10 +2072,10 @@ write_coord_output(struct ctx *c, nir_intrinsic_instr *store, unsigned stream,
          return fail(c, "constant span overflow");
       if (!operand(c, &h0, &h1, false, &rb, &sb))
          return false;
-      emit(c, w0_make(NONE, rb, eb, reg_xy, 0, 0x1c),
+      emit(c, w0_make(NONE, rb, eb, result_reg, 0, 0x1c),
            w1_make(VS_MAD_RKK | 1u << 8 | sb << 6, es, NONE));
    }
-   memset(c->holds[reg_xy], 0, sizeof(c->holds[reg_xy]));
+   memset(c->holds[result_reg], 0, sizeof(c->holds[result_reg]));
    if (output->paired) {
       nir_function_impl *impl = nir_shader_get_entrypoint(c->nir);
       nir_intrinsic_instr *pair = NULL;
@@ -2049,10 +2100,20 @@ write_coord_output(struct ctx *c, nir_intrinsic_instr *store, unsigned stream,
       /* This companion has an identity transform, proved by the layout
        * resolver.  The measured high output pair is a normal two-scalar
        * target; the sampler reads it with declaration selectors 2 and 3. */
-      return write_pair(c, reg_zw, &p0, &p1);
+      if (!write_pair(c, reg_zw, &p0, &p1))
+         return false;
+      if (c->packed_outputs) {
+         emit_move(c, reg_xy, 0x1c, result_reg, 1);
+         memset(c->holds[reg_xy], 0, sizeof(c->holds[reg_xy]));
+      }
+      return true;
    }
-   emit_move(c, reg_zw, 0x1c, reg_xy, 1);
+   emit_move(c, reg_zw, 0x1c, result_reg, 1);
    memset(c->holds[reg_zw], 0, sizeof(c->holds[reg_zw]));
+   if (c->packed_outputs) {
+      emit_move(c, reg_xy, 0x1c, result_reg, 1);
+      memset(c->holds[reg_xy], 0, sizeof(c->holds[reg_xy]));
+   }
    return true;
 }
 
@@ -2174,6 +2235,7 @@ compile_head(struct ctx *c, nir_block *block, unsigned final,
    memset(c->reserved, 0, sizeof(c->reserved));
    memset(c->busy, 0, sizeof(c->busy));
    c->pin_count = 0;
+   c->packed_outputs = packed_primary || !position;
    c->temp_seq = 0;
    c->temp_base = 0;
    c->index = 0;
@@ -2189,12 +2251,10 @@ compile_head(struct ctx *c, nir_block *block, unsigned final,
          c->reserved[REG_OUT_LO(j)] = 1;
          c->reserved[REG_OUT_HI(j)] = 1;
       }
-      pin_output(c, position, 0, REG_OUT_LO(0));
-      pin_output(c, position, 2, REG_OUT_HI(0));
+      pin_packed_output(c, position, REG_OUT_LO(0), REG_OUT_HI(0));
       for (unsigned j = 0; j < M9_VS_FUSED_VARYINGS; j++)
          if (!ostream[j].coordinate) {
-            pin_output(c, var[j], 0, REG_OUT_LO(j + 1));
-            pin_output(c, var[j], 2, REG_OUT_HI(j + 1));
+            pin_packed_output(c, var[j], REG_OUT_LO(j + 1), REG_OUT_HI(j + 1));
          }
    } else if (position) {
       bool coord0 = nvar && ostream[0].coordinate;
@@ -2224,8 +2284,7 @@ compile_head(struct ctx *c, nir_block *block, unsigned final,
       }
       for (unsigned j = 0; j < nvar; j++)
          if (!ostream[j].coordinate) {
-            pin_output(c, var[j], 0, REG_OUT_LO(j));
-            pin_output(c, var[j], 2, REG_OUT_HI(j));
+            pin_packed_output(c, var[j], REG_OUT_LO(j), REG_OUT_HI(j));
          }
    }
    declare_attributes(c, used, inputs);
