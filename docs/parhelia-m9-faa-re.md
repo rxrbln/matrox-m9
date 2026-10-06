@@ -506,11 +506,14 @@ hardware format3d, 64 stored bits. The optional BA/BB resource is its HZ
 plane at `+38c`, enabled by `+39c`, rather than the linked request-kind9
 resource. See [the bounded companion proof](parhelia-m9-faa-companion-resource-20261006.md).
 
-The Linux vendor driver names the object: its surviving assert strings carry
+An earlier attribution used the Linux surviving assert string
 `virtual Pnx::RsFragPtrsBuffer* LinuxDevice::CreateFragPtrsBuffer(MUINT32,
-Pnx::RsResourceType::Pool)` at `0xe91600`, a sibling of
-`LinuxDevice::CreateZBuffer`.  **The multisample fragment store is
-`RsFragPtrsBuffer`, a fragment-pointer buffer** [STATIC].
+Pnx::RsResourceType::Pool)` to name this main output. That attribution is
+incorrect. The exact factory and consumer joins identify a separate cached
+shader-state helper pool, initially `0x200` backing bytes, published through
+selector `6c`. They do not name `ac7e0`'s format8 main output or establish its
+GPU record layout. See [the constructor proof](parhelia-m9-selector6c-constructor-static-closeout.md)
+and [the retained output audit](parhelia-m9-faa-store-record-audit.md).
 
 ### The indices that bind it [STATIC]
 
@@ -757,7 +760,8 @@ the instrument for it is built and calibrated.
    Multisample storage is a **separate buffer group** allocated by
    `MxMD.dll 0xac7e0` at about 16.55 bytes a pixel and capped at 32 MiB
    (sections 4b and 4c), not an enlargement of the colour allocation.  The
-   vendor's own name for it is `Pnx::RsFragPtrsBuffer` [STATIC].
+   `Pnx::RsFragPtrsBuffer` names the separate selector6c state helper pool;
+   it does not establish this output buffer's name or record format.
 2. **AD bits 6:4.**  **CLOSED, and the field is on hardware.**  They are not
    AD bits at all; they are bits 6:4 of nested compiled state `+0x04`, which
    the lowerer shifts into surface shadow `+0xb8` bits 31:29 and the emitter
