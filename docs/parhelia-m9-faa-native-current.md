@@ -763,3 +763,35 @@ pointer or an address relocation; the native initialization should retain
 the literal value. This proof closes command address translation and the
 sentinel literal provenance, while HZ clear construction and rendered FAA
 remain separate outstanding requirements.
+
+### First-use sentinel restore precedes cached state save
+
+The same owned-resource capture now executes actualfce90 context construction,
+then fce50 before any restore, actualfcb60 with the allocated current sentinel,
+and finally fce50 using the cache published by that real restore. Context
+construction initializes current74/78 and cached7c/80 to null. Its84/88 words
+are generic default register state until the caller publishes a resource;
+they are not a constructor-created pool6 pointer. The fixture supplies the
+real allocated pool6 pair as an explicit caller binding.
+
+Before the first restore, fce50 emits zero bytes despite its dirtybit8 being
+requested: actualfc8f0 rejects a null cached sentinel. First fcb60 uses the
+current sentinel and emits20 actual raw words. Its real common-counter fence
+packet begins `4545e3e6 1 21` in this capture. The remainder contains E6
+`42000000`, eight literal28041968 index44 writes, E6 `3 3`, then index2e/2f
+references using kind2c/2e. These encode `sentinel|1` and `sentinel+14`:
+kind2e clears the low two address bits, unlike the tagged kind2c path.
+No pool6 address appears in this first sentinel-restore command stream.
+
+Only after these commands does actualfcb60 copy current74/78 into cached7c/80
+atfce05..fce39. Subsequentfce50 emits the29-word pool6/context save plus
+A1/A3/A4 sentinel save sequence already proved above. Thus the previous
+capture's preseeded cached sentinel was a command-encoding fixture, not a
+first-use policy. Normal context switching atf8fd0 saves the old owner only
+if one exists, then restores a new owner's sentinel when dirtybit4 is set;
+thefc342 dispatcher similarly processes savebit8 before restorebit4.
+
+This checkpoint executes actual CPU constructors, counter/reference handling
+and command production. It supplies no GPU completion or fabricated counter
+readback. The commands have not been executed by hardware here, so pool6 GPU
+state acquisition semantics and complete enabled draw/resolve remain open.
