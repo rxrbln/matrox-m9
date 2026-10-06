@@ -1724,9 +1724,33 @@ m9_job_native(struct m9_context *ctx, const struct m9_job_key *key,
    return 0;
 }
 
+/* Select the exact immutable C2 owner named by this job, including an
+ * older queued image. Never substitute the most recently bound program. */
+static const struct m9_resource *
+m9_job_c2_owner(const struct m9_context *ctx, const struct m9_fs_variant *fs,
+                 uint32_t handle)
+{
+   if (!handle)
+      return NULL;
+   if (fs) {
+      if (fs->native_c2.handle == handle)
+         return &fs->native_c2;
+      util_dynarray_foreach(&fs->native_c2_images, struct m9_native_image, image)
+         if (image->image.handle == handle)
+            return &image->image;
+   }
+   if (ctx->vs_c2.handle == handle)
+      return &ctx->vs_c2;
+   util_dynarray_foreach(&ctx->vs_c2_images, struct m9_native_image, image)
+      if (image->image.handle == handle)
+         return &image->image;
+   return NULL;
+}
+
 /* Job words, relocations, fragment slots and constants for offline decode. */
 static void
-m9_dump_job(struct m9_context *ctx, const struct m9_fs_variant *fs)
+m9_dump_job(struct m9_context *ctx, const struct m9_fs_variant *fs,
+            const struct m9_draw_job *job)
 {
    const struct m9_batch *b = &ctx->batch;
    /* M9X_DUMP_FROM / M9X_DUMP_COUNT select a window of jobs by their running
@@ -1764,6 +1788,45 @@ m9_dump_job(struct m9_context *ctx, const struct m9_fs_variant *fs)
       else if (b->bos[i].handle == ctx->index.handle) size = ctx->index.size;
       fprintf(out, "BO handle %u flags %u size %#" PRIx64 "\n",
               b->bos[i].handle, b->bos[i].flags, size);
+   }
+   if (job->vs_producer_entry && ctx->job_key.vs) {
+      const struct m9_vs_program *vs = ctx->job_key.vs;
+      const struct m9_resource *image = m9_job_c2_owner(ctx, fs, job->program);
+      unsigned slots = job->vs_producer_entry + m9_vs_producer_slot_count(vs);
+      unsigned final_entry = job->vs_extra_entry - m9_vs_slot_count(vs);
+      fprintf(out, "NATIVEVS vertices %u stride %u C2 %u slots %u "
+              "entries %u/%u/%u/%u masks %04x/%04x record-view %u fields %u\n",
+              job->source_vertices, job->vs_record_bytes,
+              job->program, slots, job->vs_producer_entry, job->vs_extra_entry,
+              job->vs_gather_entry, final_entry, job->vs_producer_mask, job->vs_extra_mask,
+              job->vs_record_view, job->vs_extra_targets + 3);
+      /* These are the actual mapped submitted image bytes before ioctl,
+       * not reconstructed opcodes or a claim of GPU fetch visibility. */
+      if (image && image->map && 8ull * slots <= image->size) {
+         const uint32_t *w = image->map;
+         for (unsigned i = 0; i < slots; i++)
+            fprintf(out, "C2 %u %08x %08x\n", i, w[2*i], w[2*i+1]);
+      } else {
+         fprintf(out, "C2 OWNER MISSING\n");
+      }
+      uint64_t bytes = (uint64_t)MIN2(job->source_vertices, 16u) * job->vs_record_bytes;
+      if (ctx->source.handle == job->source && ctx->source.map &&
+          bytes <= ctx->source.size) {
+         const uint32_t *w = ctx->source.map;
+         fprintf(out, "SOURCE vertices %u of %u bytes %" PRIu64 "\n",
+                 MIN2(job->source_vertices, 16u), job->source_vertices, bytes);
+         for (unsigned i = 0; i < bytes / 4; i++)
+            fprintf(out, "SOURCE %u %08x\n", i, w[i]);
+      }
+      uint64_t const_bytes = (uint64_t)job->vs_const_pairs * 8;
+      if (ctx->system.handle == job->system && ctx->system.map &&
+          M9_VS_CONST_OFFSET <= ctx->system.size &&
+          const_bytes <= ctx->system.size - M9_VS_CONST_OFFSET) {
+         const uint32_t *w = (const uint32_t *)((const uint8_t *)ctx->system.map +
+                                               M9_VS_CONST_OFFSET);
+         for (unsigned i = 0; i < const_bytes / 4; i++)
+            fprintf(out, "VSCONST %u %08x\n", i, w[i]);
+      }
    }
    if (fs) {
       const float *k = ctx->job_consts.data;
@@ -2798,7 +2861,7 @@ m9_submit_job(struct m9_context *ctx)
 
       ctx->batch.sealed = true;
       if (ctx->dump_path)
-         m9_dump_job(ctx, fs ? key->variant : NULL);
+         m9_dump_job(ctx, fs ? key->variant : NULL, &job);
       t_ioctl = m9_prof_begin();
       ret = ctx->dry_run ?
             m9_batch_validate(ctx->screen, &ctx->command, &ctx->batch,
@@ -2827,7 +2890,7 @@ m9_submit_job(struct m9_context *ctx)
             break;
          ctx->batch.sealed = true;
          if (ctx->dump_path)
-            m9_dump_job(ctx, key->variant);
+            m9_dump_job(ctx, key->variant, &job);
          ret = ctx->dry_run ?
                m9_batch_validate(ctx->screen, &ctx->command, &ctx->batch,
                                  ctx->context_id) :
