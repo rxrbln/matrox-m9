@@ -1336,7 +1336,8 @@ capability owners or prove M9128 FAA admission.
 ### Bounded actual-board SPI identity capture helper
 
 `tools/m9emu/capture-spi.c` is prepared for root's review and sole-owner,
-locked idle-target execution; it has **not** yet run on the GPU. The helper
+locked idle-target execution; root subsequently ran it successfully, as
+documented below. The helper
 requires PCI102b0540 rev1 subsystem102b22c0 and inactive CS/clock/MOSI/1000
 controls. It changes only BAR2`+304`, issuing read-only flash commands15,
 AB000000 (only if command15's first byte is not1f, matching vendor fallback)
@@ -1390,3 +1391,33 @@ backing-allocator ownership and its device`+6988` publication. Profile
 construction, address encoding and ordinary context refcounts are proved;
 physical allocation domain, resource contents and enabled surface admission
 remain open.
+
+### Actual M9128 SPI responses now captured and admitted
+
+Root ran the reviewed bounded capture under the established locks with
+X/GPU clients stopped. Actual M9128 returned command15=`ffff`, AB=`bf49`
+and ROM8=`55aa78eb7b17ba02`, exactly the retained board shadow's first8
+bytes. The capture completed426 writes, saved/restored304=0, timeout0,
+return0 and no new error on the same boot815d4dcc. Retained
+`spi-identity.json` SHA is
+`707744e68f7374669c42a33322d488be31591936e4451198810f84cbc4db7014`.
+These replies happen to match M9148, but are independently measured on this
+installed M9128 and no longer borrowed from another board.
+
+`M9128Inputs` now validates the physical capture against board identity,
+restoration and known-ROM8, admits those identity bytes, and reuses the
+bounded ownership capture from this same M9128 boot. Real FindAdapter
+continues through ROM header/PInS accesses at0,7ffc,7460,7464,7462,7460,
+then ownership31870000003→60000003/grant3b0ffff, and stops precisely at
+uncaptured GPIO1c4c. Full ROM payloads still come from the actual board's
+legacy shadow; physical SPI verification covers its first8 bytes, not every
+payload byte. No EEPROM ACK/data or engine completion is supplied.
+
+At this boundary actual miniport owner`+4 +1ec` already points to a genuine
+indexed configuration instance. Executing real `26d9d` finds its single
+type14/208-byte record. Its initial header holds1/0540 at offsets0/4, but
+fields8/1ac/1b0/204 are still zero before GPIO-dependent initialization.
+`bootstrap.json` preserves its pointers and exact208 bytes under
+`partial_capability_record`. This is an allocated, incompletely initialized
+record; zero`+204` must **not** be used as evidence of unsupported M9128 FAA
+or fed to normal ICD admission as initialized capability data.
