@@ -1,5 +1,15 @@
 # glmark2 on the m9x driver: where the 60 fps goal actually stands
 
+## 2026-10-06: bounded reciprocal/root branches support radial GPU passes
+
+Mesa3948308 admits the unchanged captured radial shader with two/four stops
+through7/9nativeGPU passes by enabling bounded pure expensive-ALU selection.
+Unsafe speculation guards and defaultcap2 remain. Root full fragment/vertex/
+batch gates and full DSO build pass; independent native-word radial reference
+checks12288cells/count, with three exact-zero boundary limits explicit.
+[Root integration evidence](../tests/m9-expensive-alu-integration-20261006/README.md).
+Hardware seed/pixels/record publication remain unqualified; no new FPS claim.
+
 ## 2026-10-06: current default Q3GL2 hardware regression passes
 
 Mesaebe263e current default path completes one short native Q3GL2 timedemo:
