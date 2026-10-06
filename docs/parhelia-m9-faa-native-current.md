@@ -992,3 +992,19 @@ A direct GPU-address lookup in BAR0 validity is not sufficient to classify
 pool6/sentinel initialization: the GPU virtual address must first be joined to
 its actual CPU mapping/physical aperture domain. No empty validity mask is
 currently admitted as evidence that the resources are uninitialized.
+
+The handle/current-target join now succeeds through bounded genuine `7a770`:
+real `beb40/c04a0` creates and locates the DD-local registry, then
+`7a770→a3710→a9ab0→885e0→7a7d7` publishes wrapper handle1. Public `bec70`
+context creation reuses these exact OS DD-local/global pointers, returns1 with
+HRESULT0, and retains both the actual registry table and handle1 at
+`context+34/+8` and `+c4`. The reusable context fixture fails if either owner
+changes. `tools/m9-vendor-faa-associated-context.py` reproduces this contract;
+the associated-context trace records the genuine addresses and ownership.
+
+This bounded producer is below public `bf0e0`'s still-unjoined display-enabled
+Boolean at PDEV+30; it neither sets that field nor claims public surface-callback
+admission. The first real draw now reaches render-target validation `75788`,
+which requires the ordinary `hardware+fea8[head]` owner. The earlier handle0
+fixture skipped this branch. Triangle emission and coherent FAA rendering are
+still unproved at this checkpoint; no executable Linux FAA frame is admitted.
