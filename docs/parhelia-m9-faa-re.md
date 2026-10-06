@@ -1105,3 +1105,40 @@ with kind5; this is not an alias of BC fragment storage or B8 companion.
 The conditional outputs and both relocation lists are retained in
 `full-surface-packets.json`; `check-surface-packets.py` proves both branches.
 No hardware operation or physical GPU completion occurred in these runs.
+
+### Current M9128 ownership capture and bounded host replay
+
+The root hardware owner ran `tools/m9emu/capture-hmc.c` with idle GPU/display
+clients and the established target lock on the current **M9128 LP PCIe x16,
+102b:0540 rev1, 102b:22c0**, boot`815d4dcc`. The cleanroom driver had already
+initialized the board. The captured request changes only miscIO request bit28:
+
+```text
+318 saved70000003 -> requested60000003 -> restored70000003
+3b0 before0000ffff -> acquired0000ffff -> after0000ffff
+```
+
+The helper guards PCI identity and existing ownership, completes all fallible
+setup before requesting ownership, blocks asynchronous signals across the
+request/read/restore operations, flushes posted writes with reads and prints
+only after restoration. It sends no serial data, flash write or erase command.
+Its source builds with `-std=c11 -Wall -Wextra -Werror`.
+
+Optional `--hmc-inputs` replays only this captured bit28 request/restore and
+grant state; unknown request bits, DDC requests and writes to the grant
+register remain explicit stops. This modern cleanroom postinit snapshot is
+**distinct from the historical M9148 vendor-cold PCI/ROM/SPI captures** used
+by bootstrap; the harness records this mixed-input provenance explicitly.
+It supplies no engine completion or GPIO input value.
+
+Genuine MxMM FindAdapter now executes the `0x341bb` ownership acquisition,
+clears request28 and observes the captured grant, then stops on its actual
+**BAR2+0x1c4c GPIO read**. `captured-hmc-bootstrap-trace.json`, the raw
+`m9128-ownership-request.json` and board identity retain the evidence.
+`check-hmc-inputs.py` proves the bounded state transitions and refusal to
+invent other operations. Full FindAdapter/HwInitialize remain open.
+
+Next bootstrap input is the actual miscIO I2C/board-EEPROM protocol; a whole
+live-register snapshot must not stand in for dynamic slave ACK/data. For FAA,
+the newly exposed device-owned index24 resource and conditional E6/BCBD
+producer remain the highest leverage packet investigation.
