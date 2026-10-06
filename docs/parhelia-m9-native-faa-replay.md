@@ -1,5 +1,12 @@
 # Private native M9128 FAA replay
 
+Latest physical result: kernel `7dd03c5` on M9128 boot `6c79ac0e` passes
+the positive CPU control and retires the private frame, but its image fails.
+The companion-table profile produces new fragment-store and AA-companion
+writes; the actual readback is scattered incorrect data rather than the
+green triangle. See the latest qualification at the end of this note and
+`tests/m9-faa-companion-20261006`. Earlier runs below are historical.
+
 The Linux producer now owns the actual normal FAA frame's allocations and
 source bytes. It is a bounded diagnostic behind `m9_faa_diag=1`, selected
 through the existing FIRST_TRIANGLE ioctl. It does not enable application
@@ -139,3 +146,29 @@ loaded/after logs and actual black PPM. The private attempt is consumed;
 another full submission requires a fresh boot and a new implementation
 candidate. CPU visibility is closed for this fixture; fragment output and
 generic application FAA remain open.
+
+## Companion profile writes FAA owners; the image remains incorrect
+
+Kernel `7dd03c5` implements the source-proven private Windows100f8/101f8
+constructor profile, while retaining the complete captured101b8 native
+frame. The compact table occupies401000/104000 and its optional16-byte
+companion505000/410000; CPUroot915000, tail995000 and restorea99000 follow.
+The actual cold constructor clears only companion DWORD0. Local mappings
+publish [page|8,0,0,unknown] without initializing the unknown last DWORD.
+Coherent DMA publishes its known [pte,0,pagecount,0] metadata, retaining the
+proven native nibble-a domain. Bounds, conflicts, actual readback and failed
+publication quarantine are covered by the source-helper CPU fixture.
+
+On fresh boot `6c79ac0e-786d-4dcb-822e-d34a4b13fb3f`, all76800 positive
+CPU pixels pass; known VRAM inputs verify; primary0x3a2f000 retires at1e0.
+The image oracle fails: colored270, full0, partial270, interior_bad8326,
+exterior_bad183, non_green809. This is not a successful FAA screenshot.
+
+The main fragment store and AA companion, previously zero, now contain
+1041 and1404 nonzero DWORDs respectively. Their actual read-only retired
+BAR bytes match the before/after kernel observations. Preprocessing retains
+correct positions and green varyings. Packed-looking destination pixels
+require further resolve/translation/CPU-view analysis; owner writes and
+retirement do not establish correct fragment coverage. Complete logs,
+module/source hashes, actual PPM and compressed raw buffers are archived in
+`tests/m9-faa-companion-20261006`. No application FAA is enabled.

@@ -9,25 +9,28 @@ rendering is not yet validated. This note is separate from P690
 `102b:2539` evidence.
 
 Current authoritative private replay and hardware evidence are in
-[the native replay note](parhelia-m9-native-faa-replay.md). Kernel `be6d018`
+[the native replay note](parhelia-m9-native-faa-replay.md). Kernel `7dd03c5`
 includes the complete normal-surface capture with 30 owners, 53 typed addresses,
 26 timeline fields and the actual 5676-byte primary and 604/772-byte counted
-secondaries. The latest physical M9128 run on boot `808a1512` passes all
+secondaries. The latest physical M9128 run on boot `6c79ac0e` passes all
 76800 positive CPU pattern pixels through the exact vendor F0220140 view,
 verifies all 117648 known VRAM input bytes, and reaches GPU retirement `0x1e0`.
-The image still fails: black, zero colored/partial pixels, 8326 bad interior
-pixels. App FAA remains disabled; there is no FAA-on application screenshot.
+The image still fails: 270 scattered partial pixels, no full green pixels,
+8326 bad interior pixels, 183 bad exterior pixels and 809 non-green pixels.
+App FAA remains disabled; there is no FAA-on application screenshot.
 
 The direct CPU-root mapping is repaired and physically verified. The latest
-run additionally verifies the bounded 256 MiB direct-root initialization and
-3072 vendor virtual-address tags in default restore records. Neither produces
-fragments. Before/after observations show geometry/preprocessing, auxiliary
-and HZ changes, while the main fragment store remains zero. The preceding
-run's actual read-only bytes prove correct triangle positions and green
-varyings. See `tests/m9-faa-root-join-20261006` and
-`tests/m9-faa-virtual-restore-20261006`. The remaining failure is downstream
-of preprocessing; the vendor's optional 16-byte mapping view and fragment
-state are under investigation. Its hardware consumption is not yet proven.
+run retains the bounded 256 MiB direct-root initialization and 3072 vendor
+virtual-address tags, and adds the coherent optional 16-byte companion
+mapping profile and source-known DMA metadata. The main fragment store now
+changes from zero to 1041 nonzero DWORDs and the AA companion to1404.
+Actual retired BAR bytes agree with kernel observations; preprocessing has
+correct triangle positions and green varyings. See
+`tests/m9-faa-companion-20261006` for the latest failed image and raw resource
+evidence; earlier root-join and virtual-restore archives retain historical
+results. The remaining failure is downstream of preprocessing: packed FAA
+data, resolve and destination/CPU-view interpretation are being compared
+with the actual vendor flow. GPU writes are not proof of correct pixels.
 
 The earlier manually joined frame below was superseded by the coherent
 normal-surface capture, whose second real launcher retains sampledFAAstate.
