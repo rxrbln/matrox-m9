@@ -20,6 +20,7 @@
 #include <drm/drm_gem_vram_helper.h>
 #include <drm/drm_plane_helper.h>
 #include <drm/drm_probe_helper.h>
+#include <drm/drm_property.h>
 #include <drm/drm_vblank.h>
 
 #include "../matrox_common/matrox_kms_common.h"
@@ -1472,9 +1473,8 @@ static const u64 m9_format_modifiers[] = {
  * its modifier list is declared -- X could not create one and presented
  * nothing.  drm_plane_has_format() consults this through the plane's funcs at
  * call time, so replacing the pointer after the pipe is built is enough to
- * admit the buffers.  The IN_FORMATS blob is still the one built during init,
- * which lists LINEAR alone; correcting what userspace enumerates needs the
- * real CRTC and plane that replacing the simple pipe would bring.
+ * admit the buffers.  Its immutable IN_FORMATS blob was already built with
+ * that old predicate, so publish a matching blob before device registration.
  */
 static bool m9_plane_mod_supported(struct drm_plane *plane, u32 format,
 				   u64 modifier)
@@ -1485,6 +1485,77 @@ static bool m9_plane_mod_supported(struct drm_plane *plane, u32 format,
 		if (m9_format_modifiers[i] == modifier)
 			return m9_format_modifiers[i] != DRM_FORMAT_MOD_INVALID;
 	return false;
+}
+
+/* Called only during modeset initialization, before drm_dev_register(). The
+ * simple pipe's original blob has its global creation reference, plus the
+ * lookup reference taken here. Replace the ID before releasing either.
+ * drm_mode_config_cleanup() owns the new blob's creation reference.
+ */
+static int m9_plane_publish_modifiers(struct drm_plane *plane)
+{
+	struct drm_device *drm = plane->dev;
+	struct drm_property *property = drm->mode_config.modifiers_property;
+	struct drm_property_blob *old, *blob;
+	struct drm_format_modifier_blob *data;
+	struct drm_format_modifier *mods;
+	size_t formats_size, modifiers_size, offset, bytes;
+	u64 old_id;
+	unsigned int i, j;
+	int ret;
+
+	/* The current DRM format-mask encoding supports 64 formats per row. */
+	if (!property || !plane->format_count || plane->format_count > 64 ||
+	    !plane->modifier_count || !plane->funcs->format_mod_supported)
+		return -EINVAL;
+	ret = drm_object_property_get_value(&plane->base, property, &old_id);
+	if (ret)
+		return ret;
+	if (!old_id || old_id > U32_MAX)
+		return -EINVAL;
+	old = drm_property_lookup_blob(drm, old_id);
+	if (!old)
+		return -EINVAL;
+
+	if (check_mul_overflow(sizeof(u32), (size_t)plane->format_count,
+			       &formats_size) ||
+	    check_mul_overflow(sizeof(*mods), (size_t)plane->modifier_count,
+			       &modifiers_size) ||
+	    check_add_overflow(sizeof(*data), ALIGN(formats_size, 8), &offset) ||
+	    check_add_overflow(offset, modifiers_size, &bytes)) {
+		ret = -EOVERFLOW;
+		goto put_old;
+	}
+	blob = drm_property_create_blob(drm, bytes, NULL);
+	if (IS_ERR(blob)) {
+		ret = PTR_ERR(blob);
+		goto put_old;
+	}
+	data = blob->data;
+	data->version = FORMAT_BLOB_CURRENT;
+	data->count_formats = plane->format_count;
+	data->formats_offset = sizeof(*data);
+	data->count_modifiers = plane->modifier_count;
+	data->modifiers_offset = offset;
+	memcpy((u8 *)data + data->formats_offset, plane->format_types, formats_size);
+	mods = (void *)((u8 *)data + offset);
+	for (i = 0; i < plane->modifier_count; i++) {
+		mods[i].modifier = plane->modifiers[i];
+		for (j = 0; j < plane->format_count; j++)
+			if (plane->funcs->format_mod_supported(plane,
+					plane->format_types[j], plane->modifiers[i]))
+				mods[i].formats |= BIT_ULL(j);
+	}
+	ret = drm_object_property_set_value(&plane->base, property, blob->base.id);
+	if (ret) {
+		drm_property_blob_put(blob);
+		goto put_old;
+	}
+	/* The replaced blob is no longer a global mode-config property. */
+	drm_property_blob_put(old);
+put_old:
+	drm_property_blob_put(old);
+	return ret;
 }
 
 
@@ -1800,6 +1871,9 @@ static int m9_head_init(struct m9x_device *mdev, struct m9_head *head,
 	head->plane_funcs = *head->pipe.plane.funcs;
 	head->plane_funcs.format_mod_supported = m9_plane_mod_supported;
 	head->pipe.plane.funcs = &head->plane_funcs;
+	ret = m9_plane_publish_modifiers(&head->pipe.plane);
+	if (ret)
+		return ret;
 	drm_info(drm, "head %u: plane takes tiled and linear framebuffers\n",
 		 head->index);
 	/* Each connector owns its own bit-banged bus, so userspace sees which
