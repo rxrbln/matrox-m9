@@ -1310,11 +1310,15 @@ identity, not independent dynamic SPI transaction responses.
 set through `m9128-inputs.py`, independently of the older M9148 capture.
 Actual resources put BAR2 at`fdffe000`, versus historical`febfe000`.
 The genuine MSerX miniport FindAdapter reaches that actual BAR2 mapping;
-the model then deliberately stops before device reads. It cannot borrow
+the model now uses the separately captured BAR2`+304=0` baseline to clock
+the genuine first SPI header, then deliberately stops at opcode15's uncaptured
+identity response. It cannot borrow
 M9148 initial MMIO, opcode15/AB identity responses or later completion
 state. Current actual idle GPIO values are baselines, not an EEPROM/SPI
 protocol trace. `check-m9128-inputs.py` verifies the board hashes, actual
-mapping and this precise refusal boundary. Physical SPI identities and
+mapping and this precise refusal boundary. The scalar baseline's SHA is
+`7361bda8958499b6d0447316723db92767916c44e26f41982dec1dda2601a620`;
+it is not a substituted whole MMIO snapshot. Physical SPI identities and
 board-EEPROM slave responses remain required to continue actual-board
 bootstrap.
 
