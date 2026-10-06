@@ -57,3 +57,17 @@ to copy inherited MMIO values. Requester arming, partition controls, service
 windows and the restore image are already accounted for by their own source
 producers. The remaining boundary needs a genuine device-enable/cold-state
 contract with board inputs, rather than a changed restore variant.
+
+Further static consumer pins narrow two members of that chain. `0x5ed49`
+iterates collection type three and calls `0x1cfbd`; the latter increments a
+CPU collection DWORD after `0x1d02c` returns its backing pointer. It neither
+restores GPU context bytes nor writes an engine enable. `0x5d475` constructs
+an operation descriptor and calls `0x5d6f5`; the selected head index must be
+less than four (`0x5d754..0x5d75f`). Consumer `0x5af6d` selects its state at
+profile `+0x21fb14+head*0x74`. Its four-byte branch at
+`0x5b035..0x5b064` copies three 256-entry 16-bit tables, using source offsets
+`+0x18/+0x218/+0x418`. This is concrete head/table state, not a program,
+pool22 or FAA-address publication. These added pins are static source
+evidence; the retained dynamic run did not invoke that device-enable chain.
+Other members remain open, so this bounded classification does not claim
+the entire request is irrelevant to rendering.
