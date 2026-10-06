@@ -45,6 +45,7 @@ struct m9_faa_tracker {
 	u32 owner, offset, captured;
 };
 #if (defined(M9_FAA_CONSTANT_SHADER_CONTROL) + \
+     defined(M9_FAA_CONSTANT_RED_CONTROL) + \
      defined(M9_FAA_INIT_ONLY_CONTROL) + \
      defined(M9_FAA_POST_TRIANGLE_CONTROL)) > 1
 #error "Select only one complete private FAA source profile"
@@ -60,6 +61,11 @@ struct m9_faa_tracker {
  * before output/resolve. Its final counter is in its counted secondary. */
 #include "m9_faa_post_triangle_data.h"
 #define M9_FAA_INPUT_FIRMWARE "m9x/faa-post-triangle-known-inputs.bin"
+#elif defined(M9_FAA_CONSTANT_RED_CONTROL)
+/* A distinct whole public source capture changes c0 through SETCONST.
+ * Never patch captured green command or program bytes in place. */
+#include "m9_faa_constant_red_data.h"
+#define M9_FAA_INPUT_FIRMWARE "m9x/faa-constant-red-known-inputs.bin"
 #elif defined(M9_FAA_CONSTANT_SHADER_CONTROL)
 /* Whole independently captured public CREATEPS/SETCONST/SETPS flow. The
  * input blob and all owner/fixup tables are one source profile; never splice

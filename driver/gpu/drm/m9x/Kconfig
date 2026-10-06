@@ -35,9 +35,21 @@ config DRM_M9X_FAA_CONSTANT_SHADER_CONTROL
 	  setup dependency while preserving the source vertex and raster state.
 	  It still requires m9_faa_diag=1 and does not enable application FAA.
 
+config DRM_M9X_FAA_CONSTANT_RED_CONTROL
+	bool "Private M9128 FAA public constant red shader control"
+	depends on DRM_M9X && X86_64 && !DRM_M9X_FAA_CONSTANT_SHADER_CONTROL
+	default n
+	help
+	  Select the complete independently recovered public CREATEPS/SETCONST/
+	  SETPS constant-red source profile with its separate
+	  m9x/faa-constant-red-known-inputs.bin firmware. Compared with the green
+	  profile this tests shader-color dependence of actual retained stores.
+	  It still requires m9_faa_diag=1 and does not enable application FAA.
+
 choice
 	prompt "Private M9128 FAA source phase control"
 	depends on DRM_M9X && X86_64 && !DRM_M9X_FAA_CONSTANT_SHADER_CONTROL
+	depends on !DRM_M9X_FAA_CONSTANT_RED_CONTROL
 	optional
 	help
 	  Select one independently recovered vendor queue finish instead of the
