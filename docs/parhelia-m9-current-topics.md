@@ -15,8 +15,13 @@ locks. Keep source-proven improvements even when a short benchmark is flat.
 Mesa c7b8a6e corrects native packed publication. Both complete1024x768
 textured/depth palettes now match786432pixels each,4608vertices, six GPU
 user draws and zero user CPU fallback, with healthy retirement. Strict CPU
-record decoding and unusual batch-size bounds remain under investigation;
-default varyingcap2 is unchanged. Actual glmark2 buffer wireframe now also
+record decoding and unusual batch-size bounds are now implemented with full
+retained-owner checks. A fresh integrated307ff0a/4f2012e hardware test exits0,
+passes all221184actual record components and both independent786432pixel
+palettes, with healthy retirement. See
+[strict record/pixel proof](../tests/m9-gl2-record-complete-hardware-20261006/README.md).
+This is the measured six-field fixture scope; default varyingcap2 is
+unchanged. Actual glmark2 buffer wireframe now also
 completes with34native draws/0module/0skipped, noGPUtimeout and an empty
 queue. Its single1024x768/vblank0/FAAoff run reports about34FPS; screenshot
 and independent wireframe image fidelity are still unqualified. Bump-height

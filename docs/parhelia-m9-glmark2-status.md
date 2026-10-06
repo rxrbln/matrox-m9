@@ -1,5 +1,17 @@
 # glmark2 on the m9x driver: where the 60 fps goal actually stands
 
+## 2026-10-06: complete strict packed records and textured/depth pixels pass
+
+Integrated Mesa307ff0a/4f2012e, rootDSObca674ce, now passes a fresh full
+1024x768 fixture with exit0: all221184actual record components and both
+independent786432pixel palettes pass. Six GPU application draws,0application
+CPU transforms, real14440/14560retirement, emptyqueue/wedged0/noGPUtimeout.
+The versioned dumps retain full442368byte payloads and the measured six-field
+tile/bank decoder; negative controls reject incomplete/wrong layout records.
+This closes the prior fixture-only raw-record failure. It does not close the
+bump application image failure below or qualify all GL2/defaultcap promotion.
+[Exact strict hardware proof](../tests/m9-gl2-record-complete-hardware-20261006/README.md).
+
 ## 2026-10-06: bump-height retires but actual image fails
 
 The next1024x768 bump-height run completes170GPU user draws/0CPU user
