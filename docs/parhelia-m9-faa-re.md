@@ -1061,3 +1061,47 @@ python3 tools/m9emu/check-captured-identity.py
 
 Next inspect the genuine `0x318/0x3b0` ownership protocol. Captured baseline
 values alone cannot stand in for every subsequent grant/acknowledgement state.
+
+### Entire surface emitter: conditional index24 / E6 / store binding
+
+`tools/m9emu/surface-packets.py` now executes the full genuine `fb920` function
+with explicit controlled address/descriptor markers and a relocation sink.
+The **shadow is not produced by an initialized API allocation**: this proves
+the function's conditional packet order and relocation contract, not FAA
+admission or the validity of marker descriptors. Owner-allocation dirty bits
+remain zero; no allocator/reference callback is forced to succeed.
+
+With surface dirty mask`0x8f0` and shadow pair`+0x9c/+0xa0` different from
+the driver's global null pair`20d51c/20d520`, genuine execution emits:
+
+1. B8/B9 (relocation6), BA/BB (7), BE (8).
+2. **index24**, relocation kind`0x2b` from shadow`+0x9c`.
+3. **E6 three times**, payloads`0x6dc00000`, `1`, `1`.
+4. BC/BD, relocation kinds9/10 from shadow`+0x80/+0x94`.
+5. AD four times and AF once.
+
+The precise middle words are:
+
+```text
+00000001 45454524 <controlled address marker>
+00000003 45e6e6e6 6dc00000 00000001 00000001
+00000002 4545bdbc <controlled store marker> <controlled second marker>
+```
+
+When shadow`+0x9c/+0xa0` equals the genuine global null pair, the function
+**skips the complete index24 / E6 / BCBD block** and leaves dirty bit`0x40`
+set, while emitting the other dirty state. Thus the store pair is gated by
+an additional bound object; emitting BC/BD alone does not reproduce this
+vendor producer. The clear case retires all controlled dirty bits.
+
+Current native M9 FAA code lacks index24 and this E6 triple; its kernel
+validator also rejects these E6 payloads. **Do not broaden the whitelist or
+insert a guessed index24 address.** The exact owner/resource producer and
+real relocation semantics must be established first. Independent static
+tracing locates shadow`+0x9c` producer in binder`aa750` at`aad13`, fetching
+a device-owned per-slot resource and invoking its descriptor method`+0x5c`
+with kind5; this is not an alias of BC fragment storage or B8 companion.
+
+The conditional outputs and both relocation lists are retained in
+`full-surface-packets.json`; `check-surface-packets.py` proves both branches.
+No hardware operation or physical GPU completion occurred in these runs.
