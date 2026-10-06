@@ -66,5 +66,10 @@ alignments, checks footer/length and complete prefix/suffix/secondary/geometry
 preservation, leaves unknown output bytes untouched, and rejects damaged
 source clear words and undersized owners before mutation. The source
 checker, reader/companion fixtures and complete kernel module build pass.
-Actual native retirement and correct ordinary output pixels still require
-the separate physical qualification. Application FAA remains disabled.
+The first physical qualification of kernel `df1f49e` reaches actual native
+retirement `0x1d0` but fails: all76800 visible ordinary output pixels are
+black. Main/AA fragment hashes are unchanged from the earlier failed runs.
+See [the hardware evidence](../tests/m9-faa-ordinary-output-20261006/README.md).
+SYSTEM mapped-prefix pre/post observations are being added; primary virtual
+fetch versus physical clone remains a behavioral difference to qualify.
+Application FAA remains disabled.

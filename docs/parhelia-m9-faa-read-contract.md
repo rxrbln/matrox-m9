@@ -83,3 +83,10 @@ last16rows. The retained
 records count, helper bytes and address-map checksum, rather than a large
 array of repeated events. Refused coordinates leave the output argument
 unchanged. This is a CPU address proof and makes no claim about GPU pixels.
+
+The first explicit ordinary output hardware read (kernel `df1f49e`, boot
+`3b7f5f11`) succeeds after real retirement `0x1d0`, but all76800 visible
+pixels are black and the image oracle fails. This is a failed rendering
+qualification, not successful FAA. Raw SYSTEM prefix deltas were not observed
+in that run; [logs and image](../tests/m9-faa-ordinary-output-20261006/README.md)
+preserve this limitation.

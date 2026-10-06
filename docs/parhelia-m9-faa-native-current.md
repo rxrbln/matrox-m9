@@ -8,15 +8,18 @@ Ordinary textured rendering and the deployed driver are validated. FAA
 rendering is not yet validated. This note is separate from P690
 `102b:2539` evidence.
 
-Current implementation checkpoint: kernel153f782/10bfccd adds the separately
-owned system output and explicit retired RGBA readback. All81920 source/native
-tiled coordinates, both mapping policies, readback refusal cases and the full
-module build pass. This remains inactive with the old sampled template.
-[The new real output inputs](parhelia-m9-faa-output-inputs-re.md) retain90 typed
-operands and per-owner virtual mapping policies; final flush/retirement,
-direct operands and generated native commands are still being integrated.
-No new hardware FAA image passes. See
-[the integrated foundation proof](../tests/m9-faa-output-foundation-20261006/README.md).
+Current physical checkpoint: kernel `df1f49e`, RE producer `986e6fef`,
+explicit output oracle `626860c5`. The new31-owner stream retires at `0x1d0`
+on M9128 boot `3b7f5f11`, but the ordinary output image is entirely black.
+The sampled CPU control passes76800 pixels; main/AA fragment hashes match
+previous failures. No timeout occurs. FAA remains unvalidated and disabled
+for applications. See [the actual failed image and logs](../tests/m9-faa-ordinary-output-20261006/README.md).
+All81920 vendor/native tiled coordinates, mapping/reader refusal checks,
+51address/25timeline relocation fixtures and the full module build pass;
+these do not prove correct rendering. Raw SYSTEM output pre/post observations
+and primary virtual-fetch/resolve ordering are under investigation.
+
+Earlier sampled-destination tests below are historical evidence.
 
 Current authoritative private replay and hardware evidence are in
 [the native replay note](parhelia-m9-native-faa-replay.md). Kernel `bcccb66`
