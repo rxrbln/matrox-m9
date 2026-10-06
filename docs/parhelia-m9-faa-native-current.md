@@ -8,7 +8,19 @@ Ordinary textured rendering and the deployed driver are validated. FAA
 rendering is not yet validated. This note is separate from P690
 `102b:2539` evidence.
 
-Latest deep-review hardware checkpoint,2026-10-07: kernel516990f repairs
+Latest backend-status test,2026-10-07: unchanged516990f on freshbootd3f40c04
+still produces the identical black image after actual140 retirement and the
+post-wait kick. All before/after samples have vendor drain mask30000 clear;
+no persistent backend drain was observed. Both primary IN_FORMATS blobs now
+physically publish five formats for all three modifiers. Complete proof is in
+[the status hardware archive](../tests/m9-faa-status-hardware-20261007/README.md).
+After copying proof, a second power cycle recovered network boot; normal73
+is restored on boot4636e49f-790e-46ce-88df-8c107cf63889 with privateFAAoff,
+user submissions on and an empty unarmed healthy queue. Kernel source951e6a2
+fixes the atomic-driver property-getter warning; its source/host proof is
+separate from the restored normal73 binary.
+
+Previous deep-review hardware checkpoint,2026-10-07: kernel516990f repairs
 the genuine output mapper's omitted post-wait314frontend kick. Original
 ac1f0 stack continuation proves that ordering with the same-profile actual
 retired counters; it emits no additional command-buffer words or backend

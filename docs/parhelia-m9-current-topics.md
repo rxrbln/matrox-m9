@@ -89,10 +89,10 @@ capture. [Actual ordinary hardware proof](../tests/m9-ordinary-system-red-hardwa
 [current FAA evidence](parhelia-m9-faa-native-current.md) and
 [SYSTEM admission](parhelia-m9-faa-output-system-admission.md).
 
-Current normal target boot is `6d6d22e6-4788-4491-a665-9b12701edd38`,
+Current normal target boot is `4636e49f-790e-46ce-88df-8c107cf63889`,
 observer kernel73c2a45, user submissions enabled and private FAA disabled.
-The post-benchmark read-only check still reports submitted/completed84ac0,
-raw84ac1, empty queue and wedged0. Current qualified Mesa05c7c29 retains
+Recovery after the backend-status FAA test reports raw10/10,next20, empty
+unarmed queue and wedged0. The previous benchmark boot6d completed84ac0. Current qualified Mesa05c7c29 retains
 the earlier map, completion-cache, packed publication, dependency and wait
 improvements. The earlier 34FPS run with156wrong Z/W pairs is superseded by
 the correct bump qualification above; it remains historical failure evidence.
