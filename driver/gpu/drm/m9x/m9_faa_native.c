@@ -41,7 +41,10 @@ struct m9_faa_owner {
 };
 struct m9x_faa_replay {
 	struct m9_faa_owner owner[ARRAY_SIZE(m9_faa_owner_specs)];
-	bool prepared, attempted;
+	bool prepared, attempted, baseline_valid;
+	u32 before_hash[ARRAY_SIZE(m9_faa_owner_specs)];
+	u32 before_nonzero[ARRAY_SIZE(m9_faa_owner_specs)];
+	u32 before_nonzero_words[ARRAY_SIZE(m9_faa_owner_specs)];
 };
 
 static bool m9_faa_diag;
@@ -210,13 +213,13 @@ static int m9_faa_verify_upload(struct m9x_device *mdev,
 	return 0;
 }
 
-/* One bounded observation after actual retirement. Includes stores, HZ,
+/* Bounded observations before submit and after actual retirement. Includes stores, HZ,
  * pool and sentinel, but never claims unknown initial contents were zero or
  * that a nonzero byte proves a GPU store. Caller color has its separate
  * descriptor-aware readback and is not mapped here. No allocation is written.
  */
-static void m9_faa_observe_retired(struct m9x_device *mdev,
-				 struct m9x_faa_replay *r)
+static void m9_faa_observe(struct m9x_device *mdev,
+			 struct m9x_faa_replay *r, bool before)
 {
 	const u32 budget = 16 * 1024 * 1024;
 	u8 data[256];
@@ -226,13 +229,13 @@ static void m9_faa_observe_retired(struct m9x_device *mdev,
 		if (!r->owner[i].vram)
 			continue;
 		if (m9_faa_owner_specs[i].bytes > budget - total) {
-			dev_err(&mdev->pdev->dev, "M9 FAA retired observation exceeds %u-byte budget\n",
+			dev_err(&mdev->pdev->dev, "M9 FAA observation exceeds %u-byte budget\n",
 				budget);
 			return;
 		}
 		total += m9_faa_owner_specs[i].bytes;
 	}
-	/* Order the real completion observation before BAR reads. */
+	/* Order publication/completion observations before BAR reads. */
 	rmb();
 	for (i = 0; i < ARRAY_SIZE(r->owner); i++) {
 		struct m9_faa_owner *o = &r->owner[i];
@@ -250,11 +253,25 @@ static void m9_faa_observe_retired(struct m9x_device *mdev,
 			for (j = 0; j + sizeof(u32) <= count; j += sizeof(u32))
 				nonzero_words += !!get_unaligned_le32(data + j);
 		}
+		if (before) {
+			r->before_hash[i] = hash;
+			r->before_nonzero[i] = nonzero;
+			r->before_nonzero_words[i] = nonzero_words;
+		}
 		dev_info(&mdev->pdev->dev,
-			 "M9 FAA retired BAR observation: owner=%u captured=%#x native=%#x bytes=%u fnv=%#x nonzero_bytes=%u nonzero_words=%u\n",
+			 "M9 FAA %s BAR observation: owner=%u captured=%#x native=%#x bytes=%u fnv=%#x nonzero_bytes=%u nonzero_words=%u\n",
+			 before ? "before submit" : "retired",
 			 i, m9_faa_owner_specs[i].captured, o->base, bytes,
 			 hash, nonzero, nonzero_words);
+		if (!before && r->baseline_valid)
+			dev_info(&mdev->pdev->dev,
+				 "M9 FAA BAR delta: owner=%u before_fnv=%#x after_fnv=%#x hash_changed=%u before_nonzero_bytes=%u after_nonzero_bytes=%u before_nonzero_words=%u after_nonzero_words=%u\n",
+				 i, r->before_hash[i], hash, r->before_hash[i] != hash,
+				 r->before_nonzero[i], nonzero,
+				 r->before_nonzero_words[i], nonzero_words);
 	}
+	if (before)
+		r->baseline_valid = true;
 }
 
 /* Allocations precede the caller's color BO reservation, as in ordinary
@@ -497,13 +514,16 @@ int m9x_faa_submit_diag(struct m9x_device *mdev, u32 color,
  * Its native identity leaves were checked separately from FAA pool6. */
 	m9x_write(mdev, M9_REG_RESTORE_TAGGED, ((t->restore_base + 0x200) & ~31u) | 1);
 	m9x_read(mdev, M9_REG_FENCE2_ADDRESS);
+	/* Baseline follows real initialization and every pointer/counter patch,
+	 * but precedes this immutable stream's first GPU publication. */
+	m9_faa_observe(mdev, r, true);
 	ret = m9x_submit_kernel_stream_locked(mdev,
 			r->owner[M9_FAA_PRIMARY_OWNER].cpu, M9_FAA_PRIMARY_BYTES / 4,
 			target, point, &posted, false);
 	*color_active = posted && ret;
 	if (!ret) {
 		t->next_fence = target + 0x10;
-		m9_faa_observe_retired(mdev, r);
+		m9_faa_observe(mdev, r, false);
 		dev_info(&mdev->pdev->dev,
 			 "M9 FAA normal frame retired: point=%#llx primary=%#x descriptor=cc220140 320x240\n",
 			 *point, color);
