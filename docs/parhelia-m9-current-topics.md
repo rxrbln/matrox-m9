@@ -4,7 +4,7 @@
 # M9 open topics and evidence, 2026-10-06
 
 This ledger reconciles the independent M9 (`102b:0540`, `m9x`) userspace
-source at **6780573**, the October 2 piglit results, and the feature-specific
+source at **32fa687**, the October 2 piglit results, and the feature-specific
 RE notes. It is a work queue, not a new hardware result. The user has installed
 an M9 in nano for deployment and FAA testing; results from that new installation
 must record the actual adapter/subsystem identity, boot, kernel and Mesa hashes.
@@ -22,9 +22,13 @@ d1f2b12, a new-board baseline. The sampler base and border regressions pass.
 Driver5ad6c17 additionally passes the actual advertised varying-limit test,
 after compiler splitting and padding overlap fixes. See the
 [interpolation proof](../tests/m9-interpolation-native-20261006/README.md).
-FAA mode remains unproved and unadvertised. One current5ad6c17 Quake3
-profile is49.5FPS, with zero native vertex draws and CPU transforms throughout
-gameplay; see [rendering-path profile](../tests/m9-q3-profile-20261006/README.md).
+FAA mode remains unproved and unadvertised. Historical5ad6c17 profile49.5FPS
+had zero native vertex draws. Current32fa687 packs independent identity
+texture pairs into one stream and preserves interpolated color in the second;
+actual texture/affine/depth controls pass. One1024x768/vsync0 Quake3 run is
+51.4FPS, about99.2% GPU vertex draws and zero skips; see
+[latest native proof](../tests/m9-packed-coord-native-20261006/README.md).
+Remaining70jobs/frame and15uniform splits are the next submission cost.
 
 The [October 2 piglit status](parhelia-m9-piglit-status.md) supersedes the
 September 18 backlog where they disagree. The glmark2 standing is still the
@@ -55,7 +59,7 @@ an agent running simultaneously.
 | 4 | complex split scenes | glmark2 terrain remains incorrect/slow in the recorded standing; partial split coverage is implemented, not a blanket missing feature | Capture one bounded terrain/split case against a reference with skip accounting and identify the first bad intermediate rather than reporting its FPS as conformant |
 | 4 | texture layout and filtered copies | Cube faces larger than 16 are not placed; non-halving filtered engine copies have known failures | Trace the vendor cube address/layout calculator above the packed tail; use existing `blitlin:75x37`, `blitlin:74x37` and `blitlin:100x40` controls for the copy issue |
 | 4 | MRT blending and combined operations | Four unblended targets work; blending has per-target replay, but single-pass destination reads for RT1..3 and combined stencil/discard/split cases remain open | Capture destination-read registers and program image for RT1..3 blend, and verify each target plus retained BO membership |
-| 5 | performance and GPU geometry | Current1024x768 Quake3 profile49.5FPS: zero native vertex draws, CPU transforms throughout; about54jobs/frame with program/depth splits dominant | Recorded fallbacks are63% projector/36% output cap/1% rasterizer by call count; prove constant-q projection where applicable, then qualify vendor multi-stream routing and pursue submission costs |
+| 5 | performance and GPU geometry | Current32fa687 at1024x768/vsync0:51.4FPS,99.2% native calls;70jobs/frame and15uniform splits | Texture-pair packing and proven unit-q projection measured; retain them, address per-draw uniform relocation/submission and broader stream routing |
 | 5 | presentation and async submission | Existing presentation/submit features need current-board measurement; this ledger does not establish an extra async ABI gap | Check current kernel/DDX implementation and one fullscreen/windowed swap trace before changing the framebuffer or retirement model |
 | 6 | 10-bit masks and conversion | Unblended single-target partial masks use a constant-color blend fallback; already-blended and multiple-target partial masks remain refused, and converting readback needs current retest | Prove the existing unblended mask fallback, implement captured mask lowering for combined cases, then test converting readback and linear filtering |
 | 6 | 10-bit display verification | M9128 KMS/GBM/EGL 30-bit path passed; panel precision and transmitter depth remain unverified | Repeat on the installed board and inspect the physical output; keep raw storage precision distinct from panel output precision |
@@ -107,6 +111,29 @@ These are controls for deployment, not new open feature implementations:
   masks remain refused, while filtering precision, other blend factors,
   converting readback and panel/transmitter verification are separate
   questions. The older GigaColor note predates that fallback.
+
+## Latest FAA command and resource evidence
+
+Actual128-byte M9128 capability EEPROM now executes genuine31f90/3265f and
+populates type14. Both SPI payloads and EEPROM responses are from this board;
+full adapter initialization is still incomplete. Retained live MM owners and
+actual25-device PCI/assigned-bus inventory advance the normal runtime profile
+constructor. Actual configured companion477f0(format3d) admits sample2; this
+is a constructor prerequisite, not completed normal resource backing or FAA.
+
+[Companion recipe proof](parhelia-m9-faa-companion-resource-20261006.md) corrects
+the old linked-format9 BA/BB interpretation: AA uses64-bit format3d/layout2
+and its own optional HZ plane. The normal1024x768 allocation extent is600020;
+current diagnostic reserves600000 andforceslayout1. Ordinary context pool6
+is a distinct1280-byte resource, still without admitted physical backing.
+
+Actual fce50/fc8f0/24f20 command execution now captures full contextrestore
+thenA1/A3/A4save:29GPUwords,6genuine relocations, strict negative controls.
+It is distinct from the existing24/E6/BCBD surface binding and pointer reset.
+Native FAA still requires complete physical owners/content/lifetime, enabled
+draws, store writes, resolved edge coverage, depth and texture controls.
+Two FAA agents own normal allocation and platform/OS backing joins; the
+performance agent continues independently. Root owns all target tests.
 
 ## FAA evidence boundary
 

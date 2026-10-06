@@ -2,7 +2,7 @@
 <!-- SPDX-License-Identifier: GPL-2.0 -->
 # M9128 GPU geometry coverage and presentation evidence, October 6
 
-Current runtime `335d442` (rendering change `5ad6c17`) supports five native
+Historical runtime `335d442` (rendering change `5ad6c17`) supports five native
 output streams in its compiler but defaults to **two** hardware-delivered
 streams. Texture transforms and coordinate sharing are enabled; a separate
 coordinate beside another stream and native multi-pass fragment shaders remain
@@ -12,7 +12,24 @@ has not yet delivered a third native varying through the modern driver; five
 previous chain/descriptor experiments rendered nothing or stalled. Do not
 raise the default cap based on the vendor's larger API limit.
 
-## Current Quake3 evidence
+## Current deployed result
+
+Canonical32fa687 is built/deployed/tested with defaults enabled. Native
+ffarray2/ffarray/texture/texaff/textureddepth readbacks are exact. Packed XY/ZW
+coordinates keep two independent texture arrays plus color within the measured
+two-stream hardware limit. The full offline VS corpus is43/43 plus6/6 expected
+refusals. [Latest physical proof](../tests/m9-packed-coord-native-20261006/README.md)
+pins source, DSO, actual M9128 identity, same boot and complete workflow.
+
+One1024x768/fullscreen/vsync0 Quake3 timedemo reports51.4FPS, versus49.5 in
+the prior unit-projector candidate. About99.2% GPU calls, CPU60rasterizer
+fallbacks/60frames, no projector/input-cap fallback.70jobs/frame and15uniform
+splits remain. Native submission lies outside CPU draw timing, so the older
+all-nested timing description below applies only to its historical CPU path.
+No full benchmark repetition. FAA off throughout; two FAA investigators
+continue command/resource admission independently from performance work.
+
+## Historical Quake3 baseline
 
 `tests/m9-q3-profile-20261006` retains the M9128, 1024x768 fullscreen,
 OpenGL1 renderer, uncompressed 32-bit texture, vsync-off diagnostic. One
@@ -74,7 +91,7 @@ time shares. Projector semantics must be proved before changing that guard.
   still does not deliver output; another output-register seed guess is not a
   prerequisite proof.
 * Per-object uniform batching: establish per-draw constant-span relocation and
-  visibility from a complete vendor job. Current GL1 Quake3 has zero such splits.
+  visibility from a complete vendor job. The historical CPU-only GL1 run has zero such splits; latest native coverage exposes15/frame.
 * Submission/presentation: the existing path already overlaps submission and
   engine work. These intervals cannot independently attribute all ioctl time
   to Present or vblank; vsync is disabled. Root should inspect active fallback
@@ -98,8 +115,8 @@ MODULATE fixture using a two-component client texture coordinate array. Its
 missing q is one by the existing source-record unpack contract. The existing
 `ff` immediate-mode test is unchanged. Both use the independently computed
 texture-times-interpolated-color reference. The new fixture host build passes;
-GPU coverage and a projector guard change remain pending producer proof and
-native readback. A shader or four-component source with genuinely varying q
+Producer proof and native readback now pass in the retained
+[unit-projector proof](../tests/m9-unit-projector-native-20261006/README.md), superseded by packed-coordinate deployment. A shader or four-component source with genuinely varying q
 must retain the guard.
 
 ### Two-coordinate client-array companion proof
