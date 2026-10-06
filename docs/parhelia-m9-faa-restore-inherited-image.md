@@ -71,3 +71,27 @@ pool22 or FAA-address publication. These added pins are static source
 evidence; the retained dynamic run did not invoke that device-enable chain.
 Other members remain open, so this bounded classification does not claim
 the entire request is irrelevant to rendering.
+
+Consumer `0x5e909` loops the four selection flags at profile `+0x2fec`.
+For each selected head, `0x5e980` clears one bit in the mapped `0x8e8` word:
+heads zero through three select `0x20`, `0x40`, `0x04000000`, `0x08000000`.
+The original instructions are checked for all 16 selections using poisoned
+CPU scratch cells by `tools/m9emu/check-faa-head-resource-consumers.py`.
+Those cells are explicit synthetic ABI inputs, not MMIO observations or
+read replies added to actual-input bootstrap. Native initialization already
+writes IRQ-low mask `0x8e8` zero; this consumer supplies no missing enable.
+
+`0x5f036` builds operations through miniport `+4 -> profile+0x1ec`.
+Setter `0x11ab8` requests operation six with a 20-byte payload at `0x11ae1`,
+then stores the caller's four rectangle DWORDs and trailing zero. Commit
+`0x11b1d` calls `0x2536b` with that same owner. The latter validates a CPU
+record's state byte three, advances the current/previous record indexes,
+changes their state bytes and calls `0x292ae -> 0x2a179(2)`. This is a separate
+miniport mode transaction, whose actual downstream hardware work is not
+exported by the conditional MD frame. The checker pins these producer and
+commit instructions; it does not execute or supply status for that whole
+transaction. Its existence alone does not establish a FAA prerequisite.
+
+```sh
+/home/ai/tmp/faaemu/venv/bin/python tools/m9emu/check-faa-head-resource-consumers.py
+```
