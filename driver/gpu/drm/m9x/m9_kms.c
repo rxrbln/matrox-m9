@@ -1508,7 +1508,8 @@ static int m9_plane_publish_modifiers(struct drm_plane *plane)
 	if (!property || !plane->format_count || plane->format_count > 64 ||
 	    !plane->modifier_count || !plane->funcs->format_mod_supported)
 		return -EINVAL;
-	ret = drm_object_property_get_value(&plane->base, property, &old_id);
+	ret = drm_object_immutable_property_get_value(&plane->base, property,
+						      &old_id);
 	if (ret)
 		return ret;
 	if (!old_id || old_id > U32_MAX)
