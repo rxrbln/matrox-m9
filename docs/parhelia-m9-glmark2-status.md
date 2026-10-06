@@ -1,5 +1,16 @@
 # glmark2 on the m9x driver: where the 60 fps goal actually stands
 
+## 2026-10-06: actual buffer wireframe now completes on the GPU
+
+One short1024x768 windowed run with Mesa c7b8a6e/DSOdc6e40b6,
+FAAoff/vblank_mode0 and explicit RECORD2/VARYINGS5 completes with exit0:
+34GPU user vertex draws,0CPU transforms,0refused/skipped. Actual3a60 fence
+retires, queueempty/wedged0 immediately and2s later, noGPUtimeout. The
+duration1 run reports about34FPS with profiling enabled. The older68FPS
+failed-run number is invalid and cannot establish a regression. Independent
+image fidelity is not yet qualified. Defaultcap2 remains unchanged.
+[Exact application evidence](../tests/m9-gl2-wireframe-packed-hardware-20261006/README.md).
+
 ## 2026-10-06: full 4608-vertex route renders correctly at1024x768
 
 The same Mesa c7b8a6e/DSOdc6e40b6 now passes both complete1024x768 palettes:

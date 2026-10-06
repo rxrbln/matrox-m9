@@ -3,6 +3,41 @@
 
 # M9 open topics and evidence, 2026-10-06
 
+## Latest checkpoint: three active tracks and corrected GL2 rendering
+
+The user requested three background tracks: FAA command/output flow,
+GL2 operations, and performance. Render owns FAA (including the completed
+SYSTEM output admission handoff), GL2 owns packed-record bounds and missing
+operations, and the former inputs investigator now owns performance. Root
+alone integrates and runs serialized hardware tests using the established
+locks. Keep source-proven improvements even when a short benchmark is flat.
+
+Mesa c7b8a6e corrects native packed publication. Both complete1024x768
+textured/depth palettes now match786432pixels each,4608vertices, six GPU
+user draws and zero user CPU fallback, with healthy retirement. Strict CPU
+record decoding and unusual batch-size bounds remain under investigation;
+default varyingcap2 is unchanged. Actual glmark2 buffer wireframe now also
+completes with34native draws/0module/0skipped, noGPUtimeout and an empty
+queue. Its single1024x768/vblank0/FAAoff run reports about34FPS; screenshot
+and independent application image fidelity are still unqualified. Bump,
+radial multipass and optional Q3 lighting remain application-test targets.
+Latest basic Q3GL2 checkpoint remains38.9FPS; the historical GL1 numbers
+below describe a different renderer/profile. See
+[wireframe evidence](../tests/m9-gl2-wireframe-packed-hardware-20261006/README.md)
+and [current GL2 status](parhelia-m9-glmark2-status.md).
+
+FAA genuine red public shader constants cause a different actual main-store
+result from green, but final output remains allzero/black. This is not working
+FAA. Complete source/address/lifetime audits have not yet found the final
+output defect; resolve/store translation remains open. Kernelc70c607 contains
+the isolated red diagnostic, while healthy normal target boot3cd3b20a still
+uses observer73c2a45 with user submissions enabled and private FAA disabled.
+See [current FAA evidence](parhelia-m9-faa-native-current.md) and
+[SYSTEM output admission](parhelia-m9-faa-output-system-admission.md).
+
+The older ledger below retains its dated measurements and source checkpoints;
+use this checkpoint and linked topic notes for the current work queue.
+
 This ledger reconciles the independent M9 (`102b:0540`, `m9x`) userspace
 source at **05c25ed** and kernel **8b4e339** (native combined controls at
 a9c5668/4b84cbc; last timedemo bd24336), the October 2 piglit results, and the feature-specific
