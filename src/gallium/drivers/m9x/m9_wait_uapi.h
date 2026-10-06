@@ -3,6 +3,10 @@
 #ifndef M9_WAIT_UAPI_H
 #define M9_WAIT_UAPI_H
 
+#ifndef PARHELIA_M9_SUBMIT_QUEUED
+#define PARHELIA_M9_SUBMIT_QUEUED (1u << 3)
+#endif
+
 /* Transitional copy of the dedicated kernel completion ioctl. Once Mesa's
  * drm-uapi/m9x_drm.h carries it, that canonical declaration takes priority. */
 #ifndef DRM_IOCTL_PARHELIA_M9_WAIT_POINT

@@ -2,6 +2,7 @@
 /* Copyright 2026 René Rebe <rene@exactco.de> */
 #include "m9_batch.h"
 #include "m9_resource69_inline.h"
+#include "m9_wait_uapi.h"
 
 #include <errno.h>
 #include <limits.h>
@@ -689,8 +690,9 @@ m9_batch_prepare_execute(const struct m9_batch *batch,
 }
 
 int
-m9_batch_validate(struct m9_screen *screen, struct m9_resource *command,
-                  const struct m9_batch *batch, uint32_t context_id)
+m9_batch_validate_flags(struct m9_screen *screen, struct m9_resource *command,
+                        const struct m9_batch *batch, uint32_t context_id,
+                        uint32_t flags)
 {
    struct drm_parhelia_m9_submit submit;
    int ret;
@@ -700,11 +702,19 @@ m9_batch_validate(struct m9_screen *screen, struct m9_resource *command,
    ret = m9_batch_prepare_submit(batch, command, context_id, &submit);
    if (ret)
       return ret;
+   submit.flags |= flags;
    memcpy(command->map, batch->command, submit.command_length);
    __sync_synchronize();
    if (ioctl(screen->fd, DRM_IOCTL_PARHELIA_M9_SUBMIT, &submit))
       return -errno;
    return submit.out_point ? -EPROTO : 0;
+}
+
+int
+m9_batch_validate(struct m9_screen *screen, struct m9_resource *command,
+                  const struct m9_batch *batch, uint32_t context_id)
+{
+   return m9_batch_validate_flags(screen, command, batch, context_id, 0);
 }
 
 int
@@ -720,6 +730,8 @@ m9_batch_submit(struct m9_screen *screen, struct m9_resource *command,
    ret = m9_batch_prepare_execute(batch, command, context_id, &submit);
    if (ret)
       return ret;
+   if (screen->queued_submit)
+      submit.flags |= PARHELIA_M9_SUBMIT_QUEUED;
    memcpy(command->map, batch->command, submit.command_length);
    __sync_synchronize();
    if (ioctl(screen->fd, DRM_IOCTL_PARHELIA_M9_SUBMIT, &submit))

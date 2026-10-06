@@ -248,6 +248,7 @@ struct m9_screen {
    bool execute_submit;
    bool native_depth_bias;
    bool wait_point;
+   bool queued_submit;       /* M9X_QUEUE=1 plus typed kernel admission */
    simple_mtx_t import_lock;
    struct m9_prime_import *imports;
    /* One inter-pass record serves the whole screen.  The engine runs one job
@@ -445,6 +446,13 @@ struct m9_vs_state {
    uint64_t serial;
 };
 
+/* Four posted readers and one CPU builder. The active set remains in the
+ * context fields; the four parked sets retain their last real fence point. */
+struct m9_job_arena {
+   struct m9_resource source, system, index, cpu_streams;
+   uint64_t point;
+};
+
 struct m9_context {
    struct pipe_context base;
    struct m9_screen *screen;
@@ -514,7 +522,8 @@ struct m9_context {
    struct m9_resource system, program, fragment_db, transient, be, source;
    /* Clip window the engine state object was last cleared for. */
    uint32_t be_clip;
-   /* The four arenas the CPU fills per job are double buffered.  An
+   /* The four arenas the CPU fills per job are double buffered in legacy
+    * mode. An
     * asynchronous submit posts its job and returns, so the engine is still
     * reading the previous job's records, indices, constants and streams
     * while the next job is built; holding a kernel reference to the object
@@ -522,8 +531,12 @@ struct m9_context {
     * drains the posted job at the *next* submission, so by the time a
     * second job has been submitted the first has retired and its set is
     * free: two sets are enough, and alternating them is exact rather than
-    * a guess about timing. */
+    * a guess about timing. Opted-in queue mode adds three parked sets and
+    * waits each set's real point before reuse: four readers + one builder. */
    struct m9_resource system_alt, source_alt, index_alt, cpu_streams_alt;
+   struct m9_job_arena queue_arena[3];
+   uint64_t arena_point, arena_alt_point;
+   unsigned arena_cursor;
    /* The raster index run, in its own object: a draw range is a raw bus
     * address, so only this has to be physically contiguous, and keeping it
     * out of the record arena keeps that demand small. */

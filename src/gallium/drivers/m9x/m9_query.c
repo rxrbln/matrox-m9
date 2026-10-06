@@ -395,6 +395,16 @@ m9_begin_query(struct pipe_context *pctx, struct pipe_query *pq)
    struct m9_context *ctx = (struct m9_context *)pctx;
    struct m9_query *q = m9_query(pq);
 
+   /* Flush earlier draws before reusing this query's CPU-written slots.
+    * In queue mode they can still publish into the old pair and pause pages. */
+   if (ctx->screen->queued_submit &&
+       (m9_context_flush_job(pctx) ||
+        m9_wait_for_point(ctx->screen, ctx->last_point))) {
+      q->failed = true;
+      ctx->lost = true;
+      return false;
+   }
+
    q->active = q->ended = q->have_result = q->failed = false;
    q->begin_emitted = q->end_emitted = false;
    q->count = 0;
@@ -405,7 +415,7 @@ m9_begin_query(struct pipe_context *pctx, struct pipe_query *pq)
    m9_query_reset_slot(q, M9_QUERY_END);
    /* Earlier draws are not this query's: they go out in their own job, and
     * the record leads the job that opens with this query's first draw. */
-   if (m9_context_flush_job(pctx)) {
+   if (!ctx->screen->queued_submit && m9_context_flush_job(pctx)) {
       q->failed = true;
       return false;
    }

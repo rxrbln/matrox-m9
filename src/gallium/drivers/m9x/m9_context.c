@@ -1020,8 +1020,14 @@ m9_transfer_map_locked(struct pipe_context *pctx, struct pipe_resource *pres,
        (unsigned)box->y > height || (unsigned)box->height > height - box->y)
       return NULL;
    /* Pending jobs may still write render and depth targets. */
-   if (pres->target != PIPE_BUFFER && !(usage & PIPE_MAP_UNSYNCHRONIZED))
+   if (!(usage & PIPE_MAP_UNSYNCHRONIZED) &&
+       (pres->target != PIPE_BUFFER || ctx->screen->queued_submit))
       m9_context_sync(ctx);
+   if (!(usage & PIPE_MAP_UNSYNCHRONIZED) && ctx->screen->queued_submit &&
+       (ctx->lost || m9_wait_for_point(ctx->screen, ctx->last_point))) {
+      ctx->lost = true;
+      return NULL;
+   }
    transfer = CALLOC_STRUCT(m9_transfer);
    if (!transfer)
       return NULL;
@@ -1250,17 +1256,46 @@ m9_transfer_unmap(struct pipe_context *pctx, struct pipe_transfer *ptransfer)
 /* Two-pass jobs */
 
 /* Swap in the other set of per-job arenas; see m9_context's declaration. */
-static void
+static int
 m9_arena_rotate(struct m9_context *ctx)
 {
    struct m9_resource tmp;
+   struct m9_job_arena *bank = NULL;
+   uint64_t *parked_point = &ctx->arena_alt_point;
+   uint64_t point;
+   int ret;
+
+   if (ctx->screen->queued_submit) {
+      unsigned slot = ctx->arena_cursor++ % 4;
+
+      if (slot) {
+         bank = &ctx->queue_arena[slot - 1];
+         parked_point = &bank->point;
+      }
+      ret = m9_wait_for_point(ctx->screen, *parked_point);
+      if (ret) {
+         ctx->lost = true;
+         return ret;
+      }
+   }
 
 #define ARENA_SWAP(a, b) do { tmp = (a); (a) = (b); (b) = tmp; } while (0)
-   ARENA_SWAP(ctx->source, ctx->source_alt);
-   ARENA_SWAP(ctx->system, ctx->system_alt);
-   ARENA_SWAP(ctx->index, ctx->index_alt);
-   ARENA_SWAP(ctx->cpu_streams, ctx->cpu_streams_alt);
+   if (bank) {
+      ARENA_SWAP(ctx->source, bank->source);
+      ARENA_SWAP(ctx->system, bank->system);
+      ARENA_SWAP(ctx->index, bank->index);
+      ARENA_SWAP(ctx->cpu_streams, bank->cpu_streams);
+   } else {
+      ARENA_SWAP(ctx->source, ctx->source_alt);
+      ARENA_SWAP(ctx->system, ctx->system_alt);
+      ARENA_SWAP(ctx->index, ctx->index_alt);
+      ARENA_SWAP(ctx->cpu_streams, ctx->cpu_streams_alt);
+   }
 #undef ARENA_SWAP
+   point = ctx->arena_point;
+   ctx->arena_point = *parked_point;
+   *parked_point = point;
+   return 0;
 }
 
 static int
@@ -2221,6 +2256,20 @@ m9_be_zero(struct m9_context *ctx)
    struct m9_resource *be;
    uint64_t t_be = m9_prof_begin();
 
+   if (ctx->lost) {
+      m9_prof_end(M9_PROF_BE, t_be);
+      return;
+   }
+
+   /* The legacy two-object swap was safe only because every following
+    * submit drained the sole reader. Wait before clearing either object. */
+   if (ctx->screen->queued_submit &&
+       m9_wait_for_point(ctx->screen, ctx->last_point)) {
+      ctx->lost = true;
+      m9_prof_end(M9_PROF_BE, t_be);
+      return;
+   }
+
    m9_be_shape_slot(ctx)->valid = false;
    if (!entry || !m9_be_per_target) {
       if (ctx->be.map)
@@ -2285,6 +2334,8 @@ m9_submit_job(struct m9_context *ctx)
     * last submit; nothing reads it until a draw replaces the key. */
    if (!draws)
       return 0;
+   if (ctx->lost)
+      return -EIO;
    pass_count = fs ? key->variant->passes.count : 0;
    if (m9_split_trace > 1)
       fprintf(stderr, "m9x job %llu: %ux%u passes %u draws %u records %u "
@@ -2422,7 +2473,9 @@ m9_submit_job(struct m9_context *ctx)
    uint64_t index_base = 0;
 
    /* Before a single byte of this job is written. */
-   m9_arena_rotate(ctx);
+   ret = m9_arena_rotate(ctx);
+   if (ret)
+      return ret;
    /* M9X_BE_CLEAR clears the engine's own state object, which separates
     * state the engine keeps there from the target that selects it.  It
     * clears the object the job actually binds: with a back-end object a
@@ -2746,6 +2799,8 @@ m9_submit_job(struct m9_context *ctx)
                               ctx->context_id) :
             m9_batch_submit(ctx->screen, &ctx->command, &ctx->batch,
                             ctx->context_id, &point);
+      if (!ret && !ctx->dry_run)
+         ctx->last_point = ctx->arena_point = point;
       /* A second raster pass inside one submission stalls the engine
        * (MEASURED): the vendor separates its passes with an engine
        * transition the kernel does not accept.  Every pass after the
@@ -2772,6 +2827,8 @@ m9_submit_job(struct m9_context *ctx)
                                  ctx->context_id) :
                m9_batch_submit(ctx->screen, &ctx->command, &ctx->batch,
                                ctx->context_id, &point);
+         if (!ret && !ctx->dry_run)
+            ctx->last_point = ctx->arena_point = point;
       }
       m9_prof_end(M9_PROF_IOCTL, t_ioctl);
       if (m9_be_dump && ctx->be.map) {
@@ -6886,6 +6943,11 @@ m9_clear_render_target(struct pipe_context *pctx, struct pipe_surface *dst,
       return;
    m9_context_sync(ctx);
    util_pack_color(color->f, dst->format, &uc);
+   if (ctx->screen->queued_submit &&
+       (ctx->lost || m9_wait_for_point(ctx->screen, ctx->last_point))) {
+      ctx->lost = true;
+      return;
+   }
    if (!dstx && !dsty && width >= resource->width &&
        height >= resource->height) {
       /* A mip chain follows level 0 in the same object, so a full clear of
@@ -6947,6 +7009,11 @@ m9_clear_depth_stencil(struct pipe_context *pctx, struct pipe_surface *dst,
    m9_context_sync(ctx);
    if (!dstx && !dsty && width >= resource->width &&
        height >= resource->height) {
+      if (ctx->screen->queued_submit &&
+          (ctx->lost || m9_wait_for_point(ctx->screen, ctx->last_point))) {
+         ctx->lost = true;
+         return;
+      }
       m9_clear_depth_cpu(resource, clear_flags, depth, stencil);
       return;
    }
@@ -8715,6 +8782,16 @@ m9_context_init_fixed(struct m9_context *ctx)
    if (!ret)
       ret = m9_bo_create(screen, 4096, 0, M9_RESOURCE_LINEAR_BUFFER,
                          &ctx->cpu_streams_alt);
+   for (unsigned i = 0; !ret && screen->queued_submit &&
+                        i < ARRAY_SIZE(ctx->queue_arena); i++) {
+      struct m9_job_arena *bank = &ctx->queue_arena[i];
+
+      ret = m9_bo_create(screen, M9_SYSTEM_BYTES, 0, M9_RESOURCE_SYSTEM_STATE,
+                         &bank->system);
+      if (!ret)
+         ret = m9_bo_create(screen, 4096, 0, M9_RESOURCE_LINEAR_BUFFER,
+                            &bank->cpu_streams);
+   }
    if (!ret)
       ret = m9_bo_create(screen, M9_BE_BYTES, PARHELIA_M9_BO_VRAM,
                          M9_RESOURCE_SYSTEM_STATE, &ctx->be);
@@ -8760,6 +8837,8 @@ m9_context_destroy(struct pipe_context *pctx)
       draw_destroy(ctx->draw);
       ctx->draw = NULL;
    }
+   if (screen->queued_submit)
+      m9_wait_for_point(screen, ctx->last_point);
    if (ctx->base.stream_uploader)
       u_upload_destroy(ctx->base.stream_uploader);
    m9_weld_cache_fini(ctx);
@@ -8788,6 +8867,14 @@ m9_context_destroy(struct pipe_context *pctx)
    m9_bo_destroy(screen, &ctx->cpu_streams_alt);
    m9_bo_destroy(screen, &ctx->source_alt);
    m9_bo_destroy(screen, &ctx->index_alt);
+   for (unsigned i = 0; i < ARRAY_SIZE(ctx->queue_arena); i++) {
+      struct m9_job_arena *bank = &ctx->queue_arena[i];
+
+      m9_bo_destroy(screen, &bank->source);
+      m9_bo_destroy(screen, &bank->system);
+      m9_bo_destroy(screen, &bank->index);
+      m9_bo_destroy(screen, &bank->cpu_streams);
+   }
    util_dynarray_foreach(&ctx->target_depths, struct m9_target_depth *, it) {
       m9_bo_destroy(screen, &(*it)->depth);
       m9_bo_destroy(screen, &(*it)->aux);

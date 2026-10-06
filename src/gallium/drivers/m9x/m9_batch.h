@@ -136,6 +136,9 @@ int m9_batch_prepare_execute(const struct m9_batch *batch,
                              struct drm_parhelia_m9_submit *submit);
 int m9_batch_validate(struct m9_screen *screen, struct m9_resource *command,
                       const struct m9_batch *batch, uint32_t context_id);
+int m9_batch_validate_flags(struct m9_screen *screen, struct m9_resource *command,
+                            const struct m9_batch *batch, uint32_t context_id,
+                            uint32_t flags);
 int m9_batch_submit(struct m9_screen *screen, struct m9_resource *command,
                     const struct m9_batch *batch, uint32_t context_id,
                     uint64_t *out_point);

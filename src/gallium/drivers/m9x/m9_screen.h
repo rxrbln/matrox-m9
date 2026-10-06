@@ -25,6 +25,7 @@ void m9_command_bo_destroy(struct m9_screen *screen,
 struct pipe_context *m9_context_create(struct pipe_screen *screen, void *priv,
                                        unsigned flags);
 struct pipe_fence_handle *m9_fence_create(uint64_t point, bool signaled);
+int m9_wait_for_point(struct m9_screen *screen, uint64_t point);
 
 void m9_faa_store_report(struct m9_screen *screen);
 

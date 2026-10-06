@@ -32,6 +32,7 @@
 #include "util/u_memory.h"
 #include "util/u_inlines.h"
 #include "util/u_atomic.h"
+#include "util/u_debug.h"
 #include "util/u_screen.h"
 
 static inline struct m9_screen *
@@ -1274,6 +1275,25 @@ m9_init_shader_caps(struct m9_screen *screen)
    fs->max_texture_samplers = fs->max_sampler_views = 8;
 }
 
+/* Queue arena and CPU-state reuse require completion before the first write.
+ * The ioctl watchdog bounds an infinite application wait; errors never grant
+ * permission to overwrite storage still reachable by the engine. */
+int
+m9_wait_for_point(struct m9_screen *screen, uint64_t point)
+{
+   struct drm_parhelia_m9_wait_point wait = {
+      .point = point, .timeout_ns = UINT64_MAX,
+   };
+
+   if (!point)
+      return 0;
+   if (!screen->wait_point)
+      return -EOPNOTSUPP;
+   if (ioctl(screen->fd, DRM_IOCTL_PARHELIA_M9_WAIT_POINT, &wait))
+      return -errno;
+   return wait.completed_point >= point ? 0 : -EPROTO;
+}
+
 static bool
 m9_probe_user_submit(struct m9_screen *screen)
 {
@@ -1303,6 +1323,13 @@ m9_probe_user_submit(struct m9_screen *screen)
          ok = !m9_batch_emit_packet(batch, &be, 1) &&
               !m9_batch_validate(screen, &command, batch, 0);
          if (ok) {
+            /* Explicitly opt in: a flags-zero client owns only two CPU
+             * banks and depends on the next submit draining its old job. */
+            screen->queued_submit =
+               debug_get_bool_option("M9X_QUEUE", false) &&
+               !screen->faa.enable &&
+               !m9_batch_validate_flags(screen, &command, batch, 0,
+                                        PARHELIA_M9_SUBMIT_QUEUED);
             const struct m9_packet_value bias[] = {
                { .index = 0xd0, .value = 0 },
                { .index = 0xd1, .value = 0 },
@@ -1416,6 +1443,7 @@ m9_screen_create(int fd, const struct pipe_screen_config *config)
    /* A valid zero-time query can lose the transport lock to another
     * context. ETIME still establishes the completion ioctl's presence. */
    screen->wait_point = !completion_status || errno == ETIME;
+   screen->queued_submit &= screen->wait_point;
    m9_load_fragment_db(screen);
    screen->base.get_screen_fd = m9_fd;
    u_init_pipe_screen_caps(&screen->base, 1);
