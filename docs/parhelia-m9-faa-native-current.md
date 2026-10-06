@@ -836,3 +836,52 @@ constants or fabricated completed counters.
 This establishes the allocated CPU binder and actual packet mapping. Queue
 activation, HZ initialization execution, kernel-private indirect state
 ownership, enabled draw/resolve and hardware FAA rendering remain open.
+
+### Owned FAA output publisher and ordinary compiler order (2026-10-06)
+
+The actual ordinary copy/map path reaches `a74b0→ac1f0` at `a7528`.
+When the AA outer owner has companion/main objects, `ac1f0` allocates a
+temporary profile14/format6 destination and calls `abc20` at `ac2d4`, then
+uses ordinary `afbe0` to copy that output to the requested destination. Its
+allocation-failure path calls the same publisher for 64×64 tiles. This is
+the concrete caller provenance for the FAA output/resolve candidate;
+`abc20` is not an otherwise unreachable emitter.
+
+[Owned resolve capture](traces/m9-vendor-faa-owned-resolve-20261006.json)
+executes real `abc20(destination,companion,main,x0,y0,x1,y1)` on returned
+vendor allocator objects. It stops at `ac0ac`, after actual shadow publication
+and before actual queue dispatch at `ac0e3`. The real main→auxiliary and
+companion→HZ links are required. Mode `AAshadow+14` changes from draw `1f`
+to output `1d`, `+20=ffff`, and main/auxiliary/pool6 address pairs remain
+the genuine owned tagged addresses. Fragment `+28=e0000400` and
+`+20=20007000` still target **F0/EF**, and the requested rectangle publishes
+fragment `+30=origin`, `+34=width|(height<<16)`.
+
+`tools/faaemu/m9_owned_faa_resolve.py` retains that bounded default and can
+execute the same actual call without its boundary once the genuine queue is
+available. It never supplies a successful dispatch or GPU completion. The
+post-dispatch backing-lifetime updates (`ac101..ac131`) and fragment save bit
+(`ac139`) have not executed in this capture. This capture does not prove a
+completed FAA resolve, normal pixel-format admission or hardware rendering.
+
+The actual ordinary state compiler `fadf0` emits **`fc0e0` before `fb920`**
+(`fae02`, `fae0e`), followed by `f4f50`, `f6f20`, `fb260`. Earlier independent
+emitter fixtures intentionally captured each encoder separately; their JSON
+field order is not the normal submission order. The complete-frame trace
+must run the genuine queue/compiler and preserve this order, including the
+first-use sentinel restore before the pool6 producer.
+
+Correction to preliminary caller investigation: `a7390` calls interface+8
+virtual+6c, whose actual constructor-published vtable is `1f3c50`; slot
+`1f3cbc` contains **`a7440`**, the AA binder refresh. `a7390` then calls
+`ac150` to clear AA ownership flags. Neither that flag clear nor this
+virtual call is the `ac1f0→abc20` output path.
+
+The pinned ordinary compiler switch provides the remaining trigger location:
+`abc20` publishes context `+10=9`; real `f85c0` dispatches modes7..10 through
+table `f8fac`, whose mode9 entry is `f8e36`. That branch calls `fadf0`, then
+emits `45fcf3ec,0,fragment+30,fragment+34` at `f8e94..f8ed7` before the usual
+pending-resource bookkeeping. This branch and write are **static pinned image
+provenance**, not executed compiler evidence in the bounded output capture.
+Capturing FAA bindings alone omits this rectangle operation; the full-frame
+queue trace must also reach the actual trigger and retirement boundary.
