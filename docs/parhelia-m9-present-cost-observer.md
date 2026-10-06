@@ -1,7 +1,31 @@
 # Observe the actual fullscreen swap route
 
-The current source offers three materially different Present routes. Their
-physical use by current fullscreen Q3 is unobserved. This patch adds an opt-in
+Current physical observation,2026-10-07: one1024x768 fullscreen Q3GL2
+basic-profile timedemo completes387frames/10.9seconds/35.5FPS, FAAoff,
+vblank_mode0/r_swapInterval0, queue enabled. GPU retires23c860/raw23c861,
+queueempty/peak4/wedged0 immediately and2s later. This is a new profile,
+not a controlled A/B to the previous38.9FPS windowed run.
+
+Every reported Present copy uses CopyArea and accepted glamor GL draw for
+all786432pixels, pageflip0. No CPU detile, GL readback, upload, temporary,
+rejection, drop or CPU fallback is observed. The360-frame cumulative copy
+host time is26295us and flush47787us; these are host scopes and cannot
+establish GPU copy cost. Counters later reach540 and include menu frames.
+The actual screenshot is taken after the timedemo and shows the textured
+main menu; it is not an independent gameplay-pixel oracle. Whole proof is
+copied locally at /tmp/m9-present-clean-stage-20261007/proof for signed
+archive. The next presentation priority is GPU copy/scanout/flip ownership,
+rather than a CPU detile route that was inactive in this run.
+
+The first observer deployment aborted before Quake started. Its copied build
+template retained an old driver object whose glamor function-table offsets
+were incompatible with freshly compiled drmmode_display. No timedemo ran
+and the GPU stayed healthy. The builder now runs `make clean` before the
+full build and exports matching Xorg, modesetting, glamor and GLX artifacts.
+The corrected complete build, host helper controls and real startup pass.
+Treat templates as configuration/ABI input, never as qualified objects.
+
+The current source offers three materially different Present routes. The physical fullscreen route is observed above. This patch adds an opt-in
 route observer to choose the next performance change from the actual route.
 It does not enable flipping or change rendering, buffer ownership, waits,
 damage, update-region release or idle-fence notification.
@@ -36,7 +60,7 @@ glmark results are not a controlled A/B comparison.
 
 ## Opt-in trace and one target run
 
-Run the matching Xorg, modesetting and glamoregl artifacts built together.
+Run the matching Xorg, modesetting, glamoregl and GLX artifacts built together.
 Set `M9X_PRESENT_PROFILE=60` in the **Xserver environment**, then request one
 1024x768 fullscreen Q3 timedemo with the current FAA0/vsync0 settings.
 Do not take XGetImage screenshots during the timedemo; collect an image
@@ -86,5 +110,5 @@ handled/fallback update ownership, copy-only scope, flush and idle ordering,
 accepted/event separation and preserved errno around clock observations.
 Negative controls remove flush or extend copy scope through flush; both are
 rejected. LeakSanitizer alone is disabled because the managed runner is
-traced; address and undefined-behavior checks remain enabled. No target run,
-GPU completion or visible image is claimed by these CPU fixtures.
+traced; address and undefined-behavior checks remain enabled. These CPU fixtures do not establish GPU completion or visible pixels;
+the separate actual hardware observation is recorded above.
