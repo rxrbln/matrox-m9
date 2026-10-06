@@ -8676,7 +8676,7 @@ m9_context_flush(struct pipe_context *pctx,
    }
    if (out_fence) {
       if (!ctx->lost)
-         fence = m9_fence_create(ctx->last_point, true);
+         fence = m9_fence_create(ctx->last_point, !ctx->last_point);
       pctx->screen->fence_reference(pctx->screen, out_fence, fence);
       if (fence)
          pctx->screen->fence_reference(pctx->screen, &fence, NULL);

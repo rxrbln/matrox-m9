@@ -23,6 +23,7 @@
 #include "drm-uapi/drm_mode.h"
 #include "draw/draw_context.h"
 #include "m9_batch.h"
+#include "m9_wait_uapi.h"
 #include "m9_format.h"
 #include "m9_internal.h"
 #include "m9_vs_texture.h"
@@ -30,6 +31,7 @@
 #include "util/format/u_format.h"
 #include "util/u_memory.h"
 #include "util/u_inlines.h"
+#include "util/u_atomic.h"
 #include "util/u_screen.h"
 
 static inline struct m9_screen *
@@ -1056,7 +1058,7 @@ m9_fence_create(uint64_t point, bool signaled)
       return NULL;
    pipe_reference_init(&fence->reference, 1);
    fence->point = point;
-   fence->signaled = signaled;
+   p_atomic_set(&fence->signaled, signaled || !point);
    return (struct pipe_fence_handle *)fence;
 }
 
@@ -1081,13 +1083,30 @@ m9_fence_finish(struct pipe_screen *screen, struct pipe_context *ctx,
 {
    struct m9_fence *m9f = (struct m9_fence *)fence;
 
-   (void)screen;
+   struct m9_screen *m9s = m9_screen(screen);
+
    (void)ctx;
-   (void)timeout;
-   /* Both currently defined M9 fence-producing ioctls complete
-    * synchronously.  A future asynchronous UAPI needs an explicit wait
-    * ioctl before execute_submit can be enabled. */
-   return !m9f || m9f->signaled;
+   if (!m9f || p_atomic_read(&m9f->signaled))
+      return true;
+   if (m9s->wait_point) {
+      struct drm_parhelia_m9_wait_point wait = {
+         .point = m9f->point, .timeout_ns = timeout,
+      };
+      if (ioctl(m9s->fd, DRM_IOCTL_PARHELIA_M9_WAIT_POINT, &wait) ||
+          wait.completed_point < m9f->point)
+         return false;
+   } else {
+      uint64_t completed;
+
+      /* Older async kernels have no read-only completion query. A zero
+       * timeout must not pretend completion or post a blocking command;
+       * an explicit wait falls back to the existing synchronous drain. */
+      if (!timeout || m9_submit_noop_fence(m9s, &completed) ||
+          completed < m9f->point)
+         return false;
+   }
+   p_atomic_set(&m9f->signaled, true);
+   return true;
 }
 
 static bool
@@ -1391,6 +1410,9 @@ m9_screen_create(int fd, const struct pipe_screen_config *config)
    screen->uapi_version = 1;
    screen->validate_submit = true;
    screen->execute_submit = m9_probe_user_submit(screen);
+   struct drm_parhelia_m9_wait_point completion_probe = {0};
+   screen->wait_point = !ioctl(screen->fd, DRM_IOCTL_PARHELIA_M9_WAIT_POINT,
+                               &completion_probe);
    m9_load_fragment_db(screen);
    screen->base.get_screen_fd = m9_fd;
    u_init_pipe_screen_caps(&screen->base, 1);

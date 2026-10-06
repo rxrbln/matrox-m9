@@ -247,6 +247,7 @@ struct m9_screen {
    bool validate_submit;
    bool execute_submit;
    bool native_depth_bias;
+   bool wait_point;
    simple_mtx_t import_lock;
    struct m9_prime_import *imports;
    /* One inter-pass record serves the whole screen.  The engine runs one job
@@ -272,7 +273,7 @@ struct m9_screen {
 struct m9_fence {
    struct pipe_reference reference;
    uint64_t point;
-   bool signaled;
+   int signaled;
 };
 
 struct m9_vertex {
