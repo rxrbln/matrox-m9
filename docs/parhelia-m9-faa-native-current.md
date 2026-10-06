@@ -695,7 +695,7 @@ and separate sentinel/pool6 constructors and lifetime checks.
 
 At320x240 the stages are distinct:
 
-| Resource | Actual45eb0 geometry/flags | After backing allocation extent/flags |
+| Resource | Actual45eb0 raw return/flags | Stored aligned extent/allocated flags |
 |---|---:|---:|
 | Main1024x310 |136020/1|136080/3|
 | Auxiliary1024x19 |13020/1|13080/3|
@@ -703,10 +703,13 @@ At320x240 the stages are distinct:
 | HZ40x60 |2d00/1|3000/3|
 
 Values are hexadecimal. The earlier32-byte geometry guard remains correct:
-the later backing allocator rounds linear allocations to128 bytes and tiled
-allocations to pages, publishes address15c and marks layoutbit2. A native
-allocation rounded to full pages already covers this padding. Do not confuse
-postallocation ownership extent with the45eb0 geometry result.
+actual45eb0 returns the raw protected size in EAX, then at464ca..464d9
+final-aligns the stored descriptor extent+180 using alignment+174 (128 bytes
+for these linear resources,4096 for tiled resources). These stored extents
+already exist before backing. Later4dfe0 publishes address15c and marks
+allocated layoutbit2. A native allocation rounded to full pages already covers
+this padding. Distinguish the raw function return, stored aligned extent and
+subsequent allocated-address publication.
 
 An independent actuala3870 sentinel request uses the same flags8202/profile56/
 format0/5x1 asac7e0. The genuineac7e0 CPU initialization prefixaca7b..acb06
