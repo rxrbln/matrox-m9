@@ -5472,7 +5472,8 @@ m9_native_vs_resolve(struct m9_context *ctx, const struct pipe_draw_info *info,
                 rast->fill_front != PIPE_POLYGON_MODE_FILL ||
                 rast->fill_back != PIPE_POLYGON_MODE_FILL))
       return "a rasterizer state the hardware pass does not carry";
-   if (rast && rast->offset_tri && reduced == MESA_PRIM_TRIANGLES) {
+   if (rast && rast->offset_tri && reduced == MESA_PRIM_TRIANGLES &&
+       ctx->dsa && ctx->dsa->depth_enabled) {
       uint32_t units, factor;
 
       if (!m9_context_depth(ctx))
@@ -6319,20 +6320,34 @@ m9_native_vs_draw(struct m9_context *ctx, const struct pipe_draw_info *info,
    }
    if (ctx->rasterizer && ctx->rasterizer->offset_tri &&
        u_reduced_prim(info->mode) == MESA_PRIM_TRIANGLES) {
+      bool depth_test = ctx->dsa && ctx->dsa->depth_enabled;
+
+      /* Without a depth test the offset cannot affect a colour-only draw.
+       * Keep those transforms native, but preserve the draw module when
+       * fragment position is read: its z includes the pre-shading offset. */
+      if (!depth_test && key.variant)
+         for (unsigned i = 0; i < key.variant->passes.count; i++)
+            if (key.variant->passes.pass[i].fragcoord) {
+               m9_native_vs_note(ctx,
+                  "depth-disabled polygon offset reads fragment position");
+               return false;
+            }
       /* The captured scalar pair applies to one hardware raster pass.
        * Preserve the draw module for split/explicit-fragment-depth paths
        * until their interaction with raster bias has been captured. */
-      if (key.variant && (key.variant->passes.count > 1 ||
-                          key.variant->passes.pass[0].fragdepth)) {
+      if (depth_test && key.variant && (key.variant->passes.count > 1 ||
+                                       key.variant->passes.pass[0].fragdepth)) {
          m9_native_vs_note(ctx,
                           "native polygon offset needs one raster depth pass");
          return false;
       }
-      key.depth_bias = m9_draw_depth_bias(ctx->rasterizer->offset_scale,
-                                         ctx->rasterizer->offset_units,
-                                         &key.depth_bias_units,
-                                         &key.depth_bias_factor);
-      key.depth_ef |= M9_DEPTH_BIAS_EF;
+      if (depth_test) {
+         key.depth_bias = m9_draw_depth_bias(ctx->rasterizer->offset_scale,
+                                            ctx->rasterizer->offset_units,
+                                            &key.depth_bias_units,
+                                            &key.depth_bias_factor);
+         key.depth_ef |= M9_DEPTH_BIAS_EF;
+      }
    }
    key.vs = &variant->program;
    key.vs_program = m9_native_vs_c2(ctx, (struct m9_fs_variant *)key.variant,
