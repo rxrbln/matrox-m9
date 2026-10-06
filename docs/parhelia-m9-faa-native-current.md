@@ -915,3 +915,36 @@ The genuine required order is `1a260→230f0(return1)→1ff90`; constructing
 shader state before activation passed a null TaskMgr. The corrected full
 clear/draw/output capture is still the integration gate. No null shader
 owner, successful vendor return or GPU retirement is supplied by hand.
+
+### Joined minimal FAA frame, 2026-10-06
+
+`tools/m9-vendor-faa-frame.py` now executes the returned queue and public D3D
+context, all three real `ac7e0` initialization clears, `aa750` FAA binding,
+public `beeb0` DP2 XYZRHW/diffuse triangle lowering through `17e480`, and
+`abc20` output through dispatch and `ac139` lifetime bookkeeping. Actual
+`fb920` observes FAA mode `0x1f` for the triangle and `0x1d` for output. The
+triangle emits `0x23000001`; the output compiler emits `0x45fcf3ec`.
+`docs/traces/m9-vendor-faa-frame-20261006.json` records the joined frame.
+`tools/check-m9-faa-frame.py` verifies successful public context/draw callers,
+ordered compiler modes, resource links, typed relocations, and exact CPU-written
+DMA images against all 32 live OS buffer bounds. Capture starts before queue
+construction, includes context initialization, and exports only written bytes.
+Every exported byte must equal the final actual CPU write for that stage;
+untouched emulator memory is never evidence of an initialized GPU program.
+
+Pool6's actual kind-5 address pair is `{offset=0, tagged_base=GPU_address|1}`,
+cached at fragment `+0x84/+0x88`. The real getter and all actual kind-`0x2b`
+translations agree. The earlier interpretation `+0x88/+0x8c` was a shifted
+scalar read, not an address pair. Kind-`0x2c`/`0x2f` save-state endpoints use
+pool6 offsets `0x284`/`0x2c4`; kind-`0x30` writes sentinel slots `8/c/10`.
+Sentinel's second initial word `0x28041968` is a pinned literal instruction,
+not a CPU heap pointer. Its actual CPU initializer is `[a4a3a1a1,28041968,0,0,0]`.
+
+This proves CPU command production with genuine returned resource/queue owners
+and controlled Windows CPU API inputs. It does not prove normal display mapper
+admission, GPU execution, retirement, antialiasing, or a Linux screenshot.
+Opaque indirect saved-state backing must remain kernel-owned and cannot be
+admitted as client-written VRAM. Pool6 initial GPU-written state and additional
+shader/constant resource write provenance remain explicit translation work.
+The sibling retirement trace executes the same returned frame through the final
+counter/flush and stops before the first GPU status read; it supplies no completion.
