@@ -1695,3 +1695,43 @@ bookkeeping: after saved display controls, actual2ebd1 invokes41892,4191e and
 41c61, including DRAM programming/readback. A populated16-byte response
 buffer is consequently still insufficient to claim normal mapper completion.
 Unknown post-programming hardware replies remain explicit boundaries.
+
+### Conditional shared allocator now returns with real CPU resource owners
+
+**EMULATED, CONDITIONAL:** `m9_allocator_fixture.initialize()` supplies the
+real702cf pre-refresh OS-owned aperture VA/length as explicit CPU caller inputs,
+while preserving the incomplete normal85d50 result. It executes the genuine
+primary-device link prefix2dfa9..2dfd2 (controlled EBX=device,EDI=0), then
+ordinary865c0/cfb40 shared-lock construction. Full2dea0 display-mode construction
+is not claimed. Genuine19420→19560→25a70→44b90 now **returns1** and itself
+publishes device6984/6988/698c. No resource outputs or completion replies are
+inserted by the host.
+
+The missing platform counter has a genuine OS producer. Optional
+`bootstrap(common_buffers=True)` provides a bounded Windows2000
+[VideoPortGetCommonBuffer](https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/video/nf-video-videoportgetcommonbuffer)
+endpoint through OS config+60. ActualFindAdapter560b1/560b6 imports that callback;
+real58c39 lookup and5a97c select5aa1d. MM5d2e1→6d628 requests159 system-RAM
+bytes, real45350 clears128 bytes, then1cc7a initializes four CPU synchronization
+counters. The counter OS physical address02007000 (after seven earlier common-buffer
+allocations in this fixture) is deliberately **synthetic system
+RAM**, never a captured native GPU address. Unknown common-buffer bytes and
+access after release remain guarded. An exact unchanged captured PCI command
+DWORD is echoed in the CPU host; no physical PCI write occurs.
+
+`m9_shared_allocator.initialize()` uses only actual M9128 f04/3a8/f0c baseline
+reads (f0c00200040 captured separately). Genuine initializer writes are retained
+with PCs and full order; FIFO writes never supply read/completion replies.
+The first1000000-instruction cutoff at5bc29 was a **CPU zeroing-loop budget**
+boundary, not a GPU poll: real5bc20 writes0, advances the pointer, and compares
+its count. A larger bounded execution budget completes those genuine CPU
+writes. Sparse page data/validity stores their provenance without a Python
+dictionary entry for every VRAM byte.
+
+`check-shared-allocator.py` verifies returned19420, the real1f30e0 allocator
+vtable/publications, actual CPU-zeroed aperture bytes, genuine counter bytes
+and refusal of still-unknown VRAM. Captured init includes ordered132c/1330/1334
+and1320/1324/1328 resource bindings. The artifact is
+`shared-allocator-conditional.json`. This is usable conditional CPU ownership
+for tracing AA allocation/map/contents; it remains **no normal adapter admission,
+no vendor GPU completion and no native FAA rendering result**.
