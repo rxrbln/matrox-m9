@@ -610,7 +610,10 @@ m9_emit_raster_range(struct m9_batch *batch, const struct m9_draw_job *job,
            V(0xb9, job->faa.companion_desc));
    else
       EMIT(R(0xb8, job->depth, 0, DEPTH), V(0xb9, p->depth_desc));
-   EMIT(R(0xba, job->aux, 0, DEPTH), V(0xbb, p->aux_desc));
+   if (job->faa.graph)
+      EMIT(R(0xba, job->faa.hz, 0, DEPTH), V(0xbb, job->faa.hz_desc));
+   else
+      EMIT(R(0xba, job->aux, 0, DEPTH), V(0xbb, p->aux_desc));
    EMIT(R(0xbe, job->be, 0, STREAM));
    EMIT(V(0xa8, pass ? pass->depth_control : job->depth_control),
         V(0xa9, pass ? pass->a9 :
@@ -782,6 +785,16 @@ m9_draw_job_valid(const struct m9_draw_job *job)
    if (job->faa.set &&
        ((job->faa.store_bind && (!job->faa.store || !job->faa.store_aux)) ||
         (job->faa.bind_index >= 0 && !job->faa.store)))
+      return false;
+   /* The normal vendor FAA pass owns companion/HZ/main/auxiliary together.
+    * An incomplete graph must fail before it can select ordinary depth or
+    * silently reuse a diagnostic arbitrary-index/reset path. Kernel-owned
+    * pool/sentinel initialization is a separate submission prerequisite. */
+   if (job->faa.graph &&
+       (!job->faa.set || !job->faa.raster || !job->faa.store_bind ||
+        !job->faa.companion || !job->faa.hz || !job->faa.store ||
+        !job->faa.store_aux || !(job->faa.ad & 0x1fffffu) ||
+        job->faa.bind_index >= 0 || job->faa.bind_reset))
       return false;
    for (unsigned i = 0; i < job->unit_count; i++)
       if (!job->units[i].handle)
@@ -1071,10 +1084,14 @@ m9_emit_preprocess(struct m9_batch *batch, const struct m9_draw_job *job,
       EMIT(V(0xba, 0x00000020), V(0xbb, 0xf0010040));
    }
    EMIT(V(0xbe, 3));
-   uint32_t faa_ad = job->faa.set ? job->faa.ad : M9_FAA_AD_OFF;
+   /* Actual normal FAA has an ordinary geometry helper followed by the
+    * FAA raster pass. Store capacity/coverage belong to that raster pass;
+    * the helper carries AD20/AF0. Keep raw diagnostic probes independent. */
+   bool faa_probe = job->faa.set && !job->faa.graph;
+   uint32_t faa_ad = faa_probe ? job->faa.ad : M9_FAA_AD_OFF;
 
    EMIT(V(0xad, faa_ad), V(0xad, faa_ad), V(0xad, faa_ad), V(0xad, faa_ad));
-   EMIT(V(0xaf, job->faa.set ? job->faa.af : M9_FAA_AF_OFF));
+   EMIT(V(0xaf, faa_probe ? job->faa.af : M9_FAA_AF_OFF));
    EMIT(V(0xa8, 0x1f), V(0xa9, 0), V(0xaa, 0));
    EMIT(V(0xab, 0xffffffff), V(0xac, 0xffffffff),
         V(0xae, m9_job_ae(job, 0x22444442u)));
