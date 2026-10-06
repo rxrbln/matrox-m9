@@ -8825,7 +8825,7 @@ m9_context_create(struct pipe_screen *pscreen, void *priv, unsigned flags)
    m9_vs_max_const_pairs = debug_get_num_option("M9X_VS_MAX_CONST_PAIRS",
                                                 M9_VS_MAX_CONST_PAIRS);
    m9_vs_const_pad = debug_get_num_option("M9X_VS_CONST_PAD", 0);
-   m9_vs_uniform_batch = debug_get_bool_option("M9X_VS_UNIFORM_BATCH", false);
+   m9_vs_uniform_batch = debug_get_bool_option("M9X_VS_UNIFORM_BATCH", true);
    m9_vs_specialise = debug_get_bool_option("M9X_VS_SPECIALISE", true);
    m9_native_vs_varyings = MIN2((unsigned)
       debug_get_num_option("M9X_VS_VARYINGS", M9_VS_FUSED_VARYINGS),
