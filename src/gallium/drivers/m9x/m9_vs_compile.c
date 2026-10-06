@@ -1968,6 +1968,16 @@ write_pair(struct ctx *c, unsigned reg, const struct held *h0,
       emit_move_const(c, reg, 0x1c, e, swz);
    } else if (find_pair(c, h0, h1, false, &src, &swz)) {
       emit_move(c, reg, 0x1c, src, swz);
+   } else if (c->packed_outputs && c->reserved[reg] &&
+              reg >= REG_OUT_LO(0) &&
+              reg <= REG_OUT_HI(M9_VS_MAX_ROUTES - 1) && (reg & 1u)) {
+      /* Captured GLSL EE19 source producers publish register copies as
+       * complete pairs. Mixed scalars must first meet in a normal temporary;
+       * scalar register-MOVs into a packed output have no source witness.
+       * Partial ALU/constant output stores are separate captured forms. */
+      if (!operand(c, h0, h1, false, &src, &swz))
+         return false;
+      emit_move(c, reg, 0x1c, src, swz);
    } else {
       return write_scalar(c, reg, 0, h0) && write_scalar(c, reg, 1, h1);
    }
