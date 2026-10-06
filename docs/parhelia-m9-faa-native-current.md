@@ -680,3 +680,51 @@ fallback, not proof of the present native renderer. On success0x54cd3 invokes
 mask4. Capturing that real initialization command stream still requires the
 returned shared allocator and resource backing; the request proof does not
 claim HZ contents, completion or FAA rendering.
+
+### Returned allocator and genuine allocated FAA resources
+
+`tools/m9-vendor-faa-owned-resources.py` uses the sibling reusable
+`m9_allocator_fixture.initialize`: real shared allocator0x19420 returns1,
+publishing device6984/6988/698c. The actual OS-owned aperture mapping is an
+explicit CPU caller input; its normal85d50 refresh still has not returned.
+No GPU completion is supplied. Actualac7e0 then allocates the main, auxiliary,
+companion and HZ resources before stopping at the first real HZ GPU-clear
+0xb4fe0. The [owned-resource capture](traces/m9-vendor-faa-owned-resources-20261006.json)
+contains the real objects, backing descriptors, input/return layout stages,
+and separate sentinel/pool6 constructors and lifetime checks.
+
+At320x240 the stages are distinct:
+
+| Resource | Actual45eb0 geometry/flags | After backing allocation extent/flags |
+|---|---:|---:|
+| Main1024x310 |136020/1|136080/3|
+| Auxiliary1024x19 |13020/1|13080/3|
+| Companion320x240/sample2 |96020/9|97000/b|
+| HZ40x60 |2d00/1|3000/3|
+
+Values are hexadecimal. The earlier32-byte geometry guard remains correct:
+the later backing allocator rounds linear allocations to128 bytes and tiled
+allocations to pages, publishes address15c and marks layoutbit2. A native
+allocation rounded to full pages already covers this padding. Do not confuse
+postallocation ownership extent with the45eb0 geometry result.
+
+An independent actuala3870 sentinel request uses the same flags8202/profile56/
+format0/5x1 asac7e0. The genuineac7e0 CPU initialization prefixaca7b..acb06
+maps the real allocated wrapper, writes exactly
+`a4a3a1a1 28041968 00000000 00000000 00000000`, and unmaps. Its actual backing
+extent is80hex with row8. This independent prefix does not return a fake
+successful clear to the interruptedac7e0 frame.
+
+Real751f0 constructs the pool6 CPU owner; explicitly controlled owner fields
+select the actual hardware/device/head0. Actual76540 allocates the0x500-byte
+request with extent580hex, then reuses the identical interface on the second
+call. Wrapper reference count increases2→3 (constructor baseline1). The real
+kind5 getter returns a direct address pair for pool6, while the flags8202
+sentinel returns tag40000000 and a pointer to its real wrapper relocation
+record: actuala6740 selects this record when wrapper+a8 is set. These are
+separate binding forms and separate resources.
+
+This checkpoint proves actual vendor allocation outputs and sentinel CPU
+initialization on modeled OS-owned storage. Pool6 semantic initialization,
+HZ/companion GPU clears, enabled FAA draw/resolve and normal display admission
+remain open. No rendered FAA fragment is claimed.
