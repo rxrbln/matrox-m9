@@ -3,9 +3,9 @@
 /*
  * Specialising a shader on the uniform values a draw is submitted with.
  *
- * Neither native backend has control flow, so a branch or a loop only
- * reaches the hardware when the value that decides it is known at draw
- * time.  Both stages share these passes: the screen declares no integer
+ * Neither native backend emits hardware branches.  Uniform specialization
+ * removes selected control flow; bounded varying arithmetic becomes GPU
+ * selects.  Both stages share these passes: the screen declares no integer
  * support, so an integer uniform arrives as a float and the NIR has to be
  * lowered to match before a loop bound reads as the number it is.
  */
@@ -20,8 +20,8 @@ struct nir_shader;
  * the screen advertises. */
 void m9_nir_lower_integers(struct nir_shader *nir);
 
-/* Mark the constant-buffer dwords that decide control flow or a select,
- * so the state tracker sends their values through set_inlinable_constants. */
+/* Mark the constant-buffer dwords of uniform conditions, including boolean
+ * operands of varying guards, so set_inlinable_constants sends their values. */
 void m9_nir_find_inlinable_uniforms(struct nir_shader *nir);
 
 /* Substitute those values and fold, which unrolls a uniform-bounded loop

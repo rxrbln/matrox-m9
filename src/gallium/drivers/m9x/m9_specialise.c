@@ -12,11 +12,40 @@
 #include "nir_builder.h"
 #include "compiler/shader_info.h"
 
+/* st lowers the driver's declared default uniforms to load_ubo_vec4 without
+ * retaining the speculation property of load_uniform.  The native backends
+ * turn these loads into constant-register references, not GPU buffer reads.
+ * Restore that property only for a complete, fixed, in-bounds load of the
+ * declared default uniform storage.  Indirects and other buffers retain their
+ * original access flags and all of peephole_select's remaining guards apply. */
+static bool
+default_uniform_can_speculate(nir_builder *b, nir_intrinsic_instr *intr,
+                              void *data)
+{
+   if (!b->shader->info.first_ubo_is_default_ubo ||
+       intr->intrinsic != nir_intrinsic_load_ubo_vec4 ||
+       !nir_src_is_const(intr->src[0]) || nir_src_as_uint(intr->src[0]) ||
+       !nir_src_is_const(intr->src[1]) || intr->def.bit_size != 32 ||
+       nir_intrinsic_component(intr) + intr->def.num_components > 4)
+      return false;
+   uint64_t slot = (uint64_t)nir_intrinsic_base(intr) +
+                   nir_src_as_uint(intr->src[1]);
+   enum gl_access_qualifier access = nir_intrinsic_access(intr);
+
+   if (slot >= b->shader->num_uniforms ||
+       (access & (ACCESS_VOLATILE | ACCESS_CAN_SPECULATE)))
+      return false;
+   nir_intrinsic_set_access(intr, access | ACCESS_CAN_SPECULATE);
+   return true;
+}
+
 void
 m9_nir_lower_alu_if(nir_shader *nir)
 {
    bool progress;
 
+   NIR_PASS(_, nir, nir_shader_intrinsics_pass, default_uniform_can_speculate,
+            nir_metadata_all, NULL);
    /* Native CMP/SEL already implement varying-dependent ternaries.  Use
     * the same forms for larger arithmetic if/else arms rather than require
     * a uniform condition or a hardware branch.  A finite limit preserves
@@ -33,6 +62,10 @@ m9_nir_lower_alu_if(nir_shader *nir)
       NIR_PASS(progress, nir, nir_opt_copy_prop);
       NIR_PASS(progress, nir, nir_opt_cse);
       NIR_PASS(progress, nir, nir_opt_dce);
+      /* If-conversion can make an inactive arm's uninitialised value
+       * visible as an undef input of a select.  Pick the legal value zero
+       * so both backends can represent that input in a constant register. */
+      NIR_PASS(progress, nir, nir_lower_undef_to_zero, NULL);
    } while (progress);
 }
 
@@ -74,6 +107,37 @@ cond_dwords(nir_scalar s, uint16_t *dw, unsigned *count, unsigned depth)
       return true;
    }
    return false;
+}
+
+/* A bounded loop may already have become a ladder of varying-dependent
+ * exits before st hands NIR to the driver.  Its uniform count then appears
+ * in a boolean subcondition, for example (x < stops[i]) && (n_stop > i).
+ * Specialise the wholly uniform boolean operand, without specialising the
+ * uniform threshold of a varying comparison or any arbitrary data leaf.
+ * Keep the original whole-condition collection transactional. */
+static void
+condition_uniforms(nir_scalar s, uint16_t *dw, unsigned *count, unsigned depth)
+{
+   uint16_t trial[MAX_INLINABLE_UNIFORMS];
+   unsigned n = *count;
+
+   if (depth > 16)
+      return;
+   memcpy(trial, dw, sizeof(trial));
+   if (cond_dwords(s, trial, &n, 0)) {
+      memcpy(dw, trial, sizeof(trial));
+      *count = n;
+      return;
+   }
+   if (!nir_scalar_is_alu(s) || s.def->bit_size != 1)
+      return;
+   nir_alu_instr *alu = nir_def_as_alu(s.def);
+
+   if (alu->op != nir_op_iand && alu->op != nir_op_ior &&
+       alu->op != nir_op_ixor && alu->op != nir_op_inot)
+      return;
+   for (unsigned i = 0; i < nir_op_infos[alu->op].num_inputs; i++)
+      condition_uniforms(nir_scalar_chase_alu_src(s, i), dw, count, depth + 1);
 }
 
 /* Records one constant buffer dword, keeping the set free of repeats. */
@@ -211,29 +275,17 @@ m9_nir_find_inlinable_uniforms(nir_shader *nir)
             if (alu->op != nir_op_bcsel)
                continue;
             for (unsigned c = 0; c < alu->def.num_components; c++) {
-               uint16_t trial[MAX_INLINABLE_UNIFORMS];
-               unsigned n = count;
                nir_scalar condition = nir_scalar_chase_alu_src(
                   nir_get_scalar(&alu->def, c), 0);
 
-               memcpy(trial, dw, sizeof(dw));
-               if (cond_dwords(condition, trial, &n, 0)) {
-                  memcpy(dw, trial, sizeof(dw));
-                  count = n;
-               }
+               condition_uniforms(condition, dw, &count, 0);
             }
          }
          nir_if *nif = nir_block_get_following_if(block);
-         uint16_t trial[MAX_INLINABLE_UNIFORMS];
-         unsigned n = count;
 
          if (!nif)
             continue;
-         memcpy(trial, dw, sizeof(dw));
-         if (cond_dwords(nir_get_scalar(nif->condition.ssa, 0), trial, &n, 0)) {
-            memcpy(dw, trial, sizeof(dw));
-            count = n;
-         }
+         condition_uniforms(nir_get_scalar(nif->condition.ssa, 0), dw, &count, 0);
       }
    }
    nir_foreach_function_impl(impl, nir)
