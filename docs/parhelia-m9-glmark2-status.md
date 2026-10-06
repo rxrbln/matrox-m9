@@ -1,5 +1,28 @@
 # glmark2 on the m9x driver: where the 60 fps goal actually stands
 
+## 2026-10-07: indexed variableZ/W and forced-clear fixtures pass
+
+The actual indexed264-vertex diagnostic with vertex-varying perspectiveW
+passes both6336record components exactly and both65536pixel palettes with
+zero wrong pixels/maxchannel1. It uses GPU user transforms and fresh retained
+record metadata. This excludes vertex count, indexed draws or varyingZ/W
+alone as the complex bump failure.
+[Exact hardware proof](../captures/m9x-native-variable-zw-264-20261007/README.md).
+
+Mesa21a446f selected back-end owner waits also pass the full1024x768
+forced-clear regression:221184components, both786432pixel palettes and
+5BEstate swaps, healthy23cda0 retirement. Queue peak4 and async target are
+from earlier work, so no asynchronous throughput improvement is inferred.
+Component-aware dependenciesbd792ac reduce the bump split program by
+23slots,179to156, preserving default program bytes; no FPS gain is claimed
+for an application whose rendering still fails.
+
+Read-only source/C2/owner audits find disjoint logical packed and later
+flat views. Most missing expectedW values do not occur anywhere in the
+retained output span; a decoder permutation alone cannot restore them.
+Complex vendor register allocation and availability masks remain under
+emulator investigation. Full GL2 and default varying promotion remain open.
+
 ## 2026-10-07: paired publication follows vendor form but Z/W still fail
 
 Mesa5f78a2d stages mixed output scalars in an ordinary temporary before a

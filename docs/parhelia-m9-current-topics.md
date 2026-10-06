@@ -23,20 +23,39 @@ to the earlier34FPS QUEUE0 run.
 [Queued-map hardware evidence](../tests/m9-cpu-buffer-queue-hardware-20261006/README.md).
 Observed-completion cache071517c removes redundant successful covered waits;
 concurrent/error/unreached/wrap/lifetime controls pass. No FPS gain is claimed.
-The opt-in matched Xorg/modesetting/glamor Present observer is built and
-host-verified; one fullscreen hardware route observation remains pending.
+The matched clean-built Xorg/modesetting/glamor/GLX observer physically
+passes fullscreen Q3 basicGL2:387frames10.9s,35.5FPS, FAAoff/vsync0. Every
+observed presentation uses a GPU CopyArea; no PageFlip. This is a different
+profile from the older38.9FPS windowed checkpoint, so no controlled gain or
+regression is established. A read-only target probe confirms both primary
+IN_FORMATS blobs advertise no formats for their custom tiled modifiers,
+while LINEAR advertises all five. Async page-flip capabilities remain zero.
 [Present observer](parhelia-m9-present-cost-observer.md).
 
 Bump-height remains an image failure, despite healthy retirement; its85FPS
 printout is invalid as a rendering benchmark. A new complete two-frame
 capture retains264vertices/1440valid indices/all constants and retired
 records. Actual X/Y positions match, while128Z/W pairs are corrupt in
-specific ranges. Packed partial publication and record storage are under
-investigation; no cause is yet proved. Indexed app qualification, radial
-multipass and optional Q3 lighting remain open. Latest valid basic Q3GL2
-checkpoint remains38.9FPS1024x768/FAAoff/vsync0.
+specific ranges. Paired publication follows the vendor MOV form but still fails156Z/W
+pairs in its actual candidate. Most incorrect expectedW values are absent
+from the entire retained buffer. Logical writer views are disjoint; the
+complex shader register and availability-mask contract remains unresolved.
+A separate indexed264-vertex variableZ/W fixture physically passes both
+6336record components and both65536pixel palettes with GPU transforms.
+[Exact indexed variableZ/W proof](../captures/m9x-native-variable-zw-264-20261007/README.md). Indexed app qualification, radial
+multipass and optional Q3 lighting remain open. Latest fullscreen basic Q3GL2 checkpoint is35.5FPS1024x768/FAAoff/vsync0;
+38.9FPS is the prior windowed profile.
 [Bump image failure](../tests/m9-gl2-bump-packed-hardware-20261006/README.md)
 and [GL2 status](parhelia-m9-glmark2-status.md).
+
+Component-aware dependenciesbd792ac remove23unused bump VS slots,179to156,
+without changing default program bytes. Selected BE-owner waits21a446f
+retain exact successful submit points and wait only before reusing the
+selected owner. Host error/lifetime/negative checks and full builds pass.
+Forced-clear1024x768 hardware regression passes221184record components,
+both786432pixel palettes and5BEstate swaps, with healthy retirement. The
+run does not independently qualify asynchronous overlap; previous queue
+peak and async target are historical. No measured FPS gain is claimed.
 
 FAA public red constants change actual main-store contents, but final output
 remains black. This is not working FAA. A genuine ordinary SYSTEM red control
