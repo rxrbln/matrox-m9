@@ -75,9 +75,10 @@ These are controls for deployment, not new open feature implementations:
   additional preprocessing draw that remains unqualified on this board. Native FS has six interpolation
   registers, four fetch units and up to sixteen raster passes. API sampler
   declarations advertise eight so unused variants can link.
-* `FS_CUT_INTERP` is implemented in `m9_fs_compile.c`; the open item is the
-  observed shader that still fails to enter or complete the cut. Do not raise
-  the six-register hardware limit.
+* Interpolation splitting is implemented in `m9_fs_compile.c`. Register
+  pressure now enters `FS_CUT_REGS`; the advertised-limit piglit case passes
+  after padding overlap repair. Broader complex scenes still need qualification;
+  the six-register hardware limit is unchanged.
 * Four MRT destinations were measured pixel-exact, at pairs `0x2c+4p` and
   `0x2d+4p`. The fragment compiler refuses single-program MRT
   blend/discard/pass splitting. `m9_mrt_blend_split()` replays blended draws
