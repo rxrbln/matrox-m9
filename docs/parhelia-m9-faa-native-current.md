@@ -599,3 +599,15 @@ reach the later constructor. At1024x768 the ordinary auxiliary layout is
 1024x198/811040 bytes; the fixed branch is1024x512/2097184 bytes.
 Both include the32-byte guard. These are conditional builder proofs;
 full auxiliary allocation, contents and lifetime remain unproved.
+
+The independent CPU request fixtures explicitly set x87 control word027f:
+53-bit precision, round to nearest, exceptions masked. The vendor then saves
+and temporarily changes its rounding mode for conversion. This caller FP ABI
+is controlled and recorded, not recovered hardware state. Leaving Unicorn's
+zero control word active introduced24-bit precision carry between interrupted
+queries; it changed some byte budgets by one while preserving these row counts.
+Microsoft documents the distinct x86 precision controls in
+[the CRT control-word API](https://learn.microsoft.com/en-us/cpp/c-runtime-library/reference/control87-controlfp-control87-2?view=msvc-170).
+The corrected six-case captures are nonempty parsed JSON, including tiny cases,
+the rounding boundary and both conditional auxiliary branches. The earlier
+empty capture checkpoint is superseded.
