@@ -114,6 +114,9 @@ struct m9x_transport {
 	/* One-shot FAA owns the live virtual primary until bus-master teardown.
 	 * Ordinary command-slot cursors cannot be reused in this namespace. */
 	bool faa_virtual_primary;
+	/* Private Windows stream owns context initialization; Linux sequence0
+	 * was not submitted. This is admission state, not GPU completion. */
+	bool faa_source_context;
 	bool bus_master_enabled;
 	bool engine_transitioned;
 	bool restore_ready;
@@ -387,6 +390,9 @@ int m9x_submit_triangle_diag(struct m9x_device *mdev, u32 color,
 			     bool *color_active);
 int m9x_triangle_prepare_diag(struct m9x_device *mdev);
 bool m9x_faa_diag_enabled(void);
+bool m9x_faa_source_init_enabled(struct m9x_device *mdev);
+int m9x_faa_source_init_admit_locked(struct m9x_device *mdev,
+				    bool context_initialized);
 int m9x_faa_prepare_diag(struct m9x_device *mdev);
 int m9x_faa_submit_diag(struct m9x_device *mdev, u32 color,
 			struct drm_gem_vram_object *color_bo, u64 *point,

@@ -85,11 +85,48 @@ static bool m9_faa_diag;
 module_param(m9_faa_diag, bool, 0400);
 MODULE_PARM_DESC(m9_faa_diag,
 	"Use the kernel-owned normal FAA frame for one FIRST_TRIANGLE diagnostic (M9128 only)");
+static bool m9_faa_source_init;
+module_param(m9_faa_source_init, bool, 0400);
+MODULE_PARM_DESC(m9_faa_source_init,
+	"Let the private M9128 Windows FAA stream initialize a fresh context without Linux sequence0");
 MODULE_FIRMWARE("m9x/faa-normal-known-inputs.bin");
 
 bool m9x_faa_diag_enabled(void)
 {
 	return m9_faa_diag;
+}
+
+bool m9x_faa_source_init_enabled(struct m9x_device *mdev)
+{
+	return m9_faa_diag && m9_faa_source_init && mdev->pdev->device == 0x0540;
+}
+
+/* The unchanged native origin10 is an initial CPU counter seed. Fresh
+ * source admission must never call it a previous GPU retirement. */
+int m9x_faa_source_init_admit_locked(struct m9x_device *mdev,
+				    bool context_initialized)
+{
+	struct m9x_transport *t = &mdev->transport;
+	struct m9x_faa_replay *r = t->faa;
+
+	lockdep_assert_held(&t->lock);
+	if (!m9x_faa_source_init_enabled(mdev) || !r || !r->prepared ||
+	    !t->fence_cpu || t->wedged || context_initialized)
+		return -EINVAL;
+	/* Repeated CPU-view preparation may reuse the admitted manager. It
+	 * cannot start a second frame: the caller's attempted gate remains. */
+	if (t->faa_source_context && r->attempted)
+		return t->engine_transitioned && t->restore_ready &&
+		       t->transport_armed && t->bus_master_enabled &&
+		       !t->queue_count && !t->async_pending ? 0 : -EINVAL;
+	if (r->attempted || t->faa_virtual_primary || t->submitted_point ||
+	    t->completed_point || t->queue_count || t->async_pending ||
+	    t->command_slot || t->command_offset || t->fence_epoch ||
+	    t->last_fence || t->next_fence != 0x20 ||
+	    READ_ONCE(((u32 *)t->fence_cpu)[0]) != 0x10 ||
+	    READ_ONCE(((u32 *)t->fence_cpu)[1]) != 0x10)
+		return -EBUSY;
+	return 0;
 }
 
 static struct m9_faa_owner *m9_faa_output_owner(struct m9x_faa_replay *r)
@@ -827,8 +864,8 @@ int m9x_faa_submit_diag(struct m9x_device *mdev, u32 color,
 	}
 	base = t->next_fence - 0x10;
 	target = base + M9_FAA_TRACKER_LAST - 0x10;
-	/* Retain a real observed retirement as the new common-buffer seed.
- * Never advance a completion counter on the CPU to fit the replay. */
+	/* Reuse an already observed retirement, or the unchanged CPU seed10
+	 * on explicitly admitted fresh source initialization. No CPU advance. */
 	if ((READ_ONCE(((u32 *)t->fence_cpu)[0]) & ~15u) != base) {
 		ret = -EAGAIN;
 		goto unlock;
@@ -933,7 +970,8 @@ int m9x_faa_submit_diag(struct m9x_device *mdev, u32 color,
 	}
 	dma_resv_add_fence(color_bo->bo.base.resv, &fence->base, DMA_RESV_USAGE_WRITE);
 	/* Actual 23a3b/23aaf normal activation contracts. The ordinary context
- * just retired; the two additional tracker words belong to this same
+ * retired, or fresh source admission retained the initial CPU seed;
+ * the two additional tracker words belong to this same
  * retained coherent common buffer, not captured host physical memory.
  * Only the actual known128-byte initializer is reproduced; the low seed
  * equals the already observed GPU retirement and does not publish success. */
@@ -942,6 +980,10 @@ int m9x_faa_submit_diag(struct m9x_device *mdev, u32 color,
 	WRITE_ONCE(((u32 *)t->fence_cpu)[0x20 / 4], base);
 	WRITE_ONCE(((u32 *)t->fence_cpu)[0x40 / 4], base);
 	WRITE_ONCE(((u32 *)t->fence_cpu)[0x60 / 4], base);
+	if (t->faa_source_context)
+		dev_info(&mdev->pdev->dev,
+			 "M9 FAA source context: CPU seed=%#x target=%#x no prior GPU submission\n",
+			 base, target);
 	/* Publish coherent command/counter words and any prior WC writes. */
 	wmb();
 	m9x_write(mdev, M9_REG_FENCE0_ADDRESS, lower_32_bits(t->fence_bus + 0x20) | 2);

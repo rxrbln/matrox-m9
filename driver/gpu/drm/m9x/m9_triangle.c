@@ -1555,12 +1555,20 @@ static int m9_triangle_context_init_locked(struct m9x_device *mdev,
 
 int m9x_engine_ready_locked(struct m9x_device *mdev)
 {
+	bool source_init = m9x_faa_source_init_enabled(mdev);
 	u64 point;
 	int ret;
 
 	lockdep_assert_held(&mdev->transport.lock);
 	if (mdev->transport.wedged)
 		return -EIO;
+	if (source_init) {
+		ret = m9x_faa_source_init_admit_locked(mdev,
+			mdev->transport.triangle &&
+			mdev->transport.triangle->context_initialized);
+		if (ret)
+			return ret;
+	}
 	ret = m9_triangle_prepare_resources(mdev);
 	if (!ret)
 		ret = m9x_transport_enable_bus_master_locked(mdev);
@@ -1568,6 +1576,18 @@ int m9x_engine_ready_locked(struct m9x_device *mdev)
 		ret = m9x_address_prepare(mdev);
 	if (!ret)
 		ret = m9_triangle_engine_transition_locked(mdev);
+	if (!ret && source_init) {
+		/* Actual Windows queue initialization is in the private primary.
+		 * Preserve live manager/requester/bindings/restore preparation, but
+		 * do not inject the unrelated Linux first-context GPU submission. */
+		if (!mdev->transport.engine_transitioned ||
+		    !mdev->transport.restore_ready ||
+		    !mdev->transport.transport_armed ||
+		    !mdev->transport.bus_master_enabled)
+			return -EINVAL;
+		mdev->transport.faa_source_context = true;
+		return 0;
+	}
 	if (!ret)
 		ret = m9_triangle_context_init_locked(mdev, &point);
 	return ret;
