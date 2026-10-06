@@ -8,7 +8,7 @@ submission refuses while the private context diagnostic is enabled.
 
 `tools/m9-native-faa-template.py` converts the pinned normal capture into
 30 unique backing owners (40 resource views), 53 typed address fixups,
-and an input blob containing only 125,008 actual known bytes. Aliases share
+26 timeline fields and an input blob containing only 125,008 actual known bytes. Aliases share
 their backing owner; constants and geometry retain the physical DMA domain.
 The primary is 5,676 raw bytes, while the two counted secondary images
 retain their original 604/772-byte structure and physical selector2.
@@ -44,10 +44,10 @@ It saves actual PPM pixels and checks interior/exterior colors and partial
 edge coverage. This is a hardware oracle; it does not rasterize on the CPU.
 The scoped sampled-window admission exists only while the diagnostic is on.
 
-Hardware FAA retirement and image proof are pending. Review additionally
-identified four selected E3 timeline snapshots, in addition to twenty E3
-completion tokens and two waits. They must all be translated through the
-same genuine timeline bias before publishing this replay. The private
+Hardware FAA retirement and image proof are pending. All four selected E3
+timeline snapshots, twenty E3 completion tokens and two waits now translate
+through the same genuine timeline bias. The independent fetch audit rejects
+plans that omit any of these actual producer-written slots. The private
 pool save/restore GPU effect and shader fetch behavior require the hardware
 run; CPU capture alone does not prove rendered fragments or completion.
 
