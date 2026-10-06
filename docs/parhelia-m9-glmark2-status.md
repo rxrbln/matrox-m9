@@ -31,6 +31,11 @@ and clear160 retire, but the optional four-stage five-stream dispatch times
 out at220 with writeback161. No GPU record/pixel qualification or FPS gain.
 The initial loader-only llvmpipe refusal is retained separately and was fixed
 by including the linked unified Gallium DSO directory in LD_LIBRARY_PATH.
+Mesa20b02d4 now implements the actual vendor preprocessing stage publication,
+restart and index43 dependencies in one range, with live framed lengths.
+Root build/batch/sourcewitness and independent framing/lifetime review pass.
+[Corrected integration proof](../tests/m9-gl2-pre-transition-build-20261006/README.md);
+corrected physical qualification remains pending.
 See [actual device evidence](../tests/m9-gl2-route-hardware-20261006/README.md).
 
 ## 2026-10-06: wireframe compiles natively; physical dispatch fails
