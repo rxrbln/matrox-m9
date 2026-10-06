@@ -7857,9 +7857,16 @@ m9_set_inlinable_constants(struct pipe_context *pctx, mesa_shader_stage shader,
    struct m9_context *ctx = m9_context(pctx);
    const unsigned n = MIN2(num_values, MAX_INLINABLE_UNIFORMS);
 
-   if (shader == MESA_SHADER_FRAGMENT)
+   if (shader == MESA_SHADER_FRAGMENT) {
+      /* Inlining can remove a fetch or change the raster pass schedule, so
+       * it also changes the CPU varying/coordinate record layout returned
+       * by m9_render_get_vertex_info.  A backend-only draw_flush keeps the
+       * prepared frontend and its emit translation: rebinding the same FS
+       * invalidates that layout before the new variant is selected. */
+      if (n && memcmp(ctx->fs_inline, values, n * sizeof(*values)))
+         draw_bind_fragment_shader(ctx->draw, ctx->fs ? ctx->fs->draw : NULL);
       memcpy(ctx->fs_inline, values, n * sizeof(*values));
-   else if (shader == MESA_SHADER_VERTEX)
+   } else if (shader == MESA_SHADER_VERTEX)
       memcpy(ctx->vs_inline, values, n * sizeof(*values));
 }
 
