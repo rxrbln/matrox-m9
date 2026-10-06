@@ -32,3 +32,18 @@ The CPU replay completes actual draw/resolve dispatch. It supplies no GPU
 retirement or rendered result. Kernel-private pool ownership, complete shader
 and source resources, and the actual saved-state lifecycle remain necessary
 for safe executable translation.
+
+## Sampled primary descriptor
+
+The genuinely activated primary also carries a sampled layout. Its actual
+selector9 cache at layout74/78/7c is `[e81001,cc220140,000100f0]`, with validity
+20000; layout138 is2 and raw surface234 samplecount is2. Its returned descriptor
+extent is50000 (327680 bytes). Layout16c is recorded verbatim as20 (32), without
+assuming its units match the descriptor's low16 row value140 (320).
+
+The strong draw and resolve audits now validate B1 against this actual cache,
+as well as B0 against the owned primary GPU address. The current ordinary Mesa
+color descriptor helper hardcodes layout1 (`cc210140` for the same visible
+shape). A production FAA primary therefore needs its sampled descriptor and
+matching allocation/interpretation. Binding only the graph to an otherwise
+ordinary primary is not the captured minimal variant.
