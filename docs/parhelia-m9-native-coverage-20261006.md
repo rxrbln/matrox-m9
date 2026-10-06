@@ -41,7 +41,7 @@ reason tally; the initial temporary context teardown (`native 0, module 0`)
 does not identify gameplay coverage. A short gameplay interval suffices to
 capture that tally without repeating the complete timedemo.
 
-## Implemented coverage prerequisite, pending native validation
+## Implemented coverage prerequisite, native readback validated
 
 Mesa folds short uniform-decided `if` branches to `bcsel` ALU before driver
 finalization. `m9_nir_find_inlinable_uniforms` inspected remaining if/loop nodes
@@ -60,7 +60,12 @@ corpus **177/182**, while total emitted slots fall **1660 -> 1655**.
 full readback against independently scaled interpolated colors each time. Its
 native acceptance check is three GPU draws, one CPU fallback, and zero wrong
 pixels in all variants. This is a coverage fix, with no measured Quake3 gain
-until the active reason is captured and the native fixture passes.
+claimed for Quake3. The native fixture passes all four full readbacks;
+[the native proof](../tests/m9-native-uniform-select-20261006/README.md)
+records the actual first GPU draw and the final three-input CPU fallback.
+The bounded gameplay profile now identifies approximately63% projector,
+36% output-cap and1% rasterizer-state fallback calls; these are counts, not
+time shares. Projector semantics must be proved before changing that guard.
 
 ## Remaining prerequisites
 
