@@ -1142,3 +1142,51 @@ Next bootstrap input is the actual miscIO I2C/board-EEPROM protocol; a whole
 live-register snapshot must not stand in for dynamic slave ACK/data. For FAA,
 the newly exposed device-owned index24 resource and conditional E6/BCBD
 producer remain the highest leverage packet investigation.
+
+### Real index24 resource getter and descriptor producer
+
+`tools/m9emu/resource-address.py` now executes the complete real interface
+constructor `a32a0`, real descriptor getter `a6740` (vtable `1f3a90`, slot
+`+5c`), descriptor builder `467e0` with its helper `47350`, and surface emitter
+`fb920`. Inputs are explicit controlled resource/layout fixtures; this does
+**not** initialize the device's pool-6 allocation or establish its lifetime,
+contents, domain, size, Windows API ownership or hardware completion.
+
+The low-level resource's `+268` contains a **pointer to a separate interface**,
+not an inline interface. `a3870` loads this pointer at `a38b8`. Descriptor-kind
+5 branches at `a6776` to descriptor selector **2**, not format 5. The getter
+uses layout `[interface+c0]+3c`; `467e0` creates triple `layout+20/+24/+28`
+and marks validity bit `400` at `layout+11c`. A second genuine getter call
+uses this cache and never reenters the builder.
+
+`47350` at `47370..47383` only admits the layout address `+15c` when layout
+bit1 is set. Layout `+144` is separate metadata, **not the mapped address**.
+The fixture uses format `78`, dimensions `256 x 1 x 1`, stride256, address
+`06000000` and zero layout mode. Actual builder output is
+`{06000000, f0000100, 00010001}`. None of those fixture values establishes
+the real pool-6 allocation's descriptor format or layout.
+
+The two real getter branches produce distinct relocation contracts:
+
+| Input condition | Getter pair at shadow `+9c/+a0` | Additional state |
+| --- | --- | --- |
+| `interface+a4 == 0` and `interface+a8 == 0` | `{0, address}` | direct mapped address |
+| either field nonzero | `{40000000, &interface+74}` | `+74` backing-owner pointer from resource`+1e4`; `+78` address |
+
+Passing either pair into real `fb920` emits index24 via relocation kind`2b`,
+then E6`6dc00000,1,1`, then BC/BD. The controlled relocation sink records the
+direct address or follows the explicit indirect pair; it does not assign a
+physical address to a real backing owner. Clearing layout bit1 makes the real
+getter produce `{0,0}`; `fb920` then omits the entire block and retains dirty40.
+`resource-address.json` preserves all three cases. `check-resource-address.py`
+checks actual constructor/getter entries, descriptor cache, both pair forms,
+exact packet order and the address-admission negative control.
+
+Static pool-6 request correction: `76540` initially writes request`+8=1a` at
+`7656e`, but **overwrites it with zero at `765e3` before calling `a3870`**.
+The final request format is therefore zero, not `1a`. Pool6 flags are `8002`;
+width is `ceil(bytes/4)` and height is `ceil(width/1024)`, with other dimensions
+1. `a3870` at `a38e2..a38fa` derives interface`+a4/+a8` from request bits8/9,
+both zero for `8002`; this selects the mapped getter branch if that request
+successfully reaches a valid low-level resource. Pool-6 allocation and its
+initial data are still open and must be captured before native index24 use.
