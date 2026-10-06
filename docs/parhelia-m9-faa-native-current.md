@@ -359,6 +359,27 @@ the runtime collection pointer at `+0x21f05c`. No substitute record or
 successful device initialization was supplied. Finishing the real miniport
 bootstrap therefore serves this constructor as well as query2 admission.
 
+The primary factory at resource owner `+0x1074` now has an exact producer.
+It is `owner+0xfe4+0x90`: constructor `0x1cb90` installs the typed factory
+block through actual `0x5f550`, then its successful tail `0x1de20` calls
+`0x5f740`. The latter publishes resident pointers and passes them through
+real typed virtual getters. With an empty engine inventory, the actual
+result is owner `+0x1034`, vtable `0x1f40c0`, slot0 `0xb78f0`; its delegate
+is owner `+0x1058`, vtable `0x1f3310`, slot0 `0xb6850`.
+`tools/m9-vendor-resource-factory.py` executes those genuine CPU leaves and
+asserts both factory identities, the constructor/getter visits, and that
+device `+0x69a4` remains unpublished. The
+[factory capture](traces/m9-vendor-resource-factory-20261006.json) is a
+conditional ownership proof; it does not complete or bypass the earlier
+shared-runtime requirement in the full resource constructor.
+
+The other primary prerequisite, device `+0x6990`, also has a normal startup
+publisher: module `0x273a0` at startup-table `0x1f25a0` calls `0x273c0`,
+which assigns it at `0x273ff`. Before that assignment, actual `0x12340`
+reads the same genuine device `+0x10` shared runtime owner. Thus both
+missing resource branches depend on initialized runtime configuration;
+neither requires an invented factory pointer or an extra FAA registry gate.
+
 The genuine ICD client publisher is `0x1003a2a0`. Actual
 `0x1003d480 -> 0x1003b270 -> 0x1003d510` sends operation4, ExtEscape186a0
 input0x38/output0x10; only a successful actual reply would publish client
