@@ -8,21 +8,21 @@ Ordinary textured rendering and the deployed driver are validated. FAA
 rendering is not yet validated. This note is separate from P690
 `102b:2539` evidence.
 
-Current physical checkpoint: kernel `03c30b3` (`c95e3c1` virtual primary),
-RE producer `986e6fef`, explicit output oracle `626860c5`. The retained
-class1/B primary posts its derived GPUVA/end and retires at `0x1d0` on
-M9128 boot `a4a2ad1d`; the ordinary output image is still entirely black.
-Read-only SYSTEM-prefix observations show all327680 CPU-alias output bytes
-zero and unchanged, including padding. Main/AA fragment hashes match previous
-failures. Required source write-event channel00 reaches1d1/0; other channels
-remaina0/0. No separate40 wait is proved or needed by this bounded access.
-See [the hardware image, counters and raw observations](../tests/m9-faa-virtual-primary-20261006/README.md).
-The virtual path is retained; no rendering success or app FAA is claimed.
-SYSTEM CPU cache attributes and hardware/context prerequisites are being
-compared with actual source. Structural/bounds/source/CPU checks pass but do
-not prove pixels or DRAM visibility independent of the retained CPU alias.
-The prior [physical-clone run](../tests/m9-faa-ordinary-output-20261006/README.md)
-remains historical evidence of the same black output.
+Current physical checkpoint: kernel `20df96d` on M9128 boot `9666bcd7`.
+All five private SYSTEM owners verify WB->WC80/80/64/64/64pages before
+publication, following the actual vendor cache request. The virtual primary
+retires at `0x1d0`, but the image remains entirely black. Both raw output and
+scratch SYSTEM backings remain zero through verified WC aliases. Main/AA
+fragment hashes match earlier failures; required write-event channel00 reaches
+1d1/0. No timeout or cache-preparation refusal occurs. The cache-contract fix
+is retained; no rendering success or application FAA is claimed.
+See [the complete WC test](../tests/m9-faa-wc-20261006/README.md).
+Next source-derived candidate isolates the Windows frame's initialization
+from the extra Linux M9148 sequence0 predecessor. Remaining fragment/resolve
+interpretation is still under source audit. Earlier
+[virtual-primary](../tests/m9-faa-virtual-primary-20261006/README.md) and
+[physical-clone](../tests/m9-faa-ordinary-output-20261006/README.md) failures
+remain historical evidence. FAA stays disabled for applications.
 
 Earlier sampled-destination tests below are historical evidence.
 

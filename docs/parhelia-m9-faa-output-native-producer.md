@@ -81,3 +81,9 @@ source-required write-event channel reaches its native rebased target.
 [Physical qualification still fails](../tests/m9-faa-virtual-primary-20261006/README.md);
 no extra cache operation or hardware-enable value is justified without source
 proof. Application FAA remains disabled.
+
+The subsequent verified WC mapping test (`20df96d`, boot9666bcd7) also
+retires1d0 with zero ordinary output. All five source-covered SYSTEM owners
+have live WC attributes before publication. Source cache fidelity is closed
+for this run, [but rendered pixels still fail](../tests/m9-faa-wc-20261006/README.md).
+The extra Linux context-initialization predecessor is being isolated next.

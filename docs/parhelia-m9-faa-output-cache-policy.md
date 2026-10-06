@@ -80,3 +80,12 @@ After a submitted attempt, attribute restoration requires PCI bus mastering
 stopped. No manual cache flush is performed after GPU retirement. This closes
 a source/native CPU mapping contract; correct pixels require a separate
 physical result.
+
+## Physical qualification
+
+Canonical kernel20df96d verifies all five live native SYSTEM owner mappings
+WB->WC before publication on M9128 boot9666bcd7. The stream retires1d0;
+the complete output remains zero through the verified WC CPU alias and the
+image testFAILs. See [actual logs and image](../tests/m9-faa-wc-20261006/README.md).
+This closes the CPU attribute contract for this bounded run; it does not
+identify the black-image cause or prove FAA rendering. The fix is retained.
