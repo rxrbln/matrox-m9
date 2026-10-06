@@ -82,3 +82,55 @@ failure cannot justify mixing baseline addresses into the successful `101f8`
 capture. The existing complete normal `101b8` input exporter was regenerated
 after factoring its shared read-only observers: the resulting JSON object is
 exactly equal to the original retained baseline.
+
+## Independent actual queue flush and fresh direct fields
+
+`normal-faa-output-flush-input-manifest-101f8.json` additionally retains an
+independent explicit call to the actual `23b80` queue-finishing method on this
+unfinished output stream. Its guarded source helper requires the genuine
+triangle, allocated live ordinary temporary, executed `abc20/ac139`, original
+missing-input boundary and actual queue `+94=1`. It does not resume `ac1f0` or
+answer its completion input. The unchanged actual finish core appends twelve
+primary bytes, posts the actual buffer endpoint and stops at `23bc3` before
+executing its status read. The primary is 5596 bytes, total known MDL bytes
+7280, and the desired source counter is **140**, not the old 150. The
+temporary remains retained and neither copy nor retirement returns.
+
+Reproduce with the unfinished exporter arguments plus
+`--independent-flush-helper PATH --address-audit-out PATH`. The helper is the
+render agent's source-guarded `m9_faa_retirement.py`; its SHA256 is retained.
+The checker accepts the additional `--address-audit ADDRESSES` argument. Its
+source, contract and address audit are separately hashed. The original
+common-read boundary and the independent final status boundary are both
+preserved, with no GPU reply or pixel data.
+
+The actual fresh command inventory has 47 nonnull typed fields plus four
+direct secondary endpoints: **51 address sites**, and **25** timeline fields.
+The direct primary offsets are `1348/134c/1354/1358`. The two secondary
+intervals cover 604 and 772 bytes. Their starts use the GPUvirtual selector 1;
+their ends carry marker 2 from the actual saved-kind expression while retaining
+the same mapped buffer/translation. An endpoint marker must not be treated as
+proof of a physical DMA domain. All fields are joined to their actual producer
+PC and unique actual CPU backing write, including the shader-loader timeline
+getters that a generic packet walker misses. Native alignment changes still
+require regenerating lengths and shifting every remaining field.
+
+The actual `106c` activation takes the mapped-counter branch. Source
+`23a47..23a97` examines queue `+160`, verifies that the physical counter lies
+inside its backing page, and at `23a8d` produces
+`[resource+3c+8] + (physical_counter - [resource+24])`. This maps the fresh
+counter to its retained GPUvirtual PFN proxy and tag 1. The physical `|2`
+expression at `23a94` is only the fallback. Registers `1068/1070` still use
+their actual separate physical common-buffer fields `|2`. The native producer
+must derive these distinct bindings from the live counter owner and selected
+mapping, preserving its policy `110` / PTE nibble `a`; queue policy `30` /
+nibble `b` does not admit a universal counter substitution.
+
+The same flush run observes `b5f86` reading the actual caller/device `+1c=0`
+and `b6028` using retained bit-0 padding flag zero. It records the companion's
+actual GPU base and logical clear extent 151 pages, together with the exact
+`b60ab` header and `b6101/b6143/b61ae` write inventory. The captured prefix has
+nineteen page-run words plus its header. This remains a controlled device ABI
+observation, not a universal hardware capability. The native clear must derive
+every run, mask, count and suffix offset from its live companion placement;
+the render agent's alignment-varied helper proof supplies that separate check.
