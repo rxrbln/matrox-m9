@@ -1214,7 +1214,10 @@ m9_emit_preprocess(struct m9_batch *batch, const struct m9_draw_job *job,
 
    EMIT(V(0xad, faa_ad), V(0xad, faa_ad), V(0xad, faa_ad), V(0xad, faa_ad));
    EMIT(V(0xaf, faa_probe ? job->faa.af : M9_FAA_AF_OFF));
-   EMIT(V(0xa8, 0x1f), V(0xa9, 0), V(0xaa, 0));
+   /* Native vendor chains leave A8 disabled until LAST: FIRST/CONTINUE/
+    * MIDDLE publish intermediate outputs and carry no final epilogue.
+    * The ordinary fused and legacy diagnostic paths retain their state. */
+   EMIT(V(0xa8, chain && extra ? 0 : 0x1f), V(0xa9, 0), V(0xaa, 0));
    EMIT(V(0xab, 0xffffffff), V(0xac, 0xffffffff),
         V(0xae, m9_job_ae(job, 0x22444442u)));
    EMIT(V(0xf5, 0), V(0xf6, 0x7fff7fff), V(0xc4, 0), V(0xc5, 0x7fff7fff));
