@@ -1777,11 +1777,13 @@ held_coeff(unsigned stream, unsigned comp)
  * the same so the stream entry carries no stale register. */
 static bool
 write_coord_output(struct ctx *c, nir_intrinsic_instr *store, unsigned stream,
-                   unsigned component, unsigned reg_xy, unsigned reg_zw)
+                   const struct m9_vs_output *output,
+                   unsigned reg_xy, unsigned reg_zw)
 {
    struct held h0, h1;
    unsigned rb, sb;
    int scale, bias, es, eb;
+   unsigned component = output->component;
 
    /* Both scalars have to be values the shader stores; a component it
     * leaves at the GL default is not a coordinate. */
@@ -1820,6 +1822,32 @@ write_coord_output(struct ctx *c, nir_intrinsic_instr *store, unsigned stream,
            w1_make(VS_MAD_RKK | 1u << 8 | sb << 6, es, NONE));
    }
    memset(c->holds[reg_xy], 0, sizeof(c->holds[reg_xy]));
+   if (output->paired) {
+      nir_function_impl *impl = nir_shader_get_entrypoint(c->nir);
+      nir_intrinsic_instr *pair = NULL;
+
+      nir_foreach_instr(instr, nir_start_block(impl)) {
+         if (instr->type != nir_instr_type_intrinsic)
+            continue;
+         nir_intrinsic_instr *intr = nir_instr_as_intrinsic(instr);
+
+         if (intr->intrinsic == nir_intrinsic_store_output &&
+             nir_intrinsic_io_semantics(intr).location == output->pair_location)
+            pair = intr;
+      }
+      unsigned pc = output->pair_component;
+
+      if (!pair || pc < nir_intrinsic_component(pair) ||
+          pc + 2 > nir_intrinsic_component(pair) + pair->src[0].ssa->num_components)
+         return fail(c, "the packed texture pair reaches past its varying");
+      struct held p0 = out_held(pair, pc, 0.0f);
+      struct held p1 = out_held(pair, pc + 1, 0.0f);
+
+      /* This companion has an identity transform, proved by the layout
+       * resolver.  The measured high output pair is a normal two-scalar
+       * target; the sampler reads it with declaration selectors 2 and 3. */
+      return write_pair(c, reg_zw, &p0, &p1);
+   }
    emit_move(c, reg_zw, 0x1c, reg_xy, 1);
    memset(c->holds[reg_zw], 0, sizeof(c->holds[reg_zw]));
    return true;
@@ -1852,7 +1880,7 @@ write_stream(struct ctx *c, nir_intrinsic_instr *store,
    static const float dflt[4] = { 0.0f, 0.0f, 0.0f, 1.0f };
 
    if (present && ostream[j].coordinate)
-      return write_coord_output(c, store, base + j, ostream[j].component,
+      return write_coord_output(c, store, base + j, &ostream[j],
                                 reg_xy, reg_zw);
    return write_output(c, present ? store : NULL, reg_xy, reg_zw, dflt);
 }
@@ -2138,7 +2166,7 @@ compile_impl(struct ctx *c, nir_function_impl *impl,
    for (unsigned v = 0; v < nvar; v++) {
       c->p->varying_location[v] = out.stream[v].location;
       c->p->varying_components[v] =
-         out.stream[v].coordinate ? 2 :
+         out.stream[v].coordinate ? (out.stream[v].paired ? 4 : 2) :
          nir_intrinsic_component(varying[v]) +
          varying[v]->src[0].ssa->num_components;
    }
@@ -2268,6 +2296,9 @@ m9_vs_stream_index(const struct m9_vs_program *p, unsigned location,
          continue;
       if (coordinate ? o->coord == coord && o->pass == pass :
                        o->location == location)
+         return (int)v;
+      if (coordinate && o->paired && o->pair_coord == coord &&
+          o->pair_pass == pass)
          return (int)v;
    }
    return -1;

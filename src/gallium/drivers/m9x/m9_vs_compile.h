@@ -221,6 +221,10 @@ struct m9_vs_output {
     * draw that samples a differently addressed target then appends records
     * to the pending job rather than ending it. */
    bool coeff_record;
+   /* An identity coordinate pair in the upper half of this same stream.
+    * It comes from its own varying, rather than duplicating the low pair. */
+   bool paired;
+   uint8_t pair_location, pair_component, pair_coord, pair_pass;
 };
 
 struct m9_vs_outputs {

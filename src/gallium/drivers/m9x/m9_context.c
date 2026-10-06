@@ -332,6 +332,9 @@ static bool m9_no_cull;
  * M9128 -- six textured fixtures exact, glmark2 texture native at the draw
  * module's own frame rate. */
 static bool m9_coord_share;
+/* Two identity coordinate pairs can occupy XY and ZW of one native stream;
+ * =0 keeps the separate-output diagnostic arm. */
+static bool m9_coord_pack;
 /* M9X_VS_SPLIT=1 lets a native preprocessing job carry a fragment program
  * the engine runs as several raster passes.  The layout below is the union
  * over the passes, which for a shader that hands a coordinate between them
@@ -1533,6 +1536,15 @@ m9_job_native(struct m9_context *ctx, const struct m9_job_key *key,
          coords[c] = st->coord_extra[c] < 0 || view >= 0 ?
                      MAX2(view, 0) : M9_TRANSIENT_CPU_VIEW +
                                      st->coord_extra[c];
+         if (key->vs && view >= 0) {
+            int index = m9_vs_stream_index(key->vs, st->coord_location[c],
+                                            i, c, true);
+            const struct m9_vs_output *o = index >= 0 ?
+                                           &key->vs->outputs.stream[index] : NULL;
+
+            if (o && o->paired && o->pair_pass == i && o->pair_coord == c)
+               coord_select[c] = m9_coord_select(2);
+         }
       }
       ret = m9_raster_fs_init_textured(&pass->fs, fs->vertex_entry,
                                        m9_fs_raster_88(p), consts,
@@ -5269,10 +5281,13 @@ m9_native_vs_fs_cheap(const struct m9_context *ctx)
    if (!ctx->fs || !ctx->fs->nir)
       return false;
    info = &ctx->fs->nir->info;
-   return info->num_inlinable_uniforms ||
-          util_bitcount64(info->inputs_read &
+   unsigned inputs = util_bitcount64(info->inputs_read &
                           ~(VARYING_BIT_POS | VARYING_BIT_FACE |
-                            VARYING_BIT_PNTC)) <= m9_native_vs_varyings;
+                            VARYING_BIT_PNTC));
+
+   return info->num_inlinable_uniforms || inputs <= m9_native_vs_varyings ||
+          (m9_coord_pack && inputs == m9_native_vs_varyings + 1 &&
+           !BITSET_IS_EMPTY(info->textures_used));
 }
 
 /* Can this draw run the compiled vertex program?  NULL when it can, and a
@@ -5542,6 +5557,43 @@ m9_native_vs_layout(struct m9_context *ctx, const struct m9_job_key *key,
                interpolated |= !out->stream[j].coordinate &&
                                out->stream[j].location == stream.location;
             if (interpolated)
+               continue;
+         }
+         /* The producer's high pair has no consumer yet.  Identity
+          * coordinates need no extra coefficient record: emit the second
+          * raw pair there and let its sampler select components 2 and 3.
+          * Preserve separate streams for every transformed coordinate. */
+         if (m9_coord_pack && sc[0] == 1.0f && sc[1] == 1.0f &&
+             bi[0] == 0.0f && bi[1] == 0.0f) {
+            bool paired = false;
+
+            for (unsigned j = 0; j < out->count; j++) {
+               struct m9_vs_output *o = &out->stream[j];
+               float os[2], ob[2];
+
+               if (!o->coordinate || o->paired)
+                  continue;
+               m9_vs_coord_coefficients(key, o->pass, o->coord,
+                                         M9_VS_COORD_SCALE, os);
+               m9_vs_coord_coefficients(key, o->pass, o->coord,
+                                         M9_VS_COORD_BIAS, ob);
+               if (os[0] != 1.0f || os[1] != 1.0f ||
+                   ob[0] != 0.0f || ob[1] != 0.0f)
+                  continue;
+               if (m9_vs_varying_index(p, stream.location) < 0)
+                  return "the vertex program does not write the varying a "
+                         "texture coordinate comes from";
+               o->paired = true;
+               o->pair_location = stream.location;
+               o->pair_component = stream.component;
+               o->pair_coord = stream.coord;
+               o->pair_pass = stream.pass;
+               coeff -= o->coeff_record;
+               o->coeff_record = false;
+               paired = true;
+               break;
+            }
+            if (paired)
                continue;
          }
          stream.coeff_record = p->attr_count + coeff < M9_VS_MAX_ATTRIBUTES;
@@ -8630,6 +8682,7 @@ m9_context_create(struct pipe_screen *pscreen, void *priv, unsigned flags)
    m9_native_vs_coord_pair = debug_get_bool_option("M9X_VS_COORD_PAIR", true);
    m9_no_cull = debug_get_bool_option("M9X_NO_CULL", false);
    m9_coord_share = debug_get_bool_option("M9X_COORD_SHARE", true);
+   m9_coord_pack = debug_get_bool_option("M9X_COORD_PACK", true);
    m9_native_vs_split = debug_get_bool_option("M9X_VS_SPLIT", false);
 
    m9_no_clear = debug_get_bool_option("M9X_NO_CLEAR", false);
