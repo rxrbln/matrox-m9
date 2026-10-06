@@ -148,6 +148,20 @@ m9_raster_89(uint32_t base, const uint8_t *color_class, unsigned color_count)
    return word;
 }
 
+/* Native GLSL preprocessing output classes, joined with every captured
+ * target descriptor: packed four-dword records 4, flat streams 2, clip code
+ * 1, disabled 7. Native GLSL captures clear the fixed-function bit 21. */
+uint32_t
+m9_preprocess_89(unsigned targets, bool packed, bool clip)
+{
+   if (!targets || targets > M9_DRAW_MAX_COLOR)
+      return 0;
+   uint32_t word = 0xfe000000u;
+   for (unsigned t = 0; t < M9_DRAW_MAX_COLOR; t++)
+      word |= (t < targets ? packed ? 4u : 2u : 7u) << (3 * t);
+   return word | (clip ? 1u : 7u) << 12;
+}
+
 uint32_t
 m9_color_mask_pair(const uint32_t *mask, unsigned count, unsigned first)
 {
@@ -1245,7 +1259,9 @@ m9_emit_preprocess(struct m9_batch *batch, const struct m9_draw_job *job,
                 (primary ? job->vs_producer_mask :
                  chain && kind == M9_PRE_HEAD ? job->vs_extra_mask :
                  extra ? 0x0000ffffu : 0x0000bf00u)),
-        V(0x89, 0xfe201e92), V(0x8a, 0), V(0xc1, 0));
+        V(0x89, chain ? m9_preprocess_89(extra ? targets : 3u,
+                        primary || kind == M9_PRE_HEAD, !extra) :
+                        0xfe201e92u), V(0x8a, 0), V(0xc1, 0));
    EMIT(R(0x00, job->source, 0, SYSTEM), V(0x01, 0xf2fe014f),
         V(0x10, record_bytes));
    /* The vertex program of a split shader sits behind every fragment

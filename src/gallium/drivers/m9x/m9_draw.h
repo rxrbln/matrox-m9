@@ -237,6 +237,7 @@ unsigned m9_draw_color_relocs(unsigned color_count, unsigned pass_count);
  * at a time from bit 0, with 7 in each unbound field.  base supplies the bits
  * above 14, which no capture varies.  A count of zero returns base unchanged.
  * docs/parhelia-m9-mrt-routing.md */
+uint32_t m9_preprocess_89(unsigned targets, bool packed, bool clip);
 uint32_t m9_raster_89(uint32_t base, const uint8_t *color_class,
                       unsigned color_count);
 /* Raster ab and ac: one sixteen-bit write mask a target, ab holding targets
