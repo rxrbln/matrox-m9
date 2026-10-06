@@ -964,6 +964,7 @@ static bool
 emit_pow(struct ctx *c, unsigned dst, const struct held *a,
          const struct held *b)
 {
+   const unsigned scratch_base = c->temp_seq;
    struct held logarithm = held_temp(c), product = held_temp(c);
    struct held result = held_temp(c), condition = held_temp(c);
    const struct held zero = held_lit(0.0f);
@@ -977,11 +978,27 @@ emit_pow(struct ctx *c, unsigned dst, const struct held *a,
 
    if (rl < 0 || rm < 0 || rr < 0 || rc < 0)
       return fail(c, "out of temporaries");
-   return emit_log2(c, rl, a) &&
-          emit_mul(c, rm, &logarithm, &logarithm, b, b) &&
-          emit_exp2(c, rr, &product) &&
-          emit_cmp(c, rc, 4, a, a, &zero, &zero) &&
-          emit_sel(c, dst, 5, sel);
+   if (!emit_log2(c, rl, a) ||
+       !emit_mul(c, rm, &logarithm, &logarithm, b, b) ||
+       !emit_exp2(c, rr, &product) ||
+       !emit_cmp(c, rc, 4, a, a, &zero, &zero) ||
+       !emit_sel(c, dst, 5, sel))
+      return false;
+   /* The final select has consumed this scalar chain's intermediates,
+    * including exp2's four scratch pairs.  The caller allocated dst and
+    * its earlier component results before scratch_base; live NIR SSA
+    * values have HELD_DEF identities.  Release only pairs whose two held
+    * identities were created inside this power chain. */
+   for (unsigned r = 0; r < M9_VS_REGS; r++) {
+      if (c->holds[r][0].kind != HELD_TEMP ||
+          c->holds[r][1].kind != HELD_TEMP ||
+          c->holds[r][0].a <= scratch_base ||
+          c->holds[r][1].a <= scratch_base)
+         continue;
+      memset(c->holds[r], 0, sizeof(c->holds[r]));
+      c->busy[r] = 0;
+   }
+   return true;
 }
 
 /* sine and cosine: no instruction computes either.  The vendor's own
