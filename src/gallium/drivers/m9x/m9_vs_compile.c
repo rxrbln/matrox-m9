@@ -1541,6 +1541,32 @@ build_alu(struct ctx *c, nir_alu_instr *alu)
          if (!emit_minmax(c, dst, alu->op == nir_op_fmax, &a0, &a1, &b0, &b1))
             return false;
          break;
+      case nir_op_fsign: {
+         /* The existing compare writes an exact Boolean.  Turn x < 0
+          * into -1/+1, then select zero for either signed zero.  This is
+          * also the sign used by Mesa's asin lowering for generated UVs. */
+         const struct held zero = held_lit(0.0f);
+         const struct held one = held_lit(1.0f), minus_two = held_lit(-2.0f);
+         struct held sign = held_temp(c);
+         const struct held *sel[3][2];
+         int r = reg_alloc_pinned(c, &sign);
+
+         if (r < 0)
+            return fail(c, "out of temporaries");
+         a0 = src_held(alu, 0, c0); a1 = src_held(alu, 0, c1);
+         sel[0][0] = &a0; sel[0][1] = &a1;
+         sel[1][0] = sel[1][1] = &zero;
+         sel[2][0] = sel[2][1] = &sign;
+         if (!emit_cmp(c, r, 0, &a0, &a1, &zero, &zero) ||
+             !emit_mad(c, r, &sign, &sign, &minus_two, &minus_two, &one, &one) ||
+             !emit_sel(c, dst, 4, sel))
+            return false;
+         /* Only the private intermediate has ended; source SSA and the
+          * caller's destination remain live across the next component. */
+         memset(c->holds[r], 0, sizeof(c->holds[r]));
+         c->busy[r] = 0;
+         break;
+      }
       case nir_op_fabs: {
          /* No modifier for absolute value is captured; the compare and
           * select classes express it: negate where the value is below
