@@ -3,9 +3,9 @@
 Copyright 2026 René Rebe <rene@exactco.de>
 SPDX-License-Identifier: GPL-2.0-only
 
-Nano now has an M9 adapter. The first test must identify PCI `102b:0540`,
-record the loaded module/runtime identities and establish ordinary textured
-rendering before writing multisample state. This note is separate from P690
+Nano is confirmed M9128 PCI `102b:0540` rev1, with1GiB installed VRAM.
+Ordinary textured rendering and the deployed driver are validated. FAA
+rendering is not yet validated. This note is separate from P690
 `102b:2539` evidence.
 
 `tools/m9-faa-smoke.sh` runs the current instrument at 320x240, its fixed
@@ -27,9 +27,10 @@ timeouts, a nonzero child exit or a different renderer stop the sequence.
 The paired phase proves only current AD/AF packet plumbing. True FAA needs
 nonzero partial edge levels, a full 48000-pixel integer-edge rectangle,
 valid sample staircases and GPU retirement; a process exit of zero does
-not prove any of them. Hardware results are pending until logs are captured.
+not prove any of them. The captured historical mode sweeps below did not
+produce antialiasing.
 
-Current canonical `m9x` commit `6780573` already has the diagnostic store
+The initial canonical `m9x` baseline `6780573` already had the diagnostic store
 allocator, the `bc/bd` fragment-store bindings, optional `b8/b9` companion
 binding and `RESET_FRAG_PTR`. Kernel `m9x/m9_submit.c` requires explicit
 `faa_probe_indices` permission for `bc/bd` and `a1/a3/a4`; ordinary AD/AF
@@ -50,8 +51,10 @@ The missing contract includes the companion's optional HZ plane and its
 the initialized vendor context, resolve and destination retirement. The
 ordinary implementation binds `ba/bb` to its ordinary auxiliary depth
 resource; replacing only `b8/b9` is not proof of the vendor's complete AA
-companion graph. Static recipes should not be equated with a full FAA
-submission.
+companion graph. The actual AA companion request uses format5; generic
+linked-kind9 recursion requires requestformat9 and does not describe this
+companion. BA/BB instead depends on companion+38c/+39c with selector12.
+Static recipes should not be equated with a full FAA submission.
 
 Actual MSerX emulation has executed the AD/AF and reset emitters, but with
 controlled host owners. The isolated M9 emulator worktree tracks progress
@@ -278,7 +281,9 @@ returns the miniport owner `+8` here. MM publisher `0x15551` obtains its
 mask from actual type14, 0x208-byte configuration record via `0x26d9d` /
 `0x28e5f`, copying record `+0x204` to shared owner `+0x21f040`. Query2
 uses bit5 of that mask; the ICD itself has not reached a PCI0540 restriction.
-The genuine configuration record remains an initialization dependency.
+The actual record is now decoded from the captured M9128 EEPROM and
+published by0x15551, as described below; full query2 still needs its
+remaining normal owners and allocations.
 
 ### Hardware-format mask includes actual surface creation
 
@@ -352,12 +357,12 @@ Its initial surface pointers are genuinely zero until real allocation.
 Device `+0x69a4` is published by ordinary module `0x1f990`, startup entry
 `0x1f2600`. It allocates0x8368 and executes constructor `0x1cb90` before
 publishing the completed owner. Exploration with the actual configured
-CPU owner reaches `0x1e1f0 -> 0x12340` and stops because the genuine
-shared miniport owner at device `+0x10` is absent. That reader needs the
+CPU owner originally reached `0x1e1f0 -> 0x12340` and stopped because the
+shared miniport owner at device `+0x10` was absent. That reader needs the
 current configuration index at shared `+0x21f038`, its record type and
-the runtime collection pointer at `+0x21f05c`. No substitute record or
-successful device initialization was supplied. Finishing the real miniport
-bootstrap therefore serves this constructor as well as query2 admission.
+the runtime collection pointer at `+0x21f05c`. The later normal-runtime capture below closes this prerequisite with the
+genuine initialized CPU runtime and completes the resource constructor.
+Complete device initialization and FAA surface allocation remain separate.
 
 The primary factory at resource owner `+0x1074` now has an exact producer.
 It is `owner+0xfe4+0x90`: constructor `0x1cb90` installs the typed factory
@@ -377,7 +382,7 @@ The other primary prerequisite, device `+0x6990`, also has a normal startup
 publisher: module `0x273a0` at startup-table `0x1f25a0` calls `0x273c0`,
 which assigns it at `0x273ff`. Before that assignment, actual `0x12340`
 reads the same genuine device `+0x10` shared runtime owner. Thus both
-missing resource branches depend on initialized runtime configuration;
+resource branches depend on initialized runtime configuration;
 neither requires an invented factory pointer or an extra FAA registry gate.
 
 Actual M9128 bootstrap now retains the genuine decoded EEPROM record and
@@ -391,15 +396,11 @@ Real `0x5de58` allocates the ordinary0x1ee400 CPU runtime owner and
 asserts exact copied fields and the genuine resident pointer, with no
 manufactured capabilities or populated configuration profile.
 
-Full ordinary runtime initialization is `0x568e7`. Bounded execution with
-an initially empty emulated Windows registry executes the vendor's own
-default property creation and writes its generated `D00` value, then stops
-at `0x5816f -> 0x580fb -> 0x6ad45 -> 0x6dc80 -> 0x5e20e -> 0x24745`:
-`HalGetBusDataByOffset(type4,bus0,slot0,offset0,length4)` needs the actual
-Nano host-chipset PCI inventory. The existing capture covers the M9128 on
-bus1 only. No missing host bridge or initialized profile is substituted.
-This next normal runtime dependency remains separate from the later
-uncaptured transmitter-reset GPIO in complete FindAdapter startup.
+Full ordinary runtime initialization is `0x568e7`. The early bounded run
+stopped at its host-chipset PCI inventory request. The later complete
+same-boot Nano inventory and bounded NT CPU contracts now let this actual
+initializer return1, as shown below. The uncaptured transmitter-reset GPIO
+in complete FindAdapter startup remains a separate hardware boundary.
 
 The genuine ICD client publisher is `0x1003a2a0`. Actual
 `0x1003d480 -> 0x1003b270 -> 0x1003d510` sends operation4, ExtEscape186a0
@@ -455,8 +456,9 @@ errors. The controlled miniport CPU owners are still not hardware initialized.
 Static MM dispatch also resolves MD query2's IOCTL `0x23231c`, selector1:
 `0x5d927 -> 0x5dc7b -> 0x5e0eb` reads runtime profile property0x19 and
 returns owner `+0x48`, updated when that property's `+0x14` value is4.
-This is a runtime policy state, not a direct GPU capability register. Its real
-runtime profile remains uninitialized; no successful reply is substituted.
+This is a runtime policy state, not a direct GPU capability register. The
+normal-runtime initialization below now populates its actual collection; this
+query still needs a full dynamic join before an admission claim.
 
 The normal option-matrix helper now uses these actual module publications
 too: `0x61f70` and `0x64800`, with genuine miniport property dispatch, supply
@@ -480,12 +482,15 @@ successful reads. `0x31f90` receives that real source and count, accepting
 its extended profile only for at least128 bytes and header `0x000825d3`.
 The accepted source supplies chip enumeration at `+0x0a` and retained flags;
 the actual `0x3265f` fills result `+8/+0x1ac/+0x1b0/+0x204` by chip branch.
-These functions are the producer missing at the genuine M9128 GPIO1c4c
-bootstrap boundary, before which the record contains only its header/PCI.
+These producers now execute with the actual128-byte GPIO EEPROM capture.
+The genuine decoded record has header3, chipWORD34, +1ac=1b, +1b0=1,
++204=2. Earlier pre-EEPROM snapshots contained only header/PCI and were
+not negative hardware-capability evidence.
 
 An unsuccessful or absent extended source has an actual vendor fallback
 for PCI0540 to enumeration0x29. This is a conditional default branch, not
-the observed result of M9128's still-incomplete serial transaction. Do not
+the observed M9128 result: its actual extended source was captured and
+accepted. Do not
 replace its hardware transaction with a synthetic absent profile. The only
 `d3250800` occurrence in the captured M9128 ROM, offset0xb057, is the
 immediate operand of a BIOS compare instruction, not a captured profile blob.
