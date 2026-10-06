@@ -2840,10 +2840,11 @@ m9_vs_producer_slot_count(const struct m9_vs_program *p)
    return body ? MAX2(body / 2 + 1, 4u) : 0;
 }
 
-/* Tail-free affine producers in vs-varyings-4 reserve the contiguous
- * scratch-pair prefix and leave bound output pairs available. Derive that
- * prefix from this producer, not the mask of a different captured shader.
- * Broader allocation combinations still require hardware qualification. */
+/* Keep the existing conservative scratch prefix. The actual vendor GLSL
+ * finalizer's 150dc0 metadata calculator additionally couples the two pairs
+ * of a complete bound output: when either is occupied, both are reserved.
+ * Its complex bump variant and the scratch-r10 control witness this rule.
+ * This is metadata closure, not permission to use outputs as temporaries. */
 uint16_t
 m9_vs_source_mask(const struct m9_vs_program *p, bool primary)
 {
@@ -2861,7 +2862,17 @@ m9_vs_source_mask(const struct m9_vs_program *p, bool primary)
          pairs = MAX2(pairs, d / 2 + 1);
       }
    }
-   return (uint16_t)~BITFIELD_MASK(pairs);
+   uint16_t mask = (uint16_t)~BITFIELD_MASK(pairs);
+   if (p->producer.size) {
+      for (unsigned j = 0; j < targets; j++) {
+         unsigned low = REG_OUT_LO(j) / 2;
+         unsigned high = REG_OUT_HI(j) / 2;
+         uint16_t complete = BITFIELD_BIT(low) | BITFIELD_BIT(high);
+         if ((mask & complete) != complete)
+            mask &= ~complete;
+      }
+   }
+   return mask;
 }
 
 /* Frees output pair 1 for a varying by pointing the two tail slots that
