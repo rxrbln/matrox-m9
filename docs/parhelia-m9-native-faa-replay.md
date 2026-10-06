@@ -39,12 +39,23 @@ of unaligned/wrapping owners, damaged source blobs and ambiguous aliases.
 
 `tools/m9-native-faa-image.c` initializes only the application's sampled
 primary background using SURFACE_ACCESS, submits the captured green triangle
-at (80,180), (240,180), (160,60), then reads through the same sampled window.
+at (80,180), (240,180), (160,60), then reads through the exact vendor sampled CPU window. Before submission it verifies a positive CPU pattern and clears the background.
 It saves actual PPM pixels and checks interior/exterior colors and partial
 edge coverage. This is a hardware oracle; it does not rasterize on the CPU.
 The scoped sampled-window admission exists only while the diagnostic is on.
 
-Hardware FAA retirement and image proof are pending. All four selected E3
+The first physical M9128 run (kernel776911a) reached actual retirement
+point0x1e0 without timeout and kept SSH healthy on the same boot. The image
+oracle FAILED: entirely black, zero colored/partial pixels,8326 bad interior
+pixels. Raw former output storage read before another allocation was also
+zero. See tests/m9-faa-native-20261006 for hashes, logs and actual pixels.
+This is bounded-stream retirement evidence, not working FAA rendering.
+
+Vendor CPU-map tracing subsequently proved selector1 uses F0220140 with
+padded height256 and tagged GPU address. Kernel30023d9 admits only that
+exact private320x240 view with verified identity mappings. The current image
+fixture requires a76800-pixel positive CPU read/write control before clear
+and submission. The corrected fresh-boot image qualification is pending. All four selected E3
 timeline snapshots, twenty E3 completion tokens and two waits now translate
 through the same genuine timeline bias. The independent fetch audit rejects
 plans that omit any of these actual producer-written slots. The private
