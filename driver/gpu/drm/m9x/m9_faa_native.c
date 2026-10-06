@@ -44,7 +44,16 @@ struct m9_faa_fixup {
 struct m9_faa_tracker {
 	u32 owner, offset, captured;
 };
+#ifdef M9_FAA_CONSTANT_SHADER_CONTROL
+/* Whole independently captured public CREATEPS/SETCONST/SETPS flow. The
+ * input blob and all owner/fixup tables are one source profile; never splice
+ * shader bytes or captured secondary lengths into the normal profile. */
+#include "m9_faa_constant_green_data.h"
+#define M9_FAA_INPUT_FIRMWARE "m9x/faa-constant-green-known-inputs.bin"
+#else
 #include "m9_faa_native_data.h"
+#define M9_FAA_INPUT_FIRMWARE "m9x/faa-normal-known-inputs.bin"
+#endif
 /* The older sampled-destination template has no ordinary output owner.
  * It must never be advertised as a completed ac1f0 output contract. */
 #ifndef M9_FAA_OUTPUT_OWNER
@@ -89,7 +98,7 @@ static bool m9_faa_source_init;
 module_param(m9_faa_source_init, bool, 0400);
 MODULE_PARM_DESC(m9_faa_source_init,
 	"Let the private M9128 Windows FAA stream initialize a fresh context without Linux sequence0");
-MODULE_FIRMWARE("m9x/faa-normal-known-inputs.bin");
+MODULE_FIRMWARE(M9_FAA_INPUT_FIRMWARE);
 
 bool m9x_faa_diag_enabled(void)
 {
@@ -579,7 +588,7 @@ int m9x_faa_prepare_diag(struct m9x_device *mdev)
 			(mdev->transport.faa->attempted ? -EALREADY : 0);
 		goto unlock;
 	}
-	ret = request_firmware(&fw, "m9x/faa-normal-known-inputs.bin", &mdev->pdev->dev);
+	ret = request_firmware(&fw, M9_FAA_INPUT_FIRMWARE, &mdev->pdev->dev);
 	if (ret)
 		goto unlock;
 	if (fw->size != M9_FAA_BLOB_BYTES) {

@@ -3,3 +3,5 @@
 m9x_drm-y := m9x_drv.o m9_gem.o m9_requester.o m9_address.o m9_submit.o m9_triangle.o m9_faa_native.o m9_kms.o m9_ddc.o m9_dp.o m9_mode.o m9_surface.o
 
 obj-$(CONFIG_DRM_M9X) += m9x_drm.o
+
+ccflags-$(CONFIG_DRM_M9X_FAA_CONSTANT_SHADER_CONTROL) += -DM9_FAA_CONSTANT_SHADER_CONTROL
