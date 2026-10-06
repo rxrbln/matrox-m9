@@ -37,7 +37,9 @@ polygon offset (factor=-1,units=-2), about0.8% of calls/0.03ms per frame.
 Native D24 polygon offset is now implemented in0b101e9/c74a519, with typed
 kernel admission in7da488d. Source408e866 probes that admission without GPU
 execution and retains CPU fallback on older kernels. The DSO build and batch
-suite pass; native depth-bias qualification still needs the new module.
+suite pass. Kernel4b84cbc with Mesa a9c5668 now passes native texture,
+depth-tested offset and depth-disabled offset controls, each0/76800 wrong;
+see [combined control proof](../tests/m9-completion-native-20261006/README.md).
 The99.2% and56.6FPS measurements above predate this feature.
 FAA companion allocation now matches28 genuine vendor geometry/descriptor
 cases (fb4e710). Main and auxiliary stores now use genuine linear rows and
@@ -84,8 +86,8 @@ are queued. Some have partial vendor evidence, but they are not all closed.
 | 4 | complex split scenes | glmark2 terrain remains incorrect/slow in the recorded standing; partial split coverage is implemented, not a blanket missing feature | Capture one bounded terrain/split case against a reference with skip accounting and identify the first bad intermediate rather than reporting its FPS as conformant |
 | 4 | texture layout and filtered copies | Cube faces larger than 16 are not placed; non-halving filtered engine copies have known failures | Trace the vendor cube address/layout calculator above the packed tail; use existing `blitlin:75x37`, `blitlin:74x37` and `blitlin:100x40` controls for the copy issue |
 | 4 | MRT blending and combined operations | Four unblended targets work; blending has per-target replay, but single-pass destination reads for RT1..3 and combined stencil/discard/split cases remain open | Capture destination-read registers and program image for RT1..3 blend, and verify each target plus retained BO membership |
-| 5 | performance and GPU geometry | Last measured bd24336 at1024x768/vsync0:56.6FPS,99.2% native calls;55jobs/frame,zero uniform splits. GPU polygon offset implemented, native qualification pending | Qualify typed depth bias with the new kernel, then reduce remaining submission costs; retain measured packing and batching |
-| 5 | presentation and async submission | Real completion/wait, worker retirement and per-BO dma_resv fences are implemented; the combined candidate needs native qualification. Only one job remains outstanding | Qualify ordinary rendering, actual fence completion and presentation; then implement separately owned secondary slots and CPU arenas before admitting multiple outstanding jobs |
+| 5 | performance and GPU geometry | Last measured bd24336 at1024x768/vsync0:56.6FPS,99.2% native calls;55jobs/frame,zero uniform splits. GPU polygon offset passes native depth-tested and depth-disabled controls; FPS not remeasured | Reduce remaining submission costs; retain measured packing and batching |
+| 5 | presentation and async submission | Real completion/wait, worker retirement and per-BO dma_resv fences are implemented; ordinary readback controls and WAIT_POINT pass. Only one job remains outstanding | Qualify asynchronous last-job fences, GLFinish without readback and presentation; then implement separately owned secondary slots and CPU arenas before admitting multiple outstanding jobs |
 | 6 | 10-bit masks and conversion | Unblended single-target partial masks use a constant-color blend fallback; already-blended and multiple-target partial masks remain refused, and converting readback needs current retest | Prove the existing unblended mask fallback, implement captured mask lowering for combined cases, then test converting readback and linear filtering |
 | 6 | 10-bit display verification | M9128 KMS/GBM/EGL 30-bit path passed; panel precision and transmitter depth remain unverified | Repeat on the installed board and inspect the physical output; keep raw storage precision distinct from panel output precision |
 | 7 | query and kernel lifetime/recovery | Query counter wrap, split-pass sample accounting and fault/recovery boundaries require targeted qualification | Audit the current kernel first, then submit a bounded wrap/lifetime test to the target owner; no unsupported arbitrary requester state |
