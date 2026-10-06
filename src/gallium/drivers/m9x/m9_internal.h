@@ -109,6 +109,9 @@ struct m9_resource {
    /* Bumped whenever this driver hands out a writable mapping, so
     * anything derived from the contents can tell they have moved on. */
    uint64_t generation;
+   /* Last submitted reader/writer of a private back-end state object.
+    * Zero means this owner has never been submitted, not GPU retirement. */
+   uint64_t be_point;
    bool bind_logged;
    void *map;
    /* Hierarchical-Z metadata owned by a D24S8 depth image. */

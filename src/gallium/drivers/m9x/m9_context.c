@@ -2525,6 +2525,7 @@ m9_be_zero(struct m9_context *ctx)
 {
    struct m9_target_depth *entry = ctx->target_entry;
    struct m9_resource *be;
+   unsigned selected = entry ? entry->be_slot : 0;
    uint64_t t_be = m9_prof_begin();
 
    if (ctx->lost) {
@@ -2532,23 +2533,7 @@ m9_be_zero(struct m9_context *ctx)
       return;
    }
 
-   /* The legacy two-object swap was safe only because every following
-    * submit drained the sole reader. Wait before clearing either object. */
-   if (ctx->screen->queued_submit &&
-       m9_wait_for_point(ctx->screen, ctx->last_point)) {
-      ctx->lost = true;
-      m9_prof_end(M9_PROF_BE, t_be);
-      return;
-   }
-
-   m9_be_shape_slot(ctx)->valid = false;
-   if (!entry || !m9_be_per_target) {
-      if (ctx->be.map)
-         memset(ctx->be.map, 0, m9_be_clear_span(ctx, &ctx->be));
-      m9_prof_end(M9_PROF_BE, t_be);
-      return;
-   }
-   if (m9_be_swap) {
+   if (entry && m9_be_per_target && m9_be_swap) {
       unsigned spare = entry->be_slot ^ 1u;
 
       /* The spare is allocated the first time a shape wants a clear, so a
@@ -2557,16 +2542,42 @@ m9_be_zero(struct m9_context *ctx)
           m9_bo_create(ctx->screen, M9_BE_BYTES, PARHELIA_M9_BO_VRAM,
                        M9_RESOURCE_SYSTEM_STATE, &entry->be[spare]))
          entry->be[spare].handle = 0;
-      if (entry->be[spare].handle) {
-         entry->be_slot = spare;
-         m9_be_swaps++;
-      }
+      if (entry->be[spare].handle)
+         selected = spare;
    }
-   be = &entry->be[entry->be_slot];
+   be = entry && m9_be_per_target ? &entry->be[selected] : &ctx->be;
+   /* A queued reader can still use either object. Wait for the selected
+    * owner's actual last submit, not the context's newer unrelated work.
+    * Pending CPU draw/held-job states have no BE binding: submit_job chooses
+    * it here, before emitting its batch, then records every successful post.
+    * A failed spare allocation falls back to the current owner's same wait.
+    * Do not publish a new slot or invalidate the shape on a failed wait. */
+   if (ctx->screen->queued_submit &&
+       m9_wait_for_point(ctx->screen, be->be_point)) {
+      ctx->lost = true;
+      m9_prof_end(M9_PROF_BE, t_be);
+      return;
+   }
+   m9_be_shape_slot(ctx)->valid = false;
+   if (entry && m9_be_per_target && selected != entry->be_slot) {
+      entry->be_slot = selected;
+      m9_be_swaps++;
+   }
    if (be->map)
       memset(be->map, 0, m9_be_clear_span(ctx, be));
-   ctx->target_be = be->handle ? be : NULL;
+   if (entry && m9_be_per_target)
+      ctx->target_be = be->handle ? be : NULL;
    m9_prof_end(M9_PROF_BE, t_be);
+}
+
+/* Only a successful real submit establishes this owner's completion point.
+ * This also runs after every separately submitted raster pass. A failed post
+ * loses the context before any later CPU clear can use unproved ownership. */
+static void
+m9_job_submitted(struct m9_context *ctx, struct m9_resource *be, uint64_t point)
+{
+   ctx->last_point = ctx->arena_point = point;
+   be->be_point = point;
 }
 
 static int
@@ -2758,7 +2769,8 @@ m9_submit_job(struct m9_context *ctx)
         (m9_be_clear == 2 && ctx->be_clip != ctx->params.clip_max))) {
       m9_be_zero(ctx);
       be_bound = ctx->target_be ? ctx->target_be : &ctx->be;
-      ctx->be_clip = ctx->params.clip_max;
+      if (!ctx->lost)
+         ctx->be_clip = ctx->params.clip_max;
    }
    /* The object a multi-pass job binds is cleared ahead of it: one that finds
     * what draws into another target left behind stops the engine, and a scene
@@ -2795,7 +2807,7 @@ m9_submit_job(struct m9_context *ctx)
          differs = true;
       }
       be_bound = ctx->target_be ? ctx->target_be : &ctx->be;
-      if (differs)
+      if (!ctx->lost && differs)
          *held = be_bound->map ? shape : (struct m9_be_shape) {0};
    }
    ret = ctx->lost ? -EIO :
@@ -2910,7 +2922,7 @@ m9_submit_job(struct m9_context *ctx)
          .color_offset = ctx->color_offset,
          .depth = key->depth->handle,
          .aux = key->aux->handle,
-         .be = ctx->target_be ? ctx->target_be->handle : ctx->be.handle,
+         .be = be_bound->handle,
          .source_vertices = records * copies,
          .index_base = (uint32_t)index_base,
          .index_count = index_count * copies,
@@ -3080,7 +3092,7 @@ m9_submit_job(struct m9_context *ctx)
             m9_batch_submit(ctx->screen, &ctx->command, &ctx->batch,
                             ctx->context_id, &point);
       if (!ret && !ctx->dry_run)
-         ctx->last_point = ctx->arena_point = point;
+         m9_job_submitted(ctx, be_bound, point);
       /* A second raster pass inside one submission stalls the engine
        * (MEASURED): the vendor separates its passes with an engine
        * transition the kernel does not accept.  Every pass after the
@@ -3108,7 +3120,7 @@ m9_submit_job(struct m9_context *ctx)
                m9_batch_submit(ctx->screen, &ctx->command, &ctx->batch,
                                ctx->context_id, &point);
          if (!ret && !ctx->dry_run)
-            ctx->last_point = ctx->arena_point = point;
+            m9_job_submitted(ctx, be_bound, point);
       }
       m9_prof_end(M9_PROF_IOCTL, t_ioctl);
       if (m9_be_dump && ctx->be.map) {
