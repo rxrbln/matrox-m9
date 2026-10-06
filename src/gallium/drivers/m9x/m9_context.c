@@ -23,6 +23,7 @@
 #include "indices/u_indices.h"
 #include "m9_batch.h"
 #include "m9_draw.h"
+#include "m9_vs_record.h"
 #include "m9_format.h"
 #include "m9_fs_compile.h"
 #include "m9_specialise.h"
@@ -2863,6 +2864,11 @@ m9_submit_job(struct m9_context *ctx)
             job.vs_extra_view[t] = M9_TRANSIENT_VS_EXTRA_VIEW +
                                    M9_VS_FUSED_VARYINGS - 1 + t;
       }
+      if (!ret && job.vs_producer_entry &&
+          !m9_vs_record_fits(job.source_vertices, job.vs_extra_targets + 3u,
+                             job.vs_record_view, m9_transient_view_bytes(),
+                             ctx->transient.size))
+         ret = -EINVAL;
       /* A query's snapshot records bracket this job's draws inside its own
        * stream, where the closing one can wait for them to retire. */
       if (!ret)
@@ -8957,15 +8963,19 @@ m9_context_flush(struct pipe_context *pctx,
        ctx->transient.map) {
       uint32_t fields = ctx->vs_record_fields;
       uint64_t offset = (uint64_t)ctx->vs_record_view * m9_transient_view_bytes();
-      uint64_t bytes = (uint64_t)ctx->vs_record_vertices * fields * 16;
-      if (fields >= 4 && fields <= M9_VS_MAX_VARYINGS + 1 &&
-          offset <= ctx->transient.size && bytes <= ctx->transient.size - offset) {
+      uint64_t bytes = m9_vs_record_bytes(ctx->vs_record_vertices, fields);
+      if (ctx->vs_record_vertices <= m9_draw_max_source_vertices() &&
+          m9_vs_record_fits(ctx->vs_record_vertices, fields, ctx->vs_record_view,
+                            m9_transient_view_bytes(), ctx->transient.size)) {
          /* sync submitted pending work and the explicit wait retired the
           * last writer of this live arena. This
           * opt-in dump only reads GPU output; no native vertex result is
           * filled or transformed by the CPU. */
-         uint32_t header[] = { 0x4d395652u, fields, ctx->vs_record_vertices,
-                               ctx->vs_record_view };
+         uint32_t header[M9_VS_RECORD_HEADER_DWORDS] = {
+            M9_VS_RECORD_MAGIC, fields, ctx->vs_record_vertices,
+            ctx->vs_record_view, M9_VS_RECORD_VERTICES,
+            M9_VS_RECORD_BANK_BYTES, (uint32_t)bytes, (uint32_t)(bytes >> 32)
+         };
          FILE *f = fopen(m9_vs_record_dump, "wb");
          if (f) {
             bool written = fwrite(header, sizeof(header), 1, f) == 1 &&

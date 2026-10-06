@@ -6,6 +6,7 @@
  * (parhelia-m9-cpu-tnl-raster-state.md, parhelia-m9-cpu-tnl-draw-parameters.md).
  */
 #include "m9_draw_params.h"
+#include "m9_vs_record.h"
 #include "m9_batch.h"
 #include "m9_passthrough.h"
 
@@ -581,5 +582,9 @@ m9_draw_max_source_vertices(void)
 uint32_t
 m9_transient_view_bytes(void)
 {
-   return m9_job_vertices * M9_TRANSIENT_VERTEX_BYTES;
+   /* Each view starts and ends on a whole packed-record bank quantum.
+    * The ordinary default (23040 vertices) already meets this alignment. */
+   uint32_t bytes = m9_job_vertices * M9_TRANSIENT_VERTEX_BYTES;
+   return (bytes + M9_VS_RECORD_BANK_BYTES - 1u) &
+          ~(M9_VS_RECORD_BANK_BYTES - 1u);
 }

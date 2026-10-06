@@ -7,6 +7,7 @@
  * Size and state dependent words come from m9_draw_params.
  */
 #include "m9_draw.h"
+#include "m9_vs_record.h"
 #include "m9_faa.h"
 
 #include <errno.h>
@@ -930,7 +931,10 @@ m9_draw_job_valid(const struct m9_draw_job *job)
       return false;
    if (job->vs_producer_entry &&
        (!job->vs_gather_entry || !job->vs_fused_view ||
-        job->vs_extra_targets > 3 || m9_vs_record_mode() < 2))
+        job->vs_extra_targets > 3 || m9_vs_record_mode() < 2 ||
+        !m9_vs_record_bytes(job->source_vertices, job->vs_extra_targets + 3u) ||
+        m9_vs_record_bytes(job->source_vertices, job->vs_extra_targets + 3u) >
+           (uint64_t)(job->vs_extra_targets + 3u) * m9_transient_view_bytes()))
       return false;
    if (job->pass_count) {
       /* Every pass but the last renders into the record, so a split job
