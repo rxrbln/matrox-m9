@@ -644,3 +644,20 @@ This resolves the static shadow producer split. The caller-array ownership
 join to the sentinel allocated by0xac7e0 at its interface+18 still requires
 the complete resource graph; no pointer alias is assumed. Full allocated
 resource admission remains unproved.
+
+### Actual caller reference publication closes the sentinel array position
+
+`tools/m9-vendor-faa-binder-graph.py` executes real MxMD0xa7200 with explicitly
+controlled CPU wrapper/reference inputs. The actual code returns1 and copies
+primary, companion, main, sentinel into both participating AAouter arrays at
++8,+c,+10,+14, then marks+18 active. At0xa72d2/+0xa72ed it obtains main and
+sentinel from the source AAouter+24/+34: these are exactly the owning
+ac7e0 interface+8/+18 because that interface begins at outer+1c. This closes
+the caller-array position left conditional above: actualaa750(outer+8)
+receives the main resource at array+8 and the sentinel at array+c.
+
+The [bounded reference-copy capture](traces/m9-vendor-faa-binder-graph-20261006.json)
+is CPU ABI evidence. Its wrapper pointers and source ownership flag are supplied
+caller inputs; it supplies no successful GPU allocator outputs and proves no
+normal display admission, backing allocation, or rendered result. The separate
+per-head pool6 binding at context84/88 remains a different resource.
