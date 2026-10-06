@@ -109,12 +109,17 @@ struct m9x_transport {
 	 * job be built while this one runs.
 	 */
 	bool async_pending;
+	bool async_stop;
+	bool user_resources_ready;
 	u32 async_target;
 	u64 async_point;
 	u64 submitted_point, completed_point;
 	struct drm_gem_object **async_bos;
 	bool *async_pinned;
 	u32 async_count;
+	struct m9x_fence *async_fence;
+	struct m9_retired *async_retire;
+	struct work_struct async_complete;
 	/* Releasing an object takes this same lock, so retired objects go to a
 	 * worker rather than being freed under it. */
 	struct llist_head async_retired;
@@ -345,6 +350,7 @@ int m9x_submit_triangle_diag(struct m9x_device *mdev, u32 color,
 			     struct drm_gem_vram_object *color_bo, u64 *point,
 			     bool *color_active);
 int m9x_triangle_prepare_diag(struct m9x_device *mdev);
+int m9x_triangle_prepare_user(struct m9x_device *mdev);
 int m9x_engine_ready_locked(struct m9x_device *mdev);
 int m9x_submit_user_stream_locked(struct m9x_device *mdev, const u32 *records,
 				  u32 dwords, const u32 *range_ends, u32 ranges,

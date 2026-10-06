@@ -960,6 +960,23 @@ int m9x_triangle_prepare_diag(struct m9x_device *mdev)
 	return ret;
 }
 
+/* The private resource allocations may reserve TTM BOs. Finish them before
+ * the user-submit path acquires its WW reservation set, never underneath it. */
+int m9x_triangle_prepare_user(struct m9x_device *mdev)
+{
+	int ret;
+
+	if (READ_ONCE(mdev->transport.user_resources_ready))
+		return 0;
+	mutex_lock(&mdev->transport.lock);
+	ret = mdev->transport.wedged ? -EIO :
+		m9_triangle_prepare_resources(mdev);
+	if (!ret)
+		WRITE_ONCE(mdev->transport.user_resources_ready, true);
+	mutex_unlock(&mdev->transport.lock);
+	return ret;
+}
+
 static u32 m9_triangle_bus(const struct m9x_triangle_diag *diag,
 			   enum m9_triangle_resource_id id)
 {

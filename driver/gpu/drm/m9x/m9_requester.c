@@ -479,13 +479,21 @@ int m9x_transport_drain_locked(struct m9x_device *mdev)
 		return ret;
 	transport->async_pending = false;
 	transport->completed_point = transport->async_point;
-	if (!transport->async_bos)
+	if (transport->async_fence) {
+		dma_fence_signal(&transport->async_fence->base);
+		dma_fence_put(&transport->async_fence->base);
+		transport->async_fence = NULL;
+	}
+	if (!transport->async_bos && !transport->async_retire)
 		return ret;
 	/*
 	 * The job has retired, so its objects are free, but unpinning and
 	 * putting one takes this lock again: hand them to the worker.
 	 */
-	retired = kmalloc(sizeof(*retired), GFP_KERNEL);
+	retired = transport->async_retire;
+	/* Kernel-only old owners can have no preallocated retirement record. */
+	if (!retired)
+		retired = kmalloc(sizeof(*retired), GFP_KERNEL);
 	if (retired) {
 		retired->bos = transport->async_bos;
 		retired->pinned = transport->async_pinned;
@@ -496,7 +504,57 @@ int m9x_transport_drain_locked(struct m9x_device *mdev)
 	transport->async_bos = NULL;
 	transport->async_pinned = NULL;
 	transport->async_count = 0;
+	transport->async_retire = NULL;
 	return ret;
+}
+
+/* Signal the last user job even when there is no following submit/readback.
+ * Observe the real writeback without holding transport while sleeping. This
+ * worker takes no BO reservation: releasing refs/pins stays in async_release. */
+static void m9x_transport_complete(struct work_struct *work)
+{
+	struct m9x_transport *t = container_of(work, struct m9x_transport,
+						async_complete);
+	struct m9x_device *mdev = container_of(t, struct m9x_device, transport);
+	u64 owner = 0, start = 0;
+	int idx;
+
+	if (!drm_dev_enter(&mdev->drm, &idx))
+		return;
+	for (;;) {
+		bool done;
+
+		mutex_lock(&t->lock);
+		done = t->async_stop || !t->async_pending || t->wedged;
+		if (!done) {
+			if (owner != t->async_point) {
+				owner = t->async_point;
+				start = ktime_get_ns();
+			}
+			if (m9_fence_reached(READ_ONCE(((u32 *)t->fence_cpu)[0]),
+					    t->async_target)) {
+				dma_rmb();
+				m9x_transport_drain_locked(mdev);
+				done = true;
+			} else if (ktime_get_ns() - start >=
+				   (u64)max(m9_fence_timeout_ms, 1u) * NSEC_PER_MSEC) {
+				/* Failed progress is not completion. Retain fence/BO
+				 * quarantine until fini stops host DMA. */
+				t->wedged = true;
+				t->generation++;
+				dev_err(&mdev->pdev->dev,
+					"M9 async completion timeout: target=%#x writeback=%#x\n",
+					t->async_target,
+					READ_ONCE(((u32 *)t->fence_cpu)[0]));
+				done = true;
+			}
+		}
+		mutex_unlock(&t->lock);
+		if (done)
+			break;
+		usleep_range(10, 30);
+	}
+	drm_dev_exit(idx);
 }
 
 void m9x_transport_release_retired(struct work_struct *work)
@@ -884,6 +942,7 @@ int m9x_init(struct m9x_device *mdev)
 	init_llist_head(&mdev->transport.async_retired);
 	INIT_WORK(&mdev->transport.async_release,
 		  m9x_transport_release_retired);
+	INIT_WORK(&mdev->transport.async_complete, m9x_transport_complete);
 	mdev->transport.fence_context = dma_fence_context_alloc(1);
 	/* m9x865 seeds both tracker domains at 0x10.  m9x708/m9x604
 	 * increment their tracker before emitting the first 0x20 token. */
@@ -922,10 +981,16 @@ void m9x_fini(struct m9x_device *mdev)
 {
 	struct drm_gem_vram_object *color;
 	struct m9x_fence *fence;
+	struct m9x_fence *user_fence;
+	struct m9_retired *retired;
 	struct drm_gem_object **bos;
 	bool *pinned;
 	u32 count, i;
 
+	mutex_lock(&mdev->transport.lock);
+	mdev->transport.async_stop = true;
+	mutex_unlock(&mdev->transport.lock);
+	cancel_work_sync(&mdev->transport.async_complete);
 	mutex_lock(&mdev->transport.lock);
 	/* Retire a posted job and let go of what it was reading before the
 	 * engine is stopped. */
@@ -940,10 +1005,14 @@ void m9x_fini(struct m9x_device *mdev)
 	bos = mdev->transport.async_bos;
 	pinned = mdev->transport.async_pinned;
 	count = mdev->transport.async_count;
+	retired = mdev->transport.async_retire;
+	user_fence = mdev->transport.async_fence;
 	mdev->transport.async_bos = NULL;
 	mdev->transport.async_pinned = NULL;
 	mdev->transport.async_count = 0;
 	mdev->transport.async_pending = false;
+	mdev->transport.async_retire = NULL;
+	mdev->transport.async_fence = NULL;
 	fence = mdev->transport.quarantined_fence;
 	mdev->transport.quarantined_fence = NULL;
 	color = mdev->transport.quarantined_color;
@@ -956,6 +1025,12 @@ void m9x_fini(struct m9x_device *mdev)
 	}
 	kfree(bos);
 	kfree(pinned);
+	kfree(retired);
+	if (user_fence) {
+		dma_fence_set_error(&user_fence->base, -EIO);
+		dma_fence_signal(&user_fence->base);
+		dma_fence_put(&user_fence->base);
+	}
 	m9x_triangle_fini(mdev);
 	if (fence) {
 		dma_fence_set_error(&fence->base, -EIO);

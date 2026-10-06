@@ -5,6 +5,7 @@
 #include <linux/uaccess.h>
 
 #include <drm/drm_file.h>
+#include <drm/drm_exec.h>
 #include <drm/drm_drv.h>
 #include <drm/drm_gem.h>
 #include <drm/drm_gem_vram_helper.h>
@@ -993,11 +994,48 @@ static u32 *m9_frame_records(const u32 *image, const u32 *expected, u32 dwords,
  * objects would be handed to that job or released while this one still reads
  * them.
  */
+static int m9_wait_foreign_fences(struct m9x_device *mdev,
+				struct drm_gem_object **bos,
+				const struct drm_parhelia_m9_bo_ref *refs, u32 count)
+{
+	u32 i;
+
+	for (i = 0; i < count; i++) {
+		struct dma_resv_iter cursor;
+		struct dma_fence *fence;
+		bool write = refs[i].flags & PARHELIA_M9_BO_WRITE;
+
+		dma_resv_for_each_fence(&cursor, bos[i]->resv,
+				       dma_resv_usage_rw(write), fence) {
+			long waited;
+			int status;
+
+			/* Our primary stream is ordered; the following transport
+			 * drain/owner handoff establishes this dependency. Waiting
+			 * it here would unnecessarily serialize CPU preparation. */
+			if (fence->context == mdev->transport.fence_context)
+				continue;
+			waited = dma_fence_wait_timeout(fence, true,
+						      MAX_SCHEDULE_TIMEOUT);
+			if (waited <= 0)
+				return waited < 0 ? waited : -ETIMEDOUT;
+			status = dma_fence_get_status(fence);
+			if (status < 0)
+				return status;
+		}
+	}
+	return 0;
+}
+
 static int m9_submit_execute(struct m9x_device *mdev, const u32 *image,
 			     const u32 *expected, u32 dwords, u64 *point,
 			     bool async, struct drm_gem_object ***bos,
-			     bool **pinned, u32 count)
+			     bool **pinned,
+			     const struct drm_parhelia_m9_bo_ref *refs, u32 count)
 {
+	struct drm_exec exec;
+	struct m9x_fence *fence = NULL;
+	struct m9_retired *retired;
 	u32 *framed, *range_ends, framed_dwords, ranges, max_token, target, final;
 	u64 issued;
 	bool posted = false;
@@ -1006,7 +1044,34 @@ static int m9_submit_execute(struct m9x_device *mdev, const u32 *image,
 	range_ends = kvcalloc(dwords / 2 + 1, sizeof(*range_ends), GFP_KERNEL);
 	if (!range_ends)
 		return -ENOMEM;
+	retired = kzalloc(sizeof(*retired), GFP_KERNEL);
+	if (!retired) {
+		kvfree(range_ends);
+		return -ENOMEM;
+	}
+	ret = m9x_triangle_prepare_user(mdev);
+	if (ret)
+		goto out_retired;
+	drm_exec_init(&exec, DRM_EXEC_INTERRUPTIBLE_WAIT |
+		      DRM_EXEC_IGNORE_DUPLICATES, count);
+	drm_exec_until_all_locked(&exec) {
+		u32 i;
+
+		for (i = 0; i < count; i++) {
+			ret = drm_exec_prepare_obj(&exec, (*bos)[i], 1);
+			drm_exec_retry_on_contention(&exec);
+			if (ret)
+				goto out_exec;
+		}
+	}
+	ret = m9_wait_foreign_fences(mdev, *bos, refs, count);
+	if (ret)
+		goto out_exec;
 	mutex_lock(&mdev->transport.lock);
+	if (mdev->transport.async_stop) {
+		ret = -ENODEV;
+		goto out_unlock;
+	}
 	ret = m9x_transport_drain_locked(mdev);
 	if (ret)
 		goto out_unlock;
@@ -1025,6 +1090,18 @@ static int m9_submit_execute(struct m9x_device *mdev, const u32 *image,
 	final = target + max_token + 0x10;
 	issued = ((u64)(mdev->transport.fence_epoch +
 			 (final < mdev->transport.last_fence)) << 32) | final;
+	fence = m9x_fence_create_target_locked(mdev, final);
+	if (!fence) {
+		kvfree(framed);
+		ret = -ENOMEM;
+		goto out_unlock;
+	}
+	/* Every reservation is held and has a reserved slot before publication;
+	 * consumers can never see the new framebuffer without its dependency. */
+	for (u32 i = 0; i < count; i++)
+		dma_resv_add_fence((*bos)[i]->resv, &fence->base,
+				  refs[i].flags & PARHELIA_M9_BO_WRITE ?
+				  DMA_RESV_USAGE_WRITE : DMA_RESV_USAGE_READ);
 	ret = m9x_submit_user_stream_locked(mdev, framed, framed_dwords,
 					    range_ends, ranges,
 					    final, point, async, &posted);
@@ -1041,15 +1118,31 @@ static int m9_submit_execute(struct m9x_device *mdev, const u32 *image,
 		mdev->transport.async_bos = *bos;
 		mdev->transport.async_pinned = *pinned;
 		mdev->transport.async_count = count;
+		mdev->transport.async_fence = fence;
+		mdev->transport.async_retire = retired;
+		fence = NULL;
+		retired = NULL;
 		*bos = NULL;
 		*pinned = NULL;
 		if (ret && !mdev->transport.wedged) {
 			mdev->transport.wedged = true;
 			mdev->transport.generation++;
 		}
+		if (!mdev->transport.wedged)
+			schedule_work(&mdev->transport.async_complete);
 	}
 out_unlock:
+	if (fence) {
+		if (ret)
+			dma_fence_set_error(&fence->base, ret);
+		dma_fence_signal(&fence->base);
+		dma_fence_put(&fence->base);
+	}
 	mutex_unlock(&mdev->transport.lock);
+out_exec:
+	drm_exec_fini(&exec);
+out_retired:
+	kfree(retired);
 	kvfree(range_ends);
 	return ret;
 }
@@ -1198,7 +1291,7 @@ static int m9_submit_validate(struct m9x_device *mdev,
 					&args->out_point,
 					m9_async_submit &&
 					!mdev->transport.wedged,
-					&bos, &vram_pinned, args->bo_count);
+					&bos, &vram_pinned, refs, args->bo_count);
 out:
 	if (vram_pinned)
 		for (i = 0; i < args->bo_count; i++)
