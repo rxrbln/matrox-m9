@@ -99,6 +99,16 @@ implicit dependency. The newly published render fence therefore reaches the
 existing KMS dependency path; no unproven display command is added. Native
 presentation qualification still requires the target owner's new-module run.
 
+The integrated-source review also removed the inherited custom fence release.
+It called kfree directly, which violated the dma_fence RCU-free contract; it
+also kept driver ops attached after signaling, allowing a dma_resv-held fence
+to reference module callbacks after unloading. `struct m9x_fence` has its base
+as the allocation's first member, so the core default `dma_fence_free` safely
+uses kfree_rcu. Omitting custom release/wait lets Linux 7.2 detach ops at signal.
+This follows actual `include/linux/dma-fence.h` release/lifetime documentation
+and `dma_fence_signal_timestamp_locked`/`dma_fence_free` implementation, rather
+than the adapter harness inventing callback lifetime rules.
+
 ## Focused verification
 
 `tools/m9-completion-check.py KERNEL_M9X MESA_M9X` extracts the actual kernel
