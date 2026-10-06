@@ -1078,6 +1078,27 @@ m9_fence_reference(struct pipe_screen *screen,
    *ptr = fence;
 }
 
+static void
+m9_completed_point_note(struct m9_screen *screen, uint64_t completed)
+{
+   uint64_t previous = p_atomic_read(&screen->completed_point.value);
+
+   while (completed > previous) {
+      uint64_t observed = p_atomic_cmpxchg(&screen->completed_point.value,
+                                           previous, completed);
+      if (observed == previous)
+         break;
+      previous = observed;
+   }
+}
+
+static bool
+m9_point_completed(const struct m9_screen *screen, uint64_t point)
+{
+   return !(point & 0xfu) &&
+          point <= p_atomic_read(&screen->completed_point.value);
+}
+
 static bool
 m9_fence_finish(struct pipe_screen *screen, struct pipe_context *ctx,
                 struct pipe_fence_handle *fence, uint64_t timeout)
@@ -1089,14 +1110,15 @@ m9_fence_finish(struct pipe_screen *screen, struct pipe_context *ctx,
    (void)ctx;
    if (!m9f || p_atomic_read(&m9f->signaled))
       return true;
-   if (m9s->wait_point) {
+   if (m9s->wait_point && !m9_point_completed(m9s, m9f->point)) {
       struct drm_parhelia_m9_wait_point wait = {
          .point = m9f->point, .timeout_ns = timeout,
       };
       if (ioctl(m9s->fd, DRM_IOCTL_PARHELIA_M9_WAIT_POINT, &wait) ||
           wait.completed_point < m9f->point)
          return false;
-   } else {
+      m9_completed_point_note(m9s, wait.completed_point);
+   } else if (!m9s->wait_point) {
       uint64_t completed;
 
       /* Older async kernels have no read-only completion query. A zero
@@ -1289,9 +1311,17 @@ m9_wait_for_point(struct m9_screen *screen, uint64_t point)
       return 0;
    if (!screen->wait_point)
       return -EOPNOTSUPP;
+   /* The kernel's completed point covers every earlier final point in
+    * this device timeline. An actual prior observation already grants
+    * reuse; do not reacquire the transport lock behind newer readers. */
+   if (m9_point_completed(screen, point))
+      return 0;
    if (ioctl(screen->fd, DRM_IOCTL_PARHELIA_M9_WAIT_POINT, &wait))
       return -errno;
-   return wait.completed_point >= point ? 0 : -EPROTO;
+   if (wait.completed_point < point)
+      return -EPROTO;
+   m9_completed_point_note(screen, wait.completed_point);
+   return 0;
 }
 
 static bool

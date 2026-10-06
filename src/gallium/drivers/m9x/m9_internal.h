@@ -17,6 +17,7 @@
 #include "m9_vs_compile.h"
 #include "m9_texture.h"
 #include "util/simple_mtx.h"
+#include "util/u_atomic.h"
 #include "util/u_dynarray.h"
 
 #define M9_PCI_ID 0x0540u
@@ -272,6 +273,9 @@ struct m9_screen {
    bool native_depth_bias;
    bool wait_point;
    bool queued_submit;       /* M9X_QUEUE=1 plus typed kernel admission */
+   /* Actual successful WAIT_POINT observations, shared by contexts and
+    * presentation fences. Posting a command never advances this value. */
+   p_atomic_uint64_t completed_point;
    simple_mtx_t import_lock;
    struct m9_prime_import *imports;
    /* One inter-pass record serves the whole screen.  The engine runs one job
