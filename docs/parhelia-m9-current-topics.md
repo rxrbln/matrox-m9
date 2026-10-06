@@ -17,8 +17,12 @@ kernel7.2.5-t2, boot815d4dcc. See the
 [integrated sampler/FAA-resource proof](../tests/m9-faa-sampler-integration-20261006/README.md).
 Ordinary texture/depth, queries, four MRT targets and accelerated GLX pass.
 One1024x768/vsync-off texture scene reports717FPS; this is not a whole-suite
-performance result. The sampler specialization regression now passes with
-zero skips on driverd1f2b12. FAA mode remains unproved and unadvertised.
+performance result. One fullscreen Quake3 GL1 timedemo reports49.6FPS on
+d1f2b12, a new-board baseline. The sampler base and border regressions pass.
+Driver5ad6c17 additionally passes the actual advertised varying-limit test,
+after compiler splitting and padding overlap fixes. See the
+[interpolation proof](../tests/m9-interpolation-native-20261006/README.md).
+FAA mode remains unproved and unadvertised.
 
 The [October 2 piglit status](parhelia-m9-piglit-status.md) supersedes the
 September 18 backlog where they disagree. The glmark2 standing is still the
@@ -40,9 +44,9 @@ an agent running simultaneously.
 | 0 | deployment and baseline | Qualified on current M9128; broader scenes remain | Retain the pinned deployment and post-test health proof when testing each new candidate |
 | 1 | FAA vendor emulation | Real M9 emitters were executed; complete API-created FAA resource/draw/resolve was not | Complete miniport initialization from genuine device responses, then capture FAA-off/on allocation, complete packets, program images and retirement |
 | 1 | FAA implementation and native probe | Existing diagnostic state does not prove multisampling: previously zero of 318464 store dwords changed | Compare the vendor-owned resource/enable/reset/resolve graph, test one edge scene, read back store writes and resolved edge coverage; follow with depth and texture controls |
-| 2 | max-samplers regression | Main regression closed: stale CPU record layout after fragment specialization; border variants remain to check | Native old build fails eight fragment draws; d8fa015 passes32seen/zero skips without capacity changes. Run a bounded border variant next |
+| 2 | max-samplers regression | Base and border cases closed: stale CPU record layout after fragment specialization | Both native cases pass32seen/zero skips after d8fa015, without capacity changes |
 | 2 | kill/early-z state | Three quad lanes use an earlier quad's kill outcome with our instruction and an unchanged vendor program | Obtain genuine vendor engine MMIO while `fs-discard-cond` runs and compare initialization plus job-head controls |
-| 3 | interpolation splitting | A raster pass has six interpolants; vendor schedules fourteen as 2/6/6; current splitter contains an interpolation cut but piglit still reports refusals | Feed the precise failing piglit NIR through the offline compiler, expose the first refusal, add the smallest bounded native record-routing proof |
+| 3 | interpolation splitting | Advertised varying-limit case closed; broader scene schedules remain | a4995c2 classifies allocator pressure;5ad6c17 excludes overlapping padding. Actual glsl-max-varyings passes69seen/zero skips. Fourteen-input stress passes offline only; native VS still has a five-input limit |
 | 3 | per-fragment TXB | Uniform/draw-constant bias works; varying bias is explicitly refused | Implement the captured two-pass coordinate-plus-LOD record form and prove mip selection with a varying bias image |
 | 3 | fragment control flow and values | General control flow, some value splits and shadow-reference clamping remain refused or unstarted | Map one existing vendor control-flow program into the native pass graph; prove branch-dependent color/depth/kill semantics before generalizing |
 | 3 | native vertex ISA | Vertex logarithm/power remain refused; six odd temporary registers are excluded after native failures | Capture a genuine vertex log2 seed and complete chain; separately trace output/register lifetime to determine whether any excluded register can safely be recovered |
@@ -125,6 +129,12 @@ before replay. Normal shipping Windows configuration and API routes exist:
 OGL\\Multisample nonzero plus3D\\AAMode bit0 enables32-bit WGL pixel formats
 advertising eight samples. That establishes static reachability, not a fully
 initialized API draw. Dead debug strings are separate weaker evidence.
+The dynamic configuration/query chain now executes both constructors and
+real driver escape, with actual ICD enable matrix0/0/0/1. Pixel-format
+capability initialization is incomplete: the harness rejects ordinary
+hardware formats and its appended fallback formats actually advertise zero
+samples. The flag alone must not be called dynamic AA advertisement; the
+agent is tracing that capability producer and rejection condition.
 
 Current diagnostic source separates `ad`/`af`, the `ef[31:29]` AA mode,
 `f0` control bits, `bc`/`bd` store bindings, `b8` companion and reset state.
