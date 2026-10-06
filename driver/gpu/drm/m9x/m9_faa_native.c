@@ -329,6 +329,20 @@ static void m9_faa_observe(struct m9x_device *mdev,
 	/* Order publication/completion observations before BAR and DMA reads. */
 	rmb();
 	dma_rmb();
+	if (mdev->transport.fence_cpu) {
+		u32 *counter = mdev->transport.fence_cpu;
+
+		/* Observe the same retained completion page selected by 106c
+		 * and 1068/1070. Source query/map waits use +20/+00;
+		 * observing +40/+60 does not assign them another wait role. */
+		dev_info(&mdev->pdev->dev,
+			 "M9 FAA %s counters: +00=%#x/%#x +20=%#x/%#x +40=%#x/%#x +60=%#x/%#x\n",
+			 before ? "before submit" : "retired",
+			 READ_ONCE(counter[0]), READ_ONCE(counter[1]),
+			 READ_ONCE(counter[0x20 / 4]), READ_ONCE(counter[0x24 / 4]),
+			 READ_ONCE(counter[0x40 / 4]), READ_ONCE(counter[0x44 / 4]),
+			 READ_ONCE(counter[0x60 / 4]), READ_ONCE(counter[0x64 / 4]));
+	}
 	for (i = 0; i < ARRAY_SIZE(r->owner); i++) {
 		struct m9_faa_owner *o = &r->owner[i];
 		const struct m9_faa_owner_spec *spec = &m9_faa_owner_specs[i];
