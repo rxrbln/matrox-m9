@@ -75,7 +75,7 @@ are queued. Some have partial vendor evidence, but they are not all closed.
 | order | scope | actual remaining gap | next useful proof |
 |---|---|---|---|
 | 0 | deployment and baseline | Qualified on current M9128; broader scenes remain | Retain the pinned deployment and post-test health proof when testing each new candidate |
-| 1 | FAA vendor emulation | Genuine conditional allocator and actual queue activation pass with32 owned OS DMA allocations; default mapping policy and clear compiler state ownership remain open | Finish the genuine clear/draw/resolve command stream and program images through the first unknown GPU reply; do not invent completion |
+| 1 | FAA vendor emulation | Actual queue activation and FAA allocation plus all three initialization clears pass; full draw/resolve trace awaits independent integration | Verify the joined clear/draw/resolve stream, command images and submission/retirement boundaries; do not invent completion |
 | 1 | FAA implementation and native probe | Existing diagnostic state does not prove multisampling: previously zero of 318464 store dwords changed | Compare the vendor-owned resource/enable/reset/resolve graph, test one edge scene, read back store writes and resolved edge coverage; follow with depth and texture controls |
 | 2 | max-samplers regression | Base and border cases closed: stale CPU record layout after fragment specialization | Both native cases pass32seen/zero skips after d8fa015, without capacity changes |
 | 2 | kill/early-z state | Three quad lanes use an earlier quad's kill outcome with our instruction and an unchanged vendor program | Obtain genuine vendor engine MMIO while `fs-discard-cond` runs and compare initialization plus job-head controls |
@@ -143,16 +143,24 @@ These are controls for deployment, not new open feature implementations:
 
 The implementation gate is one complete vendor FAA frame: allocation,
 initialization, normal state compilation, draw, resolve and retirement.
-Current captures prove allocated owners and individual state emitters.
+Current integrated captures prove allocated owners, queue activation and all
+three initialization-clear command producers. A joined draw/resolve capture
+is being reviewed separately; it has not yet passed root's independent replay.
 Canonical5661c4f4 now activates the real vendor queue with32 owned system-DMA
 allocations through genuine MM handlers and bounded synthetic OS RAM, using
 the genuine FAA-admitting MmFlags101b8 option. Root independently replayed
 this successfully. Default101f8 has a separate mapping contract still open;
 its class1 predicate alone was incorrectly treated as terminal rejection.
-The clear compiler's next boundary is a missing CPU shader/state owner at
-f5969, before any supplied GPU completion. Captured
-packets must not be concatenated to infer normal ordering. No FAA fragments
-or resolved target image have been demonstrated.
+Canonical58ac2169 fixes the capture's initialization order: queue activation
+precedes resource/shader enable, so the shader uses the live TaskMgr+0xc.
+The genuine PDEV CPU alias publisher supplies the existing timeline owner.
+These close the earlier f5969 and missing device+58 CPU boundaries.
+Root independently replayed actual ac7e0 returning1, all three initialization
+clears,900 system-DMA CPU writes and sentinel initialization; no GPU execution
+or completion was supplied. Main/auxiliary/companion/HZ extents at320x240 are
+136080/13080/97000/3000 hex. Captured packets must not be concatenated to
+infer normal ordering. No FAA fragments or resolved target image have been
+demonstrated.
 
 Kernel1f1ff0d admits the exact nine-word FAA binding grammar for validation,
 with typed pool ownership, tagged VRAM addresses and extent checks. Actual
