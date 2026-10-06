@@ -220,3 +220,75 @@ disable the shared/current target strategy as part of normal `20a80` setup.
 observed publication PCs and the two captured reads. This is sufficient to
 join the normal vendor draw validator; retained FAA draw bindings and a
 native FAA image remain separate gates.
+
+## Corrected normal counted-image contract and kernel producer
+
+The normal surface-owned frame (`0050ee32`) exports two independent images
+from the same live contiguous DMA owner (`01042000`, extent `41000`):
+
+| image | bytes | count groups | primary words | terminal |
+| --- | ---: | ---: | --- | --- |
+| scratch quad | 604 | 35 | `45452d2c,01042002,0104225e` | `23000001,0,4` |
+| FAA triangle | 772 | 44 | `45452d2c,0104225e,01042562` | `23000001,0,3` |
+
+Their unchanged SHA256 values are respectively
+`c1d45b1d65dcf4109b2d644d5bbc29da86b13088e452fcea2efac949b9d55536`
+and `a4df84b2af6c68c50da75e8787d3688ca91175866904f4a09f0628e2deaf8475`.
+The combined extent is `560` bytes. Every exported byte matches its actual
+CPU write, not untouched backing. Both start pointers select physical DMA
+with low tag2; both ends use saved-kind1 mode2. The second launch retains the
+real FAA companion/HZ/main/auxiliary graph and main capacity. The first is
+the genuine scratch pass, not a substitute ordinary triangle. This is
+recorded in `normal-counted-submit.json` and checked by the normal graph
+checker plus actual `24b10..24d45` observers (`bd8ef694`).
+
+Kernel candidate `1326475` introduces `m9_private_stream_range`, an internal
+bounded owner-span encoder. The existing native-proved user-secondary path
+uses its class1 GPUVA variant, with identical pointer words. The new physical
+DMA32 variant produces the two exact normal exports above. It validates the
+complete owner extent, aligned nonempty member range, domain and 32-bit end
+before writing any output. It never accepts userspace addresses or copies,
+strips or reforms a counted image. Its `m9_private_stream_owner` must be
+constructed from an already allocated private command owner; it is not a
+new app ABI or proof that the owner has retired.
+
+`check-m9-private-stream.py` compiles this actual C header and compares both
+captured exports, existing class1 framing, aligned end bounds, overflows,
+invalid domains and unchanged outputs on failure. Sixteen checks pass. The
+full Linux7.2 module builds with the usual existing objtool/pahole warnings.
+The physical-DMA private variant has no executable FAA caller yet; generic
+FAA_POOL execution remains refused. This component is preparation, not the
+full private graph or native FAA completion.
+
+### Full-frame owner and ordering requirements
+
+The corrected pool6 `24f20` sequence is **later**, during the resolve
+transition through `fc8f0/fc99b`. It is not a pre-draw pool initialization.
+The first triangle's `fb920` supplies its counted pool binding; resolve then
+emits the raw 76-byte state preparation and pool range `284..2c4`, followed
+by its raw pool/FAA rebind. Preserve this exact producer/read order. The
+pool constructor supplies no CPU memset. Opaque bytes may be GPU-produced
+state, so missing CPU initialization cannot justify filling them with zero
+or inserting a new earlier clear. Join the actual GPU state-save producer
+and following reads before declaring this graph executable.
+
+The smallest diagnostic lifetime can reuse device-owned private resources,
+as the existing kernel triangle diagnostic does. Its graph and command
+storage remain unexposed and retained until device teardown stops DMA.
+Before any CPU rewrite or resource replacement, hold the transport lock and
+drain **all** existing owners; refuse writes when wedged. Prepare VRAM/TTM
+allocations before taking any client reservation/transport execution locks.
+Preserve both draw images and their source/program operands through the
+completion after the raw resolve; a first-draw token cannot release them.
+If the diagnostic writes an externally owned color BO, retain its ref/pin,
+reserve it, wait foreign dependencies and publish the true final write fence
+before posting, using the current completion/quarantine contract. No generic
+client-indirect execution or file-state ABI is needed for this first image.
+
+The remaining integration inputs are the corrected normal GPU pool-save/
+restore ordering, the exact shader/constant/source operand owners and known
+CPU bytes behind every fetched range, and the trusted raw clear/resolve
+producer. The counted pointer form alone cannot invent those templates or
+prove the full graph's lifetime. Subsequent dynamic contexts should use
+explicit private graph owners retained by final fences and released off
+the transport lock; that extension is not silently provided by this encoder.
