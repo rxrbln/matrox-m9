@@ -124,7 +124,7 @@ struct ctx {
    struct util_dynarray keys;
    struct held holds[M9_VS_REGS][2];
    unsigned *last_use;      /* per definition, the instruction that ends it */
-   bool *head_live;         /* split head's pure ALU dependencies */
+   uint32_t *head_live;     /* component demand of the split head's pure ALU */
    int8_t *fold;            /* product's constant side, or FOLD_NEG */
    unsigned def_count;
    unsigned index;          /* instruction being emitted */
@@ -2145,30 +2145,47 @@ note_src(nir_src *src, void *data)
    return true;
 }
 
-static bool
-note_head_src(nir_src *src, void *data)
+static void
+head_src(struct ctx *c, nir_src *src, unsigned mask, unsigned index)
 {
-   struct ctx *c = data;
-
-   c->head_live[src->ssa->index] = true;
-   return true;
+   if (!mask)
+      return;
+   unsigned def = src->ssa->index;
+   c->head_live[def] |= mask;
+   c->last_use[def] = MAX2(c->last_use[def], index);
 }
 
 static void
-head_root(struct ctx *c, nir_intrinsic_instr *store, unsigned final)
+head_root(struct ctx *c, nir_intrinsic_instr *store, unsigned final,
+          unsigned mask)
 {
    if (!store)
       return;
-   struct use_state st = { c, final };
-
-   nir_foreach_src(&store->instr, note_head_src, c);
-   nir_foreach_src(&store->instr, note_src, &st);
+   head_src(c, &store->src[0], mask & nir_intrinsic_write_mask(store), final);
 }
 
-/* The two preprocessing heads have independent registers and selected
- * output targets.  Walk backwards from those targets in the already
- * validated single SSA block; only pure ALU can be omitted.  Keep the
- * original NIR, declarations and full intrinsic/control-flow guards. */
+/* Only the coordinate pair is read. Invalid pairs keep conservative demand
+ * here and retain write_coord_output's existing bounds/refusal path. */
+static void
+head_pair_root(struct ctx *c, nir_intrinsic_instr *store, unsigned final,
+               unsigned component)
+{
+   if (!store)
+      return;
+   unsigned base = nir_intrinsic_component(store);
+   unsigned n = store->src[0].ssa->num_components;
+   unsigned mask = nir_intrinsic_write_mask(store);
+   if (component >= base && component - base < n && n - (component - base) >= 2)
+      mask = 3u << (component - base);
+   head_root(c, store, final, mask);
+}
+
+/* Walk from actual output components through the validated single SSA block.
+ * Vector/move aliases carry only the requested lanes, so coordinates do not
+ * evaluate an unrelated varying packed into the other half. Real ALU still
+ * computes its whole vector; keep every source lane its unchanged emitter
+ * reads. Original NIR, declarations and intrinsic/control-flow guards stay
+ * intact. Each head also keeps its own consumed-source lifetimes. */
 static void
 head_dependencies(struct ctx *c, nir_block *block, unsigned final,
                   nir_intrinsic_instr *position,
@@ -2179,11 +2196,14 @@ head_dependencies(struct ctx *c, nir_block *block, unsigned final,
       return;
    memset(c->head_live, 0, (c->def_count + 1) * sizeof(*c->head_live));
    memset(c->last_use, 0, (c->def_count + 1) * sizeof(*c->last_use));
-   head_root(c, position, final);
+   head_root(c, position, final, ~0u);
    unsigned count = position ? MIN2(nvar, M9_VS_FUSED_VARYINGS) : nvar;
 
    for (unsigned j = 0; j < count; j++) {
-      head_root(c, var[j], final);
+      if (ostream[j].coordinate)
+         head_pair_root(c, var[j], final, ostream[j].component);
+      else
+         head_root(c, var[j], final, ~0u);
       /* A coordinate route can carry a pair from a different varying.
        * write_coord_output reads that stored source as well. */
       if (ostream[j].coordinate && ostream[j].paired) {
@@ -2194,7 +2214,7 @@ head_dependencies(struct ctx *c, nir_block *block, unsigned final,
             if (intr->intrinsic == nir_intrinsic_store_output &&
                 nir_intrinsic_io_semantics(intr).location ==
                 ostream[j].pair_location)
-               head_root(c, intr, final);
+               head_pair_root(c, intr, final, ostream[j].pair_component);
          }
       }
    }
@@ -2202,13 +2222,26 @@ head_dependencies(struct ctx *c, nir_block *block, unsigned final,
       if (instr->type != nir_instr_type_alu)
          continue;
       nir_alu_instr *alu = nir_instr_as_alu(instr);
-      if (!c->head_live[alu->def.index])
+      unsigned wanted = c->head_live[alu->def.index];
+      if (!wanted)
          continue;
-      struct use_state st = { c, instr->index };
+      unsigned index = instr->index;
       if (c->fold[alu->def.index] >= 0 || nir_op_is_vec_or_mov(alu->op))
-         st.idx = c->last_use[alu->def.index];
-      nir_foreach_src(instr, note_head_src, c);
-      nir_foreach_src(instr, note_src, &st);
+         index = c->last_use[alu->def.index];
+      for (unsigned i = 0; i < nir_op_infos[alu->op].num_inputs; i++) {
+         unsigned mask = 0;
+         if (nir_op_is_vec(alu->op)) {
+            if (wanted & (1u << i))
+               mask = 1u << alu->src[i].swizzle[0];
+         } else {
+            unsigned fixed = nir_op_infos[alu->op].input_sizes[i];
+            unsigned lanes = fixed ? fixed : alu->def.num_components;
+            for (unsigned lane = 0; lane < lanes; lane++)
+               if (fixed || alu->op != nir_op_mov || (wanted & (1u << lane)))
+                  mask |= 1u << alu->src[i].swizzle[lane];
+         }
+         head_src(c, &alu->src[i].src, mask, index);
+      }
    }
 }
 
