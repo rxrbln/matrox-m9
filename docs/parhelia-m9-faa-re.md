@@ -1882,3 +1882,57 @@ It does not establish normal hardware/display initialization, executed DMA,
 FAA fragments, resolve completion or retirement. The next required proof is
 one complete FAA frame through this returned queue, stopping at the first
 unknown GPU reply.
+
+### 2026-10-06: returned FAA initialization and correct live shader ownership
+
+Genuine queue activation alone was insufficient for the clear fixture: the
+fixture had called resource-enable module `1ff90 -> 1e490` before activating
+`230f0`. At `1e526..1e52f`, resource-enable reads queue`+30` (TaskMgr) and passes
+it to actual `f5d60`. That initializer writes shader`+f0=TaskMgr+0xc` at
+`f5dda`, and shader`+ec=0xaa` at `f5df9`. With a null TaskMgr, `f5730` later
+copies its instruction stream from address `0xc` and fails at `f5969`. This
+was a fixture initialization-order defect, not a shader/GPU capability result.
+The genuine sequence `1a260 -> 230f0(return1) -> 1ff90` creates the live source
+without changing a shader field or overriding a return value.
+
+The next CPU parent was the normal PDEV timeline alias `device+58`.
+`b5509..b550f` reads this parent after actual job compilation. Its real normal
+PDEV publisher is `2e02c..2e035`: load `device+c`, add `30`, store to
+`device+58`. The fixture executes that bounded instruction prefix against the
+already genuine MM-created CPU counter page. It does not execute or claim the
+remaining normal display/PDEV initialization. The following `f19f0` is not
+needed by this alias and is not executed as part of the prefix.
+
+`m9_queue_context.initialize(e,state,activate=True)` now follows real queue
+creation, successful real activation, the genuine timeline alias publisher,
+and resource-enable. The default `activate=False` remains a preactivation CPU
+publisher probe; its shader source is unsuitable for actual compilation until
+resource-enable has run with the live TaskMgr. Neither mode supplies a GPU
+completion.
+
+With those genuine CPU owners, **full `ac7e0` returns1**. The returned owned
+graph includes the main and auxiliary fragment stores, companion with linked
+HZ resource, and the real sentinel wrapper. All three initialization clear
+paths execute, including `b54ee -> f85c0 -> fadf0`, with `fc0e0` before `fb920`.
+The retained run has 900 actual CPU writes to the genuine OS-owned system-DMA
+buffers. The final sentinel initialization is the genuine full `ac7e0` tail,
+not an independent prefix: words `a4a3a1a1,28041968,0,0,0`.
+
+Reusable capture: `m9_faa_initialized.capture(e,state,bootstrap,...)`; checker
+`check-faa-initialized.py --runtime-tools tools/faaemu --pci-inventory
+captures/m9128-device-inputs-20261006/pci-inventory/inventory.json`.
+Capture: `captures/m9128-device-inputs-20261006/faa-initialized.json`.
+The surface dimensions are explicit controlled CPU caller inputs unless the
+caller supplies an already genuine surface. The command spans export only
+bytes actually written by the vendor CPU, excluding unspecified OS RAM bytes.
+The existing MM-created buffer import establishes the MD CPU allocation view;
+it does not assert physical GPU coherence or subsequent MM readback of MD
+writes. No executed GPU work, rendered FAA fragments, retirement, or complete
+normal hardware/display admission is established by an `ac7e0` CPU return.
+The complete minimal draw/output/retirement trace remains the next gate.
+
+The serial-bounded FindAdapter elapsed allowance is now 30 seconds instead of
+10, retaining its 10-million-instruction bound. Concurrent emulator replays
+could otherwise expire before reaching the genuine EEPROM branch. This changes
+host scheduling tolerance only; actual device absence/failure boundaries and
+captured physical input guards remain intact.
