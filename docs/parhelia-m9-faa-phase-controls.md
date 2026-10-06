@@ -144,3 +144,11 @@ fixture is `tools/check-m9-faa-phase-native-cpu.py`, with explicit plan/blob,
 phase header, actual kernel C source and vendor page-run proof arguments.
 All signed artifacts are under
 `captures/m9128-device-inputs-20261006/normal-faa-{init-only,post-triangle}-*`.
+
+Canonical integration is kernel `d2821c3`: optional mutually exclusive
+`DRM_M9X_FAA_INIT_ONLY_CONTROL`/`DRM_M9X_FAA_POST_TRIANGLE_CONTROL`, excluded
+by the constant shader control, with compile-time mixed-selection refusal.
+All four root full builds and exact firmware metadata checks pass.
+`m9-native-faa-image DEVICE --phase-control` requires nonzero real retirement
+and actual absent-output `ENODATA`; it performs no pixel oracle.
+[Root integration evidence](../tests/m9-faa-phase-integration-20261006/README.md).
