@@ -1245,3 +1245,23 @@ three index-E6 writes, not a leading GPU count3. Enveloped fixtures are
 intermediate software records and must never be submitted directly through
 the cleanroom raw command ABI. This establishes the actual emitter's raw
 grammar; a complete initialized vendor submit/export lifecycle remains open.
+
+### Genuine relocation resolver and kind2b payload width
+
+The new `resource-address.json` `genuine_relocation_cases` execute the real
+command-stream relocation method `25680` and relocation-kind encoder `24870`.
+Real stream vtable `1f2c60` slot`54` points to `25680`; the fixtures retain
+controlled stream/resource/layout ownership, but replace the controlled sink
+with that actual method. Passive instruction/write hooks only record arguments
+and vendor payload stores. Direct and indirect getter cases produce the same
+nine raw dwords, with actual `2b/9/10` relocation writes.
+
+`25680` resolves the pair's top-three-bit address class: class0 uses the second
+word directly; class1 loads resource`+1c4`; class2 loads reference`+4`. Class2
+therefore consumes exactly the `{40000000,&interface+74}` pair produced by the
+real getter. It separates the base address's low2 bits, sign-extends the pair's
+low29-bit offset and adds that offset to the aligned base. Kind`2b` selects
+jumptable byte9 at `24993`, reaching `24930`: the encoder restores the low2
+bits and writes **one complete 32-bit payload**. There is no kind2b-specific
+address truncation. This closes encoding and indirection, not the allocation's
+physical domain, contents, lifetime or normal enabled FAA admission.
