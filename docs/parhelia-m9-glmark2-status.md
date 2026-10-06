@@ -1,5 +1,22 @@
 # glmark2 on the m9x driver: where the 60 fps goal actually stands
 
+## 2026-10-06: complete optional route pipeline integrated; pixels pending
+
+Canonical Mesa58674dc derives all four stages for three to five streams from
+actual native outputs, strides, offsets and retained owners. Default varying
+cap2 and RECORD1 remain unchanged; optional routes require RECORD2. Root full
+DSO,76numeric references/five refusals,512geometry trials, batch bounds,
+pinned vendor witness and independent CPU oracle self-test pass. These host
+checks do not prove device pixels. Earlier per-head slot counts below describe
+that compiler checkpoint, not the complete current four-stage dispatch cost.
+
+Mesaebe263e also submits pending native work before deleting its owned vertex
+shader, fixing a pre-existing CPU metadata lifetime error. Actual ordinary and
+four-stage helper tests pass; removing the new sync causes both tests to fail.
+Full root DSO8d62f1ac8bb38aac365cdc52d7c4807a8f23c160b2ab551ca5424986b3329218 builds.
+See [integration proof](../tests/m9-gl2-route-integration-20261006/README.md).
+Fresh normal M9128 boot/device qualification is next; no new FPS gain claimed.
+
 ## 2026-10-06: wireframe compiles natively; physical dispatch fails
 
 Mesa465b546 reduces the installed buffer wireframe vertex shader from299
