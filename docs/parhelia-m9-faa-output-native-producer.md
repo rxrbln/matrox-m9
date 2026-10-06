@@ -46,9 +46,11 @@ therefore retains a one-page class1 alias of the transport's existing
 completion DMA page, and publishes that alias with tag1. It allocates no
 independent counter and never frees the transport's shared page. Source
 `1068/1070` retain their separately observed physical-tag2 fields at offsets
-`20/40`. The native initializer uses only the real previously observed
-retirement as its seed. The transport must already be armed; its primary
-submit helper consequently preserves this actual counter publication.
+`20/40`. The ordinary diagnostic initializer uses the real previously observed
+retirement as its seed. A separate default-off fresh source-context admission
+preserves the CPU-initialized seed10 without claiming prior GPU retirement.
+Both paths derive timelines from their admitted live transport state, and
+the primary submit helper preserves the actual counter publication.
 
 After real native retirement, explicit `PARHELIA_M9_ACCESS_FAA_OUTPUT` READ
 accepts only the exact original color GEM object, matching transport
@@ -71,8 +73,9 @@ The first physical qualification of kernel `df1f49e` reaches actual native
 retirement `0x1d0` but fails: all76800 visible ordinary output pixels are
 black. Main/AA fragment hashes are unchanged from the earlier failed runs.
 See [the hardware evidence](../tests/m9-faa-ordinary-output-20261006/README.md).
-SYSTEM mapped-prefix pre/post observations are being added; primary virtual
-fetch versus physical clone remains a behavioral difference to qualify.
+Subsequent SYSTEM mapped-prefix observations, virtual-primary fetch and
+verified WC CPU mapping have been physically qualified below, with images
+still failing.
 Application FAA remains disabled.
 
 Kernel `03c30b3` also retires the source-faithful virtual primary, but all
@@ -86,4 +89,9 @@ The subsequent verified WC mapping test (`20df96d`, boot9666bcd7) also
 retires1d0 with zero ordinary output. All five source-covered SYSTEM owners
 have live WC attributes before publication. Source cache fidelity is closed
 for this run, [but rendered pixels still fail](../tests/m9-faa-wc-20261006/README.md).
-The extra Linux context-initialization predecessor is being isolated next.
+The source-context experiment8664d0c separately omits the extra Linux
+context-initialization predecessor and retires at140, but likewise produces
+all black pixels and unchanged main/AA stores.
+See [the actual source-context test](../tests/m9-faa-source-init-20261006/README.md).
+Full vendor cold initialization equivalence and actual downstream resolve
+dependencies remain under source audit; no application FAA success is claimed.
