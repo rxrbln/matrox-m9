@@ -58,3 +58,17 @@ OS/MDL owners with strict stops at the first wait or CPU copy. It requires the
 full-frame MDL bridge and scatter observer as explicit tool paths.
 `tools/check-faa-read-contract.py` verifies the retained owner relationships,
 allocation request, returned format/layout, exact stage sequence and boundary.
+
+The subsequent CPU address builder is now independently executed without
+resuming the interrupted copy. Source `aff90` passes the retained raw layout
+to `8b390`; `8b020` selects coordinate helper `8c4a0` for the actual platform
+table values2/1 and this kind1/32-bit layout. Allocation-kind1 mapper
+`2c980` selects `2ca7c`, which returns the already-owned OS MDL CPU alias
+from resource `+1f0`; it does not install a CPU aperture decoder. The actual
+coordinate helper maps `(0,1)` to byte32, `(16,0)` to256, `(32,0)` to7680
+and `(319,239)` to327420. These differ from logical linear row offsets.
+Resource `+1cc=1280` is the logical pitch; it does **not** prove that the
+underlying DMA allocation is a linear pixel array. A correct native pixel
+read must use the actual tiled coordinate contract or expose raw tiled bytes
+explicitly. The source helper pins that function and records these CPU-only
+address calculations without reading any pixel.
