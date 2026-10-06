@@ -148,6 +148,15 @@ struct m9_faa_companion_layout {
 bool m9_faa_companion_layout(uint32_t width, uint32_t height,
                              struct m9_faa_companion_layout *layout);
 
+/* Actual sampled color request 01000002, selector9. This primary is a
+ * distinct allocation from the FAA companion and fragment stores. */
+struct m9_faa_primary_layout {
+   uint64_t size;
+   uint32_t row_span, allocation_height, descriptor;
+};
+bool m9_faa_primary_layout(uint32_t width, uint32_t height, uint8_t format,
+                           struct m9_faa_primary_layout *layout);
+
 /* Logical vendor extents are distinct from a GEM allocation's page padding.
  * In particular aab89 reads the main store extent, not the colour extent. */
 struct m9_faa_graph_layout {
@@ -187,5 +196,11 @@ struct m9_faa_edits {
 };
 
 void m9_faa_edits(const struct m9_faa *faa, struct m9_faa_edits *edits);
+
+/* Exact18232e..1823ad contribution from a genuinely compiled nested+04.
+ * This lowers a compiler result; it does not derive a variant from enable,
+ * select its program image, or change preprocessing scratch state. Return
+ * whether the vendor182637..182646 gate admits AD/AF for this mode. */
+bool m9_faa_lower_compiled04(uint32_t compiled04, struct m9_faa_edits *edits);
 
 #endif

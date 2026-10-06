@@ -598,7 +598,7 @@ m9_emit_raster_range(struct m9_batch *batch, const struct m9_draw_job *job,
       EMIT(R(0xb0, job->record, 0, STREAM), V(0xb1, pass->record_desc));
    } else {
       EMIT(R(0xb0, job->color, job->color_offset, COLOR),
-           V(0xb1, p->color_desc));
+           V(0xb1, job->faa.graph ? job->faa.primary_desc : p->color_desc));
       /* Target s takes the pair at b0 + 2s with its own descriptor
        * (CAPTURED, one to four attachments). */
       for (unsigned s = 1; s < job->color_count; s++)
@@ -731,9 +731,9 @@ m9_emit_raster_range(struct m9_batch *batch, const struct m9_draw_job *job,
          }
          EMIT(V(0x22, m9_job_raster_control(job, pass, d)),
               V(0x6a, 0x25010000));
-         EMIT(V(0xf0, m9_raster_class(d->lines, blend)),
-              V(0xef, d->cull | depth_ef |
-                      (logic ? 0xaau : m9_dither_ef(p->color_desc))),
+         EMIT(V(0xf0, m9_job_f0(job, m9_raster_class(d->lines, blend))),
+              V(0xef, m9_job_ef(job, d->cull | depth_ef |
+                      (logic ? 0xaau : m9_dither_ef(p->color_desc)))),
               V(0xd7, m9_raster_d7(d->topology)), V(0xf4, 0));
       }
       draw_at = batch->command_count;
@@ -796,6 +796,14 @@ m9_draw_job_valid(const struct m9_draw_job *job)
         !job->faa.store_aux || !(job->faa.ad & 0x1fffffu) ||
         job->faa.bind_index >= 0 || job->faa.bind_reset))
       return false;
+   if (job->faa.graph) {
+      struct m9_faa_primary_layout primary;
+      if (!m9_faa_primary_layout(job->params->width, job->params->height,
+                                job->params->color_desc >> 25, &primary) ||
+          job->faa.primary_desc != primary.descriptor ||
+          job->color_count > 1 || job->pass_count > 1)
+         return false;
+   }
    for (unsigned i = 0; i < job->unit_count; i++)
       if (!job->units[i].handle)
          return false;

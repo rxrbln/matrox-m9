@@ -151,6 +151,35 @@ m9_faa_companion_layout(uint32_t width, uint32_t height,
 }
 
 bool
+m9_faa_primary_layout(uint32_t width, uint32_t height, uint8_t format,
+                        struct m9_faa_primary_layout *layout)
+{
+   if (!layout || !width || !height || width > 2048 || height > 2048 ||
+       (format != M9_COLOR_FORMAT_A8R8G8B8 &&
+        format != M9_COLOR_FORMAT_A2B10G10R10 &&
+        format != M9_COLOR_FORMAT_A2R10G10B10))
+      return false;
+   bool small = width <= 64 && height <= 64;
+   uint32_t row = (width + 31) & ~31u;
+   uint32_t quantum = small ? 4 : 32;
+   uint32_t rows = (height + quantum - 1) & ~(quantum - 1);
+   uint64_t byte_quantum = small ? 1024 : 4096;
+   if (width <= 16 && height <= 16)
+      rows = 16;
+   uint64_t elements = (uint64_t)row * rows;
+   uint64_t tail = (uint64_t)(rows - height) * row + row - width;
+   if (tail < 8)
+      elements += 8 - tail;
+   *layout = (struct m9_faa_primary_layout) {
+      .size = (elements * 4 + byte_quantum - 1) & ~(byte_quantum - 1),
+      .row_span = row, .allocation_height = rows,
+      .descriptor = ((uint32_t)format << 25) | 0x00020000u |
+                    (small ? 0 : 0x00200000u) | row,
+   };
+   return true;
+}
+
+bool
 m9_faa_graph_layout(uint32_t width, uint32_t height,
                      struct m9_faa_graph_layout *layout)
 {
@@ -205,6 +234,20 @@ m9_faa_edits(const struct m9_faa *faa, struct m9_faa_edits *edits)
       edits->f0_or |= 0x00008000u;
    if (faa->f0_bit24)
       edits->f0_or |= 0x01000000u;
+}
+
+bool
+m9_faa_lower_compiled04(uint32_t compiled04, struct m9_faa_edits *edits)
+{
+   uint32_t mode = (compiled04 >> 4) & 7u;
+   *edits = (struct m9_faa_edits) {
+      .ae_and = 0xffffffffu,
+      .ef_and = ~0xe0000000u, .ef_or = mode << 29,
+      .f0_and = ~0x01008000u,
+      .f0_or = ((compiled04 & 1u) << 15) |
+               ((compiled04 & 6u) ? 0x01000000u : 0),
+   };
+   return mode != 0 && mode != 3;
 }
 
 uint32_t

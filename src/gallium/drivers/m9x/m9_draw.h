@@ -185,6 +185,8 @@ struct m9_draw_job {
       bool set;
       /* Complete surface-owned graph, admitted separately from raw probes. */
       bool graph;
+      /* Actual selector9 descriptor of the independently owned primary. */
+      uint32_t primary_desc;
       bool raster;   /* restate the pair in the raster range as well */
       uint32_t ad, af;
       /* ae bits 6:4, ef bits 31:29 and two f0 flags are edited rather than
