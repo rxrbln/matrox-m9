@@ -165,10 +165,12 @@ DisplayDriver: PuntAll2d@0fc=0 Simulate2d@100=0 StretchBlt@104=0
     AlphaTextGamma@158=0x16 TextAntiAliasing@15c=1
 ```
 
-`PsBmMicrocode`, `PsBmConstants`, `CeBmMicrocode`, and `CeBmConstants` have
-real configuration reads but no public GL trigger joined to those fields.
-Treat them as dormant internal tuning and never as permission to substitute
-unvalidated microcode or constants.
+The earlier zero entries for the BM microcode slots do not describe the
+actual locked MxMD constructor defaults. The complete public RED source
+trace observes PsBmMicrocode and CeBmMicrocode locked at1, with real
+resource-program transport consumers; see
+[the owner and consumer proof](parhelia-m9-faa-bm-program-options.md).
+This does not authorize substituting unvalidated program bytes or constants.
 
 ### Linux M9 additions
 
