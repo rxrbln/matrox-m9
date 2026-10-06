@@ -1579,3 +1579,25 @@ Execution stops there because the current actual miscIO capture proves only
 bit28. No DDC grant, transmitter identity, or success reply is invented. The
 native CPU runtime/configuration publishers can use the retained actual owner
 without requiring a physical display-reset detour.
+
+### Normal runtime initializer completes under bounded Windows host contracts
+
+`NTHost.MDLHost` now models owned zero-filled OS system-RAM pages, the x86 MDL
+header/PFN list, kernel mapping, unmapping and separate pages/descriptor release.
+Physical page numbers are deliberately synthetic OS allocation addresses,
+distinct from guest virtual addresses; they are never captured GPU/VRAM backing
+or native replay addresses. Unsupported allocation/mapping domains and ownership
+violations remain explicit boundaries. The API behavior follows Microsoft's
+[MDL layout](https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/wdm/ns-wdm-_mdl),
+[allocation contract](https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/wdm/nf-wdm-mmallocatepagesformdl)
+and [kernel mapping contract](https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/wdm/nf-wdm-mmmaplockedpagesspecifycache).
+
+The actual first MmAllocatePagesForMdl request from247f4/24814 is Low0,\
+Highffffffff, Skip0, TotalBytes1000. Genuine568e7 then requests the optional OS
+service `\\Device\\MatroxExtioManager` at74f73. An explicitly empty controlled
+Windows namespace returns OBJECT_NAME_NOT_FOUND for that name only, with no
+fictitious device/file object and no installed-hardware claim. Normal568e7 now
+returns1 after8250 actual-catalog PCI reads and1190 actual registry/default
+queries. The record is `normal-runtime-host.json`; it does not claim adapter
+admission, full display initialization, FAA resource backing or a draw. Native
+owner construction can now consume this real CPU runtime graph directly.
