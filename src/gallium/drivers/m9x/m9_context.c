@@ -137,6 +137,7 @@ struct m9_fs_variant {
    /* The same fragment slots with a compiled vertex program behind them. */
    struct m9_resource native_c2;
    uint64_t native_c2_serial;
+   struct util_dynarray native_c2_images; /* struct m9_native_image */
    unsigned vertex_entry;
    unsigned extra_count;               /* CPU view locations: varyings, then coordinates */
    uint8_t extra_location[M9_FS_MAX_EXTRA];
@@ -4034,6 +4035,9 @@ m9_record_layout(struct m9_fs_variant *v)
 static void
 m9_fs_variant_free(struct m9_context *ctx, struct m9_fs_variant *v)
 {
+   util_dynarray_foreach(&v->native_c2_images, struct m9_native_image, entry)
+      m9_bo_destroy(ctx->screen, &entry->image);
+   util_dynarray_fini(&v->native_c2_images);
    if (v->ok) {
       m9_bo_destroy(ctx->screen, &v->c2);
       m9_bo_destroy(ctx->screen, &v->native_c2);
@@ -4136,6 +4140,7 @@ m9_fs_variant(struct m9_context *ctx, struct m9_fs_state *fs,
       FREE(v);
       return NULL;
    }
+   util_dynarray_init(&v->native_c2_images, NULL);
    v->blend = want->blend;
    v->targets = want->targets;
    v->select = want->select;
@@ -5394,6 +5399,8 @@ m9_native_vs_c2(struct m9_context *ctx, struct m9_fs_variant *v,
                 unsigned *extra_entry, unsigned *gather_entry)
 {
    struct m9_resource *image = v ? &v->native_c2 : &ctx->vs_c2;
+   struct m9_resource fresh = {0};
+   struct util_dynarray *images = v ? &v->native_c2_images : &ctx->vs_c2_images;
    uint64_t *serial = v ? &v->native_c2_serial : &ctx->vs_c2_serial;
    const uint32_t *fs_slots = v ? m9_fs_final(v)->slots.data :
                                   m9_passthrough_c2_program;
@@ -5413,7 +5420,16 @@ m9_native_vs_c2(struct m9_context *ctx, struct m9_fs_variant *v,
    *gather_entry = m9_vs_gather_slot_count(&vs->program) ?
                    fs_slots_count + m9_vs_slot_count(&vs->program) +
                    m9_vs_extra_slot_count(&vs->program) : 0;
-   if (image->handle && *serial == vs->serial)
+   if (ctx->screen->queued_submit) {
+      /* This runs before a changed job key flushes earlier recorded draws.
+       * Keep their handle alive as well as the kernel-owned posted readers;
+       * a fresh image per serial avoids both CPU rewrites and forced waits. */
+      util_dynarray_foreach(images, struct m9_native_image, entry)
+         if (entry->serial == vs->serial)
+            return entry->image.handle;
+      image = &fresh;
+   }
+   if (!ctx->screen->queued_submit && image->handle && *serial == vs->serial)
       return image->handle;
    if (bytes > M9_PROGRAM_MAX_BYTES)
       return 0;
@@ -5431,8 +5447,27 @@ m9_native_vs_c2(struct m9_context *ctx, struct m9_fs_variant *v,
                        m9_vs_fused_pair(&vs->program), &entry, &extra,
                        &gather) ||
        entry != fs_slots_count || extra != *extra_entry ||
-       gather != *gather_entry)
+       gather != *gather_entry) {
+      if (ctx->screen->queued_submit)
+         m9_bo_destroy(ctx->screen, image);
       return 0;
+   }
+   if (ctx->screen->queued_submit) {
+      struct m9_native_image *entry =
+         util_dynarray_grow(images, struct m9_native_image, 1);
+
+      if (!entry) {
+         m9_bo_destroy(ctx->screen, image);
+         return 0;
+      }
+      *entry = (struct m9_native_image) { .serial = vs->serial, .image = fresh };
+      if (ctx->debug)
+         fprintf(stderr, "m9x: queued C2 owner %p VS serial %" PRIu64
+                 " handle %u images %u\n", (void *)images, vs->serial,
+                 fresh.handle,
+                 (unsigned)util_dynarray_num_elements(images, struct m9_native_image));
+      return fresh.handle;
+   }
    *serial = vs->serial;
    return image->handle;
 }
@@ -8896,6 +8931,9 @@ m9_context_destroy(struct pipe_context *pctx)
    m9_job_state_fini(&ctx->deferred.state);
    m9_bo_destroy(screen, &ctx->placeholder_texture);
    m9_bo_destroy(screen, &ctx->vs_c2);
+   util_dynarray_foreach(&ctx->vs_c2_images, struct m9_native_image, entry)
+      m9_bo_destroy(screen, &entry->image);
+   util_dynarray_fini(&ctx->vs_c2_images);
    if (ctx->debug)
       fprintf(stderr, "m9x: job splits: state %u uniforms %u vertices %u "
               "stream %u\n", ctx->split_state, ctx->split_uniforms,
@@ -9022,6 +9060,7 @@ m9_context_create(struct pipe_screen *pscreen, void *priv, unsigned flags)
    ctx->only_after = debug_get_num_option("M9X_ONLY_AFTER", 0);
    ctx->dry_run = debug_get_bool_option("M9X_DRYRUN", false);
    util_dynarray_init(&ctx->records, NULL);
+   util_dynarray_init(&ctx->vs_c2_images, NULL);
    util_dynarray_init(&ctx->native_vs_reasons, NULL);
    util_dynarray_init(&ctx->target_depths, NULL);
    util_dynarray_init(&ctx->indices, NULL);

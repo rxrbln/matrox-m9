@@ -453,6 +453,12 @@ struct m9_job_arena {
    uint64_t point;
 };
 
+/* Queued code is immutable while either a recorded or posted job names it. */
+struct m9_native_image {
+   uint64_t serial;
+   struct m9_resource image;
+};
+
 struct m9_context {
    struct pipe_context base;
    struct m9_screen *screen;
@@ -559,6 +565,7 @@ struct m9_context {
     * for a draw whose fragment shader keeps the captured colour image. */
    struct m9_resource vs_c2;
    uint64_t vs_c2_serial;
+   struct util_dynarray vs_c2_images;  /* struct m9_native_image */
    /* The query whose range this job falls inside, and the snapshots its
     * stream opens and closes with. */
    struct m9_query *query_active, *query_begin, *query_end;
