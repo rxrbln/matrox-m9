@@ -15,7 +15,12 @@ shader, fixing a pre-existing CPU metadata lifetime error. Actual ordinary and
 four-stage helper tests pass; removing the new sync causes both tests to fail.
 Full root DSO8d62f1ac8bb38aac365cdc52d7c4807a8f23c160b2ab551ca5424986b3329218 builds.
 See [integration proof](../tests/m9-gl2-route-integration-20261006/README.md).
-Fresh normal M9128 boot/device qualification is next; no new FPS gain claimed.
+Fresh normal M9128 hardware qualification now FAILS: preceding native blit100
+and clear160 retire, but the optional four-stage five-stream dispatch times
+out at220 with writeback161. No GPU record/pixel qualification or FPS gain.
+The initial loader-only llvmpipe refusal is retained separately and was fixed
+by including the linked unified Gallium DSO directory in LD_LIBRARY_PATH.
+See [actual device evidence](../tests/m9-gl2-route-hardware-20261006/README.md).
 
 ## 2026-10-06: wireframe compiles natively; physical dispatch fails
 
