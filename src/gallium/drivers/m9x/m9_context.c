@@ -371,6 +371,9 @@ static unsigned m9_vs_max_slots = 188;
  * count of constants a program names. */
 static unsigned m9_vs_max_const_pairs = M9_VS_MAX_CONST_PAIRS;
 static unsigned m9_vs_const_pad;
+/* Initially diagnostic until the matrix A/B/A native readback proves the
+ * captured constant update between measured numeric preprocessing runs. */
+static bool m9_vs_uniform_batch;
 /* M9X_NATIVE_VS=0 keeps every vertex shader in the draw module.  On by
  * default since the whole hardware fixture corpus passes either way
  * (m9-mesa-vs 14/14, m9-mesa-glsl 90/90, 2026-09-17). */
@@ -1774,6 +1777,8 @@ m9_job_state_swap(struct m9_context *ctx, struct m9_job_state *s)
    m9_dynarray_swap(&ctx->job_textures, &s->job_textures);
    m9_dynarray_swap(&ctx->job_consts, &s->job_consts);
    m9_dynarray_swap(&ctx->job_vs_consts, &s->job_vs_consts);
+   m9_dynarray_swap(&ctx->job_vs_runs, &s->job_vs_runs);
+   m9_dynarray_swap(&ctx->job_vs_values, &s->job_vs_values);
 }
 
 static void
@@ -1788,6 +1793,8 @@ m9_job_state_fini(struct m9_job_state *s)
    util_dynarray_fini(&s->job_textures);
    util_dynarray_fini(&s->job_consts);
    util_dynarray_fini(&s->job_vs_consts);
+   util_dynarray_fini(&s->job_vs_runs);
+   util_dynarray_fini(&s->job_vs_values);
    memset(s, 0, sizeof(*s));
 }
 
@@ -1799,6 +1806,8 @@ m9_job_state_clear(struct m9_context *ctx)
       pipe_resource_reference(held, NULL);
    util_dynarray_clear(&ctx->job_textures);
    ctx->job_unit_dwords = 0;
+   util_dynarray_clear(&ctx->job_vs_runs);
+   util_dynarray_clear(&ctx->job_vs_values);
    util_dynarray_clear(&ctx->records);
    util_dynarray_clear(&ctx->indices);
    util_dynarray_clear(&ctx->draws);
@@ -2382,6 +2391,8 @@ m9_submit_job(struct m9_context *ctx)
             pipe_resource_reference(held, NULL);
          util_dynarray_clear(&ctx->job_textures);
          ctx->job_unit_dwords = 0;
+         util_dynarray_clear(&ctx->job_vs_runs);
+         util_dynarray_clear(&ctx->job_vs_values);
          util_dynarray_clear(&ctx->records);
          util_dynarray_clear(&ctx->indices);
          util_dynarray_clear(&ctx->draws);
@@ -2397,6 +2408,8 @@ m9_submit_job(struct m9_context *ctx)
          pipe_resource_reference(held, NULL);
       util_dynarray_clear(&ctx->job_textures);
       ctx->job_unit_dwords = 0;
+      util_dynarray_clear(&ctx->job_vs_runs);
+      util_dynarray_clear(&ctx->job_vs_values);
       util_dynarray_clear(&ctx->records);
       util_dynarray_clear(&ctx->indices);
       util_dynarray_clear(&ctx->draws);
@@ -2519,6 +2532,31 @@ m9_submit_job(struct m9_context *ctx)
          }
          if (!vs_decl_count || !vs_const_pairs)
             ret = -EINVAL;
+         unsigned runs = util_dynarray_num_elements(&ctx->job_vs_runs,
+                                                    struct m9_vs_const_run);
+         struct m9_vs_const_run *run = ctx->job_vs_runs.data;
+         for (unsigned i = 0; !ret && i < runs; i++) {
+            uint32_t offset = i ? M9_VS_RUN_CONST_OFFSET +
+                                 (i - 1) * M9_VS_RUN_CONST_BYTES :
+                                 M9_VS_CONST_OFFSET;
+            uint8_t *dst = (uint8_t *)ctx->system.map + offset;
+            if (i) {
+               /* Copy every tail pair, including guard/viewport values.
+                * m9_vs_const_span replaces only the shader's own pairs. */
+               memcpy(dst, (uint8_t *)ctx->system.map + M9_VS_CONST_OFFSET,
+                      8 * vs_const_pairs);
+               if (!m9_vs_const_span(key->vs,
+                     (float *)((uint8_t *)ctx->job_vs_values.data +
+                               i * ctx->job_vs_consts.size),
+                     ctx->job_vs_consts.size / sizeof(float),
+                     (uint32_t *)dst, 2 * M9_VS_CONST_MAX_PAIRS))
+                  ret = -EINVAL;
+            }
+            run[i].count = (i + 1 < runs ? run[i + 1].first : records) -
+                           run[i].first;
+            run[i].const_offset = offset;
+            run[i].const_pairs = vs_const_pairs;
+         }
       }
       if (fs) {
          const char *why = NULL;
@@ -2554,6 +2592,9 @@ m9_submit_job(struct m9_context *ctx)
          .index_count = index_count * copies,
          .draws = ctx->draws.data,
          .draw_count = draws,
+         .vs_const_runs = ctx->job_vs_runs.data,
+         .vs_const_run_count = util_dynarray_num_elements(&ctx->job_vs_runs,
+                                                     struct m9_vs_const_run),
          .depth_control = key->depth_control,
          /* A single pass carries its own depth bits for gl_FragDepth. */
          .depth_ef = pass_count == 1 && !ret ? passes[0].depth_ef :
@@ -2775,8 +2816,9 @@ m9_submit_job(struct m9_context *ctx)
       ctx->record_written |= pass_count > 1;
       m9_prof_relocs = MAX2(m9_prof_relocs, ctx->batch.reloc_count);
       if (ctx->debug)
-         fprintf(stderr, "m9x: job %u records %u draws a8 %08x ef %08x "
+         fprintf(stderr, "m9x: job %u records %u draws vsruns %u a8 %08x ef %08x "
                  "ab %08x clip %08x/%08x -> %#" PRIx64 "\n", records, draws,
+                 job.vs_const_run_count,
                  key->depth_control, key->depth_ef, key->color_mask,
                  key->clip_min, key->clip_max, point);
    }
@@ -2784,6 +2826,8 @@ m9_submit_job(struct m9_context *ctx)
       pipe_resource_reference(held, NULL);
    util_dynarray_clear(&ctx->job_textures);
    ctx->job_unit_dwords = 0;
+   util_dynarray_clear(&ctx->job_vs_runs);
+   util_dynarray_clear(&ctx->job_vs_values);
    util_dynarray_clear(&ctx->records);
    util_dynarray_clear(&ctx->indices);
    util_dynarray_clear(&ctx->draws);
@@ -2797,6 +2841,27 @@ static bool
 m9_consts_differ(const struct util_dynarray *a, const struct util_dynarray *b)
 {
    return a->size != b->size || (a->size && memcmp(a->data, b->data, a->size));
+}
+
+static bool
+m9_vs_uniforms_batchable(const struct m9_job_key *key)
+{
+   return m9_vs_uniform_batch && key->vs && !key->vs_extra_entry &&
+          (!key->fs || key->variant->passes.count == 1);
+}
+
+/* Compare against the latest snapshot while keeping job_vs_consts as the
+ * first run's values for the original single-span submission path. */
+static bool
+m9_vs_uniforms_differ(struct m9_context *ctx,
+                      const struct util_dynarray *values)
+{
+   if (values->size != ctx->job_vs_consts.size)
+      return true;
+   const void *last = ctx->job_vs_values.size ?
+      (uint8_t *)ctx->job_vs_values.data + ctx->job_vs_values.size -
+         values->size : ctx->job_vs_consts.data;
+   return values->size && memcmp(values->data, last, values->size);
 }
 
 /* Source records one job can hold under this key.  A split shader
@@ -2843,6 +2908,12 @@ m9_job_reserve(struct m9_context *ctx, const struct m9_job_key *key,
    /* The bound textures are restated per draw, so they need not end a job;
     * only their extra stream words have to fit the command budget. */
    unsigned passes = copies;
+   bool vs_batchable = m9_vs_uniforms_batchable(key);
+   bool vs_changed = key->vs && m9_vs_uniforms_differ(ctx, vs_consts);
+   unsigned vs_runs = util_dynarray_num_elements(&ctx->job_vs_runs,
+                                                 struct m9_vs_const_run);
+   unsigned new_vs_runs = vs_batchable ?
+                         vs_runs + (!vs_runs || vs_changed) : 0;
    bool units_differ = key->unit_count != ctx->job_key.unit_count ||
                        memcmp(key->units, ctx->job_key.units,
                               key->unit_count * sizeof(key->units[0]));
@@ -2860,6 +2931,9 @@ m9_job_reserve(struct m9_context *ctx, const struct m9_job_key *key,
              m9_draw_vs_extra_dwords(key->vs_extra_targets,
                                      2 * key->vs->attr_count + 1) : 0) +
             m9_faa_raster_dwords(&ctx->screen->faa) * MAX2(passes, 1u);
+   /* Every additional run adds a five-word constant packet and a numeric
+    * three-word launch. Framing is charged by the existing upper bound. */
+   dwords += new_vs_runs ? 8 * (new_vs_runs - 1) : 0;
    if (draws) {
       bool state = memcmp(key, &ctx->job_key,
                           offsetof(struct m9_job_key, units)) != 0;
@@ -2883,8 +2957,8 @@ m9_job_reserve(struct m9_context *ctx, const struct m9_job_key *key,
                              key->clip_max != o->clip_max;
       }
       bool uniforms = (key->fs && m9_consts_differ(consts, &ctx->job_consts)) ||
-                      (key->vs && m9_consts_differ(vs_consts,
-                                                   &ctx->job_vs_consts)) ||
+                      (vs_changed && (!vs_batchable ||
+                       vs_consts->size != ctx->job_vs_consts.size)) ||
                       record_floats != ctx->record_floats;
       bool vertices_full = records + padded > ceiling;
       unsigned relocs = (passes > 1 ?
@@ -2894,6 +2968,7 @@ m9_job_reserve(struct m9_context *ctx, const struct m9_job_key *key,
                          m9_draw_vs_extra_relocs(key->vs_extra_targets) : 0) +
                         m9_faa_raster_relocs(&ctx->screen->faa) *
                         MAX2(passes, 1u);
+      relocs += new_vs_runs ? 2 * (new_vs_runs - 1) : 0;
       /* A split shader binds one unit pool for the whole job, so a draw
        * that needs another set starts a job of its own. */
       bool stream_full = dwords > M9_MAX_COMMAND_DWORDS ||
@@ -2903,6 +2978,7 @@ m9_job_reserve(struct m9_context *ctx, const struct m9_job_key *key,
                          (passes > 1 && units_differ) ||
                          (passes > 1 && draws >= m9_split_draws) ||
                          (m9_job_draws && draws >= m9_job_draws);
+      stream_full |= new_vs_runs > M9_VS_MAX_CONST_RUNS;
 
       if (state || uniforms || vertices_full || stream_full) {
          m9_prof_split[5] += !state && uniforms;
@@ -2953,8 +3029,34 @@ m9_job_reserve(struct m9_context *ctx, const struct m9_job_key *key,
          return NULL;
    }
    out = util_dynarray_grow(&ctx->records, float, padded * record_floats);
-   if (!out)
+   if (!out) {
       m9_warn_once(ctx, M9_WARN_MEMORY, "out of memory for source records");
+      return NULL;
+   }
+   if (vs_batchable) {
+      vs_runs = util_dynarray_num_elements(&ctx->job_vs_runs,
+                                          struct m9_vs_const_run);
+      if (!vs_runs || m9_vs_uniforms_differ(ctx, vs_consts)) {
+         size_t before = ctx->job_vs_values.size;
+         void *values = vs_consts->size ?
+            util_dynarray_grow_bytes(&ctx->job_vs_values, 1,
+                                     vs_consts->size) : NULL;
+         struct m9_vs_const_run *run = NULL;
+         if (!vs_consts->size || values)
+            run = util_dynarray_grow(&ctx->job_vs_runs,
+                                     struct m9_vs_const_run, 1);
+         if (!run) {
+            ctx->job_vs_values.size = before;
+            ctx->records.size = (size_t)records * record_floats * sizeof(float);
+            if (extra_count)
+               ctx->extra.size = (size_t)records * 4 * extra_count * sizeof(float);
+            return NULL;
+         }
+         if (vs_consts->size)
+            memcpy(values, vs_consts->data, vs_consts->size);
+         *run = (struct m9_vs_const_run) { .first = records };
+      }
+   }
    *first = records;
    return out;
 }
@@ -2986,6 +3088,18 @@ m9_job_commit(struct m9_context *ctx, float *out, float *extra,
       ctx->records.size = (size_t)first * floats * sizeof(float);
       ctx->extra.size = (size_t)first * extra_floats * sizeof(float);
       ctx->indices.size = (size_t)index_first * sizeof(uint16_t);
+      while (ctx->job_vs_runs.size) {
+         struct m9_vs_const_run *runs = ctx->job_vs_runs.data;
+         unsigned n = util_dynarray_num_elements(&ctx->job_vs_runs,
+                                                  struct m9_vs_const_run);
+         if (runs[n - 1].first < first)
+            break;
+         ctx->job_vs_runs.size -= sizeof(*runs);
+      }
+      ctx->job_vs_values.size =
+         util_dynarray_num_elements(&ctx->job_vs_runs,
+                                    struct m9_vs_const_run) *
+         ctx->job_vs_consts.size;
       m9_warn_once(ctx, M9_WARN_MEMORY, "out of memory for draw records");
       return;
    }
@@ -8655,6 +8769,8 @@ m9_context_destroy(struct pipe_context *pctx)
    util_dynarray_fini(&ctx->job_consts);
    util_dynarray_fini(&ctx->key_vs_consts);
    util_dynarray_fini(&ctx->job_vs_consts);
+   util_dynarray_fini(&ctx->job_vs_runs);
+   util_dynarray_fini(&ctx->job_vs_values);
    FREE(ctx);
 }
 
@@ -8692,6 +8808,7 @@ m9_context_create(struct pipe_screen *pscreen, void *priv, unsigned flags)
    m9_vs_max_const_pairs = debug_get_num_option("M9X_VS_MAX_CONST_PAIRS",
                                                 M9_VS_MAX_CONST_PAIRS);
    m9_vs_const_pad = debug_get_num_option("M9X_VS_CONST_PAD", 0);
+   m9_vs_uniform_batch = debug_get_bool_option("M9X_VS_UNIFORM_BATCH", false);
    m9_vs_specialise = debug_get_bool_option("M9X_VS_SPECIALISE", true);
    m9_native_vs_varyings = MIN2((unsigned)
       debug_get_num_option("M9X_VS_VARYINGS", M9_VS_FUSED_VARYINGS),
@@ -8760,6 +8877,8 @@ m9_context_create(struct pipe_screen *pscreen, void *priv, unsigned flags)
    util_dynarray_init(&ctx->key_consts, NULL);
    util_dynarray_init(&ctx->retired_fs_variants, NULL);
    util_dynarray_init(&ctx->job_consts, NULL);
+   util_dynarray_init(&ctx->job_vs_runs, NULL);
+   util_dynarray_init(&ctx->job_vs_values, NULL);
 
    m9_vs_texture_init(&ctx->base);
    ctx->base.destroy = m9_context_destroy;

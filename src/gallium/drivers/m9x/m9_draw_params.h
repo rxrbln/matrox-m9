@@ -89,6 +89,12 @@ enum m9_topology {
  * (CAPTURED 8d = system + 0x10) and may run up to the linked record. */
 #define M9_VS_CONST_OFFSET        0x10u
 #define M9_VS_CONST_MAX_PAIRS     ((M9_LINKED_OFFSET - M9_VS_CONST_OFFSET) / 8u)
+/* Additional preprocessing spans share the submission's system object, above
+ * every raster span (at most M9_FS_MAX_PASSES * 56 pairs from +0x1000).
+ * Their fixed slots include the viewport tail, not just shader uniforms. */
+#define M9_VS_RUN_CONST_OFFSET    0x10000u
+#define M9_VS_RUN_CONST_BYTES     ((8u * M9_VS_CONST_MAX_PAIRS + 255u) & ~255u)
+#define M9_VS_MAX_CONST_RUNS      (1u + (M9_SYSTEM_BYTES - M9_VS_RUN_CONST_OFFSET) / M9_VS_RUN_CONST_BYTES)
 /* Pairs the captured pass-through program's span holds. */
 #define M9_VS_CONST_PAIRS         22u
 /* Prefix dwords the tail reads as its viewport scale, depth scale, viewport

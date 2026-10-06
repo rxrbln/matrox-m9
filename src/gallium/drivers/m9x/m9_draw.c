@@ -776,6 +776,27 @@ m9_draw_job_valid(const struct m9_draw_job *job)
        (job->vs_const_pairs > M9_VS_CONST_MAX_PAIRS ||
         job->vs_const_pairs > 0x7f))
       return false;
+   if (job->vs_const_run_count) {
+      if (!job->vs_const_runs || !job->vs_decl_count ||
+          job->vs_const_run_count > M9_VS_MAX_CONST_RUNS ||
+          job->vs_extra_entry || job->pass_count > 1 ||
+          job->vs_const_runs[0].const_offset != M9_VS_CONST_OFFSET ||
+          job->vs_const_runs[0].const_pairs != job->vs_const_pairs)
+         return false;
+      uint32_t end = 0;
+      for (unsigned i = 0; i < job->vs_const_run_count; i++) {
+         const struct m9_vs_const_run *run = &job->vs_const_runs[i];
+         if (run->first != end || !run->count || run->count % 4 ||
+             run->count > job->source_vertices - end ||
+             run->const_offset % 8 || !run->const_pairs ||
+             run->const_pairs > M9_VS_CONST_MAX_PAIRS ||
+             run->const_offset > M9_SYSTEM_BYTES - 8 * run->const_pairs)
+            return false;
+         end += run->count;
+      }
+      if (end != job->source_vertices)
+         return false;
+   }
    /* The second preprocessing draw runs the same declaration and the same
     * source record, so it only stands with a native vertex program. */
    if (job->vs_extra_entry &&
@@ -1088,9 +1109,29 @@ m9_emit_preprocess(struct m9_batch *batch, const struct m9_draw_job *job,
    if (ret)
       goto fail;
    EMIT(V(0x19, 0), V(0x18, 0x7fffffff));
-   /* One covering preprocessing draw serves every raster draw. */
-   ret = m9_batch_emit_draw_numeric(batch, 0, job->source_vertices,
-                                    0x20000000);
+   /* Multiple four-aligned preprocessing draws are measured equivalent to
+    * one covering draw (m9-user-raster-state multi/multi-single-pre). The
+    * captured constant dirty group restates 8c/8d/8e/8f. Their combination
+    * keeps each matrix with the records it transforms, inside this range. */
+   if (job->vs_const_run_count) {
+      for (unsigned i = 0; i < job->vs_const_run_count; i++) {
+         const struct m9_vs_const_run *run = &job->vs_const_runs[i];
+         if (i) {
+            EMIT(V(0x8c, 0x00500000 | run->const_pairs << 8),
+                 R(0x8d, job->system, run->const_offset, SYSTEM),
+                 R(0x8e, job->system,
+                   run->const_offset + 8 * run->const_pairs, SYSTEM),
+                 V(0x8f, 0));
+         }
+         ret = m9_batch_emit_draw_numeric(batch, run->first, run->count,
+                                          0x20000000);
+         if (ret)
+            goto fail;
+      }
+   } else {
+      ret = m9_batch_emit_draw_numeric(batch, 0, job->source_vertices,
+                                       0x20000000);
+   }
    /* M9X_VS_EXTRA_BREAK=0 keeps both preprocessing draws inside one range.
     * The vendor separates its own preprocessing draws with an engine
     * transition the kernel refuses, so which barrier belongs between them

@@ -26,6 +26,13 @@ struct m9_draw_record {
    unsigned unit_count;
 };
 
+/* A four-aligned preprocessing run with its own constant binding. Runs
+ * partition the source in order; raster draws retain their original starts. */
+struct m9_vs_const_run {
+   uint32_t first, count;
+   uint32_t const_offset, const_pairs;
+};
+
 /* One value carried from a producing raster pass to a later one through a
  * per-fragment record in memory: the selector emitted at 0x74 + k and the
  * consumer descriptor emitted at 0x79 behind it.
@@ -129,6 +136,8 @@ struct m9_draw_job {
    unsigned vs_decl_count;    /* index-23 words, terminator included */
    uint32_t vs_record_bytes;
    unsigned vs_const_pairs;   /* 0 keeps the captured twenty-two */
+   const struct m9_vs_const_run *vs_const_runs;
+   unsigned vs_const_run_count;
    /* Transient view the fused pass's own fourth output target writes; zero
     * leaves that target unbound, because view 0 is always target 0's.  The
     * target is index 0xb6 and its register pair 0x1d/0x1f, which the

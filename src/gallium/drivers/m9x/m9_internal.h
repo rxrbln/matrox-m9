@@ -365,6 +365,7 @@ struct m9_job_state {
    struct m9_job_key key;
    struct util_dynarray records, indices, draws, extra;
    struct util_dynarray job_textures, job_consts, job_vs_consts;
+   struct util_dynarray job_vs_runs, job_vs_values;
    unsigned record_floats, job_unit_dwords;
 };
 
@@ -578,6 +579,8 @@ struct m9_context {
    struct util_dynarray retired_fs_variants;
    /* Preprocessing constant pairs, two floats each, in program order. */
    struct util_dynarray key_vs_consts, job_vs_consts;
+   /* One snapshot per changed native constant span, owned by this job. */
+   struct util_dynarray job_vs_runs, job_vs_values;
    /* Floats per source record of the pending job. */
    unsigned record_floats;
    /* References held for every texture the pending job binds, and the stream
