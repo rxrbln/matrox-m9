@@ -100,3 +100,35 @@ size/domain and initialized owner lifetime, followed by the operation's
 dispatch/retirement semantics. Replaying a guessed index24 address would
 not answer those questions. The emulator agent is executing the complete
 conditional emitter with recorded callback arguments separately.
+
+## Is vendor FAA reachable through normal options?
+
+The saved retail MSerX binaries contain a normal configuration-to-pixel-format
+path, beyond the debug strings and controlled emitters. This is static
+reachability evidence, not proof of an initialized M9128 completing FAA:
+
+* The MxMD configuration constructor reads `OGL\Multisample` with default0
+  at `0xb9f49`. The real `DrvEscape` query `0x80040610` handler `0xd4180`
+  returns that option at output `+0x20` (configuration wrapper `+0x2ec`,
+  virtual getter at `0xd429a`). The same response carries `3D\AAMode & 1`
+  at output `+4` via the actual getter `0x64760`. Default AAMode
+  `0x80000842` has that bit clear.
+* The ICD's actual pixel-format enumeration function `0x10043900` calls
+  configuration query `0x10048d10` at `0x1004393c`. The query combines the
+  two response values into global `0x108aa200` at `0x10048d78..0x10048d8e`.
+* The pixel-format builder requires color depth greater than24 at
+  `0x10043f18`. If that combined global is nonzero, `0x10043f32` marks
+  the pixel format multisampled at `pf+0x74`. The normal WGL attribute
+  getter reports eight samples for that format at `0x100470f6..0x10047100`.
+* The real MxMD AA allocator `0xac7e0` has direct call sites `0x51ef2`,
+  `0xa787d` and `0xb6a19`. Surface construction at the first site tests
+  a request flag `0x20000000` or retained multisample flag, positive sample
+  count `surface+0x270`, resource class2 at `[surface+0x23c]+4` and absent
+  existing AA storage before invoking the allocator.
+
+Therefore configuring both options and choosing a multisample 32-bit WGL
+pixel format is a real retail-code route to investigate. Merely setting
+`GL_MULTISAMPLE` on an ordinary single-sample pixel format is not that route.
+The registry root and an exposed PowerDesk UI control have not been verified
+in this round. No initialized normal-API allocation, enabled submission or
+native M9 antialiased image has yet been established by this static chain.
