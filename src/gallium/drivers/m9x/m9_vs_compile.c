@@ -26,11 +26,10 @@
  * ff-fog-exp vertex programs; the rest are the fragment unit's own measured
  * forms, which the shared encoding says the vertex unit takes too.
  *
- * Logarithm and power are still refused.  No captured vertex program
- * contains the log2 seed, and the fragment unit's own log2 chain cannot be
- * validated offline: its three polynomial slots write the first scalar and
- * read the chained operand's second, so each reads a scalar its predecessor
- * left unwritten.  Guessing it would compile silently wrong geometry.
+ * The vendor vertex frontend also emits the logarithm seed.  Its compact
+ * polynomial instructions remain undecoded, so logarithm uses ordinary
+ * multiply/add forms with the vendor coefficients instead (see
+ * tests/native-vs-logarithm.md for the evidence and validation boundary).
  */
 #include "m9_vs_compile.h"
 
@@ -898,6 +897,93 @@ emit_exp2(struct ctx *c, unsigned dst, const struct held *a)
    return true;
 }
 
+/* The stage-1 vendor frontend emits VS_LOG2_SEED, reading scalar 0 and
+ * splitting x = 2^exponent * (1 + fraction).  Rebuild its degree-seven
+ * polynomial with the ordinary GPU ALU: log2(x) = exponent + fraction *
+ * P(fraction).  No compact polynomial instruction or implicit carry is
+ * needed.  Both seed scalars stay live under distinct held identities.
+ * Reusing the product register bounds the scratch cost to four pairs. */
+static bool
+emit_log2(struct ctx *c, unsigned dst, const struct held *a)
+{
+   static const uint32_t poly[8] = {
+      0xbc188576, 0x3d553bd2, 0xbe0cd266, 0x3e77ab67,
+      0xbeb1d173, 0x3ef51608, 0xbf389e52, 0x3fb8aa10,
+   };
+   struct held input = held_temp(c), exponent = held_temp(c);
+   struct held fraction = held_temp(c), acc = held_temp(c);
+   struct held product = held_temp(c);
+   unsigned ra, sa;
+   int rp, rs, rh, rm;
+
+   if (!operand(c, a, a, false, &ra, &sa))
+      return false;
+   rp = reg_alloc_pinned(c, &input);
+   rs = reg_alloc_pinned(c, &exponent);
+   rh = reg_alloc_pinned(c, &acc);
+   rm = reg_alloc_pinned(c, &product);
+   if (rp < 0 || rs < 0 || rh < 0 || rm < 0)
+      return fail(c, "out of temporaries");
+   emit_move(c, rp, 0x1d, ra, sa);
+   emit(c, w0_make(rp, NONE, NONE, rs, 0, 0x1c),
+        w1_make(VS_LOG2_SEED, 0, rp));
+   hold_def(c, rs, 1, &fraction);
+   {
+      const struct held k0 = held_lit(uif(poly[0]));
+      const struct held k1 = held_lit(uif(poly[1]));
+
+      if (!emit_mad(c, rh, &fraction, &fraction, &k0, &k0, &k1, &k1))
+         return false;
+   }
+   for (unsigned i = 2; i < ARRAY_SIZE(poly); i++) {
+      const struct held k = held_lit(uif(poly[i]));
+
+      if (!emit_mul(c, rm, &fraction, &fraction, &acc, &acc) ||
+          !emit_add(c, rh, &product, &product, &k, &k, false))
+         return false;
+   }
+   if (!emit_mul(c, rm, &fraction, &fraction, &acc, &acc) ||
+       !emit_add(c, dst, &product, &product, &exponent, &exponent, false))
+      return false;
+   /* These scratch pairs have no users after this scalar chain.  Release
+    * them before another component of the same NIR instruction runs. */
+   const unsigned scratch[] = { (unsigned)rp, (unsigned)rs,
+                                (unsigned)rh, (unsigned)rm };
+   for (unsigned i = 0; i < ARRAY_SIZE(scratch); i++) {
+      memset(c->holds[scratch[i]], 0, sizeof(c->holds[scratch[i]]));
+      c->busy[scratch[i]] = 0;
+   }
+   return true;
+}
+
+/* A zero base with a positive exponent has a defined zero result.  Select
+ * it on the GPU after the ordinary log/multiply/exp chain, so it does not
+ * depend on either special seed's undocumented behavior at zero/infinity.
+ * Other nonpositive-base cases are outside pow's defined GLSL domain. */
+static bool
+emit_pow(struct ctx *c, unsigned dst, const struct held *a,
+         const struct held *b)
+{
+   struct held logarithm = held_temp(c), product = held_temp(c);
+   struct held result = held_temp(c), condition = held_temp(c);
+   const struct held zero = held_lit(0.0f);
+   const struct held *sel[3][2] = {
+      { &condition, &condition }, { &zero, &zero }, { &result, &result },
+   };
+   int rl = reg_alloc_pinned(c, &logarithm);
+   int rm = reg_alloc_pinned(c, &product);
+   int rr = reg_alloc_pinned(c, &result);
+   int rc = reg_alloc_pinned(c, &condition);
+
+   if (rl < 0 || rm < 0 || rr < 0 || rc < 0)
+      return fail(c, "out of temporaries");
+   return emit_log2(c, rl, a) &&
+          emit_mul(c, rm, &logarithm, &logarithm, b, b) &&
+          emit_exp2(c, rr, &product) &&
+          emit_cmp(c, rc, 4, a, a, &zero, &zero) &&
+          emit_sel(c, dst, 5, sel);
+}
+
 /* sine and cosine: no instruction computes either.  The vendor's own
  * fragment program fs-sin reduces the argument modulo 2*pi with a fract and
  * evaluates a degree-four minimax polynomial in x*x, and the coefficients it
@@ -1503,29 +1589,54 @@ build_alu(struct ctx *c, nir_alu_instr *alu)
             return false;
          break;
       }
+      case nir_op_flog2:
       case nir_op_fexp2: {
          struct held h0 = held_temp(c), h1;
          int r0, r1;
+         bool (*chain)(struct ctx *, unsigned, const struct held *) =
+            alu->op == nir_op_flog2 ? emit_log2 : emit_exp2;
 
          a0 = src_held(alu, 0, c0); a1 = src_held(alu, 0, c1);
          /* The chain writes both scalars with one result, so a lane whose
           * two components differ runs it twice and gathers the pair. */
          if (held_same(&a0, &a1)) {
-            if (!emit_exp2(c, dst, &a0))
+            if (!chain(c, dst, &a0))
                return false;
             break;
          }
          r0 = reg_alloc_pinned(c, &h0);
          if (r0 < 0)
             return fail(c, "out of temporaries");
-         if (!emit_exp2(c, r0, &a0))
+         if (!chain(c, r0, &a0))
             return false;
          h1 = held_temp(c);
          r1 = reg_alloc_pinned(c, &h1);
          if (r1 < 0)
             return fail(c, "out of temporaries");
-         if (!emit_exp2(c, r1, &a1) ||
+         if (!chain(c, r1, &a1) ||
              !emit_unary(c, dst, VS_MOV, 0, &h0, &h1, true))
+            return false;
+         break;
+      }
+      case nir_op_fpow: {
+         struct held h0 = held_temp(c), h1;
+         int r0, r1;
+
+         a0 = src_held(alu, 0, c0); a1 = src_held(alu, 0, c1);
+         b0 = src_held(alu, 1, c0); b1 = src_held(alu, 1, c1);
+         if (held_same(&a0, &a1) && held_same(&b0, &b1)) {
+            if (!emit_pow(c, dst, &a0, &b0))
+               return false;
+            break;
+         }
+         r0 = reg_alloc_pinned(c, &h0);
+         if (r0 < 0 || !emit_pow(c, r0, &a0, &b0))
+            return fail(c, "out of temporaries");
+         h1 = held_temp(c);
+         r1 = reg_alloc_pinned(c, &h1);
+         if (r1 < 0 || !emit_pow(c, r1, &a1, &b1))
+            return fail(c, "out of temporaries");
+         if (!emit_unary(c, dst, VS_MOV, 0, &h0, &h1, true))
             return false;
          break;
       }

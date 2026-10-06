@@ -173,6 +173,9 @@ extern const struct nir_shader_compiler_options m9_vs_nir_options;
 #define VS_EXP2_POLY 0x982082d0u  /* first coefficient pair in the c field */
 #define VS_EXP2_STEP 0xa2600cf0u  /* coefficient pair in e, writes scalar 1 */
 #define VS_EXP2_SCALE 0xac2fc0c0u
+/* Recovered through the vendor's vertex frontend and actual packer;
+ * reads a.scalar0, writes exponent/fraction. */
+#define VS_LOG2_SEED 0x96852ec0u
 
 enum m9_vs_const_kind {
    M9_VS_CONST_LITERAL,
