@@ -1,7 +1,7 @@
 /* SPDX-License-Identifier: MIT */
 /* Copyright 2026 René Rebe <rene@exactco.de> */
 /*
- * Specialising a shader on the uniform values a draw is submitted with:
+ * Uniform specialization and bounded arithmetic if-conversion:
  * the passes both native backends share.
  */
 #include "m9_specialise.h"
@@ -11,6 +11,30 @@
 #include "nir.h"
 #include "nir_builder.h"
 #include "compiler/shader_info.h"
+
+void
+m9_nir_lower_alu_if(nir_shader *nir)
+{
+   bool progress;
+
+   /* Native CMP/SEL already implement varying-dependent ternaries.  Use
+    * the same forms for larger arithmetic if/else arms rather than require
+    * a uniform condition or a hardware branch.  A finite limit preserves
+    * NIR's speculation checks: unlike limit=~0 it rejects texture fetches,
+    * discards, stores and guarded indirect loads.  The native slot/register
+    * limits still apply to the resulting straight-line program. */
+   do {
+      progress = false;
+      NIR_PASS(progress, nir, nir_opt_peephole_select,
+               &(nir_opt_peephole_select_options){ .limit = 64 });
+      if (!progress)
+         break;
+      NIR_PASS(progress, nir, nir_opt_remove_phis);
+      NIR_PASS(progress, nir, nir_opt_copy_prop);
+      NIR_PASS(progress, nir, nir_opt_cse);
+      NIR_PASS(progress, nir, nir_opt_dce);
+   } while (progress);
+}
 
 /* Uniforms are lowered to load_ubo_vec4, which nir_find_inlinable_uniforms
  * does not track: collect the constant buffer dwords an if condition reads. */

@@ -35,6 +35,7 @@
 #include "m9_vs_compile.h"
 
 #include "m9_passthrough.h"
+#include "m9_specialise.h"
 
 #define NONE       0x7fu
 #define STOP_W0    0xffff801cu
@@ -2234,6 +2235,8 @@ m9_vs_compile(struct nir_shader *nir, const struct m9_vs_outputs *outputs,
    util_dynarray_init(&c.keys, NULL);
    c.nir = nir;
    c.p = p;
+   if (nir->info.stage == MESA_SHADER_VERTEX)
+      m9_nir_lower_alu_if(nir);
    impl = nir->info.stage == MESA_SHADER_VERTEX ?
           nir_shader_get_entrypoint(nir) : NULL;
    ok = impl ? compile_impl(&c, impl, outputs) :

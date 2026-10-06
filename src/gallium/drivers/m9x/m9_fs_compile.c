@@ -17,6 +17,7 @@
 #include "m9_fs_compile.h"
 
 #include "m9_draw_params.h"
+#include "m9_specialise.h"
 
 #include "pipe/p_defines.h"
 
@@ -5711,6 +5712,8 @@ static void
 fs_prepare(nir_shader *nir)
 {
    bool lowered = false;
+
+   m9_nir_lower_alu_if(nir);
 
    /* st lowers uniforms to UBO loads after its last folding pass, so a
     * constant slot index arrives as an iadd of two constants; without this
