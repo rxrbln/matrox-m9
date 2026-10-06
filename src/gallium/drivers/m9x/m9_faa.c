@@ -23,6 +23,7 @@ m9_faa_init(struct m9_faa *faa, uint16_t device_id)
    if (faa->chip == M9_FAA_CHIP_NONE)
       return;
    faa->enable = debug_get_bool_option("M9X_FAA", false);
+   faa->prepare = debug_get_bool_option("M9X_FAA_PREPARE", false);
    faa->raster = debug_get_bool_option("M9X_FAA_RASTER", false);
    faa->coverage = (float)debug_get_num_option("M9X_FAA_COVERAGE", 256) /
                    256.0f;

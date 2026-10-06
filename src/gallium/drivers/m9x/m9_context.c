@@ -8627,6 +8627,18 @@ m9_update_target(struct m9_context *ctx)
    ctx->color_format[0] = color->format;
    if (!m9_update_color_extra(ctx, w, h))
       return;
+   if (ctx->screen->faa.prepare && !ctx->color_discard &&
+       ctx->color_count == 1) {
+      struct m9_resource *depth = ctx->framebuffer.zsbuf.texture ?
+         m9_res(ctx->framebuffer.zsbuf.texture) : NULL;
+
+      if (m9_faa_surface_prepare(ctx->screen, color, depth,
+                                 ctx->color_offset, w, h, &ctx->faa_surface))
+         m9_warn_once(ctx, M9_WARN_MEMORY,
+                      "FAA surface preparation failed; ordinary target retained");
+   } else if (!ctx->faa_surface.graph.initialized) {
+      m9_faa_surface_destroy(ctx->screen, &ctx->faa_surface);
+   }
    ctx->params_valid = true;
    m9_prof_end(M9_PROF_TARGET, t_target);
 }
@@ -8887,6 +8899,7 @@ m9_context_destroy(struct pipe_context *pctx)
       pipe_sampler_view_reference(&ctx->fs_views[i], NULL);
    pipe_resource_reference(&ctx->proxy.tex, NULL);
    pipe_resource_reference(&ctx->proxy.scratch, NULL);
+   m9_faa_surface_destroy(ctx->screen, &ctx->faa_surface);
    m9_context_state_cleanup(ctx);
    m9_batch_fini(&ctx->batch);
    m9_command_bo_destroy(screen, &ctx->command);

@@ -28,6 +28,9 @@ enum m9_faa_chip {
 struct m9_faa {
    enum m9_faa_chip chip;
    bool enable;
+   /* Allocate context-owned candidate surfaces only. This does not enable
+    * command emission, shader variants, resolve, or multisample caps. */
+   bool prepare;
    /* Emit the pair in the raster range as well as the preprocessing one.
     * The captured vendor stream carries it in preprocessing only; a sticky
     * register makes that sufficient, which is what M9X_FAA_RASTER tests. */

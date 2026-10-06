@@ -123,6 +123,20 @@ struct m9_faa_graph {
    bool initialized;
 };
 
+/* A context's prepared sampled target and the attachments it stands for.
+ * The ordinary destination retains its own layout and level offset. No
+ * prepared owner is an executable draw/resolve route until initialization,
+ * pool ownership and matching compiled shader variants are established. */
+struct m9_faa_surface {
+   struct m9_faa_primary_layout primary_layout;
+   struct m9_resource primary;
+   struct m9_faa_graph graph;
+   struct pipe_resource *destination, *depth;
+   uint64_t destination_offset;
+   uint32_t width, height;
+   uint8_t format;
+};
+
 /* What the engine's back-end object last carried.  It keeps per-target state
  * there, and a job that finds another shape's state stops the engine, so the
  * object is cleared when this changes rather than ahead of every job. */
@@ -477,6 +491,7 @@ struct m9_context {
    uint64_t last_point;
    uint64_t dirty;
    struct pipe_resource *color;
+   struct m9_faa_surface faa_surface;
    /* Byte offset of the bound colour level inside that object; a mip level
     * above zero is a render surface of its own at its chain offset. */
    uint64_t color_offset;
