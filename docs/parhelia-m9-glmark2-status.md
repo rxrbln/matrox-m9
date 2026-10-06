@@ -1,6 +1,6 @@
 # glmark2 on the m9x driver: where the 60 fps goal actually stands
 
-## Current implementation gaps, checked against Mesa05c7c29
+## Current implementation gaps, checked against Mesa1802132
 
 The older chronological entries below are not a current missing-op list.
 Vertex log2/exp2/pow and bounded arithmetic branching are implemented; they
@@ -20,15 +20,40 @@ need broader application qualification, not a second implementation.
 * Fragment varying texture bias and complete explicit LOD/gradient resource
   routing remain open, as do broader multipass and discard/depth/blending
   combinations. These include extension paths beyond baseline GLSL1.10.
-* Vertex `fsign`, needed by `texture:texgen=true`, is under implementation
-  in the GL2 agent branch. The installed shader now compiles there; independent
-  references, integration and hardware qualification are still pending.
+* Vertex `fsign`, needed by `texture:texgen=true`, is implemented in1802132.
+  Canonical build,86vertex references/five refusals and independent texgen
+  math checks pass. The first physical native run has zero CPU user transforms
+  but a visibly corrupted image; ordinary vertex/coordinate transport is now
+  under investigation. This scene is not qualified.
 
 The actual compiler/finalizer-to-mask consumer join now passes under bounded
 no-vertex-texture policy (REd0102161); full live EE19 resource/view binding
 and broad default-cap promotion remain distinct open work. Existing complex
 bump rendering and its417FPS clean result do not qualify terrain, all Quake3
 GL2 lighting variants, or the complete glmark2 suite.
+
+## 2026-10-07: vertex sign integrated; native texgen image still fails
+
+Canonical1802132 lowers sign with the existing vendor compare/MAD/select
+forms. All86host vertex references and five required refusals pass. Three
+sign fixtures each test512independent inputs exactly; the complete installed
+texgen shader passes512double matrix/normalize/libm-asin references with
+maximum error1.58e-5. It uses137slots/48constant pairs/two attributes/one
+packed varying, without raising limits.
+
+One physical1024x768/windowed/one-head/FAAoff/vsync0 run on normal73,
+boot4636e49f, uses defaultRECORD1/VARYINGS2 andQUEUE1. All2837application
+draws use GPU transforms; final9b0e0/raw9b0e1 retires with an empty healthy
+queue immediately and2seconds later. The actual screenshot shows distorted,
+dark geometry with horizontal bands. The image is FAIL, so the reported
+946FPS is not a valid rendering benchmark. Root retains the sign improvement;
+the new observation does not identify sign arithmetic as the cause.
+
+The full native-input/packed-record observer currently requires the wider
+producer/gather route and does not capture this ordinary native path. The
+linked diffuse/U/V component routing and actual ordinary output are the next
+diagnostic scope. No full independent application pixel reference is claimed.
+[Exact failed-image evidence](../tests/m9-gl2-texgen-hardware-20261007/README.md).
 
 ## 2026-10-07: complex bump clip coordinates pass; clean run reaches 417 FPS
 
