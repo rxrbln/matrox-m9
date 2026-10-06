@@ -2079,3 +2079,72 @@ source PTE and initializer against sparse CPU-write validity. It neither
 remaps a resource after posted work nor supplies a device status reply.
 `check-page-alias.py` reproduces the proof; output is
 `captures/m9128-device-inputs-20261006/sentinel-page-alias.json`.
+
+
+### Normal FAA pool preparation, ownership and retirement boundary (2026-10-06)
+
+The current proof uses the normal surface-owned frame, not the earlier direct
+FAA binding fixture. Genuine `a77c0` activation, actual resource association,
+normal per-head target owner `20810` and public DP2 target state produce the
+scratch quad, coherent FAA triangle and `abc20` output/resolve. The target owner
+uses the retained M9128 DC snapshot. No GPU completion or successful retirement
+reply is provided. The passive observer is `tools/m9emu/m9_pool_lifecycle.py`;
+`check-pool-lifecycle.py` checks allocation, exact producer order, packet words,
+owned completion post and known sentinel bytes.
+
+The actual context constructor calls allocator `76540(bytes=500,pool=6)` at
+`11c0af..11c0c5`, and its return observed at `11c0c0` is the real cached resource.
+Requested shape is 320 DWORDs by one row, profile class5, hardware format78;
+the actual allocated extent is580 bytes. The owning wrapper has refcount2
+after creation and still2 at the final retirement-read boundary. `109310`
+publishes this interface into the CPU shadow and marks dirty8; neither that
+publication nor the observed factory performs a CPU pool memset. Unspecified
+pool contents remain unknown, and lifetime cannot end at a CPU callback return.
+
+The FAA triangle's `fb920` changed-pointer block is a counted secondary image:
+`[1,45454524,pool|1,3,45e6e6e6,6dc00000,1,1,2,4545bdbc,main|1,aux|1]`.
+The distinct pool preparation emitter is genuine stream virtual slot98,
+`24f20`, reached during resolve by `fc8f0 -> fc99b`. In this normal trace the
+queue is depth0/kind0, so its actual image is RAW, 19 DWORDs /76 bytes:
+
+```
+45454524 pool|1
+453ce6e6 6dc00000 42000000 000000a1
+44444444 30081898 30081898 30081898 30081898
+44444444 30081898 30081898 30081898 30081898
+45452f2e (pool+284)|1 (pool+2c4)|1
+```
+
+Both referenced offsets fit the actual580-byte resource. Resolve subsequently
+emits the raw nine-DWORD index24/E6 `[6dc00000,1,1]`/BCBD rebind. Thus the
+`453ce6e6` preparation packet and `45e6e6e6` rebind are different actual producer
+contracts. This ordering proves CPU command production; it does not establish
+what bytes the device writes to pool6 or justify inventing a blanket zero fill.
+`shadow_14` in the observer is the raw value at the emitter's supplied shadow,
+not an assumed FAA mode field in every shadow class.
+
+The normal sentinel retains its genuine CPU-map owner. The read-only alias
+helper now derives the map from raw resource `+1f8`, mapper `+1b4` descriptor
+`+1c`, and mapper `+1e0`, rather than requiring the old fixture's saved map
+field. Sparse CPU-write validity and the actual alias PTE prove exactly20 bytes
+`[a4a3a1a1,28041968,0,0,0]`; the remaining108 bytes stay unknown. The second word
+is a literal vendor immediate: `MxMD!acae1`, bytes `c7400468190428`, instruction
+`mov dword ptr [eax+4],28041968`. It is neither a guest pointer nor a host input.
+
+Genuine final queue callee `23b80` emits completion words
+`[4545e3e6,1,151]`, then posts physical end `0100262c` through MMIO404. The
+trace stops at actual `23bc3`, instruction `8b09`, BEFORE loading the GPU-written
+counter. Desired counter is150, live common-buffer size159 bytes. Retirement
+does not return, and subsequent resource releases do not execute. These values
+are this captured frame's values; the checker derives address/counter relations
+from their actual owners instead of treating them as permanent constants.
+
+Retained compact proof:
+`captures/m9128-device-inputs-20261006/normal-faa-pool-retirement.json`.
+Validate it without replay using `check-pool-lifecycle.py --proof <capture>`.
+Replay requires explicit `--runtime-tools`, `--target-tools`, actual
+`--pci-inventory`, `--pci-resources` and `--dc-snapshot`; the helper always selects
+`normal_surface=True`. Runtime dependencies are native `0050ee32` (normal FAA
+frame and all its ancestors), target-owner `eae6be4d` (and its ancestors), and
+the existing genuine allocator/queue/retirement helpers. No physical target
+operation is performed by this proof.
