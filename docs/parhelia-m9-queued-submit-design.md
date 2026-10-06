@@ -172,3 +172,47 @@ candidate and its proof if FPS is equal; default enablement awaits native
 ownership evidence. Fullscreen page flipping is separate: root observed actual
 M9 DC_START changes with PageFlip=true, but DP enable reported sending-nothing
 `-67`, so physical fullscreen presentation is not closed by that register proof.
+
+### Queue review correction: immutable shader images
+
+Root review found `m9_native_vs_c2` reusing and CPU-rewriting a sufficiently
+large fragment-owner image when the vertex shader serial changes. A queued
+reader can still use those bytes. There is also an unsubmitted-owner hazard:
+this helper runs before `m9_native_vs_append`/job reservation flushes a changed
+key, so merely destroying/replacing its cached handle can invalidate a prior
+recorded draw.
+
+The queue-only correction retains immutable native C2 images keyed by VS
+serial in the FS variant (or the context for the fixed captured fragment
+fallback). Each new serial builds a fresh owned BO; A/B/A finds the original A
+handle without rewriting or reallocating it. The cache survives earlier
+recorded and posted jobs and is released with its existing owner. Kernel
+per-job refs/pins retain any submitted images beyond userspace owner release.
+Legacy sufficient-size image reuse is unchanged. Cold BO creation still goes
+through the kernel's conservative allocation drain; this correction adds no
+explicit CPU completion wait and warm shader switches reuse the immutable
+images. Images cost one BO per compiled VS serial for that owner.
+
+The adjacent CPU shader/image audit found fragment C2 upload allocates a fresh
+BO for each new FS variant, while fixed program/database uploads occur only in
+new context resources. Arena/constants uploads use retirement-owned sets;
+BE clears and query reuse use explicit queue waits. Texture/depth window
+writes retain kernel drain; direct synchronized CPU maps/clears wait. FAA is
+still excluded. The native C2 sufficient-size rewrite was the additional
+shared program upload that needed a separate owner.
+
+`tools/m9-queue-program-check.py <mesa>` extracts the actual image helper:
+**14 ASAN/UBSAN checks PASS**, including distinct A/B images, unchanged earlier
+bytes and handles, A/B/A cache reuse, FS/context owners, allocation/compiler/
+cache-growth failure cleanup and legacy reuse. Controlled image generation is
+not a native ISA or hardware proof. Full batch suite/context build still PASS.
+
+`vsqueueprog` and `vsqueueprogd` use two genuine ARB vertex programs (A full
+color, B half RGB) and one unchanged fixed-function MODULATE textured fragment
+state, rather than two linked GLSL programs that might own separate fragment
+variants. They alternate over 49 flushed matrix-positioned draws, finish with
+A on the first tile using changed source colors, and GLFinish before readback.
+Both independent llvmpipe pixel references PASS **0/76800**. Native proof must
+also confirm actual GPU transforms and the debug `queued C2 owner` lines show
+multiple serials in the same owner cache; a CPU fallback pixel pass alone
+cannot close this hazard. No native queue or shader-switch success is claimed.
