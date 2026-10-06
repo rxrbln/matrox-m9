@@ -6156,6 +6156,23 @@ m9_native_vs_dump_reason(struct m9_context *ctx, const char *reason)
    if (!f)
       return false;
    fprintf(f, "reason: %s\nvertex elements:\n", reason);
+   if (ctx->rasterizer) {
+      const struct pipe_rasterizer_state *r = ctx->rasterizer;
+      /* Only in the bounded fallback dump: name every native admission
+       * flag, so a rare aggregated rasterizer refusal has an actual cause. */
+      fprintf(f, "rasterizer: discard=%u clip_planes=%#x halfz=%u "
+              "depth_clip_near=%u depth_clip_far=%u "
+              "offset_tri=%u offset_line=%u offset_point=%u "
+              "poly_stipple=%u fill_front=%u fill_back=%u "
+              "offset_units=%.9g offset_scale=%.9g offset_clamp=%.9g "
+              "offset_units_unscaled=%u\n",
+              r->rasterizer_discard, r->clip_plane_enable, r->clip_halfz,
+              r->depth_clip_near, r->depth_clip_far,
+              r->offset_tri, r->offset_line, r->offset_point,
+              r->poly_stipple_enable, r->fill_front, r->fill_back,
+              r->offset_units, r->offset_scale, r->offset_clamp,
+              r->offset_units_unscaled);
+   }
    for (unsigned i = 0; ctx->velems && i < ctx->velems->count; i++) {
       const struct pipe_vertex_element *e = &ctx->velems->elements[i];
 
