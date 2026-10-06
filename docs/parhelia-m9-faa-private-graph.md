@@ -42,6 +42,47 @@ would not prove the vendor publisher.
 
 ## Actual triangle overwrites in the retained frame
 
+### Genuine handle publisher for public render-target binding
+
+The public context constructor subsequently reads `primary+268` (the resource
+wrapper), then wrapper `+bc` (its registered handle) at `755aa..755b3`. A plain
+`a3870` allocation leaves that handle zero. The constructor therefore cannot
+find the actual render target in its DirectDraw-local registry even after
+`a77c0` successfully publishes a surface-owned FAA graph.
+
+The real public association callback is `bf0e0`, advertised at D3D owner
+`+cc`. It checks PDEV `+30` at `bf18f` before invoking the handle publisher.
+Current retained allocator/queue/frontend owners leave this Boolean zero; an
+actual callback call correctly returns `8007000e`. The genuine `2f750`
+publisher writes it to one at `2f80e` only after all 17 module initializers
+from table `1f2480` have returned successfully. No PDEV flag is patched to
+bypass this remaining full startup admission boundary.
+
+A bounded real producer is sufficient to investigate subsequent CPU binding:
+`7a770` takes the actual already-allocated primary in EAX and the real
+DirectDraw-local registry as its single stack argument. The real `beb40` and
+`c04a0` create and recover that registry using the explicit OS caller's
+DirectDraw-local key. `7a770` invokes `a3710`, which constructs the wrapper;
+`a4010 -> a9ab0` joins wrapper `+c0` to the actual resource and resource `+268`
+to the wrapper. `885e0` publishes the wrapper in the registry and returns the
+handle which `7a7d7` writes to wrapper `+bc`. None of these driver outputs is
+assigned by the host.
+
+`tools/faaemu/m9_surface_associate.py` and
+`tools/m9-vendor-surface-associate.py` execute this bounded producer and verify
+the actual returned wrapper, nonzero handle and table lookup. The retained
+receipt reports `public_callback_executed=false`, actual OS version `700`,
+handle one and the observed publisher PCs. The OS pointer structures and
+surface MORE handle are explicit CPU caller inputs. The public-callback mode
+is separate and requires its genuine full startup prerequisite.
+
+The returned DirectDraw-local key and surface local/global objects must be
+reused by public context creation; creating new caller objects silently
+selects a different registry. This proof closes the handle publisher, not
+the FAA triangle's final graph association, GPU rendering or completion.
+
+### Detached-frame negative baseline
+
 The frame's binding selects the genuine graph companion and its HZ. Its
 triangle then writes different bindings before the operation:
 
