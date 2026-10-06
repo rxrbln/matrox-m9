@@ -3,46 +3,57 @@
 
 # M9 open topics and evidence, 2026-10-06
 
-## Latest checkpoint: three active tracks and corrected GL2 rendering
+## Latest checkpoint: FAA, GL2 operations and performance tracks
 
-The user requested three background tracks: FAA command/output flow,
-GL2 operations, and performance. Render owns FAA (including the completed
-SYSTEM output admission handoff), GL2 owns packed-record bounds and missing
-operations, and the former inputs investigator now owns performance. Root
-alone integrates and runs serialized hardware tests using the established
-locks. Keep source-proven improvements even when a short benchmark is flat.
+Three background agents own FAA command/output flow, GL2 operations and
+performance. Root integrates signed commits and runs serialized hardware
+under the established locks. Preserve source-proven optimizations even when
+one short benchmark is flat.
 
-Mesa c7b8a6e corrects native packed publication. Both complete1024x768
-textured/depth palettes now match786432pixels each,4608vertices, six GPU
-user draws and zero user CPU fallback, with healthy retirement. Strict CPU
-record decoding and unusual batch-size bounds are now implemented with full
-retained-owner checks. A fresh integrated307ff0a/4f2012e hardware test exits0,
-passes all221184actual record components and both independent786432pixel
-palettes, with healthy retirement. See
-[strict record/pixel proof](../tests/m9-gl2-record-complete-hardware-20261006/README.md).
-This is the measured six-field fixture scope; default varyingcap2 is
-unchanged. Actual glmark2 buffer wireframe now also
-completes with34native draws/0module/0skipped, noGPUtimeout and an empty
-queue. Its single1024x768/vblank0/FAAoff run reports about34FPS; screenshot
-and independent wireframe image fidelity are still unqualified. Bump-height
-now retires170GPU user draws with healthy completion, but the actual captured
-image shows stretched triangles. Its85FPS printout is invalid as a rendering
-benchmark. Indexed packed-workload diagnosis, radial multipass and optional
-Q3 lighting remain open. See
-[bump image failure](../tests/m9-gl2-bump-packed-hardware-20261006/README.md).
-Latest basic Q3GL2 checkpoint remains38.9FPS; the historical GL1 numbers
-below describe a different renderer/profile. See
-[wireframe evidence](../tests/m9-gl2-wireframe-packed-hardware-20261006/README.md)
-and [current GL2 status](parhelia-m9-glmark2-status.md).
+The complete strict1024x768 six-field fixture passes all221184record
+components and both786432pixel palettes, with six GPU user draws/zero user
+CPU fallback and healthy retirement. Defaultvaryingcap2 remains unchanged.
+[Strict record and pixel proof](../tests/m9-gl2-record-complete-hardware-20261006/README.md).
 
-FAA genuine red public shader constants cause a different actual main-store
-result from green, but final output remains allzero/black. This is not working
-FAA. Complete source/address/lifetime audits have not yet found the final
-output defect; resolve/store translation remains open. Kernelc70c607 contains
-the isolated red diagnostic, while healthy normal target boot3cd3b20a still
-uses observer73c2a45 with user submissions enabled and private FAA disabled.
-See [current FAA evidence](parhelia-m9-faa-native-current.md) and
-[SYSTEM output admission](parhelia-m9-faa-output-system-admission.md).
+Actual glmark2 wireframe also retires correctly. A queued map-update run
+with integrated CPU-only map optimization4f2012e produces a visible wave
+mesh,20native draws/zero CPU fallback, queuepeak1 and no wedge. Its one-second
+20FPS run includes screenshot readback and startup; it is not controlled A/B
+to the earlier34FPS QUEUE0 run.
+[Queued-map hardware evidence](../tests/m9-cpu-buffer-queue-hardware-20261006/README.md).
+Observed-completion cache071517c removes redundant successful covered waits;
+concurrent/error/unreached/wrap/lifetime controls pass. No FPS gain is claimed.
+The opt-in matched Xorg/modesetting/glamor Present observer is built and
+host-verified; one fullscreen hardware route observation remains pending.
+[Present observer](parhelia-m9-present-cost-observer.md).
+
+Bump-height remains an image failure, despite healthy retirement; its85FPS
+printout is invalid as a rendering benchmark. A new complete two-frame
+capture retains264vertices/1440valid indices/all constants and retired
+records. Actual X/Y positions match, while128Z/W pairs are corrupt in
+specific ranges. Packed partial publication and record storage are under
+investigation; no cause is yet proved. Indexed app qualification, radial
+multipass and optional Q3 lighting remain open. Latest valid basic Q3GL2
+checkpoint remains38.9FPS1024x768/FAAoff/vsync0.
+[Bump image failure](../tests/m9-gl2-bump-packed-hardware-20261006/README.md)
+and [GL2 status](parhelia-m9-glmark2-status.md).
+
+FAA public red constants change actual main-store contents, but final output
+remains black. This is not working FAA. A genuine ordinary SYSTEM red control
+now has a complete source plan and exclusive kernelprofilea6c0b5e:23live
+owners,30addressfields,16timelines, noFAAactivation/resolve/companionclear.
+Actual encoder placement/alignment and absent-clear controls pass; root is
+preparing its fresh-boot hardware discriminator. No output pixels are copied
+from a capture. [Ordinary SYSTEM control](parhelia-m9-ordinary-system-constant-red.md),
+[current FAA evidence](parhelia-m9-faa-native-current.md) and
+[SYSTEM admission](parhelia-m9-faa-output-system-admission.md).
+
+Healthy normal target boot3cd3b20a uses observer73c2a45/user submissions
+on/privateFAAoff. Current Mesa883280f includes CPU-only maps, completion
+cache, retained bounds and full input capture; actual two-frame bump run
+retires17140/raw17141, queueempty/peak1/wedged0 immediately and2s later.
+Private control tests require fresh boot and evidence archiving before
+mandatory recovery. Root owns all target runs.
 
 The older ledger below retains its dated measurements and source checkpoints;
 use this checkpoint and linked topic notes for the current work queue.

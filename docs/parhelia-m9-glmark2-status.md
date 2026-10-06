@@ -1,5 +1,24 @@
 # glmark2 on the m9x driver: where the 60 fps goal actually stands
 
+## 2026-10-07: actual bump inputs narrow the position corruption
+
+Current Mesa883280f/DSOb29 retains complete source vertices, indices,
+constant runs and exact retired-record metadata from two actual bump frames.
+All264clipX/Y values match;128clipZ/W pairs fail in ranges40..135 and232..263.
+All1440logical indices are in range. Partial scalar packed publication versus
+vendor output-store semantics is under investigation; the responsible layer
+is not yet proved. Final17140/raw17141 retires with queueempty/peak1/wedged0
+immediately and2s later, noGPUtimeout. Diagnostic43FPS is not a benchmark.
+The previous captured bump image remains visibly incorrect.
+
+A separate queued map-update wireframe run has20native draws/zero CPU,
+healthy retirement and a visible structured wave mesh. Its20FPS includes
+readback/startup during the one-second run and cannot be compared directly
+to34FPS QUEUE0. CPU-only map optimization4f2012e is retained. Completion
+cache071517c host concurrency/error/lifetime tests pass; no measured FPS gain
+is claimed. Default varyingcap2 remains.
+[Queued-map proof](../tests/m9-cpu-buffer-queue-hardware-20261006/README.md).
+
 ## 2026-10-06: complete strict packed records and textured/depth pixels pass
 
 Integrated Mesa307ff0a/4f2012e, rootDSObca674ce, now passes a fresh full
