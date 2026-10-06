@@ -101,3 +101,20 @@ texture-times-interpolated-color reference. The new fixture host build passes;
 GPU coverage and a projector guard change remain pending producer proof and
 native readback. A shader or four-component source with genuinely varying q
 must retain the guard.
+
+### Two-coordinate client-array companion proof
+
+`m9-mesa-glsl ffarray2` extends the fixed-function array case to two MODULATE
+texture units, separate two-component TC0 and mirrored TC1 arrays, and color.
+Its independent full-frame reference is texture(TC0) * texture(TC1) * color.
+The mirrored array exposes accidentally duplicated XY or incorrectly selected
+ZW even when both units bind the same traceable image. This reproduces the
+captured Quake3 diffuse/lightmap producer layout; source arrays provide q=1.
+
+The paired-coordinate native candidate uses two existing output streams: color
+and XY/ZW coordinates. It retains the measured hardware stream cap and refuses
+nonidentity transforms. Offline native program comparisons pass (43/43 plus
+6/6 expected refusals). Native acceptance remains pending and must check both
+pixel results and actual native/fused-pair/four-attribute metadata. No new FPS
+number is inferred. Performance validation is deferred while FAA command state
+and rendering are prioritized.
