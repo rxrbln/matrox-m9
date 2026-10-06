@@ -340,6 +340,41 @@ device `+0x69bc`, its display/resource owner `+0x54`, and device `+0x69a4`
 constructor owner `+0x1074`. These ordinary owner initializers remain to
 be joined to genuine hardware startup before a complete FAA sequence claim.
 
+### Exact normal display and client owner publishers
+
+Device `+0x69bc` aliases `hardware+0xfebc+head_index*0x90`, published
+by genuine MD `0x84890` after IOCTL233038 and also at `0x2dfea` during
+ordinary device initialization. Ordinary module `0x7abc0`, present in the
+real startup table at `0x1f2628`, allocates0xf8, executes real `0x7aca0`
+and publishes the display/resource owner at head `+0x54` (`0x7ac2a`).
+Its initial surface pointers are genuinely zero until real allocation.
+
+Device `+0x69a4` is published by ordinary module `0x1f990`, startup entry
+`0x1f2600`. It allocates0x8368 and executes constructor `0x1cb90` before
+publishing the completed owner. Exploration with the actual configured
+CPU owner reaches `0x1e1f0 -> 0x12340` and stops because the genuine
+shared miniport owner at device `+0x10` is absent. That reader needs the
+current configuration index at shared `+0x21f038`, its record type and
+the runtime collection pointer at `+0x21f05c`. No substitute record or
+successful device initialization was supplied. Finishing the real miniport
+bootstrap therefore serves this constructor as well as query2 admission.
+
+The genuine ICD client publisher is `0x1003a2a0`. Actual
+`0x1003d480 -> 0x1003b270 -> 0x1003d510` sends operation4, ExtEscape186a0
+input0x38/output0x10; only a successful actual reply would publish client
+handles into display `+0x70/+0x74` at `0x1003a39b`. The normal MD operation
+table selects `0x97461 -> 0x960b0`; that handler uses head `+0x78` and
+real constructors `0x873e0 -> 0x87590`, returning the actual client pointer
+at output+8. These handles are the dependency used by later operation0x10.
+
+`tools/m9-vendor-faa-options.py --client-boundary` now executes the real
+ICD caller after genuine enabled option decoding and captures
+[the exact operation4 envelope](traces/m9-vendor-display-client-boundary-20261006.json).
+The fixture provides a controlled display DC and ordinary CPU process
+pseudo-handle; it stops before any device reply or returned handles, and
+does not admit a capability collection. Reserved/high-half stack bytes in
+the request remain unspecified and must not be interpreted as device flags.
+
 ### Real miniport property dispatch closes the four configuration queries
 
 `--miniport-defaults` executes actual MD `0x61f70` and forwards its four
