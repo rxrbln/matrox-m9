@@ -76,7 +76,7 @@ are queued. Some have partial vendor evidence, but they are not all closed.
 | order | scope | actual remaining gap | next useful proof |
 |---|---|---|---|
 | 0 | deployment and baseline | Qualified on current M9128; broader scenes remain | Retain the pinned deployment and post-test health proof when testing each new candidate |
-| 1 | FAA vendor emulation | Actual queue activation and FAA allocation plus all three initialization clears pass; full draw/resolve trace awaits independent integration | Verify the joined clear/draw/resolve stream, command images and submission/retirement boundaries; do not invent completion |
+| 1 | FAA vendor emulation | Joined queue/context initialization→FAA clear/bind→triangle→resolve→final DMA post independently replayed; first genuine GPU status read remains unanswered | Finish operand/backing provenance for executable translation; preserve the first GPU read boundary without inventing completion |
 | 1 | FAA implementation and native probe | Existing diagnostic state does not prove multisampling: previously zero of 318464 store dwords changed | Compare the vendor-owned resource/enable/reset/resolve graph, test one edge scene, read back store writes and resolved edge coverage; follow with depth and texture controls |
 | 2 | max-samplers regression | Base and border cases closed: stale CPU record layout after fragment specialization | Both native cases pass32seen/zero skips after d8fa015, without capacity changes |
 | 2 | kill/early-z state | Three quad lanes use an earlier quad's kill outcome with our instruction and an unchanged vendor program | Obtain genuine vendor engine MMIO while `fs-discard-cond` runs and compare initialization plus job-head controls |
@@ -144,9 +144,16 @@ These are controls for deployment, not new open feature implementations:
 
 The implementation gate is one complete vendor FAA frame: allocation,
 initialization, normal state compilation, draw, resolve and retirement.
-Current integrated captures prove allocated owners, queue activation and all
-three initialization-clear command producers. A joined draw/resolve capture
-is being reviewed separately; it has not yet passed root's independent replay.
+Canonical7806a76d/613dcc84 now provide the joined CPU frame through final
+DMA submission and the first genuine GPU retirement-read boundary. Root
+independently replayed both:1768 live-owned DMA writes, nine known byte spans,
+actual public context/triangle success, FAA mode1f draw and mode1d resolve.
+Every exported DMA byte matches an actual vendor CPU write within its owner.
+The final real completion packet requests130 hex and posts01002780; execution
+stops before status load23bc3 from the actual common-buffer physical02007000.
+No GPU completion or subsequent release is supplied. Kernel-owned indirect
+state initialization and complete operand/backing provenance remain executable
+translation requirements. This is CPU evidence, not a rendered FAA image.
 Canonical5661c4f4 now activates the real vendor queue with32 owned system-DMA
 allocations through genuine MM handlers and bounded synthetic OS RAM, using
 the genuine FAA-admitting MmFlags101b8 option. Root independently replayed

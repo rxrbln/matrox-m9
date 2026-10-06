@@ -8,6 +8,15 @@ Ordinary textured rendering and the deployed driver are validated. FAA
 rendering is not yet validated. This note is separate from P690
 `102b:2539` evidence.
 
+Latest integrated evidence7806a76d/613dcc84 is a joined real vendor CPU frame:
+queue/context initialization, three FAA initialization clears, FAA bind,
+public triangle launch, resolve, final completion packet and DMA post. Root's
+independent replay passed1768 DMA writes/nine known spans and stopped before
+the first GPU completion read at23bc3. No GPU reply or FAA image was supplied.
+The remaining native work is the complete trusted state-buffer lifecycle,
+including companion HZ, indirect saved state and resolve. Historical probes
+below explain earlier gaps; the joined-frame section records the current trace.
+
 `tools/m9-faa-smoke.sh` runs the current instrument at 320x240, its fixed
 measurement size. Application performance checks remain at 1024x768. Run it
 under the target owner's common lock and both historical M9 locks:
