@@ -1291,3 +1291,40 @@ and returns1. The two releases take refs3 to2 to1 while preserving the
 device-slot cache. This proves ordinary context reference lifetime; it never
 reaches the last-reference virtual teardown or establishes device shutdown,
 GPU completion, allocation contents or enabled FAA surface admission.
+
+### Separate actual M9128 PCI and legacy-ROM inputs
+
+`captures/m9128-device-inputs-20261006/` preserves root's sole-owner, idle
+read-only capture from the installed M9128 LP PCIe x16, rev1, subsystem
+`102b:22c0`, boot`815d4dcc`. The4096-byte PCI config SHA is
+`b45f1f8d86bd041d6824d6bf4dea11fbfa9113d3de5a199d64aee32a9ec9c7e0`.
+The131072-byte legacy ROM shadow SHA is
+`34064c0553954252f0d45fb78150a30c5773ea8205a1bfb8995d9711ff874cf4`.
+Sysfs ROM reading failed with EINVAL without changing ROM-enable state;
+`/dev/mem` legacy shadow reading succeeded. The shadow has55aa, PCIR at60
+withVID/DID102b/0540, declared61440-byte image checksum0, board string
+`128-E1024LAF` and serial`KFP35758`. This establishes the shadow's board
+identity, not independent dynamic SPI transaction responses.
+
+`faa-trace.py --os-mapping --m9128-inputs` uses this actual PCI/ROM/resource
+set through `m9128-inputs.py`, independently of the older M9148 capture.
+Actual resources put BAR2 at`fdffe000`, versus historical`febfe000`.
+The genuine MSerX miniport FindAdapter reaches that actual BAR2 mapping;
+the model then deliberately stops before device reads. It cannot borrow
+M9148 initial MMIO, opcode15/AB identity responses or later completion
+state. Current actual idle GPIO values are baselines, not an EEPROM/SPI
+protocol trace. `check-m9128-inputs.py` verifies the board hashes, actual
+mapping and this precise refusal boundary. Physical SPI identities and
+board-EEPROM slave responses remain required to continue actual-board
+bootstrap.
+
+The full actual profile publisher `4ed00` was subsequently executed with
+the separately initialized real config owner `61f70`, returning1 and
+publishing all86 entries at hardware`+1015c` and device`+69a8`. Its earlier
+100k-instruction stop at`50af0` was a fixture instruction limit during
+mask counting, not a missing capability rejection. The complete constructor
+works with a1M-instruction bound. Ordinary card-list registration `27230`
+also returns1, links device`+69c0` and publishes global`20d1cc`; the normal
+device-init loop at`2e03a..2e056` calls it from paired module table`1f2638`.
+These CPU ownership steps do not substitute for initialized physical
+capability owners or prove M9128 FAA admission.
