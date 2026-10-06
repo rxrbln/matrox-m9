@@ -1,5 +1,26 @@
 # glmark2 on the m9x driver: where the 60 fps goal actually stands
 
+## 2026-10-06: source stage corrections retire both tiny palettes; pixels still fail
+
+Mesa038b89e derives A8 from the native intermediate/final stage role.
+Mesa7eb502a derives register89 target classes and native high bits from
+actual targets and vendor source. Each correction was tested once with the
+same bounded four-stage/five-stream textured, depth-tested workload. Both
+palettes retire in both tests (220/340 and4c0/5e0), with empty queues,
+wedged0 and no GPU timeout. Both fresh raw records remain incorrect and all
+256 pixels in each palette fail, maximum channel errors114 and121. The
+source fixes stay; full4608-vertex dispatch remains unqualified. No FPS gain.
+[A8 hardware evidence](../tests/m9-gl2-role-state-hardware-20261006/README.md)
+and [output-class hardware evidence](../tests/m9-gl2-output-class-hardware-20261006/README.md).
+
+Mesa7f21ae0 preserves aggregate counters and separately reports draws while
+the actual utility blitter is running. The fixture still requires six GPU
+application draws, zero application CPU fallback and valid records/pixels;
+the texture-upload utility copy remains visible. Root production helper
+positive/negative checks,512-cell oracle, batch and full DSO build pass.
+This classification correction does not qualify physical pixels. Current
+default Q3GL2 performance remains the38.9FPS checkpoint below.
+
 ## 2026-10-06: preserved small GL2 record and pixels fail; next palette stalls
 
 Same healthy normal boot and unchanged driver/DSO, improved fixture: first
