@@ -340,3 +340,23 @@ response now come from the real decoder as well. The active query-owner
 wrapper remains a controlled ABI input, and full hardware startup, display
 collection population and real surface allocation remain unproved. The
 capability-boundary mode still stops at the identical genuine query2 request.
+
+### Exact serial source of the miniport capability record
+
+The sole direct capability-record initializer call is MM `0x2e1c0` in
+`0x2e0c5`. It creates a 128-byte type13 source and 0x208-byte type14 result,
+copies the PCI device word into result `+4`, then obtains serial source
+kind2 through `0x2f70c -> 0x2f9d4`. `0x2f682` reads offsets0..127 and counts
+successful reads. `0x31f90` receives that real source and count, accepting
+its extended profile only for at least128 bytes and header `0x000825d3`.
+The accepted source supplies chip enumeration at `+0x0a` and retained flags;
+the actual `0x3265f` fills result `+8/+0x1ac/+0x1b0/+0x204` by chip branch.
+These functions are the producer missing at the genuine M9128 GPIO1c4c
+bootstrap boundary, before which the record contains only its header/PCI.
+
+An unsuccessful or absent extended source has an actual vendor fallback
+for PCI0540 to enumeration0x29. This is a conditional default branch, not
+the observed result of M9128's still-incomplete serial transaction. Do not
+replace its hardware transaction with a synthetic absent profile. The only
+`d3250800` occurrence in the captured M9128 ROM, offset0xb057, is the
+immediate operand of a BIOS compare instruction, not a captured profile blob.
