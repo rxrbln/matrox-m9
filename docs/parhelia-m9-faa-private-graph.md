@@ -164,3 +164,35 @@ bypass them merely because the command templates are trusted.
 Only after the private frame produces an FAA image and retires correctly
 should the reusable helpers gain a file-bound graph API. No placeholder graph
 token, app ioctl or writable opaque-program BO is introduced in this round.
+
+## Normal render-target validator owner, bounded MM dispatch
+
+The genuine surface association now lets public context creation retain
+registry handle 1. Its next target-validation consumer at `75788` calls
+`hardware+fea8[head]` through virtual slot `+8`. This owner is published by
+ordinary module `20810(device)`: constructor `214e0` creates four real
+`1f2c3c` objects; `208fd` publishes them and `20982` selects `device+6998`.
+No synthetic vtable or direct pointer assignment is used.
+
+The first constructor calls `21620`, which emits actual miniport request
+`2322a0`, input 28 bytes, output zero bytes and a null output pointer. The
+retained request is `[1,0,0,0,0,1,1]`: four Boolean capabilities, head index,
+and two Boolean policy flags. The scoped host bridge forwards these values
+to genuine MM dispatcher `7165f` and handler `16a49`, returning only its real
+result and returned-byte count. This is a new reviewed scalar request; it
+does not admit arbitrary I/O or provide an allocation/completion reply.
+
+Actual execution then reaches `16a49 -> 1eb33 -> 1f331/1f360`, which reads
+BAR2+`1800` display-controller control. The current emulator refuses that
+uncaptured input. `target-owner-boundary.json` records this honest boundary;
+its MMIO event's read `value=0` is the hook's placeholder, **not an observed
+register value**. The function has not returned and its four target owners
+have not been published. A captured initial control input is the next proof,
+with any later hardware access remaining a separate explicit boundary.
+
+The MM private target box is `20231850`, while the MD shared target box is
+`202305ec`. Their different ownership is observed through the real
+dispatch/constructor fields. No wholesale heap copy or strategy-pointer
+mirroring is needed or performed; doing so would overwrite genuine MD
+state with unrelated MM objects. This owner proof remains CPU-only and is
+not FAA draw coherence, native execution or an FAA image.
