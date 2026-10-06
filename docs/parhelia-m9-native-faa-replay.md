@@ -113,4 +113,29 @@ question is downstream fragment/raster/FAA output, rather than missing VS
 geometry or a broken CPUmapper. Actualbytes/logs/image are retained in
 tests/m9-faa-root-join-20261006. Kernel82b4dd2 extends directroot constructor
 identities to supportedlocalBARpages using actualvendorinitializer evidence;
-its nativeFAAqualification is pending. No appFAA success is claimed.
+its CPU qualification now passes in the subsequent run below. No app FAA
+success is claimed.
+
+## Vendor virtual restore tags verified; image still black
+
+Kernel `be6d018` retains the preceding CPU-root repair and extends its direct
+identity initialization to the vendor's bounded 256 MiB BAR scope. It also
+corrects DWORDs 9, 14 and 19 in all 1024 private default-restore records to
+virtual-address tag1. The genuine normal format1 initializer is `656c0`;
+the complete source proof identifies precisely those 3072 differences from
+native `m9_restore_fill`, without replacing work shadows or altering the
+ordinary submission path. All fields are checked before modification and
+verified after publication.
+
+The physical run on boot `808a1512-2221-4b8f-96fd-3df67a781ba9`
+verifies the 3072 fields, passes the 76800-pixel F0220140 CPU control, and
+retires the actual FAA frame at `0x1e0`. The primary is `0x3a57000`.
+The image remains black: colored/full/partial zero, interior_bad8326,
+exterior_bad0, non_green0. Main fragment store and AA companion remain zero;
+auxiliary, HZ, sentinel, pool and preprocessing owners change. The pool hash
+differs from the preceding run, but this does not prove pixel rendering.
+See `tests/m9-faa-virtual-restore-20261006` for the exact module hashes,
+loaded/after logs and actual black PPM. The private attempt is consumed;
+another full submission requires a fresh boot and a new implementation
+candidate. CPU visibility is closed for this fixture; fragment output and
+generic application FAA remain open.
