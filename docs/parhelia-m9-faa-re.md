@@ -1804,3 +1804,34 @@ with a successful reply or described as a GPU completion issue. Its exact
 heap/configuration dependency and the later dispatcher/currentjob publisher
 remain open. No full normal display admission is implied by the independently
 executed ordinary module CPU paths.
+
+### Queue activation is a mapped-class policy boundary
+
+`check-queue-activation.py` retains the actual `230f0` CPU activation result,
+all `5c160` command-buffer candidate returns and the genuine `39450` class
+checks. The first pool1 candidate has a successfully allocated backing node,
+but `455c0` calls mapping predicate `45df0` under real configured policy
+`101f8`, then `39450` rejects class1. At `45718`, the resource backing is
+released and `455c0` returns0. `39450` accepts only classes0,5,6. The first
+fallback candidate uses class5 and succeeds; a second fallback lacks space
+in the bounded 4MiB mapped heap. No GPU completion is involved.
+
+The real shipping `System.BmBuffers` DWORD input `01000100` is also admitted
+through `61f70`/the actual registry descriptor query. Real typed wrapper
+`61ba0` decodes bufferKiB as low12bits (zero becomes8), totalMiB as high8bits
+(zero becomes1), and count as `(totalMiB<<10)/bufferKiB`. This input therefore
+produces four 256KiB buffers; it still hits the same class1 policy rejection.
+Reducing buffer size is not a solution to that mapping predicate.
+
+Native agent identified the actual raw `+120` property backing derived
+configuration `+338` as shipping registry option `System.MmFlags`. Alternate
+policy must pass through this real option parser and retain genuine format
+admission results; do not clear a guest capability/policy field by hand.
+Capture: `queue-activation-policy.json`. No failed activation is overridden
+or resumed into a GPU job in this checker.
+
+`m9_allocator_fixture.initialize(...,registry_settings=None)` now optionally
+passes explicit CPU registry inputs to the native agent's normal configuration
+helper. Default callers are unchanged. Nondefault calls require helper API
+commit `b5c839ca` (or its canonical integration), which exposes
+`m9_md_runtime.initialize(...,registry_settings=None)`.
