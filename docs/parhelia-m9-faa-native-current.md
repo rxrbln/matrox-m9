@@ -540,17 +540,22 @@ PATH --bootstrap-tools PATH`, using the captured actual PCI inventory and
 The [MD runtime-owner capture](traces/m9-vendor-md-runtime-owners-20261006.json)
 retains the real MM heap addresses and forwards the MD configuration's four
 property requests through that initialized miniport's actual0x70eab dispatch.
-The MD device/hardware wrappers remain controlled CPU caller ABI objects;
-no hardware startup, GPU status or capabilities are substituted.
+The initial MD device is a controlled CPU caller ABI object. Actual MM
+0x71d8e handles the normal233038 request, and actual MD0x84890 publishes
+its hardware/platform/shared pointers. The platform is the retained real MM
+profile (OS500, BAR0 d0000000/10000000). Its256MiB aperture is separate
+from installed1GiB VRAM. No startup success, GPU status or caps are supplied.
 
 With that real shared runtime, actual MD0x273a0 returns1 and publishes
 resident engine `device+6990`. Actual0x1f990 executes the complete0x1cb90
 resource constructor and publishes `device+69a4`, including the real typed
 primary factory at owner+1074: wrapper0xb78f0 delegates to0xb6850. This
 supersedes the earlier runtime-null stops for these constructors. The
-resource module's later platform policy call0x1fca0→0x62170 remains a
-separate boundary requiring the actual platform owner at hardware+4.
-The capture stops before that call; it does not claim full module startup.
+resource module's later platform policy call0x1fca0→0x62170 now completes
+with that genuine platform owner. It stops at the following1fca5 publication
+because hardware+35fc requires the real shared memory manager. Actual
+display/resource module0x7abc0 also returns1 and publishes head+54. The
+capture does not claim complete resource module or adapter startup.
 
 Actual derived config+338 virtual getter returns101f8; actual admission
 helper0x477f0 for hardwareformat3d returns1, confirming the companion's
