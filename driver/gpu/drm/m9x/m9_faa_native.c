@@ -367,6 +367,68 @@ unlock:
 	return ret;
 }
 
+/* Actual normal 656c0 records preserve descriptor tag1 in DWORD9, 14 and
+ * 19 (65836/6584b/65892). Ordinary Linux mode3 records use tag0 instead.
+ * Convert only those three static pointers after prior jobs retire; leave
+ * work shadows and every other source byte intact. Verify all originals
+ * before the first write, and retain the existing identity-leaf admission.
+ */
+static int m9_faa_prepare_virtual_restore(struct m9x_device *mdev)
+{
+	struct iosys_map map;
+	static const u32 word[] = { 9, 14, 19 };
+	u32 base, i, j;
+	int ret;
+
+	lockdep_assert_held(&mdev->transport.lock);
+	ret = m9x_address_restore_region(mdev, &map, &base);
+	if (ret)
+		return ret;
+	if (base != mdev->transport.restore_base ||
+	    !IS_ALIGNED(base, PAGE_SIZE) ||
+	    PARHELIA_M9_RESTORE_BYTES < 0x700 + 0x3ff * 0x600 + 0x50 ||
+	    base > U32_MAX - PARHELIA_M9_RESTORE_BYTES)
+		return -ERANGE;
+	for (i = 0; i < 0x400; i++) {
+		u32 work = base + 0x200 + i * 0x600;
+		u32 expected[] = { work, base, work + 0x440 };
+
+		for (j = 0; j < ARRAY_SIZE(word); j++) {
+			u32 offset = 0x700 + i * 0x600 + word[j] * sizeof(u32);
+			u32 value = iosys_map_rd(&map, offset, u32);
+
+			if (value != expected[j]) {
+				dev_err(&mdev->pdev->dev,
+					"M9 FAA virtual restore refused: record=%u word=%u observed=%#x expected=%#x\n",
+					i, word[j], value, expected[j]);
+				return -EINVAL;
+			}
+		}
+	}
+	for (i = 0; i < 0x400; i++) {
+		u32 work = base + 0x200 + i * 0x600;
+		u32 expected[] = { work, base, work + 0x440 };
+
+		for (j = 0; j < ARRAY_SIZE(word); j++)
+			iosys_map_wr(&map, 0x700 + i * 0x600 + word[j] * sizeof(u32),
+				     u32, expected[j] | 1u);
+	}
+	wmb();
+	for (i = 0; i < 0x400; i++) {
+		u32 work = base + 0x200 + i * 0x600;
+		u32 expected[] = { work, base, work + 0x440 };
+
+		for (j = 0; j < ARRAY_SIZE(word); j++)
+			if (iosys_map_rd(&map,
+				0x700 + i * 0x600 + word[j] * sizeof(u32), u32) !=
+			    (expected[j] | 1u))
+				return -EIO;
+	}
+	dev_info(&mdev->pdev->dev,
+		 "M9 FAA virtual restore: base=%#x 1024 records, DWORD9/14/19 tag1 verified\n", base);
+	return 0;
+}
+
 static u32 m9_faa_encode(u32 pc, u32 address, u32 tag)
 {
 	switch (pc) {
@@ -445,6 +507,9 @@ int m9x_faa_submit_diag(struct m9x_device *mdev, u32 color,
  * later admission fails. A retry must not reinterpret already rebased
  * words as their original captured addresses. */
 	r->attempted = true;
+	ret = m9_faa_prepare_virtual_restore(mdev);
+	if (ret)
+		goto unlock;
 	for (i = 0; i < ARRAY_SIZE(m9_faa_fixups); i++) {
 		const struct m9_faa_fixup *f = &m9_faa_fixups[i];
 		struct m9_faa_owner *dst;
