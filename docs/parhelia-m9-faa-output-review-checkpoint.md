@@ -68,3 +68,14 @@ generator's own CLI independently ran `check-faa-output-manifest.py` before
 producing the comparison artifacts. This validation closes this fixed
 diagnostic's producer/bounds/namespace/variable-length glue; arbitrary shader,
 texture, depth, dimensions and public copy contexts remain outside its scope.
+
+## Subsequent physical qualification and scope correction
+
+The integrated runtime `df1f49e` retires at `0x1d0` on real M9128 but the
+ordinary output is entirely black; see [the failed hardware image](../tests/m9-faa-ordinary-output-20261006/README.md).
+The self-reference check establishes explicit pointer safety of the primary
+clone. It does not establish behavioral equivalence of physical-tag2 primary
+fetch to the vendor's retained virtual-tag1 primary, including implicit
+frontend/cache contracts. That source/native difference remains under
+investigation. Structural fixture PASS must not be interpreted as rendering
+PASS or full submission-domain equivalence.
