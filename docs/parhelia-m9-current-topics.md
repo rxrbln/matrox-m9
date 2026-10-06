@@ -75,7 +75,7 @@ are queued. Some have partial vendor evidence, but they are not all closed.
 | order | scope | actual remaining gap | next useful proof |
 |---|---|---|---|
 | 0 | deployment and baseline | Qualified on current M9128; broader scenes remain | Retain the pinned deployment and post-test health proof when testing each new candidate |
-| 1 | FAA vendor emulation | Genuine conditional19420 allocator now returns1 using OS-owned BAR0 mapping and actual CPU synchronization counters; normal miniport/mapper completion and API-created FAA draw/resolve remain open | Capture the real allocated FAA graph and initialization, then complete packets, program images and retirement without invented GPU replies |
+| 1 | FAA vendor emulation | Genuine conditional allocator and actual queue activation pass with32 owned OS DMA allocations; default mapping policy and clear compiler state ownership remain open | Finish the genuine clear/draw/resolve command stream and program images through the first unknown GPU reply; do not invent completion |
 | 1 | FAA implementation and native probe | Existing diagnostic state does not prove multisampling: previously zero of 318464 store dwords changed | Compare the vendor-owned resource/enable/reset/resolve graph, test one edge scene, read back store writes and resolved edge coverage; follow with depth and texture controls |
 | 2 | max-samplers regression | Base and border cases closed: stale CPU record layout after fragment specialization | Both native cases pass32seen/zero skips after d8fa015, without capacity changes |
 | 2 | kill/early-z state | Three quad lanes use an earlier quad's kill outcome with our instruction and an unchanged vendor program | Obtain genuine vendor engine MMIO while `fs-discard-cond` runs and compare initialization plus job-head controls |
@@ -87,7 +87,7 @@ are queued. Some have partial vendor evidence, but they are not all closed.
 | 4 | texture layout and filtered copies | Cube faces larger than 16 are not placed; non-halving filtered engine copies have known failures | Trace the vendor cube address/layout calculator above the packed tail; use existing `blitlin:75x37`, `blitlin:74x37` and `blitlin:100x40` controls for the copy issue |
 | 4 | MRT blending and combined operations | Four unblended targets work; blending has per-target replay, but single-pass destination reads for RT1..3 and combined stencil/discard/split cases remain open | Capture destination-read registers and program image for RT1..3 blend, and verify each target plus retained BO membership |
 | 5 | performance and GPU geometry | Last measured bd24336 at1024x768/vsync0:56.6FPS,99.2% native calls;55jobs/frame,zero uniform splits. GPU polygon offset passes native depth-tested and depth-disabled controls; FPS not remeasured | Reduce remaining submission costs; retain measured packing and batching |
-| 5 | presentation and async submission | Real completion/wait, worker retirement and per-BO dma_resv fences are implemented; native last-job retirement, EGL fence poll and GLFinish without readback pass. Accelerated1024x768 GLX double buffering passes with page flips disabled. Only one job remains outstanding | Qualify direct page flips; implement separately owned secondary slots and CPU arenas before admitting multiple outstanding jobs |
+| 5 | presentation and async submission | Native last-job retirement, EGL fence poll and GLFinish without readback pass.1024x768 GLX copy presentation passes; opt-in flip test switches real DC_START addresses but output-enable reports sending nothing(-67). Only one job remains outstanding | Qualify physical flip output and mode-enable status; implement independently owned secondary slots and CPU arenas for multiple outstanding jobs |
 | 6 | 10-bit masks and conversion | Unblended single-target partial masks use a constant-color blend fallback; already-blended and multiple-target partial masks remain refused, and converting readback needs current retest | Prove the existing unblended mask fallback, implement captured mask lowering for combined cases, then test converting readback and linear filtering |
 | 6 | 10-bit display verification | M9128 KMS/GBM/EGL 30-bit path passed; panel precision and transmitter depth remain unverified | Repeat on the installed board and inspect the physical output; keep raw storage precision distinct from panel output precision |
 | 7 | query and kernel lifetime/recovery | Query counter wrap, split-pass sample accounting and fault/recovery boundaries require targeted qualification | Audit the current kernel first, then submit a bounded wrap/lifetime test to the target owner; no unsupported arbitrary requester state |
@@ -143,8 +143,14 @@ These are controls for deployment, not new open feature implementations:
 
 The implementation gate is one complete vendor FAA frame: allocation,
 initialization, normal state compilation, draw, resolve and retirement.
-Current captures prove allocated owners and individual state emitters, but
-queue activation still fails its DMA backing/mapping contract. Captured
+Current captures prove allocated owners and individual state emitters.
+Canonical5661c4f4 now activates the real vendor queue with32 owned system-DMA
+allocations through genuine MM handlers and bounded synthetic OS RAM, using
+the genuine FAA-admitting MmFlags101b8 option. Root independently replayed
+this successfully. Default101f8 has a separate mapping contract still open;
+its class1 predicate alone was incorrectly treated as terminal rejection.
+The clear compiler's next boundary is a missing CPU shader/state owner at
+f5969, before any supplied GPU completion. Captured
 packets must not be concatenated to infer normal ordering. No FAA fragments
 or resolved target image have been demonstrated.
 
