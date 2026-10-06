@@ -1998,3 +1998,21 @@ honest hardware-response boundary. Executable native translation must preserve
 all referenced resource/program backing, address domains and lifetime through
 observed retirement. It must not copy synthetic OS addresses, count envelopes,
 unspecified RAM contents, or the blocked completion result into native packets.
+
+The refreshed retirement capture uses native joined-frame API `b954cf25`, whose
+passive hooks start before queue initialization. All six stages are required:
+queue/context/FAA initialization, FAA bind, triangle and resolve. The first
+buffer's prefix `0..427` now comes from actual queue-initialization CPU writes,
+so it is not synthesized as zero-filled RAM. `m9_faa_operands.capture` supplies
+read-only ownership candidates for the 86 genuine profile entries (`4ee1f`)
+and all actual `25680` operands. There are 39 allocated resource views in the
+retained graph; aliases and namespace overlaps remain explicit. Nonzero
+operands all match a real resource/system-RAM/common-buffer owner; seven match
+both a numeric VRAM-offset range and the synthetic OS physical range. No domain
+is guessed from that numeric overlap. The genuine low two address bits, CPU
+reference tags, register-specific payloads and retained backing objects remain
+available for typed native translation.
+
+This ownership manifest does not make the counted secondary draw image a raw
+indexed command stream, nor establish that ordinary DP2 state correctly retains
+FAA companion/depth/MRT participation. Those are separate execution gates.
