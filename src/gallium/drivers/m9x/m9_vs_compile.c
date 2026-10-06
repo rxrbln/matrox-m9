@@ -788,6 +788,7 @@ emit_rcp(struct ctx *c, unsigned dst, const struct held *a)
 static bool
 emit_rsq(struct ctx *c, unsigned dst, const struct held *a)
 {
+   const unsigned scratch_base = c->temp_seq;
    unsigned ra, sa;
    int kc = key_literal(c, uif(0x7f800000), uif(0xff800000));
    int kk = key_literal(c, 0.0f, 3.0f);
@@ -826,6 +827,17 @@ emit_rsq(struct ctx *c, unsigned dst, const struct held *a)
       emit(c, w0_make(t0, t1, t1, d, 7, 0x1d),
            w1_make(VS_RSQ_STEP, ek, t0));
       t0 = d;
+   }
+   /* Both refinements are complete.  Retain the caller's result and source
+    * identities, freeing only pairs created inside this scalar chain. */
+   for (unsigned r = 0; r < M9_VS_REGS; r++) {
+      if (c->holds[r][0].kind != HELD_TEMP ||
+          c->holds[r][1].kind != HELD_TEMP ||
+          c->holds[r][0].a <= scratch_base ||
+          c->holds[r][1].a <= scratch_base)
+         continue;
+      memset(c->holds[r], 0, sizeof(c->holds[r]));
+      c->busy[r] = 0;
    }
    return true;
 }
