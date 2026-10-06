@@ -1735,3 +1735,44 @@ and1320/1324/1328 resource bindings. The artifact is
 `shared-allocator-conditional.json`. This is usable conditional CPU ownership
 for tracing AA allocation/map/contents; it remains **no normal adapter admission,
 no vendor GPU completion and no native FAA rendering result**.
+
+### Raw layout size, aligned descriptor extent, and first real HZ clear
+
+`tools/m9emu/check-faa-allocation-extents.py` executes actual `ac7e0` with a
+controlled 320x240 CPU caller surface on the genuinely returned conditional
+`19420` resource allocators. A guest memory-write hook records the descriptor
+extent before any backing allocation. The four genuine `45eb0` calls yield:
+
+| Resource | Raw EAX return | Descriptor extent | Descriptor alignment |
+| --- | --- | --- | --- |
+| Main FAA store | `136020` | `136080` | `80` |
+| Auxiliary store | `13020` | `13080` | `80` |
+| Kind9 companion | `96020` | `97000` | `1000` |
+| Initial HZ | `2d00` | `3000` | `1000` |
+
+The raw EAX return is **not** the stored descriptor extent. Real `45eb0` takes
+alignment from descriptor `+174` at `4648b`; `464ca..464d3` align raw EAX upward,
+and `464d9` writes that aligned value to descriptor `+180`. The memory hook
+observes every write at that instruction before `455c0` backing allocation;
+the descriptor allocated bit2 is still clear at the `51bd7` return site.
+Thus these extent differences are not evidence of `455c0` resizing the raw
+layout. Genuine backing attachment `4dfe0` publishes backing pointer `+1e4`,
+sets descriptor bit2 at `4dff7`, and copies its backing address at `4dffa`.
+The earlier raw protection term remains valid; a native allocation must cover
+its aligned extent as well. Native BO page rounding already covers the listed
+linear cases.
+
+With `--advance-clear`, the same real `ac7e0` frame continues through `b4fe0`
+and `b5030`, including actual descriptor-kind8 computation, and reaches
+`b5237`. That instruction would write the clear value to command shadow
+`[context+b8]+3a8`, where context is actual `device+69a4` owner plus `b08`.
+Its command-shadow owner is still null: `1cb90` constructs and clears the
+context through `1de50`, but the later renderer binding is absent. This is
+an explicit CPU ownership boundary before job submission, not a GPU status
+poll or hardware rejection. No replacement shadow, successful clear,
+completion value, or FAA rendering result is supplied.
+
+Capture: `captures/m9128-device-inputs-20261006/faa-allocation-extents-clear-boundary.json`.
+The replay uses `--runtime-tools tools/faaemu` in the canonical repository;
+the isolated worktree used the native-agent helper directory explicitly.
+Normal display admission and full `85d50` mapper completion remain unproved.
