@@ -1423,6 +1423,11 @@ m9_faa_store_grow(struct m9_context *ctx)
          m9_bo_destroy(screen, &screen->faa_companion);
          screen->faa_companion = companion;
          companion = (struct m9_resource){0};
+         if (screen->faa.trace)
+            fprintf(stderr, "m9x: faa companion %ux%u -> %llu bytes handle %u\n",
+                    width, height,
+                    (unsigned long long)screen->faa_companion.size,
+                    screen->faa_companion.handle);
       }
       screen->faa_store_width = width;
       screen->faa_store_height = height;
