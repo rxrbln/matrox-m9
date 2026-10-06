@@ -8,20 +8,26 @@ Ordinary textured rendering and the deployed driver are validated. FAA
 rendering is not yet validated. This note is separate from P690
 `102b:2539` evidence.
 
-Latest integrated evidence7806a76d/613dcc84 is a joined real vendor CPU frame:
-queue/context initialization, three FAA initialization clears, FAA bind,
-public triangle launch, resolve, final completion packet and DMA post. Root's
-independent replay passed1768 DMA writes/nine known spans and stopped before
-the first GPU completion read at23bc3. No GPU reply or FAA image was supplied.
-The remaining native work is the complete trusted state-buffer lifecycle,
-including companion HZ, indirect saved state and resolve. Historical probes
-below explain earlier gaps; the joined-frame section records the current trace.
-Followup review found that the public triangle overwrites the manually bound
-FAA companion/HZ with ordinary context state. Root independently confirmed
-the B8/BA address changes. Thus the CPU replay PASS does not yet prove that
-this draw participates in the FAA graph or issues its raster launch. Correct
-context admission/target-state lowering and the count-prefixed secondary
-consumer remain required before executing this stream on the GPU.
+Current authoritative private replay and hardware evidence are in
+[the native replay note](parhelia-m9-native-faa-replay.md). Kernel1b4dd67 now
+includes the complete normal-surface capture with30owners,53typedaddresses,
+26timelinefields and actual5676-byte raw primary/604+772 countedsecondaries.
+Two physical M9128 runs reached actualGPUretirement0x1e0; the first image was
+black and the exact vendorCPUview attempt timedout. AppFAA remains disabled.
+RE3a96ff32 retains read-only target proof: GPUidentityleaf is correct, while
+the separate directCPU-root entry forprimary1422000 iszero. Kernel1b4dd67
+adds the genuine bounded0360rootmirror and vendorflush before taggedCPUmap;
+next freshboot hardwarequalification is inprogress. Source uploads now have
+byte-exactBARverification; privateowner before/after observations can locate
+changed GPUstores without assuming unknown memory was initiallyzero.
+
+The earlier manually joined frame below was superseded by the coherent
+normal-surface capture, whose second real launcher retains sampledFAAstate.
+It is historical evidence of an admission error, not the current replay.
+The current private stream includes companionHZ/pools/sentinel/resolve and
+reaches hardware completion; renderedfragments and CPUvisibility are still
+unproven. The historical AD/AF smoke instrument below is separate from this
+full trusted private kernelreplay and does not enableFAAforapplications.
 
 `tools/m9-faa-smoke.sh` runs the current instrument at 320x240, its fixed
 measurement size. Application performance checks remain at 1024x768. Run it
