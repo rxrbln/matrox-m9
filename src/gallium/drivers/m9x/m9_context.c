@@ -1779,7 +1779,12 @@ m9_native_inputs_valid(const struct m9_context *ctx,
                        const struct m9_resource *image, unsigned slots)
 {
    uint64_t source_bytes = (uint64_t)job->source_vertices * job->vs_record_bytes;
-   if (!job->vs_producer_entry || !job->vs_gather_entry ||
+   bool packed = job->vs_producer_entry != 0;
+   /* A complete packed chain or the ordinary fused draw. Do not admit
+    * truncated chains or the separate legacy extra-head protocol here. */
+   if ((packed ? !job->vs_gather_entry :
+                 (job->vs_extra_entry || job->vs_gather_entry ||
+                  job->vs_extra_targets)) ||
        !job->source_vertices || job->source_vertices % 4 ||
        job->source_vertices > 65532u || !job->vs_record_bytes ||
        job->vs_record_bytes % 16 ||
@@ -1794,14 +1799,15 @@ m9_native_inputs_valid(const struct m9_context *ctx,
        8ull * job->vs_const_pairs > ctx->system.size - M9_VS_CONST_OFFSET ||
        !job->vs_decl || !job->vs_decl_count || job->vs_decl_count > M9_VS_MAX_DECL ||
        !job->draws || !job->draw_count || job->draw_count > 4096u ||
+       (job->pass_count && (!job->passes || job->pass_count > M9_FS_MAX_PASSES)) ||
        job->index_count > 65536u ||
        (job->index_count && (!ctx->index.map || !job->index ||
         ctx->index.handle != job->index || job->index_base > ctx->index.size ||
         2ull * job->index_count > ctx->index.size - job->index_base)) ||
        !job->transient || ctx->transient.handle != job->transient ||
-       !m9_vs_record_fits(job->source_vertices, job->vs_extra_targets + 3u,
+       (packed && !m9_vs_record_fits(job->source_vertices, job->vs_extra_targets + 3u,
                           job->vs_record_view, m9_transient_view_bytes(),
-                          ctx->transient.size))
+                          ctx->transient.size)))
       return false;
    if (job->vs_const_run_count &&
        (!job->vs_const_runs || job->vs_const_run_count > M9_VS_MAX_CONST_RUNS))
@@ -1853,13 +1859,19 @@ m9_dump_native_inputs(const struct m9_context *ctx,
    FILE *out = fopen(path, "wx");
    if (!out)
       return false;
-   fprintf(out, "NATIVE_INPUTS 1 context %u job %u vertices %u stride %u "
+   bool packed = job->vs_producer_entry != 0;
+   fprintf(out, "NATIVE_INPUTS %u context %u job %u vertices %u stride %u "
            "fields %u record-view %u source %u index %u index-base %u "
            "index-halves %u C2 %u slots %u entries %u/%u/%u\n",
-           ctx->context_id, seq, job->source_vertices, job->vs_record_bytes,
-           job->vs_extra_targets + 3u, job->vs_record_view, job->source,
+           packed ? 1u : 2u, ctx->context_id, seq, job->source_vertices, job->vs_record_bytes,
+           packed ? job->vs_extra_targets + 3u : 0u,
+           packed ? job->vs_record_view : 0u, job->source,
            job->index, job->index_base, job->index_count, job->program, slots,
            job->vs_producer_entry, job->vs_extra_entry, job->vs_gather_entry);
+   if (!packed)
+      fprintf(out, "MODE ordinary-fused input-only vertex-entry %u\n",
+              job->fs ? job->fs->vertex_entry :
+              job->pass_count ? job->passes[0].fs.vertex_entry : 4u);
    fprintf(out, "OWNER SOURCE %u bytes %" PRIu64 " SYSTEM %u bytes %" PRIu64
            " INDEX %u bytes %" PRIu64 " C2 %u bytes %" PRIu64
            " TRANSIENT %u bytes %" PRIu64 "\n",
@@ -1989,11 +2001,25 @@ m9_dump_job(struct m9_context *ctx, const struct m9_fs_variant *fs,
       fprintf(out, "BO handle %u flags %u size %#" PRIx64 "\n",
               b->bos[i].handle, b->bos[i].flags, size);
    }
-   if (job->vs_producer_entry && ctx->job_key.vs) {
+   if (ctx->job_key.vs) {
       const struct m9_vs_program *vs = ctx->job_key.vs;
       const struct m9_resource *image = m9_job_c2_owner(ctx, fs, job->program);
-      unsigned slots = job->vs_producer_entry + m9_vs_producer_slot_count(vs);
-      unsigned final_entry = job->vs_extra_entry - m9_vs_slot_count(vs);
+      unsigned final_entry = job->fs ? job->fs->vertex_entry :
+                             job->pass_count ? job->passes[0].fs.vertex_entry : 4u;
+      unsigned slots = job->vs_producer_entry ?
+         job->vs_producer_entry + m9_vs_producer_slot_count(vs) :
+         final_entry + m9_vs_slot_count(vs);
+      if (job->vs_extra_entry && !job->vs_producer_entry)
+         slots = job->vs_extra_entry + m9_vs_extra_slot_count(vs);
+      fprintf(out, "VSOUTPUTS count %u fused-pair %u\n",
+              vs->outputs.count, ctx->job_key.vs_fused_pair);
+      for (unsigned k = 0; k < vs->outputs.count; k++) {
+         const struct m9_vs_output *o = &vs->outputs.stream[k];
+         fprintf(out, "VSOUTPUT %u location %u component %u coord %u pass %u "
+                 "coordinate %u coeff-record %u paired %u\n", k,
+                 o->location, o->component, o->coord, o->pass, o->coordinate,
+                 o->coeff_record, o->paired);
+      }
       if (m9_dump_native_inputs_enable) {
          ctx->dump_native_valid = m9_dump_native_inputs(ctx, job, image, slots, seq);
          if (!ctx->dump_native_valid)
@@ -2005,7 +2031,8 @@ m9_dump_job(struct m9_context *ctx, const struct m9_fs_variant *fs,
               job->source_vertices, job->vs_record_bytes,
               job->program, slots, job->vs_producer_entry, job->vs_extra_entry,
               job->vs_gather_entry, final_entry, job->vs_producer_mask, job->vs_extra_mask,
-              job->vs_record_view, job->vs_extra_targets + 3);
+              job->vs_producer_entry ? job->vs_record_view : 0u,
+              job->vs_producer_entry ? job->vs_extra_targets + 3u : 0u);
       /* These are the actual mapped submitted image bytes before ioctl,
        * not reconstructed opcodes or a claim of GPU fetch visibility. */
       if (image && image->map && 8ull * slots <= image->size) {
