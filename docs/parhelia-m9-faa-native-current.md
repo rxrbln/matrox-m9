@@ -17,6 +17,9 @@ after real140 retirement but still reads an entirely black image. The
 source-proven ordering repair is retained; it is insufficient to fix FAA.
 [Actual post-wait kick qualification](../tests/m9-faa-postwait-kick-hardware-20261007/README.md)
 and [original CPU continuation](parhelia-m9-faa-output-postwait-continuation.md).
+After copying proof and mandatory power cycle, root restored validatednormal
+observer73/module997c1e0e on freshboot6d6d22e6, user submissions enabled,
+privateFAAoff, next20/raw10/10, emptyqueue/unarmed/busmaster0/wedged0.
 
 The board-specific cold audit independently executes original Windows and
 Linux MC producers on verified physical M9128 PInS: all76writes/4delays
