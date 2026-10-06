@@ -64,6 +64,11 @@ times eight page alignments, all 30 fields and 16 timelines, whole nonfixup
 byte preservation, the source secondary count/finish and unknown-output
 preservation. Default output, green, red, init-only and post-triangle plans
 and blobs regenerate byte-identically; their stored headers are unchanged.
+The fixture also extracts the actual kernel's guarded absent-clear helper:
+it retains exact primary length 4644 without touching a companion or packet,
+and refuses a null CPU owner, VRAM primary or insufficient primary extent.
+This requires the separately integrated kernel profile guards; it does not
+exercise an old sampled companion-clear implementation for this control.
 
 All artifacts are under `captures/m9128-device-inputs-20261006/`:
 
