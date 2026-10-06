@@ -16,6 +16,7 @@
 
 #include "m9_drv.h"
 #include "m9_reg.h"
+#include "m9_faa_output.h"
 
 struct m9_faa_owner_spec {
 	u32 captured, bytes;

@@ -352,6 +352,8 @@ int m9x_address_commit_gpuva(struct m9x_device *mdev, u32 gpuva);
 int m9x_address_finalize_service(struct m9x_device *mdev);
 int m9x_address_map_system(struct m9x_device *mdev, struct drm_mm_node *node,
 			   dma_addr_t dma, u32 bytes);
+int m9x_address_map_faa_output(struct m9x_device *mdev,
+			     struct drm_mm_node *node, dma_addr_t dma, u32 bytes);
 int m9x_address_map_system_sgt(struct m9x_device *mdev,
 			       struct drm_mm_node *node, struct sg_table *sgt,
 			       u32 bytes);

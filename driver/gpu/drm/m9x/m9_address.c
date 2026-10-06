@@ -73,6 +73,7 @@ struct m9x_address_binding {
 	u32 gpuva;
 	u32 bytes;
 	dma_addr_t dma;
+	bool flags30;
 	bool published;
 };
 
@@ -344,10 +345,11 @@ static int m9_address_secondary_publish(struct m9x_device *mdev,
 				gpuva + page * PAGE_SIZE);
 			u32 pte = iosys_map_rd(&a->map, source, u32);
 
-			/* Native coherent DMA retains its proven nibble a. The
-			 * actual flags110 counter path is its source counterpart;
-			 * do not import queue flags30's different nibble b. */
-			if ((pte & 0xf) != (dma ? 0xa : 0x8))
+			/* Typed DMA publication accepts flags110 nibblea or the
+			 * separately admitted flags30 output nibbleb. The packed
+			 * leaf was checked against its binding before this copy. */
+			if (dma ? ((pte & 0xf) != 0xa && (pte & 0xf) != 0xb) :
+			    (pte & 0xf) != 0x8)
 				return -EINVAL;
 		}
 	}
@@ -631,8 +633,8 @@ out_put:
 	return ret;
 }
 
-int m9x_address_bind_dma(struct m9x_device *mdev, u32 gpuva,
-			 dma_addr_t dma, u32 bytes)
+static int m9_address_bind_dma_policy(struct m9x_device *mdev, u32 gpuva,
+			 dma_addr_t dma, u32 bytes, bool flags30)
 {
 	struct m9x_address_space *address = mdev->transport.address;
 	struct m9x_address_binding *bindings;
@@ -663,7 +665,7 @@ int m9x_address_bind_dma(struct m9x_device *mdev, u32 gpuva,
 		u32 binding_end = binding->gpuva + binding->bytes;
 
 		if (binding->gpuva == gpuva && binding->bytes == span &&
-		    binding->dma == dma)
+		    binding->dma == dma && binding->flags30 == flags30)
 			return 0;
 		if (gpuva < binding_end && binding->gpuva < gpuva_end)
 			return -EEXIST;
@@ -686,9 +688,25 @@ int m9x_address_bind_dma(struct m9x_device *mdev, u32 gpuva,
 			.gpuva = gpuva,
 			.bytes = span,
 			.dma = dma,
+			.flags30 = flags30,
 		};
 	address->bindings_dirty = true;
 	return 0;
+}
+
+int m9x_address_bind_dma(struct m9x_device *mdev, u32 gpuva,
+                         dma_addr_t dma, u32 bytes)
+{
+	return m9_address_bind_dma_policy(mdev, gpuva, dma, bytes, false);
+}
+
+static u32 m9_address_binding_pte(const struct m9x_address_binding *binding,
+                                u32 page)
+{
+	/* Actual 5b750: flags110 encodes a; actual ac1f0 temp flags30 encodes b.
+	 * Only the admitted private output owner selects this cache policy. */
+	return m9x_address_pte_word(binding->dma + page * PAGE_SIZE) |
+	       (binding->flags30 ? 1u : 0u);
 }
 
 int m9x_address_prepare(struct m9x_device *mdev)
@@ -858,8 +876,7 @@ static int m9_address_publish_binding(struct m9x_device *mdev,
 		if (ret)
 			return ret;
 		iosys_map_wr(&address->map, offset, u32,
-			     m9x_address_pte_word(binding->dma +
-						     page * PAGE_SIZE));
+			     m9_address_binding_pte(binding, page));
 	}
 	if (address->layout.secondary_bytes) {
 		wmb();
@@ -871,7 +888,7 @@ static int m9_address_publish_binding(struct m9x_device *mdev,
 			if (ret)
 				return ret;
 			if (iosys_map_rd(&address->map, slot, u32) !=
-			    m9x_address_pte_word(binding->dma + page * PAGE_SIZE))
+			    m9_address_binding_pte(binding, page))
 				return -EIO;
 		}
 	}
@@ -990,6 +1007,27 @@ int m9x_address_map_system(struct m9x_device *mdev, struct drm_mm_node *node,
 		return ret;
 	return m9_address_finish_system(mdev, node,
 			m9x_address_bind_dma(mdev, node->start, dma, bytes));
+}
+
+/* Source-owned ac1f0 kind6 output: 80-page system resource, flags30.
+ * Ordinary coherent/SG mappings keep their existing policy unchanged. */
+int m9x_address_map_faa_output(struct m9x_device *mdev,
+                             struct drm_mm_node *node,
+                             dma_addr_t dma, u32 bytes)
+{
+	struct m9x_address_space *a = mdev->transport.address;
+	int ret;
+
+	lockdep_assert_held(&mdev->transport.lock);
+	if (!m9x_faa_diag_enabled() || !a || !a->layout.secondary_bytes ||
+	    bytes != 0x50000 || mdev->pdev->device != 0x0540 ||
+	    mdev->pdev->revision != 1 || mdev->pdev->subsystem_device != 0x22c0)
+		return -EINVAL;
+	ret = m9_address_reserve_system(mdev, node, bytes);
+	if (ret)
+		return ret;
+	return m9_address_finish_system(mdev, node,
+		m9_address_bind_dma_policy(mdev, node->start, dma, bytes, true));
 }
 
 /* The same for a mapped page array: one binding per DMA segment. */
