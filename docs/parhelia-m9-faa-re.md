@@ -1440,3 +1440,13 @@ verification currently covers only the first eight bytes; all remaining ROM
 payload is the actual board's legacy shadow, explicitly provisional for flash
 equality. These bounded ranges, rather than a full ROM dump, are sufficient
 for the next physical flash comparison. GPIO capability data is still unsupplied.
+
+`capture-spi.c <M9128 sysfs directory> --pins` now captures exactly those six
+ranges after the same genuine identity query. It accepts no arbitrary flash
+address and uses only READ03, identity15 and its genuine AB fallback. The fixed
+mode is bounded to 21416 GPIO writes and a two-second deadline, with saved304
+control restoration before output on every path. `spi-pins-protocol.json` is
+controlled zero-MISO actual MxMM448ef execution, **not hardware data**; the
+checker compares every C helper write to this independent vendor execution and
+checks restoration after failures inside the PInS transactions. Root must
+review and run under the existing idle-target locks before admitting payload.
