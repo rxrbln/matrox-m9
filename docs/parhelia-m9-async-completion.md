@@ -64,12 +64,14 @@ single shared secondary/BO ownership protocol is unchanged.
 `tools/m9-completion-check.py KERNEL_M9X MESA_M9X` extracts the actual kernel
 timeline/wait functions and Mesa fence create/finish functions, compiles them
 with controlled writeback, clock, drain and ioctl adapters, then exercises
-43 cases under AddressSanitizer and UndefinedBehaviorSanitizer. It checks ABI
+60 cases under AddressSanitizer and UndefinedBehaviorSanitizer. It checks ABI
 layout equality, async unsignaled posting, zero/finite/infinite-bounded waits,
 exact writeback matching, delayed completion, lock contention, invalid ioctl
 inputs, unplug/disabled-device admission, interrupts/device errors,
 64-bit wrap, cached completion, older-kernel fallback, and actual failed-drain
-BO/pin quarantine versus real retirement. LeakSanitizer is
+BO/pin quarantine versus real retirement, and actual user-submit ownership
+transfer across unposted errors, sync timeouts, async posts, sync completion
+and an error after real completion. LeakSanitizer is
 disabled because the workspace sandbox uses ptrace; every allocated test
 fence is freed explicitly. Actual modified kernel objects compile, Mesa batch
 suite and context/screen objects compile. Native validation remains pending
@@ -85,9 +87,10 @@ the target owner's next controlled kernel deployment.
 2. Timed-out async jobs now retain their pending owner, BO references and pins;
    new submits honor a drain error, and fini releases quarantine only after
    clearing PCI bus mastering. This is tested against the actual drain function.
-   Synchronous user submission failure after posting still needs the same
-   ownership transfer; the next slice must report the true doorbell result from
-   user-stream framing and distinguish an unposted failure from active DMA.
+   User-stream framing now reports the true doorbell result: synchronous
+   failure after posting also transfers the vectors to quarantine while an
+   unposted failure or a retired job's guard error leaves them with the caller
+   for ordinary cleanup. The actual submit function is covered offline.
 3. Provide at least four independent secondary command slots and retirement
    ownership vectors. The current shared 32 KiB secondary cannot be rewritten
    with a previous reader in flight. Primary append capacity alone does not
