@@ -1,5 +1,35 @@
 # glmark2 on the m9x driver: where the 60 fps goal actually stands
 
+## Current implementation gaps, checked against Mesa05c7c29
+
+The older chronological entries below are not a current missing-op list.
+Vertex log2/exp2/pow and bounded arithmetic branching are implemented; they
+need broader application qualification, not a second implementation.
+
+* Vertex texture fetches remain absent from the native VS compiler. Installed
+  glmark2 terrain uses two vertex texture reads for displacement and normals.
+* General data-dependent control flow and loops remain gated. Uniform
+  specialization, static unrolling and bounded arithmetic if-conversion
+  exist; conditional texture and side-effect paths are not generally covered.
+* Indirect vertex inputs and indirect constant-buffer reads remain refused,
+  including general dynamically indexed uniform arrays.
+* Native input/output limits still gate shaders: four source attributes,
+  five compiler output streams, and two streams by default. Wider packed
+  paths pass selected fixtures and bump, not every application. Dynamic
+  point size and clip-distance transport remain refused.
+* Fragment varying texture bias and complete explicit LOD/gradient resource
+  routing remain open, as do broader multipass and discard/depth/blending
+  combinations. These include extension paths beyond baseline GLSL1.10.
+* Vertex `fsign`, needed by `texture:texgen=true`, is under implementation
+  in the GL2 agent branch. The installed shader now compiles there; independent
+  references, integration and hardware qualification are still pending.
+
+The actual compiler/finalizer-to-mask consumer join now passes under bounded
+no-vertex-texture policy (REd0102161); full live EE19 resource/view binding
+and broad default-cap promotion remain distinct open work. Existing complex
+bump rendering and its417FPS clean result do not qualify terrain, all Quake3
+GL2 lighting variants, or the complete glmark2 suite.
+
 ## 2026-10-07: complex bump clip coordinates pass; clean run reaches 417 FPS
 
 Canonical Mesa `05c7c29` follows the actual vendor finalizer's coupled
