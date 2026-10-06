@@ -1,9 +1,12 @@
 # M9128 warm-state observation boundary
 
-Two read-only board fields can classify the saved vendor's 0540 warm helper:
-BAR2 DWORD `1c10` and DWORD `1fdc`. A fresh-boot observation of that pair is
-missing. It would distinguish one concrete source admission branch without
-resetting clocks, altering PCI flags, or guessing a render enable.
+Two read-only board fields classify the saved vendor's 0540 warm helper:
+BAR2 DWORD `1c10` and DWORD `1fdc`. The fresh-before-module M9128 observation
+on bootdf3986cd is now retained: `00000001` and `04000000`, so the source
+warm-helper early-return predicate is false. Root's exact-source checker
+passes with `--require-fresh`. This does not prove that the native driver
+omits the later transition, full MC/PLL initialization or the cause of black
+FAA pixels. See [actual fresh-board evidence](../tests/m9-fresh-warm-entry-20261006/README.md).
 
 The exact Linux X image is SHA256
 `3878475450ffad5cd648cc037cc65c29fcb07b5e86caf41ccf5983ef8e570273`.
