@@ -152,7 +152,9 @@ extern const struct nir_shader_compiler_options m9_vs_nir_options;
 #define VS_CMP      0x90000010u  /* CAPTURED s14: constant pair in c, e=5  */
 #define VS_SEL      0xaf400c00u
 #define VS_DOT_P    0xbe000d00u  /* CAPTURED s5:  d = b . k - kc.s0 (c pair) */
-#define VS_DOT_RR   0xeda00c00u  /* CAPTURED tail s36: d.s0 = a . b + k.s0, c=a */
+#define VS_DOT_RR   0xada00c00u  /* CAPTURED vs-math s6: d.s0 = a . b + k.s0, c=a */
+/* Tail s36 carries this form with the program-finish bit (W1 bit 30).
+ * That marker belongs only four slots before the end, never in the head. */
 #define VS_DOT_C    0xadc00c00u  /* CAPTURED s7:  d = b . k + c[swz << 4]  */
 #define VS_RCP_SEED 0xae203000u  /* CAPTURED s15                           */
 #define VS_RCP_RES  0x8c26ac10u  /* CAPTURED s17, class 5, e already set   */
