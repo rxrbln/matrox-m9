@@ -80,6 +80,7 @@ struct m9x_fence {
 };
 
 struct m9x_triangle_diag;
+struct m9x_faa_replay;
 struct m9x_address_space;
 
 #define M9_QUEUE_SLOTS 4u
@@ -141,6 +142,7 @@ struct m9x_transport {
 	struct drm_gem_vram_object *quarantined_color;
 	struct m9x_address_space *address;
 	struct m9x_triangle_diag *triangle;
+	struct m9x_faa_replay *faa;
 };
 
 /* Both PInS GPIO maps hold eight function IDs in physical-bit order. */
@@ -359,6 +361,7 @@ int m9x_address_restore_region(struct m9x_device *mdev,
 			       struct iosys_map *map, u32 *base);
 int m9x_address_publish_restore(struct m9x_device *mdev);
 int m9x_address_read_pte(struct m9x_device *mdev, u32 gpuva, u32 *value);
+int m9x_address_check_local_identity(struct m9x_device *mdev, u32 base, u32 bytes);
 int m9x_address_read_root_pte(struct m9x_device *mdev, u32 gpuva, u32 *value);
 u32 m9x_address_pte_word(dma_addr_t dma);
 void m9x_address_surface_window(struct m9x_device *mdev, u32 surface,
@@ -369,6 +372,12 @@ int m9x_submit_triangle_diag(struct m9x_device *mdev, u32 color,
 			     struct drm_gem_vram_object *color_bo, u64 *point,
 			     bool *color_active);
 int m9x_triangle_prepare_diag(struct m9x_device *mdev);
+bool m9x_faa_diag_enabled(void);
+int m9x_faa_prepare_diag(struct m9x_device *mdev);
+int m9x_faa_submit_diag(struct m9x_device *mdev, u32 color,
+			struct drm_gem_vram_object *color_bo, u64 *point,
+			bool *color_active);
+void m9x_faa_fini(struct m9x_device *mdev);
 int m9x_triangle_prepare_user(struct m9x_device *mdev);
 int m9x_triangle_prepare_queue(struct m9x_device *mdev);
 int m9x_engine_ready_locked(struct m9x_device *mdev);

@@ -913,6 +913,35 @@ int m9x_address_finalize_service(struct m9x_device *mdev)
 	return 0;
 }
 
+/* The private FAA capture uses selector1 virtual local resources. The
+ * manager already publishes identity leaves for every BAR-visible VRAM
+ * page. Verify that explicit join, rather than assuming raw local and
+ * virtual addresses have the same meaning. No mapping is changed here. */
+int m9x_address_check_local_identity(struct m9x_device *mdev, u32 base, u32 bytes)
+{
+	struct m9x_address_space *a = mdev->transport.address;
+	u64 end = (u64)base + bytes;
+	u32 address, slot, root_slot, page;
+
+	lockdep_assert_held(&mdev->transport.lock);
+	if (!a || !a->manager_ready || !a->mapped || M9_VRAM_GPU_BASE || !bytes ||
+	    !IS_ALIGNED(base, PAGE_SIZE) || !IS_ALIGNED(bytes, PAGE_SIZE) ||
+	    end > ((u64)a->local_pages << PAGE_SHIFT))
+		return -ERANGE;
+	for (address = base; address < end; address += PAGE_SIZE) {
+		slot = m9_address_identity_slot(address);
+		if (slot > M9_ADDRESS_COMPACT_ORIGIN + a->layout.primary_bytes - sizeof(u32) ||
+		    iosys_map_rd(&a->map, slot, u32) != (address | 8u))
+			return -EFAULT;
+		page = slot >> PAGE_SHIFT;
+		root_slot = a->layout.translation_base + page * sizeof(u32);
+		if (root_slot > a->layout.translation_limit - sizeof(u32) ||
+		    iosys_map_rd(&a->map, root_slot, u32) != ((page << PAGE_SHIFT) | 8u))
+			return -EFAULT;
+	}
+	return 0;
+}
+
 int m9x_address_read_pte(struct m9x_device *mdev, u32 gpuva, u32 *value)
 {
 	struct m9x_address_space *address = mdev->transport.address;

@@ -662,7 +662,8 @@ static int m9_submit_first_triangle(struct m9x_device *mdev,
 	/* Allocate and pin every private diagnostic BO before reserving the
 	 * userspace color BO.  Later transport work then performs no nested TTM
 	 * reservation under the color reservation. */
-	ret = m9x_triangle_prepare_diag(mdev);
+	ret = m9x_faa_diag_enabled() ? m9x_faa_prepare_diag(mdev) :
+		m9x_triangle_prepare_diag(mdev);
 	if (ret)
 		return ret;
 	gem = drm_gem_object_lookup(file, ref.handle);
@@ -710,8 +711,11 @@ static int m9_submit_first_triangle(struct m9x_device *mdev,
 	ret = dma_resv_reserve_fences(gem->resv, 1);
 	if (ret)
 		goto out_unreserve;
-	ret = m9x_submit_triangle_diag(mdev, lower_32_bits(address), vram,
-				       &args->out_point, &color_active);
+	ret = m9x_faa_diag_enabled() ?
+		m9x_faa_submit_diag(mdev, lower_32_bits(address), vram,
+				  &args->out_point, &color_active) :
+		m9x_submit_triangle_diag(mdev, lower_32_bits(address), vram,
+					&args->out_point, &color_active);
 	if (color_active) {
 		/* A timed-out local draw can keep writing after the ioctl returns.
 		 * The draw path transferred its unsignaled fence, pin and GEM
@@ -1362,6 +1366,10 @@ static int m9_submit_ioctl(struct drm_device *drm, void *data,
 		return m9_submit_first_triangle(mdev, file, args);
 	}
 	if (!flags || flags == PARHELIA_M9_SUBMIT_QUEUED) {
+		/* The private capture intentionally owns a complete FAA context.
+		 * It is a one-shot diagnostic, not a context-switch implementation. */
+		if (m9x_faa_diag_enabled())
+			return -EACCES;
 		if (!m9_user_submit)
 			return -EOPNOTSUPP;
 		if (flags && !m9_async_submit)

@@ -1242,6 +1242,7 @@ void m9x_fini(struct m9x_device *mdev)
 	kfree(bos);
 	kfree(pinned);
 	kfree(retired);
+	m9x_faa_fini(mdev);
 	m9x_triangle_fini(mdev);
 	if (fence) {
 		dma_fence_set_error(&fence->base, -EIO);
