@@ -180,8 +180,9 @@ the m9x commit messages and `src/gallium/drivers/m9x/M9_BRINGUP.md`.
 engine limit; the vendor splits passes), out of interpolation registers in
 the splitter, control flow that
 specialisation does not fold, "no value splits this shader", a per-fragment
-texture bias (TXB from a varying; CAPTURED as a two-pass bias route, not yet
-implemented), the shadow reference clamp
+texture bias (the literal-bias two-pass route is CAPTURED; varying bias
+and mip-selection semantics still need the prepared vendor probes in
+`parhelia-m9-txb-capture-boundary.md`, and remain unimplemented), the shadow reference clamp
 for fixed-point depth, dual-source blending, sRGB render targets, and logic
 ops (captured, `parhelia-m9-logic-op.md`, not yet implemented).
 

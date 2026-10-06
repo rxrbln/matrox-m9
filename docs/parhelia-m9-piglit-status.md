@@ -82,9 +82,9 @@ glsl-1.20 tests into real results.
   engine limit (`parhelia-m9-raster-stream-limit-re.md` section 6: registers
   0x40+8i, i=0..5; a seventh reads garbage); the vendor splits into passes
   (vs-varyings-max: 14 varyings as 2/6/6), so the open question is why the
-  splitter's interpolant cut does not fire.  Per-fragment TXB is CAPTURED
-  (fs-tex2d-bias, two-pass with the LOD as the route's third component) and
-  implementable.  Control flow, value splits and the shadow reference clamp
+  splitter's interpolant cut does not fire.  The TXB record route is CAPTURED with literal bias +1 and no mip filtering;
+  varying bias and mip-selection semantics still require the prepared vendor
+  probes ([capture boundary](parhelia-m9-txb-capture-boundary.md)).  Control flow, value splits and the shadow reference clamp
   are not started.
 * Regressions after c4dd850: only max-samplers (+ border) is real (passes
   5/5 on c4dd850); bisect candidates a535381, fs3 32eabe7..b885bdd, vs
