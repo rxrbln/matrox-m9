@@ -4,7 +4,8 @@
 # M9 open topics and evidence, 2026-10-06
 
 This ledger reconciles the independent M9 (`102b:0540`, `m9x`) userspace
-source at **a9c5668** and kernel **4b84cbc** (native resource-tested7443ff6; last timedemo bd24336), the October 2 piglit results, and the feature-specific
+source at **05c25ed** and kernel **8b4e339** (native combined controls at
+a9c5668/4b84cbc; last timedemo bd24336), the October 2 piglit results, and the feature-specific
 RE notes. It is a work queue, not a new hardware result. The user has installed
 an M9 in nano for deployment and FAA testing; results from that new installation
 must record the actual adapter/subsystem identity, boot, kernel and Mesa hashes.
@@ -87,7 +88,7 @@ are queued. Some have partial vendor evidence, but they are not all closed.
 | 4 | texture layout and filtered copies | Cube faces larger than 16 are not placed; non-halving filtered engine copies have known failures | Trace the vendor cube address/layout calculator above the packed tail; use existing `blitlin:75x37`, `blitlin:74x37` and `blitlin:100x40` controls for the copy issue |
 | 4 | MRT blending and combined operations | Four unblended targets work; blending has per-target replay, but single-pass destination reads for RT1..3 and combined stencil/discard/split cases remain open | Capture destination-read registers and program image for RT1..3 blend, and verify each target plus retained BO membership |
 | 5 | performance and GPU geometry | Last measured bd24336 at1024x768/vsync0:56.6FPS,99.2% native calls;55jobs/frame,zero uniform splits. GPU polygon offset passes native depth-tested and depth-disabled controls; FPS not remeasured | Reduce remaining submission costs; retain measured packing and batching |
-| 5 | presentation and async submission | Native last-job retirement, EGL fence poll and GLFinish without readback pass.1024x768 GLX copy presentation passes; opt-in flip test switches real DC_START addresses but output-enable reports sending nothing(-67). Only one job remains outstanding | Qualify physical flip output and mode-enable status; implement independently owned secondary slots and CPU arenas for multiple outstanding jobs |
+| 5 | presentation and async submission | Native single-job retirement, EGL fence poll and GLFinish without readback pass. Copy presentation passes; opt-in flip switches DC_START but output enable reports -67. Four-job opt-in queue is integrated and passes offline ownership checks; native queue proof remains open | Qualify queue matrix/depth and shared-FS vertex-program A/B/A ownership, then one short1024x768/vsync0 Q3 run; qualify physical flip output separately |
 | 6 | 10-bit masks and conversion | Unblended single-target partial masks use a constant-color blend fallback; already-blended and multiple-target partial masks remain refused, and converting readback needs current retest | Prove the existing unblended mask fallback, implement captured mask lowering for combined cases, then test converting readback and linear filtering |
 | 6 | 10-bit display verification | M9128 KMS/GBM/EGL 30-bit path passed; panel precision and transmitter depth remain unverified | Repeat on the installed board and inspect the physical output; keep raw storage precision distinct from panel output precision |
 | 7 | query and kernel lifetime/recovery | Query counter wrap, split-pass sample accounting and fault/recovery boundaries require targeted qualification | Audit the current kernel first, then submit a bounded wrap/lifetime test to the target owner; no unsupported arbitrary requester state |
