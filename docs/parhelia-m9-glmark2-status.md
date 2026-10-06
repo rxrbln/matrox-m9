@@ -35,7 +35,11 @@ Mesa20b02d4 now implements the actual vendor preprocessing stage publication,
 restart and index43 dependencies in one range, with live framed lengths.
 Root build/batch/sourcewitness and independent framing/lifetime review pass.
 [Corrected integration proof](../tests/m9-gl2-pre-transition-build-20261006/README.md);
-corrected physical qualification remains pending.
+Corrected physical qualification also FAILS220/writeback161, despite
+preceding blit100/clear160retirement. No stage-specific stall or eventual
+completion proof follows from that100mswatchdog snapshot. The source fix stays;
+read-only fence observation and bounded stage isolation are next.
+See [corrected device proof](../tests/m9-gl2-pre-transition-hardware-20261006/README.md).
 See [actual device evidence](../tests/m9-gl2-route-hardware-20261006/README.md).
 
 ## 2026-10-06: wireframe compiles natively; physical dispatch fails
