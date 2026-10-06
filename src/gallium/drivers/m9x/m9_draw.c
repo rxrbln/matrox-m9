@@ -173,7 +173,8 @@ m9_extra_dependency(const struct m9_draw_job *job)
 {
    if (!job->vs_extra_entry)
       return 0;
-   return job->vs_gather_entry ? 0x40u : 0x20u;
+   return job->vs_producer_entry ? 0x60u :
+          job->vs_gather_entry ? 0x40u : 0x20u;
 }
 
 /* Dependency token a pass starts at; its raster range begins two steps in
@@ -198,6 +199,7 @@ m9_draw_job_final_dependency(const struct m9_draw_job *job)
 
 /* The three shapes a preprocessing draw of one job takes. */
 enum m9_pre_kind {
+   M9_PRE_PRIMARY,  /* source-fed clip position and the two primary streams */
    M9_PRE_HEAD,     /* the tail-free head, writes the varyings it carries */
    M9_PRE_GATHER,   /* route-fed, de-interleaves the head's record */
    M9_PRE_FUSED,    /* the job's own pass, with the appended tail */
@@ -859,7 +861,12 @@ m9_draw_job_valid(const struct m9_draw_job *job)
    if (job->vs_gather_entry &&
        (!job->vs_extra_entry ||
         job->vs_record_view < M9_TRANSIENT_VS_RECORD_VIEW ||
-        job->vs_record_view + job->vs_extra_targets > M9_TRANSIENT_VIEWS))
+        job->vs_record_view + job->vs_extra_targets +
+           (job->vs_producer_entry ? 3u : 0u) > M9_TRANSIENT_VIEWS))
+      return false;
+   if (job->vs_producer_entry &&
+       (!job->vs_gather_entry || !job->vs_fused_view ||
+        job->vs_extra_targets > 3 || m9_vs_record_mode() < 2))
       return false;
    if (job->pass_count) {
       /* Every pass but the last renders into the record, so a split job
@@ -959,14 +966,22 @@ m9_batch_emit_draw_job(struct m9_batch *batch, const struct m9_draw_job *job)
          /* Varyings 1..4 come from a draw of their own, ahead of the fused
           * pass: the appended tail owns three of the four output targets
           * and scratches the register behind the fourth. */
-         if (job->vs_extra_entry) {
+         if (job->vs_producer_entry) {
             ret = m9_emit_preprocess(batch, job, decl, decl_count,
                                      record_bytes, const_pairs, base,
+                                     M9_PRE_PRIMARY);
+            if (ret)
+               goto fail;
+         }
+         if (job->vs_extra_entry) {
+            unsigned first = job->vs_producer_entry ? 0x20u : 0;
+            ret = m9_emit_preprocess(batch, job, decl, decl_count,
+                                     record_bytes, const_pairs, base + first,
                                      M9_PRE_HEAD);
             if (!ret && job->vs_gather_entry)
                ret = m9_emit_preprocess(batch, job, decl, decl_count,
                                         record_bytes, const_pairs,
-                                        base + 0x20, M9_PRE_GATHER);
+                                        base + first + 0x20, M9_PRE_GATHER);
             if (ret)
                goto fail;
          }
@@ -998,6 +1013,7 @@ fail:
  * sets with no exception (docs/parhelia-m9-varying-transport-re.md
  * section 4).  Bits 19/21/23 enable targets 1..3; target 0 is always on. */
 #define M9_PRE_ROLE_FIRST  0x00000200u
+#define M9_PRE_ROLE_SOURCE 0x00000400u
 #define M9_PRE_ROLE_MID    0x00000600u
 #define M9_PRE_ROLE_ONLY   0x00000800u
 #define M9_PRE_ROLE_LAST   0x00000e00u
@@ -1035,6 +1051,21 @@ m9_draw_vs_extra_relocs(unsigned target_count)
    return 2 * (target_count + 6) + target_count;
 }
 
+unsigned
+m9_draw_vs_producer_dwords(unsigned decl_count)
+{
+   /* One three-target source producer, plus final routes 0..2. The older
+    * extra/gather upper bound already charges the longer source declaration
+    * for the gather, so changing it to the terminator only cannot exceed it. */
+   return M9_JOB_EXTRA_DWORDS + 9 + m9_draw_decl_dwords(decl_count) + 10 + 12;
+}
+
+unsigned
+m9_draw_vs_producer_relocs(void)
+{
+   return 3 + 6 + 3;  /* producer targets/state and three final routes */
+}
+
 /* Preprocessing pass: two dependency steps from base.  The extra form runs
  * the tail-free head, binding one stream target a varying and no clip code;
  * everything else -- the declaration, the source record, the constant span
@@ -1046,8 +1077,18 @@ m9_emit_preprocess(struct m9_batch *batch, const struct m9_draw_job *job,
                    enum m9_pre_kind kind)
 {
    bool extra = kind != M9_PRE_FUSED;
+   bool chain = job->vs_producer_entry != 0;
+   bool primary = kind == M9_PRE_PRIMARY;
+   unsigned routes = chain && kind == M9_PRE_FUSED ? 3u :
+                     kind == M9_PRE_GATHER ? job->vs_extra_targets : 0;
+   uint32_t terminator = M9_DECL_END;
+   if (chain && routes) {
+      decl = &terminator;
+      decl_count = 1;
+   }
    bool packed = m9_vs_record_mode() >= 2 && job->vs_gather_entry;
-   unsigned targets = extra ? job->vs_extra_targets : 0;
+   unsigned targets = primary ? 3u : extra ? job->vs_extra_targets : 0;
+   unsigned fields = job->vs_extra_targets + 3;
    int ret = 0;
 
    EMIT(V(0xe6, 3), V(0xe3, base));
@@ -1055,8 +1096,10 @@ m9_emit_preprocess(struct m9_batch *batch, const struct m9_draw_job *job,
    /* The AA mode edit belongs to the raster range: it is lowered from the
     * surface shadow, and a preprocessing pass binds no render target. */
    EMIT(V(0xf0, 0xf0000400),
-        V(0xef, kind == M9_PRE_HEAD ?
-                   m9_preprocess_ef(targets, M9_PRE_ROLE_FIRST) :
+        V(0xef, primary ? m9_preprocess_ef(targets, M9_PRE_ROLE_FIRST) :
+                kind == M9_PRE_HEAD ?
+                   m9_preprocess_ef(targets, chain ? M9_PRE_ROLE_SOURCE :
+                                                   M9_PRE_ROLE_FIRST) :
                 kind == M9_PRE_GATHER ?
                    m9_preprocess_ef(targets, M9_PRE_ROLE_MID) :
                         m9_preprocess_ef(3, job->vs_extra_entry ?
@@ -1066,14 +1109,17 @@ m9_emit_preprocess(struct m9_batch *batch, const struct m9_draw_job *job,
         V(0xd7, 0x000050ae));
    EMIT(V(0x22, m9_preprocess_control(decl_count)));
    EMIT(V(0xe6, 3), V(0xe3, base + 0x10));
-   if (kind == M9_PRE_HEAD) {
+   if (primary || kind == M9_PRE_HEAD) {
       /* The captured chain writes one packed record, every target of the
        * draw at its own dword offset of the same object. */
       for (unsigned t = 0; t < targets; t++)
          EMIT(R(0xb0 + 2 * t, job->transient,
                 VIEW(packed ? job->vs_record_view : job->vs_extra_view[t]),
                 STREAM),
-              V(0xb1 + 2 * t, m9_vs_extra_desc(t, targets)));
+              V(0xb1 + 2 * t, chain ?
+                   m9_record_desc(M9_RECORD_SLOT, 4 * fields,
+                                  4 * (primary ? t : t + 3)) :
+                   m9_vs_extra_desc(t, targets)));
    } else if (kind == M9_PRE_GATHER) {
       for (unsigned t = 0; t < targets; t++)
          EMIT(R(0xb0 + 2 * t, job->transient, VIEW(job->vs_extra_view[t]),
@@ -1124,14 +1170,18 @@ m9_emit_preprocess(struct m9_batch *batch, const struct m9_draw_job *job,
     * 0xfffc, 0xfff8, 0xfff0, 0xffe0 -- so the extra draw claims them all,
     * which is the captured 0x0100ffff. */
    EMIT(V(0x88, (BITFIELD_MASK((decl_count - 1) / 2) << 24) |
-                (extra ? 0x0000ffffu : 0x0000bf00u)),
+                (chain ? BITFIELD_MASK(routes) << 20 : 0) |
+                (primary ? job->vs_producer_mask :
+                 chain && kind == M9_PRE_HEAD ? job->vs_extra_mask :
+                 extra ? 0x0000ffffu : 0x0000bf00u)),
         V(0x89, 0xfe201e92), V(0x8a, 0), V(0xc1, 0));
    EMIT(R(0x00, job->source, 0, SYSTEM), V(0x01, 0xf2fe014f),
         V(0x10, record_bytes));
    /* The vertex program of a split shader sits behind every fragment
     * pass, so its entry comes from the passes when fs is unset. */
    EMIT(R(0xc2, job->program, 0, PROGRAM),
-        V(0xc3, kind == M9_PRE_HEAD ? job->vs_extra_entry :
+        V(0xc3, primary ? job->vs_producer_entry :
+                kind == M9_PRE_HEAD ? job->vs_extra_entry :
                 kind == M9_PRE_GATHER ? job->vs_gather_entry :
                 job->fs ? job->fs->vertex_entry :
                 job->pass_count ? job->passes[0].fs.vertex_entry : 4),
@@ -1146,11 +1196,15 @@ m9_emit_preprocess(struct m9_batch *batch, const struct m9_draw_job *job,
    /* The gather reads the head's record: one route a varying, each naming
     * the record and the field the draw's own output pair takes.  These
     * restate the idle words m9_emit_units just wrote. */
-   if (kind == M9_PRE_GATHER)
-      for (unsigned t = 0; t < targets; t++)
-         EMIT(V(0x74 + t, m9_vs_gather_route(t)),
+   if (kind == M9_PRE_GATHER || (chain && kind == M9_PRE_FUSED))
+      for (unsigned t = 0; t < routes; t++) {
+         unsigned field = chain && kind == M9_PRE_GATHER ? t + 3 : t;
+         EMIT(V(0x74 + t, m9_vs_gather_route(field)),
               R(0x78, job->transient, VIEW(job->vs_record_view), TEXTURE),
-              V(0x79, m9_vs_extra_desc(t, targets)));
+              V(0x79, chain ? m9_record_desc(M9_RECORD_SLOT, 4 * fields,
+                                            4 * field) :
+                             m9_vs_extra_desc(t, targets)));
+      }
    EMIT(V(0xec, 0), V(0xf4, 0x00010004), V(0xea, 0), V(0xeb, 0x46000000));
    EMIT(V(0x30, 0));
    EMIT(V(0x28, 0));

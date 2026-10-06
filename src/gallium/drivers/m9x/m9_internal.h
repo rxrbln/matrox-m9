@@ -365,6 +365,7 @@ struct m9_job_key {
    /* Program slot of the route-fed draw that de-interleaves the second
     * head's record into the stream views the raster stage reads. */
    uint32_t vs_gather_entry;
+   uint32_t vs_producer_entry;
    /* Stream targets that draw binds: the varying indices past the two the
     * fused pass carries that the fragment program reads, so a varying
     * nothing reads costs no target. */
@@ -645,6 +646,8 @@ struct m9_context {
    bool queries_enabled;        /* pipe set_active_query_state, recorded */
    uint32_t submitted_draws;
    uint32_t native_vs_draws, native_vs_fallbacks;
+   /* Last successfully submitted packed-record producer, for opt-in proof. */
+   uint32_t vs_record_vertices, vs_record_fields, vs_record_view;
    /* Why the native vertex path refused, one entry a reason: the reasons
     * are static strings, so the pointer identifies them. */
    struct util_dynarray native_vs_reasons;

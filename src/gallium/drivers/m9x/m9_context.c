@@ -456,6 +456,7 @@ static bool m9_split_pad_enable = true;
  * every split job, so the slots the engine touched can be read back and
  * the record's granularity measured rather than assumed. */
 static const char *m9_record_dump;
+static const char *m9_vs_record_dump;
 /* Raster draws one split job restates.  Two of them stop the engine
  * (MEASURED, docs/parhelia-m9-fragment-pass-hardware.md), and one draw
  * also bounds the record: its fragment counter then covers a single
@@ -2761,6 +2762,10 @@ m9_submit_job(struct m9_context *ctx)
           * varyings 1..4 into the views above M9_TRANSIENT_VS_EXTRA_VIEW. */
          job.cpu_streams = 0;
          job.vs_extra_entry = key->vs_extra_entry;
+         job.vs_producer_entry = key->vs_producer_entry;
+         job.vs_producer_mask = m9_vs_source_mask(key->vs, true);
+         job.vs_extra_mask = key->vs_producer_entry ?
+                             m9_vs_source_mask(key->vs, false) : 0xffff;
          /* Only the packed record needs the draw that de-interleaves it. */
          job.vs_gather_entry = m9_vs_record_mode() >= 2 ?
                                key->vs_gather_entry : 0;
@@ -2875,6 +2880,20 @@ m9_submit_job(struct m9_context *ctx)
    } else {
       ctx->last_point = point;
       ctx->record_written |= pass_count > 1;
+      if (key->vs_producer_entry && !ctx->dry_run) {
+         ctx->vs_record_vertices = job.source_vertices;
+         ctx->vs_record_fields = job.vs_extra_targets + 3;
+         ctx->vs_record_view = job.vs_record_view;
+         if (ctx->debug)
+            fprintf(stderr, "m9x: native route chain fields %u vertices %u "
+                    "entries %u/%u/%u/%u masks %04x/%04x -> %#" PRIx64 "\n",
+                    ctx->vs_record_fields, ctx->vs_record_vertices,
+                    job.vs_producer_entry, job.vs_extra_entry, job.vs_gather_entry,
+                    job.fs ? job.fs->vertex_entry : passes[0].fs.vertex_entry,
+                    job.vs_producer_mask, job.vs_extra_mask, point);
+      } else {
+         ctx->vs_record_vertices = 0;
+      }
       m9_prof_relocs = MAX2(m9_prof_relocs, ctx->batch.reloc_count);
       if (ctx->debug)
          fprintf(stderr, "m9x: job %u records %u draws vsruns %u a8 %08x ef %08x "
@@ -2969,6 +2988,7 @@ m9_job_reserve(struct m9_context *ctx, const struct m9_job_key *key,
    /* The bound textures are restated per draw, so they need not end a job;
     * only their extra stream words have to fit the command budget. */
    unsigned passes = copies;
+   unsigned pre_copies = m9_split_preprocess ? MAX2(passes, 1u) : 1u;
    bool vs_batchable = m9_vs_uniforms_batchable(key);
    bool vs_changed = key->vs && m9_vs_uniforms_differ(ctx, vs_consts);
    unsigned vs_runs = util_dynarray_num_elements(&ctx->job_vs_runs,
@@ -2989,8 +3009,10 @@ m9_job_reserve(struct m9_context *ctx, const struct m9_job_key *key,
              m9_draw_job_dwords(draws + 1)) +
             m9_draw_decl_dwords(key->vs ? 2 * key->vs->attr_count + 1 : 5) +
             (key->vs && key->vs_extra_entry ?
-             m9_draw_vs_extra_dwords(key->vs_extra_targets,
-                                     2 * key->vs->attr_count + 1) : 0) +
+             pre_copies * (m9_draw_vs_extra_dwords(key->vs_extra_targets,
+                                     2 * key->vs->attr_count + 1) +
+             (key->vs_producer_entry ?
+              m9_draw_vs_producer_dwords(2 * key->vs->attr_count + 1) : 0)) : 0) +
             m9_faa_raster_dwords(&ctx->screen->faa) * MAX2(passes, 1u) +
             (key->depth_bias ? M9_DEPTH_BIAS_DWORDS : 0);
    /* Every additional run adds a five-word constant packet and a numeric
@@ -3027,7 +3049,9 @@ m9_job_reserve(struct m9_context *ctx, const struct m9_job_key *key,
                          m9_variant_relocs(key->variant, draws + 1) :
                          m9_draw_job_relocs(draws + 1, key->unit_count)) +
                         (key->vs && key->vs_extra_entry ?
-                         m9_draw_vs_extra_relocs(key->vs_extra_targets) : 0) +
+                         pre_copies * (m9_draw_vs_extra_relocs(key->vs_extra_targets) +
+                         (key->vs_producer_entry ?
+                          m9_draw_vs_producer_relocs() : 0)) : 0) +
                         m9_faa_raster_relocs(&ctx->screen->faa) *
                         MAX2(passes, 1u);
       relocs += new_vs_runs ? 2 * (new_vs_runs - 1) : 0;
@@ -5396,7 +5420,8 @@ m9_vs_fused_pair(const struct m9_vs_program *p)
 static uint32_t
 m9_native_vs_c2(struct m9_context *ctx, struct m9_fs_variant *v,
                 const struct m9_vs_variant *vs,
-                unsigned *extra_entry, unsigned *gather_entry)
+                unsigned *extra_entry, unsigned *gather_entry,
+                unsigned *producer_entry)
 {
    struct m9_resource *image = v ? &v->native_c2 : &ctx->vs_c2;
    struct m9_resource fresh = {0};
@@ -5406,11 +5431,12 @@ m9_native_vs_c2(struct m9_context *ctx, struct m9_fs_variant *v,
                                   m9_passthrough_c2_program;
    unsigned fs_slots_count = v ? m9_fs_slot_count(m9_fs_final(v)) :
                                  M9_PASSTHROUGH_FS_SLOTS;
-   unsigned entry = 0, extra = 0, gather = 0;
+   unsigned entry = 0, extra = 0, gather = 0, producer = 0;
    uint64_t bytes = align64(8ull * (fs_slots_count +
                                     m9_vs_slot_count(&vs->program) +
                                     m9_vs_extra_slot_count(&vs->program) +
-                                    m9_vs_gather_slot_count(&vs->program)),
+                                    m9_vs_gather_slot_count(&vs->program) +
+                                    m9_vs_producer_slot_count(&vs->program)),
                             0x1000);
 
    /* The second head sits behind the first and the gather behind that, so
@@ -5420,6 +5446,10 @@ m9_native_vs_c2(struct m9_context *ctx, struct m9_fs_variant *v,
    *gather_entry = m9_vs_gather_slot_count(&vs->program) ?
                    fs_slots_count + m9_vs_slot_count(&vs->program) +
                    m9_vs_extra_slot_count(&vs->program) : 0;
+   *producer_entry = m9_vs_producer_slot_count(&vs->program) ?
+      fs_slots_count + m9_vs_slot_count(&vs->program) +
+      m9_vs_extra_slot_count(&vs->program) +
+      m9_vs_gather_slot_count(&vs->program) : 0;
    if (ctx->screen->queued_submit) {
       /* This runs before a changed job key flushes earlier recorded draws.
        * Keep their handle alive as well as the kernel-owned posted readers;
@@ -5445,9 +5475,9 @@ m9_native_vs_c2(struct m9_context *ctx, struct m9_fs_variant *v,
    if (!m9_vs_c2_image(&vs->program, fs_slots, fs_slots_count, image->map,
                        image->size / sizeof(uint32_t),
                        m9_vs_fused_pair(&vs->program), &entry, &extra,
-                       &gather) ||
+                       &gather, &producer) ||
        entry != fs_slots_count || extra != *extra_entry ||
-       gather != *gather_entry) {
+       gather != *gather_entry || producer != *producer_entry) {
       if (ctx->screen->queued_submit)
          m9_bo_destroy(ctx->screen, image);
       return 0;
@@ -5851,7 +5881,8 @@ m9_native_vs_layout(struct m9_context *ctx, const struct m9_job_key *key,
                    "second output target (M9X_VS_COORD_PAIR)";
       }
    }
-   return NULL;
+   return out->count > M9_VS_FUSED_VARYINGS && m9_vs_record_mode() < 2 ?
+          "multi-stream route-fed output needs M9X_VS_RECORD=2" : NULL;
 }
 
 /* Why the engine would not run this compiled program, or NULL.  Both bounds
@@ -5859,7 +5890,12 @@ m9_native_vs_layout(struct m9_context *ctx, const struct m9_job_key *key,
 static const char *
 m9_vs_program_refusal(const struct m9_vs_program *p)
 {
-   if (m9_vs_slot_count(p) > m9_vs_max_slots)
+   /* The tail-free producer must meet the same ALU bound as the ordinary
+    * source-plus-tail shader. Routing cannot evade the admission limit. */
+   if (m9_vs_slot_count(p) > m9_vs_max_slots ||
+       (m9_vs_producer_slot_count(p) &&
+        m9_vs_producer_slot_count(p) + M9_VS_TAIL_SLOTS > m9_vs_max_slots) ||
+       m9_vs_extra_slot_count(p) > m9_vs_max_slots)
       return "the compiled vertex program is past M9X_VS_MAX_SLOTS";
    if (m9_vs_const_count(p) > m9_vs_max_const_pairs)
       return "the vertex program's constant span is past "
@@ -6446,11 +6482,11 @@ m9_native_vs_draw(struct m9_context *ctx, const struct pipe_draw_info *info,
    key.vs = &variant->program;
    key.vs_program = m9_native_vs_c2(ctx, (struct m9_fs_variant *)key.variant,
                                     variant, &key.vs_extra_entry,
-                                    &key.vs_gather_entry);
+                                    &key.vs_gather_entry, &key.vs_producer_entry);
    key.vs_fused_pair = m9_vs_fused_pair(key.vs);
    key.vs_extra_targets = m9_native_vs_extra_targets(key.vs);
    if (!key.vs_extra_targets)
-      key.vs_extra_entry = key.vs_gather_entry = 0;
+      key.vs_extra_entry = key.vs_gather_entry = key.vs_producer_entry = 0;
    if (!key.vs_program) {
       m9_native_vs_note(ctx, "the vertex program image could not be built");
       return false;
@@ -7975,7 +8011,8 @@ m9_vs_spec_for(struct m9_vs_state *vs, const uint32_t *values)
    if (spec->native) {
       spec->slots = m9_vs_slot_count(&spec->program) +
                     m9_vs_extra_slot_count(&spec->program) +
-                    m9_vs_gather_slot_count(&spec->program);
+                    m9_vs_gather_slot_count(&spec->program) +
+                    m9_vs_producer_slot_count(&spec->program);
       spec->consts = m9_vs_const_count(&spec->program);
       util_dynarray_foreach(&spec->program.consts, struct m9_vs_const, k)
          if (k->kind == M9_VS_CONST_LITERAL)
@@ -8788,6 +8825,38 @@ m9_context_flush(struct pipe_context *pctx,
               ctx->params.width, ctx->params.height, m9_record_dump);
       ctx->record_written = false;
    }
+   if (m9_vs_record_dump && !ctx->lost && ctx->vs_record_vertices &&
+       m9_wait_for_point(ctx->screen, ctx->last_point)) {
+      fprintf(stderr, "m9x: native packed record completion failed; context lost\n");
+      ctx->lost = true;
+      ctx->vs_record_vertices = 0;
+   }
+   if (m9_vs_record_dump && !ctx->lost && ctx->vs_record_vertices &&
+       ctx->transient.map) {
+      uint32_t fields = ctx->vs_record_fields;
+      uint64_t offset = (uint64_t)ctx->vs_record_view * m9_transient_view_bytes();
+      uint64_t bytes = (uint64_t)ctx->vs_record_vertices * fields * 16;
+      if (fields >= 4 && fields <= M9_VS_MAX_VARYINGS + 1 &&
+          offset <= ctx->transient.size && bytes <= ctx->transient.size - offset) {
+         /* sync submitted pending work and the explicit wait retired the
+          * last writer of this live arena. This
+          * opt-in dump only reads GPU output; no native vertex result is
+          * filled or transformed by the CPU. */
+         uint32_t header[] = { 0x4d395652u, fields, ctx->vs_record_vertices,
+                               ctx->vs_record_view };
+         FILE *f = fopen(m9_vs_record_dump, "wb");
+         if (f) {
+            bool written = fwrite(header, sizeof(header), 1, f) == 1 &&
+               fwrite((const uint8_t *)ctx->transient.map + offset, bytes, 1, f) == 1;
+            fclose(f);
+            if (written)
+               fprintf(stderr, "m9x: native packed record fields %u vertices %u "
+                       "bytes %" PRIu64 " -> %s\n", fields, ctx->vs_record_vertices,
+                       bytes, m9_vs_record_dump);
+         }
+      }
+      ctx->vs_record_vertices = 0;
+   }
    if (out_fence) {
       if (!ctx->lost)
          fence = m9_fence_create(ctx->last_point, !ctx->last_point);
@@ -9049,6 +9118,7 @@ m9_context_create(struct pipe_screen *pscreen, void *priv, unsigned flags)
    m9_split_be = debug_get_num_option("M9X_SPLIT_BE", 3);
    m9_split_pad_enable = debug_get_bool_option("M9X_SPLIT_PAD", true);
    m9_record_dump = debug_get_option("M9X_RECORD_DUMP", NULL);
+   m9_vs_record_dump = debug_get_option("M9X_VS_RECORD_DUMP", NULL);
    m9_split_draws = debug_get_num_option("M9X_SPLIT_DRAWS", 1);
    m9_record_89 = debug_get_num_option("M9X_RECORD_89", 0);
    m9_fragdepth_state = debug_get_bool_option("M9X_FRAGDEPTH", true);

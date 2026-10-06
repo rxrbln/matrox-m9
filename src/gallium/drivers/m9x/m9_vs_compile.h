@@ -263,12 +263,17 @@ struct m9_vs_program {
    unsigned attr_count;
    uint64_t inputs_read;          /* gl_vert_attrib mask of the shader */
    uint32_t record_bytes;
-   /* Varying 0 rides the fused pass; 1..4 the second head in extra. */
+   /* Past two streams: a source-fed first producer and source-fed extra
+    * continuation pack every output. Gather extracts the extra streams;
+    * slots is then a route-fed final head plus the appended epilogue. */
    struct util_dynarray extra;    /* uint32_t W0, W1 of the second head */
    /* The route-fed draw that de-interleaves the head's record into the
     * stream views the raster stage reads, one register-pair move a
     * varying (CAPTURED, vs-varyings-4's c3=27). */
    struct util_dynarray gather;
+   /* Source-fed first draw: clip position and the two primary streams,
+    * written as fields 0..2 of one retained packed record. */
+   struct util_dynarray producer;
    /* Output streams, one an output target.  varying_count is their number,
     * whatever kind they are. */
    unsigned varying_count;
@@ -314,20 +319,23 @@ unsigned m9_vs_extra_slot_count(const struct m9_vs_program *program);
 /* Instruction slots of the gather draw, stop pair included; 0 with no
  * second head. */
 unsigned m9_vs_gather_slot_count(const struct m9_vs_program *program);
+unsigned m9_vs_producer_slot_count(const struct m9_vs_program *program);
+/* Register-pair availability of a source-fed, tail-free output producer. */
+uint16_t m9_vs_source_mask(const struct m9_vs_program *program, bool primary);
 /* Writes head, tail and stop pair; returns the dwords written, 0 if max is
  * too small.  fused_pair moves the tail's scratch off target 3's low half,
  * which the caller asks for exactly when it binds that target. */
 unsigned m9_vs_emit(const struct m9_vs_program *program, uint32_t *out,
                     unsigned max_dwords, bool fused_pair);
-/* Assembles the c2 image the two-pass job binds: fragment slots first, the
- * compiled vertex program behind them, as m9_fs_variant_upload lays it out
- * for the captured program.  Reports the vertex entry slot, which is what
- * index c3 carries.  Returns the dwords written, 0 if max is too small. */
+/* Assembles the C2 image: fragment, final vertex, continuation, gather,
+ * first producer. Reports each native entry independently; execution order
+ * comes from the live preprocessing chain, not image order. Returns the
+ * dwords written, 0 if max is too small. */
 unsigned m9_vs_c2_image(const struct m9_vs_program *program,
                         const uint32_t *fs_slots, unsigned fs_slot_count,
                         uint32_t *out, unsigned max_dwords, bool fused_pair,
                         unsigned *vertex_entry, unsigned *extra_entry,
-                        unsigned *gather_entry);
+                        unsigned *gather_entry, unsigned *producer_entry);
 
 /* Resolves the user constants into the preprocessing span, pair p at
  * out[2 * p], leaving pairs 9..21 untouched for the caller's viewport and

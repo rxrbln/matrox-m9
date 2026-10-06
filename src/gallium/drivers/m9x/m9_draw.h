@@ -158,6 +158,9 @@ struct m9_draw_job {
     * the stream view above, which is what every captured chain does.  Zero
     * leaves the head writing those views itself. */
    unsigned vs_gather_entry;
+   /* Nonzero selects the bounded fully route-fed multi-stream chain. */
+   unsigned vs_producer_entry;
+   uint16_t vs_producer_mask, vs_extra_mask;
    uint32_t vs_record_view;   /* transient view the packed record starts at */
    /* Raster texture units, texel pair order. */
    const struct m9_texture_unit *units;
@@ -222,6 +225,8 @@ unsigned m9_draw_decl_dwords(unsigned decl_count);
  * pass that preprocesses for itself. */
 unsigned m9_draw_vs_extra_dwords(unsigned target_count, unsigned decl_count);
 unsigned m9_draw_vs_extra_relocs(unsigned target_count);
+unsigned m9_draw_vs_producer_dwords(unsigned decl_count);
+unsigned m9_draw_vs_producer_relocs(void);
 unsigned m9_draw_job_relocs(unsigned draw_count, unsigned unit_count);
 /* Dwords and relocations each colour attachment past the first costs: one
  * address/descriptor packet and its COLOR relocation, per raster pass. */

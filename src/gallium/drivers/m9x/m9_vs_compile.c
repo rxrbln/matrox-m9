@@ -131,7 +131,7 @@ struct ctx {
    /* Lanes whose result the output registers take directly. */
    struct out_pin {
       unsigned def, lane, reg;
-   } pins[4];
+   } pins[2 * M9_VS_MAX_ROUTES];
    unsigned pin_count;
    unsigned temp_seq;
    /* Temporaries of earlier instructions are dead: only one raised past
@@ -2165,7 +2165,8 @@ compile_head(struct ctx *c, nir_block *block, unsigned final,
              const struct input_use *used, unsigned inputs,
              nir_intrinsic_instr *position,
              nir_intrinsic_instr *const *var,
-             const struct m9_vs_output *ostream, unsigned base, unsigned nvar)
+             const struct m9_vs_output *ostream, unsigned base, unsigned nvar,
+             bool packed_primary)
 {
    static const float dflt[4] = { 0.0f, 0.0f, 0.0f, 1.0f };
 
@@ -2178,7 +2179,24 @@ compile_head(struct ctx *c, nir_block *block, unsigned final,
    c->index = 0;
    c->temp_live = false;
    head_dependencies(c, block, final, position, var, ostream, nvar);
-   if (position) {
+   if (c->p->producer.size || packed_primary) {
+      /* Tail-free source draws have no clip-code target. Keep its register
+       * and pair 16 outside the 16-bit availability mask out of the pool. */
+      c->reserved[0x20] = c->reserved[0x21] = 1;
+   }
+   if (packed_primary) {
+      for (unsigned j = 0; j < M9_VS_MAX_ROUTES; j++) {
+         c->reserved[REG_OUT_LO(j)] = 1;
+         c->reserved[REG_OUT_HI(j)] = 1;
+      }
+      pin_output(c, position, 0, REG_OUT_LO(0));
+      pin_output(c, position, 2, REG_OUT_HI(0));
+      for (unsigned j = 0; j < M9_VS_FUSED_VARYINGS; j++)
+         if (!ostream[j].coordinate) {
+            pin_output(c, var[j], 0, REG_OUT_LO(j + 1));
+            pin_output(c, var[j], 2, REG_OUT_HI(j + 1));
+         }
+   } else if (position) {
       bool coord0 = nvar && ostream[0].coordinate;
 
       pin_output(c, position, 0, REG_POS_XY);
@@ -2226,7 +2244,14 @@ compile_head(struct ctx *c, nir_block *block, unsigned final,
    c->temp_live = true;
    c->temp_base = c->temp_seq;
    memset(c->busy, 0, sizeof(c->busy));
-   if (position) {
+   if (packed_primary) {
+      if (!write_output(c, position, REG_OUT_LO(0), REG_OUT_HI(0), dflt))
+         return false;
+      for (unsigned j = 0; j < M9_VS_FUSED_VARYINGS; j++)
+         if (!write_stream(c, var[j], ostream, base, j, REG_OUT_LO(j + 1),
+                           REG_OUT_HI(j + 1), true))
+            return false;
+   } else if (position) {
       if (!write_output(c, position, REG_POS_XY, REG_POS_ZW, dflt))
          return false;
       if (!write_stream(c, nvar ? var[0] : NULL, ostream, base, 0,
@@ -2432,9 +2457,10 @@ compile_impl(struct ctx *c, nir_function_impl *impl,
       nir_foreach_src(instr, note_src, &st);
    }
 
-   c->out = &c->p->slots;
+   bool route_fed = nvar > M9_VS_FUSED_VARYINGS;
+   c->out = route_fed ? &c->p->producer : &c->p->slots;
    if (!compile_head(c, block, final, used, inputs, position, varying,
-                     out.stream, 0, nvar))
+                     out.stream, 0, nvar, route_fed))
       return false;
    /* Varyings past the two the fused pass carries are a program of their
     * own, run as the preprocessing draw ahead of it.  Each independently
@@ -2444,9 +2470,21 @@ compile_impl(struct ctx *c, nir_function_impl *impl,
       if (!compile_head(c, block, final, used, inputs, NULL,
                         varying + M9_VS_FUSED_VARYINGS,
                         out.stream + M9_VS_FUSED_VARYINGS,
-                        M9_VS_FUSED_VARYINGS, nvar - M9_VS_FUSED_VARYINGS))
+                        M9_VS_FUSED_VARYINGS, nvar - M9_VS_FUSED_VARYINGS, false))
          return false;
       compile_gather(c->p, nvar - M9_VS_FUSED_VARYINGS);
+      /* The final draw reads the packed position and first two streams
+       * through routes 0..2. Preserve route 0's ZW before replacing r02
+       * with varying 0's XY. The epilogue consumes the ordinary register
+       * convention; it does not rerun the original attribute shader. */
+      c->out = &c->p->slots;
+      static const unsigned from[] = { 2, 4, 6, 8, 10 };
+      static const unsigned to[] = { REG_POS_ZW, REG_VAR_XY, REG_VAR_ZW,
+                                    REG_OUT_LO(M9_VS_FUSED_PAIR),
+                                    REG_OUT_HI(M9_VS_FUSED_PAIR) };
+      for (unsigned i = 0; i < ARRAY_SIZE(from); i++)
+         emit(c, w0_make(NONE, NONE, from[i], to[i], 0, 0x1c),
+                 w1_make(VS_MOV | 1u << 4, NONE, NONE));
    }
    c->p->outputs = out;
    c->p->varying_count = nvar;
@@ -2485,11 +2523,12 @@ dump_program(const nir_shader *nir, const struct m9_vs_outputs *outputs,
    h = fnv1a(h, p->slots.data, p->slots.size);
    h = fnv1a(h, p->extra.data, p->extra.size);
    h = fnv1a(h, p->gather.data, p->gather.size);
+   h = fnv1a(h, p->producer.data, p->producer.size);
    h = fnv1a(h, p->consts.data, p->consts.size);
    if (outputs)
       lh = fnv1a(lh, outputs, sizeof(*outputs));
    fprintf(stderr, "m9x vs dump: src %02x%02x%02x%02x layout %08x slots %u+%u+%u "
-           "consts %u maxreg %02x words %08x\n",
+           "consts %u maxreg %02x words %08x producer %u\n",
            nir->info.source_blake3[0], nir->info.source_blake3[1],
            nir->info.source_blake3[2], nir->info.source_blake3[3],
            outputs ? lh : 0, n / 2,
@@ -2497,7 +2536,7 @@ dump_program(const nir_shader *nir, const struct m9_vs_outputs *outputs,
            (unsigned)util_dynarray_num_elements(&p->gather, uint32_t) / 2,
            (unsigned)util_dynarray_num_elements(&p->consts, struct m9_vs_const),
            maxreg,
-           h);
+           h, (unsigned)p->producer.size / 8);
    if (debug_get_num_option("M9X_VS_DUMP", 0) > 1)
       for (unsigned i = 0; i + 1 < n; i += 2)
          fprintf(stderr, "m9x vs dump: %08x %3u  %08x %08x\n", h, i / 2, w[i],
@@ -2579,6 +2618,7 @@ m9_vs_compile(struct nir_shader *nir, const struct m9_vs_outputs *outputs,
    util_dynarray_init(&p->slots, NULL);
    util_dynarray_init(&p->extra, NULL);
    util_dynarray_init(&p->gather, NULL);
+   util_dynarray_init(&p->producer, NULL);
    util_dynarray_init(&p->consts, NULL);
    util_dynarray_init(&c.keys, NULL);
    c.nir = nir;
@@ -2625,6 +2665,7 @@ m9_vs_program_fini(struct m9_vs_program *p)
    util_dynarray_fini(&p->slots);
    util_dynarray_fini(&p->extra);
    util_dynarray_fini(&p->gather);
+   util_dynarray_fini(&p->producer);
    util_dynarray_fini(&p->consts);
    memset(p, 0, sizeof(*p));
 }
@@ -2688,6 +2729,37 @@ m9_vs_gather_slot_count(const struct m9_vs_program *p)
    unsigned body = util_dynarray_num_elements(&p->gather, uint32_t);
 
    return body ? MAX2(body / 2 + 1, 4u) : 0;
+}
+
+unsigned
+m9_vs_producer_slot_count(const struct m9_vs_program *p)
+{
+   unsigned body = util_dynarray_num_elements(&p->producer, uint32_t);
+   return body ? MAX2(body / 2 + 1, 4u) : 0;
+}
+
+/* Tail-free affine producers in vs-varyings-4 reserve the contiguous
+ * scratch-pair prefix and leave bound output pairs available. Derive that
+ * prefix from this producer, not the mask of a different captured shader.
+ * Broader allocation combinations still require hardware qualification. */
+uint16_t
+m9_vs_source_mask(const struct m9_vs_program *p, bool primary)
+{
+   const struct util_dynarray *body = primary ? &p->producer : &p->extra;
+   const uint32_t *w = body->data;
+   unsigned targets = primary ? 3 : p->varying_count - M9_VS_FUSED_VARYINGS;
+   unsigned pairs = 0;
+   for (unsigned i = 0; i < body->size / 8; i++) {
+      unsigned d = w[2 * i] >> 8 & 0x7f;
+      bool output = false;
+      for (unsigned j = 0; j < targets; j++)
+         output |= d == REG_OUT_LO(j) || d == REG_OUT_HI(j);
+      if (!output) {
+         assert(d < 0x20);
+         pairs = MAX2(pairs, d / 2 + 1);
+      }
+   }
+   return (uint16_t)~BITFIELD_MASK(pairs);
 }
 
 /* Frees output pair 1 for a varying by pointing the two tail slots that
@@ -2776,13 +2848,14 @@ unsigned
 m9_vs_c2_image(const struct m9_vs_program *p, const uint32_t *fs_slots,
                unsigned fs_slot_count, uint32_t *out, unsigned max_dwords,
                bool fused_pair, unsigned *vertex_entry, unsigned *extra_entry,
-               unsigned *gather_entry)
+               unsigned *gather_entry, unsigned *producer_entry)
 {
    unsigned vs_dwords = m9_vs_slot_count(p) * 2;
    unsigned extra_dwords = m9_vs_extra_slot_count(p) * 2;
    unsigned gather_dwords = m9_vs_gather_slot_count(p) * 2;
+   unsigned producer_dwords = m9_vs_producer_slot_count(p) * 2;
    unsigned total = fs_slot_count * 2 + vs_dwords + extra_dwords +
-                    gather_dwords;
+                    gather_dwords + producer_dwords;
 
    if (!out || total > max_dwords || (fs_slot_count && !fs_slots))
       return 0;
@@ -2798,6 +2871,14 @@ m9_vs_c2_image(const struct m9_vs_program *p, const uint32_t *fs_slots,
                         out + fs_slot_count * 2 + vs_dwords + extra_dwords,
                         gather_dwords))
       return 0;
+   if (producer_dwords &&
+       !m9_vs_emit_body(&p->producer,
+                        out + fs_slot_count * 2 + vs_dwords + extra_dwords +
+                              gather_dwords, producer_dwords))
+      return 0;
+   if (producer_entry)
+      *producer_entry = producer_dwords ?
+         fs_slot_count + (vs_dwords + extra_dwords + gather_dwords) / 2 : 0;
    if (vertex_entry)
       *vertex_entry = fs_slot_count;
    if (extra_entry)
