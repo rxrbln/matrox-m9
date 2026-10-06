@@ -4,7 +4,7 @@
 # M9 open topics and evidence, 2026-10-06
 
 This ledger reconciles the independent M9 (`102b:0540`, `m9x`) userspace
-source at **ea97652** (native-tested bd24336), the October 2 piglit results, and the feature-specific
+source at **d8819db** (native-tested bd24336), the October 2 piglit results, and the feature-specific
 RE notes. It is a work queue, not a new hardware result. The user has installed
 an M9 in nano for deployment and FAA testing; results from that new installation
 must record the actual adapter/subsystem identity, boot, kernel and Mesa hashes.
@@ -35,7 +35,11 @@ see [batching proof](../tests/m9-uniform-runs-native-20261006/README.md).
 ea97652 enables the tested path by default. Remaining CPU draw is triangle
 polygon offset (factor=-1,units=-2), about0.8% of calls/0.03ms per frame.
 FAA companion allocation now matches28 genuine vendor geometry/descriptor
-cases (fb4e710), without proving the full FAA resource/command lifecycle.
+cases (fb4e710). Main and auxiliary stores now use genuine linear rows and
+independent32-byte guards, even at the32MiB budget cap (7443ff6/d8819db).
+Actual-C helpers match six independently captured vendor cases; ownership
+sanitizers, complete batch suite and DSO build pass. These newer allocation
+fixes have no FAA-on rendering proof and are not yet native-deployed.
 
 The [October 2 piglit status](parhelia-m9-piglit-status.md) supersedes the
 September 18 backlog where they disagree. The glmark2 standing is still the

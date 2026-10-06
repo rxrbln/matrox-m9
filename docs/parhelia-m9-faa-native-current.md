@@ -611,3 +611,10 @@ Microsoft documents the distinct x86 precision controls in
 The corrected six-case captures are nonempty parsed JSON, including tiny cases,
 the rounding boundary and both conditional auxiliary branches. The earlier
 empty capture checkpoint is superseded.
+
+Native source7443ff6 now corrects main/ordinary auxiliary extents together,
+with source regression d8819db retaining guards after BO page rounding.
+Actual-C six-case vendor comparison, ownership ASAN/UBSAN, full batch suite
+and DSO build pass. Root independently reran the genuine vendor layout
+producer with retained current-board PCI inputs. This source is not yet
+native-deployed; backing/init/completeFAA command state remain open.
