@@ -88,3 +88,87 @@ Queue capability, command slots, ownership FIFO and Mesa banks should land as
 one coherent opt-in feature. Keep the current single-job path available for
 older kernels/clients and diagnostics. Do not turn queue support on solely
 because a Boolean reports async posting.
+
+## 2026-10-06 opt-in implementation checkpoint
+
+The isolated kernel candidate is based on canonical `4b84cbc`, including the
+WAIT/implicit-fence fixes, native D24 depth-bias grammar, and the root's typed
+FAA validation-only families. The isolated Mesa candidate is based on
+`a9c5668`, preserving both the depth-bias capability probe and ETIME-compatible
+WAIT admission. Native deployment and queue throughput are **not yet proved**.
+
+The new `PARHELIA_M9_SUBMIT_QUEUED` bit is `1 << 3`. Flags zero keep the original
+single outstanding job, two Mesa input sets, and the following-submit drain.
+Only `QUEUED` or `VALIDATE_ONLY | QUEUED` are new accepted combinations; the
+kernel refuses queued admission when `async_submit=N`. Mesa defaults to the
+legacy path and enables the candidate only for `M9X_QUEUE=1`, successful flagged
+validate-only admission, an available WAIT ioctl, and `screen->faa.enable=false`.
+The flagged capability probe submits no GPU work. Old kernels reject the bit
+and Mesa retains ordinary rendering.
+
+Four additional exact 32 KiB, zero-tailed DMA32 secondary images are allocated
+and mapped through the existing compact class-1 PTE owner before user BO WW
+reservation. They have independent mapping nodes and do not alter the captured
+diagnostic image or its 44-PTE accounting. A FIFO entry retains each job's real
+fence, BO/pin arrays, preallocated retirement node and selected secondary bank.
+The primary still appends the existing captured range grammar and footer. On
+primary-slot rollover it drains the whole FIFO before changing `0x400`.
+
+The writeback observer extends its low-nibble-masked value relative to the last
+actually completed 64-bit final point. It rejects stale/future observations,
+retires every FIFO final point passed by a valid observation, and never
+publishes an intermediate dependency token as completion. Admission rejects
+nonaligned/nonmonotonic issue points and an outstanding span at least `2^31`.
+A full FIFO waits its oldest point; the existing short spin optimization is
+retained before sleeping. WAIT can complete an earlier point while a newer
+owner remains outstanding. The completion worker observes the FIFO even when
+no following job/readback occurs and tracks its oldest owner for the watchdog.
+A post-doorbell failure or watchdog timeout retains every reader and its
+unsignaled fence. Teardown stops DMA, signals all quarantined queue fences,
+then releases any shared BO; this preserves TTM's last-put reservation-wait
+contract. Successful retired BO releases remain outside the transport lock.
+The first increase to each queue high-water value is logged once per device.
+
+Mesa adds three parked sets to the existing active/alternate arenas, for five
+sets total. Rotation waits the selected set's actual last point before swapping
+it into the CPU builder. Source/index growth therefore occurs only after that
+set retires. Every successful raster-pass submission updates the same set's
+point, so a later pass cannot outlive the bank ownership. A failed wait loses
+the context without granting overwrite permission. CPU BE clears, query
+slot/page reuse, synchronized resource maps and direct CPU surface/depth clears
+wait the context's prior submissions. Existing kernel window/translation edits
+still drain all jobs. GPU-only transient/inter-pass scratch stays ordered by
+the captured footer. FAA queueing remains deferred to its separate ownership
+proof. The opt-in mode does not grant applications permission to overwrite
+UNSYNCHRONIZED maps or omit cross-context synchronization.
+
+Offline receipts:
+
+- Full matching Linux 7.2 external module build PASS; existing pahole/objtool
+  warnings retained. No new loaded-module or GPU success claim.
+- Full Mesa batch suite PASS; changed context, screen and query objects compile.
+- `tools/m9-completion-check.py <kernel>/m9x <mesa>`: **131 actual-function
+  ASAN/UBSAN checks PASS**, including four owner transfers, skipped observations,
+  full-queue backpressure, wrap, stale/future/status tokens, posted/unposted
+  errors, automatic last-owner completion, all-owner quarantine/teardown and
+  actual requester append/primary-switch ordering. Hardware writeback is a
+  controlled test input, not a vendor capture or native completion.
+- `tools/m9-queue-arena-check.py <mesa>`: **68 actual Mesa rotation/WAIT
+  ASAN/UBSAN checks PASS**, including five distinct sets, reuse only after
+  retirement, a failed wait granting no writable bank and the legacy path.
+- New `m9-mesa-glsl vsqueue` / `vsqueued` emits 49 flushed textured matrix jobs,
+  ending A/B/A with changed final source colors, followed by GLFinish before
+  pixel validation. Both independent llvmpipe references PASS **0/76800**.
+  The `d` suffix supplies ordinary depth testing. Native result is pending.
+
+Sole-owner native qualification at a controlled kernel checkpoint: first run
+ordinary queue-disabled texture/depth and the existing completion fixture;
+then enable `M9X_QUEUE=1` with FAA disabled for `vsqueue`, `vsqueued`, ordinary
+texture and one query reuse case. Confirm the driver's queue high-water log,
+zero skipped/refused jobs, WAIT progress after GLFinish and a healthy subsequent
+texture draw. Only after those controls pass use one short 1024x768 fullscreen
+Q3 ballpark/profile run. Do not repeat the baseline benchmark. Retain the
+candidate and its proof if FPS is equal; default enablement awaits native
+ownership evidence. Fullscreen page flipping is separate: root observed actual
+M9 DC_START changes with PageFlip=true, but DP enable reported sending-nothing
+`-67`, so physical fullscreen presentation is not closed by that register proof.
