@@ -46,10 +46,24 @@ config DRM_M9X_FAA_CONSTANT_RED_CONTROL
 	  profile this tests shader-color dependence of actual retained stores.
 	  It still requires m9_faa_diag=1 and does not enable application FAA.
 
+config DRM_M9X_ORDINARY_SYSTEM_CONTROL
+	bool "Private M9128 ordinary SYSTEM constant red control"
+	depends on DRM_M9X && X86_64 && !DRM_M9X_FAA_CONSTANT_SHADER_CONTROL
+	depends on !DRM_M9X_FAA_CONSTANT_RED_CONTROL
+	default n
+	help
+	  Select the independently recovered ordinary public constant-red draw
+	  into a SYSTEM destination, without FAA activation or resolve. Its
+	  own input firmware is m9x/ordinary-system-constant-red-known-inputs.bin.
+	  This separates output write admission from FAA resolve behavior.
+	  It still requires the one-shot m9_faa_diag=1 private diagnostic gates
+	  and does not enable application FAA or arbitrary SYSTEM rendering.
+
 choice
 	prompt "Private M9128 FAA source phase control"
 	depends on DRM_M9X && X86_64 && !DRM_M9X_FAA_CONSTANT_SHADER_CONTROL
 	depends on !DRM_M9X_FAA_CONSTANT_RED_CONTROL
+	depends on !DRM_M9X_ORDINARY_SYSTEM_CONTROL
 	optional
 	help
 	  Select one independently recovered vendor queue finish instead of the

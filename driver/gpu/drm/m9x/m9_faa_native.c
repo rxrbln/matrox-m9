@@ -46,12 +46,18 @@ struct m9_faa_tracker {
 };
 #if (defined(M9_FAA_CONSTANT_SHADER_CONTROL) + \
      defined(M9_FAA_CONSTANT_RED_CONTROL) + \
+     defined(M9_FAA_ORDINARY_SYSTEM_CONTROL) + \
      defined(M9_FAA_INIT_ONLY_CONTROL) + \
      defined(M9_FAA_POST_TRIANGLE_CONTROL)) > 1
 #error "Select only one complete private FAA source profile"
 #endif
 
-#if defined(M9_FAA_INIT_ONLY_CONTROL)
+#if defined(M9_FAA_ORDINARY_SYSTEM_CONTROL)
+/* Whole ordinary public draw into its own SYSTEM owner. No sampled caller
+ * color, FAA activation, companion clear or resolve is present in this flow. */
+#include "m9_ordinary_system_red_data.h"
+#define M9_FAA_INPUT_FIRMWARE "m9x/ordinary-system-constant-red-known-inputs.bin"
+#elif defined(M9_FAA_INIT_ONLY_CONTROL)
 /* Independent vendor queue finish at the returned context constructor.
  * No triangle or output request, and no invented output owner. */
 #include "m9_faa_init_only_data.h"
@@ -629,7 +635,8 @@ int m9x_faa_prepare_diag(struct m9x_device *mdev)
 		goto release_fw;
 	}
 	for (i = 0; i < ARRAY_SIZE(r->owner); i++) {
-		/* The pinned/reserved caller's exact 320x240 BO owns the primary. */
+		/* Only a profile with a sampled caller color substitutes that owner.
+		 * An absent sentinel allocates every genuine source owner. */
 		if (i == M9_FAA_COLOR_OWNER)
 			continue;
 		ret = m9_faa_allocate(mdev, &r->owner[i], &m9_faa_owner_specs[i]);
@@ -765,6 +772,7 @@ static u32 m9_faa_encode(u32 pc, u32 address, u32 tag)
 #endif
 #define M9_FAA_CLEAR_MAX_WORDS 20u
 
+#if !defined(M9_FAA_HAS_COMPANION_CLEAR) || M9_FAA_HAS_COMPANION_CLEAR
 static int m9_faa_clear_page_words(u32 base, u32 bytes, u32 *words,
 				  u32 capacity, u32 *count)
 {
@@ -798,6 +806,7 @@ static int m9_faa_clear_page_words(u32 base, u32 bytes, u32 *words,
 	*count = n;
 	return 0;
 }
+#endif
 
 /* Patch ordinary addresses/trackers at their captured offsets first, then
  * move the already patched suffix once. No record outside this inline clear
@@ -807,6 +816,17 @@ static int m9_faa_clear_page_words(u32 base, u32 bytes, u32 *words,
 static int m9_faa_rebase_page_clear(struct m9x_faa_replay *r)
 {
 	struct m9_faa_owner *primary = &r->owner[M9_FAA_PRIMARY_OWNER];
+#if defined(M9_FAA_HAS_COMPANION_CLEAR) && !M9_FAA_HAS_COMPANION_CLEAR
+	/* This complete source profile contains no inline companion clear.
+	 * Preserve its exact primary and independent secondary finish. */
+	if (!primary->cpu || primary->vram ||
+	    primary->bytes < M9_FAA_PRIMARY_BYTES ||
+	    M9_FAA_CLEAR_OWNER != U32_MAX || M9_FAA_CLEAR_BYTES ||
+	    M9_FAA_CLEAR_START || M9_FAA_CLEAR_END)
+		return -EINVAL;
+	r->primary_bytes = M9_FAA_PRIMARY_BYTES;
+	return 0;
+#else
 	struct m9_faa_owner *companion = &r->owner[M9_FAA_CLEAR_OWNER];
 	u32 original[M9_FAA_CLEAR_MAX_WORDS], replacement[M9_FAA_CLEAR_MAX_WORDS];
 	u32 original_count, count, bytes, i;
@@ -850,6 +870,7 @@ static int m9_faa_rebase_page_clear(struct m9x_faa_replay *r)
 		put_unaligned_le32(replacement[i], data + M9_FAA_CLEAR_START + i * 4);
 	r->primary_bytes = bytes;
 	return 0;
+#endif
 }
 
 int m9x_faa_submit_diag(struct m9x_device *mdev, u32 color,
@@ -905,7 +926,14 @@ int m9x_faa_submit_diag(struct m9x_device *mdev, u32 color,
 					 PARHELIA_M9_RESTORE_BYTES);
 	if (ret)
 		goto unlock;
+#if !defined(M9_FAA_HAS_SAMPLED_COLOR) || M9_FAA_HAS_SAMPLED_COLOR
 	r->owner[M9_FAA_COLOR_OWNER].base = color;
+#else
+	if (M9_FAA_COLOR_OWNER != U32_MAX) {
+		ret = -EINVAL;
+		goto unlock;
+	}
+#endif
 	for (i = 0; i < ARRAY_SIZE(r->owner); i++) {
 		if (!m9_faa_owner_specs[i].local)
 			continue;
@@ -975,10 +1003,12 @@ int m9x_faa_submit_diag(struct m9x_device *mdev, u32 color,
 	ret = m9_faa_rebase_page_clear(r);
 	if (ret)
 		goto unlock;
+#if !defined(M9_FAA_HAS_COMPANION_CLEAR) || M9_FAA_HAS_COMPANION_CLEAR
 	dev_info(&mdev->pdev->dev,
 		 "M9 FAA companion clear: base=%#x bytes=%#x inline_words=%u primary_bytes=%u\n",
 		 r->owner[M9_FAA_CLEAR_OWNER].base, M9_FAA_CLEAR_BYTES,
 		 (r->primary_bytes - M9_FAA_PRIMARY_BYTES) / 4 + 19, r->primary_bytes);
+#endif
 	/* Only a generated source-closed ordinary-output template owns this
 	 * object. A successful older sampled resolve is not an output read. */
 	if (m9_faa_output_owner(r)) {
