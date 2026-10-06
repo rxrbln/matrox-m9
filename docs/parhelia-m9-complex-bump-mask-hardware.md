@@ -45,3 +45,21 @@ case does not qualify all GL2 operations or larger source/stream counts.
 The complete EE19 consumer/+58c source-policy join and remaining native
 operation gaps are still separate work. No target action was performed by
 the archive or source-analysis agent; root alone executed this bounded run.
+
+## Single capture-free measurement
+
+Root then ran one three-second height-bump measurement on the same
+Mesa `05c7c29` / DSO `8f39f59c`, normal `73c2a45` /boot `6d6d22e6`, at 1024x768 windowed
+with one active display, FAA=0, vblank=0 and the same optional queued packed
+pipeline. Actual result: 417 FPS / 2.400 ms, 1251 GPU user draws and 0 CPU user
+draws; final `84ac0`/raw `84ac1` is retired with an empty, unwedged queue stable
+after two seconds. No input/program dumping, record readback, profiling or
+window capture ran during this measurement. Loader artifact hashes were
+checked. The compact raw proof is
+`captures/m9x-glmark-bump-clean-bench-20261007`.
+
+The approximately 11.3× difference from the 37 FPS diagnostic is removal of
+capture/readback overhead, not an 11× code improvement. The older 85 FPS corrupt
+geometry run is an invalid baseline. This is one present implementation's
+bounded scene result, not a controlled speedup experiment or a replacement
+for the separately archived clip/image qualification.
