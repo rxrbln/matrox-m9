@@ -44,6 +44,9 @@ struct m9_faa_tracker {
 #ifndef M9_FAA_OUTPUT_OWNER
 #define M9_FAA_OUTPUT_OWNER U32_MAX
 #endif
+#ifndef M9_FAA_COUNTER_VIRTUAL
+#define M9_FAA_COUNTER_VIRTUAL 0
+#endif
 
 struct m9_faa_owner {
 	struct drm_gem_vram_object *vram;
@@ -61,6 +64,9 @@ struct m9x_faa_replay {
 	u64 output_point;
 	u32 output_generation;
 	bool output_retired;
+	/* An alias of the transport's existing completion page, never a new
+	 * completion allocation or an independently seeded success counter. */
+	struct drm_mm_node counter_node;
 	u32 before_hash[ARRAY_SIZE(m9_faa_owner_specs)];
 	u32 before_nonzero[ARRAY_SIZE(m9_faa_owner_specs)];
 	u32 before_nonzero_words[ARRAY_SIZE(m9_faa_owner_specs)];
@@ -88,6 +94,8 @@ static void m9_faa_release(struct m9x_device *mdev, struct m9x_faa_replay *r)
 {
 	u32 i;
 
+	if (drm_mm_node_allocated(&r->counter_node))
+		m9x_address_unmap_system(mdev, &r->counter_node);
 	for (i = 0; i < ARRAY_SIZE(r->owner); i++) {
 		struct m9_faa_owner *o = &r->owner[i];
 
@@ -118,6 +126,8 @@ void m9x_faa_fini(struct m9x_device *mdev)
 		u32 i;
 
 		mutex_lock(&mdev->transport.lock);
+		if (drm_mm_node_allocated(&r->counter_node))
+			m9x_address_unmap_system(mdev, &r->counter_node);
 		for (i = 0; i < ARRAY_SIZE(r->owner); i++)
 			if (drm_mm_node_allocated(&r->owner[i].system_node))
 				m9x_address_unmap_system(mdev, &r->owner[i].system_node);
@@ -390,6 +400,12 @@ int m9x_faa_prepare_diag(struct m9x_device *mdev)
 		if (ret)
 			goto free;
 	}
+	if (M9_FAA_COUNTER_VIRTUAL) {
+		ret = m9x_address_map_system(mdev, &r->counter_node,
+					    mdev->transport.fence_bus, PAGE_SIZE);
+		if (ret)
+			goto free;
+	}
 	for (i = 0; i < ARRAY_SIZE(m9_faa_spans); i++) {
 		const struct m9_faa_span *s = &m9_faa_spans[i];
 
@@ -409,8 +425,9 @@ int m9x_faa_prepare_diag(struct m9x_device *mdev)
 		goto free;
 	r->prepared = true;
 	mdev->transport.faa = r;
-	dev_info(&mdev->pdev->dev, "M9 FAA private inputs: %zu owners, %u known bytes, 53 address/26 tracker fixups\n",
-		 ARRAY_SIZE(r->owner), M9_FAA_BLOB_BYTES);
+	dev_info(&mdev->pdev->dev, "M9 FAA private inputs: %zu owners, %u known bytes, %zu address/%zu tracker fixups\n",
+		 ARRAY_SIZE(r->owner), M9_FAA_BLOB_BYTES,
+		 ARRAY_SIZE(m9_faa_fixups), ARRAY_SIZE(m9_faa_trackers));
 	ret = 0;
 	goto release_fw;
 free:
@@ -504,10 +521,12 @@ static u32 m9_faa_encode(u32 pc, u32 address, u32 tag)
  * The retained device+1c bit0 is zero: b6028/b6172 select no tail padding.
  * Page masks must follow the new allocation alignment, not captured masks.
  */
+#ifndef M9_FAA_CLEAR_OWNER
 #define M9_FAA_CLEAR_OWNER 4u
 #define M9_FAA_CLEAR_BYTES 0x97000u
 #define M9_FAA_CLEAR_START 0x11d8u
 #define M9_FAA_CLEAR_END 0x1224u
+#endif
 #define M9_FAA_CLEAR_MAX_WORDS 20u
 
 static int m9_faa_clear_page_words(u32 base, u32 bytes, u32 *words,
@@ -632,6 +651,12 @@ int m9x_faa_submit_diag(struct m9x_device *mdev, u32 color,
 		ret = -ERANGE;
 		goto unlock;
 	}
+	if (M9_FAA_COUNTER_VIRTUAL &&
+	    (!drm_mm_node_allocated(&r->counter_node) ||
+	     r->counter_node.size != PAGE_SIZE || r->counter_node.start > U32_MAX)) {
+		ret = -EINVAL;
+		goto unlock;
+	}
 	base = t->next_fence - 0x10;
 	target = base + M9_FAA_TRACKER_LAST - 0x10;
 	/* Retain a real observed retirement as the new common-buffer seed.
@@ -668,7 +693,8 @@ int m9x_faa_submit_diag(struct m9x_device *mdev, u32 color,
 		struct m9_faa_owner *dst;
 		u32 address, value;
 
-		if (f->dst >= ARRAY_SIZE(r->owner) || f->src >= ARRAY_SIZE(r->owner)) {
+		if (f->dst >= ARRAY_SIZE(r->owner) || f->src >= ARRAY_SIZE(r->owner) ||
+		    (M9_FAA_COUNTER_VIRTUAL && f->src == M9_FAA_PRIMARY_OWNER)) {
 			ret = -EINVAL;
 			goto unlock;
 		}
@@ -751,6 +777,11 @@ int m9x_faa_submit_diag(struct m9x_device *mdev, u32 color,
 	/* Publish coherent command/counter words and any prior WC writes. */
 	wmb();
 	m9x_write(mdev, M9_REG_FENCE0_ADDRESS, lower_32_bits(t->fence_bus + 0x20) | 2);
+	/* Actual23a47..23a94: the source110/PTEa proxy publishes the same
+	 * transport completion page through class1. Other selectors retain
+	 * their separately proven physical-tag2 common-buffer fields. */
+	if (M9_FAA_COUNTER_VIRTUAL)
+		m9x_write(mdev, M9_REG_FENCE1_ADDRESS, (u32)r->counter_node.start | 1);
 	m9x_write(mdev, M9_REG_FENCE2_ADDRESS, lower_32_bits(t->fence_bus + 0x40) | 2);
 	/* Genuine normal activation selects the virtual restore descriptor.
  * Its native identity leaves were checked separately from FAA pool6. */
@@ -759,6 +790,11 @@ int m9x_faa_submit_diag(struct m9x_device *mdev, u32 color,
 	/* Baseline follows real initialization and every pointer/counter patch,
 	 * but precedes this immutable stream's first GPU publication. */
 	m9_faa_observe(mdev, r, true);
+	/* The generated output table rejects primary self-references. The
+	 * ordinary transport owns and posts its coherent physical-tag2 clone;
+	 * no source GPUVA is used as a native physical primary address. All
+	 * indirect secondary/geometry operands retain their independently
+	 * published class1/B owners and exact source endpoint encodings. */
 	ret = m9x_submit_kernel_stream_locked(mdev,
 			r->owner[M9_FAA_PRIMARY_OWNER].cpu, r->primary_bytes / 4,
 			target, point, &posted, false);
@@ -772,8 +808,8 @@ int m9x_faa_submit_diag(struct m9x_device *mdev, u32 color,
 		}
 		m9_faa_observe(mdev, r, false);
 		dev_info(&mdev->pdev->dev,
-			 "M9 FAA normal frame retired: point=%#llx primary=%#x descriptor=cc220140 320x240\n",
-			 *point, color);
+			 "M9 FAA private frame retired: point=%#llx sampled_primary=%#x ordinary_output=%#x 320x240\n",
+			 *point, color, m9_faa_output_owner(r) ? m9_faa_output_owner(r)->base : 0);
 	}
 unlock:
 	if (fence && ret)
