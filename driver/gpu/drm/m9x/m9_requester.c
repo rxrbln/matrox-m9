@@ -457,7 +457,84 @@ static int m9_fence_wait_locked(struct m9x_device *mdev, u32 target)
  * Every path that touches the shared command image, the engine state or an
  * object the engine may still be reading goes through here first.
  */
-int m9x_transport_drain_locked(struct m9x_device *mdev)
+/* Four outstanding jobs occupy far less than half of the 32-bit timeline.
+ * Extend an observed token relative to the last genuinely completed point;
+ * reject stale/future words instead of mistaking a wrapped token for progress.
+ * Intermediate E3 tokens may retire an older final point, never themselves
+ * become completion points. */
+static void m9_queue_observe_locked(struct m9x_device *mdev)
+{
+	struct m9x_transport *t = &mdev->transport;
+	u64 span, observed;
+	u32 delta;
+
+	lockdep_assert_held(&t->lock);
+	if (!t->queue_count || t->wedged)
+		return;
+	span = t->submitted_point - t->completed_point;
+	delta = (READ_ONCE(((u32 *)t->fence_cpu)[0]) & ~0xfu) -
+		(u32)t->completed_point;
+	if (span >= (1ULL << 31) || delta > span)
+		return;
+	observed = t->completed_point + delta;
+	dma_rmb();
+	while (t->queue_count) {
+		struct m9_queued_job *job = &t->queue[t->queue_head];
+		struct m9_retired *retired = job->retire;
+
+		if (job->point > observed)
+			break;
+		t->completed_point = job->point;
+		dma_fence_signal(&job->fence->base);
+		dma_fence_put(&job->fence->base);
+		retired->bos = job->bos;
+		retired->pinned = job->pinned;
+		retired->count = job->count;
+		llist_add(&retired->node, &t->async_retired);
+		schedule_work(&t->async_release);
+		memset(job, 0, sizeof(*job));
+		t->queue_head = (t->queue_head + 1) % M9_QUEUE_SLOTS;
+		t->queue_count--;
+	}
+}
+
+static int m9_queue_wait_head_locked(struct m9x_device *mdev)
+{
+	struct m9x_transport *t = &mdev->transport;
+	u64 owner, start = ktime_get_ns();
+
+	lockdep_assert_held(&t->lock);
+	if (t->wedged)
+		return -EIO;
+	if (!t->queue_count)
+		return 0;
+	owner = t->queue[t->queue_head].point;
+	for (unsigned int spins = 0;;) {
+		m9_queue_observe_locked(mdev);
+		if (!t->queue_count || t->queue[t->queue_head].point != owner)
+			return 0;
+		if (++spins < M9_FENCE_SPIN_LIMIT) {
+			cpu_relax();
+			continue;
+		}
+		spins = 0;
+		if (ktime_get_ns() - start >=
+		    (u64)max(m9_fence_timeout_ms, 1u) * NSEC_PER_MSEC) {
+			t->wedged = true;
+			t->generation++;
+			dev_err(&mdev->pdev->dev,
+				"M9 queued completion timeout: target=%#x writeback=%#x\n",
+				t->queue[t->queue_head].target,
+				READ_ONCE(((u32 *)t->fence_cpu)[0]));
+			return -ETIMEDOUT;
+		}
+		usleep_range(10, 30);
+	}
+}
+
+/* Legacy ownership drains separately so opted-in submits can leave the FIFO
+ * running, while diagnostics/translation edits still drain every reader. */
+static int m9_drain_legacy_locked(struct m9x_device *mdev)
 {
 	struct m9x_transport *transport = &mdev->transport;
 	struct m9_retired *retired;
@@ -505,6 +582,64 @@ int m9x_transport_drain_locked(struct m9x_device *mdev)
 	return ret;
 }
 
+int m9x_transport_drain_locked(struct m9x_device *mdev)
+{
+	struct m9x_transport *t = &mdev->transport;
+	int ret;
+
+	lockdep_assert_held(&t->lock);
+	while (t->queue_count) {
+		ret = m9_queue_wait_head_locked(mdev);
+		if (ret)
+			return ret;
+	}
+	return m9_drain_legacy_locked(mdev);
+}
+
+int m9x_transport_queue_room_locked(struct m9x_device *mdev, u32 *slot)
+{
+	struct m9x_transport *t = &mdev->transport;
+	u32 used = 0;
+	int ret;
+
+	lockdep_assert_held(&t->lock);
+	ret = m9_drain_legacy_locked(mdev);
+	if (ret)
+		return ret;
+	if (t->wedged)
+		return -EIO;
+	m9_queue_observe_locked(mdev);
+	if (t->queue_count == M9_QUEUE_SLOTS) {
+		ret = m9_queue_wait_head_locked(mdev);
+		if (ret)
+			return ret;
+	}
+	for (u32 i = 0; i < t->queue_count; i++)
+		used |= 1u << t->queue[(t->queue_head + i) % M9_QUEUE_SLOTS].secondary_slot;
+	for (*slot = 0; *slot < M9_QUEUE_SLOTS; (*slot)++)
+		if (!(used & (1u << *slot)))
+			return 0;
+	return -EBUSY;
+}
+
+void m9x_transport_queue_commit_locked(struct m9x_device *mdev,
+				      const struct m9_queued_job *job)
+{
+	struct m9x_transport *t = &mdev->transport;
+	u32 tail = (t->queue_head + t->queue_count) % M9_QUEUE_SLOTS;
+
+	lockdep_assert_held(&t->lock);
+	t->queue[tail] = *job;
+	t->queue_count++;
+	if (t->queue_count > t->queue_peak) {
+		t->queue_peak = t->queue_count;
+		dev_info(&mdev->pdev->dev, "M9 queued submit high-water: %u jobs\n",
+			 t->queue_peak);
+	}
+	if (!t->wedged)
+		schedule_work(&t->async_complete);
+}
+
 /* Signal the last user job even when there is no following submit/readback.
  * Observe the real writeback without holding transport while sleeping. This
  * worker takes no BO reservation: releasing refs/pins stays in async_release. */
@@ -522,13 +657,21 @@ static void m9x_transport_complete(struct work_struct *work)
 		bool done;
 
 		mutex_lock(&t->lock);
-		done = t->async_stop || !t->async_pending || t->wedged;
+		done = t->async_stop || (!t->async_pending && !t->queue_count) || t->wedged;
 		if (!done) {
-			if (owner != t->async_point) {
-				owner = t->async_point;
+			u64 pending;
+
+			m9_queue_observe_locked(mdev);
+			pending = t->queue_count ? t->queue[t->queue_head].point :
+				t->async_pending ? t->async_point : 0;
+			if (owner != pending) {
+				owner = pending;
 				start = ktime_get_ns();
 			}
-			if (m9_fence_reached(READ_ONCE(((u32 *)t->fence_cpu)[0]),
+			if (!pending) {
+				done = true;
+			} else if (t->async_pending &&
+				   m9_fence_reached(READ_ONCE(((u32 *)t->fence_cpu)[0]),
 					    t->async_target)) {
 				dma_rmb();
 				m9x_transport_drain_locked(mdev);
@@ -541,7 +684,7 @@ static void m9x_transport_complete(struct work_struct *work)
 				t->generation++;
 				dev_err(&mdev->pdev->dev,
 					"M9 async completion timeout: target=%#x writeback=%#x\n",
-					t->async_target,
+					t->queue_count ? t->queue[t->queue_head].target : t->async_target,
 					READ_ONCE(((u32 *)t->fence_cpu)[0]));
 				done = true;
 			}
@@ -577,16 +720,16 @@ void m9x_transport_release_retired(struct work_struct *work)
 	}
 }
 
-int m9x_submit_kernel_stream_locked(struct m9x_device *mdev,
+static int m9_submit_kernel_stream_common(struct m9x_device *mdev,
 				    const u32 *commands, u32 dwords,
 				    u32 target, u64 *point, bool *doorbell_posted,
-				    bool async)
+				    bool async, bool queued)
 {
 	struct m9x_transport *transport = &mdev->transport;
 	dma_addr_t start_bus;
 	u32 *writeback = transport->fence_cpu;
 	u32 command_offset, end, raw;
-	u64 extended;
+	u64 extended, queued_point = 0;
 	int ret;
 
 	lockdep_assert_held(&transport->lock);
@@ -594,7 +737,8 @@ int m9x_submit_kernel_stream_locked(struct m9x_device *mdev,
 		*doorbell_posted = false;
 	/* The command image and the engine state are shared, so a job posted
 	 * earlier has to retire before this one is built. */
-	ret = m9x_transport_drain_locked(mdev);
+	ret = queued ? m9_drain_legacy_locked(mdev) :
+		m9x_transport_drain_locked(mdev);
 	if (ret)
 		return ret;
 	if (!commands || !dwords ||
@@ -602,13 +746,25 @@ int m9x_submit_kernel_stream_locked(struct m9x_device *mdev,
 		return -EINVAL;
 	if (transport->wedged)
 		return -EIO;
+	if (queued) {
+		queued_point = ((u64)(transport->fence_epoch +
+				 (target < transport->last_fence)) << 32) | target;
+		if (transport->queue_count >= M9_QUEUE_SLOTS)
+			return -EBUSY;
+		if ((target & 0xf) || queued_point <= transport->submitted_point ||
+		    queued_point - transport->completed_point >= (1ULL << 31))
+			return -ERANGE;
+	}
 	ret = m9x_transport_arm_locked(mdev);
 	if (ret)
 		return ret;
 
 	command_offset = transport->command_offset;
 	if (command_offset > PARHELIA_M9_COMMAND_BYTES - dwords * sizeof(u32)) {
-		/* The prior interval is synchronous and retired.  Only an actual
+		ret = m9x_transport_drain_locked(mdev);
+		if (ret)
+			return ret;
+		/* The prior interval is now retired. Only an actual
 		 * primary-buffer switch rebases the vendor requester's 0x400. */
 		m9_advance_command_slot(transport);
 		command_offset = 0;
@@ -634,8 +790,10 @@ int m9x_submit_kernel_stream_locked(struct m9x_device *mdev,
 	if (async) {
 		/* The next drain retires it; the point is the target it
 		 * reaches. */
-		transport->async_pending = true;
-		transport->async_target = target;
+		if (!queued) {
+			transport->async_pending = true;
+			transport->async_target = target;
+		}
 		raw = target;
 	} else {
 		ret = m9_fence_wait_locked(mdev, target);
@@ -643,12 +801,36 @@ int m9x_submit_kernel_stream_locked(struct m9x_device *mdev,
 			return ret;
 		raw = READ_ONCE(writeback[0]);
 	}
-	extended = m9_extend_fence(transport, raw);
-	if (async)
+	/* A queued issue is not completion, even when the FIFO was empty. */
+	if (queued) {
+		transport->fence_epoch = queued_point >> 32;
+		transport->last_fence = target;
+		extended = queued_point;
+		transport->submitted_point = extended;
+	} else {
+		extended = m9_extend_fence(transport, raw);
+	}
+	if (async && !queued)
 		transport->async_point = extended;
 	if (point)
 		*point = extended;
 	return 0;
+}
+
+int m9x_submit_kernel_stream_locked(struct m9x_device *mdev,
+				    const u32 *commands, u32 dwords, u32 target,
+				    u64 *point, bool *doorbell_posted, bool async)
+{
+	return m9_submit_kernel_stream_common(mdev, commands, dwords, target,
+					     point, doorbell_posted, async, false);
+}
+
+int m9x_submit_kernel_queue_locked(struct m9x_device *mdev,
+				   const u32 *commands, u32 dwords, u32 target,
+				   u64 *point, bool *doorbell_posted)
+{
+	return m9_submit_kernel_stream_common(mdev, commands, dwords, target,
+					     point, doorbell_posted, true, true);
 }
 
 static u64 m9_extend_fence(struct m9x_transport *m9, u32 raw)
@@ -659,7 +841,7 @@ static u64 m9_extend_fence(struct m9x_transport *m9, u32 raw)
 		m9->fence_epoch++;
 	m9->last_fence = low;
 	m9->submitted_point = ((u64)m9->fence_epoch << 32) | low;
-	if (!m9->async_pending)
+	if (!m9->async_pending && !m9->queue_count)
 		m9->completed_point = m9->submitted_point;
 	return m9->submitted_point;
 }
@@ -693,6 +875,7 @@ static int m9_wait_point_locked(struct m9x_device *mdev,
 	if ((args->point & 0xf) || args->point > t->submitted_point)
 		return -EINVAL;
 	for (;;) {
+		m9_queue_observe_locked(mdev);
 		args->completed_point = t->completed_point;
 		if (args->point <= t->completed_point)
 			return 0;
@@ -976,13 +1159,14 @@ int m9x_init(struct m9x_device *mdev)
 
 void m9x_fini(struct m9x_device *mdev)
 {
+	struct m9_queued_job queued[M9_QUEUE_SLOTS];
 	struct drm_gem_vram_object *color;
 	struct m9x_fence *fence;
 	struct m9x_fence *user_fence;
 	struct m9_retired *retired;
 	struct drm_gem_object **bos;
 	bool *pinned;
-	u32 count, i;
+	u32 count, i, queued_count;
 
 	mutex_lock(&mdev->transport.lock);
 	mdev->transport.async_stop = true;
@@ -1010,6 +1194,14 @@ void m9x_fini(struct m9x_device *mdev)
 	mdev->transport.async_pending = false;
 	mdev->transport.async_retire = NULL;
 	mdev->transport.async_fence = NULL;
+	queued_count = mdev->transport.queue_count;
+	for (i = 0; i < queued_count; i++) {
+		u32 slot = (mdev->transport.queue_head + i) % M9_QUEUE_SLOTS;
+
+		queued[i] = mdev->transport.queue[slot];
+		memset(&mdev->transport.queue[slot], 0, sizeof(queued[i]));
+	}
+	mdev->transport.queue_count = 0;
 	fence = mdev->transport.quarantined_fence;
 	mdev->transport.quarantined_fence = NULL;
 	color = mdev->transport.quarantined_color;
@@ -1022,6 +1214,25 @@ void m9x_fini(struct m9x_device *mdev)
 		dma_fence_set_error(&user_fence->base, -EIO);
 		dma_fence_signal(&user_fence->base);
 		dma_fence_put(&user_fence->base);
+	}
+	/* Several jobs can share a reservation; signal all of their failures
+ * before any last BO put can enter TTM's reservation wait fallback. */
+	for (i = 0; i < queued_count; i++) {
+		dma_fence_set_error(&queued[i].fence->base, -EIO);
+		dma_fence_signal(&queued[i].fence->base);
+		dma_fence_put(&queued[i].fence->base);
+	}
+	for (i = 0; i < queued_count; i++) {
+		struct m9_queued_job *job = &queued[i];
+
+		for (u32 j = 0; j < job->count; j++) {
+			if (job->pinned[j])
+				m9x_gem_vram_unpin(job->bos[j]);
+			drm_gem_object_put(job->bos[j]);
+		}
+		kfree(job->bos);
+		kfree(job->pinned);
+		kfree(job->retire);
 	}
 	for (i = 0; bos && i < count; i++) {
 		if (pinned && pinned[i])

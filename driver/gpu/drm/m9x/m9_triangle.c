@@ -189,6 +189,10 @@ struct m9_triangle_commands {
 
 struct m9x_triangle_diag {
 	struct m9_triangle_resource resource[M9_TRI_RESOURCE_COUNT];
+	/* Independent user images; the captured diagnostic image stays 32 KiB. */
+	struct m9_triangle_resource queued_secondary[M9_QUEUE_SLOTS];
+	u32 queued_used[M9_QUEUE_SLOTS];
+	bool queue_prepared;
 	u32 pte_count;
 	struct m9_triangle_commands commands;
 	/* Bytes a previous submit left non-zero in the command image. */
@@ -977,6 +981,62 @@ int m9x_triangle_prepare_user(struct m9x_device *mdev)
 	return ret;
 }
 
+/* Allocate before the submit acquires user BO reservations. Adding PTEs
+ * changes translation state, so first retire every existing reader. These
+ * normal class-1 mappings do not consume the diagnostic 44-PTE budget. */
+int m9x_triangle_prepare_queue(struct m9x_device *mdev)
+{
+	struct m9x_triangle_diag *diag;
+	struct device *dev = &mdev->pdev->dev;
+	int ret = m9x_triangle_prepare_user(mdev);
+	u32 i;
+
+	if (ret)
+		return ret;
+	mutex_lock(&mdev->transport.lock);
+	diag = mdev->transport.triangle;
+	if (diag->queue_prepared)
+		goto out;
+	ret = m9x_transport_drain_locked(mdev);
+	if (ret)
+		goto out;
+	for (i = 0; i < M9_QUEUE_SLOTS; i++) {
+		struct m9_triangle_resource *r = &diag->queued_secondary[i];
+		u64 end;
+
+		if (!r->cpu) {
+			r->cpu = dmam_alloc_coherent(dev, M9_TRIANGLE_SECONDARY_BYTES,
+						    &r->bus, GFP_KERNEL | __GFP_ZERO);
+			if (!r->cpu) {
+				ret = -ENOMEM;
+				goto out;
+			}
+			if (!IS_ALIGNED(r->bus, PAGE_SIZE) ||
+			    upper_32_bits(r->bus) ||
+			    check_add_overflow((u64)r->bus,
+					       (u64)M9_TRIANGLE_SECONDARY_BYTES, &end) ||
+			    end > (u64)U32_MAX + 1) {
+				dmam_free_coherent(dev, M9_TRIANGLE_SECONDARY_BYTES,
+						   r->cpu, r->bus);
+				r->cpu = NULL;
+				ret = -ERANGE;
+				goto out;
+			}
+		}
+		if (!drm_mm_node_allocated(&r->system)) {
+			ret = m9x_address_map_system(mdev, &r->system, r->bus,
+						    M9_TRIANGLE_SECONDARY_BYTES);
+			if (ret)
+				goto out;
+		}
+		r->gpuva = r->system.start;
+	}
+	diag->queue_prepared = true;
+out:
+	mutex_unlock(&mdev->transport.lock);
+	return ret;
+}
+
 static u32 m9_triangle_bus(const struct m9x_triangle_diag *diag,
 			   enum m9_triangle_resource_id id)
 {
@@ -1518,13 +1578,13 @@ int m9x_engine_ready_locked(struct m9x_device *mdev)
 int m9x_submit_user_stream_locked(struct m9x_device *mdev, const u32 *records,
 				  u32 dwords, const u32 *range_ends, u32 ranges,
 				  u32 target, u64 *point, bool async,
-				  bool *doorbell_posted)
+				  bool *doorbell_posted, u32 secondary_slot)
 {
 	const struct m9_triangle_layout *layout = &m9_triangle_external_layout;
 	struct m9x_triangle_diag *diag = mdev->transport.triangle;
 	u16 footer_start = layout->end[1], footer_end = layout->end[2];
 	u32 footer_bytes = footer_end - footer_start;
-	u32 body_end, secondary, start, used, i, *primary;
+	u32 body_end, secondary, start, used, i, *primary, *previous_used;
 	u8 *image;
 	int ret;
 
@@ -1541,15 +1601,24 @@ int m9x_submit_user_stream_locked(struct m9x_device *mdev, const u32 *records,
 	for (i = 0; i < ranges; i++)
 		if (range_ends[i] <= (i ? range_ends[i - 1] : 0))
 			return -EINVAL;
-	image = diag->resource[M9_TRI_SECONDARY].cpu;
-	secondary = diag->resource[M9_TRI_SECONDARY].gpuva;
+	if (secondary_slot < M9_QUEUE_SLOTS) {
+		if (!diag->queue_prepared)
+			return -EINVAL;
+		image = diag->queued_secondary[secondary_slot].cpu;
+		secondary = diag->queued_secondary[secondary_slot].gpuva;
+		previous_used = &diag->queued_used[secondary_slot];
+	} else {
+		image = diag->resource[M9_TRI_SECONDARY].cpu;
+		secondary = diag->resource[M9_TRI_SECONDARY].gpuva;
+		previous_used = &diag->secondary_used;
+	}
 	body_end = M9_TRIANGLE_SECONDARY_PREFIX + dwords * sizeof(u32);
 	/* Everything after the published ranges is the image's zero tail, so
 	 * only what a previous submit left behind has to be cleared. */
 	used = body_end + footer_bytes;
-	if (diag->secondary_used > used)
-		memset(image + used, 0, diag->secondary_used - used);
-	diag->secondary_used = used;
+	if (*previous_used > used)
+		memset(image + used, 0, *previous_used - used);
+	*previous_used = used;
 	memset(image, 0, M9_TRIANGLE_SECONDARY_PREFIX);
 	memcpy(image + M9_TRIANGLE_SECONDARY_PREFIX, records,
 	       dwords * sizeof(u32));
@@ -1580,8 +1649,12 @@ int m9x_submit_user_stream_locked(struct m9x_device *mdev, const u32 *records,
 				     M9_TRIANGLE_SECONDARY_END_TAG;
 		start = end;
 	}
-	ret = m9x_submit_kernel_stream_locked(mdev, primary, 3 * (ranges + 1),
-					      target, point, doorbell_posted, async);
+	if (secondary_slot < M9_QUEUE_SLOTS)
+		ret = m9x_submit_kernel_queue_locked(mdev, primary, 3 * (ranges + 1),
+						     target, point, doorbell_posted);
+	else
+		ret = m9x_submit_kernel_stream_locked(mdev, primary, 3 * (ranges + 1),
+						      target, point, doorbell_posted, async);
 	kfree(primary);
 	if (ret)
 		return ret;

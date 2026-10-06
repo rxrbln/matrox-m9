@@ -210,6 +210,9 @@ struct drm_parhelia_m9_reloc {
 #define PARHELIA_M9_SUBMIT_VALIDATE_ONLY	(1u << 0)
 #define PARHELIA_M9_SUBMIT_NOOP_FENCE		(1u << 1)
 #define PARHELIA_M9_SUBMIT_FIRST_TRIANGLE	(1u << 2)
+/* Opt-in retention beyond the next submit. The client must wait out_point
+ * before overwriting CPU-visible inputs; legacy flags-zero remains one job. */
+#define PARHELIA_M9_SUBMIT_QUEUED		(1u << 3)
 
 enum drm_parhelia_m9_program_type {
 	PARHELIA_M9_PROGRAM_NONE,

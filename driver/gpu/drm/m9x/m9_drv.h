@@ -82,6 +82,17 @@ struct m9x_fence {
 struct m9x_triangle_diag;
 struct m9x_address_space;
 
+#define M9_QUEUE_SLOTS 4u
+struct m9_queued_job {
+	u64 point;
+	u32 target, primary_slot, secondary_slot;
+	struct drm_gem_object **bos;
+	bool *pinned;
+	u32 count;
+	struct m9x_fence *fence;
+	struct m9_retired *retire;
+};
+
 struct m9x_transport {
 	struct mutex lock;
 	void *requester_cpu;
@@ -120,6 +131,8 @@ struct m9x_transport {
 	struct m9x_fence *async_fence;
 	struct m9_retired *async_retire;
 	struct work_struct async_complete;
+	struct m9_queued_job queue[M9_QUEUE_SLOTS];
+	u32 queue_head, queue_count, queue_peak;
 	/* Releasing an object takes this same lock, so retired objects go to a
 	 * worker rather than being freed under it. */
 	struct llist_head async_retired;
@@ -311,6 +324,9 @@ struct m9_retired {
 
 void m9x_transport_release_retired(struct work_struct *work);
 int m9x_transport_drain_locked(struct m9x_device *mdev);
+int m9x_transport_queue_room_locked(struct m9x_device *mdev, u32 *slot);
+void m9x_transport_queue_commit_locked(struct m9x_device *mdev,
+				     const struct m9_queued_job *job);
 int m9x_wait_point_ioctl(struct drm_device *drm, void *data,
 			struct drm_file *file);
 int m9x_submit_kernel_stream_locked(struct m9x_device *mdev,
@@ -319,6 +335,9 @@ int m9x_submit_kernel_stream_locked(struct m9x_device *mdev,
 				    bool async);
 struct m9x_fence *m9x_fence_create_target_locked(struct m9x_device *mdev,
 						 u32 target);
+int m9x_submit_kernel_queue_locked(struct m9x_device *mdev,
+				  const u32 *commands, u32 dwords,
+				  u32 target, u64 *point, bool *doorbell_posted);
 int m9x_address_init(struct m9x_device *mdev);
 void m9x_address_fini(struct m9x_device *mdev);
 int m9x_address_bind_dma(struct m9x_device *mdev, u32 gpuva,
@@ -351,11 +370,12 @@ int m9x_submit_triangle_diag(struct m9x_device *mdev, u32 color,
 			     bool *color_active);
 int m9x_triangle_prepare_diag(struct m9x_device *mdev);
 int m9x_triangle_prepare_user(struct m9x_device *mdev);
+int m9x_triangle_prepare_queue(struct m9x_device *mdev);
 int m9x_engine_ready_locked(struct m9x_device *mdev);
 int m9x_submit_user_stream_locked(struct m9x_device *mdev, const u32 *records,
 				  u32 dwords, const u32 *range_ends, u32 ranges,
 				  u32 target, u64 *point, bool async,
-				  bool *doorbell_posted);
+				  bool *doorbell_posted, u32 secondary_slot);
 int m9x_triangle_selftest(void);
 void m9x_triangle_fini(struct m9x_device *mdev);
 int m9x_submit_selftest(void);

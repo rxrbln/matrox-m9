@@ -1029,7 +1029,7 @@ static int m9_wait_foreign_fences(struct m9x_device *mdev,
 
 static int m9_submit_execute(struct m9x_device *mdev, const u32 *image,
 			     const u32 *expected, u32 dwords, u64 *point,
-			     bool async, struct drm_gem_object ***bos,
+			     bool async, bool queued, struct drm_gem_object ***bos,
 			     bool **pinned,
 			     const struct drm_parhelia_m9_bo_ref *refs, u32 count)
 {
@@ -1037,6 +1037,7 @@ static int m9_submit_execute(struct m9x_device *mdev, const u32 *image,
 	struct m9x_fence *fence = NULL;
 	struct m9_retired *retired;
 	u32 *framed, *range_ends, framed_dwords, ranges, max_token, target, final;
+	u32 secondary_slot = M9_QUEUE_SLOTS;
 	u64 issued;
 	bool posted = false;
 	int ret;
@@ -1049,7 +1050,8 @@ static int m9_submit_execute(struct m9x_device *mdev, const u32 *image,
 		kvfree(range_ends);
 		return -ENOMEM;
 	}
-	ret = m9x_triangle_prepare_user(mdev);
+	ret = queued ? m9x_triangle_prepare_queue(mdev) :
+		m9x_triangle_prepare_user(mdev);
 	if (ret)
 		goto out_retired;
 	drm_exec_init(&exec, DRM_EXEC_INTERRUPTIBLE_WAIT |
@@ -1072,7 +1074,8 @@ static int m9_submit_execute(struct m9x_device *mdev, const u32 *image,
 		ret = -ENODEV;
 		goto out_unlock;
 	}
-	ret = m9x_transport_drain_locked(mdev);
+	ret = queued ? m9x_transport_queue_room_locked(mdev, &secondary_slot) :
+		m9x_transport_drain_locked(mdev);
 	if (ret)
 		goto out_unlock;
 	ret = m9x_engine_ready_locked(mdev);
@@ -1104,12 +1107,32 @@ static int m9_submit_execute(struct m9x_device *mdev, const u32 *image,
 				  DMA_RESV_USAGE_WRITE : DMA_RESV_USAGE_READ);
 	ret = m9x_submit_user_stream_locked(mdev, framed, framed_dwords,
 					    range_ends, ranges,
-					    final, point, async, &posted);
+					    final, point, async, &posted, secondary_slot);
 	kvfree(framed);
 	/* Synchronous failure after the real doorbell can also leave DMA
 	 * active. A failure before posting owns no GPU readers; a retired
 	 * job whose guard check failed can likewise release its objects. */
-	if (posted && mdev->transport.completed_point < issued &&
+	if (posted && queued) {
+		struct m9_queued_job job = {
+			.point = issued, .target = final,
+			.primary_slot = mdev->transport.command_slot,
+			.secondary_slot = secondary_slot,
+			.bos = *bos, .pinned = *pinned, .count = count,
+			.fence = fence, .retire = retired,
+		};
+
+		/* Publication and owner transfer share the posting lock. Even a
+		 * post-doorbell error must retain all GPU readers until DMA stops. */
+		if (ret && !mdev->transport.wedged) {
+			mdev->transport.wedged = true;
+			mdev->transport.generation++;
+		}
+		m9x_transport_queue_commit_locked(mdev, &job);
+		fence = NULL;
+		retired = NULL;
+		*bos = NULL;
+		*pinned = NULL;
+	} else if (posted && mdev->transport.completed_point < issued &&
 	    !mdev->transport.async_bos) {
 		mdev->transport.async_pending = true;
 		mdev->transport.async_target = final;
@@ -1291,6 +1314,7 @@ static int m9_submit_validate(struct m9x_device *mdev,
 					&args->out_point,
 					m9_async_submit &&
 					!mdev->transport.wedged,
+					args->flags & PARHELIA_M9_SUBMIT_QUEUED,
 					&bos, &vram_pinned, refs, args->bo_count);
 out:
 	if (vram_pinned)
@@ -1323,7 +1347,8 @@ static int m9_submit_ioctl(struct drm_device *drm, void *data,
 	    args->out_point ||
 	    flags & ~(PARHELIA_M9_SUBMIT_VALIDATE_ONLY |
 		      PARHELIA_M9_SUBMIT_NOOP_FENCE |
-		      PARHELIA_M9_SUBMIT_FIRST_TRIANGLE))
+		      PARHELIA_M9_SUBMIT_FIRST_TRIANGLE |
+		      PARHELIA_M9_SUBMIT_QUEUED))
 		return m9_refuse(-EINVAL);
 	if (flags == PARHELIA_M9_SUBMIT_NOOP_FENCE) {
 		if (args->command_handle || args->command_offset ||
@@ -1336,12 +1361,17 @@ static int m9_submit_ioctl(struct drm_device *drm, void *data,
 	if (flags == PARHELIA_M9_SUBMIT_FIRST_TRIANGLE) {
 		return m9_submit_first_triangle(mdev, file, args);
 	}
-	if (!flags) {
+	if (!flags || flags == PARHELIA_M9_SUBMIT_QUEUED) {
 		if (!m9_user_submit)
+			return -EOPNOTSUPP;
+		if (flags && !m9_async_submit)
 			return -EOPNOTSUPP;
 		return m9_submit_validate(mdev, file, args, true);
 	}
-	if (flags != PARHELIA_M9_SUBMIT_VALIDATE_ONLY)
+	if (flags != PARHELIA_M9_SUBMIT_VALIDATE_ONLY &&
+	    flags != (PARHELIA_M9_SUBMIT_VALIDATE_ONLY | PARHELIA_M9_SUBMIT_QUEUED))
+		return -EOPNOTSUPP;
+	if ((flags & PARHELIA_M9_SUBMIT_QUEUED) && !m9_async_submit)
 		return -EOPNOTSUPP;
 	return m9_submit_validate(mdev, file, args, false);
 }
