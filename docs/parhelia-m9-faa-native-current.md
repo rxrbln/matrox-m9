@@ -299,6 +299,24 @@ or only filling the manager collection would skip this real admission test.
 The current fixture has an empty collection and never attempts these
 allocations, so its early rejection still proves no M9128 restriction.
 
+`tools/m9-vendor-faa-options.py --surface-boundary` now dynamically executes
+the actual primary caller `0x1003a5e0`, its real surface-ID allocator,
+`0x1000aac0`, manager dispatch `0x10030c70 -> 0x10030bb0`, and actual
+request virtual method `0x1003b270 -> 0x1000b8c0`. It supplies a controlled
+display DC and 1024x768 desktop rectangle, without inserting an adapter into
+the collection or supplying successful resource allocation. The real request
+stops at ExtEscape186a0, input0x48/output0x10, operation0x10, before any
+device response. The resource descriptor at input+0x18 contains
+`[type,0,1,0x15,1024,768,0,0]`.
+
+[The four-case dynamic capture](traces/m9-vendor-faa-primary-allocation-boundary-20261006.json)
+shows type9 when OGL.Multisample=0 and type0x02000009 when it is1. This
+allocation type follows the OGL option alone, even when AAMode's enable bit
+is off; the later pixel-format enable still requires both options. No
+hardware capability, allocation reply, WGL multisampled format or complete
+draw is admitted by this controlled caller fixture. It proves the exact
+normal resource-request envelope to join to MD's real allocation handler.
+
 ### Real miniport property dispatch closes the four configuration queries
 
 `--miniport-defaults` executes actual MD `0x61f70` and forwards its four
