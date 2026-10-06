@@ -39,10 +39,10 @@ an agent running simultaneously.
 | 3 | native vertex ISA | Vertex logarithm/power remain refused; six odd temporary registers are excluded after native failures | Capture a genuine vertex log2 seed and complete chain; separately trace output/register lifetime to determine whether any excluded register can safely be recovered |
 | 4 | complex split scenes | glmark2 terrain remains incorrect/slow in the recorded standing; partial split coverage is implemented, not a blanket missing feature | Capture one bounded terrain/split case against a reference with skip accounting and identify the first bad intermediate rather than reporting its FPS as conformant |
 | 4 | texture layout and filtered copies | Cube faces larger than 16 are not placed; non-halving filtered engine copies have known failures | Trace the vendor cube address/layout calculator above the packed tail; use existing `blitlin:75x37`, `blitlin:74x37` and `blitlin:100x40` controls for the copy issue |
-| 4 | MRT blending and combined operations | Four unblended targets work; multiple-target discard, blending and split shaders are refused | Capture destination-read registers and program image for RT1..3 blend, and verify each target plus retained BO membership |
+| 4 | MRT blending and combined operations | Four unblended targets work; blending has per-target replay, but single-pass destination reads for RT1..3 and combined stencil/discard/split cases remain open | Capture destination-read registers and program image for RT1..3 blend, and verify each target plus retained BO membership |
 | 5 | performance and GPU geometry | Per-object uniform spans still end jobs; native cull bits have not removed hidden faces; complex shaders remain expensive | Profile one 1024x768 scene, compare complete rendering and native/module counts; pursue vendor-proved preprocessing constant spans and the missing cull condition |
 | 5 | presentation and async submission | Existing presentation/submit features need current-board measurement; this ledger does not establish an extra async ABI gap | Check current kernel/DDX implementation and one fullscreen/windowed swap trace before changing the framebuffer or retirement model |
-| 6 | 10-bit masks and conversion | Ten-bit formats work, but partial masks are explicitly refused; older converting-readback failure needs current retest | Implement captured fragment-channel mask lowering with untouched-destination proof, then test converting readback and linear filtering |
+| 6 | 10-bit masks and conversion | Unblended single-target partial masks use a constant-color blend fallback; already-blended and multiple-target partial masks remain refused, and converting readback needs current retest | Prove the existing unblended mask fallback, implement captured mask lowering for combined cases, then test converting readback and linear filtering |
 | 6 | 10-bit display verification | M9128 KMS/GBM/EGL 30-bit path passed; panel precision and transmitter depth remain unverified | Repeat on the installed board and inspect the physical output; keep raw storage precision distinct from panel output precision |
 | 7 | query and kernel lifetime/recovery | Query counter wrap, split-pass sample accounting and fault/recovery boundaries require targeted qualification | Audit the current kernel first, then submit a bounded wrap/lifetime test to the target owner; no unsupported arbitrary requester state |
 | 8 | pixel conformance | Eight-bit GL_DITHER ignored; polygon stipple capture decoded but not implemented; minor rounding/state tests remain | Schedule after FAA and major rendering/performance gaps; use the captured state plus explicit pixel references |
@@ -63,8 +63,11 @@ These are controls for deployment, not new open feature implementations:
   observed shader that still fails to enter or complete the cut. Do not raise
   the six-register hardware limit.
 * Four MRT destinations were measured pixel-exact, at pairs `0x2c+4p` and
-  `0x2d+4p`. The backend explicitly refuses MRT blend/discard/pass splitting;
-  this does not reopen the basic four-target routing decode.
+  `0x2d+4p`. The fragment compiler refuses single-program MRT
+  blend/discard/pass splitting. `m9_mrt_blend_split()` replays blended draws
+  one target at a time, with equal-depth/no-write and query pause on later
+  targets; it refuses a live stencil test. Single-pass destination-read
+  decoding remains open, without reopening basic four-target routing.
 * Occlusion queries are implemented and advertised. Logic operations were
   implemented at 6780573. Stencil, fog, sRGB texture/write support and GL 2.1
   exposure supersede the earlier partial or unreachable claims.
@@ -81,9 +84,12 @@ These are controls for deployment, not new open feature implementations:
   or 3-D texture implementation.
 * Ten-bit render, nearest sample and clear, plus the
   `SRC_ALPHA/ONE_MINUS_SRC_ALPHA` blend pair, were measured on M9128. The
-  actual KMS/GBM/EGL 30-bit chain and packed codes were also measured. Partial
-  channel masks, filtering precision, other blend factors, converting
-  readback and panel/transmitter verification remain separate questions.
+  actual KMS/GBM/EGL 30-bit chain and packed codes were also measured.
+  `m9_draw_vbo()` implements an unblended single-target partial mask as
+  `src*m + dst*(1-m)` with an exact 0/1 constant mask. Combined blend/MRT
+  masks remain refused, while filtering precision, other blend factors,
+  converting readback and panel/transmitter verification are separate
+  questions. The older GigaColor note predates that fallback.
 
 ## FAA evidence boundary
 
