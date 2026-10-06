@@ -100,6 +100,21 @@ enum m9_topology {
 #define M9_VS_GUARD_X_DWORD       41u
 #define M9_VS_GUARD_Y_DWORD       43u
 
+/* Padding strips in m9_split_pad order: top, bottom, left, right.  A strip
+ * intersecting the retained pixel clip would overwrite real fragments with
+ * the padding's zero inputs.  Omit it: the original geometry already reaches
+ * that target edge, so it needs no padding there. */
+static inline unsigned
+m9_split_pad_mask(unsigned width, unsigned height, unsigned x0, unsigned y0,
+                  unsigned x1, unsigned y1)
+{
+   if (!width || !height || x0 >= x1 || y0 >= y1 ||
+       x1 > width || y1 > height)
+      return 0;
+   return (y0 > 0 ? 1u : 0u) | (y1 < height ? 2u : 0u) |
+          (x0 > 0 ? 4u : 0u) | (x1 < width ? 8u : 0u);
+}
+
 /* A per-fragment record carrying values from one raster pass to the next.
  * The descriptor names the record's stride in dwords and the dword the
  * operand starts at; the route word emitted at 0x74 + k names where the

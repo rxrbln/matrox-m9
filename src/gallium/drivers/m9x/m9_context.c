@@ -1877,7 +1877,9 @@ m9_pad_records(float *out, unsigned floats, float x0, float y0, float x1,
  * counted (MEASURED, conv3pad, conv3frame, conv3subpad and conv3hole against
  * conv3sub).  The padding is four rectangles a pixel wide at the edges, two
  * triangles of each winding apiece so that no cull state removes them, and the
- * clip window keeps every one of their fragments out of the image.
+ * clip window keeps their fragments out of the image.  A strip at an edge
+ * the retained clip touches is omitted, since the original geometry already
+ * reaches that edge and its padding would overwrite the real fragments.
  */
 static bool
 m9_split_pad(struct m9_context *ctx, const struct m9_job_key *key,
@@ -1893,7 +1895,7 @@ m9_split_pad(struct m9_context *ctx, const struct m9_job_key *key,
    uint32_t w = ctx->params.width, h = ctx->params.height;
    struct util_dynarray idx = {0};
    uint32_t bx0, by0, bx1, by1;
-   unsigned base = *records, count;
+   unsigned base = *records, count, pad_mask;
    uint16_t *tail;
    float *out;
 
@@ -1932,11 +1934,14 @@ m9_split_pad(struct m9_context *ctx, const struct m9_job_key *key,
       *empty = true;
       return false;
    }
+   pad_mask = m9_split_pad_mask(w, h, bx0, by0, bx1, by1);
    if (!m9_pad_expand(&idx, draw, ctx->indices.size ? ctx->indices.data : NULL))
       goto fail;
    for (unsigned r = 0; r < M9_PAD_RECTS; r++) {
       unsigned p = base + r * 6;
 
+      if (!(pad_mask & BITFIELD_BIT(r)))
+         continue;
       if (!m9_push_tri(&idx, p, p + 1, p + 2) ||
           !m9_push_tri(&idx, p + 3, p + 4, p + 5) ||
           !m9_push_tri(&idx, p + 2, p + 1, p) ||
