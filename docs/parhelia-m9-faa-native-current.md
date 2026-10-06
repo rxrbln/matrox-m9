@@ -259,3 +259,41 @@ actual hardware responses remain unacquired. The helper explicitly returns
 an unsupported error, exercising vendor defaults; it accepts a separate
 feature handler for genuine responses. No hardware-format capability,
 MMIO status, command completion or FAA admission is supplied by this helper.
+
+`--process` additionally executes the real module initializer `0x64800`,
+which calls `0xbb800` and the actual default-option decoder `0x64530`.
+It publishes the default snapshot at `hw+0x10514 -> device+0x14` and
+its configuration owner at `hw+0x10518 -> device+0x18`. This closes the
+missing per-process owner used by query2 `0x966a0`, without a hand-built
+snapshot. The real default AA token changes from1 with842 to2 with843.
+Both default and enabled runs pass; the enabled run also includes profiles
+and registration. See [the compact owner capture](traces/m9-vendor-config-owner-process-20261006.json).
+
+The remaining shared owner at `device+0x10` is acquired by actual MD
+`0x84890` through miniport IOCTL `0x233038` (input20/output20 bytes).
+Its reply `+0x0c` supplies an owner declaring size `0x21f068`; MD publishes
+it at `0x84928`. Genuine MM dispatch `0x71a7c -> 0x71d8e -> 0x61e82`
+returns the miniport owner `+8` here. MM publisher `0x15551` obtains its
+mask from actual type14, 0x208-byte configuration record via `0x26d9d` /
+`0x28e5f`, copying record `+0x204` to shared owner `+0x21f040`. Query2
+uses bit5 of that mask; the ICD itself has not reached a PCI0540 restriction.
+The genuine configuration record remains an initialization dependency.
+
+### Hardware-format mask includes actual surface creation
+
+Static continuation of the exact rejection producer `0x10044330` shows
+its low mask bits are not simply a hardware feature mask returned by query2.
+For every actual display owner, bit0 requires an existing primary surface
+at `+4`, or successful creation by `0x1003a5e0 -> 0x1000aac0`. That normal
+method constructs request type9, changing it to `0x02000009` when the
+genuine OGL Multisample option is enabled; the 32-bit format is0x15.
+Bit1 similarly requires the depth surface at `+0x0c`, or creation via
+`0x1003a6d0` (type0x0a / enabled `0x0200000a`). Bit2 requires the next
+surface at `+0x1c`, or creation via `0x1003a900`. The producer clears all
+three low bits if any required surface creation fails.
+
+Therefore the full normal FAA admission proof must include genuine surface
+allocation after adapter capability acquisition. Returning an enabled mask
+or only filling the manager collection would skip this real admission test.
+The current fixture has an empty collection and never attempts these
+allocations, so its early rejection still proves no M9128 restriction.
