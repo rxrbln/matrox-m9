@@ -1,5 +1,19 @@
 # glmark2 on the m9x driver: where the 60 fps goal actually stands
 
+## 2026-10-06: packed publication fix gives correct textured/depth pixels
+
+Mesa c7b8a6e follows the vendor GLSL high-before-low packed output schedule,
+retaining safe paired pins and using normal temporaries for coordinates.
+Root79/79 references,5refusals, vendor witness, batch and full DSO pass.
+One fresh physical M9128 test now passes all256 textured/depth pixels in
+both palettes, max channel error1; six user draws use GPU vertex shaders,
+zero application CPU fallback. Actual220/340 retirement, emptyqueue and
+wedged0 are preserved. The record oracle still rejects its assumed dense
+layout: raw bytes instead show component planes at64-DWORD boundaries.
+Its dump/allocation-span contract needs proof; full large-workload check is
+next at1024x768. Defaultcap2 remains, no FPS gain is claimed.
+[Exact first correct pixel evidence](../tests/m9-gl2-packed-order-hardware-20261006/README.md).
+
 ## 2026-10-06: source stage corrections retire both tiny palettes; pixels still fail
 
 Mesa038b89e derives A8 from the native intermediate/final stage role.
