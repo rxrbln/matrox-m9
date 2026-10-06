@@ -1,11 +1,13 @@
 # Private native M9128 FAA replay
 
-Latest physical result: kernel `7dd03c5` on M9128 boot `6c79ac0e` passes
+Latest physical result: kernel `bcccb66` on M9128 boot `96a79ac0` passes
 the positive CPU control and retires the private frame, but its image fails.
 The companion-table profile produces new fragment-store and AA-companion
 writes; the actual readback is scattered incorrect data rather than the
 green triangle. See the latest qualification at the end of this note and
-`tests/m9-faa-companion-20261006`. Earlier runs below are historical.
+`tests/m9-faa-clear-20261006`. The allocation-dependent companion clear is
+now correctly regenerated; this closes a real command bug, while rendering
+remains incorrect. Earlier runs below are historical.
 
 The Linux producer now owns the actual normal FAA frame's allocations and
 source bytes. It is a bounded diagnostic behind `m9_faa_diag=1`, selected
@@ -172,3 +174,19 @@ require further resolve/translation/CPU-view analysis; owner writes and
 retirement do not establish correct fragment coverage. Complete logs,
 module/source hashes, actual PPM and compressed raw buffers are archived in
 `tests/m9-faa-companion-20261006`. No application FAA is enabled.
+
+## Corrected companion page clear; hardware image still fails
+
+Kernel `bcccb66` validates the source clear, generates the 151 live companion
+pages with their actual alignment, updates the count, moves the already
+patched suffix and submits its adjusted length. On native2f0e000 this is20
+words/5680 bytes, preserving the spare152nd backing page. The actual vendor
+instruction and native-helper fixtures pass all eight alignments.
+
+Fresh physical boot `96a79ac0-255c-403a-8e29-d3df6a31e68f` confirms the
+corrected count/length, CPU76800 control and real retirement1e0. ImageFAIL:
+colored278/full0/partial278/interior_bad8326/exterior_bad185/non_green823.
+Fragment-store and companion FNV hashes/counts are identical to the previous
+run. This proven command fix is retained, but it does not resolve the pixel
+failure. See `tests/m9-faa-clear-20261006` for actual hashes/logs/PPM, and
+`docs/gpu-capture-replay-policy.md` for the standing implementation rule.

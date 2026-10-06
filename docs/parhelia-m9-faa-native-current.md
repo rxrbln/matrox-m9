@@ -9,14 +9,14 @@ rendering is not yet validated. This note is separate from P690
 `102b:2539` evidence.
 
 Current authoritative private replay and hardware evidence are in
-[the native replay note](parhelia-m9-native-faa-replay.md). Kernel `7dd03c5`
+[the native replay note](parhelia-m9-native-faa-replay.md). Kernel `bcccb66`
 includes the complete normal-surface capture with 30 owners, 53 typed addresses,
 26 timeline fields and the actual 5676-byte primary and 604/772-byte counted
-secondaries. The latest physical M9128 run on boot `6c79ac0e` passes all
+secondaries. The latest physical M9128 run on boot `96a79ac0` passes all
 76800 positive CPU pattern pixels through the exact vendor F0220140 view,
 verifies all 117648 known VRAM input bytes, and reaches GPU retirement `0x1e0`.
-The image still fails: 270 scattered partial pixels, no full green pixels,
-8326 bad interior pixels, 183 bad exterior pixels and 809 non-green pixels.
+The image still fails: 278 scattered partial pixels, no full green pixels,
+8326 bad interior pixels, 185 bad exterior pixels and 823 non-green pixels.
 App FAA remains disabled; there is no FAA-on application screenshot.
 
 The direct CPU-root mapping is repaired and physically verified. The latest
@@ -31,6 +31,15 @@ evidence; earlier root-join and virtual-restore archives retain historical
 results. The remaining failure is downstream of preprocessing: packed FAA
 data, resolve and destination/CPU-view interpretation are being compared
 with the actual vendor flow. GPU writes are not proof of correct pixels.
+
+The latest run additionally corrects the allocation-dependent companion
+clear words emitted outside the relocation callback. The native 151-page
+extent requires20 words rather than captured19; the primary is rebuilt to
+5680 bytes after its other operand patches. Actual vendor instructions and
+the native helper agree at all eight page alignments. The resulting GPU
+image still fails, with unchanged fragment/companion observation hashes.
+This proven command fix is retained. See `tests/m9-faa-clear-20261006` and
+[the mandatory capture replay policy](gpu-capture-replay-policy.md).
 
 The earlier manually joined frame below was superseded by the coherent
 normal-surface capture, whose second real launcher retains sampledFAAstate.
