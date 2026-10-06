@@ -111,8 +111,11 @@ static const struct m9_faa_fixup m9_faa_fixups[] = {
 static const struct m9_faa_tracker m9_faa_trackers[] = {
 	{ 27u, 0x8u, 0x21u },
 	{ 27u, 0x5cu, 0x31u },
+	{ 27u, 0x124u, 0x30u },
 	{ 27u, 0x430u, 0x41u },
 	{ 27u, 0x468u, 0x51u },
+	{ 27u, 0x4f0u, 0x50u },
+	{ 27u, 0xfbcu, 0x50u },
 	{ 27u, 0x117cu, 0x61u },
 	{ 27u, 0x122cu, 0x71u },
 	{ 27u, 0x1240u, 0x81u },
@@ -130,5 +133,6 @@ static const struct m9_faa_tracker m9_faa_trackers[] = {
 	{ 27u, 0x142cu, 0x131u },
 	{ 27u, 0x1434u, 0x130u },
 	{ 27u, 0x1458u, 0x141u },
+	{ 27u, 0x1510u, 0x140u },
 	{ 27u, 0x1628u, 0x151u },
 };

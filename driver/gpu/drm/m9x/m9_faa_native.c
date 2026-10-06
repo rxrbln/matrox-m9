@@ -221,7 +221,7 @@ int m9x_faa_prepare_diag(struct m9x_device *mdev)
 	}
 	r->prepared = true;
 	mdev->transport.faa = r;
-	dev_info(&mdev->pdev->dev, "M9 FAA private inputs: %zu owners, %u known bytes, 53 address/22 tracker fixups\n",
+	dev_info(&mdev->pdev->dev, "M9 FAA private inputs: %zu owners, %u known bytes, 53 address/26 tracker fixups\n",
 		 ARRAY_SIZE(r->owner), M9_FAA_BLOB_BYTES);
 	ret = 0;
 	goto release_fw;
@@ -286,6 +286,12 @@ int m9x_faa_submit_diag(struct m9x_device *mdev, u32 color,
 	}
 	base = t->next_fence - 0x10;
 	target = base + M9_FAA_TRACKER_LAST - 0x10;
+	/* Retain a real observed retirement as the new common-buffer seed.
+ * Never advance a completion counter on the CPU to fit the replay. */
+	if ((READ_ONCE(((u32 *)t->fence_cpu)[0]) & ~15u) != base) {
+		ret = -EAGAIN;
+		goto unlock;
+	}
 	ret = m9x_address_check_local_identity(mdev, t->restore_base,
 					 PARHELIA_M9_RESTORE_BYTES);
 	if (ret)
@@ -359,7 +365,11 @@ int m9x_faa_submit_diag(struct m9x_device *mdev, u32 color,
 	dma_resv_add_fence(color_bo->bo.base.resv, &fence->base, DMA_RESV_USAGE_WRITE);
 	/* Actual 23a3b/23aaf normal activation contracts. The ordinary context
  * just retired; the two additional tracker words belong to this same
- * retained coherent common buffer, not captured host physical memory. */
+ * retained coherent common buffer, not captured host physical memory.
+ * Only the actual known128-byte initializer is reproduced; the low seed
+ * equals the already observed GPU retirement and does not publish success. */
+	memset(t->fence_cpu, 0, 128);
+	WRITE_ONCE(((u32 *)t->fence_cpu)[0], base);
 	WRITE_ONCE(((u32 *)t->fence_cpu)[0x20 / 4], base);
 	WRITE_ONCE(((u32 *)t->fence_cpu)[0x40 / 4], base);
 	WRITE_ONCE(((u32 *)t->fence_cpu)[0x60 / 4], base);
