@@ -90,10 +90,10 @@ retained. Address outputs are unbacked tags and must not be submitted.
 
 All extents/descriptors are hexadecimal. The two standard AA dimensions need
 payload width*height*8 plus32 bytes; the odd/small controls prove that formula
-alone is not a general allocator. The current Linux diagnostic allocates8 bytes
-per source pixel (the64-bit size is already recognized), forces descriptor
-layout1 and leaves BA/BB bound to ordinary depth HZ. It needs the actual companion
-layout, end-guard/alignment and its own optional HZ graph after admission closes.
+alone is not a general allocator. The pre-fb4e710 Linux diagnostic allocated8 bytes
+per source pixel (the64-bit size is already recognized), forced descriptor
+layout1 and left BA/BB bound to ordinary depth HZ. fb4e710 now matches the actual companion
+layout and padding-aware guard; its own optional HZ graph remains open.
 
 The ordinary HZ rows/extent match existing implementation, but the AA companion
 must own/initialize its plane rather than borrow the ordinary depth surface's.
@@ -129,5 +129,10 @@ the request is96018;320x240 is96020;321x240 isb4000. Exact1920x1200 needs
 padding, independent of the32MiB fragment-store cap.
 
 This reference extends the shape proof; it still supplies no GPU backing or
-initial contents. Existing diagnostic companion allocation and descriptor
-construction remain to be corrected coherently with the full resource graph.
+initial contents. Native fb4e710 now uses this padding-aware extent and genuine selector2
+descriptor coherently for format3d. The actual-C regression compares all28
+vendor size/row/height/descriptor values and rejects invalid dimensions without
+changing the output. Fault-injected ownership passes ASAN/UBSAN. Native
+FAA-off controls pass in the combined bd24336 deployment. Optional AA-owned HZ,
+physical backing, initialized pool6/sentinel and complete command lifecycle
+remain open; this is not FAA-on proof.

@@ -4,7 +4,7 @@
 # M9 open topics and evidence, 2026-10-06
 
 This ledger reconciles the independent M9 (`102b:0540`, `m9x`) userspace
-source at **32fa687**, the October 2 piglit results, and the feature-specific
+source at **ea97652** (native-tested bd24336), the October 2 piglit results, and the feature-specific
 RE notes. It is a work queue, not a new hardware result. The user has installed
 an M9 in nano for deployment and FAA testing; results from that new installation
 must record the actual adapter/subsystem identity, boot, kernel and Mesa hashes.
@@ -28,7 +28,14 @@ texture pairs into one stream and preserves interpolated color in the second;
 actual texture/affine/depth controls pass. One1024x768/vsync0 Quake3 run is
 51.4FPS, about99.2% GPU vertex draws and zero skips; see
 [latest native proof](../tests/m9-packed-coord-native-20261006/README.md).
-Remaining70jobs/frame and15uniform splits are the next submission cost.
+Native constant batching now passes textured A/B/A and49-matrix pixel
+references, including depth, with actual3/49 constant runs per job. One new
+1024x768/vsync0 run reports56.6FPS,55jobs/frame and zero uniform splits;
+see [batching proof](../tests/m9-uniform-runs-native-20261006/README.md).
+ea97652 enables the tested path by default. Remaining CPU draw is triangle
+polygon offset (factor=-1,units=-2), about0.8% of calls/0.03ms per frame.
+FAA companion allocation now matches28 genuine vendor geometry/descriptor
+cases (fb4e710), without proving the full FAA resource/command lifecycle.
 
 The [October 2 piglit status](parhelia-m9-piglit-status.md) supersedes the
 September 18 backlog where they disagree. The glmark2 standing is still the
@@ -59,7 +66,7 @@ an agent running simultaneously.
 | 4 | complex split scenes | glmark2 terrain remains incorrect/slow in the recorded standing; partial split coverage is implemented, not a blanket missing feature | Capture one bounded terrain/split case against a reference with skip accounting and identify the first bad intermediate rather than reporting its FPS as conformant |
 | 4 | texture layout and filtered copies | Cube faces larger than 16 are not placed; non-halving filtered engine copies have known failures | Trace the vendor cube address/layout calculator above the packed tail; use existing `blitlin:75x37`, `blitlin:74x37` and `blitlin:100x40` controls for the copy issue |
 | 4 | MRT blending and combined operations | Four unblended targets work; blending has per-target replay, but single-pass destination reads for RT1..3 and combined stencil/discard/split cases remain open | Capture destination-read registers and program image for RT1..3 blend, and verify each target plus retained BO membership |
-| 5 | performance and GPU geometry | Current32fa687 at1024x768/vsync0:51.4FPS,99.2% native calls;70jobs/frame and15uniform splits | Texture-pair packing and proven unit-q projection measured; retain them, address per-draw uniform relocation/submission and broader stream routing |
+| 5 | performance and GPU geometry | Current bd24336 at1024x768/vsync0:56.6FPS,99.2% native calls;55jobs/frame,zero uniform splits | Texture-pair packing, unit-q and constant-run batching measured; retain them, close GPU polygon offset and reduce remaining submission costs |
 | 5 | presentation and async submission | Existing presentation/submit features need current-board measurement; this ledger does not establish an extra async ABI gap | Check current kernel/DDX implementation and one fullscreen/windowed swap trace before changing the framebuffer or retirement model |
 | 6 | 10-bit masks and conversion | Unblended single-target partial masks use a constant-color blend fallback; already-blended and multiple-target partial masks remain refused, and converting readback needs current retest | Prove the existing unblended mask fallback, implement captured mask lowering for combined cases, then test converting readback and linear filtering |
 | 6 | 10-bit display verification | M9128 KMS/GBM/EGL 30-bit path passed; panel precision and transmitter depth remain unverified | Repeat on the installed board and inspect the physical output; keep raw storage precision distinct from panel output precision |
