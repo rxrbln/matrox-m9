@@ -37,6 +37,12 @@ constructor consumes the live PDEV `+80` and `+24` fields and calls `487d0`
 at `8ae3f`. These fields require genuine mode/device provenance before extending
 the conditional fixture. This audit does not supply their values.
 
+The subsequent [mode-admission execution](parhelia-m9-faa-copy-constructor-admission.md)
+closes their type: `+80` is a **numeric format code**, not a pointer. For an
+accepted 32-bpp mode the source publishes `+80=66` and `+78=4` bytes.
+The current retained mode collection contains zero modes, so that execution
+does not admit a mode or run `86660`.
+
 For each backing, `868d0` constructs a `0x3ec` wrapper, records the PDEV at
 `+240`, hardware at `+244`, and backing at `+248`. It initializes wrapper
 `+234` to zero (`868dd`). Non-NULL publication therefore does not establish
