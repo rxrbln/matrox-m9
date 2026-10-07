@@ -3,6 +3,31 @@
 Copyright 2026 René Rebe <rene@exactco.de>
 SPDX-License-Identifier: GPL-2.0-only
 
+## October 7: genuine retained flow executes; same six stale edges remain
+
+DRM `6c3fdd4` replaces the reused first-draw secondary with the actual vendor
+retained command structure (primary3624/secondary2536 for two declaration
+groups), preserving live resource and shader derivation. Independent source
+comparisons pass128 placement/state/count/declaration cases. One complete
+hardware batch retires first3 → clear → next6 → both Lock/read/Unlock cycles
+and cleanup with generation0/queue0/wedged0. Both images are byte-identical
+to the prior build: first image passes; second still has six stale old-color
+edge samples. The correction is retained; full FAA sample reset is open.
+[Exact hardware evidence](../tests/m9-faa-retained-flow-hardware-20261007/README.md).
+
+Mesa `0dba5b2` preserves the retained graph across same-layout back/front
+retargets and requires a real clear for a new destination. `dcc14df`/`5e6f59c`
+add flat COLOR frontend/topology and correct FIRST/LAST provoking vertices.
+`9fa80ea` uses the authenticated160-byte FRAME ABI for both first and repeated
+application draws. `14f1fbe` combines Mesa fixed-function lighting's split RGB
+and alpha stores on an owned NIR clone: original Mesa directional/positional
+producer controls pass4,096 independent GPU transform/lighting components,
+within existing instruction/constant limits. These are host proofs; actual
+glxgears has not passed. Full clear, depth and native flat/cull state are still
+gated pending their complete source-derived implementation and hardware test.
+DRM `a918988`/`376cee8` prepare bound attachments from authentic INIT and encode
+live HZ/depth clear bodies; the complete bound clear/draw sequence is unfinished.
+
 ## October 7: six-vertex FAA draw executes; frame reset still fails
 
 DRM `102a969` corrects real launch counts instead of overwriting packet lengths.
