@@ -3,6 +3,25 @@
 
 # M9 open topics and evidence, 2026-10-06
 
+## October 8: batch failure traced to CPU stack overwrite
+
+A zero-delay phase trace with the WC-publication fix reaches INITb0 and
+successful first-frame preparation, then loses the host before batch
+composition or any batch END. Source inspection found a concrete kernel
+stack overwrite: the batch allocated31 owner descriptors but the production
+fill writes34, including depth attachments. DRM `6170da1` fixes the capacity;
+the updated test uses the real fill and reproduces the old overflow under
+ASan. Its earlier31-role stub had masked this bug. The WC barrier correction
+`2717bf4` is retained independently. The corrected hardware test is pending.
+[Host-streamed phase evidence](../tests/m9-faa-first-batch-hardware-20261008/wc-trace-failure/README.md).
+Do not characterize this observed failure as a proved GPU-command wedge.
+
+Initialized later-frame source controls are integrated as RE `42361ee2`:
+clear3/depth7 reuses bound attachments and reaches unread Lock370 from
+native Unlock220; no-clear reaches Lock2f0. The clear prefix includes a
+separate existing-sentinel operation. Native integration and pool rotation
+remain open; glxgears FAA is not yet verified.
+
 ## October 8: combined flat/CW batch fails after successful INIT
 
 The frozen native candidate `d2a5c03` (root `b1e5ba3`) now pairs flat32
