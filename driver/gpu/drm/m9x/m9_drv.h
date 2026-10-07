@@ -464,7 +464,9 @@ int m9x_faa_graph_prepare_ioctl(struct drm_device *drm, void *data,
 int m9x_faa_graph_release_ioctl(struct drm_device *drm, void *data,
 				struct drm_file *file);
 int m9x_faa_graph_init_ioctl(struct drm_device *drm, void *data,
-				struct drm_file *file);
+			     struct drm_file *file);
+int m9x_faa_graph_draw_red_ioctl(struct drm_device *drm, void *data,
+				 struct drm_file *file);
 int m9x_faa_prepare_graph(struct m9x_device *mdev,
 			  struct m9_faa_graph_binding *binding, u32 generation);
 int m9x_faa_submit_graph(struct m9x_device *mdev,

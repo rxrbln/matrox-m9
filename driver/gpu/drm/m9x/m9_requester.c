@@ -1121,7 +1121,9 @@ int m9x_post_faa_graph_end_locked(struct m9x_device *mdev,
 	end = (u32)node->start + new_bytes;
 	dma_wmb();
 	m9x_write(mdev, M9_REG_COMMAND_END, end);
-	m9x_read(mdev, M9_REG_COMMAND_END);
+	/* Source repeats +64 END without an intervening MMIO read. */
+	if (target)
+		m9x_read(mdev, M9_REG_COMMAND_END);
 	*doorbell_posted = true;
 	if (!target)
 		return 0;
