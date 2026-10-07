@@ -1,11 +1,10 @@
 /* SPDX-License-Identifier: MIT */
 /* Copyright 2026 René Rebe <rene@exactco.de> */
 /*
- * Vertex-stage texture fetch.  Vertex programs run on the CPU in the draw
- * module, so its own sampler does the fetching and the driver only has to
- * hand it a linear copy of every bound image.  The pipe_context entries are
- * wrapped from m9_screen.c, which installs this: the vtable itself is built
- * in m9_context.c.
+ * Vertex-stage texture bindings. Native programs borrow the retained view
+ * and sampler to emit a GPU fetch. The draw module fallback receives a
+ * linear copy through m9_vs_texture_refresh immediately before CPU drawing.
+ * The pipe_context entries are installed by m9_context.c.
  */
 #include "m9_vs_texture.h"
 
@@ -197,4 +196,18 @@ m9_vs_texture_init(struct pipe_context *pctx)
       return false;
    m9_vs_context(pctx)->vs_textures = vs;
    return true;
+}
+
+struct pipe_sampler_view *
+m9_vs_texture_view(struct pipe_context *pctx, unsigned slot)
+{
+   struct m9_vs_textures *vs = m9_vs_context(pctx)->vs_textures;
+   return vs && slot < ARRAY_SIZE(vs->views) ? vs->views[slot] : NULL;
+}
+
+const struct pipe_sampler_state *
+m9_vs_texture_state(struct pipe_context *pctx, unsigned slot)
+{
+   struct m9_vs_textures *vs = m9_vs_context(pctx)->vs_textures;
+   return vs && slot < ARRAY_SIZE(vs->states) ? vs->states[slot] : NULL;
 }

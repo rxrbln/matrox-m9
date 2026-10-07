@@ -380,6 +380,11 @@ struct m9_job_key {
    /* The fused pass binds its own fourth output target for varying 1. */
    bool vs_fused_pair;
    float viewport_scale[3], viewport_bias[3];
+   /* Separate bounded vertex sampler snapshot, part of the job state key.
+    * Its resource stays retained through queued submission/retirement. */
+   bool vs_texture;
+   struct m9_texture_unit vs_unit;
+   struct pipe_resource *vs_unit_res;
    /* One entry a texture slot of every raster pass: a shader split across
     * passes binds four in each of them. */
    struct m9_texture_unit units[M9_DRAW_MAX_UNITS];

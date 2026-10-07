@@ -127,6 +127,7 @@ struct ctx {
    uint32_t *head_live;     /* component demand of the split head's pure ALU */
    int8_t *fold;            /* product's constant side, or FOLD_NEG */
    unsigned def_count;
+   nir_tex_instr *texture;
    unsigned index;          /* instruction being emitted */
    /* Lanes whose result the output registers take directly. */
    struct out_pin {
@@ -1938,6 +1939,55 @@ note_input(struct ctx *c, struct input_use *used, unsigned *count,
    return true;
 }
 
+/* The GL compiler's two-component texture descriptor selects mode 1;
+ * sample results arrive in r00/r02 before the source-fed ALU head. The
+ * runtime additionally requires one resident level and point/no-mip state.
+ * Computed coordinates need the vendor's separate coordinate producer. */
+static bool
+note_texture(struct ctx *c, nir_tex_instr *tex)
+{
+   int ci = nir_tex_instr_src_index(tex, nir_tex_src_coord);
+   int li = nir_tex_instr_src_index(tex, nir_tex_src_lod);
+   if (c->texture)
+      return fail(c, "more than one vertex texture fetch");
+   if ((tex->op != nir_texop_tex && tex->op != nir_texop_txl) ||
+       tex->sampler_dim != GLSL_SAMPLER_DIM_2D || tex->is_array ||
+       tex->is_shadow || tex->coord_components != 2 || ci < 0 ||
+       tex->src[ci].src.ssa->bit_size != 32 ||
+       tex->src[ci].src.ssa->num_components != 2 ||
+       tex->def.num_components != 4 || tex->def.bit_size != 32 ||
+       tex->dest_type != nir_type_float32 ||
+       tex->texture_index != tex->sampler_index || tex->texture_index >= 8 ||
+       tex->num_srcs != (tex->op == nir_texop_txl ? 2 : 1))
+      return fail(c, "unsupported vertex texture operation");
+   if (tex->op == nir_texop_txl &&
+       (li < 0 || !nir_src_is_const(tex->src[li].src) ||
+        nir_src_as_float(tex->src[li].src) != 0.0f))
+      return fail(c, "vertex texture LOD must be zero");
+   nir_scalar x = nir_scalar_chase_movs(nir_get_scalar(tex->src[ci].src.ssa, 0));
+   nir_scalar y = nir_scalar_chase_movs(nir_get_scalar(tex->src[ci].src.ssa, 1));
+   if (!nir_scalar_is_intrinsic(x) || !nir_scalar_is_intrinsic(y))
+      return fail(c, "vertex texture coordinates need a separate producer");
+   nir_intrinsic_instr *input = nir_def_as_intrinsic(x.def);
+   nir_intrinsic_instr *other = nir_def_as_intrinsic(y.def);
+   if (input->intrinsic != nir_intrinsic_load_input ||
+       other->intrinsic != nir_intrinsic_load_input ||
+       x.def->bit_size != 32 || y.def->bit_size != 32 ||
+       nir_intrinsic_component(input) + x.comp != 0 ||
+       nir_intrinsic_component(other) + y.comp != 1 ||
+       nir_intrinsic_io_semantics(input).location !=
+          nir_intrinsic_io_semantics(other).location ||
+       nir_intrinsic_base(input) != nir_intrinsic_base(other) ||
+       !nir_src_is_const(input->src[0]) || nir_src_as_uint(input->src[0]) ||
+       !nir_src_is_const(other->src[0]) || nir_src_as_uint(other->src[0]))
+      return fail(c, "vertex texture coordinates must be direct input XY");
+   c->texture = tex;
+   c->p->texture_count = 1;
+   c->p->texture_sampler = tex->texture_index;
+   c->p->texture_location = nir_intrinsic_io_semantics(input).location;
+   return true;
+}
+
 /* Attribute a is register pair 0x46 + 8 * (a - 1) and the next register;
  * the first holds selectors 0 and 1, the second selectors 2 and 3.  The
  * declaration pads a short input with the default (0, 0, 0, 1), which makes
@@ -2385,6 +2435,23 @@ compile_head(struct ctx *c, nir_block *block, unsigned final,
          }
    }
    declare_attributes(c, used, inputs);
+   if (c->texture) {
+      /* Save both sampled halves before any position/varying publication
+       * reuses r00/r02. They are real SSA definitions with normal last-use
+       * lifetime, not instruction-private temporaries. */
+      for (unsigned pair = 0; pair < 2; pair++) {
+         int dst = reg_alloc(c);
+         if (dst < 0)
+            return fail(c, "register pressure preserving a vertex texture");
+         emit_move(c, dst, 0x1c, 2 * pair, 1);
+         struct held h0 = { .kind = HELD_DEF,
+                           .a = c->texture->def.index, .b = 2 * pair };
+         struct held h1 = h0;
+         h1.b++;
+         hold_def(c, dst, 0, &h0);
+         hold_def(c, dst, 1, &h1);
+      }
+   }
    nir_foreach_instr(instr, block) {
       c->index = instr->index;
       c->temp_live = true;
@@ -2460,6 +2527,11 @@ compile_impl(struct ctx *c, nir_function_impl *impl,
       if (instr->type == nir_instr_type_alu ||
           instr->type == nir_instr_type_load_const)
          continue;
+      if (instr->type == nir_instr_type_tex) {
+         if (!note_texture(c, nir_instr_as_tex(instr)))
+            return false;
+         continue;
+      }
       if (instr->type != nir_instr_type_intrinsic)
          return fail(c, "unsupported instruction");
       intr = nir_instr_as_intrinsic(instr);
@@ -2535,6 +2607,8 @@ compile_impl(struct ctx *c, nir_function_impl *impl,
          return fail(c, "a stream the shader writes no varying for");
    }
    nvar = out.count;
+   if (c->texture && nvar > M9_VS_FUSED_VARYINGS)
+      return fail(c, "vertex texture requires the bounded fused output path");
    if (nvar > M9_VS_FUSED_VARYINGS) {
       c->head_live = calloc(c->def_count + 1, sizeof(*c->head_live));
       if (!c->head_live)
@@ -3182,7 +3256,7 @@ unsigned
 m9_vs_decl_words(const struct m9_vs_program *p, uint32_t *out,
                  unsigned max_words)
 {
-   unsigned n = 2 * p->attr_count + 1;
+   unsigned n = 2 * p->attr_count + p->texture_count + 1;
 
    if (!out || n > max_words || n > M9_VS_MAX_DECL)
       return 0;
@@ -3200,6 +3274,18 @@ m9_vs_decl_words(const struct m9_vs_program *p, uint32_t *out,
       out[2 * i + 1] = a->offset << 24 | (i + 1) << 20 | 6 | 6 << 3 |
                        a->select[2] << 6 | a->select[3] << 9;
    }
-   out[2 * p->attr_count] = 0x00004b08;
+   if (p->texture_count) {
+      unsigned i;
+      for (i = 0; i < p->attr_count; i++)
+         if (p->attrs[i].location == p->texture_location)
+            break;
+      if (i == p->attr_count || p->texture_count != 1)
+         return 0;
+      /* Texture coordinate set 0 is attribute 5. The four input selectors
+       * are source-proven by the genuine public direct-UV producer. Mode
+       * 1 uses XY; the runtime's single-level state never reads a W LOD. */
+      out[2 * p->attr_count] = p->attrs[i].offset << 24 | 5u << 20 | 0x688u;
+   }
+   out[n - 1] = 0x00004b08;
    return n;
 }

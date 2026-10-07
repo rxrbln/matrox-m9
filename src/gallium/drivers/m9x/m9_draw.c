@@ -926,6 +926,11 @@ m9_draw_job_valid(const struct m9_draw_job *job)
       return false;
    /* The packed record spans one view a varying, above the views the
     * gather de-interleaves into. */
+   if (job->vs_unit &&
+       (!job->vs_decl_count || job->vs_extra_entry || job->vs_gather_entry ||
+        job->vs_producer_entry || job->pass_count > 1 ||
+        !job->vs_unit->handle))
+      return false;
    if (job->vs_gather_entry &&
        (!job->vs_extra_entry ||
         job->vs_record_view < M9_TRANSIENT_VS_RECORD_VIEW ||
@@ -1265,9 +1270,12 @@ m9_emit_preprocess(struct m9_batch *batch, const struct m9_draw_job *job,
     * with one, two or three targets rendered exactly).  Every captured head
     * pass declares a run of pairs up to 15 instead -- 0xffff, 0xfffe,
     * 0xfffc, 0xfff8, 0xfff0, 0xffe0 -- so the extra draw claims them all,
-    * which is the captured 0x0100ffff. */
+    * which is the captured 0x0100ffff. An ordinary vertex sampler supplies
+    * attribute 5 and sets one texture-input bit at20; it leaves the bounded
+    * normal attribute count and compiler-derived scratch mask unchanged. */
    EMIT(V(0x88, (BITFIELD_MASK((decl_count - 1) / 2) << 24) |
-                (chain ? BITFIELD_MASK(routes) << 20 : 0) |
+                (chain ? BITFIELD_MASK(routes) << 20 :
+                 job->vs_unit ? 1u << 20 : 0) |
                 (primary ? job->vs_producer_mask :
                  chain && kind == M9_PRE_HEAD ? job->vs_extra_mask :
                  extra ? 0x0000ffffu :
@@ -1290,7 +1298,8 @@ m9_emit_preprocess(struct m9_batch *batch, const struct m9_draw_job *job,
         R(0x8d, job->system, M9_VS_CONST_OFFSET, SYSTEM),
         R(0x8e, job->system, M9_VS_CONST_OFFSET + 8 * const_pairs, SYSTEM),
         V(0x8f, 0));
-   ret = m9_emit_units(batch, job, NULL, NULL, 0);
+   ret = m9_emit_units(batch, job, NULL, job->vs_unit,
+                       job->vs_unit ? 1 : 0);
    if (ret)
       goto fail;
    /* The gather reads the head's record: one route a varying, each naming

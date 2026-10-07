@@ -165,6 +165,9 @@ struct m9_draw_job {
    bool vs_fused_mask_set;
    uint16_t vs_fused_mask;
    uint32_t vs_record_view;   /* transient view the packed record starts at */
+   /* One direct-input, level-zero vertex sampler. Only the ordinary source
+    * producer binds it; the raster range restores its own units. */
+   const struct m9_texture_unit *vs_unit;
    /* Raster texture units, texel pair order. */
    const struct m9_texture_unit *units;
    unsigned unit_count;

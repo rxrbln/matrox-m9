@@ -7,6 +7,7 @@
 
 struct pipe_context;
 struct pipe_sampler_view;
+struct pipe_sampler_state;
 
 /* Units the draw module samples for the vertex stage. */
 #define M9_VS_MAX_SAMPLERS 8
@@ -19,5 +20,11 @@ void m9_vs_texture_views(struct pipe_context *pctx, unsigned start,
 void m9_vs_texture_states(struct pipe_context *pctx, unsigned start,
                           unsigned count, void **states);
 void m9_vs_texture_refresh(struct pipe_context *pctx);
+/* Borrow currently retained bindings; jobs snapshot words and retain the
+ * resource before sampler/view state can change. */
+struct pipe_sampler_view *m9_vs_texture_view(struct pipe_context *pctx,
+                                           unsigned slot);
+const struct pipe_sampler_state *m9_vs_texture_state(struct pipe_context *pctx,
+                                                    unsigned slot);
 
 #endif
