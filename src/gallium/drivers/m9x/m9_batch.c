@@ -53,17 +53,18 @@ m9_batch_rollback(struct m9_batch *batch,
       batch->bos[i].flags = checkpoint->bo_flags[i];
 }
 
-/* Resets a batch for reuse, keeping the relocation array it already grew.
+/* Reset the used prefixes, not their storage: emitters fully assign every
+ * command, relocation and BO entry before advancing its count. Submission
+ * exposes only these prefixes. Keep the grown relocation allocation too.
  * A batch is zeroed by its owner before the first call. */
 void
 m9_batch_init(struct m9_batch *batch)
 {
-   struct drm_parhelia_m9_reloc *relocs = batch->relocs;
-   uint32_t capacity = batch->reloc_capacity;
-
-   memset(batch, 0, sizeof(*batch));
-   batch->relocs = relocs;
-   batch->reloc_capacity = capacity;
+   batch->command_count = 0;
+   batch->reloc_count = 0;
+   batch->bo_count = 0;
+   batch->program_mode = M9_PROGRAM_MODE_NONE;
+   batch->sealed = false;
 }
 
 void
