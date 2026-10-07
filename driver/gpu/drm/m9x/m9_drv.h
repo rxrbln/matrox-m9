@@ -4,6 +4,7 @@
 #define __M9X_DRM_DRV_H__
 
 #include <linux/dma-fence.h>
+#include <linux/atomic.h>
 #include <linux/list.h>
 #include <linux/i2c-algo-bit.h>
 #include <linux/io.h>
@@ -81,6 +82,7 @@ struct m9x_fence {
 
 struct m9x_triangle_diag;
 struct m9x_faa_replay;
+struct m9_faa_prepared_graph;
 struct m9x_address_space;
 
 #define M9_QUEUE_SLOTS 4u
@@ -276,6 +278,8 @@ struct m9x_device {
 	struct mutex dma_lock;
 	struct list_head dma_chunks;
 	struct m9x_transport transport;
+	/* Device-unique prepared-only FAA graph tokens; zero is never issued. */
+	atomic64_t faa_graph_next;
 };
 
 static inline struct m9x_device *to_m9x(struct drm_device *drm)
@@ -443,6 +447,18 @@ int m9x_submit_user_stream_locked(struct m9x_device *mdev, const u32 *records,
 int m9x_triangle_selftest(void);
 void m9x_triangle_fini(struct m9x_device *mdev);
 int m9x_submit_selftest(void);
+int m9x_faa_graph_selftest(void);
+int m9x_faa_graph_file_open(struct drm_device *drm, struct drm_file *file);
+void m9x_faa_graph_file_close(struct drm_device *drm, struct drm_file *file);
+int m9x_faa_graph_prepare_ioctl(struct drm_device *drm, void *data,
+				struct drm_file *file);
+int m9x_faa_graph_release_ioctl(struct drm_device *drm, void *data,
+				struct drm_file *file);
+struct m9_faa_prepared_graph *m9x_faa_graph_acquire(struct drm_file *file,
+							  u64 id, u32 generation);
+struct drm_gem_object *m9x_faa_graph_owner(
+				const struct m9_faa_prepared_graph *graph, u32 role);
+void m9x_faa_graph_put(struct m9_faa_prepared_graph *graph);
 struct m9x_bo *m9x_bo_lookup(struct m9x_device *mdev,
 			     struct drm_file *file, u32 handle);
 bool m9x_gem_is_dma(struct drm_gem_object *gem);

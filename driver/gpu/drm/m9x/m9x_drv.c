@@ -45,6 +45,10 @@ static const struct drm_ioctl_desc m9x_ioctls[] = {
 			  DRM_RENDER_ALLOW),
 	DRM_IOCTL_DEF_DRV(PARHELIA_M9_SURFACE_ACCESS, m9x_surface_access_ioctl,
 			  DRM_RENDER_ALLOW),
+	DRM_IOCTL_DEF_DRV(PARHELIA_M9_FAA_GRAPH_PREPARE,
+			  m9x_faa_graph_prepare_ioctl, DRM_RENDER_ALLOW),
+	DRM_IOCTL_DEF_DRV(PARHELIA_M9_FAA_GRAPH_RELEASE,
+			  m9x_faa_graph_release_ioctl, DRM_RENDER_ALLOW),
 };
 
 struct m9_transport_snapshot {
@@ -157,6 +161,8 @@ static void m9x_debugfs_init(struct drm_minor *minor)
 /* Mesa selects the independent M9X Gallium driver from this DRM name. */
 #define M9X_DRM_DRIVER_COMMON						\
 	.fops = &m9x_fops,						\
+	.open = m9x_faa_graph_file_open,				\
+	.postclose = m9x_faa_graph_file_close,			\
 	.ioctls = m9x_ioctls,						\
 	.num_ioctls = ARRAY_SIZE(m9x_ioctls),				\
 	.gem_create_object = m9x_gem_create_object,			\

@@ -11,6 +11,8 @@
 #define DRM_PARHELIA_M9_GET_BO_INFO	0x0b
 #define DRM_PARHELIA_M9_SURFACE_ACCESS	0x0c
 #define DRM_PARHELIA_M9_WAIT_POINT	0x0d
+#define DRM_PARHELIA_M9_FAA_GRAPH_PREPARE	0x0e
+#define DRM_PARHELIA_M9_FAA_GRAPH_RELEASE	0x0f
 
 #define DRM_IOCTL_PARHELIA_M9_CREATE_BO \
 	DRM_IOWR(DRM_COMMAND_BASE + DRM_PARHELIA_M9_CREATE_BO, \
@@ -38,6 +40,49 @@ struct drm_parhelia_m9_wait_point {
 #define DRM_IOCTL_PARHELIA_M9_WAIT_POINT \
 	DRM_IOWR(DRM_COMMAND_BASE + DRM_PARHELIA_M9_WAIT_POINT, \
 		 struct drm_parhelia_m9_wait_point)
+
+/* The six roles match Mesa's m9_faa_init_request. PREPARE only retains and
+ * validates the live owners. It posts no GPU work and is not an init receipt. */
+#define PARHELIA_M9_FAA_GRAPH_OWNERS 6u
+enum drm_parhelia_m9_faa_owner_role {
+	PARHELIA_M9_FAA_PRIMARY,
+	PARHELIA_M9_FAA_MAIN,
+	PARHELIA_M9_FAA_AUXILIARY,
+	PARHELIA_M9_FAA_COMPANION,
+	PARHELIA_M9_FAA_HZ,
+	PARHELIA_M9_FAA_SENTINEL,
+};
+#define PARHELIA_M9_FAA_GRAPH_PREPARED 1u
+struct drm_parhelia_m9_faa_owner {
+	__u32 handle;
+	__u32 pad;
+	__u64 logical_bytes;
+	__u64 capacity_bytes;
+	__u64 clear_bytes;
+};
+struct drm_parhelia_m9_faa_graph_prepare {
+	__u32 width, height, format;
+	__u32 primary_desc, companion_desc, hz_desc, ad;
+	__u32 flags;
+	struct drm_parhelia_m9_faa_owner owners[PARHELIA_M9_FAA_GRAPH_OWNERS];
+	/* Outputs are zero on input. A future executable path must recheck both
+	 * identity and transport generation, and obtain a real init point. */
+	__u64 graph_id;
+	__u64 init_point;
+	__u32 generation;
+	__u32 state;
+};
+#define DRM_IOCTL_PARHELIA_M9_FAA_GRAPH_PREPARE \
+	DRM_IOWR(DRM_COMMAND_BASE + DRM_PARHELIA_M9_FAA_GRAPH_PREPARE, \
+		 struct drm_parhelia_m9_faa_graph_prepare)
+struct drm_parhelia_m9_faa_graph_release {
+	__u64 graph_id;
+	__u32 generation;
+	__u32 flags;
+};
+#define DRM_IOCTL_PARHELIA_M9_FAA_GRAPH_RELEASE \
+	DRM_IOW(DRM_COMMAND_BASE + DRM_PARHELIA_M9_FAA_GRAPH_RELEASE, \
+		struct drm_parhelia_m9_faa_graph_release)
 
 /*
  * M9 command and staging objects are immutable DMA32 allocations unless

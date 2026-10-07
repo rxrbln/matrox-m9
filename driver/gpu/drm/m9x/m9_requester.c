@@ -1323,6 +1323,9 @@ int m9x_init(struct m9x_device *mdev)
 	ret = m9x_submit_selftest();
 	if (ret)
 		return dev_err_probe(dev, ret, "M9 submit selftest failed\n");
+	ret = m9x_faa_graph_selftest();
+	if (ret)
+		return dev_err_probe(dev, ret, "M9 FAA graph selftest failed\n");
 	ret = m9x_triangle_selftest();
 	if (ret)
 		return dev_err_probe(dev, ret, "M9 triangle selftest failed\n");
@@ -1338,6 +1341,7 @@ int m9x_init(struct m9x_device *mdev)
 	ret = drmm_mutex_init(&mdev->drm, &mdev->transport.lock);
 	if (ret)
 		return ret;
+	atomic64_set(&mdev->faa_graph_next, 0);
 	init_llist_head(&mdev->transport.async_retired);
 	INIT_WORK(&mdev->transport.async_release,
 		  m9x_transport_release_retired);
