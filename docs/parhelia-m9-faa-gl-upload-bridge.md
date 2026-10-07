@@ -1,5 +1,18 @@
 # M9128 generalized GL FAA upload boundary
 
+## October 7 resumed: live COLOR hardware result
+
+FAA work resumed at the user's request, with parallel application, native and
+vendor-source agents. The first live COLOR four-stage upload and the build
+with corrected packed-record readers both retire through Lock190, F021 read,
+Unlock1b0 and cleanup, helper exit0; generation0/queue0/wedged0 remain healthy.
+Both images are entirely black. Full application FAA remains unfinished.
+Canonical DRM1fd825f contains the reader fix and current-frame authentication;
+the unchanged live GL upload comes from Mesa fc5cfc1. Further work now targets
+the remaining producer/consumer joins and application lifecycle.
+[Exact two-run evidence](../tests/m9-faa-live-color-20261007/README.md).
+Earlier wind-down notes below are historical and superseded by this resume.
+
 ## October 7 wind-down checkpoint
 
 Work is paused at the user's request. Canonical Mesa9128470 includes the

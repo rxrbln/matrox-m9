@@ -3,10 +3,22 @@
 
 # M9 open topics and evidence, 2026-10-06
 
-## October 7 wind-down: work paused by user
+## October 7 resumed: FAA application work and first live COLOR hardware
 
-All tracks have stopped; no further tests or development are authorized
-until resumed. Completed Mesa code, vendor source plans and the failed GL2
+The user resumed work to finish FAA and explicitly requested parallel agents.
+Three tracks cover the Mesa application bridge, native repeated submission,
+and focused vendor command derivation; root serializes hardware tests.
+The first live COLOR four-stage upload completes Lock/readback/Unlock and
+cleanup without a wedge, but returns an entirely black image. This is a
+failed pixel result. Canonical DRM330b6b2 corrects two packed-record readers;
+1fd825f prepares current-frame Lock authentication. The corrected build also retires healthy but renders black; the remaining
+stage joins are under investigation. Full glxgears/ioquake3 FAA is unfinished.
+[Exact live COLOR evidence](../tests/m9-faa-live-color-20261007/README.md).
+
+## October 7 earlier wind-down: historical checkpoint
+
+At this earlier checkpoint all tracks stopped at the user’s request.
+The later explicit resume above supersedes that pause. Completed Mesa code, vendor source plans and the failed GL2
 hardware capsule are integrated. Canonical DRM7106c67 preserves the variable
 COLOR launcher, with experimental four-stage mode default-off and stride32
 gated. Its source tree matches the agent's passing module build. The exact

@@ -1,5 +1,18 @@
 # M9 multisampling (FAA): static closure, captures, and what the silicon did
 
+## October 7 resumed: live COLOR hardware result
+
+FAA work resumed at the user's request, with parallel application, native and
+vendor-source agents. The first live COLOR four-stage upload and the build
+with corrected packed-record readers both retire through Lock190, F021 read,
+Unlock1b0 and cleanup, helper exit0; generation0/queue0/wedged0 remain healthy.
+Both images are entirely black. Full application FAA remains unfinished.
+Canonical DRM1fd825f contains the reader fix and current-frame authentication;
+the unchanged live GL upload comes from Mesa fc5cfc1. Further work now targets
+the remaining producer/consumer joins and application lifecycle.
+[Exact two-run evidence](../tests/m9-faa-live-color-20261007/README.md).
+Earlier wind-down notes below are historical and superseded by this resume.
+
 Latest boundary, October7wind-down: two retained live-shader FAA triangles,
 changed geometry, readbacks/Unlocks and cleanup pass on M9128. New variable
 COLOR upload/fragment compiler work has host proof only; full application FAA
