@@ -149,7 +149,11 @@ Lock is invoked. The Lock writes 14 relocation fields farther into the CPU
 primary buffer but has **no observed post** before waiting for `0x140`.
 Its vendor index-43 dependency emitter requests `0x140`, while the `0x141`
 completion token is CPU-written at primary offset 5,108, beyond the only
-posted endpoint 4,980. The source queue/finalizer ordering must be resolved
-before any native `0x140`
-submission; the 4,980-byte DRAW tail is not a Lock completion. All captured
+posted endpoint 4,980. The emulator's queue counters already read
+`next=0x130, cached=0x130` before Lock, then `next=0x150, cached=0x130`
+at its `0x140` wait; the active cursor changes from the secondary queue to
+the primary while the secondary cursor is retained. These are CPU queue
+observations, not GPU completion receipts. The source queue/finalizer ordering
+must be resolved before any native `0x140` submission; the 4,980-byte DRAW
+tail is not a Lock completion. All captured
 bytes and addresses remain forensic evidence, not live native inputs.
