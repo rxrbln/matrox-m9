@@ -1,5 +1,33 @@
 # M9 multisampling (FAA): static closure, captures, and what the silicon did
 
+## October 8: fresh FIRST clear/depth also passes physical M9128
+
+DRM `c1962dc` (sealed candidate `43d80b0`) now runs directly from authentic
+INITb0 through full sampled color/depth reset and a live single-COLOR GPU
+program with six vertices: Lock200/readF021/Unlock220. All14 initial ENDs
+and17 after Unlock retire; delayed/cleanup snapshots remain queue0/wedged0.
+The image passes12,302 colored/638 partial pixels and9,936 interior checks
+with zero pixel errors. Its entire raw readback is byte-identical to the
+previous passing retained full-clear image. [Exact hardware evidence and
+screenshot](../tests/m9-faa-first-depth-hardware-20261008/README.md).
+
+Mesa `617e812` owns all draw snapshots until flush/readback, target change,
+or a later clear, instead of presenting each draw separately. `63a0835`
+authenticates FIRST+150 and retained+1a0 depth receipts with exact metadata
+and an independent wait. The full20-object driver build and focused host
+checks pass. Actual directional/positional fixed-function uploads also pass
+the fresh native encoder on CPU; this is not GPU lighting qualification.
+
+Glxgears FAA remains open: FIRST flat/cull, complete native multiple-draw
+composition for live application shaders, initialized-depth later frames,
+and retirement-aware command-pool reuse. The corrected pure appender
+`af5137c` compares the whole composed primary to vendor output; its earlier
+footer-only version was incomplete and was never posted. Native batch
+execution remains gated. Pool RE proves primary rotation through an unused
+slot and a separate pool-counter reuse dependency; Unlock alone does not
+authorize rewinding active pools. See [pool contract](parhelia-m9-faa-pool-reuse-contract.md).
+No glxgears/Quake3 screenshot, FPS, or sustained rendering claim yet.
+
 ## October 8: full sampled clear/depth FRAME passes physical M9128
 
 DRM `cf43aa2` completes live first3 Lock190/read/Unlock1b0, then full black
@@ -17,9 +45,9 @@ complete vendor source controls, but those raster variants have no new
 hardware qualification. Real Mesa directional and positional fixed-function
 lighting uploads also pass the native depth encoder's host tests.
 
-Glxgears FAA is still incomplete. Fresh FIRST clear/depth initialization,
-multiple draws preserving depth before one final presentation, and sustained
-command-pool reuse remain active. Original vendor FIRST now passes the
+At this earlier retained-frame checkpoint, fresh FIRST, multiple draws
+and sustained pool reuse were still open. FIRST is now superseded by the
+hardware pass above; the remaining application gaps are listed there. Original vendor FIRST now passes the
 finite25270 dependency-query branch without a fabricated completion; its
 normal Lock path is being integrated. Separate source DP2 callers reuse bound
 attachments within a frame without clearing, so application submission must
