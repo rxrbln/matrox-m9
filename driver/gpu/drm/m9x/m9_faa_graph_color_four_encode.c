@@ -33,6 +33,7 @@ int m9x_faa_color_four_encode(const u8*blob,size_t bytes,const struct m9x_faa_gr
  in->layout.program_count!=4||!in->layout.program_bytes||in->layout.program_bytes>4096||(in->layout.program_bytes&7)||
  in->layout.entry_bytes[0]||!in->layout.constants_bytes||in->layout.constants_bytes>16384||(in->layout.constants_bytes&7)||
  in->record_stride!=32||!in->record_count||in->record_count%3||in->record_count>12288||
+ (in->data_offset&127)||in->data_offset>owner[28].bytes||
  in->declaration_count<3||in->declaration_count>17||!(in->declaration_count&1)||
  in->layout.vertex_offset!=128||check_mul_overflow(in->record_stride,in->record_count,&raw)||
  raw!=in->layout.vertex_bytes||in->layout.geometry_bytes!=128+raw||in->layout.geometry_bytes>0x40000-256)return -EINVAL;
@@ -64,7 +65,7 @@ int m9x_faa_color_four_encode(const u8*blob,size_t bytes,const struct m9x_faa_gr
  groups=(in->declaration_count+3)/4;extra=((int)groups-2)*24;secondary=2712+extra;
  geo=(in->layout.constants_bytes+127)&~127u;padded=(in->record_count+3)&~3u;
  if(m9x_faa_graph_draw_owners_validate(owner)||init_bytes>owner[27].bytes||owner[27].bytes-init_bytes<3696||
- owner[26].bytes<in->layout.program_bytes||owner[28].bytes<geo+128+padded*in->record_stride||owner[29].bytes<secondary||
+ owner[26].bytes<in->layout.program_bytes||owner[28].bytes-in->data_offset<geo+128+padded*in->record_stride||owner[29].bytes<secondary||
  out->program_bytes<in->layout.program_bytes||out->constants_bytes<geo+128+padded*in->record_stride||out->primary_bytes<3696||out->secondary_bytes<secondary)return -ERANGE;
  /* Dry-run domains/offsets before the first destination change. */
  for(i=0;i<ARRAY_SIZE(fields);i++){
@@ -77,7 +78,8 @@ int m9x_faa_color_four_encode(const u8*blob,size_t bytes,const struct m9x_faa_gr
    else if(f->at==372||f->at==376)offset=f->at==372?in->layout.constant_begin[1]:in->layout.constant_end[1];
    else if(f->at==1000||f->at==1004)offset=in->layout.constant_begin[2];
    else if(f->at==1612||f->at==1616)offset=f->at==1612?in->layout.constant_begin[3]:in->layout.constant_end[3];
-   else if(f->at==2364||f->at==2368)offset=f->at==2364?in->layout.constant_begin[0]:in->layout.constant_end[0];}
+   else if(f->at==2364||f->at==2368)offset=f->at==2364?in->layout.constant_begin[0]:in->layout.constant_end[0];
+   offset+=in->data_offset;}
   if(offset>owner[f->owner].bytes||owner[f->owner].bytes-offset<4||check_add_overflow(owner[f->owner].base,offset,&address)||(address&3))return -ERANGE;
  }
  memcpy(out->program,in->program,in->layout.program_bytes);memcpy(out->constants,in->constants,in->layout.constants_bytes);
@@ -98,7 +100,8 @@ int m9x_faa_color_four_encode(const u8*blob,size_t bytes,const struct m9x_faa_gr
    else if(f->at==372||f->at==376)offset=f->at==372?in->layout.constant_begin[1]:in->layout.constant_end[1];
    else if(f->at==1000||f->at==1004)offset=in->layout.constant_begin[2];
    else if(f->at==1612||f->at==1616)offset=f->at==1612?in->layout.constant_begin[3]:in->layout.constant_end[3];
-   else if(f->at==2364||f->at==2368)offset=f->at==2364?in->layout.constant_begin[0]:in->layout.constant_end[0];}
+   else if(f->at==2364||f->at==2368)offset=f->at==2364?in->layout.constant_begin[0]:in->layout.constant_end[0];
+   offset+=in->data_offset;}
   address=owner[f->owner].base+offset;
   value=f->pc==0x248a0?(address&0xfffff000)|f->tag:f->pc==0x2490e?(address|f->tag)&0xfffffffc:address|f->tag;
   put(f->dst==27?out->primary+f->at:out->secondary+moved(f->at,extra),value);

@@ -21,6 +21,7 @@ int m9x_faa_color_encode(const u8*blob,size_t bytes,
 {
  u32 padded,extra,secondary,offset,address,value,i,j,pairs,raw,padded_records,geometry_offset;
  if(in&&in->layout.program_count==4)return m9x_faa_color_four_encode(blob,bytes,owner,init_bytes,init_point,in,out);
+ if(in&&in->data_offset)return -EINVAL;
  if(!in||!out||!owner||!in->program||!in->constants||!in->geometry||!in->declaration||
   !out->program||!out->constants||!out->primary||!out->secondary||!out->secondary_length||
   !m9x_faa_color_template_valid(blob,bytes)||

@@ -20,6 +20,9 @@ struct m9x_faa_color_input {
  struct m9x_faa_color_layout layout;
  const u8 *program,*constants,*geometry,*declaration;
  u32 record_stride,record_count,declaration_count;
+ /* Native-owned arena offset, never an input GPU address or UAPI field.
+  * Each pending draw keeps disjoint CB/header/raw records in owner28. */
+ u32 data_offset;
 };
 struct m9x_faa_color_image {
  u8 *program,*constants,*primary,*secondary;
