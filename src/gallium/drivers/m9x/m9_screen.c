@@ -249,6 +249,14 @@ m9_is_format_supported(struct pipe_screen *screen, enum pipe_format format,
                                 PIPE_BIND_CONSTANT_BUFFER |
                                 PIPE_BIND_VERTEX_STATE |
                                 PIPE_BIND_COMMAND_ARGS_BUFFER));
+   /* Only an opt-in BGRA8 RT0 opaque path has an encode producer.  This
+    * precedes the cube/3D speculative bind concession below. */
+   if (util_format_is_srgb(format) &&
+       (bind & (PIPE_BIND_RENDER_TARGET | PIPE_BIND_BLENDABLE)) &&
+       (!debug_get_bool_option("M9X_SRGB_TARGET", false) ||
+        format != PIPE_FORMAT_B8G8R8A8_SRGB ||
+        (bind & PIPE_BIND_BLENDABLE)))
+      return false;
    switch (target) {
    case PIPE_TEXTURE_1D:
    case PIPE_TEXTURE_2D:

@@ -18,6 +18,7 @@
 
 #include "m9_draw_params.h"
 #include "m9_specialise.h"
+#include "m9_srgb.h"
 
 #include "pipe/p_defines.h"
 
@@ -5753,11 +5754,6 @@ fs_prepare(nir_shader *nir)
  * instead, out of the compare, select, log2, exp2 and multiply-add forms the
  * corpus and the hardware fixtures already cover.
  */
-#define M9_SRGB_THRESHOLD  0.0030400000978261232f
-#define M9_SRGB_LINEAR     12.920000076293945f
-#define M9_SRGB_SCALE      1.0549999475479126f
-#define M9_SRGB_BIAS       0.054999999701976776f
-#define M9_SRGB_EXPONENT   0.4166666567325592f
 
 static nir_def *
 srgb_encode(nir_builder *b, nir_def *x)

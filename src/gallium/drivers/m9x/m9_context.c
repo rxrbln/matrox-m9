@@ -25,6 +25,7 @@
 #include "m9_draw.h"
 #include "m9_vs_record.h"
 #include "m9_format.h"
+#include "m9_srgb.h"
 #include "m9_fs_compile.h"
 #include "m9_specialise.h"
 #include "m9_internal.h"
@@ -4759,6 +4760,7 @@ m9_ctx_variant(struct m9_context *ctx, const char **reason,
                           cf);
    if (*reason)
       return NULL;
+   want.blend.srgb = util_format_is_srgb(cf);
    memcpy(want.inline_values, ctx->fs_inline, sizeof(want.inline_values));
    /* The facing register's front is GL's counter-clockwise; st states the
     * winding against a viewport it inverts for window buffers. */
@@ -4798,7 +4800,8 @@ m9_fs_use_native(struct m9_context *ctx)
       return fs && fs->native;
    /* Blended lines have no captured raster class; they stay opaque.
     * Logic-op lines are drawn as quads (m9_render_line_quads). */
-   if (!m9_logic_tail(ctx->blend) &&
+   if (!util_format_is_srgb(ctx->framebuffer.cbufs[0].format) &&
+       !m9_logic_tail(ctx->blend) &&
        (!ctx->blend || !ctx->blend->rt[0].blend_enable || ctx->lines))
       return false;
    if (!fs->native_tried) {
@@ -4863,6 +4866,15 @@ m9_job_key_current(struct m9_context *ctx, struct m9_job_key *key)
    colormask = blend ? blend->rt[0].colormask : PIPE_MASK_RGBA;
    key->color_mask = m9_color_mask(colormask);
    key->color_mask_hi = 0xffffffffu;
+   if (util_format_is_srgb(ctx->framebuffer.cbufs[0].format) &&
+       (ctx->color_count != 1 || ctx->lines || !m9_fs_use_native(ctx)))
+      return m9_skip_reason(ctx, "sRGB RT0 needs a native single-target "
+                                  "triangle fragment program; draw skipped");
+   for (unsigned p = 1; p < ctx->color_count; p++) {
+      if (util_format_is_srgb(ctx->framebuffer.cbufs[p].format))
+         return m9_skip_reason(ctx, "sRGB rendering past RT0 is not "
+                                     "lowered; draw skipped");
+   }
    if (m9_fs_use_native(ctx)) {
       const char *reason;
 
@@ -7352,9 +7364,18 @@ m9_clear_quad(struct m9_context *ctx, const struct pipe_scissor_state *scissor,
    struct m9_job_key key;
    uint32_t first;
    float *out, *extra;
+   float encoded[4];
 
    if (ctx->lost || !ctx->params_valid)
       return;
+   /* The fixed clear shader writes bytes directly.  The vendor encodes its
+    * linear RGB input on the CPU for an sRGB RT0; alpha stays linear. */
+   if (colormask && util_format_is_srgb(ctx->framebuffer.cbufs[0].format)) {
+      for (unsigned c = 0; c < 3; c++)
+         encoded[c] = m9_srgb_encode_clear(rgba[c]);
+      encoded[3] = rgba[3];
+      rgba = encoded;
+   }
    depth = depth && zs;
    stencil = stencil && zs && smask && m9_zs_has_stencil(ctx);
    memset(&key, 0, sizeof(key));

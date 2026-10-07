@@ -9,12 +9,15 @@ m9_format_info(enum pipe_format format, struct m9_format_info *out)
 {
    struct m9_format_info info;
 
-   /* An sRGB image is its UNORM twin, decoded after the fetch by the
-    * fragment program (m9_fs_lower_srgb_texture); never a target. */
+   /* The BGRA8 sRGB target stores the same bytes as its UNORM twin.  The
+    * fragment variant encodes RT0 writes; other sRGB formats remain sampler
+    * sources only.  Screen admission separately gates target exposure. */
    if (util_format_is_srgb(format)) {
       if (!m9_format_info(util_format_linear(format), &info))
          return false;
       info.usage &= M9_FORMAT_TEXTURE;
+      if (format == PIPE_FORMAT_B8G8R8A8_SRGB)
+         info.usage |= M9_FORMAT_COLOR;
       if (out)
          *out = info;
       return info.usage != 0;
