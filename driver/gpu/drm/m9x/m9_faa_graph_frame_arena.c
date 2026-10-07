@@ -22,8 +22,11 @@ int m9x_faa_frame_input_plan(u32 owner28_bytes, u32 occupied_end,
 	u32 after_cb, bytes;
 	int ret;
 
-	if (!result || changed_program || vertex_count != 3 ||
-	    record_stride != 32 || cb_bytes != (changed_cb0 ? 136u : 0u))
+	if (!result || changed_program || !vertex_count ||
+	    vertex_count > 12288 || vertex_count % 3 ||
+	    record_stride != 32 ||
+	    (changed_cb0 ? (!cb_bytes || cb_bytes > 16384 || (cb_bytes & 7)) :
+	                   cb_bytes != 0))
 		return -EINVAL;
 	if (occupied_end > owner28_bytes ||
 	    check_mul_overflow(vertex_count, record_stride, &bytes))

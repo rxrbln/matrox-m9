@@ -6,7 +6,9 @@
 /* Pure input-placement transaction for a second bound COLOR4 DRAW before
  * final Lock. No command is posted and no owner is modified by this helper.
  * A changed program is deliberately excluded: the source control retains
- * owner26 code and does not establish a second immutable program slot. */
+ * owner26 code and does not establish a second immutable program slot.
+ * Three records/136B CB match the source exactly; larger live record counts
+ * and CB lengths are bounded extensions pending a separate image receipt. */
 struct m9x_faa_frame_input_plan {
 	u32 prior_end;
 	u32 constants_offset;
