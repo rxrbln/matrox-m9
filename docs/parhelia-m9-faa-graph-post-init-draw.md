@@ -176,3 +176,32 @@ relocations**. Any native tail encoder must derive the packed extent from the
 validated current graph shape, just as it must derive owner bases at the new
 placement. This plan has no hardware receipt and cannot yet be handed to the
 normal Lock or app as completed FAA rendering.
+
+## Explicit finish after returned DRAW closes the source submission boundary
+
+The new source experiment calls the genuine `0x23b80` queue finish immediately
+after the original DRAW returns, before invoking normal Lock. This is an
+explicit independent flush; it is not a claim that the original DRAW or Lock
+calls that method. The real producer appends 16 secondary bytes at
+`1356..1372`, including a completion token `0x141` written by `0x2557b`,
+and a second indirect packet at primary `4980..4992`. It posts endpoint
+4992 and stops before its first actual status load at `0x23bc3`, requesting
+`0x140`. No GPU status is supplied and no teardown executes.
+
+Thus the native diagnostic can reproduce the complete returned DRAW plus
+explicit flush, retaining the original DRAW post at 4980 followed by the
+finish post at 4992. The timeline token is generated from the retired prefix
+point plus `0x30`; the four indirect endpoints and 17 resource fields come
+from live owners. The source join checks that the preceding 692 secondary
+bytes match the earlier original-DRAW audit exactly. The sealed complete
+template has 708 secondary bytes and 24 primary bytes. This resolves the
+source completion-producer gap; actual native submission, retirement,
+subsequent normal Lock/resolve and application pixels remain unproved.
+
+Evidence: `tests/m9-faa-returned-draw-finish-20261007/`; source regeneration:
+
+```sh
+PYTHONPATH=tools/faaemu:tools/m9emu /home/ai/tmp/faaemu/venv/bin/python \
+ tests/m9-faa-returned-draw-finish-20261007/capture.py --out /tmp/m9-finish/proof.json
+python3 tests/m9-faa-returned-draw-finish-20261007/check.py
+```
