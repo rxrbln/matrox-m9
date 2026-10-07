@@ -2483,7 +2483,7 @@ compile_head(struct ctx *c, nir_block *block, unsigned final,
          c->reserved[REG_OUT_HI(j)] = 1;
       }
       pin_packed_output(c, position, REG_OUT_LO(0), REG_OUT_HI(0));
-      for (unsigned j = 0; j < M9_VS_FUSED_VARYINGS; j++)
+      for (unsigned j = 0; j < MIN2(nvar, M9_VS_FUSED_VARYINGS); j++)
          if (!ostream[j].coordinate) {
             pin_packed_output(c, var[j], REG_OUT_LO(j + 1), REG_OUT_HI(j + 1));
          }
@@ -2566,7 +2566,7 @@ compile_head(struct ctx *c, nir_block *block, unsigned final,
    if (packed_primary) {
       if (!write_output(c, position, REG_OUT_LO(0), REG_OUT_HI(0), dflt))
          return false;
-      for (unsigned j = 0; j < M9_VS_FUSED_VARYINGS; j++)
+      for (unsigned j = 0; j < MIN2(nvar, M9_VS_FUSED_VARYINGS); j++)
          if (!write_stream(c, var[j], ostream, base, j, REG_OUT_LO(j + 1),
                            REG_OUT_HI(j + 1), true))
             return false;
