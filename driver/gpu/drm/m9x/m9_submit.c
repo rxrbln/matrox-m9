@@ -736,6 +736,87 @@ out_put:
 	return ret;
 }
 
+/* The original M9128 Unlock continues the already-retired private FAA
+ * primary. A fresh lookup/pin is temporary; the first submit retained its
+ * own pin/reference so the same backing survives this ioctl's exit. */
+static int m9_submit_faa_unlock(struct m9x_device *mdev,
+			       struct drm_file *file,
+			       struct drm_parhelia_m9_submit *args)
+{
+	struct drm_parhelia_m9_bo_ref ref;
+	struct drm_gem_vram_object *vram;
+	struct drm_gem_object *gem;
+	bool posted = false;
+	long wait;
+	s64 offset;
+	u64 address;
+	int ret;
+
+	if (!m9x_faa_diag_enabled())
+		return -EOPNOTSUPP;
+	if (args->command_handle || args->command_offset ||
+	    args->command_length || args->relocation_count ||
+	    args->relocations_ptr || args->bo_count != 1 || !args->bos_ptr ||
+	    args->program_type)
+		return m9_refuse(-EINVAL);
+	if (copy_from_user(&ref, u64_to_user_ptr(args->bos_ptr), sizeof(ref)))
+		return -EFAULT;
+	if (!ref.handle || ref.flags !=
+	    (PARHELIA_M9_BO_READ | PARHELIA_M9_BO_WRITE))
+		return m9_refuse(-EINVAL);
+	gem = drm_gem_object_lookup(file, ref.handle);
+	if (!gem)
+		return -ENOENT;
+	if (!m9x_gem_is_vram(gem) || !m9x_gem_vram_tiled(gem) ||
+	    gem->size != 0x50000) {
+		ret = m9_refuse(-EINVAL);
+		goto out_put;
+	}
+	vram = drm_gem_vram_of_gem(gem);
+	ret = m9x_vram_pin(vram);
+	if (ret)
+		goto out_put;
+	ret = ttm_bo_reserve(&vram->bo, true, false, NULL);
+	if (ret)
+		goto out_unpin;
+	/* The initial color write fence must be for the returned 0x180 Lock,
+	 * never the unposted 0x1a0 suffix. Wait before adding that new fence. */
+	mutex_lock(&mdev->transport.lock);
+	m9x_transport_drain_locked(mdev);
+	ret = mdev->transport.wedged ? -EIO : 0;
+	mutex_unlock(&mdev->transport.lock);
+	if (ret)
+		goto out_unreserve;
+	wait = dma_resv_wait_timeout(gem->resv, dma_resv_usage_rw(true), true,
+				     MAX_SCHEDULE_TIMEOUT);
+	if (wait <= 0) {
+		ret = wait < 0 ? wait : -ETIMEDOUT;
+		goto out_unreserve;
+	}
+	offset = drm_gem_vram_offset(vram);
+	if (offset < 0) {
+		ret = offset;
+		goto out_unreserve;
+	}
+	ret = m9_vram_gpu_address(m9x_vram_gpu_limit(mdev), offset,
+				  0x50000 - 1, &address);
+	if (ret)
+		goto out_unreserve;
+	address -= 0x50000 - 1;
+	ret = dma_resv_reserve_fences(gem->resv, 1);
+	if (ret)
+		goto out_unreserve;
+	ret = m9x_faa_unlock_diag(mdev, lower_32_bits(address), vram,
+				  &args->out_point, &posted);
+out_unreserve:
+	ttm_bo_unreserve(&vram->bo);
+out_unpin:
+	m9x_vram_unpin(vram);
+out_put:
+	drm_gem_object_put(gem);
+	return ret;
+}
+
 /* CPU-only state for one ioctl. Nothing here escapes into a queued owner.
  * Relocation validation finishes before framing, so their pointer/word
  * scratch can share storage. GEM object/pin arrays, fences and retirement records
@@ -1400,7 +1481,8 @@ static int m9_submit_ioctl(struct drm_device *drm, void *data,
 	    flags & ~(PARHELIA_M9_SUBMIT_VALIDATE_ONLY |
 		      PARHELIA_M9_SUBMIT_NOOP_FENCE |
 		      PARHELIA_M9_SUBMIT_FIRST_TRIANGLE |
-		      PARHELIA_M9_SUBMIT_QUEUED))
+		      PARHELIA_M9_SUBMIT_QUEUED |
+		      PARHELIA_M9_SUBMIT_FAA_UNLOCK))
 		return m9_refuse(-EINVAL);
 	if (flags == PARHELIA_M9_SUBMIT_NOOP_FENCE) {
 		if (args->command_handle || args->command_offset ||
@@ -1413,6 +1495,8 @@ static int m9_submit_ioctl(struct drm_device *drm, void *data,
 	if (flags == PARHELIA_M9_SUBMIT_FIRST_TRIANGLE) {
 		return m9_submit_first_triangle(mdev, file, args);
 	}
+	if (flags == PARHELIA_M9_SUBMIT_FAA_UNLOCK)
+		return m9_submit_faa_unlock(mdev, file, args);
 	if (!flags || flags == PARHELIA_M9_SUBMIT_QUEUED) {
 		/* The private capture intentionally owns a complete FAA context.
 		 * It is a one-shot diagnostic, not a context-switch implementation. */

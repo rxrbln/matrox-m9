@@ -217,6 +217,9 @@ struct drm_parhelia_m9_reloc {
 /* Opt-in retention beyond the next submit. The client must wait out_point
  * before overwriting CPU-visible inputs; legacy flags-zero remains one job. */
 #define PARHELIA_M9_SUBMIT_QUEUED		(1u << 3)
+/* Private source-qualified continuation after FIRST_TRIANGLE's returned
+ * normal Lock. Reuses the same color handle; the kernel owns the suffix. */
+#define PARHELIA_M9_SUBMIT_FAA_UNLOCK		(1u << 4)
 
 enum drm_parhelia_m9_program_type {
 	PARHELIA_M9_PROGRAM_NONE,
@@ -224,10 +227,10 @@ enum drm_parhelia_m9_program_type {
 };
 
 /*
- * NOOP_FENCE requires all command and BO fields to be zero.  FIRST_TRIANGLE accepts one
- * read/write VRAM BO reference as its kernel-validated linear color target;
- * all command bytes, resource addresses and executable state remain selected
- * by the kernel.
+ * NOOP_FENCE requires all command and BO fields to be zero. FIRST_TRIANGLE
+ * accepts one read/write VRAM BO reference as its kernel-validated color
+ * target; FAA_UNLOCK accepts that same retained handle only after the
+ * source-matched Lock view. Both use kernel-owned executable state.
  */
 struct drm_parhelia_m9_submit {
 	__u32 context_id;

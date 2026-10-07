@@ -1,18 +1,18 @@
 /* SPDX-License-Identifier: GPL-2.0-only */
 /* Copyright 2026 René Rebe <rene@exactco.de> */
-/* Generated from actual original normal Lock posts before180 write wait; no independent flush. */
-#define M9_FAA_BLOB_BYTES 127976u
-#define M9_FAA_BLOB_FNV 0x0497cc2bu
+/* Generated from actual prepared-normal-unlock-wait caller boundary + independent queue flush. */
+#define M9_FAA_BLOB_BYTES 128072u
+#define M9_FAA_BLOB_FNV 0x723c22bcu
 #define M9_FAA_PRIMARY_OWNER 0x1bu
-#define M9_FAA_PRIMARY_BYTES 0x21c8u
+#define M9_FAA_PRIMARY_BYTES 0x2228u
 #define M9_FAA_COLOR_OWNER 0x1u
 #define M9_FAA_OUTPUT_OWNER 0xffffffffu
-#define M9_FAA_TRACKER_LAST 0x180u
+#define M9_FAA_TRACKER_LAST 0x1a0u
 #define M9_FAA_CLEAR_OWNER 0x4u
 #define M9_FAA_CLEAR_BYTES 0x97000u
 #define M9_FAA_CLEAR_START 0x11d8u
 #define M9_FAA_CLEAR_END 0x1224u
-#define M9_FAA_SOURCE_PHASES { { 4980u, 0xc0u }, { 5068u, 0x120u }, { 8628u, 0x170u }, { 8648u, 0x180u } }
+#define M9_FAA_SOURCE_PHASES { { 4980u, 0xc0u }, { 5068u, 0x120u }, { 8628u, 0x170u }, { 8648u, 0x180u }, { 8744u, 0x1a0u } }
 #define M9_FAA_PHASE_CONTROL 1
 #define M9_FAA_HAS_OUTPUT 0
 #define M9_FAA_PHASE_INIT_ONLY 0
@@ -20,6 +20,9 @@
 /* Same-run returned normal Lock: kind0 CPU view f0210140/10100,
  * borrowed primary offset0, pitch1280, 320x240 after original180 wait. */
 #define M9_FAA_NORMAL_LOCK_CPU_VIEW 1
+#define M9_FAA_UNLOCK_PUBLICATION_CONTROL 1
+#define M9_FAA_NORMAL_LOCK_SPLIT_BYTES 8648u
+#define M9_FAA_NORMAL_LOCK_SPLIT_TARGET 0x180u
 #define M9_FAA_STARTUP_LOCAL_OWNER 30u
 #define M9_FAA_STARTUP_LOCAL_BYTES 0x80000u
 #define M9_FAA_PROGRAM_ENTRY_MASK 0x3u
@@ -73,10 +76,10 @@ static const struct m9_faa_span m9_faa_spans[] = {
 	{ 17u, 0x0u, 0x1c68cu, 0x400u },
 	{ 21u, 0x0u, 0x1ca8cu, 0x14u },
 	{ 26u, 0x0u, 0x1caa0u, 0xf0u },
-	{ 27u, 0x0u, 0x1cb90u, 0x21c8u },
-	{ 28u, 0x0u, 0x1ed58u, 0x88u },
-	{ 28u, 0x100u, 0x1ede0u, 0xbcu },
-	{ 29u, 0x0u, 0x1ee9cu, 0x54cu },
+	{ 27u, 0x0u, 0x1cb90u, 0x2228u },
+	{ 28u, 0x0u, 0x1edb8u, 0x88u },
+	{ 28u, 0x100u, 0x1ee40u, 0xbcu },
+	{ 29u, 0x0u, 0x1eefcu, 0x54cu },
 };
 static const struct m9_faa_fixup m9_faa_fixups[] = {
 	{ 27u, 0x470u, 5u, 0x0u, 0x24930u, 1u, 0x1151001u },
@@ -121,6 +124,8 @@ static const struct m9_faa_fixup m9_faa_fixups[] = {
 	{ 27u, 0x1440u, 8u, 0x10u, 0x256f1u, 1u, 0x1161011u },
 	{ 27u, 0x1498u, 1u, 0x0u, 0x24930u, 1u, 0xf19001u },
 	{ 27u, 0x206cu, 1u, 0x0u, 0x24930u, 1u, 0xf19001u },
+	{ 27u, 0x21f0u, 1u, 0x0u, 0x24930u, 1u, 0xf19001u },
+	{ 27u, 0x2200u, 1u, 0x0u, 0x24930u, 1u, 0xf19001u },
 	{ 27u, 0x13b8u, 29u, 0x0u, 0x256f1u, 1u, 0x40042001u },
 	{ 27u, 0x13bcu, 29u, 0x25cu, 0x256f1u, 2u, 0x4004225eu },
 	{ 27u, 0x13c4u, 29u, 0x25cu, 0x256f1u, 1u, 0x4004225du },
@@ -157,4 +162,6 @@ static const struct m9_faa_tracker m9_faa_trackers[] = {
 	{ 27u, 0x1fe4u, 0x160u },
 	{ 27u, 0x21b0u, 0x171u },
 	{ 27u, 0x21c4u, 0x181u },
+	{ 27u, 0x21d0u, 0x191u },
+	{ 27u, 0x2224u, 0x1a1u },
 };

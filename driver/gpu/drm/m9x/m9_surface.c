@@ -404,13 +404,29 @@ out_unreserve:
 	ttm_bo_unreserve(&vram->bo);
 out_unpin:
 	m9x_vram_unpin(vram);
-out_put:
-	drm_gem_object_put(gem);
+	/* User memory may fault through TTM. Copy after releasing the BO, then
+	 * reacquire it to validate the same retained view before publishing Lock. */
 	for (row = 0; !ret && !write && row < args->height; row++)
 		if (copy_to_user(u64_to_user_ptr(args->data_ptr +
 						 (u64)row * args->data_stride),
 				 kbuf + row * row_bytes, row_bytes))
 			ret = -EFAULT;
+	if (!ret && view.lock_cpu_view) {
+		ret = ttm_bo_reserve(&vram->bo, true, false, NULL);
+		if (!ret) {
+			offset = drm_gem_vram_offset(vram);
+			mutex_lock(&mdev->transport.lock);
+			ret = offset < 0 ? offset :
+				m9x_faa_lock_view_admit_locked(mdev, vram,
+					lower_32_bits(offset + args->offset), view.bytes);
+			if (!ret)
+				ret = m9x_faa_lock_view_observed_locked(mdev, vram);
+			mutex_unlock(&mdev->transport.lock);
+			ttm_bo_unreserve(&vram->bo);
+		}
+	}
+out_put:
+	drm_gem_object_put(gem);
 out_free:
 	kvfree(kbuf);
 	return ret;

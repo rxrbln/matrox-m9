@@ -970,6 +970,80 @@ int m9x_submit_faa_virtual_phases_locked(struct m9x_device *mdev,
 	return 0;
 }
 
+/* Continue the already-owned flags30/B primary after a genuine CPU caller
+ * boundary. The first issue installed COMMAND_BASE and retired old_bytes;
+ * repeating that issue would reset the requester instead of extending it.
+ * The caller owns the retained graph, color fence and transport lock. */
+int m9x_validate_faa_virtual_resume_locked(struct m9x_device *mdev,
+				 const struct drm_mm_node *node, dma_addr_t dma,
+				 u32 old_bytes, u32 new_bytes, u32 target)
+{
+	struct m9x_transport *t = &mdev->transport;
+	u32 page, pte, end;
+	int ret;
+
+	lockdep_assert_held(&t->lock);
+	if (!m9x_faa_diag_enabled() || !t->faa || !t->faa_virtual_primary ||
+	    !t->transport_armed || !t->fence_cpu || !node ||
+	    !drm_mm_node_allocated(node) || node->start > U32_MAX ||
+	    !IS_ALIGNED(node->start, PAGE_SIZE) ||
+	    !IS_ALIGNED(dma, PAGE_SIZE) || upper_32_bits(dma) ||
+	    !old_bytes || old_bytes >= new_bytes || !IS_ALIGNED(old_bytes, 4) ||
+	    !IS_ALIGNED(new_bytes, 4) || new_bytes > PARHELIA_M9_COMMAND_BYTES ||
+	    new_bytes > node->size || node->size > 0x50000 ||
+	    !target || !IS_ALIGNED(target, 16) ||
+	    check_add_overflow((u32)node->start, new_bytes, &end) ||
+	    (u64)dma + node->size > (u64)U32_MAX + 1)
+		return -EINVAL;
+	if (t->wedged)
+		return -EIO;
+	if (t->async_pending || t->queue_count ||
+	    m9_fence_reached(READ_ONCE(((u32 *)t->fence_cpu)[0]), target))
+		return -EAGAIN;
+	/* The suffix can cross a page boundary after the Lock return. Demand
+	 * that the same coherent command owner still maps every consumed page. */
+	for (page = 0; page < DIV_ROUND_UP(new_bytes, PAGE_SIZE); page++) {
+		ret = m9x_address_read_pte(mdev,
+				(u32)node->start + page * PAGE_SIZE, &pte);
+		if (ret)
+			return ret;
+		if (pte != (m9x_address_pte_word(dma + page * PAGE_SIZE) | 1u))
+			return -ESTALE;
+	}
+	return 0;
+}
+
+int m9x_extend_faa_virtual_primary_locked(struct m9x_device *mdev,
+				 const struct drm_mm_node *node, dma_addr_t dma,
+				 u32 old_bytes, u32 new_bytes, u32 target,
+				 u64 *point, bool *doorbell_posted)
+{
+	struct m9x_transport *t = &mdev->transport;
+	u32 end;
+	int ret;
+
+	lockdep_assert_held(&t->lock);
+	if (doorbell_posted)
+		*doorbell_posted = false;
+	if (!point)
+		return -EINVAL;
+	ret = m9x_validate_faa_virtual_resume_locked(mdev, node, dma,
+						 old_bytes, new_bytes, target);
+	if (ret)
+		return ret;
+	end = (u32)node->start + new_bytes;
+	dma_wmb();
+	m9x_write(mdev, M9_REG_COMMAND_END, end);
+	m9x_read(mdev, M9_REG_COMMAND_END);
+	if (doorbell_posted)
+		*doorbell_posted = true;
+	ret = m9_fence_wait_locked(mdev, target);
+	if (ret)
+		return ret;
+	*point = m9_extend_fence(t, READ_ONCE(((u32 *)t->fence_cpu)[0]));
+	return 0;
+}
+
 int m9x_submit_kernel_queue_locked(struct m9x_device *mdev,
 				   const u32 *commands, u32 dwords, u32 target,
 				   u64 *point, bool *doorbell_posted)

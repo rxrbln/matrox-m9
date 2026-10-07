@@ -345,6 +345,13 @@ int m9x_submit_faa_virtual_primary_locked(struct m9x_device *mdev,
 				 const struct drm_mm_node *node, dma_addr_t dma,
 				 u32 bytes, u32 target, u64 *point,
 				 bool *doorbell_posted);
+int m9x_extend_faa_virtual_primary_locked(struct m9x_device *mdev,
+				 const struct drm_mm_node *node, dma_addr_t dma,
+				 u32 old_bytes, u32 new_bytes, u32 target,
+				 u64 *point, bool *doorbell_posted);
+int m9x_validate_faa_virtual_resume_locked(struct m9x_device *mdev,
+				 const struct drm_mm_node *node, dma_addr_t dma,
+				 u32 old_bytes, u32 new_bytes, u32 target);
 struct m9x_faa_submit_phase {
 	u32 bytes, target;
 };
@@ -411,10 +418,15 @@ int m9x_faa_prepare_diag(struct m9x_device *mdev);
 int m9x_faa_submit_diag(struct m9x_device *mdev, u32 color,
 			struct drm_gem_vram_object *color_bo, u64 *point,
 			bool *color_active, bool *color_retained);
+int m9x_faa_unlock_diag(struct m9x_device *mdev, u32 color,
+			struct drm_gem_vram_object *color_bo, u64 *point,
+			bool *posted);
 void m9x_faa_fini(struct m9x_device *mdev);
 int m9x_faa_dma_snapshot(struct m9x_device *mdev, void **data, size_t *bytes);
 int m9x_faa_lock_view_admit_locked(struct m9x_device *mdev,
 			struct drm_gem_vram_object *color, u32 base, u64 bytes);
+int m9x_faa_lock_view_observed_locked(struct m9x_device *mdev,
+			struct drm_gem_vram_object *color);
 int m9x_faa_output_read(struct m9x_device *mdev, struct drm_file *file,
 		       const struct drm_parhelia_m9_surface_access *args);
 int m9x_triangle_prepare_user(struct m9x_device *mdev);
