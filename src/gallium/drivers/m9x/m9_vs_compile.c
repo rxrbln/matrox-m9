@@ -3064,6 +3064,68 @@ m9_vs_compile_faa(struct nir_shader *nir, const struct m9_vs_outputs *outputs,
    return compile_program(nir, outputs, p, reason, true, NULL, NULL, true);
 }
 
+/* Lowered-I/O counterpart of Mesa nir_lower_clip_halfz: the original public
+ * D3D FAA position stage expects z in [0,w], while Gallium GL NIR writes
+ * [-w,w]. Preserve X/Y/W and all varyings; perform this affine conversion
+ * in the live GPU producer, not by CPU-transforming vertex records. */
+struct faa_gl_position_state {
+   unsigned stores;
+   bool invalid;
+};
+
+static bool
+faa_gl_position(nir_builder *b, nir_intrinsic_instr *intr, void *data)
+{
+   struct faa_gl_position_state *state = data;
+   if (intr->intrinsic != nir_intrinsic_store_output ||
+       nir_intrinsic_io_semantics(intr).location != VARYING_SLOT_POS)
+      return false;
+   if (nir_intrinsic_component(intr) || nir_intrinsic_write_mask(intr) != 0xf ||
+       intr->src[0].ssa->num_components != 4 || intr->src[0].ssa->bit_size != 32) {
+      state->invalid = true;
+      return false;
+   }
+   state->stores++;
+   b->cursor = nir_before_instr(&intr->instr);
+   nir_def *pos = intr->src[0].ssa;
+   nir_def *z = nir_fmul_imm(b, nir_fadd(b, nir_channel(b, pos, 2),
+                                       nir_channel(b, pos, 3)), 0.5f);
+   nir_def *halfz = nir_vec4(b, nir_channel(b, pos, 0),
+                            nir_channel(b, pos, 1), z, nir_channel(b, pos, 3));
+   nir_src_rewrite(&intr->src[0], halfz);
+   return true;
+}
+
+bool
+m9_vs_compile_faa_gl(const struct nir_shader *nir,
+                     const struct m9_vs_outputs *outputs,
+                     struct m9_vs_program *p, const char **reason)
+{
+   if (!nir || !p || nir->info.stage != MESA_SHADER_VERTEX) {
+      if (reason)
+         *reason = "missing FAA GL vertex shader/program";
+      return false;
+   }
+   nir_shader *copy = nir_shader_clone(NULL, nir);
+   if (!copy) {
+      if (reason)
+         *reason = "out of memory";
+      return false;
+   }
+   struct faa_gl_position_state state = {0};
+   nir_shader_intrinsics_pass(copy, faa_gl_position,
+                             nir_metadata_control_flow, &state);
+   if (state.invalid || !state.stores) {
+      if (reason)
+         *reason = "FAA GL requires complete float32 clip position stores";
+      ralloc_free(copy);
+      return false;
+   }
+   bool ok = m9_vs_compile_faa(copy, outputs, p, reason);
+   ralloc_free(copy);
+   return ok;
+}
+
 /* The ordinary source can keep independent scalar coefficient chains even
  * when NIR has paired outputs. Vectorizing those chains trades some slots
  * for fewer typed constant pairs. Retry only a constant-span refusal, on a

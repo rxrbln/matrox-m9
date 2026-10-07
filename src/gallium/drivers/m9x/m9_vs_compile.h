@@ -323,6 +323,12 @@ bool m9_vs_compile(struct nir_shader *nir,
 bool m9_vs_compile_faa(struct nir_shader *nir,
                        const struct m9_vs_outputs *outputs,
                        struct m9_vs_program *program, const char **reason);
+/* Compile GL clip-space NIR on a private clone, applying (z+w)/2 in the
+ * GPU producer for the source D3D position stage. Original NIR unchanged;
+ * same complete-position/two-direct-stream admission as compile_faa. */
+bool m9_vs_compile_faa_gl(const struct nir_shader *nir,
+                          const struct m9_vs_outputs *outputs,
+                          struct m9_vs_program *program, const char **reason);
 /* Finalize that producer with STOP/padding/finish. Refuses ordinary programs.
  * m9_vs_constants/m9_vs_const_span use its dense typed constant layout. */
 unsigned m9_vs_emit_faa(const struct m9_vs_program *program, uint32_t *out,

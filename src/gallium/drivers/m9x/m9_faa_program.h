@@ -59,4 +59,25 @@ bool m9_faa_preprocess_moves(enum m9_faa_move_input kind,
                             uint32_t capacity_bytes,
                             struct m9_faa_move_interface *interface);
 
+struct m9_faa_viewport {
+   uint32_t x, y, width, height;
+};
+
+struct m9_faa_position_interface {
+   uint32_t slots, constant_pairs;
+   uint64_t output_registers;
+};
+
+/* Original public clip-space position stage: retained route0 arrives in
+ * r00/r02; two complete outputs carry clip and screen position, and r21
+ * carries the source clip code. Inputs use D3D clip z in [0,w]. The separate
+ * live FAA GL compiler adapter performs (z+w)/2 on the GPU first.
+ * Default depth range only; no point/fog/user-clip/AA policy is implied.
+ * Emit 25 instruction slots and 13 dense constant pairs into disjoint owned
+ * outputs. All validation precedes writes. This does not bind a graph/job. */
+bool m9_faa_preprocess_position(const struct m9_faa_viewport *viewport,
+                                uint32_t *output, uint32_t capacity_bytes,
+                                float *constants, uint32_t constant_bytes,
+                                struct m9_faa_position_interface *interface);
+
 #endif
