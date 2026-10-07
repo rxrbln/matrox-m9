@@ -12,6 +12,7 @@
 #include <string.h>
 
 #include "nir.h"
+#include "nir_builder.h"
 #include "util/format/u_format.h"
 #include "util/u_math.h"
 
@@ -25,6 +26,130 @@ m9_vs_source_format_ok(enum pipe_format format)
    return d && !util_format_is_compressed(format) &&
           d->colorspace == UTIL_FORMAT_COLORSPACE_RGB &&
           util_format_get_blocksize(format) <= 16;
+}
+
+bool
+m9_vs_format_key_init(uint64_t inputs_read,
+                       const struct pipe_vertex_element *elements,
+                       unsigned element_count, struct m9_vs_format_key *key)
+{
+   struct m9_vs_format_key trial = {0};
+   unsigned element = 0;
+
+   if (!key || (inputs_read && !elements))
+      return false;
+   for (unsigned location = 0; location < 64; location++) {
+      if (!(inputs_read & BITFIELD64_BIT(location)))
+         continue;
+      if (element >= element_count || elements[element].instance_divisor ||
+          elements[element].dual_slot ||
+          !m9_vs_source_format_ok(elements[element].src_format))
+         return false;
+      const struct util_format_description *d =
+         util_format_description(elements[element++].src_format);
+      for (unsigned c = 0; c < 4; c++) {
+         if (d->swizzle[c] == PIPE_SWIZZLE_0)
+            trial.zero[c] |= BITFIELD64_BIT(location);
+         else if (d->swizzle[c] == PIPE_SWIZZLE_1)
+            trial.one[c] |= BITFIELD64_BIT(location);
+      }
+   }
+   *key = trial;
+   return true;
+}
+
+static bool
+format_input(nir_builder *b, nir_intrinsic_instr *intr, void *data)
+{
+   const struct m9_vs_format_key *key = data;
+   if (intr->intrinsic != nir_intrinsic_load_input ||
+       intr->def.bit_size != 32 ||
+       nir_intrinsic_dest_type(intr) != nir_type_float32 ||
+       !nir_src_is_const(intr->src[0]) || nir_src_as_uint(intr->src[0]))
+      return false;
+   unsigned location = nir_intrinsic_io_semantics(intr).location;
+   unsigned first = nir_intrinsic_component(intr);
+   unsigned count = intr->def.num_components;
+   if (location >= 64 || first + count > 4)
+      return false;
+   uint64_t bit = BITFIELD64_BIT(location);
+   unsigned real = 0;
+   bool changed = false;
+   nir_scalar components[4];
+   b->cursor = nir_after_instr(&intr->instr);
+   for (unsigned c = 0; c < count; c++) {
+      if ((key->zero[first + c] | key->one[first + c]) & bit) {
+         components[c] = nir_get_scalar(nir_imm_float(b,
+                            (key->one[first + c] & bit) ? 1.0f : 0.0f), 0);
+         changed = true;
+      } else {
+         components[c] = nir_get_scalar(&intr->def, c);
+         real = c + 1;
+      }
+   }
+   if (!changed)
+      return false;
+   nir_def *value = nir_vec_scalars(b, components, count);
+   nir_def_rewrite_uses_after(&intr->def, value);
+   if (real) {
+      intr->num_components = real;
+      intr->def.num_components = real;
+   } else {
+      nir_instr_remove(&intr->instr);
+   }
+   return true;
+}
+
+bool
+m9_vs_compile_format_source(struct nir_shader **nir,
+                             const struct m9_vs_outputs *outputs,
+                             struct m9_vs_program *program, const char **reason,
+                             unsigned max_slots, unsigned max_const_pairs,
+                             const struct m9_vs_format_key *key)
+{
+   const char *original_reason = NULL;
+   bool defaults = false;
+   if (key)
+      for (unsigned c = 0; c < 4; c++)
+         defaults |= (key->zero[c] | key->one[c]) != 0;
+   /* The first compile mutates its source. Save only the bounded retry's
+    * pre-geometry graph, with the same parent as the caller's owner. */
+   nir_shader *saved = defaults ? nir_shader_clone(ralloc_parent(*nir), *nir) : NULL;
+   if (m9_vs_compile_bounded_source(nir, outputs, program, &original_reason,
+                                     max_slots, max_const_pairs)) {
+      ralloc_free(saved);
+      if (reason) *reason = original_reason;
+      return true;
+   }
+   struct m9_vs_program trial;
+   if (saved && original_reason &&
+       !strcmp(original_reason, "more than four vertex attributes") &&
+       nir_shader_intrinsics_pass(saved, format_input,
+                                   nir_metadata_control_flow, (void *)key)) {
+      NIR_PASS(_, saved, nir_opt_constant_folding);
+      NIR_PASS(_, saved, nir_opt_dce);
+      NIR_PASS(_, saved, nir_opt_shrink_vectors, true);
+      NIR_PASS(_, saved, nir_opt_dce);
+      if (m9_vs_compile_bounded_source(&saved, outputs, &trial, NULL,
+                                         max_slots, max_const_pairs)) {
+         bool fits = m9_vs_slot_count(&trial) <= max_slots &&
+                     m9_vs_extra_slot_count(&trial) <= max_slots &&
+                     (!m9_vs_producer_slot_count(&trial) ||
+                      m9_vs_producer_slot_count(&trial) + M9_VS_TAIL_SLOTS <= max_slots) &&
+                     m9_vs_const_count(&trial) <= max_const_pairs;
+         if (fits) {
+            *program = trial;
+            ralloc_free(*nir);
+            *nir = saved;
+            if (reason) *reason = NULL;
+            return true;
+         }
+         m9_vs_program_fini(&trial);
+      }
+   }
+   ralloc_free(saved);
+   if (reason) *reason = original_reason;
+   return false;
 }
 
 bool

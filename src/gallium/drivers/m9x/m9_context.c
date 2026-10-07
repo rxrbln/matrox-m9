@@ -8634,17 +8634,20 @@ m9_vs_native_init(struct m9_vs_state *vs, struct nir_shader *src)
                            MAX_INLINABLE_UNIFORMS) : 0;
 }
 
-/* The specialisation for one set of values, compiled on first use and kept.
- * A shader with no inlinable uniform has exactly one. */
+/* The specialization for one set of values and bound-format GL defaults.
+ * Each retained graph owns its output variants; no cache entry is evicted
+ * while a queued job can still name its program. */
 static struct m9_vs_spec *
-m9_vs_spec_for(struct m9_vs_state *vs, const uint32_t *values)
+m9_vs_spec_for(struct m9_vs_state *vs, const uint32_t *values,
+                const struct m9_vs_format_key *format_key)
 {
    const size_t bytes = vs->inline_count * sizeof(*values);
    struct m9_vs_spec *spec;
    nir_shader *nir;
 
    util_dynarray_foreach(&vs->specs, struct m9_vs_spec *, it)
-      if (!memcmp((*it)->values, values, bytes))
+      if (!memcmp((*it)->values, values, bytes) &&
+          !memcmp(&(*it)->format_key, format_key, sizeof(*format_key)))
          return *it;
    /* A shader specialised on a uniform can be asked for one per value, so
     * the cache is capped and a further set is refused rather than evicting
@@ -8657,6 +8660,7 @@ m9_vs_spec_for(struct m9_vs_state *vs, const uint32_t *values)
       return NULL;
    util_dynarray_init(&spec->variants, NULL);
    memcpy(spec->values, values, bytes);
+   spec->format_key = *format_key;
    nir = vs->src ? nir_shader_clone(NULL, vs->src) : NULL;
    if (nir) {
       if (vs->inline_count)
@@ -8666,9 +8670,9 @@ m9_vs_spec_for(struct m9_vs_state *vs, const uint32_t *values)
        * only the product the hardware's multiply-add can take. */
       NIR_PASS(_, nir, nir_opt_algebraic_late);
       NIR_PASS(_, nir, nir_opt_dce);
-      spec->native = m9_vs_compile_bounded_source(&nir, NULL, &spec->program,
+      spec->native = m9_vs_compile_format_source(&nir, NULL, &spec->program,
                                          &spec->reason, m9_vs_max_slots,
-                                         m9_vs_max_const_pairs);
+                                         m9_vs_max_const_pairs, format_key);
    }
    if (spec->native) {
       spec->slots = m9_vs_slot_count(&spec->program) +
@@ -8716,10 +8720,15 @@ m9_vs_select_spec(struct m9_context *ctx)
 
    if (!vs)
       return;
+   struct m9_vs_format_key format_key = {0};
+   if (vs->src && ctx->velems)
+      m9_vs_format_key_init(vs->src->info.inputs_read, ctx->velems->elements,
+                             ctx->velems->count, &format_key);
    if (vs->cur && !memcmp(vs->cur->values, ctx->vs_inline,
-                          vs->inline_count * sizeof(*ctx->vs_inline)))
+                          vs->inline_count * sizeof(*ctx->vs_inline)) &&
+       !memcmp(&vs->cur->format_key, &format_key, sizeof(format_key)))
       return;
-   vs->cur = m9_vs_spec_for(vs, ctx->vs_inline);
+   vs->cur = m9_vs_spec_for(vs, ctx->vs_inline, &format_key);
 }
 
 static void *

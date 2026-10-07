@@ -13,6 +13,28 @@
 
 #include "pipe/p_state.h"
 
+/* Only semantic GL defaults derived from the bound unpack format. Values,
+ * buffer addresses and strides are not compiler keys. */
+struct m9_vs_format_key {
+   uint64_t zero[4];
+   uint64_t one[4];
+};
+
+bool m9_vs_format_key_init(uint64_t inputs_read,
+                            const struct pipe_vertex_element *elements,
+                            unsigned element_count,
+                            struct m9_vs_format_key *key);
+
+/* Retry only a four-attribute refusal using exact absent-component defaults.
+ * Adopt the lowered graph with its program; existing accepted images remain
+ * unchanged. This is the ordinary vertex interface, not FAA preprocessing. */
+bool m9_vs_compile_format_source(struct nir_shader **nir,
+                                  const struct m9_vs_outputs *outputs,
+                                  struct m9_vs_program *program,
+                                  const char **reason,
+                                  unsigned max_slots, unsigned max_const_pairs,
+                                  const struct m9_vs_format_key *key);
+
 /* Where one declared attribute's components come from. */
 struct m9_vs_source_attr {
    unsigned buffer;        /* index into the bound vertex buffers */

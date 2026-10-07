@@ -15,6 +15,7 @@
 #include "m9_draw_params.h"
 #include "m9_faa.h"
 #include "m9_vs_compile.h"
+#include "m9_vs_source.h"
 #include "m9_texture.h"
 #include "util/simple_mtx.h"
 #include "util/u_atomic.h"
@@ -466,6 +467,7 @@ struct m9_vs_variant {
  * the engine once that value is substituted and the loop unrolls; the values
  * are fixed per draw, so one of these is kept per set the context sends. */
 struct m9_vs_spec {
+   struct m9_vs_format_key format_key;
    uint32_t values[MAX_INLINABLE_UNIFORMS];
    /* The lowered, specialised clone the backend consumed, kept so a further
     * layout can be compiled from it. */
