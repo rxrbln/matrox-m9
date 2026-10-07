@@ -135,6 +135,7 @@ int m9x_faa_depth_draw_encode(const u8 *blob, size_t bytes,
 	const struct m9x_faa_graph_draw_owner owner[M9_FAA_DEPTH_DRAW_OWNERS],
 	const struct m9x_faa_depth_views *views,
 	u32 primary_cursor, u32 secondary_cursor, u64 previous_unlock_point,
+	u32 clear_flags,
 	const struct m9x_faa_color_input *in,
 	u32 previous_geometry_offset, u32 next_geometry_offset,
 	struct m9x_faa_depth_draw_image *out)
@@ -144,6 +145,7 @@ int m9x_faa_depth_draw_encode(const u8 *blob, size_t bytes,
 
 	if (!blob || bytes != M9_FAA_DEPTH_DRAW_TEMPLATE_BYTES ||
 	    !owner || !out || !out->primary || !out->secondary ||
+	    clear_flags > 1 ||
 	    !source_layout(in) || !views_match(views, owner) ||
 	    m9x_faa_graph_draw_owners_validate(owner))
 		return -EINVAL;
@@ -151,10 +153,10 @@ int m9x_faa_depth_draw_encode(const u8 *blob, size_t bytes,
 	if (memcmp(hash, depth_template_sha, sizeof(hash)))
 		return -EINVAL;
 	low = (u32)previous_unlock_point;
-	if ((previous_unlock_point & 15) || low < 0x1b0 ||
-	    low > U32_MAX - 0x190 ||
-	    (primary_cursor & 3) || primary_cursor < 13352 ||
-	    (secondary_cursor & 3) || secondary_cursor < 2688 ||
+	if ((previous_unlock_point & 15) || low < 0x10 ||
+	    low > U32_MAX - (clear_flags ? 0x190 : 0x130) ||
+	    (primary_cursor & 3) ||
+	    (secondary_cursor & 3) ||
 	    out->primary_capacity < M9_FAA_DEPTH_DRAW_PRIMARY_BYTES ||
 	    out->secondary_capacity < M9_FAA_DEPTH_DRAW_SECONDARY_BYTES ||
 	    primary_cursor > owner[27].bytes ||
@@ -220,7 +222,8 @@ int m9x_faa_depth_draw_encode(const u8 *blob, size_t bytes,
 		const struct depth_epoch *e = &depth_epochs[i];
 		u8 *dst = e->dst ? out->secondary : out->primary;
 
-		write32(dst + e->at, (low + e->delta) | e->tag);
+		write32(dst + e->at,
+			(low + e->delta - (clear_flags ? 0 : 0x60)) | e->tag);
 	}
 	for (i = 0; i < ARRAY_SIZE(depth_relatives); i++)
 		write32(out->secondary + depth_relatives[i].at,
@@ -247,6 +250,7 @@ int m9x_faa_depth_draw_encode(const u8 *blob, size_t bytes,
 	for (i = 0; i < M9_FAA_DEPTH_DRAW_ENDS; i++)
 		out->end_bytes[i] =
 			primary_cursor + depth_end_delta[i];
-	out->final_point = previous_unlock_point + 0x190;
+	out->final_point = previous_unlock_point +
+		(clear_flags ? 0x190 : 0x130);
 	return 0;
 }

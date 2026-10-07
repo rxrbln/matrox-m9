@@ -23,6 +23,7 @@ int m9x_faa_depth_draw_encode(const u8 *blob, size_t bytes,
 	const struct m9x_faa_graph_draw_owner owner[M9_FAA_DEPTH_DRAW_OWNERS],
 	const struct m9x_faa_depth_views *views,
 	u32 primary_cursor, u32 secondary_cursor, u64 previous_unlock_point,
+	u32 clear_flags,
 	const struct m9x_faa_color_input *input,
 	u32 previous_geometry_offset, u32 next_geometry_offset,
 	struct m9x_faa_depth_draw_image *output);
