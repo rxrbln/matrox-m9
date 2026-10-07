@@ -10,6 +10,19 @@ performance. Root integrates signed commits and runs serialized hardware
 under the established locks. Preserve source-proven optimizations even when
 one short benchmark is flat.
 
+Latest integrated Mesa8ce8651 adds ordinary native mask3b02e61 and zero-stride
+current attributes8530cf9/8ce8651. Texgen's native screenshot loses the
+horizontal geometry bands; dark stretched texture matches scene behavior.
+The ordinary CPU fallback still bands and is a separate open case. Current
+attributes pass16GPU draws/zero CPU and0/1572864 wrong pixels at1024x768.
+One matching fullscreen basic Q3GL2 run now reports39.1FPS versus35.5, about
+10.1% higher across integrated changes and different boots. Six draws/frame
+move from CPU to GPU; jobs55→54, zero-stride refusal disappears. Other native
+constant/instruction/attribute limits persist. Presentation remains GPUCopyArea.
+[Current-attribute pixels](../tests/m9-current-attributes-hardware-20261007/README.md),
+[Q3 run](../tests/m9-q3-current-attributes-20261007/README.md) and
+[texgen controls](../captures/m9x-texgen-fused-mask-20261007/README.md).
+
 The complete strict1024x768 six-field fixture passes all221184record
 components and both786432pixel palettes, with six GPU user draws/zero user
 CPU fallback and healthy retirement. Defaultvaryingcap2 remains unchanged.
@@ -23,7 +36,7 @@ to the earlier34FPS QUEUE0 run.
 [Queued-map hardware evidence](../tests/m9-cpu-buffer-queue-hardware-20261006/README.md).
 Observed-completion cache071517c removes redundant successful covered waits;
 concurrent/error/unreached/wrap/lifetime controls pass. No FPS gain is claimed.
-The matched clean-built Xorg/modesetting/glamor/GLX observer physically
+The previous matched clean-built Xorg/modesetting/glamor/GLX observer physically
 passes fullscreen Q3 basicGL2:387frames10.9s,35.5FPS, FAAoff/vsync0. Every
 observed presentation uses a GPU CopyArea; no PageFlip. This is a different
 profile from the older38.9FPS windowed checkpoint, so no controlled gain or
@@ -47,7 +60,7 @@ application pixel comparison and broader shader coverage remain open.
 A separate indexed264-vertex variableZ/W fixture physically passes both
 6336record components and both65536pixel palettes with GPU transforms.
 [Exact indexed variableZ/W proof](../captures/m9x-native-variable-zw-264-20261007/README.md). Indexed app qualification, radial
-multipass and optional Q3 lighting remain open. Latest fullscreen basic Q3GL2 checkpoint is35.5FPS1024x768/FAAoff/vsync0;
+multipass and optional Q3 lighting remain open. Latest fullscreen basic Q3GL2 checkpoint is39.1FPS1024x768/FAAoff/vsync0;
 38.9FPS is the prior windowed profile.
 [Bump image failure](../tests/m9-gl2-bump-packed-hardware-20261006/README.md)
 and [GL2 status](parhelia-m9-glmark2-status.md).
@@ -63,11 +76,12 @@ peak and async target are historical. No measured FPS gain is claimed.
 
 Mesa1802132 adds vertex sign; all86host vertex references and five expected
 refusals pass. Actual texture:texgen=true uses only GPU user transforms but
-its first screenshot is visibly corrupted; the reported946FPS is not a valid
-rendering baseline. Mesabb0c20a adds bounded ordinary input capture. Two
-actual frames expose scratch registers10/12 beside varying outputs11/13,
-with the submitted fixedbf00 mask. Vendor-policy comparison is in progress;
-no texgen image fix is yet qualified.
+its first screenshot was visibly corrupted; the reported946FPS is not a valid
+rendering baseline. Mesabb0c20a added bounded ordinary input capture. Two
+actual frames exposed scratch registers10/12 beside varying outputs11/13,
+with the submitted fixedbf00 mask. Actual vendor comparison establishedbc00;
+Mesa3b02e61 removes the observed native bands as described above. Equal-pose
+application pixel qualification remains distinct from that image improvement.
 [Texgen image and input evidence](parhelia-m9-glmark2-status.md).
 
 FAA public red constants change actual main-store contents, but final output
@@ -100,10 +114,11 @@ capture. [Actual ordinary hardware proof](../tests/m9-ordinary-system-red-hardwa
 
 Current normal target boot is `4636e49f-790e-46ce-88df-8c107cf63889`,
 observer kernel73c2a45, user submissions enabled and private FAA disabled.
-After recovery, the latest ordinary texgen input diagnostic completes
-9b500/raw9b501, next9b510, with an empty queue and wedged0 immediately and
+After recovery, the latest integrated Q3 diagnostic completes
+4a5540/raw4a5541, next4a5550, with an empty queue and wedged0 immediately and
 two seconds later. The previous benchmark boot6d completed84ac0.
-Current Mesabb0c20a includes sign1802132 and input capture; the complex bump
+Current Mesa8ce8651 includes sign1802132, input capture, ordinary native mask
+and current attributes; the complex bump
 rendering qualification belongs to Mesa05c7c29. The current source retains
 the earlier map, completion-cache, packed publication, dependency and wait
 improvements. The earlier 34FPS run with156wrong Z/W pairs is superseded by

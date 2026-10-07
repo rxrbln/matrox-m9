@@ -1,6 +1,6 @@
 # glmark2 on the m9x driver: where the 60 fps goal actually stands
 
-## Current implementation gaps, checked against Mesabb0c20a
+## Current implementation gaps, checked against Mesa8ce8651
 
 The older chronological entries below are not a current missing-op list.
 Vertex log2/exp2/pow and bounded arithmetic branching are implemented; they
@@ -22,15 +22,40 @@ need broader application qualification, not a second implementation.
   combinations. These include extension paths beyond baseline GLSL1.10.
 * Vertex `fsign`, needed by `texture:texgen=true`, is implemented in1802132.
   Canonical build,86vertex references/five refusals and independent texgen
-  math checks pass. The first physical native run has zero CPU user transforms
-  but a visibly corrupted image; ordinary vertex/coordinate transport is now
-  under investigation. This scene is not qualified.
+  math checks pass. Mesa3b02e61 corrects ordinary native register availability
+  from vendor policy; the physical image now has a complete cube without the
+  earlier horizontal bands, with2108GPUuser draws/zero CPUuser. Dark stretched
+  texture is consistent with the software scene reference. Exact equal-pose
+  pixel qualification remains open, as does the CPU fallback's banding.
 
 The actual compiler/finalizer-to-mask consumer join now passes under bounded
 no-vertex-texture policy (REd0102161); full live EE19 resource/view binding
 and broad default-cap promotion remain distinct open work. Existing complex
 bump rendering and its417FPS clean result do not qualify terrain, all Quake3
 GL2 lighting variants, or the complete glmark2 suite.
+
+## 2026-10-07: ordinary native mask corrected; current attributes pass hardware
+
+Mesa3b02e61 derives the ordinary preprocessing mask from actual scratch use,
+preserving the captured tail reservations and coupling only bound output
+groups. The submitted texgen program requiresbc00 rather thanbf00, confirmed
+by genuine vendor150dc0 and twelve controls. One physical1024x768 native run
+has no previous sawtooth geometry bands,2108GPUuser draws/zero CPUuser and
+healthy130180 retirement. The703FPS includes a screenshot and is retained as
+a diagnostic. Both app-only and app-plus-Xorg CPU-transform controls still
+show the old bands; no CPU workaround is enabled in the implementation.
+[Physical images and controls](../captures/m9x-texgen-fused-mask-20261007/README.md).
+
+Mesa8530cf9/8ce8651 additionally accepts zero-stride current attributes and
+expands their actual per-draw values into owned GPU source records. Actual
+ordinary/indexed draws with changing colours pass16GPUuser draws/zero CPU,
+0/1572864 wrong pixels/maxchannel1 at1024x768.
+[Hardware pixel proof](../tests/m9-current-attributes-hardware-20261007/README.md).
+One fullscreen Q3 basicGL2 run now reports39.1FPS versus35.5 in the previous
+matching fullscreen checkpoint (FAAoff/vsync0). Six draws/frame move from
+CPU to GPU transforms; jobs55→54. This is a single-run integrated comparison,
+not isolated attribution or a new qualification of optional lighting modes.
+[Q3 profile and measurement](../tests/m9-q3-current-attributes-20261007/README.md).
 
 ## 2026-10-07: vertex sign integrated; native texgen image still fails
 
