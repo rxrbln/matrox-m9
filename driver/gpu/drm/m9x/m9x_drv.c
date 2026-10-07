@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0-only
 /* Copyright 2026 René Rebe <rene@exactco.de> */
 #include <linux/dma-mapping.h>
+#include <linux/capability.h>
 #include <linux/aperture.h>
 #include <linux/interrupt.h>
 #include <linux/ktime.h>
@@ -8,6 +9,7 @@
 #include <linux/module.h>
 #include <linux/pci.h>
 #include <linux/seq_file.h>
+#include <linux/slab.h>
 
 #include <drm/clients/drm_client_setup.h>
 #include <drm/drm_atomic_helper.h>
@@ -124,11 +126,32 @@ static int m9_transport_snapshot_show(struct seq_file *m, void *unused)
 	return 0;
 }
 
+static int m9_faa_dma_snapshot_show(struct seq_file *m, void *unused)
+{
+	struct drm_debugfs_entry *entry = m->private;
+	void *data;
+	size_t bytes;
+	int ret;
+
+	if (!capable(CAP_SYS_ADMIN))
+		return -EPERM;
+	ret = m9x_faa_dma_snapshot(to_m9x(entry->dev), &data, &bytes);
+	if (ret)
+		return ret;
+	/* seq_file grows its buffer and retries on overflow. The one-shot
+	 * private owners remain immutable after the successful final wait. */
+	seq_write(m, data, bytes);
+	kvfree(data);
+	return 0;
+}
+
 static void m9x_debugfs_init(struct drm_minor *minor)
 {
 	drm_vram_mm_debugfs_init(minor);
 	drm_debugfs_add_file(minor->dev, "m9_transport_snapshot",
 			     m9_transport_snapshot_show, NULL);
+	drm_debugfs_add_file(minor->dev, "m9_faa_dma_snapshot",
+			     m9_faa_dma_snapshot_show, NULL);
 }
 
 /* Mesa selects the independent M9X Gallium driver from this DRM name. */

@@ -21,6 +21,7 @@
 #endif
 #include <linux/uaccess.h>
 
+#include <drm/drm_drv.h>
 #include <drm/drm_file.h>
 
 #include "m9_drv.h"
@@ -224,6 +225,11 @@ struct m9x_faa_replay {
 	u64 output_point;
 	u32 output_generation;
 	bool output_retired;
+	/* Raw retained-owner evidence is independent of ordinary pixel output.
+	 * Set only after this one-shot profile's final actual wait succeeds. */
+	u64 observation_point;
+	u32 observation_generation;
+	bool observation_retired;
 	/* An alias of the transport's existing completion page, never a new
 	 * completion allocation or an independently seeded success counter. */
 	struct drm_mm_node counter_node;
@@ -645,7 +651,8 @@ static int m9_faa_verify_upload(struct m9x_device *mdev,
 }
 
 /* Bounded observations before submit and after actual retirement. Includes
- * local stores and retained SYSTEM mapped prefixes, but never claims unknown
+ * local stores, retained SYSTEM mapped prefixes and exact coherent-DMA
+ * allocation spans, but never claims unknown
  * initial contents were zero or that a nonzero byte proves a GPU store.
  * Unmapped allocation tails are excluded. No allocation is written.
  */
@@ -663,8 +670,8 @@ static void m9_faa_observe(struct m9x_device *mdev,
 		if (r->owner[i].vram) {
 			bytes = spec->bytes;
 			total = &local_total;
-		} else if (spec->system && r->owner[i].cpu) {
-			bytes = spec->mapped_bytes;
+		} else if (r->owner[i].cpu) {
+			bytes = spec->system ? spec->mapped_bytes : spec->bytes;
 			total = &system_total;
 		} else {
 			continue;
@@ -696,11 +703,11 @@ static void m9_faa_observe(struct m9x_device *mdev,
 	for (i = 0; i < ARRAY_SIZE(r->owner); i++) {
 		struct m9_faa_owner *o = &r->owner[i];
 		const struct m9_faa_owner_spec *spec = &m9_faa_owner_specs[i];
-		u32 bytes = o->vram ? spec->bytes : spec->mapped_bytes;
+		u32 bytes = spec->system ? spec->mapped_bytes : spec->bytes;
 		u32 hash = 0x811c9dc5, nonzero = 0, nonzero_words = 0;
 		const char *domain = o->vram ? "BAR" : "DMA";
 
-		if (!o->vram && (!spec->system || !o->cpu))
+		if (!o->vram && !o->cpu)
 			continue;
 		for (offset = 0; offset < bytes; offset += count) {
 			count = min_t(u32, sizeof(data), bytes - offset);
@@ -1833,6 +1840,9 @@ int m9x_faa_submit_diag(struct m9x_device *mdev, u32 color,
 	*color_active = posted && ret;
 	if (!ret) {
 		t->next_fence = target + 0x10;
+		r->observation_point = *point;
+		r->observation_generation = t->generation;
+		r->observation_retired = true;
 		/* An output allocation may already exist at an earlier vendor
 		 * format-transition wait. Retirement of that prefix does not
 		 * complete the later resolve or make its pixels readable. */
@@ -1868,6 +1878,137 @@ unlock:
 	if (fence)
 		dma_fence_put(&fence->base);
 	mutex_unlock(&t->lock);
+	return ret;
+}
+
+/* Version-one little-endian raw snapshot. No caller supplies an owner,
+ * physical address, offset or decoder. The compiled trusted source profile
+ * selects the exact coherent DMA owners and their logical allocation spans. */
+struct m9_faa_dma_header {
+	__le32 magic, version, header_bytes, owners;
+	__le64 point;
+	__le32 generation, bytes;
+};
+struct m9_faa_dma_entry {
+	__le32 owner, base, bytes, allocated_bytes, data_offset, reserved;
+};
+#define M9_FAA_DMA_SNAPSHOT_BUDGET (16u * 1024u * 1024u)
+
+static int m9_faa_dma_span(const struct m9_faa_owner_spec *spec,
+			   const struct m9_faa_owner *owner, u32 *bytes)
+{
+	if (spec->local || spec->system)
+		return 0;
+	if (spec->flags30 || spec->mapped_bytes || !spec->bytes || !owner->cpu ||
+	    owner->vram || owner->cpu_wc || drm_mm_node_allocated(&owner->system_node) ||
+	    upper_32_bits(owner->dma) || !IS_ALIGNED(owner->dma, PAGE_SIZE) ||
+	    owner->base != lower_32_bits(owner->dma) ||
+	    (u64)owner->dma + owner->bytes > U32_MAX ||
+	    (u64)PAGE_ALIGN((u64)spec->bytes) != owner->bytes)
+		return -EINVAL;
+	*bytes = spec->bytes;
+	return 1;
+}
+
+int m9x_faa_dma_snapshot(struct m9x_device *mdev, void **data, size_t *bytes)
+{
+	struct m9x_transport *t = &mdev->transport;
+	struct m9x_faa_replay *r;
+	struct m9_faa_dma_header *header;
+	struct m9_faa_dma_entry *entry;
+	u32 i, count = 0, payload = 0, span, total, offset;
+	int idx, ret;
+
+	BUILD_BUG_ON(sizeof(*header) != 32);
+	BUILD_BUG_ON(sizeof(*entry) != 24);
+	*data = NULL;
+	*bytes = 0;
+	if (!m9_faa_diag)
+		return -EACCES;
+	if (!drm_dev_enter(&mdev->drm, &idx))
+		return -ENODEV;
+	if (!mutex_trylock(&t->lock)) {
+		ret = -EBUSY;
+		goto exit;
+	}
+	r = t->faa;
+	if (t->async_stop) {
+		ret = -ENODEV;
+		goto unlock;
+	}
+	if (t->wedged) {
+		ret = -EIO;
+		goto unlock;
+	}
+	if (!r || !r->attempted || !r->observation_retired || !r->observation_point ||
+	    r->observation_generation != t->generation ||
+	    r->observation_point > t->completed_point || t->async_pending ||
+	    t->queue_count) {
+		ret = -ENODATA;
+		goto unlock;
+	}
+	/* Validate the complete inventory and budget before allocating/copying.
+	 * Failed final submission never reaches this raw read contract. */
+	for (i = 0; i < ARRAY_SIZE(r->owner); i++) {
+		ret = m9_faa_dma_span(&m9_faa_owner_specs[i], &r->owner[i], &span);
+		if (ret < 0)
+			goto unlock;
+		if (!ret)
+			continue;
+		if (span > M9_FAA_DMA_SNAPSHOT_BUDGET - payload) {
+			ret = -E2BIG;
+			goto unlock;
+		}
+		payload += span;
+		count++;
+	}
+	if (!count) {
+		ret = -ENODATA;
+		goto unlock;
+	}
+	if (check_mul_overflow(count, (u32)sizeof(*entry), &offset) ||
+	    check_add_overflow(offset, (u32)sizeof(*header), &offset) ||
+	    check_add_overflow(offset, payload, &total) ||
+	    total > M9_FAA_DMA_SNAPSHOT_BUDGET) {
+		ret = -E2BIG;
+		goto unlock;
+	}
+	header = kvmalloc(total, GFP_KERNEL);
+	if (!header) {
+		ret = -ENOMEM;
+		goto unlock;
+	}
+	*header = (struct m9_faa_dma_header) {
+		.magic = cpu_to_le32(0x4d44394d), /* M9DM */
+		.version = cpu_to_le32(1), .header_bytes = cpu_to_le32(offset),
+		.owners = cpu_to_le32(count), .point = cpu_to_le64(r->observation_point),
+		.generation = cpu_to_le32(t->generation), .bytes = cpu_to_le32(total),
+	};
+	entry = (void *)(header + 1);
+	rmb();
+	dma_rmb();
+	for (i = 0; i < ARRAY_SIZE(r->owner); i++) {
+		const struct m9_faa_owner_spec *spec = &m9_faa_owner_specs[i];
+		struct m9_faa_owner *owner = &r->owner[i];
+
+		if (spec->local || spec->system)
+			continue;
+		*entry++ = (struct m9_faa_dma_entry) {
+			.owner = cpu_to_le32(i), .base = cpu_to_le32(owner->base),
+			.bytes = cpu_to_le32(spec->bytes),
+			.allocated_bytes = cpu_to_le32(owner->bytes),
+			.data_offset = cpu_to_le32(offset), .reserved = 0,
+		};
+		memcpy((u8 *)header + offset, owner->cpu, spec->bytes);
+		offset += spec->bytes;
+	}
+	*data = header;
+	*bytes = total;
+	ret = 0;
+unlock:
+	mutex_unlock(&t->lock);
+exit:
+	drm_dev_exit(idx);
 	return ret;
 }
 
