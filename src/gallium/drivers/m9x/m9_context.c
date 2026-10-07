@@ -6763,8 +6763,8 @@ m9_native_vs_bind_texture(struct m9_context *ctx, struct m9_job_key *key,
 {
    if (!program->texture_count)
       return NULL;
-   if (!debug_get_bool_option("M9X_NATIVE_VS_TEXTURE", false))
-      return "native vertex texture qualification is disabled";
+   if (!debug_get_bool_option("M9X_NATIVE_VS_TEXTURE", true))
+      return "native vertex texture is disabled";
    if (program->texture_count != 1 ||
        !key->variant || key->variant->passes.count != 1)
       return "vertex texture requires one sampler and one raster pass";
