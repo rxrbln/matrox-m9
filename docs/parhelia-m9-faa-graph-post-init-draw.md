@@ -3,11 +3,11 @@
 This separate source control reconstructs the sealed graph INIT exactly, joins
 its real M9128 completion receipt, then calls public DrawPrimitives2 on the
 same graph and context. CREATEPS54, SETCONST57 and SETPS56 are real public
-commands: pixel shader `MOV oC0,c0`, c0=(1,0,0,1). The first preprocessing
-DRAW prefix now has a real `0x110` retirement receipt. The receipt-gated
-continuation returns the original public DRAW; its following normal Lock
-stops at a new unqualified `0x140` wait. No pixels have been supplied. This
-is not the earlier diagnostic180 flow.
+commands: pixel shader `MOV oC0,c0`, c0=(1,0,0,1). The retained native sequence now retires preprocessing `0x110`, returned
+DRAW plus explicit finish `0x140`, and the normal Lock prefix `0x170` on real
+M9128 hardware. Each step preserves the same graph and source post order.
+The Lock CPU mapping/readback continuation and resolved pixels remain open.
+This is separate from the earlier diagnostic180 flow.
 
 The qualified INIT receipt is the confirmed-retirement archive under
 `tests/m9-faa-graph-init-hardware-20261007/`: INIT/independent WAIT_POINT both
@@ -238,3 +238,27 @@ writers produce151/161/171 at offsets5120/5176/8544. Selected E3 writers
 Their source producer, not numeric resemblance or packet location, identifies
 them as timeline fields.
 The new170 phase has no native encoder or hardware receipt yet.
+
+
+## Normal Lock prefix hardware receipt, 2026-10-07
+
+Canonical DRM `7d0e96a` (WIP `3b2ba9f`) generates the source Lock prefix from
+live owners and timelines; helper RE `317d8271` runs it with `--draw-lock`.
+Fresh M9128 boot `68120712-5aad-4837-9abf-8590f717d19b` completed INITb0,
+preprocessing110, returned DRAW/finish140 and normal Lock170 on one retained
+graph. Eight source-ordered END posts end at live primary8552 (source8548
+plus the placement-dependent four-byte INIT clear delta). Immediate and+2s
+snapshots report raw171,submitted/completed170,next180,queue0,wedged0.
+
+Evidence: `tests/m9-faa-normal-lock-20261007/hardware-20261007/` includes the
+run script, boot identities, artifact hashes, helper log and kernel snapshots.
+Module SHA50b041667299632f96d2037e7d014137d19ab0765bb9b865bc931624bb31224e;
+helper SHAde55be8c0957fc0a2fc09b0649c356cfe0f55004dd2597f65112672d8d71863c.
+The authenticated3556-byte Lock template derives eight owner fields, five
+timelines (including two shader-loader getter values) and two extents. Source
+posts3544,3544(repeat),3556 are relative to the live returned-DRAW length.
+
+This proves posted Lock prefix retirement only. The normal Lock CPU mapper,
+returned view, pixel contents and application FAA remain unproved. Consume
+only this actual receipt when continuing the vendor emulator; no pixel data
+may be fabricated from successful completion.
