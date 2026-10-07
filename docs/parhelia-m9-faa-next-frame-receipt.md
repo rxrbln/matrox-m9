@@ -21,12 +21,16 @@ The corresponding native end would need to derive its live cursor; the current
 be `8684`. The source's two new secondary timeline words include `0x1f1`
 and `0x201`; the complete packet is not yet a native producer.
 
-The next genuine normal Lock on the same surface starts, writes source primary
-`[8680,12216)` (3,536 bytes), then stops at another `252b9` read with desired
-low point `0x210`. The observed `0x1e1` cannot cover it. There is no Lock
-`COMMAND_END` before this read in the current source continuation. No new GPU
-status or pixel bytes were supplied, and the independent finalizer stack was
-not resumed. Later Lock publication, pixels, and another Unlock remain open.
+An explicit genuine `23b80` finish on the retained queue then writes
+secondary `[2732,2748)` and primary `[8680,8692)`, posts a second END at
+source `8692`, and stops before its status load at desired point `0x210`.
+The next genuine normal Lock on the same surface starts after restoring the
+original DRAW caller stack, writes source primary `[8692,12228)` (3,536 bytes),
+then stops at another `252b9` read for that same unqualified `0x210` point.
+The observed `0x1e1` cannot cover either read. No Lock `COMMAND_END` occurs
+before its read, no new GPU status or pixel bytes were supplied, and the
+independent finalizer stack was not resumed. Later Lock publication, pixels,
+and another Unlock remain open.
 
 The controller's source-only mode verifies the saved original `0x1d0` wait
 without supplying a future status. Its receipt mode checks boot continuity,
