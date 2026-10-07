@@ -7,6 +7,7 @@
  * Opaque stores, HZ, pool and allocation tails receive no fabricated memset.
  */
 #include <linux/dma-mapping.h>
+#include <linux/delay.h>
 #include <linux/firmware.h>
 #include <linux/iosys-map.h>
 #include <linux/module.h>
@@ -272,6 +273,26 @@ static void m9_faa_depth_frame_free(struct m9_faa_depth_frame_storage *frame)
 {
  if(!frame)return;
  kvfree(frame->batch_data);kvfree(frame->batch_secondary);kvfree(frame->batch_program);kfree(frame);
+}
+
+/* Opt-in progress evidence, with no extra GPU reads or command changes.
+ * The optional pre-action delay lets host dmesg streaming persist a marker
+ * before a failing PCI transaction. Disabled by default in both settings. */
+static bool m9_faa_frame_trace_enabled;
+static unsigned int m9_faa_frame_trace_delay_ms;
+module_param_named(faa_frame_trace,m9_faa_frame_trace_enabled,bool,0600);
+module_param_named(faa_frame_trace_delay_ms,m9_faa_frame_trace_delay_ms,uint,0600);
+MODULE_PARM_DESC(faa_frame_trace,"Log bounded FAA frame prepare/upload/END phases");
+MODULE_PARM_DESC(faa_frame_trace_delay_ms,"Opt-in frame trace pre-action pause, capped100ms");
+static void m9_faa_frame_trace(struct m9x_device *mdev,const char *phase,
+ u32 index,u32 offset,u64 point,int result,bool pause)
+{
+ unsigned int delay;
+ if(!READ_ONCE(m9_faa_frame_trace_enabled))return;
+ dev_info(&mdev->pdev->dev,"M9 FAA frame phase: %s index=%u offset=%u point=%#llx result=%d\n",
+  phase,index,offset,point,result);
+ delay=READ_ONCE(m9_faa_frame_trace_delay_ms);
+ if(pause&&delay)msleep(min(delay,100u));
 }
 
 static bool m9_faa_color_four_experimental;
@@ -6861,6 +6882,7 @@ int m9x_faa_graph_depth_frame_prepare(struct m9x_device *mdev,
  const struct firmware *sample_fw=NULL,*draw_fw=NULL,*first_fw=NULL;
  struct m9x_faa_color_input typed_input;
  u32 i,sample_bytes,prefix_bytes;u64 queue_start=0;int ret;
+ m9_faa_frame_trace(mdev,"prepare-enter",first,0,previous,0,false);
  if(!binding||!input||(!(raster_flags&1)&&m9x_faa_color_flat_fragment_valid(input))||(!first&&(raster_flags&1))||(raster_flags&~7u)||(raster_flags&6)==6||
   !m9_faa_color_four_experimental||input->layout.program_count!=4||(input->declaration_count!=3&&input->declaration_count!=5)||(!first&&input->declaration_count!=5))return -EOPNOTSUPP;
  typed_input=*input;typed_input.fragment_flags=raster_flags&1;input=&typed_input;
@@ -6875,10 +6897,13 @@ int m9x_faa_graph_depth_frame_prepare(struct m9x_device *mdev,
  ret=request_firmware(&first_fw,M9_FAA_GRAPH_COLOR_FOUR_FIRMWARE,&mdev->pdev->dev);if(ret)goto release;
  /* Claims/maps the three separate native owners while INIT is still the
   * actual observed boundary. TTM operations occur outside TRANSPORT. */
+ m9_faa_frame_trace(mdev,"attachments-begin",first,0,previous,0,false);
  ret=m9x_faa_graph_bound_depth_prepare(mdev,binding,generation,previous,
-  M9_FAA_DEPTH_COLOR_SYSTEM_B,first);if(ret)goto release;
+  M9_FAA_DEPTH_COLOR_SYSTEM_B,first);
+ m9_faa_frame_trace(mdev,"attachments-end",first,0,previous,ret,false);if(ret)goto release;
  ret=first?m9x_faa_graph_color_prepare(mdev,binding,generation,previous,input):
   m9x_faa_graph_color_next_prepare(mdev,binding,generation,previous,input,0);if(ret)goto release;
+ m9_faa_frame_trace(mdev,"color-input-end",first,0,previous,ret,false);
  mutex_lock(&t->lock);
  ret=first?m9_faa_depth_frame_first_state(t,binding,generation,previous):
   m9_faa_depth_frame_retained_state(mdev,binding,generation,previous,&queue_start);if(ret)goto unlock;
@@ -6992,7 +7017,8 @@ unlock:mutex_unlock(&t->lock);
 release:
  if(sample_fw)release_firmware(sample_fw);if(draw_fw)release_firmware(draw_fw);
  if(first_fw)release_firmware(first_fw);kfree(scratch);
- kfree(raster_scratch);kfree(fresh);kfree(attach);kfree(frame);return ret;
+ kfree(raster_scratch);kfree(fresh);kfree(attach);kfree(frame);
+ m9_faa_frame_trace(mdev,"prepare-return",first,0,previous,ret,false);return ret;
 #else
  return -EOPNOTSUPP;
 #endif
@@ -7076,6 +7102,7 @@ int m9x_faa_graph_depth_batch_prepare(struct m9x_device *mdev,
  u32 code_slots[M9_FAA_FRAME_BATCH_MAX_DRAWS];
  u32 slots[M9_FAA_FRAME_BATCH_MAX_DRAWS],ends[14],arena_bytes=0,sec_cursor,pb,sb,i,bytes,raw;
  u64 queue_start=0;bool initialized;int ret;
+ m9_faa_frame_trace(mdev,"batch-prepare-enter",batch?batch->count:0,0,previous,0,false);
  if(!binding||!batch||!batch->count||batch->count>M9_FAA_FRAME_BATCH_MAX_DRAWS)return -EOPNOTSUPP;
  initialized=!!(batch->flags&PARHELIA_M9_FAA_COLOR_FRAME_INITIALIZED);
  if(initialized&&first)return -EOPNOTSUPP;
@@ -7094,6 +7121,7 @@ int m9x_faa_graph_depth_batch_prepare(struct m9x_device *mdev,
  if(batch->count==1)return initialized?
   m9x_faa_graph_depth_later_prepare(mdev,binding,generation,previous,&batch->draw[0].input,batch->clear_flags,batch->draw[0].raster_flags):
   m9x_faa_graph_depth_frame_prepare(mdev,binding,generation,previous,true,&batch->draw[0].input,batch->draw[0].raster_flags);
+ m9_faa_frame_trace(mdev,"batch-allocate",batch->count,arena_bytes,previous,0,false);
  arena=kvzalloc(arena_bytes,GFP_KERNEL);
  secondary=kvzalloc((initialized?2572:2712)+(batch->count-1)*2700,GFP_KERNEL);
  composed=kmalloc(M9_FAA_DEPTH_FRAME_PRIMARY_CAPACITY,GFP_KERNEL);
@@ -7104,6 +7132,7 @@ int m9x_faa_graph_depth_batch_prepare(struct m9x_device *mdev,
  jobs_secondary=kvzalloc(batch->count*2712,GFP_KERNEL);
  jobs=kzalloc(batch->count*sizeof(*jobs),GFP_KERNEL);
  if(!arena||!secondary||!composed||!job_primary||!job_secondary||!scratch||!prefix||!code_page||!jobs_secondary||!jobs){ret=-ENOMEM;goto release;}
+ m9_faa_frame_trace(mdev,"batch-allocated",batch->count,arena_bytes,previous,0,false);
  ret=request_firmware(&sample,M9_FAA_SAMPLE_CLEAR_FIRMWARE,&mdev->pdev->dev);if(ret)goto release;
  ret=request_firmware(&color,M9_FAA_GRAPH_COLOR_FOUR_FIRMWARE,&mdev->pdev->dev);if(ret)goto release;
  /* No command is posted by preparation. Each extra stage is generated
@@ -7167,6 +7196,7 @@ int m9x_faa_graph_depth_batch_prepare(struct m9x_device *mdev,
  }
  /* Bind every immutable code span before composing a consuming range.
   * C2 page pointers retain owner26 identity; selectors use live slot bytes. */
+ m9_faa_frame_trace(mdev,"batch-code-bind",batch->count,arena_bytes,previous,0,false);
  ret=m9x_faa_program_arena_encode(&owner[26],jobs,batch->count,
   code_page,M9_FAA_PROGRAM_PAGE_BYTES,code_slots);if(ret)goto unlock;
  /* Slot zero is always the first immutable program. The later singleton
@@ -7210,7 +7240,8 @@ unlock:mutex_unlock(&t->lock);
 release:
  if(sample)release_firmware(sample);if(color)release_firmware(color);
  kvfree(code_page);kvfree(jobs_secondary);kfree(jobs);
- kvfree(arena);kvfree(secondary);kfree(composed);kfree(job_primary);kfree(job_secondary);kfree(scratch);kfree(prefix);return ret;
+ kvfree(arena);kvfree(secondary);kfree(composed);kfree(job_primary);kfree(job_secondary);kfree(scratch);kfree(prefix);
+ m9_faa_frame_trace(mdev,"batch-prepare-return",batch->count,0,previous,ret,false);return ret;
 #else
  return -EOPNOTSUPP;
 #endif
@@ -7227,6 +7258,7 @@ int m9x_faa_graph_depth_frame_submit(struct m9x_device *mdev,
  const u8 *code;u32 code_bytes;
  bool stage_posted=false;u64 queue_start=0;int ret;
  if(!point||!posted||!binding)return -EINVAL;*point=0;*posted=false;
+ m9_faa_frame_trace(mdev,"submit-enter",0,0,previous,0,false);
  mutex_lock(&t->lock);
  r=t->faa;
  if(!r||!r->depth_storage||!r->depth_storage->frame){ret=-ESTALE;goto out;}
@@ -7273,26 +7305,35 @@ int m9x_faa_graph_depth_frame_submit(struct m9x_device *mdev,
  r->normal_lock_view_seen=false;r->unlock_started=false;r->unlock_retired=false;
  r->color_primary_start=frame->primary_start;r->color_posts_start=r->graph_draw_posts;
  /* All six consuming WRITE fences precede code/data and every clear post. */
+ m9_faa_frame_trace(mdev,"code-prepare-begin",frame->draw_count,code_bytes,frame->final_point,0,true);
  m9x_write(mdev,M9_REG_FRONTEND_KICK,1);
  ret=m9x_address_cpu_local_prepare(mdev,program->base,program->bytes);if(ret)goto out;
+ m9_faa_frame_trace(mdev,"code-upload-begin",0,code_bytes,frame->final_point,0,true);
  iosys_map_memcpy_to(&program->map,0,code,code_bytes);wmb();
+ m9_faa_frame_trace(mdev,"code-upload-end",0,code_bytes,frame->final_point,0,false);
  m9x_write(mdev,M9_REG_FRONTEND_STATE,0);m9x_read(mdev,M9_REG_FRONTEND_STATE);
+ m9_faa_frame_trace(mdev,"code-readback-begin",0,code_bytes,frame->final_point,0,true);
  iosys_map_memcpy_from(frame->observed,&program->map,0,code_bytes);
  if(memcmp(frame->observed,code,code_bytes)){ret=-EIO;goto out;}
+ m9_faa_frame_trace(mdev,"code-readback-end",0,code_bytes,frame->final_point,0,false);
  if(frame->batch_data)memcpy(r->draw_owner[1].cpu,frame->batch_data,frame->batch_data_bytes);
  else{
   memcpy(r->draw_owner[1].cpu,input->constants,input->constants_bytes);
   memcpy((u8*)r->draw_owner[1].cpu+input->geometry_offset,input->constants+input->geometry_offset,input->geometry_bytes);
  }
  memcpy((u8*)r->draw_owner[2].cpu+frame->secondary_cursor,frame->batch_secondary?frame->batch_secondary:frame->secondary,frame->secondary_bytes);
+ m9_faa_frame_trace(mdev,"data-published",frame->draw_count,frame->secondary_bytes,frame->final_point,0,false);
  for(i=0;i<frame->end_count;i++){
   u32 length=frame->end_bytes[i]-frame->primary_start;
   end=frame->end_bytes[i];
   if(length>frame->primary_bytes||length<copied){ret=-EINVAL;goto out;}
   if(length>copied)memcpy((u8*)primary->cpu+frame->primary_start+copied,frame->primary+copied,length-copied);
-  dma_wmb();ret=m9x_post_faa_graph_end_locked(mdev,&primary->system_node,primary->dma,
+  dma_wmb();m9_faa_frame_trace(mdev,"END-begin",i,end,
+   i==frame->end_count-1?frame->final_point:0,0,true);
+  ret=m9x_post_faa_graph_end_locked(mdev,&primary->system_node,primary->dma,
    r->graph_draw_end_bytes,end,i&&(end==frame->end_bytes[i-1]),
    i==frame->end_count-1?lower_32_bits(frame->final_point):0,&stage_point,&stage_posted);
+  m9_faa_frame_trace(mdev,"END-end",i,end,stage_point,ret,false);
   *posted|=stage_posted;if(stage_posted){r->graph_draw_end_bytes=end;r->graph_draw_posts++;}
   if(ret)goto out;copied=length;
  }
@@ -7310,7 +7351,8 @@ out:
  if(ret)*point=0;if(fence&&ret)dma_fence_set_error(&fence->base,ret);
  if(ret&&*posted){t->wedged=true;t->generation++;WARN_ON(t->quarantined_fence);t->quarantined_fence=fence;fence=NULL;}
  else if(fence)dma_fence_signal(&fence->base);if(fence)dma_fence_put(&fence->base);
- mutex_unlock(&t->lock);return ret;
+ mutex_unlock(&t->lock);
+ m9_faa_frame_trace(mdev,"submit-return",0,0,*point,ret,false);return ret;
 #else
  return -EOPNOTSUPP;
 #endif
