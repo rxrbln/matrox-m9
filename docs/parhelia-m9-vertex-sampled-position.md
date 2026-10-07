@@ -17,7 +17,7 @@ The exact pinned MxMD source is SHA256
 |---|---:|---:|---|
 | Raster fragment program | 19 | 19 | Raster outputs |
 | Unsampled FIRST | 4 | 4 | 2, 3 |
-| Sampled CONTINUE | 8 | 13 | 1, 4, 5, **0 (position)** |
+| Sampled CONTINUE | 8 | 13 | **1 (position)**, 4, 5, 0 |
 | GATHER | 8 | 8 | Four ordinary varying streams |
 | LAST | 26 | 26 | Final position and first varying |
 
@@ -51,6 +51,17 @@ FIRST's B0/B2 references bind fields 2/3 of that same owner. The checker
 derives owner identity from each observed operand/resource join, rather than
 using a captured GPU address as a portable allocation.
 
+The original output-register rule maps r11/r13 to **B0**, so the position
+writer is field1, not field0. LAST route0 reads field0 into r00/r02 and copies
+it to its varying output; route1 reads field1 into r04/r06 for the reciprocal
+and position epilogue. Both route references join the same packed owner.
+Their read descriptors include the original two-dword view bias (`EE190218`
+and `EE190618`), distinct from the writer descriptors `EE190018`/`EE190418`.
+The strict check retains that distinction and the exact original consumers.
+This corrects the position-field attribution in checkpoint e0d264b: the raw
+reports and the observed partition were accurate, but that earlier semantic
+label selected the last bound field instead of the target for r11.
+
 The real sampler constructor `187860` and lowerer `18b4e0` retain sequential
 units 0/1, descriptors from the exact textured compiler record and the two
 published texture wrappers. Both texture owners have zero source-known texel
@@ -66,8 +77,10 @@ varyings; `texture_head_only` deliberately refuses a sampled FIRST dependency.
 For this source shape, FIRST must publish two texture-independent requested
 streams while CONTINUE publishes position and the other three, with its
 normal input declaration, constants, packed field bindings and last-use
-ownership derived from that stage's live roots. The final field-zero position
-and the GATHER/LAST consumer routes must remain coupled to the chosen writer.
+ownership derived from that stage's live roots. Native field zero currently
+names position; the vendor control uses field one. The native position field
+and GATHER/LAST consumer routes must remain coupled to the chosen writer,
+rather than importing that source field number as a universal layout.
 Removing the existing refusal alone would leave that contract wrong.
 
 The installed terrain shader has texture-independent tangent, binormal, UV
@@ -77,7 +90,7 @@ and complete live register/mask interface still require qualification. These
 explicit-LOD controls do not authorize implicit LOD or native terrain by
 themselves. No Mesa code, cap, default gate or GPU command is changed here.
 
-Reproduce the strict check (two controls and thirteen mutations):
+Reproduce the strict check (two controls and fifteen mutations):
 
 ```sh
 <faaemu-python> tools/check-m9-vertex-sampled-position.py \
