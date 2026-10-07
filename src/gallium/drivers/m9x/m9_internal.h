@@ -294,6 +294,10 @@ struct m9_screen {
    simple_mtx_t faa_store_lock;
    struct m9_resource faa_store, faa_store_aux, faa_companion;
    uint32_t faa_store_width, faa_store_height;
+   /* Current mapped main owner only, protected by faa_store_lock. A failed
+    * post has no trustworthy final point and forbids CPU readback. */
+   uint64_t faa_store_point;
+   bool faa_store_dirty, faa_store_failed;
    /* Fixed-fragment database firmware bound through index 69. */
    uint8_t *fragment_db;
    size_t fragment_db_size;

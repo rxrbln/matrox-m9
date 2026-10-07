@@ -1228,7 +1228,8 @@ m9_destroy(struct pipe_screen *pscreen)
 /*
  * What the engine put in the multisample fragment store.  Every dword was
  * filled with its own index, so a write is identifiable wherever it landed.
- * Printed once, from whichever teardown path runs first.
+ * Report each completed current-owner use at most once. Later contexts may
+ * submit more work; context, screen and atexit reports share the same guard.
  */
 void
 m9_faa_store_report(struct m9_screen *screen)
@@ -1239,7 +1240,17 @@ m9_faa_store_report(struct m9_screen *screen)
    if (!screen)
       return;
    simple_mtx_lock(&screen->faa_store_lock);
-   if (!screen->faa.store_check || !screen->faa_store.map) {
+   if (!screen->faa.store_check || !screen->faa_store.map ||
+       !screen->faa_store_dirty) {
+      simple_mtx_unlock(&screen->faa_store_lock);
+      return;
+   }
+   /* Keep the owner stable and prevent another context from posting a new
+    * writer between the wait and the scan. WAIT_POINT covers all earlier
+    * device jobs, including uses submitted by other contexts. */
+   if (screen->faa_store_failed ||
+       m9_wait_for_point(screen, screen->faa_store_point)) {
+      fprintf(stderr, "m9x: faa store report deferred: retirement unproved\n");
       simple_mtx_unlock(&screen->faa_store_lock);
       return;
    }
@@ -1256,7 +1267,7 @@ m9_faa_store_report(struct m9_screen *screen)
       }
    fprintf(stderr, "m9x: faa store %llu of %llu dwords changed\n",
            (unsigned long long)changed, (unsigned long long)count);
-   screen->faa.store_check = false;
+   screen->faa_store_dirty = false;
    simple_mtx_unlock(&screen->faa_store_lock);
 }
 

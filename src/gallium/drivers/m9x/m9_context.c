@@ -1503,6 +1503,9 @@ m9_faa_store_grow_locked(struct m9_context *ctx)
          m9_bo_destroy(screen, &screen->faa_store_aux);
          screen->faa_store = store;
          screen->faa_store_aux = store_aux;
+         screen->faa_store_point = 0;
+         screen->faa_store_dirty = true;
+         screen->faa_store_failed = false;
          store = (struct m9_resource){0};
          store_aux = (struct m9_resource){0};
          if (screen->faa.trace)
@@ -1559,6 +1562,25 @@ m9_faa_store_bind_job_locked(struct m9_context *ctx, struct m9_draw_job *job)
          ok = m9_faa_store_ad(0, main, &job->faa.ad);
    }
    return ok;
+}
+
+/* Called under the owner lock after every real submission attempt, including
+ * split passes. A failure may already have posted work without returning its
+ * final point: never infer CPU access from an older successful submission. */
+static void
+m9_faa_store_submitted_locked(struct m9_screen *screen,
+                             const struct m9_draw_job *job,
+                             int ret, uint64_t point)
+{
+   simple_mtx_assert_locked(&screen->faa_store_lock);
+   if (!job->faa.store || (!job->faa.store_bind && job->faa.bind_index < 0))
+      return;
+   if (ret || !point || job->faa.store != screen->faa_store.handle) {
+      screen->faa_store_failed = true;
+      return;
+   }
+   screen->faa_store_point = MAX2(screen->faa_store_point, point);
+   screen->faa_store_dirty = true;
 }
 
 /* Raster constants, CPU varying views and per-pass state of a native
@@ -3161,6 +3183,8 @@ m9_submit_job(struct m9_context *ctx)
                             ctx->context_id, &point);
       if (!ret && !ctx->dry_run)
          m9_job_submitted(ctx, be_bound, point);
+      if (faa_store_locked && !ctx->dry_run)
+         m9_faa_store_submitted_locked(ctx->screen, &job, ret, point);
       /* A second raster pass inside one submission stalls the engine
        * (MEASURED): the vendor separates its passes with an engine
        * transition the kernel does not accept.  Every pass after the
@@ -3189,6 +3213,8 @@ m9_submit_job(struct m9_context *ctx)
                                ctx->context_id, &point);
          if (!ret && !ctx->dry_run)
             m9_job_submitted(ctx, be_bound, point);
+         if (faa_store_locked && !ctx->dry_run)
+            m9_faa_store_submitted_locked(ctx->screen, &job, ret, point);
       }
       m9_prof_end(M9_PROF_IOCTL, t_ioctl);
       if (m9_be_dump && ctx->be.map) {
@@ -9456,7 +9482,6 @@ m9_context_destroy(struct pipe_context *pctx)
     * of a benchmark run. */
    if (ctx->debug || debug_get_bool_option("M9X_SKIP_REPORT", false))
       m9_skip_report(ctx);
-   m9_faa_store_report(screen);
    m9_vs_texture_fini(pctx);
    if (ctx->blitter) {
       util_blitter_destroy(ctx->blitter);
@@ -9470,6 +9495,7 @@ m9_context_destroy(struct pipe_context *pctx)
    }
    if (screen->queued_submit)
       m9_wait_for_point(screen, ctx->last_point);
+   m9_faa_store_report(screen);
    if (ctx->base.stream_uploader)
       u_upload_destroy(ctx->base.stream_uploader);
    m9_weld_cache_fini(ctx);
