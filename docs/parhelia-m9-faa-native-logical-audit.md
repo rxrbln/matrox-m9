@@ -31,18 +31,19 @@ under its store lock. Missing or undersized owners refuse submission; explicit
 diagnostic overrides remain explicit. The current private180 image already
 uses the source-derived9b04 and is unaffected by that bug.
 
-## Confirmed application lifetime gap, fix pending
+## Corrected application lifetime gap
 
-The store lock currently covers growth and handle snapshot separately, then
-ends before emission and ioctl. There is no broader submission lock. The batch
+The store lock previously covered growth and handle snapshot separately, then
+ended before emission and ioctl. There was no broader submission lock. The batch
 retains integer GEM handles, not userspace ownership references; another context
-can grow the shared group and close main/aux/companion before kernel lookup.
-Companion reads also occur outside that lock. The required follow-up must keep
-the group stable through every split-pass submission and all error exits;
-kernel references then retain accepted work. The screen destructor also lacks
-an explicit companion close (closing the final DRM file eventually releases
-its handles). These are application lifetime defects, not an explanation for
-the isolated private180 black image. The follow-up is not yet integrated.
+could grow the shared group and close main/aux/companion before kernel lookup.
+Companion reads also occurred outside that lock. Mesa dbb76c8 now keeps the group
+stable from growth through binding, emission and every split-pass submission,
+releasing once on all common success/error paths. Kernel references retain
+accepted work after unlocking. FAA-off draws do not acquire this lock. The
+screen destructor explicitly closes the companion and clears its diagnostic
+atexit pointer; diagnostic map reads use the same store lock. These application
+lifetime defects do not explain the isolated private180 black image.
 
 ## Deliberately bounded diagnostic constants
 
@@ -90,6 +91,11 @@ The exercised device-global service/MMIO initialization matches native code
 so far; the unclosed cold-device path does not justify speculative toggles.
 The independent [global initialization audit](parhelia-m9-faa-global-service-prefix.md)
 checks all13 exercised prefix writes and manager-before-prefetch ordering.
+The [CPU chronology audit](parhelia-m9-faa-temporal-input-audit.md) proves all
+earlier known inputs survive in the final image; it does not prove equivalent
+ordering of GPU writes or intervening mapping operations. Kernel8d95847 adds an
+optional phased-post diagnostic to isolate collapsing source c0/120/160/180
+waits. It retains the same command bytes and actual retirement requirements.
 
 ## Validation
 
@@ -100,6 +106,8 @@ secondary byte is unchanged. Source checks and the private module build pass.
 No new hardware rendering pass is claimed for mask normalization.
 The integrated application AD/ownership fixtures pass ASAN/UBSAN and the full
 Mesa DSO builds. Public lifecycle checks reject four false observations; the
-global source checks reject four altered initialization variants. The confirmed
-shared-store race above remains open; these passing tests do not cover concurrent
-replacement between snapshot and submission.
+global source checks reject four altered initialization variants. A threaded
+actual-allocation fixture proves competing replacement remains blocked through
+emission and both submission passes, including refusal and partial-pass failure;
+the integrated Mesa DSO builds. The phased requester independently passes
+ASAN/UBSAN timeout, late-endpoint, PTE, placement and clear-length controls.
