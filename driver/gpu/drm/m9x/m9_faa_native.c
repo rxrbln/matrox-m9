@@ -229,6 +229,9 @@ struct m9_faa_owner {
 static bool m9_faa_color_four_experimental;
 module_param_named(faa_color_four_experimental,m9_faa_color_four_experimental,bool,0600);
 MODULE_PARM_DESC(faa_color_four_experimental,"Enable unqualified four-stage COLOR launcher (diagnostic only)");
+static bool m9_faa_color_observe;
+module_param_named(faa_color_observe, m9_faa_color_observe, bool, 0600);
+MODULE_PARM_DESC(faa_color_observe, "Read at most four retained COLOR intermediate records after final retirement");
 struct m9_faa_color_storage {
  u8 program[4096],primary[3696],secondary[2880];
  u8 *constants;u32 constants_bytes,geometry_bytes,geometry_offset,program_bytes,secondary_bytes,primary_length,draw_length,lock_delta;
@@ -4238,6 +4241,69 @@ int m9x_faa_graph_public_vs_unlocked_get_locked(struct m9x_device *mdev,
 #endif
 }
 
+#ifdef M9_FAA_GRAPH_INIT_CONTROL
+/* These are the actual emitted B0/B2/B8 target pairs. Resolve their tagged
+ * local addresses back to the retained owner; never publish a new CPU view.
+ * The declaration splice shifts every stage after the carry declaration. */
+static void m9_faa_color_intermediates_observe(struct m9x_device *mdev,
+					    struct m9x_faa_replay *r)
+{
+	static const struct { u32 at, owner, bytes; } target[] = {
+		{ 116, 24, 0 }, { 132, 24, 0 },
+		{ 804, 23, 64 }, { 820, 23, 64 },
+		{ 1416, 23, 64 }, { 1432, 23, 64 }, { 1448, 23, 16 },
+	};
+	struct m9_faa_color_storage *n = r->color_image;
+	u8 data[256];
+	u32 i, at, address, descriptor, offset, bytes, stride;
+	int extra;
+
+	lockdep_assert_held(&mdev->transport.lock);
+	if (!m9_faa_color_observe || !r->color_lock_retired || !n ||
+	    n->layout.program_count != 4 || n->secondary_bytes < 2688 ||
+	    n->secondary_bytes > sizeof(n->secondary) ||
+	    mdev->transport.wedged || mdev->transport.queue_count ||
+	    mdev->transport.completed_point != r->color_lock_point ||
+	    mdev->transport.generation != r->graph_generation)
+		return;
+	extra = (int)n->secondary_bytes - 2712;
+	rmb();
+	dma_rmb();
+	for (i = 0; i < ARRAY_SIZE(target); i++) {
+		struct m9_faa_owner *o = &r->owner[target[i].owner];
+
+		at = target[i].at < 576 ? target[i].at : target[i].at + extra;
+		if (at > n->secondary_bytes - 8)
+			continue;
+		address = get_unaligned_le32(n->secondary + at);
+		descriptor = get_unaligned_le32(n->secondary + at + 4);
+		if ((address & 3) != 1 || !o->vram || o->cpu ||
+		    iosys_map_is_null(&o->map) || (address & ~3u) < o->base)
+			continue;
+		offset = (address & ~3u) - o->base;
+		bytes = target[i].bytes;
+		if (!bytes) {
+			/* Packed SLOT records: sample four complete records, including
+			 * all active fields, rather than misreading them as linear vec4. */
+			if ((descriptor & 0xffff0000) != 0xee190000)
+				continue;
+			stride = descriptor & 255;
+			if (!stride || stride > 16)
+				continue;
+			bytes = 4 * stride * sizeof(u32);
+		}
+		if (offset > o->bytes || bytes > o->bytes - offset ||
+		    bytes > sizeof(data))
+			continue;
+		iosys_map_memcpy_from(data, &o->map, offset, bytes);
+		dev_info(&mdev->pdev->dev,
+			 "M9 FAA COLOR intermediate: point=%#llx owner=%u base=%#x offset=%#x secondary=%u descriptor=%#x bytes=%u hex=%*phN\n",
+			 r->color_lock_point, target[i].owner, o->base, offset,
+			 at, descriptor, bytes, bytes, data);
+	}
+}
+#endif
+
 int m9x_faa_graph_color_submit(struct m9x_device *mdev,
  struct m9_faa_graph_binding *binding,u32 generation,u64 init_point,u64 *point,bool *posted)
 {
@@ -4295,6 +4361,7 @@ int m9x_faa_graph_color_submit(struct m9x_device *mdev,
   *posted|=stage_posted;if(stage_posted){r->graph_draw_end_bytes=end;r->graph_draw_posts++;}if(ret)goto out;}
  if(stage_point!=init_point+n->lock_delta){ret=-EIO;goto out;}
  *point=stage_point;r->graph_draw_point=stage_point;r->color_lock_point=stage_point;r->color_lock_retired=true;
+ m9_faa_color_intermediates_observe(mdev,r);
  dev_info(&mdev->pdev->dev,"M9 FAA color Lock retired: init=%#llx lock=%#llx bytes=%u posts=%u program=%u secondary=%u; %u live vectors\n",init_point,*point,r->graph_draw_end_bytes,r->graph_draw_posts,n->program_bytes,n->secondary_bytes,n->layout.program_count);
 out:
  if(ret)*point=0;if(fence&&ret)dma_fence_set_error(&fence->base,ret);
