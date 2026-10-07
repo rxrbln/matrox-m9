@@ -19,6 +19,7 @@
 #define DRM_PARHELIA_M9_FAA_GRAPH_NEXT_DRAW	0x13
 #define DRM_PARHELIA_M9_FAA_GRAPH_NEXT_FINISH	0x14
 #define DRM_PARHELIA_M9_FAA_GRAPH_NEXT_LOCK	0x15
+#define DRM_PARHELIA_M9_FAA_GRAPH_PUBLIC_VS	0x16
 
 #define DRM_IOCTL_PARHELIA_M9_CREATE_BO \
 	DRM_IOWR(DRM_COMMAND_BASE + DRM_PARHELIA_M9_CREATE_BO, \
@@ -69,6 +70,7 @@ enum drm_parhelia_m9_faa_owner_role {
 #define PARHELIA_M9_FAA_NEXT_PREFIX_RETIRED 7u
 #define PARHELIA_M9_FAA_NEXT_FINISH_RETIRED 8u
 #define PARHELIA_M9_FAA_NEXT_LOCK_RETIRED 9u
+#define PARHELIA_M9_FAA_PUBLIC_VS_PREFIX_RETIRED 10u
 struct drm_parhelia_m9_faa_owner {
 	__u32 handle;
 	__u32 pad;
@@ -133,6 +135,30 @@ struct drm_parhelia_m9_faa_graph_draw_red {
 #define DRM_IOCTL_PARHELIA_M9_FAA_GRAPH_DRAW_RED \
 	DRM_IOWR(DRM_COMMAND_BASE + DRM_PARHELIA_M9_FAA_GRAPH_DRAW_RED, \
 		struct drm_parhelia_m9_faa_graph_draw_red)
+
+/* Private initial public-VS COPY preprocessing only, mutually exclusive with
+ * DRAW_RED on the same INIT receipt. Payload bytes are little-endian shader/
+ * FLOAT4 input words; there are no user, CPU or GPU addresses. Exact code,
+ * declaration and 320x240 shape stay guarded until wider qualification.
+ * State 10 proves independent preprocessing retirement, not returned DRAW,
+ * gather/position/raster, Lock or pixels. All outputs/flags/pad start zero. */
+struct drm_parhelia_m9_faa_public_vs_layout {
+	__u32 program_bytes, program_count, entry_bytes[4];
+	__u32 constants_bytes, constant_begin[4], constant_end[4];
+	__u32 geometry_bytes, vertex_offset, vertex_bytes;
+	__u32 declaration[5];
+};
+struct drm_parhelia_m9_faa_graph_public_vs {
+	__u64 graph_id, init_point, prefix_point;
+	__u32 generation, flags, state, pad;
+	struct drm_parhelia_m9_faa_public_vs_layout layout;
+	__u8 program[328];
+	__u8 constants[152];
+	__u8 geometry[224];
+};
+#define DRM_IOCTL_PARHELIA_M9_FAA_GRAPH_PUBLIC_VS \
+	DRM_IOWR(DRM_COMMAND_BASE + DRM_PARHELIA_M9_FAA_GRAPH_PUBLIC_VS, \
+		 struct drm_parhelia_m9_faa_graph_public_vs)
 
 /*
  * M9 command and staging objects are immutable DMA32 allocations unless

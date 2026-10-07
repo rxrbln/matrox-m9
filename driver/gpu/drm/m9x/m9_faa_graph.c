@@ -10,6 +10,7 @@
 #include <drm/drm_gem.h>
 
 #include "m9_drv.h"
+#include "m9_faa_graph_public_vs_encode.h"
 
 /* Source-qualified prepared180 shape. These are allocation extents, not
  * permission to clear opaque tails or evidence of GPU initialization. */
@@ -852,6 +853,100 @@ int m9x_faa_graph_draw_red_ioctl(struct drm_device *drm, void *data,
 				args->flags & PARHELIA_M9_FAA_DRAW_WITH_FINISH ?
 				PARHELIA_M9_FAA_DRAW_FINISH_RETIRED :
 				PARHELIA_M9_FAA_DRAW_PREFIX_RETIRED;
+		}
+	}
+out_exec:
+	drm_exec_fini(&exec);
+out_state:
+	mutex_unlock(&state->lock);
+	m9x_faa_graph_binding_put(binding);
+out_dev:
+	drm_dev_exit(idx);
+	return ret;
+}
+
+int m9x_faa_graph_public_vs_ioctl(struct drm_device *drm, void *data,
+				 struct drm_file *file)
+{
+	struct drm_parhelia_m9_faa_graph_public_vs *args = data;
+	struct m9x_device *mdev = to_m9x(drm);
+	struct m9_faa_file *state = file->driver_priv;
+	struct m9_faa_graph_binding *binding;
+	struct drm_exec exec;
+	u32 address[PARHELIA_M9_FAA_GRAPH_OWNERS];
+	u64 point = 0;
+	u32 i;
+	bool posted = false;
+	struct m9x_faa_public_vs_input input;
+	int idx, ret;
+
+	BUILD_BUG_ON(sizeof(args->layout) != sizeof(input.layout));
+	if (!state || !args->graph_id || !args->init_point || args->flags ||
+	    args->prefix_point || args->state || args->pad)
+		return -EINVAL;
+	input = (struct m9x_faa_public_vs_input) {
+		.program = args->program, .constants = args->constants,
+		.geometry = args->geometry,
+		.program_bytes = sizeof(args->program),
+		.constants_bytes = sizeof(args->constants),
+		.geometry_bytes = sizeof(args->geometry),
+	};
+	memcpy(&input.layout, &args->layout, sizeof(input.layout));
+	if (!drm_dev_enter(drm, &idx))
+		return -ENODEV;
+	ret = m9x_faa_graph_continuation_acquire(mdev, file,
+			args->graph_id, args->generation, args->init_point,
+			&binding);
+	if (ret)
+		goto out_dev;
+	mutex_lock(&state->lock);
+	if (state->graph != binding->graph ||
+	    !m9_faa_graph_continuation_matches(state->graph,
+		args->graph_id, args->generation, args->init_point)) {
+		ret = -ENOENT;
+		goto out_state;
+	}
+	/* Firmware, typed encoding and the private local TTM reservation
+	 * finish before taking any of the six caller BO reservations. The
+	 * two SYSTEM maps remain exactly those retained by INIT. */
+	ret = m9x_faa_graph_public_vs_prepare(mdev, binding, args->generation,
+					    args->init_point, &input);
+	if (ret)
+		goto out_state;
+	drm_exec_init(&exec, DRM_EXEC_INTERRUPTIBLE_WAIT |
+		      DRM_EXEC_IGNORE_DUPLICATES, PARHELIA_M9_FAA_GRAPH_OWNERS);
+	drm_exec_until_all_locked(&exec) {
+		for (i = 0; i < PARHELIA_M9_FAA_GRAPH_OWNERS; i++) {
+			ret = drm_exec_prepare_obj(&exec,
+				m9x_faa_graph_binding_owner(binding, i), 1);
+			drm_exec_retry_on_contention(&exec);
+			if (ret)
+				goto out_exec;
+		}
+	}
+	ret = m9_faa_graph_live_addresses(mdev, binding->graph, address);
+	if (ret)
+		goto out_exec;
+	if (memcmp(address, binding->address, sizeof(address))) {
+		ret = -ESTALE;
+		goto out_exec;
+	}
+	for (i = 0; i < PARHELIA_M9_FAA_GRAPH_OWNERS; i++) {
+		if (!dma_resv_test_signaled(
+			m9x_faa_graph_binding_owner(binding, i)->resv,
+			DMA_RESV_USAGE_READ)) {
+			ret = -EBUSY;
+			goto out_exec;
+		}
+	}
+	ret = m9x_faa_graph_public_vs_submit(mdev, binding, args->generation,
+					 args->init_point, &point, &posted);
+	if (!ret) {
+		if (point != args->init_point + 0x50)
+			ret = -EIO;
+		else {
+			args->prefix_point = point;
+			args->state = PARHELIA_M9_FAA_PUBLIC_VS_PREFIX_RETIRED;
 		}
 	}
 out_exec:

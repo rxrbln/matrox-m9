@@ -28,6 +28,7 @@
 #include "m9_reg.h"
 #include "m9_faa_output.h"
 #include "m9_faa_graph_draw_encode.h"
+#include "m9_faa_graph_public_vs_encode.h"
 #include "m9_faa_graph_unlock_encode.h"
 #include "m9_faa_graph_next_encode.h"
 #include "m9_faa_graph_next_finish_encode.h"
@@ -220,6 +221,13 @@ struct m9_faa_owner {
 	struct drm_mm_node system_node;
 };
 #ifdef M9_FAA_GRAPH_INIT_CONTROL
+struct m9_faa_public_vs_storage {
+	u8 program[M9_FAA_PUBLIC_VS_PROGRAM_BYTES];
+	u8 constants[M9_FAA_PUBLIC_VS_CONSTANT_EXTENT];
+	u8 secondary[M9_FAA_PUBLIC_VS_SECONDARY_BYTES];
+	u8 primary[M9_FAA_PUBLIC_VS_PRIMARY_BYTES];
+	struct m9x_faa_public_vs_endpoints ends;
+};
 struct m9_faa_next_finish_storage {
 	u8 primary[M9_FAA_NEXT_FINISH_PRIMARY_BYTES];
 	u8 secondary[M9_FAA_NEXT_FINISH_SECONDARY_BYTES];
@@ -233,9 +241,12 @@ struct m9_faa_next_storage {
 struct m9x_faa_replay {
 	struct m9_faa_owner owner[ARRAY_SIZE(m9_faa_owner_specs)];
 #ifdef M9_FAA_GRAPH_INIT_CONTROL
-	/* Allocated only after the real INIT receipt. Source indices 26/28/29
-	 * are new; original command 26 and startup 27 stay in owner[]. */
+	/* Program26 is allocated after INIT; SYSTEM constants28/secondary29
+	 * are mapped before INIT and remain retained. Original command26
+	 * and startup27 stay in owner[]. */
 	struct m9_faa_owner draw_owner[3];
+	struct m9_faa_public_vs_storage *public_vs_image;
+	bool public_vs_payload_ready, public_vs_prefix_retired;
 	struct {
 		u8 program[M9_FAA_DRAW_PROGRAM_BYTES];
 		u8 constants[M9_FAA_DRAW_CONSTANTS_BYTES];
@@ -336,6 +347,9 @@ MODULE_PARM_DESC(m9_faa_phased_submit,
 	"Wait at source retirement boundaries in the private phased FAA diagnostic");
 MODULE_FIRMWARE(M9_FAA_INPUT_FIRMWARE);
 #ifdef M9_FAA_GRAPH_INIT_CONTROL
+#define M9_FAA_GRAPH_PUBLIC_VS_FIRMWARE \
+	"m9x/faa-graph-public-vs-first-template.bin"
+MODULE_FIRMWARE(M9_FAA_GRAPH_PUBLIC_VS_FIRMWARE);
 #define M9_FAA_GRAPH_DRAW_INPUT_FIRMWARE \
 	"m9x/faa-graph-post-init-known-inputs.bin"
 MODULE_FIRMWARE(M9_FAA_GRAPH_DRAW_INPUT_FIRMWARE);
@@ -800,6 +814,7 @@ static bool m9_faa_release(struct m9x_device *mdev, struct m9x_faa_replay *r)
 		}
 	}
 	kfree(r->draw_image);
+	kfree(r->public_vs_image);
 	kfree(r->next_image);
 	kfree(r->next_finish_image);
 	kfree(r->next_lock_image);
@@ -956,6 +971,131 @@ put:
 /* Source owner28/29 are mapped during INIT preparation and remain retained.
  * Only program26 is allocated after INIT. Its TTM reservation must finish
  * outside TRANSPORT and before the six borrowed BO reservations. */
+/* New local code is allocated outside TRANSPORT and all six graph BO
+ * reservations. Invalid typed inputs leave the original INIT claim reusable. */
+int m9x_faa_graph_public_vs_prepare(struct m9x_device *mdev,
+		struct m9_faa_graph_binding *binding, u32 generation,
+		u64 init_point, const struct m9x_faa_public_vs_input *input)
+{
+#ifdef M9_FAA_GRAPH_INIT_CONTROL
+	static const struct m9_faa_owner_spec program_spec =
+		{ 0, 0x1080, true, false, false, 0 };
+	struct m9x_transport *t = &mdev->transport;
+	struct m9x_faa_replay *r;
+	struct m9_faa_owner program = { };
+	struct m9_faa_public_vs_storage *storage = NULL;
+	struct m9x_faa_graph_draw_owner owner[M9_FAA_DRAW_SOURCE_OWNERS];
+	struct m9x_faa_public_vs_image image;
+	const struct firmware *fw = NULL;
+	u32 i;
+	int ret;
+
+	if (!binding || !input)
+		return -EINVAL;
+	ret = request_firmware(&fw, M9_FAA_GRAPH_PUBLIC_VS_FIRMWARE,
+			       &mdev->pdev->dev);
+	if (ret)
+		return ret;
+	if (!m9x_faa_public_vs_template_valid(fw->data, fw->size)) {
+		ret = -EINVAL;
+		goto release;
+	}
+	storage = kzalloc(sizeof(*storage), GFP_KERNEL);
+	if (!storage) {
+		ret = -ENOMEM;
+		goto release;
+	}
+	ret = m9_faa_allocate(mdev, &program, &program_spec, false);
+	if (ret)
+		goto release;
+	mutex_lock(&t->lock);
+	ret = m9_faa_graph_continuation_state(t, generation, init_point);
+	if (ret)
+		goto unlock_uninstalled;
+	r = t->faa;
+	if (r->graph_binding != binding || r->draw_owner[0].vram ||
+	    r->public_vs_image || r->draw_image) {
+		ret = -ESTALE;
+		goto unlock_uninstalled;
+	}
+	for (i = 1; i < ARRAY_SIZE(r->draw_owner); i++) {
+		struct m9_faa_owner *o = &r->draw_owner[i];
+
+		if (!o->cpu || !drm_mm_node_allocated(&o->system_node) ||
+		    o->system_node.start != o->base) {
+			ret = -ESTALE;
+			goto unlock_uninstalled;
+		}
+	}
+	for (i = 0; i < M9_FAA_DRAW_SOURCE_OWNERS; i++) {
+		struct m9_faa_owner *o;
+
+		switch (i) {
+		case 26: o = &program; break;
+		case 27: o = &r->owner[26]; break;
+		case 28: o = &r->draw_owner[1]; break;
+		case 29: o = &r->draw_owner[2]; break;
+		case 30: o = &r->owner[27]; break;
+		default: o = &r->owner[i]; break;
+		}
+		owner[i].base = o->base;
+		owner[i].bytes = o->bytes;
+	}
+	image = (struct m9x_faa_public_vs_image) {
+		.program = storage->program, .constants = storage->constants,
+		.secondary = storage->secondary, .primary = storage->primary,
+		.program_bytes = sizeof(storage->program),
+		.constants_bytes = sizeof(storage->constants),
+		.secondary_bytes = sizeof(storage->secondary),
+		.primary_bytes = sizeof(storage->primary),
+	};
+	/* Validate/encode before claiming INIT or publishing this local mapping. */
+	ret = m9x_faa_public_vs_encode(fw->data, fw->size, owner,
+			r->primary_bytes, init_point, input, &image, &storage->ends);
+	if (ret)
+		goto unlock_uninstalled;
+	ret = m9x_faa_graph_draw_claim_locked(mdev, binding, generation, init_point);
+	if (ret)
+		goto unlock_uninstalled;
+	r->draw_owner[0] = program;
+	memset(&program, 0, sizeof(program));
+	r->public_vs_image = storage;
+	storage = NULL;
+	/* This class-1 identity publication is distinct from the CPU-root map
+	 * after314. Once attempted, all private owners remain with the replay. */
+	ret = m9x_address_local_prepare(mdev, r->draw_owner[0].base,
+					 r->draw_owner[0].bytes);
+	if (ret) {
+		if (!t->wedged) {
+			t->wedged = true;
+			t->generation++;
+		}
+	} else {
+		r->public_vs_payload_ready = true;
+	}
+	mutex_unlock(&t->lock);
+	goto release;
+unlock_uninstalled:
+	mutex_unlock(&t->lock);
+	/* This allocation was never installed or made GPU reachable. TTM
+	 * cleanup must stay outside TRANSPORT and caller BO reservations. */
+	if (WARN_ON(ttm_bo_reserve(&program.vram->bo, false, false, NULL))) {
+		ret = -EIO;
+		goto release;
+	}
+	drm_gem_vram_vunmap(program.vram, &program.map);
+	ttm_bo_unreserve(&program.vram->bo);
+	m9x_vram_unpin(program.vram);
+	drm_gem_vram_put(program.vram);
+release:
+	kfree(storage);
+	release_firmware(fw);
+	return ret;
+#else
+	return -EOPNOTSUPP;
+#endif
+}
+
 int m9x_faa_graph_draw_prepare(struct m9x_device *mdev,
 		struct m9_faa_graph_binding *binding, u32 generation,
 		u64 init_point, bool with_finish, bool with_lock)
@@ -3017,6 +3157,194 @@ int m9x_faa_graph_draw_submit(struct m9x_device *mdev,
 			 "M9 FAA normal Lock prefix retired: point=%#llx bytes=%u posts=%u; returned Lock and pixels unproved\n",
 			 *point, r->graph_draw_end_bytes, r->graph_draw_posts);
 	}
+	dma_rmb();
+	dev_info(&mdev->pdev->dev,
+		 "M9 FAA retired counters: +00=%#x/%#x +20=%#x/%#x +40=%#x/%#x +60=%#x/%#x\n",
+		 READ_ONCE(((u32 *)t->fence_cpu)[0]),
+		 READ_ONCE(((u32 *)t->fence_cpu)[1]),
+		 READ_ONCE(((u32 *)t->fence_cpu)[0x20 / 4]),
+		 READ_ONCE(((u32 *)t->fence_cpu)[0x24 / 4]),
+		 READ_ONCE(((u32 *)t->fence_cpu)[0x40 / 4]),
+		 READ_ONCE(((u32 *)t->fence_cpu)[0x44 / 4]),
+		 READ_ONCE(((u32 *)t->fence_cpu)[0x60 / 4]),
+		 READ_ONCE(((u32 *)t->fence_cpu)[0x64 / 4]));
+out:
+	if (fence && ret)
+		dma_fence_set_error(&fence->base, ret);
+	if (ret && *posted) {
+		t->wedged = true;
+		t->generation++;
+		WARN_ON(t->quarantined_fence);
+		t->quarantined_fence = fence;
+		fence = NULL;
+	} else if (fence) {
+		dma_fence_signal(&fence->base);
+	}
+	if (fence)
+		dma_fence_put(&fence->base);
+	mutex_unlock(&t->lock);
+	return ret;
+#else
+	return -EOPNOTSUPP;
+#endif
+}
+
+#ifdef M9_FAA_GRAPH_INIT_CONTROL
+/* The separately typed first public-VS prefix cannot authorize the fixed-red
+ * raster/Lock path. The original source f0 wait remains unread. */
+static int m9_faa_public_vs_state(const struct m9x_transport *t,
+		struct m9_faa_graph_binding *binding, u32 generation, u64 init_point)
+{
+	const struct m9x_faa_replay *r = t->faa;
+
+	if (!r || !binding || r->graph_binding != binding ||
+	    r->graph_generation != generation || t->generation != generation ||
+	    r->observation_generation != generation ||
+	    !r->prepared || !r->attempted || !r->graph_draw_claimed ||
+	    !r->public_vs_payload_ready || r->public_vs_prefix_retired ||
+	    !r->public_vs_image || r->draw_image || r->graph_draw_payload_ready ||
+	    r->graph_draw_posts || r->graph_draw_point || r->graph_preparing ||
+	    r->graph_draw_end_bytes != r->primary_bytes ||
+	    !r->observation_retired || r->observation_point != init_point ||
+	    t->submitted_point != init_point || t->completed_point != init_point ||
+	    t->next_fence != lower_32_bits(init_point) + 0x10 ||
+	    lower_32_bits(init_point) > U32_MAX - 0x60 ||
+	    !t->faa_virtual_primary || !t->faa_source_context ||
+	    !t->transport_armed || !t->bus_master_enabled ||
+	    !t->engine_transitioned || !t->restore_ready || !t->fence_cpu ||
+	    t->wedged || t->async_stop || t->async_pending || t->queue_count)
+		return -ESTALE;
+	if (r->public_vs_image->ends.first_end != r->primary_bytes + 64 ||
+	    r->public_vs_image->ends.final_end != r->primary_bytes + 112 ||
+	    r->public_vs_image->ends.original_wait != init_point + 0x40 ||
+	    r->public_vs_image->ends.independent_finish != init_point + 0x50)
+		return -ESTALE;
+	return 0;
+}
+#endif
+
+int m9x_faa_graph_public_vs_submit(struct m9x_device *mdev,
+		struct m9_faa_graph_binding *binding, u32 generation,
+		u64 init_point, u64 *point, bool *posted)
+{
+#ifdef M9_FAA_GRAPH_INIT_CONTROL
+	struct m9x_transport *t = &mdev->transport;
+	struct m9x_faa_replay *r;
+	struct m9_faa_public_vs_storage *image;
+	struct m9_faa_owner *primary, *program, *constants, *secondary;
+	struct m9x_fence *fence = NULL;
+	u8 observed[M9_FAA_PUBLIC_VS_PROGRAM_BYTES];
+	u32 page, pte, i, target;
+	u64 stage_point;
+	bool stage_posted;
+	int ret;
+
+	if (!point || !posted)
+		return -EINVAL;
+	*point = 0;
+	*posted = false;
+	mutex_lock(&t->lock);
+	ret = m9_faa_public_vs_state(t, binding, generation, init_point);
+	if (ret)
+		goto out;
+	r = t->faa;
+	image = r->public_vs_image;
+	primary = &r->owner[M9_FAA_PRIMARY_OWNER];
+	program = &r->draw_owner[0];
+	constants = &r->draw_owner[1];
+	secondary = &r->draw_owner[2];
+	if (!primary->cpu || !drm_mm_node_allocated(&primary->system_node) ||
+	    primary->system_node.start != primary->base ||
+	    image->ends.final_end > primary->bytes || !program->vram ||
+	    program->bytes < M9_FAA_PUBLIC_VS_PROGRAM_BYTES ||
+	    !constants->cpu || !secondary->cpu ||
+	    constants->bytes < M9_FAA_PUBLIC_VS_CONSTANT_EXTENT ||
+	    secondary->bytes < M9_FAA_PUBLIC_VS_SECONDARY_BYTES ||
+	    !drm_mm_node_allocated(&constants->system_node) ||
+	    !drm_mm_node_allocated(&secondary->system_node) ||
+	    constants->system_node.start != constants->base ||
+	    secondary->system_node.start != secondary->base) {
+		ret = -ESTALE;
+		goto out;
+	}
+	/* Check both retained flags30 SYSTEM maps before CPU uploads or posts. */
+	for (i = 1; i < ARRAY_SIZE(r->draw_owner); i++) {
+		struct m9_faa_owner *o = &r->draw_owner[i];
+
+		for (page = 0; page < o->bytes / PAGE_SIZE; page++) {
+			ret = m9x_address_read_pte(mdev, o->base + page * PAGE_SIZE, &pte);
+			if (ret)
+				goto out;
+			if (pte != (m9x_address_pte_word(o->dma + page * PAGE_SIZE) | 1u)) {
+				ret = -ESTALE;
+				goto out;
+			}
+		}
+	}
+	ret = m9x_address_check_local_identity(mdev, program->base, program->bytes);
+	if (ret)
+		goto out;
+	target = lower_32_bits(image->ends.independent_finish);
+	fence = m9x_fence_create_target_locked(mdev, target);
+	if (!fence) {
+		ret = -ENOMEM;
+		goto out;
+	}
+	/* Caller reserved all six BOs with one fence slot each. Every posted
+	 * part has this final WRITE fence; posted errors quarantine it. */
+	for (i = 0; i < PARHELIA_M9_FAA_GRAPH_OWNERS; i++)
+		dma_resv_add_fence(m9x_faa_graph_binding_owner(binding, i)->resv,
+				   &fence->base, DMA_RESV_USAGE_WRITE);
+	m9x_write(mdev, M9_REG_FRONTEND_KICK, 1);
+	ret = m9x_address_cpu_local_prepare(mdev, program->base, program->bytes);
+	if (ret)
+		goto out;
+	iosys_map_memcpy_to(&program->map, 0, image->program, sizeof(image->program));
+	wmb();
+	m9x_write(mdev, M9_REG_FRONTEND_STATE, 0);
+	m9x_read(mdev, M9_REG_FRONTEND_STATE);
+	iosys_map_memcpy_from(observed, &program->map, 0, sizeof(observed));
+	if (memcmp(observed, image->program, sizeof(observed))) {
+		ret = -EIO;
+		goto out;
+	}
+	/* Source-known disjoint spans only; never initialize [152,256). */
+	memcpy(constants->cpu, image->constants, M9_FAA_PUBLIC_VS_CONSTANT_BYTES);
+	memcpy((u8 *)constants->cpu + 256, image->constants + 256,
+	       M9_FAA_PUBLIC_VS_GEOMETRY_BYTES);
+	memcpy((u8 *)primary->cpu + r->primary_bytes, image->primary, 64);
+	wmb();
+	for (i = 0; i < 3; i++) {
+		u32 end = i == 2 ? image->ends.final_end : image->ends.first_end;
+
+		if (i == 2) {
+			memcpy(secondary->cpu, image->secondary, sizeof(image->secondary));
+			memcpy((u8 *)primary->cpu + r->primary_bytes + 64,
+			       image->primary + 64, sizeof(image->primary) - 64);
+			wmb();
+		}
+		ret = m9x_post_faa_graph_end_locked(mdev, &primary->system_node,
+			primary->dma, r->graph_draw_end_bytes, end, i == 1,
+			i == 2 ? target : 0, &stage_point, &stage_posted);
+		*posted |= stage_posted;
+		if (stage_posted) {
+			r->graph_draw_end_bytes = end;
+			r->graph_draw_posts++;
+		}
+		if (ret)
+			goto out;
+	}
+	if (stage_point != image->ends.independent_finish) {
+		ret = -EIO;
+		goto out;
+	}
+	*point = stage_point;
+	r->graph_draw_point = stage_point;
+	r->public_vs_prefix_retired = true;
+	dev_info(&mdev->pdev->dev,
+		 "M9 FAA public VS prefix retired: init=%#llx point=%#llx bytes=%u posts=%u program=%u; original DRAW unreturned, no pixels claimed\n",
+		 init_point, *point, r->graph_draw_end_bytes, r->graph_draw_posts,
+		 M9_FAA_PUBLIC_VS_PROGRAM_BYTES);
 	dma_rmb();
 	dev_info(&mdev->pdev->dev,
 		 "M9 FAA retired counters: +00=%#x/%#x +20=%#x/%#x +40=%#x/%#x +60=%#x/%#x\n",
