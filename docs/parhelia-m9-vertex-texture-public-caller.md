@@ -1,8 +1,8 @@
 # Public vertex texture caller and retained stage inputs
 
-The real public VS3 TEXLDL caller now reaches a genuinely allocated vertex
-texture, sampler lowering, native program variants and complete CPU command
-inputs. This is stronger than the earlier null-resource metadata witness. It
+The corrected public VS3 TEXLDL caller joins caller UV bytes to emitted
+texture-input attribute 5, a genuinely allocated vertex texture, sampler
+lowering, native program variants and complete direct-UV CPU command inputs. This is stronger than the earlier null-resource metadata witness. It
 is **not** a Mesa vertex-fetch implementation or hardware/pixel result.
 Native terrain remains unsupported pending that implementation and qualification.
 
@@ -14,11 +14,34 @@ helper is replaced. No texture contents, sampled values, producer results or
 GPU completion replies are supplied. Actual final-queue preparation stops before
 its first GPU-written status read. The resource's unknown bytes stay unknown.
 
-The caller uses a FLOAT4 position plus FLOAT4 UV declaration; UV.z/w are zero,
+The caller uses classic FLOAT4 position register 0 and FLOAT4 UV register 7;
+the VS3 DCL declares POSITION0 on v0 and TEXCOORD0 on v1. UV.z/w are zero,
 so standard VS3 TEXLDL explicitly selects LOD zero. Its public VS copies
 position, samples s0, and copies the sample to color. The public PS2 shader only
 copies incoming color. There is no pixel texture instruction or fixed-stage
 texture bind that could account for the observed sampler relocation.
+
+## Declaration correction and observer scope
+
+The original `f32595e1` captures used legacy register 1 for UV, which maps to
+BLENDWEIGHT0 rather than the VS3 shader's TEXCOORD0. Their genuine resource,
+sampler and launcher observations remain useful, but they did **not** prove
+caller UV binding. Those original bytes and their caller are retained under
+`semantic-mismatch-*` names as controls, including their default-coordinate
+word `00500b24`. They are not implementation or UV-input proofs.
+
+The actual parser at `10b7b0/10b7b8` reads two **bytes** per legacy register
+from `1f66ac`: register 0 maps `(POSITION,0)`, register 1 `(BLENDWEIGHT,0)`,
+and register 7 `(TEXCOORD,0)`. The corrected observer reads these actual table
+bytes; the checker joins register 7's map to shader DCL semantic 5 and the
+actual producer declaration `00100d88,001006b6,04500688,00004b08`. Its third
+word selects caller DWORD 4 (UV at byte 16), attribute 5 and the XY components.
+Thus the proof depends on real emitted words as well as public tokens.
+
+All instruction observers, including the sampler lowerer's return observer,
+are installed before bootstrap execution. A global dispatcher observes the
+real return PC; no late hook can silently miss an already translated Unicorn
+block. Its observed return and after-state are required by the checker.
 
 ## Public resource and shader joins
 
@@ -79,11 +102,14 @@ working sampler/backend states, CPU-written DMA chronology, sparse known
 resource inputs, PTE/alias checks and relocation ownership candidates. It
 keeps namespace ambiguity explicit rather than selecting an invented domain.
 
-The retained `transformed-uv-caller.py` / `transformed-uv.json.gz` source control that adds a standard VS3 ADD to UV before
-TEXLDL produces variants 8/2/28 and three real launcher calls. Its first 2-slot
+The corrected `--coordinate-offset` / `transformed-uv.json.gz` control adds
+a standard VS3 ADD to UV before TEXLDL and produces variants 8/2/28 and
+three real launcher calls in producer, texture-consumer, raster order. Its first 2-slot
 producer has no texture input group; the next 28-slot producer has one. The
-original two-launch exporter refuses that unfamiliar sequence instead of
-exporting it as the direct-UV contract. This extra-coordinate-producer path
+original two-launch exporter refuses unjoined payload key `248f2` with a
+retained KeyError boundary instead of exporting this sequence as a complete
+three-stage contract. The actual CPU draw caller and real queue preparation
+reach this boundary; no failure or success of GPU execution is inferred. This extra-coordinate-producer path
 remains implementation work. Direct-UV support must refuse such dependencies
 until that producer and its additional binding contract are implemented.
 
@@ -104,12 +130,14 @@ hashes are included in each proof. Example:
   --texture-size 64 --out /tmp/public-vs64.json
 python tools/check-m9-vertex-texture-public.py \
   captures/m9x-vertex-texture-public-20261007/public-vs64.json.gz \
-  captures/m9x-vertex-texture-public-20261007/public-vs128.json.gz
+  captures/m9x-vertex-texture-public-20261007/public-vs128.json.gz \
+  captures/m9x-vertex-texture-public-20261007/transformed-uv.json.gz
 ```
 
-Run the caller separately with size 128 for the second control. The independent
+Run the caller separately with size 128 for the second control, and with
+`--coordinate-offset` at size 64 for the transformed-coordinate control. The independent
 checker validates public token/declaration sizes, actual sampler owner and
 selector 2 layout derivation, unknown texels, bounded compiled-code owners and
-retained C2 entries. It rejects wrong vertex sampler owner, false known texel
-and code outside its retained owner. These are CPU proof negative controls;
+retained C2 entries. It rejects the wrong legacy semantic, default emitted UV coordinates, wrong
+vertex sampler owner, false known texel and code outside its retained owner. These are CPU proof negative controls;
 no pixels or successful native hardware fetch are inferred.
