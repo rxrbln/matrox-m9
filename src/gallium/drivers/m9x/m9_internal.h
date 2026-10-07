@@ -379,6 +379,13 @@ struct m9_fs_state;
 struct m9_fs_variant;
 struct m9_velems;
 struct m9_vs_textures;
+struct m9_faa_application_upload;
+struct m9_context;
+bool m9_context_faa_build_draw(struct m9_context *ctx,
+                              const struct pipe_draw_info *info,
+                              const struct pipe_draw_start_count_bias *draw,
+                              struct m9_faa_application_upload *upload,
+                              const char **reason);
 
 /* Pass-level raster state shared by every draw of one two-pass job. */
 struct m9_job_key {

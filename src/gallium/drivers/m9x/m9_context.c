@@ -30,6 +30,7 @@
 #include "m9_specialise.h"
 #include "m9_internal.h"
 #include "m9_indirect.h"
+#include "m9_faa_application.h"
 #include "m9_vs_texture.h"
 #include "m9_weld.h"
 #include "m9_vs_source.h"
@@ -9085,6 +9086,135 @@ m9_vs_spec_for(struct m9_vs_state *vs, const uint32_t *values,
    }
    util_dynarray_append_typed(&vs->specs, struct m9_vs_spec *, spec);
    return spec;
+}
+
+/* This bridge owns a complete live upload but submits nothing. A typed FAA
+ * draw transaction must admit upload.state before binding its GPU program.
+ * CPU-only Gallium buffers and caller user pointers are snapshotted while
+ * bound; borrowed NIR/maps/CB pointers never escape this call. */
+bool
+m9_context_faa_build_draw(struct m9_context *ctx,
+                          const struct pipe_draw_info *info,
+                          const struct pipe_draw_start_count_bias *draw,
+                          struct m9_faa_application_upload *upload,
+                          const char **reason)
+{
+   const char *why = "FAA application draw has no retained live shader/state";
+   nir_shader *vs = NULL;
+   struct m9_vs_outputs linkage = {.count = 1};
+   const uint8_t *maps[PIPE_MAX_ATTRIBS] = {0};
+   unsigned sizes[PIPE_MAX_ATTRIBS] = {0};
+   struct m9_faa_application_draw source = {0};
+   if (!ctx || ctx->lost || !info || !draw || !upload || upload->shader.storage ||
+       !ctx->vs || !ctx->vs->src || !ctx->fs || !ctx->fs->nir ||
+       !ctx->velems || !ctx->rasterizer || !ctx->dsa ||
+       ctx->color_count != 1 || !ctx->faa_surface.graph.initialized ||
+       !ctx->faa_surface.graph.prepared || !ctx->faa_surface.graph.prepared_id ||
+       !ctx->faa_surface.graph.init_point || (ctx->faa_surface.graph.init_point & 15) ||
+       ctx->faa_surface.destination != ctx->color ||
+       ctx->faa_surface.destination_offset != ctx->color_offset ||
+       ctx->faa_surface.width != ctx->framebuffer_width ||
+       ctx->faa_surface.height != ctx->framebuffer_height)
+      goto fail;
+   const struct pipe_rasterizer_state *r = ctx->rasterizer;
+   const struct pipe_depth_stencil_alpha_state *z = ctx->dsa;
+   if (ctx->query_active || ctx->query_begin || ctx->query_end ||
+       z->stencil[0].enabled || z->stencil[1].enabled || z->alpha_enabled ||
+       (ctx->blend && (ctx->blend->logicop_enable ||
+                      ctx->blend->rt[0].blend_enable ||
+                      ctx->blend->rt[0].colormask != PIPE_MASK_RGBA)) ||
+       r->rasterizer_discard || r->clip_plane_enable || r->clip_halfz ||
+       !r->depth_clip_near || !r->depth_clip_far || r->light_twoside ||
+       r->offset_tri || r->poly_stipple_enable ||
+       r->fill_front != PIPE_POLYGON_MODE_FILL ||
+       r->fill_back != PIPE_POLYGON_MODE_FILL) {
+      why = "FAA application raster/depth/blend effects need a typed draw contract";
+      goto fail;
+   }
+   m9_context_sync(ctx); /* Consume earlier deferred CPU reads before snapshot. */
+   if (ctx->lost) { why = "FAA application context was lost while flushing"; goto fail; }
+   source.info = info;
+   source.draw = draw;
+   source.fs = ctx->fs->nir;
+   source.state = (struct m9_faa_application_state){
+      .width = ctx->framebuffer_width, .height = ctx->framebuffer_height,
+      .viewport = ctx->viewport, .scissor = ctx->scissor,
+      .scissor_enabled = r->scissor, .depth_enabled = z->depth_enabled,
+      .depth_write = z->depth_writemask, .depth_func = z->depth_func,
+      .cull_face = r->cull_face, .front_ccw = r->front_ccw,
+      .flatshade = r->flatshade, .flatshade_first = r->flatshade_first,
+   };
+   for (unsigned i = 0; i < ctx->num_vertex_buffers; i++) {
+      if (i >= PIPE_MAX_ATTRIBS) goto fail;
+      const struct pipe_vertex_buffer *b = &ctx->vertex_buffers[i];
+      if (b->is_user_buffer) {
+         maps[i] = b->buffer.user;
+         sizes[i] = UINT_MAX; /* Gallium caller owns the user-pointer extent. */
+      } else if (b->buffer.resource) {
+         const struct m9_resource *owner = m9_res(b->buffer.resource);
+         if (b->buffer.resource->target != PIPE_BUFFER || owner->handle ||
+             owner->size > UINT_MAX) {
+            why = "FAA input snapshot requires a CPU-only Gallium buffer";
+            goto fail;
+         }
+         maps[i] = owner->map;
+         sizes[i] = MIN2(owner->size, b->buffer.resource->width0);
+      }
+   }
+   const struct pipe_constant_buffer *cb = &ctx->vs_constants[0];
+   const uint8_t *data = cb->user_buffer;
+   if (!data && cb->buffer) {
+      const struct m9_resource *owner = m9_res(cb->buffer);
+      uint64_t available = MIN2(owner->size, cb->buffer->width0);
+      if (cb->buffer->target != PIPE_BUFFER || owner->handle ||
+          cb->buffer_offset > available ||
+          cb->buffer_size > available - cb->buffer_offset) {
+         why = "FAA constant snapshot leaves its CPU-only owner";
+         goto fail;
+      }
+      data = owner->map;
+   }
+   if (data) data += cb->buffer_offset;
+   else if (cb->buffer_size) goto fail;
+   if (info->index_size) {
+      if (info->has_user_indices) {
+         source.index_map = info->index.user;
+         source.index_bytes = SIZE_MAX;
+      } else if (info->index.resource) {
+         const struct m9_resource *owner = m9_res(info->index.resource);
+         if (info->index.resource->target != PIPE_BUFFER || owner->handle) {
+            why = "FAA index snapshot requires a CPU-only Gallium buffer";
+            goto fail;
+         }
+         source.index_map = owner->map;
+         source.index_bytes = MIN2(owner->size, info->index.resource->width0);
+      }
+   }
+   /* Ordinary admission may rewrite its own retained specialized graph.
+    * Start from original lowered VS NIR and actual inline values instead. */
+   vs = nir_shader_clone(NULL, ctx->vs->src);
+   if (!vs) { why = "FAA live vertex clone allocation failed"; goto fail; }
+   if (ctx->vs->inline_count) m9_nir_inline_uniforms(vs, ctx->vs_inline);
+   linkage.stream[0].location = VARYING_SLOT_COL0;
+   source.live = (struct m9_faa_live_gl){
+      .vs = vs, .linkage = &linkage, .cb0 = data,
+      .cb0_bytes = cb->buffer_size, .elements = ctx->velems->elements,
+      .element_count = ctx->velems->count, .buffers = ctx->vertex_buffers,
+      .buffer_count = ctx->num_vertex_buffers, .maps = maps, .map_bytes = sizes,
+   };
+   bool ok = m9_faa_application_build(&source, upload, &why);
+   if (ok) {
+      upload->graph_id = ctx->faa_surface.graph.prepared_id;
+      upload->init_point = ctx->faa_surface.graph.init_point;
+      upload->generation = ctx->faa_surface.graph.prepared_generation;
+   }
+   ralloc_free(vs);
+   if (reason) *reason = why;
+   return ok;
+fail:
+   ralloc_free(vs);
+   if (reason) *reason = why;
+   return false;
 }
 
 /* Point the shader at the specialisation the context's uniform values ask
