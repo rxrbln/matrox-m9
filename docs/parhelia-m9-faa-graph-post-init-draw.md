@@ -83,8 +83,44 @@ M9_FAA_NATIVE_SOURCE=/absolute/path/to/m9_faa_native.c \
 
 The first command also refuses a forged receipt, opaque GPU input, false draw
 return, altered INIT prefix, invented final deadline, changed program writer,
-wrong direct address domain and reordered program release. Original INIT
+wrong direct address domain, reordered program release and altered staged END. Original INIT
 plan/blob/header regenerate byte-exactly. The pending110 receipt is the next
 hardware qualification; original100 continuation and later raster/Lock/resolve
 still require their genuine caller and input contracts. No application image,
 public presentation or generic shader support is established by this prefix.
+
+## Native ordering review and the next original caller
+
+The first staged END excludes the preprocessing indirect packet, which starts
+at4944; the only new address field consumed before it is the sentinel at4896.
+The four secondary endpoint fixups are4948,4952,4960,4964. This proves that
+upfront known secondary/constant storage is not consumed by the first staged
+barrier, while the program's actual CPU mapping and upload must still follow
+INIT. There is no additional source MMIO or GPU-input read between the two
+identical END stores. A separate refusal control changes this staged END and
+is rejected. Do not treat the duplicate as an extra completion phase.
+
+Before the program kick, the source publishes31c=f,0,1 then5,0,2; these are
+mapping publication actions, distinct from the subsequent CPU-rootf,0,c.
+A native implementation must derive the required live local/GPUvirtual
+mappings and use its existing publication helpers; replaying the numeric
+sequence without owner/PTE identity is insufficient. Release31c=0 follows all
+240B program stores. No surface-window formatted slot is acquired for that
+raw program upload. Admission must recheck the current binding, generation,
+six pinned live owners, completed INIT observation, virtual-primary ownership
+and empty healthy queue before any mapping/MMIO or END extension. After any
+post, failure handling must preserve the owners until retirement or safe
+bus-master-off cleanup. No queue start, counter seed or INIT-prefix rewrite
+belongs in this continuation.
+
+The next source controller must reconstruct this same frame, save original
+252b9 registers and stack before the independent finish, and consume only a
+new qualified110 receipt for this plan. It must not resume the23b80 finalizer
+through destruction. Resume the original public DRAW to its own return,
+checking the actual return/HRESULT and any newly emitted packets/deadlines.
+Only then call the genuine retained sampled wrapper's ordinary Lock receiver
+(resource+268, actual vtable+14=a8a60 →a8d60 →55850), preserving its prepared
+startup wrappers and normal staging/resource selection. Do not insert Lock
+into the suspended DRAW. The later57d90/48c60 path, mapper publication and
+returned formatted view require same-frame dynamic joins; neither a F021
+pixel view nor a normal Lock result is supplied by the present prefix.
