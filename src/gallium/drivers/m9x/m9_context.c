@@ -1432,7 +1432,7 @@ m9_record_grow(struct m9_context *ctx, unsigned dwords, const char **reason)
  * requests a store or companion, and grows with the largest target seen.
  */
 static bool
-m9_faa_store_grow(struct m9_context *ctx)
+m9_faa_store_grow_locked(struct m9_context *ctx)
 {
    struct m9_screen *screen = ctx->screen;
    uint32_t width, height;
@@ -1440,10 +1440,10 @@ m9_faa_store_grow(struct m9_context *ctx)
    struct m9_resource store = {0}, store_aux = {0}, companion = {0};
    bool ok = true;
 
+   simple_mtx_assert_locked(&screen->faa_store_lock);
    if (screen->faa.bind_index < 0 && !screen->faa.store_bind &&
        screen->faa.companion_format < 0)
       return true;
-   simple_mtx_lock(&screen->faa_store_lock);
    width = MAX2(ctx->params.width, screen->faa_store_width);
    height = MAX2(ctx->params.height, screen->faa_store_height);
    bytes = (m9_faa_fragment_bytes(width, height) + 127) & ~127ull;
@@ -1525,21 +1525,21 @@ m9_faa_store_grow(struct m9_context *ctx)
    m9_bo_destroy(screen, &store);
    m9_bo_destroy(screen, &store_aux);
    m9_bo_destroy(screen, &companion);
-   simple_mtx_unlock(&screen->faa_store_lock);
    return ok;
 }
 
-/* Bind the retained group and its logical descriptor extent together. The
- * GEM's page padding and the unrelated color allocation do not determine AD.
+/* The caller holds the store lock until every submission has looked up the
+ * handles. Bind the retained group and its logical descriptor extent together.
+ * The GEM's page padding and the unrelated color allocation do not determine AD.
  * Explicit AD overrides retain their diagnostic value, but still need every
  * requested store owner and its logical capacity. */
 static bool
-m9_faa_store_bind_job(struct m9_context *ctx, struct m9_draw_job *job)
+m9_faa_store_bind_job_locked(struct m9_context *ctx, struct m9_draw_job *job)
 {
    struct m9_screen *screen = ctx->screen;
    bool ok = true;
 
-   simple_mtx_lock(&screen->faa_store_lock);
+   simple_mtx_assert_locked(&screen->faa_store_lock);
    job->faa.store_bind = screen->faa.store_bind;
    job->faa.store = screen->faa_store.handle;
    job->faa.store_aux = screen->faa_store_aux.handle;
@@ -1558,7 +1558,6 @@ m9_faa_store_bind_job(struct m9_context *ctx, struct m9_draw_job *job)
       else if (!screen->faa.ad_forced)
          ok = m9_faa_store_ad(0, main, &job->faa.ad);
    }
-   simple_mtx_unlock(&screen->faa_store_lock);
    return ok;
 }
 
@@ -2670,6 +2669,7 @@ m9_submit_job(struct m9_context *ctx)
    uint64_t point = 0;
    uint64_t t_submit;
    bool built;
+   bool faa_store_locked = false;
    int ret;
 
    /* An empty job's key may name a shader or variant deleted since the
@@ -3036,7 +3036,13 @@ m9_submit_job(struct m9_context *ctx)
           * f0 written as zero, which cleared the cull, depth and format
           * bits the pass built and rendered nothing (MEASURED). */
          m9_faa_edits(&ctx->screen->faa, &job.faa.edit);
-         if (!m9_faa_store_grow(ctx) || !m9_faa_store_bind_job(ctx, &job)) {
+         /* Batches retain integer handles only. Prevent another context from
+          * closing/replacing this group before all of this job's ioctls take
+          * their kernel references, including separately submitted passes. */
+         simple_mtx_lock(&ctx->screen->faa_store_lock);
+         faa_store_locked = true;
+         if (!m9_faa_store_grow_locked(ctx) ||
+             !m9_faa_store_bind_job_locked(ctx, &job)) {
             /* An explicitly requested FAA group must never degrade to AA
              * mode bits without its backing resources. Do not emit or
              * submit this job, even when an older smaller group survives. */
@@ -3197,6 +3203,8 @@ m9_submit_job(struct m9_context *ctx)
          }
       }
    }
+   if (faa_store_locked)
+      simple_mtx_unlock(&ctx->screen->faa_store_lock);
    if (ret == -EINVAL) {
       /* A refused job is one unsupported state, not a broken context. */
       const char *who = built ? "the kernel refused a job; those draws are "

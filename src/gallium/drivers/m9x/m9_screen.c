@@ -1194,6 +1194,8 @@ m9_finalize_nir(struct pipe_screen *pscreen, struct nir_shader *nir,
       m9_nir_find_inlinable_uniforms(nir);
 }
 
+static struct m9_screen *m9_faa_check_screen;
+
 static void
 m9_destroy(struct pipe_screen *pscreen)
 {
@@ -1210,8 +1212,11 @@ m9_destroy(struct pipe_screen *pscreen)
    }
    m9_bo_destroy(screen, &screen->record);
    m9_faa_store_report(screen);
+   if (m9_faa_check_screen == screen)
+      m9_faa_check_screen = NULL;
    m9_bo_destroy(screen, &screen->faa_store);
    m9_bo_destroy(screen, &screen->faa_store_aux);
+   m9_bo_destroy(screen, &screen->faa_companion);
    simple_mtx_destroy(&screen->faa_store_lock);
    simple_mtx_destroy(&screen->record_lock);
    simple_mtx_destroy(&screen->import_lock);
@@ -1225,16 +1230,19 @@ m9_destroy(struct pipe_screen *pscreen)
  * filled with its own index, so a write is identifiable wherever it landed.
  * Printed once, from whichever teardown path runs first.
  */
-static struct m9_screen *m9_faa_check_screen;
-
 void
 m9_faa_store_report(struct m9_screen *screen)
 {
    const uint32_t *words;
    uint64_t count, changed = 0, shown = 0;
 
-   if (!screen || !screen->faa.store_check || !screen->faa_store.map)
+   if (!screen)
       return;
+   simple_mtx_lock(&screen->faa_store_lock);
+   if (!screen->faa.store_check || !screen->faa_store.map) {
+      simple_mtx_unlock(&screen->faa_store_lock);
+      return;
+   }
    words = screen->faa_store.map;
    count = screen->faa_store.size / 4;
    for (uint64_t k = 0; k < count; k++)
@@ -1249,6 +1257,7 @@ m9_faa_store_report(struct m9_screen *screen)
    fprintf(stderr, "m9x: faa store %llu of %llu dwords changed\n",
            (unsigned long long)changed, (unsigned long long)count);
    screen->faa.store_check = false;
+   simple_mtx_unlock(&screen->faa_store_lock);
 }
 
 static void
