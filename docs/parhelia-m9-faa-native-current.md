@@ -30,6 +30,17 @@ diagnostic aperture read is not a passive observation of the vendor flow.
 This is still a private 320×240 diagnostic, not Mesa application FAA or final
 display presentation.
 
+Kernel `e933dad` guards the direct F022 diagnostic aperture path after the
+source-qualified normal-Lock replay starts; its actual-C tests cover three
+admission points, two races and F021/control preservation. Kernel `53b953d`
+adds a file-owned six-buffer FAA graph PREPARE/RELEASE transaction, returning
+only a PREPARED token with `init_point=0`. It posts no GPU initialization.
+The [fresh-boot integrated regression](../tests/m9-faa-f022-guard-hardware-20261007/README.md)
+loaded that combined module and again retired `0x180/0x1a0/0x1c0` on M9128
+with byte-identical clean F021 images and `wedged=0`. It validates that the
+new admission code did not regress the private source-order path; it does not
+exercise graph PREPARE or establish application FAA.
+
 Kernel `9eed0a9` continues the source-proven primary only after a successful
 public F021 Lock read. The Lock returned actual point180 and the same clean
 9,801-pixel diagnostic triangle. Separate normal Unlock retired actual point1a0,
