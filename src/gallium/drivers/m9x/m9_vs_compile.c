@@ -124,6 +124,7 @@ struct const_seed {
 
 struct ctx {
    bool compact;
+   bool faa;
    bool *identity_keys;
    nir_shader *nir;
    struct m9_vs_program *p;
@@ -605,7 +606,7 @@ const_index(struct ctx *c, int key)
 
    if (key < 0)
       return -1;
-   pair = m9_vs_const_pair(key);
+   pair = c->faa ? (unsigned)key : m9_vs_const_pair(key);
    return pair <= M9_VS_MAX_CONSTS ? (int)pair : -1;
 }
 
@@ -2559,6 +2560,8 @@ compile_impl(struct ctx *c, nir_function_impl *impl,
           instr->type == nir_instr_type_load_const)
          continue;
       if (instr->type == nir_instr_type_tex) {
+         if (c->faa)
+            return fail(c, "FAA vertex sampler interface");
          if (!note_texture(c, nir_instr_as_tex(instr)))
             return false;
          continue;
@@ -2638,6 +2641,23 @@ compile_impl(struct ctx *c, nir_function_impl *impl,
          return fail(c, "a stream the shader writes no varying for");
    }
    nvar = out.count;
+   if (c->faa) {
+      if (nvar != 2)
+         return fail(c, "FAA requires two direct output streams");
+      if (nir_intrinsic_component(position) ||
+          nir_intrinsic_write_mask(position) != 0xf ||
+          position->src[0].ssa->num_components != 4)
+         return fail(c, "FAA requires a complete clip position");
+      for (unsigned j = 0; j < nvar; j++) {
+         if (out.stream[j].coordinate || out.stream[j].coeff_record ||
+             out.stream[j].paired)
+            return fail(c, "FAA coordinate stream interface");
+         if (nir_intrinsic_component(varying[j]) ||
+             nir_intrinsic_write_mask(varying[j]) != 0xf ||
+             varying[j]->src[0].ssa->num_components != 4)
+            return fail(c, "FAA requires complete vec4 streams");
+      }
+   }
    if (c->texture && nvar > M9_VS_FUSED_VARYINGS)
       return fail(c, "vertex texture requires the bounded fused output path");
    if (nvar > M9_VS_FUSED_VARYINGS) {
@@ -2718,7 +2738,7 @@ compile_impl(struct ctx *c, nir_function_impl *impl,
       nir_foreach_src(instr, note_src, &st);
    }
 
-   bool route_fed = nvar > M9_VS_FUSED_VARYINGS;
+   bool route_fed = c->faa || nvar > M9_VS_FUSED_VARYINGS;
    c->out = route_fed ? &c->p->producer : &c->p->slots;
    if (!compile_head(c, block, final, used, inputs, position, varying,
                      out.stream, 0, nvar, route_fed))
@@ -2897,7 +2917,7 @@ static bool
 compile_program(struct nir_shader *nir, const struct m9_vs_outputs *outputs,
                 struct m9_vs_program *p, const char **reason,
                 bool geometry, const struct const_seed *seed,
-                bool *identity)
+                bool *identity, bool faa)
 {
    nir_function_impl *impl;
    struct ctx c;
@@ -2912,7 +2932,8 @@ compile_program(struct nir_shader *nir, const struct m9_vs_outputs *outputs,
    util_dynarray_init(&p->consts, NULL);
    util_dynarray_init(&c.keys, NULL);
    c.identity_keys = identity;
-   c.compact = seed != NULL;
+   c.faa = faa;
+   c.compact = faa || seed != NULL;
    c.nir = nir;
    c.p = p;
    if (nir->info.stage == MESA_SHADER_VERTEX) {
@@ -2926,6 +2947,7 @@ compile_program(struct nir_shader *nir, const struct m9_vs_outputs *outputs,
         (impl ? compile_impl(&c, impl, outputs) :
                 fail(&c, "not a vertex shader"));
    if (ok) {
+      p->faa_preprocess = faa;
       util_dynarray_foreach(&c.keys, struct kkey, k) {
          struct m9_vs_const *out =
             util_dynarray_grow(&p->consts, struct m9_vs_const, 1);
@@ -2957,7 +2979,19 @@ bool
 m9_vs_compile(struct nir_shader *nir, const struct m9_vs_outputs *outputs,
               struct m9_vs_program *p, const char **reason)
 {
-   return compile_program(nir, outputs, p, reason, true, NULL, NULL);
+   return compile_program(nir, outputs, p, reason, true, NULL, NULL, false);
+}
+
+bool
+m9_vs_compile_faa(struct nir_shader *nir, const struct m9_vs_outputs *outputs,
+                  struct m9_vs_program *p, const char **reason)
+{
+   if (!nir || !p) {
+      if (reason)
+         *reason = "missing FAA shader/program";
+      return false;
+   }
+   return compile_program(nir, outputs, p, reason, true, NULL, NULL, true);
 }
 
 /* The ordinary source can keep independent scalar coefficient chains even
@@ -2983,7 +3017,7 @@ compile_bounded(struct nir_shader *nir,
    nir_shader *trial_nir;
    struct m9_vs_program trial;
 
-   if (!compile_program(nir, outputs, p, reason, true, NULL, identity))
+   if (!compile_program(nir, outputs, p, reason, true, NULL, identity, false))
       return false;
    if (m9_vs_const_count(p) <= max_const_pairs ||
        !program_slots_fit(p, max_slots))
@@ -3041,7 +3075,7 @@ m9_vs_compile_bounded_source(struct nir_shader **nir,
                  m9_vs_const_count(p) > max_const_pairs)) {
       const struct const_seed seed = {.program = p, .identity = identity};
 
-      if (compile_program(saved, outputs, &trial, NULL, false, &seed, NULL)) {
+      if (compile_program(saved, outputs, &trial, NULL, false, &seed, NULL, false)) {
          if (program_slots_fit(&trial, max_slots) &&
              m9_vs_const_count(&trial) <= max_const_pairs) {
             m9_vs_program_fini(p);
@@ -3103,6 +3137,8 @@ m9_vs_const_count(const struct m9_vs_program *p)
 {
    unsigned n = util_dynarray_num_elements(&p->consts, struct m9_vs_const);
 
+   if (p->faa_preprocess)
+      return n;
    return n ? MAX2(M9_VS_TAIL_LAST_PAIR + 1u, m9_vs_const_pair(n - 1) + 1u) :
               M9_VS_TAIL_LAST_PAIR + 1u;
 }
@@ -3228,7 +3264,7 @@ m9_vs_emit(const struct m9_vs_program *p, uint32_t *out, unsigned max_dwords,
    unsigned head = util_dynarray_num_elements(&p->slots, uint32_t);
    unsigned total = head + 2 * (M9_VS_TAIL_SLOTS + 1);
 
-   if (!out || total > max_dwords)
+   if (!out || p->faa_preprocess || total > max_dwords)
       return 0;
    memcpy(out, p->slots.data, head * sizeof(*out));
    memcpy(out + head, &m9_passthrough_c2_program[2 * M9_VS_TAIL_FIRST_SLOT],
@@ -3283,6 +3319,16 @@ m9_vs_emit_body(const struct util_dynarray *body, uint32_t *out,
 }
 
 unsigned
+m9_vs_emit_faa(const struct m9_vs_program *p, uint32_t *out,
+               unsigned max_dwords)
+{
+   if (!p || !p->faa_preprocess || p->slots.size || p->extra.size ||
+       p->gather.size)
+      return 0;
+   return m9_vs_emit_body(&p->producer, out, max_dwords);
+}
+
+unsigned
 m9_vs_c2_image(const struct m9_vs_program *p, const uint32_t *fs_slots,
                unsigned fs_slot_count, uint32_t *out, unsigned max_dwords,
                bool fused_pair, unsigned *vertex_entry, unsigned *extra_entry,
@@ -3295,7 +3341,8 @@ m9_vs_c2_image(const struct m9_vs_program *p, const uint32_t *fs_slots,
    unsigned total = fs_slot_count * 2 + vs_dwords + extra_dwords +
                     gather_dwords + producer_dwords;
 
-   if (!out || total > max_dwords || (fs_slot_count && !fs_slots))
+   if (!out || p->faa_preprocess || total > max_dwords ||
+       (fs_slot_count && !fs_slots))
       return 0;
    memcpy(out, fs_slots, fs_slot_count * 2 * sizeof(*out));
    if (!m9_vs_emit(p, out + fs_slot_count * 2, vs_dwords, fused_pair))
@@ -3344,10 +3391,11 @@ m9_vs_constants(const struct m9_vs_program *p, const float *uniforms,
    unsigned n = util_dynarray_num_elements(&p->consts, struct m9_vs_const);
    unsigned pairs = m9_vs_const_count(p);
 
-   if (!out || 2 * pairs > max_dwords)
+   if (!out || 2 * pairs > max_dwords ||
+       (p->faa_preprocess && uniform_floats && !uniforms))
       return 0;
    for (unsigned i = 0; i < n; i++) {
-      unsigned pair = m9_vs_const_pair(i);
+      unsigned pair = p->faa_preprocess ? i : m9_vs_const_pair(i);
 
       for (unsigned lane = 0; lane < 2; lane++) {
          float v = k[i].kind == M9_VS_CONST_UNIFORM ?
@@ -3371,7 +3419,7 @@ m9_vs_const_span(const struct m9_vs_program *p, const float *values,
        (n && !values))
       return 0;
    for (unsigned i = 0; i < n; i++)
-      memcpy(&out[2 * m9_vs_const_pair(i)], &values[2 * i],
+      memcpy(&out[2 * (p->faa_preprocess ? i : m9_vs_const_pair(i))], &values[2 * i],
              2 * sizeof(*values));
    return pairs;
 }

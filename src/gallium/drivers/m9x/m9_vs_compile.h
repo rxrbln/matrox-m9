@@ -257,6 +257,9 @@ struct m9_vs_attr {
 };
 
 struct m9_vs_program {
+   /* A standalone FAA packed producer. Its constants are dense and it has
+    * no ordinary position tail; ordinary image emitters must refuse it. */
+   bool faa_preprocess;
    struct util_dynarray slots;    /* uint32_t W0, W1 of the compiled head */
    struct util_dynarray consts;   /* struct m9_vs_const, user pairs in order */
    struct m9_vs_attr attrs[M9_VS_MAX_ATTRIBUTES];
@@ -306,6 +309,18 @@ int m9_vs_stream_index(const struct m9_vs_program *program, unsigned location,
 bool m9_vs_compile(struct nir_shader *nir,
                    const struct m9_vs_outputs *outputs,
                    struct m9_vs_program *program, const char **reason);
+/* Source-qualified first FAA producer: clip position plus exactly two
+ * direct vec4 streams. Constants are live typed pairs starting at key0.
+ * No vertex sampler, coordinate-transform stream or ordinary tail is
+ * admitted. The caller owns a specialization clone; no NIR is retained.
+ * This does not bind the position tail, record owners or an app DRAW. */
+bool m9_vs_compile_faa(struct nir_shader *nir,
+                       const struct m9_vs_outputs *outputs,
+                       struct m9_vs_program *program, const char **reason);
+/* Finalize that producer with STOP/padding/finish. Refuses ordinary programs.
+ * m9_vs_constants/m9_vs_const_span use its dense typed constant layout. */
+unsigned m9_vs_emit_faa(const struct m9_vs_program *program, uint32_t *out,
+                        unsigned max_dwords);
 /* Compile normally, then try coefficient vectorization on a clone only if
  * the result exceeds max_const_pairs while fitting max_slots. An unsuccessful
  * retry preserves the original program for the caller's ordinary admission
@@ -333,9 +348,10 @@ void m9_vs_program_fini(struct m9_vs_program *program);
 unsigned m9_vs_attr_element(const struct m9_vs_program *program, unsigned i);
 /* Constant span pair holding user constant index i. */
 unsigned m9_vs_const_pair(unsigned index);
-/* Pairs the whole span needs, the appended tail included. */
+/* Pairs the whole span needs: ordinary tail included, FAA dense keys only. */
 unsigned m9_vs_const_count(const struct m9_vs_program *program);
-/* Instruction slots of the whole program, tail and stop pair included. */
+/* Ordinary final-program slots, tail and STOP included. FAA callers use
+ * m9_vs_producer_slot_count(), because their position tail is separate. */
 unsigned m9_vs_slot_count(const struct m9_vs_program *program);
 /* Instruction slots of the second head, stop pair included; 0 when the
  * program has at most one varying and needs no second preprocessing draw. */
@@ -363,8 +379,8 @@ unsigned m9_vs_c2_image(const struct m9_vs_program *program,
                         unsigned *gather_entry, unsigned *producer_entry);
 
 /* Resolves the user constants into the preprocessing span, pair p at
- * out[2 * p], leaving pairs 9..21 untouched for the caller's viewport and
- * clip words.  Returns the pairs the span needs. */
+ * out[2 * p], leaving ordinary pairs 9..21 untouched for viewport/clip
+ * words. FAA instead fills its dense typed keys. Returns the required pairs. */
 unsigned m9_vs_constants(const struct m9_vs_program *program,
                          const float *uniforms, unsigned uniform_floats,
                          uint32_t *out, unsigned max_dwords);
