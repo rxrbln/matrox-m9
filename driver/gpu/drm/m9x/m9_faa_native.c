@@ -57,6 +57,7 @@ struct m9_faa_clear_segment {
      defined(M9_FAA_PRECLEAR_OUTPUT_WRITE_CONTROL) + \
      defined(M9_FAA_PRECLEAR_INPLACE_OUTPUT_CONTROL) + \
      defined(M9_FAA_PRECLEAR_INPLACE_COPY_CONTROL) + \
+     defined(M9_FAA_PUBLIC_SHARED_DEPTH_FLUSH_CONTROL) + \
      defined(M9_FAA_POST_TRIANGLE_CONTROL)) > 1
 #error "Select only one complete private FAA source profile"
 #endif
@@ -106,6 +107,11 @@ struct m9_faa_clear_segment {
  * preparation, then stopped at a new wait. No CPU pixels are supplied. */
 #include "m9_faa_preclear_inplace_copy_data.h"
 #define M9_FAA_INPUT_FIRMWARE "m9x/faa-preclear-inplace-copy-known-inputs.bin"
+#elif defined(M9_FAA_PUBLIC_SHARED_DEPTH_FLUSH_CONTROL)
+/* Public depth state and a shared-primary target change select the genuine
+ * dirty-graph flush. Its original CPU wait and readback remain pending. */
+#include "m9_faa_public_shared_depth_flush_data.h"
+#define M9_FAA_INPUT_FIRMWARE "m9x/faa-public-shared-depth-flush-known-inputs.bin"
 #elif defined(M9_FAA_CONSTANT_RED_CONTROL)
 /* A distinct whole public source capture changes c0 through SETCONST.
  * Never patch captured green command or program bytes in place. */
@@ -134,9 +140,10 @@ struct m9_faa_clear_segment {
 #endif
 #if defined(M9_FAA_PRECLEAR_OUTPUT_WRITE_CONTROL) || \
     defined(M9_FAA_PRECLEAR_INPLACE_OUTPUT_CONTROL) || \
-    defined(M9_FAA_PRECLEAR_INPLACE_COPY_CONTROL)
-/* All three profiles retain the same original public draw and C2 access
- * before the later output-allocation branch diverges. */
+    defined(M9_FAA_PRECLEAR_INPLACE_COPY_CONTROL) || \
+    defined(M9_FAA_PUBLIC_SHARED_DEPTH_FLUSH_CONTROL)
+/* These profiles retain the same original public draw and C2 access
+ * before their later output or target-change branches diverge. */
 #define M9_FAA_PROGRAM_ACCESS_CONTROL 1
 #endif
 
@@ -190,9 +197,7 @@ static bool m9_faa_program_access_kick;
 module_param(m9_faa_program_access_kick, bool, 0400);
 MODULE_PARM_DESC(m9_faa_program_access_kick,
 	"Preserve the private C2 CPU-access frontend kick after actual c0 retirement");
-#if defined(M9_FAA_PRECLEAR_OUTPUT_WRITE_CONTROL) || \
-    defined(M9_FAA_PRECLEAR_INPLACE_OUTPUT_CONTROL) || \
-    defined(M9_FAA_PRECLEAR_INPLACE_COPY_CONTROL)
+#ifdef M9_FAA_PROGRAM_ACCESS_CONTROL
 /* Same-module hardware control: collapsing these waits leaves main/AA
  * stores untouched; preserving them produces GPU state. Resolve is still
  * unqualified. Keep the opt-out for this bounded ordering control. */
@@ -1512,12 +1517,16 @@ int m9x_faa_submit_diag(struct m9x_device *mdev, u32 color,
 		goto unlock;
 	}
 	if (m9_faa_phased_submit) {
-#if defined(M9_FAA_PRECLEAR_OUTPUT_WRITE_CONTROL) || \
-    defined(M9_FAA_PRECLEAR_INPLACE_OUTPUT_CONTROL) || \
-    defined(M9_FAA_PRECLEAR_INPLACE_COPY_CONTROL)
+#ifdef M9_FAA_PROGRAM_ACCESS_CONTROL
 		/* These source-exported endpoints are after both variable
 		 * clear segments, so they all move by the same signed suffix
 		 * delta. No captured address or desired completion is replayed. */
+#ifdef M9_FAA_SOURCE_PHASES
+		/* Public shared-depth metadata joins actual post endpoints and
+		 * counted finish tokens. Its140 pause is diagnostic, not an
+		 * invented original CPU wait or the in-place profile's170. */
+		static const struct m9x_faa_submit_phase source[] = M9_FAA_SOURCE_PHASES;
+#else
 		static const struct m9x_faa_submit_phase source[] = {
 			{ 4980, 0xc0 }, { 5068, 0x120 },
 #if defined(M9_FAA_PRECLEAR_INPLACE_OUTPUT_CONTROL) || \
@@ -1530,6 +1539,7 @@ int m9x_faa_submit_diag(struct m9x_device *mdev, u32 color,
 			{ 5224, 0x160 }, { 5724, 0x180 },
 #endif
 		};
+#endif
 		struct m9x_faa_submit_phase phases[ARRAY_SIZE(source)];
 		s64 delta = (s64)r->primary_bytes - M9_FAA_PRIMARY_BYTES;
 
