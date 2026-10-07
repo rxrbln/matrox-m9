@@ -1688,13 +1688,12 @@ static int m9_faa_graph_depth_frame_ioctl(struct drm_device *drm,
  struct m9_faa_prepared_graph *graph;struct m9_faa_graph_binding *binding=NULL;
  struct m9x_faa_color_input input;struct drm_exec exec;u8 *upload=NULL;
  u32 sum,tmp,address[PARHELIA_M9_FAA_GRAPH_OWNERS],i;u64 point=0;bool posted=false,first;int idx,ret;
- /* Refuse unqualified FIRST before allocation/publication. Retained
-  * COLOR uses its actual prior Unlock, live queue epoch and complete
-  * typed COLOR prefix/suffix rather than borrowing public-VS state. */
+ /* FIRST owns the full fresh clear and closed draw/Lock. Retained COLOR
+  * owns its actual prior Unlock and a different live queue epoch. */
  first=!!(args->flags&PARHELIA_M9_FAA_COLOR_FRAME_FIRST);
  if(!m9x_faa_graph_depth_frame_profile_qualified(first))return -EOPNOTSUPP;
  if(!state||args->flags&~PARHELIA_M9_FAA_COLOR_FRAME_FIRST||
-  args->clear_flags!=3||args->clear_color||args->depth_flags!=7||(args->raster_flags&~7u)||(args->raster_flags&6)==6||
+  args->clear_flags!=3||args->clear_color||args->depth_flags!=7||(first&&args->raster_flags)||(args->raster_flags&~7u)||(args->raster_flags&6)==6||
   args->width!=320||args->height!=240||args->layout.program_count!=4||
   !args->upload||!args->upload_bytes||args->upload_bytes>0x42000||
   !args->declaration_count||args->declaration_count>31||args->previous_point>U64_MAX-0x1a0)
@@ -1725,7 +1724,7 @@ static int m9_faa_graph_depth_frame_ioctl(struct drm_device *drm,
  ret=m9_faa_graph_live_addresses(mdev,graph,address);if(ret)goto out_exec;
  if(memcmp(binding->address,address,sizeof(address))){ret=-ESTALE;goto out_exec;}
  ret=m9x_faa_graph_depth_frame_submit(mdev,binding,args->generation,args->previous_point,&point,&posted);
- if(!ret){if(point!=args->previous_point+(first?0x190:0x1a0))ret=-EIO;
+ if(!ret){if(point!=args->previous_point+(first?0x150:0x1a0))ret=-EIO;
   else{args->lock_point=point;args->state=first?PARHELIA_M9_FAA_COLOR_FRAME_FIRST_LOCK_RETIRED:PARHELIA_M9_FAA_COLOR_FRAME_NEXT_LOCK_RETIRED;}}
  out_exec:drm_exec_fini(&exec);
  out_binding:kfree(upload);m9x_faa_graph_binding_put(binding);mutex_unlock(&state->lock);drm_dev_exit(idx);return ret;

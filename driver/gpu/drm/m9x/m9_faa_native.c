@@ -32,6 +32,7 @@
 #include "m9_faa_graph_color_next_encode.h"
 #include "m9_faa_graph_depth_encode.h"
 #include "m9_faa_graph_sample_clear_encode.h"
+#include "m9_faa_graph_first_depth_encode.h"
 #include "m9_faa_graph_depth_draw_encode.h"
 #include "m9_faa_graph_depth_raster_encode.h"
 #include "m9_faa_graph_depth.h"
@@ -235,13 +236,15 @@ struct m9_faa_owner {
 #define M9_FAA_DEPTH_PREFIX_CAPACITY (M9_FAA_ATTACHMENT_CLEAR_CAPACITY + M9_FAA_SAMPLE_CLEAR_CAPACITY)
 #define M9_FAA_DEPTH_FRAME_PRIMARY_CAPACITY (M9_FAA_DEPTH_PREFIX_CAPACITY + M9_FAA_DEPTH_DRAW_PRIMARY_BYTES)
 #define M9_FAA_DEPTH_FRAME_ENDS 13
+#define M9_FAA_DEPTH_FRAME_MAX_ENDS 32
 #define M9_FAA_SAMPLE_CLEAR_FIRMWARE "m9x/faa-graph-sample-clear-template.bin"
 #define M9_FAA_DEPTH_DRAW_FIRMWARE "m9x/faa-graph-depth-draw-template.bin"
 struct m9_faa_depth_frame_storage {
  u8 primary[M9_FAA_DEPTH_FRAME_PRIMARY_CAPACITY];
  u8 secondary[M9_FAA_COLOR_SECONDARY_CAPACITY];
  u8 observed[4096];
- u32 end_bytes[M9_FAA_DEPTH_FRAME_ENDS];
+ u32 end_bytes[M9_FAA_DEPTH_FRAME_MAX_ENDS];
+ u32 end_count;
  u32 primary_bytes, primary_start, secondary_cursor, secondary_bytes, generation;
  u64 previous_point, queue_start, final_point;
  bool first, attempted, retired;
@@ -6807,6 +6810,7 @@ int m9x_faa_graph_depth_frame_prepare(struct m9x_device *mdev,
  struct m9x_transport *t=&mdev->transport;struct m9x_faa_replay *r;
  struct m9_faa_depth_frame_storage *frame=NULL;
  struct m9x_faa_attachment_clear_image *attach=NULL;
+ struct m9x_faa_first_depth_scratch *fresh=NULL;
  struct m9x_faa_depth_draw_image draw;
  struct m9x_faa_color_image first_image;
  struct m9_faa_color_storage *scratch=NULL;
@@ -6815,18 +6819,17 @@ int m9x_faa_graph_depth_frame_prepare(struct m9x_device *mdev,
  struct m9x_faa_graph_draw_owner owner[M9_FAA_DEPTH_DRAW_OWNERS];
  const struct firmware *sample_fw=NULL,*draw_fw=NULL,*first_fw=NULL;
  u32 i,sample_bytes,prefix_bytes;u64 queue_start=0;int ret;
- if(!binding||!input||(raster_flags&~7u)||(raster_flags&6)==6||(first&&raster_flags)||(first?!m9x_faa_depth_draw_input_valid(input):
-  (!m9_faa_color_four_experimental||input->layout.program_count!=4||input->declaration_count!=5)))return -EOPNOTSUPP;
+ if(!binding||!input||(raster_flags&~7u)||(raster_flags&6)==6||(first&&raster_flags)||
+  !m9_faa_color_four_experimental||input->layout.program_count!=4||input->declaration_count!=5)return -EOPNOTSUPP;
  if(previous>U64_MAX-0x1a0||lower_32_bits(previous)>U32_MAX-0x1a0)return -ERANGE;
  frame=kzalloc(sizeof(*frame),GFP_KERNEL);attach=kmalloc(sizeof(*attach),GFP_KERNEL);
  if(!frame||!attach){ret=-ENOMEM;goto release;}
  if(raster_flags){raster_scratch=kmalloc(M9_FAA_DEPTH_DRAW_PRIMARY_BYTES+M9_FAA_COLOR_SECONDARY_CAPACITY,GFP_KERNEL);if(!raster_scratch){ret=-ENOMEM;goto release;}}
  ret=request_firmware(&sample_fw,M9_FAA_SAMPLE_CLEAR_FIRMWARE,&mdev->pdev->dev);if(ret)goto release;
- ret=request_firmware(&draw_fw,M9_FAA_DEPTH_DRAW_FIRMWARE,&mdev->pdev->dev);if(ret)goto release;
- if(!first){
-  scratch=kzalloc(sizeof(*scratch),GFP_KERNEL);if(!scratch){ret=-ENOMEM;goto release;}
-  ret=request_firmware(&first_fw,M9_FAA_GRAPH_COLOR_FOUR_FIRMWARE,&mdev->pdev->dev);if(ret)goto release;
- }
+ if(!first){ret=request_firmware(&draw_fw,M9_FAA_DEPTH_DRAW_FIRMWARE,&mdev->pdev->dev);if(ret)goto release;}
+ scratch=kzalloc(sizeof(*scratch),GFP_KERNEL);if(!scratch){ret=-ENOMEM;goto release;}
+ if(first){fresh=kzalloc(sizeof(*fresh),GFP_KERNEL);if(!fresh){ret=-ENOMEM;goto release;}}
+ ret=request_firmware(&first_fw,M9_FAA_GRAPH_COLOR_FOUR_FIRMWARE,&mdev->pdev->dev);if(ret)goto release;
  /* Claims/maps the three separate native owners while INIT is still the
   * actual observed boundary. TTM operations occur outside TRANSPORT. */
  ret=m9x_faa_graph_bound_depth_prepare(mdev,binding,generation,previous,
@@ -6841,8 +6844,22 @@ int m9x_faa_graph_depth_frame_prepare(struct m9x_device *mdev,
  if(!r->depth_storage||r->depth_storage->initialized||r->depth_storage->frame){ret=-ESTALE;goto unlock;}
  ret=m9x_faa_graph_bound_depth_views_locked(mdev,binding,generation,&views);if(ret)goto unlock;
  m9_faa_depth_frame_owners(r,owner);
- ret=first?m9x_faa_attachment_clear_encode(&views,lower_32_bits(queue_start),0x3f800000,attach):
-  m9x_faa_color_attachment_clear_encode(&views,lower_32_bits(queue_start),0x3f800000,attach);if(ret)goto unlock;
+ first_image=(struct m9x_faa_color_image){
+  .program=r->color_image->program,.constants=r->color_image->constants,
+  .primary=scratch->primary,.secondary=scratch->secondary,
+  .program_bytes=sizeof(r->color_image->program),
+  .constants_bytes=r->color_image->geometry_offset+input->layout.geometry_bytes+768,
+  .primary_bytes=sizeof(scratch->primary),.secondary_bytes=sizeof(scratch->secondary),
+  .secondary_length=&scratch->secondary_bytes};
+ if(first){
+  ret=m9x_faa_first_depth_encode(sample_fw->data,sample_fw->size,first_fw->data,first_fw->size,
+   owner,&views,r->primary_bytes,previous,input,frame->primary,sizeof(frame->primary),
+   frame->secondary,sizeof(frame->secondary),&frame->primary_bytes,&frame->secondary_bytes,
+   frame->end_bytes,&first_image,fresh);if(ret)goto unlock;
+  frame->primary_start=r->graph_draw_end_bytes;frame->end_count=M9_FAA_FIRST_DEPTH_ENDS;
+  frame->final_point=previous+0x150;goto encoded;
+ }
+ ret=m9x_faa_color_attachment_clear_encode(&views,lower_32_bits(queue_start),0x3f800000,attach);if(ret)goto unlock;
  memcpy(frame->primary,attach->word,attach->bytes);
  ret=m9x_faa_sample_clear_encode(sample_fw->data,sample_fw->size,owner,&views,queue_start,
   frame->primary+attach->bytes,M9_FAA_SAMPLE_CLEAR_CAPACITY,&sample_bytes);if(ret)goto unlock;
@@ -6850,28 +6867,13 @@ int m9x_faa_graph_depth_frame_prepare(struct m9x_device *mdev,
  draw=(struct m9x_faa_depth_draw_image){.primary=frame->primary+prefix_bytes,
   .secondary=frame->secondary,.primary_capacity=M9_FAA_DEPTH_DRAW_PRIMARY_BYTES,
   .secondary_capacity=sizeof(frame->secondary)};
- if(first){
-  ret=m9x_faa_depth_draw_encode(draw_fw->data,draw_fw->size,owner,&views,
-   r->graph_draw_end_bytes+prefix_bytes,0,queue_start,1,input,
-   r->color_image->geometry_offset,r->color_image->geometry_offset+input->layout.vertex_offset,&draw);
-  frame->secondary_bytes=M9_FAA_DEPTH_DRAW_SECONDARY_BYTES;
- }else{
-  /* Rebuild the first encoder only as CPU scratch. Its live stage routing,
-   * shader entries, dense ranges and declaration groups feed the retained
-   * depth splice; none of its first-only commands are posted. */
-  first_image=(struct m9x_faa_color_image){
-   .program=r->color_image->program,.constants=r->color_image->constants,
-   .primary=scratch->primary,.secondary=scratch->secondary,
-   .program_bytes=sizeof(r->color_image->program),
-   .constants_bytes=r->color_image->geometry_offset+input->layout.geometry_bytes+768,
-   .primary_bytes=sizeof(scratch->primary),.secondary_bytes=sizeof(scratch->secondary),
-   .secondary_length=&scratch->secondary_bytes};
-  ret=m9x_faa_depth_color_encode(draw_fw->data,draw_fw->size,first_fw->data,first_fw->size,
-   owner,&views,r->primary_bytes,r->graph_draw_end_bytes+prefix_bytes,r->color_secondary_cursor,
-   queue_start,1,input,r->color_image->geometry_offset,
-   r->color_image->geometry_offset+input->layout.vertex_offset,&draw,&first_image);
-  frame->secondary_bytes=M9_FAA_DEPTH_COLOR_SECONDARY_BYTES;
- }
+ /* Rebuild the live first image only as CPU scratch; the retained splice
+  * owns its own state/epochs and does not publish any first-only commands. */
+ ret=m9x_faa_depth_color_encode(draw_fw->data,draw_fw->size,first_fw->data,first_fw->size,
+  owner,&views,r->primary_bytes,r->graph_draw_end_bytes+prefix_bytes,r->color_secondary_cursor,
+  queue_start,1,input,r->color_image->geometry_offset,
+  r->color_image->geometry_offset+input->layout.vertex_offset,&draw,&first_image);
+ frame->secondary_bytes=M9_FAA_DEPTH_COLOR_SECONDARY_BYTES;
  if(ret)goto unlock;
  if(raster_flags){
   struct m9x_faa_depth_raster_input ri={
@@ -6905,7 +6907,11 @@ int m9x_faa_graph_depth_frame_prepare(struct m9x_device *mdev,
  frame->end_bytes[5]=frame->primary_start+prefix_bytes;
  for(i=0;i<M9_FAA_DEPTH_DRAW_ENDS;i++)frame->end_bytes[6+i]=draw.end_bytes[i];
  if(draw.final_point!=queue_start+0x190||frame->end_bytes[12]!=frame->primary_start+frame->primary_bytes){ret=-EINVAL;goto unlock;}
- frame->previous_point=previous;frame->queue_start=queue_start;frame->final_point=draw.final_point;
+ frame->end_count=M9_FAA_DEPTH_FRAME_ENDS;
+ frame->final_point=draw.final_point;
+encoded:
+ if(frame->primary_start>owner[27].bytes||frame->primary_bytes>owner[27].bytes-frame->primary_start){ret=-ENOSPC;goto unlock;}
+ frame->previous_point=previous;frame->queue_start=queue_start;
  frame->secondary_cursor=first?0:r->color_secondary_cursor;frame->generation=generation;frame->first=first;
  /* Storage is ready only after every field/domain/count has been checked.
   * This metadata alone never authorizes F021 or marks attachments cleared. */
@@ -6915,7 +6921,7 @@ unlock:mutex_unlock(&t->lock);
 release:
  if(sample_fw)release_firmware(sample_fw);if(draw_fw)release_firmware(draw_fw);
  if(first_fw)release_firmware(first_fw);kfree(scratch);
- kfree(raster_scratch);kfree(attach);kfree(frame);return ret;
+ kfree(raster_scratch);kfree(fresh);kfree(attach);kfree(frame);return ret;
 #else
  return -EOPNOTSUPP;
 #endif
@@ -6941,9 +6947,11 @@ int m9x_faa_graph_depth_frame_submit(struct m9x_device *mdev,
  input=r->color_image;
  if(frame->attempted||frame->retired||frame->generation!=generation||
   frame->previous_point!=previous||frame->queue_start!=queue_start||
-  frame->final_point!=queue_start+0x190||
+  frame->final_point!=queue_start+(frame->first?0x150:0x190)||
   (!frame->first&&frame->secondary_cursor!=r->color_secondary_cursor)||
-  frame->primary_start!=r->graph_draw_end_bytes){ret=-ESTALE;goto out;}
+  frame->primary_start!=r->graph_draw_end_bytes||!frame->end_count||
+  frame->end_count>M9_FAA_DEPTH_FRAME_MAX_ENDS||
+  frame->end_bytes[frame->end_count-1]!=frame->primary_start+frame->primary_bytes){ret=-ESTALE;goto out;}
  primary=&r->owner[M9_FAA_PRIMARY_OWNER];program=&r->draw_owner[0];
  if(!primary->cpu||!program->vram||input->program_bytes>sizeof(frame->observed)||
   frame->primary_start>primary->bytes||primary->bytes-frame->primary_start<frame->primary_bytes||
@@ -6978,21 +6986,21 @@ int m9x_faa_graph_depth_frame_submit(struct m9x_device *mdev,
  memcpy(r->draw_owner[1].cpu,input->constants,input->constants_bytes);
  memcpy((u8*)r->draw_owner[1].cpu+input->geometry_offset,input->constants+input->geometry_offset,input->geometry_bytes);
  memcpy((u8*)r->draw_owner[2].cpu+frame->secondary_cursor,frame->secondary,frame->secondary_bytes);
- for(i=0;i<M9_FAA_DEPTH_FRAME_ENDS;i++){
+ for(i=0;i<frame->end_count;i++){
   u32 length=frame->end_bytes[i]-frame->primary_start;
   end=frame->end_bytes[i];
   if(length>frame->primary_bytes||length<copied){ret=-EINVAL;goto out;}
   if(length>copied)memcpy((u8*)primary->cpu+frame->primary_start+copied,frame->primary+copied,length-copied);
   dma_wmb();ret=m9x_post_faa_graph_end_locked(mdev,&primary->system_node,primary->dma,
    r->graph_draw_end_bytes,end,i&&(end==frame->end_bytes[i-1]),
-   i==M9_FAA_DEPTH_FRAME_ENDS-1?lower_32_bits(frame->final_point):0,&stage_point,&stage_posted);
+   i==frame->end_count-1?lower_32_bits(frame->final_point):0,&stage_point,&stage_posted);
   *posted|=stage_posted;if(stage_posted){r->graph_draw_end_bytes=end;r->graph_draw_posts++;}
   if(ret)goto out;copied=length;
  }
  if(stage_point!=frame->final_point){ret=-EIO;goto out;}
  *point=stage_point;frame->retired=true;r->depth_storage->initialized=true;
  r->graph_draw_point=stage_point;r->color_lock_point=stage_point;r->color_lock_retired=true;
- input->primary_length=frame->primary_bytes;input->lock_delta=frame->final_point-previous;input->lock_posts=M9_FAA_DEPTH_FRAME_ENDS;
+ input->primary_length=frame->primary_bytes;input->lock_delta=frame->final_point-previous;input->lock_posts=frame->end_count;
  r->color_secondary_cursor=frame->secondary_cursor+frame->secondary_bytes;
  dev_info(&mdev->pdev->dev,"M9 FAA bound depth FRAME retired: previous=%#llx queue_start=%#llx lock=%#llx bytes=%u posts=%u attachments=31/32/33\n",
   previous,queue_start,*point,r->graph_draw_end_bytes,r->graph_draw_posts);
@@ -7011,14 +7019,15 @@ MODULE_FIRMWARE(M9_FAA_SAMPLE_CLEAR_FIRMWARE);
 MODULE_FIRMWARE(M9_FAA_DEPTH_DRAW_FIRMWARE);
 #endif
 
-/* Retained COLOR uses the reviewed live adapter under the existing
- * experimental launcher opt-in. Fresh FIRST remains independently gated. */
+/* Fresh and retained COLOR have distinct complete source plans and queue
+ * epochs, both under the diagnostic launcher opt-in until hardware review. */
 bool m9x_faa_graph_depth_frame_profile_qualified(bool first)
 {
 #ifdef M9_FAA_GRAPH_INIT_CONTROL
- /* Retained COLOR owns a genuine prior Lock/view/Unlock and uses the live
-  * queue epoch. Fresh FIRST's clear/preprocess frontier is separate. */
- return !first && m9_faa_color_four_experimental;
+ /* FIRST owns exact INIT; retained owns exact Lock/view/Unlock. The native
+  * producers independently validate the fresh or retained state. */
+ (void)first;
+ return m9_faa_color_four_experimental;
 #else
  return false;
 #endif
