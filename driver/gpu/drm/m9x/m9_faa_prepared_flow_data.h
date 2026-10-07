@@ -1,18 +1,18 @@
 /* SPDX-License-Identifier: GPL-2.0-only */
 /* Copyright 2026 René Rebe <rene@exactco.de> */
-/* Generated from actual prepared-normal-lock-wait caller boundary + independent queue flush. */
-#define M9_FAA_BLOB_BYTES 127956u
-#define M9_FAA_BLOB_FNV 0xf33fc34fu
+/* Generated from actual original normal Lock posts before180 write wait; no independent flush. */
+#define M9_FAA_BLOB_BYTES 127976u
+#define M9_FAA_BLOB_FNV 0x0497cc2bu
 #define M9_FAA_PRIMARY_OWNER 0x1bu
-#define M9_FAA_PRIMARY_BYTES 0x21b4u
+#define M9_FAA_PRIMARY_BYTES 0x21c8u
 #define M9_FAA_COLOR_OWNER 0x1u
 #define M9_FAA_OUTPUT_OWNER 0xffffffffu
-#define M9_FAA_TRACKER_LAST 0x170u
+#define M9_FAA_TRACKER_LAST 0x180u
 #define M9_FAA_CLEAR_OWNER 0x4u
 #define M9_FAA_CLEAR_BYTES 0x97000u
 #define M9_FAA_CLEAR_START 0x11d8u
 #define M9_FAA_CLEAR_END 0x1224u
-#define M9_FAA_SOURCE_PHASES { { 4980u, 0xc0u }, { 5068u, 0x120u }, { 8628u, 0x170u } }
+#define M9_FAA_SOURCE_PHASES { { 4980u, 0xc0u }, { 5068u, 0x120u }, { 8628u, 0x170u }, { 8648u, 0x180u } }
 #define M9_FAA_PHASE_CONTROL 1
 #define M9_FAA_HAS_OUTPUT 0
 #define M9_FAA_PHASE_INIT_ONLY 0
@@ -70,10 +70,10 @@ static const struct m9_faa_span m9_faa_spans[] = {
 	{ 17u, 0x0u, 0x1c68cu, 0x400u },
 	{ 21u, 0x0u, 0x1ca8cu, 0x14u },
 	{ 26u, 0x0u, 0x1caa0u, 0xf0u },
-	{ 27u, 0x0u, 0x1cb90u, 0x21b4u },
-	{ 28u, 0x0u, 0x1ed44u, 0x88u },
-	{ 28u, 0x100u, 0x1edccu, 0xbcu },
-	{ 29u, 0x0u, 0x1ee88u, 0x54cu },
+	{ 27u, 0x0u, 0x1cb90u, 0x21c8u },
+	{ 28u, 0x0u, 0x1ed58u, 0x88u },
+	{ 28u, 0x100u, 0x1ede0u, 0xbcu },
+	{ 29u, 0x0u, 0x1ee9cu, 0x54cu },
 };
 static const struct m9_faa_fixup m9_faa_fixups[] = {
 	{ 27u, 0x470u, 5u, 0x0u, 0x24930u, 1u, 0x1151001u },
@@ -153,4 +153,5 @@ static const struct m9_faa_tracker m9_faa_trackers[] = {
 	{ 27u, 0x1518u, 0x160u },
 	{ 27u, 0x1fe4u, 0x160u },
 	{ 27u, 0x21b0u, 0x171u },
+	{ 27u, 0x21c4u, 0x181u },
 };
