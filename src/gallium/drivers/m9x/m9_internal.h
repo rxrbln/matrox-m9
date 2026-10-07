@@ -386,6 +386,10 @@ bool m9_context_faa_build_draw(struct m9_context *ctx,
                               const struct pipe_draw_start_count_bias *draw,
                               struct m9_faa_application_upload *upload,
                               const char **reason);
+/* Consume only an authenticated returned COLOR Lock. Copies source F021
+ * rows into the retained ordinary target, then performs genuine Unlock. */
+int m9_context_faa_present_lock(struct m9_context *ctx, uint64_t graph_id,
+                               uint32_t generation, uint64_t lock_point);
 
 /* Pass-level raster state shared by every draw of one two-pass job. */
 struct m9_job_key {

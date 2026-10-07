@@ -9217,6 +9217,112 @@ fail:
    return false;
 }
 
+/* A returned COLOR Lock grants a source-qualified F021 row view, not an
+ * ordinary mapping of the sampled allocation. Transfer that view verbatim
+ * through the destination's live surface descriptor before source Unlock.
+ * This bounded bridge is not called from draw_vbo until repeated draw and
+ * per-frame clear/depth contracts are admitted. */
+int
+m9_context_faa_present_lock(struct m9_context *ctx, uint64_t graph_id,
+                            uint32_t generation, uint64_t lock_point)
+{
+   struct pipe_resource *retained = NULL;
+   uint8_t *rows = NULL;
+   if (!ctx || ctx->lost || !ctx->screen || !ctx->params_valid ||
+       ctx->color_count != 1 || ctx->color_discard || !ctx->color ||
+       ctx->faa_surface.destination != ctx->color ||
+       ctx->faa_surface.destination_offset != ctx->color_offset ||
+       ctx->faa_surface.width != ctx->framebuffer_width ||
+       ctx->faa_surface.height != ctx->framebuffer_height)
+      return -EINVAL;
+   struct m9_faa_surface *surface = &ctx->faa_surface;
+   struct m9_faa_graph *graph = &surface->graph;
+   if (!graph_id || !lock_point || (lock_point & 15) ||
+       !graph->prepared || !graph->initialized ||
+       graph->prepared_id != graph_id || graph->prepared_generation != generation ||
+       !graph->color_lock_attempted || graph->color_lock_point != lock_point ||
+       graph->color_unlock_attempted || graph->color_unlock_point)
+      return -ESTALE;
+   /* Only this shape/view has an original Lock mapper and pixel proof.
+    * The kernel separately checks the exact owner, epoch and retirement. */
+   struct m9_faa_primary_layout primary;
+   if (surface->width != 320 || surface->height != 240 || surface->format != 0x66 ||
+       !m9_faa_primary_layout(surface->width, surface->height, surface->format, &primary) ||
+       surface->primary_layout.size != primary.size ||
+       surface->primary_layout.row_span != primary.row_span ||
+       surface->primary_layout.allocation_height != primary.allocation_height ||
+       surface->primary_layout.descriptor != primary.descriptor ||
+       !surface->primary.handle || surface->primary.handle == m9_res(ctx->color)->handle ||
+       surface->primary.size < primary.size || surface->primary.cpp != 4 ||
+       !surface->primary.tiled || surface->primary.domain != M9_BO_VRAM)
+      return -EOPNOTSUPP;
+   struct m9_resource *destination = m9_res(ctx->color);
+   unsigned level = ctx->framebuffer.cbufs[0].texture == ctx->color ?
+                    ctx->framebuffer.cbufs[0].level : 0;
+   bool texture = m9_texture_renders_level(destination, level);
+   uint32_t width = texture ? destination->texture.level[level].width : destination->width;
+   uint32_t height = texture ? destination->texture.level[level].height : destination->height;
+   uint64_t offset = texture ? destination->texture.level[level].offset : 0;
+   struct m9_render_layout target;
+   if (!m9_resource_is_color_target(destination, level) ||
+       (destination->base.format != PIPE_FORMAT_B8G8R8A8_UNORM &&
+        destination->base.format != PIPE_FORMAT_B8G8R8X8_UNORM) ||
+       destination->format != M9_COLOR_FORMAT_A8R8G8B8 ||
+       !m9_render_surface_layout(width, height, 4, &target) ||
+       width < surface->width || height < surface->height ||
+       ctx->color_offset != offset || offset > UINT32_MAX || (offset & 255) ||
+       offset > destination->size || target.size > destination->size - offset)
+      return -EOPNOTSUPP;
+   size_t bytes = (size_t)surface->width * surface->height * 4;
+   rows = MALLOC(bytes);
+   if (!rows) return -ENOMEM;
+   pipe_resource_reference(&retained, ctx->color);
+   m9_context_sync(ctx);
+   int ret = ctx->lost ? -EIO : 0;
+   const struct m9_surface_desc source_desc = {
+      .row_span = primary.row_span, .height = primary.allocation_height,
+      .layers = 1, .layout = 1, .format = 0x78, .address_offset = true,
+   };
+   struct drm_parhelia_m9_surface_access access = {
+      .handle = surface->primary.handle, .op = PARHELIA_M9_ACCESS_READ,
+      .descriptor0 = m9_surface_desc0(&source_desc),
+      .descriptor1 = m9_surface_desc1(&source_desc),
+      .surface_width = surface->width, .width = surface->width, .height = surface->height,
+      .data_stride = surface->width * 4, .data_ptr = (uintptr_t)rows, .data_size = bytes,
+   };
+   if (!ret) {
+      ctx->window_reads++;
+      ctx->window_read_bytes += bytes;
+      ret = ioctl(ctx->screen->fd, DRM_IOCTL_PARHELIA_M9_SURFACE_ACCESS, &access) ? -errno : 0;
+      m9_blit_window_receipt(&surface->primary, &access, ret);
+   }
+   if (!ret) {
+      const struct m9_surface_desc target_desc = {
+         .row_span = target.row_span, .height = m9_surface_even_height(height),
+         .layers = 1, .layout = 1, .format = destination->format, .address_offset = true,
+      };
+      access.handle = destination->handle;
+      access.op = PARHELIA_M9_ACCESS_WRITE;
+      access.descriptor0 = m9_surface_desc0(&target_desc);
+      access.descriptor1 = m9_surface_desc1(&target_desc);
+      access.surface_width = width;
+      access.offset = offset;
+      /* Invalidate dependent snapshots even if a window write is partial. */
+      destination->generation++;
+      ctx->window_writes++;
+      ctx->window_write_bytes += bytes;
+      ret = ioctl(ctx->screen->fd, DRM_IOCTL_PARHELIA_M9_SURFACE_ACCESS, &access) ? -errno : 0;
+      m9_blit_window_receipt(destination, &access, ret);
+      /* Successful F021 user copy admits source Unlock. Preserve any
+       * destination failure while still releasing that admitted CPU view. */
+      int unlock = m9_faa_surface_color_unlock_kernel(ctx->screen, surface);
+      if (!ret) ret = unlock;
+   }
+   pipe_resource_reference(&retained, NULL);
+   FREE(rows);
+   return ret;
+}
+
 /* Point the shader at the specialisation the context's uniform values ask
  * for, which is what every native decision below is then taken against. */
 static void
