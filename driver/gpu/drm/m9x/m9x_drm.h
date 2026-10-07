@@ -17,6 +17,7 @@
 #define DRM_PARHELIA_M9_FAA_GRAPH_DRAW_RED	0x11
 #define DRM_PARHELIA_M9_FAA_GRAPH_UNLOCK	0x12
 #define DRM_PARHELIA_M9_FAA_GRAPH_NEXT_DRAW	0x13
+#define DRM_PARHELIA_M9_FAA_GRAPH_NEXT_FINISH	0x14
 
 #define DRM_IOCTL_PARHELIA_M9_CREATE_BO \
 	DRM_IOWR(DRM_COMMAND_BASE + DRM_PARHELIA_M9_CREATE_BO, \
@@ -65,6 +66,7 @@ enum drm_parhelia_m9_faa_owner_role {
 #define PARHELIA_M9_FAA_LOCK_PREFIX_RETIRED 5u
 #define PARHELIA_M9_FAA_UNLOCK_RETIRED 6u
 #define PARHELIA_M9_FAA_NEXT_PREFIX_RETIRED 7u
+#define PARHELIA_M9_FAA_NEXT_FINISH_RETIRED 8u
 struct drm_parhelia_m9_faa_owner {
 	__u32 handle;
 	__u32 pad;
@@ -383,5 +385,21 @@ struct drm_parhelia_m9_faa_graph_next_draw {
 #define DRM_IOCTL_PARHELIA_M9_FAA_GRAPH_NEXT_DRAW \
 	DRM_IOWR(DRM_COMMAND_BASE + DRM_PARHELIA_M9_FAA_GRAPH_NEXT_DRAW, \
 		struct drm_parhelia_m9_faa_graph_next_draw)
+
+/* Private returned second-DRAW rendering/finish on the same retained graph.
+ * Requires the actual preprocessing receipt; state8 proves retirement only.
+ * No second Lock or image is implied. All outputs/flags/padding start zero. */
+struct drm_parhelia_m9_faa_graph_next_finish {
+	__u64 graph_id;
+	__u64 prefix_point;
+	__u64 finish_point;
+	__u32 generation;
+	__u32 flags;
+	__u32 state;
+	__u32 pad;
+};
+#define DRM_IOCTL_PARHELIA_M9_FAA_GRAPH_NEXT_FINISH \
+	DRM_IOWR(DRM_COMMAND_BASE + DRM_PARHELIA_M9_FAA_GRAPH_NEXT_FINISH, \
+		struct drm_parhelia_m9_faa_graph_next_finish)
 
 #endif
