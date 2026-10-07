@@ -2,9 +2,11 @@
 /* Copyright 2026 René Rebe <rene@exactco.de> */
 #include <errno.h>
 #include <string.h>
+#include <sys/ioctl.h>
 
 #include "m9_internal.h"
 #include "m9_screen.h"
+#include "m9_faa_graph_uapi.h"
 #include "util/u_inlines.h"
 
 void
@@ -12,6 +14,10 @@ m9_faa_graph_destroy(struct m9_screen *screen, struct m9_faa_graph *graph)
 {
    if (!screen || !graph)
       return;
+   /* A failed release cannot invalidate the kernel's independent GEM refs
+    * and pins. Teardown closes Mesa handles; file-close owns any retained
+    * kernel group. Retarget calls release explicitly and propagates failure. */
+   (void)m9_faa_graph_release_kernel(screen, graph);
    m9_bo_destroy(screen, &graph->sentinel);
    m9_bo_destroy(screen, &graph->hz);
    m9_bo_destroy(screen, &graph->companion);
@@ -29,7 +35,8 @@ m9_faa_graph_create(struct m9_screen *screen, uint32_t width,
 
    if (!screen || !graph || graph->main.handle || graph->auxiliary.handle ||
        graph->companion.handle || graph->hz.handle || graph->sentinel.handle ||
-       graph->initialized || !m9_faa_graph_layout(width, height, &fresh.layout))
+       graph->prepared_id || graph->prepared || graph->initialized ||
+       !m9_faa_graph_layout(width, height, &fresh.layout))
       return -EINVAL;
    ret = m9_bo_create_engine_only(screen, fresh.layout.main_bytes,
                                    M9_RESOURCE_LINEAR_BUFFER, &fresh.main);
@@ -127,6 +134,11 @@ m9_faa_surface_prepare(struct m9_screen *screen,
    fresh.format = destination->format;
    pipe_resource_reference(&fresh.destination, &destination->base);
    pipe_resource_reference(&fresh.depth, depth ? &depth->base : NULL);
+   ret = m9_faa_graph_release_kernel(screen, &surface->graph);
+   if (ret) {
+      m9_faa_surface_destroy(screen, &fresh);
+      return ret;
+   }
    m9_faa_surface_destroy(screen, surface);
    *surface = fresh;
    return 0;
@@ -221,4 +233,82 @@ m9_faa_surface_init_request(const struct m9_screen *screen,
       return false;
    *request = fresh;
    return true;
+}
+
+/* PREPARE has no GPU endpoint. Its id/generation is a retained-owner token,
+ * not evidence of initialized GPU stores, shaders or a usable FAA job. */
+int
+m9_faa_surface_prepare_kernel(struct m9_screen *screen,
+                                struct m9_faa_surface *surface)
+{
+   struct m9_faa_init_request snapshot;
+   struct drm_parhelia_m9_faa_graph_prepare request = {0};
+   struct m9_faa_graph *graph;
+
+   if (!screen || !surface || surface->graph.initialized)
+      return -EINVAL;
+   graph = &surface->graph;
+   if (!m9_faa_surface_init_request(screen, surface, &snapshot) ||
+       !snapshot.source_capacity_compatible)
+      return -EOPNOTSUPP;
+   if (graph->prepared_id)
+      return graph->prepared ? 0 : -EPROTO;
+   if (graph->prepared)
+      return -EPROTO;
+   _Static_assert(M9_FAA_INIT_OWNER_COUNT == PARHELIA_M9_FAA_GRAPH_OWNERS,
+                  "FAA owner count differs from kernel ABI");
+   _Static_assert((unsigned)M9_FAA_INIT_PRIMARY == (unsigned)PARHELIA_M9_FAA_PRIMARY &&
+                  (unsigned)M9_FAA_INIT_MAIN == (unsigned)PARHELIA_M9_FAA_MAIN &&
+                  (unsigned)M9_FAA_INIT_AUXILIARY == (unsigned)PARHELIA_M9_FAA_AUXILIARY &&
+                  (unsigned)M9_FAA_INIT_COMPANION == (unsigned)PARHELIA_M9_FAA_COMPANION &&
+                  (unsigned)M9_FAA_INIT_HZ == (unsigned)PARHELIA_M9_FAA_HZ &&
+                  (unsigned)M9_FAA_INIT_SENTINEL == (unsigned)PARHELIA_M9_FAA_SENTINEL,
+                  "FAA owner ordering differs from kernel ABI");
+   request.width = snapshot.width;
+   request.height = snapshot.height;
+   request.format = snapshot.format;
+   request.primary_desc = snapshot.primary_desc;
+   request.companion_desc = snapshot.companion_desc;
+   request.hz_desc = snapshot.hz_desc;
+   request.ad = snapshot.ad;
+   for (unsigned i = 0; i < M9_FAA_INIT_OWNER_COUNT; i++) {
+      request.owners[i].handle = snapshot.owners[i].handle;
+      request.owners[i].logical_bytes = snapshot.owners[i].logical_bytes;
+      request.owners[i].capacity_bytes = snapshot.owners[i].capacity_bytes;
+      request.owners[i].clear_bytes = snapshot.owners[i].clear_bytes;
+   }
+   if (ioctl(screen->fd, DRM_IOCTL_PARHELIA_M9_FAA_GRAPH_PREPARE, &request))
+      return -errno;
+   if (!request.graph_id)
+      return -EPROTO;
+   graph->prepared_id = request.graph_id;
+   graph->prepared_generation = request.generation;
+   if (request.state != PARHELIA_M9_FAA_GRAPH_PREPARED || request.init_point) {
+      (void)m9_faa_graph_release_kernel(screen, graph);
+      return -EPROTO;
+   }
+   graph->prepared = true;
+   return 0;
+}
+
+int
+m9_faa_graph_release_kernel(struct m9_screen *screen, struct m9_faa_graph *graph)
+{
+   struct drm_parhelia_m9_faa_graph_release request = {0};
+
+   if (!screen || !graph)
+      return -EINVAL;
+   if (!graph->prepared_id)
+      return graph->prepared ? -EPROTO : 0;
+   /* Initialized graphs need a future GPU retirement/release contract. */
+   if (graph->initialized)
+      return -EBUSY;
+   request.graph_id = graph->prepared_id;
+   request.generation = graph->prepared_generation;
+   if (ioctl(screen->fd, DRM_IOCTL_PARHELIA_M9_FAA_GRAPH_RELEASE, &request))
+      return -errno;
+   graph->prepared_id = 0;
+   graph->prepared_generation = 0;
+   graph->prepared = false;
+   return 0;
 }

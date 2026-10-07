@@ -9204,6 +9204,9 @@ m9_update_target(struct m9_context *ctx)
                                  ctx->color_offset, w, h, &ctx->faa_surface))
          m9_warn_once(ctx, M9_WARN_MEMORY,
                       "FAA surface preparation failed; ordinary target retained");
+      else if (m9_faa_surface_prepare_kernel(ctx->screen, &ctx->faa_surface))
+         m9_warn_once(ctx, M9_WARN_MEMORY,
+                      "FAA kernel owner preparation unavailable; ordinary target retained");
    } else if (!ctx->faa_surface.graph.initialized) {
       m9_faa_surface_destroy(ctx->screen, &ctx->faa_surface);
    }

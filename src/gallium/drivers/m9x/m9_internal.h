@@ -124,6 +124,11 @@ struct m9_resource {
 struct m9_faa_graph {
    struct m9_faa_graph_layout layout;
    struct m9_resource main, auxiliary, companion, hz, sentinel;
+   /* PREPARE pins CPU-owned GEM resources only. A real GPU init receipt is
+    * still required before initialized can become true. Generation0 is valid. */
+   uint64_t prepared_id;
+   uint32_t prepared_generation;
+   bool prepared;
    bool initialized;
 };
 
