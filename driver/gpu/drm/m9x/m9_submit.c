@@ -735,23 +735,92 @@ out_put:
 	return ret;
 }
 
+/* CPU-only state for one ioctl. Nothing here escapes into a queued owner.
+ * Relocation validation finishes before framing, so their pointer/word
+ * scratch can share storage. GEM object/pin arrays, fences and retirement records
+ * remain separate allocations with their existing GPU lifetime. */
+struct m9_submit_scratch {
+	void *storage;
+	size_t bytes;
+	u32 *image, *expected, *required_access, *range_ends, *framed;
+	const struct drm_parhelia_m9_reloc **by_dword;
+	struct drm_parhelia_m9_reloc *relocs;
+	struct drm_parhelia_m9_bo_ref *refs;
+};
+
+static int m9_scratch_reserve(size_t *total, size_t count, size_t size,
+			      size_t alignment, size_t *offset)
+{
+	size_t aligned, bytes;
+
+	if (check_add_overflow(*total, alignment - 1, &aligned) ||
+	    check_mul_overflow(count, size, &bytes))
+		return -EOVERFLOW;
+	aligned &= ~(alignment - 1);
+	if (check_add_overflow(aligned, bytes, total))
+		return -EOVERFLOW;
+	*offset = aligned;
+	return 0;
+}
+
+static int m9_submit_scratch_init(struct m9_submit_scratch *scratch,
+				u32 dwords, u32 bo_count, u32 reloc_count)
+{
+	size_t total = 0, image, expected, refs, relocs, shared, access;
+	size_t shared_bytes, access_words;
+	u8 *base;
+	int ret;
+
+	if (!dwords || dwords > PARHELIA_M9_COMMAND_BYTES / sizeof(u32) ||
+	    bo_count > PARHELIA_M9_MAX_BOS ||
+	    reloc_count > PARHELIA_M9_MAX_RELOCS || reloc_count > dwords)
+		return -EINVAL;
+	shared_bytes = max_t(size_t, dwords * sizeof(*scratch->by_dword),
+				 2 * dwords * sizeof(*scratch->framed));
+	access_words = max_t(size_t, bo_count, dwords / 2 + 1);
+#define M9_SCRATCH_REGION(field, count, type) do { \
+	ret = m9_scratch_reserve(&total, count, sizeof(type), \
+				 __alignof__(type), &field); \
+	if (ret) \
+		return ret; \
+} while (0)
+	M9_SCRATCH_REGION(image, dwords, u32);
+	M9_SCRATCH_REGION(expected, dwords, u32);
+	M9_SCRATCH_REGION(refs, bo_count, struct drm_parhelia_m9_bo_ref);
+	M9_SCRATCH_REGION(relocs, reloc_count, struct drm_parhelia_m9_reloc);
+	M9_SCRATCH_REGION(shared, shared_bytes / sizeof(u64), u64);
+	M9_SCRATCH_REGION(access, access_words, u32);
+#undef M9_SCRATCH_REGION
+	/* Initial masks/pointer slots are zero, just as the former per-array
+	 * callocs. Every later framed/range word is assigned before use. */
+	base = kvzalloc(total, GFP_KERNEL);
+	if (!base)
+		return -ENOMEM;
+	*scratch = (struct m9_submit_scratch) {
+		.storage = base, .bytes = total,
+		.image = (u32 *)(base + image),
+		.expected = (u32 *)(base + expected),
+		.refs = (void *)(base + refs),
+		.relocs = (void *)(base + relocs),
+		.by_dword = (void *)(base + shared),
+		.framed = (u32 *)(base + shared),
+		.required_access = (u32 *)(base + access),
+		.range_ends = (u32 *)(base + access),
+	};
+	return 0;
+}
+
 static int
 m9_validate_relocs(u32 *image, u32 dwords, u32 *expected,
 		   const struct drm_parhelia_m9_reloc *relocs, u32 reloc_count,
 		   struct drm_gem_object **bos, struct m9x_device *mdev,
-		   const struct drm_parhelia_m9_bo_ref *refs, u32 bo_count)
+		   const struct drm_parhelia_m9_bo_ref *refs, u32 bo_count,
+		   const struct m9_submit_scratch *scratch)
 {
-	const struct drm_parhelia_m9_reloc **by_dword;
-	u32 *required_access;
+	const struct drm_parhelia_m9_reloc **by_dword = scratch->by_dword;
+	u32 *required_access = scratch->required_access;
 	u32 i;
 	int ret = 0;
-
-	by_dword = kvcalloc(dwords, sizeof(*by_dword), GFP_KERNEL);
-	required_access = kcalloc(bo_count, sizeof(*required_access), GFP_KERNEL);
-	if (!by_dword || !required_access) {
-		ret = -ENOMEM;
-		goto out;
-	}
 
 	for (i = 0; i < reloc_count; i++) {
 		const struct drm_parhelia_m9_reloc *reloc = &relocs[i];
@@ -915,8 +984,6 @@ m9_validate_relocs(u32 *image, u32 dwords, u32 *expected,
 		}
 	ret = m9_validate_draw_reloc_pairs(image, dwords, by_dword);
 out:
-	kfree(required_access);
-	kvfree(by_dword);
 	return ret;
 }
 
@@ -938,15 +1005,12 @@ static void m9_put_bos(struct drm_gem_object **bos, u32 count)
  */
 static u32 *m9_frame_records(const u32 *image, const u32 *expected, u32 dwords,
 			     u32 target, u32 *out_dwords, u32 *range_ends,
-			     u32 *ranges, u32 *max_token)
+			     u32 *ranges, u32 *max_token, u32 *framed)
 {
-	u32 *framed, cursor = 0, out = 0;
+	u32 cursor = 0, out = 0;
 
 	*ranges = 0;
 	*max_token = 0;
-	framed = kvcalloc(dwords * 2, sizeof(*framed), GFP_KERNEL);
-	if (!framed)
-		return NULL;
 	while (cursor < dwords) {
 		u32 header = image[cursor], family;
 		unsigned int values = 4, i;
@@ -1035,7 +1099,8 @@ static int m9_submit_execute(struct m9x_device *mdev, const u32 *image,
 			     const u32 *expected, u32 dwords, u64 *point,
 			     bool async, bool queued, struct drm_gem_object ***bos,
 			     bool **pinned,
-			     const struct drm_parhelia_m9_bo_ref *refs, u32 count)
+			     const struct drm_parhelia_m9_bo_ref *refs, u32 count,
+			     const struct m9_submit_scratch *scratch)
 {
 	struct drm_exec exec;
 	struct m9x_fence *fence = NULL;
@@ -1046,14 +1111,10 @@ static int m9_submit_execute(struct m9x_device *mdev, const u32 *image,
 	bool posted = false;
 	int ret;
 
-	range_ends = kvcalloc(dwords / 2 + 1, sizeof(*range_ends), GFP_KERNEL);
-	if (!range_ends)
-		return -ENOMEM;
+	range_ends = scratch->range_ends;
 	retired = kzalloc(sizeof(*retired), GFP_KERNEL);
-	if (!retired) {
-		kvfree(range_ends);
+	if (!retired)
 		return -ENOMEM;
-	}
 	ret = queued ? m9x_triangle_prepare_queue(mdev) :
 		m9x_triangle_prepare_user(mdev);
 	if (ret)
@@ -1088,18 +1149,13 @@ static int m9_submit_execute(struct m9x_device *mdev, const u32 *image,
 	target = mdev->transport.next_fence;
 	framed = m9_frame_records(image, expected, dwords, target,
 				  &framed_dwords, range_ends, &ranges,
-				  &max_token);
-	if (!framed) {
-		ret = -ENOMEM;
-		goto out_unlock;
-	}
+				  &max_token, scratch->framed);
 	/* The completion target follows every userspace dependency token. */
 	final = target + max_token + 0x10;
 	issued = ((u64)(mdev->transport.fence_epoch +
 			 (final < mdev->transport.last_fence)) << 32) | final;
 	fence = m9x_fence_create_target_locked(mdev, final);
 	if (!fence) {
-		kvfree(framed);
 		ret = -ENOMEM;
 		goto out_unlock;
 	}
@@ -1112,7 +1168,6 @@ static int m9_submit_execute(struct m9x_device *mdev, const u32 *image,
 	ret = m9x_submit_user_stream_locked(mdev, framed, framed_dwords,
 					    range_ends, ranges,
 					    final, point, async, &posted, secondary_slot);
-	kvfree(framed);
 	/* Synchronous failure after the real doorbell can also leave DMA
 	 * active. A failure before posting owns no GPU readers; a retired
 	 * job whose guard check failed can likewise release its objects. */
@@ -1170,7 +1225,6 @@ out_exec:
 	drm_exec_fini(&exec);
 out_retired:
 	kfree(retired);
-	kvfree(range_ends);
 	return ret;
 }
 
@@ -1178,6 +1232,7 @@ static int m9_submit_validate(struct m9x_device *mdev,
 			      struct drm_file *file,
 			      struct drm_parhelia_m9_submit *args, bool execute)
 {
+	struct m9_submit_scratch scratch = {};
 	struct drm_parhelia_m9_reloc *relocs = NULL;
 	struct drm_parhelia_m9_bo_ref *refs = NULL;
 	struct drm_gem_object **bos = NULL;
@@ -1214,30 +1269,24 @@ static int m9_submit_validate(struct m9x_device *mdev,
 		goto out_command;
 	}
 	dwords = args->command_length / sizeof(u32);
-	image = kmemdup((u8 *)command_bo->dma.vaddr + args->command_offset,
-			args->command_length, GFP_KERNEL);
-	expected = kvcalloc(dwords, sizeof(*expected), GFP_KERNEL);
-	if (args->bo_count)
-		refs = memdup_user(u64_to_user_ptr(args->bos_ptr),
-				   array_size(args->bo_count, sizeof(*refs)));
-	if (!image || !expected) {
-		ret = -ENOMEM;
+	ret = m9_submit_scratch_init(&scratch, dwords, args->bo_count,
+				     args->relocation_count);
+	if (ret)
 		goto out;
-	}
-	if (IS_ERR(refs)) {
-		ret = PTR_ERR(refs);
-		refs = NULL;
+	image = scratch.image;
+	expected = scratch.expected;
+	refs = scratch.refs;
+	relocs = scratch.relocs;
+	memcpy(image, (u8 *)command_bo->dma.vaddr + args->command_offset,
+	       args->command_length);
+	if ((args->bo_count &&
+	     copy_from_user(refs, u64_to_user_ptr(args->bos_ptr),
+			    array_size(args->bo_count, sizeof(*refs)))) ||
+	    (args->relocation_count &&
+	     copy_from_user(relocs, u64_to_user_ptr(args->relocations_ptr),
+			    array_size(args->relocation_count, sizeof(*relocs))))) {
+		ret = -EFAULT;
 		goto out;
-	}
-	if (args->relocation_count) {
-		relocs = vmemdup_array_user(u64_to_user_ptr(args->relocations_ptr),
-					    args->relocation_count,
-					    sizeof(*relocs));
-		if (IS_ERR(relocs)) {
-			ret = PTR_ERR(relocs);
-			relocs = NULL;
-			goto out;
-		}
 	}
 	if (execute)
 		for (i = 0; i < args->relocation_count; i++)
@@ -1306,7 +1355,7 @@ static int m9_submit_validate(struct m9x_device *mdev,
 	if (!ret)
 		ret = m9_validate_relocs(image, dwords, expected, relocs,
 					 args->relocation_count, bos, mdev, refs,
-					 args->bo_count);
+					 args->bo_count, &scratch);
 	/*
 	 * A synchronous job holds its objects for the call.  An asynchronous
 	 * one hands them to the transport, which releases them when the job
@@ -1319,7 +1368,8 @@ static int m9_submit_validate(struct m9x_device *mdev,
 					m9_async_submit &&
 					!mdev->transport.wedged,
 					args->flags & PARHELIA_M9_SUBMIT_QUEUED,
-					&bos, &vram_pinned, refs, args->bo_count);
+					&bos, &vram_pinned, refs, args->bo_count,
+					&scratch);
 out:
 	if (vram_pinned)
 		for (i = 0; i < args->bo_count; i++)
@@ -1328,10 +1378,7 @@ out:
 	kfree(vram_pinned);
 	m9_put_bos(bos, args->bo_count);
 	kfree(bos);
-	kvfree(relocs);
-	kfree(refs);
-	kvfree(expected);
-	kfree(image);
+	kvfree(scratch.storage);
 out_command:
 	drm_gem_object_put(&command_bo->dma.base);
 	return ret;
