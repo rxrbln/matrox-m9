@@ -3,6 +3,31 @@
 
 # M9 open topics and evidence, 2026-10-06
 
+## October 7: complete FAA DRAW retirement and current parallel source
+
+The latest M9128 graph path physically retires INITb0, preprocessing110,
+and the complete returned DRAW plus explicit finish140/raw141. Kernel
+`ea659e6` preserves all five source posts and live relocations. Actual
+boot364aa8be has an empty healthy queue immediately and+2s. This closes
+the DRAW submission/retirement boundary, not application FAA pixels.
+The receipt-gated vendor normal Lock now reaches an unread170 wait after
+three genuine posts; its complete3556B source plan includes eight live
+address fields, five timeline values and two extents. Native Lock translation
+and resolved output remain next. See the
+[current DRAW/Lock evidence](parhelia-m9-faa-graph-post-init-draw.md) and
+[hardware capsule](../tests/m9-faa-returned-draw-finish-20261007/hardware-20261007/).
+
+Canonical Mesa now includes live-CB0 gate specialization, vertex truncation,
+opt-in sRGB RT0 writes and opt-in cube faces through64. The archived Q3
+case2 source drops from248instructions/78constant pairs to93/55 without
+raising188/63 limits; target pixels remain unqualified. sRGB/cube caps
+remain opt-in until hardware checks. Vertex log/power have implementations;
+older rows calling them absent are superseded, while their numerical hardware
+qualification remains open. Production complete-job aggregation is being
+implemented with retained BO/arena lifetimes and per-job completion packets.
+FAA, GL2, performance and other feature tracks continue in parallel; root
+owns the target, with FAA first in the locked queue. No new FPS claim.
+
 ## Latest checkpoint: FAA, GL2 operations and performance tracks
 
 Latest hardware progress: the completed black clear plus the triangle's first
