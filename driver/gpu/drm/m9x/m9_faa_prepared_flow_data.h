@@ -1,31 +1,32 @@
 /* SPDX-License-Identifier: GPL-2.0-only */
 /* Copyright 2026 René Rebe <rene@exactco.de> */
-/* Generated from actual preclear-draw-wait caller boundary + independent queue flush. */
-#define M9_FAA_BLOB_BYTES 123704u
-#define M9_FAA_BLOB_FNV 0xe40fa33fu
+/* Generated from actual prepared-normal-lock-wait caller boundary + independent queue flush. */
+#define M9_FAA_BLOB_BYTES 127956u
+#define M9_FAA_BLOB_FNV 0xf33fc34fu
 #define M9_FAA_PRIMARY_OWNER 0x1bu
-#define M9_FAA_PRIMARY_BYTES 0x13ccu
+#define M9_FAA_PRIMARY_BYTES 0x21b4u
 #define M9_FAA_COLOR_OWNER 0x1u
 #define M9_FAA_OUTPUT_OWNER 0xffffffffu
-#define M9_FAA_TRACKER_LAST 0x120u
+#define M9_FAA_TRACKER_LAST 0x170u
 #define M9_FAA_CLEAR_OWNER 0x4u
 #define M9_FAA_CLEAR_BYTES 0x97000u
 #define M9_FAA_CLEAR_START 0x11d8u
 #define M9_FAA_CLEAR_END 0x1224u
-#define M9_FAA_SOURCE_PHASES { { 4980u, 0xc0u }, { 5068u, 0x120u } }
+#define M9_FAA_SOURCE_PHASES { { 4980u, 0xc0u }, { 5068u, 0x120u }, { 8628u, 0x170u } }
 #define M9_FAA_PHASE_CONTROL 1
 #define M9_FAA_HAS_OUTPUT 0
 #define M9_FAA_PHASE_INIT_ONLY 0
 #define M9_FAA_PREPARED_FLOW_CONTROL 1
 #define M9_FAA_STARTUP_LOCAL_OWNER 30u
 #define M9_FAA_STARTUP_LOCAL_BYTES 0x80000u
-#define M9_FAA_PROGRAM_ENTRY_MASK 0x2u
+#define M9_FAA_PROGRAM_ENTRY_MASK 0x3u
 #define M9_FAA_PROGRAM_UPLOAD_OWNER 26u
 #define M9_FAA_MULTI_CLEAR 1
 static const struct m9_faa_clear_segment m9_faa_clear_segments[] = {
 	{ 4u, 0x97000u, 0x11d8u, 0x1224u },
 	{ 1u, 0x50000u, 0x1328u, 0x1354u },
 };
+#define M9_FAA_RASTER_MASK_BLOCKS { { 29u, 988u, 1048u } }
 #define M9_FAA_COUNTER_VIRTUAL 1
 static const struct m9_faa_owner_spec m9_faa_owner_specs[] = {
 	{ 0xc1a000u, 0x100u, true, false, false, 0x0u },
@@ -69,10 +70,10 @@ static const struct m9_faa_span m9_faa_spans[] = {
 	{ 17u, 0x0u, 0x1c68cu, 0x400u },
 	{ 21u, 0x0u, 0x1ca8cu, 0x14u },
 	{ 26u, 0x0u, 0x1caa0u, 0xf0u },
-	{ 27u, 0x0u, 0x1cb90u, 0x13ccu },
-	{ 28u, 0x0u, 0x1df5cu, 0x88u },
-	{ 28u, 0x100u, 0x1dfe4u, 0xbcu },
-	{ 29u, 0x0u, 0x1e0a0u, 0x298u },
+	{ 27u, 0x0u, 0x1cb90u, 0x21b4u },
+	{ 28u, 0x0u, 0x1ed44u, 0x88u },
+	{ 28u, 0x100u, 0x1edccu, 0xbcu },
+	{ 29u, 0x0u, 0x1ee88u, 0x54cu },
 };
 static const struct m9_faa_fixup m9_faa_fixups[] = {
 	{ 27u, 0x470u, 5u, 0x0u, 0x24930u, 1u, 0x1151001u },
@@ -91,10 +92,38 @@ static const struct m9_faa_fixup m9_faa_fixups[] = {
 	{ 29u, 0x14cu, 28u, 0x88u, 0x248c8u, 1u, 0x400c2089u },
 	{ 29u, 0x21cu, 12u, 0x0u, 0x24886u, 1u, 0x119a001u },
 	{ 29u, 0x23cu, 28u, 0x100u, 0x248c8u, 1u, 0x400c2101u },
+	{ 29u, 0x31cu, 8u, 0x0u, 0x24930u, 1u, 0x1161001u },
+	{ 29u, 0x320u, 8u, 0x14u, 0x24909u, 1u, 0x1161014u },
+	{ 29u, 0x33cu, 1u, 0x0u, 0x24930u, 1u, 0xf19001u },
+	{ 29u, 0x34cu, 4u, 0x0u, 0x24930u, 1u, 0x10b9001u },
+	{ 29u, 0x35cu, 5u, 0x0u, 0x24930u, 1u, 0x1151001u },
+	{ 29u, 0x36cu, 25u, 0x0u, 0x24930u, 1u, 0x1a99001u },
+	{ 29u, 0x378u, 22u, 0x0u, 0x24930u, 1u, 0x1229001u },
+	{ 29u, 0x398u, 2u, 0x0u, 0x24930u, 1u, 0xf69001u },
+	{ 29u, 0x39cu, 3u, 0x0u, 0x24930u, 1u, 0x10a0001u },
+	{ 29u, 0x42cu, 23u, 0x107800u, 0x24930u, 1u, 0x1331801u },
+	{ 29u, 0x430u, 23u, 0x316800u, 0x24930u, 1u, 0x1540801u },
+	{ 29u, 0x440u, 23u, 0x20f000u, 0x24930u, 1u, 0x1439001u },
+	{ 29u, 0x454u, 26u, 0x0u, 0x24886u, 1u, 0x1b9a001u },
+	{ 29u, 0x458u, 26u, 0x0u, 0x248abu, 1u, 0x0u },
+	{ 29u, 0x46cu, 28u, 0x0u, 0x248c8u, 1u, 0x400c2001u },
+	{ 29u, 0x470u, 28u, 0x20u, 0x248c8u, 1u, 0x400c2021u },
+	{ 29u, 0x51cu, 12u, 0x0u, 0x24886u, 1u, 0x119a001u },
+	{ 29u, 0x53cu, 28u, 0x100u, 0x248c8u, 1u, 0x400c2101u },
+	{ 27u, 0x13dcu, 22u, 0x0u, 0x24930u, 1u, 0x1229001u },
+	{ 27u, 0x141cu, 22u, 0x284u, 0x24930u, 1u, 0x1229285u },
+	{ 27u, 0x1420u, 22u, 0x2c4u, 0x24919u, 1u, 0x12292c5u },
+	{ 27u, 0x1428u, 8u, 0x8u, 0x256f1u, 1u, 0x1161009u },
+	{ 27u, 0x1434u, 8u, 0xcu, 0x256f1u, 1u, 0x116100du },
+	{ 27u, 0x1440u, 8u, 0x10u, 0x256f1u, 1u, 0x1161011u },
+	{ 27u, 0x1498u, 1u, 0x0u, 0x24930u, 1u, 0xf19001u },
+	{ 27u, 0x206cu, 1u, 0x0u, 0x24930u, 1u, 0xf19001u },
 	{ 27u, 0x13b8u, 29u, 0x0u, 0x256f1u, 1u, 0x40042001u },
 	{ 27u, 0x13bcu, 29u, 0x25cu, 0x256f1u, 2u, 0x4004225eu },
 	{ 27u, 0x13c4u, 29u, 0x25cu, 0x256f1u, 1u, 0x4004225du },
 	{ 27u, 0x13c8u, 29u, 0x298u, 0x256f1u, 2u, 0x4004229au },
+	{ 27u, 0x13d0u, 29u, 0x298u, 0x256f1u, 1u, 0x40042299u },
+	{ 27u, 0x13d4u, 29u, 0x54cu, 0x256f1u, 2u, 0x4004254eu },
 };
 static const struct m9_faa_tracker m9_faa_trackers[] = {
 	{ 27u, 0x8u, 0x21u },
@@ -117,4 +146,11 @@ static const struct m9_faa_tracker m9_faa_trackers[] = {
 	{ 29u, 0x268u, 0x101u },
 	{ 29u, 0x284u, 0x111u },
 	{ 29u, 0x294u, 0x121u },
+	{ 29u, 0x2d0u, 0x131u },
+	{ 29u, 0x330u, 0x141u },
+	{ 27u, 0x1458u, 0x151u },
+	{ 27u, 0x1490u, 0x161u },
+	{ 27u, 0x1518u, 0x160u },
+	{ 27u, 0x1fe4u, 0x160u },
+	{ 27u, 0x21b0u, 0x171u },
 };
