@@ -2,11 +2,9 @@
 /* Copyright 2026 René Rebe <rene@exactco.de> */
 /*
  * Texture placement: the 32x16 packed tail (levels up to 16x16) is the
- * captured address permutation, and it covers a plane, a cube face and a
- * volume slice alike -- the face is an allocation stride and the slice is
- * an input of the address calculator.  Every volume level is placed by the
- * vendor calculators.  Plane levels outside the tail report -ENOTSUP and
- * go through the kernel texture window (docs/parhelia-m9-texture-storage.md).
+ * captured address permutation.  Cube faces through 64x64 and every volume
+ * level use the source-derived calculators.  Larger plane levels report
+ * -ENOTSUP and use the kernel texture window; larger cubes remain unplaced.
  */
 #include "m9_texture.h"
 
@@ -502,6 +500,15 @@ m9_texture_layout_init(struct m9_texture_layout *layout,
                           ~(quantum - 1)));
          lvl->offset = offset;
          offset += layout->faces * lvl->face_bytes;
+         /* kind 09 selects the aperture calculator.  The original cube
+          * constructor advances each mip by six face allocations, and its
+          * per-face object uses the same mode-2 address calculation as a
+          * plane.  Exhaustive verification below proves that calculation
+          * injective and inside each face only through a 64-texel span;
+          * at 65, x=64 aliases x=0.  Keep wider faces unplaced. */
+         if (kind == M9_TEXTURE_KIND_CUBE && lvl->width <= 64 &&
+             lvl->height <= 64)
+            candidates |= 1u << l;
       }
    }
    layout->size = MAX2(offset, end);
