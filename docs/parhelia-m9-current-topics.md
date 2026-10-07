@@ -20,6 +20,12 @@ is still unfinished. Focused host checks and complete builds pass, but this
 new application/depth code has no hardware qualification.
 [Exact batch evidence and images](../tests/m9-faa-live-color-six-20261007/README.md).
 
+The original two-output vendor COLOR4 profile (360-byte program, gather40)
+also passes an authentic Lock190/read/Unlock1b0 cycle and the pixel oracle,
+producing the exact same first image. Its real receipt now permits the
+matching post-Unlock vendor continuation; repeated clearing is still open.
+[Original-profile receipt and image](../tests/m9-faa-original-color4-hardware-20261007/README.md).
+
 ## October7: repeated live COLOR completes, frame reset has three stale edge pixels
 
 Native ade4713 and the full-cycle helper complete first Lock190/Unlock1b0,
