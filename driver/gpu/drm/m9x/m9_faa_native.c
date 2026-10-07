@@ -3999,6 +3999,56 @@ out:
 #endif
 }
 
+/* Authenticate the first returned public-VS Unlock as a successor boundary.
+ * This only retains the existing binding. It never resets first-draw flags,
+ * ignores a reservation hazard, rewrites a cursor or posts GPU commands. */
+int m9x_faa_graph_public_vs_unlocked_get_locked(struct m9x_device *mdev,
+		u32 generation, u64 unlock_point, struct m9_faa_graph_binding **out)
+{
+#ifdef M9_FAA_GRAPH_INIT_CONTROL
+	struct m9x_transport *t = &mdev->transport;
+	struct m9x_faa_replay *r = t->faa;
+
+	lockdep_assert_held(&t->lock);
+	if (!out)
+		return -EINVAL;
+	*out = NULL;
+	if (t->wedged)
+		return -EIO;
+	if (!r || !r->graph_binding || !r->public_vs_payload_ready ||
+	    !r->public_vs_image || !r->public_vs_draw_image ||
+	    !r->public_vs_lock_image || !r->public_vs_head_retired ||
+	    !r->public_vs_draw_observed || !r->public_vs_lock_retired ||
+	    !r->public_vs_lock_attempted || r->public_vs_prefix_retired ||
+	    r->public_vs_follow_retired || r->draw_image ||
+	    r->public_vs_head_fence || r->public_vs_draw_fence ||
+	    !r->normal_lock_view_seen || !r->unlock_started || !r->unlock_retired ||
+	    r->graph_generation != generation || t->generation != generation ||
+	    r->observation_generation != generation || !r->observation_retired ||
+	    !r->observation_point || r->observation_point > U64_MAX - 0x100 ||
+	    !unlock_point || (unlock_point & 15) ||
+	    unlock_point != r->observation_point + 0x100 ||
+	    r->unlock_point != unlock_point || r->graph_draw_point != unlock_point ||
+	    r->graph_draw_posts != 9 || r->graph_unlock_posts != 9 ||
+	    r->graph_draw_end_bytes != r->graph_unlock_end_bytes ||
+	    (u64)r->graph_draw_end_bytes != (u64)r->primary_bytes + 124 +
+		M9_FAA_VS_LOCK_PRIMARY_BYTES + M9_FAA_UNLOCK_PRIMARY_BYTES ||
+	    t->submitted_point != unlock_point || t->completed_point != unlock_point ||
+	    lower_32_bits(unlock_point) > U32_MAX - 0x10 ||
+	    t->next_fence != lower_32_bits(unlock_point) + 0x10)
+		return -ESTALE;
+	if (!t->faa_source_context || !t->faa_virtual_primary ||
+	    !t->engine_transitioned || !t->restore_ready || !t->fence_cpu ||
+	    !t->transport_armed || !t->bus_master_enabled || t->async_stop ||
+	    t->async_pending || t->queue_count)
+		return -EBUSY;
+	*out = m9x_faa_graph_binding_get(r->graph_binding);
+	return 0;
+#else
+	return -EOPNOTSUPP;
+#endif
+}
+
 #ifdef M9_FAA_GRAPH_INIT_CONTROL
 static int m9_faa_public_vs_head_state(struct m9x_transport *t,
 		struct m9_faa_graph_binding *binding, u32 generation, u64 head_point)
