@@ -1,5 +1,22 @@
 # M9 multisampling (FAA): static closure, captures, and what the silicon did
 
+## October 7: six-vertex FAA draw executes; frame reset still fails
+
+DRM `102a969` corrects real launch counts instead of overwriting packet lengths.
+The M9128 test completes first3 then changed6 vertices through Lock/read/Unlock,
+release and file close without a wedge. Both new triangles render, with9,936
+checked interior pixels and zero interior/exterior errors, but six edge pixels
+retain old color. This is batch execution progress, not full frame correctness.
+Mesa `73b22bb` integrates the authenticated repeated-draw client; `46d4f02`
+adds the genuine six-vertex shader fixture. Mesa `b871c33` now wires opt-in
+application draws through live upload/read/Unlock/presentation, and `cb1a062`
+adds smooth quads/quad strips without CPU transforms. Pending clear, depth,
+culling and flat shading remain explicitly refused. DRM `1fc1972` retains the
+three distinct bound color/HZ/depth allocations; their clear/draw activation
+is still unfinished. Focused host checks and complete builds pass, but this
+new application/depth code has no hardware qualification.
+[Exact batch evidence and images](../tests/m9-faa-live-color-six-20261007/README.md).
+
 ## October7: repeated live COLOR completes, frame reset has three stale edge pixels
 
 Native ade4713 and the full-cycle helper complete first Lock190/Unlock1b0,
