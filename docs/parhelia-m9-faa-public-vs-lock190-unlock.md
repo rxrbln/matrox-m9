@@ -5,9 +5,11 @@ The real M9128 combined public-VS run on boot
 `0xc0`, natural DRAW observation `0x160`, and normal Lock `0x190` in that
 order. After Lock, transport reported submitted/completed `0x190`, raw
 `0x191`, common lanes `0x191/0x10/0x10/0x10`, queue zero and no wedge. The
-helper wrote a complete 307200-byte F021 readback, but its final cleanup
-blocked and the outer timeout returned 124. That is a cleanup failure, not
-a successful complete helper session. The independent raw SHA-256 is
+helper wrote a complete 307200-byte F021 readback, but the 20-second outer
+timeout returned 124 before the helper's final result was printed. The
+helper's saved-view `printf` is buffered and a further two-second sleep
+precedes graph RELEASE, so this receipt does not locate a release hang. It
+is not a successful complete helper session. The independent raw SHA-256 is
 `a3279ef8fde3fe105d006f411559c71f8812bce48cc4e6a7fd449afab4dbeec5`.
 The live FS range fix bound the authenticated cyan `(0,1,1,0.5)` constant;
 the pixel oracle found 9801 colored pixels, 9361 full and 440 partial, with
