@@ -173,6 +173,7 @@ struct m9_faa_surface {
    uint64_t destination_offset;
    uint32_t width, height;
    uint8_t format;
+   bool destination_needs_clear;
 };
 
 /* What the engine's back-end object last carried.  It keeps per-target state

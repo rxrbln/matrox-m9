@@ -124,6 +124,43 @@ m9_faa_surface_prepare(struct m9_screen *screen,
        surface->destination_offset == offset && surface->width == width &&
        surface->height == height && surface->format == destination->format)
       return 0;
+   if (surface->graph.prepared || surface->graph.initialized) {
+      struct m9_faa_graph *graph = &surface->graph;
+      const struct m9_resource *owners[] = {
+         &surface->primary, &graph->main, &graph->auxiliary,
+         &graph->companion, &graph->hz, &graph->sentinel,
+      };
+      /* The ordinary destination is a presentation copy, not one of the
+       * retained GPU graph owners. A same-layout back-buffer change must
+       * not RELEASE that graph: the native context still owns it afterward
+       * and cannot PREPARE a replacement on the running engine. */
+      if (!graph->prepared || !graph->prepared_id ||
+          width != surface->width || height != surface->height ||
+          destination->format != surface->format ||
+          surface->depth != (depth ? &depth->base : NULL))
+         return -EOPNOTSUPP;
+      if (graph->color_next_attempted || graph->public_vs_attempted ||
+          graph->public_vs_head_attempted || graph->public_vs_draw_attempted ||
+          graph->public_vs_lock_attempted || graph->public_vs_unlock_attempted ||
+          graph->public_vs_next_attempted || graph->public_vs_next_unlock_attempted ||
+          graph->public_vs_follow_attempted ||
+          (graph->color_lock_attempted &&
+           (!graph->initialized || !graph->color_lock_point ||
+            !graph->color_unlock_attempted ||
+            graph->color_lock_point > UINT64_MAX - 0x20 ||
+            graph->color_unlock_point != graph->color_lock_point + 0x20)))
+         return -EBUSY;
+      for (unsigned i = 0; i < ARRAY_SIZE(owners); i++)
+         if (destination->handle == owners[i]->handle)
+            return -EINVAL;
+      pipe_resource_reference(&surface->destination, &destination->base);
+      surface->destination_offset = offset;
+      /* Swapping presentation buffers and binding a different same-size FBO
+       * are indistinguishable here. Require a real full-frame reset before
+       * this new destination can receive retained sampled contents. */
+      surface->destination_needs_clear = true;
+      return 0;
+   }
    /* The kernel's native context keeps independent references to a graph
     * after file RELEASE. Retarget still releases the exact old token before
     * publishing fresh owners; the new graph cannot inherit INIT's receipt. */

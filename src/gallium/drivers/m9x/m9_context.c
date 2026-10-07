@@ -9264,7 +9264,7 @@ m9_context_faa_submit_draw(struct m9_context *ctx,
    int ret = -EOPNOTSUPP;
    bool attempted = false;
    if (!ctx || ctx->lost || !ctx->screen) goto out;
-   if (ctx->faa_application_clear.pending) {
+   if (ctx->faa_application_clear.pending || ctx->faa_surface.destination_needs_clear) {
       why = "FAA application frame clear/reset is not qualified";
       goto out;
    }
