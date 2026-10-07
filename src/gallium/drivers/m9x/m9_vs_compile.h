@@ -34,6 +34,8 @@ extern const struct nir_shader_compiler_options m9_vs_nir_options;
  * Index 22 bits 11:8 carry the word count minus one, so a pass takes
  * sixteen words; nine, four attributes' worth, is well inside it. */
 #define M9_VS_MAX_ATTRIBUTES 4u
+/* Logical inputs can share existing source slots; this is not a hardware cap. */
+#define M9_VS_MAX_SOURCE_ATTRIBUTES (4u * M9_VS_MAX_ATTRIBUTES)
 /* Attributes a preprocessing pass is MEASURED to feed correctly.  A third
  * used to draw from neither its own value nor a decoy; the register rule
  * above was right all along and the declaration was not, because the pass
@@ -254,6 +256,10 @@ struct m9_vs_attr {
     * whose scale (components 0, 1) and bias (2, 3) it carries. */
    bool constant;
    uint8_t coeff_stream;
+   /* A vec4 source slot composed of up to four scalar (component-zero)
+    * inputs. Zero preserves the ordinary one-input-per-slot representation. */
+   uint8_t scalar_count;
+   uint8_t scalar_location[4];
 };
 
 struct m9_vs_program {

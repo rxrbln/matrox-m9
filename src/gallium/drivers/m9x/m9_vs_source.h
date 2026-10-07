@@ -21,6 +21,8 @@ struct m9_vs_source_attr {
    enum pipe_format format;
    unsigned components;    /* components the shader reads */
    unsigned dword;         /* dword offset of the element in the record */
+   bool scalar;            /* writes only component zero at this dword */
+   bool scalar_first;      /* initializes its packed source slot defaults */
    /* A slot no vertex element feeds: value[] goes into every record of the
     * draw.  The caller fills it -- a coordinate stream's scale and bias --
     * between the layout and the records. */
@@ -30,7 +32,7 @@ struct m9_vs_source_attr {
 };
 
 struct m9_vs_source_layout {
-   struct m9_vs_source_attr attr[M9_VS_MAX_ATTRIBUTES];
+   struct m9_vs_source_attr attr[M9_VS_MAX_SOURCE_ATTRIBUTES];
    unsigned attr_count;
    unsigned record_dwords;  /* floats per source record */
 };

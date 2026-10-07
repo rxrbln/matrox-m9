@@ -112,62 +112,72 @@ m9_vs_source_layout_init(const struct m9_vs_program *program,
                          struct m9_vs_source_layout *out,
                          const char **reason)
 {
-   unsigned dword = 0;
+   unsigned dword = 0, sources = 0;
 
 #define REFUSE(why) do { if (reason) *reason = (why); return false; } while (0)
-   if (!program || !out || (element_count && !elements))
+   if (!program || !out || (element_count && !elements) ||
+       program->attr_count > M9_VS_MAX_ATTRIBUTES)
       REFUSE("no vertex elements");
    memset(out, 0, sizeof(*out));
    for (unsigned i = 0; i < program->attr_count; i++) {
       const struct m9_vs_attr *a = &program->attrs[i];
-      const struct pipe_vertex_element *e;
-      struct m9_vs_source_attr *s = &out->attr[i];
-      unsigned components = 0;
-      unsigned element;
+      unsigned lanes = a->scalar_count ? a->scalar_count : 1;
 
-      /* A coefficient slot has no element: the caller writes its four
-       * floats into every record of the draw. */
-      if (a->constant) {
-         s->constant = true;
-         s->coeff_stream = a->coeff_stream;
-         s->components = 4;
-         s->dword = dword;
-         if (s->dword != a->offset)
-            REFUSE("the record layout disagrees with the declaration");
-         dword += 4;
-         continue;
-      }
-      element = m9_vs_attr_element(program, i);
-
-      if (element >= element_count)
-         REFUSE("an attribute has no vertex element");
-      e = &elements[element];
-      if (e->vertex_buffer_index >= buffer_count)
-         REFUSE("an attribute has no vertex buffer");
-      if (e->instance_divisor)
-         REFUSE("an instanced attribute");
-      if (e->dual_slot)
-         REFUSE("a dual-slot attribute");
-      if (!m9_vs_source_format_ok(e->src_format))
-         REFUSE("a vertex format the record cannot carry");
-      /* Components beyond what the element carries unpack to the GL default
-       * already, so a short element serves a wider read. */
-      components = MIN2(a->components, 4u);
-      uint64_t offset = (uint64_t)buffers[e->vertex_buffer_index].buffer_offset +
-                        e->src_offset;
-      if (offset > UINT_MAX)
-         REFUSE("an attribute offset leaves the vertex buffer");
-      s->buffer = e->vertex_buffer_index;
-      s->src_offset = offset;
-      s->stride = e->src_stride;
-      s->format = e->src_format;
-      s->components = components;
-      s->dword = dword;
-      if (s->dword != a->offset)
+      if (a->offset != dword || lanes > 4 ||
+          sources + lanes > M9_VS_MAX_SOURCE_ATTRIBUTES ||
+          (a->scalar_count && (a->constant || a->components != 4)))
          REFUSE("the record layout disagrees with the declaration");
+      for (unsigned lane = 0; lane < lanes; lane++) {
+         struct m9_vs_source_attr *s = &out->attr[sources++];
+         const struct pipe_vertex_element *e;
+         unsigned element;
+
+         /* A coefficient slot has no element: the caller writes its four
+          * floats into every record of the draw. */
+         if (a->constant) {
+            s->constant = true;
+            s->coeff_stream = a->coeff_stream;
+            s->components = 4;
+            s->dword = dword;
+            continue;
+         }
+         if (a->scalar_count) {
+            unsigned location = a->scalar_location[lane];
+            if (location >= 64 || !(program->inputs_read & BITFIELD64_BIT(location)))
+               REFUSE("a packed scalar has no vertex input");
+            element = util_bitcount64(program->inputs_read & BITFIELD64_MASK(location));
+         } else {
+            element = m9_vs_attr_element(program, i);
+         }
+         if (element >= element_count)
+            REFUSE("an attribute has no vertex element");
+         e = &elements[element];
+         if (!buffers || e->vertex_buffer_index >= buffer_count)
+            REFUSE("an attribute has no vertex buffer");
+         if (e->instance_divisor)
+            REFUSE("an instanced attribute");
+         if (e->dual_slot)
+            REFUSE("a dual-slot attribute");
+         if (!m9_vs_source_format_ok(e->src_format))
+            REFUSE("a vertex format the record cannot carry");
+         uint64_t offset = (uint64_t)buffers[e->vertex_buffer_index].buffer_offset +
+                           e->src_offset;
+         if (offset > UINT_MAX)
+            REFUSE("an attribute offset leaves the vertex buffer");
+         s->buffer = e->vertex_buffer_index;
+         s->src_offset = offset;
+         s->stride = e->src_stride;
+         s->format = e->src_format;
+         /* Each scalar semantic contributes its own component zero, from
+          * its own live source. Other element components remain irrelevant. */
+         s->scalar = a->scalar_count != 0;
+         s->scalar_first = s->scalar && lane == 0;
+         s->components = s->scalar ? 1 : MIN2(a->components, 4u);
+         s->dword = dword + (s->scalar ? lane : 0);
+      }
       dword += 4;
    }
-   out->attr_count = program->attr_count;
+   out->attr_count = sources;
    out->record_dwords = dword;
    if (!dword || dword != program->record_bytes / 4)
       REFUSE("the record size disagrees with the declaration");
@@ -210,6 +220,24 @@ m9_vs_source_in_range(const struct m9_vs_source_layout *layout,
    return true;
 }
 
+/* A packed group is initialized by its first logical source, then each
+ * source writes only its own lane. The unoccupied lanes stay GL defaults. */
+static void
+m9_vs_source_store(const struct m9_vs_source_attr *s, float *dst,
+                    const float rgba[4])
+{
+   if (s->scalar) {
+      if (s->scalar_first) {
+         dst[0] = dst[1] = dst[2] = 0.0f;
+         dst[3] = 1.0f;
+      }
+      dst[0] = rgba[0];
+   } else {
+      for (unsigned c = 0; c < 4; c++)
+         dst[c] = c < s->components ? rgba[c] : (c == 3 ? 1.0f : 0.0f);
+   }
+}
+
 /* A zero-stride element addresses one bounded texel for the whole draw.
  * Expand it into ordinary source records; the GPU declaration and its record
  * stride stay the same as for per-vertex attributes. */
@@ -225,11 +253,9 @@ m9_vs_source_repeat(const struct m9_vs_source_layout *layout,
    if (!m9_vs_source_range(s, size, 0))
       return false;
    unpack->unpack_rgba(rgba, map + s->src_offset, 1);
-   for (unsigned c = s->components; c < 4; c++)
-      rgba[c] = c == 3 ? 1.0f : 0.0f;
    for (unsigned v = 0; v < count; v++)
-      memcpy(out + (uint64_t)v * layout->record_dwords + s->dword,
-             rgba, sizeof(rgba));
+      m9_vs_source_store(s, out + (uint64_t)v * layout->record_dwords + s->dword,
+                         rgba);
    return true;
 }
 
@@ -273,9 +299,7 @@ m9_vs_source_records(const struct m9_vs_source_layout *layout,
          float rgba[4];
 
          unpack->unpack_rgba(rgba, src, 1);
-         for (unsigned c = 0; c < 4; c++)
-            dst[c] = c < s->components ? rgba[c] :
-                     (c == 3 ? 1.0f : 0.0f);
+         m9_vs_source_store(s, dst, rgba);
       }
    }
    return true;
@@ -320,8 +344,7 @@ m9_vs_source_records_gather(const struct m9_vs_source_layout *layout,
             return false;
          src = buffer_map[s->buffer] + at * s->stride + s->src_offset;
          unpack->unpack_rgba(rgba, src, 1);
-         for (unsigned c = 0; c < 4; c++)
-            dst[c] = c < s->components ? rgba[c] : (c == 3 ? 1.0f : 0.0f);
+         m9_vs_source_store(s, dst, rgba);
       }
    }
    return true;

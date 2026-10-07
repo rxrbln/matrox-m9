@@ -1962,8 +1962,8 @@ note_input(struct ctx *c, struct input_use *used, unsigned *count,
          return true;
       }
    }
-   if (*count >= M9_VS_MAX_ATTRIBUTES)
-      return fail(c, "more than four vertex attributes");
+   if (*count >= M9_VS_MAX_SOURCE_ATTRIBUTES)
+      return fail(c, "more than sixteen logical vertex attributes");
    used[*count].location = location;
    used[*count].driver_location = driver;
    used[*count].coeff_stream = -1;
@@ -2038,11 +2038,40 @@ declare_attributes(struct ctx *c, const struct input_use *used,
    struct m9_vs_program *p = c->p;
    unsigned dword = 0;
 
-   for (unsigned i = 0; i < count; i++) {
+   memset(p->attrs, 0, sizeof(p->attrs));
+   unsigned physical = 0, scalar_slot = ~0u;
+   bool packing = count > M9_VS_MAX_ATTRIBUTES;
+   for (unsigned input = 0; input < count; input++) {
+      unsigned i = physical;
+      if (packing && used[input].components == 1 && used[input].coeff_stream < 0) {
+         if (scalar_slot == ~0u || p->attrs[scalar_slot].scalar_count == 4) {
+            scalar_slot = physical++;
+            p->attrs[scalar_slot].location = used[input].location;
+            p->attrs[scalar_slot].driver_location = used[input].driver_location;
+            p->attrs[scalar_slot].offset = dword;
+            p->attrs[scalar_slot].components = 4;
+            unsigned reg = REG_ATTR0 + 8 * scalar_slot;
+            for (unsigned lane = 0; lane < 4; lane++) {
+               p->attrs[scalar_slot].select[lane] = lane;
+               struct held h = held_lit(lane == 3 ? 1.0f : 0.0f);
+               hold_def(c, reg + lane / 2, lane % 2, &h);
+            }
+            dword += 4;
+         }
+         struct m9_vs_attr *a = &p->attrs[scalar_slot];
+         unsigned lane = a->scalar_count++;
+         a->scalar_location[lane] = used[input].location;
+         struct held h = {.kind = HELD_INPUT, .a = used[input].location, .b = 0};
+         unsigned reg = REG_ATTR0 + 8 * scalar_slot;
+         hold_def(c, reg + lane / 2, lane % 2, &h);
+         continue;
+      }
+      const struct input_use *u = &used[input];
+      physical++;
       unsigned reg = REG_ATTR0 + 8 * i;
 
-      p->attrs[i].location = used[i].location;
-      p->attrs[i].driver_location = used[i].driver_location;
+      p->attrs[i].location = u->location;
+      p->attrs[i].driver_location = u->driver_location;
       p->attrs[i].offset = dword;
       /* Every slot selects a record component; the record writer puts the
        * GL default (0, 0, 0, 1) in the components the shader does not read,
@@ -2054,9 +2083,9 @@ declare_attributes(struct ctx *c, const struct input_use *used,
 
          memset(&h, 0, sizeof(h));
          p->attrs[i].select[j] = j;
-         if (j < used[i].components) {
+         if (j < u->components) {
             h.kind = HELD_INPUT;
-            h.a = used[i].location;
+            h.a = u->location;
             h.b = j;
          } else {
             h.kind = HELD_LIT;
@@ -2064,14 +2093,14 @@ declare_attributes(struct ctx *c, const struct input_use *used,
          }
          hold_def(c, reg + j / 2, j % 2, &h);
       }
-      p->attrs[i].components = used[i].components;
-      p->attrs[i].constant = used[i].coeff_stream >= 0;
-      p->attrs[i].coeff_stream = (uint8_t)MAX2(used[i].coeff_stream, 0);
+      p->attrs[i].components = u->components;
+      p->attrs[i].constant = u->coeff_stream >= 0;
+      p->attrs[i].coeff_stream = (uint8_t)MAX2(u->coeff_stream, 0);
       /* One 16-byte slot per attribute: every captured vendor record puts
        * its four attributes at dword offsets 0, 4, 8 and 12. */
       dword += 4;
    }
-   p->attr_count = count;
+   p->attr_count = physical;
    p->inputs_read = c->nir->info.inputs_read;
    p->record_bytes = 4 * dword;
 }
@@ -2531,7 +2560,7 @@ static bool
 compile_impl(struct ctx *c, nir_function_impl *impl,
              const struct m9_vs_outputs *want)
 {
-   struct input_use used[M9_VS_MAX_ATTRIBUTES];
+   struct input_use used[M9_VS_MAX_SOURCE_ATTRIBUTES];
    nir_intrinsic_instr *position = NULL;
    nir_intrinsic_instr *stored[M9_VS_MAX_VARYINGS] = { NULL };
    nir_intrinsic_instr *varying[M9_VS_MAX_VARYINGS] = { NULL };
@@ -2679,6 +2708,17 @@ compile_impl(struct ctx *c, nir_function_impl *impl,
       used[inputs].driver_location = 0;
       used[inputs].components = 4;
       used[inputs++].coeff_stream = (int)j;
+   }
+
+   if (inputs > M9_VS_MAX_ATTRIBUTES) {
+      unsigned scalar = 0;
+      for (unsigned i = 0; i < inputs; i++)
+         scalar += used[i].components == 1 && used[i].coeff_stream < 0;
+      unsigned physical = inputs - scalar + DIV_ROUND_UP(scalar, 4);
+      /* Existing four-slot programs remain byte-exact. FAA and vertex
+       * sampling keep their separately source-qualified input interfaces. */
+      if (c->faa || c->texture || physical > M9_VS_MAX_ATTRIBUTES)
+         return fail(c, "more than four vertex attributes");
    }
 
    nir_foreach_instr(instr, block) {
