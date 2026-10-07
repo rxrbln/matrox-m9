@@ -42,3 +42,23 @@ completion receipt before advancing the original caller. The source trace
 is [archived](../captures/m9-faa-graph-public-vs-20261007/continued-actual100-prefix.json);
 `check-continue-prefix.py` verifies the exact source image, rebuilt bytes,
 four distinct live placements and refusal cases.
+
+The follow controller accepts a *single new-boot* capsule for INIT, public
+VS prefix 0x100 and follow 0x130. It requires the exact 796-byte input,
+staged module/helper hashes supplied explicitly, the 664-byte follow
+firmware, state 10 then state 11, both intermediate and final transport
+snapshots, the native 5044-byte/four-post/relative-word line and final four
+counter lanes ending in 0x131. It rejects the earlier 0x100-only capsule.
+The host admission test uses a temporary parser-only synthetic fixture;
+those bytes are never supplied to the emulator or treated as hardware proof.
+After a genuine 0x130 receipt arrives, run:
+
+```sh
+PYTHONPATH=tools/faaemu:tools/m9emu /home/ai/tmp/faaemu/venv/bin/python \
+  tools/m9emu/m9_faa_graph_public_vs_continue.py \
+  --init-receipt-dir tests/m9-faa-graph-init-hardware-20261007/confirmed-retirement \
+  --follow-receipt-dir /absolute/path/to/new-boot-proof \
+  --follow-module-sha256 STAGED_MODULE_SHA256 \
+  --follow-helper-sha256 STAGED_HELPER_SHA256 \
+  --out /tmp/m9-public-vs-actual130-source.json
+```
