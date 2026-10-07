@@ -32,6 +32,7 @@
  * tests/native-vs-logarithm.md for the evidence and validation boundary).
  */
 #include "m9_vs_compile.h"
+#include "m9_draw_params.h"
 
 #include "m9_passthrough.h"
 #include "m9_specialise.h"
@@ -3169,6 +3170,165 @@ m9_vs_compile_sampled_position(struct nir_shader *nir,
    return compile_program(nir, outputs, p, reason, true, NULL, NULL, false, true);
 }
 
+/* This offset exists only on this private compilation clone. Original UBO
+ * loads are checked before insertion; the resulting lane is tagged after
+ * compilation and never interpreted as an application memory address. */
+#define M9_PADDING_SELECTOR_OFFSET 0xfffffff0u
+
+struct gpu_padding_state {
+   nir_io_semantics input;
+   unsigned stores;
+   bool invalid;
+};
+
+static bool
+gpu_padding_position(nir_builder *b, nir_intrinsic_instr *intr, void *data)
+{
+   struct gpu_padding_state *s = data;
+   if (intr->intrinsic != nir_intrinsic_store_output ||
+       nir_intrinsic_io_semantics(intr).location != VARYING_SLOT_POS)
+      return false;
+   if (nir_intrinsic_component(intr) || nir_intrinsic_write_mask(intr) != 0xf ||
+       intr->src[0].ssa->bit_size != 32 || intr->src[0].ssa->num_components != 4) {
+      s->invalid = true;
+      return false;
+   }
+   s->stores++;
+   b->cursor = nir_before_instr(&intr->instr);
+   nir_def *zero = nir_imm_int(b, 0);
+   nir_def *xy = nir_load_input(b, 2, 32, zero, .base = 0, .component = 0,
+                                .dest_type = nir_type_float32,
+                                .io_semantics = s->input);
+   nir_def *flag = nir_load_ubo(b, 1, 32, zero,
+                               nir_imm_int(b, M9_PADDING_SELECTOR_OFFSET),
+                               .align_mul = 4,
+                               .range_base = M9_PADDING_SELECTOR_OFFSET,
+                               .range = 4);
+   nir_def *pad = nir_vec4(b, nir_channel(b, xy, 0), nir_channel(b, xy, 1),
+                          nir_imm_float(b, 1.0f), nir_imm_float(b, 1.0f));
+   nir_src_rewrite(&intr->src[0],
+                  nir_bcsel(b, nir_fneu(b, flag, nir_imm_float(b, 0.0f)),
+                            pad, intr->src[0].ssa));
+   return true;
+}
+
+bool
+m9_vs_compile_gpu_padding(const struct nir_shader *nir,
+                          const struct m9_vs_outputs *outputs,
+                          bool sampled_position,
+                          unsigned max_slots, unsigned max_const_pairs,
+                          struct m9_vs_program *p, const char **reason)
+{
+   const char *why = "GPU padding requires direct float32 source slot0 XY";
+   struct gpu_padding_state s = {0};
+   bool input = false;
+   if (!nir || !p || nir->info.stage != MESA_SHADER_VERTEX || !max_slots ||
+       !max_const_pairs || max_const_pairs > M9_VS_MAX_CONST_PAIRS)
+      goto refuse;
+   if (outputs) {
+      if (outputs->count > M9_VS_MAX_VARYINGS)
+         goto refuse;
+      for (unsigned v = 0; v < outputs->count; v++)
+         if (outputs->stream[v].coordinate || outputs->stream[v].paired ||
+             outputs->stream[v].coeff_record)
+            goto refuse;
+   }
+   nir_foreach_function_impl(impl, nir) nir_foreach_block(block, impl)
+      nir_foreach_instr(instr, block) {
+         if (instr->type != nir_instr_type_intrinsic)
+            continue;
+         nir_intrinsic_instr *intr = nir_instr_as_intrinsic(instr);
+         if (intr->intrinsic == nir_intrinsic_load_ubo ||
+             intr->intrinsic == nir_intrinsic_load_ubo_vec4) {
+            if (!nir_src_is_const(intr->src[1]))
+               goto refuse;
+            uint64_t offset = nir_src_as_uint(intr->src[1]);
+            if (intr->intrinsic == nir_intrinsic_load_ubo_vec4)
+               offset = 16ull * (offset + nir_intrinsic_base(intr)) +
+                        4ull * nir_intrinsic_component(intr);
+            if (offset + 4ull * intr->def.num_components >
+                M9_PADDING_SELECTOR_OFFSET) {
+               why = "application uniform overlaps internal padding key";
+               goto refuse;
+            }
+         }
+         if (intr->intrinsic == nir_intrinsic_load_input &&
+             nir_intrinsic_base(intr) == 0 && !nir_intrinsic_component(intr) &&
+             intr->def.bit_size == 32 && intr->def.num_components >= 2 &&
+             nir_src_is_const(intr->src[0]) && !nir_src_as_uint(intr->src[0])) {
+            nir_io_semantics sem = nir_intrinsic_io_semantics(intr);
+            if (input && sem.location != s.input.location)
+               goto refuse;
+            s.input = sem;
+            input = true;
+         }
+      }
+   if (!input)
+      goto refuse;
+   nir_shader *copy = nir_shader_clone(NULL, nir);
+   if (!copy) {
+      why = "out of memory";
+      goto refuse;
+   }
+   nir_shader_intrinsics_pass(copy, gpu_padding_position,
+                             nir_metadata_control_flow, &s);
+   struct m9_vs_program trial = {0};
+   bool ok = !s.invalid && s.stores == 1 &&
+             compile_program(copy, outputs, &trial, &why, true, NULL, NULL,
+                             false, sampled_position);
+   ralloc_free(copy);
+   if (!ok) {
+      m9_vs_program_fini(&trial);
+      goto refuse;
+   }
+   if (m9_vs_slot_count(&trial) > max_slots ||
+       (trial.producer.size && m9_vs_producer_slot_count(&trial) +
+                              M9_VS_TAIL_SLOTS > max_slots) ||
+       m9_vs_extra_slot_count(&trial) > max_slots ||
+       m9_vs_const_count(&trial) > max_const_pairs) {
+      why = "GPU padding program exceeds unchanged native limits";
+      m9_vs_program_fini(&trial);
+      goto refuse;
+   }
+   unsigned attr;
+   for (attr = 0; attr < trial.attr_count; attr++)
+      if (trial.attrs[attr].location == s.input.location)
+         break;
+   if (attr == trial.attr_count || trial.attrs[attr].constant ||
+       trial.attrs[attr].scalar_count || trial.attrs[attr].driver_location ||
+       trial.attrs[attr].components < 2 || trial.attrs[attr].select[0] != 0 ||
+       trial.attrs[attr].select[1] != 1) {
+      m9_vs_program_fini(&trial);
+      goto refuse;
+   }
+   unsigned tagged = 0;
+   util_dynarray_foreach(&trial.consts, struct m9_vs_const, k)
+      if (k->kind == M9_VS_CONST_UNIFORM)
+         for (unsigned lane = 0; lane < 2; lane++)
+            if (k->offset[lane] == M9_PADDING_SELECTOR_OFFSET) {
+               k->padding_mask |= 1u << lane;
+               /* No application read, even if a later uploader does not
+                * yet understand the deliberately unactivated interface. */
+               k->offset[lane] = M9_VS_UNIFORM_ZERO;
+               tagged++;
+            }
+   if (!tagged) {
+      why = "GPU padding selector was not retained";
+      m9_vs_program_fini(&trial);
+      goto refuse;
+   }
+   trial.gpu_padding = true;
+   trial.padding_attr = attr;
+   *p = trial;
+   if (reason)
+      *reason = NULL;
+   return true;
+refuse:
+   if (reason)
+      *reason = why;
+   return false;
+}
+
 bool
 m9_vs_compile_faa(struct nir_shader *nir, const struct m9_vs_outputs *outputs,
                   struct m9_vs_program *p, const char **reason)
@@ -3622,7 +3782,8 @@ m9_vs_c2_image(const struct m9_vs_program *p, const uint32_t *fs_slots,
    if (!out || p->faa_preprocess || total > max_dwords ||
        (fs_slot_count && !fs_slots))
       return 0;
-   memcpy(out, fs_slots, fs_slot_count * 2 * sizeof(*out));
+   if (fs_slot_count)
+      memcpy(out, fs_slots, fs_slot_count * 2 * sizeof(*out));
    if (!m9_vs_emit(p, out + fs_slot_count * 2, vs_dwords, fused_pair))
       return 0;
    if (extra_dwords &&
@@ -3658,6 +3819,141 @@ m9_vs_uniform(const float *uniforms, unsigned floats, uint32_t offset)
    if (offset == M9_VS_UNIFORM_ZERO || offset / 4 >= floats)
       return 0.0f;
    return uniforms[offset / 4];
+}
+
+bool
+m9_vs_padding_upload_build(const struct m9_vs_program *p,
+                           const struct m9_vs_padding_bounds *b,
+                           unsigned app, unsigned max_vertices,
+                           const uint32_t *constants, unsigned pairs,
+                           struct m9_vs_padding_upload *out)
+{
+   if (!p || !b || !out || !constants || !p->gpu_padding || p->faa_preprocess ||
+       !app || app % 4 || max_vertices > 65532u ||
+       app > max_vertices || M9_VS_PADDING_VERTICES > max_vertices - app ||
+       b->width < 2 || b->height < 2 || b->width > 0x7fffu ||
+       b->height > 0x7fffu || b->stencil_enabled || b->query_active ||
+       b->fragment_depth || b->viewport_scale[0] != b->width * 0.5f ||
+       b->viewport_scale[1] != b->height * 0.5f ||
+       b->viewport_translate[0] != b->width * 0.5f ||
+       b->viewport_translate[1] != b->height * 0.5f ||
+       !p->attr_count || p->attr_count > M9_VS_MAX_ATTRIBUTES ||
+       p->outputs.count > M9_VS_MAX_VARYINGS ||
+       !p->consts.data || p->consts.size % sizeof(struct m9_vs_const) ||
+       p->padding_attr >= p->attr_count || !p->record_bytes ||
+       p->record_bytes % 16 || p->record_bytes > 16 * M9_VS_MAX_ATTRIBUTES ||
+       !pairs || pairs > M9_VS_MAX_CONST_PAIRS || pairs != m9_vs_const_count(p))
+      return false;
+   unsigned x0 = b->clip_min & 0xffffu, y0 = b->clip_min >> 16;
+   unsigned x1 = b->clip_max & 0xffffu, y1 = b->clip_max >> 16;
+   if (x0 >= x1 || y0 >= y1 || x1 > b->width || y1 > b->height)
+      return false;
+   bool interior = x0 >= 1 && y0 >= 1 && x1 < b->width && y1 < b->height;
+   bool far_less = b->normalized_less_depth &&
+                   isfinite(b->viewport_scale[2]) &&
+                   b->viewport_scale[2] >= 0.0f &&
+                   b->viewport_scale[2] <= 0.5f &&
+                   b->viewport_translate[2] >= b->viewport_scale[2] &&
+                   b->viewport_scale[2] + b->viewport_translate[2] == 1.0f;
+   if (!interior && !far_less)
+      return false;
+   /* Match the actual span consumed by the unchanged viewport tail, rather
+    * than trusting a separate bounds description of another viewport. */
+   const unsigned viewport_words[6] = {
+      M9_VS_VIEWPORT_DWORD, M9_VS_VIEWPORT_DWORD + 1,
+      M9_VS_DEPTH_SCALE_DWORD, M9_VS_BIAS_DWORD, M9_VS_BIAS_DWORD + 1,
+      M9_VS_DEPTH_BIAS_DWORD,
+   };
+   for (unsigned v = 0; v < 6; v++) {
+      unsigned word = viewport_words[v] - M9_VS_CONST_OFFSET / 4;
+      if (word >= pairs * 2)
+         return false;
+      float actual;
+      memcpy(&actual, &constants[word], sizeof(actual));
+      if (actual != (v < 3 ? b->viewport_scale[v] :
+                            b->viewport_translate[v - 3]))
+         return false;
+   }
+   const struct m9_vs_attr *pad = &p->attrs[p->padding_attr];
+   if (pad->constant || pad->scalar_count || pad->driver_location ||
+       pad->components < 2 || pad->select[0] != 0 || pad->select[1] != 1 ||
+       pad->offset > p->record_bytes / 4 ||
+       4 > p->record_bytes / 4 - pad->offset)
+      return false;
+   for (unsigned i = 0; i < p->attr_count; i++) {
+      if (p->attrs[i].offset % 4 || p->attrs[i].offset >= p->record_bytes / 4 ||
+          p->attrs[i].constant || p->attrs[i].scalar_count)
+         return false;
+      for (unsigned j = 0; j < i; j++)
+         if (p->attrs[i].offset == p->attrs[j].offset)
+            return false;
+   }
+   for (unsigned i = 0; i < p->outputs.count; i++)
+      if (p->outputs.stream[i].coordinate || p->outputs.stream[i].paired ||
+          p->outputs.stream[i].coeff_record)
+         return false;
+   unsigned tagged = 0, i = 0;
+   util_dynarray_foreach(&p->consts, struct m9_vs_const, k) {
+      if (k->padding_mask & ~3u || (k->padding_mask &&
+          (k->kind != M9_VS_CONST_UNIFORM || m9_vs_const_pair(i) >= pairs)))
+         return false;
+      for (unsigned lane = 0; lane < 2; lane++)
+         if (k->padding_mask & (1u << lane)) {
+            if (k->offset[lane] != M9_VS_UNIFORM_ZERO)
+               return false;
+            tagged++;
+         }
+      i++;
+   }
+   if (!tagged)
+      return false;
+   struct m9_vs_padding_upload upload = {0};
+   upload.record_bytes = p->record_bytes;
+   upload.const_pairs = pairs;
+   upload.source_vertices = app + M9_VS_PADDING_VERTICES;
+   upload.runs[0].count = app;
+   upload.runs[1].first = app;
+   upload.runs[1].count = M9_VS_PADDING_VERTICES;
+   upload.runs[1].const_offset = pairs * 8;
+   memcpy(upload.constants, constants, pairs * 8);
+   memcpy(upload.constants + pairs * 2, constants, pairs * 8);
+   i = 0;
+   util_dynarray_foreach(&p->consts, struct m9_vs_const, k) {
+      for (unsigned lane = 0; lane < 2; lane++)
+         if (k->padding_mask & (1u << lane)) {
+            unsigned at = 2 * m9_vs_const_pair(i) + lane;
+            upload.constants[at] = 0;
+            upload.constants[pairs * 2 + at] = 0x3f800000u;
+         }
+      i++;
+   }
+   const unsigned edge[4][4] = {
+      {0, b->height - 1, b->width, b->height},
+      {0, 0, b->width, 1}, {0, 0, 1, b->height},
+      {b->width - 1, 0, b->width, b->height},
+   };
+   const uint8_t corner[6][2] = {{0,0},{1,0},{0,1},{0,1},{1,0},{1,1}};
+   const uint8_t order[12] = {0,1,2,3,4,5,2,1,0,5,4,3};
+   unsigned stride = p->record_bytes / 4;
+   for (unsigned r = 0; r < 4; r++) {
+      for (unsigned v = 0; v < 6; v++) {
+         uint32_t *record = upload.records + (r * 6 + v) * stride;
+         for (unsigned a = 0; a < p->attr_count; a++)
+            record[p->attrs[a].offset + 3] = 0x3f800000u;
+         float xy[2] = {
+            2.0f * edge[r][corner[v][0] ? 2 : 0] / b->width - 1.0f,
+            2.0f * edge[r][corner[v][1] ? 3 : 1] / b->height - 1.0f,
+         };
+         memcpy(record + pad->offset, xy, sizeof(xy));
+      }
+      for (unsigned v = 0; v < 12; v++)
+         upload.indices[r * 12 + v] = app + r * 6 + order[v];
+   }
+   upload.indices[M9_VS_PADDING_INDICES] =
+      upload.indices[M9_VS_PADDING_INDICES + 1] =
+      upload.indices[M9_VS_PADDING_INDICES - 1];
+   *out = upload;
+   return true;
 }
 
 unsigned

@@ -205,6 +205,10 @@ struct m9_vs_const {
    uint32_t offset[2];     /* constant buffer 0 byte offsets */
    uint8_t coord_stream;   /* M9_VS_CONST_COORD: the stream it belongs to */
    uint8_t coord_part;     /* M9_VS_COORD_SCALE or M9_VS_COORD_BIAS */
+   /* Internal padding selector lanes. Never an application CB0 offset.
+    * Ordinary constants resolve these lanes to zero; owned padding spans
+    * explicitly supply zero/one. */
+   uint8_t padding_mask;
 };
 
 /* One stream a compiled program writes to an output target.  A varying
@@ -285,6 +289,8 @@ struct m9_vs_program {
     * fields (position=0, varying j=j+1); the draw builder consumes both
     * maps under its complete partition preflight. */
    bool sampled_position;
+   bool gpu_padding;
+   uint8_t padding_attr;
    uint8_t producer_fields[2];
    uint8_t extra_fields[4];
    unsigned texture_location;
@@ -308,6 +314,45 @@ struct m9_vs_program {
    unsigned varying_components[M9_VS_MAX_VARYINGS];
    struct m9_vs_outputs outputs;
 };
+
+#define M9_VS_PADDING_VERTICES 24u
+#define M9_VS_PADDING_INDICES 48u
+
+/* Full-target viewport plus the caller's current top-down clip window.
+ * The caller must derive these facts from live state. This producer has no
+ * ioctl, shader cache entry or capability/automatic runtime admission. */
+struct m9_vs_padding_bounds {
+   uint32_t width, height, clip_min, clip_max;
+   float viewport_scale[3], viewport_translate[3];
+   bool normalized_less_depth;
+   bool stencil_enabled, query_active, fragment_depth;
+};
+
+/* Self-contained CPU ownership for the raw GENERATED records and both
+ * complete constant snapshots. Source records still need the GPU program.
+ * Run offsets are relative to constants[], not GPU addresses. The final
+ * raster draw must append indices to the app's one indexed draw. */
+struct m9_vs_padding_upload {
+   uint32_t records[M9_VS_PADDING_VERTICES * 4 * M9_VS_MAX_ATTRIBUTES];
+   uint32_t constants[4 * M9_VS_MAX_CONST_PAIRS];
+   uint16_t indices[M9_VS_PADDING_INDICES + 2];
+   unsigned record_bytes, const_pairs, source_vertices;
+   struct {
+      unsigned first, count, const_offset;
+   } runs[2];
+};
+
+/* base_constants is the complete live span, including viewport/tail pairs.
+ * Refusal leaves upload unchanged. The producer retains no input pointers.
+ * Scissored padding or normalized LESS/far1 must suppress all added writes;
+ * stencil/query/fragment-depth side effects are conservatively refused. */
+bool m9_vs_padding_upload_build(const struct m9_vs_program *program,
+                                const struct m9_vs_padding_bounds *bounds,
+                                unsigned app_source_vertices,
+                                unsigned max_source_vertices,
+                                const uint32_t *base_constants,
+                                unsigned base_pairs,
+                                struct m9_vs_padding_upload *upload);
 
 /* The program's index for a varying slot, or -1 when it writes none.  Index
  * 0 lands on transient view 0 and index k on the extra pass's target k - 1. */
@@ -335,6 +380,16 @@ bool m9_vs_compile_sampled_position(struct nir_shader *nir,
                                     const struct m9_vs_outputs *outputs,
                                     struct m9_vs_program *program,
                                     const char **reason);
+/* Clone-only GPU POSITION selector. Generated records feed clip XY through
+ * existing direct source slot0, and select clip (x,y,1,1) only for the
+ * driver-owned padding run. App records retain their original GPU shader.
+ * No runtime/multipass admission or NIR/resource retention is implied. */
+bool m9_vs_compile_gpu_padding(const struct nir_shader *nir,
+                               const struct m9_vs_outputs *outputs,
+                               bool sampled_position,
+                               unsigned max_slots, unsigned max_const_pairs,
+                               struct m9_vs_program *program,
+                               const char **reason);
 /* Clone-only bounded retry; swaps the graph with its accepted program.
  * Refusal leaves the caller graph intact and no retained program arrays. */
 bool m9_vs_compile_sampled_position_source(struct nir_shader **nir,
