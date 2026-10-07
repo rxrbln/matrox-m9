@@ -241,11 +241,14 @@ m9_is_format_supported(struct pipe_screen *screen, enum pipe_format format,
    if (samples > 1 || storage_samples > 1)
       return false;
    if (target == PIPE_BUFFER)
-      /* VERTEX_STATE: display-list (vbo_save) vertex/index storage. */
+      /* VERTEX_STATE: display-list (vbo_save) vertex/index storage.
+       * COMMAND_ARGS_BUFFER: GL indirect arguments stay in CPU buffer
+       * memory and are snapshot through the ordinary synchronized map. */
       return bind && !(bind & ~(PIPE_BIND_VERTEX_BUFFER |
                                 PIPE_BIND_INDEX_BUFFER |
                                 PIPE_BIND_CONSTANT_BUFFER |
-                                PIPE_BIND_VERTEX_STATE));
+                                PIPE_BIND_VERTEX_STATE |
+                                PIPE_BIND_COMMAND_ARGS_BUFFER));
    switch (target) {
    case PIPE_TEXTURE_1D:
    case PIPE_TEXTURE_2D:
@@ -1535,6 +1538,11 @@ m9_screen_create(int fd, const struct pipe_screen_config *config)
    caps->glsl_feature_level = 120;
    caps->glsl_feature_level_compatibility = 120;
    caps->essl_feature_level = 100;
+   /* GL indirect commands are read from live mapped argument buffers and
+    * dispatched through the existing draw path. st_draw splits multi draws
+    * while multi_draw_indirect remains unset. Parameter-buffer count draws
+    * stay unadvertised until their GL path is qualified separately. */
+   caps->draw_indirect = true;
    caps->npot_textures = true;
    /* Rectangle targets: unnormalized coordinates reach the driver, which
     * folds the reciprocal of the sampled span into them per vertex
