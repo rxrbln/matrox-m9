@@ -96,6 +96,11 @@ earlier known inputs survive in the final image; it does not prove equivalent
 ordering of GPU writes or intervening mapping operations. Kernel8d95847 adds an
 optional phased-post diagnostic to isolate collapsing source c0/120/160/180
 waits. It retains the same command bytes and actual retirement requirements.
+The [fresh-boot same-module comparison](../tests/m9-faa-mask-control-hardware-20261007/README.md)
+now demonstrates a real ordering effect: phased submission produces601 main
+and1404 companion nonzero words, while a single post leaves both zero. The
+final output stays black in both. Preserving waits is the default for this
+complete diagnostic; later output-mapping publication and resolve remain open.
 
 ## Validation
 
