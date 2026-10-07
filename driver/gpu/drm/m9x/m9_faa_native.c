@@ -1481,6 +1481,68 @@ static void m9_faa_observe(struct m9x_device *mdev,
 		r->baseline_valid = true;
 }
 
+#ifdef M9_FAA_GRAPH_INIT_CONTROL
+/* Read-only evidence after the separately qualified public-VS prefix. These
+ * opaque GPU-owned bytes are never decoded or used as source CPU inputs. */
+static void m9_faa_public_vs_prefix_observe(struct m9x_device *mdev,
+					 struct m9x_faa_replay *r)
+{
+	struct m9_faa_owner *o = &r->owner[23];
+	struct iosys_map restore;
+	u8 data[256];
+	u32 base, offset, count, j, hash, nonzero, words[20];
+	static const u32 source_offsets[] = { 0, 873472, 3493888 };
+	const u32 bytes = m9_faa_owner_specs[23].bytes;
+
+	lockdep_assert_held(&mdev->transport.lock);
+	if (!r->public_vs_prefix_retired || !o->vram || o->cpu ||
+	    bytes > o->bytes || bytes > 8 * 1024 * 1024 ||
+	    m9x_address_restore_region(mdev, &restore, &base) ||
+	    base != mdev->transport.restore_base || PARHELIA_M9_RESTORE_BYTES < 8192) {
+		dev_info(&mdev->pdev->dev, "M9 FAA public VS prefix observation refused\n");
+		return;
+	}
+	for (j = 0; j < ARRAY_SIZE(source_offsets); j++)
+		if (source_offsets[j] > bytes || bytes - source_offsets[j] < 64)
+			return;
+	rmb();
+	dma_rmb();
+	hash = 0x811c9dc5;
+	nonzero = 0;
+	for (offset = 0; offset < 8192; offset += sizeof(data)) {
+		iosys_map_memcpy_from(data, &restore, offset, sizeof(data));
+		hash = m9_faa_hash(hash, data, sizeof(data));
+		for (j = 0; j < sizeof(data); j += 4)
+			nonzero += !!get_unaligned_le32(data + j);
+	}
+	iosys_map_memcpy_from(words, &restore, 0x700 + 2 * 0x600, sizeof(words));
+	dev_info(&mdev->pdev->dev,
+		 "M9 FAA public VS prefix restore: base=%#x bytes=8192 fnv=%#x nonzero_words=%u "
+		 "record2[3/9/10/11/12/14/15/19]=%#x/%#x/%#x/%#x/%#x/%#x/%#x/%#x\n",
+		 base, hash, nonzero, words[3], words[9], words[10], words[11],
+		 words[12], words[14], words[15], words[19]);
+	hash = 0x811c9dc5;
+	nonzero = 0;
+	for (offset = 0; offset < bytes; offset += count) {
+		count = min_t(u32, sizeof(data), bytes - offset);
+		iosys_map_memcpy_from(data, &o->map, offset, count);
+		hash = m9_faa_hash(hash, data, count);
+		for (j = 0; j + 4 <= count; j += 4)
+			nonzero += !!get_unaligned_le32(data + j);
+	}
+	dev_info(&mdev->pdev->dev,
+		 "M9 FAA public VS prefix preprocessing: owner=23 native=%#x bytes=%u "
+		 "fnv=%#x nonzero_words=%u engine=%#x\n", o->base, bytes, hash,
+		 nonzero, m9x_read(mdev, M9_REG_ENGINE_STATUS));
+	for (j = 0; j < ARRAY_SIZE(source_offsets); j++) {
+		iosys_map_memcpy_from(data, &o->map, source_offsets[j], 64);
+		dev_info(&mdev->pdev->dev,
+			 "M9 FAA public VS prefix preprocessing raw: owner=23 offset=%#x bytes=64 hex=%*phN\n",
+			 source_offsets[j], 64, data);
+	}
+}
+#endif
+
 /* The sampled primary is borrowed, so the ordinary owner loop intentionally
  * skips it. Observe the actual pinned/reserved caller BO without turning it
  * into an owned allocation or extending the GPU command stream. Failure to
@@ -3361,6 +3423,7 @@ int m9x_faa_graph_public_vs_submit(struct m9x_device *mdev,
 	*point = stage_point;
 	r->graph_draw_point = stage_point;
 	r->public_vs_prefix_retired = true;
+	m9_faa_public_vs_prefix_observe(mdev, r);
 	dev_info(&mdev->pdev->dev,
 		 "M9 FAA public VS prefix retired: init=%#llx point=%#llx bytes=%u posts=%u program=%u; original DRAW unreturned, no pixels claimed\n",
 		 init_point, *point, r->graph_draw_end_bytes, r->graph_draw_posts,
