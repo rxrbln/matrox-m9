@@ -208,3 +208,114 @@ m9_faa_preprocess_position(const struct m9_faa_viewport *viewport,
    *interface = info;
    return true;
 }
+
+
+bool
+m9_faa_relative_slot_word(uint32_t prior, uint32_t slot_offset,
+                          uint32_t target_offset, uint32_t owner_bytes,
+                          uint32_t *word)
+{
+   if (!word || (uintptr_t)word % _Alignof(uint32_t) ||
+       4u > UINTPTR_MAX - (uintptr_t)word || owner_bytes < 4 || (slot_offset & 3) ||
+       (target_offset & 3) || slot_offset > owner_bytes - 4 ||
+       target_offset > owner_bytes - 4 || target_offset < slot_offset ||
+       target_offset - slot_offset > 0x3ffffcu)
+      return false;
+   *word = (prior & ~0xfffffu) | ((target_offset - slot_offset) >> 2);
+   return true;
+}
+
+bool
+m9_faa_preprocess_upload_build(const struct m9_faa_preprocess_upload *input,
+   uint32_t *program, uint32_t program_capacity,
+   uint32_t *constants, uint32_t constant_capacity,
+   uint32_t *geometry, uint32_t geometry_capacity,
+   struct m9_faa_preprocess_upload_layout *layout)
+{
+   struct m9_faa_preprocess_upload_layout result = {0};
+   /* Source-created raw program extent1080; constant area ends at geometry
+    * offset100. Larger live images need a separately proved owner layout. */
+   uint32_t linked[0x1080 / 4], dense[256 / 4], records[224 / 4] = {0};
+   const uint32_t declaration[5] = {
+      0x00100d88u, 0x001006b6u, 0x04200d88u, 0x042006b6u, 0x00004b08u,
+   };
+   if (!input || !program || !constants || !geometry || !layout ||
+       !input->vertices || !input->declaration ||
+       !input->viewport.width || !input->viewport.height ||
+       input->viewport.x > 15359u || input->viewport.y > 15359u ||
+       input->viewport.width > 15359u - input->viewport.x ||
+       input->viewport.height > 15359u - input->viewport.y ||
+       (uintptr_t)program % _Alignof(uint32_t) ||
+       (uintptr_t)constants % _Alignof(uint32_t) ||
+       (uintptr_t)geometry % _Alignof(uint32_t) ||
+       (uintptr_t)input->vertices % _Alignof(uint32_t) ||
+       (uintptr_t)input->declaration % _Alignof(uint32_t) ||
+       (uintptr_t)layout % _Alignof(struct m9_faa_preprocess_upload_layout) ||
+       96u > UINTPTR_MAX - (uintptr_t)input->vertices ||
+       sizeof(declaration) > UINTPTR_MAX - (uintptr_t)input->declaration ||
+       memcmp(input->declaration, declaration, sizeof(declaration)))
+      return false;
+   /* Source constant allocator starts with two immutable utility pairs. */
+   dense[0] = 0x3f800000u; dense[1] = 0;
+   dense[2] = 0; dense[3] = 0x3f800000u;
+   result.constants_bytes = 16;
+   for (uint32_t i = 0; i < 4; i++) {
+      const struct m9_faa_dense_constants *k = &input->constants[i];
+      if (k->pairs > 63u || (k->pairs && (!k->words ||
+          (uintptr_t)k->words % _Alignof(uint32_t))) ||
+          k->pairs > (sizeof(dense) - result.constants_bytes) / 8u ||
+          (k->pairs && k->pairs * 8u > UINTPTR_MAX - (uintptr_t)k->words))
+         return false;
+      result.constant_begin[i] = result.constants_bytes;
+      if (k->pairs)
+         memcpy((unsigned char *)dense + result.constants_bytes,
+                k->words, k->pairs * 8u);
+      result.constants_bytes += k->pairs * 8u;
+      result.constant_end[i] = result.constants_bytes;
+   }
+   /* The existing linker validates every vector's STOP/finish and all
+    * lengths, before copying into this private scratch image. */
+   if (!m9_faa_program_link(input->vectors, 4, linked, sizeof(linked),
+                            &result.program))
+      return false;
+   result.geometry_bytes = sizeof(records);
+   result.vertex_offset = 128;
+   result.vertex_bytes = 96;
+   memcpy(result.declaration, declaration, sizeof(declaration));
+   float header[8] = {
+      input->viewport.width * 0.5f, input->viewport.height * -0.5f,
+      1.0f, 0.0f, input->viewport.x + input->viewport.width * 0.5f,
+      input->viewport.y + input->viewport.height * 0.5f, 0.0f, 0.0f,
+   };
+   memcpy(records, header, sizeof(header));
+   memcpy((unsigned char *)records + 128, input->vertices, 96);
+   void *outputs[4] = {program, constants, geometry, layout};
+   uint32_t sizes[4] = {result.program.bytes, result.constants_bytes,
+                        sizeof(records), sizeof(*layout)};
+   if (program_capacity < sizes[0] || constant_capacity < sizes[1] ||
+       geometry_capacity < sizes[2])
+      return false;
+   for (uint32_t i = 0; i < 4; i++) {
+      if (sizes[i] > UINTPTR_MAX - (uintptr_t)outputs[i] ||
+          overlap(outputs[i], sizes[i], input, sizeof(*input)) ||
+          overlap(outputs[i], sizes[i], input->vertices, 96) ||
+          overlap(outputs[i], sizes[i], input->declaration, sizeof(declaration)))
+         return false;
+      for (uint32_t j = i + 1; j < 4; j++)
+         if (overlap(outputs[i], sizes[i], outputs[j], sizes[j]))
+            return false;
+      for (uint32_t j = 0; j < 4; j++) {
+         uint32_t bytes = input->vectors[j].slots * 8u;
+         uint32_t kbytes = input->constants[j].pairs * 8u;
+         if (overlap(outputs[i], sizes[i], input->vectors[j].words, bytes) ||
+             (kbytes && overlap(outputs[i], sizes[i],
+                                input->constants[j].words, kbytes)))
+            return false;
+      }
+   }
+   memcpy(program, linked, result.program.bytes);
+   memcpy(constants, dense, result.constants_bytes);
+   memcpy(geometry, records, sizeof(records));
+   *layout = result;
+   return true;
+}

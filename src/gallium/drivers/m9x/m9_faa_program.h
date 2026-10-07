@@ -80,4 +80,41 @@ bool m9_faa_preprocess_position(const struct m9_faa_viewport *viewport,
                                 float *constants, uint32_t constant_bytes,
                                 struct m9_faa_position_interface *interface);
 
+/* Address-free upload preparation for the public VS four-vector shape.
+ * Each dense constant span is supplied by its live compiler/runtime, in
+ * vector order. Utility pairs precede FS/carry/gather/position constants.
+ * Two FLOAT4 input attributes use one 32-byte interleaved record. This
+ * synchronous builder does not issue packets or admit a generic FAA draw. */
+struct m9_faa_dense_constants {
+   const uint32_t *words;
+   uint32_t pairs;
+};
+struct m9_faa_preprocess_upload {
+   struct m9_faa_program_vector vectors[4];
+   struct m9_faa_dense_constants constants[4];
+   struct m9_faa_viewport viewport;
+   const uint32_t *vertices; /* Three raw POSITION0 + TEXCOORD0 records. */
+   const uint32_t *declaration; /* m9_vs_decl_words: two FLOAT4 attributes. */
+};
+struct m9_faa_preprocess_upload_layout {
+   struct m9_faa_program_layout program;
+   uint32_t constants_bytes;
+   uint32_t constant_begin[4], constant_end[4];
+   uint32_t geometry_bytes, vertex_offset, vertex_bytes;
+   uint32_t declaration[5];
+};
+bool m9_faa_preprocess_upload_build(
+   const struct m9_faa_preprocess_upload *input,
+   uint32_t *program, uint32_t program_capacity,
+   uint32_t *constants, uint32_t constant_capacity,
+   uint32_t *geometry, uint32_t geometry_capacity,
+   struct m9_faa_preprocess_upload_layout *layout);
+
+/* Source 248f2 deferred field, restricted to forward fields in the same
+ * retained owner. No CPU/GPU base participates; high12 opcode bits survive.
+ * Caller performs the actual write only after its owner/lifetime checks. */
+bool m9_faa_relative_slot_word(uint32_t prior, uint32_t slot_offset,
+                              uint32_t target_offset, uint32_t owner_bytes,
+                              uint32_t *word);
+
 #endif
