@@ -449,6 +449,7 @@ int m9x_triangle_selftest(void);
 void m9x_triangle_fini(struct m9x_device *mdev);
 int m9x_submit_selftest(void);
 int m9x_faa_graph_selftest(void);
+int m9x_faa_graph_continuation_selftest(void);
 int m9x_faa_graph_file_open(struct drm_device *drm, struct drm_file *file);
 void m9x_faa_graph_file_close(struct drm_device *drm, struct drm_file *file);
 int m9x_faa_graph_prepare_ioctl(struct drm_device *drm, void *data,
@@ -478,7 +479,18 @@ struct drm_gem_object *m9x_faa_graph_binding_owner(
 bool m9x_faa_graph_binding_address(
 		const struct m9_faa_graph_binding *binding, u32 role,
 		u32 *address, u32 *source_owner);
+struct m9_faa_graph_binding *
+m9x_faa_graph_binding_get(struct m9_faa_graph_binding *binding);
 void m9x_faa_graph_binding_put(struct m9_faa_graph_binding *binding);
+/* Caller holds the DRM device live. The returned binding kref protects its
+ * six pinned BOs, but a future draw must reserve/recheck before posting. */
+int m9x_faa_graph_continuation_acquire(struct m9x_device *mdev,
+		struct drm_file *file, u64 id, u32 generation, u64 init_point,
+		struct m9_faa_graph_binding **out);
+/* TRANSPORT lock held; this is a read-only native-state snapshot. */
+int m9x_faa_graph_retained_get_locked(struct m9x_device *mdev,
+		u32 generation, u64 init_point,
+		struct m9_faa_graph_binding **out);
 struct m9x_bo *m9x_bo_lookup(struct m9x_device *mdev,
 			     struct drm_file *file, u32 handle);
 bool m9x_gem_is_dma(struct drm_gem_object *gem);

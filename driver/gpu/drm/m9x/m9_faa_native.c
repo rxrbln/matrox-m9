@@ -323,6 +323,98 @@ bool m9x_faa_graph_preparing(struct m9x_device *mdev)
 	       mdev->transport.faa->graph_preparing;
 }
 
+/* First post-INIT caller only. Its source timeline starts from the same
+ * retired b0-era context; an already continued primary or an outstanding
+ * phase must not be admitted using INIT's receipt again. No MMIO is read. */
+static int m9_faa_graph_continuation_state(
+		const struct m9x_transport *t, u32 generation, u64 init_point)
+{
+	const struct m9x_faa_replay *r = t->faa;
+
+	if (t->wedged)
+		return -EIO;
+	if (!r || !r->graph_binding || !r->prepared || !r->attempted ||
+	    !r->observation_retired || !r->observation_point ||
+	    r->graph_preparing || r->graph_generation != generation ||
+	    r->observation_generation != generation ||
+	    t->generation != generation ||
+	    r->observation_point != init_point ||
+	    t->submitted_point != init_point ||
+	    t->completed_point != init_point ||
+	    lower_32_bits(init_point) > U32_MAX - 0x10 ||
+	    t->next_fence != lower_32_bits(init_point) + 0x10)
+		return -ESTALE;
+	if (!t->faa_source_context || !t->faa_virtual_primary ||
+	    !t->transport_armed || !t->bus_master_enabled ||
+	    !t->engine_transitioned || !t->restore_ready || !t->fence_cpu ||
+	    t->async_stop || t->async_pending || t->queue_count)
+		return -EBUSY;
+	return 0;
+}
+
+int m9x_faa_graph_retained_get_locked(struct m9x_device *mdev,
+		u32 generation, u64 init_point,
+		struct m9_faa_graph_binding **out)
+{
+	int ret;
+
+	lockdep_assert_held(&mdev->transport.lock);
+	if (!out)
+		return -EINVAL;
+	*out = NULL;
+	ret = m9_faa_graph_continuation_state(&mdev->transport,
+					    generation, init_point);
+	if (!ret)
+		*out = m9x_faa_graph_binding_get(mdev->transport.faa->graph_binding);
+	return ret;
+}
+
+int m9x_faa_graph_continuation_selftest(void)
+{
+	/* The replay contains the full private owner table; keep it off the
+	 * module-init stack even though this is a CPU-only predicate test. */
+	static struct m9x_transport t;
+	static struct m9x_faa_replay r;
+	static u32 counter = 0xb1;
+
+	t.faa = &r;
+	t.fence_cpu = &counter;
+	t.faa_source_context = true;
+	t.faa_virtual_primary = true;
+	t.transport_armed = true;
+	t.bus_master_enabled = true;
+	t.engine_transitioned = true;
+	t.restore_ready = true;
+	t.submitted_point = t.completed_point = 0xb0;
+	t.next_fence = 0xc0;
+	r.graph_binding = (void *)&t; /* predicate checks presence, not identity */
+	r.prepared = r.attempted = r.observation_retired = true;
+	r.observation_point = 0xb0;
+	if (m9_faa_graph_continuation_state(&t, 0, 0xb0) ||
+	    m9_faa_graph_continuation_state(&t, 1, 0xb0) != -ESTALE ||
+	    m9_faa_graph_continuation_state(&t, 0, 0xc0) != -ESTALE)
+		return -EINVAL;
+	t.queue_count = 1;
+	if (m9_faa_graph_continuation_state(&t, 0, 0xb0) != -EBUSY)
+		return -EINVAL;
+	t.queue_count = 0;
+	t.async_pending = true;
+	if (m9_faa_graph_continuation_state(&t, 0, 0xb0) != -EBUSY)
+		return -EINVAL;
+	t.async_pending = false;
+	t.completed_point = 0xc0; /* another submission cannot reuse INIT */
+	if (m9_faa_graph_continuation_state(&t, 0, 0xb0) != -ESTALE)
+		return -EINVAL;
+	t.completed_point = 0xb0;
+	t.wedged = true;
+	if (m9_faa_graph_continuation_state(&t, 0, 0xb0) != -EIO)
+		return -EINVAL;
+	t.wedged = false;
+	r.graph_binding = NULL;
+	return m9_faa_graph_continuation_state(&t, 0, 0xb0) == -ESTALE ?
+		0 : -EINVAL;
+}
+
 bool m9x_faa_source_init_enabled(struct m9x_device *mdev)
 {
 #ifdef M9_FAA_GRAPH_INIT_CONTROL

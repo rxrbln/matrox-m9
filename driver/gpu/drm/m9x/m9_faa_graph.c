@@ -53,6 +53,7 @@ static const u8 m9_faa_graph_source_owner[PARHELIA_M9_FAA_GRAPH_OWNERS] = {
 /* A future posted init transfers this whole binding to its retirement or
  * quarantine record. File RELEASE only drops its own graph reference. */
 struct m9_faa_graph_binding {
+	struct kref refs;
 	struct m9_faa_prepared_graph *graph;
 	u32 address[PARHELIA_M9_FAA_GRAPH_OWNERS];
 	u32 generation;
@@ -107,6 +108,15 @@ static bool m9_faa_graph_release_matches(
 {
 	return graph && graph->id == args->graph_id &&
 	       graph->generation == args->generation && !args->flags;
+}
+
+static bool m9_faa_graph_continuation_matches(
+		const struct m9_faa_prepared_graph *graph,
+		u64 id, u32 generation, u64 init_point)
+{
+	return graph && id && init_point && graph->initialized &&
+	       graph->id == id && graph->generation == generation &&
+	       graph->init_point == init_point;
 }
 
 static bool m9_faa_graph_init_request_valid(
@@ -173,6 +183,7 @@ int m9x_faa_graph_selftest(void)
 	struct m9_faa_prepared_graph graph = {
 		.id = 7, .generation = 0,
 	};
+	struct m9_faa_graph_binding retained = { .graph = &graph };
 	struct drm_parhelia_m9_faa_graph_release release = {
 		.graph_id = 7, .generation = 0,
 	};
@@ -221,6 +232,27 @@ int m9x_faa_graph_selftest(void)
 		return -EINVAL;
 	release.generation = 1;
 	if (m9_faa_graph_release_matches(&graph, &release))
+		return -EINVAL;
+	graph.initialized = true;
+	graph.init_point = 0xb0;
+	if (!m9_faa_graph_continuation_matches(&graph, 7, 0, 0xb0) ||
+	    m9_faa_graph_continuation_matches(&graph, 8, 0, 0xb0) ||
+	    m9_faa_graph_continuation_matches(&graph, 7, 1, 0xb0) ||
+	    m9_faa_graph_continuation_matches(&graph, 7, 0, 0xc0) ||
+	    m9_faa_graph_continuation_matches(&graph, 7, 0, 0))
+		return -EINVAL;
+	graph.initialized = false;
+	if (m9_faa_graph_continuation_matches(&graph, 7, 0, 0xb0))
+		return -EINVAL;
+	/* A matching file token can disappear after authentication, while an
+	 * acquired binding reference must remain live for the admitted caller. */
+	kref_init(&retained.refs);
+	if (m9x_faa_graph_binding_get(&retained) != &retained ||
+	    kref_read(&retained.refs) != 2)
+		return -EINVAL;
+	m9x_faa_graph_binding_put(&retained);
+	if (kref_read(&retained.refs) != 1 ||
+	    m9_faa_graph_continuation_matches(NULL, 7, 0, 0xb0))
 		return -EINVAL;
 	release.generation = 0;
 	release.graph_id = 8;
@@ -305,6 +337,36 @@ m9x_faa_graph_owner(const struct m9_faa_prepared_graph *graph, u32 role)
 		graph->owner[role] : NULL;
 }
 
+/* Caller holds one WW reservation set covering all six owners. A retained
+ * pin should make these positions stable, but a continuation must compare
+ * its live placement to the original binding before using any address. */
+static int m9_faa_graph_live_addresses(struct m9x_device *mdev,
+		const struct m9_faa_prepared_graph *graph,
+		u32 address[PARHELIA_M9_FAA_GRAPH_OWNERS])
+{
+	u64 limit = m9x_vram_gpu_limit(mdev);
+	u32 i;
+
+	if (!limit)
+		return -ERANGE;
+	for (i = 0; i < PARHELIA_M9_FAA_GRAPH_OWNERS; i++) {
+		struct drm_gem_object *gem = graph->owner[i];
+		s64 offset;
+
+		if (!gem || !graph->pinned[i] ||
+		    !m9_faa_graph_owner_class_valid(i, gem) ||
+		    gem->size != m9_faa_graph_owner_spec[i].capacity)
+			return -ERANGE;
+		offset = m9x_gem_vram_offset(gem);
+		if (offset < 0 ||
+		    !m9_faa_graph_local_span(M9_VRAM_GPU_BASE, (u64)offset,
+			m9_faa_graph_owner_spec[i].capacity, limit,
+			&address[i]))
+			return -ERANGE;
+	}
+	return m9_faa_graph_ranges_disjoint(address) ? 0 : -EINVAL;
+}
+
 int m9x_faa_graph_binding_acquire(struct m9x_device *mdev,
 		struct drm_file *file, u64 id, u32 generation,
 		struct m9_faa_graph_binding **out)
@@ -312,7 +374,6 @@ int m9x_faa_graph_binding_acquire(struct m9x_device *mdev,
 	struct m9_faa_prepared_graph *graph;
 	struct m9_faa_graph_binding *binding;
 	struct drm_exec exec;
-	u64 limit;
 	u32 i;
 	int ret = 0;
 
@@ -329,9 +390,9 @@ int m9x_faa_graph_binding_acquire(struct m9x_device *mdev,
 		return -ENOMEM;
 	}
 	binding->graph = graph;
+	kref_init(&binding->refs);
 	binding->generation = generation;
-	limit = m9x_vram_gpu_limit(mdev);
-	if (m9x_local_gpu_base || !limit ||
+	if (m9x_local_gpu_base || !m9x_vram_gpu_limit(mdev) ||
 	    mdev->pdev->device != M9X_PCI_DEVICE_PHOENIX ||
 	    mdev->pdev->revision != 1 || mdev->pdev->subsystem_device != 0x22c0) {
 		ret = -EOPNOTSUPP;
@@ -347,25 +408,9 @@ int m9x_faa_graph_binding_acquire(struct m9x_device *mdev,
 				goto out_exec;
 		}
 	}
-	for (i = 0; i < PARHELIA_M9_FAA_GRAPH_OWNERS; i++) {
-		struct drm_gem_object *gem = graph->owner[i];
-		s64 offset = m9x_gem_vram_offset(gem);
-
-		if (!graph->pinned[i] ||
-		    !m9_faa_graph_owner_class_valid(i, gem) ||
-		    gem->size != m9_faa_graph_owner_spec[i].capacity ||
-		    offset < 0 ||
-		    !m9_faa_graph_local_span(M9_VRAM_GPU_BASE, (u64)offset,
-				m9_faa_graph_owner_spec[i].capacity, limit,
-				&binding->address[i])) {
-			ret = -ERANGE;
-			goto out_exec;
-		}
-	}
-	if (!m9_faa_graph_ranges_disjoint(binding->address)) {
-		ret = -EINVAL;
+	ret = m9_faa_graph_live_addresses(mdev, graph, binding->address);
+	if (ret)
 		goto out_exec;
-	}
 	mutex_lock(&mdev->transport.lock);
 	if (mdev->transport.generation != generation)
 		ret = -ESTALE;
@@ -403,12 +448,94 @@ bool m9x_faa_graph_binding_address(const struct m9_faa_graph_binding *binding,
 	return true;
 }
 
+struct m9_faa_graph_binding *
+m9x_faa_graph_binding_get(struct m9_faa_graph_binding *binding)
+{
+	if (binding)
+		kref_get(&binding->refs);
+	return binding;
+}
+
+static void m9_faa_graph_binding_destroy(struct kref *ref)
+{
+	struct m9_faa_graph_binding *binding =
+		container_of(ref, struct m9_faa_graph_binding, refs);
+
+	m9x_faa_graph_put(binding->graph);
+	kfree(binding);
+}
+
 void m9x_faa_graph_binding_put(struct m9_faa_graph_binding *binding)
 {
 	if (!binding)
 		return;
-	m9x_faa_graph_put(binding->graph);
-	kfree(binding);
+	kref_put(&binding->refs, m9_faa_graph_binding_destroy);
+}
+
+/* This is an admission snapshot, not permission to post later without a
+ * second generation/placement/health check under the draw's reservations.
+ * Lock order matches INIT: file state, six GEM reservations, transport. The
+ * file lock prevents RELEASE from winning between token and native identity
+ * checks; the returned binding kref survives either later RELEASE or fini. */
+int m9x_faa_graph_continuation_acquire(struct m9x_device *mdev,
+		struct drm_file *file, u64 id, u32 generation, u64 init_point,
+		struct m9_faa_graph_binding **out)
+{
+	struct m9_faa_file *state;
+	struct m9_faa_graph_binding *binding = NULL;
+	struct m9_faa_prepared_graph *graph;
+	struct drm_exec exec;
+	u32 address[PARHELIA_M9_FAA_GRAPH_OWNERS];
+	u32 i;
+	int ret;
+
+	if (!out)
+		return -EINVAL;
+	*out = NULL;
+	if (!mdev || !file || !file->minor ||
+	    file->minor->dev != &mdev->drm || !id || !init_point)
+		return -EINVAL;
+	if (!m9x_faa_graph_profile_enabled())
+		return -EOPNOTSUPP;
+	state = file->driver_priv;
+	if (!state)
+		return -ENOENT;
+	mutex_lock(&state->lock);
+	graph = state->graph;
+	if (!m9_faa_graph_continuation_matches(graph, id, generation,
+						init_point)) {
+		ret = -ENOENT;
+		goto out_state;
+	}
+	drm_exec_init(&exec, DRM_EXEC_INTERRUPTIBLE_WAIT |
+		      DRM_EXEC_IGNORE_DUPLICATES, PARHELIA_M9_FAA_GRAPH_OWNERS);
+	drm_exec_until_all_locked(&exec) {
+		for (i = 0; i < PARHELIA_M9_FAA_GRAPH_OWNERS; i++) {
+			ret = drm_exec_lock_obj(&exec, graph->owner[i]);
+			drm_exec_retry_on_contention(&exec);
+			if (ret)
+				goto out_exec;
+		}
+	}
+	ret = m9_faa_graph_live_addresses(mdev, graph, address);
+	if (ret)
+		goto out_exec;
+	mutex_lock(&mdev->transport.lock);
+	ret = m9x_faa_graph_retained_get_locked(mdev, generation,
+						  init_point, &binding);
+	if (!ret && (binding->graph != graph ||
+		     memcmp(binding->address, address, sizeof(address))))
+		ret = -ESTALE;
+	mutex_unlock(&mdev->transport.lock);
+out_exec:
+	drm_exec_fini(&exec);
+out_state:
+	mutex_unlock(&state->lock);
+	if (ret)
+		m9x_faa_graph_binding_put(binding);
+	else
+		*out = binding;
+	return ret;
 }
 
 int m9x_faa_graph_file_open(struct drm_device *drm, struct drm_file *file)

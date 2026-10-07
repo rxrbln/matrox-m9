@@ -1327,6 +1327,10 @@ int m9x_init(struct m9x_device *mdev)
 	ret = m9x_faa_graph_selftest();
 	if (ret)
 		return dev_err_probe(dev, ret, "M9 FAA graph selftest failed\n");
+	ret = m9x_faa_graph_continuation_selftest();
+	if (ret)
+		return dev_err_probe(dev, ret,
+				     "M9 FAA continuation selftest failed\n");
 	ret = m9x_triangle_selftest();
 	if (ret)
 		return dev_err_probe(dev, ret, "M9 triangle selftest failed\n");
