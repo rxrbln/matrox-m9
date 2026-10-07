@@ -912,7 +912,9 @@ int m9x_submit_faa_virtual_phases_locked(struct m9x_device *mdev,
 	lockdep_assert_held(&t->lock);
 	if (doorbell_posted)
 		*doorbell_posted = false;
-	if (!node || !phases || count < 2 || count > 4 || !point ||
+	/* Public dirty-graph resolve continues beyond the four preparation
+	 * endpoints. Keep that additional wait instead of merging old phases. */
+	if (!node || !phases || count < 2 || count > 5 || !point ||
 	    !drm_mm_node_allocated(node) || node->start > U32_MAX ||
 	    upper_32_bits(dma) || !IS_ALIGNED(dma, PAGE_SIZE))
 		return -EINVAL;
