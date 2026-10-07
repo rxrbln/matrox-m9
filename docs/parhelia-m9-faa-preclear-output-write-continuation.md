@@ -74,3 +74,35 @@ The public pixel shader writes constant red despite green vertex records.
 The initial helper defaulted to green; corrected red evaluation of the same
 archived image still fails with zero coverage and8326 bad interior pixels.
 FAA rendering remains unqualified and broken for this bounded diagnostic.
+## Actual180 receipt and raster/color audit
+
+The root-owned physical test retires180/raw181 but remains all black. Main
+and AA buffers stay zero; preprocessing remains the earlier qualified
+transformed/varying output. The intended final color is **red**, independent
+of the green vertex varying: genuine CREATEPS54 `mov oC0,c0`,SETCONST57
+`c0=(1,0,0,1)` and SETPS56 precede the public clear/draw. The complete active
+240B program matches the passing ordinary SYSTEM red program byte for byte;
+the current136B constant image also matches, including that exact red c0.
+A green readback expectation for this profile is incorrect. Zero output
+fails both expectations and remains an actual FAA failure.
+
+`check-m9-faa-preclear-raster-contract.py` verifies the actual second
+17e480 emitter writes `[23000001,0,3]` at secondary540 via17e495. Its full
+second source range `[664,1356)` is referenced by the live-owner native
+primary at offsets5072/5076, within the posted stream. This establishes
+source-issued raster dispatch, not successful hardware raster execution.
+Selected packed indexed controls22,A8/A9/AA,F5/F6/C4/C5,88/89/8a/C1 and
+EC/F4/EA/EB agree with the independently passing ordinary red source.
+F0/EF/D7 intentionally differ by the actual FAA shadows; graph/pool/HZ
+bindings differ too. Equality of packed controls does not prove identical
+GPU interpretation or establish which FAA prerequisite rejects fragments.
+
+The actual180 receipt continuation supplies only the observed181 at
+4e1d1/4e203 on the original write-wait stack. It reaches2cba8 MMIO314=1
+then8b390, where it stops before unknown pixels. It emits zero command-MDL
+writes and consumes zero opaque BAR data. Thus this prefix omits no new
+postwait raster/resolve command stream; original pixelcopy/return still
+remains unexecuted. Root already tested the real314 ordering on hardware,
+so emulation of that transition is not a claim that it materializes pixels.
+The nine retained raw BAR roles are read-only evidence, not portable pool
+pointers or emulated GPU replies.
