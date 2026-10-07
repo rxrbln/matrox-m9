@@ -76,13 +76,18 @@ auxiliary `+0x1dc` links back to depth. The original color target was already
 handle 1, but is outside the original 31 command-owner namespace. The
 sampled graph primary remains owner 1. This plan classifies 64 source
 address fields, 29 timeline fields, three relative fields and ten END posts;
-captured bases exist only for source role matching. The two inline page runs
+captured bases exist only for source role matching. The prebind handle 1
+wrapper points to sampled owner 1, while the bound-clear color resource is
+role 31. Original `5b750` maps that role through an 80-page, `0x50000`-byte
+OS MDL with flags `0x30`; its compact SYSTEM PTE-b entries carry low flags
+`0xb`. A native mapping must derive each entry from its own retained pages.
+The two inline page runs
 clear the bound color target and sampled primary, each selecting 80 pages
 through 10 and 11 words respectively. Neither page run targets graph
 companion owner 4. The depth and HZ command bodies require their own live
 descriptor and allocation mapping; the plan is not an executable template.
 `check-bound-depth-plan.py` verifies the source-derived owner and packet
-joins with four refusals.
+joins with five refusals.
 
 After a real retained first public VS Unlock, separate controlled RS62
 BeginScene/EndScene and SETRENDERTARGET41(existing color/null depth) before
