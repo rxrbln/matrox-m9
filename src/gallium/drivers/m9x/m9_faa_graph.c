@@ -42,6 +42,8 @@ m9_faa_graph_create(struct m9_screen *screen, uint32_t width,
        graph->public_vs_draw_attempted || graph->public_vs_draw_point ||
        graph->public_vs_lock_attempted || graph->public_vs_lock_point ||
        graph->public_vs_unlock_attempted || graph->public_vs_unlock_point ||
+       graph->public_vs_next_attempted || graph->public_vs_next_lock_point ||
+       graph->public_vs_next_unlock_attempted || graph->public_vs_next_unlock_point ||
        graph->public_vs_follow_attempted || graph->public_vs_follow_point ||
        !m9_faa_graph_layout(width, height, &fresh.layout))
       return -EINVAL;
@@ -526,13 +528,27 @@ m9_faa_surface_public_vs_unlock_kernel(struct m9_screen *screen,
        !graph->public_vs_lock_attempted ||
        graph->public_vs_lock_point != graph->init_point + 0xe0)
       return -EINVAL;
-   if (graph->public_vs_unlock_attempted || graph->public_vs_unlock_point)
+   const bool next = graph->public_vs_next_attempted;
+   if (next && (graph->init_point > UINT64_MAX - 0x1f0 ||
+                !graph->public_vs_unlock_attempted ||
+                graph->public_vs_unlock_point != graph->init_point + 0x100 ||
+                graph->public_vs_next_lock_point != graph->init_point + 0x1d0))
+      return -EINVAL;
+   if (!next && (graph->public_vs_next_lock_point ||
+                 graph->public_vs_next_unlock_attempted ||
+                 graph->public_vs_next_unlock_point))
+      return -EINVAL;
+   bool *attempted = next ? &graph->public_vs_next_unlock_attempted :
+                            &graph->public_vs_unlock_attempted;
+   uint64_t *point = next ? &graph->public_vs_next_unlock_point :
+                           &graph->public_vs_unlock_point;
+   if (*attempted || *point)
       return -ESTALE;
    request.graph_id = graph->prepared_id;
    request.generation = graph->prepared_generation;
-   request.lock_point = graph->public_vs_lock_point;
+   request.lock_point = next ? graph->public_vs_next_lock_point : graph->public_vs_lock_point;
    const struct drm_parhelia_m9_faa_graph_unlock before = request;
-   graph->public_vs_unlock_attempted = true;
+   *attempted = true;
    if (ioctl(screen->fd, DRM_IOCTL_PARHELIA_M9_FAA_GRAPH_UNLOCK, &request))
       return -errno;
    if (request.graph_id != before.graph_id || request.generation != before.generation ||
@@ -544,7 +560,59 @@ m9_faa_surface_public_vs_unlock_kernel(struct m9_screen *screen,
    if (ret)
       return ret;
    /* Final copyback and independent finish retired on this retained graph. */
-   graph->public_vs_unlock_point = request.unlock_point;
+   *point = request.unlock_point;
+   return 0;
+}
+
+int
+m9_faa_surface_public_vs_next_kernel(struct m9_screen *screen,
+                                    struct m9_faa_surface *surface,
+                                    const uint32_t vertices[24])
+{
+   struct drm_parhelia_m9_faa_graph_public_vs_next request = {0};
+   struct m9_faa_graph *graph;
+
+   _Static_assert(sizeof(request) == 136, "public VS NEXT kernel ABI");
+   if (!screen || !surface || !vertices)
+      return -EINVAL;
+   graph = &surface->graph;
+   if (screen->faa.chip != M9_FAA_CHIP_M9 || !screen->wait_point ||
+       surface->width != 320 || surface->height != 240 || surface->format != 0x66)
+      return -EOPNOTSUPP;
+   if (!graph->prepared || !graph->prepared_id || !graph->initialized ||
+       !graph->init_point || graph->init_point > UINT64_MAX - 0x1d0 ||
+       !graph->public_vs_head_attempted ||
+       graph->public_vs_head_point != graph->init_point + 0x10 ||
+       !graph->public_vs_draw_attempted ||
+       graph->public_vs_draw_point != graph->init_point + 0xb0 ||
+       !graph->public_vs_lock_attempted ||
+       graph->public_vs_lock_point != graph->init_point + 0xe0 ||
+       !graph->public_vs_unlock_attempted ||
+       graph->public_vs_unlock_point != graph->init_point + 0x100 ||
+       graph->public_vs_attempted || graph->public_vs_point ||
+       graph->public_vs_follow_attempted || graph->public_vs_follow_point)
+      return -EINVAL;
+   if (graph->public_vs_next_attempted || graph->public_vs_next_lock_point ||
+       graph->public_vs_next_unlock_attempted || graph->public_vs_next_unlock_point)
+      return -ESTALE;
+   request.graph_id = graph->prepared_id;
+   request.generation = graph->prepared_generation;
+   request.unlock_point = graph->public_vs_unlock_point;
+   memcpy(request.vertices, vertices, sizeof(request.vertices));
+   const struct drm_parhelia_m9_faa_graph_public_vs_next before = request;
+   graph->public_vs_next_attempted = true;
+   if (ioctl(screen->fd, DRM_IOCTL_PARHELIA_M9_FAA_GRAPH_PUBLIC_VS_NEXT, &request))
+      return -errno;
+   if (request.graph_id != before.graph_id || request.generation != before.generation ||
+       request.unlock_point != before.unlock_point || request.flags || request.pad ||
+       request.state != PARHELIA_M9_FAA_PUBLIC_VS_NEXT_LOCK_RETIRED ||
+       request.lock_point != before.unlock_point + 0xd0 ||
+       memcmp(request.vertices, before.vertices, sizeof(request.vertices)))
+      return -EPROTO;
+   int ret = m9_wait_for_point(screen, request.lock_point);
+   if (ret)
+      return ret;
+   graph->public_vs_next_lock_point = request.lock_point;
    return 0;
 }
 
@@ -602,6 +670,8 @@ m9_faa_graph_release_kernel(struct m9_screen *screen, struct m9_faa_graph *graph
              graph->public_vs_draw_attempted || graph->public_vs_draw_point ||
        graph->public_vs_lock_attempted || graph->public_vs_lock_point ||
        graph->public_vs_unlock_attempted || graph->public_vs_unlock_point ||
+       graph->public_vs_next_attempted || graph->public_vs_next_lock_point ||
+       graph->public_vs_next_unlock_attempted || graph->public_vs_next_unlock_point ||
              graph->public_vs_follow_attempted || graph->public_vs_follow_point ? -EPROTO : 0;
    request.graph_id = graph->prepared_id;
    request.generation = graph->prepared_generation;
@@ -620,6 +690,10 @@ m9_faa_graph_release_kernel(struct m9_screen *screen, struct m9_faa_graph *graph
    graph->public_vs_lock_point = 0;
    graph->public_vs_unlock_attempted = false;
    graph->public_vs_unlock_point = 0;
+   graph->public_vs_next_attempted = false;
+   graph->public_vs_next_lock_point = 0;
+   graph->public_vs_next_unlock_attempted = false;
+   graph->public_vs_next_unlock_point = 0;
    graph->public_vs_attempted = false;
    graph->public_vs_point = 0;
    graph->public_vs_follow_attempted = false;

@@ -95,6 +95,12 @@ int m9_faa_surface_public_vs_lock_kernel(struct m9_screen *screen,
  * authenticates the view read; an ioctl failure must not permit a retry. */
 int m9_faa_surface_public_vs_unlock_kernel(struct m9_screen *screen,
                                          struct m9_faa_surface *surface);
+/* Second retained draw and complete normal Lock, with unchanged shader and
+ * constants. The vertices are three raw FLOAT4 clip + FLOAT4 texcoord records.
+ * F021 read and normal Unlock remain separately authenticated steps. */
+int m9_faa_surface_public_vs_next_kernel(struct m9_screen *screen,
+                                       struct m9_faa_surface *surface,
+                                       const uint32_t vertices[24]);
 /* Continue only the actually retired public prefix on this retained graph.
  * Success records the next preprocessing endpoint; pixels remain separate. */
 int m9_faa_surface_public_vs_follow_kernel(struct m9_screen *screen,

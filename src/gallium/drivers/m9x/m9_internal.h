@@ -142,6 +142,10 @@ struct m9_faa_graph {
    uint64_t public_vs_lock_point;
    bool public_vs_unlock_attempted;
    uint64_t public_vs_unlock_point;
+   bool public_vs_next_attempted;
+   uint64_t public_vs_next_lock_point;
+   bool public_vs_next_unlock_attempted;
+   uint64_t public_vs_next_unlock_point;
    bool public_vs_attempted;
    uint64_t public_vs_point;
    bool public_vs_follow_attempted;

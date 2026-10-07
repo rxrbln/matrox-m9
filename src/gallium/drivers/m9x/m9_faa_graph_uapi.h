@@ -145,3 +145,16 @@ struct drm_parhelia_m9_faa_graph_unlock {
    DRM_IOWR(DRM_COMMAND_BASE + DRM_PARHELIA_M9_FAA_GRAPH_UNLOCK, \
             struct drm_parhelia_m9_faa_graph_unlock)
 #endif
+
+#ifndef DRM_IOCTL_PARHELIA_M9_FAA_GRAPH_PUBLIC_VS_NEXT
+#define DRM_PARHELIA_M9_FAA_GRAPH_PUBLIC_VS_NEXT 0x1b
+#define PARHELIA_M9_FAA_PUBLIC_VS_NEXT_LOCK_RETIRED 15u
+struct drm_parhelia_m9_faa_graph_public_vs_next {
+   __u64 graph_id, unlock_point, lock_point;
+   __u32 generation, flags, state, pad;
+   __u32 vertices[24];
+};
+#define DRM_IOCTL_PARHELIA_M9_FAA_GRAPH_PUBLIC_VS_NEXT \
+   DRM_IOWR(DRM_COMMAND_BASE + DRM_PARHELIA_M9_FAA_GRAPH_PUBLIC_VS_NEXT, \
+            struct drm_parhelia_m9_faa_graph_public_vs_next)
+#endif
