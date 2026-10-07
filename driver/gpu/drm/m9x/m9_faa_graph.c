@@ -1000,13 +1000,19 @@ int m9x_faa_graph_unlock_ioctl(struct drm_device *drm, void *data,
 	graph = state->graph;
 	if (!m9_faa_graph_continuation_matches(graph, args->graph_id,
 			args->generation, args->lock_point - 0xc0) &&
+	    (args->lock_point < 0xe0 ||
+	     !m9_faa_graph_continuation_matches(graph, args->graph_id,
+			args->generation, args->lock_point - 0xe0)) &&
 	    (args->lock_point < 0x190 ||
 	     !m9_faa_graph_continuation_matches(graph, args->graph_id,
 			args->generation, args->lock_point - 0x190))) {
 		ret = -ENOENT;
 		goto out_state;
 	}
-	/* Keep RELEASE excluded through live address and native binding joins,
+	/* Token matching admits the public-VS Lock epoch too. Native admission
+	 * separately requires its actual Lock marker and successful F021 view;
+	 * a numerical point alone never authorizes Unlock.
+	 * Keep RELEASE excluded through live address and native binding joins,
 	 * reserve every owner, then retain the exact existing native binding. */
 	drm_exec_init(&exec, DRM_EXEC_INTERRUPTIBLE_WAIT |
 		      DRM_EXEC_IGNORE_DUPLICATES, PARHELIA_M9_FAA_GRAPH_OWNERS);
