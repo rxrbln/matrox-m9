@@ -60,6 +60,10 @@ optional second-field START, bounds and final configuration writes. It has
 no read or event in this bounded leaf. This proves programming grammar;
 it does not prove when scanout changes or when the old framebuffer can be
 released. The full original caller's scheduling and completion remain open.
+The separate original route-transition routine has a real pre-setter
+hardware-read dependency, bounded in
+[`parhelia-m9-display-route-scheduler-re.md`](parhelia-m9-display-route-scheduler-re.md).
+That CPU-only proof does not establish a scanout latch or release event.
 
 The native simple-pipe `.update` calls `m9_program_scanout`, then arms a
 vblank event through `matrox_kms_arm_event`. Its direct path derives START
