@@ -345,6 +345,13 @@ int m9x_submit_faa_virtual_primary_locked(struct m9x_device *mdev,
 				 const struct drm_mm_node *node, dma_addr_t dma,
 				 u32 bytes, u32 target, u64 *point,
 				 bool *doorbell_posted);
+struct m9x_faa_submit_phase {
+	u32 bytes, target;
+};
+int m9x_submit_faa_virtual_phases_locked(struct m9x_device *mdev,
+				const struct drm_mm_node *node, dma_addr_t dma,
+				const struct m9x_faa_submit_phase *phases,
+				u32 count, u64 *point, bool *doorbell_posted);
 struct m9x_fence *m9x_fence_create_target_locked(struct m9x_device *mdev,
 						 u32 target);
 int m9x_submit_kernel_queue_locked(struct m9x_device *mdev,

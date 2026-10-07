@@ -159,6 +159,10 @@ static bool m9_faa_source_init;
 module_param(m9_faa_source_init, bool, 0400);
 MODULE_PARM_DESC(m9_faa_source_init,
 	"Let the private M9128 Windows FAA stream initialize a fresh context without Linux sequence0");
+static bool m9_faa_phased_submit;
+module_param(m9_faa_phased_submit, bool, 0400);
+MODULE_PARM_DESC(m9_faa_phased_submit,
+	"Wait at source c0/120/160/180 boundaries in the private complete-output diagnostic");
 MODULE_FIRMWARE(M9_FAA_INPUT_FIRMWARE);
 
 bool m9x_faa_diag_enabled(void)
@@ -1280,10 +1284,49 @@ int m9x_faa_submit_diag(struct m9x_device *mdev, u32 color,
 		ret = -EINVAL;
 		goto unlock;
 	}
-	ret = m9x_submit_faa_virtual_primary_locked(mdev,
-			&r->owner[M9_FAA_PRIMARY_OWNER].system_node,
-			r->owner[M9_FAA_PRIMARY_OWNER].dma, r->primary_bytes,
-			target, point, &posted);
+	if (m9_faa_phased_submit) {
+#ifdef M9_FAA_PRECLEAR_OUTPUT_WRITE_CONTROL
+		/* These four source-exported endpoints are after both variable
+		 * clear segments, so they all move by the same signed suffix
+		 * delta. No captured address or desired completion is replayed. */
+		static const struct m9x_faa_submit_phase source[] = {
+			{ 4980, 0xc0 }, { 5068, 0x120 },
+			{ 5224, 0x160 }, { 5724, 0x180 },
+		};
+		struct m9x_faa_submit_phase phases[ARRAY_SIZE(source)];
+		s64 delta = (s64)r->primary_bytes - M9_FAA_PRIMARY_BYTES;
+
+		if (M9_FAA_PRIMARY_BYTES != 5724 || M9_FAA_TRACKER_LAST != 0x180) {
+			ret = -EINVAL;
+			goto unlock;
+		}
+		for (i = 0; i < ARRAY_SIZE(m9_faa_clear_segments); i++)
+			if (m9_faa_clear_segments[i].end > source[0].bytes) {
+				ret = -EINVAL;
+				goto unlock;
+			}
+		for (i = 0; i < ARRAY_SIZE(source); i++) {
+			if ((s64)source[i].bytes + delta <= 0 ||
+			    (s64)source[i].bytes + delta > U32_MAX) {
+				ret = -ERANGE;
+				goto unlock;
+			}
+			phases[i].bytes = source[i].bytes + delta;
+			phases[i].target = base + source[i].target - 0x10;
+		}
+		ret = m9x_submit_faa_virtual_phases_locked(mdev,
+				&r->owner[M9_FAA_PRIMARY_OWNER].system_node,
+				r->owner[M9_FAA_PRIMARY_OWNER].dma, phases,
+				ARRAY_SIZE(phases), point, &posted);
+#else
+		ret = -EOPNOTSUPP;
+#endif
+	} else {
+		ret = m9x_submit_faa_virtual_primary_locked(mdev,
+				&r->owner[M9_FAA_PRIMARY_OWNER].system_node,
+				r->owner[M9_FAA_PRIMARY_OWNER].dma, r->primary_bytes,
+				target, point, &posted);
+	}
 	*color_active = posted && ret;
 	if (!ret) {
 		t->next_fence = target + 0x10;

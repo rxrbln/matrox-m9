@@ -894,6 +894,66 @@ int m9x_submit_faa_virtual_primary_locked(struct m9x_device *mdev,
 	return 0;
 }
 
+/* A bounded diagnostic preserves actual source retirement boundaries while
+ * extending the same retained primary. It does not replay captured MMIO or
+ * claim equivalence of intervening mapping operations. Check every endpoint
+ * and consumed page before the first doorbell; failure retains posted owners. */
+int m9x_submit_faa_virtual_phases_locked(struct m9x_device *mdev,
+				const struct drm_mm_node *node, dma_addr_t dma,
+				const struct m9x_faa_submit_phase *phases,
+				u32 count, u64 *point, bool *doorbell_posted)
+{
+	struct m9x_transport *t = &mdev->transport;
+	u32 i, page, pte, end;
+	int ret;
+
+	lockdep_assert_held(&t->lock);
+	if (doorbell_posted)
+		*doorbell_posted = false;
+	if (!node || !phases || count < 2 || count > 4 || !point ||
+	    !drm_mm_node_allocated(node) || node->start > U32_MAX ||
+	    upper_32_bits(dma) || !IS_ALIGNED(dma, PAGE_SIZE))
+		return -EINVAL;
+	for (i = 0; i < count; i++) {
+		if (!phases[i].bytes || !IS_ALIGNED(phases[i].bytes, 4) ||
+		    phases[i].bytes > node->size ||
+		    phases[i].bytes > PARHELIA_M9_COMMAND_BYTES ||
+		    !phases[i].target || (phases[i].target & 15) ||
+		    check_add_overflow((u32)node->start, phases[i].bytes, &end) ||
+		    (i && (phases[i].bytes <= phases[i - 1].bytes ||
+			   phases[i].target <= phases[i - 1].target)))
+			return -EINVAL;
+	}
+	if ((u64)dma + node->size > (u64)U32_MAX + 1)
+		return -EINVAL;
+	for (page = 0; page < DIV_ROUND_UP(phases[count - 1].bytes, PAGE_SIZE); page++) {
+		ret = m9x_address_read_pte(mdev, (u32)node->start + page * PAGE_SIZE, &pte);
+		if (ret)
+			return ret;
+		if (pte != (m9x_address_pte_word(dma + page * PAGE_SIZE) | 1u))
+			return -ESTALE;
+	}
+	ret = m9x_submit_faa_virtual_primary_locked(mdev, node, dma,
+			phases[0].bytes, phases[0].target, point, doorbell_posted);
+	if (ret)
+		return ret;
+	for (i = 1; i < count; i++) {
+		/* The prior actual wait returned; neither CPU seeds nor a later
+		 * phase's desired counter are treated as GPU completion. */
+		dma_wmb();
+		m9x_write(mdev, M9_REG_COMMAND_END, (u32)node->start + phases[i].bytes);
+		m9x_read(mdev, M9_REG_COMMAND_END);
+		ret = m9_fence_wait_locked(mdev, phases[i].target);
+		if (ret)
+			return ret;
+		*point = m9_extend_fence(t, READ_ONCE(((u32 *)t->fence_cpu)[0]));
+		dev_info(&mdev->pdev->dev,
+			 "M9 FAA source phase retired: phase=%u bytes=%u target=%#x actual=%#llx\n",
+			 i, phases[i].bytes, phases[i].target, *point);
+	}
+	return 0;
+}
+
 int m9x_submit_kernel_queue_locked(struct m9x_device *mdev,
 				   const u32 *commands, u32 dwords, u32 target,
 				   u64 *point, bool *doorbell_posted)
