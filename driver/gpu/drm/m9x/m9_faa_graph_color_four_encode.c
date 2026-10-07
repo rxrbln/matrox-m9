@@ -32,8 +32,8 @@ int m9x_faa_color_four_encode(const u8*blob,size_t bytes,const struct m9x_faa_gr
  (init_point&15)||(u32)init_point<0xb0||(u32)init_point>U32_MAX-0xf0||
  in->layout.program_count!=4||!in->layout.program_bytes||in->layout.program_bytes>4096||(in->layout.program_bytes&7)||
  in->layout.entry_bytes[0]||!in->layout.constants_bytes||in->layout.constants_bytes>16384||(in->layout.constants_bytes&7)||
- in->record_stride!=32||in->record_count!=3||
- in->declaration_count<3||in->declaration_count>31||!(in->declaration_count&1)||
+ in->record_stride!=32||!in->record_count||in->record_count%3||in->record_count>12288||
+ in->declaration_count<3||in->declaration_count>17||!(in->declaration_count&1)||
  in->layout.vertex_offset!=128||check_mul_overflow(in->record_stride,in->record_count,&raw)||
  raw!=in->layout.vertex_bytes||in->layout.geometry_bytes!=128+raw||in->layout.geometry_bytes>0x40000-256)return -EINVAL;
  for(i=0;i<4;i++){
@@ -109,9 +109,17 @@ int m9x_faa_color_four_encode(const u8*blob,size_t bytes,const struct m9x_faa_gr
  {const u32 c2[]={2344,352,980,1592},c3[]={2360,368,996,1608};for(i=0;i<4;i++){
   put(out->secondary+moved(c2[i],extra),in->layout.entry_bytes[i]/8);pairs=(in->layout.constant_end[i]-in->layout.constant_begin[i])/8;
   put(out->secondary+moved(c3[i],extra),0x00500000|(pairs<<8));}}
- put(out->secondary+320,in->record_count);put(out->secondary+336,in->record_stride);
- for(i=0;i<4;i++)put(out->secondary+moved((u32[]){600,1236,1796,2680}[i],extra),in->record_count);
- put(out->secondary+272,padded);put(out->secondary+moved(2232,extra),padded);
+ /* Genuine 3-to6 source differential identifies launch payloads,
+  * not their preceding packet word counts (which remain3/4). */
+ put(out->secondary+336,in->record_stride);
+ for(i=0;i<3;i++)put(out->secondary+moved((u32[]){644,1264,1824}[i],extra),padded);
+ put(out->secondary+moved(2708,extra),in->record_count);
+ /* The COLOR raster frontend declares exactly one input, mapped toslot0.
+  * Source182500 populates only its AB halfword; other AB/AC halfwords
+  * copied by182541/182549 andfbee8 are uninitialized inactive residue.
+  * Give inactive slots defined zero masks rather than captured CPU residue. */
+ put(out->secondary+moved(2220,extra),0x0000ffff);
+ put(out->secondary+moved(2224,extra),0);
  put(out->secondary+72,ef(1+arity,0x200));put(out->secondary+moved(760,extra),ef(arity,0x600));
  put(out->secondary+304,(((1u<<((in->declaration_count-1)/2))-1)<<24)|0xffff);
  put(out->secondary+308,route(1+arity,true,false));

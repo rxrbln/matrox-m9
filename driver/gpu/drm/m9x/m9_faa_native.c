@@ -6418,7 +6418,8 @@ int m9x_faa_graph_color_next_prepare(struct m9x_device *mdev,
  const struct firmware *fw=NULL;u32 i,capacity;int ret;
  if(!binding||!input||!m9_faa_color_four_experimental||input->layout.program_count!=4||clear_flags>1)return -EOPNOTSUPP;
  if(input->layout.program_bytes>4096||input->layout.constants_bytes>16384||
-  input->record_stride!=32||input->record_count!=3||input->layout.geometry_bytes!=224)return -ERANGE;
+  input->record_stride!=32||!input->record_count||input->record_count%3||input->record_count>12288||
+  input->layout.geometry_bytes>0x40000-256)return -ERANGE;
  n=kzalloc(sizeof(*n),GFP_KERNEL);if(!n)return -ENOMEM;
  n->geometry_offset=ALIGN(input->layout.constants_bytes,128);
  capacity=n->geometry_offset+input->layout.geometry_bytes+768;
@@ -6441,7 +6442,7 @@ int m9x_faa_graph_color_next_prepare(struct m9x_device *mdev,
  ret=m9x_faa_color_next_encode(fw->data,fw->size,owner,r->primary_bytes,
   r->color_secondary_cursor,previous_unlock_point,input,clear_flags,&image);if(ret)goto unlock;
  if((u64)r->graph_draw_end_bytes+n->clear_bytes+3632>owner[27].bytes){ret=-ENOSPC;goto unlock;}
- n->layout=input->layout;n->constants_bytes=input->layout.constants_bytes;n->geometry_bytes=128+4*32;
+ n->layout=input->layout;n->constants_bytes=input->layout.constants_bytes;n->geometry_bytes=128+ALIGN(input->record_count,4)*input->record_stride;
  n->program_bytes=input->layout.program_bytes;n->primary_length=3632;n->draw_length=60;
  n->lock_delta=0xd0+(clear_flags?0x10:0);n->secondary_cursor=r->color_secondary_cursor;
  n->previous_unlock_point=previous_unlock_point;
