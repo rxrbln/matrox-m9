@@ -32,6 +32,7 @@
 #include "m9_faa_graph_public_vs_follow_encode.h"
 #include "m9_faa_graph_public_vs_draw_encode.h"
 #include "m9_faa_graph_public_vs_lock_encode.h"
+#include "m9_faa_graph_public_vs_next_encode.h"
 #include "m9_faa_graph_unlock_encode.h"
 #include "m9_faa_graph_next_encode.h"
 #include "m9_faa_graph_next_finish_encode.h"
@@ -232,6 +233,12 @@ struct m9_faa_public_vs_storage {
 	u8 primary[M9_FAA_PUBLIC_VS_PRIMARY_BYTES];
 	struct m9x_faa_public_vs_endpoints ends;
 };
+struct m9_faa_public_vs_next_storage {
+ u8 primary[60],secondary[2548],lock_primary[M9_FAA_VS_LOCK_PRIMARY_BYTES];
+ u32 vertices[24];
+ u64 unlock_point;
+ u32 primary_start,draw_end,lock_end;
+};
 struct m9_faa_public_vs_lock_storage {u8 primary[M9_FAA_VS_LOCK_PRIMARY_BYTES];};
 struct m9_faa_public_vs_draw_storage {
  u8 primary[M9_FAA_VS_DRAW_PRIMARY_BYTES], secondary[M9_FAA_VS_DRAW_SECONDARY_BYTES];
@@ -265,6 +272,8 @@ struct m9x_faa_replay {
  struct m9_faa_public_vs_draw_storage *public_vs_draw_image;
  struct m9_faa_public_vs_lock_storage *public_vs_lock_image;
  bool public_vs_lock_attempted,public_vs_lock_retired;
+ struct m9_faa_public_vs_next_storage *public_vs_next_image;
+ bool public_vs_next_attempted,public_vs_next_lock_retired,public_vs_next_view_seen;
  struct m9x_fence *public_vs_draw_fence;
  bool public_vs_draw_attempted,public_vs_draw_observed;
 	struct m9_faa_public_vs_follow_storage *public_vs_follow_image;
@@ -380,6 +389,8 @@ MODULE_FIRMWARE(M9_FAA_INPUT_FIRMWARE);
 MODULE_FIRMWARE(M9_FAA_GRAPH_PUBLIC_VS_FIRMWARE);
 #define M9_FAA_GRAPH_PUBLIC_VS_DRAW_FIRMWARE "m9x/faa-graph-public-vs-draw-template.bin"
 MODULE_FIRMWARE(M9_FAA_GRAPH_PUBLIC_VS_DRAW_FIRMWARE);
+#define M9_FAA_GRAPH_PUBLIC_VS_NEXT_FIRMWARE "m9x/faa-graph-public-vs-next-template.bin"
+MODULE_FIRMWARE(M9_FAA_GRAPH_PUBLIC_VS_NEXT_FIRMWARE);
 #define M9_FAA_GRAPH_PUBLIC_VS_LOCK_FIRMWARE "m9x/faa-graph-public-vs-lock-template.bin"
 MODULE_FIRMWARE(M9_FAA_GRAPH_PUBLIC_VS_LOCK_FIRMWARE);
 #define M9_FAA_GRAPH_PUBLIC_VS_FOLLOW_FIRMWARE \
@@ -853,6 +864,7 @@ static bool m9_faa_release(struct m9x_device *mdev, struct m9x_faa_replay *r)
 	kfree(r->public_vs_follow_image);
  kfree(r->public_vs_draw_image);
  kfree(r->public_vs_lock_image);
+ kfree(r->public_vs_next_image);
 	kfree(r->next_image);
 	kfree(r->next_finish_image);
 	kfree(r->next_lock_image);
@@ -3716,7 +3728,16 @@ int m9x_faa_lock_view_admit_locked(struct m9x_device *mdev,
 	/* The second normal Lock uses the exact same source mapper/format but
 	 * has its own actual retirement marker and full retained cursor join.
 	 * Unlock/preprocessing/rendering receipts alone never admit F021. */
-	if (r->public_vs_lock_retired) {
+	if (r->public_vs_next_lock_retired) {
+		const struct m9_faa_public_vs_next_storage *n = r->public_vs_next_image;
+
+		if (!n || !r->public_vs_next_attempted || r->public_vs_head_fence ||
+		    r->public_vs_draw_fence || r->graph_draw_point != n->unlock_point + 0xd0 ||
+		    r->unlock_point != n->unlock_point || r->graph_draw_posts != 13 ||
+		    r->graph_draw_end_bytes != n->lock_end ||
+		    n->lock_end != n->primary_start + 60 + M9_FAA_VS_LOCK_PRIMARY_BYTES)
+			return -ENODATA;
+	} else if (r->public_vs_lock_retired) {
 		if (!r->public_vs_head_retired || !r->public_vs_draw_observed ||
 		    !r->public_vs_lock_attempted || r->unlock_started ||
 		    r->public_vs_head_fence || r->public_vs_draw_fence ||
@@ -3820,7 +3841,9 @@ int m9x_faa_lock_view_observed_locked(struct m9x_device *mdev,
 	ret = m9x_faa_lock_view_admit_locked(mdev, color,
 			r->owner[1].base, r->owner[1].bytes);
 	if (!ret) {
-		if (r->graph_second_lock_retired)
+		if (r->public_vs_next_lock_retired)
+			r->public_vs_next_view_seen = true;
+		else if (r->graph_second_lock_retired)
 			r->second_lock_view_seen = true;
 		else
 			r->normal_lock_view_seen = true;
@@ -3864,7 +3887,8 @@ int m9x_faa_graph_unlock_get_locked(struct m9x_device *mdev,
 	*out = NULL;
 	if (!r || !r->graph_binding || !r->normal_lock_view_seen ||
 	    (r->unlock_started &&
-	     (!r->graph_second_lock_retired || !r->second_lock_view_seen)) ||
+	     (!r->graph_second_lock_retired || !r->second_lock_view_seen) &&
+	     (!r->public_vs_next_lock_retired || !r->public_vs_next_view_seen)) ||
 	    r->graph_generation != generation ||
 	    t->generation != generation || !lock_point ||
 	    r->graph_draw_point != lock_point || !t->engine_transitioned ||
@@ -4046,6 +4070,129 @@ int m9x_faa_graph_public_vs_unlocked_get_locked(struct m9x_device *mdev,
 	return 0;
 #else
 	return -EOPNOTSUPP;
+#endif
+}
+
+int m9x_faa_graph_public_vs_next_prepare(struct m9x_device *mdev,
+ struct m9_faa_graph_binding *binding,u32 generation,u64 unlock_point,const u32 vertices[24])
+{
+#ifdef M9_FAA_GRAPH_INIT_CONTROL
+ struct m9x_transport *t=&mdev->transport;struct m9x_faa_replay *r;
+ struct m9_faa_public_vs_next_storage *n;
+ struct m9_faa_graph_binding *checked=NULL;
+ struct m9x_faa_graph_draw_owner owner[M9_FAA_DRAW_SOURCE_OWNERS];
+ struct m9x_faa_public_vs_next_image out;
+ const struct firmware *fw=NULL,*lock_fw=NULL;
+ u32 i;int ret=m9x_faa_public_vs_next_vertices_valid(vertices);
+ if(ret)return ret;
+ ret=request_firmware(&fw,M9_FAA_GRAPH_PUBLIC_VS_NEXT_FIRMWARE,&mdev->pdev->dev);
+ if(ret)return ret;
+ ret=request_firmware(&lock_fw,M9_FAA_GRAPH_PUBLIC_VS_LOCK_FIRMWARE,&mdev->pdev->dev);
+ if(ret)goto release;
+ n=kzalloc(sizeof(*n),GFP_KERNEL);if(!n){ret=-ENOMEM;goto release;}
+ mutex_lock(&t->lock);
+ ret=m9x_faa_graph_public_vs_unlocked_get_locked(mdev,generation,unlock_point,&checked);
+ if(ret)goto out;
+ if(checked!=binding){ret=-ESTALE;goto out;}
+ r=t->faa;
+ if(r->public_vs_next_image||r->public_vs_next_attempted){ret=-ESTALE;goto out;}
+ for(i=0;i<M9_FAA_DRAW_SOURCE_OWNERS;i++){
+  struct m9_faa_owner *o;
+  switch(i){case 26:o=&r->draw_owner[0];break;case 27:o=&r->owner[26];break;
+   case 28:o=&r->draw_owner[1];break;case 29:o=&r->draw_owner[2];break;
+   case 30:o=&r->owner[27];break;default:o=&r->owner[i];break;}
+  owner[i]=(struct m9x_faa_graph_draw_owner){o->base,o->bytes};
+ }
+ n->primary_start=r->graph_draw_end_bytes;n->draw_end=n->primary_start+60;
+ n->lock_end=n->draw_end+M9_FAA_VS_LOCK_PRIMARY_BYTES;n->unlock_point=unlock_point;
+ out=(struct m9x_faa_public_vs_next_image){n->primary,n->secondary,sizeof(n->primary),sizeof(n->secondary)};
+ ret=m9x_faa_public_vs_next_encode(fw->data,fw->size,owner,n->primary_start,2688,512,unlock_point,
+  r->public_vs_image->layout.constant_begin[0],r->public_vs_image->layout.constant_end[0],&out);
+ if(ret)goto out;
+ ret=m9x_faa_public_vs_lock_encode(lock_fw->data,lock_fw->size,owner,n->draw_end,
+  320,240,unlock_point+0xa0,n->lock_primary,sizeof(n->lock_primary));
+ if(ret)goto out;
+ memcpy(n->vertices,vertices,sizeof(n->vertices));r->public_vs_next_image=n;n=NULL;
+out:
+ mutex_unlock(&t->lock);m9x_faa_graph_binding_put(checked);kfree(n);
+release:
+ if(lock_fw)release_firmware(lock_fw);if(fw)release_firmware(fw);return ret;
+#else
+ return -EOPNOTSUPP;
+#endif
+}
+
+int m9x_faa_graph_public_vs_next_submit(struct m9x_device *mdev,
+ struct m9_faa_graph_binding *binding,u32 generation,u64 unlock_point,u64 *point,bool *posted)
+{
+#ifdef M9_FAA_GRAPH_INIT_CONTROL
+ struct m9x_transport *t=&mdev->transport;struct m9x_faa_replay *r;
+ struct m9_faa_graph_binding *checked=NULL;struct m9_faa_public_vs_next_storage *n;
+ struct m9_faa_owner *primary;struct m9x_fence *fence=NULL;
+ bool stage_posted=false;u64 stage_point=0;u32 i,page,pte,end;int ret;
+ if(!point||!posted||!binding)return -EINVAL;*point=0;*posted=false;
+ mutex_lock(&t->lock);
+ ret=m9x_faa_graph_public_vs_unlocked_get_locked(mdev,generation,unlock_point,&checked);
+ if(ret)goto out;
+ if(checked!=binding){ret=-ESTALE;goto out;}
+ r=t->faa;n=r->public_vs_next_image;primary=&r->owner[M9_FAA_PRIMARY_OWNER];
+ if(!n||r->public_vs_next_attempted||n->unlock_point!=unlock_point||n->primary_start!=r->graph_draw_end_bytes||
+  !primary->cpu||!drm_mm_node_allocated(&primary->system_node)||primary->system_node.start!=primary->base||
+  n->lock_end>primary->bytes||r->draw_owner[1].bytes<640||r->draw_owner[2].bytes<5236){ret=-ESTALE;goto out;}
+ for(i=0;i<PARHELIA_M9_FAA_GRAPH_OWNERS;i++){
+  struct drm_gem_object *bo=m9x_faa_graph_binding_owner(binding,i);
+  dma_resv_assert_held(bo->resv);
+  if(!dma_resv_test_signaled(bo->resv,DMA_RESV_USAGE_READ)){ret=-EBUSY;goto out;}
+ }
+ for(i=0;i<3;i++){
+  struct m9_faa_owner *o=i==0?primary:&r->draw_owner[i];
+  if(!o->cpu||!drm_mm_node_allocated(&o->system_node)||o->system_node.start!=o->base){ret=-ESTALE;goto out;}
+  for(page=0;page<o->bytes/PAGE_SIZE;page++){
+   ret=m9x_address_read_pte(mdev,o->base+page*PAGE_SIZE,&pte);if(ret)goto out;
+   if(pte!=(m9x_address_pte_word(o->dma+page*PAGE_SIZE)|1u)){ret=-ESTALE;goto out;}
+  }
+ }
+ ret=m9x_address_check_local_identity(mdev,r->draw_owner[0].base,r->draw_owner[0].bytes);if(ret)goto out;
+ ret=m9x_triangle_system_page_admit_locked(mdev,0x40004000);if(ret)goto out;
+ ret=m9x_triangle_system_page_admit_locked(mdev,0x40008000);if(ret)goto out;
+ fence=m9x_fence_create_target_locked(mdev,lower_32_bits(unlock_point)+0xd0);
+ if(!fence){ret=-ENOMEM;goto out;}
+ for(i=0;i<PARHELIA_M9_FAA_GRAPH_OWNERS;i++)
+  dma_resv_add_fence(m9x_faa_graph_binding_owner(binding,i)->resv,&fence->base,DMA_RESV_USAGE_WRITE);
+ r->public_vs_next_attempted=true;r->public_vs_next_view_seen=false;
+ memcpy((u8*)r->draw_owner[1].cpu+512,n->vertices,sizeof(n->vertices));
+ memcpy((u8*)r->draw_owner[2].cpu+2688,n->secondary,sizeof(n->secondary));
+ for(i=0;i<4;i++){
+  if(!i){end=n->draw_end;memcpy((u8*)primary->cpu+n->primary_start,n->primary,60);}
+  else if(i<3){end=n->draw_end+M9_FAA_VS_LOCK_FIRST_POST_BYTES;
+   if(i==1)memcpy((u8*)primary->cpu+n->draw_end,n->lock_primary,M9_FAA_VS_LOCK_FIRST_POST_BYTES);}
+  else{end=n->lock_end;memcpy((u8*)primary->cpu+n->draw_end+M9_FAA_VS_LOCK_FIRST_POST_BYTES,
+   n->lock_primary+M9_FAA_VS_LOCK_FIRST_POST_BYTES,M9_FAA_VS_LOCK_PRIMARY_BYTES-M9_FAA_VS_LOCK_FIRST_POST_BYTES);}
+  dma_wmb();
+  ret=m9x_post_faa_graph_end_locked(mdev,&primary->system_node,primary->dma,r->graph_draw_end_bytes,
+   end,i==2,i==3?lower_32_bits(unlock_point)+0xd0:0,&stage_point,&stage_posted);
+  *posted|=stage_posted;
+  if(stage_posted){r->graph_draw_end_bytes=end;r->graph_draw_posts++;}
+  if(ret)goto out;
+ }
+ if(stage_point!=unlock_point+0xd0){ret=-EIO;goto out;}
+ *point=stage_point;r->graph_draw_point=stage_point;r->public_vs_next_lock_retired=true;
+ dev_info(&mdev->pdev->dev,"M9 FAA public VS next Lock retired: unlock=%#llx lock=%#llx bytes=%u posts=%u secondary=2688..5236 vertices=512..608; same retained program\n",unlock_point,*point,r->graph_draw_end_bytes,r->graph_draw_posts);
+ dma_rmb();
+ dev_info(&mdev->pdev->dev,"M9 FAA retired counters: +00=%#x/%#x +20=%#x/%#x +40=%#x/%#x +60=%#x/%#x\n",
+ READ_ONCE(((u32*)t->fence_cpu)[0]),READ_ONCE(((u32*)t->fence_cpu)[1]),
+ READ_ONCE(((u32*)t->fence_cpu)[8]),READ_ONCE(((u32*)t->fence_cpu)[9]),
+ READ_ONCE(((u32*)t->fence_cpu)[16]),READ_ONCE(((u32*)t->fence_cpu)[17]),
+ READ_ONCE(((u32*)t->fence_cpu)[24]),READ_ONCE(((u32*)t->fence_cpu)[25]));
+out:
+ if(ret)*point=0;
+ if(fence&&ret)dma_fence_set_error(&fence->base,ret);
+ if(ret&&*posted){t->wedged=true;t->generation++;WARN_ON(t->quarantined_fence);t->quarantined_fence=fence;fence=NULL;}
+ else if(fence)dma_fence_signal(&fence->base);
+ if(fence)dma_fence_put(&fence->base);
+ mutex_unlock(&t->lock);m9x_faa_graph_binding_put(checked);return ret;
+#else
+ return -EOPNOTSUPP;
 #endif
 }
 

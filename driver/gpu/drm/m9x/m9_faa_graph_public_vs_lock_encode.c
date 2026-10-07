@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0-only
 /* Copyright 2026 René Rebe <rene@exactco.de> */
 /* Natural public-VS normal Lock after same-graph actual160. No source pixel
- * input. Source3572 bytes,8 live owners/5 tokens/2 extents,3 END posts. */
+ * input. Source3572 bytes,8 live owners/6 tokens/2 extents,3 END posts. */
 #include <linux/errno.h>
 #include <linux/kernel.h>
 #include <linux/overflow.h>
@@ -11,7 +11,7 @@
 #define SOURCE_START 5004u
 static const u8 lock_sha256[SHA256_DIGEST_SIZE] = {0xbb,0x5f,0xb2,0xde,0x14,0xdc,0xc2,0x89,0x36,0x46,0x08,0x11,0x35,0x5b,0xa8,0xfa,0x04,0x98,0x47,0x60,0xbc,0xc8,0xa7,0xe4,0x94,0x21,0x05,0x9a,0x02,0xe9,0xde,0x27};
 static const struct {u16 offset,owner,addend;u32 encoder;} address_fixups[] = {{5008,22,0,0x24930},{5072,22,644,0x24930},{5076,22,708,0x24919},{5084,8,8,0x256f1},{5096,8,12,0x256f1},{5108,8,16,0x256f1},{5196,1,0,0x24930},{8224,1,0,0x24930}};
-static const struct {u16 offset,delta,tag;} timeline_fixups[] = {{5132,16,1},{5188,32,1},{5324,32,0},{8088,32,0},{8572,48,1}};
+static const struct {u16 offset,delta,tag;} timeline_fixups[] = {{5132,16,1},{5188,32,1},{5324,32,0},{8088,32,0},{8552,16,0},{8572,48,1}};
 static void lock_put32(u8 *p, u32 v)
 {
  p[0]=v; p[1]=v>>8; p[2]=v>>16; p[3]=v>>24;
