@@ -60,7 +60,7 @@ application pixel comparison and broader shader coverage remain open.
 A separate indexed264-vertex variableZ/W fixture physically passes both
 6336record components and both65536pixel palettes with GPU transforms.
 [Exact indexed variableZ/W proof](../captures/m9x-native-variable-zw-264-20261007/README.md). Indexed app qualification, radial
-multipass and optional Q3 lighting remain open. Latest fullscreen basic Q3GL2 checkpoint is39.1FPS1024x768/FAAoff/vsync0;
+multipass and optional Q3 lighting remain open. Latest fullscreen basic Q3GL2 checkpoint is40.8FPS1024x768/FAAoff/vsync0;
 38.9FPS is the prior windowed profile.
 [Bump image failure](../tests/m9-gl2-bump-packed-hardware-20261006/README.md)
 and [GL2 status](parhelia-m9-glmark2-status.md).
