@@ -46,6 +46,25 @@ cull/flat packets, and sustained command-pool reuse remain unfinished; no
 working glxgears or ioquake3 FAA run is claimed. Further hardware testing will
 combine these ready changes instead of rebooting for each small edit.
 
+Mesa `ea4be47` preserves pending color/depth values across separate clear
+calls and merges component masks. `c5caa09` retains the exact authenticated
+Lock increment for subsequent Unlock/NEXT validation. `802ab27` forwards a
+bounded full black/depth-one reset plus live depth/cull/flat state, consuming
+its clear journal only after successful presentation. Production-function
+host tests and the complete20-object Gallium build pass; the FRAME client
+still refuses unimplemented native profiles before submission.
+
+DRM `0ab1f57` integrates the bounded depth DRAW/Lock suffix and `a4df024` the
+source-derived flat/CW/CCW packet encoder. `a31eb3b` integrates the fenced
+13-END depth submission lifecycle, **with public activation still gated**.
+The retained suffix is not yet proved valid for a fresh INIT first draw, and
+its fixed source shader profile still needs the live COLOR adapter. The
+source epoch difference is explained by retained queue state, not shader
+identity: the control finalizer changes the next queue epoch. Runtime commands
+must derive that epoch from the retained queue; neither historical delta is
+a portable replacement. [Queue/source evidence](../captures/m9-faa-graph-public-vs-20261007/next-state-controls/BOUND-REPEAT.md).
+No new hardware result supersedes the six stale edge pixels above.
+
 ## October 7: six-vertex FAA draw executes; frame reset still fails
 
 DRM `102a969` corrects real launch counts instead of overwriting packet lengths.
