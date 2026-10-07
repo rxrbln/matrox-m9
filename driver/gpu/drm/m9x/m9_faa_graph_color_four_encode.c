@@ -69,6 +69,9 @@ int m9x_faa_color_four_encode(const u8*blob,size_t bytes,const struct m9x_faa_gr
  /* Dry-run domains/offsets before the first destination change. */
  for(i=0;i<ARRAY_SIZE(fields);i++){
   const struct field*f=&fields[i];offset=f->offset;
+  /* One real COLOR stream is gathered into target0. The raster COLOR
+   * plane must follow that producer, rather than the disabled target1. */
+  if(arity==1&&f->owner==23&&f->at==2300)offset=0;
   if(f->owner==29)offset=moved(offset,extra);
   if(f->owner==28){if(offset==256)offset=geo;else if(f->at==328)offset=geo+128;
    else if(f->at==372||f->at==376)offset=f->at==372?in->layout.constant_begin[1]:in->layout.constant_end[1];
@@ -87,6 +90,9 @@ int m9x_faa_color_four_encode(const u8*blob,size_t bytes,const struct m9x_faa_gr
  for(i=0;i<ARRAY_SIZE(metadata);i++)if(metadata[i].a<528||metadata[i].a>=576)put(out->secondary+moved(metadata[i].a,extra),metadata[i].b);
  for(i=0;i<ARRAY_SIZE(fields);i++){
   const struct field*f=&fields[i];offset=f->offset;
+  /* One real COLOR stream is gathered into target0. The raster COLOR
+   * plane must follow that producer, rather than the disabled target1. */
+  if(arity==1&&f->owner==23&&f->at==2300)offset=0;
   if(f->owner==29)offset=moved(offset,extra);
   if(f->owner==28){if(offset==256)offset=geo;else if(f->at==328)offset=geo+128;
    else if(f->at==372||f->at==376)offset=f->at==372?in->layout.constant_begin[1]:in->layout.constant_end[1];

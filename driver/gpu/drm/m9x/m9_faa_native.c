@@ -4255,7 +4255,7 @@ static void m9_faa_color_intermediates_observe(struct m9x_device *mdev,
 	};
 	struct m9_faa_color_storage *n = r->color_image;
 	u8 data[256];
-	u32 i, at, address, descriptor, offset, bytes, stride;
+	u32 i, at, address, descriptor, offset, bytes, stride, chunk, count;
 	int extra;
 
 	lockdep_assert_held(&mdev->transport.lock);
@@ -4296,10 +4296,15 @@ static void m9_faa_color_intermediates_observe(struct m9x_device *mdev,
 		    bytes > sizeof(data))
 			continue;
 		iosys_map_memcpy_from(data, &o->map, offset, bytes);
-		dev_info(&mdev->pdev->dev,
-			 "M9 FAA COLOR intermediate: point=%#llx owner=%u base=%#x offset=%#x secondary=%u descriptor=%#x bytes=%u hex=%*phN\n",
-			 r->color_lock_point, target[i].owner, o->base, offset,
-			 at, descriptor, bytes, bytes, data);
+		/* Kernel %ph logging caps each byte string at64 bytes. */
+		for (chunk = 0; chunk < bytes; chunk += count) {
+			count = min_t(u32, 64, bytes - chunk);
+			dev_info(&mdev->pdev->dev,
+				 "M9 FAA COLOR intermediate: point=%#llx owner=%u base=%#x offset=%#x secondary=%u descriptor=%#x total=%u bytes=%u hex=%*phN\n",
+				 r->color_lock_point, target[i].owner, o->base,
+				 offset + chunk, at, descriptor, bytes, count,
+				 count, data + chunk);
+		}
 	}
 }
 #endif
