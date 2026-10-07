@@ -6608,13 +6608,20 @@ m9_native_vs_dump_reason(struct m9_context *ctx, const char *reason)
 {
    char path[1024];
    FILE *f;
+   nir_shader *nir;
 
    /* One representative of each reason, after a completed profile interval
     * when profiling is enabled.  Opt-in and bounded across contexts: enough
     * to join a failed layout to its actual
     * shaders and input defaults without tracing thousands of draw calls. */
    if (!m9_native_fallback_dump || m9_native_fallback_dump_count >= 8 ||
-       !ctx->vs || !ctx->vs->cur || !ctx->vs->cur->nir || !ctx->fs)
+       !ctx->vs || !ctx->vs->cur || !ctx->fs)
+      return false;
+   /* Compile/admission refusals free their specialized clone. Reuse the
+    * shader's retained source instead of keeping extra refused clones, and
+    * record the actual inlinable words needed to reconstruct this spec. */
+   nir = ctx->vs->cur->nir ? ctx->vs->cur->nir : ctx->vs->src;
+   if (!nir)
       return false;
    if (snprintf(path, sizeof(path), "%s-%u.txt", m9_native_fallback_dump,
                 m9_native_fallback_dump_count++) >= sizeof(path))
@@ -6623,6 +6630,16 @@ m9_native_vs_dump_reason(struct m9_context *ctx, const char *reason)
    if (!f)
       return false;
    fprintf(f, "reason: %s\nvertex elements:\n", reason);
+   fprintf(f, "vertex NIR provenance: %s\n",
+           ctx->vs->cur->nir ? "retained specialized compiler input" :
+                              "retained unspecialized shader source");
+   fprintf(f, "vertex specialization: native %u slots %u consts %u "
+           "inlinable words %u\n", ctx->vs->cur->native,
+           ctx->vs->cur->slots, ctx->vs->cur->consts, ctx->vs->inline_count);
+   for (unsigned i = 0; ctx->vs->src && i < ctx->vs->inline_count; i++)
+      fprintf(f, "  inline dw%u %08x\n",
+              ctx->vs->src->info.inlinable_uniform_dw_offsets[i],
+              ctx->vs->cur->values[i]);
    if (ctx->rasterizer) {
       const struct pipe_rasterizer_state *r = ctx->rasterizer;
       /* Only in the bounded fallback dump: name every native admission
@@ -6673,7 +6690,7 @@ m9_native_vs_dump_reason(struct m9_context *ctx, const char *reason)
       }
    }
    fprintf(f, "\nvertex NIR:\n");
-   nir_print_shader(ctx->vs->cur->nir, f);
+   nir_print_shader(nir, f);
    fprintf(f, "\nfragment NIR before specialization:\n");
    nir_print_shader(ctx->fs->nir, f);
    fclose(f);
