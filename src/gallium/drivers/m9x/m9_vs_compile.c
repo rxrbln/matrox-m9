@@ -126,6 +126,7 @@ struct const_seed {
 struct ctx {
    bool compact;
    bool faa;
+   bool sampled_position, unsampled_stage;
    bool *identity_keys;
    nir_shader *nir;
    struct m9_vs_program *p;
@@ -2470,7 +2471,7 @@ compile_head(struct ctx *c, nir_block *block, unsigned final,
    c->index = 0;
    c->temp_live = false;
    head_dependencies(c, block, final, position, var, ostream, nvar);
-   if (c->p->producer.size || packed_primary) {
+   if (c->p->producer.size || packed_primary || c->sampled_position) {
       /* Tail-free source draws have no clip-code target. Keep its register
        * and pair 16 outside the 16-bit availability mask out of the pool. */
       c->reserved[0x20] = c->reserved[0x21] = 1;
@@ -2517,12 +2518,13 @@ compile_head(struct ctx *c, nir_block *block, unsigned final,
          }
    }
    declare_attributes(c, used, inputs);
-   if (c->p->texture_head_only && packed_primary) {
+   if (c->p->texture_head_only && (packed_primary || c->unsampled_stage)) {
       for (unsigned unit = 0; unit < c->p->texture_count; unit++)
          if (c->head_live[c->texture[unit]->def.index])
             return fail(c, "packed FIRST requires texture-independent outputs");
    }
-   if (c->texture[0] && (!c->p->texture_head_only || !packed_primary)) {
+   if (c->texture[0] && !c->unsampled_stage &&
+       (!c->p->texture_head_only || !packed_primary)) {
       /* Unit 0 supplies r00/r02 and unit 1 r04/r06. Keep every raw bank
        * protected until all sampled SSA definitions have been preserved:
        * the ordinary allocator's first temporary is r04. */
@@ -2702,6 +2704,21 @@ compile_impl(struct ctx *c, nir_function_impl *impl,
          return fail(c, "a stream the shader writes no varying for");
    }
    nvar = out.count;
+   if (c->sampled_position) {
+      if (nvar != 5 || c->p->texture_count != 2)
+         return fail(c, "sampled position requires two fetches and five streams");
+      for (unsigned j = 0; j < nvar; j++) {
+         if (out.stream[j].coordinate || out.stream[j].coeff_record ||
+             out.stream[j].paired || nir_intrinsic_component(varying[j]) ||
+             nir_intrinsic_write_mask(varying[j]) != 15 ||
+             varying[j]->src[0].ssa->num_components != 4)
+            return fail(c, "sampled position requires five direct vec4 streams");
+      }
+      if (nir_intrinsic_component(position) ||
+          nir_intrinsic_write_mask(position) != 15 ||
+          position->src[0].ssa->num_components != 4)
+         return fail(c, "sampled position requires a complete clip position");
+   }
    if (c->faa) {
       if (nvar != 2)
          return fail(c, "FAA requires two direct output streams");
@@ -2816,15 +2833,62 @@ compile_impl(struct ctx *c, nir_function_impl *impl,
 
    bool route_fed = c->faa || nvar > M9_VS_FUSED_VARYINGS;
    c->out = route_fed ? &c->p->producer : &c->p->slots;
-   if (!compile_head(c, block, final, used, inputs, position, varying,
-                     out.stream, 0, nvar, route_fed))
+   if (c->sampled_position) {
+      /* Original public sampled-position controls publish two unsampled
+       * fields in FIRST, then position and three fields in CONTINUE. Select
+       * that partition from live requested roots, never source field numbers. */
+      nir_intrinsic_instr *first[2], *continuation[4] = { position };
+      struct m9_vs_output first_out[2], continuation_out[4] = {{0}};
+      unsigned chosen = 0, remaining = 1;
+      bool selected[M9_VS_MAX_VARYINGS] = {0};
+      head_dependencies(c, block, final, position, NULL, NULL, 0);
+      bool position_sampled = false;
+      for (unsigned unit = 0; unit < c->p->texture_count; unit++)
+         position_sampled |= c->head_live[c->texture[unit]->def.index] != 0;
+      if (!position_sampled)
+         return fail(c, "sampled position has no sampled clip dependency");
+      for (unsigned j = 0; j < nvar && chosen < 2; j++) {
+         head_dependencies(c, block, final, NULL, &varying[j], &out.stream[j], 1);
+         bool sampled = false;
+         for (unsigned unit = 0; unit < c->p->texture_count; unit++)
+            sampled |= c->head_live[c->texture[unit]->def.index] != 0;
+         if (!sampled) {
+            first[chosen] = varying[j];
+            first_out[chosen] = out.stream[j];
+            c->p->producer_fields[chosen++] = j + 1;
+            selected[j] = true;
+         }
+      }
+      if (chosen != 2)
+         return fail(c, "sampled position needs two unsampled requested streams");
+      c->p->extra_fields[0] = 0;
+      for (unsigned j = 0; j < nvar; j++) {
+         if (selected[j])
+            continue;
+         continuation[remaining] = varying[j];
+         continuation_out[remaining] = out.stream[j];
+         c->p->extra_fields[remaining++] = j + 1;
+      }
+      assert(remaining == 4);
+      c->p->sampled_position = true;
+      c->unsampled_stage = true;
+      if (!compile_head(c, block, final, used, inputs, NULL, first,
+                        first_out, 0, 2, false))
+         return false;
+      c->unsampled_stage = false;
+      c->out = &c->p->extra;
+      if (!compile_head(c, block, final, used, inputs, NULL, continuation,
+                        continuation_out, 0, 4, false))
+         return false;
+   } else if (!compile_head(c, block, final, used, inputs, position, varying,
+                           out.stream, 0, nvar, route_fed))
       return false;
    /* Varyings past the two the fused pass carries are a program of their
     * own, run as the preprocessing draw ahead of it.  Each independently
     * emits the SSA dependencies of its output targets. */
    if (nvar > M9_VS_FUSED_VARYINGS) {
       c->out = &c->p->extra;
-      if (!compile_head(c, block, final, used, inputs, NULL,
+      if (!c->sampled_position && !compile_head(c, block, final, used, inputs, NULL,
                         varying + M9_VS_FUSED_VARYINGS,
                         out.stream + M9_VS_FUSED_VARYINGS,
                         M9_VS_FUSED_VARYINGS, nvar - M9_VS_FUSED_VARYINGS, false))
@@ -3010,7 +3074,7 @@ static bool
 compile_program(struct nir_shader *nir, const struct m9_vs_outputs *outputs,
                 struct m9_vs_program *p, const char **reason,
                 bool geometry, const struct const_seed *seed,
-                bool *identity, bool faa)
+                bool *identity, bool faa, bool sampled_position)
 {
    nir_function_impl *impl;
    struct ctx c;
@@ -3026,6 +3090,7 @@ compile_program(struct nir_shader *nir, const struct m9_vs_outputs *outputs,
    util_dynarray_init(&c.keys, NULL);
    c.identity_keys = identity;
    c.faa = faa;
+   c.sampled_position = sampled_position;
    c.compact = faa || seed != NULL;
    c.nir = nir;
    c.p = p;
@@ -3074,7 +3139,20 @@ bool
 m9_vs_compile(struct nir_shader *nir, const struct m9_vs_outputs *outputs,
               struct m9_vs_program *p, const char **reason)
 {
-   return compile_program(nir, outputs, p, reason, true, NULL, NULL, false);
+   return compile_program(nir, outputs, p, reason, true, NULL, NULL, false, false);
+}
+
+bool
+m9_vs_compile_sampled_position(struct nir_shader *nir,
+                               const struct m9_vs_outputs *outputs,
+                               struct m9_vs_program *p, const char **reason)
+{
+   if (!nir || !p) {
+      if (reason)
+         *reason = "missing sampled-position shader/program";
+      return false;
+   }
+   return compile_program(nir, outputs, p, reason, true, NULL, NULL, false, true);
 }
 
 bool
@@ -3086,7 +3164,7 @@ m9_vs_compile_faa(struct nir_shader *nir, const struct m9_vs_outputs *outputs,
          *reason = "missing FAA shader/program";
       return false;
    }
-   return compile_program(nir, outputs, p, reason, true, NULL, NULL, true);
+   return compile_program(nir, outputs, p, reason, true, NULL, NULL, true, false);
 }
 
 /* Lowered-I/O counterpart of Mesa nir_lower_clip_halfz: the original public
@@ -3174,7 +3252,7 @@ compile_bounded(struct nir_shader *nir,
    nir_shader *trial_nir;
    struct m9_vs_program trial;
 
-   if (!compile_program(nir, outputs, p, reason, true, NULL, identity, false))
+   if (!compile_program(nir, outputs, p, reason, true, NULL, identity, false, false))
       return false;
    if (m9_vs_const_count(p) <= max_const_pairs ||
        !program_slots_fit(p, max_slots))
@@ -3232,7 +3310,7 @@ m9_vs_compile_bounded_source(struct nir_shader **nir,
                  m9_vs_const_count(p) > max_const_pairs)) {
       const struct const_seed seed = {.program = p, .identity = identity};
 
-      if (compile_program(saved, outputs, &trial, NULL, false, &seed, NULL, false)) {
+      if (compile_program(saved, outputs, &trial, NULL, false, &seed, NULL, false, false)) {
          if (program_slots_fit(&trial, max_slots) &&
              m9_vs_const_count(&trial) <= max_const_pairs) {
             m9_vs_program_fini(p);
@@ -3340,7 +3418,8 @@ m9_vs_source_mask(const struct m9_vs_program *p, bool primary)
 {
    const struct util_dynarray *body = primary ? &p->producer : &p->extra;
    const uint32_t *w = body->data;
-   unsigned targets = primary ? 3 : p->varying_count - M9_VS_FUSED_VARYINGS;
+   unsigned targets = p->sampled_position ? (primary ? 2 : 4) :
+                      primary ? 3 : p->varying_count - M9_VS_FUSED_VARYINGS;
    unsigned pairs = 0;
    for (unsigned i = 0; i < body->size / 8; i++) {
       unsigned d = w[2 * i] >> 8 & 0x7f;

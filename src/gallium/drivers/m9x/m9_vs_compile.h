@@ -280,6 +280,13 @@ struct m9_vs_program {
    unsigned texture_sampler_second;
    /* Packed source: only CONTINUE samples; FIRST must be texture-independent. */
    bool texture_head_only;
+   /* Separate sampled-position compiler API, not ordinary runtime admission.
+    * Two FIRST targets and four CONTINUE targets partition the six native
+    * fields (position=0, varying j=j+1); the draw builder must consume both
+    * maps before this program can be submitted. */
+   bool sampled_position;
+   uint8_t producer_fields[2];
+   uint8_t extra_fields[4];
    unsigned texture_location;
    uint64_t inputs_read;          /* gl_vert_attrib mask of the shader */
    uint32_t record_bytes;
@@ -320,6 +327,14 @@ int m9_vs_stream_index(const struct m9_vs_program *program, unsigned location,
 bool m9_vs_compile(struct nir_shader *nir,
                    const struct m9_vs_outputs *outputs,
                    struct m9_vs_program *program, const char **reason);
+/* Explicit-zero-LOD two-fetch/five-direct-stream partition. FIRST writes
+ * two texture-independent requested streams; CONTINUE writes position and
+ * the other three. No NIR/resource is retained, no app path calls this API.
+ * Live target-field metadata is mandatory for the future draw consumer. */
+bool m9_vs_compile_sampled_position(struct nir_shader *nir,
+                                    const struct m9_vs_outputs *outputs,
+                                    struct m9_vs_program *program,
+                                    const char **reason);
 /* Source-qualified first FAA producer: clip position plus exactly two
  * direct vec4 streams. Constants are live typed pairs starting at key0.
  * No vertex sampler, coordinate-transform stream or ordinary tail is
