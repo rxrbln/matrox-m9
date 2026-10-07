@@ -3246,6 +3246,7 @@ m9_submit_job(struct m9_context *ctx)
          job.vs_record_bytes = key->vs->record_bytes;
          job.vs_unit = key->vs_texture ? &key->vs_unit : NULL;
          job.vs_unit_second = key->vs_texture_second ? &key->vs_unit_second : NULL;
+         job.vs_texture_head_only = key->vs && key->vs->texture_head_only;
          job.vs_const_pairs = vs_const_pairs;
          /* Nothing writes the CPU views of a native job, so its stream
           * slots stay local and the second preprocessing draw can render
@@ -6982,7 +6983,13 @@ m9_native_vs_bind_texture(struct m9_context *ctx, struct m9_job_key *key,
    if (program->texture_count == 2 &&
        !debug_get_bool_option("M9X_NATIVE_VS_TEXTURE_TWO", false))
       return "dual vertex texture is disabled";
-   if (program->producer.size || program->extra.size || program->gather.size)
+   if (program->texture_head_only) {
+      if (!debug_get_bool_option("M9X_NATIVE_VS_TEXTURE_PACKED", false))
+         return "packed vertex texture is disabled";
+      if (!program->producer.size || !program->extra.size || !program->gather.size ||
+          m9_vs_record_mode() < 2)
+         return "packed vertex texture needs retained FIRST/CONTINUE/gather routes";
+   } else if (program->producer.size || program->extra.size || program->gather.size)
       return "vertex texture requires the bounded fused output path";
    for (unsigned unit = 0; unit < program->texture_count; unit++) {
       unsigned slot = unit ? program->texture_sampler_second : program->texture_sampler;

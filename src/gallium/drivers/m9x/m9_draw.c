@@ -926,12 +926,16 @@ m9_draw_job_valid(const struct m9_draw_job *job)
       return false;
    /* The packed record spans one view a varying, above the views the
     * gather de-interleaves into. */
+   if (job->vs_texture_head_only && !job->vs_unit)
+      return false;
    if (job->vs_unit_second && (!job->vs_unit || !job->vs_unit_second->handle))
       return false;
    unsigned vertex_units = !!job->vs_unit + !!job->vs_unit_second;
    if (job->vs_unit &&
-       (!job->vs_decl_count || job->vs_extra_entry || job->vs_gather_entry ||
-        job->vs_producer_entry || job->pass_count > 1 ||
+       (!job->vs_decl_count || job->pass_count > 1 ||
+        (job->vs_texture_head_only ?
+         (!job->vs_producer_entry || !job->vs_extra_entry || !job->vs_gather_entry) :
+         (job->vs_extra_entry || job->vs_gather_entry || job->vs_producer_entry)) ||
         !job->vs_unit->handle ||
         job->vs_decl_count < vertex_units + 3 ||
         (job->vs_decl_count - vertex_units - 1) % 2 ||
@@ -1165,6 +1169,18 @@ m9_emit_preprocess(struct m9_batch *batch, const struct m9_draw_job *job,
    bool extra = kind != M9_PRE_FUSED;
    bool chain = job->vs_producer_entry != 0;
    bool primary = kind == M9_PRE_PRIMARY;
+   unsigned vertex_units = (!job->vs_texture_head_only || kind == M9_PRE_HEAD) ?
+                           !!job->vs_unit + !!job->vs_unit_second : 0;
+   uint32_t ordinary_decl[M9_VS_MAX_DECL];
+   if (job->vs_texture_head_only && primary) {
+      /* FIRST consumes only normal source attributes. CONTINUE adds the
+       * two coordinate words; route-fed stages consume no source declarations. */
+      unsigned words = decl_count - (!!job->vs_unit + !!job->vs_unit_second) - 1;
+      memcpy(ordinary_decl, decl, words * sizeof(*decl));
+      ordinary_decl[words] = M9_DECL_END;
+      decl = ordinary_decl;
+      decl_count = words + 1;
+   }
    unsigned routes = chain && kind == M9_PRE_FUSED ? 3u :
                      kind == M9_PRE_GATHER ? job->vs_extra_targets : 0;
    uint32_t terminator = M9_DECL_END;
@@ -1279,14 +1295,12 @@ m9_emit_preprocess(struct m9_batch *batch, const struct m9_draw_job *job,
     * which is the captured 0x0100ffff. An ordinary vertex sampler supplies
     * attribute 5 and sets one texture-input bit at20; it leaves the bounded
     * normal attribute count and compiler-derived scratch mask unchanged. */
-   unsigned vertex_units = !!job->vs_unit + !!job->vs_unit_second;
    /* Coordinate declarations name attributes 5/6 independently of the
     * normal source attributes. Two coordinate words must not count as a
     * third normal attribute. */
    unsigned attributes = (decl_count - 1 - vertex_units) / 2;
    EMIT(V(0x88, (BITFIELD_MASK(attributes) << 24) |
-                (chain ? BITFIELD_MASK(routes) << 20 :
-                 BITFIELD_MASK(vertex_units) << 20) |
+                (BITFIELD_MASK(routes ? routes : vertex_units) << 20) |
                 (primary ? job->vs_producer_mask :
                  chain && kind == M9_PRE_HEAD ? job->vs_extra_mask :
                  extra ? 0x0000ffffu :
@@ -1310,8 +1324,8 @@ m9_emit_preprocess(struct m9_batch *batch, const struct m9_draw_job *job,
         R(0x8e, job->system, M9_VS_CONST_OFFSET + 8 * const_pairs, SYSTEM),
         V(0x8f, 0));
    struct m9_texture_unit vertex[2];
-   const struct m9_texture_unit *units = job->vs_unit;
-   if (job->vs_unit_second) {
+   const struct m9_texture_unit *units = vertex_units ? job->vs_unit : NULL;
+   if (vertex_units == 2) {
       vertex[0] = *job->vs_unit;
       vertex[1] = *job->vs_unit_second;
       units = vertex;

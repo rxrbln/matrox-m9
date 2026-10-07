@@ -170,6 +170,7 @@ struct m9_draw_job {
    const struct m9_texture_unit *vs_unit;
    /* Optional second direct-XY unit; its raw result occupies r04/r06. */
    const struct m9_texture_unit *vs_unit_second;
+   bool vs_texture_head_only;
    /* Raster texture units, texel pair order. */
    const struct m9_texture_unit *units;
    unsigned unit_count;

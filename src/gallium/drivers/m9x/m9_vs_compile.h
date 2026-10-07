@@ -278,6 +278,8 @@ struct m9_vs_program {
    unsigned texture_count;
    unsigned texture_sampler;
    unsigned texture_sampler_second;
+   /* Packed source: only CONTINUE samples; FIRST must be texture-independent. */
+   bool texture_head_only;
    unsigned texture_location;
    uint64_t inputs_read;          /* gl_vert_attrib mask of the shader */
    uint32_t record_bytes;

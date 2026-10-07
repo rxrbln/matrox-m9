@@ -2517,7 +2517,12 @@ compile_head(struct ctx *c, nir_block *block, unsigned final,
          }
    }
    declare_attributes(c, used, inputs);
-   if (c->texture[0]) {
+   if (c->p->texture_head_only && packed_primary) {
+      for (unsigned unit = 0; unit < c->p->texture_count; unit++)
+         if (c->head_live[c->texture[unit]->def.index])
+            return fail(c, "packed FIRST requires texture-independent outputs");
+   }
+   if (c->texture[0] && (!c->p->texture_head_only || !packed_primary)) {
       /* Unit 0 supplies r00/r02 and unit 1 r04/r06. Keep every raw bank
        * protected until all sampled SSA definitions have been preserved:
        * the ordinary allocator's first temporary is r04. */
@@ -2714,8 +2719,12 @@ compile_impl(struct ctx *c, nir_function_impl *impl,
             return fail(c, "FAA requires complete vec4 streams");
       }
    }
-   if (c->texture[0] && nvar > M9_VS_FUSED_VARYINGS)
-      return fail(c, "vertex texture requires the bounded fused output path");
+   if (c->texture[0] && nvar > M9_VS_FUSED_VARYINGS) {
+      for (unsigned unit = 0; unit < c->p->texture_count; unit++)
+         if (c->texture[unit]->op != nir_texop_txl)
+            return fail(c, "packed vertex textures require explicit zero LOD");
+      c->p->texture_head_only = true;
+   }
    if (nvar > M9_VS_FUSED_VARYINGS) {
       c->head_live = calloc(c->def_count + 1, sizeof(*c->head_live));
       if (!c->head_live)
