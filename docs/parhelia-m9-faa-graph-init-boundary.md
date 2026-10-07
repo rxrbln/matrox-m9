@@ -23,16 +23,17 @@ complete prefix also includes first-queue/context setup; it is a bounded
 fresh-first-context initializer, not a packet sequence to replay on every
 new surface in an already running app context.
 
-| Caller graph role | Plan owner | Logical bytes | Required page capacity | Explicit clear bytes | CPU-known bytes |
+| Caller graph role | Plan owner | Mesa logical bytes | Required page capacity | Explicit clear bytes | CPU-known bytes |
 | --- | ---: | ---: | ---: | ---: | ---: |
 | Primary | 1 | `50000` | `50000` | 0 | 0 |
 | Main | 2 | `136080` | `137000` | 0 | 0 |
 | Auxiliary | 3 | `13080` | `14000` | 0 | 0 |
-| AA companion | 4 | `97000` | `98000` | `97000` | 0 |
+| AA companion | 4 | `96020` | `98000` | `97000` | 0 |
 | HZ | 5 | `3000` | `8000` | `3000` | 0 |
 | Graph sentinel | 8 | `80` | `1000` | 0 | 20 |
 
-These indices are plan coordinates. Bind each role to the corresponding live
+The companion's `97000` clear extent is source resource `+1bc`, separate from
+Mesa's `96020` helper footprint. These indices are plan coordinates. Bind each role to the corresponding live
 caller BO, at zero view offset. Validate six distinct retained local owners,
 source-compatible capacities/layouts and the 320×240/format66 request. Pin,
 reserve and retain their references through real retirement and subsequent
