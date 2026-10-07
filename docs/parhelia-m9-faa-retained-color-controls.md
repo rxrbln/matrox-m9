@@ -202,11 +202,14 @@ then applies `((mask & 0xff1fffff) | 0x00100000) & 0xfffffffc` at
 it is not a literal mask for arbitrary compiled programs.
 
 `captures/m9-faa-gl-one-color-20261007/two-output-four-retained-plan.json`
-and its stripped template type 127 live owner, timeline, declaration, stage,
+and its stripped template type 128 live owner, timeline, declaration, stage,
 dimension, count, and relative fields. The paired no-clear and six-vertex
 source controls prove respectively 15 timeline changes and four launch-count
 changes. They supply no repeated GPU counter or pixel receipt: the next
 positive normal-Lock read is still unread. A one-output live program needs
 its own stage-object/route admission before these two-output packet fields
-can be adapted. Run
+can be adapted. Twelve exact source-derived copy slices transform the already
+live first secondary image into the retained shape, including the 108-byte
+copy of first-image raster state `[2428,2536)` into repeat `[440,548)`.
+Only 23 dwords then differ, and every one is typed in the plan. Run
 `python3 tests/m9-faa-gl-one-color-20261007/check-retained-four.py`.
