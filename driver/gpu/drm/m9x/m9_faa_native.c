@@ -30,6 +30,7 @@
 #include "m9_faa_graph_draw_encode.h"
 #include "m9_faa_graph_public_vs_encode.h"
 #include "m9_faa_graph_public_vs_follow_encode.h"
+#include "m9_faa_graph_public_vs_draw_encode.h"
 #include "m9_faa_graph_unlock_encode.h"
 #include "m9_faa_graph_next_encode.h"
 #include "m9_faa_graph_next_finish_encode.h"
@@ -229,6 +230,10 @@ struct m9_faa_public_vs_storage {
 	u8 primary[M9_FAA_PUBLIC_VS_PRIMARY_BYTES];
 	struct m9x_faa_public_vs_endpoints ends;
 };
+struct m9_faa_public_vs_draw_storage {
+ u8 primary[M9_FAA_VS_DRAW_PRIMARY_BYTES], secondary[M9_FAA_VS_DRAW_SECONDARY_BYTES];
+ struct m9x_faa_public_vs_draw_endpoints ends;
+};
 struct m9_faa_public_vs_follow_storage {
  u8 primary[48],secondary[616];
  struct m9x_faa_public_vs_follow_endpoints ends;
@@ -254,6 +259,9 @@ struct m9x_faa_replay {
 	bool public_vs_payload_ready, public_vs_prefix_retired;
 	bool public_vs_head_attempted, public_vs_head_retired;
 	struct m9x_fence *public_vs_head_fence;
+ struct m9_faa_public_vs_draw_storage *public_vs_draw_image;
+ struct m9x_fence *public_vs_draw_fence;
+ bool public_vs_draw_attempted,public_vs_draw_observed;
 	struct m9_faa_public_vs_follow_storage *public_vs_follow_image;
 	bool public_vs_follow_retired;
 	struct {
@@ -365,6 +373,8 @@ MODULE_FIRMWARE(M9_FAA_INPUT_FIRMWARE);
 #define M9_FAA_GRAPH_PUBLIC_VS_FIRMWARE \
 	"m9x/faa-graph-public-vs-first-template.bin"
 MODULE_FIRMWARE(M9_FAA_GRAPH_PUBLIC_VS_FIRMWARE);
+#define M9_FAA_GRAPH_PUBLIC_VS_DRAW_FIRMWARE "m9x/faa-graph-public-vs-draw-template.bin"
+MODULE_FIRMWARE(M9_FAA_GRAPH_PUBLIC_VS_DRAW_FIRMWARE);
 #define M9_FAA_GRAPH_PUBLIC_VS_FOLLOW_FIRMWARE \
  "m9x/faa-graph-public-vs-follow-template.bin"
 MODULE_FIRMWARE(M9_FAA_GRAPH_PUBLIC_VS_FOLLOW_FIRMWARE);
@@ -834,6 +844,7 @@ static bool m9_faa_release(struct m9x_device *mdev, struct m9x_faa_replay *r)
 	kfree(r->draw_image);
 	kfree(r->public_vs_image);
 	kfree(r->public_vs_follow_image);
+ kfree(r->public_vs_draw_image);
 	kfree(r->next_image);
 	kfree(r->next_finish_image);
 	kfree(r->next_lock_image);
@@ -900,6 +911,13 @@ void m9x_faa_fini(struct m9x_device *mdev)
 			dma_fence_put(&r->public_vs_head_fence->base);
 			r->public_vs_head_fence = NULL;
 		}
+		if (r->public_vs_draw_fence) {
+			dma_fence_set_error(&r->public_vs_draw_fence->base, -EIO);
+			dma_fence_signal(&r->public_vs_draw_fence->base);
+			dma_fence_put(&r->public_vs_draw_fence->base);
+			r->public_vs_draw_fence = NULL;
+		}
+
 #endif
 
 		mutex_lock(&mdev->transport.lock);
@@ -4046,6 +4064,151 @@ out:
 	return ret;
 #else
 	return -EOPNOTSUPP;
+#endif
+}
+
+int m9x_faa_graph_public_vs_head_get_locked(struct m9x_device *mdev,
+ u32 generation,u64 head_point,struct m9_faa_graph_binding **out)
+{
+#ifdef M9_FAA_GRAPH_INIT_CONTROL
+ int ret;
+ if(!out)return -EINVAL;
+ *out=NULL;
+ ret=m9_faa_public_vs_head_state(&mdev->transport,
+  mdev->transport.faa ? mdev->transport.faa->graph_binding : NULL,generation,head_point);
+ if(ret)return ret;
+ if(mdev->transport.faa->public_vs_draw_attempted ||
+    mdev->transport.faa->public_vs_draw_observed)return -ESTALE;
+ *out=m9x_faa_graph_binding_get(mdev->transport.faa->graph_binding);
+ return 0;
+#else
+ return -EOPNOTSUPP;
+#endif
+}
+
+int m9x_faa_graph_public_vs_draw_prepare(struct m9x_device *mdev,
+ struct m9_faa_graph_binding *binding,u32 generation,u64 head_point)
+{
+#ifdef M9_FAA_GRAPH_INIT_CONTROL
+ struct m9x_transport *t=&mdev->transport;
+ struct m9x_faa_replay *r;
+ struct m9_faa_public_vs_draw_storage *storage;
+ struct m9x_faa_graph_draw_owner owner[M9_FAA_DRAW_SOURCE_OWNERS];
+ struct m9x_faa_public_vs_draw_image out;
+ const struct firmware *fw;
+ u32 i;int ret;
+ ret=request_firmware(&fw,M9_FAA_GRAPH_PUBLIC_VS_DRAW_FIRMWARE,&mdev->pdev->dev);
+ if(ret)return ret;
+ if(!m9x_faa_public_vs_draw_template_valid(fw->data,fw->size)){ret=-EINVAL;goto out_fw;}
+ storage=kzalloc(sizeof(*storage),GFP_KERNEL);
+ if(!storage){ret=-ENOMEM;goto out_fw;}
+ mutex_lock(&t->lock);
+ ret=m9_faa_public_vs_head_state(t,binding,generation,head_point);
+ if(ret)goto out_lock;
+ r=t->faa;
+ if(r->public_vs_draw_image || r->public_vs_draw_attempted || r->public_vs_draw_observed){ret=-ESTALE;goto out_lock;}
+ for(i=0;i<M9_FAA_DRAW_SOURCE_OWNERS;i++){
+  struct m9_faa_owner *o;
+  switch(i){case 26:o=&r->draw_owner[0];break;case 27:o=&r->owner[26];break;
+   case 28:o=&r->draw_owner[1];break;case 29:o=&r->draw_owner[2];break;
+   case 30:o=&r->owner[27];break;default:o=&r->owner[i];break;}
+  owner[i]=(struct m9x_faa_graph_draw_owner){o->base,o->bytes};
+ }
+ out=(struct m9x_faa_public_vs_draw_image){storage->primary,storage->secondary,
+  sizeof(storage->primary),sizeof(storage->secondary)};
+ ret=m9x_faa_public_vs_draw_encode(fw->data,fw->size,owner,r->graph_draw_end_bytes,
+  head_point,&out,&storage->ends);
+ if(ret)goto out_lock;
+ r->public_vs_draw_image=storage;storage=NULL;
+out_lock:
+ mutex_unlock(&t->lock);kfree(storage);
+out_fw:
+ release_firmware(fw);return ret;
+#else
+ return -EOPNOTSUPP;
+#endif
+}
+
+int m9x_faa_graph_public_vs_draw_submit(struct m9x_device *mdev,
+ struct m9_faa_graph_binding *binding,u32 generation,u64 head_point,u64 *point,bool *posted)
+{
+#ifdef M9_FAA_GRAPH_INIT_CONTROL
+ struct m9x_transport *t=&mdev->transport;
+ struct m9x_faa_replay *r;
+ struct m9_faa_owner *primary,*secondary;
+ struct m9_faa_public_vs_draw_storage *image;
+ struct m9x_fence *fence=NULL;
+ u32 i,page,pte,old_bytes;int ret;
+ bool fenced=false;
+ if(!point||!posted)return -EINVAL;
+ *point=0;*posted=false;
+ /* No unlocked interval after exact owned-fence exclusion: caller holds all
+  * six reservations, and none of this path removes its HEAD reference. */
+ ret=m9x_faa_graph_public_vs_head_hazards(mdev,binding,generation,head_point);
+ if(ret)return ret;
+ mutex_lock(&t->lock);
+ ret=m9_faa_public_vs_head_state(t,binding,generation,head_point);
+ if(ret)goto out;
+ r=t->faa;primary=&r->owner[M9_FAA_PRIMARY_OWNER];secondary=&r->draw_owner[2];
+ image=r->public_vs_draw_image;old_bytes=r->graph_draw_end_bytes;
+ if(!image||r->public_vs_draw_attempted||r->public_vs_draw_observed||
+  !primary->cpu||!secondary->cpu||!drm_mm_node_allocated(&primary->system_node)||
+  primary->system_node.start!=primary->base||old_bytes>primary->bytes||primary->bytes-old_bytes<60||
+  secondary->bytes<2688||image->ends.final_end!=old_bytes+60||image->ends.observed_point!=head_point+0xa0){ret=-ESTALE;goto out;}
+ for(i=1;i<ARRAY_SIZE(r->draw_owner);i++){
+  struct m9_faa_owner *o=&r->draw_owner[i];
+  if(!o->cpu||!drm_mm_node_allocated(&o->system_node)||o->system_node.start!=o->base){ret=-ESTALE;goto out;}
+  for(page=0;page<o->bytes/PAGE_SIZE;page++){
+   ret=m9x_address_read_pte(mdev,o->base+page*PAGE_SIZE,&pte);
+   if(ret)goto out;
+   if(pte!=(m9x_address_pte_word(o->dma+page*PAGE_SIZE)|1u)){ret=-ESTALE;goto out;}
+  }
+ }
+ ret=m9x_address_check_local_identity(mdev,r->draw_owner[0].base,r->draw_owner[0].bytes);
+ if(ret)goto out;
+ /* Preserve the source immediate only while its fixed SYSTEM page belongs
+  * to the retained ordinary allocation; do not infer a command-primary role. */
+ ret=m9x_triangle_system_page_admit_locked(mdev,0x40004000);
+ if(ret)goto out;
+ fence=m9x_fence_create_target_locked(mdev,lower_32_bits(image->ends.observed_point));
+ if(!fence){ret=-ENOMEM;goto out;}
+ r->public_vs_draw_attempted=true;
+ for(i=0;i<PARHELIA_M9_FAA_GRAPH_OWNERS;i++)
+  dma_resv_add_fence(m9x_faa_graph_binding_owner(binding,i)->resv,&fence->base,DMA_RESV_USAGE_WRITE);
+ fenced=true;
+ /* HEAD never exposed any secondary. Materialize the entire CPU-known,
+  * closed block (including the source43 dependencies) before its first fetch. */
+ memcpy(secondary->cpu,image->secondary,sizeof(image->secondary));
+ memcpy((u8 *)primary->cpu+old_bytes,image->primary,sizeof(image->primary));
+ dma_wmb();
+ ret=m9x_post_faa_graph_end_locked(mdev,&primary->system_node,primary->dma,
+  old_bytes,image->ends.final_end,false,lower_32_bits(image->ends.observed_point),point,posted);
+ if(*posted){r->graph_draw_end_bytes=image->ends.final_end;r->graph_draw_posts++;}
+ if(!ret&&*point!=image->ends.observed_point)ret=-EIO;
+ if(!ret){
+  r->public_vs_draw_observed=true;r->graph_draw_point=*point;
+  r->public_vs_draw_fence=fence;fence=NULL;
+  dev_info(&mdev->pdev->dev,"M9 FAA public VS draw observed: head=%#llx point=%#llx bytes=%u posts=%u; E3 before final raster, owners held\n",head_point,*point,r->graph_draw_end_bytes,r->graph_draw_posts);
+  dma_rmb();
+  dev_info(&mdev->pdev->dev,"M9 FAA retired counters: +00=%#x/%#x +20=%#x/%#x +40=%#x/%#x +60=%#x/%#x\n",
+   READ_ONCE(((u32 *)t->fence_cpu)[0]),READ_ONCE(((u32 *)t->fence_cpu)[1]),
+   READ_ONCE(((u32 *)t->fence_cpu)[0x20/4]),READ_ONCE(((u32 *)t->fence_cpu)[0x24/4]),
+   READ_ONCE(((u32 *)t->fence_cpu)[0x40/4]),READ_ONCE(((u32 *)t->fence_cpu)[0x44/4]),
+   READ_ONCE(((u32 *)t->fence_cpu)[0x60/4]),READ_ONCE(((u32 *)t->fence_cpu)[0x64/4]));
+ }
+out:
+ if(ret)*point=0;
+ if(fence&&ret)dma_fence_set_error(&fence->base,ret);
+ if(ret&&fenced){
+  /* Same-context insertion can replace HEAD in reservations. Even a failed
+   * pre-post cannot signal this replacement while HEAD's tail is reachable. */
+  t->wedged=true;t->generation++;WARN_ON(t->quarantined_fence);
+  t->quarantined_fence=fence;fence=NULL;
+ }
+ if(fence)dma_fence_put(&fence->base);
+ mutex_unlock(&t->lock);return ret;
+#else
+ return -EOPNOTSUPP;
 #endif
 }
 

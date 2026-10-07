@@ -455,6 +455,7 @@ int m9x_submit_user_stream_locked(struct m9x_device *mdev, const u32 *records,
 				  u32 target, u64 *point, bool async,
 				  bool *doorbell_posted, u32 secondary_slot);
 int m9x_triangle_selftest(void);
+int m9x_triangle_system_page_admit_locked(struct m9x_device *mdev, u32 address);
 void m9x_triangle_fini(struct m9x_device *mdev);
 int m9x_submit_selftest(void);
 int m9x_faa_graph_selftest(void);
@@ -518,6 +519,10 @@ int m9x_faa_graph_public_vs_follow_submit(struct m9x_device *mdev,
  u64 *point, bool *posted);
 
 
+int m9x_faa_graph_public_vs_draw_ioctl(struct drm_device *drm,void *data,struct drm_file *file);
+int m9x_faa_graph_public_vs_head_get_locked(struct m9x_device *mdev,u32 generation,u64 head_point,struct m9_faa_graph_binding **out);
+int m9x_faa_graph_public_vs_draw_prepare(struct m9x_device *mdev,struct m9_faa_graph_binding *binding,u32 generation,u64 head_point);
+int m9x_faa_graph_public_vs_draw_submit(struct m9x_device *mdev,struct m9_faa_graph_binding *binding,u32 generation,u64 head_point,u64 *point,bool *posted);
 int m9x_faa_graph_public_vs_head_hazards(struct m9x_device *mdev,
 		struct m9_faa_graph_binding *binding, u32 generation, u64 head_point);
 int m9x_faa_graph_public_vs_head_ioctl(struct drm_device *drm, void *data,

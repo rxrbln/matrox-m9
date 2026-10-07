@@ -22,6 +22,7 @@
 #define DRM_PARHELIA_M9_FAA_GRAPH_PUBLIC_VS	0x16
 #define DRM_PARHELIA_M9_FAA_GRAPH_PUBLIC_VS_FOLLOW	0x17
 #define DRM_PARHELIA_M9_FAA_GRAPH_PUBLIC_VS_HEAD	0x18
+#define DRM_PARHELIA_M9_FAA_GRAPH_PUBLIC_VS_DRAW	0x19
 
 #define DRM_IOCTL_PARHELIA_M9_CREATE_BO \
 	DRM_IOWR(DRM_COMMAND_BASE + DRM_PARHELIA_M9_CREATE_BO, \
@@ -75,6 +76,7 @@ enum drm_parhelia_m9_faa_owner_role {
 #define PARHELIA_M9_FAA_PUBLIC_VS_PREFIX_RETIRED 10u
 #define PARHELIA_M9_FAA_PUBLIC_VS_FOLLOW_PREFIX_RETIRED 11u
 #define PARHELIA_M9_FAA_PUBLIC_VS_HEAD_RETIRED 12u
+#define PARHELIA_M9_FAA_PUBLIC_VS_DRAW_OBSERVED 13u
 struct drm_parhelia_m9_faa_owner {
 	__u32 handle;
 	__u32 pad;
@@ -169,6 +171,14 @@ struct drm_parhelia_m9_faa_graph_public_vs {
 #define DRM_IOCTL_PARHELIA_M9_FAA_GRAPH_PUBLIC_VS_HEAD \
 	DRM_IOWR(DRM_COMMAND_BASE + DRM_PARHELIA_M9_FAA_GRAPH_PUBLIC_VS_HEAD, \
 		 struct drm_parhelia_m9_faa_graph_public_vs)
+
+struct drm_parhelia_m9_faa_graph_public_vs_draw {
+ __u64 graph_id, head_point, draw_point;
+ __u32 generation, flags, state, pad;
+};
+#define DRM_IOCTL_PARHELIA_M9_FAA_GRAPH_PUBLIC_VS_DRAW \
+ DRM_IOWR(DRM_COMMAND_BASE + DRM_PARHELIA_M9_FAA_GRAPH_PUBLIC_VS_DRAW, \
+          struct drm_parhelia_m9_faa_graph_public_vs_draw)
 
 /* Separate continuation of the retained public-VS prefix. State11 proves
  * the new independent prefix wait, not public DRAW return or pixels. */

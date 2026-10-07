@@ -2288,6 +2288,38 @@ int m9x_triangle_selftest(void)
 	return ret;
 }
 
+/* Fixed DLL immediate page used by the bounded public-VS profile. This
+ * authenticates the retained ordinary SYSTEM allocation, not its GPU role.
+ * The resource remains owned until requester teardown has stopped DMA. */
+int m9x_triangle_system_page_admit_locked(struct m9x_device *mdev, u32 address)
+{
+ struct m9x_triangle_diag *diag = mdev->transport.triangle;
+ const struct m9_triangle_resource *resource;
+ u32 offset, pte;
+ int ret;
+
+ lockdep_assert_held(&mdev->transport.lock);
+ if (!diag || !diag->prepared || !mdev->transport.user_resources_ready ||
+     !IS_ALIGNED(address, PAGE_SIZE))
+  return -ESTALE;
+ resource = &diag->resource[M9_TRI_SYSTEM];
+ if (!resource->cpu || resource->vram ||
+     !drm_mm_node_allocated(&resource->system) ||
+     resource->system.start != resource->gpuva ||
+     address < resource->gpuva)
+  return -ESTALE;
+ offset = address - resource->gpuva;
+ if (offset > resource->alloc_bytes ||
+     resource->alloc_bytes - offset < PAGE_SIZE ||
+     offset > resource->system.size ||
+     resource->system.size - offset < PAGE_SIZE)
+  return -ERANGE;
+ ret = m9x_address_read_pte(mdev, address, &pte);
+ if (ret)
+  return ret;
+ return pte == m9x_address_pte_word(resource->bus + offset) ? 0 : -ESTALE;
+}
+
 void m9x_triangle_fini(struct m9x_device *mdev)
 {
 	struct m9x_triangle_diag *diag = mdev->transport.triangle;
