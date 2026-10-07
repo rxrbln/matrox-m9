@@ -78,6 +78,14 @@ m9_faa_application_build(const struct m9_faa_application_draw *d,
       if (d->draw->count % 3) goto fail;
       triangles = d->draw->count / 3;
       break;
+   case MESA_PRIM_QUADS:
+      if (d->draw->count % 4) goto fail;
+      triangles = d->draw->count / 4 * 2;
+      break;
+   case MESA_PRIM_QUAD_STRIP:
+      if (d->draw->count < 4 || d->draw->count % 2) goto fail;
+      triangles = (d->draw->count / 2 - 1) * 2;
+      break;
    case MESA_PRIM_TRIANGLE_STRIP:
    case MESA_PRIM_TRIANGLE_FAN:
       if (d->draw->count < 3) goto fail;
@@ -98,6 +106,16 @@ m9_faa_application_build(const struct m9_faa_application_draw *d,
       unsigned source[3];
       if (d->info->mode == MESA_PRIM_TRIANGLES) {
          source[0] = 3 * triangle; source[1] = source[0] + 1; source[2] = source[0] + 2;
+      } else if (d->info->mode == MESA_PRIM_QUADS) {
+         unsigned first = (triangle / 2) * 4;
+         source[0] = first; source[1] = first + (triangle & 1u ? 2 : 1);
+         source[2] = first + (triangle & 1u ? 3 : 2);
+      } else if (d->info->mode == MESA_PRIM_QUAD_STRIP) {
+         /* GL quad-strip quad order is (2i,2i+1,2i+3,2i+2).
+          * Preserve orientation using its diagonal; flat is still refused. */
+         unsigned first = (triangle / 2) * 2;
+         source[0] = first; source[1] = first + (triangle & 1u ? 3 : 1);
+         source[2] = first + (triangle & 1u ? 2 : 3);
       } else if (d->info->mode == MESA_PRIM_TRIANGLE_FAN) {
          source[0] = 0; source[1] = triangle + 1; source[2] = triangle + 2;
       } else {
