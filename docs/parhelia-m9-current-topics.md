@@ -3,6 +3,20 @@
 
 # M9 open topics and evidence, 2026-10-06
 
+## October 7: two retained FAA draws and complete cleanup pass
+
+The latest M9128 batch passes the first live FAA image through Unlock1b0,
+then a changed second draw with complete Lock280/readback/Unlock2a0, token
+release and file close, helper exit0. All owners and shaders are reused.
+Second image has12,495 colored pixels/506 partial edges, with zero checked
+interior, exterior-union or channel errors. Raw2a1/generation0/queue0/wedged0
+remain healthy after the second Unlock and release. Native2adfafe implements
+the final-fence ownership and live timeline/address derivation. This supersedes
+single-draw-only status below. Application FAA and continuous frames remain
+unproven; the vendor one-color/color-reading-FS route selects a distinct
+**two-vector** whole profile, now being integrated for glxgears.
+[Two-draw hardware evidence and images](../tests/m9-faa-public-vs-next-20261007/README.md).
+
 ## October 7: live FAA triangle and complete single-draw cycle
 
 Current M9128 hardware proof passes INIT b0 → public VS HEAD c0 → complete
