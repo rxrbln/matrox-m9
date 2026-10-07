@@ -270,6 +270,24 @@ m9_skip_reason(struct m9_context *ctx, const char *reason)
 static bool m9_debug_textures;
 static const char *m9_texture_dump;
 static bool m9_texture_addrcode;
+/* Opt-in window receipt for blit stage captures.  Transfer unmap is void,
+ * so a staging write can otherwise be mistaken for a completed CPU blit. */
+static bool m9_blit_window_trace;
+
+static void
+m9_blit_window_receipt(const struct m9_resource *resource,
+                       const struct drm_parhelia_m9_surface_access *access,
+                       int ret)
+{
+   if (m9_blit_window_trace)
+      fprintf(stderr, "m9x: window %s handle %u image %ux%u box %u,%u %ux%u "
+              "d0 %08x d1 %08x flags %#x capacity %#" PRIx64 " ret %d\n",
+              access->op == PARHELIA_M9_ACCESS_WRITE ? "WRITE" : "READ",
+              resource->handle, resource->width, resource->height,
+              access->x, access->y, access->width, access->height,
+              access->descriptor0, access->descriptor1, access->flags,
+              resource->size, ret);
+}
 
 /* M9X_PROFILE=N reports where the frame went every N frames.  The phases
  * nest: draw contains emit, emit contains submit, submit contains the
@@ -699,8 +717,11 @@ m9_surface_access(struct m9_context *ctx, const struct m9_resource *resource,
       .data_size = (uint64_t)box->width * box->height * 4,
    };
 
-   return ioctl(ctx->screen->fd, DRM_IOCTL_PARHELIA_M9_SURFACE_ACCESS,
-                &access) ? -errno : 0;
+   int ret = ioctl(ctx->screen->fd, DRM_IOCTL_PARHELIA_M9_SURFACE_ACCESS,
+                   &access) ? -errno : 0;
+
+   m9_blit_window_receipt(resource, &access, ret);
+   return ret;
 }
 
 static bool
@@ -859,9 +880,11 @@ m9_texture_window_blocks(struct m9_context *ctx,
       ctx->window_reads++;
       ctx->window_read_bytes += bytes;
    }
-   if (!ret && ioctl(ctx->screen->fd, DRM_IOCTL_PARHELIA_M9_SURFACE_ACCESS,
-                     &access))
-      ret = -errno;
+   if (!ret) {
+      ret = ioctl(ctx->screen->fd, DRM_IOCTL_PARHELIA_M9_SURFACE_ACCESS,
+                  &access) ? -errno : 0;
+      m9_blit_window_receipt(resource, &access, ret);
+   }
    if (!ret && !write)
       for (uint32_t r = 0; r < rows; r++)
          memcpy(data + (size_t)r * stride, image + (size_t)r * cols * block,
@@ -927,9 +950,12 @@ m9_texture_window(struct m9_context *ctx, const struct m9_resource *resource,
          ctx->window_read_bytes += bytes;
       }
    }
-   if (!ret && ioctl(ctx->screen->fd, DRM_IOCTL_PARHELIA_M9_SURFACE_ACCESS,
-                     &access)) {
-      ret = -errno;
+   if (!ret) {
+      ret = ioctl(ctx->screen->fd, DRM_IOCTL_PARHELIA_M9_SURFACE_ACCESS,
+                  &access) ? -errno : 0;
+      m9_blit_window_receipt(resource, &access, ret);
+   }
+   if (ret) {
       if (ctx->debug)
          fprintf(stderr, "m9x: window %s level %u %ux%u span %u off %#" PRIx64
                  " box %d,%d %ux%u d0 %08x d1 %08x: %s\n",
@@ -9957,6 +9983,8 @@ m9_context_create(struct pipe_screen *pscreen, void *priv, unsigned flags)
    m9_clear_repeat = debug_get_num_option("M9X_CLEAR_REPEAT", 0);
    ctx->dump_path = debug_get_option("M9X_DUMP", NULL);
    m9_debug_textures = debug_get_bool_option("M9X_DEBUG_TEXTURES", false);
+   m9_blit_window_trace =
+      debug_get_bool_option("M9X_BLIT_WINDOW_TRACE", false);
    m9_texture_dump = debug_get_option("M9X_TEXTURE_DUMP", NULL);
    m9_texture_addrcode = debug_get_bool_option("M9X_TEXTURE_ADDRCODE", false);
    m9_debug_ctx = ctx;
