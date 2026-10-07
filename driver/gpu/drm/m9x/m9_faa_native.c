@@ -225,6 +225,7 @@ struct m9_faa_owner {
 };
 #ifdef M9_FAA_GRAPH_INIT_CONTROL
 struct m9_faa_public_vs_storage {
+	struct m9x_faa_public_vs_upload_layout layout;
 	u8 program[M9_FAA_PUBLIC_VS_PROGRAM_BYTES];
 	u8 constants[M9_FAA_PUBLIC_VS_CONSTANT_EXTENT];
 	u8 secondary[M9_FAA_PUBLIC_VS_SECONDARY_BYTES];
@@ -1112,6 +1113,7 @@ int m9x_faa_graph_public_vs_prepare(struct m9x_device *mdev,
 	ret = m9x_faa_graph_draw_claim_locked(mdev, binding, generation, init_point);
 	if (ret)
 		goto unlock_uninstalled;
+	storage->layout = input->layout;
 	r->draw_owner[0] = program;
 	memset(&program, 0, sizeof(program));
 	r->public_vs_image = storage;
@@ -4241,7 +4243,8 @@ int m9x_faa_graph_public_vs_draw_prepare(struct m9x_device *mdev,
  out=(struct m9x_faa_public_vs_draw_image){storage->primary,storage->secondary,
   sizeof(storage->primary),sizeof(storage->secondary)};
  ret=m9x_faa_public_vs_draw_encode(fw->data,fw->size,owner,r->graph_draw_end_bytes,
-  head_point,&out,&storage->ends);
+  head_point,r->public_vs_image->layout.constant_begin[0],
+  r->public_vs_image->layout.constant_end[0],&out,&storage->ends);
  if(ret)goto out_lock;
  r->public_vs_draw_image=storage;storage=NULL;
 out_lock:

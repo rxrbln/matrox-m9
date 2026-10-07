@@ -13,7 +13,7 @@ struct m9x_faa_public_vs_draw_endpoints {u32 final_end;u64 observed_point;};
 bool m9x_faa_public_vs_draw_template_valid(const u8 *blob, size_t bytes);
 int m9x_faa_public_vs_draw_encode(const u8 *blob, size_t bytes,
  const struct m9x_faa_graph_draw_owner owner[M9_FAA_DRAW_SOURCE_OWNERS],
- u32 live_primary_bytes, u64 head_point,
+ u32 live_primary_bytes, u64 head_point, u32 fs_begin, u32 fs_end,
  const struct m9x_faa_public_vs_draw_image *out,
  struct m9x_faa_public_vs_draw_endpoints *ends);
 #endif

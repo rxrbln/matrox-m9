@@ -86,20 +86,26 @@ static bool overlap(const void *a,size_t na,const void *b,size_t nb){unsigned lo
 bool m9x_faa_public_vs_draw_template_valid(const u8 *blob,size_t bytes){u8 digest[32];if(!blob||bytes!=M9_FAA_VS_DRAW_TEMPLATE_BYTES)return false;sha256(blob,bytes,digest);return !memcmp(digest,template_sha,32);}
 int m9x_faa_public_vs_draw_encode(const u8 *blob,size_t bytes,
  const struct m9x_faa_graph_draw_owner owner[M9_FAA_DRAW_SOURCE_OWNERS],
- u32 live_primary_bytes,u64 head_point,const struct m9x_faa_public_vs_draw_image *out,
+ u32 live_primary_bytes,u64 head_point,u32 fs_begin,u32 fs_end,const struct m9x_faa_public_vs_draw_image *out,
  struct m9x_faa_public_vs_draw_endpoints *ends)
 {
  u32 words[ARRAY_SIZE(fields)],address,final,i,k;void *dest[3];size_t spans[3];
  if(!owner||!out||!ends||!out->primary||!out->secondary||out->primary_bytes<60||out->secondary_bytes<2688||
   (live_primary_bytes!=4944&&live_primary_bytes!=4948)||(head_point&15)||
-  (u32)head_point<0xc0||(u32)head_point>U32_MAX-0xb0||!m9x_faa_public_vs_draw_template_valid(blob,bytes))return -EINVAL;
+  (fs_begin&7)||(fs_end&7)||fs_begin>fs_end||fs_end-fs_begin<16||
+  fs_end>152||(u32)head_point<0xc0||(u32)head_point>U32_MAX-0xb0||!m9x_faa_public_vs_draw_template_valid(blob,bytes))return -EINVAL;
  if(m9x_faa_graph_draw_owners_validate(owner)||check_add_overflow(live_primary_bytes,60u,&final)||final>owner[27].bytes||owner[29].bytes<2688)return -ERANGE;
  dest[0]=out->primary;spans[0]=60;dest[1]=out->secondary;spans[1]=2688;dest[2]=ends;spans[2]=sizeof(*ends);
  for(i=0;i<3;i++){if(overlap(dest[i],spans[i],blob,bytes)||overlap(dest[i],spans[i],owner,31*sizeof(*owner))||overlap(dest[i],spans[i],out,sizeof(*out)))return -EINVAL;
   for(k=i+1;k<3;k++)if(overlap(dest[i],spans[i],dest[k],spans[k]))return -EINVAL;}
  for(i=0;i<ARRAY_SIZE(fields);i++){
   const struct draw_field *f=&fields[i];
-  if(f->offset>owner[f->owner].bytes||owner[f->owner].bytes-f->offset<4||check_add_overflow(owner[f->owner].base,f->offset,&address)||(address&3))return -ERANGE;
+  u32 offset=f->offset;
+  /* The live FS e0/e1 operands address pairs relative to this bound span,
+   * independently of the immutable utility pairs preceding the caller's FS. */
+  if(f->at==2424)offset=fs_begin;
+  if(f->at==2428)offset=fs_end;
+  if(offset>owner[f->owner].bytes||owner[f->owner].bytes-offset<4||check_add_overflow(owner[f->owner].base,offset,&address)||(address&3))return -ERANGE;
   switch(f->pc){
   case 0x24886:words[i]=(address&0xfffff000)|f->tag|(!address?4:0);break;
   case 0x248ab:if(address&7)return -ERANGE;words[i]=(address&0xfff)>>3;break;
@@ -112,6 +118,7 @@ int m9x_faa_public_vs_draw_encode(const u8 *blob,size_t bytes,
  for(i=0;i<ARRAY_SIZE(fields);i++)put32(fields[i].at<60?out->primary+fields[i].at:out->secondary+fields[i].at-60,words[i]);
  for(i=0;i<ARRAY_SIZE(tokens);i++)put32(out->secondary+tokens[i].at,((u32)head_point+tokens[i].delta)|tokens[i].flag);
  for(i=0;i<ARRAY_SIZE(lengths);i++)put32(out->secondary+lengths[i].at,0x49d00000|((lengths[i].target-lengths[i].at)/4));
+ put32(out->secondary+2360,0x00500000u|((fs_end-fs_begin)/8u)<<8);
  /* Current authenticated program/geometry interface admits only320x240. */
  put32(out->secondary+2244,(240u<<16)|320u);put32(out->secondary+2252,(240u<<16)|320u);
  *ends=(struct m9x_faa_public_vs_draw_endpoints){final,head_point+0xa0};return 0;
