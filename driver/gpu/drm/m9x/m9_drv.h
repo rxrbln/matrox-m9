@@ -506,6 +506,12 @@ int m9x_faa_graph_draw_claim_locked(struct m9x_device *mdev,
 int m9x_faa_graph_draw_end_locked(struct m9x_device *mdev,
 		struct m9_faa_graph_binding *binding, u32 generation,
 		u64 init_point, u32 stage, u64 *point, bool *posted);
+int m9x_faa_graph_draw_prepare(struct m9x_device *mdev,
+		struct m9_faa_graph_binding *binding, u32 generation,
+		u64 init_point);
+int m9x_faa_graph_draw_submit(struct m9x_device *mdev,
+		struct m9_faa_graph_binding *binding, u32 generation,
+		u64 init_point, u64 *point, bool *posted);
 struct m9x_bo *m9x_bo_lookup(struct m9x_device *mdev,
 			     struct drm_file *file, u32 handle);
 bool m9x_gem_is_dma(struct drm_gem_object *gem);

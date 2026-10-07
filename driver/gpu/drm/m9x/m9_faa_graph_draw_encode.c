@@ -113,6 +113,17 @@ static u32 draw_fnv(const u8 *blob, size_t bytes)
 	return hash;
 }
 
+bool m9x_faa_graph_draw_blob_valid(const u8 *blob, size_t blob_bytes)
+{
+	u8 digest[SHA256_DIGEST_SIZE];
+
+	if (!blob || blob_bytes != M9_FAA_DRAW_BLOB_BYTES ||
+	    draw_fnv(blob, blob_bytes) != M9_FAA_DRAW_BLOB_FNV)
+		return false;
+	sha256(blob, blob_bytes, digest);
+	return !memcmp(digest, draw_blob_sha256, sizeof(digest));
+}
+
 static u32 draw_encode_address(u32 encoder, u32 address, u32 tag)
 {
 	switch (encoder) {
@@ -153,7 +164,6 @@ int m9x_faa_graph_draw_encode(const u8 *blob, size_t blob_bytes,
 		const struct m9x_faa_graph_draw_image *image)
 {
 	u32 source_offset, image_offset, address, value, init_low;
-	u8 digest[SHA256_DIGEST_SIZE];
 	u32 i;
 
 	if (!blob || !owner || !image || !image->program || !image->constants ||
@@ -176,10 +186,7 @@ int m9x_faa_graph_draw_encode(const u8 *blob, size_t blob_bytes,
 	    SOURCE_PRIMARY_BLOB + SOURCE_PRIMARY_BYTES +
 		M9_FAA_DRAW_PRIMARY_SUFFIX_BYTES > blob_bytes ||
 	    SOURCE_CONSTANTS1_BLOB + 188 > blob_bytes ||
-	    draw_fnv(blob, blob_bytes) != M9_FAA_DRAW_BLOB_FNV)
-		return -EINVAL;
-	sha256(blob, blob_bytes, digest);
-	if (memcmp(digest, draw_blob_sha256, sizeof(digest)))
+	    !m9x_faa_graph_draw_blob_valid(blob, blob_bytes))
 		return -EINVAL;
 	init_low = (u32)init_point;
 	for (i = 0; i < M9_FAA_DRAW_SOURCE_OWNERS; i++) {

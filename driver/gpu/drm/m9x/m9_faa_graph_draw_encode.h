@@ -27,6 +27,8 @@ struct m9x_faa_graph_draw_image {
 	u32 program_bytes, constants_bytes, secondary_bytes, primary_suffix_bytes;
 };
 
+bool m9x_faa_graph_draw_blob_valid(const u8 *blob, size_t blob_bytes);
+
 int m9x_faa_graph_draw_encode(const u8 *blob, size_t blob_bytes,
 		const struct m9x_faa_graph_draw_owner owner[M9_FAA_DRAW_SOURCE_OWNERS],
 		u32 live_init_primary_bytes, u64 init_point,
