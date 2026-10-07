@@ -10,6 +10,20 @@ application rendering is not yet validated. This note is separate from P690
 
 ## 2026-10-07: actual normal Unlock GPU copyback on M9128
 
+The private diagnostic now completes a second normal Lock at actual `0x1c0`
+after Lock `0x180` and Unlock `0x1a0`. The [first hardware round trip](../tests/m9-faa-relock-hardware-20261007/README.md)
+reached all three fences with `wedged=0`, but an optional F022 CPU aperture
+read inserted between Unlock and second Lock changed 1,833 words in the
+returned F021 image. A [fresh-boot source-order control](../tests/m9-faa-relock-nopeek-hardware-20261007/README.md)
+using the same module, helper, plan and GPU commands omitted only that read.
+Its first and second returned F021 images are **byte-identical** clean FAA
+triangles (9,801 covered pixels; SHA `ac5a1f13…`). Both runs stayed queue-empty
+and healthy through `0x1c0`. This isolates the inserted diagnostic observation
+as the relevant difference; the precise aperture-state mechanism remains
+under review. The helper now rejects that observation during a relock run.
+This is still a private 320×240 diagnostic, not Mesa application FAA or final
+display presentation.
+
 Kernel `9eed0a9` continues the source-proven primary only after a successful
 public F021 Lock read. The Lock returned actual point180 and the same clean
 9,801-pixel diagnostic triangle. Separate normal Unlock retired actual point1a0,
