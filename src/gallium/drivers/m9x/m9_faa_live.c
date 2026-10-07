@@ -1,0 +1,254 @@
+/* SPDX-License-Identifier: MIT */
+/* Copyright 2026 René Rebe <rene@exactco.de> */
+#include "m9_faa_live.h"
+#include "m9_vs_source.h"
+#include "nir.h"
+#include <math.h>
+#include <string.h>
+
+_Static_assert(sizeof(struct m9_faa_public_upload) == 796, "upload ABI");
+
+static bool
+overlap(const void *a, size_t na, const void *b, size_t nb)
+{
+   uintptr_t x = (uintptr_t)a, y = (uintptr_t)b;
+   return na && nb && (x <= y ? y - x < na : x - y < nb);
+}
+
+/* Classification never rewrites the caller's NIR or evaluates a vertex ALU.
+ * Only scalar MOV/vec chains may feed the complete supported stores. */
+static bool
+stores(const nir_shader *shader, mesa_shader_stage stage,
+       nir_intrinsic_instr **out, unsigned count)
+{
+   if (!shader || shader->info.stage != stage || !shader->info.io_lowered ||
+       shader->xfb_info)
+      return false;
+   nir_function_impl *impl = nir_shader_get_entrypoint((nir_shader *)shader);
+   if (!impl || !exec_list_is_singular(&impl->body))
+      return false;
+   nir_cf_node *node = exec_node_data(nir_cf_node, exec_list_get_head(&impl->body), node);
+   if (node->type != nir_cf_node_block)
+      return false;
+   unsigned n = 0;
+   nir_foreach_instr(instr, nir_cf_node_as_block(node)) {
+      if (instr->type == nir_instr_type_alu || instr->type == nir_instr_type_load_const)
+         continue;
+      if (instr->type != nir_instr_type_intrinsic)
+         return false;
+      nir_intrinsic_instr *in = nir_instr_as_intrinsic(instr);
+      switch (in->intrinsic) {
+      case nir_intrinsic_load_input:
+      case nir_intrinsic_load_ubo:
+      case nir_intrinsic_load_ubo_vec4:
+         break;
+      case nir_intrinsic_store_output:
+         if (nir_intrinsic_io_semantics(in).dual_source_blend_index ||
+             nir_intrinsic_io_semantics(in).fb_fetch_output ||
+             nir_intrinsic_io_semantics(in).fb_fetch_output_coherent ||
+             nir_intrinsic_io_semantics(in).per_view ||
+             nir_intrinsic_io_semantics(in).high_16bits ||
+             nir_intrinsic_io_semantics(in).high_dvec2 ||
+             nir_intrinsic_io_semantics(in).no_sysval_output)
+            return false;
+         if (n == count || nir_intrinsic_component(in) ||
+             nir_intrinsic_write_mask(in) != 15 ||
+             nir_intrinsic_src_type(in) != nir_type_float32 ||
+             in->src[0].ssa->bit_size != 32 || in->src[0].ssa->num_components != 4 ||
+             !nir_src_is_const(in->src[1]) || nir_src_as_uint(in->src[1]) ||
+             nir_intrinsic_io_semantics(in).num_slots != 1)
+            return false;
+         out[n++] = in;
+         break;
+      default:
+         return false;
+      }
+   }
+   return n == count;
+}
+
+static bool
+input_vec(nir_def *value, unsigned *location)
+{
+   for (unsigned c = 0; c < 4; c++) {
+      nir_scalar s = nir_scalar_chase_movs(nir_get_scalar(value, c));
+      if (s.def->bit_size != 32 || !nir_scalar_is_intrinsic(s))
+         return false;
+      nir_intrinsic_instr *in = nir_def_as_intrinsic(s.def);
+      if (in->intrinsic != nir_intrinsic_load_input ||
+          nir_intrinsic_dest_type(in) != nir_type_float32 ||
+          !nir_src_is_const(in->src[0]) || nir_src_as_uint(in->src[0]) ||
+          nir_intrinsic_component(in) + s.comp != c)
+         return false;
+      unsigned loc = nir_intrinsic_io_semantics(in).location;
+      if (loc >= 64 || (c && loc != *location))
+         return false;
+      *location = loc;
+   }
+   return true;
+}
+
+static bool
+color_vec(nir_def *value, const void *cb, size_t bytes, bool uniforms_only,
+          uint32_t words[4])
+{
+   uint64_t first = 0;
+   for (unsigned c = 0; c < 4; c++) {
+      nir_scalar s = nir_scalar_chase_movs(nir_get_scalar(value, c));
+      if (s.def->bit_size != 32)
+         return false;
+      if (!uniforms_only && nir_scalar_is_const(s)) {
+         words[c] = nir_scalar_as_uint(s);
+      } else {
+         if (!nir_scalar_is_intrinsic(s))
+            return false;
+         nir_intrinsic_instr *in = nir_def_as_intrinsic(s.def);
+         if ((in->intrinsic != nir_intrinsic_load_ubo &&
+              in->intrinsic != nir_intrinsic_load_ubo_vec4) ||
+             !nir_src_is_const(in->src[0]) || nir_src_as_uint(in->src[0]) ||
+             !nir_src_is_const(in->src[1]))
+            return false;
+         uint64_t at;
+         if (in->intrinsic == nir_intrinsic_load_ubo)
+            at = (uint64_t)nir_src_as_uint(in->src[1]) + 4u * s.comp;
+         else if (in->intrinsic == nir_intrinsic_load_ubo_vec4)
+            at = 16ull * ((uint64_t)nir_intrinsic_base(in) + nir_src_as_uint(in->src[1])) +
+                 4u * (nir_intrinsic_component(in) + s.comp);
+         else
+            return false;
+         if ((at & 3) || !cb || at > bytes || bytes - at < 4 ||
+             (uniforms_only && ((c && at != first + 4u * c) || (!c && (at & 15)))))
+            return false;
+         if (!c) first = at;
+         memcpy(&words[c], (const uint8_t *)cb + at, 4);
+      }
+      float f;
+      memcpy(&f, &words[c], 4);
+      if ((words[c] >> 31) || !isfinite(f) || f > 1.0f)
+         return false;
+   }
+   return true;
+}
+
+/* Original 16fa20 MOV fields, selected from live supported shader semantics.
+ * Constant selectors refer to each vector's own dense xy/zw pair order.
+ * E=3f for public carry (different unused field from generic carry moves).
+ * Finish belongs four slots before the end, from actual f40e3. */
+static void
+mov(uint32_t *out, unsigned source, unsigned target, unsigned cls,
+    unsigned op, bool constant, bool clamp)
+{
+   out[0] = 0xffc00000u | source << 15 | target << 8 | cls << 5 | op |
+            (clamp ? 0x80u : 0);
+   out[1] = constant ? 0xa280331fu : 0xa28fff1fu;
+}
+
+bool
+m9_faa_live_public_mov_build(const struct m9_faa_live_public_mov *s,
+                              struct m9_faa_public_upload *output)
+{
+   if (!s || !output || !s->d3d_clip_space ||
+       (uintptr_t)output % _Alignof(struct m9_faa_public_upload) ||
+       sizeof(*output) > UINTPTR_MAX - (uintptr_t)output ||
+       overlap(output, sizeof(*output), s, sizeof(*s)) ||
+       overlap(output, sizeof(*output), s->vs_cb0, s->vs_cb0_bytes) ||
+       overlap(output, sizeof(*output), s->fs_cb0, s->fs_cb0_bytes) ||
+       !s->maps || !s->map_bytes || !s->buffers || !s->elements ||
+       s->buffer_count > PIPE_MAX_ATTRIBS || s->element_count > PIPE_MAX_ATTRIBS ||
+       s->color_location >= 64 || s->texcoord_location >= 64 ||
+       s->color_location == s->texcoord_location ||
+       s->color_location == VARYING_SLOT_POS || s->texcoord_location == VARYING_SLOT_POS)
+      return false;
+   if (overlap(output, sizeof(*output), s->elements, s->element_count * sizeof(*s->elements)) ||
+       overlap(output, sizeof(*output), s->buffers, s->buffer_count * sizeof(*s->buffers)) ||
+       overlap(output, sizeof(*output), s->maps, s->buffer_count * sizeof(*s->maps)) ||
+       overlap(output, sizeof(*output), s->map_bytes, s->buffer_count * sizeof(*s->map_bytes)) ||
+       overlap(output, sizeof(*output), s->vs, s->vs ? sizeof(*s->vs) : 0) ||
+       overlap(output, sizeof(*output), s->fs, s->fs ? sizeof(*s->fs) : 0))
+      return false;
+   for (unsigned i = 0; i < s->buffer_count; i++)
+      if (overlap(output, sizeof(*output), s->maps[i], s->map_bytes[i]))
+         return false;
+   nir_intrinsic_instr *vs[3], *fs[1], *pos = NULL, *col = NULL, *tex = NULL;
+   if (!stores(s->vs, MESA_SHADER_VERTEX, vs, 3) ||
+       !stores(s->fs, MESA_SHADER_FRAGMENT, fs, 1) ||
+       (nir_intrinsic_io_semantics(fs[0]).location != FRAG_RESULT_COLOR &&
+        nir_intrinsic_io_semantics(fs[0]).location != FRAG_RESULT_DATA0))
+      return false;
+   for (unsigned i = 0; i < 3; i++) {
+      unsigned loc = nir_intrinsic_io_semantics(vs[i]).location;
+      nir_intrinsic_instr **which = loc == VARYING_SLOT_POS ? &pos :
+                                   loc == s->color_location ? &col :
+                                   loc == s->texcoord_location ? &tex : NULL;
+      if (!which || *which) return false;
+      *which = vs[i];
+   }
+   if (!pos || !col || !tex) return false;
+   unsigned position = 0, coord = 0;
+   uint32_t colors[2][4];
+   if (!input_vec(pos->src[0].ssa, &position) ||
+       !input_vec(tex->src[0].ssa, &coord) || position == coord ||
+       !color_vec(col->src[0].ssa, s->vs_cb0, s->vs_cb0_bytes, true, colors[1]) ||
+       !color_vec(fs[0]->src[0].ssa, s->fs_cb0, s->fs_cb0_bytes, false, colors[0]))
+      return false;
+   struct m9_vs_program p = {0};
+   p.attr_count = 2; p.record_bytes = 32;
+   p.inputs_read = UINT64_C(1) << position | UINT64_C(1) << coord;
+   for (unsigned i = 0; i < 2; i++) {
+      p.attrs[i].location = i ? coord : position;
+      p.attrs[i].offset = 4 * i; p.attrs[i].components = 4;
+      for (unsigned c = 0; c < 4; c++) p.attrs[i].select[c] = c;
+      unsigned element = m9_vs_attr_element(&p, i);
+      if (element >= s->element_count ||
+          s->elements[element].src_format != PIPE_FORMAT_R32G32B32A32_FLOAT)
+         return false;
+   }
+   struct m9_vs_source_layout source;
+   float vertices[24]; uint32_t decl[5];
+   if (m9_vs_decl_words(&p, decl, 5) != 5 ||
+       !m9_vs_source_layout_init(&p, s->elements, s->element_count, s->buffers,
+                                  s->buffer_count, &source, NULL) ||
+       !m9_vs_source_records(&source, s->maps, s->map_bytes, s->buffer_count,
+                              s->first, 3, vertices))
+      return false;
+   uint32_t fragment[8], carry[14], gather[10], position_words[50];
+   mov(fragment, 0x7f, 0x2d, 4, 0x1e, true, true);
+   mov(fragment + 2, 0x7f, 0x2d, 4, 0x1d, true, true);
+   /* Source constant selectors: xy=0, zw=1. */
+   fragment[1] |= 1u << 14;
+   fragment[1] |= 0x40000000u;
+   for (unsigned i = 4; i < 8; i += 2) {
+      fragment[i] = 0xffff801cu; fragment[i + 1] = 0xa01fc00fu;
+   }
+   mov(carry, 0x4f, 0x1b, 0, 0x1c, false, false);
+   mov(carry + 2, 0x4e, 0x19, 0, 0x1c, false, false);
+   mov(carry + 4, 0x7f, 0x17, 0, 0x1c, true, false);
+   carry[5] |= 1u << 14;
+   mov(carry + 6, 0x7f, 0x15, 0, 0x1c, true, false);
+   carry[7] |= 0x40000000u;
+   mov(carry + 8, 0x47, 0x13, 0, 0x1c, false, false);
+   mov(carry + 10, 0x46, 0x11, 0, 0x1c, false, false);
+   carry[12] = 0xffff801cu; carry[13] = 0xa01fc00fu;
+   const uint8_t inputs[2] = {0, 1};
+   struct m9_faa_move_interface gi;
+   struct m9_faa_position_interface pi;
+   float viewport_constants[26];
+   if (!m9_faa_preprocess_moves(M9_FAA_MOVE_RECORDS, inputs, 2, 0,
+                                 gather, sizeof(gather), &gi) ||
+       !m9_faa_preprocess_position(&s->viewport, position_words, sizeof(position_words),
+                                    viewport_constants, sizeof(viewport_constants), &pi))
+      return false;
+   struct m9_faa_preprocess_upload upload = {
+      .vectors = {{fragment, 4}, {carry, 7}, {gather, gi.slots}, {position_words, pi.slots}},
+      .constants = {{colors[0], 2}, {colors[1], 2}, {NULL, 0},
+                    {(const uint32_t *)viewport_constants, pi.constant_pairs}},
+      .viewport = s->viewport, .vertices = (const uint32_t *)vertices, .declaration = decl,
+   };
+   struct m9_faa_public_upload result;
+   if (!m9_faa_preprocess_upload_build(&upload, result.program, sizeof(result.program),
+                                        result.constants, sizeof(result.constants),
+                                        result.geometry, sizeof(result.geometry), &result.layout))
+      return false;
+   memcpy(output, &result, sizeof(result));
+   return true;
+}
