@@ -143,8 +143,10 @@ selected its vtable+14 normal Lock and emitted Lock relocation fields. The
 emulator stopped before reading a new common-buffer deadline at `0x140`;
 that deadline is not covered by the `0x110` receipt. The bounded source audit
 at `tests/m9-faa-graph-post-init-lock-20261007/` proves one natural post at
-source primary endpoint 4,980, a 12-byte suffix after 4,968, and 14 normal
-Lock relocation fields. These are forensic source values, not live native
-addresses. Derive and submit this next same-context Lock prefix with retained
-live owners, then qualify its actual retirement before continuing to formatted
-view or pixel comparison.
+source primary endpoint 4,980. That 12-byte suffix and its 692-byte retained
+secondary packet belong to the **returning original DRAW**, before normal
+Lock is invoked. The Lock writes 14 relocation fields farther into the CPU
+primary buffer but has **no observed post** before waiting for `0x140`.
+The source stage attribution must be resolved before any native `0x140`
+submission; the 4,980-byte DRAW tail is not a Lock completion. All captured
+bytes and addresses remain forensic evidence, not live native inputs.
