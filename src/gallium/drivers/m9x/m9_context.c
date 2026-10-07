@@ -7725,7 +7725,8 @@ m9_clear_render_target_engine(struct m9_context *ctx, struct pipe_surface *dst,
    if (!m9_clear_on_engine || !ctx->blitter || ctx->blitter->running ||
        ctx->blitter->cb_slot != 0 ||
        ctx->lost || ctx->query_active || render_condition_enabled ||
-       ctx->faa_surface.graph.initialized ||
+       ctx->faa_surface.graph.initialized || ctx->screen->faa.prepare ||
+       m9_faa_active(&ctx->screen->faa) ||
        (res->base.target != PIPE_TEXTURE_2D &&
         res->base.target != PIPE_TEXTURE_RECT) ||
        res->base.nr_samples > 1 || res->base.depth0 != 1 ||
