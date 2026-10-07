@@ -8,6 +8,16 @@ Ordinary textured rendering and the deployed driver are validated. FAA
 rendering is not yet validated. This note is separate from P690
 `102b:2539` evidence.
 
+Latest logical review fixes two concrete defects: kernel e5af628 removes
+an obsolete four-phase cap while preserving all waits, and Mesa c192362
+rejects companion format aliases before allocation/layout selection. Focused
+sanitizer controls and full builds pass; no new GPU result follows from those
+checks. Kernel151e438 now admits the genuinely emitted public mode9 resolve
+continuation (source9424/final1d0), with128 native-placement controls and
+strict source checks passing. It is built but not yet hardware tested.
+See [the logical audit](parhelia-m9-faa-native-logical-audit.md) and
+[the public dispatch proof](parhelia-m9-faa-public-resolve-dispatch-wait.md).
+
 Latest hardware checkpoint: kernel e316f3f retires the distinct public
 shared-depth dirty-flush prefix at1a0/raw1a1, with an empty queue and wedged=0
 immediately and two seconds later. Its generated phases are c0/120/140/1a0;

@@ -20,12 +20,14 @@ ASAN/UBSAN fixture checks fifth-phase success, timeout, callback failure,
 late endpoint/target refusal and a newly consumed stale page. This removes a
 next-profile admission failure; it did not cause the earlier black output.
 
-The genuine public continuation has now executed mode9 rendering dispatch
+The [genuine public continuation](parhelia-m9-faa-public-resolve-dispatch-wait.md)
+has now executed mode9 rendering dispatch
 and published three1c0 last-use deadlines, then stopped at an original
 cleanup wait before aa750 returns. The earlier1a0 prefix did not contain
 that launch. Its620 appended bytes neither overwrite earlier CPU inputs nor
-replace the earlier independent1a0 footer. Native admission of the new whole
-prefix and its hardware execution still need their own proof.
+replace the earlier independent1a0 footer. Kernel151e438 admits the new whole prefix. The strict source checker,
+128 actual-C placement/alignment controls and isolated module build pass.
+Its hardware execution still needs a separate fresh-boot test.
 
 The new resolve block emits zero AB/AC words from the actual vendor producer.
 Do not apply the older inactive-color-mask normalization there: its proof is
@@ -39,8 +41,11 @@ into hardware format61 (`0x3d`). At320x240, the real helper selects614400
 bytes/descriptor7a210140 instead of the source-backed614432/7a220140 used by
 option61. This is an invalid-option alias into a different layout, not a
 measured overrun or explanation of the correctly selected private0x3d image.
-Reject the original wide option outside -1 or0..127 before any narrowing;
-never silently canonicalize an alias after allocation decisions.
+Mesa c192362 now rejects the original wide option outside -1 or0..127
+before any narrowing, reports the invalid value and resets the whole probe
+configuration so AD/AF overrides cannot reactivate it. The extracted real
+initializer passes31 controls and three rejected mutations under ASAN/UBSAN;
+the full isolated DSO build and batch executable pass. No GPU test is claimed.
 
 No additional literal captured-address defect was found in the reviewed
 native owner/fixup/clear paths. This does not close the public readback or
