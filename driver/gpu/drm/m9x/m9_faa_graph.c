@@ -783,7 +783,8 @@ int m9x_faa_graph_draw_red_ioctl(struct drm_device *drm, void *data,
 	bool posted = false;
 	int idx, ret;
 
-	if (!state || !args->graph_id || !args->init_point || args->flags ||
+	if (!state || !args->graph_id || !args->init_point ||
+	    (args->flags & ~PARHELIA_M9_FAA_DRAW_WITH_FINISH) ||
 	    args->draw_point || args->state || args->pad)
 		return -EINVAL;
 	if (!drm_dev_enter(drm, &idx))
@@ -803,7 +804,8 @@ int m9x_faa_graph_draw_red_ioctl(struct drm_device *drm, void *data,
 	/* Firmware, private local TTM reservation, and late SYSTEM mapping
 	 * must finish before taking any of the six caller BO reservations. */
 	ret = m9x_faa_graph_draw_prepare(mdev, binding, args->generation,
-					args->init_point);
+					args->init_point,
+					args->flags & PARHELIA_M9_FAA_DRAW_WITH_FINISH);
 	if (ret)
 		goto out_state;
 	drm_exec_init(&exec, DRM_EXEC_INTERRUPTIBLE_WAIT |
@@ -835,11 +837,14 @@ int m9x_faa_graph_draw_red_ioctl(struct drm_device *drm, void *data,
 	ret = m9x_faa_graph_draw_submit(mdev, binding, args->generation,
 					 args->init_point, &point, &posted);
 	if (!ret) {
-		if (!point || point != args->init_point + 0x60)
+		if (!point || point != args->init_point +
+		    (args->flags & PARHELIA_M9_FAA_DRAW_WITH_FINISH ? 0x90 : 0x60))
 			ret = -EIO;
 		else {
 			args->draw_point = point;
-			args->state = PARHELIA_M9_FAA_DRAW_PREFIX_RETIRED;
+			args->state = args->flags & PARHELIA_M9_FAA_DRAW_WITH_FINISH ?
+				PARHELIA_M9_FAA_DRAW_FINISH_RETIRED :
+				PARHELIA_M9_FAA_DRAW_PREFIX_RETIRED;
 		}
 	}
 out_exec:

@@ -28,6 +28,8 @@ struct m9x_faa_graph_draw_image {
 };
 
 bool m9x_faa_graph_draw_blob_valid(const u8 *blob, size_t blob_bytes);
+int m9x_faa_graph_draw_owners_validate(
+	const struct m9x_faa_graph_draw_owner owner[M9_FAA_DRAW_SOURCE_OWNERS]);
 
 int m9x_faa_graph_draw_encode(const u8 *blob, size_t blob_bytes,
 		const struct m9x_faa_graph_draw_owner owner[M9_FAA_DRAW_SOURCE_OWNERS],

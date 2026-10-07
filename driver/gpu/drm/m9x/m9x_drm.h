@@ -57,6 +57,8 @@ enum drm_parhelia_m9_faa_owner_role {
 #define PARHELIA_M9_FAA_GRAPH_PREPARED 1u
 #define PARHELIA_M9_FAA_GRAPH_INITIALIZED 2u
 #define PARHELIA_M9_FAA_DRAW_PREFIX_RETIRED 3u
+#define PARHELIA_M9_FAA_DRAW_FINISH_RETIRED 4u
+#define PARHELIA_M9_FAA_DRAW_WITH_FINISH 1u
 struct drm_parhelia_m9_faa_owner {
 	__u32 handle;
 	__u32 pad;
@@ -106,7 +108,9 @@ struct drm_parhelia_m9_faa_graph_init {
  * graph. The caller supplies the exact INIT receipt; outputs are zero on
  * input. State 3 and draw_point require the later actual GPU wait at the
  * independent finish boundary. The original public DRAW has not returned,
- * and this is neither a pixel/readback nor a Gallium draw receipt. */
+ * and this is neither a pixel/readback nor a Gallium draw receipt.
+ * WITH_FINISH additionally submits returned DRAW + explicit queue finish;
+ * state 4 proves its retirement only, with no normal Lock/resolve claim. */
 struct drm_parhelia_m9_faa_graph_draw_red {
 	__u64 graph_id;
 	__u64 init_point;

@@ -141,6 +141,27 @@ static u32 draw_encode_address(u32 encoder, u32 address, u32 tag)
 	}
 }
 
+int m9x_faa_graph_draw_owners_validate(
+	const struct m9x_faa_graph_draw_owner owner[M9_FAA_DRAW_SOURCE_OWNERS])
+{
+	u32 i;
+
+	if (!owner)
+		return -EINVAL;
+	for (i = 0; i < M9_FAA_DRAW_SOURCE_OWNERS; i++) {
+		u64 end = (u64)owner[i].base + owner[i].bytes;
+
+		if (!IS_ALIGNED(owner[i].base, PAGE_SIZE) ||
+		    !IS_ALIGNED(owner[i].bytes, PAGE_SIZE) ||
+		    owner[i].bytes < draw_owner_spec[i].bytes ||
+		    (draw_owner_spec[i].virtual ?
+		     owner[i].base < 0x40000000u || end > 0x41000000u :
+		     end > 0x40000000u))
+			return -ERANGE;
+	}
+	return 0;
+}
+
 static bool draw_source_word(u16 dst, u16 offset, u32 *blob_offset,
 			     u32 *image_offset)
 {
@@ -189,17 +210,8 @@ int m9x_faa_graph_draw_encode(const u8 *blob, size_t blob_bytes,
 	    !m9x_faa_graph_draw_blob_valid(blob, blob_bytes))
 		return -EINVAL;
 	init_low = (u32)init_point;
-	for (i = 0; i < M9_FAA_DRAW_SOURCE_OWNERS; i++) {
-		u64 end = (u64)owner[i].base + owner[i].bytes;
-
-		if (!IS_ALIGNED(owner[i].base, PAGE_SIZE) ||
-		    !IS_ALIGNED(owner[i].bytes, PAGE_SIZE) ||
-		    owner[i].bytes < draw_owner_spec[i].bytes ||
-		    (draw_owner_spec[i].virtual ?
-		     owner[i].base < 0x40000000u || end > 0x41000000u :
-		     end > 0x40000000u))
-			return -ERANGE;
-	}
+	if (m9x_faa_graph_draw_owners_validate(owner))
+		return -ERANGE;
 	/* Preflight all source words, live extents and encoded addresses before
 	 * writing any destination. A source change cannot leave a partial draw. */
 	for (i = 0; i < ARRAY_SIZE(draw_fixups); i++) {
