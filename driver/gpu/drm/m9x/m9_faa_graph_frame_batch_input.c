@@ -61,15 +61,11 @@ int m9x_faa_color_batch_copy(const struct drm_parhelia_m9_faa_graph_color_frame_
   input->declaration=input->geometry+l->geometry_bytes;
   input->record_stride=d->record_stride;input->record_count=d->record_count;
   input->declaration_count=d->declaration_count;job->bytes=sum;job->raster_flags=d->raster_flags;
-  /* Until distinct immutable code slots are implemented, a batch may vary
-   * CB/geometry only. Entries/ranges/declarations are part of code identity. */
+  /* Each job is independently shader/constant validated by the live
+   * first-stage encoder. Preserve a common viewport/raw declaration and
+   * cull orientation; flat/smooth and immutable code may vary per job. */
   if(i){const struct m9x_faa_color_input *first=&batch->draw[0].input;
-   if(job->raster_flags!=batch->draw[0].raster_flags||l->program_bytes!=first->layout.program_bytes||
-    l->constants_bytes!=first->layout.constants_bytes||
-    memcmp(l->entry_bytes,first->layout.entry_bytes,sizeof(l->entry_bytes))||
-    memcmp(l->constant_begin,first->layout.constant_begin,sizeof(l->constant_begin))||
-    memcmp(l->constant_end,first->layout.constant_end,sizeof(l->constant_end))||
-    memcmp(input->program,first->program,l->program_bytes)||
+   if((job->raster_flags&6)!=(batch->draw[0].raster_flags&6)||
     memcmp(input->geometry,first->geometry,128)||
     memcmp(input->declaration,first->declaration,20)){ret=-EOPNOTSUPP;goto out;}}
   batch->count++;

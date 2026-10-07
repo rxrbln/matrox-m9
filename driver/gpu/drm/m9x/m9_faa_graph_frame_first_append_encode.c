@@ -67,7 +67,7 @@ int m9x_faa_frame_first_append_encode(
 	const u8 *old_primary, u32 old_primary_bytes,
 	const u8 *first_secondary, u32 first_secondary_bytes,
 	const u8 *extra_first_secondary, u32 extra_first_bytes,
-	const struct m9x_faa_color_input *extra_input, bool same_program,
+	const struct m9x_faa_color_input *extra_input, bool programs_retained,
 	struct m9x_faa_frame_first_append_image *out)
 {
 	u32 i, insert, tail_bytes, growth, old_second_start;
@@ -77,7 +77,7 @@ int m9x_faa_frame_first_append_encode(
 
 	if (!owner || !old_end_bytes || !old_primary || !first_secondary ||
 	    !extra_first_secondary || !extra_input || !out ||
-	    !out->primary || !out->secondary || !same_program ||
+	    !out->primary || !out->secondary || !programs_retained ||
 	    old_draw_count<1 || old_draw_count>31 ||
 	    (init_point&15) || low<0xb0 || low>U32_MAX-0x1550 ||
 	    (init_bytes&3) || (primary_cursor&3) ||

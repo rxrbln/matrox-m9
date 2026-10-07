@@ -30,6 +30,6 @@ int m9x_faa_frame_first_append_encode(
 	const u8 *old_primary, u32 old_primary_bytes,
 	const u8 *first_secondary, u32 first_secondary_bytes,
 	const u8 *extra_first_secondary, u32 extra_first_bytes,
-	const struct m9x_faa_color_input *extra_input, bool same_program,
+	const struct m9x_faa_color_input *extra_input, bool programs_retained,
 	struct m9x_faa_frame_first_append_image *out);
 #endif
