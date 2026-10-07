@@ -32,7 +32,7 @@ int m9x_faa_color_four_encode(const u8*blob,size_t bytes,const struct m9x_faa_gr
  (init_point&15)||(u32)init_point<0xb0||(u32)init_point>U32_MAX-0xf0||
  in->layout.program_count!=4||!in->layout.program_bytes||in->layout.program_bytes>4096||(in->layout.program_bytes&7)||
  in->layout.entry_bytes[0]||!in->layout.constants_bytes||in->layout.constants_bytes>16384||(in->layout.constants_bytes&7)||
- in->record_stride!=32||!in->record_count||in->record_count%3||in->record_count>12288||
+ in->record_stride!=32||in->record_count!=3||
  in->declaration_count<3||in->declaration_count>31||!(in->declaration_count&1)||
  in->layout.vertex_offset!=128||check_mul_overflow(in->record_stride,in->record_count,&raw)||
  raw!=in->layout.vertex_bytes||in->layout.geometry_bytes!=128+raw||in->layout.geometry_bytes>0x40000-256)return -EINVAL;
@@ -113,6 +113,11 @@ int m9x_faa_color_four_encode(const u8*blob,size_t bytes,const struct m9x_faa_gr
  /* Packed carry record stride is four DWORDs per real target. */
  if(arity==1)for(i=0;i<2;i++)put(out->secondary+120+i*16,0xee190000|8|(4*i<<8));
  if(arity==1){
+  /* Both downstream readers consume the same two-field packed carry
+   * record. The independent m9_record_desc SLOT grammar couples stride
+   * and field offset to the producer: eight DWORDs, COLOR at+4/POS at0. */
+  put(out->secondary+moved(1036,extra),0xee190408);
+  put(out->secondary+moved(1648,extra),0xee190008);
   put(out->secondary+148,0);put(out->secondary+152,0xf0010040);
   put(out->secondary+moved(820,extra),0);put(out->secondary+moved(824,extra),0xf0010040);
   put(out->secondary+moved(1048,extra),0);put(out->secondary+moved(1060,extra),0);put(out->secondary+moved(1064,extra),0xf0010040);
