@@ -487,6 +487,16 @@ int m9x_faa_graph_next_finish_prepare(struct m9x_device *mdev,
 int m9x_faa_graph_next_finish_submit(struct m9x_device *mdev,
 		struct m9_faa_graph_binding *binding, u32 generation,
 		u64 prefix_point, u64 *point, bool *posted);
+int m9x_faa_graph_next_lock_ioctl(struct drm_device *drm, void *data,
+		struct drm_file *file);
+int m9x_faa_graph_next_lock_get_locked(struct m9x_device *mdev,
+		u32 generation, u64 finish_point, struct m9_faa_graph_binding **out);
+int m9x_faa_graph_next_lock_prepare(struct m9x_device *mdev,
+		struct m9_faa_graph_binding *binding, u32 generation,
+		u64 finish_point);
+int m9x_faa_graph_next_lock_submit(struct m9x_device *mdev,
+		struct m9_faa_graph_binding *binding, u32 generation,
+		u64 finish_point, u64 *point, bool *posted);
 int m9x_faa_graph_unlock_ioctl(struct drm_device *drm, void *data,
 		struct drm_file *file);
 /* Transport lock held for the snapshot; submit revalidates under all BO

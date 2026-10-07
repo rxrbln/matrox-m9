@@ -55,6 +55,8 @@ static const struct drm_ioctl_desc m9x_ioctls[] = {
 			  m9x_faa_graph_next_draw_ioctl, DRM_RENDER_ALLOW),
 	DRM_IOCTL_DEF_DRV(PARHELIA_M9_FAA_GRAPH_NEXT_FINISH,
 			  m9x_faa_graph_next_finish_ioctl, DRM_RENDER_ALLOW),
+	DRM_IOCTL_DEF_DRV(PARHELIA_M9_FAA_GRAPH_NEXT_LOCK,
+			  m9x_faa_graph_next_lock_ioctl, DRM_RENDER_ALLOW),
 	DRM_IOCTL_DEF_DRV(PARHELIA_M9_FAA_GRAPH_UNLOCK,
 			  m9x_faa_graph_unlock_ioctl, DRM_RENDER_ALLOW),
 	DRM_IOCTL_DEF_DRV(PARHELIA_M9_FAA_GRAPH_DRAW_RED,

@@ -248,6 +248,8 @@ struct m9x_faa_replay {
 	struct m9_faa_next_storage *next_image;
 	struct m9_faa_next_finish_storage *next_finish_image;
 	bool graph_next_finish_claimed;
+	u8 *next_lock_image;
+	bool graph_next_lock_claimed, graph_second_lock_retired, second_lock_view_seen;
 	bool graph_next_claimed;
 	bool graph_draw_payload_ready;
 	bool graph_draw_with_finish;
@@ -800,6 +802,7 @@ static bool m9_faa_release(struct m9x_device *mdev, struct m9x_faa_replay *r)
 	kfree(r->draw_image);
 	kfree(r->next_image);
 	kfree(r->next_finish_image);
+	kfree(r->next_lock_image);
 #endif
 	if (r->retained_color) {
 		m9x_vram_unpin(r->retained_color);
@@ -3948,6 +3951,257 @@ int m9x_faa_graph_next_finish_submit(struct m9x_device *mdev,
 		dev_info(&mdev->pdev->dev,
 			 "M9 FAA second returned DRAW finish retired: prefix=%#llx finish=%#llx bytes=%u posts=%u; second Lock pending\n",
 			 prefix_point, *point, r->graph_draw_end_bytes, r->graph_draw_posts);
+	}
+out:
+	if (fence && ret)
+		dma_fence_set_error(&fence->base, ret);
+	if (ret && *posted) {
+		t->wedged = true;
+		t->generation++;
+		WARN_ON(t->quarantined_fence);
+		t->quarantined_fence = fence;
+		fence = NULL;
+	} else if (fence) {
+		dma_fence_signal(&fence->base);
+	}
+	if (fence)
+		dma_fence_put(&fence->base);
+	mutex_unlock(&t->lock);
+	return ret;
+#else
+	return -EOPNOTSUPP;
+#endif
+}
+
+#ifdef M9_FAA_GRAPH_INIT_CONTROL
+static int m9_faa_graph_next_lock_state(struct m9x_transport *t,
+		u32 generation, u64 finish_point, bool claimed)
+{
+	struct m9x_faa_replay *r = t->faa;
+
+	lockdep_assert_held(&t->lock);
+	if (t->wedged)
+		return -EIO;
+	if (!r || !r->graph_binding || !r->normal_lock_view_seen ||
+	    !r->unlock_started || !r->unlock_retired ||
+	    !r->graph_next_claimed || !r->next_image ||
+	    !r->graph_next_finish_claimed || !r->next_finish_image || r->graph_second_lock_retired ||
+	    r->graph_next_lock_claimed != claimed || (!!r->next_lock_image != claimed) ||
+	    r->graph_generation != generation || t->generation != generation ||
+	    r->observation_generation != generation || !r->observation_retired ||
+	    !finish_point || finish_point != r->unlock_point + 0x80 ||
+	    finish_point != r->observation_point + 0x160 ||
+	    r->graph_draw_point != finish_point || r->graph_draw_posts != 14 ||
+	    r->graph_draw_end_bytes != r->primary_bytes +
+		M9_FAA_DRAW_PRIMARY_SUFFIX_BYTES + M9_FAA_DRAW_TAIL_PRIMARY_BYTES +
+		M9_FAA_LOCK_PRIMARY_BYTES + M9_FAA_UNLOCK_PRIMARY_BYTES +
+		M9_FAA_NEXT_PRIMARY_BYTES + M9_FAA_NEXT_FINISH_PRIMARY_BYTES ||
+	    (finish_point & 15) || lower_32_bits(finish_point) > U32_MAX - 0x40 ||
+	    t->submitted_point != finish_point || t->completed_point != finish_point ||
+	    t->next_fence != lower_32_bits(finish_point) + 0x10)
+		return -ESTALE;
+	if (!t->faa_source_context || !t->faa_virtual_primary ||
+	    !t->engine_transitioned || !t->restore_ready || !t->fence_cpu ||
+	    !t->transport_armed || !t->bus_master_enabled ||
+	    t->async_stop || t->async_pending || t->queue_count)
+		return -EBUSY;
+	return 0;
+}
+#endif
+
+int m9x_faa_graph_next_lock_get_locked(struct m9x_device *mdev,
+		u32 generation, u64 finish_point, struct m9_faa_graph_binding **out)
+{
+#ifdef M9_FAA_GRAPH_INIT_CONTROL
+	int ret;
+
+	lockdep_assert_held(&mdev->transport.lock);
+	if (!out)
+		return -EINVAL;
+	*out = NULL;
+	ret = m9_faa_graph_next_lock_state(&mdev->transport, generation, finish_point, false);
+	if (!ret)
+		*out = m9x_faa_graph_binding_get(mdev->transport.faa->graph_binding);
+	return ret;
+#else
+	return -EOPNOTSUPP;
+#endif
+}
+
+/* Authenticate and build the live command image before reserving caller BOs.
+ * No new GPU owners or mappings are needed by this source continuation. */
+int m9x_faa_graph_next_lock_prepare(struct m9x_device *mdev,
+		struct m9_faa_graph_binding *binding, u32 generation,
+		u64 finish_point)
+{
+#ifdef M9_FAA_GRAPH_INIT_CONTROL
+	struct m9x_transport *t = &mdev->transport;
+	struct m9x_faa_replay *r;
+	u8 *storage;
+	struct m9x_faa_graph_draw_owner owner[M9_FAA_DRAW_SOURCE_OWNERS];
+	const struct firmware *fw;
+	u32 i;
+	int ret;
+
+	if (!binding)
+		return -EINVAL;
+	ret = request_firmware(&fw, M9_FAA_GRAPH_LOCK_FIRMWARE, &mdev->pdev->dev);
+	if (ret)
+		return ret;
+	if (!m9x_faa_graph_lock_blob_valid(fw->data, fw->size)) {
+		ret = -EINVAL;
+		goto out_fw;
+	}
+	storage = kmalloc(M9_FAA_LOCK_PRIMARY_BYTES, GFP_KERNEL);
+	if (!storage) {
+		ret = -ENOMEM;
+		goto out_fw;
+	}
+	mutex_lock(&t->lock);
+	ret = m9_faa_graph_next_lock_state(t, generation, finish_point, false);
+	if (ret)
+		goto out_lock;
+	r = t->faa;
+	if (r->graph_binding != binding) {
+		ret = -ESTALE;
+		goto out_lock;
+	}
+	for (i = 0; i < M9_FAA_DRAW_SOURCE_OWNERS; i++) {
+		struct m9_faa_owner *o;
+
+		switch (i) {
+		case 26: o = &r->draw_owner[0]; break;
+		case 27: o = &r->owner[26]; break;
+		case 28: o = &r->draw_owner[1]; break;
+		case 29: o = &r->draw_owner[2]; break;
+		case 30: o = &r->owner[27]; break;
+		default: o = &r->owner[i]; break;
+		}
+		owner[i].base = o->base;
+		owner[i].bytes = o->bytes;
+	}
+	ret = m9x_faa_graph_lock_encode(fw->data, fw->size, owner,
+			r->graph_draw_end_bytes, 320, 240, finish_point,
+			storage, M9_FAA_LOCK_PRIMARY_BYTES);
+	if (ret)
+		goto out_lock;
+	/* Claim only a fully encoded image; invalid inputs leave no half-state. */
+	r->graph_next_lock_claimed = true;
+	r->next_lock_image = storage;
+	storage = NULL;
+out_lock:
+	mutex_unlock(&t->lock);
+	kfree(storage);
+out_fw:
+	release_firmware(fw);
+	return ret;
+#else
+	return -EOPNOTSUPP;
+#endif
+}
+
+int m9x_faa_graph_next_lock_submit(struct m9x_device *mdev,
+		struct m9_faa_graph_binding *binding, u32 generation,
+		u64 finish_point, u64 *point, bool *posted)
+{
+#ifdef M9_FAA_GRAPH_INIT_CONTROL
+	struct m9x_transport *t = &mdev->transport;
+	struct m9x_faa_replay *r;
+	struct m9_faa_owner *primary, *secondary;
+	struct m9x_fence *fence = NULL;
+	u32 i, page, pte, target, old_bytes;
+	u64 stage_point;
+	bool stage_posted;
+	int ret;
+
+	if (!binding || !point || !posted)
+		return -EINVAL;
+	*point = 0;
+	*posted = false;
+	mutex_lock(&t->lock);
+	ret = m9_faa_graph_next_lock_state(t, generation, finish_point, true);
+	if (ret)
+		goto out;
+	r = t->faa;
+	if (r->graph_binding != binding) {
+		ret = -ESTALE;
+		goto out;
+	}
+	primary = &r->owner[M9_FAA_PRIMARY_OWNER];
+	secondary = &r->draw_owner[2];
+	old_bytes = r->graph_draw_end_bytes;
+	if (!primary->cpu || !drm_mm_node_allocated(&primary->system_node) ||
+	    primary->system_node.start != primary->base || old_bytes > primary->bytes ||
+	    primary->bytes - old_bytes < M9_FAA_LOCK_PRIMARY_BYTES ||
+	    !secondary->cpu ||
+	    secondary->bytes < M9_FAA_NEXT_FINISH_SECONDARY_OFFSET + M9_FAA_NEXT_FINISH_SECONDARY_BYTES) {
+		ret = -ESTALE;
+		goto out;
+	}
+	/* Recheck retained SYSTEM mappings, without remapping or reading opaque
+	 * GPU output. The requester independently checks the primary PTEs. */
+	for (i = 1; i < ARRAY_SIZE(r->draw_owner); i++) {
+		struct m9_faa_owner *o = &r->draw_owner[i];
+
+		if (!drm_mm_node_allocated(&o->system_node) ||
+		    o->system_node.start != o->base) {
+			ret = -ESTALE;
+			goto out;
+		}
+		for (page = 0; page < o->bytes / PAGE_SIZE; page++) {
+			ret = m9x_address_read_pte(mdev, o->base + page * PAGE_SIZE, &pte);
+			if (ret)
+				goto out;
+			if (pte != (m9x_address_pte_word(o->dma + page * PAGE_SIZE) | 1u)) {
+				ret = -ESTALE;
+				goto out;
+			}
+		}
+	}
+	target = lower_32_bits(finish_point) + 0x30;
+	fence = m9x_fence_create_target_locked(mdev, target);
+	if (!fence) {
+		ret = -ENOMEM;
+		goto out;
+	}
+	for (i = 0; i < PARHELIA_M9_FAA_GRAPH_OWNERS; i++)
+		dma_resv_add_fence(m9x_faa_graph_binding_owner(binding, i)->resv,
+				   &fence->base, DMA_RESV_USAGE_WRITE);
+	/* The source normal Lock emits its first populated prefix twice,
+	 * then appends its completion packet. No earlier prefix is overwritten.
+	 * Six write fences cover all three posts and the final wait. */
+	for (i = 0; i < 3; i++) {
+		u32 end = old_bytes + (i == 2 ? M9_FAA_LOCK_PRIMARY_BYTES :
+				M9_FAA_LOCK_FIRST_POST_BYTES);
+
+		if (i == 0)
+			memcpy((u8 *)primary->cpu + old_bytes, r->next_lock_image,
+			       M9_FAA_LOCK_FIRST_POST_BYTES);
+		else if (i == 2)
+			memcpy((u8 *)primary->cpu + old_bytes + M9_FAA_LOCK_FIRST_POST_BYTES,
+			       r->next_lock_image + M9_FAA_LOCK_FIRST_POST_BYTES,
+			       M9_FAA_LOCK_PRIMARY_BYTES - M9_FAA_LOCK_FIRST_POST_BYTES);
+		wmb();
+		ret = m9x_post_faa_graph_end_locked(mdev, &primary->system_node,
+			primary->dma, r->graph_draw_end_bytes, end, i == 1,
+			i == 2 ? target : 0, &stage_point, &stage_posted);
+		*posted |= stage_posted;
+		if (stage_posted) {
+			r->graph_draw_end_bytes = end;
+			r->graph_draw_posts++;
+		}
+		if (ret)
+			goto out;
+	}
+	*point = stage_point;
+	if (!ret && *point != finish_point + 0x30)
+		ret = -EIO;
+	if (!ret) {
+		r->graph_draw_point = *point;
+		r->graph_second_lock_retired = true;
+		dev_info(&mdev->pdev->dev,
+			 "M9 FAA second normal Lock prefix retired: finish=%#llx lock=%#llx bytes=%u posts=%u; returned Lock and pixels unproved\n",
+			 finish_point, *point, r->graph_draw_end_bytes, r->graph_draw_posts);
 	}
 out:
 	if (fence && ret)
