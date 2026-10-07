@@ -27,6 +27,13 @@ real second image has14065 colored/528 partial pixels,4704 changed pixels,
 zero interior/exterior/channel errors. Evidence and first/second PNGs are under
 tests/m9-faa-second-view-20261007. These are bounded320x240 diagnostics.
 
+Canonical DRM29cb6d4 reuses genuine Unlock after the observed second F021
+view. The fresh-boot hardware receipt in
+`tests/m9-faa-second-unlock-20261007` reaches260 with20 posts/12348 primary
+bytes, queue0/wedged0/generation0, and both images byte-identical to the
+validated prior run. This proves the second restore to writable state, not
+a third draw or arbitrary continuous reuse.
+
 Canonical Mesa23f0999 supplies the GPU integer-viewport position encoder and
 private-clone GL depth adapter, computing `(z+w)/2` on GPU. Mesa789d4f5 joins
 live four-vector programs, dense constants, current viewport and raw POSITION/
@@ -35,6 +42,13 @@ UV FLOAT4 records into address-free upload spans. Actual source-byte equality,
 pass under ASAN/UBSAN. SourceREb2553362/ab5f4056 proves the distinct public-VS
 first-stage structure, including owner24 output and same-owner relative248f2.
 Its originalf0/final100 path has not yet been submitted on hardware.
+Canonical DRMdeb22e4 now supplies the separate typed public-VS ioctl0x16.
+It validates the address-free COPY profile before consuming INIT, retains
+the original SYSTEM mappings, installs six write fences, follows the source
+program access order and stages64/64/112 primary bytes. Actual C admission,
+ownership, failure and module checks pass. The helper accepts live adapter
+output with strict byte lengths and independently observes retirement; the
+semantic compiler producer and real100 hardware receipt remain pending.
 
 The current combined18-object Mesa build passes, including manual compilation
 of m9_faa_program.c (f4a5f9e fixes the earlier17-object build omission). The
@@ -86,11 +100,12 @@ supply no application FAA or FPS claim. The remaining edges below still apply.
    but there is no graph publication/resolve consumer of them in Mesa. The
    normal app target remains a different BO. Kernel F021 read admission is
    currently restricted to the exact retained primary, same generation,
-   eight source posts, final INIT+0xc0 point and idle queue. A clean Lock view
+   the first Lock's eight posts/INIT+0xc0 or the separately guarded second
+   Lock's17 posts/INIT+0x190, and an idle queue. A clean Lock view
    is therefore a finite readback result, not scanout or Present. The source's
    normal Unlock changes the layout using a real GPU copy; the earlier
    same-backing F021→F022 and reverse-copy proofs are distinct lifecycle
-   evidence. Normal Unlock now retires on this same graph. The diagnostic second draw and Lock now retire. The app path must still
+   evidence. Both normal Unlocks now retire on this same graph. The diagnostic second draw and Lock now retire. The app path must still
    qualify its destination, overlap policy,
    retirement and source copy/presentation ordering, and transition back into
    a writable graph before another draw. Reading raw F022 as linear pixels
