@@ -53,6 +53,7 @@ struct m9_faa_clear_segment {
      defined(M9_FAA_INIT_ONLY_CONTROL) + \
      defined(M9_FAA_PRECLEAR_CONTROL) + \
      defined(M9_FAA_PRECLEAR_DRAW_CONTROL) + \
+     defined(M9_FAA_PRECLEAR_OUTPUT_CONTROL) + \
      defined(M9_FAA_POST_TRIANGLE_CONTROL)) > 1
 #error "Select only one complete private FAA source profile"
 #endif
@@ -77,6 +78,11 @@ struct m9_faa_clear_segment {
  * launch stopped at its next GPU wait. Earlier inputs remain byte-exact. */
 #include "m9_faa_preclear_draw_data.h"
 #define M9_FAA_INPUT_FIRMWARE "m9x/faa-preclear-draw-known-inputs.bin"
+#elif defined(M9_FAA_PRECLEAR_OUTPUT_CONTROL)
+/* Returned public triangle, then the genuine output format transition
+ * stopped at its next GPU wait. The output exists but is not readable. */
+#include "m9_faa_preclear_output_data.h"
+#define M9_FAA_INPUT_FIRMWARE "m9x/faa-preclear-output-known-inputs.bin"
 #elif defined(M9_FAA_POST_TRIANGLE_CONTROL)
 /* Independent vendor queue finish after the returned public triangle,
  * before output/resolve. Its final counter is in its counted secondary. */
@@ -96,6 +102,9 @@ struct m9_faa_clear_segment {
 #else
 #include "m9_faa_native_data.h"
 #define M9_FAA_INPUT_FIRMWARE "m9x/faa-normal-known-inputs.bin"
+#endif
+#ifndef M9_FAA_OUTPUT_PENDING
+#define M9_FAA_OUTPUT_PENDING 0
 #endif
 /* The older sampled-destination template has no ordinary output owner.
  * It must never be advertised as a completed ac1f0 output contract. */
@@ -1235,7 +1244,10 @@ int m9x_faa_submit_diag(struct m9x_device *mdev, u32 color,
 	*color_active = posted && ret;
 	if (!ret) {
 		t->next_fence = target + 0x10;
-		if (m9_faa_output_owner(r)) {
+		/* An output allocation may already exist at an earlier vendor
+		 * format-transition wait. Retirement of that prefix does not
+		 * complete the later resolve or make its pixels readable. */
+		if (!M9_FAA_OUTPUT_PENDING && m9_faa_output_owner(r)) {
 			r->output_generation = t->generation;
 			r->output_point = *point;
 			r->output_retired = true;
