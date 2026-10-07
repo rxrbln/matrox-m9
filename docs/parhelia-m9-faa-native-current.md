@@ -58,6 +58,14 @@ transport samples show raw `0xb1`, submitted/completed `0xb0`, queue 0 and
 `wedged=0`. PREPARE still leaves the graph uninitialized. This is real graph
 INIT, not an FAA draw, resolve, display image or application result.
 
+Mesa M9 `e327638` adds an explicit `M9X_FAA_INIT=1` opt-in on top of
+`M9X_FAA_PREPARE=1`. It sends the exact graph ID and generation through the
+new INIT ioctl and records `graph.initialized` only for a matching state 2
+receipt with a nonzero point; initialized file-token RELEASE leaves the
+kernel's native owner references intact. Linked graph tests pass 5,211 cases
+in normal and sanitizer builds. This bridge does not yet select FAA draw or
+presentation commands for applications.
+
 Kernel `e933dad` guards the direct F022 diagnostic aperture path after the
 source-qualified normal-Lock replay starts; its actual-C tests cover three
 admission points, two races and F021/control preservation. Kernel `53b953d`
