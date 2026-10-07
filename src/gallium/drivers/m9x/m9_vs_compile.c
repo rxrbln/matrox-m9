@@ -3373,6 +3373,36 @@ faa_gl_position(nir_builder *b, nir_intrinsic_instr *intr, void *data)
    return true;
 }
 
+/* Mesa's fixed-function lighting emits COLOR alpha and RGB separately.
+ * Canonicalize only split/repeated outputs, on the owned FAA clone. Original
+ * NIR passes preserve final per-component stores and do not move across CFG
+ * blocks; already admitted one-store programs keep their exact image. */
+static void
+faa_gl_combine_outputs(nir_shader *nir)
+{
+   unsigned stores[NUM_TOTAL_VARYING_SLOTS] = {0};
+   bool repeated = false;
+   nir_foreach_function_impl(impl, nir) nir_foreach_block(block, impl)
+      nir_foreach_instr(instr, block) {
+         if (instr->type != nir_instr_type_intrinsic)
+            continue;
+         nir_intrinsic_instr *intr = nir_instr_as_intrinsic(instr);
+         if (intr->intrinsic != nir_intrinsic_store_output)
+            continue;
+         unsigned location = nir_intrinsic_io_semantics(intr).location;
+         if (location >= ARRAY_SIZE(stores) || intr->src[0].ssa->bit_size != 32 ||
+             intr->src[0].ssa->num_components > 4)
+            return;
+         repeated |= ++stores[location] > 1;
+      }
+   if (!repeated)
+      return;
+   NIR_PASS(_, nir, nir_lower_io_to_scalar, nir_var_shader_out, NULL, NULL);
+   NIR_PASS(_, nir, nir_opt_constant_folding);
+   NIR_PASS(_, nir, nir_opt_cse);
+   NIR_PASS(_, nir, nir_opt_vectorize_io, nir_var_shader_out, false);
+}
+
 bool
 m9_vs_compile_faa_gl(const struct nir_shader *nir,
                      const struct m9_vs_outputs *outputs,
@@ -3389,6 +3419,7 @@ m9_vs_compile_faa_gl(const struct nir_shader *nir,
          *reason = "out of memory";
       return false;
    }
+   faa_gl_combine_outputs(copy);
    struct faa_gl_position_state state = {0};
    nir_shader_intrinsics_pass(copy, faa_gl_position,
                              nir_metadata_control_flow, &state);
