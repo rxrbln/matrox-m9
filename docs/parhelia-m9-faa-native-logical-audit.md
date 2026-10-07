@@ -45,6 +45,18 @@ logical review; no new hardware run or rendering success is claimed.
    a first-consumption join against the c0 commands. No such overwrite has
    been demonstrated here; this remains an integration proof requirement.
 
+4. **A raw diagnostic index silently aliases other registers.** Mesa
+   `m9_faa.c:53` narrows the 64-bit M9X_FAA_BIND_INDEX option to int without
+   validation; `m9_draw.c:712` then narrows it to uint8_t. Extracted actual
+   initializer/emission code reproduces index256 emitting0 and wide value
+   4294967296 storing/emitting0. With BIND_DESC enabled, index255 wraps the
+   following descriptor index to0. Root independently reproduced all three
+   controls. Validate the wide option before narrowing, and reject an index
+   whose paired descriptor exceeds255. This is a raw probe-option admission
+   bug; it does not affect the current private kernel profile or establish
+   the cause of its black image. Kernel relocation admission may reject the
+   malformed binding later. No product change was made in this review.
+
 The earlier raw AD truncation and relocation-array truncation fixes remain
 present. Fixed320x240, program1080 and ordinary-output50000 are guarded
 private-profile inputs, not independently identified stale live addresses.
