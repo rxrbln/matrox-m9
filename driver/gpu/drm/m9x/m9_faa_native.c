@@ -1280,6 +1280,11 @@ static int m9_faa_program_access(struct m9x_device *mdev,
 				 struct m9x_faa_replay *r, u64 point)
 {
 	u32 i, program = U32_MAX, entries = 0, offsets = 0;
+#ifdef M9_FAA_PROGRAM_ENTRY_MASK
+	const u32 expected_offsets = M9_FAA_PROGRAM_ENTRY_MASK;
+#else
+	const u32 expected_offsets = 3;
+#endif
 	const struct m9_faa_owner_spec *spec;
 	struct m9_faa_owner *owner;
 	int ret;
@@ -1304,7 +1309,11 @@ static int m9_faa_program_access(struct m9x_device *mdev,
 		offsets |= f->addend ? 2 : 1;
 		entries++;
 	}
-	if (entries < 2 || offsets != 3)
+	/* A source prefix may contain only preprocessing entry32. Require
+	 * its explicit generated inventory; older complete profiles retain
+	 * both entries. Pair and unique-owner validation remain identical. */
+	if (!entries || !expected_offsets || (expected_offsets & ~3u) ||
+	    offsets != expected_offsets)
 		return -EINVAL;
 	/* Kind19 resident-database bindings use the same page-base encoder
 	 * without a C3 half. First identify the unique program from actual
