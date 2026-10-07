@@ -901,7 +901,9 @@ int m9x_submit_faa_virtual_primary_locked(struct m9x_device *mdev,
 int m9x_submit_faa_virtual_phases_locked(struct m9x_device *mdev,
 				const struct drm_mm_node *node, dma_addr_t dma,
 				const struct m9x_faa_submit_phase *phases,
-				u32 count, u64 *point, bool *doorbell_posted)
+				u32 count, u64 *point, bool *doorbell_posted,
+				int (*retired)(struct m9x_device *, u32, u64, void *),
+				void *retired_data)
 {
 	struct m9x_transport *t = &mdev->transport;
 	u32 i, page, pte, end;
@@ -947,6 +949,11 @@ int m9x_submit_faa_virtual_phases_locked(struct m9x_device *mdev,
 		if (ret)
 			return ret;
 		*point = m9_extend_fence(t, READ_ONCE(((u32 *)t->fence_cpu)[0]));
+		if (retired) {
+			ret = retired(mdev, i, *point, retired_data);
+			if (ret)
+				return ret;
+		}
 		dev_info(&mdev->pdev->dev,
 			 "M9 FAA source phase retired: phase=%u bytes=%u target=%#x actual=%#llx\n",
 			 i, phases[i].bytes, phases[i].target, *point);

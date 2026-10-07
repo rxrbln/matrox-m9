@@ -160,6 +160,10 @@ static bool m9_faa_source_init;
 module_param(m9_faa_source_init, bool, 0400);
 MODULE_PARM_DESC(m9_faa_source_init,
 	"Let the private M9128 Windows FAA stream initialize a fresh context without Linux sequence0");
+static bool m9_faa_defer_output_map;
+module_param(m9_faa_defer_output_map, bool, 0400);
+MODULE_PARM_DESC(m9_faa_defer_output_map,
+	"Publish only the private output SYSTEM mapping after source120 retirement");
 #ifdef M9_FAA_PRECLEAR_OUTPUT_WRITE_CONTROL
 /* Same-module hardware control: collapsing these waits leaves main/AA
  * stores untouched; preserving them produces GPU state. Resolve is still
@@ -389,7 +393,7 @@ void m9x_faa_fini(struct m9x_device *mdev)
 }
 
 static int m9_faa_allocate(struct m9x_device *mdev, struct m9_faa_owner *o,
-			   const struct m9_faa_owner_spec *spec)
+			   const struct m9_faa_owner_spec *spec, bool defer_output)
 {
 	struct drm_gem_vram_object *vram;
 	u64 end, base;
@@ -417,11 +421,18 @@ static int m9_faa_allocate(struct m9x_device *mdev, struct m9_faa_owner *o,
 				return ret;
 		}
 		if (spec->system) {
-			ret = spec->flags30 ?
-				m9x_address_map_faa_system(mdev, &o->system_node,
-						  o->dma, spec->mapped_bytes) :
-				m9x_address_map_system(mdev, &o->system_node,
-						      o->dma, spec->mapped_bytes);
+			if (defer_output) {
+				if (!spec->flags30 || spec->mapped_bytes != 0x50000)
+					return -EINVAL;
+				ret = m9x_address_reserve_faa_output(mdev,
+						&o->system_node, spec->mapped_bytes);
+			} else {
+				ret = spec->flags30 ?
+					m9x_address_map_faa_system(mdev, &o->system_node,
+							  o->dma, spec->mapped_bytes) :
+					m9x_address_map_system(mdev, &o->system_node,
+							      o->dma, spec->mapped_bytes);
+			}
 			if (ret)
 				return ret;
 			o->base = o->system_node.start;
@@ -719,6 +730,14 @@ int m9x_faa_prepare_diag(struct m9x_device *mdev)
 
 	if (!m9_faa_diag || mdev->pdev->device != 0x0540)
 		return -EACCES;
+	if (m9_faa_defer_output_map) {
+#ifndef M9_FAA_PRECLEAR_OUTPUT_WRITE_CONTROL
+		return -EOPNOTSUPP;
+#else
+		if (!m9_faa_phased_submit || M9_FAA_OUTPUT_OWNER == U32_MAX)
+			return -EINVAL;
+#endif
+	}
 	/* This replay joins tagged virtual fetches to the driver's identity
  * leaves. A diagnostic local-base override has no such proven contract. */
 	if (m9x_local_gpu_base)
@@ -766,7 +785,8 @@ int m9x_faa_prepare_diag(struct m9x_device *mdev)
 		 * An absent sentinel allocates every genuine source owner. */
 		if (i == M9_FAA_COLOR_OWNER)
 			continue;
-		ret = m9_faa_allocate(mdev, &r->owner[i], &m9_faa_owner_specs[i]);
+		ret = m9_faa_allocate(mdev, &r->owner[i], &m9_faa_owner_specs[i],
+				      m9_faa_defer_output_map && i == M9_FAA_OUTPUT_OWNER);
 		if (ret)
 			goto free;
 	}
@@ -1144,6 +1164,33 @@ static int m9_faa_rebase_page_clear(struct m9x_faa_replay *r)
 #endif
 }
 
+#ifdef M9_FAA_PRECLEAR_OUTPUT_WRITE_CONTROL
+static int m9_faa_publish_output_phase(struct m9x_device *mdev, u32 phase,
+                                      u64 point, void *data)
+{
+	struct m9x_faa_replay *r = data;
+	struct m9_faa_owner *output;
+	int ret;
+
+	if (phase != 1)
+		return 0;
+	output = m9_faa_output_owner(r);
+	if (!output || !output->cpu || output->vram ||
+	    !m9_faa_owner_specs[M9_FAA_OUTPUT_OWNER].flags30 ||
+	    m9_faa_owner_specs[M9_FAA_OUTPUT_OWNER].mapped_bytes != 0x50000)
+		return -EINVAL;
+	/* Called after the actual120 wait and before posting the160 suffix.
+	 * Existing publisher derives every PTE and C24 word from this owner. */
+	ret = m9x_address_publish_faa_output(mdev, &output->system_node, output->dma);
+
+	if (!ret)
+		dev_info(&mdev->pdev->dev,
+			 "M9 FAA late output mapping: point=%#llx gpu=%#x pages=80\n",
+			 point, output->base);
+	return ret;
+}
+#endif
+
 int m9x_faa_submit_diag(struct m9x_device *mdev, u32 color,
 			struct drm_gem_vram_object *color_bo, u64 *point,
 			bool *color_active)
@@ -1397,7 +1444,9 @@ int m9x_faa_submit_diag(struct m9x_device *mdev, u32 color,
 		ret = m9x_submit_faa_virtual_phases_locked(mdev,
 				&r->owner[M9_FAA_PRIMARY_OWNER].system_node,
 				r->owner[M9_FAA_PRIMARY_OWNER].dma, phases,
-				ARRAY_SIZE(phases), point, &posted);
+				ARRAY_SIZE(phases), point, &posted,
+				m9_faa_defer_output_map ? m9_faa_publish_output_phase : NULL,
+				r);
 #else
 		ret = -EOPNOTSUPP;
 #endif

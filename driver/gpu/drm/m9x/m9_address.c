@@ -1035,6 +1035,55 @@ int m9x_address_map_faa_system(struct m9x_device *mdev,
 		m9_address_bind_dma_policy(mdev, node->start, dma, bytes, true));
 }
 
+/* The private phased source allocates this owner only after preprocessing.
+ * Reserve its live address early for relocation, without staging a binding
+ * that engine initialization could prematurely publish. */
+int m9x_address_reserve_faa_output(struct m9x_device *mdev,
+                                  struct drm_mm_node *node, u32 bytes)
+{
+	struct m9x_address_space *a = mdev->transport.address;
+
+	lockdep_assert_held(&mdev->transport.lock);
+	if (!m9x_faa_diag_enabled() || !a || !a->layout.secondary_bytes ||
+	    bytes != 0x50000 || mdev->pdev->device != 0x0540 ||
+	    mdev->pdev->revision != 1 || mdev->pdev->subsystem_device != 0x22c0)
+		return -EINVAL;
+	return m9_address_reserve_system(mdev, node, bytes);
+}
+
+int m9x_address_publish_faa_output(struct m9x_device *mdev,
+                                  const struct drm_mm_node *node,
+                                  dma_addr_t dma)
+{
+	struct m9x_address_space *a = mdev->transport.address;
+	u32 i;
+	int ret;
+
+	lockdep_assert_held(&mdev->transport.lock);
+	if (!m9x_faa_diag_enabled() || !a || !a->layout.secondary_bytes ||
+	    !a->manager_ready || !a->windows_published || !a->service_ready ||
+	    !node || !drm_mm_node_allocated(node) || node->size != 0x50000 ||
+	    node->start < M9_ADDRESS_SYSTEM_BASE || node->start > U32_MAX ||
+	    !IS_ALIGNED(node->start, PAGE_SIZE) ||
+	    node->start + node->size > a->layout.system_end ||
+	    mdev->pdev->device != 0x0540 || mdev->pdev->revision != 1 ||
+	    mdev->pdev->subsystem_device != 0x22c0)
+		return -EINVAL;
+	if (mdev->transport.wedged)
+		return -EIO;
+	/* A reserved-only owner must not silently accept earlier publication. */
+	for (i = 0; i < a->binding_count; i++)
+		if (a->bindings[i].gpuva >= node->start &&
+		    a->bindings[i].gpuva < node->start + node->size)
+			return -EALREADY;
+	ret = m9_address_bind_dma_policy(mdev, node->start, dma, node->size, true);
+	if (ret)
+		return ret;
+	/* Do not use finish_system: a post-GPU failure must retain this node and
+	 * any partially published binding until bus mastering has stopped. */
+	return m9x_address_commit_gpuva(mdev, node->start);
+}
+
 /* The output-only entry retains its stricter 320x256 allocation contract. */
 int m9x_address_map_faa_output(struct m9x_device *mdev,
 			     struct drm_mm_node *node, dma_addr_t dma, u32 bytes)

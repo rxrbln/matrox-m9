@@ -351,7 +351,9 @@ struct m9x_faa_submit_phase {
 int m9x_submit_faa_virtual_phases_locked(struct m9x_device *mdev,
 				const struct drm_mm_node *node, dma_addr_t dma,
 				const struct m9x_faa_submit_phase *phases,
-				u32 count, u64 *point, bool *doorbell_posted);
+				u32 count, u64 *point, bool *doorbell_posted,
+				int (*retired)(struct m9x_device *, u32, u64, void *),
+				void *retired_data);
 struct m9x_fence *m9x_fence_create_target_locked(struct m9x_device *mdev,
 						 u32 target);
 int m9x_submit_kernel_queue_locked(struct m9x_device *mdev,
@@ -369,6 +371,11 @@ int m9x_address_commit_gpuva(struct m9x_device *mdev, u32 gpuva);
 int m9x_address_finalize_service(struct m9x_device *mdev);
 int m9x_address_map_system(struct m9x_device *mdev, struct drm_mm_node *node,
 			   dma_addr_t dma, u32 bytes);
+int m9x_address_reserve_faa_output(struct m9x_device *mdev,
+                                  struct drm_mm_node *node, u32 bytes);
+int m9x_address_publish_faa_output(struct m9x_device *mdev,
+                                  const struct drm_mm_node *node,
+                                  dma_addr_t dma);
 int m9x_address_map_faa_output(struct m9x_device *mdev,
 			     struct drm_mm_node *node, dma_addr_t dma, u32 bytes);
 int m9x_address_map_faa_system(struct m9x_device *mdev,
