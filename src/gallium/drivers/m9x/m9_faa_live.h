@@ -83,6 +83,7 @@ struct m9_faa_gl_upload {
    uint8_t varying_location[2];
    uint64_t carry_output_registers;
    bool color_flat; /* Live FS load_input vs smooth interpolation; no raster receipt. */
+   bool color_legacy_interpolation; /* COLOR0 INTERP_MODE_NONE follows live raster flatshade. */
    /* Explicitly false until a broader native layout/fragment/launcher
     * contract and hardware receipt are qualified. */
    bool native_admission;
