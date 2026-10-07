@@ -232,6 +232,9 @@ real END events at primary offsets8536,8536,8548 (middle writer `0x4a327`),
 then stops before a new170 common-buffer read at `0x4e1d1`. Its new primary
 span is3556 CPU-written bytes after source4992; fourteen relocation events
 include eight nonzero owner fields and six genuine null bindings. Footer
-writers produce151/161/171 at offsets5120/5176/8544. Two unrelated shader
-state words also equal160 and must not be rebased as timeline values.
+writers produce151/161/171 at offsets5120/5176/8544. Selected E3 writers
+`0xf5898/0xf5b30` also obtain160 from the actual queue timeline getter
+`0x25860` and must be rebased, despite appearing in shader-state blocks.
+Their source producer, not numeric resemblance or packet location, identifies
+them as timeline fields.
 The new170 phase has no native encoder or hardware receipt yet.
