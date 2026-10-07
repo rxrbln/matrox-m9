@@ -45,6 +45,7 @@
 #include <string.h>
 
 #include "nir.h"
+#include "nir_builder.h"
 #include "nir_schedule.h"
 #include "util/u_debug.h"
 #include "util/u_math.h"
@@ -2895,6 +2896,23 @@ geometry_scalar(const nir_instr *instr, const void *data)
    return alu->def.num_components > 1;
 }
 
+/* no_integers lowers public float-to-int casts to ftrunc after st's
+ * algebraic pass. Use the same existing floor/ceil/select forms as the FS
+ * backend: finite nonnegative values round down, negative ones round up. */
+static bool
+lower_vertex_trunc(nir_builder *b, nir_alu_instr *alu, void *data)
+{
+   (void)data;
+   if (alu->op != nir_op_ftrunc || alu->def.bit_size != 32)
+      return false;
+   b->cursor = nir_before_instr(&alu->instr);
+   nir_def *x = nir_ssa_for_alu_src(b, alu, 0);
+   nir_def_replace(&alu->def,
+                  nir_bcsel(b, nir_flt_imm(b, x, 0.0f), nir_fceil(b, x),
+                            nir_ffloor(b, x)));
+   return true;
+}
+
 static void
 prepare_geometry(nir_shader *nir)
 {
@@ -2977,6 +2995,8 @@ compile_program(struct nir_shader *nir, const struct m9_vs_outputs *outputs,
    c.nir = nir;
    c.p = p;
    if (nir->info.stage == MESA_SHADER_VERTEX) {
+      NIR_PASS(_, nir, nir_shader_alu_pass, lower_vertex_trunc,
+               nir_metadata_control_flow, NULL);
       m9_nir_lower_alu_if(nir);
       if (geometry)
          prepare_geometry(nir);
