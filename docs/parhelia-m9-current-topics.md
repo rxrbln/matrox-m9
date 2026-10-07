@@ -5,12 +5,21 @@
 
 ## Latest checkpoint: FAA, GL2 operations and performance tracks
 
+Latest hardware progress: the completed black clear plus the triangle's first
+preprocessing launch retires at `0x120`, without wedging. Complete live GPU
+buffers are archived; final FAA pixels remain unproven. Mesa f31f2ec constant
+reuse passes 16 GPU draws/zero CPU fallback and zero of 1,572,864 wrong pixels.
+One matching Q3 run is 40.7 FPS versus 40.8, effectively flat.
+[FAA preprocessing proof](../tests/m9-faa-preclear-draw-hardware-20261007/README.md),
+[constant reuse proof](../tests/m9-constant-broadcast-hardware-20261007/README.md).
+
+
 Three background agents own FAA command/output flow, GL2 operations and
 performance. Root integrates signed commits and runs serialized hardware
 under the established locks. Preserve source-proven optimizations even when
 one short benchmark is flat.
 
-Latest integrated Mesa8ce8651 adds ordinary native mask3b02e61 and zero-stride
+The earlier integrated Mesa8ce8651 adds ordinary native mask3b02e61 and zero-stride
 current attributes8530cf9/8ce8651. Texgen's native screenshot loses the
 horizontal geometry bands; dark stretched texture matches scene behavior.
 The ordinary CPU fallback still bands and is a separate open case. Current
@@ -60,7 +69,7 @@ application pixel comparison and broader shader coverage remain open.
 A separate indexed264-vertex variableZ/W fixture physically passes both
 6336record components and both65536pixel palettes with GPU transforms.
 [Exact indexed variableZ/W proof](../captures/m9x-native-variable-zw-264-20261007/README.md). Indexed app qualification, radial
-multipass and optional Q3 lighting remain open. Latest fullscreen basic Q3GL2 checkpoint is40.8FPS1024x768/FAAoff/vsync0;
+multipass and optional Q3 lighting remain open. Latest fullscreen basic Q3GL2 checkpoint is40.7FPS1024x768/FAAoff/vsync0;
 38.9FPS is the prior windowed profile.
 [Bump image failure](../tests/m9-gl2-bump-packed-hardware-20261006/README.md)
 and [GL2 status](parhelia-m9-glmark2-status.md).
@@ -113,11 +122,11 @@ capture. [Actual ordinary hardware proof](../tests/m9-ordinary-system-red-hardwa
 [SYSTEM admission](parhelia-m9-faa-output-system-admission.md).
 
 The public FAA preclear admission prefix now physically retiresc0/rawc1 on
-kernel7a270ae, with both live page-clear ranges and no wedge. It contains no
-completed public clear, triangle or output owner. Exact +20/+40/+60 channels
+kernel7a270ae, with both live page-clear ranges and no wedge. The early vendor observer now proves the clear handler already returned;
+the triangle remains incomplete and there is no output owner. Exact +20/+40/+60 channels
 remain10/0; continuation must use only their actual readings.
 [Prefix hardware proof](../tests/m9-faa-preclear-hardware-20261007/README.md).
-Current normal target boot is9054ec2d-cf67-467f-bdb0-6a7d8cc0333c, integrated
+The preceding normal qualification used boot9054ec2d-cf67-467f-bdb0-6a7d8cc0333c,
 kernele1703f9, user submissions enabled and privateFAAoff. Current-attribute
 regression passes16GPUdraws/zeroCPU and0/1572864wrongpixels, healthy6a0.
 The kernel combines eight temporary submit arrays into one without changing
@@ -127,7 +136,8 @@ SameMesa8ce8651 and fullscreen1024x768/FAAoff/vsync0 settings, differentboots.
 Laststeady ioctl6.40→5.25ms; jobs54 and native/CPU draw counts unchanged.
 Actual231760/raw231761 retires with emptyqueue/peak4/wedged0, noGPUwarnings.
 [Scratch hardware qualification](../tests/m9-submit-scratch-hardware-20261007/README.md).
-Current Mesa8ce8651 includes sign1802132, input capture, ordinary native mask
+Current Mesa f31f2ec also adds constant broadcast reuse and its hardware pixel
+fixture; the preceding Mesa8ce8651 includes sign1802132, input capture, ordinary native mask
 and current attributes; the complex bump
 rendering qualification belongs to Mesa05c7c29. The current source retains
 the earlier map, completion-cache, packed publication, dependency and wait

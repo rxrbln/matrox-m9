@@ -1,6 +1,6 @@
 # glmark2 on the m9x driver: where the 60 fps goal actually stands
 
-## Current implementation gaps, checked against Mesa8ce8651
+## Current implementation gaps, checked against Mesa f31f2ec
 
 The older chronological entries below are not a current missing-op list.
 Vertex log2/exp2/pow and bounded arithmetic branching are implemented; they
@@ -33,6 +33,22 @@ no-vertex-texture policy (REd0102161); full live EE19 resource/view binding
 and broad default-cap promotion remain distinct open work. Existing complex
 bump rendering and its417FPS clean result do not qualify terrain, all Quake3
 GL2 lighting variants, or the complete glmark2 suite.
+
+## 2026-10-07: constant reuse passes pixels; Q3 remains at 40.7 FPS
+
+Mesa045e788 reuses safe broadcast constants, fcfbcc7 retains useful bounded
+refusal diagnostics and f31f2ec adds the pixel fixture. Hardware passes16GPU
+user draws/zeroCPU,0/1572864wrongpixels. One same-boot matching Q3 run gives
+40.7FPS versus40.8: flat. Exact refusal dumps show137slots/69constant span,
+226slots/74span, and a third shader exceeding four source attributes. Span
+includes the13reserved prefix entries, not just occupied constant keys.
+[Actual pixels, Q3 and refusals](../tests/m9-constant-broadcast-hardware-20261007/README.md).
+
+Corrected vendor vertex-texture tracing joins live UV input to attribute5
+(word04500688); earlier reg1 probes selected blend weight and do not prove UV
+binding. Direct resource/stage evidence is integrated in REcfaa3c90. Native
+vertex-texture implementation and application qualification remain open;
+transformed UVs require an additional producer stage.
 
 ## 2026-10-07: submission scratch qualifies at 40.8 FPS basic Q3 GL2
 

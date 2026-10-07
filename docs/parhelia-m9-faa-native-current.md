@@ -8,23 +8,29 @@ Ordinary textured rendering and the deployed driver are validated. FAA
 rendering is not yet validated. This note is separate from P690
 `102b:2539` evidence.
 
-Latest FAA diagnostic, 2026-10-07: kernel7a270ae corrects borrowed color
-ownership and physically retires the genuine public CLEAR42 admission prefix
-atc0/rawc1 on fresh M9128 boot1c9a1824. Both inline page-clear ranges derive
-from live owners; native alignment expands the primary from4980 to4984bytes.
-The exact other counter channels remain +20/+40/+60=10/0; these are notc0
-receipts. No output owner exists in this prefix, so it proves neither the
-completed public clear nor FAA pixels. The earlier EINVAL test submitted no
-GPU work. [Actual prefix retirement](../tests/m9-faa-preclear-hardware-20261007/README.md)
-and [source flow](parhelia-m9-faa-public-preclear.md).
+Latest FAA diagnostic, 2026-10-07: kernel c7db56b physically retires the
+completed public black clear and original triangle's first preprocessing
+launch at `0x120` (raw `0x121`), with an empty queue and wedged=0 immediately
+and two seconds later. The preprocessing allocation contains 55 nonzero bytes
+in 32 words; main and companion remain zero. Five complete GPU buffer roles
+were read through a bounds-checked read-only mapping and archived before
+power cycling. There is still no final output owner or FAA pixel proof.
+[Actual preprocessing evidence](../tests/m9-faa-preclear-draw-hardware-20261007/README.md).
 
-After archive and mandatory power cycle, current normal boot is
-9054ec2d-cf67-467f-bdb0-6a7d8cc0333c, integrated kernele1703f9, privateFAAoff,
-user submissions enabled. The native current-attribute pixel regression passes
-16GPUdraws/zeroCPU,0/1572864wrongpixels, healthy6a0/raw6a1. Submission scratch
-qualification now reports40.8FPS basic Q3GL2 versus39.1, healthy231760,
-FAAoff; [normal hardware proof](../tests/m9-submit-scratch-hardware-20261007/README.md). Historical checkpoints below retain
-their original boot and module identities.
+The early vendor observer corrects the earlier clear interpretation: public
+CLEAR42 returns before the original triangle reaches the first wait. The
+whole public draw request remains pending. Earlier `0xc0` retirement remains
+valid; the statement that the clear handler had not completed was incorrect.
+Only common counter +00 advances to raw `0x121`; +20/+40/+60 stay `0x10/0`.
+The emulator continuation must use these exact channel-specific observations.
+
+Normal FAA-off qualification with kernel e1703f9 and Mesa f31f2ec passes
+16 GPU draws, zero CPU fallback and zero of 1,572,864 wrong pixels. One
+matching fullscreen 1024x768 Q3 basic-GL2 run gives 40.7 FPS versus 40.8,
+effectively flat, with healthy retirement. The constant reuse improvement
+is retained. [Normal hardware proof](../tests/m9-constant-broadcast-hardware-20261007/README.md).
+The private test boot was powered off after archiving; recovery is in progress.
+Historical checkpoints below retain their original boot and module identities.
 
 Earlier backend-status test,2026-10-07: unchanged516990f on freshbootd3f40c04
 still produces the identical black image after actual140 retirement and the
