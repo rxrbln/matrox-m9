@@ -8,6 +8,25 @@ Ordinary textured rendering and the deployed driver are validated. FAA
 application rendering is not yet validated. This note is separate from P690
 `102b:2539` evidence.
 
+## 2026-10-07: actual normal Unlock GPU copyback on M9128
+
+Kernel `9eed0a9` continues the source-proven primary only after a successful
+public F021 Lock read. The Lock returned actual point180 and the same clean
+9,801-pixel diagnostic triangle. Separate normal Unlock retired actual point1a0,
+copying from the F021 staging view into F022 on the same retained color BO.
+The queue stayed empty, generation0 and `wedged=0` immediately and two seconds
+later. [The archived same-boot result](../tests/m9-faa-unlock-hardware-20261007/README.md)
+includes both 307,200-byte views, health receipts and a checker. Host
+ASAN/UBSAN controls cover 163 split/resume/fence cases and reject five
+regression mutants in canonical kernel `a6c2cce`.
+
+The post-Unlock F022 raw CPU view differs at 1,833 words and is stippled in
+three-byte visualization. The vendor source qualifies F021 as the returned
+Lock image, but does not qualify this F022 view as resolved display pixels.
+Its appearance alone cannot establish a copyback defect or presentation
+success. The next source-qualified public consumer and Mesa context-owned FAA
+graph remain open; no glxgears or Quake FAA result follows from this test.
+
 ## 2026-10-07: first real private FAA pixels on M9128
 
 Kernel 4a9ecd6 and RE d3ec0974 now validate the *private diagnostic*
