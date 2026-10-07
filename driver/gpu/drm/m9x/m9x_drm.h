@@ -60,6 +60,22 @@ struct drm_parhelia_m9_faa_graph_color_lock {
 };
 #define DRM_IOCTL_PARHELIA_M9_FAA_GRAPH_COLOR_LOCK DRM_IOWR(DRM_COMMAND_BASE + DRM_PARHELIA_M9_FAA_GRAPH_COLOR_LOCK, struct drm_parhelia_m9_faa_graph_color_lock)
 
+/* Repeated COLOR frame on the exact retained graph after its observed Unlock.
+ * Upload blob schema is identical to COLOR_LOCK. State is explicit: unsupported
+ * dimensions, depth attachments, cull/flat policy and clear values are refused. */
+#define DRM_PARHELIA_M9_FAA_GRAPH_COLOR_NEXT 0x1d
+#define PARHELIA_M9_FAA_COLOR_NEXT_LOCK_RETIRED 17u
+#define PARHELIA_M9_FAA_COLOR_CLEAR_TARGET 1u
+#define PARHELIA_M9_FAA_COLOR_DEPTH_LESS_WRITE 7u
+struct drm_parhelia_m9_faa_graph_color_next {
+ __u64 graph_id, previous_unlock_point, lock_point, upload;
+ __u32 upload_bytes, generation, flags, state, pad;
+ __u32 record_stride, record_count, declaration_count;
+ struct drm_parhelia_m9_faa_upload_layout layout;
+ __u32 width, height, clear_flags, clear_color, depth_flags, raster_flags;
+};
+#define DRM_IOCTL_PARHELIA_M9_FAA_GRAPH_COLOR_NEXT DRM_IOWR(DRM_COMMAND_BASE + DRM_PARHELIA_M9_FAA_GRAPH_COLOR_NEXT, struct drm_parhelia_m9_faa_graph_color_next)
+
 #define DRM_PARHELIA_M9_FAA_GRAPH_PUBLIC_VS_DRAW	0x19
 
 #define DRM_IOCTL_PARHELIA_M9_CREATE_BO \
