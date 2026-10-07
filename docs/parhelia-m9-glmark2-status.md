@@ -1,13 +1,15 @@
 # glmark2 on the m9x driver: where the 60 fps goal actually stands
 
-## Current implementation gaps, checked against Mesa f31f2ec
+## Current implementation gaps, checked against Mesa957c46a
 
 The older chronological entries below are not a current missing-op list.
 Vertex log2/exp2/pow and bounded arithmetic branching are implemented; they
 need broader application qualification, not a second implementation.
 
-* Vertex texture fetches remain absent from the native VS compiler. Installed
-  glmark2 terrain uses two vertex texture reads for displacement and normals.
+* Mesa957c46a implements one direct-UV vertex texture fetch with retained GPU
+  resources and fragment-sampler restoration. It remains disabled by default
+  pending hardware pixels. Installed glmark2 terrain needs transformed UVs and
+  two vertex reads for displacement and normals; those paths remain open.
 * General data-dependent control flow and loops remain gated. Uniform
   specialization, static unrolling and bounded arithmetic if-conversion
   exist; conditional texture and side-effect paths are not generally covered.
@@ -33,6 +35,22 @@ no-vertex-texture policy (REd0102161); full live EE19 resource/view binding
 and broad default-cap promotion remain distinct open work. Existing complex
 bump rendering and its417FPS clean result do not qualify terrain, all Quake3
 GL2 lighting variants, or the complete glmark2 suite.
+
+## 2026-10-07: bounded Q3 retry and direct-UV vertex texture integrated
+
+Mesa2303be9 retries constant-limited shaders with bounded vectorization;
+81ad856 adds the whole public Q3 shader pixel fixture. Actual case0 changes
+137instructions/69constant span to161/61, under unchanged188/63 limits.
+2048 host comparisons are bit-identical; physical pixels/FPS are pending.
+Case1 remains refused in canonical code; agent prototype176/61 versus226/74
+has host numerical evidence but is not yet integrated or hardware-qualified.
+
+Mesa957c46a integrates a gated direct-input vertex texture path. Combined
+build,97vertex references/12refusals, batch restoration and47actual admission/
+retention checks pass. Physical changing-palette pixels remain pending.
+M9X_NATIVE_VS_TEXTURE defaults off. The path avoids CPU texture refresh for
+successful native draws while preserving refresh for draw-module fallbacks.
+No complete terrain or new FPS result is claimed.
 
 ## 2026-10-07: constant reuse passes pixels; Q3 remains at 40.7 FPS
 

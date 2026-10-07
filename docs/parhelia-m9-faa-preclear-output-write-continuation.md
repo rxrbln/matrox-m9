@@ -62,3 +62,15 @@ clear instructions at two placements and all8×8 clear alignments, preserves
 all unpatched sparse bytes and unknown output, and rejects seven malformed
 source/count/owner/retirement controls. Native C and physical pixels are
 separate qualifications. Existing init/post/preclear profiles remain strict.
+
+## Actual hardware result
+
+Kernel65206bc on the M9128 completes the whole original resolve at180/raw181,
+queue empty/wedged0 immediately and two seconds later. The actual image is
+all black. CPU mapping positive control passes76800 pixels; neither main nor
+AA companion receives color. Nine source-named BAR buffers and logs are in
+[the hardware archive](../tests/m9-faa-preclear-output-write-hardware-20261007/README.md).
+The public pixel shader writes constant red despite green vertex records.
+The initial helper defaulted to green; corrected red evaluation of the same
+archived image still fails with zero coverage and8326 bad interior pixels.
+FAA rendering remains unqualified and broken for this bounded diagnostic.
