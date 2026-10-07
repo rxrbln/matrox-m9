@@ -8,13 +8,22 @@ Ordinary textured rendering and the deployed driver are validated. FAA
 rendering is not yet validated. This note is separate from P690
 `102b:2539` evidence.
 
-Latest logical review fixes two concrete defects: kernel e5af628 removes
+Latest hardware checkpoint: kernel151e438 now retires the genuine public
+mode9 resolve prefix at1d0/raw1d1 on fresh M9128 boot, with an empty queue and
+wedged=0 immediately and two seconds later. All five endpoints are preserved.
+Main, companion and sampled-primary hashes remain unchanged; pool state changes.
+Ten retained BAR roles and exact counters are archived and checked. This is
+not a pixel pass. The actual receipt now permits original1c0 cleanup to
+continue toward the true aa750 return.
+[Public resolve hardware evidence](../tests/m9-faa-public-resolve-hardware-20261007/README.md).
+
+Earlier logical review fixes two concrete defects: kernel e5af628 removes
 an obsolete four-phase cap while preserving all waits, and Mesa c192362
 rejects companion format aliases before allocation/layout selection. Focused
 sanitizer controls and full builds pass; no new GPU result follows from those
 checks. Kernel151e438 now admits the genuinely emitted public mode9 resolve
 continuation (source9424/final1d0), with128 native-placement controls and
-strict source checks passing. It is built but not yet hardware tested.
+strict source checks passing. Its subsequent hardware retirement is recorded above; rendering remains unproved.
 See [the logical audit](parhelia-m9-faa-native-logical-audit.md) and
 [the public dispatch proof](parhelia-m9-faa-public-resolve-dispatch-wait.md).
 

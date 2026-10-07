@@ -27,7 +27,10 @@ cleanup wait before aa750 returns. The earlier1a0 prefix did not contain
 that launch. Its620 appended bytes neither overwrite earlier CPU inputs nor
 replace the earlier independent1a0 footer. Kernel151e438 admits the new whole prefix. The strict source checker,
 128 actual-C placement/alignment controls and isolated module build pass.
-Its hardware execution still needs a separate fresh-boot test.
+The subsequent fresh-boot151e438 test retires1d0 without wedging, but
+main/companion/sampled-primary hashes remain unchanged. Pool state changes.
+Actual cleanup/public return and rendered-pixel proof remain separate gaps;
+see [the hardware archive](../tests/m9-faa-public-resolve-hardware-20261007/README.md).
 
 The new resolve block emits zero AB/AC words from the actual vendor producer.
 Do not apply the older inactive-color-mask normalization there: its proof is
