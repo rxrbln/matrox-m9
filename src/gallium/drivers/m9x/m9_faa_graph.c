@@ -666,8 +666,8 @@ m9_faa_surface_color_frame_kernel(struct m9_screen *screen,
       return -EOPNOTSUPP;
    }
    const bool first = !graph->color_lock_attempted;
-   if (first && ((clear_flags && !sampled_reset) || raster_flags))
-      return -EOPNOTSUPP; /* FIRST depth producer currently has smooth/no-cull source proof. */
+   if (first && clear_flags && !sampled_reset)
+      return -EOPNOTSUPP; /* FIRST requires the complete sampled reset producer. */
    const uint64_t delta = sampled_reset ? (first ? 0x150 : 0x1a0) :
                           first ? 0xe0 : clear_flags ? 0xe0 : 0xd0;
    if (first) {
@@ -797,8 +797,9 @@ m9_faa_surface_color_batch_kernel(struct m9_screen *screen,
          return -ESTALE;
       if (state->width != surface->width || state->height != surface->height ||
           !state->depth_enabled || !state->depth_write || state->depth_func != PIPE_FUNC_LESS ||
-          state->scissor_enabled || state->flatshade || state->cull_face != PIPE_FACE_NONE ||
-          u->shader.color_flat || u->shader.layout.count != 4 || u->shader.record_bytes != 32 ||
+          state->scissor_enabled || u->shader.color_flat != state->flatshade ||
+          (state->cull_face != PIPE_FACE_NONE && state->cull_face != PIPE_FACE_FRONT && state->cull_face != PIPE_FACE_BACK) ||
+          u->shader.layout.count != 4 || u->shader.record_bytes != 32 ||
           !u->shader.vertex_count || u->shader.vertex_count % 3)
          return -EOPNOTSUPP;
       int ret = m9_faa_color_upload_request(&u->shader, &packed);
@@ -810,6 +811,14 @@ m9_faa_surface_color_batch_kernel(struct m9_screen *screen,
       draws[i].declaration_count = packed.declaration_count;
       draws[i].layout = packed.layout;
       draws[i].depth_flags = PARHELIA_M9_FAA_COLOR_DEPTH_LESS_WRITE;
+      if (state->flatshade) draws[i].raster_flags |= PARHELIA_M9_FAA_COLOR_RASTER_FLAT;
+      if (state->cull_face != PIPE_FACE_NONE)
+         draws[i].raster_flags |= ((state->cull_face == PIPE_FACE_BACK) == state->front_ccw) ?
+            PARHELIA_M9_FAA_COLOR_RASTER_CULL_CW : PARHELIA_M9_FAA_COLOR_RASTER_CULL_CCW;
+      /* Fresh source establishes a common raster mode. Mid-frame changes
+       * need their own binding transitions even when program bytes match. */
+      if (i && draws[i].raster_flags != draws[0].raster_flags)
+         return -EOPNOTSUPP;
       if (i && (memcmp(&u->shader.layout, &head->shader.layout, sizeof(u->shader.layout)) ||
                 u->shader.constants_bytes != head->shader.constants_bytes ||
                 memcmp(u->shader.constant_begin, head->shader.constant_begin, sizeof(u->shader.constant_begin)) ||
