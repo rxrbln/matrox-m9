@@ -40,6 +40,13 @@ does not reproduce the original CPU scheduling. This is a causal diagnostic
 candidate, not proof that the kick controls a particular GPU cache or fixes
 FAA. The native code already uses the same primitive after output retirement.
 
+Kernel6fe8ead implements this opt-in control. Its
+[fresh-boot hardware test](../tests/m9-faa-program-kick-hardware-20261007/README.md)
+confirms the kick after actualc0, but the final output remains black. Main,
+companion and sampled-primary hashes exactly match the preceding no-kick run.
+The added source transition alone is insufficient; CPU-alias31c operations
+and the public resolve lifecycle remain separate questions.
+
 `tools/check-m9-faa-program-access-kick.py` joins the unchanged full180
 manifest/plan, all nine reproduced source-export hashes, the original phase
 mapping observation, actual resource fields/program operands and shipping
