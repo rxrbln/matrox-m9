@@ -28,6 +28,9 @@ void m9_nir_find_inlinable_uniforms(struct nir_shader *nir);
  * and removes a uniform-decided branch or select. */
 void m9_nir_inline_uniforms(struct nir_shader *nir, const uint32_t *values);
 
+/* Run the same NIR folding after another exact, live specialization. */
+void m9_nir_fold_specialization(struct nir_shader *nir);
+
 /* Execute both pure arithmetic arms and select their SSA results on the GPU.
  * Bounded branches only; loops, texture fetches, indirect loads and side
  * effects keep their control flow and the backend's ordinary refusal. */

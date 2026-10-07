@@ -7,6 +7,7 @@
  * order the index-23 declaration names them.
  */
 #include "m9_vs_source.h"
+#include "m9_specialise.h"
 
 #include <limits.h>
 #include <string.h>
@@ -150,6 +151,194 @@ m9_vs_compile_format_source(struct nir_shader **nir,
    ralloc_free(saved);
    if (reason) *reason = original_reason;
    return false;
+}
+
+static bool
+uniform_gate_word(nir_scalar s, unsigned uniforms, unsigned *word)
+{
+   s = nir_scalar_chase_movs(s);
+   if (!nir_scalar_is_intrinsic(s) || s.def->bit_size != 32)
+      return false;
+   nir_intrinsic_instr *i = nir_def_as_intrinsic(s.def);
+   if (i->intrinsic != nir_intrinsic_load_ubo_vec4 ||
+       !nir_src_is_const(i->src[0]) || nir_src_as_uint(i->src[0]) ||
+       !nir_src_is_const(i->src[1]) ||
+       (nir_intrinsic_access(i) & ACCESS_VOLATILE))
+      return false;
+   uint64_t w = ((uint64_t)nir_intrinsic_base(i) + nir_src_as_uint(i->src[1])) * 4 +
+                nir_intrinsic_component(i) + s.comp;
+   if (w > UINT16_MAX || w / 4 >= uniforms)
+      return false;
+   *word = w;
+   return true;
+}
+
+static bool
+uniform_gate_costly(nir_scalar s)
+{
+   s = nir_scalar_chase_movs(s);
+   if (!nir_scalar_is_alu(s))
+      return false;
+   switch (nir_def_as_alu(s.def)->op) {
+   case nir_op_fsin: case nir_op_fcos: case nir_op_frsq:
+   case nir_op_frcp: case nir_op_fsqrt: case nir_op_fexp2: case nir_op_flog2:
+      return true;
+   default:
+      return false;
+   }
+}
+
+void
+m9_vs_find_uniform_gates(nir_shader *nir, struct m9_vs_uniform_gates *gates)
+{
+   memset(gates, 0, sizeof(*gates));
+   if (!nir || nir->info.stage != MESA_SHADER_VERTEX ||
+       !nir->info.first_ubo_is_default_ubo)
+      return;
+   /* Prioritize a uniform multiplying an SFU result; then other direct
+    * multiplicative gates. The bounded word list contains no live values. */
+   for (unsigned priority = 0; priority < 2; priority++) {
+      nir_foreach_function_impl(impl, nir) {
+         nir_foreach_block(block, impl) {
+            nir_foreach_instr(instr, block) {
+               if (instr->type != nir_instr_type_alu)
+                  continue;
+               nir_alu_instr *alu = nir_instr_as_alu(instr);
+               if (alu->op != nir_op_fmul || alu->def.bit_size != 32)
+                  continue;
+               for (unsigned c = 0; c < alu->def.num_components; c++) {
+                  for (unsigned src = 0; src < 2; src++) {
+                     nir_scalar result = nir_get_scalar(&alu->def, c);
+                     unsigned word;
+                     if (uniform_gate_costly(nir_scalar_chase_alu_src(result, 1-src)) !=
+                         (priority == 0) ||
+                         !uniform_gate_word(nir_scalar_chase_alu_src(result, src),
+                                              nir->num_uniforms, &word))
+                        continue;
+                     bool have = false;
+                     for (unsigned j = 0; j < gates->count; j++)
+                        have |= gates->word[j] == word;
+                     if (have)
+                        continue;
+                     if (gates->count == M9_VS_MAX_GATE_UNIFORMS)
+                        return;
+                     gates->word[gates->count++] = word;
+                  }
+               }
+            }
+         }
+      }
+   }
+}
+
+bool
+m9_vs_gate_key_init(const struct m9_vs_uniform_gates *gates,
+                     const void *data, size_t bytes, struct m9_vs_gate_key *key)
+{
+   struct m9_vs_gate_key trial = {0};
+   if (!gates || !key || gates->count > M9_VS_MAX_GATE_UNIFORMS ||
+       (gates->count && !data))
+      return false;
+   for (unsigned i = 0; i < gates->count; i++) {
+      size_t offset = (size_t)gates->word[i] * 4;
+      if (offset > bytes || bytes - offset < 4)
+         return false;
+      uint32_t value;
+      memcpy(&value, (const uint8_t *)data + offset, sizeof(value));
+      if (value == 0)
+         trial.zero |= 1u << i;
+      else if (value == 0x3f800000u)
+         trial.one |= 1u << i;
+   }
+   *key = trial;
+   return true;
+}
+
+struct uniform_gate_input {
+   const struct m9_vs_uniform_gates *gates;
+   const struct m9_vs_gate_key *key;
+};
+
+static bool
+uniform_gate_input(nir_builder *b, nir_intrinsic_instr *i, void *data)
+{
+   const struct uniform_gate_input *input = data;
+   if (i->intrinsic != nir_intrinsic_load_ubo_vec4 || i->def.bit_size != 32 ||
+       !nir_src_is_const(i->src[0]) || nir_src_as_uint(i->src[0]) ||
+       !nir_src_is_const(i->src[1]) ||
+       (nir_intrinsic_access(i) & ACCESS_VOLATILE))
+      return false;
+   uint64_t first = ((uint64_t)nir_intrinsic_base(i) + nir_src_as_uint(i->src[1])) * 4 +
+                    nir_intrinsic_component(i);
+   nir_scalar components[NIR_MAX_VEC_COMPONENTS];
+   bool progress = false;
+   b->cursor = nir_after_instr(&i->instr);
+   for (unsigned c = 0; c < i->def.num_components; c++) {
+      components[c] = nir_get_scalar(&i->def, c);
+      for (unsigned gate = 0; gate < input->gates->count; gate++) {
+         unsigned bit = 1u << gate;
+         if (input->gates->word[gate] != first+c ||
+             !((input->key->zero | input->key->one) & bit))
+            continue;
+         components[c] = nir_get_scalar(nir_imm_float(b,
+                                  (input->key->one & bit) ? 1.0f : 0.0f), 0);
+         progress = true;
+      }
+   }
+   if (progress)
+      nir_def_rewrite_uses_after(&i->def,
+                         nir_vec_scalars(b, components, i->def.num_components));
+   return progress;
+}
+
+static bool
+source_program_fits(const struct m9_vs_program *p, unsigned slots, unsigned consts)
+{
+   return m9_vs_slot_count(p) <= slots && m9_vs_extra_slot_count(p) <= slots &&
+          (!m9_vs_producer_slot_count(p) ||
+           m9_vs_producer_slot_count(p) + M9_VS_TAIL_SLOTS <= slots) &&
+          m9_vs_const_count(p) <= consts;
+}
+
+bool
+m9_vs_compile_gate_source(nir_shader **nir, const struct m9_vs_outputs *outputs,
+                            struct m9_vs_program *program, const char **reason,
+                            unsigned max_slots, unsigned max_const_pairs,
+                            const struct m9_vs_format_key *format_key,
+                            const struct m9_vs_uniform_gates *gates,
+                            const struct m9_vs_gate_key *gate_key)
+{
+   bool known = gates && gate_key && gates->count <= M9_VS_MAX_GATE_UNIFORMS &&
+                !(gate_key->zero & gate_key->one) &&
+                !((gate_key->zero | gate_key->one) >> gates->count) &&
+                (gate_key->zero | gate_key->one);
+   nir_shader *saved = known ? nir_shader_clone(ralloc_parent(*nir), *nir) : NULL;
+   const char *original_reason = NULL;
+   bool ok = m9_vs_compile_format_source(nir, outputs, program, &original_reason,
+                                            max_slots, max_const_pairs, format_key);
+   if (saved && (!ok || !source_program_fits(program,max_slots,max_const_pairs))) {
+      struct uniform_gate_input input = {gates,gate_key};
+      if (nir_shader_intrinsics_pass(saved, uniform_gate_input,
+                                     nir_metadata_control_flow, &input)) {
+         m9_nir_fold_specialization(saved);
+         struct m9_vs_program trial;
+         if (m9_vs_compile_format_source(&saved,outputs,&trial,NULL,
+                                           max_slots,max_const_pairs,format_key)) {
+            if (source_program_fits(&trial,max_slots,max_const_pairs)) {
+               if (ok) m9_vs_program_fini(program);
+               *program = trial;
+               ralloc_free(*nir);
+               *nir = saved;
+               if (reason) *reason = NULL;
+               return true;
+            }
+            m9_vs_program_fini(&trial);
+         }
+      }
+   }
+   ralloc_free(saved);
+   if (reason) *reason = original_reason;
+   return ok;
 }
 
 bool

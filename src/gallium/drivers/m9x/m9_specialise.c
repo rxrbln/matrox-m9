@@ -334,12 +334,17 @@ inline_ubo_vec4(nir_builder *b, nir_intrinsic_instr *intr, void *data)
 void
 m9_nir_inline_uniforms(nir_shader *nir, const uint32_t *values)
 {
-   bool progress;
-
    if (!nir->info.num_inlinable_uniforms ||
        !nir_shader_intrinsics_pass(nir, inline_ubo_vec4,
                                    nir_metadata_control_flow, (void *)values))
       return;
+   m9_nir_fold_specialization(nir);
+}
+
+void
+m9_nir_fold_specialization(nir_shader *nir)
+{
+   bool progress;
    do {
       progress = false;
       NIR_PASS(progress, nir, nir_opt_constant_folding);

@@ -468,6 +468,7 @@ struct m9_vs_variant {
  * are fixed per draw, so one of these is kept per set the context sends. */
 struct m9_vs_spec {
    struct m9_vs_format_key format_key;
+   struct m9_vs_gate_key gate_key;
    uint32_t values[MAX_INLINABLE_UNIFORMS];
    /* The lowered, specialised clone the backend consumed, kept so a further
     * layout can be compiled from it. */
@@ -486,6 +487,7 @@ struct m9_vs_state {
    /* The lowered clone before specialisation, and the dwords the values
     * that specialise it come from. */
    struct nir_shader *src;
+   struct m9_vs_uniform_gates uniform_gates;
    unsigned inline_count;
    struct util_dynarray specs;      /* struct m9_vs_spec * */
    /* The specialisation the draws being emitted run; never NULL once a

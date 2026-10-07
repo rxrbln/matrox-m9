@@ -35,6 +35,31 @@ bool m9_vs_compile_format_source(struct nir_shader **nir,
                                   unsigned max_slots, unsigned max_const_pairs,
                                   const struct m9_vs_format_key *key);
 
+/* CPU specialization budget, independent of hardware constant/register caps.
+ * Gates are direct multiplicative default-UBO words; costly SFU weights have
+ * priority. Only exact +0/+1 facts are substituted. Other values stay live. */
+#define M9_VS_MAX_GATE_UNIFORMS 8u
+struct m9_vs_uniform_gates {
+   unsigned count;
+   uint16_t word[M9_VS_MAX_GATE_UNIFORMS];
+};
+struct m9_vs_gate_key {
+   uint16_t zero, one;
+};
+void m9_vs_find_uniform_gates(struct nir_shader *nir,
+                               struct m9_vs_uniform_gates *gates);
+bool m9_vs_gate_key_init(const struct m9_vs_uniform_gates *gates,
+                          const void *data, size_t bytes,
+                          struct m9_vs_gate_key *key);
+bool m9_vs_compile_gate_source(struct nir_shader **nir,
+                                const struct m9_vs_outputs *outputs,
+                                struct m9_vs_program *program,
+                                const char **reason,
+                                unsigned max_slots, unsigned max_const_pairs,
+                                const struct m9_vs_format_key *format_key,
+                                const struct m9_vs_uniform_gates *gates,
+                                const struct m9_vs_gate_key *gate_key);
+
 /* Where one declared attribute's components come from. */
 struct m9_vs_source_attr {
    unsigned buffer;        /* index into the bound vertex buffers */

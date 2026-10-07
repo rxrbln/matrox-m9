@@ -8629,6 +8629,8 @@ m9_vs_native_init(struct m9_vs_state *vs, struct nir_shader *src)
     * tracker's own shader, which gallivm lowers for itself. */
    m9_nir_lower_integers(nir);
    vs->src = nir;
+   if (m9_vs_specialise)
+      m9_vs_find_uniform_gates(nir, &vs->uniform_gates);
    vs->inline_count = m9_vs_specialise ?
                       MIN2(src->info.num_inlinable_uniforms,
                            MAX_INLINABLE_UNIFORMS) : 0;
@@ -8639,7 +8641,8 @@ m9_vs_native_init(struct m9_vs_state *vs, struct nir_shader *src)
  * while a queued job can still name its program. */
 static struct m9_vs_spec *
 m9_vs_spec_for(struct m9_vs_state *vs, const uint32_t *values,
-                const struct m9_vs_format_key *format_key)
+                const struct m9_vs_format_key *format_key,
+                const struct m9_vs_gate_key *gate_key)
 {
    const size_t bytes = vs->inline_count * sizeof(*values);
    struct m9_vs_spec *spec;
@@ -8647,7 +8650,8 @@ m9_vs_spec_for(struct m9_vs_state *vs, const uint32_t *values,
 
    util_dynarray_foreach(&vs->specs, struct m9_vs_spec *, it)
       if (!memcmp((*it)->values, values, bytes) &&
-          !memcmp(&(*it)->format_key, format_key, sizeof(*format_key)))
+          !memcmp(&(*it)->format_key, format_key, sizeof(*format_key)) &&
+          !memcmp(&(*it)->gate_key, gate_key, sizeof(*gate_key)))
          return *it;
    /* A shader specialised on a uniform can be asked for one per value, so
     * the cache is capped and a further set is refused rather than evicting
@@ -8661,6 +8665,7 @@ m9_vs_spec_for(struct m9_vs_state *vs, const uint32_t *values,
    util_dynarray_init(&spec->variants, NULL);
    memcpy(spec->values, values, bytes);
    spec->format_key = *format_key;
+   spec->gate_key = *gate_key;
    nir = vs->src ? nir_shader_clone(NULL, vs->src) : NULL;
    if (nir) {
       if (vs->inline_count)
@@ -8670,9 +8675,10 @@ m9_vs_spec_for(struct m9_vs_state *vs, const uint32_t *values,
        * only the product the hardware's multiply-add can take. */
       NIR_PASS(_, nir, nir_opt_algebraic_late);
       NIR_PASS(_, nir, nir_opt_dce);
-      spec->native = m9_vs_compile_format_source(&nir, NULL, &spec->program,
+      spec->native = m9_vs_compile_gate_source(&nir, NULL, &spec->program,
                                          &spec->reason, m9_vs_max_slots,
-                                         m9_vs_max_const_pairs, format_key);
+                                         m9_vs_max_const_pairs, format_key,
+                                         &vs->uniform_gates, gate_key);
    }
    if (spec->native) {
       spec->slots = m9_vs_slot_count(&spec->program) +
@@ -8724,11 +8730,26 @@ m9_vs_select_spec(struct m9_context *ctx)
    if (vs->src && ctx->velems)
       m9_vs_format_key_init(vs->src->info.inputs_read, ctx->velems->elements,
                              ctx->velems->count, &format_key);
+   struct m9_vs_gate_key gate_key = {0};
+   const struct pipe_constant_buffer *cb = &ctx->vs_constants[0];
+   const uint8_t *data = cb->user_buffer;
+   size_t bytes = cb->buffer_size;
+   if (!data && cb->buffer) {
+      const struct m9_resource *r = m9_res(cb->buffer);
+      uint64_t available = MIN2(r->size,cb->buffer->width0);
+      if (cb->buffer->target == PIPE_BUFFER && cb->buffer_offset <= available &&
+          cb->buffer_size <= available - cb->buffer_offset)
+         data = r->map;
+   }
+   if (data)
+      m9_vs_gate_key_init(&vs->uniform_gates, data + cb->buffer_offset,
+                            bytes, &gate_key);
    if (vs->cur && !memcmp(vs->cur->values, ctx->vs_inline,
                           vs->inline_count * sizeof(*ctx->vs_inline)) &&
-       !memcmp(&vs->cur->format_key, &format_key, sizeof(format_key)))
+       !memcmp(&vs->cur->format_key, &format_key, sizeof(format_key)) &&
+       !memcmp(&vs->cur->gate_key, &gate_key, sizeof(gate_key)))
       return;
-   vs->cur = m9_vs_spec_for(vs, ctx->vs_inline, &format_key);
+   vs->cur = m9_vs_spec_for(vs, ctx->vs_inline, &format_key, &gate_key);
 }
 
 static void *
