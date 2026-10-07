@@ -5,7 +5,7 @@ m9x_drm-y := m9x_drv.o m9_gem.o m9_requester.o m9_address.o m9_submit.o m9_trian
 obj-$(CONFIG_DRM_M9X) += m9x_drm.o
 
 # Pure source-qualified counted secondary link and live two-slot lifetime.
-m9x_drm-y += m9_faa_counted_secondary_encode.o m9_faa_secondary_pool.o
+m9x_drm-y += m9_faa_counted_secondary_encode.o m9_faa_secondary_pool.o m9_faa_primary_pool.o
 
 ccflags-$(CONFIG_DRM_M9X_FAA_CONSTANT_SHADER_CONTROL) += -DM9_FAA_CONSTANT_SHADER_CONTROL
 ccflags-$(CONFIG_DRM_M9X_FAA_CONSTANT_RED_CONTROL) += -DM9_FAA_CONSTANT_RED_CONTROL

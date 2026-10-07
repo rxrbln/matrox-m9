@@ -20,6 +20,8 @@ struct m9x_faa_counted_secondary_request {
 	struct m9x_faa_counted_secondary_owner old, selected;
 	u32 range_start, range_end;
 	u32 parent_cursor, parent_capacity;
+	/* Last submitted points, not the transport's next-fence cursor. Original
+	 * INIT b0/10 produces the counted c0/20 pair in the source control. */
 	u64 global_origin, pool_origin;
 	u64 observed_pool_point, observed_global_point;
 	u64 fence_bus;
