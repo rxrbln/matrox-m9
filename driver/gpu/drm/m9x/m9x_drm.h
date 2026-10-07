@@ -81,6 +81,9 @@ struct drm_parhelia_m9_faa_graph_color_next {
  * retired Unlock. State not encoded by the selected producer is refused. */
 #define DRM_PARHELIA_M9_FAA_GRAPH_COLOR_FRAME 0x1e
 #define PARHELIA_M9_FAA_COLOR_FRAME_FIRST 1u
+/* Reuse actual retired depth/HZ attachments; exclusive with FIRST.
+ * Flags0 retains the diagnostic COLOR-to-initial-depth transition. */
+#define PARHELIA_M9_FAA_COLOR_FRAME_INITIALIZED 2u
 #define PARHELIA_M9_FAA_COLOR_FRAME_FIRST_LOCK_RETIRED 18u
 #define PARHELIA_M9_FAA_COLOR_FRAME_NEXT_LOCK_RETIRED 19u
 #define PARHELIA_M9_FAA_COLOR_RASTER_FLAT 1u
