@@ -117,7 +117,14 @@ struct kkey {
    bool pair;
 };
 
+struct const_seed {
+   const struct m9_vs_program *program;
+   const bool *identity;
+};
+
 struct ctx {
+   bool compact;
+   bool *identity_keys;
    nir_shader *nir;
    struct m9_vs_program *p;
    struct util_dynarray *out;   /* the head being emitted */
@@ -245,7 +252,7 @@ key_coord(struct ctx *c, unsigned stream, unsigned part)
 /* A constant pair holding the two scalars, and the operand swizzle that
  * reads them; a single-valued pair is read with the first scalar. */
 static bool
-const_pair(struct ctx *c, const struct held *a, const struct held *b,
+const_pair_values(struct ctx *c, const struct held *a, const struct held *b,
            int *key, unsigned *swz)
 {
    if (a->kind == HELD_LIT && b->kind == HELD_LIT)
@@ -261,6 +268,18 @@ const_pair(struct ctx *c, const struct held *a, const struct held *b,
       return false;
    *swz = *key >= 0 && ((struct kkey *)c->keys.data)[*key].pair ? 1 : 0;
    return *key >= 0;
+}
+
+/* Track consumers without a proved high-lane swizzle separately. */
+static bool
+const_pair(struct ctx *c, const struct held *a, const struct held *b,
+           int *key, unsigned *swz)
+{
+   bool ok = const_pair_values(c, a, b, key, swz);
+
+   if (ok && c->identity_keys)
+      c->identity_keys[*key] = true;
+   return ok;
 }
 
 /* These callers encode a constant swizzle. Its captured zero form broadcasts
@@ -286,9 +305,18 @@ const_pair_swizzled(struct ctx *c, const struct held *a, const struct held *b,
             *swz = 0;
             return true;
          }
+         /* Actual vertex MOVK/MUL_RK/MAD multiplier y controls encode
+          * high-lane broadcast 3. Only the bounded seeded trial enables it;
+          * literal and coordinate keys remain on their existing paths. */
+         if (c->compact && uniform && it->kind == M9_VS_CONST_UNIFORM &&
+             it->pair && it->off[1] == a->a) {
+            *key = it - (struct kkey *)c->keys.data;
+            *swz = 3;
+            return true;
+         }
       }
    }
-   return const_pair(c, a, b, key, swz);
+   return const_pair_values(c, a, b, key, swz);
 }
 
 static bool
@@ -518,7 +546,7 @@ write_scalar(struct ctx *c, unsigned dst, unsigned scalar,
       e = const_index(c, key);
       if (e < 0)
          return fail(c, "constant span overflow");
-      emit_move_const(c, dst, op0, e, 0);
+      emit_move_const(c, dst, op0, e, swz);
    } else if (find_pair(c, h, h, false, &reg, &swz)) {
       emit_move(c, dst, op0, reg, swz);
    } else {
@@ -700,8 +728,11 @@ emit_cmp(struct ctx *c, unsigned dst, unsigned cls, const struct held *a0,
    int key, e;
 
    if (!held_is_const(b0) || !held_is_const(b1) ||
-       !const_pair_swizzled(c, b0, b1, &key, &kswz))
+       !(c->compact ? const_pair(c, b0, b1, &key, &kswz) :
+                      const_pair_swizzled(c, b0, b1, &key, &kswz)))
       return fail(c, "compare against a register");
+   if (c->identity_keys)
+      c->identity_keys[key] = true;
    e = const_index(c, key);
    if (e < 0)
       return fail(c, "constant span overflow");
@@ -2835,9 +2866,38 @@ prepare_geometry(nir_shader *nir)
    nir->options = original;
 }
 
-bool
-m9_vs_compile(struct nir_shader *nir, const struct m9_vs_outputs *outputs,
-              struct m9_vs_program *p, const char **reason)
+/* The seed comes from this compile's own typed keys and consumer tracking.
+ * Pack only scalar uniforms that no identity-only operand consumes. No new
+ * UBO offset, literal payload, coordinate or captured index is introduced. */
+static bool
+seed_constants(struct ctx *c, const struct const_seed *seed)
+{
+   uint32_t pending = M9_VS_UNIFORM_ZERO;
+
+   util_dynarray_foreach(&seed->program->consts, struct m9_vs_const, k) {
+      unsigned i = k - (struct m9_vs_const *)seed->program->consts.data;
+
+      if (k->kind != M9_VS_CONST_UNIFORM || k->offset[0] != k->offset[1] ||
+          k->offset[0] == M9_VS_UNIFORM_ZERO || seed->identity[i])
+         continue;
+      if (pending == M9_VS_UNIFORM_ZERO) {
+         pending = k->offset[0];
+      } else {
+         if (key_uniform(c, pending, k->offset[0]) < 0)
+            return fail(c, "constant seed overflow");
+         pending = M9_VS_UNIFORM_ZERO;
+      }
+   }
+   if (pending != M9_VS_UNIFORM_ZERO && key_uniform(c, pending, pending) < 0)
+      return fail(c, "constant seed overflow");
+   return true;
+}
+
+static bool
+compile_program(struct nir_shader *nir, const struct m9_vs_outputs *outputs,
+                struct m9_vs_program *p, const char **reason,
+                bool geometry, const struct const_seed *seed,
+                bool *identity)
 {
    nir_function_impl *impl;
    struct ctx c;
@@ -2851,16 +2911,20 @@ m9_vs_compile(struct nir_shader *nir, const struct m9_vs_outputs *outputs,
    util_dynarray_init(&p->producer, NULL);
    util_dynarray_init(&p->consts, NULL);
    util_dynarray_init(&c.keys, NULL);
+   c.identity_keys = identity;
+   c.compact = seed != NULL;
    c.nir = nir;
    c.p = p;
    if (nir->info.stage == MESA_SHADER_VERTEX) {
       m9_nir_lower_alu_if(nir);
-      prepare_geometry(nir);
+      if (geometry)
+         prepare_geometry(nir);
    }
    impl = nir->info.stage == MESA_SHADER_VERTEX ?
           nir_shader_get_entrypoint(nir) : NULL;
-   ok = impl ? compile_impl(&c, impl, outputs) :
-        fail(&c, "not a vertex shader");
+   ok = (!seed || seed_constants(&c, seed)) &&
+        (impl ? compile_impl(&c, impl, outputs) :
+                fail(&c, "not a vertex shader"));
    if (ok) {
       util_dynarray_foreach(&c.keys, struct kkey, k) {
          struct m9_vs_const *out =
@@ -2889,6 +2953,13 @@ m9_vs_compile(struct nir_shader *nir, const struct m9_vs_outputs *outputs,
    return ok;
 }
 
+bool
+m9_vs_compile(struct nir_shader *nir, const struct m9_vs_outputs *outputs,
+              struct m9_vs_program *p, const char **reason)
+{
+   return compile_program(nir, outputs, p, reason, true, NULL, NULL);
+}
+
 /* The ordinary source can keep independent scalar coefficient chains even
  * when NIR has paired outputs. Vectorizing those chains trades some slots
  * for fewer typed constant pairs. Retry only a constant-span refusal, on a
@@ -2902,16 +2973,17 @@ program_slots_fit(const struct m9_vs_program *p, unsigned max_slots)
           m9_vs_extra_slot_count(p) <= max_slots;
 }
 
-bool
-m9_vs_compile_bounded(struct nir_shader *nir,
+static bool
+compile_bounded(struct nir_shader *nir,
                       const struct m9_vs_outputs *outputs,
                       struct m9_vs_program *p, const char **reason,
-                      unsigned max_slots, unsigned max_const_pairs)
+                      unsigned max_slots, unsigned max_const_pairs,
+                      bool *identity)
 {
    nir_shader *trial_nir;
    struct m9_vs_program trial;
 
-   if (!m9_vs_compile(nir, outputs, p, reason))
+   if (!compile_program(nir, outputs, p, reason, true, NULL, identity))
       return false;
    if (m9_vs_const_count(p) <= max_const_pairs ||
        !program_slots_fit(p, max_slots))
@@ -2931,6 +3003,58 @@ m9_vs_compile_bounded(struct nir_shader *nir,
       }
    }
    ralloc_free(trial_nir);
+   return true;
+}
+
+bool
+m9_vs_compile_bounded(struct nir_shader *nir,
+                      const struct m9_vs_outputs *outputs,
+                      struct m9_vs_program *p, const char **reason,
+                      unsigned max_slots, unsigned max_const_pairs)
+{
+   return compile_bounded(nir, outputs, p, reason, max_slots, max_const_pairs,
+                          NULL);
+}
+
+/* Geometry scalarization can expand otherwise supported paired sine/dot
+ * arithmetic. Keep a pre-geometry clone only for these sources, then retry
+ * a refusal using their existing vector graph and typed scalar keys. The
+ * adopted graph must follow its program so subsequent sampler variants do
+ * not start again from the unsuccessful scalarized graph. */
+bool
+m9_vs_compile_bounded_source(struct nir_shader **nir,
+                             const struct m9_vs_outputs *outputs,
+                             struct m9_vs_program *p, const char **reason,
+                             unsigned max_slots, unsigned max_const_pairs)
+{
+   bool identity[M9_VS_MAX_CONSTS] = {0};
+   nir_shader *saved = geometry_dots(*nir) ?
+      nir_shader_clone(ralloc_parent(*nir), *nir) : NULL;
+   struct m9_vs_program trial;
+
+   if (!compile_bounded(*nir, outputs, p, reason, max_slots, max_const_pairs,
+                         identity)) {
+      ralloc_free(saved);
+      return false;
+   }
+   if (saved && (!program_slots_fit(p, max_slots) ||
+                 m9_vs_const_count(p) > max_const_pairs)) {
+      const struct const_seed seed = {.program = p, .identity = identity};
+
+      if (compile_program(saved, outputs, &trial, NULL, false, &seed, NULL)) {
+         if (program_slots_fit(&trial, max_slots) &&
+             m9_vs_const_count(&trial) <= max_const_pairs) {
+            m9_vs_program_fini(p);
+            *p = trial;
+            ralloc_free(*nir);
+            *nir = saved;
+            saved = NULL;
+         } else {
+            m9_vs_program_fini(&trial);
+         }
+      }
+   }
+   ralloc_free(saved);
    return true;
 }
 

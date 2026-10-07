@@ -315,6 +315,15 @@ bool m9_vs_compile_bounded(struct nir_shader *nir,
                            struct m9_vs_program *program, const char **reason,
                            unsigned max_slots, unsigned max_const_pairs);
 
+/* The caller owns a unique specialization clone through *nir. On adoption,
+ * exchange that graph with its bounded vector/constant trial; admitted and
+ * failed trials preserve the ordinary source/program ownership. */
+bool m9_vs_compile_bounded_source(struct nir_shader **nir,
+                                   const struct m9_vs_outputs *outputs,
+                                   struct m9_vs_program *program,
+                                   const char **reason, unsigned max_slots,
+                                   unsigned max_const_pairs);
+
 void m9_vs_program_fini(struct m9_vs_program *program);
 
 /* The vertex element feeding attribute i.  The state tracker compacts the

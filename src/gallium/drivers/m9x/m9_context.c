@@ -6257,7 +6257,7 @@ m9_native_vs_variant(struct m9_vs_spec *vs, const struct m9_vs_outputs *out)
       return NULL;
    v->outputs = *out;
    v->serial = ++m9_vs_serial;
-   v->ok = vs->nir && m9_vs_compile_bounded(vs->nir, out, &v->program,
+   v->ok = vs->nir && m9_vs_compile_bounded_source(&vs->nir, out, &v->program,
                                            &v->reason, m9_vs_max_slots,
                                            m9_vs_max_const_pairs);
    /* A coordinate stream costs the layout constants the specialisation had
@@ -8444,7 +8444,7 @@ m9_vs_spec_for(struct m9_vs_state *vs, const uint32_t *values)
        * only the product the hardware's multiply-add can take. */
       NIR_PASS(_, nir, nir_opt_algebraic_late);
       NIR_PASS(_, nir, nir_opt_dce);
-      spec->native = m9_vs_compile_bounded(nir, NULL, &spec->program,
+      spec->native = m9_vs_compile_bounded_source(&nir, NULL, &spec->program,
                                          &spec->reason, m9_vs_max_slots,
                                          m9_vs_max_const_pairs);
    }
