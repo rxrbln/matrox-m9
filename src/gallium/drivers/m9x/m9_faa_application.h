@@ -40,4 +40,24 @@ bool m9_faa_application_build(const struct m9_faa_application_draw *draw,
                              struct m9_faa_application_upload *output,
                              const char **reason);
 void m9_faa_application_fini(struct m9_faa_application_upload *upload);
+
+/* A frame owns every live draw snapshot until its final retirement. Realloc
+ * moves descriptors only: pointers inside each shader still name its owned
+ * storage. There are no borrowed Gallium resources or shader pointers here.
+ * This queue grants no native packet admission. */
+struct m9_faa_application_frame {
+   struct m9_faa_application_upload *draws;
+   uint32_t count, capacity;
+   size_t storage_bytes;
+   uint32_t clear_flags, clear_color;
+};
+
+/* Move ownership only on success. A mismatch, allocation failure or aliased
+ * owner leaves both inputs untouched. Only the first append records clear. */
+bool m9_faa_application_frame_append(struct m9_faa_application_frame *frame,
+                                    struct m9_faa_application_upload *upload,
+                                    uint32_t clear_flags, uint32_t clear_color,
+                                    const char **reason);
+void m9_faa_application_frame_reset(struct m9_faa_application_frame *frame);
+void m9_faa_application_frame_fini(struct m9_faa_application_frame *frame);
 #endif

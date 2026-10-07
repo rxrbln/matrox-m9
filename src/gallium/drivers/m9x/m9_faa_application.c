@@ -14,6 +14,90 @@ m9_faa_application_fini(struct m9_faa_application_upload *upload)
    }
 }
 
+void
+m9_faa_application_frame_reset(struct m9_faa_application_frame *frame)
+{
+   if (!frame) return;
+   for (uint32_t i = 0; i < frame->count; i++)
+      m9_faa_application_fini(&frame->draws[i]);
+   frame->count = 0;
+   frame->storage_bytes = 0;
+   frame->clear_flags = frame->clear_color = 0;
+}
+
+void
+m9_faa_application_frame_fini(struct m9_faa_application_frame *frame)
+{
+   if (!frame) return;
+   m9_faa_application_frame_reset(frame);
+   free(frame->draws);
+   memset(frame, 0, sizeof(*frame));
+}
+
+bool
+m9_faa_application_frame_append(struct m9_faa_application_frame *frame,
+                                struct m9_faa_application_upload *upload,
+                                uint32_t clear_flags, uint32_t clear_color,
+                                const char **reason)
+{
+   const char *why = "FAA frame input has no owned upload or INIT identity";
+   if (!frame || !upload || !upload->shader.storage ||
+       !upload->shader.storage_bytes || !upload->graph_id ||
+       !upload->init_point || (upload->init_point & 15) ||
+       !upload->state.width || !upload->state.height)
+      goto fail;
+   if (frame->count) {
+      const struct m9_faa_application_upload *first = &frame->draws[0];
+      if (upload->graph_id != first->graph_id ||
+          upload->init_point != first->init_point ||
+          upload->generation != first->generation ||
+          upload->state.width != first->state.width ||
+          upload->state.height != first->state.height ||
+          clear_flags != frame->clear_flags || clear_color != frame->clear_color) {
+         why = "FAA draw changed graph, dimensions or pending frame clear";
+         goto fail;
+      }
+   }
+   for (uint32_t i = 0; i < frame->count; i++) {
+      if (upload == &frame->draws[i] ||
+          upload->shader.storage == frame->draws[i].shader.storage) {
+         why = "FAA draw aliases an earlier owned frame upload";
+         goto fail;
+      }
+   }
+   /* Bound CPU snapshot memory independently of the kernel's actual packet
+    * arenas. Hitting this bound must never split a frame or clear its depth. */
+   const size_t budget = 64u * 1024u * 1024u;
+   if (upload->shader.storage_bytes > budget ||
+       frame->storage_bytes > budget - upload->shader.storage_bytes ||
+       frame->count == UINT32_MAX) {
+      why = "FAA frame exceeds owned input budget";
+      goto fail;
+   }
+   if (frame->count == frame->capacity) {
+      uint32_t capacity = frame->capacity ? frame->capacity : 16;
+      if (frame->capacity) {
+         if (capacity > UINT32_MAX / 2) goto fail;
+         capacity *= 2;
+      }
+      if ((uint64_t)capacity * sizeof(*frame->draws) > SIZE_MAX) goto fail;
+      void *draws = realloc(frame->draws, (size_t)capacity * sizeof(*frame->draws));
+      if (!draws) { why = "FAA frame descriptor allocation failed"; goto fail; }
+      frame->draws = draws;
+      frame->capacity = capacity;
+   }
+   frame->draws[frame->count++] = *upload;
+   frame->storage_bytes += upload->shader.storage_bytes;
+   frame->clear_flags = clear_flags;
+   frame->clear_color = clear_color;
+   memset(upload, 0, sizeof(*upload));
+   if (reason) *reason = NULL;
+   return true;
+fail:
+   if (reason) *reason = why;
+   return false;
+}
+
 static bool
 source_index(const struct m9_faa_application_draw *d, unsigned at,
              uint32_t *value)

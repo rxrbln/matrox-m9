@@ -658,7 +658,7 @@ m9_prof_frame(struct m9_context *ctx)
 static void m9_retired_variants_free(struct m9_context *ctx);
 
 static void
-m9_context_sync(struct m9_context *ctx)
+m9_context_sync_ordinary(struct m9_context *ctx)
 {
    if (ctx->draw)
       draw_flush(ctx->draw);
@@ -669,6 +669,17 @@ m9_context_sync(struct m9_context *ctx)
    m9_deferred_run(ctx);
    m9_aggregate_flush(ctx);
    m9_retired_variants_free(ctx);
+}
+
+static void
+m9_context_sync(struct m9_context *ctx)
+{
+   m9_context_sync_ordinary(ctx);
+   if (ctx->faa_frame.count) {
+      const char *why = NULL;
+      if (m9_context_faa_flush_frame(ctx, &why))
+         fprintf(stderr, "m9x: FAA frame failed: %s\n", why ? why : "submission failed");
+   }
 }
 
 static void
@@ -7963,6 +7974,8 @@ m9_clear(struct pipe_context *pctx, unsigned buffers,
    struct m9_context *ctx = m9_context(pctx);
    uint64_t t_clear = m9_prof_begin();
    if (m9_faa_application_enabled() && buffers) {
+      if (ctx->faa_frame.count) m9_context_sync(ctx);
+      if (ctx->lost) { m9_prof_end(M9_PROF_CLEAR, t_clear); return; }
       ctx->faa_application_clear.pending = true;
       ctx->faa_application_clear.buffers |= buffers;
       /* Color and depth clears can arrive separately. Arguments for an
@@ -9187,7 +9200,7 @@ m9_context_faa_build_draw(struct m9_context *ctx,
       why = "FAA application raster/depth/blend effects need a typed draw contract";
       goto fail;
    }
-   m9_context_sync(ctx); /* Consume earlier deferred CPU reads before snapshot. */
+   m9_context_sync_ordinary(ctx); /* FAA draws already own their CPU inputs. */
    if (ctx->lost) { why = "FAA application context was lost while flushing"; goto fail; }
    source.info = info;
    source.draw = draw;
@@ -9285,7 +9298,6 @@ m9_context_faa_submit_draw(struct m9_context *ctx,
    struct m9_faa_application_upload owned = {0};
    const char *why = "FAA application draw has no qualified graph/state";
    int ret = -EOPNOTSUPP;
-   bool attempted = false;
    uint32_t clear_flags = 0;
    if (!ctx || ctx->lost || !ctx->screen) goto out;
    if (ctx->faa_application_clear.pending) {
@@ -9330,26 +9342,73 @@ m9_context_faa_submit_draw(struct m9_context *ctx,
       ret = -ESTALE;
       goto out;
    }
+   if (!m9_faa_application_frame_append(&ctx->faa_frame, &owned,
+                                         clear_flags, 0, &why)) {
+      ret = -ENOMEM;
+      goto out;
+   }
+   ret = 0;
+   why = NULL;
+out:
+   if (ret && ctx && ctx->faa_frame.count) {
+      /* A refused later draw invalidates the whole queued frame. Rendering
+       * only its accepted prefix would silently omit application geometry. */
+      ctx->lost = true;
+      m9_faa_application_frame_reset(&ctx->faa_frame);
+   }
+   m9_faa_application_fini(&owned);
+   if (reason) *reason = why;
+   return ret;
+}
+
+/* Complete an application frame only at a visibility boundary. The queue
+ * does not replace a multi-draw transaction with separately resolved draws:
+ * that would lose the shared sampled depth/fragment state between draws. */
+int
+m9_context_faa_flush_frame(struct m9_context *ctx, const char **reason)
+{
+   const char *why = NULL;
+   int ret = 0;
+   if (!ctx) { ret = -EINVAL; why = "FAA frame has no context"; goto out; }
+   struct m9_faa_application_frame *frame = &ctx->faa_frame;
+   if (!frame->count) goto out;
+   if (ctx->lost) { ret = -EIO; why = "FAA frame context was lost"; goto done; }
+   struct m9_faa_graph *graph = &ctx->faa_surface.graph;
+   const struct m9_faa_application_upload *first = &frame->draws[0];
+   if (first->graph_id != graph->prepared_id ||
+       first->generation != graph->prepared_generation ||
+       first->init_point != graph->init_point ||
+       first->state.width != ctx->faa_surface.width ||
+       first->state.height != ctx->faa_surface.height) {
+      ret = -ESTALE; why = "FAA queued frame no longer names the retained graph";
+      goto done;
+   }
+   /* The batch schema is reserved, but its native encoder and exact receipt
+    * profiles are still being qualified. Keep multi-draw atomic: never send
+    * the first draw and discover an unsupported later draw after posting. */
+   if (frame->count != 1) {
+      ret = -EOPNOTSUPP; why = "FAA native multi-draw FRAME is not yet admitted";
+      goto done;
+   }
    ret = m9_faa_surface_color_frame_kernel(ctx->screen, &ctx->faa_surface,
-                                          &owned.shader, state, clear_flags, 0);
-   attempted = graph->color_lock_attempted &&
-               (!graph->color_unlock_attempted || graph->color_next_attempted);
-   if (ret) { why = "FAA application authenticated COLOR submission failed"; goto out; }
-   /* Only real retired points advance the context. Presentation authenticates
-    * the same token, reads F021, then Unlocks before destination WRITE. */
+                                          &first->shader, &first->state,
+                                          frame->clear_flags, frame->clear_color);
+   if (ret) { why = "FAA authenticated frame submission failed"; goto done; }
    ctx->last_point = MAX2(ctx->last_point, graph->color_lock_point);
-   ret = m9_context_faa_present_lock(ctx, owned.graph_id, owned.generation,
+   ret = m9_context_faa_present_lock(ctx, first->graph_id, first->generation,
                                     graph->color_lock_point);
-   if (ret) { why = "FAA application Lock/Unlock presentation failed"; goto out; }
+   if (ret) { why = "FAA frame Lock/Unlock presentation failed"; goto done; }
    ctx->last_point = MAX2(ctx->last_point, graph->color_unlock_point);
-   if (clear_flags) {
+   if (frame->clear_flags) {
       memset(&ctx->faa_application_clear, 0, sizeof(ctx->faa_application_clear));
       ctx->faa_surface.destination_needs_clear = false;
    }
-   why = NULL;
+done:
+   /* CPU snapshots may be freed after the synchronous kernel has copied
+    * inputs; GPU owners remain retained by its graph even on failure. */
+   if (ret) ctx->lost = true;
+   m9_faa_application_frame_reset(frame);
 out:
-   if (ret && attempted) ctx->lost = true;
-   m9_faa_application_fini(&owned);
    if (reason) *reason = why;
    return ret;
 }
@@ -9415,7 +9474,7 @@ m9_context_faa_present_lock(struct m9_context *ctx, uint64_t graph_id,
    rows = MALLOC(bytes);
    if (!rows) return -ENOMEM;
    pipe_resource_reference(&retained, ctx->color);
-   m9_context_sync(ctx);
+   m9_context_sync_ordinary(ctx);
    int ret = ctx->lost ? -EIO : 0;
    const struct m9_surface_desc source_desc = {
       .row_span = primary.row_span, .height = primary.allocation_height,
@@ -10448,6 +10507,7 @@ m9_context_destroy(struct pipe_context *pctx)
       pipe_sampler_view_reference(&ctx->fs_views[i], NULL);
    pipe_resource_reference(&ctx->proxy.tex, NULL);
    pipe_resource_reference(&ctx->proxy.scratch, NULL);
+   m9_faa_application_frame_fini(&ctx->faa_frame);
    m9_faa_surface_destroy(ctx->screen, &ctx->faa_surface);
    m9_context_state_cleanup(ctx);
    m9_batch_fini(&ctx->batch);

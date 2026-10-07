@@ -14,6 +14,7 @@
 #include "m9_aggregate_uapi.h"
 #include "m9_draw_params.h"
 #include "m9_faa.h"
+#include "m9_faa_application.h"
 #include "m9_vs_compile.h"
 #include "m9_vs_source.h"
 #include "m9_texture.h"
@@ -400,6 +401,7 @@ int m9_context_faa_submit_draw(struct m9_context *ctx,
                                const struct pipe_draw_info *info,
                                const struct pipe_draw_start_count_bias *draw,
                                const char **reason);
+int m9_context_faa_flush_frame(struct m9_context *ctx, const char **reason);
 int m9_context_faa_present_lock(struct m9_context *ctx, uint64_t graph_id,
                                uint32_t generation, uint64_t lock_point);
 
@@ -574,6 +576,7 @@ struct m9_context {
    uint64_t dirty;
    struct pipe_resource *color;
    struct m9_faa_surface faa_surface;
+   struct m9_faa_application_frame faa_frame;
    /* Ordinary clear does not reset this graph's fragment/HZ state. Preserve
     * the actual requested state until a qualified native frame-reset API. */
    struct {
