@@ -4,6 +4,74 @@ The actual complete180 stream retires without wedging but produces an all-black
 image. Retirement is established; FAA rendering is not. This review examines
 native production and the source contract rather than repeating that test.
 
+## Current review: raw extent, repeat masks and incomplete relocation joins
+
+Reviewed REa55bfdbb, kernel8790b0e and Mesaca86fce. The last actual hardware
+result remains the250 prefix: it retires with healthy queues, but there is no
+qualified FAA image. The returned-public280 profile has passed host checks
+and builds; it has not been submitted to hardware.
+
+Confirmed issues and their disposition:
+
+- **Wrong size source and stale bit width, fixed in Mesaca86fce.** The raw
+  unbound probe used color GEM bytes for AD. It now computes the prospective
+  logical fragment-store extent from live target dimensions, with independent
+  128-byte backing alignment. The helper reuses the checked21-bit store encoder;
+  its former20-bit clamp truncated the valid capped value100004 tofffff.
+  Source-backed320x240 yields9b04. Forced diagnostic overrides remain exact.
+  This corrects raw diagnostic arithmetic; no store/resolve is supplied by it.
+  The already-correct bound-store path and private hardware profile did not
+  use the buggy raw helper, so this is not the cause of their black image.
+- **Repeated inactive stack residue, fixed in kernel8790b0e.** The returned
+  replacement draw adds a second proven single-target mask block. The generated
+  owner33 offsets are AB/route988/1048 and2348/2408. Normalize both blocks' three
+  inactive halfwords, after preflighting every block. Preserve active masks
+  and the public resolve's legitimate AB/AC zeros. The old single-block helper
+  would leave the new inactive residue intact. Active channels were already
+  enabled, so removing this residue alone is not a demonstrated pixel fix.
+- **Silent truncation in native generation, fixed in REa55bfdbb.** The
+  output-template builder zipped operand, encoder and domain arrays without
+  equal cardinality checks. The returned-profile strict checker validated only
+  the earlier encoder prefix. Dropping the last new encoder was accepted, yielding
+  101 rather than102 fixups, leaving the last uniform address unrebased. The
+  sealed plan/header contain all102; this is an admission hole, not a defect in
+  the current artifact. The shared validator now requires exact lengths, row
+  identity, observed payload, tag and original callback joins before generation.
+  Both250/280 profiles pass13 missing/extra/identity negative controls with
+  byte-identical sealed plans/blobs; the strict returned checker also rejects
+  missing/extra terminal rows. Root also checked row joins for all22 historical
+  and current manifests.
+- **Missing normal-read initialization remains a real contract gap.** Earlier
+  source fixtures omit the genuine86660 conversion wrappers and2f899 preparation.
+  Their PDEVd4/d8 are absent. Normal Lock uses the sampled resource's3d0/3c8
+  staging/conversion path; its3fc is zero, so the embeddedac1f0 path is skipped.
+  Historical directac1f0 output is not proof of this normal public Lock flow.
+  New source helpers execute the real constructors/preparation before queue
+  initialization. Their complete fresh fixture must be qualified as a whole;
+  injecting pointers into an older retired capture would not be valid.
+- **Application integration remains incomplete.** Preparation allocates surfaces,
+  but production draws neither assign job.faa.graph nor initialize that graph
+  for execution. Non3d raw companion layouts remain unqualified. These are
+  missing functionality, not stale opcode constants.
+
+The current generator retains nonnull program entry offset0 correctly. All
+four C2/C3 pairs,16 direct sites and47 timeline fields are joined; no additional
+literal captured-address flaw was identified in those current sealed fields.
+The fixed320x240 dimensions, format words, two clear segments and50000 ordinary
+output capacity remain guarded experimental inputs, not general application
+parameters. Live bases, page masks/counts, suffix lengths and timeline origins
+are still recomputed from retained owners. Do not globally replace constants
+or zero masks without their producer/consumer evidence.
+
+Root verification: actual raw/helper and locked-caller ASAN/UBSAN checks, full
+isolated Mesa DSO and rebuilt batch executable pass. Nine real kernel program
+tables pass; extracted native code passes128 placement/alignment cases including
+both mask blocks and refusal before any write on a malformed later block. The
+returned-profile module builds. No hardware test was repeated for this audit.
+
+The sections below are historical review checkpoints; superseded findings are
+retained to explain the evidence and earlier fixes.
+
 ## Current review: real-table program guard regression
 
 Reviewed kernel ce402c0 (including65cafcc), Mesa c192362 and RE22e9d9fa.
