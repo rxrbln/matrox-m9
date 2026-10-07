@@ -8,6 +8,14 @@ Ordinary textured rendering and the deployed driver are validated. FAA
 rendering is not yet validated. This note is separate from P690
 `102b:2539` evidence.
 
+Latest hardware checkpoint: kernel b011551 retires the second finite
+replacement-format barrier at250/raw251 on a fresh M9128 boot. All eight phases
+complete; empty queue/wedged0 persists after two seconds. Main, companion and
+sampled-primary contents match prior230; pool state changes. Ten retained BAR
+roles and exact counters are archived and verified. The original240 emulator
+continuation can proceed. No ordinary-output or FAA pixel pass is established.
+[Finite format barrier hardware evidence](../tests/m9-faa-public-replacement-submit-hardware-20261007/README.md).
+
 Latest hardware checkpoint: corrected kernel da3e710 retires the original
 public caller's replacement-preparation prefix at230/raw231 on a fresh M9128
 boot. All seven boundaries complete; queue empty/wedged0 persists after two
