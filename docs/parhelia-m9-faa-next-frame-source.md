@@ -89,3 +89,13 @@ The raw image in this capsule is the **first** Lock image, taken before
 Unlock and the second draw. It still passes the triangle oracle, but supplies
 no second-frame pixel evidence. Original second DRAW return, raster finish,
 normal Lock and its resulting image remain the next boundaries.
+
+
+The same retained diagnostic graph now completes a changed second image.
+Native renderingfinish210 and reused normalLock240 retire. After the actual
+240-gated vendor Lock returns the same retained F021 mapper (REc97f6d75),
+DRM8552a94 admits only the exact retired second Lock state/point/cursor/owner.
+Freshboote0647539-cb37-43b9-84c5-202f5cd53b2e produced second14065 colored
+pixels/528 partial edges,4704 changed packed pixels,zero geometric/channel
+errors. Pixel/receipt mutations pass in tests/m9-faa-second-view-20261007.
+This proves two changed geometry draws on one graph, not continuous app FAA.

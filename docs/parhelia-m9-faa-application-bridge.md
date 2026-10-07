@@ -22,8 +22,10 @@ records; the fragment program remains the fixed red diagnostic. Source proof
 recomputing eight addresses, five timeline words and two extents. Hardware
 capsules are under tests/m9-faa-next-frame-tail-20261007 and
 m9-faa-next-frame-lock-20261007. Their saved raw files are FIRST image only.
-A separate guarded second F021 view is implemented at DRM8552a94; actual
-second-image validation remains pending. These are bounded320x240 diagnostics.
+A separate guarded second F021 view at DRM8552a94 is now hardware verified:
+real second image has14065 colored/528 partial pixels,4704 changed pixels,
+zero interior/exterior/channel errors. Evidence and first/second PNGs are under
+tests/m9-faa-second-view-20261007. These are bounded320x240 diagnostics.
 
 Canonical Mesa23f0999 supplies the GPU integer-viewport position encoder and
 private-clone GL depth adapter, computing `(z+w)/2` on GPU. Mesa789d4f5 joins
