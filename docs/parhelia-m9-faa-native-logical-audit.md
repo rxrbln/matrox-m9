@@ -4,6 +4,48 @@ The actual complete180 stream retires without wedging but produces an all-black
 image. Retirement is established; FAA rendering is not. This review examines
 native production and the source contract rather than repeating that test.
 
+## Current review: public continuation and remaining hardcoded assumptions
+
+Reviewed kernel e316f3f and Mesa776e5bf. The distinct public shared-depth
+prefix now retires1a0 on M9128 with healthy counters; this is preparation
+completion, not a resolved image. The sampled-color retention fix9dee327 is
+included in that hardware module. The earlier text below records prior review
+states and must not be read as the current deployment status.
+
+One stale structural limit remains in that tested kernel: the phased requester
+rejects more than four endpoints. The new public resolve continuation needs
+the existing c0/120/140/1a0 boundaries plus its own finish. Kernel e5af628
+admits five while retaining complete endpoint/PTE preflight. The actual-C
+ASAN/UBSAN fixture checks fifth-phase success, timeout, callback failure,
+late endpoint/target refusal and a newly consumed stale page. This removes a
+next-profile admission failure; it did not cause the earlier black output.
+
+The genuine public continuation has now executed mode9 rendering dispatch
+and published three1c0 last-use deadlines, then stopped at an original
+cleanup wait before aa750 returns. The earlier1a0 prefix did not contain
+that launch. Its620 appended bytes neither overwrite earlier CPU inputs nor
+replace the earlier independent1a0 footer. Native admission of the new whole
+prefix and its hardware execution still need their own proof.
+
+The new resolve block emits zero AB/AC words from the actual vendor producer.
+Do not apply the older inactive-color-mask normalization there: its proof is
+specific to the earlier secondary block and its active-target routing. A
+zero state word is not stale merely because another pass uses all-one masks.
+Likewise, the fixed private320x240 dimensions and descriptor constants remain
+bounded inputs, not a substitute for deriving application surface state.
+A separate raw Mesa option bug is confirmed: `M9X_FAA_COMPANION=189`
+is compared as189 when choosing allocation/layout, then narrowed and masked
+into hardware format61 (`0x3d`). At320x240, the real helper selects614400
+bytes/descriptor7a210140 instead of the source-backed614432/7a220140 used by
+option61. This is an invalid-option alias into a different layout, not a
+measured overrun or explanation of the correctly selected private0x3d image.
+Reject the original wide option outside -1 or0..127 before any narrowing;
+never silently canonicalize an alias after allocation decisions.
+
+No additional literal captured-address defect was found in the reviewed
+native owner/fixup/clear paths. This does not close the public readback or
+application graph integration gaps described below.
+
 ## Follow-up source review: current native and application paths
 
 Reviewed kernel3b39c98 plus the uncommitted in-place-copy profile, and Mesa
