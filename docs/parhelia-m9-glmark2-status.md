@@ -1,6 +1,6 @@
 # glmark2 on the m9x driver: where the 60 fps goal actually stands
 
-## Current implementation gaps, checked against Mesa1802132
+## Current implementation gaps, checked against Mesabb0c20a
 
 The older chronological entries below are not a current missing-op list.
 Vertex log2/exp2/pow and bounded arithmetic branching are implemented; they
@@ -49,11 +49,17 @@ dark geometry with horizontal bands. The image is FAIL, so the reported
 946FPS is not a valid rendering benchmark. Root retains the sign improvement;
 the new observation does not identify sign arithmetic as the cause.
 
-The full native-input/packed-record observer currently requires the wider
-producer/gather route and does not capture this ordinary native path. The
-linked diffuse/U/V component routing and actual ordinary output are the next
-diagnostic scope. No full independent application pixel reference is claimed.
+Mesabb0c20a subsequently adds bounded input-only capture for this ordinary
+native path. Two actual frames retain the submitted C2, source attributes,
+constants, declarations and output layout, with two GPU user draws and zero
+CPU user transforms. Final9b500/raw9b501 retires healthy with an empty queue
+immediately and two seconds later. These are submitted inputs, not GPU
+vertex-output readback or another image qualification. The actual shader uses
+scratch registers10/12 beside varying outputs11/13 while its ordinary mask
+remainsbf00. Vendor mask-policy comparison is the next diagnostic scope.
+No full independent application pixel reference is claimed.
 [Exact failed-image evidence](../tests/m9-gl2-texgen-hardware-20261007/README.md).
+[Actual ordinary inputs](../captures/m9x-texgen-fused-inputs-20261007/README.md).
 
 ## 2026-10-07: complex bump clip coordinates pass; clean run reaches 417 FPS
 

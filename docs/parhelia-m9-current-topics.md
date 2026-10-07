@@ -61,6 +61,15 @@ both786432pixel palettes and5BEstate swaps, with healthy retirement. The
 run does not independently qualify asynchronous overlap; previous queue
 peak and async target are historical. No measured FPS gain is claimed.
 
+Mesa1802132 adds vertex sign; all86host vertex references and five expected
+refusals pass. Actual texture:texgen=true uses only GPU user transforms but
+its first screenshot is visibly corrupted; the reported946FPS is not a valid
+rendering baseline. Mesabb0c20a adds bounded ordinary input capture. Two
+actual frames expose scratch registers10/12 beside varying outputs11/13,
+with the submitted fixedbf00 mask. Vendor-policy comparison is in progress;
+no texgen image fix is yet qualified.
+[Texgen image and input evidence](parhelia-m9-glmark2-status.md).
+
 FAA public red constants change actual main-store contents, but final output
 remains black. Kernel516990f preserves the vendor's omitted post-wait314kick;
 one fresh hardware test still reads black after the kick, so the retained
@@ -91,8 +100,11 @@ capture. [Actual ordinary hardware proof](../tests/m9-ordinary-system-red-hardwa
 
 Current normal target boot is `4636e49f-790e-46ce-88df-8c107cf63889`,
 observer kernel73c2a45, user submissions enabled and private FAA disabled.
-Recovery after the backend-status FAA test reports raw10/10,next20, empty
-unarmed queue and wedged0. The previous benchmark boot6d completed84ac0. Current qualified Mesa05c7c29 retains
+After recovery, the latest ordinary texgen input diagnostic completes
+9b500/raw9b501, next9b510, with an empty queue and wedged0 immediately and
+two seconds later. The previous benchmark boot6d completed84ac0.
+Current Mesabb0c20a includes sign1802132 and input capture; the complex bump
+rendering qualification belongs to Mesa05c7c29. The current source retains
 the earlier map, completion-cache, packed publication, dependency and wait
 improvements. The earlier 34FPS run with156wrong Z/W pairs is superseded by
 the correct bump qualification above; it remains historical failure evidence.
