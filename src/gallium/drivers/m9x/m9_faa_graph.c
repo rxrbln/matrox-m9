@@ -815,16 +815,11 @@ m9_faa_surface_color_batch_kernel(struct m9_screen *screen,
       if (state->cull_face != PIPE_FACE_NONE)
          draws[i].raster_flags |= ((state->cull_face == PIPE_FACE_BACK) == state->front_ccw) ?
             PARHELIA_M9_FAA_COLOR_RASTER_CULL_CW : PARHELIA_M9_FAA_COLOR_RASTER_CULL_CCW;
-      /* Fresh source establishes a common raster mode. Mid-frame changes
-       * need their own binding transitions even when program bytes match. */
-      if (i && draws[i].raster_flags != draws[0].raster_flags)
+      /* Each job owns its shader interface and full flat/smooth metadata.
+       * Cull launch state remains common until its transition is proved. */
+      if (i && (draws[i].raster_flags & 6u) != (draws[0].raster_flags & 6u))
          return -EOPNOTSUPP;
-      if (i && (memcmp(&u->shader.layout, &head->shader.layout, sizeof(u->shader.layout)) ||
-                u->shader.constants_bytes != head->shader.constants_bytes ||
-                memcmp(u->shader.constant_begin, head->shader.constant_begin, sizeof(u->shader.constant_begin)) ||
-                memcmp(u->shader.constant_end, head->shader.constant_end, sizeof(u->shader.constant_end)) ||
-                u->shader.declaration_words != head->shader.declaration_words ||
-                memcmp(u->shader.program, head->shader.program, u->shader.layout.bytes) ||
+      if (i && (u->shader.declaration_words != head->shader.declaration_words ||
                 memcmp(u->shader.declaration, head->shader.declaration, u->shader.declaration_words * 4u)))
          return -EOPNOTSUPP;
    }
