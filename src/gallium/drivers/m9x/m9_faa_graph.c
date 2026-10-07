@@ -38,6 +38,7 @@ m9_faa_graph_create(struct m9_screen *screen, uint32_t width,
        graph->companion.handle || graph->hz.handle || graph->sentinel.handle ||
        graph->prepared_id || graph->prepared || graph->initialized ||
        graph->public_vs_attempted || graph->public_vs_point ||
+       graph->public_vs_follow_attempted || graph->public_vs_follow_point ||
        !m9_faa_graph_layout(width, height, &fresh.layout))
       return -EINVAL;
    ret = m9_bo_create_engine_only(screen, fresh.layout.main_bytes,
@@ -387,6 +388,45 @@ m9_faa_surface_public_vs_kernel(struct m9_screen *screen,
 }
 
 int
+m9_faa_surface_public_vs_follow_kernel(struct m9_screen *screen,
+                                      struct m9_faa_surface *surface)
+{
+   struct drm_parhelia_m9_faa_graph_public_vs_follow request = {0};
+   struct m9_faa_graph *graph;
+
+   _Static_assert(sizeof(request) == 40, "public VS follow kernel ABI");
+   if (!screen || !surface)
+      return -EINVAL;
+   graph = &surface->graph;
+   if (screen->faa.chip != M9_FAA_CHIP_M9 || !screen->wait_point)
+      return -EOPNOTSUPP;
+   if (!graph->prepared || !graph->prepared_id || !graph->initialized ||
+       !graph->public_vs_attempted || !graph->init_point ||
+       graph->init_point > UINT64_MAX - 0x80 ||
+       graph->public_vs_point != graph->init_point + 0x50)
+      return -EINVAL;
+   if (graph->public_vs_follow_attempted || graph->public_vs_follow_point)
+      return -ESTALE;
+   request.graph_id = graph->prepared_id;
+   request.generation = graph->prepared_generation;
+   request.prefix_point = graph->public_vs_point;
+   const struct drm_parhelia_m9_faa_graph_public_vs_follow before = request;
+   graph->public_vs_follow_attempted = true;
+   if (ioctl(screen->fd, DRM_IOCTL_PARHELIA_M9_FAA_GRAPH_PUBLIC_VS_FOLLOW, &request))
+      return -errno;
+   if (request.graph_id != before.graph_id || request.generation != before.generation ||
+       request.prefix_point != before.prefix_point || request.flags || request.pad ||
+       request.state != PARHELIA_M9_FAA_PUBLIC_VS_FOLLOW_PREFIX_RETIRED ||
+       request.follow_point != before.prefix_point + 0x30)
+      return -EPROTO;
+   int ret = m9_wait_for_point(screen, request.follow_point);
+   if (ret)
+      return ret;
+   graph->public_vs_follow_point = request.follow_point;
+   return 0;
+}
+
+int
 m9_faa_graph_release_kernel(struct m9_screen *screen, struct m9_faa_graph *graph)
 {
    struct drm_parhelia_m9_faa_graph_release request = {0};
@@ -395,7 +435,8 @@ m9_faa_graph_release_kernel(struct m9_screen *screen, struct m9_faa_graph *graph
       return -EINVAL;
    if (!graph->prepared_id)
       return graph->prepared || graph->initialized || graph->init_point ||
-             graph->public_vs_attempted || graph->public_vs_point ? -EPROTO : 0;
+             graph->public_vs_attempted || graph->public_vs_point ||
+             graph->public_vs_follow_attempted || graph->public_vs_follow_point ? -EPROTO : 0;
    request.graph_id = graph->prepared_id;
    request.generation = graph->prepared_generation;
    if (ioctl(screen->fd, DRM_IOCTL_PARHELIA_M9_FAA_GRAPH_RELEASE, &request))
@@ -407,5 +448,7 @@ m9_faa_graph_release_kernel(struct m9_screen *screen, struct m9_faa_graph *graph
    graph->init_point = 0;
    graph->public_vs_attempted = false;
    graph->public_vs_point = 0;
+   graph->public_vs_follow_attempted = false;
+   graph->public_vs_follow_point = 0;
    return 0;
 }

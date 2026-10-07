@@ -89,4 +89,15 @@ struct drm_parhelia_m9_faa_graph_public_vs {
    DRM_IOWR(DRM_COMMAND_BASE + DRM_PARHELIA_M9_FAA_GRAPH_PUBLIC_VS, \
             struct drm_parhelia_m9_faa_graph_public_vs)
 #endif
+#ifndef DRM_IOCTL_PARHELIA_M9_FAA_GRAPH_PUBLIC_VS_FOLLOW
+#define DRM_PARHELIA_M9_FAA_GRAPH_PUBLIC_VS_FOLLOW 0x17
+#define PARHELIA_M9_FAA_PUBLIC_VS_FOLLOW_PREFIX_RETIRED 11u
+struct drm_parhelia_m9_faa_graph_public_vs_follow {
+   __u64 graph_id, prefix_point, follow_point;
+   __u32 generation, flags, state, pad;
+};
+#define DRM_IOCTL_PARHELIA_M9_FAA_GRAPH_PUBLIC_VS_FOLLOW \
+   DRM_IOWR(DRM_COMMAND_BASE + DRM_PARHELIA_M9_FAA_GRAPH_PUBLIC_VS_FOLLOW, \
+            struct drm_parhelia_m9_faa_graph_public_vs_follow)
+#endif
 #endif

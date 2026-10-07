@@ -136,6 +136,8 @@ struct m9_faa_graph {
     * Any attempted ioctl may consume INIT; retry needs a new graph token. */
    bool public_vs_attempted;
    uint64_t public_vs_point;
+   bool public_vs_follow_attempted;
+   uint64_t public_vs_follow_point;
 };
 
 /* A context's prepared sampled target and the attachments it stands for.
