@@ -37,10 +37,14 @@ m9_faa_graph_create(struct m9_screen *screen, uint32_t width,
       ret = m9_bo_create_engine_only(screen, fresh.layout.auxiliary_bytes,
                                       M9_RESOURCE_LINEAR_BUFFER, &fresh.auxiliary);
    if (!ret)
-      ret = m9_bo_create_engine_only(screen, fresh.layout.companion_bytes,
+      ret = m9_bo_create_engine_only(screen, fresh.layout.companion_capacity_bytes ?
+                                      fresh.layout.companion_capacity_bytes :
+                                      fresh.layout.companion_bytes,
                                       M9_RESOURCE_LINEAR_DEPTH, &fresh.companion);
    if (!ret)
-      ret = m9_bo_create_engine_only(screen, fresh.layout.hz_bytes,
+      ret = m9_bo_create_engine_only(screen, fresh.layout.hz_capacity_bytes ?
+                                      fresh.layout.hz_capacity_bytes :
+                                      fresh.layout.hz_bytes,
                                       M9_RESOURCE_LINEAR_DEPTH, &fresh.hz);
    if (!ret)
       ret = m9_bo_create(screen, M9_FAA_SENTINEL_BYTES, PARHELIA_M9_BO_VRAM,
@@ -156,6 +160,10 @@ m9_faa_surface_init_request(const struct m9_screen *screen,
        actual->auxiliary_bytes != graph.auxiliary_bytes ||
        actual->companion_bytes != graph.companion_bytes ||
        actual->hz_bytes != graph.hz_bytes ||
+       actual->companion_clear_bytes != graph.companion_clear_bytes ||
+       actual->companion_capacity_bytes != graph.companion_capacity_bytes ||
+       actual->hz_clear_bytes != graph.hz_clear_bytes ||
+       actual->hz_capacity_bytes != graph.hz_capacity_bytes ||
        actual->companion_row_span != graph.companion_row_span ||
        actual->companion_desc != graph.companion_desc ||
        actual->hz_desc != graph.hz_desc ||
@@ -174,17 +182,24 @@ m9_faa_surface_init_request(const struct m9_screen *screen,
       primary.size, graph.main_bytes, graph.auxiliary_bytes,
       graph.companion_bytes, graph.hz_bytes, M9_FAA_SENTINEL_BYTES,
    };
-   /* Retained prepared180 source graph: compare capacities only. The
-    * companion/HZ padding contract is still missing from Mesa allocation;
-    * this snapshot neither grows them nor admits a GPU transaction. */
+   /* Clear ranges are source-qualified only for these two roles. Zero
+    * does not authorize a clear of another owner. Backing padding is not
+    * CPU-initialized or included in the GPU clear extent. */
+   const uint64_t clear[M9_FAA_INIT_OWNER_COUNT] = {
+      0, 0, 0, graph.companion_clear_bytes, graph.hz_clear_bytes, 0,
+   };
+   /* Retained prepared180 page capacities, independently confirmed by
+    * the actual constructor/backing allocator. No initialization receipt. */
    const uint64_t source_capacity[M9_FAA_INIT_OWNER_COUNT] = {
-      0x50000, 0x137000, 0x14000, 0x98000, 0x8000, 0x1000,
+      0x50000, 0x137000, 0x14000, graph.companion_capacity_bytes,
+      graph.hz_capacity_bytes, 0x1000,
    };
    fresh.source_capacity_compatible = true;
    for (unsigned i = 0; i < M9_FAA_INIT_OWNER_COUNT; i++) {
       const struct m9_resource *owner = owners[i];
       if (!owner->handle || !owner->handle_owned ||
           owner->domain != M9_BO_VRAM || owner->size < logical[i] ||
+          owner->size < clear[i] ||
           owner->handle == ((const struct m9_resource *)surface->destination)->handle)
          return false;
       for (unsigned k = 0; k < i; k++)
@@ -193,7 +208,7 @@ m9_faa_surface_init_request(const struct m9_screen *screen,
       fresh.source_capacity_compatible &= owner->size == source_capacity[i];
       fresh.owners[i] = (struct m9_faa_init_owner) {
          .handle = owner->handle, .logical_bytes = logical[i],
-         .capacity_bytes = owner->size,
+         .clear_bytes = clear[i], .capacity_bytes = owner->size,
       };
    }
    fresh.width = surface->width;

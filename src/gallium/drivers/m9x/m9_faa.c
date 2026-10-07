@@ -221,6 +221,19 @@ m9_faa_graph_layout(uint32_t width, uint32_t height,
       .companion_desc = companion.descriptor,
       .hz_desc = 0xf0010000u | m9_depth_row_span(width, height),
    };
+   /* Actual 320x240 ac7e0/45eb0: companion raw 0x96020 is rounded by
+    * 464d9 to clear 0x97000. 46197 selects backing alignment 0x8000;
+    * 546ea passes it to a17d1..a17df, yielding capacity 0x98000.
+    * HZ raw 0x2d00 clears0x3000 and uses the same backing alignment.
+    * These are bounded allocation metadata, not GPU initialization. */
+   if (width == 320 && height == 240) {
+      layout->companion_clear_bytes = (companion.size + 4095) & ~4095ull;
+      layout->companion_capacity_bytes =
+         (layout->companion_clear_bytes + 0x7fff) & ~0x7fffull;
+      layout->hz_clear_bytes = 0x3000;
+      layout->hz_capacity_bytes =
+         (layout->hz_clear_bytes + 0x7fff) & ~0x7fffull;
+   }
    return true;
 }
 

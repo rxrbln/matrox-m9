@@ -50,6 +50,8 @@ struct m9_faa_init_owner {
    uint32_t handle;
    /* Mesa helper footprint; not the vendor resource+1bc clear extent. */
    uint64_t logical_bytes, capacity_bytes;
+   /* Source-qualified companion/HZ clear range; zero means unmodeled. */
+   uint64_t clear_bytes;
 };
 struct m9_faa_init_request {
    uint32_t width, height, format;
