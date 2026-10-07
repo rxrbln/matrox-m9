@@ -1045,6 +1045,94 @@ int m9x_extend_faa_virtual_primary_locked(struct m9x_device *mdev,
 	return 0;
 }
 
+/* A retained graph can post the same END twice before any new fence write.
+ * This pure shape check leaves the stage ordering to the native producer:
+ * equality is admitted only for an explicitly repeated endpoint, and a
+ * target is never confused with the CPU's previous INIT observation. */
+static int m9_faa_graph_end_shape(const struct drm_mm_node *node,
+				 dma_addr_t dma, u32 old_bytes, u32 new_bytes,
+				 bool repeat, u32 target)
+{
+	u32 end;
+
+	if (!node || !drm_mm_node_allocated(node) || node->start > U32_MAX ||
+	    !IS_ALIGNED(node->start, PAGE_SIZE) ||
+	    !IS_ALIGNED(node->size, PAGE_SIZE) ||
+	    node->size > 0x50000 || upper_32_bits(dma) ||
+	    !IS_ALIGNED(dma, PAGE_SIZE) ||
+	    (u64)dma + node->size > (u64)U32_MAX + 1 ||
+	    !old_bytes || !IS_ALIGNED(old_bytes | new_bytes, 4) ||
+	    new_bytes > node->size ||
+	    new_bytes > PARHELIA_M9_COMMAND_BYTES ||
+	    (repeat ? new_bytes != old_bytes : new_bytes <= old_bytes) ||
+	    (target && (!IS_ALIGNED(target, 16) || target > U32_MAX - 0x10)) ||
+	    check_add_overflow((u32)node->start, new_bytes, &end))
+		return -EINVAL;
+	return 0;
+}
+
+/* Continue the same flags30/B COMMAND_BASE namespace.  This function never
+ * writes COMMAND_BASE, seeds a counter, or treats an END post as completion.
+ * The caller holds TRANSPORT and the retained graph's owner reservations;
+ * after any posted failure those owners must remain quarantined.  Only the
+ * native graph producer may call this helper, after its identity gate. */
+int m9x_post_faa_graph_end_locked(struct m9x_device *mdev,
+				 const struct drm_mm_node *node, dma_addr_t dma,
+				 u32 old_bytes, u32 new_bytes, bool repeat,
+				 u32 target, u64 *point, bool *doorbell_posted)
+{
+	struct m9x_transport *t = &mdev->transport;
+	u32 page, pte, end;
+	int ret;
+
+	lockdep_assert_held(&t->lock);
+	if (doorbell_posted)
+		*doorbell_posted = false;
+	if (point)
+		*point = 0;
+	if (!point || !doorbell_posted)
+		return -EINVAL;
+	if (!m9x_faa_graph_profile_enabled())
+		return -EOPNOTSUPP;
+	if (!m9x_faa_graph_active(mdev) || m9x_faa_graph_preparing(mdev) ||
+	    !t->faa_virtual_primary || !t->faa_source_context ||
+	    !t->transport_armed || !t->bus_master_enabled || !t->fence_cpu ||
+	    t->async_stop || t->async_pending || t->queue_count)
+		return -EBUSY;
+	if (t->wedged)
+		return -EIO;
+	ret = m9_faa_graph_end_shape(node, dma, old_bytes, new_bytes,
+				     repeat, target);
+	if (ret)
+		return ret;
+	if (target && (target < t->next_fence ||
+	    m9_fence_reached(READ_ONCE(((u32 *)t->fence_cpu)[0]), target)))
+		return -EAGAIN;
+	/* A new suffix can cross a mapped page.  Verify every consumed page
+	 * still names the same coherent primary before the first doorbell. */
+	for (page = 0; page < DIV_ROUND_UP(new_bytes, PAGE_SIZE); page++) {
+		ret = m9x_address_read_pte(mdev,
+				(u32)node->start + page * PAGE_SIZE, &pte);
+		if (ret)
+			return ret;
+		if (pte != (m9x_address_pte_word(dma + page * PAGE_SIZE) | 1u))
+			return -ESTALE;
+	}
+	end = (u32)node->start + new_bytes;
+	dma_wmb();
+	m9x_write(mdev, M9_REG_COMMAND_END, end);
+	m9x_read(mdev, M9_REG_COMMAND_END);
+	*doorbell_posted = true;
+	if (!target)
+		return 0;
+	ret = m9_fence_wait_locked(mdev, target);
+	if (ret)
+		return ret;
+	*point = m9_extend_fence(t, READ_ONCE(((u32 *)t->fence_cpu)[0]));
+	t->next_fence = target + 0x10;
+	return 0;
+}
+
 int m9x_submit_kernel_queue_locked(struct m9x_device *mdev,
 				   const u32 *commands, u32 dwords, u32 target,
 				   u64 *point, bool *doorbell_posted)

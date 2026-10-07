@@ -354,6 +354,13 @@ int m9x_extend_faa_virtual_primary_locked(struct m9x_device *mdev,
 				 const struct drm_mm_node *node, dma_addr_t dma,
 				 u32 old_bytes, u32 new_bytes, u32 target,
 				 u64 *point, bool *doorbell_posted);
+/* Graph-only continuation of an already published virtual primary.  A zero
+ * target posts END without claiming retirement; a nonzero target waits for
+ * the actual writeback.  The native caller owns the graph and stage order. */
+int m9x_post_faa_graph_end_locked(struct m9x_device *mdev,
+				 const struct drm_mm_node *node, dma_addr_t dma,
+				 u32 old_bytes, u32 new_bytes, bool repeat,
+				 u32 target, u64 *point, bool *doorbell_posted);
 int m9x_validate_faa_virtual_resume_locked(struct m9x_device *mdev,
 				 const struct drm_mm_node *node, dma_addr_t dma,
 				 u32 old_bytes, u32 new_bytes, u32 target);
@@ -491,6 +498,14 @@ int m9x_faa_graph_continuation_acquire(struct m9x_device *mdev,
 int m9x_faa_graph_retained_get_locked(struct m9x_device *mdev,
 		u32 generation, u64 init_point,
 		struct m9_faa_graph_binding **out);
+/* Private first-draw staging only. The future caller holds all six graph
+ * reservations and the same retained binding through every END and wait. */
+int m9x_faa_graph_draw_claim_locked(struct m9x_device *mdev,
+		struct m9_faa_graph_binding *binding, u32 generation,
+		u64 init_point);
+int m9x_faa_graph_draw_end_locked(struct m9x_device *mdev,
+		struct m9_faa_graph_binding *binding, u32 generation,
+		u64 init_point, u32 stage, u64 *point, bool *posted);
 struct m9x_bo *m9x_bo_lookup(struct m9x_device *mdev,
 			     struct drm_file *file, u32 handle);
 bool m9x_gem_is_dma(struct drm_gem_object *gem);

@@ -14,6 +14,7 @@
 #define DRM_PARHELIA_M9_FAA_GRAPH_PREPARE	0x0e
 #define DRM_PARHELIA_M9_FAA_GRAPH_RELEASE	0x0f
 #define DRM_PARHELIA_M9_FAA_GRAPH_INIT	0x10
+#define DRM_PARHELIA_M9_FAA_GRAPH_DRAW_RED	0x11
 
 #define DRM_IOCTL_PARHELIA_M9_CREATE_BO \
 	DRM_IOWR(DRM_COMMAND_BASE + DRM_PARHELIA_M9_CREATE_BO, \
@@ -55,6 +56,7 @@ enum drm_parhelia_m9_faa_owner_role {
 };
 #define PARHELIA_M9_FAA_GRAPH_PREPARED 1u
 #define PARHELIA_M9_FAA_GRAPH_INITIALIZED 2u
+#define PARHELIA_M9_FAA_DRAW_RETIRED 3u
 struct drm_parhelia_m9_faa_owner {
 	__u32 handle;
 	__u32 pad;
@@ -99,6 +101,23 @@ struct drm_parhelia_m9_faa_graph_init {
 #define DRM_IOCTL_PARHELIA_M9_FAA_GRAPH_INIT \
 	DRM_IOWR(DRM_COMMAND_BASE + DRM_PARHELIA_M9_FAA_GRAPH_INIT, \
 		struct drm_parhelia_m9_faa_graph_init)
+
+/* Private source-bounded first red draw on a retained initialized graph.
+ * The caller supplies the exact INIT receipt; all output fields are zero on
+ * input. State 3 and draw_point require the later actual GPU wait. This is
+ * neither a public Gallium draw contract nor a pixel/readback receipt. */
+struct drm_parhelia_m9_faa_graph_draw_red {
+	__u64 graph_id;
+	__u64 init_point;
+	__u64 draw_point;
+	__u32 generation;
+	__u32 flags;
+	__u32 state;
+	__u32 pad;
+};
+#define DRM_IOCTL_PARHELIA_M9_FAA_GRAPH_DRAW_RED \
+	DRM_IOWR(DRM_COMMAND_BASE + DRM_PARHELIA_M9_FAA_GRAPH_DRAW_RED, \
+		struct drm_parhelia_m9_faa_graph_draw_red)
 
 /*
  * M9 command and staging objects are immutable DMA32 allocations unless

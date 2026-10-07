@@ -219,6 +219,12 @@ struct m9x_faa_replay {
 	struct m9_faa_graph_binding *graph_binding;
 	u32 graph_generation;
 	bool graph_preparing;
+	/* The first graph draw is a separate caller on the retained INIT
+	 * context. A claim closes INIT-token reuse before any source upload;
+	 * every posted END advances this cursor even if its later wait fails. */
+	bool graph_draw_claimed;
+	u32 graph_draw_posts, graph_draw_end_bytes;
+	u64 graph_draw_point;
 	/* Prepared program bytes remain CPU inputs until the original c0
 	 * access boundary. Keep their source buffer through that upload. */
 	const struct firmware *program_inputs;
@@ -335,7 +341,8 @@ static int m9_faa_graph_continuation_state(
 		return -EIO;
 	if (!r || !r->graph_binding || !r->prepared || !r->attempted ||
 	    !r->observation_retired || !r->observation_point ||
-	    r->graph_preparing || r->graph_generation != generation ||
+	    r->graph_preparing || r->graph_draw_claimed ||
+	    r->graph_generation != generation ||
 	    r->observation_generation != generation ||
 	    t->generation != generation ||
 	    r->observation_point != init_point ||
@@ -367,6 +374,119 @@ int m9x_faa_graph_retained_get_locked(struct m9x_device *mdev,
 	if (!ret)
 		*out = m9x_faa_graph_binding_get(mdev->transport.faa->graph_binding);
 	return ret;
+}
+
+#ifdef M9_FAA_GRAPH_INIT_CONTROL
+/* The signed first-draw source appends 88 bytes to the existing 4880-byte
+ * primary: two posts at +64, then an independent finish at +88.  The live
+ * INIT primary may be longer because its companion clear was regenerated;
+ * adding to r->primary_bytes applies that delta without touching the
+ * already retired prefix or resetting COMMAND_BASE.  0x60 is the source
+ * timeline distance from the actual INIT receipt to the final writeback. */
+static int m9_faa_graph_stage_shape(const struct m9x_faa_replay *r,
+				    u32 stage, u64 init_point, u32 *end_bytes,
+				    bool *repeat, u32 *target)
+{
+	u32 end;
+
+	if (!r || !end_bytes || !repeat || !target ||
+	    M9_FAA_PRIMARY_BYTES != 4880 || stage != r->graph_draw_posts ||
+	    stage >= 3 || !r->primary_bytes ||
+	    lower_32_bits(init_point) > U32_MAX - 0x60)
+		return -EINVAL;
+	if (check_add_overflow(r->primary_bytes,
+			       stage == 2 ? 88u : 64u, &end) ||
+	    end > r->owner[M9_FAA_PRIMARY_OWNER].bytes ||
+	    (stage == 0 && r->graph_draw_end_bytes != r->primary_bytes) ||
+	    (stage && r->graph_draw_end_bytes != r->primary_bytes + 64))
+		return -ERANGE;
+	*end_bytes = end;
+	*repeat = stage == 1;
+	*target = stage == 2 ? lower_32_bits(init_point) + 0x60 : 0;
+	return 0;
+}
+#endif
+
+/* Claim the separate public caller before its CPU mapping and program
+ * upload.  No command is posted here.  A repeated caller cannot use the
+ * INIT receipt to begin another draw, even while its first END is pending. */
+int m9x_faa_graph_draw_claim_locked(struct m9x_device *mdev,
+		struct m9_faa_graph_binding *binding, u32 generation,
+		u64 init_point)
+{
+#ifdef M9_FAA_GRAPH_INIT_CONTROL
+	struct m9x_transport *t = &mdev->transport;
+	struct m9x_faa_replay *r;
+	int ret;
+
+	lockdep_assert_held(&t->lock);
+	ret = m9_faa_graph_continuation_state(t, generation, init_point);
+	if (ret)
+		return ret;
+	r = t->faa;
+	if (!binding || binding != r->graph_binding ||
+	    r->primary_bytes < M9_FAA_PRIMARY_BYTES ||
+	    r->owner[M9_FAA_PRIMARY_OWNER].vram ||
+	    !r->owner[M9_FAA_PRIMARY_OWNER].cpu ||
+	    !drm_mm_node_allocated(&r->owner[M9_FAA_PRIMARY_OWNER].system_node) ||
+	    r->owner[M9_FAA_PRIMARY_OWNER].system_node.start !=
+			r->owner[M9_FAA_PRIMARY_OWNER].base)
+		return -ESTALE;
+	r->graph_draw_claimed = true;
+	r->graph_draw_end_bytes = r->primary_bytes;
+	return 0;
+#else
+	return -EOPNOTSUPP;
+#endif
+}
+
+/* The future private draw producer calls this only after source-known
+ * suffix/secondary uploads, under six graph reservations and TRANSPORT.
+ * Even a failed wait after END publication consumes its stage; owner refs
+ * stay with the retained replay until teardown/quarantine. */
+int m9x_faa_graph_draw_end_locked(struct m9x_device *mdev,
+		struct m9_faa_graph_binding *binding, u32 generation,
+		u64 init_point, u32 stage, u64 *point, bool *posted)
+{
+#ifdef M9_FAA_GRAPH_INIT_CONTROL
+	struct m9x_transport *t = &mdev->transport;
+	struct m9x_faa_replay *r = t->faa;
+	struct m9_faa_owner *primary;
+	u32 end, target;
+	bool repeat;
+	int ret;
+
+	lockdep_assert_held(&t->lock);
+	if (posted)
+		*posted = false;
+	if (point)
+		*point = 0;
+	if (!point || !posted || !binding || !r || !r->graph_draw_claimed ||
+	    r->graph_binding != binding || r->graph_generation != generation ||
+	    r->observation_generation != generation ||
+	    r->observation_point != init_point ||
+	    t->generation != generation || t->wedged ||
+	    t->submitted_point != init_point || t->completed_point != init_point ||
+	    t->next_fence != lower_32_bits(init_point) + 0x10)
+		return -ESTALE;
+	ret = m9_faa_graph_stage_shape(r, stage, init_point,
+				       &end, &repeat, &target);
+	if (ret)
+		return ret;
+	primary = &r->owner[M9_FAA_PRIMARY_OWNER];
+	ret = m9x_post_faa_graph_end_locked(mdev, &primary->system_node,
+					primary->dma, r->graph_draw_end_bytes,
+					end, repeat, target, point, posted);
+	if (*posted) {
+		r->graph_draw_end_bytes = end;
+		r->graph_draw_posts++;
+	}
+	if (!ret && target)
+		r->graph_draw_point = *point;
+	return ret;
+#else
+	return -EOPNOTSUPP;
+#endif
 }
 
 int m9x_faa_graph_continuation_selftest(void)
