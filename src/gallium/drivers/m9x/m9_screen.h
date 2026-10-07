@@ -36,6 +36,34 @@ int m9_faa_surface_prepare(struct m9_screen *screen,
                            struct m9_faa_surface *surface);
 void m9_faa_surface_destroy(struct m9_screen *screen,
                             struct m9_faa_surface *surface);
+
+/* Internal request snapshot only: no public ioctl or initialization receipt.
+ * The caller retains the surface until a future kernel transaction acquires
+ * every GEM owner. Capacities remain separate from the logical footprint;
+ * no captured GPU address is encoded. */
+enum m9_faa_init_owner_role {
+   M9_FAA_INIT_PRIMARY, M9_FAA_INIT_MAIN, M9_FAA_INIT_AUXILIARY,
+   M9_FAA_INIT_COMPANION, M9_FAA_INIT_HZ, M9_FAA_INIT_SENTINEL,
+   M9_FAA_INIT_OWNER_COUNT,
+};
+struct m9_faa_init_owner {
+   uint32_t handle;
+   /* Mesa helper footprint; not the vendor resource+1bc clear extent. */
+   uint64_t logical_bytes, capacity_bytes;
+};
+struct m9_faa_init_request {
+   uint32_t width, height, format;
+   uint32_t primary_desc, companion_desc, hz_desc, ad;
+   /* Equality with the bounded source owner's page capacities, not a
+    * kernel initialization result or an arbitrary-size allocation rule. */
+   bool source_capacity_compatible;
+   struct m9_faa_init_owner owners[M9_FAA_INIT_OWNER_COUNT];
+};
+/* First request class matches the qualified320x240/format66 graph only.
+ * Rejection preserves the output and all retained surface owners. */
+bool m9_faa_surface_init_request(const struct m9_screen *screen,
+                                  const struct m9_faa_surface *surface,
+                                  struct m9_faa_init_request *request);
 int m9_command_bo_create(struct m9_screen *screen,
                          struct m9_resource *resource);
 void m9_command_bo_destroy(struct m9_screen *screen,

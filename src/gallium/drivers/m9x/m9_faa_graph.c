@@ -100,8 +100,11 @@ m9_faa_surface_prepare(struct m9_screen *screen,
    /* Preparation cannot retire or replace a group later made executable. */
    if (surface->graph.initialized)
       return -EBUSY;
-   ret = m9_bo_create_engine_only(screen, fresh.primary_layout.size,
-                                   M9_RESOURCE_LINEAR_COLOR, &fresh.primary);
+   /* The returned normal-Lock view addresses a tiled GEM primary. A
+    * userspace layout field cannot turn an ENGINE_ONLY GEM into that owner.
+    * Current CREATE_BO rejects TILED|ENGINE_ONLY, so use real BO_TILED. */
+   ret = m9_bo_create(screen, fresh.primary_layout.size, PARHELIA_M9_BO_TILED,
+                       M9_RESOURCE_LINEAR_COLOR, &fresh.primary);
    if (!ret)
       ret = m9_faa_graph_create(screen, width, height, &fresh.graph);
    if (ret) {
@@ -123,4 +126,84 @@ m9_faa_surface_prepare(struct m9_screen *screen,
    m9_faa_surface_destroy(screen, surface);
    *surface = fresh;
    return 0;
+}
+
+/* Allocation prepares owners; it does not initialize their GPU state. This
+ * snapshot is intentionally not submitted through FIRST_TRIANGLE, which owns
+ * a different one-shot private graph and cannot return our init receipt. */
+bool
+m9_faa_surface_init_request(const struct m9_screen *screen,
+                             const struct m9_faa_surface *surface,
+                             struct m9_faa_init_request *request)
+{
+   struct m9_faa_init_request fresh = {0};
+   struct m9_faa_graph_layout graph;
+   struct m9_faa_primary_layout primary;
+   const struct m9_resource *owners[M9_FAA_INIT_OWNER_COUNT];
+
+   if (!screen || !surface || !request || screen->faa.chip != M9_FAA_CHIP_M9 ||
+       surface->graph.initialized || surface->width != 320 ||
+       surface->height != 240 || surface->format != 0x66 ||
+       !surface->destination || !surface->primary.tiled ||
+       !m9_faa_graph_layout(surface->width, surface->height, &graph) ||
+       !m9_faa_primary_layout(surface->width, surface->height,
+                              surface->format, &primary))
+      return false;
+   /* Compare derived fields explicitly: C padding is not graph metadata. */
+   const struct m9_faa_graph_layout *actual = &surface->graph.layout;
+   if (actual->width != graph.width || actual->height != graph.height ||
+       actual->main_bytes != graph.main_bytes ||
+       actual->auxiliary_bytes != graph.auxiliary_bytes ||
+       actual->companion_bytes != graph.companion_bytes ||
+       actual->hz_bytes != graph.hz_bytes ||
+       actual->companion_row_span != graph.companion_row_span ||
+       actual->companion_desc != graph.companion_desc ||
+       actual->hz_desc != graph.hz_desc ||
+       surface->primary_layout.size != primary.size ||
+       surface->primary_layout.row_span != primary.row_span ||
+       surface->primary_layout.allocation_height != primary.allocation_height ||
+       surface->primary_layout.descriptor != primary.descriptor)
+      return false;
+   owners[M9_FAA_INIT_PRIMARY] = &surface->primary;
+   owners[M9_FAA_INIT_MAIN] = &surface->graph.main;
+   owners[M9_FAA_INIT_AUXILIARY] = &surface->graph.auxiliary;
+   owners[M9_FAA_INIT_COMPANION] = &surface->graph.companion;
+   owners[M9_FAA_INIT_HZ] = &surface->graph.hz;
+   owners[M9_FAA_INIT_SENTINEL] = &surface->graph.sentinel;
+   const uint64_t logical[M9_FAA_INIT_OWNER_COUNT] = {
+      primary.size, graph.main_bytes, graph.auxiliary_bytes,
+      graph.companion_bytes, graph.hz_bytes, M9_FAA_SENTINEL_BYTES,
+   };
+   /* Retained prepared180 source graph: compare capacities only. The
+    * companion/HZ padding contract is still missing from Mesa allocation;
+    * this snapshot neither grows them nor admits a GPU transaction. */
+   const uint64_t source_capacity[M9_FAA_INIT_OWNER_COUNT] = {
+      0x50000, 0x137000, 0x14000, 0x98000, 0x8000, 0x1000,
+   };
+   fresh.source_capacity_compatible = true;
+   for (unsigned i = 0; i < M9_FAA_INIT_OWNER_COUNT; i++) {
+      const struct m9_resource *owner = owners[i];
+      if (!owner->handle || !owner->handle_owned ||
+          owner->domain != M9_BO_VRAM || owner->size < logical[i] ||
+          owner->handle == ((const struct m9_resource *)surface->destination)->handle)
+         return false;
+      for (unsigned k = 0; k < i; k++)
+         if (owner->handle == owners[k]->handle)
+            return false;
+      fresh.source_capacity_compatible &= owner->size == source_capacity[i];
+      fresh.owners[i] = (struct m9_faa_init_owner) {
+         .handle = owner->handle, .logical_bytes = logical[i],
+         .capacity_bytes = owner->size,
+      };
+   }
+   fresh.width = surface->width;
+   fresh.height = surface->height;
+   fresh.format = surface->format;
+   fresh.primary_desc = primary.descriptor;
+   fresh.companion_desc = graph.companion_desc;
+   fresh.hz_desc = graph.hz_desc;
+   if (!m9_faa_store_ad(0, graph.main_bytes, &fresh.ad))
+      return false;
+   *request = fresh;
+   return true;
 }
