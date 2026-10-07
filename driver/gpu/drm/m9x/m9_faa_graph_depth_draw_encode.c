@@ -136,27 +136,31 @@ static bool views_match(const struct m9x_faa_depth_views *views,
 	return true;
 }
 
-int m9x_faa_depth_draw_encode(const u8 *blob, size_t bytes,
+static int depth_encode_impl(const u8 *blob, size_t bytes,
 	const struct m9x_faa_graph_draw_owner owner[M9_FAA_DEPTH_DRAW_OWNERS],
 	const struct m9x_faa_depth_views *views,
 	u32 primary_cursor, u32 secondary_cursor, u64 previous_unlock_point,
 	u32 clear_flags,
 	const struct m9x_faa_color_input *in,
 	u32 geometry_header_offset, u32 vertex_record_offset,
-	struct m9x_faa_depth_draw_image *out)
+	struct m9x_faa_depth_draw_image *out, bool live_color)
 {
 	u8 hash[32];
-	u32 i, low, address, offset, geometry_header_end, vertex_end;
+	u32 i, low, address, offset, geometry_header_end, vertex_end, raw_bytes;
 
 	if (!blob || bytes != M9_FAA_DEPTH_DRAW_TEMPLATE_BYTES ||
 	    !owner || !out || !out->primary || !out->secondary ||
 	    clear_flags > 1 ||
-	    !source_layout(in) || !views_match(views, owner) ||
+	    ((!live_color && !source_layout(in)) ||
+	    (live_color && (!in || in->layout.program_count != 4 ||
+		in->record_count > 12288 || in->record_stride != 32))) ||
+	    !views_match(views, owner) ||
 	    m9x_faa_graph_draw_owners_validate(owner))
 		return -EINVAL;
 	sha256(blob, bytes, hash);
 	if (memcmp(hash, depth_template_sha, sizeof(hash)))
 		return -EINVAL;
+	raw_bytes = ((in->record_count + 3u) & ~3u) * in->record_stride;
 	low = (u32)previous_unlock_point;
 	if ((previous_unlock_point & 15) || low < 0x10 ||
 	    low > U32_MAX - (clear_flags ? 0x190 : 0x130) ||
@@ -179,8 +183,7 @@ int m9x_faa_depth_draw_encode(const u8 *blob, size_t bytes,
 		((in->layout.constants_bytes + 127u) & ~127u) ||
 	    check_add_overflow(geometry_header_offset, 128u,
 		&geometry_header_end) ||
-	    check_add_overflow(vertex_record_offset,
-		(in->layout.vertex_bytes + 127u) & ~127u, &vertex_end) ||
+	    check_add_overflow(vertex_record_offset, raw_bytes, &vertex_end) ||
 	    vertex_record_offset < geometry_header_end ||
 	    vertex_end > owner[28].bytes)
 		return -ERANGE;
@@ -260,5 +263,98 @@ int m9x_faa_depth_draw_encode(const u8 *blob, size_t bytes,
 			primary_cursor + depth_end_delta[i];
 	out->final_point = previous_unlock_point +
 		(clear_flags ? 0x190 : 0x130);
+	return 0;
+}
+
+int m9x_faa_depth_draw_encode(const u8 *blob, size_t bytes,
+	const struct m9x_faa_graph_draw_owner owner[M9_FAA_DEPTH_DRAW_OWNERS],
+	const struct m9x_faa_depth_views *views,
+	u32 primary_cursor, u32 secondary_cursor, u64 previous_unlock_point,
+	u32 clear_flags, const struct m9x_faa_color_input *in,
+	u32 geometry_header_offset, u32 vertex_record_offset,
+	struct m9x_faa_depth_draw_image *out)
+{
+	return depth_encode_impl(blob, bytes, owner, views, primary_cursor,
+		secondary_cursor, previous_unlock_point, clear_flags, in,
+		geometry_header_offset, vertex_record_offset, out, false);
+}
+
+int m9x_faa_depth_color_encode(const u8 *depth_blob, size_t depth_bytes,
+	const u8 *first_blob, size_t first_bytes,
+	const struct m9x_faa_graph_draw_owner owner[M9_FAA_DEPTH_DRAW_OWNERS],
+	const struct m9x_faa_depth_views *views,
+	u32 init_bytes, u32 primary_cursor, u32 secondary_cursor,
+	u64 live_next_epoch, u32 clear_flags,
+	const struct m9x_faa_color_input *in,
+	u32 geometry_header_offset, u32 vertex_record_offset,
+	struct m9x_faa_depth_draw_image *out,
+	struct m9x_faa_color_image *first)
+{
+	/* Exact source first-to-bound COLOR4 packet slices. The first image is
+	 * generated from live program/constants/geometry and actual owners. */
+	static const struct { u16 from, end, to; } span[] = {
+		{0, 844, 0}, {944, 1212, 844}, {1236, 1440, 1112},
+		{1516, 1536, 1316}, {1556, 1772, 1336},
+		{1796, 2712, 1552},
+	};
+	u32 i, first_length, end;
+	int ret;
+
+	/* This candidate admits the source-matched two-declaration-group shape;
+	 * one real gather output is accepted by the live first encoder. */
+	if (!owner || !in || !out || !first || !first->secondary ||
+	    !first->secondary_length || first->secondary == out->secondary ||
+	    in->declaration_count != 5 || clear_flags != 1 ||
+	    geometry_header_offset !=
+		((in->layout.constants_bytes + 127u) & ~127u) ||
+	    vertex_record_offset != geometry_header_offset + 128u ||
+	    out->secondary_capacity < M9_FAA_DEPTH_COLOR_SECONDARY_BYTES ||
+	    secondary_cursor > owner[29].bytes ||
+	    owner[29].bytes - secondary_cursor <
+		M9_FAA_DEPTH_COLOR_SECONDARY_BYTES ||
+	    (u64)owner[29].base + secondary_cursor +
+		M9_FAA_DEPTH_COLOR_SECONDARY_BYTES > U32_MAX)
+		return -EINVAL;
+	ret = m9x_faa_color_four_encode(first_blob, first_bytes, owner,
+		init_bytes, live_next_epoch, in, first);
+	if (ret)
+		return ret;
+	first_length = *first->secondary_length;
+	if (first_length != 2712)
+		return -EINVAL;
+	ret = depth_encode_impl(depth_blob, depth_bytes, owner, views,
+		primary_cursor, secondary_cursor, live_next_epoch, clear_flags,
+		in, geometry_header_offset, vertex_record_offset, out, true);
+	if (ret)
+		return ret;
+	for (i = 0; i < ARRAY_SIZE(span); i++)
+		memcpy(out->secondary + span[i].to,
+		       first->secondary + span[i].from,
+		       span[i].end - span[i].from);
+	/* The original depth suffix's 13 GPU timeline fields, two relative
+	 * branches, bound depth descriptor and LESS/write state supersede the
+	 * first-only values. Every location is source-differential verified. */
+	for (i = 0; i < ARRAY_SIZE(depth_epochs); i++) {
+		const struct depth_epoch *e = &depth_epochs[i];
+		if (e->dst != 1)
+			continue;
+		write32(out->secondary + e->at,
+			((u32)live_next_epoch + e->delta -
+			 (clear_flags ? 0 : 0x60)) | e->tag);
+	}
+	for (i = 0; i < ARRAY_SIZE(depth_relatives); i++)
+		write32(out->secondary + depth_relatives[i].at,
+			0x49d00000u |
+			((depth_relatives[i].target - depth_relatives[i].at) / 4));
+	/* b5030's bound-depth producer clears the first-stage standalone
+	 * target bit while preserving the live COLOR route/arity bit. */
+	write32(out->secondary + 1676,
+		read32(first->secondary + 1920) & ~0x20000000u);
+	write32(out->secondary + 1832, owner[33].base | 1u);
+	write32(out->secondary + 1956, 0x0038038fu);
+	/* Four primary indirect words refer to the live secondary slice. The
+	 * final target grows by 24 bytes for the COLOR raster declaration. */
+	end = secondary_cursor + M9_FAA_DEPTH_COLOR_SECONDARY_BYTES;
+	write32(out->primary + 4296, (owner[29].base + end) | 2u);
 	return 0;
 }
