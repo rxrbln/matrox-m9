@@ -9,6 +9,23 @@ address is a native parameter: the owner numbers below describe source roles;
 native commands must use current retained owners and recompute all offsets,
 lengths, links and timeline fields.
 
+A separate original two-output COLOR4 **immediate** second-caller control
+does not use that retained Unlock. It starts from the real INIT `0xb1`
+observation and treats later `25270` reads of historical `0xb1` only as
+nonblocking CPU branch controls; they are not post-END GPU receipts. The
+first public DRAW returns with only HEAD END `5004` posted and an open full
+draw block. CLEAR42 flags1 followed by changed CB0/geometry and a second
+DRAW calls `b5e70` once and posts ENDs `5004,8632,8692,12244,12244,12256`;
+without CLEAR the ends are `5004,5064,8616,8616,8628`. Thus CLEAR forces
+the prior open block closed before the second draw. The following genuine
+normal-Lock positive read at `4e1d1` is left unread (`0x260` with CLEAR,
+`0x230` without). Captures
+`two-output-four-immediate-{clear,none}.json.gz` and
+`check-immediate-four-repeat.py` pin the CPU-only differential. It cannot
+qualify post-Unlock COLOR NEXT or explain its three stale edge pixels: the
+first caller in this control has no Lock/Unlock receipt, and the vendor's
+two-real-stream COLOR4 profile differs from the native one-stream profile.
+
 The repeat baseline reuses its 328-byte program. Its new primary range is
 `[8672,12304)`, secondary `[2688,5236)`, and owner 28 geometry `[512,608)`.
 It posts END at 8732, 12292 twice and 12304. Controlled changes are:
