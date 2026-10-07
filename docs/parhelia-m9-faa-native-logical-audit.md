@@ -11,7 +11,7 @@ dbb76c8. No new literal-address defect was found in the inspected native
 fixup, clear rebuild, borrowed-owner or timeline paths. This is a bounded
 review, not a claim that every required vendor transition is implemented.
 
-Concrete gaps remain in the inspected code:
+The review identified these gaps (subsequent fixes are recorded below):
 
 - `m9_faa_program_access` and its callback are compiled only for the complete
   output-write profile. Preparation refuses its option for both in-place
@@ -43,6 +43,27 @@ Concrete gaps remain in the inspected code:
   and an ordinary depth row-span descriptor. Only0x3d takes the source-backed
   companion layout. The other raw-probe format/extent combinations remain
   unqualified; this is not a demonstrated failure of the private0x3d flow.
+
+Follow-up implementation: kerneld249a3e extends the C2 access control to both
+in-place profiles; its new copy-wait hardware run logs the kick atc0 and
+retires1a0. Mesa776e5bf fixes shared-store reporting with per-owner last-use
+tracking and a retirement wait under the owner lock, covering split submits,
+multiple contexts and atexit. Failed submission refuses CPU inspection;
+failed wait leaves the report pending. Host checks/full DSO build pass.
+Neither correction establishes an FAA image.
+
+A further native ownership defect was found after that run. Successful
+pending-output profiles kept only the borrowed color address after the
+submit caller dropped its pin/lookup reference and the helper closed its
+handle. Complete-output profiles kept an extra identity reference but not
+the caller pin. Kernel9dee327 now transfers the existing caller pin/reference
+on successful FAA submission and releases it outside the transport lock only
+after DMA shutdown and cache restoration. Posted-failure quarantine retains
+its existing separate path. Inside-submit observations remain valid; older
+post-exit raw physical dumps are byte evidence, not proof of a retained color
+BO. Actual release/caller ownership checks, peer review and module build pass;
+this fix awaits the next hardware candidate rather than repeating the same
+rendering test solely for unchanged command bytes.
 
 The strongest unresolved rendering question remains the missing public
 dirty-surface lifecycle before the manually invoked internal resolve. A
