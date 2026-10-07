@@ -13,6 +13,7 @@
 #include "m9_drv.h"
 #include "m9_faa_graph_public_vs_encode.h"
 #include "m9_faa_graph_color_encode.h"
+#include "m9_faa_graph_frame_batch_input.h"
 
 /* Source-qualified prepared180 shape. These are allocation extents, not
  * permission to clear opaque tails or evidence of GPU initialization. */
@@ -1734,6 +1735,45 @@ static int m9_faa_graph_depth_frame_ioctl(struct drm_device *drm,
  * FIRST is a CPU lifecycle selector, not an unencoded GPU state bit. The
  * old diagnostic requests remain unchanged. No output is published unless
  * the selected producer returns its exact actual retirement receipt. */
+int m9x_faa_graph_color_frame_batch_ioctl(struct drm_device *drm,void *data,struct drm_file *file)
+{
+ struct drm_parhelia_m9_faa_graph_color_frame_batch *args=data;
+ struct m9x_device *mdev=to_m9x(drm);struct m9_faa_file *state=file->driver_priv;
+ struct m9x_faa_owned_color_batch *batch=NULL;
+ struct m9_faa_prepared_graph *graph;struct m9_faa_graph_binding *binding=NULL;
+ struct drm_exec exec;u32 address[PARHELIA_M9_FAA_GRAPH_OWNERS],i;
+ u64 point=0,delta;bool first,posted=false;int idx,ret;
+ if(!state)return -EINVAL;
+ /* Copy all descriptor and upload bytes once, before taking reservations
+  * or preparing any GPU-consumable state. No caller memory is read later. */
+ ret=m9x_faa_color_batch_copy(args,&batch);if(ret)return ret;
+ first=!!(args->flags&PARHELIA_M9_FAA_COLOR_FRAME_FIRST);
+ delta=(first?0x150:0x1a0)+(u64)(batch->count-1)*0xa0;
+ if(args->previous_point>U64_MAX-delta||lower_32_bits(args->previous_point)>U32_MAX-delta){ret=-ERANGE;goto out_batch;}
+ if(!m9x_faa_graph_profile_enabled()||!m9x_faa_graph_depth_frame_profile_qualified(first)){ret=-EOPNOTSUPP;goto out_batch;}
+ if(!drm_dev_enter(drm,&idx)){ret=-ENODEV;goto out_batch;}
+ mutex_lock(&state->lock);graph=state->graph;
+ if(!graph||!graph->initialized||!graph->init_point||graph->id!=args->graph_id||
+  graph->generation!=args->generation||(first&&graph->init_point!=args->previous_point)){ret=-ENOENT;goto out_binding;}
+ mutex_lock(&mdev->transport.lock);
+ ret=first?m9x_faa_graph_retained_get_locked(mdev,args->generation,args->previous_point,&binding):
+  m9x_faa_graph_color_unlocked_get_locked(mdev,args->generation,args->previous_point,&binding);
+ mutex_unlock(&mdev->transport.lock);if(ret)goto out_binding;
+ if(binding->graph!=graph){ret=-ESTALE;goto out_binding;}
+ ret=m9x_faa_graph_depth_batch_prepare(mdev,binding,args->generation,args->previous_point,first,batch);if(ret)goto out_binding;
+ drm_exec_init(&exec,DRM_EXEC_INTERRUPTIBLE_WAIT|DRM_EXEC_IGNORE_DUPLICATES,PARHELIA_M9_FAA_GRAPH_OWNERS);
+ drm_exec_until_all_locked(&exec){for(i=0;i<PARHELIA_M9_FAA_GRAPH_OWNERS;i++){
+  ret=drm_exec_prepare_obj(&exec,graph->owner[i],1);drm_exec_retry_on_contention(&exec);if(ret)goto out_exec;}}
+ ret=m9_faa_graph_live_addresses(mdev,graph,address);if(ret)goto out_exec;
+ if(memcmp(binding->address,address,sizeof(address))){ret=-ESTALE;goto out_exec;}
+ ret=m9x_faa_graph_depth_frame_submit(mdev,binding,args->generation,args->previous_point,&point,&posted);
+ if(!ret){if(!point||point!=args->previous_point+delta)ret=-EIO;
+  else{args->lock_point=point;args->state=first?PARHELIA_M9_FAA_COLOR_BATCH_FIRST_LOCK_RETIRED:PARHELIA_M9_FAA_COLOR_BATCH_NEXT_LOCK_RETIRED;}}
+out_exec:drm_exec_fini(&exec);
+out_binding:m9x_faa_graph_binding_put(binding);mutex_unlock(&state->lock);drm_dev_exit(idx);
+out_batch:m9x_faa_color_batch_free(batch);return ret;
+}
+
 int m9x_faa_graph_color_frame_ioctl(struct drm_device *drm,void *data,struct drm_file *file)
 {
  struct drm_parhelia_m9_faa_graph_color_frame *args=data;

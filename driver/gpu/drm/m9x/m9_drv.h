@@ -676,5 +676,8 @@ bool m9x_faa_graph_depth_frame_profile_qualified(bool);
 int m9x_faa_graph_depth_frame_prepare(struct m9x_device *,struct m9_faa_graph_binding *,u32,u64,bool,const struct m9x_faa_color_input *,u32);
 int m9x_faa_graph_depth_frame_submit(struct m9x_device *,struct m9_faa_graph_binding *,u32,u64,u64 *,bool *);
 int m9x_faa_graph_color_frame_ioctl(struct drm_device *,void *,struct drm_file *);
+struct m9x_faa_owned_color_batch;
+int m9x_faa_graph_depth_batch_prepare(struct m9x_device *,struct m9_faa_graph_binding *,u32,u64,bool,const struct m9x_faa_owned_color_batch *);
+int m9x_faa_graph_color_frame_batch_ioctl(struct drm_device *,void *,struct drm_file *);
 
 #endif
