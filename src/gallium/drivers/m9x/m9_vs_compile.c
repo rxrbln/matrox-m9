@@ -3822,27 +3822,14 @@ m9_vs_uniform(const float *uniforms, unsigned floats, uint32_t offset)
 }
 
 bool
-m9_vs_padding_upload_build(const struct m9_vs_program *p,
-                           const struct m9_vs_padding_bounds *b,
-                           unsigned app, unsigned max_vertices,
-                           const uint32_t *constants, unsigned pairs,
-                           struct m9_vs_padding_upload *out)
+m9_vs_padding_bounds_valid(const struct m9_vs_padding_bounds *b)
 {
-   if (!p || !b || !out || !constants || !p->gpu_padding || p->faa_preprocess ||
-       !app || app % 4 || max_vertices > 65532u ||
-       app > max_vertices || M9_VS_PADDING_VERTICES > max_vertices - app ||
-       b->width < 2 || b->height < 2 || b->width > 0x7fffu ||
+   if (!b || b->width < 2 || b->height < 2 || b->width > 0x7fffu ||
        b->height > 0x7fffu || b->stencil_enabled || b->query_active ||
        b->fragment_depth || b->viewport_scale[0] != b->width * 0.5f ||
        b->viewport_scale[1] != b->height * 0.5f ||
        b->viewport_translate[0] != b->width * 0.5f ||
-       b->viewport_translate[1] != b->height * 0.5f ||
-       !p->attr_count || p->attr_count > M9_VS_MAX_ATTRIBUTES ||
-       p->outputs.count > M9_VS_MAX_VARYINGS ||
-       !p->consts.data || p->consts.size % sizeof(struct m9_vs_const) ||
-       p->padding_attr >= p->attr_count || !p->record_bytes ||
-       p->record_bytes % 16 || p->record_bytes > 16 * M9_VS_MAX_ATTRIBUTES ||
-       !pairs || pairs > M9_VS_MAX_CONST_PAIRS || pairs != m9_vs_const_count(p))
+       b->viewport_translate[1] != b->height * 0.5f)
       return false;
    unsigned x0 = b->clip_min & 0xffffu, y0 = b->clip_min >> 16;
    unsigned x1 = b->clip_max & 0xffffu, y1 = b->clip_max >> 16;
@@ -3855,7 +3842,26 @@ m9_vs_padding_upload_build(const struct m9_vs_program *p,
                    b->viewport_scale[2] <= 0.5f &&
                    b->viewport_translate[2] >= b->viewport_scale[2] &&
                    b->viewport_scale[2] + b->viewport_translate[2] == 1.0f;
-   if (!interior && !far_less)
+   return interior || far_less;
+}
+
+bool
+m9_vs_padding_upload_build(const struct m9_vs_program *p,
+                           const struct m9_vs_padding_bounds *b,
+                           unsigned app, unsigned max_vertices,
+                           const uint32_t *constants, unsigned pairs,
+                           struct m9_vs_padding_upload *out)
+{
+   if (!p || !out || !constants || !p->gpu_padding || p->faa_preprocess ||
+       !m9_vs_padding_bounds_valid(b) || !app || app % 4 ||
+       max_vertices > 65532u || app > max_vertices ||
+       M9_VS_PADDING_VERTICES > max_vertices - app ||
+       !p->attr_count || p->attr_count > M9_VS_MAX_ATTRIBUTES ||
+       p->outputs.count > M9_VS_MAX_VARYINGS ||
+       !p->consts.data || p->consts.size % sizeof(struct m9_vs_const) ||
+       p->padding_attr >= p->attr_count || !p->record_bytes ||
+       p->record_bytes % 16 || p->record_bytes > 16 * M9_VS_MAX_ATTRIBUTES ||
+       !pairs || pairs > M9_VS_MAX_CONST_PAIRS || pairs != m9_vs_const_count(p))
       return false;
    /* Match the actual span consumed by the unchanged viewport tail, rather
     * than trusting a separate bounds description of another viewport. */

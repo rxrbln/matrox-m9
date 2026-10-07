@@ -480,6 +480,7 @@ struct m9_vs_variant {
    struct m9_vs_program program;
    const char *reason;
    bool ok;
+   bool gpu_padding;
    /* Never reused, so a cached c2 image can name the program it holds
     * without a pointer that a later allocation could match. */
    uint64_t serial;

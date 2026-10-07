@@ -578,7 +578,7 @@ fail:
  * count the kernel inserts before every indexed packet. Count those
  * packets from the prologue's header, excluding its preceding count.
  * The last stage stops at the numeric draw header; all others include its
- * three words. No range break or earlier draw belongs inside this block. */
+ * three words. Earlier numeric runs share this block; range breaks do not. */
 static int
 m9_pre_transition_length(struct m9_batch *batch, uint32_t at,
                           uint32_t draw_at, bool more)
@@ -589,6 +589,15 @@ m9_pre_transition_length(struct m9_batch *batch, uint32_t at,
       return -EINVAL;
    while (cursor < draw_at) {
       uint32_t header = batch->command[cursor];
+      /* Numeric launch packets already carry their own count. Earlier
+       * runs stay inside this stage; only indexed state packets acquire
+       * the additional outer DWORD from the kernel framer. */
+      if (header == 0x23000001u) {
+         if (draw_at - cursor < 3)
+            return -EINVAL;
+         cursor += 3;
+         continue;
+      }
       unsigned n = 0;
       while (n < 4 && ((header >> (8 * n)) & 0xffu) != M9_PACKET_STOP)
          n++;
@@ -890,7 +899,7 @@ m9_draw_job_valid(const struct m9_draw_job *job)
    if (job->vs_const_run_count) {
       if (!job->vs_const_runs || !job->vs_decl_count ||
           job->vs_const_run_count > M9_VS_MAX_CONST_RUNS ||
-          job->vs_extra_entry || job->pass_count > 1 ||
+          ((job->vs_extra_entry || job->pass_count > 1) && !job->vs_gpu_padding) ||
           job->vs_const_runs[0].const_offset != M9_VS_CONST_OFFSET ||
           job->vs_const_runs[0].const_pairs != job->vs_const_pairs)
          return false;
@@ -908,6 +917,12 @@ m9_draw_job_valid(const struct m9_draw_job *job)
       if (end != job->source_vertices)
          return false;
    }
+   if (job->vs_gpu_padding &&
+       (!job->vs_decl_count || job->vs_const_run_count < 2 ||
+        job->draw_count != 1 || !job->draws[0].index_count ||
+        job->draws[0].topology != M9_TOPOLOGY_TRIANGLES ||
+        job->draws[0].lines || job->faa.graph))
+      return false;
    /* The second preprocessing draw runs the same declaration and the same
     * source record, so it only stands with a native vertex program. */
    if (job->vs_extra_entry &&
@@ -953,7 +968,7 @@ m9_draw_job_valid(const struct m9_draw_job *job)
    } else if (job->vs_producer_targets || job->vs_head_targets)
       return false;
    if (job->vs_unit &&
-       (!job->vs_decl_count || job->pass_count > 1 ||
+       (!job->vs_decl_count || (job->pass_count > 1 && !job->vs_gpu_padding) ||
         (job->vs_texture_head_only ?
          (!job->vs_producer_entry || !job->vs_extra_entry || !job->vs_gather_entry) :
          (job->vs_extra_entry || job->vs_gather_entry || job->vs_producer_entry)) ||
@@ -1385,6 +1400,7 @@ m9_emit_preprocess(struct m9_batch *batch, const struct m9_draw_job *job,
     * one covering draw (m9-user-raster-state multi/multi-single-pre). The
     * captured constant dirty group restates 8c/8d/8e/8f. Their combination
     * keeps each matrix with the records it transforms, inside this range. */
+   uint32_t draw_at = 0;
    if (job->vs_const_run_count) {
       for (unsigned i = 0; i < job->vs_const_run_count; i++) {
          const struct m9_vs_const_run *run = &job->vs_const_runs[i];
@@ -1395,18 +1411,19 @@ m9_emit_preprocess(struct m9_batch *batch, const struct m9_draw_job *job,
                    run->const_offset + 8 * run->const_pairs, SYSTEM),
                  V(0x8f, 0));
          }
+         draw_at = batch->command_count;
          ret = m9_batch_emit_draw_numeric(batch, run->first, run->count,
                                           0x20000000);
          if (ret)
             goto fail;
       }
    } else {
-      uint32_t draw_at = batch->command_count;
+      draw_at = batch->command_count;
       ret = m9_batch_emit_draw_numeric(batch, 0, job->source_vertices,
                                        0x20000000);
-      if (!ret && chain)
-         ret = m9_pre_transition_length(batch, transition_at, draw_at, extra);
    }
+   if (!ret && chain)
+      ret = m9_pre_transition_length(batch, transition_at, draw_at, extra);
    /* The source-proven route chain stays in one preprocessing range.
     * LAST closes that range without another publication. The legacy extra
     * path retains its existing explicit range-break option. */

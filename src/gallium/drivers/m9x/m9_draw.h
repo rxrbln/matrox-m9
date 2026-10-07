@@ -140,6 +140,9 @@ struct m9_draw_job {
    unsigned vs_const_pairs;   /* 0 keeps the captured twenty-two */
    const struct m9_vs_const_run *vs_const_runs;
    unsigned vs_const_run_count;
+   /* Generated GPU POSITION selection uses two live constant spans; the
+    * retained source copies partition into app/padding runs per pass. */
+   bool vs_gpu_padding;
    /* Transient view the fused pass's own fourth output target writes; zero
     * leaves that target unbound, because view 0 is always target 0's.  The
     * target is index 0xb6 and its register pair 0x1d/0x1f, which the

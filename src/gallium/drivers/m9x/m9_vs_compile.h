@@ -327,6 +327,7 @@ struct m9_vs_padding_bounds {
    bool normalized_less_depth;
    bool stencil_enabled, query_active, fragment_depth;
 };
+bool m9_vs_padding_bounds_valid(const struct m9_vs_padding_bounds *bounds);
 
 /* Self-contained CPU ownership for the raw GENERATED records and both
  * complete constant snapshots. Source records still need the GPU program.

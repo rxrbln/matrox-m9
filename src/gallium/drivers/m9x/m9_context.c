@@ -369,6 +369,8 @@ static bool m9_coord_pack;
  * (MEASURED on the M9128, 76800 of 76800 pixels differ, no stream timeout,
  * the card alive afterwards).  Off until that is understood. */
 static bool m9_native_vs_split;
+/* GPU padding/multipass transport is a separate hardware qualification. */
+static bool m9_native_vs_gpu_padding;
 /* M9X_VS_SPECIALISE=0 compiles a vertex shader without substituting the
  * inlinable uniform values, which is the form the backend refused for
  * control flow before those values were used.  A diagnostic: it is what a
@@ -2405,6 +2407,109 @@ m9_pad_records(float *out, unsigned floats, float x0, float y0, float x1,
    }
 }
 
+static bool
+m9_gpu_padding_bounds(const struct m9_context *ctx, const struct m9_job_key *key,
+                      const float scale[3], const float bias[3],
+                      struct m9_vs_padding_bounds *b)
+{
+   if (!m9_native_vs_gpu_padding || !key->variant ||
+       key->variant->passes.count < 2 || ctx->lost || ctx->lines ||
+       m9_faa_active(&ctx->screen->faa) || ctx->faa_surface.graph.initialized ||
+       m9_split_depth != 1 || !m9_split_seq || m9_split_stage != 3 ||
+       !m9_split_submit || m9_split_passes || !m9_split_coverage ||
+       m9_record_89 || m9_vs_const_pad ||
+       key->depth_bias)
+      return false;
+   *b = (struct m9_vs_padding_bounds) {
+      .width = ctx->params.width, .height = ctx->params.height,
+      .clip_min = key->clip_min, .clip_max = key->clip_max,
+      .normalized_less_depth =
+         (key->depth_control & ~2u) == m9_depth_control(true, false, PIPE_FUNC_LESS),
+      .stencil_enabled = key->stencil,
+      .query_active = ctx->query_active || ctx->query_begin || ctx->query_end ||
+                      ctx->query_paused || ctx->query_exclude,
+   };
+   memcpy(b->viewport_scale, scale, sizeof(b->viewport_scale));
+   memcpy(b->viewport_translate, bias, sizeof(b->viewport_translate));
+   for (unsigned i = 0; i < key->variant->passes.count; i++)
+      b->fragment_depth |= key->variant->passes.pass[i].fragdepth;
+   return m9_vs_padding_bounds_valid(b);
+}
+
+/* Build only CPU-owned append state here. Nothing is mapped or posted on
+ * failure; pending source/texture snapshots remain owned by the job. */
+static bool
+m9_gpu_padding_append(struct m9_context *ctx, unsigned *records)
+{
+   const struct m9_job_key *key = &ctx->job_key;
+   struct m9_vs_padding_bounds bounds;
+   if (!key->vs || !key->vs->gpu_padding || ctx->job_vs_runs.size ||
+       util_dynarray_num_elements(&ctx->draws, struct m9_draw_record) != 1 ||
+       !m9_gpu_padding_bounds(ctx, key, key->viewport_scale, key->viewport_bias, &bounds))
+      return false;
+   struct m9_draw_record draw = *(struct m9_draw_record *)ctx->draws.data;
+   if (draw.lines || ctx->record_floats * 4 != key->vs->record_bytes)
+      return false;
+   uint32_t constants[2 * M9_VS_MAX_CONST_PAIRS] = {0};
+   struct m9_draw_params params = ctx->params;
+   uint32_t prefix[M9_SYSTEM_PREFIX_DWORDS];
+   memcpy(prefix, params.system_prefix, sizeof(prefix));
+   m9_draw_params_viewport(&params, key->viewport_scale, key->viewport_bias, prefix);
+   memcpy(constants, (uint8_t *)prefix + M9_VS_CONST_OFFSET,
+          MIN2(sizeof(constants), sizeof(prefix) - M9_VS_CONST_OFFSET));
+   unsigned pairs = m9_vs_const_span(key->vs, ctx->job_vs_consts.data,
+                         ctx->job_vs_consts.size / sizeof(float),
+                         constants, ARRAY_SIZE(constants));
+   struct m9_vs_padding_upload upload;
+   unsigned copies = key->variant->passes.count;
+   if (!m9_vs_padding_upload_build(key->vs, &bounds, *records,
+          m9_draw_max_source_vertices() / copies, constants, pairs, &upload))
+      return false;
+   struct util_dynarray indices = {0};
+   if (!m9_pad_expand(&indices, &draw, ctx->indices.size ? ctx->indices.data : NULL))
+      goto fail;
+   uint16_t *added = util_dynarray_grow(&indices, uint16_t, M9_VS_PADDING_INDICES);
+   if (!added)
+      goto fail;
+   memcpy(added, upload.indices, M9_VS_PADDING_INDICES * sizeof(uint16_t));
+   unsigned count = util_dynarray_num_elements(&indices, uint16_t);
+   uint16_t *tail = util_dynarray_grow(&indices, uint16_t, (count & 1) + M9_INDEX_TAIL);
+   if (!tail)
+      goto fail;
+   for (unsigned i = 0; i < (count & 1) + M9_INDEX_TAIL; i++)
+      tail[i] = ((uint16_t *)indices.data)[count - 1];
+   size_t before = ctx->records.size;
+   void *out = util_dynarray_grow_bytes(&ctx->records, 1,
+                        M9_VS_PADDING_VERTICES * upload.record_bytes);
+   if (!out)
+      goto fail;
+   memcpy(out, upload.records, M9_VS_PADDING_VERTICES * upload.record_bytes);
+   struct m9_vs_const_run *runs = util_dynarray_grow(&ctx->job_vs_runs,
+                                                    struct m9_vs_const_run, 2 * copies);
+   if (!runs) {
+      ctx->records.size = before;
+      goto fail;
+   }
+   for (unsigned i = 0; i < 2 * copies; i++)
+      runs[i] = (struct m9_vs_const_run) {
+         .first = (i / 2) * upload.source_vertices + upload.runs[i % 2].first,
+         .count = upload.runs[i % 2].count,
+         .const_offset = i % 2 ? M9_VS_RUN_CONST_OFFSET : M9_VS_CONST_OFFSET,
+         .const_pairs = pairs,
+      };
+   util_dynarray_fini(&ctx->indices);
+   ctx->indices = indices;
+   draw.topology = M9_TOPOLOGY_TRIANGLES;
+   draw.index_first = 0; draw.index_count = count;
+   *(struct m9_draw_record *)ctx->draws.data = draw;
+   *records = upload.source_vertices;
+   ctx->padded_draws++;
+   return true;
+fail:
+   util_dynarray_fini(&indices);
+   return false;
+}
+
 /*
  * Pad a partial multi-pass draw out to its render target's extent and narrow
  * the clip window to the pixels it covers.  The engine counts the geometry a
@@ -2804,6 +2909,7 @@ m9_submit_job(struct m9_context *ctx)
    bool built;
    bool faa_store_locked = false;
    bool aggregate_job = false, deferred_submit = false;
+   bool gpu_padding = false;
    int ret;
 
    /* An empty job's key may name a shader or variant deleted since the
@@ -2813,6 +2919,12 @@ m9_submit_job(struct m9_context *ctx)
    if (ctx->lost)
       return -EIO;
    pass_count = fs ? key->variant->passes.count : 0;
+   gpu_padding = key->vs && key->vs->gpu_padding;
+   if (gpu_padding && !m9_gpu_padding_append(ctx, &records)) {
+      m9_job_state_drop(ctx, "GPU multipass padding could not retain its inputs",
+                             "the live padding/viewport contract was refused");
+      return 0;
+   }
    if (m9_split_trace > 1)
       fprintf(stderr, "m9x job %llu: %ux%u passes %u draws %u records %u "
               "colour %08x depth %08x clip %08x\n",
@@ -2833,7 +2945,7 @@ m9_submit_job(struct m9_context *ctx)
    if (pass_count > 1) {
       uint64_t area = (uint64_t)ctx->params.width * ctx->params.height;
 
-      if (m9_split_trace || m9_split_clip || !m9_split_partial) {
+      if (!gpu_padding && (m9_split_trace || m9_split_clip || !m9_split_partial)) {
          uint64_t t_extent = m9_prof_begin();
 
          if (records) {
@@ -3076,7 +3188,28 @@ m9_submit_job(struct m9_context *ctx)
          unsigned runs = util_dynarray_num_elements(&ctx->job_vs_runs,
                                                     struct m9_vs_const_run);
          struct m9_vs_const_run *run = ctx->job_vs_runs.data;
-         for (unsigned i = 0; !ret && i < runs; i++) {
+         if (!ret && gpu_padding) {
+            struct m9_vs_padding_bounds bounds;
+            struct m9_vs_padding_upload upload;
+            unsigned app = records - M9_VS_PADDING_VERTICES;
+            if (!m9_gpu_padding_bounds(ctx, key, key->viewport_scale,
+                                       key->viewport_bias, &bounds) ||
+                !m9_vs_padding_upload_build(key->vs, &bounds, app,
+                       m9_draw_max_source_vertices() / copies,
+                       (uint32_t *)((uint8_t *)ctx->system.map + M9_VS_CONST_OFFSET),
+                       vs_const_pairs, &upload) ||
+                runs != 2 * copies ||
+                memcmp((uint8_t *)ctx->records.data + app * upload.record_bytes,
+                       upload.records, M9_VS_PADDING_VERTICES * upload.record_bytes))
+               ret = -EINVAL;
+            else {
+               memcpy((uint8_t *)ctx->system.map + M9_VS_CONST_OFFSET,
+                      upload.constants, 8 * vs_const_pairs);
+               memcpy((uint8_t *)ctx->system.map + M9_VS_RUN_CONST_OFFSET,
+                      upload.constants + 2 * vs_const_pairs, 8 * vs_const_pairs);
+            }
+         }
+         for (unsigned i = 0; !ret && !gpu_padding && i < runs; i++) {
             uint32_t offset = i ? M9_VS_RUN_CONST_OFFSET +
                                  (i - 1) * M9_VS_RUN_CONST_BYTES :
                                  M9_VS_CONST_OFFSET;
@@ -3135,7 +3268,8 @@ m9_submit_job(struct m9_context *ctx)
          .draw_count = draws,
          .vs_const_runs = ctx->job_vs_runs.data,
          .vs_const_run_count = util_dynarray_num_elements(&ctx->job_vs_runs,
-                                                     struct m9_vs_const_run),
+                                                        struct m9_vs_const_run),
+         .vs_gpu_padding = gpu_padding,
          .depth_control = key->depth_control,
          /* A single pass carries its own depth bits for gl_FragDepth. */
          .depth_ef = pass_count == 1 && !ret ? passes[0].depth_ef :
@@ -3555,6 +3689,10 @@ m9_job_reserve(struct m9_context *ctx, const struct m9_job_key *key,
    /* Every additional run adds a five-word constant packet and a numeric
     * three-word launch. Framing is charged by the existing upper bound. */
    dwords += new_vs_runs ? 8 * (new_vs_runs - 1) : 0;
+   if (key->vs && key->vs->gpu_padding) {
+      unsigned stages = key->vs_producer_entry ? 4 : key->vs_extra_entry ? 3 : 1;
+      dwords += 8 * (2 * copies - 1) * stages * pre_copies;
+   }
    dwords += pre_copies * 18 * (key->vs_texture + key->vs_texture_second);
    if (draws) {
       bool state = memcmp(key, &ctx->job_key,
@@ -3593,10 +3731,15 @@ m9_job_reserve(struct m9_context *ctx, const struct m9_job_key *key,
                         m9_faa_raster_relocs(&ctx->screen->faa) *
                         MAX2(passes, 1u);
       relocs += new_vs_runs ? 2 * (new_vs_runs - 1) : 0;
+      if (key->vs && key->vs->gpu_padding) {
+         unsigned stages = key->vs_producer_entry ? 4 : key->vs_extra_entry ? 3 : 1;
+         relocs += 2 * (2 * copies - 1) * stages * pre_copies;
+      }
       relocs += pre_copies * (key->vs_texture + key->vs_texture_second);
       /* A split shader binds one unit pool for the whole job, so a draw
        * that needs another set starts a job of its own. */
-      bool stream_full = dwords > M9_MAX_COMMAND_DWORDS ||
+      bool stream_full = (key->vs && key->vs->gpu_padding) ||
+                         dwords > M9_MAX_COMMAND_DWORDS ||
                          m9_draw_framed_dwords(dwords, draws) >
                          M9_MAX_FRAMED_DWORDS ||
                          relocs > M9_MAX_RELOCS ||
@@ -6312,7 +6455,7 @@ m9_native_vs_layout(struct m9_context *ctx, const struct m9_job_key *key,
       };
       return NULL;
    }
-   if (key->variant->passes.count > 1 && !m9_native_vs_split)
+   if (key->variant->passes.count > 1 && !m9_native_vs_split && !m9_native_vs_gpu_padding)
       return "the fragment program runs as several raster passes";
    /* Every raster pass interpolates what it reads, so the streams are the
     * union over the passes: a value handed between them travels through the
@@ -6471,12 +6614,14 @@ m9_vs_program_refusal(const struct m9_vs_program *p)
  * kept with the shader; a refused layout is kept with its reason so the
  * same pair is not compiled again every draw. */
 static struct m9_vs_variant *
-m9_native_vs_variant(struct m9_vs_spec *vs, const struct m9_vs_outputs *out)
+m9_native_vs_variant(struct m9_vs_spec *vs, const struct m9_vs_outputs *out,
+                     bool gpu_padding)
 {
    struct m9_vs_variant *v;
 
    util_dynarray_foreach(&vs->variants, struct m9_vs_variant *, it)
-      if (!memcmp(&(*it)->outputs, out, sizeof(*out)))
+      if ((*it)->gpu_padding == gpu_padding &&
+          !memcmp(&(*it)->outputs, out, sizeof(*out)))
          return *it;
    /* One layout a fragment variant this shader is drawn with; a further one
     * falls back rather than compiling without bound. */
@@ -6487,8 +6632,13 @@ m9_native_vs_variant(struct m9_vs_spec *vs, const struct m9_vs_outputs *out)
    if (!v)
       return NULL;
    v->outputs = *out;
+   v->gpu_padding = gpu_padding;
    v->serial = ++m9_vs_serial;
-   if (vs->program.sampled_position) {
+   if (gpu_padding)
+      v->ok = vs->nir && m9_vs_compile_gpu_padding(vs->nir, out,
+                           vs->program.sampled_position, m9_vs_max_slots,
+                           m9_vs_max_const_pairs, &v->program, &v->reason);
+   else if (vs->program.sampled_position) {
       nir_shader *trial = vs->nir ? nir_shader_clone(NULL, vs->nir) : NULL;
       v->ok = trial && m9_vs_compile_sampled_position_source(&trial, out,
                            &v->program, &v->reason, m9_vs_max_slots,
@@ -7004,7 +7154,7 @@ m9_native_vs_bind_texture(struct m9_context *ctx, struct m9_job_key *key,
    if (!debug_get_bool_option("M9X_NATIVE_VS_TEXTURE", true))
       return "native vertex texture is disabled";
    if (program->texture_count > 2 ||
-       !key->variant || key->variant->passes.count != 1)
+       !key->variant || (key->variant->passes.count != 1 && !program->gpu_padding))
       return "vertex texture requires at most two samplers and one raster pass";
    /* The second-fetch hardware image and packed-output stages are distinct
     * qualification boundaries. Keep the new fused slice opt-in. */
@@ -7130,7 +7280,16 @@ m9_native_vs_draw(struct m9_context *ctx, const struct pipe_draw_info *info,
       m9_native_vs_note(ctx, reason);
       return false;
    }
-   variant = m9_native_vs_variant(ctx->vs->cur, &outputs);
+   bool gpu_padding = key.variant && key.variant->passes.count > 1 && m9_native_vs_gpu_padding;
+   if (gpu_padding) {
+      struct m9_vs_padding_bounds bounds;
+      if (n.lines || !m9_gpu_padding_bounds(ctx, &key, ctx->viewport.scale,
+                                          ctx->viewport.translate, &bounds)) {
+         m9_native_vs_note(ctx, "GPU multipass padding needs a suppressed full-target frame");
+         return false;
+      }
+   }
+   variant = m9_native_vs_variant(ctx->vs->cur, &outputs, gpu_padding);
    if (!variant || !variant->ok) {
       m9_native_vs_note(ctx, variant ? variant->reason :
                         "the vertex program could not be compiled");
@@ -10072,6 +10231,7 @@ m9_context_create(struct pipe_screen *pscreen, void *priv, unsigned flags)
    m9_split_copy = debug_get_num_option("M9X_SPLIT_COPY", 1);
    m9_split_be = debug_get_num_option("M9X_SPLIT_BE", 3);
    m9_split_pad_enable = debug_get_bool_option("M9X_SPLIT_PAD", true);
+   m9_native_vs_gpu_padding = debug_get_bool_option("M9X_NATIVE_VS_MULTIPASS", false);
    m9_record_dump = debug_get_option("M9X_RECORD_DUMP", NULL);
    m9_vs_record_dump = debug_get_option("M9X_VS_RECORD_DUMP", NULL);
    m9_dump_native_inputs_enable = debug_get_bool_option("M9X_DUMP_NATIVE_INPUTS", false);
