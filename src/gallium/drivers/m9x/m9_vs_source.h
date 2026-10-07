@@ -17,7 +17,7 @@
 struct m9_vs_source_attr {
    unsigned buffer;        /* index into the bound vertex buffers */
    unsigned src_offset;    /* byte offset of the element from the buffer base */
-   unsigned stride;
+   unsigned stride;        /* zero repeats one bounded source texel */
    enum pipe_format format;
    unsigned components;    /* components the shader reads */
    unsigned dword;         /* dword offset of the element in the record */

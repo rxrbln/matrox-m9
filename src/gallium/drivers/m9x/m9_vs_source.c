@@ -8,6 +8,7 @@
  */
 #include "m9_vs_source.h"
 
+#include <limits.h>
 #include <string.h>
 
 #include "nir.h"
@@ -147,16 +148,17 @@ m9_vs_source_layout_init(const struct m9_vs_program *program,
          REFUSE("an instanced attribute");
       if (e->dual_slot)
          REFUSE("a dual-slot attribute");
-      if (!e->src_stride)
-         REFUSE("a zero-stride attribute");
       if (!m9_vs_source_format_ok(e->src_format))
          REFUSE("a vertex format the record cannot carry");
       /* Components beyond what the element carries unpack to the GL default
        * already, so a short element serves a wider read. */
       components = MIN2(a->components, 4u);
+      uint64_t offset = (uint64_t)buffers[e->vertex_buffer_index].buffer_offset +
+                        e->src_offset;
+      if (offset > UINT_MAX)
+         REFUSE("an attribute offset leaves the vertex buffer");
       s->buffer = e->vertex_buffer_index;
-      s->src_offset = buffers[e->vertex_buffer_index].buffer_offset +
-                      e->src_offset;
+      s->src_offset = offset;
       s->stride = e->src_stride;
       s->format = e->src_format;
       s->components = components;
@@ -173,6 +175,18 @@ m9_vs_source_layout_init(const struct m9_vs_program *program,
 #undef REFUSE
 }
 
+/* Compare against the remaining mapping instead of multiplying an
+ * arbitrary vertex index by the input stride. Zero stride consumes only
+ * the texel itself, even for a high draw/index base. */
+static bool
+m9_vs_source_range(const struct m9_vs_source_attr *s, unsigned size,
+                   uint64_t last)
+{
+   uint64_t end = (uint64_t)s->src_offset + util_format_get_blocksize(s->format);
+
+   return end <= size && (!s->stride || last <= (size - end) / s->stride);
+}
+
 bool
 m9_vs_source_in_range(const struct m9_vs_source_layout *layout,
                       const unsigned *buffer_size, unsigned buffer_count,
@@ -182,17 +196,38 @@ m9_vs_source_in_range(const struct m9_vs_source_layout *layout,
       return false;
    for (unsigned a = 0; a < layout->attr_count; a++) {
       const struct m9_vs_source_attr *s = &layout->attr[a];
-      unsigned texel;
 
       if (s->constant)
          continue;
-      texel = util_format_get_blocksize(s->format);
-      if (s->buffer >= buffer_count || !s->stride)
+      if (s->buffer >= buffer_count)
          return false;
-      if ((uint64_t)(first + count - 1) * s->stride + s->src_offset + texel >
-          buffer_size[s->buffer])
+      if (!m9_vs_source_range(s, buffer_size[s->buffer],
+                              (uint64_t)first + count - 1))
          return false;
    }
+   return true;
+}
+
+/* A zero-stride element addresses one bounded texel for the whole draw.
+ * Expand it into ordinary source records; the GPU declaration and its record
+ * stride stay the same as for per-vertex attributes. */
+static bool
+m9_vs_source_repeat(const struct m9_vs_source_layout *layout,
+                    const struct m9_vs_source_attr *s,
+                    const struct util_format_unpack_description *unpack,
+                    const uint8_t *map, unsigned size, unsigned count,
+                    float *out)
+{
+   float rgba[4];
+
+   if (!m9_vs_source_range(s, size, 0))
+      return false;
+   unpack->unpack_rgba(rgba, map + s->src_offset, 1);
+   for (unsigned c = s->components; c < 4; c++)
+      rgba[c] = c == 3 ? 1.0f : 0.0f;
+   for (unsigned v = 0; v < count; v++)
+      memcpy(out + (uint64_t)v * layout->record_dwords + s->dword,
+             rgba, sizeof(rgba));
    return true;
 }
 
@@ -202,12 +237,11 @@ m9_vs_source_records(const struct m9_vs_source_layout *layout,
                      const unsigned *buffer_size, unsigned buffer_count,
                      unsigned first, unsigned count, float *out)
 {
-   if (!layout || !buffer_map || !buffer_size || !out)
+   if (!layout || !buffer_map || !buffer_size || !out || !count)
       return false;
    for (unsigned a = 0; a < layout->attr_count; a++) {
       const struct m9_vs_source_attr *s = &layout->attr[a];
       const struct util_format_unpack_description *unpack;
-      unsigned texel;
 
       if (s->constant) {
          for (unsigned v = 0; v < count; v++)
@@ -216,18 +250,23 @@ m9_vs_source_records(const struct m9_vs_source_layout *layout,
          continue;
       }
       unpack = util_format_unpack_description(s->format);
-      texel = util_format_get_blocksize(s->format);
       if (s->buffer >= buffer_count || !buffer_map[s->buffer] || !unpack ||
-          !unpack->unpack_rgba || !s->stride)
+          !unpack->unpack_rgba)
          return false;
+      if (!s->stride) {
+         if (!m9_vs_source_repeat(layout, s, unpack, buffer_map[s->buffer],
+                                  buffer_size[s->buffer], count, out))
+            return false;
+         continue;
+      }
       /* The last vertex this draw reads must lie inside the mapping. */
-      if ((uint64_t)(first + count - 1) * s->stride + s->src_offset + texel >
-          buffer_size[s->buffer])
+      if (!m9_vs_source_range(s, buffer_size[s->buffer],
+                              (uint64_t)first + count - 1))
          return false;
 
       for (unsigned v = 0; v < count; v++) {
          const uint8_t *src = buffer_map[s->buffer] +
-                              (uint64_t)(first + v) * s->stride + s->src_offset;
+                              ((uint64_t)first + v) * s->stride + s->src_offset;
          float *dst = out + (uint64_t)v * layout->record_dwords + s->dword;
          float rgba[4];
 
@@ -247,12 +286,11 @@ m9_vs_source_records_gather(const struct m9_vs_source_layout *layout,
                             unsigned buffer_count, unsigned first,
                             const uint32_t *vertex, unsigned count, float *out)
 {
-   if (!layout || !buffer_map || !buffer_size || !vertex || !out)
+   if (!layout || !buffer_map || !buffer_size || !vertex || !out || !count)
       return false;
    for (unsigned a = 0; a < layout->attr_count; a++) {
       const struct m9_vs_source_attr *s = &layout->attr[a];
       const struct util_format_unpack_description *unpack;
-      unsigned texel;
 
       if (s->constant) {
          for (unsigned v = 0; v < count; v++)
@@ -261,17 +299,22 @@ m9_vs_source_records_gather(const struct m9_vs_source_layout *layout,
          continue;
       }
       unpack = util_format_unpack_description(s->format);
-      texel = util_format_get_blocksize(s->format);
       if (s->buffer >= buffer_count || !buffer_map[s->buffer] || !unpack ||
-          !unpack->unpack_rgba || !s->stride)
+          !unpack->unpack_rgba)
          return false;
+      if (!s->stride) {
+         if (!m9_vs_source_repeat(layout, s, unpack, buffer_map[s->buffer],
+                                  buffer_size[s->buffer], count, out))
+            return false;
+         continue;
+      }
       for (unsigned v = 0; v < count; v++) {
          uint64_t at = (uint64_t)first + vertex[v];
          const uint8_t *src;
          float *dst = out + (uint64_t)v * layout->record_dwords + s->dword;
          float rgba[4];
 
-         if (at * s->stride + s->src_offset + texel > buffer_size[s->buffer])
+         if (!m9_vs_source_range(s, buffer_size[s->buffer], at))
             return false;
          src = buffer_map[s->buffer] + at * s->stride + s->src_offset;
          unpack->unpack_rgba(rgba, src, 1);
