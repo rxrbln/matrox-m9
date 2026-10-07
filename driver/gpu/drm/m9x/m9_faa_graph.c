@@ -1678,26 +1678,26 @@ out_exec:drm_exec_fini(&exec);
 out_binding:kfree(upload);m9x_faa_graph_binding_put(binding);mutex_unlock(&state->lock);drm_dev_exit(idx);return ret;
 }
 
-/* Initial bound-depth FRAME: one owned upload, three distinct private
- * attachments and the same six borrowed graph reservations. Existing-depth
- * and live one-stream depth routes remain gated until their source joins. */
+/* Bound-depth FRAME: one owned upload, three private attachments and
+ * six borrowed graph reservations. Retained COLOR authenticates prior
+ * Unlock; fresh FIRST and already initialized depth remain separate gates. */
 static int m9_faa_graph_depth_frame_ioctl(struct drm_device *drm,
  struct drm_parhelia_m9_faa_graph_color_frame *args,struct drm_file *file)
 {
  struct m9x_device *mdev=to_m9x(drm);struct m9_faa_file *state=file->driver_priv;
  struct m9_faa_prepared_graph *graph;struct m9_faa_graph_binding *binding=NULL;
  struct m9x_faa_color_input input;struct drm_exec exec;u8 *upload=NULL;
- u32 sum,tmp,address[PARHELIA_M9_FAA_GRAPH_OWNERS],i;u64 point=0;bool posted=false;int idx,ret;
- /* The current bounded late grammar is post-Unlock public VS state.
-  * Neither fresh INIT nor the live one-stream COLOR depth route is yet
-  * source-qualified. Preserve the ownership/submit infrastructure but
-  * refuse public activation before any allocation, mapping or upload. */
- if(!m9x_faa_graph_depth_frame_profile_qualified())return -EOPNOTSUPP;
- if(!state||args->flags!=PARHELIA_M9_FAA_COLOR_FRAME_FIRST||
-  args->clear_flags!=3||args->clear_color||args->depth_flags!=7||args->raster_flags||
+ u32 sum,tmp,address[PARHELIA_M9_FAA_GRAPH_OWNERS],i;u64 point=0;bool posted=false,first;int idx,ret;
+ /* Refuse unqualified FIRST before allocation/publication. Retained
+  * COLOR uses its actual prior Unlock, live queue epoch and complete
+  * typed COLOR prefix/suffix rather than borrowing public-VS state. */
+ first=!!(args->flags&PARHELIA_M9_FAA_COLOR_FRAME_FIRST);
+ if(!m9x_faa_graph_depth_frame_profile_qualified(first))return -EOPNOTSUPP;
+ if(!state||args->flags&~PARHELIA_M9_FAA_COLOR_FRAME_FIRST||
+  args->clear_flags!=3||args->clear_color||args->depth_flags!=7||(args->raster_flags&~7u)||(args->raster_flags&6)==6||
   args->width!=320||args->height!=240||args->layout.program_count!=4||
   !args->upload||!args->upload_bytes||args->upload_bytes>0x42000||
-  !args->declaration_count||args->declaration_count>31||args->previous_point>U64_MAX-0x190)
+  !args->declaration_count||args->declaration_count>31||args->previous_point>U64_MAX-0x1a0)
   return -EOPNOTSUPP;
  if(check_add_overflow(args->layout.program_bytes,args->layout.constants_bytes,&sum)||
   check_add_overflow(sum,args->layout.geometry_bytes,&sum)||check_mul_overflow(args->declaration_count,4u,&tmp)||
@@ -1705,9 +1705,11 @@ static int m9_faa_graph_depth_frame_ioctl(struct drm_device *drm,
  if(!m9x_faa_graph_profile_enabled())return -EOPNOTSUPP;
  if(!drm_dev_enter(drm,&idx))return -ENODEV;
  mutex_lock(&state->lock);graph=state->graph;
- if(!m9_faa_graph_continuation_matches(graph,args->graph_id,args->generation,args->previous_point)){ret=-ENOENT;goto out_binding;}
+ if(!graph||!graph->initialized||!graph->init_point||graph->id!=args->graph_id||
+  graph->generation!=args->generation||(first&&graph->init_point!=args->previous_point)){ret=-ENOENT;goto out_binding;}
  mutex_lock(&mdev->transport.lock);
- ret=m9x_faa_graph_retained_get_locked(mdev,args->generation,args->previous_point,&binding);
+ ret=first?m9x_faa_graph_retained_get_locked(mdev,args->generation,args->previous_point,&binding):
+  m9x_faa_graph_color_unlocked_get_locked(mdev,args->generation,args->previous_point,&binding);
  mutex_unlock(&mdev->transport.lock);if(ret)goto out_binding;
  if(binding->graph!=graph){ret=-ESTALE;goto out_binding;}
  upload=memdup_user(u64_to_user_ptr(args->upload),args->upload_bytes);
@@ -1716,15 +1718,15 @@ static int m9_faa_graph_depth_frame_ioctl(struct drm_device *drm,
  input.program=upload;input.constants=input.program+args->layout.program_bytes;
  input.geometry=input.constants+args->layout.constants_bytes;input.declaration=input.geometry+args->layout.geometry_bytes;
  input.record_stride=args->record_stride;input.record_count=args->record_count;input.declaration_count=args->declaration_count;
- ret=m9x_faa_graph_depth_frame_prepare(mdev,binding,args->generation,args->previous_point,true,&input);if(ret)goto out_binding;
+ ret=m9x_faa_graph_depth_frame_prepare(mdev,binding,args->generation,args->previous_point,first,&input,args->raster_flags);if(ret)goto out_binding;
  drm_exec_init(&exec,DRM_EXEC_INTERRUPTIBLE_WAIT|DRM_EXEC_IGNORE_DUPLICATES,PARHELIA_M9_FAA_GRAPH_OWNERS);
  drm_exec_until_all_locked(&exec){for(i=0;i<PARHELIA_M9_FAA_GRAPH_OWNERS;i++){
   ret=drm_exec_prepare_obj(&exec,graph->owner[i],1);drm_exec_retry_on_contention(&exec);if(ret)goto out_exec;}}
  ret=m9_faa_graph_live_addresses(mdev,graph,address);if(ret)goto out_exec;
  if(memcmp(binding->address,address,sizeof(address))){ret=-ESTALE;goto out_exec;}
  ret=m9x_faa_graph_depth_frame_submit(mdev,binding,args->generation,args->previous_point,&point,&posted);
- if(!ret){if(point!=args->previous_point+0x190)ret=-EIO;
-  else{args->lock_point=point;args->state=PARHELIA_M9_FAA_COLOR_FRAME_FIRST_LOCK_RETIRED;}}
+ if(!ret){if(point!=args->previous_point+(first?0x190:0x1a0))ret=-EIO;
+  else{args->lock_point=point;args->state=first?PARHELIA_M9_FAA_COLOR_FRAME_FIRST_LOCK_RETIRED:PARHELIA_M9_FAA_COLOR_FRAME_NEXT_LOCK_RETIRED;}}
  out_exec:drm_exec_fini(&exec);
  out_binding:kfree(upload);m9x_faa_graph_binding_put(binding);mutex_unlock(&state->lock);drm_dev_exit(idx);return ret;
 }

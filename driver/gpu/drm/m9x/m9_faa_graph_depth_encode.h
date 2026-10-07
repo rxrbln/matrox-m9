@@ -30,4 +30,7 @@ int m9x_faa_depth_clear_encode(const struct m9x_faa_depth_views *,u32,u32,
  struct m9x_faa_depth_clear_image *);
 int m9x_faa_attachment_clear_encode(const struct m9x_faa_depth_views *,u32,u32,
  struct m9x_faa_attachment_clear_image *);
+/* Matching retained COLOR4 first attachment clear; epoch is live queue state. */
+int m9x_faa_color_attachment_clear_encode(const struct m9x_faa_depth_views *,u32,u32,
+ struct m9x_faa_attachment_clear_image *);
 #endif

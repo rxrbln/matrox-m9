@@ -166,3 +166,44 @@ int m9x_faa_attachment_clear_encode(const struct m9x_faa_depth_views *views,
  *out=image;
  return 0;
 }
+
+/* Matching retained COLOR4 clear: the separate SYSTEM color's page clear
+ * precedes HZ initialization. This is not the public-VS creation prologue:
+ * f5227..f56ae emits nine controls, then b5fc3's page-run family. The source
+ * initializes HZ with its E3/E6 header only after that first color END. */
+int m9x_faa_color_attachment_clear_encode(const struct m9x_faa_depth_views *views,
+ u32 queue_start,u32 depth_bits,struct m9x_faa_attachment_clear_image *out)
+{
+ static const u32 prefix[15]={
+  0x45458fe6,0x04000001,0x80000600,0x45929190,0,0,0xffffffff,
+  0x45454570,0,0x4545ace6,2,0xffffffff,0x45e62b2a,0x454545e6,0xffff
+ };
+ struct m9x_faa_depth_stage_image stages;
+ struct m9x_faa_attachment_clear_image image={0};
+ const struct m9x_faa_depth_view *color;
+ u32 *w=image.word,at=16,page,last,n=0,i,color_end,hz_end;
+ if(!out||(queue_start&15)||queue_start>0xffffffffu-0x40u||
+  m9x_faa_depth_stages_encode(views,depth_bits,&stages))return -EINVAL;
+ color=&views->owner[M9_FAA_BOUND_COLOR];
+ memcpy(w,prefix,sizeof(prefix));
+ page=color->base>>12;last=page+color->logical_bytes/4096;
+ while(page<last){
+  u32 group=page&~7u,end=group+8<last?group+8:last;
+  u32 mask=((1u<<(end-page))-1)<<(page&7);
+  w[at++]=((group|0xd00000u)<<5)|mask;n++;page=end;
+ }
+ w[15]=0x20000000|(n-1);
+ w[at++]=0x4545e3e6;w[at++]=1;w[at++]=(queue_start+0x10)|1;
+ w[at++]=0x454545e6;w[at++]=1;color_end=at*4;
+ w[at++]=0x45e3e6e6;w[at++]=1;w[at++]=2;w[at++]=(queue_start+0x20)|1;
+ for(i=0;i<20;i++)w[at++]=stages.hz[i];
+ hz_end=at*4;
+ if(m9x_faa_depth_clear_encode(views,queue_start,depth_bits,
+  (struct m9x_faa_depth_clear_image *)(w+at)))return -EINVAL;
+ at+=M9_FAA_DEPTH_CLEAR_BYTES/4;
+ image.bytes=at*4;image.end_bytes[0]=color_end;
+ image.end_bytes[1]=image.end_bytes[2]=hz_end;
+ image.end_bytes[3]=hz_end+M9_FAA_DEPTH_CLEAR_SETUP_BYTES;
+ image.end_bytes[4]=image.bytes;
+ *out=image;return 0;
+}
