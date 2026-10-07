@@ -135,6 +135,10 @@ struct m9_faa_graph {
    bool color_lock_attempted;
    uint64_t color_lock_point;
    uint32_t color_program_count;
+   /* Per-cycle NEXT attempt remains consumed on any reported failure.
+    * Historical authentic base/point stay until graph release. */
+   bool color_next_attempted;
+   uint64_t color_next_previous_unlock_point, color_next_lock_point;
    bool color_unlock_attempted;
    uint64_t color_unlock_point;
    /* A typed preprocessing prefix is distinct from a returned DRAW/image.
