@@ -32,7 +32,14 @@ generation, and use the current timeline epoch. The owner 29 word at `+1320`
 is the next deferred marker; source supplies no payload for it here. The
 three `0x40004000` words at `+1292/+1296/+1300` are fixed instruction
 immediates from the exact original M9128 DLL (`mov eax,0x40004000` at
-`0xfa227`, stores at `0xfa22c/0xfa235/0xfa23e`), not owner addresses.
+`0xfa227`, stores at `0xfa22c/0xfa235/0xfa23e`). The packet writes e6,
+44 and 44. Six other original M9128 context constructors also set paired
+state cells from the same fixed immediate (PCs `0x1e4d7`, `0x1e6c6`,
+`0x1ea0b`, `0x1ee39`, `0x1f26f`, `0x1f69f`). This proves literal production
+in multiple same-device contexts, but does not alone settle whether the GPU
+register values depend on a fixed reserved mapping. M9148 captures showing
+the same values cannot qualify this M9128 path. The failed first native
+follow probe must not be treated as a 0x130 receipt.
 
 This is a bounded fixed-input CPU source plan for the retained public VS
 graph. It does not qualify application state, the raster tail, Lock, 0x130
@@ -62,3 +69,37 @@ PYTHONPATH=tools/faaemu:tools/m9emu /home/ai/tmp/faaemu/venv/bin/python \
   --follow-helper-sha256 STAGED_HELPER_SHA256 \
   --out /tmp/m9-public-vs-actual130-source.json
 ```
+
+## Failed native follow and restore-pool boundary
+
+Two real native follow probes retired the first public VS prefix at 0x100,
+then timed out at 0x130 with writeback still 0x101. Neither is a follow
+receipt. On the second boot, the requester reported command 0xa9a245 and
+fetch 0xa9a32d. These are in the **live** restore owner at 0xa99000:
+owner+0x1245 lies in the filled gap after record one, and owner+0x132d
+points into record two at word 11 (aligned +0x132c). They are not locations
+in the follow secondary DMA or shader program. This numerical join does not
+identify the instruction that caused the timeout or prove those restore
+bytes were wrong.
+
+The original M9128 type-one/1024 restore initializer was already compared
+against the entire native CPU image by
+`tools/m9emu/check-faa-restore-inherited-image.py`. The failed boot also logged
+verification of tag one in record DWORDs 9, 14 and 19. A separate **read-only**
+8 KiB BAR snapshot after the second timeout, `restore-after.bin` in that boot's
+proof directory, matches the source-qualified initial image byte for byte at
+its live base. Its SHA-256 is
+`fa87ce60b0ae62d22bdc77288970a89dce2e516142e197d8e414c029f8c4c337`.
+The bounded snapshot covers the prefix, records zero through four, both
+reported fetch neighborhoods and intervening work/fill bytes. It does not
+cover the rest of the 0x181000-byte pool or establish what the GPU read at
+the instant of failure. `check-failed-restore-snapshot.py` re-runs the exact
+M9128 source check, derives the base from that boot's dmesg, reconstructs
+the first 8 KiB, and rejects four host-only mutations. Do not substitute a
+captured base for the next live owner.
+
+The initial restore grammar is therefore not an evidenced cause of this
+failure. The next hardware diagnostic should observe the requester's fetch
+register immediately after valid 0x100 retirement, before posting follow,
+and compare a read-only restore snapshot at that boundary with this post-fail
+snapshot. Any mutation beyond the captured 8 KiB remains a separate question.
