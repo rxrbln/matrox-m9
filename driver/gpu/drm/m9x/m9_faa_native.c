@@ -230,10 +230,15 @@ struct m9x_faa_replay {
 	u64 observation_point;
 	u32 observation_generation;
 	bool observation_retired;
-	/* Only the returned normal-Lock CPU view authorizes the later original
-	 * Unlock copyback. The view is no longer public once Unlock begins. */
+	/* Only a returned normal-Lock CPU view authorizes its Unlock copyback.
+	 * The first view closes at Unlock; a new view needs the relock receipt. */
 	bool normal_lock_view_seen, unlock_started, unlock_retired;
 	u64 unlock_point;
+	/* A later genuine public Lock first copies primary back to staging and
+	 * must retire its own 0x1c0 wait before F021 can be exposed again. */
+	bool relock_started, relock_retired, relock_view_seen;
+	u64 relock_point;
+	u32 relock_generation;
 	/* An alias of the transport's existing completion page, never a new
 	 * completion allocation or an independently seeded success counter. */
 	struct drm_mm_node counter_node;
@@ -1566,6 +1571,14 @@ int m9x_faa_submit_diag(struct m9x_device *mdev, u32 color,
 		ret = t->wedged ? -EIO : -EINVAL;
 		goto unlock;
 	}
+#ifdef M9_FAA_UNLOCK_PUBLICATION_CONTROL
+	/* Split public callers cannot use the monolithic submit fallback: it
+	 * would post later command bytes while publishing the first Lock fence. */
+	if (!m9_faa_phased_submit) {
+		ret = -EOPNOTSUPP;
+		goto unlock;
+	}
+#endif
 	/* No live job may observe this probe's counter destinations or state.
  * The earlier ioctl-side drain does not cover the intervening lock gap. */
 	ret = m9x_transport_drain_locked(mdev);
@@ -1589,10 +1602,17 @@ int m9x_faa_submit_diag(struct m9x_device *mdev, u32 color,
 	}
 	base = t->next_fence - 0x10;
 #ifdef M9_FAA_UNLOCK_PUBLICATION_CONTROL
-	/* The final source endpoint belongs to the separate public Unlock.
-	 * A fence for it here would make the returned Lock wait on unposted work. */
+	/* The later source endpoints belong to separate public callers. A fence
+	 * for either here would make the first Lock wait on unposted work. */
 	if (M9_FAA_NORMAL_LOCK_SPLIT_TARGET != 0x180 ||
+#ifdef M9_FAA_RELOCK_PUBLICATION_CONTROL
+	    M9_FAA_NORMAL_UNLOCK_SPLIT_TARGET != 0x1a0 ||
+	    M9_FAA_TRACKER_LAST != 0x1c0 ||
+	    M9_FAA_NORMAL_LOCK_SPLIT_BYTES >= M9_FAA_NORMAL_UNLOCK_SPLIT_BYTES ||
+	    M9_FAA_NORMAL_UNLOCK_SPLIT_BYTES >= M9_FAA_PRIMARY_BYTES ||
+#else
 	    M9_FAA_TRACKER_LAST != 0x1a0 ||
+#endif
 	    M9_FAA_NORMAL_LOCK_SPLIT_BYTES >= M9_FAA_PRIMARY_BYTES) {
 		ret = -EINVAL;
 		goto unlock;
@@ -1820,11 +1840,22 @@ int m9x_faa_submit_diag(struct m9x_device *mdev, u32 color,
 			goto unlock;
 		}
 #ifdef M9_FAA_UNLOCK_PUBLICATION_CONTROL
-		if (ARRAY_SIZE(source) < 3 ||
+		if (ARRAY_SIZE(source) <
+#ifdef M9_FAA_RELOCK_PUBLICATION_CONTROL
+			4 || source[ARRAY_SIZE(source) - 3].bytes !=
+				M9_FAA_NORMAL_LOCK_SPLIT_BYTES ||
+		    source[ARRAY_SIZE(source) - 3].target !=
+				M9_FAA_NORMAL_LOCK_SPLIT_TARGET ||
 		    source[ARRAY_SIZE(source) - 2].bytes !=
+				M9_FAA_NORMAL_UNLOCK_SPLIT_BYTES ||
+		    source[ARRAY_SIZE(source) - 2].target !=
+				M9_FAA_NORMAL_UNLOCK_SPLIT_TARGET) {
+#else
+			3 || source[ARRAY_SIZE(source) - 2].bytes !=
 				M9_FAA_NORMAL_LOCK_SPLIT_BYTES ||
 		    source[ARRAY_SIZE(source) - 2].target !=
 				M9_FAA_NORMAL_LOCK_SPLIT_TARGET) {
+#endif
 			ret = -EINVAL;
 			goto unlock;
 		}
@@ -1847,7 +1878,12 @@ int m9x_faa_submit_diag(struct m9x_device *mdev, u32 color,
 				&r->owner[M9_FAA_PRIMARY_OWNER].system_node,
 				r->owner[M9_FAA_PRIMARY_OWNER].dma, phases,
 #ifdef M9_FAA_UNLOCK_PUBLICATION_CONTROL
-				ARRAY_SIZE(phases) - 1, point, &posted,
+				ARRAY_SIZE(phases) -
+#ifdef M9_FAA_RELOCK_PUBLICATION_CONTROL
+				2, point, &posted,
+#else
+				1, point, &posted,
+#endif
 #else
 				ARRAY_SIZE(phases), point, &posted,
 #endif
@@ -2076,7 +2112,10 @@ int m9x_faa_lock_view_admit_locked(struct m9x_device *mdev,
 	if (!r || !r->attempted || !r->observation_retired ||
 	    !r->observation_point || r->observation_generation != t->generation ||
 	    r->observation_point > t->completed_point || t->async_pending ||
-	    t->queue_count || r->retained_color != color || r->unlock_started)
+	    t->queue_count || r->retained_color != color ||
+	    (r->unlock_started &&
+	     (!r->relock_retired || r->relock_generation != t->generation ||
+	      r->relock_point != t->completed_point)))
 		return -ENODATA;
 	offset = drm_gem_vram_offset(color);
 	if (offset < 0 ||
@@ -2104,12 +2143,18 @@ int m9x_faa_lock_view_observed_locked(struct m9x_device *mdev,
 
 	lockdep_assert_held(&t->lock);
 #ifdef M9_FAA_UNLOCK_PUBLICATION_CONTROL
-	if (!r || !r->observation_retired || r->unlock_started ||
+	if (!r || !r->observation_retired ||
 	    r->retained_color != color ||
 	    r->observation_generation != t->generation ||
-	    r->observation_point != t->completed_point)
+	    (r->unlock_started ?
+	     (!r->relock_retired || r->relock_generation != t->generation ||
+	      r->relock_point != t->completed_point) :
+	     r->observation_point != t->completed_point))
 		return -ENODATA;
-	r->normal_lock_view_seen = true;
+	if (r->unlock_started)
+		r->relock_view_seen = true;
+	else
+		r->normal_lock_view_seen = true;
 	return 0;
 #else
 	(void)r;
@@ -2128,7 +2173,14 @@ int m9x_faa_unlock_diag(struct m9x_device *mdev, u32 color,
 	struct m9x_transport *t = &mdev->transport;
 	struct m9x_faa_replay *r;
 	struct m9x_fence *fence = NULL;
-	u32 old_bytes, target;
+	u32 old_bytes, new_bytes, target;
+#ifdef M9_FAA_RELOCK_PUBLICATION_CONTROL
+	const u32 unlock_source_bytes = M9_FAA_NORMAL_UNLOCK_SPLIT_BYTES;
+	const u32 unlock_source_target = M9_FAA_NORMAL_UNLOCK_SPLIT_TARGET;
+#else
+	const u32 unlock_source_bytes = M9_FAA_PRIMARY_BYTES;
+	const u32 unlock_source_target = M9_FAA_TRACKER_LAST;
+#endif
 	s64 delta;
 	int ret;
 
@@ -2151,8 +2203,15 @@ int m9x_faa_unlock_diag(struct m9x_device *mdev, u32 color,
 	    t->next_fence < 0x10 ||
 	    lower_32_bits(r->observation_point) != t->next_fence - 0x10 ||
 	    M9_FAA_NORMAL_LOCK_SPLIT_TARGET != 0x180 ||
+	    unlock_source_target != 0x1a0 ||
+#ifdef M9_FAA_RELOCK_PUBLICATION_CONTROL
+	    unlock_source_bytes >= M9_FAA_PRIMARY_BYTES ||
+	    M9_FAA_TRACKER_LAST != 0x1c0 ||
+#else
+	    unlock_source_bytes != M9_FAA_PRIMARY_BYTES ||
 	    M9_FAA_TRACKER_LAST != 0x1a0 ||
-	    M9_FAA_NORMAL_LOCK_SPLIT_BYTES >= M9_FAA_PRIMARY_BYTES) {
+#endif
+	    M9_FAA_NORMAL_LOCK_SPLIT_BYTES >= unlock_source_bytes) {
 		ret = -ENODATA;
 		goto unlock;
 	}
@@ -2163,27 +2222,154 @@ int m9x_faa_unlock_diag(struct m9x_device *mdev, u32 color,
 	delta = (s64)r->primary_bytes - M9_FAA_PRIMARY_BYTES;
 	if ((s64)M9_FAA_NORMAL_LOCK_SPLIT_BYTES + delta <= 0 ||
 	    (s64)M9_FAA_NORMAL_LOCK_SPLIT_BYTES + delta > U32_MAX ||
+	    (s64)unlock_source_bytes + delta <= 0 ||
+	    (s64)unlock_source_bytes + delta > U32_MAX ||
 	    r->primary_bytes > r->owner[M9_FAA_PRIMARY_OWNER].bytes ||
 	    !drm_mm_node_allocated(&r->owner[M9_FAA_PRIMARY_OWNER].system_node)) {
 		ret = -ERANGE;
 		goto unlock;
 	}
 	old_bytes = M9_FAA_NORMAL_LOCK_SPLIT_BYTES + delta;
-	if (old_bytes >= r->primary_bytes ||
-	    r->primary_bytes - old_bytes !=
-			M9_FAA_PRIMARY_BYTES - M9_FAA_NORMAL_LOCK_SPLIT_BYTES ||
+	new_bytes = unlock_source_bytes + delta;
+	if (old_bytes >= new_bytes || new_bytes > r->primary_bytes ||
+	    new_bytes - old_bytes !=
+			unlock_source_bytes - M9_FAA_NORMAL_LOCK_SPLIT_BYTES ||
 	    t->next_fence > U32_MAX -
-			(M9_FAA_TRACKER_LAST - M9_FAA_NORMAL_LOCK_SPLIT_TARGET)) {
+			(unlock_source_target - M9_FAA_NORMAL_LOCK_SPLIT_TARGET)) {
 		ret = -ERANGE;
 		goto unlock;
 	}
 	target = t->next_fence - 0x10 +
-		(M9_FAA_TRACKER_LAST - M9_FAA_NORMAL_LOCK_SPLIT_TARGET);
+		(unlock_source_target - M9_FAA_NORMAL_LOCK_SPLIT_TARGET);
 	ret = m9x_transport_drain_locked(mdev);
 	if (ret)
 		goto unlock;
 	/* This is the original live requester, not another engine activation.
 	 * A second readiness path could emit unrelated setup before Unlock. */
+	if (!t->transport_armed || !t->restore_ready ||
+	    !t->bus_master_enabled || !t->engine_transitioned) {
+		ret = -ESTALE;
+		goto unlock;
+	}
+	ret = m9x_validate_faa_virtual_resume_locked(mdev,
+			&r->owner[M9_FAA_PRIMARY_OWNER].system_node,
+			r->owner[M9_FAA_PRIMARY_OWNER].dma, old_bytes,
+			new_bytes, target);
+	if (ret)
+		goto unlock;
+	fence = m9x_fence_create_target_locked(mdev, target);
+	if (!fence) {
+		ret = -ENOMEM;
+		goto unlock;
+	}
+	dma_resv_add_fence(color_bo->bo.base.resv, &fence->base,
+			   DMA_RESV_USAGE_WRITE);
+	/* Actual a66f0/55a40 release: the CPU-root leaves and descriptors
+	 * remain cached, while 2c878 writes 31c=0 before the copyback post. */
+	r->unlock_started = true;
+	m9x_write(mdev, M9_REG_FRONTEND_STATE, 0);
+	ret = m9x_extend_faa_virtual_primary_locked(mdev,
+			&r->owner[M9_FAA_PRIMARY_OWNER].system_node,
+			r->owner[M9_FAA_PRIMARY_OWNER].dma, old_bytes,
+			new_bytes, target, point, posted);
+	if (!ret) {
+		t->next_fence = target + 0x10;
+		r->unlock_retired = true;
+		r->unlock_point = *point;
+		m9_faa_observe(mdev, r, false);
+		m9_faa_observe_borrowed_color(mdev, r, color_bo, false);
+		dev_info(&mdev->pdev->dev,
+			 "M9 FAA normal Unlock retired: lock=%#llx unlock=%#llx primary_bytes=%u copyback=F021->F022\n",
+			 r->observation_point, *point, r->primary_bytes);
+	}
+#else
+	(void)r;
+	(void)color;
+	(void)color_bo;
+	ret = -EOPNOTSUPP;
+#endif
+unlock:
+	if (fence && ret)
+		dma_fence_set_error(&fence->base, ret);
+	if (fence && ret && *posted) {
+		t->wedged = true;
+		t->generation++;
+		WARN_ON(t->quarantined_fence);
+		t->quarantined_fence = fence;
+		fence = NULL;
+	} else if (fence) {
+		dma_fence_signal(&fence->base);
+	}
+	if (fence)
+		dma_fence_put(&fence->base);
+	mutex_unlock(&t->lock);
+	return ret;
+}
+
+/* The next original public Lock is a separate primary F022 -> staging F021
+ * conversion. It consumes the genuine Unlock receipt before submitting only
+ * the source-derived final suffix on the same retained command owner. */
+int m9x_faa_relock_diag(struct m9x_device *mdev, u32 color,
+			struct drm_gem_vram_object *color_bo, u64 *point,
+			bool *posted)
+{
+	struct m9x_transport *t = &mdev->transport;
+	struct m9x_faa_replay *r;
+	struct m9x_fence *fence = NULL;
+	u32 old_bytes, target;
+	s64 delta;
+	int ret;
+
+	if (!point || !posted)
+		return -EINVAL;
+	*point = 0;
+	*posted = false;
+	mutex_lock(&t->lock);
+	r = t->faa;
+#ifdef M9_FAA_RELOCK_PUBLICATION_CONTROL
+	if (!m9_faa_diag || !r || !r->prepared || !r->attempted ||
+	    !r->observation_retired || !r->normal_lock_view_seen ||
+	    !r->unlock_started || !r->unlock_retired || !r->unlock_point ||
+	    r->relock_started || !t->faa_virtual_primary || t->async_stop ||
+	    t->async_pending || t->queue_count || !color_bo ||
+	    r->retained_color != color_bo || r->borrowed_color_bytes != 0x50000 ||
+	    color_bo->bo.base.size != 0x50000 ||
+	    r->owner[M9_FAA_COLOR_OWNER].base != color ||
+	    r->observation_generation != t->generation ||
+	    r->unlock_point != t->completed_point || t->next_fence < 0x10 ||
+	    lower_32_bits(r->unlock_point) != t->next_fence - 0x10 ||
+	    M9_FAA_NORMAL_UNLOCK_SPLIT_TARGET != 0x1a0 ||
+	    M9_FAA_TRACKER_LAST != 0x1c0 ||
+	    M9_FAA_NORMAL_UNLOCK_SPLIT_BYTES >= M9_FAA_PRIMARY_BYTES) {
+		ret = -ENODATA;
+		goto unlock;
+	}
+	if (t->wedged) {
+		ret = -EIO;
+		goto unlock;
+	}
+	delta = (s64)r->primary_bytes - M9_FAA_PRIMARY_BYTES;
+	if ((s64)M9_FAA_NORMAL_UNLOCK_SPLIT_BYTES + delta <= 0 ||
+	    (s64)M9_FAA_NORMAL_UNLOCK_SPLIT_BYTES + delta > U32_MAX ||
+	    r->primary_bytes > r->owner[M9_FAA_PRIMARY_OWNER].bytes ||
+	    !drm_mm_node_allocated(&r->owner[M9_FAA_PRIMARY_OWNER].system_node)) {
+		ret = -ERANGE;
+		goto unlock;
+	}
+	old_bytes = M9_FAA_NORMAL_UNLOCK_SPLIT_BYTES + delta;
+	if (old_bytes >= r->primary_bytes ||
+	    r->primary_bytes - old_bytes !=
+			M9_FAA_PRIMARY_BYTES - M9_FAA_NORMAL_UNLOCK_SPLIT_BYTES ||
+	    t->next_fence > U32_MAX -
+			(M9_FAA_TRACKER_LAST - M9_FAA_NORMAL_UNLOCK_SPLIT_TARGET)) {
+		ret = -ERANGE;
+		goto unlock;
+	}
+	target = t->next_fence - 0x10 +
+		(M9_FAA_TRACKER_LAST - M9_FAA_NORMAL_UNLOCK_SPLIT_TARGET);
+	ret = m9x_transport_drain_locked(mdev);
+	if (ret)
+		goto unlock;
 	if (!t->transport_armed || !t->restore_ready ||
 	    !t->bus_master_enabled || !t->engine_transitioned) {
 		ret = -ESTALE;
@@ -2202,23 +2388,21 @@ int m9x_faa_unlock_diag(struct m9x_device *mdev, u32 color,
 	}
 	dma_resv_add_fence(color_bo->bo.base.resv, &fence->base,
 			   DMA_RESV_USAGE_WRITE);
-	/* Actual a66f0/55a40 release: the CPU-root leaves and descriptors
-	 * remain cached, while 2c878 writes 31c=0 before the copyback post. */
-	r->unlock_started = true;
-	m9x_write(mdev, M9_REG_FRONTEND_STATE, 0);
+	r->relock_started = true;
 	ret = m9x_extend_faa_virtual_primary_locked(mdev,
 			&r->owner[M9_FAA_PRIMARY_OWNER].system_node,
 			r->owner[M9_FAA_PRIMARY_OWNER].dma, old_bytes,
 			r->primary_bytes, target, point, posted);
 	if (!ret) {
 		t->next_fence = target + 0x10;
-		r->unlock_retired = true;
-		r->unlock_point = *point;
+		r->relock_retired = true;
+		r->relock_point = *point;
+		r->relock_generation = t->generation;
 		m9_faa_observe(mdev, r, false);
 		m9_faa_observe_borrowed_color(mdev, r, color_bo, false);
 		dev_info(&mdev->pdev->dev,
-			 "M9 FAA normal Unlock retired: lock=%#llx unlock=%#llx primary_bytes=%u copyback=F021->F022\n",
-			 r->observation_point, *point, r->primary_bytes);
+			 "M9 FAA second normal Lock conversion retired: unlock=%#llx relock=%#llx primary_bytes=%u copyback=F022->F021\n",
+			 r->unlock_point, *point, r->primary_bytes);
 	}
 #else
 	(void)r;

@@ -736,12 +736,11 @@ out_put:
 	return ret;
 }
 
-/* The original M9128 Unlock continues the already-retired private FAA
- * primary. A fresh lookup/pin is temporary; the first submit retained its
- * own pin/reference so the same backing survives this ioctl's exit. */
-static int m9_submit_faa_unlock(struct m9x_device *mdev,
+/* Both later public caller boundaries continue the already-owned private
+ * primary. The first submit retains its backing across these temporary pins. */
+static int m9_submit_faa_continuation(struct m9x_device *mdev,
 			       struct drm_file *file,
-			       struct drm_parhelia_m9_submit *args)
+			       struct drm_parhelia_m9_submit *args, bool relock)
 {
 	struct drm_parhelia_m9_bo_ref ref;
 	struct drm_gem_vram_object *vram;
@@ -779,8 +778,8 @@ static int m9_submit_faa_unlock(struct m9x_device *mdev,
 	ret = ttm_bo_reserve(&vram->bo, true, false, NULL);
 	if (ret)
 		goto out_unpin;
-	/* The initial color write fence must be for the returned 0x180 Lock,
-	 * never the unposted 0x1a0 suffix. Wait before adding that new fence. */
+	/* Wait for the previous public caller's completed write before adding
+	 * the next continuation fence; posted failure fences stay quarantined. */
 	mutex_lock(&mdev->transport.lock);
 	m9x_transport_drain_locked(mdev);
 	ret = mdev->transport.wedged ? -EIO : 0;
@@ -806,8 +805,11 @@ static int m9_submit_faa_unlock(struct m9x_device *mdev,
 	ret = dma_resv_reserve_fences(gem->resv, 1);
 	if (ret)
 		goto out_unreserve;
-	ret = m9x_faa_unlock_diag(mdev, lower_32_bits(address), vram,
-				  &args->out_point, &posted);
+	ret = relock ?
+		m9x_faa_relock_diag(mdev, lower_32_bits(address), vram,
+				     &args->out_point, &posted) :
+		m9x_faa_unlock_diag(mdev, lower_32_bits(address), vram,
+				     &args->out_point, &posted);
 out_unreserve:
 	ttm_bo_unreserve(&vram->bo);
 out_unpin:
@@ -1482,7 +1484,8 @@ static int m9_submit_ioctl(struct drm_device *drm, void *data,
 		      PARHELIA_M9_SUBMIT_NOOP_FENCE |
 		      PARHELIA_M9_SUBMIT_FIRST_TRIANGLE |
 		      PARHELIA_M9_SUBMIT_QUEUED |
-		      PARHELIA_M9_SUBMIT_FAA_UNLOCK))
+		      PARHELIA_M9_SUBMIT_FAA_UNLOCK |
+		      PARHELIA_M9_SUBMIT_FAA_RELOCK))
 		return m9_refuse(-EINVAL);
 	if (flags == PARHELIA_M9_SUBMIT_NOOP_FENCE) {
 		if (args->command_handle || args->command_offset ||
@@ -1496,7 +1499,9 @@ static int m9_submit_ioctl(struct drm_device *drm, void *data,
 		return m9_submit_first_triangle(mdev, file, args);
 	}
 	if (flags == PARHELIA_M9_SUBMIT_FAA_UNLOCK)
-		return m9_submit_faa_unlock(mdev, file, args);
+		return m9_submit_faa_continuation(mdev, file, args, false);
+	if (flags == PARHELIA_M9_SUBMIT_FAA_RELOCK)
+		return m9_submit_faa_continuation(mdev, file, args, true);
 	if (!flags || flags == PARHELIA_M9_SUBMIT_QUEUED) {
 		/* The private capture intentionally owns a complete FAA context.
 		 * It is a one-shot diagnostic, not a context-switch implementation. */

@@ -220,6 +220,9 @@ struct drm_parhelia_m9_reloc {
 /* Private source-qualified continuation after FIRST_TRIANGLE's returned
  * normal Lock. Reuses the same color handle; the kernel owns the suffix. */
 #define PARHELIA_M9_SUBMIT_FAA_UNLOCK		(1u << 4)
+/* Private reverse conversion after a retired normal Unlock. The caller
+ * must use the same retained color handle and read F021 only after return. */
+#define PARHELIA_M9_SUBMIT_FAA_RELOCK		(1u << 5)
 
 enum drm_parhelia_m9_program_type {
 	PARHELIA_M9_PROGRAM_NONE,
