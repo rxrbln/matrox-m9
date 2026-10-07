@@ -6,16 +6,24 @@ viewport, FVF and stream stride precede the clear. The caller changes only
 its CPU command storage and length. Neither graph dirty flags nor the
 renderer, resource descriptors, shader results or GPU replies are changed.
 
-This is a **prefix qualification**, not a returned public clear or a rendered
-image. Actual `df9d0` enters with one full 320×240 rectangle and flags=1,
-black color, depth=1, stencil=0. Its `75730` target admission calls the real
-head/interface method at `75790`. Before the clear renderer is dispatched
-at `dfa52`, that chain reaches `4e2fc`, the first actual common-buffer +0x20
-read. The observer stops before the load. Desired query deadline is 0/0;
-this does not grant permission to invent the read value or the subsequent
-writer completion. No triangle/preprocessing launch or output helper has
-executed at this boundary.
+This is a **prefix qualification**, not a returned whole DP2 draw or a
+rendered image. The later receipt-qualified observer, installed before any
+public command execution, corrects the initial boundary interpretation:
+actual `df9d0` enters with one full 320×240 rectangle and flags=1, black
+color, depth=1, stencil=0. `75730` returns 1; `dfa52` invokes the genuine
+renderer callee `13de20`, `dfa54` observes its returned EAX=1, and `dfa61`
+returns from the clear handler. **All these CPU events precede the first
+`4e2fc` common-buffer +0x20 read.** That read belongs to subsequent original
+draw admission. Its desired query deadline is 0/0; no value is invented.
+No preprocessing launch or output helper has executed at this boundary.
 
+The historical signed capture's prose saying the stop precedes clear
+renderer dispatch was wrong. Its bytes, typed operands, actual CPU writes,
+owners and boundary remain unchanged. The corrective early observer and
+same-prefix hardware receipt are retained by
+[the continuation proof](parhelia-m9-faa-preclear-receipt-continuation.md).
+The clear handler's CPU return is distinct from whole DP2 request completion
+and GPU effects.
 The pending source stream is not the old init-only profile. Its first 4,868
 bytes exactly equal that source prefix, followed by 100 new CPU-produced
 bytes. These include a second `b5e70` page clear of the actual sampled
@@ -24,7 +32,7 @@ The initial clear remains the companion's 0x97000 (151 logical pages).
 The primary clear is reached during real public target admission; its
 presence is not proof that it repairs the final FAA output.
 
-The original caller remains stopped. A separately scoped genuine `23b80`
+The whole original draw caller remains stopped after the clear handler. A separately scoped genuine `23b80`
 request flushes this prefix and stops before `23bc3`'s completion load:
 
 | Item | Source result |
@@ -90,7 +98,7 @@ eight companion × eight primary page alignments using actual vendor clear
 instructions, and source refusal controls. Its backwards rewrite is an
 offline source reference; it does not execute the native C producer or GPU.
 The original init-only and post-triangle plans, blobs and headers regenerate
-byte-exactly. Native C and physical prefix retirement require independent
-qualification. Any later emulator continuation requires receipts joined to
+byte-exactly. Native C and physical prefix retirement were independently qualified by
+the borrowed-owner correction and real c0 receipt; neither proves final FAA pixels. Any later emulator continuation requires receipts joined to
 this **c0 prefix**, its live counter channels and timeline translation.
 Existing b0 init-only or 140 draw/output receipts do not qualify this prefix.
