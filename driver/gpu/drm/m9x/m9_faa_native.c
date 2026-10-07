@@ -4001,7 +4001,7 @@ int m9x_faa_graph_public_vs_follow_submit(struct m9x_device *mdev,
 	struct m9_faa_owner *primary, *secondary;
 	struct m9_faa_public_vs_follow_storage *image;
 	struct m9x_fence *fence = NULL;
-	u32 i, page, pte, old_bytes, target;
+	u32 i, page, pte, secondary_pte = 0, old_bytes, target;
 	int ret;
 	if (!binding || !point || !posted)
 		return -EINVAL;
@@ -4043,6 +4043,8 @@ int m9x_faa_graph_public_vs_follow_submit(struct m9x_device *mdev,
 				ret = -ESTALE;
 				goto out;
 			}
+			if (i == 2 && !page)
+				secondary_pte = pte;
 		}
 	}
 	ret = m9x_address_check_local_identity(mdev, r->draw_owner[0].base, r->draw_owner[0].bytes);
@@ -4057,12 +4059,24 @@ int m9x_faa_graph_public_vs_follow_submit(struct m9x_device *mdev,
 	for (i = 0; i < PARHELIA_M9_FAA_GRAPH_OWNERS; i++)
 		dma_resv_add_fence(m9x_faa_graph_binding_owner(binding, i)->resv, &fence->base,
 				   DMA_RESV_USAGE_WRITE);
-	/* Original248f2 patches a relative command slot in the retained owner.
-	 * It is not a captured GPU address. All six fences precede this write. */
+	/* Source writes [752,1284), then248fe patches old704, then writes
+	 * [1284,1368) and the primary suffix before its only END. Preserve that
+	 * CPU chronology even though no intervening source MMIO is observed. */
+	memcpy((u8 *)secondary->cpu + 752, image->secondary, 1284 - 752);
 	WRITE_ONCE(((u32 *)secondary->cpu)[704 / 4], image->ends.patch_word);
-	memcpy((u8 *)secondary->cpu + 752, image->secondary, sizeof(image->secondary));
+	memcpy((u8 *)secondary->cpu + 1284, image->secondary + (1284 - 752),
+	       1368 - 1284);
 	memcpy((u8 *)primary->cpu + old_bytes, image->primary, sizeof(image->primary));
 	wmb();
+	dev_info(&mdev->pdev->dev,
+		 "M9 FAA public VS follow before post: secondary=%#x dma=%pad pte0=%#x "
+		 "program=%#x relative704=%#x primary=%#x old=%u new=%u indirect=%#x/%#x/%#x\n",
+		 secondary->base, &secondary->dma, secondary_pte, r->draw_owner[0].base,
+		 READ_ONCE(((u32 *)secondary->cpu)[704 / 4]), primary->base,
+		 old_bytes, image->ends.final_end,
+		 READ_ONCE(((u32 *)primary->cpu)[old_bytes / 4]),
+		 READ_ONCE(((u32 *)primary->cpu)[old_bytes / 4 + 1]),
+		 READ_ONCE(((u32 *)primary->cpu)[old_bytes / 4 + 2]));
 	ret = m9x_post_faa_graph_end_locked(mdev, &primary->system_node, primary->dma, old_bytes,
 					    image->ends.final_end, false, target, point, posted);
 	if (*posted) {
