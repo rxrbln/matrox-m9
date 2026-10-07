@@ -29,7 +29,9 @@ Normal FAA-off qualification with kernel e1703f9 and Mesa f31f2ec passes
 matching fullscreen 1024x768 Q3 basic-GL2 run gives 40.7 FPS versus 40.8,
 effectively flat, with healthy retirement. The constant reuse improvement
 is retained. [Normal hardware proof](../tests/m9-constant-broadcast-hardware-20261007/README.md).
-The private test boot was powered off after archiving; recovery is in progress.
+After archiving and power cycling, normal e1703f9/modulebbe7bca4 is restored
+on verified boot e0e83f87-34ff-4e73-859a-ee3d5b4f4dc5: empty queue, unarmed,
+wedged=0, next=0x20.
 Historical checkpoints below retain their original boot and module identities.
 
 Earlier backend-status test,2026-10-07: unchanged516990f on freshbootd3f40c04
