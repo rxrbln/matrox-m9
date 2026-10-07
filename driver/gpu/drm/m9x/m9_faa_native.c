@@ -62,6 +62,7 @@ struct m9_faa_clear_segment {
      defined(M9_FAA_PUBLIC_SHARED_DEPTH_RETURNED_CONTROL) + \
      defined(M9_FAA_PUBLIC_SHARED_DEPTH_REPLACEMENT_CONTROL) + \
      defined(M9_FAA_PUBLIC_SHARED_DEPTH_REPLACEMENT_SUBMIT_CONTROL) + \
+     defined(M9_FAA_PUBLIC_SHARED_DEPTH_REPLACEMENT_RETURNED_CONTROL) + \
      defined(M9_FAA_POST_TRIANGLE_CONTROL)) > 1
 #error "Select only one complete private FAA source profile"
 #endif
@@ -136,6 +137,11 @@ struct m9_faa_clear_segment {
  * wait. Its query and independent finish retain their source timeline. */
 #include "m9_faa_public_shared_depth_replacement_submit_data.h"
 #define M9_FAA_INPUT_FIRMWARE "m9x/faa-public-shared-depth-replacement-submit-known-inputs.bin"
+#elif defined(M9_FAA_PUBLIC_SHARED_DEPTH_REPLACEMENT_RETURNED_CONTROL)
+/* Original public replacement DRAW has genuinely returned. Its newly
+ * emitted rendering commands still require this independent retirement. */
+#include "m9_faa_public_shared_depth_replacement_returned_data.h"
+#define M9_FAA_INPUT_FIRMWARE "m9x/faa-public-shared-depth-replacement-returned-known-inputs.bin"
 #elif defined(M9_FAA_CONSTANT_RED_CONTROL)
 /* A distinct whole public source capture changes c0 through SETCONST.
  * Never patch captured green command or program bytes in place. */
@@ -169,7 +175,8 @@ struct m9_faa_clear_segment {
     defined(M9_FAA_PUBLIC_SHARED_DEPTH_RESOLVE_CONTROL) || \
     defined(M9_FAA_PUBLIC_SHARED_DEPTH_RETURNED_CONTROL) || \
     defined(M9_FAA_PUBLIC_SHARED_DEPTH_REPLACEMENT_CONTROL) || \
-    defined(M9_FAA_PUBLIC_SHARED_DEPTH_REPLACEMENT_SUBMIT_CONTROL)
+    defined(M9_FAA_PUBLIC_SHARED_DEPTH_REPLACEMENT_SUBMIT_CONTROL) || \
+    defined(M9_FAA_PUBLIC_SHARED_DEPTH_REPLACEMENT_RETURNED_CONTROL)
 /* These profiles retain the same original public draw and C2 access
  * before their later output or target-change branches diverge. */
 #define M9_FAA_PROGRAM_ACCESS_CONTROL 1
@@ -1065,28 +1072,47 @@ static int m9_faa_bind_borrowed_color(struct m9x_faa_replay *r, u32 color,
  * This is separate from address relocation and never alters the capture. */
 static int m9_faa_normalize_raster_masks(struct m9x_faa_replay *r)
 {
-#ifdef M9_FAA_RASTER_MASK_OWNER
-	struct m9_faa_owner *owner;
-	u8 *data;
-	u32 ab = M9_FAA_RASTER_MASK_AB_OFFSET;
-	u32 route = M9_FAA_RASTER_MASK_89_OFFSET;
+#if defined(M9_FAA_RASTER_MASK_BLOCKS) || defined(M9_FAA_RASTER_MASK_OWNER)
+	static const struct {
+		u32 owner, ab, route;
+	} blocks[] =
+#ifdef M9_FAA_RASTER_MASK_BLOCKS
+		M9_FAA_RASTER_MASK_BLOCKS;
+#else
+		{ { M9_FAA_RASTER_MASK_OWNER, M9_FAA_RASTER_MASK_AB_OFFSET,
+		    M9_FAA_RASTER_MASK_89_OFFSET } };
+#endif
+	u32 i;
 
-	if (M9_FAA_RASTER_MASK_OWNER >= ARRAY_SIZE(r->owner))
-		return -EINVAL;
-	owner = &r->owner[M9_FAA_RASTER_MASK_OWNER];
-	data = owner->cpu;
-	if (!data || owner->vram || ab < 8 || route < 12 ||
-	    (u64)ab + 8 > owner->bytes || (u64)route + 4 > owner->bytes ||
-	    get_unaligned_le32(data + ab - 8) != 3 ||
-	    get_unaligned_le32(data + ab - 4) != 0x45aeacab ||
-	    get_unaligned_le32(data + route - 12) != 4 ||
-	    get_unaligned_le32(data + route - 8) != 0xc18a8988 ||
-	    get_unaligned_le32(data + route) != 0xfe207ff8 ||
-	    (get_unaligned_le32(data + ab) & 0xffff) != 0xffff)
-		return -EINVAL;
-	put_unaligned_le32(get_unaligned_le32(data + ab) | 0xffff0000,
-			   data + ab);
-	put_unaligned_le32(0xffffffff, data + ab + 4);
+	/* Refuse a changed later target before rewriting any earlier block. */
+	for (i = 0; i < ARRAY_SIZE(blocks); i++) {
+		struct m9_faa_owner *owner;
+		u32 ab = blocks[i].ab, route = blocks[i].route;
+		u8 *data;
+
+		if (blocks[i].owner >= ARRAY_SIZE(r->owner))
+			return -EINVAL;
+		owner = &r->owner[blocks[i].owner];
+		data = owner->cpu;
+		if (!data || owner->vram || ab < 8 || route < 12 ||
+		    !IS_ALIGNED(ab | route, sizeof(u32)) ||
+		    (u64)ab + 8 > owner->bytes || (u64)route + 4 > owner->bytes ||
+		    get_unaligned_le32(data + ab - 8) != 3 ||
+		    get_unaligned_le32(data + ab - 4) != 0x45aeacab ||
+		    get_unaligned_le32(data + route - 12) != 4 ||
+		    get_unaligned_le32(data + route - 8) != 0xc18a8988 ||
+		    get_unaligned_le32(data + route) != 0xfe207ff8 ||
+		    (get_unaligned_le32(data + ab) & 0xffff) != 0xffff)
+			return -EINVAL;
+	}
+	for (i = 0; i < ARRAY_SIZE(blocks); i++) {
+		u8 *data = r->owner[blocks[i].owner].cpu;
+		u32 ab = blocks[i].ab;
+
+		put_unaligned_le32(get_unaligned_le32(data + ab) | 0xffff0000,
+				   data + ab);
+		put_unaligned_le32(0xffffffff, data + ab + 4);
+	}
 #else
 	(void)r;
 #endif
