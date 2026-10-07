@@ -8,7 +8,25 @@ Ordinary textured rendering and the deployed driver are validated. FAA
 rendering is not yet validated. This note is separate from P690
 `102b:2539` evidence.
 
-Latest backend-status test,2026-10-07: unchanged516990f on freshbootd3f40c04
+Latest FAA diagnostic, 2026-10-07: kernel7a270ae corrects borrowed color
+ownership and physically retires the genuine public CLEAR42 admission prefix
+atc0/rawc1 on fresh M9128 boot1c9a1824. Both inline page-clear ranges derive
+from live owners; native alignment expands the primary from4980 to4984bytes.
+The exact other counter channels remain +20/+40/+60=10/0; these are notc0
+receipts. No output owner exists in this prefix, so it proves neither the
+completed public clear nor FAA pixels. The earlier EINVAL test submitted no
+GPU work. [Actual prefix retirement](../tests/m9-faa-preclear-hardware-20261007/README.md)
+and [source flow](parhelia-m9-faa-public-preclear.md).
+
+After archive and mandatory power cycle, current normal boot is
+9054ec2d-cf67-467f-bdb0-6a7d8cc0333c, integrated kernele1703f9, privateFAAoff,
+user submissions enabled. The native current-attribute pixel regression passes
+16GPUdraws/zeroCPU,0/1572864wrongpixels, healthy6a0/raw6a1. Submission scratch
+qualification now reports40.8FPS basic Q3GL2 versus39.1, healthy231760,
+FAAoff; [normal hardware proof](../tests/m9-submit-scratch-hardware-20261007/README.md). Historical checkpoints below retain
+their original boot and module identities.
+
+Earlier backend-status test,2026-10-07: unchanged516990f on freshbootd3f40c04
 still produces the identical black image after actual140 retirement and the
 post-wait kick. All before/after samples have vendor drain mask30000 clear;
 no persistent backend drain was observed. Both primary IN_FORMATS blobs now

@@ -34,6 +34,17 @@ and broad default-cap promotion remain distinct open work. Existing complex
 bump rendering and its417FPS clean result do not qualify terrain, all Quake3
 GL2 lighting variants, or the complete glmark2 suite.
 
+## 2026-10-07: submission scratch qualifies at 40.8 FPS basic Q3 GL2
+
+Kernele1703f9 combines eight per-submit temporary arrays into one, preserving
+GPU ownership. Hardware current-attribute pixels still pass16GPUdraws/zeroCPU,
+0/1572864wrongpixels. One1024x768 fullscreen Q3 run reports40.8FPS versus39.1,
+about4.3% higher, sameMesa8ce8651, FAAoff/vsync0/queue1 and basic lighting.
+This is a ballpark comparison across boots. Laststeady ioctl6.40→5.25ms;
+54jobs/frame and existing constant/slot/attribute refusals remain unchanged.
+Actual231760 retires healthy, queuepeak4. No new GL2 feature is claimed by
+this optimization. [Physical proof](../tests/m9-submit-scratch-hardware-20261007/README.md).
+
 ## 2026-10-07: ordinary native mask corrected; current attributes pass hardware
 
 Mesa3b02e61 derives the ordinary preprocessing mask from actual scratch use,

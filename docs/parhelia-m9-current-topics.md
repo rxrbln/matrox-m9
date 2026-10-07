@@ -112,11 +112,21 @@ capture. [Actual ordinary hardware proof](../tests/m9-ordinary-system-red-hardwa
 [current FAA evidence](parhelia-m9-faa-native-current.md) and
 [SYSTEM admission](parhelia-m9-faa-output-system-admission.md).
 
-Current normal target boot is `4636e49f-790e-46ce-88df-8c107cf63889`,
-observer kernel73c2a45, user submissions enabled and private FAA disabled.
-After recovery, the latest integrated Q3 diagnostic completes
-4a5540/raw4a5541, next4a5550, with an empty queue and wedged0 immediately and
-two seconds later. The previous benchmark boot6d completed84ac0.
+The public FAA preclear admission prefix now physically retiresc0/rawc1 on
+kernel7a270ae, with both live page-clear ranges and no wedge. It contains no
+completed public clear, triangle or output owner. Exact +20/+40/+60 channels
+remain10/0; continuation must use only their actual readings.
+[Prefix hardware proof](../tests/m9-faa-preclear-hardware-20261007/README.md).
+Current normal target boot is9054ec2d-cf67-467f-bdb0-6a7d8cc0333c, integrated
+kernele1703f9, user submissions enabled and privateFAAoff. Current-attribute
+regression passes16GPUdraws/zeroCPU and0/1572864wrongpixels, healthy6a0.
+The kernel combines eight temporary submit arrays into one without changing
+GPU resource lifetime. Root267valid/2588refusal CPU cases and fullbuild pass;
+the one short Q3 hardware check reports40.8FPS versus39.1 (~4.3%ballpark).
+SameMesa8ce8651 and fullscreen1024x768/FAAoff/vsync0 settings, differentboots.
+Laststeady ioctl6.40→5.25ms; jobs54 and native/CPU draw counts unchanged.
+Actual231760/raw231761 retires with emptyqueue/peak4/wedged0, noGPUwarnings.
+[Scratch hardware qualification](../tests/m9-submit-scratch-hardware-20261007/README.md).
 Current Mesa8ce8651 includes sign1802132, input capture, ordinary native mask
 and current attributes; the complex bump
 rendering qualification belongs to Mesa05c7c29. The current source retains
