@@ -4,6 +4,65 @@ The actual complete180 stream retires without wedging but produces an all-black
 image. Retirement is established; FAA rendering is not. This review examines
 native production and the source contract rather than repeating that test.
 
+## Follow-up source review: current native and application paths
+
+Reviewed kernel3b39c98 plus the uncommitted in-place-copy profile, and Mesa
+dbb76c8. No new literal-address defect was found in the inspected native
+fixup, clear rebuild, borrowed-owner or timeline paths. This is a bounded
+review, not a claim that every required vendor transition is implemented.
+
+Concrete gaps remain in the inspected code:
+
+- `m9_faa_program_access` and its callback are compiled only for the complete
+  output-write profile. Preparation refuses its option for both in-place
+  profiles. The original public draw and c0/120 prefixes are unchanged in
+  those profiles, so the source-backed C2 access kick also applies there.
+  This is an omitted available ordering control; the older complete-profile
+  hardware test already proves that adding this kick alone does not fix the
+  black image. CPU-aperture side effects remain a separate contract.
+- Mesa `m9_context_destroy` calls `m9_faa_store_report` before flushing its
+  draw context and waiting for its last queued point. The report scans GPU
+  storage and then clears the screen-wide `store_check` flag. Consequently,
+  an early context teardown can record incomplete writes and suppress a
+  later report. The userspace store lock prevents handle replacement, but
+  does not wait for GPU retirement. A correct reporting fix must also cover
+  other contexts sharing the store and the atexit path; moving the call
+  below one context's wait alone would not close that contract. This affects
+  application diagnostic evidence, not the independently retired private
+  hardware observations or a demonstrated rendering failure.
+- The raw Mesa probe still calls `m9_faa_ad` with color allocation bytes
+  when `M9X_FAA=1` and `M9X_FAA_STORE=0`. Its old comment also claims color
+  bytes are the vendor extent. The bound-store path overrides this using
+  the retained logical main-store extent; the raw path does not. This is
+  reachable diagnostic behavior, not evidence of complete application FAA.
+- `m9_faa_surface_prepare` allocates the prepared graph, but production
+  context code never assigns `job.faa.graph` or marks the graph initialized.
+  The initialized graph, pool integration and resolve/publication must still
+  be connected before preparation can become an application FAA path.
+- Companion probe formats other than0x3d still use `width*height*8` storage
+  and an ordinary depth row-span descriptor. Only0x3d takes the source-backed
+  companion layout. The other raw-probe format/extent combinations remain
+  unqualified; this is not a demonstrated failure of the private0x3d flow.
+
+The strongest unresolved rendering question remains the missing public
+dirty-surface lifecycle before the manually invoked internal resolve. A
+correctly relocated command sequence below that boundary does not establish
+that the selected operation is a complete public FAA resolve.
+
+The source continuation after170 preserves all previously known CPU bytes;
+its extra primary commands append rather than overwrite earlier shader,
+geometry or metadata inputs. This rules out that specific upfront-upload
+hazard, not GPU-state or MMIO-order differences. The uncommitted copy profile
+still needs its own integration checks and hardware receipt; its final1a0 is
+not a rendering success. The actual phased requester and program-access
+guard fixtures pass ASAN/UBSAN in this review. No GPU test was repeated.
+
+Constants need provenance, not indiscriminate removal. The sentinel filler
+`0x28041968` is an actual vendor immediate, not a captured pointer. Fixed
+320x240 geometry, descriptor words and output50000 remain confined to the
+private source experiment. Live address operands, page masks, clear lengths
+and timeline origins must continue to be derived independently.
+
 ## Confirmed stale values
 
 The private second raster block has one active color target: indexed89 is

@@ -25,8 +25,13 @@ defects, guarded diagnostic constants and remaining lifecycle gaps.
 Kernel3b39c98 additionally admits the source-derived sampled-destination
 pending prefix after genuine temporary-allocation failure. Its independent
 finish is170; the original160 wait and rectangle launch remain pending.
-Host source/128-placement checks and module build pass; its distinct hardware
-receipt is pending. This is a diagnostic branch, not completed application FAA.
+Host source/128-placement checks and module build pass. Its distinct hardware
+run now retires170/raw171, with an empty queue and wedged=0 immediately and
+two seconds later. Main/companion/sampled-primary observations remain unchanged;
+ordinary output correctly refuses with ENODATA. The receipt qualifies this
+prefix, not the pending rectangle or an FAA image.
+[Actual170 hardware evidence](../tests/m9-faa-inplace-prefix-hardware-20261007/README.md).
+This is a diagnostic branch, not completed application FAA.
 
 Historical hardware checkpoint: kernel6367f4f completes the whole pending-output
 prefix at0x160/raw0x161, next0x170, empty queue and wedged=0 immediately/+2s.
