@@ -40,7 +40,7 @@ m9_faa_graph_create(struct m9_screen *screen, uint32_t width,
        graph->companion.handle || graph->hz.handle || graph->sentinel.handle ||
        graph->prepared_id || graph->prepared || graph->initialized ||
        graph->color_lock_attempted || graph->color_lock_point ||
-       graph->color_program_count ||
+       graph->color_program_count || graph->color_lock_delta ||
        graph->color_next_attempted || graph->color_next_previous_unlock_point ||
        graph->color_next_lock_point ||
        graph->color_unlock_attempted || graph->color_unlock_point ||
@@ -447,6 +447,31 @@ m9_faa_color_upload_request(const struct m9_faa_gl_upload *upload,
    return 0;
 }
 
+
+/* Keep the exact authenticated transaction shape. Accepting either of two
+ * plausible deltas loses the distinction between clear and no-clear Lock. */
+static bool
+m9_faa_color_lock_history_valid(const struct m9_faa_graph *graph)
+{
+   const uint64_t delta = graph->color_lock_delta;
+   uint64_t previous;
+   if (graph->color_next_lock_point) {
+      if (graph->color_program_count != 4 ||
+          graph->color_lock_point != graph->color_next_lock_point ||
+          (delta != 0xd0 && delta != 0xe0))
+         return false;
+      previous = graph->color_next_previous_unlock_point;
+   } else {
+      if (graph->color_next_previous_unlock_point ||
+          (graph->color_program_count != 2 && graph->color_program_count != 4) ||
+          delta != (graph->color_program_count == 2 ? 0xa0 : 0xe0))
+         return false;
+      previous = graph->init_point;
+   }
+   return previous && !(previous & 15) && previous <= UINT64_MAX - delta &&
+          graph->color_lock_point == previous + delta;
+}
+
 int
 m9_faa_surface_color_lock_kernel(struct m9_screen *screen,
                                 struct m9_faa_surface *surface,
@@ -466,7 +491,7 @@ m9_faa_surface_color_lock_kernel(struct m9_screen *screen,
        !graph->init_point || graph->init_point > UINT64_MAX - delta)
       return -EINVAL;
    if (graph->color_lock_attempted || graph->color_lock_point ||
-       graph->color_program_count ||
+       graph->color_program_count || graph->color_lock_delta ||
        graph->color_next_attempted || graph->color_next_previous_unlock_point ||
        graph->color_next_lock_point ||
        graph->color_unlock_attempted || graph->color_unlock_point ||
@@ -502,6 +527,7 @@ m9_faa_surface_color_lock_kernel(struct m9_screen *screen,
    ret = m9_wait_for_point(screen, request.lock_point);
    if (ret) return ret;
    graph->color_lock_point = request.lock_point;
+   graph->color_lock_delta = delta;
    return 0;
 }
 
@@ -536,15 +562,7 @@ m9_faa_surface_color_next_kernel(struct m9_screen *screen,
        graph->color_unlock_point != graph->color_lock_point + 0x20 ||
        (graph->color_unlock_point & 15) || graph->color_unlock_point > UINT64_MAX - delta ||
        graph->color_next_attempted ||
-       (graph->color_next_lock_point ?
-        (graph->color_lock_point != graph->color_next_lock_point ||
-         !graph->color_next_previous_unlock_point ||
-         (graph->color_next_previous_unlock_point & 15) ||
-         graph->color_next_previous_unlock_point > UINT64_MAX - 0xe0 ||
-         (graph->color_lock_point != graph->color_next_previous_unlock_point + 0xd0 &&
-          graph->color_lock_point != graph->color_next_previous_unlock_point + 0xe0)) :
-        (graph->color_next_previous_unlock_point || graph->init_point > UINT64_MAX - 0xe0 ||
-         graph->color_lock_point != graph->init_point + 0xe0)) ||
+       !m9_faa_color_lock_history_valid(graph) ||
        graph->public_vs_attempted || graph->public_vs_point ||
        graph->public_vs_head_attempted || graph->public_vs_head_point ||
        graph->public_vs_draw_attempted || graph->public_vs_draw_point ||
@@ -586,6 +604,7 @@ m9_faa_surface_color_next_kernel(struct m9_screen *screen,
    graph->color_next_previous_unlock_point = before.previous_unlock_point;
    graph->color_next_lock_point = request.lock_point;
    graph->color_lock_point = request.lock_point;
+   graph->color_lock_delta = delta;
    graph->color_unlock_attempted = false;
    graph->color_unlock_point = 0;
    return 0;
@@ -623,7 +642,7 @@ m9_faa_surface_color_frame_kernel(struct m9_screen *screen,
           !graph->init_point || (graph->init_point & 15) || graph->init_point > UINT64_MAX - delta)
          return -ESTALE;
       if (graph->color_lock_attempted || graph->color_lock_point ||
-          graph->color_program_count ||
+          graph->color_program_count || graph->color_lock_delta ||
           graph->color_next_attempted || graph->color_next_previous_unlock_point ||
           graph->color_next_lock_point ||
           graph->color_unlock_attempted || graph->color_unlock_point ||
@@ -644,16 +663,8 @@ m9_faa_surface_color_frame_kernel(struct m9_screen *screen,
           graph->color_unlock_point != graph->color_lock_point + 0x20 ||
           (graph->color_unlock_point & 15) || graph->color_unlock_point > UINT64_MAX - delta ||
           graph->color_next_attempted ||
-          (graph->color_next_lock_point ?
-           (graph->color_lock_point != graph->color_next_lock_point ||
-            !graph->color_next_previous_unlock_point ||
-            (graph->color_next_previous_unlock_point & 15) ||
-            graph->color_next_previous_unlock_point > UINT64_MAX - 0xe0 ||
-            (graph->color_lock_point != graph->color_next_previous_unlock_point + 0xd0 &&
-             graph->color_lock_point != graph->color_next_previous_unlock_point + 0xe0)) :
-           (graph->color_next_previous_unlock_point || graph->init_point > UINT64_MAX - 0xe0 ||
-            graph->color_lock_point != graph->init_point + 0xe0)) ||
-          graph->public_vs_attempted || graph->public_vs_point ||
+          !m9_faa_color_lock_history_valid(graph) ||
+       graph->public_vs_attempted || graph->public_vs_point ||
           graph->public_vs_head_attempted || graph->public_vs_head_point ||
           graph->public_vs_draw_attempted || graph->public_vs_draw_point ||
           graph->public_vs_lock_attempted || graph->public_vs_lock_point ||
@@ -704,6 +715,7 @@ m9_faa_surface_color_frame_kernel(struct m9_screen *screen,
       graph->color_next_lock_point = request.lock_point;
    }
    graph->color_lock_point = request.lock_point;
+   graph->color_lock_delta = delta;
    graph->color_unlock_attempted = false;
    graph->color_unlock_point = 0;
    return 0;
@@ -723,21 +735,12 @@ m9_faa_surface_color_unlock_kernel(struct m9_screen *screen,
       return -EOPNOTSUPP;
    if (graph->color_program_count != 2 && graph->color_program_count != 4)
       return -EINVAL;
-   const uint64_t delta = graph->color_program_count == 2 ? 0xa0 : 0xe0;
    if (!graph->prepared || !graph->prepared_id || !graph->initialized ||
-       !graph->init_point || graph->init_point > UINT64_MAX - (delta + 0x20) ||
+       !graph->init_point ||
+       (graph->color_next_lock_point ? !graph->color_next_attempted : graph->color_next_attempted) ||
        !graph->color_lock_attempted || !graph->color_lock_point ||
        graph->color_lock_point > UINT64_MAX - 0x20 ||
-       (graph->color_next_lock_point ?
-        (!graph->color_next_attempted || graph->color_program_count != 4 ||
-         graph->color_lock_point != graph->color_next_lock_point ||
-         !graph->color_next_previous_unlock_point ||
-         (graph->color_next_previous_unlock_point & 15) ||
-         graph->color_next_previous_unlock_point > UINT64_MAX - 0xe0 ||
-         (graph->color_lock_point != graph->color_next_previous_unlock_point + 0xd0 &&
-          graph->color_lock_point != graph->color_next_previous_unlock_point + 0xe0)) :
-        (graph->color_next_attempted ||
-         graph->color_lock_point != graph->init_point + delta)) ||
+       !m9_faa_color_lock_history_valid(graph) ||
        graph->public_vs_attempted || graph->public_vs_point ||
        graph->public_vs_head_attempted || graph->public_vs_head_point ||
        graph->public_vs_draw_attempted || graph->public_vs_draw_point ||
@@ -792,7 +795,7 @@ m9_faa_surface_public_vs_submit_kernel(struct m9_screen *screen,
        !graph->init_point || graph->init_point > UINT64_MAX - delta)
       return -EINVAL;
    if (graph->color_lock_attempted || graph->color_lock_point ||
-       graph->color_program_count ||
+       graph->color_program_count || graph->color_lock_delta ||
        graph->color_next_attempted || graph->color_next_previous_unlock_point ||
        graph->color_next_lock_point ||
        graph->color_unlock_attempted || graph->color_unlock_point ||
@@ -1102,7 +1105,7 @@ m9_faa_graph_release_kernel(struct m9_screen *screen, struct m9_faa_graph *graph
    if (!graph->prepared_id)
       return graph->prepared || graph->initialized || graph->init_point ||
              graph->color_lock_attempted || graph->color_lock_point ||
-             graph->color_program_count ||
+             graph->color_program_count || graph->color_lock_delta ||
        graph->color_next_attempted || graph->color_next_previous_unlock_point ||
        graph->color_next_lock_point ||
              graph->color_unlock_attempted || graph->color_unlock_point ||
@@ -1126,6 +1129,7 @@ m9_faa_graph_release_kernel(struct m9_screen *screen, struct m9_faa_graph *graph
    graph->color_lock_attempted = false;
    graph->color_lock_point = 0;
    graph->color_program_count = 0;
+   graph->color_lock_delta = 0;
    graph->color_next_attempted = false;
    graph->color_next_previous_unlock_point = 0;
    graph->color_next_lock_point = 0;
