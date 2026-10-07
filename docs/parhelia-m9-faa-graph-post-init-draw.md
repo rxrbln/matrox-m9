@@ -157,7 +157,10 @@ posted endpoint 4,980. The emulator's queue counters already read
 `next=0x130, cached=0x130` before Lock, then `next=0x150, cached=0x130`
 at its `0x140` wait; the active cursor changes from the secondary queue to
 the primary while the secondary cursor is retained. These are CPU queue
-observations, not GPU completion receipts. The source queue/finalizer ordering
+observations, not GPU completion receipts. No explicit `0x23b80` queue
+finalizer or `0x23bc3` status load executes in the returned DRAW/normal Lock
+window before this wait; the earlier independent finish was a separate
+controller call at the suspended DRAW100 boundary. The source queue/finalizer ordering
 must be resolved before any native `0x140` submission; the 4,980-byte DRAW
 tail is not a Lock completion. All captured
 bytes and addresses remain forensic evidence, not live native inputs.
