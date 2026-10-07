@@ -1226,8 +1226,10 @@ static int m9_faa_rebase_page_clear(struct m9x_faa_replay *r)
 #ifdef M9_FAA_PROGRAM_ACCESS_CONTROL
 /* Actual 2cb40 waits for the program resource before its unconditional
  * 2cba8 frontend kick. Its later CPU-aperture mapping is a separate branch.
- * The two entry-offset encoders identify the retained C2 owner; no captured
- * resource address or CPU alias is installed by this bounded control. */
+ * Paired entry-offset encoders identify the retained C2 owner. Later draws
+ * may rebind either entry of the same program; validate every pair without
+ * limiting the whole stream to two bindings. No captured resource address
+ * or CPU alias is installed by this bounded control. */
 static int m9_faa_program_access(struct m9x_device *mdev,
 				 struct m9x_faa_replay *r, u64 point)
 {
@@ -1239,6 +1241,10 @@ static int m9_faa_program_access(struct m9x_device *mdev,
 	for (i = 0; i < ARRAY_SIZE(m9_faa_fixups); i++) {
 		const struct m9_faa_fixup *f = &m9_faa_fixups[i];
 
+		if (f->encoder == 0x24886 &&
+		    (i + 1 >= ARRAY_SIZE(m9_faa_fixups) ||
+		     m9_faa_fixups[i + 1].encoder != 0x248ab))
+			return -EINVAL;
 		if (f->encoder != 0x248ab)
 			continue;
 		if (!i || f->offset < 4 ||
@@ -1256,7 +1262,7 @@ static int m9_faa_program_access(struct m9x_device *mdev,
 		offsets |= f->addend ? 2 : 1;
 		entries++;
 	}
-	if (entries != 2 || offsets != 3)
+	if (entries < 2 || offsets != 3)
 		return -EINVAL;
 	spec = &m9_faa_owner_specs[program];
 	owner = &r->owner[program];
