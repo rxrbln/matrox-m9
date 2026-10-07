@@ -110,6 +110,7 @@ int m9x_faa_secondary_pool_plan(struct m9x_faa_secondary_pool *pool,
 	    observed->generation != pool->generation ||
 	    observed->pool_point != pool->completed_pool_point ||
 	    pool_origin != pool->submitted_pool_point ||
+	    range_start != pool->cursor ||
 	    pool->cursor > U32_MAX - 12)
 		return -EINVAL;
 	selected = pool->active ^ 1;
