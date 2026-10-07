@@ -4303,10 +4303,11 @@ int m9x_faa_graph_public_vs_unlocked_get_locked(struct m9x_device *mdev,
 static void m9_faa_color_intermediates_observe(struct m9x_device *mdev,
 					    struct m9x_faa_replay *r)
 {
-	static const struct { u32 at, owner, bytes; } target[] = {
-		{ 116, 24, 0 }, { 132, 24, 0 },
-		{ 804, 23, 64 }, { 820, 23, 64 },
-		{ 1416, 23, 64 }, { 1432, 23, 64 }, { 1448, 23, 16 },
+	static const struct { u32 at, next_at, owner, bytes; } target[] = {
+		{ 116, 120, 24, 0 }, { 132, 136, 24, 0 },
+		{ 804, 896, 23, 64 }, { 820, 912, 23, 64 },
+		{ 1416, 1372, 23, 64 }, { 1432, 1388, 23, 64 },
+		{ 1448, 0, 23, 16 }, /* first-only third position target */
 	};
 	struct m9_faa_color_storage *n = r->color_image;
 	u8 data[256];
@@ -4315,19 +4316,26 @@ static void m9_faa_color_intermediates_observe(struct m9x_device *mdev,
 
 	lockdep_assert_held(&mdev->transport.lock);
 	if (!m9_faa_color_observe || !r->color_lock_retired || !n ||
-	    n->layout.program_count != 4 || n->secondary_bytes < 2688 ||
+	    n->layout.program_count != 4 ||
+	    n->secondary_bytes < (n->previous_unlock_point ? 2512 : 2688) ||
 	    n->secondary_bytes > sizeof(n->secondary) ||
 	    mdev->transport.wedged || mdev->transport.queue_count ||
 	    mdev->transport.completed_point != r->color_lock_point ||
 	    mdev->transport.generation != r->graph_generation)
 		return;
-	extra = (int)n->secondary_bytes - 2712;
+	extra = (int)n->secondary_bytes - (n->previous_unlock_point ? 2536 : 2712);
 	rmb();
 	dma_rmb();
 	for (i = 0; i < ARRAY_SIZE(target); i++) {
 		struct m9_faa_owner *o = &r->owner[target[i].owner];
 
-		at = target[i].at < 576 ? target[i].at : target[i].at + extra;
+		if (n->previous_unlock_point) {
+			at = target[i].next_at;
+			if (!at) continue;
+			if (at >= 680) at += extra;
+		} else {
+			at = target[i].at < 576 ? target[i].at : target[i].at + extra;
+		}
 		if (at > n->secondary_bytes - 8)
 			continue;
 		address = get_unaligned_le32(n->secondary + at);
@@ -6464,7 +6472,7 @@ int m9x_faa_graph_color_next_prepare(struct m9x_device *mdev,
  struct m9x_transport *t=&mdev->transport;struct m9x_faa_replay *r;
  struct m9_faa_color_storage *n=NULL,*old=NULL;struct m9_faa_graph_binding *checked=NULL;
  struct m9x_faa_graph_draw_owner owner[31];struct m9x_faa_color_next_image image;
- const struct firmware *fw=NULL;u32 i,capacity;int ret;
+ const struct firmware *fw=NULL;u8 *scratch=NULL;u32 i,capacity;int ret;
  if(!binding||!input||!m9_faa_color_four_experimental||input->layout.program_count!=4||clear_flags>1)return -EOPNOTSUPP;
  if(input->layout.program_bytes>4096||input->layout.constants_bytes>16384||
   input->record_stride!=32||!input->record_count||input->record_count%3||input->record_count>12288||
@@ -6473,6 +6481,7 @@ int m9x_faa_graph_color_next_prepare(struct m9x_device *mdev,
  n->geometry_offset=ALIGN(input->layout.constants_bytes,128);
  capacity=n->geometry_offset+input->layout.geometry_bytes+768;
  n->constants=kzalloc(capacity,GFP_KERNEL);if(!n->constants){ret=-ENOMEM;goto release;}
+ scratch=kmalloc(M9_FAA_COLOR_SECONDARY_CAPACITY,GFP_KERNEL);if(!scratch){ret=-ENOMEM;goto release;}
  ret=request_firmware(&fw,M9_FAA_GRAPH_COLOR_FOUR_FIRMWARE,&mdev->pdev->dev);if(ret)goto release;
  mutex_lock(&t->lock);
  ret=m9x_faa_graph_color_unlocked_get_locked(mdev,generation,previous_unlock_point,&checked);if(ret)goto unlock;
@@ -6487,17 +6496,18 @@ int m9x_faa_graph_color_next_prepare(struct m9x_device *mdev,
  }
  image=(struct m9x_faa_color_next_image){
   .image={n->program,n->constants,n->primary,n->secondary,sizeof(n->program),capacity,sizeof(n->primary),sizeof(n->secondary),&n->secondary_bytes},
-  .clear=n->clear,.clear_capacity=sizeof(n->clear),.clear_length=&n->clear_bytes};
+  .clear=n->clear,.clear_capacity=sizeof(n->clear),.clear_length=&n->clear_bytes,
+  .secondary_scratch=scratch,.secondary_scratch_capacity=M9_FAA_COLOR_SECONDARY_CAPACITY};
  ret=m9x_faa_color_next_encode(fw->data,fw->size,owner,r->primary_bytes,
   r->color_secondary_cursor,previous_unlock_point,input,clear_flags,&image);if(ret)goto unlock;
- if((u64)r->graph_draw_end_bytes+n->clear_bytes+3632>owner[27].bytes){ret=-ENOSPC;goto unlock;}
+ if((u64)r->graph_draw_end_bytes+n->clear_bytes+M9_FAA_COLOR_NEXT_PRIMARY_BYTES>owner[27].bytes){ret=-ENOSPC;goto unlock;}
  n->layout=input->layout;n->constants_bytes=input->layout.constants_bytes;n->geometry_bytes=128+ALIGN(input->record_count,4)*input->record_stride;
- n->program_bytes=input->layout.program_bytes;n->primary_length=3632;n->draw_length=60;
+ n->program_bytes=input->layout.program_bytes;n->primary_length=M9_FAA_COLOR_NEXT_PRIMARY_BYTES;n->draw_length=60;
  n->lock_delta=0xd0+(clear_flags?0x10:0);n->secondary_cursor=r->color_secondary_cursor;
  n->previous_unlock_point=previous_unlock_point;
  old=r->color_image;r->color_image=n;n=NULL;ret=0;
 unlock:mutex_unlock(&t->lock);m9x_faa_graph_binding_put(checked);
-release:if(fw)release_firmware(fw);if(n)kfree(n->constants);kfree(n);if(old)kfree(old->constants);kfree(old);return ret;
+release:kfree(scratch);if(fw)release_firmware(fw);if(n)kfree(n->constants);kfree(n);if(old)kfree(old->constants);kfree(old);return ret;
 #else
  return -EOPNOTSUPP;
 #endif
