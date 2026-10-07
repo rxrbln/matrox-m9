@@ -44,10 +44,14 @@ struct m9_faa_fixup {
 struct m9_faa_tracker {
 	u32 owner, offset, captured;
 };
+struct m9_faa_clear_segment {
+	u32 owner, bytes, start, end;
+};
 #if (defined(M9_FAA_CONSTANT_SHADER_CONTROL) + \
      defined(M9_FAA_CONSTANT_RED_CONTROL) + \
      defined(M9_FAA_ORDINARY_SYSTEM_CONTROL) + \
      defined(M9_FAA_INIT_ONLY_CONTROL) + \
+     defined(M9_FAA_PRECLEAR_CONTROL) + \
      defined(M9_FAA_POST_TRIANGLE_CONTROL)) > 1
 #error "Select only one complete private FAA source profile"
 #endif
@@ -62,6 +66,11 @@ struct m9_faa_tracker {
  * No triangle or output request, and no invented output owner. */
 #include "m9_faa_init_only_data.h"
 #define M9_FAA_INPUT_FIRMWARE "m9x/faa-init-only-known-inputs.bin"
+#elif defined(M9_FAA_PRECLEAR_CONTROL)
+/* Genuine public pre-draw CLEAR42 admission, stopped at its first GPU
+ * input and independently flushed. Neither the clear nor draw has returned. */
+#include "m9_faa_preclear_data.h"
+#define M9_FAA_INPUT_FIRMWARE "m9x/faa-preclear-known-inputs.bin"
 #elif defined(M9_FAA_POST_TRIANGLE_CONTROL)
 /* Independent vendor queue finish after the returned public triangle,
  * before output/resolve. Its final counter is in its counted secondary. */
@@ -837,6 +846,84 @@ static int m9_faa_rebase_page_clear(struct m9x_faa_replay *r)
 		return -EINVAL;
 	r->primary_bytes = M9_FAA_PRIMARY_BYTES;
 	return 0;
+#elif defined(M9_FAA_MULTI_CLEAR)
+	u32 replacement[ARRAY_SIZE(m9_faa_clear_segments)][M9_FAA_CLEAR_MAX_WORDS];
+	u32 counts[ARRAY_SIZE(m9_faa_clear_segments)];
+	u32 original[M9_FAA_CLEAR_MAX_WORDS];
+	u64 bytes = M9_FAA_PRIMARY_BYTES;
+	u8 *data = primary->cpu;
+	u32 i, j, original_count;
+	int ret;
+
+	/* This profile contains two independently observed b5e70 calls. Check
+	 * every owner, packet and final extent before modifying any bytes. */
+	if (ARRAY_SIZE(m9_faa_clear_segments) != 2 || !data || primary->vram ||
+	    primary->bytes < M9_FAA_PRIMARY_BYTES)
+		return -EINVAL;
+	for (i = 0; i < ARRAY_SIZE(m9_faa_clear_segments); i++) {
+		const struct m9_faa_clear_segment *s = &m9_faa_clear_segments[i];
+		struct m9_faa_owner *owner;
+
+		if (s->owner >= ARRAY_SIZE(r->owner) || !s->bytes ||
+		    !IS_ALIGNED(s->start, 4) || !IS_ALIGNED(s->end, 4) ||
+		    s->start < 28 || s->start >= s->end ||
+		    (u64)s->end + 8 > M9_FAA_PRIMARY_BYTES ||
+		    (i && s->start - 28 < m9_faa_clear_segments[i - 1].end + 8))
+			return -EINVAL;
+		owner = &r->owner[s->owner];
+		if (!owner->vram || owner->bytes < s->bytes ||
+		    m9_faa_owner_specs[s->owner].bytes < s->bytes ||
+		    get_unaligned_le32(data + s->start - 28) != 0x4545ace6 ||
+		    get_unaligned_le32(data + s->start - 24) != 2 ||
+		    get_unaligned_le32(data + s->start - 20) != 0 ||
+		    get_unaligned_le32(data + s->start - 16) != 0x45e62b2a ||
+		    get_unaligned_le32(data + s->start - 12) != 0x454545e6 ||
+		    get_unaligned_le32(data + s->start - 8) != 0xffff ||
+		    get_unaligned_le32(data + s->end) != 0x4545e3e6 ||
+		    get_unaligned_le32(data + s->end + 4) != 1)
+			return -EINVAL;
+		ret = m9_faa_clear_page_words(m9_faa_owner_specs[s->owner].captured,
+			s->bytes, original, ARRAY_SIZE(original), &original_count);
+		if (ret)
+			return ret;
+		if (original_count * 4 != s->end - s->start ||
+		    get_unaligned_le32(data + s->start - 4) !=
+			(0x20000000 | (original_count - 1)))
+			return -EINVAL;
+		for (j = 0; j < original_count; j++)
+			if (get_unaligned_le32(data + s->start + j * 4) != original[j])
+				return -EINVAL;
+		ret = m9_faa_clear_page_words(owner->base, s->bytes,
+			replacement[i], ARRAY_SIZE(replacement[i]), &counts[i]);
+		if (ret)
+			return ret;
+	}
+	/* Intermediate suffix growth must fit too, even when the earlier
+	 * segment later shrinks and the final length would fit the allocation. */
+	for (i = ARRAY_SIZE(m9_faa_clear_segments); i-- > 0;) {
+		const struct m9_faa_clear_segment *s = &m9_faa_clear_segments[i];
+
+		bytes = bytes - (s->end - s->start) + counts[i] * 4;
+		if (bytes > primary->bytes)
+			return -ENOSPC;
+	}
+	/* Address and timeline fixups have already been applied at their
+	 * original offsets. Rebuild from the last segment backwards: shifting
+	 * an earlier suffix then preserves the already rebuilt later clear. */
+	bytes = M9_FAA_PRIMARY_BYTES;
+	for (i = ARRAY_SIZE(m9_faa_clear_segments); i-- > 0;) {
+		const struct m9_faa_clear_segment *s = &m9_faa_clear_segments[i];
+
+		memmove(data + s->start + counts[i] * 4, data + s->end,
+			bytes - s->end);
+		put_unaligned_le32(0x20000000 | (counts[i] - 1),
+			data + s->start - 4);
+		for (j = 0; j < counts[i]; j++)
+			put_unaligned_le32(replacement[i][j], data + s->start + j * 4);
+		bytes = bytes - (s->end - s->start) + counts[i] * 4;
+	}
+	r->primary_bytes = bytes;
+	return 0;
 #else
 	struct m9_faa_owner *companion = &r->owner[M9_FAA_CLEAR_OWNER];
 	u32 original[M9_FAA_CLEAR_MAX_WORDS], replacement[M9_FAA_CLEAR_MAX_WORDS];
@@ -1014,7 +1101,14 @@ int m9x_faa_submit_diag(struct m9x_device *mdev, u32 color,
 	ret = m9_faa_rebase_page_clear(r);
 	if (ret)
 		goto unlock;
-#if !defined(M9_FAA_HAS_COMPANION_CLEAR) || M9_FAA_HAS_COMPANION_CLEAR
+#if defined(M9_FAA_MULTI_CLEAR)
+	for (i = 0; i < ARRAY_SIZE(m9_faa_clear_segments); i++)
+		dev_info(&mdev->pdev->dev,
+			 "M9 FAA page clear: segment=%u owner=%u base=%#x bytes=%#x primary_bytes=%u\n",
+			 i, m9_faa_clear_segments[i].owner,
+			 r->owner[m9_faa_clear_segments[i].owner].base,
+			 m9_faa_clear_segments[i].bytes, r->primary_bytes);
+#elif !defined(M9_FAA_HAS_COMPANION_CLEAR) || M9_FAA_HAS_COMPANION_CLEAR
 	dev_info(&mdev->pdev->dev,
 		 "M9 FAA companion clear: base=%#x bytes=%#x inline_words=%u primary_bytes=%u\n",
 		 r->owner[M9_FAA_CLEAR_OWNER].base, M9_FAA_CLEAR_BYTES,
