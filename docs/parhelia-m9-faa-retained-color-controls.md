@@ -65,6 +65,33 @@ validating the new depth allocation, identifying the auxiliary resource's
 ownership, and deriving both depth command paths from live descriptors. The
 source command count does not prove GPU retirement or depth pixels.
 
+The machine-readable source contract is
+`captures/m9-faa-graph-public-vs-20261007/next-state-controls/bound-depth-source-plan.json`.
+It identifies a preexisting bound color target (new role 31, SYSTEM GPUVA,
+class4/format `0x7c`, capacity `0x50000`), a depth-owned HZ auxiliary (role
+32, VRAM, class5/format `0x78`, 40×60, logical `0x3000`, capacity `0x8000`),
+and the new depth resource (role 33, VRAM, class4/format `0x3d`, 320×240,
+logical `0x97000`, capacity `0x98000`). Depth `+0x1d8` owns the auxiliary;
+auxiliary `+0x1dc` links back to depth. The original color target was already
+handle 1, but is outside the original 31 command-owner namespace. The
+sampled graph primary remains owner 1. This plan classifies 64 source
+address fields, 29 timeline fields, three relative fields and ten END posts;
+captured bases exist only for source role matching. The two inline page runs
+clear the bound color target and sampled primary, each selecting 80 pages
+through 10 and 11 words respectively. Neither page run targets graph
+companion owner 4. The depth and HZ command bodies require their own live
+descriptor and allocation mapping; the plan is not an executable template.
+`check-bound-depth-plan.py` verifies the source-derived owner and packet
+joins with four refusals.
+
+After a real retained first public VS Unlock, separate controlled RS62
+BeginScene/EndScene and SETRENDERTARGET41(existing color/null depth) before
+the TARGET-only clear, alone and combined, emit exactly the same primary,
+secondary and geometry images as TARGET-only clear. Each still reaches only
+the sampled-primary `b5e70` call. These controls cannot establish a
+per-frame reset of the FAA companion or cure the three retained edge samples
+observed in the later native repeated-COLOR hardware run.
+
 An independent **initial**, not retained-repeat, original COLOR-reading
 four-vector control compares three and six vertices with the same two-real-
 output shader. The genuine CPU draw and normal Lock reach the same unread
