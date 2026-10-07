@@ -189,3 +189,24 @@ The reproducible controllers are
 `tools/m9emu/m9_faa_graph_color_mask_initial.py` and
 `tools/m9emu/m9_faa_graph_color_one_stream_chain.py` under the established
 vendor emulator environment.
+
+The matching original two-output COLOR4 Lock/Unlock hardware receipt now
+qualifies only a retained CPU source continuation. The source's next
+`CLEAR42` is 128 primary bytes at 8672..8800; the changed second draw writes
+3624 primary bytes at 8800..12424 and 2536 secondary bytes at 2712..5248.
+The latter has no GPU43 packets and contains an extra early 96-byte copy of
+the raster state block. Its first stage mask differs from the initial draw:
+the original DLL loads the live stage object through `[eax+0x5b8]+0xb8`,
+then applies `((mask & 0xff1fffff) | 0x00100000) & 0xfffffffc` at
+`f98b3..f98ce`. This yields `0x0310fffc` for the admitted two-output control;
+it is not a literal mask for arbitrary compiled programs.
+
+`captures/m9-faa-gl-one-color-20261007/two-output-four-retained-plan.json`
+and its stripped template type 127 live owner, timeline, declaration, stage,
+dimension, count, and relative fields. The paired no-clear and six-vertex
+source controls prove respectively 15 timeline changes and four launch-count
+changes. They supply no repeated GPU counter or pixel receipt: the next
+positive normal-Lock read is still unread. A one-output live program needs
+its own stage-object/route admission before these two-output packet fields
+can be adapted. Run
+`python3 tests/m9-faa-gl-one-color-20261007/check-retained-four.py`.
