@@ -30,6 +30,8 @@ struct m9_faa_prepared_graph {
 	bool pinned[PARHELIA_M9_FAA_GRAPH_OWNERS];
 	u64 id;
 	u32 generation;
+	u64 init_point;
+	bool initialized;
 };
 
 struct m9_faa_file {
@@ -105,6 +107,27 @@ static bool m9_faa_graph_release_matches(
 {
 	return graph && graph->id == args->graph_id &&
 	       graph->generation == args->generation && !args->flags;
+}
+
+static bool m9_faa_graph_init_request_valid(
+		const struct drm_parhelia_m9_faa_graph_init *args)
+{
+	return args && args->graph_id && !args->flags && !args->init_point &&
+	       !args->state && !args->pad;
+}
+
+static bool m9_faa_graph_record_retired(struct m9_faa_prepared_graph *graph,
+		struct drm_parhelia_m9_faa_graph_init *args, u64 point)
+{
+	if (!graph || !args || !point || graph->initialized ||
+	    graph->id != args->graph_id ||
+	    graph->generation != args->generation)
+		return false;
+	graph->initialized = true;
+	graph->init_point = point;
+	args->init_point = point;
+	args->state = PARHELIA_M9_FAA_GRAPH_INITIALIZED;
+	return true;
 }
 
 static bool m9_faa_graph_request_valid(
@@ -542,4 +565,79 @@ int m9x_faa_graph_release_ioctl(struct drm_device *drm, void *data,
 	mutex_unlock(&state->lock);
 	m9x_faa_graph_put(graph);
 	return 0;
+}
+
+int m9x_faa_graph_init_ioctl(struct drm_device *drm, void *data,
+			     struct drm_file *file)
+{
+	struct drm_parhelia_m9_faa_graph_init *args = data;
+	struct m9x_device *mdev = to_m9x(drm);
+	struct m9_faa_file *state = file->driver_priv;
+	struct m9_faa_graph_binding *binding;
+	struct drm_exec exec;
+	u64 point = 0;
+	u32 i;
+	bool posted = false;
+	bool prepared = false;
+	int idx, ret;
+
+	if (!state || !m9_faa_graph_init_request_valid(args))
+		return -EINVAL;
+	if (!drm_dev_enter(drm, &idx))
+		return -ENODEV;
+	ret = m9x_faa_graph_binding_acquire(mdev, file, args->graph_id,
+						args->generation, &binding);
+	if (ret)
+		goto out_dev;
+	mutex_lock(&state->lock);
+	if (state->graph != binding->graph) {
+		ret = -ENOENT;
+		goto out_state;
+	}
+	if (state->graph->initialized) {
+		ret = -EALREADY;
+		goto out_state;
+	}
+	/* Allocation, known-byte upload and private mappings precede the six
+	 * caller BO reservations. A successful prepare transfers the binding to
+	 * the retained native producer; it stays alive after file RELEASE. */
+	ret = m9x_faa_prepare_graph(mdev, binding, args->generation);
+	if (ret)
+		goto out_state;
+	prepared = true;
+	drm_exec_init(&exec, DRM_EXEC_INTERRUPTIBLE_WAIT |
+		      DRM_EXEC_IGNORE_DUPLICATES, PARHELIA_M9_FAA_GRAPH_OWNERS);
+	drm_exec_until_all_locked(&exec) {
+		for (i = 0; i < PARHELIA_M9_FAA_GRAPH_OWNERS; i++) {
+			ret = drm_exec_prepare_obj(&exec,
+				m9x_faa_graph_binding_owner(binding, i), 1);
+			drm_exec_retry_on_contention(&exec);
+			if (ret)
+				goto out_exec;
+		}
+	}
+	for (i = 0; i < PARHELIA_M9_FAA_GRAPH_OWNERS; i++) {
+		if (!dma_resv_test_signaled(
+			m9x_faa_graph_binding_owner(binding, i)->resv,
+			DMA_RESV_USAGE_READ)) {
+			ret = -EBUSY;
+			goto out_exec;
+		}
+	}
+	/* The native producer itself checks the fresh queue and transport
+	 * generation before its first doorbell. It waits for the real source
+	 * final target; neither a CPU seed nor a captured desired counter is a
+	 * receipt. Failed posts keep the producer's owners in quarantine. */
+	ret = m9x_faa_submit_graph(mdev, binding, &point, &posted);
+	if (!ret && !m9_faa_graph_record_retired(state->graph, args, point))
+		ret = -EIO;
+out_exec:
+	drm_exec_fini(&exec);
+out_state:
+	mutex_unlock(&state->lock);
+	if (!prepared)
+		m9x_faa_graph_binding_put(binding);
+out_dev:
+	drm_dev_exit(idx);
+	return ret;
 }

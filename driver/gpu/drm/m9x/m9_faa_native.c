@@ -52,6 +52,7 @@ struct m9_faa_clear_segment {
      defined(M9_FAA_CONSTANT_RED_CONTROL) + \
      defined(M9_FAA_ORDINARY_SYSTEM_CONTROL) + \
      defined(M9_FAA_INIT_ONLY_CONTROL) + \
+     defined(M9_FAA_GRAPH_INIT_CONTROL) + \
      defined(M9_FAA_PRECLEAR_CONTROL) + \
      defined(M9_FAA_PREPARED_PRECLEAR_CONTROL) + \
      defined(M9_FAA_PREPARED_FLOW_CONTROL) + \
@@ -80,6 +81,11 @@ struct m9_faa_clear_segment {
  * No triangle or output request, and no invented output owner. */
 #include "m9_faa_init_only_data.h"
 #define M9_FAA_INPUT_FIRMWARE "m9x/faa-init-only-known-inputs.bin"
+#elif defined(M9_FAA_GRAPH_INIT_CONTROL)
+/* Six source owners are borrowed from a PREPARED graph; the remaining
+ * private owners and the fresh queue primary follow the sealed source plan. */
+#include "m9_faa_graph_init_data.h"
+#define M9_FAA_INPUT_FIRMWARE "m9x/faa-graph-init-known-inputs.bin"
 #elif defined(M9_FAA_PREPARED_PRECLEAR_CONTROL)
 /* Fresh source constructor/preparation precedes queue creation. Retain and
  * publish its otherwise unconsumed local conversion backing before c0. */
@@ -209,6 +215,10 @@ struct m9_faa_owner {
 };
 struct m9x_faa_replay {
 	struct m9_faa_owner owner[ARRAY_SIZE(m9_faa_owner_specs)];
+	/* Holds all six caller GEM pins through retirement or quarantine. */
+	struct m9_faa_graph_binding *graph_binding;
+	u32 graph_generation;
+	bool graph_preparing;
 	/* Prepared program bytes remain CPU inputs until the original c0
 	 * access boundary. Keep their source buffer through that upload. */
 	const struct firmware *program_inputs;
@@ -282,12 +292,37 @@ MODULE_FIRMWARE(M9_FAA_INPUT_FIRMWARE);
 
 bool m9x_faa_diag_enabled(void)
 {
+#ifdef M9_FAA_GRAPH_INIT_CONTROL
+	return false;
+#else
 	return m9_faa_diag;
+#endif
+}
+
+bool m9x_faa_graph_active(struct m9x_device *mdev)
+{
+	lockdep_assert_held(&mdev->transport.lock);
+	return mdev->transport.faa &&
+	       (mdev->transport.faa->graph_binding ||
+		mdev->transport.faa->graph_preparing);
+}
+
+bool m9x_faa_graph_preparing(struct m9x_device *mdev)
+{
+	lockdep_assert_held(&mdev->transport.lock);
+	return mdev->transport.faa &&
+	       mdev->transport.faa->graph_preparing;
 }
 
 bool m9x_faa_source_init_enabled(struct m9x_device *mdev)
 {
+#ifdef M9_FAA_GRAPH_INIT_CONTROL
+	return mdev->transport.faa &&
+	       mdev->transport.faa->graph_binding &&
+	       mdev->pdev->device == 0x0540;
+#else
 	return m9_faa_diag && m9_faa_source_init && mdev->pdev->device == 0x0540;
+#endif
 }
 
 /* The unchanged native origin10 is an initial CPU counter seed. Fresh
@@ -454,6 +489,7 @@ static bool m9_faa_release(struct m9x_device *mdev, struct m9x_faa_replay *r)
 		drm_gem_object_put(r->output_color);
 	if (r->program_inputs)
 		release_firmware(r->program_inputs);
+	m9x_faa_graph_binding_put(r->graph_binding);
 	kfree(r);
 	return true;
 quarantine:
@@ -835,15 +871,25 @@ static void m9_faa_observe_borrowed_color(struct m9x_device *mdev,
 
 /* Allocations precede the caller's color BO reservation, as in ordinary
  * FIRST_TRIANGLE. Every private owner survives both publication and timeout. */
-int m9x_faa_prepare_diag(struct m9x_device *mdev)
+static int m9_faa_prepare(struct m9x_device *mdev,
+			  struct m9_faa_graph_binding *binding,
+			  u32 generation)
 {
 	const struct firmware *fw = NULL;
-	struct m9x_faa_replay *r;
+	struct m9x_faa_replay *r = NULL;
 	u32 i, hash = 0x811c9dc5;
+	bool locked = true;
 	int ret;
 
-	if (!m9_faa_diag || mdev->pdev->device != 0x0540)
+	if ((!m9_faa_diag && !binding) || mdev->pdev->device != 0x0540)
 		return -EACCES;
+#ifdef M9_FAA_GRAPH_INIT_CONTROL
+	if (!binding)
+		return -EOPNOTSUPP;
+#else
+	if (binding)
+		return -EOPNOTSUPP;
+#endif
 	if (m9_faa_defer_output_map) {
 #ifndef M9_FAA_PRECLEAR_OUTPUT_WRITE_CONTROL
 		return -EOPNOTSUPP;
@@ -878,7 +924,8 @@ int m9x_faa_prepare_diag(struct m9x_device *mdev)
 		goto unlock;
 	}
 	if (mdev->transport.faa) {
-		ret = mdev->transport.faa->attempted ? -EALREADY : 0;
+		ret = binding ? -EBUSY :
+			(mdev->transport.faa->attempted ? -EALREADY : 0);
 		goto unlock;
 	}
 	/* Engine prerequisite allocations must also finish outside COLOR RESV. */
@@ -889,12 +936,27 @@ int m9x_faa_prepare_diag(struct m9x_device *mdev)
 	mutex_lock(&mdev->transport.lock);
 	if (mdev->transport.faa || mdev->transport.wedged) {
 		ret = mdev->transport.wedged ? -EIO :
-			(mdev->transport.faa->attempted ? -EALREADY : 0);
+			(binding ? -EBUSY :
+			 (mdev->transport.faa->attempted ? -EALREADY : 0));
 		goto unlock;
+	}
+	if (binding) {
+		/* Claim the native producer slot first, then drop TRANSPORT
+		 * before any private TTM reservation. Other engine users refuse
+		 * this unprepared first-context producer. */
+		r = kzalloc(sizeof(*r), GFP_KERNEL);
+		if (!r) {
+			ret = -ENOMEM;
+			goto unlock;
+		}
+		r->graph_preparing = true;
+		mdev->transport.faa = r;
+		mutex_unlock(&mdev->transport.lock);
+		locked = false;
 	}
 	ret = request_firmware(&fw, M9_FAA_INPUT_FIRMWARE, &mdev->pdev->dev);
 	if (ret)
-		goto unlock;
+		goto release_fw;
 	if (fw->size != M9_FAA_BLOB_BYTES) {
 		ret = -EINVAL;
 		goto release_fw;
@@ -905,24 +967,52 @@ int m9x_faa_prepare_diag(struct m9x_device *mdev)
 		ret = -EINVAL;
 		goto release_fw;
 	}
-	r = kzalloc(sizeof(*r), GFP_KERNEL);
 	if (!r) {
-		ret = -ENOMEM;
-		goto release_fw;
+		r = kzalloc(sizeof(*r), GFP_KERNEL);
+		if (!r) {
+			ret = -ENOMEM;
+			goto release_fw;
+		}
 	}
 	for (i = 0; i < ARRAY_SIZE(r->owner); i++) {
+		u32 role, address, source;
+
+		if (binding) {
+			for (role = 0; role < PARHELIA_M9_FAA_GRAPH_OWNERS; role++) {
+				if (!m9x_faa_graph_binding_address(binding, role,
+							  &address, &source)) {
+					ret = -EINVAL;
+					goto free;
+				}
+				if (source != i)
+					continue;
+				r->owner[i].base = address;
+				r->owner[i].bytes = PAGE_ALIGN(m9_faa_owner_specs[i].bytes);
+				break;
+			}
+			if (role != PARHELIA_M9_FAA_GRAPH_OWNERS)
+				continue;
+		}
 		/* Only a profile with a sampled caller color substitutes that owner.
 		 * An absent sentinel allocates every genuine source owner. */
 		if (i == M9_FAA_COLOR_OWNER)
 			continue;
+		if (binding && !m9_faa_owner_specs[i].local)
+			mutex_lock(&mdev->transport.lock);
 		ret = m9_faa_allocate(mdev, &r->owner[i], &m9_faa_owner_specs[i],
 				      m9_faa_defer_output_map && i == M9_FAA_OUTPUT_OWNER);
+		if (binding && !m9_faa_owner_specs[i].local)
+			mutex_unlock(&mdev->transport.lock);
 		if (ret)
 			goto free;
 	}
 	if (M9_FAA_COUNTER_VIRTUAL) {
+		if (binding)
+			mutex_lock(&mdev->transport.lock);
 		ret = m9x_address_map_system(mdev, &r->counter_node,
 					    mdev->transport.fence_bus, PAGE_SIZE);
+		if (binding)
+			mutex_unlock(&mdev->transport.lock);
 		if (ret)
 			goto free;
 	}
@@ -933,7 +1023,7 @@ int m9x_faa_prepare_diag(struct m9x_device *mdev)
 		    s->offset > m9_faa_owner_specs[s->owner].bytes ||
 		    s->bytes > m9_faa_owner_specs[s->owner].bytes - s->offset ||
 		    s->blob_offset > fw->size || s->bytes > fw->size - s->blob_offset ||
-		    s->owner == M9_FAA_COLOR_OWNER) {
+		    (!binding && s->owner == M9_FAA_COLOR_OWNER)) {
 			ret = -EINVAL;
 			goto free;
 		}
@@ -941,6 +1031,20 @@ int m9x_faa_prepare_diag(struct m9x_device *mdev)
 		if (s->owner == M9_FAA_PROGRAM_UPLOAD_OWNER)
 			continue;
 #endif
+		if (binding && s->owner == 8) {
+			/* The caller BO is written only after the ioctl has acquired
+			 * all six reservations. Never take its RESV under transport. */
+			static const u32 init[5] = {
+				0xa4a3a1a1, 0x28041968, 0, 0, 0,
+			};
+
+			if (s->offset || s->bytes != sizeof(init) ||
+			    memcmp(fw->data + s->blob_offset, init, sizeof(init))) {
+				ret = -EINVAL;
+				goto free;
+			}
+			continue;
+		}
 		m9_faa_write(&r->owner[s->owner], s->offset,
 			     fw->data + s->blob_offset, s->bytes);
 	}
@@ -951,7 +1055,21 @@ int m9x_faa_prepare_diag(struct m9x_device *mdev)
 	r->program_inputs = fw;
 	fw = NULL;
 #endif
+	if (binding) {
+		mutex_lock(&mdev->transport.lock);
+		locked = true;
+		if (mdev->transport.faa != r || mdev->transport.wedged ||
+		    mdev->transport.generation != generation ||
+		    mdev->transport.submitted_point ||
+		    mdev->transport.queue_count) {
+			ret = -ESTALE;
+			goto free;
+		}
+	}
 	r->prepared = true;
+	r->graph_binding = binding;
+	r->graph_generation = generation;
+	r->graph_preparing = false;
 	mdev->transport.faa = r;
 	dev_info(&mdev->pdev->dev, "M9 FAA private inputs: %zu owners, %u known bytes, %zu address/%zu tracker fixups\n",
 		 ARRAY_SIZE(r->owner), M9_FAA_BLOB_BYTES,
@@ -959,13 +1077,63 @@ int m9x_faa_prepare_diag(struct m9x_device *mdev)
 	ret = 0;
 	goto release_fw;
 free:
-	m9_faa_release_failed_prepare(mdev, r);
+	if (!binding)
+		m9_faa_release_failed_prepare(mdev, r);
 release_fw:
 	if (fw)
 		release_firmware(fw);
 unlock:
-	mutex_unlock(&mdev->transport.lock);
+	if (locked)
+		mutex_unlock(&mdev->transport.lock);
+	if (binding && ret && r) {
+		/* Graph preparation never posts. Unmap address nodes under the
+		 * transport lock; release local TTM reservations outside it. A
+		 * failed address publication can have exposed DMA or left the
+		 * frontend frozen: retain every private owner until bus-master-off. */
+		mutex_lock(&mdev->transport.lock);
+		if (mdev->transport.wedged ||
+		    mdev->transport.bus_master_enabled) {
+			/* Address publication may already be visible. Preserve the
+			 * in-progress slot and mappings until requester teardown. */
+			mutex_unlock(&mdev->transport.lock);
+			return ret;
+		}
+		for (i = 0; i < ARRAY_SIZE(r->owner); i++)
+			if (!m9_faa_dma_restore_wb(&r->owner[i])) {
+				mdev->transport.wedged = true;
+				mutex_unlock(&mdev->transport.lock);
+				return ret;
+			}
+		if (drm_mm_node_allocated(&r->counter_node))
+			m9x_address_unmap_system(mdev, &r->counter_node);
+		for (i = 0; i < ARRAY_SIZE(r->owner); i++)
+			if (drm_mm_node_allocated(&r->owner[i].system_node))
+				m9x_address_unmap_system(mdev, &r->owner[i].system_node);
+		if (mdev->transport.faa == r)
+			mdev->transport.faa = NULL;
+		mutex_unlock(&mdev->transport.lock);
+		m9_faa_release(mdev, r);
+	}
 	return ret;
+}
+
+int m9x_faa_prepare_diag(struct m9x_device *mdev)
+{
+	return m9_faa_prepare(mdev, NULL, 0);
+}
+
+int m9x_faa_prepare_graph(struct m9x_device *mdev,
+			  struct m9_faa_graph_binding *binding, u32 generation)
+{
+#ifdef M9_FAA_GRAPH_INIT_CONTROL
+	/* The producer takes the binding only after complete preparation.
+	 * A failed call leaves its reference with the ioctl. */
+	if (!binding)
+		return -EINVAL;
+	return m9_faa_prepare(mdev, binding, generation);
+#else
+	return -EOPNOTSUPP;
+#endif
 }
 
 /* Actual normal 656c0 records preserve descriptor tag1 in DWORD9, 14 and
@@ -1283,7 +1451,8 @@ static int m9_faa_rebase_page_clear(struct m9x_faa_replay *r)
 	int ret;
 
 	if (!data || primary->vram || primary->bytes < M9_FAA_PRIMARY_BYTES ||
-	    companion->bytes < M9_FAA_CLEAR_BYTES || !companion->vram ||
+	    companion->bytes < M9_FAA_CLEAR_BYTES ||
+	    (!companion->vram && !r->graph_binding) ||
 	    M9_FAA_CLEAR_END > M9_FAA_PRIMARY_BYTES ||
 	    get_unaligned_le32(data + 0x11bc) != 0x4545ace6 ||
 	    get_unaligned_le32(data + 0x11c0) != 2 ||
@@ -1549,9 +1718,10 @@ static int m9_faa_prepare_startup_local(struct m9x_device *mdev,
 }
 #endif
 
-int m9x_faa_submit_diag(struct m9x_device *mdev, u32 color,
-			struct drm_gem_vram_object *color_bo, u64 *point,
-			bool *color_active, bool *color_retained)
+static int m9_faa_submit(struct m9x_device *mdev, u32 color,
+			  struct drm_gem_vram_object *color_bo, u64 *point,
+			  bool *color_active, bool *color_retained,
+			  struct m9_faa_graph_binding *expected_binding)
 {
 	struct m9x_transport *t = &mdev->transport;
 	struct m9x_faa_replay *r;
@@ -1565,10 +1735,19 @@ int m9x_faa_submit_diag(struct m9x_device *mdev, u32 color,
 	*color_retained = false;
 	mutex_lock(&t->lock);
 	r = t->faa;
-	if (!m9_faa_diag || !r || !r->prepared || r->attempted ||
+	if ((!m9_faa_diag && !(r && r->graph_binding)) ||
+	    !r || !r->prepared || r->attempted ||
 	    r->retained_color || t->wedged ||
 	    !IS_ALIGNED(color, PAGE_SIZE)) {
 		ret = t->wedged ? -EIO : -EINVAL;
+		goto unlock;
+	}
+	if (r->graph_binding && t->generation != r->graph_generation) {
+		ret = -ESTALE;
+		goto unlock;
+	}
+	if (r->graph_binding != expected_binding) {
+		ret = -ESTALE;
 		goto unlock;
 	}
 #ifdef M9_FAA_UNLOCK_PUBLICATION_CONTROL
@@ -1632,6 +1811,21 @@ int m9x_faa_submit_diag(struct m9x_device *mdev, u32 color,
 	if (ret)
 		goto unlock;
 #if !defined(M9_FAA_HAS_SAMPLED_COLOR) || M9_FAA_HAS_SAMPLED_COLOR
+	if (r->graph_binding) {
+		for (i = 0; i < PARHELIA_M9_FAA_GRAPH_OWNERS; i++) {
+			u32 address, source;
+
+			if (!m9x_faa_graph_binding_address(r->graph_binding, i,
+							  &address, &source) ||
+			    source >= ARRAY_SIZE(r->owner) ||
+			    r->owner[source].base != address ||
+			    r->owner[source].bytes <
+				PAGE_ALIGN(m9_faa_owner_specs[source].bytes)) {
+				ret = -ESTALE;
+				goto unlock;
+			}
+		}
+	} else {
 #ifdef M9_FAA_MULTI_CLEAR
 	ret = m9_faa_bind_borrowed_color(r, color, color_bo);
 	if (ret)
@@ -1639,6 +1833,7 @@ int m9x_faa_submit_diag(struct m9x_device *mdev, u32 color,
 #else
 	r->owner[M9_FAA_COLOR_OWNER].base = color;
 #endif
+	}
 #else
 	if (M9_FAA_COLOR_OWNER != U32_MAX) {
 		ret = -EINVAL;
@@ -1759,7 +1954,15 @@ int m9x_faa_submit_diag(struct m9x_device *mdev, u32 color,
 		ret = -ENOMEM;
 		goto unlock;
 	}
-	dma_resv_add_fence(color_bo->bo.base.resv, &fence->base, DMA_RESV_USAGE_WRITE);
+	if (r->graph_binding) {
+		for (i = 0; i < PARHELIA_M9_FAA_GRAPH_OWNERS; i++)
+			dma_resv_add_fence(
+				m9x_faa_graph_binding_owner(r->graph_binding, i)->resv,
+				&fence->base, DMA_RESV_USAGE_WRITE);
+	} else {
+		dma_resv_add_fence(color_bo->bo.base.resv, &fence->base,
+					   DMA_RESV_USAGE_WRITE);
+	}
 	/* Actual 23a3b/23aaf normal activation contracts. The ordinary context
  * retired, or fresh source admission retained the initial CPU seed;
  * the two additional tracker words belong to this same
@@ -1922,8 +2125,10 @@ int m9x_faa_submit_diag(struct m9x_device *mdev, u32 color,
 		/* The one-shot stream retains this address even without a SYSTEM
 		 * output. Transfer the caller's existing pin/reference; taking a
 		 * new pin here would nest its reservation under TRANSPORT. */
-		r->retained_color = color_bo;
-		*color_retained = true;
+		if (!r->graph_binding) {
+			r->retained_color = color_bo;
+			*color_retained = true;
+		}
 		dev_info(&mdev->pdev->dev,
 			 "M9 FAA private frame retired: point=%#llx sampled_primary=%#x ordinary_output=%#x 320x240\n",
 			 *point, color, m9_faa_output_owner(r) ? m9_faa_output_owner(r)->base : 0);
@@ -1945,6 +2150,64 @@ unlock:
 		dma_fence_put(&fence->base);
 	mutex_unlock(&t->lock);
 	return ret;
+}
+
+int m9x_faa_submit_diag(struct m9x_device *mdev, u32 color,
+			struct drm_gem_vram_object *color_bo, u64 *point,
+			bool *color_active, bool *color_retained)
+{
+	return m9_faa_submit(mdev, color, color_bo, point,
+			      color_active, color_retained, NULL);
+}
+
+int m9x_faa_submit_graph(struct m9x_device *mdev,
+			 struct m9_faa_graph_binding *binding,
+			 u64 *point, bool *posted)
+{
+#ifdef M9_FAA_GRAPH_INIT_CONTROL
+	static const u32 init[5] = {
+		0xa4a3a1a1, 0x28041968, 0, 0, 0,
+	};
+	struct drm_gem_object *gem;
+	struct drm_gem_vram_object *bo;
+	struct iosys_map map = IOSYS_MAP_INIT_VADDR(NULL);
+	u32 check[ARRAY_SIZE(init)];
+	bool retained;
+	int ret;
+
+	if (!binding || !point || !posted)
+		return -EINVAL;
+	mutex_lock(&mdev->transport.lock);
+	ret = mdev->transport.faa &&
+	      mdev->transport.faa->graph_binding == binding &&
+	      mdev->transport.faa->prepared &&
+	      mdev->transport.generation ==
+		mdev->transport.faa->graph_generation ? 0 : -ESTALE;
+	mutex_unlock(&mdev->transport.lock);
+	if (ret)
+		return ret;
+	gem = m9x_faa_graph_binding_owner(binding, PARHELIA_M9_FAA_SENTINEL);
+	if (!gem || !m9x_gem_is_vram(gem) || gem->size < sizeof(init))
+		return -EINVAL;
+	/* The caller holds all six drm_exec reservations through the actual
+	 * native wait. The two nonzero words are source instruction immediates,
+	 * not captured address relocations; only the known 20 bytes are written. */
+	bo = drm_gem_vram_of_gem(gem);
+	ret = drm_gem_vram_vmap(bo, &map);
+	if (ret)
+		return ret;
+	iosys_map_memcpy_to(&map, 0, init, sizeof(init));
+	wmb();
+	iosys_map_memcpy_from(check, &map, 0, sizeof(check));
+	drm_gem_vram_vunmap(bo, &map);
+	if (memcmp(check, init, sizeof(init)))
+		return -EIO;
+
+	return m9_faa_submit(mdev, 0, NULL, point, posted, &retained,
+			     binding);
+#else
+	return -EOPNOTSUPP;
+#endif
 }
 
 /* Version-one little-endian raw snapshot. No caller supplies an owner,

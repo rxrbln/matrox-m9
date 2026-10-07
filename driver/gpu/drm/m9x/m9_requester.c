@@ -844,7 +844,8 @@ int m9x_submit_faa_virtual_primary_locked(struct m9x_device *mdev,
 	lockdep_assert_held(&t->lock);
 	if (doorbell_posted)
 		*doorbell_posted = false;
-	if (!m9x_faa_diag_enabled() || !t->faa || t->faa_virtual_primary ||
+	if ((!m9x_faa_diag_enabled() && !m9x_faa_graph_active(mdev)) ||
+	    !t->faa || t->faa_virtual_primary ||
 	    !t->transport_armed || !t->fence_cpu || !point || !node ||
 	    !drm_mm_node_allocated(node) || !bytes || !IS_ALIGNED(bytes, 4) ||
 	    bytes > PARHELIA_M9_COMMAND_BYTES || bytes > node->size ||

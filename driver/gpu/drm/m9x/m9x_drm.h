@@ -13,6 +13,7 @@
 #define DRM_PARHELIA_M9_WAIT_POINT	0x0d
 #define DRM_PARHELIA_M9_FAA_GRAPH_PREPARE	0x0e
 #define DRM_PARHELIA_M9_FAA_GRAPH_RELEASE	0x0f
+#define DRM_PARHELIA_M9_FAA_GRAPH_INIT	0x10
 
 #define DRM_IOCTL_PARHELIA_M9_CREATE_BO \
 	DRM_IOWR(DRM_COMMAND_BASE + DRM_PARHELIA_M9_CREATE_BO, \
@@ -53,6 +54,7 @@ enum drm_parhelia_m9_faa_owner_role {
 	PARHELIA_M9_FAA_SENTINEL,
 };
 #define PARHELIA_M9_FAA_GRAPH_PREPARED 1u
+#define PARHELIA_M9_FAA_GRAPH_INITIALIZED 2u
 struct drm_parhelia_m9_faa_owner {
 	__u32 handle;
 	__u32 pad;
@@ -83,6 +85,20 @@ struct drm_parhelia_m9_faa_graph_release {
 #define DRM_IOCTL_PARHELIA_M9_FAA_GRAPH_RELEASE \
 	DRM_IOW(DRM_COMMAND_BASE + DRM_PARHELIA_M9_FAA_GRAPH_RELEASE, \
 		struct drm_parhelia_m9_faa_graph_release)
+
+/* INIT is a single fresh first-context operation. State 2 and point become
+ * visible only after the producer's actual hardware wait has retired. */
+struct drm_parhelia_m9_faa_graph_init {
+	__u64 graph_id;
+	__u32 generation;
+	__u32 flags;
+	__u64 init_point;
+	__u32 state;
+	__u32 pad;
+};
+#define DRM_IOCTL_PARHELIA_M9_FAA_GRAPH_INIT \
+	DRM_IOWR(DRM_COMMAND_BASE + DRM_PARHELIA_M9_FAA_GRAPH_INIT, \
+		struct drm_parhelia_m9_faa_graph_init)
 
 /*
  * M9 command and staging objects are immutable DMA32 allocations unless

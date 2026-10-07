@@ -455,6 +455,15 @@ int m9x_faa_graph_prepare_ioctl(struct drm_device *drm, void *data,
 				struct drm_file *file);
 int m9x_faa_graph_release_ioctl(struct drm_device *drm, void *data,
 				struct drm_file *file);
+int m9x_faa_graph_init_ioctl(struct drm_device *drm, void *data,
+				struct drm_file *file);
+int m9x_faa_prepare_graph(struct m9x_device *mdev,
+			  struct m9_faa_graph_binding *binding, u32 generation);
+int m9x_faa_submit_graph(struct m9x_device *mdev,
+			 struct m9_faa_graph_binding *binding,
+			 u64 *point, bool *posted);
+bool m9x_faa_graph_active(struct m9x_device *mdev);
+bool m9x_faa_graph_preparing(struct m9x_device *mdev);
 struct m9_faa_prepared_graph *m9x_faa_graph_acquire(struct drm_file *file,
 							  u64 id, u32 generation);
 struct drm_gem_object *m9x_faa_graph_owner(

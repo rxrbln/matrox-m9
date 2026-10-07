@@ -1023,7 +1023,8 @@ int m9x_address_map_faa_system(struct m9x_device *mdev,
 	int ret;
 
 	lockdep_assert_held(&mdev->transport.lock);
-	if (!m9x_faa_diag_enabled() || !a || !a->layout.secondary_bytes ||
+	if ((!m9x_faa_diag_enabled() && !m9x_faa_graph_active(mdev)) ||
+	    !a || !a->layout.secondary_bytes ||
 	    !bytes || bytes > 0x50000 || !IS_ALIGNED(bytes, PAGE_SIZE) ||
 	    mdev->pdev->device != 0x0540 ||
 	    mdev->pdev->revision != 1 || mdev->pdev->subsystem_device != 0x22c0)

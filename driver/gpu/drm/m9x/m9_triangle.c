@@ -1562,6 +1562,8 @@ int m9x_engine_ready_locked(struct m9x_device *mdev)
 	lockdep_assert_held(&mdev->transport.lock);
 	if (mdev->transport.wedged)
 		return -EIO;
+	if (m9x_faa_graph_preparing(mdev))
+		return -EBUSY;
 	if (source_init) {
 		ret = m9x_faa_source_init_admit_locked(mdev,
 			mdev->transport.triangle &&
