@@ -52,9 +52,17 @@ then grows to `[8672,16984)`, with ENDs 8880, 8960 twice, 9792, 9832,
 13352, 13412, 16972 twice and 16984; 94 relocation callbacks replace the
 baseline's 73. Its next genuine CPU Lock query asks `0x2f0` and is unread.
 This depth owner is separate from the six graph owners and cannot alias the
-AA companion. The current native six-owner request cannot use this flow
-without retaining and validating a seventh depth allocation and deriving
-the full depth clear packet from its live descriptors and page runs. The
+AA companion. A targeted hook at the original clear callees observes five
+source entries in order: `b5e70` color extent `0x50000`, `b5030` a distinct
+auxiliary extent `0x3000`, `b5e70` and `b5030` on the newly bound depth
+resource extent `0x97000`, and `b5e70` on the sampled primary extent
+`0x50000`. Only the first and final entries reach the `b5fc3` page-run
+writer, selecting 80 pages through 10 and 11 words respectively. The depth
+entry follows a different command path; its `0x97000` extent is not a
+license to feed that extent to the color page-run generator. The current
+native six-owner request cannot use this flow without retaining and
+validating the new depth allocation, identifying the auxiliary resource's
+ownership, and deriving both depth command paths from live descriptors. The
 source command count does not prove GPU retirement or depth pixels.
 
 An original one-COLOR public shader (`ps_2_0 dcl v0; mov oC0,v0`) compiles
