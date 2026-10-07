@@ -51,6 +51,25 @@ struct drm_parhelia_m9_faa_graph_release {
 
 #endif
 
+#ifndef DRM_IOCTL_PARHELIA_M9_FAA_GRAPH_COLOR_LOCK
+#define DRM_PARHELIA_M9_FAA_GRAPH_COLOR_LOCK 0x1c
+#define PARHELIA_M9_FAA_COLOR_LOCK_RETIRED 16u
+struct drm_parhelia_m9_faa_upload_layout {
+   __u32 program_bytes, program_count, entry_bytes[4];
+   __u32 constants_bytes, constant_begin[4], constant_end[4];
+   __u32 geometry_bytes, vertex_offset, vertex_bytes;
+};
+struct drm_parhelia_m9_faa_graph_color_lock {
+   __u64 graph_id, init_point, lock_point, upload;
+   __u32 upload_bytes, generation, flags, state, pad;
+   __u32 record_stride, record_count, declaration_count;
+   struct drm_parhelia_m9_faa_upload_layout layout;
+};
+#define DRM_IOCTL_PARHELIA_M9_FAA_GRAPH_COLOR_LOCK \
+   DRM_IOWR(DRM_COMMAND_BASE + DRM_PARHELIA_M9_FAA_GRAPH_COLOR_LOCK, \
+            struct drm_parhelia_m9_faa_graph_color_lock)
+#endif
+
 /* A newer kernel exposes synchronous first-context initialization. Keep this
  * declaration separate so installed headers with PREPARE but without INIT
  * still compile; the old kernel will return ENOTTY at the ioctl boundary. */

@@ -101,6 +101,14 @@ int m9_faa_surface_public_vs_unlock_kernel(struct m9_screen *screen,
 int m9_faa_surface_public_vs_next_kernel(struct m9_screen *screen,
                                        struct m9_faa_surface *surface,
                                        const uint32_t vertices[24]);
+/* Submit the complete two-vector COLOR draw and normal Lock with a live,
+ * owned upload. Retirement and a correct F021 image are separate proofs. */
+struct m9_faa_gl_upload;
+int m9_faa_surface_color_lock_kernel(struct m9_screen *screen,
+                                    struct m9_faa_surface *surface,
+                                    const struct m9_faa_gl_upload *upload);
+int m9_faa_surface_color_unlock_kernel(struct m9_screen *screen,
+                                      struct m9_faa_surface *surface);
 /* Continue only the actually retired public prefix on this retained graph.
  * Success records the next preprocessing endpoint; pixels remain separate. */
 int m9_faa_surface_public_vs_follow_kernel(struct m9_screen *screen,

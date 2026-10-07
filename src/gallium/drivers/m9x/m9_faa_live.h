@@ -74,6 +74,7 @@ struct m9_faa_live_gl {
  * survive. Call fini before retargeting. Zero-initialize before first build. */
 struct m9_faa_gl_upload {
    void *storage;
+   size_t storage_bytes;
    uint32_t *program, *constants, *geometry, *declaration;
    struct m9_faa_program_layout layout;
    uint32_t constant_begin[4], constant_end[4], constants_bytes;

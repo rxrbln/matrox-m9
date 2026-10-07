@@ -132,6 +132,10 @@ struct m9_faa_graph {
    uint32_t prepared_generation;
    bool prepared;
    bool initialized;
+   bool color_lock_attempted;
+   uint64_t color_lock_point;
+   bool color_unlock_attempted;
+   uint64_t color_unlock_point;
    /* A typed preprocessing prefix is distinct from a returned DRAW/image.
     * Any attempted ioctl may consume INIT; retry needs a new graph token. */
    bool public_vs_head_attempted;

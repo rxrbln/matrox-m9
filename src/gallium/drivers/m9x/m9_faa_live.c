@@ -208,6 +208,7 @@ m9_faa_live_gl_build(const struct m9_faa_live_gl *s,
    size_t bytes = (size_t)program_bytes + result.constants_bytes + result.geometry_bytes + declarations * 4u;
    result.storage = calloc(1, bytes);
    if (!result.storage) {why = "out of memory"; goto fail;}
+   result.storage_bytes = bytes;
    result.program = result.storage;
    result.constants = result.program + program_bytes / 4;
    result.geometry = result.constants + result.constants_bytes / 4;
