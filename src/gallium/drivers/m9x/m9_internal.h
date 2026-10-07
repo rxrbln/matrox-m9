@@ -393,6 +393,10 @@ bool m9_context_faa_build_draw(struct m9_context *ctx,
 /* Consume only an authenticated returned COLOR Lock. Copies source F021
  * rows into owned memory, performs genuine Unlock, then writes the retained
  * ordinary target without replacing the active Lock's aperture mapper. */
+int m9_context_faa_submit_draw(struct m9_context *ctx,
+                               const struct pipe_draw_info *info,
+                               const struct pipe_draw_start_count_bias *draw,
+                               const char **reason);
 int m9_context_faa_present_lock(struct m9_context *ctx, uint64_t graph_id,
                                uint32_t generation, uint64_t lock_point);
 
@@ -567,6 +571,18 @@ struct m9_context {
    uint64_t dirty;
    struct pipe_resource *color;
    struct m9_faa_surface faa_surface;
+   /* Ordinary clear does not reset this graph's fragment/HZ state. Preserve
+    * the actual requested state until a qualified native frame-reset API. */
+   struct {
+      bool pending, scissored;
+      unsigned buffers;
+      uint32_t color_mask;
+      uint8_t stencil_mask;
+      union pipe_color_union color;
+      double depth;
+      unsigned stencil;
+      struct pipe_scissor_state scissor;
+   } faa_application_clear;
    /* Byte offset of the bound colour level inside that object; a mip level
     * above zero is a render surface of its own at its chain offset. */
    uint64_t color_offset;

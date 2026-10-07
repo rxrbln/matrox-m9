@@ -7379,6 +7379,12 @@ m9_native_vs_draw(struct m9_context *ctx, const struct pipe_draw_info *info,
    return true;
 }
 
+static bool
+m9_faa_application_enabled(void)
+{
+   return debug_get_bool_option("M9X_FAA_APPLICATION", false);
+}
+
 static void
 m9_draw_vbo(struct pipe_context *pctx, const struct pipe_draw_info *info,
             unsigned drawid_offset,
@@ -7565,6 +7571,21 @@ m9_draw_vbo(struct pipe_context *pctx, const struct pipe_draw_info *info,
     * nothing, exactly, without the kill slot's lane artifact (M9_BRINGUP). */
    if (ctx->fs && ctx->fs->kill_all)
       return;
+   if (m9_faa_application_enabled()) {
+      /* This mode consumes the draw explicitly. A refused state cannot fall
+       * into ordinary rasterization and masquerade as FAA output. */
+      if (!num_draws || !draws[0].count || !info->instance_count)
+         return;
+      const char *why = NULL;
+      ctx->submitted_draws++;
+      if (m9_context_faa_submit_draw(ctx, info, &draws[0], &why)) {
+         ctx->skipped_draws++;
+         m9_skip_reason(ctx, why ? why : "FAA application draw failed");
+         fprintf(stderr, "m9x: FAA application draw refused: %s\n",
+                 why ? why : "authenticated submission/presentation failed");
+      }
+      return;
+   }
    if (num_draws && !indirect &&
        m9_mrt_blend_split(ctx, info, drawid_offset, draws))
       return;
@@ -7940,6 +7961,18 @@ m9_clear(struct pipe_context *pctx, unsigned buffers,
 {
    struct m9_context *ctx = m9_context(pctx);
    uint64_t t_clear = m9_prof_begin();
+   if (m9_faa_application_enabled() && buffers) {
+      ctx->faa_application_clear.pending = true;
+      ctx->faa_application_clear.buffers |= buffers;
+      ctx->faa_application_clear.color_mask = color_clear_mask;
+      ctx->faa_application_clear.stencil_mask = stencil_clear_mask;
+      if (color) ctx->faa_application_clear.color = *color;
+      ctx->faa_application_clear.depth = depth;
+      ctx->faa_application_clear.stencil = stencil;
+      ctx->faa_application_clear.scissored = scissor != NULL;
+      if (scissor) ctx->faa_application_clear.scissor = *scissor;
+   }
+
 
    /* A job held for the scratch path is copied into place before the clear
     * that follows it, not over it. */
@@ -9217,13 +9250,74 @@ fail:
    return false;
 }
 
+/* A complete application draw transaction. Native pixel qualification is
+ * bounded to smooth COLOR, no depth/cull/scissor, and the full 320x240 view.
+ * Caller clear requests remain pending instead of impersonating graph reset. */
+int
+m9_context_faa_submit_draw(struct m9_context *ctx,
+                           const struct pipe_draw_info *info,
+                           const struct pipe_draw_start_count_bias *draw,
+                           const char **reason)
+{
+   struct m9_faa_application_upload owned = {0};
+   const char *why = "FAA application draw has no qualified graph/state";
+   int ret = -EOPNOTSUPP;
+   bool attempted = false;
+   if (!ctx || ctx->lost || !ctx->screen) goto out;
+   if (ctx->faa_application_clear.pending) {
+      why = "FAA application frame clear/reset is not qualified";
+      goto out;
+   }
+   if (!m9_context_faa_build_draw(ctx, info, draw, &owned, &why))
+      goto out;
+   const struct m9_faa_application_state *state = &owned.state;
+   if (state->width != 320 || state->height != 240 ||
+       state->depth_enabled || state->cull_face != PIPE_FACE_NONE ||
+       state->flatshade || state->scissor_enabled ||
+       state->viewport.scale[0] != 160 || state->viewport.scale[1] != -120 ||
+       state->viewport.translate[0] != 160 || state->viewport.translate[1] != 120 ||
+       owned.shader.layout.count != 4 || owned.shader.record_bytes != 32) {
+      why = "FAA application depth/cull/flat/scissor/view state is not qualified";
+      goto out;
+   }
+   struct m9_faa_graph *graph = &ctx->faa_surface.graph;
+   if (owned.graph_id != graph->prepared_id ||
+       owned.generation != graph->prepared_generation ||
+       owned.init_point != graph->init_point) {
+      why = "FAA application upload no longer names its retained graph";
+      ret = -ESTALE;
+      goto out;
+   }
+   if (!graph->color_lock_attempted)
+      ret = m9_faa_surface_color_lock_kernel(ctx->screen, &ctx->faa_surface,
+                                             &owned.shader);
+   else
+      ret = m9_faa_surface_color_next_kernel(ctx->screen, &ctx->faa_surface,
+                       &owned.shader, state, 0, 0);
+   attempted = graph->color_lock_attempted &&
+               (!graph->color_unlock_attempted || graph->color_next_attempted);
+   if (ret) { why = "FAA application authenticated COLOR submission failed"; goto out; }
+   /* Only real retired points advance the context. Presentation authenticates
+    * the same token, reads F021, then Unlocks before destination WRITE. */
+   ctx->last_point = MAX2(ctx->last_point, graph->color_lock_point);
+   ret = m9_context_faa_present_lock(ctx, owned.graph_id, owned.generation,
+                                    graph->color_lock_point);
+   if (ret) { why = "FAA application Lock/Unlock presentation failed"; goto out; }
+   ctx->last_point = MAX2(ctx->last_point, graph->color_unlock_point);
+   why = NULL;
+out:
+   if (ret && attempted) ctx->lost = true;
+   m9_faa_application_fini(&owned);
+   if (reason) *reason = why;
+   return ret;
+}
+
 /* A returned COLOR Lock grants a source-qualified F021 row view, not an
  * ordinary mapping of the sampled allocation. Transfer that view verbatim
  * into owned rows, authenticate source Unlock, then transfer those rows
  * through the destination's live surface descriptor. An intervening ordinary
  * aperture mapping would replace the mapper retained by source Unlock.
- * This bounded bridge is not called from draw_vbo until repeated draw and
- * per-frame clear/depth contracts are admitted. */
+ * The opt-in draw route rejects unsupported clear/depth/raster state. */
 int
 m9_context_faa_present_lock(struct m9_context *ctx, uint64_t graph_id,
                             uint32_t generation, uint64_t lock_point)
