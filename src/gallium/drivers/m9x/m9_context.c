@@ -3052,7 +3052,10 @@ m9_submit_job(struct m9_context *ctx)
          job.faa.raster = ctx->screen->faa.raster;
          job.faa.ad = ctx->screen->faa.store_bind &&
                       !ctx->screen->faa.ad_forced ? 0 :
-                      m9_faa_ad(&ctx->screen->faa, m9_res(ctx->color)->size);
+                      m9_faa_ad(&ctx->screen->faa,
+                         (m9_faa_fragment_bytes(ctx->params.width,
+                                                ctx->params.height) + 127) &
+                         ~127ull);
          job.faa.af = m9_faa_af(&ctx->screen->faa);
          /* One call fills every edited index: wiring ae alone left ef and
           * f0 written as zero, which cleared the cull, depth and format

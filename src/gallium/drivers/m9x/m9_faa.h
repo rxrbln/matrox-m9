@@ -187,7 +187,7 @@ bool m9_faa_active(const struct m9_faa *faa);
  * auxiliary state 25 before masking it into af[8:0] (magic double
  * 26388279066624.0 = 1.5 * 2^44, so the ulp is 1/256). */
 uint32_t m9_faa_coverage_fixed(float coverage);
-uint32_t m9_faa_ad(const struct m9_faa *faa, uint64_t color_bytes);
+uint32_t m9_faa_ad(const struct m9_faa *faa, uint64_t logical_bytes);
 uint32_t m9_faa_af(const struct m9_faa *faa);
 /* Every index this state edits rather than replaces, in one object: a
  * caller that fills it cannot wire one index and forget another, which is

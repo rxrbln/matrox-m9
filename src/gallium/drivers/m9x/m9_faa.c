@@ -286,27 +286,26 @@ m9_faa_raster_relocs(const struct m9_faa *faa)
 }
 
 uint32_t
-m9_faa_ad(const struct m9_faa *faa, uint64_t color_bytes)
+m9_faa_ad(const struct m9_faa *faa, uint64_t logical_bytes)
 {
-   uint64_t units;
+   uint32_t ad;
 
    if (faa->ad_forced)
       return faa->ad_force;
    if (faa->chip == M9_FAA_CHIP_NONE || !faa->enable)
       return M9_FAA_AD_OFF;
-   /* ad[20:0] is the colour allocation's byte extent in 32-byte units,
-    * saturated (STATIC, MxMD.dll 0x1395a4..0x1395dc).  The replacement
-    * overwrites the seed's bit 5, so nothing of the off form survives. */
-   units = color_bytes >> 5;
-   if (units > 0xfffffu)
-      units = 0xfffffu;
+   /* The low21 bits describe the logical fragment store, including its
+    * 128-byte backing alignment, not the color BO or GEM page padding.
+    * At the vendor budget cap the independent guard yields 0x100004;
+    * saturating to 20 bits silently truncates that valid extent. */
+   if (!m9_faa_store_ad(0, logical_bytes, &ad))
+      return M9_FAA_AD_OFF;
    if (faa->trace && !faa->traced) {
       ((struct m9_faa *)faa)->traced = true;
-      fprintf(stderr, "m9x: faa ad %08x from %llu colour bytes, af %08x\n",
-              (uint32_t)units, (unsigned long long)color_bytes,
-              m9_faa_af(faa));
+      fprintf(stderr, "m9x: faa ad %08x from %llu logical store bytes, af %08x\n",
+              ad, (unsigned long long)logical_bytes, m9_faa_af(faa));
    }
-   return (uint32_t)units;
+   return ad;
 }
 
 uint32_t
