@@ -31,6 +31,7 @@
 #include "m9_internal.h"
 #include "m9_indirect.h"
 #include "m9_faa_application.h"
+#include "m9_faa_graph_uapi.h"
 #include "m9_vs_texture.h"
 #include "m9_weld.h"
 #include "m9_vs_source.h"
@@ -9272,9 +9273,9 @@ fail:
    return false;
 }
 
-/* A complete application draw transaction. Native pixel qualification is
- * bounded to smooth COLOR, no depth/cull/scissor, and the full 320x240 view.
- * Caller clear requests remain pending instead of impersonating graph reset. */
+/* Preserve application clear/depth/raster semantics across the owned draw.
+ * The FRAME client independently admits only its implemented native packet
+ * profiles. Pending clears are consumed after real Lock/Unlock presentation. */
 int
 m9_context_faa_submit_draw(struct m9_context *ctx,
                            const struct pipe_draw_info *info,
@@ -9285,21 +9286,40 @@ m9_context_faa_submit_draw(struct m9_context *ctx,
    const char *why = "FAA application draw has no qualified graph/state";
    int ret = -EOPNOTSUPP;
    bool attempted = false;
+   uint32_t clear_flags = 0;
    if (!ctx || ctx->lost || !ctx->screen) goto out;
-   if (ctx->faa_application_clear.pending || ctx->faa_surface.destination_needs_clear) {
-      why = "FAA application frame clear/reset is not qualified";
+   if (ctx->faa_application_clear.pending) {
+      /* The current native full reset has a black color/depth-one profile.
+       * Never substitute the old TARGET-only packet, which leaves sampled
+       * edge state behind. Separate color/depth calls are merged by clear. */
+      if (ctx->faa_application_clear.buffers != (PIPE_CLEAR_COLOR0 | PIPE_CLEAR_DEPTH) ||
+          ctx->faa_application_clear.scissored ||
+          ctx->faa_application_clear.color_mask != PIPE_MASK_RGBA ||
+          ctx->faa_application_clear.depth != 1.0 ||
+          ctx->faa_application_clear.color.f[0] != 0.0f ||
+          ctx->faa_application_clear.color.f[1] != 0.0f ||
+          ctx->faa_application_clear.color.f[2] != 0.0f ||
+          ctx->faa_application_clear.color.f[3] != 0.0f) {
+         why = "FAA full reset requires full black color and depth-one clear";
+         goto out;
+      }
+      clear_flags = PARHELIA_M9_FAA_COLOR_CLEAR_TARGET | PARHELIA_M9_FAA_COLOR_CLEAR_DEPTH;
+   }
+   if (ctx->faa_surface.destination_needs_clear && !clear_flags) {
+      why = "FAA destination change requires a full sampled reset";
       goto out;
    }
    if (!m9_context_faa_build_draw(ctx, info, draw, &owned, &why))
       goto out;
    const struct m9_faa_application_state *state = &owned.state;
    if (state->width != 320 || state->height != 240 ||
-       state->depth_enabled || state->cull_face != PIPE_FACE_NONE ||
-       state->flatshade || state->scissor_enabled ||
+       (state->depth_enabled && (!state->depth_write || state->depth_func != PIPE_FUNC_LESS)) ||
+       (state->cull_face != PIPE_FACE_NONE && state->cull_face != PIPE_FACE_FRONT &&
+        state->cull_face != PIPE_FACE_BACK) || state->scissor_enabled ||
        state->viewport.scale[0] != 160 || state->viewport.scale[1] != -120 ||
        state->viewport.translate[0] != 160 || state->viewport.translate[1] != 120 ||
        owned.shader.layout.count != 4 || owned.shader.record_bytes != 32) {
-      why = "FAA application depth/cull/flat/scissor/view state is not qualified";
+      why = "FAA application depth/cull/scissor/view state is not implemented";
       goto out;
    }
    struct m9_faa_graph *graph = &ctx->faa_surface.graph;
@@ -9311,7 +9331,7 @@ m9_context_faa_submit_draw(struct m9_context *ctx,
       goto out;
    }
    ret = m9_faa_surface_color_frame_kernel(ctx->screen, &ctx->faa_surface,
-                                          &owned.shader, state, 0, 0);
+                                          &owned.shader, state, clear_flags, 0);
    attempted = graph->color_lock_attempted &&
                (!graph->color_unlock_attempted || graph->color_next_attempted);
    if (ret) { why = "FAA application authenticated COLOR submission failed"; goto out; }
@@ -9322,6 +9342,10 @@ m9_context_faa_submit_draw(struct m9_context *ctx,
                                     graph->color_lock_point);
    if (ret) { why = "FAA application Lock/Unlock presentation failed"; goto out; }
    ctx->last_point = MAX2(ctx->last_point, graph->color_unlock_point);
+   if (clear_flags) {
+      memset(&ctx->faa_application_clear, 0, sizeof(ctx->faa_application_clear));
+      ctx->faa_surface.destination_needs_clear = false;
+   }
    why = NULL;
 out:
    if (ret && attempted) ctx->lost = true;
