@@ -507,6 +507,17 @@ int m9x_faa_graph_unlock_submit(struct m9x_device *mdev,
 		struct m9_faa_graph_binding *binding, u32 generation,
 		u64 lock_point, u64 *point, bool *posted);
 struct m9x_faa_public_vs_input;
+int m9x_faa_graph_public_vs_follow_ioctl(struct drm_device *drm, void *data,
+ struct drm_file *file);
+int m9x_faa_graph_public_vs_follow_get_locked(struct m9x_device *mdev,
+ u32 generation, u64 prefix_point, struct m9_faa_graph_binding **out);
+int m9x_faa_graph_public_vs_follow_prepare(struct m9x_device *mdev,
+ struct m9_faa_graph_binding *binding, u32 generation, u64 prefix_point);
+int m9x_faa_graph_public_vs_follow_submit(struct m9x_device *mdev,
+ struct m9_faa_graph_binding *binding, u32 generation, u64 prefix_point,
+ u64 *point, bool *posted);
+
+
 int m9x_faa_graph_public_vs_ioctl(struct drm_device *drm, void *data,
 		struct drm_file *file);
 int m9x_faa_graph_public_vs_prepare(struct m9x_device *mdev,

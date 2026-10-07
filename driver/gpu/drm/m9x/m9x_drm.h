@@ -20,6 +20,7 @@
 #define DRM_PARHELIA_M9_FAA_GRAPH_NEXT_FINISH	0x14
 #define DRM_PARHELIA_M9_FAA_GRAPH_NEXT_LOCK	0x15
 #define DRM_PARHELIA_M9_FAA_GRAPH_PUBLIC_VS	0x16
+#define DRM_PARHELIA_M9_FAA_GRAPH_PUBLIC_VS_FOLLOW	0x17
 
 #define DRM_IOCTL_PARHELIA_M9_CREATE_BO \
 	DRM_IOWR(DRM_COMMAND_BASE + DRM_PARHELIA_M9_CREATE_BO, \
@@ -71,6 +72,7 @@ enum drm_parhelia_m9_faa_owner_role {
 #define PARHELIA_M9_FAA_NEXT_FINISH_RETIRED 8u
 #define PARHELIA_M9_FAA_NEXT_LOCK_RETIRED 9u
 #define PARHELIA_M9_FAA_PUBLIC_VS_PREFIX_RETIRED 10u
+#define PARHELIA_M9_FAA_PUBLIC_VS_FOLLOW_PREFIX_RETIRED 11u
 struct drm_parhelia_m9_faa_owner {
 	__u32 handle;
 	__u32 pad;
@@ -159,6 +161,16 @@ struct drm_parhelia_m9_faa_graph_public_vs {
 #define DRM_IOCTL_PARHELIA_M9_FAA_GRAPH_PUBLIC_VS \
 	DRM_IOWR(DRM_COMMAND_BASE + DRM_PARHELIA_M9_FAA_GRAPH_PUBLIC_VS, \
 		 struct drm_parhelia_m9_faa_graph_public_vs)
+
+/* Separate continuation of the retained public-VS prefix. State11 proves
+ * the new independent prefix wait, not public DRAW return or pixels. */
+struct drm_parhelia_m9_faa_graph_public_vs_follow {
+ __u64 graph_id, prefix_point, follow_point;
+ __u32 generation, flags, state, pad;
+};
+#define DRM_IOCTL_PARHELIA_M9_FAA_GRAPH_PUBLIC_VS_FOLLOW \
+ DRM_IOWR(DRM_COMMAND_BASE + DRM_PARHELIA_M9_FAA_GRAPH_PUBLIC_VS_FOLLOW, \
+          struct drm_parhelia_m9_faa_graph_public_vs_follow)
 
 /*
  * M9 command and staging objects are immutable DMA32 allocations unless
