@@ -2901,6 +2901,34 @@ m9_vs_source_mask(const struct m9_vs_program *p, bool primary)
    return mask;
 }
 
+/* The ordinary source head shares the captured tail's three bound
+ * output groups. Keep its bf00 reservations, add only occupied scratch
+ * pairs, then apply 150dc0's coupling only to those complete groups.
+ * In particular the unbound r1d/r1f group is not a complete output. */
+uint16_t
+m9_vs_fused_source_mask(const struct m9_vs_program *p)
+{
+   const uint32_t *w = p->slots.data;
+   uint16_t mask = 0xbf00;
+   for (unsigned i = 0; i < p->slots.size / 8; i++) {
+      unsigned d = w[2 * i] >> 8 & 0x7f;
+      bool output = false;
+      for (unsigned j = 0; j < 3; j++)
+         output |= d == REG_OUT_LO(j) || d == REG_OUT_HI(j);
+      /* The mask has sixteen pairs. The tail's clip-code register r21
+       * and source attributes are not part of that availability field. */
+      if (!output && d < 0x20)
+         mask &= ~BITFIELD_BIT(d / 2);
+   }
+   for (unsigned j = 0; j < 3; j++) {
+      uint16_t complete = BITFIELD_BIT(REG_OUT_LO(j) / 2) |
+                          BITFIELD_BIT(REG_OUT_HI(j) / 2);
+      if ((mask & complete) != complete)
+         mask &= ~complete;
+   }
+   return mask;
+}
+
 /* Frees output pair 1 for a varying by pointing the two tail slots that
  * write the clip position at the tail's own scratch register.  One decoded
  * field each, the destination at W0 bits 14:8; nothing reads either

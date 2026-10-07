@@ -161,6 +161,9 @@ struct m9_draw_job {
    /* Nonzero selects the bounded fully route-fed multi-stream chain. */
    unsigned vs_producer_entry;
    uint16_t vs_producer_mask, vs_extra_mask;
+   /* Explicitly supplied ordinary native mask; zero is a valid value. */
+   bool vs_fused_mask_set;
+   uint16_t vs_fused_mask;
    uint32_t vs_record_view;   /* transient view the packed record starts at */
    /* Raster texture units, texel pair order. */
    const struct m9_texture_unit *units;

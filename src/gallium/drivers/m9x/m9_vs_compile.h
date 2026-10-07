@@ -322,6 +322,7 @@ unsigned m9_vs_gather_slot_count(const struct m9_vs_program *program);
 unsigned m9_vs_producer_slot_count(const struct m9_vs_program *program);
 /* Register-pair availability of a source-fed, tail-free output producer. */
 uint16_t m9_vs_source_mask(const struct m9_vs_program *program, bool primary);
+uint16_t m9_vs_fused_source_mask(const struct m9_vs_program *p);
 /* Writes head, tail and stop pair; returns the dwords written, 0 if max is
  * too small.  fused_pair moves the tail's scratch off target 3's low half,
  * which the caller asks for exactly when it binds that target. */

@@ -918,6 +918,9 @@ m9_draw_job_valid(const struct m9_draw_job *job)
       if (job->vs_extra_view[t] >= M9_TRANSIENT_VIEWS)
          return false;
    /* View 0 is target 0's, so it is the sentinel for an unbound target 3. */
+   if (job->vs_fused_mask_set &&
+       (!job->vs_decl_count || job->vs_producer_entry))
+      return false;
    if (job->vs_fused_view &&
        (!job->vs_decl_count || job->vs_fused_view >= M9_TRANSIENT_VIEWS))
       return false;
@@ -1250,7 +1253,12 @@ m9_emit_preprocess(struct m9_batch *batch, const struct m9_draw_job *job,
     * appended tail only scratches them.  It is the same word when the pass
     * carries a second varying: that varying takes output pair 1, which is
     * already an enabled output, and the two tail slots it displaces write
-    * the same scratch pair.  The tail-free head writes 0x1d as target 3, and
+    * the same scratch pair. An ordinary compiled source head can also
+    * occupy pairs above the captured r00..r0f scratch range. Its explicit
+    * mask retains bf00, excludes those occupied pairs and couples only the
+    * three bound complete output groups, as actual 150dc0 requires. The
+    * captured fallback and route-fed final keep their existing bf00.
+    * The tail-free head writes 0x1d as target 3, and
     * with 0xbf00 carried over the engine stopped on every four-target draw
     * and retired none of them (MEASURED: fixture vary5 failed with
     * "two-pass job failed (Device or resource busy)" while the same draw
@@ -1262,7 +1270,8 @@ m9_emit_preprocess(struct m9_batch *batch, const struct m9_draw_job *job,
                 (chain ? BITFIELD_MASK(routes) << 20 : 0) |
                 (primary ? job->vs_producer_mask :
                  chain && kind == M9_PRE_HEAD ? job->vs_extra_mask :
-                 extra ? 0x0000ffffu : 0x0000bf00u)),
+                 extra ? 0x0000ffffu :
+                 job->vs_fused_mask_set ? job->vs_fused_mask : 0x0000bf00u)),
         V(0x89, chain ? m9_preprocess_89(extra ? targets : 3u,
                         primary || kind == M9_PRE_HEAD, !extra) :
                         0xfe201e92u), V(0x8a, 0), V(0xc1, 0));

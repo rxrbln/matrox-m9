@@ -3072,6 +3072,8 @@ m9_submit_job(struct m9_context *ctx)
          job.vs_extra_entry = key->vs_extra_entry;
          job.vs_producer_entry = key->vs_producer_entry;
          job.vs_producer_mask = m9_vs_source_mask(key->vs, true);
+         job.vs_fused_mask_set = !key->vs_producer_entry;
+         job.vs_fused_mask = m9_vs_fused_source_mask(key->vs);
          job.vs_extra_mask = key->vs_producer_entry ?
                              m9_vs_source_mask(key->vs, false) : 0xffff;
          /* Only the packed record needs the draw that de-interleaves it. */
