@@ -4,6 +4,7 @@
 #include "m9_vs_source.h"
 #include "nir.h"
 #include <math.h>
+#include <stdlib.h>
 #include <string.h>
 
 _Static_assert(sizeof(struct m9_faa_public_upload) == 796, "upload ABI");
@@ -86,6 +87,163 @@ input_vec(nir_def *value, unsigned *location)
       *location = loc;
    }
    return true;
+}
+
+void
+m9_faa_gl_upload_fini(struct m9_faa_gl_upload *upload)
+{
+   if (upload) {
+      free(upload->storage);
+      memset(upload, 0, sizeof(*upload));
+   }
+}
+
+bool
+m9_faa_live_gl_build(const struct m9_faa_live_gl *s,
+                       struct m9_faa_gl_upload *output, const char **reason)
+{
+   struct m9_vs_program p = {0};
+   struct m9_faa_gl_upload result = {0};
+   const char *why = "invalid live FAA GL upload inputs";
+   bool compiled = false;
+   uint32_t carry[2 * M9_FAA_GL_UPLOAD_SLOT_BUDGET], gather[10], position[50];
+   uint32_t carry_constants[126], position_constants[26], declaration[M9_VS_MAX_DECL];
+   struct m9_faa_move_interface gi;
+   struct m9_faa_position_interface pi;
+   struct m9_vs_source_layout source;
+   if (!s || !output || output->storage || !s->vs || !s->linkage ||
+       s->linkage->count != 2 || !s->count || s->count > M9_FAA_GL_UPLOAD_MAX_VERTICES ||
+       !s->elements || !s->buffers || !s->maps || !s->map_bytes ||
+       s->element_count > PIPE_MAX_ATTRIBS || s->buffer_count > PIPE_MAX_ATTRIBS ||
+       (s->cb0_bytes && !s->cb0) || s->cb0_bytes > UINT32_MAX ||
+       (uintptr_t)s->cb0 % _Alignof(float) ||
+       !s->fragment.words || s->fragment.slots > M9_FAA_GL_UPLOAD_SLOT_BUDGET ||
+       s->fragment.slots < 4 || s->fragment_constants.pairs > 63 ||
+       (s->fragment_constants.pairs && (!s->fragment_constants.words ||
+        (uintptr_t)s->fragment_constants.words % _Alignof(uint32_t))) ||
+       overlap(output, sizeof(*output), s, sizeof(*s)) ||
+       overlap(output, sizeof(*output), s->cb0, s->cb0_bytes) ||
+       overlap(output, sizeof(*output), s->fragment.words, s->fragment.slots * 8) ||
+       overlap(output, sizeof(*output), s->fragment_constants.words, s->fragment_constants.pairs * 8))
+      goto fail;
+   for (unsigned i = 0; i < 2; i++) {
+      const struct m9_vs_output *o = &s->linkage->stream[i];
+      if (o->coordinate || o->paired || o->coeff_record || o->component ||
+          o->location == VARYING_SLOT_POS || o->location >= 64 ||
+          (i && o->location == s->linkage->stream[0].location))
+         goto fail;
+   }
+   for (unsigned i = 0; i < s->buffer_count; i++)
+      if (overlap(output, sizeof(*output), s->maps[i], s->map_bytes[i]))
+         goto fail;
+   if (!m9_vs_compile_faa_gl(s->vs, s->linkage, &p, &why))
+      goto fail;
+   compiled = true;
+   unsigned slots = m9_vs_producer_slot_count(&p), pairs = m9_vs_const_count(&p);
+   if (slots > M9_FAA_GL_UPLOAD_SLOT_BUDGET || pairs > 63 || p.varying_count != 2 ||
+       !p.record_bytes || p.record_bytes % 16 || p.texture_count) {
+      why = "FAA GL producer limits or direct stream interface";
+      goto fail;
+   }
+   /* The generic constant resolver deliberately supplies GL defaults for
+    * missing words. This owner snapshot instead requires every live key to
+    * be within the actual retained CB0, before resolving any dense span. */
+   util_dynarray_foreach(&p.consts, struct m9_vs_const, key) {
+      if (key->kind == M9_VS_CONST_COORD) {
+         why = "FAA coordinate constant binding is not qualified";
+         goto fail;
+      }
+      if (key->kind == M9_VS_CONST_UNIFORM)
+         for (unsigned lane = 0; lane < 2; lane++) {
+            uint32_t at = key->offset[lane];
+            if (at != M9_VS_UNIFORM_ZERO &&
+                ((at & 3) || at > s->cb0_bytes || s->cb0_bytes - at < 4)) {
+               why = "FAA GL uniform key leaves retained CB0";
+               goto fail;
+            }
+         }
+   }
+   if (m9_vs_emit_faa(&p, carry, ARRAY_SIZE(carry)) != 2 * slots ||
+       m9_vs_constants(&p, s->cb0, s->cb0_bytes / 4, carry_constants,
+                          ARRAY_SIZE(carry_constants)) != pairs ||
+       !m9_vs_source_layout_init(&p, s->elements, s->element_count, s->buffers,
+                                  s->buffer_count, &source, &why))
+      goto fail;
+   unsigned declarations = m9_vs_decl_words(&p, declaration, ARRAY_SIZE(declaration));
+   const uint8_t inputs[2] = {0, 1};
+   if (!declarations ||
+       !m9_faa_preprocess_moves(M9_FAA_MOVE_RECORDS, inputs, 2, 0, gather, sizeof(gather), &gi) ||
+       !m9_faa_preprocess_position(&s->viewport, position, sizeof(position),
+                                    (float *)position_constants, sizeof(position_constants), &pi)) {
+      why = "FAA GL declaration or position interface";
+      goto fail;
+   }
+   const struct m9_faa_program_vector vectors[4] = {
+      s->fragment, {carry, slots}, {gather, gi.slots}, {position, pi.slots},
+   };
+   const struct m9_faa_dense_constants constants[4] = {
+      s->fragment_constants, {carry_constants, pairs}, {NULL, 0},
+      {position_constants, pi.constant_pairs},
+   };
+   unsigned program_bytes = 0;
+   for (unsigned i = 0; i < 4; i++) program_bytes += vectors[i].slots * 8;
+   result.constants_bytes = 16;
+   for (unsigned i = 0; i < 4; i++) {
+      result.constant_begin[i] = result.constants_bytes;
+      result.constants_bytes += constants[i].pairs * 8;
+      result.constant_end[i] = result.constants_bytes;
+   }
+   /* All capacities follow the compiled stride and the live vertex count,
+    * with a bounded CPU budget. This does not establish native draw lengths. */
+   uint64_t vertices = (uint64_t)s->count * p.record_bytes;
+   if (vertices > UINT32_MAX - 128u) goto fail;
+   result.vertex_bytes = vertices; result.vertex_offset = 128;
+   result.geometry_bytes = 128 + result.vertex_bytes;
+   result.vertex_count = s->count; result.record_bytes = p.record_bytes;
+   result.declaration_words = declarations;
+   memcpy(result.varying_location, p.varying_location, sizeof(result.varying_location));
+   for (unsigned i = 0; i < 3; i++)
+      for (unsigned half = 0; half < 2; half++)
+         result.carry_output_registers |= UINT64_C(1) << (0x11 + 4 * i + 2 * half);
+   size_t bytes = (size_t)program_bytes + result.constants_bytes + result.geometry_bytes + declarations * 4u;
+   result.storage = calloc(1, bytes);
+   if (!result.storage) {why = "out of memory"; goto fail;}
+   result.program = result.storage;
+   result.constants = result.program + program_bytes / 4;
+   result.geometry = result.constants + result.constants_bytes / 4;
+   result.declaration = result.geometry + result.geometry_bytes / 4;
+   if (!m9_faa_program_link(vectors, 4, result.program, program_bytes, &result.layout)) {
+      why = "FAA live fragment or preprocessing vector finish";
+      goto fail;
+   }
+   const uint32_t utility[4] = {0x3f800000, 0, 0, 0x3f800000};
+   memcpy(result.constants, utility, sizeof(utility));
+   for (unsigned i = 0; i < 4; i++)
+      if (constants[i].pairs)
+         memcpy((uint8_t *)result.constants + result.constant_begin[i],
+                constants[i].words, constants[i].pairs * 8);
+   const float header[8] = {s->viewport.width * .5f, s->viewport.height * -.5f,
+      1, 0, s->viewport.x + s->viewport.width * .5f,
+      s->viewport.y + s->viewport.height * .5f, 0, 0};
+   memcpy(result.geometry, header, sizeof(header));
+   bool records = s->indices ?
+      m9_vs_source_records_gather(&source, s->maps, s->map_bytes, s->buffer_count,
+                                   s->first, s->indices, s->count,
+                                   (float *)((uint8_t *)result.geometry + 128)) :
+      m9_vs_source_records(&source, s->maps, s->map_bytes, s->buffer_count,
+                             s->first, s->count,
+                             (float *)((uint8_t *)result.geometry + 128));
+   if (!records) {why = "FAA GL raw input mapping bounds"; goto fail;}
+   memcpy(result.declaration, declaration, declarations * 4);
+   m9_vs_program_fini(&p);
+   *output = result;
+   if (reason) *reason = NULL;
+   return true;
+fail:
+   if (compiled) m9_vs_program_fini(&p);
+   m9_faa_gl_upload_fini(&result);
+   if (reason) *reason = why;
+   return false;
 }
 
 static bool

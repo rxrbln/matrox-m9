@@ -6,6 +6,7 @@
 #include "pipe/p_state.h"
 #include <stddef.h>
 struct nir_shader;
+struct m9_vs_outputs;
 
 /* Bounded public MOV shader interface, before graph/job binding. The caller
  * retains lowered NIR, CB0 and mapped vertex buffers throughout this call.
@@ -40,4 +41,53 @@ struct m9_faa_live_public_mov {
  * unchanged. Output storage must be disjoint from retained NIR storage. */
 bool m9_faa_live_public_mov_build(const struct m9_faa_live_public_mov *state,
                                   struct m9_faa_public_upload *output);
+
+/* CPU snapshot budget, not a hardware vertex/program capability. */
+#define M9_FAA_GL_UPLOAD_MAX_VERTICES 2048u
+#define M9_FAA_GL_UPLOAD_SLOT_BUDGET 188u
+
+/* Generic GL carry compiler interface. Fragment is a final LIVE compiler
+ * vector with its dense keys, supplied by its separately qualified frontend.
+ * The two direct vec4 linkage streams must be explicit and complete; absent
+ * diffuse/texcoord outputs are not silently manufactured. */
+struct m9_faa_live_gl {
+   const struct nir_shader *vs;
+   const struct m9_vs_outputs *linkage;
+   const void *cb0;
+   size_t cb0_bytes;
+   struct m9_faa_program_vector fragment;
+   struct m9_faa_dense_constants fragment_constants;
+   const struct pipe_vertex_element *elements;
+   unsigned element_count;
+   const struct pipe_vertex_buffer *buffers;
+   unsigned buffer_count;
+   const uint8_t *const *maps;
+   const unsigned *map_bytes;
+   const uint32_t *indices; /* Optional count owned indices, relative to first. */
+   unsigned first, count;
+   struct m9_faa_viewport viewport;
+};
+
+/* All buffers point into one owned allocation. Constants and geometry stay
+ * separate: no unsupported combined-owner offset or native placement is
+ * inferred from the old 100h source geometry offset. No resource/NIR pointers
+ * survive. Call fini before retargeting. Zero-initialize before first build. */
+struct m9_faa_gl_upload {
+   void *storage;
+   uint32_t *program, *constants, *geometry, *declaration;
+   struct m9_faa_program_layout layout;
+   uint32_t constant_begin[4], constant_end[4], constants_bytes;
+   uint32_t geometry_bytes, vertex_offset, vertex_bytes;
+   uint32_t declaration_words, record_bytes, vertex_count;
+   uint8_t varying_location[2];
+   uint64_t carry_output_registers;
+   /* Explicitly false until a broader native layout/fragment/launcher
+    * contract and hardware receipt are qualified. */
+   bool native_admission;
+};
+
+bool m9_faa_live_gl_build(const struct m9_faa_live_gl *state,
+                           struct m9_faa_gl_upload *output,
+                           const char **reason);
+void m9_faa_gl_upload_fini(struct m9_faa_gl_upload *upload);
 #endif
