@@ -22,6 +22,39 @@ coordinates, filter state, or a dimension cap. In particular, a rounded
 fractional-weight model can explain some non-halving differences, but not
 the failing nearest control.
 
+## CPU window contract checked without the target
+
+The failing CPU counts were recorded after Mesa commit `cd61a2c`
+(`m9_surface_even_height`), so they are not observations from the old
+odd-height descriptor. For a 37×37 BGRA8 render target,
+`m9_render_surface_layout` produces a 64-texel row span, 40 allocated
+rows, and 10,240 bytes. `m9_surface_access` sends the small-kind window
+descriptor `d0=cc010040`, `d1=00010026` (38 view rows). The kernel's
+`m9_surface_min_bytes(64,38,4)` also requires 10,240 bytes. The
+40×40 passing control uses the same row span, allocated rows, and capacity.
+Thus the host-side capacity and class admission do not explain why the
+37-high CPU case differs. The raster/sampler view retains logical height
+37; the window's even view height is intentional and was measured to fix
+other odd surfaces.
+
+The source-backed Linux `m9x474`/`m9x587` local address formulas map
+coordinates 0..36 identically for declared heights 37, 38 and 40 at a
+64-texel span and depth zero. This only excludes a height-dependent
+**local** address change; the CPU window uses the aperture calculator,
+whose selector inputs have not been joined to this live descriptor.
+Using the local formula as a replacement for the window would cross a
+different address class and is not justified.
+
+`m9_blit_convert` computes a packed, CPU-bilinear destination in a
+staging allocation, then hands it to a void `pipe_texture_unmap`.
+The unmap calls `M9_SURFACE_ACCESS WRITE`; its failure is warned but
+cannot change `m9_blit_convert`'s success result. The kernel-side size
+check above predicts admission, not a successful physical window write.
+The nearly complete CPU mismatch therefore still needs the actual
+source/destination stage files and the window ioctl result. A later fix
+should target the demonstrated failing producer or consumer, without
+changing valid dimensions or substituting captured addresses.
+
 An opt-in fixture capture now retains three distinct observations: source
 FBO readback before the blit, destination FBO readback after the blit, and
 the existing final 320x240 sampled output. On a future locked M9128 run,
