@@ -63,6 +63,7 @@ m9_batch_init(struct m9_batch *batch)
    batch->command_count = 0;
    batch->reloc_count = 0;
    batch->bo_count = 0;
+   batch->aggregate_jobs = batch->aggregate_framed = batch->aggregate_span = 0;
    batch->program_mode = M9_PROGRAM_MODE_NONE;
    batch->sealed = false;
 }
@@ -642,6 +643,83 @@ m9_repack_vertices(struct m9_vertex *dst, unsigned dst_capacity,
    return 0;
 }
 
+/* Complete jobs retain local token numbering; only the kernel rebases them.
+ * Preflight every capacity before assigning the new used prefix. */
+int
+m9_batch_aggregate_append(struct m9_batch *dst, const struct m9_batch *job)
+{
+   unsigned at = 0, framed = 0, token = 0, extra_bos = 0;
+   if (!dst || !job || dst == job || !job->sealed || dst->sealed ||
+       !job->command_count || job->command_count > M9_MAX_COMMAND_DWORDS ||
+       job->bo_count > M9_MAX_BOS || job->reloc_count > M9_MAX_RELOCS ||
+       (job->reloc_count && !job->relocs) ||
+       dst->aggregate_jobs >= 4 || job->program_mode == M9_PROGRAM_MODE_FIXED_INLINE)
+      return -EINVAL;
+   while (at < job->command_count) {
+      uint32_t h = job->command[at];
+      unsigned n = 0;
+      if (h == 0x45454545) { at++; continue; }
+      if (h == PARHELIA_M9_RANGE_BREAK) {
+         if (job->command_count-at < 2 || job->command[at+1]) return -EINVAL;
+         at += 2; continue;
+      }
+      if (h == PARHELIA_M9_JOB_BREAK || h == 0x45454524) return -EOPNOTSUPP;
+      if (m9_header_is_draw(h)) {
+         if (job->command_count-at < 3) return -EINVAL;
+         framed += 3; at += 3; continue;
+      }
+      while (n < 4 && ((h >> (8*n)) & 255) != 0x45) n++;
+      if (!n || job->command_count-at < n+1) return -EINVAL;
+      for (unsigned i=0;i<n;i++) {
+         unsigned index=(h>>(8*i))&255;
+         if (index == 0x1e) return -EOPNOTSUPP;
+         if (index == 0xe3 || index == 0x43) {
+            uint32_t value=job->command[at+1+i];
+            if ((value&15) || value >= PARHELIA_M9_DEPENDENCY_LIMIT) return -EINVAL;
+            token=MAX2(token,value);
+         }
+      }
+      framed += n+2; at += n+1;
+   }
+   unsigned skip = dst->aggregate_jobs ? 2 : 0;
+   unsigned span = dst->aggregate_span + (skip ? 0x10 : 0) + token + 0x10;
+   if (!framed || dst->command_count + skip + job->command_count > M9_MAX_COMMAND_DWORDS ||
+       dst->reloc_count + job->reloc_count > M9_MAX_RELOCS ||
+       dst->aggregate_framed + framed + 11 > (32768u-8u)/4u ||
+       span > PARHELIA_M9_DEPENDENCY_LIMIT)
+      return -ENOSPC;
+   for (unsigned i=0;i<job->bo_count;i++) {
+      if (!job->bos[i].handle || !job->bos[i].flags ||
+          (job->bos[i].flags & ~(PARHELIA_M9_BO_READ | PARHELIA_M9_BO_WRITE))) return -EINVAL;
+      for (unsigned j=0;j<i;j++)
+         if (job->bos[j].handle == job->bos[i].handle) return -EINVAL;
+      bool found=false;
+      for (unsigned j=0;j<dst->bo_count;j++) found |= dst->bos[j].handle == job->bos[i].handle;
+      extra_bos += !found;
+   }
+   if (dst->bo_count + extra_bos > M9_MAX_BOS) return -ENOSPC;
+   for (unsigned i=0;i<job->reloc_count;i++)
+      if (job->relocs[i].command_dword >= job->command_count) return -EINVAL;
+   unsigned need=dst->reloc_count+job->reloc_count;
+   if (need > dst->reloc_capacity) {
+      struct drm_parhelia_m9_reloc *r = realloc(dst->relocs, need*sizeof(*r));
+      if (!r) return -ENOMEM;
+      dst->relocs=r;dst->reloc_capacity=need;
+   }
+   unsigned base=dst->command_count+skip;
+   if (skip) { dst->command[dst->command_count++]=PARHELIA_M9_JOB_BREAK;dst->command[dst->command_count++]=0; }
+   memcpy(dst->command+base, job->command, job->command_count*4);
+   for (unsigned i=0;i<job->reloc_count;i++) {
+      dst->relocs[dst->reloc_count]=job->relocs[i];
+      dst->relocs[dst->reloc_count++].command_dword += base;
+   }
+   for (unsigned i=0;i<job->bo_count;i++) m9_batch_add_bo(dst,job->bos[i].handle,job->bos[i].flags);
+   dst->command_count=base+job->command_count;
+   dst->program_mode=M9_PROGRAM_MODE_EXTERNAL;
+   dst->aggregate_jobs++;dst->aggregate_framed += framed+11;dst->aggregate_span=span;
+   return 0;
+}
+
 int
 m9_batch_prepare_submit(const struct m9_batch *batch,
                         const struct m9_resource *command,
@@ -665,7 +743,8 @@ m9_batch_prepare_submit(const struct m9_batch *batch,
       .relocations_ptr = batch->reloc_count ?
                          (uintptr_t)batch->relocs : 0,
       .bo_count = batch->bo_count,
-      .flags = PARHELIA_M9_SUBMIT_VALIDATE_ONLY,
+      .flags = PARHELIA_M9_SUBMIT_VALIDATE_ONLY |
+               (batch->aggregate_jobs > 1 ? PARHELIA_M9_SUBMIT_AGGREGATE : 0),
       .bos_ptr = batch->bo_count ? (uintptr_t)batch->bos : 0,
       .program_type = batch->program_mode == M9_PROGRAM_MODE_FIXED_INLINE ?
                       PARHELIA_M9_PROGRAM_FIXED_P00_S28_INLINE :
@@ -686,7 +765,7 @@ m9_batch_prepare_execute(const struct m9_batch *batch,
       return -EINVAL;
    ret = m9_batch_prepare_submit(batch, command, context_id, submit);
    if (!ret)
-      submit->flags = 0;
+      submit->flags = batch->aggregate_jobs > 1 ? PARHELIA_M9_SUBMIT_AGGREGATE : 0;
    return ret;
 }
 

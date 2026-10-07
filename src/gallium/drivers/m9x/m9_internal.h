@@ -11,7 +11,7 @@
 #include "pipe/p_context.h"
 #include "pipe/p_screen.h"
 #include "pipe/p_state.h"
-#include "drm-uapi/m9x_drm.h"
+#include "m9_aggregate_uapi.h"
 #include "m9_draw_params.h"
 #include "m9_faa.h"
 #include "m9_vs_compile.h"
@@ -282,6 +282,7 @@ struct m9_screen {
    bool execute_submit;
    bool native_depth_bias;
    bool wait_point;
+   bool aggregate_submit;    /* explicit opt-in plus kernel capability */
    bool queued_submit;       /* M9X_QUEUE=1 plus typed kernel admission */
    /* Actual successful WAIT_POINT observations, shared by contexts and
     * presentation fences. Posting a command never advances this value. */
@@ -344,6 +345,7 @@ struct m9_batch {
    uint32_t command_count;
    uint32_t reloc_count, reloc_capacity;
    uint32_t bo_count;
+   uint32_t aggregate_jobs, aggregate_framed, aggregate_span;
    enum m9_program_mode program_mode;
    bool sealed;
 };
@@ -513,6 +515,9 @@ struct m9_context {
    struct pipe_context base;
    struct m9_screen *screen;
    struct m9_batch batch;
+   struct m9_batch *aggregate;
+   struct util_dynarray aggregate_resources; /* retained pipe_resource refs */
+   struct m9_resource *aggregate_be[4];
    struct m9_resource command;
    uint32_t context_id;
    uint64_t last_point;

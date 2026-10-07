@@ -197,6 +197,7 @@ struct m9_vbuf_render {
 };
 
 static int m9_submit_job(struct m9_context *ctx);
+static int m9_aggregate_flush(struct m9_context *ctx);
 static void m9_proxy_writeback(struct m9_context *ctx);
 static void m9_proxy_reseed(struct m9_context *ctx);
 static void m9_deferred_run(struct m9_context *ctx);
@@ -640,9 +641,11 @@ m9_context_sync(struct m9_context *ctx)
    if (ctx->draw)
       draw_flush(ctx->draw);
    m9_submit_job(ctx);
+   m9_aggregate_flush(ctx);
    /* Outside the draw module: a job held for the scratch path runs here,
     * before anything this sync was called for reads the target. */
    m9_deferred_run(ctx);
+   m9_aggregate_flush(ctx);
    m9_retired_variants_free(ctx);
 }
 
@@ -1287,6 +1290,70 @@ m9_transfer_unmap(struct pipe_context *pctx, struct pipe_transfer *ptransfer)
 
 /* Two-pass jobs */
 
+/* No point exists for a deferred job. This marker can never be sent to
+ * WAIT_POINT: flush first, then replace every held arena with the real point. */
+#define M9_AGGREGATE_PENDING UINT64_MAX
+
+static int
+m9_aggregate_flush(struct m9_context *ctx)
+{
+   struct m9_batch *b = ctx->aggregate;
+   uint64_t point = 0;
+   int ret = 0;
+   if (!b || !b->aggregate_jobs) return 0;
+   unsigned jobs = b->aggregate_jobs;
+   b->sealed = true;
+   ret = ctx->lost ? -EIO :
+      m9_batch_submit(ctx->screen, &ctx->command, b, ctx->context_id, &point);
+   if (ret) {
+      /* A posted failure is quarantined by the kernel. Never rebuild or
+       * overwrite a deferred arena after an unproved completion. */
+      ctx->lost = true;
+   } else {
+      ctx->last_point = point;
+      if (ctx->arena_point == M9_AGGREGATE_PENDING) ctx->arena_point = point;
+      if (ctx->arena_alt_point == M9_AGGREGATE_PENDING) ctx->arena_alt_point = point;
+      for (unsigned i=0;i<ARRAY_SIZE(ctx->queue_arena);i++)
+         if (ctx->queue_arena[i].point == M9_AGGREGATE_PENDING)
+            ctx->queue_arena[i].point = point;
+      for (unsigned i=0;i<jobs;i++) ctx->aggregate_be[i]->be_point = point;
+      if (ctx->vs_record_vertices && !ctx->vs_record_point) ctx->vs_record_point = point;
+   }
+   /* Success transferred GEM refs/pins to the real kernel fence; failure
+    * loses this context, and any posted readers remain kernel-owned. */
+   util_dynarray_foreach(&ctx->aggregate_resources, struct pipe_resource *, held)
+      pipe_resource_reference(held, NULL);
+   util_dynarray_clear(&ctx->aggregate_resources);
+   m9_batch_init(b);
+   return ret;
+}
+
+static int
+m9_aggregate_enqueue(struct m9_context *ctx, struct m9_resource *be)
+{
+   size_t old_size = ctx->aggregate_resources.size;
+   void *held = NULL;
+   if (ctx->job_textures.size) {
+      held = util_dynarray_grow_bytes(&ctx->aggregate_resources, 1, ctx->job_textures.size);
+      if (!held) return -ENOMEM;
+   }
+   int ret = m9_batch_aggregate_append(ctx->aggregate, &ctx->batch);
+   if (ret) {
+      ctx->aggregate_resources.size = old_size;
+      if (ret == -ENOSPC && ctx->aggregate->aggregate_jobs) {
+         ret = m9_aggregate_flush(ctx);
+         if (!ret) return m9_aggregate_enqueue(ctx, be);
+      }
+      return ret;
+   }
+   if (held) memcpy(held,ctx->job_textures.data,ctx->job_textures.size);
+   util_dynarray_clear(&ctx->job_textures); /* transfer existing references */
+   ctx->aggregate_be[ctx->aggregate->aggregate_jobs-1] = be;
+   ctx->arena_point = M9_AGGREGATE_PENDING;
+   be->be_point = M9_AGGREGATE_PENDING;
+   return 0;
+}
+
 /* Swap in the other set of per-job arenas; see m9_context's declaration. */
 static int
 m9_arena_rotate(struct m9_context *ctx)
@@ -1304,6 +1371,8 @@ m9_arena_rotate(struct m9_context *ctx)
          bank = &ctx->queue_arena[slot - 1];
          parked_point = &bank->point;
       }
+      if (*parked_point == M9_AGGREGATE_PENDING && m9_aggregate_flush(ctx))
+         return -EIO;
       ret = m9_wait_for_point(ctx->screen, *parked_point);
       if (ret) {
          ctx->lost = true;
@@ -2615,6 +2684,10 @@ m9_be_zero(struct m9_context *ctx)
    unsigned selected = entry ? entry->be_slot : 0;
    uint64_t t_be = m9_prof_begin();
 
+   if (m9_aggregate_flush(ctx)) {
+      m9_prof_end(M9_PROF_BE, t_be);
+      return;
+   }
    if (ctx->lost) {
       m9_prof_end(M9_PROF_BE, t_be);
       return;
@@ -2698,6 +2771,7 @@ m9_submit_job(struct m9_context *ctx)
    uint64_t t_submit;
    bool built;
    bool faa_store_locked = false;
+   bool aggregate_job = false, deferred_submit = false;
    int ret;
 
    /* An empty job's key may name a shader or variant deleted since the
@@ -2842,6 +2916,17 @@ m9_submit_job(struct m9_context *ctx)
    unsigned copies = MAX2(pass_count, 1u);
    uint64_t index_base = 0;
 
+   /* Complete-job aggregation retains independent immutable CPU arenas.
+    * The first scope excludes mutable CPU clears, queries and split passes. */
+   aggregate_job = ctx->aggregate && pass_count == 1 && !ctx->dry_run &&
+      !ctx->in_scratch && !m9_pass_loop && !m9_be_clear && !m9_be_dump &&
+      !m9_vs_record_dump && !m9_record_dump &&
+      !m9_faa_active(&ctx->screen->faa) && !ctx->faa_surface.graph.initialized &&
+      !ctx->query_active && !ctx->query_begin && !ctx->query_end &&
+      !ctx->query_paused && !ctx->query_exclude;
+   if ((!aggregate_job || ctx->aggregate->aggregate_jobs == 4) &&
+       m9_aggregate_flush(ctx))
+      return -EIO;
    /* Before a single byte of this job is written. */
    ret = m9_arena_rotate(ctx);
    if (ret)
@@ -3185,12 +3270,23 @@ m9_submit_job(struct m9_context *ctx)
       if (ctx->dump_path)
          m9_dump_job(ctx, fs ? key->variant : NULL, &job);
       t_ioctl = m9_prof_begin();
-      ret = ctx->dry_run ?
-            m9_batch_validate(ctx->screen, &ctx->command, &ctx->batch,
-                              ctx->context_id) :
-            m9_batch_submit(ctx->screen, &ctx->command, &ctx->batch,
-                            ctx->context_id, &point);
-      if (!ret && !ctx->dry_run)
+      if (aggregate_job) {
+         ret = m9_aggregate_enqueue(ctx, be_bound);
+         deferred_submit = !ret;
+         /* An unsupported single job stays on the established path. */
+         if (ret == -EINVAL || ret == -EOPNOTSUPP || ret == -ENOSPC) {
+            ret = m9_aggregate_flush(ctx);
+            if (!ret) ret = m9_batch_submit(ctx->screen, &ctx->command,
+                                           &ctx->batch, ctx->context_id, &point);
+         }
+      } else {
+         ret = ctx->dry_run ?
+               m9_batch_validate(ctx->screen, &ctx->command, &ctx->batch,
+                                 ctx->context_id) :
+               m9_batch_submit(ctx->screen, &ctx->command, &ctx->batch,
+                               ctx->context_id, &point);
+      }
+      if (!ret && !ctx->dry_run && !deferred_submit)
          m9_job_submitted(ctx, be_bound, point);
       if (faa_store_locked && !ctx->dry_run)
          m9_faa_store_submitted_locked(ctx->screen, &job, ret, point);
@@ -3269,7 +3365,7 @@ m9_submit_job(struct m9_context *ctx)
                  strerror(-ret));
       ctx->lost = true;
    } else {
-      ctx->last_point = point;
+      if (!deferred_submit) ctx->last_point = point;
       ctx->record_written |= pass_count > 1;
       if (key->vs_producer_entry && !ctx->dry_run) {
          ctx->vs_record_vertices = job.source_vertices;
@@ -8464,8 +8560,8 @@ m9_blit(struct pipe_context *pctx, const struct pipe_blit_info *info)
 static void
 m9_flush_resource(struct pipe_context *pctx, struct pipe_resource *resource)
 {
-   (void)pctx;
    (void)resource;
+   m9_context_sync(m9_context(pctx));
 }
 
 /* State objects */
@@ -8827,6 +8923,7 @@ m9_delete_vs_state(struct pipe_context *pctx, void *state)
    struct m9_context *ctx = m9_context(pctx);
    struct m9_vs_state *vs = state;
 
+   m9_aggregate_flush(ctx);
    /* Native records bypass draw's flush. Encode and submit their job while
     * its specialization/layout data is still alive, as FS deletion does.
     * Posted C2 images retain their separate BO lifetime. */
@@ -9017,6 +9114,7 @@ m9_delete_fs_state(struct pipe_context *pctx, void *state)
    struct m9_context *ctx = m9_context(pctx);
    struct m9_fs_state *fs = state;
 
+   m9_aggregate_flush(ctx);
    if (ctx->job_key.fs == fs)
       m9_context_sync(ctx);
    util_dynarray_foreach(&fs->variants, struct m9_fs_variant *, it)
@@ -9726,6 +9824,8 @@ m9_context_destroy(struct pipe_context *pctx)
    m9_faa_surface_destroy(ctx->screen, &ctx->faa_surface);
    m9_context_state_cleanup(ctx);
    m9_batch_fini(&ctx->batch);
+   if (ctx->aggregate) { m9_batch_fini(ctx->aggregate); FREE(ctx->aggregate); }
+   util_dynarray_fini(&ctx->aggregate_resources);
    m9_command_bo_destroy(screen, &ctx->command);
    m9_bo_destroy(screen, &ctx->system);
    m9_bo_destroy(screen, &ctx->program);
@@ -9903,6 +10003,8 @@ m9_context_create(struct pipe_screen *pscreen, void *priv, unsigned flags)
    ctx->only_first = debug_get_num_option("M9X_ONLY_FIRST", UINT_MAX);
    ctx->only_after = debug_get_num_option("M9X_ONLY_AFTER", 0);
    ctx->dry_run = debug_get_bool_option("M9X_DRYRUN", false);
+   util_dynarray_init(&ctx->aggregate_resources, NULL);
+   if (screen->aggregate_submit) ctx->aggregate = CALLOC_STRUCT(m9_batch);
    util_dynarray_init(&ctx->records, NULL);
    util_dynarray_init(&ctx->vs_c2_images, NULL);
    util_dynarray_init(&ctx->native_vs_reasons, NULL);

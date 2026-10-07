@@ -72,6 +72,7 @@ struct m9_vertex_input {
 
 void m9_batch_init(struct m9_batch *batch);
 void m9_batch_fini(struct m9_batch *batch);
+int m9_batch_aggregate_append(struct m9_batch *dst, const struct m9_batch *job);
 void m9_batch_checkpoint(const struct m9_batch *batch,
                          struct m9_batch_checkpoint *checkpoint);
 void m9_batch_rollback(struct m9_batch *batch,

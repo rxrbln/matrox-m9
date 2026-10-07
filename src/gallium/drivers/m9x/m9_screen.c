@@ -1396,6 +1396,13 @@ m9_probe_user_submit(struct m9_screen *screen)
                !screen->faa.enable &&
                !m9_batch_validate_flags(screen, &command, batch, 0,
                                         PARHELIA_M9_SUBMIT_QUEUED);
+            struct drm_parhelia_m9_submit aggregate_probe = {
+               .flags = PARHELIA_M9_SUBMIT_VALIDATE_ONLY | PARHELIA_M9_SUBMIT_AGGREGATE,
+            };
+            screen->aggregate_submit = screen->queued_submit &&
+               debug_get_bool_option("M9X_AGGREGATE", false) &&
+               !ioctl(screen->fd, DRM_IOCTL_PARHELIA_M9_SUBMIT, &aggregate_probe) &&
+               !aggregate_probe.out_point;
             const struct m9_packet_value bias[] = {
                { .index = 0xd0, .value = 0 },
                { .index = 0xd1, .value = 0 },
