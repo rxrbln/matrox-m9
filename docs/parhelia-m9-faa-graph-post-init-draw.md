@@ -205,3 +205,33 @@ PYTHONPATH=tools/faaemu:tools/m9emu /home/ai/tmp/faaemu/venv/bin/python \
  tests/m9-faa-returned-draw-finish-20261007/capture.py --out /tmp/m9-finish/proof.json
 python3 tests/m9-faa-returned-draw-finish-20261007/check.py
 ```
+
+## Complete returned DRAW physically retires at 0x140
+
+Kernel `ea659e6`, module SHA `83f77b5cecc55e05b6d22187a44f12cdc7ce6a97859be14260ed47b5760cc5a2`,
+passed the complete graph INIT → first prefix → returned DRAW plus explicit
+finish on real M9128, boot `364aa8be-9dc4-4017-bd18-360a393be1dc`.
+INIT returned/independently waited `0xb0`; the native prefix retired `0x110`,
+then the final source-derived post retired `0x140`/raw `0x141`. The live
+primary is 4996 bytes (source4992 plus the live INIT clear delta4), with five
+ordered posts. Immediate and +2s checks show submitted/completed140,
+next150, queue0/wedged0. The six user handles were closed before INIT;
+the graph retained their owners and RELEASE succeeded exactly once.
+
+The capsule is `tests/m9-faa-returned-draw-finish-20261007/hardware-20261007/`.
+`check-hardware.py` validates the actual receipt and refuses eight altered
+receipt cases. This is a full command-retirement result, not FAA edge coverage
+or a screenshot. No normal Lock, view mapping or CPU pixel copy was executed
+by the native helper.
+
+Using only these newly qualified counters, `m9_faa_graph_finish_continue.py`
+reconstructs the identical source finish, preserves its queue state, discards
+its suspended CPU stack without resuming destruction, and starts the genuine
+normal Lock. The former140 dependency is covered. Lock now produces three
+real END events at primary offsets8536,8536,8548 (middle writer `0x4a327`),
+then stops before a new170 common-buffer read at `0x4e1d1`. Its new primary
+span is3556 CPU-written bytes after source4992; fourteen relocation events
+include eight nonzero owner fields and six genuine null bindings. Footer
+writers produce151/161/171 at offsets5120/5176/8544. Two unrelated shader
+state words also equal160 and must not be rebased as timeline values.
+The new170 phase has no native encoder or hardware receipt yet.
