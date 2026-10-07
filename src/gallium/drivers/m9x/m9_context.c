@@ -7109,9 +7109,9 @@ m9_draw_indirect(struct pipe_context *pctx, const struct pipe_draw_info *info,
 
       direct.instance_count = args[i].instance_count;
       direct.start_instance = args[i].start_instance;
-      m9_draw_vbo(pctx, &direct,
-                  drawid_offset + (info->increment_draw_id ? i : 0),
-                  NULL, &draw, 1);
+      /* Gallium's indirect expansion advances DrawID for every command;
+       * increment_draw_id controls direct multidraws instead. */
+      m9_draw_vbo(pctx, &direct, drawid_offset + i, NULL, &draw, 1);
    }
    FREE(args);
    return true;
