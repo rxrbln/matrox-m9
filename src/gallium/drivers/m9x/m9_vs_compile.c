@@ -1986,6 +1986,8 @@ note_input(struct ctx *c, struct input_use *used, unsigned *count,
 /* The GL compiler's two-component texture descriptor selects mode 1;
  * sample results arrive in r00/r02 before the source-fed ALU head. The
  * runtime additionally requires one resident level and point/no-mip state.
+ * Original two-owner GLSL descriptor controls produce that same mode for
+ * implicit fetches; vertex implicit LOD selects the base level.
  * Computed coordinates need the vendor's separate coordinate producer. */
 static bool
 note_texture(struct ctx *c, nir_tex_instr *tex)
@@ -2027,8 +2029,6 @@ note_texture(struct ctx *c, nir_tex_instr *tex)
       return fail(c, "vertex texture coordinates must be direct input XY");
    unsigned unit = c->p->texture_count;
    unsigned location = nir_intrinsic_io_semantics(input).location;
-   if (unit && (c->texture[0]->op != nir_texop_txl || tex->op != nir_texop_txl))
-      return fail(c, "two vertex textures require explicit zero LOD");
    if (unit && location != c->p->texture_location)
       return fail(c, "two vertex textures require the same direct XY input");
    c->texture[unit] = tex;
@@ -2737,9 +2737,6 @@ compile_impl(struct ctx *c, nir_function_impl *impl,
       }
    }
    if (c->texture[0] && nvar > M9_VS_FUSED_VARYINGS) {
-      for (unsigned unit = 0; unit < c->p->texture_count; unit++)
-         if (c->texture[unit]->op != nir_texop_txl)
-            return fail(c, "packed vertex textures require explicit zero LOD");
       c->p->texture_head_only = true;
    }
    if (nvar > M9_VS_FUSED_VARYINGS) {
