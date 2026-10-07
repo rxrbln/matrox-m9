@@ -32,4 +32,31 @@ bool m9_faa_program_link(const struct m9_faa_program_vector *vectors,
                          uint32_t capacity_bytes,
                          struct m9_faa_program_layout *layout);
 
+enum m9_faa_move_input {
+   M9_FAA_MOVE_ATTRIBUTES,
+   M9_FAA_MOVE_RECORDS,
+};
+
+struct m9_faa_move_interface {
+   uint32_t slots;
+   uint32_t constant_pairs;
+   uint32_t output_targets;
+   /* Compiler liveness seed for the two native registers of every target.
+    * This is compiler metadata, not a hardware register write. */
+   uint64_t output_registers;
+};
+
+/* Emit the source-qualified pair moves used by carry and gather stages.
+ * inputs[i] is a live attribute/record index, in the required output order;
+ * caller declarations and retained record bindings must provide those inputs.
+ * The attribute slice covers three pairs, the record slice covers two.
+ * saturate_targets explicitly selects pair clamp modifiers from live state;
+ * no diffuse clamp is assumed for arbitrary Gallium varyings.
+ * This does not compile position/clip/depth or admit an app FAA draw. */
+bool m9_faa_preprocess_moves(enum m9_faa_move_input kind,
+                            const uint8_t *inputs, uint32_t count,
+                            uint32_t saturate_targets, uint32_t *output,
+                            uint32_t capacity_bytes,
+                            struct m9_faa_move_interface *interface);
+
 #endif
