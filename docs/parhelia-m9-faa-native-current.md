@@ -8,7 +8,18 @@ Ordinary textured rendering and the deployed driver are validated. FAA
 rendering is not yet validated. This note is separate from P690
 `102b:2539` evidence.
 
-Latest FAA diagnostic, 2026-10-07: kernel c7db56b physically retires the
+Latest hardware checkpoint: kernel6367f4f completes the whole pending-output
+prefix at0x160/raw0x161, next0x170, empty queue and wedged=0 immediately/+2s.
+The public clear and triangle have returned; the original output path is still
+at its format-transition150 wait. The real output allocation stays unreadable
+(ENODATA) until the remaining resolve is proved. Pool stores change to659
+nonzero bytes/200words; this does not establish an FAA image. Five full BAR
+roles and all four counter channels are archived before recovery.
+[Actual160 hardware evidence](../tests/m9-faa-preclear-output-hardware-20261007/README.md).
+The preceding120 preprocessing buffer also independently matches all36 checked
+color/screen/clip components. Normal-driver recovery follows the private test.
+
+Preceding FAA diagnostic, 2026-10-07: kernel c7db56b physically retires the
 completed public black clear and original triangle's first preprocessing
 launch at `0x120` (raw `0x121`), with an empty queue and wedged=0 immediately
 and two seconds later. The preprocessing allocation contains 55 nonzero bytes
