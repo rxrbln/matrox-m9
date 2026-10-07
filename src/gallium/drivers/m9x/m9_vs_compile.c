@@ -262,6 +262,34 @@ const_pair(struct ctx *c, const struct held *a, const struct held *b,
    return *key >= 0;
 }
 
+/* These callers encode a constant swizzle. Its captured zero form broadcasts
+ * lane zero, so (x,x) can read an existing (x,y) without allocating another
+ * pair. Compare literal bits: signed zero and NaN payloads are not aliases.
+ * Identity-only DOT/MINMAX and MAD's constant addend keep const_pair(). */
+static bool
+const_pair_swizzled(struct ctx *c, const struct held *a, const struct held *b,
+                    int *key, unsigned *swz)
+{
+   bool literal = a->kind == HELD_LIT && b->kind == HELD_LIT &&
+                  !memcmp(&a->lit, &b->lit, sizeof(a->lit));
+   bool uniform = a->kind == HELD_UNIFORM && b->kind == HELD_UNIFORM &&
+                  a->a == b->a;
+
+   if (literal || uniform) {
+      util_dynarray_foreach(&c->keys, struct kkey, it) {
+         if ((literal && it->kind == M9_VS_CONST_LITERAL &&
+              !memcmp(&it->v[0], &a->lit, sizeof(a->lit))) ||
+             (uniform && it->kind == M9_VS_CONST_UNIFORM &&
+              it->off[0] == a->a)) {
+            *key = it - (struct kkey *)c->keys.data;
+            *swz = 0;
+            return true;
+         }
+      }
+   }
+   return const_pair(c, a, b, key, swz);
+}
+
 static bool
 held_is_const(const struct held *h)
 {
@@ -484,7 +512,7 @@ write_scalar(struct ctx *c, unsigned dst, unsigned scalar,
    int key, e;
 
    if (held_is_const(h)) {
-      if (!const_pair(c, h, h, &key, &swz))
+      if (!const_pair_swizzled(c, h, h, &key, &swz))
          return fail(c, "constant operand");
       e = const_index(c, key);
       if (e < 0)
@@ -562,7 +590,7 @@ emit_mul(struct ctx *c, unsigned dst, const struct held *a0,
    int key, e;
 
    if (held_is_const(b0) && held_is_const(b1) &&
-       const_pair(c, b0, b1, &key, &kswz)) {
+       const_pair_swizzled(c, b0, b1, &key, &kswz)) {
       if (!operand(c, a0, a1, false, &ra, &sa))
          return false;
       e = const_index(c, key);
@@ -593,7 +621,7 @@ emit_mad(struct ctx *c, unsigned dst, const struct held *b0,
    unsigned rb, sb, rc, sc, kswz, cswz;
    int key, kc, e, ec;
 
-   if (!const_pair(c, k0, k1, &key, &kswz))
+   if (!const_pair_swizzled(c, k0, k1, &key, &kswz))
       return false;
    e = const_index(c, key);
    if (e < 0)
@@ -671,7 +699,7 @@ emit_cmp(struct ctx *c, unsigned dst, unsigned cls, const struct held *a0,
    int key, e;
 
    if (!held_is_const(b0) || !held_is_const(b1) ||
-       !const_pair(c, b0, b1, &key, &kswz))
+       !const_pair_swizzled(c, b0, b1, &key, &kswz))
       return fail(c, "compare against a register");
    e = const_index(c, key);
    if (e < 0)
@@ -1989,7 +2017,7 @@ write_pair(struct ctx *c, unsigned reg, const struct held *h0,
    if (held_same(&c->holds[reg][0], h0) && held_same(&c->holds[reg][1], h1))
       return true;
    if (held_is_const(h0) && held_is_const(h1) &&
-       const_pair(c, h0, h1, &key, &swz) &&
+       const_pair_swizzled(c, h0, h1, &key, &swz) &&
        (e = const_index(c, key)) >= 0) {
       emit_move_const(c, reg, 0x1c, e, swz);
    } else if (find_pair(c, h0, h1, false, &src, &swz)) {
