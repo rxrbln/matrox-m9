@@ -175,16 +175,18 @@ m9_vs_source_layout_init(const struct m9_vs_program *program,
 #undef REFUSE
 }
 
-/* Compare against the remaining mapping instead of multiplying an
- * arbitrary vertex index by the input stride. Zero stride consumes only
- * the texel itself, even for a high draw/index base. */
+/* A nonzero stride cannot address a vertex above UINT_MAX in this bounded
+ * mapping. After that guard, unsigned stride times vertex fits uint64_t;
+ * compare it against the remaining bytes without a division per gather.
+ * Zero stride consumes only the texel, even for a high draw/index base. */
 static bool
 m9_vs_source_range(const struct m9_vs_source_attr *s, unsigned size,
                    uint64_t last)
 {
    uint64_t end = (uint64_t)s->src_offset + util_format_get_blocksize(s->format);
 
-   return end <= size && (!s->stride || last <= (size - end) / s->stride);
+   return end <= size && (!s->stride ||
+                          (last <= UINT_MAX && last * s->stride <= size - end));
 }
 
 bool
