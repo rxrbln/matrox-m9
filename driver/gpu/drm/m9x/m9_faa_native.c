@@ -30,6 +30,7 @@
 #include "m9_faa_graph_draw_encode.h"
 #include "m9_faa_graph_color_encode.h"
 #include "m9_faa_graph_color_next_encode.h"
+#include "m9_faa_graph_depth.h"
 #include "m9_faa_graph_public_vs_encode.h"
 #include "m9_faa_graph_public_vs_follow_encode.h"
 #include "m9_faa_graph_public_vs_draw_encode.h"
@@ -227,6 +228,13 @@ struct m9_faa_owner {
 	struct drm_mm_node system_node;
 };
 #ifdef M9_FAA_GRAPH_INIT_CONTROL
+struct m9_faa_depth_storage {
+ struct m9_faa_owner owner[M9_FAA_DEPTH_OWNERS];
+ struct m9x_faa_depth_views views;
+ u32 generation;
+ u64 previous_unlock_point;
+ bool ready;
+};
 static bool m9_faa_color_four_experimental;
 module_param_named(faa_color_four_experimental,m9_faa_color_four_experimental,bool,0600);
 MODULE_PARM_DESC(faa_color_four_experimental,"Enable unqualified four-stage COLOR launcher (diagnostic only)");
@@ -283,6 +291,7 @@ struct m9x_faa_replay {
 	struct m9_faa_owner draw_owner[3];
 	struct m9_faa_public_vs_storage *public_vs_image;
  struct m9_faa_color_storage *color_image;
+ struct m9_faa_depth_storage *depth_storage;
  bool color_payload_ready,color_attempted,color_lock_retired;
  u64 color_lock_point;
  u32 color_primary_start,color_posts_start;
@@ -811,6 +820,7 @@ static bool m9_faa_release(struct m9x_device *mdev, struct m9x_faa_replay *r)
 	bool owner_reserved[ARRAY_SIZE(r->owner)] = { };
 #ifdef M9_FAA_GRAPH_INIT_CONTROL
 	bool draw_reserved[ARRAY_SIZE(r->draw_owner)] = { };
+ bool depth_reserved[M9_FAA_DEPTH_OWNERS] = { };
 #endif
 
 	/* Failed preparation has no submitted FAA work. Attempted owners may
@@ -832,6 +842,12 @@ static bool m9_faa_release(struct m9x_device *mdev, struct m9x_faa_replay *r)
 		if (!m9_faa_dma_restore_wb(&r->draw_owner[i]))
 			goto quarantine;
 #endif
+#ifdef M9_FAA_GRAPH_INIT_CONTROL
+ if (r->depth_storage)
+  for (i=0;i<M9_FAA_DEPTH_OWNERS;i++)
+   if (!m9_faa_dma_restore_wb(&r->depth_storage->owner[i]))
+    goto quarantine;
+#endif
 	/* Reserve every private TTM view before freeing anything. A failed
 	 * reservation must not be followed by vunmap or a partial owner release. */
 	for (i = 0; i < ARRAY_SIZE(r->owner); i++) {
@@ -849,6 +865,17 @@ static bool m9_faa_release(struct m9x_device *mdev, struct m9x_faa_replay *r)
 			goto unreserve_quarantine;
 		draw_reserved[i] = true;
 	}
+#endif
+
+#ifdef M9_FAA_GRAPH_INIT_CONTROL
+ if (r->depth_storage)
+  for (i=0;i<M9_FAA_DEPTH_OWNERS;i++) {
+   struct m9_faa_owner *o=&r->depth_storage->owner[i];
+   if (!o->vram) continue;
+   if (ttm_bo_reserve(&o->vram->bo,false,false,NULL))
+    goto unreserve_quarantine;
+   depth_reserved[i]=true;
+  }
 #endif
 
 	if (drm_mm_node_allocated(&r->counter_node))
@@ -883,6 +910,21 @@ static bool m9_faa_release(struct m9x_device *mdev, struct m9x_faa_replay *r)
 					  o->cpu, o->dma);
 		}
 	}
+ if (r->depth_storage) {
+  for (i=0;i<M9_FAA_DEPTH_OWNERS;i++) {
+   struct m9_faa_owner *o=&r->depth_storage->owner[i];
+   if (drm_mm_node_allocated(&o->system_node))
+    m9x_address_unmap_system(mdev,&o->system_node);
+   if (o->vram) {
+    drm_gem_vram_vunmap(o->vram,&o->map);
+    ttm_bo_unreserve(&o->vram->bo);
+    m9x_vram_unpin(o->vram);
+    drm_gem_vram_put(o->vram);
+   } else if (o->cpu)
+    dma_free_coherent(&mdev->pdev->dev,o->bytes,o->cpu,o->dma);
+  }
+  kfree(r->depth_storage);
+ }
 	kfree(r->draw_image);
 	kfree(r->public_vs_image);
  if (r->color_image) kfree(r->color_image->constants);
@@ -908,6 +950,9 @@ static bool m9_faa_release(struct m9x_device *mdev, struct m9x_faa_replay *r)
 	return true;
 unreserve_quarantine:
 #ifdef M9_FAA_GRAPH_INIT_CONTROL
+ if (r->depth_storage)
+  for(i=0;i<M9_FAA_DEPTH_OWNERS;i++)
+   if(depth_reserved[i])ttm_bo_unreserve(&r->depth_storage->owner[i].vram->bo);
 	for (i = 0; i < ARRAY_SIZE(r->draw_owner); i++)
 		if (draw_reserved[i])
 			ttm_bo_unreserve(&r->draw_owner[i].vram->bo);
@@ -977,6 +1022,10 @@ void m9x_faa_fini(struct m9x_device *mdev)
 			if (drm_mm_node_allocated(&r->draw_owner[i].system_node))
 				m9x_address_unmap_system(mdev,
 						 &r->draw_owner[i].system_node);
+ if (r->depth_storage)
+  for(i=0;i<M9_FAA_DEPTH_OWNERS;i++)
+   if(drm_mm_node_allocated(&r->depth_storage->owner[i].system_node))
+    m9x_address_unmap_system(mdev,&r->depth_storage->owner[i].system_node);
 #endif
 		mutex_unlock(&mdev->transport.lock);
 		if (m9_faa_release(mdev, r))
@@ -6525,6 +6574,130 @@ out:
  if(ret&&*posted){t->wedged=true;t->generation++;WARN_ON(t->quarantined_fence);t->quarantined_fence=fence;fence=NULL;}
  else if(fence)dma_fence_signal(&fence->base);if(fence)dma_fence_put(&fence->base);
  m9x_faa_graph_binding_put(checked);mutex_unlock(&t->lock);return ret;
+#else
+ return -EOPNOTSUPP;
+#endif
+}
+
+/* Native attachment ownership for the source SETRENDERTARGET association.
+ * Callers hold their graph file mutex and drm_dev_enter across preparation.
+ * There is deliberately no ioctl activation or clear packet here until the
+ * bound-depth encoder qualifies its descriptors and mapping policy. */
+int m9x_faa_graph_bound_depth_prepare(struct m9x_device *mdev,
+ struct m9_faa_graph_binding *binding,u32 generation,u64 previous_unlock_point,
+ u32 color_policy)
+{
+#ifdef M9_FAA_GRAPH_INIT_CONTROL
+ static const struct m9_faa_owner_spec spec[M9_FAA_DEPTH_OWNERS]={
+  {0,0x50000,false,false,false,0},
+  {0,0x8000,true,false,false,0},
+  {0,0x98000,true,false,false,0},
+ };
+ static const struct m9x_faa_depth_view shape[M9_FAA_DEPTH_OWNERS]={
+  {0,0x50000,0x50000,320,240,4,0x7c},
+  {0,0x3000,0x8000,40,60,5,0x78},
+  {0,0x97000,0x98000,320,240,4,0x3d},
+ };
+ struct m9x_transport *t=&mdev->transport;
+ struct m9_faa_graph_binding *checked=NULL;
+ struct m9_faa_depth_storage *n;
+ struct m9x_faa_replay *r;
+ u32 i;int ret;
+
+ /* The original color31 MDL is flags30: its compact PTE policy is B.
+  * Ordinary SYSTEM policy A is intentionally not admitted for this role. */
+ if(!binding||color_policy!=M9_FAA_DEPTH_COLOR_SYSTEM_B)return -EINVAL;
+ n=kzalloc(sizeof(*n),GFP_KERNEL);if(!n)return -ENOMEM;
+ n->generation=generation;n->previous_unlock_point=previous_unlock_point;
+ n->views.color_policy=color_policy;
+ n->views.depth_aux_role=M9_FAA_DEPTH_HZ;n->views.aux_depth_role=M9_FAA_BOUND_DEPTH;
+ memcpy(n->views.owner,shape,sizeof(shape));
+ mutex_lock(&t->lock);
+ ret=m9x_faa_graph_color_unlocked_get_locked(mdev,generation,previous_unlock_point,&checked);
+ if(ret)goto unclaimed;
+ r=t->faa;
+ if(checked!=binding){ret=-ESTALE;goto unclaimed;}
+ if(r->depth_storage){ret=-EALREADY;goto unclaimed;}
+ /* Claim the lifetime before allocation. The ready flag prevents consumers
+  * from observing partly constructed owners. No other graph operation can
+  * steal this bundle; even failed preparation is kept until DMA shutdown. */
+ r->depth_storage=n;
+ mutex_unlock(&t->lock);
+ m9x_faa_graph_binding_put(checked);checked=NULL;
+ for(i=0;i<M9_FAA_DEPTH_OWNERS;i++){
+  ret=m9_faa_allocate(mdev,&n->owner[i],&spec[i],false);
+  if(ret)return ret;
+ }
+ /* TTM allocation/reservation above is outside TRANSPORT and the six
+  * borrowed BO reservations. Address publication is under TRANSPORT only. */
+ mutex_lock(&t->lock);
+ ret=m9x_faa_graph_color_unlocked_get_locked(mdev,generation,previous_unlock_point,&checked);
+ if(ret)goto retained;
+ r=t->faa;
+ if(checked!=binding||r->depth_storage!=n){ret=-ESTALE;goto retained;}
+ if(color_policy==M9_FAA_DEPTH_COLOR_SYSTEM_B){
+  ret=m9_faa_dma_prepare_wc(mdev,&n->owner[M9_FAA_BOUND_COLOR]);
+  if(ret)goto retained;
+ }
+ ret=color_policy==M9_FAA_DEPTH_COLOR_SYSTEM_B?
+  m9x_address_map_faa_system(mdev,&n->owner[0].system_node,n->owner[0].dma,0x50000):
+  m9x_address_map_system(mdev,&n->owner[0].system_node,n->owner[0].dma,0x50000);
+ if(ret)goto retained;
+ n->owner[0].base=n->owner[0].system_node.start;
+ for(i=M9_FAA_DEPTH_HZ;i<M9_FAA_DEPTH_OWNERS;i++){
+  ret=m9x_address_local_prepare(mdev,n->owner[i].base,n->owner[i].bytes);
+  if(ret)goto retained;
+ }
+ for(i=0;i<M9_FAA_DEPTH_OWNERS;i++)n->views.owner[i].base=n->owner[i].base;
+ n->ready=true;
+retained:
+ m9x_faa_graph_binding_put(checked);
+ mutex_unlock(&t->lock);
+ return ret;
+unclaimed:
+ m9x_faa_graph_binding_put(checked);mutex_unlock(&t->lock);kfree(n);return ret;
+#else
+ return -EOPNOTSUPP;
+#endif
+}
+
+int m9x_faa_graph_bound_depth_views_locked(struct m9x_device *mdev,
+ struct m9_faa_graph_binding *binding,u32 generation,struct m9x_faa_depth_views *views)
+{
+#ifdef M9_FAA_GRAPH_INIT_CONTROL
+ struct m9x_transport *t=&mdev->transport;struct m9x_faa_replay *r=t->faa;
+ struct m9_faa_depth_storage *n;u32 i,page,pte;int ret;
+ lockdep_assert_held(&t->lock);
+ if(!views||!binding)return -EINVAL;
+ memset(views,0,sizeof(*views));
+ if(t->wedged)return -EIO;
+ if(!r||r->graph_binding!=binding||r->graph_generation!=generation||t->generation!=generation||
+  !r->depth_storage||!r->depth_storage->ready)return -ESTALE;
+ n=r->depth_storage;
+ if(n->generation!=generation||n->views.color_policy!=M9_FAA_DEPTH_COLOR_SYSTEM_B||
+  n->views.depth_aux_role!=M9_FAA_DEPTH_HZ||
+  n->views.aux_depth_role!=M9_FAA_BOUND_DEPTH)return -ESTALE;
+ for(i=0;i<M9_FAA_DEPTH_OWNERS;i++){
+  struct m9_faa_owner *o=&n->owner[i];
+  const struct m9x_faa_depth_view *v=&n->views.owner[i];
+  if(v->base!=o->base||v->capacity_bytes!=o->bytes||!v->logical_bytes||
+   v->logical_bytes>o->bytes||!IS_ALIGNED(o->base,PAGE_SIZE)||
+   (u64)o->base+o->bytes>U32_MAX)return -ESTALE;
+  if(i==M9_FAA_BOUND_COLOR){
+   if(o->vram||!o->cpu||!drm_mm_node_allocated(&o->system_node)||
+    o->system_node.start!=o->base||o->system_node.size!=o->bytes||
+    o->cpu_wc!=(n->views.color_policy==M9_FAA_DEPTH_COLOR_SYSTEM_B))return -ESTALE;
+   for(page=0;page<o->bytes/PAGE_SIZE;page++){
+    ret=m9x_address_read_pte(mdev,o->base+page*PAGE_SIZE,&pte);if(ret)return ret;
+    if(pte!=(m9x_address_pte_word(o->dma+page*PAGE_SIZE)|
+     (n->views.color_policy==M9_FAA_DEPTH_COLOR_SYSTEM_B?1u:0u)))return -ESTALE;
+   }
+  }else{
+   if(!o->vram||o->cpu||iosys_map_is_null(&o->map))return -ESTALE;
+   ret=m9x_address_check_local_identity(mdev,o->base,o->bytes);if(ret)return ret;
+  }
+ }
+ *views=n->views;return 0;
 #else
  return -EOPNOTSUPP;
 #endif

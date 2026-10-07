@@ -661,6 +661,9 @@ static inline void m9x_write8(struct m9x_device *mdev, u32 reg, u8 value)
 	writeb(value, (u8 __iomem *)mdev->mmio + reg);
 }
 
+struct m9x_faa_depth_views;
+int m9x_faa_graph_bound_depth_prepare(struct m9x_device *,struct m9_faa_graph_binding *,u32,u64,u32);
+int m9x_faa_graph_bound_depth_views_locked(struct m9x_device *,struct m9_faa_graph_binding *,u32,struct m9x_faa_depth_views *);
 struct m9x_faa_color_input;
 int m9x_faa_graph_color_prepare(struct m9x_device *, struct m9_faa_graph_binding *,u32,u64,const struct m9x_faa_color_input *);
 int m9x_faa_graph_color_submit(struct m9x_device *,struct m9_faa_graph_binding *,u32,u64,u64 *,bool *);
