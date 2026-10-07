@@ -38,7 +38,9 @@ only a PREPARED token with `init_point=0`. It posts no GPU initialization.
 The [fresh-boot integrated regression](../tests/m9-faa-f022-guard-hardware-20261007/README.md)
 loaded that combined module and again retired `0x180/0x1a0/0x1c0` on M9128
 with byte-identical clean F021 images and `wedged=0`. It validates that the
-new admission code did not regress the private source-order path; it does not
+new admission code did not regress the private source-order path. A subsequent
+same-boot direct F022 probe on another color BO returned `EBUSY` before any
+new post, with all transport fields unchanged except sample time. It does not
 exercise graph PREPARE or establish application FAA.
 
 Kernel `9eed0a9` continues the source-proven primary only after a successful
