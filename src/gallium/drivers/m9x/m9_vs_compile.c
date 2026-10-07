@@ -2705,14 +2705,20 @@ compile_impl(struct ctx *c, nir_function_impl *impl,
    }
    nvar = out.count;
    if (c->sampled_position) {
-      if (nvar != 5 || c->p->texture_count != 2)
-         return fail(c, "sampled position requires two fetches and five streams");
+      if (nvar < 3 || nvar > 5 || c->p->texture_count != 2)
+         return fail(c, "sampled position requires two fetches and three to five streams");
       for (unsigned j = 0; j < nvar; j++) {
+         unsigned components = varying[j]->src[0].ssa->num_components;
          if (out.stream[j].coordinate || out.stream[j].coeff_record ||
              out.stream[j].paired || nir_intrinsic_component(varying[j]) ||
-             nir_intrinsic_write_mask(varying[j]) != 15 ||
-             varying[j]->src[0].ssa->num_components != 4)
-            return fail(c, "sampled position requires five direct vec4 streams");
+             varying[j]->src[0].ssa->bit_size != 32 ||
+             components < 2 || components > 4 ||
+             nir_intrinsic_write_mask(varying[j]) != (1u << components) - 1u)
+            return fail(c, "sampled position requires direct vector streams");
+         /* The existing packed writer publishes a complete 16-byte field:
+          * live lanes retain the shader's values, missing Z/W use (0,1).
+          * GATHER/LAST and the immutable field maps keep that same layout;
+          * varying_components records only the live semantic width. */
       }
       if (nir_intrinsic_component(position) ||
           nir_intrinsic_write_mask(position) != 15 ||
@@ -2834,8 +2840,8 @@ compile_impl(struct ctx *c, nir_function_impl *impl,
       /* Original public sampled-position controls publish two unsampled
        * fields in FIRST, then position and three fields in CONTINUE. Select
        * that partition from live requested roots, never source field numbers. */
-      nir_intrinsic_instr *first[2], *continuation[4] = { position };
-      struct m9_vs_output first_out[2], continuation_out[4] = {{0}};
+      nir_intrinsic_instr *first[2] = {0}, *continuation[4] = { position };
+      struct m9_vs_output first_out[2] = {{0}}, continuation_out[4] = {{0}};
       unsigned chosen = 0, remaining = 1;
       bool selected[M9_VS_MAX_VARYINGS] = {0};
       head_dependencies(c, block, final, position, NULL, NULL, 0);
@@ -2856,6 +2862,14 @@ compile_impl(struct ctx *c, nir_function_impl *impl,
             selected[j] = true;
          }
       }
+      /* Linker-packed vec2/vec3 outputs may occupy only three or four
+       * physical streams. Preserve the measured two FIRST + four CONTINUE
+       * targets and six-field record. An unused field is explicitly written
+       * by write_stream's existing (0,0,0,1) path, never an opaque input or
+       * an alias of another field. Five-stream programs stay exact. */
+      unsigned padding = nvar + 1;
+      while (chosen < 2 && padding < 6)
+         c->p->producer_fields[chosen++] = padding++;
       if (chosen != 2)
          return fail(c, "sampled position needs two unsampled requested streams");
       c->p->extra_fields[0] = 0;
@@ -2866,6 +2880,8 @@ compile_impl(struct ctx *c, nir_function_impl *impl,
          continuation_out[remaining] = out.stream[j];
          c->p->extra_fields[remaining++] = j + 1;
       }
+      while (remaining < 4 && padding < 6)
+         c->p->extra_fields[remaining++] = padding++;
       assert(remaining == 4);
       c->p->sampled_position = true;
       c->unsampled_stage = true;
@@ -2890,7 +2906,8 @@ compile_impl(struct ctx *c, nir_function_impl *impl,
                         out.stream + M9_VS_FUSED_VARYINGS,
                         M9_VS_FUSED_VARYINGS, nvar - M9_VS_FUSED_VARYINGS, false))
          return false;
-      compile_gather(c->p, nvar - M9_VS_FUSED_VARYINGS);
+      compile_gather(c->p, c->sampled_position ? M9_VS_EXTRA_VARYINGS :
+                                               nvar - M9_VS_FUSED_VARYINGS);
       /* The final draw reads the packed position and first two streams
        * through routes 0..2. Preserve route 0's ZW before replacing r02
        * with varying 0's XY. The epilogue consumes the ordinary register

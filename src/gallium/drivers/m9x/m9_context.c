@@ -6260,6 +6260,12 @@ m9_native_vs_records(struct m9_context *ctx, const struct m9_job_key *key,
 static unsigned
 m9_native_vs_extra_targets(const struct m9_vs_program *p)
 {
+   /* Sampled-position always owns the source-qualified six-field record,
+    * including explicit default fields when the live linker packs fewer
+    * streams. GATHER publishes three views; unused views are not FS inputs. */
+   if (p->sampled_position)
+      return p->outputs.count >= 3 && p->outputs.count <= M9_VS_MAX_VARYINGS ?
+             M9_VS_EXTRA_VARYINGS : 0;
    return p->outputs.count > M9_VS_FUSED_VARYINGS ?
           p->outputs.count - M9_VS_FUSED_VARYINGS : 0;
 }
