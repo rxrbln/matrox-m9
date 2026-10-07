@@ -63,3 +63,42 @@ so no additional insertion, hidden state difference or changed instruction
 vector is silently discarded. Captured addresses are source identity evidence
 only. Hardware flat/provoking/cull pixel proof and application shader admission
 remain separate from this complete source transition.
+
+## Upstream CPU producer closure
+
+`tests/m9-faa-first-raster-metadata-20261008/check.py` now closes the previously
+separate upstream joins with passive original HEAP scalar-write histories.
+Both new whole source runs preserve the matrix's exact primary, secondary,
+program copies, constants and every MDL CPU write. Final CPU read sites are
+joined to their actual secondary destination, rather than selected by value.
+
+* Program state at2276 follows original17f040. Its low16 bits are
+  `(compiler+397 >> 8) & ~context+58c & ffff` (17f04f..17f06f).
+  Bit80000 is `(compiler+397 >> 6) & 80000` (17f1d2..17f1ea).
+  Remaining output masks are derived from compiler+14/+1c; originalf98bf
+  sets the mode field to100000 andf98ce clears low2. The observed compiler
+  words are smooth839ff008 andflat80fff002, exclusion0. This yields low
+  9ff0 versusfff0 and the paired state01189ff0 versus0110fff0. These are
+  compiler/output-use metadata, not a captured allocation pointer or a
+  consequence of fragment program byte length alone.
+* Shader EF20000 is `(rewritten compiler+397 >> 7) & 20000` at
+  1815cd..1815e8. Observed rewritten words are smooth039ff000 andflat00fff000.
+  Program-shadow+e4 therefore contributes18020000 versus18000000. The
+  source mergerfaee7/faefc/faf14/faf2c starts at0 and ORs AA+b8,
+  program+e4 and texture+80. AA c0004055 and texture0 match in both runs;
+  final EF isd8024055 versusd8004055. Native lowering should use its actual
+  shader's source-qualified usage mode, not call20000 an allocation bit.
+* Varying-word bit31 is emitted at13a83d from
+  `local compiler flag != 0 || (source IR record DWORD0 & 1) != 0`.
+  Original13a7ef..13a83d preserves the low31 encoded bits and replaces bit31.
+  The compiler flag is0 in both runs. Smooth COLOR/TEX records begin3b10/2d6c;
+  flat records begin3b11/2d6d. Those bit0 differences give the flat
+  80100d88/801006b6 words at2616/2620. The source IR records and exact CPU
+  destination are retained, so the high bits cannot be mistaken for addresses.
+
+The native implementation can now bind the bounded flat32 fragment program,
+flat utility constants and typed flat input/interpolation mode together.
+General live fragment-register allocation remains outside this bounded proof.
+Changing only Gallium's flat flag on an unchanged smooth fragment program is
+still not the original producer contract. No hardware flat pixels or provoking
+vertex convention are established by these CPU traces.
