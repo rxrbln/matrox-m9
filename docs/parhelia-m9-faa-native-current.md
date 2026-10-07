@@ -45,9 +45,18 @@ and derives their live VRAM addresses; it has not been hardware-exercised.
 The [fresh first-context source INIT plan](../tests/m9-faa-graph-init-source-20261007/README.md)
 has 4,880 primary bytes and natural target `0xb0`; it borrows the six graph
 roles and retains separate private owners. Strict regeneration, refusal and
-native encoder checks pass. It is a source plan, not a GPU INIT receipt. The
-next required step is executable INIT using live addresses, followed by an
-actual retirement receipt. PREPARE leaves the graph uninitialized.
+native encoder checks pass. Kernel `f8db007` turned the plan into an executable
+first-context graph INIT; its first hardware attempt exposed ordinary MMU
+layout selection and refused before a GPU post. Kernel `c3873e8` selected the
+source FAA secondary-root layout for the graph profile. The
+[locked M9128 hardware round trip](../tests/m9-faa-graph-init-hardware-20261007/README.md)
+then retired actual point `0xb0` with a live six-owner graph, 28 retained
+context owners, and no wedge. A subsequent same-boot run with the bounded
+receipt helper `5d34a125` returned graph state `INITIALIZED`/point `0xb0` and
+independent `WAIT_POINT` completion `0xb0`. Both immediate and two-second
+transport samples show raw `0xb1`, submitted/completed `0xb0`, queue 0 and
+`wedged=0`. PREPARE still leaves the graph uninitialized. This is real graph
+INIT, not an FAA draw, resolve, display image or application result.
 
 Kernel `e933dad` guards the direct F022 diagnostic aperture path after the
 source-qualified normal-Lock replay starts; its actual-C tests cover three
