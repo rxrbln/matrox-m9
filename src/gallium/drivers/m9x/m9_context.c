@@ -7964,12 +7964,28 @@ m9_clear(struct pipe_context *pctx, unsigned buffers,
    if (m9_faa_application_enabled() && buffers) {
       ctx->faa_application_clear.pending = true;
       ctx->faa_application_clear.buffers |= buffers;
-      ctx->faa_application_clear.color_mask = color_clear_mask;
-      ctx->faa_application_clear.stencil_mask = stencil_clear_mask;
-      if (color) ctx->faa_application_clear.color = *color;
-      ctx->faa_application_clear.depth = depth;
-      ctx->faa_application_clear.stencil = stencil;
-      ctx->faa_application_clear.scissored = scissor != NULL;
+      /* Color and depth clears can arrive separately. Arguments for an
+       * attachment absent from buffers are not part of this request. Merge
+       * component masks so a later masked color clear retains earlier
+       * component values, just as sequential full-surface clears do. */
+      if (buffers & PIPE_CLEAR_COLOR) {
+         ctx->faa_application_clear.color_mask |= color_clear_mask;
+         if (color)
+            for (unsigned i = 0; i < 4; i++)
+               if (color_clear_mask & (1u << i))
+                  ctx->faa_application_clear.color.ui[i] = color->ui[i];
+      }
+      if (buffers & PIPE_CLEAR_DEPTH)
+         ctx->faa_application_clear.depth = depth;
+      if (buffers & PIPE_CLEAR_STENCIL) {
+         ctx->faa_application_clear.stencil_mask |= stencil_clear_mask;
+         ctx->faa_application_clear.stencil =
+            (ctx->faa_application_clear.stencil & ~stencil_clear_mask) |
+            (stencil & stencil_clear_mask);
+      }
+      /* The bounded native clear is full-surface only. An unrelated later
+       * clear must not erase a pending scissored operation's refusal. */
+      ctx->faa_application_clear.scissored |= scissor != NULL;
       if (scissor) ctx->faa_application_clear.scissor = *scissor;
    }
    if (m9_faa_application_enabled()) {
