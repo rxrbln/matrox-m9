@@ -28,6 +28,7 @@
 #include "m9_fs_compile.h"
 #include "m9_specialise.h"
 #include "m9_internal.h"
+#include "m9_indirect.h"
 #include "m9_vs_texture.h"
 #include "m9_weld.h"
 #include "m9_vs_source.h"
@@ -7037,6 +7038,85 @@ m9_draw_vbo(struct pipe_context *pctx, const struct pipe_draw_info *info,
             const struct pipe_draw_start_count_bias *draws,
             unsigned num_draws);
 
+/* Snapshot live indirect arguments before invoking the ordinary direct path.
+ * Its CPU and native vertex producers then retain their existing behavior.
+ * pipe_buffer_map_range performs the same resource synchronization as any
+ * application read map; no captured command or address is replayed. */
+static bool
+m9_draw_indirect(struct pipe_context *pctx, const struct pipe_draw_info *info,
+                 unsigned drawid_offset,
+                 const struct pipe_draw_indirect_info *indirect)
+{
+   struct m9_indirect_args *args = NULL;
+   struct pipe_transfer *transfer = NULL;
+   const uint8_t *map;
+   uint32_t count = indirect->draw_count, span, stride;
+
+   if (!indirect->buffer ||
+       indirect->buffer->target != PIPE_BUFFER ||
+       indirect->count_from_stream_output)
+      return false;
+   if (indirect->indirect_draw_count) {
+      struct pipe_resource *res = indirect->indirect_draw_count;
+      struct pipe_transfer *ct = NULL;
+      const uint8_t *cm;
+      uint32_t live_count;
+
+      if (res->target != PIPE_BUFFER ||
+          (indirect->indirect_draw_count_offset & 3) ||
+          indirect->indirect_draw_count_offset > res->width0 ||
+          res->width0 - indirect->indirect_draw_count_offset < 4)
+         return false;
+      cm = pipe_buffer_map_range(pctx, res,
+                                 indirect->indirect_draw_count_offset,
+                                 4, PIPE_MAP_READ, &ct);
+      if (!cm)
+         return false;
+      memcpy(&live_count, cm, 4);
+      pipe_buffer_unmap(pctx, ct);
+      count = MIN2(count, live_count);
+   }
+   if (!m9_indirect_span(indirect->buffer->width0, indirect->offset,
+                         indirect->stride, count, info->index_size != 0,
+                         &span))
+      return false;
+   if (!count)
+      return true;
+   if ((uint64_t)count * sizeof(*args) > SIZE_MAX)
+      return false;
+   args = MALLOC((size_t)count * sizeof(*args));
+   if (!args)
+      return false;
+   map = pipe_buffer_map_range(pctx, indirect->buffer, indirect->offset,
+                               span, PIPE_MAP_READ, &transfer);
+   if (!map) {
+      FREE(args);
+      return false;
+   }
+   stride = indirect->stride ? indirect->stride : info->index_size ? 20 : 16;
+   for (uint32_t i = 0; i < count; i++)
+      m9_indirect_decode(map + (size_t)i * stride, info->index_size != 0,
+                         &args[i]);
+   pipe_buffer_unmap(pctx, transfer);
+
+   for (uint32_t i = 0; i < count; i++) {
+      struct pipe_draw_info direct = *info;
+      struct pipe_draw_start_count_bias draw = {
+         .start = args[i].start,
+         .count = args[i].count,
+         .index_bias = args[i].index_bias,
+      };
+
+      direct.instance_count = args[i].instance_count;
+      direct.start_instance = args[i].start_instance;
+      m9_draw_vbo(pctx, &direct,
+                  drawid_offset + (info->increment_draw_id ? i : 0),
+                  NULL, &draw, 1);
+   }
+   FREE(args);
+   return true;
+}
+
 /*
  * The blend tail reads the destination of colour target 0 alone; where the
  * other targets' destinations reach the program is not captured.  A draw
@@ -7120,8 +7200,16 @@ m9_draw_vbo(struct pipe_context *pctx, const struct pipe_draw_info *info,
    /* A job held for the scratch path reaches the engine before this draw,
     * which was recorded after it. */
    m9_deferred_run(ctx);
+   if (indirect) {
+      if (num_draws && !m9_draw_indirect(pctx, info, drawid_offset, indirect)) {
+         m9_skip_reason(ctx, "indirect draw arguments are invalid or "
+                             "unavailable; skipped");
+         ctx->skipped_draws++;
+      }
+      return;
+   }
    if (num_draws > 1) {
-      util_draw_multi(pctx, info, drawid_offset, indirect, draws, num_draws);
+      util_draw_multi(pctx, info, drawid_offset, NULL, draws, num_draws);
       return;
    }
    /* A discarded fragment updates nothing -- colour, depth, stencil or the
@@ -7174,11 +7262,10 @@ m9_draw_vbo(struct pipe_context *pctx, const struct pipe_draw_info *info,
               ctx->submitted_draws, ctx->skipped_draws);
       m9_skip_report(ctx);
    }
-   if (!num_draws || indirect || !draws[0].count || !info->instance_count ||
+   if (!num_draws || !draws[0].count || !info->instance_count ||
        ctx->lost || !ctx->params_valid) {
       m9_skip_reason(ctx, !num_draws || !draws[0].count ||
                      !info->instance_count ? "the draw is empty; skipped" :
-                     indirect ? "indirect draws are not implemented; skipped" :
                      ctx->lost ? "the context is lost; draw skipped" :
                      "no valid raster parameters; draw skipped");
       ctx->skipped_draws++;
