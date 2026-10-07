@@ -159,7 +159,14 @@ static bool m9_faa_source_init;
 module_param(m9_faa_source_init, bool, 0400);
 MODULE_PARM_DESC(m9_faa_source_init,
 	"Let the private M9128 Windows FAA stream initialize a fresh context without Linux sequence0");
+#ifdef M9_FAA_PRECLEAR_OUTPUT_WRITE_CONTROL
+/* Same-module hardware control: collapsing these waits leaves main/AA
+ * stores untouched; preserving them produces GPU state. Resolve is still
+ * unqualified. Keep the opt-out for this bounded ordering control. */
+static bool m9_faa_phased_submit = true;
+#else
 static bool m9_faa_phased_submit;
+#endif
 module_param(m9_faa_phased_submit, bool, 0400);
 MODULE_PARM_DESC(m9_faa_phased_submit,
 	"Wait at source c0/120/160/180 boundaries in the private complete-output diagnostic");
