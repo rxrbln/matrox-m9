@@ -288,6 +288,9 @@ enum drm_parhelia_m9_reloc_kind {
  */
 #define PARHELIA_M9_DEPENDENCY_LIMIT	0x400u
 #define PARHELIA_M9_RANGE_BREAK		0x4545452cu
+/* Only SUBMIT_AGGREGATE admits this zero-valued complete-job boundary. */
+#define PARHELIA_M9_JOB_BREAK		0x4545452du
+#define PARHELIA_M9_AGGREGATE_MAX_JOBS	4u
 
 struct drm_parhelia_m9_reloc {
 	__u32 command_dword;
@@ -310,6 +313,9 @@ struct drm_parhelia_m9_reloc {
 /* Private reverse conversion after a retired normal Unlock. The caller
  * must use the same retained color handle and read F021 only after return. */
 #define PARHELIA_M9_SUBMIT_FAA_RELOCK		(1u << 5)
+/* Default-off kernel admission; PROGRAM_NONE, 2..4 complete jobs. An empty
+ * VALIDATE_ONLY|AGGREGATE request probes admission without posting. */
+#define PARHELIA_M9_SUBMIT_AGGREGATE		(1u << 6)
 
 enum drm_parhelia_m9_program_type {
 	PARHELIA_M9_PROGRAM_NONE,

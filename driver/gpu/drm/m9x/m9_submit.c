@@ -21,6 +21,12 @@ static bool m9_async_submit = true;
 module_param_named(async_submit, m9_async_submit, bool, 0644);
 MODULE_PARM_DESC(async_submit, "retire a job at the next submission");
 
+/* Qualified only after an explicit aggregate pixel test; ordinary submits
+ * and older userspace keep their existing path. */
+static bool m9_aggregate_submit;
+module_param_named(aggregate_submit, m9_aggregate_submit, bool, 0400);
+MODULE_PARM_DESC(aggregate_submit, "admit bounded complete-job aggregation");
+
 #define M9_TRIANGLE_COLOR_BYTES	0x00050000u
 
 /* Dynamic debug is not built on this target, so name the refusing check
@@ -860,8 +866,8 @@ static int m9_submit_scratch_init(struct m9_submit_scratch *scratch,
 	    reloc_count > PARHELIA_M9_MAX_RELOCS || reloc_count > dwords)
 		return -EINVAL;
 	shared_bytes = max_t(size_t, dwords * sizeof(*scratch->by_dword),
-				 2 * dwords * sizeof(*scratch->framed));
-	access_words = max_t(size_t, bo_count, dwords / 2 + 1);
+				 (2 * dwords + 44) * sizeof(*scratch->framed));
+	access_words = max_t(size_t, bo_count, dwords / 2 + 5);
 #define M9_SCRATCH_REGION(field, count, type) do { \
 	ret = m9_scratch_reserve(&total, count, sizeof(type), \
 				 __alignof__(type), &field); \
@@ -1146,6 +1152,59 @@ static u32 *m9_frame_records(const u32 *image, const u32 *expected, u32 dwords,
  * objects would be handed to that job or released while this one still reads
  * them.
  */
+#include "m9_submit_aggregate.h"
+
+/* Recognize markers only at top-level packet boundaries. Parse each job
+ * independently, then retain global relocation indices and the BO access
+ * union. No query or fixed-inline-program state crosses a complete job. */
+static int
+m9_parse_aggregate(u32 *image, u32 dwords, u32 *expected,
+                   struct m9_complete_job *jobs, u32 *count)
+{
+ u32 at = 0, start = 0, n = 0;
+ while (at < dwords) {
+  u32 header = image[at], family;
+  unsigned values = 0;
+  if (header == PARHELIA_M9_JOB_BREAK) {
+   int ret;
+   if (dwords - at < 2 || image[at + 1] || at == start ||
+       n >= M9_COMPLETE_MAX_JOBS - 1)
+    return -EINVAL;
+   jobs[n++] = (struct m9_complete_job){image + start, expected + start, at - start};
+   ret = m9_parse_commands(image + start, at - start, expected + start,
+                           PARHELIA_M9_PROGRAM_NONE);
+   if (ret) return ret;
+   image[at] = PARHELIA_M9_RANGE_BREAK;
+   at += 2; start = at; continue;
+  }
+  if (header == 0x45454524) return -EOPNOTSUPP;
+  if (header == 0x45454545) { at++; continue; }
+  if (header == PARHELIA_M9_RANGE_BREAK) {
+   if (dwords - at < 2 || image[at + 1]) return -EINVAL;
+   at += 2; continue;
+  }
+  if (m9_draw_header(header, &family)) {
+   if (dwords - at < 3) return -EINVAL;
+   at += 3; continue;
+  }
+  while (values < 4 && ((header >> (8 * values)) & 255) != 0x45) {
+   if (((header >> (8 * values)) & 255) == 0x1e) return -EOPNOTSUPP;
+   values++;
+  }
+  if (!values || dwords - at < values + 1) return -EINVAL;
+  at += values + 1;
+ }
+ if (start == dwords || !n) return -EINVAL;
+ jobs[n++] = (struct m9_complete_job){image + start, expected + start, dwords - start};
+ {
+  int ret = m9_parse_commands(image + start, dwords - start, expected + start,
+                             PARHELIA_M9_PROGRAM_NONE);
+  if (ret) return ret;
+ }
+ *count = n;
+ return 0;
+}
+
 static int m9_wait_foreign_fences(struct m9x_device *mdev,
 				struct drm_gem_object **bos,
 				const struct drm_parhelia_m9_bo_ref *refs, u32 count)
@@ -1184,7 +1243,8 @@ static int m9_submit_execute(struct m9x_device *mdev, const u32 *image,
 			     bool async, bool queued, struct drm_gem_object ***bos,
 			     bool **pinned,
 			     const struct drm_parhelia_m9_bo_ref *refs, u32 count,
-			     const struct m9_submit_scratch *scratch)
+			     const struct m9_submit_scratch *scratch,
+                             const struct m9_complete_job *jobs, u32 job_count)
 {
 	struct drm_exec exec;
 	struct m9x_fence *fence = NULL;
@@ -1231,11 +1291,23 @@ static int m9_submit_execute(struct m9x_device *mdev, const u32 *image,
 	if (ret)
 		goto out_unlock;
 	target = mdev->transport.next_fence;
-	framed = m9_frame_records(image, expected, dwords, target,
+	if (job_count) {
+		ret = m9_complete_frame(jobs, job_count, target,
+			lower_32_bits(mdev->transport.fence_bus), scratch->framed,
+			2 * dwords + 44, range_ends, dwords / 2 + 5,
+			&framed_dwords, &ranges, &final);
+		if (ret) goto out_unlock;
+		/* The existing posting helper adds exactly this last footer. */
+		framed_dwords -= M9_COMPLETE_FOOTER_WORDS;
+		ranges--;
+		framed = scratch->framed;
+	} else {
+		framed = m9_frame_records(image, expected, dwords, target,
 				  &framed_dwords, range_ends, &ranges,
 				  &max_token, scratch->framed);
-	/* The completion target follows every userspace dependency token. */
-	final = target + max_token + 0x10;
+		/* The completion target follows every userspace dependency token. */
+		final = target + max_token + 0x10;
+	}
 	issued = ((u64)(mdev->transport.fence_epoch +
 			 (final < mdev->transport.last_fence)) << 32) | final;
 	fence = m9x_fence_create_target_locked(mdev, final);
@@ -1317,6 +1389,8 @@ static int m9_submit_validate(struct m9x_device *mdev,
 			      struct drm_parhelia_m9_submit *args, bool execute)
 {
 	struct m9_submit_scratch scratch = {};
+	struct m9_complete_job jobs[M9_COMPLETE_MAX_JOBS] = {};
+	u32 job_count = 0;
 	struct drm_parhelia_m9_reloc *relocs = NULL;
 	struct drm_parhelia_m9_bo_ref *refs = NULL;
 	struct drm_gem_object **bos = NULL;
@@ -1374,7 +1448,11 @@ static int m9_submit_validate(struct m9x_device *mdev,
 	}
 	if (execute)
 		for (i = 0; i < args->relocation_count; i++)
-			if (!m9_reloc_executable(relocs[i].kind)) {
+			if (!m9_reloc_executable(relocs[i].kind) ||
+			    ((args->flags & PARHELIA_M9_SUBMIT_AGGREGATE) &&
+			     (relocs[i].kind == PARHELIA_M9_RELOC_QUERY ||
+			      relocs[i].kind == PARHELIA_M9_RELOC_FRAGMENT ||
+			      relocs[i].kind == PARHELIA_M9_RELOC_FAA_POOL))) {
 				ret = m9_refuse(-EOPNOTSUPP);
 				goto out;
 			}
@@ -1435,7 +1513,10 @@ static int m9_submit_validate(struct m9x_device *mdev,
 		ret = m9_refuse(-EINVAL);
 		goto out;
 	}
-	ret = m9_parse_commands(image, dwords, expected, args->program_type);
+	if (args->flags & PARHELIA_M9_SUBMIT_AGGREGATE)
+		ret = m9_parse_aggregate(image, dwords, expected, jobs, &job_count);
+	else
+		ret = m9_parse_commands(image, dwords, expected, args->program_type);
 	if (!ret)
 		ret = m9_validate_relocs(image, dwords, expected, relocs,
 					 args->relocation_count, bos, mdev, refs,
@@ -1453,7 +1534,7 @@ static int m9_submit_validate(struct m9x_device *mdev,
 					!mdev->transport.wedged,
 					args->flags & PARHELIA_M9_SUBMIT_QUEUED,
 					&bos, &vram_pinned, refs, args->bo_count,
-					&scratch);
+					&scratch, jobs, job_count);
 out:
 	if (vram_pinned)
 		for (i = 0; i < args->bo_count; i++)
@@ -1485,8 +1566,29 @@ static int m9_submit_ioctl(struct drm_device *drm, void *data,
 		      PARHELIA_M9_SUBMIT_FIRST_TRIANGLE |
 		      PARHELIA_M9_SUBMIT_QUEUED |
 		      PARHELIA_M9_SUBMIT_FAA_UNLOCK |
-		      PARHELIA_M9_SUBMIT_FAA_RELOCK))
+		      PARHELIA_M9_SUBMIT_FAA_RELOCK |
+		      PARHELIA_M9_SUBMIT_AGGREGATE))
 		return m9_refuse(-EINVAL);
+	if (flags & PARHELIA_M9_SUBMIT_AGGREGATE) {
+		u32 allowed = PARHELIA_M9_SUBMIT_AGGREGATE |
+			PARHELIA_M9_SUBMIT_QUEUED | PARHELIA_M9_SUBMIT_VALIDATE_ONLY;
+		if (!m9_aggregate_submit || flags & ~allowed ||
+		    args->program_type != PARHELIA_M9_PROGRAM_NONE ||
+		    m9x_faa_diag_enabled())
+			return -EOPNOTSUPP;
+		if (flags == (PARHELIA_M9_SUBMIT_VALIDATE_ONLY |
+			      PARHELIA_M9_SUBMIT_AGGREGATE) &&
+		    !args->command_handle && !args->command_offset &&
+		    !args->command_length && !args->relocation_count &&
+		    !args->relocations_ptr && !args->bo_count && !args->bos_ptr)
+			return 0;
+		if (!(flags & PARHELIA_M9_SUBMIT_VALIDATE_ONLY) && !m9_user_submit)
+			return -EOPNOTSUPP;
+		if ((flags & PARHELIA_M9_SUBMIT_QUEUED) && !m9_async_submit)
+			return -EOPNOTSUPP;
+		return m9_submit_validate(mdev, file, args,
+			!(flags & PARHELIA_M9_SUBMIT_VALIDATE_ONLY));
+	}
 	if (flags == PARHELIA_M9_SUBMIT_NOOP_FENCE) {
 		if (args->command_handle || args->command_offset ||
 		    args->command_length || args->relocation_count ||
