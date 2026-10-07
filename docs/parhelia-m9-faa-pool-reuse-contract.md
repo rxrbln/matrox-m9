@@ -72,3 +72,44 @@ blind rewind or fabricated complete rotation. Secondary/code reuse needs its
 own complete producer and live owner joins. Hardware qualification should
 force more than one pool switch and then return correct FAA pixels while the
 same graph token/generation remains retained.
+
+## Complete constructed-queue transition and completion distinction
+
+The [complete rotation proof](../tests/m9-faa-pool-rotation-source-20261008/README)
+now executes original24060 through its real return on a byte-equal reconstructed
+INIT queue, with the authentic INIT receipt and opaque-read guard. The explicit
+allocator call selects unused mapped pool4 after rejecting active pools0..3.
+Four CPU stores append the16-byte link to the old primary; old/new refs change
+1→0/0→1. Original24d60→24530→2461e posts the selected live GPU base as END.
+It emits no new E3 epoch and performs no new allocation or mapping MMIO.
+
+This closes the primary flush missing from the earlier subregion proof. It also
+clarifies its terminology: queue+120/+124 are CPU-published pool points, not
+observed hardware completion. Queue+110/+114 are cached source use/publication
+state; neither full64 comparison substitutes for the preceding resource busy
+queries. Resource55550→4e130 reads actual common lane0; resource555c0→4e250
+reads actual pool lane+20. Original4e203/4e32d update their software wrap caches
+and compare full64 needed points. The earlier synthetic fixture's variable
+names describe supplied CPU test fields, not newly sampled GPU values.
+
+The next original allocator call reaches4e32d needing pool20 and is stopped
+before the load. The prior authentic pool10 does not establish this new point.
+A global Lock/Unlock completion cannot simply be renamed a pool completion.
+A later native ordered E3 point could establish retirement of a preceding pool
+link only with explicit command-order and generation proof.
+
+Native observation uses the already retained PAGE_SIZE coherent
+`transport.fence_cpu` owner and its DMA `fence_bus`; the source pool link's
+physical-tag2 destination derives from `fence_bus+0x20`. The existing FAA
+counter_node is a class1 mapping of the same allocation, not a separate
+completion owner. Read-only debugfs can sample DWORD8/9 as raw20/raw24 under the
+existing device/transport lifetime guard. Raw24 is not asserted to be a GPU
+high-word producer: source high64 tracking uses software wrap state. Such a
+snapshot must never extend either completion domain or release an owner.
+
+The next bounded planner may construct the proven four link words from live
+old/new retained owners, aligned physical pool-counter address and checked
+full64 pool origin. It must preserve old owner references through true observed
+retirement and posted failure quarantine. This does not authorize secondary,
+constant or code rewinds: their original nonzero-mode24b10/24a20 range and
+reference protocol remains distinct.
