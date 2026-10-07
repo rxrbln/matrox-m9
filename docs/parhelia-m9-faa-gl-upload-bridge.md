@@ -1,5 +1,31 @@
 # M9128 generalized GL FAA upload boundary
 
+## October 8: full sampled clear/depth FRAME passes physical M9128
+
+DRM `cf43aa2` completes live first3 Lock190/read/Unlock1b0, then full black
+color/depth-one clear plus LESS/write and changed live6 Lock350/read/Unlock370.
+The single hardware run and cleanup stay generation0/queue0/wedged0.
+The next image passes all checked interior/exterior/channel tests; **exactly
+six pixels differ from the previous failing image, removing all six stale
+old-color edge contributions**. It contains12,302 colored/638 partial pixels
+and9,936 checked interiors. [Hardware receipts, raw data and screenshot](../tests/m9-faa-depth-frame-hardware-20261008/README.md).
+
+The new COLOR attachment prefix derives live page masks and its distinct
+source prologue; the draw suffix derives live shader/CB/geometry and the
+actual retained queue epoch. Flat/CW/CCW packet construction matches six
+complete vendor source controls, but those raster variants have no new
+hardware qualification. Real Mesa directional and positional fixed-function
+lighting uploads also pass the native depth encoder's host tests.
+
+Glxgears FAA is still incomplete. Fresh FIRST clear/depth initialization,
+multiple draws preserving depth before one final presentation, and sustained
+command-pool reuse remain active. Original vendor FIRST now passes the
+finite25270 dependency-query branch without a fabricated completion; its
+normal Lock path is being integrated. Separate source DP2 callers reuse bound
+attachments within a frame without clearing, so application submission must
+preserve that frame lifetime. The older six-stale-pixel results below are
+historical and superseded by this full-clear hardware test.
+
 ## October 7: genuine retained flow executes; same six stale edges remain
 
 DRM `6c3fdd4` replaces the reused first-draw secondary with the actual vendor
