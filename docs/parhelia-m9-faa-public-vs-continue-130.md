@@ -37,9 +37,14 @@ immediates from the exact original M9128 DLL (`mov eax,0x40004000` at
 state cells from the same fixed immediate (PCs `0x1e4d7`, `0x1e6c6`,
 `0x1ea0b`, `0x1ee39`, `0x1f26f`, `0x1f69f`). This proves literal production
 in multiple same-device contexts, but does not alone settle whether the GPU
-register values depend on a fixed reserved mapping. M9148 captures showing
-the same values cannot qualify this M9128 path. The failed first native
-follow probe must not be treated as a 0x130 receipt.
+register values depend on a fixed reserved mapping. The original M9128
+initial manifest actually binds a 64-page flags48 SYSTEM MDL at 0x40002000;
+its third mapped PTE is 0x40004000. The failed native boot also places its
+ordinary system resource at 0x40002000 with enough extent to cover that page.
+That numerical overlap calls for a consumer/role check before treating the
+immediate as universally portable. M9148 captures showing the same values
+cannot qualify this M9128 path. The failed first native follow probe must
+not be treated as a 0x130 receipt.
 
 This is a bounded fixed-input CPU source plan for the retained public VS
 graph. It does not qualify application state, the raster tail, Lock, 0x130
