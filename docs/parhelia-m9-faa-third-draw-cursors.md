@@ -13,14 +13,14 @@ before an unread GPU counter desired 0x260. The third DRAW itself stops at
 the original `0x252b9` read desired 0x2a0. Neither counter nor pixels were
 supplied by the emulator. This trace qualifies CPU-produced prefix structure
 only. The full local source trace SHA-256 is
-`d71a4115182eb0534cc637729dd0e401c5a3486fe7299b72a382faaf8ed949ac`.
+`c4d75b62c9eb07c854eb203866e2c729cb05f3616853c285543f56e7f4a145fd`.
 
 The source writes are contiguous in three retained owners:
 
 | Role | Prior cursor | Third cursor | Bytes now known | Next source cursor |
 | --- | ---: | ---: | ---: | ---: |
-| primary command owner 27 | 12344 | 12344 | 12 | 12356 |
-| secondary command owner 29 | 2748 | 2748 | 652 | 3400 |
+| primary command owner 27 | 12344 | 12344 | 24 | 12368 |
+| secondary command owner 29 | 2748 | 2748 | 668 | 3416 |
 | constants/geometry owner 28 | 544 | 544 | 60 | 624 |
 
 The preceding second DRAW source used secondary `[1372,2040)` (668 bytes)
@@ -31,9 +31,14 @@ tokens from live retained owners and the new Unlock epoch. Source kind 27
 references geometry at 544, an 80-byte advance; other referenced owner
 offsets are unchanged. The first 12 primary bytes form an indirect packet
 whose endpoints reference secondary `[2748,3356)`. The source has written no
-third-DRAW END by the unread 0x2a0 boundary. The omitted 16-byte secondary
-tail and second primary indirect packet of the prior complete DRAW must not
-be treated as already produced or posted in this third DRAW.
+third-DRAW END by the unread 0x2a0 boundary. From that suspended CPU state,
+the genuine independent queue finish writes the final 16 secondary bytes at
+`[3400,3416)`, including the fifth timeline token for 0x2b0, and a second
+12-byte primary indirect packet at `[12356,12368)`. It posts exactly one END
+at source primary cursor 12368 and stops before its own unread 0x2b0 status
+load. The original 0x2a0 DRAW stack remains unresumed. This is the same
+24-byte primary / 668-byte secondary fixed template as the second DRAW,
+regenerated at new live owner cursors and an Unlock epoch of 0x260.
 
 The original DLL's `0x17e480` writes the indirect tuple to the current
 primary pointer and adds 12 to it. At `0x176eaf` it advances the geometry
@@ -48,8 +53,8 @@ the next packet would cross the guard until those behaviors are derived.
 
 The [checker](../tests/m9-faa-next-frame-20261007/check-third-draw-prefix.py)
 compares every fixed source word with the earlier typed second-DRAW template,
-verifies the pinned 0x260 receipt, live fields and cursor changes, and rejects
-ten mutations.
+verifies the pinned 0x260 receipt, live fields, cursor changes, ordered final
+END and two unread GPU boundaries, and rejects fourteen mutations.
 For native use, every owner address, tagged endpoint, geometry input, extent,
 and timeline word must be regenerated from retained live state as required by
 [the capture policy](gpu-capture-replay-policy.md). The source trace's guest
