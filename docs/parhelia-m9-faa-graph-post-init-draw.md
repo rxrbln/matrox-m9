@@ -147,7 +147,11 @@ source primary endpoint 4,980. That 12-byte suffix and its 692-byte retained
 secondary packet belong to the **returning original DRAW**, before normal
 Lock is invoked. The Lock writes 14 relocation fields farther into the CPU
 primary buffer but has **no observed post** before waiting for `0x140`.
-Its vendor index-43 dependency emitter requests `0x140`, while the `0x141`
+The original DRAW enters vendor commit `0xf9b70`, publishes fence `0x140`
+through `0xfadc0`, and then makes the sole observed MMIO post. At both
+publication and post its CPU queue counters read `next=0x130, cached=0x110`.
+The following Lock's index-43 dependency emitter requests that published
+`0x140` fence, while the `0x141`
 completion token is CPU-written at primary offset 5,108, beyond the only
 posted endpoint 4,980. The emulator's queue counters already read
 `next=0x130, cached=0x130` before Lock, then `next=0x150, cached=0x130`
