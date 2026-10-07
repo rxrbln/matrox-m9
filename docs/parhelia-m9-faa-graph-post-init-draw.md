@@ -1,11 +1,13 @@
 # First public draw after retained graph INIT
 
 This separate source control reconstructs the sealed graph INIT exactly, joins
-only its real M9128 completion receipt, then calls public DrawPrimitives2 on the
+its real M9128 completion receipt, then calls public DrawPrimitives2 on the
 same graph and context. CREATEPS54, SETCONST57 and SETPS56 are real public
-commands: pixel shader `MOV oC0,c0`, c0=(1,0,0,1). The original triangle remains
-suspended at its first new 252b9/common00 wait for 0x100. No draw receipt or
-pixels have been supplied. This is not the earlier diagnostic180 flow.
+commands: pixel shader `MOV oC0,c0`, c0=(1,0,0,1). The first preprocessing
+DRAW prefix now has a real `0x110` retirement receipt. The receipt-gated
+continuation returns the original public DRAW; its following normal Lock
+stops at a new unqualified `0x140` wait. No pixels have been supplied. This
+is not the earlier diagnostic180 flow.
 
 The qualified INIT receipt is the confirmed-retirement archive under
 `tests/m9-faa-graph-init-hardware-20261007/`: INIT/independent WAIT_POINT both
@@ -124,3 +126,21 @@ startup wrappers and normal staging/resource selection. Do not insert Lock
 into the suspended DRAW. The later57d90/48c60 path, mapper publication and
 returned formatted view require same-frame dynamic joins; neither a F021
 pixel view nor a normal Lock result is supplied by the present prefix.
+
+## First prefix hardware receipt and next boundary
+
+The exact single-run M9128 archive is
+`tests/m9-faa-graph-post-init-smoke-20261007/hardware-20261007/`. On boot
+`1c02066a-0808-4957-a07b-482672b8f39b`, the live graph INIT retired at
+`0xb0`, then the first DRAW prefix retired at `0x110`/raw `0x111`. The
+source-derived appended primary endpoint was 4,972 bytes after the
+placement-dependent companion-clear delta. Both immediate and +2s snapshots
+reported an empty healthy queue. The offline receipt checker passes.
+
+Using only that new receipt, the preserved original `252b9` caller returned
+EAX1 and its public HRESULT was zero. The genuine wrapper at resource+268
+selected its vtable+14 normal Lock and emitted Lock relocation fields. The
+emulator stopped before reading a new common-buffer deadline at `0x140`;
+that deadline is not covered by the `0x110` receipt. Derive and submit this
+next same-context Lock prefix with retained live owners, then qualify its
+actual retirement before continuing to formatted view or pixel comparison.
