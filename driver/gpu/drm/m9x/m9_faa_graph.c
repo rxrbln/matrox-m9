@@ -784,7 +784,10 @@ int m9x_faa_graph_draw_red_ioctl(struct drm_device *drm, void *data,
 	int idx, ret;
 
 	if (!state || !args->graph_id || !args->init_point ||
-	    (args->flags & ~PARHELIA_M9_FAA_DRAW_WITH_FINISH) ||
+	    (args->flags & ~(PARHELIA_M9_FAA_DRAW_WITH_FINISH |
+			     PARHELIA_M9_FAA_DRAW_WITH_LOCK)) ||
+	    ((args->flags & PARHELIA_M9_FAA_DRAW_WITH_LOCK) &&
+	     !(args->flags & PARHELIA_M9_FAA_DRAW_WITH_FINISH)) ||
 	    args->draw_point || args->state || args->pad)
 		return -EINVAL;
 	if (!drm_dev_enter(drm, &idx))
@@ -805,7 +808,8 @@ int m9x_faa_graph_draw_red_ioctl(struct drm_device *drm, void *data,
 	 * must finish before taking any of the six caller BO reservations. */
 	ret = m9x_faa_graph_draw_prepare(mdev, binding, args->generation,
 					args->init_point,
-					args->flags & PARHELIA_M9_FAA_DRAW_WITH_FINISH);
+					args->flags & PARHELIA_M9_FAA_DRAW_WITH_FINISH,
+					args->flags & PARHELIA_M9_FAA_DRAW_WITH_LOCK);
 	if (ret)
 		goto out_state;
 	drm_exec_init(&exec, DRM_EXEC_INTERRUPTIBLE_WAIT |
@@ -838,11 +842,14 @@ int m9x_faa_graph_draw_red_ioctl(struct drm_device *drm, void *data,
 					 args->init_point, &point, &posted);
 	if (!ret) {
 		if (!point || point != args->init_point +
-		    (args->flags & PARHELIA_M9_FAA_DRAW_WITH_FINISH ? 0x90 : 0x60))
+		    (args->flags & PARHELIA_M9_FAA_DRAW_WITH_LOCK ? 0xc0 :
+		     args->flags & PARHELIA_M9_FAA_DRAW_WITH_FINISH ? 0x90 : 0x60))
 			ret = -EIO;
 		else {
 			args->draw_point = point;
-			args->state = args->flags & PARHELIA_M9_FAA_DRAW_WITH_FINISH ?
+			args->state = args->flags & PARHELIA_M9_FAA_DRAW_WITH_LOCK ?
+				PARHELIA_M9_FAA_LOCK_PREFIX_RETIRED :
+				args->flags & PARHELIA_M9_FAA_DRAW_WITH_FINISH ?
 				PARHELIA_M9_FAA_DRAW_FINISH_RETIRED :
 				PARHELIA_M9_FAA_DRAW_PREFIX_RETIRED;
 		}

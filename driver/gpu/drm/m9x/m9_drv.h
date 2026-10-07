@@ -510,7 +510,7 @@ int m9x_faa_graph_draw_end_locked(struct m9x_device *mdev,
 		u64 init_point, u32 stage, u64 *point, bool *posted);
 int m9x_faa_graph_draw_prepare(struct m9x_device *mdev,
 		struct m9_faa_graph_binding *binding, u32 generation,
-		u64 init_point, bool with_finish);
+		u64 init_point, bool with_finish, bool with_lock);
 int m9x_faa_graph_draw_submit(struct m9x_device *mdev,
 		struct m9_faa_graph_binding *binding, u32 generation,
 		u64 init_point, u64 *point, bool *posted);

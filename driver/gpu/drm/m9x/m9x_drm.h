@@ -59,6 +59,8 @@ enum drm_parhelia_m9_faa_owner_role {
 #define PARHELIA_M9_FAA_DRAW_PREFIX_RETIRED 3u
 #define PARHELIA_M9_FAA_DRAW_FINISH_RETIRED 4u
 #define PARHELIA_M9_FAA_DRAW_WITH_FINISH 1u
+#define PARHELIA_M9_FAA_DRAW_WITH_LOCK 2u
+#define PARHELIA_M9_FAA_LOCK_PREFIX_RETIRED 5u
 struct drm_parhelia_m9_faa_owner {
 	__u32 handle;
 	__u32 pad;
