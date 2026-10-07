@@ -939,6 +939,11 @@ int m9x_submit_faa_virtual_phases_locked(struct m9x_device *mdev,
 			phases[0].bytes, phases[0].target, point, doorbell_posted);
 	if (ret)
 		return ret;
+	if (retired) {
+		ret = retired(mdev, 0, *point, retired_data);
+		if (ret)
+			return ret;
+	}
 	for (i = 1; i < count; i++) {
 		/* The prior actual wait returned; neither CPU seeds nor a later
 		 * phase's desired counter are treated as GPU completion. */

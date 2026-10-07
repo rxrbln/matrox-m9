@@ -164,6 +164,10 @@ static bool m9_faa_defer_output_map;
 module_param(m9_faa_defer_output_map, bool, 0400);
 MODULE_PARM_DESC(m9_faa_defer_output_map,
 	"Publish only the private output SYSTEM mapping after source120 retirement");
+static bool m9_faa_program_access_kick;
+module_param(m9_faa_program_access_kick, bool, 0400);
+MODULE_PARM_DESC(m9_faa_program_access_kick,
+	"Preserve the private C2 CPU-access frontend kick after actual c0 retirement");
 #ifdef M9_FAA_PRECLEAR_OUTPUT_WRITE_CONTROL
 /* Same-module hardware control: collapsing these waits leaves main/AA
  * stores untouched; preserving them produces GPU state. Resolve is still
@@ -730,7 +734,7 @@ int m9x_faa_prepare_diag(struct m9x_device *mdev)
 
 	if (!m9_faa_diag || mdev->pdev->device != 0x0540)
 		return -EACCES;
-	if (m9_faa_defer_output_map) {
+	if (m9_faa_defer_output_map || m9_faa_program_access_kick) {
 #ifndef M9_FAA_PRECLEAR_OUTPUT_WRITE_CONTROL
 		return -EOPNOTSUPP;
 #else
@@ -1165,6 +1169,56 @@ static int m9_faa_rebase_page_clear(struct m9x_faa_replay *r)
 }
 
 #ifdef M9_FAA_PRECLEAR_OUTPUT_WRITE_CONTROL
+/* Actual 2cb40 waits for the program resource before its unconditional
+ * 2cba8 frontend kick. Its later CPU-aperture mapping is a separate branch.
+ * The two entry-offset encoders identify the retained C2 owner; no captured
+ * resource address or CPU alias is installed by this bounded control. */
+static int m9_faa_program_access(struct m9x_device *mdev,
+				 struct m9x_faa_replay *r, u64 point)
+{
+	u32 i, program = U32_MAX, entries = 0, offsets = 0;
+	const struct m9_faa_owner_spec *spec;
+	struct m9_faa_owner *owner;
+	int ret;
+
+	for (i = 0; i < ARRAY_SIZE(m9_faa_fixups); i++) {
+		const struct m9_faa_fixup *f = &m9_faa_fixups[i];
+
+		if (f->encoder != 0x248ab)
+			continue;
+		if (!i || f->offset < 4 ||
+		    m9_faa_fixups[i - 1].encoder != 0x24886 ||
+		    m9_faa_fixups[i - 1].dst != f->dst ||
+		    m9_faa_fixups[i - 1].offset != f->offset - 4 ||
+		    m9_faa_fixups[i - 1].src != f->src ||
+		    m9_faa_fixups[i - 1].addend != f->addend ||
+		    m9_faa_fixups[i - 1].tag != f->tag ||
+		    (f->addend != 0 && f->addend != 32) ||
+		    f->src >= ARRAY_SIZE(r->owner) ||
+		    (program != U32_MAX && program != f->src))
+			return -EINVAL;
+		program = f->src;
+		offsets |= f->addend ? 2 : 1;
+		entries++;
+	}
+	if (entries != 2 || offsets != 3)
+		return -EINVAL;
+	spec = &m9_faa_owner_specs[program];
+	owner = &r->owner[program];
+	if (!spec->local || spec->system || spec->bytes != 0x1080 ||
+	    !owner->vram || owner->cpu || owner->bytes != PAGE_ALIGN(spec->bytes))
+		return -EINVAL;
+	ret = m9x_address_check_local_identity(mdev, owner->base, owner->bytes);
+	if (ret)
+		return ret;
+	wmb();
+	m9x_write(mdev, M9_REG_FRONTEND_KICK, 1);
+	dev_info(&mdev->pdev->dev,
+		 "M9 FAA program access kick: point=%#llx owner=%u gpu=%#x bytes=%u\n",
+		 point, program, owner->base, owner->bytes);
+	return 0;
+}
+
 static int m9_faa_publish_output_phase(struct m9x_device *mdev, u32 phase,
                                       u64 point, void *data)
 {
@@ -1172,7 +1226,9 @@ static int m9_faa_publish_output_phase(struct m9x_device *mdev, u32 phase,
 	struct m9_faa_owner *output;
 	int ret;
 
-	if (phase != 1)
+	if (phase == 0 && m9_faa_program_access_kick)
+		return m9_faa_program_access(mdev, r, point);
+	if (phase != 1 || !m9_faa_defer_output_map)
 		return 0;
 	output = m9_faa_output_owner(r);
 	if (!output || !output->cpu || output->vram ||
@@ -1445,7 +1501,8 @@ int m9x_faa_submit_diag(struct m9x_device *mdev, u32 color,
 				&r->owner[M9_FAA_PRIMARY_OWNER].system_node,
 				r->owner[M9_FAA_PRIMARY_OWNER].dma, phases,
 				ARRAY_SIZE(phases), point, &posted,
-				m9_faa_defer_output_map ? m9_faa_publish_output_phase : NULL,
+				(m9_faa_defer_output_map || m9_faa_program_access_kick) ?
+					m9_faa_publish_output_phase : NULL,
 				r);
 #else
 		ret = -EOPNOTSUPP;
