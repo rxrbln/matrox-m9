@@ -53,6 +53,7 @@ struct m9_faa_clear_segment {
      defined(M9_FAA_INIT_ONLY_CONTROL) + \
      defined(M9_FAA_PRECLEAR_CONTROL) + \
      defined(M9_FAA_PREPARED_PRECLEAR_CONTROL) + \
+     defined(M9_FAA_PREPARED_FLOW_CONTROL) + \
      defined(M9_FAA_PRECLEAR_DRAW_CONTROL) + \
      defined(M9_FAA_PRECLEAR_OUTPUT_CONTROL) + \
      defined(M9_FAA_PRECLEAR_OUTPUT_WRITE_CONTROL) + \
@@ -83,6 +84,11 @@ struct m9_faa_clear_segment {
  * publish its otherwise unconsumed local conversion backing before c0. */
 #include "m9_faa_prepared_preclear_data.h"
 #define M9_FAA_INPUT_FIRMWARE "m9x/faa-prepared-preclear-known-inputs.bin"
+#elif defined(M9_FAA_PREPARED_FLOW_CONTROL)
+/* Whole continuation of the fresh prepared source. Its generated phases
+ * and program access inventory are part of this profile's source proof. */
+#include "m9_faa_prepared_flow_data.h"
+#define M9_FAA_INPUT_FIRMWARE "m9x/faa-prepared-flow-known-inputs.bin"
 #elif defined(M9_FAA_PRECLEAR_CONTROL)
 /* Completed public black CLEAR42, then the original draw stopped at its
  * first GPU query. Independent finish; no completed triangle or output. */
@@ -174,7 +180,8 @@ struct m9_faa_clear_segment {
 #ifndef M9_FAA_COUNTER_VIRTUAL
 #define M9_FAA_COUNTER_VIRTUAL 0
 #endif
-#if defined(M9_FAA_PRECLEAR_OUTPUT_WRITE_CONTROL) || \
+#if defined(M9_FAA_PREPARED_FLOW_CONTROL) || \
+    defined(M9_FAA_PRECLEAR_OUTPUT_WRITE_CONTROL) || \
     defined(M9_FAA_PRECLEAR_INPLACE_OUTPUT_CONTROL) || \
     defined(M9_FAA_PRECLEAR_INPLACE_COPY_CONTROL) || \
     defined(M9_FAA_PUBLIC_SHARED_DEPTH_FLUSH_CONTROL) || \
@@ -201,6 +208,9 @@ struct m9_faa_owner {
 };
 struct m9x_faa_replay {
 	struct m9_faa_owner owner[ARRAY_SIZE(m9_faa_owner_specs)];
+	/* Prepared program bytes remain CPU inputs until the original c0
+	 * access boundary. Keep their source buffer through that upload. */
+	const struct firmware *program_inputs;
 	bool prepared, attempted, baseline_valid;
 	u32 primary_bytes;
 	/* Checked extent of the caller's pinned/reserved color BO. This is
@@ -234,7 +244,11 @@ static bool m9_faa_defer_output_map;
 module_param(m9_faa_defer_output_map, bool, 0400);
 MODULE_PARM_DESC(m9_faa_defer_output_map,
 	"Publish only the private output SYSTEM mapping after source120 retirement");
+#ifdef M9_FAA_PROGRAM_UPLOAD_OWNER
+static bool m9_faa_program_access_kick = true;
+#else
 static bool m9_faa_program_access_kick;
+#endif
 module_param(m9_faa_program_access_kick, bool, 0400);
 MODULE_PARM_DESC(m9_faa_program_access_kick,
 	"Preserve the private C2 CPU-access frontend kick after actual c0 retirement");
@@ -423,6 +437,8 @@ static bool m9_faa_release(struct m9x_device *mdev, struct m9x_faa_replay *r)
 	}
 	if (r->output_color)
 		drm_gem_object_put(r->output_color);
+	if (r->program_inputs)
+		release_firmware(r->program_inputs);
 	kfree(r);
 	return true;
 quarantine:
@@ -590,6 +606,10 @@ static int m9_faa_verify_upload(struct m9x_device *mdev,
 		const struct m9_faa_span *s = &m9_faa_spans[i];
 		struct m9_faa_owner *o = &r->owner[s->owner];
 
+#ifdef M9_FAA_PROGRAM_UPLOAD_OWNER
+		if (s->owner == M9_FAA_PROGRAM_UPLOAD_OWNER)
+			continue;
+#endif
 		if (!o->vram)
 			continue;
 		if (!known[s->owner]) {
@@ -824,6 +844,14 @@ int m9x_faa_prepare_diag(struct m9x_device *mdev)
 			return -EINVAL;
 #endif
 	}
+#ifdef M9_FAA_PROGRAM_UPLOAD_OWNER
+	/* A deferred upload cannot be bypassed by selecting a single post or
+	 * disabling the callback: that would submit unknown program bytes. */
+	if (!m9_faa_phased_submit || !m9_faa_program_access_kick ||
+	    M9_FAA_PROGRAM_UPLOAD_OWNER >= ARRAY_SIZE(m9_faa_owner_specs) ||
+	    M9_FAA_PROGRAM_UPLOAD_OWNER == M9_FAA_COLOR_OWNER)
+		return -EINVAL;
+#endif
 	/* This replay joins tagged virtual fetches to the driver's identity
  * leaves. A diagnostic local-base override has no such proven contract. */
 	if (m9x_local_gpu_base)
@@ -893,12 +921,20 @@ int m9x_faa_prepare_diag(struct m9x_device *mdev)
 			ret = -EINVAL;
 			goto free;
 		}
+#ifdef M9_FAA_PROGRAM_UPLOAD_OWNER
+		if (s->owner == M9_FAA_PROGRAM_UPLOAD_OWNER)
+			continue;
+#endif
 		m9_faa_write(&r->owner[s->owner], s->offset,
 			     fw->data + s->blob_offset, s->bytes);
 	}
 	ret = m9_faa_verify_upload(mdev, r, fw);
 	if (ret)
 		goto free;
+#ifdef M9_FAA_PROGRAM_UPLOAD_OWNER
+	r->program_inputs = fw;
+	fw = NULL;
+#endif
 	r->prepared = true;
 	mdev->transport.faa = r;
 	dev_info(&mdev->pdev->dev, "M9 FAA private inputs: %zu owners, %u known bytes, %zu address/%zu tracker fixups\n",
@@ -909,7 +945,8 @@ int m9x_faa_prepare_diag(struct m9x_device *mdev)
 free:
 	m9_faa_release_failed_prepare(mdev, r);
 release_fw:
-	release_firmware(fw);
+	if (fw)
+		release_firmware(fw);
 unlock:
 	mutex_unlock(&mdev->transport.lock);
 	return ret;
@@ -1269,13 +1306,92 @@ static int m9_faa_rebase_page_clear(struct m9x_faa_replay *r)
 #endif
 }
 
+#ifdef M9_FAA_PROGRAM_UPLOAD_OWNER
+/* The prepared source uploads its program only after the original access
+ * wait. Its CPU alias is allocated independently of its GPU address. Here
+ * the retained local range also owns its checked CPU-root identity alias;
+ * no captured aperture index or page-table destination is reused. */
+static int m9_faa_upload_program(struct m9x_device *mdev,
+				 struct m9x_faa_replay *r, u32 program)
+{
+	const struct firmware *fw = r->program_inputs;
+	struct m9_faa_owner *o;
+	u8 observed[256];
+	u32 i, offset, count, known = 0;
+	int ret;
+
+	if (program != M9_FAA_PROGRAM_UPLOAD_OWNER ||
+	    program >= ARRAY_SIZE(r->owner) || !fw)
+		return -EINVAL;
+	o = &r->owner[program];
+	if (!o->vram || o->cpu || !m9_faa_owner_specs[program].local ||
+	    m9_faa_owner_specs[program].system)
+		return -EINVAL;
+	/* Preflight all spans before publishing the CPU alias. Unknown tails
+	 * remain unknown; neither mapping nor upload supplies invented bytes. */
+	for (i = 0; i < ARRAY_SIZE(m9_faa_spans); i++) {
+		const struct m9_faa_span *s = &m9_faa_spans[i];
+
+		if (s->owner != program)
+			continue;
+		if (!s->bytes || s->offset > m9_faa_owner_specs[program].bytes ||
+		    s->bytes > m9_faa_owner_specs[program].bytes - s->offset ||
+		    s->offset > o->bytes || s->bytes > o->bytes - s->offset ||
+		    s->blob_offset > fw->size || s->bytes > fw->size - s->blob_offset ||
+		    check_add_overflow(known, s->bytes, &known))
+			return -EINVAL;
+	}
+	if (!known)
+		return -EINVAL;
+	/* The caller already checked local identity, so local_prepare inside
+	 * this helper makes no GPU mapping writes; only CPU leaves publish. */
+	ret = m9x_address_cpu_local_prepare(mdev, o->base, o->bytes);
+	if (ret)
+		return ret;
+	/* The actual program caller uses a raw linear CPU alias, without a
+	 * formatted selector1 view. Our pinned TTM map covers BAR offset base;
+	 * the CPU-root identity mirror above joins that alias to this owner. */
+	for (i = 0; i < ARRAY_SIZE(m9_faa_spans); i++) {
+		const struct m9_faa_span *s = &m9_faa_spans[i];
+
+		if (s->owner == program)
+			iosys_map_memcpy_to(&o->map, s->offset,
+					   fw->data + s->blob_offset, s->bytes);
+	}
+	wmb();
+	/* Actual 2c840/2c878 releases its cached raw CPU view, then writes0.
+	 * The retained native TTM view needs no transient formatted slot. */
+	m9x_write(mdev, M9_REG_FRONTEND_STATE, 0);
+	m9x_read(mdev, M9_REG_FRONTEND_STATE);
+	/* Verify only source-known bytes through the retained raw BAR view;
+	 * the CPU-root helper establishes its separate live-owner mapping. */
+	for (i = 0; i < ARRAY_SIZE(m9_faa_spans); i++) {
+		const struct m9_faa_span *s = &m9_faa_spans[i];
+
+		if (s->owner != program)
+			continue;
+		for (offset = 0; offset < s->bytes; offset += count) {
+			count = min_t(u32, sizeof(observed), s->bytes - offset);
+			iosys_map_memcpy_from(observed, &o->map, s->offset + offset, count);
+			if (memcmp(observed, fw->data + s->blob_offset + offset, count))
+				return -EIO;
+		}
+	}
+	dev_info(&mdev->pdev->dev,
+		 "M9 FAA program CPU upload verified: owner=%u gpu=%#x bytes=%u known=%u after c0\n",
+		 program, o->base, o->bytes, known);
+	return 0;
+}
+#endif
+
 #ifdef M9_FAA_PROGRAM_ACCESS_CONTROL
 /* Actual 2cb40 waits for the program resource before its unconditional
- * 2cba8 frontend kick. Its later CPU-aperture mapping is a separate branch.
+ * 2cba8 frontend kick. Prepared profiles then perform the proven raw upload;
+ * older profiles retain their independently tested kick-only control.
  * Paired entry-offset encoders identify the retained C2 owner. Later draws
  * may rebind either entry of the same program; validate every pair without
  * limiting the whole stream to two bindings. No captured resource address
- * or CPU alias is installed by this bounded control. */
+ * or captured CPU alias is installed by this bounded control. */
 static int m9_faa_program_access(struct m9x_device *mdev,
 				 struct m9x_faa_replay *r, u64 point)
 {
@@ -1340,6 +1456,9 @@ static int m9_faa_program_access(struct m9x_device *mdev,
 	dev_info(&mdev->pdev->dev,
 		 "M9 FAA program access kick: point=%#llx owner=%u gpu=%#x bytes=%u\n",
 		 point, program, owner->base, owner->bytes);
+#ifdef M9_FAA_PROGRAM_UPLOAD_OWNER
+	return m9_faa_upload_program(mdev, r, program);
+#endif
 	return 0;
 }
 
