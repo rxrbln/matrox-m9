@@ -114,7 +114,7 @@ receipt. An INIT receipt proves initialization completion, not rendered pixels
 or arbitrary app state support.
 
 No target test was run for this new profile. The signed source producer and
-strict checker regenerate the plan/header/blob exactly. Ten refusal controls
+strict checker regenerate the plan/header/blob exactly. Eleven refusal controls
 cover aliased/undersized caller roles, added primary clear, opaque pool/tail
 uploads, sentinel aliasing, fabricated receipt and wrong frontier. Actual
 native encoder/page-clear C passes two placements×eight alignments with
