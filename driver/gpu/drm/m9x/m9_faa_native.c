@@ -2078,6 +2078,23 @@ exit:
 	return ret;
 }
 
+/* A direct F022 diagnostic aperture access is not a passive snapshot.
+ * The public Lock sequence retains its cached F021 mapper across Unlock;
+ * replacing global aperture state between those calls changes the next
+ * returned image. Keep the pre-submit probe, then require the source-owned
+ * Lock/relock path until this replay is torn down. */
+int m9x_faa_direct_view_admit_locked(struct m9x_device *mdev)
+{
+	struct m9x_transport *t = &mdev->transport;
+
+	lockdep_assert_held(&t->lock);
+#if defined(M9_FAA_PREPARED_FLOW_CONTROL) && defined(M9_FAA_NORMAL_LOCK_CPU_VIEW)
+	if (m9_faa_diag && t->faa && t->faa->attempted)
+		return -EBUSY;
+#endif
+	return 0;
+}
+
 /* The ioctl already owns the caller's pin and reservation before entering
  * transport.lock. Admit only this private profile's immutable borrowed
  * primary after its final actual write wait, never another caller's BO. */

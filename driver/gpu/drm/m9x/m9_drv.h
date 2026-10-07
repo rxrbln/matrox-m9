@@ -426,6 +426,7 @@ int m9x_faa_relock_diag(struct m9x_device *mdev, u32 color,
 			bool *posted);
 void m9x_faa_fini(struct m9x_device *mdev);
 int m9x_faa_dma_snapshot(struct m9x_device *mdev, void **data, size_t *bytes);
+int m9x_faa_direct_view_admit_locked(struct m9x_device *mdev);
 int m9x_faa_lock_view_admit_locked(struct m9x_device *mdev,
 			struct drm_gem_vram_object *color, u32 base, u64 bytes);
 int m9x_faa_lock_view_observed_locked(struct m9x_device *mdev,

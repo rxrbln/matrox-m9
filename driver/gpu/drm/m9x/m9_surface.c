@@ -325,6 +325,12 @@ static int m9_surface_access(struct m9x_device *mdev, struct drm_file *file,
 		goto out_put;
 	}
 	if (view.captured_cpu_view && !view.lock_cpu_view) {
+		/* Refuse before preparation can touch the active Lock sequence. */
+		mutex_lock(&mdev->transport.lock);
+		ret = m9x_faa_direct_view_admit_locked(mdev);
+		mutex_unlock(&mdev->transport.lock);
+		if (ret)
+			goto out_put;
 		/* The tagged vendor host map needs the compact identity manager.
 		 * Prepare and activate it before reserving the caller's color BO;
 		 * CPU mapping may precede the first diagnostic submission. */
@@ -332,8 +338,11 @@ static int m9_surface_access(struct m9x_device *mdev, struct drm_file *file,
 		if (ret && ret != -EALREADY)
 			goto out_put;
 		mutex_lock(&mdev->transport.lock);
-		m9x_transport_drain_locked(mdev);
-		ret = m9x_engine_ready_locked(mdev);
+		ret = m9x_faa_direct_view_admit_locked(mdev);
+		if (!ret) {
+			m9x_transport_drain_locked(mdev);
+			ret = m9x_engine_ready_locked(mdev);
+		}
 		mutex_unlock(&mdev->transport.lock);
 		if (ret)
 			goto out_put;
@@ -358,6 +367,13 @@ static int m9_surface_access(struct m9x_device *mdev, struct drm_file *file,
 		goto out_unreserve;
 	}
 	mutex_lock(&mdev->transport.lock);
+	/* Submission can start between preflight and the BO reservation.
+	 * Recheck before either draining or changing the global CPU view. */
+	if (view.captured_cpu_view && !view.lock_cpu_view) {
+		ret = m9x_faa_direct_view_admit_locked(mdev);
+		if (ret)
+			goto out_transport;
+	}
 	if (!view.lock_cpu_view)
 		m9x_transport_drain_locked(mdev);
 	if (mdev->transport.wedged) {
