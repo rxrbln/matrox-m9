@@ -44,17 +44,23 @@ The original DLL's `0x17e480` writes the indirect tuple to the current
 primary pointer and adds 12 to it. At `0x176eaf` it advances the geometry
 cursor by `4 * queue[0xdc]`; the observed value is 80. The command queue's
 `0x24a20` path checks `write_cursor + 0x30 <= guard` and calls a rotation
-callback when it fails. In this retained source state, secondary write cursor
+callback when it fails. The retained queue's M9128 vtable is at DLL
+`0x1f2c60`; its `+0xa4` slot resolves to `0x24060`. That callback checks
+pool-buffer retirement, advances a 64-bit fence by 16, emits a 16-byte
+primary control packet, and switches the active queue pointers. It is not a
+plain cursor reset. In this retained source state, secondary write cursor
 is base+3400, indirect endpoint base+3356, and guard base+0x3fe00 for a
 0x40000-byte owner. These facts justify a **bounded no-wrap path** with live
 capacity checks. The source callback's rotation and reuse synchronization
-are not yet qualified; a native continuous-frame producer must refuse when
-the next packet would cross the guard until those behaviors are derived.
+are not yet qualified as a native protocol; a continuous-frame producer must
+refuse when the next packet would cross the guard until those behaviors are
+derived and retired on hardware.
 
 The [checker](../tests/m9-faa-next-frame-20261007/check-third-draw-prefix.py)
 compares every fixed source word with the earlier typed second-DRAW template,
 verifies the pinned 0x260 receipt, live fields, cursor changes, ordered final
-END and two unread GPU boundaries, and rejects fourteen mutations.
+END, two unread GPU boundaries and the original queue rotation instructions,
+and rejects fifteen mutations.
 For native use, every owner address, tagged endpoint, geometry input, extent,
 and timeline word must be regenerated from retained live state as required by
 [the capture policy](gpu-capture-replay-policy.md). The source trace's guest
