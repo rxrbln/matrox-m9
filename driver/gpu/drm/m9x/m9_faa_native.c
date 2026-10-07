@@ -59,6 +59,7 @@ struct m9_faa_clear_segment {
      defined(M9_FAA_PRECLEAR_INPLACE_COPY_CONTROL) + \
      defined(M9_FAA_PUBLIC_SHARED_DEPTH_FLUSH_CONTROL) + \
      defined(M9_FAA_PUBLIC_SHARED_DEPTH_RESOLVE_CONTROL) + \
+     defined(M9_FAA_PUBLIC_SHARED_DEPTH_RETURNED_CONTROL) + \
      defined(M9_FAA_POST_TRIANGLE_CONTROL)) > 1
 #error "Select only one complete private FAA source profile"
 #endif
@@ -118,6 +119,11 @@ struct m9_faa_clear_segment {
  * then stops at its original cleanup wait. CPU readback remains pending. */
 #include "m9_faa_public_shared_depth_resolve_data.h"
 #define M9_FAA_INPUT_FIRMWARE "m9x/faa-public-shared-depth-resolve-known-inputs.bin"
+#elif defined(M9_FAA_PUBLIC_SHARED_DEPTH_RETURNED_CONTROL)
+/* Genuine public aa750 has returned after its source-emitted cleanup and
+ * fragment-pointer reset. Replacement draw and CPU readback remain stopped. */
+#include "m9_faa_public_shared_depth_returned_data.h"
+#define M9_FAA_INPUT_FIRMWARE "m9x/faa-public-shared-depth-returned-known-inputs.bin"
 #elif defined(M9_FAA_CONSTANT_RED_CONTROL)
 /* A distinct whole public source capture changes c0 through SETCONST.
  * Never patch captured green command or program bytes in place. */
@@ -148,7 +154,8 @@ struct m9_faa_clear_segment {
     defined(M9_FAA_PRECLEAR_INPLACE_OUTPUT_CONTROL) || \
     defined(M9_FAA_PRECLEAR_INPLACE_COPY_CONTROL) || \
     defined(M9_FAA_PUBLIC_SHARED_DEPTH_FLUSH_CONTROL) || \
-    defined(M9_FAA_PUBLIC_SHARED_DEPTH_RESOLVE_CONTROL)
+    defined(M9_FAA_PUBLIC_SHARED_DEPTH_RESOLVE_CONTROL) || \
+    defined(M9_FAA_PUBLIC_SHARED_DEPTH_RETURNED_CONTROL)
 /* These profiles retain the same original public draw and C2 access
  * before their later output or target-change branches diverge. */
 #define M9_FAA_PROGRAM_ACCESS_CONTROL 1
