@@ -113,3 +113,51 @@ full64 pool origin. It must preserve old owner references through true observed
 retirement and posted failure quarantine. This does not authorize secondary,
 constant or code rewinds: their original nonzero-mode24b10/24a20 range and
 reference protocol remains distinct.
+
+## Complete counted-secondary close and pending-owner drain
+
+The original constructed-queue mode1/flags0 control is now retained in
+`tests/m9-faa-pool-counted-source-20261008`. Original249a0 enters secondary
+slot1,25370 emits E3c0,24060 selects unused slot4,249a0 closes to primary
+mode0, and24d60 returns after a real END. It supplies no new GPU completion.
+The old4880-byte primary CPU-known prefix stays exact and no GPU owner or
+mapping is allocated. The single4-byte HEAP allocation is the original CPU
+pending-list cell (allocation return119f3e), not command or pixel storage.
+
+After selection, old secondaryslot1 still has one CPU reference and is the
+sole q+b0..b4 pending entry. Mode close preserves it. Only original24d60
+stamps its backing pool fence20 and drains that reference to0. The selected
+secondaryslot4 keeps its active CPU reference; the primaryslot0 remains active
+and retained throughout. The mode-stack saved slot/cursors are restored from
+source249a0/24a20, not reset together across owners.
+
+Original parent append at4880 is24 bytes:
+
+| Word | Source producer and expression |
+| --- | --- |
+|0|24c80:45452d2c counted indirect range|
+|1|24cb2:old secondary translated range start OR live selector|
+|2|24cd5:old secondary translated range end OR conditional tag|
+|3|25644:4545421a pool-counter command|
+|4|25651:physical common counter lane20 OR2|
+|5|2565c:new pool logical point20 OR1|
+
+The end tag is2 iff saved mode1 flagsq+e4 are nonzero (24c73..24c88);
+this actual mode1/flags0 source control yields tag0. Native ranges must derive
+that state instead of importing a different draw profile's end tag2. The
+primary-mode453e421a four-word jump link is a different producer and is not
+used here. Native counted rotation must close the old parent range, retain
+pending owners, restore the mode stack and publish the ordered pool fence.
+
+The old secondary contains the actual12-byte E3c1 footer and is referenced by
+the parent range. After the parent append, original2461e posts the current
+primary end (source4904), not a new primary base. Queue published pool20 and
+cached globalc0 are CPU state, not observations of their completion. The ten
+actual counter reads only require0 and use the authenticated prior INIT
+controls. The model cannot select that old pool again until a genuine pool20
+observation and all other outstanding owner-use conditions are satisfied.
+
+This proof closes the pending-reference lifetime missing from the primary
+rotation evidence. Constant/code mode reuse and native multi-frame rendering
+still need their own typed mode-owner integration; no blind all-pool rewind is
+licensed by the counted-secondary result.
