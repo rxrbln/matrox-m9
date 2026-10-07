@@ -103,11 +103,17 @@ m9_faa_application_build(const struct m9_faa_application_draw *d,
       } else if (d->info->mode == MESA_PRIM_QUADS) {
          unsigned first = (triangle / 2) * 4;
          if (d->state.flatshade) {
-            /* Quads retain their last vertex under either GL convention.
-             * Both triangles contain it; no COLOR value is copied on CPU. */
-            source[0] = first + (triangle & 1u ? 1 : 0);
-            source[1] = first + (triangle & 1u ? 2 : 1);
-            source[2] = first + 3;
+            /* Match the incoming Gallium provoking convention; CPU work
+             * changes only triangle indices, never shader COLOR values. */
+            if (d->state.flatshade_first) {
+               source[0] = first;
+               source[1] = first + (triangle & 1u ? 2 : 1);
+               source[2] = first + (triangle & 1u ? 3 : 2);
+            } else {
+               source[0] = first + (triangle & 1u ? 1 : 0);
+               source[1] = first + (triangle & 1u ? 2 : 1);
+               source[2] = first + 3;
+            }
          } else {
             source[0] = first; source[1] = first + (triangle & 1u ? 2 : 1);
             source[2] = first + (triangle & 1u ? 3 : 2);
@@ -117,9 +123,15 @@ m9_faa_application_build(const struct m9_faa_application_draw *d,
           * Preserve orientation using its diagonal and requested COLOR source. */
          unsigned first = (triangle / 2) * 2;
          if (d->state.flatshade) {
-            source[0] = first + (triangle & 1u ? 0 : 2);
-            source[1] = first + (triangle & 1u ? 1 : 0);
-            source[2] = first + 3;
+            if (d->state.flatshade_first) {
+               source[0] = first;
+               source[1] = first + (triangle & 1u ? 3 : 1);
+               source[2] = first + (triangle & 1u ? 2 : 3);
+            } else {
+               source[0] = first + (triangle & 1u ? 0 : 2);
+               source[1] = first + (triangle & 1u ? 1 : 0);
+               source[2] = first + 3;
+            }
          } else {
             source[0] = first; source[1] = first + (triangle & 1u ? 3 : 1);
             source[2] = first + (triangle & 1u ? 2 : 3);
@@ -132,8 +144,7 @@ m9_faa_application_build(const struct m9_faa_application_draw *d,
          source[0] = triangle + (triangle & 1u);
          source[1] = triangle + !(triangle & 1u); source[2] = triangle + 2;
       }
-      if (d->state.flatshade && d->state.flatshade_first &&
-          d->info->mode != MESA_PRIM_QUADS && d->info->mode != MESA_PRIM_QUAD_STRIP) {
+      if (d->state.flatshade && d->state.flatshade_first) {
          /* Match Gallium's PV_FIRST→PV_LAST translation. Fan's first
           * provoking vertex is the rim vertex, not the shared center. */
          if (d->info->mode == MESA_PRIM_TRIANGLE_STRIP) {
