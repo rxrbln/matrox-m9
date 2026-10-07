@@ -248,7 +248,7 @@ fail:
 }
 
 static bool
-fragment_color(const nir_shader *fs)
+fragment_color(const nir_shader *fs, bool *flat)
 {
    if (!fs || fs->info.stage != MESA_SHADER_FRAGMENT || !fs->info.io_lowered || fs->xfb_info)
       return false;
@@ -256,7 +256,7 @@ fragment_color(const nir_shader *fs)
    if (!impl || !exec_list_is_singular(&impl->body)) return false;
    nir_cf_node *node = exec_node_data(nir_cf_node, exec_list_get_head(&impl->body), node);
    if (node->type != nir_cf_node_block) return false;
-   unsigned written = 0, output_location = UINT32_MAX;
+   unsigned written = 0, output_location = UINT32_MAX, interpolation = 0;
    nir_foreach_instr(instr, nir_cf_node_as_block(node)) {
       if (instr->type == nir_instr_type_alu || instr->type == nir_instr_type_load_const)
          continue;
@@ -266,7 +266,20 @@ fragment_color(const nir_shader *fs)
          if (nir_intrinsic_interp_mode(in) != INTERP_MODE_SMOOTH) return false;
          continue;
       }
+      if (in->intrinsic == nir_intrinsic_load_input) {
+         nir_io_semantics io = nir_intrinsic_io_semantics(in);
+         if (io.location != VARYING_SLOT_COL0 || io.num_slots != 1 ||
+             io.per_view || io.high_16bits || io.high_dvec2 ||
+             nir_intrinsic_dest_type(in) != nir_type_float32 ||
+             in->def.bit_size != 32 || !nir_src_is_const(in->src[0]) ||
+             nir_src_as_uint(in->src[0]) || (interpolation && interpolation != 2))
+            return false;
+         interpolation = 2;
+         continue;
+      }
       if (in->intrinsic == nir_intrinsic_load_interpolated_input) {
+         if (interpolation && interpolation != 1) return false;
+         interpolation = 1;
          if (nir_intrinsic_io_semantics(in).location != VARYING_SLOT_COL0 ||
              nir_intrinsic_dest_type(in) != nir_type_float32 ||
              in->def.bit_size != 32 ||
@@ -300,14 +313,17 @@ fragment_color(const nir_shader *fs)
          nir_scalar scalar = nir_scalar_chase_movs(nir_get_scalar(in->src[0].ssa, c));
          if (!nir_scalar_is_intrinsic(scalar)) return false;
          nir_intrinsic_instr *load = nir_def_as_intrinsic(scalar.def);
-         if (load->intrinsic != nir_intrinsic_load_interpolated_input ||
+         if ((load->intrinsic != nir_intrinsic_load_interpolated_input &&
+              load->intrinsic != nir_intrinsic_load_input) ||
              nir_intrinsic_io_semantics(load).location != VARYING_SLOT_COL0 ||
              nir_intrinsic_component(load) + scalar.comp != base + c)
             return false;
          written |= bit;
       }
    }
-   return written == 15;
+   if (written != 15 || !interpolation) return false;
+   *flat = interpolation == 2;
+   return true;
 }
 
 bool
@@ -316,16 +332,21 @@ m9_faa_live_gl_color_build(const struct m9_faa_live_gl *s, const nir_shader *fs,
 {
    uint32_t program[16], constants[4];
    struct m9_faa_color_fs_interface interface;
+   bool flat = false;
    if (!s || !s->linkage || s->linkage->count != 1 ||
-       s->linkage->stream[0].location != VARYING_SLOT_COL0 || !fragment_color(fs) ||
+       s->linkage->stream[0].location != VARYING_SLOT_COL0 || !fragment_color(fs, &flat) ||
        !m9_faa_color_fs_build(0, program, sizeof(program), constants, sizeof(constants), &interface)) {
-      if (reason) *reason = "FAA fragment must pass smooth pixel COLOR0 to the complete color output";
+      if (reason) *reason = "FAA fragment must pass consistently smooth or flat COLOR0 to the complete color output";
       return false;
    }
    struct m9_faa_live_gl live = *s;
    live.fragment = (struct m9_faa_program_vector){program, interface.slots};
    live.fragment_constants = (struct m9_faa_dense_constants){constants, interface.constant_pairs};
-   return m9_faa_live_gl_build(&live, output, reason);
+   if (!m9_faa_live_gl_build(&live, output, reason)) return false;
+   /* RS9 controls interpolation at the raster input. The original flat
+    * control leaves the shader vector unchanged; do not emulate COLOR in CPU. */
+   output->color_flat = flat;
+   return true;
 }
 
 static bool

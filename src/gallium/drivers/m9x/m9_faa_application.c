@@ -66,12 +66,6 @@ m9_faa_application_build(const struct m9_faa_application_draw *d,
         d->state.scissor.maxx > d->state.width ||
         d->state.scissor.maxy > d->state.height))
       goto fail;
-   /* The qualified COLOR frontend uses smooth interpolation. Retain an
-    * explicit refusal until flat/provoking state is joined to that frontend. */
-   if (d->state.flatshade) {
-      why = "FAA application flat COLOR0/provoking-vertex contract is pending";
-      goto fail;
-   }
    unsigned triangles;
    switch (d->info->mode) {
    case MESA_PRIM_TRIANGLES:
@@ -108,14 +102,28 @@ m9_faa_application_build(const struct m9_faa_application_draw *d,
          source[0] = 3 * triangle; source[1] = source[0] + 1; source[2] = source[0] + 2;
       } else if (d->info->mode == MESA_PRIM_QUADS) {
          unsigned first = (triangle / 2) * 4;
-         source[0] = first; source[1] = first + (triangle & 1u ? 2 : 1);
-         source[2] = first + (triangle & 1u ? 3 : 2);
+         if (d->state.flatshade) {
+            /* Quads retain their last vertex under either GL convention.
+             * Both triangles contain it; no COLOR value is copied on CPU. */
+            source[0] = first + (triangle & 1u ? 1 : 0);
+            source[1] = first + (triangle & 1u ? 2 : 1);
+            source[2] = first + 3;
+         } else {
+            source[0] = first; source[1] = first + (triangle & 1u ? 2 : 1);
+            source[2] = first + (triangle & 1u ? 3 : 2);
+         }
       } else if (d->info->mode == MESA_PRIM_QUAD_STRIP) {
          /* GL quad-strip quad order is (2i,2i+1,2i+3,2i+2).
-          * Preserve orientation using its diagonal; flat is still refused. */
+          * Preserve orientation using its diagonal and requested COLOR source. */
          unsigned first = (triangle / 2) * 2;
-         source[0] = first; source[1] = first + (triangle & 1u ? 3 : 1);
-         source[2] = first + (triangle & 1u ? 2 : 3);
+         if (d->state.flatshade) {
+            source[0] = first + (triangle & 1u ? 0 : 2);
+            source[1] = first + (triangle & 1u ? 1 : 0);
+            source[2] = first + 3;
+         } else {
+            source[0] = first; source[1] = first + (triangle & 1u ? 3 : 1);
+            source[2] = first + (triangle & 1u ? 2 : 3);
+         }
       } else if (d->info->mode == MESA_PRIM_TRIANGLE_FAN) {
          source[0] = 0; source[1] = triangle + 1; source[2] = triangle + 2;
       } else {
@@ -123,6 +131,19 @@ m9_faa_application_build(const struct m9_faa_application_draw *d,
           * preserves strip face orientation without transforming a vertex. */
          source[0] = triangle + (triangle & 1u);
          source[1] = triangle + !(triangle & 1u); source[2] = triangle + 2;
+      }
+      if (d->state.flatshade && d->state.flatshade_first &&
+          d->info->mode != MESA_PRIM_QUADS && d->info->mode != MESA_PRIM_QUAD_STRIP) {
+         /* Match Gallium's PV_FIRST→PV_LAST translation. Fan's first
+          * provoking vertex is the rim vertex, not the shared center. */
+         if (d->info->mode == MESA_PRIM_TRIANGLE_STRIP) {
+            source[0] = triangle;
+            source[1] = triangle + 1 + (triangle & 1u);
+            source[2] = triangle + 2 - (triangle & 1u);
+         } else if (d->info->mode == MESA_PRIM_TRIANGLE_FAN) {
+            source[0] = triangle + 1; source[1] = triangle + 2; source[2] = 0;
+         }
+         unsigned first = source[0]; source[0] = source[1]; source[1] = source[2]; source[2] = first;
       }
       for (unsigned c = 0; c < 3; c++)
          if (!source_index(d, source[c], &indices[3 * triangle + c])) {
@@ -152,6 +173,10 @@ m9_faa_application_build(const struct m9_faa_application_draw *d,
    live.viewport = (struct m9_faa_viewport){x, y, w, h};
    if (!m9_faa_live_gl_color_build(&live, d->fs, &fresh.shader, &why))
       goto fail;
+   if (fresh.shader.color_flat != d->state.flatshade) {
+      why = "FAA COLOR interpolation and application raster state disagree";
+      goto fail;
+   }
    fresh.state = d->state;
    free(indices);
    *output = fresh;
