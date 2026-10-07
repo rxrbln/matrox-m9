@@ -261,6 +261,16 @@ struct m9_faa_depth_storage {
  bool first, ready, initialized;
  struct m9_faa_depth_frame_storage *frame;
 };
+/* CPU snapshots are not live GPU allocations. Drop them only after the
+ * exact frame Lock has been read and its authentic Unlock retired. The
+ * initialized attachment owners and their mappings survive this boundary;
+ * a later caller still needs a separately qualified state grammar. */
+static void m9_faa_depth_frame_free(struct m9_faa_depth_frame_storage *frame)
+{
+ if(!frame)return;
+ kvfree(frame->batch_data);kvfree(frame->batch_secondary);kfree(frame);
+}
+
 static bool m9_faa_color_four_experimental;
 module_param_named(faa_color_four_experimental,m9_faa_color_four_experimental,bool,0600);
 MODULE_PARM_DESC(faa_color_four_experimental,"Enable unqualified four-stage COLOR launcher (diagnostic only)");
@@ -949,11 +959,7 @@ static bool m9_faa_release(struct m9x_device *mdev, struct m9x_faa_replay *r)
    } else if (o->cpu)
     dma_free_coherent(&mdev->pdev->dev,o->bytes,o->cpu,o->dma);
   }
-  if(r->depth_storage->frame){
-   kvfree(r->depth_storage->frame->batch_data);
-   kvfree(r->depth_storage->frame->batch_secondary);
-  }
-  kfree(r->depth_storage->frame);
+  m9_faa_depth_frame_free(r->depth_storage->frame);
   kfree(r->depth_storage);
  }
 	kfree(r->draw_image);
@@ -4161,6 +4167,27 @@ int m9x_faa_graph_unlock_get_locked(struct m9x_device *mdev,
 #endif
 }
 
+#ifdef M9_FAA_GRAPH_INIT_CONTROL
+static struct m9_faa_depth_frame_storage *m9_faa_depth_frame_take_retired(
+ struct m9x_faa_replay *r,u32 generation,u64 lock_point,u64 unlock_point)
+{
+ struct m9_faa_depth_storage *depth;
+ struct m9_faa_depth_frame_storage *frame;
+ if(!r||!r->color_lock_retired||!r->normal_lock_view_seen||
+  !r->unlock_started||!r->unlock_retired||r->graph_generation!=generation||
+  r->color_lock_point!=lock_point||r->unlock_point!=unlock_point||
+  r->graph_draw_point!=unlock_point||lock_point>U64_MAX-0x20||
+  unlock_point!=lock_point+0x20)return NULL;
+ depth=r->depth_storage;
+ if(!depth||!depth->ready||!depth->initialized||depth->generation!=generation)return NULL;
+ frame=depth->frame;
+ if(!frame||!frame->attempted||!frame->retired||frame->generation!=generation||
+  frame->final_point!=lock_point)return NULL;
+ depth->frame=NULL;
+ return frame;
+}
+#endif
+
 int m9x_faa_graph_unlock_submit(struct m9x_device *mdev,
 		struct m9_faa_graph_binding *binding, u32 generation,
 		u64 lock_point, u64 *point, bool *posted)
@@ -4170,6 +4197,7 @@ int m9x_faa_graph_unlock_submit(struct m9x_device *mdev,
 	struct m9x_faa_replay *r;
 	struct m9_faa_graph_binding *checked = NULL;
 	struct m9_faa_owner *primary;
+	struct m9_faa_depth_frame_storage *retired_frame = NULL;
 	struct m9x_fence *fence = NULL;
 	u8 image[M9_FAA_UNLOCK_PRIMARY_BYTES];
 	u32 old_bytes, target, i;
@@ -4252,6 +4280,7 @@ int m9x_faa_graph_unlock_submit(struct m9x_device *mdev,
 	r->unlock_point = stage_point;
 	r->graph_unlock_end_bytes = r->graph_draw_end_bytes;
 	r->graph_unlock_posts = r->graph_draw_posts;
+	retired_frame = m9_faa_depth_frame_take_retired(r, generation, lock_point, stage_point);
 	dev_info(&mdev->pdev->dev,
 		 "M9 FAA graph Unlock retired: lock=%#llx unlock=%#llx bytes=%u posts=%u copyback=F021->F022\n",
 		 lock_point, *point, r->graph_draw_end_bytes, r->graph_draw_posts);
@@ -4271,6 +4300,7 @@ out:
 		dma_fence_put(&fence->base);
 	m9x_faa_graph_binding_put(checked);
 	mutex_unlock(&t->lock);
+	m9_faa_depth_frame_free(retired_frame);
 	return ret;
 #else
 	return -EOPNOTSUPP;
