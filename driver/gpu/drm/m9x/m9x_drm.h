@@ -22,6 +22,14 @@
 #define DRM_PARHELIA_M9_FAA_GRAPH_PUBLIC_VS	0x16
 #define DRM_PARHELIA_M9_FAA_GRAPH_PUBLIC_VS_FOLLOW	0x17
 #define DRM_PARHELIA_M9_FAA_GRAPH_PUBLIC_VS_HEAD	0x18
+#define DRM_PARHELIA_M9_FAA_GRAPH_PUBLIC_VS_LOCK 0x1a
+#define PARHELIA_M9_FAA_PUBLIC_VS_LOCK_RETIRED 14u
+struct drm_parhelia_m9_faa_graph_public_vs_lock {
+ __u64 graph_id, draw_point, lock_point;
+ __u32 generation, flags, state, pad;
+};
+#define DRM_IOCTL_PARHELIA_M9_FAA_GRAPH_PUBLIC_VS_LOCK DRM_IOWR(DRM_COMMAND_BASE + DRM_PARHELIA_M9_FAA_GRAPH_PUBLIC_VS_LOCK, struct drm_parhelia_m9_faa_graph_public_vs_lock)
+
 #define DRM_PARHELIA_M9_FAA_GRAPH_PUBLIC_VS_DRAW	0x19
 
 #define DRM_IOCTL_PARHELIA_M9_CREATE_BO \
