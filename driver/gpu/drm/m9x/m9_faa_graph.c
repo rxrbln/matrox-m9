@@ -1694,7 +1694,7 @@ static int m9_faa_graph_depth_frame_ioctl(struct drm_device *drm,
  first=!!(args->flags&PARHELIA_M9_FAA_COLOR_FRAME_FIRST);
  if(!m9x_faa_graph_depth_frame_profile_qualified(first))return -EOPNOTSUPP;
  if(!state||args->flags&~PARHELIA_M9_FAA_COLOR_FRAME_FIRST||
-  args->clear_flags!=3||args->clear_color||args->depth_flags!=7||(first&&(args->raster_flags&1))||(args->raster_flags&~7u)||(args->raster_flags&6)==6||
+  args->clear_flags!=3||args->clear_color||args->depth_flags!=7||(!first&&(args->raster_flags&1))||(args->raster_flags&~7u)||(args->raster_flags&6)==6||
   args->width!=320||args->height!=240||args->layout.program_count!=4||
   !args->upload||!args->upload_bytes||args->upload_bytes>0x42000||
   !args->declaration_count||args->declaration_count>31||args->previous_point>U64_MAX-0x1a0)

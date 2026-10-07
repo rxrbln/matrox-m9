@@ -23,6 +23,9 @@ struct m9x_faa_color_input {
  /* Native-owned arena offset, never an input GPU address or UAPI field.
   * Each pending draw keeps disjoint CB/header/raw records in owner28. */
  u32 data_offset;
+ /* Paired bounded fragment/interpolation mode derived from raster state.
+  * Native encoders verify its actual program and utility interface. */
+ u32 fragment_flags;
 };
 struct m9x_faa_color_image {
  u8 *program,*constants,*primary,*secondary;

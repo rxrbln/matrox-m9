@@ -34,6 +34,7 @@ int m9x_faa_color_four_encode(const u8*blob,size_t bytes,const struct m9x_faa_gr
  in->layout.entry_bytes[0]||!in->layout.constants_bytes||in->layout.constants_bytes>16384||(in->layout.constants_bytes&7)||
  in->record_stride!=32||!in->record_count||in->record_count%3||in->record_count>12288||
  (in->data_offset&127)||in->data_offset>owner[28].bytes||
+ (in->fragment_flags&~1u)||
  in->declaration_count<3||in->declaration_count>17||!(in->declaration_count&1)||
  in->layout.vertex_offset!=128||check_mul_overflow(in->record_stride,in->record_count,&raw)||
  raw!=in->layout.vertex_bytes||in->layout.geometry_bytes!=128+raw||in->layout.geometry_bytes>0x40000-256)return -EINVAL;
@@ -48,6 +49,17 @@ int m9x_faa_color_four_encode(const u8*blob,size_t bytes,const struct m9x_faa_gr
  in->layout.constant_begin[2]!=in->layout.constant_end[2]||
  in->layout.constant_end[3]-in->layout.constant_begin[3]!=104||
  in->layout.constant_end[0]-in->layout.constant_begin[0]<16)return -EINVAL;
+ if(in->fragment_flags){
+  /* Source-qualified flat COLOR0 stream0 -> r2d grammar. The compiler
+   * usage/interpolation fields belong to this actual fragment interface,
+   * not a generic FLAT toggle on the smooth allocator. */
+  static const u32 fs[]={0xffe2ad9e,0xe29fff1f,0xffe22d9d,0xa29fff1f,
+   0xffff801c,0xa01fc00f,0xffff801c,0xa01fc00f};
+  static const u32 utility[]={0,0x3f800000,0x3f800000,0x3f000000};
+  if(in->layout.entry_bytes[1]!=32||in->layout.constant_end[0]-in->layout.constant_begin[0]!=16)return -EINVAL;
+  for(i=0;i<8;i++)if(get(in->program+4*i)!=fs[i])return -EINVAL;
+  for(i=0;i<4;i++)if(get(in->constants+in->layout.constant_begin[0]+4*i)!=utility[i])return -EINVAL;
+ }
  /* Exact address-free RECORDS move grammar, including output register halves,
   * source logical indices, scheduling bit, saturation and STOP padding. */
  for(i=0;i<gatherbytes/8;i++){
@@ -123,6 +135,16 @@ int m9x_faa_color_four_encode(const u8*blob,size_t bytes,const struct m9x_faa_gr
   * Give inactive slots defined zero masks rather than captured CPU residue. */
  put(out->secondary+moved(2220,extra),0x0000ffff);
  put(out->secondary+moved(2224,extra),0);
+ if(in->fragment_flags){
+  /* 1815cd lowers usage bit24 -> EF20000. 17f040 lowers compiler
+   * usage bits into the low mask and80000. 13a83d marks the flat
+   * COLOR varying pair's interpolation bit31. Preserve other live bits. */
+  put(out->secondary+moved(1920,extra),get(out->secondary+moved(1920,extra))&~0x20000u);
+  put(out->secondary+moved(2276,extra),
+   (get(out->secondary+moved(2276,extra))&~0x8ffffu)|0xfff0u);
+  put(out->secondary+moved(2616,extra),get(out->secondary+moved(2616,extra))|0x80000000u);
+  put(out->secondary+moved(2620,extra),get(out->secondary+moved(2620,extra))|0x80000000u);
+ }
  put(out->secondary+72,ef(1+arity,0x200));put(out->secondary+moved(760,extra),ef(arity,0x600));
  put(out->secondary+304,(((1u<<((in->declaration_count-1)/2))-1)<<24)|0xffff);
  put(out->secondary+308,route(1+arity,true,false));
