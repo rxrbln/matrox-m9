@@ -26,24 +26,39 @@ producer needs a sized owned upload, packet length/declaration rebuilding,
 live owner offsets/capacity checks and source-proven raster/fragment routing;
 changing only the C2/C3 fields is insufficient.
 
-The one-color GL1 case remains a separate admission gap. The FAA compiler's
-whole-program branch requires **two real complete vec4 output stores** and
-the generalized builder requires two distinct explicit linkage streams.
-The ordinary Mesa pass-through color layout requests only `COL0`. The
-qualified public VS writes COLOR and TEXCOORD, but its FS is constant-color,
-so that run proves neither stream is read; it does not prove a fabricated
-second output is inert for a color-reading FS. Original `14eba0` tests show
-how shorter vectors are finalized, not a whole one-stream FAA draw. No actual
-glxgears lowered NIR or M9128 one-color public draw is archived here.
+The one-color GL1 case has a distinct original source shape. The current Mesa
+FAA compiler's whole-program branch requires **two real complete vec4 output
+stores** and the generalized builder requires two distinct explicit linkage
+streams. The ordinary Mesa pass-through color layout requests only `COL0`.
+We therefore ran the original M9128 public compiler with a genuine
+`ps_2_0 dcl v0; mov oC0,v0`, POSITION and COLOR VS outputs, and otherwise
+unchanged viewport, declaration, vertex bytes and stride. It produced two
+vectors: FS64 + VS232 = 296 bytes. The original public DRAW returned EAX1,
+with a 624-byte first secondary block, one 4968-byte source END, and no
+deferred marker/relative rewrite. Its next original `252b9` input desired
+`0x100` and remained unread in the capture.
 
-The smallest source experiment is a genuine public M9128 VS with POSITION and
-COLOR outputs, paired with an FS that reads COLOR, compared against a control
-that also writes an independently varying but FS-unused second vec4. Record
-the original compiler output, declaration and final draw packet lengths and
-pixel/retirement behavior separately. Only if that proves an unused second
-stream harmless may Mesa add it from a live, explicit source and the native
-producer encode it; no captured address, raw record, or command byte is a
-portable default.
+The paired control adds a real TEXCOORD VS output which that same FS does not
+read. Its FS64 bytes are identical, but it produces four vectors:
+FS64 + carry56 + gather40 + position200 = 360 bytes. The first secondary
+block is 736 bytes, two deferred markers and one relative rewrite appear,
+the independent source END is 4992, and the original unread query is `0xf0`.
+This proves an unused second output is accepted by the original CPU compiler
+for this input, but it changes the whole command topology. It is not a
+portable zero-output alias or a reason to pass nonexistent linkage from
+glxgears. The source-supported one-color route should get its own bounded
+two-vector native producer.
+
+Continuing only source nonblocking `25270` dependencies with the historical
+actual INIT `0xb1` as an explicitly labeled branch control returns the
+one-color public DRAW and constructs the normal Lock suffix. The source END
+sequence is DRAW 4968, Lock 8520 twice and final 8532. The true positive
+CPU wait at `4e1d1` asks for `0x150`; it is unread. The archived `+20`
+zero-floor control applies to the two intervening maintenance reads. This
+does not claim an actual post-DRAW status, Lock return, pixel image or a
+glxgears shader. The source images and refusal checker are in
+`captures/m9-faa-gl-one-color-20261007` and
+`tests/m9-faa-gl-one-color-20261007`.
 
 Sources: Mesa `m9_faa_live.c`, `m9_vs_compile.c`, `m9_faa_program.c`,
 `m9_vs_decl_words`, and `tests/faa-live-public-upload-20261007/GENERALIZED.md`;
