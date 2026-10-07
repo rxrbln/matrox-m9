@@ -83,6 +83,7 @@ struct m9x_fence {
 struct m9x_triangle_diag;
 struct m9x_faa_replay;
 struct m9_faa_prepared_graph;
+struct m9_faa_graph_binding;
 struct m9x_address_space;
 
 #define M9_QUEUE_SLOTS 4u
@@ -459,6 +460,15 @@ struct m9_faa_prepared_graph *m9x_faa_graph_acquire(struct drm_file *file,
 struct drm_gem_object *m9x_faa_graph_owner(
 				const struct m9_faa_prepared_graph *graph, u32 role);
 void m9x_faa_graph_put(struct m9_faa_prepared_graph *graph);
+int m9x_faa_graph_binding_acquire(struct m9x_device *mdev,
+		struct drm_file *file, u64 id, u32 generation,
+		struct m9_faa_graph_binding **out);
+struct drm_gem_object *m9x_faa_graph_binding_owner(
+		const struct m9_faa_graph_binding *binding, u32 role);
+bool m9x_faa_graph_binding_address(
+		const struct m9_faa_graph_binding *binding, u32 role,
+		u32 *address, u32 *source_owner);
+void m9x_faa_graph_binding_put(struct m9_faa_graph_binding *binding);
 struct m9x_bo *m9x_bo_lookup(struct m9x_device *mdev,
 			     struct drm_file *file, u32 handle);
 bool m9x_gem_is_dma(struct drm_gem_object *gem);

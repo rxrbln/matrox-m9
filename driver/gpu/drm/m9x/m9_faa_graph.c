@@ -37,6 +37,55 @@ struct m9_faa_file {
 	struct m9_faa_prepared_graph *graph;
 };
 
+/* The original 320x240 init path's six caller-owned roles. This is only a
+ * source-role join; executable words must still come from a trusted producer. */
+static const u8 m9_faa_graph_source_owner[PARHELIA_M9_FAA_GRAPH_OWNERS] = {
+	[PARHELIA_M9_FAA_PRIMARY] = 1,
+	[PARHELIA_M9_FAA_MAIN] = 2,
+	[PARHELIA_M9_FAA_AUXILIARY] = 3,
+	[PARHELIA_M9_FAA_COMPANION] = 4,
+	[PARHELIA_M9_FAA_HZ] = 5,
+	[PARHELIA_M9_FAA_SENTINEL] = 8,
+};
+
+/* A future posted init transfers this whole binding to its retirement or
+ * quarantine record. File RELEASE only drops its own graph reference. */
+struct m9_faa_graph_binding {
+	struct m9_faa_prepared_graph *graph;
+	u32 address[PARHELIA_M9_FAA_GRAPH_OWNERS];
+	u32 generation;
+};
+
+static bool m9_faa_graph_local_span(u64 local_base, u64 offset, u64 bytes,
+				    u64 limit, u32 *address)
+{
+	u64 end, base;
+
+	if (!address || !bytes || !IS_ALIGNED(offset, PAGE_SIZE) ||
+	    !IS_ALIGNED(local_base, PAGE_SIZE) ||
+	    check_add_overflow(offset, bytes, &end) || end > limit ||
+	    check_add_overflow(local_base, offset, &base) ||
+	    check_add_overflow(base, bytes, &end) ||
+	    end > (u64)U32_MAX + 1)
+		return false;
+	*address = (u32)base;
+	return true;
+}
+
+static bool m9_faa_graph_ranges_disjoint(const u32 *address)
+{
+	u32 i, j;
+
+	for (i = 0; i < PARHELIA_M9_FAA_GRAPH_OWNERS; i++)
+		for (j = 0; j < i; j++)
+			if ((u64)address[i] < (u64)address[j] +
+				m9_faa_graph_owner_spec[j].capacity &&
+			    (u64)address[j] < (u64)address[i] +
+				m9_faa_graph_owner_spec[i].capacity)
+				return false;
+	return true;
+}
+
 static bool m9_faa_graph_owner_distinct(
 		const struct m9_faa_prepared_graph *graph, u32 role)
 {
@@ -104,6 +153,11 @@ int m9x_faa_graph_selftest(void)
 	struct drm_parhelia_m9_faa_graph_release release = {
 		.graph_id = 7, .generation = 0,
 	};
+	u32 address[PARHELIA_M9_FAA_GRAPH_OWNERS] = {
+		0x1000000, 0x1100000, 0x1240000,
+		0x1260000, 0x1300000, 0x1310000,
+	};
+	u32 native = 0;
 
 	BUILD_BUG_ON(ARRAY_SIZE(m9_faa_graph_owner_spec) !=
 		     PARHELIA_M9_FAA_GRAPH_OWNERS);
@@ -148,6 +202,23 @@ int m9x_faa_graph_selftest(void)
 	release.generation = 0;
 	release.graph_id = 8;
 	if (m9_faa_graph_release_matches(&graph, &release))
+		return -EINVAL;
+	if (m9_faa_graph_source_owner[PARHELIA_M9_FAA_PRIMARY] != 1 ||
+	    m9_faa_graph_source_owner[PARHELIA_M9_FAA_MAIN] != 2 ||
+	    m9_faa_graph_source_owner[PARHELIA_M9_FAA_AUXILIARY] != 3 ||
+	    m9_faa_graph_source_owner[PARHELIA_M9_FAA_COMPANION] != 4 ||
+	    m9_faa_graph_source_owner[PARHELIA_M9_FAA_HZ] != 5 ||
+	    m9_faa_graph_source_owner[PARHELIA_M9_FAA_SENTINEL] != 8 ||
+	    !m9_faa_graph_ranges_disjoint(address) ||
+	    !m9_faa_graph_local_span(0, 0x2f00000, 0x98000,
+				    0x10000000, &native) || native != 0x2f00000)
+		return -EINVAL;
+	address[PARHELIA_M9_FAA_HZ] = address[PARHELIA_M9_FAA_COMPANION];
+	if (m9_faa_graph_ranges_disjoint(address) ||
+	    m9_faa_graph_local_span(0, 0x2f00001, 0x98000,
+				    0x10000000, &native) ||
+	    m9_faa_graph_local_span(0, 0x2f00000, 0x98000,
+				    0x2f00000, &native))
 		return -EINVAL;
 	return 0;
 }
@@ -209,6 +280,112 @@ m9x_faa_graph_owner(const struct m9_faa_prepared_graph *graph, u32 role)
 {
 	return graph && role < PARHELIA_M9_FAA_GRAPH_OWNERS ?
 		graph->owner[role] : NULL;
+}
+
+int m9x_faa_graph_binding_acquire(struct m9x_device *mdev,
+		struct drm_file *file, u64 id, u32 generation,
+		struct m9_faa_graph_binding **out)
+{
+	struct m9_faa_prepared_graph *graph;
+	struct m9_faa_graph_binding *binding;
+	struct drm_exec exec;
+	u64 limit;
+	u32 i;
+	int ret = 0;
+
+	if (!mdev || !file || !file->minor ||
+	    file->minor->dev != &mdev->drm || !out || !id)
+		return -EINVAL;
+	*out = NULL;
+	graph = m9x_faa_graph_acquire(file, id, generation);
+	if (!graph)
+		return -ENOENT;
+	binding = kzalloc_obj(*binding);
+	if (!binding) {
+		m9x_faa_graph_put(graph);
+		return -ENOMEM;
+	}
+	binding->graph = graph;
+	binding->generation = generation;
+	limit = m9x_vram_gpu_limit(mdev);
+	if (m9x_local_gpu_base || !limit ||
+	    mdev->pdev->device != M9X_PCI_DEVICE_PHOENIX ||
+	    mdev->pdev->revision != 1 || mdev->pdev->subsystem_device != 0x22c0) {
+		ret = -EOPNOTSUPP;
+		goto out_binding;
+	}
+	drm_exec_init(&exec, DRM_EXEC_INTERRUPTIBLE_WAIT |
+		      DRM_EXEC_IGNORE_DUPLICATES, PARHELIA_M9_FAA_GRAPH_OWNERS);
+	drm_exec_until_all_locked(&exec) {
+		for (i = 0; i < PARHELIA_M9_FAA_GRAPH_OWNERS; i++) {
+			ret = drm_exec_lock_obj(&exec, graph->owner[i]);
+			drm_exec_retry_on_contention(&exec);
+			if (ret)
+				goto out_exec;
+		}
+	}
+	for (i = 0; i < PARHELIA_M9_FAA_GRAPH_OWNERS; i++) {
+		struct drm_gem_object *gem = graph->owner[i];
+		s64 offset = m9x_gem_vram_offset(gem);
+
+		if (!graph->pinned[i] ||
+		    !m9_faa_graph_owner_class_valid(i, gem) ||
+		    gem->size != m9_faa_graph_owner_spec[i].capacity ||
+		    offset < 0 ||
+		    !m9_faa_graph_local_span(M9_VRAM_GPU_BASE, (u64)offset,
+				m9_faa_graph_owner_spec[i].capacity, limit,
+				&binding->address[i])) {
+			ret = -ERANGE;
+			goto out_exec;
+		}
+	}
+	if (!m9_faa_graph_ranges_disjoint(binding->address)) {
+		ret = -EINVAL;
+		goto out_exec;
+	}
+	mutex_lock(&mdev->transport.lock);
+	if (mdev->transport.generation != generation)
+		ret = -ESTALE;
+	else if (mdev->transport.async_stop || mdev->transport.wedged ||
+		 mdev->transport.faa || mdev->transport.faa_virtual_primary ||
+		 mdev->transport.faa_source_context)
+		ret = -EBUSY;
+	mutex_unlock(&mdev->transport.lock);
+out_exec:
+	drm_exec_fini(&exec);
+out_binding:
+	if (ret) {
+		m9x_faa_graph_binding_put(binding);
+		return ret;
+	}
+	*out = binding;
+	return 0;
+}
+
+struct drm_gem_object *
+m9x_faa_graph_binding_owner(const struct m9_faa_graph_binding *binding,
+			    u32 role)
+{
+	return binding ? m9x_faa_graph_owner(binding->graph, role) : NULL;
+}
+
+bool m9x_faa_graph_binding_address(const struct m9_faa_graph_binding *binding,
+				u32 role, u32 *address, u32 *source_owner)
+{
+	if (!binding || role >= PARHELIA_M9_FAA_GRAPH_OWNERS ||
+	    !address || !source_owner)
+		return false;
+	*address = binding->address[role];
+	*source_owner = m9_faa_graph_source_owner[role];
+	return true;
+}
+
+void m9x_faa_graph_binding_put(struct m9_faa_graph_binding *binding)
+{
+	if (!binding)
+		return;
+	m9x_faa_graph_put(binding->graph);
+	kfree(binding);
 }
 
 int m9x_faa_graph_file_open(struct drm_device *drm, struct drm_file *file)
