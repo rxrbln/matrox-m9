@@ -664,6 +664,7 @@ struct m9_context {
    uint32_t warned;
    uint32_t skipped_draws;      /* dropped for an unimplemented state */
    uint32_t engine_blits;       /* copies and blits the raster engine drew */
+   uint32_t engine_clears;      /* render-target clears queued on the engine */
    uint32_t padded_draws;       /* partial split draws padded to the extent */
    bool queries_enabled;        /* pipe set_active_query_state, recorded */
    uint32_t submitted_draws;

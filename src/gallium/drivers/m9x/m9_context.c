@@ -236,6 +236,8 @@ m9_skip_report(struct m9_context *ctx)
    fprintf(stderr, "m9x: %u copies and blits on the engine, %u split draws "
            "padded to their target's extent, %" PRIu64 " state swaps\n",
            ctx->engine_blits, ctx->padded_draws, m9_be_swaps);
+   fprintf(stderr, "m9x: %u render-target clears on the engine\n",
+           ctx->engine_clears);
    for (unsigned i = 0; i < ctx->skip_reasons; i++)
       fprintf(stderr, "m9x: context %u: %u draws skipped: %s\n",
               ctx->context_id, ctx->skip_reason[i].draws,
@@ -511,6 +513,8 @@ static bool m9_blit_on_engine = true;
  * one binary measures a chain built by the engine against the same chain
  * built by the CPU transfer path. */
 static bool m9_level_targets = true;
+/* Keep the CPU clear available for image/cost comparisons. */
+static bool m9_clear_on_engine = true;
 /* M9X_BE_DUMP names a file the engine state object is written to after every
  * job, so what it accumulates can be read rather than assumed. */
 static const char *m9_be_dump;
@@ -7505,6 +7509,13 @@ m9_clear(struct pipe_context *pctx, unsigned buffers,
    m9_prof_end(M9_PROF_CLEAR, t_clear);
 }
 
+static bool
+m9_clear_render_target_engine(struct m9_context *ctx, struct pipe_surface *dst,
+                              const union pipe_color_union *color,
+                              unsigned x, unsigned y,
+                              unsigned width, unsigned height,
+                              bool render_condition_enabled);
+
 static void
 m9_clear_render_target(struct pipe_context *pctx, struct pipe_surface *dst,
                        const union pipe_color_union *color,
@@ -7516,8 +7527,14 @@ m9_clear_render_target(struct pipe_context *pctx, struct pipe_surface *dst,
    struct m9_resource *resource = m9_res(dst->texture);
    union util_color uc;
 
-   (void)render_condition_enabled;
-   if (dst->level || resource->cpp != 4 || !resource->map || !width || !height)
+   if (!width || !height)
+      return;
+   /* The same raster path as engine blits keeps preceding readers/writers
+    * ordered in the queue, without waiting for them to CPU-fill VRAM. */
+   if (m9_clear_render_target_engine(ctx, dst, color, dstx, dsty,
+                                     width, height, render_condition_enabled))
+      return;
+   if (dst->level || resource->cpp != 4 || !resource->map)
       return;
    m9_context_sync(ctx);
    util_pack_color(color->f, dst->format, &uc);
@@ -7686,6 +7703,54 @@ static bool
 m9_engine_drew(struct m9_context *ctx, uint32_t skipped_before)
 {
    return !ctx->lost && ctx->skipped_draws == skipped_before;
+}
+
+static bool
+m9_clear_render_target_engine(struct m9_context *ctx, struct pipe_surface *dst,
+                              const union pipe_color_union *color,
+                              unsigned x, unsigned y,
+                              unsigned width, unsigned height,
+                              bool render_condition_enabled)
+{
+   struct m9_resource *res = m9_res(dst->texture);
+   if (dst->level > res->base.last_level)
+      return false;
+   unsigned w = u_minify(res->base.width0, dst->level);
+   unsigned h = u_minify(res->base.height0, dst->level);
+
+   /* Use only storage already admitted as an ordinary colour target. Query
+    * and conditional clears retain the old path, as do formatted FAA views,
+    * layered images and the packed mip tail. Wide colour engine writes have
+    * a separately observed rounding difference (see m9_blit_engine). */
+   if (!m9_clear_on_engine || !ctx->blitter || ctx->blitter->running ||
+       ctx->blitter->cb_slot != 0 ||
+       ctx->lost || ctx->query_active || render_condition_enabled ||
+       ctx->faa_surface.graph.initialized ||
+       (res->base.target != PIPE_TEXTURE_2D &&
+        res->base.target != PIPE_TEXTURE_RECT) ||
+       res->base.nr_samples > 1 || res->base.depth0 != 1 ||
+       res->base.array_size != 1 || dst->first_layer || dst->last_layer ||
+       dst->format != res->base.format || res->cpp != 4 ||
+       util_format_is_pure_integer(dst->format) ||
+       util_format_get_component_bits(dst->format,
+                                      UTIL_FORMAT_COLORSPACE_RGB, 0) > 8 ||
+       (dst->level && !m9_level_targets) ||
+       !m9_resource_is_color_target(res, dst->level) ||
+       !width || !height || x >= w || y >= h ||
+       width > w - x || height > h - y)
+      return false;
+
+   uint32_t skipped = ctx->skipped_draws;
+   m9_blitter_save(ctx);
+   /* Unlike a copy shader, the clear shader replaces fragment CB0. */
+   util_blitter_save_fragment_constant_buffer_slot(ctx->blitter,
+                                                   &ctx->fs_constants);
+   util_blitter_clear_render_target(ctx->blitter, dst, color,
+                                    x, y, width, height);
+   if (!m9_engine_drew(ctx, skipped))
+      return false;
+   ctx->engine_clears++;
+   return true;
 }
 
 /* One bilinear 8-bit texel, with the edge clamped: the reduction a filtered
@@ -9692,6 +9757,7 @@ m9_context_create(struct pipe_screen *pscreen, void *priv, unsigned flags)
    m9_record_liveness = debug_get_bool_option("M9X_RECORD_LIVENESS", true);
    m9_split_enable = debug_get_bool_option("M9X_SPLIT", true);
    m9_level_targets = debug_get_bool_option("M9X_LEVEL_TARGET", true);
+   m9_clear_on_engine = debug_get_bool_option("M9X_CLEAR_ENGINE", true);
    m9_blit_on_engine = debug_get_bool_option("M9X_BLIT_ENGINE", true);
    ctx->dump_from = debug_get_num_option("M9X_DUMP_FROM", 0);
    ctx->dump_count = debug_get_num_option("M9X_DUMP_COUNT", 4096);
