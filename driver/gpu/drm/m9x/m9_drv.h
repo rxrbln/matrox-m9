@@ -464,6 +464,7 @@ int m9x_faa_submit_graph(struct m9x_device *mdev,
 			 u64 *point, bool *posted);
 bool m9x_faa_graph_active(struct m9x_device *mdev);
 bool m9x_faa_graph_preparing(struct m9x_device *mdev);
+bool m9x_faa_graph_profile_enabled(void);
 struct m9_faa_prepared_graph *m9x_faa_graph_acquire(struct drm_file *file,
 							  u64 id, u32 generation);
 struct drm_gem_object *m9x_faa_graph_owner(

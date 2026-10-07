@@ -532,6 +532,14 @@ static void m9_address_clear_root_image(struct m9x_address_space *address)
 	}
 }
 
+/* The graph INIT producer needs the same source queue's secondary root and
+ * 16-MiB class-1 policy even though it never enables the private diagnostic
+ * submit ioctl. Select the layout before any graph can be PREPARED. */
+static bool m9_address_faa_profile(void)
+{
+	return m9x_faa_diag_enabled() || m9x_faa_graph_profile_enabled();
+}
+
 int m9x_address_init(struct m9x_device *mdev)
 {
 	struct m9x_address_space *address;
@@ -550,7 +558,7 @@ int m9x_address_init(struct m9x_device *mdev)
 	if (!address)
 		return -ENOMEM;
 	layout = &address->layout;
-	if (m9x_faa_diag_enabled() &&
+	if (m9_address_faa_profile() &&
 	    (mdev->pdev->device != 0x0540 || mdev->pdev->revision != 1 ||
 	     mdev->pdev->subsystem_device != 0x22c0 ||
 	     mdev->bar0_bytes != SZ_256M || m9x_local_gpu_base))
@@ -560,7 +568,7 @@ int m9x_address_init(struct m9x_device *mdev)
 	address->local_pages = m9x_vram_gpu_limit(mdev) >> PAGE_SHIFT;
 	ret = m9_address_layout_init(mdev->vram_total,
 				     (u64)address->local_pages << PAGE_SHIFT,
-				     m9x_faa_diag_enabled(), layout);
+				     m9_address_faa_profile(), layout);
 	if (ret)
 		return ret;
 	if (layout->system_end <= M9_ADDRESS_SYSTEM_BASE)

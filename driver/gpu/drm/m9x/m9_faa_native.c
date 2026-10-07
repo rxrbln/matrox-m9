@@ -307,6 +307,15 @@ bool m9x_faa_graph_active(struct m9x_device *mdev)
 		mdev->transport.faa->graph_preparing);
 }
 
+bool m9x_faa_graph_profile_enabled(void)
+{
+#ifdef M9_FAA_GRAPH_INIT_CONTROL
+	return true;
+#else
+	return false;
+#endif
+}
+
 bool m9x_faa_graph_preparing(struct m9x_device *mdev)
 {
 	lockdep_assert_held(&mdev->transport.lock);
