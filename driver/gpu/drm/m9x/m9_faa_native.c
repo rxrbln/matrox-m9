@@ -159,6 +159,9 @@ struct m9x_faa_replay {
 	 * borrowed storage, never a locally mapped owner to release. */
 	u64 borrowed_color_bytes;
 	bool borrowed_color_observed;
+	/* Successful submit transfers the caller's pin and lookup reference.
+	 * Keep its native address owned through later diagnostic readback. */
+	struct drm_gem_vram_object *retained_color;
 	struct drm_gem_object *output_color;
 	u64 output_point;
 	u32 output_generation;
@@ -367,6 +370,10 @@ static bool m9_faa_release(struct m9x_device *mdev, struct m9x_faa_replay *r)
 		} else if (o->cpu) {
 			dma_free_coherent(&mdev->pdev->dev, o->bytes, o->cpu, o->dma);
 		}
+	}
+	if (r->retained_color) {
+		m9x_vram_unpin(r->retained_color);
+		drm_gem_vram_put(r->retained_color);
 	}
 	if (r->output_color)
 		drm_gem_object_put(r->output_color);
@@ -1284,7 +1291,7 @@ static int m9_faa_publish_output_phase(struct m9x_device *mdev, u32 phase,
 
 int m9x_faa_submit_diag(struct m9x_device *mdev, u32 color,
 			struct drm_gem_vram_object *color_bo, u64 *point,
-			bool *color_active)
+			bool *color_active, bool *color_retained)
 {
 	struct m9x_transport *t = &mdev->transport;
 	struct m9x_faa_replay *r;
@@ -1295,9 +1302,11 @@ int m9x_faa_submit_diag(struct m9x_device *mdev, u32 color,
 
 	*point = 0;
 	*color_active = false;
+	*color_retained = false;
 	mutex_lock(&t->lock);
 	r = t->faa;
-	if (!m9_faa_diag || !r || !r->prepared || r->attempted || t->wedged ||
+	if (!m9_faa_diag || !r || !r->prepared || r->attempted ||
+	    r->retained_color || t->wedged ||
 	    !IS_ALIGNED(color, PAGE_SIZE)) {
 		ret = t->wedged ? -EIO : -EINVAL;
 		goto unlock;
@@ -1576,6 +1585,11 @@ int m9x_faa_submit_diag(struct m9x_device *mdev, u32 color,
 		}
 		m9_faa_observe(mdev, r, false);
 		m9_faa_observe_borrowed_color(mdev, r, color_bo, false);
+		/* The one-shot stream retains this address even without a SYSTEM
+		 * output. Transfer the caller's existing pin/reference; taking a
+		 * new pin here would nest its reservation under TRANSPORT. */
+		r->retained_color = color_bo;
+		*color_retained = true;
 		dev_info(&mdev->pdev->dev,
 			 "M9 FAA private frame retired: point=%#llx sampled_primary=%#x ordinary_output=%#x 320x240\n",
 			 *point, color, m9_faa_output_owner(r) ? m9_faa_output_owner(r)->base : 0);

@@ -410,7 +410,7 @@ int m9x_faa_source_init_admit_locked(struct m9x_device *mdev,
 int m9x_faa_prepare_diag(struct m9x_device *mdev);
 int m9x_faa_submit_diag(struct m9x_device *mdev, u32 color,
 			struct drm_gem_vram_object *color_bo, u64 *point,
-			bool *color_active);
+			bool *color_active, bool *color_retained);
 void m9x_faa_fini(struct m9x_device *mdev);
 int m9x_faa_output_read(struct m9x_device *mdev, struct drm_file *file,
 		       const struct drm_parhelia_m9_surface_access *args);

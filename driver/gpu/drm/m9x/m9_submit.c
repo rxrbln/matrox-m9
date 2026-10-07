@@ -643,7 +643,7 @@ static int m9_submit_first_triangle(struct m9x_device *mdev,
 	struct drm_parhelia_m9_bo_ref ref;
 	struct drm_gem_vram_object *vram;
 	struct drm_gem_object *gem;
-	bool color_active;
+	bool color_active, color_retained = false;
 	long wait;
 	s64 offset;
 	u64 address;
@@ -713,13 +713,14 @@ static int m9_submit_first_triangle(struct m9x_device *mdev,
 		goto out_unreserve;
 	ret = m9x_faa_diag_enabled() ?
 		m9x_faa_submit_diag(mdev, lower_32_bits(address), vram,
-				  &args->out_point, &color_active) :
+				  &args->out_point, &color_active, &color_retained) :
 		m9x_submit_triangle_diag(mdev, lower_32_bits(address), vram,
 					&args->out_point, &color_active);
-	if (color_active) {
-		/* A timed-out local draw can keep writing after the ioctl returns.
-		 * The draw path transferred its unsignaled fence, pin and GEM
-		 * reference to the transport before dropping its lock.
+	if (color_active || color_retained) {
+		/* Posted failures transfer the pin/reference to quarantine.
+		 * Successful FAA diagnostics retain them for later readback,
+		 * including profiles without an ordinary output allocation.
+		 * Both owners release only after requester DMA shutdown.
 		 */
 		ttm_bo_unreserve(&vram->bo);
 		return ret;
