@@ -147,6 +147,9 @@ source primary endpoint 4,980. That 12-byte suffix and its 692-byte retained
 secondary packet belong to the **returning original DRAW**, before normal
 Lock is invoked. The Lock writes 14 relocation fields farther into the CPU
 primary buffer but has **no observed post** before waiting for `0x140`.
-The source stage attribution must be resolved before any native `0x140`
+Its vendor index-43 dependency emitter requests `0x140`, while the `0x141`
+completion token is CPU-written at primary offset 5,108, beyond the only
+posted endpoint 4,980. The source queue/finalizer ordering must be resolved
+before any native `0x140`
 submission; the 4,980-byte DRAW tail is not a Lock completion. All captured
 bytes and addresses remain forensic evidence, not live native inputs.
