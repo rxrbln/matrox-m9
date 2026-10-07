@@ -458,13 +458,14 @@ m9_faa_color_lock_history_valid(const struct m9_faa_graph *graph)
    if (graph->color_next_lock_point) {
       if (graph->color_program_count != 4 ||
           graph->color_lock_point != graph->color_next_lock_point ||
-          (delta != 0xd0 && delta != 0xe0))
+          (delta != 0xd0 && delta != 0xe0 && delta != 0x1a0))
          return false;
       previous = graph->color_next_previous_unlock_point;
    } else {
       if (graph->color_next_previous_unlock_point ||
           (graph->color_program_count != 2 && graph->color_program_count != 4) ||
-          delta != (graph->color_program_count == 2 ? 0xa0 : 0xe0))
+          (graph->color_program_count == 2 ? delta != 0xa0 :
+           (delta != 0xe0 && delta != 0x150)))
          return false;
       previous = graph->init_point;
    }
@@ -625,18 +626,35 @@ m9_faa_surface_color_frame_kernel(struct m9_screen *screen,
    if (!screen || !surface || !upload || !state)
       return -EINVAL;
    struct m9_faa_graph *graph = &surface->graph;
+   const bool sampled_reset = clear_flags ==
+      (PARHELIA_M9_FAA_COLOR_CLEAR_TARGET | PARHELIA_M9_FAA_COLOR_CLEAR_DEPTH);
    if (screen->faa.chip != M9_FAA_CHIP_M9 || !screen->wait_point ||
        surface->width != 320 || surface->height != 240 || surface->format != 0x66 ||
        state->width != surface->width || state->height != surface->height ||
-       state->depth_enabled || state->cull_face != PIPE_FACE_NONE || state->flatshade ||
        state->scissor_enabled || upload->color_flat != state->flatshade || upload->layout.count != 4 || upload->record_bytes != 32 ||
        (!upload->vertex_count || upload->vertex_count % 3) ||
-       (clear_flags & ~PARHELIA_M9_FAA_COLOR_CLEAR_TARGET) || clear_color)
+       (clear_flags & ~(PARHELIA_M9_FAA_COLOR_CLEAR_TARGET | PARHELIA_M9_FAA_COLOR_CLEAR_DEPTH)) || clear_color)
       return -EOPNOTSUPP;
+   uint32_t depth_flags = 0, raster_flags = 0;
+   if (sampled_reset) {
+      if (!state->depth_enabled || !state->depth_write || state->depth_func != PIPE_FUNC_LESS ||
+          (state->cull_face != PIPE_FACE_NONE && state->cull_face != PIPE_FACE_FRONT &&
+           state->cull_face != PIPE_FACE_BACK))
+         return -EOPNOTSUPP;
+      depth_flags = PARHELIA_M9_FAA_COLOR_DEPTH_LESS_WRITE;
+      if (state->flatshade) raster_flags |= PARHELIA_M9_FAA_COLOR_RASTER_FLAT;
+      if (state->cull_face != PIPE_FACE_NONE)
+         raster_flags |= ((state->cull_face == PIPE_FACE_BACK) == state->front_ccw) ?
+            PARHELIA_M9_FAA_COLOR_RASTER_CULL_CW : PARHELIA_M9_FAA_COLOR_RASTER_CULL_CCW;
+   } else if (state->depth_enabled || state->cull_face != PIPE_FACE_NONE || state->flatshade ||
+              (clear_flags & ~PARHELIA_M9_FAA_COLOR_CLEAR_TARGET)) {
+      return -EOPNOTSUPP;
+   }
    const bool first = !graph->color_lock_attempted;
-   if (first && clear_flags)
-      return -EOPNOTSUPP; /* FIRST reset is not yet a native transaction. */
-   const uint64_t delta = first ? 0xe0 : clear_flags ? 0xe0 : 0xd0;
+   if (first && ((clear_flags && !sampled_reset) || raster_flags))
+      return -EOPNOTSUPP; /* FIRST depth producer currently has smooth/no-cull source proof. */
+   const uint64_t delta = sampled_reset ? (first ? 0x150 : 0x1a0) :
+                          first ? 0xe0 : clear_flags ? 0xe0 : 0xd0;
    if (first) {
       if (!graph->prepared || !graph->prepared_id || !graph->initialized ||
           !graph->init_point || (graph->init_point & 15) || graph->init_point > UINT64_MAX - delta)
@@ -687,6 +705,8 @@ m9_faa_surface_color_frame_kernel(struct m9_screen *screen,
    request.height = state->height;
    request.clear_flags = clear_flags;
    request.clear_color = clear_color;
+   request.depth_flags = depth_flags;
+   request.raster_flags = raster_flags;
    const struct drm_parhelia_m9_faa_graph_color_frame before = request;
    if (first) {
       graph->color_lock_attempted = true;
