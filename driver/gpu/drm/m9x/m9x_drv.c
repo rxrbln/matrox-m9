@@ -83,7 +83,7 @@ static const struct drm_ioctl_desc m9x_ioctls[] = {
 
 struct m9_transport_snapshot {
 	u64 sampled_ns, submitted, completed, async_point;
-	u32 raw[4], generation, next, last, epoch;
+	u32 raw[4], pool_raw[2], generation, next, last, epoch;
 	u32 queue_head, queue_count, queue_peak, async_target;
 	u32 command_slot, command_offset;
 	bool armed, wedged, async_pending, bus_master;
@@ -113,8 +113,13 @@ static int m9_transport_snapshot_read(struct m9x_device *mdev,
 		goto unlock;
 	}
 	BUILD_BUG_ON(sizeof(out->raw) > PAGE_SIZE);
+	BUILD_BUG_ON(0x20 + sizeof(out->pool_raw) > PAGE_SIZE);
 	for (unsigned int i = 0; i < ARRAY_SIZE(out->raw); i++)
 		out->raw[i] = READ_ONCE(((u32 *)t->fence_cpu)[i]);
+	/* Source pool allocation uses its separate lane at +0x20. These
+	 * raw words are observation only; raw24 is not a derived high epoch. */
+	for (unsigned int i = 0; i < ARRAY_SIZE(out->pool_raw); i++)
+		out->pool_raw[i] = READ_ONCE(((u32 *)t->fence_cpu)[0x20 / 4 + i]);
 	out->sampled_ns = ktime_get_ns();
 	out->submitted = t->submitted_point;
 	out->completed = t->completed_point;
@@ -150,6 +155,8 @@ static int m9_transport_snapshot_show(struct seq_file *m, void *unused)
 		return ret;
 	seq_printf(m, "sampled_ns=%llu raw00=%08x raw04=%08x raw08=%08x raw0c=%08x\n",
 		   s.sampled_ns, s.raw[0], s.raw[1], s.raw[2], s.raw[3]);
+	seq_printf(m, "raw20=%08x raw24=%08x\n",
+		   s.pool_raw[0], s.pool_raw[1]);
 	seq_printf(m, "submitted=%#llx completed=%#llx next=%#x last=%#x epoch=%#x generation=%u\n",
 		   s.submitted, s.completed, s.next, s.last, s.epoch, s.generation);
 	seq_printf(m, "queue_head=%u queue_count=%u queue_peak=%u async_pending=%u async_target=%#x async_point=%#llx\n",
