@@ -75,9 +75,10 @@ likewise refuses a different routing or active mask rather than guessing.
 
 ## Remaining causal gaps
 
-The changed pool is a saved register image, not edge/fragment evidence. Its
-A1/A3/A4 fields match the still-zero saved sentinel fields. The selected
-source raster controls and dispatch exist, but fragment generation is unproven.
+The pool is a saved register image, not independently decoded fragment data.
+With phased submission, pool A1 and sentinel+8 are now both0x24a; A3/A4 remain
+zero. Main and companion stores also receive writes. This establishes GPU
+activity, but neither decodes those records nor proves correct FAA pixels.
 The manually invoked ac1f0 output flow is still below the unjoined public
 surface read/dirty-flush lifecycle. The association itself is present: actual
 101050 inserts its node and both returned interfaces publish the dirty outer
@@ -107,7 +108,37 @@ observation of the actual pinned/reserved caller BO before submit and after
 retirement. It keeps borrowed ownership separate and never invents a zero
 baseline after a mapping failure. The retained-store checker accepts this
 optional paired observation only when its address matches the submitted color.
-The observer builds; hardware evidence for this additional surface is pending.
+The subsequent fresh-boot d76d07d run observes that surface changing from zero
+to1308 nonzero words/2819 bytes, FNV04099694. These are retained sampled-surface
+words, not a decoded pixel proof.
+
+Kernel d76d07d adds an opt-in test of the remaining output publication order:
+reserve the live output address without staging its binding, then publish its
+compact and secondary mappings after actual120 retirement, before the160
+suffix. The source first references that output at byte5264, beyond the120
+prefix endpoint5068. Host tests exercise the actual helpers, including failure
+after a posted prefix; the integrated module builds. The
+[hardware run](../tests/m9-faa-late-output-hardware-20261007/README.md)
+confirms publication after actual120 but still produces an all-zero output;
+main and companion hashes exactly match the earlier phased run. Later output
+publication alone is insufficient. DMA allocation still happens early, and the native120
+wait is stronger than the original CPU deadline110. The intervening C2 CPU
+aperture mapping is another remaining chronology difference.
+
+The [resolve resource-role proof](parhelia-m9-faa-resolve-resource-roles.md)
+also rules out a simple reversed explicit destination: the successful vendor
+path passes the SYSTEM temporary as destination and companion/main as inputs.
+The sampled primary becomes the destination in the separate allocation-failure
+branch. No explicit primary-to-output copy is justified by this evidence;
+opaque indirect color references remain unproven.
+
+The [complete address-encoding audit](parhelia-m9-faa-complete-address-encoding.md)
+matches all52 relocations and31 owner extents against the source plan, and
+compares the actual native encoder with shipping vendor instructions in310
+cases. Two distinct native placements and packed low-bit controls agree,
+including paired C2/C3 reconstruction. No additional stale-address or
+discarded-bit defect was found in this admitted profile. This does not prove
+that the captured flow includes every required lifecycle transition.
 
 ## Validation
 

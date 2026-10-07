@@ -34,21 +34,25 @@ are separately checked. Therefore the missing CPU alias itself is not a
 missing GPU shader translation. This does not establish equivalence of the
 source314/31c timing or hardware effects.
 
-Native currently reserves and publishes the later SYSTEM output with every
+The default native path reserves and publishes the later SYSTEM output with every
 other owner before initial GPU execution. Its final B leaves and four-word
 records match the actual per-owner grammar, but the source publishes that
 output after preprocessing. Matching contents do not prove that moving these
 publication operations before GPU execution is equivalent:31c's temporal
 hardware effects remain unqualified.
 
-A narrow diagnostic can preserve the source allocation boundary by reserving
+A narrow diagnostic in kernel d76d07d tests later mapping publication by reserving
 only the later output node early, leaving its binding unstaged across manager
 initialization, then staging/committing that live flags30 binding after genuine
 120 retirement and before the160 endpoint. Existing validated compact/C24
 publication must derive words from the live node/DMA owner. All other mappings
 remain unchanged; failure after an earlier post must retain the ordinary
-quarantine path. This is a source-shaped experiment, not a demonstrated cause
-or a replay of captured register values.
+quarantine path. This is a source-shaped experiment, not a replay of captured
+register values. Its
+[fresh-boot hardware run](../tests/m9-faa-late-output-hardware-20261007/README.md)
+confirms the120 publication point but still produces black output, with
+unchanged main/companion hashes compared with early publication. This timing
+change alone is insufficient. CPU DMA allocation remains early.
 
 The original program-access counter deadline is0 and original draw-format
 counter deadline110; c0/120 are the independently retained prefix endpoints.
