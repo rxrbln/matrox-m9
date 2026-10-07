@@ -19,13 +19,20 @@ An initial unobserved failure was repeated once with durable staging and
 host-streamed phase markers; the repeat establishes the batch transaction
 as the boundary. No optimization or new feature was reverted. Reviews have
 not found a concrete C3 relocation or input-lifetime defect. A complete
-original flat/CW multi-draw comparison is the next diagnostic step.
+original flat/CW N1/N2/N3 comparison now passes against frozen actual C
+(`d8d50832`), including whole primary/secondary, owner placement and all
+fourteen ENDs. It does not qualify the live one-output hardware adaptation.
+The recovered target is on boot4640313a with no candidate module loaded;
+opt-in submission phase tracing is being added to locate the failing END.
 
 Separate progress remains host-only: native immutable code-slot/C2 lowering
 `e68f6be`, executable counted-pool ownership `2b3e755`, retired CPU-frame
 reclamation `9282eee`, and flat-interface classification compatibility
-`1d977db`. Mixed-program native integration, repeated initialized-depth
-frames and sustained pool wiring remain open. Glxgears FAA and later Quake3
+`1d977db`. Mixed-program native execution is now integrated as `89e9b86` with an
+owned preloaded instruction page and per-job C2/flat metadata; its host
+mixed400/368/832/1024 producer and failure tests pass. It has no new GPU
+qualification. Repeated initialized-depth frames and sustained pool wiring
+remain open. Glxgears FAA and later Quake3
 GL1, glmark2, piglet and Quake3 GL2 objectives are not complete.
 
 ## October 8: native frame batches and actual flat shader frontend
