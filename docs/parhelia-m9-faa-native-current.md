@@ -65,6 +65,9 @@ receipt with a nonzero point; initialized file-token RELEASE leaves the
 kernel's native owner references intact. Linked graph tests pass 5,211 cases
 in normal and sanitizer builds. This bridge does not yet select FAA draw or
 presentation commands for applications.
+The [post-INIT native seam review](parhelia-m9-faa-post-init-native-seam.md)
+documents why the retained virtual primary requires a separate public draw
+continuation and exact graph identity, rather than ordinary `M9_SUBMIT`.
 
 Kernel `e933dad` guards the direct F022 diagnostic aperture path after the
 source-qualified normal-Lock replay starts; its actual-C tests cover three
