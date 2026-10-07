@@ -10,6 +10,20 @@ application rendering is not yet validated. This note is separate from P690
 
 ## 2026-10-07: corrected original public draw flow
 
+The first live-shader FAA image is now hardware verified on M9128. The full
+INIT b0 → HEAD c0 → DRAW160 → Lock190 path reaches raw191/end8580/posts6
+without a wedge. F021 readback produces the requested cyan triangle:9801
+colored pixels,9361 full pixels and440 partial-coverage pixels, with zero
+interior/exterior/channel errors. The live FS binding fix9cf4af6 derives the
+constant span and pair count from the retained upload layout, avoiding the
+preceding red utility constants. See [the image and hardware evidence](../tests/m9-faa-public-vs-lock-20261007/README.md).
+
+The helper's complete session still failed its20-second cap after writing the
+raw image; buffered output did not identify the terminal fsync/release/close
+stage. The next batch records those stages and exercises the source-identical
+Unlock encoder. Continuous frames, generalized GL shader/vertex uploads and
+glxgears/ioquake3 FAA remain unfinished.
+
 Application FAA remains unfinished. The source HEAD hardware run now passes
 INIT b0 then c0/state12 on the same M9128 boot, with rawc1, generation0,
 queue0 and no wedge immediately and two seconds later. It posts only the
@@ -34,9 +48,10 @@ continuation changed that block after submission. This is a source ordering
 error, not proof of a device incompatibility. The corrected original c0
 observation allows the emulator to follow the real conditional branch. The
 vendor DRAW then returns and submits one complete source block with closed
-length fields and no inserted finisher. Final raster completion through the
-normal Lock/readback tail, pixels, generalized GL shader uploads, continuous frames and application
-presentation remain unverified. See [the source analysis](parhelia-m9-faa-public-vs-open-block.md).
+length fields and no inserted finisher. Normal Lock190 and the first live
+pixels are now verified as described above; generalized GL shader uploads,
+continuous frames and application presentation remain unverified.
+See [the source analysis](parhelia-m9-faa-public-vs-open-block.md).
 
 ## 2026-10-07: real M9128 Lock, Unlock and second Lock
 
