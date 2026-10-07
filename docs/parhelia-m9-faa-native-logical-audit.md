@@ -31,6 +31,21 @@ under its store lock. Missing or undersized owners refuse submission; explicit
 diagnostic overrides remain explicit. The current private180 image already
 uses the source-derived9b04 and is unaffected by that bug.
 
+## Confirmed application lifetime gap, fix pending
+
+The store lock currently covers growth and handle snapshot separately, then
+ends before emission and ioctl. There is no broader submission lock. The batch
+retains integer GEM handles, not userspace ownership references; another context
+can grow the shared group and close main/aux/companion before kernel lookup.
+Companion reads also occur outside that lock. The required follow-up must keep
+the group stable through every split-pass submission and all error exits;
+kernel references then retain accepted work. The screen destructor also lacks
+an explicit companion close (closing the final DRM file eventually releases
+its handles). These are application lifetime defects, not an explanation for
+the isolated private180 black image. The follow-up is not yet integrated.
+
+## Deliberately bounded diagnostic constants
+
 The private profile's320x240 geometry, output extent50000, format descriptors
 and packet offsets remain deliberately fixed. They describe a guarded source
 experiment, not arbitrary application FAA support. Address fixups, page clears
@@ -85,6 +100,6 @@ secondary byte is unchanged. Source checks and the private module build pass.
 No new hardware rendering pass is claimed for mask normalization.
 The integrated application AD/ownership fixtures pass ASAN/UBSAN and the full
 Mesa DSO builds. Public lifecycle checks reject four false observations; the
-global source checks reject four altered initialization variants. Shared
-application store lifetime from handle snapshot through ioctl is being checked
-separately: locking a snapshot alone does not retain its GEM handles.
+global source checks reject four altered initialization variants. The confirmed
+shared-store race above remains open; these passing tests do not cover concurrent
+replacement between snapshot and submission.
