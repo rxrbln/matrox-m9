@@ -127,6 +127,7 @@ struct m9_faa_graph {
    /* PREPARE pins CPU-owned GEM resources only. A real GPU init receipt is
     * still required before initialized can become true. Generation0 is valid. */
    uint64_t prepared_id;
+   uint64_t init_point;
    uint32_t prepared_generation;
    bool prepared;
    bool initialized;

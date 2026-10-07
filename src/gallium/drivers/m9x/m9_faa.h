@@ -31,6 +31,9 @@ struct m9_faa {
    /* Allocate context-owned candidate surfaces only. This does not enable
     * command emission, shader variants, resolve, or multisample caps. */
    bool prepare;
+   /* Explicit first-context kernel INIT after owner PREPARE. The kernel
+    * returns the real retired point; this does not enable FAA draw. */
+   bool init_graph;
    /* Emit the pair in the raster range as well as the preprocessing one.
     * The captured vendor stream carries it in preprocessing only; a sticky
     * register makes that sufficient, which is what M9X_FAA_RASTER tests. */

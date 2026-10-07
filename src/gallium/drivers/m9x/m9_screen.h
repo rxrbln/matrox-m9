@@ -27,8 +27,8 @@ int m9_faa_graph_create(struct m9_screen *screen, uint32_t width,
 void m9_faa_graph_destroy(struct m9_screen *screen, struct m9_faa_graph *graph);
 /* Preparation retains destination/depth references and publishes all six
  * owners atomically. It emits nothing and leaves graph.initialized false.
- * A matching target reuses its owners. Replacing an initialized target
- * returns EBUSY; destroy requires all GPU users to have retired. */
+ * A matching target reuses its owners. The kernel retains its native owner
+ * references after an initialized graph's file token is released. */
 int m9_faa_surface_prepare(struct m9_screen *screen,
                            struct m9_resource *destination,
                            struct m9_resource *depth, uint64_t offset,
@@ -70,6 +70,10 @@ bool m9_faa_surface_init_request(const struct m9_screen *screen,
  * allocated and uninitialized. One graph may be retained per DRM file. */
 int m9_faa_surface_prepare_kernel(struct m9_screen *screen,
                                    struct m9_faa_surface *surface);
+/* Opt-in synchronous first-context INIT. Only the kernel's state-2/nonzero
+ * point receipt marks the graph initialized; no application draw is emitted. */
+int m9_faa_surface_init_kernel(struct m9_screen *screen,
+                               struct m9_faa_surface *surface);
 /* Exact token release works after reset. Failure preserves token and owners;
  * kernel file-close still owns final cleanup if context teardown cannot release. */
 int m9_faa_graph_release_kernel(struct m9_screen *screen,

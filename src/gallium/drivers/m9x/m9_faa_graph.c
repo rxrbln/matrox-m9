@@ -108,9 +108,9 @@ m9_faa_surface_prepare(struct m9_screen *screen,
        surface->destination_offset == offset && surface->width == width &&
        surface->height == height && surface->format == destination->format)
       return 0;
-   /* Preparation cannot retire or replace a group later made executable. */
-   if (surface->graph.initialized)
-      return -EBUSY;
+   /* The kernel's native context keeps independent references to a graph
+    * after file RELEASE. Retarget still releases the exact old token before
+    * publishing fresh owners; the new graph cannot inherit INIT's receipt. */
    /* The returned normal-Lock view addresses a tiled GEM primary. A
     * userspace layout field cannot turn an ENGINE_ONLY GEM into that owner.
     * Current CREATE_BO rejects TILED|ENGINE_ONLY, so use real BO_TILED. */
@@ -245,9 +245,11 @@ m9_faa_surface_prepare_kernel(struct m9_screen *screen,
    struct drm_parhelia_m9_faa_graph_prepare request = {0};
    struct m9_faa_graph *graph;
 
-   if (!screen || !surface || surface->graph.initialized)
+   if (!screen || !surface)
       return -EINVAL;
    graph = &surface->graph;
+   if (graph->initialized)
+      return graph->prepared && graph->prepared_id && graph->init_point ? 0 : -EPROTO;
    if (!m9_faa_surface_init_request(screen, surface, &snapshot) ||
        !snapshot.source_capacity_compatible)
       return -EOPNOTSUPP;
@@ -292,6 +294,41 @@ m9_faa_surface_prepare_kernel(struct m9_screen *screen,
 }
 
 int
+m9_faa_surface_init_kernel(struct m9_screen *screen,
+                            struct m9_faa_surface *surface)
+{
+   struct drm_parhelia_m9_faa_graph_init request = {0};
+   struct m9_faa_graph *graph;
+
+   _Static_assert(sizeof(request) == 32, "FAA INIT ioctl ABI differs from kernel");
+
+   if (!screen || !surface)
+      return -EINVAL;
+   graph = &surface->graph;
+   if (!graph->prepared || !graph->prepared_id)
+      return -EINVAL;
+   if (graph->initialized)
+      return graph->init_point ? 0 : -EPROTO;
+   if (graph->init_point)
+      return -EPROTO;
+   request.graph_id = graph->prepared_id;
+   request.generation = graph->prepared_generation;
+   if (ioctl(screen->fd, DRM_IOCTL_PARHELIA_M9_FAA_GRAPH_INIT, &request))
+      return -errno;
+   /* The ioctl waits for the native producer's actual retirement. A
+    * PREPARED token, an unretired point, or a changed identity proves no
+    * usable graph, even if ioctl itself reported success. */
+   if (request.graph_id != graph->prepared_id ||
+       request.generation != graph->prepared_generation || request.flags ||
+       request.pad || request.state != PARHELIA_M9_FAA_GRAPH_INITIALIZED ||
+       !request.init_point)
+      return -EPROTO;
+   graph->init_point = request.init_point;
+   graph->initialized = true;
+   return 0;
+}
+
+int
 m9_faa_graph_release_kernel(struct m9_screen *screen, struct m9_faa_graph *graph)
 {
    struct drm_parhelia_m9_faa_graph_release request = {0};
@@ -299,10 +336,7 @@ m9_faa_graph_release_kernel(struct m9_screen *screen, struct m9_faa_graph *graph
    if (!screen || !graph)
       return -EINVAL;
    if (!graph->prepared_id)
-      return graph->prepared ? -EPROTO : 0;
-   /* Initialized graphs need a future GPU retirement/release contract. */
-   if (graph->initialized)
-      return -EBUSY;
+      return graph->prepared || graph->initialized || graph->init_point ? -EPROTO : 0;
    request.graph_id = graph->prepared_id;
    request.generation = graph->prepared_generation;
    if (ioctl(screen->fd, DRM_IOCTL_PARHELIA_M9_FAA_GRAPH_RELEASE, &request))
@@ -310,5 +344,7 @@ m9_faa_graph_release_kernel(struct m9_screen *screen, struct m9_faa_graph *graph
    graph->prepared_id = 0;
    graph->prepared_generation = 0;
    graph->prepared = false;
+   graph->initialized = false;
+   graph->init_point = 0;
    return 0;
 }

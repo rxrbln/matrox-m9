@@ -50,4 +50,23 @@ struct drm_parhelia_m9_faa_graph_release {
 		struct drm_parhelia_m9_faa_graph_release)
 
 #endif
+
+/* A newer kernel exposes synchronous first-context initialization. Keep this
+ * declaration separate so installed headers with PREPARE but without INIT
+ * still compile; the old kernel will return ENOTTY at the ioctl boundary. */
+#ifndef DRM_IOCTL_PARHELIA_M9_FAA_GRAPH_INIT
+#define DRM_PARHELIA_M9_FAA_GRAPH_INIT 0x10
+#define PARHELIA_M9_FAA_GRAPH_INITIALIZED 2u
+struct drm_parhelia_m9_faa_graph_init {
+   __u64 graph_id;
+   __u32 generation;
+   __u32 flags;
+   __u64 init_point;
+   __u32 state;
+   __u32 pad;
+};
+#define DRM_IOCTL_PARHELIA_M9_FAA_GRAPH_INIT \
+   DRM_IOWR(DRM_COMMAND_BASE + DRM_PARHELIA_M9_FAA_GRAPH_INIT, \
+            struct drm_parhelia_m9_faa_graph_init)
+#endif
 #endif
