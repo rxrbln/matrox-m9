@@ -1,5 +1,30 @@
 # M9128 generalized GL FAA upload boundary
 
+## October 8: combined flat/CW batch fails after successful INIT
+
+The frozen native candidate `d2a5c03` (root `b1e5ba3`) now pairs flat32
+programs with their full fragment metadata and common cull state. Mesa
+`970d205` forwards those profiles. Host checks and full builds pass, but the
+physical M9128 test **fails**: INIT retires at b0, then three flat368/CW draws
+with distinct CB colors and overlapping depth enter FRAME_BATCH; the target
+becomes unreachable before the expected Lock340 or any pixel readback.
+The exact failing GPU END is not yet known. [Candidate hashes, inputs,
+runner and host-streamed failure](../tests/m9-faa-first-batch-hardware-20261008/README.md).
+The earlier single smooth six-vertex FIRST pass remains valid and narrower.
+
+An initial unobserved failure was repeated once with durable staging and
+host-streamed phase markers; the repeat establishes the batch transaction
+as the boundary. No optimization or new feature was reverted. Reviews have
+not found a concrete C3 relocation or input-lifetime defect. A complete
+original flat/CW multi-draw comparison is the next diagnostic step.
+
+Separate progress remains host-only: native immutable code-slot/C2 lowering
+`e68f6be`, executable counted-pool ownership `2b3e755`, retired CPU-frame
+reclamation `9282eee`, and flat-interface classification compatibility
+`1d977db`. Mixed-program native integration, repeated initialized-depth
+frames and sustained pool wiring remain open. Glxgears FAA and later Quake3
+GL1, glmark2, piglet and Quake3 GL2 objectives are not complete.
+
 ## October 8: native frame batches and actual flat shader frontend
 
 DRM `2520b48` integrates FIRST FRAME_BATCH execution for 1..32 same-program
