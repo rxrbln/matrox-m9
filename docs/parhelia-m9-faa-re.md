@@ -1,5 +1,17 @@
 # M9 multisampling (FAA): static closure, captures, and what the silicon did
 
+## October7: repeated live COLOR completes, frame reset has three stale edge pixels
+
+Native ade4713 and the full-cycle helper complete first Lock190/Unlock1b0,
+black TARGET clear, changed live CB0/geometry and second Lock290/Unlock2b0,
+release and file close with a healthy empty queue. Frame2 has9,801 colored
+pixels and zero checked interior/exterior errors, but three edge pixels
+retain old-frame color contributions. Complete frame-reset correctness is
+therefore still unproved. The single-frame GL COLOR pixel success below
+remains valid. Mesa7f90fcc also adds an unactivated presentation helper that
+copies F021 rows, authenticates Unlock, then writes the live destination.
+[Exact repeated-frame receipt, images and failing pixel oracle](../tests/m9-faa-live-color-next-20261007/README.md).
+
 ## October 7 latest: live GL COLOR triangle now passes hardware
 
 The combined Mesa5c7fc89 output-arity fix and DRMfa9f2f6 raster/gather
