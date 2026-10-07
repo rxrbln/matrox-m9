@@ -68,6 +68,59 @@ m9_faa_program_link(const struct m9_faa_program_vector *vectors,
    return true;
 }
 
+/* Source `16fa20` emits these eight M9128 forms for a single COLOR0 input.
+ * The last pair reads raster stream 0's 0x40/42 and 0x44/45 halves and writes
+ * r2d, the source oC0 route. Encoding the register fields keeps the source
+ * instruction contract visible and leaves all program/constant addresses to
+ * the retained owner binder. There is no shader or vertex byte captured here. */
+struct m9_faa_color_fs_form {
+   uint8_t op, cls, dst, a, b, c;
+   uint32_t control;
+};
+
+static const struct m9_faa_color_fs_form m9_faa_color_fs_forms[8] = {
+   {0x1c, 0, 0x1d, 0x7f, 0x7f, 0x7a, 0xa28fcf10},
+   {0x1c, 0, 0x01, 0x79, 0x7f, 0x7f, 0x8c020d10},
+   {0x1c, 0, 0x02, 0x1d, 0x7f, 0x7f, 0xac8001f0},
+   {0x1c, 0, 0x1c, 0x79, 0x7f, 0x7f, 0x8c024d10},
+   {0x1c, 0, 0x03, 0x01, 0x02, 0x79, 0xec4fcd10},
+   {0x1c, 4, 0x1b, 0x1c, 0x02, 0x03, 0xac4fcdd0},
+   {0x1e, 4, 0x2d, 0x42, 0x1b, 0x45, 0xae0ffc10},
+   {0x1d, 4, 0x2d, 0x40, 0x1b, 0x44, 0xae0ffc10},
+};
+
+bool
+m9_faa_color_fs_build(uint32_t source_stream,
+                       uint32_t *program, uint32_t program_capacity_bytes,
+                       uint32_t *constants, uint32_t constant_capacity_bytes,
+                       struct m9_faa_color_fs_interface *interface)
+{
+   static const uint32_t utility[4] = {
+      0x3f800000u, 0x3f000000u, 0u, 0x3f800000u,
+   };
+   struct m9_faa_color_fs_interface result = {8, 2, 0, 0x2d};
+   if (source_stream != 0 || !program || !constants || !interface ||
+       (uintptr_t)program % _Alignof(uint32_t) ||
+       (uintptr_t)constants % _Alignof(uint32_t) ||
+       program_capacity_bytes < 64 || constant_capacity_bytes < 16 ||
+       64 > UINTPTR_MAX - (uintptr_t)program ||
+       16 > UINTPTR_MAX - (uintptr_t)constants ||
+       overlap(program, 64, constants, 16) ||
+       overlap(program, 64, interface, sizeof(*interface)) ||
+       overlap(constants, 16, interface, sizeof(*interface)))
+      return false;
+   for (uint32_t i = 0; i < 8; i++) {
+      const struct m9_faa_color_fs_form *s = &m9_faa_color_fs_forms[i];
+      program[2 * i] = ((uint32_t)(s->a & 7u) << 29) |
+         ((uint32_t)s->b << 22) | ((uint32_t)s->c << 15) |
+         ((uint32_t)s->dst << 8) | ((uint32_t)s->cls << 5) | s->op;
+      program[2 * i + 1] = s->control | s->a >> 3;
+   }
+   memcpy(constants, utility, sizeof(utility));
+   *interface = result;
+   return true;
+}
+
 bool
 m9_faa_preprocess_moves(enum m9_faa_move_input kind, const uint8_t *inputs,
                         uint32_t count, uint32_t saturate_targets, uint32_t *output,

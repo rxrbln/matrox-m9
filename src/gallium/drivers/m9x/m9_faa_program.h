@@ -32,6 +32,23 @@ bool m9_faa_program_link(const struct m9_faa_program_vector *vectors,
                          uint32_t capacity_bytes,
                          struct m9_faa_program_layout *layout);
 
+/* Original M9128 ps_2_0 `dcl v0; mov oC0,v0` frontend. The one-color and
+ * unused-TEXCOORD controls, plus a changed position-ALU control, produce the
+ * same eight fragment slots. The live COLOR0 linkage must occupy stream 0;
+ * other fragment inputs, texture/depth state and output routes are not
+ * admitted here. Utility constants are two live-owned pairs at FS C3 [0,16).
+ * This encodes ISA fields, not a captured program allocation or address. */
+struct m9_faa_color_fs_interface {
+   uint32_t slots;
+   uint32_t constant_pairs;
+   uint32_t source_stream;
+   uint32_t result_register;
+};
+bool m9_faa_color_fs_build(uint32_t source_stream,
+                           uint32_t *program, uint32_t program_capacity_bytes,
+                           uint32_t *constants, uint32_t constant_capacity_bytes,
+                           struct m9_faa_color_fs_interface *interface);
+
 enum m9_faa_move_input {
    M9_FAA_MOVE_ATTRIBUTES,
    M9_FAA_MOVE_RECORDS,
