@@ -33,7 +33,7 @@ int m9x_faa_color_encode(const u8*blob,size_t bytes,
   in->layout.constant_begin[2]||in->layout.constant_begin[3]||in->layout.constant_end[2]||in->layout.constant_end[3]||
   in->record_stride<16||in->record_stride>256||(in->record_stride&15)||
   !in->record_count||in->record_count%3||in->record_count>12288||
-  !in->declaration_count||in->declaration_count>32||
+  !in->declaration_count||in->declaration_count>17||
   in->layout.vertex_offset!=128||in->layout.geometry_bytes>0x40000-256||
   check_mul_overflow(in->record_stride,in->record_count,&raw)||raw!=in->layout.vertex_bytes||
   in->layout.geometry_bytes!=128+raw)return -EINVAL;
@@ -107,6 +107,10 @@ int m9x_faa_color_encode(const u8*blob,size_t bytes,
  put(out->secondary+308,in->layout.entry_bytes[1]/8);put(out->secondary+moved(1084,extra),in->layout.entry_bytes[0]/8);
  for(i=0;i<2;i++){offset=i?324:1100;pairs=(in->layout.constant_end[i]-in->layout.constant_begin[i])/8;
   put(out->secondary+moved(offset,extra),0x00500000|pairs<<8);}
+ /* Register88's high byte is the source raw FLOAT4 input mask. Its
+  * low mask is the separately qualified fused position/COLOR interface. */
+ put(out->secondary+260,(((1u<<((in->declaration_count-1)/2))-1)<<24)|0x00bf00);
+ for(i=0;i<4;i++)put(out->secondary+164+i*4,in->record_stride);
  put(out->secondary+292,in->record_stride);put(out->secondary+296,in->record_count);
  put(out->secondary+moved(568,extra),0x23000001);
  put(out->secondary+moved(576,extra),padded_records);
