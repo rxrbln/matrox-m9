@@ -287,7 +287,10 @@ static int m9_faa_graph_prepare(struct drm_device *drm, void *data,
 		      DRM_EXEC_IGNORE_DUPLICATES, PARHELIA_M9_FAA_GRAPH_OWNERS);
 	drm_exec_until_all_locked(&exec) {
 		for (i = 0; i < PARHELIA_M9_FAA_GRAPH_OWNERS; i++) {
-			ret = drm_exec_prepare_obj(&exec, graph->owner[i], 0);
+			/* PREPARE posts no work, so it needs the reservation lock
+			 * without allocating a fence slot. dma_resv rejects zero
+			 * requested fence slots with -EINVAL. */
+			ret = drm_exec_lock_obj(&exec, graph->owner[i]);
 			drm_exec_retry_on_contention(&exec);
 			if (ret)
 				goto out_exec;
