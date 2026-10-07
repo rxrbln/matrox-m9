@@ -25,6 +25,24 @@ gated pending their complete source-derived implementation and hardware test.
 DRM `a918988`/`376cee8` prepare bound attachments from authentic INIT and encode
 live HZ/depth clear bodies; the complete bound clear/draw sequence is unfinished.
 
+The subsequent clear implementation is now committed: DRM `6df69cd` emits
+complete sampled b5e70 (3516/3520 bytes with live page masks), and `48fe227`
+emits bound attachment/HZ/depth setup (1160/1164 bytes and five ENDs).
+Both pass complete source comparison, varying placements/alignments and
+atomic-refusal host checks. This code has **not** been hardware-tested yet;
+the stale-edge hardware result above predates these full clear producers.
+The apparent pointer0x40888889 is proved to be an immutable constructor float,
+not an allocation address; [source evidence](../tests/m9-faa-gl-one-color-20261007/sampled-clear/README.md).
+
+Mesa `363c0f3` also admits the original fixed-function fragment COLOR0 legacy
+interpolation, resolving its smooth/flat mode from live Gallium state.
+`2a861dd` fixes FAA clear dispatch: journal the request and stop before ordinary
+clear GPU submission, preserving retained FAA command state. The production
+wrapper test passes. Complete native FRAME sequencing, one-stream depth draw,
+cull/flat packets, and sustained command-pool reuse remain unfinished; no
+working glxgears or ioquake3 FAA run is claimed. Further hardware testing will
+combine these ready changes instead of rebooting for each small edit.
+
 ## October 7: six-vertex FAA draw executes; frame reset still fails
 
 DRM `102a969` corrects real launch counts instead of overwriting packet lengths.
