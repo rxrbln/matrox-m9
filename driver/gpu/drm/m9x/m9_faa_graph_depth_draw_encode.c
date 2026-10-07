@@ -42,17 +42,17 @@ static void write32(u8 *p, u32 value)
 }
 
 static u32 constants_offset(const struct depth_field *f,
-		const struct m9x_faa_color_input *in, u32 old_geometry,
-		u32 next_geometry)
+		const struct m9x_faa_color_input *in, u32 geometry_header,
+		u32 vertex_records)
 {
 	/* These are source producer roles, not literal source upload offsets.
-	 * Four stages read live constant spans; the retained geometry and the
-	 * next owned record are separate until the final draw has retired. */
+	 * Four stages read live constant spans. The viewport/header is 128 B;
+	 * the raw vertex records may follow it immediately or after padding. */
 	switch (f->at) {
-	case 328: return next_geometry;
+	case 328: return vertex_records;
 	case 372: return in->layout.constant_begin[1];
 	case 376: return in->layout.constant_end[1];
-	case 616: case 1128: case 1568: case 2428: return old_geometry;
+	case 616: case 1128: case 1568: case 2428: return geometry_header;
 	case 900: return in->layout.constant_begin[2];
 	case 904: return in->layout.constant_end[2];
 	case 1392: return in->layout.constant_begin[3];
@@ -137,11 +137,11 @@ int m9x_faa_depth_draw_encode(const u8 *blob, size_t bytes,
 	u32 primary_cursor, u32 secondary_cursor, u64 previous_unlock_point,
 	u32 clear_flags,
 	const struct m9x_faa_color_input *in,
-	u32 previous_geometry_offset, u32 next_geometry_offset,
+	u32 geometry_header_offset, u32 vertex_record_offset,
 	struct m9x_faa_depth_draw_image *out)
 {
 	u8 hash[32];
-	u32 i, low, address, offset, geometry_end;
+	u32 i, low, address, offset, geometry_header_end, vertex_end;
 
 	if (!blob || bytes != M9_FAA_DEPTH_DRAW_TEMPLATE_BYTES ||
 	    !owner || !out || !out->primary || !out->secondary ||
@@ -168,13 +168,16 @@ int m9x_faa_depth_draw_encode(const u8 *blob, size_t bytes,
 		M9_FAA_DEPTH_DRAW_PRIMARY_BYTES, &address) ||
 	    check_add_overflow(owner[29].base, secondary_cursor +
 		M9_FAA_DEPTH_DRAW_SECONDARY_BYTES, &address) ||
-	    (previous_geometry_offset & 127) ||
-	    (next_geometry_offset & 127) ||
-	    check_add_overflow(next_geometry_offset, 256u, &geometry_end) ||
-	    geometry_end > owner[28].bytes ||
-	    previous_geometry_offset > owner[28].bytes ||
-	    owner[28].bytes - previous_geometry_offset < 256 ||
-	    previous_geometry_offset + 256 > next_geometry_offset)
+	    (geometry_header_offset & 127) ||
+	    (vertex_record_offset & 127) ||
+	    geometry_header_offset <
+		((in->layout.constants_bytes + 127u) & ~127u) ||
+	    check_add_overflow(geometry_header_offset, 128u,
+		&geometry_header_end) ||
+	    check_add_overflow(vertex_record_offset,
+		(in->layout.vertex_bytes + 127u) & ~127u, &vertex_end) ||
+	    vertex_record_offset < geometry_header_end ||
+	    vertex_end > owner[28].bytes)
 		return -ERANGE;
 	/* Audit every live base/offset/tag and domain before writing output. */
 	for (i = 0; i < ARRAY_SIZE(depth_fields); i++) {
@@ -186,7 +189,7 @@ int m9x_faa_depth_draw_encode(const u8 *blob, size_t bytes,
 			offset = secondary_cursor + offset - 2688;
 		else if (f->owner == 28)
 			offset = constants_offset(f, in,
-				previous_geometry_offset, next_geometry_offset);
+				geometry_header_offset, vertex_record_offset);
 		if (offset == U32_MAX || offset > src->bytes ||
 		    src->bytes - offset < 4 ||
 		    check_add_overflow(src->base, offset, &address) ||
@@ -208,7 +211,7 @@ int m9x_faa_depth_draw_encode(const u8 *blob, size_t bytes,
 			offset = secondary_cursor + offset - 2688;
 		else if (f->owner == 28)
 			offset = constants_offset(f, in,
-				previous_geometry_offset, next_geometry_offset);
+				geometry_header_offset, vertex_record_offset);
 		address = owner[f->owner].base + offset;
 		if (f->writer == 0x248a0)
 			address = (address & 0xfffff000u) | f->tag;
