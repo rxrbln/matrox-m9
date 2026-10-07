@@ -6593,11 +6593,6 @@ int m9x_faa_graph_bound_depth_prepare(struct m9x_device *mdev,
   {0,0x8000,true,false,false,0},
   {0,0x98000,true,false,false,0},
  };
- static const struct m9x_faa_depth_view shape[M9_FAA_DEPTH_OWNERS]={
-  {0,0x50000,0x50000,320,240,4,0x7c},
-  {0,0x3000,0x8000,40,60,5,0x78},
-  {0,0x97000,0x98000,320,240,4,0x3d},
- };
  struct m9x_transport *t=&mdev->transport;
  struct m9_faa_graph_binding *checked=NULL;
  struct m9_faa_depth_storage *n;
@@ -6611,7 +6606,7 @@ int m9x_faa_graph_bound_depth_prepare(struct m9x_device *mdev,
  n->generation=generation;n->previous_unlock_point=previous_unlock_point;
  n->views.color_policy=color_policy;
  n->views.depth_aux_role=M9_FAA_DEPTH_HZ;n->views.aux_depth_role=M9_FAA_BOUND_DEPTH;
- memcpy(n->views.owner,shape,sizeof(shape));
+ for(i=0;i<M9_FAA_DEPTH_OWNERS;i++)n->views.owner[i]=m9x_faa_bound_depth_profile(i);
  mutex_lock(&t->lock);
  ret=m9x_faa_graph_color_unlocked_get_locked(mdev,generation,previous_unlock_point,&checked);
  if(ret)goto unclaimed;
@@ -6680,6 +6675,9 @@ int m9x_faa_graph_bound_depth_views_locked(struct m9x_device *mdev,
  for(i=0;i<M9_FAA_DEPTH_OWNERS;i++){
   struct m9_faa_owner *o=&n->owner[i];
   const struct m9x_faa_depth_view *v=&n->views.owner[i];
+  struct m9x_faa_depth_view expected=m9x_faa_bound_depth_profile(i);
+  expected.base=o->base;
+  if(memcmp(v,&expected,sizeof(expected)))return -ESTALE;
   if(v->base!=o->base||v->capacity_bytes!=o->bytes||!v->logical_bytes||
    v->logical_bytes>o->bytes||!IS_ALIGNED(o->base,PAGE_SIZE)||
    (u64)o->base+o->bytes>U32_MAX)return -ESTALE;
