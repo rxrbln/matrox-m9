@@ -9219,7 +9219,9 @@ fail:
 
 /* A returned COLOR Lock grants a source-qualified F021 row view, not an
  * ordinary mapping of the sampled allocation. Transfer that view verbatim
- * through the destination's live surface descriptor before source Unlock.
+ * into owned rows, authenticate source Unlock, then transfer those rows
+ * through the destination's live surface descriptor. An intervening ordinary
+ * aperture mapping would replace the mapper retained by source Unlock.
  * This bounded bridge is not called from draw_vbo until repeated draw and
  * per-frame clear/depth contracts are admitted. */
 int
@@ -9296,6 +9298,8 @@ m9_context_faa_present_lock(struct m9_context *ctx, uint64_t graph_id,
       ret = ioctl(ctx->screen->fd, DRM_IOCTL_PARHELIA_M9_SURFACE_ACCESS, &access) ? -errno : 0;
       m9_blit_window_receipt(&surface->primary, &access, ret);
    }
+   if (!ret)
+      ret = m9_faa_surface_color_unlock_kernel(ctx->screen, surface);
    if (!ret) {
       const struct m9_surface_desc target_desc = {
          .row_span = target.row_span, .height = m9_surface_even_height(height),
@@ -9306,6 +9310,8 @@ m9_context_faa_present_lock(struct m9_context *ctx, uint64_t graph_id,
       access.descriptor0 = m9_surface_desc0(&target_desc);
       access.descriptor1 = m9_surface_desc1(&target_desc);
       access.surface_width = width;
+      access.flags = texture ? PARHELIA_M9_ACCESS_TEXTURE : 0;
+      if (texture) access.surface_width = target.row_span;
       access.offset = offset;
       /* Invalidate dependent snapshots even if a window write is partial. */
       destination->generation++;
@@ -9313,10 +9319,6 @@ m9_context_faa_present_lock(struct m9_context *ctx, uint64_t graph_id,
       ctx->window_write_bytes += bytes;
       ret = ioctl(ctx->screen->fd, DRM_IOCTL_PARHELIA_M9_SURFACE_ACCESS, &access) ? -errno : 0;
       m9_blit_window_receipt(destination, &access, ret);
-      /* Successful F021 user copy admits source Unlock. Preserve any
-       * destination failure while still releasing that admitted CPU view. */
-      int unlock = m9_faa_surface_color_unlock_kernel(ctx->screen, surface);
-      if (!ret) ret = unlock;
    }
    pipe_resource_reference(&retained, NULL);
    FREE(rows);

@@ -387,7 +387,8 @@ bool m9_context_faa_build_draw(struct m9_context *ctx,
                               struct m9_faa_application_upload *upload,
                               const char **reason);
 /* Consume only an authenticated returned COLOR Lock. Copies source F021
- * rows into the retained ordinary target, then performs genuine Unlock. */
+ * rows into owned memory, performs genuine Unlock, then writes the retained
+ * ordinary target without replacing the active Lock's aperture mapper. */
 int m9_context_faa_present_lock(struct m9_context *ctx, uint64_t graph_id,
                                uint32_t generation, uint64_t lock_point);
 
