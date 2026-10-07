@@ -56,7 +56,7 @@ enum drm_parhelia_m9_faa_owner_role {
 };
 #define PARHELIA_M9_FAA_GRAPH_PREPARED 1u
 #define PARHELIA_M9_FAA_GRAPH_INITIALIZED 2u
-#define PARHELIA_M9_FAA_DRAW_RETIRED 3u
+#define PARHELIA_M9_FAA_DRAW_PREFIX_RETIRED 3u
 struct drm_parhelia_m9_faa_owner {
 	__u32 handle;
 	__u32 pad;
@@ -102,10 +102,11 @@ struct drm_parhelia_m9_faa_graph_init {
 	DRM_IOWR(DRM_COMMAND_BASE + DRM_PARHELIA_M9_FAA_GRAPH_INIT, \
 		struct drm_parhelia_m9_faa_graph_init)
 
-/* Private source-bounded first red draw on a retained initialized graph.
- * The caller supplies the exact INIT receipt; all output fields are zero on
- * input. State 3 and draw_point require the later actual GPU wait. This is
- * neither a public Gallium draw contract nor a pixel/readback receipt. */
+/* Private source-bounded first red-draw preprocessing prefix on a retained
+ * graph. The caller supplies the exact INIT receipt; outputs are zero on
+ * input. State 3 and draw_point require the later actual GPU wait at the
+ * independent finish boundary. The original public DRAW has not returned,
+ * and this is neither a pixel/readback nor a Gallium draw receipt. */
 struct drm_parhelia_m9_faa_graph_draw_red {
 	__u64 graph_id;
 	__u64 init_point;
