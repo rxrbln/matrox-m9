@@ -28,15 +28,37 @@ includes the route setter's calls into the same `m9x6104` dispatcher used by
 the complete display-start API, but this bounded run intentionally ends
 before that point.
 
-This routine has not been traced from the Linux Present callback or proven
-to be the active KMS update path. Its `0x318` read is **not** a measured
+## Actual source caller and status ordering
+
+The pinned ELF `.text` has one direct call into `m9x11412`: `0x2b0ce0`
+inside `m9x21210` at `0x2b0ca0`. Its relocated `m9x28149` virtual table
+places that method at slot `+0x40`. It first calls `m9x4532` at `0x2b0a40`
+to prepare a route ID. Failure after the transition calls `m9x28080` at
+`0x2b5f40`; the successful path calls the same object's virtual slot `+0x48`
+with arguments taken from the request. The pinned slot resolves to
+`m9x6634` at `0x2b0640`, which enters `m9x6002` at `0x2b6020`. Its later
+`m9x221` branch explicitly selects the `0540` routine `m9x27667` at
+`0x2f2b30`. Thus the success follow-up is further original display control,
+not an identified Xserver Present-completion callback.
+
+Inside `m9x11412`, after the still-unanswered `0x318` read chain, source
+stores requested route ID at descriptor `+8`, new-row status 1, old-row ID
+at descriptor `+0xc`, old-row status 2, and prior-row status `0xff`. **All
+these CPU status stores precede** `m9x7332` (the display setter), followed by
+`m9x28260` and `m9x15769`. In particular, old-row status 2 cannot itself
+mean hardware retired the old scanout: the setter has not run yet. The
+checker pins the sole direct caller, virtual slots, M9128 dispatch and store
+ordering against exact original bytes.
+
+This virtual method has not been joined to a Linux Present/DRI swap callback
+or proven to be the active KMS update path. Its `0x318` read is **not** a measured
 scanout latch, completion or vblank acknowledgment. The next source experiment
-is to identify the actual original caller for route transitions, then trace
-the complete M9128 transition with read values acquired from a controlled
-source environment and observe which event permits release of the old scanout
-owner. Any eventual native update must derive start addresses from live pinned
-backing. Async capabilities remain disabled until latch, event and lifetime
-are qualified on the target under the established lock.
+is to trace the virtual method's external invocation and identify any swap
+or Present relationship. The complete M9128 transition then needs source
+read values and an observable event that permits release of the old scanout
+owner. Any eventual native update must derive start addresses from live
+pinned backing. Async capabilities remain disabled until latch, event and
+lifetime are qualified on the target under the established lock.
 
 Run the CPU-only proof with:
 
