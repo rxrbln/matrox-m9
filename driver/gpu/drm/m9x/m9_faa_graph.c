@@ -1000,20 +1000,11 @@ int m9x_faa_graph_unlock_ioctl(struct drm_device *drm, void *data,
 		return -ENODEV;
 	mutex_lock(&state->lock);
 	graph = state->graph;
-	if (!m9_faa_graph_continuation_matches(graph, args->graph_id,
-			args->generation, args->lock_point - 0xc0) &&
-	    (args->lock_point < 0xe0 ||
-	     !m9_faa_graph_continuation_matches(graph, args->graph_id,
-			args->generation, args->lock_point - 0xe0)) &&
-	    (args->lock_point < 0x1d0 ||
-	     !m9_faa_graph_continuation_matches(graph, args->graph_id,
-			args->generation, args->lock_point - 0x1d0)) &&
-	    (args->lock_point < 0x190 ||
-	     !m9_faa_graph_continuation_matches(graph, args->graph_id,
-			args->generation, args->lock_point - 0x190)) &&
-     !m9_faa_graph_continuation_matches(graph, args->graph_id,
-      args->generation, args->lock_point - 0xa0) &&
-     !m9_faa_graph_continuation_matches(graph,args->graph_id,args->generation,args->lock_point-0xe0)) {
+	/* File identity is independent of the number of retired frames. Native
+	 * admission below authenticates the exact CURRENT Lock point and view.
+	 * Subtracting a fixed first-frame delta would reject later real epochs. */
+	if (!graph || !graph->initialized || !graph->init_point ||
+	    graph->id != args->graph_id || graph->generation != args->generation) {
 		ret = -ENOENT;
 		goto out_state;
 	}

@@ -277,6 +277,8 @@ struct m9x_faa_replay {
 	struct m9_faa_public_vs_storage *public_vs_image;
  struct m9_faa_color_storage *color_image;
  bool color_payload_ready,color_attempted,color_lock_retired;
+ u64 color_lock_point;
+ u32 color_primary_start,color_posts_start;
 	bool public_vs_payload_ready, public_vs_prefix_retired;
 	bool public_vs_head_attempted, public_vs_head_retired;
 	struct m9x_fence *public_vs_head_fence;
@@ -3888,8 +3890,9 @@ int m9x_faa_lock_view_admit_locked(struct m9x_device *mdev,
 	 * Unlock/preprocessing/rendering receipts alone never admit F021. */
  if (r->color_lock_retired) {
   if(!r->color_image||!r->color_attempted||r->unlock_started||
-   r->graph_draw_point!=r->observation_point+r->color_image->lock_delta||r->graph_draw_posts!=4||
-   r->graph_draw_end_bytes!=r->primary_bytes+r->color_image->primary_length)return -ENODATA;
+   r->graph_draw_point!=r->color_lock_point||!r->color_lock_point||
+   r->graph_draw_posts!=r->color_posts_start+4||
+   r->graph_draw_end_bytes!=r->color_primary_start+r->color_image->primary_length)return -ENODATA;
  } else if (r->public_vs_next_lock_retired) {
 		const struct m9_faa_public_vs_next_storage *n = r->public_vs_next_image;
 
@@ -4270,6 +4273,8 @@ int m9x_faa_graph_color_submit(struct m9x_device *mdev,
  ret=m9x_triangle_system_page_admit_locked(mdev,0x40008000);if(ret)goto out;
  fence=m9x_fence_create_target_locked(mdev,lower_32_bits(init_point)+n->lock_delta);if(!fence){ret=-ENOMEM;goto out;}
  for(i=0;i<PARHELIA_M9_FAA_GRAPH_OWNERS;i++)dma_resv_add_fence(m9x_faa_graph_binding_owner(binding,i)->resv,&fence->base,DMA_RESV_USAGE_WRITE);
+ r->color_primary_start=r->graph_draw_end_bytes;
+ r->color_posts_start=r->graph_draw_posts;
  r->color_attempted=true;
  m9x_write(mdev,M9_REG_FRONTEND_KICK,1);
  ret=m9x_address_cpu_local_prepare(mdev,program->base,program->bytes);if(ret)goto out;
@@ -4289,7 +4294,7 @@ int m9x_faa_graph_color_submit(struct m9x_device *mdev,
    i==3?lower_32_bits(init_point)+n->lock_delta:0,&stage_point,&stage_posted);
   *posted|=stage_posted;if(stage_posted){r->graph_draw_end_bytes=end;r->graph_draw_posts++;}if(ret)goto out;}
  if(stage_point!=init_point+n->lock_delta){ret=-EIO;goto out;}
- *point=stage_point;r->graph_draw_point=stage_point;r->color_lock_retired=true;
+ *point=stage_point;r->graph_draw_point=stage_point;r->color_lock_point=stage_point;r->color_lock_retired=true;
  dev_info(&mdev->pdev->dev,"M9 FAA color Lock retired: init=%#llx lock=%#llx bytes=%u posts=%u program=%u secondary=%u; %u live vectors\n",init_point,*point,r->graph_draw_end_bytes,r->graph_draw_posts,n->program_bytes,n->secondary_bytes,n->layout.program_count);
 out:
  if(ret)*point=0;if(fence&&ret)dma_fence_set_error(&fence->base,ret);
