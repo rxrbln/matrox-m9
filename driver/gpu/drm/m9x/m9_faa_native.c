@@ -7005,7 +7005,7 @@ int m9x_faa_graph_depth_batch_prepare(struct m9x_device *mdev,
  struct m9_faa_depth_frame_storage *frame;
  struct m9x_faa_first_depth_scratch *prefix=NULL;
  struct m9_faa_color_storage *scratch=NULL;
- struct m9x_faa_graph_draw_owner owner[31];struct m9x_faa_depth_views views;
+ struct m9x_faa_graph_draw_owner owner[M9_FAA_DEPTH_DRAW_OWNERS];struct m9x_faa_depth_views views;
  const struct firmware *sample=NULL,*color=NULL;
  u8 *arena=NULL,*secondary=NULL,*composed=NULL,*job_primary=NULL,*job_secondary=NULL;
  u8 *code_page=NULL,*jobs_secondary=NULL;
