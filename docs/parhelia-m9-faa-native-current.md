@@ -8,7 +8,27 @@ Ordinary textured rendering and the deployed driver are validated. FAA
 rendering is not yet validated. This note is separate from P690
 `102b:2539` evidence.
 
-Latest hardware checkpoint: kernel6367f4f completes the whole pending-output
+Latest hardware checkpoint, 2026-10-07: kernel6fe8ead retires the complete180
+stream with phased waits, deferred output publication and the source-backed
+program-access kick. Output remains entirely black. Main601 nonzero words,
+companion1404 and sampled primary1308 match the prior phased run. The F022
+sampled CPU read succeeds but retains the same nonzero word multiset as the
+raw primary; no resolved FAA pixels are proved.
+[Actual program-kick hardware evidence](../tests/m9-faa-program-kick-hardware-20261007/README.md).
+Collapsing the waits was separately isolated as a real ordering defect: the
+same-module single-post control left main/companion untouched. Keep the phased
+ordering; neither late output publication nor the program kick alone fixes
+the image. The [logical audit](parhelia-m9-faa-native-logical-audit.md) and
+[encoder proof](parhelia-m9-faa-complete-address-encoding.md) distinguish fixed
+defects, guarded diagnostic constants and remaining lifecycle gaps.
+
+Kernel3b39c98 additionally admits the source-derived sampled-destination
+pending prefix after genuine temporary-allocation failure. Its independent
+finish is170; the original160 wait and rectangle launch remain pending.
+Host source/128-placement checks and module build pass; its distinct hardware
+receipt is pending. This is a diagnostic branch, not completed application FAA.
+
+Historical hardware checkpoint: kernel6367f4f completes the whole pending-output
 prefix at0x160/raw0x161, next0x170, empty queue and wedged=0 immediately/+2s.
 The public clear and triangle have returned; the original output path is still
 at its format-transition150 wait. The real output allocation stays unreadable
