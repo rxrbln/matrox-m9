@@ -25,8 +25,18 @@ the active target mask already enables all four channels.
 The older application probe computes AD from color allocation bytes, although
 the current vendor graph uses logical fragment-store extent divided by32.
 The full prepared graph's m9_faa_store_ad helper already has the correct rule.
-The application caller is being corrected separately; the current private180
-image already uses the source-derived9b04 and is unaffected by that bug.
+Mesa2c01eb9 corrects the bound application caller: main/aux allocations use
+their128-rounded logical extent, and AD comes from the live group's dimensions
+under its store lock. Missing or undersized owners refuse submission; explicit
+diagnostic overrides remain explicit. The current private180 image already
+uses the source-derived9b04 and is unaffected by that bug.
+
+The private profile's320x240 geometry, output extent50000, format descriptors
+and packet offsets remain deliberately fixed. They describe a guarded source
+experiment, not arbitrary application FAA support. Address fixups, page clears
+and timelines derive from native owners; retaining a source packet offset is
+not permission to retain its captured address. The one-target mask rewrite
+likewise refuses a different routing or active mask rather than guessing.
 
 ## Reviewed mechanisms that agree
 
@@ -53,11 +63,18 @@ The changed pool is a saved register image, not edge/fragment evidence. Its
 A1/A3/A4 fields match the still-zero saved sentinel fields. The selected
 source raster controls and dispatch exist, but fragment generation is unproven.
 The manually invoked ac1f0 output flow is still below the unjoined public
-surface admission/association/dirty-flush lifecycle. The genuine draw marks
-its outer surface dirty; real public flush association must be traced rather
-than assigning list/class/dirty fields or assuming an internal helper is valid.
+surface read/dirty-flush lifecycle. The association itself is present: actual
+101050 inserts its node and both returned interfaces publish the dirty outer
+graph before the draw returns. The earlier empty-list observation was only
+the first lookup, not the state at output. The public embedded graph at+3fc
+and this separate outer graph at+420 must not be conflated. No public flush
+executes before the explicit internal output recipe; this is a remaining
+contract gap, not proof that adding a flush fixes the black image. See
+[the passive lifecycle proof](parhelia-m9-faa-public-draw-ownership.md).
 The exercised device-global service/MMIO initialization matches native code
 so far; the unclosed cold-device path does not justify speculative toggles.
+The independent [global initialization audit](parhelia-m9-faa-global-service-prefix.md)
+checks all13 exercised prefix writes and manager-before-prefetch ordering.
 
 ## Validation
 
@@ -66,3 +83,8 @@ under ASAN/UBSAN. Mask controls reject altered target routing, active mask,
 packet headers and short extent without changing data, and verify every other
 secondary byte is unchanged. Source checks and the private module build pass.
 No new hardware rendering pass is claimed for mask normalization.
+The integrated application AD/ownership fixtures pass ASAN/UBSAN and the full
+Mesa DSO builds. Public lifecycle checks reject four false observations; the
+global source checks reject four altered initialization variants. Shared
+application store lifetime from handle snapshot through ioctl is being checked
+separately: locking a snapshot alone does not retain its GEM handles.
