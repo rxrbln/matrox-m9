@@ -15,6 +15,7 @@
 #define DRM_PARHELIA_M9_FAA_GRAPH_RELEASE	0x0f
 #define DRM_PARHELIA_M9_FAA_GRAPH_INIT	0x10
 #define DRM_PARHELIA_M9_FAA_GRAPH_DRAW_RED	0x11
+#define DRM_PARHELIA_M9_FAA_GRAPH_UNLOCK	0x12
 
 #define DRM_IOCTL_PARHELIA_M9_CREATE_BO \
 	DRM_IOWR(DRM_COMMAND_BASE + DRM_PARHELIA_M9_CREATE_BO, \
@@ -61,6 +62,7 @@ enum drm_parhelia_m9_faa_owner_role {
 #define PARHELIA_M9_FAA_DRAW_WITH_FINISH 1u
 #define PARHELIA_M9_FAA_DRAW_WITH_LOCK 2u
 #define PARHELIA_M9_FAA_LOCK_PREFIX_RETIRED 5u
+#define PARHELIA_M9_FAA_UNLOCK_RETIRED 6u
 struct drm_parhelia_m9_faa_owner {
 	__u32 handle;
 	__u32 pad;
@@ -342,5 +344,22 @@ struct drm_parhelia_m9_submit {
 	__u32 program_type;
 	__u64 out_point;
 };
+
+
+/* Private same-graph normal Unlock after a successfully copied Lock view.
+ * No caller-provided command data or addresses. Exact Lock receipt required;
+ * state6/unlock_point only follow actual retirement of the separate finish. */
+struct drm_parhelia_m9_faa_graph_unlock {
+	__u64 graph_id;
+	__u64 lock_point;
+	__u64 unlock_point;
+	__u32 generation;
+	__u32 flags;
+	__u32 state;
+	__u32 pad;
+};
+#define DRM_IOCTL_PARHELIA_M9_FAA_GRAPH_UNLOCK \
+	DRM_IOWR(DRM_COMMAND_BASE + DRM_PARHELIA_M9_FAA_GRAPH_UNLOCK, \
+		struct drm_parhelia_m9_faa_graph_unlock)
 
 #endif

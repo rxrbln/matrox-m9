@@ -28,6 +28,7 @@
 #include "m9_reg.h"
 #include "m9_faa_output.h"
 #include "m9_faa_graph_draw_encode.h"
+#include "m9_faa_graph_unlock_encode.h"
 #include "m9_faa_graph_draw_tail_encode.h"
 #include "m9_faa_graph_lock_encode.h"
 
@@ -3194,7 +3195,7 @@ int m9x_faa_lock_view_admit_locked(struct m9x_device *mdev,
 	if (t->wedged)
 		return -EIO;
 	if (!r || !r->graph_binding || !r->observation_retired ||
-	    !r->graph_draw_with_lock || !r->graph_draw_with_finish ||
+	    !r->graph_draw_with_lock || !r->graph_draw_with_finish || r->unlock_started ||
 	    r->graph_generation != t->generation ||
 	    r->observation_generation != t->generation ||
 	    !r->observation_point ||
@@ -3277,7 +3278,17 @@ int m9x_faa_lock_view_observed_locked(struct m9x_device *mdev,
 	struct m9x_faa_replay *r = t->faa;
 
 	lockdep_assert_held(&t->lock);
-#ifdef M9_FAA_UNLOCK_PUBLICATION_CONTROL
+#ifdef M9_FAA_GRAPH_INIT_CONTROL
+	int ret;
+
+	if (!r)
+		return -ENODATA;
+	ret = m9x_faa_lock_view_admit_locked(mdev, color,
+			r->owner[1].base, r->owner[1].bytes);
+	if (!ret)
+		r->normal_lock_view_seen = true;
+	return ret;
+#elif defined(M9_FAA_UNLOCK_PUBLICATION_CONTROL)
 	if (!r || !r->observation_retired ||
 	    r->retained_color != color ||
 	    r->observation_generation != t->generation ||
@@ -3295,6 +3306,151 @@ int m9x_faa_lock_view_observed_locked(struct m9x_device *mdev,
 	(void)r;
 	(void)color;
 	return 0;
+#endif
+}
+
+/* A successful CPU view and its same-graph Lock receipt are both required.
+ * Caller holds the six graph BO reservations before taking transport.lock. */
+int m9x_faa_graph_unlock_get_locked(struct m9x_device *mdev,
+		u32 generation, u64 lock_point, struct m9_faa_graph_binding **out)
+{
+#ifdef M9_FAA_GRAPH_INIT_CONTROL
+	struct m9x_transport *t = &mdev->transport;
+	struct m9x_faa_replay *r = t->faa;
+	struct drm_gem_object *gem;
+	int ret;
+
+	lockdep_assert_held(&t->lock);
+	if (!out)
+		return -EINVAL;
+	*out = NULL;
+	if (!r || !r->graph_binding || !r->normal_lock_view_seen ||
+	    r->unlock_started || r->graph_generation != generation ||
+	    t->generation != generation || !lock_point ||
+	    r->graph_draw_point != lock_point || !t->engine_transitioned ||
+	    !t->restore_ready || !t->fence_cpu)
+		return -ESTALE;
+	gem = m9x_faa_graph_binding_owner(r->graph_binding, PARHELIA_M9_FAA_PRIMARY);
+	if (!gem || !m9x_gem_is_vram(gem))
+		return -ESTALE;
+	ret = m9x_faa_lock_view_admit_locked(mdev, drm_gem_vram_of_gem(gem),
+			r->owner[1].base, r->owner[1].bytes);
+	if (!ret)
+		*out = m9x_faa_graph_binding_get(r->graph_binding);
+	return ret;
+#else
+	return -EOPNOTSUPP;
+#endif
+}
+
+int m9x_faa_graph_unlock_submit(struct m9x_device *mdev,
+		struct m9_faa_graph_binding *binding, u32 generation,
+		u64 lock_point, u64 *point, bool *posted)
+{
+#ifdef M9_FAA_GRAPH_INIT_CONTROL
+	struct m9x_transport *t = &mdev->transport;
+	struct m9x_faa_replay *r;
+	struct m9_faa_graph_binding *checked = NULL;
+	struct m9_faa_owner *primary;
+	struct m9x_fence *fence = NULL;
+	u8 image[M9_FAA_UNLOCK_PRIMARY_BYTES];
+	u32 old_bytes, target, i;
+	u64 stage_point = 0;
+	bool stage_posted = false;
+	int ret;
+
+	if (!binding || !point || !posted)
+		return -EINVAL;
+	*point = 0;
+	*posted = false;
+	mutex_lock(&t->lock);
+	ret = m9x_faa_graph_unlock_get_locked(mdev, generation, lock_point, &checked);
+	if (ret)
+		goto out;
+	if (checked != binding) {
+		ret = -ESTALE;
+		goto out;
+	}
+	r = t->faa;
+	primary = &r->owner[M9_FAA_PRIMARY_OWNER];
+	old_bytes = r->graph_draw_end_bytes;
+	if (!primary->cpu || !drm_mm_node_allocated(&primary->system_node) ||
+	    primary->system_node.start != primary->base || old_bytes > primary->bytes ||
+	    primary->bytes - old_bytes < sizeof(image)) {
+		ret = -ESTALE;
+		goto out;
+	}
+	ret = m9x_faa_graph_unlock_encode(r->owner[1].base, r->owner[1].bytes,
+			320, 240, lock_point, image, sizeof(image));
+	if (ret)
+		goto out;
+	target = lower_32_bits(lock_point) + 0x20;
+	/* Cover all borrowed surfaces before any release MMIO or END. A late
+	 * failure keeps both the fence and retained binding quarantined. */
+	fence = m9x_fence_create_target_locked(mdev, target);
+	if (!fence) {
+		ret = -ENOMEM;
+		goto out;
+	}
+	for (i = 0; i < PARHELIA_M9_FAA_GRAPH_OWNERS; i++)
+		dma_resv_add_fence(m9x_faa_graph_binding_owner(binding, i)->resv,
+				   &fence->base, DMA_RESV_USAGE_WRITE);
+	r->unlock_started = true;
+	/* Source2c878 releases the CPU frontend; retained PTEs stay intact. */
+	m9x_write(mdev, M9_REG_FRONTEND_STATE, 0);
+	for (i = 0; i < 3; i++) {
+		u32 end = old_bytes + (i == 2 ? M9_FAA_UNLOCK_PRIMARY_BYTES :
+			M9_FAA_UNLOCK_FIRST_POST_BYTES);
+
+		if (i == 0)
+			memcpy((u8 *)primary->cpu + old_bytes, image,
+			       M9_FAA_UNLOCK_FIRST_POST_BYTES);
+		else if (i == 2)
+			memcpy((u8 *)primary->cpu + old_bytes + M9_FAA_UNLOCK_FIRST_POST_BYTES,
+			       image + M9_FAA_UNLOCK_FIRST_POST_BYTES,
+			       M9_FAA_UNLOCK_PRIMARY_BYTES - M9_FAA_UNLOCK_FIRST_POST_BYTES);
+		wmb();
+		ret = m9x_post_faa_graph_end_locked(mdev, &primary->system_node,
+			primary->dma, r->graph_draw_end_bytes, end, i == 1,
+			i == 2 ? target : 0, &stage_point, &stage_posted);
+		*posted |= stage_posted;
+		if (stage_posted) {
+			r->graph_draw_end_bytes = end;
+			r->graph_draw_posts++;
+		}
+		if (ret)
+			goto out;
+	}
+	if (stage_point != lock_point + 0x20) {
+		ret = -EIO;
+		goto out;
+	}
+	*point = stage_point;
+	r->graph_draw_point = stage_point;
+	r->unlock_retired = true;
+	r->unlock_point = stage_point;
+	dev_info(&mdev->pdev->dev,
+		 "M9 FAA graph Unlock retired: lock=%#llx unlock=%#llx bytes=%u posts=%u copyback=F021->F022\n",
+		 lock_point, *point, r->graph_draw_end_bytes, r->graph_draw_posts);
+out:
+	if (fence && ret)
+		dma_fence_set_error(&fence->base, ret);
+	if (ret && *posted) {
+		t->wedged = true;
+		t->generation++;
+		WARN_ON(t->quarantined_fence);
+		t->quarantined_fence = fence;
+		fence = NULL;
+	} else if (fence) {
+		dma_fence_signal(&fence->base);
+	}
+	if (fence)
+		dma_fence_put(&fence->base);
+	m9x_faa_graph_binding_put(checked);
+	mutex_unlock(&t->lock);
+	return ret;
+#else
+	return -EOPNOTSUPP;
 #endif
 }
 

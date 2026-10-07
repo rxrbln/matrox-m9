@@ -467,6 +467,15 @@ int m9x_faa_graph_release_ioctl(struct drm_device *drm, void *data,
 				struct drm_file *file);
 int m9x_faa_graph_init_ioctl(struct drm_device *drm, void *data,
 			     struct drm_file *file);
+int m9x_faa_graph_unlock_ioctl(struct drm_device *drm, void *data,
+		struct drm_file *file);
+/* Transport lock held for the snapshot; submit revalidates under all BO
+ * reservations. The binding reference must match the caller's live graph. */
+int m9x_faa_graph_unlock_get_locked(struct m9x_device *mdev,
+		u32 generation, u64 lock_point, struct m9_faa_graph_binding **out);
+int m9x_faa_graph_unlock_submit(struct m9x_device *mdev,
+		struct m9_faa_graph_binding *binding, u32 generation,
+		u64 lock_point, u64 *point, bool *posted);
 int m9x_faa_graph_draw_red_ioctl(struct drm_device *drm, void *data,
 				 struct drm_file *file);
 int m9x_faa_prepare_graph(struct m9x_device *mdev,
