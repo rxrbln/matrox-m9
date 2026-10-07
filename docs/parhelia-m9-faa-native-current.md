@@ -8,7 +8,17 @@ Ordinary textured rendering and the deployed driver are validated. FAA
 rendering is not yet validated. This note is separate from P690
 `102b:2539` evidence.
 
-Latest hardware checkpoint, 2026-10-07: kernel6fe8ead retires the complete180
+Latest continuation: kernel d249a3e retires the whole sampled copy-wait prefix
+at1a0/raw1a1, with an empty queue and wedged=0 immediately and two seconds
+later. It preserves c0/120/170/1a0 phases and executes the C2 access kick atc0.
+Main/companion/sampled-primary hashes remain unchanged; pool state changes.
+The ordinary-output guard remains ENODATA. This qualifies the next original
+190 CPU-preparation continuation, not an FAA image.
+[Exact1a0 hardware receipt and raw buffers](../tests/m9-faa-inplace-copy-hardware-20261007/README.md).
+Mesa776e5bf also fixes diagnostic store reporting before shared GPU use retires;
+its CPU checks and full DSO build pass, with no new application pixel claim.
+
+Earlier hardware checkpoint, 2026-10-07: kernel6fe8ead retires the complete180
 stream with phased waits, deferred output publication and the source-backed
 program-access kick. Output remains entirely black. Main601 nonzero words,
 companion1404 and sampled primary1308 match the prior phased run. The F022
