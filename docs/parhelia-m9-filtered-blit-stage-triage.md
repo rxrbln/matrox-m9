@@ -58,9 +58,27 @@ changing valid dimensions or substituting captured addresses.
 An opt-in fixture capture now retains three distinct observations: source
 FBO readback before the blit, destination FBO readback after the blit, and
 the existing final 320x240 sampled output. On a future locked M9128 run,
-use one process per case and a unique prefix:
+use the opt-in Mesa `M9X_BLIT_WINDOW_TRACE=1` build (commit
+`531fc6980cef1cae1f1bcfc600ac546ae74af332`). It records each colour
+window READ/WRITE ioctl's live GEM handle, dimensions, box, descriptor,
+capacity and signed return code. This makes a void transfer-unmap WRITE
+failure visible beside the raw files.
+
+On the established healthy 1024×768 target session, after FAA gets the
+first hardware slot, run this from the RE checkout. The suite gives every
+case a fresh process, stops on a new stream timeout and saves the ioctl
+receipts beside each three-stage capture:
 
 ```sh
+M9X_MESA=/root/parhelia-m9x-mesa \
+  tools/m9x-hw-lock.sh tools/m9-blit-stage-suite.sh \
+  /root/tmp/m9-blit-stages-20261007
+```
+
+For one controlled case instead, use a unique prefix:
+
+```sh
+M9X_BLIT_WINDOW_TRACE=1 \
 M9_GLSL_BLIT_STAGES=/tmp/blit-100x37-near \
 M9_GLSL_RAW=/tmp/blit-100x37-near.final.rgba \
   m9-mesa-glsl blitnear:100x37
@@ -73,7 +91,10 @@ The stage files are `PREFIX.src.NxN.rgba` and
 `PREFIX.dst.NxN.rgba`, raw GL RGBA8 with the bottom row first. Run
 `blitlin:75x37`, `blitlin:74x37`, `blitlin:100x40`, and matching
 `blitcpu` cases with their own prefixes. The analyzer reports per-row
-source, destination, and final mismatches. Its host-only self-test checks
+source, destination, and final mismatches; the suite also saves
+`PREFIX.windows` with all issued colour-window ioctl receipts and the
+full `PREFIX.log`. A missing receipt means that path did not issue that
+ioctl; it is not a success report. Its host-only self-test checks
 four exact size/filter constructions, a single damaged row and a truncated
 input.
 
