@@ -8,6 +8,26 @@ Ordinary textured rendering and the deployed driver are validated. FAA
 application rendering is not yet validated. This note is separate from P690
 `102b:2539` evidence.
 
+## 2026-10-07: corrected original public draw flow
+
+Application FAA remains unfinished. The source HEAD hardware run now passes
+INIT b0 then c0/state12 on the same M9128 boot, with rawc1, generation0,
+queue0 and no wedge immediately and two seconds later. It posts only the
+vendor's first64 primary bytes twice and keeps all six buffers fenced after
+this early observation. See [the hardware receipt](../tests/m9-faa-public-vs-head-20261007/README.md).
+
+The earlier public100→130 diagnostic wedged. Its trace harness incorrectly
+classified original function25270 as a blocking CPU wait; the vendor function
+instead emits a GPU dependency when the observed counter is below its ticket.
+An inserted independent finisher submitted an unfinished block, then the
+continuation changed that block after submission. This is a source ordering
+error, not proof of a device incompatibility. The corrected original c0
+observation allows the emulator to follow the real conditional branch. The
+vendor DRAW then returns and submits one complete source block with closed
+length fields and no inserted finisher. Native complete-block retirement,
+pixels, generalized GL shader uploads, continuous frames and application
+presentation remain unverified. See [the source analysis](parhelia-m9-faa-public-vs-open-block.md).
+
 ## 2026-10-07: real M9128 Lock, Unlock and second Lock
 
 The private diagnostic now completes a second normal Lock at actual `0x1c0`
