@@ -52,11 +52,13 @@ m9_indirect_decode(const uint8_t *bytes, bool indexed,
    memcpy(&out->instance_count, bytes + 4, 4);
    memcpy(&out->start, bytes + 8, 4);
    memcpy(&bias, bytes + 12, 4);
-   out->index_bias = indexed ? (int32_t)bias : 0;
-   if (indexed)
+   if (indexed) {
+      memcpy(&out->index_bias, bytes + 12, 4);
       memcpy(&out->start_instance, bytes + 16, 4);
-   else
+   } else {
+      out->index_bias = 0;
       out->start_instance = bias;
+   }
 }
 
 #endif
