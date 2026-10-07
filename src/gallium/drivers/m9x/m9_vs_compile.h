@@ -398,8 +398,8 @@ bool m9_vs_compile_sampled_position_source(struct nir_shader **nir,
                                            const char **reason,
                                            unsigned max_slots,
                                            unsigned max_const_pairs);
-/* Source-qualified first FAA producer: clip position plus exactly two
- * direct vec4 streams. Constants are live typed pairs starting at key0.
+/* FAA carry producer: clip position plus one or two complete direct vec4
+ * streams. Constants are live typed pairs starting at key0.
  * No vertex sampler, coordinate-transform stream or ordinary tail is
  * admitted. The caller owns a specialization clone; no NIR is retained.
  * This does not bind the position tail, record owners or an app DRAW. */
@@ -408,7 +408,7 @@ bool m9_vs_compile_faa(struct nir_shader *nir,
                        struct m9_vs_program *program, const char **reason);
 /* Compile GL clip-space NIR on a private clone, applying (z+w)/2 in the
  * GPU producer for the source D3D position stage. Original NIR unchanged;
- * same complete-position/two-direct-stream admission as compile_faa. */
+ * same complete-position/one-or-two-stream admission as compile_faa. */
 bool m9_vs_compile_faa_gl(const struct nir_shader *nir,
                           const struct m9_vs_outputs *outputs,
                           struct m9_vs_program *program, const char **reason);

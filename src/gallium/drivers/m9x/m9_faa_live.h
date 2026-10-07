@@ -48,7 +48,7 @@ bool m9_faa_live_public_mov_build(const struct m9_faa_live_public_mov *state,
 
 /* Generic GL carry compiler interface. Fragment is a final LIVE compiler
  * vector with its dense keys, supplied by its separately qualified frontend.
- * The two direct vec4 linkage streams must be explicit and complete; absent
+ * One or two direct vec4 linkage streams must be explicit and complete; absent
  * diffuse/texcoord outputs are not silently manufactured. */
 struct m9_faa_live_gl {
    const struct nir_shader *vs;

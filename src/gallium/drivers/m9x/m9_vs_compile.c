@@ -2727,8 +2727,8 @@ compile_impl(struct ctx *c, nir_function_impl *impl,
          return fail(c, "sampled position requires a complete clip position");
    }
    if (c->faa) {
-      if (nvar != 2)
-         return fail(c, "FAA requires two direct output streams");
+      if (nvar < 1 || nvar > 2)
+         return fail(c, "FAA requires one or two direct output streams");
       if (nir_intrinsic_component(position) ||
           nir_intrinsic_write_mask(position) != 0xf ||
           position->src[0].ssa->num_components != 4)

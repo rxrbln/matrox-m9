@@ -112,7 +112,7 @@ m9_faa_live_gl_build(const struct m9_faa_live_gl *s,
    struct m9_faa_position_interface pi;
    struct m9_vs_source_layout source;
    if (!s || !output || output->storage || !s->vs || !s->linkage ||
-       s->linkage->count != 2 || !s->count || s->count > M9_FAA_GL_UPLOAD_MAX_VERTICES ||
+       (s->linkage->count < 1 || s->linkage->count > 2) || !s->count || s->count > M9_FAA_GL_UPLOAD_MAX_VERTICES ||
        !s->elements || !s->buffers || !s->maps || !s->map_bytes ||
        s->element_count > PIPE_MAX_ATTRIBS || s->buffer_count > PIPE_MAX_ATTRIBS ||
        (s->cb0_bytes && !s->cb0) || s->cb0_bytes > UINT32_MAX ||
@@ -126,7 +126,7 @@ m9_faa_live_gl_build(const struct m9_faa_live_gl *s,
        overlap(output, sizeof(*output), s->fragment.words, s->fragment.slots * 8) ||
        overlap(output, sizeof(*output), s->fragment_constants.words, s->fragment_constants.pairs * 8))
       goto fail;
-   for (unsigned i = 0; i < 2; i++) {
+   for (unsigned i = 0; i < s->linkage->count; i++) {
       const struct m9_vs_output *o = &s->linkage->stream[i];
       if (o->coordinate || o->paired || o->coeff_record || o->component ||
           o->location == VARYING_SLOT_POS || o->location >= 64 ||
@@ -140,7 +140,7 @@ m9_faa_live_gl_build(const struct m9_faa_live_gl *s,
       goto fail;
    compiled = true;
    unsigned slots = m9_vs_producer_slot_count(&p), pairs = m9_vs_const_count(&p);
-   if (slots > M9_FAA_GL_UPLOAD_SLOT_BUDGET || pairs > 63 || p.varying_count != 2 ||
+   if (slots > M9_FAA_GL_UPLOAD_SLOT_BUDGET || pairs > 63 || p.varying_count != s->linkage->count ||
        !p.record_bytes || p.record_bytes % 16 || p.texture_count) {
       why = "FAA GL producer limits or direct stream interface";
       goto fail;
@@ -172,7 +172,7 @@ m9_faa_live_gl_build(const struct m9_faa_live_gl *s,
    unsigned declarations = m9_vs_decl_words(&p, declaration, ARRAY_SIZE(declaration));
    const uint8_t inputs[2] = {0, 1};
    if (!declarations ||
-       !m9_faa_preprocess_moves(M9_FAA_MOVE_RECORDS, inputs, 2, 0, gather, sizeof(gather), &gi) ||
+       !m9_faa_preprocess_moves(M9_FAA_MOVE_RECORDS, inputs, p.varying_count, 0, gather, sizeof(gather), &gi) ||
        !m9_faa_preprocess_position(&s->viewport, position, sizeof(position),
                                     (float *)position_constants, sizeof(position_constants), &pi)) {
       why = "FAA GL declaration or position interface";
@@ -202,7 +202,7 @@ m9_faa_live_gl_build(const struct m9_faa_live_gl *s,
    result.vertex_count = s->count; result.record_bytes = p.record_bytes;
    result.declaration_words = declarations;
    memcpy(result.varying_location, p.varying_location, sizeof(result.varying_location));
-   for (unsigned i = 0; i < 3; i++)
+   for (unsigned i = 0; i <= p.varying_count; i++)
       for (unsigned half = 0; half < 2; half++)
          result.carry_output_registers |= UINT64_C(1) << (0x11 + 4 * i + 2 * half);
    size_t bytes = (size_t)program_bytes + result.constants_bytes + result.geometry_bytes + declarations * 4u;
