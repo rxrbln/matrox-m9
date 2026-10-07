@@ -11,30 +11,34 @@ This audit pins Mesa `e0d9262` and kernel `4d1b0a3`. File hashes and the final
 `traces/m9-faa-application-bridge-20261007.json`. No target was accessed and no
 production activation changed.
 
-## Current integration after Unlock and the live position encoder
+## Current integration after verified second draw and Lock
 
-Canonical DRM `87a8329` now implements same-file graph Unlock after a successful
-Lock CPU view. Actual M9128 evidence in
-`tests/m9-faa-graph-unlock-20261007/hardware-20261007` proves the original84-byte
-copyback posted twice, independent12-byte finish, and real190 retirement with
-queue0/wedged0. The native graph keeps all six owners fenced until completion;
-repeated Unlock and stale F021 access refuse. The readback image was taken before
-Unlock. A next draw on this graph and post-Unlock pixels remain unproved.
+Canonical DRM791ad1b and30c18a0 implement the retained second draw's
+preprocessing, returned-DRAW rendering finish, and second normal Lock. Real
+M9128 receipts now reach1e0,210 and240 on the same owned graph, with queue0,
+wedged0, generation0. The new native triangle receives live XYZRHW/diffuse
+records; the fragment program remains the fixed red diagnostic. Source proof
+9133cfa0 establishes exact reuse of the3556-byte normal-Lock encoder after
+recomputing eight addresses, five timeline words and two extents. Hardware
+capsules are under tests/m9-faa-next-frame-tail-20261007 and
+m9-faa-next-frame-lock-20261007. Their saved raw files are FIRST image only.
+A separate guarded second F021 view is implemented at DRM8552a94; actual
+second-image validation remains pending. These are bounded320x240 diagnostics.
 
-Canonical Mesa `23f0999` adds the live integer-viewport position encoder and
-private-clone GL depth adapter. The encoder emits25 slots and13 dense constant
-pairs, using retained route0 and the source's clip/screen/clip-code outputs.
-The GL adapter computes `(z+w)/2` in the GPU producer. This closes the missing
-bounded position-vector producer, but not its graph record/constant bindings.
-Original packer execution checks96 records across four controls; compiler
-checks cover36,864 independent component references. Neither API is connected
-to production graph jobs yet. The complete17-object DSO builds, and its recorded
-source hashes match every canonical driver input (DSO SHA
-`cf16cb841f04539ad08f69eb8633d25c6022f6c2f05a43a078e3414668c77f14`).
+Canonical Mesa23f0999 supplies the GPU integer-viewport position encoder and
+private-clone GL depth adapter, computing `(z+w)/2` on GPU. Mesa789d4f5 joins
+live four-vector programs, dense constants, current viewport and raw POSITION/
+UV FLOAT4 records into address-free upload spans. Actual source-byte equality,
+12 atomic refusals, five relative-field refusals and256 changed-input controls
+pass under ASAN/UBSAN. SourceREb2553362/ab5f4056 proves the distinct public-VS
+first-stage structure, including owner24 output and same-owner relative248f2.
+Its originalf0/final100 path has not yet been submitted on hardware.
 
-The remaining work below is the application bridge. Earlier pinned line
-numbers describe the original audit; the two new completed steps above do not
-supply missing live draw, next-frame or presentation receipts.
+The current combined18-object Mesa build passes, including manual compilation
+of m9_faa_program.c (f4a5f9e fixes the earlier17-object build omission). The
+helpers remain unactivated in production; linker GC can leave the DSO hash
+unchanged even though the helper object is rebuilt. These host/build proofs
+supply no application FAA or FPS claim. The remaining edges below still apply.
 
 ## Four concrete missing edges
 
@@ -84,7 +88,7 @@ supply missing live draw, next-frame or presentation receipts.
    is therefore a finite readback result, not scanout or Present. The source's
    normal Unlock changes the layout using a real GPU copy; the earlier
    same-backing F021→F022 and reverse-copy proofs are distinct lifecycle
-   evidence. Normal Unlock now retires on this same graph. The app path must still
+   evidence. Normal Unlock now retires on this same graph. The diagnostic second draw and Lock now retire. The app path must still
    qualify its destination, overlap policy,
    retirement and source copy/presentation ordering, and transition back into
    a writable graph before another draw. Reading raw F022 as linear pixels
