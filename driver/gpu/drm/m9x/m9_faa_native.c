@@ -139,6 +139,7 @@ struct m9x_faa_replay {
 	/* Checked extent of the caller's pinned/reserved color BO. This is
 	 * borrowed storage, never a locally mapped owner to release. */
 	u64 borrowed_color_bytes;
+	bool borrowed_color_observed;
 	struct drm_gem_object *output_color;
 	u64 output_point;
 	u32 output_generation;
@@ -634,6 +635,77 @@ static void m9_faa_observe(struct m9x_device *mdev,
 	}
 	if (before)
 		r->baseline_valid = true;
+}
+
+/* The sampled primary is borrowed, so the ordinary owner loop intentionally
+ * skips it. Observe the actual pinned/reserved caller BO without turning it
+ * into an owned allocation or extending the GPU command stream. Failure to
+ * map observation data never invents a zero baseline or changes submission. */
+static void m9_faa_observe_borrowed_color(struct m9x_device *mdev,
+					struct m9x_faa_replay *r,
+					struct drm_gem_vram_object *color_bo,
+					bool before)
+{
+#ifdef M9_FAA_MULTI_CLEAR
+	const u32 i = M9_FAA_COLOR_OWNER;
+	struct iosys_map map = IOSYS_MAP_INIT_VADDR(NULL);
+	u8 data[256];
+	u32 bytes, offset, count, j, hash = 0x811c9dc5;
+	u32 nonzero = 0, nonzero_words = 0;
+	s64 local_offset;
+	u64 base;
+	int ret;
+
+	if (!color_bo || i >= ARRAY_SIZE(r->owner) || r->owner[i].vram ||
+	    r->owner[i].cpu || !r->borrowed_color_bytes)
+		return;
+	bytes = m9_faa_owner_specs[i].bytes;
+	local_offset = drm_gem_vram_offset(color_bo);
+	if (!bytes || bytes > 1024 * 1024 || (bytes & 3) || local_offset < 0 ||
+	    bytes > r->borrowed_color_bytes || bytes > color_bo->bo.base.size ||
+	    check_add_overflow(M9_VRAM_GPU_BASE, (u64)local_offset, &base) ||
+	    base != r->owner[i].base)
+		return;
+	/* m9_submit_first_triangle owns this reservation across our call. */
+	ret = drm_gem_vram_vmap(color_bo, &map);
+	if (ret) {
+		dev_warn(&mdev->pdev->dev, "M9 FAA borrowed observation unavailable: %d\n", ret);
+		return;
+	}
+	rmb();
+	for (offset = 0; offset < bytes; offset += count) {
+		count = min_t(u32, sizeof(data), bytes - offset);
+		iosys_map_memcpy_from(data, &map, offset, count);
+		hash = m9_faa_hash(hash, data, count);
+		for (j = 0; j < count; j++)
+			nonzero += !!data[j];
+		for (j = 0; j < count; j += sizeof(u32))
+			nonzero_words += !!get_unaligned_le32(data + j);
+	}
+	drm_gem_vram_vunmap(color_bo, &map);
+	if (before) {
+		r->before_hash[i] = hash;
+		r->before_nonzero[i] = nonzero;
+		r->before_nonzero_words[i] = nonzero_words;
+		r->borrowed_color_observed = true;
+	}
+	dev_info(&mdev->pdev->dev,
+		 "M9 FAA %s BAR observation: owner=%u captured=%#x native=%#x bytes=%u fnv=%#x nonzero_bytes=%u nonzero_words=%u\n",
+		 before ? "before submit" : "retired", i,
+		 m9_faa_owner_specs[i].captured, r->owner[i].base, bytes,
+		 hash, nonzero, nonzero_words);
+	if (!before && r->borrowed_color_observed)
+		dev_info(&mdev->pdev->dev,
+			 "M9 FAA BAR delta: owner=%u before_fnv=%#x after_fnv=%#x hash_changed=%u before_nonzero_bytes=%u after_nonzero_bytes=%u before_nonzero_words=%u after_nonzero_words=%u\n",
+			 i, r->before_hash[i], hash, r->before_hash[i] != hash,
+			 r->before_nonzero[i], nonzero,
+			 r->before_nonzero_words[i], nonzero_words);
+#else
+	(void)mdev;
+	(void)r;
+	(void)color_bo;
+	(void)before;
+#endif
 }
 
 /* Allocations precede the caller's color BO reservation, as in ordinary
@@ -1277,6 +1349,7 @@ int m9x_faa_submit_diag(struct m9x_device *mdev, u32 color,
 	/* Baseline follows real initialization and every pointer/counter patch,
 	 * but precedes this immutable stream's first GPU publication. */
 	m9_faa_observe(mdev, r, true);
+	m9_faa_observe_borrowed_color(mdev, r, color_bo, true);
 	/* Source23a09/2461e consume this live class1/B owner directly. Its
 	 * final size includes the regenerated inline clear and shifted suffix.
 	 * No transport clone substitutes a physical domain for this primary. */
@@ -1346,6 +1419,7 @@ int m9x_faa_submit_diag(struct m9x_device *mdev, u32 color,
 			r->output_retired = true;
 		}
 		m9_faa_observe(mdev, r, false);
+		m9_faa_observe_borrowed_color(mdev, r, color_bo, false);
 		dev_info(&mdev->pdev->dev,
 			 "M9 FAA private frame retired: point=%#llx sampled_primary=%#x ordinary_output=%#x 320x240\n",
 			 *point, color, m9_faa_output_owner(r) ? m9_faa_output_owner(r)->base : 0);
