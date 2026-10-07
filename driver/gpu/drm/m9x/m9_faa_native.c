@@ -115,6 +115,9 @@ struct m9x_faa_replay {
 	struct m9_faa_owner owner[ARRAY_SIZE(m9_faa_owner_specs)];
 	bool prepared, attempted, baseline_valid;
 	u32 primary_bytes;
+	/* Checked extent of the caller's pinned/reserved color BO. This is
+	 * borrowed storage, never a locally mapped owner to release. */
+	u64 borrowed_color_bytes;
 	struct drm_gem_object *output_color;
 	u64 output_point;
 	u32 output_generation;
@@ -833,6 +836,32 @@ static int m9_faa_clear_page_words(u32 base, u32 bytes, u32 *words,
  * is regenerated or reinterpreted. The command buffer has an owned capacity
  * independent of its exact known/submitted prefix length.
  */
+#ifdef M9_FAA_MULTI_CLEAR
+static int m9_faa_bind_borrowed_color(struct m9x_faa_replay *r, u32 color,
+				    struct drm_gem_vram_object *color_bo)
+{
+	struct m9_faa_owner *owner = &r->owner[M9_FAA_COLOR_OWNER];
+	u64 base, bytes;
+	s64 offset;
+
+	/* The caller holds this BO's pin and reservation throughout submit;
+	 * its existing fence/quarantine path retains it through retirement. */
+	if (!color_bo || owner->vram || owner->cpu || owner->bytes ||
+	    !m9_faa_owner_specs[M9_FAA_COLOR_OWNER].local)
+		return -EINVAL;
+	offset = drm_gem_vram_offset(color_bo);
+	bytes = color_bo->bo.base.size;
+	if (offset < 0 || check_add_overflow(M9_VRAM_GPU_BASE, (u64)offset, &base) ||
+	    base != color || !IS_ALIGNED(base, PAGE_SIZE) ||
+	    bytes < m9_faa_owner_specs[M9_FAA_COLOR_OWNER].bytes ||
+	    bytes > (u64)U32_MAX + 1 - base)
+		return -ERANGE;
+	owner->base = color;
+	r->borrowed_color_bytes = bytes;
+	return 0;
+}
+#endif
+
 static int m9_faa_rebase_page_clear(struct m9x_faa_replay *r)
 {
 	struct m9_faa_owner *primary = &r->owner[M9_FAA_PRIMARY_OWNER];
@@ -871,8 +900,14 @@ static int m9_faa_rebase_page_clear(struct m9x_faa_replay *r)
 		    (i && s->start - 28 < m9_faa_clear_segments[i - 1].end + 8))
 			return -EINVAL;
 		owner = &r->owner[s->owner];
-		if (!owner->vram || owner->bytes < s->bytes ||
-		    m9_faa_owner_specs[s->owner].bytes < s->bytes ||
+		if (s->owner == M9_FAA_COLOR_OWNER) {
+			if (owner->vram || owner->cpu || owner->bytes ||
+			    r->borrowed_color_bytes < s->bytes)
+				return -EINVAL;
+		} else if (!owner->vram || owner->bytes < s->bytes) {
+			return -EINVAL;
+		}
+		if (m9_faa_owner_specs[s->owner].bytes < s->bytes ||
 		    get_unaligned_le32(data + s->start - 28) != 0x4545ace6 ||
 		    get_unaligned_le32(data + s->start - 24) != 2 ||
 		    get_unaligned_le32(data + s->start - 20) != 0 ||
@@ -1025,7 +1060,13 @@ int m9x_faa_submit_diag(struct m9x_device *mdev, u32 color,
 	if (ret)
 		goto unlock;
 #if !defined(M9_FAA_HAS_SAMPLED_COLOR) || M9_FAA_HAS_SAMPLED_COLOR
+#ifdef M9_FAA_MULTI_CLEAR
+	ret = m9_faa_bind_borrowed_color(r, color, color_bo);
+	if (ret)
+		goto unlock;
+#else
 	r->owner[M9_FAA_COLOR_OWNER].base = color;
+#endif
 #else
 	if (M9_FAA_COLOR_OWNER != U32_MAX) {
 		ret = -EINVAL;
