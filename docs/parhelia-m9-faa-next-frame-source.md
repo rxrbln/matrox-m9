@@ -63,3 +63,29 @@ The large full trace is regenerated in `/tmp`; only the stripped native
 template, plan, and checker are committed. Captured VRAM, PFN, GPU virtual,
 CPU or MMIO addresses are evidence of the original source run, never native
 parameters.
+
+## Native second preprocessing now retires on M9128
+
+Canonical DRM `e8ee451` (WIP `271df45`) and helper RE `1ea3576d` implement
+this retained-graph continuation with caller-owned live XYZRHW/diffuse words.
+The encoder derives11 resource fields, four indirect endpoints and five
+relative timeline values. It accepts the authenticated live primary cursor,
+preserves the full completion epoch, and rejects invalid inputs before writes.
+All six graph BOs receive the final fence before the single END. Posted failures
+keep the private and borrowed owners quarantined through safe teardown.
+
+Actual boot `b0dc74fa-3207-46aa-b51b-7ed6182ca9fb` completed INITb0, first
+DRAW/Lock170 and readback, Unlock190, then second preprocessing/finish1e0.
+The new vertex positions are (64,192),(256,192),(160,48). Source bytes8668
+become native8672 through the live INIT clear delta; the graph has12 posts.
+Immediate and later snapshots show raw1e1, submitted/completed1e0, next1f0,
+generation0, queue0, wedged0. A repeated next-draw request returns ESTALE.
+
+Evidence is `tests/m9-faa-next-frame-20261007/hardware-20261007`, checked by
+`check-hardware.py` with eight altered-receipt refusals. Module SHA
+`326d24d2c2098953e0a5302d0360e359d1ce596e5d442def10e59bce9af19533`;
+helper SHA `c9d1e9b899309cc56482a2f78e06b57cf6e93789a77db2c2728399b1797017a0`.
+The raw image in this capsule is the **first** Lock image, taken before
+Unlock and the second draw. It still passes the triangle oracle, but supplies
+no second-frame pixel evidence. Original second DRAW return, raster finish,
+normal Lock and its resulting image remain the next boundaries.
