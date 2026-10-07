@@ -1,9 +1,21 @@
 # M9128 FAA logical and stale-value audit, 2026-10-07
 
-The latest qualified hardware prefix is prepared startup c0, archived in
-`tests/m9-faa-prepared-preclear-hardware-20261007`. It retires with healthy
-queues; it does not yet contain a completed triangle or establish FAA pixels.
-Older complete180 and public250 results below are historical observations.
+The latest qualified hardware prefix is prepared preprocessing120, archived in
+`tests/m9-faa-prepared-flow-hardware-20261007` (RE7efccaad). Kernel a78c07b
+now defers the program's known240 bytes until the real c0 boundary, derives its
+raw CPU mapping from the retained live owner, and performs the source-proven
+kick/mapping/upload/release sequence. It verifies the uploaded bytes before
+posting120. Actual hardware retires120 with empty queues and wedged=0; the
+preprocessing buffer changes. Final raster/resolve and FAA pixels remain
+unproved. Neither that buffer change nor the CPU program upload is an image.
+
+The entry-inventory fix is kernel aad2ec0: generated mask2 admits the genuine
+preprocessing entry32 while older full profiles retain both entries. The raw
+binding-index alias is fixed in Mesa faea59a, with wide-value validation before
+narrowing and paired-index wrap rejection;140 actual initializer/emitter
+controls pass, and the isolated DSO and batch build pass. The review below
+records the evidence that led to these changes; its original "no product
+change" statements describe the review checkpoint, not the current code.
 
 ## Current review: program entry assumptions and CPU mapping order
 
