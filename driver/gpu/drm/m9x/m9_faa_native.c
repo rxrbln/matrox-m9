@@ -1248,10 +1248,6 @@ static int m9_faa_program_access(struct m9x_device *mdev,
 	for (i = 0; i < ARRAY_SIZE(m9_faa_fixups); i++) {
 		const struct m9_faa_fixup *f = &m9_faa_fixups[i];
 
-		if (f->encoder == 0x24886 &&
-		    (i + 1 >= ARRAY_SIZE(m9_faa_fixups) ||
-		     m9_faa_fixups[i + 1].encoder != 0x248ab))
-			return -EINVAL;
 		if (f->encoder != 0x248ab)
 			continue;
 		if (!i || f->offset < 4 ||
@@ -1271,6 +1267,18 @@ static int m9_faa_program_access(struct m9x_device *mdev,
 	}
 	if (entries < 2 || offsets != 3)
 		return -EINVAL;
+	/* Kind19 resident-database bindings use the same page-base encoder
+	 * without a C3 half. First identify the unique program from actual
+	 * entry-offset pairs, then reject orphan bases on that proven owner.
+	 * A valid later rebind must not conceal a missing earlier C3 half. */
+	for (i = 0; i < ARRAY_SIZE(m9_faa_fixups); i++) {
+		const struct m9_faa_fixup *f = &m9_faa_fixups[i];
+
+		if (f->encoder == 0x24886 && f->src == program &&
+		    (i + 1 >= ARRAY_SIZE(m9_faa_fixups) ||
+		     m9_faa_fixups[i + 1].encoder != 0x248ab))
+			return -EINVAL;
+	}
 	spec = &m9_faa_owner_specs[program];
 	owner = &r->owner[program];
 	if (!spec->local || spec->system || spec->bytes != 0x1080 ||
