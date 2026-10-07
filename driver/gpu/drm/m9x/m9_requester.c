@@ -875,9 +875,10 @@ int m9x_submit_faa_virtual_primary_locked(struct m9x_device *mdev,
 		if (pte != (m9x_address_pte_word(dma + page * PAGE_SIZE) | 1u))
 			return -ESTALE;
 	}
-	/* The flags30 owner was committed before engine activation, and its
-	 * final variable-length command bytes are coherent CPU writes. */
-	dma_wmb();
+	/* The flags30 mapping is committed before engine activation. Drain
+	 * WC command/data stores before MMIO publication: dma_wmb() is only
+	 * a compiler barrier on x86; writel() does not emit an SFENCE. */
+	wmb();
 	t->faa_virtual_primary = true;
 	m9x_write(mdev, M9_REG_COMMAND_BASE, base | 1u);
 	m9x_read(mdev, M9_REG_COMMAND_BASE);
@@ -952,7 +953,7 @@ int m9x_submit_faa_virtual_phases_locked(struct m9x_device *mdev,
 	for (i = 1; i < count; i++) {
 		/* The prior actual wait returned; neither CPU seeds nor a later
 		 * phase's desired counter are treated as GPU completion. */
-		dma_wmb();
+		wmb();
 		m9x_write(mdev, M9_REG_COMMAND_END, (u32)node->start + phases[i].bytes);
 		m9x_read(mdev, M9_REG_COMMAND_END);
 		ret = m9_fence_wait_locked(mdev, phases[i].target);
@@ -1033,7 +1034,9 @@ int m9x_extend_faa_virtual_primary_locked(struct m9x_device *mdev,
 	if (ret)
 		return ret;
 	end = (u32)node->start + new_bytes;
-	dma_wmb();
+	/* The primary and consumed data/secondary owners can be WC. Order
+	 * all earlier CPU stores before exposing this range to the GPU. */
+	wmb();
 	m9x_write(mdev, M9_REG_COMMAND_END, end);
 	m9x_read(mdev, M9_REG_COMMAND_END);
 	if (doorbell_posted)
@@ -1119,7 +1122,9 @@ int m9x_post_faa_graph_end_locked(struct m9x_device *mdev,
 			return -ESTALE;
 	}
 	end = (u32)node->start + new_bytes;
-	dma_wmb();
+	/* The primary and consumed data/secondary owners can be WC. Order
+	 * all earlier CPU stores before exposing this range to the GPU. */
+	wmb();
 	m9x_write(mdev, M9_REG_COMMAND_END, end);
 	/* Source repeats +64 END without an intervening MMIO read. */
 	if (target) {
