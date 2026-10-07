@@ -16,6 +16,16 @@ queue0 and no wedge immediately and two seconds later. It posts only the
 vendor's first64 primary bytes twice and keeps all six buffers fenced after
 this early observation. See [the hardware receipt](../tests/m9-faa-public-vs-head-20261007/README.md).
 
+The complete original DRAW now also passes on hardware: INIT b0 → HEAD c0 →
+DRAW160/state13, raw161, primary endpoint5008 and three total posts. It uploads
+the fully closed2688-byte secondary block before its first fetch. The same
+boot stays generation0, queue0 and not wedged immediately, after two seconds,
+and after token release. The counter161 occurs before the final raster, so
+both retained fences remain unsignaled; this is not yet pixel completion.
+See [the complete DRAW hardware evidence](../tests/m9-faa-public-vs-draw-20261007/README.md).
+DRM implementation0d4f9d9 and Mesa clientd1276a2 are committed; the Mesa
+client's actual receipt/error controls and full19-object build pass.
+
 The earlier public100→130 diagnostic wedged. Its trace harness incorrectly
 classified original function25270 as a blocking CPU wait; the vendor function
 instead emits a GPU dependency when the observed counter is below its ticket.
@@ -24,8 +34,8 @@ continuation changed that block after submission. This is a source ordering
 error, not proof of a device incompatibility. The corrected original c0
 observation allows the emulator to follow the real conditional branch. The
 vendor DRAW then returns and submits one complete source block with closed
-length fields and no inserted finisher. Native complete-block retirement,
-pixels, generalized GL shader uploads, continuous frames and application
+length fields and no inserted finisher. Final raster completion through the
+normal Lock/readback tail, pixels, generalized GL shader uploads, continuous frames and application
 presentation remain unverified. See [the source analysis](parhelia-m9-faa-public-vs-open-block.md).
 
 ## 2026-10-07: real M9128 Lock, Unlock and second Lock
