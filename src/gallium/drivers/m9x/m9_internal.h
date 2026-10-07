@@ -132,6 +132,10 @@ struct m9_faa_graph {
    uint32_t prepared_generation;
    bool prepared;
    bool initialized;
+   /* A typed preprocessing prefix is distinct from a returned DRAW/image.
+    * Any attempted ioctl may consume INIT; retry needs a new graph token. */
+   bool public_vs_attempted;
+   uint64_t public_vs_point;
 };
 
 /* A context's prepared sampled target and the attachments it stands for.

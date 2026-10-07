@@ -103,6 +103,13 @@ struct m9_faa_preprocess_upload_layout {
    uint32_t geometry_bytes, vertex_offset, vertex_bytes;
    uint32_t declaration[5];
 };
+/* Owned snapshot for the source-qualified public COPY profile. It contains
+ * no pointers or graph tokens; producers must derive its words from live
+ * shader/state/vertices. Wider programs use their own qualified contracts. */
+struct m9_faa_public_upload {
+   struct m9_faa_preprocess_upload_layout layout;
+   uint32_t program[82], constants[38], geometry[56];
+};
 bool m9_faa_preprocess_upload_build(
    const struct m9_faa_preprocess_upload *input,
    uint32_t *program, uint32_t program_capacity,

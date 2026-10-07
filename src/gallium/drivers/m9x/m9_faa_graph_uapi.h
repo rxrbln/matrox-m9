@@ -69,4 +69,24 @@ struct drm_parhelia_m9_faa_graph_init {
    DRM_IOWR(DRM_COMMAND_BASE + DRM_PARHELIA_M9_FAA_GRAPH_INIT, \
             struct drm_parhelia_m9_faa_graph_init)
 #endif
+
+#ifndef DRM_IOCTL_PARHELIA_M9_FAA_GRAPH_PUBLIC_VS
+#define DRM_PARHELIA_M9_FAA_GRAPH_PUBLIC_VS 0x16
+#define PARHELIA_M9_FAA_PUBLIC_VS_PREFIX_RETIRED 10u
+struct drm_parhelia_m9_faa_public_vs_layout {
+   __u32 program_bytes, program_count, entry_bytes[4];
+   __u32 constants_bytes, constant_begin[4], constant_end[4];
+   __u32 geometry_bytes, vertex_offset, vertex_bytes;
+   __u32 declaration[5];
+};
+struct drm_parhelia_m9_faa_graph_public_vs {
+   __u64 graph_id, init_point, prefix_point;
+   __u32 generation, flags, state, pad;
+   struct drm_parhelia_m9_faa_public_vs_layout layout;
+   __u8 program[328], constants[152], geometry[224];
+};
+#define DRM_IOCTL_PARHELIA_M9_FAA_GRAPH_PUBLIC_VS \
+   DRM_IOWR(DRM_COMMAND_BASE + DRM_PARHELIA_M9_FAA_GRAPH_PUBLIC_VS, \
+            struct drm_parhelia_m9_faa_graph_public_vs)
+#endif
 #endif

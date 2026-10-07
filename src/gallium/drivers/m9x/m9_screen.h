@@ -12,6 +12,7 @@ struct m9_resource;
 struct m9_screen;
 struct m9_faa_graph;
 struct m9_faa_surface;
+struct m9_faa_public_upload;
 
 struct pipe_screen *m9_screen_create(int fd,
                                      const struct pipe_screen_config *config);
@@ -74,6 +75,11 @@ int m9_faa_surface_prepare_kernel(struct m9_screen *screen,
  * point receipt marks the graph initialized; no application draw is emitted. */
 int m9_faa_surface_init_kernel(struct m9_screen *screen,
                                struct m9_faa_surface *surface);
+/* Submit owned, live public COPY uploads on the exact initialized surface.
+ * A returned point proves preprocessing only, not an app DRAW or image. */
+int m9_faa_surface_public_vs_kernel(struct m9_screen *screen,
+                                  struct m9_faa_surface *surface,
+                                  const struct m9_faa_public_upload *upload);
 /* Exact token release works after reset. Failure preserves token and owners;
  * kernel file-close still owns final cleanup if context teardown cannot release. */
 int m9_faa_graph_release_kernel(struct m9_screen *screen,
