@@ -52,6 +52,7 @@ struct m9_faa_clear_segment {
      defined(M9_FAA_ORDINARY_SYSTEM_CONTROL) + \
      defined(M9_FAA_INIT_ONLY_CONTROL) + \
      defined(M9_FAA_PRECLEAR_CONTROL) + \
+     defined(M9_FAA_PRECLEAR_DRAW_CONTROL) + \
      defined(M9_FAA_POST_TRIANGLE_CONTROL)) > 1
 #error "Select only one complete private FAA source profile"
 #endif
@@ -67,10 +68,15 @@ struct m9_faa_clear_segment {
 #include "m9_faa_init_only_data.h"
 #define M9_FAA_INPUT_FIRMWARE "m9x/faa-init-only-known-inputs.bin"
 #elif defined(M9_FAA_PRECLEAR_CONTROL)
-/* Genuine public pre-draw CLEAR42 admission, stopped at its first GPU
- * input and independently flushed. Neither the clear nor draw has returned. */
+/* Completed public black CLEAR42, then the original draw stopped at its
+ * first GPU query. Independent finish; no completed triangle or output. */
 #include "m9_faa_preclear_data.h"
 #define M9_FAA_INPUT_FIRMWARE "m9x/faa-preclear-known-inputs.bin"
+#elif defined(M9_FAA_PRECLEAR_DRAW_CONTROL)
+/* Completed public black clear, then the original triangle preprocessing
+ * launch stopped at its next GPU wait. Earlier inputs remain byte-exact. */
+#include "m9_faa_preclear_draw_data.h"
+#define M9_FAA_INPUT_FIRMWARE "m9x/faa-preclear-draw-known-inputs.bin"
 #elif defined(M9_FAA_POST_TRIANGLE_CONTROL)
 /* Independent vendor queue finish after the returned public triangle,
  * before output/resolve. Its final counter is in its counted secondary. */
