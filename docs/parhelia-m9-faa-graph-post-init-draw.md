@@ -164,3 +164,15 @@ controller call at the suspended DRAW100 boundary. The source queue/finalizer or
 must be resolved before any native `0x140` submission; the 4,980-byte DRAW
 tail is not a Lock completion. All captured
 bytes and addresses remain forensic evidence, not live native inputs.
+
+The source-only tail plan at
+`captures/m9-faa-graph-post-init-tail-20261007/native-tail-plan.json` strips
+all 17 proven secondary owner address words, both tagged indirect endpoints
+and two width/height fields from its templates. The latter fields at secondary
+offsets `0x3f4/0x3fc` contain packed `240:320` and numerically overlap the
+captured conversion-startup owner 30 range; their actual writers
+`0xfbf41/0xfbf59` and the live primary shape prove they are **not address
+relocations**. Any native tail encoder must derive the packed extent from the
+validated current graph shape, just as it must derive owner bases at the new
+placement. This plan has no hardware receipt and cannot yet be handed to the
+normal Lock or app as completed FAA rendering.
