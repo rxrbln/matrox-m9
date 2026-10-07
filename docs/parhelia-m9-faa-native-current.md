@@ -8,6 +8,15 @@ Ordinary textured rendering and the deployed driver are validated. FAA
 rendering is not yet validated. This note is separate from P690
 `102b:2539` evidence.
 
+Latest hardware checkpoint: corrected kernel da3e710 retires the original
+public caller's replacement-preparation prefix at230/raw231 on a fresh M9128
+boot. All seven boundaries complete; queue empty/wedged0 persists after two
+seconds. Main, companion and sampled-primary hashes match prior1f0; pool state
+changes. All ten retained BAR roles are archived and verified. This permits
+the original220 emulator continuation, not an FAA image claim. Ordinary output
+is absent and the helper verifies ENODATA rather than inspecting FAA pixels.
+[Replacement preparation hardware evidence](../tests/m9-faa-public-replacement-hardware-20261007/README.md).
+
 Latest code review: kernel da3e710 fixes a new pre-deployment regression in
 65cafcc/ce402c0: encoder24886 also represents standalone resident-database
 bindings, so requiring a C3 partner for every occurrence rejected valid FAA
