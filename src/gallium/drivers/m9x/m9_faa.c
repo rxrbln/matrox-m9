@@ -16,6 +16,8 @@ const uint32_t m9_faa_sentinel_init[M9_FAA_SENTINEL_INIT_DWORDS] = {
 void
 m9_faa_init(struct m9_faa *faa, uint16_t device_id)
 {
+   int64_t companion_format;
+
    *faa = (struct m9_faa) { 0 };
    /* Dispatch on the family, not on "this is the only card we have": a
     * second family reaches this with a chip of its own or with NONE. */
@@ -38,8 +40,16 @@ m9_faa_init(struct m9_faa *faa, uint16_t device_id)
    faa->f0_bit15 = debug_get_bool_option("M9X_FAA_F0_BIT15", false);
    faa->f0_bit24 = debug_get_bool_option("M9X_FAA_F0_BIT24", false);
    faa->store_bind = debug_get_bool_option("M9X_FAA_STORE", false);
-   faa->companion_format =
-      (int)debug_get_num_option("M9X_FAA_COMPANION", -1);
+   companion_format = debug_get_num_option("M9X_FAA_COMPANION", -1);
+   /* Validate before narrowing: the descriptor has seven format bits, and
+    * an alias must not bypass the source-derived 0x3d layout guard. */
+   if (companion_format < -1 || companion_format > 127) {
+      fprintf(stderr, "m9x: invalid M9X_FAA_COMPANION=%lld; expected -1 or "
+              "0..127; FAA probe disabled\n", (long long)companion_format);
+      *faa = (struct m9_faa) { .chip = M9_FAA_CHIP_NONE };
+      return;
+   }
+   faa->companion_format = (int)companion_format;
    faa->bind_index = (int)debug_get_num_option("M9X_FAA_BIND_INDEX", -1);
    faa->bind_desc = debug_get_num_option("M9X_FAA_BIND_DESC", -1);
    faa->bind_reset = debug_get_bool_option("M9X_FAA_BIND_RESET", false);
