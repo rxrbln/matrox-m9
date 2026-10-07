@@ -106,3 +106,26 @@ remains unexecuted. Root already tested the real314 ordering on hardware,
 so emulation of that transition is not a claim that it materializes pixels.
 The nine retained raw BAR roles are read-only evidence, not portable pool
 pointers or emulated GPU replies.
+
+## Bounded saved pool field joins
+
+The nine-role raw receipt is now joined to source-selected pool cells by
+`check-m9-faa-pool-live-state.py`. It verifies the original24f20 transition,
+including24ffe's literalA1, original25039's64B interval, and native typed
+range284..2c4. Those offsets are exactly4*A1..4*B1. Within that source-defined
+interval, pool+A1*4 agrees with actual sentinel+8, and A3/A4 likewise agree
+with sentinel+c/+10: all three saved pointer values are zero in this test.
+The pool itself is not zero and is not a list of proved colored fragments.
+
+Selected other cells match individually source-emitted indexed fields and
+live native owners:00/01/02 contain the retained preprocessing view pointers,
+24 names the retained pool,69 names the uploaded RS database, andB0/B8/BA/
+BC/BD name actual output/companion/HZ/main/aux owners. CorrespondingB1/B9/BB
+values match the source output/companion/HZ descriptors. A8 andAD agree with
+raster control/logical footprint; EF/D7 agree with final resolve state. The
+successful joins establish bounded saved-state correspondence and that
+these pointer-bearing cells refer to current owners. They do not establish
+a universal pool ABI, successful render-target memory writes or semantic
+meaning for unlisted opaque cells. No pool data is transported as emulator
+GPU input. Old RED A1=24a and new public-preclear A1=0 remain separately
+qualified profiles, not interchangeable receipts or a guessed reset fix.
