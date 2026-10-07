@@ -252,6 +252,8 @@ struct m9x_faa_replay {
 	struct m9_faa_owner draw_owner[3];
 	struct m9_faa_public_vs_storage *public_vs_image;
 	bool public_vs_payload_ready, public_vs_prefix_retired;
+	bool public_vs_head_attempted, public_vs_head_retired;
+	struct m9x_fence *public_vs_head_fence;
 	struct m9_faa_public_vs_follow_storage *public_vs_follow_image;
 	bool public_vs_follow_retired;
 	struct {
@@ -888,6 +890,17 @@ void m9x_faa_fini(struct m9x_device *mdev)
 		 * GEM reference outside it: its last release takes this lock. */
 		struct m9x_faa_replay *r = mdev->transport.faa;
 		u32 i;
+
+#ifdef M9_FAA_GRAPH_INIT_CONTROL
+		if (r->public_vs_head_fence) {
+			/* HEAD's c0 is an early observation, not a tail completion.
+			 * Requester fini has already disabled bus mastering. */
+			dma_fence_set_error(&r->public_vs_head_fence->base, -EIO);
+			dma_fence_signal(&r->public_vs_head_fence->base);
+			dma_fence_put(&r->public_vs_head_fence->base);
+			r->public_vs_head_fence = NULL;
+		}
+#endif
 
 		mutex_lock(&mdev->transport.lock);
 		if (drm_mm_node_allocated(&r->counter_node))
@@ -3284,6 +3297,7 @@ static int m9_faa_public_vs_state(const struct m9x_transport *t,
 	    r->observation_generation != generation ||
 	    !r->prepared || !r->attempted || !r->graph_draw_claimed ||
 	    !r->public_vs_payload_ready || r->public_vs_prefix_retired ||
+	    r->public_vs_head_attempted || r->public_vs_head_retired ||
 	    !r->public_vs_image || r->draw_image || r->graph_draw_payload_ready ||
 	    r->graph_draw_posts || r->graph_draw_point || r->graph_preparing ||
 	    r->graph_draw_end_bytes != r->primary_bytes ||
@@ -3305,9 +3319,9 @@ static int m9_faa_public_vs_state(const struct m9x_transport *t,
 }
 #endif
 
-int m9x_faa_graph_public_vs_submit(struct m9x_device *mdev,
+static int m9_faa_graph_public_vs_submit_mode(struct m9x_device *mdev,
 		struct m9_faa_graph_binding *binding, u32 generation,
-		u64 init_point, u64 *point, bool *posted)
+		u64 init_point, u64 *point, bool *posted, bool head)
 {
 #ifdef M9_FAA_GRAPH_INIT_CONTROL
 	struct m9x_transport *t = &mdev->transport;
@@ -3366,12 +3380,15 @@ int m9x_faa_graph_public_vs_submit(struct m9x_device *mdev,
 	ret = m9x_address_check_local_identity(mdev, program->base, program->bytes);
 	if (ret)
 		goto out;
-	target = lower_32_bits(image->ends.independent_finish);
+	target = lower_32_bits(head ? init_point + 0x10 :
+			      image->ends.independent_finish);
 	fence = m9x_fence_create_target_locked(mdev, target);
 	if (!fence) {
 		ret = -ENOMEM;
 		goto out;
 	}
+	if (head)
+		r->public_vs_head_attempted = true;
 	/* Caller reserved all six BOs with one fence slot each. Every posted
 	 * part has this final WRITE fence; posted errors quarantine it. */
 	for (i = 0; i < PARHELIA_M9_FAA_GRAPH_OWNERS; i++)
@@ -3396,7 +3413,7 @@ int m9x_faa_graph_public_vs_submit(struct m9x_device *mdev,
 	       M9_FAA_PUBLIC_VS_GEOMETRY_BYTES);
 	memcpy((u8 *)primary->cpu + r->primary_bytes, image->primary, 64);
 	wmb();
-	for (i = 0; i < 3; i++) {
+	for (i = 0; i < (head ? 2 : 3); i++) {
 		u32 end = i == 2 ? image->ends.final_end : image->ends.first_end;
 
 		if (i == 2) {
@@ -3407,7 +3424,7 @@ int m9x_faa_graph_public_vs_submit(struct m9x_device *mdev,
 		}
 		ret = m9x_post_faa_graph_end_locked(mdev, &primary->system_node,
 			primary->dma, r->graph_draw_end_bytes, end, i == 1,
-			i == 2 ? target : 0, &stage_point, &stage_posted);
+			i == (head ? 1 : 2) ? target : 0, &stage_point, &stage_posted);
 		*posted |= stage_posted;
 		if (stage_posted) {
 			r->graph_draw_end_bytes = end;
@@ -3416,17 +3433,22 @@ int m9x_faa_graph_public_vs_submit(struct m9x_device *mdev,
 		if (ret)
 			goto out;
 	}
-	if (stage_point != image->ends.independent_finish) {
+	if (stage_point != (head ? init_point + 0x10 :
+			   image->ends.independent_finish)) {
 		ret = -EIO;
 		goto out;
 	}
 	*point = stage_point;
 	r->graph_draw_point = stage_point;
-	r->public_vs_prefix_retired = true;
-	m9_faa_public_vs_prefix_observe(mdev, r);
+	if (head)
+		r->public_vs_head_retired = true;
+	else {
+		r->public_vs_prefix_retired = true;
+		m9_faa_public_vs_prefix_observe(mdev, r);
+	}
 	dev_info(&mdev->pdev->dev,
-		 "M9 FAA public VS prefix retired: init=%#llx point=%#llx bytes=%u posts=%u program=%u; original DRAW unreturned, no pixels claimed\n",
-		 init_point, *point, r->graph_draw_end_bytes, r->graph_draw_posts,
+		 "M9 FAA public VS %s retired: init=%#llx point=%#llx bytes=%u posts=%u program=%u; original DRAW unreturned, no pixels claimed\n",
+		 head ? "head" : "prefix", init_point, *point, r->graph_draw_end_bytes, r->graph_draw_posts,
 		 M9_FAA_PUBLIC_VS_PROGRAM_BYTES);
 	dma_rmb();
 	dev_info(&mdev->pdev->dev,
@@ -3448,6 +3470,11 @@ out:
 		WARN_ON(t->quarantined_fence);
 		t->quarantined_fence = fence;
 		fence = NULL;
+	} else if (fence && head && !ret) {
+		/* c0 precedes the remaining original state packets. Keep all six
+		 * BOs unavailable until a source-qualified successor or DMA stop. */
+		r->public_vs_head_fence = fence;
+		fence = NULL;
 	} else if (fence) {
 		dma_fence_signal(&fence->base);
 	}
@@ -3458,6 +3485,22 @@ out:
 #else
 	return -EOPNOTSUPP;
 #endif
+}
+
+int m9x_faa_graph_public_vs_submit(struct m9x_device *mdev,
+		struct m9_faa_graph_binding *binding, u32 generation,
+		u64 init_point, u64 *point, bool *posted)
+{
+	return m9_faa_graph_public_vs_submit_mode(mdev, binding, generation,
+						init_point, point, posted, false);
+}
+
+int m9x_faa_graph_public_vs_head_submit(struct m9x_device *mdev,
+		struct m9_faa_graph_binding *binding, u32 generation,
+		u64 init_point, u64 *point, bool *posted)
+{
+	return m9_faa_graph_public_vs_submit_mode(mdev, binding, generation,
+						init_point, point, posted, true);
 }
 
 /* Version-one little-endian raw snapshot. No caller supplies an owner,
@@ -3929,6 +3972,7 @@ static int m9_faa_public_vs_follow_state(struct m9x_transport *t, u32 generation
 		return -EIO;
 	if (!r || !r->graph_binding || !r->prepared || !r->attempted || !r->observation_retired ||
 	    !r->graph_draw_claimed || !r->public_vs_payload_ready || !r->public_vs_prefix_retired ||
+	    r->public_vs_head_attempted || r->public_vs_head_retired ||
 	    !r->public_vs_image || r->draw_image || r->graph_draw_payload_ready ||
 	    r->public_vs_follow_retired || (!!r->public_vs_follow_image != claimed) ||
 	    r->graph_preparing || r->graph_generation != generation ||

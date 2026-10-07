@@ -518,6 +518,11 @@ int m9x_faa_graph_public_vs_follow_submit(struct m9x_device *mdev,
  u64 *point, bool *posted);
 
 
+int m9x_faa_graph_public_vs_head_ioctl(struct drm_device *drm, void *data,
+				 struct drm_file *file);
+int m9x_faa_graph_public_vs_head_submit(struct m9x_device *mdev,
+		struct m9_faa_graph_binding *binding, u32 generation,
+		u64 init_point, u64 *point, bool *posted);
 int m9x_faa_graph_public_vs_ioctl(struct drm_device *drm, void *data,
 		struct drm_file *file);
 int m9x_faa_graph_public_vs_prepare(struct m9x_device *mdev,

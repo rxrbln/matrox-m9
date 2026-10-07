@@ -21,6 +21,7 @@
 #define DRM_PARHELIA_M9_FAA_GRAPH_NEXT_LOCK	0x15
 #define DRM_PARHELIA_M9_FAA_GRAPH_PUBLIC_VS	0x16
 #define DRM_PARHELIA_M9_FAA_GRAPH_PUBLIC_VS_FOLLOW	0x17
+#define DRM_PARHELIA_M9_FAA_GRAPH_PUBLIC_VS_HEAD	0x18
 
 #define DRM_IOCTL_PARHELIA_M9_CREATE_BO \
 	DRM_IOWR(DRM_COMMAND_BASE + DRM_PARHELIA_M9_CREATE_BO, \
@@ -73,6 +74,7 @@ enum drm_parhelia_m9_faa_owner_role {
 #define PARHELIA_M9_FAA_NEXT_LOCK_RETIRED 9u
 #define PARHELIA_M9_FAA_PUBLIC_VS_PREFIX_RETIRED 10u
 #define PARHELIA_M9_FAA_PUBLIC_VS_FOLLOW_PREFIX_RETIRED 11u
+#define PARHELIA_M9_FAA_PUBLIC_VS_HEAD_RETIRED 12u
 struct drm_parhelia_m9_faa_owner {
 	__u32 handle;
 	__u32 pad;
@@ -160,6 +162,12 @@ struct drm_parhelia_m9_faa_graph_public_vs {
 };
 #define DRM_IOCTL_PARHELIA_M9_FAA_GRAPH_PUBLIC_VS \
 	DRM_IOWR(DRM_COMMAND_BASE + DRM_PARHELIA_M9_FAA_GRAPH_PUBLIC_VS, \
+		 struct drm_parhelia_m9_faa_graph_public_vs)
+
+/* Original first64/duplicateEND only. No secondary indirect or independent
+ * finish is posted; success observes init_point+0x10 and state12. */
+#define DRM_IOCTL_PARHELIA_M9_FAA_GRAPH_PUBLIC_VS_HEAD \
+	DRM_IOWR(DRM_COMMAND_BASE + DRM_PARHELIA_M9_FAA_GRAPH_PUBLIC_VS_HEAD, \
 		 struct drm_parhelia_m9_faa_graph_public_vs)
 
 /* Separate continuation of the retained public-VS prefix. State11 proves

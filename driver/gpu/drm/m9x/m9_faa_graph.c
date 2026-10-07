@@ -865,8 +865,8 @@ out_dev:
 	return ret;
 }
 
-int m9x_faa_graph_public_vs_ioctl(struct drm_device *drm, void *data,
-				 struct drm_file *file)
+static int m9_faa_graph_public_vs_ioctl_mode(struct drm_device *drm, void *data,
+				 struct drm_file *file, bool head)
 {
 	struct drm_parhelia_m9_faa_graph_public_vs *args = data;
 	struct m9x_device *mdev = to_m9x(drm);
@@ -939,14 +939,18 @@ int m9x_faa_graph_public_vs_ioctl(struct drm_device *drm, void *data,
 			goto out_exec;
 		}
 	}
-	ret = m9x_faa_graph_public_vs_submit(mdev, binding, args->generation,
+	ret = head ?
+		m9x_faa_graph_public_vs_head_submit(mdev, binding, args->generation,
+					 args->init_point, &point, &posted) :
+		m9x_faa_graph_public_vs_submit(mdev, binding, args->generation,
 					 args->init_point, &point, &posted);
 	if (!ret) {
-		if (point != args->init_point + 0x50)
+		if (point != args->init_point + (head ? 0x10 : 0x50))
 			ret = -EIO;
 		else {
 			args->prefix_point = point;
-			args->state = PARHELIA_M9_FAA_PUBLIC_VS_PREFIX_RETIRED;
+			args->state = head ? PARHELIA_M9_FAA_PUBLIC_VS_HEAD_RETIRED :
+				PARHELIA_M9_FAA_PUBLIC_VS_PREFIX_RETIRED;
 		}
 	}
 out_exec:
@@ -957,6 +961,18 @@ out_state:
 out_dev:
 	drm_dev_exit(idx);
 	return ret;
+}
+
+int m9x_faa_graph_public_vs_ioctl(struct drm_device *drm, void *data,
+				 struct drm_file *file)
+{
+	return m9_faa_graph_public_vs_ioctl_mode(drm, data, file, false);
+}
+
+int m9x_faa_graph_public_vs_head_ioctl(struct drm_device *drm, void *data,
+				 struct drm_file *file)
+{
+	return m9_faa_graph_public_vs_ioctl_mode(drm, data, file, true);
 }
 
 int m9x_faa_graph_unlock_ioctl(struct drm_device *drm, void *data,
