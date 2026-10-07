@@ -81,8 +81,8 @@ identify the original owners for source checking; they are not native values.
 
 ## Controlled public-state differentials
 
-The original M9128 emulator repeated the combined request with only one
-public state value changed per run. All five runs use the same genuine normal
+The original M9128 emulator repeated the combined request with controlled
+public state values. All seven runs use the same genuine normal
 sampled primary, allocated 64x64 profile12 texture, 320x240 profile49 depth
 target, three XYZ/RHW/UV vertices, source input hashes, and four launcher
 routes. Each CPU draw returned successfully; no GPU execution or completion
@@ -92,11 +92,14 @@ was supplied.
 | --- | --- | --- | --- | --- |
 | COLOROP4 (MODULATE), ZENABLE1, ZFUNC4, ZWRITE1 | `62ae1` | 336 | baseline | `d8004055` |
 | COLOROP7 (ADD) only | `62ae1` | 336 | FS slots2 and4 change, 11 bytes total | `d8004055` |
+| COLOROP5 (MODULATE2X) only | `62ae1` | 352 | FS grows by two slots; preprocess entries shift | `d8004055` |
+| COLOROP7, COLORARG1/2 swapped | `62ae1` | 336 | ADD operands swap in slots2 and4 | `d8004055` |
 | ZFUNC8 (ALWAYS) only | `62ae1` | 336 | byte-identical | `d8004055` |
 | ZWRITE0 only | `62ae1` | 336 | byte-identical | `d8004055` |
 | ZENABLE0, depth still bound | `62af9` | 328 | byte-identical to texture-only | `f8004055` |
 
-Every case retains entry offsets `48,104,144,0`. COLOROP4→7 changes only
+All except MODULATE2X retain entry offsets `48,104,144,0`; that case uses
+`64,120,160,0`. COLOROP4→7 changes only
 the public stage0 state1 payload and the CPU-written program, with SHA256
 `848a74cc622014616e36671b08874cc9abcf9a83656a80cc208a7207a7cf0b8d`
 for the ADD program. It changes no triangle command-list write. ZFUNC4→8
@@ -107,9 +110,34 @@ command-list writes and selects the texture-only program and compiled word
 even though the depth resource remains bound. These are CPU source outputs,
 not decoded depth pixels or a general depth control formula.
 
-Reproduce the five raw captures with `tools/m9-vendor-faa-texture-depth.py
---case texture-depth` and, for the four controls, `--color-op 7`, `--zfunc 8`,
-`--zwrite 0`, or `--zenable 0`; use the same runtime, bootstrap, PCI and DC
+The repository's M9 two-dword disassembler and the existing Mesa native FS
+encoder identify the two changed instructions as register-register multiply
+(`op2=01`) versus register-register add (`op2=04`). In this fixed program,
+`op0=1d` and class4 write the first scalar of each destination pair. The
+actual encoded operand selectors are:
+
+| Stage | FS slot | Operation | Destination `d` | First source `a` | Second source |
+| --- | ---: | --- | ---: | ---: | --- |
+| MODULATE | 2 | MUL, `op2=01` | `08` | `02` | `b=06` |
+| MODULATE | 4 | MUL, `op2=01` | `2d` | `00` | `b=1a` |
+| ADD | 2 | ADD, `op2=04` | `08` | `02` | `c=06` |
+| ADD | 4 | ADD, `op2=04` | `2d` | `00` | `c=1a` |
+| ADD, arguments swapped | 2 | ADD, `op2=04` | `08` | `06` | `c=02` |
+| ADD, arguments swapped | 4 | ADD, `op2=04` | `2d` | `1a` | `c=00` |
+
+The swapped public COLORARG1/2 request changes exactly these source fields:
+`02/06` and `00/1a` trade places, while the two destination selectors and
+four entry routes stay fixed. It changes no triangle command-list write.
+MODULATE2X confirms that a nearby valid COLOROP changes more than an opcode:
+its FS prefix gains two slots, earlier interpolation destinations and later
+temporary selectors change, and all three preprocessing entries advance16
+bytes. This evidence supports the decoded MUL/ADD operation and operand
+routing for these captured states; it is not an encoder for a live shader.
+
+Reproduce the seven raw captures with `tools/m9-vendor-faa-texture-depth.py
+--case texture-depth` and, for the six controls, `--color-op 7`,
+`--color-op 5`, `--color-op 7 --color-arg1 0 --color-arg2 2`,
+`--zfunc 8`, `--zwrite 0`, or `--zenable 0`; use the same runtime, bootstrap, PCI and DC
 inputs above. `tools/m9-vendor-faa-variant-diff-compact.py` extracts the
 source-bearing differential into
 `docs/traces/m9-vendor-faa-variant-diff-20261007.json`. Run
@@ -120,13 +148,14 @@ program bytes/PTE joins, entry routes and command-write deltas.
 This still does not justify lowering Mesa's live fragment shader into a
 vendor program. `m9_faa_lower_compiled04` translates a genuine vendor compiler
 word into AE/EF/F0 edits; Mesa has no source-proven map from its Gallium/NIR
-shader and texture state to the vendor word or the instructions in FS slots2
-and4. In particular, the COLOROP differential proves those bytes depend on
-the public operation but does not decode the instruction fields, and the
-depth controls have a separate command-word producer. The next source
-experiment must pin the original M9128 compiler input structure and instruction
-encoder for these two slots with independent COLOROP/COLORARG controls, then
-join that encoding to Mesa's live FS operations. Before any application FAA
+shader and texture state to the vendor word or to a complete instruction
+stream. The decoded slots still carry context-dependent register allocation,
+swizzles and control bits that the public state differential does not derive;
+MODULATE2X also changes program length and entry offsets. The depth controls
+have a separate command-word producer. The next source experiment must pin
+the original M9128 compiler's register assignment, swizzle/control fields and
+program-length decisions with independently varied arguments and adjacent
+operations, then join that encoding to Mesa's live FS operations. Before any application FAA
 submit, a native producer also needs two distinct retained placements and
 relevant alignment changes for the entire program and command flow.
 
