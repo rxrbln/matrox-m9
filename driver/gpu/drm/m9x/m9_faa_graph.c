@@ -1677,3 +1677,48 @@ int m9x_faa_graph_color_next_ioctl(struct drm_device *drm,void *data,struct drm_
 out_exec:drm_exec_fini(&exec);
 out_binding:kfree(upload);m9x_faa_graph_binding_put(binding);mutex_unlock(&state->lock);drm_dev_exit(idx);return ret;
 }
+
+/* One application ABI shares the established first/repeated producer paths.
+ * FIRST is a CPU lifecycle selector, not an unencoded GPU state bit. The
+ * old diagnostic requests remain unchanged. No output is published unless
+ * the selected producer returns its exact actual retirement receipt. */
+int m9x_faa_graph_color_frame_ioctl(struct drm_device *drm,void *data,struct drm_file *file)
+{
+ struct drm_parhelia_m9_faa_graph_color_frame *args=data;
+ struct drm_parhelia_m9_faa_graph_color_next next,next_before;
+ struct drm_parhelia_m9_faa_graph_color_lock first,first_before;
+ bool is_first;int ret;
+ static_assert(sizeof(*args)==160);
+ static_assert(sizeof(next)==sizeof(*args));
+ static_assert(offsetof(struct drm_parhelia_m9_faa_graph_color_frame,width)==sizeof(first));
+ if(!args->graph_id||!args->previous_point||(args->previous_point&15)||args->lock_point||
+  args->flags&~PARHELIA_M9_FAA_COLOR_FRAME_FIRST||args->state||args->pad||
+  args->previous_point>U64_MAX-0xe0)return -EINVAL;
+ if(args->width!=320||args->height!=240||args->layout.program_count!=4||
+  args->clear_flags>PARHELIA_M9_FAA_COLOR_CLEAR_TARGET||args->clear_color||
+  args->depth_flags||args->raster_flags)return -EOPNOTSUPP;
+ is_first=!!(args->flags&PARHELIA_M9_FAA_COLOR_FRAME_FIRST);
+ if(is_first){
+  /* FIRST clear/state setup needs its own source-qualified segment. Do not
+   * silently translate a requested clear into already-retired INIT work. */
+  if(args->clear_flags)return -EOPNOTSUPP;
+  memcpy(&first,args,sizeof(first));first.flags=0;first_before=first;
+  ret=m9x_faa_graph_color_lock_ioctl(drm,&first,file);
+  if(ret)return ret;
+  if(first.state!=PARHELIA_M9_FAA_COLOR_LOCK_RETIRED||
+   args->previous_point>U64_MAX-0xe0||first.lock_point!=args->previous_point+0xe0)return -EIO;
+  args->lock_point=first.lock_point;first.lock_point=0;first.state=0;
+  if(memcmp(&first,&first_before,sizeof(first))){args->lock_point=0;return -EIO;}
+  args->state=PARHELIA_M9_FAA_COLOR_FRAME_FIRST_LOCK_RETIRED;
+ }else{
+  memcpy(&next,args,sizeof(next));next.flags=0;next_before=next;
+  ret=m9x_faa_graph_color_next_ioctl(drm,&next,file);
+  if(ret)return ret;
+  if(next.state!=PARHELIA_M9_FAA_COLOR_NEXT_LOCK_RETIRED||
+   args->previous_point>U64_MAX-0xe0||next.lock_point!=args->previous_point+0xd0+(args->clear_flags?0x10:0))return -EIO;
+  args->lock_point=next.lock_point;next.lock_point=0;next.state=0;
+  if(memcmp(&next,&next_before,sizeof(next))){args->lock_point=0;return -EIO;}
+  args->state=PARHELIA_M9_FAA_COLOR_FRAME_NEXT_LOCK_RETIRED;
+ }
+ return 0;
+}

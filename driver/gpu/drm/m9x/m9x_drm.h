@@ -76,6 +76,25 @@ struct drm_parhelia_m9_faa_graph_color_next {
 };
 #define DRM_IOCTL_PARHELIA_M9_FAA_GRAPH_COLOR_NEXT DRM_IOWR(DRM_COMMAND_BASE + DRM_PARHELIA_M9_FAA_GRAPH_COLOR_NEXT, struct drm_parhelia_m9_faa_graph_color_next)
 
+/* Unified application frame state; the owned upload schema remains unchanged.
+ * FIRST authenticates previous_point as INIT; otherwise it is the preceding
+ * retired Unlock. State not encoded by the selected producer is refused. */
+#define DRM_PARHELIA_M9_FAA_GRAPH_COLOR_FRAME 0x1e
+#define PARHELIA_M9_FAA_COLOR_FRAME_FIRST 1u
+#define PARHELIA_M9_FAA_COLOR_FRAME_FIRST_LOCK_RETIRED 18u
+#define PARHELIA_M9_FAA_COLOR_FRAME_NEXT_LOCK_RETIRED 19u
+#define PARHELIA_M9_FAA_COLOR_RASTER_FLAT 1u
+#define PARHELIA_M9_FAA_COLOR_RASTER_CULL_CW 2u
+#define PARHELIA_M9_FAA_COLOR_RASTER_CULL_CCW 4u
+struct drm_parhelia_m9_faa_graph_color_frame {
+ __u64 graph_id, previous_point, lock_point, upload;
+ __u32 upload_bytes, generation, flags, state, pad;
+ __u32 record_stride, record_count, declaration_count;
+ struct drm_parhelia_m9_faa_upload_layout layout;
+ __u32 width, height, clear_flags, clear_color, depth_flags, raster_flags;
+};
+#define DRM_IOCTL_PARHELIA_M9_FAA_GRAPH_COLOR_FRAME DRM_IOWR(DRM_COMMAND_BASE + DRM_PARHELIA_M9_FAA_GRAPH_COLOR_FRAME, struct drm_parhelia_m9_faa_graph_color_frame)
+
 #define DRM_PARHELIA_M9_FAA_GRAPH_PUBLIC_VS_DRAW	0x19
 
 #define DRM_IOCTL_PARHELIA_M9_CREATE_BO \
