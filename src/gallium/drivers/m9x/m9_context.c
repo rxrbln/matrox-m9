@@ -7972,7 +7972,13 @@ m9_clear(struct pipe_context *pctx, unsigned buffers,
       ctx->faa_application_clear.scissored = scissor != NULL;
       if (scissor) ctx->faa_application_clear.scissor = *scissor;
    }
-
+   if (m9_faa_application_enabled()) {
+      /* The retained graph owns the GPU command state. Sending an ordinary
+       * clear quad here would replace that state before the FAA frame ioctl.
+       * Keep the clear pending until its actual FAA transaction succeeds. */
+      m9_prof_end(M9_PROF_CLEAR, t_clear);
+      return;
+   }
 
    /* A job held for the scratch path is copied into place before the clear
     * that follows it, not over it. */
