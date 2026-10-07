@@ -8,7 +8,16 @@ Ordinary textured rendering and the deployed driver are validated. FAA
 rendering is not yet validated. This note is separate from P690
 `102b:2539` evidence.
 
-Latest hardware checkpoint: kernel151e438 now retires the genuine public
+Latest hardware checkpoint: kernel55ffd76 retires the whole returned public
+FAA flush at1f0/raw1f1 with all six waits preserved, an empty queue and wedged=0
+immediately and two seconds later. This includes the source-emitted cleanup
+and fragment-pointer reset previously absent after resolve dispatch. Main,
+companion and sampled-primary hashes remain unchanged; pool state changes.
+Ten retained BAR roles and exact counters are checked and archived. Source
+still requires its staging-copy path; no FAA pixel pass is established.
+[Returned flush hardware evidence](../tests/m9-faa-public-returned-hardware-20261007/README.md).
+
+Earlier hardware checkpoint: kernel151e438 now retires the genuine public
 mode9 resolve prefix at1d0/raw1d1 on fresh M9128 boot, with an empty queue and
 wedged=0 immediately and two seconds later. All five endpoints are preserved.
 Main, companion and sampled-primary hashes remain unchanged; pool state changes.
