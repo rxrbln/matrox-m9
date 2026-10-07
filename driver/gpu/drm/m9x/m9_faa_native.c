@@ -55,6 +55,7 @@ struct m9_faa_clear_segment {
      defined(M9_FAA_PRECLEAR_DRAW_CONTROL) + \
      defined(M9_FAA_PRECLEAR_OUTPUT_CONTROL) + \
      defined(M9_FAA_PRECLEAR_OUTPUT_WRITE_CONTROL) + \
+     defined(M9_FAA_PRECLEAR_INPLACE_OUTPUT_CONTROL) + \
      defined(M9_FAA_POST_TRIANGLE_CONTROL)) > 1
 #error "Select only one complete private FAA source profile"
 #endif
@@ -94,6 +95,11 @@ struct m9_faa_clear_segment {
  * before output/resolve. Its final counter is in its counted secondary. */
 #include "m9_faa_post_triangle_data.h"
 #define M9_FAA_INPUT_FIRMWARE "m9x/faa-post-triangle-known-inputs.bin"
+#elif defined(M9_FAA_PRECLEAR_INPLACE_OUTPUT_CONTROL)
+/* Genuine OS allocation failure selected the sampled destination. Its
+ * original format-transition wait and rectangle launch remain pending. */
+#include "m9_faa_preclear_inplace_output_data.h"
+#define M9_FAA_INPUT_FIRMWARE "m9x/faa-preclear-inplace-output-known-inputs.bin"
 #elif defined(M9_FAA_CONSTANT_RED_CONTROL)
 /* A distinct whole public source capture changes c0 through SETCONST.
  * Never patch captured green command or program bytes in place. */
@@ -168,7 +174,8 @@ static bool m9_faa_program_access_kick;
 module_param(m9_faa_program_access_kick, bool, 0400);
 MODULE_PARM_DESC(m9_faa_program_access_kick,
 	"Preserve the private C2 CPU-access frontend kick after actual c0 retirement");
-#ifdef M9_FAA_PRECLEAR_OUTPUT_WRITE_CONTROL
+#if defined(M9_FAA_PRECLEAR_OUTPUT_WRITE_CONTROL) || \
+    defined(M9_FAA_PRECLEAR_INPLACE_OUTPUT_CONTROL)
 /* Same-module hardware control: collapsing these waits leaves main/AA
  * stores untouched; preserving them produces GPU state. Resolve is still
  * unqualified. Keep the opt-out for this bounded ordering control. */
@@ -178,7 +185,7 @@ static bool m9_faa_phased_submit;
 #endif
 module_param(m9_faa_phased_submit, bool, 0400);
 MODULE_PARM_DESC(m9_faa_phased_submit,
-	"Wait at source c0/120/160/180 boundaries in the private complete-output diagnostic");
+	"Wait at source retirement boundaries in the private phased FAA diagnostic");
 MODULE_FIRMWARE(M9_FAA_INPUT_FIRMWARE);
 
 bool m9x_faa_diag_enabled(void)
@@ -1468,18 +1475,24 @@ int m9x_faa_submit_diag(struct m9x_device *mdev, u32 color,
 		goto unlock;
 	}
 	if (m9_faa_phased_submit) {
-#ifdef M9_FAA_PRECLEAR_OUTPUT_WRITE_CONTROL
-		/* These four source-exported endpoints are after both variable
+#if defined(M9_FAA_PRECLEAR_OUTPUT_WRITE_CONTROL) || \
+    defined(M9_FAA_PRECLEAR_INPLACE_OUTPUT_CONTROL)
+		/* These source-exported endpoints are after both variable
 		 * clear segments, so they all move by the same signed suffix
 		 * delta. No captured address or desired completion is replayed. */
 		static const struct m9x_faa_submit_phase source[] = {
 			{ 4980, 0xc0 }, { 5068, 0x120 },
+#ifdef M9_FAA_PRECLEAR_INPLACE_OUTPUT_CONTROL
+			{ 5304, 0x170 },
+#else
 			{ 5224, 0x160 }, { 5724, 0x180 },
+#endif
 		};
 		struct m9x_faa_submit_phase phases[ARRAY_SIZE(source)];
 		s64 delta = (s64)r->primary_bytes - M9_FAA_PRIMARY_BYTES;
 
-		if (M9_FAA_PRIMARY_BYTES != 5724 || M9_FAA_TRACKER_LAST != 0x180) {
+		if (M9_FAA_PRIMARY_BYTES != source[ARRAY_SIZE(source) - 1].bytes ||
+		    M9_FAA_TRACKER_LAST != source[ARRAY_SIZE(source) - 1].target) {
 			ret = -EINVAL;
 			goto unlock;
 		}
@@ -1501,8 +1514,12 @@ int m9x_faa_submit_diag(struct m9x_device *mdev, u32 color,
 				&r->owner[M9_FAA_PRIMARY_OWNER].system_node,
 				r->owner[M9_FAA_PRIMARY_OWNER].dma, phases,
 				ARRAY_SIZE(phases), point, &posted,
+#ifdef M9_FAA_PRECLEAR_OUTPUT_WRITE_CONTROL
 				(m9_faa_defer_output_map || m9_faa_program_access_kick) ?
 					m9_faa_publish_output_phase : NULL,
+#else
+				NULL,
+#endif
 				r);
 #else
 		ret = -EOPNOTSUPP;
