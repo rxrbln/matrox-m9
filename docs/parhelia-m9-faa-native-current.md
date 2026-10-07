@@ -8,7 +8,19 @@ Ordinary textured rendering and the deployed driver are validated. FAA
 rendering is not yet validated. This note is separate from P690
 `102b:2539` evidence.
 
-Latest continuation: kernel d249a3e retires the whole sampled copy-wait prefix
+Latest hardware checkpoint: kernel e316f3f retires the distinct public
+shared-depth dirty-flush prefix at1a0/raw1a1, with an empty queue and wedged=0
+immediately and two seconds later. Its generated phases are c0/120/140/1a0;
+the140 pause is diagnostic at a genuine post, not an original CPU wait.
+The sampled primary remains unchanged; no FAA pixel pass is established.
+This source-specific receipt permits the original public190 continuation.
+[Public-flow hardware evidence](../tests/m9-faa-public-flush-hardware-20261007/README.md).
+It includes the sampled-color pin/reference retention fix9dee327, so later
+readback retains the same owner after the helper exits. The separate inplace
+continuation reached missing PDEV+d4/d8 helpers; their genuine86660 constructor
+has been identified, but conversion readiness and final pixels remain open.
+
+Earlier continuation: kernel d249a3e retires the whole sampled copy-wait prefix
 at1a0/raw1a1, with an empty queue and wedged=0 immediately and two seconds
 later. It preserves c0/120/170/1a0 phases and executes the C2 access kick atc0.
 Main/companion/sampled-primary hashes remain unchanged; pool state changes.
