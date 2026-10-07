@@ -34,6 +34,94 @@ m9_faa_application_frame_fini(struct m9_faa_application_frame *frame)
    memset(frame, 0, sizeof(*frame));
 }
 
+/* Only packed, builder-owned triangle lists can be joined. Every source
+ * position/normal remains raw; the GPU runs the unchanged producer once per
+ * record. No indexed topology or per-draw system value survives this ABI. */
+static bool
+m9_faa_application_packed(const struct m9_faa_gl_upload *s)
+{
+   uintptr_t base = (uintptr_t)s->storage;
+   uint64_t total = (uint64_t)s->layout.bytes + s->constants_bytes +
+                    s->geometry_bytes + (uint64_t)s->declaration_words * 4;
+   return base && s->layout.bytes && s->layout.count == 4 &&
+          s->record_bytes && !(s->record_bytes % 16) &&
+          s->vertex_count && !(s->vertex_count % 3) &&
+          s->vertex_count <= M9_FAA_GL_UPLOAD_MAX_VERTICES &&
+          (uint64_t)s->vertex_count * s->record_bytes == s->vertex_bytes &&
+          s->vertex_offset == 128 &&
+          (uint64_t)s->vertex_offset + s->vertex_bytes == s->geometry_bytes &&
+          total == s->storage_bytes && total <= UINTPTR_MAX - base &&
+          (uintptr_t)s->program == base &&
+          (uintptr_t)s->constants == base + s->layout.bytes &&
+          (uintptr_t)s->geometry == base + s->layout.bytes + s->constants_bytes &&
+          (uintptr_t)s->declaration == base + s->layout.bytes +
+                                             s->constants_bytes + s->geometry_bytes;
+}
+
+static bool
+m9_faa_application_state_equal(const struct m9_faa_application_state *a,
+                                const struct m9_faa_application_state *b)
+{
+   return a->width == b->width && a->height == b->height &&
+          !memcmp(a->viewport.scale, b->viewport.scale, sizeof(a->viewport.scale)) &&
+          !memcmp(a->viewport.translate, b->viewport.translate, sizeof(a->viewport.translate)) &&
+          a->scissor_enabled == b->scissor_enabled &&
+          (!a->scissor_enabled ||
+           (a->scissor.minx == b->scissor.minx && a->scissor.miny == b->scissor.miny &&
+            a->scissor.maxx == b->scissor.maxx && a->scissor.maxy == b->scissor.maxy)) &&
+          a->depth_enabled == b->depth_enabled && a->depth_write == b->depth_write &&
+          a->depth_func == b->depth_func && a->cull_face == b->cull_face &&
+          a->front_ccw == b->front_ccw && a->flatshade == b->flatshade &&
+          a->flatshade_first == b->flatshade_first;
+}
+
+static bool
+m9_faa_application_merge(struct m9_faa_application_upload *last,
+                          const struct m9_faa_application_upload *next)
+{
+   const struct m9_faa_gl_upload *a = &last->shader, *b = &next->shader;
+   if (!m9_faa_application_packed(a) || !m9_faa_application_packed(b) ||
+       !m9_faa_application_state_equal(&last->state, &next->state) ||
+       a->vertex_count > M9_FAA_GL_UPLOAD_MAX_VERTICES - b->vertex_count ||
+       a->record_bytes != b->record_bytes ||
+       a->constants_bytes != b->constants_bytes ||
+       a->declaration_words != b->declaration_words ||
+       a->carry_output_registers != b->carry_output_registers ||
+       a->color_flat != b->color_flat ||
+       a->color_legacy_interpolation != b->color_legacy_interpolation ||
+       a->native_admission != b->native_admission ||
+       memcmp(&a->layout, &b->layout, sizeof(a->layout)) ||
+       memcmp(a->constant_begin, b->constant_begin, sizeof(a->constant_begin)) ||
+       memcmp(a->constant_end, b->constant_end, sizeof(a->constant_end)) ||
+       memcmp(a->varying_location, b->varying_location, sizeof(a->varying_location)) ||
+       memcmp(a->program, b->program, a->layout.bytes) ||
+       memcmp(a->constants, b->constants, a->constants_bytes) ||
+       memcmp(a->geometry, b->geometry, a->vertex_offset) ||
+       memcmp(a->declaration, b->declaration, (size_t)a->declaration_words * 4) ||
+       b->vertex_bytes > UINT32_MAX - a->geometry_bytes ||
+       b->vertex_bytes > SIZE_MAX - a->storage_bytes)
+      return false;
+   struct m9_faa_gl_upload joined = *a;
+   joined.storage_bytes += b->vertex_bytes;
+   joined.storage = malloc(joined.storage_bytes);
+   if (!joined.storage) return false; /* Retain the two independent draws. */
+   joined.vertex_count += b->vertex_count;
+   joined.vertex_bytes += b->vertex_bytes;
+   joined.geometry_bytes += b->vertex_bytes;
+   joined.program = joined.storage;
+   joined.constants = (uint32_t *)((uint8_t *)joined.storage + joined.layout.bytes);
+   joined.geometry = (uint32_t *)((uint8_t *)joined.constants + joined.constants_bytes);
+   joined.declaration = (uint32_t *)((uint8_t *)joined.geometry + joined.geometry_bytes);
+   size_t prefix = a->layout.bytes + (size_t)a->constants_bytes + a->geometry_bytes;
+   memcpy(joined.storage, a->storage, prefix);
+   memcpy((uint8_t *)joined.storage + prefix,
+          (const uint8_t *)b->geometry + b->vertex_offset, b->vertex_bytes);
+   memcpy(joined.declaration, a->declaration, (size_t)a->declaration_words * 4);
+   m9_faa_gl_upload_fini(&last->shader);
+   last->shader = joined;
+   return true;
+}
+
 bool
 m9_faa_application_frame_append(struct m9_faa_application_frame *frame,
                                 struct m9_faa_application_upload *upload,
@@ -73,6 +161,16 @@ m9_faa_application_frame_append(struct m9_faa_application_frame *frame,
        frame->count == UINT32_MAX) {
       why = "FAA frame exceeds owned input budget";
       goto fail;
+   }
+   if (frame->count) {
+      struct m9_faa_application_upload *last = &frame->draws[frame->count - 1];
+      size_t old_bytes = last->shader.storage_bytes;
+      if (m9_faa_application_merge(last, upload)) {
+         frame->storage_bytes = frame->storage_bytes - old_bytes + last->shader.storage_bytes;
+         m9_faa_application_fini(upload);
+         if (reason) *reason = NULL;
+         return true;
+      }
    }
    if (frame->count == frame->capacity) {
       uint32_t capacity = frame->capacity ? frame->capacity : 16;
