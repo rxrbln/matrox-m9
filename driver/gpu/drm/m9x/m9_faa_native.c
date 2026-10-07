@@ -52,6 +52,7 @@ struct m9_faa_clear_segment {
      defined(M9_FAA_ORDINARY_SYSTEM_CONTROL) + \
      defined(M9_FAA_INIT_ONLY_CONTROL) + \
      defined(M9_FAA_PRECLEAR_CONTROL) + \
+     defined(M9_FAA_PREPARED_PRECLEAR_CONTROL) + \
      defined(M9_FAA_PRECLEAR_DRAW_CONTROL) + \
      defined(M9_FAA_PRECLEAR_OUTPUT_CONTROL) + \
      defined(M9_FAA_PRECLEAR_OUTPUT_WRITE_CONTROL) + \
@@ -77,6 +78,11 @@ struct m9_faa_clear_segment {
  * No triangle or output request, and no invented output owner. */
 #include "m9_faa_init_only_data.h"
 #define M9_FAA_INPUT_FIRMWARE "m9x/faa-init-only-known-inputs.bin"
+#elif defined(M9_FAA_PREPARED_PRECLEAR_CONTROL)
+/* Fresh source constructor/preparation precedes queue creation. Retain and
+ * publish its otherwise unconsumed local conversion backing before c0. */
+#include "m9_faa_prepared_preclear_data.h"
+#define M9_FAA_INPUT_FIRMWARE "m9x/faa-prepared-preclear-known-inputs.bin"
 #elif defined(M9_FAA_PRECLEAR_CONTROL)
 /* Completed public black CLEAR42, then the original draw stopped at its
  * first GPU query. Independent finish; no completed triangle or output. */
@@ -1362,6 +1368,43 @@ static int m9_faa_publish_output_phase(struct m9x_device *mdev, u32 phase,
 }
 #endif
 
+#ifdef M9_FAA_STARTUP_LOCAL_OWNER
+static int m9_faa_prepare_startup_local(struct m9x_device *mdev,
+                                      struct m9x_faa_replay *r)
+{
+	int ret;
+
+	/* Actual 2f899 preparation publishes d0 before queue creation. The
+	 * source allocator's page number is not portable: retain an independent
+	 * unknown-byte owner and derive both page tables from its live base.
+	 * No GPU job has been posted; publish it before the consumed owners. */
+	if (M9_FAA_STARTUP_LOCAL_OWNER >= ARRAY_SIZE(r->owner) ||
+	    M9_FAA_STARTUP_LOCAL_OWNER == M9_FAA_COLOR_OWNER ||
+	    !m9_faa_owner_specs[M9_FAA_STARTUP_LOCAL_OWNER].local ||
+	    m9_faa_owner_specs[M9_FAA_STARTUP_LOCAL_OWNER].system ||
+	    m9_faa_owner_specs[M9_FAA_STARTUP_LOCAL_OWNER].flags30 ||
+	    m9_faa_owner_specs[M9_FAA_STARTUP_LOCAL_OWNER].mapped_bytes ||
+	    m9_faa_owner_specs[M9_FAA_STARTUP_LOCAL_OWNER].bytes !=
+			M9_FAA_STARTUP_LOCAL_BYTES ||
+	    !IS_ALIGNED(M9_FAA_STARTUP_LOCAL_BYTES, PAGE_SIZE) ||
+	    !M9_FAA_STARTUP_LOCAL_BYTES ||
+	    !r->owner[M9_FAA_STARTUP_LOCAL_OWNER].vram ||
+	    r->owner[M9_FAA_STARTUP_LOCAL_OWNER].cpu ||
+	    r->owner[M9_FAA_STARTUP_LOCAL_OWNER].bytes != M9_FAA_STARTUP_LOCAL_BYTES)
+		return -EINVAL;
+	ret = m9x_address_local_prepare(mdev,
+			r->owner[M9_FAA_STARTUP_LOCAL_OWNER].base,
+			M9_FAA_STARTUP_LOCAL_BYTES);
+	if (ret)
+		return ret;
+	dev_info(&mdev->pdev->dev,
+		 "M9 FAA startup local: owner=%u gpu=%#x bytes=%u before primary submit\n",
+		 M9_FAA_STARTUP_LOCAL_OWNER,
+		 r->owner[M9_FAA_STARTUP_LOCAL_OWNER].base, M9_FAA_STARTUP_LOCAL_BYTES);
+	return 0;
+}
+#endif
+
 int m9x_faa_submit_diag(struct m9x_device *mdev, u32 color,
 			struct drm_gem_vram_object *color_bo, u64 *point,
 			bool *color_active, bool *color_retained)
@@ -1431,9 +1474,18 @@ int m9x_faa_submit_diag(struct m9x_device *mdev, u32 color,
 		goto unlock;
 	}
 #endif
+#ifdef M9_FAA_STARTUP_LOCAL_OWNER
+	ret = m9_faa_prepare_startup_local(mdev, r);
+	if (ret)
+		goto unlock;
+#endif
 	for (i = 0; i < ARRAY_SIZE(r->owner); i++) {
 		if (!m9_faa_owner_specs[i].local)
 			continue;
+#ifdef M9_FAA_STARTUP_LOCAL_OWNER
+		if (i == M9_FAA_STARTUP_LOCAL_OWNER)
+			continue;
+#endif
 		ret = m9x_address_local_prepare(mdev, r->owner[i].base,
 				PAGE_ALIGN(m9_faa_owner_specs[i].bytes));
 		if (ret) {
