@@ -235,6 +235,29 @@ void m9x_address_surface_window(struct m9x_device *mdev, u32 surface,
 	m9x_read(mdev, M9_ADDRESS_SURFACE_WINDOW);
 }
 
+/* Source-derived slot range for a retained bounded CPU view. The slot
+ * starts at our reserved BAR aperture, independently of the live GPU owner.
+ * Inclusive end derives from its allocation extent, never a captured range. */
+int m9x_address_surface_window_bounded(struct m9x_device *mdev, u32 surface,
+				      u32 format, u32 extent, u32 bytes)
+{
+	u32 first = M9_ADDRESS_CPU_BYTES >> PAGE_SHIFT;
+	u32 last;
+
+	lockdep_assert_held(&mdev->transport.lock);
+	if (!bytes || !IS_ALIGNED(bytes, PAGE_SIZE) ||
+	    bytes > M9_ADDRESS_SURFACE_BYTES)
+		return -EINVAL;
+	last = (M9_ADDRESS_CPU_BYTES + bytes - PAGE_SIZE) >> PAGE_SHIFT;
+	m9x_write(mdev, M9_ADDRESS_SURFACE_WINDOW, M9_ADDRESS_SLOT_EMPTY);
+	m9x_write(mdev, M9_ADDRESS_SURFACE_WINDOW + 4, surface);
+	m9x_write(mdev, M9_ADDRESS_SURFACE_WINDOW + 8, format);
+	m9x_write(mdev, M9_ADDRESS_SURFACE_WINDOW + 12, extent);
+	m9x_write(mdev, M9_ADDRESS_SURFACE_WINDOW, first | (last << 16));
+	m9x_read(mdev, M9_ADDRESS_SURFACE_WINDOW);
+	return 0;
+}
+
 /* The same slot carrying the untranslated identity format: a linear view of
  * any video memory address, including memory no permanent window reaches. */
 void m9x_address_raw_window(struct m9x_device *mdev, u32 vram)

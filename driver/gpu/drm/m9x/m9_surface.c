@@ -222,7 +222,8 @@ static int m9_surface_check(const struct drm_parhelia_m9_surface_access *args,
 		/* Actual returned normal-Lock view is ordinary kind21 even
 		 * though its retained backing is the sampled primary. Only a
 		 * read of the retired, source-qualified borrowed owner may use it. */
-		view->lock_cpu_view = m9x_faa_diag_enabled() &&
+		view->lock_cpu_view = (m9x_faa_diag_enabled() ||
+			m9x_faa_graph_profile_enabled()) &&
 			d0 == 0xf0210140 && d1 == 0x00010100 &&
 			args->op == PARHELIA_M9_ACCESS_READ &&
 			args->surface_width == 320 && args->width == 320 &&
@@ -397,8 +398,15 @@ static int m9_surface_access(struct m9x_device *mdev, struct drm_file *file,
 				goto out_transport;
 			surface |= 1;
 		}
-		m9x_address_surface_window(mdev, surface,
-					   args->descriptor0, args->descriptor1);
+		if (view.lock_cpu_view && m9x_faa_graph_profile_enabled()) {
+			ret = m9x_address_surface_window_bounded(mdev, surface,
+				args->descriptor0, args->descriptor1, view.bytes);
+			if (ret)
+				goto out_transport;
+		} else {
+			m9x_address_surface_window(mdev, surface,
+				args->descriptor0, args->descriptor1);
+		}
 		for (row = 0; row < args->height; row++) {
 			void __iomem *rows = (u8 __iomem *)mdev->bar0_window +
 				((u64)(args->y + row) * view.elements +

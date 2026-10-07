@@ -3178,7 +3178,50 @@ int m9x_faa_lock_view_admit_locked(struct m9x_device *mdev,
 {
 	struct m9x_transport *t = &mdev->transport;
 
-#if defined(M9_FAA_PREPARED_FLOW_CONTROL) && defined(M9_FAA_NORMAL_LOCK_CPU_VIEW)
+#ifdef M9_FAA_GRAPH_INIT_CONTROL
+	struct m9x_faa_replay *r = t->faa;
+	u32 bound, source;
+	s64 offset;
+
+	lockdep_assert_held(&t->lock);
+	/* Actual normal Lock returned after its 170 receipt: staging and
+	 * primary share owner1, with F021/320x256 CPU view and pitch1280.
+	 * Only this retained primary and this exact same-graph point qualify. */
+	if (!color || bytes != 0x50000 || m9x_local_gpu_base)
+		return -EOPNOTSUPP;
+	if (t->async_stop)
+		return -ENODEV;
+	if (t->wedged)
+		return -EIO;
+	if (!r || !r->graph_binding || !r->observation_retired ||
+	    !r->graph_draw_with_lock || !r->graph_draw_with_finish ||
+	    r->graph_generation != t->generation ||
+	    r->observation_generation != t->generation ||
+	    !r->observation_point ||
+	    r->graph_draw_point != r->observation_point + 0xc0 ||
+	    r->graph_draw_posts != 8 ||
+	    r->graph_draw_end_bytes != r->primary_bytes +
+		M9_FAA_DRAW_PRIMARY_SUFFIX_BYTES + M9_FAA_DRAW_TAIL_PRIMARY_BYTES +
+		M9_FAA_LOCK_PRIMARY_BYTES ||
+	    t->completed_point != r->graph_draw_point ||
+	    t->submitted_point != r->graph_draw_point ||
+	    t->next_fence != lower_32_bits(r->graph_draw_point) + 0x10 ||
+	    t->async_pending || t->queue_count || !t->transport_armed ||
+	    !t->bus_master_enabled || !t->faa_source_context || !t->faa_virtual_primary)
+		return -ENODATA;
+	if (m9x_faa_graph_binding_owner(r->graph_binding, PARHELIA_M9_FAA_PRIMARY) !=
+	    &color->bo.base ||
+	    !m9x_faa_graph_binding_address(r->graph_binding, PARHELIA_M9_FAA_PRIMARY,
+					 &bound, &source) || source != 1 ||
+	    bound != base || r->owner[source].base != base ||
+	    r->owner[source].bytes != bytes || color->bo.base.size != bytes)
+		return -ESTALE;
+	offset = drm_gem_vram_offset(color);
+	if (offset < 0 || (u64)offset != base || !IS_ALIGNED(base, PAGE_SIZE) ||
+	    bytes > (u64)U32_MAX + 1 - base)
+		return -ESTALE;
+	return 0;
+#elif defined(M9_FAA_PREPARED_FLOW_CONTROL) && defined(M9_FAA_NORMAL_LOCK_CPU_VIEW)
 	struct m9x_faa_replay *r = t->faa;
 	const struct m9_faa_owner_spec *spec = &m9_faa_owner_specs[M9_FAA_COLOR_OWNER];
 	s64 offset;

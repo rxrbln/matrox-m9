@@ -416,6 +416,8 @@ int m9x_address_read_root_pte(struct m9x_device *mdev, u32 gpuva, u32 *value);
 u32 m9x_address_pte_word(dma_addr_t dma);
 void m9x_address_surface_window(struct m9x_device *mdev, u32 surface,
 				u32 format, u32 extent);
+int m9x_address_surface_window_bounded(struct m9x_device *mdev, u32 surface,
+				      u32 format, u32 extent, u32 bytes);
 void m9x_address_raw_window(struct m9x_device *mdev, u32 vram);
 void m9x_address_surface_release(struct m9x_device *mdev);
 int m9x_submit_triangle_diag(struct m9x_device *mdev, u32 color,
