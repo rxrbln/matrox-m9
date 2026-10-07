@@ -61,6 +61,7 @@ struct m9_faa_clear_segment {
      defined(M9_FAA_PUBLIC_SHARED_DEPTH_RESOLVE_CONTROL) + \
      defined(M9_FAA_PUBLIC_SHARED_DEPTH_RETURNED_CONTROL) + \
      defined(M9_FAA_PUBLIC_SHARED_DEPTH_REPLACEMENT_CONTROL) + \
+     defined(M9_FAA_PUBLIC_SHARED_DEPTH_REPLACEMENT_SUBMIT_CONTROL) + \
      defined(M9_FAA_POST_TRIANGLE_CONTROL)) > 1
 #error "Select only one complete private FAA source profile"
 #endif
@@ -130,6 +131,11 @@ struct m9_faa_clear_segment {
  * prepares the replacement draw, then stops before a new GPU wait. */
 #include "m9_faa_public_shared_depth_replacement_data.h"
 #define M9_FAA_INPUT_FIRMWARE "m9x/faa-public-shared-depth-replacement-known-inputs.bin"
+#elif defined(M9_FAA_PUBLIC_SHARED_DEPTH_REPLACEMENT_SUBMIT_CONTROL)
+/* The original replacement renderer reaches its second finite transition
+ * wait. Its query and independent finish retain their source timeline. */
+#include "m9_faa_public_shared_depth_replacement_submit_data.h"
+#define M9_FAA_INPUT_FIRMWARE "m9x/faa-public-shared-depth-replacement-submit-known-inputs.bin"
 #elif defined(M9_FAA_CONSTANT_RED_CONTROL)
 /* A distinct whole public source capture changes c0 through SETCONST.
  * Never patch captured green command or program bytes in place. */
@@ -162,7 +168,8 @@ struct m9_faa_clear_segment {
     defined(M9_FAA_PUBLIC_SHARED_DEPTH_FLUSH_CONTROL) || \
     defined(M9_FAA_PUBLIC_SHARED_DEPTH_RESOLVE_CONTROL) || \
     defined(M9_FAA_PUBLIC_SHARED_DEPTH_RETURNED_CONTROL) || \
-    defined(M9_FAA_PUBLIC_SHARED_DEPTH_REPLACEMENT_CONTROL)
+    defined(M9_FAA_PUBLIC_SHARED_DEPTH_REPLACEMENT_CONTROL) || \
+    defined(M9_FAA_PUBLIC_SHARED_DEPTH_REPLACEMENT_SUBMIT_CONTROL)
 /* These profiles retain the same original public draw and C2 access
  * before their later output or target-change branches diverge. */
 #define M9_FAA_PROGRAM_ACCESS_CONTROL 1
