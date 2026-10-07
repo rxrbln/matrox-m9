@@ -3372,7 +3372,9 @@ int m9x_faa_graph_unlock_get_locked(struct m9x_device *mdev,
 		return -EINVAL;
 	*out = NULL;
 	if (!r || !r->graph_binding || !r->normal_lock_view_seen ||
-	    r->unlock_started || r->graph_generation != generation ||
+	    (r->unlock_started &&
+	     (!r->graph_second_lock_retired || !r->second_lock_view_seen)) ||
+	    r->graph_generation != generation ||
 	    t->generation != generation || !lock_point ||
 	    r->graph_draw_point != lock_point || !t->engine_transitioned ||
 	    !t->restore_ready || !t->fence_cpu)
@@ -3443,6 +3445,9 @@ int m9x_faa_graph_unlock_submit(struct m9x_device *mdev,
 		dma_resv_add_fence(m9x_faa_graph_binding_owner(binding, i)->resv,
 				   &fence->base, DMA_RESV_USAGE_WRITE);
 	r->unlock_started = true;
+	r->unlock_retired = false;
+	r->graph_second_lock_retired = false;
+	r->second_lock_view_seen = false;
 	/* Source2c878 releases the CPU frontend; retained PTEs stay intact. */
 	m9x_write(mdev, M9_REG_FRONTEND_STATE, 0);
 	for (i = 0; i < 3; i++) {

@@ -888,7 +888,10 @@ int m9x_faa_graph_unlock_ioctl(struct drm_device *drm, void *data,
 	mutex_lock(&state->lock);
 	graph = state->graph;
 	if (!m9_faa_graph_continuation_matches(graph, args->graph_id,
-			args->generation, args->lock_point - 0xc0)) {
+			args->generation, args->lock_point - 0xc0) &&
+	    (args->lock_point < 0x190 ||
+	     !m9_faa_graph_continuation_matches(graph, args->graph_id,
+			args->generation, args->lock_point - 0x190))) {
 		ret = -ENOENT;
 		goto out_state;
 	}
