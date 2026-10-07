@@ -60,6 +60,26 @@ owner. Any eventual native update must derive start addresses from live
 pinned backing. Async capabilities remain disabled until latch, event and
 lifetime are qualified on the target under the established lock.
 
+## Why the apparent Linux Present names do not close the link
+
+The same ELF contains readable `LinuxServices::Present` strings at `0xe9e900`
+and `0xe9e980`. Their only identified code references here are
+`m9x13211`/`m9x20228` at `0x34cec0`/`0x34cef0`: each builds arguments for
+`__assert_fail`, with no presentation work. The checker pins those references
+and the actual call target. The Xorg `xf86CrtcCreate` registration at
+`0x288eac` installs a CRTC function table at `0x1218620`; this is not itself
+a Present/pageflip callback either. The active physical Q3 session uses the
+new modesetting DDX, not this old vendor Xorg CRTC table. Thus matching a
+string or an old CRTC slot to a display-route routine would conflate two
+different call paths.
+
+This is a bounded negative, not proof that no proprietary swap path exists.
+Without a source join from the real swap caller and a target-observed latch
+or event that protects the old pinned BO, async flip remains gated. A locked
+two-live-owner scanout/event probe is the next hardware experiment once FAA
+allows a target slot; it must observe old-owner safety after the event, rather
+than equating the MMIO write or CPU route status with completion.
+
 Run the CPU-only proof with:
 
 ```sh
