@@ -28,6 +28,7 @@ int m9x_faa_counted_secondary_encode(
 	    r->parent_cursor > r->parent_capacity ||
 	    r->parent_capacity - r->parent_cursor < 24 ||
 	    (r->global_origin & 15) || (r->pool_origin & 15) ||
+	    r->global_origin > r->observed_global_point ||
 	    r->global_origin > U64_MAX - 16 ||
 	    r->pool_origin > U64_MAX - 16 ||
 	    (u32)r->global_origin > U32_MAX - 16 ||
