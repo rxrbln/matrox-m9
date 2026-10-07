@@ -364,12 +364,8 @@ m9_faa_application_build(const struct m9_faa_application_draw *d,
       goto fail;
    }
    live.viewport = (struct m9_faa_viewport){x, y, w, h};
-   if (!m9_faa_live_gl_color_build(&live, d->fs, &fresh.shader, &why))
+   if (!m9_faa_live_gl_color_build_state(&live, d->fs, d->state.flatshade, &fresh.shader, &why))
       goto fail;
-   /* Original GL1 FF COLOR barycentrics deliberately have INTERP_MODE_NONE:
-    * the incoming Gallium flatshade state supplies their interpolation mode. */
-   if (fresh.shader.color_legacy_interpolation)
-      fresh.shader.color_flat = d->state.flatshade;
    if (fresh.shader.color_flat != d->state.flatshade) {
       why = "FAA COLOR interpolation and application raster state disagree";
       goto fail;

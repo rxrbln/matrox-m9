@@ -99,5 +99,10 @@ bool m9_faa_live_gl_color_build(const struct m9_faa_live_gl *state,
                               const struct nir_shader *fs,
                               struct m9_faa_gl_upload *output,
                               const char **reason);
+/* Legacy FF COLOR interpolation follows the live Gallium raster state. */
+bool m9_faa_live_gl_color_build_state(const struct m9_faa_live_gl *state,
+                                    const struct nir_shader *fs, bool legacy_flat,
+                                    struct m9_faa_gl_upload *output,
+                                    const char **reason);
 void m9_faa_gl_upload_fini(struct m9_faa_gl_upload *upload);
 #endif

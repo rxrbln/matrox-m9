@@ -330,27 +330,40 @@ fragment_color(const nir_shader *fs, bool *flat, bool *legacy)
 }
 
 bool
-m9_faa_live_gl_color_build(const struct m9_faa_live_gl *s, const nir_shader *fs,
+m9_faa_live_gl_color_build_state(const struct m9_faa_live_gl *s, const nir_shader *fs, bool legacy_flat,
                           struct m9_faa_gl_upload *output, const char **reason)
 {
    uint32_t program[16], constants[4];
    struct m9_faa_color_fs_interface interface;
    bool flat = false, legacy = false;
    if (!s || !s->linkage || s->linkage->count != 1 ||
-       s->linkage->stream[0].location != VARYING_SLOT_COL0 || !fragment_color(fs, &flat, &legacy) ||
-       !m9_faa_color_fs_build(0, program, sizeof(program), constants, sizeof(constants), &interface)) {
+       s->linkage->stream[0].location != VARYING_SLOT_COL0 || !fragment_color(fs, &flat, &legacy)) {
       if (reason) *reason = "FAA fragment must pass consistently smooth or flat COLOR0 to the complete color output";
+      return false;
+   }
+   if (legacy) flat = legacy_flat;
+   bool built = flat ? m9_faa_color_flat_fs_build(0, program, sizeof(program), constants, sizeof(constants), &interface) :
+                       m9_faa_color_fs_build(0, program, sizeof(program), constants, sizeof(constants), &interface);
+   if (!built) {
+      if (reason) *reason = "FAA COLOR fragment encoding failed";
       return false;
    }
    struct m9_faa_live_gl live = *s;
    live.fragment = (struct m9_faa_program_vector){program, interface.slots};
    live.fragment_constants = (struct m9_faa_dense_constants){constants, interface.constant_pairs};
    if (!m9_faa_live_gl_build(&live, output, reason)) return false;
-   /* RS9 controls interpolation at the raster input. The original flat
-    * control leaves the shader vector unchanged; do not emulate COLOR in CPU. */
+   /* The actual FIRST frontend emits distinct smooth/flat programs and
+    * utility order. Native admission must bind matching fragment metadata. */
    output->color_flat = flat;
    output->color_legacy_interpolation = legacy;
    return true;
+}
+
+bool
+m9_faa_live_gl_color_build(const struct m9_faa_live_gl *s, const nir_shader *fs,
+                          struct m9_faa_gl_upload *output, const char **reason)
+{
+   return m9_faa_live_gl_color_build_state(s, fs, false, output, reason);
 }
 
 static bool

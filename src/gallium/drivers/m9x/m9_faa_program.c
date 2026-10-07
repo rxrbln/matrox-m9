@@ -89,8 +89,19 @@ static const struct m9_faa_color_fs_form m9_faa_color_fs_forms[8] = {
    {0x1d, 4, 0x2d, 0x40, 0x1b, 0x44, 0xae0ffc10},
 };
 
-bool
-m9_faa_color_fs_build(uint32_t source_stream,
+/* Original FIRST flat COLOR0 frontend bypasses interpolation and writes
+ * raster stream0's two flat halves directly to oC0. Finish belongs four
+ * slots from the end, so the two output instructions include two STOP pads.
+ * These are ISA forms, independent of program/constant owner addresses. */
+static const struct m9_faa_color_fs_form m9_faa_color_flat_forms[4] = {
+   {0x1e, 4, 0x2d, 0x7f, 0x7f, 0x45, 0xe29fff10},
+   {0x1d, 4, 0x2d, 0x7f, 0x7f, 0x44, 0xa29fff10},
+   {0x1c, 0, 0x00, 0x7f, 0x7f, 0x7f, 0xa01fc000},
+   {0x1c, 0, 0x00, 0x7f, 0x7f, 0x7f, 0xa01fc000},
+};
+
+static bool
+m9_faa_color_fs_build_mode(uint32_t source_stream, bool flat,
                        uint32_t *program, uint32_t program_capacity_bytes,
                        uint32_t *constants, uint32_t constant_capacity_bytes,
                        struct m9_faa_color_fs_interface *interface)
@@ -98,27 +109,51 @@ m9_faa_color_fs_build(uint32_t source_stream,
    static const uint32_t utility[4] = {
       0x3f800000u, 0x3f000000u, 0u, 0x3f800000u,
    };
-   struct m9_faa_color_fs_interface result = {8, 2, 0, 0x2d};
+   static const uint32_t flat_utility[4] = {0u, 0x3f800000u, 0x3f800000u, 0x3f000000u};
+   const uint32_t slots = flat ? 4 : 8;
+   const uint32_t bytes = slots * 8;
+   const struct m9_faa_color_fs_form *forms = flat ? m9_faa_color_flat_forms : m9_faa_color_fs_forms;
+   struct m9_faa_color_fs_interface result = {slots, 2, 0, 0x2d};
    if (source_stream != 0 || !program || !constants || !interface ||
        (uintptr_t)program % _Alignof(uint32_t) ||
        (uintptr_t)constants % _Alignof(uint32_t) ||
-       program_capacity_bytes < 64 || constant_capacity_bytes < 16 ||
-       64 > UINTPTR_MAX - (uintptr_t)program ||
+       program_capacity_bytes < bytes || constant_capacity_bytes < 16 ||
+       bytes > UINTPTR_MAX - (uintptr_t)program ||
        16 > UINTPTR_MAX - (uintptr_t)constants ||
-       overlap(program, 64, constants, 16) ||
-       overlap(program, 64, interface, sizeof(*interface)) ||
+       overlap(program, bytes, constants, 16) ||
+       overlap(program, bytes, interface, sizeof(*interface)) ||
        overlap(constants, 16, interface, sizeof(*interface)))
       return false;
-   for (uint32_t i = 0; i < 8; i++) {
-      const struct m9_faa_color_fs_form *s = &m9_faa_color_fs_forms[i];
+   for (uint32_t i = 0; i < slots; i++) {
+      const struct m9_faa_color_fs_form *s = &forms[i];
       program[2 * i] = ((uint32_t)(s->a & 7u) << 29) |
          ((uint32_t)s->b << 22) | ((uint32_t)s->c << 15) |
          ((uint32_t)s->dst << 8) | ((uint32_t)s->cls << 5) | s->op;
       program[2 * i + 1] = s->control | s->a >> 3;
    }
-   memcpy(constants, utility, sizeof(utility));
+   memcpy(constants, flat ? flat_utility : utility, sizeof(utility));
    *interface = result;
    return true;
+}
+
+bool
+m9_faa_color_fs_build(uint32_t source_stream,
+                       uint32_t *program, uint32_t program_capacity_bytes,
+                       uint32_t *constants, uint32_t constant_capacity_bytes,
+                       struct m9_faa_color_fs_interface *interface)
+{
+   return m9_faa_color_fs_build_mode(source_stream, false, program, program_capacity_bytes,
+                                    constants, constant_capacity_bytes, interface);
+}
+
+bool
+m9_faa_color_flat_fs_build(uint32_t source_stream,
+                            uint32_t *program, uint32_t program_capacity_bytes,
+                            uint32_t *constants, uint32_t constant_capacity_bytes,
+                            struct m9_faa_color_fs_interface *interface)
+{
+   return m9_faa_color_fs_build_mode(source_stream, true, program, program_capacity_bytes,
+                                    constants, constant_capacity_bytes, interface);
 }
 
 bool
