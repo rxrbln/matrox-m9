@@ -1,5 +1,34 @@
 # M9128 generalized GL FAA upload boundary
 
+## October 8: native frame batches and actual flat shader frontend
+
+DRM `2520b48` integrates FIRST FRAME_BATCH execution for 1..32 same-program
+draws. Every draw retains separate CB/header/raw inputs; the final Lock is
+INIT+0x150+(N-1)*0xa0 with fourteen END posts. Source N2/N3 comparisons,
+actual preparation N1..32, and actual submission/failure host checks pass.
+Hardware qualification of multiple draws is pending. Initially admitted
+batches use full black/depth-one clear, LESS/write, smooth no-cull state.
+
+Mesa `e0083b7` sends queued application frames to that typed batch API with
+one final presentation and authenticated count-derived receipt. `f675b1a`
+fixes a concrete flat-shading bug: the live frontend previously emitted the
+smooth64 shader for flat state. It now emits the original flat32 ISA and
+utility ordering, including legacy fixed-function interpolation. Smooth
+uploads remain unchanged; GPU transformation and lighting remain in the
+carry shader. The full twenty-object Mesa build and live/fixed-function
+host checks pass. Native flat metadata pairing and hardware pixels remain
+pending; shader byte length alone is not sufficient admission.
+
+The original FIRST source proves the corresponding compiler usage mask,
+EF contribution and varying interpolation metadata. Its earlier retained
+flat control had reused a cached compiled shader, so the raster-bit-only
+inference was incomplete. See [FIRST raster/metadata proof](parhelia-m9-faa-first-raster-controls.md).
+Continuous glxgears still needs flat/cull batches, real program switching,
+initialized-depth later frames, and observed-retirement-based pool reuse.
+[Counted pool source proof](../tests/m9-faa-pool-counted-source-20261008/README.md)
+now distinguishes pending CPU references, submitted pool points and actual
+GPU completion; it does not authorize recycling from submission alone.
+
 ## October 8: fresh FIRST clear/depth also passes physical M9128
 
 DRM `c1962dc` (sealed candidate `43d80b0`) now runs directly from authentic
@@ -22,8 +51,8 @@ Glxgears FAA remains open: FIRST flat/cull, complete native multiple-draw
 composition for live application shaders, initialized-depth later frames,
 and retirement-aware command-pool reuse. The corrected pure appender
 `af5137c` compares the whole composed primary to vendor output; its earlier
-footer-only version was incomplete and was never posted. Native batch
-execution remains gated. Pool RE proves primary rotation through an unused
+footer-only version was incomplete and was never posted. At that earlier checkpoint native batch
+execution remained gated; the new host-tested integration is described above. Pool RE proves primary rotation through an unused
 slot and a separate pool-counter reuse dependency; Unlock alone does not
 authorize rewinding active pools. See [pool contract](parhelia-m9-faa-pool-reuse-contract.md).
 No glxgears/Quake3 screenshot, FPS, or sustained rendering claim yet.
