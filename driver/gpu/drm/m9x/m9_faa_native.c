@@ -6858,7 +6858,7 @@ int m9x_faa_graph_depth_frame_prepare(struct m9x_device *mdev,
  const struct firmware *sample_fw=NULL,*draw_fw=NULL,*first_fw=NULL;
  struct m9x_faa_color_input typed_input;
  u32 i,sample_bytes,prefix_bytes;u64 queue_start=0;int ret;
- if(!binding||!input||(!(raster_flags&1)&&input->layout.entry_bytes[1]==32)||(!first&&(raster_flags&1))||(raster_flags&~7u)||(raster_flags&6)==6||
+ if(!binding||!input||(!(raster_flags&1)&&m9x_faa_color_flat_fragment_valid(input))||(!first&&(raster_flags&1))||(raster_flags&~7u)||(raster_flags&6)==6||
   !m9_faa_color_four_experimental||input->layout.program_count!=4||input->declaration_count!=5)return -EOPNOTSUPP;
  typed_input=*input;typed_input.fragment_flags=raster_flags&1;input=&typed_input;
  if(previous>U64_MAX-0x1a0||lower_32_bits(previous)>U32_MAX-0x1a0)return -ERANGE;

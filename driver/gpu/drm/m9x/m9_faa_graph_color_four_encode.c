@@ -16,6 +16,24 @@ static const u8 digest[32]={0xa7,0xc8,0xb9,0xa2,0xb6,0x9f,0x0c,0x51,0x9a,0x3b,0x
 static u32 get(const u8*p){return (u32)p[0]|(u32)p[1]<<8|(u32)p[2]<<16|(u32)p[3]<<24;}
 static void put(u8*p,u32 x){p[0]=x;p[1]=x>>8;p[2]=x>>16;p[3]=x>>24;}
 bool m9x_faa_color_four_template_valid(const u8*b,size_t n){u8 h[32];if(!b||n!=6408)return false;sha256(b,n,h);return !memcmp(h,digest,32);}
+/* Classify the complete bounded flat interface. Other 32-byte fragment
+ * programs (including the existing constant-color source control) are not
+ * flat merely because their vector has this length. */
+bool m9x_faa_color_flat_fragment_valid(const struct m9x_faa_color_input *in)
+{
+ static const u32 fs[]={0xffe2ad9e,0xe29fff1f,0xffe22d9d,0xa29fff1f,
+  0xffff801c,0xa01fc00f,0xffff801c,0xa01fc00f};
+ static const u32 utility[]={0,0x3f800000,0x3f800000,0x3f000000};
+ u32 i,begin;
+ if(!in||!in->program||!in->constants||in->layout.program_bytes<32||
+  in->layout.entry_bytes[1]!=32||in->layout.constant_end[0]<in->layout.constant_begin[0]||
+  in->layout.constant_end[0]-in->layout.constant_begin[0]!=16||
+  in->layout.constant_end[0]>in->layout.constants_bytes)return false;
+ begin=in->layout.constant_begin[0];
+ for(i=0;i<8;i++)if(get(in->program+4*i)!=fs[i])return false;
+ for(i=0;i<4;i++)if(get(in->constants+begin+4*i)!=utility[i])return false;
+ return true;
+}
 /* Replace the two four-DWORD source declaration groups with owned semantic
  * input groups. All later fixups, endpoint fields and lengths follow it. */
 static u32 moved(u32 x,int extra){return x>=576?x+extra:x;}
@@ -49,17 +67,8 @@ int m9x_faa_color_four_encode(const u8*blob,size_t bytes,const struct m9x_faa_gr
  in->layout.constant_begin[2]!=in->layout.constant_end[2]||
  in->layout.constant_end[3]-in->layout.constant_begin[3]!=104||
  in->layout.constant_end[0]-in->layout.constant_begin[0]<16)return -EINVAL;
- if(in->fragment_flags){
-  /* Source-qualified flat COLOR0 stream0 -> r2d grammar. The compiler
-   * usage/interpolation fields belong to this actual fragment interface,
-   * not a generic FLAT toggle on the smooth allocator. */
-  static const u32 fs[]={0xffe2ad9e,0xe29fff1f,0xffe22d9d,0xa29fff1f,
-   0xffff801c,0xa01fc00f,0xffff801c,0xa01fc00f};
-  static const u32 utility[]={0,0x3f800000,0x3f800000,0x3f000000};
-  if(in->layout.entry_bytes[1]!=32||in->layout.constant_end[0]-in->layout.constant_begin[0]!=16)return -EINVAL;
-  for(i=0;i<8;i++)if(get(in->program+4*i)!=fs[i])return -EINVAL;
-  for(i=0;i<4;i++)if(get(in->constants+in->layout.constant_begin[0]+4*i)!=utility[i])return -EINVAL;
- }
+ /* Pair only the classified flat interface with flat usage metadata. */
+ if(m9x_faa_color_flat_fragment_valid(in)!=!!in->fragment_flags)return -EINVAL;
  /* Exact address-free RECORDS move grammar, including output register halves,
   * source logical indices, scheduling bit, saturation and STOP padding. */
  for(i=0;i<gatherbytes/8;i++){

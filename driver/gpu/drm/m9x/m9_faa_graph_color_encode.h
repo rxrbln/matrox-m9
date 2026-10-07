@@ -37,6 +37,7 @@ int m9x_faa_color_encode(const u8 *blob,size_t bytes,
  const struct m9x_faa_graph_draw_owner owner[M9_FAA_DRAW_SOURCE_OWNERS],
  u32 init_bytes,u64 init_point,const struct m9x_faa_color_input *input,
  const struct m9x_faa_color_image *image);
+bool m9x_faa_color_flat_fragment_valid(const struct m9x_faa_color_input *input);
 bool m9x_faa_color_four_template_valid(const u8 *blob,size_t bytes);
 int m9x_faa_color_four_encode(const u8 *blob,size_t bytes,const struct m9x_faa_graph_draw_owner owner[31],
  u32 init_bytes,u64 init_point,const struct m9x_faa_color_input *input,const struct m9x_faa_color_image *image);
