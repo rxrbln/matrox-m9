@@ -54,6 +54,7 @@ struct m9_faa_clear_segment {
      defined(M9_FAA_PRECLEAR_CONTROL) + \
      defined(M9_FAA_PRECLEAR_DRAW_CONTROL) + \
      defined(M9_FAA_PRECLEAR_OUTPUT_CONTROL) + \
+     defined(M9_FAA_PRECLEAR_OUTPUT_WRITE_CONTROL) + \
      defined(M9_FAA_POST_TRIANGLE_CONTROL)) > 1
 #error "Select only one complete private FAA source profile"
 #endif
@@ -83,6 +84,11 @@ struct m9_faa_clear_segment {
  * stopped at its next GPU wait. The output exists but is not readable. */
 #include "m9_faa_preclear_output_data.h"
 #define M9_FAA_INPUT_FIRMWARE "m9x/faa-preclear-output-known-inputs.bin"
+#elif defined(M9_FAA_PRECLEAR_OUTPUT_WRITE_CONTROL)
+/* The original output path posted its complete resolve before waiting
+ * for CPU access. Preserve that posted prefix and its genuine footer. */
+#include "m9_faa_preclear_output_write_data.h"
+#define M9_FAA_INPUT_FIRMWARE "m9x/faa-preclear-output-write-known-inputs.bin"
 #elif defined(M9_FAA_POST_TRIANGLE_CONTROL)
 /* Independent vendor queue finish after the returned public triangle,
  * before output/resolve. Its final counter is in its counted secondary. */
