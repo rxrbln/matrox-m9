@@ -104,6 +104,30 @@ struct drm_parhelia_m9_faa_graph_color_frame {
 #define DRM_IOCTL_PARHELIA_M9_FAA_GRAPH_COLOR_FRAME DRM_IOWR(DRM_COMMAND_BASE + DRM_PARHELIA_M9_FAA_GRAPH_COLOR_FRAME, struct drm_parhelia_m9_faa_graph_color_frame)
 #endif
 
+#ifndef DRM_IOCTL_PARHELIA_M9_FAA_GRAPH_COLOR_FRAME_BATCH
+/* One clear, immutable per-draw inputs, and one final Lock. All descriptors
+ * and owned upload bytes must be copied and validated before the first post.
+ * This schema reserves the command; unsupported profiles are not dispatched.
+ * FIRST authenticates INIT, otherwise previous_point authenticates Unlock.
+ * Reserved fields and output lock_point/state must be zero on input. */
+#define DRM_PARHELIA_M9_FAA_GRAPH_COLOR_FRAME_BATCH 0x1f
+#define PARHELIA_M9_FAA_COLOR_BATCH_FIRST_LOCK_RETIRED 20u
+#define PARHELIA_M9_FAA_COLOR_BATCH_NEXT_LOCK_RETIRED 21u
+struct drm_parhelia_m9_faa_color_draw {
+ __u64 upload;
+ __u32 upload_bytes, record_stride, record_count, declaration_count;
+ struct drm_parhelia_m9_faa_upload_layout layout;
+ __u32 depth_flags, raster_flags, pad[2];
+};
+struct drm_parhelia_m9_faa_graph_color_frame_batch {
+ __u64 graph_id, previous_point, lock_point, draws;
+ __u32 draw_count, generation, flags, state;
+ __u32 width, height, clear_flags, clear_color, pad[4];
+};
+#define DRM_IOCTL_PARHELIA_M9_FAA_GRAPH_COLOR_FRAME_BATCH DRM_IOWR(DRM_COMMAND_BASE + DRM_PARHELIA_M9_FAA_GRAPH_COLOR_FRAME_BATCH, struct drm_parhelia_m9_faa_graph_color_frame_batch)
+
+#endif
+
 /* A newer kernel exposes synchronous first-context initialization. Keep this
  * declaration separate so installed headers with PREPARE but without INIT
  * still compile; the old kernel will return ENOTTY at the ioctl boundary. */

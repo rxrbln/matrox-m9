@@ -118,6 +118,10 @@ int m9_faa_surface_color_frame_kernel(struct m9_screen *screen,
                                     const struct m9_faa_gl_upload *upload,
                                     const struct m9_faa_application_state *state,
                                     uint32_t clear_flags, uint32_t clear_color);
+struct m9_faa_application_frame;
+int m9_faa_surface_color_batch_kernel(struct m9_screen *screen,
+                                     struct m9_faa_surface *surface,
+                                     const struct m9_faa_application_frame *frame);
 int m9_faa_surface_color_unlock_kernel(struct m9_screen *screen,
                                       struct m9_faa_surface *surface);
 /* Continue only the actually retired public prefix on this retained graph.

@@ -137,6 +137,7 @@ struct m9_faa_graph {
    uint64_t color_lock_point;
    /* Exact submitted delta, published only after receipt and wait succeed. */
    uint32_t color_lock_delta;
+   uint32_t color_frame_draw_count; /* Authenticated batch receipt, zero for legacy FRAME. */
    uint32_t color_program_count;
    /* Per-cycle NEXT attempt remains consumed on any reported failure.
     * Historical authentic base/point stay until graph release. */

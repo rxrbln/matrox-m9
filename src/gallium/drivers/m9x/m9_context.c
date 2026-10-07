@@ -9383,16 +9383,7 @@ m9_context_faa_flush_frame(struct m9_context *ctx, const char **reason)
       ret = -ESTALE; why = "FAA queued frame no longer names the retained graph";
       goto done;
    }
-   /* The batch schema is reserved, but its native encoder and exact receipt
-    * profiles are still being qualified. Keep multi-draw atomic: never send
-    * the first draw and discover an unsupported later draw after posting. */
-   if (frame->count != 1) {
-      ret = -EOPNOTSUPP; why = "FAA native multi-draw FRAME is not yet admitted";
-      goto done;
-   }
-   ret = m9_faa_surface_color_frame_kernel(ctx->screen, &ctx->faa_surface,
-                                          &first->shader, &first->state,
-                                          frame->clear_flags, frame->clear_color);
+   ret = m9_faa_surface_color_batch_kernel(ctx->screen, &ctx->faa_surface, frame);
    if (ret) { why = "FAA authenticated frame submission failed"; goto done; }
    ctx->last_point = MAX2(ctx->last_point, graph->color_lock_point);
    ret = m9_context_faa_present_lock(ctx, first->graph_id, first->generation,
