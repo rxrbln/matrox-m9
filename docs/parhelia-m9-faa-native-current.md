@@ -30,6 +30,25 @@ diagnostic aperture read is not a passive observation of the vendor flow.
 This is still a private 320×240 diagnostic, not Mesa application FAA or final
 display presentation.
 
+The [real six-owner graph preparation test](../tests/m9-faa-graph-prep-hardware-20261007/README.md)
+now passes on M9128 boot `48e17497-8d39-4703-8ff2-682bf1543c14`. Its first
+module returned `EINVAL`: Linux 7.2 rejects `drm_exec_prepare_obj(..., 0)`
+because it reserves zero fence slots. Kernel `7ecd89a` changed graph locking
+to `drm_exec_lock_obj`, after which PREPARE returned graph ID 1, generation 0,
+`init_point=0`. Duplicate PREPARE returned `EBUSY`; release with a wrong
+generation returned `ENOENT`; valid RELEASE still worked after all six GEM
+handles were closed, then duplicate RELEASE returned `ENOENT`. The transport
+remained submitted/completed 0, queue empty and `wedged=0`. Kernel `e646797`
+also provides a CPU-tested binding helper that retains these prepared owners
+and derives their live VRAM addresses; it has not been hardware-exercised.
+
+The [fresh first-context source INIT plan](../tests/m9-faa-graph-init-source-20261007/README.md)
+has 4,880 primary bytes and natural target `0xb0`; it borrows the six graph
+roles and retains separate private owners. Strict regeneration, refusal and
+native encoder checks pass. It is a source plan, not a GPU INIT receipt. The
+next required step is executable INIT using live addresses, followed by an
+actual retirement receipt. PREPARE leaves the graph uninitialized.
+
 Kernel `e933dad` guards the direct F022 diagnostic aperture path after the
 source-qualified normal-Lock replay starts; its actual-C tests cover three
 admission points, two races and F021/control preservation. Kernel `53b953d`
@@ -41,7 +60,8 @@ with byte-identical clean F021 images and `wedged=0`. It validates that the
 new admission code did not regress the private source-order path. A subsequent
 same-boot direct F022 probe on another color BO returned `EBUSY` before any
 new post, with all transport fields unchanged except sample time. It does not
-exercise graph PREPARE or establish application FAA.
+exercise graph PREPARE or establish application FAA; the separate graph test
+above exercises PREPARE and RELEASE.
 
 Kernel `9eed0a9` continues the source-proven primary only after a successful
 public F021 Lock read. The Lock returned actual point180 and the same clean
