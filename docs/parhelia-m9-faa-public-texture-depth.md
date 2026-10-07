@@ -134,6 +134,55 @@ temporary selectors change, and all three preprocessing entries advance16
 bytes. This evidence supports the decoded MUL/ADD operation and operand
 routing for these captured states; it is not an encoder for a live shader.
 
+### Two public texture-coordinate selections
+
+The original M9128 path also accepts a dual-coordinate FVF `0x244`, stride36
+triangle. Each vertex supplies the original UV pair and a distinct second UV
+pair. The only change within each pair of COLOROP4, 5 or 7 captures is public
+stage0 state11 `TEXCOORDINDEX=0` versus `1`. Source `0x105648` stores this
+field and compiler `0x17f91d` consumes it as the coordinate record index;
+this is a live public state, not a caller-assigned private compiler mode.
+
+All six CPU draws return successfully. For each COLOROP, both coordinate
+selections produce byte-identical complete programs, compiled04 `62ae1`,
+and the same merged F0/EF/D7. The programs also match the corresponding
+single-coordinate captures above: 336 bytes and entries `48,104,144,0` for
+MODULATE and ADD, 352 bytes and `64,120,160,0` for MODULATE2X. Choosing
+coordinate set1 changes exactly three original source command-list writes:
+`f70fa:05300d88→07300d88`, `f7102:05300b36→07300b36`, and
+`fbee8:28207006→28207046` for MODULATE/ADD, or
+`28207776→282077b6` for MODULATE2X. The coordinate selection is therefore
+represented outside the C2 program in these admitted cases. The captures
+do not supply texture pixels or prove that the GPU samples the selected UVs.
+
+The existing Mesa FS encoder explains the captured operation/control words
+for the two fixed slots. Its `L_MUL_RR` base W1 is `ac200000`, its `L_ADD_RR`
+base is `ac800c00`, and `w0_make` packs the decoded register selectors.
+The additional `40000000` in slot2 is the known program end marker: the
+encoder places it at FS slot `max(n,4)-4`, which is slot2 for the six-slot
+MODULATE/ADD prefix and slot4 for the eight-slot MODULATE2X prefix. The
+remaining W1 swizzle bits are `140` for the second MODULATE slot and `110`
+for the second ADD slot, matching the current backend's scalar selectors.
+This closes the *encoding of these observed slots once their scheduled
+operands and program length are known*. It does not derive the vendor's
+register allocation or program-length decision from an arbitrary live
+Gallium shader. In particular, TEXCOORDINDEX changes source records while
+the program remains identical, and MODULATE2X changes slot scheduling and
+preprocess entry offsets. A fixed C2 byte table would also copy captured
+layout instead of deriving it from retained owners.
+
+Reproduce this matrix with `tools/m9-vendor-faa-texture-depth.py --case
+texture-depth --texcoord-count 2`, COLOROP `4`, `5`, or `7`, and
+`--texcoord-index 0` or `1`, using the same original M9128 runtime and
+recorded device/DC inputs above. `tools/m9-vendor-faa-texcoord-compact.py`
+produces `docs/traces/m9-vendor-faa-texcoord-diff-20261007.json`; run
+`tools/check-m9-faa-texcoord-diff.py` with that trace and
+`docs/traces/m9-vendor-faa-variant-diff-20261007.json`. The checker proves
+source-owned program/PTE joins, exact public state differences, C2 equality,
+entry offsets, the three command-word differences, decoded operand fields,
+and marker placement. This is a bounded negative for a new FAA encoder, not
+a GPU rendering result.
+
 Reproduce the seven raw captures with `tools/m9-vendor-faa-texture-depth.py
 --case texture-depth` and, for the six controls, `--color-op 7`,
 `--color-op 5`, `--color-op 7 --color-arg1 0 --color-arg2 2`,
