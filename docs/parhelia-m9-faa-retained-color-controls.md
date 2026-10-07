@@ -22,6 +22,36 @@ It posts END at 8732, 12292 twice and 12304. Controlled changes are:
 | flat shading (`RS9=1`) | Secondary 4484 changes `00000203→00004203`. The source packet does not establish GL provoking-vertex semantics or pixel correctness. |
 | full black CLEAR42 before DRAW | Primary grows 128 bytes; ENDs become 8800, 8860, 12420 twice, 12432, and source timeline advances by `0x10`. No display latch or clear pixel claim follows. |
 
+The TARGET-only clear's 128-byte prefix has a live page-run segment. Its
+`b5fc3..b6092` six-word header is followed by the `b60ab` count and ten
+`b6101/b6143/b61ae` page words for the sampled primary's logical `0x50000`
+extent (80 pages). These words directly encode GPU allocation page indices
+outside ordinary relocation callbacks. Reuse the established `b5e70`
+page-run generator with the **live primary owner** and rebuild the segment,
+subsequent cursor and ENDs if native page alignment changes; copying the
+captured ten words would clear the wrong pages. Source `2557b` writes the
+clear's timeline low|1 before its own END. The source primary was previously
+cleared at first public target admission; this second clear is a new command
+against the retained owner.
+
+Simply changing CLEAR42 to TARGET|ZBUFFER (`flags=3`) in this context emits
+no clear commands at all: its images equal the no-clear control. A genuine
+depth attachment must be allocated and bound. The bounded source run does so
+with original `a3870` using a separate 320×240 profile49 surface (class4,
+format `0x3d`, logical `0x97000`, backing capacity `0x98000`), publishes its
+new handle 2 through `7a770`, then sends SETRENDERTARGET41 `(color handle1,
+depth handle2)`, CLEAR42 flags3, and DRAW52. `FLOATOBJ_SetLong` followed by
+`FLOATOBJ_GetFloat` on the same temporary is modeled only for its four
+observed integer-to-IEEE-float roundtrips (0,0,240,320). The source primary
+then grows to `[8672,16984)`, with ENDs 8880, 8960 twice, 9792, 9832,
+13352, 13412, 16972 twice and 16984; 94 relocation callbacks replace the
+baseline's 73. Its next genuine CPU Lock query asks `0x2f0` and is unread.
+This depth owner is separate from the six graph owners and cannot alias the
+AA companion. The current native six-owner request cannot use this flow
+without retaining and validating a seventh depth allocation and deriving
+the full depth clear packet from its live descriptors and page runs. The
+source command count does not prove GPU retirement or depth pixels.
+
 An original one-COLOR public shader (`ps_2_0 dcl v0; mov oC0,v0`) compiles
 FS64 + fused VS232: a three-slot shader head followed by 25 position/clip
 slots and STOP. A controlled ADD-temporary/MUL-position version still uses
@@ -75,6 +105,8 @@ M9128 mask/fused program control in
 `captures/m9-faa-gl-one-color-20261007/mask-and-fused-controls.json`.
 Run `python3 tests/m9-faa-public-vs-next-controls-20261007/check.py` and
 `python3 tests/m9-faa-public-vs-next-controls-20261007/check-mask-fused.py`.
+The separate depth-resource refusal check is
+`python3 tests/m9-faa-public-vs-next-controls-20261007/check-bound-depth.py`.
 The reproducible controllers are
 `tools/m9emu/m9_faa_public_vs_next_controls.py`,
 `tools/m9emu/m9_faa_graph_color_mask_initial.py` and
