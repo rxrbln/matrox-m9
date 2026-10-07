@@ -136,7 +136,7 @@ struct ctx {
    uint32_t *head_live;     /* component demand of the split head's pure ALU */
    int8_t *fold;            /* product's constant side, or FOLD_NEG */
    unsigned def_count;
-   nir_tex_instr *texture;
+   nir_tex_instr *texture[2];
    unsigned index;          /* instruction being emitted */
    /* Lanes whose result the output registers take directly. */
    struct out_pin {
@@ -1991,8 +1991,8 @@ note_texture(struct ctx *c, nir_tex_instr *tex)
 {
    int ci = nir_tex_instr_src_index(tex, nir_tex_src_coord);
    int li = nir_tex_instr_src_index(tex, nir_tex_src_lod);
-   if (c->texture)
-      return fail(c, "more than one vertex texture fetch");
+   if (c->texture[1])
+      return fail(c, "more than two vertex texture fetches");
    if ((tex->op != nir_texop_tex && tex->op != nir_texop_txl) ||
        tex->sampler_dim != GLSL_SAMPLER_DIM_2D || tex->is_array ||
        tex->is_shadow || tex->coord_components != 2 || ci < 0 ||
@@ -2024,10 +2024,20 @@ note_texture(struct ctx *c, nir_tex_instr *tex)
        !nir_src_is_const(input->src[0]) || nir_src_as_uint(input->src[0]) ||
        !nir_src_is_const(other->src[0]) || nir_src_as_uint(other->src[0]))
       return fail(c, "vertex texture coordinates must be direct input XY");
-   c->texture = tex;
-   c->p->texture_count = 1;
-   c->p->texture_sampler = tex->texture_index;
-   c->p->texture_location = nir_intrinsic_io_semantics(input).location;
+   unsigned unit = c->p->texture_count;
+   unsigned location = nir_intrinsic_io_semantics(input).location;
+   if (unit && (c->texture[0]->op != nir_texop_txl || tex->op != nir_texop_txl))
+      return fail(c, "two vertex textures require explicit zero LOD");
+   if (unit && location != c->p->texture_location)
+      return fail(c, "two vertex textures require the same direct XY input");
+   c->texture[unit] = tex;
+   c->p->texture_count++;
+   if (unit)
+      c->p->texture_sampler_second = tex->texture_index;
+   else {
+      c->p->texture_sampler = tex->texture_index;
+      c->p->texture_location = location;
+   }
    return true;
 }
 
@@ -2507,22 +2517,28 @@ compile_head(struct ctx *c, nir_block *block, unsigned final,
          }
    }
    declare_attributes(c, used, inputs);
-   if (c->texture) {
-      /* Save both sampled halves before any position/varying publication
-       * reuses r00/r02. They are real SSA definitions with normal last-use
-       * lifetime, not instruction-private temporaries. */
-      for (unsigned pair = 0; pair < 2; pair++) {
-         int dst = reg_alloc(c);
-         if (dst < 0)
-            return fail(c, "register pressure preserving a vertex texture");
-         emit_move(c, dst, 0x1c, 2 * pair, 1);
-         struct held h0 = { .kind = HELD_DEF,
-                           .a = c->texture->def.index, .b = 2 * pair };
-         struct held h1 = h0;
-         h1.b++;
-         hold_def(c, dst, 0, &h0);
-         hold_def(c, dst, 1, &h1);
+   if (c->texture[0]) {
+      /* Unit 0 supplies r00/r02 and unit 1 r04/r06. Keep every raw bank
+       * protected until all sampled SSA definitions have been preserved:
+       * the ordinary allocator's first temporary is r04. */
+      if (c->texture[1])
+         c->reserved[4] = c->reserved[6] = 1;
+      for (unsigned unit = 0; unit < c->p->texture_count; unit++) {
+         for (unsigned pair = 0; pair < 2; pair++) {
+            int dst = reg_alloc(c);
+            if (dst < 0)
+               return fail(c, "register pressure preserving a vertex texture");
+            emit_move(c, dst, 0x1c, 4 * unit + 2 * pair, 1);
+            struct held h0 = { .kind = HELD_DEF,
+                              .a = c->texture[unit]->def.index, .b = 2 * pair };
+            struct held h1 = h0;
+            h1.b++;
+            hold_def(c, dst, 0, &h0);
+            hold_def(c, dst, 1, &h1);
+         }
       }
+      if (c->texture[1])
+         c->reserved[4] = c->reserved[6] = 0;
    }
    nir_foreach_instr(instr, block) {
       c->index = instr->index;
@@ -2698,7 +2714,7 @@ compile_impl(struct ctx *c, nir_function_impl *impl,
             return fail(c, "FAA requires complete vec4 streams");
       }
    }
-   if (c->texture && nvar > M9_VS_FUSED_VARYINGS)
+   if (c->texture[0] && nvar > M9_VS_FUSED_VARYINGS)
       return fail(c, "vertex texture requires the bounded fused output path");
    if (nvar > M9_VS_FUSED_VARYINGS) {
       c->head_live = calloc(c->def_count + 1, sizeof(*c->head_live));
@@ -2728,7 +2744,7 @@ compile_impl(struct ctx *c, nir_function_impl *impl,
       unsigned physical = inputs - scalar + DIV_ROUND_UP(scalar, 4);
       /* Existing four-slot programs remain byte-exact. FAA and vertex
        * sampling keep their separately source-qualified input interfaces. */
-      if (c->faa || c->texture || physical > M9_VS_MAX_ATTRIBUTES)
+      if (c->faa || c->texture[0] || physical > M9_VS_MAX_ATTRIBUTES)
          return fail(c, "more than four vertex attributes");
    }
 
@@ -3560,6 +3576,8 @@ unsigned
 m9_vs_decl_words(const struct m9_vs_program *p, uint32_t *out,
                  unsigned max_words)
 {
+   if (p->texture_count > 2)
+      return 0;
    unsigned n = 2 * p->attr_count + p->texture_count + 1;
 
    if (!out || n > max_words || n > M9_VS_MAX_DECL)
@@ -3583,12 +3601,14 @@ m9_vs_decl_words(const struct m9_vs_program *p, uint32_t *out,
       for (i = 0; i < p->attr_count; i++)
          if (p->attrs[i].location == p->texture_location)
             break;
-      if (i == p->attr_count || p->texture_count != 1)
+      if (i == p->attr_count || p->texture_count > 2)
          return 0;
       /* Texture coordinate set 0 is attribute 5. The four input selectors
        * are source-proven by the genuine public direct-UV producer. Mode
        * 1 uses XY; the runtime's single-level state never reads a W LOD. */
-      out[2 * p->attr_count] = p->attrs[i].offset << 24 | 5u << 20 | 0x688u;
+      for (unsigned unit = 0; unit < p->texture_count; unit++)
+         out[2 * p->attr_count + unit] =
+            p->attrs[i].offset << 24 | (5u + unit) << 20 | 0x688u;
    }
    out[n - 1] = 0x00004b08;
    return n;

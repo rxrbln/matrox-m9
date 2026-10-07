@@ -398,6 +398,9 @@ struct m9_job_key {
    bool vs_texture;
    struct m9_texture_unit vs_unit;
    struct pipe_resource *vs_unit_res;
+   bool vs_texture_second;
+   struct m9_texture_unit vs_unit_second;
+   struct pipe_resource *vs_unit_res_second;
    /* One entry a texture slot of every raster pass: a shader split across
     * passes binds four in each of them. */
    struct m9_texture_unit units[M9_DRAW_MAX_UNITS];

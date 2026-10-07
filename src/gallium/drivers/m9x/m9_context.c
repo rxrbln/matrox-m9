@@ -3245,6 +3245,7 @@ m9_submit_job(struct m9_context *ctx)
          job.vs_decl_count = vs_decl_count;
          job.vs_record_bytes = key->vs->record_bytes;
          job.vs_unit = key->vs_texture ? &key->vs_unit : NULL;
+         job.vs_unit_second = key->vs_texture_second ? &key->vs_unit_second : NULL;
          job.vs_const_pairs = vs_const_pairs;
          /* Nothing writes the CPU views of a native job, so its stream
           * slots stay local and the second preprocessing draw can render
@@ -3538,7 +3539,7 @@ m9_job_reserve(struct m9_context *ctx, const struct m9_job_key *key,
    /* Every additional run adds a five-word constant packet and a numeric
     * three-word launch. Framing is charged by the existing upper bound. */
    dwords += new_vs_runs ? 8 * (new_vs_runs - 1) : 0;
-   dwords += key->vs_texture ? pre_copies * 18 : 0;
+   dwords += pre_copies * 18 * (key->vs_texture + key->vs_texture_second);
    if (draws) {
       bool state = memcmp(key, &ctx->job_key,
                           offsetof(struct m9_job_key, units)) != 0;
@@ -3576,7 +3577,7 @@ m9_job_reserve(struct m9_context *ctx, const struct m9_job_key *key,
                         m9_faa_raster_relocs(&ctx->screen->faa) *
                         MAX2(passes, 1u);
       relocs += new_vs_runs ? 2 * (new_vs_runs - 1) : 0;
-      relocs += key->vs_texture ? pre_copies : 0;
+      relocs += pre_copies * (key->vs_texture + key->vs_texture_second);
       /* A split shader binds one unit pool for the whole job, so a draw
        * that needs another set starts a job of its own. */
       bool stream_full = dwords > M9_MAX_COMMAND_DWORDS ||
@@ -3629,13 +3630,13 @@ m9_job_reserve(struct m9_context *ctx, const struct m9_job_key *key,
       *held = NULL;
       pipe_resource_reference(held, key->unit_res[k]);
    }
-   if (key->vs_texture) {
+   for (unsigned unit = 0; unit < key->vs_texture + key->vs_texture_second; unit++) {
       struct pipe_resource **held =
          util_dynarray_grow(&ctx->job_textures, struct pipe_resource *, 1);
       if (!held)
          return NULL;
       *held = NULL;
-      pipe_resource_reference(held, key->vs_unit_res);
+      pipe_resource_reference(held, unit ? key->vs_unit_res_second : key->vs_unit_res);
    }
    *extra = NULL;
    if (extra_count) {
@@ -6973,56 +6974,71 @@ m9_native_vs_bind_texture(struct m9_context *ctx, struct m9_job_key *key,
       return NULL;
    if (!debug_get_bool_option("M9X_NATIVE_VS_TEXTURE", true))
       return "native vertex texture is disabled";
-   if (program->texture_count != 1 ||
+   if (program->texture_count > 2 ||
        !key->variant || key->variant->passes.count != 1)
-      return "vertex texture requires one sampler and one raster pass";
-   unsigned slot = program->texture_sampler;
-   struct pipe_sampler_view *view = m9_vs_texture_view(&ctx->base, slot);
-   const struct pipe_sampler_state *sampler =
-      m9_vs_texture_state(&ctx->base, slot);
-   if (!view || !view->texture || !sampler)
-      return "vertex texture has no retained sampler/view";
-   if (view->target != PIPE_TEXTURE_2D || view->texture->target != PIPE_TEXTURE_2D ||
-       view->u.tex.first_level || view->texture->last_level ||
-       util_format_is_srgb(view->format) || sampler->unnormalized_coords ||
-       sampler->min_img_filter != PIPE_TEX_FILTER_NEAREST ||
-       sampler->mag_img_filter != PIPE_TEX_FILTER_NEAREST ||
-       sampler->min_mip_filter != PIPE_TEX_MIPFILTER_NONE ||
-       sampler->compare_mode != PIPE_TEX_COMPARE_NONE || sampler->lod_bias ||
-       sampler->wrap_s != PIPE_TEX_WRAP_REPEAT ||
-       sampler->wrap_t != PIPE_TEX_WRAP_REPEAT)
-      return "vertex texture needs level-zero normalized point/wrap 2-D state";
-   uint8_t swizzle[4];
-   m9_view_swizzle(view, swizzle);
-   for (unsigned c = 0; c < 4; c++)
-      if (swizzle[c] != PIPE_SWIZZLE_X + c)
-         return "vertex texture view needs a shader swizzle";
-   if (view->texture == ctx->color || view->texture == ctx->depth ||
-       (key->aux && view->texture == &key->aux->base))
-      return "vertex texture framebuffer feedback";
-   for (unsigned c = 0; c < ARRAY_SIZE(ctx->color_extra); c++)
-      if (view->texture == ctx->color_extra[c])
+      return "vertex texture requires at most two samplers and one raster pass";
+   /* The second-fetch hardware image and packed-output stages are distinct
+    * qualification boundaries. Keep the new fused slice opt-in. */
+   if (program->texture_count == 2 &&
+       !debug_get_bool_option("M9X_NATIVE_VS_TEXTURE_TWO", false))
+      return "dual vertex texture is disabled";
+   if (program->producer.size || program->extra.size || program->gather.size)
+      return "vertex texture requires the bounded fused output path";
+   for (unsigned unit = 0; unit < program->texture_count; unit++) {
+      unsigned slot = unit ? program->texture_sampler_second : program->texture_sampler;
+      struct pipe_sampler_view *view = m9_vs_texture_view(&ctx->base, slot);
+      const struct pipe_sampler_state *sampler =
+         m9_vs_texture_state(&ctx->base, slot);
+      if (!view || !view->texture || !sampler)
+         return "vertex texture has no retained sampler/view";
+      if (view->target != PIPE_TEXTURE_2D || view->texture->target != PIPE_TEXTURE_2D ||
+          view->u.tex.first_level || view->texture->last_level ||
+          util_format_is_srgb(view->format) || sampler->unnormalized_coords ||
+          sampler->min_img_filter != PIPE_TEX_FILTER_NEAREST ||
+          sampler->mag_img_filter != PIPE_TEX_FILTER_NEAREST ||
+          sampler->min_mip_filter != PIPE_TEX_MIPFILTER_NONE ||
+          sampler->compare_mode != PIPE_TEX_COMPARE_NONE || sampler->lod_bias ||
+          sampler->wrap_s != PIPE_TEX_WRAP_REPEAT ||
+          sampler->wrap_t != PIPE_TEX_WRAP_REPEAT)
+         return "vertex texture needs level-zero normalized point/wrap 2-D state";
+      uint8_t swizzle[4];
+      m9_view_swizzle(view, swizzle);
+      for (unsigned c = 0; c < 4; c++)
+         if (swizzle[c] != PIPE_SWIZZLE_X + c)
+            return "vertex texture view needs a shader swizzle";
+      if (view->texture == ctx->color || view->texture == ctx->depth ||
+          (key->aux && view->texture == &key->aux->base))
          return "vertex texture framebuffer feedback";
-   struct m9_texture_bind bind;
-   const char *reason = m9_texture_bind_view(view, &bind);
-   if (reason)
-      return reason;
-   if (bind.width != m9_res(view->texture)->width ||
-       bind.height != m9_res(view->texture)->height)
-      return "vertex texture needs unscaled live storage dimensions";
-   if (bind.code != M9_TEXTURE_CODE_BGRA && bind.code != 0xc8 && bind.code != 0xc9)
-      return "vertex texture format has no bounded native sample proof";
-   if (bind.kind != M9_TEXTURE_KIND_2D && bind.kind != M9_TEXTURE_KIND_RENDER)
-      return "vertex texture storage has no bounded native sample proof";
-   if (m9_texture_unit_init(&key->vs_unit, m9_res(view->texture)->handle,
-                            &bind, sampler))
-      return "vertex texture sampler words could not be derived";
-   if (ctx->debug)
-      fprintf(stderr, "m9x: native vertex sampler slot %u handle %u 70=%08x "
-              "79=%08x 7a=%08x\n", slot, key->vs_unit.handle,
-              key->vs_unit.w70, key->vs_unit.w79, key->vs_unit.w7a);
-   key->vs_texture = true;
-   key->vs_unit_res = view->texture;
+      for (unsigned c = 0; c < ARRAY_SIZE(ctx->color_extra); c++)
+         if (view->texture == ctx->color_extra[c])
+            return "vertex texture framebuffer feedback";
+      struct m9_texture_bind bind;
+      const char *reason = m9_texture_bind_view(view, &bind);
+      if (reason)
+         return reason;
+      if (bind.width != m9_res(view->texture)->width ||
+          bind.height != m9_res(view->texture)->height)
+         return "vertex texture needs unscaled live storage dimensions";
+      if (bind.code != M9_TEXTURE_CODE_BGRA && bind.code != 0xc8 && bind.code != 0xc9)
+         return "vertex texture format has no bounded native sample proof";
+      if (bind.kind != M9_TEXTURE_KIND_2D && bind.kind != M9_TEXTURE_KIND_RENDER)
+         return "vertex texture storage has no bounded native sample proof";
+      struct m9_texture_unit *native = unit ? &key->vs_unit_second : &key->vs_unit;
+      if (m9_texture_unit_init(native, m9_res(view->texture)->handle,
+                               &bind, sampler))
+         return "vertex texture sampler words could not be derived";
+      if (ctx->debug)
+         fprintf(stderr, "m9x: native vertex sampler slot %u handle %u 70=%08x "
+                 "79=%08x 7a=%08x\n", slot, native->handle,
+                 native->w70, native->w79, native->w7a);
+      if (unit) {
+         key->vs_texture_second = true;
+         key->vs_unit_res_second = view->texture;
+      } else {
+         key->vs_texture = true;
+         key->vs_unit_res = view->texture;
+      }
+   }
    return NULL;
 }
 

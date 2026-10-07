@@ -270,11 +270,14 @@ struct m9_vs_program {
    struct util_dynarray consts;   /* struct m9_vs_const, user pairs in order */
    struct m9_vs_attr attrs[M9_VS_MAX_ATTRIBUTES];
    unsigned attr_count;
-   /* Bounded source-fed sampler input: one direct XY vertex attribute.
+   /* Bounded source-fed sampler inputs: up to two units sharing direct XY.
+    * A second fetch requires explicit LOD zero and has no runtime admission
+    * until the dual-unit binding/queued-ownership path is qualified.
     * The runtime admits only level-zero point 2-D storage until a wider
     * vertex sampler/coordinate producer contract is qualified. */
    unsigned texture_count;
    unsigned texture_sampler;
+   unsigned texture_sampler_second;
    unsigned texture_location;
    uint64_t inputs_read;          /* gl_vert_attrib mask of the shader */
    uint32_t record_bytes;

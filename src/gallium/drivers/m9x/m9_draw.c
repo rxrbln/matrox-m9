@@ -926,10 +926,16 @@ m9_draw_job_valid(const struct m9_draw_job *job)
       return false;
    /* The packed record spans one view a varying, above the views the
     * gather de-interleaves into. */
+   if (job->vs_unit_second && (!job->vs_unit || !job->vs_unit_second->handle))
+      return false;
+   unsigned vertex_units = !!job->vs_unit + !!job->vs_unit_second;
    if (job->vs_unit &&
        (!job->vs_decl_count || job->vs_extra_entry || job->vs_gather_entry ||
         job->vs_producer_entry || job->pass_count > 1 ||
-        !job->vs_unit->handle))
+        !job->vs_unit->handle ||
+        job->vs_decl_count < vertex_units + 3 ||
+        (job->vs_decl_count - vertex_units - 1) % 2 ||
+        (job->vs_decl_count - vertex_units - 1) / 2 > M9_VS_MAX_ATTRIBUTES))
       return false;
    if (job->vs_gather_entry &&
        (!job->vs_extra_entry ||
@@ -1273,9 +1279,14 @@ m9_emit_preprocess(struct m9_batch *batch, const struct m9_draw_job *job,
     * which is the captured 0x0100ffff. An ordinary vertex sampler supplies
     * attribute 5 and sets one texture-input bit at20; it leaves the bounded
     * normal attribute count and compiler-derived scratch mask unchanged. */
-   EMIT(V(0x88, (BITFIELD_MASK((decl_count - 1) / 2) << 24) |
+   unsigned vertex_units = !!job->vs_unit + !!job->vs_unit_second;
+   /* Coordinate declarations name attributes 5/6 independently of the
+    * normal source attributes. Two coordinate words must not count as a
+    * third normal attribute. */
+   unsigned attributes = (decl_count - 1 - vertex_units) / 2;
+   EMIT(V(0x88, (BITFIELD_MASK(attributes) << 24) |
                 (chain ? BITFIELD_MASK(routes) << 20 :
-                 job->vs_unit ? 1u << 20 : 0) |
+                 BITFIELD_MASK(vertex_units) << 20) |
                 (primary ? job->vs_producer_mask :
                  chain && kind == M9_PRE_HEAD ? job->vs_extra_mask :
                  extra ? 0x0000ffffu :
@@ -1298,8 +1309,14 @@ m9_emit_preprocess(struct m9_batch *batch, const struct m9_draw_job *job,
         R(0x8d, job->system, M9_VS_CONST_OFFSET, SYSTEM),
         R(0x8e, job->system, M9_VS_CONST_OFFSET + 8 * const_pairs, SYSTEM),
         V(0x8f, 0));
-   ret = m9_emit_units(batch, job, NULL, job->vs_unit,
-                       job->vs_unit ? 1 : 0);
+   struct m9_texture_unit vertex[2];
+   const struct m9_texture_unit *units = job->vs_unit;
+   if (job->vs_unit_second) {
+      vertex[0] = *job->vs_unit;
+      vertex[1] = *job->vs_unit_second;
+      units = vertex;
+   }
+   ret = m9_emit_units(batch, job, NULL, units, vertex_units);
    if (ret)
       goto fail;
    /* The gather reads the head's record: one route a varying, each naming

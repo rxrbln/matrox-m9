@@ -168,6 +168,8 @@ struct m9_draw_job {
    /* One direct-input, level-zero vertex sampler. Only the ordinary source
     * producer binds it; the raster range restores its own units. */
    const struct m9_texture_unit *vs_unit;
+   /* Optional second direct-XY unit; its raw result occupies r04/r06. */
+   const struct m9_texture_unit *vs_unit_second;
    /* Raster texture units, texel pair order. */
    const struct m9_texture_unit *units;
    unsigned unit_count;
