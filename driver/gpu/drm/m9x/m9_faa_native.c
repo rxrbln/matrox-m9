@@ -6819,12 +6819,12 @@ int m9x_faa_graph_depth_frame_prepare(struct m9x_device *mdev,
  struct m9x_faa_graph_draw_owner owner[M9_FAA_DEPTH_DRAW_OWNERS];
  const struct firmware *sample_fw=NULL,*draw_fw=NULL,*first_fw=NULL;
  u32 i,sample_bytes,prefix_bytes;u64 queue_start=0;int ret;
- if(!binding||!input||(raster_flags&~7u)||(raster_flags&6)==6||(first&&raster_flags)||
+ if(!binding||!input||(raster_flags&~7u)||(raster_flags&6)==6||(first&&(raster_flags&1))||
   !m9_faa_color_four_experimental||input->layout.program_count!=4||input->declaration_count!=5)return -EOPNOTSUPP;
  if(previous>U64_MAX-0x1a0||lower_32_bits(previous)>U32_MAX-0x1a0)return -ERANGE;
  frame=kzalloc(sizeof(*frame),GFP_KERNEL);attach=kmalloc(sizeof(*attach),GFP_KERNEL);
  if(!frame||!attach){ret=-ENOMEM;goto release;}
- if(raster_flags){raster_scratch=kmalloc(M9_FAA_DEPTH_DRAW_PRIMARY_BYTES+M9_FAA_COLOR_SECONDARY_CAPACITY,GFP_KERNEL);if(!raster_scratch){ret=-ENOMEM;goto release;}}
+ if(raster_flags){raster_scratch=kmalloc(M9_FAA_DEPTH_FRAME_PRIMARY_CAPACITY+M9_FAA_COLOR_SECONDARY_CAPACITY,GFP_KERNEL);if(!raster_scratch){ret=-ENOMEM;goto release;}}
  ret=request_firmware(&sample_fw,M9_FAA_SAMPLE_CLEAR_FIRMWARE,&mdev->pdev->dev);if(ret)goto release;
  if(!first){ret=request_firmware(&draw_fw,M9_FAA_DEPTH_DRAW_FIRMWARE,&mdev->pdev->dev);if(ret)goto release;}
  scratch=kzalloc(sizeof(*scratch),GFP_KERNEL);if(!scratch){ret=-ENOMEM;goto release;}
@@ -6857,6 +6857,33 @@ int m9x_faa_graph_depth_frame_prepare(struct m9x_device *mdev,
    frame->secondary,sizeof(frame->secondary),&frame->primary_bytes,&frame->secondary_bytes,
    frame->end_bytes,&first_image,fresh);if(ret)goto unlock;
   frame->primary_start=r->graph_draw_end_bytes;frame->end_count=M9_FAA_FIRST_DEPTH_ENDS;
+  if(raster_flags){
+   u32 prefix=frame->primary_bytes-(M9_FAA_COLOR_PRIMARY_BYTES-64),secondary_bytes;
+   struct m9x_faa_raster_input ri={
+    .primary=frame->primary,.secondary=frame->secondary,
+    .primary_bytes=frame->primary_bytes,.secondary_bytes=frame->secondary_bytes,
+    .secondary_base=owner[29].base,
+    .range_at={prefix+4,prefix+8,prefix+52,prefix+56},
+    .database_bytes=0x1c1d8,.no_cull_start_bytes=0x149a0,.cull_start_bytes=0x147f8,
+    .flags=raster_flags};
+   struct m9x_faa_raster_output ro={
+    .primary=raster_scratch,.secondary=raster_scratch+M9_FAA_DEPTH_FRAME_PRIMARY_CAPACITY,
+    .primary_capacity=M9_FAA_DEPTH_FRAME_PRIMARY_CAPACITY,
+    .secondary_capacity=M9_FAA_COLOR_SECONDARY_CAPACITY,.secondary_bytes=&secondary_bytes};
+   bool resident=false;
+   for(i=0;i<ARRAY_SIZE(m9_faa_spans);i++){
+    const struct m9_faa_span *span=&m9_faa_spans[i];
+    if(span->owner==12&&span->offset==0&&span->bytes==ri.database_bytes)resident=true;
+   }
+   if(!resident||owner[12].bytes<ri.database_bytes){ret=-ESTALE;goto unlock;}
+   ret=m9x_faa_raster_encode(&ri,&ro);if(ret)goto unlock;
+   /* Fresh FIRST already contains all four database bindings. Culling
+    * changes their live S26 instruction starts and EF, never its ranges
+    * or ENDs. Flat remains refused until its FS allocator is paired. */
+   if(secondary_bytes!=frame->secondary_bytes){ret=-EINVAL;goto unlock;}
+   memcpy(frame->primary,ro.primary,frame->primary_bytes);
+   memcpy(frame->secondary,ro.secondary,secondary_bytes);
+  }
   frame->final_point=previous+0x150;goto encoded;
  }
  ret=m9x_faa_color_attachment_clear_encode(&views,lower_32_bits(queue_start),0x3f800000,attach);if(ret)goto unlock;
