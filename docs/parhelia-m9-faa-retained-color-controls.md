@@ -65,6 +65,21 @@ validating the new depth allocation, identifying the auxiliary resource's
 ownership, and deriving both depth command paths from live descriptors. The
 source command count does not prove GPU retirement or depth pixels.
 
+An independent **initial**, not retained-repeat, original COLOR-reading
+four-vector control compares three and six vertices with the same two-real-
+output shader. The genuine CPU draw and normal Lock reach the same unread
+`0x190` query. Primary `[4880,8576)` is byte-identical; secondary `[0,2712)`
+differs only at padded input counts `644/1264/1824: 4→8`, inactive raster
+AC shadow `2224: 28268eb6→28268f16`, and raster record count
+`2708: 3→6`. Secondary `272=4`, `320=3`, `600/1236/1796/2680=3`, and
+`2232=4` stay fixed. Thus these unchanged values are stage topology or
+format controls in this source profile, not geometry counts. The AC change
+comes from `fbee8` shadow state and must not be guessed as an extent. This
+original two-output control does not make the experimental one-real-color
+four-vector native image byte-equivalent. The reproducible six-vertex source
+and three-refusal check are in `tools/m9emu/m9_faa_graph_two_output_continue.py`
+and `tests/m9-faa-gl-one-color-20261007/check-six.py`.
+
 An original one-COLOR public shader (`ps_2_0 dcl v0; mov oC0,v0`) compiles
 FS64 + fused VS232: a three-slot shader head followed by 25 position/clip
 slots and STOP. A controlled ADD-temporary/MUL-position version still uses
