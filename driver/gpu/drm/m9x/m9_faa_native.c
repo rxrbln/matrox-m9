@@ -232,8 +232,8 @@ struct m9_faa_depth_storage {
  struct m9_faa_owner owner[M9_FAA_DEPTH_OWNERS];
  struct m9x_faa_depth_views views;
  u32 generation;
- u64 previous_unlock_point;
- bool ready;
+ u64 previous_point;
+ bool first, ready;
 };
 static bool m9_faa_color_four_experimental;
 module_param_named(faa_color_four_experimental,m9_faa_color_four_experimental,bool,0600);
@@ -6584,8 +6584,8 @@ out:
  * There is deliberately no ioctl activation or clear packet here until the
  * bound-depth encoder qualifies its descriptors and mapping policy. */
 int m9x_faa_graph_bound_depth_prepare(struct m9x_device *mdev,
- struct m9_faa_graph_binding *binding,u32 generation,u64 previous_unlock_point,
- u32 color_policy)
+ struct m9_faa_graph_binding *binding,u32 generation,u64 previous_point,
+ u32 color_policy,bool first)
 {
 #ifdef M9_FAA_GRAPH_INIT_CONTROL
  static const struct m9_faa_owner_spec spec[M9_FAA_DEPTH_OWNERS]={
@@ -6603,12 +6603,13 @@ int m9x_faa_graph_bound_depth_prepare(struct m9x_device *mdev,
   * Ordinary SYSTEM policy A is intentionally not admitted for this role. */
  if(!binding||color_policy!=M9_FAA_DEPTH_COLOR_SYSTEM_B)return -EINVAL;
  n=kzalloc(sizeof(*n),GFP_KERNEL);if(!n)return -ENOMEM;
- n->generation=generation;n->previous_unlock_point=previous_unlock_point;
+ n->generation=generation;n->previous_point=previous_point;n->first=first;
  n->views.color_policy=color_policy;
  n->views.depth_aux_role=M9_FAA_DEPTH_HZ;n->views.aux_depth_role=M9_FAA_BOUND_DEPTH;
  for(i=0;i<M9_FAA_DEPTH_OWNERS;i++)n->views.owner[i]=m9x_faa_bound_depth_profile(i);
  mutex_lock(&t->lock);
- ret=m9x_faa_graph_color_unlocked_get_locked(mdev,generation,previous_unlock_point,&checked);
+ ret=first?m9x_faa_graph_retained_get_locked(mdev,generation,previous_point,&checked):
+  m9x_faa_graph_color_unlocked_get_locked(mdev,generation,previous_point,&checked);
  if(ret)goto unclaimed;
  r=t->faa;
  if(checked!=binding){ret=-ESTALE;goto unclaimed;}
@@ -6626,7 +6627,8 @@ int m9x_faa_graph_bound_depth_prepare(struct m9x_device *mdev,
  /* TTM allocation/reservation above is outside TRANSPORT and the six
   * borrowed BO reservations. Address publication is under TRANSPORT only. */
  mutex_lock(&t->lock);
- ret=m9x_faa_graph_color_unlocked_get_locked(mdev,generation,previous_unlock_point,&checked);
+ ret=first?m9x_faa_graph_retained_get_locked(mdev,generation,previous_point,&checked):
+  m9x_faa_graph_color_unlocked_get_locked(mdev,generation,previous_point,&checked);
  if(ret)goto retained;
  r=t->faa;
  if(checked!=binding||r->depth_storage!=n){ret=-ESTALE;goto retained;}
