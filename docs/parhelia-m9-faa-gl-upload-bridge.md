@@ -1,5 +1,17 @@
 # M9128 generalized GL FAA upload boundary
 
+## October 7 latest: live GL COLOR triangle now passes hardware
+
+The combined Mesa5c7fc89 output-arity fix and DRMfa9f2f6 raster/gather
+connection fix render the live GL triangle correctly:9,801 colored pixels,
+440 partial edges, zero checked interior/exterior/channel errors. Full
+Lock190/readback/Unlock1b0/release/file-close passes with an empty healthy
+queue. GPU observations confirm the caller color and GL half-depth transform.
+Application repeated draws and presentation are still being implemented;
+this is not a full glxgears/ioquake3 qualification.
+[Original image, inputs and hardware proof](../tests/m9-faa-live-color-20261007/README.md).
+The earlier black-image results below are retained as historical evidence.
+
 ## October 7 resumed: live COLOR hardware result
 
 FAA work resumed at the user's request, with parallel application, native and
