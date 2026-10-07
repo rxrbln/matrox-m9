@@ -5,8 +5,24 @@ SPDX-License-Identifier: GPL-2.0-only
 
 Nano is confirmed M9128 PCI `102b:0540` rev1, with1GiB installed VRAM.
 Ordinary textured rendering and the deployed driver are validated. FAA
-rendering is not yet validated. This note is separate from P690
+application rendering is not yet validated. This note is separate from P690
 `102b:2539` evidence.
+
+## 2026-10-07: first real private FAA pixels on M9128
+
+Kernel 4a9ecd6 and RE d3ec0974 now validate the *private diagnostic*
+320×240 FAA triangle through the actual source-returned F0210140/00010100
+normal Lock view. The exact prepared180 command stream retired on M9128
+102b:0540 rev01/subsystem22c0, and a guarded read of the same retained
+sampled-primary BO returned a formatted linear image. It contains 9,801
+covered pixels (9,361 full and 440 partial) within the expected triangle
+vertices x80..240/y60..180; conservative interior, exterior and channel
+checks have zero errors. The queue was empty and the GPU was not wedged
+immediately or two seconds later. [Screenshot and same-boot receipts](../tests/m9-faa-lock-view-hardware-20261007/README.md)
+include a checker, PNG, Lock-view bytes and separate raw tiled BAR bytes.
+This result supersedes the older no-pixel statements below for the private
+prepared180 path only. Mesa's application FAA graph is still uninitialized;
+textured, depth-tested app draws and final display publication remain open.
 
 Latest hardware checkpoint: kernel b011551 retires the second finite
 replacement-format barrier at250/raw251 on a fresh M9128 boot. All eight phases
