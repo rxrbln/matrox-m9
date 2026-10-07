@@ -1063,7 +1063,7 @@ int m9x_faa_graph_next_draw_ioctl(struct drm_device *drm, void *data,
 	mutex_lock(&state->lock);
 	graph = state->graph;
 	if (!m9_faa_graph_continuation_matches(graph, args->graph_id,
-			args->generation, args->unlock_point - 0xe0)) {
+			args->generation, graph ? graph->init_point : 0)) {
 		ret = -ENOENT;
 		goto out_state;
 	}

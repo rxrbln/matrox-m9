@@ -262,6 +262,12 @@ struct m9x_faa_replay {
 	u8 *next_lock_image;
 	bool graph_next_lock_claimed, graph_second_lock_retired, second_lock_view_seen;
 	bool graph_next_claimed;
+	/* Append-only producer cursors and the last actual Unlock frontier. */
+	u32 graph_secondary_cursor, graph_vertex_cursor, graph_repeat_draws;
+	u32 graph_unlock_end_bytes, graph_unlock_posts;
+	struct m9x_faa_graph_next_cursor next_cursor;
+	u32 next_posts_start;
+	u64 next_unlock_point;
 	bool graph_draw_payload_ready;
 	bool graph_draw_with_finish;
 	bool graph_draw_with_lock;
@@ -3104,6 +3110,9 @@ int m9x_faa_graph_draw_submit(struct m9x_device *mdev,
 		}
 		*point = stage_point;
 		r->graph_draw_point = *point;
+		r->graph_secondary_cursor = M9_FAA_DRAW_TAIL_SECONDARY_OFFSET +
+			M9_FAA_DRAW_TAIL_SECONDARY_BYTES;
+		r->graph_vertex_cursor = M9_FAA_NEXT_VERTEX_OFFSET;
 		dev_info(&mdev->pdev->dev,
 			 "M9 FAA returned DRAW finish retired: point=%#llx bytes=%u posts=%u; no Lock or pixels claimed\n",
 			 *point, r->graph_draw_end_bytes, r->graph_draw_posts);
@@ -3809,6 +3818,8 @@ int m9x_faa_graph_unlock_submit(struct m9x_device *mdev,
 	r->graph_draw_point = stage_point;
 	r->unlock_retired = true;
 	r->unlock_point = stage_point;
+	r->graph_unlock_end_bytes = r->graph_draw_end_bytes;
+	r->graph_unlock_posts = r->graph_draw_posts;
 	dev_info(&mdev->pdev->dev,
 		 "M9 FAA graph Unlock retired: lock=%#llx unlock=%#llx bytes=%u posts=%u copyback=F021->F022\n",
 		 lock_point, *point, r->graph_draw_end_bytes, r->graph_draw_posts);
@@ -3845,15 +3856,24 @@ static int m9_faa_graph_next_state(struct m9x_transport *t,
 		return -EIO;
 	if (!r || !r->graph_binding || !r->normal_lock_view_seen ||
 	    !r->unlock_started || !r->unlock_retired ||
-	    r->graph_next_claimed != claimed || (!!r->next_image != claimed) ||
+	    (r->graph_next_claimed && r->next_unlock_point == unlock_point) != claimed ||
+	    (claimed && !r->next_image) ||
 	    r->graph_generation != generation || t->generation != generation ||
 	    r->observation_generation != generation || !r->observation_retired ||
 	    !unlock_point || unlock_point != r->unlock_point ||
-	    unlock_point != r->observation_point + 0xe0 ||
-	    r->graph_draw_point != unlock_point || r->graph_draw_posts != 11 ||
-	    r->graph_draw_end_bytes != r->primary_bytes +
-		M9_FAA_DRAW_PRIMARY_SUFFIX_BYTES + M9_FAA_DRAW_TAIL_PRIMARY_BYTES +
-		M9_FAA_LOCK_PRIMARY_BYTES + M9_FAA_UNLOCK_PRIMARY_BYTES ||
+	    !r->graph_draw_payload_ready || r->public_vs_payload_ready ||
+	    !r->graph_draw_with_lock || !r->graph_draw_with_finish ||
+	    r->graph_draw_point != unlock_point ||
+	    r->graph_draw_posts !=	r->graph_unlock_posts ||
+	    r->graph_unlock_posts < 11 ||
+	    r->graph_draw_end_bytes !=	r->graph_unlock_end_bytes ||
+	    r->graph_secondary_cursor < M9_FAA_NEXT_SECONDARY_OFFSET ||
+	    r->graph_vertex_cursor < M9_FAA_NEXT_VERTEX_OFFSET ||
+	    (claimed && (r->next_unlock_point != unlock_point ||
+	      r->next_posts_start !=	r->graph_unlock_posts ||
+	      r->next_cursor.primary !=	r->graph_unlock_end_bytes ||
+	      r->next_cursor.secondary != r->graph_secondary_cursor ||
+	      r->next_cursor.vertices != r->graph_vertex_cursor)) ||
 	    (unlock_point & 15) || lower_32_bits(unlock_point) > U32_MAX - 0x60 ||
 	    t->submitted_point != unlock_point || t->completed_point != unlock_point ||
 	    t->next_fence != lower_32_bits(unlock_point) + 0x10)
@@ -3897,6 +3917,7 @@ int m9x_faa_graph_next_prepare(struct m9x_device *mdev,
 	struct m9x_faa_replay *r;
 	struct m9_faa_next_storage *storage;
 	struct m9x_faa_graph_next_image image;
+	struct m9x_faa_graph_next_cursor cursor;
 	struct m9x_faa_graph_draw_owner owner[M9_FAA_DRAW_SOURCE_OWNERS];
 	const struct firmware *fw;
 	u32 i;
@@ -3944,11 +3965,27 @@ int m9x_faa_graph_next_prepare(struct m9x_device *mdev,
 		.secondary = storage->secondary, .secondary_bytes = sizeof(storage->secondary),
 		.vertices = storage->vertices, .vertex_bytes = sizeof(storage->vertices),
 	};
-	ret = m9x_faa_graph_next_encode(fw->data, fw->size, owner,
-			r->graph_draw_end_bytes, unlock_point, vertices, &image);
+	cursor = (struct m9x_faa_graph_next_cursor) {
+		r->graph_draw_end_bytes, r->graph_secondary_cursor, r->graph_vertex_cursor,
+	};
+	ret = m9x_faa_graph_next_encode_at(fw->data, fw->size, owner,
+			&cursor, unlock_point, vertices, &image);
 	if (ret)
 		goto out_lock;
 	/* Claim only a fully encoded image; invalid inputs leave no half-state. */
+	/* The preceding cycle has actually Unlocked. Replace only CPU staging
+	 * snapshots after the new image has validated; no GPU owner or GEM lifetime
+	 * changes occur under transport.lock. */
+	kfree(r->next_image);
+	kfree(r->next_finish_image);
+	kfree(r->next_lock_image);
+	r->next_finish_image = NULL;
+	r->next_lock_image = NULL;
+	r->graph_next_finish_claimed = false;
+	r->graph_next_lock_claimed = false;
+	r->next_cursor = cursor;
+	r->next_posts_start = r->graph_draw_posts;
+	r->next_unlock_point = unlock_point;
 	r->graph_next_claimed = true;
 	r->next_image = storage;
 	storage = NULL;
@@ -3996,8 +4033,11 @@ int m9x_faa_graph_next_submit(struct m9x_device *mdev,
 	    primary->system_node.start != primary->base || old_bytes > primary->bytes ||
 	    primary->bytes - old_bytes < M9_FAA_NEXT_PRIMARY_BYTES ||
 	    !constants->cpu || !secondary->cpu ||
-	    constants->bytes < M9_FAA_NEXT_VERTEX_OFFSET + M9_FAA_NEXT_VERTEX_BYTES ||
-	    secondary->bytes < M9_FAA_NEXT_SECONDARY_OFFSET + M9_FAA_NEXT_SECONDARY_BYTES) {
+	    r->next_cursor.vertices > constants->bytes ||
+	    constants->bytes - r->next_cursor.vertices < M9_FAA_NEXT_VERTEX_STRIDE ||
+	    r->next_cursor.secondary > M9_FAA_NEXT_SECONDARY_GUARD - M9_FAA_NEXT_SECONDARY_BYTES ||
+	    r->next_cursor.secondary > secondary->bytes ||
+	    secondary->bytes - r->next_cursor.secondary < M9_FAA_NEXT_SECONDARY_BYTES + 4) {
 		ret = -ESTALE;
 		goto out;
 	}
@@ -4033,10 +4073,10 @@ int m9x_faa_graph_next_submit(struct m9x_device *mdev,
 				   &fence->base, DMA_RESV_USAGE_WRITE);
 	/* Source writes only the new vertex records and command tails. Neither
 	 * the earlier constants gap, old command prefix nor private pools change.
-	 * Its original1d0 wait is unposted; the independent finish posts once. */
-	memcpy((u8 *)constants->cpu + M9_FAA_NEXT_VERTEX_OFFSET,
+	 * The original DRAW wait is unposted; the independent finish posts once. */
+	memcpy((u8 *)constants->cpu + r->next_cursor.vertices,
 	       r->next_image->vertices, M9_FAA_NEXT_VERTEX_BYTES);
-	memcpy((u8 *)secondary->cpu + M9_FAA_NEXT_SECONDARY_OFFSET,
+	memcpy((u8 *)secondary->cpu + r->next_cursor.secondary,
 	       r->next_image->secondary, M9_FAA_NEXT_SECONDARY_BYTES);
 	memcpy((u8 *)primary->cpu + old_bytes,
 	       r->next_image->primary, M9_FAA_NEXT_PRIMARY_BYTES);
@@ -4051,9 +4091,14 @@ int m9x_faa_graph_next_submit(struct m9x_device *mdev,
 		ret = -EIO;
 	if (!ret) {
 		r->graph_draw_point = *point;
+		r->graph_secondary_cursor += M9_FAA_NEXT_SECONDARY_BYTES;
+		r->graph_vertex_cursor += M9_FAA_NEXT_VERTEX_STRIDE;
+		r->graph_repeat_draws++;
 		dev_info(&mdev->pdev->dev,
-			 "M9 FAA second draw prefix retired: unlock=%#llx prefix=%#llx bytes=%u posts=%u; original DRAW pending\n",
-			 unlock_point, *point, end, r->graph_draw_posts);
+			 "M9 FAA repeat draw prefix retired: unlock=%#llx prefix=%#llx bytes=%u posts=%u secondary=%u geometry=%u draw=%u; original DRAW pending\n",
+			 unlock_point, *point, end, r->graph_draw_posts,
+			 r->graph_secondary_cursor, r->graph_vertex_cursor,
+			 r->graph_repeat_draws);
 	}
 out:
 	if (fence && ret)
@@ -4088,6 +4133,7 @@ static int m9_faa_graph_next_finish_state(struct m9x_transport *t,
 	if (!r || !r->graph_binding || !r->normal_lock_view_seen ||
 	    !r->unlock_started || !r->unlock_retired ||
 	    !r->graph_next_claimed || !r->next_image ||
+	    r->graph_repeat_draws != 1 ||
 	    r->graph_next_finish_claimed != claimed || (!!r->next_finish_image != claimed) ||
 	    r->graph_generation != generation || t->generation != generation ||
 	    r->observation_generation != generation || !r->observation_retired ||
@@ -4302,6 +4348,7 @@ int m9x_faa_graph_next_finish_submit(struct m9x_device *mdev,
 		ret = -EIO;
 	if (!ret) {
 		r->graph_draw_point = *point;
+		r->graph_secondary_cursor += M9_FAA_NEXT_FINISH_SECONDARY_BYTES;
 		dev_info(&mdev->pdev->dev,
 			 "M9 FAA second returned DRAW finish retired: prefix=%#llx finish=%#llx bytes=%u posts=%u; second Lock pending\n",
 			 prefix_point, *point, r->graph_draw_end_bytes, r->graph_draw_posts);

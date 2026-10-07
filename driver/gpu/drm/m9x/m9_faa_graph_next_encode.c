@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0-only
 /* Copyright 2026 René Rebe <rene@exactco.de> */
-/* Source-qualified second red draw after the same graph's Unlock. The 692-B
+/* Source-qualified repeated red draw after the same graph's Unlock. The 692-B
  * source template contains opcodes and fixed state only; all address,
  * timeline and vertex input words are filled from live retained state. */
 #include <linux/errno.h>
@@ -23,7 +23,7 @@ struct next_fixup {
 	u32 addend, encoder;
 };
 
-/* Destinations are relative to secondary offset 1372. Every source is a
+/* Destinations are relative to the retained secondary cursor. Every source is a
  * retained live owner; the source index namespace remains the 31-owner
  * post-INIT/Unlock namespace. */
 static const struct next_fixup next_fixups[] = {
@@ -42,7 +42,7 @@ static const struct next_fixup next_fixups[] = {
 
 static const u16 next_tracker_offsets[] = { 16, 64, 620, 648, 664 };
 static const u16 next_direct_offsets[] = { 4, 8, 16, 20 };
-static const u16 next_direct_addends[] = { 1372, 1980, 1980, 2040 };
+static const u16 next_direct_addends[] = { 0, 608, 608, 668 };
 static const u8 next_direct_tags[] = { 1, 2, 1, 2 };
 
 static void next_put32(u8 *p, u32 word)
@@ -94,21 +94,26 @@ bool m9x_faa_graph_next_blob_valid(const u8 *blob, size_t bytes)
 	return !memcmp(digest, next_sha256, sizeof(digest));
 }
 
-int m9x_faa_graph_next_encode(const u8 *blob, size_t bytes,
+int m9x_faa_graph_next_encode_at(const u8 *blob, size_t bytes,
 	const struct m9x_faa_graph_draw_owner owner[M9_FAA_DRAW_SOURCE_OWNERS],
-	u32 live_primary_bytes, u64 unlock_point, const u32 vertices[15],
+	const struct m9x_faa_graph_next_cursor *cursor, u64 unlock_point,
+	const u32 vertices[15],
 	const struct m9x_faa_graph_next_image *image)
 {
 	u32 fixup_words[ARRAY_SIZE(next_fixups)];
 	u32 direct_words[ARRAY_SIZE(next_direct_offsets)];
 	u32 address, i;
 
-	if (!owner || !image || !vertices || !image->primary ||
+	if (!cursor || !owner || !image || !vertices || !image->primary ||
 	    !image->secondary || !image->vertices ||
 	    image->primary_bytes < M9_FAA_NEXT_PRIMARY_BYTES ||
 	    image->secondary_bytes < M9_FAA_NEXT_SECONDARY_BYTES ||
 	    image->vertex_bytes < M9_FAA_NEXT_VERTEX_BYTES ||
-	    live_primary_bytes < 8644 || (live_primary_bytes & 3) ||
+	    cursor->primary < 8644 || (cursor->primary & 3) ||
+	    cursor->secondary < M9_FAA_NEXT_SECONDARY_OFFSET ||
+	    (cursor->secondary & 3) ||
+	    cursor->secondary > M9_FAA_NEXT_SECONDARY_GUARD - M9_FAA_NEXT_SECONDARY_BYTES ||
+	    cursor->vertices < M9_FAA_NEXT_VERTEX_OFFSET || (cursor->vertices & 15) ||
 	    (u32)unlock_point < 0x190 ||
 	    (u32)unlock_point > U32_MAX - 0x60 ||
 	    (unlock_point & 15) || !next_vertices_valid(vertices) ||
@@ -116,12 +121,12 @@ int m9x_faa_graph_next_encode(const u8 *blob, size_t bytes,
 		return -EINVAL;
 	if (m9x_faa_graph_draw_owners_validate(owner))
 		return -ERANGE;
-	if (owner[27].bytes < live_primary_bytes ||
-	    owner[27].bytes - live_primary_bytes < M9_FAA_NEXT_PRIMARY_BYTES ||
-	    owner[29].bytes < M9_FAA_NEXT_SECONDARY_OFFSET +
-		M9_FAA_NEXT_SECONDARY_BYTES ||
-	    owner[28].bytes < M9_FAA_NEXT_VERTEX_OFFSET +
-		M9_FAA_NEXT_VERTEX_BYTES)
+	if (owner[27].bytes < cursor->primary ||
+	    owner[27].bytes - cursor->primary < M9_FAA_NEXT_PRIMARY_BYTES ||
+	    cursor->secondary > owner[29].bytes ||
+	    owner[29].bytes - cursor->secondary < M9_FAA_NEXT_SECONDARY_BYTES + 4 ||
+	    cursor->vertices > owner[28].bytes ||
+	    owner[28].bytes - cursor->vertices < M9_FAA_NEXT_VERTEX_STRIDE)
 		return -ERANGE;
 	/* No destination can corrupt the authenticated template, live input,
 	 * or another destination. All refusals leave every output untouched. */
@@ -148,8 +153,10 @@ int m9x_faa_graph_next_encode(const u8 *blob, size_t bytes,
 		const struct next_fixup *f = &next_fixups[i];
 		const struct m9x_faa_graph_draw_owner *src = &owner[f->src];
 
-		if (f->addend > src->bytes || src->bytes - f->addend < 4 ||
-		    check_add_overflow(src->base, f->addend, &address) ||
+		u32 addend = f->dst == 288 ? cursor->vertices : f->addend;
+
+		if (addend > src->bytes || src->bytes - addend < 4 ||
+		    check_add_overflow(src->base, addend, &address) ||
 		    (address & 3))
 			return -ERANGE;
 		switch (f->encoder) {
@@ -169,7 +176,7 @@ int m9x_faa_graph_next_encode(const u8 *blob, size_t bytes,
 		}
 	}
 	for (i = 0; i < ARRAY_SIZE(next_direct_offsets); i++) {
-		u32 addend = next_direct_addends[i];
+		u32 addend = cursor->secondary + next_direct_addends[i];
 
 		if (addend > owner[29].bytes ||
 		    owner[29].bytes - addend < 4 ||
@@ -193,4 +200,17 @@ int m9x_faa_graph_next_encode(const u8 *blob, size_t bytes,
 	for (i = 0; i < 15; i++)
 		next_put32(image->vertices + 4 * i, vertices[i]);
 	return 0;
+}
+
+/* Preserve the original bounded second-frame encoder API for source tests. */
+int m9x_faa_graph_next_encode(const u8 *blob, size_t bytes,
+ const struct m9x_faa_graph_draw_owner owner[M9_FAA_DRAW_SOURCE_OWNERS],
+ u32 live_primary_bytes, u64 unlock_point, const u32 vertices[15],
+ const struct m9x_faa_graph_next_image *image)
+{
+ const struct m9x_faa_graph_next_cursor cursor = {
+  live_primary_bytes, M9_FAA_NEXT_SECONDARY_OFFSET, M9_FAA_NEXT_VERTEX_OFFSET,
+ };
+ return m9x_faa_graph_next_encode_at(blob, bytes, owner, &cursor,
+                                    unlock_point, vertices, image);
 }

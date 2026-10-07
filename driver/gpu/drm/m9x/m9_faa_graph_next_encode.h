@@ -11,6 +11,12 @@
 #define M9_FAA_NEXT_SECONDARY_OFFSET 1372u
 #define M9_FAA_NEXT_VERTEX_OFFSET 464u
 #define M9_FAA_NEXT_BLOB_BYTES 692u
+#define M9_FAA_NEXT_VERTEX_STRIDE 80u
+#define M9_FAA_NEXT_SECONDARY_GUARD 0x3fe00u
+
+struct m9x_faa_graph_next_cursor {
+	u32 primary, secondary, vertices;
+};
 
 struct m9x_faa_graph_next_image {
 	u8 *primary, *secondary, *vertices;
@@ -19,12 +25,19 @@ struct m9x_faa_graph_next_image {
 
 bool m9x_faa_graph_next_blob_valid(const u8 *blob, size_t bytes);
 
-/* Source-only bounded second DRAW after the same graph's retired Unlock.
+/* Source-only bounded repeated DRAW after the same graph's retired Unlock.
  * Every address and timeline field is generated from retained live owners.
  * The caller owns the graph, live cursor, fence, publication and wait. */
 int m9x_faa_graph_next_encode(const u8 *blob, size_t bytes,
 	const struct m9x_faa_graph_draw_owner owner[M9_FAA_DRAW_SOURCE_OWNERS],
 	u32 live_primary_bytes, u64 unlock_point, const u32 vertices[15],
 	const struct m9x_faa_graph_next_image *image);
+
+/* No-wrap continuation: cursors are retained producer state, never caller
+ * offsets. The source rotation callback is a separate unqualified path. */
+int m9x_faa_graph_next_encode_at(const u8 *blob, size_t bytes,
+	const struct m9x_faa_graph_draw_owner owner[M9_FAA_DRAW_SOURCE_OWNERS],
+	const struct m9x_faa_graph_next_cursor *cursor, u64 unlock_point,
+	const u32 vertices[15], const struct m9x_faa_graph_next_image *image);
 
 #endif

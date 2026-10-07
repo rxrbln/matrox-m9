@@ -394,11 +394,12 @@ struct drm_parhelia_m9_faa_graph_unlock {
 	DRM_IOWR(DRM_COMMAND_BASE + DRM_PARHELIA_M9_FAA_GRAPH_UNLOCK, \
 		struct drm_parhelia_m9_faa_graph_unlock)
 
-/* Private second same-graph triangle preprocessing after normal Unlock.
+/* Private repeated same-graph triangle preprocessing after normal Unlock.
  * Vertices are three live XYZRHW + packed diffuse records (five u32 each);
  * coordinates are float32 bits. The retained red fragment shader is unchanged.
  * State7 proves preprocessing/independent finish only, not returned draw or
- * second-frame pixels. flags, outputs and padding must be zero on input. */
+ * subsequent-frame pixels. Cursors are kernel-retained and never wrap;
+ * flags, outputs and padding must be zero on input. */
 struct drm_parhelia_m9_faa_graph_next_draw {
 	__u64 graph_id;
 	__u64 unlock_point;
