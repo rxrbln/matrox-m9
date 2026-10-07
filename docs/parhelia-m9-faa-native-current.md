@@ -3,6 +3,22 @@
 Copyright 2026 René Rebe <rene@exactco.de>
 SPDX-License-Identifier: GPL-2.0-only
 
+## October 8: repaired flat/CW multi-draw FAA passes hardware
+
+The34-owner correction now passes the exact three-draw test that previously
+lost the machine: INITb0 →Lock340/read/Unlock360, all14/17 ENDs retired,
+generation0/queue0/wedged0 through cleanup. Independent pixels pass23,492
+interiors,7,697 depth-overlap checks,zero errors and777 partial-coverage
+pixels. [Hardware receipts and actual image](../tests/m9-faa-first-batch-hardware-20261008/ownerfix-pass/README.md).
+Frozen5dcaa82 contains the owner fix and WC barrier; canonical equivalents
+are6170da1 and2717bf4. The preceding failure was a reproduced kernel stack
+overwrite before batch submission. Its test stub had hidden the capacity
+mismatch; the test now calls the actual production fill.
+
+This is one same-program flat/CW frame, not continuous glxgears. Mixed shader
+native/Mesa code is integrated but awaits hardware. Initialized later-frame
+integration and observed-retirement command-pool rotation remain active.
+
 ## October 8: batch failure traced to CPU stack overwrite
 
 A zero-delay phase trace with the WC-publication fix reaches INITb0 and
