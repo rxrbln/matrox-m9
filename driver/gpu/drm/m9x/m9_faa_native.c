@@ -2012,6 +2012,54 @@ exit:
 	return ret;
 }
 
+/* The ioctl already owns the caller's pin and reservation before entering
+ * transport.lock. Admit only this private profile's immutable borrowed
+ * primary after its final actual write wait, never another caller's BO. */
+int m9x_faa_lock_view_admit_locked(struct m9x_device *mdev,
+			struct drm_gem_vram_object *color, u32 base, u64 bytes)
+{
+	struct m9x_transport *t = &mdev->transport;
+
+#if defined(M9_FAA_PREPARED_FLOW_CONTROL) && defined(M9_FAA_NORMAL_LOCK_CPU_VIEW)
+	struct m9x_faa_replay *r = t->faa;
+	const struct m9_faa_owner_spec *spec = &m9_faa_owner_specs[M9_FAA_COLOR_OWNER];
+	s64 offset;
+	u64 physical;
+
+	lockdep_assert_held(&t->lock);
+	/* This marker follows a complete same-run normal-Lock mapper/owner
+	 * join. Earlier prepared prefixes are not that contract. */
+	if (M9_FAA_TRACKER_LAST != 0x180 || M9_FAA_NORMAL_LOCK_CPU_VIEW != 1 ||
+	    !m9_faa_diag || m9x_local_gpu_base || !color || bytes != 0x50000 ||
+	    !spec->local || spec->system || spec->bytes != bytes)
+		return -EOPNOTSUPP;
+	if (t->async_stop)
+		return -ENODEV;
+	if (t->wedged)
+		return -EIO;
+	if (!r || !r->attempted || !r->observation_retired ||
+	    !r->observation_point || r->observation_generation != t->generation ||
+	    r->observation_point > t->completed_point || t->async_pending ||
+	    t->queue_count || r->retained_color != color)
+		return -ENODATA;
+	offset = drm_gem_vram_offset(color);
+	if (offset < 0 ||
+	    check_add_overflow(M9_VRAM_GPU_BASE, (u64)offset, &physical) ||
+	    physical != base || !IS_ALIGNED(base, PAGE_SIZE) ||
+	    bytes > (u64)U32_MAX + 1 - base || color->bo.base.size != bytes ||
+	    r->borrowed_color_bytes != bytes ||
+	    r->owner[M9_FAA_COLOR_OWNER].base != base)
+		return -ESTALE;
+	return 0;
+#else
+	lockdep_assert_held(&t->lock);
+	(void)color;
+	(void)base;
+	(void)bytes;
+	return -EOPNOTSUPP;
+#endif
+}
+
 /* Explicit internal ac1f0 output contract, below unjoined public Lock
  * admission. This never reinterprets the sampled F022 host-aperture view.
  * The actual kind6 flags30 system owner is read through its retained DMA

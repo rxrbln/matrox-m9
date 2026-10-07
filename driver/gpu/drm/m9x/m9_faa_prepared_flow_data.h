@@ -17,6 +17,9 @@
 #define M9_FAA_HAS_OUTPUT 0
 #define M9_FAA_PHASE_INIT_ONLY 0
 #define M9_FAA_PREPARED_FLOW_CONTROL 1
+/* Same-run returned normal Lock: kind0 CPU view f0210140/10100,
+ * borrowed primary offset0, pitch1280, 320x240 after original180 wait. */
+#define M9_FAA_NORMAL_LOCK_CPU_VIEW 1
 #define M9_FAA_STARTUP_LOCAL_OWNER 30u
 #define M9_FAA_STARTUP_LOCAL_BYTES 0x80000u
 #define M9_FAA_PROGRAM_ENTRY_MASK 0x3u

@@ -15,6 +15,7 @@
 #include <drm/drm_gem_vram_helper.h>
 
 #include "m9_drv.h"
+#include "m9_reg.h"
 
 #define M9_SURFACE_MAX_SPAN	2048u
 #define M9_SURFACE_FAMILY	0xcc210000u
@@ -27,6 +28,7 @@
 
 struct m9_surface_view {
 	bool captured_cpu_view;
+	bool lock_cpu_view;
 	u32 span;
 	u32 height;
 	u32 cpp;
@@ -137,6 +139,7 @@ static int m9_surface_check(const struct drm_parhelia_m9_surface_access *args,
 	u64 need;
 
 	view->captured_cpu_view = false;
+	view->lock_cpu_view = false;
 
 	if ((args->flags & ~PARHELIA_M9_ACCESS_TEXTURE) ||
 	    (!texture && args->offset) ||
@@ -216,6 +219,16 @@ static int m9_surface_check(const struct drm_parhelia_m9_surface_access *args,
 			d0 == 0xf0220140 && d1 == 0x00010100 &&
 			args->surface_width == 320 && args->width == 320 &&
 			args->height == 240 && !args->x && !args->y;
+		/* Actual returned normal-Lock view is ordinary kind21 even
+		 * though its retained backing is the sampled primary. Only a
+		 * read of the retired, source-qualified borrowed owner may use it. */
+		view->lock_cpu_view = m9x_faa_diag_enabled() &&
+			d0 == 0xf0210140 && d1 == 0x00010100 &&
+			args->op == PARHELIA_M9_ACCESS_READ &&
+			args->surface_width == 320 && args->width == 320 &&
+			args->height == 240 && !args->x && !args->y &&
+			args->data_stride == 1280;
+		view->captured_cpu_view |= view->lock_cpu_view;
 
 		if ((!faa_probe && !view->captured_cpu_view &&
 		     (d0 & ~M9_SURFACE_CODE_MASK & 0xffff0000) !=
@@ -311,7 +324,7 @@ static int m9_surface_access(struct m9x_device *mdev, struct drm_file *file,
 		ret = -EINVAL;
 		goto out_put;
 	}
-	if (view.captured_cpu_view) {
+	if (view.captured_cpu_view && !view.lock_cpu_view) {
 		/* The tagged vendor host map needs the compact identity manager.
 		 * Prepare and activate it before reserving the caller's color BO;
 		 * CPU mapping may precede the first diagnostic submission. */
@@ -345,13 +358,22 @@ static int m9_surface_access(struct m9x_device *mdev, struct drm_file *file,
 		goto out_unreserve;
 	}
 	mutex_lock(&mdev->transport.lock);
-	m9x_transport_drain_locked(mdev);
+	if (!view.lock_cpu_view)
+		m9x_transport_drain_locked(mdev);
 	if (mdev->transport.wedged) {
 		ret = -EIO;
 	} else {
 		u32 surface = lower_32_bits(offset + args->offset);
 
 		if (view.captured_cpu_view) {
+			if (view.lock_cpu_view) {
+				ret = m9x_faa_lock_view_admit_locked(mdev, vram,
+							 surface, view.bytes);
+				if (ret)
+					goto out_transport;
+				/* Actual 2cba8 after the original write wait. */
+				m9x_write(mdev, M9_REG_FRONTEND_KICK, 1);
+			}
 			/* The owned new color range needs its secondary mapping
 			 * before the full identity contract can be checked. */
 			ret = m9x_address_cpu_local_prepare(mdev, surface, view.bytes);
