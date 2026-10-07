@@ -3221,21 +3221,38 @@ int m9x_faa_lock_view_admit_locked(struct m9x_device *mdev,
 	if (t->wedged)
 		return -EIO;
 	if (!r || !r->graph_binding || !r->observation_retired ||
-	    !r->graph_draw_with_lock || !r->graph_draw_with_finish || r->unlock_started ||
+	    !r->graph_draw_with_lock || !r->graph_draw_with_finish ||
 	    r->graph_generation != t->generation ||
 	    r->observation_generation != t->generation ||
 	    !r->observation_point ||
-	    r->graph_draw_point != r->observation_point + 0xc0 ||
-	    r->graph_draw_posts != 8 ||
-	    r->graph_draw_end_bytes != r->primary_bytes +
-		M9_FAA_DRAW_PRIMARY_SUFFIX_BYTES + M9_FAA_DRAW_TAIL_PRIMARY_BYTES +
-		M9_FAA_LOCK_PRIMARY_BYTES ||
 	    t->completed_point != r->graph_draw_point ||
 	    t->submitted_point != r->graph_draw_point ||
 	    t->next_fence != lower_32_bits(r->graph_draw_point) + 0x10 ||
 	    t->async_pending || t->queue_count || !t->transport_armed ||
 	    !t->bus_master_enabled || !t->faa_source_context || !t->faa_virtual_primary)
 		return -ENODATA;
+	/* The second normal Lock uses the exact same source mapper/format but
+	 * has its own actual retirement marker and full retained cursor join.
+	 * Unlock/preprocessing/rendering receipts alone never admit F021. */
+	if (r->unlock_started) {
+		if (!r->unlock_retired || !r->normal_lock_view_seen ||
+		    !r->graph_second_lock_retired ||
+		    r->graph_draw_point != r->observation_point + 0x190 ||
+		    r->graph_draw_posts != 17 ||
+		    r->graph_draw_end_bytes != r->primary_bytes +
+			M9_FAA_DRAW_PRIMARY_SUFFIX_BYTES + M9_FAA_DRAW_TAIL_PRIMARY_BYTES +
+			2 * M9_FAA_LOCK_PRIMARY_BYTES + M9_FAA_UNLOCK_PRIMARY_BYTES +
+			M9_FAA_NEXT_PRIMARY_BYTES + M9_FAA_NEXT_FINISH_PRIMARY_BYTES)
+			return -ENODATA;
+	} else if (r->graph_second_lock_retired ||
+		   r->graph_draw_point != r->observation_point + 0xc0 ||
+		   r->graph_draw_posts != 8 ||
+		   r->graph_draw_end_bytes != r->primary_bytes +
+			M9_FAA_DRAW_PRIMARY_SUFFIX_BYTES + M9_FAA_DRAW_TAIL_PRIMARY_BYTES +
+			M9_FAA_LOCK_PRIMARY_BYTES) {
+		return -ENODATA;
+	}
+
 	if (m9x_faa_graph_binding_owner(r->graph_binding, PARHELIA_M9_FAA_PRIMARY) !=
 	    &color->bo.base ||
 	    !m9x_faa_graph_binding_address(r->graph_binding, PARHELIA_M9_FAA_PRIMARY,
@@ -3311,8 +3328,12 @@ int m9x_faa_lock_view_observed_locked(struct m9x_device *mdev,
 		return -ENODATA;
 	ret = m9x_faa_lock_view_admit_locked(mdev, color,
 			r->owner[1].base, r->owner[1].bytes);
-	if (!ret)
-		r->normal_lock_view_seen = true;
+	if (!ret) {
+		if (r->graph_second_lock_retired)
+			r->second_lock_view_seen = true;
+		else
+			r->normal_lock_view_seen = true;
+	}
 	return ret;
 #elif defined(M9_FAA_UNLOCK_PUBLICATION_CONTROL)
 	if (!r || !r->observation_retired ||
