@@ -1681,17 +1681,27 @@ build_alu(struct ctx *c, nir_alu_instr *alu)
          break;
       }
       case nir_op_bcsel:
-      case nir_op_fcsel: {
+      case nir_op_fcsel:
+      case nir_op_fcsel_gt:
+      case nir_op_fcsel_ge: {
          const struct held *sel[3][2];
+         const bool fused = alu->op == nir_op_fcsel_gt ||
+                            alu->op == nir_op_fcsel_ge;
+         const unsigned cls = alu->op == nir_op_fcsel_gt ? 3 :
+                              alu->op == nir_op_fcsel_ge ? 1 : 4;
 
          a0 = src_held(alu, 0, c0); a1 = src_held(alu, 0, c1);
          b0 = src_held(alu, 1, c0); b1 = src_held(alu, 1, c1);
          x0 = src_held(alu, 2, c0); x1 = src_held(alu, 2, c1);
-         /* Class 4 picks the second operand where the condition is zero. */
+         /* The shared select compares its first source against zero.
+          * Fused > and >= use classes 3 and 1 directly; Boolean/nonzero
+          * selects use class 4 with reversed branches. */
          sel[0][0] = &a0; sel[0][1] = &a1;
-         sel[1][0] = &x0; sel[1][1] = &x1;
-         sel[2][0] = &b0; sel[2][1] = &b1;
-         if (!emit_sel(c, dst, 4, sel))
+         sel[1][0] = fused ? &b0 : &x0;
+         sel[1][1] = fused ? &b1 : &x1;
+         sel[2][0] = fused ? &x0 : &b0;
+         sel[2][1] = fused ? &x1 : &b1;
+         if (!emit_sel(c, dst, cls, sel))
             return false;
          break;
       }
