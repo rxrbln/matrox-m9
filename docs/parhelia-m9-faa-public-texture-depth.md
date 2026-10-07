@@ -79,18 +79,56 @@ and the recorded `pci-inventory/inventory.json`, `pci-resources.txt`, and
 input hashes and the vendor image hash. Captured handles and GPU addresses
 identify the original owners for source checking; they are not native values.
 
-This does not yet justify lowering Mesa's live fragment shader into that
-336-byte program. `m9_faa_lower_compiled04` only translates a genuine vendor
-compiler word into AE/EF/F0 edits; Mesa does not produce that vendor word or
-the four-entry program from its current Gallium shader, texture, and depth
-state. The exact next source experiment is a paired original M9128 capture
-holding the public XYZ/RHW/UV triangle and depth profile fixed while varying
-one texture image/sampler field and then ZFUNC/ZWRITE independently. Observe
-the compiler's source fields, all CPU-written program bytes and entry routes,
-kind13/14/17/18/19/1a operands, and the merged raster shadows for each case.
-That will distinguish input-derived instruction and constant fields from
-allocation addresses. A native producer then needs two distinct retained
-placements and relevant alignment changes before any application FAA submit.
+## Controlled public-state differentials
+
+The original M9128 emulator repeated the combined request with only one
+public state value changed per run. All five runs use the same genuine normal
+sampled primary, allocated 64x64 profile12 texture, 320x240 profile49 depth
+target, three XYZ/RHW/UV vertices, source input hashes, and four launcher
+routes. Each CPU draw returned successfully; no GPU execution or completion
+was supplied.
+
+| Public state change | Compiler `+04` | Program bytes | Program result | Final EF |
+| --- | --- | --- | --- | --- |
+| COLOROP4 (MODULATE), ZENABLE1, ZFUNC4, ZWRITE1 | `62ae1` | 336 | baseline | `d8004055` |
+| COLOROP7 (ADD) only | `62ae1` | 336 | FS slots2 and4 change, 11 bytes total | `d8004055` |
+| ZFUNC8 (ALWAYS) only | `62ae1` | 336 | byte-identical | `d8004055` |
+| ZWRITE0 only | `62ae1` | 336 | byte-identical | `d8004055` |
+| ZENABLE0, depth still bound | `62af9` | 328 | byte-identical to texture-only | `f8004055` |
+
+Every case retains entry offsets `48,104,144,0`. COLOROP4→7 changes only
+the public stage0 state1 payload and the CPU-written program, with SHA256
+`848a74cc622014616e36671b08874cc9abcf9a83656a80cc208a7207a7cf0b8d`
+for the ADD program. It changes no triangle command-list write. ZFUNC4→8
+and ZWRITE1→0 each change only the public RENDERSTATE8 payload and one
+source command-list write at original PC `fbe8c`, respectively
+`38038f→38039f` and `38038f→38038d`. ZENABLE1→0 changes seven source
+command-list writes and selects the texture-only program and compiled word
+even though the depth resource remains bound. These are CPU source outputs,
+not decoded depth pixels or a general depth control formula.
+
+Reproduce the five raw captures with `tools/m9-vendor-faa-texture-depth.py
+--case texture-depth` and, for the four controls, `--color-op 7`, `--zfunc 8`,
+`--zwrite 0`, or `--zenable 0`; use the same runtime, bootstrap, PCI and DC
+inputs above. `tools/m9-vendor-faa-variant-diff-compact.py` extracts the
+source-bearing differential into
+`docs/traces/m9-vendor-faa-variant-diff-20261007.json`. Run
+`tools/check-m9-faa-variant-diff.py` against that trace and the five-case
+trace to check packet deltas, returned handles, compiler words, source-owned
+program bytes/PTE joins, entry routes and command-write deltas.
+
+This still does not justify lowering Mesa's live fragment shader into a
+vendor program. `m9_faa_lower_compiled04` translates a genuine vendor compiler
+word into AE/EF/F0 edits; Mesa has no source-proven map from its Gallium/NIR
+shader and texture state to the vendor word or the instructions in FS slots2
+and4. In particular, the COLOROP differential proves those bytes depend on
+the public operation but does not decode the instruction fields, and the
+depth controls have a separate command-word producer. The next source
+experiment must pin the original M9128 compiler input structure and instruction
+encoder for these two slots with independent COLOROP/COLORARG controls, then
+join that encoding to Mesa's live FS operations. Before any application FAA
+submit, a native producer also needs two distinct retained placements and
+relevant alignment changes for the entire program and command flow.
 
 Texture contents and depth storage are not populated by a simulated GPU.
 This proves CPU admission and program/state production, not rendering or
