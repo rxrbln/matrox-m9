@@ -3,6 +3,19 @@
 
 # M9 open topics and evidence, 2026-10-06
 
+## October 7: live FAA triangle and complete single-draw cycle
+
+Current M9128 hardware proof passes INIT b0 → public VS HEAD c0 → complete
+DRAW 160 → normal Lock 190 → live cyan readback → Unlock 1b0 → token
+release → file close, helper exit 0. Independent live-input pixel checks
+find 9,801 colored pixels, 440 partial edge pixels and zero interior,
+exterior or channel errors. The queue remains healthy after Unlock and
+release. Native source d495803 includes authenticated public-VS Unlock;
+the existing encoder remains unchanged. This supersedes earlier statements
+below that no FAA fragments have rendered. It proves one live shader
+triangle, not glxgears, continuous frames or general application FAA.
+[Complete cycle and original hardware capsule](../tests/m9-faa-public-vs-unlock-20261007/README.md).
+
 ## October 7: complete FAA DRAW retirement and current parallel source
 
 The latest M9128 graph path physically retires INITb0, preprocessing110,
