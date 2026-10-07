@@ -300,6 +300,15 @@ int m9_vs_stream_index(const struct m9_vs_program *program, unsigned location,
 bool m9_vs_compile(struct nir_shader *nir,
                    const struct m9_vs_outputs *outputs,
                    struct m9_vs_program *program, const char **reason);
+/* Compile normally, then try coefficient vectorization on a clone only if
+ * the result exceeds max_const_pairs while fitting max_slots. An unsuccessful
+ * retry preserves the original program for the caller's ordinary admission
+ * checks. No NIR or resource pointer is retained by a compiled program. */
+bool m9_vs_compile_bounded(struct nir_shader *nir,
+                           const struct m9_vs_outputs *outputs,
+                           struct m9_vs_program *program, const char **reason,
+                           unsigned max_slots, unsigned max_const_pairs);
+
 void m9_vs_program_fini(struct m9_vs_program *program);
 
 /* The vertex element feeding attribute i.  The state tracker compacts the

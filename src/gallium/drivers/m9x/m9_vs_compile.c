@@ -2815,6 +2815,51 @@ m9_vs_compile(struct nir_shader *nir, const struct m9_vs_outputs *outputs,
    return ok;
 }
 
+/* The ordinary source can keep independent scalar coefficient chains even
+ * when NIR has paired outputs. Vectorizing those chains trades some slots
+ * for fewer typed constant pairs. Retry only a constant-span refusal, on a
+ * clone: admitted programs and unsuccessful trials keep their exact image. */
+static bool
+program_slots_fit(const struct m9_vs_program *p, unsigned max_slots)
+{
+   return m9_vs_slot_count(p) <= max_slots &&
+          (!m9_vs_producer_slot_count(p) ||
+           m9_vs_producer_slot_count(p) + M9_VS_TAIL_SLOTS <= max_slots) &&
+          m9_vs_extra_slot_count(p) <= max_slots;
+}
+
+bool
+m9_vs_compile_bounded(struct nir_shader *nir,
+                      const struct m9_vs_outputs *outputs,
+                      struct m9_vs_program *p, const char **reason,
+                      unsigned max_slots, unsigned max_const_pairs)
+{
+   nir_shader *trial_nir;
+   struct m9_vs_program trial;
+
+   if (!m9_vs_compile(nir, outputs, p, reason))
+      return false;
+   if (m9_vs_const_count(p) <= max_const_pairs ||
+       !program_slots_fit(p, max_slots))
+      return true;
+   trial_nir = nir_shader_clone(NULL, nir);
+   if (!trial_nir)
+      return true;
+   bool progress = false;
+   NIR_PASS(progress, trial_nir, nir_opt_vectorize, NULL, NULL);
+   if (progress && m9_vs_compile(trial_nir, outputs, &trial, NULL)) {
+      if (program_slots_fit(&trial, max_slots) &&
+          m9_vs_const_count(&trial) <= max_const_pairs) {
+         m9_vs_program_fini(p);
+         *p = trial;
+      } else {
+         m9_vs_program_fini(&trial);
+      }
+   }
+   ralloc_free(trial_nir);
+   return true;
+}
+
 void
 m9_vs_program_fini(struct m9_vs_program *p)
 {
