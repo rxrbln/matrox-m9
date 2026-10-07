@@ -3,6 +3,24 @@
 
 # M9 open topics and evidence, 2026-10-06
 
+## October 8: mixed flat/smooth FAA now passes hardware
+
+The next single hardware run passes flat368 →smooth400 →flat368 with the
+native deduplicated instruction page: INITb0/Lock340/F021/Unlock360, healthy
+delayed and cleanup snapshots. The independent pixel oracle passes23,492
+interiors,7,697 overlaps,zero errors and777 partial pixels; the raw image is
+identical to the previous all-flat pass. [Exact mixed-program evidence](../tests/m9-faa-first-batch-hardware-20261008/mixed-pass/README.md).
+These constant-color inputs do not qualify varying-color interpolation.
+
+Mesa36d9fc8 now tracks authenticated initialized-depth state and explicit
+FRAME_INITIALIZEDbit2, preserving flags0's old +1a0 contract. Its full20-object
+build and client checks pass. Pool primary/secondary managers share one
+actual-completion timeline (DRMb4b6df0/e321d0e); native allocation/publication
+hooks remain under implementation. The80-byte BATCH ABI now names a separate
+maintenance_point output (db01829), so real pool maintenance cannot silently
+rewrite the previous application Unlock history. No repeated-frame/glxgears
+hardware pass yet.
+
 ## October 8: repaired flat/CW multi-draw FAA passes hardware
 
 The34-owner correction now passes the exact three-draw test that previously
