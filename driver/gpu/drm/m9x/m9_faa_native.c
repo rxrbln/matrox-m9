@@ -56,6 +56,7 @@ struct m9_faa_clear_segment {
      defined(M9_FAA_PRECLEAR_OUTPUT_CONTROL) + \
      defined(M9_FAA_PRECLEAR_OUTPUT_WRITE_CONTROL) + \
      defined(M9_FAA_PRECLEAR_INPLACE_OUTPUT_CONTROL) + \
+     defined(M9_FAA_PRECLEAR_INPLACE_COPY_CONTROL) + \
      defined(M9_FAA_POST_TRIANGLE_CONTROL)) > 1
 #error "Select only one complete private FAA source profile"
 #endif
@@ -100,6 +101,11 @@ struct m9_faa_clear_segment {
  * original format-transition wait and rectangle launch remain pending. */
 #include "m9_faa_preclear_inplace_output_data.h"
 #define M9_FAA_INPUT_FIRMWARE "m9x/faa-preclear-inplace-output-known-inputs.bin"
+#elif defined(M9_FAA_PRECLEAR_INPLACE_COPY_CONTROL)
+/* Original sampled resolve has emitted its rectangle and CPU access
+ * preparation, then stopped at a new wait. No CPU pixels are supplied. */
+#include "m9_faa_preclear_inplace_copy_data.h"
+#define M9_FAA_INPUT_FIRMWARE "m9x/faa-preclear-inplace-copy-known-inputs.bin"
 #elif defined(M9_FAA_CONSTANT_RED_CONTROL)
 /* A distinct whole public source capture changes c0 through SETCONST.
  * Never patch captured green command or program bytes in place. */
@@ -125,6 +131,13 @@ struct m9_faa_clear_segment {
 #endif
 #ifndef M9_FAA_COUNTER_VIRTUAL
 #define M9_FAA_COUNTER_VIRTUAL 0
+#endif
+#if defined(M9_FAA_PRECLEAR_OUTPUT_WRITE_CONTROL) || \
+    defined(M9_FAA_PRECLEAR_INPLACE_OUTPUT_CONTROL) || \
+    defined(M9_FAA_PRECLEAR_INPLACE_COPY_CONTROL)
+/* All three profiles retain the same original public draw and C2 access
+ * before the later output-allocation branch diverges. */
+#define M9_FAA_PROGRAM_ACCESS_CONTROL 1
 #endif
 
 struct m9_faa_owner {
@@ -175,7 +188,8 @@ module_param(m9_faa_program_access_kick, bool, 0400);
 MODULE_PARM_DESC(m9_faa_program_access_kick,
 	"Preserve the private C2 CPU-access frontend kick after actual c0 retirement");
 #if defined(M9_FAA_PRECLEAR_OUTPUT_WRITE_CONTROL) || \
-    defined(M9_FAA_PRECLEAR_INPLACE_OUTPUT_CONTROL)
+    defined(M9_FAA_PRECLEAR_INPLACE_OUTPUT_CONTROL) || \
+    defined(M9_FAA_PRECLEAR_INPLACE_COPY_CONTROL)
 /* Same-module hardware control: collapsing these waits leaves main/AA
  * stores untouched; preserving them produces GPU state. Resolve is still
  * unqualified. Keep the opt-out for this bounded ordering control. */
@@ -741,11 +755,19 @@ int m9x_faa_prepare_diag(struct m9x_device *mdev)
 
 	if (!m9_faa_diag || mdev->pdev->device != 0x0540)
 		return -EACCES;
-	if (m9_faa_defer_output_map || m9_faa_program_access_kick) {
+	if (m9_faa_defer_output_map) {
 #ifndef M9_FAA_PRECLEAR_OUTPUT_WRITE_CONTROL
 		return -EOPNOTSUPP;
 #else
 		if (!m9_faa_phased_submit || M9_FAA_OUTPUT_OWNER == U32_MAX)
+			return -EINVAL;
+#endif
+	}
+	if (m9_faa_program_access_kick) {
+#ifndef M9_FAA_PROGRAM_ACCESS_CONTROL
+		return -EOPNOTSUPP;
+#else
+		if (!m9_faa_phased_submit)
 			return -EINVAL;
 #endif
 	}
@@ -1175,7 +1197,7 @@ static int m9_faa_rebase_page_clear(struct m9x_faa_replay *r)
 #endif
 }
 
-#ifdef M9_FAA_PRECLEAR_OUTPUT_WRITE_CONTROL
+#ifdef M9_FAA_PROGRAM_ACCESS_CONTROL
 /* Actual 2cb40 waits for the program resource before its unconditional
  * 2cba8 frontend kick. Its later CPU-aperture mapping is a separate branch.
  * The two entry-offset encoders identify the retained C2 owner; no captured
@@ -1230,11 +1252,14 @@ static int m9_faa_publish_output_phase(struct m9x_device *mdev, u32 phase,
                                       u64 point, void *data)
 {
 	struct m9x_faa_replay *r = data;
+#ifdef M9_FAA_PRECLEAR_OUTPUT_WRITE_CONTROL
 	struct m9_faa_owner *output;
 	int ret;
+#endif
 
 	if (phase == 0 && m9_faa_program_access_kick)
 		return m9_faa_program_access(mdev, r, point);
+#ifdef M9_FAA_PRECLEAR_OUTPUT_WRITE_CONTROL
 	if (phase != 1 || !m9_faa_defer_output_map)
 		return 0;
 	output = m9_faa_output_owner(r);
@@ -1251,6 +1276,9 @@ static int m9_faa_publish_output_phase(struct m9x_device *mdev, u32 phase,
 			 "M9 FAA late output mapping: point=%#llx gpu=%#x pages=80\n",
 			 point, output->base);
 	return ret;
+#else
+	return 0;
+#endif
 }
 #endif
 
@@ -1476,14 +1504,19 @@ int m9x_faa_submit_diag(struct m9x_device *mdev, u32 color,
 	}
 	if (m9_faa_phased_submit) {
 #if defined(M9_FAA_PRECLEAR_OUTPUT_WRITE_CONTROL) || \
-    defined(M9_FAA_PRECLEAR_INPLACE_OUTPUT_CONTROL)
+    defined(M9_FAA_PRECLEAR_INPLACE_OUTPUT_CONTROL) || \
+    defined(M9_FAA_PRECLEAR_INPLACE_COPY_CONTROL)
 		/* These source-exported endpoints are after both variable
 		 * clear segments, so they all move by the same signed suffix
 		 * delta. No captured address or desired completion is replayed. */
 		static const struct m9x_faa_submit_phase source[] = {
 			{ 4980, 0xc0 }, { 5068, 0x120 },
-#ifdef M9_FAA_PRECLEAR_INPLACE_OUTPUT_CONTROL
+#if defined(M9_FAA_PRECLEAR_INPLACE_OUTPUT_CONTROL) || \
+    defined(M9_FAA_PRECLEAR_INPLACE_COPY_CONTROL)
 			{ 5304, 0x170 },
+#ifdef M9_FAA_PRECLEAR_INPLACE_COPY_CONTROL
+			{ 5936, 0x1a0 },
+#endif
 #else
 			{ 5224, 0x160 }, { 5724, 0x180 },
 #endif
@@ -1514,7 +1547,7 @@ int m9x_faa_submit_diag(struct m9x_device *mdev, u32 color,
 				&r->owner[M9_FAA_PRIMARY_OWNER].system_node,
 				r->owner[M9_FAA_PRIMARY_OWNER].dma, phases,
 				ARRAY_SIZE(phases), point, &posted,
-#ifdef M9_FAA_PRECLEAR_OUTPUT_WRITE_CONTROL
+#ifdef M9_FAA_PROGRAM_ACCESS_CONTROL
 				(m9_faa_defer_output_map || m9_faa_program_access_kick) ?
 					m9_faa_publish_output_phase : NULL,
 #else
