@@ -16,6 +16,7 @@
 #define DRM_PARHELIA_M9_FAA_GRAPH_INIT	0x10
 #define DRM_PARHELIA_M9_FAA_GRAPH_DRAW_RED	0x11
 #define DRM_PARHELIA_M9_FAA_GRAPH_UNLOCK	0x12
+#define DRM_PARHELIA_M9_FAA_GRAPH_NEXT_DRAW	0x13
 
 #define DRM_IOCTL_PARHELIA_M9_CREATE_BO \
 	DRM_IOWR(DRM_COMMAND_BASE + DRM_PARHELIA_M9_CREATE_BO, \
@@ -63,6 +64,7 @@ enum drm_parhelia_m9_faa_owner_role {
 #define PARHELIA_M9_FAA_DRAW_WITH_LOCK 2u
 #define PARHELIA_M9_FAA_LOCK_PREFIX_RETIRED 5u
 #define PARHELIA_M9_FAA_UNLOCK_RETIRED 6u
+#define PARHELIA_M9_FAA_NEXT_PREFIX_RETIRED 7u
 struct drm_parhelia_m9_faa_owner {
 	__u32 handle;
 	__u32 pad;
@@ -361,5 +363,25 @@ struct drm_parhelia_m9_faa_graph_unlock {
 #define DRM_IOCTL_PARHELIA_M9_FAA_GRAPH_UNLOCK \
 	DRM_IOWR(DRM_COMMAND_BASE + DRM_PARHELIA_M9_FAA_GRAPH_UNLOCK, \
 		struct drm_parhelia_m9_faa_graph_unlock)
+
+/* Private second same-graph triangle preprocessing after normal Unlock.
+ * Vertices are three live XYZRHW + packed diffuse records (five u32 each);
+ * coordinates are float32 bits. The retained red fragment shader is unchanged.
+ * State7 proves preprocessing/independent finish only, not returned draw or
+ * second-frame pixels. flags, outputs and padding must be zero on input. */
+struct drm_parhelia_m9_faa_graph_next_draw {
+	__u64 graph_id;
+	__u64 unlock_point;
+	__u64 draw_point;
+	__u32 generation;
+	__u32 flags;
+	__u32 state;
+	__u32 pad;
+	__u32 vertices[15];
+	__u32 reserved;
+};
+#define DRM_IOCTL_PARHELIA_M9_FAA_GRAPH_NEXT_DRAW \
+	DRM_IOWR(DRM_COMMAND_BASE + DRM_PARHELIA_M9_FAA_GRAPH_NEXT_DRAW, \
+		struct drm_parhelia_m9_faa_graph_next_draw)
 
 #endif

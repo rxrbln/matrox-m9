@@ -940,3 +940,88 @@ out_state:
 	drm_dev_exit(idx);
 	return ret;
 }
+
+int m9x_faa_graph_next_draw_ioctl(struct drm_device *drm, void *data,
+				struct drm_file *file)
+{
+	struct drm_parhelia_m9_faa_graph_next_draw *args = data;
+	struct m9x_device *mdev = to_m9x(drm);
+	struct m9_faa_file *state = file->driver_priv;
+	struct m9_faa_graph_binding *binding = NULL;
+	struct m9_faa_prepared_graph *graph;
+	struct drm_exec exec;
+	u32 address[PARHELIA_M9_FAA_GRAPH_OWNERS], i;
+	u64 point = 0;
+	bool posted = false;
+	int idx, ret;
+
+	if (!state || !args->graph_id || args->unlock_point < 0xe0 ||
+	    args->draw_point || args->flags || args->state || args->pad || args->reserved)
+		return -EINVAL;
+	if (!m9x_faa_graph_profile_enabled())
+		return -EOPNOTSUPP;
+	if (!drm_dev_enter(drm, &idx))
+		return -ENODEV;
+	mutex_lock(&state->lock);
+	graph = state->graph;
+	if (!m9_faa_graph_continuation_matches(graph, args->graph_id,
+			args->generation, args->unlock_point - 0xe0)) {
+		ret = -ENOENT;
+		goto out_state;
+	}
+	mutex_lock(&mdev->transport.lock);
+	ret = m9x_faa_graph_next_get_locked(mdev, args->generation,
+			args->unlock_point, &binding);
+	if (!ret && binding->graph != graph)
+		ret = -ESTALE;
+	mutex_unlock(&mdev->transport.lock);
+	if (ret)
+		goto out_binding;
+	/* Firmware access and CPU image allocation precede caller reservations.
+	 * The file mutex preserves the exact graph token across preparation. */
+	ret = m9x_faa_graph_next_prepare(mdev, binding, args->generation,
+			args->unlock_point, args->vertices);
+	if (ret)
+		goto out_binding;
+	drm_exec_init(&exec, DRM_EXEC_INTERRUPTIBLE_WAIT |
+		      DRM_EXEC_IGNORE_DUPLICATES, PARHELIA_M9_FAA_GRAPH_OWNERS);
+	drm_exec_until_all_locked(&exec) {
+		for (i = 0; i < PARHELIA_M9_FAA_GRAPH_OWNERS; i++) {
+			ret = drm_exec_prepare_obj(&exec, graph->owner[i], 1);
+			drm_exec_retry_on_contention(&exec);
+			if (ret)
+				goto out_exec;
+		}
+	}
+	ret = m9_faa_graph_live_addresses(mdev, graph, address);
+	if (ret)
+		goto out_exec;
+	if (memcmp(binding->address, address, sizeof(address))) {
+		ret = -ESTALE;
+		goto out_exec;
+	}
+	for (i = 0; i < PARHELIA_M9_FAA_GRAPH_OWNERS; i++) {
+		if (!dma_resv_test_signaled(graph->owner[i]->resv, DMA_RESV_USAGE_READ)) {
+			ret = -EBUSY;
+			goto out_exec;
+		}
+	}
+	ret = m9x_faa_graph_next_submit(mdev, binding, args->generation,
+			args->unlock_point, &point, &posted);
+	if (!ret) {
+		if (!point || point != args->unlock_point + 0x50)
+			ret = -EIO;
+		else {
+			args->draw_point = point;
+			args->state = PARHELIA_M9_FAA_NEXT_PREFIX_RETIRED;
+		}
+	}
+out_exec:
+	drm_exec_fini(&exec);
+out_binding:
+	m9x_faa_graph_binding_put(binding);
+out_state:
+	mutex_unlock(&state->lock);
+	drm_dev_exit(idx);
+	return ret;
+}
