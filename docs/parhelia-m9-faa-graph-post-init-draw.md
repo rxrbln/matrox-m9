@@ -141,6 +141,10 @@ Using only that new receipt, the preserved original `252b9` caller returned
 EAX1 and its public HRESULT was zero. The genuine wrapper at resource+268
 selected its vtable+14 normal Lock and emitted Lock relocation fields. The
 emulator stopped before reading a new common-buffer deadline at `0x140`;
-that deadline is not covered by the `0x110` receipt. Derive and submit this
-next same-context Lock prefix with retained live owners, then qualify its
-actual retirement before continuing to formatted view or pixel comparison.
+that deadline is not covered by the `0x110` receipt. The bounded source audit
+at `tests/m9-faa-graph-post-init-lock-20261007/` proves one natural post at
+source primary endpoint 4,980, a 12-byte suffix after 4,968, and 14 normal
+Lock relocation fields. These are forensic source values, not live native
+addresses. Derive and submit this next same-context Lock prefix with retained
+live owners, then qualify its actual retirement before continuing to formatted
+view or pixel comparison.
