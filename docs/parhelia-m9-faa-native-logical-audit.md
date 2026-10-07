@@ -4,7 +4,64 @@ The actual complete180 stream retires without wedging but produces an all-black
 image. Retirement is established; FAA rendering is not. This review examines
 native production and the source contract rather than repeating that test.
 
-## Current review: public continuation and remaining hardcoded assumptions
+## Current review: real-table program guard regression
+
+Reviewed kernel ce402c0 (including65cafcc), Mesa c192362 and RE22e9d9fa.
+The new kernel has a confirmed admission regression: `m9_faa_program_access`
+interprets every encoder24886 relocation as a C2 base needing an immediately
+following248ab entry offset. The real replacement table also uses24886 for
+standalone kind19 resident-database bindings: secondary offset21c, owner12,
+followed by an unrelated248c8 relocation. These are valid source commands.
+The staged build therefore returnsEINVAL at the c0 callback before posting120.
+This is a deterministic host-side refusal after a posted prefix, not a
+hardware-measured wedge. The module has not been deployed. It cannot explain
+the older black180 image or the previously retired public1f0 result, which
+precede65cafcc. The synthetic pair-only test omitted this legitimate reuse;
+the native placement test did not call the program-access helper. Correction
+and regression coverage now use the full generated tables as well as malformed
+pair controls. The staged ce402c0 module must be replaced before hardware use.
+
+Kernel da3e710 fixes the regression in two passes: validate all entry-offset
+pairs and establish their unique program owner, then check orphan page bases
+on that owner. Unrelated resident-database bindings remain valid. All seven
+real profile tables pass at two placements under ASAN/UBSAN, including removal
+of either half of every actual program pair; all23 synthetic controls at two
+placements and phased failure controls pass. Root independently ran the
+expanded table fixture and built the replacement-profile module successfully.
+No hardware run followed this review, and no FAA image success is claimed.
+
+The following existing gaps were rechecked against current source:
+
+- Mesa context preparation never assigns `job.faa.graph` or initializes the
+  graph for execution. Allocation alone still cannot enable application FAA.
+- The raw `M9X_FAA=1`/STORE=0 path still derives AD from color bytes at
+  `m9_context.c:3053`, and `m9_faa.c:296` still calls that the vendor extent.
+  Only the bound-store path uses the logical fragment-store extent. This is
+  stale diagnostic behavior/documentation, not the private test's AD producer.
+- Formats other than0x3d still use generic width*height*8 storage and the
+  ordinary depth descriptor. Their layout is unqualified. The prior189→61
+  format-alias bug is already fixed by c192362; do not report it as open.
+- The emulator mode request uses the adapter-wide miniport owner, whose
+  head selector isffffffff. Actual6dd9c rejects head>=4 and skips the count
+  store, although6dde1 returnsAL1. The strict observer now stops before that
+  unwritten output is consumed. Genuine head publication is missing;
+  supplying head0 or a fabricated count would bypass the source contract.
+  Further source tracing identifies the earlier GetModes caller11940 and
+  IOCTL232304 leading to5801f, which can publish that head on the live owner.
+  A separate child object is not established as necessary. Exploratory
+  execution now observes that original publisher assign head0 without a field
+  patch; the rest of the GetModes sequence remains under investigation. This
+  explains the emulator constructor boundary, not the native GPU pixels.
+
+Fixed320x240 geometry, sampled descriptors and50000 ordinary-output capacity
+remain explicitly bounded experiment inputs. Runtime source checks, live owner
+fixups, page-clear reconstruction and shifted phase endpoints protect their
+allocation-dependent fields. No additional literal captured-address flaw was
+found in the inspected current paths. The old exactly-two program-binding and
+four/five-phase limits have already been removed; the encoder-role regression
+above is a separate error introduced while tightening pair validation.
+
+## Earlier review: public continuation and remaining hardcoded assumptions
 
 Reviewed kernel e316f3f and Mesa776e5bf. The distinct public shared-depth
 prefix now retires1a0 on M9128 with healthy counters; this is preparation

@@ -8,6 +8,16 @@ Ordinary textured rendering and the deployed driver are validated. FAA
 rendering is not yet validated. This note is separate from P690
 `102b:2539` evidence.
 
+Latest code review: kernel da3e710 fixes a new pre-deployment regression in
+65cafcc/ce402c0: encoder24886 also represents standalone resident-database
+bindings, so requiring a C3 partner for every occurrence rejected valid FAA
+profiles at the c0 callback. Validation now identifies the program owner from
+complete pairs before checking its orphan bases. All seven actual generated
+tables pass ASAN/UBSAN, missing-half controls still refuse, and the isolated
+replacement-profile module builds. The old staged ce402c0 module must not be
+deployed. There is no new hardware result from this audit. See the
+[logical review](parhelia-m9-faa-native-logical-audit.md).
+
 Latest hardware checkpoint: kernel55ffd76 retires the whole returned public
 FAA flush at1f0/raw1f1 with all six waits preserved, an empty queue and wedged=0
 immediately and two seconds later. This includes the source-emitted cleanup
