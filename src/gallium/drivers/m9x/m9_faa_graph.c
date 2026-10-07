@@ -592,6 +592,125 @@ m9_faa_surface_color_next_kernel(struct m9_screen *screen,
 }
 
 int
+m9_faa_surface_color_frame_kernel(struct m9_screen *screen,
+                                 struct m9_faa_surface *surface,
+                                 const struct m9_faa_gl_upload *upload,
+                                 const struct m9_faa_application_state *state,
+                                 uint32_t clear_flags, uint32_t clear_color)
+{
+   struct drm_parhelia_m9_faa_graph_color_frame request = {0};
+   struct drm_parhelia_m9_faa_graph_color_lock input = {0};
+   _Static_assert(sizeof(request) == 160, "FAA COLOR_FRAME kernel ABI");
+   _Static_assert(offsetof(struct drm_parhelia_m9_faa_graph_color_frame, width) ==
+                  sizeof(input), "FAA COLOR_FRAME owned upload prefix");
+   if (!screen || !surface || !upload || !state)
+      return -EINVAL;
+   struct m9_faa_graph *graph = &surface->graph;
+   if (screen->faa.chip != M9_FAA_CHIP_M9 || !screen->wait_point ||
+       surface->width != 320 || surface->height != 240 || surface->format != 0x66 ||
+       state->width != surface->width || state->height != surface->height ||
+       state->depth_enabled || state->cull_face != PIPE_FACE_NONE || state->flatshade ||
+       state->scissor_enabled || upload->color_flat != state->flatshade || upload->layout.count != 4 || upload->record_bytes != 32 ||
+       (!upload->vertex_count || upload->vertex_count % 3) ||
+       (clear_flags & ~PARHELIA_M9_FAA_COLOR_CLEAR_TARGET) || clear_color)
+      return -EOPNOTSUPP;
+   const bool first = !graph->color_lock_attempted;
+   if (first && clear_flags)
+      return -EOPNOTSUPP; /* FIRST reset is not yet a native transaction. */
+   const uint64_t delta = first ? 0xe0 : clear_flags ? 0xe0 : 0xd0;
+   if (first) {
+      if (!graph->prepared || !graph->prepared_id || !graph->initialized ||
+          !graph->init_point || (graph->init_point & 15) || graph->init_point > UINT64_MAX - delta)
+         return -ESTALE;
+      if (graph->color_lock_attempted || graph->color_lock_point ||
+          graph->color_program_count ||
+          graph->color_next_attempted || graph->color_next_previous_unlock_point ||
+          graph->color_next_lock_point ||
+          graph->color_unlock_attempted || graph->color_unlock_point ||
+          graph->public_vs_attempted || graph->public_vs_point ||
+          graph->public_vs_head_attempted || graph->public_vs_head_point ||
+          graph->public_vs_draw_attempted || graph->public_vs_draw_point ||
+          graph->public_vs_lock_attempted || graph->public_vs_lock_point ||
+          graph->public_vs_unlock_attempted || graph->public_vs_unlock_point ||
+          graph->public_vs_next_attempted || graph->public_vs_next_lock_point ||
+          graph->public_vs_next_unlock_attempted || graph->public_vs_next_unlock_point ||
+          graph->public_vs_follow_attempted || graph->public_vs_follow_point)
+         return -ESTALE;
+   } else {
+      if (!graph->prepared || !graph->prepared_id || !graph->initialized ||
+          !graph->init_point || !graph->color_lock_attempted || !graph->color_lock_point ||
+          graph->color_program_count != 4 || !graph->color_unlock_attempted ||
+          graph->color_lock_point > UINT64_MAX - 0x20 ||
+          graph->color_unlock_point != graph->color_lock_point + 0x20 ||
+          (graph->color_unlock_point & 15) || graph->color_unlock_point > UINT64_MAX - delta ||
+          graph->color_next_attempted ||
+          (graph->color_next_lock_point ?
+           (graph->color_lock_point != graph->color_next_lock_point ||
+            !graph->color_next_previous_unlock_point ||
+            (graph->color_next_previous_unlock_point & 15) ||
+            graph->color_next_previous_unlock_point > UINT64_MAX - 0xe0 ||
+            (graph->color_lock_point != graph->color_next_previous_unlock_point + 0xd0 &&
+             graph->color_lock_point != graph->color_next_previous_unlock_point + 0xe0)) :
+           (graph->color_next_previous_unlock_point || graph->init_point > UINT64_MAX - 0xe0 ||
+            graph->color_lock_point != graph->init_point + 0xe0)) ||
+          graph->public_vs_attempted || graph->public_vs_point ||
+          graph->public_vs_head_attempted || graph->public_vs_head_point ||
+          graph->public_vs_draw_attempted || graph->public_vs_draw_point ||
+          graph->public_vs_lock_attempted || graph->public_vs_lock_point ||
+          graph->public_vs_unlock_attempted || graph->public_vs_unlock_point ||
+          graph->public_vs_next_attempted || graph->public_vs_next_lock_point ||
+          graph->public_vs_next_unlock_attempted || graph->public_vs_next_unlock_point ||
+          graph->public_vs_follow_attempted || graph->public_vs_follow_point)
+         return -ESTALE;
+   }
+   int ret = m9_faa_color_upload_request(upload, &input);
+   if (ret) return ret;
+   /* The source ABI adds six state words after the same owned blob layout.
+    * No token or address is inherited from the upload itself. */
+   memcpy(&request, &input, sizeof(input));
+   request.graph_id = graph->prepared_id;
+   request.previous_point = first ? graph->init_point : graph->color_unlock_point;
+   request.flags = first ? PARHELIA_M9_FAA_COLOR_FRAME_FIRST : 0;
+   request.generation = graph->prepared_generation;
+   request.width = state->width;
+   request.height = state->height;
+   request.clear_flags = clear_flags;
+   request.clear_color = clear_color;
+   const struct drm_parhelia_m9_faa_graph_color_frame before = request;
+   if (first) {
+      graph->color_lock_attempted = true;
+      graph->color_program_count = 4;
+   } else {
+      graph->color_next_attempted = true;
+   }
+   if (ioctl(screen->fd, DRM_IOCTL_PARHELIA_M9_FAA_GRAPH_COLOR_FRAME, &request))
+      return -errno;
+   if (request.lock_point != before.previous_point + delta ||
+       request.state != (first ? PARHELIA_M9_FAA_COLOR_FRAME_FIRST_LOCK_RETIRED :
+                                 PARHELIA_M9_FAA_COLOR_FRAME_NEXT_LOCK_RETIRED))
+      return -EPROTO;
+   struct drm_parhelia_m9_faa_graph_color_frame returned = request;
+   returned.lock_point = 0;
+   returned.state = 0;
+   if (memcmp(&returned, &before, sizeof(before)))
+      return -EPROTO;
+   ret = m9_wait_for_point(screen, request.lock_point);
+   if (ret) return ret;
+   /* Publish a new current Lock only after its authentic receipt and real
+    * wait. Any failed NEXT preserves the old spent Lock/Unlock markers and
+    * the attempted flag, so it cannot be retried or presented as success. */
+   if (!first) {
+      graph->color_next_previous_unlock_point = before.previous_point;
+      graph->color_next_lock_point = request.lock_point;
+   }
+   graph->color_lock_point = request.lock_point;
+   graph->color_unlock_attempted = false;
+   graph->color_unlock_point = 0;
+   return 0;
+}
+
+
+int
 m9_faa_surface_color_unlock_kernel(struct m9_screen *screen,
                                   struct m9_faa_surface *surface)
 {

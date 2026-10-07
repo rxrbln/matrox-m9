@@ -9288,12 +9288,8 @@ m9_context_faa_submit_draw(struct m9_context *ctx,
       ret = -ESTALE;
       goto out;
    }
-   if (!graph->color_lock_attempted)
-      ret = m9_faa_surface_color_lock_kernel(ctx->screen, &ctx->faa_surface,
-                                             &owned.shader);
-   else
-      ret = m9_faa_surface_color_next_kernel(ctx->screen, &ctx->faa_surface,
-                       &owned.shader, state, 0, 0);
+   ret = m9_faa_surface_color_frame_kernel(ctx->screen, &ctx->faa_surface,
+                                          &owned.shader, state, 0, 0);
    attempted = graph->color_lock_attempted &&
                (!graph->color_unlock_attempted || graph->color_next_attempted);
    if (ret) { why = "FAA application authenticated COLOR submission failed"; goto out; }
