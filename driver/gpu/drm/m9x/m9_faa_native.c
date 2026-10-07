@@ -4067,6 +4067,113 @@ out:
 #endif
 }
 
+#ifdef M9_FAA_GRAPH_INIT_CONTROL
+static int m9_faa_public_vs_draw_state(struct m9x_transport *t,
+		struct m9_faa_graph_binding *binding, u32 generation, u64 draw_point)
+{
+	struct m9x_faa_replay *r = t->faa;
+
+	lockdep_assert_held(&t->lock);
+	if (t->wedged)
+		return -EIO;
+	if (!r || !binding || r->graph_binding != binding ||
+	    !r->prepared || !r->attempted || !r->observation_retired ||
+	    !r->graph_draw_claimed || !r->public_vs_payload_ready ||
+	    !r->public_vs_head_attempted || !r->public_vs_head_retired ||
+	    !r->public_vs_draw_attempted || !r->public_vs_draw_observed ||
+	    !r->public_vs_draw_image || !r->public_vs_head_fence ||
+	    r->public_vs_prefix_retired || r->public_vs_follow_retired ||
+	    !r->public_vs_image || !r->public_vs_draw_fence ||
+	    r->draw_image || r->graph_draw_payload_ready || r->graph_preparing ||
+	    r->graph_generation != generation || t->generation != generation ||
+	    r->observation_generation != generation || !draw_point ||
+	    (draw_point & 15) || draw_point != r->observation_point + 0xb0 ||
+	    r->graph_draw_point != draw_point || r->graph_draw_posts != 3 ||
+	    r->graph_draw_end_bytes != r->primary_bytes + 124 ||
+	    r->public_vs_draw_image->ends.final_end != r->graph_draw_end_bytes ||
+	    r->public_vs_draw_image->ends.observed_point != draw_point ||
+	    t->submitted_point != draw_point || t->completed_point != draw_point ||
+	    t->next_fence != lower_32_bits(draw_point) + 0x10 ||
+	    r->public_vs_draw_fence->base.context != t->fence_context ||
+	    r->public_vs_draw_fence->base.seqno != draw_point ||
+	    dma_fence_get_status(&r->public_vs_draw_fence->base))
+		return -ESTALE;
+	if (!t->faa_source_context || !t->faa_virtual_primary ||
+	    !t->engine_transitioned || !t->restore_ready || !t->fence_cpu ||
+	    !t->transport_armed || !t->bus_master_enabled || t->async_stop ||
+	    t->async_pending || t->queue_count)
+		return -EBUSY;
+	return 0;
+}
+#endif
+
+/* Caller holds all six reservations. Ignore only this exact authenticated
+ * DRAW fence: context/sequence equality alone never exempts another hazard.
+ * No allocations, uploads, MMIO, fence signalling or posting occur here. */
+int m9x_faa_graph_public_vs_draw_hazards(struct m9x_device *mdev,
+		struct m9_faa_graph_binding *binding, u32 generation, u64 draw_point)
+{
+#ifdef M9_FAA_GRAPH_INIT_CONTROL
+	struct m9x_transport *t = &mdev->transport;
+	struct m9x_faa_replay *r;
+	u32 i;
+	int ret;
+
+	mutex_lock(&t->lock);
+	ret = m9_faa_public_vs_draw_state(t, binding, generation, draw_point);
+	if (ret)
+		goto out;
+	r = t->faa;
+	for (i = 0; i < PARHELIA_M9_FAA_GRAPH_OWNERS; i++) {
+		struct drm_gem_object *bo = m9x_faa_graph_binding_owner(binding, i);
+		struct dma_resv_iter cursor;
+		struct dma_fence *fence;
+		bool found = false;
+
+		dma_resv_assert_held(bo->resv);
+		dma_resv_for_each_fence(&cursor, bo->resv, DMA_RESV_USAGE_READ, fence) {
+			int status;
+
+			if (fence == &r->public_vs_draw_fence->base) {
+				found = true;
+				continue;
+			}
+			status = dma_fence_get_status(fence);
+			if (status <= 0) {
+				ret = status ? status : -EBUSY;
+				goto out;
+			}
+		}
+		if (!found) {
+			ret = -ESTALE;
+			goto out;
+		}
+	}
+out:
+	mutex_unlock(&t->lock);
+	return ret;
+#else
+	return -EOPNOTSUPP;
+#endif
+}
+
+int m9x_faa_graph_public_vs_draw_get_locked(struct m9x_device *mdev,
+ u32 generation,u64 draw_point,struct m9_faa_graph_binding **out)
+{
+#ifdef M9_FAA_GRAPH_INIT_CONTROL
+ int ret;
+ if(!out)return -EINVAL;
+ *out=NULL;
+ ret=m9_faa_public_vs_draw_state(&mdev->transport,
+  mdev->transport.faa ? mdev->transport.faa->graph_binding : NULL,generation,draw_point);
+ if(ret)return ret;
+ *out=m9x_faa_graph_binding_get(mdev->transport.faa->graph_binding);
+ return 0;
+#else
+ return -EOPNOTSUPP;
+#endif
+}
+
 int m9x_faa_graph_public_vs_head_get_locked(struct m9x_device *mdev,
  u32 generation,u64 head_point,struct m9_faa_graph_binding **out)
 {
