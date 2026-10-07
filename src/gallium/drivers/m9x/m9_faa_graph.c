@@ -488,7 +488,7 @@ m9_faa_surface_color_next_kernel(struct m9_screen *screen,
        state->width != surface->width || state->height != surface->height ||
        state->depth_enabled || state->cull_face != PIPE_FACE_NONE || state->flatshade ||
        state->scissor_enabled || upload->layout.count != 4 || upload->record_bytes != 32 ||
-       upload->vertex_count != 3 ||
+       (!upload->vertex_count || upload->vertex_count % 3) ||
        (clear_flags & ~PARHELIA_M9_FAA_COLOR_CLEAR_TARGET) || clear_color)
       return -EOPNOTSUPP;
    const uint64_t delta = clear_flags ? 0xe0 : 0xd0;
