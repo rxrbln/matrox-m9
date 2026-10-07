@@ -1,10 +1,60 @@
 # M9128 FAA logical and stale-value audit, 2026-10-07
 
-The actual complete180 stream retires without wedging but produces an all-black
-image. Retirement is established; FAA rendering is not. This review examines
-native production and the source contract rather than repeating that test.
+The latest qualified hardware prefix is prepared startup c0, archived in
+`tests/m9-faa-prepared-preclear-hardware-20261007`. It retires with healthy
+queues; it does not yet contain a completed triangle or establish FAA pixels.
+Older complete180 and public250 results below are historical observations.
 
-## Current review: raw extent, repeat masks and incomplete relocation joins
+## Current review: program entry assumptions and CPU mapping order
+
+Reviewed kernel4663b49 (code08c9bda), REcb961527 and Mesaca86fce. This is a
+logical review; no new hardware run or rendering success is claimed.
+
+1. **The program guard assumes a later, complete draw.** In
+   `m9x/m9_faa_native.c:m9_faa_program_access`, `entries < 2 || offsets != 3`
+   requires both program offsets0 and32. The genuine preclear-draw prefix has
+   only the preprocessing entry32. Extracting the actual C helper and the
+   complete existing `m9_faa_preclear_draw_data.h` table reproduces EINVAL at
+   two live placements under ASAN/UBSAN, before identity checks or MMIO.
+   That existing prefix does not enable PROGRAM_ACCESS_CONTROL, so this is
+   a prospective integration blocker, not a regression in the previously
+   tested full profiles. The fresh prepared draw export likewise has only
+   entry32. Its generated contract must carry the source-proven entry mask;
+   do not weaken malformed-pair or unique-owner validation globally.
+2. **The frontend kick is not the whole observed program-access flow.**
+   The current callback checks GPU identity and writes314=1. The fresh
+   original continuation after the actual prepared-c0 receipt observes
+   2cba8 writing314=1, 59b82 writing31c=f,0,c, then2c878 writing31c=0 before
+   the next requester posts. The kick's source resource identity uniquely
+   joins the program owner. Exact mapper arguments, aperture effects and
+   temporal first-consumption evidence are being sealed by the source agent.
+   Current native code has no corresponding program CPU-map call. Existing
+   `m9x_address_cpu_local_prepare` in `m9_address.c` shows why a GPU identity
+   check is insufficient: it separately derives direct CPU-root leaves from
+   the live local owner and publishes them with f,0,c. Its actual-helper
+   fixture passes, including mapping conflicts and publication order.
+   This is an observed flow discrepancy, not proof that the missing mapping
+   caused black pixels. Do not copy captured aperture addresses or merely
+   append the register values; establish the owner/view/extent and full
+   service transition before integrating the prepared draw profile.
+3. **Upfront uploads still require a temporal proof per new prefix.**
+   `m9x_faa_prepare_diag` uploads all known spans before the first submit.
+   Preservation of earlier known bytes alone cannot prove that moving a
+   later CPU write earlier is safe: a GPU producer could overwrite it before
+   its first consumer. The new program, constants and secondary inputs need
+   a first-consumption join against the c0 commands. No such overwrite has
+   been demonstrated here; this remains an integration proof requirement.
+
+The earlier raw AD truncation and relocation-array truncation fixes remain
+present. Fixed320x240, program1080 and ordinary-output50000 are guarded
+private-profile inputs, not independently identified stale live addresses.
+The sampled source bases in generated headers are comparison/provenance
+values: admitted address operands are rewritten from retained native owners.
+No additional literal-address defect was found in the inspected relocation,
+clear rebuild or startup owner paths. This bounded audit does not establish
+complete vendor-flow equivalence or application FAA support.
+
+## Earlier review: raw extent, repeat masks and incomplete relocation joins
 
 Reviewed REa55bfdbb, kernel8790b0e and Mesaca86fce. The last actual hardware
 result remains the250 prefix: it retires with healthy queues, but there is no
