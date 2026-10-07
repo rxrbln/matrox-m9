@@ -87,6 +87,10 @@ int m9_faa_surface_public_vs_head_kernel(struct m9_screen *screen,
  * counter precedes the final raster: owners remain held for the Lock tail. */
 int m9_faa_surface_public_vs_draw_kernel(struct m9_screen *screen,
                                        struct m9_faa_surface *surface);
+/* Complete the original normal Lock after DRAW. Successful completion permits
+ * the separately guarded F021 pixel read; failure keeps all owners retained. */
+int m9_faa_surface_public_vs_lock_kernel(struct m9_screen *screen,
+                                       struct m9_faa_surface *surface);
 /* Continue only the actually retired public prefix on this retained graph.
  * Success records the next preprocessing endpoint; pixels remain separate. */
 int m9_faa_surface_public_vs_follow_kernel(struct m9_screen *screen,
