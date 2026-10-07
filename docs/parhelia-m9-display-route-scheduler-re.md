@@ -28,6 +28,29 @@ includes the route setter's calls into the same `m9x6104` dispatcher used by
 the complete display-start API, but this bounded run intentionally ends
 before that point.
 
+## The `0x318` bit is not an owner-latch receipt
+
+The original `0540` getter `m9x25509` selects `m9x2331` at `0x2f8070`.
+That leaf reads `0x318`, shifts high-byte bit 6 into a Boolean, and returns
+it: the observed field is full-word bit 30. In the same binary, `m9x8988`
+at `0x2f80a0` accepts a caller Boolean and explicitly clears or sets that
+same bit through a read-modify-write. The pinned `.text` has two identified
+direct calls of the getter and six of the setter. At `0x2de6e3`,
+`m9x7701` tests the bit, records a CPU request field at `+0x30` when set,
+then calls the setter with zero. At `0x2dec45`, `m9x30415` tests the bit,
+calls the setter with zero on one path, and calls it with one on the other
+path after its display work. Exact original instruction bytes, the call
+inventory and four negative source mutations are checked by the emulator
+script.
+
+These source-controlled changes mean a bit-30 read alone cannot identify
+which START backing is actually being fetched. No getter path here compares
+the active START address with the new owner's live address or acknowledges
+a vblank event. This does not prove the hardware never changes the bit; it
+limits what this source evidence establishes. In particular, the route's
+pre-setter CPU status stores and a returned bit-30 value cannot authorize
+release of the old pinned framebuffer.
+
 ## Actual source caller and status ordering
 
 The pinned ELF `.text` has one direct call into `m9x11412`: `0x2b0ce0`
@@ -86,3 +109,10 @@ Run the CPU-only proof with:
 /home/ai/tmp/faaemu/venv/bin/python tools/m9-display-route-scheduler-check.py \
   --out /tmp/m9-display-route-scheduler.json
 ```
+
+The remaining target experiment needs two simultaneously pinned, distinguishable
+M9128 scanout owners. A synchronous page-flip control should record the
+requested live START value, actual display status across vblank, the DRM
+event and pixels before and after. Only an observed latch tied to the new
+owner can justify a later old-owner release test. No async flip capability
+or release rule follows from this CPU-only source proof.
