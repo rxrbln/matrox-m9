@@ -23,14 +23,19 @@ It posts END at 8732, 12292 twice and 12304. Controlled changes are:
 | full black CLEAR42 before DRAW | Primary grows 128 bytes; ENDs become 8800, 8860, 12420 twice, 12432, and source timeline advances by `0x10`. No display latch or clear pixel claim follows. |
 
 The TARGET-only clear's 128-byte prefix has a live page-run segment. Its
-`b5fc3..b6092` six-word header is followed by the `b60ab` count and ten
-`b6101/b6143/b61ae` page words for the sampled primary's logical `0x50000`
+`b5fc3..b6092` six-word header is followed by the `b60ab` count (`n-1`)
+and eleven `b6101/b6143/b61ae` page words for the sampled primary's logical `0x50000`
 extent (80 pages). These words directly encode GPU allocation page indices
 outside ordinary relocation callbacks. Reuse the established `b5e70`
 page-run generator with the **live primary owner** and rebuild the segment,
 subsequent cursor and ENDs if native page alignment changes; copying the
-captured ten words would clear the wrong pages. Source `2557b` writes the
-clear's timeline low|1 before its own END. The source primary was previously
+captured eleven words would clear the wrong pages. The bounded prefix at
+old cursor 8672 has nine control words, six clear header words, a count
+word `0x20000000 | (n-1)`, `n` generated page words, then five footer words.
+Its length is `84 + 4*n` bytes, 128 for this sampled alignment. The footer
+has `4545e3e6,1`, the source timeline low|1 written by `2557b`, then
+`454545e6,1`; the timeline must come from the live epoch. The first nine
+control words are sampled source policy, not live owner addresses. The source primary was previously
 cleared at first public target admission; this second clear is a new command
 against the retained owner.
 
