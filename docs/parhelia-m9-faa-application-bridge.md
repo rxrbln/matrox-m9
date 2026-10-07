@@ -11,6 +11,31 @@ This audit pins Mesa `e0d9262` and kernel `4d1b0a3`. File hashes and the final
 `traces/m9-faa-application-bridge-20261007.json`. No target was accessed and no
 production activation changed.
 
+## Current integration after Unlock and the live position encoder
+
+Canonical DRM `87a8329` now implements same-file graph Unlock after a successful
+Lock CPU view. Actual M9128 evidence in
+`tests/m9-faa-graph-unlock-20261007/hardware-20261007` proves the original84-byte
+copyback posted twice, independent12-byte finish, and real190 retirement with
+queue0/wedged0. The native graph keeps all six owners fenced until completion;
+repeated Unlock and stale F021 access refuse. The readback image was taken before
+Unlock. A next draw on this graph and post-Unlock pixels remain unproved.
+
+Canonical Mesa `23f0999` adds the live integer-viewport position encoder and
+private-clone GL depth adapter. The encoder emits25 slots and13 dense constant
+pairs, using retained route0 and the source's clip/screen/clip-code outputs.
+The GL adapter computes `(z+w)/2` in the GPU producer. This closes the missing
+bounded position-vector producer, but not its graph record/constant bindings.
+Original packer execution checks96 records across four controls; compiler
+checks cover36,864 independent component references. Neither API is connected
+to production graph jobs yet. The complete17-object DSO builds, and its recorded
+source hashes match every canonical driver input (DSO SHA
+`cf16cb841f04539ad08f69eb8633d25c6022f6c2f05a43a078e3414668c77f14`).
+
+The remaining work below is the application bridge. Earlier pinned line
+numbers describe the original audit; the two new completed steps above do not
+supply missing live draw, next-frame or presentation receipts.
+
 ## Four concrete missing edges
 
 1. **Prepared graph to application job.** `m9_faa_graph.c:117` allocates a
@@ -41,8 +66,8 @@ production activation changed.
    program and geometry, not arbitrary Gallium input. Its continuation state
    rejects a previously claimed draw. The new `m9_faa_program_link` and
    `m9_faa_preprocess_moves` helpers have focused compiler tests but no
-   production caller. Their headers explicitly leave position, clip, depth,
-   shader admission and ordinary-VS-to-FAA qualification open. An application
+   production caller. The new bounded position encoder and GL depth adapter are available, while
+   graph record bindings, shader admission and nondefault policies remain open. An application
    producer must join live declarations, linked C2 entries, constant spans,
    varying destinations and raster state to the source's preprocessing/raster
    split. Substituting a Gallium program handle into the fixed diagnostic
@@ -59,7 +84,8 @@ production activation changed.
    is therefore a finite readback result, not scanout or Present. The source's
    normal Unlock changes the layout using a real GPU copy; the earlier
    same-backing F021→F022 and reverse-copy proofs are distinct lifecycle
-   evidence. A future app path must qualify its destination, overlap policy,
+   evidence. Normal Unlock now retires on this same graph. The app path must still
+   qualify its destination, overlap policy,
    retirement and source copy/presentation ordering, and transition back into
    a writable graph before another draw. Reading raw F022 as linear pixels
    or extending the old Lock admission point is not that transition.
