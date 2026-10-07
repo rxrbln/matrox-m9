@@ -3,6 +3,30 @@
 
 # M9 open topics and evidence, 2026-10-06
 
+## October 7 wind-down: work paused by user
+
+All tracks have stopped; no further tests or development are authorized
+until resumed. Completed Mesa code, vendor source plans and the failed GL2
+hardware capsule are integrated. Canonical DRM7106c67 preserves the variable
+COLOR launcher, with experimental four-stage mode default-off and stride32
+gated. Its source tree matches the agent's passing module build. The exact
+final native draft state and
+remaining work are recorded in the [wind-down handoff](parhelia-m9-wind-down-20261007.md).
+
+FAA: two retained triangle draws pass hardware; the new shader-bound COLOR
+upload/client and fragment frontend pass host checks. Full glxgears/ioquake3
+FAA remains unverified. The one-color four-stage path is experimental and
+does not manufacture an unused second varying.
+
+GL2: the unchanged1024×768 native GPU multipass qualification **failed** before
+readback: submitted520, completed460/raw461, queue1/wedged1. No passing pixels
+or FPS result follows. The target was recovered to boot
+`e98c7106-f10b-4680-a5ea-a71af43c0b4e`, module absent, and all locks released.
+Code and the original oracle are retained; runtime admission remains opt-in.
+The integrated Mesa evidence is in
+`tests/native-gpu-padding-runtime-proof/hardware-20261007` (commitsf3d416c,
+5237521). Earlier chronological checkpoints below retain their original scope.
+
 ## October 7: two retained FAA draws and complete cleanup pass
 
 The latest M9128 batch passes the first live FAA image through Unlock1b0,
@@ -55,7 +79,7 @@ implemented with retained BO/arena lifetimes and per-job completion packets.
 FAA, GL2, performance and other feature tracks continue in parallel; root
 owns the target, with FAA first in the locked queue. No new FPS claim.
 
-## Latest checkpoint: FAA, GL2 operations and performance tracks
+## Earlier checkpoint: FAA, GL2 operations and performance tracks
 
 Latest hardware progress: the completed black clear plus the triangle's first
 preprocessing launch retires at `0x120`, without wedging. Complete live GPU

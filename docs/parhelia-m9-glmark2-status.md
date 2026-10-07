@@ -1,5 +1,18 @@
 # glmark2 on the m9x driver: where the 60 fps goal actually stands
 
+## October 7 wind-down: latest multipass result
+
+Work is paused at the user's request. New compiler/math host checks pass,
+but the unchanged1024×768 GPU multipass fixture on canonical Mesaa295717
+failed before readback: final520unreached, completed460/raw461, queue1/wedged1.
+The first draw pair completes3a0; the second final FS pass JOB7 never publishes
+its first470 dependency. Successful and failing command bodies are identical;
+the cause is unresolved. No new pixel or FPS qualification is claimed.
+Code, default-off gate and strict oracle remain retained. See the
+[handoff and exact evidence](parhelia-m9-wind-down-20261007.md).
+
+The older implementation/version notes below do not supersede that result.
+
 ## Current implementation gaps, checked against Mesa3c12a86
 
 The older chronological entries below are not a current missing-op list.

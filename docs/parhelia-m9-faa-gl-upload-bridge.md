@@ -1,5 +1,33 @@
 # M9128 generalized GL FAA upload boundary
 
+## October 7 wind-down checkpoint
+
+Work is paused at the user's request. Canonical Mesa9128470 includes the
+source-derived COLOR0 FS64 frontend, an actual lowered-NIR COLOR pass-through
+classifier (vector/scalar stores and smooth pixel interpolation), live GPU
+carry/gather/position uploads, and the variable136-byte COLOR_LOCK client.
+The client authenticates two-vector INIT+a0 and four-vector INIT+e0 final
+Lock receipts, then independently waits; COLOR Unlock authenticates Lock+20.
+Owned storage capacity and all program/range/record/declaration metadata are
+checked. The complete19-object DSO build and focused host controls pass.
+`native_admission` stays false; no new COLOR hardware run was performed.
+
+The one-real-COLOR four-stage upload is independently generated and remains
+experimental. Its representative fixture is FS64/carry120/gather32/position200,
+with168live constant bytes, three32-byte raw records and five semantic VS
+declaration words. No nonexistent TEXCOORD output is added. The genuine vendor
+four-stage control has **two real outputs** and now has a complete typed
+DRAW/Lock plan; it does not itself prove the experimental one-output flow.
+
+The original one-color fused VS changes21of29scheduled slots when a live ADD
+is introduced. The ordinary Mesa tail also differs. A captured fixed suffix
+must not be spliced into arbitrary MVP/lighting. All GL position arithmetic
+in the current carry builder, including half-Z conversion, stays on the GPU.
+
+See [the wind-down handoff](parhelia-m9-wind-down-20261007.md) for final code,
+hardware evidence and remaining application/presentation work. The sections
+below describe the earlier fixed-upload and original source boundaries.
+
 The generalized Mesa `m9_faa_live_gl_build` added in `385b2c2` is an owned
 CPU snapshot. It compiles a retained GL vertex NIR on a clone, keeps the
 GL-to-D3D half-Z operation in the GPU carry program, resolves live CB0 keys,
@@ -17,7 +45,7 @@ establish these field relationships for their two-complete-stream profile:
 | Vertex record | Source-map writer uses the compiled live input layout and bound Gallium formats; `record_bytes` and vertex count determine the snapshot byte extent | The qualified public command uses exactly two FLOAT4 inputs, a 32-byte record and three vertices. The generalized snapshot may produce another stride/count, but its GPU command lengths are not yet qualified. |
 | Input declaration | `m9_vs_decl_words` generates two words per live attribute, optional texture words, and the terminal word | The qualified command has exactly five declaration words. Its packet offsets and lengths cannot be reused for another word count. |
 
-The current kernel public-VS ioctl takes the fixed 796-byte
+The older kernel public-VS ioctl takes the fixed 796-byte
 layout/program/constants/geometry image, requires a 328-byte four-vector
 program and five declaration words, and checks the admitted program's SHA.
 Its command offsets, counts, fixed geometry `+0x100` placement, and later
@@ -26,10 +54,11 @@ producer needs a sized owned upload, packet length/declaration rebuilding,
 live owner offsets/capacity checks and source-proven raster/fragment routing;
 changing only the C2/C3 fields is insufficient.
 
-The one-color GL1 case has a distinct original source shape. The current Mesa
-FAA compiler's whole-program branch requires **two real complete vec4 output
-stores** and the generalized builder requires two distinct explicit linkage
-streams. The ordinary Mesa pass-through color layout requests only `COL0`.
+The one-color GL1 case has a distinct original source shape. The generalized
+Mesa carry compiler and builder now support **one or two real complete vec4
+linkage streams**. Their four-vector output is distinct from the original
+one-color fused two-vector profile. The ordinary Mesa pass-through color
+layout requests only `COL0`.
 We therefore ran the original M9128 public compiler with a genuine
 `ps_2_0 dcl v0; mov oC0,v0`, POSITION and COLOR VS outputs, and otherwise
 unchanged viewport, declaration, vertex bytes and stride. It produced two
@@ -47,7 +76,8 @@ This proves an unused second output is accepted by the original CPU compiler
 for this input, but it changes the whole command topology. It is not a
 portable zero-output alias or a reason to pass nonexistent linkage from
 glxgears. The source-supported one-color route should get its own bounded
-two-vector native producer.
+two-vector native producer; the experimental one-real-stream four-stage
+producer must independently pass hardware rendering.
 
 Continuing only source nonblocking `25270` dependencies with the historical
 actual INIT `0xb1` as an explicitly labeled branch control returns the

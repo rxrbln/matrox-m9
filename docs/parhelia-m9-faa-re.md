@@ -1,5 +1,12 @@
 # M9 multisampling (FAA): static closure, captures, and what the silicon did
 
+Latest boundary, October7wind-down: two retained live-shader FAA triangles,
+changed geometry, readbacks/Unlocks and cleanup pass on M9128. New variable
+COLOR upload/fragment compiler work has host proof only; full application FAA
+remains unfinished. Work is paused by user request. See the
+[current handoff](parhelia-m9-wind-down-20261007.md); older milestones below
+remain historical.
+
 Current milestone (2026-10-07): the retained source-derived graph renders a
 correct real M9128 antialiased red triangle through normal Lock/readback:
 9361fully red+440partial pixels, no interior/exterior/channel errors, no wedge.

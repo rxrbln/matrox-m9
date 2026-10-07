@@ -3,6 +3,19 @@
 Copyright 2026 René Rebe <rene@exactco.de>
 SPDX-License-Identifier: GPL-2.0-only
 
+## October 7 wind-down: current authoritative boundary
+
+Work is paused at the user's request. Two retained live FAA triangle draws,
+changed geometry, both readbacks/Unlocks and complete release/file-close pass
+on M9128 with healthy transport. This supersedes the earlier single-draw and
+helper-timeout notes below. [Two-draw hardware proof](../tests/m9-faa-public-vs-next-20261007/README.md).
+
+The variable COLOR client, shader-bound live GL upload and COLOR0 FS frontend
+pass host checks and the complete Mesa build. The new native COLOR launcher
+has no hardware result. Full glxgears/ioquake3 FAA, generalized state,
+continuous frames and presentation remain unfinished. See the
+[final handoff](parhelia-m9-wind-down-20261007.md).
+
 Nano is confirmed M9128 PCI `102b:0540` rev1, with1GiB installed VRAM.
 Ordinary textured rendering and the deployed driver are validated. FAA
 application rendering is not yet validated. This note is separate from P690
