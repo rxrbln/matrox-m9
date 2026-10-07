@@ -20,11 +20,19 @@ struct m9x_faa_secondary_pool_transition {
 	u32 generation, old_cursor, parent_next;
 };
 
+/* Primary, secondary, code and constant rotations share one M9128 +0x20
+ * platform timeline. Keep it separate from the global +0x00 fence. */
+struct m9x_faa_pool_timeline {
+	u64 submitted_point, completed_point;
+	u32 generation;
+	bool initialized, planned, quarantined;
+};
+
 struct m9x_faa_secondary_pool {
 	struct m9x_faa_secondary_pool_slot slot[M9_FAA_SECONDARY_POOL_SLOTS];
 	struct m9x_faa_secondary_pool_transition pending;
+	struct m9x_faa_pool_timeline *timeline;
 	u64 serial;
-	u64 submitted_pool_point, completed_pool_point;
 	u32 generation, active, cursor;
 	bool initialized, planned, quarantined;
 };
@@ -35,9 +43,12 @@ struct m9x_faa_secondary_pool_observation {
 	bool resource_queries_retired;
 };
 
+int m9x_faa_pool_timeline_init(struct m9x_faa_pool_timeline *timeline,
+	u32 generation, u64 initial_point);
 int m9x_faa_secondary_pool_init(struct m9x_faa_secondary_pool *pool,
+	struct m9x_faa_pool_timeline *timeline,
 	u32 generation, const struct m9x_faa_counted_secondary_owner *initial,
-	u32 cursor, u64 initial_pool_point);
+	u32 cursor);
 int m9x_faa_secondary_pool_bind(struct m9x_faa_secondary_pool *pool,
 	const struct m9x_faa_counted_secondary_owner *selected);
 int m9x_faa_secondary_pool_advance(struct m9x_faa_secondary_pool *pool,

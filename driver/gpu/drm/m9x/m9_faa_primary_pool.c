@@ -15,10 +15,12 @@ int m9x_faa_primary_pool_plan(m9x_faa_primary_pool *pool,
 	u32 selected_index, point;
 
 	if (!pool || !pool->initialized || pool->quarantined || pool->planned ||
+	    !pool->timeline || pool->timeline->planned ||
+	    pool->timeline->quarantined ||
 	    !observed || !image || !transition ||
 	    observed->generation != pool->generation ||
-	    observed->pool_point != pool->completed_pool_point ||
-	    pool_origin != pool->submitted_pool_point ||
+	    observed->pool_point != pool->timeline->completed_point ||
+	    pool_origin != pool->timeline->submitted_point ||
 	    !observed->resource_queries_retired ||
 	    (global_last_submitted & 15) ||
 	    global_last_submitted > observed->global_point ||
@@ -61,6 +63,7 @@ int m9x_faa_primary_pool_plan(m9x_faa_primary_pool *pool,
 	token.parent_next = next.new_end;
 	pool->pending = token;
 	pool->planned = true;
+	pool->timeline->planned = true;
 	*image = next;
 	*transition = token;
 	return 0;

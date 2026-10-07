@@ -12,23 +12,38 @@ static bool m9_faa_pool_owner_valid(
 		owner->gpu_base <= U32_MAX - owner->bytes;
 }
 
+int m9x_faa_pool_timeline_init(struct m9x_faa_pool_timeline *timeline,
+	u32 generation, u64 initial_point)
+{
+	if (!timeline || timeline->initialized || (initial_point & 15))
+		return -EINVAL;
+	*timeline = (struct m9x_faa_pool_timeline) {
+		.submitted_point = initial_point,
+		.completed_point = initial_point,
+		.generation = generation,
+		.initialized = true,
+	};
+	return 0;
+}
+
 int m9x_faa_secondary_pool_init(struct m9x_faa_secondary_pool *pool,
+	struct m9x_faa_pool_timeline *timeline,
 	u32 generation, const struct m9x_faa_counted_secondary_owner *initial,
-	u32 cursor, u64 initial_pool_point)
+	u32 cursor)
 {
 	struct m9x_faa_secondary_pool next = { };
 
-	if (!pool || pool->initialized || !m9_faa_pool_owner_valid(initial) ||
-	    initial->cpu_refs != 1 || (cursor & 3) || cursor > initial->bytes ||
-	    (initial_pool_point & 15))
+	if (!pool || pool->initialized || !timeline || !timeline->initialized ||
+	    timeline->generation != generation || timeline->quarantined ||
+	    timeline->planned || !m9_faa_pool_owner_valid(initial) ||
+	    initial->cpu_refs != 1 || (cursor & 3) || cursor > initial->bytes)
 		return -EINVAL;
 	next.slot[0].owner = *initial;
 	next.slot[0].bound = true;
 	next.generation = generation;
 	next.initialized = true;
 	next.cursor = cursor;
-	next.submitted_pool_point = initial_pool_point;
-	next.completed_pool_point = initial_pool_point;
+	next.timeline = timeline;
 	*pool = next;
 	return 0;
 }
@@ -40,6 +55,8 @@ int m9x_faa_secondary_pool_bind(struct m9x_faa_secondary_pool *pool,
 	u64 old_end, new_end;
 
 	if (!pool || !pool->initialized || pool->planned || pool->quarantined ||
+	    !pool->timeline || pool->timeline->planned ||
+	    pool->timeline->quarantined ||
 	    pool->slot[1].bound || !m9_faa_pool_owner_valid(selected) ||
 	    selected->cpu_refs)
 		return -EINVAL;
@@ -58,6 +75,8 @@ int m9x_faa_secondary_pool_advance(struct m9x_faa_secondary_pool *pool,
 	u32 expected_cursor, u32 bytes)
 {
 	if (!pool || !pool->initialized || pool->quarantined || pool->planned ||
+	    !pool->timeline || pool->timeline->planned ||
+	    pool->timeline->quarantined ||
 	    pool->cursor != expected_cursor || (bytes & 3) ||
 	    bytes > pool->slot[pool->active].owner.bytes - pool->cursor)
 		return -EINVAL;
@@ -73,21 +92,22 @@ int m9x_faa_secondary_pool_observe_raw(struct m9x_faa_secondary_pool *pool,
 	u64 span;
 	u32 delta;
 
-	if (!pool || !pool->initialized || pool->quarantined || !observed ||
+	if (!pool || !pool->initialized || pool->quarantined || !pool->timeline ||
+	    pool->timeline->quarantined || !observed ||
 	    generation != pool->generation ||
-	    pool->submitted_pool_point < pool->completed_pool_point)
+	    pool->timeline->submitted_point < pool->timeline->completed_point)
 		return -EINVAL;
-	span = pool->submitted_pool_point - pool->completed_pool_point;
+	span = pool->timeline->submitted_point - pool->timeline->completed_point;
 	if (span >= (1ULL << 31))
 		return -ERANGE;
-	delta = (raw20 & ~15u) - (u32)pool->completed_pool_point;
+	delta = (raw20 & ~15u) - (u32)pool->timeline->completed_point;
 	if (delta > span)
 		return -EAGAIN;
-	next.pool_point = pool->completed_pool_point + delta;
+	next.pool_point = pool->timeline->completed_point + delta;
 	next.global_point = global_completed;
 	next.generation = generation;
 	next.resource_queries_retired = resources_idle;
-	pool->completed_pool_point = next.pool_point;
+	pool->timeline->completed_point = next.pool_point;
 	*observed = next;
 	return 0;
 }
@@ -106,10 +126,12 @@ int m9x_faa_secondary_pool_plan(struct m9x_faa_secondary_pool *pool,
 	int ret;
 
 	if (!pool || !pool->initialized || pool->quarantined || pool->planned ||
+	    !pool->timeline || pool->timeline->planned ||
+	    pool->timeline->quarantined ||
 	    !observed || !image || !transition ||
 	    observed->generation != pool->generation ||
-	    observed->pool_point != pool->completed_pool_point ||
-	    pool_origin != pool->submitted_pool_point ||
+	    observed->pool_point != pool->timeline->completed_point ||
+	    pool_origin != pool->timeline->submitted_point ||
 	    range_start != pool->cursor ||
 	    pool->cursor > U32_MAX - 12)
 		return -EINVAL;
@@ -147,6 +169,7 @@ int m9x_faa_secondary_pool_plan(struct m9x_faa_secondary_pool *pool,
 	token.parent_next = next.parent_next;
 	pool->pending = token;
 	pool->planned = true;
+	pool->timeline->planned = true;
 	*image = next;
 	*transition = token;
 	return 0;
@@ -158,7 +181,8 @@ static bool m9_faa_pool_token_matches(const struct m9x_faa_secondary_pool *pool,
 	const struct m9x_faa_secondary_pool_transition *p;
 
 	if (!pool || !transition || !pool->initialized || !pool->planned ||
-	    pool->quarantined)
+	    pool->quarantined || !pool->timeline ||
+	    !pool->timeline->planned || pool->timeline->quarantined)
 		return false;
 	p = &pool->pending;
 	return p->serial == transition->serial &&
@@ -177,6 +201,7 @@ int m9x_faa_secondary_pool_abort(struct m9x_faa_secondary_pool *pool,
 	if (!m9_faa_pool_token_matches(pool, transition))
 		return -ESTALE;
 	pool->planned = false;
+	pool->timeline->planned = false;
 	memset(&pool->pending, 0, sizeof(pool->pending));
 	return 0;
 }
@@ -197,7 +222,8 @@ int m9x_faa_secondary_pool_posted(struct m9x_faa_secondary_pool *pool,
 	pool->active = selected;
 	pool->cursor = 0;
 	pool->serial = transition->serial;
-	pool->submitted_pool_point = transition->pool_point;
+	pool->timeline->submitted_point = transition->pool_point;
+	pool->timeline->planned = false;
 	pool->planned = false;
 	memset(&pool->pending, 0, sizeof(pool->pending));
 	return 0;
@@ -210,10 +236,11 @@ bool m9x_faa_secondary_pool_slot_retired(
 	const struct m9x_faa_counted_secondary_owner *owner;
 
 	if (!pool || !observed || !pool->initialized || pool->quarantined ||
+	    !pool->timeline || pool->timeline->quarantined ||
 	    pool->planned ||
 	    index >= M9_FAA_SECONDARY_POOL_SLOTS || !pool->slot[index].bound ||
 	    pool->active == index || observed->generation != pool->generation ||
-	    observed->pool_point != pool->completed_pool_point ||
+	    observed->pool_point != pool->timeline->completed_point ||
 	    !observed->resource_queries_retired)
 		return false;
 	owner = &pool->slot[index].owner;
@@ -224,6 +251,8 @@ bool m9x_faa_secondary_pool_slot_retired(
 
 void m9x_faa_secondary_pool_quarantine(struct m9x_faa_secondary_pool *pool)
 {
+	if (pool && pool->initialized)
+		pool->timeline->quarantined = true;
 	if (pool && pool->initialized)
 		pool->quarantined = true;
 }
