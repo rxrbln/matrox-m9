@@ -101,6 +101,13 @@ now demonstrates a real ordering effect: phased submission produces601 main
 and1404 companion nonzero words, while a single post leaves both zero. The
 final output stays black in both. Preserving waits is the default for this
 complete diagnostic; later output-mapping publication and resolve remain open.
+The previous nine BAR dumps omit the borrowed sampled primary (owner1), which
+has no privately owned vram/cpu field. Kernel98dbe6a adds a bounded read-only
+observation of the actual pinned/reserved caller BO before submit and after
+retirement. It keeps borrowed ownership separate and never invents a zero
+baseline after a mapping failure. The retained-store checker accepts this
+optional paired observation only when its address matches the submitted color.
+The observer builds; hardware evidence for this additional surface is pending.
 
 ## Validation
 
