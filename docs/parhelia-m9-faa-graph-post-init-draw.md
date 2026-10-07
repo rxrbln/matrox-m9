@@ -6,7 +6,8 @@ same graph and context. CREATEPS54, SETCONST57 and SETPS56 are real public
 commands: pixel shader `MOV oC0,c0`, c0=(1,0,0,1). The retained native sequence now retires preprocessing `0x110`, returned
 DRAW plus explicit finish `0x140`, and the normal Lock prefix `0x170` on real
 M9128 hardware. Each step preserves the same graph and source post order.
-The Lock CPU mapping/readback continuation and resolved pixels remain open.
+The returned Lock CPU view and real diagnostic antialiased pixels now pass.
+Application rendering and repeated-frame integration remain open.
 This is separate from the earlier diagnostic180 flow.
 
 The qualified INIT receipt is the confirmed-retirement archive under
@@ -262,3 +263,16 @@ This proves posted Lock prefix retirement only. The normal Lock CPU mapper,
 returned view, pixel contents and application FAA remain unproved. Consume
 only this actual receipt when continuing the vendor emulator; no pixel data
 may be fabricated from successful completion.
+
+
+## First correct graph FAA pixels
+
+Canonical DRMaf4e5b7 and helperREf3b93e86 now read the source-qualified
+returned normal-Lock view. Actual freshboot470e125d-d5c4-49b6-8148-25cf248d6e59
+produced a correct red triangle:9361full plus440partial pixels, zero interior,
+exterior or channel errors, and a healthy170 queue. The exact raw image, PNG,
+receipt and mutation checker are in
+[`tests/m9-faa-normal-lock-view-20261007`](../tests/m9-faa-normal-lock-view-20261007/README.md).
+This supersedes earlier no-pixel claims for this fixed control. Application
+FAA, repeated frames, live shader/texture/depth state and other sizes remain
+open; do not widen the private red control into an application claim.

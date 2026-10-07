@@ -1,5 +1,13 @@
 # M9 multisampling (FAA): static closure, captures, and what the silicon did
 
+Current milestone (2026-10-07): the retained source-derived graph renders a
+correct real M9128 antialiased red triangle through normal Lock/readback:
+9361fully red+440partial pixels, no interior/exterior/channel errors, no wedge.
+See the [hardware image and proof](../tests/m9-faa-normal-lock-view-20261007/README.md).
+This is a bounded320×240 diagnostic; application FAA remains open. Older
+sections below retain historical findings and must not override this receipt.
+
+
 Copyright 2026 René Rebe <rene@exactco.de>
 SPDX-License-Identifier: GPL-2.0
 
