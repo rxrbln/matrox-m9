@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: GPL-2.0-only */
 /* Copyright 2026 René Rebe <rene@exactco.de> */
-/* Generated from actual preclear-output-write-wait caller boundary + independent queue flush. */
+/* Generated from actual original output caller post before180 write wait; no independent flush. */
 #define M9_FAA_BLOB_BYTES 125052u
 #define M9_FAA_BLOB_FNV 0xda275c60u
 #define M9_FAA_PRIMARY_OWNER 0x1cu
