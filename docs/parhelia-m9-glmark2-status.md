@@ -1,15 +1,15 @@
 # glmark2 on the m9x driver: where the 60 fps goal actually stands
 
-## Current implementation gaps, checked against Mesa957c46a
+## Current implementation gaps, checked against Mesa3c12a86
 
 The older chronological entries below are not a current missing-op list.
 Vertex log2/exp2/pow and bounded arithmetic branching are implemented; they
 need broader application qualification, not a second implementation.
 
 * Mesa957c46a implements one direct-UV vertex texture fetch with retained GPU
-  resources and fragment-sampler restoration. It remains disabled by default
-  pending hardware pixels. Installed glmark2 terrain needs transformed UVs and
-  two vertex reads for displacement and normals; those paths remain open.
+  resources and fragment-sampler restoration. It passes hardware pixels
+  and defaults on in3c12a86. Installed glmark2 terrain uses direct UVs but
+  needs two vertex reads and five linked varying outputs; those paths remain open.
 * General data-dependent control flow and loops remain gated. Uniform
   specialization, static unrolling and bounded arithmetic if-conversion
   exist; conditional texture and side-effect paths are not generally covered.
@@ -35,6 +35,31 @@ no-vertex-texture policy (REd0102161); full live EE19 resource/view binding
 and broad default-cap promotion remain distinct open work. Existing complex
 bump rendering and its417FPS clean result do not qualify terrain, all Quake3
 GL2 lighting variants, or the complete glmark2 suite.
+
+## 2026-10-07: Q3 improves to44.7FPS; direct vertex textures pass hardware
+
+The whole Q3 generic shader fixture passes0/1572864wrongpixels,maxchannel1,
+with161instructions/61constant span,2GPUapplication draws/zeroCPU. The initial
+fixture mistakenly counted an internal texture-upload blit as application
+fallback;593811c corrects that distinction and the strict run passes.
+One matching1024x768fullscreen basicGL2 run,FAAoff/vsync0/queue1, gives44.7FPS
+versus40.7 (~9.8%); actual234640retirement,empty/wedged0. A ballpark single-run
+comparison acrossboots. The post-timing menu screenshot retains title artifacts;
+it is not full-scene/gameplay pixel proof.
+[Q3 hardware evidence](../tests/m9-vectorize-hardware-20261007/README.md).
+
+Mesa957c46a direct-UV vertex texture passes4GPUapplicationdraws/zeroCPU,
+four sampler publications and0/1572864wrongpixels,maxchannel1. Both vertex
+and fragment texture palettes change, then textures are deleted before
+readback. Actual234a60retirement,empty/wedged0. The bounded path defaults on
+in3c12a86; all existing restrictions and M9X_NATIVE_VS_TEXTURE=0 remain.
+[Vertex-texture hardware evidence](../tests/m9-vertex-texture-hardware-20261007/README.md).
+
+Mesa088441d additionally integrates paired-source/constant-key retry for
+case1:226/74→176/61, capsunchanged,2048hostold/newbitidentical. Combined97refs/
+12refusals,batch,49admission/lifetime/default-optout checks andbuildPASS.
+This second retry still needs its own lightall source hardware pixels;44.7FPS
+was measured before it. Remaining >4attribute fallback still needs work.
 
 ## 2026-10-07: bounded Q3 retry and direct-UV vertex texture integrated
 
