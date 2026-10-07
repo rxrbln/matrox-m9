@@ -91,6 +91,10 @@ int m9_faa_surface_public_vs_draw_kernel(struct m9_screen *screen,
  * the separately guarded F021 pixel read; failure keeps all owners retained. */
 int m9_faa_surface_public_vs_lock_kernel(struct m9_screen *screen,
                                        struct m9_faa_surface *surface);
+/* Finish normal Unlock after a successfully copied F021 view. Kernel admission
+ * authenticates the view read; an ioctl failure must not permit a retry. */
+int m9_faa_surface_public_vs_unlock_kernel(struct m9_screen *screen,
+                                         struct m9_faa_surface *surface);
 /* Continue only the actually retired public prefix on this retained graph.
  * Success records the next preprocessing endpoint; pixels remain separate. */
 int m9_faa_surface_public_vs_follow_kernel(struct m9_screen *screen,
