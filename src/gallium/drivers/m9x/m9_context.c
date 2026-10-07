@@ -2023,6 +2023,12 @@ m9_dump_native_inputs(const struct m9_context *ctx,
            packed ? job->vs_record_view : 0u, job->source,
            job->index, job->index_base, job->index_count, job->program, slots,
            job->vs_producer_entry, job->vs_extra_entry, job->vs_gather_entry);
+   if (job->vs_sampled_position)
+      fprintf(out, "SAMPLED_POSITION first %u fields %u/%u head %u fields %u/%u/%u/%u\n",
+              job->vs_producer_targets, job->vs_producer_fields[0],
+              job->vs_producer_fields[1], job->vs_head_targets,
+              job->vs_head_fields[0], job->vs_head_fields[1],
+              job->vs_head_fields[2], job->vs_head_fields[3]);
    if (!packed)
       fprintf(out, "MODE ordinary-fused input-only vertex-entry %u\n",
               job->fs ? job->fs->vertex_entry :
@@ -3247,6 +3253,15 @@ m9_submit_job(struct m9_context *ctx)
          job.vs_unit = key->vs_texture ? &key->vs_unit : NULL;
          job.vs_unit_second = key->vs_texture_second ? &key->vs_unit_second : NULL;
          job.vs_texture_head_only = key->vs && key->vs->texture_head_only;
+         job.vs_sampled_position = key->vs->sampled_position;
+         if (job.vs_sampled_position) {
+            job.vs_producer_targets = 2;
+            job.vs_head_targets = 4;
+            memcpy(job.vs_producer_fields, key->vs->producer_fields,
+                   sizeof(job.vs_producer_fields));
+            memcpy(job.vs_head_fields, key->vs->extra_fields,
+                   sizeof(job.vs_head_fields));
+         }
          job.vs_const_pairs = vs_const_pairs;
          /* Nothing writes the CPU views of a native job, so its stream
           * slots stay local and the second preprocessing draw can render
@@ -6467,9 +6482,16 @@ m9_native_vs_variant(struct m9_vs_spec *vs, const struct m9_vs_outputs *out)
       return NULL;
    v->outputs = *out;
    v->serial = ++m9_vs_serial;
-   v->ok = vs->nir && m9_vs_compile_bounded_source(&vs->nir, out, &v->program,
-                                           &v->reason, m9_vs_max_slots,
-                                           m9_vs_max_const_pairs);
+   if (vs->program.sampled_position) {
+      nir_shader *trial = vs->nir ? nir_shader_clone(NULL, vs->nir) : NULL;
+      v->ok = trial && m9_vs_compile_sampled_position_source(&trial, out,
+                           &v->program, &v->reason, m9_vs_max_slots,
+                           m9_vs_max_const_pairs);
+      ralloc_free(trial);
+   } else
+      v->ok = vs->nir && m9_vs_compile_bounded_source(&vs->nir, out, &v->program,
+                                              &v->reason, m9_vs_max_slots,
+                                              m9_vs_max_const_pairs);
    /* A coordinate stream costs the layout constants the specialisation had
     * none of, so the bounds are taken again here. */
    if (v->ok && (v->reason = m9_vs_program_refusal(&v->program))) {
@@ -6983,6 +7005,9 @@ m9_native_vs_bind_texture(struct m9_context *ctx, struct m9_job_key *key,
    if (program->texture_count == 2 &&
        !debug_get_bool_option("M9X_NATIVE_VS_TEXTURE_TWO", false))
       return "dual vertex texture is disabled";
+   if (program->sampled_position &&
+       !debug_get_bool_option("M9X_NATIVE_VS_TEXTURE_POSITION", false))
+      return "sampled vertex position is disabled";
    if (program->texture_head_only) {
       if (!debug_get_bool_option("M9X_NATIVE_VS_TEXTURE_PACKED", false))
          return "packed vertex texture is disabled";
@@ -8841,10 +8866,24 @@ m9_vs_spec_for(struct m9_vs_state *vs, const uint32_t *values,
        * only the product the hardware's multiply-add can take. */
       NIR_PASS(_, nir, nir_opt_algebraic_late);
       NIR_PASS(_, nir, nir_opt_dce);
+      /* Original admission mutates the graph. Save the optional partition
+       * candidate before that call; ordinary accepted programs stay exact. */
+      nir_shader *sampled = debug_get_bool_option("M9X_NATIVE_VS_TEXTURE_POSITION", false) ?
+                            nir_shader_clone(NULL, nir) : NULL;
       spec->native = m9_vs_compile_gate_source(&nir, NULL, &spec->program,
                                          &spec->reason, m9_vs_max_slots,
                                          m9_vs_max_const_pairs, format_key,
                                          &vs->uniform_gates, gate_key);
+      if (!spec->native && sampled &&
+          m9_vs_compile_sampled_position_source(&sampled, NULL, &spec->program,
+                        NULL, m9_vs_max_slots, m9_vs_max_const_pairs)) {
+         ralloc_free(nir);
+         nir = sampled;
+         sampled = NULL;
+         spec->reason = NULL;
+         spec->native = true;
+      }
+      ralloc_free(sampled);
    }
    if (spec->native) {
       spec->slots = m9_vs_slot_count(&spec->program) +

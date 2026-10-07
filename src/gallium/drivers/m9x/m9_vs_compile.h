@@ -280,10 +280,10 @@ struct m9_vs_program {
    unsigned texture_sampler_second;
    /* Packed source: only CONTINUE samples; FIRST must be texture-independent. */
    bool texture_head_only;
-   /* Separate sampled-position compiler API, not ordinary runtime admission.
+   /* Separate opt-in sampled-position interface.
     * Two FIRST targets and four CONTINUE targets partition the six native
-    * fields (position=0, varying j=j+1); the draw builder must consume both
-    * maps before this program can be submitted. */
+    * fields (position=0, varying j=j+1); the draw builder consumes both
+    * maps under its complete partition preflight. */
    bool sampled_position;
    uint8_t producer_fields[2];
    uint8_t extra_fields[4];
@@ -329,12 +329,20 @@ bool m9_vs_compile(struct nir_shader *nir,
                    struct m9_vs_program *program, const char **reason);
 /* Explicit-zero-LOD two-fetch/five-direct-stream partition. FIRST writes
  * two texture-independent requested streams; CONTINUE writes position and
- * the other three. No NIR/resource is retained, no app path calls this API.
- * Live target-field metadata is mandatory for the future draw consumer. */
+ * the other three. The program retains no NIR/resource.
+ * Live target-field metadata is mandatory for the draw consumer. */
 bool m9_vs_compile_sampled_position(struct nir_shader *nir,
                                     const struct m9_vs_outputs *outputs,
                                     struct m9_vs_program *program,
                                     const char **reason);
+/* Clone-only bounded retry; swaps the graph with its accepted program.
+ * Refusal leaves the caller graph intact and no retained program arrays. */
+bool m9_vs_compile_sampled_position_source(struct nir_shader **nir,
+                                           const struct m9_vs_outputs *outputs,
+                                           struct m9_vs_program *program,
+                                           const char **reason,
+                                           unsigned max_slots,
+                                           unsigned max_const_pairs);
 /* Source-qualified first FAA producer: clip position plus exactly two
  * direct vec4 streams. Constants are live typed pairs starting at key0.
  * No vertex sampler, coordinate-transform stream or ordinary tail is

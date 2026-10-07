@@ -931,6 +931,27 @@ m9_draw_job_valid(const struct m9_draw_job *job)
    if (job->vs_unit_second && (!job->vs_unit || !job->vs_unit_second->handle))
       return false;
    unsigned vertex_units = !!job->vs_unit + !!job->vs_unit_second;
+   if (job->vs_sampled_position) {
+      if (!job->vs_texture_head_only || vertex_units != 2 ||
+          !job->vs_producer_entry || !job->vs_extra_entry || !job->vs_gather_entry ||
+          job->vs_extra_targets != 3 || job->vs_producer_targets != 2 ||
+          job->vs_head_targets != 4 || job->vs_head_fields[0] != 0)
+         return false;
+      unsigned written = 0;
+      for (unsigned stage = 0; stage < 2; stage++) {
+         unsigned count = stage ? job->vs_head_targets : job->vs_producer_targets;
+         const uint8_t *fields = stage ? job->vs_head_fields : job->vs_producer_fields;
+         for (unsigned t = 0; t < count; t++) {
+            if (fields[t] >= 6 || (!stage && !fields[t]) ||
+                (written & (1u << fields[t])))
+               return false;
+            written |= 1u << fields[t];
+         }
+      }
+      if (written != 63)
+         return false;
+   } else if (job->vs_producer_targets || job->vs_head_targets)
+      return false;
    if (job->vs_unit &&
        (!job->vs_decl_count || job->pass_count > 1 ||
         (job->vs_texture_head_only ?
@@ -1189,7 +1210,9 @@ m9_emit_preprocess(struct m9_batch *batch, const struct m9_draw_job *job,
       decl_count = 1;
    }
    bool packed = m9_vs_record_mode() >= 2 && job->vs_gather_entry;
-   unsigned targets = primary ? 3u : extra ? job->vs_extra_targets : 0;
+   unsigned targets = job->vs_sampled_position && (primary || kind == M9_PRE_HEAD) ?
+                      primary ? job->vs_producer_targets : job->vs_head_targets :
+                      primary ? 3u : extra ? job->vs_extra_targets : 0;
    unsigned fields = job->vs_extra_targets + 3;
    int ret = 0;
    uint32_t transition_at = 0;
@@ -1234,7 +1257,10 @@ m9_emit_preprocess(struct m9_batch *batch, const struct m9_draw_job *job,
                 STREAM),
               V(0xb1 + 2 * t, chain ?
                    m9_record_desc(M9_RECORD_SLOT, 4 * fields,
-                                  4 * (primary ? t : t + 3)) :
+                                  4 * (job->vs_sampled_position ?
+                                     primary ? job->vs_producer_fields[t] :
+                                               job->vs_head_fields[t] :
+                                     primary ? t : t + 3)) :
                    m9_vs_extra_desc(t, targets)));
    } else if (kind == M9_PRE_GATHER) {
       for (unsigned t = 0; t < targets; t++)

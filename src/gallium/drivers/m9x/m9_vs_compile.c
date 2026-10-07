@@ -3242,6 +3242,34 @@ program_slots_fit(const struct m9_vs_program *p, unsigned max_slots)
           m9_vs_extra_slot_count(p) <= max_slots;
 }
 
+bool
+m9_vs_compile_sampled_position_source(struct nir_shader **nir,
+                                      const struct m9_vs_outputs *outputs,
+                                      struct m9_vs_program *p, const char **reason,
+                                      unsigned max_slots, unsigned max_const_pairs)
+{
+   if (!nir || !*nir || !p)
+      return false;
+   nir_shader *trial = nir_shader_clone(ralloc_parent(*nir), *nir);
+   if (!trial) {
+      if (reason) *reason = "out of memory";
+      return false;
+   }
+   if (!m9_vs_compile_sampled_position(trial, outputs, p, reason)) {
+      ralloc_free(trial);
+      return false;
+   }
+   if (!program_slots_fit(p, max_slots) || m9_vs_const_count(p) > max_const_pairs) {
+      m9_vs_program_fini(p);
+      ralloc_free(trial);
+      if (reason) *reason = "sampled position exceeds native program limits";
+      return false;
+   }
+   ralloc_free(*nir);
+   *nir = trial;
+   return true;
+}
+
 static bool
 compile_bounded(struct nir_shader *nir,
                       const struct m9_vs_outputs *outputs,

@@ -171,6 +171,12 @@ struct m9_draw_job {
    /* Optional second direct-XY unit; its raw result occupies r04/r06. */
    const struct m9_texture_unit *vs_unit_second;
    bool vs_texture_head_only;
+   /* Explicit sampled-position partition: FIRST publishes two fields,
+    * CONTINUE four; GATHER still publishes the last three varying streams.
+    * Counts/maps are copied from the immutable live compiler variant. */
+   bool vs_sampled_position;
+   unsigned vs_producer_targets, vs_head_targets;
+   uint8_t vs_producer_fields[2], vs_head_fields[4];
    /* Raster texture units, texel pair order. */
    const struct m9_texture_unit *units;
    unsigned unit_count;
