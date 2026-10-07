@@ -30,3 +30,22 @@ This is source-known input for a bounded 320x240 red control. No actual
 is claimed. The native encoder has distinct placement/timeline and atomic
 refusal tests. Hardware must separately prove the two-post order and final
 retirement before continuing the original normal Lock.
+
+
+Native rendering continuation is now hardware verified. Kernel WIPf14553e
+(canonical791ad1b) adds private ioctl0x14 NEXT_FINISH from exact1e0. Firmware
+SHA4fc27c24... is authenticated before allocation/encoding; retained owner
+bindings and SYSTEM PTEs are rechecked. All six write fences precede the two
+ordered ENDs; failures after a post quarantine the fence and graph owners.
+Actual-function ASAN/UBSAN tests cover19 stale/PTE refusals and before/after
+failures at both posts. Encoder17 placement/epoch controls and16 refusals pass.
+
+Fresh M9128 bootab573610-efea-490c-8e4a-0ff77fe0fe1f completed the entire
+INITb0 → firstDRAW/Lock170 → view → Unlock190 → secondprefix1e0 → second
+renderingfinish210. raw00=211, submitted=completed210,next220, generation0,
+queue0,wedged0, busmaster1 immediately and two seconds later. Actual native
+primary8696B/posts14 preserve the dynamic clear delta. ModuleSHA d068e3ab...,
+helperSHA0422bcd1.... Evidence is under tests/m9-faa-next-frame-tail-20261007/
+hardware-20261007 and check-hardware.py verifies eight altered-receipt refusals.
+The saved raw image is still the FIRST Lock image; second Lock and changed
+second pixels require the next source continuation and separate hardware proof.
