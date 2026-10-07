@@ -24,8 +24,13 @@ The post-Unlock F022 raw CPU view differs at 1,833 words and is stippled in
 three-byte visualization. The vendor source qualifies F021 as the returned
 Lock image, but does not qualify this F022 view as resolved display pixels.
 Its appearance alone cannot establish a copyback defect or presentation
-success. The next source-qualified public consumer and Mesa context-owned FAA
-graph remain open; no glxgears or Quake FAA result follows from this test.
+success. The [next genuine public Lock source](../tests/m9-faa-prepared-relock-source-20261007/README.md)
+first consumes the actual `0x1a0` Unlock receipt, then emits a reverse
+320×240 primary F022 to staging F021 GPU copy and reaches a new natural
+`0x1c0` wait. Its first 8,744 source command bytes are unchanged; the new
+suffix is 100 bytes. No `0x1c0` GPU reply or second returned image has yet
+been supplied. The Mesa context-owned FAA graph remains open; no glxgears
+or Quake FAA result follows from this test.
 
 ## 2026-10-07: first real private FAA pixels on M9128
 
