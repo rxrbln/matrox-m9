@@ -22,6 +22,9 @@ static const struct m9_faa_clear_segment m9_faa_clear_segments[] = {
 	{ 1u, 0x50000u, 0x1328u, 0x1354u },
 };
 #define M9_FAA_OUTPUT_PENDING 0
+#define M9_FAA_RASTER_MASK_OWNER 0x1eu
+#define M9_FAA_RASTER_MASK_AB_OFFSET 0x3dcu
+#define M9_FAA_RASTER_MASK_89_OFFSET 0x418u
 #define M9_FAA_COUNTER_VIRTUAL 1
 static const struct m9_faa_owner_spec m9_faa_owner_specs[] = {
 	{ 0xc1a000u, 0x100u, true, false, false, 0x0u },

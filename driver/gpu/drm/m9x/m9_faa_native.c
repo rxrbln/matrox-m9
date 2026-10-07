@@ -883,6 +883,40 @@ static int m9_faa_bind_borrowed_color(struct m9x_faa_replay *r, u32 color,
 }
 #endif
 
+/* The public one-target raster producer leaves inactive AB/AC halfwords
+ * as stack residue. Preserve its active target mask, but derive neutral
+ * masks for the three absent targets instead of replaying that residue.
+ * This is separate from address relocation and never alters the capture. */
+static int m9_faa_normalize_raster_masks(struct m9x_faa_replay *r)
+{
+#ifdef M9_FAA_RASTER_MASK_OWNER
+	struct m9_faa_owner *owner;
+	u8 *data;
+	u32 ab = M9_FAA_RASTER_MASK_AB_OFFSET;
+	u32 route = M9_FAA_RASTER_MASK_89_OFFSET;
+
+	if (M9_FAA_RASTER_MASK_OWNER >= ARRAY_SIZE(r->owner))
+		return -EINVAL;
+	owner = &r->owner[M9_FAA_RASTER_MASK_OWNER];
+	data = owner->cpu;
+	if (!data || owner->vram || ab < 8 || route < 12 ||
+	    (u64)ab + 8 > owner->bytes || (u64)route + 4 > owner->bytes ||
+	    get_unaligned_le32(data + ab - 8) != 3 ||
+	    get_unaligned_le32(data + ab - 4) != 0x45aeacab ||
+	    get_unaligned_le32(data + route - 12) != 4 ||
+	    get_unaligned_le32(data + route - 8) != 0xc18a8988 ||
+	    get_unaligned_le32(data + route) != 0xfe207ff8 ||
+	    (get_unaligned_le32(data + ab) & 0xffff) != 0xffff)
+		return -EINVAL;
+	put_unaligned_le32(get_unaligned_le32(data + ab) | 0xffff0000,
+			   data + ab);
+	put_unaligned_le32(0xffffffff, data + ab + 4);
+#else
+	(void)r;
+#endif
+	return 0;
+}
+
 static int m9_faa_rebase_page_clear(struct m9x_faa_replay *r)
 {
 	struct m9_faa_owner *primary = &r->owner[M9_FAA_PRIMARY_OWNER];
@@ -1160,6 +1194,9 @@ int m9x_faa_submit_diag(struct m9x_device *mdev, u32 color,
 		}
 		put_unaligned_le32(value | (f->captured & 15), (u8 *)dst->cpu + f->offset);
 	}
+	ret = m9_faa_normalize_raster_masks(r);
+	if (ret)
+		goto unlock;
 	ret = m9_faa_rebase_page_clear(r);
 	if (ret)
 		goto unlock;
