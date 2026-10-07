@@ -16,7 +16,7 @@ const uint32_t m9_faa_sentinel_init[M9_FAA_SENTINEL_INIT_DWORDS] = {
 void
 m9_faa_init(struct m9_faa *faa, uint16_t device_id)
 {
-   int64_t companion_format;
+   int64_t companion_format, bind_index;
 
    *faa = (struct m9_faa) { 0 };
    /* Dispatch on the family, not on "this is the only card we have": a
@@ -50,8 +50,19 @@ m9_faa_init(struct m9_faa *faa, uint16_t device_id)
       return;
    }
    faa->companion_format = (int)companion_format;
-   faa->bind_index = (int)debug_get_num_option("M9X_FAA_BIND_INDEX", -1);
+   bind_index = debug_get_num_option("M9X_FAA_BIND_INDEX", -1);
    faa->bind_desc = debug_get_num_option("M9X_FAA_BIND_DESC", -1);
+   /* The emitter has an eight-bit index. Validate the wide option before
+    * narrowing, including the adjacent descriptor index when requested. */
+   if (bind_index < -1 || bind_index > 255 ||
+       (bind_index == 255 && faa->bind_desc >= 0)) {
+      fprintf(stderr, "m9x: invalid M9X_FAA_BIND_INDEX=%lld; expected -1 or "
+              "0..255, with no paired descriptor at 255; FAA probe disabled\n",
+              (long long)bind_index);
+      *faa = (struct m9_faa) { .chip = M9_FAA_CHIP_NONE };
+      return;
+   }
+   faa->bind_index = (int)bind_index;
    faa->bind_reset = debug_get_bool_option("M9X_FAA_BIND_RESET", false);
    faa->store_check = debug_get_bool_option("M9X_FAA_STORE_CHECK", false);
    faa->ad_force = (uint32_t)debug_get_num_option("M9X_FAA_AD", -1);
