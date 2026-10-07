@@ -39,6 +39,7 @@ m9_faa_graph_create(struct m9_screen *screen, uint32_t width,
        graph->companion.handle || graph->hz.handle || graph->sentinel.handle ||
        graph->prepared_id || graph->prepared || graph->initialized ||
        graph->color_lock_attempted || graph->color_lock_point ||
+       graph->color_program_count ||
        graph->color_unlock_attempted || graph->color_unlock_point ||
        graph->public_vs_attempted || graph->public_vs_point ||
        graph->public_vs_head_attempted || graph->public_vs_head_point ||
@@ -352,12 +353,14 @@ m9_faa_surface_color_lock_kernel(struct m9_screen *screen,
    struct m9_faa_graph *graph = &surface->graph;
    if (screen->faa.chip != M9_FAA_CHIP_M9 || !screen->wait_point ||
        surface->width != 320 || surface->height != 240 || surface->format != 0x66 ||
-       upload->layout.count != 2)
+       (upload->layout.count != 2 && upload->layout.count != 4))
       return -EOPNOTSUPP;
+   const uint64_t delta = upload->layout.count == 2 ? 0xa0 : 0xe0;
    if (!graph->prepared || !graph->prepared_id || !graph->initialized ||
-       !graph->init_point || graph->init_point > UINT64_MAX - 0xa0)
+       !graph->init_point || graph->init_point > UINT64_MAX - delta)
       return -EINVAL;
    if (graph->color_lock_attempted || graph->color_lock_point ||
+       graph->color_program_count ||
        graph->color_unlock_attempted || graph->color_unlock_point ||
        graph->public_vs_attempted || graph->public_vs_point ||
        graph->public_vs_head_attempted || graph->public_vs_head_point ||
@@ -372,11 +375,7 @@ m9_faa_surface_color_lock_kernel(struct m9_screen *screen,
                     upload->geometry_bytes + (uint64_t)upload->declaration_words * 4;
    uintptr_t base = (uintptr_t)upload->storage;
    if (!upload->layout.bytes || upload->layout.bytes % 8 ||
-       upload->layout.entry_bytes[0] || upload->layout.entry_bytes[1] % 8 ||
-       upload->layout.entry_bytes[1] < 32 ||
-       upload->layout.entry_bytes[1] > upload->layout.bytes ||
-       upload->layout.bytes - upload->layout.entry_bytes[1] < 32 ||
-       upload->layout.entry_bytes[2] || upload->layout.entry_bytes[3] ||
+       upload->layout.entry_bytes[0] ||
        !upload->record_bytes || upload->record_bytes % 16 ||
        !upload->vertex_count || upload->vertex_count > M9_FAA_GL_UPLOAD_MAX_VERTICES ||
        (uint64_t)upload->record_bytes * upload->vertex_count != upload->vertex_bytes ||
@@ -391,10 +390,21 @@ m9_faa_surface_color_lock_kernel(struct m9_screen *screen,
        (uintptr_t)upload->declaration != base + upload->layout.bytes +
                                            upload->constants_bytes + upload->geometry_bytes)
       return -EINVAL;
-   uint32_t end = 0;
+   for (unsigned i = 0; i < 4; i++) {
+      uint32_t entry = upload->layout.entry_bytes[i];
+      if (i >= upload->layout.count) {
+         if (entry) return -EINVAL;
+      } else {
+         uint32_t next = i + 1 == upload->layout.count ? upload->layout.bytes :
+                                                         upload->layout.entry_bytes[i + 1];
+         if (entry % 8 || next < entry || next > upload->layout.bytes || next - entry < 32)
+            return -EINVAL;
+      }
+   }
+   uint32_t end = upload->layout.count == 2 ? 0 : 16;
    for (unsigned i = 0; i < 4; i++) {
       uint32_t begin = upload->constant_begin[i], next = upload->constant_end[i];
-      if (i >= 2) {
+      if (i >= upload->layout.count) {
          if (begin || next) return -EINVAL;
       } else {
          if (begin != end || begin % 8 || next < begin || next % 8 ||
@@ -426,9 +436,10 @@ m9_faa_surface_color_lock_kernel(struct m9_screen *screen,
    /* The kernel may publish before reporting an error. Keep the consumed
     * graph and its owners until authenticated RELEASE or reset. */
    graph->color_lock_attempted = true;
+   graph->color_program_count = upload->layout.count;
    if (ioctl(screen->fd, DRM_IOCTL_PARHELIA_M9_FAA_GRAPH_COLOR_LOCK, &request))
       return -errno;
-   if (request.lock_point != before.init_point + 0xa0 ||
+   if (request.lock_point != before.init_point + delta ||
        request.state != PARHELIA_M9_FAA_COLOR_LOCK_RETIRED)
       return -EPROTO;
    struct drm_parhelia_m9_faa_graph_color_lock returned = request;
@@ -453,9 +464,12 @@ m9_faa_surface_color_unlock_kernel(struct m9_screen *screen,
    if (screen->faa.chip != M9_FAA_CHIP_M9 || !screen->wait_point ||
        surface->width != 320 || surface->height != 240 || surface->format != 0x66)
       return -EOPNOTSUPP;
+   if (graph->color_program_count != 2 && graph->color_program_count != 4)
+      return -EINVAL;
+   const uint64_t delta = graph->color_program_count == 2 ? 0xa0 : 0xe0;
    if (!graph->prepared || !graph->prepared_id || !graph->initialized ||
-       !graph->init_point || graph->init_point > UINT64_MAX - 0xc0 ||
-       !graph->color_lock_attempted || graph->color_lock_point != graph->init_point + 0xa0 ||
+       !graph->init_point || graph->init_point > UINT64_MAX - (delta + 0x20) ||
+       !graph->color_lock_attempted || graph->color_lock_point != graph->init_point + delta ||
        graph->public_vs_attempted || graph->public_vs_point ||
        graph->public_vs_head_attempted || graph->public_vs_head_point ||
        graph->public_vs_draw_attempted || graph->public_vs_draw_point ||
@@ -509,6 +523,7 @@ m9_faa_surface_public_vs_submit_kernel(struct m9_screen *screen,
        !graph->init_point || graph->init_point > UINT64_MAX - delta)
       return -EINVAL;
    if (graph->color_lock_attempted || graph->color_lock_point ||
+       graph->color_program_count ||
        graph->color_unlock_attempted || graph->color_unlock_point ||
        graph->public_vs_attempted || graph->public_vs_point ||
        graph->public_vs_head_attempted || graph->public_vs_head_point)
@@ -816,6 +831,7 @@ m9_faa_graph_release_kernel(struct m9_screen *screen, struct m9_faa_graph *graph
    if (!graph->prepared_id)
       return graph->prepared || graph->initialized || graph->init_point ||
              graph->color_lock_attempted || graph->color_lock_point ||
+             graph->color_program_count ||
              graph->color_unlock_attempted || graph->color_unlock_point ||
              graph->public_vs_attempted || graph->public_vs_point ||
              graph->public_vs_head_attempted || graph->public_vs_head_point ||
@@ -836,6 +852,7 @@ m9_faa_graph_release_kernel(struct m9_screen *screen, struct m9_faa_graph *graph
    graph->init_point = 0;
    graph->color_lock_attempted = false;
    graph->color_lock_point = 0;
+   graph->color_program_count = 0;
    graph->color_unlock_attempted = false;
    graph->color_unlock_point = 0;
    graph->public_vs_head_attempted = false;

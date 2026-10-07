@@ -248,6 +248,87 @@ fail:
 }
 
 static bool
+fragment_color(const nir_shader *fs)
+{
+   if (!fs || fs->info.stage != MESA_SHADER_FRAGMENT || !fs->info.io_lowered || fs->xfb_info)
+      return false;
+   nir_function_impl *impl = nir_shader_get_entrypoint((nir_shader *)fs);
+   if (!impl || !exec_list_is_singular(&impl->body)) return false;
+   nir_cf_node *node = exec_node_data(nir_cf_node, exec_list_get_head(&impl->body), node);
+   if (node->type != nir_cf_node_block) return false;
+   unsigned written = 0, output_location = UINT32_MAX;
+   nir_foreach_instr(instr, nir_cf_node_as_block(node)) {
+      if (instr->type == nir_instr_type_alu || instr->type == nir_instr_type_load_const)
+         continue;
+      if (instr->type != nir_instr_type_intrinsic) return false;
+      nir_intrinsic_instr *in = nir_instr_as_intrinsic(instr);
+      if (in->intrinsic == nir_intrinsic_load_barycentric_pixel) {
+         if (nir_intrinsic_interp_mode(in) != INTERP_MODE_SMOOTH) return false;
+         continue;
+      }
+      if (in->intrinsic == nir_intrinsic_load_interpolated_input) {
+         if (nir_intrinsic_io_semantics(in).location != VARYING_SLOT_COL0 ||
+             nir_intrinsic_dest_type(in) != nir_type_float32 ||
+             in->def.bit_size != 32 ||
+             !nir_src_is_const(in->src[1]) || nir_src_as_uint(in->src[1]))
+            return false;
+         nir_def *bary = in->src[0].ssa;
+         if (nir_def_instr(bary)->type != nir_instr_type_intrinsic ||
+             nir_def_as_intrinsic(bary)->intrinsic != nir_intrinsic_load_barycentric_pixel ||
+             nir_intrinsic_interp_mode(nir_def_as_intrinsic(bary)) != INTERP_MODE_SMOOTH)
+            return false;
+         continue;
+      }
+      if (in->intrinsic != nir_intrinsic_store_output) return false;
+      nir_io_semantics io = nir_intrinsic_io_semantics(in);
+      if ((io.location != FRAG_RESULT_COLOR && io.location != FRAG_RESULT_DATA0) ||
+          (output_location != UINT32_MAX && output_location != io.location) ||
+          io.dual_source_blend_index || io.fb_fetch_output || io.fb_fetch_output_coherent ||
+          io.per_view || io.high_16bits || io.high_dvec2 || io.no_sysval_output ||
+          io.num_slots != 1 || nir_intrinsic_src_type(in) != nir_type_float32 ||
+          in->src[0].ssa->bit_size != 32 || !nir_src_is_const(in->src[1]) ||
+          nir_src_as_uint(in->src[1]))
+         return false;
+      output_location = io.location;
+      unsigned mask = nir_intrinsic_write_mask(in), base = nir_intrinsic_component(in);
+      if (!mask || base >= 4 || mask >> in->src[0].ssa->num_components || mask >> (4 - base))
+         return false;
+      for (unsigned c = 0; c < in->src[0].ssa->num_components; c++) {
+         if (!(mask & (1u << c))) continue;
+         unsigned bit = 1u << (base + c);
+         if (written & bit) return false;
+         nir_scalar scalar = nir_scalar_chase_movs(nir_get_scalar(in->src[0].ssa, c));
+         if (!nir_scalar_is_intrinsic(scalar)) return false;
+         nir_intrinsic_instr *load = nir_def_as_intrinsic(scalar.def);
+         if (load->intrinsic != nir_intrinsic_load_interpolated_input ||
+             nir_intrinsic_io_semantics(load).location != VARYING_SLOT_COL0 ||
+             nir_intrinsic_component(load) + scalar.comp != base + c)
+            return false;
+         written |= bit;
+      }
+   }
+   return written == 15;
+}
+
+bool
+m9_faa_live_gl_color_build(const struct m9_faa_live_gl *s, const nir_shader *fs,
+                          struct m9_faa_gl_upload *output, const char **reason)
+{
+   uint32_t program[16], constants[4];
+   struct m9_faa_color_fs_interface interface;
+   if (!s || !s->linkage || s->linkage->count != 1 ||
+       s->linkage->stream[0].location != VARYING_SLOT_COL0 || !fragment_color(fs) ||
+       !m9_faa_color_fs_build(0, program, sizeof(program), constants, sizeof(constants), &interface)) {
+      if (reason) *reason = "FAA fragment must pass smooth pixel COLOR0 to the complete color output";
+      return false;
+   }
+   struct m9_faa_live_gl live = *s;
+   live.fragment = (struct m9_faa_program_vector){program, interface.slots};
+   live.fragment_constants = (struct m9_faa_dense_constants){constants, interface.constant_pairs};
+   return m9_faa_live_gl_build(&live, output, reason);
+}
+
+static bool
 color_vec(nir_def *value, const void *cb, size_t bytes, bool uniforms_only,
           uint32_t words[4])
 {

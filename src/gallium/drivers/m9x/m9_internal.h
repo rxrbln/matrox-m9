@@ -134,6 +134,7 @@ struct m9_faa_graph {
    bool initialized;
    bool color_lock_attempted;
    uint64_t color_lock_point;
+   uint32_t color_program_count;
    bool color_unlock_attempted;
    uint64_t color_unlock_point;
    /* A typed preprocessing prefix is distinct from a returned DRAW/image.

@@ -90,5 +90,12 @@ struct m9_faa_gl_upload {
 bool m9_faa_live_gl_build(const struct m9_faa_live_gl *state,
                            struct m9_faa_gl_upload *output,
                            const char **reason);
+/* Compile a real pass-through COLOR0 FS into the live four-vector upload.
+ * Handles scalarized stores and smooth pixel interpolation; unsupported
+ * fragment arithmetic, side effects or additional inputs refuse. */
+bool m9_faa_live_gl_color_build(const struct m9_faa_live_gl *state,
+                              const struct nir_shader *fs,
+                              struct m9_faa_gl_upload *output,
+                              const char **reason);
 void m9_faa_gl_upload_fini(struct m9_faa_gl_upload *upload);
 #endif
