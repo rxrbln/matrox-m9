@@ -1678,6 +1678,57 @@ out_exec:drm_exec_fini(&exec);
 out_binding:kfree(upload);m9x_faa_graph_binding_put(binding);mutex_unlock(&state->lock);drm_dev_exit(idx);return ret;
 }
 
+/* Initial bound-depth FRAME: one owned upload, three distinct private
+ * attachments and the same six borrowed graph reservations. Existing-depth
+ * and live one-stream depth routes remain gated until their source joins. */
+static int m9_faa_graph_depth_frame_ioctl(struct drm_device *drm,
+ struct drm_parhelia_m9_faa_graph_color_frame *args,struct drm_file *file)
+{
+ struct m9x_device *mdev=to_m9x(drm);struct m9_faa_file *state=file->driver_priv;
+ struct m9_faa_prepared_graph *graph;struct m9_faa_graph_binding *binding=NULL;
+ struct m9x_faa_color_input input;struct drm_exec exec;u8 *upload=NULL;
+ u32 sum,tmp,address[PARHELIA_M9_FAA_GRAPH_OWNERS],i;u64 point=0;bool posted=false;int idx,ret;
+ /* The current bounded late grammar is post-Unlock public VS state.
+  * Neither fresh INIT nor the live one-stream COLOR depth route is yet
+  * source-qualified. Preserve the ownership/submit infrastructure but
+  * refuse public activation before any allocation, mapping or upload. */
+ if(!m9x_faa_graph_depth_frame_profile_qualified())return -EOPNOTSUPP;
+ if(!state||args->flags!=PARHELIA_M9_FAA_COLOR_FRAME_FIRST||
+  args->clear_flags!=3||args->clear_color||args->depth_flags!=7||args->raster_flags||
+  args->width!=320||args->height!=240||args->layout.program_count!=4||
+  !args->upload||!args->upload_bytes||args->upload_bytes>0x42000||
+  !args->declaration_count||args->declaration_count>31||args->previous_point>U64_MAX-0x190)
+  return -EOPNOTSUPP;
+ if(check_add_overflow(args->layout.program_bytes,args->layout.constants_bytes,&sum)||
+  check_add_overflow(sum,args->layout.geometry_bytes,&sum)||check_mul_overflow(args->declaration_count,4u,&tmp)||
+  check_add_overflow(sum,tmp,&sum)||sum!=args->upload_bytes)return -EINVAL;
+ if(!m9x_faa_graph_profile_enabled())return -EOPNOTSUPP;
+ if(!drm_dev_enter(drm,&idx))return -ENODEV;
+ mutex_lock(&state->lock);graph=state->graph;
+ if(!m9_faa_graph_continuation_matches(graph,args->graph_id,args->generation,args->previous_point)){ret=-ENOENT;goto out_binding;}
+ mutex_lock(&mdev->transport.lock);
+ ret=m9x_faa_graph_retained_get_locked(mdev,args->generation,args->previous_point,&binding);
+ mutex_unlock(&mdev->transport.lock);if(ret)goto out_binding;
+ if(binding->graph!=graph){ret=-ESTALE;goto out_binding;}
+ upload=memdup_user(u64_to_user_ptr(args->upload),args->upload_bytes);
+ if(IS_ERR(upload)){ret=PTR_ERR(upload);upload=NULL;goto out_binding;}
+ memset(&input,0,sizeof(input));memcpy(&input.layout,&args->layout,sizeof(input.layout));
+ input.program=upload;input.constants=input.program+args->layout.program_bytes;
+ input.geometry=input.constants+args->layout.constants_bytes;input.declaration=input.geometry+args->layout.geometry_bytes;
+ input.record_stride=args->record_stride;input.record_count=args->record_count;input.declaration_count=args->declaration_count;
+ ret=m9x_faa_graph_depth_frame_prepare(mdev,binding,args->generation,args->previous_point,true,&input);if(ret)goto out_binding;
+ drm_exec_init(&exec,DRM_EXEC_INTERRUPTIBLE_WAIT|DRM_EXEC_IGNORE_DUPLICATES,PARHELIA_M9_FAA_GRAPH_OWNERS);
+ drm_exec_until_all_locked(&exec){for(i=0;i<PARHELIA_M9_FAA_GRAPH_OWNERS;i++){
+  ret=drm_exec_prepare_obj(&exec,graph->owner[i],1);drm_exec_retry_on_contention(&exec);if(ret)goto out_exec;}}
+ ret=m9_faa_graph_live_addresses(mdev,graph,address);if(ret)goto out_exec;
+ if(memcmp(binding->address,address,sizeof(address))){ret=-ESTALE;goto out_exec;}
+ ret=m9x_faa_graph_depth_frame_submit(mdev,binding,args->generation,args->previous_point,&point,&posted);
+ if(!ret){if(point!=args->previous_point+0x190)ret=-EIO;
+  else{args->lock_point=point;args->state=PARHELIA_M9_FAA_COLOR_FRAME_FIRST_LOCK_RETIRED;}}
+ out_exec:drm_exec_fini(&exec);
+ out_binding:kfree(upload);m9x_faa_graph_binding_put(binding);mutex_unlock(&state->lock);drm_dev_exit(idx);return ret;
+}
+
 /* One application ABI shares the established first/repeated producer paths.
  * FIRST is a CPU lifecycle selector, not an unencoded GPU state bit. The
  * old diagnostic requests remain unchanged. No output is published unless
@@ -1694,6 +1745,7 @@ int m9x_faa_graph_color_frame_ioctl(struct drm_device *drm,void *data,struct drm
  if(!args->graph_id||!args->previous_point||(args->previous_point&15)||args->lock_point||
   args->flags&~PARHELIA_M9_FAA_COLOR_FRAME_FIRST||args->state||args->pad||
   args->previous_point>U64_MAX-0xe0)return -EINVAL;
+ if(args->depth_flags)return m9_faa_graph_depth_frame_ioctl(drm,args,file);
  if(args->width!=320||args->height!=240||args->layout.program_count!=4||
   args->clear_flags>PARHELIA_M9_FAA_COLOR_CLEAR_TARGET||args->clear_color||
   args->depth_flags||args->raster_flags)return -EOPNOTSUPP;

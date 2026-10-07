@@ -95,6 +95,11 @@ static bool source_layout(const struct m9x_faa_color_input *in)
 	return true;
 }
 
+bool m9x_faa_depth_draw_input_valid(const struct m9x_faa_color_input *in)
+{
+ return source_layout(in);
+}
+
 static bool views_match(const struct m9x_faa_depth_views *views,
 	const struct m9x_faa_graph_draw_owner owner[M9_FAA_DEPTH_DRAW_OWNERS])
 {

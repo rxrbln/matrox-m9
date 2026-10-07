@@ -17,6 +17,8 @@ struct m9x_faa_depth_draw_image {
 	u64 final_point;
 };
 
+bool m9x_faa_depth_draw_input_valid(const struct m9x_faa_color_input *);
+
 /* Source-bounded, post-attach-and-clear suffix only. Caller owns the paired
  * attachment preparation, all six graph fences, publication and wait. */
 int m9x_faa_depth_draw_encode(const u8 *blob, size_t bytes,
