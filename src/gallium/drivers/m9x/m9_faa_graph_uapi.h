@@ -101,3 +101,11 @@ struct drm_parhelia_m9_faa_graph_public_vs_follow {
             struct drm_parhelia_m9_faa_graph_public_vs_follow)
 #endif
 #endif
+
+#ifndef DRM_IOCTL_PARHELIA_M9_FAA_GRAPH_PUBLIC_VS_HEAD
+#define DRM_PARHELIA_M9_FAA_GRAPH_PUBLIC_VS_HEAD 0x18
+#define PARHELIA_M9_FAA_PUBLIC_VS_HEAD_RETIRED 12u
+#define DRM_IOCTL_PARHELIA_M9_FAA_GRAPH_PUBLIC_VS_HEAD \
+   DRM_IOWR(DRM_COMMAND_BASE + DRM_PARHELIA_M9_FAA_GRAPH_PUBLIC_VS_HEAD, \
+            struct drm_parhelia_m9_faa_graph_public_vs)
+#endif

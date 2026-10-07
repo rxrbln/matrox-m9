@@ -38,6 +38,7 @@ m9_faa_graph_create(struct m9_screen *screen, uint32_t width,
        graph->companion.handle || graph->hz.handle || graph->sentinel.handle ||
        graph->prepared_id || graph->prepared || graph->initialized ||
        graph->public_vs_attempted || graph->public_vs_point ||
+       graph->public_vs_head_attempted || graph->public_vs_head_point ||
        graph->public_vs_follow_attempted || graph->public_vs_follow_point ||
        !m9_faa_graph_layout(width, height, &fresh.layout))
       return -EINVAL;
@@ -331,10 +332,10 @@ m9_faa_surface_init_kernel(struct m9_screen *screen,
    return 0;
 }
 
-int
-m9_faa_surface_public_vs_kernel(struct m9_screen *screen,
+static int
+m9_faa_surface_public_vs_submit_kernel(struct m9_screen *screen,
                                struct m9_faa_surface *surface,
-                               const struct m9_faa_public_upload *upload)
+                               const struct m9_faa_public_upload *upload, bool head)
 {
    struct drm_parhelia_m9_faa_graph_public_vs request = {0};
    struct m9_faa_graph *graph;
@@ -345,13 +346,17 @@ m9_faa_surface_public_vs_kernel(struct m9_screen *screen,
    if (!screen || !surface || !upload)
       return -EINVAL;
    graph = &surface->graph;
+   const uint64_t delta = head ? 0x10 : 0x50;
+   bool *attempted = head ? &graph->public_vs_head_attempted : &graph->public_vs_attempted;
+   uint64_t *retired_point = head ? &graph->public_vs_head_point : &graph->public_vs_point;
    if (screen->faa.chip != M9_FAA_CHIP_M9 || !screen->wait_point ||
        surface->width != 320 || surface->height != 240 || surface->format != 0x66)
       return -EOPNOTSUPP;
    if (!graph->prepared || !graph->prepared_id || !graph->initialized ||
-       !graph->init_point || graph->init_point > UINT64_MAX - 0x50)
+       !graph->init_point || graph->init_point > UINT64_MAX - delta)
       return -EINVAL;
-   if (graph->public_vs_attempted || graph->public_vs_point)
+   if (graph->public_vs_attempted || graph->public_vs_point ||
+       graph->public_vs_head_attempted || graph->public_vs_head_point)
       return -ESTALE;
    if (upload->layout.program.bytes != sizeof(request.program) ||
        upload->layout.program.count != 4 ||
@@ -368,13 +373,15 @@ m9_faa_surface_public_vs_kernel(struct m9_screen *screen,
    const struct drm_parhelia_m9_faa_graph_public_vs before = request;
    /* Failure can occur after publication. Preserve all owners and do not
     * retry a potentially consumed graph. Kernel RELEASE/reset owns cleanup. */
-   graph->public_vs_attempted = true;
-   if (ioctl(screen->fd, DRM_IOCTL_PARHELIA_M9_FAA_GRAPH_PUBLIC_VS, &request))
+   *attempted = true;
+   if (ioctl(screen->fd, head ? DRM_IOCTL_PARHELIA_M9_FAA_GRAPH_PUBLIC_VS_HEAD :
+             DRM_IOCTL_PARHELIA_M9_FAA_GRAPH_PUBLIC_VS, &request))
       return -errno;
    if (request.graph_id != before.graph_id || request.generation != before.generation ||
        request.init_point != before.init_point || request.flags || request.pad ||
-       request.state != PARHELIA_M9_FAA_PUBLIC_VS_PREFIX_RETIRED ||
-       request.prefix_point != before.init_point + 0x50 ||
+       request.state != (head ? PARHELIA_M9_FAA_PUBLIC_VS_HEAD_RETIRED :
+                                  PARHELIA_M9_FAA_PUBLIC_VS_PREFIX_RETIRED) ||
+       request.prefix_point != before.init_point + delta ||
        memcmp(&request.layout, &before.layout, sizeof(request.layout)) ||
        memcmp(request.program, before.program, sizeof(request.program)) ||
        memcmp(request.constants, before.constants, sizeof(request.constants)) ||
@@ -383,8 +390,24 @@ m9_faa_surface_public_vs_kernel(struct m9_screen *screen,
    int ret = m9_wait_for_point(screen, request.prefix_point);
    if (ret)
       return ret;
-   graph->public_vs_point = request.prefix_point;
+   *retired_point = request.prefix_point;
    return 0;
+}
+
+int
+m9_faa_surface_public_vs_kernel(struct m9_screen *screen,
+                               struct m9_faa_surface *surface,
+                               const struct m9_faa_public_upload *upload)
+{
+   return m9_faa_surface_public_vs_submit_kernel(screen, surface, upload, false);
+}
+
+int
+m9_faa_surface_public_vs_head_kernel(struct m9_screen *screen,
+                                    struct m9_faa_surface *surface,
+                                    const struct m9_faa_public_upload *upload)
+{
+   return m9_faa_surface_public_vs_submit_kernel(screen, surface, upload, true);
 }
 
 int
@@ -402,6 +425,7 @@ m9_faa_surface_public_vs_follow_kernel(struct m9_screen *screen,
       return -EOPNOTSUPP;
    if (!graph->prepared || !graph->prepared_id || !graph->initialized ||
        !graph->public_vs_attempted || !graph->init_point ||
+       graph->public_vs_head_attempted || graph->public_vs_head_point ||
        graph->init_point > UINT64_MAX - 0x80 ||
        graph->public_vs_point != graph->init_point + 0x50)
       return -EINVAL;
@@ -436,6 +460,7 @@ m9_faa_graph_release_kernel(struct m9_screen *screen, struct m9_faa_graph *graph
    if (!graph->prepared_id)
       return graph->prepared || graph->initialized || graph->init_point ||
              graph->public_vs_attempted || graph->public_vs_point ||
+             graph->public_vs_head_attempted || graph->public_vs_head_point ||
              graph->public_vs_follow_attempted || graph->public_vs_follow_point ? -EPROTO : 0;
    request.graph_id = graph->prepared_id;
    request.generation = graph->prepared_generation;
@@ -446,6 +471,8 @@ m9_faa_graph_release_kernel(struct m9_screen *screen, struct m9_faa_graph *graph
    graph->prepared = false;
    graph->initialized = false;
    graph->init_point = 0;
+   graph->public_vs_head_attempted = false;
+   graph->public_vs_head_point = 0;
    graph->public_vs_attempted = false;
    graph->public_vs_point = 0;
    graph->public_vs_follow_attempted = false;

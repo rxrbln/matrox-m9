@@ -80,6 +80,9 @@ int m9_faa_surface_init_kernel(struct m9_screen *screen,
 int m9_faa_surface_public_vs_kernel(struct m9_screen *screen,
                                   struct m9_faa_surface *surface,
                                   const struct m9_faa_public_upload *upload);
+int m9_faa_surface_public_vs_head_kernel(struct m9_screen *screen,
+                                  struct m9_faa_surface *surface,
+                                  const struct m9_faa_public_upload *upload);
 /* Continue only the actually retired public prefix on this retained graph.
  * Success records the next preprocessing endpoint; pixels remain separate. */
 int m9_faa_surface_public_vs_follow_kernel(struct m9_screen *screen,
