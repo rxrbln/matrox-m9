@@ -8380,57 +8380,160 @@ int m9x_faa_graph_depth_unlocked_get_locked(struct m9x_device *mdev,
 }
 
 int m9x_faa_graph_color_next_prepare(struct m9x_device *mdev,
- struct m9_faa_graph_binding *binding,u32 generation,u64 previous_unlock_point,
- const struct m9x_faa_color_input *input,u32 clear_flags)
+				     struct m9_faa_graph_binding *binding,
+				     u32 generation, u64 previous_unlock_point,
+				     const struct m9x_faa_color_input *input,
+				     u32 clear_flags)
 {
 #ifdef M9_FAA_GRAPH_INIT_CONTROL
- struct m9x_transport *t=&mdev->transport;struct m9x_faa_replay *r;
- struct m9_faa_color_storage *n=NULL,*old=NULL;struct m9_faa_graph_binding *checked=NULL;
- struct m9x_faa_graph_draw_owner owner[31];struct m9x_faa_color_next_image image;
- const struct firmware *fw=NULL;u8 *scratch=NULL;u32 i,capacity;int ret;
- if(!binding||!input||!m9_faa_color_four_experimental||input->layout.program_count!=4||clear_flags>1)return -EOPNOTSUPP;
- if(input->layout.program_bytes>4096||input->layout.constants_bytes>16384||
-  (input->record_stride!=32&&(input->record_stride!=16||input->declaration_count!=3))||
-  !input->record_count||input->record_count%3||input->record_count>12288||
-  input->layout.geometry_bytes>0x40000-256)return -ERANGE;
- n=kzalloc(sizeof(*n),GFP_KERNEL);if(!n)return -ENOMEM;
- n->geometry_offset=ALIGN(input->layout.constants_bytes,128);
- capacity=n->geometry_offset+input->layout.geometry_bytes+768;
- n->constants=kzalloc(capacity,GFP_KERNEL);if(!n->constants){ret=-ENOMEM;goto release;}
- scratch=kmalloc(M9_FAA_COLOR_SECONDARY_CAPACITY,GFP_KERNEL);if(!scratch){ret=-ENOMEM;goto release;}
- ret=request_firmware(&fw,M9_FAA_GRAPH_COLOR_FOUR_FIRMWARE,&mdev->pdev->dev);if(ret)goto release;
- mutex_lock(&t->lock);
- ret=m9x_faa_graph_depth_unlocked_get_locked(mdev,generation,previous_unlock_point,&checked);if(ret)goto unlock;
- r=t->faa;if(checked!=binding){ret=-ESTALE;goto unlock;}
- /* The historical color-only NEXT grammar is four-stage. Its retained
-  * source does not authorize changing a two-stage first frame into a
-  * four-stage successor merely because Unlock completed. */
- if(!r->color_image||r->color_image->layout.program_count!=4){ret=-EOPNOTSUPP;goto unlock;}
- if(r->draw_owner[0].bytes<input->layout.program_bytes||!r->draw_owner[0].vram){ret=-ERANGE;goto unlock;}
- for(i=0;i<31;i++){
-  struct m9_faa_owner *o;
-  switch(i){case 26:o=&r->draw_owner[0];break;case 27:o=m9_faa_command_owner(r,false);break;
-   case 28:o=&r->draw_owner[1];break;case 29:o=m9_faa_command_owner(r,true);break;
-   case 30:o=&r->owner[27];break;default:o=&r->owner[i];break;}
-  if(!o){ret=-ESTALE;goto unlock;}
-  owner[i]=(struct m9x_faa_graph_draw_owner){o->base,o->bytes};
- }
- image=(struct m9x_faa_color_next_image){
-  .image={n->program,n->constants,n->primary,n->secondary,sizeof(n->program),capacity,sizeof(n->primary),sizeof(n->secondary),&n->secondary_bytes},
-  .clear=n->clear,.clear_capacity=sizeof(n->clear),.clear_length=&n->clear_bytes,
-  .secondary_scratch=scratch,.secondary_scratch_capacity=M9_FAA_COLOR_SECONDARY_CAPACITY};
- ret=m9x_faa_color_next_encode(fw->data,fw->size,owner,r->primary_bytes,
-  r->color_secondary_cursor,m9_faa_frame_origin(r,previous_unlock_point),input,clear_flags,&image);if(ret)goto unlock;
- if((u64)r->graph_draw_end_bytes+n->clear_bytes+M9_FAA_COLOR_NEXT_PRIMARY_BYTES>owner[27].bytes){ret=-ENOSPC;goto unlock;}
- n->layout=input->layout;n->constants_bytes=input->layout.constants_bytes;n->geometry_bytes=128+ALIGN(input->record_count,4)*input->record_stride;
- n->program_bytes=input->layout.program_bytes;n->primary_length=M9_FAA_COLOR_NEXT_PRIMARY_BYTES;n->draw_length=60;
- n->lock_delta=0xd0+(clear_flags?0x10:0);n->secondary_cursor=r->color_secondary_cursor;
- n->previous_unlock_point=previous_unlock_point;
- old=r->color_image;r->color_image=n;n=NULL;ret=0;
-unlock:mutex_unlock(&t->lock);m9x_faa_graph_binding_put(checked);
-release:kfree(scratch);if(fw)release_firmware(fw);if(n)kfree(n->constants);kfree(n);if(old)kfree(old->constants);kfree(old);return ret;
+	struct m9x_transport *t = &mdev->transport;
+	struct m9x_faa_replay *r;
+	struct m9_faa_color_storage *n = NULL, *old = NULL;
+	struct m9_faa_graph_binding *checked = NULL;
+	struct m9x_faa_graph_draw_owner owner[31];
+	struct m9x_faa_color_next_image image;
+	const struct firmware *fw = NULL;
+	u8 *scratch = NULL;
+	u32 i, capacity;
+	int ret;
+
+	if (!binding || !input || !m9_faa_color_four_experimental ||
+	    input->layout.program_count != 4 || clear_flags > 1)
+		return -EOPNOTSUPP;
+	if (input->layout.program_bytes > 4096 ||
+	    input->layout.constants_bytes > 16384 ||
+	    (input->record_stride != 32 &&
+	     (input->record_stride != 16 || input->declaration_count != 3)) ||
+	    !input->record_count || input->record_count % 3 ||
+	    input->record_count > 12288 ||
+	    input->layout.geometry_bytes > 0x40000 - 256)
+		return -ERANGE;
+	n = kzalloc_obj(*n);
+	if (!n)
+		return -ENOMEM;
+	n->geometry_offset = ALIGN(input->layout.constants_bytes, 128);
+	capacity = n->geometry_offset + input->layout.geometry_bytes + 768;
+	n->constants = kzalloc(capacity, GFP_KERNEL);
+	if (!n->constants) {
+		ret = -ENOMEM;
+		goto release;
+	}
+	scratch = kmalloc(M9_FAA_COLOR_SECONDARY_CAPACITY, GFP_KERNEL);
+	if (!scratch) {
+		ret = -ENOMEM;
+		goto release;
+	}
+	ret = request_firmware(&fw, M9_FAA_GRAPH_COLOR_FOUR_FIRMWARE,
+			       &mdev->pdev->dev);
+	if (ret)
+		goto release;
+	mutex_lock(&t->lock);
+	ret = m9x_faa_graph_depth_unlocked_get_locked(mdev, generation,
+						      previous_unlock_point,
+						      &checked);
+	if (ret)
+		goto unlock;
+	r = t->faa;
+	if (checked != binding) {
+		ret = -ESTALE;
+		goto unlock;
+	}
+	/* The historical color-only NEXT grammar is four-stage. Its retained
+	 * source does not authorize changing a two-stage first frame into a
+	 * four-stage successor merely because Unlock completed.
+	 */
+	if (!r->color_image || r->color_image->layout.program_count != 4) {
+		ret = -EOPNOTSUPP;
+		goto unlock;
+	}
+	if (r->draw_owner[0].bytes < input->layout.program_bytes ||
+	    !r->draw_owner[0].vram) {
+		ret = -ERANGE;
+		goto unlock;
+	}
+	for (i = 0; i < 31; i++) {
+		struct m9_faa_owner *o;
+
+		switch (i) {
+		case 26:
+			o = &r->draw_owner[0];
+			break;
+		case 27:
+			o = m9_faa_command_owner(r, false);
+			break;
+		case 28:
+			o = &r->draw_owner[1];
+			break;
+		case 29:
+			o = m9_faa_command_owner(r, true);
+			break;
+		case 30:
+			o = &r->owner[27];
+			break;
+		default:
+			o = &r->owner[i];
+			break;
+		}
+		if (!o) {
+			ret = -ESTALE;
+			goto unlock;
+		}
+		owner[i] =
+			(struct m9x_faa_graph_draw_owner){ o->base, o->bytes };
+	}
+	image = (struct m9x_faa_color_next_image){
+		.image = { n->program, n->constants, n->primary, n->secondary,
+			   sizeof(n->program), capacity, sizeof(n->primary),
+			   sizeof(n->secondary), &n->secondary_bytes },
+		.clear = n->clear,
+		.clear_capacity = sizeof(n->clear),
+		.clear_length = &n->clear_bytes,
+		.secondary_scratch = scratch,
+		.secondary_scratch_capacity = M9_FAA_COLOR_SECONDARY_CAPACITY
+	};
+	ret = m9x_faa_color_next_encode(fw->data, fw->size, owner,
+					r->primary_bytes,
+					r->color_secondary_cursor,
+					m9_faa_frame_origin(r, previous_unlock_point),
+					input, clear_flags, &image);
+	if (ret)
+		goto unlock;
+	if ((u64)r->graph_draw_end_bytes + n->clear_bytes +
+		    M9_FAA_COLOR_NEXT_PRIMARY_BYTES >
+	    owner[27].bytes) {
+		ret = -ENOSPC;
+		goto unlock;
+	}
+	n->layout = input->layout;
+	n->constants_bytes = input->layout.constants_bytes;
+	n->geometry_bytes =
+		128 + ALIGN(input->record_count, 4) * input->record_stride;
+	n->program_bytes = input->layout.program_bytes;
+	n->primary_length = M9_FAA_COLOR_NEXT_PRIMARY_BYTES;
+	n->draw_length = 60;
+	n->lock_delta = 0xd0 + (clear_flags ? 0x10 : 0);
+	n->secondary_cursor = r->color_secondary_cursor;
+	n->previous_unlock_point = previous_unlock_point;
+	old = r->color_image;
+	r->color_image = n;
+	n = NULL;
+	ret = 0;
+unlock:
+	mutex_unlock(&t->lock);
+	m9x_faa_graph_binding_put(checked);
+release:
+	kfree(scratch);
+	if (fw)
+		release_firmware(fw);
+	if (n)
+		kfree(n->constants);
+	kfree(n);
+	if (old)
+		kfree(old->constants);
+	kfree(old);
+	return ret;
 #else
- return -EOPNOTSUPP;
+	return -EOPNOTSUPP;
 #endif
 }
 
