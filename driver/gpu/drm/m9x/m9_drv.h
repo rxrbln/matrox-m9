@@ -705,6 +705,11 @@ int m9x_faa_graph_depth_frame_receipt_locked(struct m9x_device *,u32,u64,u64,u64
 int m9x_faa_graph_depth_frame_maintenance_locked(struct m9x_device *,u32,u64,u64,u64 *);
 int m9x_faa_graph_command_pool_prepare(struct m9x_device *,struct m9_faa_graph_binding *,u32,u64);
 int m9x_faa_graph_depth_later_prepare(struct m9x_device *,struct m9_faa_graph_binding *,u32,u64,const struct m9x_faa_color_input *,u32,u32);
+int m9x_faa_graph_clear_prefix_binding_locked(struct m9x_device *,u32,u64,struct m9_faa_graph_binding **);
+int m9x_faa_graph_clear_prefix_ioctl(struct drm_device *,void *,struct drm_file *);
+int m9x_faa_graph_clear_prefix_submit(struct m9x_device *,struct m9_faa_graph_binding *,
+ const struct drm_parhelia_m9_faa_graph_clear_prefix *,
+ struct drm_parhelia_m9_faa_graph_clear_prefix *);
 int m9x_faa_graph_depth_frame_submit(struct m9x_device *,struct m9_faa_graph_binding *,u32,u64,u64 *,bool *);
 int m9x_faa_graph_color_frame_ioctl(struct drm_device *,void *,struct drm_file *);
 int m9x_faa_graph_depth_batch_prepare(struct m9x_device *,struct m9_faa_graph_binding *,u32,u64,bool,const struct m9x_faa_owned_color_batch *);

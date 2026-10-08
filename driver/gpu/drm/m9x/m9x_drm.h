@@ -166,6 +166,25 @@ struct drm_parhelia_m9_faa_graph_dual_batch {
 };
 #define DRM_IOCTL_PARHELIA_M9_FAA_GRAPH_DUAL_BATCH DRM_IOWR(DRM_COMMAND_BASE + DRM_PARHELIA_M9_FAA_GRAPH_DUAL_BATCH, struct drm_parhelia_m9_faa_graph_dual_batch)
 
+/* Source-closed initialized CLEAR3 publication only. No shader/upload or
+ * DRAW/Lock admission. All outputs start zero; receipt retries never repost.
+ * v1 is320x240,count2, unrotated U-only origin; P/maintenance are refused. */
+#define DRM_PARHELIA_M9_FAA_GRAPH_CLEAR_PREFIX 0x23
+#define PARHELIA_M9_FAA_CLEAR_PREFIX_VERSION 1u
+#define PARHELIA_M9_FAA_CLEAR_PREFIX_RETIRED 25u
+#define PARHELIA_M9_FAA_CLEAR_PREFIX_MODE_VALID 1u
+#define PARHELIA_M9_FAA_CLEAR_PREFIX_MODE_ENABLED 2u
+#define PARHELIA_M9_FAA_CLEAR_PREFIX_MODE_EMBEDDED 4u
+struct drm_parhelia_m9_faa_graph_clear_prefix {
+ __u64 graph_id,previous_unlock_point,clear_point;
+ __u32 generation,version,width,height,flags,state;
+ __u32 primary_base,primary_capacity,primary_start,primary_end;
+ __u32 secondary_base,secondary_capacity,secondary_cursor,end_count;
+ __u32 end_bytes[9];
+ __u32 raw00,raw04,raw20,mode_flags,reserved;
+};
+#define DRM_IOCTL_PARHELIA_M9_FAA_GRAPH_CLEAR_PREFIX DRM_IOWR(DRM_COMMAND_BASE + DRM_PARHELIA_M9_FAA_GRAPH_CLEAR_PREFIX, struct drm_parhelia_m9_faa_graph_clear_prefix)
+
 /* Retired Lock -> authentic Unlock -> separate-owner GPU presentation.
  * Input outputs/padding are zero. U stays immutable; P is a distinct frontier.
  * Destination descriptor is its ordinary CC21 view, never a caller GPUVA. */
