@@ -113,10 +113,8 @@ int m9x_faa_later_depth_two_clear_encode(const u8 *sample, size_t sample_bytes,
 						 owner[34],
 					 const struct m9x_faa_depth_views *views,
 					 u32 cursor, u64 origin,
-					 struct m9x_faa_later_depth_clear_image
-						 *out,
-					 struct m9x_faa_later_depth_scratch
-						 *scratch)
+					 struct m9x_faa_later_depth_clear_image *out,
+					 struct m9x_faa_later_depth_scratch *scratch)
 {
 	u32 bytes, ends[9], i;
 	int ret;

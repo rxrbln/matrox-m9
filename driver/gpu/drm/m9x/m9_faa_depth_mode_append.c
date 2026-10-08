@@ -6,8 +6,7 @@
 #include "m9_faa_depth_mode_append.h"
 #include "m9_faa_graph_depth_encode.h"
 
-int m9x_faa_depth_mode_append_encode(const struct m9x_faa_depth_mode_append_input
-					     *in,
+int m9x_faa_depth_mode_append_encode(const struct m9x_faa_depth_mode_append_input *in,
 				     struct m9x_faa_depth_mode_append_image *out)
 {
 	static const u32 sec_at[7] = { 12, 60, 592, 620, 632, 692, 788 };

@@ -13,8 +13,7 @@
 /* After the host-test typedefs of the texture headers. */
 #include "m9_cmd.h"
 
-int m9x_faa_texture_dual_link_place(const struct m9x_faa_texture_dual_link_input
-					    *in,
+int m9x_faa_texture_dual_link_place(const struct m9x_faa_texture_dual_link_input *in,
 				    u8 *secondary, u32 bytes)
 {
 	/* Source packet order: carry, gather, position, fragment. Stage index

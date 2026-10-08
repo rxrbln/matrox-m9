@@ -52,10 +52,8 @@ int m9x_faa_public_vs_follow_encode(const u8 *blob, size_t bytes,
 				    const struct m9x_faa_graph_draw_owner
 					    owner[M9_FAA_DRAW_SOURCE_OWNERS],
 				    u32 live_primary_bytes, u64 prefix_point,
-				    const struct m9x_faa_public_vs_follow_image
-					    *out,
-				    struct m9x_faa_public_vs_follow_endpoints
-					    *ends)
+				    const struct m9x_faa_public_vs_follow_image *out,
+				    struct m9x_faa_public_vs_follow_endpoints *ends)
 {
 	u32 words[ARRAY_SIZE(fields)], address, final, i, j;
 	void *dest[3];

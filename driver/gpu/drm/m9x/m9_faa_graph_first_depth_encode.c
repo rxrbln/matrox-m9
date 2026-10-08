@@ -7,13 +7,11 @@
 #include "m9_faa_depth_mode.h"
 
 int m9x_faa_first_depth_prefix_encode(const u8 *blob, size_t bytes,
-				      const struct m9x_faa_graph_draw_owner
-					      *owner,
+				      const struct m9x_faa_graph_draw_owner *owner,
 				      const struct m9x_faa_depth_views *views,
 				      u64 init_point, u8 *primary,
 				      size_t capacity, u32 *length, u32 *ends,
-				      struct m9x_faa_first_depth_scratch
-					      *scratch)
+				      struct m9x_faa_first_depth_scratch *scratch)
 {
 	struct m9x_faa_depth_stage_image hz;
 	const struct m9x_faa_depth_view *color;
@@ -151,8 +149,7 @@ int m9x_faa_first_depth_encode(const u8 *sample, size_t sample_bytes,
 			       u32 *primary_bytes, u32 *secondary_bytes,
 			       u32 *ends,
 			       const struct m9x_faa_color_image *first_scratch,
-			       struct m9x_faa_first_depth_scratch
-				       *prefix_scratch)
+			       struct m9x_faa_first_depth_scratch *prefix_scratch)
 {
 	u32 length, sec, i, ef, shift;
 	int ret;
@@ -315,6 +312,7 @@ int m9x_faa_first_depth_color_stage_encode(const u8 *first, size_t first_bytes,
 	m9_cmd_put(secondary + a8_at, m9x_faa_depth_a8(input->depth_flags));
 	if (two) {
 		u32 ef = m9_cmd_get(secondary + ef_at);
+
 		mode.ef = (ef & ~0x20000000u) |
 			  (mode.after.enabled ? 0 : 0x20000000u);
 		m9_cmd_put(secondary + ef_at, mode.ef);

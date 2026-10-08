@@ -68,8 +68,7 @@ int m9x_faa_graph_next_finish_encode(const u8 *blob, size_t bytes,
 				     const struct m9x_faa_graph_draw_owner
 					     owner[M9_FAA_DRAW_SOURCE_OWNERS],
 				     u32 live_primary_bytes, u64 prefix_point,
-				     const struct m9x_faa_graph_next_finish_image
-					     *image)
+				     const struct m9x_faa_graph_next_finish_image *image)
 {
 	u32 values[ARRAY_SIZE(finish_fixups)];
 	u32 direct[ARRAY_SIZE(finish_direct_dst)];

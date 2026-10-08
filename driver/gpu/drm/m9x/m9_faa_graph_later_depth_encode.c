@@ -332,8 +332,7 @@ int m9x_faa_later_depth_append_encode(const struct m9x_faa_graph_draw_owner
 				      u64 old_point, const u8 *fresh,
 				      u32 fresh_bytes,
 				      const struct m9x_faa_color_input *input,
-				      struct m9x_faa_later_depth_append_image
-					      *out)
+				      struct m9x_faa_later_depth_append_image *out)
 {
 	static const u16 lock_at[] = { 128, 184, 320, 3084, 3548, 3568 };
 	static const u8 lock_back[] = { 0x20, 0x10, 0x10, 0x10, 0x20, 0 };

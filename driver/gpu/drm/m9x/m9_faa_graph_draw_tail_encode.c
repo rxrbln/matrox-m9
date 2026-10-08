@@ -60,8 +60,7 @@ int m9x_faa_graph_draw_tail_encode(const u8 *blob, size_t bytes,
 					   owner[M9_FAA_DRAW_SOURCE_OWNERS],
 				   u32 live_primary_bytes, u32 width,
 				   u32 height, u64 prefix_point,
-				   const struct m9x_faa_graph_draw_tail_image
-					   *image)
+				   const struct m9x_faa_graph_draw_tail_image *image)
 {
 	u32 values[ARRAY_SIZE(tail_fixups)], i, address;
 	u32 secondary_end = M9_FAA_DRAW_TAIL_SECONDARY_OFFSET +

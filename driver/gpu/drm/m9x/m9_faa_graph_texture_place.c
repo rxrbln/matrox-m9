@@ -11,8 +11,7 @@
 #include "m9_cmd.h"
 
 int m9x_faa_texture_bind_place(const struct m9x_faa_texture_bind_input *in,
-			       const struct m9x_faa_texture_program_interface
-				       *program,
+			       const struct m9x_faa_texture_program_interface *program,
 			       u8 *secondary, u32 bytes)
 {
 	struct m9x_faa_texture_bind_words image;

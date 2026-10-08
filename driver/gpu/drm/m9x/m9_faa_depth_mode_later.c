@@ -11,12 +11,10 @@ int m9x_faa_depth_mode_later_encode(const u8 *sample, size_t sample_bytes,
 				    const struct m9x_faa_depth_views *v,
 				    u32 init_bytes, u32 pcursor, u32 scursor,
 				    u64 origin, u64 next,
-				    const struct m9x_faa_depth_mode_state
-					    *before,
+				    const struct m9x_faa_depth_mode_state *before,
 				    const struct m9x_faa_color_input *input,
 				    struct m9x_faa_later_depth_image *out,
-				    struct m9x_faa_depth_mode_later_scratch
-					    *scratch,
+				    struct m9x_faa_depth_mode_later_scratch *scratch,
 				    struct m9x_faa_depth_mode_state *after)
 {
 	struct m9x_faa_depth_mode_image mode;

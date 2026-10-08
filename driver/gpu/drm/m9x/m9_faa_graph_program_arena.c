@@ -135,8 +135,7 @@ int m9x_faa_program_arena_encode(const struct m9x_faa_graph_draw_owner *owner,
 				    slot_offset, false);
 }
 
-int m9x_faa_program_arena_two_encode(const struct m9x_faa_graph_draw_owner
-					     *owner,
+int m9x_faa_program_arena_two_encode(const struct m9x_faa_graph_draw_owner *owner,
 				     const struct m9x_faa_program_arena_job *job,
 				     u32 count, u8 *code_page,
 				     u32 code_capacity, u32 *slot_offset)

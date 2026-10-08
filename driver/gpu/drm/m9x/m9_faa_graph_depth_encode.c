@@ -284,11 +284,9 @@ int m9x_faa_attachment_clear_encode(const struct m9x_faa_depth_views *views,
  * f5227..f56ae emits nine controls, then b5fc3's page-run family. The source
  * initializes HZ with its E3/E6 header only after that first color END.
  */
-int m9x_faa_color_attachment_clear_encode(const struct m9x_faa_depth_views
-						  *views,
+int m9x_faa_color_attachment_clear_encode(const struct m9x_faa_depth_views *views,
 					  u32 queue_start, u32 depth_bits,
-					  struct m9x_faa_attachment_clear_image
-						  *out)
+					  struct m9x_faa_attachment_clear_image *out)
 {
 	static const u32 prefix[15] = { 0x45458fe6, 0x04000001, 0x80000600,
 					0x45929190, 0,		0,

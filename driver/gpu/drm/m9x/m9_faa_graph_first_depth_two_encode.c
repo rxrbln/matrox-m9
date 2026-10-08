@@ -16,10 +16,8 @@ int m9x_faa_first_depth_two_encode(const u8 *sample, size_t sample_bytes,
 				   u8 *secondary, size_t secondary_capacity,
 				   u32 *primary_bytes, u32 *secondary_bytes,
 				   u32 *ends,
-				   const struct m9x_faa_color_image
-					   *first_scratch,
-				   struct m9x_faa_first_depth_scratch
-					   *prefix_scratch)
+				   const struct m9x_faa_color_image *first_scratch,
+				   struct m9x_faa_first_depth_scratch *prefix_scratch)
 {
 	u32 length, sec, extra, i, expected;
 	int ret;

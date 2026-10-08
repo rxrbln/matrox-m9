@@ -13,8 +13,7 @@ static const u8 digest[32] = { 0x68, 0xd8, 0x5c, 0xf3, 0xb1, 0xf9, 0xc9, 0x6f,
 int m9x_faa_depth_mode_reset_encode(const u8 *blob, size_t bytes,
 				    const struct m9x_faa_graph_draw_owner *o,
 				    const struct m9x_faa_depth_views *v,
-				    const struct m9x_faa_depth_mode_state
-					    *before,
+				    const struct m9x_faa_depth_mode_state *before,
 				    bool resolved_primary, u64 epoch,
 				    struct m9x_faa_depth_mode_reset_image *out)
 {

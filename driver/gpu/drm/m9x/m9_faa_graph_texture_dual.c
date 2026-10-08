@@ -17,8 +17,7 @@
 
 int m9x_faa_texture_dual_bind_place(const struct m9x_faa_texture_bind_input
 					    unit[2],
-				    const struct m9x_faa_texture_dual_program
-					    *program,
+				    const struct m9x_faa_texture_dual_program *program,
 				    u8 *secondary, u32 bytes)
 {
 	struct m9x_faa_texture_bind_input input;
@@ -203,8 +202,7 @@ int m9x_faa_texture_dual_bind_append_place(const struct m9x_faa_texture_bind_inp
 
 int m9x_faa_texture_dual_bind_later_place(const struct m9x_faa_texture_bind_input
 						  unit[2],
-					  const struct m9x_faa_texture_dual_program
-						  *program,
+					  const struct m9x_faa_texture_dual_program *program,
 					  u8 *secondary, u32 bytes)
 {
 	struct m9x_faa_texture_bind_input input;
@@ -271,8 +269,7 @@ int m9x_faa_texture_dual_bind_later_place(const struct m9x_faa_texture_bind_inpu
 
 int m9x_faa_texture_dual_colorpass_place(const struct m9x_faa_texture_bind_input
 						 unit[2],
-					 const struct m9x_faa_texture_dual_program
-						 *program,
+					 const struct m9x_faa_texture_dual_program *program,
 					 u8 *secondary, u32 bytes)
 {
 	struct m9x_faa_texture_bind_input live;

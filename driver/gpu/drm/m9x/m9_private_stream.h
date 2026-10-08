@@ -25,9 +25,9 @@ struct m9_private_stream_owner {
 	enum m9_private_stream_domain domain;
 };
 
-static inline int m9_private_stream_range(u32 words[3],
-				 const struct m9_private_stream_owner *owner,
-				 u32 start, u32 end)
+static inline int
+m9_private_stream_range(u32 words[3], const struct m9_private_stream_owner *owner,
+			u32 start, u32 end)
 {
 	u64 first, limit;
 
