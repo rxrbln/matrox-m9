@@ -1358,15 +1358,19 @@ int m9x_address_check_local_mapping(struct m9x_device *mdev, u32 base, u32 bytes
 	return 0;
 }
 
-int m9x_address_check_local_identity(struct m9x_device *mdev, u32 base, u32 bytes)
+/* Called only after the compact/root identity check under transport.lock.
+ * Keep secondary metadata validation separate so a publication does not
+ * repeat the same compact MMIO scan through the public strict checker. */
+static int m9_address_check_local_secondary_identity(struct m9x_device *mdev,
+						     u32 base, u32 bytes)
 {
 	struct m9x_address_space *a = mdev->transport.address;
 	u64 end = (u64)base + bytes;
 	u32 address, slot;
-	int ret = m9_address_check_local_compact(mdev, base, bytes);
 
-	if (ret || !a->layout.secondary_bytes)
-		return ret;
+	lockdep_assert_held(&mdev->transport.lock);
+	if (!a->layout.secondary_bytes)
+		return 0;
 	for (address = base; address < end; address += PAGE_SIZE) {
 		if (m9_address_secondary_slot(&a->layout, address, &slot) ||
 		    iosys_map_rd(&a->map, slot, u32) != (address | 8u) ||
@@ -1375,6 +1379,15 @@ int m9x_address_check_local_identity(struct m9x_device *mdev, u32 base, u32 byte
 			return -EFAULT;
 	}
 	return 0;
+}
+
+int m9x_address_check_local_identity(struct m9x_device *mdev, u32 base, u32 bytes)
+{
+	int ret = m9_address_check_local_compact(mdev, base, bytes);
+
+	if (ret)
+		return ret;
+	return m9_address_check_local_secondary_identity(mdev, base, bytes);
 }
 
 /* The private caller owns each pinned local range. Reproduce its actual
@@ -1390,7 +1403,7 @@ int m9x_address_local_prepare(struct m9x_device *mdev, u32 base, u32 bytes)
 	if (ret || !a->layout.secondary_bytes)
 		return ret;
 	/* Matching known records already satisfy this owned publication. */
-	if (!m9x_address_check_local_identity(mdev, base, bytes))
+	if (!m9_address_check_local_secondary_identity(mdev, base, bytes))
 		return 0;
 	for (address = base; address < end; address += PAGE_SIZE) {
 		ret = m9_address_secondary_slot(&a->layout, address, &slot);
@@ -1449,12 +1462,15 @@ int m9x_address_cpu_local_prepare(struct m9x_device *mdev, u32 base, u32 bytes)
 		if (installed && installed != leaf)
 			return -EEXIST;
 	}
+	/* local_prepare proved every compact leaf equals address|8. The
+	 * destination preflight above reread those live leaves; no mapping
+	 * writer can run while this lock is held. Publish that same verified
+	 * identity value without a third leaf read. This is not a cached PTE
+	 * or a skipped destination/metadata check. */
 	for (address = base; address < end; address += PAGE_SIZE) {
-		slot = m9_address_identity_slot(&a->layout, address);
 		root_slot = a->layout.translation_base +
 				(address >> PAGE_SHIFT) * sizeof(u32);
-		iosys_map_wr(&a->map, root_slot, u32,
-			     iosys_map_rd(&a->map, slot, u32));
+		iosys_map_wr(&a->map, root_slot, u32, address | 8u);
 	}
 	/* Actual 594b6 -> 59af0 packed token 0x30000c8f emits f,0,c.
 	 * Complete the CPU mirror before publishing a tagged aperture slot. */
