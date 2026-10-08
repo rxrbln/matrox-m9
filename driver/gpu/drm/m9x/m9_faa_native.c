@@ -10999,60 +10999,155 @@ void m9x_faa_report_stall_locked(struct m9x_device *mdev, u32 head, u32 end)
 
 #ifdef M9_FAA_GRAPH_INIT_CONTROL
 static int m9_faa_primary_rotate(struct m9x_device *mdev,
- struct m9_faa_graph_binding *binding,u32 generation,u64 previous,u32 needed)
+				 struct m9_faa_graph_binding *binding,
+				 u32 generation, u64 previous, u32 needed)
 {
- struct m9x_transport *t=&mdev->transport;struct m9x_faa_replay *r;
- struct m9_faa_command_pools *p;struct m9_faa_owner *old,*selected;
- struct m9x_faa_secondary_pool_observation observed;
- struct m9x_faa_primary_pool_image image;m9x_faa_primary_transition token;
- u64 next=0;u32 i,raw;int ret;
- mutex_lock(&t->lock);
- ret=m9_faa_depth_frame_retained_state(mdev,binding,generation,previous,&next);if(ret)goto unlock;
- r=t->faa;
- if(!r->depth_storage||!r->depth_storage->initialized||r->depth_storage->frame){ret=-ESTALE;goto unlock;}
- if(needed>0x40000-16){ret=-ENOSPC;goto unlock;}
- if(r->graph_draw_end_bytes<=0x40000&&needed+16<=0x40000-r->graph_draw_end_bytes){ret=0;goto unlock;}
- mutex_unlock(&t->lock);
- ret=m9x_faa_graph_command_pool_prepare(mdev,binding,generation,previous);if(ret)return ret;
- mutex_lock(&t->lock);
- ret=m9_faa_depth_frame_retained_state(mdev,binding,generation,previous,&next);if(ret)goto unlock;
- r=t->faa;p=r->command_pools;
- if(!p||!p->ready||p->generation!=generation||p->unlock_point){ret=-ESTALE;goto unlock;}
- old=m9_faa_command_owner(r,false);selected=p->primary.active?&r->owner[M9_FAA_PRIMARY_OWNER]:&p->spare[0];
- ret=m9_faa_command_owner_admit(mdev,old);if(ret)goto unlock;
- ret=m9_faa_command_owner_admit(mdev,selected);if(ret)goto unlock;
- if(p->primary.cursor>r->graph_draw_end_bytes){ret=-ESTALE;goto unlock;}
- ret=m9x_faa_secondary_pool_advance(&p->primary,p->primary.cursor,r->graph_draw_end_bytes-p->primary.cursor);if(ret)goto unlock;
- for(i=0;i<PARHELIA_M9_FAA_GRAPH_OWNERS;i++)
-  if(!dma_resv_test_signaled(m9x_faa_graph_binding_owner(binding,i)->resv,DMA_RESV_USAGE_READ)){ret=-EBUSY;goto unlock;}
- dma_rmb();raw=READ_ONCE(((u32*)t->fence_cpu)[8]);
- ret=m9x_faa_secondary_pool_observe_raw(&p->primary,raw,t->completed_point,generation,true,&observed);if(ret)goto unlock;
- ret=m9x_faa_primary_pool_plan(&p->primary,t->submitted_point,p->timeline.submitted_point,t->fence_bus,&observed,&image,&token);if(ret)goto unlock;
- if(image.new_end!=selected->base){ret=-ESTALE;goto abort;}
- for(i=0;i<4;i++)put_unaligned_le32(image.old_link[i],(u8*)old->cpu+r->graph_draw_end_bytes+4*i);
- /* Original mode0 posts the selected base after the old owner's jump.
-  * COMMAND_BASE stays intact; there is no global E3 or invented completion. */
- wmb();m9x_write(mdev,M9_REG_COMMAND_END,image.new_end);
- ret=m9x_faa_primary_pool_posted(&p->primary,&token);if(ret)goto quarantine;
- p->rotated=true;r->graph_draw_end_bytes=0;r->graph_draw_posts++;
- for(i=0;i<10000;i++){
-  dma_rmb();raw=READ_ONCE(((u32*)t->fence_cpu)[8]);
-  ret=m9x_faa_secondary_pool_observe_raw(&p->primary,raw,t->completed_point,generation,true,&observed);
-  if(!ret&&observed.pool_point==image.pool_point)break;
-  if(ret&&ret!=-EAGAIN)goto quarantine;
-  usleep_range(100,200);
- }
- if(i==10000){ret=-ETIMEDOUT;goto quarantine;}
- p->unlock_point=previous;p->unlock_end=m9_faa_idle_end(r);p->unlock_posts=m9_faa_idle_posts(r);
- p->parent_end=0;p->secondary_cursor=r->color_secondary_cursor;p->posts=1;
- dev_info(&mdev->pdev->dev,"M9 FAA primary pool retired: Unlock=%#llx pool=%#llx old=%#x selected=%#x END=%#x\n",previous,observed.pool_point,old->base,selected->base,image.new_end);
- ret=0;goto unlock;
-abort:if(m9x_faa_primary_pool_abort(&p->primary,&token))ret=-EIO;goto unlock;
+	struct m9x_transport *t = &mdev->transport;
+	struct m9x_faa_replay *r;
+	struct m9_faa_command_pools *p;
+	struct m9_faa_owner *old, *selected;
+	struct m9x_faa_secondary_pool_observation observed;
+	struct m9x_faa_primary_pool_image image;
+	m9x_faa_primary_transition token;
+	u64 next = 0;
+	u32 i, raw;
+	int ret;
+
+	mutex_lock(&t->lock);
+	ret = m9_faa_depth_frame_retained_state(mdev, binding, generation,
+						previous, &next);
+	if (ret)
+		goto unlock;
+	r = t->faa;
+	if (!r->depth_storage || !r->depth_storage->initialized ||
+	    r->depth_storage->frame) {
+		ret = -ESTALE;
+		goto unlock;
+	}
+	if (needed > 0x40000 - 16) {
+		ret = -ENOSPC;
+		goto unlock;
+	}
+	if (r->graph_draw_end_bytes <= 0x40000 &&
+	    needed + 16 <= 0x40000 - r->graph_draw_end_bytes) {
+		ret = 0;
+		goto unlock;
+	}
+	mutex_unlock(&t->lock);
+	ret = m9x_faa_graph_command_pool_prepare(mdev, binding, generation,
+						 previous);
+	if (ret)
+		return ret;
+	mutex_lock(&t->lock);
+	ret = m9_faa_depth_frame_retained_state(mdev, binding, generation,
+						previous, &next);
+	if (ret)
+		goto unlock;
+	r = t->faa;
+	p = r->command_pools;
+	if (!p || !p->ready || p->generation != generation || p->unlock_point) {
+		ret = -ESTALE;
+		goto unlock;
+	}
+	old = m9_faa_command_owner(r, false);
+	selected = p->primary.active ? &r->owner[M9_FAA_PRIMARY_OWNER] :
+				       &p->spare[0];
+	ret = m9_faa_command_owner_admit(mdev, old);
+	if (ret)
+		goto unlock;
+	ret = m9_faa_command_owner_admit(mdev, selected);
+	if (ret)
+		goto unlock;
+	if (p->primary.cursor > r->graph_draw_end_bytes) {
+		ret = -ESTALE;
+		goto unlock;
+	}
+	ret = m9x_faa_secondary_pool_advance(&p->primary, p->primary.cursor,
+					     r->graph_draw_end_bytes -
+						     p->primary.cursor);
+	if (ret)
+		goto unlock;
+	for (i = 0; i < PARHELIA_M9_FAA_GRAPH_OWNERS; i++)
+		if (!dma_resv_test_signaled(m9x_faa_graph_binding_owner(binding, i)->resv,
+					    DMA_RESV_USAGE_READ)) {
+			ret = -EBUSY;
+			goto unlock;
+		}
+	dma_rmb();
+	raw = READ_ONCE(((u32 *)t->fence_cpu)[8]);
+	ret = m9x_faa_secondary_pool_observe_raw(&p->primary, raw,
+						 t->completed_point, generation,
+						 true, &observed);
+	if (ret)
+		goto unlock;
+	ret = m9x_faa_primary_pool_plan(&p->primary, t->submitted_point,
+					p->timeline.submitted_point,
+					t->fence_bus, &observed, &image,
+					&token);
+	if (ret)
+		goto unlock;
+	if (image.new_end != selected->base) {
+		ret = -ESTALE;
+		goto abort;
+	}
+	for (i = 0; i < 4; i++)
+		put_unaligned_le32(image.old_link[i],
+				   (u8 *)old->cpu + r->graph_draw_end_bytes +
+					   4 * i);
+	/* Original mode0 posts the selected base after the old owner's jump.
+	 * COMMAND_BASE stays intact; there is no global E3 or invented completion.
+	 */
+	wmb();
+	m9x_write(mdev, M9_REG_COMMAND_END, image.new_end);
+	ret = m9x_faa_primary_pool_posted(&p->primary, &token);
+	if (ret)
+		goto quarantine;
+	p->rotated = true;
+	r->graph_draw_end_bytes = 0;
+	r->graph_draw_posts++;
+	for (i = 0; i < 10000; i++) {
+		dma_rmb();
+		raw = READ_ONCE(((u32 *)t->fence_cpu)[8]);
+		ret = m9x_faa_secondary_pool_observe_raw(&p->primary, raw,
+							 t->completed_point,
+							 generation, true,
+							 &observed);
+		if (!ret && observed.pool_point == image.pool_point)
+			break;
+		if (ret && ret != -EAGAIN)
+			goto quarantine;
+		usleep_range(100, 200);
+	}
+	if (i == 10000) {
+		ret = -ETIMEDOUT;
+		goto quarantine;
+	}
+	p->unlock_point = previous;
+	p->unlock_end = m9_faa_idle_end(r);
+	p->unlock_posts = m9_faa_idle_posts(r);
+	p->parent_end = 0;
+	p->secondary_cursor = r->color_secondary_cursor;
+	p->posts = 1;
+	dev_info(&mdev->pdev->dev,
+		 "M9 FAA primary pool retired: Unlock=%#llx pool=%#llx old=%#x selected=%#x END=%#x\n",
+		 previous, observed.pool_point, old->base, selected->base,
+		 image.new_end);
+	ret = 0;
+	goto unlock;
+abort:
+	if (m9x_faa_primary_pool_abort(&p->primary, &token))
+		ret = -EIO;
+	goto unlock;
 quarantine:
- m9x_faa_secondary_pool_quarantine(&p->primary);m9x_faa_secondary_pool_quarantine(&p->secondary);
- t->wedged=true;t->generation++;
-unlock:mutex_unlock(&t->lock);return ret;
+	m9x_faa_secondary_pool_quarantine(&p->primary);
+	m9x_faa_secondary_pool_quarantine(&p->secondary);
+	t->wedged = true;
+	t->generation++;
+unlock:
+	mutex_unlock(&t->lock);
+	return ret;
 }
+
 #endif
 
 /* Authenticate the completed frame against the same immutable Unlock and
