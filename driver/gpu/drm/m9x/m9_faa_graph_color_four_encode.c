@@ -7,6 +7,7 @@
 #include <linux/string.h>
 #include <linux/overflow.h>
 #include <crypto/sha2.h>
+#include "m9_cmd.h"
 #include "m9_faa_graph_color_encode.h"
 
 /* Original M9128 150dc0 availability mask for the live carry head. The
@@ -207,19 +208,6 @@ static const u8 digest[32] = { 0xa7, 0xc8, 0xb9, 0xa2, 0xb6, 0x9f, 0x0c, 0x51,
 			       0x9a, 0x3b, 0x76, 0xd4, 0xb6, 0x43, 0x4d, 0xb8,
 			       0xee, 0xc2, 0x60, 0x0f, 0x4b, 0x89, 0x36, 0x50,
 			       0x63, 0x06, 0xc8, 0x58, 0x27, 0x80, 0x57, 0x43 };
-static u32 get(const u8 *p)
-{
-	return (u32)p[0] | (u32)p[1] << 8 | (u32)p[2] << 16 | (u32)p[3] << 24;
-}
-
-static void put(u8 *p, u32 x)
-{
-	p[0] = x;
-	p[1] = x >> 8;
-	p[2] = x >> 16;
-	p[3] = x >> 24;
-}
-
 bool m9x_faa_color_four_template_valid(const u8 *b, size_t n)
 {
 	u8 h[32];
@@ -250,10 +238,10 @@ bool m9x_faa_color_flat_fragment_valid(const struct m9x_faa_color_input *in)
 		return false;
 	begin = in->layout.constant_begin[0];
 	for (i = 0; i < 8; i++)
-		if (get(in->program + 4 * i) != fs[i])
+		if (m9_cmd_get(in->program + 4 * i) != fs[i])
 			return false;
 	for (i = 0; i < 4; i++)
-		if (get(in->constants + begin + 4 * i) != utility[i])
+		if (m9_cmd_get(in->constants + begin + 4 * i) != utility[i])
 			return false;
 	return true;
 }
@@ -387,15 +375,17 @@ int m9x_faa_color_four_encode(const u8 *blob, size_t bytes,
 		}
 		if (i == gatherbytes / 8 - 4)
 			b |= 0x40000000;
-		if (get(in->program + in->layout.entry_bytes[2] + i * 8) != a ||
-		    get(in->program + in->layout.entry_bytes[2] + i * 8 + 4) !=
-			    b)
+		if (m9_cmd_get(in->program + in->layout.entry_bytes[2] +
+			       i * 8) != a ||
+		    m9_cmd_get(in->program + in->layout.entry_bytes[2] + i * 8 +
+			       4) != b)
 			return -EINVAL;
 	}
-	if (get(in->declaration + 4 * (in->declaration_count - 1)) != 0x4b08)
+	if (m9_cmd_get(in->declaration + 4 * (in->declaration_count - 1)) !=
+	    0x4b08)
 		return -EINVAL;
 	for (i = 0; i + 1 < in->declaration_count; i++) {
-		u32 q = get(in->declaration + 4 * i);
+		u32 q = m9_cmd_get(in->declaration + 4 * i);
 
 		if (arity == 3 &&
 		    (in->record_stride == 32 || in->record_stride == 36)) {
@@ -423,8 +413,8 @@ int m9x_faa_color_four_encode(const u8 *blob, size_t bytes,
 	}
 	for (i = 0; i < in->record_count; i++)
 		for (j = 0; j < in->record_stride / 4; j++)
-			if ((get(in->geometry + 128 + i * in->record_stride +
-				 4 * j) &
+			if ((m9_cmd_get(in->geometry + 128 +
+					i * in->record_stride + 4 * j) &
 			     0x7f800000) == 0x7f800000)
 				return -ERANGE;
 	groups = (in->declaration_count + 3) / 4;
@@ -497,13 +487,14 @@ int m9x_faa_color_four_encode(const u8 *blob, size_t bytes,
 	for (i = 0; i < groups; i++) {
 		u8 *p = out->secondary + 528 + i * 24;
 
-		put(p, 4);
-		put(p + 4, 0x23232323);
+		m9_cmd_put(p, 4);
+		m9_cmd_put(p + 4, 0x23232323);
 		for (j = 0; j < 4; j++)
-			put(p + 8 + j * 4,
-			    i * 4 + j < in->declaration_count ?
-				    get(in->declaration + 4 * (i * 4 + j)) :
-				    0);
+			m9_cmd_put(p + 8 + j * 4,
+				   i * 4 + j < in->declaration_count ?
+					   m9_cmd_get(in->declaration +
+						      4 * (i * 4 + j)) :
+					   0);
 	}
 	memcpy(out->secondary + 576 + extra, blob + 3696 + 576, 2712 - 576);
 	for (i = 0; i < 4; i++) {
@@ -515,8 +506,8 @@ int m9x_faa_color_four_encode(const u8 *blob, size_t bytes,
 	}
 	for (i = 0; i < ARRAY_SIZE(metadata); i++)
 		if (metadata[i].a < 528 || metadata[i].a >= 576)
-			put(out->secondary + moved(metadata[i].a, extra),
-			    metadata[i].b);
+			m9_cmd_put(out->secondary + moved(metadata[i].a, extra),
+				   metadata[i].b);
 	for (i = 0; i < ARRAY_SIZE(fields); i++) {
 		const struct field *f = &fields[i];
 
@@ -553,116 +544,126 @@ int m9x_faa_color_four_encode(const u8 *blob, size_t bytes,
 		value = f->pc == 0x248a0 ? (address & 0xfffff000) | f->tag :
 			f->pc == 0x2490e ? (address | f->tag) & 0xfffffffc :
 					   address | f->tag;
-		put(f->dst == 27 ? out->primary + f->at :
-				   out->secondary + moved(f->at, extra),
-		    value);
+		m9_cmd_put(f->dst == 27 ? out->primary + f->at :
+					  out->secondary + moved(f->at, extra),
+			   value);
 	}
 	for (i = 0; i < ARRAY_SIZE(tokens); i++)
-		put(tokens[i].dst == 27 ?
-			    out->primary + tokens[i].at :
-			    out->secondary + moved(tokens[i].at, extra),
-		    ((u32)init_point + tokens[i].delta) | tokens[i].tag);
+		m9_cmd_put(tokens[i].dst == 27 ?
+				   out->primary + tokens[i].at :
+				   out->secondary + moved(tokens[i].at, extra),
+			   ((u32)init_point + tokens[i].delta) | tokens[i].tag);
 	for (i = 0; i < ARRAY_SIZE(dims); i++)
-		put(dims[i].a == 27 ? out->primary + dims[i].b :
-				      out->secondary + moved(dims[i].b, extra),
-		    (dimensions.height << 16) | dimensions.width);
-	put(out->primary + 320, 0xf0210000u | dimensions.width);
-	put(out->primary + 3348, 0xf0220000u | dimensions.width);
-	put(out->primary + 3352, 0x00010000u | dimensions.height);
-	put(out->secondary + moved(2064, extra), dimensions.primary_descriptor);
-	put(out->secondary + moved(2080, extra),
-	    dimensions.companion_descriptor);
-	put(out->secondary + moved(2096, extra), dimensions.hz_descriptor);
+		m9_cmd_put(dims[i].a == 27 ?
+				   out->primary + dims[i].b :
+				   out->secondary + moved(dims[i].b, extra),
+			   (dimensions.height << 16) | dimensions.width);
+	m9_cmd_put(out->primary + 320, 0xf0210000u | dimensions.width);
+	m9_cmd_put(out->primary + 3348, 0xf0220000u | dimensions.width);
+	m9_cmd_put(out->primary + 3352, 0x00010000u | dimensions.height);
+	m9_cmd_put(out->secondary + moved(2064, extra),
+		   dimensions.primary_descriptor);
+	m9_cmd_put(out->secondary + moved(2080, extra),
+		   dimensions.companion_descriptor);
+	m9_cmd_put(out->secondary + moved(2096, extra),
+		   dimensions.hz_descriptor);
 	for (i = 0; i < 4; i++)
-		put(out->secondary + moved(2168 + i * 4, extra), dimensions.ad);
+		m9_cmd_put(out->secondary + moved(2168 + i * 4, extra),
+			   dimensions.ad);
 	{
 		const u32 slot[] = { 28, 704, 1316 },
 			  target[] = { 660, 1280, 1828 };
 		for (i = 0; i < 3; i++)
-			put(out->secondary + moved(slot[i], extra),
-			    0x49d00000 | ((moved(target[i], extra) -
-					   moved(slot[i], extra)) /
-					  4));
+			m9_cmd_put(out->secondary + moved(slot[i], extra),
+				   0x49d00000 | ((moved(target[i], extra) -
+						  moved(slot[i], extra)) /
+						 4));
 	}
 	{
 		const u32 c2[] = { 2344, 352, 980, 1592 },
 			  c3[] = { 2360, 368, 996, 1608 };
 		for (i = 0; i < 4; i++) {
-			put(out->secondary + moved(c2[i], extra),
-			    in->layout.entry_bytes[i] / 8);
+			m9_cmd_put(out->secondary + moved(c2[i], extra),
+				   in->layout.entry_bytes[i] / 8);
 			pairs = (in->layout.constant_end[i] -
 				 in->layout.constant_begin[i]) /
 				8;
-			put(out->secondary + moved(c3[i], extra),
-			    0x00500000 | (pairs << 8));
+			m9_cmd_put(out->secondary + moved(c3[i], extra),
+				   0x00500000 | (pairs << 8));
 		}
 	}
 	/* Genuine 3-to6 source differential identifies launch payloads,
 	 * not their preceding packet word counts (which remain3/4).
 	 */
-	put(out->secondary + 336, in->record_stride);
+	m9_cmd_put(out->secondary + 336, in->record_stride);
 	/* Same original13a884 declaration-half count as the fused raw stage.
 	 * Change only the caller-input head; gather/position controls describe
 	 * their own generated declarations and retain their producer values.
 	 */
-	put(out->secondary + 88, (get(out->secondary + 88) & ~0x1f00u) |
-					 ((in->declaration_count - 1) << 8));
+	m9_cmd_put(out->secondary + 88,
+		   (m9_cmd_get(out->secondary + 88) & ~0x1f00u) |
+			   ((in->declaration_count - 1) << 8));
 	for (i = 0; i < 3; i++) {
 		const u32 padded_at[3] = { 644, 1264, 1824 };
 
-		put(out->secondary + moved(padded_at[i], extra), padded);
+		m9_cmd_put(out->secondary + moved(padded_at[i], extra), padded);
 	}
-	put(out->secondary + moved(2708, extra), in->record_count);
+	m9_cmd_put(out->secondary + moved(2708, extra), in->record_count);
 	/* The COLOR raster frontend declares exactly one input, mapped toslot0.
 	 * Source182500 populates only its AB halfword; other AB/AC halfwords
 	 * copied by182541/182549 andfbee8 are uninitialized inactive residue.
 	 * Give inactive slots defined zero masks rather than captured CPU residue.
 	 */
-	put(out->secondary + moved(2220, extra), 0x0000ffff);
-	put(out->secondary + moved(2224, extra), 0);
+	m9_cmd_put(out->secondary + moved(2220, extra), 0x0000ffff);
+	m9_cmd_put(out->secondary + moved(2224, extra), 0);
 	if (in->fragment_flags) {
 		/* 1815cd lowers usage bit24 -> EF20000. 17f040 lowers compiler
 		 * usage bits into the low mask and80000. 13a83d marks the flat
 		 * COLOR varying pair's interpolation bit31. Preserve other live bits.
 		 */
-		put(out->secondary + moved(1920, extra),
-		    get(out->secondary + moved(1920, extra)) & ~0x20000u);
-		put(out->secondary + moved(2276, extra),
-		    (get(out->secondary + moved(2276, extra)) & ~0x8ffffu) |
-			    0xfff0u);
-		put(out->secondary + moved(2616, extra),
-		    get(out->secondary + moved(2616, extra)) | 0x80000000u);
-		put(out->secondary + moved(2620, extra),
-		    get(out->secondary + moved(2620, extra)) | 0x80000000u);
+		m9_cmd_put(out->secondary + moved(1920, extra),
+			   m9_cmd_get(out->secondary + moved(1920, extra)) &
+				   ~0x20000u);
+		m9_cmd_put(out->secondary + moved(2276, extra),
+			   (m9_cmd_get(out->secondary + moved(2276, extra)) &
+			    ~0x8ffffu) |
+				   0xfff0u);
+		m9_cmd_put(out->secondary + moved(2616, extra),
+			   m9_cmd_get(out->secondary + moved(2616, extra)) |
+				   0x80000000u);
+		m9_cmd_put(out->secondary + moved(2620, extra),
+			   m9_cmd_get(out->secondary + moved(2620, extra)) |
+				   0x80000000u);
 	}
-	put(out->secondary + 72, ef(1 + arity, 0x200));
-	put(out->secondary + moved(760, extra), ef(arity, 0x600));
-	put(out->secondary + 304,
-	    (((1u << ((in->declaration_count - 1) / 2)) - 1) << 24) |
-		    carry_mask);
-	put(out->secondary + 308, route(1 + arity, true, false));
-	put(out->secondary + moved(952, extra),
-	    ((1u << arity) - 1) << 20 | 0xffff);
-	put(out->secondary + moved(956, extra), route(arity, false, false));
+	m9_cmd_put(out->secondary + 72, ef(1 + arity, 0x200));
+	m9_cmd_put(out->secondary + moved(760, extra), ef(arity, 0x600));
+	m9_cmd_put(out->secondary + 304,
+		   (((1u << ((in->declaration_count - 1) / 2)) - 1) << 24) |
+			   carry_mask);
+	m9_cmd_put(out->secondary + 308, route(1 + arity, true, false));
+	m9_cmd_put(out->secondary + moved(952, extra),
+		   ((1u << arity) - 1) << 20 | 0xffff);
+	m9_cmd_put(out->secondary + moved(956, extra),
+		   route(arity, false, false));
 	/* Packed carry record stride is four DWORDs per real target. */
 	if (arity == 1)
 		for (i = 0; i < 2; i++)
-			put(out->secondary + 120 + i * 16,
-			    0xee190000 | 8 | (4 * i << 8));
+			m9_cmd_put(out->secondary + 120 + i * 16,
+				   0xee190000 | 8 | (4 * i << 8));
 	if (arity == 1) {
 		/* Both downstream readers consume the same two-field packed carry
 		 * record. The independent m9_record_desc SLOT grammar couples stride
 		 * and field offset to the producer: eight DWORDs, COLOR at+4/POS at0.
 		 */
-		put(out->secondary + moved(1036, extra), 0xee190408);
-		put(out->secondary + moved(1648, extra), 0xee190008);
-		put(out->secondary + 148, 0);
-		put(out->secondary + 152, 0xf0010040);
-		put(out->secondary + moved(820, extra), 0);
-		put(out->secondary + moved(824, extra), 0xf0010040);
-		put(out->secondary + moved(1048, extra), 0);
-		put(out->secondary + moved(1060, extra), 0);
-		put(out->secondary + moved(1064, extra), 0xf0010040);
+		m9_cmd_put(out->secondary + moved(1036, extra), 0xee190408);
+		m9_cmd_put(out->secondary + moved(1648, extra), 0xee190008);
+		m9_cmd_put(out->secondary + 148, 0);
+		m9_cmd_put(out->secondary + 152, 0xf0010040);
+		m9_cmd_put(out->secondary + moved(820, extra), 0);
+		m9_cmd_put(out->secondary + moved(824, extra), 0xf0010040);
+		m9_cmd_put(out->secondary + moved(1048, extra), 0);
+		m9_cmd_put(out->secondary + moved(1060, extra), 0);
+		m9_cmd_put(out->secondary + moved(1064, extra), 0xf0010040);
 	}
 	*out->secondary_length = secondary;
 	return 0;

@@ -4,6 +4,7 @@
 #include <linux/string.h>
 #include <linux/overflow.h>
 #include <crypto/sha2.h>
+#include "m9_cmd.h"
 #include "m9_faa_graph_color_encode.h"
 #include "m9_faa_fragment_state.h"
 
@@ -80,19 +81,6 @@ static const u8 template_sha[32] = { 0x56, 0x0f, 0x8b, 0xeb, 0xb7, 0xc9, 0x6b,
 				     0xfe, 0x88, 0x97, 0x10, 0x88, 0x7c, 0x27,
 				     0x3e, 0x38, 0x43, 0x7f, 0xbe, 0x59, 0x66,
 				     0xb2, 0x02, 0x31, 0xc4 };
-static u32 word(const u8 *p)
-{
-	return (u32)p[0] | (u32)p[1] << 8 | (u32)p[2] << 16 | (u32)p[3] << 24;
-}
-
-static void put(u8 *p, u32 v)
-{
-	p[0] = v;
-	p[1] = v >> 8;
-	p[2] = v >> 16;
-	p[3] = v >> 24;
-}
-
 /* Original 150dc0 bound groups for fused POSITION/COLOR. Occupied scratch
  * halves clear availability; output halves are coupled only within the
  * three real tail groups. Clipcode r21 lies outside the 16-pair field.
@@ -108,8 +96,8 @@ int m9x_faa_fused_source_mask(const u8 *program, u32 bytes, u32 begin,
 	    bytes - begin < 8)
 		return -EINVAL;
 	for (i = begin; i < bytes; i += 8) {
-		u32 a = word(program + i), b = word(program + i + 4),
-		    d = (a >> 8) & 127;
+		u32 a = m9_cmd_get(program + i),
+		    b = m9_cmd_get(program + i + 4), d = (a >> 8) & 127;
 		bool output = false;
 
 		if (a == 0xffff801c && b == 0xa01fc00f) {
@@ -220,18 +208,19 @@ int m9x_faa_color_encode(const u8 *blob, size_t bytes,
 	}
 	for (i = 0; i < in->record_count; i++)
 		for (j = 0; j < in->record_stride / 4; j++)
-			if ((word(in->geometry + 128 + i * in->record_stride +
-				  4 * j) &
+			if ((m9_cmd_get(in->geometry + 128 +
+					i * in->record_stride + 4 * j) &
 			     0x7f800000) == 0x7f800000)
 				return -ERANGE;
 	/* The terminal links one raw vertex declaration; paired words describe
 	 * only finite FLOAT4 slots within the owned interleaved record.
 	 */
 	if (in->declaration_count < 3 || !(in->declaration_count & 1) ||
-	    word(in->declaration + 4 * (in->declaration_count - 1)) != 0x4b08)
+	    m9_cmd_get(in->declaration + 4 * (in->declaration_count - 1)) !=
+		    0x4b08)
 		return -EINVAL;
 	for (i = 0; i + 1 < in->declaration_count; i++) {
-		u32 d = word(in->declaration + 4 * i);
+		u32 d = m9_cmd_get(in->declaration + 4 * i);
 
 		if (((d >> 16) & 15) ||
 		    ((d >> 24) * 4 + 16 > in->record_stride) ||
@@ -325,13 +314,14 @@ int m9x_faa_color_encode(const u8 *blob, size_t bytes,
 	for (i = 0; i < padded; i += 4) {
 		u8 *p = out->secondary + 484 + i / 4 * 24;
 
-		put(p, 4);
-		put(p + 4, 0x23232323);
+		m9_cmd_put(p, 4);
+		m9_cmd_put(p + 4, 0x23232323);
 		for (j = 0; j < 4; j++)
-			put(p + 8 + j * 4,
-			    i + j < in->declaration_count ?
-				    word(in->declaration + (i + j) * 4) :
-				    0);
+			m9_cmd_put(p + 8 + j * 4,
+				   i + j < in->declaration_count ?
+					   m9_cmd_get(in->declaration +
+						      (i + j) * 4) :
+					   0);
 	}
 	memcpy(out->secondary + 508 + extra, blob + 3652 + 508, 1352 - 508);
 	/* Guard band setup field of the live target, never the template's 320. */
@@ -365,99 +355,106 @@ int m9x_faa_color_encode(const u8 *blob, size_t bytes,
 		value = f->pc == 0x248a0 ? (address & 0xfffff000) | f->tag :
 			f->pc == 0x2490e ? (address | f->tag) & 0xfffffffc :
 					   address | f->tag;
-		put((f->dst == 27 ? out->primary + f->at :
+		m9_cmd_put((f->dst == 27 ?
+				    out->primary + f->at :
 				    out->secondary + moved(f->at, extra)),
-		    value);
+			   value);
 	}
 	for (i = 0; i < ARRAY_SIZE(tokens); i++)
-		put(tokens[i].dst == 27 ?
-			    out->primary + tokens[i].at :
-			    out->secondary + moved(tokens[i].at, extra),
-		    ((u32)init_point + tokens[i].delta) | tokens[i].tag);
+		m9_cmd_put(tokens[i].dst == 27 ?
+				   out->primary + tokens[i].at :
+				   out->secondary + moved(tokens[i].at, extra),
+			   ((u32)init_point + tokens[i].delta) | tokens[i].tag);
 	for (i = 0; i < ARRAY_SIZE(dims); i++)
-		put(dims[i].dst == 27 ?
-			    out->primary + dims[i].at :
-			    out->secondary + moved(dims[i].at, extra),
-		    (dimensions.height << 16) | dimensions.width);
+		m9_cmd_put(dims[i].dst == 27 ?
+				   out->primary + dims[i].at :
+				   out->secondary + moved(dims[i].at, extra),
+			   (dimensions.height << 16) | dimensions.width);
 	/* Selector9/13/12 source descriptors are dimension fields, separate
 	 * from their preceding live resource addresses. AD derives from the
 	 * main resource logical extent; it is not a command-buffer capacity.
 	 */
-	put(out->primary + 284, 0xf0210000u | dimensions.width);
-	put(out->primary + 3312, 0xf0220000u | dimensions.width);
-	put(out->primary + 3316, 0x00010000u | dimensions.height);
-	put(out->secondary + moved(804, extra), dimensions.primary_descriptor);
-	put(out->secondary + moved(820, extra),
-	    dimensions.companion_descriptor);
-	put(out->secondary + moved(836, extra), dimensions.hz_descriptor);
+	m9_cmd_put(out->primary + 284, 0xf0210000u | dimensions.width);
+	m9_cmd_put(out->primary + 3312, 0xf0220000u | dimensions.width);
+	m9_cmd_put(out->primary + 3316, 0x00010000u | dimensions.height);
+	m9_cmd_put(out->secondary + moved(804, extra),
+		   dimensions.primary_descriptor);
+	m9_cmd_put(out->secondary + moved(820, extra),
+		   dimensions.companion_descriptor);
+	m9_cmd_put(out->secondary + moved(836, extra),
+		   dimensions.hz_descriptor);
 	for (i = 0; i < 4; i++)
-		put(out->secondary + moved(908 + i * 4, extra), dimensions.ad);
-	put(out->secondary + 308, in->layout.entry_bytes[1] / 8);
-	put(out->secondary + moved(1084, extra), in->layout.entry_bytes[0] / 8);
+		m9_cmd_put(out->secondary + moved(908 + i * 4, extra),
+			   dimensions.ad);
+	m9_cmd_put(out->secondary + 308, in->layout.entry_bytes[1] / 8);
+	m9_cmd_put(out->secondary + moved(1084, extra),
+		   in->layout.entry_bytes[0] / 8);
 	for (i = 0; i < 2; i++) {
 		offset = i ? 324 : 1100;
 		pairs = (in->layout.constant_end[i] -
 			 in->layout.constant_begin[i]) /
 			8;
-		put(out->secondary + moved(offset, extra),
-		    0x00500000 | pairs << 8);
+		m9_cmd_put(out->secondary + moved(offset, extra),
+			   0x00500000 | pairs << 8);
 	}
 	/* Register88's high byte is the source raw FLOAT4 input mask. Its
 	 * low mask is the separately qualified fused position/COLOR interface.
 	 */
-	put(out->secondary + 260,
-	    (((1u << ((in->declaration_count - 1) / 2)) - 1) << 24) |
-		    fused_mask);
+	m9_cmd_put(out->secondary + 260,
+		   (((1u << ((in->declaration_count - 1) / 2)) - 1) << 24) |
+			   fused_mask);
 	/* Original13a884..13a89e packs the number of live declaration halves
 	 * (terminal excluded) into bits12:8. fafcc/fafe1 merges this into the
 	 * raw stage's register22 control before fc2df emits it. The captured
 	 * one-input8020e cannot describe a two-input8040e launch.
 	 */
-	put(out->secondary + 44, (word(out->secondary + 44) & ~0x1f00u) |
-					 ((in->declaration_count - 1) << 8));
+	m9_cmd_put(out->secondary + 44,
+		   (m9_cmd_get(out->secondary + 44) & ~0x1f00u) |
+			   ((in->declaration_count - 1) << 8));
 	/* Original stride16/32 controls keep this setup family at32. Only
 	 * f513d's raw fetch word292 follows the caller's record stride.
 	 */
 	for (i = 0; i < 4; i++)
-		put(out->secondary + 164 + i * 4, 32);
+		m9_cmd_put(out->secondary + 164 + i * 4, 32);
 	/* f57c8 indexed C2 header at296 has three payload words. It is not
 	 * the draw count; only the23000001 launch payloads carry that count.
 	 */
-	put(out->secondary + 292, in->record_stride);
-	put(out->secondary + 296, 3);
-	put(out->secondary + moved(568, extra), 0x23000001);
-	put(out->secondary + moved(576, extra), padded_records);
+	m9_cmd_put(out->secondary + 292, in->record_stride);
+	m9_cmd_put(out->secondary + 296, 3);
+	m9_cmd_put(out->secondary + moved(568, extra), 0x23000001);
+	m9_cmd_put(out->secondary + moved(576, extra), padded_records);
 	{
 		static const u32 fsdecl[5] = { 0x00100d88, 0x001006b6,
 					       0x00010688, 0x00c231b6,
 					       0x00d30688 };
-		put(out->secondary + moved(1248, extra), 4);
-		put(out->secondary + moved(1272, extra), 4);
+		m9_cmd_put(out->secondary + moved(1248, extra), 4);
+		m9_cmd_put(out->secondary + moved(1272, extra), 4);
 		for (i = 0; i < 4; i++)
-			put(out->secondary + moved(1256 + i * 4, extra),
-			    fsdecl[i]);
-		put(out->secondary + moved(1280, extra), fsdecl[4]);
+			m9_cmd_put(out->secondary + moved(1256 + i * 4, extra),
+				   fsdecl[i]);
+		m9_cmd_put(out->secondary + moved(1280, extra), fsdecl[4]);
 	}
 	if (effects) {
 		/* These are the compiler allocation and destination/alpha-test producer
 		 * fields observed at181fa0 and17f04f/f5056, paired with the validated ISA.
 		 * Live attachment/depth/cull fields and all ranges remain independent.
 		 */
-		u32 f0 = word(out->secondary + moved(656, extra));
+		u32 f0 = m9_cmd_get(out->secondary + moved(656, extra));
 
 		f0 &= ~0x01000400u;
 		if (effect_interface.reads_destination)
 			f0 |= 0x01000000u;
-		put(out->secondary + moved(656, extra), f0);
-		put(out->secondary + moved(1016, extra),
-		    (word(out->secondary + moved(1016, extra)) & ~0xffffu) |
-			    effect_interface.available_register_mask);
+		m9_cmd_put(out->secondary + moved(656, extra), f0);
+		m9_cmd_put(out->secondary + moved(1016, extra),
+			   (m9_cmd_get(out->secondary + moved(1016, extra)) &
+			    ~0xffffu) |
+				   effect_interface.available_register_mask);
 	}
 	/* Original182500 publishes one active COLOR input in AB slot0. Other
 	 * AB/AC slots copied by182541/182549/fbee8 are inactive stack residue.
 	 */
-	put(out->secondary + moved(960, extra), 0x0000ffffu);
-	put(out->secondary + moved(964, extra), 0);
+	m9_cmd_put(out->secondary + moved(960, extra), 0x0000ffffu);
+	m9_cmd_put(out->secondary + moved(964, extra), 0);
 	if (in->fragment_flags) {
 		/* Same original compiler-shadow producers as COLOR4: fc203 lowers
 		 * compiler397 bit24 into EF20000, f5056 publishes usage at1016, and
@@ -465,18 +462,22 @@ int m9x_faa_color_encode(const u8 *blob, size_t bytes,
 		 * exact FS32/utility interface above is required; C1 interpolation is
 		 * emitted separately from the caller's typed raster state.
 		 */
-		put(out->secondary + moved(660, extra),
-		    word(out->secondary + moved(660, extra)) & ~0x20000u);
-		put(out->secondary + moved(1016, extra),
-		    (word(out->secondary + moved(1016, extra)) & ~0x8ffffu) |
-			    0xfff0u);
-		put(out->secondary + moved(1256, extra),
-		    word(out->secondary + moved(1256, extra)) | 0x80000000u);
-		put(out->secondary + moved(1260, extra),
-		    word(out->secondary + moved(1260, extra)) | 0x80000000u);
+		m9_cmd_put(out->secondary + moved(660, extra),
+			   m9_cmd_get(out->secondary + moved(660, extra)) &
+				   ~0x20000u);
+		m9_cmd_put(out->secondary + moved(1016, extra),
+			   (m9_cmd_get(out->secondary + moved(1016, extra)) &
+			    ~0x8ffffu) |
+				   0xfff0u);
+		m9_cmd_put(out->secondary + moved(1256, extra),
+			   m9_cmd_get(out->secondary + moved(1256, extra)) |
+				   0x80000000u);
+		m9_cmd_put(out->secondary + moved(1260, extra),
+			   m9_cmd_get(out->secondary + moved(1260, extra)) |
+				   0x80000000u);
 	}
-	put(out->secondary + moved(1340, extra), 0x23000001);
-	put(out->secondary + moved(1348, extra), in->record_count);
+	m9_cmd_put(out->secondary + moved(1340, extra), 0x23000001);
+	m9_cmd_put(out->secondary + moved(1348, extra), in->record_count);
 	*out->secondary_length = secondary;
 	return 0;
 }

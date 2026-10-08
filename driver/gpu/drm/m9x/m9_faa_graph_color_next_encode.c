@@ -3,20 +3,8 @@
 #include <linux/errno.h>
 #include <linux/kernel.h>
 #include <linux/string.h>
+#include "m9_cmd.h"
 #include "m9_faa_graph_color_next_encode.h"
-
-static u32 get(const u8 *p)
-{
-	return (u32)p[0] | (u32)p[1] << 8 | (u32)p[2] << 16 | (u32)p[3] << 24;
-}
-
-static void put(u8 *p, u32 word)
-{
-	p[0] = word;
-	p[1] = word >> 8;
-	p[2] = word >> 16;
-	p[3] = word >> 24;
-}
 
 /* Original b5e70 page-run grammar, with device+1c bit0 clear. This bounded
  * TARGET clear selects the current 320x240 primary's 80 logical pages.
@@ -40,19 +28,19 @@ static int clear_target(u32 base, u64 previous, u8 image[128], u32 *bytes)
 		u32 last = group + 8 < end ? group + 8 : end;
 		u32 mask = ((1u << (last - page)) - 1) << (page & 7);
 
-		put(image + at, ((group | 0xd00000u) << 5) | mask);
+		m9_cmd_put(image + at, ((group | 0xd00000u) << 5) | mask);
 		at += 4;
 		n++;
 		page = last;
 	}
 	for (i = 0; i < ARRAY_SIZE(prefix); i++)
-		put(image + i * 4, prefix[i]);
-	put(image + 60, 0x20000000 | (n - 1));
-	put(image + at, 0x4545e3e6);
-	put(image + at + 4, 1);
-	put(image + at + 8, ((u32)previous + 0x10) | 1);
-	put(image + at + 12, 0x454545e6);
-	put(image + at + 16, 1);
+		m9_cmd_put(image + i * 4, prefix[i]);
+	m9_cmd_put(image + 60, 0x20000000 | (n - 1));
+	m9_cmd_put(image + at, M9_CMD_FENCE);
+	m9_cmd_put(image + at + 4, 1);
+	m9_cmd_put(image + at + 8, ((u32)previous + 0x10) | 1);
+	m9_cmd_put(image + at + 12, 0x454545e6);
+	m9_cmd_put(image + at + 16, 1);
 	*bytes = at + 20;
 	return 0;
 }
@@ -147,9 +135,9 @@ int m9x_faa_color_next_encode(const u8 *blob, size_t bytes,
 
 		if (end)
 			end += extra;
-		put(first.primary + pointer_at[i],
-		    (owner[29].base + secondary_cursor + end) |
-			    (i & 1 ? 2 : 1));
+		m9_cmd_put(first.primary + pointer_at[i],
+			   (owner[29].base + secondary_cursor + end) |
+				   (i & 1 ? 2 : 1));
 	}
 	secondary = output->image.secondary;
 	for (i = 0; i < ARRAY_SIZE(span); i++) {
@@ -165,17 +153,18 @@ int m9x_faa_color_next_encode(const u8 *blob, size_t bytes,
 		memcpy(secondary + next, first.secondary + begin, end - begin);
 	}
 	/* Original repeat E3/E6 packet order is distinct from the initial one. */
-	put(secondary + 44, 3);
-	put(secondary + 48, 0x45e3e6e6);
-	put(secondary + 52, 1);
-	put(secondary + 56, 2);
-	put(secondary + 60, get(first.secondary + 56));
+	m9_cmd_put(secondary + 44, 3);
+	m9_cmd_put(secondary + 48, 0x45e3e6e6);
+	m9_cmd_put(secondary + 52, 1);
+	m9_cmd_put(secondary + 56, 2);
+	m9_cmd_put(secondary + 60, m9_cmd_get(first.secondary + 56));
 	/* Original f98b3..f98ce transforms the live first-stage mask;
 	 * its route and all packed carry descriptors remain live-derived.
 	 */
-	put(secondary + 308,
-	    ((get(first.secondary + 304) & 0xff1fffff) | 0x00100000) &
-		    0xfffffffc);
+	m9_cmd_put(secondary + 308,
+		   ((m9_cmd_get(first.secondary + 304) & 0xff1fffff) |
+		    0x00100000) &
+			   0xfffffffc);
 	for (i = 0; i < ARRAY_SIZE(branch_at); i++) {
 		u32 at = branch_at[i], end = branch_end[i];
 
@@ -183,7 +172,7 @@ int m9x_faa_color_next_encode(const u8 *blob, size_t bytes,
 			at += extra;
 		if (end >= 680)
 			end += extra;
-		put(secondary + at, 0x49d00000 | ((end - at) / 4));
+		m9_cmd_put(secondary + at, 0x49d00000 | ((end - at) / 4));
 	}
 	if (clear_bytes)
 		memcpy(output->clear, clear, clear_bytes);
