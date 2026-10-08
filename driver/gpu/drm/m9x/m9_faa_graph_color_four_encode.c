@@ -6,6 +6,35 @@
 #include <linux/overflow.h>
 #include <crypto/sha2.h>
 #include "m9_faa_graph_color_encode.h"
+/* Original M9128 150dc0 availability mask for the live carry head. The
+ * program's terminal STOP is padding, not a scratch-register write. */
+int m9x_faa_carry_source_mask(const u8 *program, u32 program_bytes,
+ u32 begin, u32 end, u32 targets, u16 *mask)
+{
+ u32 i,pairs=0,seen=0;u16 available;bool stopped=false;
+ if(!program||!mask||!targets||targets>3||(begin&7)||(end&7)||
+  begin>=end||end>program_bytes||end-begin<3*8)return -EINVAL;
+ for(i=begin;i<end;i+=8){
+  u32 w0=(u32)program[i]|(u32)program[i+1]<<8|
+   (u32)program[i+2]<<16|(u32)program[i+3]<<24;
+  u32 w1=(u32)program[i+4]|(u32)program[i+5]<<8|
+   (u32)program[i+6]<<16|(u32)program[i+7]<<24;
+  u32 d=(w0>>8)&0x7f;bool output=false;
+  if(w0==0xffff801c&&w1==0xa01fc00f){stopped=true;continue;}
+  if(stopped)return -EINVAL;
+  for(u32 j=0;j<targets;j++){
+   if(d==0x11+4*j){seen|=1u<<(2*j);output=true;}
+   else if(d==0x13+4*j){seen|=1u<<(2*j+1);output=true;}}
+  if(!output){if(d>=0x20)return -EINVAL;if(d/2+1>pairs)pairs=d/2+1;}
+ }
+ if(!stopped||seen!=(1u<<(2*targets))-1)return -EINVAL;
+ available=(u16)~((1u<<pairs)-1);
+ for(i=0;i<targets;i++){
+  u16 complete=(u16)((1u<<((0x11+4*i)/2))|
+                     (1u<<((0x13+4*i)/2)));
+  if((available&complete)!=complete)available&=~complete;}
+ *mask=available;return 0;
+}
 struct field{u32 dst,at,owner,offset,pc,tag;};
 static const struct field fields[]={{27,16,8,0,149810,1},{27,68,29,0,150706,1},{27,72,29,1840,150741,2},{27,116,29,1840,150706,1},{27,120,29,2712,150741,2},{27,128,22,0,149810,1},{27,192,22,644,149810,1},{27,196,22,704,149791,5},{27,204,8,8,153331,1},{27,216,8,12,153331,1},{27,228,8,16,153331,1},{27,316,1,0,149810,1},{27,3344,1,0,149810,1},{29,116,24,0,149810,1},{29,132,24,0,149810,1},{29,148,24,0,149810,1},{29,328,28,384,149810,1},{29,348,26,0,149664,1},{29,372,28,16,149713,1},{29,376,28,32,149713,1},{29,584,12,0,149664,1},{29,616,28,256,149713,1},{29,804,23,0,149810,1},{29,820,23,873472,149810,1},{29,836,23,3493888,149810,1},{29,976,26,0,149664,1},{29,1000,28,32,149713,1},{29,1004,28,32,149713,1},{29,1032,24,0,149810,1},{29,1060,24,0,149810,1},{29,1220,12,0,149664,1},{29,1252,28,256,149713,1},{29,1416,23,1746944,149810,1},{29,1432,23,2620416,149810,1},{29,1448,23,3493888,149810,1},{29,1588,26,0,149664,1},{29,1612,28,32,149713,1},{29,1616,28,136,149713,1},{29,1644,24,0,149810,1},{29,1780,12,0,149664,1},{29,1812,28,256,149713,1},{29,2028,8,0,149810,1},{29,2032,8,20,149774,0},{29,2060,1,0,149810,1},{29,2076,4,0,149810,1},{29,2092,5,0,149810,1},{29,2108,25,0,149810,1},{29,2120,22,0,149810,1},{29,2152,2,0,149810,1},{29,2156,3,0,149810,1},{29,2300,23,873472,149810,1},{29,2304,23,2620416,149810,1},{29,2320,23,3493888,149810,1},{29,2324,23,1746944,149810,1},{29,2340,26,0,149664,1},{29,2364,28,0,149713,1},{29,2368,28,16,149713,1},{29,2664,12,0,149664,1},{29,2696,28,256,149713,1}};
 struct token{u32 dst,at,delta,tag;};
@@ -43,7 +72,7 @@ static u32 ef(u32 targets,u32 role){for(u32 i=1;i<targets;i++)role|=0x80000<<(2*
 int m9x_faa_color_four_encode(const u8*blob,size_t bytes,const struct m9x_faa_graph_draw_owner owner[31],
  u32 init_bytes,u64 init_point,const struct m9x_faa_color_input*in,const struct m9x_faa_color_image*out)
 {
- u32 i,j,raw,padded,geo,groups,secondary,arity,gatherbytes,pairs,address,offset,value;int extra;
+ u32 i,j,raw,padded,geo,groups,secondary,arity,gatherbytes,pairs,address,offset,value;u16 carry_mask;int extra;
  if(!in||!out||!owner||!in->program||!in->constants||!in->geometry||!in->declaration||
  !out->program||!out->constants||!out->primary||!out->secondary||!out->secondary_length||
  !m9x_faa_color_four_template_valid(blob,bytes)||(init_bytes!=4880&&init_bytes!=4884)||
@@ -63,6 +92,9 @@ int m9x_faa_color_four_encode(const u8*blob,size_t bytes,const struct m9x_faa_gr
    in->layout.constant_end[i]>in->layout.constants_bytes||in->layout.constant_end[i]-in->layout.constant_begin[i]>504)return -ERANGE;}
  gatherbytes=in->layout.entry_bytes[3]-in->layout.entry_bytes[2];
  if(gatherbytes!=32&&gatherbytes!=40)return -EINVAL;arity=gatherbytes==32?1:2;
+ if(m9x_faa_carry_source_mask(in->program,in->layout.program_bytes,
+  in->layout.entry_bytes[1],in->layout.entry_bytes[2],1+arity,
+  &carry_mask))return -EINVAL;
  if(in->layout.program_bytes-in->layout.entry_bytes[3]!=200||
  in->layout.constant_begin[2]!=in->layout.constant_end[2]||
  in->layout.constant_end[3]-in->layout.constant_begin[3]!=104||
@@ -155,7 +187,7 @@ int m9x_faa_color_four_encode(const u8*blob,size_t bytes,const struct m9x_faa_gr
   put(out->secondary+moved(2620,extra),get(out->secondary+moved(2620,extra))|0x80000000u);
  }
  put(out->secondary+72,ef(1+arity,0x200));put(out->secondary+moved(760,extra),ef(arity,0x600));
- put(out->secondary+304,(((1u<<((in->declaration_count-1)/2))-1)<<24)|0xffff);
+ put(out->secondary+304,(((1u<<((in->declaration_count-1)/2))-1)<<24)|carry_mask);
  put(out->secondary+308,route(1+arity,true,false));
  put(out->secondary+moved(952,extra),((1u<<arity)-1)<<20|0xffff);put(out->secondary+moved(956,extra),route(arity,false,false));
  /* Packed carry record stride is four DWORDs per real target. */
