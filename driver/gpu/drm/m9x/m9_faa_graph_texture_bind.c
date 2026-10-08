@@ -12,6 +12,7 @@
 #include <linux/limits.h>
 #endif
 #include "m9_faa_graph_texture_bind.h"
+#include "m9_hw_encode.h"
 
 /* One 2-D level's surface-contract footprint (row span, allocation rows,
  * small aperture class), as the vendor render-surface allocator sizes it.
@@ -67,13 +68,13 @@ static int wrap_mode(u32 address, u32 *mode)
 {
 	switch (address) {
 	case 1:
-		*mode = 0;
+		*mode = M9_HW_WRAP_REPEAT;
 		return 0;
 	case 3:
-		*mode = 1;
+		*mode = M9_HW_WRAP_CLAMP_TO_EDGE;
 		return 0;
 	case 6:
-		*mode = 6;
+		*mode = M9_HW_WRAP_CLAMP;
 		return 0;
 	default:
 		return -EINVAL;
@@ -161,26 +162,29 @@ int m9x_faa_texture_bind_encode(
 	 * Kind 01 becomes 21 above 64 in either dimension. The format code
 	 * occupies idx79[31:24]. Kind-11 relocation adds
 	 * texture tag 1 to a 256-byte-aligned live VRAM base. */
-	image.unit70 = 0x40040118;
+	/* The vendor's FAA unit also sets 70 bit 30. */
+	image.unit70 = m9_hw_texture_70(1, 0, 0, 0) | 0x40000000u;
 	image.address78 = in->owner_base | 1;
-	image.descriptor79 = (code << 24) | (kind << 16) | in->width;
-	image.descriptor7a = (1u << 16) | in->height;
+	image.descriptor79 = m9_hw_texture_79(code, kind, in->width);
 	/* Mipmapped sampling: last level in 7a[31:28] and 7c nearest 0x80 /
 	 * linear 0x100, the ordinary sampler's MEASURED encoding.
 	 */
-	if (in->mip_filter != 1)
-		image.descriptor7a |= (in->levels - 1) << 28;
+	image.descriptor7a = m9_hw_texture_7a(in->mip_filter != 1 ?
+					      in->levels - 1 : 0,
+					      1, in->height);
 	/* 18afb0/18ba27 tables, checked against independent MIN/MAG and
-	 * U/V wrap controls.
+	 * U/V wrap controls. D3D's no-mip filter keeps the nearest bit.
 	 */
-	image.sampler7c = 0x00009200 |
-		(in->mip_filter == 3 ? 0x100 : 0x80) |
-		(in->mip_filter == 2 && in->mag_filter == 2 &&
-		 in->min_filter == 1 ? 0x400 : 0) |
-		((in->min_filter == 2) ? 2 : 0) |
-		((in->mag_filter == 2) ? (2 << 3) : 0) |
-		wrap_u << 22 | wrap_v << 25;
-	image.sampler7d = 0x0ff80000;
+	image.sampler7c =
+		m9_hw_sampler_7c((in->mip_filter == 3 ? M9_HW_7C_MIP_LINEAR :
+							M9_HW_7C_MIP_NEAREST) |
+				 (in->mip_filter == 2 && in->mag_filter == 2 &&
+				  in->min_filter == 1 ?
+				  M9_HW_7C_MIP_NEAREST_MAG_LINEAR : 0) |
+				 (in->min_filter == 2 ? M9_HW_7C_MIN_LINEAR : 0) |
+				 (in->mag_filter == 2 ? M9_HW_7C_MAG_LINEAR : 0),
+				 wrap_u, wrap_v, M9_HW_WRAP_REPEAT);
+	image.sampler7d = m9_hw_sampler_7d(0, 0, 511);
 	image.sampler87 = 0;
 	/* 105648/17f91d coordinate selection leaves the program intact.
 	 * f70fa/f7102 select a stream record; fbee8 selects its raster half. */
