@@ -143,8 +143,10 @@ int m9x_faa_color_encode(const u8*blob,size_t bytes,
  /* Register88's high byte is the source raw FLOAT4 input mask. Its
   * low mask is the separately qualified fused position/COLOR interface. */
  put(out->secondary+260,(((1u<<((in->declaration_count-1)/2))-1)<<24)|fused_mask);
- for(i=0;i<4;i++)put(out->secondary+164+i*4,in->record_stride);
- /* f5778 indexed C2 header at296 has three payload words. It is not
+ /* Original stride16/32 controls keep this setup family at32. Only
+  * f513d's raw fetch word292 follows the caller's record stride. */
+ for(i=0;i<4;i++)put(out->secondary+164+i*4,32);
+ /* f57c8 indexed C2 header at296 has three payload words. It is not
   * the draw count; only the23000001 launch payloads carry that count. */
  put(out->secondary+292,in->record_stride);put(out->secondary+296,3);
  put(out->secondary+moved(568,extra),0x23000001);
