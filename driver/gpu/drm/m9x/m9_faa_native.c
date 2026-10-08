@@ -12632,137 +12632,298 @@ int m9x_faa_graph_clear_prefix_binding_locked(struct m9x_device *mdev,
 }
 
 int m9x_faa_graph_clear_prefix_submit(struct m9x_device *mdev,
- struct m9_faa_graph_binding *binding,
- const struct drm_parhelia_m9_faa_graph_clear_prefix *request,
- struct drm_parhelia_m9_faa_graph_clear_prefix *reply)
+				      struct m9_faa_graph_binding *binding,
+				      const struct drm_parhelia_m9_faa_graph_clear_prefix *request,
+				      struct drm_parhelia_m9_faa_graph_clear_prefix *reply)
 {
 #ifdef M9_FAA_GRAPH_INIT_CONTROL
- struct m9x_transport*t=&mdev->transport;struct m9x_faa_replay*r;
- struct m9_faa_depth_frame_storage *frame=NULL,*held;
- struct m9x_faa_later_depth_scratch *scratch=NULL;
- struct m9x_faa_later_depth_clear_image image;
- struct m9x_faa_graph_draw_owner owner[34];struct m9x_faa_depth_views views;
- struct m9_faa_owner *primary,*secondary;struct m9x_fence*fence=NULL;
- const struct firmware *sample=NULL;
- struct drm_parhelia_m9_faa_graph_clear_prefix receipt;
- u64 next=0,point=0;u32 i,copied=0,start_posts=0;bool posted=false,one_posted=false,installed=false;
- int ret;
- if(!request||!reply||!binding)return -EINVAL;
- ret=m9_faa_template_request(mdev,binding,request->generation,0,&sample);if(ret)return ret;
- frame=kvzalloc(sizeof(*frame),GFP_KERNEL);scratch=kvzalloc(sizeof(*scratch),GFP_KERNEL);
- if(!frame||!scratch){ret=-ENOMEM;goto free;}
- mutex_lock(&t->lock);r=t->faa;
- if(t->wedged){ret=-EIO;goto out;}
- if(!r||r->graph_binding!=binding||r->graph_generation!=request->generation||
-  t->generation!=request->generation||!r->depth_storage){ret=-ESTALE;goto out;}
- /* Receipt-only retry never reposts, even after copy_to_user failed. */
- held=r->depth_storage->frame;
- if(held&&held->clear_prefix){
-  memcpy(&receipt,held->observed,sizeof(receipt));
-  primary=m9_faa_command_owner(r,false);secondary=m9_faa_command_owner(r,true);
-  if(!primary||!secondary||primary->base!=receipt.primary_base||primary->bytes!=receipt.primary_capacity||
-   secondary->base!=receipt.secondary_base||secondary->bytes!=receipt.secondary_capacity||
-   r->unlock_point!=request->previous_unlock_point||r->graph_draw_point!=request->previous_unlock_point||
-   !r->unlock_started||!r->unlock_retired||!r->color_lock_retired||
-   r->color_lock_point+0x20!=request->previous_unlock_point||
-   !held->attempted||!held->retired||held->generation!=request->generation||
-   held->previous_point!=request->previous_unlock_point||receipt.graph_id!=request->graph_id||
-   receipt.width!=request->width||receipt.height!=request->height||
-   t->submitted_point!=held->final_point||t->completed_point!=held->final_point||
-   t->next_fence!=lower_32_bits(held->final_point)+0x10||t->queue_count||t->async_pending||
-   r->graph_draw_end_bytes!=receipt.primary_end||
-   r->graph_draw_posts!=held->planned_ends+9||r->color_secondary_cursor!=receipt.secondary_cursor||
-   r->depth_storage->mode.valid!=held->mode_before.valid||
-   r->depth_storage->mode.enabled!=held->mode_before.enabled||
-   r->depth_storage->mode.embedded_hz!=held->mode_before.embedded_hz){ret=-ESTALE;goto out;}
-  *reply=receipt;ret=0;goto out;
- }
- ret=m9_faa_depth_frame_retained_state(mdev,binding,request->generation,request->previous_unlock_point,&next);if(ret)goto out;
- /* Original frontier is U-only and unrotated. Reject unsupported scopes
-  * before scratch installation, fences, CPU command writes or MMIO. */
- if(!r->depth_storage->initialized||!r->depth_storage->ready||held||
-  !r->color_image||r->color_image->layout.program_count!=2||
-  !r->depth_storage->mode.valid||!r->depth_storage->mode.enabled||
-  r->depth_storage->mode.embedded_hz||r->present_attempted||r->present_point||
-  (r->command_pools&&(r->command_pools->rotated||r->command_pools->unlock_point||
-   r->command_pools->maintenance_point))||
-  request->width!=320||request->height!=240||request->previous_unlock_point!=m9_faa_frame_origin(r,request->previous_unlock_point)){
-  ret=-EOPNOTSUPP;goto out;
- }
- ret=m9x_faa_graph_bound_depth_views_locked(mdev,binding,request->generation,&views);if(ret)goto out;
- if(views.owner[0].width!=request->width||views.owner[0].height!=request->height){ret=-ESTALE;goto out;}
- primary=m9_faa_command_owner(r,false);secondary=m9_faa_command_owner(r,true);
- ret=m9_faa_command_owner_admit(mdev,primary);if(ret)goto out;
- ret=m9_faa_command_owner_admit(mdev,secondary);if(ret)goto out;
- for(i=0;i<PARHELIA_M9_FAA_GRAPH_OWNERS;i++){
-  struct drm_gem_object*bo=m9x_faa_graph_binding_owner(binding,i);dma_resv_assert_held(bo->resv);
-  if(!dma_resv_test_signaled(bo->resv,DMA_RESV_USAGE_READ)){ret=-EBUSY;goto out;}
- }
- /* Prefix consumes the graph PRIMARY and graph sentinel as well as the
-  * bound attachments. Preserve GPU metadata while checking live roots. */
- ret=m9x_address_check_local_mapping(mdev,r->owner[1].base,r->owner[1].bytes);if(ret)goto out;
- ret=m9x_address_check_local_mapping(mdev,r->owner[8].base,r->owner[8].bytes);if(ret)goto out;
- m9_faa_depth_frame_owners(r,owner);
- image=(struct m9x_faa_later_depth_clear_image){.primary=frame->primary,.capacity=sizeof(frame->primary)};
- ret=m9x_faa_later_depth_two_clear_encode(sample->data,sample->size,owner,&views,
-  r->graph_draw_end_bytes,request->previous_unlock_point,&image,scratch);if(ret)goto out;
- if(!image.bytes||image.bytes>sizeof(frame->primary)||
-  image.final_point!=request->previous_unlock_point+0x80||
-  image.end_bytes[8]!=r->graph_draw_end_bytes+image.bytes){ret=-ESTALE;goto out;}
- for(i=0;i<9;i++)if(image.end_bytes[i]<r->graph_draw_end_bytes||
-  image.end_bytes[i]>image.end_bytes[8]||(i&&image.end_bytes[i]<image.end_bytes[i-1])){ret=-EINVAL;goto out;}
- dma_rmb();
- if((READ_ONCE(((u32*)t->fence_cpu)[0])&~15u)!=lower_32_bits(request->previous_unlock_point)){
-  ret=-ESTALE;goto out;
- }
- frame->clear_prefix=true;frame->initialized_reuse=true;frame->generation=request->generation;
- frame->previous_point=request->previous_unlock_point;frame->queue_start=next;frame->final_point=image.final_point;
- frame->primary_start=r->graph_draw_end_bytes;frame->primary_bytes=image.bytes;
- frame->secondary_cursor=r->color_secondary_cursor;frame->mode_before=r->depth_storage->mode;
- memcpy(frame->end_bytes,image.end_bytes,sizeof(image.end_bytes));frame->end_count=9;
- start_posts=r->graph_draw_posts;frame->planned_ends=start_posts;
- fence=m9x_fence_create_target_locked(mdev,lower_32_bits(frame->final_point));if(!fence){ret=-ENOMEM;goto out;}
- for(i=0;i<PARHELIA_M9_FAA_GRAPH_OWNERS;i++)dma_resv_add_fence(m9x_faa_graph_binding_owner(binding,i)->resv,&fence->base,DMA_RESV_USAGE_WRITE);
- r->depth_storage->frame=frame;installed=true;frame->attempted=true;
- /* All preflight and six reservations/fences precede the first write. */
- for(i=0;i<9;i++){
-  u32 end=frame->end_bytes[i],length=end-frame->primary_start;
-  if(length>copied)memcpy((u8*)primary->cpu+frame->primary_start+copied,frame->primary+copied,length-copied);
-  dma_wmb();one_posted=false;
-  ret=m9x_post_faa_graph_end_locked(mdev,&primary->system_node,primary->dma,
-   r->graph_draw_end_bytes,end,i&&end==frame->end_bytes[i-1],
-   i==8?lower_32_bits(frame->final_point):0,&point,&one_posted);
-  posted|=one_posted;
-  if(one_posted){r->graph_draw_end_bytes=end;r->graph_draw_posts++;r->normal_lock_view_seen=false;}
-  if(ret)goto out;copied=length;
- }
- dma_rmb();
- receipt=*request;receipt.raw00=READ_ONCE(((u32*)t->fence_cpu)[0]);
- receipt.raw04=READ_ONCE(((u32*)t->fence_cpu)[1]);receipt.raw20=READ_ONCE(((u32*)t->fence_cpu)[8]);
- if(point!=frame->final_point||t->completed_point!=point||t->submitted_point!=point||
-  (receipt.raw00&~15u)!=lower_32_bits(point)||t->queue_count||t->async_pending){ret=-EIO;goto out;}
- receipt.clear_point=point;receipt.state=PARHELIA_M9_FAA_CLEAR_PREFIX_RETIRED;
- receipt.primary_base=primary->base;receipt.primary_capacity=primary->bytes;
- receipt.primary_start=frame->primary_start;receipt.primary_end=r->graph_draw_end_bytes;
- receipt.secondary_base=secondary->base;receipt.secondary_capacity=secondary->bytes;
- receipt.secondary_cursor=r->color_secondary_cursor;receipt.end_count=9;
- memcpy(receipt.end_bytes,frame->end_bytes,sizeof(receipt.end_bytes));
- receipt.mode_flags=PARHELIA_M9_FAA_CLEAR_PREFIX_MODE_VALID|
-  (frame->mode_before.enabled?PARHELIA_M9_FAA_CLEAR_PREFIX_MODE_ENABLED:0)|
-  (frame->mode_before.embedded_hz?PARHELIA_M9_FAA_CLEAR_PREFIX_MODE_EMBEDDED:0);
- memcpy(frame->observed,&receipt,sizeof(receipt));frame->retired=true;*reply=receipt;
- dev_info(&mdev->pdev->dev,"M9 FAA CLEAR3 prefix retired: graph=%#llx generation=%u Unlock=%#llx origin=%#llx target=%#llx primary=%#x/%u range=%u..%u secondary=%#x/%u cursor=%u posts=9 raw00=%#x raw04=%#x raw20=%#x mode=%#x; no DRAW/Lock\n",
-  receipt.graph_id,receipt.generation,receipt.previous_unlock_point,receipt.previous_unlock_point,receipt.clear_point,
-  receipt.primary_base,receipt.primary_capacity,receipt.primary_start,receipt.primary_end,
-  receipt.secondary_base,receipt.secondary_capacity,receipt.secondary_cursor,receipt.raw00,receipt.raw04,receipt.raw20,receipt.mode_flags);
- ret=0;
+	struct m9x_transport *t = &mdev->transport;
+	struct m9x_faa_replay *r;
+	struct m9_faa_depth_frame_storage *frame = NULL, *held;
+	struct m9x_faa_later_depth_scratch *scratch = NULL;
+	struct m9x_faa_later_depth_clear_image image;
+	struct m9x_faa_graph_draw_owner owner[34];
+	struct m9x_faa_depth_views views;
+	struct m9_faa_owner *primary, *secondary;
+	struct m9x_fence *fence = NULL;
+	const struct firmware *sample = NULL;
+	struct drm_parhelia_m9_faa_graph_clear_prefix receipt;
+	u64 next = 0, point = 0;
+	u32 i, copied = 0, start_posts = 0;
+	bool posted = false, one_posted = false, installed = false;
+	int ret;
+
+	if (!request || !reply || !binding)
+		return -EINVAL;
+	ret = m9_faa_template_request(mdev, binding, request->generation, 0,
+				      &sample);
+	if (ret)
+		return ret;
+	frame = kvzalloc_obj(*frame);
+	scratch = kvzalloc_obj(*scratch);
+	if (!frame || !scratch) {
+		ret = -ENOMEM;
+		goto free;
+	}
+	mutex_lock(&t->lock);
+	r = t->faa;
+	if (t->wedged) {
+		ret = -EIO;
+		goto out;
+	}
+	if (!r || r->graph_binding != binding ||
+	    r->graph_generation != request->generation ||
+	    t->generation != request->generation || !r->depth_storage) {
+		ret = -ESTALE;
+		goto out;
+	}
+	/* Receipt-only retry never reposts, even after copy_to_user failed. */
+	held = r->depth_storage->frame;
+	if (held && held->clear_prefix) {
+		memcpy(&receipt, held->observed, sizeof(receipt));
+		primary = m9_faa_command_owner(r, false);
+		secondary = m9_faa_command_owner(r, true);
+		if (!primary || !secondary ||
+		    primary->base != receipt.primary_base ||
+		    primary->bytes != receipt.primary_capacity ||
+		    secondary->base != receipt.secondary_base ||
+		    secondary->bytes != receipt.secondary_capacity ||
+		    r->unlock_point != request->previous_unlock_point ||
+		    r->graph_draw_point != request->previous_unlock_point ||
+		    !r->unlock_started || !r->unlock_retired ||
+		    !r->color_lock_retired ||
+		    r->color_lock_point + 0x20 !=
+			    request->previous_unlock_point ||
+		    !held->attempted || !held->retired ||
+		    held->generation != request->generation ||
+		    held->previous_point != request->previous_unlock_point ||
+		    receipt.graph_id != request->graph_id ||
+		    receipt.width != request->width ||
+		    receipt.height != request->height ||
+		    t->submitted_point != held->final_point ||
+		    t->completed_point != held->final_point ||
+		    t->next_fence != lower_32_bits(held->final_point) + 0x10 ||
+		    t->queue_count || t->async_pending ||
+		    r->graph_draw_end_bytes != receipt.primary_end ||
+		    r->graph_draw_posts != held->planned_ends + 9 ||
+		    r->color_secondary_cursor != receipt.secondary_cursor ||
+		    r->depth_storage->mode.valid != held->mode_before.valid ||
+		    r->depth_storage->mode.enabled !=
+			    held->mode_before.enabled ||
+		    r->depth_storage->mode.embedded_hz !=
+			    held->mode_before.embedded_hz) {
+			ret = -ESTALE;
+			goto out;
+		}
+		*reply = receipt;
+		ret = 0;
+		goto out;
+	}
+	ret = m9_faa_depth_frame_retained_state(mdev, binding,
+						request->generation,
+						request->previous_unlock_point,
+						&next);
+	if (ret)
+		goto out;
+	/* Original frontier is U-only and unrotated. Reject unsupported scopes
+	 * before scratch installation, fences, CPU command writes or MMIO.
+	 */
+	if (!r->depth_storage->initialized || !r->depth_storage->ready ||
+	    held || !r->color_image ||
+	    r->color_image->layout.program_count != 2 ||
+	    !r->depth_storage->mode.valid || !r->depth_storage->mode.enabled ||
+	    r->depth_storage->mode.embedded_hz || r->present_attempted ||
+	    r->present_point ||
+	    (r->command_pools &&
+	     (r->command_pools->rotated || r->command_pools->unlock_point ||
+	      r->command_pools->maintenance_point)) ||
+	    request->width != 320 || request->height != 240 ||
+	    request->previous_unlock_point !=
+		    m9_faa_frame_origin(r, request->previous_unlock_point)) {
+		ret = -EOPNOTSUPP;
+		goto out;
+	}
+	ret = m9x_faa_graph_bound_depth_views_locked(mdev, binding,
+						     request->generation, &views);
+	if (ret)
+		goto out;
+	if (views.owner[0].width != request->width ||
+	    views.owner[0].height != request->height) {
+		ret = -ESTALE;
+		goto out;
+	}
+	primary = m9_faa_command_owner(r, false);
+	secondary = m9_faa_command_owner(r, true);
+	ret = m9_faa_command_owner_admit(mdev, primary);
+	if (ret)
+		goto out;
+	ret = m9_faa_command_owner_admit(mdev, secondary);
+	if (ret)
+		goto out;
+	for (i = 0; i < PARHELIA_M9_FAA_GRAPH_OWNERS; i++) {
+		struct drm_gem_object *bo =
+			m9x_faa_graph_binding_owner(binding, i);
+
+		dma_resv_assert_held(bo->resv);
+		if (!dma_resv_test_signaled(bo->resv, DMA_RESV_USAGE_READ)) {
+			ret = -EBUSY;
+			goto out;
+		}
+	}
+	/* Prefix consumes the graph PRIMARY and graph sentinel as well as the
+	 * bound attachments. Preserve GPU metadata while checking live roots.
+	 */
+	ret = m9x_address_check_local_mapping(mdev, r->owner[1].base,
+					      r->owner[1].bytes);
+	if (ret)
+		goto out;
+	ret = m9x_address_check_local_mapping(mdev, r->owner[8].base,
+					      r->owner[8].bytes);
+	if (ret)
+		goto out;
+	m9_faa_depth_frame_owners(r, owner);
+	image = (struct m9x_faa_later_depth_clear_image){
+		.primary = frame->primary, .capacity = sizeof(frame->primary)
+	};
+	ret = m9x_faa_later_depth_two_clear_encode(sample->data, sample->size,
+						   owner, &views,
+						   r->graph_draw_end_bytes,
+						   request->previous_unlock_point,
+						   &image, scratch);
+	if (ret)
+		goto out;
+	if (!image.bytes || image.bytes > sizeof(frame->primary) ||
+	    image.final_point != request->previous_unlock_point + 0x80 ||
+	    image.end_bytes[8] != r->graph_draw_end_bytes + image.bytes) {
+		ret = -ESTALE;
+		goto out;
+	}
+	for (i = 0; i < 9; i++)
+		if (image.end_bytes[i] < r->graph_draw_end_bytes ||
+		    image.end_bytes[i] > image.end_bytes[8] ||
+		    (i && image.end_bytes[i] < image.end_bytes[i - 1])) {
+			ret = -EINVAL;
+			goto out;
+		}
+	dma_rmb();
+	if ((READ_ONCE(((u32 *)t->fence_cpu)[0]) & ~15u) !=
+	    lower_32_bits(request->previous_unlock_point)) {
+		ret = -ESTALE;
+		goto out;
+	}
+	frame->clear_prefix = true;
+	frame->initialized_reuse = true;
+	frame->generation = request->generation;
+	frame->previous_point = request->previous_unlock_point;
+	frame->queue_start = next;
+	frame->final_point = image.final_point;
+	frame->primary_start = r->graph_draw_end_bytes;
+	frame->primary_bytes = image.bytes;
+	frame->secondary_cursor = r->color_secondary_cursor;
+	frame->mode_before = r->depth_storage->mode;
+	memcpy(frame->end_bytes, image.end_bytes, sizeof(image.end_bytes));
+	frame->end_count = 9;
+	start_posts = r->graph_draw_posts;
+	frame->planned_ends = start_posts;
+	fence = m9x_fence_create_target_locked(mdev,
+					       lower_32_bits(frame->final_point));
+	if (!fence) {
+		ret = -ENOMEM;
+		goto out;
+	}
+	for (i = 0; i < PARHELIA_M9_FAA_GRAPH_OWNERS; i++)
+		dma_resv_add_fence(m9x_faa_graph_binding_owner(binding, i)->resv,
+				   &fence->base, DMA_RESV_USAGE_WRITE);
+	r->depth_storage->frame = frame;
+	installed = true;
+	frame->attempted = true;
+	/* All preflight and six reservations/fences precede the first write. */
+	for (i = 0; i < 9; i++) {
+		u32 end = frame->end_bytes[i],
+		    length = end - frame->primary_start;
+
+		if (length > copied)
+			memcpy((u8 *)primary->cpu + frame->primary_start +
+				       copied,
+			       frame->primary + copied, length - copied);
+		dma_wmb();
+		one_posted = false;
+		ret = m9x_post_faa_graph_end_locked(mdev, &primary->system_node,
+						    primary->dma,
+						    r->graph_draw_end_bytes, end,
+						    i && end == frame->end_bytes[i - 1],
+						    i == 8 ? lower_32_bits(frame->final_point) : 0,
+						    &point, &one_posted);
+		posted |= one_posted;
+		if (one_posted) {
+			r->graph_draw_end_bytes = end;
+			r->graph_draw_posts++;
+			r->normal_lock_view_seen = false;
+		}
+		if (ret)
+			goto out;
+		copied = length;
+	}
+	dma_rmb();
+	receipt = *request;
+	receipt.raw00 = READ_ONCE(((u32 *)t->fence_cpu)[0]);
+	receipt.raw04 = READ_ONCE(((u32 *)t->fence_cpu)[1]);
+	receipt.raw20 = READ_ONCE(((u32 *)t->fence_cpu)[8]);
+	if (point != frame->final_point || t->completed_point != point ||
+	    t->submitted_point != point ||
+	    (receipt.raw00 & ~15u) != lower_32_bits(point) || t->queue_count ||
+	    t->async_pending) {
+		ret = -EIO;
+		goto out;
+	}
+	receipt.clear_point = point;
+	receipt.state = PARHELIA_M9_FAA_CLEAR_PREFIX_RETIRED;
+	receipt.primary_base = primary->base;
+	receipt.primary_capacity = primary->bytes;
+	receipt.primary_start = frame->primary_start;
+	receipt.primary_end = r->graph_draw_end_bytes;
+	receipt.secondary_base = secondary->base;
+	receipt.secondary_capacity = secondary->bytes;
+	receipt.secondary_cursor = r->color_secondary_cursor;
+	receipt.end_count = 9;
+	memcpy(receipt.end_bytes, frame->end_bytes, sizeof(receipt.end_bytes));
+	receipt.mode_flags =
+		PARHELIA_M9_FAA_CLEAR_PREFIX_MODE_VALID |
+		(frame->mode_before.enabled ?
+			 PARHELIA_M9_FAA_CLEAR_PREFIX_MODE_ENABLED :
+			 0) |
+		(frame->mode_before.embedded_hz ?
+			 PARHELIA_M9_FAA_CLEAR_PREFIX_MODE_EMBEDDED :
+			 0);
+	memcpy(frame->observed, &receipt, sizeof(receipt));
+	frame->retired = true;
+	*reply = receipt;
+	dev_info(&mdev->pdev->dev,
+		 "M9 FAA CLEAR3 prefix retired: graph=%#llx generation=%u Unlock=%#llx origin=%#llx target=%#llx primary=%#x/%u range=%u..%u secondary=%#x/%u cursor=%u posts=9 raw00=%#x raw04=%#x raw20=%#x mode=%#x; no DRAW/Lock\n",
+		 receipt.graph_id, receipt.generation,
+		 receipt.previous_unlock_point, receipt.previous_unlock_point,
+		 receipt.clear_point, receipt.primary_base,
+		 receipt.primary_capacity, receipt.primary_start,
+		 receipt.primary_end, receipt.secondary_base,
+		 receipt.secondary_capacity, receipt.secondary_cursor,
+		 receipt.raw00, receipt.raw04, receipt.raw20, receipt.mode_flags);
+	ret = 0;
 out:
 	m9x_transport_fence_finish_locked(mdev, fence, ret, posted);
- if(installed&&!posted){r->depth_storage->frame=NULL;installed=false;}
- mutex_unlock(&t->lock);
-free:if(sample)release_firmware(sample);kvfree(scratch);if(!installed)kvfree(frame);return ret;
+	if (installed && !posted) {
+		r->depth_storage->frame = NULL;
+		installed = false;
+	}
+	mutex_unlock(&t->lock);
+free:
+	if (sample)
+		release_firmware(sample);
+	kvfree(scratch);
+	if (!installed)
+		kvfree(frame);
+	return ret;
 #else
- return -EOPNOTSUPP;
+	return -EOPNOTSUPP;
 #endif
 }
 
