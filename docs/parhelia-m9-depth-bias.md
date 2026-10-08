@@ -131,3 +131,28 @@ The depth fixture must pass all pixels and show no native fallback or
 skipped draw. A short Q3 gameplay profile after that can establish whether
 the exact remaining offset draw has become native; no repeated timedemo
 is needed for this coverage proof.
+
+## 2026-10-08: GL units take two D24 LSBs (deliberate departure from the vendor)
+
+The vendor GL ICD applies **one LSB per unit**: D0 for units 2 is
+`2/(2^24-1)`, and its own readbacks above step by 2, 8 and -4 LSBs for
+units 2, 8 and -4. The D3D handlers carry raw depth-unit floats and have no
+GL unit scale to compare against.
+
+On the M9128 that scale does not satisfy GL's resolvable difference.
+MEASURED with `tests/m9-piglit-full-20261008/zprec.c` (2000 full-window
+quads under piglit's near=1/far=infinity projection, D24 readback): stored
+depth lies within ±1 LSB of the exactly rounded window depth, and the
+distribution is identical for the native vertex program and for the draw
+module (`M9X_NATIVE_VS=0`). With one-LSB units, piglit
+`gl-1.4-polygon-offset` measures an ideal MRD of 2 bits against an actual
+1 bit and fails, 4/4 natively. The draw module's offset stage already uses
+`units * mrd * 2` for CPU-transformed draws (the same D24 convention as
+radeonsi), and that path passed 4/4.
+
+Mesa m9x `9e52901` therefore doubles the GL units before the unchanged
+captured encoder (`m9_rast_depth_bias`), so native and CPU-transformed
+geometry in one frame get the same offset. MEASURED after the change:
+units=1 gives a 2-LSB step in 2000/2000 native samples (was 1 LSB in
+2000/2000). Slope factors are unchanged. Quake3's `-1/-2` now matches what
+its CPU-path draws already received.
