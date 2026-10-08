@@ -116,23 +116,28 @@ struct drm_parhelia_m9_faa_color_draw {
  struct drm_parhelia_m9_faa_upload_layout layout;
  __u32 depth_flags, raster_flags, pad[2];
 };
+
 struct drm_parhelia_m9_faa_graph_color_frame_batch {
- __u64 graph_id, previous_point, lock_point, draws;
- __u32 draw_count, generation, flags, state;
- __u32 width, height, clear_flags, clear_color;
- /* INITIALIZED output only: zero, or a genuine secondary-close global
-  * point exactly the authenticated idle origin+0x10 (Unlock, its retired
-  * PRESENT point, or ordinary_point). previous_point always remains the
-  * immutable Unlock.
-  * Pool completion is a separate timeline.
-  * ordinary_point (output only): zero, or the retired point of the last
-  * ordinary job appended to the retained primary after that idle origin;
-  * the frame then continued from it and lock_point counts from it.
-  * All four words remain zero on input; the request stays80bytes. */
- union {
-  __u32 pad[4];
-  struct { __u64 maintenance_point; __u64 ordinary_point; };
- };
+	__u64 graph_id, previous_point, lock_point, draws;
+	__u32 draw_count, generation, flags, state;
+	__u32 width, height, clear_flags, clear_color;
+	/* INITIALIZED output only: zero, or a genuine secondary-close global
+	 * point exactly the authenticated idle origin+0x10 (Unlock, its retired
+	 * PRESENT point, or ordinary_point). previous_point always remains the
+	 * immutable Unlock.
+	 * Pool completion is a separate timeline.
+	 * ordinary_point (output only): zero, or the retired point of the last
+	 * ordinary job appended to the retained primary after that idle origin;
+	 * the frame then continued from it and lock_point counts from it.
+	 * All four words remain zero on input; the request stays80bytes.
+	 */
+	union {
+		__u32 pad[4];
+		struct {
+			__u64 maintenance_point;
+			__u64 ordinary_point;
+		};
+	};
 };
 #define DRM_IOCTL_PARHELIA_M9_FAA_GRAPH_COLOR_FRAME_BATCH DRM_IOWR(DRM_COMMAND_BASE + DRM_PARHELIA_M9_FAA_GRAPH_COLOR_FRAME_BATCH, struct drm_parhelia_m9_faa_graph_color_frame_batch)
 
