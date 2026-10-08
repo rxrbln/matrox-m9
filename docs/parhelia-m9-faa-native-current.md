@@ -4,6 +4,27 @@ Copyright 2026 René Rebe <rene@exactco.de>
 SPDX-License-Identifier: GPL-2.0-only
 
 
+## October 8: full glxgears FIRST retires; pixels and frame reuse still fail
+
+DRMff3696f removes the false address check on vendor transition controls and
+integrates initialized mixed-layout/flat/cull composition. On the actual
+M9128, all12 glxgears FIRST jobs now execute: INITb0 -> Lock8e0 -> Unlock900.
+The captured320x240 window is entirely black, so this is not a rendering pass.
+SECOND frame preparation returns EFAULT before submission; the target stays
+healthy at900. [Hardware evidence](../tests/m9-faa-glxgears-first-hardware-20261008/first-retired-black/README.md).
+
+Next work separates the F021 readback from application presentation and
+checks post-render mapping metadata during frame reuse. Strict initial
+mapping publication and live mapping identity must not be conflated. The
+actual-submit CPU regression (DRM7de4237) proves three ordinary SYSTEM
+placements are independent of the control literals while six real FAA-owner
+PTE corruptions still refuse before any upload or END.
+
+Texture binding words are now derived from retained live owners in DRM6c9b985,
+with CPU source/placement/refusal checks. Full texture submission and command
+pool rotation remain unfinished. No valid FAA glxgears screenshot, continuous
+run, Quake3 FAA result or FAA FPS measurement yet.
+
 ## October 8: glxgears mixed batch prepares; control words misclassified as addresses block submission
 
 The latest target run accepts all21 glxgears draws and prepares12 native FAA
