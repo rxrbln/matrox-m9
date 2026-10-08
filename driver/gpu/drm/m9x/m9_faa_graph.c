@@ -354,8 +354,8 @@ void m9x_faa_graph_put(struct m9_faa_prepared_graph *graph)
 /* Acquiring pins the exact group beyond RELEASE or file close. A future GPU
  * producer must also compare generation with the live transport under its
  * posting lock, then hold this reference through retirement/quarantine. */
-struct m9_faa_prepared_graph *
-m9x_faa_graph_acquire(struct drm_file *file, u64 id, u32 generation)
+struct m9_faa_prepared_graph *m9x_faa_graph_acquire(struct drm_file *file,
+						    u64 id, u32 generation)
 {
 	struct m9_faa_file *state = file->driver_priv;
 	struct m9_faa_prepared_graph *graph = NULL;
