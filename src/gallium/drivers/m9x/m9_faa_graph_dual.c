@@ -129,7 +129,7 @@ m9_faa_surface_dual_later_kernel(struct m9_screen *screen,struct m9_faa_surface 
                                  const struct m9_faa_application_frame *frame)
 {
    struct drm_parhelia_m9_faa_graph_dual_later request={0};
-   _Static_assert(sizeof(request)==272,"dual LATER ABI");
+   _Static_assert(sizeof(request)==280,"dual LATER ABI");
    struct m9_faa_graph *g=&surface->graph;
    const struct m9_faa_application_upload *first=&frame->draws[0];
    if(!frame->count||frame->count>PARHELIA_M9_FAA_DUAL_LATER_MAX_DRAWS||
@@ -184,9 +184,13 @@ m9_faa_surface_dual_later_kernel(struct m9_screen *screen,struct m9_faa_surface 
    g->color_next_attempted=true;
    if(ioctl(screen->fd,DRM_IOCTL_PARHELIA_M9_FAA_GRAPH_DUAL_LATER,&request)){ret=-errno;goto out;}
    struct drm_parhelia_m9_faa_graph_dual_later immutable=request;
-   immutable.lock_point=0;immutable.state=0;
+   immutable.lock_point=0;immutable.state=0;immutable.ordinary_point=0;
    ret=-EPROTO;
-   if(request.lock_point!=before.previous_unlock_point+delta||
+   /* Ordinary jobs after the Unlock move the frame's origin. */
+   const uint64_t origin=request.ordinary_point?request.ordinary_point:before.previous_unlock_point;
+   if((request.ordinary_point&15)||
+      (request.ordinary_point&&request.ordinary_point<=before.previous_unlock_point)||
+      origin>UINT64_MAX-delta||request.lock_point!=origin+delta||
       request.state!=PARHELIA_M9_FAA_DUAL_LATER_LOCK_RETIRED||
       memcmp(&immutable,&before,sizeof(before))||
       memcmp(saved,draws,frame->count*sizeof(*draws)))
@@ -194,8 +198,8 @@ m9_faa_surface_dual_later_kernel(struct m9_screen *screen,struct m9_faa_surface 
    ret=m9_wait_for_point(screen,request.lock_point);if(ret)goto out;
    g->color_next_previous_unlock_point=before.previous_unlock_point;
    g->color_next_lock_point=g->color_lock_point=request.lock_point;
-   g->color_lock_delta=delta;g->color_texture_later=true;
-   g->color_frame_draw_count=0;g->color_frame_flags=0;g->color_frame_ordinary_point=0;
+   g->color_lock_delta=request.lock_point-before.previous_unlock_point;g->color_texture_later=true;
+   g->color_frame_draw_count=0;g->color_frame_flags=0;g->color_frame_ordinary_point=request.ordinary_point;
    g->color_unlock_attempted=false;g->color_unlock_point=0;
    ret=0;
 out:

@@ -333,6 +333,9 @@ struct drm_parhelia_m9_faa_graph_dual_later {
  struct drm_parhelia_m9_faa_texture_view texture[2];
  __u64 draws;
  __u32 draw_count,pad2;
+ /* Output only: zero, or the last ordinary job after the previous
+  * Unlock; lock_point counts from it. Zero on input. */
+ __u64 ordinary_point;
 };
 #define DRM_IOCTL_PARHELIA_M9_FAA_GRAPH_DUAL_LATER \
  DRM_IOWR(DRM_COMMAND_BASE + DRM_PARHELIA_M9_FAA_GRAPH_DUAL_LATER, \

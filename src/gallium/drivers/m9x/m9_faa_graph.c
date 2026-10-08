@@ -563,14 +563,19 @@ static bool
 m9_faa_color_lock_history_valid(const struct m9_faa_graph *graph)
 {
    const uint64_t delta = graph->color_lock_delta;
-   if(graph->color_texture_later)
+   if(graph->color_texture_later) {
+      /* A later frame after an ordinary interlude counts from that job. */
+      const uint64_t ordinary=graph->color_frame_ordinary_point;
+      const uint64_t previous=graph->color_next_previous_unlock_point;
+      if(ordinary&&((ordinary&15)||ordinary<=previous||delta<ordinary-previous))return false;
       return graph->color_texture_count==2&&graph->color_program_count==4&&
          graph->color_next_lock_point&&!graph->color_frame_draw_count&&!graph->color_frame_flags&&
-         m9_faa_dual_later_delta_valid(delta)&&graph->color_next_previous_unlock_point&&
+         m9_faa_dual_later_delta_valid(ordinary?delta-(ordinary-previous):delta)&&graph->color_next_previous_unlock_point&&
          !(graph->color_next_previous_unlock_point&15)&&
          graph->color_next_previous_unlock_point<=UINT64_MAX-delta&&
          graph->color_lock_point==graph->color_next_lock_point&&
          graph->color_lock_point==graph->color_next_previous_unlock_point+delta;
+   }
    if(graph->color_texture_count&&
       (graph->color_texture_count!=2||graph->color_program_count!=4||
        graph->color_next_lock_point||!graph->color_frame_draw_count||graph->color_frame_draw_count>3||
