@@ -150,6 +150,10 @@ struct drm_parhelia_m9_faa_graph_color_frame_batch {
 #define PARHELIA_M9_FAA_DUAL_FIRST_VERSION 1u
 #define PARHELIA_M9_FAA_DUAL_FIRST_COLORPASS_DIAGNOSTIC 1u
 #define PARHELIA_M9_FAA_DUAL_FIRST_LOCK_RETIRED 23u
+/* D3D sampler enums: mip_filter 1 none, 2 point, 3 linear; address_u/v
+ * 1 wrap, 3 clamp to edge, 6 GL clamp (zero border). levels may reach a
+ * 1x1 last level through the 32x16 tail atlas.
+ */
 struct drm_parhelia_m9_faa_texture_view {
  __u32 handle,profile,format,width,height,storage_kind,levels;
  __u32 min_filter,mag_filter,mip_filter,address_u,address_v;

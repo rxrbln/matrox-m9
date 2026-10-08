@@ -1,4 +1,5 @@
 /* SPDX-License-Identifier: GPL-2.0-only */
+/* Copyright 2026 René Rebe <rene@exactco.de> */
 #ifndef M9_FAA_GRAPH_TEXTURE_BIND_H
 #define M9_FAA_GRAPH_TEXTURE_BIND_H
 
@@ -32,7 +33,10 @@ struct m9x_faa_texture_bind_input {
 	u32 storage_kind;
 	u32 levels;
 	/* D3D texture-stage state enums, admitted subset of the source tables:
-	 * point/linear MIN/MAG, point MIP, and wrap/clamp U/V. */
+	 * point/linear MIN/MAG and MIP, and U/V WRAP 1, CLAMP 3 or the vendor
+	 * wrap table's GL CLAMP entry 6 (the stage's border words are zero).
+	 * A mip chain may reach 1x1 through the 32x16 tail atlas.
+	 */
 	u32 stage;
 	u32 min_filter, mag_filter, mip_filter;
 	u32 address_u, address_v;

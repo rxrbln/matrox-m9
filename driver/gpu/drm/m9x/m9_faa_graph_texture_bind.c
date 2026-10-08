@@ -28,11 +28,13 @@ static void level_layout(u32 width, u32 height, u32 *span, u32 *rows,
 
 /* Packed mip chain extent of the ordinary texture layout (Mesa
  * m9_texture_layout): each level by its own extent, small levels by the
- * aperture calculator's 1 KiB pages. Tail-atlas levels are not admitted.
+ * aperture calculator's 1 KiB pages. Levels of at most 16x16 share one
+ * 32x16 tail atlas (0x800 bytes) placed where the first of them starts.
  */
 static u32 chain_extent(u32 width, u32 height, u32 levels)
 {
 	u32 offset = 0, end = 0, l;
+	int tail = 0;
 
 	for (l = 0; l < levels; l++) {
 		u32 w = width >> l ? width >> l : 1;
@@ -40,6 +42,12 @@ static u32 chain_extent(u32 width, u32 height, u32 levels)
 		u32 span, rows, quantum, face, whole;
 		int small;
 
+		if (w <= 16 && h <= 16) {
+			if (!tail)
+				offset += 0x800;
+			tail = 1;
+			continue;
+		}
 		level_layout(w, h, &span, &rows, &small);
 		quantum = small ? 0x400 : 0x1000;
 		whole = (span * rows * 4 + quantum - 1) & ~(quantum - 1);
@@ -52,12 +60,32 @@ static u32 chain_extent(u32 width, u32 height, u32 levels)
 	return offset > end ? offset : end;
 }
 
+/* D3DTADDRESS WRAP 1, CLAMP 3 and the vendor table's entry 6 (GL CLAMP)
+ * to the 7c wrap field (MxMD 0x1f639c: 0,0,4,1,7,5,6).
+ */
+static int wrap_mode(u32 address, u32 *mode)
+{
+	switch (address) {
+	case 1:
+		*mode = 0;
+		return 0;
+	case 3:
+		*mode = 1;
+		return 0;
+	case 6:
+		*mode = 6;
+		return 0;
+	default:
+		return -EINVAL;
+	}
+}
+
 int m9x_faa_texture_bind_encode(
 	const struct m9x_faa_texture_bind_input *in,
 	struct m9x_faa_texture_bind_words *out)
 {
 	struct m9x_faa_texture_bind_words image;
-	u32 kind, extent, span, alloc_height, tail;
+	u32 kind, extent, span, alloc_height, tail, wrap_u, wrap_v;
 
 	if (!in || !out || in->owner_domain != M9_FAA_TEXTURE_VRAM ||
 	    (in->owner_base & 255) ||
@@ -68,16 +96,13 @@ int m9x_faa_texture_bind_encode(
 	    (in->width & (in->width - 1)) ||
 	    (in->height & (in->height - 1)) ||
 	    !in->levels || in->levels > 11 ||
-	    (in->levels > 1 &&
-	     (in->width >> (in->levels - 1) <= 16 &&
-	      in->height >> (in->levels - 1) <= 16)) ||
 	    (in->width >> (in->levels - 1) == 0 &&
 	     in->height >> (in->levels - 1) == 0) || in->stage != 0 ||
 	    (in->min_filter != 1 && in->min_filter != 2) ||
 	    (in->mag_filter != 1 && in->mag_filter != 2) ||
 	    in->mip_filter < 1 || in->mip_filter > 3 ||
-	    (in->address_u != 1 && in->address_u != 3) ||
-	    (in->address_v != 1 && in->address_v != 3) ||
+	    wrap_mode(in->address_u, &wrap_u) ||
+	    wrap_mode(in->address_v, &wrap_v) ||
 	    (in->coordinate_sets != 1 && in->coordinate_sets != 2) ||
 	    in->coordinate_index >= in->coordinate_sets)
 		return -EINVAL;
@@ -126,16 +151,15 @@ int m9x_faa_texture_bind_encode(
 	if (in->mip_filter != 1)
 		image.descriptor7a |= (in->levels - 1) << 28;
 	/* 18afb0/18ba27 tables, checked against independent MIN/MAG and
-	 * U/V clamp controls. Mip-linear needs a resident chain, so it stays
-	 * outside this single-level owner contract. */
+	 * U/V wrap controls.
+	 */
 	image.sampler7c = 0x00009200 |
 		(in->mip_filter == 3 ? 0x100 : 0x80) |
 		(in->mip_filter == 2 && in->mag_filter == 2 &&
 		 in->min_filter == 1 ? 0x400 : 0) |
 		((in->min_filter == 2) ? 2 : 0) |
 		((in->mag_filter == 2) ? (2 << 3) : 0) |
-		((in->address_u == 3) ? (1 << 22) : 0) |
-		((in->address_v == 3) ? (1 << 25) : 0);
+		wrap_u << 22 | wrap_v << 25;
 	image.sampler7d = 0x0ff80000;
 	image.sampler87 = 0;
 	/* 105648/17f91d coordinate selection leaves the program intact.
