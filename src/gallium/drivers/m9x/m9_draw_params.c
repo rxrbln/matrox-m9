@@ -213,25 +213,20 @@ m9_vertex_decl_init(struct m9_vertex_decl *decl, unsigned position_components,
    return 0;
 }
 
+/* Gallium's PIPE_FUNC order is the GL order m9_hw_compare() takes. The
+ * disabled word is the vendor's: LESS/write with the enable bit clear. */
 uint32_t
 m9_depth_control(bool test, bool write, unsigned pipe_func)
 {
-   static const uint8_t code[8] = {
-      [PIPE_FUNC_NEVER] = 0, [PIPE_FUNC_EQUAL] = 1, [PIPE_FUNC_LESS] = 2,
-      [PIPE_FUNC_LEQUAL] = 3, [PIPE_FUNC_GREATER] = 4, [PIPE_FUNC_GEQUAL] = 5,
-      [PIPE_FUNC_NOTEQUAL] = 6, [PIPE_FUNC_ALWAYS] = 7,
-   };
-
    if (!test)
-      return 0x0038038a;
-   return 0x00380381 | (uint32_t)code[pipe_func & 7] << 2 | (write ? 2 : 0);
+      return m9_hw_depth_a8(0, 1, M9_HW_CMP_LESS);
+   return m9_hw_depth_a8(1, write, m9_hw_compare(pipe_func));
 }
 
 uint32_t
 m9_depth_ef(bool test, bool write)
 {
-   /* a8 alone enables nothing; ef carries the depth enable. */
-   return test ? (write ? 0x0000f000 : 0x00007000) : 0;
+   return m9_hw_depth_ef(test, write);
 }
 
 /* Function code, then sfail, zfail and zpass codes, three bits each. */
@@ -299,13 +294,10 @@ m9_cull_ef(unsigned pipe_cull_face, bool front_ccw)
 uint32_t
 m9_color_mask(unsigned pipe_colormask)
 {
-   uint32_t nibble = (pipe_colormask & PIPE_MASK_R ? 4 : 0) |
-                     (pipe_colormask & PIPE_MASK_G ? 2 : 0) |
-                     (pipe_colormask & PIPE_MASK_B ? 1 : 0) |
-                     (pipe_colormask & PIPE_MASK_A ? 8 : 0);
-
-   /* Each nibble gates the pixel columns x % 4 == n. */
-   return 0xffff0000u | nibble * 0x1111u;
+   return m9_hw_color_mask(pipe_colormask & PIPE_MASK_R,
+                           pipe_colormask & PIPE_MASK_G,
+                           pipe_colormask & PIPE_MASK_B,
+                           pipe_colormask & PIPE_MASK_A);
 }
 
 void

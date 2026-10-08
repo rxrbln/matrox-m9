@@ -45,4 +45,53 @@ static inline M9_HW_U32 m9_hw_surface_desc1(M9_HW_U32 height,
 	return (height & 0xffffu) | ((layers & 0xfffu) << 16);
 }
 
+/*
+ * Depth comparison codes of a8 bits 4:2 (the vendor's 139670 table), and
+ * the conversion from GL/Gallium order NEVER, LESS, EQUAL, LEQUAL,
+ * GREATER, NOTEQUAL, GEQUAL, ALWAYS.
+ */
+#define M9_HW_CMP_NEVER		0u
+#define M9_HW_CMP_EQUAL		1u
+#define M9_HW_CMP_LESS		2u
+#define M9_HW_CMP_LEQUAL	3u
+#define M9_HW_CMP_GREATER	4u
+#define M9_HW_CMP_GEQUAL	5u
+#define M9_HW_CMP_NOTEQUAL	6u
+#define M9_HW_CMP_ALWAYS	7u
+
+static inline M9_HW_U32 m9_hw_compare(M9_HW_U32 gl_order)
+{
+	static const unsigned char code[8] = {
+		M9_HW_CMP_NEVER, M9_HW_CMP_LESS, M9_HW_CMP_EQUAL,
+		M9_HW_CMP_LEQUAL, M9_HW_CMP_GREATER, M9_HW_CMP_NOTEQUAL,
+		M9_HW_CMP_GEQUAL, M9_HW_CMP_ALWAYS,
+	};
+
+	return code[gl_order & 7u];
+}
+
+/* a8: depth test enable 0, write 1, comparison 4:2 (no stencil). */
+static inline M9_HW_U32 m9_hw_depth_a8(M9_HW_U32 enable, M9_HW_U32 write,
+				       M9_HW_U32 compare)
+{
+	return 0x00380380u | (enable & 1u) | ((write & 1u) << 1) |
+	       ((compare & 7u) << 2);
+}
+
+/* The depth enable bits of ef; a8 alone enables nothing. */
+static inline M9_HW_U32 m9_hw_depth_ef(M9_HW_U32 enable, M9_HW_U32 write)
+{
+	return enable ? (write ? 0x0000f000u : 0x00007000u) : 0;
+}
+
+/* ab: one nibble per pixel column x % 4, bits B 0, G 1, R 2, A 3. */
+static inline M9_HW_U32 m9_hw_color_mask(M9_HW_U32 r, M9_HW_U32 g,
+					 M9_HW_U32 b, M9_HW_U32 a)
+{
+	M9_HW_U32 nibble = (r ? 4u : 0) | (g ? 2u : 0) | (b ? 1u : 0) |
+			   (a ? 8u : 0);
+
+	return 0xffff0000u | nibble * 0x1111u;
+}
+
 #endif
