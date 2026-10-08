@@ -159,5 +159,22 @@ owners that must never be exposed to userspace.
 
 ## 6. Implementation log
 
-No stage has landed yet (wind-down 2026-10-08): the m9unify clones are
-unchanged at DRM `956e813` and Mesa `894fe3f`. Stage 1 is the next step.
+Stage 1 is done (OFFLINE, agent m9unify3, 2026-10-08). The 25 commits are
+on DRM branch `m9unify3-stage1` (`f5d9c11..e41aca9` on `956e813`), in clone
+`/home/ai/tmp/agents/m9unify-linux/linux-7.2/drivers/gpu/drm`; they are not
+yet integrated.
+
+* `m9_cmd.h` is adopted by every built FAA encoder and by the
+  ordinary/counted link builders.
+* The requester gains `m9x_system_pages_mapped()`,
+  `m9_transport_publish_end()`, `m9_transport_finish_wait_locked()` and
+  `m9x_transport_fence_finish_locked()`.
+* Proof: 120 host tests emit byte-identical streams against `956e813`
+  (12.2 MB serialized). These include a new MMIO-stream serializer for
+  the posting functions. Every style commit keeps code and rodata
+  identical, and checkpatch `--strict` is clean on the series.
+* Mesa is unchanged.
+
+Results, gaps and the stage-2 plan are in
+[tests/m9-unify-stage1-20261008](../tests/m9-unify-stage1-20261008/README.md).
+Stage 2 (one transport namespace) needs hardware and has not started.
