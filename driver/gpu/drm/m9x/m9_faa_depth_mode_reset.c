@@ -5,6 +5,7 @@
 #include "m9_cmd.h"
 #include "m9_faa_depth_mode_reset.h"
 #include "m9_faa_graph_depth_encode.h"
+#include "m9_hw_encode.h"
 
 static const u8 digest[32] = { 0x68, 0xd8, 0x5c, 0xf3, 0xb1, 0xf9, 0xc9, 0x6f,
 			       0xe2, 0xe3, 0x12, 0xe3, 0xad, 0x7e, 0x39, 0xe4,
@@ -83,9 +84,10 @@ int m9x_faa_depth_mode_reset_encode(const u8 *blob, size_t bytes,
 	m9_cmd_put(image + 776, o[8].base | 1);
 	m9_cmd_put(image + 3804, resolved_primary ? o[1].base | 1 : 0);
 	m9_cmd_put(image + 3808,
-		   resolved_primary ? 0xf0210000u | v->owner[0].width : 0);
+		   resolved_primary ? m9_hw_surface_desc0(M9_HW_FORMAT_HZ, 0, 1, 1,
+							  v->owner[0].width) : 0);
 	m9_cmd_put(image + 3812,
-		   resolved_primary ? 0x10000u | v->owner[0].height : 0);
+		   resolved_primary ? m9_hw_surface_desc1(v->owner[0].height, 1) : 0);
 	for (i = 0; i < 8; i++)
 		m9_cmd_put(image + token_at[i], (u32)epoch + token_delta[i]);
 	if (before->embedded_hz) {

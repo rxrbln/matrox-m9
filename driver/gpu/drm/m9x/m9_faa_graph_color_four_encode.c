@@ -9,6 +9,7 @@
 #include <crypto/sha2.h>
 #include "m9_cmd.h"
 #include "m9_faa_graph_color_encode.h"
+#include "m9_hw_encode.h"
 
 /* Original M9128 150dc0 availability mask for the live carry head. The
  * program's terminal STOP is padding, not a scratch-register write.
@@ -566,9 +567,11 @@ int m9x_faa_color_four_encode(const u8 *blob, size_t bytes,
 				   out->primary + dims[i].b :
 				   out->secondary + moved(dims[i].b, extra),
 			   (dimensions.height << 16) | dimensions.width);
-	m9_cmd_put(out->primary + 320, 0xf0210000u | dimensions.width);
-	m9_cmd_put(out->primary + 3348, 0xf0220000u | dimensions.width);
-	m9_cmd_put(out->primary + 3352, 0x00010000u | dimensions.height);
+	m9_cmd_put(out->primary + 320, m9_hw_surface_desc0(M9_HW_FORMAT_HZ, 0, 1, 1,
+							   dimensions.width));
+	m9_cmd_put(out->primary + 3348, m9_hw_surface_desc0(M9_HW_FORMAT_HZ, 0, 1, 2,
+							    dimensions.width));
+	m9_cmd_put(out->primary + 3352, m9_hw_surface_desc1(dimensions.height, 1));
 	m9_cmd_put(out->secondary + moved(2064, extra),
 		   dimensions.primary_descriptor);
 	m9_cmd_put(out->secondary + moved(2080, extra),

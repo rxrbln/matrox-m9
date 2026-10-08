@@ -7,6 +7,7 @@
 #include "m9_cmd.h"
 #include "m9_faa_graph_sample_clear_encode.h"
 #include "m9_faa_graph_depth_encode.h"
+#include "m9_hw_encode.h"
 
 static const u8 digest[32] = {
 	0x60, 0x64, 0x4a, 0x29, 0x61, 0x12, 0x6d, 0xcf, 0x19, 0x14, 0xf2,
@@ -82,7 +83,7 @@ int m9x_faa_sample_clear_encode(const u8 *blob, size_t bytes,
 		   (hz->allocation_height << 16) | hz->storage_width);
 	m9_cmd_put(primary + 68, ((u32)base_point + 0x60) | 1);
 	m9_cmd_put(primary + 76, hz->base | 1);
-	m9_cmd_put(primary + 80, 0xf0000000 | hz->storage_width);
+	m9_cmd_put(primary + 80, m9_hw_surface_desc0(M9_HW_FORMAT_HZ, 0, 0, 0, hz->storage_width));
 	/* fa227/fa22c/fa235/fa23e publish this fixed E6/44 transition control.
 	 * It is not a SYSTEM owner address or a dimension-dependent relocation.
 	 */

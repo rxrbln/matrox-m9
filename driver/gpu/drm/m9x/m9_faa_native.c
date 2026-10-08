@@ -34,6 +34,7 @@
 #include "m9_faa_graph_color_encode.h"
 #include "m9_faa_graph_color_next_encode.h"
 #include "m9_faa_graph_depth_encode.h"
+#include "m9_hw_encode.h"
 #include "m9_faa_graph_sample_clear_encode.h"
 #include "m9_faa_graph_first_depth_encode.h"
 #include "m9_faa_graph_later_depth_encode.h"
@@ -5501,7 +5502,7 @@ int m9x_faa_graph_present_submit(struct m9x_device *mdev,
 	struct m9x_faa_present_image image;
 	struct m9x_fence *fence = NULL;
 	u64 stage = 0;
-	u32 start, i;
+	u32 start, i, desc0, desc1;
 	bool exposed = false, stage_posted = false;
 	struct m9_faa_depth_frame_storage *retired_frame = NULL;
 	int ret;
@@ -5535,9 +5536,9 @@ int m9x_faa_graph_present_submit(struct m9x_device *mdev,
 		.width = r->graph_layout.width,
 		.height = r->graph_layout.height,
 		.span = r->graph_layout.primary.allocation_width,
-		.descriptor0 = 0xf0220000u |
-			       r->graph_layout.primary.allocation_width,
-		.descriptor1 = 0x10000u | r->graph_layout.height
+		.descriptor0 = m9_hw_surface_desc0(M9_HW_FORMAT_HZ, 0, 1, 2,
+						   r->graph_layout.primary.allocation_width),
+		.descriptor1 = m9_hw_surface_desc1(r->graph_layout.height, 1)
 	};
 	ret = m9x_faa_present_encode(&src, view, lock_point + 0x20, &image);
 	if (ret)
@@ -5583,10 +5584,10 @@ int m9x_faa_graph_present_submit(struct m9x_device *mdev,
 	ret = m9x_address_cpu_local_prepare(mdev, src.gpu_base, src.bytes);
 	if (ret)
 		goto out;
-	ret = m9x_address_surface_window_bounded(mdev, src.gpu_base | 1,
-						 0xf0210000u | src.span,
-						 0x10000u |
-						 r->graph_layout.primary.allocation_height,
+	desc0 = m9_hw_surface_desc0(M9_HW_FORMAT_HZ, 0, 1, 1, src.span);
+	desc1 = m9_hw_surface_desc1(r->graph_layout.primary.allocation_height, 1);
+	ret = m9x_address_surface_window_bounded(mdev, src.gpu_base | 1, desc0,
+						 desc1,
 						 m9x_faa_primary_window_bytes(&r->graph_layout));
 	if (ret)
 		goto out;

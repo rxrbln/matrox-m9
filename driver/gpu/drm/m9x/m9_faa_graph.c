@@ -19,6 +19,7 @@
 #include "m9_faa_graph_surface_layout.h"
 #include "m9_faa_graph_texture_owner.h"
 #include "m9_faa_depth_mode_batch.h"
+#include "m9_hw_encode.h"
 
 /* Source-qualified prepared180 shape. These are allocation extents, not
  * permission to clear opaque tails or evidence of GPU initialization.
@@ -1136,8 +1137,9 @@ int m9x_faa_graph_present_ioctl(struct drm_device *drm, void *data,
 		return -EINVAL;
 	if (!m9x_faa_runtime_shape(a->width, a->height) ||
 	    !m9x_faa_surface_layout(a->width, a->height, &layout) ||
-	    a->descriptor0 != (0xcc210000u | layout.primary.allocation_width) ||
-	    a->descriptor1 != (0x10000u | a->height) ||
+	    a->descriptor0 != m9_hw_surface_desc0(M9_HW_FORMAT_A8R8G8B8, 0, 1, 1,
+					       layout.primary.allocation_width) ||
+	    a->descriptor1 != m9_hw_surface_desc1(a->height, 1) ||
 	    !IS_ALIGNED(a->destination_offset, PAGE_SIZE))
 		return -EOPNOTSUPP;
 	if (!m9x_faa_graph_profile_enabled())

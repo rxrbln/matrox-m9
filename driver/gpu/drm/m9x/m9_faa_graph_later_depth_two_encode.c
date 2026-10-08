@@ -4,6 +4,7 @@
 #include <linux/string.h>
 #include "m9_cmd.h"
 #include "m9_faa_graph_later_depth_two_encode.h"
+#include "m9_hw_encode.h"
 
 /* Original initialized count2 short constructors. The corresponding count4
  * (dual) producer keeps the HZ and sentinel attachment views (28 bytes
@@ -70,8 +71,9 @@ static int prefix(const u8 *sample, size_t sample_bytes,
 		 * slot0; neither FIRST's disabled slot nor count4's view.
 		 */
 		m9_cmd_put(s->sample + 3104, owner[1].base | 1);
-		m9_cmd_put(s->sample + 3108, 0xf0210000 | v->owner[0].width);
-		m9_cmd_put(s->sample + 3112, 0x10000 | v->owner[0].height);
+		m9_cmd_put(s->sample + 3108, m9_hw_surface_desc0(M9_HW_FORMAT_HZ, 0, 1, 1,
+								 v->owner[0].width));
+		m9_cmd_put(s->sample + 3112, m9_hw_surface_desc1(v->owner[0].height, 1));
 		m9_cmd_put(s->sample + 856 * 4, 0x2e00040c);
 		memmove(s->sample + 793 * 4, s->sample + 795 * 4, n - 795 * 4);
 		n -= 8;

@@ -4,6 +4,7 @@
 #include <linux/string.h>
 #include "m9_cmd.h"
 #include "m9_faa_graph_depth_encode.h"
+#include "m9_hw_encode.h"
 
 /* Original FLOATOBJ_SetLong/GetFloat round trips at b591b..b599d. For the
  * positive admitted dimensions this integer encoding is exact, without FPU.
@@ -65,7 +66,7 @@ int m9x_faa_depth_stages_encode(const struct m9x_faa_depth_views *views,
 			0,
 			0xf3f0b1b0,
 			hz->base | 1,
-			0xf0000000 | hz->storage_width,
+			m9_hw_surface_desc0(M9_HW_FORMAT_HZ, 0, 0, 0, hz->storage_width),
 			0x2800040c,
 			0,
 			0x92908fe6,

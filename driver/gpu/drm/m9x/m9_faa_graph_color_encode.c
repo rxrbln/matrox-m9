@@ -7,6 +7,7 @@
 #include "m9_cmd.h"
 #include "m9_faa_graph_color_encode.h"
 #include "m9_faa_fragment_state.h"
+#include "m9_hw_encode.h"
 
 struct color_field {
 	u32 dst, at, owner, offset, pc, tag;
@@ -374,9 +375,11 @@ int m9x_faa_color_encode(const u8 *blob, size_t bytes,
 	 * from their preceding live resource addresses. AD derives from the
 	 * main resource logical extent; it is not a command-buffer capacity.
 	 */
-	m9_cmd_put(out->primary + 284, 0xf0210000u | dimensions.width);
-	m9_cmd_put(out->primary + 3312, 0xf0220000u | dimensions.width);
-	m9_cmd_put(out->primary + 3316, 0x00010000u | dimensions.height);
+	m9_cmd_put(out->primary + 284, m9_hw_surface_desc0(M9_HW_FORMAT_HZ, 0, 1, 1,
+							   dimensions.width));
+	m9_cmd_put(out->primary + 3312, m9_hw_surface_desc0(M9_HW_FORMAT_HZ, 0, 1, 2,
+							    dimensions.width));
+	m9_cmd_put(out->primary + 3316, m9_hw_surface_desc1(dimensions.height, 1));
 	m9_cmd_put(out->secondary + moved(804, extra),
 		   dimensions.primary_descriptor);
 	m9_cmd_put(out->secondary + moved(820, extra),

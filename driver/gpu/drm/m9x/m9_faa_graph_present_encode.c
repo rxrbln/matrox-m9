@@ -4,6 +4,7 @@
 #include <linux/string.h>
 #include "m9_faa_graph_present_encode.h"
 #include "m9_faa_graph_surface_layout.h"
+#include "m9_hw_encode.h"
 
 static bool view_valid(const struct m9x_faa_present_view *v, bool source)
 {
@@ -16,8 +17,11 @@ static bool view_valid(const struct m9x_faa_present_view *v, bool source)
 	    v->span != layout.primary.allocation_width ||
 	    v->bytes != (source ? layout.owner[0].capacity :
 				  layout.owner[0].logical) ||
-	    v->descriptor1 != (0x10000u | v->height) ||
-	    v->descriptor0 != ((source ? 0xf0220000u : 0xcc210000u) | v->span))
+	    v->descriptor1 != m9_hw_surface_desc1(v->height, 1) ||
+	    v->descriptor0 != (source ?
+				 m9_hw_surface_desc0(M9_HW_FORMAT_HZ, 0, 1, 2, v->span) :
+				 m9_hw_surface_desc0(M9_HW_FORMAT_A8R8G8B8, 0, 1, 1,
+						     v->span)))
 		return false;
 	end = (u64)v->gpu_base + v->bytes;
 	return end <= 0x100000000ULL;
