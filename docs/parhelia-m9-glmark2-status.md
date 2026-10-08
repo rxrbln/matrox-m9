@@ -1,5 +1,19 @@
 # glmark2 on the m9x driver: where the 60 fps goal actually stands
 
+## October 8: GL2 work resumed; full back-end clear control fails
+
+Root resumed the GL2 track while three agents continue FAA. No new general
+GL2 operation or hardware feature pass was added in the preceding six hours.
+One same-binary1024x768 multipass control clears the entire1MiB back-end object
+instead of the estimated144KiB. The failure is unchanged: completed460,
+submitted520, queue1/wedged1. All eight command bodies match the prior run.
+No pixel/FPS claim or speculative production clear-span change follows.
+Evidence lives in canonical Mesa
+`tests/native-gpu-padding-runtime-proof/hardware-full-be-clear-20261008`.
+The target recovered to boot37a97217-6098-45e7-be55-24c4c019d602, module absent.
+Current investigation concerns actual native padding coverage and the
+preprocessing/raster transition. The October7 wind-down below is historical.
+
 ## October 7 wind-down: latest multipass result
 
 Work is paused at the user's request. New compiler/math host checks pass,
