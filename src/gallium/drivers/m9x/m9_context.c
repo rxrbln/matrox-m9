@@ -9225,7 +9225,20 @@ m9_blit_engine(struct pipe_context *pctx, const struct pipe_blit_info *info)
               info->src.box.width, info->src.box.height, info->dst.box.width,
               info->dst.box.height, info->filter,
               m9_engine_drew(ctx, skipped) ? "drawn" : "skipped");
-   return m9_engine_drew(ctx, skipped);
+   if (!m9_engine_drew(ctx, skipped))
+      return false;
+   /* A blit covering a whole texture level (mipmap generation) defines it,
+    * as an upload does. */
+   struct m9_resource *dst = m9_res(info->dst.resource);
+   if (dst->texture.levels && info->dst.level < dst->texture.levels &&
+       !info->dst.box.x && !info->dst.box.y &&
+       info->dst.box.width == (int)u_minify(info->dst.resource->width0, info->dst.level) &&
+       info->dst.box.height == (int)u_minify(info->dst.resource->height0, info->dst.level) &&
+       !info->scissor_enable) {
+      dst->levels_written |= 1u << info->dst.level;
+      dst->texture_unplaced &= ~(1u << info->dst.level);
+   }
+   return true;
 }
 
 /*
