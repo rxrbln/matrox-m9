@@ -730,15 +730,76 @@ void m9x_transport_release_retired(struct work_struct *work)
 	}
 }
 
+static void m9_transport_publish_end(struct m9x_device *mdev, u32 end)
+{
+	m9x_write(mdev, M9_REG_COMMAND_END, end);
+	m9x_read(mdev, M9_REG_COMMAND_END);
+}
+
+/* Where an ordinary job's primary words go and which END publishes them. */
+struct m9_primary_place {
+	u8 *cpu;
+	u32 offset, end;
+};
+
+/* The current DMA32 staging slot; only a job that does not fit switches the
+ * slot, after the prior interval retired, and rebases the requester's 0x400.
+ */
+static int m9_primary_place_staging_locked(struct m9x_device *mdev, u32 bytes,
+					   struct m9_primary_place *place)
+{
+	struct m9x_transport *transport = &mdev->transport;
+	dma_addr_t start_bus;
+	u32 command_offset;
+	int ret;
+
+	ret = m9x_transport_arm_locked(mdev);
+	if (ret)
+		return ret;
+
+	command_offset = transport->command_offset;
+	if (command_offset > PARHELIA_M9_COMMAND_BYTES - bytes) {
+		ret = m9x_transport_drain_locked(mdev);
+		if (ret)
+			return ret;
+		m9_advance_command_slot(transport);
+		command_offset = 0;
+		m9x_write(mdev, M9_REG_COMMAND_BASE,
+			  lower_32_bits(m9_command_slot_bus(transport)) |
+			  M9_COMMAND_SYSTEM_TAG);
+		m9x_read(mdev, M9_REG_COMMAND_BASE);
+	}
+	start_bus = m9_command_slot_bus(transport) + command_offset;
+	if (upper_32_bits(start_bus) ||
+	    check_add_overflow(lower_32_bits(start_bus), bytes, &place->end))
+		return -ERANGE;
+	place->cpu = (u8 *)m9_command_slot_cpu(transport) + command_offset;
+	place->offset = command_offset;
+	return 0;
+}
+
+static int m9_primary_place_locked(struct m9x_device *mdev, u32 bytes,
+				   struct m9_primary_place *place)
+{
+	return m9_primary_place_staging_locked(mdev, bytes, place);
+}
+
+static void m9_primary_place_commit_locked(struct m9x_device *mdev,
+					   const struct m9_primary_place *place,
+					   u32 bytes)
+{
+	mdev->transport.command_offset = place->offset + bytes;
+}
+
 static int m9_submit_kernel_stream_common(struct m9x_device *mdev,
 				    const u32 *commands, u32 dwords,
 				    u32 target, u64 *point, bool *doorbell_posted,
 				    bool async, bool queued)
 {
 	struct m9x_transport *transport = &mdev->transport;
-	dma_addr_t start_bus;
+	struct m9_primary_place place;
 	u32 *writeback = transport->fence_cpu;
-	u32 command_offset, end, raw;
+	u32 raw;
 	u64 extended, queued_point = 0;
 	int ret;
 
@@ -765,38 +826,16 @@ static int m9_submit_kernel_stream_common(struct m9x_device *mdev,
 		    queued_point - transport->completed_point >= (1ULL << 31))
 			return -ERANGE;
 	}
-	ret = m9x_transport_arm_locked(mdev);
+	ret = m9_primary_place_locked(mdev, dwords * sizeof(u32), &place);
 	if (ret)
 		return ret;
-
-	command_offset = transport->command_offset;
-	if (command_offset > PARHELIA_M9_COMMAND_BYTES - dwords * sizeof(u32)) {
-		ret = m9x_transport_drain_locked(mdev);
-		if (ret)
-			return ret;
-		/* The prior interval is now retired. Only an actual
-		 * primary-buffer switch rebases the vendor requester's 0x400. */
-		m9_advance_command_slot(transport);
-		command_offset = 0;
-		m9x_write(mdev, M9_REG_COMMAND_BASE,
-			  lower_32_bits(m9_command_slot_bus(transport)) |
-			  M9_COMMAND_SYSTEM_TAG);
-		m9x_read(mdev, M9_REG_COMMAND_BASE);
-	}
-	start_bus = m9_command_slot_bus(transport) + command_offset;
-	if (upper_32_bits(start_bus) ||
-	    check_add_overflow(lower_32_bits(start_bus),
-			       dwords * (u32)sizeof(u32), &end))
-		return -ERANGE;
-	memcpy((u8 *)m9_command_slot_cpu(transport) + command_offset, commands,
-	       dwords * sizeof(u32));
+	memcpy(place.cpu, commands, dwords * sizeof(u32));
 	dma_wmb();
 
-	m9x_write(mdev, M9_REG_COMMAND_END, end);
-	m9x_read(mdev, M9_REG_COMMAND_END);
+	m9_transport_publish_end(mdev, place.end);
 	if (doorbell_posted)
 		*doorbell_posted = true;
-	transport->command_offset = command_offset + dwords * sizeof(u32);
+	m9_primary_place_commit_locked(mdev, &place, dwords * sizeof(u32));
 	if (async) {
 		/* The next drain retires it; the point is the target it
 		 * reaches. */
@@ -859,12 +898,6 @@ int m9x_system_pages_mapped(struct m9x_device *mdev, u32 base, dma_addr_t dma,
 		}
 	}
 	return 0;
-}
-
-static void m9_transport_publish_end(struct m9x_device *mdev, u32 end)
-{
-	m9x_write(mdev, M9_REG_COMMAND_END, end);
-	m9x_read(mdev, M9_REG_COMMAND_END);
 }
 
 static int m9_transport_finish_wait_locked(struct m9x_device *mdev, u32 target,
