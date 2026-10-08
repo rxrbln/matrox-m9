@@ -129,9 +129,8 @@ m9_faa_graph_owner_distinct(const struct m9_faa_prepared_graph *graph, u32 role)
 	return true;
 }
 
-static bool m9_faa_graph_release_matches(
-		const struct m9_faa_prepared_graph *graph,
-		const struct drm_parhelia_m9_faa_graph_release *args)
+static bool m9_faa_graph_release_matches(const struct m9_faa_prepared_graph *graph,
+					 const struct drm_parhelia_m9_faa_graph_release *args)
 {
 	return graph && graph->id == args->graph_id &&
 	       graph->generation == args->generation && !args->flags;
