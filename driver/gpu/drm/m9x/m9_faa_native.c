@@ -1165,7 +1165,7 @@ static bool m9_faa_transport_continuable(struct m9x_device *mdev)
 /* The unchanged native origin10 is an initial CPU counter seed. Fresh
  * source admission must never call it a previous GPU retirement. */
 int m9x_faa_source_init_admit_locked(struct m9x_device *mdev,
-				    bool context_initialized)
+				     bool context_initialized)
 {
 	struct m9x_transport *t = &mdev->transport;
 	struct m9x_faa_replay *r = t->faa;
@@ -1176,13 +1176,18 @@ int m9x_faa_source_init_admit_locked(struct m9x_device *mdev,
 		return -EINVAL;
 	if (context_initialized)
 		return !r->attempted && m9_faa_transport_continuable(mdev) ?
-		       0 : -EINVAL;
+			       0 :
+			       -EINVAL;
 	/* Repeated CPU-view preparation may reuse the admitted manager. It
-	 * cannot start a second frame: the caller's attempted gate remains. */
+	 * cannot start a second frame: the caller's attempted gate remains.
+	 */
 	if (t->faa_source_context && r->attempted)
 		return t->engine_transitioned && t->restore_ready &&
-		       t->transport_armed && t->bus_master_enabled &&
-		       !t->queue_count && !t->async_pending ? 0 : -EINVAL;
+				       t->transport_armed &&
+				       t->bus_master_enabled &&
+				       !t->queue_count && !t->async_pending ?
+			       0 :
+			       -EINVAL;
 	if (r->attempted || !m9_faa_transport_fresh(t))
 		return -EBUSY;
 	return 0;
