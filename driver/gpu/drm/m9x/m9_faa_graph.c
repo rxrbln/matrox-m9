@@ -2004,7 +2004,7 @@ out_state:
 }
 
 int m9x_faa_graph_next_lock_ioctl(struct drm_device *drm, void *data,
-				struct drm_file *file)
+				  struct drm_file *file)
 {
 	struct drm_parhelia_m9_faa_graph_next_lock *args = data;
 	struct m9x_device *mdev = to_m9x(drm);
@@ -2027,27 +2027,31 @@ int m9x_faa_graph_next_lock_ioctl(struct drm_device *drm, void *data,
 	mutex_lock(&state->lock);
 	graph = state->graph;
 	if (!m9_faa_graph_continuation_matches(graph, args->graph_id,
-			args->generation, args->finish_point - 0x160)) {
+					       args->generation,
+					       args->finish_point - 0x160)) {
 		ret = -ENOENT;
 		goto out_state;
 	}
 	mutex_lock(&mdev->transport.lock);
 	ret = m9x_faa_graph_next_lock_get_locked(mdev, args->generation,
-			args->finish_point, &binding);
+						 args->finish_point, &binding);
 	if (!ret && binding->graph != graph)
 		ret = -ESTALE;
 	mutex_unlock(&mdev->transport.lock);
 	if (ret)
 		goto out_binding;
 	/* Firmware access and CPU image allocation precede caller reservations.
-	 * The file mutex preserves the exact graph token across preparation. */
+	 * The file mutex preserves the exact graph token across preparation.
+	 */
 	ret = m9x_faa_graph_next_lock_prepare(mdev, binding, args->generation,
-			args->finish_point);
+					      args->finish_point);
 	if (ret)
 		goto out_binding;
-	drm_exec_init(&exec, DRM_EXEC_INTERRUPTIBLE_WAIT |
-		      DRM_EXEC_IGNORE_DUPLICATES, PARHELIA_M9_FAA_GRAPH_OWNERS);
-	drm_exec_until_all_locked(&exec) {
+	drm_exec_init(&exec,
+		      DRM_EXEC_INTERRUPTIBLE_WAIT | DRM_EXEC_IGNORE_DUPLICATES,
+		      PARHELIA_M9_FAA_GRAPH_OWNERS);
+	drm_exec_until_all_locked(&exec)
+	{
 		for (i = 0; i < PARHELIA_M9_FAA_GRAPH_OWNERS; i++) {
 			ret = drm_exec_prepare_obj(&exec, graph->owner[i], 1);
 			drm_exec_retry_on_contention(&exec);
@@ -2063,17 +2067,19 @@ int m9x_faa_graph_next_lock_ioctl(struct drm_device *drm, void *data,
 		goto out_exec;
 	}
 	for (i = 0; i < PARHELIA_M9_FAA_GRAPH_OWNERS; i++) {
-		if (!dma_resv_test_signaled(graph->owner[i]->resv, DMA_RESV_USAGE_READ)) {
+		if (!dma_resv_test_signaled(graph->owner[i]->resv,
+					    DMA_RESV_USAGE_READ)) {
 			ret = -EBUSY;
 			goto out_exec;
 		}
 	}
 	ret = m9x_faa_graph_next_lock_submit(mdev, binding, args->generation,
-			args->finish_point, &point, &posted);
+					     args->finish_point, &point,
+					     &posted);
 	if (!ret) {
-		if (!point || point != args->finish_point + 0x30)
+		if (!point || point != args->finish_point + 0x30) {
 			ret = -EIO;
-		else {
+		} else {
 			args->lock_point = point;
 			args->state = PARHELIA_M9_FAA_NEXT_LOCK_RETIRED;
 		}
