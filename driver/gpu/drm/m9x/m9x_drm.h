@@ -169,7 +169,8 @@ struct drm_parhelia_m9_faa_graph_dual_first {
 #define PARHELIA_M9_FAA_DUAL_BATCH_VERSION 1u
 /* Version 2: draws point to draw_count drm_parhelia_m9_faa_dual_draw records
  * (program kind and texture set per DRAW, as DUAL_LATER version 3);
- * texture[] equals the first record's. Up to three DRAWs, 320x240.
+ * texture[] equals the first record's. Up to three DRAWs, 320x240 or
+ * 1024x768 (both versions).
  */
 #define PARHELIA_M9_FAA_DUAL_BATCH_PROGRAMS_VERSION 2u
 #define PARHELIA_M9_FAA_DUAL_BATCH_LOCK_RETIRED 24u

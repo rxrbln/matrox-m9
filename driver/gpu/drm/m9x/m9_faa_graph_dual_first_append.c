@@ -203,7 +203,8 @@ static int first_append(const struct m9x_faa_graph_draw_owner owner[31],
 	    old_draw_count > 2 || (init_point & 15) || low < 0xb0 ||
 	    init_point > ~(u64)0 - 0x150 - 2 * 0xa0 ||
 	    low > U32_MAX - 0x150 - 2 * 0xa0 ||
-	    (init_bytes != 4880 && init_bytes != 4884) ||
+	    /* 320x240 (and its widened INIT) or 1024x768 INIT lengths. */
+	    (init_bytes != 4880 && init_bytes != 4884 && init_bytes != 5576) ||
 	    (u64)primary_cursor != (u64)init_bytes + old_primary_bytes ||
 	    old_primary_bytes < 3624 + (old_draw_count - 1) * 60 ||
 	    old_final_point != init_point + 0x150 + (old_draw_count - 1) * 0xa0)

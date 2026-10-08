@@ -165,8 +165,9 @@ int m9x_faa_dual_batch_copy(const struct drm_parhelia_m9_faa_graph_dual_batch
 	    args->draw_count > M9_FAA_DUAL_BATCH_MAX_DRAWS ||
 	    (args->version != PARHELIA_M9_FAA_DUAL_BATCH_VERSION &&
 	     !textured) ||
-	    args->flags || args->state || args->pad || args->width != 320 ||
-	    args->height != 240 || args->clear_flags != 3 || args->clear_color)
+	    args->flags || args->state || args->pad ||
+	    !m9x_faa_runtime_shape(args->width, args->height) ||
+	    args->clear_flags != 3 || args->clear_color)
 		return -EOPNOTSUPP;
 	ret = dual_draws_copy(args->draws, args->draw_count, args->width,
 			      args->height, PARHELIA_M9_FAA_COLOR_FRAME_FIRST,
