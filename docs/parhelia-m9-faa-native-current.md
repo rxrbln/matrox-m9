@@ -3,6 +3,23 @@
 Copyright 2026 René Rebe <rene@exactco.de>
 SPDX-License-Identifier: GPL-2.0-only
 
+
+## October 8: actual glxgears reaches FAA INIT, clear-state refusal remains
+
+The original glxgears now reaches M9 FAA initialization on hardware without
+wedging. All21 draws are refused by the full black/depth-one clear-state
+check; no FAA geometry is submitted and the captured window is not a pass.
+The driver remains healthy at INITb0 through cleanup. The non-glamor Xorg
+server needs its software GLX provider to expose visuals; the actual app
+uses the M9 DRI3 renderer. [Exact first-frame evidence](../tests/m9-faa-glxgears-first-hardware-20261008/README.md).
+
+Mesa1c700fb validates initialized BATCH maintenance points without rewriting
+prior Unlock history. Mesa29f31ae adds source-qualified MODULATE/ADD fragment
+encoding and fixes the two-varying location copy; native texture binding
+remains gated. The source-prefix check passes after integration. Initialized
+multi-draw and command-pool native integration remain active. Continuous
+glxgears FAA, textured Quake3 FAA, and FAA FPS remain unverified.
+
 ## October 8: mixed flat/smooth FAA now passes hardware
 
 The next single hardware run passes flat368 →smooth400 →flat368 with the
