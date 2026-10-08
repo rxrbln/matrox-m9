@@ -6,11 +6,14 @@
 #include <linux/string.h>
 #include <linux/uaccess.h>
 #include "m9_faa_graph_dual_batch_input.h"
+#include "m9_faa_graph_later_stage.h"
 
 /* Copy draw descriptors and their uploads; draw 0 defines the program.
  * Records are drm_parhelia_m9_faa_dual_draw when textured is set.
  */
 static_assert(sizeof(struct drm_parhelia_m9_faa_dual_draw) == 216);
+static_assert(M9_FAA_PROGRAM_DUAL == PARHELIA_M9_FAA_PROGRAM_DUAL);
+static_assert(M9_FAA_PROGRAM_SINGLE == PARHELIA_M9_FAA_PROGRAM_SINGLE);
 
 static int dual_draws_copy(u64 draws, u32 draw_count, u32 width, u32 height,
 			   u32 flags, u32 clear_flags, bool textured,
@@ -151,17 +154,33 @@ int m9x_faa_dual_batch_copy(const struct drm_parhelia_m9_faa_graph_dual_batch
 	if (!result)
 		return -EINVAL;
 	*result = NULL;
+	const bool textured = args &&
+		args->version == PARHELIA_M9_FAA_DUAL_BATCH_PROGRAMS_VERSION;
+	struct drm_parhelia_m9_faa_texture_view first[2];
+	int ret;
+
 	if (!args || !args->graph_id || !args->init_point ||
 	    (args->init_point & 15) || args->lock_point || !args->draws ||
 	    !args->draw_count ||
 	    args->draw_count > M9_FAA_DUAL_BATCH_MAX_DRAWS ||
-	    args->version != PARHELIA_M9_FAA_DUAL_BATCH_VERSION ||
+	    (args->version != PARHELIA_M9_FAA_DUAL_BATCH_VERSION &&
+	     !textured) ||
 	    args->flags || args->state || args->pad || args->width != 320 ||
 	    args->height != 240 || args->clear_flags != 3 || args->clear_color)
 		return -EOPNOTSUPP;
-	return dual_draws_copy(args->draws, args->draw_count, args->width,
-			       args->height, PARHELIA_M9_FAA_COLOR_FRAME_FIRST,
-			       3, false, result);
+	ret = dual_draws_copy(args->draws, args->draw_count, args->width,
+			      args->height, PARHELIA_M9_FAA_COLOR_FRAME_FIRST,
+			      3, textured, result);
+	if (ret || !textured)
+		return ret;
+	/* The request's set is the first DRAW's; it seeds the retained set. */
+	memcpy(first, (*result)->draw[0].texture, sizeof(first));
+	if (memcmp(first, args->texture, sizeof(first))) {
+		m9x_faa_color_batch_free(*result);
+		*result = NULL;
+		return -EINVAL;
+	}
+	return 0;
 }
 
 int m9x_faa_dual_later_batch_copy(const struct drm_parhelia_m9_faa_graph_dual_later

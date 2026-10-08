@@ -57,6 +57,9 @@ int m9x_faa_later_stage_encode(const u8 *first, u32 first_bytes, u32 epoch,
 			       bool e3, bool cull_state, u8 *out, u32 capacity,
 			       struct m9x_faa_later_stage *stage);
 
+/* Sampler sites of a FIRST stage (single 2720 or dual 2880 bytes). */
+int m9x_faa_first_stage_sites(u32 first_bytes, u32 *units, u32 site[2]);
+
 /* Program cache of a retained graph, after the vendor's: where each built
  * program lives in owner 26, the active (current) one, and the raster cull
  * state each last emitted. page is the owner-26 image a frame uploads.

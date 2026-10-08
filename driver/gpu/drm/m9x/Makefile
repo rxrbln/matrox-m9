@@ -5,7 +5,7 @@ m9x_drm-y := m9x_drv.o m9_gem.o m9_requester.o m9_address.o m9_submit.o m9_trian
 obj-$(CONFIG_DRM_M9X) += m9x_drm.o
 
 # Retained M9128 texture views and the source-qualified two-unit packet motif.
-m9x_drm-y += m9_faa_graph_texture_dual.o m9_faa_graph_texture_dual_link.o m9_faa_graph_dual_first_encode.o m9_faa_graph_single_first_encode.o m9_faa_graph_later_stage.o m9_faa_graph_dual_colorpass_encode.o m9_faa_graph_dual_first_append.o m9_faa_graph_dual_later_encode.o m9_faa_graph_dual_batch_input.o m9_faa_graph_texture_owner.o
+m9x_drm-y += m9_faa_graph_texture_dual.o m9_faa_graph_texture_dual_link.o m9_faa_graph_dual_first_encode.o m9_faa_graph_single_first_encode.o m9_faa_graph_later_stage.o m9_faa_graph_mixed_draw.o m9_faa_graph_dual_colorpass_encode.o m9_faa_graph_dual_first_append.o m9_faa_graph_dual_later_encode.o m9_faa_graph_dual_batch_input.o m9_faa_graph_texture_owner.o
 
 # Pure source-qualified counted secondary link and live two-slot lifetime.
 m9x_drm-y += m9_faa_counted_secondary_encode.o m9_faa_secondary_pool.o m9_faa_primary_pool.o

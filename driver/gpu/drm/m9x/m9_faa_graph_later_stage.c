@@ -254,3 +254,19 @@ int m9x_faa_program_cache_draw(struct m9x_faa_program_cache *cache, u32 kind,
 	*offset = at;
 	return 0;
 }
+
+int m9x_faa_first_stage_sites(u32 first_bytes, u32 *units, u32 site[2])
+{
+	u32 i;
+
+	if (!units || !site)
+		return -EINVAL;
+	for (i = 0; i < ARRAY_SIZE(profiles); i++)
+		if (profiles[i].bytes == first_bytes) {
+			*units = profiles[i].units;
+			site[0] = profiles[i].site[0];
+			site[1] = profiles[i].site[1];
+			return 0;
+		}
+	return -EINVAL;
+}

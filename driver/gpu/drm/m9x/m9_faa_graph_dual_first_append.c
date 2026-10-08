@@ -182,33 +182,30 @@ static int append(const struct m9x_faa_graph_draw_owner owner[31],
 	return 0;
 }
 
-int m9x_faa_dual_first_append_encode(const struct m9x_faa_graph_draw_owner
-					     owner[31],
-				     u32 init_bytes, u64 init_point,
-				     u32 old_draw_count, u32 primary_cursor,
-				     u32 secondary_cursor,
-				     const u32 old_end_bytes
-					     [M9_FAA_DUAL_FIRST_ENDS],
-				     u64 old_final_point, const u8 *old_primary,
-				     u32 old_primary_bytes,
-				     const u8 *first_secondary,
-				     const u8 *extra_first_secondary,
-				     bool programs_and_textures_retained,
-				     struct m9x_faa_dual_append_image *out)
+/* FIRST batch append after old_draw_count DRAWs; the previous DRAW
+ * occupies [old_start, secondary_cursor).
+ */
+static int first_append(const struct m9x_faa_graph_draw_owner owner[31],
+			u32 init_bytes, u64 init_point, u32 old_draw_count,
+			u32 primary_cursor, u32 old_start, u32 secondary_cursor,
+			const u32 old_end_bytes[M9_FAA_DUAL_FIRST_ENDS],
+			u64 old_final_point, const u8 *old_primary,
+			u32 old_primary_bytes, const u8 *first_secondary,
+			const u8 *extra, u32 extra_bytes,
+			enum m9x_faa_later_form form, bool cull_state,
+			struct m9x_faa_dual_append_image *out)
 {
 	u32 low = (u32)init_point, split, prefix, i;
 	int ret;
 
-	if (!owner || !old_end_bytes || !old_primary || !first_secondary ||
-	    !extra_first_secondary || !out || !out->primary ||
-	    !out->secondary || !programs_and_textures_retained ||
-	    old_draw_count < 1 || old_draw_count > 2 || (init_point & 15) ||
-	    low < 0xb0 || init_point > ~(u64)0 - 0x150 - 2 * 0xa0 ||
+	if (!owner || !old_end_bytes || !old_primary || !extra || !out ||
+	    !out->primary || !out->secondary || old_draw_count < 1 ||
+	    old_draw_count > 2 || (init_point & 15) || low < 0xb0 ||
+	    init_point > ~(u64)0 - 0x150 - 2 * 0xa0 ||
 	    low > U32_MAX - 0x150 - 2 * 0xa0 ||
 	    (init_bytes != 4880 && init_bytes != 4884) ||
 	    (u64)primary_cursor != (u64)init_bytes + old_primary_bytes ||
 	    old_primary_bytes < 3624 + (old_draw_count - 1) * 60 ||
-	    secondary_cursor != 2880 + (old_draw_count - 1) * 2868 ||
 	    old_final_point != init_point + 0x150 + (old_draw_count - 1) * 0xa0)
 		return -EINVAL;
 	if (m9x_faa_graph_draw_owners_validate(owner))
@@ -234,17 +231,62 @@ int m9x_faa_dual_first_append_encode(const struct m9x_faa_graph_draw_owner
 		    (i && old_end_bytes[i] < old_end_bytes[i - 1]))
 			return -ESTALE;
 	ret = append(owner, low + (old_draw_count - 1) * 0xa0, split, 0,
-		     old_draw_count == 1 ? 0 : 2880 + (old_draw_count - 2) * 2868,
-		     secondary_cursor, old_primary, old_primary_bytes,
-		     first_secondary, extra_first_secondary,
-		     M9_FAA_DUAL_FIRST_SECONDARY_BYTES, M9_FAA_LATER_PLAIN, false,
-		     out);
+		     old_start, secondary_cursor, old_primary,
+		     old_primary_bytes, first_secondary, extra, extra_bytes,
+		     form, cull_state, out);
 	if (ret)
 		return ret;
 	for (i = 0; i < M9_FAA_DUAL_FIRST_ENDS; i++)
 		out->end_bytes[i] = old_end_bytes[i] + (i < 10 ? 0 : 60);
 	out->final_point = old_final_point + 0xa0;
 	return 0;
+}
+
+int m9x_faa_dual_first_append_encode(const struct m9x_faa_graph_draw_owner
+					     owner[31],
+				     u32 init_bytes, u64 init_point,
+				     u32 old_draw_count, u32 primary_cursor,
+				     u32 secondary_cursor,
+				     const u32 old_end_bytes
+					     [M9_FAA_DUAL_FIRST_ENDS],
+				     u64 old_final_point, const u8 *old_primary,
+				     u32 old_primary_bytes,
+				     const u8 *first_secondary,
+				     const u8 *extra_first_secondary,
+				     bool programs_and_textures_retained,
+				     struct m9x_faa_dual_append_image *out)
+{
+	if (!first_secondary || !programs_and_textures_retained ||
+	    old_draw_count < 1 ||
+	    secondary_cursor != 2880 + (old_draw_count - 1) * 2868)
+		return -EINVAL;
+	return first_append(owner, init_bytes, init_point, old_draw_count,
+			    primary_cursor,
+			    old_draw_count == 1 ?
+				    0 : 2880 + (old_draw_count - 2) * 2868,
+			    secondary_cursor, old_end_bytes, old_final_point,
+			    old_primary, old_primary_bytes, first_secondary,
+			    extra_first_secondary,
+			    M9_FAA_DUAL_FIRST_SECONDARY_BYTES,
+			    M9_FAA_LATER_PLAIN, false, out);
+}
+
+int m9x_faa_first_append_encode(const struct m9x_faa_graph_draw_owner owner[31],
+				u32 init_bytes, u64 init_point,
+				u32 old_draw_count, u32 primary_cursor,
+				u32 old_start, u32 secondary_cursor,
+				const u32 old_end_bytes[M9_FAA_DUAL_FIRST_ENDS],
+				u64 old_final_point, const u8 *old_primary,
+				u32 old_primary_bytes, const u8 *extra_first,
+				u32 extra_first_bytes,
+				enum m9x_faa_later_form form, bool cull_state,
+				struct m9x_faa_dual_append_image *out)
+{
+	return first_append(owner, init_bytes, init_point, old_draw_count,
+			    primary_cursor, old_start, secondary_cursor,
+			    old_end_bytes, old_final_point, old_primary,
+			    old_primary_bytes, NULL, extra_first,
+			    extra_first_bytes, form, cull_state, out);
 }
 
 /* Retained later frame: the source N2/N3 later batches insert exactly the

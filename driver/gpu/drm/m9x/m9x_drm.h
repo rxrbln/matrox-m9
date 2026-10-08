@@ -167,6 +167,11 @@ struct drm_parhelia_m9_faa_graph_dual_first {
  * records; all are uploaded before the first consuming command is posted. */
 #define DRM_PARHELIA_M9_FAA_GRAPH_DUAL_BATCH 0x22
 #define PARHELIA_M9_FAA_DUAL_BATCH_VERSION 1u
+/* Version 2: draws point to draw_count drm_parhelia_m9_faa_dual_draw records
+ * (program kind and texture set per DRAW, as DUAL_LATER version 3);
+ * texture[] equals the first record's. Up to three DRAWs, 320x240.
+ */
+#define PARHELIA_M9_FAA_DUAL_BATCH_PROGRAMS_VERSION 2u
 #define PARHELIA_M9_FAA_DUAL_BATCH_LOCK_RETIRED 24u
 struct drm_parhelia_m9_faa_graph_dual_batch {
  __u64 graph_id,init_point,lock_point,draws;

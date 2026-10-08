@@ -719,6 +719,12 @@ int m9x_faa_graph_dual_later_ioctl(struct drm_device *,void *,struct drm_file *)
 struct m9x_faa_texture_owners;
 struct m9x_faa_owned_color_batch;
 int m9x_faa_graph_dual_first_prepare(struct m9x_device *,struct m9_faa_graph_binding *,u32,u64,const struct m9x_faa_color_input *,struct m9x_faa_texture_owners *,const struct m9x_faa_owned_color_batch *);
+int m9x_faa_graph_mixed_first_prepare(struct m9x_device *mdev,
+				      struct m9_faa_graph_binding *binding,
+				      u32 generation, u64 init_point,
+				      struct m9x_faa_texture_owners *textures,
+				      struct m9x_faa_texture_owners *draw_textures,
+				      const struct m9x_faa_owned_color_batch *batch);
 /* Per-DRAW sets (draw_textures[i], may be NULL) also feed the encoders. */
 int m9x_faa_graph_dual_later_prepare(struct m9x_device *mdev,
 				     struct m9_faa_graph_binding *binding,

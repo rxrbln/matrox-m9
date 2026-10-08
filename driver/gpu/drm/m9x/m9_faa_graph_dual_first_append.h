@@ -33,6 +33,19 @@ int m9x_faa_dual_first_append_encode(
 	const u8 *first_secondary, const u8 *extra_first_secondary,
 	bool programs_and_textures_retained,
 	struct m9x_faa_dual_append_image *out);
+/* Mixed-program FIRST batch append (source N2/N3 with dual and single
+ * programs): as the later append, with the FIRST epoch and END layout.
+ */
+int m9x_faa_first_append_encode(const struct m9x_faa_graph_draw_owner owner[31],
+				u32 init_bytes, u64 init_point,
+				u32 old_draw_count, u32 primary_cursor,
+				u32 old_start, u32 secondary_cursor,
+				const u32 old_end_bytes[M9_FAA_DUAL_FIRST_ENDS],
+				u64 old_final_point, const u8 *old_primary,
+				u32 old_primary_bytes, const u8 *extra_first,
+				u32 extra_first_bytes,
+				enum m9x_faa_later_form form, bool cull_state,
+				struct m9x_faa_dual_append_image *out);
 /* Later counterpart: old_primary is the later frame's own command image
  * (clear prefix, DRAWs and Lock tail), old_draw_count DRAWs already present.
  * Only ENDs behind the first DRAW move; final point advances by 0xa0. */
