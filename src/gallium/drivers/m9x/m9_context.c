@@ -3325,6 +3325,10 @@ m9_submit_job(struct m9_context *ctx)
           * force rather than the target's own. */
          m9_draw_params_viewport(&ctx->params, key->viewport_scale,
                                  key->viewport_bias, ctx->system.map);
+         m9_draw_params_linked_viewport(key->viewport_scale,
+                                        key->viewport_bias,
+                                        (uint32_t *)((uint8_t *)ctx->system.map +
+                                                     M9_LINKED_OFFSET));
          vs_decl_count = m9_vs_decl_words(key->vs, vs_decl,
                                           ARRAY_SIZE(vs_decl));
          vs_const_pairs =

@@ -353,6 +353,23 @@ m9_draw_params_viewport(struct m9_draw_params *params, const float scale[3],
    m9_put_float(prefix, M9_VS_GUARD_Y_DWORD, -m9_guard(ay));
 }
 
+/* The linked image's viewport, which the engine re-projects clipped vertices
+ * with; it must match the tail's or clipped primitives use the target's own
+ * top-down transform (an FBO's y-up viewport came out mirrored). */
+void
+m9_draw_params_linked_viewport(const float scale[3], const float bias[3],
+                               uint32_t *linked)
+{
+   if (!scale || !bias || !linked)
+      return;
+   m9_put_float(linked, 0, scale[0]);
+   m9_put_float(linked, 1, scale[1]);
+   m9_put_float(linked, 2, scale[2]);
+   m9_put_float(linked, 4, bias[0]);
+   m9_put_float(linked, 5, bias[1]);
+   m9_put_float(linked, 6, bias[2]);
+}
+
 uint32_t
 m9_raster_control_decl(bool flat, enum m9_topology topology,
                        unsigned decl_count)

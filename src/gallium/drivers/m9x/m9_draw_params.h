@@ -228,6 +228,8 @@ uint32_t m9_raster_control(bool flat, enum m9_topology topology);
 uint32_t m9_preprocess_control(unsigned decl_count);
 /* Rewrites the viewport, depth range and guard band the appended tail reads,
  * for a pass whose vertex program emits clip coordinates of its own. */
+void m9_draw_params_linked_viewport(const float scale[3], const float bias[3],
+                                    uint32_t *linked);
 void m9_draw_params_viewport(struct m9_draw_params *params,
                              const float scale[3], const float bias[3],
                              uint32_t *prefix);
