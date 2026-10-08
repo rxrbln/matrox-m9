@@ -689,6 +689,7 @@ static u64 m9_faa_frame_origin(struct m9x_faa_replay *r, u64 previous)
 		       r->ordinary_point :
 		       base;
 }
+
 #endif
 
 static bool m9_faa_diag;
