@@ -11437,9 +11437,10 @@ int m9x_faa_ordinary_wait(struct m9x_device *mdev)
 		mutex_lock(&t->lock);
 		seq = READ_ONCE(t->faa_idle_seq);
 		ret = m9x_faa_ordinary_continue_enabled() ?
-		      m9_faa_ordinary_idle(mdev, &start) : 0;
-		if (ret == -EBUSY && (!deadline ||
-				      m9_faa_ordinary_progress(t) != progress)) {
+			      m9_faa_ordinary_idle(mdev, &start) :
+			      0;
+		if (ret == -EBUSY &&
+		    (!deadline || m9_faa_ordinary_progress(t) != progress)) {
 			progress = m9_faa_ordinary_progress(t);
 			deadline = jiffies + 10 * m9x_fence_timeout_jiffies();
 		}
