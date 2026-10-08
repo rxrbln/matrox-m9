@@ -16,7 +16,7 @@ libm9x_batch = static_library(
 
 libm9x = static_library(
   'm9x',
-  files('m9_screen.c', 'm9_context.c', 'm9_faa_graph.c', 'm9_faa_graph_dual.c', 'm9_fs_compile.c', 'm9_query.c',
+  files('m9_screen.c', 'm9_context.c', 'm9_replay.c', 'm9_faa_graph.c', 'm9_faa_graph_dual.c', 'm9_fs_compile.c', 'm9_query.c',
         'm9_specialise.c', 'm9_vs_compile.c', 'm9_vs_source.c',
         'm9_vs_texture.c', 'm9_faa_live.c', 'm9_faa_live_effects.c', 'm9_faa_application.c'),
   include_directories : [inc_include, inc_src, inc_gallium, inc_gallium_aux],

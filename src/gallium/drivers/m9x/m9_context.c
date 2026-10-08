@@ -29,6 +29,7 @@
 #include "m9_fs_compile.h"
 #include "m9_specialise.h"
 #include "m9_internal.h"
+#include "m9_replay.h"
 #include "m9_indirect.h"
 #include "m9_faa_application.h"
 #include "m9_faa_graph_uapi.h"
@@ -683,9 +684,29 @@ m9_context_sync(struct m9_context *ctx)
    m9_context_sync_ordinary(ctx);
    if (ctx->faa_frame.count) {
       const char *why = NULL;
-      if (m9_context_faa_flush_frame(ctx, &why))
+      if (m9_context_faa_flush_frame(ctx, &why)) {
          fprintf(stderr, "m9x: FAA frame failed: %s\n", why ? why : "submission failed");
+         /* The fallback replayed the recorded frame ordinarily. */
+         m9_context_sync_ordinary(ctx);
+      }
+   } else if (m9_replay_recording(ctx) && !m9_replay_replaying(ctx)) {
+      /* Recorded clears without an FAA draw are rendered ordinarily. */
+      m9_replay_materialize(ctx);
+      m9_context_sync_ordinary(ctx);
    }
+}
+
+void
+m9_context_faa_settle(struct m9_context *ctx)
+{
+   m9_context_sync(ctx);
+}
+
+const struct pipe_vertex_element *
+m9_context_vertex_elements(const struct m9_context *ctx, unsigned *count)
+{
+   *count = ctx->velems ? ctx->velems->count : 0;
+   return ctx->velems ? ctx->velems->elements : NULL;
 }
 
 static void
@@ -8143,16 +8164,20 @@ m9_draw_vbo(struct pipe_context *pctx, const struct pipe_draw_info *info,
        info->instance_count && debug_get_bool_option("M9X_FAA_CENSUS", false))
       m9_context_faa_census(ctx, info, &draws[0]);
    if (m9_faa_application_enabled() && num_draws && draws[0].count &&
-       info->instance_count && !ctx->faa_mode.fallback && !ctx->faa_mode.skip) {
+       info->instance_count && !ctx->faa_mode.fallback && !ctx->faa_mode.skip &&
+       !m9_replay_replaying(ctx)) {
       /* The ordinary path below renders the frame too; its result stands
        * unless the whole frame is presented by FAA. */
       const char *why = NULL;
       if (m9_context_faa_submit_draw(ctx, info, &draws[0], &why))
          m9_context_faa_fallback(ctx, why ? why : "FAA application draw failed");
-      /* Diagnostic: an admitted draw is not rendered ordinarily; a frame
-       * that fails later loses its prefix. */
-      else if (!m9_faa_shadow_enabled())
-         return;
+      /* Without the shadow an admitted draw is recorded, and rendered
+       * ordinarily only if its frame is not presented. */
+      else if (!m9_faa_shadow_enabled()) {
+         if (!m9_replay_record_draw(ctx, info, drawid_offset, draws, num_draws))
+            return;
+         m9_context_faa_fallback(ctx, "FAA draw recording failed");
+      }
    }
    if (num_draws && !indirect &&
        m9_mrt_blend_split(ctx, info, drawid_offset, draws))
@@ -8497,7 +8522,7 @@ m9_clear(struct pipe_context *pctx, unsigned buffers,
    struct m9_context *ctx = m9_context(pctx);
    uint64_t t_clear = m9_prof_begin();
    if (m9_faa_application_enabled() && buffers && !ctx->faa_mode.fallback &&
-       !ctx->faa_mode.skip) {
+       !ctx->faa_mode.skip && !m9_replay_replaying(ctx)) {
       if (ctx->faa_frame.count) m9_context_sync(ctx);
       if (ctx->lost) { m9_prof_end(M9_PROF_CLEAR, t_clear); return; }
       ctx->faa_application_clear.pending = true;
@@ -8533,8 +8558,12 @@ m9_clear(struct pipe_context *pctx, unsigned buffers,
       ctx->faa_application_clear.scissored |= !m9_scissor_full(ctx, scissor);
       if (scissor) ctx->faa_application_clear.scissor = *scissor;
       if (!m9_faa_shadow_enabled()) {
-         m9_prof_end(M9_PROF_CLEAR, t_clear);
-         return;
+         if (!m9_replay_record_clear(ctx, buffers, color_clear_mask, stencil_clear_mask,
+                                     scissor, color, depth, stencil)) {
+            m9_prof_end(M9_PROF_CLEAR, t_clear);
+            return;
+         }
+         m9_context_faa_fallback(ctx, "FAA clear recording failed");
       }
    }
 
@@ -10078,13 +10107,14 @@ out:
    return ret;
 }
 
-/* M9X_FAA_SHADOW=0 skips the ordinary rendering of admitted FAA draws. */
+/* M9X_FAA_SHADOW=1 renders admitted FAA draws ordinarily too, instead of
+ * recording them for a replay if their frame is not presented. */
 bool
 m9_faa_shadow_enabled(void)
 {
    static int shadow = -1;
    if (shadow < 0)
-      shadow = debug_get_bool_option("M9X_FAA_SHADOW", true);
+      shadow = debug_get_bool_option("M9X_FAA_SHADOW", false);
    return shadow;
 }
 
@@ -10098,6 +10128,8 @@ m9_context_faa_fallback(struct m9_context *ctx, const char *why)
    ctx->faa_mode.fallback = true;
    ctx->faa_mode.reason = why;
    m9_faa_application_frame_reset(&ctx->faa_frame);
+   /* The recorded part of the frame is rendered ordinarily now. */
+   m9_replay_materialize(ctx);
    memset(&ctx->faa_application_clear, 0, sizeof(ctx->faa_application_clear));
 }
 
@@ -10188,7 +10220,10 @@ done:
     * inputs; GPU owners remain retained by its graph even on failure. The
     * ordinary rendering of the frame stands for a failed FAA frame. */
    if (ret) m9_context_faa_fallback(ctx, why);
-   else ctx->faa_mode.presented = true;
+   else {
+      ctx->faa_mode.presented = true;
+      m9_replay_discard(ctx);
+   }
    m9_faa_application_frame_reset(frame);
 out:
    if (reason) *reason = why;
@@ -11296,6 +11331,9 @@ m9_context_destroy(struct pipe_context *pctx)
     * of a benchmark run. */
    if (ctx->debug || debug_get_bool_option("M9X_SKIP_REPORT", false))
       m9_skip_report(ctx);
+   /* A recorded frame that was never presented is rendered. */
+   if (m9_replay_recording(ctx))
+      m9_context_sync(ctx);
    m9_vs_texture_fini(pctx);
    if (ctx->blitter) {
       util_blitter_destroy(ctx->blitter);
@@ -11415,6 +11453,7 @@ m9_context_destroy(struct pipe_context *pctx)
    util_dynarray_fini(&ctx->job_vs_consts);
    util_dynarray_fini(&ctx->job_vs_runs);
    util_dynarray_fini(&ctx->job_vs_values);
+   m9_replay_fini(ctx);
    FREE(ctx);
 }
 
@@ -11624,6 +11663,8 @@ m9_context_create(struct pipe_screen *pscreen, void *priv, unsigned flags)
    if (!ctx->base.stream_uploader)
       goto fail;
    ctx->base.const_uploader = ctx->base.stream_uploader;
+   if (m9_faa_application_enabled() && m9_replay_enabled())
+      m9_replay_init(ctx);
    /* Copies and blits draw, so the blitter is built last, once every entry
     * point it calls is installed.  A context without one still works: every
     * caller falls back to the CPU transfer path. */

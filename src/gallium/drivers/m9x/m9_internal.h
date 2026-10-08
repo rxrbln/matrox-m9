@@ -408,6 +408,7 @@ struct m9_query;
 struct m9_fs_state;
 struct m9_fs_variant;
 struct m9_velems;
+struct m9_replay;
 struct m9_vs_textures;
 struct m9_faa_application_upload;
 struct m9_context;
@@ -426,6 +427,9 @@ int m9_context_faa_submit_draw(struct m9_context *ctx,
 int m9_context_faa_flush_frame(struct m9_context *ctx, const char **reason);
 void m9_context_faa_fallback(struct m9_context *ctx, const char *why);
 bool m9_faa_shadow_enabled(void);
+void m9_context_faa_settle(struct m9_context *ctx);
+const struct pipe_vertex_element *m9_context_vertex_elements(const struct m9_context *ctx,
+                                                              unsigned *count);
 int m9_context_faa_present_lock(struct m9_context *ctx, uint64_t graph_id,
                                uint32_t generation, uint64_t lock_point);
 
@@ -654,6 +658,8 @@ struct m9_context {
    struct pipe_framebuffer_state framebuffer;
    struct pipe_viewport_state viewport;
    struct m9_velems *velems;
+   /* Record-and-replay of FAA-admitted draws (m9_replay.c), or NULL. */
+   struct m9_replay *replay;
    const struct pipe_rasterizer_state *rasterizer;
    const struct pipe_depth_stencil_alpha_state *dsa;
    struct pipe_stencil_ref stencil_ref;
