@@ -7290,35 +7290,43 @@ out:
 }
 
 #ifdef M9_FAA_GRAPH_INIT_CONTROL
-static int m9_faa_public_vs_follow_state(struct m9x_transport *t, u32 generation, u64 prefix_point,
+static int m9_faa_public_vs_follow_state(struct m9x_transport *t,
+					 u32 generation, u64 prefix_point,
 					 bool claimed)
 {
 	struct m9x_faa_replay *r = t->faa;
+
 	lockdep_assert_held(&t->lock);
 	if (t->wedged)
 		return -EIO;
-	if (!r || !r->graph_binding || !r->prepared || !r->attempted || !r->observation_retired ||
-	    !r->graph_draw_claimed || !r->public_vs_payload_ready || !r->public_vs_prefix_retired ||
+	if (!r || !r->graph_binding || !r->prepared || !r->attempted ||
+	    !r->observation_retired || !r->graph_draw_claimed ||
+	    !r->public_vs_payload_ready || !r->public_vs_prefix_retired ||
 	    r->public_vs_head_attempted || r->public_vs_head_retired ||
-	    !r->public_vs_image || r->draw_image || r->graph_draw_payload_ready ||
-	    r->public_vs_follow_retired || (!!r->public_vs_follow_image != claimed) ||
-	    r->graph_preparing || r->graph_generation != generation ||
-	    t->generation != generation || r->observation_generation != generation ||
-	    !prefix_point || prefix_point != r->observation_point + 0x50 ||
+	    !r->public_vs_image || r->draw_image ||
+	    r->graph_draw_payload_ready || r->public_vs_follow_retired ||
+	    (!!r->public_vs_follow_image != claimed) || r->graph_preparing ||
+	    r->graph_generation != generation || t->generation != generation ||
+	    r->observation_generation != generation || !prefix_point ||
+	    prefix_point != r->observation_point + 0x50 ||
 	    r->graph_draw_point != prefix_point || r->graph_draw_posts != 3 ||
 	    r->graph_draw_end_bytes != r->primary_bytes + 112 ||
 	    r->public_vs_image->ends.final_end != r->graph_draw_end_bytes ||
-	    r->public_vs_image->ends.independent_finish != prefix_point || (prefix_point & 15) ||
-	    lower_32_bits(prefix_point) > U32_MAX - 0x40 || t->submitted_point != prefix_point ||
+	    r->public_vs_image->ends.independent_finish != prefix_point ||
+	    (prefix_point & 15) ||
+	    lower_32_bits(prefix_point) > U32_MAX - 0x40 ||
+	    t->submitted_point != prefix_point ||
 	    t->completed_point != prefix_point ||
 	    t->next_fence != lower_32_bits(prefix_point) + 0x10)
 		return -ESTALE;
-	if (!t->faa_source_context || !t->faa_virtual_primary || !t->engine_transitioned ||
-	    !t->restore_ready || !t->fence_cpu || !t->transport_armed || !t->bus_master_enabled ||
-	    t->async_stop || t->async_pending || t->queue_count)
+	if (!t->faa_source_context || !t->faa_virtual_primary ||
+	    !t->engine_transitioned || !t->restore_ready || !t->fence_cpu ||
+	    !t->transport_armed || !t->bus_master_enabled || t->async_stop ||
+	    t->async_pending || t->queue_count)
 		return -EBUSY;
 	return 0;
 }
+
 #endif
 int m9x_faa_graph_public_vs_follow_get_locked(struct m9x_device *mdev, u32 generation,
 					      u64 prefix_point, struct m9_faa_graph_binding **out)
