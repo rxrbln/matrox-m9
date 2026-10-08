@@ -4,6 +4,7 @@
 #include <linux/overflow.h>
 #include <crypto/sha2.h>
 #include "m9_faa_graph_color_encode.h"
+#include "m9_faa_fragment_state.h"
 struct color_field {u32 dst,at,owner,offset,pc,tag;};
 static const struct color_field fields[]={{27,16,8,0,149810,1},{27,68,29,0,150706,1},{27,72,29,580,150741,2},{27,80,29,580,150706,1},{27,84,29,1352,150741,2},{27,92,22,0,149810,1},{27,156,22,644,149810,1},{27,160,22,704,149791,5},{27,168,8,8,153331,1},{27,180,8,12,153331,1},{27,192,8,16,153331,1},{27,280,1,0,149810,1},{27,3308,1,0,149810,1},{29,72,23,0,149810,1},{29,88,23,1079296,149810,1},{29,104,23,2158592,149810,1},{29,120,23,3237888,149810,1},{29,284,28,384,149810,1},{29,304,26,0,149664,1},{29,328,28,16,149713,1},{29,332,28,136,149713,1},{29,516,12,0,149664,1},{29,548,28,256,149713,1},{29,768,8,0,149810,1},{29,772,8,20,149774,0},{29,800,1,0,149810,1},{29,816,4,0,149810,1},{29,832,5,0,149810,1},{29,848,25,0,149810,1},{29,860,22,0,149810,1},{29,892,2,0,149810,1},{29,896,3,0,149810,1},{29,1040,23,0,149810,1},{29,1044,23,2158592,149810,1},{29,1060,23,3237888,149810,1},{29,1064,23,1079296,149810,1},{29,1080,26,0,149664,1},{29,1104,28,0,149713,1},{29,1108,28,16,149713,1},{29,1304,12,0,149664,1},{29,1336,28,256,149713,1}};
 struct color_token {u32 dst,at,delta,tag;};
@@ -49,6 +50,9 @@ int m9x_faa_color_encode(const u8*blob,size_t bytes,
 {
  struct m9x_faa_surface_layout dimensions;
  u32 padded,extra,secondary,offset,address,value,i,j,pairs,raw,padded_records,geometry_offset;u16 fused_mask;
+ struct m9_faa_fragment_state effect_state;
+ struct m9_faa_fragment_interface effect_interface;
+ bool effects=false;
  if(in&&in->layout.program_count==4)return m9x_faa_color_four_encode(blob,bytes,owner,init_bytes,init_point,in,out);
  if(in&&((in->data_offset&127)||(in->fragment_flags&~1u)))return -EINVAL;
  if(!in||!out||!owner||!in->program||!in->constants||!in->geometry||!in->declaration||
@@ -85,6 +89,14 @@ int m9x_faa_color_encode(const u8*blob,size_t bytes,
    ((d>>20)&15)!=(i/2+1)||((d>>12)&15))return -ERANGE;
  }
  if(m9x_faa_color_flat_fragment_valid(in)!=!!in->fragment_flags)return -EINVAL;
+ /* Original170ff0/170800 alter the complete COLOR0 allocation. Do not
+  * classify an arbitrary same-sized FS by a blend/test flag or byte count. */
+ if(in->layout.entry_bytes[1]>=80){
+  if(in->fragment_flags||!m9x_faa_fragment_state_decode((const u32*)in->program,
+   in->layout.entry_bytes[1],(const u32*)(in->constants+in->layout.constant_begin[0]),
+   in->layout.constant_end[0]-in->layout.constant_begin[0],&effect_state,&effect_interface))return -EINVAL;
+  effects=true;
+ }
  if(m9x_faa_fused_source_mask(in->program,in->layout.program_bytes,in->layout.entry_bytes[1],&fused_mask))return -EINVAL;
  padded=(in->declaration_count+3)&~3u;extra=(padded/4-1)*24;secondary=1352+extra;
  padded_records=(in->record_count+3)&~3u;
@@ -172,6 +184,17 @@ int m9x_faa_color_encode(const u8*blob,size_t bytes,
   put(out->secondary+moved(1248,extra),4);put(out->secondary+moved(1272,extra),4);
   for(i=0;i<4;i++)put(out->secondary+moved(1256+i*4,extra),fsdecl[i]);
   put(out->secondary+moved(1280,extra),fsdecl[4]);}
+ if(effects){
+  /* These are the compiler allocation and destination/alpha-test producer
+   * fields observed at181fa0 and17f04f/f5056, paired with the validated ISA.
+   * Live attachment/depth/cull fields and all ranges remain independent. */
+  u32 f0=word(out->secondary+moved(656,extra));
+  f0&=~0x01000400u;
+  if(effect_interface.reads_destination)f0|=0x01000000u;
+  put(out->secondary+moved(656,extra),f0);
+  put(out->secondary+moved(1016,extra),
+   (word(out->secondary+moved(1016,extra))&~0xffffu)|effect_interface.available_register_mask);
+ }
  /* Original182500 publishes one active COLOR input in AB slot0. Other
   * AB/AC slots copied by182541/182549/fbee8 are inactive stack residue. */
  put(out->secondary+moved(960,extra),0x0000ffffu);
