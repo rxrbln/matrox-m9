@@ -5112,7 +5112,7 @@ int m9x_faa_lock_view_admit_locked(struct m9x_device *mdev,
 }
 
 int m9x_faa_lock_view_observed_locked(struct m9x_device *mdev,
-				struct drm_gem_vram_object *color)
+				      struct drm_gem_vram_object *color)
 {
 	struct m9x_transport *t = &mdev->transport;
 	struct m9x_faa_replay *r = t->faa;
@@ -5123,8 +5123,8 @@ int m9x_faa_lock_view_observed_locked(struct m9x_device *mdev,
 
 	if (!r)
 		return -ENODATA;
-	ret = m9x_faa_lock_view_admit_locked(mdev, color,
-			r->owner[1].base, m9x_faa_primary_window_bytes(&r->graph_layout));
+	ret = m9x_faa_lock_view_admit_locked(mdev, color, r->owner[1].base,
+					     m9x_faa_primary_window_bytes(&r->graph_layout));
 	if (!ret) {
 		if (r->public_vs_next_lock_retired)
 			r->public_vs_next_view_seen = true;
@@ -5135,13 +5135,12 @@ int m9x_faa_lock_view_observed_locked(struct m9x_device *mdev,
 	}
 	return ret;
 #elif defined(M9_FAA_UNLOCK_PUBLICATION_CONTROL)
-	if (!r || !r->observation_retired ||
-	    r->retained_color != color ||
+	if (!r || !r->observation_retired || r->retained_color != color ||
 	    r->observation_generation != t->generation ||
-	    (r->unlock_started ?
-	     (!r->relock_retired || r->relock_generation != t->generation ||
-	      r->relock_point != t->completed_point) :
-	     r->observation_point != t->completed_point))
+	    (r->unlock_started ? (!r->relock_retired ||
+				  r->relock_generation != t->generation ||
+				  r->relock_point != t->completed_point) :
+				 r->observation_point != t->completed_point))
 		return -ENODATA;
 	if (r->unlock_started)
 		r->relock_view_seen = true;
