@@ -321,8 +321,7 @@ int m9x_faa_graph_selftest(void)
 	return 0;
 }
 
-static bool m9_faa_graph_owner_class_valid(u32 role,
-					   struct drm_gem_object *gem)
+static bool m9_faa_graph_owner_class_valid(u32 role, struct drm_gem_object *gem)
 {
 	if (role == PARHELIA_M9_FAA_PRIMARY)
 		return m9x_gem_vram_tiled(gem);
