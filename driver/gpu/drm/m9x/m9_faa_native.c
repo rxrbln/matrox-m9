@@ -9768,21 +9768,21 @@ int m9x_faa_graph_depth_frame_prepare(struct m9x_device *mdev,
 	};
 	if (first) {
 		ret = (two ? m9x_faa_first_depth_two_encode :
-		       m9x_faa_first_depth_encode)(sample_fw->data,
-						   sample_fw->size,
-						   first_fw->data,
-						   first_fw->size, owner,
-						   &views,
-						   r->graph_draw_end_bytes,
-						   queue_start, input,
-						   frame->primary,
-						   sizeof(frame->primary),
-						   frame->secondary,
-						   sizeof(frame->secondary),
-						   &frame->primary_bytes,
-						   &frame->secondary_bytes,
-						   frame->end_bytes,
-						   &first_image, fresh);
+			     m9x_faa_first_depth_encode)(sample_fw->data,
+							 sample_fw->size,
+							 first_fw->data,
+							 first_fw->size, owner,
+							 &views,
+							 r->graph_draw_end_bytes,
+							 queue_start, input,
+							 frame->primary,
+							 sizeof(frame->primary),
+							 frame->secondary,
+							 sizeof(frame->secondary),
+							 &frame->primary_bytes,
+							 &frame->secondary_bytes,
+							 frame->end_bytes,
+							 &first_image, fresh);
 		if (ret)
 			goto unlock;
 		frame->primary_start = r->graph_draw_end_bytes;
