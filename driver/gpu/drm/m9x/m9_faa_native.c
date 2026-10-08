@@ -4732,6 +4732,54 @@ static void m9_faa_color_intermediates_observe(struct m9x_device *mdev,
 		if (!completed_bytes || completed_bytes > (frame->batch_secondary ?
 			0x40000 : sizeof(frame->secondary)))
 			return;
+		if (frame->dual_first) {
+			/* The ordinary COLOR4 scratch image is not the published dual
+			 * packet. Decode only the retained dual frame after its exact Lock
+			 * receipt, using its own B0/B2/B4/B6, gather and position binds. */
+			static const struct observed_target dual_target[] = {
+				{116, 120, 24, 256}, {132, 136, 24, 0},
+				{148, 152, 24, 0}, {164, 168, 24, 0},
+				{844, 848, 23, 64}, {860, 864, 23, 64},
+				{876, 880, 23, 64},
+				{1488, 1492, 23, 64}, {1504, 1508, 23, 64},
+				{1520, 1524, 23, 64},
+			};
+
+			rmb();
+			dma_rmb();
+
+			for (i = 0; i < ARRAY_SIZE(dual_target); i++) {
+				const struct observed_target *t = &dual_target[i];
+				struct m9_faa_owner *o = &r->owner[t->owner];
+				u32 available, nbytes;
+
+				if (t->at + 8 > completed_bytes || !o->vram || o->cpu ||
+				    iosys_map_is_null(&o->map))
+					continue;
+				address = get_unaligned_le32(completed_secondary + t->at);
+				descriptor = get_unaligned_le32(completed_secondary + t->at + 4);
+				if ((address & 3) != 1 || (address & ~3u) < o->base)
+					continue;
+				offset = (address & ~3u) - o->base;
+				if (offset > o->bytes)
+					continue;
+				available = o->bytes - offset;
+				nbytes = min_t(u32, t->bytes, min_t(u32, available, sizeof(data)));
+				if (nbytes)
+					iosys_map_memcpy_from(data, &o->map, offset, nbytes);
+				dev_info(&mdev->pdev->dev,
+					 "M9 FAA dual intermediate: point=%#llx owner=%u secondary=%u offset=%#x descriptor=%#x bytes=%u\n",
+					 r->color_lock_point, t->owner, t->at, offset,
+					 descriptor, nbytes);
+				for (chunk = 0; chunk < nbytes; chunk += count) {
+					count = min_t(u32, 64, nbytes - chunk);
+					dev_info(&mdev->pdev->dev,
+						 "M9 FAA dual data: secondary=%u offset=%#x hex=%*phN\n",
+						 t->at, offset + chunk, count, data + chunk);
+				}
+			}
+			return;
+		}
 	}
 	if (completed_bytes >= 12 && completed_bytes <= 0x40000 &&
 	    get_unaligned_le32(completed_secondary + completed_bytes - 12) ==
