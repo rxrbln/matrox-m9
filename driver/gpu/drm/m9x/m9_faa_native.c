@@ -6805,8 +6805,8 @@ int m9x_faa_graph_public_vs_head_get_locked(struct m9x_device *mdev,
 	*out = NULL;
 	ret = m9_faa_public_vs_head_state(&mdev->transport,
 					  mdev->transport.faa ?
-					  mdev->transport.faa->graph_binding :
-					  NULL, generation, head_point);
+					  mdev->transport.faa->graph_binding : NULL,
+					  generation, head_point);
 	if (ret)
 		return ret;
 	if (mdev->transport.faa->public_vs_draw_attempted ||
