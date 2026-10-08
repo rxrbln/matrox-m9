@@ -4541,21 +4541,24 @@ out:
 /* The separately typed first public-VS prefix cannot authorize the fixed-red
  * raster/Lock path. The original source f0 wait remains unread. */
 static int m9_faa_public_vs_state(const struct m9x_transport *t,
-		struct m9_faa_graph_binding *binding, u32 generation, u64 init_point)
+				  struct m9_faa_graph_binding *binding,
+				  u32 generation, u64 init_point)
 {
 	const struct m9x_faa_replay *r = t->faa;
 
 	if (!r || !binding || r->graph_binding != binding ||
 	    r->graph_generation != generation || t->generation != generation ||
-	    r->observation_generation != generation ||
-	    !r->prepared || !r->attempted || !r->graph_draw_claimed ||
+	    r->observation_generation != generation || !r->prepared ||
+	    !r->attempted || !r->graph_draw_claimed ||
 	    !r->public_vs_payload_ready || r->public_vs_prefix_retired ||
 	    r->public_vs_head_attempted || r->public_vs_head_retired ||
-	    !r->public_vs_image || r->draw_image || r->graph_draw_payload_ready ||
-	    r->graph_draw_posts || r->graph_draw_point || r->graph_preparing ||
+	    !r->public_vs_image || r->draw_image ||
+	    r->graph_draw_payload_ready || r->graph_draw_posts ||
+	    r->graph_draw_point || r->graph_preparing ||
 	    r->graph_draw_end_bytes != r->primary_bytes ||
 	    !r->observation_retired || r->observation_point != init_point ||
-	    t->submitted_point != init_point || t->completed_point != init_point ||
+	    t->submitted_point != init_point ||
+	    t->completed_point != init_point ||
 	    t->next_fence != lower_32_bits(init_point) + 0x10 ||
 	    lower_32_bits(init_point) > U32_MAX - 0x60 ||
 	    !t->faa_virtual_primary || !t->faa_source_context ||
@@ -4570,6 +4573,7 @@ static int m9_faa_public_vs_state(const struct m9x_transport *t,
 		return -ESTALE;
 	return 0;
 }
+
 #endif
 
 static int m9_faa_graph_public_vs_submit_mode(struct m9x_device *mdev,
