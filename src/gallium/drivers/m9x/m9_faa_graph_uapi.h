@@ -123,7 +123,14 @@ struct drm_parhelia_m9_faa_color_draw {
 struct drm_parhelia_m9_faa_graph_color_frame_batch {
  __u64 graph_id, previous_point, lock_point, draws;
  __u32 draw_count, generation, flags, state;
- __u32 width, height, clear_flags, clear_color, pad[4];
+ __u32 width, height, clear_flags, clear_color;
+ /* INITIALIZED output only: zero, or a genuine secondary-close global
+  * point exactly previous_point+0x10. Pool completion is a separate timeline.
+  * All four words remain zero on input; the request stays80bytes. */
+ union {
+  __u32 pad[4];
+  struct { __u64 maintenance_point; __u32 reserved[2]; };
+ };
 };
 #define DRM_IOCTL_PARHELIA_M9_FAA_GRAPH_COLOR_FRAME_BATCH DRM_IOWR(DRM_COMMAND_BASE + DRM_PARHELIA_M9_FAA_GRAPH_COLOR_FRAME_BATCH, struct drm_parhelia_m9_faa_graph_color_frame_batch)
 
