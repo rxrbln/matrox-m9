@@ -1,4 +1,5 @@
 /* SPDX-License-Identifier: GPL-2.0-only */
+/* Copyright 2026 René Rebe <rene@exactco.de> */
 /* The original 102b:0540 stage-0 descriptor/coordinate producer. The GPU
  * address is taken solely from a live retained VRAM owner. This bounded
  * source control does not lower an arbitrary sampler or fragment shader. */
@@ -11,6 +12,45 @@
 #include <linux/limits.h>
 #endif
 #include "m9_faa_graph_texture_bind.h"
+
+/* One 2-D level's surface-contract footprint (row span, allocation rows,
+ * small aperture class), as the vendor render-surface allocator sizes it.
+ */
+static void level_layout(u32 width, u32 height, u32 *span, u32 *rows,
+			 int *small)
+{
+	*small = width <= 64 && height <= 64;
+	*span = (width + 31) & ~31u;
+	*rows = (height + (*small ? 7 : 31)) & ~(*small ? 7u : 31u);
+	if (width <= 16 && height <= 16)
+		*rows = 16;
+}
+
+/* Packed mip chain extent of the ordinary texture layout (Mesa
+ * m9_texture_layout): each level by its own extent, small levels by the
+ * aperture calculator's 1 KiB pages. Tail-atlas levels are not admitted.
+ */
+static u32 chain_extent(u32 width, u32 height, u32 levels)
+{
+	u32 offset = 0, end = 0, l;
+
+	for (l = 0; l < levels; l++) {
+		u32 w = width >> l ? width >> l : 1;
+		u32 h = height >> l ? height >> l : 1;
+		u32 span, rows, quantum, face, whole;
+		int small;
+
+		level_layout(w, h, &span, &rows, &small);
+		quantum = small ? 0x400 : 0x1000;
+		whole = (span * rows * 4 + quantum - 1) & ~(quantum - 1);
+		face = small ? ((h + (span & 63 ? 8 : 4) - 1) /
+				(span & 63 ? 8 : 4)) * 0x400 : whole;
+		if (offset + whole > end)
+			end = offset + whole;
+		offset += face;
+	}
+	return offset > end ? offset : end;
+}
 
 int m9x_faa_texture_bind_encode(
 	const struct m9x_faa_texture_bind_input *in,
@@ -27,10 +67,15 @@ int m9x_faa_texture_bind_encode(
 	    in->width > 1024 || in->height > 1024 ||
 	    (in->width & (in->width - 1)) ||
 	    (in->height & (in->height - 1)) ||
-	    in->levels != 1 || in->stage != 0 ||
+	    !in->levels || in->levels > 11 ||
+	    (in->levels > 1 &&
+	     (in->width >> (in->levels - 1) <= 16 &&
+	      in->height >> (in->levels - 1) <= 16)) ||
+	    (in->width >> (in->levels - 1) == 0 &&
+	     in->height >> (in->levels - 1) == 0) || in->stage != 0 ||
 	    (in->min_filter != 1 && in->min_filter != 2) ||
 	    (in->mag_filter != 1 && in->mag_filter != 2) ||
-	    in->mip_filter != 1 ||
+	    in->mip_filter < 1 || in->mip_filter > 3 ||
 	    (in->address_u != 1 && in->address_u != 3) ||
 	    (in->address_v != 1 && in->address_v != 3) ||
 	    (in->coordinate_sets != 1 && in->coordinate_sets != 2) ||
@@ -53,6 +98,8 @@ int m9x_faa_texture_bind_encode(
 	extent = span * alloc_height + (tail < 8 ? 8 - tail : 0);
 	extent = (extent * 4 + (kind == 1 ? 0x3ff : 0xfff)) &
 		 ~(kind == 1 ? 0x3ffu : 0xfffu);
+	if (in->levels > 1)
+		extent = chain_extent(in->width, in->height, in->levels);
 	if (in->storage_kind != kind || in->owner_bytes < extent)
 		return -EINVAL;
 
@@ -73,10 +120,18 @@ int m9x_faa_texture_bind_encode(
 	image.address78 = in->owner_base | 1;
 	image.descriptor79 = (0x66u << 25) | (kind << 16) | in->width;
 	image.descriptor7a = (1u << 16) | in->height;
+	/* Mipmapped sampling: last level in 7a[31:28] and 7c nearest 0x80 /
+	 * linear 0x100, the ordinary sampler's MEASURED encoding.
+	 */
+	if (in->mip_filter != 1)
+		image.descriptor7a |= (in->levels - 1) << 28;
 	/* 18afb0/18ba27 tables, checked against independent MIN/MAG and
 	 * U/V clamp controls. Mip-linear needs a resident chain, so it stays
 	 * outside this single-level owner contract. */
-	image.sampler7c = 0x00009280 |
+	image.sampler7c = 0x00009200 |
+		(in->mip_filter == 3 ? 0x100 : 0x80) |
+		(in->mip_filter == 2 && in->mag_filter == 2 &&
+		 in->min_filter == 1 ? 0x400 : 0) |
 		((in->min_filter == 2) ? 2 : 0) |
 		((in->mag_filter == 2) ? (2 << 3) : 0) |
 		((in->address_u == 3) ? (1 << 22) : 0) |
