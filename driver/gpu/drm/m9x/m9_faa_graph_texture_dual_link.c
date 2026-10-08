@@ -10,20 +10,8 @@
 #include <linux/limits.h>
 #endif
 #include "m9_faa_graph_texture_dual_link.h"
-
-static u32 rd(const u8 *p, u32 at)
-{
-	return (u32)p[at] | (u32)p[at + 1] << 8 | (u32)p[at + 2] << 16 |
-	       (u32)p[at + 3] << 24;
-}
-
-static void wr(u8 *p, u32 at, u32 value)
-{
-	p[at] = value;
-	p[at + 1] = value >> 8;
-	p[at + 2] = value >> 16;
-	p[at + 3] = value >> 24;
-}
+/* After the host-test typedefs of the texture headers. */
+#include "m9_cmd.h"
 
 int m9x_faa_texture_dual_link_place(const struct m9x_faa_texture_dual_link_input
 					    *in,
@@ -65,10 +53,10 @@ int m9x_faa_texture_dual_link_place(const struct m9x_faa_texture_dual_link_input
 		    in->constant_begin[i] > in->constant_end[i] ||
 		    in->constant_end[i] > in->constants_bytes ||
 		    in->constant_end[i] - in->constant_begin[i] > 504 ||
-		    rd(secondary, c2[i] - 4) != 0x458fc3c2 ||
-		    rd(secondary, c3[i] - 4) != 0x8f8e8d8c ||
-		    rd(secondary, c2[i] + 8) != 0 ||
-		    rd(secondary, c2[i] + 12) != 4)
+		    m9_cmd_get(secondary + c2[i] - 4) != 0x458fc3c2 ||
+		    m9_cmd_get(secondary + c3[i] - 4) != 0x8f8e8d8c ||
+		    m9_cmd_get(secondary + c2[i] + 8) != 0 ||
+		    m9_cmd_get(secondary + c2[i] + 12) != 4)
 			return -EINVAL;
 		start = in->data_offset + in->constant_begin[i];
 		end = in->data_offset + in->constant_end[i];
@@ -85,11 +73,11 @@ int m9x_faa_texture_dual_link_place(const struct m9x_faa_texture_dual_link_input
 			((in->constant_end[i] - in->constant_begin[i]) << 5);
 	}
 	for (i = 0; i < 4; i++) {
-		wr(secondary, c2[i], in->program_base | 1);
-		wr(secondary, c2[i] + 4, program_word[i]);
-		wr(secondary, c3[i], count_word[i]);
-		wr(secondary, c3[i] + 4, start_word[i]);
-		wr(secondary, c3[i] + 8, end_word[i]);
+		m9_cmd_put(secondary + c2[i], in->program_base | 1);
+		m9_cmd_put(secondary + c2[i] + 4, program_word[i]);
+		m9_cmd_put(secondary + c3[i], count_word[i]);
+		m9_cmd_put(secondary + c3[i] + 4, start_word[i]);
+		m9_cmd_put(secondary + c3[i] + 8, end_word[i]);
 	}
 	return 0;
 }

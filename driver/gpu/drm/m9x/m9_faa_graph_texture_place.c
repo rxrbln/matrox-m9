@@ -7,23 +7,8 @@
 #include <linux/errno.h>
 #endif
 #include "m9_faa_graph_texture_place.h"
-
-static u32 rd(const u8 *p, u32 word)
-{
-	const u8 *b = p + 4 * word;
-
-	return (u32)b[0] | (u32)b[1] << 8 | (u32)b[2] << 16 | (u32)b[3] << 24;
-}
-
-static void wr(u8 *p, u32 word, u32 value)
-{
-	u8 *b = p + 4 * word;
-
-	b[0] = value;
-	b[1] = value >> 8;
-	b[2] = value >> 16;
-	b[3] = value >> 24;
-}
+/* After the host-test typedefs of the texture headers. */
+#include "m9_cmd.h"
 
 int m9x_faa_texture_bind_place(const struct m9x_faa_texture_bind_input *in,
 			       const struct m9x_faa_texture_program_interface
@@ -47,30 +32,35 @@ int m9x_faa_texture_bind_place(const struct m9x_faa_texture_bind_input *in,
 		return ret;
 	words = bytes / 4;
 	for (i = 1; i + 11 < words; i++) {
-		if (rd(secondary, i) == 4 &&
-		    rd(secondary, i + 1) == 0x23232323 &&
-		    (rd(secondary, i + 2) & ~(1u << 25)) == 0x05300d88 &&
-		    (rd(secondary, i + 3) & ~(1u << 25)) == 0x05300b36 &&
-		    rd(secondary, i + 4) == 0x4b08 &&
-		    rd(secondary, i + 5) == 0) {
+		if (m9_cmd_get(secondary + 4 * i) == 4 &&
+		    m9_cmd_get(secondary + 4 * (i + 1)) == 0x23232323 &&
+		    (m9_cmd_get(secondary + 4 * (i + 2)) & ~(1u << 25)) ==
+			    0x05300d88 &&
+		    (m9_cmd_get(secondary + 4 * (i + 3)) & ~(1u << 25)) ==
+			    0x05300b36 &&
+		    m9_cmd_get(secondary + 4 * (i + 4)) == 0x4b08 &&
+		    m9_cmd_get(secondary + 4 * (i + 5)) == 0) {
 			if (stream)
 				return -EINVAL;
 			stream = i;
 		}
-		if (rd(secondary, i) == 3 &&
-		    rd(secondary, i + 1) == 0x45aeacab &&
-		    (rd(secondary, i + 3) == in->raster_ae_base ||
-		     rd(secondary, i + 3) == in->raster_ae_base + 0x40) &&
-		    rd(secondary, i + 4) == 0x22444442) {
+		if (m9_cmd_get(secondary + 4 * i) == 3 &&
+		    m9_cmd_get(secondary + 4 * (i + 1)) == 0x45aeacab &&
+		    (m9_cmd_get(secondary + 4 * (i + 3)) ==
+			     in->raster_ae_base ||
+		     m9_cmd_get(secondary + 4 * (i + 3)) ==
+			     in->raster_ae_base + 0x40) &&
+		    m9_cmd_get(secondary + 4 * (i + 4)) == 0x22444442) {
 			if (raster)
 				return -EINVAL;
 			raster = i;
 		}
-		if (rd(secondary, i) == 0x45454570 &&
-		    rd(secondary, i - 1) == 1 && rd(secondary, i + 2) == 3 &&
-		    rd(secondary, i + 3) == 0x457a7978 &&
-		    rd(secondary, i + 7) == 3 &&
-		    rd(secondary, i + 8) == 0x45877d7c) {
+		if (m9_cmd_get(secondary + 4 * i) == 0x45454570 &&
+		    m9_cmd_get(secondary + 4 * (i - 1)) == 1 &&
+		    m9_cmd_get(secondary + 4 * (i + 2)) == 3 &&
+		    m9_cmd_get(secondary + 4 * (i + 3)) == 0x457a7978 &&
+		    m9_cmd_get(secondary + 4 * (i + 7)) == 3 &&
+		    m9_cmd_get(secondary + 4 * (i + 8)) == 0x45877d7c) {
 			if (texture)
 				return -EINVAL;
 			texture = i;
@@ -83,15 +73,15 @@ int m9x_faa_texture_bind_place(const struct m9x_faa_texture_bind_input *in,
 	/* Every packet site was checked before the first write. Texture address
 	 * is always replaced with the retained owner's live VRAM address.
 	 */
-	wr(secondary, stream + 2, image.stream0);
-	wr(secondary, stream + 3, image.stream1);
-	wr(secondary, raster + 3, image.raster_ae);
-	wr(secondary, texture + 1, image.unit70);
-	wr(secondary, texture + 4, image.address78);
-	wr(secondary, texture + 5, image.descriptor79);
-	wr(secondary, texture + 6, image.descriptor7a);
-	wr(secondary, texture + 9, image.sampler7c);
-	wr(secondary, texture + 10, image.sampler7d);
-	wr(secondary, texture + 11, image.sampler87);
+	m9_cmd_put(secondary + 4 * (stream + 2), image.stream0);
+	m9_cmd_put(secondary + 4 * (stream + 3), image.stream1);
+	m9_cmd_put(secondary + 4 * (raster + 3), image.raster_ae);
+	m9_cmd_put(secondary + 4 * (texture + 1), image.unit70);
+	m9_cmd_put(secondary + 4 * (texture + 4), image.address78);
+	m9_cmd_put(secondary + 4 * (texture + 5), image.descriptor79);
+	m9_cmd_put(secondary + 4 * (texture + 6), image.descriptor7a);
+	m9_cmd_put(secondary + 4 * (texture + 9), image.sampler7c);
+	m9_cmd_put(secondary + 4 * (texture + 10), image.sampler7d);
+	m9_cmd_put(secondary + 4 * (texture + 11), image.sampler87);
 	return 0;
 }

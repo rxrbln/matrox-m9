@@ -9,6 +9,7 @@
 #include <linux/overflow.h>
 #include <linux/string.h>
 #include <crypto/sha2.h>
+#include "m9_cmd.h"
 #include "m9_faa_graph_public_vs_encode.h"
 
 static const u8 template_sha[32] = {
@@ -70,19 +71,6 @@ static const struct m9x_faa_public_vs_upload_layout source_layout = {
 	.declaration = { 0x100d88, 0x1006b6, 0x4200d88, 0x42006b6, 0x4b08 },
 };
 
-static u32 get32(const u8 *p)
-{
-	return p[0] | (u32)p[1] << 8 | (u32)p[2] << 16 | (u32)p[3] << 24;
-}
-
-static void put32(u8 *p, u32 w)
-{
-	p[0] = w;
-	p[1] = w >> 8;
-	p[2] = w >> 16;
-	p[3] = w >> 24;
-}
-
 static bool ranges_overlap(const void *a, size_t na, const void *b, size_t nb)
 {
 	unsigned long x = (unsigned long)a, y = (unsigned long)b, ex, ey;
@@ -126,21 +114,22 @@ static int input_valid(const struct m9x_faa_public_vs_input *in)
 	 * kernel floating point and admit only normalized finite live inputs.
 	 */
 	for (i = 0; i < 32; i++)
-		if (get32(in->geometry + 4 * i) != header[i])
+		if (m9_cmd_get(in->geometry + 4 * i) != header[i])
 			return -EINVAL;
 	for (i = 0; i < 4; i++)
-		if (get32(in->constants + 32 + 4 * i) > 0x3f800000u)
+		if (m9_cmd_get(in->constants + 32 + 4 * i) > 0x3f800000u)
 			return -ERANGE;
 	for (i = 0; i < 3; i++) {
 		const u8 *v = in->geometry + 128 + 32 * i;
 
 		for (j = 0; j < 2; j++)
-			if ((get32(v + 4 * j) & 0x7fffffffu) > 0x3f800000u)
+			if ((m9_cmd_get(v + 4 * j) & 0x7fffffffu) > 0x3f800000u)
 				return -ERANGE;
-		if (get32(v + 8) > 0x3f800000u || get32(v + 12) != 0x3f800000u)
+		if (m9_cmd_get(v + 8) > 0x3f800000u ||
+		    m9_cmd_get(v + 12) != 0x3f800000u)
 			return -ERANGE;
 		for (j = 4; j < 8; j++)
-			if (get32(v + 4 * j) > 0x3f800000u)
+			if (m9_cmd_get(v + 4 * j) > 0x3f800000u)
 				return -ERANGE;
 	}
 	return 0;
@@ -253,27 +242,30 @@ int m9x_faa_public_vs_encode(const u8 *blob, size_t bytes,
 	memcpy(out->primary, blob, 112);
 	memcpy(out->secondary, blob + 112, 752);
 	for (i = 0; i < ARRAY_SIZE(fixups); i++)
-		put32((fixups[i].dst == 27 ? out->primary : out->secondary) +
-			      fixups[i].at,
-		      words[i]);
+		m9_cmd_put((fixups[i].dst == 27 ? out->primary :
+						  out->secondary) +
+				   fixups[i].at,
+			   words[i]);
 	for (i = 0; i < ARRAY_SIZE(tokens); i++)
-		put32((tokens[i].dst == 27 ? out->primary : out->secondary) +
-			      tokens[i].at,
-		      ((u32)init_point + tokens[i].delta) | tokens[i].flags);
+		m9_cmd_put((tokens[i].dst == 27 ? out->primary :
+						  out->secondary) +
+				   tokens[i].at,
+			   ((u32)init_point + tokens[i].delta) |
+				   tokens[i].flags);
 	/* 248f2: same owned secondary. Source high12 opcode is preserved; no
 	 * native GPU/CPU alias participates. Deferred marker704 stays untouched.
 	 */
-	put32(out->secondary + 28, 0x49d00000u | ((660u - 28u) >> 2));
-	put32(out->secondary + 368,
-	      0x00500000u | ((in->layout.constant_end[1] -
-			      in->layout.constant_begin[1]) /
-				     8u
-			     << 8));
+	m9_cmd_put(out->secondary + 28, 0x49d00000u | ((660u - 28u) >> 2));
+	m9_cmd_put(out->secondary + 368,
+		   0x00500000u | ((in->layout.constant_end[1] -
+				   in->layout.constant_begin[1]) /
+					  8u
+				  << 8));
 	for (i = 0; i < 5; i++) {
 		static const u16 declaration_at[5] = { 536, 540, 544, 548,
 						       560 };
-		put32(out->secondary + declaration_at[i],
-		      in->layout.declaration[i]);
+		m9_cmd_put(out->secondary + declaration_at[i],
+			   in->layout.declaration[i]);
 	}
 	*ends = (struct m9x_faa_public_vs_endpoints){ first, final,
 						      init_point + 0x40,

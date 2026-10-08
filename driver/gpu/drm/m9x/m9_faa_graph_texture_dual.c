@@ -12,23 +12,8 @@
 #include <linux/limits.h>
 #endif
 #include "m9_faa_graph_texture_dual.h"
-
-static u32 rd(const u8 *p, u32 word)
-{
-	const u8 *b = p + 4 * word;
-
-	return (u32)b[0] | (u32)b[1] << 8 | (u32)b[2] << 16 | (u32)b[3] << 24;
-}
-
-static void wr(u8 *p, u32 word, u32 value)
-{
-	u8 *b = p + 4 * word;
-
-	b[0] = value;
-	b[1] = value >> 8;
-	b[2] = value >> 16;
-	b[3] = value >> 24;
-}
+/* After the host-test typedefs of the texture headers. */
+#include "m9_cmd.h"
 
 int m9x_faa_texture_dual_bind_place(const struct m9x_faa_texture_bind_input
 					    unit[2],
@@ -85,35 +70,41 @@ int m9x_faa_texture_dual_bind_place(const struct m9x_faa_texture_bind_input
 
 	words = bytes / 4;
 	for (i = 1; i + 11 < words; i++) {
-		if (rd(secondary, i) == 4 &&
-		    rd(secondary, i + 1) == 0x23232323 &&
-		    (rd(secondary, i + 2) & 0x00ffffff) == 0x300d88 &&
-		    ((rd(secondary, i + 3) & 0x00ffffff) == 0x300b36 ||
-		     (rd(secondary, i + 3) & 0x00ffffff) == 0x3006b6) &&
-		    (rd(secondary, i + 4) & 0x00ffffff) == 0x400d88 &&
-		    ((rd(secondary, i + 5) & 0x00ffffff) == 0x400b36 ||
-		     (rd(secondary, i + 5) & 0x00ffffff) == 0x4006b6)) {
+		if (m9_cmd_get(secondary + 4 * i) == 4 &&
+		    m9_cmd_get(secondary + 4 * (i + 1)) == 0x23232323 &&
+		    (m9_cmd_get(secondary + 4 * (i + 2)) & 0x00ffffff) ==
+			    0x300d88 &&
+		    ((m9_cmd_get(secondary + 4 * (i + 3)) & 0x00ffffff) ==
+			     0x300b36 ||
+		     (m9_cmd_get(secondary + 4 * (i + 3)) & 0x00ffffff) ==
+			     0x3006b6) &&
+		    (m9_cmd_get(secondary + 4 * (i + 4)) & 0x00ffffff) ==
+			    0x400d88 &&
+		    ((m9_cmd_get(secondary + 4 * (i + 5)) & 0x00ffffff) ==
+			     0x400b36 ||
+		     (m9_cmd_get(secondary + 4 * (i + 5)) & 0x00ffffff) ==
+			     0x4006b6)) {
 			if (stream)
 				return -EINVAL;
 			stream = i;
 		}
-		if (rd(secondary, i) == 3 &&
-		    rd(secondary, i + 1) == 0x45aeacab &&
-		    ((rd(secondary, i + 2) == 0xffff &&
-		      rd(secondary, i + 3) == 0) ||
-		     rd(secondary, i + 3) == 0x2820c8c6) &&
-		    rd(secondary, i + 4) == 0x22444442) {
+		if (m9_cmd_get(secondary + 4 * i) == 3 &&
+		    m9_cmd_get(secondary + 4 * (i + 1)) == 0x45aeacab &&
+		    ((m9_cmd_get(secondary + 4 * (i + 2)) == 0xffff &&
+		      m9_cmd_get(secondary + 4 * (i + 3)) == 0) ||
+		     m9_cmd_get(secondary + 4 * (i + 3)) == 0x2820c8c6) &&
+		    m9_cmd_get(secondary + 4 * (i + 4)) == 0x22444442) {
 			if (raster)
 				return -EINVAL;
 			raster = i;
 		}
 		for (j = 0; j < 2; j++) {
-			if (rd(secondary, i - 1) == 1 &&
-			    rd(secondary, i) == 0x45454570 + j &&
-			    rd(secondary, i + 2) == 3 &&
-			    rd(secondary, i + 3) == 0x457a7978 &&
-			    rd(secondary, i + 7) == 3 &&
-			    rd(secondary, i + 8) == 0x45877d7c) {
+			if (m9_cmd_get(secondary + 4 * (i - 1)) == 1 &&
+			    m9_cmd_get(secondary + 4 * i) == 0x45454570 + j &&
+			    m9_cmd_get(secondary + 4 * (i + 2)) == 3 &&
+			    m9_cmd_get(secondary + 4 * (i + 3)) == 0x457a7978 &&
+			    m9_cmd_get(secondary + 4 * (i + 7)) == 3 &&
+			    m9_cmd_get(secondary + 4 * (i + 8)) == 0x45877d7c) {
 				if (site[j])
 					return -EINVAL;
 				site[j] = i;
@@ -129,13 +120,13 @@ int m9x_faa_texture_dual_bind_place(const struct m9x_faa_texture_bind_input
 	 */
 	for (j = 0; j < 2; j++) {
 		i = site[j];
-		wr(secondary, i + 1, image[j].unit70);
-		wr(secondary, i + 4, image[j].address78);
-		wr(secondary, i + 5, image[j].descriptor79);
-		wr(secondary, i + 6, image[j].descriptor7a);
-		wr(secondary, i + 9, image[j].sampler7c);
-		wr(secondary, i + 10, image[j].sampler7d);
-		wr(secondary, i + 11, image[j].sampler87);
+		m9_cmd_put(secondary + 4 * (i + 1), image[j].unit70);
+		m9_cmd_put(secondary + 4 * (i + 4), image[j].address78);
+		m9_cmd_put(secondary + 4 * (i + 5), image[j].descriptor79);
+		m9_cmd_put(secondary + 4 * (i + 6), image[j].descriptor7a);
+		m9_cmd_put(secondary + 4 * (i + 9), image[j].sampler7c);
+		m9_cmd_put(secondary + 4 * (i + 10), image[j].sampler7d);
+		m9_cmd_put(secondary + 4 * (i + 11), image[j].sampler87);
 	}
 	return 0;
 }
@@ -189,23 +180,23 @@ int m9x_faa_texture_dual_bind_append_place(const struct m9x_faa_texture_bind_inp
 		/* Check both real source packets before changing either. The
 		 * earlier null-target 70 packet at offset 600 does not qualify.
 		 */
-		if (rd(secondary, at - 1) != 1 ||
-		    rd(secondary, at) != 0x45454570 + j ||
-		    rd(secondary, at + 2) != 3 ||
-		    rd(secondary, at + 3) != 0x457a7978 ||
-		    rd(secondary, at + 7) != 3 ||
-		    rd(secondary, at + 8) != 0x45877d7c)
+		if (m9_cmd_get(secondary + 4 * (at - 1)) != 1 ||
+		    m9_cmd_get(secondary + 4 * at) != 0x45454570 + j ||
+		    m9_cmd_get(secondary + 4 * (at + 2)) != 3 ||
+		    m9_cmd_get(secondary + 4 * (at + 3)) != 0x457a7978 ||
+		    m9_cmd_get(secondary + 4 * (at + 7)) != 3 ||
+		    m9_cmd_get(secondary + 4 * (at + 8)) != 0x45877d7c)
 			return -EINVAL;
 	}
 	for (j = 0; j < 2; j++) {
 		at = site[j] / 4;
-		wr(secondary, at + 1, image[j].unit70);
-		wr(secondary, at + 4, image[j].address78);
-		wr(secondary, at + 5, image[j].descriptor79);
-		wr(secondary, at + 6, image[j].descriptor7a);
-		wr(secondary, at + 9, image[j].sampler7c);
-		wr(secondary, at + 10, image[j].sampler7d);
-		wr(secondary, at + 11, image[j].sampler87);
+		m9_cmd_put(secondary + 4 * (at + 1), image[j].unit70);
+		m9_cmd_put(secondary + 4 * (at + 4), image[j].address78);
+		m9_cmd_put(secondary + 4 * (at + 5), image[j].descriptor79);
+		m9_cmd_put(secondary + 4 * (at + 6), image[j].descriptor7a);
+		m9_cmd_put(secondary + 4 * (at + 9), image[j].sampler7c);
+		m9_cmd_put(secondary + 4 * (at + 10), image[j].sampler7d);
+		m9_cmd_put(secondary + 4 * (at + 11), image[j].sampler87);
 	}
 	return 0;
 }
@@ -257,23 +248,23 @@ int m9x_faa_texture_dual_bind_later_place(const struct m9x_faa_texture_bind_inpu
 		if (ret)
 			return ret;
 		at = (2376 + 100 * j + shift) / 4;
-		if (rd(secondary, at - 1) != 1 ||
-		    rd(secondary, at) != 0x45454570 + j ||
-		    rd(secondary, at + 2) != 3 ||
-		    rd(secondary, at + 3) != 0x457a7978 ||
-		    rd(secondary, at + 7) != 3 ||
-		    rd(secondary, at + 8) != 0x45877d7c)
+		if (m9_cmd_get(secondary + 4 * (at - 1)) != 1 ||
+		    m9_cmd_get(secondary + 4 * at) != 0x45454570 + j ||
+		    m9_cmd_get(secondary + 4 * (at + 2)) != 3 ||
+		    m9_cmd_get(secondary + 4 * (at + 3)) != 0x457a7978 ||
+		    m9_cmd_get(secondary + 4 * (at + 7)) != 3 ||
+		    m9_cmd_get(secondary + 4 * (at + 8)) != 0x45877d7c)
 			return -EINVAL;
 	}
 	for (j = 0; j < 2; j++) {
 		at = (2376 + 100 * j + shift) / 4;
-		wr(secondary, at + 1, image[j].unit70);
-		wr(secondary, at + 4, image[j].address78);
-		wr(secondary, at + 5, image[j].descriptor79);
-		wr(secondary, at + 6, image[j].descriptor7a);
-		wr(secondary, at + 9, image[j].sampler7c);
-		wr(secondary, at + 10, image[j].sampler7d);
-		wr(secondary, at + 11, image[j].sampler87);
+		m9_cmd_put(secondary + 4 * (at + 1), image[j].unit70);
+		m9_cmd_put(secondary + 4 * (at + 4), image[j].address78);
+		m9_cmd_put(secondary + 4 * (at + 5), image[j].descriptor79);
+		m9_cmd_put(secondary + 4 * (at + 6), image[j].descriptor7a);
+		m9_cmd_put(secondary + 4 * (at + 9), image[j].sampler7c);
+		m9_cmd_put(secondary + 4 * (at + 10), image[j].sampler7d);
+		m9_cmd_put(secondary + 4 * (at + 11), image[j].sampler87);
 	}
 	return 0;
 }
@@ -314,14 +305,14 @@ int m9x_faa_texture_dual_colorpass_place(const struct m9x_faa_texture_bind_input
 	     (unsigned long long)unit[1].owner_base <
 		     (unsigned long long)unit[0].owner_base +
 			     unit[0].owner_bytes) ||
-	    rd(secondary, 2520 / 4) != 0x45454570 ||
-	    rd(secondary, 2528 / 4) != 3 ||
-	    rd(secondary, 2532 / 4) != 0x457a7978 ||
-	    rd(secondary, 2552 / 4) != 0x45877d7c ||
-	    rd(secondary, 2620 / 4) != 0x45454571 ||
-	    rd(secondary, 2624 / 4) != 0 ||
-	    rd(secondary, 2632 / 4) != 0x45454572 ||
-	    rd(secondary, 2644 / 4) != 0x45454573)
+	    m9_cmd_get(secondary + 4 * (2520 / 4)) != 0x45454570 ||
+	    m9_cmd_get(secondary + 4 * (2528 / 4)) != 3 ||
+	    m9_cmd_get(secondary + 4 * (2532 / 4)) != 0x457a7978 ||
+	    m9_cmd_get(secondary + 4 * (2552 / 4)) != 0x45877d7c ||
+	    m9_cmd_get(secondary + 4 * (2620 / 4)) != 0x45454571 ||
+	    m9_cmd_get(secondary + 4 * (2624 / 4)) != 0 ||
+	    m9_cmd_get(secondary + 4 * (2632 / 4)) != 0x45454572 ||
+	    m9_cmd_get(secondary + 4 * (2644 / 4)) != 0x45454573)
 		return -EINVAL;
 	live = unit[0];
 	live.raster_ae_base = 0x28207006;
@@ -331,12 +322,12 @@ int m9x_faa_texture_dual_colorpass_place(const struct m9x_faa_texture_bind_input
 	/* All packet and owner validation precedes every write. Unit 1 remains
 	 * a retained owner, but SELECTARG2 does not sample it in this profile.
 	 */
-	wr(secondary, 2524 / 4, image.unit70);
-	wr(secondary, 2536 / 4, image.address78);
-	wr(secondary, 2540 / 4, image.descriptor79);
-	wr(secondary, 2544 / 4, image.descriptor7a);
-	wr(secondary, 2556 / 4, image.sampler7c);
-	wr(secondary, 2560 / 4, image.sampler7d);
-	wr(secondary, 2564 / 4, image.sampler87);
+	m9_cmd_put(secondary + 4 * (2524 / 4), image.unit70);
+	m9_cmd_put(secondary + 4 * (2536 / 4), image.address78);
+	m9_cmd_put(secondary + 4 * (2540 / 4), image.descriptor79);
+	m9_cmd_put(secondary + 4 * (2544 / 4), image.descriptor7a);
+	m9_cmd_put(secondary + 4 * (2556 / 4), image.sampler7c);
+	m9_cmd_put(secondary + 4 * (2560 / 4), image.sampler7d);
+	m9_cmd_put(secondary + 4 * (2564 / 4), image.sampler87);
 	return 0;
 }

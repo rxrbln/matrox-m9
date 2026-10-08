@@ -6,6 +6,7 @@
 #include <linux/overflow.h>
 #include <linux/string.h>
 #include <crypto/sha2.h>
+#include "m9_cmd.h"
 #include "m9_faa_graph_public_vs_draw_encode.h"
 
 static const u8 template_sha[32] = { 0x9f, 0xa2, 0x08, 0xc5, 0xb5, 0x8c, 0x1b,
@@ -67,14 +68,6 @@ struct draw_relative {
 static const struct draw_relative lengths[] = { { 28, 660 },
 						{ 704, 1280 },
 						{ 1316, 1828 } };
-static void put32(u8 *p, u32 w)
-{
-	p[0] = w;
-	p[1] = w >> 8;
-	p[2] = w >> 16;
-	p[3] = w >> 24;
-}
-
 static bool overlap(const void *a, size_t na, const void *b, size_t nb)
 {
 	unsigned long x = (unsigned long)a, y = (unsigned long)b, ex, ey;
@@ -173,20 +166,23 @@ int m9x_faa_public_vs_draw_encode(const u8 *blob, size_t bytes,
 	memcpy(out->primary, blob, 60);
 	memcpy(out->secondary, blob + 60, 2688);
 	for (i = 0; i < ARRAY_SIZE(fields); i++)
-		put32(fields[i].at < 60 ? out->primary + fields[i].at :
-					  out->secondary + fields[i].at - 60,
-		      words[i]);
+		m9_cmd_put(fields[i].at < 60 ?
+				   out->primary + fields[i].at :
+				   out->secondary + fields[i].at - 60,
+			   words[i]);
 	for (i = 0; i < ARRAY_SIZE(tokens); i++)
-		put32(out->secondary + tokens[i].at,
-		      ((u32)head_point + tokens[i].delta) | tokens[i].flag);
+		m9_cmd_put(out->secondary + tokens[i].at,
+			   ((u32)head_point + tokens[i].delta) |
+				   tokens[i].flag);
 	for (i = 0; i < ARRAY_SIZE(lengths); i++)
-		put32(out->secondary + lengths[i].at,
-		      0x49d00000 | ((lengths[i].target - lengths[i].at) / 4));
-	put32(out->secondary + 2360, 0x00500000u | ((fs_end - fs_begin) / 8u)
-							   << 8);
+		m9_cmd_put(out->secondary + lengths[i].at,
+			   0x49d00000 |
+				   ((lengths[i].target - lengths[i].at) / 4));
+	m9_cmd_put(out->secondary + 2360,
+		   0x00500000u | ((fs_end - fs_begin) / 8u) << 8);
 	/* Current authenticated program/geometry interface admits only320x240. */
-	put32(out->secondary + 2244, (240u << 16) | 320u);
-	put32(out->secondary + 2252, (240u << 16) | 320u);
+	m9_cmd_put(out->secondary + 2244, (240u << 16) | 320u);
+	m9_cmd_put(out->secondary + 2252, (240u << 16) | 320u);
 	*ends = (struct m9x_faa_public_vs_draw_endpoints){ final,
 							   head_point + 0xa0 };
 	return 0;

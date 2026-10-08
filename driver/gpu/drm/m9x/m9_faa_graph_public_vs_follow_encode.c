@@ -6,6 +6,7 @@
 #include <linux/overflow.h>
 #include <linux/string.h>
 #include <crypto/sha2.h>
+#include "m9_cmd.h"
 #include "m9_faa_graph_public_vs_follow_encode.h"
 
 static const u8 template_sha[32] = {
@@ -29,14 +30,6 @@ static const struct follow_fixup fields[] = {
 };
 
 static const u16 tokens[] = { 44, 596, 612 };
-static void put32(u8 *p, u32 w)
-{
-	p[0] = w;
-	p[1] = w >> 8;
-	p[2] = w >> 16;
-	p[3] = w >> 24;
-}
-
 static bool overlap(const void *a, size_t na, const void *b, size_t nb)
 {
 	unsigned long x = (unsigned long)a, y = (unsigned long)b, ex, ey;
@@ -110,12 +103,13 @@ int m9x_faa_public_vs_follow_encode(const u8 *blob, size_t bytes,
 	for (i = 0; i < ARRAY_SIZE(fields); i++) {
 		u32 at = fields[i].at;
 
-		put32(at < 48 ? out->primary + at : out->secondary + at - 48,
-		      words[i]);
+		m9_cmd_put(at < 48 ? out->primary + at :
+				     out->secondary + at - 48,
+			   words[i]);
 	}
 	for (i = 0; i < ARRAY_SIZE(tokens); i++)
-		put32(out->secondary + tokens[i],
-		      ((u32)prefix_point + (i + 1) * 0x10) | 1);
+		m9_cmd_put(out->secondary + tokens[i],
+			   ((u32)prefix_point + (i + 1) * 0x10) | 1);
 	*ends = (struct m9x_faa_public_vs_follow_endpoints){
 		.final_end = final,
 		/* Same-owner source 248f2 relative slot: high opcode preserved. */
