@@ -814,7 +814,7 @@ int m9x_faa_graph_init_ioctl(struct drm_device *drm, void *data,
 	if (!drm_dev_enter(drm, &idx))
 		return -ENODEV;
 	ret = m9x_faa_graph_binding_acquire(mdev, file, args->graph_id,
-						args->generation, &binding);
+					    args->generation, &binding);
 	if (ret)
 		goto out_dev;
 	mutex_lock(&state->lock);
@@ -828,26 +828,29 @@ int m9x_faa_graph_init_ioctl(struct drm_device *drm, void *data,
 	}
 	/* Allocation, known-byte upload and private mappings precede the six
 	 * caller BO reservations. A successful prepare transfers the binding to
-	 * the retained native producer; it stays alive after file RELEASE. */
+	 * the retained native producer; it stays alive after file RELEASE.
+	 */
 	ret = m9x_faa_prepare_graph(mdev, binding, args->generation);
 	if (ret)
 		goto out_state;
 	prepared = true;
-	drm_exec_init(&exec, DRM_EXEC_INTERRUPTIBLE_WAIT |
-		      DRM_EXEC_IGNORE_DUPLICATES, PARHELIA_M9_FAA_GRAPH_OWNERS);
-	drm_exec_until_all_locked(&exec) {
+	drm_exec_init(&exec,
+		      DRM_EXEC_INTERRUPTIBLE_WAIT | DRM_EXEC_IGNORE_DUPLICATES,
+		      PARHELIA_M9_FAA_GRAPH_OWNERS);
+	drm_exec_until_all_locked(&exec)
+	{
 		for (i = 0; i < PARHELIA_M9_FAA_GRAPH_OWNERS; i++) {
 			ret = drm_exec_prepare_obj(&exec,
-				m9x_faa_graph_binding_owner(binding, i), 1);
+						   m9x_faa_graph_binding_owner(binding, i),
+						   1);
 			drm_exec_retry_on_contention(&exec);
 			if (ret)
 				goto out_exec;
 		}
 	}
 	for (i = 0; i < PARHELIA_M9_FAA_GRAPH_OWNERS; i++) {
-		if (!dma_resv_test_signaled(
-			m9x_faa_graph_binding_owner(binding, i)->resv,
-			DMA_RESV_USAGE_READ)) {
+		if (!dma_resv_test_signaled(m9x_faa_graph_binding_owner(binding, i)->resv,
+					    DMA_RESV_USAGE_READ)) {
 			ret = -EBUSY;
 			goto out_exec;
 		}
@@ -855,7 +858,8 @@ int m9x_faa_graph_init_ioctl(struct drm_device *drm, void *data,
 	/* The native producer itself checks the fresh queue and transport
 	 * generation before its first doorbell. It waits for the real source
 	 * final target; neither a CPU seed nor a captured desired counter is a
-	 * receipt. Failed posts keep the producer's owners in quarantine. */
+	 * receipt. Failed posts keep the producer's owners in quarantine.
+	 */
 	ret = m9x_faa_submit_graph(mdev, binding, &point, &posted);
 	if (!ret && !m9_faa_graph_record_retired(state->graph, args, point))
 		ret = -EIO;
