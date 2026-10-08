@@ -198,6 +198,60 @@ int m9x_faa_texture_dual_bind_append_place(
 	return 0;
 }
 
+int m9x_faa_texture_dual_bind_later_place(
+ const struct m9x_faa_texture_bind_input unit[2],
+ const struct m9x_faa_texture_dual_program *program,
+ u8 *secondary,u32 bytes)
+{
+ struct m9x_faa_texture_bind_input input;
+ struct m9x_faa_texture_bind_words image[2];
+ u32 j,at,shift=bytes==2740?4:0;
+ int ret;
+ if(!unit||!program||!secondary||(bytes!=2736&&bytes!=2740)||
+  program->stage_count!=4||program->sampler_count!=2||
+  program->coordinate_sets!=2||program->color_op0!=4||
+  program->color_op1!=4||program->entry_bytes[0]||
+  program->entry_bytes[1]!=72||
+  (program->entry_bytes[2]&7)||(program->entry_bytes[3]&7)||
+  program->entry_bytes[2]<=program->entry_bytes[1]||
+  program->entry_bytes[3]-program->entry_bytes[2]!=56||
+  !program->program_bytes||program->program_bytes>4096||
+  (program->program_bytes&7)||
+  program->program_bytes<=program->entry_bytes[3]||
+  (program->program_bytes-program->entry_bytes[3]!=192&&
+   program->program_bytes-program->entry_bytes[3]!=200)||
+  unit[0].stage||unit[1].stage!=1||
+  unit[0].coordinate_sets!=2||unit[1].coordinate_sets!=2||
+  unit[0].coordinate_index||unit[1].coordinate_index!=1||
+  unit[0].owner_base==unit[1].owner_base||
+  (unsigned long long)unit[0].owner_base+unit[0].owner_bytes>U32_MAX||
+  (unsigned long long)unit[1].owner_base+unit[1].owner_bytes>U32_MAX||
+  ((unsigned long long)unit[0].owner_base<
+    (unsigned long long)unit[1].owner_base+unit[1].owner_bytes&&
+   (unsigned long long)unit[1].owner_base<
+    (unsigned long long)unit[0].owner_base+unit[0].owner_bytes))return -EINVAL;
+ for(j=0;j<2;j++){
+  input=unit[j];input.stage=0;input.raster_ae_base=0x28207006;
+  ret=m9x_faa_texture_bind_encode(&input,&image[j]);if(ret)return ret;
+  at=(2376+100*j+shift)/4;
+  if(rd(secondary,at-1)!=1||rd(secondary,at)!=0x45454570+j||
+   rd(secondary,at+2)!=3||rd(secondary,at+3)!=0x457a7978||
+   rd(secondary,at+7)!=3||rd(secondary,at+8)!=0x45877d7c)
+   return -EINVAL;
+ }
+ for(j=0;j<2;j++){
+  at=(2376+100*j+shift)/4;
+  wr(secondary,at+1,image[j].unit70);
+  wr(secondary,at+4,image[j].address78);
+  wr(secondary,at+5,image[j].descriptor79);
+  wr(secondary,at+6,image[j].descriptor7a);
+  wr(secondary,at+9,image[j].sampler7c);
+  wr(secondary,at+10,image[j].sampler7d);
+  wr(secondary,at+11,image[j].sampler87);
+ }
+ return 0;
+}
+
 int m9x_faa_texture_dual_colorpass_place(
 	const struct m9x_faa_texture_bind_input unit[2],
 	const struct m9x_faa_texture_dual_program *program,

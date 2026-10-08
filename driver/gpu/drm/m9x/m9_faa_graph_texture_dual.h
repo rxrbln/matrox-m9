@@ -27,6 +27,14 @@ int m9x_faa_texture_dual_bind_append_place(
 	const struct m9x_faa_texture_dual_program *program,
 	u8 *secondary, u32 secondary_bytes);
 
+/* Initialized same-context DRAW retains a 1x1 null-target 70 packet before
+ * the two genuine texture packets. The latter have distinct source sites;
+ * no generic scan may mistake the null target for stage 0. */
+int m9x_faa_texture_dual_bind_later_place(
+	const struct m9x_faa_texture_bind_input unit[2],
+	const struct m9x_faa_texture_dual_program *program,
+	u8 *secondary, u32 secondary_bytes);
+
 /* Public SELECTARG2 diagnostic keeps both retained texture references but
  * only stage 0 has an active sampler packet. The stage-1 packet is idle. */
 int m9x_faa_texture_dual_colorpass_place(
