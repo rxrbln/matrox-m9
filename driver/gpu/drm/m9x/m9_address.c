@@ -1284,6 +1284,7 @@ static int m9_address_check_local_compact(struct m9x_device *mdev,
 	struct m9x_address_space *a = mdev->transport.address;
 	u64 end = (u64)base + bytes;
 	u32 address, slot, root_slot, page, actual, expected;
+	u32 checked_root_page = U32_MAX;
 
 	lockdep_assert_held(&mdev->transport.lock);
 	if (!a || !a->manager_ready || !a->mapped || M9_VRAM_GPU_BASE || !bytes ||
@@ -1306,13 +1307,21 @@ static int m9_address_check_local_compact(struct m9x_device *mdev,
 		root_slot = a->layout.translation_base + page * sizeof(u32);
 		if (root_slot > a->layout.translation_limit - sizeof(u32))
 			return -EFAULT;
-		actual = iosys_map_rd(&a->map, root_slot, u32);
-		expected = (page << PAGE_SHIFT) | 8u;
-		if (actual != expected) {
-			dev_err(&mdev->pdev->dev,
-				"M9 local identity: root address=%#x slot=%#x actual=%#x expected=%#x\n",
-				address, root_slot, actual, expected);
-			return -EFAULT;
+		/* The root identifies the compact table page, shared by up to
+		 * 1024 consecutive leaves. Mapping writers hold this same lock;
+		 * check each root once in this call, while still reading every
+		 * compact leaf and every runtime secondary identity. No result
+		 * survives the check or substitutes a prior submission's PTEs. */
+		if (page != checked_root_page) {
+			actual = iosys_map_rd(&a->map, root_slot, u32);
+			expected = (page << PAGE_SHIFT) | 8u;
+			if (actual != expected) {
+				dev_err(&mdev->pdev->dev,
+					"M9 local identity: root address=%#x slot=%#x actual=%#x expected=%#x\n",
+					address, root_slot, actual, expected);
+				return -EFAULT;
+			}
+			checked_root_page = page;
 		}
 	}
 	return 0;
