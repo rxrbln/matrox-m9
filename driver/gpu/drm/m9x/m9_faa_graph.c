@@ -1578,7 +1578,7 @@ out_state:
 }
 
 int m9x_faa_graph_public_vs_lock_ioctl(struct drm_device *drm, void *data,
-				struct drm_file *file)
+				       struct drm_file *file)
 {
 	struct drm_parhelia_m9_faa_graph_public_vs_lock *args = data;
 	struct m9x_device *mdev = to_m9x(drm);
@@ -1601,27 +1601,32 @@ int m9x_faa_graph_public_vs_lock_ioctl(struct drm_device *drm, void *data,
 	mutex_lock(&state->lock);
 	graph = state->graph;
 	if (!m9_faa_graph_continuation_matches(graph, args->graph_id,
-			args->generation, args->draw_point - 0xb0)) {
+					       args->generation,
+					       args->draw_point - 0xb0)) {
 		ret = -ENOENT;
 		goto out_state;
 	}
 	mutex_lock(&mdev->transport.lock);
 	ret = m9x_faa_graph_public_vs_draw_get_locked(mdev, args->generation,
-			args->draw_point, &binding);
+						      args->draw_point, &binding);
 	if (!ret && binding->graph != graph)
 		ret = -ESTALE;
 	mutex_unlock(&mdev->transport.lock);
 	if (ret)
 		goto out_binding;
 	/* Firmware access and CPU image allocation precede caller reservations.
-	 * The file mutex preserves the exact graph token across preparation. */
-	ret = m9x_faa_graph_public_vs_lock_prepare(mdev, binding, args->generation,
-			args->draw_point);
+	 * The file mutex preserves the exact graph token across preparation.
+	 */
+	ret = m9x_faa_graph_public_vs_lock_prepare(mdev, binding,
+						   args->generation,
+						   args->draw_point);
 	if (ret)
 		goto out_binding;
-	drm_exec_init(&exec, DRM_EXEC_INTERRUPTIBLE_WAIT |
-		      DRM_EXEC_IGNORE_DUPLICATES, PARHELIA_M9_FAA_GRAPH_OWNERS);
-	drm_exec_until_all_locked(&exec) {
+	drm_exec_init(&exec,
+		      DRM_EXEC_INTERRUPTIBLE_WAIT | DRM_EXEC_IGNORE_DUPLICATES,
+		      PARHELIA_M9_FAA_GRAPH_OWNERS);
+	drm_exec_until_all_locked(&exec)
+	{
 		for (i = 0; i < PARHELIA_M9_FAA_GRAPH_OWNERS; i++) {
 			ret = drm_exec_prepare_obj(&exec, graph->owner[i], 1);
 			drm_exec_retry_on_contention(&exec);
@@ -1636,14 +1641,19 @@ int m9x_faa_graph_public_vs_lock_ioctl(struct drm_device *drm, void *data,
 		ret = -ESTALE;
 		goto out_exec;
 	}
-	ret = m9x_faa_graph_public_vs_draw_hazards(mdev,binding,args->generation,args->draw_point);
-	if(ret)goto out_exec;
-	ret = m9x_faa_graph_public_vs_lock_submit(mdev, binding, args->generation,
-			args->draw_point, &point, &posted);
+	ret = m9x_faa_graph_public_vs_draw_hazards(mdev, binding,
+						   args->generation,
+						   args->draw_point);
+	if (ret)
+		goto out_exec;
+	ret = m9x_faa_graph_public_vs_lock_submit(mdev, binding,
+						  args->generation,
+						  args->draw_point, &point,
+						  &posted);
 	if (!ret) {
-		if (!point || point != args->draw_point + 0x30)
+		if (!point || point != args->draw_point + 0x30) {
 			ret = -EIO;
-		else {
+		} else {
 			args->lock_point = point;
 			args->state = PARHELIA_M9_FAA_PUBLIC_VS_LOCK_RETIRED;
 		}
