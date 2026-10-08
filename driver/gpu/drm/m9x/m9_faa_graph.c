@@ -1261,7 +1261,7 @@ out:
 }
 
 int m9x_faa_graph_unlock_ioctl(struct drm_device *drm, void *data,
-			     struct drm_file *file)
+			       struct drm_file *file)
 {
 	struct drm_parhelia_m9_faa_graph_unlock *args = data;
 	struct m9x_device *mdev = to_m9x(drm);
@@ -1285,9 +1285,11 @@ int m9x_faa_graph_unlock_ioctl(struct drm_device *drm, void *data,
 	graph = state->graph;
 	/* File identity is independent of the number of retired frames. Native
 	 * admission below authenticates the exact CURRENT Lock point and view.
-	 * Subtracting a fixed first-frame delta would reject later real epochs. */
+	 * Subtracting a fixed first-frame delta would reject later real epochs.
+	 */
 	if (!graph || !graph->initialized || !graph->init_point ||
-	    graph->id != args->graph_id || graph->generation != args->generation) {
+	    graph->id != args->graph_id ||
+	    graph->generation != args->generation) {
 		ret = -ENOENT;
 		goto out_state;
 	}
@@ -1295,10 +1297,13 @@ int m9x_faa_graph_unlock_ioctl(struct drm_device *drm, void *data,
 	 * separately requires its actual Lock marker and successful F021 view;
 	 * a numerical point alone never authorizes Unlock.
 	 * Keep RELEASE excluded through live address and native binding joins,
-	 * reserve every owner, then retain the exact existing native binding. */
-	drm_exec_init(&exec, DRM_EXEC_INTERRUPTIBLE_WAIT |
-		      DRM_EXEC_IGNORE_DUPLICATES, PARHELIA_M9_FAA_GRAPH_OWNERS);
-	drm_exec_until_all_locked(&exec) {
+	 * reserve every owner, then retain the exact existing native binding.
+	 */
+	drm_exec_init(&exec,
+		      DRM_EXEC_INTERRUPTIBLE_WAIT | DRM_EXEC_IGNORE_DUPLICATES,
+		      PARHELIA_M9_FAA_GRAPH_OWNERS);
+	drm_exec_until_all_locked(&exec)
+	{
 		for (i = 0; i < PARHELIA_M9_FAA_GRAPH_OWNERS; i++) {
 			ret = drm_exec_prepare_obj(&exec, graph->owner[i], 1);
 			drm_exec_retry_on_contention(&exec);
@@ -1311,7 +1316,7 @@ int m9x_faa_graph_unlock_ioctl(struct drm_device *drm, void *data,
 		goto out_exec;
 	mutex_lock(&mdev->transport.lock);
 	ret = m9x_faa_graph_unlock_get_locked(mdev, args->generation,
-			args->lock_point, &binding);
+					      args->lock_point, &binding);
 	if (!ret && (binding->graph != graph ||
 		     memcmp(binding->address, address, sizeof(address))))
 		ret = -ESTALE;
@@ -1319,17 +1324,18 @@ int m9x_faa_graph_unlock_ioctl(struct drm_device *drm, void *data,
 	if (ret)
 		goto out_exec;
 	for (i = 0; i < PARHELIA_M9_FAA_GRAPH_OWNERS; i++) {
-		if (!dma_resv_test_signaled(graph->owner[i]->resv, DMA_RESV_USAGE_READ)) {
+		if (!dma_resv_test_signaled(graph->owner[i]->resv,
+					    DMA_RESV_USAGE_READ)) {
 			ret = -EBUSY;
 			goto out_exec;
 		}
 	}
 	ret = m9x_faa_graph_unlock_submit(mdev, binding, args->generation,
-			args->lock_point, &point, &posted);
+					  args->lock_point, &point, &posted);
 	if (!ret) {
-		if (!point || point != args->lock_point + 0x20)
+		if (!point || point != args->lock_point + 0x20) {
 			ret = -EIO;
-		else {
+		} else {
 			args->unlock_point = point;
 			args->state = PARHELIA_M9_FAA_UNLOCK_RETIRED;
 		}
