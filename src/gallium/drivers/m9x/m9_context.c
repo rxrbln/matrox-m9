@@ -8565,7 +8565,7 @@ m9_clear(struct pipe_context *pctx, unsigned buffers,
    uint64_t t_clear = m9_prof_begin();
    if (ctx->debug && m9_faa_application_enabled() && buffers) {
       static unsigned reported;
-      if (reported++ < 24)
+      if (reported++ < 400)
          fprintf(stderr, "m9x: FAA clear %#x: fallback %u skip %u split %u targets %u "
                  "needs_reset %u\n", buffers, ctx->faa_mode.fallback, ctx->faa_mode.skip,
                  ctx->faa_mode.split, m9_context_faa_targets_surface(ctx),
@@ -9864,6 +9864,7 @@ m9_context_faa_build_draw_mode(struct m9_context *ctx,
       why = "FAA application raster/depth/blend effects need a typed draw contract";
       goto fail;
    }
+   source.state.destination_alpha = util_format_has_alpha(ctx->color->format);
    source.state.texture_fragment_valid =
       m9_faa_texture_fragment_gallium_state(ctx->blend, z, &source.state.texture_fragment);
    /* Textured families take more factor pairs than COLOR0 programs. */
@@ -10131,7 +10132,7 @@ m9_context_faa_submit_draw(struct m9_context *ctx,
    }
    if (ctx->faa_surface.destination_needs_clear && !clear_flags) {
       static unsigned reported;
-      if (ctx->debug && reported++ < 8)
+      if (ctx->debug && reported++ < 100)
          fprintf(stderr, "m9x: FAA reset missing: pending %u buffers %#x scissored %u depth %g "
                  "textures %u unlocked %u\n", ctx->faa_application_clear.pending,
                  ctx->faa_application_clear.buffers, ctx->faa_application_clear.scissored,
@@ -10161,6 +10162,13 @@ m9_context_faa_submit_draw(struct m9_context *ctx,
    ret = 0;
    why = NULL;
 out:
+   if (ret && ctx && ctx->debug && ctx->fs && ctx->fs->nir) {
+      static unsigned printed;
+      if (printed++ < 6) {
+         fprintf(stderr, "m9x: FAA refused draw (%s), its FS:\n", why ? why : "?");
+         nir_print_shader(ctx->fs->nir, stderr);
+      }
+   }
    /* A refused draw drops the queued FAA frame in m9_context_faa_fallback:
     * presenting its accepted prefix would omit application geometry. */
    m9_faa_application_fini(&owned);
@@ -10209,7 +10217,8 @@ void
 m9_context_faa_fallback(struct m9_context *ctx, const char *why)
 {
    if (!ctx->faa_mode.fallback && ctx->debug)
-      fprintf(stderr, "m9x: FAA frame falls back to ordinary: %s\n", why);
+      fprintf(stderr, "m9x: FAA frame falls back to ordinary: %s (pending clear %u)\n", why,
+              ctx->faa_application_clear.pending);
    ctx->faa_mode.fallback = true;
    ctx->faa_mode.reason = why;
    m9_faa_application_frame_reset(&ctx->faa_frame);
@@ -10222,6 +10231,11 @@ m9_context_faa_fallback(struct m9_context *ctx, const char *why)
 static void
 m9_context_faa_frame_end(struct m9_context *ctx)
 {
+   static unsigned reported;
+   if (ctx->debug && reported++ < 400)
+      fprintf(stderr, "m9x: FAA frame end: queued %u pending %u fallback %u split %u presented %u skip %u\n",
+              ctx->faa_frame.count, ctx->faa_application_clear.pending, ctx->faa_mode.fallback,
+              ctx->faa_mode.split, ctx->faa_mode.presented, ctx->faa_mode.skip);
    if (ctx->faa_mode.skip) {
       ctx->faa_mode.skip--;
       ctx->faa_mode.skipped++;

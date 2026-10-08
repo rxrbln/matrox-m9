@@ -25,7 +25,9 @@ m9_faa_dual_input(nir_scalar value,unsigned location,unsigned component)
    nir_instr *bary=nir_def_instr(in->src[0].ssa);
    return bary->type==nir_instr_type_intrinsic&&
           nir_instr_as_intrinsic(bary)->intrinsic==nir_intrinsic_load_barycentric_pixel&&
-          nir_intrinsic_interp_mode(nir_instr_as_intrinsic(bary))==INTERP_MODE_SMOOTH;
+          /* NONE follows the shade model; flat shading is refused apart. */
+          (nir_intrinsic_interp_mode(nir_instr_as_intrinsic(bary))==INTERP_MODE_SMOOTH||
+           nir_intrinsic_interp_mode(nir_instr_as_intrinsic(bary))==INTERP_MODE_NONE);
 }
 
 static unsigned
@@ -45,20 +47,79 @@ m9_faa_dual_product(nir_scalar value,unsigned component,unsigned depth,
       value.def->num_components!=4)return 0;
    nir_tex_instr *tex=nir_instr_as_tex(instr);
    int coordinate=nir_tex_instr_src_index(tex,nir_tex_src_coord);
+   int projector=nir_tex_instr_src_index(tex,nir_tex_src_projector);
    if(tex->op!=nir_texop_tex||tex->sampler_dim!=GLSL_SAMPLER_DIM_2D||
       tex->is_array||tex->is_shadow||tex->dest_type!=nir_type_float32||
-      tex->coord_components!=2||tex->num_srcs!=1||coordinate<0||
+      tex->coord_components!=2||tex->num_srcs!=(projector<0?1u:2u)||coordinate<0||
       tex->texture_index!=tex->sampler_index||tex->texture_index>=PIPE_MAX_SAMPLERS)
       return 0;
    for(unsigned unit=0;unit<2;unit++) {
       nir_def *coord=tex->src[coordinate].src.ssa;
       if(!m9_faa_dual_input(nir_get_scalar(coord,0),VARYING_SLOT_TEX0+unit,0)||
          !m9_faa_dual_input(nir_get_scalar(coord,1),VARYING_SLOT_TEX0+unit,1))continue;
+      /* A projector must be the coordinate's own w; the build proves w = 1. */
+      if(projector>=0&&
+         !m9_faa_dual_input(nir_get_scalar(tex->src[projector].src.ssa,0),VARYING_SLOT_TEX0+unit,3))
+         return 0;
       if(texture[unit]&&texture[unit]!=tex)return 0;
       texture[unit]=tex;sampler[unit]=tex->sampler_index;
       return 2u<<unit;
    }
    return 0;
+}
+
+/* The units whose lookups divide by the coordinate's w, and whether the
+ * alpha is COLOR0.a alone. */
+static void
+m9_faa_application_texture_form(const nir_shader *fs,unsigned *projected,bool *color_alpha)
+{
+   *projected=0;*color_alpha=false;
+   nir_function_impl *impl=nir_shader_get_entrypoint((nir_shader*)fs);
+   nir_intrinsic_instr *store=NULL;
+   nir_foreach_block(block,impl)nir_foreach_instr(instr,block) {
+      if(instr->type==nir_instr_type_tex) {
+         nir_tex_instr *tex=nir_instr_as_tex(instr);
+         int c=nir_tex_instr_src_index(tex,nir_tex_src_coord);
+         if(nir_tex_instr_src_index(tex,nir_tex_src_projector)<0||c<0)continue;
+         for(unsigned unit=0;unit<2;unit++)
+            if(m9_faa_dual_input(nir_get_scalar(tex->src[c].src.ssa,0),VARYING_SLOT_TEX0+unit,0))
+               *projected|=1u<<unit;
+      }
+      if(instr->type==nir_instr_type_intrinsic&&
+         nir_instr_as_intrinsic(instr)->intrinsic==nir_intrinsic_store_output)
+         store=nir_instr_as_intrinsic(instr);
+   }
+   *color_alpha=store&&m9_faa_dual_input(nir_get_scalar(store->src[0].ssa,3),VARYING_SLOT_COL0,3);
+}
+
+/* Whether the VS writes w = 1 to a texture coordinate: a constant one, or
+ * an input whose element format has no fourth channel. */
+static bool
+m9_faa_application_vs_w_one(const nir_shader *vs,unsigned location,
+                            const struct pipe_vertex_element *elements,unsigned element_count)
+{
+   nir_function_impl *impl=nir_shader_get_entrypoint((nir_shader*)vs);
+   nir_intrinsic_instr *store=NULL;
+   nir_foreach_block(block,impl)nir_foreach_instr(instr,block) {
+      if(instr->type!=nir_instr_type_intrinsic)continue;
+      nir_intrinsic_instr *in=nir_instr_as_intrinsic(instr);
+      if(in->intrinsic==nir_intrinsic_store_output&&nir_intrinsic_io_semantics(in).location==location) {
+         if(store)return false;
+         store=in;
+      }
+   }
+   if(!store||!(nir_intrinsic_write_mask(store)&(1u<<(3-nir_intrinsic_component(store))))||
+      nir_intrinsic_component(store)>3)return false;
+   nir_scalar w=nir_scalar_chase_movs(nir_get_scalar(store->src[0].ssa,3-nir_intrinsic_component(store)));
+   if(nir_scalar_is_const(w))return nir_scalar_as_float(w)==1.0f;
+   if(!nir_scalar_is_intrinsic(w))return false;
+   nir_intrinsic_instr *input=nir_def_as_intrinsic(w.def);
+   if(input->intrinsic!=nir_intrinsic_load_input||!nir_src_is_const(input->src[0])||
+      nir_src_as_uint(input->src[0])||nir_intrinsic_component(input)+w.comp!=3)return false;
+   unsigned at=nir_intrinsic_io_semantics(input).location;
+   unsigned rank=util_bitcount64(vs->info.inputs_read&BITFIELD64_MASK(at));
+   if(rank>=element_count)return false;
+   return util_format_get_nr_components(elements[rank].src_format)<4;
 }
 
 /* TEX0 or TEX0 * TEX1 in every component, without COLOR0. */
@@ -130,11 +191,14 @@ m9_faa_application_texture_linkage(const nir_shader *fs,
       io.num_slots!=1||io.dual_source_blend_index||io.fb_fetch_output||
       io.fb_fetch_output_coherent||io.per_view||io.high_16bits||io.high_dvec2||
       io.no_sysval_output)goto fail;
-   /* COLOR0 * TEX0 (* TEX1) in every component. */
-   for(unsigned c=0;c<4;c++)
-      if(m9_faa_dual_product(nir_get_scalar(store->src[0].ssa,c),c,0,texture,slots)!=
-         (textures==2?7u:3u))
+   /* COLOR0 * TEX0 (* TEX1) in every colour component; alpha the same or
+    * COLOR0.a alone (GL MODULATE of an RGB texture), which the caller
+    * admits only where the alpha is not observed. */
+   for(unsigned c=0;c<4;c++) {
+      unsigned mask=m9_faa_dual_product(nir_get_scalar(store->src[0].ssa,c),c,0,texture,slots);
+      if(mask!=(textures==2?7u:3u)&&!(c==3&&mask==1u))
          goto fail;
+   }
    if(textures==1) {
       if(!texture[0]||texture[1])goto fail;
       *linkage=(struct m9_vs_outputs){.count=2};
@@ -595,6 +659,13 @@ m9_faa_application_build(const struct m9_faa_application_draw *d,
                  d->texture[0].view.handle==d->texture[1].view.handle))) {
          why="FAA texture flat shading or retained texture owners are not qualified";goto fail;
       }
+      unsigned projected;bool color_alpha;
+      m9_faa_application_texture_form(texture_fs,&projected,&color_alpha);
+      for(unsigned unit=0;unit<2;unit++)
+         if((projected&(1u<<unit))&&
+            !m9_faa_application_vs_w_one(live.vs,VARYING_SLOT_TEX0+unit,live.elements,live.element_count)) {
+            why="FAA projected texture coordinate has no unit w";goto fail;
+         }
       /* Blend and the alpha test the state tracker lowered into the FS. */
       struct m9_faa_texture_fragment_state family=d->state.texture_fragment;
       enum m9_faa_alpha_mode alpha;bool alpha_present;
@@ -622,6 +693,10 @@ m9_faa_application_build(const struct m9_faa_application_draw *d,
       }
       if((family.blend||family.alpha_test)&&!d->state.texture_fragment_valid) {
          why="FAA textured blend factors have no source program";goto fail;
+      }
+      /* COLOR0.a alone is exact only where alpha is never observed. */
+      if(color_alpha&&(family.blend||family.alpha_test||d->state.destination_alpha)) {
+         why="FAA texture alpha from COLOR0 alone is observed";goto fail;
       }
       live.linkage=&texture_linkage;
       if(family.blend||family.alpha_test) {

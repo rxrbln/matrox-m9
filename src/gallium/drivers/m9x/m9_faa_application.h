@@ -27,6 +27,8 @@ struct m9_faa_application_state {
    /* Blend and alpha test of a textured draw, when its factors qualify. */
    struct m9_faa_texture_fragment_state texture_fragment;
    bool texture_fragment_valid, color_fragment_valid;
+   /* The destination stores alpha (blending or readback may observe it). */
+   bool destination_alpha;
 };
 
 struct m9_faa_application_draw {
