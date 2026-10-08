@@ -8701,7 +8701,7 @@ unlock:
  * The actual kind6 flags30 system owner is read through its retained DMA
  * alias after real retirement; 8b020/8c4a0 supplies each source address. */
 int m9x_faa_output_read(struct m9x_device *mdev, struct drm_file *file,
-		       const struct drm_parhelia_m9_surface_access *args)
+			const struct drm_parhelia_m9_surface_access *args)
 {
 	struct m9x_transport *t = &mdev->transport;
 	struct m9x_faa_replay *r;
@@ -8715,9 +8715,9 @@ int m9x_faa_output_read(struct m9x_device *mdev, struct drm_file *file,
 	if (!m9_faa_diag || args->flags != PARHELIA_M9_ACCESS_FAA_OUTPUT ||
 	    args->op != PARHELIA_M9_ACCESS_READ || args->offset ||
 	    args->descriptor0 != 0xc8210140 || args->descriptor1 != 0x100f0 ||
-	    args->surface_width != 320 || args->width != 320 || args->height != 240 ||
-	    args->x || args->y || args->data_stride != 1280 ||
-	    args->data_size < 320 * 240 * 4 ||
+	    args->surface_width != 320 || args->width != 320 ||
+	    args->height != 240 || args->x || args->y ||
+	    args->data_stride != 1280 || args->data_size < 320 * 240 * 4 ||
 	    check_add_overflow(args->data_ptr, (u64)(320 * 240 * 4), &end))
 		return -EINVAL;
 	gem = drm_gem_object_lookup(file, args->handle);
@@ -8747,7 +8747,8 @@ int m9x_faa_output_read(struct m9x_device *mdev, struct drm_file *file,
 	 */
 	m9x_write(mdev, M9_REG_FRONTEND_KICK, 1);
 	/* WC loads need a CPU read barrier after the retained retirement
-	 * gate; dma_rmb alone is a compiler barrier on x86. */
+	 * gate; dma_rmb alone is a compiler barrier on x86.
+	 */
 	rmb();
 	dma_rmb();
 	for (y = 0; y < 240; y++)
@@ -8758,7 +8759,8 @@ int m9x_faa_output_read(struct m9x_device *mdev, struct drm_file *file,
 				goto unlock;
 			}
 			/* Hardware format64 is A8B8G8R8: little-endian RGBA.
-			 * There is no CPU color synthesis or sampled-data decoder. */
+			 * There is no CPU color synthesis or sampled-data decoder.
+			 */
 			memcpy(pixels + (y * 320 + x) * 4,
 			       (u8 *)output->cpu + offset, 4);
 		}
@@ -8767,7 +8769,8 @@ int m9x_faa_output_read(struct m9x_device *mdev, struct drm_file *file,
 		 r->output_point, output->base);
 unlock:
 	mutex_unlock(&t->lock);
-	if (!ret && copy_to_user(u64_to_user_ptr(args->data_ptr), pixels, 320 * 240 * 4))
+	if (!ret && copy_to_user(u64_to_user_ptr(args->data_ptr), pixels,
+				 320 * 240 * 4))
 		ret = -EFAULT;
 	kvfree(pixels);
 put:
