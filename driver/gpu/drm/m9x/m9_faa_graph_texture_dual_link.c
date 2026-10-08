@@ -99,7 +99,7 @@ int m9x_faa_texture_single_link_place(const struct m9x_faa_texture_dual_link_inp
 
 	if (!in || !secondary || bytes != M9_FAA_SINGLE_STAGE_BYTES ||
 	    in->entry_bytes[1] != 48 ||
-	    in->entry_bytes[2] - in->entry_bytes[1] != 104 ||
+	    in->entry_bytes[2] <= in->entry_bytes[1] ||
 	    in->entry_bytes[3] - in->entry_bytes[2] != 40 ||
 	    in->entry_bytes[3] >= in->program_bytes ||
 	    in->program_bytes - in->entry_bytes[3] != 200)

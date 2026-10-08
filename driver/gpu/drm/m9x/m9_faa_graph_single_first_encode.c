@@ -125,9 +125,11 @@ int m9x_faa_single_first_encode(const u8 *sample, size_t sample_bytes,
 	    !c->single_base_only || c->dual_base_only ||
 	    c->dual_colorpass_diagnostic || c->layout.program_count != 4 ||
 	    c->layout.entry_bytes[0] || c->layout.entry_bytes[1] != 48 ||
-	    c->layout.entry_bytes[2] != 152 ||
-	    c->layout.entry_bytes[3] != 192 ||
-	    c->layout.program_bytes != 392 || c->declaration_count != 7 ||
+	    c->layout.entry_bytes[2] <= c->layout.entry_bytes[1] ||
+	    c->layout.entry_bytes[3] - c->layout.entry_bytes[2] != 40 ||
+	    c->layout.program_bytes < c->layout.entry_bytes[3] ||
+	    c->layout.program_bytes - c->layout.entry_bytes[3] != 200 ||
+	    c->declaration_count != 7 ||
 	    (c->record_stride != 24 && c->record_stride != 32 &&
 	     c->record_stride != 64) ||
 	    c->layout.constants_bytes > 16384 ||
