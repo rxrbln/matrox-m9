@@ -145,8 +145,7 @@ m9_faa_graph_continuation_matches(const struct m9_faa_prepared_graph *graph,
 	       graph->init_point == init_point;
 }
 
-static bool m9_faa_graph_init_request_valid(
-		const struct drm_parhelia_m9_faa_graph_init *args)
+static bool m9_faa_graph_init_request_valid(const struct drm_parhelia_m9_faa_graph_init *args)
 {
 	return args && args->graph_id && !args->flags && !args->init_point &&
 	       !args->state && !args->pad;
