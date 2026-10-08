@@ -1127,11 +1127,11 @@ bool m9x_faa_source_init_retired_locked(struct m9x_device *mdev)
 bool m9x_faa_source_init_enabled(struct m9x_device *mdev)
 {
 #ifdef M9_FAA_GRAPH_INIT_CONTROL
-	return mdev->transport.faa &&
-	       mdev->transport.faa->graph_binding &&
+	return mdev->transport.faa && mdev->transport.faa->graph_binding &&
 	       mdev->pdev->device == 0x0540;
 #else
-	return m9_faa_diag && m9_faa_source_init && mdev->pdev->device == 0x0540;
+	return m9_faa_diag && m9_faa_source_init &&
+	       mdev->pdev->device == 0x0540;
 #endif
 }
 
