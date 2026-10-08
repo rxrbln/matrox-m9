@@ -4879,24 +4879,34 @@ int m9x_faa_graph_unlock_get_locked(struct m9x_device *mdev,
 }
 
 #ifdef M9_FAA_GRAPH_INIT_CONTROL
-static struct m9_faa_depth_frame_storage *m9_faa_depth_frame_take_retired(
- struct m9x_faa_replay *r,u32 generation,u64 lock_point,u64 unlock_point)
+static struct m9_faa_depth_frame_storage *
+
+m9_faa_depth_frame_take_retired(struct m9x_faa_replay *r, u32 generation,
+				u64 lock_point, u64 unlock_point)
 {
- struct m9_faa_depth_storage *depth;
- struct m9_faa_depth_frame_storage *frame;
- if(!r||!r->color_lock_retired||!r->normal_lock_view_seen||
-  !r->unlock_started||!r->unlock_retired||r->graph_generation!=generation||
-  r->color_lock_point!=lock_point||r->unlock_point!=unlock_point||
-  r->graph_draw_point!=unlock_point||lock_point>U64_MAX-0x20||
-  unlock_point!=lock_point+0x20)return NULL;
- depth=r->depth_storage;
- if(!depth||!depth->ready||!depth->initialized||depth->generation!=generation)return NULL;
- frame=depth->frame;
- if(!frame||!frame->attempted||!frame->retired||frame->generation!=generation||
-  frame->final_point!=lock_point)return NULL;
- depth->frame=NULL;
- return frame;
+	struct m9_faa_depth_storage *depth;
+	struct m9_faa_depth_frame_storage *frame;
+
+	if (!r || !r->color_lock_retired || !r->normal_lock_view_seen ||
+	    !r->unlock_started || !r->unlock_retired ||
+	    r->graph_generation != generation ||
+	    r->color_lock_point != lock_point ||
+	    r->unlock_point != unlock_point ||
+	    r->graph_draw_point != unlock_point ||
+	    lock_point > U64_MAX - 0x20 || unlock_point != lock_point + 0x20)
+		return NULL;
+	depth = r->depth_storage;
+	if (!depth || !depth->ready || !depth->initialized ||
+	    depth->generation != generation)
+		return NULL;
+	frame = depth->frame;
+	if (!frame || !frame->attempted || !frame->retired ||
+	    frame->generation != generation || frame->final_point != lock_point)
+		return NULL;
+	depth->frame = NULL;
+	return frame;
 }
+
 #endif
 
 #ifdef M9_FAA_GRAPH_INIT_CONTROL
