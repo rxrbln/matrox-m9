@@ -82,8 +82,7 @@ static bool m9_faa_graph_local_span(u64 local_base, u64 offset, u64 bytes,
 	    !IS_ALIGNED(local_base, PAGE_SIZE) ||
 	    check_add_overflow(offset, bytes, &end) || end > limit ||
 	    check_add_overflow(local_base, offset, &base) ||
-	    check_add_overflow(base, bytes, &end) ||
-	    end > (u64)U32_MAX + 1)
+	    check_add_overflow(base, bytes, &end) || end > (u64)U32_MAX + 1)
 		return false;
 	*address = (u32)base;
 	return true;
