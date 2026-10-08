@@ -4,6 +4,22 @@ Copyright 2026 René Rebe <rene@exactco.de>
 SPDX-License-Identifier: GPL-2.0-only
 
 
+## October 8: both FAA paths now pass continuous glxgears
+
+The source two-stage path now completes96 actual GPU frames too, with3 primary
+and6 secondary command-pool rotations, final Lock1fef0/Unlock1ff10 and healthy
+empty queue (generation0,wedged0). Its first screenshot is byte-identical to
+the four-stage result: zero missing reference interior pixels. Both preserve
+GPU transforms and render all12 mixed raw-input draws/frame.
+[Two-stage hardware proof and screenshots](../tests/m9-faa-glxgears-first-hardware-20261008/continuous96-two-stage/README.md).
+
+DRM9543312 and Mesa1aa8d4d implement actual retained maintenance receipts and
+pool reuse. Current320x240 diagnostic performance is roughly5 FPS; short
+windows do not establish a two-stage speedup. Application resolution remains
+320x240 on a1024x768 display. Work now covers1024x768 live layouts, Quake3
+texture ownership/shaders/state and larger batches, plus GPU presentation.
+Full Quake3 FAA and unrestricted resolution remain unverified.
+
 ## October 8: continuous four-stage FAA glxgears passes96 frames
 
 DRM b011d51 completes96 real12-draw FAA frames on M9128, including3 primary
