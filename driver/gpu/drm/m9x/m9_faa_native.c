@@ -4880,7 +4880,6 @@ int m9x_faa_graph_unlock_get_locked(struct m9x_device *mdev,
 
 #ifdef M9_FAA_GRAPH_INIT_CONTROL
 static struct m9_faa_depth_frame_storage *
-
 m9_faa_depth_frame_take_retired(struct m9x_faa_replay *r, u32 generation,
 				u64 lock_point, u64 unlock_point)
 {
@@ -11412,7 +11411,6 @@ int m9x_faa_graph_clear_resume_get_locked(struct m9x_device *mdev,
  * replacement is permitted under that retained prefix entitlement. */
 #ifdef M9_FAA_GRAPH_INIT_CONTROL
 static bool
-
 m9_faa_clear_resume_input_equal(const struct m9_faa_depth_frame_storage *f,
 				const struct m9x_faa_color_input *i)
 {
