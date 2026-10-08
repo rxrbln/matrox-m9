@@ -7,12 +7,13 @@
 #define M9_FAA_DUAL_BATCH_MAX_DRAWS 3u
 
 /* Copies every caller-owned byte before any graph preparation. This source
- * profile reuses one immutable program/declaration and one texture pair. */
-int m9x_faa_dual_batch_copy(
- const struct drm_parhelia_m9_faa_graph_dual_batch *args,
- struct m9x_faa_owned_color_batch **result);
+ * profile reuses one immutable program/declaration and one texture pair.
+ */
+int m9x_faa_dual_batch_copy(const struct drm_parhelia_m9_faa_graph_dual_batch
+				    *args,
+			    struct m9x_faa_owned_color_batch **result);
 /* Version 2 retained later DRAWs: same program and texture pair, own data. */
-int m9x_faa_dual_later_batch_copy(
- const struct drm_parhelia_m9_faa_graph_dual_later *args,
- struct m9x_faa_owned_color_batch **result);
+int m9x_faa_dual_later_batch_copy(const struct drm_parhelia_m9_faa_graph_dual_later
+					  *args,
+				  struct m9x_faa_owned_color_batch **result);
 #endif
