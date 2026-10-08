@@ -287,6 +287,8 @@ struct drm_parhelia_m9_faa_graph_dual_first {
 #ifndef DRM_IOCTL_PARHELIA_M9_FAA_GRAPH_DUAL_BATCH
 #define DRM_PARHELIA_M9_FAA_GRAPH_DUAL_BATCH 0x22
 #define PARHELIA_M9_FAA_DUAL_BATCH_VERSION 1u
+/* Version 2: draws point to drm_parhelia_m9_faa_dual_draw records. */
+#define PARHELIA_M9_FAA_DUAL_BATCH_PROGRAMS_VERSION 2u
 #define PARHELIA_M9_FAA_DUAL_BATCH_LOCK_RETIRED 24u
 struct drm_parhelia_m9_faa_graph_dual_batch {
  __u64 graph_id,init_point,lock_point,draws;
