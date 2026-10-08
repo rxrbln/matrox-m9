@@ -24,6 +24,9 @@ struct m9_faa_application_state {
    unsigned depth_func, cull_face;
    bool front_ccw, flatshade, flatshade_first;
    struct m9_faa_fragment_state fragment;
+   /* Blend and alpha test of a textured draw, when its factors qualify. */
+   struct m9_faa_texture_fragment_state texture_fragment;
+   bool texture_fragment_valid, color_fragment_valid;
 };
 
 struct m9_faa_application_draw {
@@ -48,6 +51,8 @@ struct m9_faa_application_upload {
    uint32_t generation;
    uint32_t texture_count;
    struct m9_faa_application_texture texture[2];
+   /* Kernel fragment word of a textured program (0: the FIRST program). */
+   uint32_t fragment;
 };
 
 /* Recognize the complete live COLOR0 * TEX0 * TEX1 RGBA expression.

@@ -10,15 +10,15 @@
 
 static int
 dual_pack(const struct m9_faa_gl_upload *u,const struct m9_faa_application_state *s,
-          struct drm_parhelia_m9_faa_color_draw *d)
+          bool single,struct drm_parhelia_m9_faa_color_draw *d)
 {
    uintptr_t base=(uintptr_t)u->storage;
-   /* Dual FS72 with four vec4 inputs, or single FS48 with three. */
-   const bool single=u->layout.entry_bytes[1]==48;
+   /* Dual programs with four vec4 inputs, single ones with three; the FS
+    * length follows the fragment family. */
    const uint32_t record=single?48:64,words=single?7:9;
    uint64_t total=(uint64_t)u->layout.bytes+u->constants_bytes+u->geometry_bytes+4*words;
    if(!base||u->layout.count!=4||u->layout.entry_bytes[0]||
-      (u->layout.entry_bytes[1]!=72&&!single)||
+      !u->layout.entry_bytes[1]||
       !u->layout.bytes||u->layout.bytes>4096||u->record_bytes!=record||u->declaration_words!=words||
       !u->vertex_count||u->vertex_count%3||u->vertex_count>M9_FAA_GL_UPLOAD_MAX_VERTICES||
       u->vertex_offset!=128||(uint64_t)u->vertex_count*record!=u->vertex_bytes||
@@ -86,12 +86,12 @@ dual_texture_current(const struct m9_faa_application_texture *t)
 }
 
 /* Per-DRAW checks shared by later transactions and the frame pre-check.
- * kind_first[] holds the first DRAW of each program (dual, single) seen;
- * every DRAW of a program must carry its exact program and declaration. */
+ * prior[] holds the DRAWs before this one: every DRAW of one program (kind
+ * and fragment family) must carry its exact program and declaration. */
 static int
 dual_draw_admissible(const struct m9_faa_surface *surface,
                      const struct m9_faa_application_upload *u,
-                     const struct m9_faa_application_upload *kind_first[2],
+                     const struct m9_faa_application_upload *prior,unsigned prior_count,
                      struct drm_parhelia_m9_faa_color_draw *packed)
 {
    const struct m9_faa_graph *g=&surface->graph;
@@ -102,20 +102,20 @@ dual_draw_admissible(const struct m9_faa_surface *surface,
       s->width!=surface->width||s->height!=surface->height||
       (s->depth_enabled&&s->depth_func>PIPE_FUNC_ALWAYS)||
       s->flatshade||s->cull_face==PIPE_FACE_FRONT_AND_BACK||s->scissor_enabled||
-      s->fragment.blend||s->fragment.alpha||s->fragment.source_stream||
+      s->fragment.source_stream||
       (u->texture_count==2&&
        (u->texture[0].resource==u->texture[1].resource||
         u->texture[0].view.handle==u->texture[1].view.handle)))return -EOPNOTSUPP;
    for(unsigned t=0;t<u->texture_count;t++)
       if(!dual_texture_current(&u->texture[t]))return -ESTALE;
-   int ret=dual_pack(&u->shader,s,packed);if(ret)return ret;
-   const unsigned kind=u->texture_count==1;
-   const struct m9_faa_application_upload *f=kind_first[kind];
-   if(!f)kind_first[kind]=u;
-   else if(memcmp(&u->shader.layout,&f->shader.layout,sizeof(u->shader.layout))||
+   int ret=dual_pack(&u->shader,s,u->texture_count==1,packed);if(ret)return ret;
+   const struct m9_faa_application_upload *f=NULL;
+   for(unsigned i=0;i<prior_count&&!f;i++)
+      if(prior[i].texture_count==u->texture_count&&prior[i].fragment==u->fragment)f=&prior[i];
+   if(f&&(memcmp(&u->shader.layout,&f->shader.layout,sizeof(u->shader.layout))||
            memcmp(u->shader.program,f->shader.program,u->shader.layout.bytes)||
            u->shader.declaration_words!=f->shader.declaration_words||
-           memcmp(u->shader.declaration,f->shader.declaration,u->shader.declaration_words*4))
+           memcmp(u->shader.declaration,f->shader.declaration,u->shader.declaration_words*4)))
       return -EOPNOTSUPP;
    return 0;
 }
@@ -149,13 +149,13 @@ m9_faa_surface_dual_later_kernel(struct m9_screen *screen,struct m9_faa_surface 
    struct drm_parhelia_m9_faa_dual_draw *saved=calloc(frame->count,sizeof(*saved));
    int ret=-ENOMEM;
    if(!draws||!saved)goto out;
-   const struct m9_faa_application_upload *kind_first[2]={NULL,NULL};
    for(unsigned i=0;i<frame->count;i++) {
       const struct m9_faa_application_upload *u=&frame->draws[i];
-      ret=dual_draw_admissible(surface,u,kind_first,&draws[i].draw);if(ret)goto out;
+      ret=dual_draw_admissible(surface,u,frame->draws,i,&draws[i].draw);if(ret)goto out;
       /* A single DRAW names no stage-1 texture. */
       draws[i].program=u->texture_count==1?PARHELIA_M9_FAA_PROGRAM_SINGLE:
                                           PARHELIA_M9_FAA_PROGRAM_DUAL;
+      draws[i].fragment=u->fragment;
       for(unsigned t=0;t<u->texture_count;t++)draws[i].texture[t]=u->texture[t].view;
       ret=-EOPNOTSUPP;
       if(i&&(draws[i].draw.depth_flags!=draws[0].draw.depth_flags||
@@ -167,7 +167,7 @@ m9_faa_surface_dual_later_kernel(struct m9_screen *screen,struct m9_faa_surface 
       .previous_unlock_point=g->color_unlock_point,.generation=g->prepared_generation,
       .width=surface->width,.height=surface->height,.clear_flags=frame->clear_flags,
       .depth_flags=draws[0].draw.depth_flags};
-   if(frame->count==1&&!draws[0].draw.raster_flags&&
+   if(frame->count==1&&!draws[0].draw.raster_flags&&!draws[0].fragment&&
       draws[0].program==PARHELIA_M9_FAA_PROGRAM_DUAL) {
       const struct drm_parhelia_m9_faa_color_draw *d=&draws[0].draw;
       request.version=PARHELIA_M9_FAA_DUAL_LATER_VERSION;
@@ -234,7 +234,6 @@ m9_faa_surface_dual_frame_kernel(struct m9_screen *screen,struct m9_faa_surface 
       g->public_vs_attempted||g->public_vs_head_attempted||g->public_vs_draw_attempted||
       g->public_vs_lock_attempted||g->public_vs_next_attempted)return -ESTALE;
    const struct m9_faa_application_upload *first=&frame->draws[0];
-   const struct m9_faa_application_upload *kind_first[2]={NULL,NULL};
    bool programs=false;
    for(unsigned i=0;i<frame->count;i++) {
       const struct m9_faa_application_upload *u=&frame->draws[i];
@@ -242,7 +241,7 @@ m9_faa_surface_dual_frame_kernel(struct m9_screen *screen,struct m9_faa_surface 
       if(s->viewport.scale[0]!=surface->width*.5f||s->viewport.scale[1]!=surface->height*-.5f||
          s->viewport.translate[0]!=surface->width*.5f||
          s->viewport.translate[1]!=surface->height*.5f)return -EOPNOTSUPP;
-      int ret=dual_draw_admissible(surface,u,kind_first,&records[i].draw);if(ret)return ret;
+      int ret=dual_draw_admissible(surface,u,frame->draws,i,&records[i].draw);if(ret)return ret;
       /* The FIRST binds draw 0's pair; dual DRAWs keep it. */
       if(u->texture_count==2&&first->texture_count==2)
          for(unsigned t=0;t<2;t++)
@@ -253,7 +252,8 @@ m9_faa_surface_dual_frame_kernel(struct m9_screen *screen,struct m9_faa_surface 
       records[i].program=u->texture_count==1?PARHELIA_M9_FAA_PROGRAM_SINGLE:
                                             PARHELIA_M9_FAA_PROGRAM_DUAL;
       for(unsigned t=0;t<u->texture_count;t++)records[i].texture[t]=u->texture[t].view;
-      programs|=u->texture_count==1;
+      records[i].fragment=u->fragment;
+      programs|=u->texture_count==1||u->fragment;
       plain[i]=records[i].draw;
    }
    uint64_t delta=0x150+(frame->count-1u)*UINT64_C(0xa0);
@@ -339,10 +339,9 @@ static int
 dual_frame_admissible(const struct m9_faa_surface *surface,
                       const struct m9_faa_application_frame *frame)
 {
-   const struct m9_faa_application_upload *kind_first[2]={NULL,NULL};
    struct drm_parhelia_m9_faa_color_draw packed;
    for(uint32_t i=0;i<frame->count;i++) {
-      int ret=dual_draw_admissible(surface,&frame->draws[i],kind_first,&packed);
+      int ret=dual_draw_admissible(surface,&frame->draws[i],frame->draws,i,&packed);
       if(ret)return ret;
    }
    return 0;

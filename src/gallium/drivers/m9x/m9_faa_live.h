@@ -172,6 +172,10 @@ bool m9_faa_fragment_gallium_state(const struct pipe_blend_state *blend,
                                   struct m9_faa_fragment_state *out);
 /* GL1 blend/alpha-test state of a textured FAA draw. The caller sets the
  * program and stage alpha operation from its texture combine. */
+bool m9_faa_live_gl_texture_family_build(const struct m9_faa_live_gl *s,
+                                         const struct m9_faa_texture_fragment_state *state,
+                                         struct m9_faa_gl_upload *output,
+                                         const char **reason);
 bool m9_faa_texture_fragment_gallium_state(const struct pipe_blend_state *blend,
                                            const struct pipe_depth_stencil_alpha_state *dsa,
                                            struct m9_faa_texture_fragment_state *out);

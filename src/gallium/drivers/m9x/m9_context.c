@@ -9831,7 +9831,12 @@ m9_context_faa_build_draw_mode(struct m9_context *ctx,
       why = "FAA application raster/depth/blend effects need a typed draw contract";
       goto fail;
    }
-   if (!m9_faa_fragment_gallium_state(ctx->blend,z,&source.state.fragment)) {
+   source.state.texture_fragment_valid =
+      m9_faa_texture_fragment_gallium_state(ctx->blend, z, &source.state.texture_fragment);
+   /* Textured families take more factor pairs than COLOR0 programs. */
+   source.state.color_fragment_valid =
+      m9_faa_fragment_gallium_state(ctx->blend, z, &source.state.fragment);
+   if (!source.state.color_fragment_valid && !source.state.texture_fragment_valid) {
       why="FAA blend/alpha factors have no source-qualified RGBA interface";goto fail;
    }
    m9_context_sync_ordinary(ctx); /* FAA draws already own their CPU inputs. */

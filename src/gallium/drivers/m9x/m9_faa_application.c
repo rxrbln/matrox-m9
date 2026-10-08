@@ -112,6 +112,10 @@ m9_faa_application_texture_linkage(const nir_shader *fs,
       switch(in->intrinsic) {
       case nir_intrinsic_load_barycentric_pixel:
       case nir_intrinsic_load_interpolated_input:break;
+      /* A lowered alpha test; the caller decodes it. */
+      case nir_intrinsic_terminate_if:
+      case nir_intrinsic_load_ubo:
+      case nir_intrinsic_load_ubo_vec4:break;
       case nir_intrinsic_store_output:if(store)goto fail;store=in;break;
       default:goto fail;
       }
@@ -581,38 +585,65 @@ m9_faa_application_build(const struct m9_faa_application_draw *d,
       texture_fs=color_fs;
    }
    if(!m9_faa_application_texture_linkage(texture_fs,&texture_linkage,sampler,&texture_count,&why))goto fail;
-   if(texture_count==1) {
-      if(d->state.flatshade||d->state.fragment.blend!=M9_FAA_BLEND_REPLACE||
-         d->state.fragment.alpha!=M9_FAA_ALPHA_OFF||d->state.fragment.source_stream||
-         !m9_faa_application_texture_valid(&d->texture[0])) {
-         why="FAA single texture blend/alpha/flat or retained texture owner is not qualified";goto fail;
-      }
-      live.linkage=&texture_linkage;
-      if(!m9_faa_live_gl_single_texture_build(&live,&fresh.shader,&why))goto fail;
-      fresh.texture[0]=d->texture[0];fresh.texture[0].resource=NULL;
-      pipe_resource_reference(&fresh.texture[0].resource,d->texture[0].resource);
-      fresh.texture_count=1;fresh.state=d->state;
-      free(indices);ralloc_free(color_vs);ralloc_free(color_fs);free(color_constants);
-      *output=fresh;if(reason)*reason=NULL;return true;
-   }
    if(texture_count) {
-      if(d->state.flatshade||d->state.fragment.blend!=M9_FAA_BLEND_REPLACE||
-         d->state.fragment.alpha!=M9_FAA_ALPHA_OFF||d->state.fragment.source_stream||
+      const bool dual=texture_count==2;
+      if(d->state.flatshade||d->state.fragment.source_stream||
          !m9_faa_application_texture_valid(&d->texture[0])||
-         !m9_faa_application_texture_valid(&d->texture[1])||
-         d->texture[0].resource==d->texture[1].resource||
-         d->texture[0].view.handle==d->texture[1].view.handle) {
-         why="FAA dual texture blend/alpha/flat or retained texture owners are not qualified";goto fail;
+         (dual&&(!m9_faa_application_texture_valid(&d->texture[1])||
+                 d->texture[0].resource==d->texture[1].resource||
+                 d->texture[0].view.handle==d->texture[1].view.handle))) {
+         why="FAA texture flat shading or retained texture owners are not qualified";goto fail;
+      }
+      /* Blend and the alpha test the state tracker lowered into the FS. */
+      struct m9_faa_texture_fragment_state family=d->state.texture_fragment;
+      enum m9_faa_alpha_mode alpha;bool alpha_present;
+      if(!m9_faa_live_gl_alpha_decode(texture_fs,d->fs_cb0,d->fs_cb0_bytes,&alpha,&alpha_present)) {
+         why="FAA textured alpha test has no source-qualified interface";goto fail;
+      }
+      if(d->state.fragment.alpha!=M9_FAA_ALPHA_OFF&&
+         (!alpha_present||alpha!=d->state.fragment.alpha)) {
+         why="FAA DSA and lowered fragment alpha predicates disagree";goto fail;
+      }
+      if(alpha_present) {
+         static const struct {enum m9_faa_alpha_func func;float ref;} test[]={
+            [M9_FAA_ALPHA_GT_ZERO]={M9_FAA_ALPHA_FUNC_GREATER,0.0f},
+            [M9_FAA_ALPHA_LT_HALF]={M9_FAA_ALPHA_FUNC_LESS,0.5f},
+            [M9_FAA_ALPHA_GE_HALF]={M9_FAA_ALPHA_FUNC_GEQUAL,0.5f}};
+         if(alpha==M9_FAA_ALPHA_OFF||(unsigned)alpha>=ARRAY_SIZE(test)||
+            !m9_faa_alpha_ref_from_gl(test[alpha].func,test[alpha].ref,&family.alpha_ref)) {
+            why="FAA textured alpha test has no source program";goto fail;
+         }
+         family.alpha_test=true;family.alpha_func=test[alpha].func;
+      }
+      if((family.blend||family.alpha_test)&&!d->state.texture_fragment_valid) {
+         why="FAA textured blend factors have no source program";goto fail;
       }
       live.linkage=&texture_linkage;
-      if(!m9_faa_live_gl_dual_texture_build(&live,&fresh.shader,&why))goto fail;
-      for(unsigned i=0;i<2;i++) {
+      if(family.blend||family.alpha_test) {
+         /* GL MODULATE: alpha is COLOR0.a * TEX0.a (* TEX1.a). */
+         family.program=dual?M9_FAA_TEXTURE_DUAL:M9_FAA_TEXTURE_SINGLE;
+         family.alpha_op=M9_FAA_TEXTURE_ALPHA_MODULATE;
+         if(!m9_faa_live_gl_texture_family_build(&live,&family,&fresh.shader,&why))goto fail;
+         fresh.fragment=PARHELIA_M9_FAA_FRAGMENT_MODULATE|
+            (family.blend?PARHELIA_M9_FAA_FRAGMENT_BLEND|PARHELIA_M9_FAA_FRAGMENT_SRC(family.src)|
+                          PARHELIA_M9_FAA_FRAGMENT_DST(family.dst):0)|
+            (family.alpha_test?PARHELIA_M9_FAA_FRAGMENT_ALPHA_TEST|
+                               PARHELIA_M9_FAA_FRAGMENT_FUNC(family.alpha_func)|
+                               PARHELIA_M9_FAA_FRAGMENT_REF(family.alpha_ref):0);
+      } else if(!(dual?m9_faa_live_gl_dual_texture_build(&live,&fresh.shader,&why):
+                       m9_faa_live_gl_single_texture_build(&live,&fresh.shader,&why))) {
+         goto fail;
+      }
+      for(unsigned i=0;i<texture_count;i++) {
          fresh.texture[i]=d->texture[i];fresh.texture[i].resource=NULL;
          pipe_resource_reference(&fresh.texture[i].resource,d->texture[i].resource);
       }
-      fresh.texture_count=2;fresh.state=d->state;
+      fresh.texture_count=texture_count;fresh.state=d->state;
       free(indices);ralloc_free(color_vs);ralloc_free(color_fs);free(color_constants);
       *output=fresh;if(reason)*reason=NULL;return true;
+   }
+   if(d->state.texture_fragment_valid&&!d->state.color_fragment_valid) {
+      why="FAA blend/alpha factors have no source-qualified RGBA interface";goto fail;
    }
    /* The source two-stage route has continuous M9128 rendering and pool
     * reuse proof. Keep M9X_FAA_FUSED=0 for four-stage comparisons. Both

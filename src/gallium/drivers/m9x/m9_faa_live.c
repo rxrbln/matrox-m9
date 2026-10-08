@@ -569,6 +569,34 @@ m9_faa_live_gl_texture_combine_build(const struct m9_faa_live_gl *s,
    return true;
 }
 
+/* A blended or alpha-tested textured family program (the original later
+ * program switch), with its C3 utility pairs. */
+bool
+m9_faa_live_gl_texture_family_build(const struct m9_faa_live_gl *s,
+                                    const struct m9_faa_texture_fragment_state *state,
+                                    struct m9_faa_gl_upload *output,
+                                    const char **reason)
+{
+   uint32_t program[32], constants[16];
+   struct m9_faa_texture_fragment_interface interface;
+   const bool dual = state && state->program == M9_FAA_TEXTURE_DUAL;
+   if (!s || !state || !s->linkage || s->linkage->count != (dual ? 3u : 2u) ||
+       s->linkage->stream[0].location != VARYING_SLOT_COL0 ||
+       s->linkage->stream[1].location != VARYING_SLOT_TEX0 ||
+       (dual && s->linkage->stream[2].location != VARYING_SLOT_TEX1) ||
+       !m9_faa_texture_fragment_build(state, program, sizeof(program),
+                                      constants, sizeof(constants), &interface)) {
+      if (reason) *reason = "FAA textured blend/alpha state has no source program";
+      return false;
+   }
+   struct m9_faa_live_gl live = *s;
+   live.fragment = (struct m9_faa_program_vector){program, interface.slots};
+   live.fragment_constants = (struct m9_faa_dense_constants){constants, interface.constant_pairs};
+   if (!live_gl_build_mode(&live, output, reason, false, dual)) return false;
+   output->native_admission = false;
+   return true;
+}
+
 bool
 m9_faa_live_gl_dual_texture_build(const struct m9_faa_live_gl *s,
                                   struct m9_faa_gl_upload *output,

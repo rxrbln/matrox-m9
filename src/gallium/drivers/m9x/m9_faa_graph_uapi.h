@@ -322,8 +322,17 @@ struct drm_parhelia_m9_faa_graph_dual_batch {
 struct drm_parhelia_m9_faa_dual_draw {
    struct drm_parhelia_m9_faa_color_draw draw;
    struct drm_parhelia_m9_faa_texture_view texture[2];
-   uint32_t program, pad;
+   /* fragment: PARHELIA_M9_FAA_FRAGMENT_* state of a textured family;
+    * zero is the FIRST program (SELECT stage alpha, no blend or test). */
+   uint32_t program, fragment;
 };
+#define PARHELIA_M9_FAA_FRAGMENT_MODULATE 0x1u
+#define PARHELIA_M9_FAA_FRAGMENT_BLEND 0x2u
+#define PARHELIA_M9_FAA_FRAGMENT_ALPHA_TEST 0x4u
+#define PARHELIA_M9_FAA_FRAGMENT_SRC(f) ((uint32_t)(f) << 4)
+#define PARHELIA_M9_FAA_FRAGMENT_DST(f) ((uint32_t)(f) << 8)
+#define PARHELIA_M9_FAA_FRAGMENT_FUNC(f) ((uint32_t)(f) << 12)
+#define PARHELIA_M9_FAA_FRAGMENT_REF(r) ((uint32_t)(r) << 16)
 struct drm_parhelia_m9_faa_graph_dual_later {
  __u64 graph_id,previous_unlock_point,lock_point,upload;
  __u32 upload_bytes,generation,version,flags,state,pad;
