@@ -1866,7 +1866,7 @@ int m9x_faa_graph_color_frame_batch_ioctl(struct drm_device *drm,void *data,stru
  struct m9x_faa_depth_mode_state mode;
  struct m9x_faa_depth_mode_batch_plan mode_plan;
  struct drm_exec exec;u32 address[PARHELIA_M9_FAA_GRAPH_OWNERS],i;
- u64 point=0,delta,origin=0,maintenance=0;bool first,posted=false;int idx,ret;
+ u64 point=0,delta,origin=0,maintenance=0,ordinary=0,base;bool first,posted=false;int idx,ret;
  if(!state)return -EINVAL;
  /* Copy all descriptor and upload bytes once, before taking reservations
   * or preparing any GPU-consumable state. No caller memory is read later. */
@@ -1912,13 +1912,14 @@ int m9x_faa_graph_color_frame_batch_ioctl(struct drm_device *drm,void *data,stru
  ret=m9x_faa_graph_depth_frame_submit(mdev,binding,args->generation,args->previous_point,&point,&posted);
  if(!ret){
   mutex_lock(&mdev->transport.lock);
-  ret=m9x_faa_graph_depth_frame_receipt_locked(mdev,args->generation,args->previous_point,point,&origin,&maintenance);
+  ret=m9x_faa_graph_depth_frame_receipt_locked(mdev,args->generation,args->previous_point,point,&origin,&maintenance,&ordinary);
   mutex_unlock(&mdev->transport.lock);
-  if(!ret&&maintenance&&(!(args->flags&PARHELIA_M9_FAA_COLOR_FRAME_INITIALIZED)||origin>U64_MAX-0x10||maintenance!=origin+0x10))ret=-EIO;
-  if(!ret&&(!point||(maintenance?maintenance:origin)>U64_MAX-delta||
-   lower_32_bits(maintenance?maintenance:origin)>U32_MAX-delta||
-   point!=(maintenance?maintenance:origin)+delta))ret=-EIO;
-  if(!ret){args->maintenance_point=maintenance;args->lock_point=point;args->state=first?PARHELIA_M9_FAA_COLOR_BATCH_FIRST_LOCK_RETIRED:PARHELIA_M9_FAA_COLOR_BATCH_NEXT_LOCK_RETIRED;}}
+  if(!ret&&ordinary&&(!(args->flags&PARHELIA_M9_FAA_COLOR_FRAME_INITIALIZED)||(ordinary&15)||ordinary<=origin))ret=-EIO;
+  base=ordinary?ordinary:origin;
+  if(!ret&&maintenance&&(!(args->flags&PARHELIA_M9_FAA_COLOR_FRAME_INITIALIZED)||base>U64_MAX-0x10||maintenance!=base+0x10))ret=-EIO;
+  if(maintenance)base=maintenance;
+  if(!ret&&(!point||base>U64_MAX-delta||lower_32_bits(base)>U32_MAX-delta||point!=base+delta))ret=-EIO;
+  if(!ret){args->maintenance_point=maintenance;args->ordinary_point=ordinary;args->lock_point=point;args->state=first?PARHELIA_M9_FAA_COLOR_BATCH_FIRST_LOCK_RETIRED:PARHELIA_M9_FAA_COLOR_BATCH_NEXT_LOCK_RETIRED;}}
 out_exec:drm_exec_fini(&exec);
 out_binding:m9x_faa_graph_binding_put(binding);mutex_unlock(&state->lock);drm_dev_exit(idx);
 out_batch:kfree(mode_jobs);m9x_faa_color_batch_free(batch);return ret;

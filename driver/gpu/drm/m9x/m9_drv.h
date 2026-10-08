@@ -375,7 +375,7 @@ struct m9x_faa_ordinary_primary {
 int m9x_faa_ordinary_primary_locked(struct m9x_device *mdev, u32 bytes,
 				    struct m9x_faa_ordinary_primary *out);
 void m9x_faa_ordinary_primary_commit_locked(struct m9x_device *mdev,
-					    u32 end_bytes);
+					    u32 end_bytes, u64 point);
 int m9x_post_faa_graph_end_locked(struct m9x_device *mdev,
 				 const struct drm_mm_node *node, dma_addr_t dma,
 				 u32 old_bytes, u32 new_bytes, bool repeat,
@@ -723,7 +723,10 @@ int m9x_faa_graph_dual_later_prepare(struct m9x_device *,struct m9_faa_graph_bin
 int m9x_faa_graph_depth_unlocked_get_locked(struct m9x_device *,u32,u64,struct m9_faa_graph_binding **);
 struct m9x_faa_depth_mode_state;
 int m9x_faa_graph_depth_mode_locked(struct m9x_device *,struct m9_faa_graph_binding *,u32,bool,struct m9x_faa_depth_mode_state *);
-int m9x_faa_graph_depth_frame_receipt_locked(struct m9x_device *,u32,u64,u64,u64 *,u64 *);
+int m9x_faa_graph_depth_frame_receipt_locked(struct m9x_device *mdev,
+					     u32 generation, u64 previous,
+					     u64 final_point, u64 *origin,
+					     u64 *maintenance, u64 *ordinary);
 int m9x_faa_graph_depth_frame_maintenance_locked(struct m9x_device *,u32,u64,u64,u64 *);
 int m9x_faa_graph_command_pool_prepare(struct m9x_device *,struct m9_faa_graph_binding *,u32,u64);
 int m9x_faa_graph_depth_later_prepare(struct m9x_device *,struct m9_faa_graph_binding *,u32,u64,const struct m9x_faa_color_input *,u32,u32);

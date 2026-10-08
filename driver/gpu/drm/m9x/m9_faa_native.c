@@ -449,8 +449,12 @@ struct m9x_faa_replay {
 	 * every posted END advances this cursor even if its later wait fails. */
 	bool graph_draw_claimed;
 	u32 graph_draw_posts, graph_draw_end_bytes;
-	/* Ordinary jobs appended to the retained primary (stage 2). */
-	u32 ordinary_posts;
+	/* Ordinary jobs appended to the retained primary (stage 2). The last one
+	 * retires at ordinary_point after the idle origin ordinary_base; the
+	 * next FAA frame continues from there (stage 2b).
+	 */
+	u32 ordinary_posts, ordinary_end;
+	u64 ordinary_base, ordinary_point;
 	u64 graph_draw_point;
 	/* Prepared program bytes remain CPU inputs until the original c0
 	 * access boundary. Keep their source buffer through that upload. */
@@ -519,15 +523,36 @@ static u64 m9_faa_present_origin(struct m9x_faa_replay *r,u64 previous)
 {
  return r->present_retired && r->unlock_point==previous ? r->present_point : previous;
 }
+
+/* Ordinary jobs followed this idle origin and moved the shared timeline. */
+static bool m9_faa_ordinary_after(const struct m9x_faa_replay *r, u64 base)
+{
+	return r->ordinary_point && r->ordinary_base == base;
+}
+
+static u64 m9_faa_idle_origin(struct m9x_faa_replay *r, u64 previous)
+{
+	u64 base = m9_faa_present_origin(r, previous);
+
+	return m9_faa_ordinary_after(r, base) ? r->ordinary_point : base;
+}
+
 static u32 m9_faa_idle_end(struct m9x_faa_replay *r)
-{return r->present_retired?r->present_end:r->graph_unlock_end_bytes;}
+{
+	if (r->ordinary_point &&
+	    r->ordinary_base == m9_faa_present_origin(r, r->unlock_point))
+		return r->ordinary_end;
+	return r->present_retired ? r->present_end : r->graph_unlock_end_bytes;
+}
 static u32 m9_faa_idle_posts(struct m9x_faa_replay *r)
 {return r->present_retired?r->present_posts:r->graph_unlock_posts;}
 static u64 m9_faa_frame_origin(struct m9x_faa_replay *r,u64 previous)
 {
  struct m9_faa_command_pools *p=r->command_pools;
- return p&&p->ready&&p->unlock_point==previous&&p->maintenance_point?
-  p->maintenance_point:m9_faa_present_origin(r,previous);
+ u64 base=m9_faa_present_origin(r,previous);
+ if(p&&p->ready&&p->unlock_point==previous&&p->maintenance_point)
+  return p->maintenance_point;
+ return r->ordinary_point&&r->ordinary_base==base?r->ordinary_point:base;
 }
 #endif
 
@@ -4517,6 +4542,7 @@ int m9x_faa_graph_unlock_submit(struct m9x_device *mdev,
 	r->graph_draw_point = stage_point;
 	r->unlock_retired = true;
 	r->unlock_point = stage_point;
+	r->ordinary_point = 0;
 	r->graph_unlock_end_bytes = r->graph_draw_end_bytes;
 	r->graph_unlock_posts = r->graph_draw_posts;
 	if(r->command_pools){r->command_pools->unlock_point=0;r->command_pools->maintenance_point=0;r->command_pools->posts=0;}
@@ -6899,6 +6925,7 @@ int m9x_faa_unlock_diag(struct m9x_device *mdev, u32 color,
 		t->next_fence = target + 0x10;
 		r->unlock_retired = true;
 		r->unlock_point = *point;
+		r->ordinary_point = 0;
 		m9_faa_observe(mdev, r, false);
 		m9_faa_observe_borrowed_color(mdev, r, color_bo, false);
 		dev_info(&mdev->pdev->dev,
@@ -7160,11 +7187,11 @@ static int m9_faa_color_unlocked_origin_get_locked(struct m9x_device *mdev,
    r->present_posts!=r->graph_unlock_posts+3||r->present_end!=r->graph_unlock_end_bytes+100))||
   t->submitted_point!=origin||
   t->completed_point!=origin||t->next_fence!=lower_32_bits(origin)+0x10||
-  (origin==m9_faa_present_origin(r,previous_unlock_point)&&!(pool_scope&&r->command_pools&&r->command_pools->unlock_point==previous_unlock_point)?
+  (origin==m9_faa_idle_origin(r,previous_unlock_point)&&!(pool_scope&&r->command_pools&&r->command_pools->unlock_point==previous_unlock_point)?
    (r->graph_draw_end_bytes!=m9_faa_idle_end(r)||r->graph_draw_posts!=m9_faa_idle_posts(r)||!r->color_secondary_cursor):
    (!r->command_pools||!r->command_pools->ready||r->command_pools->generation!=generation||
     r->command_pools->unlock_point!=previous_unlock_point||m9_faa_frame_origin(r,previous_unlock_point)!=origin||
-    (origin!=m9_faa_present_origin(r,previous_unlock_point)&&origin!=m9_faa_present_origin(r,previous_unlock_point)+0x10)||r->command_pools->unlock_end!=m9_faa_idle_end(r)||
+    (origin!=m9_faa_idle_origin(r,previous_unlock_point)&&origin!=m9_faa_idle_origin(r,previous_unlock_point)+0x10)||r->command_pools->unlock_end!=m9_faa_idle_end(r)||
     r->command_pools->unlock_posts!=m9_faa_idle_posts(r)||r->graph_draw_end_bytes!=r->command_pools->parent_end||
     r->graph_draw_posts!=m9_faa_idle_posts(r)+r->command_pools->posts||
     r->color_secondary_cursor!=r->command_pools->secondary_cursor))||r->color_next_attempt_point==previous_unlock_point)return -ESTALE;
@@ -7184,6 +7211,14 @@ int m9x_faa_graph_depth_unlocked_get_locked(struct m9x_device *mdev,u32 generati
 {
 #ifdef M9_FAA_GRAPH_INIT_CONTROL
  struct m9x_faa_replay *r=mdev->transport.faa;
+	/* Ordinary jobs after this idle origin retire before the FAA frame. */
+	if (r && m9_faa_ordinary_after(r, m9_faa_present_origin(r, previous)) &&
+	    (mdev->transport.queue_count || mdev->transport.async_pending)) {
+		int ret = m9x_transport_drain_locked(mdev);
+
+		if (ret)
+			return ret;
+	}
  return m9_faa_color_unlocked_origin_get_locked(mdev,generation,previous,
   r?m9_faa_frame_origin(r,previous):previous,true,true,out);
 #else
@@ -8275,7 +8310,7 @@ static int m9_faa_secondary_rotate(struct m9x_device *mdev,
  parent_start=r->graph_draw_end_bytes;
  ret=m9x_faa_secondary_pool_plan(&p->secondary,r->color_secondary_cursor,parent_start,parent->bytes,
   t->submitted_point,p->timeline.submitted_point,t->fence_bus,&observed,&image,&token);if(ret)goto unlock;
- if(image.secondary_point!=m9_faa_present_origin(r,previous)+0x10||image.parent_next!=parent_start+24){ret=-ESTALE;goto abort;}
+ if(image.secondary_point!=m9_faa_idle_origin(r,previous)+0x10||image.parent_next!=parent_start+24){ret=-ESTALE;goto abort;}
  for(i=0;i<3;i++)put_unaligned_le32(image.old_footer[i],(u8*)old->cpu+r->color_secondary_cursor+4*i);
  for(i=0;i<6;i++)put_unaligned_le32(image.parent[i],(u8*)parent->cpu+parent_start+4*i);
  wmb();
@@ -8347,8 +8382,14 @@ int m9x_faa_ordinary_primary_locked(struct m9x_device *mdev, u32 bytes,
 	if (!r || !t->faa_virtual_primary || !t->faa_source_context ||
 	    !m9x_faa_graph_active(mdev) || m9x_faa_graph_preparing(mdev))
 		return -EACCES;
-	if ((r->depth_storage && r->depth_storage->frame) ||
-	    (r->command_pools && r->command_pools->primary.planned))
+	/* Only between a retired Unlock (and its retired PRESENT) and the next
+	 * frame; a pool event in this idle period keeps its own origin.
+	 */
+	if (!r->unlock_retired || !r->unlock_point ||
+	    r->present_attempted != r->present_retired ||
+	    (r->depth_storage && r->depth_storage->frame) ||
+	    (r->command_pools && (r->command_pools->primary.planned ||
+				  r->command_pools->unlock_point == r->unlock_point)))
 		return -EBUSY;
 	o = m9_faa_command_owner(r, false);
 	if (!o || !o->cpu || !drm_mm_node_allocated(&o->system_node) ||
@@ -8370,12 +8411,17 @@ int m9x_faa_ordinary_primary_locked(struct m9x_device *mdev, u32 bytes,
 }
 
 void m9x_faa_ordinary_primary_commit_locked(struct m9x_device *mdev,
-					    u32 end_bytes)
+					    u32 end_bytes, u64 point)
 {
 #ifdef M9_FAA_GRAPH_INIT_CONTROL
 	struct m9x_faa_replay *r = mdev->transport.faa;
+	u64 base = m9_faa_present_origin(r, r->unlock_point);
 
 	lockdep_assert_held(&mdev->transport.lock);
+	if (!m9_faa_ordinary_after(r, base))
+		r->ordinary_base = base;
+	r->ordinary_point = point;
+	r->ordinary_end = end_bytes;
 	r->graph_draw_end_bytes = end_bytes;
 	r->ordinary_posts++;
 #else
@@ -8445,13 +8491,13 @@ unlock:mutex_unlock(&t->lock);return ret;
  * separately retired presentation/maintenance journals used by preparation.
  * The ioctl must publish that origin, not infer it from a returned Lock. */
 int m9x_faa_graph_depth_frame_receipt_locked(struct m9x_device *mdev,u32 generation,
- u64 previous,u64 final_point,u64 *origin,u64 *maintenance)
+ u64 previous,u64 final_point,u64 *origin,u64 *maintenance,u64 *ordinary)
 {
 #ifdef M9_FAA_GRAPH_INIT_CONTROL
  struct m9x_faa_replay *r=mdev->transport.faa;struct m9_faa_depth_frame_storage *f;
  struct m9_faa_command_pools *p;u64 base,effective;
  lockdep_assert_held(&mdev->transport.lock);
- if(!origin||!maintenance)return -EINVAL;*origin=0;*maintenance=0;
+ if(!origin||!maintenance||!ordinary)return -EINVAL;*origin=0;*maintenance=0;*ordinary=0;
  if(!r||mdev->transport.wedged||r->graph_generation!=generation||
   mdev->transport.generation!=generation||!r->depth_storage||!(f=r->depth_storage->frame)||
   !f->retired||!r->color_lock_retired||f->previous_point!=previous||
@@ -8465,10 +8511,14 @@ int m9x_faa_graph_depth_frame_receipt_locked(struct m9x_device *mdev,u32 generat
     r->present_end!=r->graph_unlock_end_bytes+100||
     r->present_posts!=r->graph_unlock_posts+3)))return -ESTALE;
   base=m9_faa_present_origin(r,previous);effective=base;
+  /* The frame continued after ordinary jobs on the shared requester. */
+  if(m9_faa_ordinary_after(r,base)){
+   effective=r->ordinary_point;*ordinary=effective;
+  }
   p=r->command_pools;
   if(p&&p->maintenance_point){
    if(!p->ready||p->generation!=generation||p->unlock_point!=previous||
-    base>U64_MAX-0x10||p->maintenance_point!=base+0x10)return -ESTALE;
+    effective>U64_MAX-0x10||p->maintenance_point!=effective+0x10)return -ESTALE;
    effective=p->maintenance_point;
   }
   if(f->clear_resume){
@@ -8478,7 +8528,7 @@ int m9x_faa_graph_depth_frame_receipt_locked(struct m9x_device *mdev,u32 generat
   }else if(effective>U64_MAX-0x10||f->queue_start!=effective+0x10)return -ESTALE;
  }
  *origin=base;
- if(effective!=base)*maintenance=effective;
+ if(effective!=base&&effective!=*ordinary)*maintenance=effective;
  return 0;
 #else
  return -EOPNOTSUPP;
@@ -8506,9 +8556,10 @@ int m9x_faa_graph_depth_mode_locked(struct m9x_device *mdev,
 int m9x_faa_graph_depth_frame_maintenance_locked(struct m9x_device *mdev,u32 generation,
  u64 previous,u64 final_point,u64 *maintenance)
 {
- u64 origin;
- return m9x_faa_graph_depth_frame_receipt_locked(mdev,generation,previous,
-  final_point,&origin,maintenance);
+ u64 origin,ordinary;int ret;
+ ret=m9x_faa_graph_depth_frame_receipt_locked(mdev,generation,previous,
+  final_point,&origin,maintenance,&ordinary);
+ return ret?ret:ordinary?-EOPNOTSUPP:0;
 }
 
 #ifdef M9_FAA_GRAPH_INIT_CONTROL

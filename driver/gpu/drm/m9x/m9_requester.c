@@ -838,10 +838,11 @@ static int m9_primary_place_locked(struct m9x_device *mdev, u32 bytes,
 
 static void m9_primary_place_commit_locked(struct m9x_device *mdev,
 					   const struct m9_primary_place *place,
-					   u32 bytes)
+					   u32 bytes, u64 point)
 {
 	if (place->retained)
-		m9x_faa_ordinary_primary_commit_locked(mdev, place->offset + bytes);
+		m9x_faa_ordinary_primary_commit_locked(mdev, place->offset + bytes,
+						       point);
 	else
 		mdev->transport.command_offset = place->offset + bytes;
 }
@@ -893,7 +894,11 @@ static int m9_submit_kernel_stream_common(struct m9x_device *mdev,
 	m9_transport_publish_end(mdev, place.end);
 	if (doorbell_posted)
 		*doorbell_posted = true;
-	m9_primary_place_commit_locked(mdev, &place, dwords * sizeof(u32));
+	/* The point this job's target reaches on the shared timeline. */
+	m9_primary_place_commit_locked(mdev, &place, dwords * sizeof(u32),
+				       ((u64)(transport->fence_epoch +
+					      (target < transport->last_fence)) << 32) |
+				       target);
 	if (async) {
 		/* The next drain retires it; the point is the target it
 		 * reaches. */
