@@ -468,12 +468,12 @@ m9_faa_color_lock_history_valid(const struct m9_faa_graph *graph)
          return false;
       bool first = !graph->color_next_lock_point;
       const bool fused = graph->color_program_count == 2;
-      if (fused && !first) return false;
+      if (fused && !first && !initialized_frame) return false;
       uint64_t exact = fused ? 0x110 + (count - 1u) * UINT64_C(0x60) :
          ((first || initialized_frame) ? 0x150 : 0x1a0) + (count - 1u) * UINT64_C(0xa0);
       const uint64_t maintenance = graph->color_frame_maintenance_point;
       if (maintenance) {
-         if (!initialized_frame || graph->color_next_previous_unlock_point > UINT64_MAX - 0x10 ||
+         if (fused || !initialized_frame || graph->color_next_previous_unlock_point > UINT64_MAX - 0x10 ||
              maintenance != graph->color_next_previous_unlock_point + 0x10)
             return false;
          exact += 0x10;
@@ -822,10 +822,12 @@ m9_faa_surface_color_batch_kernel(struct m9_screen *screen,
    const bool first = !graph->color_lock_attempted;
    const bool initialized_frame = !first && graph->color_depth_initialized;
    const unsigned programs = head->shader.layout.count;
-   if ((programs != 2 && programs != 4) || (programs == 2 && !first))
+   if ((programs != 2 && programs != 4) ||
+       (programs == 2 && !first && !initialized_frame))
       return -EOPNOTSUPP;
-   /* Source count2 FIRST N1/N2 differs by one +0x60 draw transition.
-    * Homogeneous count2 and count4 batches retain separate exact receipts. */
+   /* Original count2 FIRST and initialized clear3 both use +0x110,
+    * with +0x60 per extra DRAW. Their flags and previous receipt remain
+    * distinct. Count2 pool-maintenance transitions are not yet admitted. */
    const uint64_t delta = programs == 2 ? 0x110 + (frame->count - 1u) * UINT64_C(0x60) :
       ((first || initialized_frame) ? 0x150 : 0x1a0) + (frame->count - 1u) * UINT64_C(0xa0);
    if (screen->faa.chip != M9_FAA_CHIP_M9 || !screen->wait_point ||
@@ -889,7 +891,7 @@ m9_faa_surface_color_batch_kernel(struct m9_screen *screen,
           graph->color_next_previous_unlock_point || graph->color_next_lock_point ||
           graph->color_unlock_attempted || graph->color_unlock_point)
          return -ESTALE;
-   } else if (graph->color_program_count != 4 || !graph->color_unlock_attempted || graph->color_next_attempted ||
+   } else if (graph->color_program_count != programs || !graph->color_unlock_attempted || graph->color_next_attempted ||
               graph->color_lock_point > UINT64_MAX - 0x20 ||
               graph->color_unlock_point != graph->color_lock_point + 0x20 ||
               !m9_faa_color_lock_history_valid(graph)) {
@@ -914,7 +916,7 @@ m9_faa_surface_color_batch_kernel(struct m9_screen *screen,
       return -errno;
    uint64_t origin = before.previous_point;
    if (request.maintenance_point) {
-      if (!initialized_frame || origin > UINT64_MAX - 0x10 ||
+      if (programs == 2 || !initialized_frame || origin > UINT64_MAX - 0x10 ||
           request.maintenance_point != origin + 0x10)
          return -EPROTO;
       origin = request.maintenance_point;
