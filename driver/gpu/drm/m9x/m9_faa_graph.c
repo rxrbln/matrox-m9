@@ -641,7 +641,7 @@ bool m9x_faa_graph_binding_released(const struct m9_faa_graph_binding *binding)
 }
 
 static int m9_faa_graph_prepare(struct drm_device *drm, void *data,
-			       struct drm_file *file)
+				struct drm_file *file)
 {
 	struct drm_parhelia_m9_faa_graph_prepare *args = data;
 	struct m9x_device *mdev = to_m9x(drm);
@@ -656,8 +656,9 @@ static int m9_faa_graph_prepare(struct drm_device *drm, void *data,
 		return -ENODEV;
 	if (!state || !m9_faa_graph_request_valid(args) ||
 	    mdev->pdev->device != M9X_PCI_DEVICE_PHOENIX ||
-	    mdev->pdev->revision != 1 || mdev->pdev->subsystem_device != 0x22c0 ||
-	    m9x_local_gpu_base || !limit)
+	    mdev->pdev->revision != 1 ||
+	    mdev->pdev->subsystem_device != 0x22c0 || m9x_local_gpu_base ||
+	    !limit)
 		return -EINVAL;
 	/* A released graph that was not idle at its release may be now. */
 	m9x_faa_graph_detach_released(mdev);
@@ -666,7 +667,8 @@ static int m9_faa_graph_prepare(struct drm_device *drm, void *data,
 		return -ENOMEM;
 	kref_init(&graph->refs);
 	/* Request admission already validated this immutable geometry. */
-	if (!m9x_faa_surface_layout(args->width, args->height, &graph->layout)) {
+	if (!m9x_faa_surface_layout(args->width, args->height,
+				    &graph->layout)) {
 		kfree(graph);
 		return -EINVAL;
 	}
@@ -678,9 +680,11 @@ static int m9_faa_graph_prepare(struct drm_device *drm, void *data,
 		goto out_unlock;
 	}
 	/* Lookup and pin every owner before acquiring the reservation set. No
-	 * partial group becomes visible to the file or to the transport. */
+	 * partial group becomes visible to the file or to the transport.
+	 */
 	for (i = 0; i < PARHELIA_M9_FAA_GRAPH_OWNERS; i++) {
-		graph->owner[i] = drm_gem_object_lookup(file, args->owners[i].handle);
+		graph->owner[i] =
+			drm_gem_object_lookup(file, args->owners[i].handle);
 		if (!graph->owner[i]) {
 			ret = -ENOENT;
 			goto out_unlock;
@@ -699,13 +703,16 @@ static int m9_faa_graph_prepare(struct drm_device *drm, void *data,
 			goto out_unlock;
 		graph->pinned[i] = true;
 	}
-	drm_exec_init(&exec, DRM_EXEC_INTERRUPTIBLE_WAIT |
-		      DRM_EXEC_IGNORE_DUPLICATES, PARHELIA_M9_FAA_GRAPH_OWNERS);
-	drm_exec_until_all_locked(&exec) {
+	drm_exec_init(&exec,
+		      DRM_EXEC_INTERRUPTIBLE_WAIT | DRM_EXEC_IGNORE_DUPLICATES,
+		      PARHELIA_M9_FAA_GRAPH_OWNERS);
+	drm_exec_until_all_locked(&exec)
+	{
 		for (i = 0; i < PARHELIA_M9_FAA_GRAPH_OWNERS; i++) {
 			/* PREPARE posts no work, so it needs the reservation lock
 			 * without allocating a fence slot. dma_resv rejects zero
-			 * requested fence slots with -EINVAL. */
+			 * requested fence slots with -EINVAL.
+			 */
 			ret = drm_exec_lock_obj(&exec, graph->owner[i]);
 			drm_exec_retry_on_contention(&exec);
 			if (ret)
@@ -718,14 +725,15 @@ static int m9_faa_graph_prepare(struct drm_device *drm, void *data,
 
 		if (offset < 0 ||
 		    check_add_overflow((u64)offset,
-			args->owners[i].capacity_bytes, &end) || end > limit ||
-		    !IS_ALIGNED(offset, PAGE_SIZE)) {
+				       args->owners[i].capacity_bytes, &end) ||
+		    end > limit || !IS_ALIGNED(offset, PAGE_SIZE)) {
 			ret = -ERANGE;
 			goto out_exec;
 		}
 	}
 	/* The token names a retained CPU ownership group only. No GPU command,
-	 * pool mapping or fence is installed here. */
+	 * pool mapping or fence is installed here.
+	 */
 	mutex_lock(&mdev->transport.lock);
 	if (mdev->transport.async_stop || mdev->transport.wedged ||
 	    mdev->transport.faa_virtual_primary ||
