@@ -3210,6 +3210,7 @@ static int m9_faa_normalize_raster_masks(struct m9x_faa_replay *r)
 #if defined(M9_FAA_RASTER_MASK_BLOCKS) || defined(M9_FAA_RASTER_MASK_OWNER)
 	static const struct {
 		u32 owner, ab, route;
+
 	} blocks[] =
 #ifdef M9_FAA_RASTER_MASK_BLOCKS
 		M9_FAA_RASTER_MASK_BLOCKS;
@@ -3231,7 +3232,8 @@ static int m9_faa_normalize_raster_masks(struct m9x_faa_replay *r)
 		data = owner->cpu;
 		if (!data || owner->vram || ab < 8 || route < 12 ||
 		    !IS_ALIGNED(ab | route, sizeof(u32)) ||
-		    (u64)ab + 8 > owner->bytes || (u64)route + 4 > owner->bytes ||
+		    (u64)ab + 8 > owner->bytes ||
+		    (u64)route + 4 > owner->bytes ||
 		    get_unaligned_le32(data + ab - 8) != 3 ||
 		    get_unaligned_le32(data + ab - 4) != 0x45aeacab ||
 		    get_unaligned_le32(data + route - 12) != 4 ||
