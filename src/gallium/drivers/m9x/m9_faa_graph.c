@@ -454,11 +454,12 @@ m9_faa_color_upload_request(const struct m9_faa_gl_upload *upload,
  * GL inputs; each texture handle names an independently retained VRAM BO.
  * Subsequent frames and application shader classification need separate
  * source-qualified admission. */
-int
-m9_faa_surface_dual_first_kernel(struct m9_screen *screen,
+static int
+m9_faa_surface_dual_first_kernel_mode(struct m9_screen *screen,
                                  struct m9_faa_surface *surface,
                                  const struct m9_faa_gl_upload *upload,
-                                 const struct drm_parhelia_m9_faa_texture_view *texture)
+                                 const struct drm_parhelia_m9_faa_texture_view *texture,
+                                 bool colorpass)
 {
    struct drm_parhelia_m9_faa_graph_dual_first request = {0};
    struct drm_parhelia_m9_faa_graph_color_lock packed = {0};
@@ -486,6 +487,7 @@ m9_faa_surface_dual_first_kernel(struct m9_screen *screen,
    request.upload_bytes = packed.upload_bytes;
    request.generation = graph->prepared_generation;
    request.version = PARHELIA_M9_FAA_DUAL_FIRST_VERSION;
+   request.flags = colorpass ? PARHELIA_M9_FAA_DUAL_FIRST_COLORPASS_DIAGNOSTIC : 0;
    request.record_stride = packed.record_stride;
    request.record_count = packed.record_count;
    request.declaration_count = packed.declaration_count;
@@ -515,6 +517,24 @@ m9_faa_surface_dual_first_kernel(struct m9_screen *screen,
    graph->color_unlock_attempted = false;
    graph->color_unlock_point = 0;
    return 0;
+}
+
+int
+m9_faa_surface_dual_first_kernel(struct m9_screen *screen,
+                                 struct m9_faa_surface *surface,
+                                 const struct m9_faa_gl_upload *upload,
+                                 const struct drm_parhelia_m9_faa_texture_view *texture)
+{
+   return m9_faa_surface_dual_first_kernel_mode(screen,surface,upload,texture,false);
+}
+
+int
+m9_faa_surface_dual_colorpass_kernel(struct m9_screen *screen,
+                                    struct m9_faa_surface *surface,
+                                    const struct m9_faa_gl_upload *upload,
+                                    const struct drm_parhelia_m9_faa_texture_view *texture)
+{
+   return m9_faa_surface_dual_first_kernel_mode(screen,surface,upload,texture,true);
 }
 
 
