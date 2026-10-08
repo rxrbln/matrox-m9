@@ -170,6 +170,11 @@ int m9x_faa_color_four_encode(const u8*blob,size_t bytes,const struct m9x_faa_gr
  /* Genuine 3-to6 source differential identifies launch payloads,
   * not their preceding packet word counts (which remain3/4). */
  put(out->secondary+336,in->record_stride);
+ /* Same original13a884 declaration-half count as the fused raw stage.
+  * Change only the caller-input head; gather/position controls describe
+  * their own generated declarations and retain their producer values. */
+ put(out->secondary+88,(get(out->secondary+88)&~0x1f00u)|
+  ((in->declaration_count-1)<<8));
  for(i=0;i<3;i++)put(out->secondary+moved((u32[]){644,1264,1824}[i],extra),padded);
  put(out->secondary+moved(2708,extra),in->record_count);
  /* The COLOR raster frontend declares exactly one input, mapped toslot0.

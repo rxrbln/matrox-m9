@@ -143,6 +143,12 @@ int m9x_faa_color_encode(const u8*blob,size_t bytes,
  /* Register88's high byte is the source raw FLOAT4 input mask. Its
   * low mask is the separately qualified fused position/COLOR interface. */
  put(out->secondary+260,(((1u<<((in->declaration_count-1)/2))-1)<<24)|fused_mask);
+ /* Original13a884..13a89e packs the number of live declaration halves
+  * (terminal excluded) into bits12:8. fafcc/fafe1 merges this into the
+  * raw stage's register22 control before fc2df emits it. The captured
+  * one-input8020e cannot describe a two-input8040e launch. */
+ put(out->secondary+44,(word(out->secondary+44)&~0x1f00u)|
+  ((in->declaration_count-1)<<8));
  /* Original stride16/32 controls keep this setup family at32. Only
   * f513d's raw fetch word292 follows the caller's record stride. */
  for(i=0;i<4;i++)put(out->secondary+164+i*4,32);
