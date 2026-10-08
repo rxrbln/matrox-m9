@@ -9872,8 +9872,15 @@ m9_context_faa_texture_snapshot(struct m9_context *ctx,unsigned slot,
    for(unsigned i=0;i<ARRAY_SIZE(ctx->color_extra);i++)
       if(view->texture==ctx->color_extra[i])return "FAA texture framebuffer feedback is not qualified";
    m9_view_swizzle(view,swizzle);
-   for(unsigned c=0;c<4;c++)if(swizzle[c]!=PIPE_SWIZZLE_X+c)
+   for(unsigned c=0;c<4;c++)if(swizzle[c]!=PIPE_SWIZZLE_X+c) {
+      static unsigned reported;
+      if(ctx->debug&&reported++<16)
+         fprintf(stderr,"m9x: FAA texture swizzle %u%u%u%u view %s texture %s\n",
+                 swizzle[0],swizzle[1],swizzle[2],swizzle[3],
+                 util_format_short_name(view->format),
+                 util_format_short_name(view->texture->format));
       return "FAA texture view swizzle has no qualified shader interface";
+   }
    const char *why=m9_texture_bind_view(view,&bind);if(why)return why;
    if(!owner->handle||owner->domain!=M9_BO_VRAM||owner->tiled||
       owner->kind!=M9_RESOURCE_LINEAR_TEXTURE||owner->texture.levels!=last+1||
@@ -9957,7 +9964,10 @@ m9_context_faa_build_draw_mode(struct m9_context *ctx,
    source.state = (struct m9_faa_application_state){
       .width = ctx->framebuffer_width, .height = ctx->framebuffer_height,
       .viewport = ctx->viewport, .scissor = ctx->scissor,
-      .scissor_enabled = r->scissor, .depth_enabled = z->depth_enabled,
+      /* A scissor covering the whole target clips nothing (Quake3 always
+       * enables one). */
+      .scissor_enabled = r->scissor && !m9_scissor_full(ctx, &ctx->scissor),
+      .depth_enabled = z->depth_enabled,
       .depth_write = z->depth_writemask, .depth_func = z->depth_func,
       .cull_face = r->cull_face, .front_ccw = r->front_ccw,
       .flatshade = r->flatshade, .flatshade_first = r->flatshade_first,
