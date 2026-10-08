@@ -1,5 +1,48 @@
 # M9 FAA native testing, 2026-10-06
 
+## 2026-10-08 latest: dual-texture FAA triangle renders correctly
+
+DRM3f93002 derives the final rasterSCREEN/CLIP reader order from the actual
+position producer. Authentic original XYZ vsXYZRHW MODULATE andSELECTARG2
+controls prove opposite reader order. Our GPU-transformed liveXYZ route
+had retained the XYZRHW reader order, causing one wrong originpixel despite
+correct intermediate GPU positions. The native fix preserves both modes,
+liveowner addresses and GPUtransforms.
+
+One lockedphysicalbatch completesboth320x240controls, independentINITb0/
+Lock200/Unlock220, generation0/queue0/wedged0. Both independentpixeloracles
+PASS:9801trianglepixels,9361fullinterior+440coverageedges; correctdualtexture
+MODULATE andCOLOR0-onlycontrol. Fullrawproof/images committedRE1d7b0202.
+[Proof and screenshots](../tests/m9-faa-dual-xyz-source-20261008/hardware-20261008/README.md).
+
+Quake3FAA remains open: liveapp bridge is stillFIRST-only,320x240,atmost3
+sameprogram/sametexturepairdraws. Laterdualreuse, dynamicpair/program,
+mips/effects/generaldimensionsneed source-qualified producers and HW proof.
+The FAAgears48.3–48.7FPS milestone remains the lastqualified1024x768 result.
+CLEAR_RESUME's strict authenticated appended-log receipt and realoriginal
+Lock340 CPU return are closedinRE34f33214; zeroCLEARviews were transport-only.
+Historical single-origin and receipt-open entries below are superseded here.
+
+## 2026-10-08 latest: seven no-FAA images pass; Quake3 GL2 reaches GPU timeout
+
+The latest1024x768 physical batch uses DRM3f93002 and Mesa01eef6c,
+DSOca734b68995b6dfbb0d39f462e82f85f2182178967a72daccb6c2cfc72980ba6.
+Glxgears114.411 appFPS and sixglmark114/115/115/114/113/115 pass basic
+scanout review, no skips; allglmark naturalexit0. GL1 real gameplay still
+has stretchedweapon/HUDcorruption. The per-job CPU view allocation fix
+gets GL2 past ENOSPC, then a216-DWORDtwo-pass stream stalls atDWORD213:
+target1ab240/completed1ab1e0, generation1/wedged1, contextlost/allskips.
+No GL2gameplay/FPS or full-suiteX-health pass. Root archived raw evidence
+before terminating its hungtestSSH and NanoKVMpoweroff/power recovery.
+Applicationvblank0, display60Hz; appFPS is submissionrate.
+[Exact current proof and images](../tests/m9-nonfaa-regression-20261008/hardware-compact/README.md).
+
+The separately integrated nativeVS output subset88a1990 selects up tofive
+live outputs from a shader declaringmore;49152NIR/ISA refs,12actualcontext
+controls/default99/geometry11PASS, full23-objectbuild190dfcd286ae68ca1844f096745bd2048bd5b9191d45f3766d53ef0c93896ec0.
+This new feature has not been deployed yet; seven-live unions/lightmap
+sampler-record topology remain gated. Preserve optimizations and GPU transforms.
+
 ## 2026-10-08: ordinary rendering retested; Quake3 gaps remain
 
 DRM45b33e6/Mesa6b03281 on the physical M9128 completes glxgears and six

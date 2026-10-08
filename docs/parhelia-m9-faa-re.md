@@ -1,5 +1,28 @@
 # M9 multisampling (FAA): static closure, captures, and what the silicon did
 
+## 2026-10-08 latest: dual-texture FAA triangle renders correctly
+
+DRM3f93002 derives the final rasterSCREEN/CLIP reader order from the actual
+position producer. Authentic original XYZ vsXYZRHW MODULATE andSELECTARG2
+controls prove opposite reader order. Our GPU-transformed liveXYZ route
+had retained the XYZRHW reader order, causing one wrong originpixel despite
+correct intermediate GPU positions. The native fix preserves both modes,
+liveowner addresses and GPUtransforms.
+
+One lockedphysicalbatch completesboth320x240controls, independentINITb0/
+Lock200/Unlock220, generation0/queue0/wedged0. Both independentpixeloracles
+PASS:9801trianglepixels,9361fullinterior+440coverageedges; correctdualtexture
+MODULATE andCOLOR0-onlycontrol. Fullrawproof/images committedRE1d7b0202.
+[Proof and screenshots](../tests/m9-faa-dual-xyz-source-20261008/hardware-20261008/README.md).
+
+Quake3FAA remains open: liveapp bridge is stillFIRST-only,320x240,atmost3
+sameprogram/sametexturepairdraws. Laterdualreuse, dynamicpair/program,
+mips/effects/generaldimensionsneed source-qualified producers and HW proof.
+The FAAgears48.3–48.7FPS milestone remains the lastqualified1024x768 result.
+CLEAR_RESUME's strict authenticated appended-log receipt and realoriginal
+Lock340 CPU return are closedinRE34f33214; zeroCLEARviews were transport-only.
+Historical single-origin and receipt-open entries below are superseded here.
+
 ## 2026-10-08 latest: later CLEAR continuation retires; COLOR-pass still fails pixels
 
 Canonical DRM5f07050 integrates source-native CLEAR3 continuation0x24 and
