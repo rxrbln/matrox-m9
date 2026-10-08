@@ -25,10 +25,9 @@
 #define SOURCE_INIT_POINT 0xb0u
 
 static const u8 draw_blob_sha256[SHA256_DIGEST_SIZE] = {
-	0xd7, 0x26, 0xfb, 0xa3, 0x04, 0x00, 0x23, 0x80,
-	0x25, 0x84, 0xdc, 0x8e, 0xa0, 0xb5, 0xc3, 0xf7,
-	0xd5, 0xa8, 0x56, 0xd8, 0xa5, 0xbd, 0xc3, 0xdf,
-	0xd2, 0xe2, 0xe5, 0x8f, 0x90, 0x63, 0x0d, 0x16,
+	0xd7, 0x26, 0xfb, 0xa3, 0x04, 0x00, 0x23, 0x80, 0x25, 0x84, 0xdc,
+	0x8e, 0xa0, 0xb5, 0xc3, 0xf7, 0xd5, 0xa8, 0x56, 0xd8, 0xa5, 0xbd,
+	0xc3, 0xdf, 0xd2, 0xe2, 0xe5, 0x8f, 0x90, 0x63, 0x0d, 0x16,
 };
 
 static const struct {
@@ -37,14 +36,13 @@ static const struct {
 } draw_owner_spec[M9_FAA_DRAW_SOURCE_OWNERS] = {
 #define L(bytes) { bytes, false }
 #define V(bytes) { bytes, true }
-	L(0x100), L(0x50000), L(0x136080), L(0x13080),
-	L(0x98000), L(0x8000), V(0x50000), L(0x8000),
-	L(0x80), L(0x8000), L(0x8000), L(0x20080),
-	L(0x1d080), L(0x1080), L(0x1080), L(0x8000),
-	L(0x8000), L(0x8000), L(0x8000), L(0x40080),
-	L(0x5080), L(0x80), L(0x580), L(0x460080),
-	L(0x408000), L(0x100080), L(0x1080), V(0x40000),
-	V(0x40000), V(0x40000), L(0x80000),
+	L(0x100),    L(0x50000), L(0x136080), L(0x13080),  L(0x98000),
+	L(0x8000),   V(0x50000), L(0x8000),   L(0x80),	   L(0x8000),
+	L(0x8000),   L(0x20080), L(0x1d080),  L(0x1080),   L(0x1080),
+	L(0x8000),   L(0x8000),	 L(0x8000),   L(0x8000),   L(0x40080),
+	L(0x5080),   L(0x80),	 L(0x580),    L(0x460080), L(0x408000),
+	L(0x100080), L(0x1080),	 V(0x40000),  V(0x40000),  V(0x40000),
+	L(0x80000),
 #undef L
 #undef V
 };
@@ -55,7 +53,8 @@ struct m9_draw_fixup {
 };
 
 /* The first four INIT fixups were already published and are excluded.
- * All rows below are source new bytes: primary[4880,4968) or secondary. */
+ * All rows below are source new bytes: primary[4880,4968) or secondary.
+ */
 static const struct m9_draw_fixup draw_fixups[] = {
 	{ 27, 4896, 8, 0, 0x24930, 1, 0x1161001 },
 	{ 29, 72, 23, 0, 0x24930, 1, 0x122a001 },
@@ -81,18 +80,13 @@ struct m9_draw_tracker {
 };
 
 static const struct m9_draw_tracker draw_trackers[] = {
-	{ 27, 4888, 0xc1 },
-	{ 29, 12, 0xd1 },
-	{ 29, 60, 0xe1 },
-	{ 29, 616, 0xf1 },
-	{ 29, 644, 0x101 },
-	{ 29, 660, 0x111 },
+	{ 27, 4888, 0xc1 }, { 29, 12, 0xd1 },	{ 29, 60, 0xe1 },
+	{ 29, 616, 0xf1 },  { 29, 644, 0x101 }, { 29, 660, 0x111 },
 };
 
 static u32 draw_get32(const u8 *p)
 {
-	return (u32)p[0] | (u32)p[1] << 8 |
-	       (u32)p[2] << 16 | (u32)p[3] << 24;
+	return (u32)p[0] | (u32)p[1] << 8 | (u32)p[2] << 16 | (u32)p[3] << 24;
 }
 
 static void draw_put32(u8 *p, u32 value)
@@ -141,8 +135,8 @@ static u32 draw_encode_address(u32 encoder, u32 address, u32 tag)
 	}
 }
 
-int m9x_faa_graph_draw_owners_validate(
-	const struct m9x_faa_graph_draw_owner owner[M9_FAA_DRAW_SOURCE_OWNERS])
+int m9x_faa_graph_draw_owners_validate(const struct m9x_faa_graph_draw_owner
+					       owner[M9_FAA_DRAW_SOURCE_OWNERS])
 {
 	u32 i;
 
@@ -155,8 +149,8 @@ int m9x_faa_graph_draw_owners_validate(
 		    !IS_ALIGNED(owner[i].bytes, PAGE_SIZE) ||
 		    owner[i].bytes < draw_owner_spec[i].bytes ||
 		    (draw_owner_spec[i].virtual ?
-		     owner[i].base < 0x40000000u || end > 0x41000000u :
-		     end > 0x40000000u))
+			     owner[i].base < 0x40000000u || end > 0x41000000u :
+			     end > 0x40000000u))
 			return -ERANGE;
 	}
 	return 0;
@@ -166,7 +160,8 @@ static bool draw_source_word(u16 dst, u16 offset, u32 *blob_offset,
 			     u32 *image_offset)
 {
 	if (dst == 27 && offset >= SOURCE_PRIMARY_BYTES &&
-	    offset <= SOURCE_PRIMARY_BYTES + M9_FAA_DRAW_PRIMARY_SUFFIX_BYTES - 4) {
+	    offset <= SOURCE_PRIMARY_BYTES + M9_FAA_DRAW_PRIMARY_SUFFIX_BYTES -
+			      4) {
 		*blob_offset = SOURCE_PRIMARY_BLOB + offset;
 		*image_offset = offset - SOURCE_PRIMARY_BYTES;
 		return true;
@@ -180,9 +175,10 @@ static bool draw_source_word(u16 dst, u16 offset, u32 *blob_offset,
 }
 
 int m9x_faa_graph_draw_encode(const u8 *blob, size_t blob_bytes,
-		const struct m9x_faa_graph_draw_owner owner[M9_FAA_DRAW_SOURCE_OWNERS],
-		u32 live_init_primary_bytes, u64 init_point,
-		const struct m9x_faa_graph_draw_image *image)
+			      const struct m9x_faa_graph_draw_owner
+				      owner[M9_FAA_DRAW_SOURCE_OWNERS],
+			      u32 live_init_primary_bytes, u64 init_point,
+			      const struct m9x_faa_graph_draw_image *image)
 {
 	u32 source_offset, image_offset, address, value, init_low;
 	u32 i;
@@ -197,7 +193,7 @@ int m9x_faa_graph_draw_encode(const u8 *blob, size_t blob_bytes,
 	    live_init_primary_bytes < SOURCE_PRIMARY_BYTES ||
 	    live_init_primary_bytes > owner[27].bytes ||
 	    owner[27].bytes - live_init_primary_bytes <
-		M9_FAA_DRAW_PRIMARY_SUFFIX_BYTES ||
+		    M9_FAA_DRAW_PRIMARY_SUFFIX_BYTES ||
 	    owner[26].bytes < M9_FAA_DRAW_PROGRAM_BYTES ||
 	    owner[28].bytes < M9_FAA_DRAW_CONSTANTS_BYTES ||
 	    owner[29].bytes < M9_FAA_DRAW_SECONDARY_BYTES ||
@@ -205,7 +201,8 @@ int m9x_faa_graph_draw_encode(const u8 *blob, size_t blob_bytes,
 	    (u32)init_point > U32_MAX - 0x60 ||
 	    SOURCE_SECONDARY_BLOB + M9_FAA_DRAW_SECONDARY_BYTES > blob_bytes ||
 	    SOURCE_PRIMARY_BLOB + SOURCE_PRIMARY_BYTES +
-		M9_FAA_DRAW_PRIMARY_SUFFIX_BYTES > blob_bytes ||
+			    M9_FAA_DRAW_PRIMARY_SUFFIX_BYTES >
+		    blob_bytes ||
 	    SOURCE_CONSTANTS1_BLOB + 188 > blob_bytes ||
 	    !m9x_faa_graph_draw_blob_valid(blob, blob_bytes))
 		return -EINVAL;
@@ -213,7 +210,8 @@ int m9x_faa_graph_draw_encode(const u8 *blob, size_t blob_bytes,
 	if (m9x_faa_graph_draw_owners_validate(owner))
 		return -ERANGE;
 	/* Preflight all source words, live extents and encoded addresses before
-	 * writing any destination. A source change cannot leave a partial draw. */
+	 * writing any destination. A source change cannot leave a partial draw.
+	 */
 	for (i = 0; i < ARRAY_SIZE(draw_fixups); i++) {
 		const struct m9_draw_fixup *f = &draw_fixups[i];
 		const struct m9x_faa_graph_draw_owner *src = &owner[f->src];
@@ -223,7 +221,7 @@ int m9x_faa_graph_draw_encode(const u8 *blob, size_t blob_bytes,
 		    f->addend > src->bytes || src->bytes - f->addend < 4 ||
 		    check_add_overflow(src->base, f->addend, &address) ||
 		    (f->encoder == 0x248ab ? !IS_ALIGNED(address, 8) :
-		     !IS_ALIGNED(address, 4)) ||
+					     !IS_ALIGNED(address, 4)) ||
 		    (f->encoder != 0x248ab && f->tag != 1 && f->tag != 2) ||
 		    draw_get32(blob + source_offset) != f->captured ||
 		    !draw_encode_address(f->encoder, address, f->tag))
@@ -253,7 +251,8 @@ int m9x_faa_graph_draw_encode(const u8 *blob, size_t blob_bytes,
 
 		address = owner[f->src].base + f->addend;
 		value = draw_encode_address(f->encoder, address, f->tag);
-		draw_source_word(f->dst, f->offset, &source_offset, &image_offset);
+		draw_source_word(f->dst, f->offset, &source_offset,
+				 &image_offset);
 		dst = f->dst == 27 ? image->primary_suffix : image->secondary;
 		draw_put32(dst + image_offset, value);
 	}
@@ -261,8 +260,8 @@ int m9x_faa_graph_draw_encode(const u8 *blob, size_t blob_bytes,
 		const struct m9_draw_tracker *t = &draw_trackers[i];
 		u8 *dst;
 
-		value = (init_low + (t->captured & ~15u) -
-			 SOURCE_INIT_POINT) | (t->captured & 15u);
+		value = (init_low + (t->captured & ~15u) - SOURCE_INIT_POINT) |
+			(t->captured & 15u);
 		draw_source_word(t->dst, t->offset, &source_offset,
 				 &image_offset);
 		dst = t->dst == 27 ? image->primary_suffix : image->secondary;

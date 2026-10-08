@@ -2,7 +2,8 @@
 /* Copyright 2026 René Rebe <rene@exactco.de> */
 /* Genuine second returned-DRAW raster tail and independent 23b80 finish.
  * The source strips every live address, extent and tracker from this fixed
- * 320x240 control. No captured GPU address or future status enters output. */
+ * 320x240 control. No captured GPU address or future status enters output.
+ */
 #include <linux/errno.h>
 #include <linux/kernel.h>
 #include <linux/overflow.h>
@@ -12,10 +13,9 @@
 #include "m9_faa_graph_next_finish_encode.h"
 
 static const u8 finish_sha256[SHA256_DIGEST_SIZE] = {
-	0x4f, 0xc2, 0x7c, 0x24, 0xdb, 0x1c, 0xf1, 0x13,
-	0x3e, 0xe3, 0x25, 0xba, 0x8d, 0x8b, 0x0b, 0x25,
-	0xb7, 0xbc, 0x71, 0x5b, 0x4f, 0xa1, 0x0e, 0xb5,
-	0x40, 0xf5, 0xfb, 0xd2, 0x60, 0xd3, 0xf0, 0xe9,
+	0x4f, 0xc2, 0x7c, 0x24, 0xdb, 0x1c, 0xf1, 0x13, 0x3e, 0xe3, 0x25,
+	0xba, 0x8d, 0x8b, 0x0b, 0x25, 0xb7, 0xbc, 0x71, 0x5b, 0x4f, 0xa1,
+	0x0e, 0xb5, 0x40, 0xf5, 0xfb, 0xd2, 0x60, 0xd3, 0xf0, 0xe9,
 };
 
 struct finish_fixup {
@@ -24,24 +24,17 @@ struct finish_fixup {
 };
 
 /* Destination offsets are relative to secondary owner29 offset 2040.
- * Encoders are the original M9128 producer PCs, not captured values. */
+ * Encoders are the original M9128 producer PCs, not captured values.
+ */
 static const struct finish_fixup finish_fixups[] = {
-	{ 132,  8, 0x000000, 0x24930, 1 },
-	{ 136,  8, 0x000014, 0x24909, 0 },
-	{ 164,  1, 0x000000, 0x24930, 1 },
-	{ 180,  4, 0x000000, 0x24930, 1 },
-	{ 196,  5, 0x000000, 0x24930, 1 },
-	{ 212, 25, 0x000000, 0x24930, 1 },
-	{ 224, 22, 0x000000, 0x24930, 1 },
-	{ 256,  2, 0x000000, 0x24930, 1 },
-	{ 260,  3, 0x000000, 0x24930, 1 },
-	{ 404, 23, 0x107800, 0x24930, 1 },
-	{ 408, 23, 0x316800, 0x24930, 1 },
-	{ 424, 23, 0x20f000, 0x24930, 1 },
-	{ 444, 26, 0x000000, 0x24886, 1 },
-	{ 468, 28, 0x000000, 0x248c8, 1 },
-	{ 472, 28, 0x000020, 0x248c8, 1 },
-	{ 644, 12, 0x000000, 0x24886, 1 },
+	{ 132, 8, 0x000000, 0x24930, 1 },  { 136, 8, 0x000014, 0x24909, 0 },
+	{ 164, 1, 0x000000, 0x24930, 1 },  { 180, 4, 0x000000, 0x24930, 1 },
+	{ 196, 5, 0x000000, 0x24930, 1 },  { 212, 25, 0x000000, 0x24930, 1 },
+	{ 224, 22, 0x000000, 0x24930, 1 }, { 256, 2, 0x000000, 0x24930, 1 },
+	{ 260, 3, 0x000000, 0x24930, 1 },  { 404, 23, 0x107800, 0x24930, 1 },
+	{ 408, 23, 0x316800, 0x24930, 1 }, { 424, 23, 0x20f000, 0x24930, 1 },
+	{ 444, 26, 0x000000, 0x24886, 1 }, { 468, 28, 0x000000, 0x248c8, 1 },
+	{ 472, 28, 0x000020, 0x248c8, 1 }, { 644, 12, 0x000000, 0x24886, 1 },
 	{ 676, 28, 0x000100, 0x248c8, 1 },
 };
 
@@ -63,8 +56,7 @@ static bool finish_overlap(const void *a, size_t na, const void *b, size_t nb)
 	unsigned long x = (unsigned long)a, y = (unsigned long)b;
 	unsigned long ex, ey;
 
-	if (check_add_overflow(x, na, &ex) ||
-	    check_add_overflow(y, nb, &ey))
+	if (check_add_overflow(x, na, &ex) || check_add_overflow(y, nb, &ey))
 		return true;
 	return x < ey && y < ex;
 }
@@ -80,9 +72,11 @@ bool m9x_faa_graph_next_finish_blob_valid(const u8 *blob, size_t bytes)
 }
 
 int m9x_faa_graph_next_finish_encode(const u8 *blob, size_t bytes,
-	const struct m9x_faa_graph_draw_owner owner[M9_FAA_DRAW_SOURCE_OWNERS],
-	u32 live_primary_bytes, u64 prefix_point,
-	const struct m9x_faa_graph_next_finish_image *image)
+				     const struct m9x_faa_graph_draw_owner
+					     owner[M9_FAA_DRAW_SOURCE_OWNERS],
+				     u32 live_primary_bytes, u64 prefix_point,
+				     const struct m9x_faa_graph_next_finish_image
+					     *image)
 {
 	u32 values[ARRAY_SIZE(finish_fixups)];
 	u32 direct[ARRAY_SIZE(finish_direct_dst)];
@@ -92,20 +86,21 @@ int m9x_faa_graph_next_finish_encode(const u8 *blob, size_t bytes,
 	    image->primary_bytes < M9_FAA_NEXT_FINISH_PRIMARY_BYTES ||
 	    image->secondary_bytes < M9_FAA_NEXT_FINISH_SECONDARY_BYTES ||
 	    live_primary_bytes < 8668 || (live_primary_bytes & 3) ||
-	    (u32)prefix_point < 0x1e0 ||
-	    (u32)prefix_point > U32_MAX - 0x40 ||
+	    (u32)prefix_point < 0x1e0 || (u32)prefix_point > U32_MAX - 0x40 ||
 	    (prefix_point & 15) ||
 	    !m9x_faa_graph_next_finish_blob_valid(blob, bytes))
 		return -EINVAL;
 	if (m9x_faa_graph_draw_owners_validate(owner))
 		return -ERANGE;
 	if (owner[27].bytes < live_primary_bytes ||
-	    owner[27].bytes - live_primary_bytes < M9_FAA_NEXT_FINISH_PRIMARY_BYTES ||
+	    owner[27].bytes - live_primary_bytes <
+		    M9_FAA_NEXT_FINISH_PRIMARY_BYTES ||
 	    owner[29].bytes < M9_FAA_NEXT_FINISH_SECONDARY_OFFSET +
-		M9_FAA_NEXT_FINISH_SECONDARY_BYTES)
+				      M9_FAA_NEXT_FINISH_SECONDARY_BYTES)
 		return -ERANGE;
 	if (finish_overlap(image->primary, M9_FAA_NEXT_FINISH_PRIMARY_BYTES,
-			   image->secondary, M9_FAA_NEXT_FINISH_SECONDARY_BYTES) ||
+			   image->secondary,
+			   M9_FAA_NEXT_FINISH_SECONDARY_BYTES) ||
 	    finish_overlap(image->primary, M9_FAA_NEXT_FINISH_PRIMARY_BYTES,
 			   blob, bytes) ||
 	    finish_overlap(image->secondary, M9_FAA_NEXT_FINISH_SECONDARY_BYTES,
@@ -113,7 +108,8 @@ int m9x_faa_graph_next_finish_encode(const u8 *blob, size_t bytes,
 		return -EINVAL;
 	/* All owner ranges, encodings and endpoints are checked before a single
 	 * output byte changes. The graph profile fixes 320x240; its two size
-	 * words are rebuilt below, never copied as captured parameters. */
+	 * words are rebuilt below, never copied as captured parameters.
+	 */
 	for (i = 0; i < ARRAY_SIZE(finish_fixups); i++) {
 		const struct finish_fixup *f = &finish_fixups[i];
 		const struct m9x_faa_graph_draw_owner *src = &owner[f->owner];
@@ -132,7 +128,7 @@ int m9x_faa_graph_next_finish_encode(const u8 *blob, size_t bytes,
 			break;
 		case 0x24886:
 			values[i] = (address & 0xfffff000) | f->tag |
-				(!address ? 4 : 0);
+				    (!address ? 4 : 0);
 			break;
 		default:
 			return -EINVAL;
@@ -151,7 +147,8 @@ int m9x_faa_graph_next_finish_encode(const u8 *blob, size_t bytes,
 	memcpy(image->secondary, blob + M9_FAA_NEXT_FINISH_PRIMARY_BYTES,
 	       M9_FAA_NEXT_FINISH_SECONDARY_BYTES);
 	for (i = 0; i < ARRAY_SIZE(finish_fixups); i++)
-		finish_put32(image->secondary + finish_fixups[i].dst, values[i]);
+		finish_put32(image->secondary + finish_fixups[i].dst,
+			     values[i]);
 	for (i = 0; i < ARRAY_SIZE(finish_direct_dst); i++)
 		finish_put32(image->primary + finish_direct_dst[i], direct[i]);
 	finish_put32(image->secondary + 348, 240u << 16 | 320u);

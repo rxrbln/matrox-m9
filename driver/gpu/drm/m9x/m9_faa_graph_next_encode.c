@@ -2,7 +2,8 @@
 /* Copyright 2026 René Rebe <rene@exactco.de> */
 /* Source-qualified repeated red draw after the same graph's Unlock. The 692-B
  * source template contains opcodes and fixed state only; all address,
- * timeline and vertex input words are filled from live retained state. */
+ * timeline and vertex input words are filled from live retained state.
+ */
 #include <linux/errno.h>
 #include <linux/kernel.h>
 #include <linux/overflow.h>
@@ -12,10 +13,9 @@
 #include "m9_faa_graph_next_encode.h"
 
 static const u8 next_sha256[SHA256_DIGEST_SIZE] = {
-	0xe2, 0xa6, 0x45, 0xa1, 0x2d, 0xfe, 0x80, 0x14,
-	0x91, 0x09, 0xb5, 0x68, 0x7e, 0x05, 0xfe, 0x04,
-	0xed, 0xcf, 0x4d, 0x55, 0x78, 0x6a, 0xe5, 0x1c,
-	0x0f, 0x0f, 0x78, 0x3e, 0x18, 0xe4, 0xd8, 0x5d,
+	0xe2, 0xa6, 0x45, 0xa1, 0x2d, 0xfe, 0x80, 0x14, 0x91, 0x09, 0xb5,
+	0x68, 0x7e, 0x05, 0xfe, 0x04, 0xed, 0xcf, 0x4d, 0x55, 0x78, 0x6a,
+	0xe5, 0x1c, 0x0f, 0x0f, 0x78, 0x3e, 0x18, 0xe4, 0xd8, 0x5d,
 };
 
 struct next_fixup {
@@ -25,18 +25,14 @@ struct next_fixup {
 
 /* Destinations are relative to the retained secondary cursor. Every source is a
  * retained live owner; the source index namespace remains the 31-owner
- * post-INIT/Unlock namespace. */
+ * post-INIT/Unlock namespace.
+ */
 static const struct next_fixup next_fixups[] = {
-	{  76, 23, 0x000000, 0x24930 },
-	{  92, 23, 0x107800, 0x24930 },
-	{ 108, 23, 0x20f000, 0x24930 },
-	{ 124, 23, 0x316800, 0x24930 },
-	{ 288, 28, 0x0001d0, 0x24930 },
-	{ 308, 26, 0x000020, 0x24886 },
-	{ 312, 26, 0x000020, 0x248ab },
-	{ 332, 28, 0x000020, 0x248c8 },
-	{ 336, 28, 0x000088, 0x248c8 },
-	{ 544, 12, 0x000000, 0x24886 },
+	{ 76, 23, 0x000000, 0x24930 },	{ 92, 23, 0x107800, 0x24930 },
+	{ 108, 23, 0x20f000, 0x24930 }, { 124, 23, 0x316800, 0x24930 },
+	{ 288, 28, 0x0001d0, 0x24930 }, { 308, 26, 0x000020, 0x24886 },
+	{ 312, 26, 0x000020, 0x248ab }, { 332, 28, 0x000020, 0x248c8 },
+	{ 336, 28, 0x000088, 0x248c8 }, { 544, 12, 0x000000, 0x24886 },
 	{ 576, 28, 0x000100, 0x248c8 },
 };
 
@@ -59,14 +55,14 @@ static bool next_range_overlap(const void *a, size_t na, const void *b,
 	unsigned long x = (unsigned long)a, y = (unsigned long)b;
 	unsigned long ex, ey;
 
-	if (check_add_overflow(x, na, &ex) ||
-	    check_add_overflow(y, nb, &ey))
+	if (check_add_overflow(x, na, &ex) || check_add_overflow(y, nb, &ey))
 		return true;
 	return x < ey && y < ex;
 }
 
 /* Only a bounded 320x240 XYZRHW triangle is admitted. Comparing positive
- * finite IEEE-754 encodings as integers avoids kernel floating point. */
+ * finite IEEE-754 encodings as integers avoids kernel floating point.
+ */
 static bool next_vertices_valid(const u32 vertices[15])
 {
 	u32 i;
@@ -95,10 +91,11 @@ bool m9x_faa_graph_next_blob_valid(const u8 *blob, size_t bytes)
 }
 
 int m9x_faa_graph_next_encode_at(const u8 *blob, size_t bytes,
-	const struct m9x_faa_graph_draw_owner owner[M9_FAA_DRAW_SOURCE_OWNERS],
-	const struct m9x_faa_graph_next_cursor *cursor, u64 unlock_point,
-	const u32 vertices[15],
-	const struct m9x_faa_graph_next_image *image)
+				 const struct m9x_faa_graph_draw_owner
+					 owner[M9_FAA_DRAW_SOURCE_OWNERS],
+				 const struct m9x_faa_graph_next_cursor *cursor,
+				 u64 unlock_point, const u32 vertices[15],
+				 const struct m9x_faa_graph_next_image *image)
 {
 	u32 fixup_words[ARRAY_SIZE(next_fixups)];
 	u32 direct_words[ARRAY_SIZE(next_direct_offsets)];
@@ -112,11 +109,12 @@ int m9x_faa_graph_next_encode_at(const u8 *blob, size_t bytes,
 	    cursor->primary < 8644 || (cursor->primary & 3) ||
 	    cursor->secondary < M9_FAA_NEXT_SECONDARY_OFFSET ||
 	    (cursor->secondary & 3) ||
-	    cursor->secondary > M9_FAA_NEXT_SECONDARY_GUARD - M9_FAA_NEXT_SECONDARY_BYTES ||
-	    cursor->vertices < M9_FAA_NEXT_VERTEX_OFFSET || (cursor->vertices & 15) ||
-	    (u32)unlock_point < 0x190 ||
-	    (u32)unlock_point > U32_MAX - 0x60 ||
-	    (unlock_point & 15) || !next_vertices_valid(vertices) ||
+	    cursor->secondary >
+		    M9_FAA_NEXT_SECONDARY_GUARD - M9_FAA_NEXT_SECONDARY_BYTES ||
+	    cursor->vertices < M9_FAA_NEXT_VERTEX_OFFSET ||
+	    (cursor->vertices & 15) || (u32)unlock_point < 0x190 ||
+	    (u32)unlock_point > U32_MAX - 0x60 || (unlock_point & 15) ||
+	    !next_vertices_valid(vertices) ||
 	    !m9x_faa_graph_next_blob_valid(blob, bytes))
 		return -EINVAL;
 	if (m9x_faa_graph_draw_owners_validate(owner))
@@ -124,24 +122,26 @@ int m9x_faa_graph_next_encode_at(const u8 *blob, size_t bytes,
 	if (owner[27].bytes < cursor->primary ||
 	    owner[27].bytes - cursor->primary < M9_FAA_NEXT_PRIMARY_BYTES ||
 	    cursor->secondary > owner[29].bytes ||
-	    owner[29].bytes - cursor->secondary < M9_FAA_NEXT_SECONDARY_BYTES + 4 ||
+	    owner[29].bytes - cursor->secondary <
+		    M9_FAA_NEXT_SECONDARY_BYTES + 4 ||
 	    cursor->vertices > owner[28].bytes ||
 	    owner[28].bytes - cursor->vertices < M9_FAA_NEXT_VERTEX_STRIDE)
 		return -ERANGE;
 	/* No destination can corrupt the authenticated template, live input,
-	 * or another destination. All refusals leave every output untouched. */
+	 * or another destination. All refusals leave every output untouched.
+	 */
 	if (next_range_overlap(image->primary, M9_FAA_NEXT_PRIMARY_BYTES,
 			       image->secondary, M9_FAA_NEXT_SECONDARY_BYTES) ||
 	    next_range_overlap(image->primary, M9_FAA_NEXT_PRIMARY_BYTES,
 			       image->vertices, M9_FAA_NEXT_VERTEX_BYTES) ||
 	    next_range_overlap(image->secondary, M9_FAA_NEXT_SECONDARY_BYTES,
 			       image->vertices, M9_FAA_NEXT_VERTEX_BYTES) ||
-	    next_range_overlap(image->primary, M9_FAA_NEXT_PRIMARY_BYTES,
-			       blob, bytes) ||
+	    next_range_overlap(image->primary, M9_FAA_NEXT_PRIMARY_BYTES, blob,
+			       bytes) ||
 	    next_range_overlap(image->secondary, M9_FAA_NEXT_SECONDARY_BYTES,
 			       blob, bytes) ||
-	    next_range_overlap(image->vertices, M9_FAA_NEXT_VERTEX_BYTES,
-			       blob, bytes) ||
+	    next_range_overlap(image->vertices, M9_FAA_NEXT_VERTEX_BYTES, blob,
+			       bytes) ||
 	    next_range_overlap(image->primary, M9_FAA_NEXT_PRIMARY_BYTES,
 			       vertices, M9_FAA_NEXT_VERTEX_BYTES) ||
 	    next_range_overlap(image->secondary, M9_FAA_NEXT_SECONDARY_BYTES,
@@ -166,7 +166,7 @@ int m9x_faa_graph_next_encode_at(const u8 *blob, size_t bytes,
 			break;
 		case 0x24886:
 			fixup_words[i] = (address & 0xfffff000) | 1 |
-				(!address ? 4 : 0);
+					 (!address ? 4 : 0);
 			break;
 		case 0x248ab:
 			fixup_words[i] = (address & 0xfff) >> 3;
@@ -178,8 +178,7 @@ int m9x_faa_graph_next_encode_at(const u8 *blob, size_t bytes,
 	for (i = 0; i < ARRAY_SIZE(next_direct_offsets); i++) {
 		u32 addend = cursor->secondary + next_direct_addends[i];
 
-		if (addend > owner[29].bytes ||
-		    owner[29].bytes - addend < 4 ||
+		if (addend > owner[29].bytes || owner[29].bytes - addend < 4 ||
 		    check_add_overflow(owner[29].base, addend, &address) ||
 		    (address & 3))
 			return -ERANGE;
@@ -204,13 +203,17 @@ int m9x_faa_graph_next_encode_at(const u8 *blob, size_t bytes,
 
 /* Preserve the original bounded second-frame encoder API for source tests. */
 int m9x_faa_graph_next_encode(const u8 *blob, size_t bytes,
- const struct m9x_faa_graph_draw_owner owner[M9_FAA_DRAW_SOURCE_OWNERS],
- u32 live_primary_bytes, u64 unlock_point, const u32 vertices[15],
- const struct m9x_faa_graph_next_image *image)
+			      const struct m9x_faa_graph_draw_owner
+				      owner[M9_FAA_DRAW_SOURCE_OWNERS],
+			      u32 live_primary_bytes, u64 unlock_point,
+			      const u32 vertices[15],
+			      const struct m9x_faa_graph_next_image *image)
 {
- const struct m9x_faa_graph_next_cursor cursor = {
-  live_primary_bytes, M9_FAA_NEXT_SECONDARY_OFFSET, M9_FAA_NEXT_VERTEX_OFFSET,
- };
- return m9x_faa_graph_next_encode_at(blob, bytes, owner, &cursor,
-                                    unlock_point, vertices, image);
+	const struct m9x_faa_graph_next_cursor cursor = {
+		live_primary_bytes,
+		M9_FAA_NEXT_SECONDARY_OFFSET,
+		M9_FAA_NEXT_VERTEX_OFFSET,
+	};
+	return m9x_faa_graph_next_encode_at(blob, bytes, owner, &cursor,
+					    unlock_point, vertices, image);
 }
