@@ -9366,8 +9366,8 @@ bool m9x_faa_graph_empty_primary_locked(struct m9x_device *mdev,
 
 /* An ordinary job continues the retained primary at the graph's last END:
  * after the retired INIT until FIRST posts, or after a retired Unlock (and
- * PRESENT). A prepared later frame or pool transition owns that cursor; at
- * capacity the job is refused, since ordinary jobs do not rotate the pool.
+ * PRESENT). A prepared later frame or pool transition owns that cursor. At
+ * capacity the drained requester restarts at the owner's base, as INIT did.
  */
 int m9x_faa_ordinary_primary_locked(struct m9x_device *mdev, u32 bytes,
 				    struct m9x_faa_ordinary_primary *out)
@@ -9404,8 +9404,20 @@ int m9x_faa_ordinary_primary_locked(struct m9x_device *mdev, u32 bytes,
 	    o->system_node.start != o->base)
 		return -ESTALE;
 	capacity = min_t(u64, o->bytes, o->system_node.size);
-	if (!bytes || start > capacity || bytes > capacity - start)
+	if (!bytes || bytes > capacity || start > capacity)
 		return -ENOSPC;
+	out->rebase = bytes > capacity - start;
+	if (out->rebase) {
+		/* The caller drains first. Only an owner the pool manager has
+		 * not planned away restarts.
+		 */
+		if (!IS_ALIGNED(o->system_node.start, PAGE_SIZE) ||
+		    (r->command_pools && r->command_pools->ready &&
+		     (r->command_pools->primary.planned ||
+		      r->command_pools->timeline.planned)))
+			return -EBUSY;
+		start = 0;
+	}
 	out->node = &o->system_node;
 	out->dma = o->dma;
 	out->cpu = o->cpu;
@@ -9418,13 +9430,18 @@ int m9x_faa_ordinary_primary_locked(struct m9x_device *mdev, u32 bytes,
 }
 
 void m9x_faa_ordinary_primary_commit_locked(struct m9x_device *mdev,
-					    u32 end_bytes, u64 point)
+					    u32 end_bytes, u64 point,
+					    bool rebase)
 {
 #ifdef M9_FAA_GRAPH_INIT_CONTROL
 	struct m9x_faa_replay *r = mdev->transport.faa;
+	struct m9_faa_command_pools *p = r->command_pools;
 	u64 base = m9_faa_ordinary_base(r);
 
 	lockdep_assert_held(&mdev->transport.lock);
+	/* The active pool owner is consumed again from its base. */
+	if (rebase && p && p->ready && p->primary.initialized)
+		p->primary.cursor = 0;
 	if (!m9_faa_ordinary_after(r, base))
 		r->ordinary_base = base;
 	r->ordinary_point = point;

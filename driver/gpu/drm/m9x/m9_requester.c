@@ -741,8 +741,8 @@ static void m9_transport_publish_end(struct m9x_device *mdev, u32 end)
 /* Where an ordinary job's primary words go and which END publishes them. */
 struct m9_primary_place {
 	u8 *cpu;
-	u32 offset, end;
-	bool retained;
+	u32 offset, end, base;
+	bool retained, rebase;
 };
 
 static bool m9_faa_ordinary_continue;
@@ -815,11 +815,17 @@ static int m9_primary_place_retained_locked(struct m9x_device *mdev, u32 bytes,
 	struct m9x_faa_ordinary_primary dst;
 	int ret;
 
-	/* FAA END posts admit no outstanding queue; keep that true. */
-	ret = m9x_transport_drain_locked(mdev);
-	if (ret)
-		return ret;
+	/* Queued jobs pipeline as on the staging slots; the FAA producers
+	 * drain them before their next END. Only a restart needs it here.
+	 */
 	ret = m9x_faa_ordinary_primary_locked(mdev, bytes, &dst);
+	if (!ret && dst.rebase &&
+	    (mdev->transport.queue_count || mdev->transport.async_pending)) {
+		ret = m9x_transport_drain_locked(mdev);
+		if (ret)
+			return ret;
+		ret = m9x_faa_ordinary_primary_locked(mdev, bytes, &dst);
+	}
 	if (ret)
 		return ret;
 	ret = m9x_system_pages_mapped(mdev, (u32)dst.node->start, dst.dma,
@@ -829,8 +835,10 @@ static int m9_primary_place_retained_locked(struct m9x_device *mdev, u32 bytes,
 		return ret;
 	place->cpu = dst.cpu + dst.offset;
 	place->offset = dst.offset;
-	place->end = (u32)dst.node->start + dst.offset + bytes;
+	place->base = (u32)dst.node->start;
+	place->end = place->base + dst.offset + bytes;
 	place->retained = true;
+	place->rebase = dst.rebase;
 	return 0;
 }
 
@@ -838,6 +846,7 @@ static int m9_primary_place_locked(struct m9x_device *mdev, u32 bytes,
 				   struct m9_primary_place *place)
 {
 	place->retained = false;
+	place->rebase = false;
 	if (m9_faa_ordinary_continue && mdev->transport.faa_virtual_primary)
 		return m9_primary_place_retained_locked(mdev, bytes, place);
 	return m9_primary_place_staging_locked(mdev, bytes, place);
@@ -849,7 +858,7 @@ static void m9_primary_place_commit_locked(struct m9x_device *mdev,
 {
 	if (place->retained)
 		m9x_faa_ordinary_primary_commit_locked(mdev, place->offset + bytes,
-						       point);
+						       point, place->rebase);
 	else
 		mdev->transport.command_offset = place->offset + bytes;
 }
@@ -897,6 +906,10 @@ static int m9_submit_kernel_stream_common(struct m9x_device *mdev,
 		wmb(); /* WC retained primary; dma_wmb() is no SFENCE on x86 */
 	else
 		dma_wmb();
+	if (place.rebase) {
+		m9x_write(mdev, M9_REG_COMMAND_BASE, place.base | 1u);
+		m9x_read(mdev, M9_REG_COMMAND_BASE);
+	}
 
 	m9_transport_publish_end(mdev, place.end);
 	if (doorbell_posted)

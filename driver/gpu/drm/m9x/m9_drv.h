@@ -374,12 +374,15 @@ struct m9x_faa_ordinary_primary {
 	dma_addr_t dma;
 	u8 *cpu;
 	u32 offset;
+	/* The job restarts the drained requester at the owner's base. */
+	bool rebase;
 };
 
 int m9x_faa_ordinary_primary_locked(struct m9x_device *mdev, u32 bytes,
 				    struct m9x_faa_ordinary_primary *out);
 void m9x_faa_ordinary_primary_commit_locked(struct m9x_device *mdev,
-					    u32 end_bytes, u64 point);
+					    u32 end_bytes, u64 point,
+					    bool rebase);
 int m9x_post_faa_graph_end_locked(struct m9x_device *mdev,
 				 const struct drm_mm_node *node, dma_addr_t dma,
 				 u32 old_bytes, u32 new_bytes, bool repeat,
