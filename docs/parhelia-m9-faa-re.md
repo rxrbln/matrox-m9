@@ -1,5 +1,23 @@
 # M9 multisampling (FAA): static closure, captures, and what the silicon did
 
+## 2026-10-08 latest: later CLEAR continuation retires; COLOR-pass still fails pixels
+
+Canonical DRM5f07050 integrates source-native CLEAR3 continuation0x24 and
+explicit COLOR-pass diagnostic0x21 flag1. A genuine same-fd INITb0/FIRST1c0/
+Unlock1e0/prefix260/resumedLock340/Unlock360 completes on the M9128 with
+generation0, empty queue and no wedge. Both returned F021 views are entirely
+zero: this is transport evidence, not a rendered triangle. Strict receipt
+sealing currently refuses duplicate same-boot dmesg from an earlier failed
+firmware deployment; original raw logs remain preserved pending scoped review.
+
+The independent SELECTARG2 COLOR-pass control then retires Lock200/Unlock220
+but produces the same single wrong origin pixel as MODULATE. PRE sampled view
+was zero; post-Lock sampled view has exactly one nonzero DWORD. This failure
+occurs without texture sampling, narrowing the next source review to shared
+preprocessing/raster/retained state. MAIN has five nonzero DWORDs, AUX none;
+metadata is not established coverage. No textured application FAA pass.
+[Exact raw proof and failing pixel oracle](../tests/m9-faa-dual-colorpass-source-20261008/hardware-20261008/README.txt).
+
 ## 2026-10-08: FAA glxgears reaches48.3–48.7 FPS at1024×768
 
 The physical M9128 completes512 original glxgears frames with GPU transforms,

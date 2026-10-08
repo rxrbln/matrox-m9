@@ -1,5 +1,22 @@
 # What the M9 driver still has to implement
 
+## 2026-10-08 latest: seven ordinary scenes pass; X survives; Quake3 gaps persist
+
+DRM5f07050/Mesa32bc9ec and matched X cursor fix63569210 were tested once on
+the M9128 at1024x768 with FAA disabled. Glxgears and six glmark cases pass
+basic scanout review with no skips;108.734/113–115 appFPS, mode60Hz. X now
+survives both Quake3 exits and the full nine-case batch. GPU final1a8420,
+generation0, empty queue, wedged0. Full module teardown/reload allowed this
+ordinary transport on the same boot after FAA; direct context handoff is open.
+
+Quake3 GL1 still has stretched weapon geometry/HUD corruption; the C2
+pending-job ownership fix is retained but did not close that pixel defect.
+GL2 mix and bounded split/SFU improvements expose an ENOSPC two-pass
+submission failure, followed by a lost context and loading-only pixels.
+Investigate the actual command/resource capacity; do not revert the compiler
+improvements or raise the measured six-interpolant/five-native-output limits.
+Piglit and complete GL2 remain unqualified. [Current proof and image review](../tests/m9-nonfaa-regression-20261008/hardware-combined/README.txt).
+
 ## 2026-10-08: ordinary rendering retested; Quake3 gaps remain
 
 DRM45b33e6/Mesa6b03281 on the physical M9128 completes glxgears and six
