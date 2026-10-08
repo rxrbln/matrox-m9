@@ -4,6 +4,21 @@
 # M9 open topics and evidence, 2026-10-06
 
 
+## October 8: true16 constant-normal control retains the same GPU misindex
+
+The current runtime completes constant NORMAL / NORMAL-array / constant
+NORMAL at 360 vertices without a wedge. The array frame is solid. The last
+constant frame still has 8,488 pixels and exactly the same eight sampled
+wrong clip indices as the older padded32 control. The first four clip
+records are correct; a simple uniform index division does not explain it.
+[Current hardware and ISA evidence](../tests/m9-faa-glxgears-first-hardware-20261008/constant-normal-dense16/README.md).
+
+Input padding is ruled out as the cause of this persistent failure. The
+original M9128 finalizer also reproduces all three real carry bodies exactly,
+including their output MOVs and finish scheduling. Current work checks the
+stage interface and original one-COLOR two-stage path; complete glxgears
+FAA remains unproven. Hardware stays healthy at500; paused timing is not FPS.
+
 ## October 8: dense16 integration retires, but FAA gears still lose faces
 
 DRM dd84e6c and Mesa 0c62924 complete three original glxgears FAA frames
