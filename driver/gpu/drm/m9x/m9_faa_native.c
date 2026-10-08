@@ -7442,6 +7442,31 @@ m9_faa_color_unlocked_origin_get_locked(struct m9x_device *mdev, u32 generation,
 int m9x_faa_graph_color_unlocked_get_locked(struct m9x_device *mdev,u32 generation,
  u64 previous,struct m9_faa_graph_binding **out)
 {return m9_faa_color_unlocked_origin_get_locked(mdev,generation,previous,previous,false,false,out);}
+/* Textured later frames continue after ordinary jobs, as depth ones do. */
+int m9x_faa_graph_dual_unlocked_get_locked(struct m9x_device *mdev,
+					   u32 generation, u64 previous,
+					   struct m9_faa_graph_binding **out)
+{
+#ifdef M9_FAA_GRAPH_INIT_CONTROL
+	struct m9x_faa_replay *r = mdev->transport.faa;
+
+	if (r && m9_faa_ordinary_after(r, m9_faa_present_origin(r, previous)) &&
+	    (mdev->transport.queue_count || mdev->transport.async_pending)) {
+		int ret = m9x_transport_drain_locked(mdev);
+
+		if (ret)
+			return ret;
+	}
+	return m9_faa_color_unlocked_origin_get_locked(mdev, generation,
+						       previous,
+						       r ? m9_faa_frame_origin(r, previous) :
+							   previous,
+						       false, false, out);
+#else
+	return -EOPNOTSUPP;
+#endif
+}
+
 int m9x_faa_graph_depth_unlocked_get_locked(struct m9x_device *mdev,
 					    u32 generation, u64 previous,
 					    struct m9_faa_graph_binding **out)
@@ -8671,10 +8696,12 @@ int m9x_faa_graph_dual_later_prepare(
 	if (ret)
 		goto unlock;
 	r = t->faa;
+	/* The frame continues from the Unlock, or from the ordinary jobs
+	 * after it. A GPU presentation or pool maintenance has no source form.
+	 */
 	origin = m9_faa_frame_origin(r, previous);
-	/* The source control was resumed from the direct Unlock epoch. A GPU
-  * presentation or counted-pool maintenance changes that source state. */
-	if (origin != previous || r->present_point || r->command_pools ||
+	if ((origin != previous && !m9_faa_ordinary_after(r, previous)) ||
+	    r->present_point || r->command_pools ||
 	    !r->depth_storage || !r->depth_storage->initialized ||
 	    r->depth_storage->frame || !r->color_image || !r->programs ||
 	    (r->dual_active_second ? &r->dual_next_textures : &r->dual_textures)
@@ -8718,9 +8745,9 @@ int m9x_faa_graph_dual_later_prepare(
 	m9_faa_depth_frame_owners(r, owner);
 	m9_faa_mixed_templates(&tpl, sample, color, dual_fw, single_fw);
 	memcpy(programs, r->programs, sizeof(*programs));
-	epoch = (u32)previous - (clear_flags == 3 ? 0 :
-				 clear_flags == 2 ? 0x30 :
-						    0x80);
+	epoch = (u32)origin - (clear_flags == 3 ? 0 :
+			       clear_flags == 2 ? 0x30 :
+						  0x80);
 	for (i = 0; i < count; i++) {
 		struct m9x_faa_color_input job = batch ? batch->draw[i].input :
 							 *input;
@@ -8793,7 +8820,7 @@ int m9x_faa_graph_dual_later_prepare(
 			ret = m9x_faa_later_encode(
 				sample->data, sample->size, owner, &views,
 				r->graph_draw_end_bytes,
-				r->color_secondary_cursor, previous, next,
+				r->color_secondary_cursor, origin, next,
 				clear_flags, fresh_secondary, stage_bytes,
 				fresh_primary + ends[9] - r->primary_bytes,
 				form, cull_state, &later, later_scratch);
@@ -8809,7 +8836,7 @@ int m9x_faa_graph_dual_later_prepare(
 			continue;
 		}
 		ret = m9x_faa_later_append_encode(
-			owner, previous, clear_flags, i,
+			owner, origin, clear_flags, i,
 			r->color_secondary_cursor + old_start,
 			r->color_secondary_cursor + sec_bytes, later.primary,
 			later.primary_bytes, fresh_secondary, stage_bytes, form,

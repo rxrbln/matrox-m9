@@ -740,6 +740,9 @@ int m9x_faa_graph_dual_later_prepare(struct m9x_device *mdev,
 				     u32 clear_flags,
 				     const struct m9x_faa_owned_color_batch *batch);
 int m9x_faa_graph_depth_unlocked_get_locked(struct m9x_device *,u32,u64,struct m9_faa_graph_binding **);
+int m9x_faa_graph_dual_unlocked_get_locked(struct m9x_device *mdev,
+					   u32 generation, u64 previous,
+					   struct m9_faa_graph_binding **out);
 struct m9x_faa_depth_mode_state;
 int m9x_faa_graph_depth_mode_locked(struct m9x_device *,struct m9_faa_graph_binding *,u32,bool,struct m9x_faa_depth_mode_state *);
 int m9x_faa_graph_depth_frame_receipt_locked(struct m9x_device *mdev,

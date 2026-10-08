@@ -2435,9 +2435,10 @@ int m9x_faa_graph_dual_later_ioctl(struct drm_device *drm,void *data,
  /* Version 3: per-DRAW texture owners, unused where a DRAW keeps texture[]. */
  struct m9x_faa_texture_owners *draw_textures=NULL;
  u32 handles[2],address[PARHELIA_M9_FAA_GRAPH_OWNERS],sum,tmp,i,j;
- u64 previous=args->previous_unlock_point,point=0,expected;
+ u64 previous=args->previous_unlock_point,point=0,expected,delta;
+ u64 origin=0,maintenance=0,ordinary=0;
  u8 *upload=NULL;bool posted=false;int idx,ret;
- if(!state||args->flags||args->state||args->pad||args->lock_point||
+ if(!state||args->flags||args->state||args->pad||args->lock_point||args->ordinary_point||
     !m9x_faa_runtime_shape(args->width,args->height)||
     (args->clear_flags&&args->clear_flags!=3&&args->clear_flags!=2)||
     args->clear_color||!m9x_faa_depth_flags_valid(args->depth_flags)||
@@ -2462,7 +2463,7 @@ int m9x_faa_graph_dual_later_ioctl(struct drm_device *drm,void *data,
      check_mul_overflow(args->declaration_count,4u,&tmp)||
      check_add_overflow(sum,tmp,&sum)||sum!=args->upload_bytes)return -EINVAL;
  }
- expected=previous+(args->clear_flags==3?0x150:args->clear_flags==2?0x120:0xd0)+
+ delta=(args->clear_flags==3?0x150:args->clear_flags==2?0x120:0xd0)+
   (batch?batch->count-1:0)*0xa0;
  if(!m9x_faa_graph_profile_enabled()){ret=-EOPNOTSUPP;goto free_batch;}
  if(!drm_dev_enter(drm,&idx)){ret=-ENODEV;goto free_batch;}
@@ -2513,8 +2514,8 @@ int m9x_faa_graph_dual_later_ioctl(struct drm_device *drm,void *data,
   }
  }
  mutex_lock(&mdev->transport.lock);
- ret=m9x_faa_graph_color_unlocked_get_locked(mdev,args->generation,previous,
-                                             &binding);
+ ret=m9x_faa_graph_dual_unlocked_get_locked(mdev,args->generation,previous,
+                                            &binding);
  mutex_unlock(&mdev->transport.lock);if(ret)goto out;
  if(binding->graph!=graph){ret=-ESTALE;goto out;}
  if(!batch){
@@ -2554,8 +2555,17 @@ int m9x_faa_graph_dual_later_ioctl(struct drm_device *drm,void *data,
  if(memcmp(binding->address,address,sizeof(address))){ret=-ESTALE;goto out_exec;}
  ret=m9x_faa_graph_dual_later_submit(mdev,binding,args->generation,previous,
                                       draw_textures,&point,&posted);
- if(!ret){if(point!=expected)ret=-EIO;
-  else{args->lock_point=point;
+ if(!ret){
+  /* The frame counts from the Unlock or the ordinary jobs after it. */
+  mutex_lock(&mdev->transport.lock);
+  ret=m9x_faa_graph_depth_frame_receipt_locked(mdev,args->generation,previous,
+                                               point,&origin,&maintenance,
+                                               &ordinary);
+  mutex_unlock(&mdev->transport.lock);
+  expected=(ordinary?ordinary:origin)+delta;
+  if(!ret&&(maintenance||origin!=previous||(ordinary&15)||
+            (ordinary&&ordinary<=origin)||point!=expected))ret=-EIO;
+  if(!ret){args->lock_point=point;args->ordinary_point=ordinary;
    args->state=PARHELIA_M9_FAA_DUAL_LATER_LOCK_RETIRED;}}
 out_exec:drm_exec_fini(&exec);
 out:kfree(upload);m9x_faa_texture_owners_put(&textures,false);
