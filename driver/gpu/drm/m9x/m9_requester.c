@@ -784,6 +784,21 @@ static int m9_primary_place_staging_locked(struct m9x_device *mdev, u32 bytes,
 	return 0;
 }
 
+/* With faa_ordinary_continue, ordinary jobs share the context that the
+ * retired FAA source INIT activated, as on the vendor's single requester.
+ */
+bool m9x_ordinary_faa_context_locked(struct m9x_device *mdev)
+{
+	struct m9x_transport *t = &mdev->transport;
+
+	lockdep_assert_held(&t->lock);
+	return m9_faa_ordinary_continue && t->faa_virtual_primary &&
+	       t->faa_source_context && t->engine_transitioned &&
+	       t->restore_ready && t->transport_armed && t->bus_master_enabled &&
+	       !t->wedged && t->triangle &&
+	       m9x_faa_source_init_retired_locked(mdev);
+}
+
 /* While an FAA graph owns the requester, the job continues its retained
  * flags30/B primary (MxMD 23a09/2461e): COMMAND_BASE stays, END moves on.
  */

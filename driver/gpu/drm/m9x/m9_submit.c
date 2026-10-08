@@ -1287,7 +1287,7 @@ static int m9_submit_execute(struct m9x_device *mdev, const u32 *image,
 		m9x_transport_drain_locked(mdev);
 	if (ret)
 		goto out_unlock;
-	ret = m9x_engine_ready_locked(mdev);
+	ret = m9x_ordinary_ready_locked(mdev);
 	if (ret)
 		goto out_unlock;
 	target = mdev->transport.next_fence;

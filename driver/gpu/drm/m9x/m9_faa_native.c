@@ -889,6 +889,16 @@ int m9x_faa_graph_continuation_selftest(void)
 		0 : -EINVAL;
 }
 
+/* The source INIT, the vendor's one context activation, has retired. */
+bool m9x_faa_source_init_retired_locked(struct m9x_device *mdev)
+{
+	const struct m9x_faa_replay *r = mdev->transport.faa;
+
+	lockdep_assert_held(&mdev->transport.lock);
+	return r && r->graph_binding && !r->graph_preparing && r->attempted &&
+	       r->observation_retired && r->observation_point;
+}
+
 bool m9x_faa_source_init_enabled(struct m9x_device *mdev)
 {
 #ifdef M9_FAA_GRAPH_INIT_CONTROL

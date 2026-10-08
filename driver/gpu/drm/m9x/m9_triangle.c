@@ -1593,6 +1593,17 @@ int m9x_engine_ready_locked(struct m9x_device *mdev)
 	return ret;
 }
 
+/* Ordinary submits either share the FAA source context (stage 2) or bring
+ * up the ordinary one. The FAA INIT admission is not repeated for them.
+ */
+int m9x_ordinary_ready_locked(struct m9x_device *mdev)
+{
+	lockdep_assert_held(&mdev->transport.lock);
+	if (m9x_ordinary_faa_context_locked(mdev))
+		return 0;
+	return m9x_engine_ready_locked(mdev);
+}
+
 /*
  * Execute counted user records through the shared class-1 BmBuffer, then the
  * vendor bm-12 completion range with a fresh target.
@@ -1614,7 +1625,8 @@ int m9x_submit_user_stream_locked(struct m9x_device *mdev, const u32 *records,
 	lockdep_assert_held(&mdev->transport.lock);
 	if (doorbell_posted)
 		*doorbell_posted = false;
-	if (!diag || !diag->context_initialized) {
+	if (!diag || (!diag->context_initialized &&
+		      !m9x_ordinary_faa_context_locked(mdev))) {
 		dev_warn_ratelimited(&mdev->pdev->dev,
 			"M9 ordinary stream refused: errno=%d context_initialized=%u faa_source=%u faa_virtual=%u generation=%u submitted=%#llx completed=%#llx\n",
 			-EINVAL, diag ? diag->context_initialized : 0,

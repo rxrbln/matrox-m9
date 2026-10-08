@@ -470,6 +470,9 @@ int m9x_faa_output_read(struct m9x_device *mdev, struct drm_file *file,
 int m9x_triangle_prepare_user(struct m9x_device *mdev);
 int m9x_triangle_prepare_queue(struct m9x_device *mdev);
 int m9x_engine_ready_locked(struct m9x_device *mdev);
+int m9x_ordinary_ready_locked(struct m9x_device *mdev);
+bool m9x_ordinary_faa_context_locked(struct m9x_device *mdev);
+bool m9x_faa_source_init_retired_locked(struct m9x_device *mdev);
 int m9x_submit_user_stream_locked(struct m9x_device *mdev, const u32 *records,
 				  u32 dwords, const u32 *range_ends, u32 ranges,
 				  u32 target, u64 *point, bool async,
