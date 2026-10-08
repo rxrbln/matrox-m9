@@ -50,23 +50,6 @@ static u32 rd(const u8 *p,u32 at)
 {return (u32)p[at]|(u32)p[at+1]<<8|(u32)p[at+2]<<16|(u32)p[at+3]<<24;}
 static void wr(u8 *p,u32 at,u32 v)
 {p[at]=v;p[at+1]=v>>8;p[at+2]=v>>16;p[at+3]=v>>24;}
-/* Truncated magnitude of an IEEE single, as fistp after fabs with RC=chop. */
-static u32 float_trunc(u32 bits)
-{
- u32 e=(bits>>23)&0xff,m=(bits&0x7fffff)|0x800000;
- if(e<127)return 0;
- if(e>=127+31)return U32_MAX;
- return e>=150?m<<(e-150):m>>(150-e);
-}
-static u32 floor_log2(u32 v)
-{u32 n=0;while(v>1){v>>=1;n++;}return n;}
-/* Original 13b900: guard band coefficients of the position constants select
- * two 3-bit fields (log2-1) at bits 14:12 (x) and 7:5 (y) of setup word 84. */
-u32 m9x_faa_guard_field(u32 guard_x_bits,u32 guard_y_bits)
-{
- return ((floor_log2(float_trunc(guard_x_bits))-1)&7)<<12|
-  ((floor_log2(float_trunc(guard_y_bits))-1)&7)<<5;
-}
 static bool sha_ok(const u8 *data,u32 bytes,const u8 expected[32])
 {u8 digest[32];sha256(data,bytes,digest);return !memcmp(digest,expected,32);}
 
@@ -169,11 +152,10 @@ int m9x_faa_dual_first_encode(const u8 *sample,size_t sample_bytes,
  /* Position constants k[19]/k[21] are the live x/y guard coefficients. */
  value=m9x_faa_guard_field(rd(c->constants,c->layout.constant_begin[3]+76),
   rd(c->constants,c->layout.constant_begin[3]+84));
- for(i=0;i<3;i++){
-  static const u16 at[]={76,804,1448};
-  wr(stage,at[i],(rd(stage,at[i])&~0x70e0u)|value);
+ for(i=0;i<4;i++){
+  static const u16 at[]={76,804,1448,1996};
+  m9x_faa_guard_field_put(stage+at[i],value);
  }
- wr(stage,1996,(rd(stage,1996)&~0x70e0u)|value);
  wr(stage,2272,m9x_faa_depth_a8(c->depth_flags));
  /* Source f0/ef/d7 and fragment usage describe this exact authenticated
   * dual-multiply FS72 interface. Other fragment programs refuse above. */

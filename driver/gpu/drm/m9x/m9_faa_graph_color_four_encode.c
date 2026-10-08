@@ -1,4 +1,5 @@
 /* SPDX-License-Identifier: GPL-2.0-only */
+/* Copyright 2026 René Rebe <rene@exactco.de> */
 /* Original two-varying M9128 control; one-varying shape is experimental,
  * derived from independent target/mask/record rules and real gather arity. */
 #include <linux/errno.h>
@@ -174,6 +175,11 @@ int m9x_faa_color_four_encode(const u8*blob,size_t bytes,const struct m9x_faa_gr
  for(i=0;i<groups;i++){u8*p=out->secondary+528+i*24;put(p,4);put(p+4,0x23232323);
   for(j=0;j<4;j++)put(p+8+j*4,i*4+j<in->declaration_count?get(in->declaration+4*(i*4+j)):0);}
  memcpy(out->secondary+576+extra,blob+3696+576,2712-576);
+ for(i=0;i<4;i++){
+  static const u16 guard_at[]={76,764,1376,1924};
+  m9x_faa_guard_field_put(out->secondary+moved(guard_at[i],extra),
+   m9x_faa_guard_field_size(dimensions.width,dimensions.height));
+ }
  for(i=0;i<ARRAY_SIZE(metadata);i++)if(metadata[i].a<528||metadata[i].a>=576)put(out->secondary+moved(metadata[i].a,extra),metadata[i].b);
  for(i=0;i<ARRAY_SIZE(fields);i++){
   const struct field*f=&fields[i];offset=f->offset;

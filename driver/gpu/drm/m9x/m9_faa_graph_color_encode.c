@@ -1,4 +1,5 @@
 /* SPDX-License-Identifier: GPL-2.0-only */
+/* Copyright 2026 René Rebe <rene@exactco.de> */
 #include <linux/errno.h>
 #include <linux/string.h>
 #include <linux/overflow.h>
@@ -131,6 +132,11 @@ int m9x_faa_color_encode(const u8*blob,size_t bytes,
  for(i=0;i<padded;i+=4){u8*p=out->secondary+484+i/4*24;put(p,4);put(p+4,0x23232323);
   for(j=0;j<4;j++)put(p+8+j*4,i+j<in->declaration_count?word(in->declaration+(i+j)*4):0);}
  memcpy(out->secondary+508+extra,blob+3652+508,1352-508);
+ /* Guard band setup field of the live target, never the template's 320. */
+ m9x_faa_guard_field_put(out->secondary+32,
+  m9x_faa_guard_field_size(dimensions.width,dimensions.height));
+ m9x_faa_guard_field_put(out->secondary+moved(664,extra),
+  m9x_faa_guard_field_size(dimensions.width,dimensions.height));
  for(i=0;i<ARRAY_SIZE(fields);i++){
   const struct color_field*f=&fields[i];offset=f->offset;
   if(f->owner==29)offset=moved(offset,extra);

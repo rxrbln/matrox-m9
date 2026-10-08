@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: GPL-2.0-only
+/* Copyright 2026 René Rebe <rene@exactco.de> */
 /* Original M9128 retained bound-depth LESS/write draw and normal Lock.
  * This bounded encoder emits only the suffix after a separately qualified
  * attach-and-clear prefix; it never posts commands or claims retirement. */
@@ -10,6 +11,8 @@
 #include "m9_faa_graph_depth_draw_encode.h"
 #include "m9_faa_graph_depth_draw_fields.h"
 
+/* Template guard band setup words (original 13b900 field). */
+static const u16 guard_at[] = { 76, 764, 1252, 1680 };
 static const u8 depth_template_sha[32] = {
 	0xa4,0xb2,0x07,0xb4,0xa5,0x93,0xe1,0x7f,
 	0x1e,0xba,0xdf,0x16,0xb2,0xe3,0x12,0x4f,
@@ -213,6 +216,11 @@ static int depth_encode_impl(const u8 *blob, size_t bytes,
 	memcpy(out->primary, blob, M9_FAA_DEPTH_DRAW_PRIMARY_BYTES);
 	memcpy(out->secondary, blob + M9_FAA_DEPTH_DRAW_PRIMARY_BYTES,
 	       M9_FAA_DEPTH_DRAW_SECONDARY_BYTES);
+	for (i = 0; i < ARRAY_SIZE(guard_at); i++)
+		m9x_faa_guard_field_put(out->secondary + guard_at[i],
+			m9x_faa_guard_field_size(
+				views->owner[M9_FAA_BOUND_COLOR].width,
+				views->owner[M9_FAA_BOUND_COLOR].height));
 	for (i = 0; i < ARRAY_SIZE(depth_fields); i++) {
 		const struct depth_field *f = &depth_fields[i];
 		u8 *dst = f->dst ? out->secondary : out->primary;
