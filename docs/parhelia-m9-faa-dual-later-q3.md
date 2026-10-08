@@ -64,6 +64,19 @@ Notes on the rows:
 - Single-texture MODULATE, blended and alpha-tested stages need FAA fragment programs
   beyond the pinned FS72.
 
+## m9faa5 additions (2026-10-08)
+
+| Item | Status | Evidence |
+| --- | --- | --- |
+| Mipmaps, GL level encoding | MEASURED | `hardware-mip-centre-20261008` |
+| Culled 3-DRAW batches | MEASURED | `hardware-mip-centre-20261008` |
+| FAA raster samples at integer pixel centres; Mesa moves geometry -0.5 px | MEASURED | `hardware-mip-centre-20261008` |
+| Later program switches (single, blend, alpha test) | PROVEN source | `tests/m9-faa-program-switch-source-20261008` |
+| Later batches of 8 DRAWs, per-DRAW textures | PROVEN source | `tests/m9-faa-dual-later-batch-source-20261008` (`crc-*`) |
+| GL depth range = ZRANGE k[2]/k[6] | PROVEN source, Mesa OFFLINE | `--zrange` of the dual xyz control |
+| Single FIRST stage, later switch dual->single | CPU byte-equal, UNTESTED | DRM `m9x/tests/faa-single-first.md` |
+| Per-frame fallback, admission census | OFFLINE | Mesa `7ac676d`, `d38a4a9` |
+
 ## Remaining, in order
 
 1. Done (m9faa5): mipmaps, culled batches, GL pixel centre on the FAA raster.
