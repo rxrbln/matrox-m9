@@ -105,11 +105,12 @@ struct m9_faa_live_program_entry {
    const struct nir_shader *source;
    struct m9_vs_outputs linkage;
    unsigned inline_count;
+   unsigned uniform_color_offset_plus_one;
    uint32_t inline_values[M9_FAA_CACHE_INLINE_WORDS];
    struct m9_vs_program program;
 };
 struct m9_faa_live_program_cache {
-   struct m9_faa_live_program_entry route[3];
+   struct m9_faa_live_program_entry route[3][2];
 };
 struct m9_faa_live_program_cache *
 m9_faa_live_program_cache_create(void)
@@ -121,7 +122,9 @@ m9_faa_live_program_cache_destroy(struct m9_faa_live_program_cache *cache)
 {
    if (!cache) return;
    for (unsigned i = 0; i < 3; i++)
-      if (cache->route[i].ready) m9_vs_program_fini(&cache->route[i].program);
+      for (unsigned j = 0; j < 2; j++)
+         if (cache->route[i][j].ready)
+            m9_vs_program_fini(&cache->route[i][j].program);
    free(cache);
 }
 static bool
@@ -130,6 +133,7 @@ m9_faa_live_program_cache_match(const struct m9_faa_live_program_entry *entry,
 {
    return entry->ready && entry->source == s->source_identity &&
           entry->inline_count == s->inline_count &&
+          entry->uniform_color_offset_plus_one == s->uniform_color_offset_plus_one &&
           !memcmp(&entry->linkage, s->linkage, sizeof(entry->linkage)) &&
           (!s->inline_count ||
            !memcmp(entry->inline_values, s->inline_values, s->inline_count * 4));
@@ -185,13 +189,20 @@ live_gl_build_mode(const struct m9_faa_live_gl *s,
       if (overlap(output, sizeof(*output), s->maps[i], s->map_bytes[i]))
          goto fail;
    /* The cache owner is one immutable VS state; specialization values and
-    * the complete output linkage are part of the key. The program owns no
+    * the complete output linkage are part of the key. Uniform COLOR0's
+    * deterministic private rewrite also keys its appended CB byte offset;
+    * the color words remain live draw constants, not shader specialization.
+    * The program owns no
     * NIR, CB, mapped record, or resource pointers. Unsupported cache keys
     * use the ordinary uncached path, preserving frontend admission. */
    if (s->compile_cache && s->source_identity &&
        s->inline_count <= M9_FAA_CACHE_INLINE_WORDS &&
+       (s->uniform_color_offset_plus_one == 0 ||
+        (s->uniform_color_offset_plus_one <= 65521 &&
+         (s->uniform_color_offset_plus_one & 15) == 1)) &&
        (!s->inline_count || s->inline_values))
-      entry = &s->compile_cache->route[fused ? 1 : dual ? 2 : 0];
+      entry = &s->compile_cache->route[fused ? 1 : dual ? 2 : 0]
+                                    [s->uniform_color_offset_plus_one != 0];
    if (entry && m9_faa_live_program_cache_match(entry, s)) {
       p = entry->program;
       borrowed = true;
@@ -205,6 +216,7 @@ live_gl_build_mode(const struct m9_faa_live_gl *s,
          entry->source = s->source_identity;
          entry->linkage = *s->linkage;
          entry->inline_count = s->inline_count;
+         entry->uniform_color_offset_plus_one = s->uniform_color_offset_plus_one;
          if (s->inline_count)
             memcpy(entry->inline_values, s->inline_values, s->inline_count * 4);
          entry->program = p;

@@ -63,6 +63,9 @@ struct m9_faa_live_gl {
    const struct nir_shader *source_identity; /* Immutable unspecialized VS. */
    const uint32_t *inline_values;
    unsigned inline_count;
+   /* Zero for the original VS; normalized uniform COLOR0 uses its appended
+    * CB byte offset plus one. Set only after the private NIR rewrite succeeds. */
+   unsigned uniform_color_offset_plus_one;
    const void *cb0;
    size_t cb0_bytes;
    struct m9_faa_program_vector fragment;
