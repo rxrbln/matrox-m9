@@ -172,7 +172,7 @@ static bool overlap(const void *a,u32 as,const void *b,u32 bs)
 int m9x_faa_later_depth_append_encode(
  const struct m9x_faa_graph_draw_owner owner[M9_FAA_LATER_DEPTH_OWNERS],
  const struct m9x_faa_depth_views *views,u32 pstart,u32 sstart,
- u64 previous,u32 clear_flags,u32 count,
+ u64 previous,u32 clear_flags,u32 raster_flags,u32 count,
  const u8 *old,u32 old_bytes,u32 old_secondary_bytes,
  const u32 *old_ends,u32 end_count,u64 old_point,
  const u8 *fresh,u32 fresh_bytes,const struct m9x_faa_color_input *input,
@@ -186,16 +186,16 @@ int m9x_faa_later_depth_append_encode(
  static const u8 epoch_tag[]={1,1,1,0,1,1,0,1,1,1,0,1,1};
  static const u16 save_at[]={8,84,88,100,116,132},save_offset[]={0,640,704,8,8,16};
  static const u8 save_owner[]={22,22,22,8,8,8},save_tag[]={1,5,5,1,5,1};
- u32 i,insert,old_begin,old_mid,cursor,new_bytes;u64 delta=clear_flags?0x150:0xd0;
+ u32 i,insert,old_begin,old_mid,cursor,new_bytes;u32 cull_bytes=(raster_flags&6)?24:0;u64 delta=clear_flags?0x150:0xd0;
  if(!owner||!views||!old||!old_ends||!fresh||!input||!out||!out->primary||!out->secondary||
-  (clear_flags&&clear_flags!=3)||!count||count>31||fresh_bytes!=2712||
+  (clear_flags&&clear_flags!=3)||(raster_flags&~7u)||(raster_flags&6)==6||!count||count>31||fresh_bytes!=2712||
   input->layout.program_count!=4||input->declaration_count!=5||input->record_stride!=32||
   !input->record_count||input->record_count%3||input->record_count>12288||
   (previous&15)||(pstart&3)||(sstart&3)||
   previous>~(u64)0-delta-count*0xa0||
   old_point!=previous+delta+(count-1)*0xa0||(u32)old_point>U32_MAX-0xa0||
   old_bytes<3632||old_bytes>U32_MAX-60||end_count!=(clear_flags?13u:4u)||
-  old_secondary_bytes!=(clear_flags?2568u:2572u)+(count-1)*2700u)
+  old_secondary_bytes!=(clear_flags?2568u:2572u)+cull_bytes+(count-1)*2700u)
   return -EINVAL;
  if(m9x_faa_graph_draw_owners_validate(owner)||
   m9x_faa_depth_stages_encode(views,0x3f800000,&(struct m9x_faa_depth_stage_image){0}))return -EINVAL;
@@ -212,7 +212,7 @@ int m9x_faa_later_depth_append_encode(
   overlap(out->secondary,2700,old,old_bytes)||overlap(out->secondary,2700,fresh,2712))return -EINVAL;
  insert=old_bytes-3572;
  old_begin=count==1?sstart:cursor-2700;
- old_mid=count==1?(clear_flags?1696:1700):1828;
+ old_mid=count==1?(clear_flags?1696:1700)+cull_bytes:1828;
  if(get(old+insert)!=0x45454524||
   get(old+insert-60)!=0x45452d2c||get(old+insert-12)!=0x45452d2c||
   get(old+insert-56)!=(owner[29].base+old_begin+1)||
@@ -226,7 +226,10 @@ int m9x_faa_later_depth_append_encode(
   * Fresh program, masks, interpolation and typed raw owner metadata remain
   * those of this independently encoded job. */
  if(get(fresh+2076)!=(views->owner[2].base|1)||get(fresh+2092)||
-  get(fresh+2096)!=0xf0010100||get(fresh+2200)!=0x0038038f)return -EINVAL;
+  get(fresh+2096)!=0xf0010100||get(fresh+2200)!=0x0038038f||
+  (get(fresh+1920)&0x03000000)!=(raster_flags&2?0x03000000:raster_flags&4?0x02000000:0)||
+  !!(get(fresh+1936)&0x4000)!=!!(raster_flags&1)||
+  input->fragment_flags!=!!(raster_flags&1))return -EINVAL;
  for(i=0;i<ARRAY_SIZE(save_at);i++)if((u64)owner[save_owner[i]].base+save_offset[i]+save_tag[i]>U32_MAX)return -ERANGE;
  memcpy(out->primary,old,insert);memcpy(out->primary+insert,old+insert-60,60);
  put(out->primary+insert+4,owner[29].base+cursor+1);put(out->primary+insert+8,owner[29].base+cursor+1830);
