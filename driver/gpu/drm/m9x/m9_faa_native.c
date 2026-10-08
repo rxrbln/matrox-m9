@@ -5025,23 +5025,36 @@ int m9x_faa_graph_unlock_submit(struct m9x_device *mdev,
 #endif
 }
 
-int m9x_faa_graph_present_get_locked(struct m9x_device *mdev,u32 generation,
- u64 lock_point,struct m9_faa_graph_binding **out)
+int m9x_faa_graph_present_get_locked(struct m9x_device *mdev, u32 generation,
+				     u64 lock_point,
+				     struct m9_faa_graph_binding **out)
 {
 #ifdef M9_FAA_GRAPH_INIT_CONTROL
- struct m9x_faa_replay *r=mdev->transport.faa;struct drm_gem_object *gem;int ret;
- lockdep_assert_held(&mdev->transport.lock);
- if(!out)return -EINVAL;*out=NULL;
- if(!r||!r->graph_binding||r->graph_generation!=generation||
-  mdev->transport.generation!=generation||!r->color_lock_retired||
-  r->color_lock_point!=lock_point||r->unlock_started)return -ESTALE;
- gem=m9x_faa_graph_binding_owner(r->graph_binding,PARHELIA_M9_FAA_PRIMARY);
- if(!gem||!m9x_gem_is_vram(gem))return -ESTALE;
- ret=m9x_faa_lock_view_admit_locked(mdev,drm_gem_vram_of_gem(gem),r->owner[1].base,m9x_faa_primary_window_bytes(&r->graph_layout));
- if(!ret)*out=m9x_faa_graph_binding_get(r->graph_binding);
- return ret;
+	struct m9x_faa_replay *r = mdev->transport.faa;
+	struct drm_gem_object *gem;
+	int ret;
+
+	lockdep_assert_held(&mdev->transport.lock);
+	if (!out)
+		return -EINVAL;
+	*out = NULL;
+	if (!r || !r->graph_binding || r->graph_generation != generation ||
+	    mdev->transport.generation != generation ||
+	    !r->color_lock_retired || r->color_lock_point != lock_point ||
+	    r->unlock_started)
+		return -ESTALE;
+	gem = m9x_faa_graph_binding_owner(r->graph_binding,
+					  PARHELIA_M9_FAA_PRIMARY);
+	if (!gem || !m9x_gem_is_vram(gem))
+		return -ESTALE;
+	ret = m9x_faa_lock_view_admit_locked(mdev, drm_gem_vram_of_gem(gem),
+					     r->owner[1].base,
+					     m9x_faa_primary_window_bytes(&r->graph_layout));
+	if (!ret)
+		*out = m9x_faa_graph_binding_get(r->graph_binding);
+	return ret;
 #else
- return -EOPNOTSUPP;
+	return -EOPNOTSUPP;
 #endif
 }
 
