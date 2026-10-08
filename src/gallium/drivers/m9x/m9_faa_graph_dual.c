@@ -67,7 +67,7 @@ dual_texture_current(const struct m9_faa_application_texture *t)
 
 /* One retained dual DRAW after the authenticated Unlock of the previous
  * textured Lock. The kernel admits the same program with the same pair or a
- * source-proved stage-1 owner change from the direct Unlock epoch. */
+ * source-proved stage-1 owner change, CLEAR3 or no clear, direct Unlock epoch. */
 static int
 m9_faa_surface_dual_later_kernel(struct m9_screen *screen,struct m9_faa_surface *surface,
                                  const struct m9_faa_application_frame *frame)
@@ -78,9 +78,7 @@ m9_faa_surface_dual_later_kernel(struct m9_screen *screen,struct m9_faa_surface 
    struct m9_faa_graph *g=&surface->graph;
    const struct m9_faa_application_upload *u=&frame->draws[0];
    const struct m9_faa_application_state *s=&u->state;
-   /* No-clear later frames retire but corrupt the retained pixels on hardware
-    * (RE tests/m9-faa-dual-later-native-20261008); only CLEAR3 is pixel-qualified. */
-   if(frame->count!=1||frame->clear_flags!=3||frame->clear_color)
+   if(frame->count!=1||(frame->clear_flags&&frame->clear_flags!=3)||frame->clear_color)
       return -EOPNOTSUPP;
    if(g->color_texture_count!=2||g->color_program_count!=4||!g->color_lock_point||
       !g->color_unlock_attempted||g->color_lock_point>UINT64_MAX-0x20||
@@ -100,7 +98,7 @@ m9_faa_surface_dual_later_kernel(struct m9_screen *screen,struct m9_faa_surface 
    for(unsigned t=0;t<2;t++)
       if(!dual_texture_current(&u->texture[t]))return -ESTALE;
    int ret=dual_pack(&u->shader,&draw);if(ret)return ret;
-   const uint64_t delta=0x150;
+   const uint64_t delta=frame->clear_flags?0x150:0xd0;
    request=(struct drm_parhelia_m9_faa_graph_dual_later){.graph_id=g->prepared_id,
       .previous_unlock_point=g->color_unlock_point,.upload=draw.upload,
       .upload_bytes=draw.upload_bytes,.generation=g->prepared_generation,
