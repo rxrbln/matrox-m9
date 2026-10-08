@@ -40,8 +40,13 @@ Notes on the rows:
   A culled later stage keeps two 12-byte 6A groups, 24 bytes in all
   (`tests/m9-faa-dual-cull-source-20261008`). There is no source for culled appends yet,
   so culled DRAWs go one per transaction.
-- Stage-1 COLOROP changes before a later DRAW leave the original later image unchanged.
-  The retained D3D caller does not regenerate its fixed-function program there.
+- Later program switches (`tests/m9-faa-program-switch-source-20261008`). An earlier
+  capture showed stage-1 COLOROP changes leaving the later image unchanged. That was an
+  emulator artifact: the PDEV CRC table at 0x20cda0 was never built, so every
+  program-cache key was 0. With `--pdev-crc-table`, a changed TSS, blend or alpha-test
+  state builds and uploads a new program inside the later DRAW. That stage is the
+  program's FIRST stage plus the usual sampler reload. A cached program is selected
+  without a rebuild.
 - Texture shapes (`tests/m9-faa-dual-texture-shape-source-20261008`): 128x128 uses kind
   0x21; request +0x2c is the level count. The D3D level/mip-filter words differ from the
   ordinary GL sampler encoding, so a level-coded hardware probe decides between them.
