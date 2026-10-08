@@ -1156,9 +1156,9 @@ static bool m9_faa_transport_continuable(struct m9x_device *mdev)
 	const struct m9x_transport *t = &mdev->transport;
 
 	return m9x_faa_ordinary_continue_enabled() && !t->faa_virtual_primary &&
-	       !t->wedged && !t->async_stop &&
-	       t->transport_armed && t->bus_master_enabled &&
-	       t->engine_transitioned && t->restore_ready && t->fence_cpu &&
+	       !t->wedged && !t->async_stop && t->transport_armed &&
+	       t->bus_master_enabled && t->engine_transitioned &&
+	       t->restore_ready && t->fence_cpu &&
 	       m9x_triangle_context_ready_locked(mdev);
 }
 
