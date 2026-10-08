@@ -5,6 +5,19 @@
 
 #include <stdbool.h>
 #include <stdint.h>
+#include <errno.h>
+#include <stdio.h>
+#include <stdlib.h>
+
+/* -ESTALE of an FAA graph check, named under M9X_DEBUG. */
+static inline int
+m9_faa_estale(const char *file, int line)
+{
+   if (getenv("M9X_DEBUG"))
+      fprintf(stderr, "m9x: FAA stale at %s:%d\n", file, line);
+   return -ESTALE;
+}
+#define M9_FAA_ESTALE m9_faa_estale(__FILE__, __LINE__)
 
 struct pipe_screen;
 struct pipe_screen_config;

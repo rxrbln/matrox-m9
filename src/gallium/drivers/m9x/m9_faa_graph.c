@@ -696,7 +696,7 @@ m9_faa_surface_color_lock_kernel(struct m9_screen *screen,
        graph->public_vs_next_attempted || graph->public_vs_next_lock_point ||
        graph->public_vs_next_unlock_attempted || graph->public_vs_next_unlock_point ||
        graph->public_vs_follow_attempted || graph->public_vs_follow_point)
-      return -ESTALE;
+      return M9_FAA_ESTALE;
    int ret = m9_faa_color_upload_request(upload, &request);
    if (ret) return ret;
    request.graph_id = graph->prepared_id;
@@ -770,7 +770,7 @@ m9_faa_surface_color_next_kernel(struct m9_screen *screen,
        graph->public_vs_next_attempted || graph->public_vs_next_lock_point ||
        graph->public_vs_next_unlock_attempted || graph->public_vs_next_unlock_point ||
        graph->public_vs_follow_attempted || graph->public_vs_follow_point)
-      return -ESTALE;
+      return M9_FAA_ESTALE;
    int ret = m9_faa_color_upload_request(upload, &input);
    if (ret) return ret;
    /* The source ABI adds six state words after the same owned blob layout.
@@ -871,7 +871,7 @@ m9_faa_surface_color_frame_kernel(struct m9_screen *screen,
    if (first) {
       if (!graph->prepared || !graph->prepared_id || !graph->initialized ||
           !graph->init_point || (graph->init_point & 15) || graph->init_point > UINT64_MAX - delta)
-         return -ESTALE;
+         return M9_FAA_ESTALE;
       if (graph->color_lock_attempted || graph->color_lock_point ||
           graph->color_program_count || graph->color_lock_delta || graph->color_frame_draw_count ||
        graph->color_depth_initialized || graph->color_frame_flags || graph->color_frame_maintenance_point || graph->color_frame_ordinary_point ||
@@ -886,7 +886,7 @@ m9_faa_surface_color_frame_kernel(struct m9_screen *screen,
           graph->public_vs_next_attempted || graph->public_vs_next_lock_point ||
           graph->public_vs_next_unlock_attempted || graph->public_vs_next_unlock_point ||
           graph->public_vs_follow_attempted || graph->public_vs_follow_point)
-         return -ESTALE;
+         return M9_FAA_ESTALE;
    } else {
       if (!graph->prepared || !graph->prepared_id || !graph->initialized ||
           !graph->init_point || !graph->color_lock_attempted || !graph->color_lock_point ||
@@ -904,7 +904,7 @@ m9_faa_surface_color_frame_kernel(struct m9_screen *screen,
           graph->public_vs_next_attempted || graph->public_vs_next_lock_point ||
           graph->public_vs_next_unlock_attempted || graph->public_vs_next_unlock_point ||
           graph->public_vs_follow_attempted || graph->public_vs_follow_point)
-         return -ESTALE;
+         return M9_FAA_ESTALE;
    }
    int ret = m9_faa_color_upload_request(upload, &input);
    if (ret) return ret;
@@ -985,7 +985,7 @@ m9_faa_color_batch_with_storage(struct m9_screen *screen,
    struct m9_faa_graph *graph = &surface->graph;
    if (head->graph_id != graph->prepared_id || head->init_point != graph->init_point ||
        head->generation != graph->prepared_generation)
-      return -ESTALE;
+      return M9_FAA_ESTALE;
    /* COLOR_FRAME cannot continue after an ordinary interlude, so FIRST
     * always goes through the batch. */
    if (frame->count == 1 && graph->color_lock_attempted &&
@@ -1017,7 +1017,7 @@ m9_faa_color_batch_with_storage(struct m9_screen *screen,
    bool embedded_hz = !first && graph->color_depth_embedded_hz;
    uint32_t mode_changes = 0;
    if (programs == 2) {
-      if (!first && (!initialized_frame || !mode_valid)) return -ESTALE;
+      if (!first && (!initialized_frame || !mode_valid)) return M9_FAA_ESTALE;
       /* The original later CLEAR3 disabled/reset frontier is unread.
        * Never replace that transaction with an enabled/ALWAYS draw. */
       if (!first && frame->clear_flags && (!enabled || embedded_hz || !head->state.depth_enabled))
@@ -1032,7 +1032,7 @@ m9_faa_color_batch_with_storage(struct m9_screen *screen,
       struct drm_parhelia_m9_faa_graph_color_lock packed = {0};
       if (u->graph_id != graph->prepared_id || u->init_point != graph->init_point ||
           u->generation != graph->prepared_generation)
-         return -ESTALE;
+         return M9_FAA_ESTALE;
       if (state->width != surface->width || state->height != surface->height ||
           (programs != 2 && !state->depth_enabled) || state->depth_func > PIPE_FUNC_ALWAYS ||
           state->scissor_enabled || u->shader.color_flat != state->flatshade ||
@@ -1078,24 +1078,24 @@ m9_faa_color_batch_with_storage(struct m9_screen *screen,
        graph->public_vs_next_attempted || graph->public_vs_next_lock_point ||
        graph->public_vs_next_unlock_attempted || graph->public_vs_next_unlock_point ||
        graph->public_vs_follow_attempted || graph->public_vs_follow_point)
-      return -ESTALE;
+      return M9_FAA_ESTALE;
    if (first) {
       if (graph->color_lock_point || graph->color_program_count || graph->color_lock_delta ||
           graph->color_frame_draw_count || graph->color_depth_initialized || graph->color_frame_flags || graph->color_frame_maintenance_point || graph->color_frame_ordinary_point || graph->color_next_attempted ||
           graph->color_next_previous_unlock_point || graph->color_next_lock_point ||
           graph->color_unlock_attempted || graph->color_unlock_point)
-         return -ESTALE;
+         return M9_FAA_ESTALE;
    } else if (graph->color_program_count != programs || !graph->color_unlock_attempted || graph->color_next_attempted ||
               graph->color_lock_point > UINT64_MAX - 0x20 ||
               graph->color_unlock_point != graph->color_lock_point + 0x20 ||
               !m9_faa_color_lock_history_valid(graph)) {
-      return -ESTALE;
+      return M9_FAA_ESTALE;
    }
    const uint64_t prior_present = graph->color_present_point;
-   if (graph->color_present_attempted && !prior_present) return -ESTALE;
+   if (graph->color_present_attempted && !prior_present) return M9_FAA_ESTALE;
    if (prior_present && (!initialized_frame || !graph->color_present_attempted ||
        graph->color_unlock_point > UINT64_MAX - 0x20 ||
-       prior_present != graph->color_unlock_point + 0x20)) return -ESTALE;
+       prior_present != graph->color_unlock_point + 0x20)) return M9_FAA_ESTALE;
    request.previous_point = first ? graph->init_point : graph->color_unlock_point;
    if (request.previous_point > UINT64_MAX - delta ||
        (prior_present && prior_present > UINT64_MAX - delta)) return -ERANGE;
@@ -1203,7 +1203,7 @@ m9_faa_surface_color_present_kernel(struct m9_screen *screen,
        !g->color_lock_point || g->color_lock_point > UINT64_MAX - 0x40 ||
        !m9_faa_color_lock_history_valid(g) || g->color_unlock_attempted ||
        g->color_unlock_point || g->color_present_attempted || g->color_present_point)
-      return -ESTALE;
+      return M9_FAA_ESTALE;
    request.graph_id = g->prepared_id; request.generation = g->prepared_generation;
    request.lock_point = g->color_lock_point; request.destination_handle = destination_handle;
    request.destination_offset = offset; request.width = surface->width; request.height = surface->height;
@@ -1257,7 +1257,7 @@ m9_faa_surface_color_unlock_kernel(struct m9_screen *screen,
        graph->public_vs_follow_attempted || graph->public_vs_follow_point)
       return -EINVAL;
    if (graph->color_unlock_attempted || graph->color_unlock_point)
-      return -ESTALE;
+      return M9_FAA_ESTALE;
    request.graph_id = graph->prepared_id;
    request.generation = graph->prepared_generation;
    request.lock_point = graph->color_lock_point;
@@ -1308,7 +1308,7 @@ m9_faa_surface_public_vs_submit_kernel(struct m9_screen *screen,
        graph->color_unlock_attempted || graph->color_unlock_point ||
        graph->public_vs_attempted || graph->public_vs_point ||
        graph->public_vs_head_attempted || graph->public_vs_head_point)
-      return -ESTALE;
+      return M9_FAA_ESTALE;
    if (upload->layout.program.bytes != sizeof(request.program) ||
        upload->layout.program.count != 4 ||
        upload->layout.constants_bytes != sizeof(request.constants) ||
@@ -1383,7 +1383,7 @@ m9_faa_surface_public_vs_draw_kernel(struct m9_screen *screen,
        graph->public_vs_head_point != graph->init_point + 0x10)
       return -EINVAL;
    if (graph->public_vs_draw_attempted || graph->public_vs_draw_point)
-      return -ESTALE;
+      return M9_FAA_ESTALE;
    request.graph_id = graph->prepared_id;
    request.generation = graph->prepared_generation;
    request.head_point = graph->public_vs_head_point;
@@ -1428,7 +1428,7 @@ m9_faa_surface_public_vs_lock_kernel(struct m9_screen *screen,
        graph->public_vs_draw_point != graph->init_point + 0xb0)
       return -EINVAL;
    if (graph->public_vs_lock_attempted || graph->public_vs_lock_point)
-      return -ESTALE;
+      return M9_FAA_ESTALE;
    request.graph_id = graph->prepared_id;
    request.generation = graph->prepared_generation;
    request.draw_point = graph->public_vs_draw_point;
@@ -1489,7 +1489,7 @@ m9_faa_surface_public_vs_unlock_kernel(struct m9_screen *screen,
    uint64_t *point = next ? &graph->public_vs_next_unlock_point :
                            &graph->public_vs_unlock_point;
    if (*attempted || *point)
-      return -ESTALE;
+      return M9_FAA_ESTALE;
    request.graph_id = graph->prepared_id;
    request.generation = graph->prepared_generation;
    request.lock_point = next ? graph->public_vs_next_lock_point : graph->public_vs_lock_point;
@@ -1540,7 +1540,7 @@ m9_faa_surface_public_vs_next_kernel(struct m9_screen *screen,
       return -EINVAL;
    if (graph->public_vs_next_attempted || graph->public_vs_next_lock_point ||
        graph->public_vs_next_unlock_attempted || graph->public_vs_next_unlock_point)
-      return -ESTALE;
+      return M9_FAA_ESTALE;
    request.graph_id = graph->prepared_id;
    request.generation = graph->prepared_generation;
    request.unlock_point = graph->public_vs_unlock_point;
@@ -1582,7 +1582,7 @@ m9_faa_surface_public_vs_follow_kernel(struct m9_screen *screen,
        graph->public_vs_point != graph->init_point + 0x50)
       return -EINVAL;
    if (graph->public_vs_follow_attempted || graph->public_vs_follow_point)
-      return -ESTALE;
+      return M9_FAA_ESTALE;
    request.graph_id = graph->prepared_id;
    request.generation = graph->prepared_generation;
    request.prefix_point = graph->public_vs_point;

@@ -97,7 +97,7 @@ dual_draw_admissible(const struct m9_faa_surface *surface,
    const struct m9_faa_graph *g=&surface->graph;
    const struct m9_faa_application_state *s=&u->state;
    if(u->graph_id!=g->prepared_id||u->init_point!=g->init_point||
-      u->generation!=g->prepared_generation)return -ESTALE;
+      u->generation!=g->prepared_generation)return M9_FAA_ESTALE;
    if((u->texture_count!=1&&u->texture_count!=2)||
       s->width!=surface->width||s->height!=surface->height||
       (s->depth_enabled&&s->depth_func>PIPE_FUNC_ALWAYS)||
@@ -107,7 +107,7 @@ dual_draw_admissible(const struct m9_faa_surface *surface,
        (u->texture[0].resource==u->texture[1].resource||
         u->texture[0].view.handle==u->texture[1].view.handle)))return -EOPNOTSUPP;
    for(unsigned t=0;t<u->texture_count;t++)
-      if(!dual_texture_current(&u->texture[t]))return -ESTALE;
+      if(!dual_texture_current(&u->texture[t]))return M9_FAA_ESTALE;
    int ret=dual_pack(&u->shader,s,u->texture_count==1,packed);if(ret)return ret;
    /* Programs may differ per DRAW (the kernel caches each by its bytes);
     * one kind keeps one record declaration. */
@@ -143,7 +143,7 @@ m9_faa_surface_dual_later_kernel(struct m9_screen *screen,struct m9_faa_surface 
       g->color_next_attempted||
       g->color_present_attempted||g->color_present_point||g->color_frame_present_point||
       g->color_frame_maintenance_point||!g->color_depth_initialized)
-      return -ESTALE;
+      return M9_FAA_ESTALE;
    /* Each DRAW carries its own texture pair (version 3). */
    struct drm_parhelia_m9_faa_dual_draw *draws=calloc(frame->count,sizeof(*draws));
    struct drm_parhelia_m9_faa_dual_draw *saved=calloc(frame->count,sizeof(*saved));
@@ -229,7 +229,7 @@ m9_faa_surface_dual_frame_kernel(struct m9_screen *screen,struct m9_faa_surface 
       g->color_next_previous_unlock_point||g->color_frame_flags||
       g->color_frame_maintenance_point||g->color_frame_ordinary_point||g->color_frame_present_point||g->color_frame_mode_planned||
       g->public_vs_attempted||g->public_vs_head_attempted||g->public_vs_draw_attempted||
-      g->public_vs_lock_attempted||g->public_vs_next_attempted)return -ESTALE;
+      g->public_vs_lock_attempted||g->public_vs_next_attempted)return M9_FAA_ESTALE;
    const struct m9_faa_application_upload *first=&frame->draws[0];
    bool programs=false;
    for(unsigned i=0;i<frame->count;i++) {
