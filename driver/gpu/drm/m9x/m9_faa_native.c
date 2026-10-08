@@ -8320,9 +8320,15 @@ m9_faa_color_unlocked_origin_get_locked(struct m9x_device *mdev, u32 generation,
 #endif
 }
 
-int m9x_faa_graph_color_unlocked_get_locked(struct m9x_device *mdev,u32 generation,
- u64 previous,struct m9_faa_graph_binding **out)
-{return m9_faa_color_unlocked_origin_get_locked(mdev,generation,previous,previous,false,false,out);}
+int m9x_faa_graph_color_unlocked_get_locked(struct m9x_device *mdev,
+					    u32 generation, u64 previous,
+					    struct m9_faa_graph_binding **out)
+{
+	return m9_faa_color_unlocked_origin_get_locked(mdev, generation,
+						       previous, previous, false,
+						       false, out);
+}
+
 /* Textured later frames continue after ordinary jobs, as depth ones do. */
 int m9x_faa_graph_dual_unlocked_get_locked(struct m9x_device *mdev,
 					   u32 generation, u64 previous,
