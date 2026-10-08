@@ -3575,14 +3575,16 @@ static int m9_faa_program_access(struct m9x_device *mdev,
 	}
 	/* A source prefix may contain only preprocessing entry32. Require
 	 * its explicit generated inventory; older complete profiles retain
-	 * both entries. Pair and unique-owner validation remain identical. */
+	 * both entries. Pair and unique-owner validation remain identical.
+	 */
 	if (!entries || !expected_offsets || (expected_offsets & ~3u) ||
 	    offsets != expected_offsets)
 		return -EINVAL;
 	/* Kind19 resident-database bindings use the same page-base encoder
 	 * without a C3 half. First identify the unique program from actual
 	 * entry-offset pairs, then reject orphan bases on that proven owner.
-	 * A valid later rebind must not conceal a missing earlier C3 half. */
+	 * A valid later rebind must not conceal a missing earlier C3 half.
+	 */
 	for (i = 0; i < ARRAY_SIZE(m9_faa_fixups); i++) {
 		const struct m9_faa_fixup *f = &m9_faa_fixups[i];
 
@@ -3594,11 +3596,13 @@ static int m9_faa_program_access(struct m9x_device *mdev,
 	spec = &m9_faa_owner_specs[program];
 	owner = &r->owner[program];
 	if (!spec->local || spec->system || spec->bytes != 0x1080 ||
-	    !owner->vram || owner->cpu || owner->bytes != PAGE_ALIGN(spec->bytes))
+	    !owner->vram || owner->cpu ||
+	    owner->bytes != PAGE_ALIGN(spec->bytes))
 		return -EINVAL;
 	ret = m9x_address_check_local_identity(mdev, owner->base, owner->bytes);
 	if (ret)
 		return ret;
+	/* The CPU stores precede their END post. */
 	wmb();
 	m9x_write(mdev, M9_REG_FRONTEND_KICK, 1);
 	dev_info(&mdev->pdev->dev,
