@@ -4,6 +4,24 @@ Copyright 2026 René Rebe <rene@exactco.de>
 SPDX-License-Identifier: GPL-2.0-only
 
 
+## October 8: large FAA batches pass64/96/176 draws on hardware
+
+DRM8ea85e0 and Mesa585acba replace the old32-draw cap with a ceiling derived
+from command-owner capacity and exact per-job size checks. A live GL grid now
+renders64,96,176 separately transformed/lit draws in three complete frames,
+including secondary rotation and crossing the old32KiB primary boundary.
+All triangle centers have the expected colors; no reference interior pixels
+are missing, maximum interior RGB error1. Final Unlock8130, generation0,
+wedged0, empty queue. [Hardware proof and images](../tests/m9-faa-large-batches-20261008/README.md).
+
+Quake3 still needs textured shader/UV topology, additional raster state and
+large-frame data/code streaming. Source-qualified live texture ownership is
+integrated (DRM7fff20c); whole dual-texture source image is now sealed.
+GPU copy/finish source and pure encoder are integrated (DRM95e2178), with
+runtime presentation in progress. Mesa5c60668 derives FAA-specific HZ and
+companion backing sizes; original1024x768 INIT comparison is closed, but
+runtime dimensions still need the complete clear/Lock/view transition.
+
 ## October 8: both FAA paths now pass continuous glxgears
 
 The source two-stage path now completes96 actual GPU frames too, with3 primary
