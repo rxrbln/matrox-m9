@@ -6862,6 +6862,8 @@ static int m9_faa_color_unlocked_origin_get_locked(struct m9x_device *mdev,
   lower_32_bits(previous_unlock_point)>U32_MAX-0x100||
   previous_unlock_point!=r->color_lock_point+0x20||r->unlock_point!=previous_unlock_point||
   r->graph_draw_point!=previous_unlock_point||
+  (r->present_attempted!=r->present_retired)||
+  (r->present_point&&!r->present_retired)||
   (r->present_attempted&&(!pool_scope||!r->present_retired||
    r->present_generation!=generation||r->present_point!=previous_unlock_point+0x20||
    r->present_posts!=r->graph_unlock_posts+3||r->present_end!=r->graph_unlock_end_bytes+100))||
