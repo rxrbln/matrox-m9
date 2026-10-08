@@ -106,7 +106,7 @@ int m9x_faa_sample_clear_encode(const u8 *blob, size_t bytes,
 	m9_cmd_put(primary + at, M9_CMD_FENCE);
 	m9_cmd_put(primary + at + 4, 1);
 	m9_cmd_put(primary + at + 8, ((u32)base_point + 0x70) | 1);
-	m9_cmd_put(primary + at + 12, 0x454545e6);
+	m9_cmd_put(primary + at + 12, M9_HW_HDR1(0xe6));
 	m9_cmd_put(primary + at + 16, 1);
 	*length = at + 20;
 	return 0;

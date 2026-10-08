@@ -203,7 +203,7 @@ int m9x_faa_later_depth_encode(const u8 *sample, size_t sample_bytes,
 		       scratch->next_secondary + start, last - start);
 		at += last - start;
 		m9_cmd_put(out->image.secondary + at, 1);
-		m9_cmd_put(out->image.secondary + at + 4, 0x45454543);
+		m9_cmd_put(out->image.secondary + at + 4, M9_HW_HDR1(0x43));
 		m9_cmd_put(out->image.secondary + at + 8,
 			   m9_cmd_get(scratch->next_secondary + last - 4) &
 				   ~15u);
@@ -253,7 +253,7 @@ int m9x_faa_later_depth_encode(const u8 *sample, size_t sample_bytes,
 	 * The ordinary repeat intentionally omitted it; initialized depth does not.
 	 */
 	memmove(scratch->tail + 3612, scratch->tail + 3604, 20);
-	m9_cmd_put(scratch->tail + 3604, 0x45454543);
+	m9_cmd_put(scratch->tail + 3604, M9_HW_HDR1(0x43));
 	m9_cmd_put(scratch->tail + 3608, (u32)(epoch + delta - 0x20));
 	{
 		u32 range_end = later(1676 + extra, extra, clear),

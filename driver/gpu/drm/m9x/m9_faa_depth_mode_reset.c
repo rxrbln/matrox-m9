@@ -96,10 +96,10 @@ int m9x_faa_depth_mode_reset_encode(const u8 *blob, size_t bytes,
 		 */
 		m9_cmd_put(image + 104, 0x20007000);
 		memmove(image + 724, image + 716, bytes - 716);
-		m9_cmd_put(image + 716, 0x45454543);
+		m9_cmd_put(image + 716, M9_HW_HDR1(0x43));
 		m9_cmd_put(image + 720, (u32)epoch + 0x30);
 		memmove(image + 104, image + 96, bytes + 8 - 96);
-		m9_cmd_put(image + 96, 0x45454543);
+		m9_cmd_put(image + 96, M9_HW_HDR1(0x43));
 		m9_cmd_put(image + 100, (u32)epoch + 0x10);
 	}
 	out->bytes = n;

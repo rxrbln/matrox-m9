@@ -6,14 +6,15 @@
 #include <linux/types.h>
 #include <linux/unaligned.h>
 
+#include "m9_hw_encode.h"
+
 /*
  * A packet header holds four register indices, (MMIO - 0x1000) >> 2,
  * consumed low byte first; index 0x45 ends the packet.
  */
-#define M9_CMD_IDX_END		0x45
-#define M9_CMD_HDR(a, b, c, d) \
-	((u32)(a) | (u32)(b) << 8 | (u32)(c) << 16 | (u32)(d) << 24)
-#define M9_CMD_HDR2(a, b)	M9_CMD_HDR(a, b, M9_CMD_IDX_END, M9_CMD_IDX_END)
+#define M9_CMD_IDX_END		M9_HW_IDX_END
+#define M9_CMD_HDR(a, b, c, d)	M9_HW_HDR(a, b, c, d)
+#define M9_CMD_HDR2(a, b)	M9_HW_HDR2(a, b)
 
 /* Secondary range: start | domain, end | 2 (counted pools: untagged end). */
 #define M9_CMD_LINK		M9_CMD_HDR2(0x2c, 0x2d)

@@ -3,12 +3,13 @@
 #ifndef M9_FAA_GRAPH_PUBLIC_VS_FOLLOW_ENCODE_H
 #define M9_FAA_GRAPH_PUBLIC_VS_FOLLOW_ENCODE_H
 #include "m9_faa_graph_draw_encode.h"
+#include "m9_hw_encode.h"
 #define M9_FAA_VS_FOLLOW_PRIMARY_BYTES 48u
 #define M9_FAA_VS_FOLLOW_SECONDARY_BYTES 616u
 #define M9_FAA_VS_FOLLOW_SECONDARY_OFFSET 752u
 #define M9_FAA_VS_FOLLOW_TEMPLATE_BYTES 664u
 #define M9_FAA_VS_FOLLOW_PATCH_OFFSET 704u
-#define M9_FAA_VS_FOLLOW_PATCH_EXPECTED 0x49d00000u
+#define M9_FAA_VS_FOLLOW_PATCH_EXPECTED M9_HW_TRANSITION_LENGTH
 struct m9x_faa_public_vs_follow_image {
 	u8 *primary, *secondary;
 	u32 primary_bytes, secondary_bytes;

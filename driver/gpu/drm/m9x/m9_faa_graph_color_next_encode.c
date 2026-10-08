@@ -39,7 +39,7 @@ static int clear_target(u32 base, u64 previous, u8 image[128], u32 *bytes)
 	m9_cmd_put(image + at, M9_CMD_FENCE);
 	m9_cmd_put(image + at + 4, 1);
 	m9_cmd_put(image + at + 8, ((u32)previous + 0x10) | 1);
-	m9_cmd_put(image + at + 12, 0x454545e6);
+	m9_cmd_put(image + at + 12, M9_HW_HDR1(0xe6));
 	m9_cmd_put(image + at + 16, 1);
 	*bytes = at + 20;
 	return 0;
@@ -172,7 +172,7 @@ int m9x_faa_color_next_encode(const u8 *blob, size_t bytes,
 			at += extra;
 		if (end >= 680)
 			end += extra;
-		m9_cmd_put(secondary + at, 0x49d00000 | ((end - at) / 4));
+		m9_cmd_put(secondary + at, M9_HW_TRANSITION_LENGTH | ((end - at) / 4));
 	}
 	if (clear_bytes)
 		memcpy(output->clear, clear, clear_bytes);

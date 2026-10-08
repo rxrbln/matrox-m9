@@ -76,7 +76,7 @@ int m9x_faa_depth_mode_clear_resume_encode(const u8 *sample,
 	    m9_cmd_get(s->primary + 4156) != M9_CMD_LINK ||
 	    m9_cmd_get(s->primary + 4168) != M9_CMD_LINK ||
 	    m9_cmd_get(s->secondary + 624 + extra) != 1 ||
-	    m9_cmd_get(s->secondary + 628 + extra) != 0x45454543 ||
+	    m9_cmd_get(s->secondary + 628 + extra) != M9_HW_HDR1(0x43) ||
 	    m9_cmd_get(s->secondary + 632 + extra) != (u32)previous + 0x110)
 		return -EINVAL;
 	/* Original return from the authentic finite query restores uncounted
@@ -86,7 +86,7 @@ int m9x_faa_depth_mode_clear_resume_encode(const u8 *sample,
 	memmove(s->primary + 100, s->primary + 96, 4156 - 96);
 	m9_cmd_put(s->primary + 80, M9_CMD_FENCE);
 	m9_cmd_put(s->primary + 88, ((u32)previous + 0xa0) | 1);
-	m9_cmd_put(s->primary + 92, 0x454545e6);
+	m9_cmd_put(s->primary + 92, M9_HW_HDR1(0xe6));
 	m9_cmd_put(s->primary + 96, 3);
 	/* Same live unindexed indirect ranges. The reached finite-query branch
 	 * omits the secondary three-word dependency and later primary two-word

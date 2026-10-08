@@ -11,6 +11,7 @@
 #include <drm/drm_gem_vram_helper.h>
 #include <drm/drm_print.h>
 
+#include "m9_hw_encode.h"
 #include "m9_drv.h"
 #include "m9_reg.h"
 #include "m9_resource69_inline.h"
@@ -212,10 +213,14 @@ static bool m9_textured_combiner(u32 value)
 static bool m9_transition_control(u32 value)
 {
 	switch (value) {
-	case 0x38000000: case 0x40004000: case 0x0c000000:
-	case 0x60600060: case 0x604fff9f:
-	case 0x2c000000: case 0x2c000002:
-	case 0x08000000:
+	case M9_HW_TRANSITION_END:
+	case M9_HW_TRANSITION_PUBLISH:
+	case M9_HW_TRANSITION_RECORD:
+	case M9_HW_TRANSITION_OPEN:
+	case M9_HW_TRANSITION_RESUME:
+	case M9_HW_TRANSITION_NEXT:
+	case M9_HW_TRANSITION_FIRST:
+	case M9_HW_TRANSITION_START:
 		return true;
 	default:
 		return false;
@@ -224,7 +229,7 @@ static bool m9_transition_control(u32 value)
 
 static bool m9_transition_length(u32 value)
 {
-	return (value & 0xffff0000) == 0x49d00000;
+	return (value & M9_HW_TRANSITION_LENGTH_MASK) == M9_HW_TRANSITION_LENGTH;
 }
 
 /*
@@ -423,8 +428,8 @@ static int m9_parse_commands(const u32 *words, u32 count, u32 *expected,
 					continue;
 				}
 				if (!m9_transition_control(value) &&
-				    value != 0x00000003 &&
-				    value != 0x42000000)
+				    value != M9_HW_E6_STEP &&
+				    value != M9_HW_E6_RANGE_OPEN)
 					return m9_refuse(-EPERM);
 				continue;
 			}
