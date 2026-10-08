@@ -10516,14 +10516,17 @@ release:
 }
 
 #ifdef M9_FAA_GRAPH_INIT_CONTROL
-static int m9_faa_command_owner_admit(struct m9x_device *mdev,struct m9_faa_owner *o)
+static int m9_faa_command_owner_admit(struct m9x_device *mdev,
+				      struct m9_faa_owner *o)
 {
- if(!o||o->vram||!o->cpu||!o->cpu_wc||o->bytes!=0x40000||
-  !drm_mm_node_allocated(&o->system_node)||o->system_node.start!=o->base||
-  o->system_node.size!=o->bytes)return -ESTALE;
+	if (!o || o->vram || !o->cpu || !o->cpu_wc || o->bytes != 0x40000 ||
+	    !drm_mm_node_allocated(&o->system_node) ||
+	    o->system_node.start != o->base || o->system_node.size != o->bytes)
+		return -ESTALE;
 	return m9x_system_pages_mapped(mdev, o->base, o->dma,
 				       o->bytes / PAGE_SIZE, 1u, NULL, NULL);
 }
+
 /* A maintenance E3 belongs to the idle command-pool transaction, not to the
  * preceding application Unlock. Both original receipts remain immutable.
  * Only the newly appended footer is referenced by the parent counted range.
