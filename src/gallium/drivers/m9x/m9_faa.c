@@ -161,8 +161,12 @@ m9_faa_companion_layout(uint32_t width, uint32_t height,
     * that guard:319x240 needs24 bytes,320x240 needs32,321x240 needs none. */
    if (tail < 4)
       elements += 4 - tail;
+   uint64_t size = elements * 8;
+   uint64_t clear_quantum = width <= 64 && height <= 32 ? 1024 : 4096;
+   uint64_t clear_bytes = (size + clear_quantum - 1) & ~(clear_quantum - 1);
    *layout = (struct m9_faa_companion_layout) {
-      .size = elements * 8,
+      .size = size, .clear_bytes = clear_bytes,
+      .capacity_bytes = (clear_bytes + 0x7fff) & ~0x7fffull,
       .row_span = row,
       .allocation_height = rows,
       /* Genuine467e0 selector13: format3d, sample-layout2, ordinary tile
@@ -193,11 +197,38 @@ m9_faa_primary_layout(uint32_t width, uint32_t height, uint8_t format,
    uint64_t tail = (uint64_t)(rows - height) * row + row - width;
    if (tail < 8)
       elements += 8 - tail;
+   uint64_t size = (elements * 4 + byte_quantum - 1) & ~(byte_quantum - 1);
    *layout = (struct m9_faa_primary_layout) {
-      .size = (elements * 4 + byte_quantum - 1) & ~(byte_quantum - 1),
+      .size = size, .capacity_bytes = (size + 0x7fff) & ~0x7fffull,
       .row_span = row, .allocation_height = rows,
       .descriptor = ((uint32_t)format << 25) | 0x00020000u |
                     (small ? 0 : 0x00200000u) | row,
+   };
+   return true;
+}
+
+bool
+m9_faa_hz_layout(uint32_t width, uint32_t height,
+                   struct m9_faa_hz_layout *layout)
+{
+   if (!layout || !width || !height || width > 2048 || height > 2048)
+      return false;
+   uint32_t columns = (width + 7) >> 3;
+   uint32_t rows = (height + 3) >> 2;
+   uint32_t allocation_width = (columns + 7) & ~7u;
+   uint32_t allocation_height = (rows + 15) & ~7u;
+   uint64_t size = ((uint64_t)allocation_width * allocation_height * 4 + 127) & ~127ull;
+   uint64_t clear_bytes = (size + 1023) & ~1023ull;
+
+   /* 54be0 supplies ceil(W/8),ceil(H/4); format0b forces category3 in
+    * 45eb0. 461b1 adds eight rows before 8-row alignment. 464d9 and
+    * 46197/546ea independently round the clear and backing extents. */
+   *layout = (struct m9_faa_hz_layout) {
+      .size = size, .clear_bytes = clear_bytes,
+      .capacity_bytes = (clear_bytes + 0x7fff) & ~0x7fffull,
+      .width = columns, .height = rows,
+      .allocation_width = allocation_width,
+      .allocation_height = allocation_height,
    };
    return true;
 }
@@ -207,8 +238,10 @@ m9_faa_graph_layout(uint32_t width, uint32_t height,
                      struct m9_faa_graph_layout *layout)
 {
    struct m9_faa_companion_layout companion;
+   struct m9_faa_hz_layout hz;
 
-   if (!layout || !m9_faa_companion_layout(width, height, &companion))
+   if (!layout || !m9_faa_companion_layout(width, height, &companion) ||
+       !m9_faa_hz_layout(width, height, &hz))
       return false;
    *layout = (struct m9_faa_graph_layout) {
       .width = width, .height = height,
@@ -217,24 +250,17 @@ m9_faa_graph_layout(uint32_t width, uint32_t height,
       .main_bytes = (m9_faa_fragment_bytes(width, height) + 127) & ~127ull,
       .auxiliary_bytes = (m9_faa_fragment_aux_bytes(width, height) + 127) & ~127ull,
       .companion_bytes = companion.size,
-      .hz_bytes = m9_hz_bytes(width, height),
+      .hz_bytes = hz.clear_bytes,
       .companion_row_span = companion.row_span,
       .companion_desc = companion.descriptor,
       .hz_desc = 0xf0010000u | m9_depth_row_span(width, height),
    };
-   /* Actual 320x240 ac7e0/45eb0: companion raw 0x96020 is rounded by
-    * 464d9 to clear 0x97000. 46197 selects backing alignment 0x8000;
-    * 546ea passes it to a17d1..a17df, yielding capacity 0x98000.
-    * HZ raw 0x2d00 clears0x3000 and uses the same backing alignment.
-    * These are bounded allocation metadata, not GPU initialization. */
-   if (width == 320 && height == 240) {
-      layout->companion_clear_bytes = (companion.size + 4095) & ~4095ull;
-      layout->companion_capacity_bytes =
-         (layout->companion_clear_bytes + 0x7fff) & ~0x7fffull;
-      layout->hz_clear_bytes = 0x3000;
-      layout->hz_capacity_bytes =
-         (layout->hz_clear_bytes + 0x7fff) & ~0x7fffull;
-   }
+   /* The actual ac7e0 allocation has independent clear and backing
+    * rounding. Neither extent authorizes writes to unknown padding. */
+   layout->companion_clear_bytes = companion.clear_bytes;
+   layout->companion_capacity_bytes = companion.capacity_bytes;
+   layout->hz_clear_bytes = hz.clear_bytes;
+   layout->hz_capacity_bytes = hz.capacity_bytes;
    return true;
 }
 

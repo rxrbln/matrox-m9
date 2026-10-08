@@ -148,7 +148,7 @@ uint64_t m9_faa_fragment_aux_bytes(uint32_t width, uint32_t height);
  * ordinary 32-bit depth layout cannot describe it. Recovered on M9128
  * with shared f04 fields2/1; allocation does not establish FAA rendering. */
 struct m9_faa_companion_layout {
-   uint64_t size;
+   uint64_t size, clear_bytes, capacity_bytes;
    uint32_t row_span, allocation_height, descriptor;
 };
 bool m9_faa_companion_layout(uint32_t width, uint32_t height,
@@ -157,19 +157,28 @@ bool m9_faa_companion_layout(uint32_t width, uint32_t height,
 /* Actual sampled color request 01000002, selector9. This primary is a
  * distinct allocation from the FAA companion and fragment stores. */
 struct m9_faa_primary_layout {
-   uint64_t size;
+   uint64_t size, capacity_bytes;
    uint32_t row_span, allocation_height, descriptor;
 };
 bool m9_faa_primary_layout(uint32_t width, uint32_t height, uint8_t format,
                            struct m9_faa_primary_layout *layout);
+
+/* FAA HZ uses metadata rows beyond the visible rectangle. This policy is
+ * separate from the ordinary draw HZ allocation. Contents remain opaque. */
+struct m9_faa_hz_layout {
+   uint64_t size, clear_bytes, capacity_bytes;
+   uint32_t width, height, allocation_width, allocation_height;
+};
+bool m9_faa_hz_layout(uint32_t width, uint32_t height,
+                      struct m9_faa_hz_layout *layout);
 
 /* Logical vendor extents are distinct from a GEM allocation's page padding.
  * In particular aab89 reads the main store extent, not the colour extent. */
 struct m9_faa_graph_layout {
    uint32_t width, height;
    uint64_t main_bytes, auxiliary_bytes, companion_bytes, hz_bytes;
-   /* Source-qualified 320x240 only; zero leaves other sizes unqualified.
-    * Clear extents exclude backing padding and preserve unknown tails. */
+   /* Clear extents exclude backing padding and preserve unknown tails.
+    * Allocation metadata alone does not admit INIT or rendering. */
    uint64_t companion_clear_bytes, companion_capacity_bytes;
    uint64_t hz_clear_bytes, hz_capacity_bytes;
    uint32_t companion_row_span, companion_desc, hz_desc;
