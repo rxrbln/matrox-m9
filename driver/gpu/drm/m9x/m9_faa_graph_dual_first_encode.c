@@ -5,6 +5,7 @@
 #include <linux/string.h>
 #include <linux/overflow.h>
 #include <crypto/sha2.h>
+#include "m9_cmd.h"
 #include "m9_faa_graph_dual_first_encode.h"
 
 struct addr_field {
@@ -74,20 +75,6 @@ static const u8 fragment_sha[SHA256_DIGEST_SIZE] = {
 static const u32 fragment_utility[6] = {
 	0u, 0x3f800000u, 0u, 0x3f800000u, 0x3f800000u, 0x3f000000u
 };
-
-static u32 rd(const u8 *p, u32 at)
-{
-	return (u32)p[at] | (u32)p[at + 1] << 8 | (u32)p[at + 2] << 16 |
-	       (u32)p[at + 3] << 24;
-}
-
-static void wr(u8 *p, u32 at, u32 v)
-{
-	p[at] = v;
-	p[at + 1] = v >> 8;
-	p[at + 2] = v >> 16;
-	p[at + 3] = v >> 24;
-}
 
 static bool sha_ok(const u8 *data, u32 bytes, const u8 expected[32])
 {
@@ -188,88 +175,91 @@ int m9x_faa_dual_first_encode(const u8 *sample, size_t sample_bytes,
 	/* The four-stage live producer already derived the variable carry mask.
 	 * Save it before replacing the incomplete four-target secondary body.
 	 */
-	value = rd(stage, 304);
+	value = m9_cmd_get(stage + 304);
 	memcpy(stage, dual_template, 2880);
-	wr(stage, 320, (0xfu << 24) | (value & 0xffffu));
-	wr(stage, 324, 0xfe207924);
-	wr(stage, 1008, 0x0070ffff);
-	wr(stage, 1012, 0xfe207e92);
-	wr(stage, 88, 0x0008000e | ((c->declaration_count - 1) << 8));
+	m9_cmd_put(stage + 320, (0xfu << 24) | (value & 0xffffu));
+	m9_cmd_put(stage + 324, 0xfe207924);
+	m9_cmd_put(stage + 1008, 0x0070ffff);
+	m9_cmd_put(stage + 1012, 0xfe207e92);
+	m9_cmd_put(stage + 88, 0x0008000e | ((c->declaration_count - 1) << 8));
 	/* Four packed target lanes, source 13a884/13a89e: each lane occupies
 	 * four DWORDs. The generated gather/position heads consume that record.
 	 */
 	for (i = 0; i < 4; i++)
-		wr(stage, 120 + i * 16, 0xee190010 | (i << 10));
-	wr(stage, 816, 0x0008000e);
-	wr(stage, 1460, 0x0008000e);
-	wr(stage, 1092, 0xee190410);
-	wr(stage, 1120, 0xee190810);
-	wr(stage, 1132, 0x0f0e0d0c);
-	wr(stage, 1720, 0xee190010);
-	wr(stage, 352, c->record_stride);
-	wr(stage, 684, padded);
-	wr(stage, 1336, padded);
-	wr(stage, 1896, padded);
-	wr(stage, 2876, c->record_count);
+		m9_cmd_put(stage + 120 + i * 16, 0xee190010 | (i << 10));
+	m9_cmd_put(stage + 816, 0x0008000e);
+	m9_cmd_put(stage + 1460, 0x0008000e);
+	m9_cmd_put(stage + 1092, 0xee190410);
+	m9_cmd_put(stage + 1120, 0xee190810);
+	m9_cmd_put(stage + 1132, 0x0f0e0d0c);
+	m9_cmd_put(stage + 1720, 0xee190010);
+	m9_cmd_put(stage + 352, c->record_stride);
+	m9_cmd_put(stage + 684, padded);
+	m9_cmd_put(stage + 1336, padded);
+	m9_cmd_put(stage + 1896, padded);
+	m9_cmd_put(stage + 2876, c->record_count);
 	/* The source's third input group is a genuine packet. Its padding is
 	 * always zero; no captured CPU scratch words become metadata.
 	 */
 	for (i = 0; i < 3; i++)
 		for (j = 0; j < 4; j++)
-			wr(stage, 552 + i * 24 + j * 4,
-			   j + i * 4 < c->declaration_count ?
-				   rd(c->declaration, (i * 4 + j) * 4) :
-				   0);
-	wr(stage, 2292, 0xffff);
-	wr(stage, 2296, 0);
-	wr(stage, 2316, layout.height << 16 | layout.width);
-	wr(stage, 2324, layout.height << 16 | layout.width);
+			m9_cmd_put(stage + 552 + i * 24 + j * 4,
+				   j + i * 4 < c->declaration_count ?
+					   m9_cmd_get(c->declaration +
+						      (i * 4 + j) * 4) :
+					   0);
+	m9_cmd_put(stage + 2292, 0xffff);
+	m9_cmd_put(stage + 2296, 0);
+	m9_cmd_put(stage + 2316, layout.height << 16 | layout.width);
+	m9_cmd_put(stage + 2324, layout.height << 16 | layout.width);
 	/* Seven dimension words: primary/companion descriptors, the MAIN extent
 	 * AD quartet and the active rectangle above.
 	 */
-	wr(stage, 2136, layout.primary_descriptor);
-	wr(stage, 2152, layout.companion_descriptor);
+	m9_cmd_put(stage + 2136, layout.primary_descriptor);
+	m9_cmd_put(stage + 2152, layout.companion_descriptor);
 	for (i = 0; i < 4; i++)
-		wr(stage, 2240 + i * 4, layout.ad);
+		m9_cmd_put(stage + 2240 + i * 4, layout.ad);
 	/* Position constants k[19]/k[21] are the live x/y guard coefficients. */
-	value = m9x_faa_guard_field(rd(c->constants,
-				       c->layout.constant_begin[3] + 76),
-				    rd(c->constants,
-				       c->layout.constant_begin[3] + 84));
+	value = m9x_faa_guard_field(m9_cmd_get(c->constants +
+					       c->layout.constant_begin[3] +
+					       76),
+				    m9_cmd_get(c->constants +
+					       c->layout.constant_begin[3] +
+					       84));
 	for (i = 0; i < 4; i++) {
 		static const u16 at[] = { 76, 804, 1448, 1996 };
 
 		m9x_faa_guard_field_put(stage + at[i], value);
 	}
-	wr(stage, 2272, m9x_faa_depth_a8(c->depth_flags));
+	m9_cmd_put(stage + 2272, m9x_faa_depth_a8(c->depth_flags));
 	/* Source f0/ef/d7 and fragment usage describe this exact authenticated
 	 * dual-multiply FS72 interface. Other fragment programs refuse above.
 	 */
-	wr(stage, 72, 0x00a80200);
-	wr(stage, 800, 0x00280600);
-	wr(stage, 1444, 0x00088e00);
-	wr(stage, 1992, 0xd8004055);
-	wr(stage, 2348, 0x0130fb0f);
-	wr(stage, 2352, 0xfe207ff8);
-	wr(stage, 1636, 0x0010ef03);
-	wr(stage, 1640, 0xfe201fd2);
-	wr(stage, 2008, 0x603);
-	wr(stage, 2844, 0x29340000);
+	m9_cmd_put(stage + 72, 0x00a80200);
+	m9_cmd_put(stage + 800, 0x00280600);
+	m9_cmd_put(stage + 1444, 0x00088e00);
+	m9_cmd_put(stage + 1992, 0xd8004055);
+	m9_cmd_put(stage + 2348, 0x0130fb0f);
+	m9_cmd_put(stage + 2352, 0xfe207ff8);
+	m9_cmd_put(stage + 1636, 0x0010ef03);
+	m9_cmd_put(stage + 1640, 0xfe201fd2);
+	m9_cmd_put(stage + 2008, 0x603);
+	m9_cmd_put(stage + 2844, 0x29340000);
 	/* The authenticated 72-byte dual-multiply fragment frontend declares
 	 * COLOR0, UV0 and UV1. These semantic records are generated from the
 	 * admitted fragment interface; they are not caller-provided commands.
 	 */
-	wr(stage, 2792, 0x00510688);
-	wr(stage, 2796, 0x00620688);
-	wr(stage, 2808, 0x00030688);
-	wr(stage, 2812, 0x00c431b6);
-	wr(stage, 2816, 0x00d50688);
+	m9_cmd_put(stage + 2792, 0x00510688);
+	m9_cmd_put(stage + 2796, 0x00620688);
+	m9_cmd_put(stage + 2808, 0x00030688);
+	m9_cmd_put(stage + 2812, 0x00c431b6);
+	m9_cmd_put(stage + 2816, 0x00d50688);
 	for (i = 0; i < ARRAY_SIZE(epochs); i++)
-		wr(stage, epochs[i].at,
-		   ((u32)init_point + epochs[i].delta) | epochs[i].tag);
-	wr(stage, 28, 0x49d00000 | ((700 - 28) / 4));
-	wr(stage, 744, 0x49d00000 | ((1352 - 744) / 4));
-	wr(stage, 1388, 0x49d00000 | ((1900 - 1388) / 4));
+		m9_cmd_put(stage + epochs[i].at,
+			   ((u32)init_point + epochs[i].delta) | epochs[i].tag);
+	m9_cmd_put(stage + 28, 0x49d00000 | ((700 - 28) / 4));
+	m9_cmd_put(stage + 744, 0x49d00000 | ((1352 - 744) / 4));
+	m9_cmd_put(stage + 1388, 0x49d00000 | ((1900 - 1388) / 4));
 	for (i = 0; i < ARRAY_SIZE(addresses); i++) {
 		const struct addr_field *f = &addresses[i];
 
@@ -308,7 +298,7 @@ int m9x_faa_dual_first_encode(const u8 *sample, size_t sample_bytes,
 		if (off > limit || limit - off < 4 ||
 		    check_add_overflow(base, off, &value) || (value & 3))
 			return -ERANGE;
-		wr(stage, f->at, value | f->tag);
+		m9_cmd_put(stage + f->at, value | f->tag);
 	}
 	link.program_base = owner[26].base;
 	link.program_owner_bytes = owner[26].bytes;
@@ -351,9 +341,9 @@ int m9x_faa_dual_first_encode(const u8 *sample, size_t sample_bytes,
 	memcpy(primary + length, color_scratch->primary + 64, 3348);
 	memcpy(primary + length + 3348, color_scratch->primary + 64 + 3348 + 8,
 	       M9_FAA_DUAL_FIRST_PRIMARY_TAIL_BYTES - 3348);
-	wr(primary, length + 8, (owner[29].base + 1912) | 2);
-	wr(primary, length + 52, (owner[29].base + 1912) | 1);
-	wr(primary, length + 56, (owner[29].base + 2880) | 2);
+	m9_cmd_put(primary + length + 8, (owner[29].base + 1912) | 2);
+	m9_cmd_put(primary + length + 52, (owner[29].base + 1912) | 1);
+	m9_cmd_put(primary + length + 56, (owner[29].base + 2880) | 2);
 	/* The source FIRST prefix has ten ENDs; the complete draw/Lock adds four.
 	 * Every endpoint is relative to the live INIT cursor, not a captured VA.
 	 */

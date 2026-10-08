@@ -4,21 +4,8 @@
 #include <linux/errno.h>
 #include <linux/overflow.h>
 #include <linux/string.h>
+#include "m9_cmd.h"
 #include "m9_faa_graph_dual_colorpass_encode.h"
-
-static u32 rd(const u8 *p, u32 at)
-{
-	return (u32)p[at] | (u32)p[at + 1] << 8 | (u32)p[at + 2] << 16 |
-	       (u32)p[at + 3] << 24;
-}
-
-static void wr(u8 *p, u32 at, u32 v)
-{
-	p[at] = v;
-	p[at + 1] = v >> 8;
-	p[at + 2] = v >> 16;
-	p[at + 3] = v >> 24;
-}
 
 static bool overlaps(const void *a, size_t an, const void *b, size_t bn)
 {
@@ -46,8 +33,8 @@ static bool colorpass_fs32(const u8 *p)
 		u32 w0 = ((u32)(f->a & 7) << 29) | ((u32)f->b << 22) |
 			 ((u32)f->c << 15) | ((u32)f->dst << 8) |
 			 ((u32)f->cls << 5) | f->op;
-		if (rd(p, i * 8) != w0 ||
-		    rd(p, i * 8 + 4) != (f->control | f->a >> 3))
+		if (m9_cmd_get(p + i * 8) != w0 ||
+		    m9_cmd_get(p + i * 8 + 4) != (f->control | f->a >> 3))
 			return false;
 	}
 	return true;
@@ -117,8 +104,8 @@ int m9x_faa_dual_colorpass_shadow(const struct m9x_faa_color_input *pass,
 		u32 w0 = ((u32)(f->a & 7) << 29) | ((u32)f->b << 22) |
 			 ((u32)f->c << 15) | ((u32)f->dst << 8) |
 			 ((u32)f->cls << 5) | f->op;
-		wr(program, i * 8, w0);
-		wr(program, i * 8 + 4, f->control | f->a >> 3);
+		m9_cmd_put(program + i * 8, w0);
+		m9_cmd_put(program + i * 8 + 4, f->control | f->a >> 3);
 	}
 	memcpy(program + 72, pass->program + 32,
 	       pass->layout.program_bytes - 32);
@@ -243,71 +230,77 @@ int m9x_faa_dual_colorpass_encode(const struct m9x_faa_color_input *dual,
 	}
 	at = dual_ends[10] - init_bytes - 4;
 	if (at + 4 > primary_bytes ||
-	    rd(dual_primary, at) !=
+	    m9_cmd_get(dual_primary + at) !=
 		    ((owner[29].base + M9_FAA_DUAL_FIRST_SECONDARY_BYTES) |
 		     2) ||
-	    rd(dual_secondary, 2368) != 0x45100100 ||
-	    rd(dual_secondary, 2388) != 0x45110302 ||
-	    rd(dual_secondary, 2408) != 0x45120504 ||
-	    rd(dual_secondary, 2380) != 0x00100010 ||
-	    rd(dual_secondary, 2400) != 0x00100010 ||
-	    rd(dual_secondary, 2420) != 0x00100006 ||
-	    rd(dual_secondary, 2620) != 0x45454571 ||
-	    rd(dual_secondary, 2720) != 0x45454572 ||
-	    rd(dual_secondary, 2868) != 0x23000001 ||
-	    rd(dual_secondary, 2876) != dual->record_count)
+	    m9_cmd_get(dual_secondary + 2368) != 0x45100100 ||
+	    m9_cmd_get(dual_secondary + 2388) != 0x45110302 ||
+	    m9_cmd_get(dual_secondary + 2408) != 0x45120504 ||
+	    m9_cmd_get(dual_secondary + 2380) != 0x00100010 ||
+	    m9_cmd_get(dual_secondary + 2400) != 0x00100010 ||
+	    m9_cmd_get(dual_secondary + 2420) != 0x00100006 ||
+	    m9_cmd_get(dual_secondary + 2620) != 0x45454571 ||
+	    m9_cmd_get(dual_secondary + 2720) != 0x45454572 ||
+	    m9_cmd_get(dual_secondary + 2868) != 0x23000001 ||
+	    m9_cmd_get(dual_secondary + 2876) != dual->record_count)
 		return -EINVAL;
 	/* This diagnostic is the initial code slot only. A future mixed-program
 	 * frame must supply its own authenticated offset instead of inheriting it.
 	 */
 	for (i = 0; i < 4; i++)
-		if (rd(dual_secondary, c2[i]) != (owner[26].base | 1) ||
-		    rd(dual_secondary, c2[i] + 4) !=
+		if (m9_cmd_get(dual_secondary + c2[i]) !=
+			    (owner[26].base | 1) ||
+		    m9_cmd_get(dual_secondary + c2[i] + 4) !=
 			    dual->layout.entry_bytes[i] / 8 ||
-		    rd(dual_secondary, c2[i] + 8) != 0)
+		    m9_cmd_get(dual_secondary + c2[i] + 8) != 0)
 			return -EINVAL;
 	/* All checks precede any caller-visible write. The source two texture
 	 * owners stay retained; SELECTARG2 makes unit 1 an idle packet.
 	 */
 	memcpy(primary, dual_primary, primary_bytes);
-	wr(primary, at,
-	   (owner[29].base + M9_FAA_DUAL_COLORPASS_SECONDARY_BYTES) | 2);
+	m9_cmd_put(primary + at,
+		   (owner[29].base + M9_FAA_DUAL_COLORPASS_SECONDARY_BYTES) |
+			   2);
 	memcpy(secondary, dual_secondary, 2624);
 	memcpy(secondary + 2624, dual_secondary + 2712, 168);
-	wr(secondary, 2008, 0x00000503);
-	wr(secondary, 2348, 0x0110ffc3);
+	m9_cmd_put(secondary + 2008, 0x00000503);
+	m9_cmd_put(secondary + 2348, 0x0110ffc3);
 	/* The public XYZ (untransformed) position producer publishes SCREEN at
 	 * bank 4 and CLIP at bank 3; XYZRHW publishes the same banks but its
 	 * raster reader order is reversed. This diagnostic removes UV1 without
 	 * changing that source mode decision.
 	 */
 	if (pass->layout.program_bytes - pass->layout.entry_bytes[3] == 200)
-		wr(secondary, 2392, (owner[23].base + 4 * 0xb3000u) | 1);
+		m9_cmd_put(secondary + 2392,
+			   (owner[23].base + 4 * 0xb3000u) | 1);
 	else
-		wr(secondary, 2392, (owner[23].base + 3 * 0xb3000u) | 1);
-	wr(secondary, 2396, (owner[23].base + 5 * 0xb3000u) | 1);
-	wr(secondary, 2400, 0x00060010);
+		m9_cmd_put(secondary + 2392,
+			   (owner[23].base + 3 * 0xb3000u) | 1);
+	m9_cmd_put(secondary + 2396, (owner[23].base + 5 * 0xb3000u) | 1);
+	m9_cmd_put(secondary + 2400, 0x00060010);
 	if (pass->layout.program_bytes - pass->layout.entry_bytes[3] == 200)
-		wr(secondary, 2412, (owner[23].base + 3 * 0xb3000u) | 1);
+		m9_cmd_put(secondary + 2412,
+			   (owner[23].base + 3 * 0xb3000u) | 1);
 	else
-		wr(secondary, 2412, (owner[23].base + 4 * 0xb3000u) | 1);
-	wr(secondary, 2416, 0);
-	wr(secondary, 2420, 0x00000010);
-	wr(secondary, 2708, 0x00020688);
-	wr(secondary, 2720, 0x00c331b6);
-	wr(secondary, 2724, 0x00d40688);
-	wr(secondary, 2728, 0);
+		m9_cmd_put(secondary + 2412,
+			   (owner[23].base + 4 * 0xb3000u) | 1);
+	m9_cmd_put(secondary + 2416, 0);
+	m9_cmd_put(secondary + 2420, 0x00000010);
+	m9_cmd_put(secondary + 2708, 0x00020688);
+	m9_cmd_put(secondary + 2720, 0x00c331b6);
+	m9_cmd_put(secondary + 2724, 0x00d40688);
+	m9_cmd_put(secondary + 2728, 0);
 	cb = owner[28].base + pass->data_offset;
 	for (i = 0; i < 4; i++) {
 		program_offset = pass->layout.entry_bytes[i] / 8;
 		end = pass->layout.constant_end[i] -
 		      pass->layout.constant_begin[i];
-		wr(secondary, c2[i] + 4, program_offset);
-		wr(secondary, c3[i], 0x00500000 | (end << 5));
-		wr(secondary, c3[i] + 4,
-		   (cb + pass->layout.constant_begin[i]) | 1);
-		wr(secondary, c3[i] + 8,
-		   (cb + pass->layout.constant_end[i]) | 1);
+		m9_cmd_put(secondary + c2[i] + 4, program_offset);
+		m9_cmd_put(secondary + c3[i], 0x00500000 | (end << 5));
+		m9_cmd_put(secondary + c3[i] + 4,
+			   (cb + pass->layout.constant_begin[i]) | 1);
+		m9_cmd_put(secondary + c3[i] + 8,
+			   (cb + pass->layout.constant_end[i]) | 1);
 	}
 	return 0;
 }

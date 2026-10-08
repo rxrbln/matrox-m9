@@ -6,6 +6,7 @@
 #include <linux/errno.h>
 #include <linux/kernel.h>
 #include <linux/string.h>
+#include "m9_cmd.h"
 #include "m9_faa_graph_dual_first_append.h"
 
 struct copy_span {
@@ -68,27 +69,6 @@ static const u8 save_owner[] = { 22, 22, 22, 8, 8, 8 };
 static const u16 save_offset[] = { 0, 640, 704, 8, 12, 16 };
 static const u8 save_tag[] = { 1, 5, 5, 1, 1, 1 };
 
-static u32 rd(const u8 *p, u32 at)
-{
-	return (u32)p[at] | (u32)p[at + 1] << 8 | (u32)p[at + 2] << 16 |
-	       (u32)p[at + 3] << 24;
-}
-
-static void wr(u8 *p, u32 at, u32 v)
-{
-	p[at] = v;
-	p[at + 1] = v >> 8;
-	p[at + 2] = v >> 16;
-	p[at + 3] = v >> 24;
-}
-
-static bool overlaps(const void *a, u32 as, const void *b, u32 bs)
-{
-	unsigned long x = (unsigned long)a, y = (unsigned long)b;
-
-	return x <= y ? y - x < as : x - y < bs;
-}
-
 /* Shared append after the last DRAW pair group at split. The old DRAW's
  * secondary is [old_start, secondary_cursor); tail_extra is the CLEAR3
  * later tail's 8-byte C0 group behind the pair and before the Lock words.
@@ -118,39 +98,41 @@ static int dual_append(const struct m9x_faa_graph_draw_owner owner[31],
 	    out->primary_capacity < new_bytes ||
 	    out->secondary_capacity < M9_FAA_DUAL_APPEND_SECONDARY_BYTES)
 		return -ERANGE;
-	if (overlaps(out->primary, new_bytes, out->secondary,
-		     M9_FAA_DUAL_APPEND_SECONDARY_BYTES) ||
-	    overlaps(out->primary, new_bytes, old_primary, old_primary_bytes) ||
-	    overlaps(out->primary, new_bytes, first_secondary, 2880) ||
-	    overlaps(out->primary, new_bytes, extra_first_secondary, 2880) ||
-	    overlaps(out->secondary, M9_FAA_DUAL_APPEND_SECONDARY_BYTES,
-		     old_primary, old_primary_bytes) ||
-	    overlaps(out->secondary, M9_FAA_DUAL_APPEND_SECONDARY_BYTES,
-		     first_secondary, 2880) ||
-	    overlaps(out->secondary, M9_FAA_DUAL_APPEND_SECONDARY_BYTES,
-		     extra_first_secondary, 2880))
+	if (m9_cmd_overlap(out->primary, new_bytes, out->secondary,
+			   M9_FAA_DUAL_APPEND_SECONDARY_BYTES) ||
+	    m9_cmd_overlap(out->primary, new_bytes, old_primary,
+			   old_primary_bytes) ||
+	    m9_cmd_overlap(out->primary, new_bytes, first_secondary, 2880) ||
+	    m9_cmd_overlap(out->primary, new_bytes, extra_first_secondary,
+			   2880) ||
+	    m9_cmd_overlap(out->secondary, M9_FAA_DUAL_APPEND_SECONDARY_BYTES,
+			   old_primary, old_primary_bytes) ||
+	    m9_cmd_overlap(out->secondary, M9_FAA_DUAL_APPEND_SECONDARY_BYTES,
+			   first_secondary, 2880) ||
+	    m9_cmd_overlap(out->secondary, M9_FAA_DUAL_APPEND_SECONDARY_BYTES,
+			   extra_first_secondary, 2880))
 		return -EINVAL;
 	if (split < 60 || split > old_primary_bytes ||
 	    old_primary_bytes - split != 3564 + tail_extra ||
 	    old_start > secondary_cursor ||
-	    rd(old_primary, split) != 0x45454524 ||
-	    rd(old_primary, split - 60) != 0x45452d2c ||
-	    rd(old_primary, split - 12) != 0x45452d2c)
+	    m9_cmd_get(old_primary + split) != 0x45454524 ||
+	    m9_cmd_get(old_primary + split - 60) != M9_CMD_LINK ||
+	    m9_cmd_get(old_primary + split - 12) != M9_CMD_LINK)
 		return -ESTALE;
 	old_length = secondary_cursor - old_start;
 	if (old_length < 968 ||
-	    rd(old_primary, split - 60 + 4) !=
+	    m9_cmd_get(old_primary + split - 60 + 4) !=
 		    ((owner[29].base + old_start) | 1) ||
-	    rd(old_primary, split - 60 + 8) !=
+	    m9_cmd_get(old_primary + split - 60 + 8) !=
 		    ((owner[29].base + old_start + old_length - 968) | 2) ||
-	    rd(old_primary, split - 60 + 52) !=
+	    m9_cmd_get(old_primary + split - 60 + 52) !=
 		    ((owner[29].base + old_start + old_length - 968) | 1) ||
-	    rd(old_primary, split - 60 + 56) !=
+	    m9_cmd_get(old_primary + split - 60 + 56) !=
 		    ((owner[29].base + secondary_cursor) | 2))
 		return -ESTALE;
 	for (i = 0; i < ARRAY_SIZE(lock_at); i++) {
 		at = split + lock_at[i] + (lock_at[i] >= 3288 ? tail_extra : 0);
-		if (rd(old_primary, at) !=
+		if (m9_cmd_get(old_primary + at) !=
 		    ((old_epoch + lock_delta[i]) | lock_tag[i]))
 			return -ESTALE;
 	}
@@ -158,26 +140,26 @@ static int dual_append(const struct m9x_faa_graph_draw_owner owner[31],
 	for (i = 0; i < 4; i++) {
 		static const u16 c2[] = { 364, 1032, 1660, 2432 };
 
-		if (rd(first_secondary, c2[i]) !=
-			    rd(extra_first_secondary, c2[i]) ||
-		    rd(first_secondary, c2[i] + 4) !=
-			    rd(extra_first_secondary, c2[i] + 4))
+		if (m9_cmd_get(first_secondary + c2[i]) !=
+			    m9_cmd_get(extra_first_secondary + c2[i]) ||
+		    m9_cmd_get(first_secondary + c2[i] + 4) !=
+			    m9_cmd_get(extra_first_secondary + c2[i] + 4))
 			return -EINVAL;
 	}
 	for (i = 0; i < 2; i++) {
 		static const u16 tex[] = { 2536, 2636 };
 
-		if (rd(first_secondary, tex[i]) !=
-		    rd(extra_first_secondary, tex[i]))
+		if (m9_cmd_get(first_secondary + tex[i]) !=
+		    m9_cmd_get(extra_first_secondary + tex[i]))
 			return -EINVAL;
 	}
 	/* Source no-cull append remains 2868 bytes. CW/CCW inserts another
 	 * 24 bytes and changes the 6A selector, so it requires its own producer.
 	 */
-	if (rd(extra_first_secondary, 636) != 0x29340000 ||
-	    rd(extra_first_secondary, 2844) != 0x29340000)
+	if (m9_cmd_get(extra_first_secondary + 636) != 0x29340000 ||
+	    m9_cmd_get(extra_first_secondary + 2844) != 0x29340000)
 		return -EINVAL;
-	raw = rd(extra_first_secondary, 344);
+	raw = m9_cmd_get(extra_first_secondary + 344);
 	if ((raw & 7) != 1 || raw - 1 < owner[28].base ||
 	    raw - 1 - owner[28].base >= owner[28].bytes)
 		return -ERANGE;
@@ -190,47 +172,49 @@ static int dual_append(const struct m9x_faa_graph_draw_owner owner[31],
 	/* All refusals precede output writes. Published GPU memory is untouched. */
 	memcpy(out->primary, old_primary, split);
 	memcpy(out->primary + split, old_primary + split - 60, 60);
-	wr(out->primary, split + 4, (owner[29].base + secondary_cursor) | 1);
-	wr(out->primary, split + 8,
-	   (owner[29].base + secondary_cursor + 1900) | 2);
-	wr(out->primary, split + 52,
-	   (owner[29].base + secondary_cursor + 1900) | 1);
-	wr(out->primary, split + 56,
-	   (owner[29].base + secondary_cursor + 2868) | 2);
+	m9_cmd_put(out->primary + split + 4,
+		   (owner[29].base + secondary_cursor) | 1);
+	m9_cmd_put(out->primary + split + 8,
+		   (owner[29].base + secondary_cursor + 1900) | 2);
+	m9_cmd_put(out->primary + split + 52,
+		   (owner[29].base + secondary_cursor + 1900) | 1);
+	m9_cmd_put(out->primary + split + 56,
+		   (owner[29].base + secondary_cursor + 2868) | 2);
 	memcpy(out->primary + split + 60, old_primary + split,
 	       3564 + tail_extra);
 	for (i = 0; i < ARRAY_SIZE(lock_at); i++)
-		wr(out->primary,
-		   split + 60 + lock_at[i] +
-			   (lock_at[i] >= 3288 ? tail_extra : 0),
-		   (old_epoch + 0xa0 + lock_delta[i]) | lock_tag[i]);
+		m9_cmd_put(out->primary + split + 60 + lock_at[i] +
+				   (lock_at[i] >= 3288 ? tail_extra : 0),
+			   (old_epoch + 0xa0 + lock_delta[i]) | lock_tag[i]);
 	dst = out->secondary;
 	memset(dst, 0, M9_FAA_DUAL_APPEND_SECONDARY_BYTES);
 	for (i = 0; i < ARRAY_SIZE(save_prefix); i++)
-		wr(dst, i * 4, save_prefix[i]);
+		m9_cmd_put(dst + i * 4, save_prefix[i]);
 	for (i = 0; i < ARRAY_SIZE(save_at); i++)
-		wr(dst, save_at[i],
-		   (owner[save_owner[i]].base + save_offset[i]) | save_tag[i]);
+		m9_cmd_put(dst + save_at[i],
+			   (owner[save_owner[i]].base + save_offset[i]) |
+				   save_tag[i]);
 	for (i = 0; i < ARRAY_SIZE(null_target); i++)
-		wr(dst, 604 + i * 4, null_target[i]);
-	wr(dst, 700, 0x454545c0);
-	wr(dst, 704, 4);
+		m9_cmd_put(dst + 604 + i * 4, null_target[i]);
+	m9_cmd_put(dst + 700, 0x454545c0);
+	m9_cmd_put(dst + 704, 4);
 	for (i = 0; i < ARRAY_SIZE(copies); i++)
 		memcpy(dst + copies[i].to,
 		       extra_first_secondary + copies[i].from, copies[i].bytes);
-	wr(dst, 172, 0x49d00000u | ((932 - 172) / 4));
-	wr(dst, 188, 3);
-	wr(dst, 192, 0x45e3e6e6);
-	wr(dst, 196, 1);
-	wr(dst, 468,
-	   ((rd(extra_first_secondary, 320) & 0xff1fffffu) | 0x00100000u) &
-		   0xfffffffcu);
-	wr(dst, 492, raw);
-	wr(dst, 976, 0x49d00000u | ((1460 - 976) / 4));
-	wr(dst, 1496, 0x49d00000u | ((1888 - 1496) / 4));
+	m9_cmd_put(dst + 172, 0x49d00000u | ((932 - 172) / 4));
+	m9_cmd_put(dst + 188, 3);
+	m9_cmd_put(dst + 192, 0x45e3e6e6);
+	m9_cmd_put(dst + 196, 1);
+	m9_cmd_put(dst + 468,
+		   ((m9_cmd_get(extra_first_secondary + 320) & 0xff1fffffu) |
+		    0x00100000u) &
+			   0xfffffffcu);
+	m9_cmd_put(dst + 492, raw);
+	m9_cmd_put(dst + 976, 0x49d00000u | ((1460 - 976) / 4));
+	m9_cmd_put(dst + 1496, 0x49d00000u | ((1888 - 1496) / 4));
 	for (i = 0; i < ARRAY_SIZE(epoch); i++)
-		wr(dst, epoch[i].at,
-		   (old_epoch + epoch[i].delta) | epoch[i].tag);
+		m9_cmd_put(dst + epoch[i].at,
+			   (old_epoch + epoch[i].delta) | epoch[i].tag);
 	out->primary_bytes = new_bytes;
 	out->secondary_bytes = M9_FAA_DUAL_APPEND_SECONDARY_BYTES;
 	return 0;
