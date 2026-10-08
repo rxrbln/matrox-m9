@@ -1,5 +1,20 @@
 # M9 FAA native testing, 2026-10-06
 
+## October 8: all FAA depth comparisons and GPU presentation pass hardware
+
+DRMa86fcdc/Mesa3c3e1f3 passes three144-draw frames covering all8 comparison
+functions, three incoming depth relations and both write masks. All48 cases
+pass the analytic pixel oracle: zero bad pixels among46848 checked per frame
+with RGB tolerance8. GPU transforms, two secondary pool rotations, and GPU
+presentation all complete. Final submitted/completed a5a0, generation0,
+wedged0, empty queue. The outer ioctl now authenticates presentation origin
+and maintenance instead of rejecting the correctly retired next frame.
+[Hardware matrix, screenshots and proof](../tests/m9-faa-depth-comparison-scene-20261008/hardware/README.md).
+
+This qualifies enabled comparison/write state and repeated GPU presentation
+at320x240, not textured Quake3, disabled-depth/blend/stencil, or1024x768 FAA.
+There is no timing claim for these paused screenshots.
+
 ## October 8: first GPU-presented FAA frame matches the working screenshot
 
 Combined DRM1504380/Mesa3c3e1f3 physically retires first Lock5e0, Unlock600
