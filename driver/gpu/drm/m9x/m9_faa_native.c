@@ -9475,8 +9475,8 @@ int m9x_faa_graph_bound_depth_views_locked(struct m9x_device *mdev,
 			 * without resetting those retained metadata words.
 			 */
 			ret = n->initialized ?
-			      m9x_address_check_local_mapping(mdev, o->base, o->bytes) :
-			      m9x_address_check_local_identity(mdev, o->base, o->bytes);
+				      m9x_address_check_local_mapping(mdev, o->base, o->bytes) :
+				      m9x_address_check_local_identity(mdev, o->base, o->bytes);
 			if (ret) {
 				m9_faa_frame_trace(mdev,
 						   "refuse-attachment-identity",
