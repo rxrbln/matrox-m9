@@ -113,7 +113,7 @@ static bool m9_faa_graph_ranges_disjoint(const u32 *address)
 	struct m9x_faa_surface_layout layout;
 
 	return m9x_faa_surface_layout(320, 240, &layout) &&
-		m9_faa_graph_ranges_layout_disjoint(address, &layout);
+	       m9_faa_graph_ranges_layout_disjoint(address, &layout);
 }
 
 static bool m9_faa_graph_owner_distinct(
