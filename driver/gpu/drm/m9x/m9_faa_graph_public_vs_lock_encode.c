@@ -8,6 +8,7 @@
 #include <linux/overflow.h>
 #include <linux/string.h>
 #include <crypto/sha2.h>
+#include "m9_cmd.h"
 #include "m9_faa_graph_public_vs_lock_encode.h"
 
 #define SOURCE_START 5004u
@@ -28,14 +29,6 @@ static const struct {
 	u16 offset, delta, tag;
 } timeline_fixups[] = { { 5132, 16, 1 }, { 5188, 32, 1 }, { 5324, 32, 0 },
 			{ 8088, 32, 0 }, { 8552, 16, 0 }, { 8572, 48, 1 } };
-static void lock_put32(u8 *p, u32 v)
-{
-	p[0] = v;
-	p[1] = v >> 8;
-	p[2] = v >> 16;
-	p[3] = v >> 24;
-}
-
 bool m9x_faa_public_vs_lock_blob_valid(const u8 *blob, size_t bytes)
 {
 	u8 digest[SHA256_DIGEST_SIZE];
@@ -84,13 +77,13 @@ int m9x_faa_public_vs_lock_encode(const u8 *blob, size_t bytes,
 	}
 	memcpy(primary, blob, M9_FAA_VS_LOCK_PRIMARY_BYTES);
 	for (i = 0; i < ARRAY_SIZE(address_fixups); i++)
-		lock_put32(primary + address_fixups[i].offset - SOURCE_START,
+		m9_cmd_put(primary + address_fixups[i].offset - SOURCE_START,
 			   values[i]);
 	for (i = 0; i < ARRAY_SIZE(timeline_fixups); i++)
-		lock_put32(primary + timeline_fixups[i].offset - SOURCE_START,
+		m9_cmd_put(primary + timeline_fixups[i].offset - SOURCE_START,
 			   ((u32)draw_point + timeline_fixups[i].delta) |
 				   timeline_fixups[i].tag);
-	lock_put32(primary + 5168 - SOURCE_START, height << 16 | width);
-	lock_put32(primary + 8560 - SOURCE_START, height << 16 | width);
+	m9_cmd_put(primary + 5168 - SOURCE_START, height << 16 | width);
+	m9_cmd_put(primary + 8560 - SOURCE_START, height << 16 | width);
 	return 0;
 }

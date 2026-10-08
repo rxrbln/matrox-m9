@@ -8,6 +8,7 @@
 #include <linux/overflow.h>
 #include <linux/string.h>
 #include <crypto/sha2.h>
+#include "m9_cmd.h"
 #include "m9_faa_graph_public_vs_next_encode.h"
 
 static const u8 next_sha[32] = {
@@ -56,14 +57,6 @@ static const struct {
 	u16 at, target;
 } lengths[] = { { 28, 764 }, { 808, 1260 }, { 1296, 1688 } };
 static const u16 fixed_systemva[] = { 772, 776, 780, 1268, 1272, 1276 };
-static void next_put32(u8 *p, u32 w)
-{
-	p[0] = w;
-	p[1] = w >> 8;
-	p[2] = w >> 16;
-	p[3] = w >> 24;
-}
-
 static bool next_overlap(const void *a, size_t n, const void *b, size_t m)
 {
 	unsigned long x = (unsigned long)a, y = (unsigned long)b, ex, ey;
@@ -171,23 +164,23 @@ int m9x_faa_public_vs_next_encode(const u8 *blob, size_t bytes,
 	memcpy(out->primary, blob, 60);
 	memcpy(out->secondary, blob + 60, 2548);
 	for (i = 0; i < ARRAY_SIZE(fields); i++)
-		next_put32(fields[i].at < 60 ?
+		m9_cmd_put(fields[i].at < 60 ?
 				   out->primary + fields[i].at :
 				   out->secondary + fields[i].at - 60,
 			   values[i]);
 	for (i = 0; i < ARRAY_SIZE(tokens); i++)
-		next_put32(out->secondary + tokens[i].at,
+		m9_cmd_put(out->secondary + tokens[i].at,
 			   ((u32)unlock_point + tokens[i].delta) |
 				   tokens[i].tag);
 	for (i = 0; i < ARRAY_SIZE(lengths); i++)
-		next_put32(out->secondary + lengths[i].at,
+		m9_cmd_put(out->secondary + lengths[i].at,
 			   0x49d00000 |
 				   ((lengths[i].target - lengths[i].at) / 4));
 	for (i = 0; i < ARRAY_SIZE(fixed_systemva); i++)
-		next_put32(out->secondary + fixed_systemva[i], 0x40004000);
-	next_put32(out->secondary + 4792 - 2688, (240u << 16) | 320u);
-	next_put32(out->secondary + 4800 - 2688, (240u << 16) | 320u);
-	next_put32(out->secondary + 4908 - 2688,
+		m9_cmd_put(out->secondary + fixed_systemva[i], 0x40004000);
+	m9_cmd_put(out->secondary + 4792 - 2688, (240u << 16) | 320u);
+	m9_cmd_put(out->secondary + 4800 - 2688, (240u << 16) | 320u);
+	m9_cmd_put(out->secondary + 4908 - 2688,
 		   0x00500000u | ((fs_end - fs_begin) / 8u) << 8);
 	return 0;
 }

@@ -14,6 +14,7 @@
 #include <linux/string.h>
 #include <crypto/sha2.h>
 
+#include "m9_cmd.h"
 #include "m9_faa_graph_draw_encode.h"
 
 #define SOURCE_PRIMARY_BYTES 4880u
@@ -83,19 +84,6 @@ static const struct m9_draw_tracker draw_trackers[] = {
 	{ 27, 4888, 0xc1 }, { 29, 12, 0xd1 },	{ 29, 60, 0xe1 },
 	{ 29, 616, 0xf1 },  { 29, 644, 0x101 }, { 29, 660, 0x111 },
 };
-
-static u32 draw_get32(const u8 *p)
-{
-	return (u32)p[0] | (u32)p[1] << 8 | (u32)p[2] << 16 | (u32)p[3] << 24;
-}
-
-static void draw_put32(u8 *p, u32 value)
-{
-	p[0] = value;
-	p[1] = value >> 8;
-	p[2] = value >> 16;
-	p[3] = value >> 24;
-}
 
 static u32 draw_fnv(const u8 *blob, size_t bytes)
 {
@@ -223,7 +211,7 @@ int m9x_faa_graph_draw_encode(const u8 *blob, size_t blob_bytes,
 		    (f->encoder == 0x248ab ? !IS_ALIGNED(address, 8) :
 					     !IS_ALIGNED(address, 4)) ||
 		    (f->encoder != 0x248ab && f->tag != 1 && f->tag != 2) ||
-		    draw_get32(blob + source_offset) != f->captured ||
+		    m9_cmd_get(blob + source_offset) != f->captured ||
 		    !draw_encode_address(f->encoder, address, f->tag))
 			return -ERANGE;
 	}
@@ -232,7 +220,7 @@ int m9x_faa_graph_draw_encode(const u8 *blob, size_t blob_bytes,
 
 		if (!draw_source_word(t->dst, t->offset, &source_offset,
 				      &image_offset) ||
-		    draw_get32(blob + source_offset) != t->captured ||
+		    m9_cmd_get(blob + source_offset) != t->captured ||
 		    (t->captured & ~15u) < SOURCE_INIT_POINT)
 			return -EINVAL;
 	}
@@ -254,7 +242,7 @@ int m9x_faa_graph_draw_encode(const u8 *blob, size_t blob_bytes,
 		draw_source_word(f->dst, f->offset, &source_offset,
 				 &image_offset);
 		dst = f->dst == 27 ? image->primary_suffix : image->secondary;
-		draw_put32(dst + image_offset, value);
+		m9_cmd_put(dst + image_offset, value);
 	}
 	for (i = 0; i < ARRAY_SIZE(draw_trackers); i++) {
 		const struct m9_draw_tracker *t = &draw_trackers[i];
@@ -265,7 +253,7 @@ int m9x_faa_graph_draw_encode(const u8 *blob, size_t blob_bytes,
 		draw_source_word(t->dst, t->offset, &source_offset,
 				 &image_offset);
 		dst = t->dst == 27 ? image->primary_suffix : image->secondary;
-		draw_put32(dst + image_offset, value);
+		m9_cmd_put(dst + image_offset, value);
 	}
 	return 0;
 }

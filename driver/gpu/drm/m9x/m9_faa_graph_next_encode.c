@@ -10,6 +10,7 @@
 #include <linux/string.h>
 #include <crypto/sha2.h>
 
+#include "m9_cmd.h"
 #include "m9_faa_graph_next_encode.h"
 
 static const u8 next_sha256[SHA256_DIGEST_SIZE] = {
@@ -40,14 +41,6 @@ static const u16 next_tracker_offsets[] = { 16, 64, 620, 648, 664 };
 static const u16 next_direct_offsets[] = { 4, 8, 16, 20 };
 static const u16 next_direct_addends[] = { 0, 608, 608, 668 };
 static const u8 next_direct_tags[] = { 1, 2, 1, 2 };
-
-static void next_put32(u8 *p, u32 word)
-{
-	p[0] = word;
-	p[1] = word >> 8;
-	p[2] = word >> 16;
-	p[3] = word >> 24;
-}
 
 static bool next_range_overlap(const void *a, size_t na, const void *b,
 			       size_t nb)
@@ -188,16 +181,16 @@ int m9x_faa_graph_next_encode_at(const u8 *blob, size_t bytes,
 	memcpy(image->secondary, blob + M9_FAA_NEXT_PRIMARY_BYTES,
 	       M9_FAA_NEXT_SECONDARY_BYTES);
 	for (i = 0; i < ARRAY_SIZE(next_fixups); i++)
-		next_put32(image->secondary + next_fixups[i].dst,
+		m9_cmd_put(image->secondary + next_fixups[i].dst,
 			   fixup_words[i]);
 	for (i = 0; i < ARRAY_SIZE(next_tracker_offsets); i++)
-		next_put32(image->secondary + next_tracker_offsets[i],
+		m9_cmd_put(image->secondary + next_tracker_offsets[i],
 			   ((u32)unlock_point + (i + 1) * 0x10) | 1);
 	for (i = 0; i < ARRAY_SIZE(next_direct_offsets); i++)
-		next_put32(image->primary + next_direct_offsets[i],
+		m9_cmd_put(image->primary + next_direct_offsets[i],
 			   direct_words[i]);
 	for (i = 0; i < 15; i++)
-		next_put32(image->vertices + 4 * i, vertices[i]);
+		m9_cmd_put(image->vertices + 4 * i, vertices[i]);
 	return 0;
 }
 

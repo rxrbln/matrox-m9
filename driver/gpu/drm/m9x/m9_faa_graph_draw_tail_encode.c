@@ -12,6 +12,7 @@
 #include <linux/string.h>
 #include <crypto/sha2.h>
 
+#include "m9_cmd.h"
 #include "m9_faa_graph_draw_tail_encode.h"
 
 static const u8 tail_sha256[SHA256_DIGEST_SIZE] = {
@@ -43,14 +44,6 @@ static const struct {
 	{ 1308, 12, 0, 0x24886, 1 },
 	{ 1340, 28, 256, 0x248c8, 1 },
 };
-
-static void tail_put32(u8 *p, u32 word)
-{
-	p[0] = word;
-	p[1] = word >> 8;
-	p[2] = word >> 16;
-	p[3] = word >> 24;
-}
 
 bool m9x_faa_graph_draw_tail_blob_valid(const u8 *blob, size_t bytes)
 {
@@ -120,18 +113,18 @@ int m9x_faa_graph_draw_tail_encode(const u8 *blob, size_t bytes,
 	memcpy(image->primary, blob + M9_FAA_DRAW_TAIL_SECONDARY_BYTES,
 	       M9_FAA_DRAW_TAIL_PRIMARY_BYTES);
 	for (i = 0; i < ARRAY_SIZE(tail_fixups); i++)
-		tail_put32(image->secondary + tail_fixups[i].offset -
+		m9_cmd_put(image->secondary + tail_fixups[i].offset -
 				   M9_FAA_DRAW_TAIL_SECONDARY_OFFSET,
 			   values[i]);
-	tail_put32(image->secondary + 1012 - M9_FAA_DRAW_TAIL_SECONDARY_OFFSET,
+	m9_cmd_put(image->secondary + 1012 - M9_FAA_DRAW_TAIL_SECONDARY_OFFSET,
 		   height << 16 | width);
-	tail_put32(image->secondary + 1020 - M9_FAA_DRAW_TAIL_SECONDARY_OFFSET,
+	m9_cmd_put(image->secondary + 1020 - M9_FAA_DRAW_TAIL_SECONDARY_OFFSET,
 		   height << 16 | width);
-	tail_put32(image->secondary + 1368 - M9_FAA_DRAW_TAIL_SECONDARY_OFFSET,
+	m9_cmd_put(image->secondary + 1368 - M9_FAA_DRAW_TAIL_SECONDARY_OFFSET,
 		   ((u32)prefix_point + 0x30) | 1);
-	tail_put32(image->primary + 4, (owner[29].base + 664) | 1);
-	tail_put32(image->primary + 8, (owner[29].base + 1356) | 2);
-	tail_put32(image->primary + 16, (owner[29].base + 1356) | 1);
-	tail_put32(image->primary + 20, (owner[29].base + 1372) | 2);
+	m9_cmd_put(image->primary + 4, (owner[29].base + 664) | 1);
+	m9_cmd_put(image->primary + 8, (owner[29].base + 1356) | 2);
+	m9_cmd_put(image->primary + 16, (owner[29].base + 1356) | 1);
+	m9_cmd_put(image->primary + 20, (owner[29].base + 1372) | 2);
 	return 0;
 }

@@ -10,6 +10,7 @@
 #include <linux/string.h>
 #include <crypto/sha2.h>
 
+#include "m9_cmd.h"
 #include "m9_faa_graph_next_finish_encode.h"
 
 static const u8 finish_sha256[SHA256_DIGEST_SIZE] = {
@@ -42,14 +43,6 @@ static const u16 finish_direct_dst[] = { 4, 8, 16, 20 };
 static const u16 finish_direct_src[] = { 2040, 2732, 2732, 2748 };
 static const u8 finish_direct_tag[] = { 1, 2, 1, 2 };
 static const u16 finish_tracker_dst[] = { 56, 152, 704 };
-
-static void finish_put32(u8 *p, u32 word)
-{
-	p[0] = word;
-	p[1] = word >> 8;
-	p[2] = word >> 16;
-	p[3] = word >> 24;
-}
 
 static bool finish_overlap(const void *a, size_t na, const void *b, size_t nb)
 {
@@ -147,14 +140,13 @@ int m9x_faa_graph_next_finish_encode(const u8 *blob, size_t bytes,
 	memcpy(image->secondary, blob + M9_FAA_NEXT_FINISH_PRIMARY_BYTES,
 	       M9_FAA_NEXT_FINISH_SECONDARY_BYTES);
 	for (i = 0; i < ARRAY_SIZE(finish_fixups); i++)
-		finish_put32(image->secondary + finish_fixups[i].dst,
-			     values[i]);
+		m9_cmd_put(image->secondary + finish_fixups[i].dst, values[i]);
 	for (i = 0; i < ARRAY_SIZE(finish_direct_dst); i++)
-		finish_put32(image->primary + finish_direct_dst[i], direct[i]);
-	finish_put32(image->secondary + 348, 240u << 16 | 320u);
-	finish_put32(image->secondary + 356, 240u << 16 | 320u);
+		m9_cmd_put(image->primary + finish_direct_dst[i], direct[i]);
+	m9_cmd_put(image->secondary + 348, 240u << 16 | 320u);
+	m9_cmd_put(image->secondary + 356, 240u << 16 | 320u);
 	for (i = 0; i < ARRAY_SIZE(finish_tracker_dst); i++)
-		finish_put32(image->secondary + finish_tracker_dst[i],
-			     ((u32)prefix_point + (i + 1) * 0x10) | 1);
+		m9_cmd_put(image->secondary + finish_tracker_dst[i],
+			   ((u32)prefix_point + (i + 1) * 0x10) | 1);
 	return 0;
 }
