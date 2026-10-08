@@ -298,12 +298,12 @@ enum m9_prof {
    M9_PROF_DRAW, M9_PROF_EMIT, M9_PROF_SUBMIT, M9_PROF_VARYING,
    M9_PROF_RECORDS, M9_PROF_IOCTL, M9_PROF_TARGET, M9_PROF_CLEAR,
    M9_PROF_TRANSFER, M9_PROF_BE, M9_PROF_BATCH, M9_PROF_EXTENT,
-   M9_PROF_COUNT,
+   M9_PROF_NEAR, M9_PROF_COUNT,
 };
 
 static const char *const m9_prof_name[M9_PROF_COUNT] = {
    "draw", "emit", "submit", "varying", "records", "ioctl", "target",
-   "clear", "transfer", "be", "batch", "extent",
+   "clear", "transfer", "be", "batch", "extent", "near",
 };
 
 static unsigned m9_profile_period;
@@ -323,7 +323,8 @@ static uint64_t m9_vs_serial;
  * second varying takes output target 1, the clip position's, whose two tail
  * slots are pointed at the tail's own scratch, and the raster pass then
  * declares no attribute 13 -- which it renders the same pixels without
- * (MEASURED on the M9128, fixture vary3 exact and native).
+ * (MEASURED on the M9128, fixture vary3 exact and native) unless a primitive
+ * needs near-plane clipping, which only the clip position provides.
  * A third still needs the second preprocessing draw, and that draw has
  * never delivered a stream on this board: five shapes have been run and
  * none delivers (MEASURED 2026-09-19) -- the chain role in ef, separate
@@ -7416,9 +7417,8 @@ m9_native_vs_bind_texture(struct m9_context *ctx, struct m9_job_key *key,
 
 static void m9_vs_select_spec(struct m9_context *ctx);
 
-/* True when the draw was taken by the native path; false leaves it to the
- * draw module with no change in behaviour. */
-/* Constant buffer 0 as the native constant span reads it. */
+/* Whether a vertex of the draw lies outside the near plane, read through
+ * constant buffer 0 as the native constant span reads it. */
 static int
 m9_native_vs_outside_near(struct m9_context *ctx, const struct m9_vs_program *p,
                           const struct m9_native_vs *n)
@@ -7427,14 +7427,21 @@ m9_native_vs_outside_near(struct m9_context *ctx, const struct m9_vs_program *p,
    const uint8_t *data = cb->user_buffer ? cb->user_buffer :
                          cb->buffer ? m9_res(cb->buffer)->map : NULL;
 
-   return m9_vs_clip_outside_near(p, ctx->velems->elements, ctx->velems->count,
-                                  ctx->vertex_buffers, n->map, n->size,
-                                  n->buffer_count,
-                                  data ? data + cb->buffer_offset : NULL,
-                                  data ? cb->buffer_size : 0,
-                                  n->first_vertex, n->vertex_count);
+   uint64_t t_near = m9_prof_begin();
+   int outside = m9_vs_clip_outside_near(p, ctx->velems->elements,
+                                         ctx->velems->count,
+                                         ctx->vertex_buffers, n->map, n->size,
+                                         n->buffer_count,
+                                         data ? data + cb->buffer_offset : NULL,
+                                         data ? cb->buffer_size : 0,
+                                         n->first_vertex, n->vertex_count);
+
+   m9_prof_end(M9_PROF_NEAR, t_near);
+   return outside;
 }
 
+/* True when the draw was taken by the native path; false leaves it to the
+ * draw module with no change in behaviour. */
 static bool
 m9_native_vs_draw(struct m9_context *ctx, const struct pipe_draw_info *info,
                   const struct pipe_draw_start_count_bias *draw)
