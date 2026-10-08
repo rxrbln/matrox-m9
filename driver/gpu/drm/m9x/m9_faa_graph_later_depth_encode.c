@@ -139,3 +139,113 @@ int m9x_faa_later_depth_encode(const u8 *sample,size_t sample_bytes,
  out->draw_end_bytes=primary_cursor+front+60;out->final_point=epoch+delta;
  *out->image.secondary_length=new_bytes;return 0;
 }
+
+/* Original initialized N2/N3 edef2ae2 shares these stage slices with the
+ * source FIRST extra-DRAW producer. All pointer-bearing words come from a
+ * independently live-encoded job, never a captured allocation. */
+struct later_copy_span { u16 from, to, bytes; };
+/* Original source copies of source-known packet words from a newly encoded
+ * live FIRST stage. Address-bearing words thus retain that job's allocation
+ * and live C2/CB/geometry metadata, not captured source GPU addresses. */
+static const struct later_copy_span later_copies[] = {
+	{0,144,28},{32,176,12},{44,200,4},{60,208,44},
+	{108,256,196},{308,456,20},{332,480,108},{440,600,4},
+	{444,692,176},{636,868,68},{708,940,24},{736,968,8},
+	{748,980,44},{796,1028,48},{944,1076,268},
+	{1236,1344,80},{1320,1428,24},{1348,1456,8},
+	{1360,1468,44},{1408,1516,32},{1516,1548,20},
+	{1556,1568,216},{1796,1784,56},{1856,1844,24},
+	{1884,1872,8},{1896,1884,56},{1956,1944,92},
+	{2052,2040,660},
+};
+static const u32 later_save_prefix[36] = {
+	1,0x45454524,0,3,0x453ce6e6,0x6dc00000,0x42000000,0xa1,
+	9,0x44444444,0x30081898,0x30081898,0x30081898,0x30081898,
+	0x44444444,0x30081898,0x30081898,0x30081898,0x30081898,
+	2,0x45452f2e,0,0,2,0x4545421a,0,0xa1000009,
+	2,0x4545421a,0,0xa3000009,3,0x45e6421a,0,0xa4000009,
+	0x40008000,
+};
+
+static bool overlap(const void *a,u32 as,const void *b,u32 bs)
+{unsigned long x=(unsigned long)a,y=(unsigned long)b;return x<=y?y-x<as:x-y<bs;}
+int m9x_faa_later_depth_append_encode(
+ const struct m9x_faa_graph_draw_owner owner[M9_FAA_LATER_DEPTH_OWNERS],
+ const struct m9x_faa_depth_views *views,u32 pstart,u32 sstart,
+ u64 previous,u32 clear_flags,u32 count,
+ const u8 *old,u32 old_bytes,u32 old_secondary_bytes,
+ const u32 *old_ends,u32 end_count,u64 old_point,
+ const u8 *fresh,u32 fresh_bytes,const struct m9x_faa_color_input *input,
+ struct m9x_faa_later_depth_append_image *out)
+{
+ static const u16 lock_at[]={128,184,320,3084,3548,3568};
+ static const u8 lock_back[]={0x20,0x10,0x10,0x10,0x20,0};
+ static const u8 lock_tag[]={1,1,0,0,0,1};
+ static const u16 epoch_at[]={204,252,964,976,1024,1452,1464,1512,1840,1868,1880,1940,2036};
+ static const int epoch_delta[]={-0x20,-0x10,0,0,0x10,0x20,0x20,0x30,0x40,0x50,0x50,0x60,0x70};
+ static const u8 epoch_tag[]={1,1,1,0,1,1,0,1,1,1,0,1,1};
+ static const u16 save_at[]={8,84,88,100,116,132},save_offset[]={0,640,704,8,8,16};
+ static const u8 save_owner[]={22,22,22,8,8,8},save_tag[]={1,5,5,1,5,1};
+ u32 i,insert,old_begin,old_mid,cursor,new_bytes;u64 delta=clear_flags?0x150:0xd0;
+ if(!owner||!views||!old||!old_ends||!fresh||!input||!out||!out->primary||!out->secondary||
+  (clear_flags&&clear_flags!=3)||!count||count>31||fresh_bytes!=2712||
+  input->layout.program_count!=4||input->declaration_count!=5||input->record_stride!=32||
+  !input->record_count||input->record_count%3||input->record_count>12288||
+  (previous&15)||(pstart&3)||(sstart&3)||
+  previous>~(u64)0-delta-count*0xa0||
+  old_point!=previous+delta+(count-1)*0xa0||(u32)old_point>U32_MAX-0xa0||
+  old_bytes<3632||old_bytes>U32_MAX-60||end_count!=(clear_flags?13u:4u)||
+  old_secondary_bytes!=(clear_flags?2568u:2572u)+(count-1)*2700u)
+  return -EINVAL;
+ if(m9x_faa_graph_draw_owners_validate(owner)||
+  m9x_faa_depth_stages_encode(views,0x3f800000,&(struct m9x_faa_depth_stage_image){0}))return -EINVAL;
+ for(i=0;i<3;i++)if(owner[31+i].base!=views->owner[i].base||owner[31+i].bytes<views->owner[i].capacity_bytes)return -EINVAL;
+ new_bytes=old_bytes+60;cursor=sstart+old_secondary_bytes;
+ if(pstart>owner[27].bytes||new_bytes>owner[27].bytes-pstart||
+  sstart>0x3fe00||old_secondary_bytes>0x3fe00-sstart||2700>0x3fe00-cursor||
+  cursor>owner[29].bytes||2700>owner[29].bytes-cursor||
+  out->primary_capacity<new_bytes||out->secondary_capacity<2700||
+  (u64)owner[27].base+pstart+new_bytes>U32_MAX||
+  (u64)owner[29].base+cursor+2700>U32_MAX)return -ERANGE;
+ if(overlap(out->primary,new_bytes,out->secondary,2700)||
+  overlap(out->primary,new_bytes,old,old_bytes)||overlap(out->primary,new_bytes,fresh,2712)||
+  overlap(out->secondary,2700,old,old_bytes)||overlap(out->secondary,2700,fresh,2712))return -EINVAL;
+ insert=old_bytes-3572;
+ old_begin=count==1?sstart:cursor-2700;
+ old_mid=count==1?(clear_flags?1696:1700):1828;
+ if(get(old+insert)!=0x45454524||
+  get(old+insert-60)!=0x45452d2c||get(old+insert-12)!=0x45452d2c||
+  get(old+insert-56)!=(owner[29].base+old_begin+1)||
+  get(old+insert-52)!=(owner[29].base+old_begin+old_mid+2)||
+  get(old+insert-8)!=(owner[29].base+old_begin+old_mid+1)||
+  get(old+insert-4)!=(owner[29].base+cursor+2)||
+  old_ends[end_count-4]!=pstart+insert||old_ends[end_count-1]!=pstart+old_bytes)
+  return -EINVAL;
+ for(i=0;i<ARRAY_SIZE(lock_at);i++)if(get(old+insert+lock_at[i])!=(((u32)old_point-lock_back[i])|lock_tag[i]))return -EINVAL;
+ /* Source new stages use the same source-proven depth/null-BA contract.
+  * Fresh program, masks, interpolation and typed raw owner metadata remain
+  * those of this independently encoded job. */
+ if(get(fresh+2076)!=(views->owner[2].base|1)||get(fresh+2092)||
+  get(fresh+2096)!=0xf0010100||get(fresh+2200)!=0x0038038f)return -EINVAL;
+ for(i=0;i<ARRAY_SIZE(save_at);i++)if((u64)owner[save_owner[i]].base+save_offset[i]+save_tag[i]>U32_MAX)return -ERANGE;
+ memcpy(out->primary,old,insert);memcpy(out->primary+insert,old+insert-60,60);
+ put(out->primary+insert+4,owner[29].base+cursor+1);put(out->primary+insert+8,owner[29].base+cursor+1830);
+ put(out->primary+insert+52,owner[29].base+cursor+1829);put(out->primary+insert+56,owner[29].base+cursor+2702);
+ memcpy(out->primary+insert+60,old+insert,3572);
+ for(i=0;i<ARRAY_SIZE(lock_at);i++)put(out->primary+insert+60+lock_at[i],((u32)old_point+0xa0-lock_back[i])|lock_tag[i]);
+ memset(out->secondary,0,2700);
+ for(i=0;i<ARRAY_SIZE(later_save_prefix);i++)put(out->secondary+4*i,later_save_prefix[i]);
+ for(i=0;i<ARRAY_SIZE(save_at);i++)put(out->secondary+save_at[i],(owner[save_owner[i]].base+save_offset[i])|save_tag[i]);
+ for(i=0;i<ARRAY_SIZE(later_copies);i++)memcpy(out->secondary+later_copies[i].to,fresh+later_copies[i].from,later_copies[i].bytes);
+ memcpy(out->secondary+588,fresh+2432,104);
+ put(out->secondary+172,0x49d00000|((892-172)/4));put(out->secondary+188,3);
+ put(out->secondary+192,0x45e3e6e6);put(out->secondary+196,1);
+ for(i=0;i<ARRAY_SIZE(epoch_at);i++)put(out->secondary+epoch_at[i],((u32)old_point+epoch_delta[i])|epoch_tag[i]);
+ put(out->secondary+452,((get(fresh+304)&0xff1fffff)|0x00100000)&0xfffffffc);
+ put(out->secondary+476,get(fresh+328));put(out->secondary+936,0x49d00000|((1388-936)/4));
+ put(out->secondary+1424,0x49d00000|((1816-1424)/4));
+ memcpy(out->end_bytes,old_ends,end_count*4);
+ for(i=end_count-4;i<end_count;i++)out->end_bytes[i]+=60;
+ out->primary_bytes=new_bytes;out->secondary_bytes=2700;out->end_count=end_count;
+ out->draw_end_bytes=pstart+insert+60;out->final_point=old_point+0xa0;return 0;
+}

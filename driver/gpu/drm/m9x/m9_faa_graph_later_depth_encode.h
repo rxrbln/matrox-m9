@@ -40,4 +40,28 @@ int m9x_faa_later_depth_encode(const u8 *sample,size_t sample_bytes,
  u32 secondary_cursor,u64 previous_unlock,u64 live_next_point,u32 clear_flags,
  const struct m9x_faa_color_input *,struct m9x_faa_later_depth_image *,
  struct m9x_faa_later_depth_scratch *);
+/* Appends one same-frame DRAW before the still-unposted3572-byte Lock tail.
+ * old_secondary_bytes is the accumulated later suffix, beginning at the
+ * caller's retained secondary_start. Output secondary contains only the new
+ * 2700-byte stage; old submitted/retained stages are never rewritten.
+ * extra_first_secondary is independently regenerated from that job's live
+ * input and code/CB ownership, with C2 entries already placed by the caller.
+ * Current source contract is declaration5/count4; no arbitrary packet shapes.
+ */
+struct m9x_faa_later_depth_append_image {
+ u8 *primary,*secondary;
+ u32 primary_capacity,secondary_capacity;
+ u32 primary_bytes,secondary_bytes,end_bytes[M9_FAA_LATER_DEPTH_ENDS],end_count;
+ u32 draw_end_bytes;
+ u64 final_point;
+};
+int m9x_faa_later_depth_append_encode(
+ const struct m9x_faa_graph_draw_owner owner[M9_FAA_LATER_DEPTH_OWNERS],
+ const struct m9x_faa_depth_views *,u32 primary_start,u32 secondary_start,
+ u64 previous_unlock,u32 clear_flags,u32 old_draw_count,
+ const u8 *old_primary,u32 old_primary_bytes,u32 old_secondary_bytes,
+ const u32 *old_end_bytes,u32 old_end_count,u64 old_final_point,
+ const u8 *extra_first_secondary,u32 extra_first_bytes,
+ const struct m9x_faa_color_input *,
+ struct m9x_faa_later_depth_append_image *);
 #endif
