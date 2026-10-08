@@ -497,6 +497,7 @@ static void m9_queue_observe_locked(struct m9x_device *mdev)
 		if (job->point > observed)
 			break;
 		t->completed_point = job->point;
+		m9x_transport_progress_wake(t);
 		dma_fence_signal(&job->fence->base);
 		dma_fence_put(&job->fence->base);
 		retired->bos = job->bos;
@@ -565,6 +566,7 @@ static int m9_drain_legacy_locked(struct m9x_device *mdev)
 		return ret;
 	transport->async_pending = false;
 	transport->completed_point = transport->async_point;
+	m9x_transport_progress_wake(transport);
 	if (transport->async_fence) {
 		dma_fence_signal(&transport->async_fence->base);
 		dma_fence_put(&transport->async_fence->base);
@@ -1348,8 +1350,10 @@ static u64 m9_extend_fence(struct m9x_transport *m9, u32 raw)
 		m9->fence_epoch++;
 	m9->last_fence = low;
 	m9->submitted_point = ((u64)m9->fence_epoch << 32) | low;
-	if (!m9->async_pending && !m9->queue_count)
+	if (!m9->async_pending && !m9->queue_count) {
 		m9->completed_point = m9->submitted_point;
+		m9x_transport_progress_wake(m9);
+	}
 	return m9->submitted_point;
 }
 
@@ -1456,6 +1460,7 @@ static int m9_requester_selftest(void)
 	};
 	u32 target;
 
+	init_waitqueue_head(&transport.faa_idle_wait);
 	target = m9_next_fence_target(&transport);
 	if (target != 0xfffffff0 || transport.next_fence != 0 ||
 	    m9_fence_reached(~target, target) ||

@@ -486,6 +486,14 @@ bool m9x_faa_ordinary_continue_enabled(void);
 unsigned long m9x_fence_timeout_jiffies(void);
 int m9x_faa_ordinary_wait(struct m9x_device *mdev);
 void m9x_faa_idle_wake(struct m9x_device *mdev);
+
+/* Fence retirement is graph progress too; see m9x_faa_ordinary_wait(). */
+static inline void m9x_transport_progress_wake(struct m9x_transport *t)
+{
+	WRITE_ONCE(t->faa_idle_seq, READ_ONCE(t->faa_idle_seq) + 1);
+	if (wq_has_sleeper(&t->faa_idle_wait))
+		wake_up_interruptible_all(&t->faa_idle_wait);
+}
 bool m9x_faa_ordinary_blocked_locked(struct m9x_device *mdev);
 void m9x_faa_report_stall_locked(struct m9x_device *mdev, u32 head, u32 end);
 bool m9x_triangle_context_ready_locked(struct m9x_device *mdev);

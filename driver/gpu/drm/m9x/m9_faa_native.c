@@ -9415,9 +9415,7 @@ static u64 m9_faa_ordinary_progress(const struct m9x_transport *t)
 
 void m9x_faa_idle_wake(struct m9x_device *mdev)
 {
-	WRITE_ONCE(mdev->transport.faa_idle_seq,
-		   READ_ONCE(mdev->transport.faa_idle_seq) + 1);
-	wake_up_interruptible_all(&mdev->transport.faa_idle_wait);
+	m9x_transport_progress_wake(&mdev->transport);
 }
 
 /* An ordinary submit waits for the graph's idle boundary instead of failing.
