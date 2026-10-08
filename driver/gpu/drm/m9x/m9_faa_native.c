@@ -10290,9 +10290,12 @@ static void m9_faa_mixed_templates(struct m9x_faa_mixed_templates *tpl,
 				   const struct firmware *single)
 {
 	*tpl = (struct m9x_faa_mixed_templates){
-		.sample = sample->data, .sample_bytes = sample->size,
-		.color = color->data, .color_bytes = color->size,
-		.dual = dual->data, .dual_bytes = dual->size,
+		.sample = sample->data,
+		.sample_bytes = sample->size,
+		.color = color->data,
+		.color_bytes = color->size,
+		.dual = dual->data,
+		.dual_bytes = dual->size,
 		.single = single ? single->data : NULL,
 		.single_bytes = single ? single->size : 0
 	};
