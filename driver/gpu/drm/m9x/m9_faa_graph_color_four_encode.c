@@ -12,7 +12,7 @@ int m9x_faa_carry_source_mask(const u8 *program, u32 program_bytes,
  u32 begin, u32 end, u32 targets, u16 *mask)
 {
  u32 i,pairs=0,seen=0;u16 available;bool stopped=false;
- if(!program||!mask||!targets||targets>3||(begin&7)||(end&7)||
+ if(!program||!mask||!targets||targets>4||(begin&7)||(end&7)||
   begin>=end||end>program_bytes||end-begin<3*8)return -EINVAL;
  for(i=begin;i<end;i+=8){
   u32 w0=(u32)program[i]|(u32)program[i+1]<<8|
