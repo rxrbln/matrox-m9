@@ -1066,7 +1066,8 @@ static int m9_faa_graph_end_shape(const struct drm_mm_node *node,
 	    (u64)dma + node->size > (u64)U32_MAX + 1 ||
 	    !IS_ALIGNED(old_bytes | new_bytes, 4) ||
 	    new_bytes > node->size ||
-	    new_bytes > PARHELIA_M9_COMMAND_BYTES ||
+	    /* Retained FAA pools use their authenticated owner extent; the
+	     * ordinary requester's 32 KiB staging-slot limit does not apply. */
 	    (repeat ? new_bytes != old_bytes : new_bytes <= old_bytes) ||
 	    (target && (!IS_ALIGNED(target, 16) || target > U32_MAX - 0x10)) ||
 	    check_add_overflow((u32)node->start, new_bytes, &end))
@@ -1108,8 +1109,12 @@ int m9x_post_faa_graph_end_locked(struct m9x_device *mdev,
 		return -ESTALE;
 	ret = m9_faa_graph_end_shape(node, dma, old_bytes, new_bytes,
 				     repeat, target);
-	if (ret)
+	if (ret) {
+		dev_info(&mdev->pdev->dev,
+			 "M9 FAA END refused: shape old=%u new=%u capacity=%llu repeat=%u target=%#x error=%d\n",
+			 old_bytes, new_bytes, (unsigned long long)node->size, repeat, target, ret);
 		return ret;
+	}
 	if (target && (target < t->next_fence ||
 	    m9_fence_reached(READ_ONCE(((u32 *)t->fence_cpu)[0]), target)))
 		return -EAGAIN;
@@ -1118,10 +1123,15 @@ int m9x_post_faa_graph_end_locked(struct m9x_device *mdev,
 	for (page = 0; page < DIV_ROUND_UP(new_bytes, PAGE_SIZE); page++) {
 		ret = m9x_address_read_pte(mdev,
 				(u32)node->start + page * PAGE_SIZE, &pte);
-		if (ret)
+		if (ret) {
+			dev_info(&mdev->pdev->dev, "M9 FAA END refused: PTE read base=%#llx page=%u error=%d\n", (unsigned long long)node->start, page, ret);
 			return ret;
-		if (pte != (m9x_address_pte_word(dma + page * PAGE_SIZE) | 1u))
+		}
+		if (pte != (m9x_address_pte_word(dma + page * PAGE_SIZE) | 1u)) {
+			dev_info(&mdev->pdev->dev, "M9 FAA END refused: PTE base=%#llx page=%u actual=%#x expected=%#x\n",
+			 (unsigned long long)node->start, page, pte, m9x_address_pte_word(dma + page * PAGE_SIZE) | 1u);
 			return -ESTALE;
+		}
 	}
 	end = (u32)node->start + new_bytes;
 	/* The primary and consumed data/secondary owners can be WC. Order

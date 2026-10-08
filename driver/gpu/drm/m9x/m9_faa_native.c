@@ -7901,7 +7901,11 @@ int m9x_faa_graph_depth_frame_submit(struct m9x_device *mdev,
    i==frame->end_count-1?lower_32_bits(frame->final_point):0,&stage_point,&stage_posted);
   m9_faa_frame_trace(mdev,"END-end",i,end,stage_point,ret,false);
   *posted|=stage_posted;if(stage_posted){r->graph_draw_end_bytes=end;r->graph_draw_posts++;}
-  if(ret)goto out;copied=length;
+  if(ret){
+   dev_info(&mdev->pdev->dev,"M9 FAA frame END refused: index=%u end=%u final=%#llx error=%d any_posted=%u stage_posted=%u\n",
+    i,end,frame->final_point,ret,*posted,stage_posted);
+   goto out;
+  }copied=length;
  }
  if(stage_point!=frame->final_point){ret=-EIO;goto out;}
  *point=stage_point;frame->retired=true;r->depth_storage->initialized=true;
