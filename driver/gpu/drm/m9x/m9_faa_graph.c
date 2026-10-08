@@ -1092,7 +1092,7 @@ out_dev:
 }
 
 int m9x_faa_graph_public_vs_ioctl(struct drm_device *drm, void *data,
-				 struct drm_file *file)
+				  struct drm_file *file)
 {
 	return m9_faa_graph_public_vs_ioctl_mode(drm, data, file, false);
 }
