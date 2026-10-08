@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0-only
 /* Copyright 2026 René Rebe <rene@exactco.de> */
+#include "m9_cmd.h"
 #include "m9_faa_graph_batch_limits.h"
 /* Original M9128 fresh FIRST COLOR4 extra-DRAW composition, CPU only. */
 #include <linux/errno.h>
@@ -57,19 +58,6 @@ static const u8 save_owner[] = { 22, 22, 22, 8, 8, 8 };
 static const u16 save_offset[] = { 0, 640, 704, 8, 8, 16 };
 static const u8 save_tag[] = { 1, 5, 5, 1, 5, 1 };
 
-static u32 get(const u8 *p)
-{
-	return (u32)p[0] | (u32)p[1] << 8 | (u32)p[2] << 16 | (u32)p[3] << 24;
-}
-
-static void put(u8 *p, u32 v)
-{
-	p[0] = v;
-	p[1] = v >> 8;
-	p[2] = v >> 16;
-	p[3] = v >> 24;
-}
-
 /* Removing the unused second four-word declaration group shortens the first
  * COLOR secondary after its declaration block. The appended source grammar
  * copies the one remaining group and shifts every later field with it.
@@ -77,13 +65,6 @@ static void put(u8 *p, u32 v)
 static u32 moved(u32 at, u32 shift)
 {
 	return at >= 576 ? at - shift : at;
-}
-
-static bool overlaps(const void *a, u32 as, const void *b, u32 bs)
-{
-	unsigned long x = (unsigned long)a, y = (unsigned long)b;
-
-	return x <= y ? y - x < as : x - y < bs;
 }
 
 int m9x_faa_frame_first_append_encode(const struct m9x_faa_graph_draw_owner owner[31],
@@ -159,24 +140,27 @@ int m9x_faa_frame_first_append_encode(const struct m9x_faa_graph_draw_owner owne
 	    out->secondary_capacity < append_bytes)
 		return -ERANGE;
 	new_bytes = old_primary_bytes + growth;
-	if (overlaps(out->primary, new_bytes, out->secondary, append_bytes) ||
-	    overlaps(out->primary, new_bytes, old_primary, old_primary_bytes) ||
-	    overlaps(out->primary, new_bytes, first_secondary, first_bytes) ||
-	    overlaps(out->primary, new_bytes, extra_first_secondary,
-		     extra_first_bytes) ||
-	    overlaps(out->secondary, append_bytes, old_primary,
-		     old_primary_bytes) ||
-	    overlaps(out->secondary, append_bytes, first_secondary,
-		     first_bytes) ||
-	    overlaps(out->secondary, append_bytes, extra_first_secondary,
-		     extra_first_bytes))
+	if (m9_cmd_overlap(out->primary, new_bytes, out->secondary,
+			   append_bytes) ||
+	    m9_cmd_overlap(out->primary, new_bytes, old_primary,
+			   old_primary_bytes) ||
+	    m9_cmd_overlap(out->primary, new_bytes, first_secondary,
+			   first_bytes) ||
+	    m9_cmd_overlap(out->primary, new_bytes, extra_first_secondary,
+			   extra_first_bytes) ||
+	    m9_cmd_overlap(out->secondary, append_bytes, old_primary,
+			   old_primary_bytes) ||
+	    m9_cmd_overlap(out->secondary, append_bytes, first_secondary,
+			   first_bytes) ||
+	    m9_cmd_overlap(out->secondary, append_bytes, extra_first_secondary,
+			   extra_first_bytes))
 		return -EINVAL;
 	insert = old_primary_bytes - tail_bytes;
 	/* The previous job may have a different declaration shape. Its source
 	 * indirect range gives the actual retained start and length; verify that
 	 * every earlier job accounts for one 2676/2700-byte append interval.
 	 */
-	old_range = get(old_primary + insert - 60 + 4);
+	old_range = m9_cmd_get(old_primary + insert - 60 + 4);
 	if (old_range < owner[29].base + 1 ||
 	    old_range - owner[29].base - 1 > secondary_cursor)
 		return -EINVAL;
@@ -199,29 +183,29 @@ int m9x_faa_frame_first_append_encode(const struct m9x_faa_graph_draw_owner owne
 			return -EINVAL;
 	}
 	first_end_mid = old_last_bytes - 870;
-	if (get(old_primary + insert) != 0x45454524 ||
-	    get(old_primary + insert - 60) != 0x45452d2c ||
-	    get(old_primary + insert - 12) != 0x45452d2c ||
-	    get(old_primary + insert - 60 + 4) !=
+	if (m9_cmd_get(old_primary + insert) != 0x45454524 ||
+	    m9_cmd_get(old_primary + insert - 60) != M9_CMD_LINK ||
+	    m9_cmd_get(old_primary + insert - 12) != M9_CMD_LINK ||
+	    m9_cmd_get(old_primary + insert - 60 + 4) !=
 		    owner[29].base + old_second_start + 1 ||
-	    get(old_primary + insert - 60 + 8) !=
+	    m9_cmd_get(old_primary + insert - 60 + 8) !=
 		    owner[29].base + old_second_start + first_end_mid ||
-	    get(old_primary + insert - 60 + 52) !=
+	    m9_cmd_get(old_primary + insert - 60 + 52) !=
 		    owner[29].base + old_second_start + first_end_mid - 1 ||
-	    get(old_primary + insert - 60 + 56) !=
+	    m9_cmd_get(old_primary + insert - 60 + 56) !=
 		    owner[29].base + secondary_cursor + 2 ||
 	    old_end_bytes[10] != init_bytes + insert ||
 	    old_end_bytes[13] != primary_cursor ||
 	    (old_draw_count == 1 &&
-	     (get(old_primary + insert + 3288) != 0x454545c0 ||
-	      get(old_primary + insert + 3292) != 4)))
+	     (m9_cmd_get(old_primary + insert + 3288) != 0x454545c0 ||
+	      m9_cmd_get(old_primary + insert + 3292) != 4)))
 		return -EINVAL;
 	old_epoch = low + (old_draw_count - 1) * 0xa0;
 	next_epoch = old_epoch + 0xa0;
 	for (i = 0; i < ARRAY_SIZE(lock_at_new); i++) {
 		u32 at = old_draw_count == 1 ? lock_at_first[i] :
 					       lock_at_new[i];
-		if (get(old_primary + insert + at) !=
+		if (m9_cmd_get(old_primary + insert + at) !=
 		    ((old_epoch + lock_delta[i]) | lock_tag[i]))
 			return -EINVAL;
 	}
@@ -231,21 +215,22 @@ int m9x_faa_frame_first_append_encode(const struct m9x_faa_graph_draw_owner owne
 				    save_tag[i] >
 			    U32_MAX)
 			return -ERANGE;
-	source_raw = get(extra_first_secondary + 328) & ~7u;
+	source_raw = m9_cmd_get(extra_first_secondary + 328) & ~7u;
 	if (source_raw < owner[28].base ||
 	    source_raw - owner[28].base >= owner[28].bytes ||
-	    get(extra_first_secondary + 328) != source_raw + 1)
+	    m9_cmd_get(extra_first_secondary + 328) != source_raw + 1)
 		return -ERANGE;
 	/* Every branch after this point only writes into caller-owned output. */
 	memcpy(out->primary, old_primary, insert);
 	memcpy(out->primary + insert, old_primary + insert - 60, 60);
-	put(out->primary + insert + 4, owner[29].base + secondary_cursor + 1);
-	put(out->primary + insert + 8,
-	    owner[29].base + secondary_cursor + 1830 - shift);
-	put(out->primary + insert + 52,
-	    owner[29].base + secondary_cursor + 1829 - shift);
-	put(out->primary + insert + 56,
-	    owner[29].base + secondary_cursor + append_bytes + 2);
+	m9_cmd_put(out->primary + insert + 4,
+		   owner[29].base + secondary_cursor + 1);
+	m9_cmd_put(out->primary + insert + 8,
+		   owner[29].base + secondary_cursor + 1830 - shift);
+	m9_cmd_put(out->primary + insert + 52,
+		   owner[29].base + secondary_cursor + 1829 - shift);
+	m9_cmd_put(out->primary + insert + 56,
+		   owner[29].base + secondary_cursor + append_bytes + 2);
 	if (old_draw_count == 1) {
 		memcpy(out->primary + insert + 60, old_primary + insert, 3288);
 		memcpy(out->primary + insert + 60 + 3288,
@@ -255,15 +240,16 @@ int m9x_faa_frame_first_append_encode(const struct m9x_faa_graph_draw_owner owne
 		       tail_bytes);
 	}
 	for (i = 0; i < ARRAY_SIZE(lock_at_new); i++)
-		put(out->primary + insert + 60 + lock_at_new[i],
-		    (next_epoch + lock_delta[i]) | lock_tag[i]);
+		m9_cmd_put(out->primary + insert + 60 + lock_at_new[i],
+			   (next_epoch + lock_delta[i]) | lock_tag[i]);
 	dst = out->secondary;
 	memset(dst, 0, append_bytes);
 	for (i = 0; i < ARRAY_SIZE(save_prefix); i++)
-		put(dst + i * 4, save_prefix[i]);
+		m9_cmd_put(dst + i * 4, save_prefix[i]);
 	for (i = 0; i < ARRAY_SIZE(save_at); i++)
-		put(dst + save_at[i],
-		    (owner[save_owner[i]].base + save_offset[i]) | save_tag[i]);
+		m9_cmd_put(dst + save_at[i],
+			   (owner[save_owner[i]].base + save_offset[i]) |
+				   save_tag[i]);
 	for (i = 0; i < ARRAY_SIZE(copies); i++) {
 		u32 from = copies[i].from, to = copies[i].to,
 		    bytes = copies[i].bytes;
@@ -280,20 +266,21 @@ int m9x_faa_frame_first_append_encode(const struct m9x_faa_graph_draw_owner owne
 	 * source slot at172 precedes the removed group; only this branch loses
 	 * six DWORDs when the new job declares POSITION alone.
 	 */
-	put(dst + 172, 0x49d00000u | ((892 - shift - 172) / 4));
-	put(dst + 188, 3);
-	put(dst + 192, 0x45e3e6e6);
-	put(dst + 196, 1);
+	m9_cmd_put(dst + 172, 0x49d00000u | ((892 - shift - 172) / 4));
+	m9_cmd_put(dst + 188, 3);
+	m9_cmd_put(dst + 192, 0x45e3e6e6);
+	m9_cmd_put(dst + 196, 1);
 	for (i = 0; i < ARRAY_SIZE(secondary_epoch); i++)
-		put(dst + moved(secondary_epoch[i].at, shift),
-		    (old_epoch + secondary_epoch[i].delta) |
-			    secondary_epoch[i].tag);
-	put(dst + 452,
-	    ((get(extra_first_secondary + 304) & 0xff1fffffu) | 0x00100000u) &
-		    0xfffffffcu);
-	put(dst + 476, get(extra_first_secondary + 328));
-	put(dst + 936 - shift, 0x49d00000u | ((1388 - 936) / 4));
-	put(dst + 1424 - shift, 0x49d00000u | ((1816 - 1424) / 4));
+		m9_cmd_put(dst + moved(secondary_epoch[i].at, shift),
+			   (old_epoch + secondary_epoch[i].delta) |
+				   secondary_epoch[i].tag);
+	m9_cmd_put(dst + 452,
+		   ((m9_cmd_get(extra_first_secondary + 304) & 0xff1fffffu) |
+		    0x00100000u) &
+			   0xfffffffcu);
+	m9_cmd_put(dst + 476, m9_cmd_get(extra_first_secondary + 328));
+	m9_cmd_put(dst + 936 - shift, 0x49d00000u | ((1388 - 936) / 4));
+	m9_cmd_put(dst + 1424 - shift, 0x49d00000u | ((1816 - 1424) / 4));
 	for (i = 0; i < M9_FAA_FIRST_APPEND_ENDS; i++)
 		out->end_bytes[i] = old_end_bytes[i] + (i < 10	? 0 :
 							i == 10 ? 60 :

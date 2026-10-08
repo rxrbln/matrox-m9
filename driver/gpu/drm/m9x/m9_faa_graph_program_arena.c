@@ -4,6 +4,7 @@
 #include <linux/errno.h>
 #include <linux/kernel.h>
 #include <linux/string.h>
+#include "m9_cmd.h"
 #include "m9_faa_graph_program_arena.h"
 
 /* f5778 emits the live page pointer with selector13 and the entry with
@@ -18,26 +19,6 @@ static u32 site(const u16 *at, u32 k, int extra, bool two)
 {
 	u32 threshold = two ? 508 : 576;
 	return at[k] >= threshold ? (u32)((int)at[k] + extra) : at[k];
-}
-
-static u32 get(const u8 *p)
-{
-	return (u32)p[0] | (u32)p[1] << 8 | (u32)p[2] << 16 | (u32)p[3] << 24;
-}
-
-static void put(u8 *p, u32 v)
-{
-	p[0] = v;
-	p[1] = v >> 8;
-	p[2] = v >> 16;
-	p[3] = v >> 24;
-}
-
-static bool overlaps(const void *a, u32 an, const void *b, u32 bn)
-{
-	unsigned long x = (unsigned long)a, y = (unsigned long)b;
-
-	return x <= y ? y - x < an : x - y < bn;
 }
 
 static int program_arena_encode(const struct m9x_faa_graph_draw_owner *owner,
@@ -55,12 +36,12 @@ static int program_arena_encode(const struct m9x_faa_graph_draw_owner *owner,
 	    (owner->base & (M9_FAA_PROGRAM_PAGE_BYTES - 1)) ||
 	    owner->bytes < M9_FAA_PROGRAM_PAGE_BYTES ||
 	    code_capacity < M9_FAA_PROGRAM_PAGE_BYTES ||
-	    overlaps(code_page, M9_FAA_PROGRAM_PAGE_BYTES, job,
-		     count * sizeof(*job)) ||
-	    overlaps(slot_offset, count * sizeof(*slot_offset), code_page,
-		     M9_FAA_PROGRAM_PAGE_BYTES) ||
-	    overlaps(slot_offset, count * sizeof(*slot_offset), job,
-		     count * sizeof(*job)))
+	    m9_cmd_overlap(code_page, M9_FAA_PROGRAM_PAGE_BYTES, job,
+			   count * sizeof(*job)) ||
+	    m9_cmd_overlap(slot_offset, count * sizeof(*slot_offset), code_page,
+			   M9_FAA_PROGRAM_PAGE_BYTES) ||
+	    m9_cmd_overlap(slot_offset, count * sizeof(*slot_offset), job,
+			   count * sizeof(*job)))
 		return -EINVAL;
 	for (i = 0; i < count; i++) {
 		const struct m9x_faa_program_arena_job *q = &job[i];
@@ -72,14 +53,14 @@ static int program_arena_encode(const struct m9x_faa_graph_draw_owner *owner,
 		    q->program_bytes > M9_FAA_PROGRAM_PAGE_BYTES ||
 		    q->declaration_count < 3 || q->declaration_count > 17 ||
 		    !(q->declaration_count & 1) ||
-		    overlaps(code_page, M9_FAA_PROGRAM_PAGE_BYTES, q->program,
-			     q->program_bytes) ||
-		    overlaps(code_page, M9_FAA_PROGRAM_PAGE_BYTES, q->secondary,
-			     q->secondary_bytes) ||
-		    overlaps(slot_offset, count * sizeof(*slot_offset),
-			     q->program, q->program_bytes) ||
-		    overlaps(slot_offset, count * sizeof(*slot_offset),
-			     q->secondary, q->secondary_bytes))
+		    m9_cmd_overlap(code_page, M9_FAA_PROGRAM_PAGE_BYTES,
+				   q->program, q->program_bytes) ||
+		    m9_cmd_overlap(code_page, M9_FAA_PROGRAM_PAGE_BYTES,
+				   q->secondary, q->secondary_bytes) ||
+		    m9_cmd_overlap(slot_offset, count * sizeof(*slot_offset),
+				   q->program, q->program_bytes) ||
+		    m9_cmd_overlap(slot_offset, count * sizeof(*slot_offset),
+				   q->secondary, q->secondary_bytes))
 			return -EINVAL;
 		extra = ((int)((q->declaration_count + 3) / 4) -
 			 (two ? 1 : 2)) *
@@ -97,13 +78,15 @@ static int program_arena_encode(const struct m9x_faa_graph_draw_owner *owner,
 			if ((q->entry_bytes[k] & 7) ||
 			    q->entry_bytes[k] >= q->program_bytes ||
 			    (k && q->entry_bytes[k] <= q->entry_bytes[k - 1]) ||
-			    get(q->secondary + p) != (owner->base | 1) ||
-			    get(q->secondary + e) != q->entry_bytes[k] / 8)
+			    m9_cmd_get(q->secondary + p) != (owner->base | 1) ||
+			    m9_cmd_get(q->secondary + e) !=
+				    q->entry_bytes[k] / 8)
 				return -EINVAL;
 		}
 		for (j = 0; j < i; j++)
-			if (overlaps(q->secondary, q->secondary_bytes,
-				     job[j].secondary, job[j].secondary_bytes))
+			if (m9_cmd_overlap(q->secondary, q->secondary_bytes,
+					   job[j].secondary,
+					   job[j].secondary_bytes))
 				return -EINVAL;
 		for (j = 0; j < i; j++)
 			if (job[j].program_bytes == q->program_bytes &&
@@ -135,8 +118,8 @@ static int program_arena_encode(const struct m9x_faa_graph_draw_owner *owner,
 				    24;
 			u32 e = site(entries, k, extra, two);
 
-			put(q->secondary + e,
-			    (slot[i] + q->entry_bytes[k]) / 8);
+			m9_cmd_put(q->secondary + e,
+				   (slot[i] + q->entry_bytes[k]) / 8);
 		}
 		slot_offset[i] = slot[i];
 	}

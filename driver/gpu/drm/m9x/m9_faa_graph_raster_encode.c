@@ -4,20 +4,8 @@
 #include <linux/kernel.h>
 #include <linux/overflow.h>
 #include <linux/string.h>
+#include "m9_cmd.h"
 #include "m9_faa_graph_raster_encode.h"
-
-static u32 get(const u8 *p)
-{
-	return (u32)p[0] | (u32)p[1] << 8 | (u32)p[2] << 16 | (u32)p[3] << 24;
-}
-
-static void put(u8 *p, u32 word)
-{
-	p[0] = word;
-	p[1] = word >> 8;
-	p[2] = word >> 16;
-	p[3] = word >> 24;
-}
 
 static bool overlap(const void *a, u32 na, const void *b, u32 nb)
 {
@@ -70,7 +58,7 @@ static int raster_encode(const struct m9x_faa_raster_input *in,
 	 * immediately before 68/6B/6C, as in the original retained cull control.
 	 */
 	for (at = 0; at < n; at += 4) {
-		u32 value = get(in->secondary + at);
+		u32 value = m9_cmd_get(in->secondary + at);
 
 		if ((value & 0xffff0000) == 0x49d00000) {
 			u32 distance = (value & 0xffff) * 4, target;
@@ -83,19 +71,22 @@ static int raster_encode(const struct m9x_faa_raster_input *in,
 			targets[nb++] = target;
 		}
 		if (value == 3 && n - at >= 24 &&
-		    get(in->secondary + at + 4) == 0x456c6b68) {
-			if (launches == stages || get(in->secondary + at + 8) ||
-			    get(in->secondary + at + 12) != 0x1030)
+		    m9_cmd_get(in->secondary + at + 4) == 0x456c6b68) {
+			if (launches == stages ||
+			    m9_cmd_get(in->secondary + at + 8) ||
+			    m9_cmd_get(in->secondary + at + 12) != 0x1030)
 				return -EINVAL;
 			launch[launches] = at;
 			binding[launches] = ~0u;
 			if (at >= 8 &&
-			    get(in->secondary + at - 8) == 0x4545456a &&
-			    (at < 12 || get(in->secondary + at - 12) != 1))
+			    m9_cmd_get(in->secondary + at - 8) == 0x4545456a &&
+			    (at < 12 ||
+			     m9_cmd_get(in->secondary + at - 12) != 1))
 				return -EINVAL;
-			if (at >= 12 && get(in->secondary + at - 12) == 1 &&
-			    get(in->secondary + at - 8) == 0x4545456a) {
-				u32 bind = get(in->secondary + at - 4);
+			if (at >= 12 &&
+			    m9_cmd_get(in->secondary + at - 12) == 1 &&
+			    m9_cmd_get(in->secondary + at - 8) == 0x4545456a) {
+				u32 bind = m9_cmd_get(in->secondary + at - 4);
 
 				if ((bind & 0xffff) ||
 				    bind >> 16 != in->no_cull_start_bytes / 8)
@@ -110,13 +101,15 @@ static int raster_encode(const struct m9x_faa_raster_input *in,
 		 * f0000400 deliberately do not satisfy this raster descriptor.
 		 */
 		if (value == 3 && n - at >= 32 &&
-		    get(in->secondary + at + 4) == 0x45d7eff0 &&
-		    (get(in->secondary + at + 8) & 0xff000000) == 0xc4000000) {
+		    m9_cmd_get(in->secondary + at + 4) == 0x45d7eff0 &&
+		    (m9_cmd_get(in->secondary + at + 8) & 0xff000000) ==
+			    0xc4000000) {
 			if (++nr != 1 ||
-			    (get(in->secondary + at + 12) & 0x03000000) ||
-			    get(in->secondary + at + 20) != 1 ||
-			    get(in->secondary + at + 24) != 0x45454522 ||
-			    (get(in->secondary + at + 28) & 0x4000))
+			    (m9_cmd_get(in->secondary + at + 12) &
+			     0x03000000) ||
+			    m9_cmd_get(in->secondary + at + 20) != 1 ||
+			    m9_cmd_get(in->secondary + at + 24) != 0x45454522 ||
+			    (m9_cmd_get(in->secondary + at + 28) & 0x4000))
 				return -EINVAL;
 			raster = at;
 		}
@@ -127,7 +120,7 @@ static int raster_encode(const struct m9x_faa_raster_input *in,
 	    (two && ni))
 		return -EINVAL;
 	for (at = 0; at < in->secondary_bytes; at += 4)
-		if (get(in->secondary + at) == 0x4545456a) {
+		if (m9_cmd_get(in->secondary + at) == 0x4545456a) {
 			for (i = 0; i < stages; i++)
 				if (binding[i] == at + 4)
 					break;
@@ -143,7 +136,7 @@ static int raster_encode(const struct m9x_faa_raster_input *in,
 		    in->primary_bytes - at < 4 ||
 		    (i && at <= in->range_at[i - 1]))
 			return -EINVAL;
-		pointer[i] = get(in->primary + at);
+		pointer[i] = m9_cmd_get(in->primary + at);
 		if ((pointer[i] & 3) != (i & 1 ? 2u : 1u) ||
 		    (pointer[i] & ~3u) < in->secondary_base ||
 		    (pointer[i] & ~3u) > end)
@@ -199,9 +192,10 @@ static int raster_encode(const struct m9x_faa_raster_input *in,
 		memcpy(out->secondary + destination, in->secondary + source,
 		       insert[i] - source);
 		destination += insert[i] - source;
-		put(out->secondary + destination, 1);
-		put(out->secondary + destination + 4, 0x4545456a);
-		put(out->secondary + destination + 8, continuation << 16);
+		m9_cmd_put(out->secondary + destination, 1);
+		m9_cmd_put(out->secondary + destination + 4, 0x4545456a);
+		m9_cmd_put(out->secondary + destination + 8,
+			   continuation << 16);
 		destination += 12;
 		source = insert[i];
 	}
@@ -209,26 +203,29 @@ static int raster_encode(const struct m9x_faa_raster_input *in,
 	       in->secondary_bytes - source);
 	for (i = 0; i < stages; i++)
 		if (binding[i] != ~0u)
-			put(out->secondary + moved(binding[i], insert, ni),
-			    (get(in->secondary + binding[i]) & 0xffff) |
-				    continuation << 16);
+			m9_cmd_put(out->secondary +
+					   moved(binding[i], insert, ni),
+				   (m9_cmd_get(in->secondary + binding[i]) &
+				    0xffff) |
+					   continuation << 16);
 	for (i = 0; i < nb; i++)
-		put(out->secondary + moved(branches[i], insert, ni),
-		    0x49d00000 | ((moved(targets[i], insert, ni) -
-				   moved(branches[i], insert, ni)) /
-				  4));
+		m9_cmd_put(out->secondary + moved(branches[i], insert, ni),
+			   0x49d00000 | ((moved(targets[i], insert, ni) -
+					  moved(branches[i], insert, ni)) /
+					 4));
 	for (i = 0; i < 4; i++)
-		put(out->primary + in->range_at[i],
-		    (in->secondary_base + moved(pointer[i], insert, ni)) |
-			    (i & 1 ? 2u : 1u));
-	put(out->secondary + moved(raster + 12, insert, ni),
-	    get(in->secondary + raster + 12) |
-		    (in->flags & M9_FAA_RASTER_CULL_CW	? 0x03000000 :
-		     in->flags & M9_FAA_RASTER_CULL_CCW ? 0x02000000 :
-							  0));
-	put(out->secondary + moved(raster + 28, insert, ni),
-	    get(in->secondary + raster + 28) |
-		    (in->flags & M9_FAA_RASTER_FLAT ? 0x4000 : 0));
+		m9_cmd_put(out->primary + in->range_at[i],
+			   (in->secondary_base +
+			    moved(pointer[i], insert, ni)) |
+				   (i & 1 ? 2u : 1u));
+	m9_cmd_put(out->secondary + moved(raster + 12, insert, ni),
+		   m9_cmd_get(in->secondary + raster + 12) |
+			   (in->flags & M9_FAA_RASTER_CULL_CW  ? 0x03000000 :
+			    in->flags & M9_FAA_RASTER_CULL_CCW ? 0x02000000 :
+								 0));
+	m9_cmd_put(out->secondary + moved(raster + 28, insert, ni),
+		   m9_cmd_get(in->secondary + raster + 28) |
+			   (in->flags & M9_FAA_RASTER_FLAT ? 0x4000 : 0));
 	*out->secondary_bytes = n;
 	return 0;
 }

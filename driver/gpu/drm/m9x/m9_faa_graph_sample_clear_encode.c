@@ -4,6 +4,7 @@
 #include <linux/kernel.h>
 #include <linux/string.h>
 #include <crypto/sha2.h>
+#include "m9_cmd.h"
 #include "m9_faa_graph_sample_clear_encode.h"
 #include "m9_faa_graph_depth_encode.h"
 
@@ -12,14 +13,6 @@ static const u8 digest[32] = {
 	0xaf, 0x16, 0x30, 0xc7, 0x84, 0x3b, 0x19, 0xd2, 0x96, 0x4d, 0xe8,
 	0x48, 0xbb, 0x95, 0x50, 0x86, 0x3e, 0x4d, 0x3b, 0xba, 0x27,
 };
-
-static void put(u8 *p, u32 v)
-{
-	p[0] = v;
-	p[1] = v >> 8;
-	p[2] = v >> 16;
-	p[3] = v >> 24;
-}
 
 int m9x_faa_sample_clear_encode(const u8 *blob, size_t bytes,
 				const struct m9x_faa_graph_draw_owner
@@ -84,35 +77,36 @@ int m9x_faa_sample_clear_encode(const u8 *blob, size_t bytes,
 	 * copies that unclamped numeric pair into this internal program's state.
 	 */
 	memcpy(primary, blob, bytes);
-	put(primary + 12, ((u32)base_point + 0x50) | 1);
-	put(primary + 48, (hz->allocation_height << 16) | hz->storage_width);
-	put(primary + 68, ((u32)base_point + 0x60) | 1);
-	put(primary + 76, hz->base | 1);
-	put(primary + 80, 0xf0000000 | hz->storage_width);
+	m9_cmd_put(primary + 12, ((u32)base_point + 0x50) | 1);
+	m9_cmd_put(primary + 48,
+		   (hz->allocation_height << 16) | hz->storage_width);
+	m9_cmd_put(primary + 68, ((u32)base_point + 0x60) | 1);
+	m9_cmd_put(primary + 76, hz->base | 1);
+	m9_cmd_put(primary + 80, 0xf0000000 | hz->storage_width);
 	/* fa227/fa22c/fa235/fa23e publish this fixed E6/44 transition control.
 	 * It is not a SYSTEM owner address or a dimension-dependent relocation.
 	 */
-	put(primary + 168, 0x40004000);
-	put(primary + 172, 0x40004000);
-	put(primary + 204, (u32)base_point + 0x60);
-	put(primary + 2968, (u32)base_point + 0x60);
-	put(primary + 3104, hz->base | 1);
-	put(primary + 3452, 0x20000000 | (count - 1));
+	m9_cmd_put(primary + 168, 0x40004000);
+	m9_cmd_put(primary + 172, 0x40004000);
+	m9_cmd_put(primary + 204, (u32)base_point + 0x60);
+	m9_cmd_put(primary + 2968, (u32)base_point + 0x60);
+	m9_cmd_put(primary + 3104, hz->base | 1);
+	m9_cmd_put(primary + 3452, 0x20000000 | (count - 1));
 	page = first;
 	while (page < end) {
 		u32 group = page & ~7u;
 		u32 last = group + 8 < end ? group + 8 : end;
 		u32 mask = ((1u << (last - page)) - 1) << (page & 7);
 
-		put(primary + at, ((group | 0xd00000u) << 5) | mask);
+		m9_cmd_put(primary + at, ((group | 0xd00000u) << 5) | mask);
 		at += 4;
 		page = last;
 	}
-	put(primary + at, 0x4545e3e6);
-	put(primary + at + 4, 1);
-	put(primary + at + 8, ((u32)base_point + 0x70) | 1);
-	put(primary + at + 12, 0x454545e6);
-	put(primary + at + 16, 1);
+	m9_cmd_put(primary + at, M9_CMD_FENCE);
+	m9_cmd_put(primary + at + 4, 1);
+	m9_cmd_put(primary + at + 8, ((u32)base_point + 0x70) | 1);
+	m9_cmd_put(primary + at + 12, 0x454545e6);
+	m9_cmd_put(primary + at + 16, 1);
 	*length = at + 20;
 	return 0;
 }
