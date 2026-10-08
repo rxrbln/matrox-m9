@@ -6721,7 +6721,8 @@ static int m9_faa_public_vs_draw_state(struct m9x_transport *t,
  * DRAW fence: context/sequence equality alone never exempts another hazard.
  * No allocations, uploads, MMIO, fence signalling or posting occur here. */
 int m9x_faa_graph_public_vs_draw_hazards(struct m9x_device *mdev,
-		struct m9_faa_graph_binding *binding, u32 generation, u64 draw_point)
+					 struct m9_faa_graph_binding *binding,
+					 u32 generation, u64 draw_point)
 {
 #ifdef M9_FAA_GRAPH_INIT_CONTROL
 	struct m9x_transport *t = &mdev->transport;
@@ -6735,13 +6736,15 @@ int m9x_faa_graph_public_vs_draw_hazards(struct m9x_device *mdev,
 		goto out;
 	r = t->faa;
 	for (i = 0; i < PARHELIA_M9_FAA_GRAPH_OWNERS; i++) {
-		struct drm_gem_object *bo = m9x_faa_graph_binding_owner(binding, i);
+		struct drm_gem_object *bo =
+			m9x_faa_graph_binding_owner(binding, i);
 		struct dma_resv_iter cursor;
 		struct dma_fence *fence;
 		bool found = false;
 
 		dma_resv_assert_held(bo->resv);
-		dma_resv_for_each_fence(&cursor, bo->resv, DMA_RESV_USAGE_READ, fence) {
+		dma_resv_for_each_fence(&cursor, bo->resv, DMA_RESV_USAGE_READ,
+					fence) {
 			int status;
 
 			if (fence == &r->public_vs_draw_fence->base) {
