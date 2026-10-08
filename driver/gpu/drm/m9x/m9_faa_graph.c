@@ -2358,6 +2358,7 @@ int m9x_faa_graph_dual_later_ioctl(struct drm_device *drm,void *data,
     graph->width!=args->width||graph->height!=args->height){
   ret=-ENOENT;goto out;
  }
+ /* No stage-1 handle: the single-texture program's one-unit set. */
  for(i=0;i<2;i++){
   const struct drm_parhelia_m9_faa_texture_view *v=&args->texture[i];
   handles[i]=v->handle;
@@ -2366,13 +2367,13 @@ int m9x_faa_graph_dual_later_ioctl(struct drm_device *drm,void *data,
    .storage_kind=v->storage_kind,.levels=v->levels,.stage=i,
    .min_filter=v->min_filter,.mag_filter=v->mag_filter,.mip_filter=v->mip_filter,
    .address_u=v->address_u,.address_v=v->address_v,
-   .coordinate_sets=2,.coordinate_index=i};
+   .coordinate_sets=args->texture[1].handle?2:1,.coordinate_index=i};
  }
  for(i=0;i<PARHELIA_M9_FAA_GRAPH_OWNERS;i++)graph_owner[i]=graph->owner[i];
  ret=m9x_faa_texture_owners_acquire(mdev,file,handles,request,graph_owner,
                                     args->generation,&textures);
  if(ret)goto out;
- for(i=0;i<2;i++){
+ for(i=0;i<2&&textures.gem[i];i++){
   texture_bo[i]=textures.gem[i];drm_gem_object_get(texture_bo[i]);
  }
  if(args->version==PARHELIA_M9_FAA_DUAL_LATER_TEXTURES_VERSION){
@@ -2389,7 +2390,8 @@ int m9x_faa_graph_dual_later_ioctl(struct drm_device *drm,void *data,
      .height=t[j].height,.storage_kind=t[j].storage_kind,.levels=t[j].levels,
      .stage=j,.min_filter=t[j].min_filter,.mag_filter=t[j].mag_filter,
      .mip_filter=t[j].mip_filter,.address_u=t[j].address_u,
-     .address_v=t[j].address_v,.coordinate_sets=2,.coordinate_index=j};
+     .address_v=t[j].address_v,.coordinate_sets=t[1].handle?2:1,
+     .coordinate_index=j};
    }
    ret=m9x_faa_texture_owners_acquire(mdev,file,handles,own,graph_owner,
                                       args->generation,&draw_textures[i]);
@@ -2416,18 +2418,20 @@ int m9x_faa_graph_dual_later_ioctl(struct drm_device *drm,void *data,
  /* A source-proved new stage-1 owner moves into the retained set here;
   * the local references below keep both BOs reservable until submit. */
  ret=m9x_faa_graph_dual_later_prepare(mdev,binding,args->generation,previous,
-                                      &input,&textures,args->clear_flags,batch);
+                                      &input,&textures,draw_textures,
+                                      args->clear_flags,batch);
  if(ret)goto out;
  drm_exec_init(&exec,DRM_EXEC_INTERRUPTIBLE_WAIT|DRM_EXEC_IGNORE_DUPLICATES,8);
  drm_exec_until_all_locked(&exec){
   for(i=0;i<PARHELIA_M9_FAA_GRAPH_OWNERS+2;i++){
    struct drm_gem_object *bo=i<PARHELIA_M9_FAA_GRAPH_OWNERS?
     graph->owner[i]:texture_bo[i-PARHELIA_M9_FAA_GRAPH_OWNERS];
+   if(!bo)continue;
    ret=drm_exec_prepare_obj(&exec,bo,1);
    drm_exec_retry_on_contention(&exec);if(ret)goto out_exec;
   }
   for(i=1;draw_textures&&i<batch->count;i++)
-   for(j=0;j<2&&draw_textures[i].gem[0];j++){
+   for(j=0;j<2&&draw_textures[i].gem[j];j++){
     ret=drm_exec_prepare_obj(&exec,draw_textures[i].gem[j],1);
     drm_exec_retry_on_contention(&exec);if(ret)goto out_exec;
    }

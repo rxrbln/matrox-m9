@@ -10,6 +10,8 @@
 /* Copy draw descriptors and their uploads; draw 0 defines the program.
  * Records are drm_parhelia_m9_faa_dual_draw when textured is set.
  */
+static_assert(sizeof(struct drm_parhelia_m9_faa_dual_draw) == 216);
+
 static int dual_draws_copy(u64 draws, u32 draw_count, u32 width, u32 height,
 			   u32 flags, u32 clear_flags, bool textured,
 			   struct m9x_faa_owned_color_batch **result)
@@ -37,10 +39,19 @@ static int dual_draws_copy(u64 draws, u32 draw_count, u32 width, u32 height,
 	for (i = 0; i < draw_count; i++) {
 		const struct drm_parhelia_m9_faa_color_draw *d =
 			(const void *)(desc + i * record);
+		const struct drm_parhelia_m9_faa_dual_draw *t = (const void *)d;
 		const struct drm_parhelia_m9_faa_upload_layout *l = &d->layout;
 		struct m9x_faa_owned_color_draw *job = &batch->draw[i];
 		struct m9x_faa_color_input *in = &job->input;
+		static const struct drm_parhelia_m9_faa_texture_view none;
+		u32 program = textured ? t->program : PARHELIA_M9_FAA_PROGRAM_DUAL;
+		bool single = program == PARHELIA_M9_FAA_PROGRAM_SINGLE;
 
+		/* A single-texture DRAW names no stage-1 texture. */
+		if ((textured && t->pad) ||
+		    (program != PARHELIA_M9_FAA_PROGRAM_DUAL && !single) ||
+		    (single && memcmp(&t->texture[1], &none, sizeof(none))))
+			goto out;
 		if (!d->upload || d->pad[0] || d->pad[1] ||
 		    (d->raster_flags &
 		     ~(PARHELIA_M9_FAA_COLOR_RASTER_CULL_CW |
@@ -49,7 +60,8 @@ static int dual_draws_copy(u64 draws, u32 draw_count, u32 width, u32 height,
 		    !m9x_faa_depth_flags_valid(d->depth_flags) ||
 		    d->record_stride != 64 || !d->record_count ||
 		    d->record_count % 3 || d->record_count > 12288 ||
-		    d->declaration_count != 9 || l->program_count != 4 ||
+		    d->declaration_count != (single ? 7 : 9) ||
+		    l->program_count != 4 ||
 		    !l->program_bytes || l->program_bytes > 4096 ||
 		    (l->program_bytes & 7) || !l->constants_bytes ||
 		    l->constants_bytes > 16384 || (l->constants_bytes & 7) ||
@@ -61,7 +73,7 @@ static int dual_draws_copy(u64 draws, u32 draw_count, u32 width, u32 height,
 		    check_add_overflow(l->program_bytes, l->constants_bytes,
 				       &sum) ||
 		    check_add_overflow(sum, l->geometry_bytes, &sum) ||
-		    check_add_overflow(sum, 36u, &sum) ||
+		    check_add_overflow(sum, d->declaration_count * 4, &sum) ||
 		    sum != d->upload_bytes || sum > 0x42000)
 			goto out;
 		for (j = 0; j < 4; j++)
@@ -91,24 +103,33 @@ static int dual_draws_copy(u64 draws, u32 draw_count, u32 width, u32 height,
 		in->declaration_count = d->declaration_count;
 		in->depth_flags = d->depth_flags;
 		in->raster_flags = d->raster_flags;
-		in->dual_base_only = true;
+		in->dual_base_only = !single;
+		in->single_base_only = single;
 		job->bytes = sum;
+		job->program = program;
 		if (textured)
-			memcpy(job->texture,
-			       ((const struct drm_parhelia_m9_faa_dual_draw *)d)->texture,
-			       sizeof(job->texture));
-		if (i) {
+			memcpy(job->texture, t->texture, sizeof(job->texture));
+		/* One program and declaration per kind, one depth state. */
+		for (j = 0; j < i; j++) {
 			const struct m9x_faa_color_input *f =
-				&batch->draw[0].input;
+				&batch->draw[j].input;
+
+			if (d->depth_flags != f->depth_flags) {
+				ret = -EOPNOTSUPP;
+				goto out;
+			}
+			if (batch->draw[j].program != program)
+				continue;
 			if (l->program_bytes != f->layout.program_bytes ||
 			    memcmp(in->program, f->program, l->program_bytes) ||
 			    memcmp(l->entry_bytes, f->layout.entry_bytes,
 				   sizeof(l->entry_bytes)) ||
-			    memcmp(in->declaration, f->declaration, 36) ||
-			    d->depth_flags != f->depth_flags) {
+			    memcmp(in->declaration, f->declaration,
+				   d->declaration_count * 4)) {
 				ret = -EOPNOTSUPP;
 				goto out;
 			}
+			break;
 		}
 		batch->count++;
 	}

@@ -292,6 +292,9 @@ struct m9_faa_depth_frame_storage {
  bool mode_planned;
  struct m9x_faa_depth_mode_state mode_before,mode_after;
  u32 planned_delta,planned_ends,prefix_posts;
+ /* Dual later frames: each DRAW's stage and the program cache it leaves. */
+ struct m9x_faa_frame_stage *stages;
+ struct m9x_faa_program_cache *programs;
 };
 struct m9_faa_depth_storage {
  struct m9_faa_owner owner[M9_FAA_DEPTH_OWNERS];
@@ -309,7 +312,8 @@ struct m9_faa_depth_storage {
 static void m9_faa_depth_frame_free(struct m9_faa_depth_frame_storage *frame)
 {
  if(!frame)return;
- kvfree(frame->resume_upload);kvfree(frame->batch_data);kvfree(frame->batch_secondary);kvfree(frame->batch_program);kvfree(frame);
+ kvfree(frame->resume_upload);kvfree(frame->batch_data);kvfree(frame->batch_secondary);kvfree(frame->batch_program);
+ kvfree(frame->stages);kfree(frame->programs);kvfree(frame);
 }
 
 /* Opt-in progress evidence, with no extra GPU reads or command changes.
@@ -391,6 +395,8 @@ struct m9x_faa_replay {
 	 * Both pinned sets survive until DMA-stop teardown. */
 	struct m9x_faa_texture_owners dual_next_textures;
 	bool dual_active_second;
+	/* Programs of the dual/single later frames, committed at retirement. */
+	struct m9x_faa_program_cache *programs;
 	/* Per-DRAW sets whose release met an unsignaled posted fence. */
 	struct m9x_faa_texture_owners *deferred_textures;
 	u32 deferred_count;
@@ -1218,6 +1224,9 @@ static bool m9_faa_release(struct m9x_device *mdev, struct m9x_faa_replay *r)
 	kfree(r->public_vs_image);
  if (r->color_image) kfree(r->color_image->constants);
  kfree(r->color_image);
+#ifdef M9_FAA_GRAPH_INIT_CONTROL
+ kfree(r->programs);
+#endif
 	kfree(r->public_vs_follow_image);
  kfree(r->public_vs_draw_image);
  kfree(r->public_vs_lock_image);
@@ -7829,6 +7838,7 @@ int m9x_faa_graph_dual_first_prepare(struct m9x_device *mdev,
 #ifdef M9_FAA_GRAPH_INIT_CONTROL
  struct m9x_transport *t=&mdev->transport;struct m9x_faa_replay *r;
  struct m9_faa_depth_frame_storage *frame=NULL;
+ struct m9x_faa_program_cache *programs=NULL;
  struct m9_faa_color_storage *scratch=NULL;
  struct m9x_faa_first_depth_scratch *prefix=NULL;
  struct m9x_faa_graph_draw_owner owner[M9_FAA_DEPTH_DRAW_OWNERS];
@@ -7894,11 +7904,12 @@ int m9x_faa_graph_dual_first_prepare(struct m9x_device *mdev,
  frame=kvzalloc(sizeof(*frame),GFP_KERNEL);
  scratch=kzalloc(sizeof(*scratch),GFP_KERNEL);
  prefix=kzalloc(sizeof(*prefix),GFP_KERNEL);
+ programs=kzalloc(sizeof(*programs),GFP_KERNEL);
  if(input->dual_colorpass_diagnostic){
   job_primary=kmalloc(M9_FAA_DEPTH_FRAME_PRIMARY_CAPACITY,GFP_KERNEL);
   job_secondary=kmalloc(M9_FAA_DUAL_FIRST_SECONDARY_BYTES,GFP_KERNEL);
  }
- if(!frame||!scratch||!prefix||
+ if(!frame||!scratch||!prefix||!programs||
     (input->dual_colorpass_diagnostic&&(!job_primary||!job_secondary))){
   ret=-ENOMEM;goto out;
  }
@@ -8017,12 +8028,30 @@ int m9x_faa_graph_dual_first_prepare(struct m9x_device *mdev,
   frame->secondary_bytes=secondary_bytes;
   frame->draw_count=batch->count;
  }
+	/* The FIRST builds the dual program at owner-26 offset 0. */
+	if (!input->dual_colorpass_diagnostic) {
+		enum m9x_faa_later_form form;
+		bool cull_state;
+		u32 offset;
+
+		ret = m9x_faa_program_cache_draw(programs,
+						 PARHELIA_M9_FAA_PROGRAM_DUAL,
+						 input->program,
+						 input->layout.program_bytes,
+						 input->raster_flags, true, &form,
+						 &cull_state, &offset);
+		if (ret)
+			goto unlock;
+		kfree(r->programs);
+		r->programs = programs;
+		programs = NULL;
+	}
  r->dual_textures=*textures;memset(textures,0,sizeof(*textures));
  r->depth_storage->frame=frame;frame=NULL;
 unlock:mutex_unlock(&t->lock);
 out:release_firmware(dual_fw);release_firmware(color);release_firmware(sample);
  kvfree(arena);kvfree(secondary);kfree(composed);kfree(job_primary);
- kfree(job_secondary);kfree(prefix);kfree(scratch);
+ kfree(job_secondary);kfree(prefix);kfree(scratch);kfree(programs);
  kfree(shadow_program);kfree(shadow_cb);kvfree(shadow_output);
  m9_faa_depth_frame_free(frame);return ret;
 #else
@@ -8033,245 +8062,400 @@ out:release_firmware(dual_fw);release_firmware(color);release_firmware(sample);
 /* One retained dual DRAW after an actual Lock/Unlock. The first producer is
  * used only as an independent live stage builder; its FIRST clear and ENDs
  * are never posted. The later source splice owns the actual command image. */
-int m9x_faa_graph_dual_later_prepare(struct m9x_device *mdev,
- struct m9_faa_graph_binding *binding,u32 generation,u64 previous,
- const struct m9x_faa_color_input *input,
- struct m9x_faa_texture_owners *textures,u32 clear_flags,
- const struct m9x_faa_owned_color_batch *batch)
+/* One retained later frame of up to 64 DRAWs, each running the dual or the
+ * single-texture program. Per DRAW the vendor program cache decides whether
+ * its stage builds, keeps or selects the program (PROVEN forms, see
+ * tests/faa-later-forms-cpu.py); every stage is composed from that DRAW's
+ * live FIRST encode. Sampler words are regenerated at submit. */
+int m9x_faa_graph_dual_later_prepare(
+	struct m9x_device *mdev, struct m9_faa_graph_binding *binding,
+	u32 generation, u64 previous, const struct m9x_faa_color_input *input,
+	struct m9x_faa_texture_owners *textures,
+	struct m9x_faa_texture_owners *draw_textures, u32 clear_flags,
+	const struct m9x_faa_owned_color_batch *batch)
 {
 #ifdef M9_FAA_GRAPH_INIT_CONTROL
- struct m9x_transport *t=&mdev->transport;struct m9x_faa_replay *r;
- struct m9_faa_color_storage *next_input=NULL,*old_input=NULL,*scratch=NULL;
- struct m9_faa_depth_frame_storage *frame=NULL;
- struct m9x_faa_first_depth_scratch *first_scratch=NULL;
- struct m9x_faa_dual_later_scratch *later_scratch=NULL;
- struct m9x_faa_graph_draw_owner owner[M9_FAA_DEPTH_DRAW_OWNERS];
- struct m9x_faa_depth_views views;struct m9x_faa_color_image live;
- struct m9x_faa_dual_first_input dual;
- struct m9x_faa_dual_later_image later;
- struct m9x_faa_texture_owners *active,*other;
- const struct firmware *sample=NULL,*color=NULL,*dual_fw=NULL;
- u8 *fresh_primary=NULL,*fresh_secondary=NULL;
- u32 first_bytes=0,first_ends[14],fresh_length=0,geo,capacity;
- u64 next=0,origin;bool new_pair=false;int ret;
- u8 *arena=NULL,*batch_secondary=NULL,*job_primary=NULL,*job_secondary=NULL;
- u8 *composed=NULL;
- u32 *slots=NULL,arena_bytes=0,first_len,sec_bytes;
- u32 i,raw,span,job_bytes,ends[14];
- if(batch)input=&batch->draw[0].input;
- if(!binding||!input||!textures||!textures->gem[0]||!textures->gem[1]||
-  textures->generation!=generation||
-  (clear_flags&&clear_flags!=3&&clear_flags!=2)||
-  input->layout.program_count!=4||input->declaration_count!=9||
-  input->record_stride!=64||!input->record_count||
-  input->record_count%3||input->fragment_flags||
-  input->dual_colorpass_diagnostic||!input->dual_base_only||
-  !m9x_faa_depth_flags_valid(input->depth_flags))return -EOPNOTSUPP;
- if(batch){
-  if(!batch->count||batch->count>M9_FAA_DUAL_LATER_MAX_DRAWS||
-     batch->clear_flags!=clear_flags)return -EOPNOTSUPP;
-  slots=kmalloc_array(batch->count,sizeof(*slots),GFP_KERNEL);
-  if(!slots)return -ENOMEM;
-  for(i=0;i<batch->count;i++){
-   const struct m9x_faa_color_input *job=&batch->draw[i].input;
-   if(job->data_offset||job->layout.program_count!=4||
-      job->declaration_count!=9||job->record_stride!=64||
-      job->fragment_flags||job->layout.constants_bytes>16384||
-      job->record_count>12288||!job->record_count||job->record_count%3||
-      !m9x_faa_depth_flags_valid(job->depth_flags)||
-      check_mul_overflow(ALIGN(job->record_count,4),64u,&raw)||
-      check_add_overflow(ALIGN(job->layout.constants_bytes,128),
-                         max(job->layout.geometry_bytes,128u+raw),&span))
-    {kfree(slots);return -EOPNOTSUPP;}
-   slots[i]=ALIGN(arena_bytes,128);
-   if(check_add_overflow(slots[i],span,&arena_bytes)||arena_bytes>0x40000)
-    {kfree(slots);return -ENOSPC;}
-  }
- }
- ret=m9_faa_template_request(mdev,binding,generation,0,&sample);if(ret){kfree(slots);return ret;}
- ret=m9_faa_template_request(mdev,binding,generation,2,&color);if(ret)goto release;
- ret=request_firmware(&dual_fw,"m9x/faa-graph-dual-first-template.bin",
-  &mdev->pdev->dev);if(ret)goto release;
- next_input=kzalloc(sizeof(*next_input),GFP_KERNEL);
- scratch=kzalloc(sizeof(*scratch),GFP_KERNEL);
- frame=kvzalloc(sizeof(*frame),GFP_KERNEL);
- first_scratch=kvzalloc(sizeof(*first_scratch),GFP_KERNEL);
- later_scratch=kvzalloc(sizeof(*later_scratch),GFP_KERNEL);
- fresh_primary=kvzalloc(9200,GFP_KERNEL);
- fresh_secondary=kmalloc(2880,GFP_KERNEL);
- if(!next_input||!scratch||!frame||!first_scratch||!later_scratch||
-  !fresh_primary||!fresh_secondary){ret=-ENOMEM;goto release;}
- if(batch&&batch->count>1){
-  arena=kvzalloc(arena_bytes,GFP_KERNEL);
-  batch_secondary=kvzalloc(M9_FAA_DUAL_LATER_SECONDARY_NOCLEAR+
-   (batch->count-1)*M9_FAA_DUAL_APPEND_SECONDARY_BYTES,GFP_KERNEL);
-  job_primary=kvzalloc(9200,GFP_KERNEL);
-  job_secondary=kmalloc(2880,GFP_KERNEL);
-  composed=kmalloc(sizeof(frame->primary),GFP_KERNEL);
-  if(!arena||!batch_secondary||!job_primary||!job_secondary||!composed){
-   ret=-ENOMEM;goto release;
-  }
- }
- geo=ALIGN(input->layout.constants_bytes,128);
- if(geo>0x40000||input->layout.geometry_bytes>0x40000-geo-768){
-  ret=-ERANGE;goto release;
- }
- capacity=geo+input->layout.geometry_bytes+768;
- next_input->constants=kzalloc(capacity,GFP_KERNEL);
- if(!next_input->constants){ret=-ENOMEM;goto release;}
- mutex_lock(&t->lock);
- ret=m9_faa_depth_frame_retained_state(mdev,binding,generation,previous,&next);
- if(ret)goto unlock;
- r=t->faa;origin=m9_faa_frame_origin(r,previous);
- /* The source control was resumed from the direct Unlock epoch. A GPU
+	struct m9x_transport *t = &mdev->transport;
+	struct m9x_faa_replay *r;
+	struct m9_faa_color_storage *next_input = NULL, *old_input = NULL,
+				    *scratch = NULL;
+	struct m9_faa_depth_frame_storage *frame = NULL;
+	struct m9x_faa_first_depth_scratch *first_scratch = NULL;
+	struct m9x_faa_dual_later_scratch *later_scratch = NULL;
+	struct m9x_faa_graph_draw_owner owner[M9_FAA_DEPTH_DRAW_OWNERS];
+	struct m9x_faa_depth_views views;
+	struct m9x_faa_dual_later_image later;
+	struct m9x_faa_texture_owners *active, *other;
+	struct m9x_faa_program_cache *programs = NULL;
+	const struct firmware *sample = NULL, *color = NULL, *dual_fw = NULL,
+			      *single_fw = NULL;
+	u8 *fresh_primary = NULL, *fresh_secondary = NULL, *arena = NULL,
+	   *secondary = NULL;
+	u8 *composed = NULL;
+	u32 *slots = NULL, count = batch ? batch->count : 1, arena_bytes = 0,
+	    sec_bytes = 0;
+	u32 i, raw, span, first_bytes, ends[14], fresh_length = 0, epoch,
+						 old_start = 0;
+	u64 next = 0, origin;
+	bool new_pair = false, single = false;
+	int ret;
+	if (!binding || !input || !textures || !textures->gem[0] ||
+	    textures->generation != generation || !count ||
+	    count > M9_FAA_DUAL_LATER_MAX_DRAWS ||
+	    (batch && batch->clear_flags != clear_flags) ||
+	    (clear_flags && clear_flags != 3 && clear_flags != 2))
+		return -EOPNOTSUPP;
+	slots = kmalloc_array(count, sizeof(*slots), GFP_KERNEL);
+	if (!slots)
+		return -ENOMEM;
+	for (i = 0; i < count; i++) {
+		const struct m9x_faa_color_input *job =
+			batch ? &batch->draw[i].input : input;
+		u32 kind = batch ? batch->draw[i].program :
+				   PARHELIA_M9_FAA_PROGRAM_DUAL;
+		bool one = kind == PARHELIA_M9_FAA_PROGRAM_SINGLE;
+		if (kind > PARHELIA_M9_FAA_PROGRAM_SINGLE || job->data_offset ||
+		    job->layout.program_count != 4 ||
+		    job->record_stride != 64 ||
+		    job->declaration_count != (one ? 7 : 9) ||
+		    job->dual_base_only == one ||
+		    job->single_base_only != one || job->fragment_flags ||
+		    job->dual_colorpass_diagnostic ||
+		    job->layout.constants_bytes > 16384 ||
+		    job->record_count > 12288 || !job->record_count ||
+		    job->record_count % 3 ||
+		    !m9x_faa_depth_flags_valid(job->depth_flags) ||
+		    check_mul_overflow(ALIGN(job->record_count, 4), 64u,
+				       &raw) ||
+		    check_add_overflow(ALIGN(job->layout.constants_bytes, 128),
+				       max(job->layout.geometry_bytes,
+					   128u + raw),
+				       &span)) {
+			ret = -EOPNOTSUPP;
+			goto release;
+		}
+		single |= one;
+		slots[i] = ALIGN(arena_bytes, 128);
+		if (check_add_overflow(slots[i], span, &arena_bytes) ||
+		    arena_bytes > 0x40000) {
+			ret = -ENOSPC;
+			goto release;
+		}
+	}
+	ret = m9_faa_template_request(mdev, binding, generation, 0, &sample);
+	if (ret)
+		goto release;
+	ret = m9_faa_template_request(mdev, binding, generation, 2, &color);
+	if (ret)
+		goto release;
+	ret = request_firmware(&dual_fw,
+			       "m9x/faa-graph-dual-first-template.bin",
+			       &mdev->pdev->dev);
+	if (ret)
+		goto release;
+	if (single) {
+		ret = request_firmware(&single_fw, M9_FAA_SINGLE_FIRST_FIRMWARE,
+				       &mdev->pdev->dev);
+		if (ret)
+			goto release;
+	}
+	next_input = kzalloc(sizeof(*next_input), GFP_KERNEL);
+	scratch = kzalloc(sizeof(*scratch), GFP_KERNEL);
+	frame = kvzalloc(sizeof(*frame), GFP_KERNEL);
+	first_scratch = kvzalloc(sizeof(*first_scratch), GFP_KERNEL);
+	later_scratch = kvzalloc(sizeof(*later_scratch), GFP_KERNEL);
+	programs = kmalloc(sizeof(*programs), GFP_KERNEL);
+	fresh_primary = kvzalloc(9200, GFP_KERNEL);
+	fresh_secondary =
+		kmalloc(M9_FAA_DUAL_FIRST_SECONDARY_BYTES, GFP_KERNEL);
+	arena = kvzalloc(arena_bytes, GFP_KERNEL);
+	secondary = kvzalloc(count * M9_FAA_APPEND_STAGE_MAX, GFP_KERNEL);
+	composed = kmalloc(sizeof(frame->primary), GFP_KERNEL);
+	if (!next_input || !scratch || !frame || !first_scratch ||
+	    !later_scratch || !programs || !fresh_primary || !fresh_secondary ||
+	    !arena || !secondary || !composed) {
+		ret = -ENOMEM;
+		goto release;
+	}
+	frame->stages = kvcalloc(count, sizeof(*frame->stages), GFP_KERNEL);
+	frame->batch_program = kvzalloc(M9_FAA_PROGRAM_PAGE_BYTES, GFP_KERNEL);
+	if (!frame->stages || !frame->batch_program) {
+		ret = -ENOMEM;
+		goto release;
+	}
+	next_input->constants = kzalloc(arena_bytes, GFP_KERNEL);
+	if (!next_input->constants) {
+		ret = -ENOMEM;
+		goto release;
+	}
+	mutex_lock(&t->lock);
+	ret = m9_faa_depth_frame_retained_state(mdev, binding, generation,
+						previous, &next);
+	if (ret)
+		goto unlock;
+	r = t->faa;
+	origin = m9_faa_frame_origin(r, previous);
+	/* The source control was resumed from the direct Unlock epoch. A GPU
   * presentation or counted-pool maintenance changes that source state. */
- if(origin!=previous||r->present_point||r->command_pools||
-  !r->depth_storage||!r->depth_storage->initialized||
-  r->depth_storage->frame||!r->color_image||
-  r->color_image->layout.program_count!=4||
-  (r->dual_active_second?&r->dual_next_textures:&r->dual_textures)->
-   generation!=generation||
-  memcmp(&r->color_image->layout,&input->layout,sizeof(input->layout))||
-  memcmp(r->color_image->program,input->program,input->layout.program_bytes)){
-  ret=-ESTALE;goto unlock;
- }
- active=r->dual_active_second?&r->dual_next_textures:&r->dual_textures;
- other=r->dual_active_second?&r->dual_textures:&r->dual_next_textures;
- if(!active->gem[0]||!active->gem[1]){ret=-ESTALE;goto unlock;}
- /* A new pair takes the idle slot. Its previous pair belongs to an older
+	if (origin != previous || r->present_point || r->command_pools ||
+	    !r->depth_storage || !r->depth_storage->initialized ||
+	    r->depth_storage->frame || !r->color_image || !r->programs ||
+	    (r->dual_active_second ? &r->dual_next_textures : &r->dual_textures)
+			    ->generation != generation) {
+		ret = -ESTALE;
+		goto unlock;
+	}
+	active = r->dual_active_second ? &r->dual_next_textures :
+					 &r->dual_textures;
+	other = r->dual_active_second ? &r->dual_textures :
+					&r->dual_next_textures;
+	if (!active->gem[0]) {
+		ret = -ESTALE;
+		goto unlock;
+	}
+	/* A new set takes the idle slot. Its previous set belongs to an older
   * frame whose Lock retired before this graph's Unlock; release it now.
-  * The original rebind changes only typed sampler words; each stage's
-  * words are regenerated from its own live owner (stage 0 is DERIVED). */
- new_pair=textures->gem[0]!=active->gem[0]||
-  textures->gem[1]!=active->gem[1]||
-  memcmp(textures->bind,active->bind,sizeof(active->bind));
- if(new_pair&&other->gem[0]&&!m9x_faa_texture_owners_put(other,false)){
-  ret=-EBUSY;goto unlock;
- }
- ret=m9x_faa_graph_bound_depth_views_locked(mdev,binding,generation,&views);
- if(ret)goto unlock;
- if(!m9x_faa_runtime_shape(views.owner[M9_FAA_BOUND_COLOR].width,
-  views.owner[M9_FAA_BOUND_COLOR].height)){ret=-EOPNOTSUPP;goto unlock;}
- m9_faa_depth_frame_owners(r,owner);
- dual=(struct m9x_faa_dual_first_input){.color=input,.texture=textures->bind};
- live=(struct m9x_faa_color_image){
-  .program=next_input->program,.constants=next_input->constants,
-  .primary=scratch->primary,.secondary=scratch->secondary,
-  .program_bytes=sizeof(next_input->program),.constants_bytes=capacity,
-  .primary_bytes=sizeof(scratch->primary),
-  .secondary_bytes=sizeof(scratch->secondary),
-  .secondary_length=&fresh_length};
- ret=m9x_faa_dual_first_encode(sample->data,sample->size,
-  color->data,color->size,dual_fw->data,dual_fw->size,
-  owner,&views,r->primary_bytes,previous-(clear_flags==3?0:clear_flags==2?0x30:0x80),
-  &dual,fresh_primary,9200,fresh_secondary,2880,
-  &first_bytes,first_ends,&live,first_scratch);
- if(ret)goto unlock;
- if(first_ends[9]<r->primary_bytes||
-  first_ends[9]-r->primary_bytes+M9_FAA_DUAL_FIRST_PRIMARY_TAIL_BYTES!=first_bytes){
-  ret=-ESTALE;goto unlock;
- }
- later=(struct m9x_faa_dual_later_image){
-  .primary=frame->primary,.secondary=frame->secondary,
-  .primary_capacity=sizeof(frame->primary),
-  .secondary_capacity=sizeof(frame->secondary)};
- ret=m9x_faa_dual_later_encode(sample->data,sample->size,
-  owner,&views,r->graph_draw_end_bytes,r->color_secondary_cursor,
-  previous,next,clear_flags,fresh_secondary,
-  fresh_primary+first_ends[9]-r->primary_bytes,&later,later_scratch);
- if(ret)goto unlock;
- first_len=later.secondary_bytes;sec_bytes=first_len;
- if(batch&&batch->count>1){
-  if(geo>arena_bytes||input->layout.geometry_bytes>arena_bytes-geo||
-     arena_bytes>owner[28].bytes){ret=-ERANGE;goto unlock;}
-  memcpy(arena,next_input->constants,input->layout.constants_bytes);
-  memcpy(arena+geo,next_input->constants+geo,input->layout.geometry_bytes);
-  memcpy(batch_secondary,frame->secondary,first_len);
-  for(i=1;i<batch->count;i++){
-   struct m9x_faa_color_input job=batch->draw[i].input;
-   struct m9x_faa_color_image extra_live={
-    .program=scratch->program,.constants=arena+slots[i],
-    .primary=scratch->primary,.secondary=scratch->secondary,
-    .program_bytes=sizeof(scratch->program),
-    .constants_bytes=arena_bytes-slots[i],
-    .primary_bytes=sizeof(scratch->primary),
-    .secondary_bytes=sizeof(scratch->secondary),
-    .secondary_length=&fresh_length};
-   struct m9x_faa_dual_append_image appended={
-    .primary=composed,.secondary=batch_secondary+sec_bytes,
-    .primary_capacity=sizeof(frame->primary),
-    .secondary_capacity=M9_FAA_DUAL_APPEND_SECONDARY_BYTES};
-   struct m9x_faa_dual_first_input extra;
-   job.data_offset=slots[i];job.width=input->width;job.height=input->height;
-   extra=(struct m9x_faa_dual_first_input){.color=&job,.texture=textures->bind};
-   ret=m9x_faa_dual_first_encode(sample->data,sample->size,
-    color->data,color->size,dual_fw->data,dual_fw->size,
-    owner,&views,r->primary_bytes,previous-(clear_flags==3?0:clear_flags==2?0x30:0x80),
-    &extra,job_primary,9200,job_secondary,2880,&job_bytes,ends,
-    &extra_live,first_scratch);
-   if(ret)goto unlock;
-   if(job_bytes!=first_bytes||
-      memcmp(scratch->program,next_input->program,input->layout.program_bytes)){
-    ret=-ESTALE;goto unlock;
-   }
-   ret=m9x_faa_dual_later_append_encode(owner,previous,clear_flags,i,
-    r->color_secondary_cursor,r->color_secondary_cursor+sec_bytes,
-    later.primary,later.primary_bytes,fresh_secondary,job_secondary,
-    &appended);
-   if(ret)goto unlock;
-   memcpy(later.primary,composed,appended.primary_bytes);
-   later.primary_bytes=appended.primary_bytes;
-   sec_bytes+=appended.secondary_bytes;
-   /* The DRAW END and the Lock ENDs move with the inserted pair group. */
-   for(raw=1;raw<=4;raw++)later.end_bytes[later.end_count-raw]+=60;
-   later.final_point+=0xa0;
-  }
- }
- next_input->geometry_offset=geo;
- next_input->constants_bytes=input->layout.constants_bytes;
- next_input->geometry_bytes=128+ALIGN(input->record_count,4)*input->record_stride;
- next_input->program_bytes=input->layout.program_bytes;
- next_input->layout=input->layout;
- memcpy(next_input->secondary,fresh_secondary,2880);
- next_input->secondary_bytes=2880;
- frame->primary_start=r->graph_draw_end_bytes;
- frame->primary_bytes=later.primary_bytes;
- frame->secondary_cursor=r->color_secondary_cursor;
- frame->secondary_bytes=sec_bytes;
- if(batch&&batch->count>1){
-  frame->batch_data=arena;arena=NULL;frame->batch_data_bytes=arena_bytes;
-  frame->batch_secondary=batch_secondary;batch_secondary=NULL;
- }
- memcpy(frame->end_bytes,later.end_bytes,later.end_count*sizeof(u32));
- frame->end_count=later.end_count;frame->previous_point=previous;
- frame->queue_start=next;frame->final_point=later.final_point;
- frame->generation=generation;frame->initialized_reuse=true;
- frame->clear_flags=clear_flags;frame->draw_count=batch?batch->count:1;
- frame->dual_first=true;frame->dual_later=true;
- frame->dual_next_pair=new_pair?!r->dual_active_second:r->dual_active_second;
- if(new_pair){
-  *other=*textures;
-  memset(textures,0,sizeof(*textures));
- }
- old_input=r->color_image;r->color_image=next_input;next_input=NULL;
- r->depth_storage->frame=frame;frame=NULL;
- ret=0;
-unlock:mutex_unlock(&t->lock);
-release:kfree(slots);if(sample)release_firmware(sample);
- if(color)release_firmware(color);
- if(dual_fw)release_firmware(dual_fw);
- kvfree(fresh_primary);kfree(fresh_secondary);
- kvfree(arena);kvfree(batch_secondary);kvfree(job_primary);
- kfree(job_secondary);kfree(composed);
- kvfree(first_scratch);kvfree(later_scratch);kfree(scratch);
- m9_faa_depth_frame_free(frame);
- if(next_input)kfree(next_input->constants);
- kfree(next_input);
- if(old_input)kfree(old_input->constants);
- kfree(old_input);
- return ret;
+  * The original rebind changes only typed sampler words, regenerated
+  * from each live owner at submit. */
+	new_pair = textures->gem[0] != active->gem[0] ||
+		   textures->gem[1] != active->gem[1] ||
+		   memcmp(textures->bind, active->bind, sizeof(active->bind));
+	if (new_pair && other->gem[0] &&
+	    !m9x_faa_texture_owners_put(other, false)) {
+		ret = -EBUSY;
+		goto unlock;
+	}
+	ret = m9x_faa_graph_bound_depth_views_locked(mdev, binding, generation,
+						     &views);
+	if (ret)
+		goto unlock;
+	if (!m9x_faa_runtime_shape(views.owner[M9_FAA_BOUND_COLOR].width,
+				   views.owner[M9_FAA_BOUND_COLOR].height)) {
+		ret = -EOPNOTSUPP;
+		goto unlock;
+	}
+	if (arena_bytes > r->draw_owner[1].bytes) {
+		ret = -ERANGE;
+		goto unlock;
+	}
+	m9_faa_depth_frame_owners(r, owner);
+	memcpy(programs, r->programs, sizeof(*programs));
+	epoch = (u32)previous - (clear_flags == 3 ? 0 :
+				 clear_flags == 2 ? 0x30 :
+						    0x80);
+	for (i = 0; i < count; i++) {
+		struct m9x_faa_color_input job = batch ? batch->draw[i].input :
+							 *input;
+		u32 kind = batch ? batch->draw[i].program :
+				   PARHELIA_M9_FAA_PROGRAM_DUAL;
+		const struct m9x_faa_texture_owners *own =
+			i && draw_textures && draw_textures[i].gem[0] ?
+				&draw_textures[i] :
+				textures;
+		struct m9x_faa_color_image live = {
+			.program = scratch->program,
+			.constants = arena + slots[i],
+			.primary = scratch->primary,
+			.secondary = scratch->secondary,
+			.program_bytes = sizeof(scratch->program),
+			.constants_bytes = arena_bytes - slots[i],
+			.primary_bytes = sizeof(scratch->primary),
+			.secondary_bytes = sizeof(scratch->secondary),
+			.secondary_length = &fresh_length
+		};
+		struct m9x_faa_dual_append_image appended = {
+			.primary = composed,
+			.secondary = secondary + sec_bytes,
+			.primary_capacity = sizeof(frame->primary),
+			.secondary_capacity = M9_FAA_APPEND_STAGE_MAX
+		};
+		enum m9x_faa_later_form form;
+		bool cull_state;
+		u32 offset, stage_bytes;
+		/* Each DRAW's owner set has its program's unit count. */
+		if (!!own->gem[1] != (kind == PARHELIA_M9_FAA_PROGRAM_DUAL)) {
+			ret = -EINVAL;
+			goto unlock;
+		}
+		ret = m9x_faa_program_cache_draw(programs, kind, job.program,
+						 job.layout.program_bytes,
+						 job.raster_flags, false, &form,
+						 &cull_state, &offset);
+		if (ret)
+			goto unlock;
+		job.data_offset = slots[i];
+		job.width = input->width;
+		job.height = input->height;
+		if (kind == PARHELIA_M9_FAA_PROGRAM_SINGLE) {
+			struct m9x_faa_single_first_input one = {
+				.color = &job,
+				.texture = own->bind,
+				.program_offset = offset
+			};
+			ret = m9x_faa_single_first_encode(
+				sample->data, sample->size, color->data,
+				color->size, single_fw->data, single_fw->size,
+				owner, &views, r->primary_bytes, epoch, &one,
+				fresh_primary, 9200, fresh_secondary,
+				M9_FAA_SINGLE_FIRST_SECONDARY_BYTES,
+				&first_bytes, ends, &live, first_scratch);
+		} else {
+			struct m9x_faa_dual_first_input two = {
+				.color = &job,
+				.texture = own->bind,
+				.program_offset = offset
+			};
+			ret = m9x_faa_dual_first_encode(
+				sample->data, sample->size, color->data,
+				color->size, dual_fw->data, dual_fw->size,
+				owner, &views, r->primary_bytes, epoch, &two,
+				fresh_primary, 9200, fresh_secondary,
+				M9_FAA_DUAL_FIRST_SECONDARY_BYTES, &first_bytes,
+				ends, &live, first_scratch);
+		}
+		if (ret)
+			goto unlock;
+		stage_bytes = kind == PARHELIA_M9_FAA_PROGRAM_SINGLE ?
+				      M9_FAA_SINGLE_FIRST_SECONDARY_BYTES :
+				      M9_FAA_DUAL_FIRST_SECONDARY_BYTES;
+		if (ends[9] < r->primary_bytes ||
+		    ends[9] - r->primary_bytes +
+				    M9_FAA_DUAL_FIRST_PRIMARY_TAIL_BYTES !=
+			    first_bytes) {
+			ret = -ESTALE;
+			goto unlock;
+		}
+		if (!i) {
+			memcpy(next_input->program, job.program,
+			       job.layout.program_bytes);
+			later = (struct m9x_faa_dual_later_image){
+				.primary = frame->primary,
+				.secondary = secondary,
+				.primary_capacity = sizeof(frame->primary),
+				.secondary_capacity = M9_FAA_APPEND_STAGE_MAX
+			};
+			ret = m9x_faa_later_encode(
+				sample->data, sample->size, owner, &views,
+				r->graph_draw_end_bytes,
+				r->color_secondary_cursor, previous, next,
+				clear_flags, fresh_secondary, stage_bytes,
+				fresh_primary + ends[9] - r->primary_bytes,
+				form, cull_state, &later, later_scratch);
+			if (ret)
+				goto unlock;
+			frame->stages[0] = (struct m9x_faa_frame_stage){
+				0,
+				later.secondary_bytes,
+				later.units,
+				{ later.site[0], later.site[1] }
+			};
+			sec_bytes = later.secondary_bytes;
+			continue;
+		}
+		ret = m9x_faa_later_append_encode(
+			owner, previous, clear_flags, i,
+			r->color_secondary_cursor + old_start,
+			r->color_secondary_cursor + sec_bytes, later.primary,
+			later.primary_bytes, fresh_secondary, stage_bytes, form,
+			cull_state, &appended);
+		if (ret)
+			goto unlock;
+		memcpy(later.primary, composed, appended.primary_bytes);
+		later.primary_bytes = appended.primary_bytes;
+		frame->stages[i] = (struct m9x_faa_frame_stage){
+			sec_bytes,
+			appended.secondary_bytes,
+			appended.units,
+			{ sec_bytes + appended.site[0],
+			  appended.site[1] ? sec_bytes + appended.site[1] : 0 }
+		};
+		old_start = sec_bytes;
+		sec_bytes += appended.secondary_bytes;
+		/* The DRAW END and the Lock ENDs move with the inserted pair group. */
+		for (raw = 1; raw <= 4; raw++)
+			later.end_bytes[later.end_count - raw] += 60;
+		later.final_point += 0xa0;
+	}
+	if (r->color_secondary_cursor > 0x3fe00 ||
+	    sec_bytes > 0x3fe00 - r->color_secondary_cursor) {
+		ret = -ERANGE;
+		goto unlock;
+	}
+	memcpy(next_input->constants, arena, arena_bytes);
+	next_input->geometry_offset = 0;
+	next_input->constants_bytes = arena_bytes;
+	next_input->geometry_bytes = 0;
+	next_input->program_bytes = input->layout.program_bytes;
+	next_input->layout = input->layout;
+	memcpy(next_input->secondary, fresh_secondary, 2880);
+	next_input->secondary_bytes = 2880;
+	memcpy(frame->batch_program, programs->page, M9_FAA_PROGRAM_PAGE_BYTES);
+	frame->programs = programs;
+	programs = NULL;
+	frame->primary_start = r->graph_draw_end_bytes;
+	frame->primary_bytes = later.primary_bytes;
+	frame->secondary_cursor = r->color_secondary_cursor;
+	frame->secondary_bytes = sec_bytes;
+	frame->batch_data = arena;
+	arena = NULL;
+	frame->batch_data_bytes = arena_bytes;
+	frame->batch_secondary = secondary;
+	secondary = NULL;
+	memcpy(frame->end_bytes, later.end_bytes,
+	       later.end_count * sizeof(u32));
+	frame->end_count = later.end_count;
+	frame->previous_point = previous;
+	frame->queue_start = next;
+	frame->final_point = later.final_point;
+	frame->generation = generation;
+	frame->initialized_reuse = true;
+	frame->clear_flags = clear_flags;
+	frame->draw_count = count;
+	frame->dual_first = true;
+	frame->dual_later = true;
+	frame->dual_next_pair = new_pair ? !r->dual_active_second :
+					   r->dual_active_second;
+	if (new_pair) {
+		*other = *textures;
+		memset(textures, 0, sizeof(*textures));
+	}
+	old_input = r->color_image;
+	r->color_image = next_input;
+	next_input = NULL;
+	r->depth_storage->frame = frame;
+	frame = NULL;
+	ret = 0;
+unlock:
+	mutex_unlock(&t->lock);
+release:
+	kfree(slots);
+	if (sample)
+		release_firmware(sample);
+	if (color)
+		release_firmware(color);
+	if (dual_fw)
+		release_firmware(dual_fw);
+	if (single_fw)
+		release_firmware(single_fw);
+	kvfree(fresh_primary);
+	kfree(fresh_secondary);
+	kvfree(arena);
+	kvfree(secondary);
+	kfree(composed);
+	kfree(programs);
+	kvfree(first_scratch);
+	kvfree(later_scratch);
+	kfree(scratch);
+	m9_faa_depth_frame_free(frame);
+	if (next_input)
+		kfree(next_input->constants);
+	kfree(next_input);
+	if (old_input)
+		kfree(old_input->constants);
+	kfree(old_input);
+	return ret;
 #else
- return -EOPNOTSUPP;
+	return -EOPNOTSUPP;
 #endif
 }
 
@@ -9576,31 +9760,59 @@ static int m9_faa_depth_frame_submit(struct m9x_device *mdev,
   ret=-ESTALE;goto out;
  }
 
- if(frame->dual_first){
-  struct m9x_faa_texture_owners *tex=frame->dual_next_pair?
-   &r->dual_next_textures:&r->dual_textures;
+	if (frame->dual_first && frame->dual_later) {
+		struct m9x_faa_texture_owners *tex =
+			frame->dual_next_pair ? &r->dual_next_textures :
+						&r->dual_textures;
+		u32 at = 0;
+		if (!frame->stages || !frame->programs ||
+		    !frame->batch_secondary || !frame->batch_program ||
+		    !frame->draw_count ||
+		    frame->draw_count > M9_FAA_DUAL_LATER_MAX_DRAWS ||
+		    !tex->gem[0]) {
+			ret = -ESTALE;
+			goto out;
+		}
+		/* Both texture RESVs of every set are held by the ioctl. Re-read each
+   * placement and regenerate its DRAW's sampler words at the composed
+   * sites before any consuming fence or post. */
+		for (i = 0; i < frame->draw_count; i++) {
+			const struct m9x_faa_frame_stage *st =
+				&frame->stages[i];
+			struct m9x_faa_texture_owners *own =
+				i && draw_textures && draw_textures[i].gem[0] ?
+					&draw_textures[i] :
+					tex;
+			if (st->offset != at ||
+			    st->bytes > frame->secondary_bytes - at) {
+				ret = -ESTALE;
+				goto out;
+			}
+			ret = m9x_faa_texture_owners_place_sites_locked(
+				mdev, own, generation, frame->batch_secondary,
+				frame->secondary_bytes, st->units, st->site);
+			if (ret)
+				goto out;
+			at += st->bytes;
+		}
+		if (at != frame->secondary_bytes) {
+			ret = -ESTALE;
+			goto out;
+		}
+	} else if (frame->dual_first) {
+  /* FIRST and COLOR-pass frames: one dual set at the source sites. */
+  struct m9x_faa_texture_owners *tex=&r->dual_textures;
   struct m9x_faa_texture_dual_program dual={
    .stage_count=4,.sampler_count=2,.coordinate_sets=2,
    .color_op0=frame->dual_colorpass?3:4,
    .color_op1=frame->dual_colorpass?3:4,
    .program_bytes=input->layout.program_bytes};
   for(i=0;i<4;i++)dual.entry_bytes[i]=input->layout.entry_bytes[i];
-  u32 first_len=frame->dual_later?
-   (frame->clear_flags==3?M9_FAA_DUAL_LATER_SECONDARY_CLEAR:
-                       M9_FAA_DUAL_LATER_SECONDARY_NOCLEAR):
-   frame->dual_colorpass?M9_FAA_DUAL_COLORPASS_SECONDARY_BYTES:
+  u32 first_len=frame->dual_colorpass?M9_FAA_DUAL_COLORPASS_SECONDARY_BYTES:
    M9_FAA_DUAL_FIRST_SECONDARY_BYTES;
   u8 *sec=frame->batch_secondary?frame->batch_secondary:frame->secondary;
-  /* A culled first later stage keeps its 24 bytes of 6A groups; the
-   * same-cull appends after it do not. */
-  if(frame->dual_later&&frame->draw_count&&
-     frame->draw_count<=M9_FAA_DUAL_LATER_MAX_DRAWS&&
-     frame->secondary_bytes==first_len+M9_FAA_DUAL_LATER_CULL_BYTES+
-      (frame->draw_count-1)*M9_FAA_DUAL_APPEND_SECONDARY_BYTES)
-   first_len+=M9_FAA_DUAL_LATER_CULL_BYTES;
-  if((!frame->first&&!frame->dual_later)||!frame->draw_count||
-     frame->draw_count>(frame->dual_later?M9_FAA_DUAL_LATER_MAX_DRAWS:
-                        M9_FAA_DUAL_BATCH_MAX_DRAWS)||
+  if(!frame->first||!frame->draw_count||
+     frame->draw_count>M9_FAA_DUAL_BATCH_MAX_DRAWS||
      frame->secondary_bytes!=first_len+
        (frame->draw_count-1)*M9_FAA_DUAL_APPEND_SECONDARY_BYTES||
      (frame->draw_count>1&&!frame->batch_secondary)||
@@ -9610,19 +9822,14 @@ static int m9_faa_depth_frame_submit(struct m9x_device *mdev,
   }
   /* Both texture RESVs are held by the ioctl. Re-read placement and
    * regenerate their packet words before any consuming fence or post. */
-  ret=frame->dual_later?
-    m9x_faa_texture_owners_place_later_locked(mdev,tex,
-      generation,&dual,sec,first_len):
-    frame->dual_colorpass?
+  ret=frame->dual_colorpass?
     m9x_faa_texture_owners_place_colorpass_locked(mdev,tex,
       generation,&dual,sec,first_len):
     m9x_faa_texture_owners_place_locked(mdev,tex,generation,
       &dual,sec,first_len);
   if(ret)goto out;
   for(i=1;i<frame->draw_count;i++){
-   ret=m9x_faa_texture_owners_place_append_locked(mdev,
-    draw_textures&&frame->dual_later&&draw_textures[i].gem[0]?
-     &draw_textures[i]:tex,
+   ret=m9x_faa_texture_owners_place_append_locked(mdev,tex,
     generation,&dual,sec+first_len+
      (i-1)*M9_FAA_DUAL_APPEND_SECONDARY_BYTES,
     M9_FAA_DUAL_APPEND_SECONDARY_BYTES);
@@ -9639,7 +9846,7 @@ static int m9_faa_depth_frame_submit(struct m9x_device *mdev,
   !frame->secondary_bytes||frame->secondary_bytes>(frame->batch_secondary?0x40000:sizeof(frame->secondary))||
   (frame->batch_data&&(frame->batch_data_bytes>r->draw_owner[1].bytes||
    !frame->batch_secondary||(!frame->batch_program&&!frame->dual_first)||
-   frame->draw_count<2))||
+   (frame->draw_count<2&&!frame->dual_later)))||
   frame->secondary_cursor>0x3fe00||frame->secondary_bytes+48>0x3fe00-frame->secondary_cursor){ret=-ERANGE;goto out;}
  for(i=0;i<PARHELIA_M9_FAA_GRAPH_OWNERS;i++){
   struct drm_gem_object *bo=m9x_faa_graph_binding_owner(binding,i);dma_resv_assert_held(bo->resv);
@@ -9738,7 +9945,12 @@ static int m9_faa_depth_frame_submit(struct m9x_device *mdev,
  }
  if(stage_point!=frame->final_point){ret=-EIO;goto out;}
  *point=stage_point;frame->retired=true;r->depth_storage->initialized=true;
- if(frame->dual_later)r->dual_active_second=frame->dual_next_pair;
+	if (frame->dual_later) {
+		r->dual_active_second = frame->dual_next_pair;
+		kfree(r->programs);
+		r->programs = frame->programs;
+		frame->programs = NULL;
+	}
  r->depth_storage->mode=frame->mode_planned?frame->mode_after:
   (struct m9x_faa_depth_mode_state){true,true,false};
  r->graph_draw_point=stage_point;r->color_lock_point=stage_point;r->color_lock_retired=true;

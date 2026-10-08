@@ -9,8 +9,10 @@ struct drm_gem_object;
 struct dma_fence;
 struct m9x_device;
 
-/* References and pins are acquired before graph reservations. They remain
- * held after any END post until the read fence retires or DMA is stopped.
+/* References and pins are acquired before graph reservations. A request
+ * without a stage-1 handle acquires a one-unit set (gem[1] stays NULL).
+ * They remain held after any END post until the read fence retires or DMA
+ * is stopped.
  * Initialize this object to zero before its first acquire. Reacquiring an
  * occupied object returns -EBUSY without modifying its retained owners. */
 struct m9x_faa_texture_owners {
@@ -41,6 +43,14 @@ int m9x_faa_texture_owners_place_later_locked(struct m9x_device *mdev,
 	const struct m9x_faa_texture_owners *owners, u32 generation,
 	const struct m9x_faa_texture_dual_program *program,
 	u8 *secondary, u32 secondary_bytes);
+/* Units 1 (single-texture set, gem[1] NULL) or 2, at the sampler sites the
+ * later stage composer reported.
+ */
+int m9x_faa_texture_owners_place_sites_locked(struct m9x_device *mdev,
+					      const struct m9x_faa_texture_owners *owners,
+					      u32 generation, u8 *secondary,
+					      u32 secondary_bytes, u32 units,
+					      const u32 site[2]);
 int m9x_faa_texture_owners_place_colorpass_locked(struct m9x_device *mdev,
 	const struct m9x_faa_texture_owners *owners, u32 generation,
 	const struct m9x_faa_texture_dual_program *program,

@@ -16,7 +16,8 @@
 /* COLOR0 * TEX0 MODULATE with stage 1 disabled (FS48). The template is
  * address-free; its SHA authenticates the immutable three-target opcodes.
  * Vertex records are XYZ, D3DCOLOR, UV0 at +16: stride 24 (FVF 0x142) or
- * 32 (FVF 0x242, the dual record with UV1 ignored).
+ * 32 (FVF 0x242, the dual record with UV1 ignored), or the live 64-byte
+ * vec4 record of the dual path with its UV1 ignored.
  */
 struct m9x_faa_single_first_input {
 	const struct m9x_faa_color_input *color;

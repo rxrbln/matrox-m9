@@ -297,7 +297,8 @@ int m9x_faa_color_four_encode(const u8 *blob, size_t bytes,
 	     !(in->record_stride == 16 && in->declaration_count == 3) &&
 	     !(in->dual_base_only &&
 	       (in->record_stride == 36 || in->record_stride == 64)) &&
-	     !(in->single_base_only && in->record_stride == 24)) ||
+	     !(in->single_base_only &&
+	       (in->record_stride == 24 || in->record_stride == 64))) ||
 	    !in->record_count || in->record_count % 3 ||
 	    in->record_count > 12288 || (in->data_offset & 127) ||
 	    in->data_offset > owner[28].bytes || (in->fragment_flags & ~1u) ||
@@ -407,7 +408,7 @@ int m9x_faa_color_four_encode(const u8 *blob, size_t bytes,
 			    q != (in->record_stride == 32 ? xyz_decl[i] :
 							    rhw_decl[i]))
 				return -EINVAL;
-		} else if (in->single_base_only) {
+		} else if (in->single_base_only && in->record_stride != 64) {
 			/* Original FVF 0x142/0x242 single stage: UV0 at +16. */
 			if (q != xyz_decl[i])
 				return -EINVAL;

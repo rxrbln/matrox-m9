@@ -43,6 +43,13 @@ int m9x_faa_texture_dual_colorpass_place(
 	const struct m9x_faa_texture_dual_program *program,
 	u8 *secondary, u32 secondary_bytes);
 
+/* Bind units 1 (single-texture) or 2 at their sampler 0x70 header sites,
+ * as reported by the later stage composer. unit[j] is stage j.
+ */
+int m9x_faa_texture_bind_sites(const struct m9x_faa_texture_bind_input *unit,
+			       u32 units, u8 *secondary, u32 secondary_bytes,
+			       const u32 site[2]);
+
 /* Single-texture FS48 stage: one sampler packet whose 0x70 header is at
  * byte offset site; the following stage-1 unit packet must be idle.
  */

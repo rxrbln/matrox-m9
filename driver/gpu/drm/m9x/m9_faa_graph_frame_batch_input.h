@@ -11,6 +11,8 @@ struct m9x_faa_owned_color_draw {
  u32 bytes,raster_flags;
  /* Dual later version 3: this DRAW's own texture pair. */
  struct drm_parhelia_m9_faa_texture_view texture[2];
+	/* Dual later version 3: PARHELIA_M9_FAA_PROGRAM_DUAL or _SINGLE. */
+	u32 program;
 };
 struct m9x_faa_owned_color_batch {
  u32 count,flags,clear_flags;

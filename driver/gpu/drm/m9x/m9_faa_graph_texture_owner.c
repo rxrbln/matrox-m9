@@ -87,7 +87,7 @@ int m9x_faa_texture_owners_acquire(struct m9x_device *mdev,
 {
 	struct m9x_faa_texture_bind_words words;
 	struct m9x_faa_texture_bind_input check;
-	u32 i, j;
+	u32 i, j, units;
 	int ret;
 
 	if (!out)
@@ -97,18 +97,23 @@ int m9x_faa_texture_owners_acquire(struct m9x_device *mdev,
 	if (out->gem[0] || out->gem[1] || out->retirement ||
 	    out->pinned[0] || out->pinned[1])
 		return -EBUSY;
+	if (!handle || !request)
+		return -EINVAL;
+	/* No stage-1 handle: the single-texture program's one-unit set. */
+	units = handle[1] ? 2 : 1;
 	if (!mdev || !file || !file->minor || file->minor->dev != &mdev->drm ||
-	    !handle || !request || !graph_owner ||
-	    !handle[0] || !handle[1] || handle[0] == handle[1] ||
-	    request[0].stage != 0 || request[1].stage != 1 ||
-	    request[0].coordinate_sets != 2 || request[1].coordinate_sets != 2 ||
-	    request[0].coordinate_index != 0 || request[1].coordinate_index != 1 ||
+	    !graph_owner || !handle[0] || handle[0] == handle[1] ||
+	    request[0].stage != 0 || request[0].coordinate_index != 0 ||
+	    request[0].coordinate_sets != units ||
+	    (units == 2 &&
+	     (request[1].stage != 1 || request[1].coordinate_sets != 2 ||
+	      request[1].coordinate_index != 1)) ||
 	    mdev->pdev->device != M9X_PCI_DEVICE_PHOENIX ||
 	    mdev->pdev->revision != 1 ||
 	    mdev->pdev->subsystem_device != 0x22c0)
 		return -EINVAL;
 	out->generation = generation;
-	for (i = 0; i < 2; i++) {
+	for (i = 0; i < units; i++) {
 		out->gem[i] = drm_gem_object_lookup(file, handle[i]);
 		if (!out->gem[i]) {
 			ret = -ENOENT;
@@ -143,12 +148,13 @@ int m9x_faa_texture_owners_acquire(struct m9x_device *mdev,
 		 * temporary stage-0/AE selections before encoding each packet. */
 		check = out->bind[i];
 		check.stage = 0;
-		check.raster_ae_base = 0x28207006;
+		check.raster_ae_base = units == 2 ? 0x28207006 : 0x28206ff6;
 		ret = m9x_faa_texture_bind_encode(&check, &words);
 		if (ret)
 			goto fail;
 	}
-	if ((u64)out->bind[0].owner_base + out->bind[0].owner_bytes >
+	if (units == 2 &&
+	    (u64)out->bind[0].owner_base + out->bind[0].owner_bytes >
 	    out->bind[1].owner_base &&
 	    (u64)out->bind[1].owner_base + out->bind[1].owner_bytes >
 	    out->bind[0].owner_base) {
@@ -206,6 +212,44 @@ static int m9_faa_texture_owners_place_locked(struct m9x_device *mdev,
 						    secondary_bytes);
 }
 
+/* Any later stage: rebind each unit's live owner at its sampler site. */
+int m9x_faa_texture_owners_place_sites_locked(struct m9x_device *mdev,
+					      const struct m9x_faa_texture_owners *owners,
+					      u32 generation, u8 *secondary,
+					      u32 secondary_bytes, u32 units,
+					      const u32 site[2])
+{
+	struct m9x_faa_texture_bind_input live[2];
+	u32 i;
+	int ret;
+
+	if (!mdev || !owners || !secondary || !site || !units || units > 2 ||
+	    !owners->gem[units - 1] || (units == 1 && owners->gem[1]))
+		return -EINVAL;
+	lockdep_assert_held(&mdev->transport.lock);
+	if (generation != owners->generation ||
+	    generation != mdev->transport.generation ||
+	    mdev->transport.wedged || !mdev->transport.faa_virtual_primary)
+		return -ESTALE;
+	for (i = 0; i < units; i++) {
+		if (!owners->pinned[i])
+			return -ESTALE;
+		dma_resv_assert_held(owners->gem[i]->resv);
+		if (!dma_resv_test_signaled(owners->gem[i]->resv,
+					    DMA_RESV_USAGE_READ))
+			return -EBUSY;
+		live[i] = owners->bind[i];
+		ret = m9_faa_texture_live_view(mdev, owners->gem[i],
+					       &live[i].owner_base,
+					       &live[i].owner_bytes);
+		if (ret || live[i].owner_base != owners->bind[i].owner_base ||
+		    live[i].owner_bytes != owners->bind[i].owner_bytes)
+			return -ESTALE;
+	}
+	return m9x_faa_texture_bind_sites(live, units, secondary,
+					  secondary_bytes, site);
+}
+
 int m9x_faa_texture_owners_place_locked(struct m9x_device *mdev,
 	const struct m9x_faa_texture_owners *owners, u32 generation,
 	const struct m9x_faa_texture_dual_program *program,
@@ -249,21 +293,23 @@ int m9x_faa_texture_owners_fence_locked(struct m9x_faa_texture_owners *owners,
 	u32 i;
 	int ret;
 
+	u32 units = owners && owners->gem[1] ? 2 : 1;
+
 	if (!owners || !fence || !owners->pinned[0] ||
-	    !owners->pinned[1])
+	    (units == 2 && !owners->pinned[1]))
 		return -EINVAL;
 	/* The same pinned texture pair may be read by a later frame after the
 	 * previous Lock/Unlock has genuinely retired. An unsignaled old read
 	 * fence cannot be displaced by a newly planned token. */
 	if (owners->retirement && !dma_fence_is_signaled(owners->retirement))
 		return -EBUSY;
-	for (i = 0; i < 2; i++) {
+	for (i = 0; i < units; i++) {
 		dma_resv_assert_held(owners->gem[i]->resv);
 		ret = dma_resv_reserve_fences(owners->gem[i]->resv, 1);
 		if (ret)
 			return ret;
 	}
-	for (i = 0; i < 2; i++)
+	for (i = 0; i < units; i++)
 		dma_resv_add_fence(owners->gem[i]->resv, fence,
 				   DMA_RESV_USAGE_READ);
 	old = owners->retirement;

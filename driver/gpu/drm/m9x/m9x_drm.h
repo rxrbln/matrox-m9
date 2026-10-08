@@ -187,13 +187,20 @@ struct drm_parhelia_m9_faa_graph_dual_batch {
  * draws (same program/declaration/depth, own data); upload fields are zero. */
 #define PARHELIA_M9_FAA_DUAL_LATER_BATCH_VERSION 2u
 /* Version 3: draws point to draw_count drm_parhelia_m9_faa_dual_draw records,
- * each with its own texture pair; texture[] equals the first record's. */
+ * each with its own texture pair; texture[] equals the first record's.
+ * program selects the fragment program of that DRAW: DUAL is COLOR*T0*T1
+ * MODULATE (FS72, declaration_count 9), SINGLE is COLOR*T0 MODULATE (FS48,
+ * declaration_count 7, texture[1] all zero). Both use 64-byte records.
+ */
+#define PARHELIA_M9_FAA_PROGRAM_DUAL 0u
+#define PARHELIA_M9_FAA_PROGRAM_SINGLE 1u
 #define PARHELIA_M9_FAA_DUAL_LATER_TEXTURES_VERSION 3u
 #define PARHELIA_M9_FAA_DUAL_LATER_MAX_DRAWS 64u
 #define PARHELIA_M9_FAA_DUAL_LATER_LOCK_RETIRED 27u
 struct drm_parhelia_m9_faa_dual_draw {
 	struct drm_parhelia_m9_faa_color_draw draw;
 	struct drm_parhelia_m9_faa_texture_view texture[2];
+	__u32 program, pad;
 };
 
 struct drm_parhelia_m9_faa_graph_dual_later {
