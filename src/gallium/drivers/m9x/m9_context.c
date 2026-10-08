@@ -9828,10 +9828,10 @@ m9_context_faa_submit_draw(struct m9_context *ctx,
    }
    if(owned.texture_count&&
       (!debug_get_bool_option("M9X_FAA_DUAL_APPLICATION",false)||
-       state->cull_face!=PIPE_FACE_NONE||
+       state->cull_face==PIPE_FACE_FRONT_AND_BACK||
        state->flatshade||!state->depth_enabled||owned.shader.record_bytes!=64||
        owned.shader.declaration_words!=9)) {
-      why="FAA dual application raster is qualified for no-cull enabled depth only";
+      why="FAA dual application raster requires enabled depth and smooth shading";
       goto out;
    }
    struct m9_faa_graph *graph = &ctx->faa_surface.graph;

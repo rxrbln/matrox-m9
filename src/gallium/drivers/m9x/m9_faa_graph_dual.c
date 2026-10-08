@@ -34,6 +34,9 @@ dual_pack(const struct m9_faa_gl_upload *u,const struct m9_faa_application_state
    *d=(struct drm_parhelia_m9_faa_color_draw){.upload=base,.upload_bytes=total,
       .record_stride=64,.record_count=u->vertex_count,.declaration_count=9,
       .depth_flags=1u|(s->depth_write?2u:0u)|((uint32_t)s->depth_func<<2)};
+   if(s->cull_face==PIPE_FACE_FRONT||s->cull_face==PIPE_FACE_BACK)
+      d->raster_flags=((s->cull_face==PIPE_FACE_BACK)==s->front_ccw)?
+         PARHELIA_M9_FAA_COLOR_RASTER_CULL_CW:PARHELIA_M9_FAA_COLOR_RASTER_CULL_CCW;
    d->layout.program_bytes=u->layout.bytes;d->layout.program_count=4;
    memcpy(d->layout.entry_bytes,u->layout.entry_bytes,sizeof(d->layout.entry_bytes));
    d->layout.constants_bytes=u->constants_bytes;
@@ -97,7 +100,7 @@ m9_faa_surface_dual_later_kernel(struct m9_screen *screen,struct m9_faa_surface 
          u->generation!=g->prepared_generation)return -ESTALE;
       if(u->texture_count!=2||s->width!=surface->width||s->height!=surface->height||
          !s->depth_enabled||s->depth_func>PIPE_FUNC_ALWAYS||
-         s->flatshade||s->cull_face!=PIPE_FACE_NONE||s->scissor_enabled||
+         s->flatshade||s->cull_face==PIPE_FACE_FRONT_AND_BACK||s->scissor_enabled||
          s->fragment.blend||s->fragment.alpha||s->fragment.source_stream||
          u->texture[0].resource==u->texture[1].resource||
          u->texture[0].view.handle==u->texture[1].view.handle)return -EOPNOTSUPP;
@@ -118,7 +121,7 @@ m9_faa_surface_dual_later_kernel(struct m9_screen *screen,struct m9_faa_surface 
       .previous_unlock_point=g->color_unlock_point,.generation=g->prepared_generation,
       .width=surface->width,.height=surface->height,.clear_flags=frame->clear_flags,
       .depth_flags=draws[0].depth_flags};
-   if(frame->count==1) {
+   if(frame->count==1&&!draws[0].raster_flags) {
       request.version=PARHELIA_M9_FAA_DUAL_LATER_VERSION;
       request.upload=draws[0].upload;request.upload_bytes=draws[0].upload_bytes;
       request.record_stride=draws[0].record_stride;request.record_count=draws[0].record_count;
@@ -179,7 +182,7 @@ m9_faa_surface_dual_frame_kernel(struct m9_screen *screen,struct m9_faa_surface 
          u->generation!=g->prepared_generation)return -ESTALE;
       if(u->texture_count!=2||s->width!=surface->width||s->height!=surface->height||
          !s->depth_enabled||s->depth_func>PIPE_FUNC_ALWAYS||
-         s->flatshade||s->cull_face!=PIPE_FACE_NONE||s->scissor_enabled||
+         s->flatshade||s->cull_face==PIPE_FACE_FRONT_AND_BACK||s->scissor_enabled||
          s->fragment.blend||s->fragment.alpha||s->fragment.source_stream||
          s->viewport.scale[0]!=surface->width*.5f||s->viewport.scale[1]!=surface->height*-.5f||
          s->viewport.scale[2]!=.5f||s->viewport.translate[0]!=surface->width*.5f||
@@ -199,11 +202,8 @@ m9_faa_surface_dual_frame_kernel(struct m9_screen *screen,struct m9_faa_surface 
    }
    uint64_t delta=0x150+(frame->count-1u)*UINT64_C(0xa0);
    if(g->init_point>UINT64_MAX-delta)return -ERANGE;
-   if(frame->count==1) {
-      struct drm_parhelia_m9_faa_texture_view texture[2]={first->texture[0].view,first->texture[1].view};
-      int ret=m9_faa_surface_dual_first_kernel(screen,surface,&first->shader,texture);
-      if(ret)return ret;
-   } else {
+   /* Descriptor batches of one or more DRAWs carry live depth and cull. */
+   {
       request=(struct drm_parhelia_m9_faa_graph_dual_batch){.graph_id=g->prepared_id,
          .init_point=g->init_point,.draws=(uintptr_t)draws,.draw_count=frame->count,
          .generation=g->prepared_generation,.version=PARHELIA_M9_FAA_DUAL_BATCH_VERSION,
@@ -229,7 +229,9 @@ dual_same_pair(const struct m9_faa_application_upload *a,
                const struct m9_faa_application_upload *b)
 {
    if(a->state.depth_write!=b->state.depth_write||
-      a->state.depth_func!=b->state.depth_func)return false;
+      a->state.depth_func!=b->state.depth_func||
+      a->state.cull_face!=b->state.cull_face||
+      a->state.front_ccw!=b->state.front_ccw)return false;
    for(unsigned t=0;t<2;t++)
       if(a->texture[t].resource!=b->texture[t].resource||
          memcmp(&a->texture[t].view,&b->texture[t].view,sizeof(a->texture[t].view)))
@@ -248,7 +250,9 @@ m9_faa_surface_dual_batch_kernel(struct m9_screen *screen,struct m9_faa_surface 
    if(!screen||!surface||!frame||!frame->draws||!frame->count)return -EINVAL;
    for(uint32_t start=0;start<frame->count;){
       uint32_t n=1;
-      while(start+n<frame->count&&n<3&&
+      /* Culled DRAWs are not appended (no source for that stage yet). */
+      const bool culled=frame->draws[start].state.cull_face!=PIPE_FACE_NONE;
+      while(!culled&&start+n<frame->count&&n<3&&
             dual_same_pair(&frame->draws[start],&frame->draws[start+n]))n++;
       struct m9_faa_application_frame part={.draws=frame->draws+start,.count=n,
          .clear_flags=start?0:frame->clear_flags,
