@@ -10608,6 +10608,17 @@ m9_context_faa_unlock_unpresented(struct m9_context *ctx)
    return ret;
 }
 
+/* M9X_FAA_GPU_PRESENT_TEXTURED=1 presents textured graphs by the GPU copy
+ * too (not yet measured), instead of a CPU read and write of the frame. */
+static bool
+m9_faa_gpu_present_textured(void)
+{
+   static int enabled = -1;
+   if (enabled < 0)
+      enabled = debug_get_bool_option("M9X_FAA_GPU_PRESENT_TEXTURED", false);
+   return enabled;
+}
+
 int
 m9_context_faa_present_lock(struct m9_context *ctx, uint64_t graph_id,
                             uint32_t generation, uint64_t lock_point)
@@ -10661,10 +10672,11 @@ m9_context_faa_present_lock(struct m9_context *ctx, uint64_t graph_id,
       return -EOPNOTSUPP;
    /* The typed GPU copy producer targets the same-size ordinary destination.
     * Other destinations continue through the existing CPU presentation path.
-    * Retained dual later DRAWs are admitted only from a direct Unlock epoch. */
+    * A retained dual later frame continues from the presentation's point. */
    if (debug_get_bool_option("M9X_FAA_GPU_PRESENT", true) && width == surface->width && height == surface->height &&
        target.row_span == primary.row_span && target.size == primary.size && !(offset & 4095) &&
-       graph->color_depth_initialized && !graph->color_texture_count) {
+       graph->color_depth_initialized &&
+       (!graph->color_texture_count || m9_faa_gpu_present_textured())) {
       const struct m9_surface_desc target_desc = {
          .row_span = target.row_span, .height = m9_surface_even_height(height),
          .layers = 1, .layout = 1, .format = destination->format, .address_offset = true,

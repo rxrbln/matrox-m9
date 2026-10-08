@@ -140,8 +140,9 @@ m9_faa_surface_dual_later_kernel(struct m9_screen *screen,struct m9_faa_surface 
       !g->color_unlock_attempted||g->color_lock_point>UINT64_MAX-0x20||
       g->color_unlock_point!=g->color_lock_point+0x20||(g->color_unlock_point&15)||
       g->color_unlock_point>UINT64_MAX-0x1a0-PARHELIA_M9_FAA_DUAL_LATER_MAX_DRAWS*0xa0u||
-      g->color_next_attempted||
-      g->color_present_attempted||g->color_present_point||g->color_frame_present_point||
+      g->color_next_attempted||g->color_frame_present_point||
+      (g->color_present_attempted!=!!g->color_present_point)||
+      (g->color_present_point&&g->color_present_point!=g->color_unlock_point+0x20)||
       g->color_frame_maintenance_point||!g->color_depth_initialized)
       return M9_FAA_ESTALE;
    /* Each DRAW carries its own texture pair (version 3). */
@@ -183,10 +184,12 @@ m9_faa_surface_dual_later_kernel(struct m9_screen *screen,struct m9_faa_surface 
    struct drm_parhelia_m9_faa_graph_dual_later immutable=request;
    immutable.lock_point=0;immutable.state=0;immutable.ordinary_point=0;
    ret=-EPROTO;
-   /* Ordinary jobs after the Unlock move the frame's origin. */
-   const uint64_t origin=request.ordinary_point?request.ordinary_point:before.previous_unlock_point;
+   /* A GPU presentation after the Unlock, then ordinary jobs, move the
+    * frame's origin. */
+   const uint64_t base=g->color_present_point?g->color_present_point:before.previous_unlock_point;
+   const uint64_t origin=request.ordinary_point?request.ordinary_point:base;
    if((request.ordinary_point&15)||
-      (request.ordinary_point&&request.ordinary_point<=before.previous_unlock_point)||
+      (request.ordinary_point&&request.ordinary_point<=base)||
       origin>UINT64_MAX-delta||request.lock_point!=origin+delta||
       request.state!=PARHELIA_M9_FAA_DUAL_LATER_LOCK_RETIRED||
       memcmp(&immutable,&before,sizeof(before))||
@@ -198,6 +201,7 @@ m9_faa_surface_dual_later_kernel(struct m9_screen *screen,struct m9_faa_surface 
    g->color_lock_delta=request.lock_point-before.previous_unlock_point;g->color_texture_later=true;
    g->color_frame_draw_count=0;g->color_frame_flags=0;g->color_frame_ordinary_point=request.ordinary_point;
    g->color_unlock_attempted=false;g->color_unlock_point=0;
+   g->color_present_attempted=false;g->color_present_point=0;
    ret=0;
 out:
    free(draws);free(saved);
