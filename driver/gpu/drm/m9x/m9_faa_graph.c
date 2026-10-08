@@ -1695,7 +1695,8 @@ static int m9_faa_graph_depth_frame_ioctl(struct drm_device *drm,
  if(!m9x_faa_graph_depth_frame_profile_qualified(first))return -EOPNOTSUPP;
  if(!state||args->flags&~PARHELIA_M9_FAA_COLOR_FRAME_FIRST||
   args->clear_flags!=3||args->clear_color||args->depth_flags!=7||(!first&&(args->raster_flags&1))||(args->raster_flags&~7u)||(args->raster_flags&6)==6||
-  args->width!=320||args->height!=240||(args->layout.program_count!=4&&(!first||args->layout.program_count!=2))||
+  args->width!=320||args->height!=240||
+  (args->layout.program_count!=2&&args->layout.program_count!=4)||
   !args->upload||!args->upload_bytes||args->upload_bytes>0x42000||
   !args->declaration_count||args->declaration_count>31||args->previous_point>U64_MAX-0x1a0)
   return -EOPNOTSUPP;
@@ -1709,7 +1710,9 @@ static int m9_faa_graph_depth_frame_ioctl(struct drm_device *drm,
   graph->generation!=args->generation||(first&&graph->init_point!=args->previous_point)){ret=-ENOENT;goto out_binding;}
  mutex_lock(&mdev->transport.lock);
  ret=first?m9x_faa_graph_retained_get_locked(mdev,args->generation,args->previous_point,&binding):
-  m9x_faa_graph_color_unlocked_get_locked(mdev,args->generation,args->previous_point,&binding);
+  (args->layout.program_count==2?
+   m9x_faa_graph_depth_unlocked_get_locked(mdev,args->generation,args->previous_point,&binding):
+   m9x_faa_graph_color_unlocked_get_locked(mdev,args->generation,args->previous_point,&binding));
  mutex_unlock(&mdev->transport.lock);if(ret)goto out_binding;
  if(binding->graph!=graph){ret=-ESTALE;goto out_binding;}
  upload=memdup_user(u64_to_user_ptr(args->upload),args->upload_bytes);
@@ -1718,14 +1721,21 @@ static int m9_faa_graph_depth_frame_ioctl(struct drm_device *drm,
  input.program=upload;input.constants=input.program+args->layout.program_bytes;
  input.geometry=input.constants+args->layout.constants_bytes;input.declaration=input.geometry+args->layout.geometry_bytes;
  input.record_stride=args->record_stride;input.record_count=args->record_count;input.declaration_count=args->declaration_count;
- ret=m9x_faa_graph_depth_frame_prepare(mdev,binding,args->generation,args->previous_point,first,&input,args->raster_flags);if(ret)goto out_binding;
+ ret=!first&&args->layout.program_count==2?
+  m9x_faa_graph_depth_later_prepare(mdev,binding,args->generation,args->previous_point,
+                                     &input,3,args->raster_flags):
+  m9x_faa_graph_depth_frame_prepare(mdev,binding,args->generation,args->previous_point,
+                                     first,&input,args->raster_flags);
+ if(ret)goto out_binding;
  drm_exec_init(&exec,DRM_EXEC_INTERRUPTIBLE_WAIT|DRM_EXEC_IGNORE_DUPLICATES,PARHELIA_M9_FAA_GRAPH_OWNERS);
  drm_exec_until_all_locked(&exec){for(i=0;i<PARHELIA_M9_FAA_GRAPH_OWNERS;i++){
   ret=drm_exec_prepare_obj(&exec,graph->owner[i],1);drm_exec_retry_on_contention(&exec);if(ret)goto out_exec;}}
  ret=m9_faa_graph_live_addresses(mdev,graph,address);if(ret)goto out_exec;
  if(memcmp(binding->address,address,sizeof(address))){ret=-ESTALE;goto out_exec;}
  ret=m9x_faa_graph_depth_frame_submit(mdev,binding,args->generation,args->previous_point,&point,&posted);
- if(!ret){if(point!=args->previous_point+(first?(args->layout.program_count==2?0x110:0x150):0x1a0))ret=-EIO;
+ if(!ret){if(point!=args->previous_point+
+   (first?(args->layout.program_count==2?0x110:0x150):
+    (args->layout.program_count==2?0x110:0x1a0)))ret=-EIO;
   else{args->lock_point=point;args->state=first?PARHELIA_M9_FAA_COLOR_FRAME_FIRST_LOCK_RETIRED:PARHELIA_M9_FAA_COLOR_FRAME_NEXT_LOCK_RETIRED;}}
  out_exec:drm_exec_fini(&exec);
  out_binding:kfree(upload);m9x_faa_graph_binding_put(binding);mutex_unlock(&state->lock);drm_dev_exit(idx);return ret;
@@ -1748,9 +1758,11 @@ int m9x_faa_graph_color_frame_batch_ioctl(struct drm_device *drm,void *data,stru
   * or preparing any GPU-consumable state. No caller memory is read later. */
  ret=m9x_faa_color_batch_copy(args,&batch);if(ret)return ret;
  first=!!(args->flags&PARHELIA_M9_FAA_COLOR_FRAME_FIRST);
- if(batch->draw[0].input.layout.program_count==2&&(!first||(args->flags&PARHELIA_M9_FAA_COLOR_FRAME_INITIALIZED))){ret=-EOPNOTSUPP;goto out_batch;}
  delta=(args->flags&PARHELIA_M9_FAA_COLOR_FRAME_INITIALIZED?
-  (args->clear_flags?0x150:0xd0):(first?(batch->draw[0].input.layout.program_count==2?0x110:0x150):0x1a0))+(u64)(batch->count-1)*(batch->draw[0].input.layout.program_count==2?0x60:0xa0);
+  (batch->draw[0].input.layout.program_count==2?
+   (args->clear_flags?0x110:0x90):(args->clear_flags?0x150:0xd0)):
+  (first?(batch->draw[0].input.layout.program_count==2?0x110:0x150):0x1a0))+
+  (u64)(batch->count-1)*(batch->draw[0].input.layout.program_count==2?0x60:0xa0);
  if(args->previous_point>U64_MAX-delta||lower_32_bits(args->previous_point)>U32_MAX-delta){ret=-ERANGE;goto out_batch;}
  if(!m9x_faa_graph_profile_enabled()||!m9x_faa_graph_depth_frame_profile_qualified(first)){ret=-EOPNOTSUPP;goto out_batch;}
  if(!drm_dev_enter(drm,&idx)){ret=-ENODEV;goto out_batch;}
