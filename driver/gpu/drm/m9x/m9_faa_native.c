@@ -8743,83 +8743,127 @@ out:
  * There is deliberately no ioctl activation or clear packet here until the
  * bound-depth encoder qualifies its descriptors and mapping policy. */
 int m9x_faa_graph_bound_depth_prepare(struct m9x_device *mdev,
- struct m9_faa_graph_binding *binding,u32 generation,u64 previous_point,
- u32 color_policy,bool first)
+				      struct m9_faa_graph_binding *binding,
+				      u32 generation, u64 previous_point,
+				      u32 color_policy, bool first)
 {
 #ifdef M9_FAA_GRAPH_INIT_CONTROL
- struct m9_faa_owner_spec spec[M9_FAA_DEPTH_OWNERS]={
-  {0,0x50000,false,false,false,0},
-  {0,0x8000,true,false,false,0},
-  {0,0x98000,true,false,false,0},
- };
- struct m9x_faa_surface_layout layout;
- struct m9x_transport *t=&mdev->transport;
- struct m9_faa_graph_binding *checked=NULL;
- struct m9_faa_depth_storage *n;
- struct m9x_faa_replay *r;
- u32 i;int ret;
+	struct m9_faa_owner_spec spec[M9_FAA_DEPTH_OWNERS] = {
+		{ 0, 0x50000, false, false, false, 0 },
+		{ 0, 0x8000, true, false, false, 0 },
+		{ 0, 0x98000, true, false, false, 0 },
+	};
+	struct m9x_faa_surface_layout layout;
+	struct m9x_transport *t = &mdev->transport;
+	struct m9_faa_graph_binding *checked = NULL;
+	struct m9_faa_depth_storage *n;
+	struct m9x_faa_replay *r;
+	u32 i;
+	int ret;
 
- /* The original color31 MDL is flags30: its compact PTE policy is B.
-  * Ordinary SYSTEM policy A is intentionally not admitted for this role. */
- if(!binding||color_policy!=M9_FAA_DEPTH_COLOR_SYSTEM_B||
-  !m9x_faa_graph_binding_layout(binding,&layout))return -EINVAL;
- n=kzalloc(sizeof(*n),GFP_KERNEL);if(!n)return -ENOMEM;
- n->generation=generation;n->previous_point=previous_point;n->first=first;
- n->views.color_policy=color_policy;
- n->views.depth_aux_role=M9_FAA_DEPTH_HZ;n->views.aux_depth_role=M9_FAA_BOUND_DEPTH;
- for(i=0;i<M9_FAA_DEPTH_OWNERS;i++){
-  n->views.owner[i]=m9x_faa_bound_depth_profile_dimensions(i,layout.width,layout.height);
-  if(!n->views.owner[i].logical_bytes){kfree(n);return -EINVAL;}
-  spec[i].bytes=n->views.owner[i].capacity_bytes;
- }
- mutex_lock(&t->lock);
- ret=first?m9x_faa_graph_retained_get_locked(mdev,generation,previous_point,&checked):
-  m9x_faa_graph_color_unlocked_get_locked(mdev,generation,previous_point,&checked);
- if(ret)goto unclaimed;
- r=t->faa;
- if(checked!=binding){ret=-ESTALE;goto unclaimed;}
- if(r->depth_storage){ret=-EALREADY;goto unclaimed;}
- /* Claim the lifetime before allocation. The ready flag prevents consumers
-  * from observing partly constructed owners. No other graph operation can
-  * steal this bundle; even failed preparation is kept until DMA shutdown. */
- r->depth_storage=n;
- mutex_unlock(&t->lock);
- m9x_faa_graph_binding_put(checked);checked=NULL;
- for(i=0;i<M9_FAA_DEPTH_OWNERS;i++){
-  ret=m9_faa_allocate(mdev,&n->owner[i],&spec[i],false);
-  if(ret)return ret;
- }
- /* TTM allocation/reservation above is outside TRANSPORT and the six
-  * borrowed BO reservations. Address publication is under TRANSPORT only. */
- mutex_lock(&t->lock);
- ret=first?m9x_faa_graph_retained_get_locked(mdev,generation,previous_point,&checked):
-  m9x_faa_graph_color_unlocked_get_locked(mdev,generation,previous_point,&checked);
- if(ret)goto retained;
- r=t->faa;
- if(checked!=binding||r->depth_storage!=n){ret=-ESTALE;goto retained;}
- if(color_policy==M9_FAA_DEPTH_COLOR_SYSTEM_B){
-  ret=m9_faa_dma_prepare_wc(mdev,&n->owner[M9_FAA_BOUND_COLOR]);
-  if(ret)goto retained;
- }
- ret=color_policy==M9_FAA_DEPTH_COLOR_SYSTEM_B?
-  m9x_address_map_faa_system(mdev,&n->owner[0].system_node,n->owner[0].dma,n->owner[0].bytes):
-  m9x_address_map_system(mdev,&n->owner[0].system_node,n->owner[0].dma,n->owner[0].bytes);
- if(ret)goto retained;
- n->owner[0].base=n->owner[0].system_node.start;
- for(i=M9_FAA_DEPTH_HZ;i<M9_FAA_DEPTH_OWNERS;i++){
-  ret=m9x_address_local_prepare(mdev,n->owner[i].base,n->owner[i].bytes);
-  if(ret)goto retained;
- }
- for(i=0;i<M9_FAA_DEPTH_OWNERS;i++)n->views.owner[i].base=n->owner[i].base;
- n->ready=true;
+	/* The original color31 MDL is flags30: its compact PTE policy is B.
+	 * Ordinary SYSTEM policy A is intentionally not admitted for this role.
+	 */
+	if (!binding || color_policy != M9_FAA_DEPTH_COLOR_SYSTEM_B ||
+	    !m9x_faa_graph_binding_layout(binding, &layout))
+		return -EINVAL;
+	n = kzalloc_obj(*n);
+	if (!n)
+		return -ENOMEM;
+	n->generation = generation;
+	n->previous_point = previous_point;
+	n->first = first;
+	n->views.color_policy = color_policy;
+	n->views.depth_aux_role = M9_FAA_DEPTH_HZ;
+	n->views.aux_depth_role = M9_FAA_BOUND_DEPTH;
+	for (i = 0; i < M9_FAA_DEPTH_OWNERS; i++) {
+		n->views.owner[i] = m9x_faa_bound_depth_profile_dimensions(i,
+									   layout.width,
+									   layout.height);
+		if (!n->views.owner[i].logical_bytes) {
+			kfree(n);
+			return -EINVAL;
+		}
+		spec[i].bytes = n->views.owner[i].capacity_bytes;
+	}
+	mutex_lock(&t->lock);
+	ret = first ?
+	      m9x_faa_graph_retained_get_locked(mdev, generation, previous_point, &checked) :
+	      m9x_faa_graph_color_unlocked_get_locked(mdev, generation, previous_point, &checked);
+	if (ret)
+		goto unclaimed;
+	r = t->faa;
+	if (checked != binding) {
+		ret = -ESTALE;
+		goto unclaimed;
+	}
+	if (r->depth_storage) {
+		ret = -EALREADY;
+		goto unclaimed;
+	}
+	/* Claim the lifetime before allocation. The ready flag prevents consumers
+	 * from observing partly constructed owners. No other graph operation can
+	 * steal this bundle; even failed preparation is kept until DMA shutdown.
+	 */
+	r->depth_storage = n;
+	mutex_unlock(&t->lock);
+	m9x_faa_graph_binding_put(checked);
+	checked = NULL;
+	for (i = 0; i < M9_FAA_DEPTH_OWNERS; i++) {
+		ret = m9_faa_allocate(mdev, &n->owner[i], &spec[i], false);
+		if (ret)
+			return ret;
+	}
+	/* TTM allocation/reservation above is outside TRANSPORT and the six
+	 * borrowed BO reservations. Address publication is under TRANSPORT only.
+	 */
+	mutex_lock(&t->lock);
+	ret = first ?
+	      m9x_faa_graph_retained_get_locked(mdev, generation, previous_point, &checked) :
+	      m9x_faa_graph_color_unlocked_get_locked(mdev, generation, previous_point, &checked);
+	if (ret)
+		goto retained;
+	r = t->faa;
+	if (checked != binding || r->depth_storage != n) {
+		ret = -ESTALE;
+		goto retained;
+	}
+	if (color_policy == M9_FAA_DEPTH_COLOR_SYSTEM_B) {
+		ret = m9_faa_dma_prepare_wc(mdev,
+					    &n->owner[M9_FAA_BOUND_COLOR]);
+		if (ret)
+			goto retained;
+	}
+	ret = color_policy == M9_FAA_DEPTH_COLOR_SYSTEM_B ?
+		      m9x_address_map_faa_system(mdev, &n->owner[0].system_node,
+						 n->owner[0].dma,
+						 n->owner[0].bytes) :
+		      m9x_address_map_system(mdev, &n->owner[0].system_node,
+					     n->owner[0].dma,
+					     n->owner[0].bytes);
+	if (ret)
+		goto retained;
+	n->owner[0].base = n->owner[0].system_node.start;
+	for (i = M9_FAA_DEPTH_HZ; i < M9_FAA_DEPTH_OWNERS; i++) {
+		ret = m9x_address_local_prepare(mdev, n->owner[i].base,
+						n->owner[i].bytes);
+		if (ret)
+			goto retained;
+	}
+	for (i = 0; i < M9_FAA_DEPTH_OWNERS; i++)
+		n->views.owner[i].base = n->owner[i].base;
+	n->ready = true;
 retained:
- m9x_faa_graph_binding_put(checked);
- mutex_unlock(&t->lock);
- return ret;
+	m9x_faa_graph_binding_put(checked);
+	mutex_unlock(&t->lock);
+	return ret;
 unclaimed:
- m9x_faa_graph_binding_put(checked);mutex_unlock(&t->lock);kfree(n);return ret;
+	m9x_faa_graph_binding_put(checked);
+	mutex_unlock(&t->lock);
+	kfree(n);
+	return ret;
 #else
- return -EOPNOTSUPP;
+	return -EOPNOTSUPP;
 #endif
 }
 
