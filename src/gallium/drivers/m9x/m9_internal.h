@@ -424,6 +424,7 @@ int m9_context_faa_submit_draw(struct m9_context *ctx,
                                const struct pipe_draw_start_count_bias *draw,
                                const char **reason);
 int m9_context_faa_flush_frame(struct m9_context *ctx, const char **reason);
+void m9_context_faa_fallback(struct m9_context *ctx, const char *why);
 int m9_context_faa_present_lock(struct m9_context *ctx, uint64_t graph_id,
                                uint32_t generation, uint64_t lock_point);
 
@@ -600,6 +601,14 @@ struct m9_context {
    struct pipe_resource *color;
    struct m9_faa_surface faa_surface;
    struct m9_faa_application_frame faa_frame;
+   /* Per-frame FAA admission: ordinary rendering always runs, the FAA
+    * frame replaces it at the end only when every DRAW was admitted. */
+   struct {
+      bool fallback, presented;
+      unsigned skip, backoff;
+      uint64_t frames, fallbacks, skipped;
+      const char *reason;
+   } faa_mode;
    /* Ordinary clear does not reset this graph's fragment/HZ state. Preserve
     * the actual requested state until a qualified native frame-reset API. */
    struct {

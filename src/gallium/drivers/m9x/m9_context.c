@@ -8133,20 +8133,13 @@ m9_draw_vbo(struct pipe_context *pctx, const struct pipe_draw_info *info,
     * nothing, exactly, without the kill slot's lane artifact (M9_BRINGUP). */
    if (ctx->fs && ctx->fs->kill_all)
       return;
-   if (m9_faa_application_enabled()) {
-      /* This mode consumes the draw explicitly. A refused state cannot fall
-       * into ordinary rasterization and masquerade as FAA output. */
-      if (!num_draws || !draws[0].count || !info->instance_count)
-         return;
+   if (m9_faa_application_enabled() && num_draws && draws[0].count &&
+       info->instance_count && !ctx->faa_mode.fallback && !ctx->faa_mode.skip) {
+      /* The ordinary path below renders the frame too; its result stands
+       * unless the whole frame is presented by FAA. */
       const char *why = NULL;
-      ctx->submitted_draws++;
-      if (m9_context_faa_submit_draw(ctx, info, &draws[0], &why)) {
-         ctx->skipped_draws++;
-         m9_skip_reason(ctx, why ? why : "FAA application draw failed");
-         fprintf(stderr, "m9x: FAA application draw refused: %s\n",
-                 why ? why : "authenticated submission/presentation failed");
-      }
-      return;
+      if (m9_context_faa_submit_draw(ctx, info, &draws[0], &why))
+         m9_context_faa_fallback(ctx, why ? why : "FAA application draw failed");
    }
    if (num_draws && !indirect &&
        m9_mrt_blend_split(ctx, info, drawid_offset, draws))
@@ -8487,7 +8480,8 @@ m9_clear(struct pipe_context *pctx, unsigned buffers,
 {
    struct m9_context *ctx = m9_context(pctx);
    uint64_t t_clear = m9_prof_begin();
-   if (m9_faa_application_enabled() && buffers) {
+   if (m9_faa_application_enabled() && buffers && !ctx->faa_mode.fallback &&
+       !ctx->faa_mode.skip) {
       if (ctx->faa_frame.count) m9_context_sync(ctx);
       if (ctx->lost) { m9_prof_end(M9_PROF_CLEAR, t_clear); return; }
       ctx->faa_application_clear.pending = true;
@@ -8522,13 +8516,6 @@ m9_clear(struct pipe_context *pctx, unsigned buffers,
        * Preserve a prior partial clear as a sticky refusal. */
       ctx->faa_application_clear.scissored |= !m9_scissor_full(ctx, scissor);
       if (scissor) ctx->faa_application_clear.scissor = *scissor;
-   }
-   if (m9_faa_application_enabled()) {
-      /* The retained graph owns the GPU command state. Sending an ordinary
-       * clear quad here would replace that state before the FAA frame ioctl.
-       * Keep the clear pending until its actual FAA transaction succeeds. */
-      m9_prof_end(M9_PROF_CLEAR, t_clear);
-      return;
    }
 
    /* A job held for the scratch path is copied into place before the clear
@@ -9919,6 +9906,13 @@ m9_context_faa_submit_draw(struct m9_context *ctx,
       /* Depth-only clear of a retained textured graph: the original count4
        * depth prefix resets depth/HZ/coverage and keeps the colour. */
       clear_flags = PARHELIA_M9_FAA_COLOR_CLEAR_DEPTH;
+   } else if (ctx->faa_application_clear.pending &&
+              ctx->faa_application_clear.buffers == PIPE_CLEAR_DEPTH &&
+              !ctx->faa_application_clear.scissored &&
+              ctx->faa_application_clear.depth == 1.0) {
+      /* Without retained FAA colour the depth-only clear starts from a full
+       * reset: the colour buffer is undefined after a swap; it becomes black. */
+      clear_flags = PARHELIA_M9_FAA_COLOR_CLEAR_TARGET | PARHELIA_M9_FAA_COLOR_CLEAR_DEPTH;
    } else if (ctx->faa_application_clear.pending) {
       /* The current native full reset has a black color/depth-one profile.
        * Never substitute the old TARGET-only packet, which leaves sampled
@@ -9998,15 +9992,49 @@ m9_context_faa_submit_draw(struct m9_context *ctx,
    ret = 0;
    why = NULL;
 out:
-   if (ret && ctx && ctx->faa_frame.count) {
-      /* A refused later draw invalidates the whole queued frame. Rendering
-       * only its accepted prefix would silently omit application geometry. */
-      ctx->lost = true;
-      m9_faa_application_frame_reset(&ctx->faa_frame);
-   }
+   /* A refused draw drops the queued FAA frame in m9_context_faa_fallback:
+    * presenting its accepted prefix would omit application geometry. */
    m9_faa_application_fini(&owned);
    if (reason) *reason = why;
    return ret;
+}
+
+/* Drop the queued FAA frame. The ordinary rendering, which ran for every
+ * DRAW, stands for the rest of this frame. */
+void
+m9_context_faa_fallback(struct m9_context *ctx, const char *why)
+{
+   if (!ctx->faa_mode.fallback && ctx->debug)
+      fprintf(stderr, "m9x: FAA frame falls back to ordinary: %s\n", why);
+   ctx->faa_mode.fallback = true;
+   ctx->faa_mode.reason = why;
+   m9_faa_application_frame_reset(&ctx->faa_frame);
+   memset(&ctx->faa_application_clear, 0, sizeof(ctx->faa_application_clear));
+}
+
+/* After a fallback the next 2^n - 1 frames (n <= 6) skip FAA admission. */
+static void
+m9_context_faa_frame_end(struct m9_context *ctx)
+{
+   if (ctx->faa_mode.skip) {
+      ctx->faa_mode.skip--;
+      ctx->faa_mode.skipped++;
+   } else if (ctx->faa_mode.fallback) {
+      ctx->faa_mode.fallbacks++;
+      ctx->faa_mode.backoff = MIN2(ctx->faa_mode.backoff + 1, 6);
+      ctx->faa_mode.skip = (1u << ctx->faa_mode.backoff) - 1;
+   } else if (ctx->faa_mode.presented) {
+      ctx->faa_mode.frames++;
+      ctx->faa_mode.backoff = 0;
+   }
+   if (ctx->debug && (ctx->faa_mode.frames + ctx->faa_mode.fallbacks +
+                      ctx->faa_mode.skipped) % 300 == 0)
+      fprintf(stderr, "m9x: FAA frames %" PRIu64 " fallback %" PRIu64
+              " skipped %" PRIu64 " last reason: %s\n", ctx->faa_mode.frames,
+              ctx->faa_mode.fallbacks, ctx->faa_mode.skipped,
+              ctx->faa_mode.reason ? ctx->faa_mode.reason : "none");
+   ctx->faa_mode.fallback = ctx->faa_mode.presented = false;
+   memset(&ctx->faa_application_clear, 0, sizeof(ctx->faa_application_clear));
 }
 
 /* Complete an application frame only at a visibility boundary. The queue
@@ -10046,8 +10074,10 @@ m9_context_faa_flush_frame(struct m9_context *ctx, const char **reason)
    }
 done:
    /* CPU snapshots may be freed after the synchronous kernel has copied
-    * inputs; GPU owners remain retained by its graph even on failure. */
-   if (ret) ctx->lost = true;
+    * inputs; GPU owners remain retained by its graph even on failure. The
+    * ordinary rendering of the frame stands for a failed FAA frame. */
+   if (ret) m9_context_faa_fallback(ctx, why);
+   else ctx->faa_mode.presented = true;
    m9_faa_application_frame_reset(frame);
 out:
    if (reason) *reason = why;
@@ -10991,7 +11021,6 @@ m9_context_flush(struct pipe_context *pctx,
    struct m9_context *ctx = m9_context(pctx);
    struct pipe_fence_handle *fence = NULL;
 
-   (void)flags;
    m9_prof_frame(ctx);
    m9_frame_skip_report(ctx);
    if (ctx->debug && ++ctx->flush_count % 300 == 0)
@@ -11003,6 +11032,8 @@ m9_context_flush(struct pipe_context *pctx,
               ctx->split_mask, ctx->split_clip);
    ctx->frame_jobs = 0;
    m9_context_sync(ctx);
+   if ((flags & PIPE_FLUSH_END_OF_FRAME) && m9_faa_application_enabled())
+      m9_context_faa_frame_end(ctx);
    if (m9_record_dump && ctx->record_written && ctx->screen->record.map) {
       const struct m9_resource *rec = &ctx->screen->record;
       FILE *f = fopen(m9_record_dump, "wb");
