@@ -376,7 +376,8 @@ struct drm_gem_object *
 m9x_faa_graph_owner(const struct m9_faa_prepared_graph *graph, u32 role)
 {
 	return graph && role < PARHELIA_M9_FAA_GRAPH_OWNERS ?
-		graph->owner[role] : NULL;
+		       graph->owner[role] :
+		       NULL;
 }
 
 /* Caller holds one WW reservation set covering all six owners. A retained
