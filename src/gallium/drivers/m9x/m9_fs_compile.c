@@ -4836,6 +4836,10 @@ blend_append(struct ctx *c, const int have[2])
       (c->blend->separate &&
        blend_part_reads_dst(c->blend->alpha_src, c->blend->alpha_dst,
                             c->blend->alpha_func));
+   /* The destination B,A load into 1a; the pair flagged as the program's
+    * (left from interpolating into the output) corrupts it at random. */
+   if (c->p->blend_dest)
+      c->p->registers_used &= ~BITFIELD_BIT((REG_I - 0x08) / 2);
    if (!blend_classic(c->blend)) {
       unsigned slots = m9_fs_slot_count(c->p);
       uint16_t regs = c->p->registers_used;
