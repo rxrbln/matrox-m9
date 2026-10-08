@@ -36,6 +36,9 @@ struct m9x_faa_color_input {
  /* Internal four-target staging for the dedicated dual-texture constructor.
   * The ordinary COLOR submit path must never publish this incomplete image. */
  bool dual_base_only;
+ /* Explicit initial-frame diagnostic: public SELECTARG2 on two bound
+  * stages, same three-varying preprocessing and immutable live owners. */
+ bool dual_colorpass_diagnostic;
 };
 static inline int m9x_faa_color_dimensions(const struct m9x_faa_color_input *in,
  u32 init_bytes,struct m9x_faa_surface_layout *layout)

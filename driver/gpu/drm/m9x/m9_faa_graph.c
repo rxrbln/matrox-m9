@@ -2024,7 +2024,8 @@ int m9x_faa_graph_dual_first_ioctl(struct drm_device *drm,void *data,
  u32 handles[2],address[PARHELIA_M9_FAA_GRAPH_OWNERS],sum,tmp,i;
  u8 *upload=NULL;u64 point=0;bool posted=false;int idx,ret;
  if(!state||args->version!=PARHELIA_M9_FAA_DUAL_FIRST_VERSION||
-    args->flags||args->state||args->pad||args->lock_point||
+    (args->flags&~PARHELIA_M9_FAA_DUAL_FIRST_COLORPASS_DIAGNOSTIC)||
+    args->state||args->pad||args->lock_point||
     args->width!=320||args->height!=240||args->clear_flags!=3||
     args->clear_color||!m9x_faa_depth_flags_valid(args->depth_flags)||
     args->layout.program_count!=4||args->declaration_count!=9||
@@ -2075,6 +2076,8 @@ int m9x_faa_graph_dual_first_ioctl(struct drm_device *drm,void *data,
  input.record_stride=args->record_stride;input.record_count=args->record_count;
  input.declaration_count=args->declaration_count;input.depth_flags=args->depth_flags;
  input.dual_base_only=true;
+ input.dual_colorpass_diagnostic=!!(args->flags&
+   PARHELIA_M9_FAA_DUAL_FIRST_COLORPASS_DIAGNOSTIC);
  ret=m9x_faa_graph_dual_first_prepare(mdev,binding,args->generation,args->init_point,
                                       &input,&textures,NULL);
  if(ret)goto out;

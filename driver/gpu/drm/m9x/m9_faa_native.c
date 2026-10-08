@@ -57,6 +57,7 @@
 #include "m9_faa_graph_next_encode.h"
 #include "m9_faa_graph_next_finish_encode.h"
 #include "m9_faa_graph_dual_first_encode.h"
+#include "m9_faa_graph_dual_colorpass_encode.h"
 #include "m9_faa_graph_dual_first_append.h"
 #include "m9_faa_graph_texture_owner.h"
 #include "m9_faa_graph_draw_tail_encode.h"
@@ -284,6 +285,7 @@ struct m9_faa_depth_frame_storage {
  u8 *resume_upload;
  u32 clear_flags;
  bool dual_first;
+ bool dual_colorpass;
  bool mode_planned;
  struct m9x_faa_depth_mode_state mode_before,mode_after;
  u32 planned_delta,planned_ends,prefix_posts;
@@ -7787,20 +7789,34 @@ int m9x_faa_graph_dual_first_prepare(struct m9x_device *mdev,
  struct m9x_faa_depth_views views;struct m9x_faa_color_image image;
  struct m9x_faa_surface_layout layout;
  struct m9x_faa_color_input sized_input;
+ struct m9x_faa_color_input shadow_input;
  struct m9x_faa_dual_first_input dual;
  const struct firmware *sample=NULL,*color=NULL,*dual_fw=NULL;
  u8 *arena=NULL,*secondary=NULL,*composed=NULL,*job_primary=NULL,*job_secondary=NULL;
+ u8 *shadow_program=NULL,*shadow_cb=NULL,*shadow_output=NULL;
  u32 slots[M9_FAA_DUAL_BATCH_MAX_DRAWS],arena_bytes=0;
  u32 primary_bytes=0,secondary_bytes=0,i,raw,span,job_bytes,ends[14];int ret;
  if(!binding||!input||!textures||!textures->gem[0]||!textures->gem[1]||
     textures->generation!=generation||input->layout.program_count!=4||
-    input->declaration_count!=9||input->fragment_flags)return -EOPNOTSUPP;
+    input->declaration_count!=9||input->fragment_flags||
+    (input->dual_colorpass_diagnostic&&batch))return -EOPNOTSUPP;
  if(!m9x_faa_graph_binding_layout(binding,&layout))return -ESTALE;
  sized_input=*input;
  sized_input.width=layout.width;
  sized_input.height=layout.height;
  input=&sized_input;
- dual=(struct m9x_faa_dual_first_input){.color=input,
+ if(input->dual_colorpass_diagnostic){
+  if(layout.width!=320||layout.height!=240)return -EOPNOTSUPP;
+  shadow_program=kmalloc(M9_FAA_COLOR_PROGRAM_CAPACITY,GFP_KERNEL);
+  shadow_cb=kmalloc(16384,GFP_KERNEL);
+  shadow_output=kvzalloc(0x40000,GFP_KERNEL);
+  if(!shadow_program||!shadow_cb||!shadow_output){ret=-ENOMEM;goto out;}
+  ret=m9x_faa_dual_colorpass_shadow(input,shadow_program,
+    M9_FAA_COLOR_PROGRAM_CAPACITY,shadow_cb,16384,&shadow_input);
+  if(ret)goto out;
+ }
+ dual=(struct m9x_faa_dual_first_input){
+  .color=input->dual_colorpass_diagnostic?&shadow_input:input,
   .texture=textures->bind};
  if(batch){
   if(batch->count<2||batch->count>M9_FAA_DUAL_BATCH_MAX_DRAWS||
@@ -7829,7 +7845,14 @@ int m9x_faa_graph_dual_first_prepare(struct m9x_device *mdev,
  frame=kvzalloc(sizeof(*frame),GFP_KERNEL);
  scratch=kzalloc(sizeof(*scratch),GFP_KERNEL);
  prefix=kzalloc(sizeof(*prefix),GFP_KERNEL);
- if(!frame||!scratch||!prefix){ret=-ENOMEM;goto out;}
+ if(input->dual_colorpass_diagnostic){
+  job_primary=kmalloc(M9_FAA_DEPTH_FRAME_PRIMARY_CAPACITY,GFP_KERNEL);
+  job_secondary=kmalloc(M9_FAA_DUAL_FIRST_SECONDARY_BYTES,GFP_KERNEL);
+ }
+ if(!frame||!scratch||!prefix||
+    (input->dual_colorpass_diagnostic&&(!job_primary||!job_secondary))){
+  ret=-ENOMEM;goto out;
+ }
  ret=request_firmware(&sample,M9_FAA_SAMPLE_CLEAR_FIRMWARE,&mdev->pdev->dev);
  if(ret)goto out;
  ret=request_firmware(&color,M9_FAA_GRAPH_COLOR_FOUR_FIRMWARE,&mdev->pdev->dev);
@@ -7851,7 +7874,8 @@ int m9x_faa_graph_dual_first_prepare(struct m9x_device *mdev,
  if(ret)goto unlock;
  m9_faa_depth_frame_owners(r,owner);
  image=(struct m9x_faa_color_image){
-  .program=r->color_image->program,.constants=r->color_image->constants,
+  .program=input->dual_colorpass_diagnostic?scratch->program:r->color_image->program,
+  .constants=input->dual_colorpass_diagnostic?shadow_output:r->color_image->constants,
   .primary=scratch->primary,.secondary=scratch->secondary,
   .program_bytes=sizeof(r->color_image->program),
   .constants_bytes=r->color_image->geometry_offset+input->layout.geometry_bytes+768,
@@ -7859,16 +7883,27 @@ int m9x_faa_graph_dual_first_prepare(struct m9x_device *mdev,
   .secondary_length=&scratch->secondary_bytes};
  ret=m9x_faa_dual_first_encode(sample->data,sample->size,color->data,color->size,
   dual_fw->data,dual_fw->size,owner,&views,r->primary_bytes,init_point,
-  &dual,frame->primary,sizeof(frame->primary),frame->secondary,
+  &dual,input->dual_colorpass_diagnostic?job_primary:frame->primary,
+  sizeof(frame->primary),
+  input->dual_colorpass_diagnostic?job_secondary:frame->secondary,
   sizeof(frame->secondary),&primary_bytes,frame->end_bytes,&image,prefix);
  if(ret)goto unlock;
+ if(input->dual_colorpass_diagnostic){
+  ret=m9x_faa_dual_colorpass_encode(&shadow_input,input,owner,r->primary_bytes,
+    frame->end_bytes,job_primary,primary_bytes,job_secondary,
+    M9_FAA_DUAL_FIRST_SECONDARY_BYTES,frame->primary,sizeof(frame->primary),
+    frame->secondary,sizeof(frame->secondary));
+  if(ret)goto unlock;
+ }
  if(primary_bytes>owner[27].bytes-r->graph_draw_end_bytes){ret=-ENOSPC;goto unlock;}
  frame->primary_bytes=primary_bytes;frame->primary_start=r->graph_draw_end_bytes;
- frame->secondary_bytes=M9_FAA_DUAL_FIRST_SECONDARY_BYTES;
+ frame->secondary_bytes=input->dual_colorpass_diagnostic?
+  M9_FAA_DUAL_COLORPASS_SECONDARY_BYTES:M9_FAA_DUAL_FIRST_SECONDARY_BYTES;
  frame->end_count=M9_FAA_DUAL_FIRST_ENDS;
  frame->final_point=init_point+0x150;
  frame->previous_point=frame->queue_start=init_point;
  frame->generation=generation;frame->first=true;frame->dual_first=true;
+ frame->dual_colorpass=input->dual_colorpass_diagnostic;
  frame->draw_count=1;
  if(batch){
   u32 first_geo=r->color_image->geometry_offset;
@@ -7903,7 +7938,7 @@ int m9x_faa_graph_dual_first_prepare(struct m9x_device *mdev,
      color->data,color->size,dual_fw->data,dual_fw->size,
      owner,&views,r->primary_bytes,init_point,&extra,
      job_primary,M9_FAA_DEPTH_FRAME_PRIMARY_CAPACITY,
-     job_secondary,M9_FAA_DUAL_FIRST_SECONDARY_BYTES,
+ job_secondary,M9_FAA_DUAL_FIRST_SECONDARY_BYTES,
      &job_bytes,ends,&live,prefix);
    if(ret)goto unlock;
    if(job_bytes!=primary_bytes||
@@ -7939,6 +7974,7 @@ unlock:mutex_unlock(&t->lock);
 out:release_firmware(dual_fw);release_firmware(color);release_firmware(sample);
  kvfree(arena);kvfree(secondary);kfree(composed);kfree(job_primary);
  kfree(job_secondary);kfree(prefix);kfree(scratch);
+ kfree(shadow_program);kfree(shadow_cb);kvfree(shadow_output);
  m9_faa_depth_frame_free(frame);return ret;
 #else
  return -EOPNOTSUPP;
@@ -9024,21 +9060,28 @@ int m9x_faa_graph_depth_frame_submit(struct m9x_device *mdev,
  if(frame->dual_first){
   struct m9x_faa_texture_dual_program dual={
    .stage_count=4,.sampler_count=2,.coordinate_sets=2,
-   .color_op0=4,.color_op1=4,
+   .color_op0=frame->dual_colorpass?3:4,
+   .color_op1=frame->dual_colorpass?3:4,
    .program_bytes=input->layout.program_bytes};
   for(i=0;i<4;i++)dual.entry_bytes[i]=input->layout.entry_bytes[i];
   if(!frame->first||!frame->draw_count||
      frame->draw_count>M9_FAA_DUAL_BATCH_MAX_DRAWS||
-     frame->secondary_bytes!=M9_FAA_DUAL_FIRST_SECONDARY_BYTES+
-       (frame->draw_count-1)*M9_FAA_DUAL_APPEND_SECONDARY_BYTES||
+     frame->secondary_bytes!=(frame->dual_colorpass?
+       M9_FAA_DUAL_COLORPASS_SECONDARY_BYTES:
+       M9_FAA_DUAL_FIRST_SECONDARY_BYTES+
+         (frame->draw_count-1)*M9_FAA_DUAL_APPEND_SECONDARY_BYTES)||
+     (frame->dual_colorpass&&frame->draw_count!=1)||
      !r->dual_textures.gem[0]||!r->dual_textures.gem[1]){
    ret=-ESTALE;goto out;
   }
   /* Both texture RESVs are held by the ioctl. Re-read placement and
    * regenerate their packet words before any consuming fence or post. */
-  ret=m9x_faa_texture_owners_place_locked(mdev,&r->dual_textures,generation,
-   &dual,frame->batch_secondary?frame->batch_secondary:frame->secondary,
-   M9_FAA_DUAL_FIRST_SECONDARY_BYTES);
+  ret=frame->dual_colorpass?
+    m9x_faa_texture_owners_place_colorpass_locked(mdev,&r->dual_textures,
+      generation,&dual,frame->secondary,frame->secondary_bytes):
+    m9x_faa_texture_owners_place_locked(mdev,&r->dual_textures,generation,
+      &dual,frame->batch_secondary?frame->batch_secondary:frame->secondary,
+      M9_FAA_DUAL_FIRST_SECONDARY_BYTES);
   if(ret)goto out;
   for(i=1;i<frame->draw_count;i++){
    ret=m9x_faa_texture_owners_place_append_locked(mdev,&r->dual_textures,

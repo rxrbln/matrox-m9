@@ -197,3 +197,61 @@ int m9x_faa_texture_dual_bind_append_place(
 	}
 	return 0;
 }
+
+int m9x_faa_texture_dual_colorpass_place(
+	const struct m9x_faa_texture_bind_input unit[2],
+	const struct m9x_faa_texture_dual_program *program,
+	u8 *secondary, u32 bytes)
+{
+	struct m9x_faa_texture_bind_input live;
+	struct m9x_faa_texture_bind_words image;
+	int ret;
+
+	if (!unit || !program || !secondary || bytes != 2792 ||
+	    program->stage_count != 4 || program->sampler_count != 2 ||
+	    program->coordinate_sets != 2 || program->color_op0 != 3 ||
+	    program->color_op1 != 3 || program->entry_bytes[0] ||
+	    program->entry_bytes[1] != 32 ||
+	    !program->program_bytes || program->program_bytes > 4096 ||
+	    (program->program_bytes & 7) ||
+	    program->entry_bytes[2] <= program->entry_bytes[1] ||
+	    program->entry_bytes[3] >= program->program_bytes ||
+	    program->entry_bytes[3] - program->entry_bytes[2] != 56 ||
+	    (program->entry_bytes[2] & 7) || (program->entry_bytes[3] & 7) ||
+	    (program->program_bytes - program->entry_bytes[3] != 192 &&
+	     program->program_bytes - program->entry_bytes[3] != 200) ||
+	    unit[0].stage || unit[1].stage != 1 ||
+	    unit[0].coordinate_sets != 2 || unit[1].coordinate_sets != 2 ||
+	    unit[0].coordinate_index || unit[1].coordinate_index != 1 ||
+	    unit[0].owner_base == unit[1].owner_base ||
+	    (unsigned long long)unit[0].owner_base + unit[0].owner_bytes > U32_MAX ||
+	    (unsigned long long)unit[1].owner_base + unit[1].owner_bytes > U32_MAX ||
+	    ((unsigned long long)unit[0].owner_base <
+	     (unsigned long long)unit[1].owner_base + unit[1].owner_bytes &&
+	     (unsigned long long)unit[1].owner_base <
+	     (unsigned long long)unit[0].owner_base + unit[0].owner_bytes) ||
+	    rd(secondary, 2520 / 4) != 0x45454570 ||
+	    rd(secondary, 2528 / 4) != 3 ||
+	    rd(secondary, 2532 / 4) != 0x457a7978 ||
+	    rd(secondary, 2552 / 4) != 0x45877d7c ||
+	    rd(secondary, 2620 / 4) != 0x45454571 ||
+	    rd(secondary, 2624 / 4) != 0 ||
+	    rd(secondary, 2632 / 4) != 0x45454572 ||
+	    rd(secondary, 2644 / 4) != 0x45454573)
+		return -EINVAL;
+	live = unit[0];
+	live.raster_ae_base = 0x28207006;
+	ret = m9x_faa_texture_bind_encode(&live, &image);
+	if (ret)
+		return ret;
+	/* All packet and owner validation precedes every write. Unit 1 remains
+	 * a retained owner, but SELECTARG2 does not sample it in this profile. */
+	wr(secondary, 2524 / 4, image.unit70);
+	wr(secondary, 2536 / 4, image.address78);
+	wr(secondary, 2540 / 4, image.descriptor79);
+	wr(secondary, 2544 / 4, image.descriptor7a);
+	wr(secondary, 2556 / 4, image.sampler7c);
+	wr(secondary, 2560 / 4, image.sampler7d);
+	wr(secondary, 2564 / 4, image.sampler87);
+	return 0;
+}

@@ -137,6 +137,7 @@ struct drm_parhelia_m9_faa_graph_color_frame_batch {
  * Each BO must already contain its admitted tiled layout and mip levels. */
 #define DRM_PARHELIA_M9_FAA_GRAPH_DUAL_FIRST 0x21
 #define PARHELIA_M9_FAA_DUAL_FIRST_VERSION 1u
+#define PARHELIA_M9_FAA_DUAL_FIRST_COLORPASS_DIAGNOSTIC 1u
 #define PARHELIA_M9_FAA_DUAL_FIRST_LOCK_RETIRED 23u
 struct drm_parhelia_m9_faa_texture_view {
  __u32 handle,profile,format,width,height,storage_kind,levels;
