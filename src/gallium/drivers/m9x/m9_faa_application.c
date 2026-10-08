@@ -121,13 +121,15 @@ m9_faa_application_texture_valid(const struct m9_faa_application_texture *t)
    struct m9_render_layout layout;
    return t->resource&&t->resource->target==PIPE_TEXTURE_2D&&
       t->resource->width0==v->width&&t->resource->height0==v->height&&
-      !t->resource->last_level&&t->resource->depth0==1&&t->resource->array_size==1&&
-      v->handle&&v->profile==12&&v->format==102&&v->levels==1&&
+      t->resource->last_level+1u==v->levels&&t->resource->depth0==1&&
+      t->resource->array_size==1&&
+      v->handle&&v->profile==12&&v->format==102&&v->levels>=1&&v->levels<=11&&
       v->width&&v->height&&v->width<=1024&&v->height<=1024&&
       !(v->width&(v->width-1))&&!(v->height&(v->height-1))&&
       v->storage_kind==((v->width>64||v->height>64)?0x21u:1u)&&
       (v->min_filter==1||v->min_filter==2)&&(v->mag_filter==1||v->mag_filter==2)&&
-      v->mip_filter==1&&(v->address_u==1||v->address_u==3)&&
+      v->mip_filter>=1&&v->mip_filter<=3&&(v->levels>1||v->mip_filter==1)&&
+      (v->address_u==1||v->address_u==3)&&
       (v->address_v==1||v->address_v==3)&&!t->offset&&
       m9_render_surface_layout(v->width,v->height,4,&layout)&&
       t->owner_bytes>=layout.size;
@@ -523,7 +525,7 @@ m9_faa_application_build(const struct m9_faa_application_draw *d,
          !m9_faa_application_texture_valid(&d->texture[1])||
          d->texture[0].resource==d->texture[1].resource||
          d->texture[0].view.handle==d->texture[1].view.handle) {
-         why="FAA dual texture blend/alpha/flat or retained level-zero owners are not qualified";goto fail;
+         why="FAA dual texture blend/alpha/flat or retained texture owners are not qualified";goto fail;
       }
       live.linkage=&texture_linkage;
       if(!m9_faa_live_gl_dual_texture_build(&live,&fresh.shader,&why))goto fail;
