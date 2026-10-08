@@ -4898,7 +4898,8 @@ static int m9_faa_graph_unlock_post_locked(struct m9x_device *mdev,
 	*posted = false;
 	*retired_frame = NULL;
 	lockdep_assert_held(&t->lock);
-	ret = m9x_faa_graph_unlock_get_locked(mdev, generation, lock_point, &checked);
+	ret = m9x_faa_graph_unlock_get_locked(mdev, generation, lock_point,
+					      &checked);
 	if (ret)
 		goto out;
 	if (checked != binding) {
@@ -4906,21 +4907,27 @@ static int m9_faa_graph_unlock_post_locked(struct m9x_device *mdev,
 		goto out;
 	}
 	r = t->faa;
-	primary = m9_faa_command_owner(r,false);
+	primary = m9_faa_command_owner(r, false);
 	old_bytes = r->graph_draw_end_bytes;
-	if (!primary || !primary->cpu || !drm_mm_node_allocated(&primary->system_node) ||
-	    primary->system_node.start != primary->base || old_bytes > primary->bytes ||
+	if (!primary || !primary->cpu ||
+	    !drm_mm_node_allocated(&primary->system_node) ||
+	    primary->system_node.start != primary->base ||
+	    old_bytes > primary->bytes ||
 	    primary->bytes - old_bytes < sizeof(image)) {
 		ret = -ESTALE;
 		goto out;
 	}
 	ret = m9x_faa_graph_unlock_encode(r->owner[1].base, r->owner[1].bytes,
-			r->graph_layout.width, r->graph_layout.height, lock_point, image, sizeof(image));
+					  r->graph_layout.width,
+					  r->graph_layout.height, lock_point,
+					  image, sizeof(image));
 	if (ret)
 		goto out;
 	target = lower_32_bits(lock_point) + 0x20;
 	/* Cover all borrowed surfaces before any release MMIO or END. A late
-	 * failure keeps both the fence and retained binding quarantined. */
+	 * failure keeps both the fence and retained binding quarantined.
+
+	 */
 	fence = m9x_fence_create_target_locked(mdev, target);
 	if (!fence) {
 		ret = -ENOMEM;
@@ -4929,8 +4936,11 @@ static int m9_faa_graph_unlock_post_locked(struct m9x_device *mdev,
 	for (i = 0; i < PARHELIA_M9_FAA_GRAPH_OWNERS; i++)
 		dma_resv_add_fence(m9x_faa_graph_binding_owner(binding, i)->resv,
 				   &fence->base, DMA_RESV_USAGE_WRITE);
- r->present_point=0;r->present_retired=false;r->present_attempted=false;
- r->present_end=0;r->present_posts=0;
+	r->present_point = 0;
+	r->present_retired = false;
+	r->present_attempted = false;
+	r->present_end = 0;
+	r->present_posts = 0;
 	r->unlock_started = true;
 	r->unlock_retired = false;
 	r->graph_second_lock_retired = false;
@@ -4939,19 +4949,23 @@ static int m9_faa_graph_unlock_post_locked(struct m9x_device *mdev,
 	m9x_write(mdev, M9_REG_FRONTEND_STATE, 0);
 	for (i = 0; i < 3; i++) {
 		u32 end = old_bytes + (i == 2 ? M9_FAA_UNLOCK_PRIMARY_BYTES :
-			M9_FAA_UNLOCK_FIRST_POST_BYTES);
+						M9_FAA_UNLOCK_FIRST_POST_BYTES);
 
 		if (i == 0)
 			memcpy((u8 *)primary->cpu + old_bytes, image,
 			       M9_FAA_UNLOCK_FIRST_POST_BYTES);
 		else if (i == 2)
-			memcpy((u8 *)primary->cpu + old_bytes + M9_FAA_UNLOCK_FIRST_POST_BYTES,
+			memcpy((u8 *)primary->cpu + old_bytes +
+				       M9_FAA_UNLOCK_FIRST_POST_BYTES,
 			       image + M9_FAA_UNLOCK_FIRST_POST_BYTES,
-			       M9_FAA_UNLOCK_PRIMARY_BYTES - M9_FAA_UNLOCK_FIRST_POST_BYTES);
+			       M9_FAA_UNLOCK_PRIMARY_BYTES -
+				       M9_FAA_UNLOCK_FIRST_POST_BYTES);
 		wmb();
 		ret = m9x_post_faa_graph_end_locked(mdev, &primary->system_node,
-			primary->dma, r->graph_draw_end_bytes, end, i == 1,
-			i == 2 ? target : 0, &stage_point, &stage_posted);
+						    primary->dma,
+						    r->graph_draw_end_bytes, end,
+						    i == 1, i == 2 ? target : 0,
+						    &stage_point, &stage_posted);
 		*posted |= stage_posted;
 		if (stage_posted) {
 			r->graph_draw_end_bytes = end;
@@ -4971,16 +4985,23 @@ static int m9_faa_graph_unlock_post_locked(struct m9x_device *mdev,
 	r->ordinary_point = 0;
 	r->graph_unlock_end_bytes = r->graph_draw_end_bytes;
 	r->graph_unlock_posts = r->graph_draw_posts;
-	if(r->command_pools){r->command_pools->unlock_point=0;r->command_pools->maintenance_point=0;r->command_pools->posts=0;}
-	*retired_frame = m9_faa_depth_frame_take_retired(r, generation, lock_point, stage_point);
+	if (r->command_pools) {
+		r->command_pools->unlock_point = 0;
+		r->command_pools->maintenance_point = 0;
+		r->command_pools->posts = 0;
+	}
+	*retired_frame = m9_faa_depth_frame_take_retired(r, generation,
+							 lock_point, stage_point);
 	dev_info(&mdev->pdev->dev,
 		 "M9 FAA graph Unlock retired: lock=%#llx unlock=%#llx bytes=%u posts=%u copyback=F021->F022\n",
-		 lock_point, *point, r->graph_draw_end_bytes, r->graph_draw_posts);
+		 lock_point, *point, r->graph_draw_end_bytes,
+		 r->graph_draw_posts);
 out:
 	m9x_transport_fence_finish_locked(mdev, fence, ret, *posted);
 	m9x_faa_graph_binding_put(checked);
 	return ret;
 }
+
 #endif
 
 int m9x_faa_graph_unlock_submit(struct m9x_device *mdev,
