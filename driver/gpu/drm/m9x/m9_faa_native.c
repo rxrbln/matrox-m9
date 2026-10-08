@@ -13260,11 +13260,12 @@ MODULE_FIRMWARE(M9_FAA_SINGLE_FIRST_FIRMWARE);
 bool m9x_faa_graph_depth_frame_profile_qualified(bool first)
 {
 #ifdef M9_FAA_GRAPH_INIT_CONTROL
- /* FIRST owns exact INIT; retained owns exact Lock/view/Unlock. The native
-  * producers independently validate the fresh or retained state. */
- (void)first;
- return m9_faa_color_four_experimental;
+	/* FIRST owns exact INIT; retained owns exact Lock/view/Unlock. The native
+	 * producers independently validate the fresh or retained state.
+	 */
+	(void)first;
+	return m9_faa_color_four_experimental;
 #else
- return false;
+	return false;
 #endif
 }
