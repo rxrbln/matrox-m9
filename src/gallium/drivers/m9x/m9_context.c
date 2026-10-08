@@ -1959,12 +1959,16 @@ m9_job_c2_owner(const struct m9_context *ctx, const struct m9_fs_variant *fs,
    if (!handle)
       return NULL;
    if (fs) {
+      if (fs->c2.handle == handle)
+         return &fs->c2;
       if (fs->native_c2.handle == handle)
          return &fs->native_c2;
       util_dynarray_foreach(&fs->native_c2_images, struct m9_native_image, image)
          if (image->image.handle == handle)
             return &image->image;
    }
+   if (ctx->program.handle == handle)
+      return &ctx->program;
    if (ctx->vs_c2.handle == handle)
       return &ctx->vs_c2;
    util_dynarray_foreach(&ctx->vs_c2_images, struct m9_native_image, image)
@@ -2165,24 +2169,116 @@ m9_dump_native_retirement(const struct m9_context *ctx, const char *record,
    return written;
 }
 
+/* Only CPU-uploaded, retained inputs are copied here. In particular, the
+ * transient, inter-pass record, depth and render targets remain GPU-owned. */
+static void
+m9_dump_failed_input(FILE *manifest, const char *path, const char *role,
+                     const struct m9_resource *owner, uint32_t handle,
+                     uint64_t offset, uint64_t bytes, uint64_t limit)
+{
+   char output[4096];
+   if (!bytes)
+      return;
+   if (!owner || !owner->map || !handle || owner->handle != handle ||
+       bytes > limit || offset > owner->size || bytes > owner->size - offset ||
+       snprintf(output, sizeof(output), "%s.%s", path, role) >= sizeof(output)) {
+      fprintf(manifest, "INPUT_REFUSED %s handle %u offset %#" PRIx64
+              " bytes %#" PRIx64 "\n", role, handle, offset, bytes);
+      return;
+   }
+   FILE *file = fopen(output, "wx");
+   if (!file) {
+      fprintf(manifest, "INPUT_REFUSED %s errno %d\n", role, errno);
+      return;
+   }
+   bool written = fwrite((const uint8_t *)owner->map + offset, 1, bytes, file) == bytes;
+   if (fclose(file)) written = false;
+   if (!written) {
+      unlink(output);
+      fprintf(manifest, "INPUT_REFUSED %s write\n", role);
+      return;
+   }
+   fprintf(manifest, "INPUT %s handle %u owner-bytes %#" PRIx64
+           " offset %#" PRIx64 " bytes %#" PRIx64 " file %s\n",
+           role, handle, owner->size, offset, bytes, output);
+}
+
 /* Job words, relocations, fragment slots and constants for offline decode. */
 static void
 m9_dump_job(struct m9_context *ctx, const struct m9_fs_variant *fs,
-            const struct m9_draw_job *job)
+            const struct m9_draw_job *job, bool failed)
 {
    const struct m9_batch *b = &ctx->batch;
    /* M9X_DUMP_FROM / M9X_DUMP_COUNT select a window of jobs by their running
     * number, so a long run leaves one decodable stretch from mid-game. */
-   unsigned seq = ctx->dump_seq++;
-   ctx->dump_native_valid = false;
-   ctx->dump_native_seq = seq;
+   const char *path = failed ? debug_get_option("M9X_DUMP_FAILURE", NULL) :
+                               ctx->dump_path;
+   if (!path)
+      return;
+   unsigned seq = failed ? ctx->dump_seq : ctx->dump_seq++;
+   if (!failed) {
+      ctx->dump_native_valid = false;
+      ctx->dump_native_seq = seq;
+   }
    FILE *out;
 
-   if (seq < ctx->dump_from || seq >= ctx->dump_from + ctx->dump_count)
+   if (!failed && (seq < ctx->dump_from || seq >= ctx->dump_from + ctx->dump_count))
       return;
-   out = fopen(ctx->dump_path, seq == ctx->dump_from ? "w" : "a");
+   /* A fatal submit may already have posted DMA. Inspect only the owned
+    * CPU input image; no GPU output read, wait, rewrite or retry occurs. */
+   out = fopen(path, failed ? "wx" : seq == ctx->dump_from ? "w" : "a");
    if (!out)
       return;
+   if (failed) {
+      fprintf(out, "FAILED_JOB context %u words %u records %u draws %u "
+              "source %u stride %u CPU %u view-bytes %u program %u "
+              "record %u total-passes %u emitted-passes %u transition %u "
+              "preprocess-per-pass %u previous-point %#" PRIx64 "\n",
+              ctx->context_id, b->command_count, job->source_vertices,
+              job->draw_count, job->source, job->vs_record_bytes ?
+              job->vs_record_bytes : job->decl->record_bytes,
+              job->cpu_streams, job->cpu_stream_view_bytes, job->program,
+              job->record, fs ? fs->passes.count : 0, job->pass_count,
+              job->transition, job->preprocess_per_pass, ctx->last_point);
+      fprintf(out, "TARGET width %u height %u clip %08x/%08x color-desc %08x "
+              "depth-desc %08x\n", ctx->params.width, ctx->params.height,
+              job->clip_min, job->clip_max, ctx->params.color_desc, ctx->params.depth_desc);
+      for (unsigned i = 0; i < job->draw_count; i++) {
+         const struct m9_draw_record *d = &job->draws[i];
+         fprintf(out, "FAILED_DRAW %u start %u count %u index-first %u "
+                 "index-count %u topology %u cull %08x flat %u\n", i,
+                 d->start, d->count, d->index_first, d->index_count,
+                 d->topology, d->cull, d->flat);
+      }
+      uint64_t stride = job->vs_record_bytes ? job->vs_record_bytes : job->decl->record_bytes;
+      m9_dump_failed_input(out, path, "source", &ctx->source, job->source, 0,
+                           (uint64_t)job->source_vertices * stride, 4u << 20);
+      m9_dump_failed_input(out, path, "index", &ctx->index, job->index,
+                           job->index_base, 2ull * job->index_count, 2u * 65536u);
+      m9_dump_failed_input(out, path, "system", &ctx->system, job->system, 0,
+                           M9_SYSTEM_BYTES, M9_SYSTEM_BYTES);
+      if (job->cpu_streams && fs)
+         m9_dump_failed_input(out, path, "cpu-views", &ctx->cpu_streams,
+              job->cpu_streams, 0, (uint64_t)fs->extra_count *
+              (job->cpu_stream_view_bytes ? job->cpu_stream_view_bytes :
+                                            m9_transient_view_bytes()),
+              (uint64_t)M9_FS_MAX_EXTRA * m9_transient_view_bytes());
+      const struct m9_resource *code = m9_job_c2_owner(ctx, fs, job->program);
+      m9_dump_failed_input(out, path, "program", code, job->program, 0,
+                           code ? code->size : 0, M9_PROGRAM_MAX_BYTES);
+      for (unsigned i = 0; i < job->pass_count; i++) {
+         const struct m9_raster_pass *p = &job->passes[i];
+         fprintf(out, "EMITTED_PASS %u logical %u entry %u vertex-entry %u "
+                 "vertex-offset %u index-offset %u cpu-offset %#" PRIx64
+                 " const-offset %#" PRIx64 " writes-record %u "
+                 "record-desc %08x depth %08x ef %08x sequence %08x "
+                 "routes %u units %u\n", i, p->pass_index, p->entry,
+                 p->fs.vertex_entry, p->vertex_offset, p->index_offset,
+                 (uint64_t)p->cpu_stream_offset, (uint64_t)p->const_offset,
+                 p->writes_record, p->record_desc, p->depth_control,
+                 p->depth_ef, p->sequence_ef, p->route_count, p->unit_count);
+      }
+   }
    fprintf(out, "JOB %u dwords %u relocs %u\n", seq,
            b->command_count, b->reloc_count);
    for (unsigned i = 0; i < b->command_count; i++)
@@ -2228,7 +2324,7 @@ m9_dump_job(struct m9_context *ctx, const struct m9_fs_variant *fs,
                  o->location, o->component, o->coord, o->pass, o->coordinate,
                  o->coeff_record, o->paired);
       }
-      if (m9_dump_native_inputs_enable) {
+      if (!failed && m9_dump_native_inputs_enable) {
          ctx->dump_native_valid = m9_dump_native_inputs(ctx, job, image, slots, seq);
          if (!ctx->dump_native_valid)
             fprintf(stderr, "m9x: native input proof refused context %u job %u\n",
@@ -2276,6 +2372,12 @@ m9_dump_job(struct m9_context *ctx, const struct m9_fs_variant *fs,
       for (unsigned pi = 0; pi < fs->passes.count; pi++) {
          const struct m9_fs_program *p = &fs->passes.pass[pi];
          const uint32_t *w = p->slots.data;
+         if (failed)
+            fprintf(out, "FS_PASS %u entry %u slots %u varyings %u textures %u "
+                    "writes-record %u record-stride %u record-offset %u\n",
+                    pi, fs->entry[pi], m9_fs_slot_count(p), p->varying_count,
+                    p->texture_count, p->writes_record, fs->record_dwords,
+                    fs->record_offset[pi]);
 
          for (unsigned i = 0; i < m9_fs_slot_count(p); i++)
             fprintf(out, "SLOT %u %08x %08x\n", base + i, w[2 * i],
@@ -3504,7 +3606,7 @@ m9_submit_job(struct m9_context *ctx)
 
       ctx->batch.sealed = true;
       if (ctx->dump_path)
-         m9_dump_job(ctx, fs ? key->variant : NULL, &job);
+         m9_dump_job(ctx, fs ? key->variant : NULL, &job, false);
       t_ioctl = m9_prof_begin();
       if (aggregate_job) {
          ret = m9_aggregate_enqueue(ctx, be_bound);
@@ -3546,7 +3648,7 @@ m9_submit_job(struct m9_context *ctx)
             break;
          ctx->batch.sealed = true;
          if (ctx->dump_path)
-            m9_dump_job(ctx, key->variant, &job);
+            m9_dump_job(ctx, key->variant, &job, false);
          ret = ctx->dry_run ?
                m9_batch_validate(ctx->screen, &ctx->command, &ctx->batch,
                                  ctx->context_id) :
@@ -3596,9 +3698,21 @@ m9_submit_job(struct m9_context *ctx)
                  index_count, (unsigned)index_base, first_draw->index_first,
                  first_draw->index_count);
    } else if (ret) {
-      if (!ctx->lost)
+      if (built && ctx->batch.sealed && !aggregate_job)
+         m9_dump_job(ctx, fs ? key->variant : NULL, &job, true);
+      if (!ctx->lost) {
          fprintf(stderr, "m9x: two-pass job failed (%s); context lost\n",
                  strerror(-ret));
+         if (built)
+            fprintf(stderr, "m9x: failed stream: words %u relocs %u records %u "
+                    "draws %u total-passes %u emitted-passes %u logical-pass %u "
+                    "program %u record %u CPU %u view-bytes %u\n",
+                    ctx->batch.command_count, ctx->batch.reloc_count,
+                    job.source_vertices, job.draw_count, pass_count,
+                    job.pass_count, job.pass_count ? job.passes[0].pass_index : 0,
+                    job.program, job.record, job.cpu_streams,
+                    job.cpu_stream_view_bytes);
+      }
       ctx->lost = true;
    } else {
       if (!deferred_submit) ctx->last_point = point;
