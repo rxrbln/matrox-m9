@@ -1,4 +1,5 @@
 /* SPDX-License-Identifier: GPL-2.0-only */
+#include "m9_faa_graph_batch_limits.h"
 #include <linux/errno.h>
 #include <linux/string.h>
 #include <linux/overflow.h>
@@ -28,12 +29,12 @@ int m9x_faa_later_depth_two_append_encode(
  u32 extra,old_extra,newsec,newprimary,split,minsec,maxsec,first,last,delta,at,i,ends[13],front;
  u64 point,base;bool clear=clear_flags==3;
  if(!owner||!views||!old||!s||!old_ends||!input||!out||!out->primary||!out->secondary||
-  !count||count>=32||(clear_flags&&clear_flags!=3)||(raster_flags&~7u)||(raster_flags&6)==6||
+  !count||count>=M9_FAA_FRAME_BATCH_MAX_DRAWS||(clear_flags&&clear_flags!=3)||(raster_flags&~7u)||(raster_flags&6)==6||
   (input->declaration_count!=3&&input->declaration_count!=5)||(old_decl!=3&&old_decl!=5)||
   input->layout.program_count!=2||(input->record_stride!=32&&!(input->record_stride==16&&input->declaration_count==3))||
   !input->record_count||input->record_count%3||input->record_count>12288||
   input->fragment_flags!=!!(raster_flags&1)||(previous&15)||(pstart&3)||(sstart&3)||
-  previous>~(u64)0-0x110-32*0x60||(u32)previous>U32_MAX-0x110-32*0x60||
+  previous>~(u64)0-0x110-M9_FAA_FRAME_BATCH_MAX_DRAWS*0x60||(u32)previous>U32_MAX-0x110-M9_FAA_FRAME_BATCH_MAX_DRAWS*0x60||
   old_point!=previous+(clear?0x110:0x90)+(count-1)*0x60||
   end_count!=(clear?13u:4u))return -EINVAL;
  if(m9x_faa_graph_draw_owners_validate(owner)||m9x_faa_depth_stages_encode(views,0x3f800000,&(struct m9x_faa_depth_stage_image){0}))return -EINVAL;

@@ -4,7 +4,8 @@
 
 #include "m9_faa_graph_color_encode.h"
 
-#define M9_FAA_PROGRAM_ARENA_JOBS 32u
+#include "m9_faa_graph_batch_limits.h"
+#define M9_FAA_PROGRAM_ARENA_JOBS M9_FAA_FRAME_BATCH_MAX_DRAWS
 #define M9_FAA_PROGRAM_PAGE_BYTES 4096u
 
 /* Every secondary is a freshly encoded live COLOR4 stage. Its four C2 page

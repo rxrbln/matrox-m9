@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: GPL-2.0-only
+#include "m9_faa_graph_batch_limits.h"
 /* Original M9128 fresh FIRST COLOR4 extra-DRAW composition, CPU only. */
 #include <linux/errno.h>
 #include <linux/kernel.h>
@@ -86,8 +87,8 @@ int m9x_faa_frame_first_append_encode(
 	if (!owner || !old_end_bytes || !old_primary || !first_secondary ||
 	    !extra_first_secondary || !extra_input || !out ||
 	    !out->primary || !out->secondary || !programs_retained ||
-	    old_draw_count<1 || old_draw_count>31 ||
-	    (init_point&15) || low<0xb0 || low>U32_MAX-0x1550 ||
+	    old_draw_count<1 || old_draw_count>=M9_FAA_FRAME_BATCH_MAX_DRAWS ||
+	    (init_point&15) || low<0xb0 || low>U32_MAX-0x150-M9_FAA_FRAME_BATCH_MAX_DRAWS*0xa0 ||
 	    (init_bytes&3) || (primary_cursor&3) ||
 	    (secondary_cursor&3) ||
 	    (extra_input->declaration_count!=3 &&

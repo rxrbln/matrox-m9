@@ -1,4 +1,5 @@
 /* SPDX-License-Identifier: GPL-2.0-only */
+#include "m9_faa_graph_batch_limits.h"
 #include <linux/errno.h>
 #include <linux/string.h>
 #include <linux/overflow.h>
@@ -26,11 +27,11 @@ int m9x_faa_first_depth_two_append(const struct m9x_faa_first_depth_two_append_i
  if(!in||!out||!in->owner||!in->old_primary||!in->fresh_secondary||!in->old_ends||
   !out->primary||!out->secondary||!out->primary_bytes||!out->secondary_bytes||
   !out->ends||!out->final_point||
-  !in->old_draw_count||in->old_draw_count>=32||
+  !in->old_draw_count||in->old_draw_count>=M9_FAA_FRAME_BATCH_MAX_DRAWS||
   (in->declaration_count!=3&&in->declaration_count!=5)||
   (in->old_last_declaration_count!=3&&in->old_last_declaration_count!=5)||
-  (in->init_point&15)||in->init_point>~(u64)0-0x110-32*0x60||
-  (u32)in->init_point>U32_MAX-0x110-32*0x60)
+  (in->init_point&15)||in->init_point>~(u64)0-0x110-M9_FAA_FRAME_BATCH_MAX_DRAWS*0x60||
+  (u32)in->init_point>U32_MAX-0x110-M9_FAA_FRAME_BATCH_MAX_DRAWS*0x60)
   return -EINVAL;
  if(m9x_faa_graph_draw_owners_validate(in->owner))return -EINVAL;
  extra=in->declaration_count==5?24:0;old_extra=in->old_last_declaration_count==5?24:0;

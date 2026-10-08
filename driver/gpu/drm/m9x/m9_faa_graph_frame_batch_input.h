@@ -3,7 +3,7 @@
 #define M9_FAA_GRAPH_FRAME_BATCH_INPUT_H
 #include "m9x_drm.h"
 #include "m9_faa_graph_color_encode.h"
-#define M9_FAA_FRAME_BATCH_MAX_DRAWS 32u
+#include "m9_faa_graph_batch_limits.h"
 struct m9x_faa_owned_color_draw {
  struct m9x_faa_color_input input;
  u8 *upload;

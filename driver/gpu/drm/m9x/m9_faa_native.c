@@ -243,7 +243,7 @@ struct m9_faa_owner {
 };
 #ifdef M9_FAA_GRAPH_INIT_CONTROL
 #define M9_FAA_DEPTH_PREFIX_CAPACITY (M9_FAA_ATTACHMENT_CLEAR_CAPACITY + M9_FAA_SAMPLE_CLEAR_CAPACITY)
-#define M9_FAA_DEPTH_FRAME_PRIMARY_CAPACITY (M9_FAA_DEPTH_PREFIX_CAPACITY + M9_FAA_DEPTH_DRAW_PRIMARY_BYTES)
+#define M9_FAA_DEPTH_FRAME_PRIMARY_CAPACITY (M9_FAA_DEPTH_PREFIX_CAPACITY + M9_FAA_DEPTH_DRAW_PRIMARY_BYTES + 60u * (M9_FAA_FRAME_BATCH_MAX_DRAWS - 1u))
 #define M9_FAA_DEPTH_FRAME_ENDS 13
 #define M9_FAA_DEPTH_FRAME_MAX_ENDS 32
 #define M9_FAA_SAMPLE_CLEAR_FIRMWARE "m9x/faa-graph-sample-clear-template.bin"
@@ -7604,8 +7604,8 @@ int m9x_faa_graph_depth_batch_prepare(struct m9x_device *mdev,
  u8 *arena=NULL,*secondary=NULL,*composed=NULL,*job_primary=NULL,*job_secondary=NULL;
  u8 *code_page=NULL,*jobs_secondary=NULL;
  struct m9x_faa_program_arena_job *jobs=NULL;
- u32 code_slots[M9_FAA_FRAME_BATCH_MAX_DRAWS];
- u32 slots[M9_FAA_FRAME_BATCH_MAX_DRAWS],ends[14],arena_bytes=0,sec_cursor,pb,sb,i,bytes,raw,appended_bytes;
+ u32 *code_slots=NULL,*slots=NULL;
+ u32 ends[14],secondary_needed=0,arena_bytes=0,sec_cursor,pb,sb,i,bytes,raw,appended_bytes;
  u64 queue_start=0;bool initialized,two;int ret;
  m9_faa_frame_trace(mdev,"batch-prepare-enter",batch?batch->count:0,0,previous,0,false);
  if(!binding||!batch||!batch->count||batch->count>M9_FAA_FRAME_BATCH_MAX_DRAWS)return -EOPNOTSUPP;
@@ -7613,29 +7613,39 @@ int m9x_faa_graph_depth_batch_prepare(struct m9x_device *mdev,
  two=batch->draw[0].input.layout.program_count==2;
  if(initialized&&first)return -EOPNOTSUPP;
  if(!initialized&&!first)return -EOPNOTSUPP;
+ slots=kmalloc(2u*batch->count*sizeof(*slots),GFP_KERNEL);
+ if(!slots)return -ENOMEM;
+ code_slots=slots+batch->count;
  for(i=0;i<batch->count;i++){
   const struct m9x_faa_color_input *input=&batch->draw[i].input;
   if((batch->draw[i].raster_flags&~7u)||(batch->draw[i].raster_flags&6)==6||
    (batch->draw[i].raster_flags&6)!=(batch->draw[0].raster_flags&6)||input->data_offset||
    (input->record_stride!=32&&(input->record_stride!=16||input->declaration_count!=3))||
    !input->record_count||input->record_count>12288||input->record_count%3||
-   input->layout.constants_bytes>16384||input->layout.program_count!=(two?2u:4u)||(input->declaration_count!=3&&input->declaration_count!=5))return -EOPNOTSUPP;
+   input->layout.constants_bytes>16384||input->layout.program_count!=(two?2u:4u)||(input->declaration_count!=3&&input->declaration_count!=5)){ret=-EOPNOTSUPP;goto release;}
   slots[i]=ALIGN(arena_bytes,128);
   if(check_mul_overflow(ALIGN(input->record_count,4),input->record_stride,&raw)||
    check_add_overflow(ALIGN(input->layout.constants_bytes,128),128u,&bytes)||
-   check_add_overflow(bytes,raw,&bytes)||check_add_overflow(slots[i],bytes,&arena_bytes)||arena_bytes>0x40000)return -ENOSPC;
+   check_add_overflow(bytes,raw,&bytes)||check_add_overflow(slots[i],bytes,&arena_bytes)||arena_bytes>0x40000){ret=-ENOSPC;goto release;}
+  secondary_needed+=i?(two?1484u:2676u):
+   (two?1352u:(initialized?2544u:2688u));
+  secondary_needed+=input->declaration_count==5?24u:0u;
  }
  if(initialized){
-  ret=m9_faa_primary_rotate(mdev,binding,generation,previous,12560+60*(batch->count-1)+96+24);if(ret)return ret;
-  ret=m9_faa_secondary_rotate(mdev,binding,generation,previous,(two?1380:2596)+(batch->count-1)*(two?1508:2700));if(ret)return ret;
+  secondary_needed+=batch->clear_flags?0u:4u;
+  if(!two&&(batch->draw[0].raster_flags&6))secondary_needed+=24u;
  }
- if(batch->count==1)return initialized?
+ if(secondary_needed+48>M9_FAA_BATCH_SECONDARY_BYTES){ret=-ENOSPC;goto release;}
+ if(initialized){
+  ret=m9_faa_primary_rotate(mdev,binding,generation,previous,12560+60*(batch->count-1)+96+24);if(ret)goto release;
+  ret=m9_faa_secondary_rotate(mdev,binding,generation,previous,secondary_needed);if(ret)goto release;
+ }
+ if(batch->count==1){ret=initialized?
   m9x_faa_graph_depth_later_prepare(mdev,binding,generation,previous,&batch->draw[0].input,batch->clear_flags,batch->draw[0].raster_flags):
-  m9x_faa_graph_depth_frame_prepare(mdev,binding,generation,previous,true,&batch->draw[0].input,batch->draw[0].raster_flags);
+  m9x_faa_graph_depth_frame_prepare(mdev,binding,generation,previous,true,&batch->draw[0].input,batch->draw[0].raster_flags);goto release;}
  m9_faa_frame_trace(mdev,"batch-allocate",batch->count,arena_bytes,previous,0,false);
  arena=kvzalloc(arena_bytes,GFP_KERNEL);
- secondary=kvzalloc((initialized?(two?1380:2596):2712)+
-                     (batch->count-1)*(two?1508:2700),GFP_KERNEL);
+ secondary=kvzalloc(secondary_needed,GFP_KERNEL);
  composed=kmalloc(M9_FAA_DEPTH_FRAME_PRIMARY_CAPACITY,GFP_KERNEL);
  job_primary=kmalloc(M9_FAA_DEPTH_FRAME_PRIMARY_CAPACITY,GFP_KERNEL);
  job_secondary=kmalloc(M9_FAA_COLOR_SECONDARY_CAPACITY,GFP_KERNEL);
@@ -7778,7 +7788,7 @@ int m9x_faa_graph_depth_batch_prepare(struct m9x_device *mdev,
   if(appended_bytes!=jobs[i].secondary_bytes+(two?132:-12)){ret=-EIO;goto unlock;}
   sec_cursor+=appended_bytes;
  }
- if(frame->secondary_cursor>0x3fe00||sec_cursor+48>0x3fe00-frame->secondary_cursor||
+ if(sec_cursor!=secondary_needed||frame->secondary_cursor>M9_FAA_BATCH_SECONDARY_BYTES||sec_cursor+48>M9_FAA_BATCH_SECONDARY_BYTES-frame->secondary_cursor||
   frame->final_point!=(initialized?m9_faa_frame_origin(r,previous):previous)+
    (initialized?(two?(batch->clear_flags?0x110:0x90):
                 (batch->clear_flags?0x150:0xd0)):(two?0x110:0x150))+
@@ -7789,6 +7799,7 @@ int m9x_faa_graph_depth_batch_prepare(struct m9x_device *mdev,
  frame->draw_count=batch->count;ret=0;
 unlock:mutex_unlock(&t->lock);
 release:
+ kfree(slots);
  if(sample)release_firmware(sample);if(color)release_firmware(color);
  kvfree(code_page);kvfree(jobs_secondary);kfree(jobs);
  kvfree(arena);kvfree(secondary);kfree(composed);kfree(job_primary);kfree(job_secondary);kfree(scratch);kfree(prefix);

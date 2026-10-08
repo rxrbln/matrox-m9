@@ -1,4 +1,5 @@
 /* SPDX-License-Identifier: GPL-2.0-only */
+#include "m9_faa_graph_batch_limits.h"
 #include <linux/errno.h>
 #include <linux/string.h>
 #include "m9_faa_graph_later_depth_encode.h"
@@ -188,7 +189,7 @@ int m9x_faa_later_depth_append_encode(
  static const u8 save_owner[]={22,22,22,8,8,8},save_tag[]={1,5,5,1,5,1};
  u32 i,insert,old_begin,old_mid,cursor,new_bytes,shift,last_shift,append_bytes,min_bytes,max_bytes;u32 cull_bytes=(raster_flags&6)?24:0;u64 delta=clear_flags?0x150:0xd0;
  if(!owner||!views||!old||!old_ends||!fresh||!input||!out||!out->primary||!out->secondary||
-  (clear_flags&&clear_flags!=3)||(raster_flags&~7u)||(raster_flags&6)==6||!count||count>31||
+  (clear_flags&&clear_flags!=3)||(raster_flags&~7u)||(raster_flags&6)==6||!count||count>=M9_FAA_FRAME_BATCH_MAX_DRAWS||
   (input->declaration_count!=3&&input->declaration_count!=5)||
   (old_declaration_count!=3&&old_declaration_count!=5)||
   fresh_bytes!=2712-(input->declaration_count==3?24:0)||
