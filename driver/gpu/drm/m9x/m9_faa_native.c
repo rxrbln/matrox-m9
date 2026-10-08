@@ -6342,8 +6342,7 @@ int m9x_faa_graph_public_vs_next_prepare(struct m9x_device *mdev,
 		goto release;
 	}
 	mutex_lock(&t->lock);
-	ret = m9x_faa_graph_public_vs_unlocked_get_locked(mdev, generation,
-							  unlock_point, &checked);
+	ret = m9x_faa_graph_public_vs_unlocked_get_locked(mdev, generation, unlock_point, &checked);
 	if (ret)
 		goto out;
 	if (checked != binding) {
