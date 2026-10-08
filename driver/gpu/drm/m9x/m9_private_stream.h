@@ -6,6 +6,8 @@
 #include <linux/errno.h>
 #include <linux/types.h>
 
+#include "m9_cmd.h"
+
 /* Internal kernel-owned secondary ranges, never a userspace address ABI.
  * Class1 is the existing private BmBuffer GPUVA. DMA32 is the actual normal
  * FAA24c73 export: physical DMA address selector2, unchanged counted bytes,
@@ -43,9 +45,7 @@ static inline int m9_private_stream_range(u32 words[3],
 		return -ERANGE;
 	first = owner->address + start;
 	limit = owner->address + end;
-	words[0] = 0x45452d2c;
-	words[1] = (u32)first | owner->domain;
-	words[2] = (u32)limit | 2u;
+	m9_cmd_link(words, (u32)first | owner->domain, (u32)limit | 2u);
 	return 0;
 }
 

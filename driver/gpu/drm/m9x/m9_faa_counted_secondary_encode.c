@@ -1,6 +1,8 @@
 /* SPDX-License-Identifier: GPL-2.0-only */
 #include <linux/errno.h>
 #include <linux/limits.h>
+
+#include "m9_cmd.h"
 #include "m9_faa_counted_secondary_encode.h"
 
 int m9x_faa_counted_secondary_encode(
@@ -41,13 +43,12 @@ int m9x_faa_counted_secondary_encode(
 
 	secondary_point = (u32)r->global_origin + 16;
 	pool_point = (u32)r->pool_origin + 16;
-	next.old_footer[0] = 0x4545e3e6;
+	next.old_footer[0] = M9_CMD_FENCE;
 	next.old_footer[1] = 1;
 	next.old_footer[2] = secondary_point | 1;
-	next.parent[0] = 0x45452d2c;
-	next.parent[1] = (r->old.gpu_base + r->range_start) | 1;
-	next.parent[2] = r->old.gpu_base + r->range_end;
-	next.parent[3] = 0x4545421a;
+	m9_cmd_link(next.parent, (r->old.gpu_base + r->range_start) | 1,
+		    r->old.gpu_base + r->range_end);
+	next.parent[3] = M9_CMD_TRACK;
 	next.parent[4] = ((u32)r->fence_bus + 0x20) | 2;
 	next.parent[5] = pool_point | 1;
 	next.secondary_point = r->global_origin + 16;

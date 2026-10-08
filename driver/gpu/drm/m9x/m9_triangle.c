@@ -17,6 +17,7 @@
 #include <linux/slab.h>
 #include <linux/unaligned.h>
 
+#include "m9_cmd.h"
 #include "m9_drv.h"
 #include "m9_private_stream.h"
 #include "m9_reg.h"
@@ -1133,11 +1134,11 @@ static void m9_seq0_build_primary(const struct m9_seq0_job *job, u32 *primary)
 	unsigned int i;
 
 	for (i = 0; i < ARRAY_SIZE(bounds); i++) {
-		primary[i * 3] = 0x45452d2c;
-		primary[i * 3 + 1] = (job->secondary + bounds[i][0]) |
-			M9_TRIANGLE_SECONDARY_START_TAG;
-		primary[i * 3 + 2] = (job->secondary + bounds[i][1]) |
-			M9_TRIANGLE_SECONDARY_END_TAG;
+		m9_cmd_link(&primary[i * 3],
+			    (job->secondary + bounds[i][0]) |
+			    M9_TRIANGLE_SECONDARY_START_TAG,
+			    (job->secondary + bounds[i][1]) |
+			    M9_TRIANGLE_SECONDARY_END_TAG);
 	}
 }
 
@@ -1161,12 +1162,9 @@ static void m9_triangle_build_secondary_noop(u8 *image, u32 secondary,
 	put_unaligned_le32(1, image + 0x28);
 	put_unaligned_le32(0x45454543, image + 0x2c);
 	put_unaligned_le32(target, image + 0x30);
-	primary[0] = 0x45452d2c;
-	primary[1] = (secondary + 0x08) |
-		M9_TRIANGLE_SECONDARY_START_TAG;
-	primary[2] = (secondary + 0x34) |
-		M9_TRIANGLE_SECONDARY_END_TAG;
-	primary[3] = 0x4545421a;
+	m9_cmd_link(primary, (secondary + 0x08) | M9_TRIANGLE_SECONDARY_START_TAG,
+		    (secondary + 0x34) | M9_TRIANGLE_SECONDARY_END_TAG);
+	primary[3] = M9_CMD_TRACK;
 	primary[4] = (completion + sizeof(u32)) | M9_COMMAND_SYSTEM_TAG;
 	primary[5] = target | 1;
 }
@@ -1193,7 +1191,7 @@ static int m9_triangle_log_secondary_mapping(struct m9x_device *mdev)
 		 "M9 secondary probe: gpuva=%#x dma=%pad root=%#x/%#x pte=%#x/%#x primary={%#x,%#x,%#x}\n",
 		 secondary->gpuva, &secondary->bus, root,
 		 expected_root, pte, expected,
-		 0x45452d2c, (secondary->gpuva + 0x08) | 1,
+		 M9_CMD_LINK, (secondary->gpuva + 0x08) | 1,
 		 (secondary->gpuva + 0x34) | 2);
 	return pte == expected && root == expected_root ?
 		0 : -EIO;
@@ -1414,11 +1412,11 @@ static void m9_triangle_build_primary(
 	unsigned int i;
 
 	for (i = 0; i < ARRAY_SIZE(layout->end); i++) {
-		primary[i * 3] = 0x45452d2c;
-		primary[i * 3 + 1] = (job->secondary + start) |
-			M9_TRIANGLE_SECONDARY_START_TAG;
-		primary[i * 3 + 2] = (job->secondary + layout->end[i]) |
-			M9_TRIANGLE_SECONDARY_END_TAG;
+		m9_cmd_link(&primary[i * 3],
+			    (job->secondary + start) |
+			    M9_TRIANGLE_SECONDARY_START_TAG,
+			    (job->secondary + layout->end[i]) |
+			    M9_TRIANGLE_SECONDARY_END_TAG);
 		start = layout->end[i];
 	}
 }
@@ -1753,16 +1751,14 @@ static int m9_triangle_present_locked(struct m9x_device *mdev, u32 color,
 			 lower_32_bits(mdev->transport.fence_bus), target);
 	diag->secondary_used = M9_TRIANGLE_SECONDARY_BYTES;
 	dma_wmb();
-	primary[0] = 0x45452d2c;
-	primary[1] = (secondary + M9_TRIANGLE_SECONDARY_PREFIX) |
-		     M9_TRIANGLE_SECONDARY_START_TAG;
-	primary[2] = (secondary + M9_PRESENT_RANGE0_END) |
-		     M9_TRIANGLE_SECONDARY_END_TAG;
-	primary[3] = 0x45452d2c;
-	primary[4] = (secondary + M9_PRESENT_RANGE0_END) |
-		     M9_TRIANGLE_SECONDARY_START_TAG;
-	primary[5] = (secondary + M9_PRESENT_RANGE1_END) |
-		     M9_TRIANGLE_SECONDARY_END_TAG;
+	m9_cmd_link(primary, (secondary + M9_TRIANGLE_SECONDARY_PREFIX) |
+		    M9_TRIANGLE_SECONDARY_START_TAG,
+		    (secondary + M9_PRESENT_RANGE0_END) |
+		    M9_TRIANGLE_SECONDARY_END_TAG);
+	m9_cmd_link(&primary[3], (secondary + M9_PRESENT_RANGE0_END) |
+		    M9_TRIANGLE_SECONDARY_START_TAG,
+		    (secondary + M9_PRESENT_RANGE1_END) |
+		    M9_TRIANGLE_SECONDARY_END_TAG);
 	ret = m9x_submit_kernel_stream_locked(mdev, primary, ARRAY_SIZE(primary),
 					      final, point, NULL, false);
 	if (ret)
