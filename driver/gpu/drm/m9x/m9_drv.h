@@ -715,4 +715,8 @@ int m9x_faa_graph_color_frame_ioctl(struct drm_device *,void *,struct drm_file *
 int m9x_faa_graph_depth_batch_prepare(struct m9x_device *,struct m9_faa_graph_binding *,u32,u64,bool,const struct m9x_faa_owned_color_batch *);
 int m9x_faa_graph_color_frame_batch_ioctl(struct drm_device *,void *,struct drm_file *);
 
+int m9x_faa_graph_clear_resume_get_locked(struct m9x_device *,u32,u64,struct m9_faa_graph_binding **);
+int m9x_faa_graph_clear_resume_prepare(struct m9x_device *,struct m9_faa_graph_binding *,u32,u64,const struct m9x_faa_color_input *);
+int m9x_faa_graph_clear_resume_ioctl(struct drm_device *,void *,struct drm_file *);
+
 #endif

@@ -1924,6 +1924,54 @@ out_binding:m9x_faa_graph_binding_put(binding);mutex_unlock(&state->lock);drm_de
 out_batch:kfree(mode_jobs);m9x_faa_color_batch_free(batch);return ret;
 }
 
+int m9x_faa_graph_clear_resume_ioctl(struct drm_device*drm,void*data,struct drm_file*file)
+{
+ struct drm_parhelia_m9_faa_graph_color_frame*a=data;
+ struct m9x_device*mdev=to_m9x(drm);struct m9_faa_file*state=file->driver_priv;
+ struct m9_faa_prepared_graph*graph;struct m9_faa_graph_binding*b=NULL;
+ struct m9x_faa_color_input input={0};struct drm_exec exec;u8*upload=NULL;
+ u32 sum,tmp,address[PARHELIA_M9_FAA_GRAPH_OWNERS],i;u64 point=0;bool posted=false;int idx,ret;
+ static_assert(sizeof(*a)==160);
+ if(!state||!a->graph_id||!a->previous_point||(a->previous_point&15)||a->lock_point||
+  a->flags||a->state||a->pad||a->previous_point>U64_MAX-0x160||
+  lower_32_bits(a->previous_point)>U32_MAX-0x160)return -EINVAL;
+ if(a->width!=320||a->height!=240||a->clear_flags!=3||a->clear_color||
+  !m9x_faa_depth_mode_flags_valid(a->depth_flags)||!(a->depth_flags&32)||a->raster_flags||
+  a->layout.program_count!=2||(a->declaration_count!=3&&a->declaration_count!=5)||
+  (a->record_stride!=32&&(a->record_stride!=16||a->declaration_count!=3))||
+  !a->record_count||a->record_count%3||a->record_count>12288||
+  !a->upload||!a->upload_bytes||a->upload_bytes>0x42000)return -EOPNOTSUPP;
+ if(check_add_overflow(a->layout.program_bytes,a->layout.constants_bytes,&sum)||
+  check_add_overflow(sum,a->layout.geometry_bytes,&sum)||check_mul_overflow(a->declaration_count,4u,&tmp)||
+  check_add_overflow(sum,tmp,&sum)||sum!=a->upload_bytes)return -EINVAL;
+ if(!m9x_faa_graph_profile_enabled()||!m9x_faa_graph_depth_frame_profile_qualified(false))return -EOPNOTSUPP;
+ if(!drm_dev_enter(drm,&idx))return -ENODEV;
+ mutex_lock(&state->lock);graph=state->graph;
+ if(!graph||!graph->initialized||graph->id!=a->graph_id||graph->generation!=a->generation){ret=-ENOENT;goto out;}
+ if(graph->layout.width!=a->width||graph->layout.height!=a->height){ret=-ESTALE;goto out;}
+ mutex_lock(&mdev->transport.lock);
+ ret=m9x_faa_graph_clear_resume_get_locked(mdev,a->generation,a->previous_point,&b);
+ mutex_unlock(&mdev->transport.lock);if(ret)goto out;
+ if(b->graph!=graph){ret=-ESTALE;goto out;}
+ upload=memdup_user(u64_to_user_ptr(a->upload),a->upload_bytes);
+ if(IS_ERR(upload)){ret=PTR_ERR(upload);upload=NULL;goto out;}
+ memcpy(&input.layout,&a->layout,sizeof(input.layout));input.program=upload;
+ input.constants=upload+a->layout.program_bytes;input.geometry=input.constants+a->layout.constants_bytes;
+ input.declaration=input.geometry+a->layout.geometry_bytes;input.record_stride=a->record_stride;
+ input.record_count=a->record_count;input.declaration_count=a->declaration_count;input.depth_flags=a->depth_flags;
+ ret=m9x_faa_graph_clear_resume_prepare(mdev,b,a->generation,a->previous_point,&input);if(ret)goto out;
+ drm_exec_init(&exec,DRM_EXEC_INTERRUPTIBLE_WAIT|DRM_EXEC_IGNORE_DUPLICATES,PARHELIA_M9_FAA_GRAPH_OWNERS);
+ drm_exec_until_all_locked(&exec){for(i=0;i<PARHELIA_M9_FAA_GRAPH_OWNERS;i++){
+  ret=drm_exec_prepare_obj(&exec,graph->owner[i],1);drm_exec_retry_on_contention(&exec);if(ret)goto out_exec;}}
+ ret=m9_faa_graph_live_addresses(mdev,graph,address);if(ret)goto out_exec;
+ if(memcmp(b->address,address,sizeof(address))){ret=-ESTALE;goto out_exec;}
+ ret=m9x_faa_graph_depth_frame_submit(mdev,b,a->generation,a->previous_point,&point,&posted);
+ if(!ret){if(point!=a->previous_point+0x160)ret=-EIO;
+  else{a->lock_point=point;a->state=PARHELIA_M9_FAA_CLEAR_RESUME_LOCK_RETIRED;}}
+ out_exec:drm_exec_fini(&exec);
+ out:kfree(upload);m9x_faa_graph_binding_put(b);mutex_unlock(&state->lock);drm_dev_exit(idx);return ret;
+}
+
 int m9x_faa_graph_clear_prefix_ioctl(struct drm_device *drm,void *data,
  struct drm_file *file)
 {

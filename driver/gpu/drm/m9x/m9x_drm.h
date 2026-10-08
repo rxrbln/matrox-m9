@@ -166,6 +166,14 @@ struct drm_parhelia_m9_faa_graph_dual_batch {
 };
 #define DRM_IOCTL_PARHELIA_M9_FAA_GRAPH_DUAL_BATCH DRM_IOWR(DRM_COMMAND_BASE + DRM_PARHELIA_M9_FAA_GRAPH_DUAL_BATCH, struct drm_parhelia_m9_faa_graph_dual_batch)
 
+/* Source continuation of the actually retired0x23 prefix. Uses the owned
+ *160-byte COLOR_FRAME upload schema with previous_point=original Unlock,
+ * flags0, clear3, explicit disabled depth, smooth raster0,320x240,count2.
+ * No clear is repeated; success returns originalUnlock+160 Lock receipt. */
+#define DRM_PARHELIA_M9_FAA_GRAPH_CLEAR_RESUME 0x24
+#define PARHELIA_M9_FAA_CLEAR_RESUME_LOCK_RETIRED 26u
+#define DRM_IOCTL_PARHELIA_M9_FAA_GRAPH_CLEAR_RESUME DRM_IOWR(DRM_COMMAND_BASE + DRM_PARHELIA_M9_FAA_GRAPH_CLEAR_RESUME, struct drm_parhelia_m9_faa_graph_color_frame)
+
 /* Source-closed initialized CLEAR3 publication only. No shader/upload or
  * DRAW/Lock admission. All outputs start zero; receipt retries never repost.
  * v1 is320x240,count2, unrotated U-only origin; P/maintenance are refused. */
