@@ -1738,7 +1738,8 @@ bool m9x_faa_graph_release_unposted(struct m9x_device *mdev,
 }
 
 static int m9_faa_allocate(struct m9x_device *mdev, struct m9_faa_owner *o,
-			   const struct m9_faa_owner_spec *spec, bool defer_output)
+			   const struct m9_faa_owner_spec *spec,
+			   bool defer_output)
 {
 	struct drm_gem_vram_object *vram;
 	u64 end, base;
@@ -1748,12 +1749,13 @@ static int m9_faa_allocate(struct m9x_device *mdev, struct m9_faa_owner *o,
 	o->bytes = PAGE_ALIGN(spec->bytes);
 	if (!spec->local) {
 		if ((spec->flags30 && !spec->system) ||
-		    (spec->system && (!spec->mapped_bytes ||
-		     !IS_ALIGNED(spec->mapped_bytes, PAGE_SIZE) ||
-		     spec->mapped_bytes > o->bytes)))
+		    (spec->system &&
+		     (!spec->mapped_bytes ||
+		      !IS_ALIGNED(spec->mapped_bytes, PAGE_SIZE) ||
+		      spec->mapped_bytes > o->bytes)))
 			return -EINVAL;
-		o->cpu = dma_alloc_coherent(&mdev->pdev->dev, o->bytes,
-					    &o->dma, GFP_KERNEL);
+		o->cpu = dma_alloc_coherent(&mdev->pdev->dev, o->bytes, &o->dma,
+					    GFP_KERNEL);
 		if (!o->cpu)
 			return -ENOMEM;
 		if (upper_32_bits(o->dma) || !IS_ALIGNED(o->dma, PAGE_SIZE) ||
@@ -1767,16 +1769,22 @@ static int m9_faa_allocate(struct m9x_device *mdev, struct m9_faa_owner *o,
 		}
 		if (spec->system) {
 			if (defer_output) {
-				if (!spec->flags30 || spec->mapped_bytes != 0x50000)
+				if (!spec->flags30 ||
+				    spec->mapped_bytes != 0x50000)
 					return -EINVAL;
 				ret = m9x_address_reserve_faa_output(mdev,
-						&o->system_node, spec->mapped_bytes);
+								     &o->system_node,
+								     spec->mapped_bytes);
 			} else {
 				ret = spec->flags30 ?
-					m9x_address_map_faa_system(mdev, &o->system_node,
-							  o->dma, spec->mapped_bytes) :
-					m9x_address_map_system(mdev, &o->system_node,
-							      o->dma, spec->mapped_bytes);
+				      m9x_address_map_faa_system(mdev,
+								 &o->system_node,
+								 o->dma,
+								 spec->mapped_bytes) :
+				      m9x_address_map_system(mdev,
+							     &o->system_node,
+							     o->dma,
+							     spec->mapped_bytes);
 			}
 			if (ret)
 				return ret;
@@ -1791,7 +1799,8 @@ static int m9_faa_allocate(struct m9x_device *mdev, struct m9_faa_owner *o,
 	if (ret)
 		goto put;
 	offset = drm_gem_vram_offset(vram);
-	if (offset < 0 || check_add_overflow((u64)offset, (u64)o->bytes, &end) ||
+	if (offset < 0 ||
+	    check_add_overflow((u64)offset, (u64)o->bytes, &end) ||
 	    end > m9x_vram_gpu_limit(mdev) ||
 	    check_add_overflow(M9_VRAM_GPU_BASE, (u64)offset, &base) ||
 	    base + o->bytes > U32_MAX || !IS_ALIGNED(base, PAGE_SIZE)) {
