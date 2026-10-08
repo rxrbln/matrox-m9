@@ -608,6 +608,8 @@ struct m9_context {
       unsigned skip, backoff;
       uint64_t frames, fallbacks, skipped;
       const char *reason;
+      /* M9X_FAA_CENSUS: {const char *reason, uint64_t count} per DRAW. */
+      struct util_dynarray census;
    } faa_mode;
    /* Ordinary clear does not reset this graph's fragment/HZ state. Preserve
     * the actual requested state until a qualified native frame-reset API. */

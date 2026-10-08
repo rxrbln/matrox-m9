@@ -7941,6 +7941,10 @@ m9_native_vs_draw(struct m9_context *ctx, const struct pipe_draw_info *info,
    return true;
 }
 
+static void m9_context_faa_census(struct m9_context *ctx,
+                                  const struct pipe_draw_info *info,
+                                  const struct pipe_draw_start_count_bias *draw);
+
 static bool
 m9_faa_application_enabled(void)
 {
@@ -8133,6 +8137,9 @@ m9_draw_vbo(struct pipe_context *pctx, const struct pipe_draw_info *info,
     * nothing, exactly, without the kill slot's lane artifact (M9_BRINGUP). */
    if (ctx->fs && ctx->fs->kill_all)
       return;
+   if (m9_faa_application_enabled() && num_draws && draws[0].count &&
+       info->instance_count && debug_get_bool_option("M9X_FAA_CENSUS", false))
+      m9_context_faa_census(ctx, info, &draws[0]);
    if (m9_faa_application_enabled() && num_draws && draws[0].count &&
        info->instance_count && !ctx->faa_mode.fallback && !ctx->faa_mode.skip) {
       /* The ordinary path below renders the frame too; its result stands
@@ -9882,6 +9889,79 @@ fail:
    return false;
 }
 
+/* State checks of an owned FAA DRAW past its build; NULL when admitted. */
+static const char *
+m9_context_faa_draw_refusal(const struct m9_faa_application_upload *owned)
+{
+   const struct m9_faa_application_state *state = &owned->state;
+   if (!m9_faa_runtime_dimensions(state->width,state->height) ||
+       (state->depth_enabled && state->depth_func > PIPE_FUNC_ALWAYS) ||
+       (state->cull_face != PIPE_FACE_NONE && state->cull_face != PIPE_FACE_FRONT &&
+        state->cull_face != PIPE_FACE_BACK) || state->scissor_enabled ||
+       state->viewport.scale[0] != state->width * .5f || state->viewport.scale[1] != state->height * -.5f ||
+       state->viewport.translate[0] != state->width * .5f || state->viewport.translate[1] != state->height * .5f ||
+       (owned->shader.layout.count != 2 && owned->shader.layout.count != 4) ||
+       (!owned->texture_count && owned->shader.record_bytes != 32 &&
+        (owned->shader.record_bytes != 16 || owned->shader.declaration_words != 3))) {
+      if (getenv("M9X_DEBUG"))
+         fprintf(stderr, "m9x: FAA draw state w=%u h=%u z=%u/%u/%u cull=%u scissor=%u viewport=%g,%g/%g,%g vectors=%u stride=%u vertices=%u flat=%u\n",
+                 state->width, state->height, state->depth_enabled,
+                 state->depth_write, state->depth_func, state->cull_face,
+                 state->scissor_enabled, state->viewport.scale[0],
+                 state->viewport.scale[1], state->viewport.translate[0],
+                 state->viewport.translate[1], owned->shader.layout.count,
+                 owned->shader.record_bytes, owned->shader.vertex_count,
+                 state->flatshade);
+      return "FAA application depth/cull/scissor/view state is not implemented";
+   }
+   if(owned->texture_count&&
+      (!debug_get_bool_option("M9X_FAA_DUAL_APPLICATION",false)||
+       state->cull_face==PIPE_FACE_FRONT_AND_BACK||
+       state->flatshade||!state->depth_enabled||owned->shader.record_bytes!=64||
+       owned->shader.declaration_words!=9)) {
+      return "FAA dual application raster requires enabled depth and smooth shading";
+   }
+   return NULL;
+}
+
+struct m9_faa_census_entry {
+   const char *reason;
+   uint64_t count;
+};
+
+/* Diagnostic: classify every DRAW by the FAA admission it would get. The
+ * reasons are static strings, so their pointers identify them. */
+static void
+m9_context_faa_census(struct m9_context *ctx, const struct pipe_draw_info *info,
+                      const struct pipe_draw_start_count_bias *draw)
+{
+   struct m9_faa_application_upload owned = {0};
+   const char *why = NULL;
+   if (m9_context_faa_build_draw(ctx, info, draw, &owned, &why)) {
+      why = m9_context_faa_draw_refusal(&owned);
+      if (!why)
+         why = owned.texture_count ? "admitted: textured" : "admitted: colour";
+   }
+   m9_faa_application_fini(&owned);
+   if (!why)
+      why = "build failed without a reason";
+   util_dynarray_foreach(&ctx->faa_mode.census, struct m9_faa_census_entry, e) {
+      if (e->reason == why) {
+         e->count++;
+         return;
+      }
+   }
+   struct m9_faa_census_entry e = {why, 1};
+   util_dynarray_append(&ctx->faa_mode.census, e);
+}
+
+static void
+m9_context_faa_census_report(struct m9_context *ctx)
+{
+   util_dynarray_foreach(&ctx->faa_mode.census, struct m9_faa_census_entry, e)
+      fprintf(stderr, "m9x: FAA census %8" PRIu64 " %s\n", e->count, e->reason);
+}
+
 /* Preserve application clear/depth/raster semantics across the owned draw.
  * The FRAME client independently admits only its implemented native packet
  * profiles. Pending clears are consumed after real Lock/Unlock presentation. */
@@ -9946,36 +10026,9 @@ m9_context_faa_submit_draw(struct m9_context *ctx,
    }
    if (!m9_context_faa_build_draw(ctx, info, draw, &owned, &why))
       goto out;
-   const struct m9_faa_application_state *state = &owned.state;
-   if (!m9_faa_runtime_dimensions(state->width,state->height) ||
-       (state->depth_enabled && state->depth_func > PIPE_FUNC_ALWAYS) ||
-       (state->cull_face != PIPE_FACE_NONE && state->cull_face != PIPE_FACE_FRONT &&
-        state->cull_face != PIPE_FACE_BACK) || state->scissor_enabled ||
-       state->viewport.scale[0] != state->width * .5f || state->viewport.scale[1] != state->height * -.5f ||
-       state->viewport.translate[0] != state->width * .5f || state->viewport.translate[1] != state->height * .5f ||
-       (owned.shader.layout.count != 2 && owned.shader.layout.count != 4) ||
-       (!owned.texture_count && owned.shader.record_bytes != 32 &&
-        (owned.shader.record_bytes != 16 || owned.shader.declaration_words != 3))) {
-      if (getenv("M9X_DEBUG"))
-         fprintf(stderr, "m9x: FAA draw state w=%u h=%u z=%u/%u/%u cull=%u scissor=%u viewport=%g,%g/%g,%g vectors=%u stride=%u vertices=%u flat=%u\n",
-                 state->width, state->height, state->depth_enabled,
-                 state->depth_write, state->depth_func, state->cull_face,
-                 state->scissor_enabled, state->viewport.scale[0],
-                 state->viewport.scale[1], state->viewport.translate[0],
-                 state->viewport.translate[1], owned.shader.layout.count,
-                 owned.shader.record_bytes, owned.shader.vertex_count,
-                 state->flatshade);
-      why = "FAA application depth/cull/scissor/view state is not implemented";
+   why = m9_context_faa_draw_refusal(&owned);
+   if (why)
       goto out;
-   }
-   if(owned.texture_count&&
-      (!debug_get_bool_option("M9X_FAA_DUAL_APPLICATION",false)||
-       state->cull_face==PIPE_FACE_FRONT_AND_BACK||
-       state->flatshade||!state->depth_enabled||owned.shader.record_bytes!=64||
-       owned.shader.declaration_words!=9)) {
-      why="FAA dual application raster requires enabled depth and smooth shading";
-      goto out;
-   }
    struct m9_faa_graph *graph = &ctx->faa_surface.graph;
    if (owned.graph_id != graph->prepared_id ||
        owned.generation != graph->prepared_generation ||
@@ -10033,6 +10086,9 @@ m9_context_faa_frame_end(struct m9_context *ctx)
               " skipped %" PRIu64 " last reason: %s\n", ctx->faa_mode.frames,
               ctx->faa_mode.fallbacks, ctx->faa_mode.skipped,
               ctx->faa_mode.reason ? ctx->faa_mode.reason : "none");
+   if (ctx->debug && (ctx->faa_mode.frames + ctx->faa_mode.fallbacks +
+                      ctx->faa_mode.skipped) % 300 == 0)
+      m9_context_faa_census_report(ctx);
    ctx->faa_mode.fallback = ctx->faa_mode.presented = false;
    memset(&ctx->faa_application_clear, 0, sizeof(ctx->faa_application_clear));
 }
@@ -11208,6 +11264,12 @@ m9_context_destroy(struct pipe_context *pctx)
    pipe_resource_reference(&ctx->proxy.tex, NULL);
    pipe_resource_reference(&ctx->proxy.scratch, NULL);
    m9_faa_application_frame_fini(&ctx->faa_frame);
+   if (ctx->faa_mode.census.size) {
+      fprintf(stderr, "m9x: FAA frames %" PRIu64 " fallback %" PRIu64 " skipped %" PRIu64 "\n",
+              ctx->faa_mode.frames, ctx->faa_mode.fallbacks, ctx->faa_mode.skipped);
+      m9_context_faa_census_report(ctx);
+   }
+   util_dynarray_fini(&ctx->faa_mode.census);
    m9_faa_surface_destroy(ctx->screen, &ctx->faa_surface);
    m9_context_state_cleanup(ctx);
    m9_batch_fini(&ctx->batch);
