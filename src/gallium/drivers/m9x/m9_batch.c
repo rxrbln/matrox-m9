@@ -92,7 +92,8 @@ m9_batch_emit_regs(struct m9_batch *batch, const uint8_t *indices,
 
    while (first < count) {
       unsigned n = count - first > 4 ? 4 : count - first;
-      uint32_t header = 0x45454545u;
+      uint32_t header = M9_HW_HDR(M9_HW_IDX_END, M9_HW_IDX_END,
+                                  M9_HW_IDX_END, M9_HW_IDX_END);
 
       for (unsigned i = 0; i < n; i++) {
          header &= ~(0xffu << (8 * i));
@@ -109,7 +110,8 @@ m9_batch_emit_regs(struct m9_batch *batch, const uint8_t *indices,
    first = 0;
    while (first < count) {
       unsigned n = count - first > 4 ? 4 : count - first;
-      uint32_t header = 0x45454545u;
+      uint32_t header = M9_HW_HDR(M9_HW_IDX_END, M9_HW_IDX_END,
+                                  M9_HW_IDX_END, M9_HW_IDX_END);
 
       for (unsigned i = 0; i < n; i++) {
          header &= ~(0xffu << (8 * i));
@@ -223,7 +225,9 @@ m9_batch_emit_packet(struct m9_batch *batch,
 {
    struct m9_batch_checkpoint checkpoint;
    uint8_t indices[4];
-   uint32_t words[4], header = 0x45454545u, base;
+   uint32_t words[4], base;
+   uint32_t header = M9_HW_HDR(M9_HW_IDX_END, M9_HW_IDX_END, M9_HW_IDX_END,
+                               M9_HW_IDX_END);
    int ret;
 
    if (!batch || !values || !count || count > 4 || batch->sealed)

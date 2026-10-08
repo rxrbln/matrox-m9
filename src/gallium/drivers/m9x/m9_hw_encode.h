@@ -15,6 +15,39 @@
 #define M9_HW_U32 uint32_t
 #endif
 
+/*
+ * A packet header holds four register indices, (MMIO - 0x1000) >> 2,
+ * consumed low byte first. Index 0x45 ends the packet.
+ */
+#define M9_HW_IDX_END		0x45u
+#define M9_HW_HDR(a, b, c, d) \
+	((M9_HW_U32)(a) | (M9_HW_U32)(b) << 8 | (M9_HW_U32)(c) << 16 | \
+	 (M9_HW_U32)(d) << 24)
+#define M9_HW_HDR1(a)		M9_HW_HDR(a, M9_HW_IDX_END, M9_HW_IDX_END, \
+					  M9_HW_IDX_END)
+#define M9_HW_HDR2(a, b)	M9_HW_HDR(a, b, M9_HW_IDX_END, M9_HW_IDX_END)
+#define M9_HW_HDR3(a, b, c)	M9_HW_HDR(a, b, c, M9_HW_IDX_END)
+
+/*
+ * Pass framing through index e6. Each step goes with an e3 tag and an
+ * index-43 wait. A range opens with two steps and the 0x42000000 control,
+ * which is also the vendor's switch to another context.
+ */
+#define M9_HW_E6_STEP			0x00000003u
+#define M9_HW_E6_RANGE_OPEN		0x42000000u
+/* The block prologue and epilogue around a draw (CAPTURED, 343 prologues). */
+#define M9_HW_TRANSITION_END		0x38000000u
+#define M9_HW_TRANSITION_PUBLISH	0x40004000u
+#define M9_HW_TRANSITION_RECORD		0x0c000000u
+#define M9_HW_TRANSITION_OPEN		0x60600060u
+#define M9_HW_TRANSITION_RESUME		0x604fff9fu
+#define M9_HW_TRANSITION_FIRST		0x2c000002u
+#define M9_HW_TRANSITION_NEXT		0x2c000000u
+/* | the block length in dwords, bits 15:0. */
+#define M9_HW_TRANSITION_LENGTH		0x49d00000u
+#define M9_HW_TRANSITION_LENGTH_MASK	0xffff0000u
+#define M9_HW_TRANSITION_START		0x08000000u
+
 /* Surface format codes, descriptor word 0 bits 31:25. */
 #define M9_HW_FORMAT_A8R8G8B8		0x66u
 #define M9_HW_FORMAT_A2B10G10R10	0x68u

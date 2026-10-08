@@ -6,6 +6,7 @@
  * pass consumes them into the render target with one or more draws.
  * Size and state dependent words come from m9_draw_params.
  */
+#include "m9_hw_encode.h"
 #include "m9_draw.h"
 #include "m9_vs_record.h"
 #include "m9_faa.h"
@@ -493,15 +494,16 @@ fail:
  * docs/parhelia-m9-fragment-pass-splitting.md section 6).  The epilogue
  * closes the draw that has ended, the prologue opens the block of the next.
  */
-#define M9_TRANSITION_END      0x38000000u  /* end the block that has drawn */
-#define M9_TRANSITION_PUBLISH  0x40004000u  /* e6 and both 44 of the pair */
-#define M9_TRANSITION_RECORD   0x0c000000u  /* only behind a record writer */
-#define M9_TRANSITION_OPEN     0x60600060u  /* a range's first block */
-#define M9_TRANSITION_RESUME   0x604fff9fu  /* a continuation block */
-#define M9_TRANSITION_FIRST    0x2c000002u  /* second word of the first */
-#define M9_TRANSITION_NEXT     0x2c000000u  /* second word of a continuation */
-#define M9_TRANSITION_LENGTH   0x49d00000u  /* | the block length in dwords */
-#define M9_TRANSITION_START    0x08000000u  /* start the block */
+/* The words are shared with the kernel validator (m9_hw_encode.h). */
+#define M9_TRANSITION_END      M9_HW_TRANSITION_END      /* end the block that has drawn */
+#define M9_TRANSITION_PUBLISH  M9_HW_TRANSITION_PUBLISH  /* e6 and both 44 of the pair */
+#define M9_TRANSITION_RECORD   M9_HW_TRANSITION_RECORD   /* only behind a record writer */
+#define M9_TRANSITION_OPEN     M9_HW_TRANSITION_OPEN     /* a range's first block */
+#define M9_TRANSITION_RESUME   M9_HW_TRANSITION_RESUME   /* a continuation block */
+#define M9_TRANSITION_FIRST    M9_HW_TRANSITION_FIRST    /* second word of the first */
+#define M9_TRANSITION_NEXT     M9_HW_TRANSITION_NEXT     /* second word of a continuation */
+#define M9_TRANSITION_LENGTH   M9_HW_TRANSITION_LENGTH   /* | the block length in dwords */
+#define M9_TRANSITION_START    M9_HW_TRANSITION_START    /* start the block */
 
 /* Close the block a draw has just ended.  The record word follows a draw
  * that wrote the inter-pass record and no other (CAPTURED: present behind
@@ -649,17 +651,17 @@ m9_emit_raster_range(struct m9_batch *batch, const struct m9_draw_job *job,
       if (ret)
          goto fail;
    }
-   EMIT(V(0xe6, 3), V(0xe3, dep));
+   EMIT(V(0xe6, M9_HW_E6_STEP), V(0xe3, dep));
    /* The vendor opens a range with two dependency steps and the 0x42000000
     * control, and a continuation block inside it with one step and neither
     * (CAPTURED, both raster draws of all seven two-pass cases). */
    if (opens) {
-      EMIT(V(0xe6, 3));
-      EMIT(V(0xe6, 3), V(0xe3, dep + 0x10));
+      EMIT(V(0xe6, M9_HW_E6_STEP));
+      EMIT(V(0xe6, M9_HW_E6_STEP), V(0xe3, dep + 0x10));
    }
    EMIT(V(0x43, dep + 0x10));
    if (opens)
-      EMIT(V(0xe6, 0x42000000));
+      EMIT(V(0xe6, M9_HW_E6_RANGE_OPEN));
    uint32_t depth_ef = pass ? pass->depth_ef : job->depth_ef;
 
    EMIT(V(0xf0, m9_job_f0(job, m9_raster_class(d0->lines, blend))),
