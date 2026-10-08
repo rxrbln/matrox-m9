@@ -11830,8 +11830,9 @@ int m9x_faa_graph_depth_frame_receipt_locked(struct m9x_device *mdev,
 			    final_point != previous + 0x160)
 				return -ESTALE;
 		} else if (effective > U64_MAX - 0x10 ||
-			   f->queue_start != effective + 0x10)
+			   f->queue_start != effective + 0x10) {
 			return -ESTALE;
+		}
 	} else if (f->first && m9_faa_ordinary_after(r, previous)) {
 		/* FIRST continued after ordinary jobs that followed INIT. */
 		effective = r->ordinary_point;
