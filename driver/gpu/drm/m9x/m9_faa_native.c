@@ -5867,18 +5867,23 @@ refused:
  * local addresses back to the retained owner; never publish a new CPU view.
  * The declaration splice shifts every stage after the carry declaration. */
 static void m9_faa_color_intermediates_observe(struct m9x_device *mdev,
-					    struct m9x_faa_replay *r)
+					       struct m9x_faa_replay *r)
 {
-	struct observed_target { u32 at, next_at, owner, bytes; };
+	struct observed_target {
+		u32 at, next_at, owner, bytes;
+
+	};
 	static const struct observed_target four_target[] = {
-		{ 116, 120, 24, 0 }, { 132, 136, 24, 0 },
-		{ 804, 896, 23, 64 }, { 820, 912, 23, 64 },
+		{ 116, 120, 24, 0 },	{ 132, 136, 24, 0 },
+		{ 804, 896, 23, 64 },	{ 820, 912, 23, 64 },
 		{ 1416, 1372, 23, 64 }, { 1432, 1388, 23, 64 },
 		{ 1448, 0, 23, 16 }, /* first-only third position target */
 	};
 	static const struct observed_target two_target[] = {
-		{ 72, 0, 23, 64 }, { 88, 0, 23, 64 },
-		{ 104, 0, 23, 64 }, { 120, 0, 23, 16 },
+		{ 72, 0, 23, 64 },
+		{ 88, 0, 23, 64 },
+		{ 104, 0, 23, 64 },
+		{ 120, 0, 23, 16 },
 	};
 	const struct observed_target *target;
 	struct m9_faa_color_storage *n = r->color_image;
@@ -5887,15 +5892,17 @@ static void m9_faa_color_intermediates_observe(struct m9x_device *mdev,
 	const u8 *completed_secondary;
 	u32 completed_bytes, records = 0, target_count, stages;
 	bool two;
-	u32 i, at, address, descriptor, offset, bytes, stride, chunk, count, j, launches = 0;
+	u32 i, at, address, descriptor, offset, bytes, stride, chunk, count, j,
+		launches = 0;
 	int extra;
 
 	lockdep_assert_held(&mdev->transport.lock);
 	if (!m9_faa_color_observe || !r->color_lock_retired || !n ||
 	    (n->layout.program_count != 2 && n->layout.program_count != 4) ||
 	    (n->layout.program_count == 2 ?
-	     n->secondary_bytes < 1352 :
-	     n->secondary_bytes < (n->previous_unlock_point ? 2512 : 2688)) ||
+		     n->secondary_bytes < 1352 :
+		     n->secondary_bytes <
+			     (n->previous_unlock_point ? 2512 : 2688)) ||
 	    n->secondary_bytes > sizeof(n->secondary) ||
 	    mdev->transport.wedged || mdev->transport.queue_count ||
 	    mdev->transport.completed_point != r->color_lock_point ||
@@ -5907,119 +5914,143 @@ static void m9_faa_color_intermediates_observe(struct m9x_device *mdev,
 	target_count = two ? ARRAY_SIZE(two_target) : ARRAY_SIZE(four_target);
 	/* The retained color image describes the first job's target namespace.
 	 * The last composed launch supplies the actual output record count;
-	 * different jobs can carry different counts into the same planes. */
+	 * different jobs can carry different counts into the same planes.
+	 */
 	completed_secondary = n->secondary;
 	completed_bytes = n->secondary_bytes;
 	if (r->depth_storage && r->depth_storage->frame) {
-		struct m9_faa_depth_frame_storage *frame = r->depth_storage->frame;
+		struct m9_faa_depth_frame_storage *frame =
+			r->depth_storage->frame;
 
-		if (!frame->retired || frame->final_point != r->color_lock_point)
+		if (!frame->retired ||
+		    frame->final_point != r->color_lock_point)
 			return;
 		completed_secondary = frame->batch_secondary ?
-			frame->batch_secondary : frame->secondary;
+					      frame->batch_secondary :
+					      frame->secondary;
 		completed_bytes = frame->secondary_bytes;
-		if (!completed_bytes || completed_bytes > (frame->batch_secondary ?
-			0x40000 : sizeof(frame->secondary)))
+		if (!completed_bytes ||
+		    completed_bytes > (frame->batch_secondary ?
+					       0x40000 :
+					       sizeof(frame->secondary)))
 			return;
 		if (frame->dual_first) {
 			/* The ordinary COLOR4 scratch image is not the published dual
 			 * packet. Decode only the retained dual frame after its exact Lock
-			 * receipt, using its own B0/B2/B4/B6, gather and position binds. */
+			 * receipt, using its own B0/B2/B4/B6, gather and position binds.
+			 */
 			static const struct observed_target dual_target[] = {
-				{116, 120, 24, 256}, {132, 136, 24, 0},
-				{148, 152, 24, 0}, {164, 168, 24, 0},
-				{844, 848, 23, 64}, {860, 864, 23, 64},
-				{876, 880, 23, 64},
-				{1488, 1492, 23, 64}, {1504, 1508, 23, 64},
-				{1520, 1524, 23, 64},
+				{ 116, 120, 24, 256 },	{ 132, 136, 24, 0 },
+				{ 148, 152, 24, 0 },	{ 164, 168, 24, 0 },
+				{ 844, 848, 23, 64 },	{ 860, 864, 23, 64 },
+				{ 876, 880, 23, 64 },	{ 1488, 1492, 23, 64 },
+				{ 1504, 1508, 23, 64 }, { 1520, 1524, 23, 64 },
 			};
 
 			rmb();
 			dma_rmb();
 
 			for (i = 0; i < ARRAY_SIZE(dual_target); i++) {
-				const struct observed_target *t = &dual_target[i];
+				const struct observed_target *t =
+					&dual_target[i];
 				struct m9_faa_owner *o = &r->owner[t->owner];
 				u32 available, nbytes;
 
-				if (t->at + 8 > completed_bytes || !o->vram || o->cpu ||
-				    iosys_map_is_null(&o->map))
+				if (t->at + 8 > completed_bytes || !o->vram ||
+				    o->cpu || iosys_map_is_null(&o->map))
 					continue;
 				address = get_unaligned_le32(completed_secondary + t->at);
 				descriptor = get_unaligned_le32(completed_secondary + t->at + 4);
-				if ((address & 3) != 1 || (address & ~3u) < o->base)
+				if ((address & 3) != 1 ||
+				    (address & ~3u) < o->base)
 					continue;
 				offset = (address & ~3u) - o->base;
 				if (offset > o->bytes)
 					continue;
 				available = o->bytes - offset;
-				nbytes = min_t(u32, t->bytes, min_t(u32, available, sizeof(data)));
+				nbytes = min_t(u32, t->bytes,
+					       min_t(u32, available,
+						     sizeof(data)));
 				if (nbytes)
-					iosys_map_memcpy_from(data, &o->map, offset, nbytes);
+					iosys_map_memcpy_from(data, &o->map,
+							      offset, nbytes);
 				dev_info(&mdev->pdev->dev,
 					 "M9 FAA dual intermediate: point=%#llx owner=%u secondary=%u offset=%#x descriptor=%#x bytes=%u\n",
-					 r->color_lock_point, t->owner, t->at, offset,
-					 descriptor, nbytes);
-				for (chunk = 0; chunk < nbytes; chunk += count) {
+					 r->color_lock_point, t->owner, t->at,
+					 offset, descriptor, nbytes);
+				for (chunk = 0; chunk < nbytes;
+				     chunk += count) {
 					count = min_t(u32, 64, nbytes - chunk);
 					dev_info(&mdev->pdev->dev,
 						 "M9 FAA dual data: secondary=%u offset=%#x hex=%*phN\n",
-						 t->at, offset + chunk, count, data + chunk);
+						 t->at, offset + chunk, count,
+						 data + chunk);
 				}
 			}
 			m9_faa_dual_bound_color_observe(mdev, r);
 			m9_faa_dual_graph_raw_observe(mdev, r, 1, "sampled",
-						 m9_faa_owner_specs[1].bytes);
+						      m9_faa_owner_specs[1].bytes);
 			m9_faa_dual_graph_raw_observe(mdev, r, 2, "MAIN",
-						 m9_faa_owner_specs[2].bytes);
+						      m9_faa_owner_specs[2].bytes);
 			m9_faa_dual_graph_raw_observe(mdev, r, 3, "AUX",
-						 m9_faa_owner_specs[3].bytes);
+						      m9_faa_owner_specs[3].bytes);
 			return;
 		}
 	}
 	if (completed_bytes >= 12 && completed_bytes <= 0x40000 &&
 	    get_unaligned_le32(completed_secondary + completed_bytes - 12) ==
-		0x23000001) {
-		records = get_unaligned_le32(completed_secondary + completed_bytes - 4);
+		    0x23000001) {
+		records = get_unaligned_le32(completed_secondary +
+					     completed_bytes - 4);
 		if (!records || records > 12288 || records % 3)
 			records = 0;
 	}
 	/* Decode the already composed launch controls and owner28 raw binding.
-	 * These are observations of live packets, never packet initializers. */
+	 * These are observations of live packets, never packet initializers.
+	 */
 	for (at = 0; at + 12 <= completed_bytes; at += 4) {
 		u32 opcode = get_unaligned_le32(completed_secondary + at);
 
 		if (opcode == 0x23000001 && launches < 32 * stages &&
 		    !get_unaligned_le32(completed_secondary + at + 4)) {
-			count = get_unaligned_le32(completed_secondary + at + 8);
+			count = get_unaligned_le32(completed_secondary + at +
+						   8);
 			if (count && count <= 12288) {
 				dev_info(&mdev->pdev->dev,
 					 "M9 FAA COLOR launch: point=%#llx job=%u stage=%u secondary=%u count=%u\n",
-					 r->color_lock_point, launches / stages + 1,
+					 r->color_lock_point,
+					 launches / stages + 1,
 					 launches % stages, at, count);
 				launches++;
 			}
 		}
 		if (opcode == 0x45100100 && at + 24 <= completed_bytes &&
 		    get_unaligned_le32(completed_secondary + at + 16) == 3 &&
-		    get_unaligned_le32(completed_secondary + at + 20) == 0x458fc3c2) {
+		    get_unaligned_le32(completed_secondary + at + 20) ==
+			    0x458fc3c2) {
 			struct m9_faa_owner *data_owner = &r->draw_owner[1];
 
-			address = get_unaligned_le32(completed_secondary + at + 4);
-			stride = get_unaligned_le32(completed_secondary + at + 12);
+			address = get_unaligned_le32(completed_secondary + at +
+						     4);
+			stride = get_unaligned_le32(completed_secondary + at +
+						    12);
 			if ((address & 3) != 1 || !data_owner->cpu ||
-			    (address & ~3u) < data_owner->base || (stride != 16 && stride != 32))
+			    (address & ~3u) < data_owner->base ||
+			    (stride != 16 && stride != 32))
 				continue;
 			offset = (address & ~3u) - data_owner->base;
-			if (offset > data_owner->bytes || stride > data_owner->bytes - offset)
+			if (offset > data_owner->bytes ||
+			    stride > data_owner->bytes - offset)
 				continue;
 			dev_info(&mdev->pdev->dev,
 				 "M9 FAA COLOR raw binding: point=%#llx secondary=%u owner=28 address=%#x offset=%#x descriptor=%#x stride=%u\n",
 				 r->color_lock_point, at, address, offset,
-				 get_unaligned_le32(completed_secondary + at + 8), stride);
+				 get_unaligned_le32(completed_secondary + at + 8),
+				 stride);
 		}
 	}
-	extra = (int)n->secondary_bytes - (n->previous_unlock_point ? 2536 : 2712);
+	extra = (int)n->secondary_bytes -
+		(n->previous_unlock_point ? 2536 : 2712);
 	rmb();
 	dma_rmb();
 	if (two)
@@ -6032,17 +6063,20 @@ static void m9_faa_color_intermediates_observe(struct m9x_device *mdev,
 			at = target[i].at;
 		} else if (n->previous_unlock_point) {
 			at = target[i].next_at;
-			if (!at) continue;
-			if (at >= 680) at += extra;
+			if (!at)
+				continue;
+			if (at >= 680)
+				at += extra;
 		} else {
-			at = target[i].at < 576 ? target[i].at : target[i].at + extra;
+			at = target[i].at < 576 ? target[i].at :
+						  target[i].at + extra;
 		}
 		if (at > n->secondary_bytes - 8)
 			continue;
 		address = get_unaligned_le32(n->secondary + at);
 		descriptor = get_unaligned_le32(n->secondary + at + 4);
-		if (two && descriptor != (target[i].bytes == 16 ?
-			0xb8002000u : 0x68002000u))
+		if (two && descriptor != (target[i].bytes == 16 ? 0xb8002000u :
+								  0x68002000u))
 			continue;
 		if ((address & 3) != 1 || !o->vram || o->cpu ||
 		    iosys_map_is_null(&o->map) || (address & ~3u) < o->base)
@@ -6051,7 +6085,8 @@ static void m9_faa_color_intermediates_observe(struct m9x_device *mdev,
 		bytes = target[i].bytes;
 		if (!bytes) {
 			/* Packed SLOT records: sample four complete records, including
-			 * all active fields, rather than misreading them as linear vec4. */
+			 * all active fields, rather than misreading them as linear vec4.
+			 */
 			if ((descriptor & 0xffff0000) != 0xee190000)
 				continue;
 			stride = descriptor & 255;
@@ -6074,25 +6109,30 @@ static void m9_faa_color_intermediates_observe(struct m9x_device *mdev,
 		}
 		/* Linear owner23 planes have one vec4 or clip-code DWORD per
 		 * record. Packed owner24 SLOT data has a different organization;
-		 * its existing first-four sample must not be indexed as vec4. */
+		 * its existing first-four sample must not be indexed as vec4.
+		 */
 		if (target[i].owner != 23 || !records)
 			continue;
 		stride = target[i].bytes / 4;
 		for (j = 0; j < ARRAY_SIZE(boundary); j++) {
-			u64 sample_offset = (u64)offset + (u64)boundary[j] * stride;
+			u64 sample_offset =
+				(u64)offset + (u64)boundary[j] * stride;
 
-			if (boundary[j] >= records || sample_offset > o->bytes ||
+			if (boundary[j] >= records ||
+			    sample_offset > o->bytes ||
 			    stride > o->bytes - sample_offset)
 				continue;
-			iosys_map_memcpy_from(data, &o->map, sample_offset, stride);
+			iosys_map_memcpy_from(data, &o->map, sample_offset,
+					      stride);
 			dev_info(&mdev->pdev->dev,
 				 "M9 FAA COLOR boundary: point=%#llx owner=23 base=%#x offset=%#x secondary=%u descriptor=%#x record=%u records=%u launch_bytes=%u bytes=%u hex=%*phN\n",
-				 r->color_lock_point, o->base, (u32)sample_offset,
-				 at, descriptor, boundary[j], records,
-				 completed_bytes, stride, stride, data);
+				 r->color_lock_point, o->base,
+				 (u32)sample_offset, at, descriptor, boundary[j],
+				 records, completed_bytes, stride, stride, data);
 		}
 	}
 }
+
 #endif
 
 int m9x_faa_graph_color_submit(struct m9x_device *mdev,
