@@ -441,27 +441,28 @@ struct m9x_faa_replay {
 	struct m9x_faa_texture_owners *deferred_textures;
 	u32 deferred_count;
 	struct m9_faa_public_vs_storage *public_vs_image;
- struct m9_faa_color_storage *color_image;
- struct m9_faa_depth_storage *depth_storage;
- struct m9_faa_command_pools *command_pools;
- /* Immutable loader refs keep the authenticated templates resident for
-  * this graph generation; every caller still receives its own loader ref. */
- const struct firmware *template_firmware[3];
- bool color_payload_ready,color_attempted,color_lock_retired;
- u64 color_lock_point;
- u32 color_primary_start,color_posts_start;
- u32 color_secondary_cursor;
- u64 color_next_attempt_point;
+	struct m9_faa_color_storage *color_image;
+	struct m9_faa_depth_storage *depth_storage;
+	struct m9_faa_command_pools *command_pools;
+	/* Immutable loader refs keep the authenticated templates resident for
+	 * this graph generation; every caller still receives its own loader ref. */
+	const struct firmware *template_firmware[3];
+	bool color_payload_ready, color_attempted, color_lock_retired;
+	u64 color_lock_point;
+	u32 color_primary_start, color_posts_start;
+	u32 color_secondary_cursor;
+	u64 color_next_attempt_point;
 	bool public_vs_payload_ready, public_vs_prefix_retired;
 	bool public_vs_head_attempted, public_vs_head_retired;
 	struct m9x_fence *public_vs_head_fence;
- struct m9_faa_public_vs_draw_storage *public_vs_draw_image;
- struct m9_faa_public_vs_lock_storage *public_vs_lock_image;
- bool public_vs_lock_attempted,public_vs_lock_retired;
- struct m9_faa_public_vs_next_storage *public_vs_next_image;
- bool public_vs_next_attempted,public_vs_next_lock_retired,public_vs_next_view_seen;
- struct m9x_fence *public_vs_draw_fence;
- bool public_vs_draw_attempted,public_vs_draw_observed;
+	struct m9_faa_public_vs_draw_storage *public_vs_draw_image;
+	struct m9_faa_public_vs_lock_storage *public_vs_lock_image;
+	bool public_vs_lock_attempted, public_vs_lock_retired;
+	struct m9_faa_public_vs_next_storage *public_vs_next_image;
+	bool public_vs_next_attempted, public_vs_next_lock_retired,
+		public_vs_next_view_seen;
+	struct m9x_fence *public_vs_draw_fence;
+	bool public_vs_draw_attempted, public_vs_draw_observed;
 	struct m9_faa_public_vs_follow_storage *public_vs_follow_image;
 	bool public_vs_follow_retired;
 	struct {
@@ -477,7 +478,8 @@ struct m9x_faa_replay {
 	struct m9_faa_next_finish_storage *next_finish_image;
 	bool graph_next_finish_claimed;
 	u8 *next_lock_image;
-	bool graph_next_lock_claimed, graph_second_lock_retired, second_lock_view_seen;
+	bool graph_next_lock_claimed, graph_second_lock_retired,
+		second_lock_view_seen;
 	bool graph_next_claimed;
 	/* Append-only producer cursors and the last actual Unlock frontier. */
 	u32 graph_secondary_cursor, graph_vertex_cursor, graph_repeat_draws;
@@ -536,13 +538,13 @@ struct m9x_faa_replay {
 	bool normal_lock_view_seen, unlock_started, unlock_retired;
 	u64 unlock_point;
 #ifdef M9_FAA_GRAPH_INIT_CONTROL
- /* U remains the actual Unlock. P is published only after its own wait.
-  * A failed exposed copy retains destination pin/ref/fence until DMA stop. */
- u64 present_point;
- u32 present_generation, present_end, present_posts;
- bool present_attempted, present_retired;
- struct drm_gem_object *present_destination;
- struct m9x_fence *present_fence;
+	/* U remains the actual Unlock. P is published only after its own wait.
+	 * A failed exposed copy retains destination pin/ref/fence until DMA stop. */
+	u64 present_point;
+	u32 present_generation, present_end, present_posts;
+	bool present_attempted, present_retired;
+	struct drm_gem_object *present_destination;
+	struct m9x_fence *present_fence;
 #endif
 	/* A later genuine public Lock first copies primary back to staging and
 	 * must retire its own 0x1c0 wait before F021 can be exposed again. */
