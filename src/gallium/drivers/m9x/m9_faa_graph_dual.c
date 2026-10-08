@@ -142,7 +142,7 @@ m9_faa_surface_dual_later_kernel(struct m9_screen *screen,struct m9_faa_surface 
       g->color_unlock_point>UINT64_MAX-0x190-PARHELIA_M9_FAA_DUAL_LATER_MAX_DRAWS*0xa0u||
       g->color_next_attempted||
       g->color_present_attempted||g->color_present_point||g->color_frame_present_point||
-      g->color_frame_maintenance_point||g->color_frame_ordinary_point||!g->color_depth_initialized)
+      g->color_frame_maintenance_point||!g->color_depth_initialized)
       return -ESTALE;
    /* Each DRAW carries its own texture pair (version 3). */
    struct drm_parhelia_m9_faa_dual_draw *draws=calloc(frame->count,sizeof(*draws));
@@ -195,7 +195,7 @@ m9_faa_surface_dual_later_kernel(struct m9_screen *screen,struct m9_faa_surface 
    g->color_next_previous_unlock_point=before.previous_unlock_point;
    g->color_next_lock_point=g->color_lock_point=request.lock_point;
    g->color_lock_delta=delta;g->color_texture_later=true;
-   g->color_frame_draw_count=0;g->color_frame_flags=0;
+   g->color_frame_draw_count=0;g->color_frame_flags=0;g->color_frame_ordinary_point=0;
    g->color_unlock_attempted=false;g->color_unlock_point=0;
    ret=0;
 out:
@@ -211,7 +211,7 @@ m9_faa_surface_dual_frame_kernel(struct m9_screen *screen,struct m9_faa_surface 
    /* Version 1 packs plain records; version 2 adds programs and textures. */
    struct drm_parhelia_m9_faa_dual_draw records[3]={{{0}}},saved[3];
    struct drm_parhelia_m9_faa_color_draw plain[3]={{0}};
-   _Static_assert(sizeof(request)==168,"dual BATCH ABI");
+   _Static_assert(sizeof(request)==176,"dual BATCH ABI");
    if(!screen||!surface||!frame||!frame->draws||!frame->count)return -EINVAL;
    struct m9_faa_graph *g=&surface->graph;
    if(g->color_texture_count&&screen->faa.chip==M9_FAA_CHIP_M9&&screen->wait_point&&
@@ -268,12 +268,17 @@ m9_faa_surface_dual_frame_kernel(struct m9_screen *screen,struct m9_faa_surface 
       struct drm_parhelia_m9_faa_color_draw plain_saved[3];memcpy(plain_saved,plain,sizeof(plain));
       if(ioctl(screen->fd,DRM_IOCTL_PARHELIA_M9_FAA_GRAPH_DUAL_BATCH,&request))return -errno;
       struct drm_parhelia_m9_faa_graph_dual_batch immutable=request;
-      immutable.lock_point=0;immutable.state=0;
-      if(request.lock_point!=g->init_point+delta||request.state!=PARHELIA_M9_FAA_DUAL_BATCH_LOCK_RETIRED||
+      immutable.lock_point=0;immutable.state=0;immutable.ordinary_point=0;
+      /* Ordinary jobs after INIT move the FIRST's origin. */
+      const uint64_t origin=request.ordinary_point?request.ordinary_point:g->init_point;
+      if((request.ordinary_point&15)||(request.ordinary_point&&request.ordinary_point<=g->init_point)||
+         origin>UINT64_MAX-delta||
+         request.lock_point!=origin+delta||request.state!=PARHELIA_M9_FAA_DUAL_BATCH_LOCK_RETIRED||
          memcmp(&immutable,&before,sizeof(before))||memcmp(saved,records,sizeof(saved))||
          memcmp(plain_saved,plain,sizeof(plain)))return -EPROTO;
       int ret=m9_wait_for_point(screen,request.lock_point);if(ret)return ret;
-      g->color_lock_point=request.lock_point;g->color_lock_delta=delta;g->color_depth_initialized=true;
+      g->color_lock_point=request.lock_point;g->color_lock_delta=request.lock_point-g->init_point;
+      g->color_frame_ordinary_point=request.ordinary_point;g->color_depth_initialized=true;
    }
    g->color_texture_count=2;g->color_frame_draw_count=frame->count;
    g->color_frame_flags=PARHELIA_M9_FAA_COLOR_FRAME_FIRST;

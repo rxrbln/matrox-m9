@@ -498,22 +498,27 @@ m9_faa_surface_dual_first_kernel_mode(struct m9_screen *screen,
                          PARHELIA_M9_FAA_COLOR_CLEAR_DEPTH;
    request.depth_flags = 7; /* original bound LESS/write profile */
    memcpy(request.texture, texture, sizeof(request.texture));
+   _Static_assert(sizeof(request) == 264, "FAA DUAL_FIRST kernel ABI");
    const struct drm_parhelia_m9_faa_graph_dual_first before = request;
    graph->color_lock_attempted = true;
    graph->color_program_count = 4;
    if (ioctl(screen->fd, DRM_IOCTL_PARHELIA_M9_FAA_GRAPH_DUAL_FIRST, &request))
       return -errno;
-   if (request.lock_point != before.init_point + 0x150 ||
+   const uint64_t origin = request.ordinary_point ? request.ordinary_point : before.init_point;
+   if ((request.ordinary_point & 15) ||
+       (request.ordinary_point && request.ordinary_point <= before.init_point) ||
+       origin > UINT64_MAX - 0x150 || request.lock_point != origin + 0x150 ||
        request.state != PARHELIA_M9_FAA_DUAL_FIRST_LOCK_RETIRED)
       return -EPROTO;
    struct drm_parhelia_m9_faa_graph_dual_first returned = request;
-   returned.lock_point = 0;returned.state = 0;
+   returned.lock_point = 0;returned.state = 0;returned.ordinary_point = 0;
    if (memcmp(&returned, &before, sizeof(before)))
       return -EPROTO;
    ret = m9_wait_for_point(screen, request.lock_point);
    if (ret) return ret;
    graph->color_lock_point = request.lock_point;
-   graph->color_lock_delta = 0x150;
+   graph->color_lock_delta = request.lock_point - before.init_point;
+   graph->color_frame_ordinary_point = request.ordinary_point;
    graph->color_depth_initialized = true;
    graph->color_unlock_attempted = false;
    graph->color_unlock_point = 0;
@@ -574,7 +579,9 @@ m9_faa_color_lock_history_valid(const struct m9_faa_graph *graph)
    const bool initialized_frame = graph->color_frame_flags == PARHELIA_M9_FAA_COLOR_FRAME_INITIALIZED;
    if ((graph->color_frame_flags & ~3u) || graph->color_frame_flags == 3 ||
        (initialized_frame && (!graph->color_depth_initialized || !graph->color_next_lock_point)) ||
-       ((graph->color_frame_maintenance_point || graph->color_frame_ordinary_point || graph->color_frame_present_point) && !graph->color_frame_draw_count))
+       ((graph->color_frame_maintenance_point || graph->color_frame_present_point ||
+         (graph->color_frame_ordinary_point && graph->color_next_lock_point)) &&
+        !graph->color_frame_draw_count))
       return false;
    if (graph->color_frame_draw_count) {
       uint32_t count = graph->color_frame_draw_count;
@@ -594,7 +601,7 @@ m9_faa_color_lock_history_valid(const struct m9_faa_graph *graph)
                  (count - 1u) * UINT64_C(0x60) + graph->color_frame_mode_changes * UINT64_C(0x50);
       }
       const uint64_t prior_present = graph->color_frame_present_point;
-      uint64_t origin = graph->color_next_previous_unlock_point;
+      uint64_t origin = first ? graph->init_point : graph->color_next_previous_unlock_point;
       if (prior_present) {
          if (!initialized_frame || origin > UINT64_MAX - 0x20 || prior_present != origin + 0x20)
             return false;
@@ -604,7 +611,7 @@ m9_faa_color_lock_history_valid(const struct m9_faa_graph *graph)
       /* Ordinary jobs on the shared requester moved the frame's origin. */
       const uint64_t ordinary = graph->color_frame_ordinary_point;
       if (ordinary) {
-         if (!initialized_frame || (ordinary & 15) || ordinary <= origin ||
+         if ((!initialized_frame && !first) || (ordinary & 15) || ordinary <= origin ||
              exact > UINT64_MAX - (ordinary - origin))
             return false;
          exact += ordinary - origin;
@@ -633,11 +640,18 @@ m9_faa_color_lock_history_valid(const struct m9_faa_graph *graph)
          return false;
       previous = graph->color_next_previous_unlock_point;
    } else {
+      /* A DUAL_FIRST after an ordinary interlude counts from that job. */
+      const uint64_t ordinary = graph->color_frame_ordinary_point;
+      if (ordinary &&
+          (graph->color_program_count != 4 || (ordinary & 15) ||
+           ordinary <= graph->init_point || ordinary > UINT64_MAX - 0x150 ||
+           delta != ordinary - graph->init_point + 0x150))
+         return false;
       if (graph->color_next_previous_unlock_point ||
           (graph->color_program_count != 2 && graph->color_program_count != 4) ||
-          (graph->color_program_count == 2 ?
+          (!ordinary && (graph->color_program_count == 2 ?
            (delta != 0xa0 && delta != 0x110) :
-           (delta != 0xe0 && delta != 0x150)))
+           (delta != 0xe0 && delta != 0x150))))
          return false;
       previous = graph->init_point;
    }
@@ -967,7 +981,10 @@ m9_faa_color_batch_with_storage(struct m9_screen *screen,
    if (head->graph_id != graph->prepared_id || head->init_point != graph->init_point ||
        head->generation != graph->prepared_generation)
       return -ESTALE;
-   if (frame->count == 1 && !graph->color_depth_initialized && head->state.depth_enabled)
+   /* COLOR_FRAME cannot continue after an ordinary interlude, so FIRST
+    * always goes through the batch. */
+   if (frame->count == 1 && graph->color_lock_attempted &&
+       !graph->color_depth_initialized && head->state.depth_enabled)
       return m9_faa_surface_color_frame_kernel(screen, surface, &head->shader,
                                                &head->state, frame->clear_flags,
                                                frame->clear_color);
@@ -1092,8 +1109,9 @@ m9_faa_color_batch_with_storage(struct m9_screen *screen,
    if (ioctl(screen->fd, DRM_IOCTL_PARHELIA_M9_FAA_GRAPH_COLOR_FRAME_BATCH, &request))
       return -errno;
    uint64_t origin = prior_present ? prior_present : before.previous_point;
+   /* Ordinary jobs after INIT or the previous Unlock moved the origin. */
    if (request.ordinary_point) {
-      if (!initialized_frame || (request.ordinary_point & 15) ||
+      if ((!initialized_frame && !first) || (request.ordinary_point & 15) ||
           request.ordinary_point <= origin)
          return -EPROTO;
       origin = request.ordinary_point;

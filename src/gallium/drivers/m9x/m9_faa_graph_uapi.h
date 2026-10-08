@@ -278,6 +278,9 @@ struct drm_parhelia_m9_faa_graph_dual_first {
  struct drm_parhelia_m9_faa_upload_layout layout;
  __u32 width,height,clear_flags,clear_color,depth_flags;
  struct drm_parhelia_m9_faa_texture_view texture[2];
+ /* Output only: zero, or the retired point of the last ordinary job
+  * after INIT; FIRST then continued from it. Zero on input. */
+ __u64 ordinary_point;
 };
 #define DRM_IOCTL_PARHELIA_M9_FAA_GRAPH_DUAL_FIRST \
  DRM_IOWR(DRM_COMMAND_BASE + DRM_PARHELIA_M9_FAA_GRAPH_DUAL_FIRST, \
@@ -295,6 +298,8 @@ struct drm_parhelia_m9_faa_graph_dual_batch {
  __u32 draw_count,generation,version,flags,state,pad;
  __u32 width,height,clear_flags,clear_color;
  struct drm_parhelia_m9_faa_texture_view texture[2];
+ /* Output only, as in DUAL_FIRST. */
+ __u64 ordinary_point;
 };
 #define DRM_IOCTL_PARHELIA_M9_FAA_GRAPH_DUAL_BATCH \
  DRM_IOWR(DRM_COMMAND_BASE + DRM_PARHELIA_M9_FAA_GRAPH_DUAL_BATCH, \
