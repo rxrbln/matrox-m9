@@ -26,8 +26,15 @@ texture extent bug is fixed (64×64 BGRA allocation0x4400 rather than0x4000)
 and its clean-boot retest still has the identical pixel failure, ruling out
 that allocation bug as the raster cause.
 [Both hardware cases](../tests/m9-faa-dual-first-depth-20261008/hardware-current-20261008/README.md). Disabled-depth and
-bounded dual batching runtime work is source/CPU qualified and awaits final
-integration/hardware qualification. No new no-FAA glmark2/piglit/Quake3 GL2
+bounded dual batching runtime are now integrated and CPU/source qualified.
+DRMb88ba44/Mesa6d69e7b derive seven reset dimension fields from live320/1024
+layouts, including source MAIN backing extent rather than page-rounded GEM
+capacity. Actual native/owned-client/reset proofs pass. Later CLEAR3 after
+embedded-HZ history remains gated at the unread original query. The1024
+mixed-depth hardware scene is queued; independent llvmpipe reference passes.
+The latest dual hardware probe verifies both full CPU texture views before
+DRAW but still fails identically; clear-only SYSTEMcolor31 is empty and is
+not the raster's sampled owner1. No new no-FAA glmark2/piglit/Quake3 GL2
 application result is claimed.
 
 ## October 8: continuous GPU-presented FAA glxgears passes
