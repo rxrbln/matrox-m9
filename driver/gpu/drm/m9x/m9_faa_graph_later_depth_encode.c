@@ -68,7 +68,7 @@ int m9x_faa_later_depth_encode(const u8 *sample,size_t sample_bytes,
   (clear_flags&&clear_flags!=3)||(previous&15)||
   previous>~(u64)0-delta||next!=previous+0x10||(u32)epoch>0xfffffea0u||
   (primary_cursor&3)||(secondary_cursor&3)||
-  input->declaration_count<3||input->declaration_count>17||!(input->declaration_count&1))return -EINVAL;
+  (input->declaration_count!=3&&input->declaration_count!=5))return -EINVAL;
  ret=m9x_faa_graph_draw_owners_validate(owner);if(ret)return ret;
  ret=m9x_faa_depth_stages_encode(views,0x3f800000,&(struct m9x_faa_depth_stage_image){0});if(ret)return ret;
  for(i=0;i<M9_FAA_DEPTH_OWNERS;i++)if(owner[31+i].base!=views->owner[i].base||owner[31+i].bytes<views->owner[i].capacity_bytes)return -EINVAL;
@@ -172,7 +172,7 @@ static bool overlap(const void *a,u32 as,const void *b,u32 bs)
 int m9x_faa_later_depth_append_encode(
  const struct m9x_faa_graph_draw_owner owner[M9_FAA_LATER_DEPTH_OWNERS],
  const struct m9x_faa_depth_views *views,u32 pstart,u32 sstart,
- u64 previous,u32 clear_flags,u32 raster_flags,u32 count,
+ u64 previous,u32 clear_flags,u32 raster_flags,u32 count,u32 old_declaration_count,
  const u8 *old,u32 old_bytes,u32 old_secondary_bytes,
  const u32 *old_ends,u32 end_count,u64 old_point,
  const u8 *fresh,u32 fresh_bytes,const struct m9x_faa_color_input *input,
@@ -186,33 +186,42 @@ int m9x_faa_later_depth_append_encode(
  static const u8 epoch_tag[]={1,1,1,0,1,1,0,1,1,1,0,1,1};
  static const u16 save_at[]={8,84,88,100,116,132},save_offset[]={0,640,704,8,8,16};
  static const u8 save_owner[]={22,22,22,8,8,8},save_tag[]={1,5,5,1,5,1};
- u32 i,insert,old_begin,old_mid,cursor,new_bytes;u32 cull_bytes=(raster_flags&6)?24:0;u64 delta=clear_flags?0x150:0xd0;
+ u32 i,insert,old_begin,old_mid,cursor,new_bytes,shift,last_shift,append_bytes,min_bytes,max_bytes;u32 cull_bytes=(raster_flags&6)?24:0;u64 delta=clear_flags?0x150:0xd0;
  if(!owner||!views||!old||!old_ends||!fresh||!input||!out||!out->primary||!out->secondary||
-  (clear_flags&&clear_flags!=3)||(raster_flags&~7u)||(raster_flags&6)==6||!count||count>31||fresh_bytes!=2712||
-  input->layout.program_count!=4||input->declaration_count!=5||input->record_stride!=32||
+  (clear_flags&&clear_flags!=3)||(raster_flags&~7u)||(raster_flags&6)==6||!count||count>31||
+  (input->declaration_count!=3&&input->declaration_count!=5)||
+  (old_declaration_count!=3&&old_declaration_count!=5)||
+  fresh_bytes!=2712-(input->declaration_count==3?24:0)||
+  input->layout.program_count!=4||input->record_stride!=32||
   !input->record_count||input->record_count%3||input->record_count>12288||
   (previous&15)||(pstart&3)||(sstart&3)||
   previous>~(u64)0-delta-count*0xa0||
   old_point!=previous+delta+(count-1)*0xa0||(u32)old_point>U32_MAX-0xa0||
-  old_bytes<3632||old_bytes>U32_MAX-60||end_count!=(clear_flags?13u:4u)||
-  old_secondary_bytes!=(clear_flags?2568u:2572u)+cull_bytes+(count-1)*2700u)
+  old_bytes<3632||old_bytes>U32_MAX-60||end_count!=(clear_flags?13u:4u))
   return -EINVAL;
+ shift=input->declaration_count==3?24:0;last_shift=old_declaration_count==3?24:0;append_bytes=2700-shift;
+ max_bytes=(clear_flags?2568:2572)+cull_bytes+(count-1)*2700;
+ min_bytes=max_bytes-count*24;
+ if(old_secondary_bytes<min_bytes||old_secondary_bytes>max_bytes||
+  (max_bytes-old_secondary_bytes)%24||
+  (count==1&&old_secondary_bytes!=max_bytes-last_shift)||
+  (count>1&&(old_secondary_bytes<min_bytes+24-last_shift||old_secondary_bytes>max_bytes-last_shift)))return -EINVAL;
  if(m9x_faa_graph_draw_owners_validate(owner)||
   m9x_faa_depth_stages_encode(views,0x3f800000,&(struct m9x_faa_depth_stage_image){0}))return -EINVAL;
  for(i=0;i<3;i++)if(owner[31+i].base!=views->owner[i].base||owner[31+i].bytes<views->owner[i].capacity_bytes)return -EINVAL;
  new_bytes=old_bytes+60;cursor=sstart+old_secondary_bytes;
  if(pstart>owner[27].bytes||new_bytes>owner[27].bytes-pstart||
-  sstart>0x3fe00||old_secondary_bytes>0x3fe00-sstart||2700>0x3fe00-cursor||
-  cursor>owner[29].bytes||2700>owner[29].bytes-cursor||
-  out->primary_capacity<new_bytes||out->secondary_capacity<2700||
+  sstart>0x3fe00||old_secondary_bytes>0x3fe00-sstart||append_bytes>0x3fe00-cursor||
+  cursor>owner[29].bytes||append_bytes>owner[29].bytes-cursor||
+  out->primary_capacity<new_bytes||out->secondary_capacity<append_bytes||
   (u64)owner[27].base+pstart+new_bytes>U32_MAX||
-  (u64)owner[29].base+cursor+2700>U32_MAX)return -ERANGE;
- if(overlap(out->primary,new_bytes,out->secondary,2700)||
-  overlap(out->primary,new_bytes,old,old_bytes)||overlap(out->primary,new_bytes,fresh,2712)||
-  overlap(out->secondary,2700,old,old_bytes)||overlap(out->secondary,2700,fresh,2712))return -EINVAL;
+  (u64)owner[29].base+cursor+append_bytes>U32_MAX)return -ERANGE;
+ if(overlap(out->primary,new_bytes,out->secondary,append_bytes)||
+  overlap(out->primary,new_bytes,old,old_bytes)||overlap(out->primary,new_bytes,fresh,fresh_bytes)||
+  overlap(out->secondary,append_bytes,old,old_bytes)||overlap(out->secondary,append_bytes,fresh,fresh_bytes))return -EINVAL;
  insert=old_bytes-3572;
- old_begin=count==1?sstart:cursor-2700;
- old_mid=count==1?(clear_flags?1696:1700)+cull_bytes:1828;
+ old_begin=count==1?sstart:cursor-(2700-last_shift);
+ old_mid=(count==1?(clear_flags?1696:1700)+cull_bytes:1828)-last_shift;
  if(get(old+insert)!=0x45454524||
   get(old+insert-60)!=0x45452d2c||get(old+insert-12)!=0x45452d2c||
   get(old+insert-56)!=(owner[29].base+old_begin+1)||
@@ -225,30 +234,36 @@ int m9x_faa_later_depth_append_encode(
  /* Source new stages use the same source-proven depth/null-BA contract.
   * Fresh program, masks, interpolation and typed raw owner metadata remain
   * those of this independently encoded job. */
- if(get(fresh+2076)!=(views->owner[2].base|1)||get(fresh+2092)||
-  get(fresh+2096)!=0xf0010100||get(fresh+2200)!=0x0038038f||
-  (get(fresh+1920)&0x03000000)!=(raster_flags&2?0x03000000:raster_flags&4?0x02000000:0)||
-  !!(get(fresh+1936)&0x4000)!=!!(raster_flags&1)||
+ if(get(fresh+2076-shift)!=(views->owner[2].base|1)||get(fresh+2092-shift)||
+  get(fresh+2096-shift)!=0xf0010100||get(fresh+2200-shift)!=0x0038038f||
+  (get(fresh+1920-shift)&0x03000000)!=(raster_flags&2?0x03000000:raster_flags&4?0x02000000:0)||
+  !!(get(fresh+1936-shift)&0x4000)!=!!(raster_flags&1)||
   input->fragment_flags!=!!(raster_flags&1))return -EINVAL;
  for(i=0;i<ARRAY_SIZE(save_at);i++)if((u64)owner[save_owner[i]].base+save_offset[i]+save_tag[i]>U32_MAX)return -ERANGE;
  memcpy(out->primary,old,insert);memcpy(out->primary+insert,old+insert-60,60);
- put(out->primary+insert+4,owner[29].base+cursor+1);put(out->primary+insert+8,owner[29].base+cursor+1830);
- put(out->primary+insert+52,owner[29].base+cursor+1829);put(out->primary+insert+56,owner[29].base+cursor+2702);
+ put(out->primary+insert+4,owner[29].base+cursor+1);put(out->primary+insert+8,owner[29].base+cursor+1830-shift);
+ put(out->primary+insert+52,owner[29].base+cursor+1829-shift);put(out->primary+insert+56,owner[29].base+cursor+append_bytes+2);
  memcpy(out->primary+insert+60,old+insert,3572);
  for(i=0;i<ARRAY_SIZE(lock_at);i++)put(out->primary+insert+60+lock_at[i],((u32)old_point+0xa0-lock_back[i])|lock_tag[i]);
- memset(out->secondary,0,2700);
+ memset(out->secondary,0,append_bytes);
  for(i=0;i<ARRAY_SIZE(later_save_prefix);i++)put(out->secondary+4*i,later_save_prefix[i]);
  for(i=0;i<ARRAY_SIZE(save_at);i++)put(out->secondary+save_at[i],(owner[save_owner[i]].base+save_offset[i])|save_tag[i]);
- for(i=0;i<ARRAY_SIZE(later_copies);i++)memcpy(out->secondary+later_copies[i].to,fresh+later_copies[i].from,later_copies[i].bytes);
- memcpy(out->secondary+588,fresh+2432,104);
- put(out->secondary+172,0x49d00000|((892-172)/4));put(out->secondary+188,3);
+ for(i=0;i<ARRAY_SIZE(later_copies);i++){
+  u32 from=later_copies[i].from,to=later_copies[i].to,bytes=later_copies[i].bytes;
+  if(shift&&from==444&&to==692)bytes-=shift;
+  else if(shift&&from>=576)from-=shift;
+  if(shift&&to>=868)to-=shift;
+  memcpy(out->secondary+to,fresh+from,bytes);
+ }
+ memcpy(out->secondary+588,fresh+2432-shift,104);
+ put(out->secondary+172,0x49d00000|((892-shift-172)/4));put(out->secondary+188,3);
  put(out->secondary+192,0x45e3e6e6);put(out->secondary+196,1);
- for(i=0;i<ARRAY_SIZE(epoch_at);i++)put(out->secondary+epoch_at[i],((u32)old_point+epoch_delta[i])|epoch_tag[i]);
+ for(i=0;i<ARRAY_SIZE(epoch_at);i++)put(out->secondary+epoch_at[i]-(epoch_at[i]>=868?shift:0),((u32)old_point+epoch_delta[i])|epoch_tag[i]);
  put(out->secondary+452,((get(fresh+304)&0xff1fffff)|0x00100000)&0xfffffffc);
- put(out->secondary+476,get(fresh+328));put(out->secondary+936,0x49d00000|((1388-936)/4));
- put(out->secondary+1424,0x49d00000|((1816-1424)/4));
+ put(out->secondary+476,get(fresh+328));put(out->secondary+936-shift,0x49d00000|((1388-936)/4));
+ put(out->secondary+1424-shift,0x49d00000|((1816-1424)/4));
  memcpy(out->end_bytes,old_ends,end_count*4);
  for(i=end_count-4;i<end_count;i++)out->end_bytes[i]+=60;
- out->primary_bytes=new_bytes;out->secondary_bytes=2700;out->end_count=end_count;
+ out->primary_bytes=new_bytes;out->secondary_bytes=append_bytes;out->end_count=end_count;
  out->draw_end_bytes=pstart+insert+60;out->final_point=old_point+0xa0;return 0;
 }
