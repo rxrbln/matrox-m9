@@ -695,9 +695,135 @@ m9_vs_source_records_gather(const struct m9_vs_source_layout *layout,
 struct clip_input {
    const uint8_t *base;
    unsigned stride;
+   unsigned floats;        /* direct 32-bit float components, 0 to unpack */
    const struct util_format_unpack_description *unpack;
    float rgba[4];
 };
+
+static void
+clip_fetch(struct clip_input *in, unsigned vertex)
+{
+   const uint8_t *src = in->base + (uint64_t)vertex * in->stride;
+
+   if (in->floats) {
+      in->rgba[0] = in->rgba[1] = in->rgba[2] = 0.0f;
+      in->rgba[3] = 1.0f;
+      memcpy(in->rgba, src, in->floats * sizeof(float));
+   } else {
+      in->unpack->unpack_rgba(in->rgba, src, 1);
+   }
+}
+
+static bool
+clip_constant(const float *v, unsigned terms)
+{
+   for (unsigned t = 1; v && t < terms; t++)
+      if (v[t] != 0.0f)
+         return false;
+   return true;
+}
+
+/* Folds the node list into z, w = affine functions of the fetched inputs
+ * (coefficient 0 the constant term, then four a used element).  False when
+ * a product of two vertex-dependent terms makes it non-affine. */
+static bool
+clip_affine(const struct m9_vs_program *program, const uint8_t *constants,
+            const int *slot, unsigned terms, float *aff)
+{
+   const struct m9_vs_clip_node *node = program->clip_nodes.data;
+   unsigned nodes = util_dynarray_num_elements(&program->clip_nodes,
+                                               struct m9_vs_clip_node);
+
+   for (unsigned i = 0; i < nodes; i++) {
+      const struct m9_vs_clip_node *n = &node[i];
+      float *r = aff + (size_t)i * terms;
+      bool operands = n->op >= M9_VS_CLIP_ADD;
+      const float *a = operands ? aff + (size_t)n->a * terms : NULL;
+      const float *b = n->op == M9_VS_CLIP_ADD || n->op == M9_VS_CLIP_MUL ||
+                       n->op == M9_VS_CLIP_FMA ? aff + (size_t)n->b * terms : NULL;
+      const float *c = n->op == M9_VS_CLIP_FMA ? aff + (size_t)n->c * terms : NULL;
+      bool a_const = clip_constant(a, terms), b_const = clip_constant(b, terms);
+
+      memset(r, 0, terms * sizeof(float));
+      switch (n->op) {
+      case M9_VS_CLIP_LIT:
+         r[0] = n->lit;
+         break;
+      case M9_VS_CLIP_INPUT:
+         r[1 + 4 * slot[util_bitcount64(program->inputs_read &
+                                        BITFIELD64_MASK(n->a))] + n->b] = 1.0f;
+         break;
+      case M9_VS_CLIP_UNIFORM:
+         memcpy(&r[0], constants + n->a, sizeof(float));
+         break;
+      case M9_VS_CLIP_ADD:
+         for (unsigned t = 0; t < terms; t++)
+            r[t] = a[t] + b[t];
+         break;
+      case M9_VS_CLIP_MUL:
+      case M9_VS_CLIP_FMA:
+         if (!a_const && !b_const)
+            return false;
+         for (unsigned t = 0; t < terms; t++)
+            r[t] = a_const ? a[0] * b[t] : a[t] * b[0];
+         if (n->op == M9_VS_CLIP_FMA)
+            for (unsigned t = 0; t < terms; t++)
+               r[t] += c[t];
+         break;
+      case M9_VS_CLIP_NEG:
+         for (unsigned t = 0; t < terms; t++)
+            r[t] = -a[t];
+         break;
+      case M9_VS_CLIP_ABS:
+         if (!a_const)
+            return false;
+         r[0] = fabsf(a[0]);
+         break;
+      }
+   }
+   return true;
+}
+
+static void
+clip_node_eval(const struct m9_vs_program *program, const uint8_t *constants,
+               const struct clip_input *input, float *value)
+{
+   const struct m9_vs_clip_node *node = program->clip_nodes.data;
+   unsigned nodes = util_dynarray_num_elements(&program->clip_nodes,
+                                               struct m9_vs_clip_node);
+
+   for (unsigned i = 0; i < nodes; i++) {
+      const struct m9_vs_clip_node *n = &node[i];
+
+      switch (n->op) {
+      case M9_VS_CLIP_LIT:
+         value[i] = n->lit;
+         break;
+      case M9_VS_CLIP_INPUT:
+         value[i] = input[util_bitcount64(program->inputs_read &
+                                          BITFIELD64_MASK(n->a))].rgba[n->b];
+         break;
+      case M9_VS_CLIP_UNIFORM:
+         memcpy(&value[i], constants + n->a, sizeof(float));
+         break;
+      case M9_VS_CLIP_ADD:
+         value[i] = value[n->a] + value[n->b];
+         break;
+      case M9_VS_CLIP_MUL:
+         value[i] = value[n->a] * value[n->b];
+         break;
+      case M9_VS_CLIP_FMA:
+         value[i] = value[n->a] * value[n->b] + value[n->c];
+         break;
+      case M9_VS_CLIP_NEG:
+         value[i] = -value[n->a];
+         break;
+      case M9_VS_CLIP_ABS:
+         value[i] = fabsf(value[n->a]);
+         break;
+      }
+   }
+}
 
 int
 m9_vs_clip_outside_near(const struct m9_vs_program *program,
@@ -713,14 +839,17 @@ m9_vs_clip_outside_near(const struct m9_vs_program *program,
    unsigned nodes = util_dynarray_num_elements(&program->clip_nodes,
                                                struct m9_vs_clip_node);
    struct clip_input input[PIPE_MAX_ATTRIBS];
+   int slot[PIPE_MAX_ATTRIBS];
+   unsigned used_count = 0, terms;
    uint64_t used = 0;
-   float *value;
+   float *scratch;
    int outside = 0;
 
    if (!nodes || !count || program->clip_z >= nodes || program->clip_w >= nodes)
       return -1;
    for (unsigned i = 0; i < nodes; i++) {
       const struct pipe_vertex_element *e;
+      const struct util_format_description *desc;
       unsigned element, size;
       uint64_t end;
 
@@ -745,6 +874,11 @@ m9_vs_clip_outside_near(const struct m9_vs_program *program,
       input[element].unpack = util_format_unpack_description(e->src_format);
       if (!input[element].unpack || !input[element].unpack->unpack_rgba)
          return -1;
+      desc = util_format_description(e->src_format);
+      input[element].floats = desc && util_format_is_float(e->src_format) &&
+                              desc->is_array && desc->channel[0].size == 32 &&
+                              desc->swizzle[0] == PIPE_SWIZZLE_X ?
+                              desc->nr_channels : 0;
       /* Same bounds as the record writer: the last vertex read must fit. */
       size = buffer_size[e->vertex_buffer_index];
       end = (uint64_t)buffers[e->vertex_buffer_index].buffer_offset +
@@ -756,53 +890,41 @@ m9_vs_clip_outside_near(const struct m9_vs_program *program,
                             buffers[e->vertex_buffer_index].buffer_offset +
                             e->src_offset;
       input[element].stride = e->src_stride;
+      slot[element] = used_count++;
       used |= BITFIELD64_BIT(element);
    }
-   value = malloc(sizeof(*value) * nodes);
-   if (!value)
+   terms = 1 + 4 * used_count;
+   scratch = malloc(sizeof(*scratch) * MAX2((size_t)nodes * terms, nodes));
+   if (!scratch)
       return -1;
-   for (unsigned v = 0; v < count && !outside; v++) {
-      u_foreach_bit64(element, used) {
-         struct clip_input *in = &input[element];
+   if (clip_affine(program, constants, slot, terms, scratch)) {
+      const float *z = scratch + (size_t)program->clip_z * terms;
+      const float *w = scratch + (size_t)program->clip_w * terms;
 
-         in->unpack->unpack_rgba(in->rgba, in->base +
-                                 (uint64_t)(first + v) * in->stride, 1);
-      }
-      for (unsigned i = 0; i < nodes; i++) {
-         const struct m9_vs_clip_node *n = &node[i];
+      for (unsigned v = 0; v < count && !outside; v++) {
+         float cz = z[0], cw = w[0];
 
-         switch (n->op) {
-         case M9_VS_CLIP_LIT:
-            value[i] = n->lit;
-            break;
-         case M9_VS_CLIP_INPUT:
-            value[i] = input[util_bitcount64(program->inputs_read &
-                                             BITFIELD64_MASK(n->a))].rgba[n->b];
-            break;
-         case M9_VS_CLIP_UNIFORM:
-            memcpy(&value[i], constants + n->a, sizeof(float));
-            break;
-         case M9_VS_CLIP_ADD:
-            value[i] = value[n->a] + value[n->b];
-            break;
-         case M9_VS_CLIP_MUL:
-            value[i] = value[n->a] * value[n->b];
-            break;
-         case M9_VS_CLIP_FMA:
-            value[i] = value[n->a] * value[n->b] + value[n->c];
-            break;
-         case M9_VS_CLIP_NEG:
-            value[i] = -value[n->a];
-            break;
-         case M9_VS_CLIP_ABS:
-            value[i] = fabsf(value[n->a]);
-            break;
+         u_foreach_bit64(element, used) {
+            struct clip_input *in = &input[element];
+            unsigned t = 1 + 4 * slot[element];
+
+            clip_fetch(in, first + v);
+            for (unsigned k = 0; k < 4; k++) {
+               cz += z[t + k] * in->rgba[k];
+               cw += w[t + k] * in->rgba[k];
+            }
          }
+         outside = !(cw > 0.0f && cz >= -cw);
       }
-      float z = value[program->clip_z], w = value[program->clip_w];
-
-      outside = !(w > 0.0f && z >= -w);
+   } else {
+      for (unsigned v = 0; v < count && !outside; v++) {
+         u_foreach_bit64(element, used)
+            clip_fetch(&input[element], first + v);
+         clip_node_eval(program, constants, input, scratch);
+         outside = !(scratch[program->clip_w] > 0.0f &&
+                     scratch[program->clip_z] >= -scratch[program->clip_w]);
+      }
    }
-   free(value);
+   free(scratch);
    return outside;
 }
