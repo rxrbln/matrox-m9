@@ -10133,11 +10133,22 @@ m9_context_faa_flush_frame(struct m9_context *ctx, const char **reason)
    ret = first->texture_count ?
       m9_faa_surface_dual_batch_kernel(ctx->screen,&ctx->faa_surface,frame) :
       m9_faa_surface_color_batch_kernel(ctx->screen, &ctx->faa_surface, frame);
-   if (ret) { why = "FAA authenticated frame submission failed"; goto done; }
+   if (ret) {
+      why = "FAA authenticated frame submission failed";
+      if (ctx->debug)
+         fprintf(stderr, "m9x: FAA frame of %u DRAWs: submission returned %d\n",
+                 frame->count, ret);
+      goto done;
+   }
    ctx->last_point = MAX2(ctx->last_point, graph->color_lock_point);
    ret = m9_context_faa_present_lock(ctx, first->graph_id, first->generation,
                                     graph->color_lock_point);
-   if (ret) { why = "FAA frame Lock/Unlock presentation failed"; goto done; }
+   if (ret) {
+      why = "FAA frame Lock/Unlock presentation failed";
+      if (ctx->debug)
+         fprintf(stderr, "m9x: FAA frame presentation returned %d\n", ret);
+      goto done;
+   }
    ctx->last_point = MAX2(ctx->last_point, MAX2(graph->color_unlock_point, graph->color_present_point));
    if (frame->clear_flags) {
       memset(&ctx->faa_application_clear, 0, sizeof(ctx->faa_application_clear));
