@@ -129,6 +129,26 @@ struct drm_parhelia_m9_faa_graph_color_frame_batch {
 };
 #define DRM_IOCTL_PARHELIA_M9_FAA_GRAPH_COLOR_FRAME_BATCH DRM_IOWR(DRM_COMMAND_BASE + DRM_PARHELIA_M9_FAA_GRAPH_COLOR_FRAME_BATCH, struct drm_parhelia_m9_faa_graph_color_frame_batch)
 
+/* Version-1 M9128 FIRST COLOR0/TEX0/TEX1, source-bounded 320x240 profile.
+ * Texture handles name retained VRAM BOs; no GPU address enters the ABI.
+ * Each BO must already contain its admitted tiled layout and mip levels. */
+#define DRM_PARHELIA_M9_FAA_GRAPH_DUAL_FIRST 0x21
+#define PARHELIA_M9_FAA_DUAL_FIRST_VERSION 1u
+#define PARHELIA_M9_FAA_DUAL_FIRST_LOCK_RETIRED 23u
+struct drm_parhelia_m9_faa_texture_view {
+ __u32 handle,profile,format,width,height,storage_kind,levels;
+ __u32 min_filter,mag_filter,mip_filter,address_u,address_v;
+};
+struct drm_parhelia_m9_faa_graph_dual_first {
+ __u64 graph_id,init_point,lock_point,upload;
+ __u32 upload_bytes,generation,version,flags,state,pad;
+ __u32 record_stride,record_count,declaration_count;
+ struct drm_parhelia_m9_faa_upload_layout layout;
+ __u32 width,height,clear_flags,clear_color,depth_flags;
+ struct drm_parhelia_m9_faa_texture_view texture[2];
+};
+#define DRM_IOCTL_PARHELIA_M9_FAA_GRAPH_DUAL_FIRST DRM_IOWR(DRM_COMMAND_BASE + DRM_PARHELIA_M9_FAA_GRAPH_DUAL_FIRST, struct drm_parhelia_m9_faa_graph_dual_first)
+
 /* Retired Lock -> authentic Unlock -> separate-owner GPU presentation.
  * Input outputs/padding are zero. U stays immutable; P is a distinct frontier.
  * Destination descriptor is its ordinary CC21 view, never a caller GPUVA. */

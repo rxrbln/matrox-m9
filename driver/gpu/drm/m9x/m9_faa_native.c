@@ -55,6 +55,8 @@
 #include "m9_faa_graph_unlock_encode.h"
 #include "m9_faa_graph_next_encode.h"
 #include "m9_faa_graph_next_finish_encode.h"
+#include "m9_faa_graph_dual_first_encode.h"
+#include "m9_faa_graph_texture_owner.h"
 #include "m9_faa_graph_draw_tail_encode.h"
 #include "m9_faa_graph_lock_encode.h"
 
@@ -272,6 +274,7 @@ struct m9_faa_depth_frame_storage {
  u32 batch_data_bytes,draw_count;
  bool first, initialized_reuse, attempted, retired;
  u32 clear_flags;
+ bool dual_first;
 };
 struct m9_faa_depth_storage {
  struct m9_faa_owner owner[M9_FAA_DEPTH_OWNERS];
@@ -365,6 +368,7 @@ struct m9x_faa_replay {
 	 * are mapped before INIT and remain retained. Original command26
 	 * and startup27 stay in owner[]. */
 	struct m9_faa_owner draw_owner[3];
+	struct m9x_faa_texture_owners dual_textures;
 	struct m9_faa_public_vs_storage *public_vs_image;
  struct m9_faa_color_storage *color_image;
  struct m9_faa_depth_storage *depth_storage;
@@ -985,6 +989,12 @@ static bool m9_faa_release(struct m9x_device *mdev, struct m9x_faa_replay *r)
  if (r->command_pools)
   for (i=0;i<2;i++)
    if (!m9_faa_dma_restore_wb(&r->command_pools->spare[i]))goto quarantine;
+#endif
+	/* This can fail to reserve a texture BO. Do it before freeing any graph
+	 * owner so the whole replay remains retryable during DMA-stop teardown. */
+#ifdef M9_FAA_GRAPH_INIT_CONTROL
+	if (!m9x_faa_texture_owners_put(&r->dual_textures, true))
+		goto quarantine;
 #endif
 	/* Reserve every private TTM view before freeing anything. A failed
 	 * reservation must not be followed by vunmap or a partial owner release. */
@@ -7461,6 +7471,81 @@ release:
 #endif
 }
 
+/* One source-qualified COLOR0/TEX0/TEX1 FIRST frame. Texture references are
+ * acquired by the ioctl before the INIT claim and transferred to the replay
+ * only after the complete live image is encoded. No command is posted here. */
+int m9x_faa_graph_dual_first_prepare(struct m9x_device *mdev,
+ struct m9_faa_graph_binding *binding,u32 generation,u64 init_point,
+ const struct m9x_faa_color_input *input,
+ struct m9x_faa_texture_owners *textures)
+{
+#ifdef M9_FAA_GRAPH_INIT_CONTROL
+ struct m9x_transport *t=&mdev->transport;struct m9x_faa_replay *r;
+ struct m9_faa_depth_frame_storage *frame=NULL;
+ struct m9_faa_color_storage *scratch=NULL;
+ struct m9x_faa_first_depth_scratch *prefix=NULL;
+ struct m9x_faa_graph_draw_owner owner[M9_FAA_DEPTH_DRAW_OWNERS];
+ struct m9x_faa_depth_views views;struct m9x_faa_color_image image;
+ struct m9x_faa_dual_first_input dual={.color=input,
+  .texture=textures?textures->bind:NULL};
+ const struct firmware *sample=NULL,*color=NULL,*dual_fw=NULL;
+ u32 primary_bytes=0;int ret;
+ if(!binding||!input||!textures||!textures->gem[0]||!textures->gem[1]||
+    textures->generation!=generation||input->layout.program_count!=4||
+    input->declaration_count!=9||input->fragment_flags)return -EOPNOTSUPP;
+ frame=kzalloc(sizeof(*frame),GFP_KERNEL);
+ scratch=kzalloc(sizeof(*scratch),GFP_KERNEL);
+ prefix=kzalloc(sizeof(*prefix),GFP_KERNEL);
+ if(!frame||!scratch||!prefix){ret=-ENOMEM;goto out;}
+ ret=request_firmware(&sample,M9_FAA_SAMPLE_CLEAR_FIRMWARE,&mdev->pdev->dev);
+ if(ret)goto out;
+ ret=request_firmware(&color,M9_FAA_GRAPH_COLOR_FOUR_FIRMWARE,&mdev->pdev->dev);
+ if(ret)goto out;
+ ret=request_firmware(&dual_fw,"m9x/faa-graph-dual-first-template.bin",&mdev->pdev->dev);
+ if(ret)goto out;
+ ret=m9x_faa_graph_bound_depth_prepare(mdev,binding,generation,init_point,
+  M9_FAA_DEPTH_COLOR_SYSTEM_B,true);
+ if(ret)goto out;
+ ret=m9x_faa_graph_color_prepare(mdev,binding,generation,init_point,input);
+ if(ret)goto out;
+ mutex_lock(&t->lock);
+ ret=m9_faa_depth_frame_first_state(t,binding,generation,init_point);
+ if(ret)goto unlock;
+ r=t->faa;
+ if(!r||!r->depth_storage||r->depth_storage->initialized||
+    r->depth_storage->frame||r->dual_textures.gem[0]){ret=-ESTALE;goto unlock;}
+ ret=m9x_faa_graph_bound_depth_views_locked(mdev,binding,generation,&views);
+ if(ret)goto unlock;
+ m9_faa_depth_frame_owners(r,owner);
+ image=(struct m9x_faa_color_image){
+  .program=r->color_image->program,.constants=r->color_image->constants,
+  .primary=scratch->primary,.secondary=scratch->secondary,
+  .program_bytes=sizeof(r->color_image->program),
+  .constants_bytes=r->color_image->geometry_offset+input->layout.geometry_bytes+768,
+  .primary_bytes=sizeof(scratch->primary),.secondary_bytes=sizeof(scratch->secondary),
+  .secondary_length=&scratch->secondary_bytes};
+ ret=m9x_faa_dual_first_encode(sample->data,sample->size,color->data,color->size,
+  dual_fw->data,dual_fw->size,owner,&views,r->primary_bytes,init_point,
+  &dual,frame->primary,sizeof(frame->primary),frame->secondary,
+  sizeof(frame->secondary),&primary_bytes,frame->end_bytes,&image,prefix);
+ if(ret)goto unlock;
+ if(primary_bytes>owner[27].bytes-r->graph_draw_end_bytes){ret=-ENOSPC;goto unlock;}
+ frame->primary_bytes=primary_bytes;frame->primary_start=r->graph_draw_end_bytes;
+ frame->secondary_bytes=M9_FAA_DUAL_FIRST_SECONDARY_BYTES;
+ frame->end_count=M9_FAA_DUAL_FIRST_ENDS;
+ frame->final_point=init_point+0x150;
+ frame->previous_point=frame->queue_start=init_point;
+ frame->generation=generation;frame->first=true;frame->dual_first=true;
+ r->dual_textures=*textures;memset(textures,0,sizeof(*textures));
+ r->depth_storage->frame=frame;frame=NULL;
+unlock:mutex_unlock(&t->lock);
+out:release_firmware(dual_fw);release_firmware(color);release_firmware(sample);
+ kfree(prefix);kfree(scratch);kfree(frame);return ret;
+#else
+ return -EOPNOTSUPP;
+#endif
+}
+
 /* Provision independent command MDLs before a future idle pool transition.
  * All slot identities are true native allocations; the registry never owns
  * copied owners or rewinds a cursor. Failure keeps partial mappings/CPA state
@@ -8131,6 +8216,23 @@ int m9x_faa_graph_depth_frame_submit(struct m9x_device *mdev,
   ret=-ESTALE;goto out;
  }
 
+ if(frame->dual_first){
+  struct m9x_faa_texture_dual_program dual={
+   .stage_count=4,.sampler_count=2,.coordinate_sets=2,
+   .color_op0=4,.color_op1=4,
+   .program_bytes=input->layout.program_bytes};
+  for(i=0;i<4;i++)dual.entry_bytes[i]=input->layout.entry_bytes[i];
+  if(!frame->first||frame->secondary_bytes!=M9_FAA_DUAL_FIRST_SECONDARY_BYTES||
+     !r->dual_textures.gem[0]||!r->dual_textures.gem[1]){
+   ret=-ESTALE;goto out;
+  }
+  /* Both texture RESVs are held by the ioctl. Re-read placement and
+   * regenerate their packet words before any consuming fence or post. */
+  ret=m9x_faa_texture_owners_place_locked(mdev,&r->dual_textures,generation,
+   &dual,frame->secondary,frame->secondary_bytes);
+  if(ret)goto out;
+ }
+
  primary=m9_faa_command_owner(r,false);program=&r->draw_owner[0];
  if(!primary){ret=-ESTALE;goto out;}
  code=frame->batch_program?frame->batch_program:input->program;
@@ -8157,6 +8259,10 @@ int m9x_faa_graph_depth_frame_submit(struct m9x_device *mdev,
  ret=m9x_address_check_local_identity(mdev,program->base,program->bytes);if(ret){m9_faa_frame_trace(mdev,"refuse-program-identity",program->base,program->bytes,previous,ret,false);goto out;}
  fence=m9x_fence_create_target_locked(mdev,lower_32_bits(frame->final_point));if(!fence){ret=-ENOMEM;goto out;}
  for(i=0;i<PARHELIA_M9_FAA_GRAPH_OWNERS;i++)dma_resv_add_fence(m9x_faa_graph_binding_owner(binding,i)->resv,&fence->base,DMA_RESV_USAGE_WRITE);
+ if(frame->dual_first){
+  ret=m9x_faa_texture_owners_fence_locked(&r->dual_textures,&fence->base);
+  if(ret)goto out;
+ }
  frame->attempted=true;r->color_attempted=true;
  if(!frame->first)r->color_next_attempt_point=previous;r->color_lock_retired=false;
  r->normal_lock_view_seen=false;r->unlock_started=false;r->unlock_retired=false;
@@ -8223,6 +8329,7 @@ out:
 #ifdef M9_FAA_GRAPH_INIT_CONTROL
 MODULE_FIRMWARE(M9_FAA_SAMPLE_CLEAR_FIRMWARE);
 MODULE_FIRMWARE(M9_FAA_DEPTH_DRAW_FIRMWARE);
+MODULE_FIRMWARE("m9x/faa-graph-dual-first-template.bin");
 #endif
 
 /* Fresh and retained COLOR have distinct complete source plans and queue
