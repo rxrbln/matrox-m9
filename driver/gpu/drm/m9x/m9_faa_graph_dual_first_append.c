@@ -8,6 +8,7 @@
 #include <linux/string.h>
 #include "m9_cmd.h"
 #include "m9_faa_graph_dual_first_append.h"
+#include "m9_faa_graph_dual_later_encode.h"
 
 struct copy_span {
 	u16 from, to, bytes;
@@ -80,7 +81,7 @@ static int dual_append(const struct m9x_faa_graph_draw_owner owner[31],
 		       const u8 *extra_first_secondary,
 		       struct m9x_faa_dual_append_image *out)
 {
-	u32 new_bytes, raw, i, at, old_length;
+	u32 new_bytes, raw, i, at, old_length, sel;
 	u8 *dst;
 
 	if (old_primary_bytes > owner[27].bytes ||
@@ -153,11 +154,16 @@ static int dual_append(const struct m9x_faa_graph_draw_owner owner[31],
 		    m9_cmd_get(extra_first_secondary + tex[i]))
 			return -EINVAL;
 	}
-	/* Source no-cull append remains 2868 bytes. CW/CCW inserts another
-	 * 24 bytes and changes the 6A selector, so it requires its own producer.
+	/* An append keeps 2868 bytes while the cull state is unchanged (the
+	 * original culled later N2 only carries the culled selectors). A
+	 * changed cull state inserts the 24-byte 6A groups: not produced here.
 	 */
-	if (m9_cmd_get(extra_first_secondary + 636) != 0x29340000 ||
-	    m9_cmd_get(extra_first_secondary + 2844) != 0x29340000)
+	sel = (m9_cmd_get(extra_first_secondary + 1992) >> 24) & 3;
+	if (sel != ((m9_cmd_get(first_secondary + 1992) >> 24) & 3) ||
+	    m9_cmd_get(extra_first_secondary + 636) !=
+		    (sel ? 0x28ff0000u : 0x29340000u) ||
+	    m9_cmd_get(extra_first_secondary + 2844) !=
+		    m9_cmd_get(extra_first_secondary + 636))
 		return -EINVAL;
 	raw = m9_cmd_get(extra_first_secondary + 344);
 	if ((raw & 7) != 1 || raw - 1 < owner[28].base ||
@@ -303,6 +309,9 @@ int m9x_faa_dual_later_append_encode(const struct m9x_faa_graph_draw_owner
 {
 	u32 tail = clear_flags == 3 ? 3632 : 3624;
 	u32 first = clear_flags == 3 ? 2736 : 2740, epoch;
+	/* A culled first later stage keeps its 24 bytes of 6A groups. */
+	u32 cull = (m9_cmd_get(first_secondary + 1992) >> 24 & 3) ?
+		   M9_FAA_DUAL_LATER_CULL_BYTES : 0;
 	u32 old_start;
 
 	if (!owner || !old_primary || !first_secondary ||
@@ -315,7 +324,7 @@ int m9x_faa_dual_later_append_encode(const struct m9x_faa_graph_draw_owner
 	    previous_unlock >
 		    U32_MAX - 0x150 - M9_FAA_DUAL_LATER_MAX_DRAWS * 0xa0 ||
 	    old_primary_bytes < tail + (old_draw_count - 1) * 60 ||
-	    secondary_cursor != first_secondary_cursor + first +
+	    secondary_cursor != first_secondary_cursor + first + cull +
 					(old_draw_count - 1) * 2868)
 		return -EINVAL;
 	if (m9x_faa_graph_draw_owners_validate(owner))
