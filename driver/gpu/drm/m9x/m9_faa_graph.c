@@ -39,6 +39,7 @@ struct m9_faa_prepared_graph {
 	bool pinned[PARHELIA_M9_FAA_GRAPH_OWNERS];
 	u64 id;
 	u32 generation;
+	u32 width, height;
 	u64 init_point;
 	bool initialized;
 };
@@ -624,6 +625,8 @@ static int m9_faa_graph_prepare(struct drm_device *drm, void *data,
 		kfree(graph);
 		return -EINVAL;
 	}
+	graph->width = args->width;
+	graph->height = args->height;
 	mutex_lock(&state->lock);
 	if (state->graph) {
 		ret = -EBUSY;
@@ -1933,7 +1936,8 @@ int m9x_faa_graph_dual_first_ioctl(struct drm_device *drm,void *data,
  if(!drm_dev_enter(drm,&idx))return -ENODEV;
  mutex_lock(&state->lock);graph=state->graph;
  if(!graph||!graph->initialized||graph->id!=args->graph_id||
-    graph->generation!=args->generation||graph->init_point!=args->init_point){
+    graph->generation!=args->generation||graph->init_point!=args->init_point||
+    graph->width!=args->width||graph->height!=args->height){
   ret=-ENOENT;goto out;
  }
  for(i=0;i<2;i++){
