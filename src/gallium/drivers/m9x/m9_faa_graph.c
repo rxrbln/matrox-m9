@@ -473,7 +473,7 @@ m9_faa_color_lock_history_valid(const struct m9_faa_graph *graph)
          ((first || initialized_frame) ? 0x150 : 0x1a0) + (count - 1u) * UINT64_C(0xa0);
       const uint64_t maintenance = graph->color_frame_maintenance_point;
       if (maintenance) {
-         if (fused || !initialized_frame || graph->color_next_previous_unlock_point > UINT64_MAX - 0x10 ||
+         if (!initialized_frame || graph->color_next_previous_unlock_point > UINT64_MAX - 0x10 ||
              maintenance != graph->color_next_previous_unlock_point + 0x10)
             return false;
          exact += 0x10;
@@ -827,7 +827,8 @@ m9_faa_surface_color_batch_kernel(struct m9_screen *screen,
       return -EOPNOTSUPP;
    /* Original count2 FIRST and initialized clear3 both use +0x110,
     * with +0x60 per extra DRAW. Their flags and previous receipt remain
-    * distinct. Count2 pool-maintenance transitions are not yet admitted. */
+    * distinct. A returned maintenance epoch is authenticated separately and
+    * never replaces the application's previous Unlock entitlement. */
    const uint64_t delta = programs == 2 ? 0x110 + (frame->count - 1u) * UINT64_C(0x60) :
       ((first || initialized_frame) ? 0x150 : 0x1a0) + (frame->count - 1u) * UINT64_C(0xa0);
    if (screen->faa.chip != M9_FAA_CHIP_M9 || !screen->wait_point ||
@@ -916,7 +917,7 @@ m9_faa_surface_color_batch_kernel(struct m9_screen *screen,
       return -errno;
    uint64_t origin = before.previous_point;
    if (request.maintenance_point) {
-      if (programs == 2 || !initialized_frame || origin > UINT64_MAX - 0x10 ||
+      if (!initialized_frame || origin > UINT64_MAX - 0x10 ||
           request.maintenance_point != origin + 0x10)
          return -EPROTO;
       origin = request.maintenance_point;
