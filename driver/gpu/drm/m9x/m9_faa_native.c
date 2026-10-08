@@ -3798,19 +3798,7 @@ int m9x_faa_graph_draw_submit(struct m9x_device *mdev,
 		 READ_ONCE(((u32 *)t->fence_cpu)[0x60 / 4]),
 		 READ_ONCE(((u32 *)t->fence_cpu)[0x64 / 4]));
 out:
-	if (fence && ret)
-		dma_fence_set_error(&fence->base, ret);
-	if (ret && *posted) {
-		t->wedged = true;
-		t->generation++;
-		WARN_ON(t->quarantined_fence);
-		t->quarantined_fence = fence;
-		fence = NULL;
-	} else if (fence) {
-		dma_fence_signal(&fence->base);
-	}
-	if (fence)
-		dma_fence_put(&fence->base);
+	m9x_transport_fence_finish_locked(mdev, fence, ret, *posted);
 	mutex_unlock(&t->lock);
 	return ret;
 #else
@@ -4525,19 +4513,7 @@ int m9x_faa_graph_unlock_submit(struct m9x_device *mdev,
 		 "M9 FAA graph Unlock retired: lock=%#llx unlock=%#llx bytes=%u posts=%u copyback=F021->F022\n",
 		 lock_point, *point, r->graph_draw_end_bytes, r->graph_draw_posts);
 out:
-	if (fence && ret)
-		dma_fence_set_error(&fence->base, ret);
-	if (ret && *posted) {
-		t->wedged = true;
-		t->generation++;
-		WARN_ON(t->quarantined_fence);
-		t->quarantined_fence = fence;
-		fence = NULL;
-	} else if (fence) {
-		dma_fence_signal(&fence->base);
-	}
-	if (fence)
-		dma_fence_put(&fence->base);
+	m9x_transport_fence_finish_locked(mdev, fence, ret, *posted);
 	m9x_faa_graph_binding_put(checked);
 	mutex_unlock(&t->lock);
 	m9_faa_depth_frame_free(retired_frame);
@@ -5204,9 +5180,9 @@ int m9x_faa_graph_color_submit(struct m9x_device *mdev,
  m9_faa_color_intermediates_observe(mdev,r);
  dev_info(&mdev->pdev->dev,"M9 FAA color Lock retired: init=%#llx lock=%#llx bytes=%u posts=%u program=%u secondary=%u; %u live vectors\n",init_point,*point,r->graph_draw_end_bytes,r->graph_draw_posts,n->program_bytes,n->secondary_bytes,n->layout.program_count);
 out:
- if(ret)*point=0;if(fence&&ret)dma_fence_set_error(&fence->base,ret);
- if(ret&&*posted){t->wedged=true;t->generation++;WARN_ON(t->quarantined_fence);t->quarantined_fence=fence;fence=NULL;}
- else if(fence)dma_fence_signal(&fence->base);if(fence)dma_fence_put(&fence->base);
+	if (ret)
+		*point = 0;
+	m9x_transport_fence_finish_locked(mdev, fence, ret, *posted);
  mutex_unlock(&t->lock);return ret;
 #else
  return -EOPNOTSUPP;
@@ -5328,11 +5304,9 @@ int m9x_faa_graph_public_vs_next_submit(struct m9x_device *mdev,
  READ_ONCE(((u32*)t->fence_cpu)[16]),READ_ONCE(((u32*)t->fence_cpu)[17]),
  READ_ONCE(((u32*)t->fence_cpu)[24]),READ_ONCE(((u32*)t->fence_cpu)[25]));
 out:
- if(ret)*point=0;
- if(fence&&ret)dma_fence_set_error(&fence->base,ret);
- if(ret&&*posted){t->wedged=true;t->generation++;WARN_ON(t->quarantined_fence);t->quarantined_fence=fence;fence=NULL;}
- else if(fence)dma_fence_signal(&fence->base);
- if(fence)dma_fence_put(&fence->base);
+	if (ret)
+		*point = 0;
+	m9x_transport_fence_finish_locked(mdev, fence, ret, *posted);
  mutex_unlock(&t->lock);m9x_faa_graph_binding_put(checked);return ret;
 #else
  return -EOPNOTSUPP;
@@ -6063,18 +6037,7 @@ int m9x_faa_graph_public_vs_follow_submit(struct m9x_device *mdev,
 			 READ_ONCE(((u32 *)t->fence_cpu)[0x64 / 4]));
 	}
 out:
-	if (fence && ret)
-		dma_fence_set_error(&fence->base, ret);
-	if (ret && *posted) {
-		t->wedged = true;
-		t->generation++;
-		WARN_ON(t->quarantined_fence);
-		t->quarantined_fence = fence;
-		fence = NULL;
-	} else if (fence)
-		dma_fence_signal(&fence->base);
-	if (fence)
-		dma_fence_put(&fence->base);
+	m9x_transport_fence_finish_locked(mdev, fence, ret, *posted);
 	mutex_unlock(&t->lock);
 	return ret;
 #else
@@ -6333,19 +6296,7 @@ int m9x_faa_graph_next_submit(struct m9x_device *mdev,
 			 r->graph_repeat_draws);
 	}
 out:
-	if (fence && ret)
-		dma_fence_set_error(&fence->base, ret);
-	if (ret && *posted) {
-		t->wedged = true;
-		t->generation++;
-		WARN_ON(t->quarantined_fence);
-		t->quarantined_fence = fence;
-		fence = NULL;
-	} else if (fence) {
-		dma_fence_signal(&fence->base);
-	}
-	if (fence)
-		dma_fence_put(&fence->base);
+	m9x_transport_fence_finish_locked(mdev, fence, ret, *posted);
 	mutex_unlock(&t->lock);
 	return ret;
 #else
@@ -6581,19 +6532,7 @@ int m9x_faa_graph_next_finish_submit(struct m9x_device *mdev,
 			 prefix_point, *point, r->graph_draw_end_bytes, r->graph_draw_posts);
 	}
 out:
-	if (fence && ret)
-		dma_fence_set_error(&fence->base, ret);
-	if (ret && *posted) {
-		t->wedged = true;
-		t->generation++;
-		WARN_ON(t->quarantined_fence);
-		t->quarantined_fence = fence;
-		fence = NULL;
-	} else if (fence) {
-		dma_fence_signal(&fence->base);
-	}
-	if (fence)
-		dma_fence_put(&fence->base);
+	m9x_transport_fence_finish_locked(mdev, fence, ret, *posted);
 	mutex_unlock(&t->lock);
 	return ret;
 #else
@@ -6827,19 +6766,7 @@ int m9x_faa_graph_next_lock_submit(struct m9x_device *mdev,
 			 finish_point, *point, r->graph_draw_end_bytes, r->graph_draw_posts);
 	}
 out:
-	if (fence && ret)
-		dma_fence_set_error(&fence->base, ret);
-	if (ret && *posted) {
-		t->wedged = true;
-		t->generation++;
-		WARN_ON(t->quarantined_fence);
-		t->quarantined_fence = fence;
-		fence = NULL;
-	} else if (fence) {
-		dma_fence_signal(&fence->base);
-	}
-	if (fence)
-		dma_fence_put(&fence->base);
+	m9x_transport_fence_finish_locked(mdev, fence, ret, *posted);
 	mutex_unlock(&t->lock);
 	return ret;
 #else
@@ -7379,9 +7306,9 @@ int m9x_faa_graph_color_next_submit(struct m9x_device *mdev,
  dev_info(&mdev->pdev->dev,"M9 FAA color NEXT Lock retired: previous_unlock=%#llx lock=%#llx bytes=%u posts=%u secondary_cursor=%u clear=%u\n",
   previous_unlock_point,*point,r->graph_draw_end_bytes,r->graph_draw_posts,r->color_secondary_cursor,n->clear_bytes);
 out:
- if(ret)*point=0;if(fence&&ret)dma_fence_set_error(&fence->base,ret);
- if(ret&&*posted){t->wedged=true;t->generation++;WARN_ON(t->quarantined_fence);t->quarantined_fence=fence;fence=NULL;}
- else if(fence)dma_fence_signal(&fence->base);if(fence)dma_fence_put(&fence->base);
+	if (ret)
+		*point = 0;
+	m9x_transport_fence_finish_locked(mdev, fence, ret, *posted);
  m9x_faa_graph_binding_put(checked);mutex_unlock(&t->lock);return ret;
 #else
  return -EOPNOTSUPP;
@@ -9238,10 +9165,7 @@ int m9x_faa_graph_clear_prefix_submit(struct m9x_device *mdev,
   receipt.secondary_base,receipt.secondary_capacity,receipt.secondary_cursor,receipt.raw00,receipt.raw04,receipt.raw20,receipt.mode_flags);
  ret=0;
 out:
- if(fence&&ret)dma_fence_set_error(&fence->base,ret);
- if(ret&&posted){t->wedged=true;t->generation++;WARN_ON(t->quarantined_fence);t->quarantined_fence=fence;fence=NULL;}
- else if(fence)dma_fence_signal(&fence->base);
- if(fence)dma_fence_put(&fence->base);
+	m9x_transport_fence_finish_locked(mdev, fence, ret, posted);
  if(installed&&!posted){r->depth_storage->frame=NULL;installed=false;}
  mutex_unlock(&t->lock);
 free:if(sample)release_firmware(sample);kvfree(scratch);if(!installed)kvfree(frame);return ret;

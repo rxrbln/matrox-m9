@@ -880,6 +880,30 @@ static int m9_transport_finish_wait_locked(struct m9x_device *mdev, u32 target,
 	return 0;
 }
 
+/* A failure after a posted doorbell wedges the transport and quarantines
+ * @fence until DMA stop; otherwise @fence (with @ret) is signalled and put.
+ */
+void m9x_transport_fence_finish_locked(struct m9x_device *mdev,
+				       struct m9x_fence *fence, int ret,
+				       bool posted)
+{
+	struct m9x_transport *t = &mdev->transport;
+
+	if (fence && ret)
+		dma_fence_set_error(&fence->base, ret);
+	if (ret && posted) {
+		t->wedged = true;
+		t->generation++;
+		WARN_ON(t->quarantined_fence);
+		t->quarantined_fence = fence;
+		return;
+	}
+	if (fence) {
+		dma_fence_signal(&fence->base);
+		dma_fence_put(&fence->base);
+	}
+}
+
 /* Actual MxMD 23a09 selects the retained flags30/B primary GPUVA|1;
  * 2461e posts its untagged end-exclusive GPUVA. This private synchronous
  * request consumes the already published owner, without a physical clone.

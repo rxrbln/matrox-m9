@@ -347,6 +347,9 @@ int m9x_submit_kernel_stream_locked(struct m9x_device *mdev,
 				    const u32 *commands, u32 dwords,
 				    u32 target, u64 *point, bool *doorbell_posted,
 				    bool async);
+void m9x_transport_fence_finish_locked(struct m9x_device *mdev,
+				       struct m9x_fence *fence, int ret,
+				       bool posted);
 int m9x_system_pages_mapped(struct m9x_device *mdev, u32 base, dma_addr_t dma,
 			    u32 pages, u32 valid, u32 *bad_page, u32 *bad_pte);
 int m9x_submit_faa_virtual_primary_locked(struct m9x_device *mdev,
