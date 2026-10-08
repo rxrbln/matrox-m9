@@ -6,6 +6,7 @@
 #include <linux/string.h>
 #include "m9_cmd.h"
 #include "m9_faa_graph_dual_colorpass_encode.h"
+#include "m9_faa_graph_vertex_banks.h"
 
 /* Four register forms decoded from original 16fa20 SELECTARG2 COLOR0
  * compiler output. No program VA, texture VA, C2/C3 range or record is
@@ -138,6 +139,7 @@ int m9x_faa_dual_colorpass_encode(const struct m9x_faa_color_input *dual,
 	static const u32 c2[4] = { 2432, 364, 1032, 1660 };
 	static const u32 c3[4] = { 2452, 384, 1052, 1680 };
 	static const u32 utility[4] = { 0, 0x3f800000, 0x3f800000, 0x3f000000 };
+	u32 bank = m9x_faa_vertex_bank_stride(M9_FAA_VERTEX_BANK_EXTENT, 6);
 	u32 i, at, end, program_offset = 0, cb;
 
 	if (!dual || !pass || !owner || !dual_ends || !dual_primary ||
@@ -196,8 +198,7 @@ int m9x_faa_dual_colorpass_encode(const struct m9x_faa_color_input *dual,
 		   dual->layout.geometry_bytes) ||
 	    memcmp(pass->declaration, dual->declaration,
 		   dual->declaration_count * 4) ||
-	    !owner[23].bytes || owner[23].bytes < 6 * 0xb3000u + 16 ||
-	    owner[23].base > U32_MAX - 5 * 0xb3000u ||
+	    !m9x_faa_vertex_banks_fit(owner[23].base, owner[23].bytes, 6) ||
 	    owner[28].base > U32_MAX - owner[28].bytes ||
 	    pass->data_offset > owner[28].bytes ||
 	    pass->layout.constants_bytes >
@@ -269,18 +270,18 @@ int m9x_faa_dual_colorpass_encode(const struct m9x_faa_color_input *dual,
 	 */
 	if (pass->layout.program_bytes - pass->layout.entry_bytes[3] == 200)
 		m9_cmd_put(secondary + 2392,
-			   (owner[23].base + 4 * 0xb3000u) | 1);
+			   (owner[23].base + 4 * bank) | 1);
 	else
 		m9_cmd_put(secondary + 2392,
-			   (owner[23].base + 3 * 0xb3000u) | 1);
-	m9_cmd_put(secondary + 2396, (owner[23].base + 5 * 0xb3000u) | 1);
+			   (owner[23].base + 3 * bank) | 1);
+	m9_cmd_put(secondary + 2396, (owner[23].base + 5 * bank) | 1);
 	m9_cmd_put(secondary + 2400, 0x00060010);
 	if (pass->layout.program_bytes - pass->layout.entry_bytes[3] == 200)
 		m9_cmd_put(secondary + 2412,
-			   (owner[23].base + 3 * 0xb3000u) | 1);
+			   (owner[23].base + 3 * bank) | 1);
 	else
 		m9_cmd_put(secondary + 2412,
-			   (owner[23].base + 4 * 0xb3000u) | 1);
+			   (owner[23].base + 4 * bank) | 1);
 	m9_cmd_put(secondary + 2416, 0);
 	m9_cmd_put(secondary + 2420, 0x00000010);
 	m9_cmd_put(secondary + 2708, 0x00020688);

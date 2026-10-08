@@ -7,6 +7,7 @@
 #include <crypto/sha2.h>
 #include "m9_cmd.h"
 #include "m9_faa_graph_dual_first_encode.h"
+#include "m9_faa_graph_vertex_banks.h"
 
 struct addr_field {
 	u16 at;
@@ -153,7 +154,8 @@ int m9x_faa_dual_first_encode(const u8 *sample, size_t sample_bytes,
 	if (geo > owner[28].bytes - c->data_offset ||
 	    owner[28].bytes - c->data_offset - geo <
 		    128 + padded * c->record_stride ||
-	    owner[23].bytes < 6 * 0xb3000u + 16 || owner[24].bytes < 16 ||
+	    !m9x_faa_vertex_banks_fit(owner[23].base, owner[23].bytes, 6) ||
+	    owner[24].bytes < 16 ||
 	    owner[27].bytes < 0x6004 || owner[29].bytes < 2880 ||
 	    input->program_offset > owner[26].bytes ||
 	    c->layout.program_bytes > owner[26].bytes - input->program_offset ||
@@ -301,7 +303,8 @@ int m9x_faa_dual_first_encode(const u8 *sample, size_t sample_bytes,
 				else if (f->at == 2416)
 					off = 3;
 			}
-			off *= 0xb3000u;
+			off *= m9x_faa_vertex_bank_stride(M9_FAA_VERTEX_BANK_EXTENT,
+							  6);
 		}
 		if (f->owner == 28) {
 			off = f->offset == 0xffffffff ? geo + 128 : geo;
