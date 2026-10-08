@@ -136,9 +136,9 @@ static bool m9_faa_graph_release_matches(const struct m9_faa_prepared_graph *gra
 	       graph->generation == args->generation && !args->flags;
 }
 
-static bool m9_faa_graph_continuation_matches(
-		const struct m9_faa_prepared_graph *graph,
-		u64 id, u32 generation, u64 init_point)
+static bool
+m9_faa_graph_continuation_matches(const struct m9_faa_prepared_graph *graph,
+				  u64 id, u32 generation, u64 init_point)
 {
 	return graph && id && init_point && graph->initialized &&
 	       graph->id == id && graph->generation == generation &&
