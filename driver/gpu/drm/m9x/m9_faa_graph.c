@@ -151,8 +151,10 @@ static bool m9_faa_graph_init_request_valid(const struct drm_parhelia_m9_faa_gra
 	       !args->state && !args->pad;
 }
 
-static bool m9_faa_graph_record_retired(struct m9_faa_prepared_graph *graph,
-		struct drm_parhelia_m9_faa_graph_init *args, u64 point)
+static bool
+m9_faa_graph_record_retired(struct m9_faa_prepared_graph *graph,
+			    struct drm_parhelia_m9_faa_graph_init *args,
+			    u64 point)
 {
 	if (!graph || !args || !point || graph->initialized ||
 	    graph->id != args->graph_id ||
