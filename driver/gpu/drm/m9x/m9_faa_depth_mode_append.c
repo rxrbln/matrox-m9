@@ -2,21 +2,9 @@
 /* Copyright 2026 René Rebe <rene@exactco.de> */
 #include <linux/string.h>
 #include <linux/overflow.h>
+#include "m9_cmd.h"
 #include "m9_faa_depth_mode_append.h"
 #include "m9_faa_graph_depth_encode.h"
-
-static u32 word(const u8 *p)
-{
-	return (u32)p[0] | (u32)p[1] << 8 | (u32)p[2] << 16 | (u32)p[3] << 24;
-}
-
-static void put(u8 *p, u32 v)
-{
-	p[0] = v;
-	p[1] = v >> 8;
-	p[2] = v >> 16;
-	p[3] = v >> 24;
-}
 
 int m9x_faa_depth_mode_append_encode(const struct m9x_faa_depth_mode_append_input
 					     *in,
@@ -43,7 +31,7 @@ int m9x_faa_depth_mode_append_encode(const struct m9x_faa_depth_mode_append_inpu
 	};
 	u8 save[116];
 	u32 extra, last_extra, n, split, insert, newpb, newpoint_low, i, at,
-		first, last, newsec, addends;
+		first, last, newsec, addends, link;
 	bool changed;
 	u64 point, fresh_epoch;
 	int ret;
@@ -75,8 +63,8 @@ int m9x_faa_depth_mode_append_encode(const struct m9x_faa_depth_mode_append_inpu
 						0 }))
 		return -EINVAL;
 	ret = m9x_faa_depth_mode_two_plan(in->depth_flags,
-					  word(in->fresh_secondary + 660 +
-					       extra),
+					  m9_cmd_get(in->fresh_secondary + 660 +
+						     extra),
 					  &in->before, in->owner, in->views,
 					  &route);
 	if (ret)
@@ -132,34 +120,34 @@ int m9x_faa_depth_mode_append_encode(const struct m9x_faa_depth_mode_append_inpu
 		in->old_last_secondary_bytes;
 	last = in->secondary_start + in->old_secondary_bytes - 772;
 	{
-		u32 expected[6] = { 0x45452d2c,
+		u32 expected[6] = { M9_CMD_LINK,
 				    (in->owner[29].base + first) | 1,
 				    (in->owner[29].base + last) | 2,
-				    0x45452d2c,
+				    M9_CMD_LINK,
 				    (in->owner[29].base + last) | 1,
 				    (in->owner[29].base + in->secondary_start +
 				     in->old_secondary_bytes) |
 					    2 };
 		for (i = 0; i < 6; i++)
-			if (word(in->old_primary + split - 24 + 4 * i) !=
+			if (m9_cmd_get(in->old_primary + split - 24 + 4 * i) !=
 			    expected[i])
 				return -ESTALE;
 	}
-	if (word(in->fresh_secondary) != 2 ||
-	    word(in->fresh_secondary + 4) != 0x4545e3e6 ||
-	    word(in->fresh_secondary + 8) != 1 ||
-	    word(in->fresh_secondary + 48) != 2 ||
-	    word(in->fresh_secondary + 52) != 0x4545e3e6 ||
-	    word(in->fresh_secondary + 56) != 1)
+	if (m9_cmd_get(in->fresh_secondary) != 2 ||
+	    m9_cmd_get(in->fresh_secondary + 4) != M9_CMD_FENCE ||
+	    m9_cmd_get(in->fresh_secondary + 8) != 1 ||
+	    m9_cmd_get(in->fresh_secondary + 48) != 2 ||
+	    m9_cmd_get(in->fresh_secondary + 52) != M9_CMD_FENCE ||
+	    m9_cmd_get(in->fresh_secondary + 56) != 1)
 		return -EINVAL;
 	for (i = 0; i < 7; i++) {
 		at = sec_at[i] + (sec_at[i] >= 508 ? extra : 0);
-		if (word(in->fresh_secondary + at) !=
+		if (m9_cmd_get(in->fresh_secondary + at) !=
 		    (((u32)fresh_epoch + sec_delta[i]) | sec_tag[i]))
 			return -ESTALE;
 	}
 	for (i = 0; i < 6; i++)
-		if (word(in->old_primary + split + tail_at[i]) !=
+		if (m9_cmd_get(in->old_primary + split + tail_at[i]) !=
 		    (((u32)in->old_final_point - tail_back[i]) | tail_tag[i]))
 			return -ESTALE;
 	ret = m9x_faa_depth_mode_save_encode(in->owner, save, sizeof(save));
@@ -191,53 +179,44 @@ int m9x_faa_depth_mode_append_encode(const struct m9x_faa_depth_mode_append_inpu
 		memcpy(out->primary + split + 116, reset.primary, reset.bytes);
 	}
 	at = split + (changed ? 116 + reset.bytes : 0);
-	put(out->primary + at, 0x45452d2c);
-	put(out->primary + at + 4, (in->owner[29].base + in->secondary_start +
-				    in->old_secondary_bytes) |
-					   1);
-	put(out->primary + at + 8, (in->owner[29].base + in->secondary_start +
-				    in->old_secondary_bytes + newsec - 772) |
-					   2);
-	put(out->primary + at + 12, 0x45452d2c);
-	put(out->primary + at + 16, (in->owner[29].base + in->secondary_start +
-				     in->old_secondary_bytes + newsec - 772) |
-					    1);
-	put(out->primary + at + 20, (in->owner[29].base + in->secondary_start +
-				     in->old_secondary_bytes + newsec) |
-					    2);
+	link = in->owner[29].base + in->secondary_start +
+	       in->old_secondary_bytes;
+	m9_cmd_put_link(out->primary + at, link | 1, (link + newsec - 772) | 2);
+	m9_cmd_put_link(out->primary + at + 12, (link + newsec - 772) | 1,
+			(link + newsec) | 2);
 	for (i = 0; i < 6; i++)
-		put(out->primary + split + insert + tail_at[i],
-		    (newpoint_low - tail_back[i]) | tail_tag[i]);
+		m9_cmd_put(out->primary + split + insert + tail_at[i],
+			   (newpoint_low - tail_back[i]) | tail_tag[i]);
 	if (changed) {
 		memcpy(out->secondary, in->fresh_secondary, 1352 + extra);
 	} else {
 		const u8 *s = in->fresh_secondary;
 
-		put(out->secondary, 3);
-		put(out->secondary + 4, 0x45e3e6e6);
-		put(out->secondary + 8, 1);
-		put(out->secondary + 12, 2);
-		put(out->secondary + 16, word(s + 12));
+		m9_cmd_put(out->secondary, 3);
+		m9_cmd_put(out->secondary + 4, 0x45e3e6e6);
+		m9_cmd_put(out->secondary + 8, 1);
+		m9_cmd_put(out->secondary + 12, 2);
+		m9_cmd_put(out->secondary + 16, m9_cmd_get(s + 12));
 		memcpy(out->secondary + 20, s + 16, 32);
 		memcpy(out->secondary + 52, indexed_save, sizeof(indexed_save));
-		put(out->secondary + 60, in->owner[22].base | 1);
-		put(out->secondary + 136,
-		    ((in->owner[22].base + 644) & 0xffffff84u) | 5);
-		put(out->secondary + 140,
-		    ((in->owner[22].base + 708) & 0xfffffffdu) | 1);
-		put(out->secondary + 152, (in->owner[8].base + 8) | 1);
-		put(out->secondary + 168, (in->owner[8].base + 12) | 1);
-		put(out->secondary + 184, (in->owner[8].base + 16) | 1);
+		m9_cmd_put(out->secondary + 60, in->owner[22].base | 1);
+		m9_cmd_put(out->secondary + 136,
+			   ((in->owner[22].base + 644) & 0xffffff84u) | 5);
+		m9_cmd_put(out->secondary + 140,
+			   ((in->owner[22].base + 708) & 0xfffffffdu) | 1);
+		m9_cmd_put(out->secondary + 152, (in->owner[8].base + 8) | 1);
+		m9_cmd_put(out->secondary + 168, (in->owner[8].base + 12) | 1);
+		m9_cmd_put(out->secondary + 184, (in->owner[8].base + 16) | 1);
 		memcpy(out->secondary + 196, s + 48, 504 + extra);
 		memcpy(out->secondary + 700 + extra, s + 568 + extra,
 		       1352 + extra - 568 - extra);
 	}
 	extra += changed ? 0 : 132;
-	put(out->secondary + 660 + extra, route.ef);
-	put(out->secondary + 816 + extra, route.a9);
-	put(out->secondary + 832 + extra, route.ba);
-	put(out->secondary + 836 + extra, route.ba_descriptor);
-	put(out->secondary + 940 + extra, route.a8);
+	m9_cmd_put(out->secondary + 660 + extra, route.ef);
+	m9_cmd_put(out->secondary + 816 + extra, route.a9);
+	m9_cmd_put(out->secondary + 832 + extra, route.ba);
+	m9_cmd_put(out->secondary + 836 + extra, route.ba_descriptor);
+	m9_cmd_put(out->secondary + 940 + extra, route.a8);
 	memmove(out->ends, in->old_ends, (in->old_end_count - 4) * 4);
 	if (changed)
 		for (i = 0; i < 3; i++)

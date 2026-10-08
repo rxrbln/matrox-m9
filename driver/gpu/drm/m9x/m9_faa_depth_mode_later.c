@@ -1,20 +1,8 @@
 // SPDX-License-Identifier: GPL-2.0-only
 /* Copyright 2026 René Rebe <rene@exactco.de> */
 #include <linux/string.h>
+#include "m9_cmd.h"
 #include "m9_faa_depth_mode_later.h"
-
-static u32 word(const u8 *p)
-{
-	return (u32)p[0] | (u32)p[1] << 8 | (u32)p[2] << 16 | (u32)p[3] << 24;
-}
-
-static void put(u8 *p, u32 v)
-{
-	p[0] = v;
-	p[1] = v >> 8;
-	p[2] = v >> 16;
-	p[3] = v >> 24;
-}
 
 int m9x_faa_depth_mode_later_encode(const u8 *sample, size_t sample_bytes,
 				    const u8 *first, size_t first_bytes,
@@ -116,12 +104,14 @@ int m9x_faa_depth_mode_later_encode(const u8 *sample, size_t sample_bytes,
 			return ret;
 		if (sec != 1352 + extra)
 			return -EINVAL;
-		put(scratch->later.tail + 68, (o[29].base + scursor) | 1);
-		put(scratch->later.tail + 72,
-		    (o[29].base + scursor + 580 + extra) | 2);
-		put(scratch->later.tail + 80,
-		    (o[29].base + scursor + 580 + extra) | 1);
-		put(scratch->later.tail + 84, (o[29].base + scursor + sec) | 2);
+		m9_cmd_put(scratch->later.tail + 68,
+			   (o[29].base + scursor) | 1);
+		m9_cmd_put(scratch->later.tail + 72,
+			   (o[29].base + scursor + 580 + extra) | 2);
+		m9_cmd_put(scratch->later.tail + 80,
+			   (o[29].base + scursor + 580 + extra) | 1);
+		m9_cmd_put(scratch->later.tail + 84,
+			   (o[29].base + scursor + sec) | 2);
 		memcpy(out->image.primary, reset.primary, front);
 		memcpy(out->image.primary + front, scratch->later.tail + 64,
 		       3588);
@@ -145,13 +135,14 @@ int m9x_faa_depth_mode_later_encode(const u8 *sample, size_t sample_bytes,
 	/* Preserve shader-dependent EF fields. Only source-derived depth routes
 	 * are replaced; fragment blend/alpha allocator state remains intact.
 	 */
-	mode.ef = (word(out->image.secondary + 660 + extra) & ~0x20000000u) |
+	mode.ef = (m9_cmd_get(out->image.secondary + 660 + extra) &
+		   ~0x20000000u) |
 		  (mode.after.enabled ? 0 : 0x20000000u);
-	put(out->image.secondary + 660 + extra, mode.ef);
-	put(out->image.secondary + 816 + extra, mode.a9);
-	put(out->image.secondary + 832 + extra, mode.ba);
-	put(out->image.secondary + 836 + extra, mode.ba_descriptor);
-	put(out->image.secondary + 940 + extra, mode.a8);
+	m9_cmd_put(out->image.secondary + 660 + extra, mode.ef);
+	m9_cmd_put(out->image.secondary + 816 + extra, mode.a9);
+	m9_cmd_put(out->image.secondary + 832 + extra, mode.ba);
+	m9_cmd_put(out->image.secondary + 836 + extra, mode.ba_descriptor);
+	m9_cmd_put(out->image.secondary + 940 + extra, mode.a8);
 	*after = mode.after;
 	return 0;
 }

@@ -1,20 +1,8 @@
 // SPDX-License-Identifier: GPL-2.0-only
 /* Copyright 2026 René Rebe <rene@exactco.de> */
 #include <linux/string.h>
+#include "m9_cmd.h"
 #include "m9_faa_depth_mode_clear_resume.h"
-
-static u32 word(const u8 *p)
-{
-	return (u32)p[0] | (u32)p[1] << 8 | (u32)p[2] << 16 | (u32)p[3] << 24;
-}
-
-static void put(u8 *p, u32 v)
-{
-	p[0] = v;
-	p[1] = v >> 8;
-	p[2] = v >> 16;
-	p[3] = v >> 24;
-}
 
 int m9x_faa_depth_mode_clear_resume_encode(const u8 *sample,
 					   size_t sample_bytes, const u8 *color,
@@ -83,22 +71,23 @@ int m9x_faa_depth_mode_clear_resume_encode(const u8 *sample,
 	if (tmp.primary_length != 7744 || tmp.clear_bytes != 4156 ||
 	    sec != 1352 + extra || tmp.end_count != 7 ||
 	    tmp.final_point != previous + 0x160 ||
-	    word(s->primary + 80) != 0x45e3e6e6 || word(s->primary + 88) != 2 ||
-	    word(s->primary + 4156) != 0x45452d2c ||
-	    word(s->primary + 4168) != 0x45452d2c ||
-	    word(s->secondary + 624 + extra) != 1 ||
-	    word(s->secondary + 628 + extra) != 0x45454543 ||
-	    word(s->secondary + 632 + extra) != (u32)previous + 0x110)
+	    m9_cmd_get(s->primary + 80) != 0x45e3e6e6 ||
+	    m9_cmd_get(s->primary + 88) != 2 ||
+	    m9_cmd_get(s->primary + 4156) != M9_CMD_LINK ||
+	    m9_cmd_get(s->primary + 4168) != M9_CMD_LINK ||
+	    m9_cmd_get(s->secondary + 624 + extra) != 1 ||
+	    m9_cmd_get(s->secondary + 628 + extra) != 0x45454543 ||
+	    m9_cmd_get(s->secondary + 632 + extra) != (u32)previous + 0x110)
 		return -EINVAL;
 	/* Original return from the authentic finite query restores uncounted
 	 * mode around the reset's first12-byte E3, followed by count3 re-entry.
 	 * These are source queue-mode controls, not fabricated terminators.
 	 */
 	memmove(s->primary + 100, s->primary + 96, 4156 - 96);
-	put(s->primary + 80, 0x4545e3e6);
-	put(s->primary + 88, ((u32)previous + 0xa0) | 1);
-	put(s->primary + 92, 0x454545e6);
-	put(s->primary + 96, 3);
+	m9_cmd_put(s->primary + 80, M9_CMD_FENCE);
+	m9_cmd_put(s->primary + 88, ((u32)previous + 0xa0) | 1);
+	m9_cmd_put(s->primary + 92, 0x454545e6);
+	m9_cmd_put(s->primary + 96, 3);
 	/* Same live unindexed indirect ranges. The reached finite-query branch
 	 * omits the secondary three-word dependency and later primary two-word
 	 * GPU43 control; it does NOT claim the future Lock point has retired.
@@ -108,7 +97,7 @@ int m9x_faa_depth_mode_clear_resume_encode(const u8 *sample,
 	at = 624 + extra;
 	memmove(s->secondary + at, s->secondary + at + 12, sec - at - 12);
 	sec -= 12;
-	put(s->primary + 4180, (o[29].base + scursor + sec) | 2);
+	m9_cmd_put(s->primary + 4180, (o[29].base + scursor + sec) | 2);
 	/* No caller output is changed until every typed producer and shape check
 	 * above succeeded. Program/constant/record ownership follows live inputs.
 	 */
