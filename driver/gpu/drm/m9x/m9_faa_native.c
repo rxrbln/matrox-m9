@@ -10385,60 +10385,133 @@ release:
  * copied owners or rewinds a cursor. Failure keeps partial mappings/CPA state
  * in the retained graph so DMA-stop teardown can restore every allocation. */
 int m9x_faa_graph_command_pool_prepare(struct m9x_device *mdev,
- struct m9_faa_graph_binding *binding,u32 generation,u64 previous)
+				       struct m9_faa_graph_binding *binding,
+				       u32 generation, u64 previous)
 {
 #ifdef M9_FAA_GRAPH_INIT_CONTROL
- struct m9x_transport *t=&mdev->transport;struct m9x_faa_replay *r;
- struct m9_faa_command_pools *pool=NULL;
- struct m9x_faa_counted_secondary_owner old,selected;
- const struct m9_faa_owner_spec spec={.bytes=0x40000};
- u64 next=0;u32 i,raw;bool claimed=false;int ret;
- if(!binding)return -EINVAL;
- pool=kzalloc(sizeof(*pool),GFP_KERNEL);if(!pool)return -ENOMEM;
- mutex_lock(&t->lock);
- ret=m9_faa_depth_frame_retained_state(mdev,binding,generation,previous,&next);if(ret)goto unlock;
- r=t->faa;
- if(!r->depth_storage||!r->depth_storage->initialized||r->depth_storage->frame){ret=-ESTALE;goto unlock;}
- if(r->command_pools){ret=r->command_pools->ready&&r->command_pools->generation==generation?0:-ESTALE;goto unlock;}
- r->command_pools=pool;pool->generation=generation;claimed=true;
- mutex_unlock(&t->lock);
- for(i=0;i<2;i++){
-  ret=m9_faa_allocate(mdev,&pool->spare[i],&spec,false);if(ret)goto release;
-  ret=m9_faa_dma_prepare_wc(mdev,&pool->spare[i]);if(ret)goto release;
- }
- mutex_lock(&t->lock);
- ret=m9_faa_depth_frame_retained_state(mdev,binding,generation,previous,&next);if(ret)goto unlock;
- r=t->faa;
- if(r->command_pools!=pool||pool->ready){ret=-ESTALE;goto unlock;}
- for(i=0;i<2;i++){
-  struct m9_faa_owner *o=&pool->spare[i];
-  ret=m9x_address_map_faa_system(mdev,&o->system_node,o->dma,o->bytes);if(ret)goto unlock;
-  o->base=o->system_node.start;
- }
- /* No native pool rotation preceded this registry. The source INIT lane
-  * is a genuine observed low32 value from the same retained counter page;
-  * later extensions are bounded by this shared submitted/observed timeline. */
- dma_rmb();raw=READ_ONCE(((u32*)t->fence_cpu)[8])&~15u;
- if(!raw){ret=-EAGAIN;goto unlock;}
- ret=m9x_faa_pool_timeline_init(&pool->timeline,generation,raw);if(ret)goto unlock;
- for(i=0;i<2;i++){
-  struct m9_faa_owner *o=i?&r->draw_owner[2]:&r->owner[M9_FAA_PRIMARY_OWNER];
-  struct m9x_faa_secondary_pool *manager=i?&pool->secondary:&pool->primary;
-  if(!o->cpu||!o->cpu_wc||!drm_mm_node_allocated(&o->system_node)||o->system_node.start!=o->base||o->bytes!=0x40000){ret=-ESTALE;goto unlock;}
-  old=(struct m9x_faa_counted_secondary_owner){.identity=(unsigned long)o,
-   .gpu_base=o->base,.bytes=o->bytes,.cpu_refs=1,.mapped=true};
-  ret=m9x_faa_secondary_pool_init(manager,&pool->timeline,generation,&old,
-   i?r->color_secondary_cursor:r->graph_draw_end_bytes);if(ret)goto unlock;
-  o=&pool->spare[i];
-  selected=(struct m9x_faa_counted_secondary_owner){.identity=(unsigned long)o,
-   .gpu_base=o->base,.bytes=o->bytes,.mapped=true};
-  ret=m9x_faa_secondary_pool_bind(manager,&selected);if(ret)goto unlock;
- }
- pool->ready=true;ret=0;
-unlock:mutex_unlock(&t->lock);
-release:if(!claimed)kfree(pool);return ret;
+	struct m9x_transport *t = &mdev->transport;
+	struct m9x_faa_replay *r;
+	struct m9_faa_command_pools *pool = NULL;
+	struct m9x_faa_counted_secondary_owner old, selected;
+	const struct m9_faa_owner_spec spec = { .bytes = 0x40000 };
+	u64 next = 0;
+	u32 i, raw;
+	bool claimed = false;
+	int ret;
+
+	if (!binding)
+		return -EINVAL;
+	pool = kzalloc_obj(*pool);
+	if (!pool)
+		return -ENOMEM;
+	mutex_lock(&t->lock);
+	ret = m9_faa_depth_frame_retained_state(mdev, binding, generation,
+						previous, &next);
+	if (ret)
+		goto unlock;
+	r = t->faa;
+	if (!r->depth_storage || !r->depth_storage->initialized ||
+	    r->depth_storage->frame) {
+		ret = -ESTALE;
+		goto unlock;
+	}
+	if (r->command_pools) {
+		ret = r->command_pools->ready && r->command_pools->generation ==
+							 generation ?
+			      0 :
+			      -ESTALE;
+		goto unlock;
+	}
+	r->command_pools = pool;
+	pool->generation = generation;
+	claimed = true;
+	mutex_unlock(&t->lock);
+	for (i = 0; i < 2; i++) {
+		ret = m9_faa_allocate(mdev, &pool->spare[i], &spec, false);
+		if (ret)
+			goto release;
+		ret = m9_faa_dma_prepare_wc(mdev, &pool->spare[i]);
+		if (ret)
+			goto release;
+	}
+	mutex_lock(&t->lock);
+	ret = m9_faa_depth_frame_retained_state(mdev, binding, generation,
+						previous, &next);
+	if (ret)
+		goto unlock;
+	r = t->faa;
+	if (r->command_pools != pool || pool->ready) {
+		ret = -ESTALE;
+		goto unlock;
+	}
+	for (i = 0; i < 2; i++) {
+		struct m9_faa_owner *o = &pool->spare[i];
+
+		ret = m9x_address_map_faa_system(mdev, &o->system_node, o->dma,
+						 o->bytes);
+		if (ret)
+			goto unlock;
+		o->base = o->system_node.start;
+	}
+	/* No native pool rotation preceded this registry. The source INIT lane
+	 * is a genuine observed low32 value from the same retained counter page;
+	 * later extensions are bounded by this shared submitted/observed timeline.
+	 */
+	dma_rmb();
+	raw = READ_ONCE(((u32 *)t->fence_cpu)[8]) & ~15u;
+	if (!raw) {
+		ret = -EAGAIN;
+		goto unlock;
+	}
+	ret = m9x_faa_pool_timeline_init(&pool->timeline, generation, raw);
+	if (ret)
+		goto unlock;
+	for (i = 0; i < 2; i++) {
+		struct m9_faa_owner *o = i ? &r->draw_owner[2] :
+					     &r->owner[M9_FAA_PRIMARY_OWNER];
+		struct m9x_faa_secondary_pool *manager = i ? &pool->secondary :
+							     &pool->primary;
+
+		if (!o->cpu || !o->cpu_wc ||
+		    !drm_mm_node_allocated(&o->system_node) ||
+		    o->system_node.start != o->base || o->bytes != 0x40000) {
+			ret = -ESTALE;
+			goto unlock;
+		}
+		old = (struct m9x_faa_counted_secondary_owner){
+			.identity = (unsigned long)o,
+			.gpu_base = o->base,
+			.bytes = o->bytes,
+			.cpu_refs = 1,
+			.mapped = true
+		};
+		ret = m9x_faa_secondary_pool_init(manager, &pool->timeline,
+						  generation, &old,
+						  i ? r->color_secondary_cursor :
+						  r->graph_draw_end_bytes);
+		if (ret)
+			goto unlock;
+		o = &pool->spare[i];
+		selected = (struct m9x_faa_counted_secondary_owner){
+			.identity = (unsigned long)o,
+			.gpu_base = o->base,
+			.bytes = o->bytes,
+			.mapped = true
+		};
+		ret = m9x_faa_secondary_pool_bind(manager, &selected);
+		if (ret)
+			goto unlock;
+	}
+	pool->ready = true;
+	ret = 0;
+unlock:
+	mutex_unlock(&t->lock);
+release:
+	if (!claimed)
+		kfree(pool);
+	return ret;
 #else
- return -EOPNOTSUPP;
+	return -EOPNOTSUPP;
 #endif
 }
 
