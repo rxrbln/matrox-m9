@@ -67,7 +67,8 @@ dual_texture_current(const struct m9_faa_application_texture *t)
 
 /* Retained dual DRAWs after the authenticated Unlock of the previous
  * textured Lock: the same program and pair (or a source-proved stage-1 owner
- * change) for up to three DRAWs, CLEAR3 or no clear, direct Unlock epoch. */
+ * change) for up to three DRAWs, CLEAR3, depth-only or no clear, direct
+ * Unlock epoch. */
 static int
 m9_faa_surface_dual_later_kernel(struct m9_screen *screen,struct m9_faa_surface *surface,
                                  const struct m9_faa_application_frame *frame)
@@ -77,7 +78,8 @@ m9_faa_surface_dual_later_kernel(struct m9_screen *screen,struct m9_faa_surface 
    _Static_assert(sizeof(request)==272,"dual LATER ABI");
    struct m9_faa_graph *g=&surface->graph;
    const struct m9_faa_application_upload *first=&frame->draws[0];
-   if(!frame->count||frame->count>3||(frame->clear_flags&&frame->clear_flags!=3)||
+   if(!frame->count||frame->count>3||
+      (frame->clear_flags&&frame->clear_flags!=3&&frame->clear_flags!=2)||
       frame->clear_color)
       return -EOPNOTSUPP;
    if(g->color_texture_count!=2||g->color_program_count!=4||!g->color_lock_point||
@@ -109,7 +111,8 @@ m9_faa_surface_dual_later_kernel(struct m9_screen *screen,struct m9_faa_surface 
          memcmp(u->shader.program,first->shader.program,u->shader.layout.bytes)||
          memcmp(u->shader.declaration,first->shader.declaration,36)))return -EOPNOTSUPP;
    }
-   const uint64_t delta=(frame->clear_flags?0x150:0xd0)+(frame->count-1u)*UINT64_C(0xa0);
+   const uint64_t delta=(frame->clear_flags==3?0x150:frame->clear_flags==2?0x120:0xd0)+
+                        (frame->count-1u)*UINT64_C(0xa0);
    request=(struct drm_parhelia_m9_faa_graph_dual_later){.graph_id=g->prepared_id,
       .previous_unlock_point=g->color_unlock_point,.generation=g->prepared_generation,
       .width=320,.height=240,.clear_flags=frame->clear_flags,

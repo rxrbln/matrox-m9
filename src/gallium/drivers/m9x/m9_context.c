@@ -9554,7 +9554,17 @@ m9_context_faa_submit_draw(struct m9_context *ctx,
    int ret = -EOPNOTSUPP;
    uint32_t clear_flags = 0;
    if (!ctx || ctx->lost || !ctx->screen) goto out;
-   if (ctx->faa_application_clear.pending) {
+   const struct m9_faa_graph *later_graph = &ctx->faa_surface.graph;
+   if (ctx->faa_application_clear.pending &&
+       ctx->faa_application_clear.buffers == PIPE_CLEAR_DEPTH &&
+       !ctx->faa_application_clear.scissored &&
+       ctx->faa_application_clear.depth == 1.0 &&
+       later_graph->color_texture_count == 2 &&
+       later_graph->color_unlock_attempted && later_graph->color_unlock_point) {
+      /* Depth-only clear of a retained textured graph: the original count4
+       * depth prefix resets depth/HZ/coverage and keeps the colour. */
+      clear_flags = PARHELIA_M9_FAA_COLOR_CLEAR_DEPTH;
+   } else if (ctx->faa_application_clear.pending) {
       /* The current native full reset has a black color/depth-one profile.
        * Never substitute the old TARGET-only packet, which leaves sampled
        * edge state behind. Separate color/depth calls are merged by clear. */
