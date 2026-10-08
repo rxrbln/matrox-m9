@@ -3465,43 +3465,51 @@ static int m9_faa_upload_program(struct m9x_device *mdev,
 	    m9_faa_owner_specs[program].system)
 		return -EINVAL;
 	/* Preflight all spans before publishing the CPU alias. Unknown tails
-	 * remain unknown; neither mapping nor upload supplies invented bytes. */
+	 * remain unknown; neither mapping nor upload supplies invented bytes.
+	 */
 	for (i = 0; i < ARRAY_SIZE(m9_faa_spans); i++) {
 		const struct m9_faa_span *s = &m9_faa_spans[i];
 
 		if (s->owner != program)
 			continue;
-		if (!s->bytes || s->offset > m9_faa_owner_specs[program].bytes ||
+		if (!s->bytes ||
+		    s->offset > m9_faa_owner_specs[program].bytes ||
 		    s->bytes > m9_faa_owner_specs[program].bytes - s->offset ||
 		    s->offset > o->bytes || s->bytes > o->bytes - s->offset ||
-		    s->blob_offset > fw->size || s->bytes > fw->size - s->blob_offset ||
+		    s->blob_offset > fw->size ||
+		    s->bytes > fw->size - s->blob_offset ||
 		    check_add_overflow(known, s->bytes, &known))
 			return -EINVAL;
 	}
 	if (!known)
 		return -EINVAL;
 	/* The caller already checked local identity, so local_prepare inside
-	 * this helper makes no GPU mapping writes; only CPU leaves publish. */
+	 * this helper makes no GPU mapping writes; only CPU leaves publish.
+	 */
 	ret = m9x_address_cpu_local_prepare(mdev, o->base, o->bytes);
 	if (ret)
 		return ret;
 	/* The actual program caller uses a raw linear CPU alias, without a
 	 * formatted selector1 view. Our pinned TTM map covers BAR offset base;
-	 * the CPU-root identity mirror above joins that alias to this owner. */
+	 * the CPU-root identity mirror above joins that alias to this owner.
+	 */
 	for (i = 0; i < ARRAY_SIZE(m9_faa_spans); i++) {
 		const struct m9_faa_span *s = &m9_faa_spans[i];
 
 		if (s->owner == program)
 			iosys_map_memcpy_to(&o->map, s->offset,
-					   fw->data + s->blob_offset, s->bytes);
+					    fw->data + s->blob_offset,
+					    s->bytes);
 	}
 	wmb();
 	/* Actual 2c840/2c878 releases its cached raw CPU view, then writes0.
-	 * The retained native TTM view needs no transient formatted slot. */
+	 * The retained native TTM view needs no transient formatted slot.
+	 */
 	m9x_write(mdev, M9_REG_FRONTEND_STATE, 0);
 	m9x_read(mdev, M9_REG_FRONTEND_STATE);
 	/* Verify only source-known bytes through the retained raw BAR view;
-	 * the CPU-root helper establishes its separate live-owner mapping. */
+	 * the CPU-root helper establishes its separate live-owner mapping.
+	 */
 	for (i = 0; i < ARRAY_SIZE(m9_faa_spans); i++) {
 		const struct m9_faa_span *s = &m9_faa_spans[i];
 
@@ -3509,8 +3517,10 @@ static int m9_faa_upload_program(struct m9x_device *mdev,
 			continue;
 		for (offset = 0; offset < s->bytes; offset += count) {
 			count = min_t(u32, sizeof(observed), s->bytes - offset);
-			iosys_map_memcpy_from(observed, &o->map, s->offset + offset, count);
-			if (memcmp(observed, fw->data + s->blob_offset + offset, count))
+			iosys_map_memcpy_from(observed, &o->map,
+					      s->offset + offset, count);
+			if (memcmp(observed, fw->data + s->blob_offset + offset,
+				   count))
 				return -EIO;
 		}
 	}
@@ -3519,6 +3529,7 @@ static int m9_faa_upload_program(struct m9x_device *mdev,
 		 program, o->base, o->bytes, known);
 	return 0;
 }
+
 #endif
 
 #ifdef M9_FAA_PROGRAM_ACCESS_CONTROL
