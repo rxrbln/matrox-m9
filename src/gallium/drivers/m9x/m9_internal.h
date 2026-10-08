@@ -139,6 +139,9 @@ struct m9_faa_graph {
    uint32_t color_lock_delta;
    uint32_t color_frame_draw_count; /* Authenticated batch receipt, zero for legacy FRAME. */
    uint32_t color_program_count;
+   bool color_depth_mode_valid, color_depth_enabled, color_depth_embedded_hz;
+   bool color_frame_mode_planned;
+   uint32_t color_frame_mode_changes, color_frame_clear_flags;
    bool color_depth_initialized; /* Set only after an authenticated depth FRAME. */
    uint32_t color_frame_flags; /* Exact FIRST/INITIALIZED protocol of the last FRAME. */
    uint64_t color_frame_maintenance_point; /* Genuine secondary-close point, or zero. */

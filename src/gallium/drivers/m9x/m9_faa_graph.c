@@ -539,6 +539,14 @@ m9_faa_color_lock_history_valid(const struct m9_faa_graph *graph)
       if (fused && !first && !initialized_frame) return false;
       uint64_t exact = fused ? 0x110 + (count - 1u) * UINT64_C(0x60) :
          ((first || initialized_frame) ? 0x150 : 0x1a0) + (count - 1u) * UINT64_C(0xa0);
+      if (graph->color_frame_mode_planned) {
+         if (!fused || !graph->color_depth_mode_valid ||
+             graph->color_frame_mode_changes > count ||
+             (graph->color_frame_clear_flags && graph->color_frame_clear_flags != 3) ||
+             (first && graph->color_frame_clear_flags != 3)) return false;
+         exact = (first || graph->color_frame_clear_flags ? 0x110 : 0x90) +
+                 (count - 1u) * UINT64_C(0x60) + graph->color_frame_mode_changes * UINT64_C(0x50);
+      }
       const uint64_t prior_present = graph->color_frame_present_point;
       uint64_t origin = graph->color_next_previous_unlock_point;
       if (prior_present) {
@@ -869,7 +877,12 @@ m9_faa_surface_color_frame_kernel(struct m9_screen *screen,
    graph->color_frame_flags = before.flags;
    graph->color_frame_maintenance_point = 0;
    graph->color_frame_draw_count = 0;
-   if (sampled_reset) graph->color_depth_initialized = true;
+   if (sampled_reset) {
+      graph->color_depth_initialized = true;
+      graph->color_depth_mode_valid = true;
+      graph->color_depth_enabled = true;
+      graph->color_depth_embedded_hz = false;
+   }
    graph->color_unlock_attempted = false;
    graph->color_unlock_point = 0;
    return 0;
@@ -894,7 +907,7 @@ m9_faa_color_batch_with_storage(struct m9_screen *screen,
    if (head->graph_id != graph->prepared_id || head->init_point != graph->init_point ||
        head->generation != graph->prepared_generation)
       return -ESTALE;
-   if (frame->count == 1 && !graph->color_depth_initialized)
+   if (frame->count == 1 && !graph->color_depth_initialized && head->state.depth_enabled)
       return m9_faa_surface_color_frame_kernel(screen, surface, &head->shader,
                                                &head->state, frame->clear_flags,
                                                frame->clear_color);
@@ -908,13 +921,26 @@ m9_faa_color_batch_with_storage(struct m9_screen *screen,
     * with +0x60 per extra DRAW. Their flags and previous receipt remain
     * distinct. A returned maintenance epoch is authenticated separately and
     * never replaces the application's previous Unlock entitlement. */
-   const uint64_t delta = programs == 2 ? 0x110 + (frame->count - 1u) * UINT64_C(0x60) :
+   uint64_t delta = programs == 2 ? 0x110 + (frame->count - 1u) * UINT64_C(0x60) :
       ((first || initialized_frame) ? 0x150 : 0x1a0) + (frame->count - 1u) * UINT64_C(0xa0);
    if (screen->faa.chip != M9_FAA_CHIP_M9 || !screen->wait_point ||
        !m9_faa_runtime_dimensions(surface->width,surface->height) || surface->format != 0x66 ||
-       frame->clear_flags != (PARHELIA_M9_FAA_COLOR_CLEAR_TARGET | PARHELIA_M9_FAA_COLOR_CLEAR_DEPTH) ||
+       (first ? frame->clear_flags != 3 : (frame->clear_flags && frame->clear_flags != 3)) ||
+       (programs != 2 && frame->clear_flags != 3) ||
        frame->clear_color)
       return -EOPNOTSUPP;
+   bool mode_valid = !first && graph->color_depth_mode_valid;
+   bool enabled = !first && graph->color_depth_enabled;
+   bool embedded_hz = !first && graph->color_depth_embedded_hz;
+   uint32_t mode_changes = 0;
+   if (programs == 2) {
+      if (!first && (!initialized_frame || !mode_valid)) return -ESTALE;
+      /* The original later CLEAR3 disabled/reset frontier is unread.
+       * Never replace that transaction with an enabled/ALWAYS draw. */
+      if (!first && frame->clear_flags && (!enabled || embedded_hz || !head->state.depth_enabled))
+         return -EOPNOTSUPP;
+      delta = (first || frame->clear_flags ? 0x110 : 0x90) + (frame->count - 1u) * UINT64_C(0x60);
+   }
    /* Validate the entire frame before publishing an attempt or entering the
     * ioctl. Each descriptor points at its own immutable CPU-owned snapshot. */
    for (uint32_t i = 0; i < frame->count; i++) {
@@ -925,7 +951,7 @@ m9_faa_color_batch_with_storage(struct m9_screen *screen,
           u->generation != graph->prepared_generation)
          return -ESTALE;
       if (state->width != surface->width || state->height != surface->height ||
-          !state->depth_enabled || state->depth_func > PIPE_FUNC_ALWAYS ||
+          (programs != 2 && !state->depth_enabled) || state->depth_func > PIPE_FUNC_ALWAYS ||
           state->scissor_enabled || u->shader.color_flat != state->flatshade ||
           (state->cull_face != PIPE_FACE_NONE && state->cull_face != PIPE_FACE_FRONT && state->cull_face != PIPE_FACE_BACK) ||
           u->shader.layout.count != programs || (u->shader.record_bytes != 32 &&
@@ -941,7 +967,13 @@ m9_faa_color_batch_with_storage(struct m9_screen *screen,
       draws[i].record_count = packed.record_count;
       draws[i].declaration_count = packed.declaration_count;
       draws[i].layout = packed.layout;
-      draws[i].depth_flags = 1u | (state->depth_write ? 2u : 0u) | (state->depth_func << 2);
+      draws[i].depth_flags = (state->depth_enabled ? 1u : PARHELIA_M9_FAA_COLOR_DEPTH_DISABLED) | (state->depth_write ? 2u : 0u) | (state->depth_func << 2);
+      if (programs == 2) {
+         if ((!state->depth_enabled || embedded_hz) && (surface->width != 320 || surface->height != 240))
+            return -EOPNOTSUPP;
+         if (mode_valid && enabled != state->depth_enabled) { mode_changes++; delta += 0x50; }
+         mode_valid = true; enabled = state->depth_enabled; embedded_hz |= !enabled;
+      }
       if (state->flatshade) draws[i].raster_flags |= PARHELIA_M9_FAA_COLOR_RASTER_FLAT;
       if (state->cull_face != PIPE_FACE_NONE)
          draws[i].raster_flags |= ((state->cull_face == PIPE_FACE_BACK) == state->front_ccw) ?
@@ -1031,6 +1063,12 @@ m9_faa_color_batch_with_storage(struct m9_screen *screen,
    graph->color_present_point = 0; graph->color_present_attempted = false;
    graph->color_frame_draw_count = frame->count;
    graph->color_depth_initialized = true;
+   graph->color_frame_mode_planned = programs == 2;
+   graph->color_frame_mode_changes = mode_changes;
+   graph->color_frame_clear_flags = frame->clear_flags;
+   graph->color_depth_mode_valid = true;
+   graph->color_depth_enabled = programs == 2 ? enabled : true;
+   graph->color_depth_embedded_hz = programs == 2 && embedded_hz;
    graph->color_unlock_attempted = false; graph->color_unlock_point = 0;
    return 0;
 }
@@ -1512,6 +1550,9 @@ m9_faa_graph_release_kernel(struct m9_screen *screen, struct m9_faa_graph *graph
    graph->color_lock_delta = 0;
    graph->color_frame_draw_count = 0;
    graph->color_depth_initialized = false;
+   graph->color_depth_mode_valid = graph->color_depth_enabled = graph->color_depth_embedded_hz = false;
+   graph->color_frame_mode_planned = false;
+   graph->color_frame_mode_changes = graph->color_frame_clear_flags = 0;
    graph->color_frame_flags = 0;
    graph->color_frame_maintenance_point = 0;
    graph->color_next_attempted = false;
