@@ -8454,7 +8454,8 @@ int m9x_faa_unlock_diag(struct m9x_device *mdev, u32 color,
 	    !r->observation_retired || !r->normal_lock_view_seen ||
 	    r->unlock_started || !t->faa_virtual_primary || t->async_stop ||
 	    t->async_pending || t->queue_count || !color_bo ||
-	    r->retained_color != color_bo || r->borrowed_color_bytes != 0x50000 ||
+	    r->retained_color != color_bo ||
+	    r->borrowed_color_bytes != 0x50000 ||
 	    color_bo->bo.base.size != 0x50000 ||
 	    r->owner[M9_FAA_COLOR_OWNER].base != color ||
 	    r->observation_generation != t->generation ||
@@ -8492,28 +8493,30 @@ int m9x_faa_unlock_diag(struct m9x_device *mdev, u32 color,
 	new_bytes = unlock_source_bytes + delta;
 	if (old_bytes >= new_bytes || new_bytes > r->primary_bytes ||
 	    new_bytes - old_bytes !=
-			unlock_source_bytes - M9_FAA_NORMAL_LOCK_SPLIT_BYTES ||
-	    t->next_fence > U32_MAX -
-			(unlock_source_target - M9_FAA_NORMAL_LOCK_SPLIT_TARGET)) {
+		    unlock_source_bytes - M9_FAA_NORMAL_LOCK_SPLIT_BYTES ||
+	    t->next_fence > U32_MAX - (unlock_source_target -
+				       M9_FAA_NORMAL_LOCK_SPLIT_TARGET)) {
 		ret = -ERANGE;
 		goto unlock;
 	}
 	target = t->next_fence - 0x10 +
-		(unlock_source_target - M9_FAA_NORMAL_LOCK_SPLIT_TARGET);
+		 (unlock_source_target - M9_FAA_NORMAL_LOCK_SPLIT_TARGET);
 	ret = m9x_transport_drain_locked(mdev);
 	if (ret)
 		goto unlock;
 	/* This is the original live requester, not another engine activation.
-	 * A second readiness path could emit unrelated setup before Unlock. */
+	 * A second readiness path could emit unrelated setup before Unlock.
+	 */
 	if (!t->transport_armed || !t->restore_ready ||
 	    !t->bus_master_enabled || !t->engine_transitioned) {
 		ret = -ESTALE;
 		goto unlock;
 	}
 	ret = m9x_validate_faa_virtual_resume_locked(mdev,
-			&r->owner[M9_FAA_PRIMARY_OWNER].system_node,
-			r->owner[M9_FAA_PRIMARY_OWNER].dma, old_bytes,
-			new_bytes, target);
+						     &r->owner[M9_FAA_PRIMARY_OWNER].system_node,
+						     r->owner[M9_FAA_PRIMARY_OWNER].dma,
+						     old_bytes, new_bytes,
+						     target);
 	if (ret)
 		goto unlock;
 	fence = m9x_fence_create_target_locked(mdev, target);
@@ -8524,13 +8527,15 @@ int m9x_faa_unlock_diag(struct m9x_device *mdev, u32 color,
 	dma_resv_add_fence(color_bo->bo.base.resv, &fence->base,
 			   DMA_RESV_USAGE_WRITE);
 	/* Actual a66f0/55a40 release: the CPU-root leaves and descriptors
-	 * remain cached, while 2c878 writes 31c=0 before the copyback post. */
+	 * remain cached, while 2c878 writes 31c=0 before the copyback post.
+	 */
 	r->unlock_started = true;
 	m9x_write(mdev, M9_REG_FRONTEND_STATE, 0);
 	ret = m9x_extend_faa_virtual_primary_locked(mdev,
-			&r->owner[M9_FAA_PRIMARY_OWNER].system_node,
-			r->owner[M9_FAA_PRIMARY_OWNER].dma, old_bytes,
-			new_bytes, target, point, posted);
+						    &r->owner[M9_FAA_PRIMARY_OWNER].system_node,
+						    r->owner[M9_FAA_PRIMARY_OWNER].dma,
+						    old_bytes, new_bytes, target,
+						    point, posted);
 	if (!ret) {
 		t->next_fence = target + 0x10;
 		r->unlock_retired = true;
