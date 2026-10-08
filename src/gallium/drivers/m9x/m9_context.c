@@ -9877,17 +9877,20 @@ m9_context_faa_texture_snapshot(struct m9_context *ctx,unsigned slot,
    const char *why=m9_texture_bind_view(view,&bind);if(why)return why;
    if(!owner->handle||owner->domain!=M9_BO_VRAM||owner->tiled||
       owner->kind!=M9_RESOURCE_LINEAR_TEXTURE||owner->texture.levels!=last+1||
-      owner->texture.level[0].offset||(owner->texture_unplaced&((2u<<last)-1))||
-      (owner->levels_written&((2u<<last)-1))!=((2u<<last)-1)||
-      bind.code!=M9_TEXTURE_CODE_BGRA||
-      bind.width!=view->texture->width0||bind.height!=view->texture->height0||
+      owner->texture.level[0].offset||(owner->texture_unplaced&((2u<<last)-1)))
+      return "FAA texture live storage is not a placed linear VRAM chain";
+   if((owner->levels_written&((2u<<last)-1))!=((2u<<last)-1))
+      return "FAA texture has an unwritten level";
+   if(!m9_faa_texture_code(bind.code))
+      return "FAA texture format is not RGBA8, RGBX8 or BGRA8";
+   if(bind.width!=view->texture->width0||bind.height!=view->texture->height0||
       bind.depth!=1||bind.last_level!=last||bind.view_first_level||
       bind.view_last_level!=last||
       !m9_render_surface_layout(bind.width,bind.height,4,&extent)||owner->size<extent.size)
-      return "FAA texture live storage, written level or source allocation extent is not qualified";
+      return "FAA texture bind shape or source allocation extent is not qualified";
    *out=(struct m9_faa_application_texture){.resource=view->texture,
       .generation=owner->generation,.owner_bytes=owner->size,.offset=owner->texture.level[0].offset,
-      .view={.handle=owner->handle,.profile=12,.format=bind.code>>1,
+      .view={.handle=owner->handle,.profile=12,.format=bind.code,
        .width=bind.width,.height=bind.height,.storage_kind=bind.kind,.levels=used,
        .min_filter=sampler->min_img_filter==PIPE_TEX_FILTER_LINEAR?2u:1u,
        .mag_filter=sampler->mag_img_filter==PIPE_TEX_FILTER_LINEAR?2u:1u,

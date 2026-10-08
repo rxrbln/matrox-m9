@@ -28,6 +28,20 @@
 #define M9_TEXTURE_LOD_DEFAULT 0x0ff80000u
 /* Descriptor format code of the BGRA render-target family. */
 #define M9_TEXTURE_CODE_BGRA 0xccu
+/* FAA texture views: the RGBA8, RGBX8 and BGRA8 sampler codes, and the
+ * D3D address modes WRAP 1, CLAMP 3 and the GL CLAMP table entry 6. */
+static inline bool
+m9_faa_texture_code(unsigned code)
+{
+   return code == 0xc8 || code == 0xc9 || code == M9_TEXTURE_CODE_BGRA;
+}
+
+static inline bool
+m9_faa_texture_address(unsigned mode)
+{
+   return mode == 1 || mode == 3 || mode == 6;
+}
+
 /* S3TC descriptor bytes.  Three codes, not five: DXT2 decodes as DXT3 and
  * DXT4 as DXT5 (docs/parhelia-m9-s3tc-compressed-textures.md 1). */
 #define M9_TEXTURE_CODE_DXT1 0x20u

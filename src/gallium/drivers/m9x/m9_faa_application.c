@@ -228,14 +228,13 @@ m9_faa_application_texture_valid(const struct m9_faa_application_texture *t)
       t->resource->width0==v->width&&t->resource->height0==v->height&&
       t->resource->last_level+1u>=v->levels&&t->resource->depth0==1&&
       t->resource->array_size==1&&
-      v->handle&&v->profile==12&&v->format==102&&v->levels>=1&&v->levels<=11&&
+      v->handle&&v->profile==12&&m9_faa_texture_code(v->format)&&v->levels>=1&&v->levels<=11&&
       v->width&&v->height&&v->width<=1024&&v->height<=1024&&
       !(v->width&(v->width-1))&&!(v->height&(v->height-1))&&
       v->storage_kind==((v->width>64||v->height>64)?0x21u:1u)&&
       (v->min_filter==1||v->min_filter==2)&&(v->mag_filter==1||v->mag_filter==2)&&
       v->mip_filter>=1&&v->mip_filter<=3&&(v->levels>1||v->mip_filter==1)&&
-      (v->address_u==1||v->address_u==3)&&
-      (v->address_v==1||v->address_v==3)&&!t->offset&&
+      m9_faa_texture_address(v->address_u)&&m9_faa_texture_address(v->address_v)&&!t->offset&&
       m9_render_surface_layout(v->width,v->height,4,&layout)&&
       t->owner_bytes>=layout.size;
 }

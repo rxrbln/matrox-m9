@@ -75,14 +75,13 @@ dual_texture_current(const struct m9_faa_application_texture *t)
       r->texture.level[0].offset==t->offset&&!t->offset&&
       !(r->texture_unplaced&((2u<<(v->levels-1))-1))&&
       (r->levels_written&((2u<<(v->levels-1))-1))==((2u<<(v->levels-1))-1)&&
-      r->texture_code==M9_TEXTURE_CODE_BGRA&&
+      m9_faa_texture_code(r->texture_code)&&r->texture_code==v->format&&
       m9_render_surface_layout(w,h,4,&layout)&&r->size>=layout.size&&
-      v->handle&&v->profile==12&&v->format==102&&
+      v->handle&&v->profile==12&&
       v->storage_kind==(w>64||h>64?0x21u:0x01u)&&v->levels>=1&&v->levels<=11&&
       (v->min_filter==1||v->min_filter==2)&&(v->mag_filter==1||v->mag_filter==2)&&
       v->mip_filter>=1&&v->mip_filter<=3&&(v->levels>1||v->mip_filter==1)&&
-      (v->address_u==1||v->address_u==3)&&
-      (v->address_v==1||v->address_v==3);
+      m9_faa_texture_address(v->address_u)&&m9_faa_texture_address(v->address_v);
 }
 
 /* Per-DRAW checks shared by later transactions and the frame pre-check.
