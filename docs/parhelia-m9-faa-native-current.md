@@ -4,6 +4,22 @@ Copyright 2026 René Rebe <rene@exactco.de>
 SPDX-License-Identifier: GPL-2.0-only
 
 
+## October 8: three glxgears FAA frames retire; black output isolated before presentation
+
+The combined native/runtime-mapping candidate now completes three real
+frames without preparation failure or wedge: Lock/Unlock8e0/900,
+1130/1150,1980/19a0. Every frame contains12 jobs. Canonical DRMf595ad0 plus
+2a7d35d preserve used attachment metadata while validating live mappings.
+[Exact input, intermediate and pixel evidence](../tests/m9-faa-glxgears-first-hardware-20261008/three-retired-black/README.md).
+
+The resolved F021 rows are allzero before the application destination write;
+X presentation is therefore not the cause of the black image. Intermediate
+GPU outputs exist, but gathered COLOR values do not match the plausible
+colors produced by the ISA model from captured inputs. Packet bindings,
+constant ranges and output routing are under review. Three completed black
+frames are not a glxgears rendering pass, and checkpoint timings are not FPS.
+Command-pool rotation and textured submission remain unfinished.
+
 ## October 8: full glxgears FIRST retires; pixels and frame reuse still fail
 
 DRMff3696f removes the false address check on vendor transition controls and
