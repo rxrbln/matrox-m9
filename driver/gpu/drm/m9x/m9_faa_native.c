@@ -4836,7 +4836,8 @@ int m9x_faa_dma_snapshot(struct m9x_device *mdev, void **data, size_t *bytes)
 		ret = -EIO;
 		goto unlock;
 	}
-	if (!r || !r->attempted || !r->observation_retired || !r->observation_point ||
+	if (!r || !r->attempted || !r->observation_retired ||
+	    !r->observation_point ||
 	    r->observation_generation != t->generation ||
 	    r->observation_point > t->completed_point || t->async_pending ||
 	    t->queue_count) {
@@ -4844,9 +4845,11 @@ int m9x_faa_dma_snapshot(struct m9x_device *mdev, void **data, size_t *bytes)
 		goto unlock;
 	}
 	/* Validate the complete inventory and budget before allocating/copying.
-	 * Failed final submission never reaches this raw read contract. */
+	 * Failed final submission never reaches this raw read contract.
+	 */
 	for (i = 0; i < ARRAY_SIZE(r->owner); i++) {
-		ret = m9_faa_dma_span(&m9_faa_owner_specs[i], &r->owner[i], &span);
+		ret = m9_faa_dma_span(&m9_faa_owner_specs[i], &r->owner[i],
+				      &span);
 		if (ret < 0)
 			goto unlock;
 		if (!ret)
@@ -4874,11 +4877,14 @@ int m9x_faa_dma_snapshot(struct m9x_device *mdev, void **data, size_t *bytes)
 		ret = -ENOMEM;
 		goto unlock;
 	}
-	*header = (struct m9_faa_dma_header) {
+	*header = (struct m9_faa_dma_header){
 		.magic = cpu_to_le32(0x4d44394d), /* M9DM */
-		.version = cpu_to_le32(1), .header_bytes = cpu_to_le32(offset),
-		.owners = cpu_to_le32(count), .point = cpu_to_le64(r->observation_point),
-		.generation = cpu_to_le32(t->generation), .bytes = cpu_to_le32(total),
+		.version = cpu_to_le32(1),
+		.header_bytes = cpu_to_le32(offset),
+		.owners = cpu_to_le32(count),
+		.point = cpu_to_le64(r->observation_point),
+		.generation = cpu_to_le32(t->generation),
+		.bytes = cpu_to_le32(total),
 	};
 	entry = (void *)(header + 1);
 	rmb();
@@ -4889,11 +4895,13 @@ int m9x_faa_dma_snapshot(struct m9x_device *mdev, void **data, size_t *bytes)
 
 		if (spec->local || spec->system)
 			continue;
-		*entry++ = (struct m9_faa_dma_entry) {
-			.owner = cpu_to_le32(i), .base = cpu_to_le32(owner->base),
+		*entry++ = (struct m9_faa_dma_entry){
+			.owner = cpu_to_le32(i),
+			.base = cpu_to_le32(owner->base),
 			.bytes = cpu_to_le32(spec->bytes),
 			.allocated_bytes = cpu_to_le32(owner->bytes),
-			.data_offset = cpu_to_le32(offset), .reserved = 0,
+			.data_offset = cpu_to_le32(offset),
+			.reserved = 0,
 		};
 		memcpy((u8 *)header + offset, owner->cpu, spec->bytes);
 		offset += spec->bytes;
