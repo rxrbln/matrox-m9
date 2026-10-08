@@ -12,6 +12,7 @@ int m9x_faa_depth_mode_reset_encode(const u8*blob,size_t bytes,
 {
  struct m9x_faa_depth_mode_image route;
  struct m9x_faa_depth_stage_image stages;
+ struct m9x_faa_surface_layout layout;
  u8 hash[32],*image;
  u32 n,flags,i;
  static const u32 token_at[8]={8,92,128,312,712,768,904,3668};
@@ -23,7 +24,12 @@ int m9x_faa_depth_mode_reset_encode(const u8*blob,size_t bytes,
  if(out->capacity<n)return -ERANGE;
  sha256(blob,bytes,hash);if(memcmp(hash,digest,sizeof(hash)))return -EINVAL;
  if(m9x_faa_graph_draw_owners_validate(o)||m9x_faa_depth_stages_encode(v,0x3f800000,&stages))return -EINVAL;
- if(o[8].bytes<128||o[22].bytes<712)return -ERANGE;
+ if(!m9x_faa_runtime_shape(v->owner[0].width,v->owner[0].height)||
+  !m9x_faa_surface_layout(v->owner[0].width,v->owner[0].height,&layout))return -EINVAL;
+ if(o[1].bytes<layout.owner[M9_FAA_SURFACE_PRIMARY].capacity||
+  o[2].bytes<layout.owner[M9_FAA_SURFACE_MAIN].capacity||
+  o[3].bytes<layout.owner[M9_FAA_SURFACE_AUXILIARY].capacity||
+  o[8].bytes<128||o[22].bytes<712)return -ERANGE;
  flags=before->enabled?15:32|14;
  if(m9x_faa_depth_mode_two_plan(flags,0x20004000,before,o,v,&route))return -EINVAL;
  /* All preflight refusals precede any caller output mutation. */
@@ -31,6 +37,12 @@ int m9x_faa_depth_mode_reset_encode(const u8*blob,size_t bytes,
  /* source25680/24870 joins, not numerical address classification */
  put(image+72,o[8].base|1);put(image+76,o[8].base+20);
  put(image+136,o[1].base|1);put(image+148,route.a9);
+ /* fbb19/fbbd3 descriptor widths; aab86..aaba3 main backing extent>>5
+  * feeds shadow+28 then fbe16..fbe31. Use source logical/backing extent,
+  * never native page-rounded GEM capacity or captured dimension words. */
+ put(image+140,layout.primary_descriptor);put(image+152,layout.companion_descriptor);
+ for(i=208;i<=220;i+=4)put(image+i,layout.ad);
+ put(image+580,layout.height<<16|layout.width);
  put(image+160,route.ba);put(image+164,route.ba_descriptor);
  put(image+172,o[22].base|1);put(image+196,o[2].base|1);put(image+200,o[3].base|1);
  put(image+588,o[22].base|1);

@@ -8310,7 +8310,7 @@ int m9x_faa_graph_depth_batch_prepare(struct m9x_device *mdev,
   if(ret)goto release;
   {struct m9x_faa_surface_layout shape;
    if(!m9x_faa_graph_binding_layout(binding,&shape)){ret=-ESTALE;goto release;}
-   if(mode_plan.after.embedded_hz&&(shape.width!=320||shape.height!=240)){ret=-EOPNOTSUPP;goto release;}
+   if(!m9x_faa_runtime_shape(shape.width,shape.height)){ret=-EOPNOTSUPP;goto release;}
   }
   if(mode_plan.mode_changes){
    ret=request_firmware(&reset_fw,M9_FAA_DEPTH_MODE_RESET_FIRMWARE,&mdev->pdev->dev);if(ret)goto release;

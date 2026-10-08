@@ -54,7 +54,6 @@ int m9x_faa_color_batch_copy(const struct drm_parhelia_m9_faa_graph_color_frame_
    check_add_overflow(l->program_bytes,l->constants_bytes,&sum)||
    check_add_overflow(sum,l->geometry_bytes,&sum)||
    check_add_overflow(sum,d->declaration_count*4u,&sum)||sum!=d->upload_bytes||sum>0x42000)goto out;
-  if((d->depth_flags&32u)&&(args->width!=320||args->height!=240)){ret=-EOPNOTSUPP;goto out;}
   for(j=0;j<l->program_count;j++)if((l->entry_bytes[j]&7)||l->entry_bytes[j]>=l->program_bytes||
    (j&&l->entry_bytes[j]<=l->entry_bytes[j-1])||
    (l->constant_begin[j]&7)||(l->constant_end[j]&7)||
