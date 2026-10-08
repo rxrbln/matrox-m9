@@ -9291,9 +9291,19 @@ int m9x_faa_graph_depth_frame_submit(struct m9x_device *mdev,
  for(i=0;i<3;i++){
   struct m9_faa_owner *o=i==2?m9_faa_command_owner(r,true):i?&r->draw_owner[1]:primary;
   if(!o||!o->cpu||!drm_mm_node_allocated(&o->system_node)||o->system_node.start!=o->base){m9_faa_frame_trace(mdev,"refuse-owner-node",i,o?o->base:0,o?o->system_node.start:0,-ESTALE,false);ret=-ESTALE;goto out;}
-  for(page=0;page<o->bytes/PAGE_SIZE;page++){
-   ret=m9x_address_read_pte(mdev,o->base+page*PAGE_SIZE,&pte);if(ret){m9_faa_frame_trace(mdev,"refuse-owner-pte-read",i,page,o->base,ret,false);goto out;}
-   if(pte!=(m9x_address_pte_word(o->dma+page*PAGE_SIZE)|1)){m9_faa_frame_trace(mdev,"refuse-owner-pte",i,page,((u64)pte<<32)|(m9x_address_pte_word(o->dma+page*PAGE_SIZE)|1),-ESTALE,false);ret=-ESTALE;goto out;}}}
+		ret = m9x_system_pages_mapped(mdev, o->base, o->dma,
+					      o->bytes / PAGE_SIZE, 1u, &page, &pte);
+		if (ret == -ESTALE)
+			m9_faa_frame_trace(mdev, "refuse-owner-pte", i, page,
+					   ((u64)pte << 32) |
+					   (m9x_address_pte_word(o->dma + page * PAGE_SIZE) | 1),
+					   ret, false);
+		else if (ret)
+			m9_faa_frame_trace(mdev, "refuse-owner-pte-read", i, page,
+					   o->base, ret, false);
+		if (ret)
+			goto out;
+	}
  /* DLL 0x40004000 transition / 0x40008000 query words are controls,
   * as also classified by m9_submit. They carry no SYSTEM owner identity.
   * Every actual primary/data/secondary PTE and local code view above is
@@ -9369,9 +9379,9 @@ int m9x_faa_graph_depth_frame_submit(struct m9x_device *mdev,
   dev_info(&mdev->pdev->dev,"M9 FAA FIRST batch retired: draws=%u lock=%#llx primary_bytes=%u secondary_bytes=%u input_bytes=%u\n",
    frame->draw_count,*point,frame->primary_bytes,frame->secondary_bytes,frame->batch_data_bytes);
 out:
- if(ret)*point=0;if(fence&&ret)dma_fence_set_error(&fence->base,ret);
- if(ret&&*posted){t->wedged=true;t->generation++;WARN_ON(t->quarantined_fence);t->quarantined_fence=fence;fence=NULL;}
- else if(fence)dma_fence_signal(&fence->base);if(fence)dma_fence_put(&fence->base);
+	if (ret)
+		*point = 0;
+	m9x_transport_fence_finish_locked(mdev, fence, ret, *posted);
  mutex_unlock(&t->lock);
  m9_faa_frame_trace(mdev,"submit-return",0,0,*point,ret,false);return ret;
 #else
