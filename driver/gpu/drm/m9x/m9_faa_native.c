@@ -4180,8 +4180,8 @@ int m9x_faa_submit_diag(struct m9x_device *mdev, u32 color,
 			struct drm_gem_vram_object *color_bo, u64 *point,
 			bool *color_active, bool *color_retained)
 {
-	return m9_faa_submit(mdev, color, color_bo, point,
-			      color_active, color_retained, NULL);
+	return m9_faa_submit(mdev, color, color_bo, point, color_active,
+			     color_retained, NULL);
 }
 
 int m9x_faa_submit_graph(struct m9x_device *mdev,
