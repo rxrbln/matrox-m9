@@ -208,19 +208,24 @@ m9_faa_graph_request_valid(const struct drm_parhelia_m9_faa_graph_prepare *args)
 int m9x_faa_graph_selftest(void)
 {
 	struct drm_parhelia_m9_faa_graph_prepare args = {
-		.width = 320, .height = 240, .format = 0x66,
+		.width = 320,
+		.height = 240,
+		.format = 0x66,
 		.primary_desc = 0xcc220140,
 		.companion_desc = 0x7a220140,
-		.hz_desc = 0xf0010140, .ad = 0x136080 >> 5,
+		.hz_desc = 0xf0010140,
+		.ad = 0x136080 >> 5,
 	};
 	u32 i;
 	struct drm_gem_object gem[2];
 	struct m9_faa_prepared_graph graph = {
-		.id = 7, .generation = 0,
+		.id = 7,
+		.generation = 0,
 	};
 	struct m9_faa_graph_binding retained = { .graph = &graph };
 	struct drm_parhelia_m9_faa_graph_release release = {
-		.graph_id = 7, .generation = 0,
+		.graph_id = 7,
+		.generation = 0,
 	};
 	u32 address[PARHELIA_M9_FAA_GRAPH_OWNERS] = {
 		0x1000000, 0x1100000, 0x1240000,
@@ -232,8 +237,10 @@ int m9x_faa_graph_selftest(void)
 		     PARHELIA_M9_FAA_GRAPH_OWNERS);
 	for (i = 0; i < PARHELIA_M9_FAA_GRAPH_OWNERS; i++) {
 		args.owners[i].handle = i + 1;
-		args.owners[i].logical_bytes = m9_faa_graph_owner_spec[i].logical;
-		args.owners[i].capacity_bytes = m9_faa_graph_owner_spec[i].capacity;
+		args.owners[i].logical_bytes =
+			m9_faa_graph_owner_spec[i].logical;
+		args.owners[i].capacity_bytes =
+			m9_faa_graph_owner_spec[i].capacity;
 		args.owners[i].clear_bytes = m9_faa_graph_owner_spec[i].clear;
 	}
 	if (!m9_faa_graph_request_valid(&args))
@@ -280,7 +287,8 @@ int m9x_faa_graph_selftest(void)
 	if (m9_faa_graph_continuation_matches(&graph, 7, 0, 0xb0))
 		return -EINVAL;
 	/* A matching file token can disappear after authentication, while an
-	 * acquired binding reference must remain live for the admitted caller. */
+	 * acquired binding reference must remain live for the admitted caller.
+	 */
 	kref_init(&retained.refs);
 	if (m9x_faa_graph_binding_get(&retained) != &retained ||
 	    kref_read(&retained.refs) != 2)
@@ -300,15 +308,15 @@ int m9x_faa_graph_selftest(void)
 	    m9_faa_graph_source_owner[PARHELIA_M9_FAA_HZ] != 5 ||
 	    m9_faa_graph_source_owner[PARHELIA_M9_FAA_SENTINEL] != 8 ||
 	    !m9_faa_graph_ranges_disjoint(address) ||
-	    !m9_faa_graph_local_span(0, 0x2f00000, 0x98000,
-				    0x10000000, &native) || native != 0x2f00000)
+	    !m9_faa_graph_local_span(0, 0x2f00000, 0x98000, 0x10000000,
+				     &native) ||
+	    native != 0x2f00000)
 		return -EINVAL;
 	address[PARHELIA_M9_FAA_HZ] = address[PARHELIA_M9_FAA_COMPANION];
 	if (m9_faa_graph_ranges_disjoint(address) ||
-	    m9_faa_graph_local_span(0, 0x2f00001, 0x98000,
-				    0x10000000, &native) ||
-	    m9_faa_graph_local_span(0, 0x2f00000, 0x98000,
-				    0x2f00000, &native))
+	    m9_faa_graph_local_span(0, 0x2f00001, 0x98000, 0x10000000,
+				    &native) ||
+	    m9_faa_graph_local_span(0, 0x2f00000, 0x98000, 0x2f00000, &native))
 		return -EINVAL;
 	return 0;
 }
