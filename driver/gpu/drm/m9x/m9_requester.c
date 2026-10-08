@@ -740,7 +740,13 @@ static void m9_transport_publish_end(struct m9x_device *mdev, u32 end)
 struct m9_primary_place {
 	u8 *cpu;
 	u32 offset, end;
+	bool retained;
 };
+
+static bool m9_faa_ordinary_continue;
+module_param_named(faa_ordinary_continue, m9_faa_ordinary_continue, bool, 0400);
+MODULE_PARM_DESC(faa_ordinary_continue,
+		 "Append ordinary jobs to a retained FAA primary instead of refusing them (UNTESTED)");
 
 /* The current DMA32 staging slot; only a job that does not fit switches the
  * slot, after the prior interval retired, and rebases the requester's 0x400.
@@ -778,9 +784,40 @@ static int m9_primary_place_staging_locked(struct m9x_device *mdev, u32 bytes,
 	return 0;
 }
 
+/* While an FAA graph owns the requester, the job continues its retained
+ * flags30/B primary (MxMD 23a09/2461e): COMMAND_BASE stays, END moves on.
+ */
+static int m9_primary_place_retained_locked(struct m9x_device *mdev, u32 bytes,
+					    struct m9_primary_place *place)
+{
+	struct m9x_faa_ordinary_primary dst;
+	int ret;
+
+	/* FAA END posts admit no outstanding queue; keep that true. */
+	ret = m9x_transport_drain_locked(mdev);
+	if (ret)
+		return ret;
+	ret = m9x_faa_ordinary_primary_locked(mdev, bytes, &dst);
+	if (ret)
+		return ret;
+	ret = m9x_system_pages_mapped(mdev, (u32)dst.node->start, dst.dma,
+				      DIV_ROUND_UP(dst.offset + bytes, PAGE_SIZE),
+				      1u, NULL, NULL);
+	if (ret)
+		return ret;
+	place->cpu = dst.cpu + dst.offset;
+	place->offset = dst.offset;
+	place->end = (u32)dst.node->start + dst.offset + bytes;
+	place->retained = true;
+	return 0;
+}
+
 static int m9_primary_place_locked(struct m9x_device *mdev, u32 bytes,
 				   struct m9_primary_place *place)
 {
+	place->retained = false;
+	if (m9_faa_ordinary_continue && mdev->transport.faa_virtual_primary)
+		return m9_primary_place_retained_locked(mdev, bytes, place);
 	return m9_primary_place_staging_locked(mdev, bytes, place);
 }
 
@@ -788,7 +825,10 @@ static void m9_primary_place_commit_locked(struct m9x_device *mdev,
 					   const struct m9_primary_place *place,
 					   u32 bytes)
 {
-	mdev->transport.command_offset = place->offset + bytes;
+	if (place->retained)
+		m9x_faa_ordinary_primary_commit_locked(mdev, place->offset + bytes);
+	else
+		mdev->transport.command_offset = place->offset + bytes;
 }
 
 static int m9_submit_kernel_stream_common(struct m9x_device *mdev,
@@ -830,7 +870,10 @@ static int m9_submit_kernel_stream_common(struct m9x_device *mdev,
 	if (ret)
 		return ret;
 	memcpy(place.cpu, commands, dwords * sizeof(u32));
-	dma_wmb();
+	if (place.retained)
+		wmb(); /* WC retained primary; dma_wmb() is no SFENCE on x86 */
+	else
+		dma_wmb();
 
 	m9_transport_publish_end(mdev, place.end);
 	if (doorbell_posted)

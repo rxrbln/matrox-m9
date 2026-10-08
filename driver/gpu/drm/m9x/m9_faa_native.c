@@ -449,6 +449,8 @@ struct m9x_faa_replay {
 	 * every posted END advances this cursor even if its later wait fails. */
 	bool graph_draw_claimed;
 	u32 graph_draw_posts, graph_draw_end_bytes;
+	/* Ordinary jobs appended to the retained primary (stage 2). */
+	u32 ordinary_posts;
 	u64 graph_draw_point;
 	/* Prepared program bytes remain CPU inputs until the original c0
 	 * access boundary. Keep their source buffer through that upload. */
@@ -8314,6 +8316,60 @@ bool m9x_faa_graph_empty_primary_locked(struct m9x_device *mdev,
  (void)t;(void)node;(void)dma;return false;
 #endif
 }
+
+/* An ordinary job continues the retained primary at the graph's last END.
+ * A prepared frame or pool transition owns that cursor; at capacity the job
+ * is refused, since ordinary jobs do not rotate the counted pool.
+ */
+int m9x_faa_ordinary_primary_locked(struct m9x_device *mdev, u32 bytes,
+				    struct m9x_faa_ordinary_primary *out)
+{
+	struct m9x_transport *t = &mdev->transport;
+#ifdef M9_FAA_GRAPH_INIT_CONTROL
+	struct m9x_faa_replay *r = t->faa;
+	struct m9_faa_owner *o;
+	u32 capacity;
+
+	lockdep_assert_held(&t->lock);
+	if (!r || !t->faa_virtual_primary || !t->faa_source_context ||
+	    !m9x_faa_graph_active(mdev) || m9x_faa_graph_preparing(mdev))
+		return -EACCES;
+	if ((r->depth_storage && r->depth_storage->frame) ||
+	    (r->command_pools && r->command_pools->primary.planned))
+		return -EBUSY;
+	o = m9_faa_command_owner(r, false);
+	if (!o || !o->cpu || !drm_mm_node_allocated(&o->system_node) ||
+	    o->system_node.start != o->base)
+		return -ESTALE;
+	capacity = min_t(u64, o->bytes, o->system_node.size);
+	if (!bytes || r->graph_draw_end_bytes > capacity ||
+	    bytes > capacity - r->graph_draw_end_bytes)
+		return -ENOSPC;
+	out->node = &o->system_node;
+	out->dma = o->dma;
+	out->cpu = o->cpu;
+	out->offset = r->graph_draw_end_bytes;
+	return 0;
+#else
+	lockdep_assert_held(&t->lock);
+	return -EACCES;
+#endif
+}
+
+void m9x_faa_ordinary_primary_commit_locked(struct m9x_device *mdev,
+					    u32 end_bytes)
+{
+#ifdef M9_FAA_GRAPH_INIT_CONTROL
+	struct m9x_faa_replay *r = mdev->transport.faa;
+
+	lockdep_assert_held(&mdev->transport.lock);
+	r->graph_draw_end_bytes = end_bytes;
+	r->ordinary_posts++;
+#else
+	lockdep_assert_held(&mdev->transport.lock);
+#endif
+}
+
 #ifdef M9_FAA_GRAPH_INIT_CONTROL
 static int m9_faa_primary_rotate(struct m9x_device *mdev,
  struct m9_faa_graph_binding *binding,u32 generation,u64 previous,u32 needed)
