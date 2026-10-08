@@ -5484,8 +5484,7 @@ int m9x_faa_graph_present_submit(struct m9x_device *mdev,
 	ret = m9x_address_check_local_mapping(mdev, src.gpu_base, src.bytes);
 	if (ret)
 		goto out;
-	fence = m9x_fence_create_target_locked(mdev,
-					       lower_32_bits(image.final_point));
+	fence = m9x_fence_create_target_locked(mdev, lower_32_bits(image.final_point));
 	if (!fence) {
 		ret = -ENOMEM;
 		goto out;
@@ -5573,8 +5572,7 @@ int m9x_faa_graph_present_submit(struct m9x_device *mdev,
 						    primary->dma,
 						    r->graph_draw_end_bytes, end,
 						    i == 1,
-						    i == 2 ?
-						    lower_32_bits(image.final_point) : 0,
+						    i == 2 ? lower_32_bits(image.final_point) : 0,
 						    &stage, &stage_posted);
 		*posted |= stage_posted;
 		if (stage_posted) {
