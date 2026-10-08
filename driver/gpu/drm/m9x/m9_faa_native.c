@@ -2369,8 +2369,8 @@ static u32 m9_faa_hash(u32 hash, const u8 *bytes, u32 count)
  * the upload through its BAR mapping; GPU identity leaves are checked later.
  */
 static int m9_faa_verify_upload(struct m9x_device *mdev,
-			      struct m9x_faa_replay *r,
-			      const struct firmware *fw)
+				struct m9x_faa_replay *r,
+				const struct firmware *fw)
 {
 	u32 expected[ARRAY_SIZE(r->owner)] = { 0 };
 	u32 observed[ARRAY_SIZE(r->owner)] = { 0 };
@@ -2401,19 +2401,23 @@ static int m9_faa_verify_upload(struct m9x_device *mdev,
 			const u8 *source = fw->data + s->blob_offset + offset;
 
 			count = min_t(u32, sizeof(data), s->bytes - offset);
-			iosys_map_memcpy_from(data, &o->map, s->offset + offset, count);
+			iosys_map_memcpy_from(data, &o->map, s->offset + offset,
+					      count);
 			if (memcmp(data, source, count)) {
 				for (j = 0; j < count; j++)
 					if (data[j] != source[j])
 						break;
 				dev_err(&mdev->pdev->dev,
 					"M9 FAA upload mismatch: owner=%u base=%#x offset=%#x expected=%#x observed=%#x\n",
-					s->owner, o->base, s->offset + offset + j,
-					source[j], data[j]);
+					s->owner, o->base,
+					s->offset + offset + j, source[j],
+					data[j]);
 				return -EIO;
 			}
-			expected[s->owner] = m9_faa_hash(expected[s->owner], source, count);
-			observed[s->owner] = m9_faa_hash(observed[s->owner], data, count);
+			expected[s->owner] =
+				m9_faa_hash(expected[s->owner], source, count);
+			observed[s->owner] =
+				m9_faa_hash(observed[s->owner], data, count);
 		}
 		known[s->owner] += s->bytes;
 	}
@@ -2421,7 +2425,8 @@ static int m9_faa_verify_upload(struct m9x_device *mdev,
 		if (known[i])
 			dev_info(&mdev->pdev->dev,
 				 "M9 FAA known upload verified: owner=%u base=%#x bytes=%u expected_fnv=%#x observed_fnv=%#x\n",
-				 i, r->owner[i].base, known[i], expected[i], observed[i]);
+				 i, r->owner[i].base, known[i], expected[i],
+				 observed[i]);
 	return 0;
 }
 
