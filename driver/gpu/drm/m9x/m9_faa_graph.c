@@ -167,16 +167,18 @@ m9_faa_graph_record_retired(struct m9_faa_prepared_graph *graph,
 	return true;
 }
 
-static bool m9_faa_graph_request_valid(
-		const struct drm_parhelia_m9_faa_graph_prepare *args)
+static bool
+m9_faa_graph_request_valid(const struct drm_parhelia_m9_faa_graph_prepare *args)
 {
 	struct m9x_faa_surface_layout layout;
 	u32 i, j;
 
 	/* Whole original INIT profiles close these two command shapes. The
-	 * allocation helper's broader domain does not enable new producers. */
-	if (!args || !((args->width == 320 && args->height == 240) ||
-		      (args->width == 1024 && args->height == 768)) ||
+	 * allocation helper's broader domain does not enable new producers.
+	 */
+	if (!args ||
+	    !((args->width == 320 && args->height == 240) ||
+	      (args->width == 1024 && args->height == 768)) ||
 	    !m9x_faa_surface_layout(args->width, args->height, &layout) ||
 	    args->format != 0x66 ||
 	    args->primary_desc != layout.primary_descriptor ||
