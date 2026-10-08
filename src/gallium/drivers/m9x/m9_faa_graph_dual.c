@@ -53,20 +53,26 @@ dual_texture_current(const struct m9_faa_application_texture *t)
    const struct m9_resource *r=(const struct m9_resource *)t->resource;
    const struct drm_parhelia_m9_faa_texture_view *v=&t->view;
    struct m9_render_layout layout;
-   return t->resource->target==PIPE_TEXTURE_2D&&t->resource->width0==64&&
-      t->resource->height0==64&&t->resource->depth0==1&&t->resource->array_size==1&&
+   /* Any power-of-two single-level BGRA 2-D owner: the kernel derives the
+    * storage kind (0x01, or 0x21 above 64) and extent from these sizes. */
+   const uint32_t w=v->width,h=v->height;
+   return w&&h&&w<=1024&&h<=1024&&!(w&(w-1))&&!(h&(h-1))&&
+      t->resource->target==PIPE_TEXTURE_2D&&t->resource->width0==w&&
+      t->resource->height0==h&&t->resource->depth0==1&&t->resource->array_size==1&&
       !t->resource->last_level&&r->domain==M9_BO_VRAM&&!r->tiled&&
-      r->width==64&&r->height==64&&r->depth==1&&
+      r->width==w&&r->height==h&&r->depth==1&&
       r->handle==v->handle&&r->generation==t->generation&&r->size==t->owner_bytes&&
       r->kind==M9_RESOURCE_LINEAR_TEXTURE&&r->texture.levels==1&&
-      r->texture.level[0].width==64&&r->texture.level[0].height==64&&
+      r->texture.level[0].width==w&&r->texture.level[0].height==h&&
       r->texture.level[0].depth==1&&
       r->texture.level[0].offset==t->offset&&!t->offset&&
       !(r->texture_unplaced&1)&&(r->levels_written&1)&&r->texture_code==M9_TEXTURE_CODE_BGRA&&
-      m9_render_surface_layout(64,64,4,&layout)&&r->size>=layout.size&&
-      v->handle&&v->profile==12&&v->format==102&&v->width==64&&v->height==64&&
-      v->storage_kind==1&&v->levels==1&&v->min_filter==1&&v->mag_filter==1&&
-      v->mip_filter==1&&v->address_u==1&&v->address_v==1;
+      m9_render_surface_layout(w,h,4,&layout)&&r->size>=layout.size&&
+      v->handle&&v->profile==12&&v->format==102&&
+      v->storage_kind==(w>64||h>64?0x21u:0x01u)&&v->levels==1&&
+      (v->min_filter==1||v->min_filter==2)&&(v->mag_filter==1||v->mag_filter==2)&&
+      v->mip_filter==1&&(v->address_u==1||v->address_u==3)&&
+      (v->address_v==1||v->address_v==3);
 }
 
 /* Retained dual DRAWs after the authenticated Unlock of the previous
