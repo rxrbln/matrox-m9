@@ -10966,9 +10966,13 @@ m9_update_target(struct m9_context *ctx)
 
          if (init && ctx->debug)
             fprintf(stderr, "m9x: FAA graph INIT returned %d\n", init);
-         if (init)
+         /* A prepared graph that never initialized still owns the
+          * requester; release it so ordinary jobs can submit. */
+         if (init) {
+            m9_faa_surface_destroy(ctx->screen, &ctx->faa_surface);
             m9_warn_once(ctx, M9_WARN_MEMORY,
                          "FAA kernel graph initialization unavailable; ordinary target retained");
+         }
       }
    } else if (!ctx->faa_surface.graph.initialized) {
       m9_faa_surface_destroy(ctx->screen, &ctx->faa_surface);
