@@ -12142,8 +12142,7 @@ static int m9_faa_depth_later_prepare(struct m9x_device *mdev,
 	 * that path's preallocation mapping gate.
 	 */
 	if (!ret && !two)
-		ret = m9x_faa_graph_bound_depth_views_locked(mdev, binding,
-							     generation, &views);
+		ret = m9x_faa_graph_bound_depth_views_locked(mdev, binding, generation, &views);
 	mutex_unlock(&t->lock);
 	if (ret)
 		return ret;
