@@ -579,6 +579,18 @@ bool m9x_faa_graph_active(struct m9x_device *mdev)
 		mdev->transport.faa->graph_preparing);
 }
 
+/* The source1024 INIT flags30 primary SYSTEM view maps its full backing.
+ * Only this retained immutable graph layout extends the historic80-page
+ * diagnostic allowance; ordinary map policy and DMA bounds stay separate. */
+u32 m9x_faa_graph_system_extent_locked(struct m9x_device *mdev)
+{
+ struct m9x_faa_replay *r=mdev->transport.faa;
+ lockdep_assert_held(&mdev->transport.lock);
+ if(!r||(!r->graph_binding&&!r->graph_preparing)||
+  !m9x_faa_runtime_shape(r->graph_layout.width,r->graph_layout.height))return 0;
+ return r->graph_layout.owner[M9_FAA_SURFACE_PRIMARY].capacity;
+}
+
 bool m9x_faa_graph_profile_enabled(void)
 {
 #ifdef M9_FAA_GRAPH_INIT_CONTROL

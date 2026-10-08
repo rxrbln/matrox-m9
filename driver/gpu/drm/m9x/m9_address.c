@@ -1043,8 +1043,10 @@ int m9x_address_map_system(struct m9x_device *mdev, struct drm_mm_node *node,
 }
 
 /* Source-owned 101f8 flags30 class1 owners: command buffers, geometry and
- * ordinary kind6 output. Their actual retained mapped prefixes are bounded
- * by 80 pages; backing allocation tails are not promoted to GPU inputs.
+ * ordinary kind6 output. Historical mapped prefixes are bounded by80 pages.
+ * The original1024 INIT additionally joins a full0x308000-byte flags30
+ * primary SYSTEM view to the active graph backing; unrelated sizes remain
+ * refused. Backing tails are not promoted to formatted surface windows.
  * Ordinary coherent/SG/counter flags110 mappings retain their A policy. */
 int m9x_address_map_faa_system(struct m9x_device *mdev,
                              struct drm_mm_node *node,
@@ -1056,7 +1058,9 @@ int m9x_address_map_faa_system(struct m9x_device *mdev,
 	lockdep_assert_held(&mdev->transport.lock);
 	if ((!m9x_faa_diag_enabled() && !m9x_faa_graph_active(mdev)) ||
 	    !a || !a->layout.secondary_bytes ||
-	    !bytes || bytes > 0x50000 || !IS_ALIGNED(bytes, PAGE_SIZE) ||
+	    !bytes || (bytes > 0x50000 &&
+     (bytes != 0x308000 || bytes != m9x_faa_graph_system_extent_locked(mdev))) ||
+    !IS_ALIGNED(bytes, PAGE_SIZE) ||
 	    mdev->pdev->device != 0x0540 ||
 	    mdev->pdev->revision != 1 || mdev->pdev->subsystem_device != 0x22c0)
 		return -EINVAL;

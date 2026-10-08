@@ -574,6 +574,7 @@ int m9x_faa_submit_graph(struct m9x_device *mdev,
 			 struct m9_faa_graph_binding *binding,
 			 u64 *point, bool *posted);
 bool m9x_faa_graph_active(struct m9x_device *mdev);
+u32 m9x_faa_graph_system_extent_locked(struct m9x_device *mdev);
 bool m9x_faa_graph_preparing(struct m9x_device *mdev);
 bool m9x_faa_graph_profile_enabled(void);
 struct m9_faa_prepared_graph *m9x_faa_graph_acquire(struct drm_file *file,
