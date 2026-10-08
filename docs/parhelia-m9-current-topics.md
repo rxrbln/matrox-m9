@@ -4,6 +4,22 @@
 # M9 open topics and evidence, 2026-10-06
 
 
+## October 8: dense16 integration retires, but FAA gears still lose faces
+
+DRM dd84e6c and Mesa 0c62924 complete three original glxgears FAA frames
+without a wedge. Actual POSITION-only records now use 16 bytes; the input
+arena shrinks from 91,392 to 68,224 bytes. Faces still disappear: the first
+frame misses 5,138 of 26,548 software-reference interior pixels.
+[Full hardware capsule](../tests/m9-faa-glxgears-first-hardware-20261008/dense16-still-fragmented/README.md).
+
+Dense records and the corrected context admission are integrated and retained.
+They did not finish the rendering fix. The next diagnostic compares constant
+NORMAL and a NORMAL array on this exact runtime and inspects linear GPU
+output to locate the remaining indexing error. CPU ISA checks do not prove
+hardware packed-output semantics. Command-pool rotation is implemented and
+CPU-tested, but its optional 96-frame physical test was not run after these
+images failed review. No complete FAA glxgears, Quake3 FAA or valid FAA FPS.
+
 ## October 8: missing faces isolated to dense POSITION-only record handling
 
 A genuine OpenGL360-vertex front-face diagnostic renders identical software
