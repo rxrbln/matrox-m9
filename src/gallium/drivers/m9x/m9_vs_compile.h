@@ -266,6 +266,25 @@ struct m9_vs_attr {
    uint8_t scalar_location[4];
 };
 
+/* CPU form of the position's clip z and w: scalar nodes in dependency
+ * order, leaves read a vertex element component, a CB0 word or a literal. */
+enum m9_vs_clip_op {
+   M9_VS_CLIP_LIT,
+   M9_VS_CLIP_INPUT,       /* a = gl_vert_attrib, b = component */
+   M9_VS_CLIP_UNIFORM,     /* a = constant buffer 0 byte offset */
+   M9_VS_CLIP_ADD,
+   M9_VS_CLIP_MUL,
+   M9_VS_CLIP_FMA,
+   M9_VS_CLIP_NEG,
+   M9_VS_CLIP_ABS,
+};
+
+struct m9_vs_clip_node {
+   uint32_t op;
+   uint32_t a, b, c;
+   float lit;
+};
+
 struct m9_vs_program {
    /* A standalone FAA packed producer. Its constants are dense and it has
     * no ordinary position tail; ordinary image emitters must refuse it. */
@@ -319,6 +338,9 @@ struct m9_vs_program {
    unsigned varying_location[M9_VS_MAX_VARYINGS];   /* gl_varying_slot */
    unsigned varying_components[M9_VS_MAX_VARYINGS];
    struct m9_vs_outputs outputs;
+   /* struct m9_vs_clip_node; empty when the position is not CPU-evaluable. */
+   struct util_dynarray clip_nodes;
+   uint32_t clip_z, clip_w;
 };
 
 #define M9_VS_PADDING_VERTICES 24u

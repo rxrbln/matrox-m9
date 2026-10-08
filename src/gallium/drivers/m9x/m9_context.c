@@ -7414,6 +7414,23 @@ static void m9_vs_select_spec(struct m9_context *ctx);
 
 /* True when the draw was taken by the native path; false leaves it to the
  * draw module with no change in behaviour. */
+/* Constant buffer 0 as the native constant span reads it. */
+static int
+m9_native_vs_outside_near(struct m9_context *ctx, const struct m9_vs_program *p,
+                          const struct m9_native_vs *n)
+{
+   const struct pipe_constant_buffer *cb = &ctx->vs_constants[0];
+   const uint8_t *data = cb->user_buffer ? cb->user_buffer :
+                         cb->buffer ? m9_res(cb->buffer)->map : NULL;
+
+   return m9_vs_clip_outside_near(p, ctx->velems->elements, ctx->velems->count,
+                                  ctx->vertex_buffers, n->map, n->size,
+                                  n->buffer_count,
+                                  data ? data + cb->buffer_offset : NULL,
+                                  data ? cb->buffer_size : 0,
+                                  n->first_vertex, n->vertex_count);
+}
+
 static bool
 m9_native_vs_draw(struct m9_context *ctx, const struct pipe_draw_info *info,
                   const struct pipe_draw_start_count_bias *draw)
@@ -7483,6 +7500,14 @@ m9_native_vs_draw(struct m9_context *ctx, const struct pipe_draw_info *info,
    reason = m9_native_vs_records(ctx, &key, &variant->program, &n);
    if (reason) {
       m9_native_vs_note(ctx, reason);
+      return false;
+   }
+   /* The engine clips against the near plane only with the clip position
+    * the fused pair gives up for its second varying (MEASURED, m9-nearclip). */
+   if (m9_vs_fused_pair(&variant->program) &&
+       m9_native_vs_outside_near(ctx, &variant->program, &n) > 0) {
+      m9_native_vs_note(ctx, "a fused-pair draw has a vertex outside the "
+                        "near plane, which only the clip position clips");
       return false;
    }
    if (ctx->rasterizer && ctx->rasterizer->offset_tri &&

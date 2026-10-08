@@ -2595,6 +2595,172 @@ compile_head(struct ctx *c, nir_block *block, unsigned final,
    return true;
 }
 
+/* CPU clip z/w of the stored position, for draws whose raster pass lacks
+ * the clip position the engine clips with.  Unsupported operations leave
+ * the node list empty. */
+struct clip_build {
+   struct util_dynarray *nodes;
+   int32_t *memo;
+   unsigned memo_count;
+   bool ok;
+};
+
+static uint32_t
+clip_push(struct clip_build *b, enum m9_vs_clip_op op, uint32_t x, uint32_t y,
+          uint32_t z, float lit)
+{
+   struct m9_vs_clip_node *n = util_dynarray_grow(b->nodes,
+                                                  struct m9_vs_clip_node, 1);
+
+   if (!n) {
+      b->ok = false;
+      return 0;
+   }
+   *n = (struct m9_vs_clip_node) { .op = op, .a = x, .b = y, .c = z, .lit = lit };
+   return n - (struct m9_vs_clip_node *)b->nodes->data;
+}
+
+static uint32_t clip_scalar(struct clip_build *b, nir_scalar s);
+
+static uint32_t
+clip_dot(struct clip_build *b, nir_alu_instr *alu, unsigned n, bool homogeneous)
+{
+   uint32_t sum = 0;
+
+   for (unsigned k = 0; k < n; k++) {
+      uint32_t x = clip_scalar(b, nir_get_scalar(alu->src[0].src.ssa,
+                                                 alu->src[0].swizzle[k]));
+      uint32_t y = clip_scalar(b, nir_get_scalar(alu->src[1].src.ssa,
+                                                 alu->src[1].swizzle[k]));
+
+      sum = k ? clip_push(b, M9_VS_CLIP_FMA, x, y, sum, 0.0f) :
+                clip_push(b, M9_VS_CLIP_MUL, x, y, 0, 0.0f);
+   }
+   if (homogeneous)
+      sum = clip_push(b, M9_VS_CLIP_ADD, sum,
+                      clip_scalar(b, nir_get_scalar(alu->src[1].src.ssa,
+                                                    alu->src[1].swizzle[3])),
+                      0, 0.0f);
+   return sum;
+}
+
+static uint32_t
+clip_scalar(struct clip_build *b, nir_scalar s)
+{
+   unsigned key;
+   uint32_t r = 0;
+
+   s = nir_scalar_chase_movs(s);
+   if (!b->ok)
+      return 0;
+   if (s.def->bit_size != 32) {
+      b->ok = false;
+      return 0;
+   }
+   if (nir_scalar_is_const(s))
+      return clip_push(b, M9_VS_CLIP_LIT, 0, 0, 0, nir_scalar_as_float(s));
+   key = s.def->index * NIR_MAX_VEC_COMPONENTS + s.comp;
+   if (key < b->memo_count && b->memo[key] >= 0)
+      return b->memo[key];
+   if (nir_scalar_is_intrinsic(s)) {
+      nir_intrinsic_instr *intr = nir_def_as_intrinsic(s.def);
+
+      if (intr->intrinsic == nir_intrinsic_load_input &&
+          nir_src_is_const(intr->src[0]) && !nir_src_as_uint(intr->src[0])) {
+         r = clip_push(b, M9_VS_CLIP_INPUT,
+                       nir_intrinsic_io_semantics(intr).location,
+                       nir_intrinsic_component(intr) + s.comp, 0, 0.0f);
+      } else if (intr->intrinsic == nir_intrinsic_load_ubo &&
+                 nir_src_is_const(intr->src[0]) &&
+                 !nir_src_as_uint(intr->src[0]) &&
+                 nir_src_is_const(intr->src[1])) {
+         r = clip_push(b, M9_VS_CLIP_UNIFORM,
+                       (unsigned)nir_src_as_uint(intr->src[1]) + 4 * s.comp,
+                       0, 0, 0.0f);
+      } else if (intr->intrinsic == nir_intrinsic_load_ubo_vec4 &&
+                 nir_src_is_const(intr->src[0]) &&
+                 !nir_src_as_uint(intr->src[0]) &&
+                 nir_src_is_const(intr->src[1])) {
+         r = clip_push(b, M9_VS_CLIP_UNIFORM,
+                       16 * (nir_intrinsic_base(intr) +
+                             (unsigned)nir_src_as_uint(intr->src[1])) +
+                       4 * (nir_intrinsic_component(intr) + s.comp),
+                       0, 0, 0.0f);
+      } else {
+         b->ok = false;
+      }
+   } else if (nir_scalar_is_alu(s)) {
+      nir_alu_instr *alu = nir_def_as_alu(s.def);
+
+      switch (alu->op) {
+      case nir_op_fadd:
+      case nir_op_fmul:
+         r = clip_push(b, alu->op == nir_op_fadd ? M9_VS_CLIP_ADD : M9_VS_CLIP_MUL,
+                       clip_scalar(b, nir_scalar_chase_alu_src(s, 0)),
+                       clip_scalar(b, nir_scalar_chase_alu_src(s, 1)), 0, 0.0f);
+         break;
+      case nir_op_fsub:
+         r = clip_push(b, M9_VS_CLIP_ADD,
+                       clip_scalar(b, nir_scalar_chase_alu_src(s, 0)),
+                       clip_push(b, M9_VS_CLIP_NEG,
+                                 clip_scalar(b, nir_scalar_chase_alu_src(s, 1)),
+                                 0, 0, 0.0f), 0, 0.0f);
+         break;
+      case nir_op_ffma:
+         r = clip_push(b, M9_VS_CLIP_FMA,
+                       clip_scalar(b, nir_scalar_chase_alu_src(s, 0)),
+                       clip_scalar(b, nir_scalar_chase_alu_src(s, 1)),
+                       clip_scalar(b, nir_scalar_chase_alu_src(s, 2)), 0.0f);
+         break;
+      case nir_op_fneg:
+      case nir_op_fabs:
+         r = clip_push(b, alu->op == nir_op_fneg ? M9_VS_CLIP_NEG : M9_VS_CLIP_ABS,
+                       clip_scalar(b, nir_scalar_chase_alu_src(s, 0)), 0, 0,
+                       0.0f);
+         break;
+      case nir_op_fdot2:
+      case nir_op_fdot3:
+      case nir_op_fdot4:
+         r = clip_dot(b, alu, nir_op_infos[alu->op].input_sizes[0], false);
+         break;
+      case nir_op_fdph:
+         r = clip_dot(b, alu, 3, true);
+         break;
+      default:
+         b->ok = false;
+      }
+   } else {
+      b->ok = false;
+   }
+   if (b->ok && key < b->memo_count)
+      b->memo[key] = r;
+   return r;
+}
+
+static void
+clip_build_position(struct ctx *c, nir_intrinsic_instr *position)
+{
+   struct m9_vs_program *p = c->p;
+   unsigned base = nir_intrinsic_component(position);
+   unsigned mask = nir_intrinsic_write_mask(position) << base;
+   nir_def *value = position->src[0].ssa;
+   struct clip_build b = {
+      .nodes = &p->clip_nodes,
+      .memo_count = c->def_count * NIR_MAX_VEC_COMPONENTS,
+      .ok = base == 0 && (mask & 0xc) == 0xc && value->num_components >= 4,
+   };
+
+   b.memo = b.ok ? malloc(sizeof(*b.memo) * b.memo_count) : NULL;
+   if (b.memo) {
+      memset(b.memo, -1, sizeof(*b.memo) * b.memo_count);
+      p->clip_z = clip_scalar(&b, nir_get_scalar(value, 2));
+      p->clip_w = clip_scalar(&b, nir_get_scalar(value, 3));
+   }
+   if (!b.memo || !b.ok)
+      util_dynarray_clear(&p->clip_nodes);
+   free(b.memo);
+}
+
 static bool
 compile_impl(struct ctx *c, nir_function_impl *impl,
              const struct m9_vs_outputs *want)
@@ -2689,6 +2855,7 @@ compile_impl(struct ctx *c, nir_function_impl *impl,
    }
    if (!position)
       return fail(c, "no position output");
+   clip_build_position(c, position);
    /* The streams this program writes: the caller's, or one an output the
     * shader stores, which is what every non-textured job asks for. */
    memset(&out, 0, sizeof(out));
@@ -3117,6 +3284,7 @@ compile_program(struct nir_shader *nir, const struct m9_vs_outputs *outputs,
    util_dynarray_init(&p->gather, NULL);
    util_dynarray_init(&p->producer, NULL);
    util_dynarray_init(&p->consts, NULL);
+   util_dynarray_init(&p->clip_nodes, NULL);
    util_dynarray_init(&c.keys, NULL);
    c.identity_keys = identity;
    c.faa = faa;
@@ -3629,6 +3797,7 @@ m9_vs_program_fini(struct m9_vs_program *p)
    util_dynarray_fini(&p->gather);
    util_dynarray_fini(&p->producer);
    util_dynarray_fini(&p->consts);
+   util_dynarray_fini(&p->clip_nodes);
    memset(p, 0, sizeof(*p));
 }
 

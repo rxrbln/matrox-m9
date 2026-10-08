@@ -143,4 +143,16 @@ bool m9_vs_source_records_gather(const struct m9_vs_source_layout *layout,
                                  const uint32_t *vertex, unsigned count,
                                  float *out);
 
+/* Evaluates the program's CPU clip z/w for vertices first..first+count-1.
+ * 1 when one lies outside the near plane or has w <= 0, 0 when none does,
+ * -1 when the position has no CPU form or an input cannot be read. */
+int m9_vs_clip_outside_near(const struct m9_vs_program *program,
+                            const struct pipe_vertex_element *elements,
+                            unsigned element_count,
+                            const struct pipe_vertex_buffer *buffers,
+                            const uint8_t *const *buffer_map,
+                            const unsigned *buffer_size, unsigned buffer_count,
+                            const uint8_t *constants, size_t constant_size,
+                            unsigned first, unsigned count);
+
 #endif
