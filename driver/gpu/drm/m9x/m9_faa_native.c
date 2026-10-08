@@ -7877,7 +7877,8 @@ out:
 
 #ifdef M9_FAA_GRAPH_INIT_CONTROL
 static int m9_faa_graph_next_finish_state(struct m9x_transport *t,
-		u32 generation, u64 prefix_point, bool claimed)
+					  u32 generation, u64 prefix_point,
+					  bool claimed)
 {
 	struct m9x_faa_replay *r = t->faa;
 
@@ -7888,27 +7889,34 @@ static int m9_faa_graph_next_finish_state(struct m9x_transport *t,
 	    !r->unlock_started || !r->unlock_retired ||
 	    !r->graph_next_claimed || !r->next_image ||
 	    r->graph_repeat_draws != 1 ||
-	    r->graph_next_finish_claimed != claimed || (!!r->next_finish_image != claimed) ||
+	    r->graph_next_finish_claimed != claimed ||
+	    (!!r->next_finish_image != claimed) ||
 	    r->graph_generation != generation || t->generation != generation ||
-	    r->observation_generation != generation || !r->observation_retired ||
-	    !prefix_point || prefix_point != r->unlock_point + 0x50 ||
+	    r->observation_generation != generation ||
+	    !r->observation_retired || !prefix_point ||
+	    prefix_point != r->unlock_point + 0x50 ||
 	    prefix_point != r->observation_point + 0x130 ||
 	    r->graph_draw_point != prefix_point || r->graph_draw_posts != 12 ||
-	    r->graph_draw_end_bytes != r->primary_bytes +
-		M9_FAA_DRAW_PRIMARY_SUFFIX_BYTES + M9_FAA_DRAW_TAIL_PRIMARY_BYTES +
-		M9_FAA_LOCK_PRIMARY_BYTES + M9_FAA_UNLOCK_PRIMARY_BYTES +
-		M9_FAA_NEXT_PRIMARY_BYTES ||
-	    (prefix_point & 15) || lower_32_bits(prefix_point) > U32_MAX - 0x40 ||
-	    t->submitted_point != prefix_point || t->completed_point != prefix_point ||
+	    r->graph_draw_end_bytes !=
+		    r->primary_bytes + M9_FAA_DRAW_PRIMARY_SUFFIX_BYTES +
+			    M9_FAA_DRAW_TAIL_PRIMARY_BYTES +
+			    M9_FAA_LOCK_PRIMARY_BYTES +
+			    M9_FAA_UNLOCK_PRIMARY_BYTES +
+			    M9_FAA_NEXT_PRIMARY_BYTES ||
+	    (prefix_point & 15) ||
+	    lower_32_bits(prefix_point) > U32_MAX - 0x40 ||
+	    t->submitted_point != prefix_point ||
+	    t->completed_point != prefix_point ||
 	    t->next_fence != lower_32_bits(prefix_point) + 0x10)
 		return -ESTALE;
 	if (!t->faa_source_context || !t->faa_virtual_primary ||
 	    !t->engine_transitioned || !t->restore_ready || !t->fence_cpu ||
-	    !t->transport_armed || !t->bus_master_enabled ||
-	    t->async_stop || t->async_pending || t->queue_count)
+	    !t->transport_armed || !t->bus_master_enabled || t->async_stop ||
+	    t->async_pending || t->queue_count)
 		return -EBUSY;
 	return 0;
 }
+
 #endif
 
 int m9x_faa_graph_next_finish_get_locked(struct m9x_device *mdev,
