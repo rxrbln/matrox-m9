@@ -4807,6 +4807,14 @@ static void m9_faa_dual_graph_raw_observe(struct m9x_device *mdev,
 	int ret;
 
 	lockdep_assert_held(&mdev->transport.lock);
+	/* The pre-DRAW probe runs after INIT retirement, before color_lock_point
+	 * is assigned. Log the transport's actual retired point for both probes. */
+	if (!mdev->transport.completed_point ||
+	    mdev->transport.completed_point !=
+		mdev->transport.submitted_point) {
+		refusal = "retirement";
+		goto refused;
+	}
 	if (role < 1 || role > 3 || !logical_bytes ||
 	    logical_bytes != m9_faa_owner_specs[role].bytes ||
 	    logical_bytes % 4 || !r->graph_binding ||
@@ -4885,7 +4893,8 @@ static void m9_faa_dual_graph_raw_observe(struct m9x_device *mdev,
 	}
 	dev_info(&mdev->pdev->dev,
 		 "M9 FAA dual graph raw %s owner%u: point=%#llx base=%#x bytes=%u nonzero_dwords=%u wordhash32=%08x first64=%*phN; retired physical VRAM only, preexisting metadata possible, no coverage or pixel interpretation\n",
-		 name, role, (unsigned long long)r->color_lock_point,
+		 name, role,
+		 (unsigned long long)mdev->transport.completed_point,
 		 owner->base, logical_bytes, nonzero, hash, 64, data);
 	return;
 refused:
