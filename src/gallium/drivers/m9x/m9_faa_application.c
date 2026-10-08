@@ -3,6 +3,7 @@
 #include "m9_faa_application.h"
 #include "m9_internal.h"
 #include "nir.h"
+#include "util/u_debug.h"
 #include "util/u_inlines.h"
 #include <math.h>
 #include <stdlib.h>
@@ -614,6 +615,10 @@ m9_faa_application_build(const struct m9_faa_application_draw *d,
             why="FAA textured alpha test has no source program";goto fail;
          }
          family.alpha_test=true;family.alpha_func=test[alpha].func;
+      }
+      /* M9X_FAA_FAMILIES=1 admits them until the card has run them. */
+      if((family.blend||family.alpha_test)&&!debug_get_bool_option("M9X_FAA_FAMILIES",false)) {
+         why="FAA textured blend/alpha families are disabled";goto fail;
       }
       if((family.blend||family.alpha_test)&&!d->state.texture_fragment_valid) {
          why="FAA textured blend factors have no source program";goto fail;
