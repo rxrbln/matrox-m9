@@ -333,11 +333,23 @@ int m9x_transport_arm_locked(struct m9x_device *mdev)
 	return 0;
 }
 
+/* After the retained FAA primary: END still names that primary. An empty
+ * interval at the new BASE keeps the pair a fresh arm leaves and the next
+ * load's quiescence check expects.
+ */
 int m9x_transport_rearm_locked(struct m9x_device *mdev)
 {
+	int ret;
+
 	lockdep_assert_held(&mdev->transport.lock);
 	mdev->transport.transport_armed = false;
-	return m9x_transport_arm_locked(mdev);
+	ret = m9x_transport_arm_locked(mdev);
+	if (ret)
+		return ret;
+	m9x_write(mdev, M9_REG_COMMAND_END,
+		  lower_32_bits(m9_command_current_bus(&mdev->transport)));
+	m9x_read(mdev, M9_REG_COMMAND_END);
+	return 0;
 }
 
 /* Writeback polls before the wait sleeps; about a hundred microseconds. */
