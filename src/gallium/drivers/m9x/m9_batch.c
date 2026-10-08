@@ -797,6 +797,19 @@ m9_batch_validate(struct m9_screen *screen, struct m9_resource *command,
    return m9_batch_validate_flags(screen, command, batch, context_id, 0);
 }
 
+static void
+m9_bo_points_note(struct m9_screen *screen, const struct m9_batch *batch,
+                  uint64_t point)
+{
+   if (!screen->bo_points)
+      return;
+   simple_mtx_lock(&screen->bo_point_lock);
+   for (unsigned i = 0; i < batch->bo_count; i++)
+      _mesa_hash_table_u64_insert(screen->bo_points, batch->bos[i].handle,
+                                  (void *)(uintptr_t)point);
+   simple_mtx_unlock(&screen->bo_point_lock);
+}
+
 int
 m9_batch_submit(struct m9_screen *screen, struct m9_resource *command,
                 const struct m9_batch *batch, uint32_t context_id,
@@ -819,6 +832,7 @@ m9_batch_submit(struct m9_screen *screen, struct m9_resource *command,
    if (!submit.out_point)
       return -EPROTO;
    *out_point = submit.out_point;
+   m9_bo_points_note(screen, batch, submit.out_point);
    return 0;
 }
 

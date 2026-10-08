@@ -122,6 +122,12 @@ m9_bo_destroy(struct m9_screen *screen, struct m9_resource *resource)
    if (resource->map)
       munmap(resource->map, resource->size);
    close_bo.handle = resource->handle;
+   if (close_bo.handle && screen->bo_points) {
+      /* A recycled handle must not inherit this object's point. */
+      simple_mtx_lock(&screen->bo_point_lock);
+      _mesa_hash_table_u64_remove(screen->bo_points, close_bo.handle);
+      simple_mtx_unlock(&screen->bo_point_lock);
+   }
    if (close_bo.handle)
       ioctl(screen->fd, DRM_IOCTL_GEM_CLOSE, &close_bo);
    memset(resource, 0, sizeof(*resource));
@@ -1234,6 +1240,9 @@ m9_destroy(struct pipe_screen *pscreen)
    m9_bo_destroy(screen, &screen->faa_store_aux);
    m9_bo_destroy(screen, &screen->faa_companion);
    simple_mtx_destroy(&screen->faa_store_lock);
+   _mesa_hash_table_u64_destroy(screen->bo_points);
+   screen->bo_points = NULL;
+   simple_mtx_destroy(&screen->bo_point_lock);
    simple_mtx_destroy(&screen->record_lock);
    simple_mtx_destroy(&screen->import_lock);
    FREE(screen->fragment_db);
@@ -1336,6 +1345,19 @@ m9_init_shader_caps(struct m9_screen *screen)
 /* Queue arena and CPU-state reuse require completion before the first write.
  * The ioctl watchdog bounds an infinite application wait; errors never grant
  * permission to overwrite storage still reachable by the engine. */
+uint64_t
+m9_bo_point(struct m9_screen *screen, uint32_t handle)
+{
+   uint64_t point;
+
+   if (!screen->bo_points)
+      return 0;
+   simple_mtx_lock(&screen->bo_point_lock);
+   point = (uintptr_t)_mesa_hash_table_u64_search(screen->bo_points, handle);
+   simple_mtx_unlock(&screen->bo_point_lock);
+   return point;
+}
+
 int
 m9_wait_for_point(struct m9_screen *screen, uint64_t point)
 {
@@ -1499,6 +1521,8 @@ m9_screen_create(int fd, const struct pipe_screen_config *config)
    simple_mtx_init(&screen->import_lock, mtx_plain);
    simple_mtx_init(&screen->record_lock, mtx_plain);
    simple_mtx_init(&screen->faa_store_lock, mtx_plain);
+   simple_mtx_init(&screen->bo_point_lock, mtx_plain);
+   screen->bo_points = _mesa_hash_table_u64_create(NULL);
    screen->chip_id = M9_PCI_ID;
    m9_faa_init(&screen->faa, (uint16_t)screen->chip_id);
    /* The report has to survive a client that exits without tearing the

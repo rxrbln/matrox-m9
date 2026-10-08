@@ -1077,6 +1077,22 @@ m9_transfer_offset(const struct m9_resource *resource, unsigned level,
    return ((uint64_t)box->y * resource->row_span + box->x) * resource->cpp;
 }
 
+/* Wait until the last posted job naming this object has retired.  FAA graph
+ * submissions do not note their objects, so an FAA context waits for all. */
+static int
+m9_wait_for_object(struct m9_context *ctx, const struct m9_resource *resource)
+{
+   uint64_t point;
+
+   if (m9_aggregate_flush(ctx))
+      return -EIO;
+   if (m9_faa_active(&ctx->screen->faa) || ctx->faa_surface.graph.initialized)
+      return m9_wait_for_point(ctx->screen, ctx->last_point);
+   point = resource && resource->handle ?
+           m9_bo_point(ctx->screen, resource->handle) : 0;
+   return m9_wait_for_point(ctx->screen, point);
+}
+
 static bool
 m9_transfer_sync(struct m9_context *ctx, const struct m9_resource *resource,
                   unsigned usage)
@@ -1099,7 +1115,7 @@ m9_transfer_sync(struct m9_context *ctx, const struct m9_resource *resource,
    if (!(resource->base.target == PIPE_BUFFER && !resource->handle)) {
       if (ctx->lost)
          return false;
-      if (m9_wait_for_point(ctx->screen, ctx->last_point)) {
+      if (m9_wait_for_object(ctx, resource)) {
          ctx->lost = true;
          return false;
       }
@@ -6521,8 +6537,8 @@ m9_native_vs_c2(struct m9_context *ctx, struct m9_fs_variant *v,
       return 0;
    /* An asynchronously posted job may still execute the image: retire it
     * before the CPU rewrites or frees it. */
-   if (!ctx->screen->queued_submit && image->handle && ctx->last_point &&
-       m9_wait_for_point(ctx->screen, ctx->last_point)) {
+   if (!ctx->screen->queued_submit && image->handle &&
+       m9_wait_for_object(ctx, image)) {
       ctx->lost = true;
       return 0;
    }
@@ -8659,7 +8675,7 @@ m9_clear_render_target(struct pipe_context *pctx, struct pipe_surface *dst,
       return;
    m9_context_sync(ctx);
    util_pack_color(color->f, dst->format, &uc);
-   if (ctx->lost || m9_wait_for_point(ctx->screen, ctx->last_point)) {
+   if (ctx->lost || m9_wait_for_object(ctx, resource)) {
       ctx->lost = true;
       return;
    }
@@ -8724,7 +8740,8 @@ m9_clear_depth_stencil(struct pipe_context *pctx, struct pipe_surface *dst,
    m9_context_sync(ctx);
    if (!dstx && !dsty && width >= resource->width &&
        height >= resource->height) {
-      if (ctx->lost || m9_wait_for_point(ctx->screen, ctx->last_point)) {
+      if (ctx->lost || m9_wait_for_object(ctx, resource) ||
+          m9_wait_for_object(ctx, resource->hz)) {
          ctx->lost = true;
          return;
       }

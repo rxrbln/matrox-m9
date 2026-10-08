@@ -157,6 +157,7 @@ struct pipe_context *m9_context_create(struct pipe_screen *screen, void *priv,
                                        unsigned flags);
 struct pipe_fence_handle *m9_fence_create(uint64_t point, bool signaled);
 int m9_wait_for_point(struct m9_screen *screen, uint64_t point);
+uint64_t m9_bo_point(struct m9_screen *screen, uint32_t handle);
 
 void m9_faa_store_report(struct m9_screen *screen);
 

@@ -21,6 +21,7 @@
 #include "util/simple_mtx.h"
 #include "util/u_atomic.h"
 #include "util/u_dynarray.h"
+#include "util/hash_table.h"
 
 #define M9_PCI_ID 0x0540u
 #define M9_PACKET_STOP 0x45u
@@ -353,6 +354,10 @@ struct m9_screen {
     * the target the probe renders into and shared by the screen the way the
     * inter-pass record is.  Allocated only while a bind index is named. */
    simple_mtx_t faa_store_lock;
+   /* Point of the last successful submission naming each GEM handle in its
+    * bo list, so CPU access waits for that object's own last GPU use. */
+   simple_mtx_t bo_point_lock;
+   struct hash_table_u64 *bo_points;
    struct m9_resource faa_store, faa_store_aux, faa_companion;
    uint32_t faa_store_width, faa_store_height;
    /* Current mapped main owner only, protected by faa_store_lock. A failed
