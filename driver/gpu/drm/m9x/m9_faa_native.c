@@ -1979,15 +1979,17 @@ release:
 }
 
 int m9x_faa_graph_public_vs_prepare(struct m9x_device *mdev,
-		struct m9_faa_graph_binding *binding, u32 generation,
-		u64 init_point, const struct m9x_faa_public_vs_input *input)
+				    struct m9_faa_graph_binding *binding,
+				    u32 generation, u64 init_point,
+				    const struct m9x_faa_public_vs_input *input)
 {
 #ifdef M9_FAA_GRAPH_INIT_CONTROL
-	static const struct m9_faa_owner_spec program_spec =
-		{ 0, 0x1080, true, false, false, 0 };
+	static const struct m9_faa_owner_spec program_spec = { 0,     0x1080,
+							       true,  false,
+							       false, 0 };
 	struct m9x_transport *t = &mdev->transport;
 	struct m9x_faa_replay *r;
-	struct m9_faa_owner program = { };
+	struct m9_faa_owner program = {};
 	struct m9_faa_public_vs_storage *storage = NULL;
 	struct m9x_faa_graph_draw_owner owner[M9_FAA_DRAW_SOURCE_OWNERS];
 	struct m9x_faa_public_vs_image image;
@@ -2005,7 +2007,7 @@ int m9x_faa_graph_public_vs_prepare(struct m9x_device *mdev,
 		ret = -EINVAL;
 		goto release;
 	}
-	storage = kzalloc(sizeof(*storage), GFP_KERNEL);
+	storage = kzalloc_obj(*storage);
 	if (!storage) {
 		ret = -ENOMEM;
 		goto release;
@@ -2041,19 +2043,33 @@ int m9x_faa_graph_public_vs_prepare(struct m9x_device *mdev,
 		struct m9_faa_owner *o;
 
 		switch (i) {
-		case 26: o = &program; break;
-		case 27: o = &r->owner[26]; break;
-		case 28: o = &r->draw_owner[1]; break;
-		case 29: o = &r->draw_owner[2]; break;
-		case 30: o = &r->owner[27]; break;
-		default: o = &r->owner[i]; break;
+		case 26:
+			o = &program;
+			break;
+		case 27:
+			o = &r->owner[26];
+			break;
+		case 28:
+			o = &r->draw_owner[1];
+			break;
+		case 29:
+			o = &r->draw_owner[2];
+			break;
+		case 30:
+			o = &r->owner[27];
+			break;
+		default:
+			o = &r->owner[i];
+			break;
 		}
 		owner[i].base = o->base;
 		owner[i].bytes = o->bytes;
 	}
-	image = (struct m9x_faa_public_vs_image) {
-		.program = storage->program, .constants = storage->constants,
-		.secondary = storage->secondary, .primary = storage->primary,
+	image = (struct m9x_faa_public_vs_image){
+		.program = storage->program,
+		.constants = storage->constants,
+		.secondary = storage->secondary,
+		.primary = storage->primary,
 		.program_bytes = sizeof(storage->program),
 		.constants_bytes = sizeof(storage->constants),
 		.secondary_bytes = sizeof(storage->secondary),
@@ -2061,10 +2077,12 @@ int m9x_faa_graph_public_vs_prepare(struct m9x_device *mdev,
 	};
 	/* Validate/encode before claiming INIT or publishing this local mapping. */
 	ret = m9x_faa_public_vs_encode(fw->data, fw->size, owner,
-			r->primary_bytes, init_point, input, &image, &storage->ends);
+				       r->primary_bytes, init_point, input,
+				       &image, &storage->ends);
 	if (ret)
 		goto unlock_uninstalled;
-	ret = m9x_faa_graph_draw_claim_locked(mdev, binding, generation, init_point);
+	ret = m9x_faa_graph_draw_claim_locked(mdev, binding, generation,
+					      init_point);
 	if (ret)
 		goto unlock_uninstalled;
 	storage->layout = input->layout;
@@ -2073,9 +2091,10 @@ int m9x_faa_graph_public_vs_prepare(struct m9x_device *mdev,
 	r->public_vs_image = storage;
 	storage = NULL;
 	/* This class-1 identity publication is distinct from the CPU-root map
-	 * after314. Once attempted, all private owners remain with the replay. */
+	 * after314. Once attempted, all private owners remain with the replay.
+	 */
 	ret = m9x_address_local_prepare(mdev, r->draw_owner[0].base,
-					 r->draw_owner[0].bytes);
+					r->draw_owner[0].bytes);
 	if (ret) {
 		if (!t->wedged) {
 			t->wedged = true;
@@ -2089,7 +2108,8 @@ int m9x_faa_graph_public_vs_prepare(struct m9x_device *mdev,
 unlock_uninstalled:
 	mutex_unlock(&t->lock);
 	/* This allocation was never installed or made GPU reachable. TTM
-	 * cleanup must stay outside TRANSPORT and caller BO reservations. */
+	 * cleanup must stay outside TRANSPORT and caller BO reservations.
+	 */
 	if (WARN_ON(ttm_bo_reserve(&program.vram->bo, false, false, NULL))) {
 		ret = -EIO;
 		goto release;
