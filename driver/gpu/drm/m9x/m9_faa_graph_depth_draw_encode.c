@@ -9,6 +9,7 @@
 #include <linux/overflow.h>
 #include <linux/string.h>
 #include <crypto/sha2.h>
+#include "m9_cmd.h"
 #include "m9_faa_graph_depth_draw_encode.h"
 #include "m9_faa_graph_depth_draw_fields.h"
 
@@ -31,19 +32,6 @@ static const u16 depth_pair_at[4] = { 2116, 368, 896, 1388 };
 static const u32 depth_source_declaration[5] = {
 	0x00100d88, 0x001006b6, 0x04200d88, 0x042006b6, 0x00004b08,
 };
-
-static u32 read32(const u8 *p)
-{
-	return (u32)p[0] | (u32)p[1] << 8 | (u32)p[2] << 16 | (u32)p[3] << 24;
-}
-
-static void write32(u8 *p, u32 value)
-{
-	p[0] = value;
-	p[1] = value >> 8;
-	p[2] = value >> 16;
-	p[3] = value >> 24;
-}
 
 static u32 constants_offset(const struct depth_field *f,
 			    const struct m9x_faa_color_input *in,
@@ -104,11 +92,12 @@ static bool source_layout(const struct m9x_faa_color_input *in)
 		    in->layout.constant_end[i] != end[i])
 			return false;
 	for (i = 0; i < 5; i++)
-		if (read32(in->declaration + i * 4) !=
+		if (m9_cmd_get(in->declaration + i * 4) !=
 		    depth_source_declaration[i])
 			return false;
 	for (i = 0; i < in->layout.vertex_bytes / 4; i++)
-		if ((read32(in->geometry + in->layout.vertex_offset + i * 4) &
+		if ((m9_cmd_get(in->geometry + in->layout.vertex_offset +
+				i * 4) &
 		     0x7f800000u) == 0x7f800000u)
 			return false;
 	return true;
@@ -259,28 +248,29 @@ depth_encode_impl(const u8 *blob, size_t bytes,
 			address = (address | f->tag) & ~3u;
 		else
 			address |= f->tag;
-		write32(dst + f->at, address);
+		m9_cmd_put(dst + f->at, address);
 	}
 	for (i = 0; i < ARRAY_SIZE(depth_epochs); i++) {
 		const struct depth_epoch *e = &depth_epochs[i];
 		u8 *dst = e->dst ? out->secondary : out->primary;
 
-		write32(dst + e->at,
-			(low + e->delta - (clear_flags ? 0 : 0x60)) | e->tag);
+		m9_cmd_put(dst + e->at,
+			   (low + e->delta - (clear_flags ? 0 : 0x60)) |
+				   e->tag);
 	}
 	for (i = 0; i < ARRAY_SIZE(depth_relatives); i++)
-		write32(out->secondary + depth_relatives[i].at,
-			0x49d00000u | ((depth_relatives[i].target -
-					depth_relatives[i].at) /
-				       4));
+		m9_cmd_put(out->secondary + depth_relatives[i].at,
+			   0x49d00000u | ((depth_relatives[i].target -
+					   depth_relatives[i].at) /
+					  4));
 	for (i = 0; i < ARRAY_SIZE(depth_dimension_primary); i++)
-		write32(out->primary + depth_dimension_primary[i],
-			(views->owner[M9_FAA_BOUND_DEPTH].height << 16) |
-				views->owner[M9_FAA_BOUND_DEPTH].width);
+		m9_cmd_put(out->primary + depth_dimension_primary[i],
+			   (views->owner[M9_FAA_BOUND_DEPTH].height << 16) |
+				   views->owner[M9_FAA_BOUND_DEPTH].width);
 	for (i = 0; i < ARRAY_SIZE(depth_dimension_secondary); i++)
-		write32(out->secondary + depth_dimension_secondary[i],
-			(views->owner[M9_FAA_BOUND_DEPTH].height << 16) |
-				views->owner[M9_FAA_BOUND_DEPTH].width);
+		m9_cmd_put(out->secondary + depth_dimension_secondary[i],
+			   (views->owner[M9_FAA_BOUND_DEPTH].height << 16) |
+				   views->owner[M9_FAA_BOUND_DEPTH].width);
 	for (i = 0; i < 4; i++) {
 		u32 pairs = (in->layout.constant_end[i] -
 			     in->layout.constant_begin[i]) /
@@ -288,10 +278,10 @@ depth_encode_impl(const u8 *blob, size_t bytes,
 
 		if (!i)
 			pairs = in->layout.constant_end[0] / 8;
-		write32(out->secondary + depth_entry_at[i],
-			in->layout.entry_bytes[i] / 8);
-		write32(out->secondary + depth_pair_at[i],
-			0x00500000u | (pairs << 8));
+		m9_cmd_put(out->secondary + depth_entry_at[i],
+			   in->layout.entry_bytes[i] / 8);
+		m9_cmd_put(out->secondary + depth_pair_at[i],
+			   0x00500000u | (pairs << 8));
 	}
 	for (i = 0; i < M9_FAA_DEPTH_DRAW_ENDS; i++)
 		out->end_bytes[i] = primary_cursor + depth_end_delta[i];
@@ -390,27 +380,27 @@ int m9x_faa_depth_color_encode(const u8 *depth_blob, size_t depth_bytes,
 
 		if (e->dst != 1)
 			continue;
-		write32(out->secondary + e->at,
-			((u32)live_next_epoch + e->delta -
-			 (clear_flags ? 0 : 0x60)) |
-				e->tag);
+		m9_cmd_put(out->secondary + e->at,
+			   ((u32)live_next_epoch + e->delta -
+			    (clear_flags ? 0 : 0x60)) |
+				   e->tag);
 	}
 	for (i = 0; i < ARRAY_SIZE(depth_relatives); i++)
-		write32(out->secondary + depth_relatives[i].at,
-			0x49d00000u | ((depth_relatives[i].target -
-					depth_relatives[i].at) /
-				       4));
+		m9_cmd_put(out->secondary + depth_relatives[i].at,
+			   0x49d00000u | ((depth_relatives[i].target -
+					   depth_relatives[i].at) /
+					  4));
 	/* b5030's bound-depth producer clears the first-stage standalone
 	 * target bit while preserving the live COLOR route/arity bit.
 	 */
-	write32(out->secondary + 1676,
-		read32(first->secondary + 1920) & ~0x20000000u);
-	write32(out->secondary + 1832, owner[33].base | 1u);
-	write32(out->secondary + 1956, m9x_faa_depth_a8(in->depth_flags));
+	m9_cmd_put(out->secondary + 1676,
+		   m9_cmd_get(first->secondary + 1920) & ~0x20000000u);
+	m9_cmd_put(out->secondary + 1832, owner[33].base | 1u);
+	m9_cmd_put(out->secondary + 1956, m9x_faa_depth_a8(in->depth_flags));
 	/* Four primary indirect words refer to the live secondary slice. The
 	 * final target grows by 24 bytes for the COLOR raster declaration.
 	 */
 	end = secondary_cursor + M9_FAA_DEPTH_COLOR_SECONDARY_BYTES;
-	write32(out->primary + 4296, (owner[29].base + end) | 2u);
+	m9_cmd_put(out->primary + 4296, (owner[29].base + end) | 2u);
 	return 0;
 }

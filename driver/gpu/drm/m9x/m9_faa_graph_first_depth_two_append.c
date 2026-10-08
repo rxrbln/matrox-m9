@@ -1,23 +1,11 @@
 // SPDX-License-Identifier: GPL-2.0-only
 /* Copyright 2026 René Rebe <rene@exactco.de> */
+#include "m9_cmd.h"
 #include "m9_faa_graph_batch_limits.h"
 #include <linux/errno.h>
 #include <linux/string.h>
 #include <linux/overflow.h>
 #include "m9_faa_graph_first_depth_two_append.h"
-
-static u32 word(const u8 *p)
-{
-	return (u32)p[0] | (u32)p[1] << 8 | (u32)p[2] << 16 | (u32)p[3] << 24;
-}
-
-static void put(u8 *p, u32 v)
-{
-	p[0] = v;
-	p[1] = v >> 8;
-	p[2] = v >> 16;
-	p[3] = v >> 24;
-}
 
 static u32 moved(u32 at, u32 extra)
 {
@@ -45,7 +33,7 @@ int m9x_faa_first_depth_two_append(const struct m9x_faa_first_depth_two_append_i
 	static const u32 tail_back[6] = { 0x20, 0x10, 0x10, 0x10, 0x20, 0 };
 	static const u32 tail_tag[6] = { 1, 1, 0, 0, 0, 1 };
 	u32 extra, old_extra, newsec, newprimary, split, minsec, maxsec, first,
-		last, delta, at, i, e[14], pages, groups_min, groups_max;
+		last, delta, at, i, e[14], pages, groups_min, groups_max, link;
 	u64 oldpoint, point;
 	const u8 *s;
 
@@ -126,33 +114,34 @@ int m9x_faa_first_depth_two_append(const struct m9x_faa_first_depth_two_append_i
 	last = in->old_secondary_bytes - 772;
 	{
 		u32 expected[6] = {
-			0x45452d2c,
+			M9_CMD_LINK,
 			(in->owner[29].base + first) | 1,
 			(in->owner[29].base + last) | 2,
-			0x45452d2c,
+			M9_CMD_LINK,
 			(in->owner[29].base + last) | 1,
 			(in->owner[29].base + in->old_secondary_bytes) | 2
 		};
 		for (i = 0; i < 6; i++)
-			if (word(in->old_primary + split - 24 + 4 * i) !=
+			if (m9_cmd_get(in->old_primary + split - 24 + 4 * i) !=
 			    expected[i])
 				return -ESTALE;
 	}
-	if (word(s) != 2 || word(s + 4) != 0x4545e3e6 || word(s + 8) != 1 ||
-	    word(s + 48) != 2 || word(s + 52) != 0x4545e3e6 ||
-	    word(s + 56) != 1 || word(s + moved(552, extra)) != 2 ||
-	    word(s + moved(556, extra)) != 0x45451819 ||
-	    word(s + moved(560, extra)) ||
-	    word(s + moved(564, extra)) != 0x7fffffff ||
-	    !m9x_faa_depth_a8_valid(word(s + 940 + extra)))
+	if (m9_cmd_get(s) != 2 || m9_cmd_get(s + 4) != M9_CMD_FENCE ||
+	    m9_cmd_get(s + 8) != 1 || m9_cmd_get(s + 48) != 2 ||
+	    m9_cmd_get(s + 52) != M9_CMD_FENCE || m9_cmd_get(s + 56) != 1 ||
+	    m9_cmd_get(s + moved(552, extra)) != 2 ||
+	    m9_cmd_get(s + moved(556, extra)) != 0x45451819 ||
+	    m9_cmd_get(s + moved(560, extra)) ||
+	    m9_cmd_get(s + moved(564, extra)) != 0x7fffffff ||
+	    !m9x_faa_depth_a8_valid(m9_cmd_get(s + 940 + extra)))
 		return -EINVAL;
 	for (i = 0; i < 7; i++)
-		if (word(s + moved(sec_at[i], extra)) !=
-		    ((u32)in->init_point + sec_delta[i] | sec_tag[i]))
+		if (m9_cmd_get(s + moved(sec_at[i], extra)) !=
+		    (((u32)in->init_point + sec_delta[i]) | sec_tag[i]))
 			return -ESTALE;
 	for (i = 0; i < 6; i++)
-		if (word(in->old_primary + split + tail_at[i]) !=
-		    ((u32)oldpoint - tail_back[i] | tail_tag[i]))
+		if (m9_cmd_get(in->old_primary + split + tail_at[i]) !=
+		    (((u32)oldpoint - tail_back[i]) | tail_tag[i]))
 			return -ESTALE;
 	/* Every refusal above precedes output writes. Existing secondary/code/data
 	 * remain immutable. The new source prologue preserves pool-save and graph
@@ -160,34 +149,29 @@ int m9x_faa_first_depth_two_append(const struct m9x_faa_first_depth_two_append_i
 	 */
 	memmove(out->primary, in->old_primary, split);
 	memmove(out->primary + split + 24, in->old_primary + split, 3564);
-	put(out->primary + split, 0x45452d2c);
-	put(out->primary + split + 4,
-	    (in->owner[29].base + in->old_secondary_bytes) | 1);
-	put(out->primary + split + 8,
-	    (in->owner[29].base + in->old_secondary_bytes + 712 + extra) | 2);
-	put(out->primary + split + 12, 0x45452d2c);
-	put(out->primary + split + 16,
-	    (in->owner[29].base + in->old_secondary_bytes + 712 + extra) | 1);
-	put(out->primary + split + 20,
-	    (in->owner[29].base + in->old_secondary_bytes + newsec) | 2);
+	link = in->owner[29].base + in->old_secondary_bytes;
+	m9_cmd_put_link(out->primary + split, link | 1,
+			(link + 712 + extra) | 2);
+	m9_cmd_put_link(out->primary + split + 12, (link + 712 + extra) | 1,
+			(link + newsec) | 2);
 	for (i = 0; i < 6; i++)
-		put(out->primary + split + 24 + tail_at[i],
-		    ((u32)point - tail_back[i]) | tail_tag[i]);
-	put(out->secondary, 3);
-	put(out->secondary + 4, 0x45e3e6e6);
-	put(out->secondary + 8, 1);
-	put(out->secondary + 12, 2);
-	put(out->secondary + 16, word(s + 12));
+		m9_cmd_put(out->primary + split + 24 + tail_at[i],
+			   ((u32)point - tail_back[i]) | tail_tag[i]);
+	m9_cmd_put(out->secondary, 3);
+	m9_cmd_put(out->secondary + 4, 0x45e3e6e6);
+	m9_cmd_put(out->secondary + 8, 1);
+	m9_cmd_put(out->secondary + 12, 2);
+	m9_cmd_put(out->secondary + 16, m9_cmd_get(s + 12));
 	memcpy(out->secondary + 20, s + 16, 32);
 	memcpy(out->secondary + 52, insert, sizeof(insert));
-	put(out->secondary + 60, in->owner[22].base | 1);
-	put(out->secondary + 136,
-	    ((in->owner[22].base + 644) & 0xffffff84u) | 5);
-	put(out->secondary + 140,
-	    ((in->owner[22].base + 708) & 0xfffffffdu) | 1);
-	put(out->secondary + 152, (in->owner[8].base + 8) | 1);
-	put(out->secondary + 168, (in->owner[8].base + 12) | 1);
-	put(out->secondary + 184, (in->owner[8].base + 16) | 1);
+	m9_cmd_put(out->secondary + 60, in->owner[22].base | 1);
+	m9_cmd_put(out->secondary + 136,
+		   ((in->owner[22].base + 644) & 0xffffff84u) | 5);
+	m9_cmd_put(out->secondary + 140,
+		   ((in->owner[22].base + 708) & 0xfffffffdu) | 1);
+	m9_cmd_put(out->secondary + 152, (in->owner[8].base + 8) | 1);
+	m9_cmd_put(out->secondary + 168, (in->owner[8].base + 12) | 1);
+	m9_cmd_put(out->secondary + 184, (in->owner[8].base + 16) | 1);
 	memcpy(out->secondary + 196, s + 48, 504 + extra);
 	memcpy(out->secondary + 700 + extra, s + 568 + extra,
 	       in->fresh_secondary_bytes - 568 - extra);
@@ -198,8 +182,9 @@ int m9x_faa_first_depth_two_append(const struct m9x_faa_first_depth_two_append_i
 		     at < 48	      ? at + 4 :
 		     at < 552 + extra ? at + 148 :
 					at + 132;
-		put(out->secondary + at,
-		    ((u32)in->init_point + sec_delta[i] + delta) | sec_tag[i]);
+		m9_cmd_put(out->secondary + at,
+			   ((u32)in->init_point + sec_delta[i] + delta) |
+				   sec_tag[i]);
 	}
 	for (i = 10; i < 14; i++)
 		e[i] += 24;

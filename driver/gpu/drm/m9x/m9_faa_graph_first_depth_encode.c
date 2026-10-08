@@ -2,16 +2,9 @@
 /* Copyright 2026 René Rebe <rene@exactco.de> */
 #include <linux/errno.h>
 #include <linux/string.h>
+#include "m9_cmd.h"
 #include "m9_faa_graph_first_depth_encode.h"
 #include "m9_faa_depth_mode.h"
-
-static void put(u8 *p, u32 v)
-{
-	p[0] = v;
-	p[1] = v >> 8;
-	p[2] = v >> 16;
-	p[3] = v >> 24;
-}
 
 int m9x_faa_first_depth_prefix_encode(const u8 *blob, size_t bytes,
 				      const struct m9x_faa_graph_draw_owner
@@ -63,9 +56,9 @@ int m9x_faa_first_depth_prefix_encode(const u8 *blob, size_t bytes,
 	scratch->depth.word[127] = 0;
 	memmove(scratch->depth.word + 146, scratch->depth.word + 148,
 		M9_FAA_DEPTH_CLEAR_BYTES - 148 * 4);
-	put(scratch->sample + 5 * 4, 0x2e00040c);
+	m9_cmd_put(scratch->sample + 5 * 4, 0x2e00040c);
 	memset(scratch->sample + 776 * 4, 0, 12);
-	put(scratch->sample + 856 * 4, 0x2e00040c);
+	m9_cmd_put(scratch->sample + 856 * 4, 0x2e00040c);
 	memmove(scratch->sample + 793 * 4, scratch->sample + 795 * 4,
 		sample_bytes - 795 * 4);
 	sample_bytes -= 8;
@@ -76,12 +69,12 @@ int m9x_faa_first_depth_prefix_encode(const u8 *blob, size_t bytes,
 	/* First HZ constructor: source 13-word class5/format78 body with the
 	 * live parent allocation and visible/storage dimensions, preceded by c1.
 	 */
-	put(primary, 0x4545e3e6);
-	put(primary + 4, 1);
-	put(primary + 8, ((u32)init_point + 0x10) | 1);
+	m9_cmd_put(primary, M9_CMD_FENCE);
+	m9_cmd_put(primary + 4, 1);
+	m9_cmd_put(primary + 8, ((u32)init_point + 0x10) | 1);
 	memcpy(primary + 12, hz.hz + 7, 13 * 4);
-	put(primary + 24, 0x2e00040c);
-	put(primary + 44, 0xffff0000);
+	m9_cmd_put(primary + 24, 0x2e00040c);
+	m9_cmd_put(primary + 44, 0xffff0000);
 	at = 64;
 	e[1] = at;
 	e[0] = at;
@@ -94,27 +87,27 @@ int m9x_faa_first_depth_prefix_encode(const u8 *blob, size_t bytes,
 			0x45e62b2a, 0x454545e6, 0xffff,	    0
 		};
 		memcpy(primary + at, control, sizeof(control));
-		put(primary + at + 32, 0x20000000 | (count - 1));
+		m9_cmd_put(primary + at + 32, 0x20000000 | (count - 1));
 		at += 36;
 	}
 	while (page < last) {
 		u32 group = page & ~7u,
 		    end = group + 8 < last ? group + 8 : last;
-		put(primary + at,
-		    ((group | 0xd00000u) << 5) |
-			    (((1u << (end - page)) - 1) << (page & 7)));
+		m9_cmd_put(primary + at,
+			   ((group | 0xd00000u) << 5) |
+				   (((1u << (end - page)) - 1) << (page & 7)));
 		at += 4;
 		page = end;
 	}
-	put(primary + at, 0x4545e3e6);
-	put(primary + at + 4, 1);
-	put(primary + at + 8, ((u32)init_point + 0x20) | 1);
-	put(primary + at + 12, 0x454545e6);
-	put(primary + at + 16, 1);
+	m9_cmd_put(primary + at, M9_CMD_FENCE);
+	m9_cmd_put(primary + at + 4, 1);
+	m9_cmd_put(primary + at + 8, ((u32)init_point + 0x20) | 1);
+	m9_cmd_put(primary + at + 12, 0x454545e6);
+	m9_cmd_put(primary + at + 16, 1);
 	at += 20;
 	e[2] = at;
 	memcpy(primary + at, hz.hz + 7, 13 * 4);
-	put(primary + at + 12, 0x2e00040c);
+	m9_cmd_put(primary + at + 12, 0x2e00040c);
 	at += 52;
 	e[4] = at;
 	e[3] = at;
@@ -128,16 +121,16 @@ int m9x_faa_first_depth_prefix_encode(const u8 *blob, size_t bytes,
 	/* Fresh sampled clear closes with the graph sentinel's own 4x1/128B
 	 * HZ-style constructor. It is not the new bound depth/HZ allocation.
 	 */
-	put(primary + at, 0x4545e3e6);
-	put(primary + at + 4, 1);
-	put(primary + at + 8, ((u32)init_point + 0x80) | 1);
+	m9_cmd_put(primary + at, M9_CMD_FENCE);
+	m9_cmd_put(primary + at + 4, 1);
+	m9_cmd_put(primary + at + 8, ((u32)init_point + 0x80) | 1);
 	memcpy(primary + at + 12, hz.hz + 7, 13 * 4);
-	put(primary + at + 16, owner[8].base | 1);
-	put(primary + at + 20, 0xf0000008);
-	put(primary + at + 24, 0x2e00040c);
-	put(primary + at + 28, 1);
-	put(primary + at + 44, 0);
-	put(primary + at + 60, 0x00010004);
+	m9_cmd_put(primary + at + 16, owner[8].base | 1);
+	m9_cmd_put(primary + at + 20, 0xf0000008);
+	m9_cmd_put(primary + at + 24, 0x2e00040c);
+	m9_cmd_put(primary + at + 28, 1);
+	m9_cmd_put(primary + at + 44, 0);
+	m9_cmd_put(primary + at + 60, 0x00010004);
 	at += 64;
 	e[9] = at;
 	e[8] = at;
@@ -214,16 +207,17 @@ int m9x_faa_first_depth_encode(const u8 *sample, size_t sample_bytes,
 	ef = (u32)secondary[1920 - shift] | (u32)secondary[1921 - shift] << 8 |
 	     (u32)secondary[1922 - shift] << 16 |
 	     (u32)secondary[1923 - shift] << 24;
-	put(secondary + 1920 - shift, ef & ~0x20000000u);
-	put(secondary + 2076 - shift,
-	    views->owner[M9_FAA_BOUND_DEPTH].base | 1);
+	m9_cmd_put(secondary + 1920 - shift, ef & ~0x20000000u);
+	m9_cmd_put(secondary + 2076 - shift,
+		   views->owner[M9_FAA_BOUND_DEPTH].base | 1);
 	/* FIRST's 12e75a constructor has no BA/HZ attachment in this slot. It
 	 * initializes the default null G16R16 view; the bound HZ owner remains
 	 * separately retained by the preceding clear producers.
 	 */
-	put(secondary + 2092 - shift, 0);
-	put(secondary + 2096 - shift, 0xf0010100);
-	put(secondary + 2200 - shift, m9x_faa_depth_a8(input->depth_flags));
+	m9_cmd_put(secondary + 2092 - shift, 0);
+	m9_cmd_put(secondary + 2096 - shift, 0xf0010100);
+	m9_cmd_put(secondary + 2200 - shift,
+		   m9x_faa_depth_a8(input->depth_flags));
 	for (i = 0; i < M9_FAA_FIRST_DEPTH_PREFIX_ENDS; i++)
 		ends[i] += init_bytes;
 	ends[10] = init_bytes + length + 60;
@@ -314,15 +308,16 @@ int m9x_faa_first_depth_color_stage_encode(const u8 *first, size_t first_bytes,
 		aux_at = 2092 - shift;
 		a8_at = 2200 - shift;
 	}
-	put(secondary + ef_at,
-	    ((u32)secondary[ef_at] | (u32)secondary[ef_at + 1] << 8 |
-	     (u32)secondary[ef_at + 2] << 16 |
-	     (u32)secondary[ef_at + 3] << 24) &
-		    ~0x20000000u);
-	put(secondary + depth_at, views->owner[M9_FAA_BOUND_DEPTH].base | 1);
-	put(secondary + aux_at, 0);
-	put(secondary + aux_at + 4, 0xf0010100);
-	put(secondary + a8_at, m9x_faa_depth_a8(input->depth_flags));
+	m9_cmd_put(secondary + ef_at,
+		   ((u32)secondary[ef_at] | (u32)secondary[ef_at + 1] << 8 |
+		    (u32)secondary[ef_at + 2] << 16 |
+		    (u32)secondary[ef_at + 3] << 24) &
+			   ~0x20000000u);
+	m9_cmd_put(secondary + depth_at,
+		   views->owner[M9_FAA_BOUND_DEPTH].base | 1);
+	m9_cmd_put(secondary + aux_at, 0);
+	m9_cmd_put(secondary + aux_at + 4, 0xf0010100);
+	m9_cmd_put(secondary + a8_at, m9x_faa_depth_a8(input->depth_flags));
 	if (two) {
 		u32 ef = (u32)secondary[ef_at] |
 			 (u32)secondary[ef_at + 1] << 8 |
@@ -330,10 +325,10 @@ int m9x_faa_first_depth_color_stage_encode(const u8 *first, size_t first_bytes,
 			 (u32)secondary[ef_at + 3] << 24;
 		mode.ef = (ef & ~0x20000000u) |
 			  (mode.after.enabled ? 0 : 0x20000000u);
-		put(secondary + ef_at, mode.ef);
-		put(secondary + depth_at, mode.a9);
-		put(secondary + aux_at, mode.ba);
-		put(secondary + aux_at + 4, mode.ba_descriptor);
+		m9_cmd_put(secondary + ef_at, mode.ef);
+		m9_cmd_put(secondary + depth_at, mode.a9);
+		m9_cmd_put(secondary + aux_at, mode.ba);
+		m9_cmd_put(secondary + aux_at + 4, mode.ba_descriptor);
 	}
 	*primary_bytes = tail;
 	*secondary_bytes = sec;

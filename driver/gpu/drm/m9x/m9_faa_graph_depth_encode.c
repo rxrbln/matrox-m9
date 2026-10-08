@@ -2,6 +2,7 @@
 /* Copyright 2026 René Rebe <rene@exactco.de> */
 #include <linux/errno.h>
 #include <linux/string.h>
+#include "m9_cmd.h"
 #include "m9_faa_graph_depth_encode.h"
 
 /* Original FLOATOBJ_SetLong/GetFloat round trips at b591b..b599d. For the
@@ -148,7 +149,7 @@ int m9x_faa_depth_clear_encode(const struct m9x_faa_depth_views *views,
 		w[at++] = instruction[i][1];
 	}
 	w[82] = 0x8f8e8d8c;
-	w[87] = 0x4545e3e6;
+	w[87] = M9_CMD_FENCE;
 	w[88] = 0x04000001;
 	w[89] = prior + 0x40;
 	w[90] = 0x459f9e8f;
@@ -254,7 +255,7 @@ int m9x_faa_attachment_clear_encode(const struct m9x_faa_depth_views *views,
 		page = end;
 	}
 	w[36] = 0x20000000 | (n - 1);
-	w[at++] = 0x4545e3e6;
+	w[at++] = M9_CMD_FENCE;
 	w[at++] = 1;
 	w[at++] = (prior + 0x20) | 1;
 	w[at++] = 0x454545e6;
@@ -320,7 +321,7 @@ int m9x_faa_color_attachment_clear_encode(const struct m9x_faa_depth_views
 		page = end;
 	}
 	w[15] = 0x20000000 | (n - 1);
-	w[at++] = 0x4545e3e6;
+	w[at++] = M9_CMD_FENCE;
 	w[at++] = 1;
 	w[at++] = (queue_start + 0x10) | 1;
 	w[at++] = 0x454545e6;

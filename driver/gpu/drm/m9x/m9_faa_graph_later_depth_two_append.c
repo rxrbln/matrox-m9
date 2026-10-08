@@ -1,23 +1,11 @@
 // SPDX-License-Identifier: GPL-2.0-only
 /* Copyright 2026 René Rebe <rene@exactco.de> */
+#include "m9_cmd.h"
 #include "m9_faa_graph_batch_limits.h"
 #include <linux/errno.h>
 #include <linux/string.h>
 #include <linux/overflow.h>
 #include "m9_faa_graph_later_depth_two_encode.h"
-
-static u32 word(const u8 *p)
-{
-	return (u32)p[0] | (u32)p[1] << 8 | (u32)p[2] << 16 | (u32)p[3] << 24;
-}
-
-static void put(u8 *p, u32 v)
-{
-	p[0] = v;
-	p[1] = v >> 8;
-	p[2] = v >> 16;
-	p[3] = v >> 24;
-}
 
 static u32 moved(u32 at, u32 extra)
 {
@@ -55,7 +43,7 @@ int m9x_faa_later_depth_two_append_encode(const struct m9x_faa_graph_draw_owner 
 	static const u32 tail_tag[6] = { 1, 1, 0, 0, 0, 1 };
 
 	u32 extra, old_extra, newsec, newprimary, split, minsec, maxsec, first,
-		last, delta, at, i, ends[13], front;
+		last, delta, at, i, ends[13], front, link;
 	u64 point, base;
 	bool clear = clear_flags == 3;
 
@@ -138,66 +126,66 @@ int m9x_faa_later_depth_two_append_encode(const struct m9x_faa_graph_draw_owner 
 		old_extra;
 	last = sstart + old_sec - 772;
 	{
-		u32 expected[6] = { 0x45452d2c,
+		u32 expected[6] = { M9_CMD_LINK,
 				    (owner[29].base + first) | 1,
 				    (owner[29].base + last) | 2,
-				    0x45452d2c,
+				    M9_CMD_LINK,
 				    (owner[29].base + last) | 1,
 				    (owner[29].base + sstart + old_sec) | 2 };
 		for (i = 0; i < 6; i++)
-			if (word(old + split - 24 + 4 * i) != expected[i])
+			if (m9_cmd_get(old + split - 24 + 4 * i) != expected[i])
 				return -ESTALE;
 	}
-	if (word(s) != 2 || word(s + 4) != 0x4545e3e6 || word(s + 8) != 1 ||
-	    word(s + 48) != 2 || word(s + 52) != 0x4545e3e6 ||
-	    word(s + 56) != 1 || word(s + moved(552, extra)) != 2 ||
-	    word(s + moved(556, extra)) != 0x45451819 ||
-	    word(s + moved(560, extra)) ||
-	    word(s + moved(564, extra)) != 0x7fffffff ||
-	    word(s + 816 + extra) != (views->owner[2].base | 1) ||
-	    word(s + 832 + extra) || word(s + 836 + extra) != 0xf0010100 ||
-	    !m9x_faa_depth_a8_valid(word(s + 940 + extra)) ||
-	    (word(s + 660 + extra) & 0x03000000) !=
+	if (m9_cmd_get(s) != 2 || m9_cmd_get(s + 4) != M9_CMD_FENCE ||
+	    m9_cmd_get(s + 8) != 1 || m9_cmd_get(s + 48) != 2 ||
+	    m9_cmd_get(s + 52) != M9_CMD_FENCE || m9_cmd_get(s + 56) != 1 ||
+	    m9_cmd_get(s + moved(552, extra)) != 2 ||
+	    m9_cmd_get(s + moved(556, extra)) != 0x45451819 ||
+	    m9_cmd_get(s + moved(560, extra)) ||
+	    m9_cmd_get(s + moved(564, extra)) != 0x7fffffff ||
+	    m9_cmd_get(s + 816 + extra) != (views->owner[2].base | 1) ||
+	    m9_cmd_get(s + 832 + extra) ||
+	    m9_cmd_get(s + 836 + extra) != 0xf0010100 ||
+	    !m9x_faa_depth_a8_valid(m9_cmd_get(s + 940 + extra)) ||
+	    (m9_cmd_get(s + 660 + extra) & 0x03000000) !=
 		    (raster_flags & 2 ? 0x03000000 :
 		     raster_flags & 4 ? 0x02000000 :
 					0) ||
-	    !!(word(s + 676 + extra) & 0x4000) != !!(raster_flags & 1))
+	    !!(m9_cmd_get(s + 676 + extra) & 0x4000) != !!(raster_flags & 1))
 		return -EINVAL;
 	for (i = 0; i < 7; i++)
-		if (word(s + moved(sec_at[i], extra)) !=
-		    ((u32)base + sec_delta[i] | sec_tag[i]))
+		if (m9_cmd_get(s + moved(sec_at[i], extra)) !=
+		    (((u32)base + sec_delta[i]) | sec_tag[i]))
 			return -ESTALE;
 	for (i = 0; i < 6; i++)
-		if (word(old + split + tail_at[i]) !=
-		    ((u32)old_point - tail_back[i] | tail_tag[i]))
+		if (m9_cmd_get(old + split + tail_at[i]) !=
+		    (((u32)old_point - tail_back[i]) | tail_tag[i]))
 			return -ESTALE;
 	memmove(out->primary, old, split);
 	memmove(out->primary + split + 24, old + split, 3564);
-	put(out->primary + split, 0x45452d2c);
-	put(out->primary + split + 4, (owner[29].base + sstart + old_sec) | 1);
-	put(out->primary + split + 8,
-	    (owner[29].base + sstart + old_sec + 712 + extra) | 2);
-	put(out->primary + split + 12, 0x45452d2c);
-	put(out->primary + split + 16,
-	    (owner[29].base + sstart + old_sec + 712 + extra) | 1);
-	put(out->primary + split + 20,
-	    (owner[29].base + sstart + old_sec + newsec) | 2);
+	link = owner[29].base + sstart + old_sec;
+	m9_cmd_put_link(out->primary + split, link | 1,
+			(link + 712 + extra) | 2);
+	m9_cmd_put_link(out->primary + split + 12, (link + 712 + extra) | 1,
+			(link + newsec) | 2);
 	for (i = 0; i < 6; i++)
-		put(out->primary + split + 24 + tail_at[i],
-		    ((u32)point - tail_back[i]) | tail_tag[i]);
-	put(out->secondary, 3);
-	put(out->secondary + 4, 0x45e3e6e6);
-	put(out->secondary + 8, 1);
-	put(out->secondary + 12, 2);
-	put(out->secondary + 16, word(s + 12));
+		m9_cmd_put(out->primary + split + 24 + tail_at[i],
+			   ((u32)point - tail_back[i]) | tail_tag[i]);
+	m9_cmd_put(out->secondary, 3);
+	m9_cmd_put(out->secondary + 4, 0x45e3e6e6);
+	m9_cmd_put(out->secondary + 8, 1);
+	m9_cmd_put(out->secondary + 12, 2);
+	m9_cmd_put(out->secondary + 16, m9_cmd_get(s + 12));
 	memcpy(out->secondary + 20, s + 16, 32);
 	memcpy(out->secondary + 52, insert, sizeof(insert));
-	put(out->secondary + 60, owner[22].base | 1);
-	put(out->secondary + 136, ((owner[22].base + 644) & 0xffffff84u) | 5);
-	put(out->secondary + 140, ((owner[22].base + 708) & 0xfffffffdu) | 1);
-	put(out->secondary + 152, (owner[8].base + 8) | 1);
-	put(out->secondary + 168, (owner[8].base + 12) | 1);
-	put(out->secondary + 184, (owner[8].base + 16) | 1);
+	m9_cmd_put(out->secondary + 60, owner[22].base | 1);
+	m9_cmd_put(out->secondary + 136,
+		   ((owner[22].base + 644) & 0xffffff84u) | 5);
+	m9_cmd_put(out->secondary + 140,
+		   ((owner[22].base + 708) & 0xfffffffdu) | 1);
+	m9_cmd_put(out->secondary + 152, (owner[8].base + 8) | 1);
+	m9_cmd_put(out->secondary + 168, (owner[8].base + 12) | 1);
+	m9_cmd_put(out->secondary + 184, (owner[8].base + 16) | 1);
 	memcpy(out->secondary + 196, s + 48, 504 + extra);
 	memcpy(out->secondary + 700 + extra, s + 568 + extra,
 	       fresh_bytes - 568 - extra);
@@ -208,8 +196,8 @@ int m9x_faa_later_depth_two_append_encode(const struct m9x_faa_graph_draw_owner 
 		     at < 48	      ? at + 4 :
 		     at < 552 + extra ? at + 148 :
 					at + 132;
-		put(out->secondary + at,
-		    ((u32)base + sec_delta[i] + delta) | sec_tag[i]);
+		m9_cmd_put(out->secondary + at,
+			   ((u32)base + sec_delta[i] + delta) | sec_tag[i]);
 	}
 	for (i = end_count - 4; i < end_count; i++)
 		ends[i] += 24;

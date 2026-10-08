@@ -2,20 +2,8 @@
 /* Copyright 2026 René Rebe <rene@exactco.de> */
 #include <linux/errno.h>
 #include <linux/string.h>
+#include "m9_cmd.h"
 #include "m9_faa_graph_later_depth_two_encode.h"
-
-static u32 get(const u8 *p)
-{
-	return (u32)p[0] | (u32)p[1] << 8 | (u32)p[2] << 16 | (u32)p[3] << 24;
-}
-
-static void put(u8 *p, u32 v)
-{
-	p[0] = v;
-	p[1] = v >> 8;
-	p[2] = v >> 16;
-	p[3] = v >> 24;
-}
 
 /* Original initialized count2 short constructors. The corresponding count4
  * producer has28 extra HZ/sentinel bytes and unused C0 pairs. This routine
@@ -56,44 +44,44 @@ static int prefix(const u8 *sample, size_t sample_bytes,
 	s->depth.word[127] = 0;
 	memmove(s->depth.word + 146, s->depth.word + 148,
 		M9_FAA_DEPTH_CLEAR_BYTES - 148 * 4);
-	put(s->sample + 20, 0x2e00040c);
-	put(s->sample + 44, 1);
-	put(s->sample + 48, 0x00010004);
-	put(s->sample + 76, owner[8].base | 1);
-	put(s->sample + 80, 0xf0000008);
-	put(s->sample + 3020, 0);
+	m9_cmd_put(s->sample + 20, 0x2e00040c);
+	m9_cmd_put(s->sample + 44, 1);
+	m9_cmd_put(s->sample + 48, 0x00010004);
+	m9_cmd_put(s->sample + 76, owner[8].base | 1);
+	m9_cmd_put(s->sample + 80, 0xf0000008);
+	m9_cmd_put(s->sample + 3020, 0);
 	/* Original initialized count2 keeps sampled primary in target slot0;
 	 * neither FIRST's disabled slot nor count4's graph-sentinel HZ view.
 	 */
-	put(s->sample + 3104, owner[1].base | 1);
-	put(s->sample + 3108, 0xf0210000 | v->owner[0].width);
-	put(s->sample + 3112, 0x10000 | v->owner[0].height);
-	put(s->sample + 856 * 4, 0x2e00040c);
+	m9_cmd_put(s->sample + 3104, owner[1].base | 1);
+	m9_cmd_put(s->sample + 3108, 0xf0210000 | v->owner[0].width);
+	m9_cmd_put(s->sample + 3112, 0x10000 | v->owner[0].height);
+	m9_cmd_put(s->sample + 856 * 4, 0x2e00040c);
 	memmove(s->sample + 793 * 4, s->sample + 795 * 4, n - 795 * 4);
 	n -= 8;
 	color = s->attachment.end_bytes[0];
 	memcpy(s->prefix, s->attachment.word, color);
 	ends[0] = color;
 	at = color;
-	put(s->prefix + at, 0x45e3e6e6);
-	put(s->prefix + at + 4, 1);
-	put(s->prefix + at + 8, 2);
-	put(s->prefix + at + 12, ((u32)epoch + 0x20) | 1);
+	m9_cmd_put(s->prefix + at, 0x45e3e6e6);
+	m9_cmd_put(s->prefix + at + 4, 1);
+	m9_cmd_put(s->prefix + at + 8, 2);
+	m9_cmd_put(s->prefix + at + 12, ((u32)epoch + 0x20) | 1);
 	memcpy(s->prefix + at + 16, hz.hz + 7, 52);
-	put(s->prefix + at + 28, 0x2e00040c);
+	m9_cmd_put(s->prefix + at + 28, 0x2e00040c);
 	at += 68;
 	ends[2] = at;
 	ends[1] = at;
-	put(s->prefix + at, 0x4545e3e6);
-	put(s->prefix + at + 4, 1);
-	put(s->prefix + at + 8, ((u32)epoch + 0x30) | 1);
+	m9_cmd_put(s->prefix + at, M9_CMD_FENCE);
+	m9_cmd_put(s->prefix + at + 4, 1);
+	m9_cmd_put(s->prefix + at + 8, ((u32)epoch + 0x30) | 1);
 	memcpy(s->prefix + at + 12, hz.hz + 7, 52);
-	put(s->prefix + at + 16, owner[8].base | 1);
-	put(s->prefix + at + 20, 0xf0000008);
-	put(s->prefix + at + 24, 0x2e00040c);
-	put(s->prefix + at + 28, 1);
-	put(s->prefix + at + 44, 0);
-	put(s->prefix + at + 60, 0x00010004);
+	m9_cmd_put(s->prefix + at + 16, owner[8].base | 1);
+	m9_cmd_put(s->prefix + at + 20, 0xf0000008);
+	m9_cmd_put(s->prefix + at + 24, 0x2e00040c);
+	m9_cmd_put(s->prefix + at + 28, 1);
+	m9_cmd_put(s->prefix + at + 44, 0);
+	m9_cmd_put(s->prefix + at + 60, 0x00010004);
 	at += 64;
 	ends[4] = at;
 	ends[3] = at;
@@ -231,13 +219,15 @@ int m9x_faa_later_depth_two_encode(const u8 *sample, size_t sample_bytes,
 		return -EINVAL;
 	/* Compose only after every typed producer/extent refusal has passed. */
 	memcpy(scratch->next_secondary, scratch->first_secondary, sec);
-	put(scratch->next_secondary + 660 + extra,
-	    get(scratch->next_secondary + 660 + extra) & ~0x20000000u);
-	put(scratch->next_secondary + 816 + extra, views->owner[2].base | 1);
-	put(scratch->next_secondary + 832 + extra, 0);
-	put(scratch->next_secondary + 836 + extra, 0xf0010100);
-	put(scratch->next_secondary + 940 + extra,
-	    m9x_faa_depth_a8(input->depth_flags));
+	m9_cmd_put(scratch->next_secondary + 660 + extra,
+		   m9_cmd_get(scratch->next_secondary + 660 + extra) &
+			   ~0x20000000u);
+	m9_cmd_put(scratch->next_secondary + 816 + extra,
+		   views->owner[2].base | 1);
+	m9_cmd_put(scratch->next_secondary + 832 + extra, 0);
+	m9_cmd_put(scratch->next_secondary + 836 + extra, 0xf0010100);
+	m9_cmd_put(scratch->next_secondary + 940 + extra,
+		   m9x_faa_depth_a8(input->depth_flags));
 	if (!clear) {
 		static const u32 sec_at[7] = { 12, 60, 592, 620, 632, 692, 788 };
 		static const u32 prim_at[6] = {
@@ -246,27 +236,32 @@ int m9x_faa_later_depth_two_encode(const u8 *sample, size_t sample_bytes,
 		for (i = 0; i < 7; i++) {
 			u32 at = sec_at[i] + (sec_at[i] >= 508 ? extra : 0);
 
-			put(scratch->next_secondary + at,
-			    get(scratch->next_secondary + at) - 0x80);
+			m9_cmd_put(scratch->next_secondary + at,
+				   m9_cmd_get(scratch->next_secondary + at) -
+					   0x80);
 		}
 		for (i = 0; i < 6; i++)
-			put(scratch->tail + prim_at[i],
-			    get(scratch->tail + prim_at[i]) - 0x80);
+			m9_cmd_put(scratch->tail + prim_at[i],
+				   m9_cmd_get(scratch->tail + prim_at[i]) -
+					   0x80);
 		memmove(scratch->next_secondary + 20,
 			scratch->next_secondary + 16, sec - 16);
-		put(scratch->next_secondary, 3);
-		put(scratch->next_secondary + 4, 0x45e3e6e6);
-		put(scratch->next_secondary + 8, 1);
-		put(scratch->next_secondary + 12, 2);
-		put(scratch->next_secondary + 16, ((u32)previous + 0x10) | 1);
+		m9_cmd_put(scratch->next_secondary, 3);
+		m9_cmd_put(scratch->next_secondary + 4, 0x45e3e6e6);
+		m9_cmd_put(scratch->next_secondary + 8, 1);
+		m9_cmd_put(scratch->next_secondary + 12, 2);
+		m9_cmd_put(scratch->next_secondary + 16,
+			   ((u32)previous + 0x10) | 1);
 		sec += 4;
 	}
-	put(scratch->tail + 68, (owner[29].base + scursor) | 1);
-	put(scratch->tail + 72,
-	    (owner[29].base + scursor + 580 + extra + (clear ? 0 : 4)) | 2);
-	put(scratch->tail + 80,
-	    (owner[29].base + scursor + 580 + extra + (clear ? 0 : 4)) | 1);
-	put(scratch->tail + 84, (owner[29].base + scursor + sec) | 2);
+	m9_cmd_put(scratch->tail + 68, (owner[29].base + scursor) | 1);
+	m9_cmd_put(scratch->tail + 72,
+		   (owner[29].base + scursor + 580 + extra + (clear ? 0 : 4)) |
+			   2);
+	m9_cmd_put(scratch->tail + 80,
+		   (owner[29].base + scursor + 580 + extra + (clear ? 0 : 4)) |
+			   1);
+	m9_cmd_put(scratch->tail + 84, (owner[29].base + scursor + sec) | 2);
 	if (clear) {
 		memcpy(out->image.primary, scratch->prefix, front);
 		for (i = 0; i < 9; i++)

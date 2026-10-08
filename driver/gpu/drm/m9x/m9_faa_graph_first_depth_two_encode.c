@@ -2,21 +2,9 @@
 /* Copyright 2026 René Rebe <rene@exactco.de> */
 #include <linux/errno.h>
 #include <linux/string.h>
+#include "m9_cmd.h"
 #include "m9_faa_graph_first_depth_two_encode.h"
 #include "m9_faa_depth_mode.h"
-
-static u32 word(const u8 *p)
-{
-	return (u32)p[0] | (u32)p[1] << 8 | (u32)p[2] << 16 | (u32)p[3] << 24;
-}
-
-static void put(u8 *p, u32 v)
-{
-	p[0] = v;
-	p[1] = v >> 8;
-	p[2] = v >> 16;
-	p[3] = v >> 24;
-}
 
 int m9x_faa_first_depth_two_encode(const u8 *sample, size_t sample_bytes,
 				   const u8 *first, size_t first_bytes,
@@ -71,8 +59,8 @@ int m9x_faa_first_depth_two_encode(const u8 *sample, size_t sample_bytes,
 	ret = m9x_faa_depth_mode_two_plan(input->depth_flags ?
 						  input->depth_flags :
 						  15,
-					  word(first_scratch->secondary + 660 +
-					       extra),
+					  m9_cmd_get(first_scratch->secondary +
+						     660 + extra),
 					  &before, owner, views, &mode);
 	if (ret)
 		return ret;
@@ -87,11 +75,11 @@ int m9x_faa_first_depth_two_encode(const u8 *sample, size_t sample_bytes,
 	/* Original count2 FIRST 181fa0: EF enable bit, A9 bound depth,
 	 * default null BA view from12e75a, and A8 live comparison/write state.
 	 */
-	put(secondary + 660 + extra, mode.ef);
-	put(secondary + 816 + extra, mode.a9);
-	put(secondary + 832 + extra, mode.ba);
-	put(secondary + 836 + extra, mode.ba_descriptor);
-	put(secondary + 940 + extra, mode.a8);
+	m9_cmd_put(secondary + 660 + extra, mode.ef);
+	m9_cmd_put(secondary + 816 + extra, mode.a9);
+	m9_cmd_put(secondary + 832 + extra, mode.ba);
+	m9_cmd_put(secondary + 836 + extra, mode.ba_descriptor);
+	m9_cmd_put(secondary + 940 + extra, mode.a8);
 	for (i = 0; i < M9_FAA_FIRST_DEPTH_PREFIX_ENDS; i++)
 		ends[i] += init_bytes;
 	ends[10] = init_bytes + length + 24;
