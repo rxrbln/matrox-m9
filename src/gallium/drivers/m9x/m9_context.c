@@ -8219,6 +8219,11 @@ m9_mrt_blend_split(struct m9_context *ctx, const struct pipe_draw_info *info,
    return true;
 }
 
+static bool m9_context_faa_tracing(const struct m9_context *ctx);
+static void m9_context_faa_trace_draw(struct m9_context *ctx, const struct pipe_draw_info *info,
+                                      const struct pipe_draw_start_count_bias *draw,
+                                      const char *what);
+
 static void
 m9_draw_vbo(struct pipe_context *pctx, const struct pipe_draw_info *info,
             unsigned drawid_offset,
@@ -8259,7 +8264,11 @@ m9_draw_vbo(struct pipe_context *pctx, const struct pipe_draw_info *info,
       /* The ordinary path below renders the frame too; its result stands
        * unless the whole frame is presented by FAA. */
       const char *why = NULL;
-      if (m9_context_faa_submit_draw(ctx, info, &draws[0], &why))
+      int refused = m9_context_faa_submit_draw(ctx, info, &draws[0], &why);
+      if (m9_context_faa_tracing(ctx))
+         m9_context_faa_trace_draw(ctx, info, &draws[0], refused ?
+                                   (why ? why : "refused") : "admitted");
+      if (refused)
          m9_context_faa_refused(ctx, why ? why : "FAA application draw failed");
       /* Without the shadow an admitted draw is recorded, and rendered
        * ordinarily only if its frame is not presented. */
@@ -8269,6 +8278,13 @@ m9_draw_vbo(struct pipe_context *pctx, const struct pipe_draw_info *info,
          m9_context_faa_fallback(ctx, "FAA draw recording failed");
       }
    }
+   else if (m9_faa_application_enabled() && num_draws && draws[0].count &&
+            !m9_replay_replaying(ctx) && m9_context_faa_tracing(ctx))
+      m9_context_faa_trace_draw(ctx, info, &draws[0],
+                                ctx->faa_mode.split ? "ordinary after split" :
+                                ctx->faa_mode.fallback ? "ordinary after fallback" :
+                                ctx->faa_mode.skip ? "ordinary in backoff" :
+                                "ordinary, not the FAA window target");
    if (num_draws && !indirect &&
        m9_mrt_blend_split(ctx, info, drawid_offset, draws))
       return;
@@ -8611,6 +8627,13 @@ m9_clear(struct pipe_context *pctx, unsigned buffers,
 {
    struct m9_context *ctx = m9_context(pctx);
    uint64_t t_clear = m9_prof_begin();
+   if (m9_faa_application_enabled() && buffers && m9_context_faa_tracing(ctx))
+      fprintf(stderr, "m9x: FAA trace %u clear %#x scissor %d,%d-%d,%d depth %g "
+              "fallback %u skip %u split %u targets %u\n", ctx->faa_mode.frame_index,
+              buffers, scissor ? scissor->minx : -1, scissor ? scissor->miny : -1,
+              scissor ? scissor->maxx : -1, scissor ? scissor->maxy : -1, depth,
+              ctx->faa_mode.fallback, ctx->faa_mode.skip, ctx->faa_mode.split,
+              m9_context_faa_targets_surface(ctx));
    if (ctx->debug && m9_faa_application_enabled() && buffers) {
       static unsigned reported;
       if (reported++ < 400)
@@ -10357,6 +10380,39 @@ m9_context_faa_fallback(struct m9_context *ctx, const char *why)
    memset(&ctx->faa_application_clear, 0, sizeof(ctx->faa_application_clear));
 }
 
+/* M9X_FAA_TRACE=N logs every DRAW and clear of window frame N. */
+static bool
+m9_context_faa_tracing(const struct m9_context *ctx)
+{
+   static int frame = -2;
+   if (frame == -2)
+      frame = debug_get_num_option("M9X_FAA_TRACE", -1);
+   return frame >= 0 && ctx->faa_mode.frame_index == (unsigned)frame;
+}
+
+static void
+m9_context_faa_trace_draw(struct m9_context *ctx, const struct pipe_draw_info *info,
+                          const struct pipe_draw_start_count_bias *draw,
+                          const char *what)
+{
+   const struct pipe_rasterizer_state *r = ctx->rasterizer;
+   const struct pipe_depth_stencil_alpha_state *z = ctx->dsa;
+   const struct pipe_rt_blend_state *b = ctx->blend ? &ctx->blend->rt[0] : NULL;
+   const struct pipe_viewport_state *v = &ctx->viewport;
+   fprintf(stderr, "m9x: FAA trace %u draw mode %u count %u tex %u z %u/%u/%u "
+           "range %g..%g blend %u %u/%u mask %x scissor %u %u,%u-%u,%u "
+           "viewport %g,%g/%g,%g target %ux%u: %s\n",
+           ctx->faa_mode.frame_index, info->mode, draw->count,
+           ctx->fs && ctx->fs->nir ? (unsigned)BITSET_COUNT(ctx->fs->nir->info.textures_used) : 0,
+           z ? z->depth_enabled : 0, z ? z->depth_writemask : 0, z ? z->depth_func : 0,
+           v->translate[2] - v->scale[2], v->translate[2] + v->scale[2],
+           b ? b->blend_enable : 0, b ? b->rgb_src_factor : 0, b ? b->rgb_dst_factor : 0,
+           b ? b->colormask : 0, r ? r->scissor : 0, ctx->scissor.minx, ctx->scissor.miny,
+           ctx->scissor.maxx, ctx->scissor.maxy, v->scale[0], v->scale[1],
+           v->translate[0], v->translate[1], ctx->framebuffer_width,
+           ctx->framebuffer_height, what);
+}
+
 /* M9X_FAA_BACKOFF=0 admits every frame, also after a fallback. */
 static bool
 m9_faa_backoff_enabled(void)
@@ -10411,6 +10467,7 @@ m9_context_faa_frame_end(struct m9_context *ctx)
       m9_context_faa_census_report(ctx);
    ctx->faa_mode.fallback = ctx->faa_mode.presented = ctx->faa_mode.split = false;
    ctx->faa_mode.swapped = true;
+   ctx->faa_mode.frame_index++;
    memset(&ctx->faa_application_clear, 0, sizeof(ctx->faa_application_clear));
 }
 
@@ -10451,6 +10508,9 @@ m9_context_faa_flush_frame(struct m9_context *ctx, const char **reason)
       ret = -ESTALE; why = "FAA queued frame no longer names the retained graph";
       goto done;
    }
+   if (m9_context_faa_tracing(ctx))
+      fprintf(stderr, "m9x: FAA trace %u present %u DRAWs clear %#x\n",
+              ctx->faa_mode.frame_index, frame->count, frame->clear_flags);
    ret = first->texture_count ?
       m9_faa_surface_dual_batch_kernel(ctx->screen, &ctx->faa_surface, frame,
                                        m9_context_faa_present_part, ctx) :

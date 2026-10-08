@@ -625,6 +625,8 @@ struct m9_context {
       bool split;
       /* An end-of-frame flush since the last window retarget. */
       bool swapped;
+      /* End-of-frame flushes seen; M9X_FAA_TRACE names one to trace. */
+      unsigned frame_index;
       unsigned skip, backoff, fallback_run;
       uint64_t frames, fallbacks, skipped, splits, releases;
       const char *reason;
