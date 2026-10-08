@@ -6497,85 +6497,147 @@ out_fw:
 }
 
 int m9x_faa_graph_public_vs_draw_submit(struct m9x_device *mdev,
- struct m9_faa_graph_binding *binding,u32 generation,u64 head_point,u64 *point,bool *posted)
+					struct m9_faa_graph_binding *binding,
+					u32 generation, u64 head_point,
+					u64 *point, bool *posted)
 {
 #ifdef M9_FAA_GRAPH_INIT_CONTROL
- struct m9x_transport *t=&mdev->transport;
- struct m9x_faa_replay *r;
- struct m9_faa_owner *primary,*secondary;
- struct m9_faa_public_vs_draw_storage *image;
- struct m9x_fence *fence=NULL;
+	struct m9x_transport *t = &mdev->transport;
+	struct m9x_faa_replay *r;
+	struct m9_faa_owner *primary, *secondary;
+	struct m9_faa_public_vs_draw_storage *image;
+	struct m9x_fence *fence = NULL;
 	u32 i, old_bytes;
 	int ret;
- bool fenced=false;
- if(!point||!posted)return -EINVAL;
- *point=0;*posted=false;
- /* No unlocked interval after exact owned-fence exclusion: caller holds all
-  * six reservations, and none of this path removes its HEAD reference. */
- ret=m9x_faa_graph_public_vs_head_hazards(mdev,binding,generation,head_point);
- if(ret)return ret;
- mutex_lock(&t->lock);
- ret=m9_faa_public_vs_head_state(t,binding,generation,head_point);
- if(ret)goto out;
- r=t->faa;primary=&r->owner[M9_FAA_PRIMARY_OWNER];secondary=&r->draw_owner[2];
- image=r->public_vs_draw_image;old_bytes=r->graph_draw_end_bytes;
- if(!image||r->public_vs_draw_attempted||r->public_vs_draw_observed||
-  !primary->cpu||!secondary->cpu||!drm_mm_node_allocated(&primary->system_node)||
-  primary->system_node.start!=primary->base||old_bytes>primary->bytes||primary->bytes-old_bytes<60||
-  secondary->bytes<2688||image->ends.final_end!=old_bytes+60||image->ends.observed_point!=head_point+0xa0){ret=-ESTALE;goto out;}
- for(i=1;i<ARRAY_SIZE(r->draw_owner);i++){
-  struct m9_faa_owner *o=&r->draw_owner[i];
-  if(!o->cpu||!drm_mm_node_allocated(&o->system_node)||o->system_node.start!=o->base){ret=-ESTALE;goto out;}
+	bool fenced = false;
+
+	if (!point || !posted)
+		return -EINVAL;
+	*point = 0;
+	*posted = false;
+	/* No unlocked interval after exact owned-fence exclusion: caller holds all
+	 * six reservations, and none of this path removes its HEAD reference.
+	 */
+	ret = m9x_faa_graph_public_vs_head_hazards(mdev, binding, generation,
+						   head_point);
+	if (ret)
+		return ret;
+	mutex_lock(&t->lock);
+	ret = m9_faa_public_vs_head_state(t, binding, generation, head_point);
+	if (ret)
+		goto out;
+	r = t->faa;
+	primary = &r->owner[M9_FAA_PRIMARY_OWNER];
+	secondary = &r->draw_owner[2];
+	image = r->public_vs_draw_image;
+	old_bytes = r->graph_draw_end_bytes;
+	if (!image || r->public_vs_draw_attempted ||
+	    r->public_vs_draw_observed || !primary->cpu || !secondary->cpu ||
+	    !drm_mm_node_allocated(&primary->system_node) ||
+	    primary->system_node.start != primary->base ||
+	    old_bytes > primary->bytes || primary->bytes - old_bytes < 60 ||
+	    secondary->bytes < 2688 ||
+	    image->ends.final_end != old_bytes + 60 ||
+	    image->ends.observed_point != head_point + 0xa0) {
+		ret = -ESTALE;
+		goto out;
+	}
+	for (i = 1; i < ARRAY_SIZE(r->draw_owner); i++) {
+		struct m9_faa_owner *o = &r->draw_owner[i];
+
+		if (!o->cpu || !drm_mm_node_allocated(&o->system_node) ||
+		    o->system_node.start != o->base) {
+			ret = -ESTALE;
+			goto out;
+		}
 		ret = m9x_system_pages_mapped(mdev, o->base, o->dma,
-					      o->bytes / PAGE_SIZE, 1u, NULL, NULL);
+					      o->bytes / PAGE_SIZE, 1u, NULL,
+					      NULL);
 		if (ret)
 			goto out;
- }
- ret=m9x_address_check_local_identity(mdev,r->draw_owner[0].base,r->draw_owner[0].bytes);
- if(ret)goto out;
- /* Preserve the source immediate only while its fixed SYSTEM page belongs
-  * to the retained ordinary allocation; do not infer a command-primary role. */
- ret=m9x_triangle_system_page_admit_locked(mdev,0x40004000);
- if(ret)goto out;
- fence=m9x_fence_create_target_locked(mdev,lower_32_bits(image->ends.observed_point));
- if(!fence){ret=-ENOMEM;goto out;}
- r->public_vs_draw_attempted=true;
- for(i=0;i<PARHELIA_M9_FAA_GRAPH_OWNERS;i++)
-  dma_resv_add_fence(m9x_faa_graph_binding_owner(binding,i)->resv,&fence->base,DMA_RESV_USAGE_WRITE);
- fenced=true;
- /* HEAD never exposed any secondary. Materialize the entire CPU-known,
-  * closed block (including the source43 dependencies) before its first fetch. */
- memcpy(secondary->cpu,image->secondary,sizeof(image->secondary));
- memcpy((u8 *)primary->cpu+old_bytes,image->primary,sizeof(image->primary));
- dma_wmb();
- ret=m9x_post_faa_graph_end_locked(mdev,&primary->system_node,primary->dma,
-  old_bytes,image->ends.final_end,false,lower_32_bits(image->ends.observed_point),point,posted);
- if(*posted){r->graph_draw_end_bytes=image->ends.final_end;r->graph_draw_posts++;}
- if(!ret&&*point!=image->ends.observed_point)ret=-EIO;
- if(!ret){
-  r->public_vs_draw_observed=true;r->graph_draw_point=*point;
-  r->public_vs_draw_fence=fence;fence=NULL;
-  dev_info(&mdev->pdev->dev,"M9 FAA public VS draw observed: head=%#llx point=%#llx bytes=%u posts=%u; E3 before final raster, owners held\n",head_point,*point,r->graph_draw_end_bytes,r->graph_draw_posts);
-  dma_rmb();
-  dev_info(&mdev->pdev->dev,"M9 FAA retired counters: +00=%#x/%#x +20=%#x/%#x +40=%#x/%#x +60=%#x/%#x\n",
-   READ_ONCE(((u32 *)t->fence_cpu)[0]),READ_ONCE(((u32 *)t->fence_cpu)[1]),
-   READ_ONCE(((u32 *)t->fence_cpu)[0x20/4]),READ_ONCE(((u32 *)t->fence_cpu)[0x24/4]),
-   READ_ONCE(((u32 *)t->fence_cpu)[0x40/4]),READ_ONCE(((u32 *)t->fence_cpu)[0x44/4]),
-   READ_ONCE(((u32 *)t->fence_cpu)[0x60/4]),READ_ONCE(((u32 *)t->fence_cpu)[0x64/4]));
- }
+	}
+	ret = m9x_address_check_local_identity(mdev, r->draw_owner[0].base,
+					       r->draw_owner[0].bytes);
+	if (ret)
+		goto out;
+	/* Preserve the source immediate only while its fixed SYSTEM page belongs
+	 * to the retained ordinary allocation; do not infer a command-primary role.
+	 */
+	ret = m9x_triangle_system_page_admit_locked(mdev, 0x40004000);
+	if (ret)
+		goto out;
+	fence = m9x_fence_create_target_locked(mdev,
+					       lower_32_bits(image->ends.observed_point));
+	if (!fence) {
+		ret = -ENOMEM;
+		goto out;
+	}
+	r->public_vs_draw_attempted = true;
+	for (i = 0; i < PARHELIA_M9_FAA_GRAPH_OWNERS; i++)
+		dma_resv_add_fence(m9x_faa_graph_binding_owner(binding, i)->resv,
+				   &fence->base, DMA_RESV_USAGE_WRITE);
+	fenced = true;
+	/* HEAD never exposed any secondary. Materialize the entire CPU-known,
+	 * closed block (including the source43 dependencies) before its first fetch.
+	 */
+	memcpy(secondary->cpu, image->secondary, sizeof(image->secondary));
+	memcpy((u8 *)primary->cpu + old_bytes, image->primary,
+	       sizeof(image->primary));
+	/* The CPU stores precede their END post. */
+	dma_wmb();
+	ret = m9x_post_faa_graph_end_locked(mdev, &primary->system_node,
+					    primary->dma, old_bytes,
+					    image->ends.final_end, false,
+					    lower_32_bits(image->ends.observed_point),
+					    point, posted);
+	if (*posted) {
+		r->graph_draw_end_bytes = image->ends.final_end;
+		r->graph_draw_posts++;
+	}
+	if (!ret && *point != image->ends.observed_point)
+		ret = -EIO;
+	if (!ret) {
+		r->public_vs_draw_observed = true;
+		r->graph_draw_point = *point;
+		r->public_vs_draw_fence = fence;
+		fence = NULL;
+		dev_info(&mdev->pdev->dev,
+			 "M9 FAA public VS draw observed: head=%#llx point=%#llx bytes=%u posts=%u; E3 before final raster, owners held\n",
+			 head_point, *point, r->graph_draw_end_bytes,
+			 r->graph_draw_posts);
+		dma_rmb();
+		dev_info(&mdev->pdev->dev,
+			 "M9 FAA retired counters: +00=%#x/%#x +20=%#x/%#x +40=%#x/%#x +60=%#x/%#x\n",
+			 READ_ONCE(((u32 *)t->fence_cpu)[0]),
+			 READ_ONCE(((u32 *)t->fence_cpu)[1]),
+			 READ_ONCE(((u32 *)t->fence_cpu)[0x20 / 4]),
+			 READ_ONCE(((u32 *)t->fence_cpu)[0x24 / 4]),
+			 READ_ONCE(((u32 *)t->fence_cpu)[0x40 / 4]),
+			 READ_ONCE(((u32 *)t->fence_cpu)[0x44 / 4]),
+			 READ_ONCE(((u32 *)t->fence_cpu)[0x60 / 4]),
+			 READ_ONCE(((u32 *)t->fence_cpu)[0x64 / 4]));
+	}
 out:
- if(ret)*point=0;
- if(fence&&ret)dma_fence_set_error(&fence->base,ret);
- if(ret&&fenced){
-  /* Same-context insertion can replace HEAD in reservations. Even a failed
-   * pre-post cannot signal this replacement while HEAD's tail is reachable. */
-  t->wedged=true;t->generation++;WARN_ON(t->quarantined_fence);
-  t->quarantined_fence=fence;fence=NULL;
- }
- if(fence)dma_fence_put(&fence->base);
- mutex_unlock(&t->lock);return ret;
+	if (ret)
+		*point = 0;
+	if (fence && ret)
+		dma_fence_set_error(&fence->base, ret);
+	if (ret && fenced) {
+		/* Same-context insertion can replace HEAD in reservations. Even a failed
+		 * pre-post cannot signal this replacement while HEAD's tail is reachable.
+		 */
+		t->wedged = true;
+		t->generation++;
+		WARN_ON(t->quarantined_fence);
+		t->quarantined_fence = fence;
+		fence = NULL;
+	}
+	if (fence)
+		dma_fence_put(&fence->base);
+	mutex_unlock(&t->lock);
+	return ret;
 #else
- return -EOPNOTSUPP;
+	return -EOPNOTSUPP;
 #endif
 }
 
