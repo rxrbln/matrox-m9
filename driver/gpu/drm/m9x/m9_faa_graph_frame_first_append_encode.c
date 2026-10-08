@@ -79,8 +79,8 @@ int m9x_faa_frame_first_append_encode(
 {
 	u32 i, insert, tail_bytes, growth, old_second_start;
 	u32 low=(u32)init_point, old_epoch, next_epoch;
-	u32 first_end_mid, new_bytes, source_raw;
-	u32 shift, first_bytes, append_bytes;
+	u32 first_end_mid, new_bytes, source_raw, old_last_bytes;
+	u32 shift, first_bytes, append_bytes, old_range;
 	u8 *dst;
 
 	if (!owner || !old_end_bytes || !old_primary || !first_secondary ||
@@ -105,20 +105,17 @@ int m9x_faa_frame_first_append_encode(
 	    !extra_input->record_count ||
 	    extra_input->record_count>12288 ||
 	    extra_input->record_count%3 ||
-	    secondary_cursor!=
-	      (2712-(extra_input->declaration_count==3?24:0))+
-	      (old_draw_count-1)*
-	      (2700-(extra_input->declaration_count==3?24:0)) ||
 	    (u32)old_final_point!=low+0x150+(old_draw_count-1)*0xa0 ||
 	    old_final_point<init_point ||
 	    primary_cursor<old_primary_bytes ||
 	    primary_cursor-old_primary_bytes!=init_bytes)
 		return -EINVAL;
 	shift=extra_input->declaration_count==3?24:0;
-	first_bytes=2712-shift;
+	first_bytes=first_secondary_bytes;
 	append_bytes=2700-shift;
-	if (first_secondary_bytes!=first_bytes ||
-	    extra_first_bytes!=first_bytes)
+	if ((first_bytes!=2688&&first_bytes!=2712) ||
+	    extra_first_bytes!=2712-shift ||
+	    secondary_cursor<first_bytes)
 		return -EINVAL;
 	tail_bytes=old_draw_count==1 ? 3572 : 3564;
 	growth=old_draw_count==1 ? 52 : 60;
@@ -144,8 +141,28 @@ int m9x_faa_frame_first_append_encode(
 	    overlaps(out->secondary,append_bytes,extra_first_secondary,first_bytes))
 		return -EINVAL;
 	insert=old_primary_bytes-tail_bytes;
-	old_second_start=secondary_cursor-(old_draw_count==1 ? first_bytes : append_bytes);
-	first_end_mid=(old_draw_count==1 ? 1842 : 1830)-shift;
+	/* The previous job may have a different declaration shape. Its source
+	 * indirect range gives the actual retained start and length; verify that
+	 * every earlier job accounts for one 2676/2700-byte append interval. */
+	old_range=get(old_primary+insert-60+4);
+	if (old_range<owner[29].base+1 ||
+	    old_range-owner[29].base-1>secondary_cursor)
+		return -EINVAL;
+	old_second_start=old_range-owner[29].base-1;
+	old_last_bytes=secondary_cursor-old_second_start;
+	if (old_last_bytes!=(old_draw_count==1 ? first_bytes : 2676) &&
+	    !(old_draw_count>1&&old_last_bytes==2700))
+		return -EINVAL;
+	if (old_draw_count==1) {
+		if (old_second_start) return -EINVAL;
+	} else {
+		u32 prior=old_draw_count-2, spent;
+		if (old_second_start<first_bytes) return -EINVAL;
+		spent=old_second_start-first_bytes;
+		if (spent<prior*2676 || spent>prior*2700 ||
+		    (spent-prior*2676)%24) return -EINVAL;
+	}
+	first_end_mid=old_last_bytes-870;
 	if (get(old_primary+insert)!=0x45454524 ||
 	    get(old_primary+insert-60)!=0x45452d2c ||
 	    get(old_primary+insert-12)!=0x45452d2c ||
@@ -216,7 +233,10 @@ int m9x_faa_frame_first_append_encode(
 		memcpy(dst+to,extra_first_secondary+from,bytes);
 	}
 	memcpy(dst+588,extra_first_secondary+2432-shift,104);
-	put(dst+172,0x49d00000u|((892-172)/4));
+	/* 248f2 encodes the distance to the post-declaration target. The
+	 * source slot at172 precedes the removed group; only this branch loses
+	 * six DWORDs when the new job declares POSITION alone. */
+	put(dst+172,0x49d00000u|((892-shift-172)/4));
 	put(dst+188,3); put(dst+192,0x45e3e6e6); put(dst+196,1);
 	for (i=0;i<ARRAY_SIZE(secondary_epoch);i++)
 		put(dst+moved(secondary_epoch[i].at,shift),
