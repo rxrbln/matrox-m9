@@ -10,6 +10,7 @@
 #include "m9_screen.h"
 
 #include <errno.h>
+#include <signal.h>
 #include <inttypes.h>
 #include <math.h>
 #include <stdio.h>
@@ -10473,12 +10474,28 @@ m9_context_faa_frame_end(struct m9_context *ctx)
 
 static int m9_context_faa_unlock_unpresented(struct m9_context *ctx);
 
+/* M9X_FAA_STOP_AFTER_LOCK=N stops the process with SIGSTOP after its Nth
+ * retired FAA Lock, before the Unlock (forced-Unlock kernel test). */
+static void
+m9_context_faa_stop_after_lock(void)
+{
+   static int64_t stop = -2;
+   static uint64_t locks;
+   if (stop == -2)
+      stop = debug_get_num_option("M9X_FAA_STOP_AFTER_LOCK", -1);
+   if (stop >= 0 && ++locks == (uint64_t)stop) {
+      fprintf(stderr, "m9x: FAA stopping after Lock %" PRIu64 "\n", locks);
+      raise(SIGSTOP);
+   }
+}
+
 /* Present the transactions so far of a frame that continues in another. */
 static int
 m9_context_faa_present_part(void *data)
 {
    struct m9_context *ctx = data;
    const struct m9_faa_graph *graph = &ctx->faa_surface.graph;
+   m9_context_faa_stop_after_lock();
    int ret = m9_context_faa_present_lock(ctx, graph->prepared_id,
                                          graph->prepared_generation,
                                          graph->color_lock_point);
@@ -10523,6 +10540,7 @@ m9_context_faa_flush_frame(struct m9_context *ctx, const char **reason)
       goto done;
    }
    ctx->last_point = MAX2(ctx->last_point, graph->color_lock_point);
+   m9_context_faa_stop_after_lock();
    ret = m9_context_faa_present_lock(ctx, first->graph_id, first->generation,
                                     graph->color_lock_point);
    if (ret) {
