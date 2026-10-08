@@ -3131,12 +3131,13 @@ static u32 m9_faa_encode(u32 pc, u32 address, u32 tag)
 
 #if !defined(M9_FAA_GRAPH_INIT_CONTROL) && (!defined(M9_FAA_HAS_COMPANION_CLEAR) || M9_FAA_HAS_COMPANION_CLEAR)
 static int m9_faa_clear_page_words(u32 base, u32 bytes, u32 *words,
-				  u32 capacity, u32 *count)
+				   u32 capacity, u32 *count)
 {
 	u32 page, remaining, leading, value, n = 0;
 
 	if (!bytes || !IS_ALIGNED(base, PAGE_SIZE) ||
-	    !IS_ALIGNED(bytes, PAGE_SIZE) || (u64)base + bytes > (u64)U32_MAX + 1)
+	    !IS_ALIGNED(bytes, PAGE_SIZE) ||
+	    (u64)base + bytes > (u64)U32_MAX + 1)
 		return -ERANGE;
 	page = base >> PAGE_SHIFT;
 	remaining = bytes >> PAGE_SHIFT;
@@ -3146,8 +3147,8 @@ static int m9_faa_clear_page_words(u32 base, u32 bytes, u32 *words,
 	value = (((page & 0xffff8u) | 0xd00000u) << 5);
 	if (leading) {
 		u32 mask = remaining == leading ?
-			(0xffu >> (8 - leading)) << (page & 7) :
-			0xffu << (8 - leading);
+				   (0xffu >> (8 - leading)) << (page & 7) :
+				   0xffu << (8 - leading);
 
 		words[n++] = value | (mask & 0xff);
 		value = (value & ~0x1ffff00u) | ((value + 0x100) & 0x1ffff00u);
@@ -3163,6 +3164,7 @@ static int m9_faa_clear_page_words(u32 base, u32 bytes, u32 *words,
 	*count = n;
 	return 0;
 }
+
 #endif
 
 /* Patch ordinary addresses/trackers at their captured offsets first, then
