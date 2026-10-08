@@ -120,7 +120,10 @@ struct drm_parhelia_m9_faa_color_draw {
  __u64 upload;
  __u32 upload_bytes, record_stride, record_count, declaration_count;
  struct drm_parhelia_m9_faa_upload_layout layout;
- __u32 depth_flags, raster_flags, pad[2];
+ __u32 depth_flags, raster_flags;
+ /* Dual/single texture DRAWs: clip window y << 16 | x, end exclusive;
+  * zero/zero is the whole target. COLOR frame DRAWs keep zero. */
+ __u32 clip_origin, clip_end;
 };
 struct drm_parhelia_m9_faa_graph_color_frame_batch {
  __u64 graph_id, previous_point, lock_point, draws;
@@ -333,6 +336,8 @@ struct drm_parhelia_m9_faa_dual_draw {
 #define PARHELIA_M9_FAA_FRAGMENT_DST(f) ((uint32_t)(f) << 8)
 #define PARHELIA_M9_FAA_FRAGMENT_FUNC(f) ((uint32_t)(f) << 12)
 #define PARHELIA_M9_FAA_FRAGMENT_REF(r) ((uint32_t)(r) << 16)
+/* Colour channels the DRAW does not write: R 1, G 2, B 4, A 8. */
+#define PARHELIA_M9_FAA_FRAGMENT_NO_COLOR(m) ((uint32_t)(m) << 24)
 #define PARHELIA_M9_FAA_FACTOR_ZERO 0u
 #define PARHELIA_M9_FAA_FACTOR_ONE 1u
 #define PARHELIA_M9_FAA_FACTOR_SRC_COLOR 2u

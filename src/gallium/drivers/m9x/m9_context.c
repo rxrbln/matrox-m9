@@ -10151,9 +10151,13 @@ m9_context_faa_draw_refusal(const struct m9_faa_application_upload *owned)
    if (!m9_faa_runtime_dimensions(state->width,state->height) ||
        (state->depth_enabled && state->depth_func > PIPE_FUNC_ALWAYS) ||
        (state->cull_face != PIPE_FACE_NONE && state->cull_face != PIPE_FACE_FRONT &&
-        state->cull_face != PIPE_FACE_BACK) || state->scissor_enabled ||
-       state->viewport.scale[0] != state->width * .5f || state->viewport.scale[1] != state->height * -.5f ||
-       state->viewport.translate[0] != state->width * .5f || state->viewport.translate[1] != state->height * .5f ||
+        state->cull_face != PIPE_FACE_BACK) ||
+       /* Textured DRAWs clip to viewport and scissor (DRM per-DRAW window). */
+       (!owned->texture_count &&
+        (state->scissor_enabled ||
+         state->viewport.scale[0] != state->width * .5f || state->viewport.scale[1] != state->height * -.5f ||
+         state->viewport.translate[0] != state->width * .5f ||
+         state->viewport.translate[1] != state->height * .5f)) ||
        (owned->shader.layout.count != 2 && owned->shader.layout.count != 4) ||
        (!owned->texture_count && owned->shader.record_bytes != 32 &&
         (owned->shader.record_bytes != 16 || owned->shader.declaration_words != 3))) {

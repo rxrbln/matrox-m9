@@ -50,6 +50,23 @@ dual_pack(const struct m9_faa_gl_upload *u,const struct m9_faa_application_state
    memcpy(d->layout.constant_begin,u->constant_begin,sizeof(d->layout.constant_begin));
    memcpy(d->layout.constant_end,u->constant_end,sizeof(d->layout.constant_end));
    d->layout.geometry_bytes=u->geometry_bytes;d->layout.vertex_offset=128;d->layout.vertex_bytes=u->vertex_bytes;
+   /* The vendor clips a sub-viewport or scissored DRAW to viewport and
+    * scissor in the colour pass only (m9emu viewport/, scissor). */
+   int x0=0,y0=0,x1=(int)s->width,y1=(int)s->height;
+   const float vx=s->viewport.translate[0]-fabsf(s->viewport.scale[0]);
+   const float vy=s->viewport.translate[1]-fabsf(s->viewport.scale[1]);
+   x0=MAX2(x0,(int)floorf(vx));y0=MAX2(y0,(int)floorf(vy));
+   x1=MIN2(x1,(int)ceilf(vx+2*fabsf(s->viewport.scale[0])));
+   y1=MIN2(y1,(int)ceilf(vy+2*fabsf(s->viewport.scale[1])));
+   if(s->scissor_enabled) {
+      x0=MAX2(x0,(int)s->scissor.minx);y0=MAX2(y0,(int)s->scissor.miny);
+      x1=MIN2(x1,(int)s->scissor.maxx);y1=MIN2(y1,(int)s->scissor.maxy);
+   }
+   if(x0>=x1||y0>=y1)return -EOPNOTSUPP;
+   if(x0||y0||x1!=(int)s->width||y1!=(int)s->height) {
+      d->clip_origin=(uint32_t)y0<<16|(uint32_t)x0;
+      d->clip_end=(uint32_t)y1<<16|(uint32_t)x1;
+   }
    return 0;
 }
 
@@ -101,7 +118,7 @@ dual_draw_admissible(const struct m9_faa_surface *surface,
    if((u->texture_count!=1&&u->texture_count!=2)||
       s->width!=surface->width||s->height!=surface->height||
       (s->depth_enabled&&s->depth_func>PIPE_FUNC_ALWAYS)||
-      s->flatshade||s->cull_face==PIPE_FACE_FRONT_AND_BACK||s->scissor_enabled||
+      s->flatshade||s->cull_face==PIPE_FACE_FRONT_AND_BACK||
       s->fragment.source_stream||
       (u->texture_count==2&&
        (u->texture[0].resource==u->texture[1].resource||
@@ -238,10 +255,6 @@ m9_faa_surface_dual_frame_kernel(struct m9_screen *screen,struct m9_faa_surface 
    bool programs=false;
    for(unsigned i=0;i<frame->count;i++) {
       const struct m9_faa_application_upload *u=&frame->draws[i];
-      const struct m9_faa_application_state *s=&u->state;
-      if(s->viewport.scale[0]!=surface->width*.5f||s->viewport.scale[1]!=surface->height*-.5f||
-         s->viewport.translate[0]!=surface->width*.5f||
-         s->viewport.translate[1]!=surface->height*.5f)return -EOPNOTSUPP;
       int ret=dual_draw_admissible(surface,u,frame->draws,i,&records[i].draw);if(ret)return ret;
       /* The FIRST binds draw 0's pair; dual DRAWs keep it. */
       if(u->texture_count==2&&first->texture_count==2)
