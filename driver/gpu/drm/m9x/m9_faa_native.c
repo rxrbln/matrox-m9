@@ -11557,14 +11557,16 @@ static void m9_faa_stall_owner(struct m9x_device *mdev, const char *name,
 		return;
 	off = head - start < o->bytes ? head - start : end - start;
 	for (page = off / PAGE_SIZE; page <= (off + 0x100) / PAGE_SIZE &&
-	     page < DIV_ROUND_UP(o->bytes, PAGE_SIZE); page++) {
+				     page < DIV_ROUND_UP(o->bytes, PAGE_SIZE);
+	     page++) {
 		int ret = m9x_address_read_pte(mdev, start + page * PAGE_SIZE,
 					       &pte);
 
 		dev_err(&mdev->pdev->dev,
 			"M9 FAA stall %s base=%#x page=%u pte=%#x expected=%#x ret=%d\n",
 			name, start, page, ret ? 0 : pte,
-			m9x_address_pte_word(o->dma + page * PAGE_SIZE) | 1u, ret);
+			m9x_address_pte_word(o->dma + page * PAGE_SIZE) | 1u,
+			ret);
 	}
 	/* Words around the fetch and before the latched END. */
 	words = o->cpu;
@@ -11576,6 +11578,7 @@ static void m9_faa_stall_owner(struct m9x_device *mdev, const char *name,
 			i * 4, words[i], words[i + 1], words[i + 2],
 			words[i + 3]);
 }
+
 #endif
 
 /* After a timeout outside the staging slots: which retained FAA command
