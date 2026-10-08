@@ -372,6 +372,9 @@ static bool m9_coord_pack;
  * (MEASURED on the M9128, 76800 of 76800 pixels differ, no stream timeout,
  * the card alive afterwards).  Off until that is understood. */
 static bool m9_native_vs_split;
+/* M9X_NEAR_SPLIT=0 sends a whole triangle list touching the near plane to
+ * the draw module; M9X_NEAR_ORDERED=1 keeps every split draw in its order. */
+static bool m9_near_split = true, m9_near_ordered;
 /* GPU padding/multipass transport is a separate hardware qualification. */
 static bool m9_native_vs_gpu_padding;
 /* M9X_VS_SPECIALISE=0 compiles a vertex shader without substituting the
@@ -7589,8 +7592,8 @@ m9_near_module(struct m9_context *ctx, const struct pipe_draw_info *info,
    crossing.has_user_indices = true;
    crossing.index.user = ctx->near_crossing.data;
    crossing.index_bounds_valid = false;
-   m9_native_vs_note(ctx, "fused-pair triangles crossing the near plane, "
-                     "which only the clip position clips");
+   m9_native_vs_note(ctx, "triangles crossing the near plane, clipped in "
+                     "the draw module");
    m9_module_draw(&ctx->base, &crossing, drawid_offset, &range);
 }
 
@@ -7672,18 +7675,27 @@ m9_native_vs_draw(struct m9_context *ctx, const struct pipe_draw_info *info,
     * the fused pair gives up for its second varying (MEASURED, m9-nearclip). */
    bool split = false;
 
-   if (m9_vs_fused_pair(&variant->program)) {
+   bool fused = m9_vs_fused_pair(&variant->program);
+
+   /* Triangle lists route by triangle even where the engine could clip:
+    * multi-pass shaders mix fused and single-varying passes over the same
+    * geometry, and the engine's clipped depth differs from the draw
+    * module's, so GL_EQUAL passes would miss each other. */
+   if (fused || info->mode == MESA_PRIM_TRIANGLES) {
       /* util_dynarray_resize returns the old end, not the array. */
-      uint8_t *flags = info->mode == MESA_PRIM_TRIANGLES &&
+      uint8_t *flags = m9_near_split && info->mode == MESA_PRIM_TRIANGLES &&
                        util_dynarray_resize(&ctx->near_flags, uint8_t,
                                             n.vertex_count) ?
                        ctx->near_flags.data : NULL;
       int outside = m9_native_vs_outside_near(ctx, &variant->program, &n, flags);
 
       if (outside > 0 && (!flags || !m9_near_partition(ctx, &n, draw))) {
-         m9_native_vs_note(ctx, "a fused-pair draw has a vertex outside the "
-                           "near plane, which only the clip position clips");
-         return false;
+         if (fused || !m9_near_split) {
+            m9_native_vs_note(ctx, "a fused-pair draw has a vertex outside the "
+                              "near plane, which only the clip position clips");
+            return false;
+         }
+         outside = 0;
       }
       if (outside > 0) {
          split = true;
@@ -7748,7 +7760,7 @@ m9_native_vs_draw(struct m9_context *ctx, const struct pipe_draw_info *info,
          m9_native_vs_note(ctx, "the native job would not take the draw");
          return false;
       }
-   } else if (m9_near_reorder_ok(ctx)) {
+   } else if (!m9_near_ordered && m9_near_reorder_ok(ctx)) {
       unsigned inside = util_dynarray_num_elements(&ctx->near_inside, uint32_t);
       unsigned crossing = util_dynarray_num_elements(&ctx->near_crossing, uint32_t);
 
@@ -11167,6 +11179,8 @@ m9_context_create(struct pipe_screen *pscreen, void *priv, unsigned flags)
    m9_coord_share = debug_get_bool_option("M9X_COORD_SHARE", true);
    m9_coord_pack = debug_get_bool_option("M9X_COORD_PACK", true);
    m9_native_vs_split = debug_get_bool_option("M9X_VS_SPLIT", false);
+   m9_near_split = debug_get_bool_option("M9X_NEAR_SPLIT", true);
+   m9_near_ordered = debug_get_bool_option("M9X_NEAR_ORDERED", false);
 
    m9_no_clear = debug_get_bool_option("M9X_NO_CLEAR", false);
    m9_mrt_mask_all = debug_get_bool_option("M9X_MRT_MASK_ALL", false);
