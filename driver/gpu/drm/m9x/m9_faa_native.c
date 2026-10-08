@@ -3557,7 +3557,7 @@ int m9x_faa_graph_draw_submit(struct m9x_device *mdev,
 	struct m9_faa_owner *program, *constants, *secondary, *primary;
 	struct m9x_fence *fence = NULL;
 	u8 observed[M9_FAA_DRAW_PROGRAM_BYTES];
-	u32 target, page, pte, i;
+	u32 target, i;
 	u64 stage_point;
 	bool stage_posted;
 	int ret;
@@ -3610,17 +3610,10 @@ int m9x_faa_graph_draw_submit(struct m9x_device *mdev,
 	for (i = 1; i < ARRAY_SIZE(r->draw_owner); i++) {
 		struct m9_faa_owner *o = &r->draw_owner[i];
 
-		for (page = 0; page < o->bytes / PAGE_SIZE; page++) {
-			ret = m9x_address_read_pte(mdev, o->base + page * PAGE_SIZE,
-						  &pte);
-			if (ret)
-				goto out;
-			if (pte != (m9x_address_pte_word(o->dma +
-						page * PAGE_SIZE) | 1u)) {
-				ret = -ESTALE;
-				goto out;
-			}
-		}
+		ret = m9x_system_pages_mapped(mdev, o->base, o->dma,
+					      o->bytes / PAGE_SIZE, 1u, NULL, NULL);
+		if (ret)
+			goto out;
 	}
 	if (m9x_address_check_local_identity(mdev, program->base,
 					     program->bytes)) {
@@ -3871,7 +3864,7 @@ static int m9_faa_graph_public_vs_submit_mode(struct m9x_device *mdev,
 	struct m9_faa_owner *primary, *program, *constants, *secondary;
 	struct m9x_fence *fence = NULL;
 	u8 observed[M9_FAA_PUBLIC_VS_PROGRAM_BYTES];
-	u32 page, pte, i, target;
+	u32 i, target;
 	u64 stage_point;
 	bool stage_posted;
 	int ret;
@@ -3908,15 +3901,10 @@ static int m9_faa_graph_public_vs_submit_mode(struct m9x_device *mdev,
 	for (i = 1; i < ARRAY_SIZE(r->draw_owner); i++) {
 		struct m9_faa_owner *o = &r->draw_owner[i];
 
-		for (page = 0; page < o->bytes / PAGE_SIZE; page++) {
-			ret = m9x_address_read_pte(mdev, o->base + page * PAGE_SIZE, &pte);
-			if (ret)
-				goto out;
-			if (pte != (m9x_address_pte_word(o->dma + page * PAGE_SIZE) | 1u)) {
-				ret = -ESTALE;
-				goto out;
-			}
-		}
+		ret = m9x_system_pages_mapped(mdev, o->base, o->dma,
+					      o->bytes / PAGE_SIZE, 1u, NULL, NULL);
+		if (ret)
+			goto out;
 	}
 	ret = m9x_address_check_local_identity(mdev, program->base, program->bytes);
 	if (ret)
@@ -5158,7 +5146,10 @@ int m9x_faa_graph_color_submit(struct m9x_device *mdev,
  struct m9x_transport *t=&mdev->transport;struct m9x_faa_replay *r;
  struct m9_faa_color_storage *n;struct m9_faa_owner *primary,*program;
  struct m9x_fence *fence=NULL;u8 observed[4096];
- bool stage_posted=false;u64 stage_point=0;u32 i,page,pte,end;int ret=-ESTALE;
+	bool stage_posted = false;
+	u64 stage_point = 0;
+	u32 i, end;
+	int ret = -ESTALE;
  if(!point||!posted||!binding)return -EINVAL;*point=0;*posted=false;
  mutex_lock(&t->lock);r=t->faa;
  if(!r||r->graph_binding!=binding||!r->color_payload_ready||!r->color_image||r->color_attempted||
@@ -5178,9 +5169,11 @@ int m9x_faa_graph_color_submit(struct m9x_device *mdev,
  for(i=0;i<3;i++){
   struct m9_faa_owner *o=i?&r->draw_owner[i]:primary;
   if(!o->cpu||!drm_mm_node_allocated(&o->system_node)||o->system_node.start!=o->base){ret=-ESTALE;goto out;}
-  for(page=0;page<o->bytes/PAGE_SIZE;page++){
-   ret=m9x_address_read_pte(mdev,o->base+page*PAGE_SIZE,&pte);if(ret)goto out;
-   if(pte!=(m9x_address_pte_word(o->dma+page*PAGE_SIZE)|1)){ret=-ESTALE;goto out;}}}
+		ret = m9x_system_pages_mapped(mdev, o->base, o->dma,
+					      o->bytes / PAGE_SIZE, 1u, NULL, NULL);
+		if (ret)
+			goto out;
+	}
  ret=m9x_address_check_local_identity(mdev,program->base,program->bytes);if(ret)goto out;
  ret=m9x_triangle_system_page_admit_locked(mdev,0x40004000);if(ret)goto out;
  ret=m9x_triangle_system_page_admit_locked(mdev,0x40008000);if(ret)goto out;
@@ -5276,7 +5269,10 @@ int m9x_faa_graph_public_vs_next_submit(struct m9x_device *mdev,
  struct m9x_transport *t=&mdev->transport;struct m9x_faa_replay *r;
  struct m9_faa_graph_binding *checked=NULL;struct m9_faa_public_vs_next_storage *n;
  struct m9_faa_owner *primary;struct m9x_fence *fence=NULL;
- bool stage_posted=false;u64 stage_point=0;u32 i,page,pte,end;int ret;
+	bool stage_posted = false;
+	u64 stage_point = 0;
+	u32 i, end;
+	int ret;
  if(!point||!posted||!binding)return -EINVAL;*point=0;*posted=false;
  mutex_lock(&t->lock);
  ret=m9x_faa_graph_public_vs_unlocked_get_locked(mdev,generation,unlock_point,&checked);
@@ -5294,10 +5290,10 @@ int m9x_faa_graph_public_vs_next_submit(struct m9x_device *mdev,
  for(i=0;i<3;i++){
   struct m9_faa_owner *o=i==0?primary:&r->draw_owner[i];
   if(!o->cpu||!drm_mm_node_allocated(&o->system_node)||o->system_node.start!=o->base){ret=-ESTALE;goto out;}
-  for(page=0;page<o->bytes/PAGE_SIZE;page++){
-   ret=m9x_address_read_pte(mdev,o->base+page*PAGE_SIZE,&pte);if(ret)goto out;
-   if(pte!=(m9x_address_pte_word(o->dma+page*PAGE_SIZE)|1u)){ret=-ESTALE;goto out;}
-  }
+		ret = m9x_system_pages_mapped(mdev, o->base, o->dma,
+					      o->bytes / PAGE_SIZE, 1u, NULL, NULL);
+		if (ret)
+			goto out;
  }
  ret=m9x_address_check_local_identity(mdev,r->draw_owner[0].base,r->draw_owner[0].bytes);if(ret)goto out;
  ret=m9x_triangle_system_page_admit_locked(mdev,0x40004000);if(ret)goto out;
@@ -5609,7 +5605,8 @@ int m9x_faa_graph_public_vs_draw_submit(struct m9x_device *mdev,
  struct m9_faa_owner *primary,*secondary;
  struct m9_faa_public_vs_draw_storage *image;
  struct m9x_fence *fence=NULL;
- u32 i,page,pte,old_bytes;int ret;
+	u32 i, old_bytes;
+	int ret;
  bool fenced=false;
  if(!point||!posted)return -EINVAL;
  *point=0;*posted=false;
@@ -5629,11 +5626,10 @@ int m9x_faa_graph_public_vs_draw_submit(struct m9x_device *mdev,
  for(i=1;i<ARRAY_SIZE(r->draw_owner);i++){
   struct m9_faa_owner *o=&r->draw_owner[i];
   if(!o->cpu||!drm_mm_node_allocated(&o->system_node)||o->system_node.start!=o->base){ret=-ESTALE;goto out;}
-  for(page=0;page<o->bytes/PAGE_SIZE;page++){
-   ret=m9x_address_read_pte(mdev,o->base+page*PAGE_SIZE,&pte);
-   if(ret)goto out;
-   if(pte!=(m9x_address_pte_word(o->dma+page*PAGE_SIZE)|1u)){ret=-ESTALE;goto out;}
-  }
+		ret = m9x_system_pages_mapped(mdev, o->base, o->dma,
+					      o->bytes / PAGE_SIZE, 1u, NULL, NULL);
+		if (ret)
+			goto out;
  }
  ret=m9x_address_check_local_identity(mdev,r->draw_owner[0].base,r->draw_owner[0].bytes);
  if(ret)goto out;
@@ -5732,7 +5728,8 @@ int m9x_faa_graph_public_vs_lock_submit(struct m9x_device *mdev,
  struct m9_faa_owner *primary;
  struct m9_faa_public_vs_lock_storage *image;
  struct m9x_fence *fence=NULL;
- u32 i,page,pte,old_bytes,first_end,final_end;int ret;
+	u32 i, old_bytes, first_end, final_end;
+	int ret;
  bool fenced=false,one_posted=false;
  u64 observed=0;
  if(!point||!posted)return -EINVAL;
@@ -5751,11 +5748,10 @@ int m9x_faa_graph_public_vs_lock_submit(struct m9x_device *mdev,
   lower_32_bits(draw_point)>U32_MAX-0x40){ret=-ESTALE;goto out;}
  first_end=old_bytes+M9_FAA_VS_LOCK_FIRST_POST_BYTES;
  final_end=old_bytes+M9_FAA_VS_LOCK_PRIMARY_BYTES;
- for(page=0;page<primary->bytes/PAGE_SIZE;page++){
-  ret=m9x_address_read_pte(mdev,primary->base+page*PAGE_SIZE,&pte);
-  if(ret)goto out;
-  if(pte!=(m9x_address_pte_word(primary->dma+page*PAGE_SIZE)|1u)){ret=-ESTALE;goto out;}
- }
+	ret = m9x_system_pages_mapped(mdev, primary->base, primary->dma,
+				      primary->bytes / PAGE_SIZE, 1u, NULL, NULL);
+	if (ret)
+		goto out;
  ret=m9x_triangle_system_page_admit_locked(mdev,0x40004000);
  if(ret)goto out;
  ret=m9x_triangle_system_page_admit_locked(mdev,0x40008000);
@@ -6250,7 +6246,7 @@ int m9x_faa_graph_next_submit(struct m9x_device *mdev,
 	struct m9x_faa_replay *r;
 	struct m9_faa_owner *primary, *secondary, *constants;
 	struct m9x_fence *fence = NULL;
-	u32 i, page, pte, target, old_bytes, end;
+	u32 i, target, old_bytes, end;
 	int ret;
 
 	if (!binding || !point || !posted)
@@ -6292,15 +6288,10 @@ int m9x_faa_graph_next_submit(struct m9x_device *mdev,
 			ret = -ESTALE;
 			goto out;
 		}
-		for (page = 0; page < o->bytes / PAGE_SIZE; page++) {
-			ret = m9x_address_read_pte(mdev, o->base + page * PAGE_SIZE, &pte);
-			if (ret)
-				goto out;
-			if (pte != (m9x_address_pte_word(o->dma + page * PAGE_SIZE) | 1u)) {
-				ret = -ESTALE;
-				goto out;
-			}
-		}
+		ret = m9x_system_pages_mapped(mdev, o->base, o->dma,
+					      o->bytes / PAGE_SIZE, 1u, NULL, NULL);
+		if (ret)
+			goto out;
 	}
 	target = lower_32_bits(unlock_point) + 0x50;
 	end = old_bytes + M9_FAA_NEXT_PRIMARY_BYTES;
@@ -6502,7 +6493,7 @@ int m9x_faa_graph_next_finish_submit(struct m9x_device *mdev,
 	struct m9x_faa_replay *r;
 	struct m9_faa_owner *primary, *secondary;
 	struct m9x_fence *fence = NULL;
-	u32 i, page, pte, target, old_bytes;
+	u32 i, target, old_bytes;
 	u64 stage_point;
 	bool stage_posted;
 	int ret;
@@ -6541,15 +6532,10 @@ int m9x_faa_graph_next_finish_submit(struct m9x_device *mdev,
 			ret = -ESTALE;
 			goto out;
 		}
-		for (page = 0; page < o->bytes / PAGE_SIZE; page++) {
-			ret = m9x_address_read_pte(mdev, o->base + page * PAGE_SIZE, &pte);
-			if (ret)
-				goto out;
-			if (pte != (m9x_address_pte_word(o->dma + page * PAGE_SIZE) | 1u)) {
-				ret = -ESTALE;
-				goto out;
-			}
-		}
+		ret = m9x_system_pages_mapped(mdev, o->base, o->dma,
+					      o->bytes / PAGE_SIZE, 1u, NULL, NULL);
+		if (ret)
+			goto out;
 	}
 	target = lower_32_bits(prefix_point) + 0x30;
 	fence = m9x_fence_create_target_locked(mdev, target);
@@ -6751,7 +6737,7 @@ int m9x_faa_graph_next_lock_submit(struct m9x_device *mdev,
 	struct m9x_faa_replay *r;
 	struct m9_faa_owner *primary, *secondary;
 	struct m9x_fence *fence = NULL;
-	u32 i, page, pte, target, old_bytes;
+	u32 i, target, old_bytes;
 	u64 stage_point;
 	bool stage_posted;
 	int ret;
@@ -6790,15 +6776,10 @@ int m9x_faa_graph_next_lock_submit(struct m9x_device *mdev,
 			ret = -ESTALE;
 			goto out;
 		}
-		for (page = 0; page < o->bytes / PAGE_SIZE; page++) {
-			ret = m9x_address_read_pte(mdev, o->base + page * PAGE_SIZE, &pte);
-			if (ret)
-				goto out;
-			if (pte != (m9x_address_pte_word(o->dma + page * PAGE_SIZE) | 1u)) {
-				ret = -ESTALE;
-				goto out;
-			}
-		}
+		ret = m9x_system_pages_mapped(mdev, o->base, o->dma,
+					      o->bytes / PAGE_SIZE, 1u, NULL, NULL);
+		if (ret)
+			goto out;
 	}
 	target = lower_32_bits(finish_point) + 0x30;
 	fence = m9x_fence_create_target_locked(mdev, target);
@@ -7333,7 +7314,10 @@ int m9x_faa_graph_color_next_submit(struct m9x_device *mdev,
  struct m9x_transport *t=&mdev->transport;struct m9x_faa_replay *r;
  struct m9_faa_color_storage *n;struct m9_faa_owner *primary,*program;
  struct m9_faa_graph_binding *checked=NULL;struct m9x_fence *fence=NULL;u8 observed[4096];
- u32 i,page,pte,start,end;u64 stage_point=0;bool stage_posted=false;int ret;
+	u32 i, start, end;
+	u64 stage_point = 0;
+	bool stage_posted = false;
+	int ret;
  if(!point||!posted||!binding)return -EINVAL;*point=0;*posted=false;
  mutex_lock(&t->lock);
  ret=m9x_faa_graph_color_unlocked_get_locked(mdev,generation,previous_unlock_point,&checked);if(ret)goto out;
@@ -7349,9 +7333,11 @@ int m9x_faa_graph_color_next_submit(struct m9x_device *mdev,
  for(i=0;i<3;i++){
   struct m9_faa_owner *o=i?&r->draw_owner[i]:primary;
   if(!o->cpu||!drm_mm_node_allocated(&o->system_node)||o->system_node.start!=o->base){ret=-ESTALE;goto out;}
-  for(page=0;page<o->bytes/PAGE_SIZE;page++){
-   ret=m9x_address_read_pte(mdev,o->base+page*PAGE_SIZE,&pte);if(ret)goto out;
-   if(pte!=(m9x_address_pte_word(o->dma+page*PAGE_SIZE)|1)){ret=-ESTALE;goto out;}}}
+		ret = m9x_system_pages_mapped(mdev, o->base, o->dma,
+					      o->bytes / PAGE_SIZE, 1u, NULL, NULL);
+		if (ret)
+			goto out;
+	}
  ret=m9x_address_check_local_identity(mdev,program->base,program->bytes);if(ret)goto out;
  ret=m9x_triangle_system_page_admit_locked(mdev,0x40004000);if(ret)goto out;
  ret=m9x_triangle_system_page_admit_locked(mdev,0x40008000);if(ret)goto out;
@@ -7492,7 +7478,9 @@ int m9x_faa_graph_bound_depth_views_locked(struct m9x_device *mdev,
 {
 #ifdef M9_FAA_GRAPH_INIT_CONTROL
  struct m9x_transport *t=&mdev->transport;struct m9x_faa_replay *r=t->faa;
- struct m9_faa_depth_storage *n;u32 i,page,pte;int ret;
+	struct m9_faa_depth_storage *n;
+	u32 i;
+	int ret;
  lockdep_assert_held(&t->lock);
  if(!views||!binding)return -EINVAL;
  memset(views,0,sizeof(*views));
@@ -7518,11 +7506,13 @@ int m9x_faa_graph_bound_depth_views_locked(struct m9x_device *mdev,
    if(o->vram||!o->cpu||!drm_mm_node_allocated(&o->system_node)||
     o->system_node.start!=o->base||o->system_node.size!=o->bytes||
     o->cpu_wc!=(n->views.color_policy==M9_FAA_DEPTH_COLOR_SYSTEM_B))return -ESTALE;
-   for(page=0;page<o->bytes/PAGE_SIZE;page++){
-    ret=m9x_address_read_pte(mdev,o->base+page*PAGE_SIZE,&pte);if(ret)return ret;
-    if(pte!=(m9x_address_pte_word(o->dma+page*PAGE_SIZE)|
-     (n->views.color_policy==M9_FAA_DEPTH_COLOR_SYSTEM_B?1u:0u)))return -ESTALE;
-   }
+			ret = m9x_system_pages_mapped(mdev, o->base, o->dma,
+						      o->bytes / PAGE_SIZE,
+						      n->views.color_policy ==
+						      M9_FAA_DEPTH_COLOR_SYSTEM_B ?
+						      1u : 0u, NULL, NULL);
+			if (ret)
+				return ret;
   }else{
    if(!o->vram||o->cpu||iosys_map_is_null(&o->map))return -ESTALE;
    /* GPU use can update opaque secondary-record metadata. Initial
@@ -8304,15 +8294,11 @@ release:if(!claimed)kfree(pool);return ret;
 #ifdef M9_FAA_GRAPH_INIT_CONTROL
 static int m9_faa_command_owner_admit(struct m9x_device *mdev,struct m9_faa_owner *o)
 {
- u32 page,pte;int ret;
  if(!o||o->vram||!o->cpu||!o->cpu_wc||o->bytes!=0x40000||
   !drm_mm_node_allocated(&o->system_node)||o->system_node.start!=o->base||
   o->system_node.size!=o->bytes)return -ESTALE;
- for(page=0;page<o->bytes/PAGE_SIZE;page++){
-  ret=m9x_address_read_pte(mdev,o->base+page*PAGE_SIZE,&pte);if(ret)return ret;
-  if(pte!=(m9x_address_pte_word(o->dma+page*PAGE_SIZE)|1))return -ESTALE;
- }
- return 0;
+	return m9x_system_pages_mapped(mdev, o->base, o->dma,
+				       o->bytes / PAGE_SIZE, 1u, NULL, NULL);
 }
 /* A maintenance E3 belongs to the idle command-pool transaction, not to the
  * preceding application Unlock. Both original receipts remain immutable.
