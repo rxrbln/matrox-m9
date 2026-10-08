@@ -233,12 +233,18 @@ int m9x_faa_texture_owners_place_colorpass_locked(struct m9x_device *mdev,
 int m9x_faa_texture_owners_fence_locked(struct m9x_faa_texture_owners *owners,
 	struct dma_fence *fence)
 {
+	struct dma_fence *old;
 	u32 i;
 	int ret;
 
-	if (!owners || !fence || owners->retirement || !owners->pinned[0] ||
+	if (!owners || !fence || !owners->pinned[0] ||
 	    !owners->pinned[1])
 		return -EINVAL;
+	/* The same pinned texture pair may be read by a later frame after the
+	 * previous Lock/Unlock has genuinely retired. An unsignaled old read
+	 * fence cannot be displaced by a newly planned token. */
+	if (owners->retirement && !dma_fence_is_signaled(owners->retirement))
+		return -EBUSY;
 	for (i = 0; i < 2; i++) {
 		dma_resv_assert_held(owners->gem[i]->resv);
 		ret = dma_resv_reserve_fences(owners->gem[i]->resv, 1);
@@ -248,6 +254,8 @@ int m9x_faa_texture_owners_fence_locked(struct m9x_faa_texture_owners *owners,
 	for (i = 0; i < 2; i++)
 		dma_resv_add_fence(owners->gem[i]->resv, fence,
 				   DMA_RESV_USAGE_READ);
+	old = owners->retirement;
 	owners->retirement = dma_fence_get(fence);
+	dma_fence_put(old);
 	return 0;
 }

@@ -42,8 +42,10 @@ int m9x_faa_texture_owners_place_colorpass_locked(struct m9x_device *mdev,
 	const struct m9x_faa_texture_dual_program *program,
 	u8 *secondary, u32 secondary_bytes);
 
-/* Reserve both READ fence slots before installing either. The caller also
- * fences its six graph owners before any command write or END doorbell. */
+/* Reserve both READ fence slots before installing either. A genuinely
+ * signaled earlier retirement may be replaced for same-pair frame reuse;
+ * an unsignaled one refuses without modifying either reservation. The caller
+ * also fences its six graph owners before command writes or END doorbells. */
 int m9x_faa_texture_owners_fence_locked(struct m9x_faa_texture_owners *owners,
 	struct dma_fence *fence);
 
