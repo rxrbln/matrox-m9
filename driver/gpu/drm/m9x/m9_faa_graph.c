@@ -2718,98 +2718,160 @@ static int m9_faa_graph_first_receipt(struct m9x_device *mdev, u32 generation,
 	return 0;
 }
 
-int m9x_faa_graph_dual_first_ioctl(struct drm_device *drm,void *data,
- struct drm_file *file)
+int m9x_faa_graph_dual_first_ioctl(struct drm_device *drm, void *data,
+				   struct drm_file *file)
 {
- struct drm_parhelia_m9_faa_graph_dual_first *args=data;
- struct m9x_device *mdev=to_m9x(drm);struct m9_faa_file *state=file->driver_priv;
- struct m9_faa_prepared_graph *graph;struct m9_faa_graph_binding *binding=NULL;
- struct m9x_faa_texture_owners textures={0};
- struct m9x_faa_texture_bind_input request[2]={0};
- struct drm_gem_object *graph_owner[PARHELIA_M9_FAA_GRAPH_OWNERS];
- struct drm_gem_object *texture_bo[2]={0};
- struct m9x_faa_color_input input={0};struct drm_exec exec;
- u32 handles[2],address[PARHELIA_M9_FAA_GRAPH_OWNERS],sum,tmp,i;
- u8 *upload=NULL;u64 point=0;bool posted=false;int idx,ret;
+	struct drm_parhelia_m9_faa_graph_dual_first *args = data;
+	struct m9x_device *mdev = to_m9x(drm);
+	struct m9_faa_file *state = file->driver_priv;
+	struct m9_faa_prepared_graph *graph;
+	struct m9_faa_graph_binding *binding = NULL;
+	struct m9x_faa_texture_owners textures = { 0 };
+	struct m9x_faa_texture_bind_input request[2] = { 0 };
+	struct drm_gem_object *graph_owner[PARHELIA_M9_FAA_GRAPH_OWNERS];
+	struct drm_gem_object *texture_bo[2] = { 0 };
+	struct m9x_faa_color_input input = { 0 };
+	struct drm_exec exec;
+	u32 handles[2], address[PARHELIA_M9_FAA_GRAPH_OWNERS], sum, tmp, i;
+	u8 *upload = NULL;
+	u64 point = 0;
+	bool posted = false;
+	int idx, ret;
 	u64 ordinary = 0;
 
 	if (args->ordinary_point)
 		return -EINVAL;
- if(!state||args->version!=PARHELIA_M9_FAA_DUAL_FIRST_VERSION||
-    (args->flags&~PARHELIA_M9_FAA_DUAL_FIRST_COLORPASS_DIAGNOSTIC)||
-    args->state||args->pad||args->lock_point||
-    !m9x_faa_runtime_shape(args->width,args->height)||
-    ((args->flags&PARHELIA_M9_FAA_DUAL_FIRST_COLORPASS_DIAGNOSTIC)&&
-     (args->width!=320||args->height!=240))||args->clear_flags!=3||
-    args->clear_color||!m9x_faa_depth_flags_valid(args->depth_flags)||
-    args->layout.program_count!=4||args->declaration_count!=9||
-    args->record_stride!=64||!args->record_count||
-    args->record_count>12288||args->record_count%3||
-    !args->upload||!args->upload_bytes||args->upload_bytes>0x42000||
-    args->init_point>U64_MAX-0x150)return -EOPNOTSUPP;
- if(check_add_overflow(args->layout.program_bytes,args->layout.constants_bytes,&sum)||
-    check_add_overflow(sum,args->layout.geometry_bytes,&sum)||
-    check_mul_overflow(args->declaration_count,4u,&tmp)||
-    check_add_overflow(sum,tmp,&sum)||sum!=args->upload_bytes)return -EINVAL;
- if(!m9x_faa_graph_profile_enabled())return -EOPNOTSUPP;
- if(!drm_dev_enter(drm,&idx))return -ENODEV;
- mutex_lock(&state->lock);graph=state->graph;
- if(!graph||!graph->initialized||graph->id!=args->graph_id||
-    graph->generation!=args->generation||graph->init_point!=args->init_point||
-    graph->width!=args->width||graph->height!=args->height){
-  ret=-ENOENT;goto out;
- }
- for(i=0;i<2;i++){
-  const struct drm_parhelia_m9_faa_texture_view *v=&args->texture[i];
-  handles[i]=v->handle;
-  request[i]=(struct m9x_faa_texture_bind_input){
-   .profile=v->profile,.format=v->format,.width=v->width,.height=v->height,
-   .storage_kind=v->storage_kind,.levels=v->levels,.stage=i,
-   .min_filter=v->min_filter,.mag_filter=v->mag_filter,.mip_filter=v->mip_filter,
-   .address_u=v->address_u,.address_v=v->address_v,
-   .coordinate_sets=2,.coordinate_index=i};
- }
- for(i=0;i<PARHELIA_M9_FAA_GRAPH_OWNERS;i++)graph_owner[i]=graph->owner[i];
- ret=m9x_faa_texture_owners_acquire(mdev,file,handles,request,graph_owner,
-                                    args->generation,&textures);
- if(ret)goto out;
- for(i=0;i<2;i++){
-  texture_bo[i]=textures.gem[i];
-  drm_gem_object_get(texture_bo[i]);
- }
- mutex_lock(&mdev->transport.lock);
- ret=m9x_faa_graph_retained_get_locked(mdev,args->generation,args->init_point,&binding);
- mutex_unlock(&mdev->transport.lock);if(ret)goto out;
- if(binding->graph!=graph){ret=-ESTALE;goto out;}
- upload=memdup_user(u64_to_user_ptr(args->upload),args->upload_bytes);
- if(IS_ERR(upload)){ret=PTR_ERR(upload);upload=NULL;goto out;}
- memcpy(&input.layout,&args->layout,sizeof(input.layout));input.program=upload;
- input.constants=upload+args->layout.program_bytes;
- input.geometry=input.constants+args->layout.constants_bytes;
- input.declaration=input.geometry+args->layout.geometry_bytes;
- input.record_stride=args->record_stride;input.record_count=args->record_count;
- input.declaration_count=args->declaration_count;input.depth_flags=args->depth_flags;
- input.dual_base_only=true;
- input.dual_colorpass_diagnostic=!!(args->flags&
-   PARHELIA_M9_FAA_DUAL_FIRST_COLORPASS_DIAGNOSTIC);
- ret=m9x_faa_graph_dual_first_prepare(mdev,binding,args->generation,args->init_point,
-                                      &input,&textures,NULL);
- if(ret)goto out;
- drm_exec_init(&exec,DRM_EXEC_INTERRUPTIBLE_WAIT|DRM_EXEC_IGNORE_DUPLICATES,8);
- drm_exec_until_all_locked(&exec){
-  for(i=0;i<PARHELIA_M9_FAA_GRAPH_OWNERS+2;i++){
-   struct drm_gem_object *bo=i<PARHELIA_M9_FAA_GRAPH_OWNERS?
-    graph->owner[i]:texture_bo[i-PARHELIA_M9_FAA_GRAPH_OWNERS];
-   if(!bo){ret=-ESTALE;goto out_exec;}
-   ret=drm_exec_prepare_obj(&exec,bo,1);
-   drm_exec_retry_on_contention(&exec);if(ret)goto out_exec;
-  }
- }
- ret=m9_faa_graph_live_addresses(mdev,graph,address);
- if(ret)goto out_exec;
- if(memcmp(binding->address,address,sizeof(address))){ret=-ESTALE;goto out_exec;}
- ret=m9x_faa_graph_depth_frame_submit(mdev,binding,args->generation,args->init_point,
-                                      &point,&posted);
+	if (!state || args->version != PARHELIA_M9_FAA_DUAL_FIRST_VERSION ||
+	    (args->flags & ~PARHELIA_M9_FAA_DUAL_FIRST_COLORPASS_DIAGNOSTIC) ||
+	    args->state || args->pad || args->lock_point ||
+	    !m9x_faa_runtime_shape(args->width, args->height) ||
+	    ((args->flags & PARHELIA_M9_FAA_DUAL_FIRST_COLORPASS_DIAGNOSTIC) &&
+	     (args->width != 320 || args->height != 240)) ||
+	    args->clear_flags != 3 || args->clear_color ||
+	    !m9x_faa_depth_flags_valid(args->depth_flags) ||
+	    args->layout.program_count != 4 || args->declaration_count != 9 ||
+	    args->record_stride != 64 || !args->record_count ||
+	    args->record_count > 12288 || args->record_count % 3 ||
+	    !args->upload || !args->upload_bytes ||
+	    args->upload_bytes > 0x42000 || args->init_point > U64_MAX - 0x150)
+		return -EOPNOTSUPP;
+	if (check_add_overflow(args->layout.program_bytes,
+			       args->layout.constants_bytes, &sum) ||
+	    check_add_overflow(sum, args->layout.geometry_bytes, &sum) ||
+	    check_mul_overflow(args->declaration_count, 4u, &tmp) ||
+	    check_add_overflow(sum, tmp, &sum) || sum != args->upload_bytes)
+		return -EINVAL;
+	if (!m9x_faa_graph_profile_enabled())
+		return -EOPNOTSUPP;
+	if (!drm_dev_enter(drm, &idx))
+		return -ENODEV;
+	mutex_lock(&state->lock);
+	graph = state->graph;
+	if (!graph || !graph->initialized || graph->id != args->graph_id ||
+	    graph->generation != args->generation ||
+	    graph->init_point != args->init_point ||
+	    graph->width != args->width || graph->height != args->height) {
+		ret = -ENOENT;
+		goto out;
+	}
+	for (i = 0; i < 2; i++) {
+		const struct drm_parhelia_m9_faa_texture_view *v =
+			&args->texture[i];
+
+		handles[i] = v->handle;
+		request[i] = (struct m9x_faa_texture_bind_input){
+			.profile = v->profile,
+			.format = v->format,
+			.width = v->width,
+			.height = v->height,
+			.storage_kind = v->storage_kind,
+			.levels = v->levels,
+			.stage = i,
+			.min_filter = v->min_filter,
+			.mag_filter = v->mag_filter,
+			.mip_filter = v->mip_filter,
+			.address_u = v->address_u,
+			.address_v = v->address_v,
+			.coordinate_sets = 2,
+			.coordinate_index = i
+		};
+	}
+	for (i = 0; i < PARHELIA_M9_FAA_GRAPH_OWNERS; i++)
+		graph_owner[i] = graph->owner[i];
+	ret = m9x_faa_texture_owners_acquire(mdev, file, handles, request,
+					     graph_owner, args->generation,
+					     &textures);
+	if (ret)
+		goto out;
+	for (i = 0; i < 2; i++) {
+		texture_bo[i] = textures.gem[i];
+		drm_gem_object_get(texture_bo[i]);
+	}
+	mutex_lock(&mdev->transport.lock);
+	ret = m9x_faa_graph_retained_get_locked(mdev, args->generation,
+						args->init_point, &binding);
+	mutex_unlock(&mdev->transport.lock);
+	if (ret)
+		goto out;
+	if (binding->graph != graph) {
+		ret = -ESTALE;
+		goto out;
+	}
+	upload = memdup_user(u64_to_user_ptr(args->upload), args->upload_bytes);
+	if (IS_ERR(upload)) {
+		ret = PTR_ERR(upload);
+		upload = NULL;
+		goto out;
+	}
+	memcpy(&input.layout, &args->layout, sizeof(input.layout));
+	input.program = upload;
+	input.constants = upload + args->layout.program_bytes;
+	input.geometry = input.constants + args->layout.constants_bytes;
+	input.declaration = input.geometry + args->layout.geometry_bytes;
+	input.record_stride = args->record_stride;
+	input.record_count = args->record_count;
+	input.declaration_count = args->declaration_count;
+	input.depth_flags = args->depth_flags;
+	input.dual_base_only = true;
+	input.dual_colorpass_diagnostic =
+		!!(args->flags & PARHELIA_M9_FAA_DUAL_FIRST_COLORPASS_DIAGNOSTIC);
+	ret = m9x_faa_graph_dual_first_prepare(mdev, binding, args->generation,
+					       args->init_point, &input,
+					       &textures, NULL);
+	if (ret)
+		goto out;
+	drm_exec_init(&exec,
+		      DRM_EXEC_INTERRUPTIBLE_WAIT | DRM_EXEC_IGNORE_DUPLICATES,
+		      8);
+	drm_exec_until_all_locked(&exec)
+	{
+		for (i = 0; i < PARHELIA_M9_FAA_GRAPH_OWNERS + 2; i++) {
+			struct drm_gem_object *bo =
+				i < PARHELIA_M9_FAA_GRAPH_OWNERS ?
+					graph->owner[i] :
+					texture_bo[i -
+						   PARHELIA_M9_FAA_GRAPH_OWNERS];
+
+			if (!bo) {
+				ret = -ESTALE;
+				goto out_exec;
+			}
+			ret = drm_exec_prepare_obj(&exec, bo, 1);
+			drm_exec_retry_on_contention(&exec);
+			if (ret)
+				goto out_exec;
+		}
+	}
+	ret = m9_faa_graph_live_addresses(mdev, graph, address);
+	if (ret)
+		goto out_exec;
+	if (memcmp(binding->address, address, sizeof(address))) {
+		ret = -ESTALE;
+		goto out_exec;
+	}
+	ret = m9x_faa_graph_depth_frame_submit(mdev, binding, args->generation,
+					       args->init_point, &point,
+					       &posted);
 	if (!ret)
 		ret = m9_faa_graph_first_receipt(mdev, args->generation,
 						 args->init_point, point, 0x150,
@@ -2819,11 +2881,18 @@ int m9x_faa_graph_dual_first_ioctl(struct drm_device *drm,void *data,
 		args->ordinary_point = ordinary;
 		args->state = PARHELIA_M9_FAA_DUAL_FIRST_LOCK_RETIRED;
 	}
-out_exec:drm_exec_fini(&exec);
-out:kfree(upload);m9x_faa_texture_owners_put(&textures,false);
- for(i=0;i<2;i++)if(texture_bo[i])drm_gem_object_put(texture_bo[i]);
- m9x_faa_graph_binding_put(binding);mutex_unlock(&state->lock);drm_dev_exit(idx);
- return ret;
+out_exec:
+	drm_exec_fini(&exec);
+out:
+	kfree(upload);
+	m9x_faa_texture_owners_put(&textures, false);
+	for (i = 0; i < 2; i++)
+		if (texture_bo[i])
+			drm_gem_object_put(texture_bo[i]);
+	m9x_faa_graph_binding_put(binding);
+	mutex_unlock(&state->lock);
+	drm_dev_exit(idx);
+	return ret;
 }
 
 int m9x_faa_graph_dual_batch_ioctl(struct drm_device *drm,void *data,
