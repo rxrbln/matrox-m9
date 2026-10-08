@@ -3071,7 +3071,8 @@ static int m9_faa_prepare_virtual_restore(struct m9x_device *mdev)
 		u32 expected[] = { work, base, work + 0x440 };
 
 		for (j = 0; j < ARRAY_SIZE(word); j++)
-			iosys_map_wr(&map, 0x700 + i * 0x600 + word[j] * sizeof(u32),
+			iosys_map_wr(&map,
+				     0x700 + i * 0x600 + word[j] * sizeof(u32),
 				     u32, expected[j] | 1u);
 	}
 	wmb();
@@ -3081,12 +3082,14 @@ static int m9_faa_prepare_virtual_restore(struct m9x_device *mdev)
 
 		for (j = 0; j < ARRAY_SIZE(word); j++)
 			if (iosys_map_rd(&map,
-				0x700 + i * 0x600 + word[j] * sizeof(u32), u32) !=
-			    (expected[j] | 1u))
+					 0x700 + i * 0x600 +
+						 word[j] * sizeof(u32),
+					 u32) != (expected[j] | 1u))
 				return -EIO;
 	}
 	dev_info(&mdev->pdev->dev,
-		 "M9 FAA virtual restore: base=%#x 1024 records, DWORD9/14/19 tag1 verified\n", base);
+		 "M9 FAA virtual restore: base=%#x 1024 records, DWORD9/14/19 tag1 verified\n",
+		 base);
 	return 0;
 }
 
