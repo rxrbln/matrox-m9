@@ -7445,8 +7445,9 @@ out_fw:
 }
 
 int m9x_faa_graph_public_vs_follow_submit(struct m9x_device *mdev,
-					  struct m9_faa_graph_binding *binding, u32 generation,
-					  u64 prefix_point, u64 *point, bool *posted)
+					  struct m9_faa_graph_binding *binding,
+					  u32 generation, u64 prefix_point,
+					  u64 *point, bool *posted)
 {
 #ifdef M9_FAA_GRAPH_INIT_CONTROL
 	struct m9x_transport *t = &mdev->transport;
@@ -7456,6 +7457,7 @@ int m9x_faa_graph_public_vs_follow_submit(struct m9x_device *mdev,
 	struct m9x_fence *fence = NULL;
 	u32 i, page, pte, secondary_pte = 0, old_bytes, target;
 	int ret;
+
 	if (!binding || !point || !posted)
 		return -EINVAL;
 	*point = 0;
@@ -7471,18 +7473,22 @@ int m9x_faa_graph_public_vs_follow_submit(struct m9x_device *mdev,
 	old_bytes = r->graph_draw_end_bytes;
 	if (r->graph_binding != binding || !primary->cpu || !secondary->cpu ||
 	    !drm_mm_node_allocated(&primary->system_node) ||
-	    primary->system_node.start != primary->base || old_bytes > primary->bytes ||
-	    primary->bytes - old_bytes < 48 || secondary->bytes < 1372 ||
+	    primary->system_node.start != primary->base ||
+	    old_bytes > primary->bytes || primary->bytes - old_bytes < 48 ||
+	    secondary->bytes < 1372 ||
 	    image->ends.final_end != old_bytes + 48 ||
 	    image->ends.original_wait != prefix_point + 0x20 ||
 	    image->ends.independent_finish != prefix_point + 0x30 ||
-	    image->ends.patch_word != (M9_FAA_VS_FOLLOW_PATCH_EXPECTED | ((1284u - 704u) / 4)) ||
-	    READ_ONCE(((u32 *)secondary->cpu)[704 / 4]) != M9_FAA_VS_FOLLOW_PATCH_EXPECTED) {
+	    image->ends.patch_word !=
+		    (M9_FAA_VS_FOLLOW_PATCH_EXPECTED | ((1284u - 704u) / 4)) ||
+	    READ_ONCE(((u32 *)secondary->cpu)[704 / 4]) !=
+		    M9_FAA_VS_FOLLOW_PATCH_EXPECTED) {
 		ret = -ESTALE;
 		goto out;
 	}
 	for (i = 1; i < ARRAY_SIZE(r->draw_owner); i++) {
 		struct m9_faa_owner *o = &r->draw_owner[i];
+
 		if (!o->cpu || !drm_mm_node_allocated(&o->system_node) ||
 		    o->system_node.start != o->base) {
 			ret = -ESTALE;
@@ -7492,7 +7498,9 @@ int m9x_faa_graph_public_vs_follow_submit(struct m9x_device *mdev,
 			ret = m9x_address_read_pte(mdev, o->base + page * PAGE_SIZE, &pte);
 			if (ret)
 				goto out;
-			if (pte != (m9x_address_pte_word(o->dma + page * PAGE_SIZE) | 1u)) {
+			if (pte !=
+			    (m9x_address_pte_word(o->dma + page * PAGE_SIZE) |
+			     1u)) {
 				ret = -ESTALE;
 				goto out;
 			}
@@ -7500,7 +7508,8 @@ int m9x_faa_graph_public_vs_follow_submit(struct m9x_device *mdev,
 				secondary_pte = pte;
 		}
 	}
-	ret = m9x_address_check_local_identity(mdev, r->draw_owner[0].base, r->draw_owner[0].bytes);
+	ret = m9x_address_check_local_identity(mdev, r->draw_owner[0].base,
+					       r->draw_owner[0].bytes);
 	if (ret)
 		goto out;
 	target = lower_32_bits(prefix_point) + 0x30;
@@ -7510,28 +7519,32 @@ int m9x_faa_graph_public_vs_follow_submit(struct m9x_device *mdev,
 		goto out;
 	}
 	for (i = 0; i < PARHELIA_M9_FAA_GRAPH_OWNERS; i++)
-		dma_resv_add_fence(m9x_faa_graph_binding_owner(binding, i)->resv, &fence->base,
-				   DMA_RESV_USAGE_WRITE);
+		dma_resv_add_fence(m9x_faa_graph_binding_owner(binding, i)->resv,
+				   &fence->base, DMA_RESV_USAGE_WRITE);
 	/* Source writes [752,1284), then248fe patches old704, then writes
 	 * [1284,1368) and the primary suffix before its only END. Preserve that
-	 * CPU chronology even though no intervening source MMIO is observed. */
+	 * CPU chronology even though no intervening source MMIO is observed.
+	 */
 	memcpy((u8 *)secondary->cpu + 752, image->secondary, 1284 - 752);
 	WRITE_ONCE(((u32 *)secondary->cpu)[704 / 4], image->ends.patch_word);
 	memcpy((u8 *)secondary->cpu + 1284, image->secondary + (1284 - 752),
 	       1368 - 1284);
-	memcpy((u8 *)primary->cpu + old_bytes, image->primary, sizeof(image->primary));
+	memcpy((u8 *)primary->cpu + old_bytes, image->primary,
+	       sizeof(image->primary));
 	wmb();
 	dev_info(&mdev->pdev->dev,
-		 "M9 FAA public VS follow before post: secondary=%#x dma=%pad pte0=%#x "
-		 "program=%#x relative704=%#x primary=%#x old=%u new=%u indirect=%#x/%#x/%#x\n",
-		 secondary->base, &secondary->dma, secondary_pte, r->draw_owner[0].base,
+		 "M9 FAA public VS follow before post: secondary=%#x dma=%pad pte0=%#x program=%#x relative704=%#x primary=%#x old=%u new=%u indirect=%#x/%#x/%#x\n",
+		 secondary->base, &secondary->dma, secondary_pte,
+		 r->draw_owner[0].base,
 		 READ_ONCE(((u32 *)secondary->cpu)[704 / 4]), primary->base,
 		 old_bytes, image->ends.final_end,
 		 READ_ONCE(((u32 *)primary->cpu)[old_bytes / 4]),
 		 READ_ONCE(((u32 *)primary->cpu)[old_bytes / 4 + 1]),
 		 READ_ONCE(((u32 *)primary->cpu)[old_bytes / 4 + 2]));
-	ret = m9x_post_faa_graph_end_locked(mdev, &primary->system_node, primary->dma, old_bytes,
-					    image->ends.final_end, false, target, point, posted);
+	ret = m9x_post_faa_graph_end_locked(mdev, &primary->system_node,
+					    primary->dma, old_bytes,
+					    image->ends.final_end, false,
+					    target, point, posted);
 	if (*posted) {
 		r->graph_draw_end_bytes = image->ends.final_end;
 		r->graph_draw_posts++;
@@ -7542,10 +7555,9 @@ int m9x_faa_graph_public_vs_follow_submit(struct m9x_device *mdev,
 		r->graph_draw_point = *point;
 		r->public_vs_follow_retired = true;
 		dev_info(&mdev->pdev->dev,
-			 "M9 FAA public VS follow prefix retired: prefix=%#llx point=%#llx "
-			 "bytes=%u posts=%u relative704=%#x; original DRAW pending\n",
-			 prefix_point, *point, r->graph_draw_end_bytes, r->graph_draw_posts,
-			 image->ends.patch_word);
+			 "M9 FAA public VS follow prefix retired: prefix=%#llx point=%#llx bytes=%u posts=%u relative704=%#x; original DRAW pending\n",
+			 prefix_point, *point, r->graph_draw_end_bytes,
+			 r->graph_draw_posts, image->ends.patch_word);
 		dma_rmb();
 		dev_info(&mdev->pdev->dev,
 			 "M9 FAA retired counters: +00=%#x/%#x +20=%#x/%#x +40=%#x/%#x +60=%#x/%#x\n",
