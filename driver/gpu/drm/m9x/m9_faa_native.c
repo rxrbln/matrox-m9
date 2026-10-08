@@ -12599,21 +12599,35 @@ release:
  * journal is not advanced; a prefix-only record blocks further rendering
  * until a separate source-qualified continuation exists. */
 int m9x_faa_graph_clear_prefix_binding_locked(struct m9x_device *mdev,
- u32 generation,u64 previous,struct m9_faa_graph_binding **out)
+					      u32 generation, u64 previous,
+					      struct m9_faa_graph_binding **out)
 {
 #ifdef M9_FAA_GRAPH_INIT_CONTROL
- struct m9x_transport*t=&mdev->transport;struct m9x_faa_replay*r=t->faa;
- struct m9_faa_depth_frame_storage*f;
- lockdep_assert_held(&t->lock);if(!out)return -EINVAL;*out=NULL;
- if(t->wedged)return -EIO;
- if(r&&r->depth_storage&&(f=r->depth_storage->frame)&&f->clear_prefix){
-  if(!f->retired||!f->attempted||f->generation!=generation||f->previous_point!=previous||
-   r->graph_generation!=generation||t->generation!=generation||!r->graph_binding)return -ESTALE;
-  *out=m9x_faa_graph_binding_get(r->graph_binding);return 0;
- }
- return m9x_faa_graph_depth_unlocked_get_locked(mdev,generation,previous,out);
+	struct m9x_transport *t = &mdev->transport;
+	struct m9x_faa_replay *r = t->faa;
+	struct m9_faa_depth_frame_storage *f;
+
+	lockdep_assert_held(&t->lock);
+	if (!out)
+		return -EINVAL;
+	*out = NULL;
+	if (t->wedged)
+		return -EIO;
+	f = r && r->depth_storage ? r->depth_storage->frame : NULL;
+	if (f && f->clear_prefix) {
+		if (!f->retired || !f->attempted ||
+		    f->generation != generation ||
+		    f->previous_point != previous ||
+		    r->graph_generation != generation ||
+		    t->generation != generation || !r->graph_binding)
+			return -ESTALE;
+		*out = m9x_faa_graph_binding_get(r->graph_binding);
+		return 0;
+	}
+	return m9x_faa_graph_depth_unlocked_get_locked(mdev, generation,
+						       previous, out);
 #else
- return -EOPNOTSUPP;
+	return -EOPNOTSUPP;
 #endif
 }
 
