@@ -902,32 +902,37 @@ int m9x_faa_graph_draw_red_ioctl(struct drm_device *drm, void *data,
 		return -EINVAL;
 	if (!drm_dev_enter(drm, &idx))
 		return -ENODEV;
-	ret = m9x_faa_graph_continuation_acquire(mdev, file,
-			args->graph_id, args->generation, args->init_point,
-			&binding);
+	ret = m9x_faa_graph_continuation_acquire(mdev, file, args->graph_id,
+						 args->generation,
+						 args->init_point, &binding);
 	if (ret)
 		goto out_dev;
 	mutex_lock(&state->lock);
 	if (state->graph != binding->graph ||
-	    !m9_faa_graph_continuation_matches(state->graph,
-		args->graph_id, args->generation, args->init_point)) {
+	    !m9_faa_graph_continuation_matches(state->graph, args->graph_id,
+					       args->generation,
+					       args->init_point)) {
 		ret = -ENOENT;
 		goto out_state;
 	}
 	/* Firmware, private local TTM reservation, and late SYSTEM mapping
-	 * must finish before taking any of the six caller BO reservations. */
+	 * must finish before taking any of the six caller BO reservations.
+	 */
 	ret = m9x_faa_graph_draw_prepare(mdev, binding, args->generation,
-					args->init_point,
-					args->flags & PARHELIA_M9_FAA_DRAW_WITH_FINISH,
-					args->flags & PARHELIA_M9_FAA_DRAW_WITH_LOCK);
+					 args->init_point,
+					 args->flags & PARHELIA_M9_FAA_DRAW_WITH_FINISH,
+					 args->flags & PARHELIA_M9_FAA_DRAW_WITH_LOCK);
 	if (ret)
 		goto out_state;
-	drm_exec_init(&exec, DRM_EXEC_INTERRUPTIBLE_WAIT |
-		      DRM_EXEC_IGNORE_DUPLICATES, PARHELIA_M9_FAA_GRAPH_OWNERS);
-	drm_exec_until_all_locked(&exec) {
+	drm_exec_init(&exec,
+		      DRM_EXEC_INTERRUPTIBLE_WAIT | DRM_EXEC_IGNORE_DUPLICATES,
+		      PARHELIA_M9_FAA_GRAPH_OWNERS);
+	drm_exec_until_all_locked(&exec)
+	{
 		for (i = 0; i < PARHELIA_M9_FAA_GRAPH_OWNERS; i++) {
 			ret = drm_exec_prepare_obj(&exec,
-				m9x_faa_graph_binding_owner(binding, i), 1);
+						   m9x_faa_graph_binding_owner(binding, i),
+						   1);
 			drm_exec_retry_on_contention(&exec);
 			if (ret)
 				goto out_exec;
@@ -941,27 +946,32 @@ int m9x_faa_graph_draw_red_ioctl(struct drm_device *drm, void *data,
 		goto out_exec;
 	}
 	for (i = 0; i < PARHELIA_M9_FAA_GRAPH_OWNERS; i++) {
-		if (!dma_resv_test_signaled(
-			m9x_faa_graph_binding_owner(binding, i)->resv,
-			DMA_RESV_USAGE_READ)) {
+		if (!dma_resv_test_signaled(m9x_faa_graph_binding_owner(binding, i)->resv,
+					    DMA_RESV_USAGE_READ)) {
 			ret = -EBUSY;
 			goto out_exec;
 		}
 	}
 	ret = m9x_faa_graph_draw_submit(mdev, binding, args->generation,
-					 args->init_point, &point, &posted);
+					args->init_point, &point, &posted);
 	if (!ret) {
-		if (!point || point != args->init_point +
-		    (args->flags & PARHELIA_M9_FAA_DRAW_WITH_LOCK ? 0xc0 :
-		     args->flags & PARHELIA_M9_FAA_DRAW_WITH_FINISH ? 0x90 : 0x60))
+		if (!point ||
+		    point !=
+			    args->init_point +
+				    (args->flags & PARHELIA_M9_FAA_DRAW_WITH_LOCK ?
+					     0xc0 :
+				     args->flags & PARHELIA_M9_FAA_DRAW_WITH_FINISH ?
+					     0x90 :
+					     0x60)) {
 			ret = -EIO;
-		else {
+		} else {
 			args->draw_point = point;
-			args->state = args->flags & PARHELIA_M9_FAA_DRAW_WITH_LOCK ?
-				PARHELIA_M9_FAA_LOCK_PREFIX_RETIRED :
+			args->state =
+				args->flags & PARHELIA_M9_FAA_DRAW_WITH_LOCK ?
+					PARHELIA_M9_FAA_LOCK_PREFIX_RETIRED :
 				args->flags & PARHELIA_M9_FAA_DRAW_WITH_FINISH ?
-				PARHELIA_M9_FAA_DRAW_FINISH_RETIRED :
-				PARHELIA_M9_FAA_DRAW_PREFIX_RETIRED;
+					PARHELIA_M9_FAA_DRAW_FINISH_RETIRED :
+					PARHELIA_M9_FAA_DRAW_PREFIX_RETIRED;
 		}
 	}
 out_exec:
