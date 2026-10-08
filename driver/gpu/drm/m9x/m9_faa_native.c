@@ -6782,8 +6782,8 @@ int m9x_faa_graph_public_vs_draw_get_locked(struct m9x_device *mdev,
 	*out = NULL;
 	ret = m9_faa_public_vs_draw_state(&mdev->transport,
 					  mdev->transport.faa ?
-					  mdev->transport.faa->graph_binding :
-					  NULL, generation, draw_point);
+					  mdev->transport.faa->graph_binding : NULL,
+					  generation, draw_point);
 	if (ret)
 		return ret;
 	*out = m9x_faa_graph_binding_get(mdev->transport.faa->graph_binding);
