@@ -80,18 +80,38 @@ static int wrap_mode(u32 address, u32 *mode)
 	}
 }
 
+/* The vendor request's A8R8G8B8 format 0x66 is descriptor code 0xcc; the
+ * ordinary sampler's codes RGBA8 0xc8, RGBX8 0xc9 and BGRA8 0xcc (MEASURED
+ * on the same texture unit) are taken as they are.
+ */
+static int texture_code(u32 format, u32 *code)
+{
+	switch (format) {
+	case 0x66:
+		*code = 0xcc;
+		return 0;
+	case 0xc8:
+	case 0xc9:
+	case 0xcc:
+		*code = format;
+		return 0;
+	default:
+		return -EINVAL;
+	}
+}
+
 int m9x_faa_texture_bind_encode(
 	const struct m9x_faa_texture_bind_input *in,
 	struct m9x_faa_texture_bind_words *out)
 {
 	struct m9x_faa_texture_bind_words image;
-	u32 kind, extent, span, alloc_height, tail, wrap_u, wrap_v;
+	u32 kind, extent, span, alloc_height, tail, wrap_u, wrap_v, code;
 
 	if (!in || !out || in->owner_domain != M9_FAA_TEXTURE_VRAM ||
 	    (in->owner_base & 255) ||
 	    in->owner_base > U32_MAX - in->owner_bytes ||
 	    in->profile != 12 ||
-	    in->format != 102 || !in->width || !in->height ||
+	    texture_code(in->format, &code) || !in->width || !in->height ||
 	    in->width > 1024 || in->height > 1024 ||
 	    (in->width & (in->width - 1)) ||
 	    (in->height & (in->height - 1)) ||
@@ -138,12 +158,12 @@ int m9x_faa_texture_bind_encode(
 
 	/* 467e0 selector 2: idx78 low 16 is the requested horizontal extent,
 	 * idx79 low 16 is height and bits 27:16 are the one-layer extent.
-	 * Kind 01 becomes 21 above 64 in either dimension. Format code 0x66
-	 * occupies idx78[31:25]. Kind-11 relocation adds
+	 * Kind 01 becomes 21 above 64 in either dimension. The format code
+	 * occupies idx79[31:24]. Kind-11 relocation adds
 	 * texture tag 1 to a 256-byte-aligned live VRAM base. */
 	image.unit70 = 0x40040118;
 	image.address78 = in->owner_base | 1;
-	image.descriptor79 = (0x66u << 25) | (kind << 16) | in->width;
+	image.descriptor79 = (code << 24) | (kind << 16) | in->width;
 	image.descriptor7a = (1u << 16) | in->height;
 	/* Mipmapped sampling: last level in 7a[31:28] and 7c nearest 0x80 /
 	 * linear 0x100, the ordinary sampler's MEASURED encoding.
