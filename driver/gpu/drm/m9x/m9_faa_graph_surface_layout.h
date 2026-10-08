@@ -4,6 +4,7 @@
 #ifndef M9_FAA_GRAPH_SURFACE_LAYOUT_H
 #define M9_FAA_GRAPH_SURFACE_LAYOUT_H
 #include <linux/types.h>
+#include "m9_cmd.h"
 
 enum m9x_faa_surface_role {
  M9_FAA_SURFACE_PRIMARY, M9_FAA_SURFACE_MAIN, M9_FAA_SURFACE_AUXILIARY,
@@ -114,11 +115,10 @@ static inline u32 m9x_faa_guard_field_size(u32 width,u32 height)
  return m9x_faa_guard_bits((2*15359-width)/width)<<12|
   m9x_faa_guard_bits((2*15359-height)/height)<<5;
 }
-static inline void m9x_faa_guard_field_put(u8 *p,u32 field)
+
+static inline void m9x_faa_guard_field_put(u8 *p, u32 field)
 {
- u32 v=(u32)p[0]|(u32)p[1]<<8|(u32)p[2]<<16|(u32)p[3]<<24;
- v=(v&~M9_FAA_GUARD_FIELD_MASK)|field;
- p[0]=v;p[1]=v>>8;p[2]=v>>16;p[3]=v>>24;
+	m9_cmd_put(p, (m9_cmd_get(p) & ~M9_FAA_GUARD_FIELD_MASK) | field);
 }
 static inline int m9x_faa_runtime_shape(u32 width,u32 height)
 {return (width==320&&height==240)||(width==1024&&height==768);}
