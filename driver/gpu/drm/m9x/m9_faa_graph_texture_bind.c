@@ -17,7 +17,7 @@ int m9x_faa_texture_bind_encode(
 	struct m9x_faa_texture_bind_words *out)
 {
 	struct m9x_faa_texture_bind_words image;
-	u32 kind, extent;
+	u32 kind, extent, span, alloc_height, tail;
 
 	if (!in || !out || in->owner_domain != M9_FAA_TEXTURE_VRAM ||
 	    (in->owner_base & 255) ||
@@ -38,9 +38,21 @@ int m9x_faa_texture_bind_encode(
 		return -EINVAL;
 
 	kind = in->width > 64 || in->height > 64 ? 0x21 : 0x01;
-	extent = in->width * in->height * 4;
-	if (extent < 0x4000)
-		extent = 0x4000;
+	/* The texture view has the same allocation footprint as the vendor's
+	 * render-surface allocator.  A width-filling level needs eight spare
+	 * texels after its last row, then the storage kind's byte alignment.
+	 * The 64x64x4 source level therefore occupies 0x4400, not 0x4000.
+	 * This is an allocation bound; the descriptor still uses the logical
+	 * width and height below. */
+	span = (in->width + 31) & ~31u;
+	alloc_height = (in->height + (kind == 1 ? 7 : 31)) &
+			 ~(kind == 1 ? 7u : 31u);
+	if (in->width <= 16 && in->height <= 16)
+		alloc_height = 16;
+	tail = (alloc_height - in->height) * span + span - in->width;
+	extent = span * alloc_height + (tail < 8 ? 8 - tail : 0);
+	extent = (extent * 4 + (kind == 1 ? 0x3ff : 0xfff)) &
+		 ~(kind == 1 ? 0x3ffu : 0xfffu);
 	if (in->storage_kind != kind || in->owner_bytes < extent)
 		return -EINVAL;
 
