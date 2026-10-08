@@ -41,6 +41,10 @@ dual_pack(const struct m9_faa_gl_upload *u,const struct m9_faa_application_state
       .depth_flags=1u|(s->depth_write?2u:0u)|((uint32_t)s->depth_func<<2)};
    /* A disabled depth test neither tests nor writes: ALWAYS, no write. */
    if(!s->depth_enabled)d->depth_flags=1u|((uint32_t)PIPE_FUNC_ALWAYS<<2);
+   /* Diagnostic M9X_FAA_DIAG_FAR=2: a glDepthRange(1,1) DRAW tests ALWAYS. */
+   if(s->viewport.scale[2]==0.0f&&s->viewport.translate[2]==1.0f&&
+      debug_get_num_option("M9X_FAA_DIAG_FAR",0)==2)
+      d->depth_flags=(d->depth_flags&3u)|((uint32_t)PIPE_FUNC_ALWAYS<<2);
    if(s->cull_face==PIPE_FACE_FRONT||s->cull_face==PIPE_FACE_BACK)
       d->raster_flags=((s->cull_face==PIPE_FACE_BACK)==s->front_ccw)?
          PARHELIA_M9_FAA_COLOR_RASTER_CULL_CW:PARHELIA_M9_FAA_COLOR_RASTER_CULL_CCW;
