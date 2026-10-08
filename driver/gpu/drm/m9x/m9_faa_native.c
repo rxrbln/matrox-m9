@@ -8597,7 +8597,8 @@ int m9x_faa_relock_diag(struct m9x_device *mdev, u32 color,
 	    !r->unlock_started || !r->unlock_retired || !r->unlock_point ||
 	    r->relock_started || !t->faa_virtual_primary || t->async_stop ||
 	    t->async_pending || t->queue_count || !color_bo ||
-	    r->retained_color != color_bo || r->borrowed_color_bytes != 0x50000 ||
+	    r->retained_color != color_bo ||
+	    r->borrowed_color_bytes != 0x50000 ||
 	    color_bo->bo.base.size != 0x50000 ||
 	    r->owner[M9_FAA_COLOR_OWNER].base != color ||
 	    r->observation_generation != t->generation ||
@@ -8624,14 +8625,14 @@ int m9x_faa_relock_diag(struct m9x_device *mdev, u32 color,
 	old_bytes = M9_FAA_NORMAL_UNLOCK_SPLIT_BYTES + delta;
 	if (old_bytes >= r->primary_bytes ||
 	    r->primary_bytes - old_bytes !=
-			M9_FAA_PRIMARY_BYTES - M9_FAA_NORMAL_UNLOCK_SPLIT_BYTES ||
-	    t->next_fence > U32_MAX -
-			(M9_FAA_TRACKER_LAST - M9_FAA_NORMAL_UNLOCK_SPLIT_TARGET)) {
+		    M9_FAA_PRIMARY_BYTES - M9_FAA_NORMAL_UNLOCK_SPLIT_BYTES ||
+	    t->next_fence > U32_MAX - (M9_FAA_TRACKER_LAST -
+				       M9_FAA_NORMAL_UNLOCK_SPLIT_TARGET)) {
 		ret = -ERANGE;
 		goto unlock;
 	}
 	target = t->next_fence - 0x10 +
-		(M9_FAA_TRACKER_LAST - M9_FAA_NORMAL_UNLOCK_SPLIT_TARGET);
+		 (M9_FAA_TRACKER_LAST - M9_FAA_NORMAL_UNLOCK_SPLIT_TARGET);
 	ret = m9x_transport_drain_locked(mdev);
 	if (ret)
 		goto unlock;
@@ -8641,9 +8642,10 @@ int m9x_faa_relock_diag(struct m9x_device *mdev, u32 color,
 		goto unlock;
 	}
 	ret = m9x_validate_faa_virtual_resume_locked(mdev,
-			&r->owner[M9_FAA_PRIMARY_OWNER].system_node,
-			r->owner[M9_FAA_PRIMARY_OWNER].dma, old_bytes,
-			r->primary_bytes, target);
+						     &r->owner[M9_FAA_PRIMARY_OWNER].system_node,
+						     r->owner[M9_FAA_PRIMARY_OWNER].dma,
+						     old_bytes, r->primary_bytes,
+						     target);
 	if (ret)
 		goto unlock;
 	fence = m9x_fence_create_target_locked(mdev, target);
@@ -8655,9 +8657,10 @@ int m9x_faa_relock_diag(struct m9x_device *mdev, u32 color,
 			   DMA_RESV_USAGE_WRITE);
 	r->relock_started = true;
 	ret = m9x_extend_faa_virtual_primary_locked(mdev,
-			&r->owner[M9_FAA_PRIMARY_OWNER].system_node,
-			r->owner[M9_FAA_PRIMARY_OWNER].dma, old_bytes,
-			r->primary_bytes, target, point, posted);
+						    &r->owner[M9_FAA_PRIMARY_OWNER].system_node,
+						    r->owner[M9_FAA_PRIMARY_OWNER].dma,
+						    old_bytes, r->primary_bytes,
+						    target, point, posted);
 	if (!ret) {
 		t->next_fence = target + 0x10;
 		r->relock_retired = true;
