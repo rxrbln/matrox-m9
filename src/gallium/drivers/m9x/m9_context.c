@@ -9871,7 +9871,15 @@ m9_context_faa_texture_snapshot(struct m9_context *ctx,unsigned slot,
       return "FAA texture framebuffer feedback is not qualified";
    for(unsigned i=0;i<ARRAY_SIZE(ctx->color_extra);i++)
       if(view->texture==ctx->color_extra[i])return "FAA texture framebuffer feedback is not qualified";
+   const char *why=m9_texture_bind_view(view,&bind);if(why)return why;
    m9_view_swizzle(view,swizzle);
+   /* An RGB view of RGBA8 storage (GL_RGB) samples it as RGBX8, the same
+    * texel layout with alpha one. */
+   if(bind.code==0xc8&&swizzle[0]==PIPE_SWIZZLE_X&&swizzle[1]==PIPE_SWIZZLE_Y&&
+      swizzle[2]==PIPE_SWIZZLE_Z&&swizzle[3]==PIPE_SWIZZLE_1) {
+      bind.code=0xc9;
+      swizzle[3]=PIPE_SWIZZLE_W;
+   }
    for(unsigned c=0;c<4;c++)if(swizzle[c]!=PIPE_SWIZZLE_X+c) {
       static unsigned reported;
       if(ctx->debug&&reported++<16)
@@ -9881,13 +9889,19 @@ m9_context_faa_texture_snapshot(struct m9_context *ctx,unsigned slot,
                  util_format_short_name(view->texture->format));
       return "FAA texture view swizzle has no qualified shader interface";
    }
-   const char *why=m9_texture_bind_view(view,&bind);if(why)return why;
    if(!owner->handle||owner->domain!=M9_BO_VRAM||owner->tiled||
       owner->kind!=M9_RESOURCE_LINEAR_TEXTURE||owner->texture.levels!=last+1||
       owner->texture.level[0].offset||(owner->texture_unplaced&((2u<<last)-1)))
       return "FAA texture live storage is not a placed linear VRAM chain";
-   if((owner->levels_written&((2u<<last)-1))!=((2u<<last)-1))
+   if((owner->levels_written&((2u<<last)-1))!=((2u<<last)-1)) {
+      static unsigned reported;
+      if(ctx->debug&&reported++<16)
+         fprintf(stderr,"m9x: FAA texture %ux%u %s levels %u written %#x\n",
+                 view->texture->width0,view->texture->height0,
+                 util_format_short_name(view->texture->format),last+1,
+                 owner->levels_written);
       return "FAA texture has an unwritten level";
+   }
    if(!m9_faa_texture_code(bind.code))
       return "FAA texture format is not RGBA8, RGBX8 or BGRA8";
    if(bind.width!=view->texture->width0||bind.height!=view->texture->height0||
