@@ -2605,42 +2605,92 @@ out:
 	return ret;
 }
 
-int m9x_faa_graph_clear_prefix_ioctl(struct drm_device *drm,void *data,
- struct drm_file *file)
+int m9x_faa_graph_clear_prefix_ioctl(struct drm_device *drm, void *data,
+				     struct drm_file *file)
 {
- struct drm_parhelia_m9_faa_graph_clear_prefix *args=data,reply;
- struct m9x_device *mdev=to_m9x(drm);struct m9_faa_file *state=file->driver_priv;
- struct m9_faa_prepared_graph *graph;struct m9_faa_graph_binding *binding=NULL;
- struct drm_exec exec;u32 address[PARHELIA_M9_FAA_GRAPH_OWNERS],i;int idx,ret;
- if(!state||!args->graph_id||!args->previous_unlock_point||
-  (args->previous_unlock_point&15)||args->version!=PARHELIA_M9_FAA_CLEAR_PREFIX_VERSION||
-  args->width!=320||args->height!=240||args->flags||args->clear_point||args->state||
-  args->primary_base||args->primary_capacity||args->primary_start||args->primary_end||
-  args->secondary_base||args->secondary_capacity||args->secondary_cursor||args->end_count||
-  args->raw00||args->raw04||args->raw20||args->mode_flags||args->reserved)return -EINVAL;
- for(i=0;i<9;i++)if(args->end_bytes[i])return -EINVAL;
- if(!m9x_faa_graph_profile_enabled())return -EOPNOTSUPP;
- if(!drm_dev_enter(drm,&idx))return -ENODEV;
- mutex_lock(&state->lock);graph=state->graph;
- if(!graph||!graph->initialized||graph->id!=args->graph_id||graph->generation!=args->generation||
-  graph->layout.width!=args->width||graph->layout.height!=args->height){ret=-ENOENT;goto out;}
- /* This immutable token is already pinned by graph PREPARE/INIT. Native
-  * authenticates either prior Unlock or its exact prefix-only journal. */
- mutex_lock(&mdev->transport.lock);
- if(mdev->transport.faa)ret=m9x_faa_graph_clear_prefix_binding_locked(mdev,args->generation,args->previous_unlock_point,&binding);
- else ret=-ESTALE;
- mutex_unlock(&mdev->transport.lock);
- if(ret)goto out;
- if(binding->graph!=graph){ret=-ESTALE;goto out;}
- drm_exec_init(&exec,DRM_EXEC_INTERRUPTIBLE_WAIT|DRM_EXEC_IGNORE_DUPLICATES,PARHELIA_M9_FAA_GRAPH_OWNERS);
- drm_exec_until_all_locked(&exec){for(i=0;i<PARHELIA_M9_FAA_GRAPH_OWNERS;i++){
-  ret=drm_exec_prepare_obj(&exec,graph->owner[i],1);drm_exec_retry_on_contention(&exec);if(ret)goto out_exec;}}
- ret=m9_faa_graph_live_addresses(mdev,graph,address);if(ret)goto out_exec;
- if(memcmp(binding->address,address,sizeof(address))){ret=-ESTALE;goto out_exec;}
- ret=m9x_faa_graph_clear_prefix_submit(mdev,binding,args,&reply);
- if(!ret)*args=reply;
-out_exec:drm_exec_fini(&exec);
-out:m9x_faa_graph_binding_put(binding);mutex_unlock(&state->lock);drm_dev_exit(idx);return ret;
+	struct drm_parhelia_m9_faa_graph_clear_prefix *args = data, reply;
+	struct m9x_device *mdev = to_m9x(drm);
+	struct m9_faa_file *state = file->driver_priv;
+	struct m9_faa_prepared_graph *graph;
+	struct m9_faa_graph_binding *binding = NULL;
+	struct drm_exec exec;
+	u32 address[PARHELIA_M9_FAA_GRAPH_OWNERS], i;
+	int idx, ret;
+
+	if (!state || !args->graph_id || !args->previous_unlock_point ||
+	    (args->previous_unlock_point & 15) ||
+	    args->version != PARHELIA_M9_FAA_CLEAR_PREFIX_VERSION ||
+	    args->width != 320 || args->height != 240 || args->flags ||
+	    args->clear_point || args->state || args->primary_base ||
+	    args->primary_capacity || args->primary_start ||
+	    args->primary_end || args->secondary_base ||
+	    args->secondary_capacity || args->secondary_cursor ||
+	    args->end_count || args->raw00 || args->raw04 || args->raw20 ||
+	    args->mode_flags || args->reserved)
+		return -EINVAL;
+	for (i = 0; i < 9; i++)
+		if (args->end_bytes[i])
+			return -EINVAL;
+	if (!m9x_faa_graph_profile_enabled())
+		return -EOPNOTSUPP;
+	if (!drm_dev_enter(drm, &idx))
+		return -ENODEV;
+	mutex_lock(&state->lock);
+	graph = state->graph;
+	if (!graph || !graph->initialized || graph->id != args->graph_id ||
+	    graph->generation != args->generation ||
+	    graph->layout.width != args->width ||
+	    graph->layout.height != args->height) {
+		ret = -ENOENT;
+		goto out;
+	}
+	/* This immutable token is already pinned by graph PREPARE/INIT. Native
+	 * authenticates either prior Unlock or its exact prefix-only journal.
+	 */
+	mutex_lock(&mdev->transport.lock);
+	if (mdev->transport.faa)
+		ret = m9x_faa_graph_clear_prefix_binding_locked(mdev,
+								args->generation,
+								args->previous_unlock_point,
+								&binding);
+	else
+		ret = -ESTALE;
+	mutex_unlock(&mdev->transport.lock);
+	if (ret)
+		goto out;
+	if (binding->graph != graph) {
+		ret = -ESTALE;
+		goto out;
+	}
+	drm_exec_init(&exec,
+		      DRM_EXEC_INTERRUPTIBLE_WAIT | DRM_EXEC_IGNORE_DUPLICATES,
+		      PARHELIA_M9_FAA_GRAPH_OWNERS);
+	drm_exec_until_all_locked(&exec)
+	{
+		for (i = 0; i < PARHELIA_M9_FAA_GRAPH_OWNERS; i++) {
+			ret = drm_exec_prepare_obj(&exec, graph->owner[i], 1);
+			drm_exec_retry_on_contention(&exec);
+			if (ret)
+				goto out_exec;
+		}
+	}
+	ret = m9_faa_graph_live_addresses(mdev, graph, address);
+	if (ret)
+		goto out_exec;
+	if (memcmp(binding->address, address, sizeof(address))) {
+		ret = -ESTALE;
+		goto out_exec;
+	}
+	ret = m9x_faa_graph_clear_prefix_submit(mdev, binding, args, &reply);
+	if (!ret)
+		*args = reply;
+out_exec:
+	drm_exec_fini(&exec);
+out:
+	m9x_faa_graph_binding_put(binding);
+	mutex_unlock(&state->lock);
+	drm_dev_exit(idx);
+	return ret;
 }
 
 /* A retired FIRST Lock counts from INIT, or from the ordinary jobs after it. */
