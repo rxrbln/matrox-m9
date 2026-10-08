@@ -8302,8 +8302,9 @@ out_fw:
 }
 
 int m9x_faa_graph_next_lock_submit(struct m9x_device *mdev,
-		struct m9_faa_graph_binding *binding, u32 generation,
-		u64 finish_point, u64 *point, bool *posted)
+				   struct m9_faa_graph_binding *binding,
+				   u32 generation, u64 finish_point, u64 *point,
+				   bool *posted)
 {
 #ifdef M9_FAA_GRAPH_INIT_CONTROL
 	struct m9x_transport *t = &mdev->transport;
@@ -8332,15 +8333,18 @@ int m9x_faa_graph_next_lock_submit(struct m9x_device *mdev,
 	secondary = &r->draw_owner[2];
 	old_bytes = r->graph_draw_end_bytes;
 	if (!primary->cpu || !drm_mm_node_allocated(&primary->system_node) ||
-	    primary->system_node.start != primary->base || old_bytes > primary->bytes ||
+	    primary->system_node.start != primary->base ||
+	    old_bytes > primary->bytes ||
 	    primary->bytes - old_bytes < M9_FAA_LOCK_PRIMARY_BYTES ||
 	    !secondary->cpu ||
-	    secondary->bytes < M9_FAA_NEXT_FINISH_SECONDARY_OFFSET + M9_FAA_NEXT_FINISH_SECONDARY_BYTES) {
+	    secondary->bytes < M9_FAA_NEXT_FINISH_SECONDARY_OFFSET +
+				       M9_FAA_NEXT_FINISH_SECONDARY_BYTES) {
 		ret = -ESTALE;
 		goto out;
 	}
 	/* Recheck retained SYSTEM mappings, without remapping or reading opaque
-	 * GPU output. The requester independently checks the primary PTEs. */
+	 * GPU output. The requester independently checks the primary PTEs.
+	 */
 	for (i = 1; i < ARRAY_SIZE(r->draw_owner); i++) {
 		struct m9_faa_owner *o = &r->draw_owner[i];
 
@@ -8350,7 +8354,8 @@ int m9x_faa_graph_next_lock_submit(struct m9x_device *mdev,
 			goto out;
 		}
 		ret = m9x_system_pages_mapped(mdev, o->base, o->dma,
-					      o->bytes / PAGE_SIZE, 1u, NULL, NULL);
+					      o->bytes / PAGE_SIZE, 1u, NULL,
+					      NULL);
 		if (ret)
 			goto out;
 	}
@@ -8365,22 +8370,30 @@ int m9x_faa_graph_next_lock_submit(struct m9x_device *mdev,
 				   &fence->base, DMA_RESV_USAGE_WRITE);
 	/* The source normal Lock emits its first populated prefix twice,
 	 * then appends its completion packet. No earlier prefix is overwritten.
-	 * Six write fences cover all three posts and the final wait. */
+	 * Six write fences cover all three posts and the final wait.
+	 */
 	for (i = 0; i < 3; i++) {
 		u32 end = old_bytes + (i == 2 ? M9_FAA_LOCK_PRIMARY_BYTES :
-				M9_FAA_LOCK_FIRST_POST_BYTES);
+						M9_FAA_LOCK_FIRST_POST_BYTES);
 
 		if (i == 0)
-			memcpy((u8 *)primary->cpu + old_bytes, r->next_lock_image,
+			memcpy((u8 *)primary->cpu + old_bytes,
+			       r->next_lock_image,
 			       M9_FAA_LOCK_FIRST_POST_BYTES);
 		else if (i == 2)
-			memcpy((u8 *)primary->cpu + old_bytes + M9_FAA_LOCK_FIRST_POST_BYTES,
-			       r->next_lock_image + M9_FAA_LOCK_FIRST_POST_BYTES,
-			       M9_FAA_LOCK_PRIMARY_BYTES - M9_FAA_LOCK_FIRST_POST_BYTES);
+			memcpy((u8 *)primary->cpu + old_bytes +
+				       M9_FAA_LOCK_FIRST_POST_BYTES,
+			       r->next_lock_image +
+				       M9_FAA_LOCK_FIRST_POST_BYTES,
+			       M9_FAA_LOCK_PRIMARY_BYTES -
+				       M9_FAA_LOCK_FIRST_POST_BYTES);
+		/* The CPU stores precede their END post. */
 		wmb();
 		ret = m9x_post_faa_graph_end_locked(mdev, &primary->system_node,
-			primary->dma, r->graph_draw_end_bytes, end, i == 1,
-			i == 2 ? target : 0, &stage_point, &stage_posted);
+						    primary->dma,
+						    r->graph_draw_end_bytes, end,
+						    i == 1, i == 2 ? target : 0,
+						    &stage_point, &stage_posted);
 		*posted |= stage_posted;
 		if (stage_posted) {
 			r->graph_draw_end_bytes = end;
@@ -8397,7 +8410,8 @@ int m9x_faa_graph_next_lock_submit(struct m9x_device *mdev,
 		r->graph_second_lock_retired = true;
 		dev_info(&mdev->pdev->dev,
 			 "M9 FAA second normal Lock prefix retired: finish=%#llx lock=%#llx bytes=%u posts=%u; returned Lock and pixels unproved\n",
-			 finish_point, *point, r->graph_draw_end_bytes, r->graph_draw_posts);
+			 finish_point, *point, r->graph_draw_end_bytes,
+			 r->graph_draw_posts);
 	}
 out:
 	m9x_transport_fence_finish_locked(mdev, fence, ret, *posted);
