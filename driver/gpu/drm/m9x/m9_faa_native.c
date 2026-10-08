@@ -1211,7 +1211,7 @@ static int m9_faa_dma_cache_check(struct m9_faa_owner *o, bool wc)
 #ifdef CONFIG_X86_64
 	unsigned long start = (unsigned long)o->cpu;
 	unsigned long expected = cachemode2protval(wc ? _PAGE_CACHE_MODE_WC :
-						     _PAGE_CACHE_MODE_WB);
+							_PAGE_CACHE_MODE_WB);
 	u32 offset;
 
 	if (!pat_enabled() || !o->cpu || is_vmalloc_addr(o->cpu) ||
@@ -1222,6 +1222,7 @@ static int m9_faa_dma_cache_check(struct m9_faa_owner *o, bool wc)
 	for (offset = 0; offset < o->bytes; offset += PAGE_SIZE) {
 		unsigned long address = start + offset;
 		unsigned int level;
+
 		pte_t *entry = lookup_address(address, &level);
 		unsigned long prot;
 
