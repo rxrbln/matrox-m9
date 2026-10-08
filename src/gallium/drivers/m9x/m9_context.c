@@ -6177,6 +6177,13 @@ m9_native_vs_c2(struct m9_context *ctx, struct m9_fs_variant *v,
       return image->handle;
    if (bytes > M9_PROGRAM_MAX_BYTES)
       return 0;
+   /* Synchronous submission retires posted readers, but draws can still be
+    * waiting in the CPU job when a different VS is selected for this FS.
+    * Submit that job with its existing image before rewriting or resizing it.
+    * Queued images above are immutable and do not need this drain. */
+   if (!ctx->screen->queued_submit && image->handle && ctx->draws.size &&
+       ctx->job_key.vs_program == image->handle && m9_submit_job(ctx))
+      return 0;
    /* A different vertex program binding behind the same fragment slots can
     * need a longer image than the one already cached. */
    if (image->handle && image->size < bytes)
