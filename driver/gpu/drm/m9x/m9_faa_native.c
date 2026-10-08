@@ -4459,7 +4459,7 @@ static void m9_faa_color_intermediates_observe(struct m9x_device *mdev,
 			address = get_unaligned_le32(completed_secondary + at + 4);
 			stride = get_unaligned_le32(completed_secondary + at + 12);
 			if ((address & 3) != 1 || !data_owner->cpu ||
-			    (address & ~3u) < data_owner->base || stride != 32)
+			    (address & ~3u) < data_owner->base || (stride != 16 && stride != 32))
 				continue;
 			offset = (address & ~3u) - data_owner->base;
 			if (offset > data_owner->bytes || stride > data_owner->bytes - offset)
@@ -6641,7 +6641,8 @@ int m9x_faa_graph_color_next_prepare(struct m9x_device *mdev,
  const struct firmware *fw=NULL;u8 *scratch=NULL;u32 i,capacity;int ret;
  if(!binding||!input||!m9_faa_color_four_experimental||input->layout.program_count!=4||clear_flags>1)return -EOPNOTSUPP;
  if(input->layout.program_bytes>4096||input->layout.constants_bytes>16384||
-  input->record_stride!=32||!input->record_count||input->record_count%3||input->record_count>12288||
+  (input->record_stride!=32&&(input->record_stride!=16||input->declaration_count!=3))||
+  !input->record_count||input->record_count%3||input->record_count>12288||
   input->layout.geometry_bytes>0x40000-256)return -ERANGE;
  n=kzalloc(sizeof(*n),GFP_KERNEL);if(!n)return -ENOMEM;
  n->geometry_offset=ALIGN(input->layout.constants_bytes,128);
@@ -7222,11 +7223,12 @@ int m9x_faa_graph_depth_batch_prepare(struct m9x_device *mdev,
  for(i=0;i<batch->count;i++){
   const struct m9x_faa_color_input *input=&batch->draw[i].input;
   if((batch->draw[i].raster_flags&~7u)||(batch->draw[i].raster_flags&6)==6||
-   (batch->draw[i].raster_flags&6)!=(batch->draw[0].raster_flags&6)||input->data_offset||input->record_stride!=32||
+   (batch->draw[i].raster_flags&6)!=(batch->draw[0].raster_flags&6)||input->data_offset||
+   (input->record_stride!=32&&(input->record_stride!=16||input->declaration_count!=3))||
    !input->record_count||input->record_count>12288||input->record_count%3||
    input->layout.constants_bytes>16384||input->layout.program_count!=4||(input->declaration_count!=3&&input->declaration_count!=5))return -EOPNOTSUPP;
   slots[i]=ALIGN(arena_bytes,128);
-  if(check_mul_overflow(ALIGN(input->record_count,4),32u,&raw)||
+  if(check_mul_overflow(ALIGN(input->record_count,4),input->record_stride,&raw)||
    check_add_overflow(ALIGN(input->layout.constants_bytes,128),128u,&bytes)||
    check_add_overflow(bytes,raw,&bytes)||check_add_overflow(slots[i],bytes,&arena_bytes)||arena_bytes>0x40000)return -ENOSPC;
  }

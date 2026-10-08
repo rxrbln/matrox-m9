@@ -42,7 +42,8 @@ int m9x_faa_color_batch_copy(const struct drm_parhelia_m9_faa_graph_color_frame_
   struct m9x_faa_owned_color_draw *job=&batch->draw[i];
   struct m9x_faa_color_input *input=&job->input;
   if(!d->upload||d->pad[0]||d->pad[1]||d->depth_flags!=7||(d->raster_flags&~7u)||(d->raster_flags&6)==6||
-   d->record_stride!=32||!d->record_count||d->record_count%3||
+   (d->record_stride!=32&&(d->record_stride!=16||d->declaration_count!=3))||
+   !d->record_count||d->record_count%3||
    (d->declaration_count!=3&&d->declaration_count!=5)||l->program_count!=4||
    !l->program_bytes||l->program_bytes>4096||(l->program_bytes&7)||
    !l->constants_bytes||l->constants_bytes>16384||(l->constants_bytes&7)||
