@@ -147,6 +147,7 @@ struct m9_faa_graph {
    bool color_depth_initialized; /* Set only after an authenticated depth FRAME. */
    uint32_t color_frame_flags; /* Exact FIRST/INITIALIZED protocol of the last FRAME. */
    uint64_t color_frame_maintenance_point; /* Genuine secondary-close point, or zero. */
+   uint64_t color_frame_ordinary_point; /* Ordinary interlude the frame followed, or zero. */
    /* Per-cycle NEXT attempt remains consumed on any reported failure.
     * Historical authentic base/point stay until graph release. */
    bool color_next_attempted;

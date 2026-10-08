@@ -128,10 +128,12 @@ struct drm_parhelia_m9_faa_graph_color_frame_batch {
  __u32 width, height, clear_flags, clear_color;
  /* INITIALIZED output only: zero, or a genuine secondary-close global
   * point exactly previous_point+0x10. Pool completion is a separate timeline.
+  * ordinary_point (output only): zero, or the retired point of the last
+  * ordinary job after that idle origin; lock_point then counts from it.
   * All four words remain zero on input; the request stays80bytes. */
  union {
   __u32 pad[4];
-  struct { __u64 maintenance_point; __u32 reserved[2]; };
+  struct { __u64 maintenance_point; __u64 ordinary_point; };
  };
 };
 #define DRM_IOCTL_PARHELIA_M9_FAA_GRAPH_COLOR_FRAME_BATCH DRM_IOWR(DRM_COMMAND_BASE + DRM_PARHELIA_M9_FAA_GRAPH_COLOR_FRAME_BATCH, struct drm_parhelia_m9_faa_graph_color_frame_batch)

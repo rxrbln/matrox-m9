@@ -97,7 +97,7 @@ m9_faa_surface_dual_later_kernel(struct m9_screen *screen,struct m9_faa_surface 
       g->color_unlock_point!=g->color_lock_point+0x20||(g->color_unlock_point&15)||
       g->color_unlock_point>UINT64_MAX-0x290||g->color_next_attempted||
       g->color_present_attempted||g->color_present_point||g->color_frame_present_point||
-      g->color_frame_maintenance_point||!g->color_depth_initialized)
+      g->color_frame_maintenance_point||g->color_frame_ordinary_point||!g->color_depth_initialized)
       return -ESTALE;
    for(unsigned i=0;i<frame->count;i++) {
       const struct m9_faa_application_upload *u=&frame->draws[i];
@@ -177,7 +177,7 @@ m9_faa_surface_dual_frame_kernel(struct m9_screen *screen,struct m9_faa_surface 
       g->color_unlock_attempted||g->color_present_attempted||g->color_next_attempted||
       g->color_unlock_point||g->color_present_point||g->color_next_lock_point||
       g->color_next_previous_unlock_point||g->color_frame_flags||
-      g->color_frame_maintenance_point||g->color_frame_present_point||g->color_frame_mode_planned||
+      g->color_frame_maintenance_point||g->color_frame_ordinary_point||g->color_frame_present_point||g->color_frame_mode_planned||
       g->public_vs_attempted||g->public_vs_head_attempted||g->public_vs_draw_attempted||
       g->public_vs_lock_attempted||g->public_vs_next_attempted)return -ESTALE;
    const struct m9_faa_application_upload *first=&frame->draws[0];

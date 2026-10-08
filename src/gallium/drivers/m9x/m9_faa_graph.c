@@ -42,7 +42,7 @@ m9_faa_graph_create(struct m9_screen *screen, uint32_t width,
        graph->prepared_id || graph->prepared || graph->initialized ||
        graph->color_lock_attempted || graph->color_lock_point ||
        graph->color_program_count || graph->color_lock_delta || graph->color_frame_draw_count ||
-       graph->color_depth_initialized || graph->color_frame_flags || graph->color_frame_maintenance_point ||
+       graph->color_depth_initialized || graph->color_frame_flags || graph->color_frame_maintenance_point || graph->color_frame_ordinary_point ||
        graph->color_next_attempted || graph->color_next_previous_unlock_point ||
        graph->color_next_lock_point ||
        graph->color_unlock_attempted || graph->color_unlock_point ||
@@ -574,7 +574,7 @@ m9_faa_color_lock_history_valid(const struct m9_faa_graph *graph)
    const bool initialized_frame = graph->color_frame_flags == PARHELIA_M9_FAA_COLOR_FRAME_INITIALIZED;
    if ((graph->color_frame_flags & ~3u) || graph->color_frame_flags == 3 ||
        (initialized_frame && (!graph->color_depth_initialized || !graph->color_next_lock_point)) ||
-       ((graph->color_frame_maintenance_point || graph->color_frame_present_point) && !graph->color_frame_draw_count))
+       ((graph->color_frame_maintenance_point || graph->color_frame_ordinary_point || graph->color_frame_present_point) && !graph->color_frame_draw_count))
       return false;
    if (graph->color_frame_draw_count) {
       uint32_t count = graph->color_frame_draw_count;
@@ -600,6 +600,15 @@ m9_faa_color_lock_history_valid(const struct m9_faa_graph *graph)
             return false;
          exact += 0x20;
          origin = prior_present;
+      }
+      /* Ordinary jobs on the shared requester moved the frame's origin. */
+      const uint64_t ordinary = graph->color_frame_ordinary_point;
+      if (ordinary) {
+         if (!initialized_frame || (ordinary & 15) || ordinary <= origin ||
+             exact > UINT64_MAX - (ordinary - origin))
+            return false;
+         exact += ordinary - origin;
+         origin = ordinary;
       }
       const uint64_t maintenance = graph->color_frame_maintenance_point;
       if (maintenance) {
@@ -656,7 +665,7 @@ m9_faa_surface_color_lock_kernel(struct m9_screen *screen,
       return -EINVAL;
    if (graph->color_lock_attempted || graph->color_lock_point ||
        graph->color_program_count || graph->color_lock_delta || graph->color_frame_draw_count ||
-       graph->color_depth_initialized || graph->color_frame_flags || graph->color_frame_maintenance_point ||
+       graph->color_depth_initialized || graph->color_frame_flags || graph->color_frame_maintenance_point || graph->color_frame_ordinary_point ||
        graph->color_next_attempted || graph->color_next_previous_unlock_point ||
        graph->color_next_lock_point ||
        graph->color_unlock_attempted || graph->color_unlock_point ||
@@ -696,6 +705,7 @@ m9_faa_surface_color_lock_kernel(struct m9_screen *screen,
    graph->color_frame_draw_count = 0;
    graph->color_frame_flags = 0;
    graph->color_frame_maintenance_point = 0;
+   graph->color_frame_ordinary_point = 0;
    return 0;
 }
 
@@ -779,6 +789,7 @@ m9_faa_surface_color_next_kernel(struct m9_screen *screen,
    graph->color_frame_draw_count = 0;
    graph->color_frame_flags = 0;
    graph->color_frame_maintenance_point = 0;
+   graph->color_frame_ordinary_point = 0;
    graph->color_unlock_attempted = false;
    graph->color_unlock_point = 0;
    return 0;
@@ -844,7 +855,7 @@ m9_faa_surface_color_frame_kernel(struct m9_screen *screen,
          return -ESTALE;
       if (graph->color_lock_attempted || graph->color_lock_point ||
           graph->color_program_count || graph->color_lock_delta || graph->color_frame_draw_count ||
-       graph->color_depth_initialized || graph->color_frame_flags || graph->color_frame_maintenance_point ||
+       graph->color_depth_initialized || graph->color_frame_flags || graph->color_frame_maintenance_point || graph->color_frame_ordinary_point ||
           graph->color_next_attempted || graph->color_next_previous_unlock_point ||
           graph->color_next_lock_point ||
           graph->color_unlock_attempted || graph->color_unlock_point ||
@@ -924,6 +935,7 @@ m9_faa_surface_color_frame_kernel(struct m9_screen *screen,
    graph->color_lock_delta = delta;
    graph->color_frame_flags = before.flags;
    graph->color_frame_maintenance_point = 0;
+   graph->color_frame_ordinary_point = 0;
    graph->color_frame_draw_count = 0;
    if (sampled_reset) {
       graph->color_depth_initialized = true;
@@ -1047,7 +1059,7 @@ m9_faa_color_batch_with_storage(struct m9_screen *screen,
       return -ESTALE;
    if (first) {
       if (graph->color_lock_point || graph->color_program_count || graph->color_lock_delta ||
-          graph->color_frame_draw_count || graph->color_depth_initialized || graph->color_frame_flags || graph->color_frame_maintenance_point || graph->color_next_attempted ||
+          graph->color_frame_draw_count || graph->color_depth_initialized || graph->color_frame_flags || graph->color_frame_maintenance_point || graph->color_frame_ordinary_point || graph->color_next_attempted ||
           graph->color_next_previous_unlock_point || graph->color_next_lock_point ||
           graph->color_unlock_attempted || graph->color_unlock_point)
          return -ESTALE;
@@ -1080,6 +1092,12 @@ m9_faa_color_batch_with_storage(struct m9_screen *screen,
    if (ioctl(screen->fd, DRM_IOCTL_PARHELIA_M9_FAA_GRAPH_COLOR_FRAME_BATCH, &request))
       return -errno;
    uint64_t origin = prior_present ? prior_present : before.previous_point;
+   if (request.ordinary_point) {
+      if (!initialized_frame || (request.ordinary_point & 15) ||
+          request.ordinary_point <= origin)
+         return -EPROTO;
+      origin = request.ordinary_point;
+   }
    if (request.maintenance_point) {
       if (!initialized_frame || origin > UINT64_MAX - 0x10 ||
           request.maintenance_point != origin + 0x10)
@@ -1093,6 +1111,7 @@ m9_faa_color_batch_with_storage(struct m9_screen *screen,
    struct drm_parhelia_m9_faa_graph_color_frame_batch returned = request;
    returned.lock_point = 0; returned.state = 0;
    returned.maintenance_point = 0;
+   returned.ordinary_point = 0;
    if (memcmp(&returned, &before, sizeof(before)) ||
        memcmp(saved, draws, frame->count * sizeof(draws[0])))
       return -EPROTO;
@@ -1106,6 +1125,7 @@ m9_faa_color_batch_with_storage(struct m9_screen *screen,
    graph->color_lock_delta = request.lock_point - before.previous_point;
    graph->color_frame_flags = before.flags;
    graph->color_frame_maintenance_point = request.maintenance_point;
+   graph->color_frame_ordinary_point = request.ordinary_point;
    graph->color_frame_present_point = prior_present;
    graph->color_present_point = 0; graph->color_present_attempted = false;
    graph->color_frame_draw_count = frame->count;
@@ -1259,7 +1279,7 @@ m9_faa_surface_public_vs_submit_kernel(struct m9_screen *screen,
       return -EINVAL;
    if (graph->color_lock_attempted || graph->color_lock_point ||
        graph->color_program_count || graph->color_lock_delta || graph->color_frame_draw_count ||
-       graph->color_depth_initialized || graph->color_frame_flags || graph->color_frame_maintenance_point ||
+       graph->color_depth_initialized || graph->color_frame_flags || graph->color_frame_maintenance_point || graph->color_frame_ordinary_point ||
        graph->color_next_attempted || graph->color_next_previous_unlock_point ||
        graph->color_next_lock_point ||
        graph->color_unlock_attempted || graph->color_unlock_point ||
@@ -1570,7 +1590,7 @@ m9_faa_graph_release_kernel(struct m9_screen *screen, struct m9_faa_graph *graph
       return graph->prepared || graph->initialized || graph->init_point ||
              graph->color_lock_attempted || graph->color_lock_point ||
              graph->color_program_count || graph->color_lock_delta || graph->color_frame_draw_count ||
-       graph->color_depth_initialized || graph->color_frame_flags || graph->color_frame_maintenance_point ||
+       graph->color_depth_initialized || graph->color_frame_flags || graph->color_frame_maintenance_point || graph->color_frame_ordinary_point ||
        graph->color_next_attempted || graph->color_next_previous_unlock_point ||
        graph->color_next_lock_point ||
              graph->color_unlock_attempted || graph->color_unlock_point ||
@@ -1604,6 +1624,7 @@ m9_faa_graph_release_kernel(struct m9_screen *screen, struct m9_faa_graph *graph
    graph->color_frame_mode_changes = graph->color_frame_clear_flags = 0;
    graph->color_frame_flags = 0;
    graph->color_frame_maintenance_point = 0;
+   graph->color_frame_ordinary_point = 0;
    graph->color_next_attempted = false;
    graph->color_next_previous_unlock_point = 0;
    graph->color_next_lock_point = 0;
