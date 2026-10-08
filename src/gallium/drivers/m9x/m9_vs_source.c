@@ -341,6 +341,33 @@ m9_vs_compile_gate_source(nir_shader **nir, const struct m9_vs_outputs *outputs,
    return ok;
 }
 
+/* Retain a compilable source for a draw-selected bounded layout. A shader
+ * declaring more outputs than FIRST/CONTINUE can publish must still request
+ * at most five live streams when its fragment variant is known. This seed
+ * is never used as the draw's output image. */
+bool
+m9_vs_compile_native_source(nir_shader **nir, struct m9_vs_program *program,
+                             const char **reason, unsigned max_slots,
+                             unsigned max_const_pairs,
+                             const struct m9_vs_format_key *format_key,
+                             const struct m9_vs_uniform_gates *gates,
+                             const struct m9_vs_gate_key *gate_key)
+{
+   const char *why = NULL;
+   bool ok = m9_vs_compile_gate_source(nir, NULL, program, &why, max_slots,
+                                        max_const_pairs, format_key, gates,
+                                        gate_key);
+   if (!ok && why && !strcmp(why, "more than five varyings")) {
+      const struct m9_vs_outputs position_only = {0};
+      ok = m9_vs_compile_gate_source(nir, &position_only, program, &why,
+                                      max_slots, max_const_pairs, format_key,
+                                      gates, gate_key);
+   }
+   if (reason)
+      *reason = why;
+   return ok;
+}
+
 bool
 m9_vs_output_is_one(struct nir_shader *nir,
                     const struct m9_vs_program *program,

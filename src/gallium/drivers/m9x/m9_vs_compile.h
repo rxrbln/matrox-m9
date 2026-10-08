@@ -298,6 +298,9 @@ struct m9_vs_program {
    uint8_t extra_fields[4];
    unsigned texture_location;
    uint64_t inputs_read;          /* gl_vert_attrib mask of the shader */
+   /* Actual logical stores, including roots omitted by an output layout.
+    * This manifest does not describe emitted hardware streams. */
+   uint64_t written_outputs;
    uint32_t record_bytes;
    /* Past two streams: a source-fed first producer and source-fed extra
     * continuation pack every output. Gather extracts the extra streams;
@@ -357,6 +360,13 @@ bool m9_vs_padding_upload_build(const struct m9_vs_program *program,
                                 const uint32_t *base_constants,
                                 unsigned base_pairs,
                                 struct m9_vs_padding_upload *upload);
+
+/* Logical shader stores, distinct from the selected emitted stream indices. */
+static inline bool
+m9_vs_writes_output(const struct m9_vs_program *program, unsigned location)
+{
+   return location < 64 && (program->written_outputs & (UINT64_C(1) << location));
+}
 
 /* The program's index for a varying slot, or -1 when it writes none.  Index
  * 0 lands on transient view 0 and index k on the extra pass's target k - 1. */

@@ -6514,7 +6514,7 @@ m9_native_vs_layout(struct m9_context *ctx, const struct m9_job_key *key,
    memset(out, 0, sizeof(*out));
    /* The pass-through colour image reads the primary colour from stream 0. */
    if (!key->fs) {
-      if (m9_vs_varying_index(p, VARYING_SLOT_COL0) < 0)
+      if (!m9_vs_writes_output(p, VARYING_SLOT_COL0))
          return "the pass-through fragment image needs a primary colour";
       out->stream[out->count++] = (struct m9_vs_output) {
          .location = VARYING_SLOT_COL0,
@@ -6535,7 +6535,7 @@ m9_native_vs_layout(struct m9_context *ctx, const struct m9_job_key *key,
       for (unsigned k = 0; k < fp->varying_count; k++) {
          struct m9_vs_output stream = { .location = fp->varyings[k].location };
 
-         if (m9_vs_varying_index(p, stream.location) < 0)
+         if (!m9_vs_writes_output(p, stream.location))
             return "the vertex program does not write a varying the fragment "
                    "program reads";
          reason = m9_native_vs_add_stream(out, &stream);
@@ -6625,7 +6625,7 @@ m9_native_vs_layout(struct m9_context *ctx, const struct m9_job_key *key,
                if (os[0] != 1.0f || os[1] != 1.0f ||
                    ob[0] != 0.0f || ob[1] != 0.0f)
                   continue;
-               if (m9_vs_varying_index(p, stream.location) < 0)
+               if (!m9_vs_writes_output(p, stream.location))
                   return "the vertex program does not write the varying a "
                          "texture coordinate comes from";
                o->paired = true;
@@ -6642,7 +6642,7 @@ m9_native_vs_layout(struct m9_context *ctx, const struct m9_job_key *key,
                continue;
          }
          stream.coeff_record = p->attr_count + coeff < M9_VS_MAX_ATTRIBUTES;
-         if (m9_vs_varying_index(p, stream.location) < 0)
+         if (!m9_vs_writes_output(p, stream.location))
             return "the vertex program does not write the varying a texture "
                    "coordinate comes from";
          reason = m9_native_vs_add_stream(out, &stream);
@@ -9166,7 +9166,7 @@ m9_vs_spec_for(struct m9_vs_state *vs, const uint32_t *values,
        * candidate before that call; ordinary accepted programs stay exact. */
       nir_shader *sampled = debug_get_bool_option("M9X_NATIVE_VS_TEXTURE_POSITION", false) ?
                             nir_shader_clone(NULL, nir) : NULL;
-      spec->native = m9_vs_compile_gate_source(&nir, NULL, &spec->program,
+      spec->native = m9_vs_compile_native_source(&nir, &spec->program,
                                          &spec->reason, m9_vs_max_slots,
                                          m9_vs_max_const_pairs, format_key,
                                          &vs->uniform_gates, gate_key);

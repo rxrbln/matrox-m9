@@ -2601,7 +2601,8 @@ compile_impl(struct ctx *c, nir_function_impl *impl,
 {
    struct input_use used[M9_VS_MAX_SOURCE_ATTRIBUTES];
    nir_intrinsic_instr *position = NULL;
-   nir_intrinsic_instr *stored[M9_VS_MAX_VARYINGS] = { NULL };
+   /* Logical stores do not consume hardware targets until selected. */
+   nir_intrinsic_instr *stored[VARYING_SLOT_MAX] = { NULL };
    nir_intrinsic_instr *varying[M9_VS_MAX_VARYINGS] = { NULL };
    struct m9_vs_outputs out;
    unsigned nstored = 0, nvar = 0;
@@ -2674,9 +2675,10 @@ compile_impl(struct ctx *c, nir_function_impl *impl,
             for (v = 0; v < nstored; v++)
                if (nir_intrinsic_io_semantics(stored[v]).location == location)
                   return fail(c, "a varying stored more than once");
-            if (nstored >= M9_VS_MAX_VARYINGS)
-               return fail(c, "more than five varyings");
+            if (location >= VARYING_SLOT_MAX || location >= 64)
+               return fail(c, "vertex varying location is out of range");
             stored[nstored++] = intr;
+            c->p->written_outputs |= BITFIELD64_BIT(location);
          }
          break;
       }
@@ -2695,6 +2697,8 @@ compile_impl(struct ctx *c, nir_function_impl *impl,
          return fail(c, "more output streams than the passes carry");
       out = *want;
    } else {
+      if (nstored > M9_VS_MAX_VARYINGS)
+         return fail(c, "more than five varyings");
       for (unsigned v = 0; v < nstored; v++)
          out.stream[out.count++] = (struct m9_vs_output) {
             .location = nir_intrinsic_io_semantics(stored[v]).location,

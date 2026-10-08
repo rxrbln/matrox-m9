@@ -84,6 +84,17 @@ struct m9_vs_source_layout {
    unsigned record_dwords;  /* floats per source record */
 };
 
+/* Inventory a >five-declared shader through a position-only seed when its
+ * output layout is not known yet. Actual draws compile a <=five-stream
+ * variant from the retained NIR; other refusals stay unchanged. */
+bool m9_vs_compile_native_source(struct nir_shader **nir,
+                                 struct m9_vs_program *program,
+                                 const char **reason, unsigned max_slots,
+                                 unsigned max_const_pairs,
+                                 const struct m9_vs_format_key *format_key,
+                                 const struct m9_vs_uniform_gates *gates,
+                                 const struct m9_vs_gate_key *gate_key);
+
 /* Proves a stored output component is exactly one, either a literal or a
  * direct input component whose bound format unpacks to the GL default one.
  * Other expressions and components present in the source remain unproved. */
