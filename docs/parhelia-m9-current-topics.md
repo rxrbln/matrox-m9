@@ -4,7 +4,7 @@
 # M9 open topics and evidence, 2026-10-06
 
 
-## October 8: glxgears mixed batch prepares; stale SYSTEM addresses block submission
+## October 8: glxgears mixed batch prepares; control words misclassified as addresses block submission
 
 The latest target run accepts all21 glxgears draws and prepares12 native FAA
 jobs (91,392 input bytes). Mesa7cebd8e and DRM8c0f6c1 resolve the clear/layout
@@ -12,12 +12,14 @@ and mixed declaration3/5 preparation blockers. Submission returns ESTALE before
 code upload or any geometry END; INITb0 remains healthy through cleanup.
 [Exact hardware evidence](../tests/m9-faa-glxgears-first-hardware-20261008/mixed-layout-submit-refusal/README.md).
 
-The actual ordinary SYSTEM allocation is at GPUVA0x40047000, while the tested
-native submission and packet producers still use historical0x40004000 and
-0x40008000 operands. The first admission call necessarily rejects an address
-below its retained allocation. Live owner-derived command fields and matching
-validation are now the priority fix; do not remove checks or force the old
-allocation order. The exact executed refusal branch has not yet been traced.
+The actual ordinary SYSTEM allocation is at GPUVA0x40047000, while submission
+incorrectly requires fixed command controls0x40004000 and0x40008000 to fall
+inside that allocation. The first such admission necessarily rejects the
+frame. The original M9128 DLL writes both values as instruction immediates;
+existing transition/query decoding also treats them as controls. Rebasing
+these words from the ordinary SYSTEM owner would be unsupported. The fix
+removes their false address classification while retaining checks for actual
+address-bearing fields and live owners. Hardware qualification is pending.
 
 Initialized mixed-layout/flat/cull support and command-pool rotation remain
 under integration. Texture fragment code is CPU-qualified; native texture
