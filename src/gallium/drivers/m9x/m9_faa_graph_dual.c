@@ -4,6 +4,7 @@
 #include "m9_screen.h"
 #include "m9_faa_application.h"
 #include <errno.h>
+#include <stdlib.h>
 #include <string.h>
 #include <sys/ioctl.h>
 
@@ -89,76 +90,91 @@ m9_faa_surface_dual_later_kernel(struct m9_screen *screen,struct m9_faa_surface 
                                  const struct m9_faa_application_frame *frame)
 {
    struct drm_parhelia_m9_faa_graph_dual_later request={0};
-   struct drm_parhelia_m9_faa_color_draw draws[3]={{0}},saved[3];
    _Static_assert(sizeof(request)==272,"dual LATER ABI");
    struct m9_faa_graph *g=&surface->graph;
    const struct m9_faa_application_upload *first=&frame->draws[0];
-   if(!frame->count||frame->count>3||
+   if(!frame->count||frame->count>PARHELIA_M9_FAA_DUAL_LATER_MAX_DRAWS||
       (frame->clear_flags&&frame->clear_flags!=3&&frame->clear_flags!=2)||
       frame->clear_color)
       return -EOPNOTSUPP;
    if(g->color_texture_count!=2||g->color_program_count!=4||!g->color_lock_point||
       !g->color_unlock_attempted||g->color_lock_point>UINT64_MAX-0x20||
       g->color_unlock_point!=g->color_lock_point+0x20||(g->color_unlock_point&15)||
-      g->color_unlock_point>UINT64_MAX-0x290||g->color_next_attempted||
+      g->color_unlock_point>UINT64_MAX-0x190-PARHELIA_M9_FAA_DUAL_LATER_MAX_DRAWS*0xa0u||
+      g->color_next_attempted||
       g->color_present_attempted||g->color_present_point||g->color_frame_present_point||
       g->color_frame_maintenance_point||g->color_frame_ordinary_point||!g->color_depth_initialized)
       return -ESTALE;
+   /* Each DRAW carries its own texture pair (version 3). */
+   struct drm_parhelia_m9_faa_dual_draw *draws=calloc(frame->count,sizeof(*draws));
+   struct drm_parhelia_m9_faa_dual_draw *saved=calloc(frame->count,sizeof(*saved));
+   int ret=-ENOMEM;
+   if(!draws||!saved)goto out;
    for(unsigned i=0;i<frame->count;i++) {
       const struct m9_faa_application_upload *u=&frame->draws[i];
       const struct m9_faa_application_state *s=&u->state;
+      ret=-ESTALE;
       if(u->graph_id!=g->prepared_id||u->init_point!=g->init_point||
-         u->generation!=g->prepared_generation)return -ESTALE;
+         u->generation!=g->prepared_generation)goto out;
+      ret=-EOPNOTSUPP;
       if(u->texture_count!=2||s->width!=surface->width||s->height!=surface->height||
          (s->depth_enabled&&s->depth_func>PIPE_FUNC_ALWAYS)||
          s->flatshade||s->cull_face==PIPE_FACE_FRONT_AND_BACK||s->scissor_enabled||
          s->fragment.blend||s->fragment.alpha||s->fragment.source_stream||
          u->texture[0].resource==u->texture[1].resource||
-         u->texture[0].view.handle==u->texture[1].view.handle)return -EOPNOTSUPP;
+         u->texture[0].view.handle==u->texture[1].view.handle)goto out;
       for(unsigned t=0;t<2;t++) {
-         if(!dual_texture_current(&u->texture[t]))return -ESTALE;
-         if(u->texture[t].resource!=first->texture[t].resource||
-            memcmp(&u->texture[t].view,&first->texture[t].view,sizeof(u->texture[t].view)))
-            return -EOPNOTSUPP;
+         ret=-ESTALE;
+         if(!dual_texture_current(&u->texture[t]))goto out;
+         draws[i].texture[t]=u->texture[t].view;
       }
-      int ret=dual_pack(&u->shader,s,&draws[i]);if(ret)return ret;
+      ret=dual_pack(&u->shader,s,&draws[i].draw);if(ret)goto out;
+      ret=-EOPNOTSUPP;
       if(i&&(memcmp(&u->shader.layout,&first->shader.layout,sizeof(u->shader.layout))||
          memcmp(u->shader.program,first->shader.program,u->shader.layout.bytes)||
-         memcmp(u->shader.declaration,first->shader.declaration,36)))return -EOPNOTSUPP;
+         memcmp(u->shader.declaration,first->shader.declaration,36)||
+         draws[i].draw.depth_flags!=draws[0].draw.depth_flags||
+         draws[i].draw.raster_flags!=draws[0].draw.raster_flags))goto out;
    }
    const uint64_t delta=(frame->clear_flags==3?0x150:frame->clear_flags==2?0x120:0xd0)+
                         (frame->count-1u)*UINT64_C(0xa0);
    request=(struct drm_parhelia_m9_faa_graph_dual_later){.graph_id=g->prepared_id,
       .previous_unlock_point=g->color_unlock_point,.generation=g->prepared_generation,
       .width=surface->width,.height=surface->height,.clear_flags=frame->clear_flags,
-      .depth_flags=draws[0].depth_flags};
-   if(frame->count==1&&!draws[0].raster_flags) {
+      .depth_flags=draws[0].draw.depth_flags};
+   if(frame->count==1&&!draws[0].draw.raster_flags) {
+      const struct drm_parhelia_m9_faa_color_draw *d=&draws[0].draw;
       request.version=PARHELIA_M9_FAA_DUAL_LATER_VERSION;
-      request.upload=draws[0].upload;request.upload_bytes=draws[0].upload_bytes;
-      request.record_stride=draws[0].record_stride;request.record_count=draws[0].record_count;
-      request.declaration_count=draws[0].declaration_count;request.layout=draws[0].layout;
+      request.upload=d->upload;request.upload_bytes=d->upload_bytes;
+      request.record_stride=d->record_stride;request.record_count=d->record_count;
+      request.declaration_count=d->declaration_count;request.layout=d->layout;
    } else {
-      request.version=PARHELIA_M9_FAA_DUAL_LATER_BATCH_VERSION;
+      request.version=PARHELIA_M9_FAA_DUAL_LATER_TEXTURES_VERSION;
       request.draws=(uintptr_t)draws;request.draw_count=frame->count;
    }
    request.texture[0]=first->texture[0].view;request.texture[1]=first->texture[1].view;
    const struct drm_parhelia_m9_faa_graph_dual_later before=request;
-   memcpy(saved,draws,sizeof(saved));
+   memcpy(saved,draws,frame->count*sizeof(*draws));
    g->color_next_attempted=true;
-   if(ioctl(screen->fd,DRM_IOCTL_PARHELIA_M9_FAA_GRAPH_DUAL_LATER,&request))return -errno;
+   if(ioctl(screen->fd,DRM_IOCTL_PARHELIA_M9_FAA_GRAPH_DUAL_LATER,&request)){ret=-errno;goto out;}
    struct drm_parhelia_m9_faa_graph_dual_later immutable=request;
    immutable.lock_point=0;immutable.state=0;
+   ret=-EPROTO;
    if(request.lock_point!=before.previous_unlock_point+delta||
       request.state!=PARHELIA_M9_FAA_DUAL_LATER_LOCK_RETIRED||
-      memcmp(&immutable,&before,sizeof(before))||memcmp(saved,draws,sizeof(saved)))
-      return -EPROTO;
-   int ret=m9_wait_for_point(screen,request.lock_point);if(ret)return ret;
+      memcmp(&immutable,&before,sizeof(before))||
+      memcmp(saved,draws,frame->count*sizeof(*draws)))
+      goto out;
+   ret=m9_wait_for_point(screen,request.lock_point);if(ret)goto out;
    g->color_next_previous_unlock_point=before.previous_unlock_point;
    g->color_next_lock_point=g->color_lock_point=request.lock_point;
    g->color_lock_delta=delta;g->color_texture_later=true;
    g->color_frame_draw_count=0;g->color_frame_flags=0;
    g->color_unlock_attempted=false;g->color_unlock_point=0;
-   return 0;
+   ret=0;
+out:
+   free(draws);free(saved);
+   return ret;
 }
 
 static int
@@ -235,20 +251,32 @@ m9_faa_surface_dual_frame_kernel(struct m9_screen *screen,struct m9_faa_surface 
    return 0;
 }
 
+/* DRAWs that may share one transaction: the same depth and cull state
+ * (the winding matters only when culling). A FIRST also needs one pair. */
 static bool
-dual_same_pair(const struct m9_faa_application_upload *a,
-               const struct m9_faa_application_upload *b)
+dual_same_state(const struct m9_faa_application_upload *a,
+                const struct m9_faa_application_upload *b, bool same_pair)
 {
-   if(a->state.depth_write!=b->state.depth_write||
+   if(a->state.depth_enabled!=b->state.depth_enabled||
+      a->state.depth_write!=b->state.depth_write||
       a->state.depth_func!=b->state.depth_func||
       a->state.cull_face!=b->state.cull_face||
       (a->state.cull_face!=PIPE_FACE_NONE&&
        a->state.front_ccw!=b->state.front_ccw))return false;
-   for(unsigned t=0;t<2;t++)
+   for(unsigned t=0;same_pair&&t<2;t++)
       if(a->texture[t].resource!=b->texture[t].resource||
          memcmp(&a->texture[t].view,&b->texture[t].view,sizeof(a->texture[t].view)))
          return false;
    return true;
+}
+
+/* Bytes one DRAW takes in the kernel's 256 KiB later data arena. */
+static uint64_t
+dual_arena_bytes(const struct m9_faa_application_upload *u)
+{
+   const uint64_t raw=128+(uint64_t)align(u->shader.vertex_count,4)*64;
+   return align64(u->shader.constants_bytes,128)+
+      MAX2((uint64_t)u->shader.geometry_bytes,raw);
 }
 
 /* Every DRAW of a frame is checked before its first transaction posts, so
@@ -294,9 +322,18 @@ m9_faa_surface_dual_batch_kernel(struct m9_screen *screen,struct m9_faa_surface 
    int checked=dual_frame_admissible(surface,frame);
    if(checked)return checked;
    for(uint32_t start=0;start<frame->count;){
+      /* A FIRST holds three DRAWs of one pair; later transactions take up to
+       * the kernel's limit, each DRAW with its own pair. */
+      const bool later=surface->graph.color_texture_count!=0;
+      const uint32_t limit=later?PARHELIA_M9_FAA_DUAL_LATER_MAX_DRAWS:3;
+      uint64_t arena=align64(dual_arena_bytes(&frame->draws[start]),128);
       uint32_t n=1;
-      while(start+n<frame->count&&n<3&&
-            dual_same_pair(&frame->draws[start],&frame->draws[start+n]))n++;
+      while(start+n<frame->count&&n<limit&&
+            dual_same_state(&frame->draws[start],&frame->draws[start+n],!later)&&
+            arena+dual_arena_bytes(&frame->draws[start+n])<=0x40000) {
+         arena=align64(arena+dual_arena_bytes(&frame->draws[start+n]),128);
+         n++;
+      }
       struct m9_faa_application_frame part={.draws=frame->draws+start,.count=n,
          .clear_flags=start?0:frame->clear_flags,
          .clear_color=start?0:frame->clear_color};

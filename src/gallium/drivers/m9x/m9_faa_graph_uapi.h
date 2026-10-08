@@ -305,6 +305,14 @@ struct drm_parhelia_m9_faa_graph_dual_batch {
 #define PARHELIA_M9_FAA_DUAL_LATER_LOCK_RETIRED 27u
 /* Version 2: draw_count descriptors at draws, upload fields zero. */
 #define PARHELIA_M9_FAA_DUAL_LATER_BATCH_VERSION 2u
+/* Version 3: draws point to drm_parhelia_m9_faa_dual_draw records, each with
+ * its own texture pair; texture[] equals the first record's. */
+#define PARHELIA_M9_FAA_DUAL_LATER_TEXTURES_VERSION 3u
+#define PARHELIA_M9_FAA_DUAL_LATER_MAX_DRAWS 64u
+struct drm_parhelia_m9_faa_dual_draw {
+   struct drm_parhelia_m9_faa_color_draw draw;
+   struct drm_parhelia_m9_faa_texture_view texture[2];
+};
 struct drm_parhelia_m9_faa_graph_dual_later {
  __u64 graph_id,previous_unlock_point,lock_point,upload;
  __u32 upload_bytes,generation,version,flags,state,pad;
