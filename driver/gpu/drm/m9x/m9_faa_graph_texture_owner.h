@@ -10,7 +10,9 @@ struct dma_fence;
 struct m9x_device;
 
 /* References and pins are acquired before graph reservations. They remain
- * held after any END post until the read fence retires or DMA is stopped. */
+ * held after any END post until the read fence retires or DMA is stopped.
+ * Initialize this object to zero before its first acquire. Reacquiring an
+ * occupied object returns -EBUSY without modifying its retained owners. */
 struct m9x_faa_texture_owners {
 	struct drm_gem_object *gem[2];
 	bool pinned[2];

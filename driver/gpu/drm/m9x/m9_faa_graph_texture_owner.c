@@ -92,9 +92,13 @@ int m9x_faa_texture_owners_acquire(struct m9x_device *mdev,
 
 	if (!out)
 		return -EINVAL;
-	memset(out, 0, sizeof(*out));
+	/* An acquired set owns GEM references and pins. Never replace it by
+	 * clearing caller storage; callers initialize an empty set to zero. */
+	if (out->gem[0] || out->gem[1] || out->retirement ||
+	    out->pinned[0] || out->pinned[1])
+		return -EBUSY;
 	if (!mdev || !file || !file->minor || file->minor->dev != &mdev->drm ||
-	    !handle || !request || !graph_owner || !generation ||
+	    !handle || !request || !graph_owner ||
 	    !handle[0] || !handle[1] || handle[0] == handle[1] ||
 	    request[0].stage != 0 || request[1].stage != 1 ||
 	    request[0].coordinate_sets != 2 || request[1].coordinate_sets != 2 ||
@@ -173,7 +177,7 @@ int m9x_faa_texture_owners_place_locked(struct m9x_device *mdev,
 	if (!mdev || !owners || !program || !secondary)
 		return -EINVAL;
 	lockdep_assert_held(&mdev->transport.lock);
-	if (!generation || generation != owners->generation ||
+	if (generation != owners->generation ||
 	    generation != mdev->transport.generation ||
 	    mdev->transport.wedged || !mdev->transport.faa_virtual_primary)
 		return -ESTALE;
