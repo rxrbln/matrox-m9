@@ -8179,12 +8179,13 @@ m9_draw_vbo(struct pipe_context *pctx, const struct pipe_draw_info *info,
       m9_context_faa_census(ctx, info, &draws[0]);
    if (m9_faa_application_enabled() && num_draws && draws[0].count &&
        info->instance_count && !ctx->faa_mode.fallback && !ctx->faa_mode.skip &&
+       !ctx->faa_mode.split &&
        !m9_replay_replaying(ctx) && m9_context_faa_targets_surface(ctx)) {
       /* The ordinary path below renders the frame too; its result stands
        * unless the whole frame is presented by FAA. */
       const char *why = NULL;
       if (m9_context_faa_submit_draw(ctx, info, &draws[0], &why))
-         m9_context_faa_fallback(ctx, why ? why : "FAA application draw failed");
+         m9_context_faa_refused(ctx, why ? why : "FAA application draw failed");
       /* Without the shadow an admitted draw is recorded, and rendered
        * ordinarily only if its frame is not presented. */
       else if (!m9_faa_shadow_enabled()) {
@@ -8536,7 +8537,7 @@ m9_clear(struct pipe_context *pctx, unsigned buffers,
    struct m9_context *ctx = m9_context(pctx);
    uint64_t t_clear = m9_prof_begin();
    if (m9_faa_application_enabled() && buffers && !ctx->faa_mode.fallback &&
-       !ctx->faa_mode.skip && !m9_replay_replaying(ctx) &&
+       !ctx->faa_mode.skip && !ctx->faa_mode.split && !m9_replay_replaying(ctx) &&
        m9_context_faa_targets_surface(ctx)) {
       if (ctx->faa_frame.count) m9_context_sync(ctx);
       if (ctx->lost) { m9_prof_end(M9_PROF_CLEAR, t_clear); return; }
@@ -10122,6 +10123,30 @@ out:
    return ret;
 }
 
+/* A window draw the FAA frame cannot take. Draws already admitted are
+ * presented now, and this draw and the rest of the frame render ordinarily
+ * on the resolved target; with nothing admitted yet the frame falls back. */
+void
+m9_context_faa_refused(struct m9_context *ctx, const char *why)
+{
+   if (!ctx->faa_frame.count || m9_faa_shadow_enabled()) {
+      m9_context_faa_fallback(ctx, why);
+      return;
+   }
+   const bool depth_cleared = ctx->faa_frame.clear_flags & PARHELIA_M9_FAA_COLOR_CLEAR_DEPTH;
+   ctx->faa_mode.split = true;
+   ctx->faa_mode.reason = why;
+   m9_context_sync(ctx);
+   if (ctx->faa_mode.fallback)
+      return;
+   ctx->faa_mode.splits++;
+   if (ctx->debug && ctx->faa_mode.splits < 16)
+      fprintf(stderr, "m9x: FAA frame split before an ordinary draw: %s\n", why);
+   /* The FAA depth stays in the graph; the ordinary depth starts cleared. */
+   if (depth_cleared && ctx->framebuffer.zsbuf.texture)
+      ctx->base.clear(&ctx->base, PIPE_CLEAR_DEPTH, 0, 0, NULL, NULL, 1.0, 0);
+}
+
 /* M9X_FAA_SHADOW=1 renders admitted FAA draws ordinarily too, instead of
  * recording them for a replay if their frame is not presented. */
 bool
@@ -10165,14 +10190,14 @@ m9_context_faa_frame_end(struct m9_context *ctx)
    }
    if (ctx->debug && (ctx->faa_mode.frames + ctx->faa_mode.fallbacks +
                       ctx->faa_mode.skipped) % 300 == 0)
-      fprintf(stderr, "m9x: FAA frames %" PRIu64 " fallback %" PRIu64
+      fprintf(stderr, "m9x: FAA frames %" PRIu64 " (split %" PRIu64 ") fallback %" PRIu64
               " skipped %" PRIu64 " last reason: %s\n", ctx->faa_mode.frames,
-              ctx->faa_mode.fallbacks, ctx->faa_mode.skipped,
+              ctx->faa_mode.splits, ctx->faa_mode.fallbacks, ctx->faa_mode.skipped,
               ctx->faa_mode.reason ? ctx->faa_mode.reason : "none");
    if (ctx->debug && (ctx->faa_mode.frames + ctx->faa_mode.fallbacks +
                       ctx->faa_mode.skipped) % 300 == 0)
       m9_context_faa_census_report(ctx);
-   ctx->faa_mode.fallback = ctx->faa_mode.presented = false;
+   ctx->faa_mode.fallback = ctx->faa_mode.presented = ctx->faa_mode.split = false;
    memset(&ctx->faa_application_clear, 0, sizeof(ctx->faa_application_clear));
 }
 

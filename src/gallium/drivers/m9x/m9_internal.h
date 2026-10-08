@@ -426,6 +426,7 @@ int m9_context_faa_submit_draw(struct m9_context *ctx,
                                const char **reason);
 int m9_context_faa_flush_frame(struct m9_context *ctx, const char **reason);
 void m9_context_faa_fallback(struct m9_context *ctx, const char *why);
+void m9_context_faa_refused(struct m9_context *ctx, const char *why);
 bool m9_faa_shadow_enabled(void);
 void m9_context_faa_settle(struct m9_context *ctx);
 const struct pipe_vertex_element *m9_context_vertex_elements(const struct m9_context *ctx,
@@ -612,8 +613,11 @@ struct m9_context {
     * frame replaces it at the end only when every DRAW was admitted. */
    struct {
       bool fallback, presented;
+      /* The FAA part of this frame was closed at a refused draw; the rest
+       * renders ordinarily on the resolved target. */
+      bool split;
       unsigned skip, backoff;
-      uint64_t frames, fallbacks, skipped;
+      uint64_t frames, fallbacks, skipped, splits;
       const char *reason;
       /* M9X_FAA_CENSUS: {const char *reason, uint64_t count} per DRAW. */
       struct util_dynarray census;
