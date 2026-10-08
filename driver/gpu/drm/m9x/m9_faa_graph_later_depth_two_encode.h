@@ -4,7 +4,14 @@
 #include "m9_faa_graph_later_depth_encode.h"
 /* Count2 initialized bound-depth profile, source b9f13f32. Same retained
  * ownership/cursor interface as count4, distinct packet grammar/epochs.
- * clear3: previous Unlock+110, clear0: +90; each extra DRAW adds60.
+ * clear3: command origin+110, clear0: +90; each extra DRAW adds60.
+ * The parameter named previous_unlock is the pure command epoch origin.
+ * Normally it equals authenticated Unlock; after genuine counted-secondary
+ * maintenance native passes the separately retired maintenance point instead.
+ * Native must retain the unchanged API Unlock token/generation and prove
+ * origin==Unlock or origin==Unlock+10 plus live_next==origin+10. A mode0
+ * primary jump alone adds no global point. Command cursors may be zero only
+ * on separately admitted selected owners; this encoder never rotates them.
  * No-wrap source scope. All output images remain CPU scratch; no MMIO or
  * ownership release. Native authenticates initialization/Unlock/per-job
  * metadata and applies the count2 raster lowering to each fresh image. */
