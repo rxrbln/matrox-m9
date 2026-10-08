@@ -242,9 +242,13 @@ int m9x_faa_single_first_encode(const u8 *sample, size_t sample_bytes,
 			return -ERANGE;
 		m9_cmd_put(stage + f->at, value | f->tag);
 	}
-	link.program_base = owner[26].base;
-	link.program_owner_bytes = owner[26].bytes;
-	link.program_offset = input->program_offset;
+	/* C2 names the arena page holding the program, as the vendor gives
+	 * each program its own page-aligned allocation.
+	 */
+	link.program_base = owner[26].base + (input->program_offset & ~4095u);
+	link.program_owner_bytes = owner[26].bytes -
+				   (input->program_offset & ~4095u);
+	link.program_offset = input->program_offset & 4095;
 	link.program_bytes = c->layout.program_bytes;
 	link.constants_base = owner[28].base;
 	link.constants_owner_bytes = owner[28].bytes;

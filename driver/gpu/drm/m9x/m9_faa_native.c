@@ -305,6 +305,8 @@ struct m9_faa_depth_frame_storage {
  /* Dual later frames: each DRAW's stage and the program cache it leaves. */
  struct m9x_faa_frame_stage *stages;
  struct m9x_faa_program_cache *programs;
+ /* The program arena bytes this frame uploads into owner 26. */
+	u32 code_offset, code_bytes;
 };
 struct m9_faa_depth_storage {
  struct m9_faa_owner owner[M9_FAA_DEPTH_OWNERS];
@@ -319,11 +321,44 @@ struct m9_faa_depth_storage {
  * exact frame Lock has been read and its authentic Unlock retired. The
  * initialized attachment owners and their mappings survive this boundary;
  * a later caller still needs a separately qualified state grammar. */
+static void m9_faa_program_cache_free(struct m9x_faa_program_cache *cache)
+{
+	if (!cache)
+		return;
+	kvfree(cache->entry);
+	kvfree(cache->page);
+	kfree(cache);
+}
+
+#ifdef M9_FAA_GRAPH_INIT_CONTROL
+/* An empty program cache over the whole live owner-26 arena. */
+static struct m9x_faa_program_cache *
+m9_faa_program_cache_alloc(const struct m9_faa_owner *program)
+{
+	struct m9x_faa_program_cache *cache = kzalloc_obj(*cache);
+	u32 arena = program->bytes & ~4095u;
+	struct m9x_faa_program_entry *entry =
+		kvzalloc_objs(*entry, m9x_faa_program_cache_capacity(arena));
+	u8 *page = kvzalloc(arena, GFP_KERNEL);
+
+	if (!cache || !entry || !page ||
+	    m9x_faa_program_cache_init(cache, arena, entry, page)) {
+		kvfree(entry);
+		kvfree(page);
+		kfree(cache);
+		return NULL;
+	}
+	return cache;
+}
+#endif
+
 static void m9_faa_depth_frame_free(struct m9_faa_depth_frame_storage *frame)
 {
  if(!frame)return;
  kvfree(frame->resume_upload);kvfree(frame->batch_data);kvfree(frame->batch_secondary);kvfree(frame->batch_program);
- kvfree(frame->stages);kfree(frame->programs);kvfree(frame);
+	kvfree(frame->stages);
+	m9_faa_program_cache_free(frame->programs);
+	kvfree(frame);
 }
 
 /* Opt-in progress evidence, with no extra GPU reads or command changes.
@@ -1382,7 +1417,7 @@ static bool m9_faa_release(struct m9x_device *mdev, struct m9x_faa_replay *r)
  if (r->color_image) kfree(r->color_image->constants);
  kfree(r->color_image);
 #ifdef M9_FAA_GRAPH_INIT_CONTROL
- kfree(r->programs);
+	m9_faa_program_cache_free(r->programs);
 #endif
 	kfree(r->public_vs_follow_image);
  kfree(r->public_vs_draw_image);
@@ -1771,7 +1806,7 @@ int m9x_faa_graph_color_prepare(struct m9x_device *mdev,
 {
 #ifdef M9_FAA_GRAPH_INIT_CONTROL
 	static const struct m9_faa_owner_spec program_spec =
-		{ 0, 0x1080, true, false, false, 0 };
+		{ 0, M9_FAA_PROGRAM_ARENA_BYTES, true, false, false, 0 };
 	struct m9x_transport *t = &mdev->transport;
 	struct m9x_faa_replay *r;
 	struct m9_faa_owner program = { };
@@ -9563,12 +9598,11 @@ int m9x_faa_graph_dual_first_prepare(struct m9x_device *mdev,
  frame=kvzalloc(sizeof(*frame),GFP_KERNEL);
  scratch=kzalloc(sizeof(*scratch),GFP_KERNEL);
  prefix=kzalloc(sizeof(*prefix),GFP_KERNEL);
- programs=kzalloc(sizeof(*programs),GFP_KERNEL);
  if(input->dual_colorpass_diagnostic){
   job_primary=kmalloc(M9_FAA_DEPTH_FRAME_PRIMARY_CAPACITY,GFP_KERNEL);
   job_secondary=kmalloc(M9_FAA_DUAL_FIRST_SECONDARY_BYTES,GFP_KERNEL);
  }
- if(!frame||!scratch||!prefix||!programs||
+ if(!frame||!scratch||!prefix||
     (input->dual_colorpass_diagnostic&&(!job_primary||!job_secondary))){
   ret=-ENOMEM;goto out;
  }
@@ -9720,6 +9754,11 @@ int m9x_faa_graph_dual_first_prepare(struct m9x_device *mdev,
 		bool cull_state;
 		u32 offset;
 
+		programs = m9_faa_program_cache_alloc(&r->draw_owner[0]);
+		if (!programs) {
+			ret = -ENOMEM;
+			goto unlock;
+		}
 		ret = m9x_faa_program_cache_draw(programs,
 						 PARHELIA_M9_FAA_PROGRAM_DUAL, 0,
 						 input->program,
@@ -9728,7 +9767,7 @@ int m9x_faa_graph_dual_first_prepare(struct m9x_device *mdev,
 						 &cull_state, &offset);
 		if (ret)
 			goto unlock;
-		kfree(r->programs);
+		m9_faa_program_cache_free(r->programs);
 		r->programs = programs;
 		programs = NULL;
 	}
@@ -9737,7 +9776,8 @@ int m9x_faa_graph_dual_first_prepare(struct m9x_device *mdev,
 unlock:mutex_unlock(&t->lock);
 out:release_firmware(dual_fw);release_firmware(color);release_firmware(sample);
  kvfree(arena);kvfree(secondary);kfree(composed);kfree(job_primary);
- kfree(job_secondary);kfree(prefix);kfree(scratch);kfree(programs);
+ kfree(job_secondary);kfree(prefix);kfree(scratch);
+	m9_faa_program_cache_free(programs);
  kfree(shadow_program);kfree(shadow_cb);kvfree(shadow_output);
  m9_faa_depth_frame_free(frame);return ret;
 #else
@@ -9824,21 +9864,19 @@ int m9x_faa_graph_mixed_first_prepare(struct m9x_device *mdev,
 	frame = kvzalloc_obj(*frame);
 	scratch = kzalloc_obj(*scratch);
 	prefix = kzalloc_obj(*prefix);
-	programs = kzalloc_obj(*programs);
 	arena = kvzalloc(arena_bytes, GFP_KERNEL);
 	secondary = kvzalloc(batch->count * M9_FAA_APPEND_STAGE_MAX,
 			     GFP_KERNEL);
 	composed = kmalloc(M9_FAA_DEPTH_FRAME_PRIMARY_CAPACITY, GFP_KERNEL);
 	job_primary = kmalloc(M9_FAA_DEPTH_FRAME_PRIMARY_CAPACITY, GFP_KERNEL);
 	stage = kmalloc(M9_FAA_DUAL_FIRST_SECONDARY_BYTES, GFP_KERNEL);
-	if (!frame || !scratch || !prefix || !programs || !arena ||
+	if (!frame || !scratch || !prefix || !arena ||
 	    !secondary || !composed || !job_primary || !stage) {
 		ret = -ENOMEM;
 		goto out;
 	}
 	frame->stages = kvzalloc_objs(*frame->stages, batch->count);
-	frame->batch_program = kvzalloc(M9_FAA_PROGRAM_PAGE_BYTES, GFP_KERNEL);
-	if (!frame->stages || !frame->batch_program) {
+	if (!frame->stages) {
 		ret = -ENOMEM;
 		goto out;
 	}
@@ -9888,6 +9926,11 @@ int m9x_faa_graph_mixed_first_prepare(struct m9x_device *mdev,
 		goto unlock;
 	m9_faa_depth_frame_owners(r, owner);
 	m9_faa_mixed_templates(&tpl, sample, color, dual_fw, single_fw);
+	programs = m9_faa_program_cache_alloc(&r->draw_owner[0]);
+	if (!programs) {
+		ret = -ENOMEM;
+		goto unlock;
+	}
 	/* FIRST continues after ordinary jobs that followed INIT. */
 	origin = m9_faa_first_origin(r, init_point);
 	final_point = origin + 0x150;
@@ -9982,7 +10025,9 @@ int m9x_faa_graph_mixed_first_prepare(struct m9x_device *mdev,
 		ret = -ENOSPC;
 		goto unlock;
 	}
-	memcpy(frame->batch_program, programs->page, M9_FAA_PROGRAM_PAGE_BYTES);
+	frame->code_offset = 0;
+	frame->code_bytes = programs->page_bytes;
+	programs->upload = programs->page_bytes;
 	frame->programs = programs;
 	programs = NULL;
 	frame->primary_bytes = primary_bytes;
@@ -10021,13 +10066,60 @@ out:
 	kfree(stage);
 	kfree(prefix);
 	kfree(scratch);
-	kfree(programs);
+	m9_faa_program_cache_free(programs);
 	m9_faa_depth_frame_free(frame);
 	return ret;
 #else
 	return -EOPNOTSUPP;
 #endif
 }
+
+#ifdef M9_FAA_GRAPH_INIT_CONTROL
+/* Start a later frame's cache from the committed one. When the frame's
+ * new programs do not fit, start from an empty cache instead: every frame's
+ * Locks retire before the next prepare, so no frame still uses the arena.
+ */
+static int m9_faa_later_programs(struct m9x_faa_program_cache *programs,
+				 const struct m9x_faa_program_cache *committed,
+				 const struct m9x_faa_owned_color_batch *batch,
+				 const struct m9x_faa_color_input *input)
+{
+	u32 count = batch ? batch->count : 1, pass, i, offset;
+	enum m9x_faa_later_form form;
+	bool cull_state;
+	int ret = 0;
+
+	for (pass = 0; pass < 2; pass++) {
+		ret = m9x_faa_program_cache_copy(programs, committed);
+		if (ret)
+			return ret;
+		if (pass)
+			m9x_faa_program_cache_reset(programs);
+		for (i = 0; i < count && !ret; i++) {
+			const struct m9x_faa_color_input *job =
+				batch ? &batch->draw[i].input : input;
+
+			ret = m9x_faa_program_cache_draw(programs,
+							 batch ? batch->draw[i].program :
+							 PARHELIA_M9_FAA_PROGRAM_DUAL,
+							 batch ? batch->draw[i].fragment : 0,
+							 job->program,
+							 job->layout.program_bytes,
+							 job->raster_flags, false,
+							 &form, &cull_state, &offset);
+		}
+		if (ret != -ERANGE)
+			break;
+	}
+	if (ret)
+		return ret;
+	/* Replay from the chosen start; the frame's DRAWs account again. */
+	ret = m9x_faa_program_cache_copy(programs, committed);
+	if (!ret && pass)
+		m9x_faa_program_cache_reset(programs);
+	return ret;
+}
+#endif
 
 /* One retained later frame of up to 64 DRAWs, each running the dual or the
  * single-texture program. Per DRAW the vendor program cache decides whether
@@ -10115,7 +10207,6 @@ int m9x_faa_graph_dual_later_prepare(
 	frame = kvzalloc_obj(*frame);
 	first_scratch = kvzalloc_obj(*first_scratch);
 	later_scratch = kvzalloc_obj(*later_scratch);
-	programs = kmalloc_obj(*programs);
 	fresh_primary = kvzalloc(9200, GFP_KERNEL);
 	fresh_secondary =
 		kmalloc(M9_FAA_DUAL_FIRST_SECONDARY_BYTES, GFP_KERNEL);
@@ -10123,14 +10214,13 @@ int m9x_faa_graph_dual_later_prepare(
 	secondary = kvzalloc(count * M9_FAA_APPEND_STAGE_MAX, GFP_KERNEL);
 	composed = kmalloc(sizeof(frame->primary), GFP_KERNEL);
 	if (!next_input || !scratch || !frame || !first_scratch ||
-	    !later_scratch || !programs || !fresh_primary || !fresh_secondary ||
+	    !later_scratch || !fresh_primary || !fresh_secondary ||
 	    !arena || !secondary || !composed) {
 		ret = -ENOMEM;
 		goto release;
 	}
 	frame->stages = kvzalloc_objs(*frame->stages, count);
-	frame->batch_program = kvzalloc(M9_FAA_PROGRAM_PAGE_BYTES, GFP_KERNEL);
-	if (!frame->stages || !frame->batch_program) {
+	if (!frame->stages) {
 		ret = -ENOMEM;
 		goto release;
 	}
@@ -10193,7 +10283,14 @@ int m9x_faa_graph_dual_later_prepare(
 	}
 	m9_faa_depth_frame_owners(r, owner);
 	m9_faa_mixed_templates(&tpl, sample, color, dual_fw, single_fw);
-	memcpy(programs, r->programs, sizeof(*programs));
+	programs = m9_faa_program_cache_alloc(&r->draw_owner[0]);
+	if (!programs) {
+		ret = -ENOMEM;
+		goto unlock;
+	}
+	ret = m9_faa_later_programs(programs, r->programs, batch, input);
+	if (ret)
+		goto unlock;
 	epoch = (u32)origin - (clear_flags == 3 ? 0 :
 			       clear_flags == 2 ? 0x30 :
 						  0x80);
@@ -10323,7 +10420,9 @@ int m9x_faa_graph_dual_later_prepare(
 	next_input->layout = input->layout;
 	memcpy(next_input->secondary, fresh_secondary, 2880);
 	next_input->secondary_bytes = 2880;
-	memcpy(frame->batch_program, programs->page, M9_FAA_PROGRAM_PAGE_BYTES);
+	frame->code_offset = programs->upload;
+	frame->code_bytes = programs->page_bytes - programs->upload;
+	programs->upload = programs->page_bytes;
 	frame->programs = programs;
 	programs = NULL;
 	frame->primary_start = r->graph_draw_end_bytes;
@@ -10376,7 +10475,7 @@ release:
 	kvfree(arena);
 	kvfree(secondary);
 	kfree(composed);
-	kfree(programs);
+	m9_faa_program_cache_free(programs);
 	kvfree(first_scratch);
 	kvfree(later_scratch);
 	kfree(scratch);
@@ -12940,7 +13039,8 @@ static int m9_faa_depth_frame_submit(struct m9x_device *mdev,
  struct m9_faa_depth_frame_storage *frame;struct m9_faa_color_storage *input;
  struct m9x_faa_depth_views views;struct m9_faa_owner *primary,*program;
  struct m9x_fence *fence=NULL;u32 i,page,pte,copied=0,end;u64 stage_point=0;
- const u8 *code;u32 code_bytes;
+	const u8 *code;
+	u32 code_at, code_bytes, chunk, done;
  bool stage_posted=false,two;u64 queue_start=0;u32 metadata_bad;int ret;
  if(!point||!posted||!binding)return -EINVAL;*point=0;*posted=false;
  m9_faa_frame_trace(mdev,"submit-enter",0,0,previous,0,false);
@@ -12992,7 +13092,7 @@ static int m9_faa_depth_frame_submit(struct m9x_device *mdev,
 						&r->dual_textures;
 		u32 at = 0;
 		if (!frame->stages || !frame->programs ||
-		    !frame->batch_secondary || !frame->batch_program ||
+		    !frame->batch_secondary ||
 		    !frame->draw_count ||
 		    frame->draw_count > M9_FAA_DUAL_LATER_MAX_DRAWS ||
 		    !tex->gem[0]) {
@@ -13065,9 +13165,21 @@ static int m9_faa_depth_frame_submit(struct m9x_device *mdev,
 
  primary=m9_faa_command_owner(r,false);program=&r->draw_owner[0];
  if(!primary){ret=-ESTALE;goto out;}
- code=frame->batch_program?frame->batch_program:input->program;
- code_bytes=frame->batch_program?M9_FAA_PROGRAM_PAGE_BYTES:input->program_bytes;
- if(!primary->cpu||!program->vram||code_bytes>sizeof(frame->observed)||code_bytes>program->bytes||
+	/* A cached-program frame uploads only the arena bytes it added. */
+	if (frame->programs) {
+		code = frame->programs->page + frame->code_offset;
+		code_at = frame->code_offset;
+		code_bytes = frame->code_bytes;
+	} else {
+		code = frame->batch_program ? frame->batch_program :
+					      input->program;
+		code_at = 0;
+		code_bytes = frame->batch_program ? M9_FAA_PROGRAM_PAGE_BYTES :
+						    input->program_bytes;
+	}
+	if (!primary->cpu || !program->vram ||
+	    (!frame->programs && code_bytes > sizeof(frame->observed)) ||
+	    code_at > program->bytes || code_bytes > program->bytes - code_at ||
   frame->primary_start>primary->bytes||primary->bytes-frame->primary_start<frame->primary_bytes||
   !frame->secondary_bytes||frame->secondary_bytes>(frame->batch_secondary?0x40000:sizeof(frame->secondary))||
   (frame->batch_data&&(frame->batch_data_bytes>r->draw_owner[1].bytes||
@@ -13137,12 +13249,24 @@ static int m9_faa_depth_frame_submit(struct m9x_device *mdev,
  m9x_write(mdev,M9_REG_FRONTEND_KICK,1);
  ret=m9x_address_cpu_local_prepare(mdev,program->base,program->bytes);if(ret)goto out;
  m9_faa_frame_trace(mdev,"code-upload-begin",0,code_bytes,frame->final_point,0,true);
- iosys_map_memcpy_to(&program->map,0,code,code_bytes);wmb();
+	/* The committed cache no longer owns the overwritten arena bytes. */
+	if (r->programs)
+		r->programs->upload = min(r->programs->upload, code_at);
+	iosys_map_memcpy_to(&program->map, code_at, code, code_bytes);
+	/* Code reaches VRAM before the front-end state write below. */
+	wmb();
  m9_faa_frame_trace(mdev,"code-upload-end",0,code_bytes,frame->final_point,0,false);
  m9x_write(mdev,M9_REG_FRONTEND_STATE,0);m9x_read(mdev,M9_REG_FRONTEND_STATE);
  m9_faa_frame_trace(mdev,"code-readback-begin",0,code_bytes,frame->final_point,0,true);
- iosys_map_memcpy_from(frame->observed,&program->map,0,code_bytes);
- if(memcmp(frame->observed,code,code_bytes)){ret=-EIO;goto out;}
+	for (done = 0; done < code_bytes; done += chunk) {
+		chunk = min_t(u32, code_bytes - done, sizeof(frame->observed));
+		iosys_map_memcpy_from(frame->observed, &program->map,
+				      code_at + done, chunk);
+		if (memcmp(frame->observed, code + done, chunk)) {
+			ret = -EIO;
+			goto out;
+		}
+	}
  m9_faa_frame_trace(mdev,"code-readback-end",0,code_bytes,frame->final_point,0,false);
  if(frame->batch_data)memcpy(r->draw_owner[1].cpu,frame->batch_data,frame->batch_data_bytes);
  else{
@@ -13174,7 +13298,7 @@ static int m9_faa_depth_frame_submit(struct m9x_device *mdev,
 	if (frame->dual_later)
 		r->dual_active_second = frame->dual_next_pair;
 	if (frame->programs) {
-		kfree(r->programs);
+		m9_faa_program_cache_free(r->programs);
 		r->programs = frame->programs;
 		frame->programs = NULL;
 	}

@@ -56,23 +56,55 @@ int m9x_faa_later_stage_encode(const u8 *first, u32 first_bytes, u32 epoch,
 int m9x_faa_first_stage_sites(u32 first_bytes, u32 *units, u32 site[2]);
 
 /* Program cache of a retained graph, after the vendor's (13cd00): every
- * built program (kind and fragment state, a distinct FS each), where it
- * lives in owner 26 and the raster cull state it last emitted, and the
- * active one. page is the owner-26 image a frame uploads.
+ * built program, where it lives in the owner-26 arena and the raster cull
+ * state it last emitted, and the active one. A program is identified by
+ * its kind, fragment state and exact bytes (FS and the VS-derived carry,
+ * gather and position vectors). page mirrors the arena; bytes from
+ * upload to page_bytes are not in owner 26 yet.
  */
-#define M9_FAA_PROGRAM_CACHE_ENTRIES 16u
-struct m9x_faa_program_cache {
-	u32 count, active, page_bytes;
-	struct {
-		u32 kind, fragment, offset, bytes, cull;
-	} entry[M9_FAA_PROGRAM_CACHE_ENTRIES];
-	u8 page[M9_FAA_PROGRAM_PAGE_BYTES];
+/* Owner-26 allocation: the vendor gives each program 0x1080 bytes, the
+ * retained graph one arena of whole pages for all of them.
+ */
+#define M9_FAA_PROGRAM_ARENA_BYTES 0x10000u
+
+struct m9x_faa_program_entry {
+	u32 kind, fragment, hash, offset, bytes, cull;
 };
 
+struct m9x_faa_program_cache {
+	u32 count, active, page_bytes, upload, arena_bytes, capacity;
+	struct m9x_faa_program_entry *entry;
+	u8 *page;
+};
+
+/* Programs start 64-byte aligned and never cross an arena page, so an
+ * arena of arena_bytes holds at most this many entries.
+ */
+static inline u32 m9x_faa_program_cache_capacity(u32 arena_bytes)
+{
+	return arena_bytes / 64;
+}
+
+/* Empty cache over caller storage: capacity entries and an arena_bytes
+ * page mirror, arena_bytes a whole number of 4096-byte pages.
+ */
+int m9x_faa_program_cache_init(struct m9x_faa_program_cache *cache,
+			       u32 arena_bytes,
+			       struct m9x_faa_program_entry *entry, u8 *page);
+
+/* Copy the state of src into dst of the same arena size. */
+int m9x_faa_program_cache_copy(struct m9x_faa_program_cache *dst,
+			       const struct m9x_faa_program_cache *src);
+
+/* Forget every program; the next DRAWs build again from arena offset 0.
+ * Only valid at a transaction boundary, when no frame uses the arena.
+ */
+void m9x_faa_program_cache_reset(struct m9x_faa_program_cache *cache);
+
 /* Account one DRAW of program kind and fragment state with raster cull
- * flags. A FIRST frame builds the empty cache's first program at offset
- * 0. Returns the DRAW's form, 6A decision and program offset; a cached
- * program whose bytes differ refuses with -ESTALE.
+ * flags. A FIRST frame builds into an empty cache. Returns the DRAW's form,
+ * 6A decision and arena offset; -ERANGE when the arena or entry table is
+ * full (the caller may reset at the frame boundary and retry).
  */
 int m9x_faa_program_cache_draw(struct m9x_faa_program_cache *cache, u32 kind,
 			       u32 fragment, const u8 *program, u32 bytes,

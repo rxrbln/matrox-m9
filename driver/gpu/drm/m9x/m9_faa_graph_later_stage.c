@@ -217,50 +217,101 @@ int m9x_faa_later_stage_encode(const u8 *first, u32 first_bytes, u32 epoch,
 	return 0;
 }
 
+int m9x_faa_program_cache_init(struct m9x_faa_program_cache *cache,
+			       u32 arena_bytes,
+			       struct m9x_faa_program_entry *entry, u8 *page)
+{
+	if (!cache || !entry || !page || !arena_bytes || (arena_bytes & 4095))
+		return -EINVAL;
+	*cache = (struct m9x_faa_program_cache) {
+		.active = ~0u, .arena_bytes = arena_bytes,
+		.capacity = m9x_faa_program_cache_capacity(arena_bytes),
+		.entry = entry, .page = page
+	};
+	return 0;
+}
+
+int m9x_faa_program_cache_copy(struct m9x_faa_program_cache *dst,
+			       const struct m9x_faa_program_cache *src)
+{
+	if (!dst || !src || dst->arena_bytes != src->arena_bytes ||
+	    dst->capacity != src->capacity || src->count > src->capacity ||
+	    src->page_bytes > src->arena_bytes)
+		return -EINVAL;
+	memcpy(dst->entry, src->entry, src->count * sizeof(*src->entry));
+	memcpy(dst->page, src->page, src->page_bytes);
+	dst->count = src->count;
+	dst->active = src->active;
+	dst->page_bytes = src->page_bytes;
+	dst->upload = src->upload;
+	return 0;
+}
+
+void m9x_faa_program_cache_reset(struct m9x_faa_program_cache *cache)
+{
+	cache->count = 0;
+	cache->active = ~0u;
+	cache->page_bytes = 0;
+	cache->upload = 0;
+}
+
+/* FNV-1a; equal hashes are confirmed byte for byte. */
+static u32 program_hash(const u8 *p, u32 bytes)
+{
+	u32 h = 0x811c9dc5;
+
+	while (bytes--)
+		h = (h ^ *p++) * 0x01000193;
+	return h;
+}
+
 int m9x_faa_program_cache_draw(struct m9x_faa_program_cache *cache, u32 kind,
 			       u32 fragment, const u8 *program, u32 bytes,
 			       u32 raster, bool first,
 			       enum m9x_faa_later_form *form, bool *cull_state,
 			       u32 *offset)
 {
-	u32 i, at;
+	struct m9x_faa_program_entry *e;
+	u32 i, at, hash;
 
 	if (!cache || !program || !form || !cull_state || !offset ||
 	    kind >= M9_FAA_PROGRAM_KINDS || !bytes || (bytes & 7) ||
-	    bytes > M9_FAA_PROGRAM_PAGE_BYTES || (raster & ~6u) ||
-	    (raster & 6) == 6 || first != !cache->count ||
-	    cache->count > M9_FAA_PROGRAM_CACHE_ENTRIES)
+	    bytes > 4096 || (raster & ~6u) || (raster & 6) == 6 ||
+	    (first && cache->count) || cache->count > cache->capacity ||
+	    cache->page_bytes > cache->arena_bytes)
 		return -EINVAL;
-	for (i = 0; i < cache->count; i++)
-		if (cache->entry[i].kind == kind &&
-		    cache->entry[i].fragment == fragment)
+	hash = program_hash(program, bytes);
+	for (i = 0; i < cache->count; i++) {
+		e = &cache->entry[i];
+		if (e->hash == hash && e->kind == kind &&
+		    e->fragment == fragment && e->bytes == bytes &&
+		    !memcmp(cache->page + e->offset, program, bytes))
 			break;
+	}
 	if (i < cache->count) {
-		at = cache->entry[i].offset;
-		if (cache->entry[i].bytes != bytes ||
-		    memcmp(cache->page + at, program, bytes))
-			return -ESTALE;
 		*form = cache->active == i ? M9_FAA_LATER_PLAIN :
 					     M9_FAA_LATER_CACHED;
-		*cull_state = cache->entry[i].cull != raster;
+		*cull_state = e->cull != raster;
 	} else {
 		at = (cache->page_bytes + 63) & ~63u;
-		if (i == M9_FAA_PROGRAM_CACHE_ENTRIES ||
-		    at > M9_FAA_PROGRAM_PAGE_BYTES - bytes)
+		if ((at & 4095) + bytes > 4096)
+			at = (at + 4095) & ~4095u;
+		if (i == cache->capacity || at > cache->arena_bytes ||
+		    bytes > cache->arena_bytes - at)
 			return -ERANGE;
+		e = &cache->entry[i];
+		*e = (struct m9x_faa_program_entry) {
+			kind, fragment, hash, at, bytes, 0
+		};
 		memcpy(cache->page + at, program, bytes);
-		cache->entry[i].kind = kind;
-		cache->entry[i].fragment = fragment;
-		cache->entry[i].offset = at;
-		cache->entry[i].bytes = bytes;
 		cache->count++;
 		cache->page_bytes = at + bytes;
 		*form = M9_FAA_LATER_BUILD;
 		*cull_state = false;
 	}
-	cache->entry[i].cull = raster;
+	e->cull = raster;
 	cache->active = i;
-	*offset = at;
+	*offset = e->offset;
 	return 0;
 }
 
