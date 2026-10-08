@@ -301,6 +301,8 @@ struct drm_parhelia_m9_faa_graph_dual_batch {
 #define DRM_PARHELIA_M9_FAA_GRAPH_DUAL_LATER 0x25
 #define PARHELIA_M9_FAA_DUAL_LATER_VERSION 1u
 #define PARHELIA_M9_FAA_DUAL_LATER_LOCK_RETIRED 27u
+/* Version 2: draw_count descriptors at draws, upload fields zero. */
+#define PARHELIA_M9_FAA_DUAL_LATER_BATCH_VERSION 2u
 struct drm_parhelia_m9_faa_graph_dual_later {
  __u64 graph_id,previous_unlock_point,lock_point,upload;
  __u32 upload_bytes,generation,version,flags,state,pad;
@@ -308,6 +310,8 @@ struct drm_parhelia_m9_faa_graph_dual_later {
  struct drm_parhelia_m9_faa_upload_layout layout;
  __u32 width,height,clear_flags,clear_color,depth_flags;
  struct drm_parhelia_m9_faa_texture_view texture[2];
+ __u64 draws;
+ __u32 draw_count,pad2;
 };
 #define DRM_IOCTL_PARHELIA_M9_FAA_GRAPH_DUAL_LATER \
  DRM_IOWR(DRM_COMMAND_BASE + DRM_PARHELIA_M9_FAA_GRAPH_DUAL_LATER, \
