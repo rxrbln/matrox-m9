@@ -65,9 +65,9 @@ int m9x_faa_later_depth_encode(const u8 *sample,size_t sample_bytes,
  u64 epoch=next-0x10,delta=clear?0x150:0xd0;
  if(!owner||!views||!input||!out||!scratch||!out->image.program||!out->image.constants||
   !out->image.primary||!out->image.secondary||!out->image.secondary_length||
-  (clear_flags&&clear_flags!=3)||(previous&15)||previous<0x220||
+  (clear_flags&&clear_flags!=3)||(previous&15)||
   previous>~(u64)0-delta||next!=previous+0x10||(u32)epoch>0xfffffea0u||
-  (primary_cursor&3)||(secondary_cursor&3)||init_bytes>primary_cursor||
+  (primary_cursor&3)||(secondary_cursor&3)||
   input->declaration_count<3||input->declaration_count>17||!(input->declaration_count&1))return -EINVAL;
  ret=m9x_faa_graph_draw_owners_validate(owner);if(ret)return ret;
  ret=m9x_faa_depth_stages_encode(views,0x3f800000,&(struct m9x_faa_depth_stage_image){0});if(ret)return ret;
