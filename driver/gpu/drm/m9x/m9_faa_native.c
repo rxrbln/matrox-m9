@@ -642,6 +642,7 @@ static struct m9_faa_owner *m9_faa_command_owner(struct m9x_faa_replay *r,
 }
 
 static int m9_faa_command_owner_admit(struct m9x_device *,struct m9_faa_owner *);
+
 static u64 m9_faa_present_origin(const struct m9x_faa_replay *r, u64 previous)
 {
 	return r->present_retired && r->unlock_point == previous ?
