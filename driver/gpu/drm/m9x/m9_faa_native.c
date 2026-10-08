@@ -392,20 +392,27 @@ struct m9_faa_public_vs_storage {
 	struct m9x_faa_public_vs_endpoints ends;
 };
 struct m9_faa_public_vs_next_storage {
- u8 primary[60],secondary[2548],lock_primary[M9_FAA_VS_LOCK_PRIMARY_BYTES];
- u32 vertices[24];
- u64 unlock_point;
- u32 primary_start,draw_end,lock_end;
+	u8 primary[60], secondary[2548],
+		lock_primary[M9_FAA_VS_LOCK_PRIMARY_BYTES];
+	u32 vertices[24];
+	u64 unlock_point;
+	u32 primary_start, draw_end, lock_end;
 };
-struct m9_faa_public_vs_lock_storage {u8 primary[M9_FAA_VS_LOCK_PRIMARY_BYTES];};
+
+struct m9_faa_public_vs_lock_storage {
+	u8 primary[M9_FAA_VS_LOCK_PRIMARY_BYTES];
+};
 struct m9_faa_public_vs_draw_storage {
- u8 primary[M9_FAA_VS_DRAW_PRIMARY_BYTES], secondary[M9_FAA_VS_DRAW_SECONDARY_BYTES];
- struct m9x_faa_public_vs_draw_endpoints ends;
+	u8 primary[M9_FAA_VS_DRAW_PRIMARY_BYTES],
+		secondary[M9_FAA_VS_DRAW_SECONDARY_BYTES];
+	struct m9x_faa_public_vs_draw_endpoints ends;
 };
+
 struct m9_faa_public_vs_follow_storage {
- u8 primary[48],secondary[616];
- struct m9x_faa_public_vs_follow_endpoints ends;
+	u8 primary[48], secondary[616];
+	struct m9x_faa_public_vs_follow_endpoints ends;
 };
+
 struct m9_faa_next_finish_storage {
 	u8 primary[M9_FAA_NEXT_FINISH_PRIMARY_BYTES];
 	u8 secondary[M9_FAA_NEXT_FINISH_SECONDARY_BYTES];
