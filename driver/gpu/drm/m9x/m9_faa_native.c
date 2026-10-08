@@ -73,7 +73,8 @@ struct m9_faa_owner_spec {
 	u32 captured, bytes;
 	bool local;
 	/* Per-owner domain/policy; historical DMA-physical owners stay false.
-	 * Only a source-closed generated output template may select these. */
+	 * Only a source-closed generated output template may select these.
+	 */
 	bool system, flags30;
 	u32 mapped_bytes;
 };
@@ -114,103 +115,123 @@ struct m9_faa_clear_segment {
 
 #if defined(M9_FAA_ORDINARY_SYSTEM_CONTROL)
 /* Whole ordinary public draw into its own SYSTEM owner. No sampled caller
- * color, FAA activation, companion clear or resolve is present in this flow. */
+ * color, FAA activation, companion clear or resolve is present in this flow.
+ */
 #include "m9_ordinary_system_red_data.h"
 #define M9_FAA_INPUT_FIRMWARE "m9x/ordinary-system-constant-red-known-inputs.bin"
 #elif defined(M9_FAA_INIT_ONLY_CONTROL)
 /* Independent vendor queue finish at the returned context constructor.
- * No triangle or output request, and no invented output owner. */
+ * No triangle or output request, and no invented output owner.
+ */
 #include "m9_faa_init_only_data.h"
 #define M9_FAA_INPUT_FIRMWARE "m9x/faa-init-only-known-inputs.bin"
 #elif defined(M9_FAA_GRAPH_INIT_CONTROL)
 /* Six source owners are borrowed from a PREPARED graph; the remaining
- * private owners and the fresh queue primary follow the sealed source plan. */
+ * private owners and the fresh queue primary follow the sealed source plan.
+ */
 #include "m9_faa_graph_init_data.h"
 #define M9_FAA_INPUT_FIRMWARE "m9x/faa-graph-init-known-inputs.bin"
 #elif defined(M9_FAA_PREPARED_PRECLEAR_CONTROL)
 /* Fresh source constructor/preparation precedes queue creation. Retain and
- * publish its otherwise unconsumed local conversion backing before c0. */
+ * publish its otherwise unconsumed local conversion backing before c0.
+ */
 #include "m9_faa_prepared_preclear_data.h"
 #define M9_FAA_INPUT_FIRMWARE "m9x/faa-prepared-preclear-known-inputs.bin"
 #elif defined(M9_FAA_PREPARED_FLOW_CONTROL)
 /* Whole continuation of the fresh prepared source. Its generated phases
- * and program access inventory are part of this profile's source proof. */
+ * and program access inventory are part of this profile's source proof.
+ */
 #include "m9_faa_prepared_flow_data.h"
 #define M9_FAA_INPUT_FIRMWARE "m9x/faa-prepared-flow-known-inputs.bin"
 #elif defined(M9_FAA_PRECLEAR_CONTROL)
 /* Completed public black CLEAR42, then the original draw stopped at its
- * first GPU query. Independent finish; no completed triangle or output. */
+ * first GPU query. Independent finish; no completed triangle or output.
+ */
 #include "m9_faa_preclear_data.h"
 #define M9_FAA_INPUT_FIRMWARE "m9x/faa-preclear-known-inputs.bin"
 #elif defined(M9_FAA_PRECLEAR_DRAW_CONTROL)
 /* Completed public black clear, then the original triangle preprocessing
- * launch stopped at its next GPU wait. Earlier inputs remain byte-exact. */
+ * launch stopped at its next GPU wait. Earlier inputs remain byte-exact.
+ */
 #include "m9_faa_preclear_draw_data.h"
 #define M9_FAA_INPUT_FIRMWARE "m9x/faa-preclear-draw-known-inputs.bin"
 #elif defined(M9_FAA_PRECLEAR_OUTPUT_CONTROL)
 /* Returned public triangle, then the genuine output format transition
- * stopped at its next GPU wait. The output exists but is not readable. */
+ * stopped at its next GPU wait. The output exists but is not readable.
+ */
 #include "m9_faa_preclear_output_data.h"
 #define M9_FAA_INPUT_FIRMWARE "m9x/faa-preclear-output-known-inputs.bin"
 #elif defined(M9_FAA_PRECLEAR_OUTPUT_WRITE_CONTROL)
 /* The original output path posted its complete resolve before waiting
- * for CPU access. Preserve that posted prefix and its genuine footer. */
+ * for CPU access. Preserve that posted prefix and its genuine footer.
+ */
 #include "m9_faa_preclear_output_write_data.h"
 #define M9_FAA_INPUT_FIRMWARE "m9x/faa-preclear-output-write-known-inputs.bin"
 #elif defined(M9_FAA_POST_TRIANGLE_CONTROL)
 /* Independent vendor queue finish after the returned public triangle,
- * before output/resolve. Its final counter is in its counted secondary. */
+ * before output/resolve. Its final counter is in its counted secondary.
+ */
 #include "m9_faa_post_triangle_data.h"
 #define M9_FAA_INPUT_FIRMWARE "m9x/faa-post-triangle-known-inputs.bin"
 #elif defined(M9_FAA_PRECLEAR_INPLACE_OUTPUT_CONTROL)
 /* Genuine OS allocation failure selected the sampled destination. Its
- * original format-transition wait and rectangle launch remain pending. */
+ * original format-transition wait and rectangle launch remain pending.
+ */
 #include "m9_faa_preclear_inplace_output_data.h"
 #define M9_FAA_INPUT_FIRMWARE "m9x/faa-preclear-inplace-output-known-inputs.bin"
 #elif defined(M9_FAA_PRECLEAR_INPLACE_COPY_CONTROL)
 /* Original sampled resolve has emitted its rectangle and CPU access
- * preparation, then stopped at a new wait. No CPU pixels are supplied. */
+ * preparation, then stopped at a new wait. No CPU pixels are supplied.
+ */
 #include "m9_faa_preclear_inplace_copy_data.h"
 #define M9_FAA_INPUT_FIRMWARE "m9x/faa-preclear-inplace-copy-known-inputs.bin"
 #elif defined(M9_FAA_PUBLIC_SHARED_DEPTH_FLUSH_CONTROL)
 /* Public depth state and a shared-primary target change select the genuine
- * dirty-graph flush. Its original CPU wait and readback remain pending. */
+ * dirty-graph flush. Its original CPU wait and readback remain pending.
+ */
 #include "m9_faa_public_shared_depth_flush_data.h"
 #define M9_FAA_INPUT_FIRMWARE "m9x/faa-public-shared-depth-flush-known-inputs.bin"
 #elif defined(M9_FAA_PUBLIC_SHARED_DEPTH_RESOLVE_CONTROL)
 /* The genuine public dirty-graph flush has dispatched its mode9 resolve,
- * then stops at its original cleanup wait. CPU readback remains pending. */
+ * then stops at its original cleanup wait. CPU readback remains pending.
+ */
 #include "m9_faa_public_shared_depth_resolve_data.h"
 #define M9_FAA_INPUT_FIRMWARE "m9x/faa-public-shared-depth-resolve-known-inputs.bin"
 #elif defined(M9_FAA_PUBLIC_SHARED_DEPTH_RETURNED_CONTROL)
 /* Genuine public aa750 has returned after its source-emitted cleanup and
- * fragment-pointer reset. Replacement draw and CPU readback remain stopped. */
+ * fragment-pointer reset. Replacement draw and CPU readback remain stopped.
+ */
 #include "m9_faa_public_shared_depth_returned_data.h"
 #define M9_FAA_INPUT_FIRMWARE "m9x/faa-public-shared-depth-returned-known-inputs.bin"
 #elif defined(M9_FAA_PUBLIC_SHARED_DEPTH_REPLACEMENT_CONTROL)
 /* The original outer caller continues after its returned dirty flush and
- * prepares the replacement draw, then stops before a new GPU wait. */
+ * prepares the replacement draw, then stops before a new GPU wait.
+ */
 #include "m9_faa_public_shared_depth_replacement_data.h"
 #define M9_FAA_INPUT_FIRMWARE "m9x/faa-public-shared-depth-replacement-known-inputs.bin"
 #elif defined(M9_FAA_PUBLIC_SHARED_DEPTH_REPLACEMENT_SUBMIT_CONTROL)
 /* The original replacement renderer reaches its second finite transition
- * wait. Its query and independent finish retain their source timeline. */
+ * wait. Its query and independent finish retain their source timeline.
+ */
 #include "m9_faa_public_shared_depth_replacement_submit_data.h"
 #define M9_FAA_INPUT_FIRMWARE "m9x/faa-public-shared-depth-replacement-submit-known-inputs.bin"
 #elif defined(M9_FAA_PUBLIC_SHARED_DEPTH_REPLACEMENT_RETURNED_CONTROL)
 /* Original public replacement DRAW has genuinely returned. Its newly
- * emitted rendering commands still require this independent retirement. */
+ * emitted rendering commands still require this independent retirement.
+ */
 #include "m9_faa_public_shared_depth_replacement_returned_data.h"
 #define M9_FAA_INPUT_FIRMWARE "m9x/faa-public-shared-depth-replacement-returned-known-inputs.bin"
 #elif defined(M9_FAA_CONSTANT_RED_CONTROL)
 /* A distinct whole public source capture changes c0 through SETCONST.
- * Never patch captured green command or program bytes in place. */
+ * Never patch captured green command or program bytes in place.
+ */
 #include "m9_faa_constant_red_data.h"
 #define M9_FAA_INPUT_FIRMWARE "m9x/faa-constant-red-known-inputs.bin"
 #elif defined(M9_FAA_CONSTANT_SHADER_CONTROL)
 /* Whole independently captured public CREATEPS/SETCONST/SETPS flow. The
  * input blob and all owner/fixup tables are one source profile; never splice
- * shader bytes or captured secondary lengths into the normal profile. */
+ * shader bytes or captured secondary lengths into the normal profile.
+ */
 #include "m9_faa_constant_green_data.h"
 #define M9_FAA_INPUT_FIRMWARE "m9x/faa-constant-green-known-inputs.bin"
 #else
@@ -221,7 +242,8 @@ struct m9_faa_clear_segment {
 #define M9_FAA_OUTPUT_PENDING 0
 #endif
 /* The older sampled-destination template has no ordinary output owner.
- * It must never be advertised as a completed ac1f0 output contract. */
+ * It must never be advertised as a completed ac1f0 output contract.
+ */
 #ifndef M9_FAA_OUTPUT_OWNER
 #define M9_FAA_OUTPUT_OWNER U32_MAX
 #endif
@@ -239,7 +261,8 @@ struct m9_faa_clear_segment {
     defined(M9_FAA_PUBLIC_SHARED_DEPTH_REPLACEMENT_SUBMIT_CONTROL) || \
     defined(M9_FAA_PUBLIC_SHARED_DEPTH_REPLACEMENT_RETURNED_CONTROL)
 /* These profiles retain the same original public draw and C2 access
- * before their later output or target-change branches diverge. */
+ * before their later output or target-change branches diverge.
+ */
 #define M9_FAA_PROGRAM_ACCESS_CONTROL 1
 #endif
 
@@ -250,7 +273,8 @@ struct m9_faa_owner {
 	dma_addr_t dma;
 	u32 base, bytes;
 	/* True from the first attempted attribute change until verified WB
-	 * restoration. A failed/partial CPA change still needs restoration. */
+	 * restoration. A failed/partial CPA change still needs restoration.
+	 */
 	bool cpu_wc;
 	struct drm_mm_node system_node;
 };
@@ -364,7 +388,8 @@ static void m9_faa_depth_frame_free(struct m9_faa_depth_frame_storage *frame)
 
 /* Opt-in progress evidence, with no extra GPU reads or command changes.
  * The optional pre-action delay lets host dmesg streaming persist a marker
- * before a failing PCI transaction. Disabled by default in both settings. */
+ * before a failing PCI transaction. Disabled by default in both settings.
+ */
 static bool m9_faa_frame_trace_enabled;
 static unsigned int m9_faa_frame_trace_delay_ms;
 module_param_named(faa_frame_trace, m9_faa_frame_trace_enabled, bool, 0600);
@@ -464,11 +489,13 @@ struct m9x_faa_replay {
 #ifdef M9_FAA_GRAPH_INIT_CONTROL
 	/* Program26 is allocated after INIT; SYSTEM constants28/secondary29
 	 * are mapped before INIT and remain retained. Original command26
-	 * and startup27 stay in owner[]. */
+	 * and startup27 stay in owner[].
+	 */
 	struct m9_faa_owner draw_owner[3];
 	struct m9x_faa_texture_owners dual_textures;
 	/* At most one source-qualified stage-1 rebinding is retained in v1.
-	 * Both pinned sets survive until DMA-stop teardown. */
+	 * Both pinned sets survive until DMA-stop teardown.
+	 */
 	struct m9x_faa_texture_owners dual_next_textures;
 	bool dual_active_second;
 	/* Programs of the dual/single later frames, committed at retirement. */
@@ -481,7 +508,8 @@ struct m9x_faa_replay {
 	struct m9_faa_depth_storage *depth_storage;
 	struct m9_faa_command_pools *command_pools;
 	/* Immutable loader refs keep the authenticated templates resident for
-	 * this graph generation; every caller still receives its own loader ref. */
+	 * this graph generation; every caller still receives its own loader ref.
+	 */
 	const struct firmware *template_firmware[3];
 	bool color_payload_ready, color_attempted, color_lock_retired;
 	u64 color_lock_point;
@@ -534,7 +562,8 @@ struct m9x_faa_replay {
 	bool graph_preparing;
 	/* The first graph draw is a separate caller on the retained INIT
 	 * context. A claim closes INIT-token reuse before any source upload;
-	 * every posted END advances this cursor even if its later wait fails. */
+	 * every posted END advances this cursor even if its later wait fails.
+	 */
 	bool graph_draw_claimed;
 	u32 graph_draw_posts, graph_draw_end_bytes;
 	/* Ordinary jobs appended to the retained primary (stage 2). The last one
@@ -545,7 +574,8 @@ struct m9x_faa_replay {
 	u64 ordinary_base, ordinary_point;
 	u64 graph_draw_point;
 	/* Prepared program bytes remain CPU inputs until the original c0
-	 * access boundary. Keep their source buffer through that upload. */
+	 * access boundary. Keep their source buffer through that upload.
+	 */
 	const struct firmware *program_inputs;
 	bool prepared, attempted, baseline_valid;
 	/* A later graph INIT retired after this replay was detached: it
@@ -554,28 +584,33 @@ struct m9x_faa_replay {
 	bool superseded;
 	u32 primary_bytes;
 	/* Checked extent of the caller's pinned/reserved color BO. This is
-	 * borrowed storage, never a locally mapped owner to release. */
+	 * borrowed storage, never a locally mapped owner to release.
+	 */
 	u64 borrowed_color_bytes;
 	bool borrowed_color_observed;
 	/* Successful submit transfers the caller's pin and lookup reference.
-	 * Keep its native address owned through later diagnostic readback. */
+	 * Keep its native address owned through later diagnostic readback.
+	 */
 	struct drm_gem_vram_object *retained_color;
 	struct drm_gem_object *output_color;
 	u64 output_point;
 	u32 output_generation;
 	bool output_retired;
 	/* Raw retained-owner evidence is independent of ordinary pixel output.
-	 * Set only after this one-shot profile's final actual wait succeeds. */
+	 * Set only after this one-shot profile's final actual wait succeeds.
+	 */
 	u64 observation_point;
 	u32 observation_generation;
 	bool observation_retired;
 	/* Only a returned normal-Lock CPU view authorizes its Unlock copyback.
-	 * The first view closes at Unlock; a new view needs the relock receipt. */
+	 * The first view closes at Unlock; a new view needs the relock receipt.
+	 */
 	bool normal_lock_view_seen, unlock_started, unlock_retired;
 	u64 unlock_point;
 #ifdef M9_FAA_GRAPH_INIT_CONTROL
 	/* U remains the actual Unlock. P is published only after its own wait.
-	 * A failed exposed copy retains destination pin/ref/fence until DMA stop. */
+	 * A failed exposed copy retains destination pin/ref/fence until DMA stop.
+	 */
 	u64 present_point;
 	u32 present_generation, present_end, present_posts;
 	bool present_attempted, present_retired;
@@ -583,12 +618,14 @@ struct m9x_faa_replay {
 	struct m9x_fence *present_fence;
 #endif
 	/* A later genuine public Lock first copies primary back to staging and
-	 * must retire its own 0x1c0 wait before F021 can be exposed again. */
+	 * must retire its own 0x1c0 wait before F021 can be exposed again.
+	 */
 	bool relock_started, relock_retired, relock_view_seen;
 	u64 relock_point;
 	u32 relock_generation;
 	/* An alias of the transport's existing completion page, never a new
-	 * completion allocation or an independently seeded success counter. */
+	 * completion allocation or an independently seeded success counter.
+	 */
 	struct drm_mm_node counter_node;
 	u32 before_hash[ARRAY_SIZE(m9_faa_owner_specs)];
 	u32 before_nonzero[ARRAY_SIZE(m9_faa_owner_specs)];
@@ -715,7 +752,8 @@ MODULE_PARM_DESC(m9_faa_program_access_kick,
 #ifdef M9_FAA_PROGRAM_ACCESS_CONTROL
 /* Same-module hardware control: collapsing these waits leaves main/AA
  * stores untouched; preserving them produces GPU state. Resolve is still
- * unqualified. Keep the opt-out for this bounded ordering control. */
+ * unqualified. Keep the opt-out for this bounded ordering control.
+ */
 static bool m9_faa_phased_submit = true;
 #else
 static bool m9_faa_phased_submit;
@@ -850,7 +888,8 @@ bool m9x_faa_graph_active(struct m9x_device *mdev)
 
 /* The source1024 INIT flags30 primary SYSTEM view maps its full backing.
  * Only this retained immutable graph layout extends the historic80-page
- * diagnostic allowance; ordinary map policy and DMA bounds stay separate. */
+ * diagnostic allowance; ordinary map policy and DMA bounds stay separate.
+ */
 u32 m9x_faa_graph_system_extent_locked(struct m9x_device *mdev)
 {
 	struct m9x_faa_replay *r = mdev->transport.faa;
@@ -880,7 +919,8 @@ bool m9x_faa_graph_preparing(struct m9x_device *mdev)
 
 /* First post-INIT caller only. Its source timeline starts from the same
  * retired b0-era context; an already continued primary or an outstanding
- * phase must not be admitted using INIT's receipt again. No MMIO is read. */
+ * phase must not be admitted using INIT's receipt again. No MMIO is read.
+ */
 static int m9_faa_graph_continuation_state(const struct m9x_transport *t,
 					   u32 generation, u64 init_point)
 {
@@ -944,7 +984,8 @@ int m9x_faa_graph_retained_get_locked(struct m9x_device *mdev, u32 generation,
  * INIT primary may be longer because its companion clear was regenerated;
  * adding to r->primary_bytes applies that delta without touching the
  * already retired prefix or resetting COMMAND_BASE.  0x60 is the source
- * timeline distance from the actual INIT receipt to the final writeback. */
+ * timeline distance from the actual INIT receipt to the final writeback.
+ */
 static int m9_faa_graph_stage_shape(const struct m9x_faa_replay *r, u32 stage,
 				    u64 init_point, u32 *end_bytes,
 				    bool *repeat, u32 *target)
@@ -972,7 +1013,8 @@ static int m9_faa_graph_stage_shape(const struct m9x_faa_replay *r, u32 stage,
 
 /* Claim the separate public caller before its CPU mapping and program
  * upload.  No command is posted here.  A repeated caller cannot use the
- * INIT receipt to begin another draw, even while its first END is pending. */
+ * INIT receipt to begin another draw, even while its first END is pending.
+ */
 int m9x_faa_graph_draw_claim_locked(struct m9x_device *mdev,
 				    struct m9_faa_graph_binding *binding,
 				    u32 generation, u64 init_point)
@@ -1006,7 +1048,8 @@ int m9x_faa_graph_draw_claim_locked(struct m9x_device *mdev,
 /* The future private draw producer calls this only after source-known
  * suffix/secondary uploads, under six graph reservations and TRANSPORT.
  * Even a failed wait after END publication consumes its stage; owner refs
- * stay with the retained replay until teardown/quarantine. */
+ * stay with the retained replay until teardown/quarantine.
+ */
 int m9x_faa_graph_draw_end_locked(struct m9x_device *mdev,
 				  struct m9_faa_graph_binding *binding,
 				  u32 generation, u64 init_point, u32 stage,
@@ -1163,7 +1206,8 @@ static bool m9_faa_transport_continuable(struct m9x_device *mdev)
 }
 
 /* The unchanged native origin10 is an initial CPU counter seed. Fresh
- * source admission must never call it a previous GPU retirement. */
+ * source admission must never call it a previous GPU retirement.
+ */
 int m9x_faa_source_init_admit_locked(struct m9x_device *mdev,
 				     bool context_initialized)
 {
@@ -2544,7 +2588,8 @@ static void m9_faa_observe(struct m9x_device *mdev, struct m9x_faa_replay *r,
 
 #ifdef M9_FAA_GRAPH_INIT_CONTROL
 /* Read-only evidence after the separately qualified public-VS prefix. These
- * opaque GPU-owned bytes are never decoded or used as source CPU inputs. */
+ * opaque GPU-owned bytes are never decoded or used as source CPU inputs.
+ */
 static void m9_faa_public_vs_prefix_observe(struct m9x_device *mdev,
 					    struct m9x_faa_replay *r)
 {
@@ -2610,7 +2655,8 @@ static void m9_faa_public_vs_prefix_observe(struct m9x_device *mdev,
 /* The sampled primary is borrowed, so the ordinary owner loop intentionally
  * skips it. Observe the actual pinned/reserved caller BO without turning it
  * into an owned allocation or extending the GPU command stream. Failure to
- * map observation data never invents a zero baseline or changes submission. */
+ * map observation data never invents a zero baseline or changes submission.
+ */
 static void m9_faa_observe_borrowed_color(struct m9x_device *mdev,
 					  struct m9x_faa_replay *r,
 					  struct drm_gem_vram_object *color_bo,
@@ -2680,7 +2726,8 @@ static void m9_faa_observe_borrowed_color(struct m9x_device *mdev,
 }
 
 /* Allocations precede the caller's color BO reservation, as in ordinary
- * FIRST_TRIANGLE. Every private owner survives both publication and timeout. */
+ * FIRST_TRIANGLE. Every private owner survives both publication and timeout.
+ */
 static int m9_faa_prepare(struct m9x_device *mdev,
 			  struct m9_faa_graph_binding *binding, u32 generation)
 {
@@ -3204,7 +3251,8 @@ static int m9_faa_bind_borrowed_color(struct m9x_faa_replay *r, u32 color,
 /* The public one-target raster producer leaves inactive AB/AC halfwords
  * as stack residue. Preserve its active target mask, but derive neutral
  * masks for the three absent targets instead of replaying that residue.
- * This is separate from address relocation and never alters the capture. */
+ * This is separate from address relocation and never alters the capture.
+ */
 static int m9_faa_normalize_raster_masks(struct m9x_faa_replay *r)
 {
 #if defined(M9_FAA_RASTER_MASK_BLOCKS) || defined(M9_FAA_RASTER_MASK_OWNER)
@@ -3447,7 +3495,8 @@ static int m9_faa_rebase_page_clear(struct m9x_faa_replay *r)
 /* The prepared source uploads its program only after the original access
  * wait. Its CPU alias is allocated independently of its GPU address. Here
  * the retained local range also owns its checked CPU-root identity alias;
- * no captured aperture index or page-table destination is reused. */
+ * no captured aperture index or page-table destination is reused.
+ */
 static int m9_faa_upload_program(struct m9x_device *mdev,
 				 struct m9x_faa_replay *r, u32 program)
 {
@@ -3539,7 +3588,8 @@ static int m9_faa_upload_program(struct m9x_device *mdev,
  * Paired entry-offset encoders identify the retained C2 owner. Later draws
  * may rebind either entry of the same program; validate every pair without
  * limiting the whole stream to two bindings. No captured resource address
- * or captured CPU alias is installed by this bounded control. */
+ * or captured CPU alias is installed by this bounded control.
+ */
 static int m9_faa_program_access(struct m9x_device *mdev,
 				 struct m9x_faa_replay *r, u64 point)
 {
@@ -4242,7 +4292,8 @@ int m9x_faa_submit_graph(struct m9x_device *mdev,
 
 /* A separate, source-bounded public red DRAW caller continues the retained
  * INIT command namespace. The caller holds all six graph reservations; no
- * captured owner address, old prefix, or completion value is replayed. */
+ * captured owner address, old prefix, or completion value is replayed.
+ */
 int m9x_faa_graph_draw_submit(struct m9x_device *mdev,
 			      struct m9_faa_graph_binding *binding,
 			      u32 generation, u64 init_point, u64 *point,
@@ -4539,7 +4590,8 @@ out:
 
 #ifdef M9_FAA_GRAPH_INIT_CONTROL
 /* The separately typed first public-VS prefix cannot authorize the fixed-red
- * raster/Lock path. The original source f0 wait remains unread. */
+ * raster/Lock path. The original source f0 wait remains unread.
+ */
 static int m9_faa_public_vs_state(const struct m9x_transport *t,
 				  struct m9_faa_graph_binding *binding,
 				  u32 generation, u64 init_point)
@@ -4778,7 +4830,8 @@ int m9x_faa_graph_public_vs_head_submit(struct m9x_device *mdev,
 
 /* Version-one little-endian raw snapshot. No caller supplies an owner,
  * physical address, offset or decoder. The compiled trusted source profile
- * selects the exact coherent DMA owners and their logical allocation spans. */
+ * selects the exact coherent DMA owners and their logical allocation spans.
+ */
 struct m9_faa_dma_header {
 	__le32 magic, version, header_bytes, owners;
 	__le64 point;
@@ -4920,7 +4973,8 @@ exit:
  * The public Lock sequence retains its cached F021 mapper across Unlock;
  * replacing global aperture state between those calls changes the next
  * returned image. Keep the pre-submit probe, then require the source-owned
- * Lock/relock path until this replay is torn down. */
+ * Lock/relock path until this replay is torn down.
+ */
 int m9x_faa_direct_view_admit_locked(struct m9x_device *mdev)
 {
 	struct m9x_transport *t = &mdev->transport;
@@ -4936,7 +4990,8 @@ int m9x_faa_direct_view_admit_locked(struct m9x_device *mdev)
 
 /* The ioctl already owns the caller's pin and reservation before entering
  * transport.lock. Admit only this private profile's immutable borrowed
- * primary after its final actual write wait, never another caller's BO. */
+ * primary after its final actual write wait, never another caller's BO.
+ */
 int m9x_faa_lock_view_admit_locked(struct m9x_device *mdev,
 				   struct drm_gem_vram_object *color, u32 base,
 				   u64 bytes)
@@ -5155,7 +5210,8 @@ int m9x_faa_lock_view_observed_locked(struct m9x_device *mdev,
 }
 
 /* A successful CPU view and its same-graph Lock receipt are both required.
- * Caller holds the six graph BO reservations before taking transport.lock. */
+ * Caller holds the six graph BO reservations before taking transport.lock.
+ */
 int m9x_faa_graph_unlock_get_locked(struct m9x_device *mdev, u32 generation,
 				    u64 lock_point,
 				    struct m9_faa_graph_binding **out)
@@ -5412,7 +5468,8 @@ int m9x_faa_graph_present_get_locked(struct m9x_device *mdev, u32 generation,
 
 /* A map-only normal Lock follows the same original mapper as SURFACE_ACCESS,
  * but publishes no user pixels. The source Lock itself has already retired.
- * The six owner reservations and destination reservation stay held throughout. */
+ * The six owner reservations and destination reservation stay held throughout.
+ */
 int m9x_faa_graph_present_submit(struct m9x_device *mdev,
 				 struct m9_faa_graph_binding *binding,
 				 struct drm_gem_object *destination,
@@ -5627,7 +5684,8 @@ out:
 
 /* Authenticate the first returned public-VS Unlock as a successor boundary.
  * This only retains the existing binding. It never resets first-draw flags,
- * ignores a reservation hazard, rewrites a cursor or posts GPU commands. */
+ * ignores a reservation hazard, rewrites a cursor or posts GPU commands.
+ */
 int m9x_faa_graph_public_vs_unlocked_get_locked(struct m9x_device *mdev,
 						u32 generation, u64 unlock_point,
 						struct m9_faa_graph_binding **out)
@@ -5684,7 +5742,8 @@ int m9x_faa_graph_public_vs_unlocked_get_locked(struct m9x_device *mdev,
 #ifdef M9_FAA_GRAPH_INIT_CONTROL
 /* Passive diagnostic after the independent dual Lock receipt.  The bound
  * color allocation is a retained WC SYSTEM owner, distinct from the sampled
- * F021 owner.  Its raw dwords are not assumed to be linear RGBA pixels. */
+ * F021 owner.  Its raw dwords are not assumed to be linear RGBA pixels.
+ */
 static void m9_faa_dual_bound_color_observe(struct m9x_device *mdev,
 					    struct m9x_faa_replay *r)
 {
@@ -5745,7 +5804,8 @@ static void m9_faa_dual_bound_color_observe(struct m9x_device *mdev,
  * borrowed GEM objects: r->owner[] records only their GPU address/capacity,
  * never a local CPU map. The graph binding retains the objects across this
  * actual Lock, and the ioctl holds their reservations here. MAIN/AUX may
- * contain initialized metadata; nonzero raw words are not render coverage. */
+ * contain initialized metadata; nonzero raw words are not render coverage.
+ */
 static void m9_faa_dual_graph_raw_observe(struct m9x_device *mdev,
 					  struct m9x_faa_replay *r, u32 role,
 					  const char *name, u32 logical_bytes)
@@ -5865,7 +5925,8 @@ refused:
 
 /* These are the actual emitted B0/B2/B8 target pairs. Resolve their tagged
  * local addresses back to the retained owner; never publish a new CPU view.
- * The declaration splice shifts every stage after the carry declaration. */
+ * The declaration splice shifts every stage after the carry declaration.
+ */
 static void m9_faa_color_intermediates_observe(struct m9x_device *mdev,
 					       struct m9x_faa_replay *r)
 {
@@ -6622,7 +6683,8 @@ static int m9_faa_public_vs_head_state(struct m9x_transport *t,
 
 /* Caller holds all six reservations. Ignore only this exact authenticated
  * HEAD fence: context/sequence equality alone never exempts another hazard.
- * No allocations, uploads, MMIO, fence signalling or posting occur here. */
+ * No allocations, uploads, MMIO, fence signalling or posting occur here.
+ */
 int m9x_faa_graph_public_vs_head_hazards(struct m9x_device *mdev,
 					 struct m9_faa_graph_binding *binding,
 					 u32 generation, u64 head_point)
@@ -6719,7 +6781,8 @@ static int m9_faa_public_vs_draw_state(struct m9x_transport *t,
 
 /* Caller holds all six reservations. Ignore only this exact authenticated
  * DRAW fence: context/sequence equality alone never exempts another hazard.
- * No allocations, uploads, MMIO, fence signalling or posting occur here. */
+ * No allocations, uploads, MMIO, fence signalling or posting occur here.
+ */
 int m9x_faa_graph_public_vs_draw_hazards(struct m9x_device *mdev,
 					 struct m9_faa_graph_binding *binding,
 					 u32 generation, u64 draw_point)
@@ -7648,7 +7711,8 @@ int m9x_faa_graph_next_get_locked(struct m9x_device *mdev, u32 generation,
 }
 
 /* Authenticate and build the live command image before reserving caller BOs.
- * No new GPU owners or mappings are needed by this source continuation. */
+ * No new GPU owners or mappings are needed by this source continuation.
+ */
 int m9x_faa_graph_next_prepare(struct m9x_device *mdev,
 			       struct m9_faa_graph_binding *binding,
 			       u32 generation, u64 unlock_point,
@@ -7941,7 +8005,8 @@ int m9x_faa_graph_next_finish_get_locked(struct m9x_device *mdev,
 }
 
 /* Authenticate and build the live command image before reserving caller BOs.
- * No new GPU owners or mappings are needed by this source continuation. */
+ * No new GPU owners or mappings are needed by this source continuation.
+ */
 int m9x_faa_graph_next_finish_prepare(struct m9x_device *mdev,
 				      struct m9_faa_graph_binding *binding,
 				      u32 generation, u64 prefix_point)
@@ -8216,7 +8281,8 @@ int m9x_faa_graph_next_lock_get_locked(struct m9x_device *mdev, u32 generation,
 }
 
 /* Authenticate and build the live command image before reserving caller BOs.
- * No new GPU owners or mappings are needed by this source continuation. */
+ * No new GPU owners or mappings are needed by this source continuation.
+ */
 int m9x_faa_graph_next_lock_prepare(struct m9x_device *mdev,
 				    struct m9_faa_graph_binding *binding,
 				    u32 generation, u64 finish_point)
@@ -8424,7 +8490,8 @@ out:
 
 /* Continue only the original normal Unlock after the returned 0x180 Lock
  * view has been copied. The full source-known primary was retained at first
- * submit; only its final END and actual 0x1a0 fence are new here. */
+ * submit; only its final END and actual 0x1a0 fence are new here.
+ */
 int m9x_faa_unlock_diag(struct m9x_device *mdev, u32 color,
 			struct drm_gem_vram_object *color_bo, u64 *point,
 			bool *posted)
@@ -8573,7 +8640,8 @@ unlock:
 
 /* The next original public Lock is a separate primary F022 -> staging F021
  * conversion. It consumes the genuine Unlock receipt before submitting only
- * the source-derived final suffix on the same retained command owner. */
+ * the source-derived final suffix on the same retained command owner.
+ */
 int m9x_faa_relock_diag(struct m9x_device *mdev, u32 color,
 			struct drm_gem_vram_object *color_bo, u64 *point,
 			bool *posted)
@@ -8699,7 +8767,8 @@ unlock:
 /* Explicit internal ac1f0 output contract, below unjoined public Lock
  * admission. This never reinterprets the sampled F022 host-aperture view.
  * The actual kind6 flags30 system owner is read through its retained DMA
- * alias after real retirement; 8b020/8c4a0 supplies each source address. */
+ * alias after real retirement; 8b020/8c4a0 supplies each source address.
+ */
 int m9x_faa_output_read(struct m9x_device *mdev, struct drm_file *file,
 			const struct drm_parhelia_m9_surface_access *args)
 {
@@ -8780,7 +8849,8 @@ put:
 
 /* A repeated COLOR frame owns the same graph/private context. Previous Unlock
  * must have retired completely before any retained code/data owner is rewritten.
- * This admission does not rebase a timeline or clear a reservation hazard. */
+ * This admission does not rebase a timeline or clear a reservation hazard.
+ */
 static int
 m9_faa_color_unlocked_origin_get_locked(struct m9x_device *mdev, u32 generation,
 					u64 previous_unlock_point, u64 origin,
@@ -9280,7 +9350,8 @@ out:
 /* Native attachment ownership for the source SETRENDERTARGET association.
  * Callers hold their graph file mutex and drm_dev_enter across preparation.
  * There is deliberately no ioctl activation or clear packet here until the
- * bound-depth encoder qualifies its descriptors and mapping policy. */
+ * bound-depth encoder qualifies its descriptors and mapping policy.
+ */
 int m9x_faa_graph_bound_depth_prepare(struct m9x_device *mdev,
 				      struct m9_faa_graph_binding *binding,
 				      u32 generation, u64 previous_point,
@@ -9532,7 +9603,8 @@ static int m9_faa_depth_frame_first_state(struct m9x_transport *t,
 /* A queue epoch is command-source state, distinct from the authenticated
  * prior Unlock receipt. The COLOR source preserves q+108/q+110=next_fence;
  * an independent finisher in the older public-VS control changed that state.
- * Never infer this epoch from shader arity or a historical absolute point. */
+ * Never infer this epoch from shader arity or a historical absolute point.
+ */
 static int m9_faa_depth_frame_retained_state(struct m9x_device *mdev,
 					     struct m9_faa_graph_binding *binding,
 					     u32 generation, u64 previous,
@@ -9619,7 +9691,8 @@ m9_faa_depth_frame_owners(struct m9x_faa_replay *r,
 /* First attachment preparation is outside all six graph BO reservations.
  * FIRST and retained Unlock authenticate different states and queue epochs.
  * Already initialized attachments/no-clear remain refused: their later
- * caller contract does not authorize reinitializing HZ on every draw. */
+ * caller contract does not authorize reinitializing HZ on every draw.
+ */
 int m9x_faa_graph_depth_frame_prepare(struct m9x_device *mdev,
 				      struct m9_faa_graph_binding *binding,
 				      u32 generation, u64 previous, bool first,
@@ -10282,7 +10355,8 @@ out:release_firmware(dual_fw);release_firmware(color);release_firmware(sample);
 
 /* One retained dual DRAW after an actual Lock/Unlock. The first producer is
  * used only as an independent live stage builder; its FIRST clear and ENDs
- * are never posted. The later source splice owns the actual command image. */
+ * are never posted. The later source splice owns the actual command image.
+ */
 static void m9_faa_mixed_templates(struct m9x_faa_mixed_templates *tpl,
 				   const struct firmware *sample,
 				   const struct firmware *color,
@@ -10993,7 +11067,8 @@ release:
 /* Provision independent command MDLs before a future idle pool transition.
  * All slot identities are true native allocations; the registry never owns
  * copied owners or rewinds a cursor. Failure keeps partial mappings/CPA state
- * in the retained graph so DMA-stop teardown can restore every allocation. */
+ * in the retained graph so DMA-stop teardown can restore every allocation.
+ */
 int m9x_faa_graph_command_pool_prepare(struct m9x_device *mdev,
 				       struct m9_faa_graph_binding *binding,
 				       u32 generation, u64 previous)
@@ -11141,7 +11216,8 @@ static int m9_faa_command_owner_admit(struct m9x_device *mdev,
  * preceding application Unlock. Both original receipts remain immutable.
  * Only the newly appended footer is referenced by the parent counted range.
  * It is a new original 249a0(mode1,flags0) scope, so its end selector is0.
- * Earlier DRAW scopes (whose end selector is2) are never closed or replayed. */
+ * Earlier DRAW scopes (whose end selector is2) are never closed or replayed.
+ */
 static int m9_faa_secondary_rotate(struct m9x_device *mdev,
 				   struct m9_faa_graph_binding *binding,
 				   u32 generation, u64 previous, u32 needed)
@@ -11765,7 +11841,8 @@ unlock:
 
 /* Authenticate the completed frame against the same immutable Unlock and
  * separately retired presentation/maintenance journals used by preparation.
- * The ioctl must publish that origin, not infer it from a returned Lock. */
+ * The ioctl must publish that origin, not infer it from a returned Lock.
+ */
 int m9x_faa_graph_depth_frame_receipt_locked(struct m9x_device *mdev,
 					     u32 generation, u64 previous,
 					     u64 final_point, u64 *origin,
@@ -11896,7 +11973,8 @@ int m9x_faa_graph_depth_frame_maintenance_locked(struct m9x_device *mdev,
 #ifdef M9_FAA_GRAPH_INIT_CONTROL
 /* The prefix is a real separately retired transaction, not a submitted
  * value inferred from Unlock. Keep its immutable original graph/owner/range
- * journal while preparing the remaining source caller; no prefix repost. */
+ * journal while preparing the remaining source caller; no prefix repost.
+ */
 static int m9_faa_clear_resume_state(struct m9x_device *mdev,
 				     struct m9_faa_graph_binding *binding,
 				     u32 generation, u64 previous, u64 *next)
@@ -12010,10 +12088,12 @@ int m9x_faa_graph_clear_resume_get_locked(struct m9x_device *mdev,
 
 /* Initialized callers own an actual prior Lock/view/Unlock. Reuse the
  * three retained mappings and source clear state; never run FIRST constructors
- * or claim initialization from a copied request. Preparation posts nothing. */
+ * or claim initialization from a copied request. Preparation posts nothing.
+ */
 /* A refusal before submit may retry the already prepared image, but only
  * the exact immutable owned semantic upload. No CPU reconstruction or input
- * replacement is permitted under that retained prefix entitlement. */
+ * replacement is permitted under that retained prefix entitlement.
+ */
 #ifdef M9_FAA_GRAPH_INIT_CONTROL
 static bool
 m9_faa_clear_resume_input_equal(const struct m9_faa_depth_frame_storage *f,
@@ -13198,7 +13278,8 @@ release:
 
 /* Source-closed later CLEAR3 publication. The ordinary frame/mode/Lock
  * journal is not advanced; a prefix-only record blocks further rendering
- * until a separate source-qualified continuation exists. */
+ * until a separate source-qualified continuation exists.
+ */
 int m9x_faa_graph_clear_prefix_binding_locked(struct m9x_device *mdev,
 					      u32 generation, u64 previous,
 					      struct m9_faa_graph_binding **out)
@@ -13880,7 +13961,8 @@ MODULE_FIRMWARE(M9_FAA_SINGLE_FIRST_FIRMWARE);
 #endif
 
 /* Fresh and retained COLOR have distinct complete source plans and queue
- * epochs, both under the diagnostic launcher opt-in until hardware review. */
+ * epochs, both under the diagnostic launcher opt-in until hardware review.
+ */
 bool m9x_faa_graph_depth_frame_profile_qualified(bool first)
 {
 #ifdef M9_FAA_GRAPH_INIT_CONTROL
