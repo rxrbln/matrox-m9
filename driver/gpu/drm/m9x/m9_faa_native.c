@@ -6789,7 +6789,12 @@ int m9x_faa_graph_bound_depth_views_locked(struct m9x_device *mdev,
    }
   }else{
    if(!o->vram||o->cpu||iosys_map_is_null(&o->map))return -ESTALE;
-   ret=m9x_address_check_local_identity(mdev,o->base,o->bytes);if(ret)return ret;
+   /* GPU use can update opaque secondary-record metadata. Initial
+    * publication still requires its clean image; reuse checks identities
+    * without resetting those retained metadata words. */
+   ret=n->initialized?m9x_address_check_local_mapping(mdev,o->base,o->bytes):
+    m9x_address_check_local_identity(mdev,o->base,o->bytes);
+   if(ret){m9_faa_frame_trace(mdev,"refuse-attachment-identity",31+i,o->base,o->bytes,ret,false);return ret;}
   }
  }
  *views=n->views;return 0;
@@ -7377,6 +7382,7 @@ int m9x_faa_graph_depth_frame_submit(struct m9x_device *mdev,
  r->graph_draw_point=stage_point;r->color_lock_point=stage_point;r->color_lock_retired=true;
  input->primary_length=frame->primary_bytes;input->lock_delta=frame->final_point-previous;input->lock_posts=frame->end_count;
  r->color_secondary_cursor=frame->secondary_cursor+frame->secondary_bytes;
+ m9_faa_color_intermediates_observe(mdev,r);
  dev_info(&mdev->pdev->dev,"M9 FAA bound depth FRAME retired: previous=%#llx queue_start=%#llx lock=%#llx bytes=%u posts=%u attachments=31/32/33\n",
   previous,queue_start,*point,r->graph_draw_end_bytes,r->graph_draw_posts);
  if(frame->draw_count>1)
