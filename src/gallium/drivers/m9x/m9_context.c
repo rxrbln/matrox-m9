@@ -10145,6 +10145,14 @@ m9_context_faa_flush_frame(struct m9_context *ctx, const char **reason)
       why = "FAA frame Lock/Unlock presentation failed";
       if (ctx->debug)
          fprintf(stderr, "m9x: FAA frame presentation returned %d\n", ret);
+      /* A destination the presentation cannot take (e.g. after an unflip)
+       * must not leave the graph Locked: Unlock it unpresented so the
+       * next frame can retarget the surface. */
+      if (graph->color_lock_point && !graph->color_unlock_attempted) {
+         int unlock = m9_faa_surface_color_unlock_kernel(ctx->screen, &ctx->faa_surface);
+         if (ctx->debug)
+            fprintf(stderr, "m9x: FAA unpresented Unlock returned %d\n", unlock);
+      }
       goto done;
    }
    ctx->last_point = MAX2(ctx->last_point, MAX2(graph->color_unlock_point, graph->color_present_point));
