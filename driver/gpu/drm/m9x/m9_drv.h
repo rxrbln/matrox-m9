@@ -694,8 +694,10 @@ int m9x_faa_graph_color_next_ioctl(struct drm_device *,void *,struct drm_file *)
 bool m9x_faa_graph_depth_frame_profile_qualified(bool);
 int m9x_faa_graph_depth_frame_prepare(struct m9x_device *,struct m9_faa_graph_binding *,u32,u64,bool,const struct m9x_faa_color_input *,u32);
 int m9x_faa_graph_dual_first_ioctl(struct drm_device *,void *,struct drm_file *);
+int m9x_faa_graph_dual_batch_ioctl(struct drm_device *,void *,struct drm_file *);
 struct m9x_faa_texture_owners;
-int m9x_faa_graph_dual_first_prepare(struct m9x_device *,struct m9_faa_graph_binding *,u32,u64,const struct m9x_faa_color_input *,struct m9x_faa_texture_owners *);
+struct m9x_faa_owned_color_batch;
+int m9x_faa_graph_dual_first_prepare(struct m9x_device *,struct m9_faa_graph_binding *,u32,u64,const struct m9x_faa_color_input *,struct m9x_faa_texture_owners *,const struct m9x_faa_owned_color_batch *);
 int m9x_faa_graph_depth_unlocked_get_locked(struct m9x_device *,u32,u64,struct m9_faa_graph_binding **);
 int m9x_faa_graph_depth_frame_receipt_locked(struct m9x_device *,u32,u64,u64,u64 *,u64 *);
 int m9x_faa_graph_depth_frame_maintenance_locked(struct m9x_device *,u32,u64,u64,u64 *);
@@ -703,7 +705,6 @@ int m9x_faa_graph_command_pool_prepare(struct m9x_device *,struct m9_faa_graph_b
 int m9x_faa_graph_depth_later_prepare(struct m9x_device *,struct m9_faa_graph_binding *,u32,u64,const struct m9x_faa_color_input *,u32,u32);
 int m9x_faa_graph_depth_frame_submit(struct m9x_device *,struct m9_faa_graph_binding *,u32,u64,u64 *,bool *);
 int m9x_faa_graph_color_frame_ioctl(struct drm_device *,void *,struct drm_file *);
-struct m9x_faa_owned_color_batch;
 int m9x_faa_graph_depth_batch_prepare(struct m9x_device *,struct m9_faa_graph_binding *,u32,u64,bool,const struct m9x_faa_owned_color_batch *);
 int m9x_faa_graph_color_frame_batch_ioctl(struct drm_device *,void *,struct drm_file *);
 

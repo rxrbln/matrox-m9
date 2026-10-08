@@ -149,6 +149,20 @@ struct drm_parhelia_m9_faa_graph_dual_first {
 };
 #define DRM_IOCTL_PARHELIA_M9_FAA_GRAPH_DUAL_FIRST DRM_IOWR(DRM_COMMAND_BASE + DRM_PARHELIA_M9_FAA_GRAPH_DUAL_FIRST, struct drm_parhelia_m9_faa_graph_dual_first)
 
+/* A bounded FIRST COLOR0/TEX0/TEX1 frame with one retained program and
+ * sampler pair. Each draw carries independently owned constants and raw
+ * records; all are uploaded before the first consuming command is posted. */
+#define DRM_PARHELIA_M9_FAA_GRAPH_DUAL_BATCH 0x22
+#define PARHELIA_M9_FAA_DUAL_BATCH_VERSION 1u
+#define PARHELIA_M9_FAA_DUAL_BATCH_LOCK_RETIRED 24u
+struct drm_parhelia_m9_faa_graph_dual_batch {
+ __u64 graph_id,init_point,lock_point,draws;
+ __u32 draw_count,generation,version,flags,state,pad;
+ __u32 width,height,clear_flags,clear_color;
+ struct drm_parhelia_m9_faa_texture_view texture[2];
+};
+#define DRM_IOCTL_PARHELIA_M9_FAA_GRAPH_DUAL_BATCH DRM_IOWR(DRM_COMMAND_BASE + DRM_PARHELIA_M9_FAA_GRAPH_DUAL_BATCH, struct drm_parhelia_m9_faa_graph_dual_batch)
+
 /* Retired Lock -> authentic Unlock -> separate-owner GPU presentation.
  * Input outputs/padding are zero. U stays immutable; P is a distinct frontier.
  * Destination descriptor is its ordinary CC21 view, never a caller GPUVA. */

@@ -15,6 +15,7 @@
 #include "m9_faa_graph_public_vs_encode.h"
 #include "m9_faa_graph_color_encode.h"
 #include "m9_faa_graph_frame_batch_input.h"
+#include "m9_faa_graph_dual_batch_input.h"
 #include "m9_faa_graph_surface_layout.h"
 #include "m9_faa_graph_texture_owner.h"
 
@@ -1972,7 +1973,7 @@ int m9x_faa_graph_dual_first_ioctl(struct drm_device *drm,void *data,
  input.declaration_count=args->declaration_count;input.depth_flags=args->depth_flags;
  input.dual_base_only=true;
  ret=m9x_faa_graph_dual_first_prepare(mdev,binding,args->generation,args->init_point,
-                                      &input,&textures);
+                                      &input,&textures,NULL);
  if(ret)goto out;
  drm_exec_init(&exec,DRM_EXEC_INTERRUPTIBLE_WAIT|DRM_EXEC_IGNORE_DUPLICATES,8);
  drm_exec_until_all_locked(&exec){
@@ -1996,6 +1997,82 @@ out:kfree(upload);m9x_faa_texture_owners_put(&textures,false);
  for(i=0;i<2;i++)if(texture_bo[i])drm_gem_object_put(texture_bo[i]);
  m9x_faa_graph_binding_put(binding);mutex_unlock(&state->lock);drm_dev_exit(idx);
  return ret;
+}
+
+int m9x_faa_graph_dual_batch_ioctl(struct drm_device *drm,void *data,
+ struct drm_file *file)
+{
+ struct drm_parhelia_m9_faa_graph_dual_batch *args=data;
+ struct m9x_device *mdev=to_m9x(drm);struct m9_faa_file *state=file->driver_priv;
+ struct m9x_faa_owned_color_batch *batch=NULL;
+ struct m9_faa_prepared_graph *graph;struct m9_faa_graph_binding *binding=NULL;
+ struct m9x_faa_texture_owners textures={0};
+ struct m9x_faa_texture_bind_input request[2]={0};
+ struct drm_gem_object *graph_owner[PARHELIA_M9_FAA_GRAPH_OWNERS];
+ struct drm_gem_object *texture_bo[2]={0};struct drm_exec exec;
+ u32 handles[2],address[PARHELIA_M9_FAA_GRAPH_OWNERS],i;
+ u64 point=0,expected;bool posted=false;int idx,ret;
+ if(!state)return -EINVAL;
+ ret=m9x_faa_dual_batch_copy(args,&batch);if(ret)return ret;
+ if(args->init_point>U64_MAX-0x150-0xa0*(batch->count-1)){
+  ret=-ERANGE;goto out_batch;
+ }
+ expected=args->init_point+0x150+0xa0*(batch->count-1);
+ if(!m9x_faa_graph_profile_enabled()){ret=-EOPNOTSUPP;goto out_batch;}
+ if(!drm_dev_enter(drm,&idx)){ret=-ENODEV;goto out_batch;}
+ mutex_lock(&state->lock);graph=state->graph;
+ if(!graph||!graph->initialized||graph->id!=args->graph_id||
+    graph->generation!=args->generation||graph->init_point!=args->init_point||
+    graph->width!=args->width||graph->height!=args->height){
+  ret=-ENOENT;goto out;
+ }
+ for(i=0;i<2;i++){
+  const struct drm_parhelia_m9_faa_texture_view *v=&args->texture[i];
+  handles[i]=v->handle;
+  request[i]=(struct m9x_faa_texture_bind_input){
+   .profile=v->profile,.format=v->format,.width=v->width,.height=v->height,
+   .storage_kind=v->storage_kind,.levels=v->levels,.stage=i,
+   .min_filter=v->min_filter,.mag_filter=v->mag_filter,.mip_filter=v->mip_filter,
+   .address_u=v->address_u,.address_v=v->address_v,
+   .coordinate_sets=2,.coordinate_index=i};
+ }
+ for(i=0;i<PARHELIA_M9_FAA_GRAPH_OWNERS;i++)graph_owner[i]=graph->owner[i];
+ ret=m9x_faa_texture_owners_acquire(mdev,file,handles,request,graph_owner,
+                                    args->generation,&textures);
+ if(ret)goto out;
+ for(i=0;i<2;i++){
+  texture_bo[i]=textures.gem[i];drm_gem_object_get(texture_bo[i]);
+ }
+ mutex_lock(&mdev->transport.lock);
+ ret=m9x_faa_graph_retained_get_locked(mdev,args->generation,args->init_point,
+                                       &binding);
+ mutex_unlock(&mdev->transport.lock);if(ret)goto out;
+ if(binding->graph!=graph){ret=-ESTALE;goto out;}
+ ret=m9x_faa_graph_dual_first_prepare(mdev,binding,args->generation,
+  args->init_point,&batch->draw[0].input,&textures,batch);
+ if(ret)goto out;
+ drm_exec_init(&exec,DRM_EXEC_INTERRUPTIBLE_WAIT|DRM_EXEC_IGNORE_DUPLICATES,8);
+ drm_exec_until_all_locked(&exec){
+  for(i=0;i<PARHELIA_M9_FAA_GRAPH_OWNERS+2;i++){
+   struct drm_gem_object *bo=i<PARHELIA_M9_FAA_GRAPH_OWNERS?
+    graph->owner[i]:texture_bo[i-PARHELIA_M9_FAA_GRAPH_OWNERS];
+   if(!bo){ret=-ESTALE;goto out_exec;}
+   ret=drm_exec_prepare_obj(&exec,bo,1);
+   drm_exec_retry_on_contention(&exec);if(ret)goto out_exec;
+  }
+ }
+ ret=m9_faa_graph_live_addresses(mdev,graph,address);if(ret)goto out_exec;
+ if(memcmp(binding->address,address,sizeof(address))){ret=-ESTALE;goto out_exec;}
+ ret=m9x_faa_graph_depth_frame_submit(mdev,binding,args->generation,
+                                      args->init_point,&point,&posted);
+ if(!ret){if(point!=expected)ret=-EIO;
+  else{args->lock_point=point;
+   args->state=PARHELIA_M9_FAA_DUAL_BATCH_LOCK_RETIRED;}}
+out_exec:drm_exec_fini(&exec);
+out:m9x_faa_texture_owners_put(&textures,false);
+ for(i=0;i<2;i++)if(texture_bo[i])drm_gem_object_put(texture_bo[i]);
+ m9x_faa_graph_binding_put(binding);mutex_unlock(&state->lock);drm_dev_exit(idx);
+out_batch:m9x_faa_color_batch_free(batch);return ret;
 }
 
 int m9x_faa_graph_color_frame_ioctl(struct drm_device *drm,void *data,struct drm_file *file)
