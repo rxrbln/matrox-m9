@@ -8945,6 +8945,12 @@ int m9x_faa_graph_depth_frame_submit(struct m9x_device *mdev,
   * Every actual primary/data/secondary PTE and local code view above is
   * still authenticated before any consuming fence or command write. */
  ret=m9x_address_check_local_identity(mdev,program->base,program->bytes);if(ret){m9_faa_frame_trace(mdev,"refuse-program-identity",program->base,program->bytes,previous,ret,false);goto out;}
+ /* PREPARE does not initialize sampled color through a CPU map. Capture the
+  * actual borrowed tile after retired INIT and before the first dual GPU
+  * write, under the same six-owner reservation set as the later read. This
+  * distinguishes an existing origin word from a DRAW-produced one. */
+ if(frame->dual_first&&frame->first&&m9_faa_color_observe)
+  m9_faa_dual_graph_raw_observe(mdev,r,1,"sampled-pre",m9_faa_owner_specs[1].bytes);
  fence=m9x_fence_create_target_locked(mdev,lower_32_bits(frame->final_point));if(!fence){ret=-ENOMEM;goto out;}
  for(i=0;i<PARHELIA_M9_FAA_GRAPH_OWNERS;i++)dma_resv_add_fence(m9x_faa_graph_binding_owner(binding,i)->resv,&fence->base,DMA_RESV_USAGE_WRITE);
  if(frame->dual_first){
