@@ -4,6 +4,27 @@ Copyright 2026 René Rebe <rene@exactco.de>
 SPDX-License-Identifier: GPL-2.0-only
 
 
+## October 8: raw-input count fix restores FAA glxgears geometry
+
+DRM02c2d52 derives raw register22 bits12:8 from the live declaration half
+count `(declaration_count - 1) << 8`, in both the two- and four-stage heads.
+Previously count2 retained one-attribute8020e and count4 two-attribute8040e
+regardless of the actual input. Original vendor packer/merge/writer evidence
+and complete decl3/5 source equality are [sealed here](../tests/m9-faa-raw-input-control-source-20261008/README.md).
+
+Physical four-stage glxgears now renders all reference interior geometry:
+missing pixels0/26548, down from5138. Three12-draw FAA frames reach
+8e0/900,1130/1150,1980/19a0 with healthy empty queue, generation0 and no
+wedge. First image29038 nonblack pixels,730 RGB colors;79 interior pixels
+have a different dominant channel. [Screenshots and exact hardware proof](../tests/m9-faa-glxgears-first-hardware-20261008/raw-input-control-fixed/README.md).
+This verifies320x240 FAA geometry on a1024x768 display, not unrestricted
+resolution or fine pixel/depth-edge conformance. Paused timings are not FPS.
+
+The first run stopped at3 after its host-review window expired; the96-frame
+command-pool reuse check is being run separately from a fresh GPU context.
+Corrected count2 rendering and initialized-frame native integration are
+still pending hardware qualification. Quake3 FAA textures remain open.
+
 ## October 8: source two-stage application route under integration
 
 Original M9128 one-COLOR shaders use a fused two-stage route. The new
