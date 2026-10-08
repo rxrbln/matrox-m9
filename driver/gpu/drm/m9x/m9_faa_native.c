@@ -555,20 +555,29 @@ static inline u32 m9_faa_first_bytes(const struct m9x_faa_replay *r,
 }
 
 #ifdef M9_FAA_GRAPH_INIT_CONTROL
-static struct m9_faa_owner *m9_faa_command_owner(struct m9x_faa_replay *r,bool secondary)
+static struct m9_faa_owner *m9_faa_command_owner(struct m9x_faa_replay *r,
+						 bool secondary)
 {
- struct m9_faa_owner *original=secondary?&r->draw_owner[2]:&r->owner[M9_FAA_PRIMARY_OWNER];
- struct m9_faa_command_pools *p=r->command_pools;
- struct m9x_faa_secondary_pool *manager;
- u64 identity;
- if(!p||!p->ready)return original;
- manager=secondary?&p->secondary:&p->primary;
- if(!manager->initialized||manager->quarantined||manager->active>1)return NULL;
- identity=manager->slot[manager->active].owner.identity;
- if(identity==(unsigned long)original)return original;
- if(identity==(unsigned long)&p->spare[secondary?1:0])return &p->spare[secondary?1:0];
- return NULL;
+	struct m9_faa_owner *original =
+		secondary ? &r->draw_owner[2] : &r->owner[M9_FAA_PRIMARY_OWNER];
+	struct m9_faa_command_pools *p = r->command_pools;
+	struct m9x_faa_secondary_pool *manager;
+	u64 identity;
+
+	if (!p || !p->ready)
+		return original;
+	manager = secondary ? &p->secondary : &p->primary;
+	if (!manager->initialized || manager->quarantined ||
+	    manager->active > 1)
+		return NULL;
+	identity = manager->slot[manager->active].owner.identity;
+	if (identity == (unsigned long)original)
+		return original;
+	if (identity == (unsigned long)&p->spare[secondary ? 1 : 0])
+		return &p->spare[secondary ? 1 : 0];
+	return NULL;
 }
+
 static int m9_faa_command_owner_admit(struct m9x_device *,struct m9_faa_owner *);
 static u64 m9_faa_present_origin(const struct m9x_faa_replay *r, u64 previous)
 {
