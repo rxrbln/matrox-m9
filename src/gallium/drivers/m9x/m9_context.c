@@ -7695,7 +7695,7 @@ m9_native_vs_outside_near(struct m9_context *ctx, const struct m9_vs_program *p,
    const uint8_t *data = cb->user_buffer ? cb->user_buffer :
                          cb->buffer ? m9_res(cb->buffer)->map : NULL;
    uint64_t t_near = m9_prof_begin();
-   struct m9_vs_clip_box *boxes[PIPE_MAX_ATTRIBS] = { NULL };
+   struct m9_vs_clip_box_ref boxes[PIPE_MAX_ATTRIBS] = { { NULL } };
 
    for (unsigned i = 0; i < n->buffer_count && i < PIPE_MAX_ATTRIBS; i++) {
       const struct pipe_vertex_buffer *vb = &ctx->vertex_buffers[i];
@@ -7703,8 +7703,8 @@ m9_native_vs_outside_near(struct m9_context *ctx, const struct m9_vs_program *p,
       if (!vb->is_user_buffer && vb->buffer.resource) {
          struct m9_resource *res = m9_res(vb->buffer.resource);
 
-         res->near_box.generation = res->generation;
-         boxes[i] = &res->near_box;
+         boxes[i].box = &res->near_box;
+         boxes[i].generation = res->generation;
       }
    }
    int outside = m9_vs_clip_outside_near(p, ctx->velems->elements,

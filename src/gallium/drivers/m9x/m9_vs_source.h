@@ -12,6 +12,7 @@
 #include "m9_vs_compile.h"
 
 #include "pipe/p_state.h"
+#include "util/simple_mtx.h"
 
 /* Only semantic GL defaults derived from the bound unpack format. Values,
  * buffer addresses and strides are not compiler keys. */
@@ -143,16 +144,30 @@ bool m9_vs_source_records_gather(const struct m9_vs_source_layout *layout,
                                  const uint32_t *vertex, unsigned count,
                                  float *out);
 
-/* Bounds of a float position element over a vertex range, kept with the
- * vertex buffer.  The caller sets generation to the buffer's current
- * content generation; a mismatching entry is rebuilt. */
-struct m9_vs_clip_box {
-   uint64_t generation;
+/* Bounds of a float position element over a vertex range. */
+struct m9_vs_clip_bounds {
    bool valid;
-   uint64_t built;            /* generation the bounds were taken at */
+   uint64_t built;            /* content generation the bounds were taken at */
+   uint64_t used;
    const uint8_t *base;
    unsigned stride, floats, first, count;
    float lo[4], hi[4];
+};
+
+/* The bounds kept with a vertex buffer, one entry per recently used
+ * element layout.  The lock serialises contexts sharing the buffer; a
+ * zeroed box is ready to use. */
+struct m9_vs_clip_box {
+   simple_mtx_t lock;
+   uint64_t clock;
+   struct m9_vs_clip_bounds entry[2];
+};
+
+/* A vertex buffer's box with its current content generation; an entry
+ * taken at another generation is rebuilt. */
+struct m9_vs_clip_box_ref {
+   struct m9_vs_clip_box *box;
+   uint64_t generation;
 };
 
 /* Evaluates the program's CPU clip z/w for vertices first..first+count-1.
@@ -160,15 +175,15 @@ struct m9_vs_clip_box {
  * -1 when the position has no CPU form or an input cannot be read.  With
  * flags, every vertex is evaluated and flags[v] says whether it is outside;
  * flags are left untouched when 0 is returned.  boxes, indexed by vertex
- * buffer and NULL where none is kept, let a draw whose position bounds lie
- * inside the near plane with margin skip the per-vertex test. */
+ * buffer with a NULL box where none is kept, let a draw whose position
+ * bounds lie inside the near plane with margin skip the per-vertex test. */
 int m9_vs_clip_outside_near(const struct m9_vs_program *program,
                             const struct pipe_vertex_element *elements,
                             unsigned element_count,
                             const struct pipe_vertex_buffer *buffers,
                             const uint8_t *const *buffer_map,
                             const unsigned *buffer_size, unsigned buffer_count,
-                            struct m9_vs_clip_box *const *boxes,
+                            const struct m9_vs_clip_box_ref *boxes,
                             const uint8_t *constants, size_t constant_size,
                             unsigned first, unsigned count, uint8_t *flags);
 

@@ -859,18 +859,16 @@ clip_node_eval(const struct m9_vs_program *program, const uint8_t *constants,
    }
 }
 
-/* Bounds of a float position over vertices first..first+count-1, reused
- * while the buffer's content and the range are unchanged.  False when a
- * component is not finite. */
-static bool
-clip_box_bounds(struct m9_vs_clip_box *box, const struct clip_input *in,
-                unsigned first, unsigned count)
+static void
+clip_bounds_build(struct m9_vs_clip_bounds *box, uint64_t generation,
+                  const struct clip_input *in, unsigned first, unsigned count)
 {
-   if (box->valid && box->built == box->generation && box->base == in->base &&
-       box->stride == in->stride && box->floats == in->floats &&
-       box->first == first && box->count == count)
-      return true;
    box->valid = false;
+   box->base = in->base;
+   box->stride = in->stride;
+   box->floats = in->floats;
+   box->first = first;
+   box->count = count;
    for (unsigned c = 0; c < 4; c++) {
       box->lo[c] = c < in->floats ? INFINITY : 1.0f;
       box->hi[c] = c < in->floats ? -INFINITY : 1.0f;
@@ -882,25 +880,53 @@ clip_box_bounds(struct m9_vs_clip_box *box, const struct clip_input *in,
              in->floats * sizeof(float));
       for (unsigned c = 0; c < in->floats; c++) {
          if (!isfinite(p[c]))
-            return false;
+            return;
          box->lo[c] = MIN2(box->lo[c], p[c]);
          box->hi[c] = MAX2(box->hi[c], p[c]);
       }
    }
-   box->built = box->generation;
-   box->base = in->base;
-   box->stride = in->stride;
-   box->floats = in->floats;
-   box->first = first;
-   box->count = count;
+   box->built = generation;
    box->valid = true;
-   return true;
+}
+
+/* Bounds of a float position over vertices first..first+count-1, copied
+ * out of the box's entry for this layout and range, which is rebuilt when
+ * the buffer's content moved on.  False when a component is not finite. */
+static bool
+clip_box_bounds(struct m9_vs_clip_box *box, uint64_t generation,
+                const struct clip_input *in, unsigned first, unsigned count,
+                struct m9_vs_clip_bounds *out)
+{
+   struct m9_vs_clip_bounds *b = NULL;
+   bool ok;
+
+   simple_mtx_lock(&box->lock);
+   for (unsigned i = 0; i < ARRAY_SIZE(box->entry); i++) {
+      struct m9_vs_clip_bounds *e = &box->entry[i];
+
+      if (e->base == in->base && e->stride == in->stride &&
+          e->floats == in->floats && e->first == first && e->count == count) {
+         b = e;
+         break;
+      }
+      if (!b || e->used < b->used)
+         b = e;
+   }
+   b->used = ++box->clock;
+   if (!(b->valid && b->built == generation && b->base == in->base &&
+         b->stride == in->stride && b->floats == in->floats &&
+         b->first == first && b->count == count))
+      clip_bounds_build(b, generation, in, first, count);
+   ok = b->valid;
+   *out = *b;
+   simple_mtx_unlock(&box->lock);
+   return ok;
 }
 
 /* Whether every point of the box has w > 0 and z >= -w, with a margin that
  * covers the per-vertex float evaluation, so no vertex can test outside. */
 static bool
-clip_box_inside(const float *z, const float *w, const struct m9_vs_clip_box *box)
+clip_box_inside(const float *z, const float *w, const struct m9_vs_clip_bounds *box)
 {
    double wmin = w[0], smin = (double)z[0] + w[0], scale = fabs(z[0]) + fabs(w[0]);
 
@@ -922,7 +948,7 @@ m9_vs_clip_outside_near(const struct m9_vs_program *program,
                         const struct pipe_vertex_buffer *buffers,
                         const uint8_t *const *buffer_map,
                         const unsigned *buffer_size, unsigned buffer_count,
-                        struct m9_vs_clip_box *const *boxes,
+                        const struct m9_vs_clip_box_ref *boxes,
                         const uint8_t *constants, size_t constant_size,
                         unsigned first, unsigned count, uint8_t *flags)
 {
@@ -999,11 +1025,14 @@ m9_vs_clip_outside_near(const struct m9_vs_program *program,
          const struct clip_input *in = &input[e0];
          const float *zc = z + 1, *wc = w + 1;
          bool four = in->floats >= 4;
-         struct m9_vs_clip_box *box =
-            boxes ? boxes[elements[e0].vertex_buffer_index] : NULL;
+         const struct m9_vs_clip_box_ref *ref =
+            boxes ? &boxes[elements[e0].vertex_buffer_index] : NULL;
+         struct m9_vs_clip_bounds bounds;
 
-         if (box && clip_box_bounds(box, in, first, count) &&
-             clip_box_inside(z, w, box)) {
+         if (ref && ref->box &&
+             clip_box_bounds(ref->box, ref->generation, in, first, count,
+                             &bounds) &&
+             clip_box_inside(z, w, &bounds)) {
             free(scratch);
             return 0;
          }
