@@ -116,8 +116,8 @@ static bool m9_faa_graph_ranges_disjoint(const u32 *address)
 	       m9_faa_graph_ranges_layout_disjoint(address, &layout);
 }
 
-static bool m9_faa_graph_owner_distinct(
-		const struct m9_faa_prepared_graph *graph, u32 role)
+static bool
+m9_faa_graph_owner_distinct(const struct m9_faa_prepared_graph *graph, u32 role)
 {
 	u32 i;
 
