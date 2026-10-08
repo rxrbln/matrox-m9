@@ -6862,7 +6862,7 @@ int m9x_faa_graph_depth_frame_prepare(struct m9x_device *mdev,
  struct m9x_faa_color_input typed_input;
  u32 i,sample_bytes,prefix_bytes;u64 queue_start=0;int ret;
  if(!binding||!input||(!(raster_flags&1)&&m9x_faa_color_flat_fragment_valid(input))||(!first&&(raster_flags&1))||(raster_flags&~7u)||(raster_flags&6)==6||
-  !m9_faa_color_four_experimental||input->layout.program_count!=4||input->declaration_count!=5)return -EOPNOTSUPP;
+  !m9_faa_color_four_experimental||input->layout.program_count!=4||(input->declaration_count!=3&&input->declaration_count!=5)||(!first&&input->declaration_count!=5))return -EOPNOTSUPP;
  typed_input=*input;typed_input.fragment_flags=raster_flags&1;input=&typed_input;
  if(previous>U64_MAX-0x1a0||lower_32_bits(previous)>U32_MAX-0x1a0)return -ERANGE;
  frame=kzalloc(sizeof(*frame),GFP_KERNEL);attach=kmalloc(sizeof(*attach),GFP_KERNEL);
@@ -7085,7 +7085,7 @@ int m9x_faa_graph_depth_batch_prepare(struct m9x_device *mdev,
   if((initialized&&batch->draw[i].raster_flags)||(batch->draw[i].raster_flags&~7u)||(batch->draw[i].raster_flags&6)==6||
    (batch->draw[i].raster_flags&6)!=(batch->draw[0].raster_flags&6)||input->data_offset||input->record_stride!=32||
    !input->record_count||input->record_count>12288||input->record_count%3||
-   input->layout.constants_bytes>16384||input->layout.program_count!=4||input->declaration_count!=5)return -EOPNOTSUPP;
+   input->layout.constants_bytes>16384||input->layout.program_count!=4||(input->declaration_count!=3&&input->declaration_count!=5)||(initialized&&input->declaration_count!=5))return -EOPNOTSUPP;
   slots[i]=ALIGN(arena_bytes,128);
   if(check_mul_overflow(ALIGN(input->record_count,4),32u,&raw)||
    check_add_overflow(ALIGN(input->layout.constants_bytes,128),128u,&bytes)||
@@ -7118,17 +7118,17 @@ int m9x_faa_graph_depth_batch_prepare(struct m9x_device *mdev,
   frame->first!=first||frame->initialized_reuse!=initialized||
   frame->end_count!=(initialized?(batch->clear_flags?13:4):14)||
   frame->final_point!=previous+(initialized?(batch->clear_flags?0x150:0xd0):0x150)||
-  frame->secondary_bytes!=(initialized?(batch->clear_flags?2568:2572):2712)||arena_bytes>r->draw_owner[1].bytes){ret=-ESTALE;goto unlock;}
+  frame->secondary_bytes!=(initialized?(batch->clear_flags?2568:2572):(batch->draw[0].input.declaration_count==3?2688:2712))||arena_bytes>r->draw_owner[1].bytes){ret=-ESTALE;goto unlock;}
  m9_faa_depth_frame_owners(r,owner);
  ret=m9x_faa_graph_bound_depth_views_locked(mdev,binding,generation,&views);if(ret)goto unlock;
  memcpy(arena,r->color_image->constants,r->color_image->constants_bytes);
  memcpy(arena+r->color_image->geometry_offset,r->color_image->constants+r->color_image->geometry_offset,r->color_image->geometry_bytes);
- if(!initialized)memcpy(jobs_secondary,frame->secondary,2712);
+ if(!initialized)memcpy(jobs_secondary,frame->secondary,frame->secondary_bytes);
  for(i=0;i<batch->count;i++){
   jobs[i].program=batch->draw[i].input.program;
   jobs[i].program_bytes=batch->draw[i].input.layout.program_bytes;
   memcpy(jobs[i].entry_bytes,batch->draw[i].input.layout.entry_bytes,sizeof(jobs[i].entry_bytes));
-  jobs[i].secondary=jobs_secondary+i*2712;jobs[i].secondary_bytes=2712;
+  jobs[i].secondary=jobs_secondary+i*2712;jobs[i].secondary_bytes=batch->draw[i].input.declaration_count==3?2688:2712;
   jobs[i].declaration_count=batch->draw[i].input.declaration_count;
  }
  for(i=initialized?0:1;i<batch->count;i++){
@@ -7162,7 +7162,8 @@ int m9x_faa_graph_depth_batch_prepare(struct m9x_device *mdev,
    if(raster_bytes!=sb){ret=-EINVAL;goto unlock;}
    memcpy(job_secondary,ro.secondary,sb);
   }
-  memcpy(jobs[i].secondary,job_secondary,2712);
+  if(sb!=jobs[i].secondary_bytes){ret=-EIO;goto unlock;}
+  memcpy(jobs[i].secondary,job_secondary,sb);
  }
  /* Bind every immutable code span before composing a consuming range.
   * C2 page pointers retain owner26 identity; selectors use live slot bytes. */
@@ -7172,7 +7173,7 @@ int m9x_faa_graph_depth_batch_prepare(struct m9x_device *mdev,
   * already encodes its page selectors at offset zero; its different source
   * secondary grammar must not be replaced by a fresh FIRST stage. */
  if(code_slots[0]){ret=-ESTALE;goto unlock;}
- if(!initialized)memcpy(frame->secondary,jobs[0].secondary,2712);
+ if(!initialized)memcpy(frame->secondary,jobs[0].secondary,jobs[0].secondary_bytes);
  memcpy(secondary,frame->secondary,frame->secondary_bytes);sec_cursor=frame->secondary_bytes;
  for(i=1;i<batch->count;i++){
   struct m9x_faa_color_input input=batch->draw[i].input;
@@ -7185,7 +7186,7 @@ int m9x_faa_graph_depth_batch_prepare(struct m9x_device *mdev,
     .primary=composed,.secondary=secondary+sec_cursor,
     .primary_capacity=M9_FAA_DEPTH_FRAME_PRIMARY_CAPACITY,.secondary_capacity=2700};
    ret=m9x_faa_later_depth_append_encode(owner,&views,frame->primary_start,
-    frame->secondary_cursor,previous,batch->clear_flags,i,frame->primary,frame->primary_bytes,
+    frame->secondary_cursor,previous,batch->clear_flags,0,i,frame->primary,frame->primary_bytes,
     sec_cursor,frame->end_bytes,frame->end_count,frame->final_point,
     jobs[i].secondary,2712,&input,&later);if(ret)goto unlock;
    memcpy(frame->primary,later.primary,later.primary_bytes);frame->primary_bytes=later.primary_bytes;
@@ -7193,11 +7194,11 @@ int m9x_faa_graph_depth_batch_prepare(struct m9x_device *mdev,
   }else{
    ret=m9x_faa_frame_first_append_encode(owner,r->primary_bytes,previous,i,
     frame->primary_start+frame->primary_bytes,sec_cursor,frame->end_bytes,frame->final_point,
-    frame->primary,frame->primary_bytes,frame->secondary,2712,jobs[i].secondary,2712,&input,true,&out);if(ret)goto unlock;
+    frame->primary,frame->primary_bytes,frame->secondary,jobs[0].secondary_bytes,jobs[i].secondary,jobs[i].secondary_bytes,&input,true,&out);if(ret)goto unlock;
    memcpy(frame->primary,out.primary,out.primary_bytes);frame->primary_bytes=out.primary_bytes;
    memcpy(frame->end_bytes,out.end_bytes,sizeof(out.end_bytes));frame->final_point=out.final_point;
   }
-  sec_cursor+=2700;
+  sec_cursor+=initialized?2700:out.secondary_bytes;
  }
  if(frame->secondary_cursor>0x3fe00||sec_cursor+48>0x3fe00-frame->secondary_cursor||
   frame->final_point!=previous+(initialized?(batch->clear_flags?0x150:0xd0):0x150)+(batch->count-1)*0xa0){ret=-ERANGE;goto unlock;}
