@@ -11283,51 +11283,93 @@ int m9x_faa_graph_depth_frame_maintenance_locked(struct m9x_device *mdev,
 /* The prefix is a real separately retired transaction, not a submitted
  * value inferred from Unlock. Keep its immutable original graph/owner/range
  * journal while preparing the remaining source caller; no prefix repost. */
-static int m9_faa_clear_resume_state(struct m9x_device*mdev,
- struct m9_faa_graph_binding*binding,u32 generation,u64 previous,u64*next)
+static int m9_faa_clear_resume_state(struct m9x_device *mdev,
+				     struct m9_faa_graph_binding *binding,
+				     u32 generation, u64 previous, u64 *next)
 {
- struct m9x_transport*t=&mdev->transport;struct m9x_faa_replay*r=t->faa;
- struct m9_faa_depth_frame_storage*f;struct drm_parhelia_m9_faa_graph_clear_prefix a;
- struct m9_faa_owner*p,*q;u32 i,raw;
- lockdep_assert_held(&t->lock);if(!next)return -EINVAL;*next=0;
- if(t->wedged)return -EIO;
- if(!r||!binding||r->graph_binding!=binding||r->graph_generation!=generation||
-  t->generation!=generation||!r->depth_storage||!r->depth_storage->ready||
-  !r->depth_storage->initialized||!(f=r->depth_storage->frame))return -ESTALE;
- if(f->clear_prefix){
-  if(!f->attempted||!f->retired)return -ESTALE;
-  memcpy(&a,f->observed,sizeof(a));
- }else if(f->clear_resume){
-  if(f->attempted||f->retired)return -ESTALE;
-  a=f->resume_prefix;
- }else return -ESTALE;
- p=m9_faa_command_owner(r,false);q=m9_faa_command_owner(r,true);
- if(!p||!q||f->generation!=generation||f->previous_point!=previous||
-  !r->color_image||r->color_image->layout.program_count!=2||
-  !r->unlock_started||!r->unlock_retired||!r->color_lock_retired||
-  r->color_lock_point+0x20!=previous||r->unlock_point!=previous||r->graph_draw_point!=previous||
-  a.generation!=generation||a.previous_unlock_point!=previous||a.clear_point!=previous+0x80||
-  a.version!=1||a.width!=320||a.height!=240||a.flags||a.reserved||a.state!=25||a.mode_flags!=3||
-  a.primary_base!=p->base||a.primary_capacity!=p->bytes||a.secondary_base!=q->base||a.secondary_capacity!=q->bytes||
-  a.primary_end!=r->graph_draw_end_bytes||a.secondary_cursor!=r->color_secondary_cursor||a.end_count!=9||
-  a.primary_start>=a.primary_end||a.primary_end>p->bytes||a.secondary_cursor>q->bytes||
-  (f->clear_prefix?r->graph_draw_posts!=f->planned_ends+9:r->graph_draw_posts!=f->prefix_posts)||
-  !r->depth_storage->mode.valid||!r->depth_storage->mode.enabled||r->depth_storage->mode.embedded_hz||
-  r->depth_storage->mode.valid!=f->mode_before.valid||
-  r->depth_storage->mode.enabled!=f->mode_before.enabled||r->depth_storage->mode.embedded_hz!=f->mode_before.embedded_hz||
-  r->present_attempted||r->present_point||
-  (r->command_pools&&(r->command_pools->rotated||r->command_pools->unlock_point||r->command_pools->maintenance_point))||
-  t->submitted_point!=a.clear_point||t->completed_point!=a.clear_point||
-  t->next_fence!=lower_32_bits(a.clear_point)+0x10||t->queue_count||t->async_pending||
-  previous>U64_MAX-0x160||lower_32_bits(previous)>U32_MAX-0x160)return -ESTALE;
- for(i=0;i<9;i++)if(a.end_bytes[i]<=a.primary_start||a.end_bytes[i]>a.primary_end||
-  (i&&a.end_bytes[i]<a.end_bytes[i-1]))return -ESTALE;
- if(a.end_bytes[8]!=a.primary_end)return -ESTALE;
- if(!t->fence_cpu)return -ESTALE;
- dma_rmb();raw=READ_ONCE(((u32*)t->fence_cpu)[0]);
- if(raw!=a.raw00||(raw&~15u)!=lower_32_bits(a.clear_point)||(raw&15u)!=1)return -ESTALE;
- *next=a.clear_point+0x10;return 0;
+	struct m9x_transport *t = &mdev->transport;
+	struct m9x_faa_replay *r = t->faa;
+	struct m9_faa_depth_frame_storage *f;
+	struct drm_parhelia_m9_faa_graph_clear_prefix a;
+	struct m9_faa_owner *p, *q;
+	u32 i, raw;
+
+	lockdep_assert_held(&t->lock);
+	if (!next)
+		return -EINVAL;
+	*next = 0;
+	if (t->wedged)
+		return -EIO;
+	if (!r || !binding || r->graph_binding != binding ||
+	    r->graph_generation != generation || t->generation != generation ||
+	    !r->depth_storage || !r->depth_storage->ready ||
+	    !r->depth_storage->initialized || !r->depth_storage->frame)
+		return -ESTALE;
+	f = r->depth_storage->frame;
+	if (f->clear_prefix) {
+		if (!f->attempted || !f->retired)
+			return -ESTALE;
+		memcpy(&a, f->observed, sizeof(a));
+	} else if (f->clear_resume) {
+		if (f->attempted || f->retired)
+			return -ESTALE;
+		a = f->resume_prefix;
+	} else {
+		return -ESTALE;
+	}
+	p = m9_faa_command_owner(r, false);
+	q = m9_faa_command_owner(r, true);
+	if (!p || !q || f->generation != generation ||
+	    f->previous_point != previous || !r->color_image ||
+	    r->color_image->layout.program_count != 2 || !r->unlock_started ||
+	    !r->unlock_retired || !r->color_lock_retired ||
+	    r->color_lock_point + 0x20 != previous ||
+	    r->unlock_point != previous || r->graph_draw_point != previous ||
+	    a.generation != generation || a.previous_unlock_point != previous ||
+	    a.clear_point != previous + 0x80 || a.version != 1 ||
+	    a.width != 320 || a.height != 240 || a.flags || a.reserved ||
+	    a.state != 25 || a.mode_flags != 3 || a.primary_base != p->base ||
+	    a.primary_capacity != p->bytes || a.secondary_base != q->base ||
+	    a.secondary_capacity != q->bytes ||
+	    a.primary_end != r->graph_draw_end_bytes ||
+	    a.secondary_cursor != r->color_secondary_cursor ||
+	    a.end_count != 9 || a.primary_start >= a.primary_end ||
+	    a.primary_end > p->bytes || a.secondary_cursor > q->bytes ||
+	    (f->clear_prefix ? r->graph_draw_posts != f->planned_ends + 9 :
+			       r->graph_draw_posts != f->prefix_posts) ||
+	    !r->depth_storage->mode.valid || !r->depth_storage->mode.enabled ||
+	    r->depth_storage->mode.embedded_hz ||
+	    r->depth_storage->mode.valid != f->mode_before.valid ||
+	    r->depth_storage->mode.enabled != f->mode_before.enabled ||
+	    r->depth_storage->mode.embedded_hz != f->mode_before.embedded_hz ||
+	    r->present_attempted || r->present_point ||
+	    (r->command_pools &&
+	     (r->command_pools->rotated || r->command_pools->unlock_point ||
+	      r->command_pools->maintenance_point)) ||
+	    t->submitted_point != a.clear_point ||
+	    t->completed_point != a.clear_point ||
+	    t->next_fence != lower_32_bits(a.clear_point) + 0x10 ||
+	    t->queue_count || t->async_pending || previous > U64_MAX - 0x160 ||
+	    lower_32_bits(previous) > U32_MAX - 0x160)
+		return -ESTALE;
+	for (i = 0; i < 9; i++)
+		if (a.end_bytes[i] <= a.primary_start ||
+		    a.end_bytes[i] > a.primary_end ||
+		    (i && a.end_bytes[i] < a.end_bytes[i - 1]))
+			return -ESTALE;
+	if (a.end_bytes[8] != a.primary_end)
+		return -ESTALE;
+	if (!t->fence_cpu)
+		return -ESTALE;
+	dma_rmb();
+	raw = READ_ONCE(((u32 *)t->fence_cpu)[0]);
+	if (raw != a.raw00 || (raw & ~15u) != lower_32_bits(a.clear_point) ||
+	    (raw & 15u) != 1)
+		return -ESTALE;
+	*next = a.clear_point + 0x10;
+	return 0;
 }
+
 #endif
 int m9x_faa_graph_clear_resume_get_locked(struct m9x_device*mdev,u32 generation,
  u64 previous,struct m9_faa_graph_binding**out)
