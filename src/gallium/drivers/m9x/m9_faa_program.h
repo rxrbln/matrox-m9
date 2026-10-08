@@ -75,6 +75,20 @@ bool m9_faa_texture_fs_build(enum m9_faa_texture_combine combine,
                              uint32_t *program, uint32_t program_capacity_bytes,
                              struct m9_faa_texture_fs_interface *interface);
 
+/* Original M9128 COLOR0 * texture0 * texture1 frontend. This is the
+ * nine-slot fragment vector for exactly two MODULATE stages, with smooth
+ * COLOR0 in raster stream 0 and sampler units 0/1. Texture ownership,
+ * coordinates, sampling state, and command packet binding are separate. */
+struct m9_faa_dual_texture_fs_interface {
+   uint32_t slots, color_stream, texel0_unit, texel1_unit, result_register;
+};
+bool m9_faa_dual_texture_fs_build(uint32_t color_stream,
+                                  uint32_t texel0_unit,
+                                  uint32_t texel1_unit,
+                                  uint32_t *program,
+                                  uint32_t program_capacity_bytes,
+                                  struct m9_faa_dual_texture_fs_interface *interface);
+
 enum m9_faa_move_input {
    M9_FAA_MOVE_ATTRIBUTES,
    M9_FAA_MOVE_RECORDS,

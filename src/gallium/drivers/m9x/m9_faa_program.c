@@ -205,6 +205,48 @@ m9_faa_texture_fs_build(enum m9_faa_texture_combine combine,
    return true;
 }
 
+/* The original M9128 two-stage MODULATE shader composes the first sampled
+ * texel with smooth COLOR0, then combines the second sampled texel. The ISA
+ * register form is stable across the source's 64x64 and 32x32 second-stage
+ * texture controls; dimensions reside in the separate sampler descriptor.
+ * These are decoded instruction forms, not a captured program allocation. */
+bool
+m9_faa_dual_texture_fs_build(uint32_t color_stream, uint32_t texel0_unit,
+                             uint32_t texel1_unit, uint32_t *program,
+                             uint32_t program_capacity_bytes,
+                             struct m9_faa_dual_texture_fs_interface *interface)
+{
+   static const struct m9_faa_color_fs_form forms[9] = {
+      {0x1d, 4, 0x0c, 0x42, 0x79, 0x45, 0xae0ffc00},
+      {0x1c, 4, 0x0b, 0xc0, 0x79, 0x44, 0xae0ffc00},
+      {0x1d, 4, 0x08, 0x02, 0x0c, 0x7f, 0xac2fc000},
+      {0x1c, 0, 0x09, 0xff, 0x7f, 0x02, 0xa28fff00},
+      {0x1d, 4, 0x0a, 0x06, 0x08, 0x7f, 0xac2fc000},
+      {0x1e, 4, 0x09, 0xff, 0x7f, 0x02, 0xe28fff20},
+      {0x1c, 4, 0x0e, 0x00, 0x0b, 0x7f, 0xac2fc140},
+      {0x1e, 4, 0x2d, 0x7f, 0x09, 0x0a, 0xa3400ec0},
+      {0x1d, 4, 0x2d, 0x04, 0x0e, 0x7f, 0xac2fc140},
+   };
+   struct m9_faa_dual_texture_fs_interface result = {9, 0, 0, 1, 0x2d};
+   const uint32_t bytes = 9u * 8u;
+   if (color_stream != 0 || texel0_unit != 0 || texel1_unit != 1 ||
+       !program || !interface ||
+       (uintptr_t)program % _Alignof(uint32_t) ||
+       program_capacity_bytes < bytes ||
+       bytes > UINTPTR_MAX - (uintptr_t)program ||
+       overlap(program, bytes, interface, sizeof(*interface)))
+      return false;
+   for (uint32_t i = 0; i < result.slots; i++) {
+      const struct m9_faa_color_fs_form *s = &forms[i];
+      program[2 * i] = ((uint32_t)(s->a & 7u) << 29) |
+         ((uint32_t)s->b << 22) | ((uint32_t)s->c << 15) |
+         ((uint32_t)s->dst << 8) | ((uint32_t)s->cls << 5) | s->op;
+      program[2 * i + 1] = s->control | s->a >> 3;
+   }
+   *interface = result;
+   return true;
+}
+
 bool
 m9_faa_preprocess_moves(enum m9_faa_move_input kind, const uint8_t *inputs,
                         uint32_t count, uint32_t saturate_targets, uint32_t *output,
