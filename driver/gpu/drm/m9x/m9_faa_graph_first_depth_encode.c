@@ -125,3 +125,43 @@ int m9x_faa_first_depth_encode(const u8 *sample,size_t sample_bytes,
  *primary_bytes=length+M9_FAA_COLOR_PRIMARY_BYTES-64;*secondary_bytes=sec;
  return 0;
 }
+
+int m9x_faa_first_depth_color_stage_encode(const u8 *first,size_t first_bytes,
+ const struct m9x_faa_graph_draw_owner *owner,const struct m9x_faa_depth_views *views,
+ u32 init_bytes,u64 init_point,const struct m9x_faa_color_input *input,
+ u8 *primary,size_t primary_capacity,u8 *secondary,size_t secondary_capacity,
+ u32 *primary_bytes,u32 *secondary_bytes,
+ const struct m9x_faa_color_image *first_scratch)
+{
+ struct m9x_faa_depth_stage_image validated;
+ u32 sec,tail,ef_at,depth_at,aux_at,a8_at;bool two;int ret;
+ if(!owner||!views||!input||!primary||!secondary||!primary_bytes||!secondary_bytes||
+  !first_scratch||!first_scratch->secondary_length||
+  (input->layout.program_count!=2&&input->layout.program_count!=4)||
+  (input->declaration_count!=3&&input->declaration_count!=5)||
+  init_point>~(u64)0-0x150||(u32)init_point>0xfffffeafu||
+  (input->depth_flags&&!m9x_faa_depth_flags_valid(input->depth_flags)))return -EINVAL;
+ two=input->layout.program_count==2;tail=two?3588u:3632u;
+ sec=two?(input->declaration_count==3?1352u:1376u):
+         (input->declaration_count==3?2688u:2712u);
+ if(primary_capacity<tail||secondary_capacity<sec)return -ERANGE;
+ ret=m9x_faa_depth_stages_encode(views,0x3f800000,&validated);if(ret)return ret;
+ ret=(two?m9x_faa_color_encode:m9x_faa_color_four_encode)(first,first_bytes,
+  owner,init_bytes,init_point+0x70,input,first_scratch);if(ret)return ret;
+ if(*first_scratch->secondary_length!=sec)return -EINVAL;
+ /* These bytes are exactly the live full-FIRST stage after its clear
+  * prefix. Range operands and all shader/data metadata still come from
+  * the live color encoder; the unused FIRST-only64-byte head is omitted. */
+ memcpy(primary,first_scratch->primary+64,tail);
+ memcpy(secondary,first_scratch->secondary,sec);
+ if(two){u32 extra=input->declaration_count==5?24:0;
+  ef_at=660+extra;depth_at=816+extra;aux_at=832+extra;a8_at=940+extra;
+ }else{u32 shift=input->declaration_count==3?24:0;
+  ef_at=1920-shift;depth_at=2076-shift;aux_at=2092-shift;a8_at=2200-shift;}
+ put(secondary+ef_at,((u32)secondary[ef_at]|(u32)secondary[ef_at+1]<<8|
+  (u32)secondary[ef_at+2]<<16|(u32)secondary[ef_at+3]<<24)&~0x20000000u);
+ put(secondary+depth_at,views->owner[M9_FAA_BOUND_DEPTH].base|1);
+ put(secondary+aux_at,0);put(secondary+aux_at+4,0xf0010100);
+ put(secondary+a8_at,m9x_faa_depth_a8(input->depth_flags));
+ *primary_bytes=tail;*secondary_bytes=sec;return 0;
+}

@@ -40,4 +40,13 @@ int m9x_faa_first_depth_encode(const u8 *sample,size_t sample_bytes,
  u32 *primary_bytes,u32 *secondary_bytes,u32 *ends,
  const struct m9x_faa_color_image *first_scratch,
  struct m9x_faa_first_depth_scratch *prefix_scratch);
+/* An extra batch job consumes only its live color/depth stage. Build that
+ * secondary and its typed range/Lock primary tail without constructing the
+ * unconsumed attachment/clear prefix. Owners and profiles remain validated. */
+int m9x_faa_first_depth_color_stage_encode(const u8 *first,size_t first_bytes,
+ const struct m9x_faa_graph_draw_owner *,const struct m9x_faa_depth_views *,
+ u32 init_bytes,u64 init_point,const struct m9x_faa_color_input *,
+ u8 *primary,size_t primary_capacity,u8 *secondary,size_t secondary_capacity,
+ u32 *primary_bytes,u32 *secondary_bytes,
+ const struct m9x_faa_color_image *first_scratch);
 #endif
