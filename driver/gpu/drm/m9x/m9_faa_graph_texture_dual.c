@@ -403,7 +403,7 @@ int m9x_faa_texture_single_bind_place(const struct m9x_faa_texture_bind_input
 	    program->sampler_count != 1 || program->coordinate_sets != 1 ||
 	    program->color_op0 != 4 || program->entry_bytes[0] ||
 	    program->entry_bytes[1] != 48 ||
-	    program->entry_bytes[2] - program->entry_bytes[1] != 104 ||
+	    program->entry_bytes[2] <= program->entry_bytes[1] ||
 	    program->entry_bytes[3] - program->entry_bytes[2] != 40 ||
 	    program->program_bytes - program->entry_bytes[3] != 200)
 		return -EINVAL;
