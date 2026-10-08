@@ -2682,8 +2682,7 @@ static void m9_faa_observe_borrowed_color(struct m9x_device *mdev,
 /* Allocations precede the caller's color BO reservation, as in ordinary
  * FIRST_TRIANGLE. Every private owner survives both publication and timeout. */
 static int m9_faa_prepare(struct m9x_device *mdev,
-			  struct m9_faa_graph_binding *binding,
-			  u32 generation)
+			  struct m9_faa_graph_binding *binding, u32 generation)
 {
 	const struct firmware *fw = NULL;
 	struct m9x_faa_replay *r = NULL;
@@ -2718,14 +2717,16 @@ static int m9_faa_prepare(struct m9x_device *mdev,
 	}
 #ifdef M9_FAA_PROGRAM_UPLOAD_OWNER
 	/* A deferred upload cannot be bypassed by selecting a single post or
-	 * disabling the callback: that would submit unknown program bytes. */
+	 * disabling the callback: that would submit unknown program bytes.
+	 */
 	if (!m9_faa_phased_submit || !m9_faa_program_access_kick ||
 	    M9_FAA_PROGRAM_UPLOAD_OWNER >= ARRAY_SIZE(m9_faa_owner_specs) ||
 	    M9_FAA_PROGRAM_UPLOAD_OWNER == M9_FAA_COLOR_OWNER)
 		return -EINVAL;
 #endif
 	/* This replay joins tagged virtual fetches to the driver's identity
- * leaves. A diagnostic local-base override has no such proven contract. */
+	 * leaves. A diagnostic local-base override has no such proven contract.
+	 */
 	if (m9x_local_gpu_base)
 		return -EOPNOTSUPP;
 	mutex_lock(&mdev->transport.lock);
@@ -2734,8 +2735,9 @@ static int m9_faa_prepare(struct m9x_device *mdev,
 		goto unlock;
 	}
 	if (mdev->transport.faa) {
-		ret = binding ? -EBUSY :
-			(mdev->transport.faa->attempted ? -EALREADY : 0);
+		ret = binding ?
+			      -EBUSY :
+			      (mdev->transport.faa->attempted ? -EALREADY : 0);
 		goto unlock;
 	}
 	/* Engine prerequisite allocations must also finish outside COLOR RESV. */
@@ -2745,9 +2747,12 @@ static int m9_faa_prepare(struct m9x_device *mdev,
 		return ret;
 	mutex_lock(&mdev->transport.lock);
 	if (mdev->transport.faa || mdev->transport.wedged) {
-		ret = mdev->transport.wedged ? -EIO :
-			(binding ? -EBUSY :
-			 (mdev->transport.faa->attempted ? -EALREADY : 0));
+		ret = mdev->transport.wedged ?
+			      -EIO :
+			      (binding ? -EBUSY :
+					 (mdev->transport.faa->attempted ?
+						  -EALREADY :
+						  0));
 		goto unlock;
 	}
 	/* The source INIT is the requester's first command; refuse it before
@@ -2761,7 +2766,8 @@ static int m9_faa_prepare(struct m9x_device *mdev,
 	if (binding) {
 		/* Claim the native producer slot first, then drop TRANSPORT
 		 * before any private TTM reservation. Other engine users refuse
-		 * this unprepared first-context producer. */
+		 * this unprepared first-context producer.
+		 */
 		r = kzalloc(sizeof(*r), GFP_KERNEL);
 		if (!r) {
 			ret = -ENOMEM;
@@ -2792,7 +2798,8 @@ static int m9_faa_prepare(struct m9x_device *mdev,
 			goto release_fw;
 		}
 	}
-	if (binding && !m9x_faa_graph_binding_layout(binding, &r->graph_layout)) {
+	if (binding &&
+	    !m9x_faa_graph_binding_layout(binding, &r->graph_layout)) {
 		ret = -EINVAL;
 		goto free;
 	}
@@ -2801,16 +2808,19 @@ static int m9_faa_prepare(struct m9x_device *mdev,
 		struct m9_faa_owner_spec spec = m9_faa_owner_specs[i];
 
 		if (binding) {
-			for (role = 0; role < PARHELIA_M9_FAA_GRAPH_OWNERS; role++) {
+			for (role = 0; role < PARHELIA_M9_FAA_GRAPH_OWNERS;
+			     role++) {
 				if (!m9x_faa_graph_binding_address(binding, role,
-							  &address, &source)) {
+								   &address,
+								   &source)) {
 					ret = -EINVAL;
 					goto free;
 				}
 				if (source != i)
 					continue;
 				r->owner[i].base = address;
-				r->owner[i].bytes = r->graph_layout.owner[role].capacity;
+				r->owner[i].bytes =
+					r->graph_layout.owner[role].capacity;
 				break;
 			}
 			if (role != PARHELIA_M9_FAA_GRAPH_OWNERS)
@@ -2818,22 +2828,28 @@ static int m9_faa_prepare(struct m9x_device *mdev,
 		}
 #ifdef M9_FAA_GRAPH_INIT_CONTROL
 		/* Original INIT1024 keeps all other private owner extents unchanged.
-		 * Source roles6/7 are the primary SYSTEM view and companion HZ. */
+		 * Source roles6/7 are the primary SYSTEM view and companion HZ.
+		 */
 		if (binding && i == 6) {
-			spec.bytes = r->graph_layout.owner[M9_FAA_SURFACE_PRIMARY].capacity;
+			spec.bytes =
+				r->graph_layout.owner[M9_FAA_SURFACE_PRIMARY]
+					.capacity;
 			spec.mapped_bytes = spec.bytes;
 		} else if (binding && i == 7) {
-			spec.bytes = r->graph_layout.owner[M9_FAA_SURFACE_HZ].capacity;
+			spec.bytes = r->graph_layout.owner[M9_FAA_SURFACE_HZ]
+					     .capacity;
 		}
 #endif
 		/* Only a profile with a sampled caller color substitutes that owner.
-		 * An absent sentinel allocates every genuine source owner. */
+		 * An absent sentinel allocates every genuine source owner.
+		 */
 		if (i == M9_FAA_COLOR_OWNER)
 			continue;
 		if (binding && !m9_faa_owner_specs[i].local)
 			mutex_lock(&mdev->transport.lock);
 		ret = m9_faa_allocate(mdev, &r->owner[i], &spec,
-				      m9_faa_defer_output_map && i == M9_FAA_OUTPUT_OWNER);
+				      m9_faa_defer_output_map &&
+					      i == M9_FAA_OUTPUT_OWNER);
 		if (binding && !m9_faa_owner_specs[i].local)
 			mutex_unlock(&mdev->transport.lock);
 		if (ret)
@@ -2843,7 +2859,8 @@ static int m9_faa_prepare(struct m9x_device *mdev,
 		if (binding)
 			mutex_lock(&mdev->transport.lock);
 		ret = m9x_address_map_system(mdev, &r->counter_node,
-					    mdev->transport.fence_bus, PAGE_SIZE);
+					     mdev->transport.fence_bus,
+					     PAGE_SIZE);
 		if (binding)
 			mutex_unlock(&mdev->transport.lock);
 		if (ret)
@@ -2859,7 +2876,8 @@ static int m9_faa_prepare(struct m9x_device *mdev,
 		/* Source owner28/29 are pre-existing 64-page flags30 MDLs. Keep
 		 * primary and counter placement established by the INIT profile,
 		 * then retain these two maps before its first command post. Their
-		 * contents remain unknown until the separate DRAW caller. */
+		 * contents remain unknown until the separate DRAW caller.
+		 */
 		for (i = 0; i < ARRAY_SIZE(preexisting); i++) {
 			mutex_lock(&mdev->transport.lock);
 			ret = m9_faa_allocate(mdev, &r->draw_owner[i + 1],
@@ -2876,7 +2894,8 @@ static int m9_faa_prepare(struct m9x_device *mdev,
 		if (s->owner >= ARRAY_SIZE(r->owner) ||
 		    s->offset > m9_faa_owner_specs[s->owner].bytes ||
 		    s->bytes > m9_faa_owner_specs[s->owner].bytes - s->offset ||
-		    s->blob_offset > fw->size || s->bytes > fw->size - s->blob_offset ||
+		    s->blob_offset > fw->size ||
+		    s->bytes > fw->size - s->blob_offset ||
 		    (!binding && s->owner == M9_FAA_COLOR_OWNER)) {
 			ret = -EINVAL;
 			goto free;
@@ -2887,13 +2906,15 @@ static int m9_faa_prepare(struct m9x_device *mdev,
 #endif
 		if (binding && s->owner == 8) {
 			/* The caller BO is written only after the ioctl has acquired
-			 * all six reservations. Never take its RESV under transport. */
+			 * all six reservations. Never take its RESV under transport.
+			 */
 			static const u32 init[5] = {
 				0xa4a3a1a1, 0x28041968, 0, 0, 0,
 			};
 
 			if (s->offset || s->bytes != sizeof(init) ||
-			    memcmp(fw->data + s->blob_offset, init, sizeof(init))) {
+			    memcmp(fw->data + s->blob_offset, init,
+				   sizeof(init))) {
 				ret = -EINVAL;
 				goto free;
 			}
@@ -2925,7 +2946,8 @@ static int m9_faa_prepare(struct m9x_device *mdev,
 	r->graph_generation = generation;
 	r->graph_preparing = false;
 	mdev->transport.faa = r;
-	dev_info(&mdev->pdev->dev, "M9 FAA private inputs: %zu owners, %u known bytes, %zu address/%zu tracker fixups\n",
+	dev_info(&mdev->pdev->dev,
+		 "M9 FAA private inputs: %zu owners, %u known bytes, %zu address/%zu tracker fixups\n",
 		 ARRAY_SIZE(r->owner), M9_FAA_BLOB_BYTES,
 		 ARRAY_SIZE(m9_faa_fixups), ARRAY_SIZE(m9_faa_trackers));
 	ret = 0;
@@ -2943,12 +2965,14 @@ unlock:
 		/* Graph preparation never posts. Unmap address nodes under the
 		 * transport lock; release local TTM reservations outside it. A
 		 * failed address publication can have exposed DMA or left the
-		 * frontend frozen: retain every private owner until bus-master-off. */
+		 * frontend frozen: retain every private owner until bus-master-off.
+		 */
 		mutex_lock(&mdev->transport.lock);
 		if (mdev->transport.wedged ||
 		    mdev->transport.bus_master_enabled) {
 			/* Address publication may already be visible. Preserve the
-			 * in-progress slot and mappings until requester teardown. */
+			 * in-progress slot and mappings until requester teardown.
+			 */
 			mutex_unlock(&mdev->transport.lock);
 			return ret;
 		}
@@ -2974,8 +2998,7 @@ unlock:
 #ifdef M9_FAA_GRAPH_INIT_CONTROL
 		for (i = 0; i < ARRAY_SIZE(r->draw_owner); i++)
 			if (drm_mm_node_allocated(&r->draw_owner[i].system_node))
-				m9x_address_unmap_system(mdev,
-						 &r->draw_owner[i].system_node);
+				m9x_address_unmap_system(mdev, &r->draw_owner[i].system_node);
 #endif
 		if (mdev->transport.faa == r)
 			mdev->transport.faa = NULL;
