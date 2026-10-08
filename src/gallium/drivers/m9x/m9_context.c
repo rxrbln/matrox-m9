@@ -7994,7 +7994,20 @@ static void m9_context_faa_census(struct m9_context *ctx,
 static bool
 m9_faa_application_enabled(void)
 {
-   return debug_get_bool_option("M9X_FAA_APPLICATION", false);
+   /* Read once: the draw and clear paths ask on every call. */
+   static int enabled = -1;
+   if (enabled < 0)
+      enabled = debug_get_bool_option("M9X_FAA_APPLICATION", false);
+   return enabled;
+}
+
+static bool
+m9_faa_census_enabled(void)
+{
+   static int enabled = -1;
+   if (enabled < 0)
+      enabled = debug_get_bool_option("M9X_FAA_CENSUS", false);
+   return enabled;
 }
 
 static void
@@ -8184,7 +8197,7 @@ m9_draw_vbo(struct pipe_context *pctx, const struct pipe_draw_info *info,
    if (ctx->fs && ctx->fs->kill_all)
       return;
    if (m9_faa_application_enabled() && num_draws && draws[0].count &&
-       info->instance_count && debug_get_bool_option("M9X_FAA_CENSUS", false))
+       info->instance_count && m9_faa_census_enabled())
       m9_context_faa_census(ctx, info, &draws[0]);
    if (m9_faa_application_enabled() && num_draws && draws[0].count &&
        info->instance_count && !ctx->faa_mode.fallback && !ctx->faa_mode.skip &&
@@ -8545,6 +8558,14 @@ m9_clear(struct pipe_context *pctx, unsigned buffers,
 {
    struct m9_context *ctx = m9_context(pctx);
    uint64_t t_clear = m9_prof_begin();
+   if (ctx->debug && m9_faa_application_enabled() && buffers) {
+      static unsigned reported;
+      if (reported++ < 24)
+         fprintf(stderr, "m9x: FAA clear %#x: fallback %u skip %u split %u targets %u "
+                 "needs_reset %u\n", buffers, ctx->faa_mode.fallback, ctx->faa_mode.skip,
+                 ctx->faa_mode.split, m9_context_faa_targets_surface(ctx),
+                 ctx->faa_surface.destination_needs_clear);
+   }
    if (m9_faa_application_enabled() && buffers && !ctx->faa_mode.fallback &&
        !ctx->faa_mode.skip && !ctx->faa_mode.split && !m9_replay_replaying(ctx) &&
        m9_context_faa_targets_surface(ctx)) {
@@ -10104,6 +10125,13 @@ m9_context_faa_submit_draw(struct m9_context *ctx,
       clear_flags = PARHELIA_M9_FAA_COLOR_CLEAR_TARGET | PARHELIA_M9_FAA_COLOR_CLEAR_DEPTH;
    }
    if (ctx->faa_surface.destination_needs_clear && !clear_flags) {
+      static unsigned reported;
+      if (ctx->debug && reported++ < 8)
+         fprintf(stderr, "m9x: FAA reset missing: pending %u buffers %#x scissored %u depth %g "
+                 "textures %u unlocked %u\n", ctx->faa_application_clear.pending,
+                 ctx->faa_application_clear.buffers, ctx->faa_application_clear.scissored,
+                 ctx->faa_application_clear.depth, later_graph->color_texture_count,
+                 later_graph->color_unlock_attempted);
       why = "FAA destination change requires a full sampled reset";
       goto out;
    }
