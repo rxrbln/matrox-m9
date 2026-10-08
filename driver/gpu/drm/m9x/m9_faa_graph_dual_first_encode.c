@@ -40,6 +40,11 @@ static const u8 fragment_sha[SHA256_DIGEST_SIZE]={
  0xf6,0x11,0x84,0x38,0x49,0xaa,0x62,0xc5,0xb4,0xcf,0xa5,0x53,
  0x90,0x22,0xc7,0xff,0x7e,0x24,0x39,0xcc,0x3b,0x48,0xef,0xae,
  0x5e,0x7e,0x77,0x40,0x68,0xe2,0x73,0x24};
+/* The original 72-byte two-sampler fragment program binds these three
+ * operation pairs through C3. They are scalar shader inputs, independent of
+ * allocation, framebuffer dimensions and texture placement. */
+static const u32 fragment_utility[6]={
+ 0u,0x3f800000u,0u,0x3f800000u,0x3f800000u,0x3f000000u};
 static u32 rd(const u8 *p,u32 at)
 {return (u32)p[at]|(u32)p[at+1]<<8|(u32)p[at+2]<<16|(u32)p[at+3]<<24;}
 static void wr(u8 *p,u32 at,u32 v)
@@ -83,6 +88,11 @@ int m9x_faa_dual_first_encode(const u8 *sample,size_t sample_bytes,
   (c->layout.program_bytes-c->layout.entry_bytes[3]!=192&&
    c->layout.program_bytes-c->layout.entry_bytes[3]!=200)||
   c->declaration_count!=9||c->layout.constants_bytes>16384||
+  c->layout.constant_begin[0]>c->layout.constant_end[0]||
+  c->layout.constant_end[0]-c->layout.constant_begin[0]!=24||
+  c->layout.constant_end[0]>c->layout.constants_bytes||
+  memcmp(c->constants+c->layout.constant_begin[0],fragment_utility,
+         sizeof(fragment_utility))||
   c->layout.vertex_offset!=128||c->fragment_flags||
   !m9x_faa_depth_flags_valid(c->depth_flags)||
   !sha_ok(c->program,72,fragment_sha)||
