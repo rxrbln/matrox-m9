@@ -193,15 +193,11 @@ m9_faa_live_gl_build(const struct m9_faa_live_gl *s,
       result.constants_bytes += constants[i].pairs * 8;
       result.constant_end[i] = result.constants_bytes;
    }
-   /* A POSITION-only FF shader has one 16-byte source record. The admitted
-    * COLOR draw packet uses a 32-byte source stride. Keep the shader and its
-    * one-input declaration unchanged, placing each actual POSITION at the
-    * start of a zero-padded 32-byte record. No NORMAL input is fabricated. */
-   bool pad_position = p.record_bytes == 16 && p.attr_count == 1 &&
-                       p.attrs[0].location == VERT_ATTRIB_POS &&
-                       p.attrs[0].offset == 0 && p.attrs[0].components == 4 &&
-                       declarations == 3;
-   unsigned record_bytes = pad_position ? 32 : p.record_bytes;
+   /* Keep the actual compiler record width. Original POSITION-only
+    * declarations consume one 16-byte record, while POSITION+NORMAL uses
+    * 32 bytes. Expanding the former changed hardware record indexing even
+    * with a matching explicit stream stride; no semantic padding is needed. */
+   unsigned record_bytes = p.record_bytes;
    /* All capacities follow the submitted stride and the live vertex count,
     * with a bounded CPU budget. This does not establish native draw lengths. */
    uint64_t vertices = (uint64_t)s->count * record_bytes;
@@ -248,15 +244,6 @@ m9_faa_live_gl_build(const struct m9_faa_live_gl *s,
                              s->first, s->count,
                              (float *)((uint8_t *)result.geometry + 128));
    if (!records) {why = "FAA GL raw input mapping bounds"; goto fail;}
-   if (pad_position) {
-      uint8_t *raw = (uint8_t *)result.geometry + result.vertex_offset;
-      /* The source packer wrote consecutive 16-byte positions. Move them
-       * backwards so expansion cannot overwrite a later unread position. */
-      for (unsigned i = s->count; i-- > 0;) {
-         memmove(raw + (size_t)i * 32, raw + (size_t)i * 16, 16);
-         memset(raw + (size_t)i * 32 + 16, 0, 16);
-      }
-   }
    memcpy(result.declaration, declaration, declarations * 4);
    m9_vs_program_fini(&p);
    *output = result;

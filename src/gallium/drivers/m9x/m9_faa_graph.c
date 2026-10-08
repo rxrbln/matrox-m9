@@ -582,7 +582,8 @@ m9_faa_surface_color_next_kernel(struct m9_screen *screen,
        surface->width != 320 || surface->height != 240 || surface->format != 0x66 ||
        state->width != surface->width || state->height != surface->height ||
        state->depth_enabled || state->cull_face != PIPE_FACE_NONE || state->flatshade ||
-       state->scissor_enabled || upload->layout.count != 4 || upload->record_bytes != 32 ||
+       state->scissor_enabled || upload->layout.count != 4 || (upload->record_bytes != 32 &&
+        !(upload->record_bytes == 16 && upload->declaration_words == 3)) ||
        (!upload->vertex_count || upload->vertex_count % 3) ||
        (clear_flags & ~PARHELIA_M9_FAA_COLOR_CLEAR_TARGET) || clear_color)
       return -EOPNOTSUPP;
@@ -665,7 +666,8 @@ m9_faa_surface_color_frame_kernel(struct m9_screen *screen,
    if (screen->faa.chip != M9_FAA_CHIP_M9 || !screen->wait_point ||
        surface->width != 320 || surface->height != 240 || surface->format != 0x66 ||
        state->width != surface->width || state->height != surface->height ||
-       state->scissor_enabled || upload->color_flat != state->flatshade || upload->layout.count != 4 || upload->record_bytes != 32 ||
+       state->scissor_enabled || upload->color_flat != state->flatshade || upload->layout.count != 4 || (upload->record_bytes != 32 &&
+        !(upload->record_bytes == 16 && upload->declaration_words == 3)) ||
        (!upload->vertex_count || upload->vertex_count % 3) ||
        (clear_flags & ~(PARHELIA_M9_FAA_COLOR_CLEAR_TARGET | PARHELIA_M9_FAA_COLOR_CLEAR_DEPTH)) || clear_color)
       return -EOPNOTSUPP;
@@ -825,7 +827,8 @@ m9_faa_surface_color_batch_kernel(struct m9_screen *screen,
           !state->depth_enabled || !state->depth_write || state->depth_func != PIPE_FUNC_LESS ||
           state->scissor_enabled || u->shader.color_flat != state->flatshade ||
           (state->cull_face != PIPE_FACE_NONE && state->cull_face != PIPE_FACE_FRONT && state->cull_face != PIPE_FACE_BACK) ||
-          u->shader.layout.count != 4 || u->shader.record_bytes != 32 ||
+          u->shader.layout.count != 4 || (u->shader.record_bytes != 32 &&
+           !(u->shader.record_bytes == 16 && u->shader.declaration_words == 3)) ||
           (u->shader.declaration_words != 3 && u->shader.declaration_words != 5) ||
           !u->shader.vertex_count || u->shader.vertex_count % 3)
          return -EOPNOTSUPP;
