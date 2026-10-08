@@ -6410,46 +6410,89 @@ int m9x_faa_graph_public_vs_head_get_locked(struct m9x_device *mdev,
 }
 
 int m9x_faa_graph_public_vs_draw_prepare(struct m9x_device *mdev,
- struct m9_faa_graph_binding *binding,u32 generation,u64 head_point)
+					 struct m9_faa_graph_binding *binding,
+					 u32 generation, u64 head_point)
 {
 #ifdef M9_FAA_GRAPH_INIT_CONTROL
- struct m9x_transport *t=&mdev->transport;
- struct m9x_faa_replay *r;
- struct m9_faa_public_vs_draw_storage *storage;
- struct m9x_faa_graph_draw_owner owner[M9_FAA_DRAW_SOURCE_OWNERS];
- struct m9x_faa_public_vs_draw_image out;
- const struct firmware *fw;
- u32 i;int ret;
- ret=request_firmware(&fw,M9_FAA_GRAPH_PUBLIC_VS_DRAW_FIRMWARE,&mdev->pdev->dev);
- if(ret)return ret;
- if(!m9x_faa_public_vs_draw_template_valid(fw->data,fw->size)){ret=-EINVAL;goto out_fw;}
- storage=kzalloc(sizeof(*storage),GFP_KERNEL);
- if(!storage){ret=-ENOMEM;goto out_fw;}
- mutex_lock(&t->lock);
- ret=m9_faa_public_vs_head_state(t,binding,generation,head_point);
- if(ret)goto out_lock;
- r=t->faa;
- if(r->public_vs_draw_image || r->public_vs_draw_attempted || r->public_vs_draw_observed){ret=-ESTALE;goto out_lock;}
- for(i=0;i<M9_FAA_DRAW_SOURCE_OWNERS;i++){
-  struct m9_faa_owner *o;
-  switch(i){case 26:o=&r->draw_owner[0];break;case 27:o=&r->owner[26];break;
-   case 28:o=&r->draw_owner[1];break;case 29:o=&r->draw_owner[2];break;
-   case 30:o=&r->owner[27];break;default:o=&r->owner[i];break;}
-  owner[i]=(struct m9x_faa_graph_draw_owner){o->base,o->bytes};
- }
- out=(struct m9x_faa_public_vs_draw_image){storage->primary,storage->secondary,
-  sizeof(storage->primary),sizeof(storage->secondary)};
- ret=m9x_faa_public_vs_draw_encode(fw->data,fw->size,owner,r->graph_draw_end_bytes,
-  head_point,r->public_vs_image->layout.constant_begin[0],
-  r->public_vs_image->layout.constant_end[0],&out,&storage->ends);
- if(ret)goto out_lock;
- r->public_vs_draw_image=storage;storage=NULL;
+	struct m9x_transport *t = &mdev->transport;
+	struct m9x_faa_replay *r;
+	struct m9_faa_public_vs_draw_storage *storage;
+	struct m9x_faa_graph_draw_owner owner[M9_FAA_DRAW_SOURCE_OWNERS];
+	struct m9x_faa_public_vs_draw_image out;
+	const struct firmware *fw;
+	u32 i;
+	int ret;
+
+	ret = request_firmware(&fw, M9_FAA_GRAPH_PUBLIC_VS_DRAW_FIRMWARE,
+			       &mdev->pdev->dev);
+	if (ret)
+		return ret;
+	if (!m9x_faa_public_vs_draw_template_valid(fw->data, fw->size)) {
+		ret = -EINVAL;
+		goto out_fw;
+	}
+	storage = kzalloc_obj(*storage);
+	if (!storage) {
+		ret = -ENOMEM;
+		goto out_fw;
+	}
+	mutex_lock(&t->lock);
+	ret = m9_faa_public_vs_head_state(t, binding, generation, head_point);
+	if (ret)
+		goto out_lock;
+	r = t->faa;
+	if (r->public_vs_draw_image || r->public_vs_draw_attempted ||
+	    r->public_vs_draw_observed) {
+		ret = -ESTALE;
+		goto out_lock;
+	}
+	for (i = 0; i < M9_FAA_DRAW_SOURCE_OWNERS; i++) {
+		struct m9_faa_owner *o;
+
+		switch (i) {
+		case 26:
+			o = &r->draw_owner[0];
+			break;
+		case 27:
+			o = &r->owner[26];
+			break;
+		case 28:
+			o = &r->draw_owner[1];
+			break;
+		case 29:
+			o = &r->draw_owner[2];
+			break;
+		case 30:
+			o = &r->owner[27];
+			break;
+		default:
+			o = &r->owner[i];
+			break;
+		}
+		owner[i] =
+			(struct m9x_faa_graph_draw_owner){ o->base, o->bytes };
+	}
+	out = (struct m9x_faa_public_vs_draw_image){
+		storage->primary, storage->secondary, sizeof(storage->primary),
+		sizeof(storage->secondary)
+	};
+	ret = m9x_faa_public_vs_draw_encode(fw->data, fw->size, owner,
+					    r->graph_draw_end_bytes, head_point,
+					    r->public_vs_image->layout.constant_begin[0],
+					    r->public_vs_image->layout.constant_end[0],
+					    &out, &storage->ends);
+	if (ret)
+		goto out_lock;
+	r->public_vs_draw_image = storage;
+	storage = NULL;
 out_lock:
- mutex_unlock(&t->lock);kfree(storage);
+	mutex_unlock(&t->lock);
+	kfree(storage);
 out_fw:
- release_firmware(fw);return ret;
+	release_firmware(fw);
+	return ret;
 #else
- return -EOPNOTSUPP;
+	return -EOPNOTSUPP;
 #endif
 }
 
