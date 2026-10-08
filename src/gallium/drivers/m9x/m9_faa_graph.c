@@ -467,7 +467,8 @@ m9_faa_surface_dual_first_kernel_mode(struct m9_screen *screen,
       return -EINVAL;
    struct m9_faa_graph *graph = &surface->graph;
    if (screen->faa.chip != M9_FAA_CHIP_M9 || !screen->wait_point ||
-       surface->width != 320 || surface->height != 240 ||
+       !m9_faa_runtime_dimensions(surface->width, surface->height) ||
+       (colorpass && (surface->width != 320 || surface->height != 240)) ||
        surface->format != 0x66 || !graph->prepared || !graph->initialized ||
        !graph->prepared_id || !graph->init_point || (graph->init_point & 15) ||
        graph->init_point > UINT64_MAX - 0x150 ||
@@ -538,6 +539,19 @@ m9_faa_surface_dual_colorpass_kernel(struct m9_screen *screen,
 }
 
 
+/* Retained dual later Lock receipt: CLEAR3 0x150, depth-only 0x120 or
+ * no-clear 0xd0 from the Unlock, plus 0xa0 per further DRAW (at most 3). */
+static bool
+m9_faa_dual_later_delta_valid(uint64_t delta)
+{
+   static const uint64_t base[] = {0x150, 0x120, 0xd0};
+   for (unsigned i = 0; i < 3; i++)
+      for (unsigned extra = 0; extra < 3; extra++)
+         if (delta == base[i] + extra * 0xa0)
+            return true;
+   return false;
+}
+
 /* Keep the exact authenticated transaction shape. Accepting either of two
  * plausible deltas loses the distinction between clear and no-clear Lock. */
 static bool
@@ -547,7 +561,7 @@ m9_faa_color_lock_history_valid(const struct m9_faa_graph *graph)
    if(graph->color_texture_later)
       return graph->color_texture_count==2&&graph->color_program_count==4&&
          graph->color_next_lock_point&&!graph->color_frame_draw_count&&!graph->color_frame_flags&&
-         (delta==0x150||delta==0xd0)&&graph->color_next_previous_unlock_point&&
+         m9_faa_dual_later_delta_valid(delta)&&graph->color_next_previous_unlock_point&&
          !(graph->color_next_previous_unlock_point&15)&&
          graph->color_next_previous_unlock_point<=UINT64_MAX-delta&&
          graph->color_lock_point==graph->color_next_lock_point&&
