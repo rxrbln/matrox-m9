@@ -135,10 +135,10 @@ int m9x_faa_frame_first_append_encode(
 	if (overlaps(out->primary,new_bytes,out->secondary,append_bytes) ||
 	    overlaps(out->primary,new_bytes,old_primary,old_primary_bytes) ||
 	    overlaps(out->primary,new_bytes,first_secondary,first_bytes) ||
-	    overlaps(out->primary,new_bytes,extra_first_secondary,first_bytes) ||
+	    overlaps(out->primary,new_bytes,extra_first_secondary,extra_first_bytes) ||
 	    overlaps(out->secondary,append_bytes,old_primary,old_primary_bytes) ||
 	    overlaps(out->secondary,append_bytes,first_secondary,first_bytes) ||
-	    overlaps(out->secondary,append_bytes,extra_first_secondary,first_bytes))
+	    overlaps(out->secondary,append_bytes,extra_first_secondary,extra_first_bytes))
 		return -EINVAL;
 	insert=old_primary_bytes-tail_bytes;
 	/* The previous job may have a different declaration shape. Its source
