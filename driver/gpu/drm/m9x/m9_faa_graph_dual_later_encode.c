@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: GPL-2.0-only
+/* Copyright 2026 René Rebe <rene@exactco.de> */
 /* Original M9128 retained dual draw, constructed from live owned stages. */
 #include <linux/errno.h>
 #include <linux/kernel.h>
@@ -27,32 +28,6 @@ static bool overlaps(const void *a,u32 as,const void *b,u32 bs)
  unsigned long x=(unsigned long)a,y=(unsigned long)b;
  return x<=y?y-x<as:x-y<bs;
 }
-/* The no-clear source has a 96-byte sampled-primary view prelude. Its two
- * addresses belong to retained owner1; F021/F022 descriptors use the live
- * visible width. The remaining words are the bounded 320x240 source state.
- * No memory clear or new target allocation occurs in this prelude. */
-static int no_clear_prelude(const struct m9x_faa_graph_draw_owner owner[34],
- const struct m9x_faa_depth_views *views,u64 previous,u8 dst[96])
-{
- static const u32 words[24]={
-  0x4545e3e6,1,0,0x90928fe6,0x04000001,0xc0000600,
-  0xffffffff,0,0xf0b1b091,0,0,0,0x0a0c060c,
-  0xf2f37978,0,0,0,0,0x4545fcef,0xaa,0,
-  0x4545e3e6,1,0,
- };
- u32 i;
- if(views->owner[M9_FAA_BOUND_COLOR].width!=320||
-  views->owner[M9_FAA_BOUND_COLOR].height!=240||
-  owner[1].bytes<0x50000||(u64)owner[1].base+0x50000>0x40000000u)
-  return -EINVAL;
- for(i=0;i<ARRAY_SIZE(words);i++)wr(dst,i*4,words[i]);
- wr(dst,8,((u32)previous-0x10)|1);
- wr(dst,40,owner[1].base|1);wr(dst,44,0xf0220000|320);
- wr(dst,56,owner[1].base|1);wr(dst,60,0xf0210000|320);
- wr(dst,80,0xf00000|320);wr(dst,92,((u32)previous)|1);
- return 0;
-}
-
 int m9x_faa_dual_later_encode(const u8 *sample,size_t sample_bytes,
  const struct m9x_faa_graph_draw_owner owner[34],
  const struct m9x_faa_depth_views *views,
@@ -92,11 +67,9 @@ int m9x_faa_dual_later_encode(const u8 *sample,size_t sample_bytes,
    owner,views,0,previous,&clear_image,&scratch->clear);
   if(ret)return ret;
   front=clear_image.bytes;
- }else{
-  ret=no_clear_prelude(owner,views,previous,scratch->primary);
-  if(ret)return ret;
-  front=96;
  }
+ /* The source no-clear span opens with the 96-byte F021->F022 copy that
+  * the public Unlock already posted; repeating it corrupts retained pixels. */
  total=front+tail_bytes;
  if(pcursor>owner[27].bytes||total>owner[27].bytes-pcursor||
   out->primary_capacity<total||out->secondary_capacity<sec_bytes||

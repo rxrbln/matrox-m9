@@ -1,4 +1,5 @@
 /* SPDX-License-Identifier: GPL-2.0-only */
+/* Copyright 2026 René Rebe <rene@exactco.de> */
 #ifndef M9_FAA_GRAPH_DUAL_LATER_ENCODE_H
 #define M9_FAA_GRAPH_DUAL_LATER_ENCODE_H
 
