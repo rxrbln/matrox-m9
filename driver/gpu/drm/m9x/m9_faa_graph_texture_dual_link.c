@@ -13,19 +13,14 @@
 /* After the host-test typedefs of the texture headers. */
 #include "m9_cmd.h"
 
-int m9x_faa_texture_dual_link_place(const struct m9x_faa_texture_dual_link_input *in,
-				    u8 *secondary, u32 bytes)
+/* Shared C2/C3 producer for the authenticated program sites. */
+static int link_sites(const struct m9x_faa_texture_dual_link_input *in,
+		      const u32 c2[4], const u32 c3[4], u8 *secondary)
 {
-	/* Source packet order: carry, gather, position, fragment. Stage index
-	 * remains program-vector order FS/carry/gather/position.
-	 */
-	static const u32 c2[4] = { 2432, 364, 1032, 1660 };
-	static const u32 c3[4] = { 2452, 384, 1052, 1680 };
 	u32 program_word[4], start_word[4], end_word[4], count_word[4];
 	u32 i, start, end;
 
-	if (!in || !secondary || bytes != 2880 || (in->program_base & 4095) ||
-	    (in->constants_base & 7) ||
+	if ((in->program_base & 4095) || (in->constants_base & 7) ||
 	    (in->constants_tag != 1 && in->constants_tag != 2) ||
 	    (in->program_offset & 7) || (in->data_offset & 7) ||
 	    !in->program_bytes || (in->program_bytes & 7) ||
@@ -37,12 +32,8 @@ int m9x_faa_texture_dual_link_place(const struct m9x_faa_texture_dual_link_input
 	    in->program_bytes > in->program_owner_bytes - in->program_offset ||
 	    in->data_offset > in->constants_owner_bytes ||
 	    in->constants_bytes > in->constants_owner_bytes - in->data_offset ||
-	    in->entry_bytes[0] || in->entry_bytes[1] != 72 ||
-	    in->entry_bytes[2] <= in->entry_bytes[1] ||
-	    in->entry_bytes[3] <= in->entry_bytes[2] ||
-	    in->entry_bytes[3] - in->entry_bytes[2] != 56 ||
-	    (in->program_bytes - in->entry_bytes[3] != 192 &&
-	     in->program_bytes - in->entry_bytes[3] != 200))
+	    in->entry_bytes[0] || in->entry_bytes[2] <= in->entry_bytes[1] ||
+	    in->entry_bytes[3] <= in->entry_bytes[2])
 		return -EINVAL;
 
 	for (i = 0; i < 4; i++) {
@@ -79,4 +70,39 @@ int m9x_faa_texture_dual_link_place(const struct m9x_faa_texture_dual_link_input
 		m9_cmd_put(secondary + c3[i] + 8, end_word[i]);
 	}
 	return 0;
+}
+
+int m9x_faa_texture_dual_link_place(const struct m9x_faa_texture_dual_link_input *in,
+				    u8 *secondary, u32 bytes)
+{
+	/* Source packet order: carry, gather, position, fragment. Stage index
+	 * remains program-vector order FS/carry/gather/position.
+	 */
+	static const u32 c2[4] = { 2432, 364, 1032, 1660 };
+	static const u32 c3[4] = { 2452, 384, 1052, 1680 };
+
+	if (!in || !secondary || bytes != 2880 || in->entry_bytes[1] != 72 ||
+	    in->entry_bytes[3] - in->entry_bytes[2] != 56 ||
+	    in->entry_bytes[3] >= in->program_bytes ||
+	    (in->program_bytes - in->entry_bytes[3] != 192 &&
+	     in->program_bytes - in->entry_bytes[3] != 200))
+		return -EINVAL;
+	return link_sites(in, c2, c3, secondary);
+}
+
+int m9x_faa_texture_single_link_place(const struct m9x_faa_texture_dual_link_input *in,
+				      u8 *secondary, u32 bytes)
+{
+	/* Same packet order in the three-target single stage. */
+	static const u32 c2[4] = { 2360, 348, 976, 1588 };
+	static const u32 c3[4] = { 2380, 368, 996, 1608 };
+
+	if (!in || !secondary || bytes != M9_FAA_SINGLE_STAGE_BYTES ||
+	    in->entry_bytes[1] != 48 ||
+	    in->entry_bytes[2] - in->entry_bytes[1] != 104 ||
+	    in->entry_bytes[3] - in->entry_bytes[2] != 40 ||
+	    in->entry_bytes[3] >= in->program_bytes ||
+	    in->program_bytes - in->entry_bytes[3] != 200)
+		return -EINVAL;
+	return link_sites(in, c2, c3, secondary);
 }

@@ -1,4 +1,5 @@
 /* SPDX-License-Identifier: GPL-2.0-only */
+/* Copyright 2026 René Rebe <rene@exactco.de> */
 #ifndef M9_FAA_GRAPH_TEXTURE_DUAL_H
 #define M9_FAA_GRAPH_TEXTURE_DUAL_H
 
@@ -41,5 +42,12 @@ int m9x_faa_texture_dual_colorpass_place(
 	const struct m9x_faa_texture_bind_input unit[2],
 	const struct m9x_faa_texture_dual_program *program,
 	u8 *secondary, u32 secondary_bytes);
+
+/* Single-texture FS48 stage: one sampler packet whose 0x70 header is at
+ * byte offset site; the following stage-1 unit packet must be idle.
+ */
+int m9x_faa_texture_single_bind_place(const struct m9x_faa_texture_bind_input *unit,
+				      const struct m9x_faa_texture_dual_program *program,
+				      u8 *secondary, u32 secondary_bytes, u32 site);
 
 #endif

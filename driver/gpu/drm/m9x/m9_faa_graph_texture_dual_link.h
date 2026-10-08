@@ -1,4 +1,5 @@
 /* SPDX-License-Identifier: GPL-2.0-only */
+/* Copyright 2026 René Rebe <rene@exactco.de> */
 #ifndef M9_FAA_GRAPH_TEXTURE_DUAL_LINK_H
 #define M9_FAA_GRAPH_TEXTURE_DUAL_LINK_H
 
@@ -23,5 +24,10 @@ struct m9x_faa_texture_dual_link_input {
 int m9x_faa_texture_dual_link_place(
 	const struct m9x_faa_texture_dual_link_input *input,
 	u8 *secondary, u32 secondary_bytes);
+
+/* Same for the 2720-byte single-texture FS48 stage. */
+#define M9_FAA_SINGLE_STAGE_BYTES 2720u
+int m9x_faa_texture_single_link_place(const struct m9x_faa_texture_dual_link_input *input,
+				      u8 *secondary, u32 secondary_bytes);
 
 #endif

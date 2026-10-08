@@ -57,6 +57,7 @@
 #include "m9_faa_graph_next_encode.h"
 #include "m9_faa_graph_next_finish_encode.h"
 #include "m9_faa_graph_dual_first_encode.h"
+#include "m9_faa_graph_single_first_encode.h"
 #include "m9_faa_graph_dual_colorpass_encode.h"
 #include "m9_faa_graph_dual_first_append.h"
 #include "m9_faa_graph_dual_later_encode.h"
@@ -9814,6 +9815,7 @@ MODULE_FIRMWARE(M9_FAA_SAMPLE_CLEAR_FIRMWARE);
 MODULE_FIRMWARE(M9_FAA_DEPTH_DRAW_FIRMWARE);
 MODULE_FIRMWARE(M9_FAA_DEPTH_MODE_RESET_FIRMWARE);
 MODULE_FIRMWARE("m9x/faa-graph-dual-first-template.bin");
+MODULE_FIRMWARE(M9_FAA_SINGLE_FIRST_FIRMWARE);
 #endif
 
 /* Fresh and retained COLOR have distinct complete source plans and queue

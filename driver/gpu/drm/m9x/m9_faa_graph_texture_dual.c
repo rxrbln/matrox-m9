@@ -331,3 +331,50 @@ int m9x_faa_texture_dual_colorpass_place(const struct m9x_faa_texture_bind_input
 	m9_cmd_put(secondary + 4 * (2564 / 4), image.sampler87);
 	return 0;
 }
+
+int m9x_faa_texture_single_bind_place(const struct m9x_faa_texture_bind_input
+					      *unit,
+				      const struct m9x_faa_texture_dual_program *program,
+				      u8 *secondary, u32 bytes, u32 site)
+{
+	struct m9x_faa_texture_bind_input input;
+	struct m9x_faa_texture_bind_words image;
+	u32 at = site / 4;
+	int ret;
+
+	if (!unit || !program || !secondary || (bytes & 3) || (site & 3) ||
+	    site < 4 || bytes < 96 || site > bytes - 96 ||
+	    program->stage_count != 4 || program->sampler_count != 1 ||
+	    program->coordinate_sets != 1 || program->color_op0 != 4 ||
+	    program->entry_bytes[0] || program->entry_bytes[1] != 48 ||
+	    program->entry_bytes[2] - program->entry_bytes[1] != 104 ||
+	    program->entry_bytes[3] - program->entry_bytes[2] != 40 ||
+	    program->program_bytes - program->entry_bytes[3] != 200 ||
+	    unit->stage || unit->coordinate_sets != 1 ||
+	    unit->coordinate_index ||
+	    (unsigned long long)unit->owner_base + unit->owner_bytes > U32_MAX)
+		return -EINVAL;
+	/* Stage 0 samples; the stage-1 unit packet stays idle (value 0). */
+	if (m9_cmd_get(secondary + 4 * (at - 1)) != 1 ||
+	    m9_cmd_get(secondary + 4 * at) != 0x45454570 ||
+	    m9_cmd_get(secondary + 4 * (at + 2)) != 3 ||
+	    m9_cmd_get(secondary + 4 * (at + 3)) != 0x457a7978 ||
+	    m9_cmd_get(secondary + 4 * (at + 7)) != 3 ||
+	    m9_cmd_get(secondary + 4 * (at + 8)) != 0x45877d7c ||
+	    m9_cmd_get(secondary + 4 * (at + 25)) != 0x45454571 ||
+	    m9_cmd_get(secondary + 4 * (at + 26)))
+		return -EINVAL;
+	input = *unit;
+	input.raster_ae_base = 0x28206ff6;
+	ret = m9x_faa_texture_bind_encode(&input, &image);
+	if (ret)
+		return ret;
+	m9_cmd_put(secondary + 4 * (at + 1), image.unit70);
+	m9_cmd_put(secondary + 4 * (at + 4), image.address78);
+	m9_cmd_put(secondary + 4 * (at + 5), image.descriptor79);
+	m9_cmd_put(secondary + 4 * (at + 6), image.descriptor7a);
+	m9_cmd_put(secondary + 4 * (at + 9), image.sampler7c);
+	m9_cmd_put(secondary + 4 * (at + 10), image.sampler7d);
+	m9_cmd_put(secondary + 4 * (at + 11), image.sampler87);
+	return 0;
+}

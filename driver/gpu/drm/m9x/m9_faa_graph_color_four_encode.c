@@ -296,7 +296,8 @@ int m9x_faa_color_four_encode(const u8 *blob, size_t bytes,
 	    (in->record_stride != 32 &&
 	     !(in->record_stride == 16 && in->declaration_count == 3) &&
 	     !(in->dual_base_only &&
-	       (in->record_stride == 36 || in->record_stride == 64))) ||
+	       (in->record_stride == 36 || in->record_stride == 64)) &&
+	     !(in->single_base_only && in->record_stride == 24)) ||
 	    !in->record_count || in->record_count % 3 ||
 	    in->record_count > 12288 || (in->data_offset & 127) ||
 	    in->data_offset > owner[28].bytes || (in->fragment_flags & ~1u) ||
@@ -330,6 +331,8 @@ int m9x_faa_color_four_encode(const u8 *blob, size_t bytes,
 	 */
 	dual = arity == 3;
 	if (dual != !!in->dual_base_only ||
+	    (in->single_base_only &&
+	     (arity != 2 || in->declaration_count != 7)) ||
 	    (arity == 3 &&
 	     (in->declaration_count < 9 ||
 	      (in->record_stride != 32 && in->record_stride != 36 &&
@@ -383,26 +386,30 @@ int m9x_faa_color_four_encode(const u8 *blob, size_t bytes,
 	    0x4b08)
 		return -EINVAL;
 	for (i = 0; i + 1 < in->declaration_count; i++) {
+		/* Original public FVF 0x242/0x244 both use packed D3DCOLOR and FLOAT2
+		 * coordinates. Their offsets differ with FLOAT3 XYZ vs FLOAT4 XYZRHW.
+		 * Keep exact source declarations; the live vec4x4 route remains the
+		 * separate 64-byte admission.
+		 */
+		static const u32 rhw_decl[] = {
+			0x00100d88, 0x001006b6, 0x0420cd8a, 0x0420c636,
+			0x05300d88, 0x05300b36, 0x07400d88, 0x07400b36
+		};
+		static const u32 xyz_decl[] = {
+			0x00100daa, 0x00100236, 0x0320cd8a, 0x0320c636,
+			0x04300d88, 0x04300b36, 0x06400d88, 0x06400b36
+		};
 		u32 q = m9_cmd_get(in->declaration + 4 * i);
 
 		if (arity == 3 &&
 		    (in->record_stride == 32 || in->record_stride == 36)) {
-			/* Original public FVF 0x242/0x244 both use packed D3DCOLOR and FLOAT2
-			 * coordinates. Their offsets differ with FLOAT3 XYZ vs FLOAT4 XYZRHW.
-			 * Keep exact source declarations; the live vec4x4 route remains the
-			 * separate 64-byte admission.
-			 */
-			static const u32 rhw_decl[] = {
-				0x00100d88, 0x001006b6, 0x0420cd8a, 0x0420c636,
-				0x05300d88, 0x05300b36, 0x07400d88, 0x07400b36
-			};
-			static const u32 xyz_decl[] = {
-				0x00100daa, 0x00100236, 0x0320cd8a, 0x0320c636,
-				0x04300d88, 0x04300b36, 0x06400d88, 0x06400b36
-			};
 			if (in->declaration_count != 9 ||
 			    q != (in->record_stride == 32 ? xyz_decl[i] :
 							    rhw_decl[i]))
+				return -EINVAL;
+		} else if (in->single_base_only) {
+			/* Original FVF 0x142/0x242 single stage: UV0 at +16. */
+			if (q != xyz_decl[i])
 				return -EINVAL;
 		} else if (((q >> 16) & 15) ||
 			   ((q >> 24) * 4 + 16 > in->record_stride) ||
