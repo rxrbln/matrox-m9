@@ -80,17 +80,21 @@ int m9x_faa_texture_dual_bind_place(
 	for (i = 1; i + 11 < words; i++) {
 		if (rd(secondary, i) == 4 &&
 		    rd(secondary, i + 1) == 0x23232323 &&
-		    rd(secondary, i + 2) == 0x05300d88 &&
-		    rd(secondary, i + 3) == 0x05300b36 &&
-		    rd(secondary, i + 4) == 0x07400d88 &&
-		    rd(secondary, i + 5) == 0x07400b36) {
+		    (rd(secondary, i + 2) & 0x00ffffff) == 0x300d88 &&
+		    ((rd(secondary, i + 3) & 0x00ffffff) == 0x300b36 ||
+		     (rd(secondary, i + 3) & 0x00ffffff) == 0x3006b6) &&
+		    (rd(secondary, i + 4) & 0x00ffffff) == 0x400d88 &&
+		    ((rd(secondary, i + 5) & 0x00ffffff) == 0x400b36 ||
+		     (rd(secondary, i + 5) & 0x00ffffff) == 0x4006b6)) {
 			if (stream)
 				return -EINVAL;
 			stream = i;
 		}
 		if (rd(secondary, i) == 3 &&
 		    rd(secondary, i + 1) == 0x45aeacab &&
-		    rd(secondary, i + 3) == 0x2820c8c6 &&
+		    ((rd(secondary, i + 2) == 0xffff &&
+		      rd(secondary, i + 3) == 0) ||
+		     rd(secondary, i + 3) == 0x2820c8c6) &&
 		    rd(secondary, i + 4) == 0x22444442) {
 			if (raster)
 				return -EINVAL;
