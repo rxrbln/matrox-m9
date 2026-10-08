@@ -9561,9 +9561,12 @@ int m9x_faa_graph_depth_frame_submit(struct m9x_device *mdev,
    frame->dual_colorpass?M9_FAA_DUAL_COLORPASS_SECONDARY_BYTES:
    M9_FAA_DUAL_FIRST_SECONDARY_BYTES;
   u8 *sec=frame->batch_secondary?frame->batch_secondary:frame->secondary;
-  /* A single culled later stage keeps its 24 bytes of 6A groups. */
-  if(frame->dual_later&&frame->draw_count==1&&
-     frame->secondary_bytes==first_len+M9_FAA_DUAL_LATER_CULL_BYTES)
+  /* A culled first later stage keeps its 24 bytes of 6A groups; the
+   * same-cull appends after it do not. */
+  if(frame->dual_later&&frame->draw_count&&
+     frame->draw_count<=M9_FAA_DUAL_BATCH_MAX_DRAWS&&
+     frame->secondary_bytes==first_len+M9_FAA_DUAL_LATER_CULL_BYTES+
+      (frame->draw_count-1)*M9_FAA_DUAL_APPEND_SECONDARY_BYTES)
    first_len+=M9_FAA_DUAL_LATER_CULL_BYTES;
   if((!frame->first&&!frame->dual_later)||!frame->draw_count||
      frame->draw_count>M9_FAA_DUAL_BATCH_MAX_DRAWS||
