@@ -497,10 +497,10 @@ m9x_faa_graph_binding_owner(const struct m9_faa_graph_binding *binding,
 }
 
 bool m9x_faa_graph_binding_address(const struct m9_faa_graph_binding *binding,
-				u32 role, u32 *address, u32 *source_owner)
+				   u32 role, u32 *address, u32 *source_owner)
 {
-	if (!binding || role >= PARHELIA_M9_FAA_GRAPH_OWNERS ||
-	    !address || !source_owner)
+	if (!binding || role >= PARHELIA_M9_FAA_GRAPH_OWNERS || !address ||
+	    !source_owner)
 		return false;
 	*address = binding->address[role];
 	*source_owner = m9_faa_graph_source_owner[role];
