@@ -353,13 +353,14 @@ dual_frame_admissible(const struct m9_faa_surface *surface,
 
 /* A frame is submitted as consecutive retained transactions of at most
  * three DRAWs sharing one texture pair. Only the first carries the frame's
- * clear; each later one follows an Unlock of its predecessor's Lock. The
- * caller presents after the last Lock. */
+ * clear; each later one follows a presentation of its predecessor's Lock.
+ * The caller presents after the last Lock. */
 int
 m9_faa_surface_dual_batch_kernel(struct m9_screen *screen,struct m9_faa_surface *surface,
-                                 const struct m9_faa_application_frame *frame)
+                                 const struct m9_faa_application_frame *frame,
+                                 int (*present)(void *data),void *data)
 {
-   if(!screen||!surface||!frame||!frame->draws||!frame->count)return -EINVAL;
+   if(!screen||!surface||!frame||!frame->draws||!frame->count||!present)return -EINVAL;
    int checked=dual_frame_admissible(surface,frame);
    if(checked)return checked;
    for(uint32_t start=0;start<frame->count;){
@@ -379,8 +380,10 @@ m9_faa_surface_dual_batch_kernel(struct m9_screen *screen,struct m9_faa_surface 
       struct m9_faa_application_frame part={.draws=frame->draws+start,.count=n,
          .clear_flags=start?0:frame->clear_flags,
          .clear_color=start?0:frame->clear_color};
+      /* The kernel Unlocks only after a CPU view of the Lock, as the
+       * vendor's Present does. */
       if(start){
-         int ret=m9_faa_surface_color_unlock_kernel(screen,surface);
+         int ret=present(data);
          if(ret)return ret;
       }
       int ret=m9_faa_surface_dual_frame_kernel(screen,surface,&part);

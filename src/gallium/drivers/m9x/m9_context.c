@@ -10402,6 +10402,21 @@ m9_context_faa_frame_end(struct m9_context *ctx)
    memset(&ctx->faa_application_clear, 0, sizeof(ctx->faa_application_clear));
 }
 
+static int m9_context_faa_unlock_unpresented(struct m9_context *ctx);
+
+/* Present the transactions so far of a frame that continues in another. */
+static int
+m9_context_faa_present_part(void *data)
+{
+   struct m9_context *ctx = data;
+   const struct m9_faa_graph *graph = &ctx->faa_surface.graph;
+   int ret = m9_context_faa_present_lock(ctx, graph->prepared_id,
+                                         graph->prepared_generation,
+                                         graph->color_lock_point);
+   ctx->last_point = MAX2(ctx->last_point, graph->color_unlock_point);
+   return ret;
+}
+
 /* Complete an application frame only at a visibility boundary. The queue
  * does not replace a multi-draw transaction with separately resolved draws:
  * that would lose the shared sampled depth/fragment state between draws. */
@@ -10425,7 +10440,8 @@ m9_context_faa_flush_frame(struct m9_context *ctx, const char **reason)
       goto done;
    }
    ret = first->texture_count ?
-      m9_faa_surface_dual_batch_kernel(ctx->screen,&ctx->faa_surface,frame) :
+      m9_faa_surface_dual_batch_kernel(ctx->screen, &ctx->faa_surface, frame,
+                                       m9_context_faa_present_part, ctx) :
       m9_faa_surface_color_batch_kernel(ctx->screen, &ctx->faa_surface, frame);
    if (ret) {
       why = "FAA authenticated frame submission failed";
@@ -10445,7 +10461,7 @@ m9_context_faa_flush_frame(struct m9_context *ctx, const char **reason)
        * must not leave the graph Locked: Unlock it unpresented so the
        * next frame can retarget the surface. */
       if (graph->color_lock_point && !graph->color_unlock_attempted) {
-         int unlock = m9_faa_surface_color_unlock_kernel(ctx->screen, &ctx->faa_surface);
+         int unlock = m9_context_faa_unlock_unpresented(ctx);
          if (ctx->debug)
             fprintf(stderr, "m9x: FAA unpresented Unlock returned %d\n", unlock);
       }
@@ -10477,6 +10493,49 @@ out:
  * through the destination's live surface descriptor. An intervening ordinary
  * aperture mapping would replace the mapper retained by source Unlock.
  * The opt-in draw route rejects unsupported clear/depth/raster state. */
+/* The CPU view of the retired Lock the kernel requires before an Unlock,
+ * read into rows (the whole surface), then the Unlock. */
+static int
+m9_context_faa_view_unlock(struct m9_context *ctx,
+                           const struct m9_faa_primary_layout *primary,
+                           uint8_t *rows)
+{
+   struct m9_faa_surface *surface = &ctx->faa_surface;
+   const size_t bytes = (size_t)surface->width * surface->height * 4;
+   const struct m9_surface_desc source_desc = {
+      .row_span = primary->row_span, .height = primary->allocation_height,
+      .layers = 1, .layout = 1, .format = 0x78, .address_offset = true,
+   };
+   struct drm_parhelia_m9_surface_access access = {
+      .handle = surface->primary.handle, .op = PARHELIA_M9_ACCESS_READ,
+      .descriptor0 = m9_surface_desc0(&source_desc),
+      .descriptor1 = m9_surface_desc1(&source_desc),
+      .surface_width = surface->width, .width = surface->width, .height = surface->height,
+      .data_stride = surface->width * 4, .data_ptr = (uintptr_t)rows, .data_size = bytes,
+   };
+   ctx->window_reads++;
+   ctx->window_read_bytes += bytes;
+   int ret = ioctl(ctx->screen->fd, DRM_IOCTL_PARHELIA_M9_SURFACE_ACCESS, &access) ? -errno : 0;
+   m9_blit_window_receipt(&surface->primary, &access, ret);
+   return ret ? ret : m9_faa_surface_color_unlock_kernel(ctx->screen, surface);
+}
+
+/* Unlock a retired Lock that cannot be presented, so the graph and the
+ * ordinary jobs behind it go on. */
+static int
+m9_context_faa_unlock_unpresented(struct m9_context *ctx)
+{
+   struct m9_faa_surface *surface = &ctx->faa_surface;
+   struct m9_faa_primary_layout primary;
+   if (!m9_faa_primary_layout(surface->width, surface->height, surface->format, &primary))
+      return -EINVAL;
+   uint8_t *rows = MALLOC((size_t)surface->width * surface->height * 4);
+   if (!rows) return -ENOMEM;
+   int ret = m9_context_faa_view_unlock(ctx, &primary, rows);
+   FREE(rows);
+   return ret;
+}
+
 int
 m9_context_faa_present_lock(struct m9_context *ctx, uint64_t graph_id,
                             uint32_t generation, uint64_t lock_point)
@@ -10558,32 +10617,18 @@ m9_context_faa_present_lock(struct m9_context *ctx, uint64_t graph_id,
    pipe_resource_reference(&retained, ctx->color);
    m9_context_sync_ordinary(ctx);
    int ret = ctx->lost ? -EIO : 0;
-   const struct m9_surface_desc source_desc = {
-      .row_span = primary.row_span, .height = primary.allocation_height,
-      .layers = 1, .layout = 1, .format = 0x78, .address_offset = true,
-   };
+   if (!ret)
+      ret = m9_context_faa_view_unlock(ctx, &primary, rows);
    struct drm_parhelia_m9_surface_access access = {
-      .handle = surface->primary.handle, .op = PARHELIA_M9_ACCESS_READ,
-      .descriptor0 = m9_surface_desc0(&source_desc),
-      .descriptor1 = m9_surface_desc1(&source_desc),
-      .surface_width = surface->width, .width = surface->width, .height = surface->height,
+      .op = PARHELIA_M9_ACCESS_WRITE, .width = surface->width, .height = surface->height,
       .data_stride = surface->width * 4, .data_ptr = (uintptr_t)rows, .data_size = bytes,
    };
-   if (!ret) {
-      ctx->window_reads++;
-      ctx->window_read_bytes += bytes;
-      ret = ioctl(ctx->screen->fd, DRM_IOCTL_PARHELIA_M9_SURFACE_ACCESS, &access) ? -errno : 0;
-      m9_blit_window_receipt(&surface->primary, &access, ret);
-   }
-   if (!ret)
-      ret = m9_faa_surface_color_unlock_kernel(ctx->screen, surface);
    if (!ret) {
       const struct m9_surface_desc target_desc = {
          .row_span = target.row_span, .height = m9_surface_even_height(height),
          .layers = 1, .layout = 1, .format = destination->format, .address_offset = true,
       };
       access.handle = destination->handle;
-      access.op = PARHELIA_M9_ACCESS_WRITE;
       access.descriptor0 = m9_surface_desc0(&target_desc);
       access.descriptor1 = m9_surface_desc1(&target_desc);
       access.surface_width = width;
