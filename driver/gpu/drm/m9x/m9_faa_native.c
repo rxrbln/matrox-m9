@@ -4439,29 +4439,42 @@ int m9x_faa_graph_public_vs_unlocked_get_locked(struct m9x_device *mdev,
 static void m9_faa_color_intermediates_observe(struct m9x_device *mdev,
 					    struct m9x_faa_replay *r)
 {
-	static const struct { u32 at, next_at, owner, bytes; } target[] = {
+	struct observed_target { u32 at, next_at, owner, bytes; };
+	static const struct observed_target four_target[] = {
 		{ 116, 120, 24, 0 }, { 132, 136, 24, 0 },
 		{ 804, 896, 23, 64 }, { 820, 912, 23, 64 },
 		{ 1416, 1372, 23, 64 }, { 1432, 1388, 23, 64 },
 		{ 1448, 0, 23, 16 }, /* first-only third position target */
 	};
+	static const struct observed_target two_target[] = {
+		{ 72, 0, 23, 64 }, { 88, 0, 23, 64 },
+		{ 104, 0, 23, 64 }, { 120, 0, 23, 16 },
+	};
+	const struct observed_target *target;
 	struct m9_faa_color_storage *n = r->color_image;
 	u8 data[256];
 	static const u32 boundary[] = { 31, 32, 59, 95, 96, 119, 179, 359 };
 	const u8 *completed_secondary;
-	u32 completed_bytes, records = 0;
+	u32 completed_bytes, records = 0, target_count, stages;
+	bool two;
 	u32 i, at, address, descriptor, offset, bytes, stride, chunk, count, j, launches = 0;
 	int extra;
 
 	lockdep_assert_held(&mdev->transport.lock);
 	if (!m9_faa_color_observe || !r->color_lock_retired || !n ||
-	    n->layout.program_count != 4 ||
-	    n->secondary_bytes < (n->previous_unlock_point ? 2512 : 2688) ||
+	    (n->layout.program_count != 2 && n->layout.program_count != 4) ||
+	    (n->layout.program_count == 2 ?
+	     (n->previous_unlock_point || n->secondary_bytes < 1352) :
+	     n->secondary_bytes < (n->previous_unlock_point ? 2512 : 2688)) ||
 	    n->secondary_bytes > sizeof(n->secondary) ||
 	    mdev->transport.wedged || mdev->transport.queue_count ||
 	    mdev->transport.completed_point != r->color_lock_point ||
 	    mdev->transport.generation != r->graph_generation)
 		return;
+	two = n->layout.program_count == 2;
+	stages = two ? 2 : 4;
+	target = two ? two_target : four_target;
+	target_count = two ? ARRAY_SIZE(two_target) : ARRAY_SIZE(four_target);
 	/* The retained color image describes the first job's target namespace.
 	 * The last composed launch supplies the actual output record count;
 	 * different jobs can carry different counts into the same planes. */
@@ -4491,14 +4504,14 @@ static void m9_faa_color_intermediates_observe(struct m9x_device *mdev,
 	for (at = 0; at + 12 <= completed_bytes; at += 4) {
 		u32 opcode = get_unaligned_le32(completed_secondary + at);
 
-		if (opcode == 0x23000001 && launches < 32 * 4 &&
+		if (opcode == 0x23000001 && launches < 32 * stages &&
 		    !get_unaligned_le32(completed_secondary + at + 4)) {
 			count = get_unaligned_le32(completed_secondary + at + 8);
 			if (count && count <= 12288) {
 				dev_info(&mdev->pdev->dev,
 					 "M9 FAA COLOR launch: point=%#llx job=%u stage=%u secondary=%u count=%u\n",
-					 r->color_lock_point, launches / 4 + 1,
-					 launches % 4, at, count);
+					 r->color_lock_point, launches / stages + 1,
+					 launches % stages, at, count);
 				launches++;
 			}
 		}
@@ -4524,10 +4537,15 @@ static void m9_faa_color_intermediates_observe(struct m9x_device *mdev,
 	extra = (int)n->secondary_bytes - (n->previous_unlock_point ? 2536 : 2712);
 	rmb();
 	dma_rmb();
-	for (i = 0; i < ARRAY_SIZE(target); i++) {
+	if (two)
+		dev_info(&mdev->pdev->dev,
+			 "M9 FAA COLOR observation: vectors=2 linear planes from live B0/B2/B4/B8; no packed owner24 read\n");
+	for (i = 0; i < target_count; i++) {
 		struct m9_faa_owner *o = &r->owner[target[i].owner];
 
-		if (n->previous_unlock_point) {
+		if (two) {
+			at = target[i].at;
+		} else if (n->previous_unlock_point) {
 			at = target[i].next_at;
 			if (!at) continue;
 			if (at >= 680) at += extra;
@@ -4538,6 +4556,9 @@ static void m9_faa_color_intermediates_observe(struct m9x_device *mdev,
 			continue;
 		address = get_unaligned_le32(n->secondary + at);
 		descriptor = get_unaligned_le32(n->secondary + at + 4);
+		if (two && descriptor != (target[i].bytes == 16 ?
+			0xb8002000u : 0x68002000u))
+			continue;
 		if ((address & 3) != 1 || !o->vram || o->cpu ||
 		    iosys_map_is_null(&o->map) || (address & ~3u) < o->base)
 			continue;
