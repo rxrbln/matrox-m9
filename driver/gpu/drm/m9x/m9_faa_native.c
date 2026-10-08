@@ -3654,14 +3654,15 @@ static int m9_faa_publish_output_phase(struct m9x_device *mdev, u32 phase,
 
 #ifdef M9_FAA_STARTUP_LOCAL_OWNER
 static int m9_faa_prepare_startup_local(struct m9x_device *mdev,
-                                      struct m9x_faa_replay *r)
+					struct m9x_faa_replay *r)
 {
 	int ret;
 
 	/* Actual 2f899 preparation publishes d0 before queue creation. The
 	 * source allocator's page number is not portable: retain an independent
 	 * unknown-byte owner and derive both page tables from its live base.
-	 * No GPU job has been posted; publish it before the consumed owners. */
+	 * No GPU job has been posted; publish it before the consumed owners.
+	 */
 	if (M9_FAA_STARTUP_LOCAL_OWNER >= ARRAY_SIZE(r->owner) ||
 	    M9_FAA_STARTUP_LOCAL_OWNER == M9_FAA_COLOR_OWNER ||
 	    !m9_faa_owner_specs[M9_FAA_STARTUP_LOCAL_OWNER].local ||
@@ -3669,24 +3670,27 @@ static int m9_faa_prepare_startup_local(struct m9x_device *mdev,
 	    m9_faa_owner_specs[M9_FAA_STARTUP_LOCAL_OWNER].flags30 ||
 	    m9_faa_owner_specs[M9_FAA_STARTUP_LOCAL_OWNER].mapped_bytes ||
 	    m9_faa_owner_specs[M9_FAA_STARTUP_LOCAL_OWNER].bytes !=
-			M9_FAA_STARTUP_LOCAL_BYTES ||
+		    M9_FAA_STARTUP_LOCAL_BYTES ||
 	    !IS_ALIGNED(M9_FAA_STARTUP_LOCAL_BYTES, PAGE_SIZE) ||
 	    !M9_FAA_STARTUP_LOCAL_BYTES ||
 	    !r->owner[M9_FAA_STARTUP_LOCAL_OWNER].vram ||
 	    r->owner[M9_FAA_STARTUP_LOCAL_OWNER].cpu ||
-	    r->owner[M9_FAA_STARTUP_LOCAL_OWNER].bytes != M9_FAA_STARTUP_LOCAL_BYTES)
+	    r->owner[M9_FAA_STARTUP_LOCAL_OWNER].bytes !=
+		    M9_FAA_STARTUP_LOCAL_BYTES)
 		return -EINVAL;
 	ret = m9x_address_local_prepare(mdev,
-			r->owner[M9_FAA_STARTUP_LOCAL_OWNER].base,
-			M9_FAA_STARTUP_LOCAL_BYTES);
+					r->owner[M9_FAA_STARTUP_LOCAL_OWNER].base,
+					M9_FAA_STARTUP_LOCAL_BYTES);
 	if (ret)
 		return ret;
 	dev_info(&mdev->pdev->dev,
 		 "M9 FAA startup local: owner=%u gpu=%#x bytes=%u before primary submit\n",
 		 M9_FAA_STARTUP_LOCAL_OWNER,
-		 r->owner[M9_FAA_STARTUP_LOCAL_OWNER].base, M9_FAA_STARTUP_LOCAL_BYTES);
+		 r->owner[M9_FAA_STARTUP_LOCAL_OWNER].base,
+		 M9_FAA_STARTUP_LOCAL_BYTES);
 	return 0;
 }
+
 #endif
 
 static int m9_faa_submit(struct m9x_device *mdev, u32 color,
