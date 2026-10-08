@@ -33,6 +33,9 @@ struct m9x_faa_color_input {
  /* Immutable retained graph geometry, populated by native preparation.
   * Zero/zero is reserved for historical 320 source fixtures. */
  u32 width,height;
+ /* Internal four-target staging for the dedicated dual-texture constructor.
+  * The ordinary COLOR submit path must never publish this incomplete image. */
+ bool dual_base_only;
 };
 static inline int m9x_faa_color_dimensions(const struct m9x_faa_color_input *in,
  u32 init_bytes,struct m9x_faa_surface_layout *layout)

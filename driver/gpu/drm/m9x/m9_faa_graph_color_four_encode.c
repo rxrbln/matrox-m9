@@ -81,7 +81,9 @@ int m9x_faa_color_four_encode(const u8*blob,size_t bytes,const struct m9x_faa_gr
  in->layout.program_count!=4||!in->layout.program_bytes||in->layout.program_bytes>4096||(in->layout.program_bytes&7)||
  in->layout.entry_bytes[0]||!in->layout.constants_bytes||in->layout.constants_bytes>16384||(in->layout.constants_bytes&7)||
  (in->record_stride!=32&&
-  !(in->record_stride==16&&in->declaration_count==3))||
+  !(in->record_stride==16&&in->declaration_count==3)&&
+  !(in->dual_base_only&&
+   (in->record_stride==36||in->record_stride==64)))||
  !in->record_count||in->record_count%3||in->record_count>12288||
  (in->data_offset&127)||in->data_offset>owner[28].bytes||
  (in->fragment_flags&~1u)||
@@ -94,11 +96,19 @@ int m9x_faa_color_four_encode(const u8*blob,size_t bytes,const struct m9x_faa_gr
    (in->layout.constant_begin[i]&7)||(in->layout.constant_end[i]&7)||in->layout.constant_begin[i]>in->layout.constant_end[i]||
    in->layout.constant_end[i]>in->layout.constants_bytes||in->layout.constant_end[i]-in->layout.constant_begin[i]>504)return -ERANGE;}
  gatherbytes=in->layout.entry_bytes[3]-in->layout.entry_bytes[2];
- if(gatherbytes!=32&&gatherbytes!=40)return -EINVAL;arity=gatherbytes==32?1:2;
+ if(gatherbytes!=32&&gatherbytes!=40&&gatherbytes!=56)return -EINVAL;
+ arity=gatherbytes==32?1:gatherbytes==40?2:3;
+ /* Three varyings require a fourth packed target and two texture units.
+  * This helper only builds their common base. Its image is not a complete
+  * hardware command and may only be consumed by the dual constructor. */
+ if((arity==3)!=!!in->dual_base_only||
+  (arity==3&&(in->declaration_count<9||
+   (in->record_stride!=36&&in->record_stride!=64))))return -EINVAL;
  if(m9x_faa_carry_source_mask(in->program,in->layout.program_bytes,
   in->layout.entry_bytes[1],in->layout.entry_bytes[2],1+arity,
   &carry_mask))return -EINVAL;
- if(in->layout.program_bytes-in->layout.entry_bytes[3]!=200||
+ if((in->layout.program_bytes-in->layout.entry_bytes[3]!=200&&
+     !(arity==3&&in->layout.program_bytes-in->layout.entry_bytes[3]==192))||
  in->layout.constant_begin[2]!=in->layout.constant_end[2]||
  in->layout.constant_end[3]-in->layout.constant_begin[3]!=104||
  in->layout.constant_end[0]-in->layout.constant_begin[0]<16)return -EINVAL;
@@ -115,7 +125,17 @@ int m9x_faa_color_four_encode(const u8*blob,size_t bytes,const struct m9x_faa_gr
  }
  if(get(in->declaration+4*(in->declaration_count-1))!=0x4b08)return -EINVAL;
  for(i=0;i+1<in->declaration_count;i++){u32 q=get(in->declaration+4*i);
-  if(((q>>16)&15)||((q>>24)*4+16>in->record_stride)||((q>>20)&15)!=i/2+1||((q>>12)&15))return -EINVAL;}
+  if(arity==3&&in->record_stride==36){
+   /* Original FVF 0x244 has FLOAT4 position, D3DCOLOR and two FLOAT2
+    * coordinates at byte offsets 0/16/20/28. The generic full-vec4
+    * bound check would reject its final eight-byte field. This source
+    * control is exact; live declarations retain the general check. */
+   static const u32 source_decl[]={0x00100d88,0x001006b6,
+    0x0420cd8a,0x0420c636,0x05300d88,0x05300b36,
+    0x07400d88,0x07400b36};
+   if(in->declaration_count!=9||q!=source_decl[i])return -EINVAL;
+  }else if(((q>>16)&15)||((q>>24)*4+16>in->record_stride)||
+   ((q>>20)&15)!=i/2+1||((q>>12)&15))return -EINVAL;}
  for(i=0;i<in->record_count;i++)for(j=0;j<in->record_stride/4;j++)
   if((get(in->geometry+128+i*in->record_stride+4*j)&0x7f800000)==0x7f800000)return -ERANGE;
  groups=(in->declaration_count+3)/4;extra=((int)groups-2)*24;secondary=2712+extra;
