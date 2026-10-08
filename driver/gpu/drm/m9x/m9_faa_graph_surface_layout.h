@@ -25,12 +25,12 @@ static inline u64 m9_faa_layout_align(u64 value,u32 quantum)
 
 /* 45eb0 resource extent, 464d9 clear rounding, 46197/546ea backing
  * alignment, then native GEM page capacity. Keep all four distinct. */
-static inline bool m9x_faa_surface_layout(u32 width,u32 height,
+static inline int m9x_faa_surface_layout(u32 width,u32 height,
  struct m9x_faa_surface_layout *out)
 {
  struct m9x_faa_surface_layout v={.width=width,.height=height};
  u32 row,rows,small,quantum;u64 tail,elements,raw,clear,budget;
- if(!out||!width||!height||width>2048||height>2048)return false;
+ if(!out||!width||!height||width>2048||height>2048)return 0;
  small=width<=64&&height<=64;row=m9_faa_layout_align(width,32);
  rows=width<=16&&height<=16?16:m9_faa_layout_align(height,small?4:32);
  tail=(u64)(rows-height)*row+row-width;elements=(u64)row*rows;
@@ -79,6 +79,6 @@ static inline bool m9x_faa_surface_layout(u32 width,u32 height,
  v.ad=v.owner[M9_FAA_SURFACE_MAIN].logical>>5;
  v.owner[M9_FAA_SURFACE_SENTINEL]=(struct m9x_faa_surface_extent){
   .logical=128,.backing=128,.capacity=4096};
- *out=v;return true;
+ *out=v;return 1;
 }
 #endif

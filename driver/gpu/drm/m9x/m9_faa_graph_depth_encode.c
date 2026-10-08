@@ -22,10 +22,11 @@ int m9x_faa_depth_stages_encode(const struct m9x_faa_depth_views *views,
   views->depth_aux_role!=M9_FAA_DEPTH_HZ||
   views->aux_depth_role!=M9_FAA_BOUND_DEPTH)return -EINVAL;
  for(i=0;i<M9_FAA_DEPTH_OWNERS;i++){
-  struct m9x_faa_depth_view expected=m9x_faa_bound_depth_profile(i);
+  struct m9x_faa_depth_view expected=m9x_faa_bound_depth_profile_dimensions(i,
+   views->owner[M9_FAA_BOUND_COLOR].width,views->owner[M9_FAA_BOUND_COLOR].height);
   const struct m9x_faa_depth_view *v=&views->owner[i];
   expected.base=v->base;
-  if(!v->base||(v->base&4095)||v->base>0xffffffffu-v->capacity_bytes||
+  if(!expected.logical_bytes||!v->base||(v->base&4095)||v->base>0xffffffffu-v->capacity_bytes||
    memcmp(v,&expected,sizeof(expected)))return -EINVAL;
   if(i&&(u64)v->base+v->capacity_bytes>0x40000000u)return -EINVAL;
   if(!i&&v->base<0x40000000u)return -EINVAL;
@@ -130,6 +131,9 @@ int m9x_faa_attachment_clear_encode(const struct m9x_faa_depth_views *views,
  if(!out||(prior&15)||prior>0xffffffffu-0x40u||
   m9x_faa_depth_stages_encode(views,depth_bits,&stages))return -EINVAL;
  color=&views->owner[M9_FAA_BOUND_COLOR];
+ if((color->logical_bytes&4095)||!color->logical_bytes||
+  (((color->base>>12)+(color->logical_bytes>>12)+7)/8-(color->base>>15))>97)
+  return -EINVAL;
  /* a3870-created HZ child's first initialization precedes all clear ENDs.
   * Source output 8672..8768; early E3 observes prior+10. */
  w[0]=0x45e3e6e6;w[1]=1;w[2]=2;w[3]=(prior+0x10)|1;
@@ -185,6 +189,9 @@ int m9x_faa_color_attachment_clear_encode(const struct m9x_faa_depth_views *view
  if(!out||(queue_start&15)||queue_start>0xffffffffu-0x40u||
   m9x_faa_depth_stages_encode(views,depth_bits,&stages))return -EINVAL;
  color=&views->owner[M9_FAA_BOUND_COLOR];
+ if((color->logical_bytes&4095)||!color->logical_bytes||
+  (((color->base>>12)+(color->logical_bytes>>12)+7)/8-(color->base>>15))>97)
+  return -EINVAL;
  memcpy(w,prefix,sizeof(prefix));
  page=color->base>>12;last=page+color->logical_bytes/4096;
  while(page<last){

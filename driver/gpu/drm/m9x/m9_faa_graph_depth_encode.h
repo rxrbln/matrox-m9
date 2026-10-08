@@ -11,7 +11,8 @@ struct m9x_faa_depth_stage_image {
 struct m9x_faa_depth_clear_image {
  u32 word[M9_FAA_DEPTH_CLEAR_BYTES / 4];
 };
-#define M9_FAA_ATTACHMENT_CLEAR_CAPACITY 1164u
+#define M9_FAA_ATTACHMENT_CLEAR_CAPACITY 1508u
+/* 1024 primary logical extent769 pages, at most97 page-group words. */
 struct m9x_faa_attachment_clear_image {
  u32 word[M9_FAA_ATTACHMENT_CLEAR_CAPACITY / 4];
  u32 bytes;
@@ -23,8 +24,8 @@ struct m9x_faa_attachment_clear_image {
  * bound-clear prefix must install its source-required state around them. */
 int m9x_faa_depth_stages_encode(const struct m9x_faa_depth_views *,u32,
  struct m9x_faa_depth_stage_image *);
-/* Specialized b5630 setup + b5030 rectangle. Caller admits the retained
- * SYSTEM root page40004000 before publication; this function maps no pages.
+/* Specialized b5630 setup + b5030 rectangle. Fixed40004000 transition
+ * control is distinct from typed bound owner addresses; no pages are mapped.
  * Source END occurs after setup832, then after rectangle872. */
 int m9x_faa_depth_clear_encode(const struct m9x_faa_depth_views *,u32,u32,
  struct m9x_faa_depth_clear_image *);

@@ -7083,11 +7083,12 @@ int m9x_faa_graph_bound_depth_prepare(struct m9x_device *mdev,
  u32 color_policy,bool first)
 {
 #ifdef M9_FAA_GRAPH_INIT_CONTROL
- static const struct m9_faa_owner_spec spec[M9_FAA_DEPTH_OWNERS]={
+ struct m9_faa_owner_spec spec[M9_FAA_DEPTH_OWNERS]={
   {0,0x50000,false,false,false,0},
   {0,0x8000,true,false,false,0},
   {0,0x98000,true,false,false,0},
  };
+ struct m9x_faa_surface_layout layout;
  struct m9x_transport *t=&mdev->transport;
  struct m9_faa_graph_binding *checked=NULL;
  struct m9_faa_depth_storage *n;
@@ -7096,12 +7097,17 @@ int m9x_faa_graph_bound_depth_prepare(struct m9x_device *mdev,
 
  /* The original color31 MDL is flags30: its compact PTE policy is B.
   * Ordinary SYSTEM policy A is intentionally not admitted for this role. */
- if(!binding||color_policy!=M9_FAA_DEPTH_COLOR_SYSTEM_B)return -EINVAL;
+ if(!binding||color_policy!=M9_FAA_DEPTH_COLOR_SYSTEM_B||
+  !m9x_faa_graph_binding_layout(binding,&layout))return -EINVAL;
  n=kzalloc(sizeof(*n),GFP_KERNEL);if(!n)return -ENOMEM;
  n->generation=generation;n->previous_point=previous_point;n->first=first;
  n->views.color_policy=color_policy;
  n->views.depth_aux_role=M9_FAA_DEPTH_HZ;n->views.aux_depth_role=M9_FAA_BOUND_DEPTH;
- for(i=0;i<M9_FAA_DEPTH_OWNERS;i++)n->views.owner[i]=m9x_faa_bound_depth_profile(i);
+ for(i=0;i<M9_FAA_DEPTH_OWNERS;i++){
+  n->views.owner[i]=m9x_faa_bound_depth_profile_dimensions(i,layout.width,layout.height);
+  if(!n->views.owner[i].logical_bytes){kfree(n);return -EINVAL;}
+  spec[i].bytes=n->views.owner[i].capacity_bytes;
+ }
  mutex_lock(&t->lock);
  ret=first?m9x_faa_graph_retained_get_locked(mdev,generation,previous_point,&checked):
   m9x_faa_graph_color_unlocked_get_locked(mdev,generation,previous_point,&checked);
@@ -7132,8 +7138,8 @@ int m9x_faa_graph_bound_depth_prepare(struct m9x_device *mdev,
   if(ret)goto retained;
  }
  ret=color_policy==M9_FAA_DEPTH_COLOR_SYSTEM_B?
-  m9x_address_map_faa_system(mdev,&n->owner[0].system_node,n->owner[0].dma,0x50000):
-  m9x_address_map_system(mdev,&n->owner[0].system_node,n->owner[0].dma,0x50000);
+  m9x_address_map_faa_system(mdev,&n->owner[0].system_node,n->owner[0].dma,n->owner[0].bytes):
+  m9x_address_map_system(mdev,&n->owner[0].system_node,n->owner[0].dma,n->owner[0].bytes);
  if(ret)goto retained;
  n->owner[0].base=n->owner[0].system_node.start;
  for(i=M9_FAA_DEPTH_HZ;i<M9_FAA_DEPTH_OWNERS;i++){
@@ -7172,7 +7178,8 @@ int m9x_faa_graph_bound_depth_views_locked(struct m9x_device *mdev,
  for(i=0;i<M9_FAA_DEPTH_OWNERS;i++){
   struct m9_faa_owner *o=&n->owner[i];
   const struct m9x_faa_depth_view *v=&n->views.owner[i];
-  struct m9x_faa_depth_view expected=m9x_faa_bound_depth_profile(i);
+  struct m9x_faa_depth_view expected=m9x_faa_bound_depth_profile_dimensions(i,
+   r->graph_layout.width,r->graph_layout.height);
   expected.base=o->base;
   if(memcmp(v,&expected,sizeof(expected)))return -ESTALE;
   if(v->base!=o->base||v->capacity_bytes!=o->bytes||!v->logical_bytes||
