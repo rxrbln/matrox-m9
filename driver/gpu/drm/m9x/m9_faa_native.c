@@ -4577,8 +4577,10 @@ static int m9_faa_public_vs_state(const struct m9x_transport *t,
 #endif
 
 static int m9_faa_graph_public_vs_submit_mode(struct m9x_device *mdev,
-		struct m9_faa_graph_binding *binding, u32 generation,
-		u64 init_point, u64 *point, bool *posted, bool head)
+					      struct m9_faa_graph_binding *binding,
+					      u32 generation, u64 init_point,
+					      u64 *point, bool *posted,
+					      bool head)
 {
 #ifdef M9_FAA_GRAPH_INIT_CONTROL
 	struct m9x_transport *t = &mdev->transport;
@@ -4625,15 +4627,17 @@ static int m9_faa_graph_public_vs_submit_mode(struct m9x_device *mdev,
 		struct m9_faa_owner *o = &r->draw_owner[i];
 
 		ret = m9x_system_pages_mapped(mdev, o->base, o->dma,
-					      o->bytes / PAGE_SIZE, 1u, NULL, NULL);
+					      o->bytes / PAGE_SIZE, 1u, NULL,
+					      NULL);
 		if (ret)
 			goto out;
 	}
-	ret = m9x_address_check_local_identity(mdev, program->base, program->bytes);
+	ret = m9x_address_check_local_identity(mdev, program->base,
+					       program->bytes);
 	if (ret)
 		goto out;
 	target = lower_32_bits(head ? init_point + 0x10 :
-			      image->ends.independent_finish);
+				      image->ends.independent_finish);
 	fence = m9x_fence_create_target_locked(mdev, target);
 	if (!fence) {
 		ret = -ENOMEM;
@@ -4642,15 +4646,19 @@ static int m9_faa_graph_public_vs_submit_mode(struct m9x_device *mdev,
 	if (head)
 		r->public_vs_head_attempted = true;
 	/* Caller reserved all six BOs with one fence slot each. Every posted
-	 * part has this final WRITE fence; posted errors quarantine it. */
+	 * part has this final WRITE fence; posted errors quarantine it.
+	 */
 	for (i = 0; i < PARHELIA_M9_FAA_GRAPH_OWNERS; i++)
 		dma_resv_add_fence(m9x_faa_graph_binding_owner(binding, i)->resv,
 				   &fence->base, DMA_RESV_USAGE_WRITE);
 	m9x_write(mdev, M9_REG_FRONTEND_KICK, 1);
-	ret = m9x_address_cpu_local_prepare(mdev, program->base, program->bytes);
+	ret = m9x_address_cpu_local_prepare(mdev, program->base,
+					    program->bytes);
 	if (ret)
 		goto out;
-	iosys_map_memcpy_to(&program->map, 0, image->program, sizeof(image->program));
+	iosys_map_memcpy_to(&program->map, 0, image->program,
+			    sizeof(image->program));
+	/* The CPU stores precede their END post. */
 	wmb();
 	m9x_write(mdev, M9_REG_FRONTEND_STATE, 0);
 	m9x_read(mdev, M9_REG_FRONTEND_STATE);
@@ -4660,23 +4668,30 @@ static int m9_faa_graph_public_vs_submit_mode(struct m9x_device *mdev,
 		goto out;
 	}
 	/* Source-known disjoint spans only; never initialize [152,256). */
-	memcpy(constants->cpu, image->constants, M9_FAA_PUBLIC_VS_CONSTANT_BYTES);
+	memcpy(constants->cpu, image->constants,
+	       M9_FAA_PUBLIC_VS_CONSTANT_BYTES);
 	memcpy((u8 *)constants->cpu + 256, image->constants + 256,
 	       M9_FAA_PUBLIC_VS_GEOMETRY_BYTES);
 	memcpy((u8 *)primary->cpu + r->primary_bytes, image->primary, 64);
 	wmb();
 	for (i = 0; i < (head ? 2 : 3); i++) {
-		u32 end = i == 2 ? image->ends.final_end : image->ends.first_end;
+		u32 end = i == 2 ? image->ends.final_end :
+				   image->ends.first_end;
 
 		if (i == 2) {
-			memcpy(secondary->cpu, image->secondary, sizeof(image->secondary));
+			memcpy(secondary->cpu, image->secondary,
+			       sizeof(image->secondary));
 			memcpy((u8 *)primary->cpu + r->primary_bytes + 64,
-			       image->primary + 64, sizeof(image->primary) - 64);
+			       image->primary + 64,
+			       sizeof(image->primary) - 64);
 			wmb();
 		}
 		ret = m9x_post_faa_graph_end_locked(mdev, &primary->system_node,
-			primary->dma, r->graph_draw_end_bytes, end, i == 1,
-			i == (head ? 1 : 2) ? target : 0, &stage_point, &stage_posted);
+						    primary->dma,
+						    r->graph_draw_end_bytes, end,
+						    i == 1,
+						    i == (head ? 1 : 2) ? target : 0,
+						    &stage_point, &stage_posted);
 		*posted |= stage_posted;
 		if (stage_posted) {
 			r->graph_draw_end_bytes = end;
@@ -4685,22 +4700,23 @@ static int m9_faa_graph_public_vs_submit_mode(struct m9x_device *mdev,
 		if (ret)
 			goto out;
 	}
-	if (stage_point != (head ? init_point + 0x10 :
-			   image->ends.independent_finish)) {
+	if (stage_point !=
+	    (head ? init_point + 0x10 : image->ends.independent_finish)) {
 		ret = -EIO;
 		goto out;
 	}
 	*point = stage_point;
 	r->graph_draw_point = stage_point;
-	if (head)
+	if (head) {
 		r->public_vs_head_retired = true;
-	else {
+	} else {
 		r->public_vs_prefix_retired = true;
 		m9_faa_public_vs_prefix_observe(mdev, r);
 	}
 	dev_info(&mdev->pdev->dev,
 		 "M9 FAA public VS %s retired: init=%#llx point=%#llx bytes=%u posts=%u program=%u; original DRAW unreturned, no pixels claimed\n",
-		 head ? "head" : "prefix", init_point, *point, r->graph_draw_end_bytes, r->graph_draw_posts,
+		 head ? "head" : "prefix", init_point, *point,
+		 r->graph_draw_end_bytes, r->graph_draw_posts,
 		 M9_FAA_PUBLIC_VS_PROGRAM_BYTES);
 	dma_rmb();
 	dev_info(&mdev->pdev->dev,
@@ -4724,7 +4740,8 @@ out:
 		fence = NULL;
 	} else if (fence && head && !ret) {
 		/* c0 precedes the remaining original state packets. Keep all six
-		 * BOs unavailable until a source-qualified successor or DMA stop. */
+		 * BOs unavailable until a source-qualified successor or DMA stop.
+		 */
 		r->public_vs_head_fence = fence;
 		fence = NULL;
 	} else if (fence) {
