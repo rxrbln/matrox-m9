@@ -112,6 +112,8 @@ struct m9_resource {
    /* Bumped whenever this driver hands out a writable mapping, so
     * anything derived from the contents can tell they have moved on. */
    uint64_t generation;
+   /* Position bounds the near-plane test keeps for a vertex buffer. */
+   struct m9_vs_clip_box near_box;
    /* Last submitted reader/writer of a private back-end state object.
     * Zero means this owner has never been submitted, not GPU retirement. */
    uint64_t be_point;

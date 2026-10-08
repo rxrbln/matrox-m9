@@ -859,6 +859,62 @@ clip_node_eval(const struct m9_vs_program *program, const uint8_t *constants,
    }
 }
 
+/* Bounds of a float position over vertices first..first+count-1, reused
+ * while the buffer's content and the range are unchanged.  False when a
+ * component is not finite. */
+static bool
+clip_box_bounds(struct m9_vs_clip_box *box, const struct clip_input *in,
+                unsigned first, unsigned count)
+{
+   if (box->valid && box->built == box->generation && box->base == in->base &&
+       box->stride == in->stride && box->floats == in->floats &&
+       box->first == first && box->count == count)
+      return true;
+   box->valid = false;
+   for (unsigned c = 0; c < 4; c++) {
+      box->lo[c] = c < in->floats ? INFINITY : 1.0f;
+      box->hi[c] = c < in->floats ? -INFINITY : 1.0f;
+   }
+   for (unsigned v = 0; v < count; v++) {
+      float p[4];
+
+      memcpy(p, in->base + (uint64_t)(first + v) * in->stride,
+             in->floats * sizeof(float));
+      for (unsigned c = 0; c < in->floats; c++) {
+         if (!isfinite(p[c]))
+            return false;
+         box->lo[c] = MIN2(box->lo[c], p[c]);
+         box->hi[c] = MAX2(box->hi[c], p[c]);
+      }
+   }
+   box->built = box->generation;
+   box->base = in->base;
+   box->stride = in->stride;
+   box->floats = in->floats;
+   box->first = first;
+   box->count = count;
+   box->valid = true;
+   return true;
+}
+
+/* Whether every point of the box has w > 0 and z >= -w, with a margin that
+ * covers the per-vertex float evaluation, so no vertex can test outside. */
+static bool
+clip_box_inside(const float *z, const float *w, const struct m9_vs_clip_box *box)
+{
+   double wmin = w[0], smin = (double)z[0] + w[0], scale = fabs(z[0]) + fabs(w[0]);
+
+   for (unsigned c = 0; c < 4; c++) {
+      double cw = w[1 + c], cs = (double)z[1 + c] + w[1 + c];
+      double m = MAX2(fabs(box->lo[c]), fabs(box->hi[c]));
+
+      wmin += MIN2(cw * box->lo[c], cw * box->hi[c]);
+      smin += MIN2(cs * box->lo[c], cs * box->hi[c]);
+      scale += (fabs(z[1 + c]) + fabs(w[1 + c])) * m;
+   }
+   return isfinite(scale) && wmin > 1e-5 * scale && smin > 1e-5 * scale;
+}
+
 int
 m9_vs_clip_outside_near(const struct m9_vs_program *program,
                         const struct pipe_vertex_element *elements,
@@ -866,6 +922,7 @@ m9_vs_clip_outside_near(const struct m9_vs_program *program,
                         const struct pipe_vertex_buffer *buffers,
                         const uint8_t *const *buffer_map,
                         const unsigned *buffer_size, unsigned buffer_count,
+                        struct m9_vs_clip_box *const *boxes,
                         const uint8_t *constants, size_t constant_size,
                         unsigned first, unsigned count, uint8_t *flags)
 {
@@ -942,6 +999,14 @@ m9_vs_clip_outside_near(const struct m9_vs_program *program,
          const struct clip_input *in = &input[e0];
          const float *zc = z + 1, *wc = w + 1;
          bool four = in->floats >= 4;
+         struct m9_vs_clip_box *box =
+            boxes ? boxes[elements[e0].vertex_buffer_index] : NULL;
+
+         if (box && clip_box_bounds(box, in, first, count) &&
+             clip_box_inside(z, w, box)) {
+            free(scratch);
+            return 0;
+         }
 
          for (unsigned v = 0; v < count && (flags || !outside); v++) {
             float p[4] = { 0.0f, 0.0f, 0.0f, 1.0f };
