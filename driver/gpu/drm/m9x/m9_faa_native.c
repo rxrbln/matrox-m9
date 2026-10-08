@@ -8123,7 +8123,8 @@ int m9x_faa_graph_dual_later_prepare(
 		bool one = kind == PARHELIA_M9_FAA_PROGRAM_SINGLE;
 		if (kind > PARHELIA_M9_FAA_PROGRAM_SINGLE || job->data_offset ||
 		    job->layout.program_count != 4 ||
-		    job->record_stride != 64 ||
+		    (job->record_stride != 64 &&
+		     !(one && job->record_stride == 48)) ||
 		    job->declaration_count != (one ? 7 : 9) ||
 		    job->dual_base_only == one ||
 		    job->single_base_only != one || job->fragment_flags ||
@@ -8132,8 +8133,8 @@ int m9x_faa_graph_dual_later_prepare(
 		    job->record_count > 12288 || !job->record_count ||
 		    job->record_count % 3 ||
 		    !m9x_faa_depth_flags_valid(job->depth_flags) ||
-		    check_mul_overflow(ALIGN(job->record_count, 4), 64u,
-				       &raw) ||
+		    check_mul_overflow(ALIGN(job->record_count, 4),
+				       job->record_stride, &raw) ||
 		    check_add_overflow(ALIGN(job->layout.constants_bytes, 128),
 				       max(job->layout.geometry_bytes,
 					   128u + raw),

@@ -131,7 +131,7 @@ int m9x_faa_single_first_encode(const u8 *sample, size_t sample_bytes,
 	    c->layout.program_bytes - c->layout.entry_bytes[3] != 200 ||
 	    c->declaration_count != 7 ||
 	    (c->record_stride != 24 && c->record_stride != 32 &&
-	     c->record_stride != 64) ||
+	     c->record_stride != 48 && c->record_stride != 64) ||
 	    c->layout.constants_bytes > 16384 ||
 	    c->layout.constant_begin[0] > c->layout.constant_end[0] ||
 	    c->layout.constant_end[0] - c->layout.constant_begin[0] != 16 ||

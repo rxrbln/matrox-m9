@@ -58,7 +58,9 @@ static int dual_draws_copy(u64 draws, u32 draw_count, u32 width, u32 height,
 		       PARHELIA_M9_FAA_COLOR_RASTER_CULL_CCW)) ||
 		    (d->raster_flags & 6) == 6 ||
 		    !m9x_faa_depth_flags_valid(d->depth_flags) ||
-		    d->record_stride != 64 || !d->record_count ||
+		    (d->record_stride != 64 &&
+		     !(single && d->record_stride == 48)) ||
+		    !d->record_count ||
 		    d->record_count % 3 || d->record_count > 12288 ||
 		    d->declaration_count != (single ? 7 : 9) ||
 		    l->program_count != 4 ||
@@ -67,7 +69,7 @@ static int dual_draws_copy(u64 draws, u32 draw_count, u32 width, u32 height,
 		    l->constants_bytes > 16384 || (l->constants_bytes & 7) ||
 		    !l->geometry_bytes || l->geometry_bytes > 0x40000 ||
 		    l->vertex_offset != 128 ||
-		    check_mul_overflow(d->record_count, 64u, &raw) ||
+		    check_mul_overflow(d->record_count, d->record_stride, &raw) ||
 		    raw != l->vertex_bytes || raw > l->geometry_bytes ||
 		    l->vertex_offset > l->geometry_bytes - raw ||
 		    check_add_overflow(l->program_bytes, l->constants_bytes,
