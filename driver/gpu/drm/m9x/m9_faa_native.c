@@ -399,6 +399,12 @@ static void m9_faa_depth_frame_free(struct m9_faa_depth_frame_storage *frame)
 static bool m9_faa_frame_trace_enabled;
 static unsigned int m9_faa_frame_trace_delay_ms;
 module_param_named(faa_frame_trace, m9_faa_frame_trace_enabled, bool, 0600);
+/* Stall A/B only: copy each frame part into the primary just before its END
+ * (the old order) instead of the whole image before the first END.
+ */
+static bool m9_faa_frame_copy_per_end;
+module_param_named(faa_frame_copy_per_end, m9_faa_frame_copy_per_end, bool,
+		   0400);
 module_param_named(faa_frame_trace_delay_ms, m9_faa_frame_trace_delay_ms, uint,
 		   0600);
 MODULE_PARM_DESC(faa_frame_trace,
@@ -14147,10 +14153,19 @@ static int m9_faa_depth_frame_submit(struct m9x_device *mdev,
  }
  memcpy((u8*)m9_faa_command_owner(r,true)->cpu+frame->secondary_cursor,frame->batch_secondary?frame->batch_secondary:frame->secondary,frame->secondary_bytes);
  m9_faa_frame_trace(mdev,"data-published",frame->draw_count,frame->secondary_bytes,frame->final_point,0,false);
+	/* The whole image is in the primary before the engine may prefetch
+	 * past the first END (m9x_post_faa_graph_end_locked drains WC stores).
+	 */
+	if (!READ_ONCE(m9_faa_frame_copy_per_end)) {
+		memcpy((u8 *)primary->cpu + frame->primary_start, frame->primary,
+		       frame->primary_bytes);
+		copied = frame->primary_bytes;
+	}
  for(i=0;i<frame->end_count;i++){
   u32 length=frame->end_bytes[i]-frame->primary_start;
   end=frame->end_bytes[i];
-  if(length>frame->primary_bytes||length<copied){ret=-EINVAL;goto out;}
+  if(length>frame->primary_bytes||(length<copied&&
+     READ_ONCE(m9_faa_frame_copy_per_end))){ret=-EINVAL;goto out;}
   if(length>copied)memcpy((u8*)primary->cpu+frame->primary_start+copied,frame->primary+copied,length-copied);
   dma_wmb();m9_faa_frame_trace(mdev,"END-begin",i,end,
    i==frame->end_count-1?frame->final_point:0,0,true);
@@ -14163,7 +14178,7 @@ static int m9_faa_depth_frame_submit(struct m9x_device *mdev,
    dev_info(&mdev->pdev->dev,"M9 FAA frame END refused: index=%u end=%u final=%#llx error=%d any_posted=%u stage_posted=%u\n",
     i,end,frame->final_point,ret,*posted,stage_posted);
    goto out;
-  }copied=length;
+  }copied=max(copied,length);
  }
  if(stage_point!=frame->final_point){ret=-EIO;goto out;}
  *point=stage_point;frame->retired=true;r->depth_storage->initialized=true;
