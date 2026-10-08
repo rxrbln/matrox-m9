@@ -1251,7 +1251,8 @@ static int m9_faa_dma_prepare_wc(struct m9x_device *mdev,
 	if (ret)
 		return ret;
 	/* CPA can fail after changing a subset of pages. Retain restoration
-	 * ownership before entering it, including on its error paths. */
+	 * ownership before entering it, including on its error paths.
+	 */
 	o->cpu_wc = true;
 	ret = set_memory_wc((unsigned long)o->cpu, o->bytes >> PAGE_SHIFT);
 	if (!ret)
