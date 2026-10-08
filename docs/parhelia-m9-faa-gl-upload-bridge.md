@@ -1,5 +1,16 @@
 # M9128 generalized GL FAA upload boundary
 
+## October 8: first GPU-presented FAA frame matches the working screenshot
+
+Combined DRM1504380/Mesa3c3e1f3 physically retires first Lock5e0, Unlock600
+and GPU presentation620. The actual320x240 glxgears screenshot is byte-identical
+to the working CPU-presented reference. The next frame retires Lockb50 with
+no wedge, but the outer batch ioctl still checks its result against U600
+instead of presentation P620 and returns EIO. This is an identified completion
+receipt publication bug; no GPU timeout occurred. Fixing that final origin join
+and adding actual ioctl coverage precedes the next continuous test.
+[Hardware evidence and screenshot](../tests/m9-faa-gpu-present-hardware-20261008/first-frame/README.md).
+
 ## October 8: live depth state and GPU presentation integrated, hardware pending
 
 DRM1504380 and Mesa7730b80 fix an API/state mismatch: FAA accepted GL_LESS
