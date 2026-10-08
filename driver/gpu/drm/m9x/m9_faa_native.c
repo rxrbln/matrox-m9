@@ -719,41 +719,79 @@ MODULE_FIRMWARE(M9_FAA_GRAPH_NEXT_FINISH_FIRMWARE);
 
 #ifdef M9_FAA_GRAPH_INIT_CONTROL
 static int m9_faa_template_request(struct m9x_device *mdev,
- struct m9_faa_graph_binding *binding,u32 generation,u32 slot,
- const struct firmware **out)
+				   struct m9_faa_graph_binding *binding,
+				   u32 generation, u32 slot,
+				   const struct firmware **out)
 {
- static const char *const name[]={M9_FAA_SAMPLE_CLEAR_FIRMWARE,
-  M9_FAA_GRAPH_COLOR_FIRMWARE,M9_FAA_GRAPH_COLOR_FOUR_FIRMWARE};
- struct m9x_transport *t=&mdev->transport;struct m9x_faa_replay *r;
- const struct firmware *loaded=NULL,*pin=NULL;bool missing=false;u32 bytes=0;int ret;
- if(!out||!binding||slot>=ARRAY_SIZE(name))return -EINVAL;*out=NULL;
- /* Linux's alloc_lookup_fw_priv shares the loaded immutable buffer while
-  * any ref is retained. Use a normal request for the caller's independent
-  * lifetime, rather than borrowing a replay pointer across an unlock. */
- m9_faa_frame_trace(mdev,"template-request-begin",slot,0,generation,0,false);
- ret=request_firmware(&loaded,name[slot],&mdev->pdev->dev);if(ret)goto release;
- bytes=loaded->size;
- mutex_lock(&t->lock);r=t->faa;
- if(t->wedged)ret=-EIO;
- else if(!r||r->graph_binding!=binding||r->graph_generation!=generation||
-  t->generation!=generation)ret=-ESTALE;
- else missing=!r->template_firmware[slot];
- mutex_unlock(&t->lock);if(ret)goto release;
- if(missing){
-  ret=request_firmware(&pin,name[slot],&mdev->pdev->dev);if(ret)goto release;
-  mutex_lock(&t->lock);r=t->faa;
-  if(t->wedged)ret=-EIO;
-  else if(!r||r->graph_binding!=binding||r->graph_generation!=generation||
-   t->generation!=generation)ret=-ESTALE;
-  else if(!r->template_firmware[slot]){
-   r->template_firmware[slot]=pin;pin=NULL;
-  }
-  mutex_unlock(&t->lock);if(ret)goto release;
- }
- *out=loaded;loaded=NULL;
-release:if(pin)release_firmware(pin);if(loaded)release_firmware(loaded);
- m9_faa_frame_trace(mdev,"template-request-end",slot,bytes,generation,ret,false);return ret;
+	static const char *const name[] = { M9_FAA_SAMPLE_CLEAR_FIRMWARE,
+					    M9_FAA_GRAPH_COLOR_FIRMWARE,
+					    M9_FAA_GRAPH_COLOR_FOUR_FIRMWARE };
+	struct m9x_transport *t = &mdev->transport;
+	struct m9x_faa_replay *r;
+	const struct firmware *loaded = NULL, *pin = NULL;
+	bool missing = false;
+	u32 bytes = 0;
+	int ret;
+
+	if (!out || !binding || slot >= ARRAY_SIZE(name))
+		return -EINVAL;
+	*out = NULL;
+	/* Linux's alloc_lookup_fw_priv shares the loaded immutable buffer while
+	 * any ref is retained. Use a normal request for the caller's independent
+	 * lifetime, rather than borrowing a replay pointer across an unlock.
+
+	 */
+	m9_faa_frame_trace(mdev, "template-request-begin", slot, 0, generation,
+			   0, false);
+	ret = request_firmware(&loaded, name[slot], &mdev->pdev->dev);
+	if (ret)
+		goto release;
+	bytes = loaded->size;
+	mutex_lock(&t->lock);
+	r = t->faa;
+	if (t->wedged)
+		ret = -EIO;
+	else if (!r || r->graph_binding != binding ||
+		 r->graph_generation != generation ||
+		 t->generation != generation)
+		ret = -ESTALE;
+	else
+		missing = !r->template_firmware[slot];
+	mutex_unlock(&t->lock);
+	if (ret)
+		goto release;
+	if (missing) {
+		ret = request_firmware(&pin, name[slot], &mdev->pdev->dev);
+		if (ret)
+			goto release;
+		mutex_lock(&t->lock);
+		r = t->faa;
+		if (t->wedged) {
+			ret = -EIO;
+		} else if (!r || r->graph_binding != binding ||
+			   r->graph_generation != generation ||
+			   t->generation != generation) {
+			ret = -ESTALE;
+		} else if (!r->template_firmware[slot]) {
+			r->template_firmware[slot] = pin;
+			pin = NULL;
+		}
+		mutex_unlock(&t->lock);
+		if (ret)
+			goto release;
+	}
+	*out = loaded;
+	loaded = NULL;
+release:
+	if (pin)
+		release_firmware(pin);
+	if (loaded)
+		release_firmware(loaded);
+	m9_faa_frame_trace(mdev, "template-request-end", slot, bytes,
+			   generation, ret, false);
+	return ret;
 }
+
 #endif
 
 bool m9x_faa_diag_enabled(void)
