@@ -6,30 +6,7 @@
 #include <linux/string.h>
 #include "m9_cmd.h"
 #include "m9_faa_graph_dual_later_encode.h"
-#include "m9_faa_graph_later_switch.h"
-
-/* The source drops FIRST-only state groups after it has retained the graph
- * targets. These are packet boundaries, not a copied captured command image.
- * All C2/C3, geometry, sampler and shader words come from fresh_secondary.
- */
-struct span {
-	u16 from, to, bytes;
-};
-
-static const struct span stage_spans[] = {
-	{ 0, 0, 456 },	      { 460, 560, 440 },  { 1000, 1000, 284 },
-	{ 1308, 1284, 204 },  { 1588, 1488, 20 }, { 1628, 1508, 216 },
-	{ 1868, 1724, 1012 },
-};
-
-/* A culled stage keeps the two 12-byte 6A groups the unculled later
- * source drops (FIRST 1296 and 1856), 24 bytes in all.
- */
-static const struct span cull_spans[] = {
-	{ 0, 0, 456 },	      { 460, 560, 440 },  { 1000, 1000, 284 },
-	{ 1296, 1284, 216 },  { 1588, 1500, 20 }, { 1628, 1520, 216 },
-	{ 1856, 1736, 1024 },
-};
+#include "m9_faa_graph_later_stage.h"
 
 static int later_encode(const u8 *sample, size_t sample_bytes,
 			const struct m9x_faa_graph_draw_owner owner[34],
@@ -37,12 +14,13 @@ static int later_encode(const u8 *sample, size_t sample_bytes,
 			u32 scursor, u64 previous, u64 next, u32 clear_flags,
 			const u8 *fresh_secondary, u32 fresh_bytes,
 			const u8 fresh_tail[M9_FAA_DUAL_FIRST_PRIMARY_TAIL_BYTES],
-			bool switched, struct m9x_faa_dual_later_image *out,
+			enum m9x_faa_later_form form, bool cull_state,
+			struct m9x_faa_dual_later_image *out,
 			struct m9x_faa_dual_later_scratch *scratch)
 {
 	struct m9x_faa_later_depth_clear_image clear_image;
-	u32 front = 0, sec_bytes, tail_bytes, total, mid, epoch, i, mask, cull;
-	const struct span *spans;
+	struct m9x_faa_later_stage stage;
+	u32 front = 0, sec_bytes, tail_bytes, total, mid, epoch, i;
 	u8 *s, *p;
 	int ret;
 	bool clear = clear_flags == 3, depth = clear_flags == 2;
@@ -68,16 +46,19 @@ static int later_encode(const u8 *sample, size_t sample_bytes,
 		if (owner[31 + i].base != views->owner[i].base ||
 		    owner[31 + i].bytes < views->owner[i].capacity_bytes)
 			return -EINVAL;
-	/* The fresh FIRST stage carries the live cull field (bits 25:24). A
-	 * switched stage keeps every FIRST group, culled or not.
+	/* The first DRAW of the frame: the program's FIRST stage less the
+	 * groups its cache form drops, epoch-checked below.
 	 */
-	cull = !switched && (m9_cmd_get(fresh_secondary + 1992) >> 24 & 3) ?
-		M9_FAA_DUAL_LATER_CULL_BYTES : 0;
-	sec_bytes = (clear ? M9_FAA_DUAL_LATER_SECONDARY_CLEAR :
-			     M9_FAA_DUAL_LATER_SECONDARY_NOCLEAR) + cull;
-	if (switched)
-		sec_bytes = fresh_bytes + M9_FAA_SWITCH_RELOAD_BYTES +
-			    (clear ? 0 : M9_FAA_SWITCH_E3_BYTES);
+	epoch = (u32)previous - (clear ? 0 : depth ? 0x30 : 0x80);
+	s = scratch->secondary;
+	p = scratch->primary;
+	ret = m9x_faa_later_stage_encode(fresh_secondary, fresh_bytes, epoch,
+					 form, false, !clear, cull_state, s,
+					 sizeof(scratch->secondary), &stage);
+	if (ret)
+		return ret;
+	sec_bytes = stage.bytes;
+	mid = stage.split;
 	tail_bytes = clear ? M9_FAA_DUAL_LATER_TAIL_CLEAR :
 			     M9_FAA_DUAL_LATER_TAIL_NOCLEAR;
 	if (scursor > owner[29].bytes ||
@@ -119,57 +100,13 @@ static int later_encode(const u8 *sample, size_t sample_bytes,
 			   fresh_bytes) ||
 	    m9_cmd_overlap(out->secondary, sec_bytes, fresh_tail, 3624))
 		return -EINVAL;
-	epoch = (u32)previous - (clear ? 0 : depth ? 0x30 : 0x80);
-	if (m9_cmd_get(fresh_secondary + 4) != 0x454545c7 ||
-	    m9_cmd_get(fresh_secondary + 56) != ((epoch + 0x90) | 1) ||
-	    m9_cmd_get(fresh_secondary + 104) != ((epoch + 0xa0) | 1) ||
+	if (m9_cmd_get(fresh_secondary + 56) != ((epoch + 0x90) | 1) ||
 	    m9_cmd_get(fresh_tail) != M9_CMD_LINK ||
 	    m9_cmd_get(fresh_tail + 48) != M9_CMD_LINK ||
 	    m9_cmd_get(fresh_tail + 60) != 0x45454524 ||
 	    m9_cmd_get(fresh_tail + 188) != ((epoch + 0x130) | 1) ||
 	    m9_cmd_get(fresh_tail + 3620) != ((epoch + 0x150) | 1))
 		return -ESTALE;
-	s = scratch->secondary;
-	p = scratch->primary;
-	memset(s, 0, sizeof(scratch->secondary));
-	if (switched) {
-		ret = m9x_faa_switch_stage_encode(fresh_secondary, fresh_bytes,
-						  epoch, !clear, s,
-						  sizeof(scratch->secondary),
-						  &sec_bytes, &mid);
-		if (ret)
-			return ret;
-		goto primary;
-	}
-	/* Source f25338 changes the retained input mask when re-entering this
-	 * stage. Preserve the live compiler's scratch/output bits underneath.
-	 */
-	mask = m9_cmd_get(fresh_secondary + 320);
-	if ((mask & 0xff000000) != 0x0f000000)
-		return -EINVAL;
-	spans = cull ? cull_spans : stage_spans;
-	for (i = 0; i < ARRAY_SIZE(stage_spans); i++)
-		memcpy(s + spans[i].to, fresh_secondary + spans[i].from,
-		       spans[i].bytes);
-	memcpy(s + 456, m9x_faa_null_target, sizeof(m9x_faa_null_target));
-	m9_cmd_put(s + 552, 0x454545c0);
-	m9_cmd_put(s + 556, 4);
-	m9_cmd_put(s + 28, 0x49d00000 | ((800 - 28) / 4));
-	m9_cmd_put(s + 844, 0x49d00000 | ((1328 + cull / 2 - 844) / 4));
-	m9_cmd_put(s + 1364 + cull / 2,
-		   0x49d00000 | ((1756 + cull - 1364 - cull / 2) / 4));
-	m9_cmd_put(s + 320, ((mask & 0xff1fffffu) | 0x00100000u) & ~3u);
-	if (!clear) {
-		memmove(s + 60, s + 56,
-			M9_FAA_DUAL_LATER_SECONDARY_CLEAR + cull - 56);
-		m9_cmd_put(s + 44, 3);
-		m9_cmd_put(s + 48, 0x45e3e6e6);
-		m9_cmd_put(s + 52, 1);
-		m9_cmd_put(s + 56, 2);
-		m9_cmd_put(s + 28, 0x49d00000 | ((804 - 28) / 4));
-	}
-	mid = (clear ? 1768 : 1772) + cull;
-primary:
 	if (clear_flags)
 		memcpy(p, scratch->clear.prefix, front);
 	memcpy(p + front, fresh_tail, 3348);
@@ -200,6 +137,9 @@ primary:
 	out->end_count = i;
 	out->clear_bytes = front;
 	out->draw_end_bytes = pcursor + front + 60;
+	out->units = stage.units;
+	out->site[0] = stage.site[0];
+	out->site[1] = stage.site[1];
 	out->final_point = previous + (clear ? 0x150 : depth ? 0x120 : 0xd0);
 	return 0;
 }
@@ -214,27 +154,29 @@ int m9x_faa_dual_later_encode(const u8 *sample, size_t sample_bytes,
 			      struct m9x_faa_dual_later_image *out,
 			      struct m9x_faa_dual_later_scratch *scratch)
 {
+	/* Single-program frames: a culled frame re-emits the 6A groups. */
+	if (!fresh_secondary)
+		return -EINVAL;
 	return later_encode(sample, sample_bytes, owner, views, pcursor,
 			    scursor, previous, next, clear_flags,
 			    fresh_secondary, M9_FAA_DUAL_FIRST_SECONDARY_BYTES,
-			    fresh_tail, false, out, scratch);
+			    fresh_tail, M9_FAA_LATER_PLAIN,
+			    m9_cmd_get(fresh_secondary + 1992) >> 24 & 3, out,
+			    scratch);
 }
 
-int m9x_faa_later_switch_encode(const u8 *sample, size_t sample_bytes,
-				const struct m9x_faa_graph_draw_owner owner[34],
-				const struct m9x_faa_depth_views *views,
-				u32 pcursor, u32 scursor, u64 previous,
-				u64 next, u32 clear_flags,
-				const u8 *fresh_first, u32 fresh_first_bytes,
-				const u8 fresh_tail[M9_FAA_DUAL_FIRST_PRIMARY_TAIL_BYTES],
-				struct m9x_faa_dual_later_image *out,
-				struct m9x_faa_dual_later_scratch *scratch)
+int m9x_faa_later_encode(const u8 *sample, size_t sample_bytes,
+			 const struct m9x_faa_graph_draw_owner owner[34],
+			 const struct m9x_faa_depth_views *views, u32 pcursor,
+			 u32 scursor, u64 previous, u64 next, u32 clear_flags,
+			 const u8 *fresh_first, u32 fresh_first_bytes,
+			 const u8 fresh_tail[M9_FAA_DUAL_FIRST_PRIMARY_TAIL_BYTES],
+			 enum m9x_faa_later_form form, bool cull_state,
+			 struct m9x_faa_dual_later_image *out,
+			 struct m9x_faa_dual_later_scratch *scratch)
 {
-	if (!fresh_first ||
-	    (fresh_first_bytes != M9_FAA_SINGLE_STAGE_BYTES &&
-	     fresh_first_bytes != M9_FAA_DUAL_FIRST_SECONDARY_BYTES))
-		return -EINVAL;
 	return later_encode(sample, sample_bytes, owner, views, pcursor,
 			    scursor, previous, next, clear_flags, fresh_first,
-			    fresh_first_bytes, fresh_tail, true, out, scratch);
+			    fresh_first_bytes, fresh_tail, form, cull_state, out,
+			    scratch);
 }
