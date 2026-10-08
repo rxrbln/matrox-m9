@@ -103,7 +103,8 @@ int m9x_faa_color_four_encode(const u8*blob,size_t bytes,const struct m9x_faa_gr
   * hardware command and may only be consumed by the dual constructor. */
  if((arity==3)!=!!in->dual_base_only||
   (arity==3&&(in->declaration_count<9||
-   (in->record_stride!=36&&in->record_stride!=64))))return -EINVAL;
+   (in->record_stride!=32&&in->record_stride!=36&&
+    in->record_stride!=64))))return -EINVAL;
  if(m9x_faa_carry_source_mask(in->program,in->layout.program_bytes,
   in->layout.entry_bytes[1],in->layout.entry_bytes[2],1+arity,
   &carry_mask))return -EINVAL;
@@ -129,15 +130,19 @@ int m9x_faa_color_four_encode(const u8*blob,size_t bytes,const struct m9x_faa_gr
  }
  if(get(in->declaration+4*(in->declaration_count-1))!=0x4b08)return -EINVAL;
  for(i=0;i+1<in->declaration_count;i++){u32 q=get(in->declaration+4*i);
-  if(arity==3&&in->record_stride==36){
-   /* Original FVF 0x244 has FLOAT4 position, D3DCOLOR and two FLOAT2
-    * coordinates at byte offsets 0/16/20/28. The generic full-vec4
-    * bound check would reject its final eight-byte field. This source
-    * control is exact; live declarations retain the general check. */
-   static const u32 source_decl[]={0x00100d88,0x001006b6,
+  if(arity==3&&(in->record_stride==32||in->record_stride==36)){
+   /* Original public FVF 0x242/0x244 both use packed D3DCOLOR and FLOAT2
+    * coordinates. Their offsets differ with FLOAT3 XYZ vs FLOAT4 XYZRHW.
+    * Keep exact source declarations; the live vec4x4 route remains the
+    * separate 64-byte admission. */
+   static const u32 rhw_decl[]={0x00100d88,0x001006b6,
     0x0420cd8a,0x0420c636,0x05300d88,0x05300b36,
     0x07400d88,0x07400b36};
-   if(in->declaration_count!=9||q!=source_decl[i])return -EINVAL;
+   static const u32 xyz_decl[]={0x00100daa,0x00100236,
+    0x0320cd8a,0x0320c636,0x04300d88,0x04300b36,
+    0x06400d88,0x06400b36};
+   if(in->declaration_count!=9||
+      q!=(in->record_stride==32?xyz_decl[i]:rhw_decl[i]))return -EINVAL;
   }else if(((q>>16)&15)||((q>>24)*4+16>in->record_stride)||
    ((q>>20)&15)!=i/2+1||((q>>12)&15))return -EINVAL;}
  for(i=0;i<in->record_count;i++)for(j=0;j<in->record_stride/4;j++)

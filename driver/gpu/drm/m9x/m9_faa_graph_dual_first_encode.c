@@ -163,7 +163,18 @@ int m9x_faa_dual_first_encode(const u8 *sample,size_t sample_bytes,
    limit=views->owner[M9_FAA_BOUND_DEPTH].capacity_bytes;}
   else if(f->owner==32){base=owner[27].base+0x2000;limit=owner[27].bytes-0x2000;}
   else{base=owner[f->owner].base;limit=owner[f->owner].bytes;}
-  if(f->owner==23)off*=0xb3000u;
+  if(f->owner==23){
+   /* Original untransformed XYZ producer (position tail 200 bytes) binds
+    * SCREEN before CLIP in the last raster input group. The 192-byte
+    * XYZRHW producer uses the opposite order. Both still publish the same
+    * three position output banks above; only these two reader fields move.
+    * All addresses remain derived from the retained live owner. */
+   if(c->layout.program_bytes-c->layout.entry_bytes[3]==200){
+    if(f->at==2396)off=4;
+    else if(f->at==2416)off=3;
+   }
+   off*=0xb3000u;
+  }
   if(f->owner==28){off=f->offset==0xffffffff?geo+128:geo;
    off+=c->data_offset;}
   if(off>limit||limit-off<4||check_add_overflow(base,off,&value)||

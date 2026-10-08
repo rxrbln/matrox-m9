@@ -138,6 +138,8 @@ int m9x_faa_dual_colorpass_encode(
     dual->layout.constant_begin[0]>dual->layout.constants_bytes||
     dual->layout.constant_end[0]>dual->layout.constants_bytes||
     pass->layout.program_bytes!=dual->layout.program_bytes-40||
+    (pass->layout.program_bytes-pass->layout.entry_bytes[3]!=192&&
+     pass->layout.program_bytes-pass->layout.entry_bytes[3]!=200)||
     pass->layout.constants_bytes+8!=dual->layout.constants_bytes||
     dual->layout.constant_begin[0]!=pass->layout.constant_begin[0]||
     pass->layout.constant_end[0]!=pass->layout.constant_begin[0]+16||
@@ -204,10 +206,20 @@ int m9x_faa_dual_colorpass_encode(
  memcpy(secondary+2624,dual_secondary+2712,168);
  wr(secondary,2008,0x00000503);
  wr(secondary,2348,0x0110ffc3);
- wr(secondary,2392,(owner[23].base+3*0xb3000u)|1);
+ /* The public XYZ (untransformed) position producer publishes SCREEN at
+  * bank 4 and CLIP at bank 3; XYZRHW publishes the same banks but its
+  * raster reader order is reversed. This diagnostic removes UV1 without
+  * changing that source mode decision. */
+ if(pass->layout.program_bytes-pass->layout.entry_bytes[3]==200)
+  wr(secondary,2392,(owner[23].base+4*0xb3000u)|1);
+ else
+  wr(secondary,2392,(owner[23].base+3*0xb3000u)|1);
  wr(secondary,2396,(owner[23].base+5*0xb3000u)|1);
  wr(secondary,2400,0x00060010);
- wr(secondary,2412,(owner[23].base+4*0xb3000u)|1);
+ if(pass->layout.program_bytes-pass->layout.entry_bytes[3]==200)
+  wr(secondary,2412,(owner[23].base+3*0xb3000u)|1);
+ else
+  wr(secondary,2412,(owner[23].base+4*0xb3000u)|1);
  wr(secondary,2416,0);
  wr(secondary,2420,0x00000010);
  wr(secondary,2708,0x00020688);
