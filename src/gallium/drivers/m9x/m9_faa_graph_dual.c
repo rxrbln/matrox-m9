@@ -194,8 +194,8 @@ m9_faa_surface_dual_frame_kernel(struct m9_screen *screen,struct m9_faa_surface 
          s->flatshade||s->cull_face==PIPE_FACE_FRONT_AND_BACK||s->scissor_enabled||
          s->fragment.blend||s->fragment.alpha||s->fragment.source_stream||
          s->viewport.scale[0]!=surface->width*.5f||s->viewport.scale[1]!=surface->height*-.5f||
-         s->viewport.scale[2]!=.5f||s->viewport.translate[0]!=surface->width*.5f||
-         s->viewport.translate[1]!=surface->height*.5f||s->viewport.translate[2]!=.5f||
+         s->viewport.translate[0]!=surface->width*.5f||
+         s->viewport.translate[1]!=surface->height*.5f||
          u->texture[0].resource==u->texture[1].resource||
          u->texture[0].view.handle==u->texture[1].view.handle)return -EOPNOTSUPP;
       for(unsigned t=0;t<2;t++) {

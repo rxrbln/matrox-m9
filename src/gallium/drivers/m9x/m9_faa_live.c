@@ -296,6 +296,15 @@ live_gl_build_mode(const struct m9_faa_live_gl *s,
          t -= s->viewport.centre;
          memcpy(&carry_constants[22 + c], &t, sizeof(t));
       }
+      /* Tail z scale/offset (GL clip z), system dwords 24/28. */
+      if (s->viewport.depth_range) {
+         const float z[2] = {
+            (s->viewport.depth_far - s->viewport.depth_near) * 0.5f,
+            (s->viewport.depth_far + s->viewport.depth_near) * 0.5f,
+         };
+         memcpy(&carry_constants[20], &z[0], sizeof(z[0]));
+         memcpy(&carry_constants[24], &z[1], sizeof(z[1]));
+      }
    }
    const struct m9_faa_program_vector vectors[4] = {
       s->fragment, {carry, slots}, {gather, fused ? 0 : dual ? dual_gather_slots : gi.slots},
@@ -354,9 +363,12 @@ live_gl_build_mode(const struct m9_faa_live_gl *s,
       if (constants[i].pairs)
          memcpy((uint8_t *)result.constants + result.constant_begin[i],
                 constants[i].words, constants[i].pairs * 8);
+   const float z_near = s->viewport.depth_range ? s->viewport.depth_near : 0.0f;
+   const float z_span = s->viewport.depth_range ?
+      s->viewport.depth_far - s->viewport.depth_near : 1.0f;
    const float header[8] = {s->viewport.width * .5f, s->viewport.height * -.5f,
-      1, 0, s->viewport.x + s->viewport.width * .5f - s->viewport.centre,
-      s->viewport.y + s->viewport.height * .5f - s->viewport.centre, 0, 0};
+      z_span, 0, s->viewport.x + s->viewport.width * .5f - s->viewport.centre,
+      s->viewport.y + s->viewport.height * .5f - s->viewport.centre, z_near, 0};
    memcpy(result.geometry, header, sizeof(header));
    bool records = s->indices ?
       m9_vs_source_records_gather(&source, s->maps, s->map_bytes, s->buffer_count,

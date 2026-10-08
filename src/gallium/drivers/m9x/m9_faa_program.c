@@ -385,11 +385,14 @@ m9_faa_preprocess_position(const struct m9_faa_viewport *viewport,
 
    float x = viewport->x, y = viewport->y;
    float hx = viewport->width * 0.5f, hy = viewport->height * 0.5f;
+   /* Window z = MinZ + (MaxZ - MinZ) * z, the source ZRANGE pair. */
+   float z_near = viewport->depth_range ? viewport->depth_near : 0.0f;
+   float z_span = viewport->depth_range ? viewport->depth_far - viewport->depth_near : 1.0f;
    /* Actual 134880 field writers and f485b/f4863 dense-span publication.
     * Guard coefficients include the live origin. Fixed pairs are source
     * default-depth/clip coefficients, never inherited heap contents. */
-   const float k[26] = {hx, -hy, 1, 1, x + hx - viewport->centre,
-      y + hy - viewport->centre, 0,
+   const float k[26] = {hx, -hy, z_span, 1, x + hx - viewport->centre,
+      y + hy - viewport->centre, z_near,
       (float)viewport->height, 0, 2, -16352, 16351, x, y, 1, 0.5f,
       INFINITY, -INFINITY, 1, (15359.0f - x) / hx - 1,
       1, -((15359.0f - y) / hy - 1), 127, 128, 1.25f, 1.5f};

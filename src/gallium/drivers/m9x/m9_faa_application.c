@@ -502,17 +502,19 @@ m9_faa_application_build(const struct m9_faa_application_draw *d,
    float h = -2 * d->state.viewport.scale[1];
    float x = d->state.viewport.translate[0] - d->state.viewport.scale[0];
    float y = d->state.viewport.translate[1] + d->state.viewport.scale[1];
+   float z_near = d->state.viewport.translate[2] - d->state.viewport.scale[2];
+   float z_far = d->state.viewport.translate[2] + d->state.viewport.scale[2];
    if (!(w > 0 && h > 0 && x >= 0 && y >= 0) ||
        w > 15359 || h > 15359 || x > 15359 - w || y > 15359 - h ||
        floorf(w) != w || floorf(h) != h || floorf(x) != x || floorf(y) != y ||
-       d->state.viewport.scale[2] != .5f ||
-       d->state.viewport.translate[2] != .5f) {
+       !(z_near >= 0.0f && z_near <= 1.0f && z_far >= 0.0f && z_far <= 1.0f)) {
       why = "FAA application viewport/depth range has no qualified position tail";
       goto fail;
    }
    /* The FAA raster samples at integer pixel positions (MEASURED, edge
     * coverage and texels); GL samples at half-integer ones. */
-   live.viewport = (struct m9_faa_viewport){x, y, w, h, .centre = 0.5f};
+   live.viewport = (struct m9_faa_viewport){x, y, w, h, .centre = 0.5f,
+      .depth_range = true, .depth_near = z_near, .depth_far = z_far};
    if(!m9_faa_application_texture_linkage(d->fs,&texture_linkage,sampler,&texture_count,&why))goto fail;
    if(texture_count) {
       if(d->state.flatshade||d->state.fragment.blend!=M9_FAA_BLEND_REPLACE||

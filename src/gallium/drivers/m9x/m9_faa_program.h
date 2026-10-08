@@ -128,6 +128,9 @@ bool m9_faa_preprocess_moves(enum m9_faa_move_input kind,
 struct m9_faa_viewport {
    uint32_t x, y, width, height;
    float centre;
+   /* GL depth range; without it the source default window z 0..1. */
+   bool depth_range;
+   float depth_near, depth_far;
 };
 
 struct m9_faa_position_interface {
