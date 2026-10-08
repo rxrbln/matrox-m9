@@ -628,12 +628,81 @@ int m9x_faa_graph_file_open(struct drm_device *drm, struct drm_file *file)
 	return 0;
 }
 
+/* Release a Lock its client holds and will not Unlock: the client closed its
+ * file, or kept the Lock past the ordinary wait bound. Reserves the graph's
+ * objects like the Unlock ioctl, waits out their readers, then posts the
+ * Unlock itself if the same Lock is still held.
+ */
+int m9x_faa_graph_force_unlock(struct m9x_device *mdev,
+			       const struct m9_faa_prepared_graph *only,
+			       const char *why)
+{
+	struct m9_faa_graph_binding *binding = NULL, *checked = NULL;
+	struct m9_faa_prepared_graph *graph;
+	struct drm_exec exec;
+	u32 generation, recheck_generation, i;
+	u64 lock_point, recheck_point;
+	long left;
+	int ret;
+
+	mutex_lock(&mdev->transport.lock);
+	ret = m9x_faa_graph_held_lock_locked(mdev, &binding, &generation,
+					     &lock_point);
+	mutex_unlock(&mdev->transport.lock);
+	if (ret)
+		return ret;
+	graph = binding->graph;
+	if (only && graph != only) {
+		m9x_faa_graph_binding_put(binding);
+		return -ENOENT;
+	}
+	drm_exec_init(&exec, DRM_EXEC_IGNORE_DUPLICATES,
+		      PARHELIA_M9_FAA_GRAPH_OWNERS);
+	drm_exec_until_all_locked(&exec) {
+		for (i = 0; i < PARHELIA_M9_FAA_GRAPH_OWNERS; i++) {
+			ret = drm_exec_prepare_obj(&exec, graph->owner[i], 1);
+			drm_exec_retry_on_contention(&exec);
+			if (ret)
+				goto out;
+		}
+	}
+	for (i = 0; i < PARHELIA_M9_FAA_GRAPH_OWNERS; i++) {
+		left = dma_resv_wait_timeout(graph->owner[i]->resv,
+					     DMA_RESV_USAGE_READ, false,
+					     10 * m9x_fence_timeout_jiffies());
+		if (left <= 0) {
+			ret = left ? left : -EBUSY;
+			goto out;
+		}
+	}
+	mutex_lock(&mdev->transport.lock);
+	ret = m9x_faa_graph_held_lock_locked(mdev, &checked,
+					     &recheck_generation,
+					     &recheck_point);
+	mutex_unlock(&mdev->transport.lock);
+	if (!ret && (checked != binding || recheck_generation != generation ||
+		     recheck_point != lock_point))
+		ret = -ESTALE;
+	if (!ret)
+		ret = m9x_faa_graph_unlock_forced(mdev, binding, generation,
+						  lock_point, why);
+out:
+	drm_exec_fini(&exec);
+	m9x_faa_graph_binding_put(checked);
+	m9x_faa_graph_binding_put(binding);
+	return ret;
+}
+
 void m9x_faa_graph_file_close(struct drm_device *drm, struct drm_file *file)
 {
 	struct m9_faa_file *state = file->driver_priv;
 
 	if (!state)
 		return;
+	/* A Lock this file still holds is released for it, as its Unlock. */
+	if (state->graph)
+		m9x_faa_graph_force_unlock(to_m9x(drm), state->graph,
+					   "file closed");
 	if (state->graph)
 		WRITE_ONCE(state->graph->released, true);
 	m9x_faa_graph_put(state->graph);

@@ -612,6 +612,8 @@ struct m9x_faa_replay {
 	 * The first view closes at Unlock; a new view needs the relock receipt.
 	 */
 	bool normal_lock_view_seen, unlock_started, unlock_retired;
+	/* A held Lock was force-released; the client's graph calls fail. */
+	bool revoked;
 	u64 unlock_point;
 #ifdef M9_FAA_GRAPH_INIT_CONTROL
 	/* U remains the actual Unlock. P is published only after its own wait.
@@ -969,6 +971,8 @@ int m9x_faa_graph_retained_get_locked(struct m9x_device *mdev, u32 generation,
 	if (!out)
 		return -EINVAL;
 	*out = NULL;
+	if (mdev->transport.faa && mdev->transport.faa->revoked)
+		return -ECANCELED;
 	/* Ordinary jobs after the retired INIT retire before FIRST. */
 	if (mdev->transport.faa &&
 	    m9_faa_ordinary_after(mdev->transport.faa, init_point) &&
@@ -5225,14 +5229,14 @@ int m9x_faa_lock_view_observed_locked(struct m9x_device *mdev,
 #endif
 }
 
-/* A successful CPU view and its same-graph Lock receipt are both required.
- * Caller holds the six graph BO reservations before taking transport.lock.
- */
-int m9x_faa_graph_unlock_get_locked(struct m9x_device *mdev, u32 generation,
-				    u64 lock_point,
-				    struct m9_faa_graph_binding **out)
-{
 #ifdef M9_FAA_GRAPH_INIT_CONTROL
+/* A forced Unlock releases a Lock its client never read back, so it does
+ * not require the client's CPU views.
+ */
+static int m9_faa_unlock_admit_locked(struct m9x_device *mdev, u32 generation,
+				      u64 lock_point, bool forced,
+				      struct m9_faa_graph_binding **out)
+{
 	struct m9x_transport *t = &mdev->transport;
 	struct m9x_faa_replay *r = t->faa;
 	struct drm_gem_object *gem;
@@ -5242,11 +5246,15 @@ int m9x_faa_graph_unlock_get_locked(struct m9x_device *mdev, u32 generation,
 	if (!out)
 		return -EINVAL;
 	*out = NULL;
-	if (!r || !r->graph_binding || !r->normal_lock_view_seen ||
+	if (r && r->revoked)
+		return -ECANCELED;
+	if (!r || !r->graph_binding ||
+	    (!forced && !r->normal_lock_view_seen) ||
 	    (r->unlock_started &&
-	     (!r->graph_second_lock_retired || !r->second_lock_view_seen) &&
+	     (!r->graph_second_lock_retired ||
+	      (!forced && !r->second_lock_view_seen)) &&
 	     (!r->public_vs_next_lock_retired ||
-	      !r->public_vs_next_view_seen)) ||
+	      (!forced && !r->public_vs_next_view_seen))) ||
 	    r->graph_generation != generation || t->generation != generation ||
 	    !lock_point || r->graph_draw_point != lock_point ||
 	    !t->engine_transitioned || !t->restore_ready || !t->fence_cpu)
@@ -5261,7 +5269,21 @@ int m9x_faa_graph_unlock_get_locked(struct m9x_device *mdev, u32 generation,
 	if (!ret)
 		*out = m9x_faa_graph_binding_get(r->graph_binding);
 	return ret;
+}
+#endif
+
+/* A successful CPU view and its same-graph Lock receipt are both required.
+ * Caller holds the six graph BO reservations before taking transport.lock.
+ */
+int m9x_faa_graph_unlock_get_locked(struct m9x_device *mdev, u32 generation,
+				    u64 lock_point,
+				    struct m9_faa_graph_binding **out)
+{
+#ifdef M9_FAA_GRAPH_INIT_CONTROL
+	return m9_faa_unlock_admit_locked(mdev, generation, lock_point, false,
+					  out);
 #else
+	lockdep_assert_held(&mdev->transport.lock);
 	return -EOPNOTSUPP;
 #endif
 }
@@ -5301,7 +5323,7 @@ m9_faa_depth_frame_take_retired(struct m9x_faa_replay *r, u32 generation,
 static int m9_faa_graph_unlock_post_locked(struct m9x_device *mdev,
 					   struct m9_faa_graph_binding *binding,
 					   u32 generation, u64 lock_point,
-					   u64 *point, bool *posted,
+					   bool forced, u64 *point, bool *posted,
 					   struct m9_faa_depth_frame_storage **retired_frame)
 {
 	struct m9x_transport *t = &mdev->transport;
@@ -5321,8 +5343,8 @@ static int m9_faa_graph_unlock_post_locked(struct m9x_device *mdev,
 	*posted = false;
 	*retired_frame = NULL;
 	lockdep_assert_held(&t->lock);
-	ret = m9x_faa_graph_unlock_get_locked(mdev, generation, lock_point,
-					      &checked);
+	ret = m9_faa_unlock_admit_locked(mdev, generation, lock_point, forced,
+					 &checked);
 	if (ret)
 		goto out;
 	if (checked != binding) {
@@ -5438,10 +5460,72 @@ int m9x_faa_graph_unlock_submit(struct m9x_device *mdev,
 
 	mutex_lock(&mdev->transport.lock);
 	ret = m9_faa_graph_unlock_post_locked(mdev, binding, generation,
-					      lock_point, point, posted,
+					      lock_point, false, point, posted,
 					      &retired_frame);
 	mutex_unlock(&mdev->transport.lock);
 	m9_faa_depth_frame_free(retired_frame);
+	return ret;
+#else
+	return -EOPNOTSUPP;
+#endif
+}
+
+/* The Lock a graph holds between its frame and the Unlock its client has
+ * not posted: its binding, generation and Lock point, or -ENOENT.
+ */
+int m9x_faa_graph_held_lock_locked(struct m9x_device *mdev,
+				   struct m9_faa_graph_binding **binding,
+				   u32 *generation, u64 *lock_point)
+{
+#ifdef M9_FAA_GRAPH_INIT_CONTROL
+	struct m9x_transport *t = &mdev->transport;
+	struct m9x_faa_replay *r = t->faa;
+
+	lockdep_assert_held(&t->lock);
+	*binding = NULL;
+	if (!r || !r->graph_binding || r->revoked || t->wedged ||
+	    !t->faa_virtual_primary || m9_faa_graph_idle(r) ||
+	    !r->graph_draw_point || t->completed_point < r->graph_draw_point ||
+	    t->queue_count || t->async_pending)
+		return -ENOENT;
+	*generation = r->graph_generation;
+	*lock_point = r->graph_draw_point;
+	return m9_faa_unlock_admit_locked(mdev, *generation, *lock_point, true,
+					  binding) ? -ENOENT : 0;
+#else
+	lockdep_assert_held(&mdev->transport.lock);
+	*binding = NULL;
+	return -ENOENT;
+#endif
+}
+
+/* Post the Unlock of a held Lock for a client that cannot or did not, and
+ * revoke its graph: ordinary jobs continue, the client's graph calls fail
+ * with -ECANCELED. The caller holds the graph's BO reservations.
+ */
+int m9x_faa_graph_unlock_forced(struct m9x_device *mdev,
+				struct m9_faa_graph_binding *binding,
+				u32 generation, u64 lock_point, const char *why)
+{
+#ifdef M9_FAA_GRAPH_INIT_CONTROL
+	struct m9_faa_depth_frame_storage *retired_frame = NULL;
+	u64 point = 0;
+	bool posted = false;
+	int ret;
+
+	mutex_lock(&mdev->transport.lock);
+	ret = m9_faa_graph_unlock_post_locked(mdev, binding, generation,
+					      lock_point, true, &point, &posted,
+					      &retired_frame);
+	if (!ret && mdev->transport.faa) {
+		mdev->transport.faa->revoked = true;
+		m9x_faa_idle_wake(mdev);
+	}
+	mutex_unlock(&mdev->transport.lock);
+	m9_faa_depth_frame_free(retired_frame);
+	dev_warn(&mdev->pdev->dev,
+		 "M9 FAA forced Unlock of Lock %#llx (%s): Unlock %#llx posted=%d ret=%d\n",
+		 lock_point, why, point, posted, ret);
 	return ret;
 #else
 	return -EOPNOTSUPP;
@@ -5461,6 +5545,8 @@ int m9x_faa_graph_present_get_locked(struct m9x_device *mdev, u32 generation,
 	if (!out)
 		return -EINVAL;
 	*out = NULL;
+	if (r && r->revoked)
+		return -ECANCELED;
 	if (!r || !r->graph_binding || r->graph_generation != generation ||
 	    mdev->transport.generation != generation ||
 	    !r->color_lock_retired || r->color_lock_point != lock_point ||
@@ -5600,7 +5686,7 @@ int m9x_faa_graph_present_submit(struct m9x_device *mdev,
 	 * between them, so PRESENT keeps its Unlock+0x20 origin.
 	 */
 	ret = m9_faa_graph_unlock_post_locked(mdev, binding, generation,
-					      lock_point, unlock_point,
+					      lock_point, false, unlock_point,
 					      &exposed, &retired_frame);
 	*posted = exposed;
 	if (ret)
@@ -8885,6 +8971,8 @@ m9_faa_color_unlocked_origin_get_locked(struct m9x_device *mdev, u32 generation,
 	*out = NULL;
 	if (t->wedged)
 		return -EIO;
+	if (r && r->revoked)
+		return -ECANCELED;
 	if (!r || !r->graph_binding || !r->color_payload_ready ||
 	    !r->color_image ||
 	    (r->color_image->layout.program_count != 4 &&
@@ -11541,8 +11629,16 @@ int m9x_faa_ordinary_wait(struct m9x_device *mdev)
 		mutex_unlock(&t->lock);
 		if (ret != -EBUSY)
 			return 0;
-		if (time_after_eq(jiffies, deadline))
-			return -EBUSY;
+		if (time_after_eq(jiffies, deadline)) {
+			/* A Lock held without progress is released for its
+			 * client, which gets the error instead.
+			 */
+			if (m9x_faa_graph_force_unlock(mdev, NULL,
+						       "held past the ordinary wait bound"))
+				return -EBUSY;
+			deadline = 0;
+			continue;
+		}
 		left = deadline - jiffies;
 		left = wait_event_interruptible_timeout(t->faa_idle_wait,
 							READ_ONCE(t->faa_idle_seq) != seq,

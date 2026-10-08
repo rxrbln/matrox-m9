@@ -569,6 +569,15 @@ int m9x_faa_graph_unlock_ioctl(struct drm_device *drm, void *data,
  * reservations. The binding reference must match the caller's live graph. */
 int m9x_faa_graph_unlock_get_locked(struct m9x_device *mdev,
 		u32 generation, u64 lock_point, struct m9_faa_graph_binding **out);
+int m9x_faa_graph_held_lock_locked(struct m9x_device *mdev,
+				   struct m9_faa_graph_binding **binding,
+				   u32 *generation, u64 *lock_point);
+int m9x_faa_graph_unlock_forced(struct m9x_device *mdev,
+				struct m9_faa_graph_binding *binding,
+				u32 generation, u64 lock_point, const char *why);
+int m9x_faa_graph_force_unlock(struct m9x_device *mdev,
+			       const struct m9_faa_prepared_graph *only,
+			       const char *why);
 int m9x_faa_graph_unlock_submit(struct m9x_device *mdev,
 		struct m9_faa_graph_binding *binding, u32 generation,
 		u64 lock_point, u64 *point, bool *posted);
