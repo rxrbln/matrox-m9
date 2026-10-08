@@ -13,6 +13,7 @@
 #include "m9x_drm_fragment.h"
 #include "m9_faa_graph_texture_fragment.h"
 #include "m9_cmd.h"
+#include "m9_hw_encode.h"
 
 struct form {
 	u8 op, cls, dst, a, b, c;
@@ -349,6 +350,7 @@ int m9x_faa_texture_fragment_build(u32 kind, u32 word, u8 *program,
 	bool test = word & PARHELIA_M9_FAA_FRAGMENT_ALPHA_TEST;
 	u32 src = (word >> 4) & 15, dst = (word >> 8) & 15;
 	u32 func = (word >> 12) & 3, ref = (word >> 16) & 255;
+	u32 off = (word >> 24) & 15;
 	u32 utility[14], k = 0, i, n = 0, slots, pairs;
 	const struct factor_tail *tail = NULL;
 	const struct variant *t;
@@ -427,6 +429,11 @@ int m9x_faa_texture_fragment_build(u32 kind, u32 word, u8 *program,
 	iface->program_bytes = slots * 8;
 	iface->constant_bytes = pairs * 8;
 	iface->raster_f0 = blend ? 0xc5008200 : test ? 0xc4008200 : 0xc4008600;
+	/* A partial colour write mask clears f0 bit 10 (m9emu zclear/). */
+	if (off)
+		iface->raster_f0 &= ~0x400u;
+	iface->color_mask = m9_hw_color_mask(!(off & 1), !(off & 2),
+					     !(off & 4), !(off & 8)) & 0xffff;
 	iface->usage = t->usage;
 	return 0;
 }

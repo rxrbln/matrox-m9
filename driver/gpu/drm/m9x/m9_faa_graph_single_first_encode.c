@@ -189,7 +189,7 @@ int m9x_faa_single_first_encode(const u8 *sample, size_t sample_bytes,
 	m9_cmd_put(stage + 1916, frag.raster_f0);
 	m9_cmd_put(stage + 2276, frag.usage);
 	/* Inactive AC CPU scratch: zero, as in the dual FIRST. */
-	m9_cmd_put(stage + 2220, 0xffff);
+	m9_cmd_put(stage + 2220, frag.color_mask);
 	m9_cmd_put(stage + 2224, 0);
 	m9_cmd_put(stage + 2240, c->clip_origin);
 	m9_cmd_put(stage + 2248, c->clip_origin);

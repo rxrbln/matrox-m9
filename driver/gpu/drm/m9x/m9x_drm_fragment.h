@@ -10,6 +10,8 @@
  * MODULATE: GL MODULATE stage alpha (texture * diffuse, stage 1 texture *
  * current). BLEND: ADD with identical RGB/alpha factors SRC (7:4) and
  * DST (11:8). ALPHA_TEST: FUNC (13:12) against the 8-bit REF (23:16).
+ * NO_COLOR (27:24): colour channels the DRAW does not write, R 1, G 2,
+ * B 4, A 8 (vendor COLORWRITEENABLE: colour-pass ab and f0 bit 10).
  * Other bits are zero; unsourced combinations are refused.
  */
 #define PARHELIA_M9_FAA_FRAGMENT_MODULATE 0x1u
@@ -19,7 +21,8 @@
 #define PARHELIA_M9_FAA_FRAGMENT_DST(f) ((f) << 8)
 #define PARHELIA_M9_FAA_FRAGMENT_FUNC(f) ((f) << 12)
 #define PARHELIA_M9_FAA_FRAGMENT_REF(r) ((r) << 16)
-#define PARHELIA_M9_FAA_FRAGMENT_MASK 0x00ff3ff7u
+#define PARHELIA_M9_FAA_FRAGMENT_NO_COLOR(m) ((m) << 24)
+#define PARHELIA_M9_FAA_FRAGMENT_MASK 0x0fff3ff7u
 
 /* Blend factors. Sourced (src, dst) pairs: ONE/ONE, DST_COLOR/ZERO,
  * ZERO/SRC_COLOR, SRC_ALPHA/INV_SRC_ALPHA, ONE/INV_SRC_ALPHA,

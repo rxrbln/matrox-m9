@@ -200,7 +200,7 @@ int m9x_faa_dual_first_encode(const u8 *sample, size_t sample_bytes,
 					   m9_cmd_get(c->declaration +
 						      (i * 4 + j) * 4) :
 					   0);
-	m9_cmd_put(stage + 2292, 0xffff);
+	m9_cmd_put(stage + 2292, frag.color_mask);
 	m9_cmd_put(stage + 2296, 0);
 	/* Colour-pass clip window f5/f6 and c4/c5: origin, exclusive end. */
 	m9_cmd_put(stage + 2312, c->clip_origin);

@@ -17,8 +17,10 @@ enum m9x_faa_program_kind {
 
 struct m9x_faa_texture_fragment_iface {
 	u32 program_bytes, constant_bytes;
-	/* Stage words emitted with this program: f0 fragment mode, 88 usage. */
-	u32 raster_f0, usage;
+	/* Stage words emitted with this program: f0 fragment mode, 88 usage,
+	 * ab colour write mask.
+	 */
+	u32 raster_f0, usage, color_mask;
 };
 
 /* The original M9128 textured FS of program kind (M9_FAA_PROGRAM_DUAL or
