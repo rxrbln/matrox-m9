@@ -11389,8 +11389,7 @@ static int m9_faa_ordinary_idle(struct m9x_device *mdev, u32 *start)
 		return 0;
 	}
 	/* A pool event in this idle period keeps its own origin. */
-	if (!r->unlock_retired ||
-	    r->present_attempted != r->present_retired ||
+	if (!r->unlock_retired || r->present_attempted != r->present_retired ||
 	    (r->depth_storage && r->depth_storage->frame) ||
 	    (r->command_pools &&
 	     (r->command_pools->primary.planned ||
