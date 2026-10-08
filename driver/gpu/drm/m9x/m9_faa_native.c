@@ -4926,7 +4926,8 @@ int m9x_faa_direct_view_admit_locked(struct m9x_device *mdev)
 	struct m9x_transport *t = &mdev->transport;
 
 	lockdep_assert_held(&t->lock);
-#if defined(M9_FAA_PREPARED_FLOW_CONTROL) && defined(M9_FAA_NORMAL_LOCK_CPU_VIEW)
+#if defined(M9_FAA_PREPARED_FLOW_CONTROL) && \
+	defined(M9_FAA_NORMAL_LOCK_CPU_VIEW)
 	if (m9_faa_diag && t->faa && t->faa->attempted)
 		return -EBUSY;
 #endif
