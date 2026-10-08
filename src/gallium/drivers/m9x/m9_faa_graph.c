@@ -881,7 +881,8 @@ m9_faa_color_batch_with_storage(struct m9_screen *screen,
             PARHELIA_M9_FAA_COLOR_RASTER_CULL_CW : PARHELIA_M9_FAA_COLOR_RASTER_CULL_CCW;
       /* Each job owns its shader interface and full flat/smooth metadata.
        * Cull launch state remains common until its transition is proved. */
-      if (i && (draws[i].raster_flags & 6u) != (draws[0].raster_flags & 6u))
+      if (i && draws[i].layout.program_count != 2 &&
+          (draws[i].raster_flags & 6u) != (draws[0].raster_flags & 6u))
          return -EOPNOTSUPP;
       /* Each stage uploads its own validated declaration. Constant-normal
        * and varying-normal geometry can share a frame with different
