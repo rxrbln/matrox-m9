@@ -32,10 +32,16 @@ layouts, including source MAIN backing extent rather than page-rounded GEM
 capacity. Actual native/owned-client/reset proofs pass. Later CLEAR3 after
 embedded-HZ history remains gated at the unread original query. The1024
 mixed-depth hardware scene is queued; independent llvmpipe reference passes.
-The latest dual hardware probe verifies both full CPU texture views before
-DRAW but still fails identically; clear-only SYSTEMcolor31 is empty and is
-not the raster's sampled owner1. No new no-FAA glmark2/piglit/Quake3 GL2
-application result is claimed.
+Four clean-boot dual hardware cases retire healthy Lock/Unlock but still
+fail with the same one incorrect pixel; both full CPU texture views verify.
+Clear-only SYSTEMcolor31 is empty and is not raster sampled owner1. The
+fourth sampled/MAIN/AUX observer silently refused borrowed graph objects,
+so it provides no raw-store data. CanonicalDRM8b5e25f fixes that readback
+through retained, reservation-held GEM objects with explicit refusals;
+actual-function ASAN/UBSAN coverage passes, corrected hardware probe pending.
+The application dual-texture queue/client has actual-function host proof in
+an agent branch but is not yet sealed or hardware-qualified. No new no-FAA
+glmark2/piglit/Quake3 GL2 application result is claimed.
 
 ## October 8: continuous GPU-presented FAA glxgears passes
 
