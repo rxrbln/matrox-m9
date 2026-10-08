@@ -9413,10 +9413,17 @@ static u64 m9_faa_ordinary_progress(const struct m9x_transport *t)
 }
 #endif
 
+void m9x_faa_idle_wake(struct m9x_device *mdev)
+{
+	WRITE_ONCE(mdev->transport.faa_idle_seq,
+		   READ_ONCE(mdev->transport.faa_idle_seq) + 1);
+	wake_up_interruptible_all(&mdev->transport.faa_idle_wait);
+}
+
 /* An ordinary submit waits for the graph's idle boundary instead of failing.
  * Called without the transport lock and before any reservation is held: the
- * graph's producers take the same objects. The wait ends without graph
- * progress for ten fence timeouts.
+ * graph's producers take the same objects. Driver ioctls and file close wake
+ * it; it ends without graph progress for ten fence timeouts.
  */
 int m9x_faa_ordinary_wait(struct m9x_device *mdev)
 {
@@ -9424,11 +9431,13 @@ int m9x_faa_ordinary_wait(struct m9x_device *mdev)
 	struct m9x_transport *t = &mdev->transport;
 	unsigned long deadline = 0;
 	u64 progress = 0;
-	u32 start;
+	u32 start, seq;
+	long left;
 	int ret;
 
 	for (;;) {
 		mutex_lock(&t->lock);
+		seq = READ_ONCE(t->faa_idle_seq);
 		ret = m9x_faa_ordinary_continue_enabled() ?
 		      m9_faa_ordinary_idle(mdev, &start) : 0;
 		if (ret == -EBUSY && (!deadline ||
@@ -9439,10 +9448,14 @@ int m9x_faa_ordinary_wait(struct m9x_device *mdev)
 		mutex_unlock(&t->lock);
 		if (ret != -EBUSY)
 			return 0;
-		if (time_after(jiffies, deadline))
+		if (time_after_eq(jiffies, deadline))
 			return -EBUSY;
-		if (msleep_interruptible(1))
-			return -ERESTARTSYS;
+		left = deadline - jiffies;
+		left = wait_event_interruptible_timeout(t->faa_idle_wait,
+							READ_ONCE(t->faa_idle_seq) != seq,
+							left);
+		if (left < 0)
+			return left;
 	}
 #else
 	return 0;

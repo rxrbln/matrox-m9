@@ -611,6 +611,7 @@ void m9x_faa_graph_file_close(struct drm_device *drm, struct drm_file *file)
 	kfree(state);
 	file->driver_priv = NULL;
 	m9x_faa_graph_detach_released(to_m9x(drm));
+	m9x_faa_idle_wake(to_m9x(drm));
 }
 
 bool m9x_faa_graph_binding_released(const struct m9_faa_graph_binding *binding)

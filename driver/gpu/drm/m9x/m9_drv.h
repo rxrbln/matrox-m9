@@ -157,6 +157,9 @@ struct m9x_transport {
 	 * stay engine state until the next graph INIT retires.
 	 */
 	struct m9x_faa_replay *faa_retiring;
+	/* Ordinary submits waiting for the graph's idle boundary. */
+	wait_queue_head_t faa_idle_wait;
+	u32 faa_idle_seq;
 };
 
 /* Both PInS GPIO maps hold eight function IDs in physical-bit order. */
@@ -482,6 +485,7 @@ bool m9x_ordinary_faa_context_locked(struct m9x_device *mdev);
 bool m9x_faa_ordinary_continue_enabled(void);
 unsigned long m9x_fence_timeout_jiffies(void);
 int m9x_faa_ordinary_wait(struct m9x_device *mdev);
+void m9x_faa_idle_wake(struct m9x_device *mdev);
 bool m9x_faa_ordinary_blocked_locked(struct m9x_device *mdev);
 void m9x_faa_report_stall_locked(struct m9x_device *mdev, u32 head, u32 end);
 bool m9x_triangle_context_ready_locked(struct m9x_device *mdev);

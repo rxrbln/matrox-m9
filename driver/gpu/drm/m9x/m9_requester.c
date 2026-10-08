@@ -1633,6 +1633,7 @@ int m9x_init(struct m9x_device *mdev)
 	ret = drmm_mutex_init(&mdev->drm, &mdev->transport.lock);
 	if (ret)
 		return ret;
+	init_waitqueue_head(&mdev->transport.faa_idle_wait);
 	atomic64_set(&mdev->faa_graph_next, 0);
 	init_llist_head(&mdev->transport.async_retired);
 	INIT_WORK(&mdev->transport.async_release,

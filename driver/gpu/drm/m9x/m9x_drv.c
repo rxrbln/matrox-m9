@@ -27,7 +27,24 @@
 
 #define M9X_MODULE_NAME "m9x_drm"
 
-DEFINE_DRM_GEM_FOPS(m9x_fops);
+/* Graph state only changes inside driver ioctls and at file close; each
+ * may end an FAA busy period that ordinary submits wait out.
+ */
+static long m9x_ioctl(struct file *filp, unsigned int cmd, unsigned long arg)
+{
+	struct drm_file *file = filp->private_data;
+	long ret = drm_ioctl(filp, cmd, arg);
+
+	if (DRM_IOCTL_NR(cmd) >= DRM_COMMAND_BASE)
+		m9x_faa_idle_wake(to_m9x(file->minor->dev));
+	return ret;
+}
+
+static const struct file_operations m9x_fops = {
+	.owner = THIS_MODULE,
+	DRM_GEM_FOPS,
+	.unlocked_ioctl = m9x_ioctl,
+};
 
 uint m9x_local_gpu_base;
 module_param_named(m9_local_gpu_base, m9x_local_gpu_base, uint, 0400);
