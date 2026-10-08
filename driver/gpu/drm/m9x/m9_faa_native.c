@@ -7615,23 +7615,52 @@ unlock:mutex_unlock(&t->lock);return ret;
 }
 #endif
 
-int m9x_faa_graph_depth_frame_maintenance_locked(struct m9x_device *mdev,u32 generation,
- u64 previous,u64 final_point,u64 *maintenance)
+/* Authenticate the completed frame against the same immutable Unlock and
+ * separately retired presentation/maintenance journals used by preparation.
+ * The ioctl must publish that origin, not infer it from a returned Lock. */
+int m9x_faa_graph_depth_frame_receipt_locked(struct m9x_device *mdev,u32 generation,
+ u64 previous,u64 final_point,u64 *origin,u64 *maintenance)
 {
 #ifdef M9_FAA_GRAPH_INIT_CONTROL
  struct m9x_faa_replay *r=mdev->transport.faa;struct m9_faa_depth_frame_storage *f;
+ struct m9_faa_command_pools *p;u64 base,effective;
  lockdep_assert_held(&mdev->transport.lock);
- if(!maintenance)return -EINVAL;*maintenance=0;
+ if(!origin||!maintenance)return -EINVAL;*origin=0;*maintenance=0;
  if(!r||mdev->transport.wedged||r->graph_generation!=generation||
   mdev->transport.generation!=generation||!r->depth_storage||!(f=r->depth_storage->frame)||
   !f->retired||!r->color_lock_retired||f->previous_point!=previous||
   f->final_point!=final_point||mdev->transport.completed_point!=final_point)return -ESTALE;
- if(m9_faa_frame_origin(r,previous)!=m9_faa_present_origin(r,previous))
-  *maintenance=m9_faa_frame_origin(r,previous);
+ base=previous;effective=previous;
+ if(f->initialized_reuse){
+  if(r->unlock_point!=previous||r->present_attempted!=r->present_retired||
+   (r->present_point&&!r->present_retired)||
+   (r->present_retired&&(previous>U64_MAX-0x20||
+    r->present_generation!=generation||r->present_point!=previous+0x20||
+    r->present_end!=r->graph_unlock_end_bytes+100||
+    r->present_posts!=r->graph_unlock_posts+3)))return -ESTALE;
+  base=m9_faa_present_origin(r,previous);effective=base;
+  p=r->command_pools;
+  if(p&&p->maintenance_point){
+   if(!p->ready||p->generation!=generation||p->unlock_point!=previous||
+    base>U64_MAX-0x10||p->maintenance_point!=base+0x10)return -ESTALE;
+   effective=p->maintenance_point;
+  }
+  if(effective>U64_MAX-0x10||f->queue_start!=effective+0x10)return -ESTALE;
+ }
+ *origin=base;
+ if(effective!=base)*maintenance=effective;
  return 0;
 #else
  return -EOPNOTSUPP;
 #endif
+}
+
+int m9x_faa_graph_depth_frame_maintenance_locked(struct m9x_device *mdev,u32 generation,
+ u64 previous,u64 final_point,u64 *maintenance)
+{
+ u64 origin;
+ return m9x_faa_graph_depth_frame_receipt_locked(mdev,generation,previous,
+  final_point,&origin,maintenance);
 }
 
 /* Initialized callers own an actual prior Lock/view/Unlock. Reuse the
