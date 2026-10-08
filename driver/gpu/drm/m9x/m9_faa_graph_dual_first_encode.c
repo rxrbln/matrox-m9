@@ -15,21 +15,19 @@ struct addr_field {
 	u32 offset;
 };
 
-/* owner 31 denotes the new bound depth; 32 denotes the ordinary command
- * SYSTEM owner's published +0x2000 view. All other roles are live graph owners.
+/* owner 31 denotes the new bound depth. All other roles are live graph
+ * owners.
  */
 static const struct addr_field addresses[] = {
 	{ 116, 24, 1, 0 },	     { 132, 24, 1, 0 },
 	{ 148, 24, 1, 0 },	     { 164, 24, 1, 0 },
 	{ 344, 28, 1, 0xffffffff },  { 624, 12, 1, 0 },
-	{ 656, 28, 1, 0xfffffffe },  { 708, 32, 0, 0 },
-	{ 712, 32, 0, 0 },	     { 716, 32, 0, 0 },
+	{ 656, 28, 1, 0xfffffffe },
 	{ 844, 23, 1, 0 },	     { 860, 23, 1, 1 },
 	{ 876, 23, 1, 2 },	     { 892, 23, 1, 5 },
 	{ 1088, 24, 1, 0 },	     { 1116, 24, 1, 0 },
 	{ 1144, 24, 1, 0 },	     { 1292, 12, 1, 0 },
-	{ 1324, 28, 1, 0xfffffffe }, { 1360, 32, 0, 0 },
-	{ 1364, 32, 0, 0 },	     { 1368, 32, 0, 0 },
+	{ 1324, 28, 1, 0xfffffffe },
 	{ 1488, 23, 1, 3 },	     { 1504, 23, 1, 4 },
 	{ 1520, 23, 1, 5 },	     { 1716, 24, 1, 0 },
 	{ 1852, 12, 1, 0 },	     { 1884, 28, 1, 0xfffffffe },
@@ -271,6 +269,10 @@ int m9x_faa_dual_first_encode(const u8 *sample, size_t sample_bytes,
 	for (i = 0; i < ARRAY_SIZE(epochs); i++)
 		m9_cmd_put(stage + epochs[i].at,
 			   ((u32)init_point + epochs[i].delta) | epochs[i].tag);
+	for (i = 0; i < 3; i++) {
+		m9_cmd_put(stage + 708 + i * 4, M9_FAA_E6_CONTROL_IMMEDIATE);
+		m9_cmd_put(stage + 1360 + i * 4, M9_FAA_E6_CONTROL_IMMEDIATE);
+	}
 	m9_cmd_put(stage + 28, 0x49d00000 | ((700 - 28) / 4));
 	m9_cmd_put(stage + 744, 0x49d00000 | ((1352 - 744) / 4));
 	m9_cmd_put(stage + 1388, 0x49d00000 | ((1900 - 1388) / 4));
@@ -281,9 +283,6 @@ int m9x_faa_dual_first_encode(const u8 *sample, size_t sample_bytes,
 		if (f->owner == 31) {
 			base = views->owner[M9_FAA_BOUND_DEPTH].base;
 			limit = views->owner[M9_FAA_BOUND_DEPTH].capacity_bytes;
-		} else if (f->owner == 32) {
-			base = owner[27].base + 0x2000;
-			limit = owner[27].bytes - 0x2000;
 		} else {
 			base = owner[f->owner].base;
 			limit = owner[f->owner].bytes;

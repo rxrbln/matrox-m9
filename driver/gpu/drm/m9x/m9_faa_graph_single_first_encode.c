@@ -9,8 +9,8 @@
 #include "m9_faa_graph_single_first_encode.h"
 #include "m9_faa_graph_vertex_banks.h"
 
-/* Owner roles as in the dual table: 31 is the bound depth, 32 the command
- * owner 27 +0x2000 view; owner 28 offsets: VERTEX raw records, GEO header.
+/* Owner roles as in the dual table: 31 is the bound depth; owner 28
+ * offsets: VERTEX raw records, GEO header.
  * Owner 23 offsets are bank indices.
  */
 #define VERTEX 0xffffffffu
@@ -25,11 +25,9 @@ struct addr_field {
 static const struct addr_field addresses[] = {
 	{ 116, 24, 1, 0 },   { 132, 24, 1, 0 },	   { 148, 24, 1, 0 },
 	{ 328, 28, 1, VERTEX }, { 584, 12, 1, 0 }, { 616, 28, 1, GEO },
-	{ 668, 32, 0, 0 },   { 672, 32, 0, 0 },	   { 676, 32, 0, 0 },
 	{ 804, 23, 1, 0 },   { 820, 23, 1, 1 },	   { 836, 23, 1, 4 },
 	{ 1032, 24, 1, 0 },  { 1060, 24, 1, 0 },   { 1220, 12, 1, 0 },
-	{ 1252, 28, 1, GEO }, { 1288, 32, 0, 0 },  { 1292, 32, 0, 0 },
-	{ 1296, 32, 0, 0 },  { 1416, 23, 1, 2 },   { 1432, 23, 1, 3 },
+	{ 1252, 28, 1, GEO }, { 1416, 23, 1, 2 },  { 1432, 23, 1, 3 },
 	{ 1448, 23, 1, 4 },  { 1644, 24, 1, 0 },   { 1780, 12, 1, 0 },
 	{ 1812, 28, 1, GEO }, { 2028, 8, 1, 0 },   { 2032, 8, 0, 20 },
 	{ 2060, 1, 1, 0 },   { 2076, 31, 1, 0 },   { 2108, 25, 1, 0 },
@@ -217,6 +215,10 @@ int m9x_faa_single_first_encode(const u8 *sample, size_t sample_bytes,
 	m9_cmd_put(stage + 1920, 0xd8004055 |
 		   (!c->raster_flags ? 0 :
 		    c->raster_flags & 2 ? 0x03000000 : 0x02000000));
+	for (i = 0; i < 3; i++) {
+		m9_cmd_put(stage + 668 + i * 4, M9_FAA_E6_CONTROL_IMMEDIATE);
+		m9_cmd_put(stage + 1288 + i * 4, M9_FAA_E6_CONTROL_IMMEDIATE);
+	}
 	for (i = 0; i < ARRAY_SIZE(epochs); i++)
 		m9_cmd_put(stage + epochs[i].at,
 			   ((u32)init_point + epochs[i].delta) | epochs[i].tag);
@@ -227,9 +229,6 @@ int m9x_faa_single_first_encode(const u8 *sample, size_t sample_bytes,
 		if (f->owner == 31) {
 			base = views->owner[M9_FAA_BOUND_DEPTH].base;
 			limit = views->owner[M9_FAA_BOUND_DEPTH].capacity_bytes;
-		} else if (f->owner == 32) {
-			base = owner[27].base + 0x2000;
-			limit = owner[27].bytes - 0x2000;
 		} else {
 			base = owner[f->owner].base;
 			limit = owner[f->owner].bytes;

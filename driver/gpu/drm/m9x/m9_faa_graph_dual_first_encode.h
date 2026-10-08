@@ -10,6 +10,8 @@
 #define M9_FAA_DUAL_FIRST_SECONDARY_BYTES 2880u
 #define M9_FAA_DUAL_FIRST_PRIMARY_TAIL_BYTES 3624u
 #define M9_FAA_DUAL_FIRST_ENDS 14u
+/* e6/44/44 control words: MxMD 0xfa227 mov eax,0x40004000, not an address. */
+#define M9_FAA_E6_CONTROL_IMMEDIATE 0x40004000u
 
 /* The packet template is address-free. Its SHA authenticates only immutable
  * M9128 opcodes for the admitted 320x240, four-target, two-unit profile.
