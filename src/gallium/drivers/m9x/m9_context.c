@@ -9169,6 +9169,55 @@ m9_vs_spec_for(struct m9_vs_state *vs, const uint32_t *values,
  * draw transaction must admit upload.state before binding its GPU program.
  * CPU-only Gallium buffers and caller user pointers are snapshotted while
  * bound; borrowed NIR/maps/CB pointers never escape this call. */
+static const char *
+m9_context_faa_texture_snapshot(struct m9_context *ctx,unsigned slot,
+                                struct m9_faa_application_texture *out)
+{
+   const struct pipe_sampler_view *view=slot<PIPE_MAX_SAMPLERS?ctx->fs_views[slot]:NULL;
+   const struct pipe_sampler_state *sampler=slot<PIPE_MAX_SAMPLERS?ctx->fs_samplers[slot]:NULL;
+   struct m9_texture_bind bind;struct m9_render_layout extent;uint8_t swizzle[4];
+   if(!view||!view->texture||!sampler)return "FAA texture has no live view/sampler";
+   struct m9_resource *owner=m9_res(view->texture);
+   if(view->target!=PIPE_TEXTURE_2D||view->texture->target!=PIPE_TEXTURE_2D||
+      view->u.tex.first_level||view->u.tex.last_level||view->u.tex.first_layer||
+      view->u.tex.last_layer||view->texture->last_level||
+      view->texture->array_size!=1||view->texture->depth0!=1||
+      util_format_is_srgb(view->format)||sampler->unnormalized_coords||
+      sampler->min_mip_filter!=PIPE_TEX_MIPFILTER_NONE||
+      sampler->compare_mode!=PIPE_TEX_COMPARE_NONE||sampler->lod_bias||
+      sampler->max_anisotropy>1||
+      (sampler->min_img_filter!=PIPE_TEX_FILTER_NEAREST&&sampler->min_img_filter!=PIPE_TEX_FILTER_LINEAR)||
+      (sampler->mag_img_filter!=PIPE_TEX_FILTER_NEAREST&&sampler->mag_img_filter!=PIPE_TEX_FILTER_LINEAR)||
+      (sampler->wrap_s!=PIPE_TEX_WRAP_REPEAT&&sampler->wrap_s!=PIPE_TEX_WRAP_CLAMP_TO_EDGE)||
+      (sampler->wrap_t!=PIPE_TEX_WRAP_REPEAT&&sampler->wrap_t!=PIPE_TEX_WRAP_CLAMP_TO_EDGE))
+      return "FAA texture requires a normalized level-zero 2-D point/linear wrap/clamp view";
+   if(view->texture==ctx->color||view->texture==ctx->depth)
+      return "FAA texture framebuffer feedback is not qualified";
+   for(unsigned i=0;i<ARRAY_SIZE(ctx->color_extra);i++)
+      if(view->texture==ctx->color_extra[i])return "FAA texture framebuffer feedback is not qualified";
+   m9_view_swizzle(view,swizzle);
+   for(unsigned c=0;c<4;c++)if(swizzle[c]!=PIPE_SWIZZLE_X+c)
+      return "FAA texture view swizzle has no qualified shader interface";
+   const char *why=m9_texture_bind_view(view,&bind);if(why)return why;
+   if(!owner->handle||owner->domain!=M9_BO_VRAM||owner->tiled||
+      owner->kind!=M9_RESOURCE_LINEAR_TEXTURE||!owner->texture.levels||
+      owner->texture.level[0].offset||owner->texture_unplaced&1||
+      !(owner->levels_written&1)||bind.code!=M9_TEXTURE_CODE_BGRA||
+      bind.width!=view->texture->width0||bind.height!=view->texture->height0||
+      bind.depth!=1||bind.last_level||bind.view_first_level||bind.view_last_level||
+      !m9_render_surface_layout(bind.width,bind.height,4,&extent)||owner->size<extent.size)
+      return "FAA texture live storage, written level or source allocation extent is not qualified";
+   *out=(struct m9_faa_application_texture){.resource=view->texture,
+      .generation=owner->generation,.owner_bytes=owner->size,.offset=owner->texture.level[0].offset,
+      .view={.handle=owner->handle,.profile=12,.format=bind.code>>1,
+       .width=bind.width,.height=bind.height,.storage_kind=bind.kind,.levels=1,
+       .min_filter=sampler->min_img_filter==PIPE_TEX_FILTER_LINEAR?2u:1u,
+       .mag_filter=sampler->mag_img_filter==PIPE_TEX_FILTER_LINEAR?2u:1u,.mip_filter=1,
+       .address_u=sampler->wrap_s==PIPE_TEX_WRAP_REPEAT?1u:3u,
+       .address_v=sampler->wrap_t==PIPE_TEX_WRAP_REPEAT?1u:3u}};
+   return NULL;
+}
+
 bool
 m9_context_faa_build_draw(struct m9_context *ctx,
                           const struct pipe_draw_info *info,
@@ -9292,6 +9341,12 @@ m9_context_faa_build_draw(struct m9_context *ctx,
    if (!vs) { why = "FAA live vertex clone allocation failed"; goto fail; }
    if (ctx->vs->inline_count) m9_nir_inline_uniforms(vs, ctx->vs_inline);
    linkage.stream[0].location = VARYING_SLOT_COL0;
+   unsigned sampler[2],texture_count=0;
+   if(!m9_faa_application_texture_linkage(source.fs,&linkage,sampler,&texture_count,&why))goto fail;
+   for(unsigned i=0;i<texture_count;i++) {
+      why=m9_context_faa_texture_snapshot(ctx,sampler[i],&source.texture[i]);
+      if(why)goto fail;
+   }
    if (!ctx->vs->faa_compile_cache)
       ctx->vs->faa_compile_cache = m9_faa_live_program_cache_create();
    source.live = (struct m9_faa_live_gl){
@@ -9373,7 +9428,7 @@ m9_context_faa_submit_draw(struct m9_context *ctx,
        state->viewport.scale[0] != state->width * .5f || state->viewport.scale[1] != state->height * -.5f ||
        state->viewport.translate[0] != state->width * .5f || state->viewport.translate[1] != state->height * .5f ||
        (owned.shader.layout.count != 2 && owned.shader.layout.count != 4) ||
-       (owned.shader.record_bytes != 32 &&
+       (!owned.texture_count && owned.shader.record_bytes != 32 &&
         (owned.shader.record_bytes != 16 || owned.shader.declaration_words != 3))) {
       if (getenv("M9X_DEBUG"))
          fprintf(stderr, "m9x: FAA draw state w=%u h=%u z=%u/%u/%u cull=%u scissor=%u viewport=%g,%g/%g,%g vectors=%u stride=%u vertices=%u flat=%u\n",
@@ -9385,6 +9440,15 @@ m9_context_faa_submit_draw(struct m9_context *ctx,
                  owned.shader.record_bytes, owned.shader.vertex_count,
                  state->flatshade);
       why = "FAA application depth/cull/scissor/view state is not implemented";
+      goto out;
+   }
+   if(owned.texture_count&&
+      (!debug_get_bool_option("M9X_FAA_DUAL_APPLICATION",false)||
+       state->width!=320||state->height!=240||state->cull_face!=PIPE_FACE_NONE||
+       state->flatshade||!state->depth_enabled||!state->depth_write||
+       state->depth_func!=PIPE_FUNC_LESS||owned.shader.record_bytes!=64||
+       owned.shader.declaration_words!=9)) {
+      why="FAA dual application raster is not pixel-qualified; diagnostic FIRST 320/no-cull/LESS-write only";
       goto out;
    }
    struct m9_faa_graph *graph = &ctx->faa_surface.graph;
@@ -9436,7 +9500,9 @@ m9_context_faa_flush_frame(struct m9_context *ctx, const char **reason)
       ret = -ESTALE; why = "FAA queued frame no longer names the retained graph";
       goto done;
    }
-   ret = m9_faa_surface_color_batch_kernel(ctx->screen, &ctx->faa_surface, frame);
+   ret = first->texture_count ?
+      m9_faa_surface_dual_batch_kernel(ctx->screen,&ctx->faa_surface,frame) :
+      m9_faa_surface_color_batch_kernel(ctx->screen, &ctx->faa_surface, frame);
    if (ret) { why = "FAA authenticated frame submission failed"; goto done; }
    ctx->last_point = MAX2(ctx->last_point, graph->color_lock_point);
    ret = m9_context_faa_present_lock(ctx, first->graph_id, first->generation,

@@ -524,6 +524,10 @@ static bool
 m9_faa_color_lock_history_valid(const struct m9_faa_graph *graph)
 {
    const uint64_t delta = graph->color_lock_delta;
+   if(graph->color_texture_count&&
+      (graph->color_texture_count!=2||graph->color_program_count!=4||
+       graph->color_next_lock_point||!graph->color_frame_draw_count||graph->color_frame_draw_count>3||
+       graph->color_frame_flags!=PARHELIA_M9_FAA_COLOR_FRAME_FIRST))return false;
    uint64_t previous;
    const bool initialized_frame = graph->color_frame_flags == PARHELIA_M9_FAA_COLOR_FRAME_INITIALIZED;
    if ((graph->color_frame_flags & ~3u) || graph->color_frame_flags == 3 ||
@@ -677,6 +681,7 @@ m9_faa_surface_color_next_kernel(struct m9_screen *screen,
        (!upload->vertex_count || upload->vertex_count % 3) ||
        (clear_flags & ~PARHELIA_M9_FAA_COLOR_CLEAR_TARGET) || clear_color)
       return -EOPNOTSUPP;
+   if(graph->color_texture_count)return -EOPNOTSUPP;
    const uint64_t delta = clear_flags ? 0xe0 : 0xd0;
    if (!graph->prepared || !graph->prepared_id || !graph->initialized ||
        !graph->init_point || !graph->color_lock_attempted || !graph->color_lock_point ||
@@ -782,6 +787,7 @@ m9_faa_surface_color_frame_kernel(struct m9_screen *screen,
    /* Original M9128 count2 FIRST terminates normal Lock at INIT+0x110.
     * Repeated two-stage frames require their own authenticated profile;
     * never reuse the four-stage timeline merely because the ABI matches. */
+   if(graph->color_texture_count)return -EOPNOTSUPP;
    if (upload->layout.count == 2 && (!first || !sampled_reset))
       return -EOPNOTSUPP;
    if (first && clear_flags && !sampled_reset)
@@ -921,6 +927,7 @@ m9_faa_color_batch_with_storage(struct m9_screen *screen,
     * with +0x60 per extra DRAW. Their flags and previous receipt remain
     * distinct. A returned maintenance epoch is authenticated separately and
     * never replaces the application's previous Unlock entitlement. */
+   if(graph->color_texture_count)return -EOPNOTSUPP;
    uint64_t delta = programs == 2 ? 0x110 + (frame->count - 1u) * UINT64_C(0x60) :
       ((first || initialized_frame) ? 0x150 : 0x1a0) + (frame->count - 1u) * UINT64_C(0xa0);
    if (screen->faa.chip != M9_FAA_CHIP_M9 || !screen->wait_point ||
@@ -1545,6 +1552,7 @@ m9_faa_graph_release_kernel(struct m9_screen *screen, struct m9_faa_graph *graph
    graph->color_lock_attempted = false;
    graph->color_lock_point = 0;
    graph->color_program_count = 0;
+   graph->color_texture_count = 0;
    graph->color_lock_delta = 0;
    graph->color_frame_draw_count = 0;
    graph->color_depth_initialized = false;

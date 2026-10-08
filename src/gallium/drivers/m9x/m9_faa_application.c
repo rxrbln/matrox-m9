@@ -1,15 +1,144 @@
 /* SPDX-License-Identifier: MIT */
 /* Copyright 2026 René Rebe <rene@exactco.de> */
 #include "m9_faa_application.h"
+#include "m9_internal.h"
 #include "nir.h"
+#include "util/u_inlines.h"
 #include <math.h>
 #include <stdlib.h>
 #include <string.h>
+
+static bool
+m9_faa_dual_input(nir_scalar value,unsigned location,unsigned component)
+{
+   value=nir_scalar_chase_movs(value);
+   if(!nir_scalar_is_intrinsic(value)||value.def->bit_size!=32)return false;
+   nir_intrinsic_instr *in=nir_def_as_intrinsic(value.def);
+   if(in->intrinsic!=nir_intrinsic_load_interpolated_input||
+      nir_intrinsic_dest_type(in)!=nir_type_float32||
+      nir_intrinsic_io_semantics(in).location!=location||
+      nir_intrinsic_io_semantics(in).num_slots!=1||
+      nir_intrinsic_component(in)+value.comp!=component||
+      !nir_src_is_const(in->src[1])||nir_src_as_uint(in->src[1])||
+      !in->src[0].ssa)return false;
+   nir_instr *bary=nir_def_instr(in->src[0].ssa);
+   return bary->type==nir_instr_type_intrinsic&&
+          nir_instr_as_intrinsic(bary)->intrinsic==nir_intrinsic_load_barycentric_pixel&&
+          nir_intrinsic_interp_mode(nir_instr_as_intrinsic(bary))==INTERP_MODE_SMOOTH;
+}
+
+static unsigned
+m9_faa_dual_product(nir_scalar value,unsigned component,unsigned depth,
+                     nir_tex_instr *texture[2],unsigned sampler[2])
+{
+   value=nir_scalar_chase_movs(value);
+   if(!value.def||value.def->bit_size!=32||depth>3)return 0;
+   if(nir_scalar_is_alu(value)&&nir_scalar_alu_op(value)==nir_op_fmul) {
+      unsigned a=m9_faa_dual_product(nir_scalar_chase_alu_src(value,0),component,depth+1,texture,sampler);
+      unsigned b=m9_faa_dual_product(nir_scalar_chase_alu_src(value,1),component,depth+1,texture,sampler);
+      return a&&b&&!(a&b)?a|b:0;
+   }
+   if(m9_faa_dual_input(value,VARYING_SLOT_COL0,component))return 1;
+   nir_instr *instr=nir_def_instr(value.def);
+   if(instr->type!=nir_instr_type_tex||value.comp!=component||
+      value.def->num_components!=4)return 0;
+   nir_tex_instr *tex=nir_instr_as_tex(instr);
+   int coordinate=nir_tex_instr_src_index(tex,nir_tex_src_coord);
+   if(tex->op!=nir_texop_tex||tex->sampler_dim!=GLSL_SAMPLER_DIM_2D||
+      tex->is_array||tex->is_shadow||tex->dest_type!=nir_type_float32||
+      tex->coord_components!=2||tex->num_srcs!=1||coordinate<0||
+      tex->texture_index!=tex->sampler_index||tex->texture_index>=PIPE_MAX_SAMPLERS)
+      return 0;
+   for(unsigned unit=0;unit<2;unit++) {
+      nir_def *coord=tex->src[coordinate].src.ssa;
+      if(!m9_faa_dual_input(nir_get_scalar(coord,0),VARYING_SLOT_TEX0+unit,0)||
+         !m9_faa_dual_input(nir_get_scalar(coord,1),VARYING_SLOT_TEX0+unit,1))continue;
+      if(texture[unit]&&texture[unit]!=tex)return 0;
+      texture[unit]=tex;sampler[unit]=tex->sampler_index;
+      return 2u<<unit;
+   }
+   return 0;
+}
+
+bool
+m9_faa_application_texture_linkage(const nir_shader *fs,
+                                   struct m9_vs_outputs *linkage,
+                                   unsigned sampler[2],unsigned *count,
+                                   const char **reason)
+{
+   const char *why="FAA textures require complete smooth COLOR0 * TEX0 * TEX1 RGBA";
+   nir_tex_instr *texture[2]={0};unsigned slots[2]={0},textures=0;
+   nir_intrinsic_instr *store=NULL;
+   if(!fs||!linkage||!sampler||!count||fs->info.stage!=MESA_SHADER_FRAGMENT||
+      !fs->info.io_lowered)goto fail;
+   nir_function_impl *impl=nir_shader_get_entrypoint((nir_shader*)fs);
+   if(!impl)goto fail;
+   nir_foreach_block(block,impl)nir_foreach_instr(instr,block)
+      if(instr->type==nir_instr_type_tex)textures++;
+   if(!textures){*count=0;if(reason)*reason=NULL;return true;}
+   if(textures!=2||!exec_list_is_singular(&impl->body))goto fail;
+   nir_cf_node *node=exec_node_data(nir_cf_node,exec_list_get_head(&impl->body),node);
+   if(node->type!=nir_cf_node_block)goto fail;
+   nir_foreach_instr(instr,nir_cf_node_as_block(node)) {
+      if(instr->type==nir_instr_type_alu||instr->type==nir_instr_type_load_const||
+         instr->type==nir_instr_type_tex)continue;
+      if(instr->type!=nir_instr_type_intrinsic)goto fail;
+      nir_intrinsic_instr *in=nir_instr_as_intrinsic(instr);
+      switch(in->intrinsic) {
+      case nir_intrinsic_load_barycentric_pixel:
+      case nir_intrinsic_load_interpolated_input:break;
+      case nir_intrinsic_store_output:if(store)goto fail;store=in;break;
+      default:goto fail;
+      }
+   }
+   if(!store||nir_intrinsic_component(store)||nir_intrinsic_write_mask(store)!=15||
+      nir_intrinsic_src_type(store)!=nir_type_float32||
+      store->src[0].ssa->num_components!=4||store->src[0].ssa->bit_size!=32||
+      !nir_src_is_const(store->src[1])||nir_src_as_uint(store->src[1]))goto fail;
+   nir_io_semantics io=nir_intrinsic_io_semantics(store);
+   if((io.location!=FRAG_RESULT_COLOR&&io.location!=FRAG_RESULT_DATA0)||
+      io.num_slots!=1||io.dual_source_blend_index||io.fb_fetch_output||
+      io.fb_fetch_output_coherent||io.per_view||io.high_16bits||io.high_dvec2||
+      io.no_sysval_output)goto fail;
+   for(unsigned c=0;c<4;c++)
+      if(m9_faa_dual_product(nir_get_scalar(store->src[0].ssa,c),c,0,texture,slots)!=7)
+         goto fail;
+   if(!texture[0]||!texture[1]||slots[0]==slots[1])goto fail;
+   *linkage=(struct m9_vs_outputs){.count=3};
+   linkage->stream[0].location=VARYING_SLOT_COL0;
+   linkage->stream[1].location=VARYING_SLOT_TEX0;
+   linkage->stream[2].location=VARYING_SLOT_TEX1;
+   memcpy(sampler,slots,sizeof(slots));*count=2;
+   if(reason)*reason=NULL;
+   return true;
+fail:if(reason)*reason=why;return false;
+}
+
+static bool
+m9_faa_application_texture_valid(const struct m9_faa_application_texture *t)
+{
+   const struct drm_parhelia_m9_faa_texture_view *v=&t->view;
+   struct m9_render_layout layout;
+   return t->resource&&t->resource->target==PIPE_TEXTURE_2D&&
+      t->resource->width0==v->width&&t->resource->height0==v->height&&
+      !t->resource->last_level&&t->resource->depth0==1&&t->resource->array_size==1&&
+      v->handle&&v->profile==12&&v->format==102&&v->levels==1&&
+      v->width&&v->height&&v->width<=1024&&v->height<=1024&&
+      !(v->width&(v->width-1))&&!(v->height&(v->height-1))&&
+      v->storage_kind==((v->width>64||v->height>64)?0x21u:1u)&&
+      (v->min_filter==1||v->min_filter==2)&&(v->mag_filter==1||v->mag_filter==2)&&
+      v->mip_filter==1&&(v->address_u==1||v->address_u==3)&&
+      (v->address_v==1||v->address_v==3)&&!t->offset&&
+      m9_render_surface_layout(v->width,v->height,4,&layout)&&
+      t->owner_bytes>=layout.size;
+}
 
 void
 m9_faa_application_fini(struct m9_faa_application_upload *upload)
 {
    if (upload) {
+      for (unsigned i=0;i<2;i++)
+         pipe_resource_reference(&upload->texture[i].resource,NULL);
       m9_faa_gl_upload_fini(&upload->shader);
       memset(upload, 0, sizeof(*upload));
    }
@@ -95,6 +224,7 @@ m9_faa_application_merge(struct m9_faa_application_upload *last,
        a->color_flat != b->color_flat ||
        a->color_legacy_interpolation != b->color_legacy_interpolation ||
        a->native_admission != b->native_admission ||
+       last->texture_count != next->texture_count ||
        memcmp(&a->layout, &b->layout, sizeof(a->layout)) ||
        memcmp(a->constant_begin, b->constant_begin, sizeof(a->constant_begin)) ||
        memcmp(a->constant_end, b->constant_end, sizeof(a->constant_end)) ||
@@ -106,6 +236,13 @@ m9_faa_application_merge(struct m9_faa_application_upload *last,
        b->vertex_bytes > UINT32_MAX - a->geometry_bytes ||
        b->vertex_bytes > SIZE_MAX - a->storage_bytes)
       return false;
+   for (unsigned i=0;i<last->texture_count;i++)
+      if (last->texture[i].resource != next->texture[i].resource ||
+          last->texture[i].generation != next->texture[i].generation ||
+          last->texture[i].offset != next->texture[i].offset ||
+          last->texture[i].owner_bytes != next->texture[i].owner_bytes ||
+          memcmp(&last->texture[i].view,&next->texture[i].view,sizeof(last->texture[i].view)))
+         return false;
    struct m9_faa_gl_upload joined = *a;
    joined.storage_bytes += b->vertex_bytes;
    joined.storage = malloc(joined.storage_bytes);
@@ -146,8 +283,9 @@ m9_faa_application_frame_append(struct m9_faa_application_frame *frame,
           upload->generation != first->generation ||
           upload->state.width != first->state.width ||
           upload->state.height != first->state.height ||
+          upload->texture_count != first->texture_count ||
           clear_flags != frame->clear_flags || clear_color != frame->clear_color) {
-         why = "FAA draw changed graph, dimensions or pending frame clear";
+         why = "FAA draw changed graph, dimensions, texture route or pending frame clear";
          goto fail;
       }
    }
@@ -237,7 +375,9 @@ m9_faa_application_build(const struct m9_faa_application_draw *d,
    struct nir_shader *color_vs=NULL,*color_fs=NULL;
    void *color_constants=NULL;size_t color_constant_bytes=0;
    struct m9_faa_application_upload fresh = {0};
-   if (!d || !output || output->shader.storage || !d->info || !d->draw ||
+   struct m9_vs_outputs texture_linkage={0};unsigned sampler[2],texture_count=0;
+   if (!d || !output || output->shader.storage || output->texture_count ||
+       output->texture[0].resource || output->texture[1].resource || !d->info || !d->draw ||
        !d->fs || !d->draw->count || d->info->instance_count != 1 ||
        d->info->start_instance || d->info->primitive_restart ||
        d->draw->count > M9_FAA_GL_UPLOAD_MAX_VERTICES ||
@@ -371,6 +511,25 @@ m9_faa_application_build(const struct m9_faa_application_draw *d,
       goto fail;
    }
    live.viewport = (struct m9_faa_viewport){x, y, w, h};
+   if(!m9_faa_application_texture_linkage(d->fs,&texture_linkage,sampler,&texture_count,&why))goto fail;
+   if(texture_count) {
+      if(d->state.flatshade||d->state.fragment.blend!=M9_FAA_BLEND_REPLACE||
+         d->state.fragment.alpha!=M9_FAA_ALPHA_OFF||d->state.fragment.source_stream||
+         !m9_faa_application_texture_valid(&d->texture[0])||
+         !m9_faa_application_texture_valid(&d->texture[1])||
+         d->texture[0].resource==d->texture[1].resource||
+         d->texture[0].view.handle==d->texture[1].view.handle) {
+         why="FAA dual texture blend/alpha/flat or retained level-zero owners are not qualified";goto fail;
+      }
+      live.linkage=&texture_linkage;
+      if(!m9_faa_live_gl_dual_texture_build(&live,&fresh.shader,&why))goto fail;
+      for(unsigned i=0;i<2;i++) {
+         fresh.texture[i]=d->texture[i];fresh.texture[i].resource=NULL;
+         pipe_resource_reference(&fresh.texture[i].resource,d->texture[i].resource);
+      }
+      fresh.texture_count=2;fresh.state=d->state;
+      free(indices);*output=fresh;if(reason)*reason=NULL;return true;
+   }
    /* The source two-stage route has continuous M9128 rendering and pool
     * reuse proof. Keep M9X_FAA_FUSED=0 for four-stage comparisons. Both
     * builders consume owned GL state and raw records. */

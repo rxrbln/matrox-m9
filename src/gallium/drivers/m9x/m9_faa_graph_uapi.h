@@ -281,4 +281,19 @@ struct drm_parhelia_m9_faa_graph_dual_first {
           struct drm_parhelia_m9_faa_graph_dual_first)
 #endif
 
+#ifndef DRM_IOCTL_PARHELIA_M9_FAA_GRAPH_DUAL_BATCH
+#define DRM_PARHELIA_M9_FAA_GRAPH_DUAL_BATCH 0x22
+#define PARHELIA_M9_FAA_DUAL_BATCH_VERSION 1u
+#define PARHELIA_M9_FAA_DUAL_BATCH_LOCK_RETIRED 24u
+struct drm_parhelia_m9_faa_graph_dual_batch {
+ __u64 graph_id,init_point,lock_point,draws;
+ __u32 draw_count,generation,version,flags,state,pad;
+ __u32 width,height,clear_flags,clear_color;
+ struct drm_parhelia_m9_faa_texture_view texture[2];
+};
+#define DRM_IOCTL_PARHELIA_M9_FAA_GRAPH_DUAL_BATCH \
+ DRM_IOWR(DRM_COMMAND_BASE + DRM_PARHELIA_M9_FAA_GRAPH_DUAL_BATCH, \
+          struct drm_parhelia_m9_faa_graph_dual_batch)
+#endif
+
 #endif

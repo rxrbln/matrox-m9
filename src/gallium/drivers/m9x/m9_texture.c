@@ -498,6 +498,12 @@ m9_texture_layout_init(struct m9_texture_layout *layout,
                          ((((uint64_t)render.row_span *
                             render.allocation_height * 4) + quantum - 1) &
                           ~(quantum - 1)));
+         /* A standalone plane is the source surface allocation, including
+          * its eight spare elements after the last full row. Keep the level
+          * descriptor and texel addresses unchanged. A mip chain retains
+          * its separately qualified packed extent/placement contract. */
+         if(kind==M9_TEXTURE_KIND_2D&&levels==1)
+            end=MAX2(end,render.size);
          lvl->offset = offset;
          offset += layout->faces * lvl->face_bytes;
          /* kind 09 selects the aperture calculator.  The original cube

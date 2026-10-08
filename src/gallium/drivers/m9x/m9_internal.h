@@ -139,6 +139,7 @@ struct m9_faa_graph {
    uint32_t color_lock_delta;
    uint32_t color_frame_draw_count; /* Authenticated batch receipt, zero for legacy FRAME. */
    uint32_t color_program_count;
+   uint32_t color_texture_count; /* FIRST-only dual route; not COLOR history. */
    bool color_depth_mode_valid, color_depth_enabled, color_depth_embedded_hz;
    bool color_frame_mode_planned;
    uint32_t color_frame_mode_changes, color_frame_clear_flags;

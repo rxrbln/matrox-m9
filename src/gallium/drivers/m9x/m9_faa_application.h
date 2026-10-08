@@ -2,6 +2,17 @@
 #ifndef M9_FAA_APPLICATION_H
 #define M9_FAA_APPLICATION_H
 #include "m9_faa_live.h"
+#include "m9_vs_source.h"
+#include <drm.h>
+#include "m9_faa_graph_uapi.h"
+
+/* Context-derived level-zero view. Construction borrows this resource;
+ * a successful upload retains it and copies every sampler/extent word. */
+struct m9_faa_application_texture {
+   struct pipe_resource *resource;
+   struct drm_parhelia_m9_faa_texture_view view;
+   uint64_t generation, offset, owner_bytes;
+};
 
 /* Gallium semantics, not encoded GPU registers. A future typed draw ioctl
  * must admit these exact values before it can consume the owned upload. */
@@ -25,6 +36,7 @@ struct m9_faa_application_draw {
    const void *index_map;
    size_t index_bytes;
    struct m9_faa_application_state state;
+   struct m9_faa_application_texture texture[2];
 };
 
 struct m9_faa_application_upload {
@@ -34,7 +46,16 @@ struct m9_faa_application_upload {
     * submit must revalidate all three against the still-retained graph. */
    uint64_t graph_id, init_point;
    uint32_t generation;
+   uint32_t texture_count;
+   struct m9_faa_application_texture texture[2];
 };
+
+/* Recognize the complete live COLOR0 * TEX0 * TEX1 RGBA expression.
+ * No shader instruction or vertex value is evaluated on the CPU. */
+bool m9_faa_application_texture_linkage(const struct nir_shader *fs,
+                                       struct m9_vs_outputs *linkage,
+                                       unsigned sampler[2], unsigned *count,
+                                       const char **reason);
 
 /* Expand topology/indices only; positions, lighting and clipping execute in
  * the live GPU program. Failure leaves output untouched. No borrowed pointer
@@ -46,7 +67,8 @@ void m9_faa_application_fini(struct m9_faa_application_upload *upload);
 
 /* A frame owns every live draw snapshot until its final retirement. Realloc
  * moves descriptors only: pointers inside each shader still name its owned
- * storage. There are no borrowed Gallium resources or shader pointers here.
+ * storage. Texture resources are retained and sampler parameters copied;
+ * borrowed shader pointers never escape construction.
  * This queue grants no native packet admission. */
 struct m9_faa_application_frame {
    struct m9_faa_application_upload *draws;
