@@ -344,10 +344,10 @@ static const struct form single_modulate_blend_test[8] = {
    {0x1c,0,0x40,0x7f,0x08,0x7f,0xa3c04000},
 };
 
-enum { RG = 0x100, BA, XRG, XBA, K_LAST = 0xff };
+enum { RG = 0x100, BA, XRG, XBA, K_ONE = 0xfe, K_LAST = 0xff };
 /* Blend tail of 170ff0: RGB writes r18 half, BA the r1a half. Operands name
  * the source RG/BA results (X: 0x80 modifier); K is the C3 pair index in
- * control bits 19:14, K_LAST the trailing (1, 0.5) utility pair. */
+ * control bits 19:14, K_LAST the trailing (1, 0.5), K_ONE the (0, 1) pair. */
 static const struct factor_tail {
    uint8_t src, dst;
    uint16_t rgb[3], ba[3];
@@ -366,6 +366,8 @@ static const struct factor_tail {
    {M9_FAA_FACTOR_DST_COLOR,M9_FAA_FACTOR_SRC_COLOR,{0x18,RG,0x18},{0x1a,BA,0x1a},0xa5500540,0x3f,false},
    {M9_FAA_FACTOR_INV_DST_COLOR,M9_FAA_FACTOR_ZERO,{XRG,0x18,0x7f},{XBA,0x1a,0x7f},0x9c403d40,2,false},
    {M9_FAA_FACTOR_INV_DST_COLOR,M9_FAA_FACTOR_ONE,{0x18,0x18,RG},{0x1a,0x1a,BA},0xa4e00440,K_LAST,false},
+   {M9_FAA_FACTOR_ZERO,M9_FAA_FACTOR_INV_SRC_COLOR,{RG,RG,0x18},{BA,BA,0x1a},0xa4e00440,K_ONE,false},
+   {M9_FAA_FACTOR_INV_SRC_ALPHA,M9_FAA_FACTOR_SRC_ALPHA,{0x18,BA,RG},{0x1a,BA,BA},0xa4b00dc0,0x3f,false},
 };
 
 struct texture_variant {
@@ -459,7 +461,8 @@ bool m9_faa_texture_fragment_build(const struct m9_faa_texture_fragment_state *s
       emit(words, &n, f);
    }
    if (tail) {
-      uint32_t control = tail->control | (uint32_t)(tail->k == K_LAST ? pairs - 1 : tail->k) << 14;
+      uint32_t pair = tail->k == K_LAST ? pairs - 1 : tail->k == K_ONE ? pairs - 2 : tail->k;
+      uint32_t control = tail->control | pair << 14;
       struct form rgb = {0x1d, 4, 0x2d, tail_operand(tail->rgb[0], t), tail_operand(tail->rgb[1], t),
                          tail_operand(tail->rgb[2], t), control};
       struct form ba = {0x1e, 4, 0x2d, tail_operand(tail->ba[0], t), tail_operand(tail->ba[1], t),

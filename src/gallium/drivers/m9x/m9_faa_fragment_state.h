@@ -70,6 +70,7 @@ enum m9_faa_blend_factor {
    M9_FAA_FACTOR_INV_SRC_ALPHA,
    M9_FAA_FACTOR_DST_COLOR,
    M9_FAA_FACTOR_INV_DST_COLOR,
+   M9_FAA_FACTOR_INV_SRC_COLOR,
 };
 /* Values are the source compare classes. */
 enum m9_faa_alpha_func {
