@@ -531,6 +531,8 @@ static bool m9_be_per_target = true;
  * be reading the object a CPU clear overwrites.  M9X_BE_SWAP=0 zeroes it in
  * place instead of swapping to a spare. */
 static bool m9_be_swap = true;
+/* Back-end objects a target keeps, one per recently used shape. */
+static unsigned m9_be_pool = 8;
 /* M9X_RECORD_LIVENESS=0 gives every hand-over a slot of its own, which is
  * what the record cost before slots were reused. */
 static bool m9_record_liveness = true;
@@ -2954,20 +2956,153 @@ m9_be_shape_same(const struct m9_be_shape *a, const struct m9_be_shape *b)
            (a->clip_min == b->clip_min && a->clip_max == b->clip_max));
 }
 
-/* Where the shape of the object in force is remembered: a target that owns a
- * back-end pair keeps its own, the context keeps the one for ctx->be. */
+static inline unsigned
+m9_be_slot_count(const struct m9_target_depth *entry)
+{
+   return util_dynarray_num_elements(&entry->be_slots, struct m9_be_slot *);
+}
+
+static inline struct m9_be_slot *
+m9_be_slot_at(const struct m9_target_depth *entry, unsigned i)
+{
+   return *util_dynarray_element(&entry->be_slots, struct m9_be_slot *, i);
+}
+
+static struct m9_be_slot *
+m9_be_slot_add(struct m9_context *ctx, struct m9_target_depth *entry)
+{
+   struct m9_be_slot *slot, **at;
+
+   /* The pair every target had before counts against the depth budget;
+    * objects beyond it share a budget of their own. */
+   if (m9_be_slot_count(entry) >= 2 &&
+       ctx->be_extra_bytes + M9_BE_BYTES > M9_BE_EXTRA_BUDGET)
+      return NULL;
+   slot = CALLOC_STRUCT(m9_be_slot);
+   if (!slot)
+      return NULL;
+   if (m9_bo_create(ctx->screen, M9_BE_BYTES, PARHELIA_M9_BO_VRAM,
+                    M9_RESOURCE_SYSTEM_STATE, &slot->be) ||
+       !(at = util_dynarray_grow(&entry->be_slots, struct m9_be_slot *, 1))) {
+      m9_bo_destroy(ctx->screen, &slot->be);
+      FREE(slot);
+      return NULL;
+   }
+   *at = slot;
+   if (m9_be_slot_count(entry) > 2)
+      ctx->be_extra_bytes += slot->be.size;
+   return slot;
+}
+
+/* Bytes of the pair that counts against the depth budget. */
+static uint64_t
+m9_be_slots_bytes(const struct m9_target_depth *entry)
+{
+   uint64_t bytes = 0;
+
+   for (unsigned i = 0; i < MIN2(m9_be_slot_count(entry), 2u); i++)
+      bytes += m9_be_slot_at(entry, i)->be.size;
+   return bytes;
+}
+
+static void
+m9_be_slots_destroy(struct m9_context *ctx, struct m9_target_depth *entry)
+{
+   for (unsigned i = 0; i < m9_be_slot_count(entry); i++) {
+      struct m9_be_slot *slot = m9_be_slot_at(entry, i);
+
+      if (i >= 2)
+         ctx->be_extra_bytes -= slot->be.size;
+      m9_bo_destroy(ctx->screen, &slot->be);
+      FREE(slot);
+   }
+   util_dynarray_fini(&entry->be_slots);
+}
+
+static struct m9_be_slot *
+m9_be_current(const struct m9_target_depth *entry)
+{
+   return entry && entry->be_slot < m9_be_slot_count(entry) ?
+          m9_be_slot_at(entry, entry->be_slot) : NULL;
+}
+
+static void
+m9_be_select(struct m9_context *ctx, struct m9_target_depth *entry,
+             unsigned slot)
+{
+   struct m9_be_slot *s = m9_be_slot_at(entry, slot);
+
+   if (slot != entry->be_slot)
+      m9_be_swaps++;
+   entry->be_slot = slot;
+   s->used = ++ctx->be_clock;
+   ctx->target_be = s->be.handle ? &s->be : NULL;
+}
+
+/* Where the shape of the object in force is remembered: a target that owns
+ * back-end objects keeps one a slot, the context keeps the one for ctx->be. */
 static struct m9_be_shape *
 m9_be_shape_slot(struct m9_context *ctx)
 {
    struct m9_target_depth *entry = ctx->target_entry;
+   struct m9_be_slot *slot = m9_be_per_target ? m9_be_current(entry) : NULL;
 
-   return entry && m9_be_per_target ? &entry->be_shape : &ctx->be_shape;
+   return slot ? &slot->shape : &ctx->be_shape;
+}
+
+/* Switch to another object of this target that already holds the state of
+ * this shape.  The CPU writes nothing, so a posted reader is unaffected. */
+static bool
+m9_be_find(struct m9_context *ctx, const struct m9_be_shape *shape)
+{
+   struct m9_target_depth *entry = ctx->target_entry;
+
+   if (!entry || !m9_be_per_target || !m9_be_reuse)
+      return false;
+   for (unsigned i = 0; i < m9_be_slot_count(entry); i++) {
+      struct m9_be_slot *slot = m9_be_slot_at(entry, i);
+
+      if (i != entry->be_slot && slot->shape.valid &&
+          m9_be_shape_same(&slot->shape, shape)) {
+         m9_be_select(ctx, entry, i);
+         return true;
+      }
+   }
+   return false;
+}
+
+/* The object a clear zeroes: never the bound one, nor one the last posted
+ * job binds; a new one while the pool has room, else the least recently
+ * used.  Returns the bound slot when there is no other. */
+static unsigned
+m9_be_victim(struct m9_context *ctx, struct m9_target_depth *entry)
+{
+   unsigned victim = entry->be_slot;
+   uint64_t oldest = UINT64_MAX;
+
+   if (m9_be_slot_count(entry) < m9_be_pool && m9_be_slot_add(ctx, entry))
+      return m9_be_slot_count(entry) - 1;
+   for (unsigned i = 0; i < m9_be_slot_count(entry); i++) {
+      struct m9_be_slot *slot = m9_be_slot_at(entry, i);
+
+      if (i == entry->be_slot ||
+          (!ctx->screen->queued_submit && slot->be.be_point &&
+           slot->be.be_point == ctx->last_point))
+         continue;
+      if (slot->used < oldest) {
+         oldest = slot->used;
+         victim = i;
+      }
+   }
+   return victim;
 }
 
 static void
 m9_be_zero(struct m9_context *ctx)
 {
-   struct m9_target_depth *entry = ctx->target_entry;
+   struct m9_target_depth *entry =
+      m9_be_per_target && m9_be_current(ctx->target_entry) ?
+      ctx->target_entry : NULL;
    struct m9_resource *be;
    unsigned selected = entry ? entry->be_slot : 0;
    uint64_t t_be = m9_prof_begin();
@@ -2981,24 +3116,14 @@ m9_be_zero(struct m9_context *ctx)
       return;
    }
 
-   if (entry && m9_be_per_target && m9_be_swap) {
-      unsigned spare = entry->be_slot ^ 1u;
-
-      /* The spare is allocated the first time a shape wants a clear, so a
-       * target that never clears costs one object as before. */
-      if (!entry->be[spare].handle &&
-          m9_bo_create(ctx->screen, M9_BE_BYTES, PARHELIA_M9_BO_VRAM,
-                       M9_RESOURCE_SYSTEM_STATE, &entry->be[spare]))
-         entry->be[spare].handle = 0;
-      if (entry->be[spare].handle)
-         selected = spare;
-   }
-   be = entry && m9_be_per_target ? &entry->be[selected] : &ctx->be;
-   /* A queued reader can still use either object. Wait for the selected
+   if (entry && m9_be_swap)
+      selected = m9_be_victim(ctx, entry);
+   be = entry ? &m9_be_slot_at(entry, selected)->be : &ctx->be;
+   /* A queued reader can still use any object. Wait for the selected
     * owner's actual last submit, not the context's newer unrelated work.
     * Pending CPU draw/held-job states have no BE binding: submit_job chooses
     * it here, before emitting its batch, then records every successful post.
-    * A failed spare allocation falls back to the current owner's same wait.
+    * A failed allocation falls back to the current owner's same wait.
     * Do not publish a new slot or invalidate the shape on a failed wait. */
    if (ctx->screen->queued_submit &&
        m9_wait_for_point(ctx->screen, be->be_point)) {
@@ -3006,15 +3131,11 @@ m9_be_zero(struct m9_context *ctx)
       m9_prof_end(M9_PROF_BE, t_be);
       return;
    }
+   if (entry)
+      m9_be_select(ctx, entry, selected);
    m9_be_shape_slot(ctx)->valid = false;
-   if (entry && m9_be_per_target && selected != entry->be_slot) {
-      entry->be_slot = selected;
-      m9_be_swaps++;
-   }
    if (be->map)
       memset(be->map, 0, m9_be_clear_span(ctx, be));
-   if (entry && m9_be_per_target)
-      ctx->target_be = be->handle ? be : NULL;
    m9_prof_end(M9_PROF_BE, t_be);
 }
 
@@ -3273,6 +3394,11 @@ m9_submit_job(struct m9_context *ctx)
       struct m9_be_shape *held = m9_be_shape_slot(ctx);
       bool differs = !held->valid || !m9_be_shape_same(held, &shape);
 
+      if (differs && m9_be_find(ctx, &shape)) {
+         held = m9_be_shape_slot(ctx);
+         differs = false;
+      }
+
       if (m9_split_be > 2 && pass_count > 1 &&
           (differs || !m9_be_reuse || !ctx->target_be)) {
          m9_be_zero(ctx);
@@ -3282,6 +3408,8 @@ m9_submit_job(struct m9_context *ctx)
       be_bound = ctx->target_be ? ctx->target_be : &ctx->be;
       if (!ctx->lost && differs)
          *held = be_bound->map ? shape : (struct m9_be_shape) {0};
+      if (m9_be_per_target && m9_be_current(ctx->target_entry))
+         m9_be_current(ctx->target_entry)->used = ++ctx->be_clock;
    }
    ret = ctx->lost ? -EIO :
          m9_arena_reserve(ctx, &ctx->source,
@@ -10433,8 +10561,8 @@ m9_target_depth_bind(struct m9_context *ctx, uint32_t w, uint32_t h,
    const bool fresh = debug_get_bool_option("M9X_TARGET_FRESH", false);
 
    util_dynarray_foreach(&ctx->target_depths, struct m9_target_depth *, it) {
-      total += (*it)->depth.size + (*it)->aux.size + (*it)->be[0].size +
-               (*it)->be[1].size;
+      total += (*it)->depth.size + (*it)->aux.size +
+               m9_be_slots_bytes(*it);
       if (!fresh && (*it)->width == w && (*it)->height == h &&
           (*it)->scratch == ctx->scratch_bind)
          entry = *it;
@@ -10448,12 +10576,11 @@ m9_target_depth_bind(struct m9_context *ctx, uint32_t w, uint32_t h,
              M9_TARGET_DEPTH_BUDGET) {
          struct m9_target_depth *evict = *oldest;
 
-         total -= evict->depth.size + evict->aux.size + evict->be[0].size +
-                  evict->be[1].size;
+         total -= evict->depth.size + evict->aux.size +
+                  m9_be_slots_bytes(evict);
          m9_bo_destroy(ctx->screen, &evict->depth);
          m9_bo_destroy(ctx->screen, &evict->aux);
-         m9_bo_destroy(ctx->screen, &evict->be[0]);
-         m9_bo_destroy(ctx->screen, &evict->be[1]);
+         m9_be_slots_destroy(ctx, evict);
          *oldest = *util_dynarray_pop_ptr(&ctx->target_depths,
                                           struct m9_target_depth *);
          FREE(evict);
@@ -10464,18 +10591,18 @@ m9_target_depth_bind(struct m9_context *ctx, uint32_t w, uint32_t h,
                oldest = it;
       }
       entry = CALLOC_STRUCT(m9_target_depth);
+      if (entry)
+         util_dynarray_init(&entry->be_slots, NULL);
       if (!entry ||
           m9_bo_create(ctx->screen, bytes, PARHELIA_M9_BO_VRAM,
                        M9_RESOURCE_LINEAR_DEPTH, &entry->depth) ||
           m9_bo_create(ctx->screen, m9_hz_bytes(w, h), PARHELIA_M9_BO_VRAM,
                        M9_RESOURCE_LINEAR_DEPTH, &entry->aux) ||
-          (m9_be_per_target &&
-           m9_bo_create(ctx->screen, M9_BE_BYTES, PARHELIA_M9_BO_VRAM,
-                        M9_RESOURCE_SYSTEM_STATE, &entry->be[0]))) {
+          (m9_be_per_target && !m9_be_slot_add(ctx, entry))) {
          if (entry) {
             m9_bo_destroy(ctx->screen, &entry->depth);
             m9_bo_destroy(ctx->screen, &entry->aux);
-            m9_bo_destroy(ctx->screen, &entry->be[0]);
+            m9_be_slots_destroy(ctx, entry);
             FREE(entry);
          }
          m9_warn_once(ctx, M9_WARN_MEMORY, "cannot allocate target depth");
@@ -10486,8 +10613,9 @@ m9_target_depth_bind(struct m9_context *ctx, uint32_t w, uint32_t h,
       entry->height = entry->depth.height = h;
       m9_fill_dwords(&entry->depth, 0xffffffff);
       m9_fill_dwords(&entry->aux, M9_HZ_CLEAR);
-      if (entry->be[0].map)
-         memset(entry->be[0].map, 0, entry->be[0].size);
+      if (m9_be_current(entry) && m9_be_current(entry)->be.map)
+         memset(m9_be_current(entry)->be.map, 0,
+                m9_be_current(entry)->be.size);
       util_dynarray_append_typed(&ctx->target_depths,
                                  struct m9_target_depth *, entry);
    }
@@ -10495,8 +10623,8 @@ m9_target_depth_bind(struct m9_context *ctx, uint32_t w, uint32_t h,
    ctx->target_depth = &entry->depth;
    ctx->target_aux = &entry->aux;
    ctx->target_entry = entry;
-   ctx->target_be = entry->be[entry->be_slot].handle ?
-                    &entry->be[entry->be_slot] : NULL;
+   ctx->target_be = m9_be_current(entry) && m9_be_current(entry)->be.handle ?
+                    &m9_be_current(entry)->be : NULL;
    return true;
 }
 
@@ -11078,8 +11206,7 @@ m9_context_destroy(struct pipe_context *pctx)
    util_dynarray_foreach(&ctx->target_depths, struct m9_target_depth *, it) {
       m9_bo_destroy(screen, &(*it)->depth);
       m9_bo_destroy(screen, &(*it)->aux);
-      m9_bo_destroy(screen, &(*it)->be[0]);
-      m9_bo_destroy(screen, &(*it)->be[1]);
+      m9_be_slots_destroy(ctx, *it);
       FREE(*it);
    }
    util_dynarray_fini(&ctx->target_depths);
@@ -11223,6 +11350,7 @@ m9_context_create(struct pipe_screen *pscreen, void *priv, unsigned flags)
    m9_be_dump = debug_get_option("M9X_BE_DUMP", NULL);
    m9_be_per_target = debug_get_bool_option("M9X_BE_PER_TARGET", true);
    m9_be_swap = debug_get_bool_option("M9X_BE_SWAP", true);
+   m9_be_pool = MAX2(debug_get_num_option("M9X_BE_POOL", 8), 2);
    m9_be_reuse = debug_get_bool_option("M9X_BE_REUSE", true);
    m9_be_shape_clip = debug_get_bool_option("M9X_BE_SHAPE_CLIP", true);
    m9_be_clear_bytes = debug_get_num_option("M9X_BE_CLEAR_BYTES", 0);

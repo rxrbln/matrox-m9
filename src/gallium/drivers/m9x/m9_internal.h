@@ -210,16 +210,25 @@ struct m9_target_depth {
     * belongs to one surface, not to every target of its shape. */
    bool scratch;
    struct m9_resource depth, aux;
-   /* The engine's own back-end object, which belongs to a target rather than
-    * to the context: a shape revisited after another finds its own.  There
-    * are two because a job posted asynchronously retires only at the next
-    * submission: a clear swaps to the spare and zeroes that, so the engine
-    * is never reading the object the CPU overwrites.  The spare is allocated
-    * the first time a target of this shape wants a clear. */
-   struct m9_resource be[2];
+   /* The engine's own back-end objects, which belong to a target rather than
+    * to the context.  Each keeps the shape whose state it holds, so a shape
+    * revisited after another finds its own without a clear.  A clear never
+    * zeroes the bound object or one a posted job may still read: a job
+    * posted asynchronously retires only at the next submission.  Further
+    * objects are allocated the first time a shape wants a clear, up to
+    * M9X_BE_POOL; struct m9_be_slot pointers, current at be_slot. */
+   struct util_dynarray be_slots;
    unsigned be_slot;
-   struct m9_be_shape be_shape;
 };
+
+struct m9_be_slot {
+   struct m9_resource be;
+   struct m9_be_shape shape;
+   uint64_t used;
+};
+
+/* Back-end objects a context keeps beyond each target's pair. */
+#define M9_BE_EXTRA_BUDGET (16u << 20)
 
 /* Enough for several full-screen pairs, so that a scene alternating a
  * window target with the screen keeps both; beyond that a size is one the
@@ -693,6 +702,8 @@ struct m9_context {
    struct util_dynarray target_depths;  /* struct m9_target_depth * */
    struct m9_target_depth *target_entry;  /* the one bound, for its be pair */
    struct m9_be_shape be_shape;       /* of ctx->be, when no entry owns one */
+   uint64_t be_clock;                /* stamps the back-end slot each job binds */
+   uint64_t be_extra_bytes;          /* objects beyond each target's pair */
    uint64_t target_clock;
    struct m9_resource placeholder_texture;  /* 1x1 unit-0 binding */
    bool record_written;               /* a split job ran since the last flush */
