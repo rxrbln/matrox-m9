@@ -11898,9 +11898,16 @@ release:
 #endif
 }
 
-int m9x_faa_graph_depth_later_prepare(struct m9x_device*mdev,struct m9_faa_graph_binding*b,
- u32 generation,u64 previous,const struct m9x_faa_color_input*in,u32 clear,u32 raster)
-{return m9_faa_depth_later_prepare(mdev,b,generation,previous,in,clear,raster,false);}
+int m9x_faa_graph_depth_later_prepare(struct m9x_device *mdev,
+				      struct m9_faa_graph_binding *b,
+				      u32 generation, u64 previous,
+				      const struct m9x_faa_color_input *in,
+				      u32 clear, u32 raster)
+{
+	return m9_faa_depth_later_prepare(mdev, b, generation, previous, in,
+					  clear, raster, false);
+}
+
 int m9x_faa_graph_clear_resume_prepare(struct m9x_device*mdev,struct m9_faa_graph_binding*b,
  u32 generation,u64 previous,const struct m9x_faa_color_input*in)
 {return m9_faa_depth_later_prepare(mdev,b,generation,previous,in,3,0,true);}
