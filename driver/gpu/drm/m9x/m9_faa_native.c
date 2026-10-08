@@ -3096,15 +3096,23 @@ static int m9_faa_prepare_virtual_restore(struct m9x_device *mdev)
 static u32 m9_faa_encode(u32 pc, u32 address, u32 tag)
 {
 	switch (pc) {
-	case 0x24886: return (address & 0xfffff000) | tag | (!address ? 4 : 0);
-	case 0x248ab: return ((address & 0xfff) >> 3) & 0xfffff;
-	case 0x248c8: return (address & ~3u) | tag;
-	case 0x248dc: return (address & 0xffffff84) | tag | 4;
-	case 0x24909: return (address | tag) & ~3u;
-	case 0x24919: return (address & 0xfffffffd) | 1;
+	case 0x24886:
+		return (address & 0xfffff000) | tag | (!address ? 4 : 0);
+	case 0x248ab:
+		return ((address & 0xfff) >> 3) & 0xfffff;
+	case 0x248c8:
+		return (address & ~3u) | tag;
+	case 0x248dc:
+		return (address & 0xffffff84) | tag | 4;
+	case 0x24909:
+		return (address | tag) & ~3u;
+	case 0x24919:
+		return (address & 0xfffffffd) | 1;
 	case 0x24930:
-	case 0x256f1: return address | tag;
-	default: return 0;
+	case 0x256f1:
+		return address | tag;
+	default:
+		return 0;
 	}
 }
 
