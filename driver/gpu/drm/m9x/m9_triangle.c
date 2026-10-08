@@ -1616,8 +1616,18 @@ int m9x_submit_user_stream_locked(struct m9x_device *mdev, const u32 *records,
 	lockdep_assert_held(&mdev->transport.lock);
 	if (doorbell_posted)
 		*doorbell_posted = false;
-	if (!diag || !diag->context_initialized || !ranges ||
-	    range_ends[ranges - 1] != dwords)
+	if (!diag || !diag->context_initialized) {
+		dev_warn_ratelimited(&mdev->pdev->dev,
+			"M9 ordinary stream refused: errno=%d context_initialized=%u faa_source=%u faa_virtual=%u generation=%u submitted=%#llx completed=%#llx\n",
+			-EINVAL, diag ? diag->context_initialized : 0,
+			mdev->transport.faa_source_context,
+			mdev->transport.faa_virtual_primary,
+			mdev->transport.generation,
+			(unsigned long long)mdev->transport.submitted_point,
+			(unsigned long long)mdev->transport.completed_point);
+		return -EINVAL;
+	}
+	if (!ranges || range_ends[ranges - 1] != dwords)
 		return -EINVAL;
 	if (!dwords || dwords > (M9_TRIANGLE_SECONDARY_BYTES -
 				  M9_TRIANGLE_SECONDARY_PREFIX - footer_bytes) /

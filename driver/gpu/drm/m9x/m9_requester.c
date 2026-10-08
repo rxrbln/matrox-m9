@@ -271,8 +271,16 @@ int m9x_transport_arm_locked(struct m9x_device *mdev)
 	int ret;
 
 	lockdep_assert_held(&mdev->transport.lock);
-	if (transport->faa_virtual_primary)
+	if (transport->faa_virtual_primary) {
+		dev_warn_ratelimited(&mdev->pdev->dev,
+			"M9 ordinary requester arm refused: errno=%d faa_virtual=%u faa_source=%u armed=%u generation=%u submitted=%#llx completed=%#llx\n",
+			-EACCES, transport->faa_virtual_primary,
+			transport->faa_source_context, transport->transport_armed,
+			transport->generation,
+			(unsigned long long)transport->submitted_point,
+			(unsigned long long)transport->completed_point);
 		return -EACCES;
+	}
 	if (mdev->transport.transport_armed)
 		return 0;
 	ret = m9x_transport_enable_bus_master_locked(mdev);
