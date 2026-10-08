@@ -156,6 +156,55 @@ m9_faa_color_flat_fs_build(uint32_t source_stream,
                                     constants, constant_capacity_bytes, interface);
 }
 
+/* f40e3 finishes the six-slot fragment vector at slot two. 16fa20 emits
+ * the two COLOR0 interpolants, combines each half with the stage-0 texel,
+ * and routes the result to oC0. 181fa0's texture/depth state is separate;
+ * these are ISA register fields, with no captured resource address. */
+bool
+m9_faa_texture_fs_build(enum m9_faa_texture_combine combine,
+                        bool swapped_arguments,
+                        uint32_t source_stream, uint32_t texel_unit,
+                        uint32_t *program, uint32_t program_capacity_bytes,
+                        struct m9_faa_texture_fs_interface *interface)
+{
+   struct m9_faa_color_fs_form forms[6] = {
+      {0x1d, 4, 0x06, 0x42, 0x79, 0x45, 0xae003c00},
+      {0x1c, 4, 0x1a, 0x40, 0x79, 0x44, 0xae003c10},
+      {0x1d, 4, 0x08, 0x02, 0x06, 0x7f, 0xec200000},
+      {0x1e, 4, 0x08, 0x3f, 0x7f, 0x02, 0xa2803f38},
+      {0x1d, 4, 0x2d, 0x00, 0x1a, 0x7f, 0xac200140},
+      {0x1e, 0, 0x2d, 0x3f, 0x7f, 0x08, 0xa29fff18},
+   };
+   struct m9_faa_texture_fs_interface result = {6, 0, 0, 0x2d};
+   const uint32_t bytes = 6 * 8;
+   if ((combine != M9_FAA_TEXTURE_MODULATE && combine != M9_FAA_TEXTURE_ADD) ||
+       (swapped_arguments && combine != M9_FAA_TEXTURE_ADD) ||
+       source_stream || texel_unit || !program || !interface ||
+       (uintptr_t)program % _Alignof(uint32_t) ||
+       program_capacity_bytes < bytes ||
+       bytes > UINTPTR_MAX - (uintptr_t)program ||
+       overlap(program, bytes, interface, sizeof(*interface)))
+      return false;
+   if (combine == M9_FAA_TEXTURE_ADD) {
+      forms[2].b = forms[4].b = 0x7f;
+      forms[2].c = swapped_arguments ? 0x02 : 0x06;
+      forms[4].c = swapped_arguments ? 0x00 : 0x1a;
+      forms[2].a = swapped_arguments ? 0x06 : 0x02;
+      forms[4].a = swapped_arguments ? 0x1a : 0x00;
+      forms[2].control = 0xec800c00;
+      forms[4].control = 0xac800d10;
+   }
+   for (uint32_t i = 0; i < result.slots; i++) {
+      const struct m9_faa_color_fs_form *s = &forms[i];
+      program[2 * i] = ((uint32_t)(s->a & 7u) << 29) |
+         ((uint32_t)s->b << 22) | ((uint32_t)s->c << 15) |
+         ((uint32_t)s->dst << 8) | ((uint32_t)s->cls << 5) | s->op;
+      program[2 * i + 1] = s->control | s->a >> 3;
+   }
+   *interface = result;
+   return true;
+}
+
 bool
 m9_faa_preprocess_moves(enum m9_faa_move_input kind, const uint8_t *inputs,
                         uint32_t count, uint32_t saturate_targets, uint32_t *output,

@@ -57,6 +57,24 @@ bool m9_faa_color_flat_fs_build(uint32_t source_stream,
                               uint32_t *constants, uint32_t constant_capacity_bytes,
                               struct m9_faa_color_fs_interface *interface);
 
+/* Original M9128 stage-0 texture + smooth COLOR0 fixed-function combine.
+ * The sampled texel occupies the source's first texel pair; COLOR0 occupies
+ * interpolation stream zero. This builds only the six-slot fragment vector.
+ * A caller still needs a live UV stream, sampler/resource state and the
+ * texture-specific raster command grammar before any native draw. */
+enum m9_faa_texture_combine {
+   M9_FAA_TEXTURE_MODULATE = 4,
+   M9_FAA_TEXTURE_ADD = 7,
+};
+struct m9_faa_texture_fs_interface {
+   uint32_t slots, source_stream, texel_unit, result_register;
+};
+bool m9_faa_texture_fs_build(enum m9_faa_texture_combine combine,
+                             bool swapped_arguments,
+                             uint32_t source_stream, uint32_t texel_unit,
+                             uint32_t *program, uint32_t program_capacity_bytes,
+                             struct m9_faa_texture_fs_interface *interface);
+
 enum m9_faa_move_input {
    M9_FAA_MOVE_ATTRIBUTES,
    M9_FAA_MOVE_RECORDS,

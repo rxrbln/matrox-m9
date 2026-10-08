@@ -104,5 +104,14 @@ bool m9_faa_live_gl_color_build_state(const struct m9_faa_live_gl *state,
                                     const struct nir_shader *fs, bool legacy_flat,
                                     struct m9_faa_gl_upload *output,
                                     const char **reason);
+/* Assemble the source-qualified fixed-function stage-0 combine fragment with
+ * live GPU POSITION/COLOR0/TEXCOORD0 preprocessing. This is an owned CPU
+ * upload only: native texture ownership, sampler descriptors and raster
+ * routing have no application admission yet. */
+bool m9_faa_live_gl_texture_combine_build(const struct m9_faa_live_gl *state,
+                                          enum m9_faa_texture_combine combine,
+                                          bool swapped_arguments,
+                                          struct m9_faa_gl_upload *output,
+                                          const char **reason);
 void m9_faa_gl_upload_fini(struct m9_faa_gl_upload *upload);
 #endif

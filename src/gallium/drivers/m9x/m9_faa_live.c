@@ -201,7 +201,11 @@ m9_faa_live_gl_build(const struct m9_faa_live_gl *s,
    result.geometry_bytes = 128 + result.vertex_bytes;
    result.vertex_count = s->count; result.record_bytes = p.record_bytes;
    result.declaration_words = declarations;
-   memcpy(result.varying_location, p.varying_location, sizeof(result.varying_location));
+   /* The compiler stores each location in a full-width element while the
+    * owned upload uses byte-sized semantic IDs. Copy elements, not the first
+    * two bytes of stream zero (which silently loses stream one). */
+   for (unsigned i = 0; i < p.varying_count; i++)
+      result.varying_location[i] = p.varying_location[i];
    for (unsigned i = 0; i <= p.varying_count; i++)
       for (unsigned half = 0; half < 2; half++)
          result.carry_output_registers |= UINT64_C(1) << (0x11 + 4 * i + 2 * half);
@@ -364,6 +368,31 @@ m9_faa_live_gl_color_build(const struct m9_faa_live_gl *s, const nir_shader *fs,
                           struct m9_faa_gl_upload *output, const char **reason)
 {
    return m9_faa_live_gl_color_build_state(s, fs, false, output, reason);
+}
+
+bool
+m9_faa_live_gl_texture_combine_build(const struct m9_faa_live_gl *s,
+                                     enum m9_faa_texture_combine combine,
+                                     bool swapped_arguments,
+                                     struct m9_faa_gl_upload *output,
+                                     const char **reason)
+{
+   uint32_t program[12];
+   struct m9_faa_texture_fs_interface interface;
+   if (!s || !s->linkage || s->linkage->count != 2 ||
+       s->linkage->stream[0].location != VARYING_SLOT_COL0 ||
+       s->linkage->stream[1].location != VARYING_SLOT_TEX0 ||
+       !m9_faa_texture_fs_build(combine, swapped_arguments, 0, 0,
+                                program, sizeof(program), &interface)) {
+      if (reason) *reason = "FAA texture combine needs COLOR0, TEXCOORD0 and a qualified stage-0 operation";
+      return false;
+   }
+   struct m9_faa_live_gl live = *s;
+   live.fragment = (struct m9_faa_program_vector){program, interface.slots};
+   live.fragment_constants = (struct m9_faa_dense_constants){0};
+   if (!m9_faa_live_gl_build(&live, output, reason)) return false;
+   output->native_admission = false;
+   return true;
 }
 
 static bool
