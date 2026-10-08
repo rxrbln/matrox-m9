@@ -1664,6 +1664,7 @@ static bool m9_faa_graph_idle(const struct m9x_faa_replay *r)
 		return !r->color_attempted && !r->graph_draw_posts;
 	return r->unlock_retired && r->present_attempted == r->present_retired;
 }
+
 #endif
 
 /* Once its file released the graph and the graph is idle, return the
