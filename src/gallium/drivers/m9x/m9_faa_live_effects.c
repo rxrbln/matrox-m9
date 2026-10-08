@@ -131,6 +131,54 @@ bool m9_faa_fragment_gallium_state(const struct pipe_blend_state *blend,
    *out=result;return true;
 }
 
+static bool texture_factor(unsigned f,enum m9_faa_blend_factor *out)
+{
+   switch(f) {
+   case PIPE_BLENDFACTOR_ZERO:*out=M9_FAA_FACTOR_ZERO;return true;
+   case PIPE_BLENDFACTOR_ONE:*out=M9_FAA_FACTOR_ONE;return true;
+   case PIPE_BLENDFACTOR_SRC_COLOR:*out=M9_FAA_FACTOR_SRC_COLOR;return true;
+   case PIPE_BLENDFACTOR_SRC_ALPHA:*out=M9_FAA_FACTOR_SRC_ALPHA;return true;
+   case PIPE_BLENDFACTOR_INV_SRC_ALPHA:*out=M9_FAA_FACTOR_INV_SRC_ALPHA;return true;
+   case PIPE_BLENDFACTOR_DST_COLOR:*out=M9_FAA_FACTOR_DST_COLOR;return true;
+   case PIPE_BLENDFACTOR_INV_DST_COLOR:*out=M9_FAA_FACTOR_INV_DST_COLOR;return true;
+   default:return false;
+   }
+}
+
+/* ADD with equal RGB/alpha factors and a full colour mask; ONE/ZERO is the
+ * unblended program. Factor pairs and functions without source vectors are
+ * refused by m9_faa_texture_fragment_build, not here. */
+bool m9_faa_texture_fragment_gallium_state(const struct pipe_blend_state *blend,
+                                           const struct pipe_depth_stencil_alpha_state *dsa,
+                                           struct m9_faa_texture_fragment_state *out)
+{
+   if(!dsa||!out)return false;
+   struct m9_faa_texture_fragment_state result=*out;
+   result.blend=result.alpha_test=false;
+   if(blend) {
+      const struct pipe_rt_blend_state *rt=&blend->rt[0];
+      if(blend->logicop_enable||blend->alpha_to_coverage||blend->alpha_to_one||
+         rt->colormask!=PIPE_MASK_RGBA)return false;
+      if(rt->blend_enable) {
+         if(rt->rgb_func!=PIPE_BLEND_ADD||rt->alpha_func!=PIPE_BLEND_ADD||
+            rt->rgb_src_factor!=rt->alpha_src_factor||rt->rgb_dst_factor!=rt->alpha_dst_factor||
+            !texture_factor(rt->rgb_src_factor,&result.src)||
+            !texture_factor(rt->rgb_dst_factor,&result.dst))return false;
+         result.blend=!(result.src==M9_FAA_FACTOR_ONE&&result.dst==M9_FAA_FACTOR_ZERO);
+      }
+   }
+   if(dsa->alpha_enabled) {
+      if(dsa->alpha_func==PIPE_FUNC_GREATER)result.alpha_func=M9_FAA_ALPHA_FUNC_GREATER;
+      else if(dsa->alpha_func==PIPE_FUNC_LESS)result.alpha_func=M9_FAA_ALPHA_FUNC_LESS;
+      else if(dsa->alpha_func==PIPE_FUNC_GEQUAL)result.alpha_func=M9_FAA_ALPHA_FUNC_GEQUAL;
+      else return false;
+      if(!m9_faa_alpha_ref_from_gl(result.alpha_func,dsa->alpha_ref_value,&result.alpha_ref))
+         return false;
+      result.alpha_test=true;
+   }
+   *out=result;return true;
+}
+
 /* Match the state tracker's bounded discard predicate. Source instructions
  * implement the surviving comparison, while NIR discard_if states its inverse.
  * References are resolved only from actual owned FS CB0 or literal words. */

@@ -48,4 +48,58 @@ bool m9_faa_fragment_state_decode(const uint32_t *program, uint32_t bytes,
                                   const uint32_t *constants, uint32_t constant_bytes,
                                   struct m9_faa_fragment_state *state,
                                   struct m9_faa_fragment_interface *interface);
+
+/* Textured FAA programs of the original later program switch: the dual
+ * COLOR0 * texture0 * texture1 (MODULATE lightmap) and the single
+ * COLOR0 * texture0 combine, each optionally blended and alpha tested. */
+enum m9_faa_texture_program {
+   M9_FAA_TEXTURE_SINGLE,
+   M9_FAA_TEXTURE_DUAL,
+};
+/* SELECT: D3D ALPHAOP SELECTARG1 texture (stage 1 SELECTARG1 current).
+ * MODULATE: GL MODULATE, texture * diffuse (stage 1 texture * current). */
+enum m9_faa_texture_alpha {
+   M9_FAA_TEXTURE_ALPHA_SELECT,
+   M9_FAA_TEXTURE_ALPHA_MODULATE,
+};
+enum m9_faa_blend_factor {
+   M9_FAA_FACTOR_ZERO,
+   M9_FAA_FACTOR_ONE,
+   M9_FAA_FACTOR_SRC_COLOR,
+   M9_FAA_FACTOR_SRC_ALPHA,
+   M9_FAA_FACTOR_INV_SRC_ALPHA,
+   M9_FAA_FACTOR_DST_COLOR,
+   M9_FAA_FACTOR_INV_DST_COLOR,
+};
+/* Values are the source compare classes. */
+enum m9_faa_alpha_func {
+   M9_FAA_ALPHA_FUNC_GEQUAL,
+   M9_FAA_ALPHA_FUNC_LESS,
+   M9_FAA_ALPHA_FUNC_GREATER,
+};
+struct m9_faa_texture_fragment_state {
+   enum m9_faa_texture_program program;
+   enum m9_faa_texture_alpha alpha_op;
+   bool blend, alpha_test;
+   /* ADD equation, identical RGB and alpha factors */
+   enum m9_faa_blend_factor src, dst;
+   enum m9_faa_alpha_func alpha_func;
+   uint8_t alpha_ref; /* D3D ALPHAREF */
+};
+struct m9_faa_texture_fragment_interface {
+   uint32_t slots, constant_pairs;
+   /* Stage words f0 (fragment mode) and 88 (register usage) that the
+    * original switch stage emits together with this program. */
+   uint32_t raster_f0, usage;
+   bool reads_destination, alpha_test;
+};
+/* Emits the FS vector and its dense C3 utility pairs. Unqualified states
+ * are refused and leave all outputs untouched. */
+bool m9_faa_texture_fragment_build(const struct m9_faa_texture_fragment_state *state,
+                                   uint32_t *program, uint32_t program_capacity,
+                                   uint32_t *constants, uint32_t constant_capacity,
+                                   struct m9_faa_texture_fragment_interface *interface);
+/* GL reference in [0,1] to the D3D integer reference the source compares
+ * the converted 8-bit alpha against. */
+bool m9_faa_alpha_ref_from_gl(enum m9_faa_alpha_func func, float ref, uint8_t *out);
 #endif
