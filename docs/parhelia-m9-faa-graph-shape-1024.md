@@ -1,5 +1,16 @@
 # M9128 1024×768 FAA graph source boundary
 
+## Current hardware result, 2026-10-08
+
+DRM36073bf/Mesa1468df5 pass32 real glxgears FAA frames at1024×768,
+with GPU transforms,32 Unlocks and32 GPU presentations; finalaed0,
+queue0, generation0, wedged0. No reference interior pixels are missing,
+although shading differences remain. About1.4FPS in the unpaused portion.
+[Evidence and screenshots](../tests/m9-faa-gears1024-hardware-20261008/README.md).
+Quake3 GL1 FAA remains the next priority; older source-only scope below is
+historical, not the current1024 rendering status.
+
+
 The original M9128 `MxMD.dll` CPU producers accept a second normal sampled
 primary at 1024×768. The fresh first-context controller reaches a real
 INIT-only queue finish before public draw; a separate run returns one public

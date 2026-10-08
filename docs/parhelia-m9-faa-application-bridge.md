@@ -1,5 +1,16 @@
 # Application bridge after the verified graph triangle
 
+## Current hardware result, 2026-10-08
+
+DRM36073bf/Mesa1468df5 pass32 real glxgears FAA frames at1024×768,
+with GPU transforms,32 Unlocks and32 GPU presentations; finalaed0,
+queue0, generation0, wedged0. No reference interior pixels are missing,
+although shading differences remain. About1.4FPS in the unpaused portion.
+[Evidence and screenshots](../tests/m9-faa-gears1024-hardware-20261008/README.md).
+Quake3 GL1 FAA remains the next priority; older source-only scope below is
+historical, not the current1024 rendering status.
+
+
 The same-graph M9128 INIT → public DRAW → normal Lock producer now has real
 FAA pixels. The isolated source-returned F021 view passes the strict pixel
 oracle in `tests/m9-faa-normal-lock-view-20261007/check.py`, at RE
