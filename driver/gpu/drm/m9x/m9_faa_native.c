@@ -5733,76 +5733,178 @@ static void m9_faa_color_intermediates_observe(struct m9x_device *mdev,
 #endif
 
 int m9x_faa_graph_color_submit(struct m9x_device *mdev,
- struct m9_faa_graph_binding *binding,u32 generation,u64 init_point,u64 *point,bool *posted)
+			       struct m9_faa_graph_binding *binding,
+			       u32 generation, u64 init_point, u64 *point,
+			       bool *posted)
 {
 #ifdef M9_FAA_GRAPH_INIT_CONTROL
- struct m9x_transport *t=&mdev->transport;struct m9x_faa_replay *r;
- struct m9_faa_color_storage *n;struct m9_faa_owner *primary,*program;
- struct m9x_fence *fence=NULL;u8 observed[4096];
+	struct m9x_transport *t = &mdev->transport;
+	struct m9x_faa_replay *r;
+	struct m9_faa_color_storage *n;
+	struct m9_faa_owner *primary, *program;
+	struct m9x_fence *fence = NULL;
+	u8 observed[4096];
 	bool stage_posted = false;
 	u64 stage_point = 0;
 	u32 i, end;
 	int ret = -ESTALE;
- if(!point||!posted||!binding)return -EINVAL;*point=0;*posted=false;
- mutex_lock(&t->lock);r=t->faa;
- if(!r||r->graph_binding!=binding||!r->color_payload_ready||!r->color_image||r->color_attempted||
-  r->graph_generation!=generation||t->generation!=generation||r->observation_generation!=generation||
-  !r->observation_retired||r->observation_point!=init_point||!r->graph_draw_claimed||
-  r->graph_draw_posts||r->graph_draw_point||r->graph_draw_end_bytes!=r->primary_bytes||
-  !t->faa_source_context||!t->faa_virtual_primary||!t->engine_transitioned||!t->restore_ready||
-  !t->transport_armed||!t->bus_master_enabled||!t->fence_cpu||t->async_stop||t->async_pending||t->queue_count||
-  t->wedged||t->submitted_point!=init_point||t->completed_point!=init_point||
-  t->next_fence!=lower_32_bits(init_point)+0x10)goto out;
- n=r->color_image;primary=&r->owner[M9_FAA_PRIMARY_OWNER];program=&r->draw_owner[0];
- if(!primary->cpu||n->program_bytes>sizeof(observed)||!program->vram||
-  r->primary_bytes>primary->bytes||primary->bytes-r->primary_bytes<n->primary_length){ret=-ERANGE;goto out;}
- for(i=0;i<PARHELIA_M9_FAA_GRAPH_OWNERS;i++){
-  struct drm_gem_object *bo=m9x_faa_graph_binding_owner(binding,i);dma_resv_assert_held(bo->resv);
-  if(!dma_resv_test_signaled(bo->resv,DMA_RESV_USAGE_READ)){ret=-EBUSY;goto out;}}
- for(i=0;i<3;i++){
-  struct m9_faa_owner *o=i?&r->draw_owner[i]:primary;
-  if(!o->cpu||!drm_mm_node_allocated(&o->system_node)||o->system_node.start!=o->base){ret=-ESTALE;goto out;}
+
+	if (!point || !posted || !binding)
+		return -EINVAL;
+	*point = 0;
+	*posted = false;
+	mutex_lock(&t->lock);
+	r = t->faa;
+	if (!r || r->graph_binding != binding || !r->color_payload_ready ||
+	    !r->color_image || r->color_attempted ||
+	    r->graph_generation != generation || t->generation != generation ||
+	    r->observation_generation != generation ||
+	    !r->observation_retired || r->observation_point != init_point ||
+	    !r->graph_draw_claimed || r->graph_draw_posts ||
+	    r->graph_draw_point ||
+	    r->graph_draw_end_bytes != r->primary_bytes ||
+	    !t->faa_source_context || !t->faa_virtual_primary ||
+	    !t->engine_transitioned || !t->restore_ready ||
+	    !t->transport_armed || !t->bus_master_enabled || !t->fence_cpu ||
+	    t->async_stop || t->async_pending || t->queue_count || t->wedged ||
+	    t->submitted_point != init_point ||
+	    t->completed_point != init_point ||
+	    t->next_fence != lower_32_bits(init_point) + 0x10)
+		goto out;
+	n = r->color_image;
+	primary = &r->owner[M9_FAA_PRIMARY_OWNER];
+	program = &r->draw_owner[0];
+	if (!primary->cpu || n->program_bytes > sizeof(observed) ||
+	    !program->vram || r->primary_bytes > primary->bytes ||
+	    primary->bytes - r->primary_bytes < n->primary_length) {
+		ret = -ERANGE;
+		goto out;
+	}
+	for (i = 0; i < PARHELIA_M9_FAA_GRAPH_OWNERS; i++) {
+		struct drm_gem_object *bo =
+			m9x_faa_graph_binding_owner(binding, i);
+
+		dma_resv_assert_held(bo->resv);
+		if (!dma_resv_test_signaled(bo->resv, DMA_RESV_USAGE_READ)) {
+			ret = -EBUSY;
+			goto out;
+		}
+	}
+	for (i = 0; i < 3; i++) {
+		struct m9_faa_owner *o = i ? &r->draw_owner[i] : primary;
+
+		if (!o->cpu || !drm_mm_node_allocated(&o->system_node) ||
+		    o->system_node.start != o->base) {
+			ret = -ESTALE;
+			goto out;
+		}
 		ret = m9x_system_pages_mapped(mdev, o->base, o->dma,
-					      o->bytes / PAGE_SIZE, 1u, NULL, NULL);
+					      o->bytes / PAGE_SIZE, 1u, NULL,
+					      NULL);
 		if (ret)
 			goto out;
 	}
- ret=m9x_address_check_local_identity(mdev,program->base,program->bytes);if(ret)goto out;
- ret=m9x_triangle_system_page_admit_locked(mdev,0x40004000);if(ret)goto out;
- ret=m9x_triangle_system_page_admit_locked(mdev,0x40008000);if(ret)goto out;
- fence=m9x_fence_create_target_locked(mdev,lower_32_bits(init_point)+n->lock_delta);if(!fence){ret=-ENOMEM;goto out;}
- for(i=0;i<PARHELIA_M9_FAA_GRAPH_OWNERS;i++)dma_resv_add_fence(m9x_faa_graph_binding_owner(binding,i)->resv,&fence->base,DMA_RESV_USAGE_WRITE);
- r->color_primary_start=r->graph_draw_end_bytes;
- r->color_posts_start=r->graph_draw_posts;
- r->color_attempted=true;
- m9x_write(mdev,M9_REG_FRONTEND_KICK,1);
- ret=m9x_address_cpu_local_prepare(mdev,program->base,program->bytes);if(ret)goto out;
- iosys_map_memcpy_to(&program->map,0,n->program,n->program_bytes);wmb();
- m9x_write(mdev,M9_REG_FRONTEND_STATE,0);m9x_read(mdev,M9_REG_FRONTEND_STATE);
- iosys_map_memcpy_from(observed,&program->map,0,n->program_bytes);
- if(memcmp(observed,n->program,n->program_bytes)){ret=-EIO;goto out;}
- memcpy(r->draw_owner[1].cpu,n->constants,n->constants_bytes);
- memcpy((u8*)r->draw_owner[1].cpu+n->geometry_offset,n->constants+n->geometry_offset,n->geometry_bytes);
- memcpy(r->draw_owner[2].cpu,n->secondary,n->secondary_bytes);
- for(i=0;i<4;i++){
-  u32 old=r->graph_draw_end_bytes;
-  if(!i){end=r->primary_bytes+n->draw_length;memcpy((u8*)primary->cpu+r->primary_bytes,n->primary,n->draw_length);}
-  else if(i<3){end=r->primary_bytes+n->primary_length-12;if(i==1)memcpy((u8*)primary->cpu+r->primary_bytes+n->draw_length,n->primary+n->draw_length,n->primary_length-12-n->draw_length);}
-  else{end=r->primary_bytes+n->primary_length;memcpy((u8*)primary->cpu+r->primary_bytes+n->primary_length-12,n->primary+n->primary_length-12,12);}
-  dma_wmb();ret=m9x_post_faa_graph_end_locked(mdev,&primary->system_node,primary->dma,old,end,i==2,
-   i==3?lower_32_bits(init_point)+n->lock_delta:0,&stage_point,&stage_posted);
-  *posted|=stage_posted;if(stage_posted){r->graph_draw_end_bytes=end;r->graph_draw_posts++;}if(ret)goto out;}
- if(stage_point!=init_point+n->lock_delta){ret=-EIO;goto out;}
- *point=stage_point;r->graph_draw_point=stage_point;r->color_lock_point=stage_point;r->color_lock_retired=true;r->color_secondary_cursor=n->secondary_bytes;
- m9_faa_color_intermediates_observe(mdev,r);
- dev_info(&mdev->pdev->dev,"M9 FAA color Lock retired: init=%#llx lock=%#llx bytes=%u posts=%u program=%u secondary=%u; %u live vectors\n",init_point,*point,r->graph_draw_end_bytes,r->graph_draw_posts,n->program_bytes,n->secondary_bytes,n->layout.program_count);
+	ret = m9x_address_check_local_identity(mdev, program->base,
+					       program->bytes);
+	if (ret)
+		goto out;
+	ret = m9x_triangle_system_page_admit_locked(mdev, 0x40004000);
+	if (ret)
+		goto out;
+	ret = m9x_triangle_system_page_admit_locked(mdev, 0x40008000);
+	if (ret)
+		goto out;
+	fence = m9x_fence_create_target_locked(mdev, lower_32_bits(init_point) +
+							     n->lock_delta);
+	if (!fence) {
+		ret = -ENOMEM;
+		goto out;
+	}
+	for (i = 0; i < PARHELIA_M9_FAA_GRAPH_OWNERS; i++)
+		dma_resv_add_fence(m9x_faa_graph_binding_owner(binding, i)->resv,
+				   &fence->base, DMA_RESV_USAGE_WRITE);
+	r->color_primary_start = r->graph_draw_end_bytes;
+	r->color_posts_start = r->graph_draw_posts;
+	r->color_attempted = true;
+	m9x_write(mdev, M9_REG_FRONTEND_KICK, 1);
+	ret = m9x_address_cpu_local_prepare(mdev, program->base,
+					    program->bytes);
+	if (ret)
+		goto out;
+	iosys_map_memcpy_to(&program->map, 0, n->program, n->program_bytes);
+	/* The CPU stores precede their END post. */
+	wmb();
+	m9x_write(mdev, M9_REG_FRONTEND_STATE, 0);
+	m9x_read(mdev, M9_REG_FRONTEND_STATE);
+	iosys_map_memcpy_from(observed, &program->map, 0, n->program_bytes);
+	if (memcmp(observed, n->program, n->program_bytes)) {
+		ret = -EIO;
+		goto out;
+	}
+	memcpy(r->draw_owner[1].cpu, n->constants, n->constants_bytes);
+	memcpy((u8 *)r->draw_owner[1].cpu + n->geometry_offset,
+	       n->constants + n->geometry_offset, n->geometry_bytes);
+	memcpy(r->draw_owner[2].cpu, n->secondary, n->secondary_bytes);
+	for (i = 0; i < 4; i++) {
+		u32 old = r->graph_draw_end_bytes;
+
+		if (!i) {
+			end = r->primary_bytes + n->draw_length;
+			memcpy((u8 *)primary->cpu + r->primary_bytes,
+			       n->primary, n->draw_length);
+		} else if (i < 3) {
+			end = r->primary_bytes + n->primary_length - 12;
+			if (i == 1)
+				memcpy((u8 *)primary->cpu + r->primary_bytes +
+					       n->draw_length,
+				       n->primary + n->draw_length,
+				       n->primary_length - 12 - n->draw_length);
+		} else {
+			end = r->primary_bytes + n->primary_length;
+			memcpy((u8 *)primary->cpu + r->primary_bytes +
+				       n->primary_length - 12,
+			       n->primary + n->primary_length - 12, 12);
+		}
+		/* The CPU stores precede their END post. */
+		dma_wmb();
+		ret = m9x_post_faa_graph_end_locked(mdev, &primary->system_node,
+						    primary->dma, old, end,
+						    i == 2,
+						    i == 3 ?
+						    lower_32_bits(init_point) +
+						    n->lock_delta : 0,
+						    &stage_point, &stage_posted);
+		*posted |= stage_posted;
+		if (stage_posted) {
+			r->graph_draw_end_bytes = end;
+			r->graph_draw_posts++;
+		}
+		if (ret)
+			goto out;
+	}
+	if (stage_point != init_point + n->lock_delta) {
+		ret = -EIO;
+		goto out;
+	}
+	*point = stage_point;
+	r->graph_draw_point = stage_point;
+	r->color_lock_point = stage_point;
+	r->color_lock_retired = true;
+	r->color_secondary_cursor = n->secondary_bytes;
+	m9_faa_color_intermediates_observe(mdev, r);
+	dev_info(&mdev->pdev->dev,
+		 "M9 FAA color Lock retired: init=%#llx lock=%#llx bytes=%u posts=%u program=%u secondary=%u; %u live vectors\n",
+		 init_point, *point, r->graph_draw_end_bytes,
+		 r->graph_draw_posts, n->program_bytes, n->secondary_bytes,
+		 n->layout.program_count);
 out:
 	if (ret)
 		*point = 0;
 	m9x_transport_fence_finish_locked(mdev, fence, ret, *posted);
- mutex_unlock(&t->lock);return ret;
+	mutex_unlock(&t->lock);
+	return ret;
 #else
- return -EOPNOTSUPP;
+	return -EOPNOTSUPP;
 #endif
 }
 
