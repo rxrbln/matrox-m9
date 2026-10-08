@@ -2436,8 +2436,8 @@ static int m9_faa_verify_upload(struct m9x_device *mdev,
  * initial contents were zero or that a nonzero byte proves a GPU store.
  * Unmapped allocation tails are excluded. No allocation is written.
  */
-static void m9_faa_observe(struct m9x_device *mdev,
-			 struct m9x_faa_replay *r, bool before)
+static void m9_faa_observe(struct m9x_device *mdev, struct m9x_faa_replay *r,
+			   bool before)
 {
 	const u32 budget = 16 * 1024 * 1024;
 	u8 data[256];
@@ -2457,7 +2457,8 @@ static void m9_faa_observe(struct m9x_device *mdev,
 			continue;
 		}
 		if (bytes > r->owner[i].bytes || bytes > budget - *total) {
-			dev_err(&mdev->pdev->dev, "M9 FAA observation exceeds %u-byte budget\n",
+			dev_err(&mdev->pdev->dev,
+				"M9 FAA observation exceeds %u-byte budget\n",
 				budget);
 			return;
 		}
@@ -2471,14 +2472,18 @@ static void m9_faa_observe(struct m9x_device *mdev,
 
 		/* Observe the same retained completion page selected by 106c
 		 * and 1068/1070. Source query/map waits use +20/+00;
-		 * observing +40/+60 does not assign them another wait role. */
+		 * observing +40/+60 does not assign them another wait role.
+		 */
 		dev_info(&mdev->pdev->dev,
 			 "M9 FAA %s counters: +00=%#x/%#x +20=%#x/%#x +40=%#x/%#x +60=%#x/%#x\n",
 			 before ? "before submit" : "retired",
 			 READ_ONCE(counter[0]), READ_ONCE(counter[1]),
-			 READ_ONCE(counter[0x20 / 4]), READ_ONCE(counter[0x24 / 4]),
-			 READ_ONCE(counter[0x40 / 4]), READ_ONCE(counter[0x44 / 4]),
-			 READ_ONCE(counter[0x60 / 4]), READ_ONCE(counter[0x64 / 4]));
+			 READ_ONCE(counter[0x20 / 4]),
+			 READ_ONCE(counter[0x24 / 4]),
+			 READ_ONCE(counter[0x40 / 4]),
+			 READ_ONCE(counter[0x44 / 4]),
+			 READ_ONCE(counter[0x60 / 4]),
+			 READ_ONCE(counter[0x64 / 4]));
 	}
 	for (i = 0; i < ARRAY_SIZE(r->owner); i++) {
 		struct m9_faa_owner *o = &r->owner[i];
@@ -2492,7 +2497,8 @@ static void m9_faa_observe(struct m9x_device *mdev,
 		for (offset = 0; offset < bytes; offset += count) {
 			count = min_t(u32, sizeof(data), bytes - offset);
 			if (o->vram)
-				iosys_map_memcpy_from(data, &o->map, offset, count);
+				iosys_map_memcpy_from(data, &o->map, offset,
+						      count);
 			else
 				memcpy(data, (u8 *)o->cpu + offset, count);
 			if (!offset) {
@@ -2500,11 +2506,13 @@ static void m9_faa_observe(struct m9x_device *mdev,
 
 				/* Reuse the already bounded observation read. This
 				 * is raw evidence, including unknown source bytes;
-				 * no owner role or GPU record meaning is assigned. */
+				 * no owner role or GPU record meaning is assigned.
+				 */
 				dev_info(&mdev->pdev->dev,
 					 "M9 FAA %s %s raw prefix: owner=%u native=%#x bytes=%u hex=%*phN\n",
 					 before ? "before submit" : "retired",
-					 domain, i, o->base, prefix, (int)prefix, data);
+					 domain, i, o->base, prefix, (int)prefix,
+					 data);
 			}
 			hash = m9_faa_hash(hash, data, count);
 			for (j = 0; j < count; j++)
@@ -2519,15 +2527,16 @@ static void m9_faa_observe(struct m9x_device *mdev,
 		}
 		dev_info(&mdev->pdev->dev,
 			 "M9 FAA %s %s observation: owner=%u captured=%#x native=%#x bytes=%u fnv=%#x nonzero_bytes=%u nonzero_words=%u\n",
-			 before ? "before submit" : "retired",
-			 domain, i, spec->captured, o->base, bytes,
-			 hash, nonzero, nonzero_words);
+			 before ? "before submit" : "retired", domain, i,
+			 spec->captured, o->base, bytes, hash, nonzero,
+			 nonzero_words);
 		if (!before && r->baseline_valid)
 			dev_info(&mdev->pdev->dev,
 				 "M9 FAA %s delta: owner=%u before_fnv=%#x after_fnv=%#x hash_changed=%u before_nonzero_bytes=%u after_nonzero_bytes=%u before_nonzero_words=%u after_nonzero_words=%u\n",
-				 domain, i, r->before_hash[i], hash, r->before_hash[i] != hash,
-				 r->before_nonzero[i], nonzero,
-				 r->before_nonzero_words[i], nonzero_words);
+				 domain, i, r->before_hash[i], hash,
+				 r->before_hash[i] != hash, r->before_nonzero[i],
+				 nonzero, r->before_nonzero_words[i],
+				 nonzero_words);
 	}
 	if (before)
 		r->baseline_valid = true;
