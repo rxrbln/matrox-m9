@@ -32,6 +32,77 @@ static bool colorpass_fs32(const u8 *p)
  return true;
 }
 
+int m9x_faa_dual_colorpass_shadow(
+ const struct m9x_faa_color_input *pass,
+ u8 *program,size_t program_capacity,
+ u8 *constants,size_t constants_capacity,
+ struct m9x_faa_color_input *dual)
+{
+ static const struct {u8 op,cls,dst,a,b,c;u32 control;} forms[9]={
+  {0x1d,4,0x0c,0x42,0x79,0x45,0xae0ffc00},
+  {0x1c,4,0x0b,0xc0,0x79,0x44,0xae0ffc00},
+  {0x1d,4,0x08,0x02,0x0c,0x7f,0xac2fc000},
+  {0x1c,0,0x09,0xff,0x7f,0x02,0xa28fff00},
+  {0x1d,4,0x0a,0x06,0x08,0x7f,0xac2fc000},
+  {0x1e,4,0x09,0xff,0x7f,0x02,0xe28fff20},
+  {0x1c,4,0x0e,0x00,0x0b,0x7f,0xac2fc140},
+  {0x1e,4,0x2d,0x7f,0x09,0x0a,0xa3400ec0},
+  {0x1d,4,0x2d,0x04,0x0e,0x7f,0xac2fc140},
+ };
+ static const u32 utility[6]={0,0x3f800000,0,0x3f800000,
+                              0x3f800000,0x3f000000};
+ struct m9x_faa_color_input out;
+ u32 i,pb,cb,begin;
+ if(!pass||!program||!constants||!dual||!pass->program||
+    !pass->constants||!pass->geometry||!pass->declaration||
+    pass->layout.program_count!=4||pass->layout.entry_bytes[0]||
+    pass->layout.entry_bytes[1]!=32||pass->layout.program_bytes<32||
+    pass->layout.program_bytes>M9_FAA_COLOR_PROGRAM_CAPACITY-40||
+    pass->layout.constants_bytes>16384-8||
+    pass->layout.constant_begin[0]>pass->layout.constants_bytes||
+    pass->layout.constant_end[0]>pass->layout.constants_bytes||
+    pass->layout.constant_end[0]!=pass->layout.constant_begin[0]+16||
+    !colorpass_fs32(pass->program)||
+    memcmp(pass->constants+pass->layout.constant_begin[0],
+           (const u32[]){0,0x3f800000,0x3f800000,0x3f000000},16)||
+    check_add_overflow(pass->layout.program_bytes,40u,&pb)||
+    check_add_overflow(pass->layout.constants_bytes,8u,&cb)||
+    program_capacity<pb||constants_capacity<cb||
+    overlaps(program,pb,pass->program,pass->layout.program_bytes)||
+    overlaps(constants,cb,pass->constants,pass->layout.constants_bytes)||
+    overlaps(program,pb,constants,cb)||
+    overlaps(dual,sizeof(*dual),pass,sizeof(*pass)))return -EINVAL;
+ for(i=1;i<4;i++)
+  if(pass->layout.entry_bytes[i]<32||
+     pass->layout.entry_bytes[i]>pass->layout.program_bytes||
+     pass->layout.constant_begin[i]>pass->layout.constant_end[i]||
+     pass->layout.constant_end[i]>pass->layout.constants_bytes)return -EINVAL;
+ begin=pass->layout.constant_begin[0];
+ /* Two texture samples multiplied with COLOR0: source-decoded register
+  * forms are the only shadow instructions. No captured code VA is copied. */
+ for(i=0;i<9;i++){
+  const typeof(forms[0]) *f=&forms[i];
+  u32 w0=((u32)(f->a&7)<<29)|((u32)f->b<<22)|
+    ((u32)f->c<<15)|((u32)f->dst<<8)|((u32)f->cls<<5)|f->op;
+  wr(program,i*8,w0);wr(program,i*8+4,f->control|f->a>>3);
+ }
+ memcpy(program+72,pass->program+32,pass->layout.program_bytes-32);
+ memcpy(constants,pass->constants,begin);
+ memcpy(constants+begin,utility,sizeof(utility));
+ memcpy(constants+begin+24,pass->constants+begin+16,
+        pass->layout.constants_bytes-begin-16);
+ out=*pass;out.program=program;out.constants=constants;
+ out.layout.program_bytes=pb;out.layout.constants_bytes=cb;
+ out.layout.constant_end[0]+=8;
+ for(i=1;i<4;i++){
+  out.layout.entry_bytes[i]+=40;
+  out.layout.constant_begin[i]+=8;
+  out.layout.constant_end[i]+=8;
+ }
+ *dual=out;
+ return 0;
+}
+
 int m9x_faa_dual_colorpass_encode(
  const struct m9x_faa_color_input *dual,
  const struct m9x_faa_color_input *pass,
