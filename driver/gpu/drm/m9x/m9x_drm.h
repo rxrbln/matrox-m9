@@ -167,8 +167,7 @@ struct drm_parhelia_m9_faa_graph_dual_batch {
 };
 #define DRM_IOCTL_PARHELIA_M9_FAA_GRAPH_DUAL_BATCH DRM_IOWR(DRM_COMMAND_BASE + DRM_PARHELIA_M9_FAA_GRAPH_DUAL_BATCH, struct drm_parhelia_m9_faa_graph_dual_batch)
 
-/* Reserved, unregistered WIP ABI for a retained same-program dual DRAW after
- * an actual Unlock. The two handles
+/* A retained same-program dual DRAW after an actual Unlock. The two handles
  * name live texture BOs; they never convey GPU addresses. Version 1 admits
  * one 320x240 draw, CLEAR3 or no-clear, and at most one stage-1 pair change
  * per retained graph. The separate source Lock point is returned only after
