@@ -138,7 +138,7 @@ m9_faa_surface_dual_later_kernel(struct m9_screen *screen,struct m9_faa_surface 
    if(g->color_texture_count!=2||g->color_program_count!=4||!g->color_lock_point||
       !g->color_unlock_attempted||g->color_lock_point>UINT64_MAX-0x20||
       g->color_unlock_point!=g->color_lock_point+0x20||(g->color_unlock_point&15)||
-      g->color_unlock_point>UINT64_MAX-0x190-PARHELIA_M9_FAA_DUAL_LATER_MAX_DRAWS*0xa0u||
+      g->color_unlock_point>UINT64_MAX-0x1a0-PARHELIA_M9_FAA_DUAL_LATER_MAX_DRAWS*0xa0u||
       g->color_next_attempted||
       g->color_present_attempted||g->color_present_point||g->color_frame_present_point||
       g->color_frame_maintenance_point||!g->color_depth_initialized)
@@ -156,9 +156,6 @@ m9_faa_surface_dual_later_kernel(struct m9_screen *screen,struct m9_faa_surface 
                                           PARHELIA_M9_FAA_PROGRAM_DUAL;
       draws[i].fragment=u->fragment;
       for(unsigned t=0;t<u->texture_count;t++)draws[i].texture[t]=u->texture[t].view;
-      ret=-EOPNOTSUPP;
-      if(i&&(draws[i].draw.depth_flags!=draws[0].draw.depth_flags||
-             draws[i].draw.raster_flags!=draws[0].draw.raster_flags))goto out;
    }
    const uint64_t delta=(frame->clear_flags==3?0x150:frame->clear_flags==2?0x120:0xd0)+
                         (frame->count-1u)*UINT64_C(0xa0);
@@ -288,37 +285,44 @@ m9_faa_surface_dual_frame_kernel(struct m9_screen *screen,struct m9_faa_surface 
    return 0;
 }
 
-/* DRAWs that may share one transaction: the same depth and cull state
- * (the winding matters only when culling). A FIRST also needs one pair. */
+/* DRAWs that may share one FIRST transaction: the same depth and cull
+ * state (the winding matters only when culling) and one pair. Later DRAWs
+ * carry their own A8 depth word and 6A raster groups (vendor later/). */
 static bool
 dual_same_state(const struct m9_faa_application_upload *a,
-                const struct m9_faa_application_upload *b, bool same_pair)
+                const struct m9_faa_application_upload *b, bool first)
 {
+   if(!first)return true;
    if(a->state.depth_enabled!=b->state.depth_enabled||
       a->state.depth_write!=b->state.depth_write||
       a->state.depth_func!=b->state.depth_func||
       a->state.cull_face!=b->state.cull_face||
       (a->state.cull_face!=PIPE_FACE_NONE&&
        a->state.front_ccw!=b->state.front_ccw))return false;
-   for(unsigned t=0;same_pair&&t<2;t++)
+   for(unsigned t=0;t<2;t++)
       if(a->texture[t].resource!=b->texture[t].resource||
          memcmp(&a->texture[t].view,&b->texture[t].view,sizeof(a->texture[t].view)))
          return false;
    return true;
 }
 
-/* Whether next may join a transaction of n DRAWs: one program per kind. */
+/* Whether next may join a transaction of n DRAWs: one declaration per
+ * kind; a FIRST also one program per kind, later DRAWs switch programs
+ * through the kernel's program cache. */
 static bool
 dual_same_program(const struct m9_faa_application_upload *group,uint32_t n,
-                  const struct m9_faa_application_upload *next)
+                  const struct m9_faa_application_upload *next,bool first)
 {
    for(uint32_t i=0;i<n;i++) {
       const struct m9_faa_application_upload *u=&group[i];
       if(u->texture_count!=next->texture_count)continue;
-      return !memcmp(&u->shader.layout,&next->shader.layout,sizeof(u->shader.layout))&&
-         !memcmp(u->shader.program,next->shader.program,u->shader.layout.bytes)&&
-         u->shader.declaration_words==next->shader.declaration_words&&
-         !memcmp(u->shader.declaration,next->shader.declaration,u->shader.declaration_words*4);
+      if(u->shader.declaration_words!=next->shader.declaration_words||
+         memcmp(u->shader.declaration,next->shader.declaration,u->shader.declaration_words*4))
+         return false;
+      if(first&&
+         (memcmp(&u->shader.layout,&next->shader.layout,sizeof(u->shader.layout))||
+          memcmp(u->shader.program,next->shader.program,u->shader.layout.bytes)))
+         return false;
    }
    return true;
 }
@@ -366,7 +370,7 @@ m9_faa_surface_dual_batch_kernel(struct m9_screen *screen,struct m9_faa_surface 
       uint32_t n=1;
       while(start+n<frame->count&&n<limit&&
             dual_same_state(&frame->draws[start],&frame->draws[start+n],!later)&&
-            dual_same_program(frame->draws+start,n,&frame->draws[start+n])&&
+            dual_same_program(frame->draws+start,n,&frame->draws[start+n],!later)&&
             arena+dual_arena_bytes(&frame->draws[start+n])<=0x40000) {
          arena=align64(arena+dual_arena_bytes(&frame->draws[start+n]),128);
          n++;
