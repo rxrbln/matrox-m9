@@ -1445,13 +1445,28 @@ m9_arena_reserve(struct m9_context *ctx, struct m9_resource *arena,
                  uint64_t bytes)
 {
    uint64_t size;
+   const bool cpu_streams = arena == &ctx->cpu_streams;
+   const uint64_t limit = cpu_streams ?
+      (uint64_t)M9_FS_MAX_EXTRA * m9_transient_view_bytes() : UINT64_MAX;
 
+   /* The CPU stream arena has exactly one qualified view per extra slot.
+    * Doubling its fifteenth view allocates thirty in the 16-MiB class-1
+    * window while its other live arena still owns fifteen. Never reserve
+    * storage beyond the producer/consumer layout's sixteen-view maximum. */
+   if (bytes > limit)
+      return -E2BIG;
    if (bytes <= arena->size)
       return 0;
-   size = MAX2((bytes + 0xfff) & ~0xfffull, 2 * arena->size);
+   size = MIN2(limit, MAX2((bytes + 0xfff) & ~0xfffull, 2 * arena->size));
    m9_bo_destroy(ctx->screen, arena);
-   return m9_bo_create(ctx->screen, size, 0, M9_RESOURCE_LINEAR_BUFFER,
-                       arena);
+   int ret = m9_bo_create(ctx->screen, size, 0, M9_RESOURCE_LINEAR_BUFFER,
+                          arena);
+   if (ret)
+      fprintf(stderr, "m9x: %s arena reserve failed (%s): requested %" PRIu64
+              " capacity %" PRIu64 " bytes, %u source vertices per view\n",
+              cpu_streams ? "CPU stream" : "source/index", strerror(-ret),
+              bytes, size, m9_draw_max_source_vertices());
+   return ret;
 }
 
 static bool
