@@ -118,6 +118,11 @@ int m9_faa_surface_color_frame_kernel(struct m9_screen *screen,
                                     const struct m9_faa_gl_upload *upload,
                                     const struct m9_faa_application_state *state,
                                     uint32_t clear_flags, uint32_t clear_color);
+struct drm_parhelia_m9_faa_texture_view;
+int m9_faa_surface_dual_first_kernel(struct m9_screen *screen,
+                                    struct m9_faa_surface *surface,
+                                    const struct m9_faa_gl_upload *upload,
+                                    const struct drm_parhelia_m9_faa_texture_view *texture);
 struct m9_faa_application_frame;
 int m9_faa_surface_color_batch_kernel(struct m9_screen *screen,
                                      struct m9_faa_surface *surface,

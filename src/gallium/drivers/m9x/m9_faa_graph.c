@@ -450,6 +450,73 @@ m9_faa_color_upload_request(const struct m9_faa_gl_upload *upload,
    return 0;
 }
 
+/* Explicit two-texture FIRST diagnostic. The upload is produced from live
+ * GL inputs; each texture handle names an independently retained VRAM BO.
+ * Subsequent frames and application shader classification need separate
+ * source-qualified admission. */
+int
+m9_faa_surface_dual_first_kernel(struct m9_screen *screen,
+                                 struct m9_faa_surface *surface,
+                                 const struct m9_faa_gl_upload *upload,
+                                 const struct drm_parhelia_m9_faa_texture_view *texture)
+{
+   struct drm_parhelia_m9_faa_graph_dual_first request = {0};
+   struct drm_parhelia_m9_faa_graph_color_lock packed = {0};
+   if (!screen || !surface || !upload || !texture)
+      return -EINVAL;
+   struct m9_faa_graph *graph = &surface->graph;
+   if (screen->faa.chip != M9_FAA_CHIP_M9 || !screen->wait_point ||
+       surface->width != 320 || surface->height != 240 ||
+       surface->format != 0x66 || !graph->prepared || !graph->initialized ||
+       !graph->prepared_id || !graph->init_point || (graph->init_point & 15) ||
+       graph->init_point > UINT64_MAX - 0x150 ||
+       graph->color_lock_attempted || graph->color_lock_point ||
+       graph->color_depth_initialized || graph->color_next_attempted ||
+       graph->color_unlock_attempted || graph->public_vs_attempted ||
+       upload->layout.count != 4 || upload->declaration_words != 9 ||
+       upload->record_bytes != 64 || !upload->vertex_count ||
+       upload->vertex_count % 3 || !texture[0].handle ||
+       !texture[1].handle || texture[0].handle == texture[1].handle)
+      return -EOPNOTSUPP;
+   int ret = m9_faa_color_upload_request(upload, &packed);
+   if (ret) return ret;
+   request.graph_id = graph->prepared_id;
+   request.init_point = graph->init_point;
+   request.upload = packed.upload;
+   request.upload_bytes = packed.upload_bytes;
+   request.generation = graph->prepared_generation;
+   request.version = PARHELIA_M9_FAA_DUAL_FIRST_VERSION;
+   request.record_stride = packed.record_stride;
+   request.record_count = packed.record_count;
+   request.declaration_count = packed.declaration_count;
+   memcpy(&request.layout, &packed.layout, sizeof(request.layout));
+   request.width = surface->width;request.height = surface->height;
+   request.clear_flags = PARHELIA_M9_FAA_COLOR_CLEAR_TARGET |
+                         PARHELIA_M9_FAA_COLOR_CLEAR_DEPTH;
+   request.depth_flags = 7; /* original bound LESS/write profile */
+   memcpy(request.texture, texture, sizeof(request.texture));
+   const struct drm_parhelia_m9_faa_graph_dual_first before = request;
+   graph->color_lock_attempted = true;
+   graph->color_program_count = 4;
+   if (ioctl(screen->fd, DRM_IOCTL_PARHELIA_M9_FAA_GRAPH_DUAL_FIRST, &request))
+      return -errno;
+   if (request.lock_point != before.init_point + 0x150 ||
+       request.state != PARHELIA_M9_FAA_DUAL_FIRST_LOCK_RETIRED)
+      return -EPROTO;
+   struct drm_parhelia_m9_faa_graph_dual_first returned = request;
+   returned.lock_point = 0;returned.state = 0;
+   if (memcmp(&returned, &before, sizeof(before)))
+      return -EPROTO;
+   ret = m9_wait_for_point(screen, request.lock_point);
+   if (ret) return ret;
+   graph->color_lock_point = request.lock_point;
+   graph->color_lock_delta = 0x150;
+   graph->color_depth_initialized = true;
+   graph->color_unlock_attempted = false;
+   graph->color_unlock_point = 0;
+   return 0;
+}
+
 
 /* Keep the exact authenticated transaction shape. Accepting either of two
  * plausible deltas loses the distinction between clear and no-clear Lock. */

@@ -186,7 +186,6 @@ struct drm_parhelia_m9_faa_graph_public_vs_follow {
    DRM_IOWR(DRM_COMMAND_BASE + DRM_PARHELIA_M9_FAA_GRAPH_PUBLIC_VS_FOLLOW, \
             struct drm_parhelia_m9_faa_graph_public_vs_follow)
 #endif
-#endif
 
 #ifndef DRM_IOCTL_PARHELIA_M9_FAA_GRAPH_PUBLIC_VS_HEAD
 #define DRM_PARHELIA_M9_FAA_GRAPH_PUBLIC_VS_HEAD 0x18
@@ -243,6 +242,7 @@ struct drm_parhelia_m9_faa_graph_public_vs_next {
 #define DRM_IOCTL_PARHELIA_M9_FAA_GRAPH_PUBLIC_VS_NEXT \
    DRM_IOWR(DRM_COMMAND_BASE + DRM_PARHELIA_M9_FAA_GRAPH_PUBLIC_VS_NEXT, \
             struct drm_parhelia_m9_faa_graph_public_vs_next)
+#endif
 #ifndef DRM_IOCTL_PARHELIA_M9_FAA_GRAPH_PRESENT
 /* Retired Lock -> authentic Unlock -> separate-owner GPU presentation.
  * Input outputs/padding are zero. U stays immutable; P is a distinct frontier.
@@ -257,6 +257,27 @@ struct drm_parhelia_m9_faa_graph_present {
 };
 #define DRM_IOCTL_PARHELIA_M9_FAA_GRAPH_PRESENT DRM_IOWR(DRM_COMMAND_BASE + DRM_PARHELIA_M9_FAA_GRAPH_PRESENT, struct drm_parhelia_m9_faa_graph_present)
 
+#endif
+
+#ifndef DRM_IOCTL_PARHELIA_M9_FAA_GRAPH_DUAL_FIRST
+#define DRM_PARHELIA_M9_FAA_GRAPH_DUAL_FIRST 0x21
+#define PARHELIA_M9_FAA_DUAL_FIRST_VERSION 1u
+#define PARHELIA_M9_FAA_DUAL_FIRST_LOCK_RETIRED 23u
+struct drm_parhelia_m9_faa_texture_view {
+ __u32 handle,profile,format,width,height,storage_kind,levels;
+ __u32 min_filter,mag_filter,mip_filter,address_u,address_v;
+};
+struct drm_parhelia_m9_faa_graph_dual_first {
+ __u64 graph_id,init_point,lock_point,upload;
+ __u32 upload_bytes,generation,version,flags,state,pad;
+ __u32 record_stride,record_count,declaration_count;
+ struct drm_parhelia_m9_faa_upload_layout layout;
+ __u32 width,height,clear_flags,clear_color,depth_flags;
+ struct drm_parhelia_m9_faa_texture_view texture[2];
+};
+#define DRM_IOCTL_PARHELIA_M9_FAA_GRAPH_DUAL_FIRST \
+ DRM_IOWR(DRM_COMMAND_BASE + DRM_PARHELIA_M9_FAA_GRAPH_DUAL_FIRST, \
+          struct drm_parhelia_m9_faa_graph_dual_first)
 #endif
 
 #endif
