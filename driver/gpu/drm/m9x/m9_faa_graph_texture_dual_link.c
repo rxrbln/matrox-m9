@@ -37,6 +37,7 @@ int m9x_faa_texture_dual_link_place(
 
 	if (!in || !secondary || bytes != 2880 ||
 	    (in->program_base & 4095) || (in->constants_base & 7) ||
+	    (in->constants_tag != 1 && in->constants_tag != 2) ||
 	    (in->program_offset & 7) || (in->data_offset & 7) ||
 	    !in->program_bytes || (in->program_bytes & 7) ||
 	    in->program_bytes > 4096 ||
@@ -70,10 +71,11 @@ int m9x_faa_texture_dual_link_place(
 			return -EINVAL;
 		start = in->data_offset + in->constant_begin[i];
 		end = in->data_offset + in->constant_end[i];
-		/* C3 uses tag 2 on byte-addressed begin/end, while C2 encodes
-		 * one page-rooted program identity and an eight-byte slot index. */
-		start_word[i] = (in->constants_base + start) | 2;
-		end_word[i] = (in->constants_base + end) | 2;
+		/* C3 tags the authenticated constant-owner domain; FIRST-depth
+		 * owner28 is SYSTEM/tag1, while the standalone shader control used
+		 * LOCAL/tag2. C2 retains one page-rooted program identity. */
+		start_word[i] = (in->constants_base + start) | in->constants_tag;
+		end_word[i] = (in->constants_base + end) | in->constants_tag;
 		program_word[i] = (in->program_offset + in->entry_bytes[i]) / 8;
 		count_word[i] = 0x00500000 |
 			((in->constant_end[i] - in->constant_begin[i]) << 5);

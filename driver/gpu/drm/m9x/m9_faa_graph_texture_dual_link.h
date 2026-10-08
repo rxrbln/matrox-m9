@@ -11,6 +11,9 @@ struct m9x_faa_texture_dual_link_input {
 	u32 program_base, program_owner_bytes, program_offset, program_bytes;
 	u32 entry_bytes[4];
 	u32 constants_base, constants_owner_bytes, data_offset, constants_bytes;
+	/* C3 byte-address tag: 2 for standalone LOCAL constants, 1 for
+	 * retained FIRST-depth SYSTEM owner28. Caller proves the mapped domain. */
+	u32 constants_tag;
 	u32 constant_begin[4], constant_end[4];
 };
 
