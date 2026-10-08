@@ -8995,24 +8995,44 @@ static int m9_faa_depth_frame_first_state(struct m9x_transport *t,
  * an independent finisher in the older public-VS control changed that state.
  * Never infer this epoch from shader arity or a historical absolute point. */
 static int m9_faa_depth_frame_retained_state(struct m9x_device *mdev,
- struct m9_faa_graph_binding *binding,u32 generation,u64 previous,u64 *queue_start)
+					     struct m9_faa_graph_binding *binding,
+					     u32 generation, u64 previous,
+					     u64 *queue_start)
 {
- struct m9x_transport *t=&mdev->transport;
- struct m9_faa_graph_binding *checked=NULL;
- u64 next;int ret;
- lockdep_assert_held(&t->lock);
- if(!queue_start)return -EINVAL;
- *queue_start=0;
- ret=m9x_faa_graph_depth_unlocked_get_locked(mdev,generation,previous,&checked);
- if(ret)return ret;
- if(checked!=binding){ret=-ESTALE;goto out;}
- /* Authenticate the extended epoch and forbid low32 rollover while the
-  * bounded command grammar consumes its next 0x190 points. */
- if(previous>U64_MAX-0x1a0||lower_32_bits(previous)>U32_MAX-0x1a0){ret=-ERANGE;goto out;}
- next=(previous&~0xffffffffull)|t->next_fence;
- if(next!=m9_faa_frame_origin(t->faa,previous)+0x10){ret=-ESTALE;goto out;}
- *queue_start=next;
-out:m9x_faa_graph_binding_put(checked);return ret;
+	struct m9x_transport *t = &mdev->transport;
+	struct m9_faa_graph_binding *checked = NULL;
+	u64 next;
+	int ret;
+
+	lockdep_assert_held(&t->lock);
+	if (!queue_start)
+		return -EINVAL;
+	*queue_start = 0;
+	ret = m9x_faa_graph_depth_unlocked_get_locked(mdev, generation,
+						      previous, &checked);
+	if (ret)
+		return ret;
+	if (checked != binding) {
+		ret = -ESTALE;
+		goto out;
+	}
+	/* Authenticate the extended epoch and forbid low32 rollover while the
+	 * bounded command grammar consumes its next 0x190 points.
+	 */
+	if (previous > U64_MAX - 0x1a0 ||
+	    lower_32_bits(previous) > U32_MAX - 0x1a0) {
+		ret = -ERANGE;
+		goto out;
+	}
+	next = (previous & ~0xffffffffull) | t->next_fence;
+	if (next != m9_faa_frame_origin(t->faa, previous) + 0x10) {
+		ret = -ESTALE;
+		goto out;
+	}
+	*queue_start = next;
+out:
+	m9x_faa_graph_binding_put(checked);
+	return ret;
 }
 
 static void m9_faa_depth_frame_owners(struct m9x_faa_replay *r,
