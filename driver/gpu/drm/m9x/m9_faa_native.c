@@ -2128,15 +2128,17 @@ release:
 }
 
 int m9x_faa_graph_draw_prepare(struct m9x_device *mdev,
-		struct m9_faa_graph_binding *binding, u32 generation,
-		u64 init_point, bool with_finish, bool with_lock)
+			       struct m9_faa_graph_binding *binding,
+			       u32 generation, u64 init_point, bool with_finish,
+			       bool with_lock)
 {
 #ifdef M9_FAA_GRAPH_INIT_CONTROL
-	static const struct m9_faa_owner_spec program_spec =
-		{ 0, 0x1080, true, false, false, 0 };
+	static const struct m9_faa_owner_spec program_spec = { 0,     0x1080,
+							       true,  false,
+							       false, 0 };
 	struct m9x_transport *t = &mdev->transport;
 	struct m9x_faa_replay *r;
-	struct m9_faa_owner program = { };
+	struct m9_faa_owner program = {};
 	struct m9x_faa_graph_draw_owner owner[M9_FAA_DRAW_SOURCE_OWNERS];
 	struct m9x_faa_graph_draw_image image;
 	const struct firmware *fw = NULL;
@@ -2157,11 +2159,13 @@ int m9x_faa_graph_draw_prepare(struct m9x_device *mdev,
 		return -EINVAL;
 	}
 	if (with_finish) {
-		ret = request_firmware(&tail_fw, M9_FAA_GRAPH_DRAW_TAIL_FIRMWARE,
+		ret = request_firmware(&tail_fw,
+				       M9_FAA_GRAPH_DRAW_TAIL_FIRMWARE,
 				       &mdev->pdev->dev);
 		if (ret)
 			goto preclaim_fail;
-		if (!m9x_faa_graph_draw_tail_blob_valid(tail_fw->data, tail_fw->size)) {
+		if (!m9x_faa_graph_draw_tail_blob_valid(tail_fw->data,
+							tail_fw->size)) {
 			ret = -EINVAL;
 			goto preclaim_fail;
 		}
@@ -2171,23 +2175,25 @@ int m9x_faa_graph_draw_prepare(struct m9x_device *mdev,
 				       &mdev->pdev->dev);
 		if (ret)
 			goto preclaim_fail;
-		if (!m9x_faa_graph_lock_blob_valid(lock_fw->data, lock_fw->size)) {
+		if (!m9x_faa_graph_lock_blob_valid(lock_fw->data,
+						   lock_fw->size)) {
 			ret = -EINVAL;
 			goto preclaim_fail;
 		}
 	}
 	/* The only TTM reservation in this path is complete before taking
 	 * TRANSPORT and before touching the retained replay.  A concurrent
-	 * teardown cannot free r across this unlocked preparation interval. */
+	 * teardown cannot free r across this unlocked preparation interval.
+	 */
 	ret = m9_faa_allocate(mdev, &program, &program_spec, false);
 	if (ret)
 		goto preclaim_fail;
 	mutex_lock(&t->lock);
 	/* The draw templates continue INIT itself, not an interlude. */
 	ret = t->faa && m9_faa_ordinary_after(t->faa, init_point) ?
-	      -EOPNOTSUPP :
-	      m9x_faa_graph_draw_claim_locked(mdev, binding, generation,
-					      init_point);
+		      -EOPNOTSUPP :
+		      m9x_faa_graph_draw_claim_locked(mdev, binding, generation,
+						      init_point);
 	if (ret)
 		goto no_claim;
 	r = t->faa;
@@ -2195,7 +2201,8 @@ int m9x_faa_graph_draw_prepare(struct m9x_device *mdev,
 	memset(&program, 0, sizeof(program));
 	/* Source constants and preprocessing secondary are pre-existing
 	 * flags30 MDLs. The graph INIT retained their two private mappings;
-	 * only this local program owner is newly published after INIT. */
+	 * only this local program owner is newly published after INIT.
+	 */
 	for (i = 1; i < ARRAY_SIZE(r->draw_owner); i++)
 		if (!r->draw_owner[i].cpu ||
 		    !drm_mm_node_allocated(&r->draw_owner[i].system_node)) {
@@ -2203,32 +2210,45 @@ int m9x_faa_graph_draw_prepare(struct m9x_device *mdev,
 			goto unlock_fail;
 		}
 	/* Local identity publication is separate from the later CPU-root
-	 * program access and precedes the source frontend314 kick. */
+	 * program access and precedes the source frontend314 kick.
+	 */
 	published = true;
 	ret = m9x_address_local_prepare(mdev, r->draw_owner[0].base,
-					 r->draw_owner[0].bytes);
+					r->draw_owner[0].bytes);
 	if (ret)
 		goto unlock_fail;
 	for (i = 0; i < M9_FAA_DRAW_SOURCE_OWNERS; i++) {
 		struct m9_faa_owner *o;
 
 		switch (i) {
-		case 26: o = &r->draw_owner[0]; break;
-		case 27: o = &r->owner[26]; break;
-		case 28: o = &r->draw_owner[1]; break;
-		case 29: o = &r->draw_owner[2]; break;
-		case 30: o = &r->owner[27]; break;
-		default: o = &r->owner[i]; break;
+		case 26:
+			o = &r->draw_owner[0];
+			break;
+		case 27:
+			o = &r->owner[26];
+			break;
+		case 28:
+			o = &r->draw_owner[1];
+			break;
+		case 29:
+			o = &r->draw_owner[2];
+			break;
+		case 30:
+			o = &r->owner[27];
+			break;
+		default:
+			o = &r->owner[i];
+			break;
 		}
 		owner[i].base = o->base;
 		owner[i].bytes = o->bytes;
 	}
-	r->draw_image = kzalloc(sizeof(*r->draw_image), GFP_KERNEL);
+	r->draw_image = kzalloc_obj(*r->draw_image);
 	if (!r->draw_image) {
 		ret = -ENOMEM;
 		goto unlock_fail;
 	}
-	image = (struct m9x_faa_graph_draw_image) {
+	image = (struct m9x_faa_graph_draw_image){
 		.program = r->draw_image->program,
 		.constants = r->draw_image->constants,
 		.secondary = r->draw_image->secondary,
@@ -2239,30 +2259,39 @@ int m9x_faa_graph_draw_prepare(struct m9x_device *mdev,
 		.primary_suffix_bytes = sizeof(r->draw_image->primary_suffix),
 	};
 	ret = m9x_faa_graph_draw_encode(fw->data, fw->size, owner,
-					 r->primary_bytes, init_point, &image);
+					r->primary_bytes, init_point, &image);
 	if (ret)
 		goto unlock_fail;
 	if (with_finish) {
 		struct m9x_faa_graph_draw_tail_image tail_image = {
 			.secondary = r->draw_image->tail_secondary,
 			.primary = r->draw_image->tail_primary,
-			.secondary_bytes = sizeof(r->draw_image->tail_secondary),
+			.secondary_bytes =
+				sizeof(r->draw_image->tail_secondary),
 			.primary_bytes = sizeof(r->draw_image->tail_primary),
 		};
 
 		/* PREPARE's live graph admission already enforces 320x240 and
-		 * the fixed diagnostic companion layout, before binding/pinning. */
-		ret = m9x_faa_graph_draw_tail_encode(tail_fw->data, tail_fw->size,
-			owner, r->primary_bytes + M9_FAA_DRAW_PRIMARY_SUFFIX_BYTES,
-			320, 240, init_point + 0x60, &tail_image);
+		 * the fixed diagnostic companion layout, before binding/pinning.
+		 */
+		ret = m9x_faa_graph_draw_tail_encode(tail_fw->data,
+						     tail_fw->size, owner,
+						     r->primary_bytes +
+						     M9_FAA_DRAW_PRIMARY_SUFFIX_BYTES,
+						     320, 240, init_point + 0x60,
+						     &tail_image);
 		if (ret)
 			goto unlock_fail;
 	}
 	if (with_lock) {
 		ret = m9x_faa_graph_lock_encode(lock_fw->data, lock_fw->size,
-			owner, r->primary_bytes + M9_FAA_DRAW_PRIMARY_SUFFIX_BYTES +
-			M9_FAA_DRAW_TAIL_PRIMARY_BYTES, 320, 240, init_point + 0x90,
-			r->draw_image->lock_primary, sizeof(r->draw_image->lock_primary));
+						owner,
+						r->primary_bytes +
+						M9_FAA_DRAW_PRIMARY_SUFFIX_BYTES +
+						M9_FAA_DRAW_TAIL_PRIMARY_BYTES,
+						320, 240, init_point + 0x90,
+						r->draw_image->lock_primary,
+						sizeof(r->draw_image->lock_primary));
 		if (ret)
 			goto unlock_fail;
 	}
@@ -2278,7 +2307,8 @@ unlock_fail:
 	/* A successfully committed class-1 map or local identity may now be
 	 * visible. Preserve all owners until bus-master-off; pre-publication
 	 * allocation failures leave the transport healthy but the one-shot
-	 * graph claim closed. */
+	 * graph claim closed.
+	 */
 	if ((published || t->wedged) && !t->wedged) {
 		t->wedged = true;
 		t->generation++;
@@ -2291,10 +2321,10 @@ unlock_fail:
 no_claim:
 	mutex_unlock(&t->lock);
 	/* The uninstalled local owner never became GPU-reachable. */
-	if (WARN_ON(ttm_bo_reserve(&program.vram->bo, false, false,
-				    NULL))) {
+	if (WARN_ON(ttm_bo_reserve(&program.vram->bo, false, false, NULL))) {
 		/* A failed reserve cannot safely vunmap this private TTM view.
-		 * Preserve its allocation rather than returning a dangling map. */
+		 * Preserve its allocation rather than returning a dangling map.
+		 */
 		release_firmware(lock_fw);
 		release_firmware(tail_fw);
 		release_firmware(fw);
