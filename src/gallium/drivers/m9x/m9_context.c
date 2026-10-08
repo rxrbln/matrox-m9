@@ -1078,7 +1078,9 @@ m9_transfer_offset(const struct m9_resource *resource, unsigned level,
 }
 
 /* Wait until the last posted job naming this object has retired.  FAA graph
- * submissions do not note their objects, so an FAA context waits for all. */
+ * submissions do not note their objects, so an FAA context waits for all.
+ * DRI3 objects shared with X are fenced across processes only by the
+ * kernel's dma_resv, as before. */
 static int
 m9_wait_for_object(struct m9_context *ctx, const struct m9_resource *resource)
 {

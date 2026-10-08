@@ -797,15 +797,17 @@ m9_batch_validate(struct m9_screen *screen, struct m9_resource *command,
    return m9_batch_validate_flags(screen, command, batch, context_id, 0);
 }
 
+/* Record the point of a successful post for every object it names. */
 static void
-m9_bo_points_note(struct m9_screen *screen, const struct m9_batch *batch,
-                  uint64_t point)
+m9_bo_points_note_refs(struct m9_screen *screen,
+                       const struct drm_parhelia_m9_bo_ref *bos, unsigned count,
+                       uint64_t point)
 {
    if (!screen->bo_points)
       return;
    simple_mtx_lock(&screen->bo_point_lock);
-   for (unsigned i = 0; i < batch->bo_count; i++)
-      _mesa_hash_table_u64_insert(screen->bo_points, batch->bos[i].handle,
+   for (unsigned i = 0; i < count; i++)
+      _mesa_hash_table_u64_insert(screen->bo_points, bos[i].handle,
                                   (void *)(uintptr_t)point);
    simple_mtx_unlock(&screen->bo_point_lock);
 }
@@ -832,7 +834,8 @@ m9_batch_submit(struct m9_screen *screen, struct m9_resource *command,
    if (!submit.out_point)
       return -EPROTO;
    *out_point = submit.out_point;
-   m9_bo_points_note(screen, batch, submit.out_point);
+   m9_bo_points_note_refs(screen, batch->bos, batch->bo_count,
+                          submit.out_point);
    return 0;
 }
 
@@ -849,6 +852,7 @@ m9_submit_noop_fence(struct m9_screen *screen, uint64_t *out_point)
       return -errno;
    if (!submit.out_point)
       return -EPROTO;
+   /* A no-op fence names no object, so it records no object point. */
    *out_point = submit.out_point;
    return 0;
 }
@@ -874,5 +878,6 @@ m9_submit_first_triangle(struct m9_screen *screen, uint32_t color_handle,
    if (!submit.out_point)
       return -EPROTO;
    *out_point = submit.out_point;
+   m9_bo_points_note_refs(screen, &ref, 1, submit.out_point);
    return 0;
 }
