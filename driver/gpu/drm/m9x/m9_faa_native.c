@@ -2895,8 +2895,7 @@ static int m9_faa_prepare(struct m9x_device *mdev,
 		if (binding && !m9_faa_owner_specs[i].local)
 			mutex_lock(&mdev->transport.lock);
 		ret = m9_faa_allocate(mdev, &r->owner[i], &spec,
-				      m9_faa_defer_output_map &&
-					      i == M9_FAA_OUTPUT_OWNER);
+				      m9_faa_defer_output_map && i == M9_FAA_OUTPUT_OWNER);
 		if (binding && !m9_faa_owner_specs[i].local)
 			mutex_unlock(&mdev->transport.lock);
 		if (ret)
