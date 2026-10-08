@@ -678,6 +678,20 @@ m9_context_sync_ordinary(struct m9_context *ctx)
    m9_retired_variants_free(ctx);
 }
 
+/* Whether the bound target is the FAA surface's window destination. Draws
+ * into other targets (texture uploads, mip generation, FBOs) are ordinary
+ * work beside the FAA frame, not a reason to drop it. */
+static bool
+m9_context_faa_targets_surface(const struct m9_context *ctx)
+{
+   return ctx->color && ctx->color_count == 1 &&
+          ctx->faa_surface.graph.initialized &&
+          ctx->faa_surface.destination == ctx->color &&
+          ctx->faa_surface.destination_offset == ctx->color_offset &&
+          ctx->faa_surface.width == ctx->framebuffer_width &&
+          ctx->faa_surface.height == ctx->framebuffer_height;
+}
+
 static void
 m9_context_sync(struct m9_context *ctx)
 {
@@ -8165,7 +8179,7 @@ m9_draw_vbo(struct pipe_context *pctx, const struct pipe_draw_info *info,
       m9_context_faa_census(ctx, info, &draws[0]);
    if (m9_faa_application_enabled() && num_draws && draws[0].count &&
        info->instance_count && !ctx->faa_mode.fallback && !ctx->faa_mode.skip &&
-       !m9_replay_replaying(ctx)) {
+       !m9_replay_replaying(ctx) && m9_context_faa_targets_surface(ctx)) {
       /* The ordinary path below renders the frame too; its result stands
        * unless the whole frame is presented by FAA. */
       const char *why = NULL;
@@ -8522,7 +8536,8 @@ m9_clear(struct pipe_context *pctx, unsigned buffers,
    struct m9_context *ctx = m9_context(pctx);
    uint64_t t_clear = m9_prof_begin();
    if (m9_faa_application_enabled() && buffers && !ctx->faa_mode.fallback &&
-       !ctx->faa_mode.skip && !m9_replay_replaying(ctx)) {
+       !ctx->faa_mode.skip && !m9_replay_replaying(ctx) &&
+       m9_context_faa_targets_surface(ctx)) {
       if (ctx->faa_frame.count) m9_context_sync(ctx);
       if (ctx->lost) { m9_prof_end(M9_PROF_CLEAR, t_clear); return; }
       ctx->faa_application_clear.pending = true;
@@ -11040,6 +11055,15 @@ m9_update_target(struct m9_context *ctx)
                  ctx->faa_surface.height,
                  ctx->faa_surface.destination ? m9_res(ctx->faa_surface.destination)->handle : 0,
                  ctx->faa_surface.depth == (depth ? &depth->base : NULL) ? "same" : "changed");
+      /* A same-size target the graph cannot take over (a window retarget)
+       * leaves the graph without a destination: release it, so its INIT
+       * does not hold the retained primary for ordinary jobs. Other sizes
+       * are textures or FBOs beside the window and keep the graph. */
+      if (prepared && ctx->faa_surface.graph.prepared &&
+          ctx->faa_surface.width == w && ctx->faa_surface.height == h) {
+         m9_context_faa_fallback(ctx, "FAA surface cannot retarget");
+         m9_faa_surface_destroy(ctx->screen, &ctx->faa_surface);
+      }
       if (prepared)
          m9_warn_once(ctx, M9_WARN_MEMORY,
                       "FAA surface preparation failed; ordinary target retained");
