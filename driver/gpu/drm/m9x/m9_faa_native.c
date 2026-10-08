@@ -7494,7 +7494,6 @@ int m9x_faa_graph_depth_later_prepare(struct m9x_device *mdev,
  r=t->faa;
  if(!ret&&(!r->depth_storage||!r->depth_storage->initialized||r->depth_storage->frame))ret=-ESTALE;
  if(!ret)ret=m9x_faa_graph_bound_depth_views_locked(mdev,binding,generation,&views);
- if(!ret&&two&&m9_faa_frame_origin(r,previous)!=previous)ret=-EOPNOTSUPP;
  mutex_unlock(&t->lock);if(ret)return ret;
  if(two){
   /* The non-depth NEXT producer is four-stage only. Stage count2 inputs
@@ -7522,7 +7521,7 @@ int m9x_faa_graph_depth_later_prepare(struct m9x_device *mdev,
  ret=m9_faa_depth_frame_retained_state(mdev,binding,generation,previous,&next);if(ret)goto unlock;
  r=t->faa;
  if(!r->depth_storage||!r->depth_storage->initialized||r->depth_storage->frame){ret=-ESTALE;goto unlock;}
- if(two&&(m9_faa_frame_origin(r,previous)!=previous||!r->color_image||
+ if(two&&(!r->color_image||
           r->color_image->layout.program_count!=2||
           r->draw_owner[0].bytes<input->layout.program_bytes)){ret=-ESTALE;goto unlock;}
  ret=m9x_faa_graph_bound_depth_views_locked(mdev,binding,generation,&views);if(ret)goto unlock;
@@ -7626,9 +7625,9 @@ int m9x_faa_graph_depth_batch_prepare(struct m9x_device *mdev,
    check_add_overflow(ALIGN(input->layout.constants_bytes,128),128u,&bytes)||
    check_add_overflow(bytes,raw,&bytes)||check_add_overflow(slots[i],bytes,&arena_bytes)||arena_bytes>0x40000)return -ENOSPC;
  }
- if(initialized&&!two){
+ if(initialized){
   ret=m9_faa_primary_rotate(mdev,binding,generation,previous,12560+60*(batch->count-1)+96+24);if(ret)return ret;
-  ret=m9_faa_secondary_rotate(mdev,binding,generation,previous,2596+(batch->count-1)*2700);if(ret)return ret;
+  ret=m9_faa_secondary_rotate(mdev,binding,generation,previous,(two?1380:2596)+(batch->count-1)*(two?1508:2700));if(ret)return ret;
  }
  if(batch->count==1)return initialized?
   m9x_faa_graph_depth_later_prepare(mdev,binding,generation,previous,&batch->draw[0].input,batch->clear_flags,batch->draw[0].raster_flags):
@@ -7670,7 +7669,6 @@ int m9x_faa_graph_depth_batch_prepare(struct m9x_device *mdev,
      ((batch->draw[0].raster_flags&6)?24u:0u))):
    (two?(batch->draw[0].input.declaration_count==3?1352u:1376u):
         (batch->draw[0].input.declaration_count==3?2688u:2712u)))||
-  (two&&initialized&&m9_faa_frame_origin(r,previous)!=previous)||
   arena_bytes>r->draw_owner[1].bytes){ret=-ESTALE;goto unlock;}
  m9_faa_depth_frame_owners(r,owner);
  ret=m9x_faa_graph_bound_depth_views_locked(mdev,binding,generation,&views);if(ret)goto unlock;
@@ -7697,11 +7695,14 @@ int m9x_faa_graph_depth_batch_prepare(struct m9x_device *mdev,
   input.fragment_flags=batch->draw[i].raster_flags&1;
   /* FIRST2 adds 0x70 before encoding its color stage. Supply its INIT-like
    * CPU epoch so the generated secondary's direct color token is exactly
-   * previous+0x90 (clear3) or previous+0x10 (no clear). Neither value is
+   * origin+0x90 (clear3) or origin+0x10 (no clear). A retired idle
+   * secondary close can advance origin by0x10 without changing the prior
+   * API Unlock receipt. Neither value is
    * accepted as a GPU completion; prior Unlock remains independently gated. */
   ret=(two?m9x_faa_first_depth_two_encode:m9x_faa_first_depth_encode)(sample->data,sample->size,color->data,color->size,
    owner,&views,r->primary_bytes,
-   initialized&&two?(batch->clear_flags?previous:previous-0x80):previous,
+   initialized&&two?(batch->clear_flags?m9_faa_frame_origin(r,previous):
+    m9_faa_frame_origin(r,previous)-0x80):previous,
    &input,job_primary,M9_FAA_DEPTH_FRAME_PRIMARY_CAPACITY,
    job_secondary,M9_FAA_COLOR_SECONDARY_CAPACITY,&pb,&sb,ends,&live,prefix);if(ret)goto unlock;
   if(memcmp(scratch->program,input.program,input.layout.program_bytes)){ret=-ESTALE;goto unlock;}
