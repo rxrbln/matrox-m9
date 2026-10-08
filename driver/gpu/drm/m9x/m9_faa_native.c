@@ -844,9 +844,8 @@ bool m9x_faa_diag_enabled(void)
 bool m9x_faa_graph_active(struct m9x_device *mdev)
 {
 	lockdep_assert_held(&mdev->transport.lock);
-	return mdev->transport.faa &&
-	       (mdev->transport.faa->graph_binding ||
-		mdev->transport.faa->graph_preparing);
+	return mdev->transport.faa && (mdev->transport.faa->graph_binding ||
+				       mdev->transport.faa->graph_preparing);
 }
 
 /* The source1024 INIT flags30 primary SYSTEM view maps its full backing.
