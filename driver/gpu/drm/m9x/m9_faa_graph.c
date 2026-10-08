@@ -88,8 +88,9 @@ static bool m9_faa_graph_local_span(u64 local_base, u64 offset, u64 bytes,
 	return true;
 }
 
-static bool m9_faa_graph_ranges_layout_disjoint(const u32 *address,
-		const struct m9x_faa_surface_layout *layout)
+static bool
+m9_faa_graph_ranges_layout_disjoint(const u32 *address,
+				    const struct m9x_faa_surface_layout *layout)
 {
 	u32 i, j;
 
@@ -97,10 +98,11 @@ static bool m9_faa_graph_ranges_layout_disjoint(const u32 *address,
 		return false;
 	for (i = 0; i < PARHELIA_M9_FAA_GRAPH_OWNERS; i++)
 		for (j = 0; j < i; j++)
-			if ((u64)address[i] < (u64)address[j] +
-				layout->owner[j].capacity &&
-			    (u64)address[j] < (u64)address[i] +
-				layout->owner[i].capacity)
+			if ((u64)address[i] <
+				    (u64)address[j] +
+					    layout->owner[j].capacity &&
+			    (u64)address[j] <
+				    (u64)address[i] + layout->owner[i].capacity)
 				return false;
 	return true;
 }
