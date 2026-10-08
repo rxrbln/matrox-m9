@@ -207,10 +207,12 @@ static const struct form single_modulate_blend_test[] = {
 
 /* Tail operands naming the base's RG/BA results, X with the 0x80 modifier. */
 enum { RG = 0x100, BA, XRG, XBA };
+#define K_ONE 0xfe
 #define K_LAST 0xff
 
 /* Blend tail of 170ff0: RGB writes the r18 half, BA the r1a half. K is the
- * C3 pair index in control bits 19:14, K_LAST the trailing (1, 0.5) pair.
+ * C3 pair index in control bits 19:14, K_LAST the trailing (1, 0.5) pair,
+ * K_ONE the combine's (0, 1) pair before it.
  */
 static const struct factor_tail {
 	u8 src, dst;
@@ -240,6 +242,10 @@ static const struct factor_tail {
 	  { XRG, 0x18, 0x7f }, { XBA, 0x1a, 0x7f }, 0x9c403d40, 2, false },
 	{ PARHELIA_M9_FAA_FACTOR_INV_DST_COLOR, PARHELIA_M9_FAA_FACTOR_ONE,
 	  { 0x18, 0x18, RG }, { 0x1a, 0x1a, BA }, 0xa4e00440, K_LAST, false },
+	{ PARHELIA_M9_FAA_FACTOR_ZERO, PARHELIA_M9_FAA_FACTOR_INV_SRC_COLOR,
+	  { RG, RG, 0x18 }, { BA, BA, 0x1a }, 0xa4e00440, K_ONE, false },
+	{ PARHELIA_M9_FAA_FACTOR_INV_SRC_ALPHA, PARHELIA_M9_FAA_FACTOR_SRC_ALPHA,
+	  { 0x18, BA, RG }, { 0x1a, BA, BA }, 0xa4b00dc0, 0x3f, false },
 };
 
 struct variant {
@@ -299,6 +305,15 @@ static u8 operand(u32 v, const struct variant *t)
 	default:
 		return v;
 	}
+}
+
+static u32 tail_pair(u8 k, u32 pairs)
+{
+	if (k == K_LAST)
+		return pairs - 1;
+	if (k == K_ONE)
+		return pairs - 2;
+	return k;
 }
 
 static void emit(u8 *p, u32 *n, struct form f)
@@ -391,8 +406,7 @@ int m9x_faa_texture_fragment_build(u32 kind, u32 word, u8 *program,
 		emit(image, &n, f);
 	}
 	if (tail) {
-		u32 control = tail->control |
-			      (tail->k == K_LAST ? pairs - 1 : tail->k) << 14;
+		u32 control = tail->control | tail_pair(tail->k, pairs) << 14;
 		struct form rgb = { 0x1d, 4, 0x2d, operand(tail->rgb[0], t),
 				    operand(tail->rgb[1], t),
 				    operand(tail->rgb[2], t), control };
