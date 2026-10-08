@@ -4561,16 +4561,18 @@ static struct m9_faa_depth_frame_storage *m9_faa_depth_frame_take_retired(
 }
 #endif
 
-int m9x_faa_graph_unlock_submit(struct m9x_device *mdev,
-		struct m9_faa_graph_binding *binding, u32 generation,
-		u64 lock_point, u64 *point, bool *posted)
-{
 #ifdef M9_FAA_GRAPH_INIT_CONTROL
+/* The caller frees *retired_frame after dropping TRANSPORT. */
+static int m9_faa_graph_unlock_post_locked(struct m9x_device *mdev,
+					   struct m9_faa_graph_binding *binding,
+					   u32 generation, u64 lock_point,
+					   u64 *point, bool *posted,
+					   struct m9_faa_depth_frame_storage **retired_frame)
+{
 	struct m9x_transport *t = &mdev->transport;
 	struct m9x_faa_replay *r;
 	struct m9_faa_graph_binding *checked = NULL;
 	struct m9_faa_owner *primary;
-	struct m9_faa_depth_frame_storage *retired_frame = NULL;
 	struct m9x_fence *fence = NULL;
 	u8 image[M9_FAA_UNLOCK_PRIMARY_BYTES];
 	u32 old_bytes, target, i;
@@ -4582,7 +4584,8 @@ int m9x_faa_graph_unlock_submit(struct m9x_device *mdev,
 		return -EINVAL;
 	*point = 0;
 	*posted = false;
-	mutex_lock(&t->lock);
+	*retired_frame = NULL;
+	lockdep_assert_held(&t->lock);
 	ret = m9x_faa_graph_unlock_get_locked(mdev, generation, lock_point, &checked);
 	if (ret)
 		goto out;
@@ -4657,14 +4660,31 @@ int m9x_faa_graph_unlock_submit(struct m9x_device *mdev,
 	r->graph_unlock_end_bytes = r->graph_draw_end_bytes;
 	r->graph_unlock_posts = r->graph_draw_posts;
 	if(r->command_pools){r->command_pools->unlock_point=0;r->command_pools->maintenance_point=0;r->command_pools->posts=0;}
-	retired_frame = m9_faa_depth_frame_take_retired(r, generation, lock_point, stage_point);
+	*retired_frame = m9_faa_depth_frame_take_retired(r, generation, lock_point, stage_point);
 	dev_info(&mdev->pdev->dev,
 		 "M9 FAA graph Unlock retired: lock=%#llx unlock=%#llx bytes=%u posts=%u copyback=F021->F022\n",
 		 lock_point, *point, r->graph_draw_end_bytes, r->graph_draw_posts);
 out:
 	m9x_transport_fence_finish_locked(mdev, fence, ret, *posted);
 	m9x_faa_graph_binding_put(checked);
-	mutex_unlock(&t->lock);
+	return ret;
+}
+#endif
+
+int m9x_faa_graph_unlock_submit(struct m9x_device *mdev,
+				struct m9_faa_graph_binding *binding,
+				u32 generation, u64 lock_point, u64 *point,
+				bool *posted)
+{
+#ifdef M9_FAA_GRAPH_INIT_CONTROL
+	struct m9_faa_depth_frame_storage *retired_frame = NULL;
+	int ret;
+
+	mutex_lock(&mdev->transport.lock);
+	ret = m9_faa_graph_unlock_post_locked(mdev, binding, generation,
+					      lock_point, point, posted,
+					      &retired_frame);
+	mutex_unlock(&mdev->transport.lock);
 	m9_faa_depth_frame_free(retired_frame);
 	return ret;
 #else
@@ -4709,6 +4729,7 @@ int m9x_faa_graph_present_submit(struct m9x_device *mdev,
  struct m9x_faa_present_image image;
  struct m9x_fence *fence=NULL;
  u64 stage=0;u32 start,i;bool exposed=false,stage_posted=false;
+	struct m9_faa_depth_frame_storage *retired_frame = NULL;
  int ret;
  if(!binding||!destination||!view||!unlock_point||!present_point||!posted)
   return -EINVAL;
@@ -4753,10 +4774,13 @@ int m9x_faa_graph_present_submit(struct m9x_device *mdev,
   m9x_faa_primary_window_bytes(&r->graph_layout));if(ret)goto out;
  m9x_address_surface_release(mdev);
  ret=m9x_faa_lock_view_observed_locked(mdev,drm_gem_vram_of_gem(source));if(ret)goto out;
- mutex_unlock(&t->lock);
- ret=m9x_faa_graph_unlock_submit(mdev,binding,generation,lock_point,unlock_point,&exposed);
- mutex_lock(&t->lock);
- *posted=exposed;
+	/* TRANSPORT stays held from Unlock to PRESENT: no ordinary job lands
+	 * between them, so PRESENT keeps its Unlock+0x20 origin.
+	 */
+	ret = m9_faa_graph_unlock_post_locked(mdev, binding, generation,
+					      lock_point, unlock_point,
+					      &exposed, &retired_frame);
+	*posted = exposed;
  if(ret)goto out;
  if(t->faa!=r||t->generation!=generation||t->wedged||!r->unlock_retired||
   *unlock_point!=lock_point+0x20||r->unlock_point!=*unlock_point||
@@ -4801,6 +4825,7 @@ out:
  } else if(fence)dma_fence_signal(&fence->base);
  if(fence)dma_fence_put(&fence->base);
  mutex_unlock(&t->lock);
+	m9_faa_depth_frame_free(retired_frame);
  return ret;
 #else
  return -EOPNOTSUPP;
