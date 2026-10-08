@@ -7328,16 +7328,19 @@ static int m9_faa_public_vs_follow_state(struct m9x_transport *t,
 }
 
 #endif
-int m9x_faa_graph_public_vs_follow_get_locked(struct m9x_device *mdev, u32 generation,
-					      u64 prefix_point, struct m9_faa_graph_binding **out)
+int m9x_faa_graph_public_vs_follow_get_locked(struct m9x_device *mdev,
+					      u32 generation, u64 prefix_point,
+					      struct m9_faa_graph_binding **out)
 {
 #ifdef M9_FAA_GRAPH_INIT_CONTROL
 	int ret;
+
 	lockdep_assert_held(&mdev->transport.lock);
 	if (!out)
 		return -EINVAL;
 	*out = NULL;
-	ret = m9_faa_public_vs_follow_state(&mdev->transport, generation, prefix_point, false);
+	ret = m9_faa_public_vs_follow_state(&mdev->transport, generation,
+					    prefix_point, false);
 	if (!ret)
 		*out = m9x_faa_graph_binding_get(mdev->transport.faa->graph_binding);
 	return ret;
@@ -7345,6 +7348,7 @@ int m9x_faa_graph_public_vs_follow_get_locked(struct m9x_device *mdev, u32 gener
 	return -EOPNOTSUPP;
 #endif
 }
+
 int m9x_faa_graph_public_vs_follow_prepare(struct m9x_device *mdev,
 					   struct m9_faa_graph_binding *binding, u32 generation,
 					   u64 prefix_point)
