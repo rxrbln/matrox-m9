@@ -13344,8 +13344,7 @@ int m9x_faa_graph_clear_prefix_submit(struct m9x_device *mdev,
 		ret = -EOPNOTSUPP;
 		goto out;
 	}
-	ret = m9x_faa_graph_bound_depth_views_locked(mdev, binding,
-						     request->generation, &views);
+	ret = m9x_faa_graph_bound_depth_views_locked(mdev, binding, request->generation, &views);
 	if (ret)
 		goto out;
 	if (views.owner[0].width != request->width ||
@@ -13426,8 +13425,7 @@ int m9x_faa_graph_clear_prefix_submit(struct m9x_device *mdev,
 	frame->end_count = 9;
 	start_posts = r->graph_draw_posts;
 	frame->planned_ends = start_posts;
-	fence = m9x_fence_create_target_locked(mdev,
-					       lower_32_bits(frame->final_point));
+	fence = m9x_fence_create_target_locked(mdev, lower_32_bits(frame->final_point));
 	if (!fence) {
 		ret = -ENOMEM;
 		goto out;
