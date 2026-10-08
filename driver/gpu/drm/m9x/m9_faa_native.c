@@ -4798,6 +4798,7 @@ static void m9_faa_dual_graph_raw_observe(struct m9x_device *mdev,
 	struct drm_gem_vram_object *bo;
 	struct iosys_map map = IOSYS_MAP_INIT_VADDR(NULL);
 	const char *refusal = "admission";
+	bool engine;
 	u8 data[256];
 	u32 offset, i, chunk, address, source, nonzero = 0;
 	u32 hash = 2166136261u;
@@ -4823,24 +4824,51 @@ static void m9_faa_dual_graph_raw_observe(struct m9x_device *mdev,
 		goto refused;
 	}
 	dma_resv_assert_held(gem->resv);
-	bo = drm_gem_vram_of_gem(gem);
-	local_offset = drm_gem_vram_offset(bo);
+	engine = role != 1;
+	if ((engine && !m9x_gem_is_engine_vram(gem)) ||
+	    (!engine && (!m9x_gem_is_vram(gem) ||
+			 !m9x_gem_vram_tiled(gem)))) {
+		refusal = "class";
+		goto refused;
+	}
+	local_offset = m9x_gem_vram_offset(gem);
 	if (local_offset < 0 ||
-	    r->graph_layout.owner[role - 1].capacity > bo->bo.base.size ||
+	    r->graph_layout.owner[role - 1].capacity > gem->size ||
+	    (u64)local_offset > m9x_vram_gpu_limit(mdev) ||
+	    r->graph_layout.owner[role - 1].capacity >
+		m9x_vram_gpu_limit(mdev) - (u64)local_offset ||
 	    check_add_overflow(M9_VRAM_GPU_BASE, (u64)local_offset, &base) ||
 	    base != owner->base) {
 		refusal = "placement";
 		goto refused;
 	}
-	ret = drm_gem_vram_vmap(bo, &map);
-	if (ret) {
-		refusal = "vmap";
-		goto refused;
+	if (engine) {
+		/* MAIN/AUX are engine-only BOs with no GEM vmap. The existing
+		 * slot-1 identity aperture is the CPU's read-only route to them.
+		 * This observer holds transport.lock, as required by the slot API,
+		 * and restores the empty slot before any later command can use it. */
+		if (!mdev->bar0_window || logical_bytes > M9_ADDRESS_SURFACE_BYTES ||
+		    (u64)local_offset > U32_MAX) {
+			refusal = "aperture";
+			goto refused;
+		}
+		m9x_address_raw_window(mdev, (u32)local_offset);
+	} else {
+		bo = drm_gem_vram_of_gem(gem);
+		ret = drm_gem_vram_vmap(bo, &map);
+		if (ret) {
+			refusal = "vmap";
+			goto refused;
+		}
 	}
 	dma_rmb();
 	for (offset = 0; offset < logical_bytes; offset += sizeof(data)) {
 		chunk = min_t(u32, sizeof(data), logical_bytes - offset);
-		iosys_map_memcpy_from(data, &map, offset, chunk);
+		if (engine)
+			memcpy_fromio(data, (u8 __iomem *)mdev->bar0_window + offset,
+				      chunk);
+		else
+			iosys_map_memcpy_from(data, &map, offset, chunk);
 		for (i = 0; i < chunk; i += 4) {
 			u32 word = get_unaligned_le32(data + i);
 
@@ -4848,8 +4876,13 @@ static void m9_faa_dual_graph_raw_observe(struct m9x_device *mdev,
 			hash = (hash ^ word) * 16777619u;
 		}
 	}
-	iosys_map_memcpy_from(data, &map, 0, 64);
-	drm_gem_vram_vunmap(bo, &map);
+	if (engine) {
+		memcpy_fromio(data, mdev->bar0_window, 64);
+		m9x_address_surface_release(mdev);
+	} else {
+		iosys_map_memcpy_from(data, &map, 0, 64);
+		drm_gem_vram_vunmap(bo, &map);
+	}
 	dev_info(&mdev->pdev->dev,
 		 "M9 FAA dual graph raw %s owner%u: point=%#llx base=%#x bytes=%u nonzero_dwords=%u wordhash32=%08x first64=%*phN; retired physical VRAM only, preexisting metadata possible, no coverage or pixel interpretation\n",
 		 name, role, (unsigned long long)r->color_lock_point,
