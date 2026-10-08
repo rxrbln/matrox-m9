@@ -6434,6 +6434,17 @@ m9_native_vs_fs_cheap(const struct m9_context *ctx)
            !BITSET_IS_EMPTY(info->textures_used));
 }
 
+/* GL's resolvable difference r for the D24 attachment: two LSBs, as the draw
+ * module's offset stage applies to CPU-transformed draws.  Stored depth is
+ * within one LSB of exact, so a one-LSB unit does not keep surfaces apart. */
+static bool
+m9_rast_depth_bias(const struct pipe_rasterizer_state *rast, uint32_t *units,
+                   uint32_t *factor)
+{
+   return m9_draw_depth_bias(rast->offset_scale, rast->offset_units * 2.0f,
+                             units, factor);
+}
+
 /* Can this draw run the compiled vertex program?  NULL when it can, and a
  * static reason when the draw module has to keep it.  Everything the emit
  * path then needs is resolved here, so that path cannot fail on state. */
@@ -6490,8 +6501,7 @@ m9_native_vs_resolve(struct m9_context *ctx, const struct pipe_draw_info *info,
          return "native polygon offset needs a D24 depth attachment";
       if (rast->offset_clamp || rast->offset_units_unscaled)
          return "native polygon offset needs unclamped scaled D24 units";
-      if (!m9_draw_depth_bias(rast->offset_scale, rast->offset_units,
-                              &units, &factor))
+      if (!m9_rast_depth_bias(rast, &units, &factor))
          return "native polygon offset needs finite factor and units";
    }
    /* The back colours are chosen per primitive, which the draw module's
@@ -7707,10 +7717,9 @@ m9_native_vs_draw(struct m9_context *ctx, const struct pipe_draw_info *info,
          return false;
       }
       if (depth_test) {
-         key.depth_bias = m9_draw_depth_bias(ctx->rasterizer->offset_scale,
-                                            ctx->rasterizer->offset_units,
-                                            &key.depth_bias_units,
-                                            &key.depth_bias_factor);
+         key.depth_bias = m9_rast_depth_bias(ctx->rasterizer,
+                                             &key.depth_bias_units,
+                                             &key.depth_bias_factor);
          key.depth_ef |= M9_DEPTH_BIAS_EF;
       }
    }
