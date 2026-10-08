@@ -9437,6 +9437,70 @@ void m9x_faa_ordinary_primary_commit_locked(struct m9x_device *mdev,
 }
 
 #ifdef M9_FAA_GRAPH_INIT_CONTROL
+static void m9_faa_stall_owner(struct m9x_device *mdev, const char *name,
+			       const struct m9_faa_owner *o, u32 head, u32 end)
+{
+	u32 start, off, page, pte, i, first, last;
+	const u32 *words;
+
+	if (!o || !o->cpu || !drm_mm_node_allocated(&o->system_node))
+		return;
+	start = (u32)o->system_node.start;
+	if (head - start >= o->bytes && end - start >= o->bytes)
+		return;
+	off = head - start < o->bytes ? head - start : end - start;
+	for (page = off / PAGE_SIZE; page <= (off + 0x100) / PAGE_SIZE &&
+	     page < DIV_ROUND_UP(o->bytes, PAGE_SIZE); page++) {
+		int ret = m9x_address_read_pte(mdev, start + page * PAGE_SIZE,
+					       &pte);
+
+		dev_err(&mdev->pdev->dev,
+			"M9 FAA stall %s base=%#x page=%u pte=%#x expected=%#x ret=%d\n",
+			name, start, page, ret ? 0 : pte,
+			m9x_address_pte_word(o->dma + page * PAGE_SIZE) | 1u, ret);
+	}
+	/* Words around the fetch and before the latched END. */
+	words = o->cpu;
+	first = (off & ~3u) / 4 > 16 ? (off & ~3u) / 4 - 16 : 0;
+	last = min((off & ~3u) / 4 + 16, o->bytes / 4);
+	for (i = first; i + 4 <= last; i += 4)
+		dev_err(&mdev->pdev->dev,
+			"M9 FAA stall %s +%#06x %08x %08x %08x %08x\n", name,
+			i * 4, words[i], words[i + 1], words[i + 2],
+			words[i + 3]);
+}
+#endif
+
+/* After a timeout outside the staging slots: which retained FAA command
+ * owner holds the fetch and END, its PTEs, and the words there.
+ */
+void m9x_faa_report_stall_locked(struct m9x_device *mdev, u32 head, u32 end)
+{
+#ifdef M9_FAA_GRAPH_INIT_CONTROL
+	struct m9x_faa_replay *r = mdev->transport.faa;
+
+	lockdep_assert_held(&mdev->transport.lock);
+	if (!r)
+		return;
+	dev_err(&mdev->pdev->dev,
+		"M9 FAA stall: fetch=%#x end=%#x draw_end=%u ordinary=%#llx/%u secondary=%u\n",
+		head, end, r->graph_draw_end_bytes, r->ordinary_point,
+		r->ordinary_end, r->color_secondary_cursor);
+	m9_faa_stall_owner(mdev, "primary", &r->owner[M9_FAA_PRIMARY_OWNER],
+			   head, end);
+	m9_faa_stall_owner(mdev, "secondary", &r->draw_owner[2], head, end);
+	if (r->command_pools) {
+		m9_faa_stall_owner(mdev, "spare-primary",
+				   &r->command_pools->spare[0], head, end);
+		m9_faa_stall_owner(mdev, "spare-secondary",
+				   &r->command_pools->spare[1], head, end);
+	}
+#else
+	lockdep_assert_held(&mdev->transport.lock);
+#endif
+}
+
+#ifdef M9_FAA_GRAPH_INIT_CONTROL
 static int m9_faa_primary_rotate(struct m9x_device *mdev,
  struct m9_faa_graph_binding *binding,u32 generation,u64 previous,u32 needed)
 {

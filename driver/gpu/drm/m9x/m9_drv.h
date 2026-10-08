@@ -477,6 +477,7 @@ int m9x_engine_ready_locked(struct m9x_device *mdev);
 int m9x_ordinary_ready_locked(struct m9x_device *mdev);
 bool m9x_ordinary_faa_context_locked(struct m9x_device *mdev);
 bool m9x_faa_ordinary_continue_enabled(void);
+void m9x_faa_report_stall_locked(struct m9x_device *mdev, u32 head, u32 end);
 bool m9x_triangle_context_ready_locked(struct m9x_device *mdev);
 u64 m9x_faa_graph_first_origin_locked(struct m9x_device *mdev, u64 init_point);
 void m9x_faa_graph_detach_released(struct m9x_device *mdev);

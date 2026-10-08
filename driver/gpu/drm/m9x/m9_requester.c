@@ -375,6 +375,8 @@ static void m9_report_stall_point(struct m9x_device *mdev,
 		dev_err(&mdev->pdev->dev,
 			"M9 stall point: fetch %#x outside slot %#x+%u\n",
 			head, base, (unsigned int)PARHELIA_M9_COMMAND_BYTES);
+		m9x_faa_report_stall_locked(mdev, head,
+					    m9x_read(mdev, M9_REG_COMMAND_END));
 		return;
 	}
 	off = (head - base) / sizeof(u32);
