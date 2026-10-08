@@ -26,4 +26,12 @@ int m9x_faa_program_arena_encode(
 	const struct m9x_faa_program_arena_job *job, u32 count,
 	u8 *code_page, u32 code_capacity, u32 *slot_offset);
 
+/* Two-vector fused POSITION/COLOR profile. The fresh source secondary has
+ * one VS declaration group for decl3 and two for decl5, plus two C2 pairs.
+ * Unused entry_bytes[2..3] must be zero. This does not submit a frame. */
+int m9x_faa_program_arena_two_encode(
+ const struct m9x_faa_graph_draw_owner *program_owner,
+ const struct m9x_faa_program_arena_job *job, u32 count,
+ u8 *code_page, u32 code_capacity, u32 *slot_offset);
+
 #endif

@@ -9,6 +9,14 @@
  * selector14. Declaration groups after byte 576 shift the later C2 pairs. */
 static const u16 page_at[] = { 2340, 348, 976, 1588 };
 static const u16 entry_at[] = { 2344, 352, 980, 1592 };
+static const u16 two_page_at[] = { 1080, 304 };
+static const u16 two_entry_at[] = { 1084, 308 };
+
+static u32 site(const u16 *at, u32 k, int extra, bool two)
+{
+	u32 threshold = two ? 508 : 576;
+	return at[k] >= threshold ? (u32)((int)at[k] + extra) : at[k];
+}
 
 static u32 get(const u8 *p)
 {
@@ -28,11 +36,14 @@ static bool overlaps(const void *a, u32 an, const void *b, u32 bn)
 	return x <= y ? y - x < an : x - y < bn;
 }
 
-int m9x_faa_program_arena_encode(
+static int program_arena_encode(
 	const struct m9x_faa_graph_draw_owner *owner,
 	const struct m9x_faa_program_arena_job *job, u32 count,
-	u8 *code_page, u32 code_capacity, u32 *slot_offset)
+	u8 *code_page, u32 code_capacity, u32 *slot_offset, bool two)
 {
+	const u16 *pages = two ? two_page_at : page_at;
+	const u16 *entries = two ? two_entry_at : entry_at;
+	u32 stages = two ? 2 : 4;
 	u32 slot[M9_FAA_PROGRAM_ARENA_JOBS], end = 0, i, j, k;
 
 	if (!owner || !job || !code_page || !slot_offset || !count ||
@@ -66,18 +77,17 @@ int m9x_faa_program_arena_encode(
 		    overlaps(slot_offset, count * sizeof(*slot_offset),
 			     q->secondary, q->secondary_bytes))
 			return -EINVAL;
-		extra = ((int)((q->declaration_count + 3) / 4) - 2) * 24;
-		expected_bytes = 2712 + extra;
+		extra = ((int)((q->declaration_count + 3) / 4) - (two ? 1 : 2)) * 24;
+		expected_bytes = (two ? 1352 : 2712) + extra;
 		if (q->secondary_bytes != expected_bytes ||
 		    q->entry_bytes[0] ||
-		    q->entry_bytes[3] > q->program_bytes ||
-		    q->program_bytes - q->entry_bytes[3] != 200)
+		    (two ? (q->entry_bytes[2] || q->entry_bytes[3]) :
+		     (q->entry_bytes[3] > q->program_bytes ||
+		      q->program_bytes - q->entry_bytes[3] != 200)))
 			return -EINVAL;
-		for (k = 0; k < 4; k++) {
-			u32 p = page_at[k], e = entry_at[k];
-
-			if (p >= 576) p = (u32)((int)p + extra);
-			if (e >= 576) e = (u32)((int)e + extra);
+		for (k = 0; k < stages; k++) {
+			u32 p = site(pages, k, extra, two);
+			u32 e = site(entries, k, extra, two);
 			if ((q->entry_bytes[k] & 7) ||
 			    q->entry_bytes[k] >= q->program_bytes ||
 			    (k && q->entry_bytes[k] <= q->entry_bytes[k-1]) ||
@@ -101,7 +111,7 @@ int m9x_faa_program_arena_encode(
 			slot[i] = end;
 			end += q->program_bytes;
 		}
-		for (k = 0; k < 4; k++)
+		for (k = 0; k < stages; k++)
 			if ((slot[i] + q->entry_bytes[k]) / 8 >=
 			    M9_FAA_PROGRAM_PAGE_BYTES / 8)
 				return -ERANGE;
@@ -111,15 +121,31 @@ int m9x_faa_program_arena_encode(
 
 		if (i == 0 || slot[i] != slot[i-1])
 			memcpy(code_page + slot[i], q->program, q->program_bytes);
-		for (k = 0; k < 4; k++) {
-			u32 e = entry_at[k];
-
-			if (e >= 576)
-				e = (u32)((int)e +
-				 ((int)((q->declaration_count + 3) / 4) - 2) * 24);
+		for (k = 0; k < stages; k++) {
+			int extra = ((int)((q->declaration_count + 3) / 4) -
+				     (two ? 1 : 2)) * 24;
+			u32 e = site(entries, k, extra, two);
 			put(q->secondary + e, (slot[i] + q->entry_bytes[k]) / 8);
 		}
 		slot_offset[i] = slot[i];
 	}
 	return 0;
+}
+
+int m9x_faa_program_arena_encode(
+ const struct m9x_faa_graph_draw_owner *owner,
+ const struct m9x_faa_program_arena_job *job, u32 count,
+ u8 *code_page, u32 code_capacity, u32 *slot_offset)
+{
+ return program_arena_encode(owner, job, count, code_page, code_capacity,
+                             slot_offset, false);
+}
+
+int m9x_faa_program_arena_two_encode(
+ const struct m9x_faa_graph_draw_owner *owner,
+ const struct m9x_faa_program_arena_job *job, u32 count,
+ u8 *code_page, u32 code_capacity, u32 *slot_offset)
+{
+ return program_arena_encode(owner, job, count, code_page, code_capacity,
+                             slot_offset, true);
 }
