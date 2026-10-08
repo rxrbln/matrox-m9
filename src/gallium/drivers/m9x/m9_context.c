@@ -7982,11 +7982,16 @@ m9_clear(struct pipe_context *pctx, unsigned buffers,
        * attachment absent from buffers are not part of this request. Merge
        * component masks so a later masked color clear retains earlier
        * component values, just as sequential full-surface clears do. */
-      if (buffers & PIPE_CLEAR_COLOR) {
-         ctx->faa_application_clear.color_mask |= color_clear_mask;
+      if (buffers & PIPE_CLEAR_COLOR0) {
+         /* Gallium's mask has four bits per draw buffer. The state tracker
+          * passes the complete mask (normally 0xffffffff), even when this
+          * clear names only RT0. Bits for unrequested targets do not alter
+          * the RT0 clear; buffers below still rejects an actual extra RT. */
+         uint32_t rt0_mask = color_clear_mask & PIPE_MASK_RGBA;
+         ctx->faa_application_clear.color_mask |= rt0_mask;
          if (color)
             for (unsigned i = 0; i < 4; i++)
-               if (color_clear_mask & (1u << i))
+               if (rt0_mask & (1u << i))
                   ctx->faa_application_clear.color.ui[i] = color->ui[i];
       }
       if (buffers & PIPE_CLEAR_DEPTH)
@@ -7999,7 +8004,9 @@ m9_clear(struct pipe_context *pctx, unsigned buffers,
       }
       /* The bounded native clear is full-surface only. An unrelated later
        * clear must not erase a pending scissored operation's refusal. */
-      ctx->faa_application_clear.scissored |= scissor != NULL;
+      /* A supplied rectangle covering the complete target is a full clear.
+       * Preserve a prior partial clear as a sticky refusal. */
+      ctx->faa_application_clear.scissored |= !m9_scissor_full(ctx, scissor);
       if (scissor) ctx->faa_application_clear.scissor = *scissor;
    }
    if (m9_faa_application_enabled()) {
@@ -9312,6 +9319,16 @@ m9_context_faa_submit_draw(struct m9_context *ctx,
           ctx->faa_application_clear.color.f[1] != 0.0f ||
           ctx->faa_application_clear.color.f[2] != 0.0f ||
           ctx->faa_application_clear.color.f[3] != 0.0f) {
+         if (getenv("M9X_DEBUG"))
+            fprintf(stderr, "m9x: FAA reset request buffers=%#x mask=%#x scissored=%u rgba=%08x/%08x/%08x/%08x depth=%.17g\n",
+                    ctx->faa_application_clear.buffers,
+                    ctx->faa_application_clear.color_mask,
+                    ctx->faa_application_clear.scissored,
+                    ctx->faa_application_clear.color.ui[0],
+                    ctx->faa_application_clear.color.ui[1],
+                    ctx->faa_application_clear.color.ui[2],
+                    ctx->faa_application_clear.color.ui[3],
+                    ctx->faa_application_clear.depth);
          why = "FAA full reset requires full black color and depth-one clear";
          goto out;
       }
