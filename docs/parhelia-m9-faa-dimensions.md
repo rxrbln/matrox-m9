@@ -108,3 +108,14 @@ owner7 follows HZ backing capacity `0x20000`; other private allocation extents
 are unchanged. This closes INIT command construction for these two dimensions,
 with live owner relocation and live page alignment. It does not qualify larger
 FRAME clears, a normal Lock window, presentation, or physical 1024 rendering.
+
+The original allocation and selector-1 CPU control is retained in
+`captures/m9-faa-dimensions-20261008/selectors.json` and checked by
+`tests/m9-faa-dimensions-source-20261008/check-selectors.py`. It calls the
+original selector producer on genuinely allocated layouts and stops before
+HZ clear, without a GPU reply. At 1024x768 the primary selector is F0220400 /
+00010300: the readable formatted window is 0x300000 bytes, the logical clear
+extent is 0x301000, and the backing capacity is 0x308000. The seven spare
+backing pages do not extend the formatted view height. The independent
+allocation-height/width producer is pinned for all five resource layouts;
+this control does not claim a returned 1024x768 normal Lock or pixel proof.
