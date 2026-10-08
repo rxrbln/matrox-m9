@@ -483,6 +483,14 @@ m9_faa_live_gl_dual_texture_build(const struct m9_faa_live_gl *s,
                                   struct m9_faa_gl_upload *output,
                                   const char **reason)
 {
+   /* Original M9128 dual MODULATE FS72 C3 spans three dense pairs. Its
+    * texture and color arithmetic reads these values even when the vertex
+    * program itself needs no fragment uniforms. Keep them after the live
+    * utility prefix so C3 can bind the actual owned range. */
+   static const uint32_t fragment_constants[6] = {
+      0x00000000u, 0x3f800000u, 0x00000000u, 0x3f800000u,
+      0x3f800000u, 0x3f000000u,
+   };
    uint32_t fragment[18];
    struct m9_faa_dual_texture_fs_interface interface;
    if (!s || !s->linkage || s->linkage->count != 3 ||
@@ -493,7 +501,7 @@ m9_faa_live_gl_dual_texture_build(const struct m9_faa_live_gl *s,
    }
    struct m9_faa_live_gl live = *s;
    live.fragment = (struct m9_faa_program_vector){fragment, interface.slots};
-   live.fragment_constants = (struct m9_faa_dense_constants){0};
+   live.fragment_constants = (struct m9_faa_dense_constants){fragment_constants, 3};
    if (!live_gl_build_mode(&live, output, reason, false, true)) return false;
    output->native_admission = false;
    return true;
