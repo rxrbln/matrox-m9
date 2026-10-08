@@ -1,4 +1,23 @@
 <!-- Copyright 2026 René Rebe <rene@exactco.de> -->
+
+## October 8: continuous GPU-presented FAA glxgears passes
+
+DRM a86fcdc / Mesa3c3e1f3 completes96 real glxgears frames with GPU transforms
+and GPU presentation:12 draws/frame, three primary and six secondary buffer
+rotations, final submitted/completed20b10, generation0, wedged0, empty queue.
+Frame1 exactly matches the CPU-presented reference. Short uninterrupted
+windows report6.9–7.3 FPS, versus roughly5 FPS previously; this is a ballpark
+comparison with diagnostic logging, not a controlled benchmark. Rendering is
+320x240 on a1024x768 display, vblank_mode=0.
+[Proof and screenshots](../tests/m9-faa-gpu-present-hardware-20261008/continuous96/README.md).
+
+GPU presentation is now the default for this qualified destination within
+opt-in FAA; `M9X_FAA_GPU_PRESENT=0` retains the CPU path. Larger dimensions and
+textured Quake3 still need implementation and hardware validation. The dual
+texture vendor FIRST DRAW-to-Lock flow is now captured completely through the
+unread Lock boundary, with no fabricated completion; its native constructor
+is in progress. [Dual source flow](../tests/m9-faa-dual-first-depth-20261008/README.md).
+
 <!-- SPDX-License-Identifier: GPL-2.0 -->
 
 # M9 open topics and evidence, 2026-10-06
