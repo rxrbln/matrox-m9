@@ -875,8 +875,7 @@ bool m9x_faa_graph_profile_enabled(void)
 bool m9x_faa_graph_preparing(struct m9x_device *mdev)
 {
 	lockdep_assert_held(&mdev->transport.lock);
-	return mdev->transport.faa &&
-	       mdev->transport.faa->graph_preparing;
+	return mdev->transport.faa && mdev->transport.faa->graph_preparing;
 }
 
 /* First post-INIT caller only. Its source timeline starts from the same
