@@ -2546,7 +2546,7 @@ static void m9_faa_observe(struct m9x_device *mdev, struct m9x_faa_replay *r,
 /* Read-only evidence after the separately qualified public-VS prefix. These
  * opaque GPU-owned bytes are never decoded or used as source CPU inputs. */
 static void m9_faa_public_vs_prefix_observe(struct m9x_device *mdev,
-					 struct m9x_faa_replay *r)
+					    struct m9x_faa_replay *r)
 {
 	struct m9_faa_owner *o = &r->owner[23];
 	struct iosys_map restore;
@@ -2559,8 +2559,10 @@ static void m9_faa_public_vs_prefix_observe(struct m9x_device *mdev,
 	if (!r->public_vs_prefix_retired || !o->vram || o->cpu ||
 	    bytes > o->bytes || bytes > 8 * 1024 * 1024 ||
 	    m9x_address_restore_region(mdev, &restore, &base) ||
-	    base != mdev->transport.restore_base || PARHELIA_M9_RESTORE_BYTES < 8192) {
-		dev_info(&mdev->pdev->dev, "M9 FAA public VS prefix observation refused\n");
+	    base != mdev->transport.restore_base ||
+	    PARHELIA_M9_RESTORE_BYTES < 8192) {
+		dev_info(&mdev->pdev->dev,
+			 "M9 FAA public VS prefix observation refused\n");
 		return;
 	}
 	for (j = 0; j < ARRAY_SIZE(source_offsets); j++)
@@ -2576,10 +2578,10 @@ static void m9_faa_public_vs_prefix_observe(struct m9x_device *mdev,
 		for (j = 0; j < sizeof(data); j += 4)
 			nonzero += !!get_unaligned_le32(data + j);
 	}
-	iosys_map_memcpy_from(words, &restore, 0x700 + 2 * 0x600, sizeof(words));
+	iosys_map_memcpy_from(words, &restore, 0x700 + 2 * 0x600,
+			      sizeof(words));
 	dev_info(&mdev->pdev->dev,
-		 "M9 FAA public VS prefix restore: base=%#x bytes=8192 fnv=%#x nonzero_words=%u "
-		 "record2[3/9/10/11/12/14/15/19]=%#x/%#x/%#x/%#x/%#x/%#x/%#x/%#x\n",
+		 "M9 FAA public VS prefix restore: base=%#x bytes=8192 fnv=%#x nonzero_words=%u record2[3/9/10/11/12/14/15/19]=%#x/%#x/%#x/%#x/%#x/%#x/%#x/%#x\n",
 		 base, hash, nonzero, words[3], words[9], words[10], words[11],
 		 words[12], words[14], words[15], words[19]);
 	hash = 0x811c9dc5;
@@ -2592,9 +2594,9 @@ static void m9_faa_public_vs_prefix_observe(struct m9x_device *mdev,
 			nonzero += !!get_unaligned_le32(data + j);
 	}
 	dev_info(&mdev->pdev->dev,
-		 "M9 FAA public VS prefix preprocessing: owner=23 native=%#x bytes=%u "
-		 "fnv=%#x nonzero_words=%u engine=%#x\n", o->base, bytes, hash,
-		 nonzero, m9x_read(mdev, M9_REG_ENGINE_STATUS));
+		 "M9 FAA public VS prefix preprocessing: owner=23 native=%#x bytes=%u fnv=%#x nonzero_words=%u engine=%#x\n",
+		 o->base, bytes, hash, nonzero,
+		 m9x_read(mdev, M9_REG_ENGINE_STATUS));
 	for (j = 0; j < ARRAY_SIZE(source_offsets); j++) {
 		iosys_map_memcpy_from(data, &o->map, source_offsets[j], 64);
 		dev_info(&mdev->pdev->dev,
@@ -2602,6 +2604,7 @@ static void m9_faa_public_vs_prefix_observe(struct m9x_device *mdev,
 			 source_offsets[j], 64, data);
 	}
 }
+
 #endif
 
 /* The sampled primary is borrowed, so the ordinary owner loop intentionally
