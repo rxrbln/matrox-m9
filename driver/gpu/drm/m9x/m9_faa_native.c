@@ -5156,8 +5156,9 @@ int m9x_faa_lock_view_observed_locked(struct m9x_device *mdev,
 
 /* A successful CPU view and its same-graph Lock receipt are both required.
  * Caller holds the six graph BO reservations before taking transport.lock. */
-int m9x_faa_graph_unlock_get_locked(struct m9x_device *mdev,
-		u32 generation, u64 lock_point, struct m9_faa_graph_binding **out)
+int m9x_faa_graph_unlock_get_locked(struct m9x_device *mdev, u32 generation,
+				    u64 lock_point,
+				    struct m9_faa_graph_binding **out)
 {
 #ifdef M9_FAA_GRAPH_INIT_CONTROL
 	struct m9x_transport *t = &mdev->transport;
@@ -5172,17 +5173,19 @@ int m9x_faa_graph_unlock_get_locked(struct m9x_device *mdev,
 	if (!r || !r->graph_binding || !r->normal_lock_view_seen ||
 	    (r->unlock_started &&
 	     (!r->graph_second_lock_retired || !r->second_lock_view_seen) &&
-	     (!r->public_vs_next_lock_retired || !r->public_vs_next_view_seen)) ||
-	    r->graph_generation != generation ||
-	    t->generation != generation || !lock_point ||
-	    r->graph_draw_point != lock_point || !t->engine_transitioned ||
-	    !t->restore_ready || !t->fence_cpu)
+	     (!r->public_vs_next_lock_retired ||
+	      !r->public_vs_next_view_seen)) ||
+	    r->graph_generation != generation || t->generation != generation ||
+	    !lock_point || r->graph_draw_point != lock_point ||
+	    !t->engine_transitioned || !t->restore_ready || !t->fence_cpu)
 		return -ESTALE;
-	gem = m9x_faa_graph_binding_owner(r->graph_binding, PARHELIA_M9_FAA_PRIMARY);
+	gem = m9x_faa_graph_binding_owner(r->graph_binding,
+					  PARHELIA_M9_FAA_PRIMARY);
 	if (!gem || !m9x_gem_is_vram(gem))
 		return -ESTALE;
 	ret = m9x_faa_lock_view_admit_locked(mdev, drm_gem_vram_of_gem(gem),
-			r->owner[1].base, m9x_faa_primary_window_bytes(&r->graph_layout));
+					     r->owner[1].base,
+					     m9x_faa_primary_window_bytes(&r->graph_layout));
 	if (!ret)
 		*out = m9x_faa_graph_binding_get(r->graph_binding);
 	return ret;
