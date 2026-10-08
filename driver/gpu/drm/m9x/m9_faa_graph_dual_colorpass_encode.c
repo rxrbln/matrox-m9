@@ -132,7 +132,7 @@ int m9x_faa_dual_colorpass_encode(
     dual->layout.entry_bytes[1]!=72||pass->layout.entry_bytes[1]!=32||
     dual->layout.program_bytes<72||
     dual->layout.program_bytes>M9_FAA_COLOR_PROGRAM_CAPACITY||
-    dual->layout.constants_bytes>M9_FAA_COLOR_CONSTANT_BYTES||
+    dual->layout.constants_bytes>16384||
     pass->layout.constant_begin[0]>pass->layout.constants_bytes||
     pass->layout.constant_end[0]>pass->layout.constants_bytes||
     dual->layout.constant_begin[0]>dual->layout.constants_bytes||
