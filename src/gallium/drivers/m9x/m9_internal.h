@@ -616,8 +616,8 @@ struct m9_context {
       /* The FAA part of this frame was closed at a refused draw; the rest
        * renders ordinarily on the resolved target. */
       bool split;
-      unsigned skip, backoff;
-      uint64_t frames, fallbacks, skipped, splits;
+      unsigned skip, backoff, fallback_run;
+      uint64_t frames, fallbacks, skipped, splits, releases;
       const char *reason;
       /* M9X_FAA_CENSUS: {const char *reason, uint64_t count} per DRAW. */
       struct util_dynarray census;

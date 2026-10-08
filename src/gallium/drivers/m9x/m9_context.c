@@ -10189,9 +10189,21 @@ m9_context_faa_frame_end(struct m9_context *ctx)
       ctx->faa_mode.fallbacks++;
       ctx->faa_mode.backoff = MIN2(ctx->faa_mode.backoff + 1, 6);
       ctx->faa_mode.skip = (1u << ctx->faa_mode.backoff) - 1;
+      /* A graph that presents nothing for this long only holds the
+       * requester: release it; the next framebuffer prepares a new one. */
+      if (++ctx->faa_mode.fallback_run >= 8 && ctx->faa_surface.graph.initialized &&
+          !ctx->faa_frame.count && !m9_replay_recording(ctx)) {
+         m9_faa_surface_destroy(ctx->screen, &ctx->faa_surface);
+         ctx->faa_mode.releases++;
+         ctx->faa_mode.fallback_run = 0;
+         if (ctx->debug)
+            fprintf(stderr, "m9x: FAA graph released after repeated fallbacks: %s\n",
+                    ctx->faa_mode.reason ? ctx->faa_mode.reason : "none");
+      }
    } else if (ctx->faa_mode.presented) {
       ctx->faa_mode.frames++;
       ctx->faa_mode.backoff = 0;
+      ctx->faa_mode.fallback_run = 0;
    }
    if (ctx->debug && (ctx->faa_mode.frames + ctx->faa_mode.fallbacks +
                       ctx->faa_mode.skipped) % 300 == 0)
