@@ -8,7 +8,8 @@
 #include <sys/ioctl.h>
 
 static int
-dual_pack(const struct m9_faa_gl_upload *u,struct drm_parhelia_m9_faa_color_draw *d)
+dual_pack(const struct m9_faa_gl_upload *u,const struct m9_faa_application_state *s,
+          struct drm_parhelia_m9_faa_color_draw *d)
 {
    uintptr_t base=(uintptr_t)u->storage;
    uint64_t total=(uint64_t)u->layout.bytes+u->constants_bytes+u->geometry_bytes+36;
@@ -32,7 +33,7 @@ dual_pack(const struct m9_faa_gl_upload *u,struct drm_parhelia_m9_faa_color_draw
          return -EINVAL;
    *d=(struct drm_parhelia_m9_faa_color_draw){.upload=base,.upload_bytes=total,
       .record_stride=64,.record_count=u->vertex_count,.declaration_count=9,
-      .depth_flags=PARHELIA_M9_FAA_COLOR_DEPTH_LESS_WRITE};
+      .depth_flags=1u|(s->depth_write?2u:0u)|((uint32_t)s->depth_func<<2)};
    d->layout.program_bytes=u->layout.bytes;d->layout.program_count=4;
    memcpy(d->layout.entry_bytes,u->layout.entry_bytes,sizeof(d->layout.entry_bytes));
    d->layout.constants_bytes=u->constants_bytes;
@@ -95,7 +96,7 @@ m9_faa_surface_dual_later_kernel(struct m9_screen *screen,struct m9_faa_surface 
       if(u->graph_id!=g->prepared_id||u->init_point!=g->init_point||
          u->generation!=g->prepared_generation)return -ESTALE;
       if(u->texture_count!=2||s->width!=surface->width||s->height!=surface->height||
-         !s->depth_enabled||!s->depth_write||s->depth_func!=PIPE_FUNC_LESS||
+         !s->depth_enabled||s->depth_func>PIPE_FUNC_ALWAYS||
          s->flatshade||s->cull_face!=PIPE_FACE_NONE||s->scissor_enabled||
          s->fragment.blend||s->fragment.alpha||s->fragment.source_stream||
          u->texture[0].resource==u->texture[1].resource||
@@ -106,7 +107,7 @@ m9_faa_surface_dual_later_kernel(struct m9_screen *screen,struct m9_faa_surface 
             memcmp(&u->texture[t].view,&first->texture[t].view,sizeof(u->texture[t].view)))
             return -EOPNOTSUPP;
       }
-      int ret=dual_pack(&u->shader,&draws[i]);if(ret)return ret;
+      int ret=dual_pack(&u->shader,s,&draws[i]);if(ret)return ret;
       if(i&&(memcmp(&u->shader.layout,&first->shader.layout,sizeof(u->shader.layout))||
          memcmp(u->shader.program,first->shader.program,u->shader.layout.bytes)||
          memcmp(u->shader.declaration,first->shader.declaration,36)))return -EOPNOTSUPP;
@@ -177,7 +178,7 @@ m9_faa_surface_dual_frame_kernel(struct m9_screen *screen,struct m9_faa_surface 
       if(u->graph_id!=g->prepared_id||u->init_point!=g->init_point||
          u->generation!=g->prepared_generation)return -ESTALE;
       if(u->texture_count!=2||s->width!=surface->width||s->height!=surface->height||
-         !s->depth_enabled||!s->depth_write||s->depth_func!=PIPE_FUNC_LESS||
+         !s->depth_enabled||s->depth_func>PIPE_FUNC_ALWAYS||
          s->flatshade||s->cull_face!=PIPE_FACE_NONE||s->scissor_enabled||
          s->fragment.blend||s->fragment.alpha||s->fragment.source_stream||
          s->viewport.scale[0]!=surface->width*.5f||s->viewport.scale[1]!=surface->height*-.5f||
@@ -191,7 +192,7 @@ m9_faa_surface_dual_frame_kernel(struct m9_screen *screen,struct m9_faa_surface 
             memcmp(&u->texture[t].view,&first->texture[t].view,sizeof(u->texture[t].view)))
             return -EOPNOTSUPP;
       }
-      int ret=dual_pack(&u->shader,&draws[i]);if(ret)return ret;
+      int ret=dual_pack(&u->shader,s,&draws[i]);if(ret)return ret;
       if(i&&(memcmp(&u->shader.layout,&first->shader.layout,sizeof(u->shader.layout))||
          memcmp(u->shader.program,first->shader.program,u->shader.layout.bytes)||
          memcmp(u->shader.declaration,first->shader.declaration,36)))return -EOPNOTSUPP;
@@ -227,6 +228,8 @@ static bool
 dual_same_pair(const struct m9_faa_application_upload *a,
                const struct m9_faa_application_upload *b)
 {
+   if(a->state.depth_write!=b->state.depth_write||
+      a->state.depth_func!=b->state.depth_func)return false;
    for(unsigned t=0;t<2;t++)
       if(a->texture[t].resource!=b->texture[t].resource||
          memcmp(&a->texture[t].view,&b->texture[t].view,sizeof(a->texture[t].view)))
