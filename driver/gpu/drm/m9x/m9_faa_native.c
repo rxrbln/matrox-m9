@@ -7988,8 +7988,10 @@ int m9x_faa_graph_depth_batch_prepare(struct m9x_device *mdev,
  code_slots=slots+batch->count;
  for(i=0;i<batch->count;i++){
   const struct m9x_faa_color_input *input=&batch->draw[i].input;
+  /* Count2 emits its two source-qualified 6A bindings and EF state for
+   * every owned job, including NONE/CW/CCW transitions within a batch. */
   if((batch->draw[i].raster_flags&~7u)||(batch->draw[i].raster_flags&6)==6||
-   (batch->draw[i].raster_flags&6)!=(batch->draw[0].raster_flags&6)||input->data_offset||
+   (!two&&(batch->draw[i].raster_flags&6)!=(batch->draw[0].raster_flags&6))||input->data_offset||
    (input->record_stride!=32&&(input->record_stride!=16||input->declaration_count!=3))||
    !input->record_count||input->record_count>12288||input->record_count%3||
    input->layout.constants_bytes>16384||input->layout.program_count!=(two?2u:4u)||(input->declaration_count!=3&&input->declaration_count!=5)){ret=-EOPNOTSUPP;goto release;}
