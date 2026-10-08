@@ -11411,20 +11411,30 @@ int m9x_faa_graph_clear_resume_get_locked(struct m9x_device *mdev,
  * the exact immutable owned semantic upload. No CPU reconstruction or input
  * replacement is permitted under that retained prefix entitlement. */
 #ifdef M9_FAA_GRAPH_INIT_CONTROL
-static bool m9_faa_clear_resume_input_equal(const struct m9_faa_depth_frame_storage*f,
- const struct m9x_faa_color_input*i)
+static bool
+
+m9_faa_clear_resume_input_equal(const struct m9_faa_depth_frame_storage *f,
+				const struct m9x_faa_color_input *i)
 {
- const struct m9x_faa_color_input*a=&f->resume_input;
- if(!f->resume_upload||memcmp(&a->layout,&i->layout,sizeof(a->layout))||
-  a->record_stride!=i->record_stride||a->record_count!=i->record_count||
-  a->declaration_count!=i->declaration_count||a->depth_flags!=i->depth_flags||
-  a->fragment_flags!=i->fragment_flags||a->data_offset!=i->data_offset||
-  a->width!=i->width||a->height!=i->height)return false;
- return !memcmp(a->program,i->program,i->layout.program_bytes)&&
-  !memcmp(a->constants,i->constants,i->layout.constants_bytes)&&
-  !memcmp(a->geometry,i->geometry,i->layout.geometry_bytes)&&
-  !memcmp(a->declaration,i->declaration,i->declaration_count*4);
+	const struct m9x_faa_color_input *a = &f->resume_input;
+
+	if (!f->resume_upload ||
+	    memcmp(&a->layout, &i->layout, sizeof(a->layout)) ||
+	    a->record_stride != i->record_stride ||
+	    a->record_count != i->record_count ||
+	    a->declaration_count != i->declaration_count ||
+	    a->depth_flags != i->depth_flags ||
+	    a->fragment_flags != i->fragment_flags ||
+	    a->data_offset != i->data_offset || a->width != i->width ||
+	    a->height != i->height)
+		return false;
+	return !memcmp(a->program, i->program, i->layout.program_bytes) &&
+	       !memcmp(a->constants, i->constants, i->layout.constants_bytes) &&
+	       !memcmp(a->geometry, i->geometry, i->layout.geometry_bytes) &&
+	       !memcmp(a->declaration, i->declaration,
+		       i->declaration_count * 4);
 }
+
 #endif
 static int m9_faa_depth_later_prepare(struct m9x_device *mdev,
  struct m9_faa_graph_binding *binding,u32 generation,u64 previous,
