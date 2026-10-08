@@ -5311,6 +5311,7 @@ static int m9_faa_graph_unlock_post_locked(struct m9x_device *mdev,
 			       image + M9_FAA_UNLOCK_FIRST_POST_BYTES,
 			       M9_FAA_UNLOCK_PRIMARY_BYTES -
 				       M9_FAA_UNLOCK_FIRST_POST_BYTES);
+		/* The CPU stores precede their END post. */
 		wmb();
 		ret = m9x_post_faa_graph_end_locked(mdev, &primary->system_node,
 						    primary->dma,
