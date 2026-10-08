@@ -3403,12 +3403,17 @@ faa_gl_combine_outputs(nir_shader *nir)
    NIR_PASS(_, nir, nir_opt_vectorize_io, nir_var_shader_out, false);
 }
 
-bool
-m9_vs_compile_faa_gl(const struct nir_shader *nir,
-                     const struct m9_vs_outputs *outputs,
-                     struct m9_vs_program *p, const char **reason)
+static bool
+compile_faa_gl_mode(const struct nir_shader *nir,
+                    const struct m9_vs_outputs *outputs,
+                    struct m9_vs_program *p, const char **reason,
+                    bool fused)
 {
-   if (!nir || !p || nir->info.stage != MESA_SHADER_VERTEX) {
+   if (!nir || !p || nir->info.stage != MESA_SHADER_VERTEX ||
+       (fused && (!outputs || outputs->count != 1 ||
+                  outputs->stream[0].location != VARYING_SLOT_COL0 ||
+                  outputs->stream[0].coordinate || outputs->stream[0].paired ||
+                  outputs->stream[0].coeff_record))) {
       if (reason)
          *reason = "missing FAA GL vertex shader/program";
       return false;
@@ -3429,9 +3434,32 @@ m9_vs_compile_faa_gl(const struct nir_shader *nir,
       ralloc_free(copy);
       return false;
    }
-   bool ok = m9_vs_compile_faa(copy, outputs, p, reason);
+   bool ok = fused ? m9_vs_compile(copy, outputs, p, reason) :
+                     m9_vs_compile_faa(copy, outputs, p, reason);
+   if (ok && fused && (p->texture_count || p->extra.size || p->gather.size ||
+                       p->producer.size || p->varying_count != 1)) {
+      m9_vs_program_fini(p);
+      if (reason) *reason = "FAA fused COLOR requires one unsampled direct output";
+      ok = false;
+   }
    ralloc_free(copy);
    return ok;
+}
+
+bool
+m9_vs_compile_faa_gl(const struct nir_shader *nir,
+                     const struct m9_vs_outputs *outputs,
+                     struct m9_vs_program *p, const char **reason)
+{
+   return compile_faa_gl_mode(nir, outputs, p, reason, false);
+}
+
+bool
+m9_vs_compile_faa_gl_fused(const struct nir_shader *nir,
+                           const struct m9_vs_outputs *outputs,
+                           struct m9_vs_program *p, const char **reason)
+{
+   return compile_faa_gl_mode(nir, outputs, p, reason, true);
 }
 
 /* The ordinary source can keep independent scalar coefficient chains even

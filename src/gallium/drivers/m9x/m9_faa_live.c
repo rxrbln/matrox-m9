@@ -1,6 +1,7 @@
 /* SPDX-License-Identifier: MIT */
 /* Copyright 2026 René Rebe <rene@exactco.de> */
 #include "m9_faa_live.h"
+#include "m9_draw_params.h"
 #include "m9_vs_source.h"
 #include "nir.h"
 #include <math.h>
@@ -98,21 +99,27 @@ m9_faa_gl_upload_fini(struct m9_faa_gl_upload *upload)
    }
 }
 
-bool
-m9_faa_live_gl_build(const struct m9_faa_live_gl *s,
-                       struct m9_faa_gl_upload *output, const char **reason)
+static bool
+live_gl_build_mode(const struct m9_faa_live_gl *s,
+                   struct m9_faa_gl_upload *output, const char **reason,
+                   bool fused)
 {
    struct m9_vs_program p = {0};
    struct m9_faa_gl_upload result = {0};
    const char *why = "invalid live FAA GL upload inputs";
    bool compiled = false;
    uint32_t carry[2 * M9_FAA_GL_UPLOAD_SLOT_BUDGET], gather[10], position[50];
-   uint32_t carry_constants[126], position_constants[26], declaration[M9_VS_MAX_DECL];
+   uint32_t carry_constants[126] = {0}, position_constants[26], declaration[M9_VS_MAX_DECL];
    struct m9_faa_move_interface gi;
    struct m9_faa_position_interface pi;
    struct m9_vs_source_layout source;
    if (!s || !output || output->storage || !s->vs || !s->linkage ||
-       (s->linkage->count < 1 || s->linkage->count > 2) || !s->count || s->count > M9_FAA_GL_UPLOAD_MAX_VERTICES ||
+       (s->linkage->count < 1 || s->linkage->count > 2 ||
+        (fused && s->linkage->count != 1)) ||
+       (fused && (s->viewport.x || s->viewport.y ||
+                  s->viewport.width != 320 || s->viewport.height != 240 ||
+                  s->fragment_constants.pairs != 2)) ||
+       !s->count || s->count > M9_FAA_GL_UPLOAD_MAX_VERTICES ||
        !s->elements || !s->buffers || !s->maps || !s->map_bytes ||
        s->element_count > PIPE_MAX_ATTRIBS || s->buffer_count > PIPE_MAX_ATTRIBS ||
        (s->cb0_bytes && !s->cb0) || s->cb0_bytes > UINT32_MAX ||
@@ -136,10 +143,13 @@ m9_faa_live_gl_build(const struct m9_faa_live_gl *s,
    for (unsigned i = 0; i < s->buffer_count; i++)
       if (overlap(output, sizeof(*output), s->maps[i], s->map_bytes[i]))
          goto fail;
-   if (!m9_vs_compile_faa_gl(s->vs, s->linkage, &p, &why))
+   if (!(fused ? m9_vs_compile_faa_gl_fused(s->vs, s->linkage, &p, &why) :
+                 m9_vs_compile_faa_gl(s->vs, s->linkage, &p, &why)))
       goto fail;
    compiled = true;
-   unsigned slots = m9_vs_producer_slot_count(&p), pairs = m9_vs_const_count(&p);
+   unsigned slots = fused ? m9_vs_slot_count(&p) :
+                            m9_vs_producer_slot_count(&p);
+   unsigned pairs = m9_vs_const_count(&p);
    if (slots > M9_FAA_GL_UPLOAD_SLOT_BUDGET || pairs > 63 || p.varying_count != s->linkage->count ||
        !p.record_bytes || p.record_bytes % 16 || p.texture_count) {
       why = "FAA GL producer limits or direct stream interface";
@@ -163,7 +173,8 @@ m9_faa_live_gl_build(const struct m9_faa_live_gl *s,
             }
          }
    }
-   if (m9_vs_emit_faa(&p, carry, ARRAY_SIZE(carry)) != 2 * slots ||
+   if ((fused ? m9_vs_emit(&p, carry, ARRAY_SIZE(carry), false) :
+                m9_vs_emit_faa(&p, carry, ARRAY_SIZE(carry))) != 2 * slots ||
        m9_vs_constants(&p, s->cb0, s->cb0_bytes / 4, carry_constants,
                           ARRAY_SIZE(carry_constants)) != pairs ||
        !m9_vs_source_layout_init(&p, s->elements, s->element_count, s->buffers,
@@ -172,23 +183,39 @@ m9_faa_live_gl_build(const struct m9_faa_live_gl *s,
    unsigned declarations = m9_vs_decl_words(&p, declaration, ARRAY_SIZE(declaration));
    const uint8_t inputs[2] = {0, 1};
    if (!declarations ||
-       !m9_faa_preprocess_moves(M9_FAA_MOVE_RECORDS, inputs, p.varying_count, 0, gather, sizeof(gather), &gi) ||
-       !m9_faa_preprocess_position(&s->viewport, position, sizeof(position),
-                                    (float *)position_constants, sizeof(position_constants), &pi)) {
+       (!fused &&
+        (!m9_faa_preprocess_moves(M9_FAA_MOVE_RECORDS, inputs, p.varying_count, 0, gather, sizeof(gather), &gi) ||
+         !m9_faa_preprocess_position(&s->viewport, position, sizeof(position),
+                                     (float *)position_constants, sizeof(position_constants), &pi)))) {
       why = "FAA GL declaration or position interface";
       goto fail;
    }
+   if (fused) {
+      struct m9_draw_params params;
+      if (m9_draw_params_init(&params, s->viewport.width, s->viewport.height,
+                              M9_COLOR_FORMAT_A8R8G8B8)) {
+         why = "FAA fused viewport tail parameters";
+         goto fail;
+      }
+      /* The ordinary tested tail names sparse pairs 9..21. They belong to
+       * this VS C3 span; user keys occupy its other pairs. */
+      memcpy(carry_constants + 2 * M9_VS_TAIL_FIRST_PAIR,
+             params.system_prefix + 2 * M9_VS_TAIL_FIRST_PAIR,
+             2 * M9_VS_TAIL_PAIRS * sizeof(uint32_t));
+   }
    const struct m9_faa_program_vector vectors[4] = {
-      s->fragment, {carry, slots}, {gather, gi.slots}, {position, pi.slots},
+      s->fragment, {carry, slots}, {gather, fused ? 0 : gi.slots},
+      {position, fused ? 0 : pi.slots},
    };
    const struct m9_faa_dense_constants constants[4] = {
       s->fragment_constants, {carry_constants, pairs}, {NULL, 0},
-      {position_constants, pi.constant_pairs},
+      {position_constants, fused ? 0 : pi.constant_pairs},
    };
    unsigned program_bytes = 0;
-   for (unsigned i = 0; i < 4; i++) program_bytes += vectors[i].slots * 8;
-   result.constants_bytes = 16;
-   for (unsigned i = 0; i < 4; i++) {
+   unsigned vector_count = fused ? 2 : 4;
+   for (unsigned i = 0; i < vector_count; i++) program_bytes += vectors[i].slots * 8;
+   result.constants_bytes = fused ? 0 : 16;
+   for (unsigned i = 0; i < vector_count; i++) {
       result.constant_begin[i] = result.constants_bytes;
       result.constants_bytes += constants[i].pairs * 8;
       result.constant_end[i] = result.constants_bytes;
@@ -211,9 +238,10 @@ m9_faa_live_gl_build(const struct m9_faa_live_gl *s,
     * two bytes of stream zero (which silently loses stream one). */
    for (unsigned i = 0; i < p.varying_count; i++)
       result.varying_location[i] = p.varying_location[i];
-   for (unsigned i = 0; i <= p.varying_count; i++)
+   for (unsigned i = 0; i < (fused ? 1u : p.varying_count + 1); i++)
       for (unsigned half = 0; half < 2; half++)
          result.carry_output_registers |= UINT64_C(1) << (0x11 + 4 * i + 2 * half);
+   if (fused) result.fused_source_mask = m9_vs_fused_source_mask(&p);
    size_t bytes = (size_t)program_bytes + result.constants_bytes + result.geometry_bytes + declarations * 4u;
    result.storage = calloc(1, bytes);
    if (!result.storage) {why = "out of memory"; goto fail;}
@@ -222,13 +250,13 @@ m9_faa_live_gl_build(const struct m9_faa_live_gl *s,
    result.constants = result.program + program_bytes / 4;
    result.geometry = result.constants + result.constants_bytes / 4;
    result.declaration = result.geometry + result.geometry_bytes / 4;
-   if (!m9_faa_program_link(vectors, 4, result.program, program_bytes, &result.layout)) {
+   if (!m9_faa_program_link(vectors, vector_count, result.program, program_bytes, &result.layout)) {
       why = "FAA live fragment or preprocessing vector finish";
       goto fail;
    }
    const uint32_t utility[4] = {0x3f800000, 0, 0, 0x3f800000};
-   memcpy(result.constants, utility, sizeof(utility));
-   for (unsigned i = 0; i < 4; i++)
+   if (!fused) memcpy(result.constants, utility, sizeof(utility));
+   for (unsigned i = 0; i < vector_count; i++)
       if (constants[i].pairs)
          memcpy((uint8_t *)result.constants + result.constant_begin[i],
                 constants[i].words, constants[i].pairs * 8);
@@ -254,6 +282,13 @@ fail:
    m9_faa_gl_upload_fini(&result);
    if (reason) *reason = why;
    return false;
+}
+
+bool
+m9_faa_live_gl_build(const struct m9_faa_live_gl *s,
+                     struct m9_faa_gl_upload *output, const char **reason)
+{
+   return live_gl_build_mode(s, output, reason, false);
 }
 
 static bool
@@ -338,9 +373,10 @@ fragment_color(const nir_shader *fs, bool *flat, bool *legacy)
    return true;
 }
 
-bool
-m9_faa_live_gl_color_build_state(const struct m9_faa_live_gl *s, const nir_shader *fs, bool legacy_flat,
-                          struct m9_faa_gl_upload *output, const char **reason)
+static bool
+color_build_state_mode(const struct m9_faa_live_gl *s, const nir_shader *fs,
+                       bool legacy_flat, struct m9_faa_gl_upload *output,
+                       const char **reason, bool fused)
 {
    uint32_t program[16], constants[4];
    struct m9_faa_color_fs_interface interface;
@@ -360,12 +396,39 @@ m9_faa_live_gl_color_build_state(const struct m9_faa_live_gl *s, const nir_shade
    struct m9_faa_live_gl live = *s;
    live.fragment = (struct m9_faa_program_vector){program, interface.slots};
    live.fragment_constants = (struct m9_faa_dense_constants){constants, interface.constant_pairs};
-   if (!m9_faa_live_gl_build(&live, output, reason)) return false;
+   if (!live_gl_build_mode(&live, output, reason, fused)) return false;
    /* The actual FIRST frontend emits distinct smooth/flat programs and
     * utility order. Native admission must bind matching fragment metadata. */
    output->color_flat = flat;
    output->color_legacy_interpolation = legacy;
    return true;
+}
+
+bool
+m9_faa_live_gl_color_build_state(const struct m9_faa_live_gl *s,
+                                 const nir_shader *fs, bool legacy_flat,
+                                 struct m9_faa_gl_upload *output,
+                                 const char **reason)
+{
+   return color_build_state_mode(s, fs, legacy_flat, output, reason, false);
+}
+
+bool
+m9_faa_live_gl_color_fused_build_state(const struct m9_faa_live_gl *s,
+                                       const nir_shader *fs, bool legacy_flat,
+                                       struct m9_faa_gl_upload *output,
+                                       const char **reason)
+{
+   return color_build_state_mode(s, fs, legacy_flat, output, reason, true);
+}
+
+bool
+m9_faa_live_gl_color_fused_build(const struct m9_faa_live_gl *s,
+                                 const nir_shader *fs,
+                                 struct m9_faa_gl_upload *output,
+                                 const char **reason)
+{
+   return m9_faa_live_gl_color_fused_build_state(s, fs, false, output, reason);
 }
 
 bool

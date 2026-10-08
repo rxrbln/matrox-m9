@@ -413,6 +413,16 @@ bool m9_vs_compile_faa(struct nir_shader *nir,
 bool m9_vs_compile_faa_gl(const struct nir_shader *nir,
                           const struct m9_vs_outputs *outputs,
                           struct m9_vs_program *program, const char **reason);
+/* One real COLOR output through the ordinary fused head/tail register
+ * interface. The private NIR clone receives the same GL half-Z lowering;
+ * the resulting sparse tail constants belong to this program, not to the
+ * four-stage FAA position vector. This combines separately tested ordinary
+ * instructions with the FAA two-vector command shape; it is not byte-equal
+ * to the original vendor fused tail or a graph submission receipt. */
+bool m9_vs_compile_faa_gl_fused(const struct nir_shader *nir,
+                                const struct m9_vs_outputs *outputs,
+                                struct m9_vs_program *program,
+                                const char **reason);
 /* Finalize that producer with STOP/padding/finish. Refuses ordinary programs.
  * m9_vs_constants/m9_vs_const_span use its dense typed constant layout. */
 unsigned m9_vs_emit_faa(const struct m9_vs_program *program, uint32_t *out,

@@ -82,6 +82,7 @@ struct m9_faa_gl_upload {
    uint32_t declaration_words, record_bytes, vertex_count;
    uint8_t varying_location[2];
    uint64_t carry_output_registers;
+   uint16_t fused_source_mask; /* Ordinary head/tail availability, count2 only. */
    bool color_flat; /* Live FS load_input vs smooth interpolation; no raster receipt. */
    bool color_legacy_interpolation; /* COLOR0 INTERP_MODE_NONE follows live raster flatshade. */
    /* Explicitly false until a broader native layout/fragment/launcher
@@ -102,6 +103,19 @@ bool m9_faa_live_gl_color_build(const struct m9_faa_live_gl *state,
 /* Legacy FF COLOR interpolation follows the live Gallium raster state. */
 bool m9_faa_live_gl_color_build_state(const struct m9_faa_live_gl *state,
                                     const struct nir_shader *fs, bool legacy_flat,
+                                    struct m9_faa_gl_upload *output,
+                                    const char **reason);
+/* Explicit two-vector COLOR candidate. The fused VS head and its ordinary
+ * tested viewport tail use their own sparse constants. This is not vendor
+ * tail byte equality or GPU qualification; four-vector uploads remain
+ * available through color_build_state. CPU construction is not a receipt. */
+bool m9_faa_live_gl_color_fused_build_state(const struct m9_faa_live_gl *state,
+                                          const struct nir_shader *fs,
+                                          bool legacy_flat,
+                                          struct m9_faa_gl_upload *output,
+                                          const char **reason);
+bool m9_faa_live_gl_color_fused_build(const struct m9_faa_live_gl *state,
+                                    const struct nir_shader *fs,
                                     struct m9_faa_gl_upload *output,
                                     const char **reason);
 /* Assemble the source-qualified fixed-function stage-0 combine fragment with
