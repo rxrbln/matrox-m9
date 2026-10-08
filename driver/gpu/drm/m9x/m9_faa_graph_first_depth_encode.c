@@ -204,9 +204,7 @@ int m9x_faa_first_depth_encode(const u8 *sample, size_t sample_bytes,
 	/* Original 181fa0 ZENABLE mode lowers EF's depth mode bit. A8 separately
 	 * lowers the live enable/write/comparison state, with format3d validated above.
 	 */
-	ef = (u32)secondary[1920 - shift] | (u32)secondary[1921 - shift] << 8 |
-	     (u32)secondary[1922 - shift] << 16 |
-	     (u32)secondary[1923 - shift] << 24;
+	ef = m9_cmd_get(secondary + 1920 - shift);
 	m9_cmd_put(secondary + 1920 - shift, ef & ~0x20000000u);
 	m9_cmd_put(secondary + 2076 - shift,
 		   views->owner[M9_FAA_BOUND_DEPTH].base | 1);
@@ -309,20 +307,14 @@ int m9x_faa_first_depth_color_stage_encode(const u8 *first, size_t first_bytes,
 		a8_at = 2200 - shift;
 	}
 	m9_cmd_put(secondary + ef_at,
-		   ((u32)secondary[ef_at] | (u32)secondary[ef_at + 1] << 8 |
-		    (u32)secondary[ef_at + 2] << 16 |
-		    (u32)secondary[ef_at + 3] << 24) &
-			   ~0x20000000u);
+		   m9_cmd_get(secondary + ef_at) & ~0x20000000u);
 	m9_cmd_put(secondary + depth_at,
 		   views->owner[M9_FAA_BOUND_DEPTH].base | 1);
 	m9_cmd_put(secondary + aux_at, 0);
 	m9_cmd_put(secondary + aux_at + 4, 0xf0010100);
 	m9_cmd_put(secondary + a8_at, m9x_faa_depth_a8(input->depth_flags));
 	if (two) {
-		u32 ef = (u32)secondary[ef_at] |
-			 (u32)secondary[ef_at + 1] << 8 |
-			 (u32)secondary[ef_at + 2] << 16 |
-			 (u32)secondary[ef_at + 3] << 24;
+		u32 ef = m9_cmd_get(secondary + ef_at);
 		mode.ef = (ef & ~0x20000000u) |
 			  (mode.after.enabled ? 0 : 0x20000000u);
 		m9_cmd_put(secondary + ef_at, mode.ef);

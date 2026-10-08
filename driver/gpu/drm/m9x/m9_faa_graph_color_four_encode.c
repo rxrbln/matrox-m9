@@ -25,10 +25,8 @@ int m9x_faa_carry_source_mask(const u8 *program, u32 program_bytes, u32 begin,
 	    end - begin < 3 * 8)
 		return -EINVAL;
 	for (i = begin; i < end; i += 8) {
-		u32 w0 = (u32)program[i] | (u32)program[i + 1] << 8 |
-			 (u32)program[i + 2] << 16 | (u32)program[i + 3] << 24;
-		u32 w1 = (u32)program[i + 4] | (u32)program[i + 5] << 8 |
-			 (u32)program[i + 6] << 16 | (u32)program[i + 7] << 24;
+		u32 w0 = m9_cmd_get(program + i);
+		u32 w1 = m9_cmd_get(program + i + 4);
 		u32 d = (w0 >> 8) & 0x7f;
 		bool output = false;
 
