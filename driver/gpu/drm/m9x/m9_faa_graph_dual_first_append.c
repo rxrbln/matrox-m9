@@ -301,13 +301,14 @@ int m9x_faa_dual_later_append_encode(const struct m9x_faa_graph_draw_owner
 				     const u8 *extra_first_secondary,
 				     struct m9x_faa_dual_append_image *out)
 {
-	u32 tail = clear_flags ? 3632 : 3624, first = clear_flags ? 2736 : 2740,
-	    epoch;
+	u32 tail = clear_flags == 3 ? 3632 : 3624;
+	u32 first = clear_flags == 3 ? 2736 : 2740, epoch;
 	u32 old_start;
 
 	if (!owner || !old_primary || !first_secondary ||
 	    !extra_first_secondary || !out || !out->primary ||
-	    !out->secondary || (clear_flags && clear_flags != 3) ||
+	    !out->secondary ||
+	    (clear_flags && clear_flags != 3 && clear_flags != 2) ||
 	    old_draw_count < 1 ||
 	    old_draw_count >= M9_FAA_DUAL_LATER_MAX_DRAWS ||
 	    (previous_unlock & 15) || previous_unlock < 0x130 ||
@@ -319,7 +320,8 @@ int m9x_faa_dual_later_append_encode(const struct m9x_faa_graph_draw_owner
 		return -EINVAL;
 	if (m9x_faa_graph_draw_owners_validate(owner))
 		return -EINVAL;
-	epoch = (u32)previous_unlock - (clear_flags ? 0 : 0x80) +
+	epoch = (u32)previous_unlock -
+		(clear_flags == 3 ? 0 : clear_flags == 2 ? 0x30 : 0x80) +
 		(old_draw_count - 1) * 0xa0;
 	old_start = old_draw_count == 1 ? first_secondary_cursor :
 					  secondary_cursor - 2868;

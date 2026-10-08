@@ -6,17 +6,24 @@
 #include "m9_faa_graph_later_depth_two_encode.h"
 
 /* Original initialized count2 short constructors. The corresponding count4
- * producer has28 extra HZ/sentinel bytes and unused C0 pairs. This routine
- * composes typed clear generators and drops only those source-proved groups.
+ * (dual) producer keeps the HZ and sentinel attachment views (28 bytes
+ * each), its own 2800040c policy words, the full depth constructor with its
+ * C0 pair and the graph-sentinel sample slot. A depth-only (D3D clear flags
+ * 2) count4 prefix stops after the depth constructor.
  */
+#define PREFIX_FOUR 1u
+#define PREFIX_DEPTH_ONLY 2u
+
+/* Returns the END count (9, or 8 for a depth-only prefix) or an error. */
 static int prefix(const u8 *sample, size_t sample_bytes,
 		  const struct m9x_faa_graph_draw_owner *owner,
 		  const struct m9x_faa_depth_views *v, u64 epoch,
 		  struct m9x_faa_later_depth_scratch *s, u32 *bytes,
-		  u32 ends[9])
+		  u32 ends[9], u32 form)
 {
 	struct m9x_faa_depth_stage_image hz;
-	u32 color, at, n, i;
+	bool four = form & PREFIX_FOUR;
+	u32 color, at, n, i, depth = M9_FAA_DEPTH_CLEAR_BYTES;
 	int ret;
 
 	ret = m9x_faa_depth_stages_encode(v, 0x3f800000, &hz);
@@ -40,25 +47,35 @@ static int prefix(const u8 *sample, size_t sample_bytes,
 	/* Same qualified short depth/sample constructors as FIRST2. The sentinel
 	 * is the retained graph owner, not the separately bound HZ allocation.
 	 */
-	s->depth.word[44] = 0x00080300;
-	s->depth.word[127] = 0;
-	memmove(s->depth.word + 146, s->depth.word + 148,
-		M9_FAA_DEPTH_CLEAR_BYTES - 148 * 4);
-	m9_cmd_put(s->sample + 20, 0x2e00040c);
+	if (!four) {
+		s->depth.word[44] = 0x00080300;
+		s->depth.word[127] = 0;
+		memmove(s->depth.word + 146, s->depth.word + 148,
+			M9_FAA_DEPTH_CLEAR_BYTES - 148 * 4);
+		depth -= 8;
+		m9_cmd_put(s->sample + 20, 0x2e00040c);
+	}
 	m9_cmd_put(s->sample + 44, 1);
 	m9_cmd_put(s->sample + 48, 0x00010004);
 	m9_cmd_put(s->sample + 76, owner[8].base | 1);
 	m9_cmd_put(s->sample + 80, 0xf0000008);
 	m9_cmd_put(s->sample + 3020, 0);
-	/* Original initialized count2 keeps sampled primary in target slot0;
-	 * neither FIRST's disabled slot nor count4's graph-sentinel HZ view.
-	 */
-	m9_cmd_put(s->sample + 3104, owner[1].base | 1);
-	m9_cmd_put(s->sample + 3108, 0xf0210000 | v->owner[0].width);
-	m9_cmd_put(s->sample + 3112, 0x10000 | v->owner[0].height);
-	m9_cmd_put(s->sample + 856 * 4, 0x2e00040c);
-	memmove(s->sample + 793 * 4, s->sample + 795 * 4, n - 795 * 4);
-	n -= 8;
+	if (four) {
+		/* count4 keeps the graph-sentinel HZ view in sample slot0. */
+		m9_cmd_put(s->sample + 3104, owner[8].base | 1);
+		m9_cmd_put(s->sample + 3108, 0xf0000001);
+		m9_cmd_put(s->sample + 3112, 0x00010001);
+	} else {
+		/* Original initialized count2 keeps sampled primary in target
+		 * slot0; neither FIRST's disabled slot nor count4's view.
+		 */
+		m9_cmd_put(s->sample + 3104, owner[1].base | 1);
+		m9_cmd_put(s->sample + 3108, 0xf0210000 | v->owner[0].width);
+		m9_cmd_put(s->sample + 3112, 0x10000 | v->owner[0].height);
+		m9_cmd_put(s->sample + 856 * 4, 0x2e00040c);
+		memmove(s->sample + 793 * 4, s->sample + 795 * 4, n - 795 * 4);
+		n -= 8;
+	}
 	color = s->attachment.end_bytes[0];
 	memcpy(s->prefix, s->attachment.word, color);
 	ends[0] = color;
@@ -67,22 +84,34 @@ static int prefix(const u8 *sample, size_t sample_bytes,
 	m9_cmd_put(s->prefix + at + 4, 1);
 	m9_cmd_put(s->prefix + at + 8, 2);
 	m9_cmd_put(s->prefix + at + 12, ((u32)epoch + 0x20) | 1);
-	memcpy(s->prefix + at + 16, hz.hz + 7, 52);
-	m9_cmd_put(s->prefix + at + 28, 0x2e00040c);
-	at += 68;
+	at += 16;
+	if (four) {
+		memcpy(s->prefix + at, hz.hz, 28);
+		at += 28;
+	}
+	memcpy(s->prefix + at, hz.hz + 7, 52);
+	if (!four)
+		m9_cmd_put(s->prefix + at + 12, 0x2e00040c);
+	at += 52;
 	ends[2] = at;
 	ends[1] = at;
 	m9_cmd_put(s->prefix + at, M9_CMD_FENCE);
 	m9_cmd_put(s->prefix + at + 4, 1);
 	m9_cmd_put(s->prefix + at + 8, ((u32)epoch + 0x30) | 1);
-	memcpy(s->prefix + at + 12, hz.hz + 7, 52);
-	m9_cmd_put(s->prefix + at + 16, owner[8].base | 1);
-	m9_cmd_put(s->prefix + at + 20, 0xf0000008);
-	m9_cmd_put(s->prefix + at + 24, 0x2e00040c);
-	m9_cmd_put(s->prefix + at + 28, 1);
-	m9_cmd_put(s->prefix + at + 44, 0);
-	m9_cmd_put(s->prefix + at + 60, 0x00010004);
-	at += 64;
+	at += 12;
+	if (four) {
+		memcpy(s->prefix + at, hz.hz, 28);
+		m9_cmd_put(s->prefix + at + 8, owner[8].base | 1);
+		at += 28;
+	}
+	memcpy(s->prefix + at, hz.hz + 7, 52);
+	m9_cmd_put(s->prefix + at + 4, owner[8].base | 1);
+	m9_cmd_put(s->prefix + at + 8, 0xf0000008);
+	m9_cmd_put(s->prefix + at + 12, four ? 0x2800040cu : 0x2e00040cu);
+	m9_cmd_put(s->prefix + at + 16, 1);
+	m9_cmd_put(s->prefix + at + 32, 0);
+	m9_cmd_put(s->prefix + at + 48, 0x00010004);
+	at += 52;
 	ends[4] = at;
 	ends[3] = at;
 	{
@@ -92,10 +121,16 @@ static int prefix(const u8 *sample, size_t sample_bytes,
 		at += sizeof(state);
 	}
 	ends[5] = at;
-	memcpy(s->prefix + at, s->depth.word, M9_FAA_DEPTH_CLEAR_BYTES - 8);
-	ends[6] = at + M9_FAA_DEPTH_CLEAR_SETUP_BYTES - 8;
-	at += M9_FAA_DEPTH_CLEAR_BYTES - 8;
+	memcpy(s->prefix + at, s->depth.word, depth);
+	ends[6] = at + M9_FAA_DEPTH_CLEAR_SETUP_BYTES - (four ? 0 : 8);
+	at += depth;
 	ends[7] = at;
+	if (form & PREFIX_DEPTH_ONLY) {
+		if (at > sizeof(s->prefix))
+			return -ERANGE;
+		*bytes = at;
+		return 8;
+	}
 	memcpy(s->prefix + at, s->sample, n);
 	at += n;
 	ends[8] = at;
@@ -105,7 +140,7 @@ static int prefix(const u8 *sample, size_t sample_bytes,
 		if (ends[i] > at)
 			return -EINVAL;
 	*bytes = at;
-	return 0;
+	return 9;
 }
 
 int m9x_faa_later_depth_two_clear_encode(const u8 *sample, size_t sample_bytes,
@@ -130,8 +165,8 @@ int m9x_faa_later_depth_two_clear_encode(const u8 *sample, size_t sample_bytes,
 		    owner[31 + i].bytes < views->owner[i].capacity_bytes)
 			return -EINVAL;
 	ret = prefix(sample, sample_bytes, owner, views, origin, scratch,
-		     &bytes, ends);
-	if (ret)
+		     &bytes, ends, 0);
+	if (ret < 0)
 		return ret;
 	if (cursor > owner[27].bytes || bytes > owner[27].bytes - cursor ||
 	    out->capacity < bytes)
@@ -140,6 +175,7 @@ int m9x_faa_later_depth_two_clear_encode(const u8 *sample, size_t sample_bytes,
 	for (i = 0; i < 9; i++)
 		out->end_bytes[i] = cursor + ends[i];
 	out->bytes = bytes;
+	out->end_count = 9;
 	out->final_point = origin + 0x80;
 	return 0;
 }
@@ -191,8 +227,8 @@ int m9x_faa_later_depth_two_encode(const u8 *sample, size_t sample_bytes,
 		return -ERANGE;
 	if (clear) {
 		ret = prefix(sample, sample_bytes, owner, views, previous,
-			     scratch, &front, clear_ends);
-		if (ret)
+			     scratch, &front, clear_ends, 0);
+		if (ret < 0)
 			return ret;
 	}
 	size = front + 3588;
@@ -279,5 +315,48 @@ int m9x_faa_later_depth_two_encode(const u8 *sample, size_t sample_bytes,
 	out->draw_end_bytes = pcursor + front + 24;
 	out->final_point = previous + delta;
 	*out->image.secondary_length = sec;
+	return 0;
+}
+
+/* Original dual (count4) later clear prefix: CLEAR3 (clear_flags 3, nine
+ * ENDs) or depth-only (clear_flags 2, eight ENDs, no sampled colour clear).
+ */
+int m9x_faa_later_depth_four_clear_encode(const u8 *sample,
+					  size_t sample_bytes,
+					  const struct m9x_faa_graph_draw_owner
+						  owner[34],
+					  const struct m9x_faa_depth_views *views,
+					  u32 cursor, u64 origin, u32 clear_flags,
+					  struct m9x_faa_later_depth_clear_image *out,
+					  struct m9x_faa_later_depth_scratch *scratch)
+{
+	u32 bytes, ends[9], i;
+	int count;
+
+	if (!owner || !views || !out || !out->primary || !scratch ||
+	    (clear_flags != 3 && clear_flags != 2) || (cursor & 3) ||
+	    (origin & 15) || origin > ~(u64)0 - 0x80 ||
+	    (u32)origin > 0xffffff7fu)
+		return -EINVAL;
+	if (m9x_faa_graph_draw_owners_validate(owner))
+		return -EINVAL;
+	for (i = 0; i < 3; i++)
+		if (owner[31 + i].base != views->owner[i].base ||
+		    owner[31 + i].bytes < views->owner[i].capacity_bytes)
+			return -EINVAL;
+	count = prefix(sample, sample_bytes, owner, views, origin, scratch,
+		       &bytes, ends,
+		       PREFIX_FOUR | (clear_flags == 2 ? PREFIX_DEPTH_ONLY : 0));
+	if (count < 0)
+		return count;
+	if (cursor > owner[27].bytes || bytes > owner[27].bytes - cursor ||
+	    out->capacity < bytes)
+		return -ERANGE;
+	memmove(out->primary, scratch->prefix, bytes);
+	for (i = 0; i < (u32)count; i++)
+		out->end_bytes[i] = cursor + ends[i];
+	out->end_count = count;
+	out->bytes = bytes;
+	out->final_point = origin + (clear_flags == 3 ? 0x80 : 0x50);
 	return 0;
 }

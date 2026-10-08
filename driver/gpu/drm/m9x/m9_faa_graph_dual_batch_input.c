@@ -97,7 +97,8 @@ int m9x_faa_dual_later_batch_copy(
   args->draw_count>M9_FAA_DUAL_BATCH_MAX_DRAWS||args->pad2||
   args->upload||args->upload_bytes||args->record_count||
   args->record_stride||args->declaration_count||
-  (args->clear_flags&&args->clear_flags!=3))return -EOPNOTSUPP;
+  (args->clear_flags&&args->clear_flags!=3&&args->clear_flags!=2))
+  return -EOPNOTSUPP;
  return dual_draws_copy(args->draws,args->draw_count,args->width,
   args->height,0,args->clear_flags,result);
 }

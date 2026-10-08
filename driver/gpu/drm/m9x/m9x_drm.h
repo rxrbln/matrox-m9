@@ -169,8 +169,8 @@ struct drm_parhelia_m9_faa_graph_dual_batch {
 
 /* A retained same-program dual DRAW after an actual Unlock. The two handles
  * name live texture BOs; they never convey GPU addresses. Version 1 admits
- * one 320x240 draw, CLEAR3 or no-clear, and at most one stage-1 pair change
- * per retained graph. The separate source Lock point is returned only after
+ * one 320x240 or 1024x768 draw, CLEAR3 (3), depth-only (2) or no-clear (0),
+ * and at most one stage-1 pair change per retained graph. The separate source Lock point is returned only after
  * hardware retirement. */
 #define DRM_PARHELIA_M9_FAA_GRAPH_DUAL_LATER 0x25
 #define PARHELIA_M9_FAA_DUAL_LATER_VERSION 1u

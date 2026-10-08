@@ -7936,7 +7936,8 @@ int m9x_faa_graph_dual_later_prepare(struct m9x_device *mdev,
  u32 i,raw,span,job_bytes,ends[14];
  if(batch)input=&batch->draw[0].input;
  if(!binding||!input||!textures||!textures->gem[0]||!textures->gem[1]||
-  textures->generation!=generation||(clear_flags&&clear_flags!=3)||
+  textures->generation!=generation||
+  (clear_flags&&clear_flags!=3&&clear_flags!=2)||
   input->layout.program_count!=4||input->declaration_count!=9||
   input->record_stride!=64||!input->record_count||
   input->record_count%3||input->fragment_flags||
@@ -8044,7 +8045,7 @@ int m9x_faa_graph_dual_later_prepare(struct m9x_device *mdev,
   .secondary_length=&fresh_length};
  ret=m9x_faa_dual_first_encode(sample->data,sample->size,
   color->data,color->size,dual_fw->data,dual_fw->size,
-  owner,&views,r->primary_bytes,previous-(clear_flags?0:0x80),
+  owner,&views,r->primary_bytes,previous-(clear_flags==3?0:clear_flags==2?0x30:0x80),
   &dual,fresh_primary,9200,fresh_secondary,2880,
   &first_bytes,first_ends,&live,first_scratch);
  if(ret)goto unlock;
@@ -8087,7 +8088,7 @@ int m9x_faa_graph_dual_later_prepare(struct m9x_device *mdev,
    extra=(struct m9x_faa_dual_first_input){.color=&job,.texture=textures->bind};
    ret=m9x_faa_dual_first_encode(sample->data,sample->size,
     color->data,color->size,dual_fw->data,dual_fw->size,
-    owner,&views,r->primary_bytes,previous-(clear_flags?0:0x80),
+    owner,&views,r->primary_bytes,previous-(clear_flags==3?0:clear_flags==2?0x30:0x80),
     &extra,job_primary,9200,job_secondary,2880,&job_bytes,ends,
     &extra_live,first_scratch);
    if(ret)goto unlock;
@@ -9191,7 +9192,7 @@ int m9x_faa_graph_depth_frame_submit(struct m9x_device *mdev,
  if(!r||!r->depth_storage||!r->depth_storage->frame){m9_faa_frame_trace(mdev,"refuse-frame-owner",generation,0,previous,-ESTALE,false);ret=-ESTALE;goto out;}
  frame=r->depth_storage->frame;
  if(r->depth_storage->initialized!=frame->initialized_reuse||
-  (frame->initialized_reuse&&(frame->first||frame->clear_flags>3||(frame->clear_flags&&frame->clear_flags!=3)))){m9_faa_frame_trace(mdev,"refuse-initialization",r->depth_storage->initialized,frame->clear_flags,frame->initialized_reuse,-ESTALE,false);ret=-ESTALE;goto out;}
+  (frame->initialized_reuse&&(frame->first||frame->clear_flags>3||(frame->clear_flags&&frame->clear_flags!=3&&!(frame->dual_later&&frame->clear_flags==2))))){m9_faa_frame_trace(mdev,"refuse-initialization",r->depth_storage->initialized,frame->clear_flags,frame->initialized_reuse,-ESTALE,false);ret=-ESTALE;goto out;}
  ret=frame->first?m9_faa_depth_frame_first_state(t,binding,generation,previous):
   (frame->clear_resume?m9_faa_clear_resume_state(mdev,binding,generation,previous,&queue_start):
    m9_faa_depth_frame_retained_state(mdev,binding,generation,previous,&queue_start));if(ret){m9_faa_frame_trace(mdev,frame->first?"refuse-first-state":"refuse-retained-state",frame->generation,r->graph_draw_end_bytes,previous,ret,false);goto out;}
@@ -9213,7 +9214,7 @@ int m9x_faa_graph_depth_frame_submit(struct m9x_device *mdev,
     (frame->first?queue_start:m9_faa_frame_origin(r,previous))+frame->planned_delta:
    (frame->initialized_reuse?
     m9_faa_frame_origin(r,previous)+(two?(frame->clear_flags?0x110:0x90):
-                                          (frame->clear_flags?0x150:0xd0)):
+                                          (frame->clear_flags==3?0x150:frame->clear_flags==2?0x120:0xd0)):
     queue_start+(frame->first?(two?0x110:0x150):0x190))+
     (frame->draw_count?frame->draw_count-1:0)*(two?0x60:0xa0))?64u:0)|
   (frame->mode_planned&&frame->end_count!=frame->planned_ends?4096u:0)|
@@ -9237,7 +9238,7 @@ int m9x_faa_graph_depth_frame_submit(struct m9x_device *mdev,
    .program_bytes=input->layout.program_bytes};
   for(i=0;i<4;i++)dual.entry_bytes[i]=input->layout.entry_bytes[i];
   u32 first_len=frame->dual_later?
-   (frame->clear_flags?M9_FAA_DUAL_LATER_SECONDARY_CLEAR:
+   (frame->clear_flags==3?M9_FAA_DUAL_LATER_SECONDARY_CLEAR:
                        M9_FAA_DUAL_LATER_SECONDARY_NOCLEAR):
    frame->dual_colorpass?M9_FAA_DUAL_COLORPASS_SECONDARY_BYTES:
    M9_FAA_DUAL_FIRST_SECONDARY_BYTES;

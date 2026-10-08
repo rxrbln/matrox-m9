@@ -42,11 +42,12 @@ int m9x_faa_dual_later_encode(const u8 *sample, size_t sample_bytes,
 	u32 front = 0, sec_bytes, tail_bytes, total, mid, epoch, i, mask;
 	u8 *s, *p;
 	int ret;
-	bool clear = clear_flags == 3;
+	bool clear = clear_flags == 3, depth = clear_flags == 2;
 
 	if (!sample || !owner || !views || !fresh_secondary || !fresh_tail ||
 	    !out || !out->primary || !out->secondary || !scratch ||
-	    (clear_flags && clear_flags != 3) || (pcursor & 3) ||
+	    (clear_flags && clear_flags != 3 && clear_flags != 2) ||
+	    (pcursor & 3) ||
 	    (scursor & 3) || (previous & 15) || previous < 0x130 ||
 	    previous > ~(u64)0 - 0x150 || next != previous + 0x10 ||
 	    (u32)previous > 0xfffffeafu)
@@ -73,16 +74,20 @@ int m9x_faa_dual_later_encode(const u8 *sample, size_t sample_bytes,
 	    sec_bytes > 0x3fe00 - scursor ||
 	    (u64)owner[29].base + scursor + sec_bytes > U32_MAX)
 		return -ERANGE;
-	if (clear) {
+	/* Original dual count4 prefixes: CLEAR3, or depth-only (no sampled
+	 * colour clear) followed by the no-clear DRAW/Lock form later on.
+	 */
+	if (clear_flags) {
 		clear_image = (struct m9x_faa_later_depth_clear_image){
 			.primary = scratch->clear.prefix,
 			.capacity = sizeof(scratch->clear.prefix)
 		};
-		ret = m9x_faa_later_depth_two_clear_encode(sample, sample_bytes,
-							   owner, views, 0,
-							   previous,
-							   &clear_image,
-							   &scratch->clear);
+		ret = m9x_faa_later_depth_four_clear_encode(sample, sample_bytes,
+							    owner, views, 0,
+							    previous,
+							    clear_flags,
+							    &clear_image,
+							    &scratch->clear);
 		if (ret)
 			return ret;
 		front = clear_image.bytes;
@@ -102,7 +107,7 @@ int m9x_faa_dual_later_encode(const u8 *sample, size_t sample_bytes,
 	    m9_cmd_overlap(out->secondary, sec_bytes, fresh_secondary, 2880) ||
 	    m9_cmd_overlap(out->secondary, sec_bytes, fresh_tail, 3624))
 		return -EINVAL;
-	epoch = (u32)previous - (clear ? 0 : 0x80);
+	epoch = (u32)previous - (clear ? 0 : depth ? 0x30 : 0x80);
 	if (m9_cmd_get(fresh_secondary + 4) != 0x454545c7 ||
 	    m9_cmd_get(fresh_secondary + 56) != ((epoch + 0x90) | 1) ||
 	    m9_cmd_get(fresh_secondary + 104) != ((epoch + 0xa0) | 1) ||
@@ -140,7 +145,7 @@ int m9x_faa_dual_later_encode(const u8 *sample, size_t sample_bytes,
 		m9_cmd_put(s + 56, 2);
 		m9_cmd_put(s + 28, 0x49d00000 | ((804 - 28) / 4));
 	}
-	if (clear)
+	if (clear_flags)
 		memcpy(p, scratch->clear.prefix, front);
 	memcpy(p + front, fresh_tail, 3348);
 	if (clear) {
@@ -154,10 +159,9 @@ int m9x_faa_dual_later_encode(const u8 *sample, size_t sample_bytes,
 	m9_cmd_put(p + front + 8, (owner[29].base + scursor + mid) | 2);
 	m9_cmd_put(p + front + 52, (owner[29].base + scursor + mid) | 1);
 	m9_cmd_put(p + front + 56, (owner[29].base + scursor + sec_bytes) | 2);
-	if (clear) {
-		for (i = 0; i < 9; i++)
+	if (clear_flags) {
+		for (i = 0; i < clear_image.end_count; i++)
 			out->end_bytes[i] = pcursor + clear_image.end_bytes[i];
-		i = 9;
 	} else {
 		i = 0;
 	}
@@ -172,6 +176,6 @@ int m9x_faa_dual_later_encode(const u8 *sample, size_t sample_bytes,
 	out->end_count = i;
 	out->clear_bytes = front;
 	out->draw_end_bytes = pcursor + front + 60;
-	out->final_point = previous + (clear ? 0x150 : 0xd0);
+	out->final_point = previous + (clear ? 0x150 : depth ? 0x120 : 0xd0);
 	return 0;
 }
