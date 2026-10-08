@@ -13,9 +13,8 @@ transforms, live shader constants and checked FIRST singleton/batch receipts.
 DRM 452e846/423e5a9 adds two-stage code placement, actual shader availability
 and live data bindings. DRM 8fb31ab integrates source-derived FIRST/append
 composition, checked at N1/N2/N3 and mixed declarations through N32. Native
-batch wiring is in final integration; repeated two-stage frames remain gated
-until their own transition contract is qualified. The four-stage route stays
-available.
+FIRST batch wiring and live prefix alignment support landed in ea1c091.
+The four-stage route stays available.
 
 DRM 625ca05/830d3da fixes two incorrect generalizations from the old tiny
 control: secondary +296 is the literal C2 packet count 3, never vertex count;
@@ -30,8 +29,21 @@ tail checks now cover clip coordinates, screen X/Y and window depth (10,752
 component comparisons plus depth boundary controls). Original DLL metadata
 calculation agrees with the actual fused masks bc00/bf00. Clip-code arithmetic
 is not modeled; unchanged ordinary-M9 tail bytes are not FAA pixel proof.
-No two-stage glxgears hardware pass yet; the latest physical result remains
-the fragmented four-stage control below.
+Native ea1c091 is now hardware-tested: all12 original glxgears draws reach
+Lock5e0/Unlock600 without a wedge. The image is still incomplete:23409
+nonblack pixels,4684 missing reference interior pixels,110 wrong dominant
+interior colors. [Exact hardware capsule and screenshot](../tests/m9-faa-glxgears-first-hardware-20261008/fused2-first-incomplete/README.md).
+The final linear COLOR/clip/window samples match draw9, rather than the
+last NORMAL-array draws10/11. This identifies sampled values, not proof
+that later draws were skipped. Both additional raw attributes and nonzero
+shader slots remain under investigation. [Reproducible upload analysis](../tests/m9-faa-fused-first-analysis-20261008/README.md).
+
+Authentic FIRST12 completion permits the [original initialized count2
+transition proof](../tests/m9-faa-first-depth-two-later-source-20261008/README.md):
+clear3 +110, no-clear +90, each extra draw +60. Mesa55d69c7 implements
+initialized clear3 batch receipt handling; dedicated native later2
+integration is in progress. Count2 command-pool maintenance is still gated.
+No continuous FAA glxgears pass, Quake3 FAA pass, or FAA FPS claim.
 
 ## October 8: true16 constant-normal control retains the same GPU misindex
 
