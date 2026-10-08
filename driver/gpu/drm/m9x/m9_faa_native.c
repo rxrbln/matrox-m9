@@ -1008,8 +1008,9 @@ int m9x_faa_graph_draw_claim_locked(struct m9x_device *mdev,
  * Even a failed wait after END publication consumes its stage; owner refs
  * stay with the retained replay until teardown/quarantine. */
 int m9x_faa_graph_draw_end_locked(struct m9x_device *mdev,
-		struct m9_faa_graph_binding *binding, u32 generation,
-		u64 init_point, u32 stage, u64 *point, bool *posted)
+				  struct m9_faa_graph_binding *binding,
+				  u32 generation, u64 init_point, u32 stage,
+				  u64 *point, bool *posted)
 {
 #ifdef M9_FAA_GRAPH_INIT_CONTROL
 	struct m9x_transport *t = &mdev->transport;
@@ -1025,22 +1026,23 @@ int m9x_faa_graph_draw_end_locked(struct m9x_device *mdev,
 	if (point)
 		*point = 0;
 	if (!point || !posted || !binding || !r || !r->graph_draw_claimed ||
-	    !r->graph_draw_payload_ready ||
-	    r->graph_binding != binding || r->graph_generation != generation ||
+	    !r->graph_draw_payload_ready || r->graph_binding != binding ||
+	    r->graph_generation != generation ||
 	    r->observation_generation != generation ||
-	    r->observation_point != init_point ||
-	    t->generation != generation || t->wedged ||
-	    t->submitted_point != init_point || t->completed_point != init_point ||
+	    r->observation_point != init_point || t->generation != generation ||
+	    t->wedged || t->submitted_point != init_point ||
+	    t->completed_point != init_point ||
 	    t->next_fence != lower_32_bits(init_point) + 0x10)
 		return -ESTALE;
-	ret = m9_faa_graph_stage_shape(r, stage, init_point,
-				       &end, &repeat, &target);
+	ret = m9_faa_graph_stage_shape(r, stage, init_point, &end, &repeat,
+				       &target);
 	if (ret)
 		return ret;
 	primary = &r->owner[M9_FAA_PRIMARY_OWNER];
 	ret = m9x_post_faa_graph_end_locked(mdev, &primary->system_node,
-					primary->dma, r->graph_draw_end_bytes,
-					end, repeat, target, point, posted);
+					    primary->dma,
+					    r->graph_draw_end_bytes, end,
+					    repeat, target, point, posted);
 	if (*posted) {
 		r->graph_draw_end_bytes = end;
 		r->graph_draw_posts++;
