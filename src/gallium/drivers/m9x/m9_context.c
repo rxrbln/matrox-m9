@@ -9552,19 +9552,24 @@ m9_context_faa_texture_snapshot(struct m9_context *ctx,unsigned slot,
    struct m9_texture_bind bind;struct m9_render_layout extent;uint8_t swizzle[4];
    if(!view||!view->texture||!sampler)return "FAA texture has no live view/sampler";
    struct m9_resource *owner=m9_res(view->texture);
+   /* A mipmapped view must cover the whole chain with the default LOD
+    * range; its last level must stay out of the 16x16 tail atlas. */
+   const unsigned last=view->texture->last_level;
+   const bool mipped=sampler->min_mip_filter!=PIPE_TEX_MIPFILTER_NONE&&last;
    if(view->target!=PIPE_TEXTURE_2D||view->texture->target!=PIPE_TEXTURE_2D||
-      view->u.tex.first_level||view->u.tex.last_level||view->u.tex.first_layer||
-      view->u.tex.last_layer||view->texture->last_level||
+      view->u.tex.first_level||view->u.tex.last_level!=last||view->u.tex.first_layer||
+      view->u.tex.last_layer||(last&&!mipped)||
+      (mipped&&(sampler->min_lod!=0.0f||sampler->max_lod<(float)last||
+                ((view->texture->width0>>last)<=16&&(view->texture->height0>>last)<=16)))||
       view->texture->array_size!=1||view->texture->depth0!=1||
       util_format_is_srgb(view->format)||sampler->unnormalized_coords||
-      sampler->min_mip_filter!=PIPE_TEX_MIPFILTER_NONE||
       sampler->compare_mode!=PIPE_TEX_COMPARE_NONE||sampler->lod_bias||
       sampler->max_anisotropy>1||
       (sampler->min_img_filter!=PIPE_TEX_FILTER_NEAREST&&sampler->min_img_filter!=PIPE_TEX_FILTER_LINEAR)||
       (sampler->mag_img_filter!=PIPE_TEX_FILTER_NEAREST&&sampler->mag_img_filter!=PIPE_TEX_FILTER_LINEAR)||
       (sampler->wrap_s!=PIPE_TEX_WRAP_REPEAT&&sampler->wrap_s!=PIPE_TEX_WRAP_CLAMP_TO_EDGE)||
       (sampler->wrap_t!=PIPE_TEX_WRAP_REPEAT&&sampler->wrap_t!=PIPE_TEX_WRAP_CLAMP_TO_EDGE))
-      return "FAA texture requires a normalized level-zero 2-D point/linear wrap/clamp view";
+      return "FAA texture requires a normalized full-chain 2-D point/linear wrap/clamp view";
    if(view->texture==ctx->color||view->texture==ctx->depth)
       return "FAA texture framebuffer feedback is not qualified";
    for(unsigned i=0;i<ARRAY_SIZE(ctx->color_extra);i++)
@@ -9574,19 +9579,22 @@ m9_context_faa_texture_snapshot(struct m9_context *ctx,unsigned slot,
       return "FAA texture view swizzle has no qualified shader interface";
    const char *why=m9_texture_bind_view(view,&bind);if(why)return why;
    if(!owner->handle||owner->domain!=M9_BO_VRAM||owner->tiled||
-      owner->kind!=M9_RESOURCE_LINEAR_TEXTURE||!owner->texture.levels||
-      owner->texture.level[0].offset||owner->texture_unplaced&1||
-      !(owner->levels_written&1)||bind.code!=M9_TEXTURE_CODE_BGRA||
+      owner->kind!=M9_RESOURCE_LINEAR_TEXTURE||owner->texture.levels!=last+1||
+      owner->texture.level[0].offset||(owner->texture_unplaced&((2u<<last)-1))||
+      (owner->levels_written&((2u<<last)-1))!=((2u<<last)-1)||
+      bind.code!=M9_TEXTURE_CODE_BGRA||
       bind.width!=view->texture->width0||bind.height!=view->texture->height0||
-      bind.depth!=1||bind.last_level||bind.view_first_level||bind.view_last_level||
+      bind.depth!=1||bind.last_level!=last||bind.view_first_level||
+      bind.view_last_level!=last||
       !m9_render_surface_layout(bind.width,bind.height,4,&extent)||owner->size<extent.size)
       return "FAA texture live storage, written level or source allocation extent is not qualified";
    *out=(struct m9_faa_application_texture){.resource=view->texture,
       .generation=owner->generation,.owner_bytes=owner->size,.offset=owner->texture.level[0].offset,
       .view={.handle=owner->handle,.profile=12,.format=bind.code>>1,
-       .width=bind.width,.height=bind.height,.storage_kind=bind.kind,.levels=1,
+       .width=bind.width,.height=bind.height,.storage_kind=bind.kind,.levels=last+1,
        .min_filter=sampler->min_img_filter==PIPE_TEX_FILTER_LINEAR?2u:1u,
-       .mag_filter=sampler->mag_img_filter==PIPE_TEX_FILTER_LINEAR?2u:1u,.mip_filter=1,
+       .mag_filter=sampler->mag_img_filter==PIPE_TEX_FILTER_LINEAR?2u:1u,
+       .mip_filter=!mipped?1u:sampler->min_mip_filter==PIPE_TEX_MIPFILTER_LINEAR?3u:2u,
        .address_u=sampler->wrap_s==PIPE_TEX_WRAP_REPEAT?1u:3u,
        .address_v=sampler->wrap_t==PIPE_TEX_WRAP_REPEAT?1u:3u}};
    return NULL;

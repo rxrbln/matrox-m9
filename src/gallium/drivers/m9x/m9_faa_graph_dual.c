@@ -59,19 +59,22 @@ dual_texture_current(const struct m9_faa_application_texture *t)
    return w&&h&&w<=1024&&h<=1024&&!(w&(w-1))&&!(h&(h-1))&&
       t->resource->target==PIPE_TEXTURE_2D&&t->resource->width0==w&&
       t->resource->height0==h&&t->resource->depth0==1&&t->resource->array_size==1&&
-      !t->resource->last_level&&r->domain==M9_BO_VRAM&&!r->tiled&&
+      t->resource->last_level+1u==v->levels&&r->domain==M9_BO_VRAM&&!r->tiled&&
       r->width==w&&r->height==h&&r->depth==1&&
       r->handle==v->handle&&r->generation==t->generation&&r->size==t->owner_bytes&&
-      r->kind==M9_RESOURCE_LINEAR_TEXTURE&&r->texture.levels==1&&
+      r->kind==M9_RESOURCE_LINEAR_TEXTURE&&r->texture.levels==v->levels&&
       r->texture.level[0].width==w&&r->texture.level[0].height==h&&
       r->texture.level[0].depth==1&&
       r->texture.level[0].offset==t->offset&&!t->offset&&
-      !(r->texture_unplaced&1)&&(r->levels_written&1)&&r->texture_code==M9_TEXTURE_CODE_BGRA&&
+      !(r->texture_unplaced&((2u<<(v->levels-1))-1))&&
+      (r->levels_written&((2u<<(v->levels-1))-1))==((2u<<(v->levels-1))-1)&&
+      r->texture_code==M9_TEXTURE_CODE_BGRA&&
       m9_render_surface_layout(w,h,4,&layout)&&r->size>=layout.size&&
       v->handle&&v->profile==12&&v->format==102&&
-      v->storage_kind==(w>64||h>64?0x21u:0x01u)&&v->levels==1&&
+      v->storage_kind==(w>64||h>64?0x21u:0x01u)&&v->levels>=1&&v->levels<=11&&
       (v->min_filter==1||v->min_filter==2)&&(v->mag_filter==1||v->mag_filter==2)&&
-      v->mip_filter==1&&(v->address_u==1||v->address_u==3)&&
+      v->mip_filter>=1&&v->mip_filter<=3&&(v->levels>1||v->mip_filter==1)&&
+      (v->address_u==1||v->address_u==3)&&
       (v->address_v==1||v->address_v==3);
 }
 
