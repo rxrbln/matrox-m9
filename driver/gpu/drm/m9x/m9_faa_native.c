@@ -2345,8 +2345,8 @@ preclaim_fail:
 #endif
 }
 
-static void m9_faa_write(struct m9_faa_owner *o, u32 offset,
-			 const void *source, u32 bytes)
+static void m9_faa_write(struct m9_faa_owner *o, u32 offset, const void *source,
+			 u32 bytes)
 {
 	if (o->vram)
 		iosys_map_memcpy_to(&o->map, offset, source, bytes);
