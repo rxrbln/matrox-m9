@@ -545,6 +545,7 @@ struct m9_vs_spec {
 
 struct m9_vs_state {
    void *draw;
+   struct m9_faa_live_program_cache *faa_compile_cache;
    /* The lowered clone before specialisation, and the dwords the values
     * that specialise it come from. */
    struct nir_shader *src;

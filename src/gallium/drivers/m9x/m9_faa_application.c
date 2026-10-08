@@ -380,7 +380,7 @@ m9_faa_application_build(const struct m9_faa_application_draw *d,
       why="FAA current fragment color leaves its bounded retained uniform interface";goto fail;
    }
    const struct nir_shader *fs=color_fs?color_fs:d->fs;
-   if(color_vs){live.vs=color_vs;live.cb0=color_constants;live.cb0_bytes=color_constant_bytes;}
+   if(color_vs){live.vs=color_vs;live.cb0=color_constants;live.cb0_bytes=color_constant_bytes;live.compile_cache=NULL;}
    enum m9_faa_alpha_mode alpha;bool alpha_present;
    if (!m9_faa_live_gl_alpha_decode(fs,d->fs_cb0,d->fs_cb0_bytes,&alpha,&alpha_present)) {
       why="FAA fragment discard has no source-qualified alpha interface";goto fail;

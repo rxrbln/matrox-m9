@@ -99,6 +99,42 @@ m9_faa_gl_upload_fini(struct m9_faa_gl_upload *upload)
    }
 }
 
+#define M9_FAA_CACHE_INLINE_WORDS 32u
+struct m9_faa_live_program_entry {
+   bool ready;
+   const struct nir_shader *source;
+   struct m9_vs_outputs linkage;
+   unsigned inline_count;
+   uint32_t inline_values[M9_FAA_CACHE_INLINE_WORDS];
+   struct m9_vs_program program;
+};
+struct m9_faa_live_program_cache {
+   struct m9_faa_live_program_entry route[3];
+};
+struct m9_faa_live_program_cache *
+m9_faa_live_program_cache_create(void)
+{
+   return calloc(1, sizeof(struct m9_faa_live_program_cache));
+}
+void
+m9_faa_live_program_cache_destroy(struct m9_faa_live_program_cache *cache)
+{
+   if (!cache) return;
+   for (unsigned i = 0; i < 3; i++)
+      if (cache->route[i].ready) m9_vs_program_fini(&cache->route[i].program);
+   free(cache);
+}
+static bool
+m9_faa_live_program_cache_match(const struct m9_faa_live_program_entry *entry,
+                                const struct m9_faa_live_gl *s)
+{
+   return entry->ready && entry->source == s->source_identity &&
+          entry->inline_count == s->inline_count &&
+          !memcmp(&entry->linkage, s->linkage, sizeof(entry->linkage)) &&
+          (!s->inline_count ||
+           !memcmp(entry->inline_values, s->inline_values, s->inline_count * 4));
+}
+
 static bool
 live_gl_build_mode(const struct m9_faa_live_gl *s,
                    struct m9_faa_gl_upload *output, const char **reason,
@@ -107,7 +143,8 @@ live_gl_build_mode(const struct m9_faa_live_gl *s,
    struct m9_vs_program p = {0};
    struct m9_faa_gl_upload result = {0};
    const char *why = "invalid live FAA GL upload inputs";
-   bool compiled = false;
+   bool compiled = false, borrowed = false;
+   struct m9_faa_live_program_entry *entry = NULL;
    uint32_t carry[2 * M9_FAA_GL_UPLOAD_SLOT_BUDGET], gather[14], position[50];
    uint32_t carry_constants[126] = {0}, position_constants[26], declaration[M9_VS_MAX_DECL];
    struct m9_faa_move_interface gi;
@@ -147,10 +184,33 @@ live_gl_build_mode(const struct m9_faa_live_gl *s,
    for (unsigned i = 0; i < s->buffer_count; i++)
       if (overlap(output, sizeof(*output), s->maps[i], s->map_bytes[i]))
          goto fail;
-   if (!(fused ? m9_vs_compile_faa_gl_fused(s->vs, s->linkage, &p, &why) :
-           dual ? m9_vs_compile_faa_gl_dual_texture(s->vs, s->linkage, &p, &why) :
-                  m9_vs_compile_faa_gl(s->vs, s->linkage, &p, &why)))
-      goto fail;
+   /* The cache owner is one immutable VS state; specialization values and
+    * the complete output linkage are part of the key. The program owns no
+    * NIR, CB, mapped record, or resource pointers. Unsupported cache keys
+    * use the ordinary uncached path, preserving frontend admission. */
+   if (s->compile_cache && s->source_identity &&
+       s->inline_count <= M9_FAA_CACHE_INLINE_WORDS &&
+       (!s->inline_count || s->inline_values))
+      entry = &s->compile_cache->route[fused ? 1 : dual ? 2 : 0];
+   if (entry && m9_faa_live_program_cache_match(entry, s)) {
+      p = entry->program;
+      borrowed = true;
+   } else {
+      if (!(fused ? m9_vs_compile_faa_gl_fused(s->vs, s->linkage, &p, &why) :
+              dual ? m9_vs_compile_faa_gl_dual_texture(s->vs, s->linkage, &p, &why) :
+                     m9_vs_compile_faa_gl(s->vs, s->linkage, &p, &why)))
+         goto fail;
+      if (entry) {
+         if (entry->ready) m9_vs_program_fini(&entry->program);
+         entry->source = s->source_identity;
+         entry->linkage = *s->linkage;
+         entry->inline_count = s->inline_count;
+         if (s->inline_count)
+            memcpy(entry->inline_values, s->inline_values, s->inline_count * 4);
+         entry->program = p;
+         entry->ready = borrowed = true;
+      }
+   }
    compiled = true;
    unsigned slots = fused ? m9_vs_slot_count(&p) :
                             m9_vs_producer_slot_count(&p);
@@ -288,12 +348,12 @@ live_gl_build_mode(const struct m9_faa_live_gl *s,
                              (float *)((uint8_t *)result.geometry + 128));
    if (!records) {why = "FAA GL raw input mapping bounds"; goto fail;}
    memcpy(result.declaration, declaration, declarations * 4);
-   m9_vs_program_fini(&p);
+   if (!borrowed) m9_vs_program_fini(&p);
    *output = result;
    if (reason) *reason = NULL;
    return true;
 fail:
-   if (compiled) m9_vs_program_fini(&p);
+   if (compiled && !borrowed) m9_vs_program_fini(&p);
    m9_faa_gl_upload_fini(&result);
    if (reason) *reason = why;
    return false;

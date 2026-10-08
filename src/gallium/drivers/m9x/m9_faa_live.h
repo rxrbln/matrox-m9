@@ -8,6 +8,11 @@
 #include <stddef.h>
 struct nir_shader;
 struct m9_vs_outputs;
+struct m9_faa_live_program_cache;
+/* Owned by one retained immutable VS state. Constants, raw records, viewport,
+ * declaration binding and the final upload are still rebuilt each draw. */
+struct m9_faa_live_program_cache *m9_faa_live_program_cache_create(void);
+void m9_faa_live_program_cache_destroy(struct m9_faa_live_program_cache *cache);
 
 /* Bounded public MOV shader interface, before graph/job binding. The caller
  * retains lowered NIR, CB0 and mapped vertex buffers throughout this call.
@@ -54,6 +59,10 @@ bool m9_faa_live_public_mov_build(const struct m9_faa_live_public_mov *state,
 struct m9_faa_live_gl {
    const struct nir_shader *vs;
    const struct m9_vs_outputs *linkage;
+   struct m9_faa_live_program_cache *compile_cache; /* Optional VS-state owner. */
+   const struct nir_shader *source_identity; /* Immutable unspecialized VS. */
+   const uint32_t *inline_values;
+   unsigned inline_count;
    const void *cb0;
    size_t cb0_bytes;
    struct m9_faa_program_vector fragment;

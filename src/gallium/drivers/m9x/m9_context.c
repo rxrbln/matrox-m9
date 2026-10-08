@@ -9026,6 +9026,7 @@ m9_vs_spec_free(struct m9_vs_spec *spec)
 static void
 m9_vs_state_fini(struct m9_vs_state *vs)
 {
+   m9_faa_live_program_cache_destroy(vs->faa_compile_cache);
    util_dynarray_foreach(&vs->specs, struct m9_vs_spec *, it)
       m9_vs_spec_free(*it);
    util_dynarray_fini(&vs->specs);
@@ -9291,8 +9292,13 @@ m9_context_faa_build_draw(struct m9_context *ctx,
    if (!vs) { why = "FAA live vertex clone allocation failed"; goto fail; }
    if (ctx->vs->inline_count) m9_nir_inline_uniforms(vs, ctx->vs_inline);
    linkage.stream[0].location = VARYING_SLOT_COL0;
+   if (!ctx->vs->faa_compile_cache)
+      ctx->vs->faa_compile_cache = m9_faa_live_program_cache_create();
    source.live = (struct m9_faa_live_gl){
       .vs = vs, .linkage = &linkage, .cb0 = data,
+      .compile_cache = ctx->vs->faa_compile_cache,
+      .source_identity = ctx->vs->src,
+      .inline_values = ctx->vs_inline, .inline_count = ctx->vs->inline_count,
       .cb0_bytes = cb->buffer_size, .elements = ctx->velems->elements,
       .element_count = ctx->velems->count, .buffers = ctx->vertex_buffers,
       .buffer_count = ctx->num_vertex_buffers, .maps = maps, .map_bytes = sizes,
