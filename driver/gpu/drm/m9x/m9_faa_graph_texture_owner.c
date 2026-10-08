@@ -165,10 +165,10 @@ fail:
 	return ret;
 }
 
-int m9x_faa_texture_owners_place_locked(struct m9x_device *mdev,
+static int m9_faa_texture_owners_place_locked(struct m9x_device *mdev,
 	const struct m9x_faa_texture_owners *owners, u32 generation,
 	const struct m9x_faa_texture_dual_program *program,
-	u8 *secondary, u32 secondary_bytes)
+	u8 *secondary, u32 secondary_bytes, bool appended)
 {
 	struct m9x_faa_texture_bind_input live[2];
 	u32 i;
@@ -195,8 +195,28 @@ int m9x_faa_texture_owners_place_locked(struct m9x_device *mdev,
 		    live[i].owner_bytes != owners->bind[i].owner_bytes)
 			return -ESTALE;
 	}
-	return m9x_faa_texture_dual_bind_place(live, program, secondary,
-					       secondary_bytes);
+	return appended ? m9x_faa_texture_dual_bind_append_place(live, program,
+						secondary, secondary_bytes) :
+		m9x_faa_texture_dual_bind_place(live, program, secondary,
+						    secondary_bytes);
+}
+
+int m9x_faa_texture_owners_place_locked(struct m9x_device *mdev,
+	const struct m9x_faa_texture_owners *owners, u32 generation,
+	const struct m9x_faa_texture_dual_program *program,
+	u8 *secondary, u32 secondary_bytes)
+{
+	return m9_faa_texture_owners_place_locked(mdev, owners, generation,
+			program, secondary, secondary_bytes, false);
+}
+
+int m9x_faa_texture_owners_place_append_locked(struct m9x_device *mdev,
+	const struct m9x_faa_texture_owners *owners, u32 generation,
+	const struct m9x_faa_texture_dual_program *program,
+	u8 *secondary, u32 secondary_bytes)
+{
+	return m9_faa_texture_owners_place_locked(mdev, owners, generation,
+			program, secondary, secondary_bytes, true);
 }
 
 int m9x_faa_texture_owners_fence_locked(struct m9x_faa_texture_owners *owners,

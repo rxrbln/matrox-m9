@@ -19,4 +19,12 @@ int m9x_faa_texture_dual_bind_place(
 	const struct m9x_faa_texture_dual_program *program,
 	u8 *secondary, u32 secondary_bytes);
 
+/* A repeated FIRST DRAW has a distinct 2868-byte source grammar. Its
+ * preliminary 1x1 null-target packet is not a texture owner; the two real
+ * texture packets follow at source-qualified sites 2508 and 2608. */
+int m9x_faa_texture_dual_bind_append_place(
+	const struct m9x_faa_texture_bind_input unit[2],
+	const struct m9x_faa_texture_dual_program *program,
+	u8 *secondary, u32 secondary_bytes);
+
 #endif

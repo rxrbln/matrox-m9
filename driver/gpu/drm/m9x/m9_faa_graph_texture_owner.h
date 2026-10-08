@@ -33,6 +33,10 @@ int m9x_faa_texture_owners_place_locked(struct m9x_device *mdev,
 	const struct m9x_faa_texture_owners *owners, u32 generation,
 	const struct m9x_faa_texture_dual_program *program,
 	u8 *secondary, u32 secondary_bytes);
+int m9x_faa_texture_owners_place_append_locked(struct m9x_device *mdev,
+	const struct m9x_faa_texture_owners *owners, u32 generation,
+	const struct m9x_faa_texture_dual_program *program,
+	u8 *secondary, u32 secondary_bytes);
 
 /* Reserve both READ fence slots before installing either. The caller also
  * fences its six graph owners before any command write or END doorbell. */
