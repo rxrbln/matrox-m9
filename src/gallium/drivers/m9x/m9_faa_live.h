@@ -154,6 +154,11 @@ bool m9_faa_live_gl_dual_texture_build(const struct m9_faa_live_gl *state,
 bool m9_faa_live_gl_dual_colorpass_build(const struct m9_faa_live_gl *state,
                                          struct m9_faa_gl_upload *output,
                                          const char **reason);
+/* Textured draws without COLOR0 get a COLOR0 vertex input on clones. */
+bool m9_faa_live_gl_texture_white_normalize(const struct nir_shader *vs,
+                                           const struct nir_shader *fs,
+                                           struct nir_shader **vertex,
+                                           struct nir_shader **fragment);
 /* Move a bounded retained FS uniform COLOR to an owned GPU VS uniform output.
  * NULL clones mean the original varying path; success never mutates NIR. */
 bool m9_faa_live_gl_color_uniform_normalize(const struct m9_faa_live_gl *live,

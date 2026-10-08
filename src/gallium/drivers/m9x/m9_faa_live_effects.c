@@ -97,6 +97,51 @@ bool m9_faa_live_gl_color_uniform_normalize(const struct m9_faa_live_gl *live,co
    *vertex=v;*fragment=f;*constants=data;*constant_bytes=color_offset+16;return true;
 }
 
+/* GL_REPLACE-style textured draws (TEX0, or TEX0 * TEX1, without COLOR0)
+ * run the proven COLOR0 * TEX programs and three-input records: the VS
+ * clone passes a COLOR0 vertex input through, which the caller binds to a
+ * constant white element, and the FS clone multiplies by COLOR0. */
+bool m9_faa_live_gl_texture_white_normalize(const nir_shader *vs,const nir_shader *fs,
+                                           nir_shader **vertex,nir_shader **fragment)
+{
+   if(!vs||!fs||!vertex||!fragment||*vertex||*fragment||
+      vs->info.stage!=MESA_SHADER_VERTEX||fs->info.stage!=MESA_SHADER_FRAGMENT||
+      !fs->info.io_lowered||!vs->info.io_lowered||
+      (vs->info.inputs_read&VERT_BIT_COLOR0))return false;
+   nir_shader *v=nir_shader_clone(NULL,vs),*f=nir_shader_clone(NULL,fs);
+   if(!v||!f){ralloc_free(v);ralloc_free(f);return false;}
+   nir_function_impl *vi=nir_shader_get_entrypoint(v),*fi=nir_shader_get_entrypoint(f);
+   nir_foreach_block(block,vi) nir_foreach_instr_safe(instr,block) {
+      if(instr->type==nir_instr_type_intrinsic) {
+         nir_intrinsic_instr *in=nir_instr_as_intrinsic(instr);
+         if(in->intrinsic==nir_intrinsic_store_output&&nir_intrinsic_io_semantics(in).location==VARYING_SLOT_COL0)nir_instr_remove(instr);
+      }
+   }
+   nir_builder vb=nir_builder_create(vi);vb.cursor=nir_after_impl(vi);
+   nir_def *zero=nir_imm_int(&vb,0);
+   nir_def *color=nir_load_input(&vb,4,32,zero,.base=v->num_inputs,.dest_type=nir_type_float32,
+      .io_semantics={.location=VERT_ATTRIB_COLOR0,.num_slots=1});
+   v->num_inputs++;
+   nir_store_output(&vb,color,zero,
+      .base=1,.write_mask=15,.src_type=nir_type_float32,.io_semantics={.location=VARYING_SLOT_COL0,.num_slots=1});
+   nir_intrinsic_instr *store=NULL;
+   nir_foreach_block(block,fi) nir_foreach_instr(instr,block) {
+      if(instr->type==nir_instr_type_intrinsic&&nir_instr_as_intrinsic(instr)->intrinsic==nir_intrinsic_store_output) {
+         if(store){ralloc_free(v);ralloc_free(f);return false;}
+         store=nir_instr_as_intrinsic(instr);
+      }
+   }
+   if(!store||store->src[0].ssa->num_components!=4){ralloc_free(v);ralloc_free(f);return false;}
+   nir_builder fb=nir_builder_create(fi);fb.cursor=nir_before_instr(&store->instr);
+   nir_def *varying=nir_load_interpolated_input(&fb,4,32,
+      nir_load_barycentric_pixel(&fb,32,.interp_mode=INTERP_MODE_SMOOTH),nir_imm_int(&fb,0),
+      .base=0,.dest_type=nir_type_float32,.io_semantics={.location=VARYING_SLOT_COL0,.num_slots=1});
+   nir_src_rewrite(&store->src[0],nir_fmul(&fb,varying,store->src[0].ssa));
+   nir_progress(true,vi,nir_metadata_none);nir_progress(true,fi,nir_metadata_none);
+   nir_opt_dce(v);nir_opt_dce(f);nir_shader_gather_info(v,vi);nir_shader_gather_info(f,fi);
+   *vertex=v;*fragment=f;return true;
+}
+
 /* Gallium GL1 factors are admitted as exact RGBA operations. Separate alpha
  * factors, logic operations and partial color writes need their own compiler
  * allocation interface and cannot borrow the source COLOR0 forms. */

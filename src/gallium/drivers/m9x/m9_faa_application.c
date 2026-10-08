@@ -60,6 +60,31 @@ m9_faa_dual_product(nir_scalar value,unsigned component,unsigned depth,
    return 0;
 }
 
+/* TEX0 or TEX0 * TEX1 in every component, without COLOR0. */
+static bool
+m9_faa_application_texture_unlit(const nir_shader *fs)
+{
+   nir_tex_instr *texture[2]={0};unsigned slots[2]={0},textures=0;
+   nir_intrinsic_instr *store=NULL;
+   if(!fs||fs->info.stage!=MESA_SHADER_FRAGMENT||!fs->info.io_lowered)return false;
+   nir_function_impl *impl=nir_shader_get_entrypoint((nir_shader*)fs);
+   if(!impl||!exec_list_is_singular(&impl->body))return false;
+   nir_foreach_block(block,impl)nir_foreach_instr(instr,block) {
+      if(instr->type==nir_instr_type_tex)textures++;
+      if(instr->type==nir_instr_type_intrinsic&&
+         nir_instr_as_intrinsic(instr)->intrinsic==nir_intrinsic_store_output) {
+         if(store)return false;
+         store=nir_instr_as_intrinsic(instr);
+      }
+   }
+   if((textures!=1&&textures!=2)||!store||store->src[0].ssa->num_components!=4)return false;
+   for(unsigned c=0;c<4;c++)
+      if(m9_faa_dual_product(nir_get_scalar(store->src[0].ssa,c),c,0,texture,slots)!=
+         (textures==2?6u:2u))
+         return false;
+   return true;
+}
+
 bool
 m9_faa_application_texture_linkage(const nir_shader *fs,
                                    struct m9_vs_outputs *linkage,
@@ -528,7 +553,34 @@ m9_faa_application_build(const struct m9_faa_application_draw *d,
     * coverage and texels); GL samples at half-integer ones. */
    live.viewport = (struct m9_faa_viewport){x, y, w, h, .centre = 0.5f,
       .depth_range = true, .depth_near = z_near, .depth_far = z_far};
-   if(!m9_faa_application_texture_linkage(d->fs,&texture_linkage,sampler,&texture_count,&why))goto fail;
+   const nir_shader *texture_fs=d->fs;
+   /* White COLOR0: a stride-0 element at COLOR0's rank among the inputs. */
+   static const float white[4]={1.0f,1.0f,1.0f,1.0f};
+   struct pipe_vertex_element white_elements[PIPE_MAX_ATTRIBS];
+   struct pipe_vertex_buffer white_buffers[PIPE_MAX_ATTRIBS];
+   const uint8_t *white_maps[PIPE_MAX_ATTRIBS];unsigned white_bytes[PIPE_MAX_ATTRIBS];
+   if(m9_faa_application_texture_unlit(d->fs)) {
+      if(live.element_count>=PIPE_MAX_ATTRIBS||live.buffer_count>=PIPE_MAX_ATTRIBS||
+         !m9_faa_live_gl_texture_white_normalize(live.vs,d->fs,&color_vs,&color_fs)) {
+         why="FAA white COLOR0 clone failed";goto fail;
+      }
+      unsigned rank=util_bitcount64(live.vs->info.inputs_read&BITFIELD64_MASK(VERT_ATTRIB_COLOR0));
+      if(rank>live.element_count){why="FAA white COLOR0 input rank";goto fail;}
+      for(unsigned i=0,j=0;i<=live.element_count;i++)
+         white_elements[i]=i==rank?(struct pipe_vertex_element){
+            .src_format=PIPE_FORMAT_R32G32B32A32_FLOAT,.vertex_buffer_index=live.buffer_count}:
+            live.elements[j++];
+      memcpy(white_buffers,live.buffers,live.buffer_count*sizeof(*white_buffers));
+      memcpy(white_maps,live.maps,live.buffer_count*sizeof(*white_maps));
+      memcpy(white_bytes,live.map_bytes,live.buffer_count*sizeof(*white_bytes));
+      white_buffers[live.buffer_count]=(struct pipe_vertex_buffer){.is_user_buffer=true,.buffer.user=white};
+      white_maps[live.buffer_count]=(const uint8_t*)white;white_bytes[live.buffer_count]=sizeof(white);
+      live.elements=white_elements;live.element_count++;
+      live.buffers=white_buffers;live.maps=white_maps;live.map_bytes=white_bytes;live.buffer_count++;
+      live.vs=color_vs;live.compile_cache=NULL;
+      texture_fs=color_fs;
+   }
+   if(!m9_faa_application_texture_linkage(texture_fs,&texture_linkage,sampler,&texture_count,&why))goto fail;
    if(texture_count==1) {
       if(d->state.flatshade||d->state.fragment.blend!=M9_FAA_BLEND_REPLACE||
          d->state.fragment.alpha!=M9_FAA_ALPHA_OFF||d->state.fragment.source_stream||
@@ -540,7 +592,8 @@ m9_faa_application_build(const struct m9_faa_application_draw *d,
       fresh.texture[0]=d->texture[0];fresh.texture[0].resource=NULL;
       pipe_resource_reference(&fresh.texture[0].resource,d->texture[0].resource);
       fresh.texture_count=1;fresh.state=d->state;
-      free(indices);*output=fresh;if(reason)*reason=NULL;return true;
+      free(indices);ralloc_free(color_vs);ralloc_free(color_fs);free(color_constants);
+      *output=fresh;if(reason)*reason=NULL;return true;
    }
    if(texture_count) {
       if(d->state.flatshade||d->state.fragment.blend!=M9_FAA_BLEND_REPLACE||
@@ -558,7 +611,8 @@ m9_faa_application_build(const struct m9_faa_application_draw *d,
          pipe_resource_reference(&fresh.texture[i].resource,d->texture[i].resource);
       }
       fresh.texture_count=2;fresh.state=d->state;
-      free(indices);*output=fresh;if(reason)*reason=NULL;return true;
+      free(indices);ralloc_free(color_vs);ralloc_free(color_fs);free(color_constants);
+      *output=fresh;if(reason)*reason=NULL;return true;
    }
    /* The source two-stage route has continuous M9128 rendering and pool
     * reuse proof. Keep M9X_FAA_FUSED=0 for four-stage comparisons. Both
