@@ -40,8 +40,7 @@ int m9x_faa_first_depth_two_append(const struct m9x_faa_first_depth_two_append_i
   in->old_secondary_bytes>maxsec||(in->old_secondary_bytes-minsec)%24||
   in->old_secondary_bytes<(in->old_draw_count==1?1352:1484)+old_extra||
   check_add_overflow(in->old_primary_bytes,24u,&newprimary)||
-  in->old_primary_bytes<8240+24*(in->old_draw_count-1)||
-  in->old_primary_bytes>8244+24*(in->old_draw_count-1)||
+  in->old_primary_bytes<3564||
   out->primary_capacity<newprimary||out->secondary_capacity<newsec||
   in->init_bytes>in->owner[27].bytes||newprimary>in->owner[27].bytes-in->init_bytes||
   in->old_secondary_bytes>in->owner[29].bytes||newsec>in->owner[29].bytes-in->old_secondary_bytes||
@@ -53,6 +52,15 @@ int m9x_faa_first_depth_two_append(const struct m9x_faa_first_depth_two_append_i
   if(e[i]<in->init_bytes||e[i]>in->init_bytes+in->old_primary_bytes||(e[i]&3)||
    (i&&e[i]<e[i-1]))return -EINVAL;
  }
+ /* Authenticate the shared live FIRST prefix by its producer stages,
+  * not the captured total8240. Each80-page SYSTEM clear can emit ten or
+  * eleven page-group words, independently changing the prefix by4B. */
+ if(e[0]!=in->init_bytes+64||e[1]!=e[0]||
+  (e[2]-e[1]!=96&&e[2]-e[1]!=100)||e[3]-e[2]!=52||e[4]!=e[3]||
+  e[5]-e[4]!=824||e[6]-e[5]!=40||
+  (e[7]-e[6]!=3508&&e[7]-e[6]!=3512)||
+  e[8]-e[7]!=64||e[9]!=e[8]||
+  e[9]-in->init_bytes>M9_FAA_FIRST_DEPTH_PREFIX_CAPACITY)return -EINVAL;
  if(e[9]-in->init_bytes+24*in->old_draw_count!=split||
   e[10]!=in->init_bytes+split||e[11]!=in->init_bytes+in->old_primary_bytes-12||
   e[12]!=e[11]||e[13]!=in->init_bytes+in->old_primary_bytes)return -EINVAL;

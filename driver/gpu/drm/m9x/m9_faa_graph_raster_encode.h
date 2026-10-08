@@ -25,4 +25,6 @@ struct m9x_faa_raster_output {
 };
 int m9x_faa_raster_encode(const struct m9x_faa_raster_input *input,
 			 const struct m9x_faa_raster_output *output);
+int m9x_faa_raster_two_encode(const struct m9x_faa_raster_input *input,
+			     const struct m9x_faa_raster_output *output);
 #endif

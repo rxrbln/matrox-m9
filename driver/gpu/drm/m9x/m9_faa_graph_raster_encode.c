@@ -28,9 +28,10 @@ static u32 moved(u32 at, const u32 insert[4], u32 count)
 	return at + delta;
 }
 
-int m9x_faa_raster_encode(const struct m9x_faa_raster_input *in,
-			 const struct m9x_faa_raster_output *out)
+static int raster_encode(const struct m9x_faa_raster_input *in,
+			 const struct m9x_faa_raster_output *out, bool two)
 {
+	u32 stages = two ? 2 : 4;
 	u32 launch[4], binding[4], insert[4], branches[3], targets[3];
 	u32 pointer[4], raster = 0, launches = 0, nb = 0, nr = 0, ni = 0;
 	u32 at, i, n, end, source, destination, continuation;
@@ -60,13 +61,13 @@ int m9x_faa_raster_encode(const struct m9x_faa_raster_input *in,
 		u32 value = get(in->secondary + at);
 		if ((value & 0xffff0000) == 0x49d00000) {
 			u32 distance = (value & 0xffff) * 4, target;
-			if (nb == 3 || !distance || check_add_overflow(at, distance, &target) || target >= n)
+			if (nb == (two ? 0 : 3) || !distance || check_add_overflow(at, distance, &target) || target >= n)
 				return -EINVAL;
 			branches[nb] = at; targets[nb++] = target;
 		}
 		if (value == 3 && n - at >= 24 &&
 		    get(in->secondary + at + 4) == 0x456c6b68) {
-			if (launches == 4 || get(in->secondary + at + 8) ||
+			if (launches == stages || get(in->secondary + at + 8) ||
 			    get(in->secondary + at + 12) != 0x1030)
 				return -EINVAL;
 			launch[launches] = at;
@@ -93,12 +94,14 @@ int m9x_faa_raster_encode(const struct m9x_faa_raster_input *in,
 			raster = at;
 		}
 	}
-	if (launches != 4 || nb != 3 || nr != 1 || binding[0] == ~0u || binding[3] == ~0u ||
-	    raster <= launch[2] || raster >= launch[3]) return -EINVAL;
+	if (launches != stages || nb != (two ? 0 : 3) || nr != 1 ||
+	    binding[0] == ~0u || binding[stages-1] == ~0u ||
+	    raster <= launch[stages-2] || raster >= launch[stages-1] ||
+	    (two && ni)) return -EINVAL;
 	for (at = 0; at < in->secondary_bytes; at += 4)
 		if (get(in->secondary + at) == 0x4545456a) {
-			for (i = 0; i < 4; i++) if (binding[i] == at + 4) break;
-			if (i == 4) return -EINVAL;
+			for (i = 0; i < stages; i++) if (binding[i] == at + 4) break;
+			if (i == stages) return -EINVAL;
 		}
 	/* Strict endpoints establish two complete consecutive indirect ranges.
 	 * Do not scan arbitrary address-looking words or rewrite other owners. */
@@ -148,7 +151,7 @@ int m9x_faa_raster_encode(const struct m9x_faa_raster_input *in,
 		destination += 12; source = insert[i];
 	}
 	memcpy(out->secondary + destination, in->secondary + source, in->secondary_bytes - source);
-	for (i = 0; i < 4; i++) if (binding[i] != ~0u)
+	for (i = 0; i < stages; i++) if (binding[i] != ~0u)
 		put(out->secondary + moved(binding[i], insert, ni),
 		    (get(in->secondary + binding[i]) & 0xffff) | continuation << 16);
 	for (i = 0; i < nb; i++)
@@ -164,4 +167,18 @@ int m9x_faa_raster_encode(const struct m9x_faa_raster_input *in,
 	    get(in->secondary + raster + 28) | (in->flags & M9_FAA_RASTER_FLAT ? 0x4000 : 0));
 	*out->secondary_bytes = n;
 	return 0;
+}
+
+int m9x_faa_raster_encode(const struct m9x_faa_raster_input *in,
+                         const struct m9x_faa_raster_output *out)
+{
+ return raster_encode(in,out,false);
+}
+
+/* Source FIRST count2 already has both resident6A bindings. No branch or
+ * insertion is borrowed from the four-stage retained state family. */
+int m9x_faa_raster_two_encode(const struct m9x_faa_raster_input *in,
+                             const struct m9x_faa_raster_output *out)
+{
+ return raster_encode(in,out,true);
 }
