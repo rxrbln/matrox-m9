@@ -21,7 +21,7 @@ int m9x_faa_first_depth_two_append(const struct m9x_faa_first_depth_two_append_i
  static const u32 tail_at[6]={128,184,320,3084,3540,3560};
  static const u32 tail_back[6]={0x20,0x10,0x10,0x10,0x20,0};
  static const u32 tail_tag[6]={1,1,0,0,0,1};
- u32 extra,old_extra,newsec,newprimary,split,minsec,maxsec,first,last,delta,at,i,e[14];
+ u32 extra,old_extra,newsec,newprimary,split,minsec,maxsec,first,last,delta,at,i,e[14],pages,groups_min,groups_max;
  u64 oldpoint,point;
  const u8 *s;
  if(!in||!out||!in->owner||!in->old_primary||!in->fresh_secondary||!in->old_ends||
@@ -53,13 +53,15 @@ int m9x_faa_first_depth_two_append(const struct m9x_faa_first_depth_two_append_i
   if(e[i]<in->init_bytes||e[i]>in->init_bytes+in->old_primary_bytes||(e[i]&3)||
    (i&&e[i]<e[i-1]))return -EINVAL;
  }
- /* Authenticate the shared live FIRST prefix by its producer stages,
-  * not the captured total8240. Each80-page SYSTEM clear can emit ten or
-  * eleven page-group words, independently changing the prefix by4B. */
+ /* INIT authenticates the admitted source shape; each full logical page
+  * interval has one word per eight-page group, including both edge masks. */
+ if(in->init_bytes!=4880&&in->init_bytes!=4884&&in->init_bytes!=5576)return -EINVAL;
+ pages=in->init_bytes==5576?769:80;
+ groups_min=(pages+7)/8;groups_max=(pages+14)/8;
  if(e[0]!=in->init_bytes+64||e[1]!=e[0]||
-  (e[2]-e[1]!=96&&e[2]-e[1]!=100)||e[3]-e[2]!=52||e[4]!=e[3]||
+  (e[2]-e[1]<56+groups_min*4||e[2]-e[1]>56+groups_max*4)||e[3]-e[2]!=52||e[4]!=e[3]||
   e[5]-e[4]!=824||e[6]-e[5]!=40||
-  (e[7]-e[6]!=3508&&e[7]-e[6]!=3512)||
+  (e[7]-e[6]<3468+groups_min*4||e[7]-e[6]>3468+groups_max*4)||
   e[8]-e[7]!=64||e[9]!=e[8]||
   e[9]-in->init_bytes>M9_FAA_FIRST_DEPTH_PREFIX_CAPACITY)return -EINVAL;
  if(e[9]-in->init_bytes+24*in->old_draw_count!=split||

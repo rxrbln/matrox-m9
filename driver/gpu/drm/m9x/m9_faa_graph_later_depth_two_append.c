@@ -51,7 +51,7 @@ int m9x_faa_later_depth_two_append_encode(
   sstart>owner[29].bytes||old_sec>owner[29].bytes-sstart||newsec>owner[29].bytes-sstart-old_sec||
   (u64)owner[29].base+sstart+old_sec+newsec>U32_MAX||owner[22].bytes<712||owner[8].bytes<20)return -ERANGE;
  front=old_bytes-3588-24*(count-1);
- if(clear?(front<4656||front>4664||(front&3)):front!=0)return -EINVAL;
+ if(clear?(front<4576+8*((views->owner[0].logical_bytes/4096+7)/8)||front>4576+8*((views->owner[0].logical_bytes/4096+14)/8)||(front&3)):front!=0)return -EINVAL;
  split=old_bytes-3564;point=old_point+0x60;
  for(i=0;i<end_count;i++){
   ends[i]=old_ends[i];if(ends[i]<pstart||ends[i]>pstart+old_bytes||(ends[i]&3)||(i&&ends[i]<ends[i-1]))return -EINVAL;

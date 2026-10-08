@@ -25,6 +25,7 @@ int m9x_faa_sample_clear_encode(const u8 *blob, size_t bytes,
  struct m9x_faa_depth_stage_image stages;
  const struct m9x_faa_depth_view *hz;
  u8 hash[32];
+ struct m9x_faa_surface_layout layout;
  u32 first, end, page, count, at, i;
  int ret;
 
@@ -42,8 +43,11 @@ int m9x_faa_sample_clear_encode(const u8 *blob, size_t bytes,
   * caller must have installed these same profiles in the preceding stages. */
  ret = m9x_faa_depth_stages_encode(views, 0x3f800000, &stages);
  if (ret) return ret;
- if ((owner[1].base & 4095) || owner[1].bytes < 0x50000 ||
-     (u64)owner[1].base + 0x50000 > 0x40000000u)
+ if (!m9x_faa_surface_layout(views->owner[M9_FAA_BOUND_COLOR].width,
+     views->owner[M9_FAA_BOUND_COLOR].height, &layout) ||
+     (owner[1].base & 4095) ||
+     owner[1].bytes < layout.owner[M9_FAA_SURFACE_PRIMARY].capacity ||
+     (u64)owner[1].base + owner[1].bytes > 0x40000000u)
   return -ERANGE;
  for (i = M9_FAA_DEPTH_HZ; i < M9_FAA_DEPTH_OWNERS; i++) {
   const struct m9x_faa_depth_view *v = &views->owner[i];
@@ -53,10 +57,13 @@ int m9x_faa_sample_clear_encode(const u8 *blob, size_t bytes,
  }
  hz = &views->owner[M9_FAA_DEPTH_HZ];
  first = owner[1].base >> 12;
- end = first + 80; /* admitted sampled profile: 320x240, 0x50000 logical */
+ /* b5ff5 reads resource+1bc, the logical clear extent. Spare backing
+  * pages remain opaque even when their allocation was pinned/mapped. */
+ end = first + layout.owner[M9_FAA_SURFACE_PRIMARY].logical / 4096;
  count = ((end + 7) >> 3) - (first >> 3);
  at = M9_FAA_SAMPLE_CLEAR_TEMPLATE_BYTES;
- if (capacity < at + count * 4 + 20)
+ if (count > M9_FAA_SAMPLE_CLEAR_MAX_GROUPS ||
+     capacity < at + count * 4 + 20)
   return -ERANGE;
 
  /* Remaining bytes are fixed commands/program for the admitted full black
@@ -69,8 +76,8 @@ int m9x_faa_sample_clear_encode(const u8 *blob, size_t bytes,
  put(primary + 68, ((u32)base_point + 0x60) | 1);
  put(primary + 76, hz->base | 1);
  put(primary + 80, 0xf0000000 | hz->storage_width);
- /* Native submit separately authenticates ownership/PTEs of this fixed
-  * SYSTEM virtual page. It is not a captured physical address. */
+ /* fa227/fa22c/fa235/fa23e publish this fixed E6/44 transition control.
+  * It is not a SYSTEM owner address or a dimension-dependent relocation. */
  put(primary + 168, 0x40004000);
  put(primary + 172, 0x40004000);
  put(primary + 204, (u32)base_point + 0x60);

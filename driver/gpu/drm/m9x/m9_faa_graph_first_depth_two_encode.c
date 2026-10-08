@@ -20,8 +20,8 @@ int m9x_faa_first_depth_two_encode(const u8 *sample,size_t sample_bytes,
   input->layout.program_count!=2||
   (input->declaration_count!=3&&input->declaration_count!=5)||
   init_point>~(u64)0-0x110||(u32)init_point>0xfffffeefu||
-  init_bytes>owner[27].bytes||owner[27].bytes-init_bytes<M9_FAA_FIRST_DEPTH_PREFIX_CAPACITY+3588||
-  primary_capacity<M9_FAA_FIRST_DEPTH_PREFIX_CAPACITY+3588||secondary_capacity<1352+(input->declaration_count==5?24:0))
+  init_bytes>owner[27].bytes||owner[27].bytes-init_bytes<m9x_faa_first_depth_prefix_bound(views)+3588||
+  primary_capacity<m9x_faa_first_depth_prefix_bound(views)+3588||secondary_capacity<1352+(input->declaration_count==5?24:0))
   return -EINVAL;
  if(input->depth_flags&&!m9x_faa_depth_flags_valid(input->depth_flags))return -EINVAL;
  ret=m9x_faa_depth_stages_encode(views,0x3f800000,&(struct m9x_faa_depth_stage_image){0});

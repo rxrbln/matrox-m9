@@ -72,10 +72,11 @@ static u32 ef(u32 targets,u32 role){for(u32 i=1;i<targets;i++)role|=0x80000<<(2*
 int m9x_faa_color_four_encode(const u8*blob,size_t bytes,const struct m9x_faa_graph_draw_owner owner[31],
  u32 init_bytes,u64 init_point,const struct m9x_faa_color_input*in,const struct m9x_faa_color_image*out)
 {
+ struct m9x_faa_surface_layout dimensions;
  u32 i,j,raw,padded,geo,groups,secondary,arity,gatherbytes,pairs,address,offset,value;u16 carry_mask;int extra;
  if(!in||!out||!owner||!in->program||!in->constants||!in->geometry||!in->declaration||
  !out->program||!out->constants||!out->primary||!out->secondary||!out->secondary_length||
- !m9x_faa_color_four_template_valid(blob,bytes)||(init_bytes!=4880&&init_bytes!=4884)||
+ !m9x_faa_color_four_template_valid(blob,bytes)||!m9x_faa_color_dimensions(in,init_bytes,&dimensions)||
  (init_point&15)||(u32)init_point<0xb0||(u32)init_point>U32_MAX-0xf0||
  in->layout.program_count!=4||!in->layout.program_bytes||in->layout.program_bytes>4096||(in->layout.program_bytes&7)||
  in->layout.entry_bytes[0]||!in->layout.constants_bytes||in->layout.constants_bytes>16384||(in->layout.constants_bytes&7)||
@@ -119,7 +120,7 @@ int m9x_faa_color_four_encode(const u8*blob,size_t bytes,const struct m9x_faa_gr
   if((get(in->geometry+128+i*in->record_stride+4*j)&0x7f800000)==0x7f800000)return -ERANGE;
  groups=(in->declaration_count+3)/4;extra=((int)groups-2)*24;secondary=2712+extra;
  geo=(in->layout.constants_bytes+127)&~127u;padded=(in->record_count+3)&~3u;
- if(m9x_faa_graph_draw_owners_validate(owner)||init_bytes>owner[27].bytes||owner[27].bytes-init_bytes<3696||
+ if(m9x_faa_graph_draw_owners_validate(owner)||!m9x_faa_color_dimension_owners(owner,&dimensions)||init_bytes>owner[27].bytes||owner[27].bytes-init_bytes<3696||
  owner[26].bytes<in->layout.program_bytes||owner[28].bytes-in->data_offset<geo+128+padded*in->record_stride||owner[29].bytes<secondary||
  out->program_bytes<in->layout.program_bytes||out->constants_bytes<geo+128+padded*in->record_stride||out->primary_bytes<3696||out->secondary_bytes<secondary)return -ERANGE;
  /* Dry-run domains/offsets before the first destination change. */
@@ -162,7 +163,14 @@ int m9x_faa_color_four_encode(const u8*blob,size_t bytes,const struct m9x_faa_gr
   put(f->dst==27?out->primary+f->at:out->secondary+moved(f->at,extra),value);
  }
  for(i=0;i<ARRAY_SIZE(tokens);i++)put(tokens[i].dst==27?out->primary+tokens[i].at:out->secondary+moved(tokens[i].at,extra),((u32)init_point+tokens[i].delta)|tokens[i].tag);
- for(i=0;i<ARRAY_SIZE(dims);i++)put(dims[i].a==27?out->primary+dims[i].b:out->secondary+moved(dims[i].b,extra),(240u<<16)|320u);
+ for(i=0;i<ARRAY_SIZE(dims);i++)put(dims[i].a==27?out->primary+dims[i].b:out->secondary+moved(dims[i].b,extra),(dimensions.height<<16)|dimensions.width);
+ put(out->primary+320,0xf0210000u|dimensions.width);
+ put(out->primary+3348,0xf0220000u|dimensions.width);
+ put(out->primary+3352,0x00010000u|dimensions.height);
+ put(out->secondary+moved(2064,extra),dimensions.primary_descriptor);
+ put(out->secondary+moved(2080,extra),dimensions.companion_descriptor);
+ put(out->secondary+moved(2096,extra),dimensions.hz_descriptor);
+ for(i=0;i<4;i++)put(out->secondary+moved(2168+i*4,extra),dimensions.ad);
  {const u32 slot[]={28,704,1316},target[]={660,1280,1828};for(i=0;i<3;i++)put(out->secondary+moved(slot[i],extra),0x49d00000|((moved(target[i],extra)-moved(slot[i],extra))/4));}
  {const u32 c2[]={2344,352,980,1592},c3[]={2360,368,996,1608};for(i=0;i<4;i++){
   put(out->secondary+moved(c2[i],extra),in->layout.entry_bytes[i]/8);pairs=(in->layout.constant_end[i]-in->layout.constant_begin[i])/8;

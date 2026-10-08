@@ -2,6 +2,7 @@
 #ifndef M9_FAA_GRAPH_COLOR_ENCODE_H
 #define M9_FAA_GRAPH_COLOR_ENCODE_H
 #include "m9_faa_graph_draw_encode.h"
+#include "m9_faa_graph_surface_layout.h"
 #include "m9_faa_depth_state.h"
 #define M9_FAA_COLOR_PROGRAM_BYTES 296u
 #define M9_FAA_COLOR_CONSTANT_BYTES 136u
@@ -29,7 +30,32 @@ struct m9x_faa_color_input {
  u32 fragment_flags;
  /* Owned API comparison/write state, not a captured A8 word. */
  u32 depth_flags;
+ /* Immutable retained graph geometry, populated by native preparation.
+  * Zero/zero is reserved for historical 320 source fixtures. */
+ u32 width,height;
 };
+static inline int m9x_faa_color_dimensions(const struct m9x_faa_color_input *in,
+ u32 init_bytes,struct m9x_faa_surface_layout *layout)
+{
+ u32 width=in->width,height=in->height;
+ if(!width&&!height){width=320;height=240;}
+ if(!((width==320&&height==240)||(width==1024&&height==768))||
+  !m9x_faa_surface_layout(width,height,layout))return 0;
+ /* Original INIT length includes the live companion page run. */
+ return width==320?(init_bytes==4880||init_bytes==4884):init_bytes==5576;
+}
+static inline int m9x_faa_color_dimension_owners(
+ const struct m9x_faa_graph_draw_owner *owner,
+ const struct m9x_faa_surface_layout *layout)
+{
+ static const u32 roles[]={1,2,3,4,5,8};
+ for(u32 i=0;i<M9_FAA_SURFACE_ROLES;i++){
+  u32 need=(i==M9_FAA_SURFACE_MAIN||i==M9_FAA_SURFACE_AUXILIARY)?
+   layout->owner[i].logical:layout->owner[i].capacity;
+  if(owner[roles[i]].bytes<need)return 0;
+ }
+ return 1;
+}
 struct m9x_faa_color_image {
  u8 *program,*constants,*primary,*secondary;
  u32 program_bytes,constants_bytes,primary_bytes,secondary_bytes;

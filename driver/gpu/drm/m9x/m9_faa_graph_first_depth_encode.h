@@ -4,8 +4,19 @@
 #include "m9_faa_graph_depth_encode.h"
 #include "m9_faa_graph_sample_clear_encode.h"
 #include "m9_faa_graph_color_encode.h"
-#define M9_FAA_FIRST_DEPTH_PREFIX_CAPACITY 4656u
+#define M9_FAA_FIRST_DEPTH_PREFIX_CAPACITY 5344u
 #define M9_FAA_FIRST_DEPTH_PREFIX_ENDS 10u
+static inline u32 m9x_faa_first_depth_prefix_bound(const struct m9x_faa_depth_views *views)
+{
+ struct m9x_faa_surface_layout layout;
+ u32 color_groups,sample_groups;
+ if(!views||!m9x_faa_surface_layout(views->owner[M9_FAA_BOUND_COLOR].width,
+  views->owner[M9_FAA_BOUND_COLOR].height,&layout))return 0;
+ color_groups=(views->owner[M9_FAA_BOUND_COLOR].logical_bytes/4096+14)/8;
+ sample_groups=(layout.owner[M9_FAA_SURFACE_PRIMARY].logical/4096+14)/8;
+ return 64+56+color_groups*4+52+(M9_FAA_DEPTH_CLEAR_BYTES-8)+
+  M9_FAA_SAMPLE_CLEAR_TEMPLATE_BYTES+sample_groups*4+20-8+64;
+}
 struct m9x_faa_first_depth_scratch {
  struct m9x_faa_depth_clear_image depth;
  u8 sample[M9_FAA_SAMPLE_CLEAR_CAPACITY];

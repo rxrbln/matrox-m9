@@ -3,14 +3,19 @@
 #include <linux/errno.h>
 #include <linux/string.h>
 #include "m9_faa_graph_present_encode.h"
+#include "m9_faa_graph_surface_layout.h"
 
 static bool view_valid(const struct m9x_faa_present_view *v, bool source)
 {
  u64 end;
+ struct m9x_faa_surface_layout layout;
  if (!v || !v->gpu_base || (v->gpu_base & 0xfff) ||
-     v->width != 320 || v->height != 240 || v->span != 320 ||
-     v->bytes != 0x50000 || v->descriptor1 != 0x000100f0 ||
-     v->descriptor0 != (source ? 0xf0220140u : 0xcc210140u))
+     !m9x_faa_runtime_shape(v->width,v->height) ||
+     !m9x_faa_surface_layout(v->width,v->height,&layout) ||
+     v->span != layout.primary.allocation_width ||
+     v->bytes != (source?layout.owner[0].capacity:layout.owner[0].logical) ||
+     v->descriptor1 != (0x10000u|v->height) ||
+     v->descriptor0 != ((source?0xf0220000u:0xcc210000u)|v->span))
   return false;
  end=(u64)v->gpu_base+v->bytes;
  return end <= 0x100000000ULL;
@@ -28,6 +33,7 @@ int m9x_faa_present_encode(const struct m9x_faa_present_view *source,
   0,0,0,0,0x4545fcef,0xaa,0,0x4545e3e6,1,0,
  };
  if (!out || !view_valid(source,true) || !view_valid(destination,false) ||
+     source->width!=destination->width || source->height!=destination->height ||
      !unlock_point || (low & 15) || low > 0xffffffcfu ||
      unlock_point > (~(u64)0)-0x20 ||
      ((u64)source->gpu_base < (u64)destination->gpu_base+destination->bytes &&

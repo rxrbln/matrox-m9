@@ -5,7 +5,7 @@
 #include "m9_faa_graph_depth_encode.h"
 #include "m9_faa_graph_sample_clear_encode.h"
 #define M9_FAA_LATER_DEPTH_OWNERS 34u
-#define M9_FAA_LATER_DEPTH_PREFIX_CAPACITY 4736u
+#define M9_FAA_LATER_DEPTH_PREFIX_CAPACITY 5424u
 #define M9_FAA_LATER_DEPTH_PRIMARY_CAPACITY (M9_FAA_LATER_DEPTH_PREFIX_CAPACITY+3632u)
 #define M9_FAA_LATER_DEPTH_ENDS 13u
 struct m9x_faa_later_depth_scratch {

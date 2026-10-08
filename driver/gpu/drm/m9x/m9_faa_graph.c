@@ -1021,20 +1021,24 @@ int m9x_faa_graph_present_ioctl(struct drm_device *drm,void *data,struct drm_fil
  struct m9_faa_prepared_graph *graph;struct m9_faa_graph_binding *binding=NULL;
  struct drm_gem_object *destination=NULL;struct drm_exec exec;
  struct m9x_faa_present_view view;u32 address[PARHELIA_M9_FAA_GRAPH_OWNERS],i;
+ struct m9x_faa_surface_layout layout;
  u64 u=0,p=0,end; s64 offset;bool pinned=false,posted=false;int idx,ret;
  if(!state||!a->graph_id||!a->destination_handle||!a->lock_point||
   (a->lock_point&15)||a->lock_point>U64_MAX-0x40||a->unlock_point||a->present_point||
   a->flags||a->state||a->pad[0]||a->pad[1]||a->pad[2])return -EINVAL;
- if(a->width!=320||a->height!=240||a->descriptor0!=0xcc210140||
-  a->descriptor1!=0x100f0||!IS_ALIGNED(a->destination_offset,PAGE_SIZE))return -EOPNOTSUPP;
+ if(!m9x_faa_runtime_shape(a->width,a->height)||
+  !m9x_faa_surface_layout(a->width,a->height,&layout)||
+  a->descriptor0!=(0xcc210000u|layout.primary.allocation_width)||
+  a->descriptor1!=(0x10000u|a->height)||!IS_ALIGNED(a->destination_offset,PAGE_SIZE))return -EOPNOTSUPP;
  if(!m9x_faa_graph_profile_enabled())return -EOPNOTSUPP;
  if(!drm_dev_enter(drm,&idx))return -ENODEV;
  mutex_lock(&state->lock);graph=state->graph;
  if(!graph||!graph->initialized||graph->id!=a->graph_id||graph->generation!=a->generation){ret=-ENOENT;goto out;}
+ if(graph->layout.width!=a->width||graph->layout.height!=a->height){ret=-ESTALE;goto out;}
  destination=drm_gem_object_lookup(file,a->destination_handle);
  if(!destination){ret=-ENOENT;goto out;}
  if(!m9x_gem_is_vram(destination)||!m9x_gem_vram_tiled(destination)||
-  check_add_overflow((u64)a->destination_offset,0x50000ULL,&end)||end>destination->size){ret=-EINVAL;goto out;}
+  check_add_overflow((u64)a->destination_offset,(u64)layout.owner[0].logical,&end)||end>destination->size){ret=-EINVAL;goto out;}
  for(i=0;i<PARHELIA_M9_FAA_GRAPH_OWNERS;i++)
   if(destination==graph->owner[i]){ret=-EINVAL;goto out;}
  ret=m9x_gem_vram_pin(destination);if(ret)goto out;pinned=true;
@@ -1050,8 +1054,8 @@ int m9x_faa_graph_present_ioctl(struct drm_device *drm,void *data,struct drm_fil
  ret=m9_faa_graph_live_addresses(mdev,graph,address);if(ret)goto out_exec;
  offset=m9x_gem_vram_offset(destination);
  if(offset<0||!m9_faa_graph_local_span(M9_VRAM_GPU_BASE,offset+a->destination_offset,
-  0x50000,m9x_vram_gpu_limit(mdev),&view.gpu_base)){ret=-ESTALE;goto out_exec;}
- view.bytes=0x50000;view.width=a->width;view.height=a->height;view.span=320;
+  layout.owner[0].logical,m9x_vram_gpu_limit(mdev),&view.gpu_base)){ret=-ESTALE;goto out_exec;}
+ view.bytes=layout.owner[0].logical;view.width=a->width;view.height=a->height;view.span=layout.primary.allocation_width;
  view.descriptor0=a->descriptor0;view.descriptor1=a->descriptor1;
  for(i=0;i<PARHELIA_M9_FAA_GRAPH_OWNERS;i++) {
   if((u64)view.gpu_base<(u64)address[i]+graph->owner[i]->size&&
@@ -1795,7 +1799,7 @@ static int m9_faa_graph_depth_frame_ioctl(struct drm_device *drm,
  if(!m9x_faa_graph_depth_frame_profile_qualified(first))return -EOPNOTSUPP;
  if(!state||args->flags&~PARHELIA_M9_FAA_COLOR_FRAME_FIRST||
   args->clear_flags!=3||args->clear_color||!m9x_faa_depth_flags_valid(args->depth_flags)||(!first&&(args->raster_flags&1))||(args->raster_flags&~7u)||(args->raster_flags&6)==6||
-  args->width!=320||args->height!=240||
+  !m9x_faa_runtime_shape(args->width,args->height)||
   (args->layout.program_count!=2&&args->layout.program_count!=4)||
   !args->upload||!args->upload_bytes||args->upload_bytes>0x42000||
   !args->declaration_count||args->declaration_count>31||args->previous_point>U64_MAX-0x1a0)
@@ -1814,7 +1818,7 @@ static int m9_faa_graph_depth_frame_ioctl(struct drm_device *drm,
    m9x_faa_graph_depth_unlocked_get_locked(mdev,args->generation,args->previous_point,&binding):
    m9x_faa_graph_color_unlocked_get_locked(mdev,args->generation,args->previous_point,&binding));
  mutex_unlock(&mdev->transport.lock);if(ret)goto out_binding;
- if(binding->graph!=graph){ret=-ESTALE;goto out_binding;}
+ if(binding->graph!=graph||args->width!=graph->layout.width||args->height!=graph->layout.height){ret=-ESTALE;goto out_binding;}
  upload=memdup_user(u64_to_user_ptr(args->upload),args->upload_bytes);
  if(IS_ERR(upload)){ret=PTR_ERR(upload);upload=NULL;goto out_binding;}
  memset(&input,0,sizeof(input));memcpy(&input.layout,&args->layout,sizeof(input.layout));

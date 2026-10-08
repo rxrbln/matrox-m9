@@ -24,7 +24,7 @@ int m9x_faa_first_depth_prefix_encode(const u8 *blob,size_t bytes,
  ret=m9x_faa_sample_clear_encode(blob,bytes,owner,views,init_point,
   scratch->sample,sizeof(scratch->sample),&sample_bytes);if(ret)return ret;
  if(owner[8].bytes<128)return -ERANGE;
- color=&views->owner[M9_FAA_BOUND_COLOR];page=color->base>>12;last=page+80;
+ color=&views->owner[M9_FAA_BOUND_COLOR];page=color->base>>12;last=page+color->logical_bytes/4096;
  count=((last+7)>>3)-(page>>3);
  /* Source FIRST removes one unused C0 pair from each constructor. The
   * fresh target slot starts disabled and HZ's default null descriptor is
@@ -89,8 +89,8 @@ int m9x_faa_first_depth_encode(const u8 *sample,size_t sample_bytes,
   (input->declaration_count!=3&&input->declaration_count!=5)||
   init_point>~(u64)0-0x150||(u32)init_point>0xfffffeafu||
   init_bytes>owner[27].bytes||owner[27].bytes-init_bytes<
-   M9_FAA_FIRST_DEPTH_PREFIX_CAPACITY+M9_FAA_COLOR_PRIMARY_BYTES-64||
-  primary_capacity<M9_FAA_FIRST_DEPTH_PREFIX_CAPACITY+M9_FAA_COLOR_PRIMARY_BYTES-64||
+   m9x_faa_first_depth_prefix_bound(views)+M9_FAA_COLOR_PRIMARY_BYTES-64||
+  primary_capacity<m9x_faa_first_depth_prefix_bound(views)+M9_FAA_COLOR_PRIMARY_BYTES-64||
   secondary_capacity<M9_FAA_COLOR_SECONDARY_CAPACITY)return -EINVAL;
  if(input->depth_flags&&!m9x_faa_depth_flags_valid(input->depth_flags))return -EINVAL;
  ret=m9x_faa_depth_stages_encode(views,0x3f800000,

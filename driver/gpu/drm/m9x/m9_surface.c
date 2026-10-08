@@ -224,11 +224,12 @@ static int m9_surface_check(const struct drm_parhelia_m9_surface_access *args,
 		 * read of the retired, source-qualified borrowed owner may use it. */
 		view->lock_cpu_view = (m9x_faa_diag_enabled() ||
 			m9x_faa_graph_profile_enabled()) &&
-			d0 == 0xf0210140 && d1 == 0x00010100 &&
+			((d0 == 0xf0210140 && d1 == 0x00010100 &&
+              args->surface_width == 320 && args->width == 320 && args->height == 240) ||
+             (d0 == 0xf0210400 && d1 == 0x00010300 &&
+              args->surface_width == 1024 && args->width == 1024 && args->height == 768)) &&
 			args->op == PARHELIA_M9_ACCESS_READ &&
-			args->surface_width == 320 && args->width == 320 &&
-			args->height == 240 && !args->x && !args->y &&
-			args->data_stride == 1280;
+			!args->x && !args->y && args->data_stride == args->width * 4;
 		view->captured_cpu_view |= view->lock_cpu_view;
 
 		if ((!faa_probe && !view->captured_cpu_view &&
@@ -314,8 +315,8 @@ static int m9_surface_access(struct m9x_device *mdev, struct drm_file *file,
 	if (texture)
 		min_size = (u64)args->offset + view.bytes;
 	else if (view.captured_cpu_view)
-		/* The observed primary is exactly 0x50000 allocated bytes;
-		 * padded host height is not a new logical render height. */
+		/* The selector window is independently bounded below; native Lock
+		 * admission checks the complete retained backing allocation. */
 		min_size = view.bytes;
 	else if (!m9x_surface_layout_bytes(args->surface_width, view.height, 4,
 					  &min_size))
@@ -501,7 +502,11 @@ int m9x_surface_selftest(void)
 	if (m9_surface_check(&args, &view) != -EINVAL)
 		return -EINVAL;
 	args.descriptor0 = 0xf0210400;
-	if (m9_surface_check(&args, &view) != -EINVAL)
+	if (m9x_faa_diag_enabled() || m9x_faa_graph_profile_enabled()) {
+		if (m9_surface_check(&args, &view) || !view.lock_cpu_view ||
+		    view.bytes != 0x300000 || view.height != 768)
+			return -EINVAL;
+	} else if (m9_surface_check(&args, &view) != -EINVAL)
 		return -EINVAL;
 	/* The two 10-bit GigaColor codes share the 32-bit storage class. */
 	args.descriptor0 = 0xd0210400;

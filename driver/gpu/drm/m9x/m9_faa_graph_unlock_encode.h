@@ -4,11 +4,12 @@
 #define M9_FAA_GRAPH_UNLOCK_ENCODE_H
 #include <linux/types.h>
 #include <linux/errno.h>
+#include "m9_faa_graph_surface_layout.h"
 #define M9_FAA_UNLOCK_PRIMARY_BYTES 96u
 #define M9_FAA_UNLOCK_FIRST_POST_BYTES 84u
 /* RE4f005ade: public Unlock's F021 -> F022 copy and separate finish.
  * The descriptor modes and copy state below are source-proven only for the
- * admitted 320x240 graph. Both typed operands alias the retained primary;
+ * admitted source geometry. Both typed operands alias the retained primary;
  * addresses, dimensions and timeline words are always live inputs.
  * Admission is atomic: no output writes occur on an invalid request. */
 static inline int m9x_faa_graph_unlock_encode(u32 base, u64 bytes,
@@ -20,10 +21,13 @@ static inline int m9x_faa_graph_unlock_encode(u32 base, u64 bytes,
 		0xf2f37978, 0, 0, 0, 0, 0x4545fcef, 0xaa, 0,
 		0x4545e3e6, 1, 0,
 	};
+	struct m9x_faa_surface_layout layout;
 	u32 i;
 
 	if (!out || out_bytes < M9_FAA_UNLOCK_PRIMARY_BYTES ||
-	    width != 320 || height != 240 || bytes != 0x50000 ||
+	    !m9x_faa_runtime_shape(width,height) ||
+	    !m9x_faa_surface_layout(width,height,&layout) ||
+	    bytes != layout.owner[M9_FAA_SURFACE_PRIMARY].capacity ||
 	    (base & 4095) || (u64)base + bytes > 0x100000000ull ||
 	    (lock_point & 15) || (u32)lock_point < 0x170 ||
 	    (u32)lock_point > 0xffffffcfu)

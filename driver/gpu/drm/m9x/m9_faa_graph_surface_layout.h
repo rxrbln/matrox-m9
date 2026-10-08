@@ -81,4 +81,10 @@ static inline int m9x_faa_surface_layout(u32 width,u32 height,
   .logical=128,.backing=128,.capacity=4096};
  *out=v;return 1;
 }
+/* Source selector1 reads allocation geometry (467e0+46838/469f1),
+ * independently of logical clear bytes and spare backing pages. */
+static inline u32 m9x_faa_primary_window_bytes(const struct m9x_faa_surface_layout *layout)
+{return layout->primary.allocation_width*layout->primary.allocation_height*4u;}
+static inline int m9x_faa_runtime_shape(u32 width,u32 height)
+{return (width==320&&height==240)||(width==1024&&height==768);}
 #endif

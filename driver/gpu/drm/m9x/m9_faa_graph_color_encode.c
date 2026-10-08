@@ -47,13 +47,14 @@ int m9x_faa_color_encode(const u8*blob,size_t bytes,
  const struct m9x_faa_graph_draw_owner owner[31],u32 init_bytes,u64 init_point,
  const struct m9x_faa_color_input*in,const struct m9x_faa_color_image*out)
 {
+ struct m9x_faa_surface_layout dimensions;
  u32 padded,extra,secondary,offset,address,value,i,j,pairs,raw,padded_records,geometry_offset;u16 fused_mask;
  if(in&&in->layout.program_count==4)return m9x_faa_color_four_encode(blob,bytes,owner,init_bytes,init_point,in,out);
  if(in&&((in->data_offset&127)||(in->fragment_flags&~1u)))return -EINVAL;
  if(!in||!out||!owner||!in->program||!in->constants||!in->geometry||!in->declaration||
   !out->program||!out->constants||!out->primary||!out->secondary||!out->secondary_length||
   !m9x_faa_color_template_valid(blob,bytes)||
-  (init_bytes!=4880&&init_bytes!=4884)||(init_point&15)||(u32)init_point<0xb0||(u32)init_point>U32_MAX-0xb0||
+  !m9x_faa_color_dimensions(in,init_bytes,&dimensions)||(init_point&15)||(u32)init_point<0xb0||(u32)init_point>U32_MAX-0xb0||
   in->layout.program_count!=2||in->layout.program_bytes>4096||(in->layout.program_bytes&7)||
   in->layout.program_bytes<16||in->layout.entry_bytes[0]||!in->layout.entry_bytes[1]||
   (in->layout.entry_bytes[1]&7)||in->layout.entry_bytes[1]>=in->layout.program_bytes||
@@ -88,7 +89,7 @@ int m9x_faa_color_encode(const u8*blob,size_t bytes,
  padded=(in->declaration_count+3)&~3u;extra=(padded/4-1)*24;secondary=1352+extra;
  padded_records=(in->record_count+3)&~3u;
  geometry_offset=(in->layout.constants_bytes+127)&~127u;
- if(m9x_faa_graph_draw_owners_validate(owner)||init_bytes>owner[27].bytes||owner[27].bytes-init_bytes<3652||
+ if(m9x_faa_graph_draw_owners_validate(owner)||!m9x_faa_color_dimension_owners(owner,&dimensions)||init_bytes>owner[27].bytes||owner[27].bytes-init_bytes<3652||
   owner[26].bytes<in->layout.program_bytes||owner[29].bytes<secondary+560||
   in->data_offset>owner[28].bytes||owner[28].bytes-in->data_offset<geometry_offset+128+padded_records*in->record_stride||
   out->program_bytes<in->layout.program_bytes||out->constants_bytes<geometry_offset+128+padded_records*in->record_stride||
@@ -136,7 +137,17 @@ int m9x_faa_color_encode(const u8*blob,size_t bytes,
  for(i=0;i<ARRAY_SIZE(tokens);i++)put(tokens[i].dst==27?out->primary+tokens[i].at:
   out->secondary+moved(tokens[i].at,extra),((u32)init_point+tokens[i].delta)|tokens[i].tag);
  for(i=0;i<ARRAY_SIZE(dims);i++)put(dims[i].dst==27?out->primary+dims[i].at:
-  out->secondary+moved(dims[i].at,extra),(240u<<16)|320u);
+  out->secondary+moved(dims[i].at,extra),(dimensions.height<<16)|dimensions.width);
+ /* Selector9/13/12 source descriptors are dimension fields, separate
+  * from their preceding live resource addresses. AD derives from the
+  * main resource logical extent; it is not a command-buffer capacity. */
+ put(out->primary+284,0xf0210000u|dimensions.width);
+ put(out->primary+3312,0xf0220000u|dimensions.width);
+ put(out->primary+3316,0x00010000u|dimensions.height);
+ put(out->secondary+moved(804,extra),dimensions.primary_descriptor);
+ put(out->secondary+moved(820,extra),dimensions.companion_descriptor);
+ put(out->secondary+moved(836,extra),dimensions.hz_descriptor);
+ for(i=0;i<4;i++)put(out->secondary+moved(908+i*4,extra),dimensions.ad);
  put(out->secondary+308,in->layout.entry_bytes[1]/8);put(out->secondary+moved(1084,extra),in->layout.entry_bytes[0]/8);
  for(i=0;i<2;i++){offset=i?324:1100;pairs=(in->layout.constant_end[i]-in->layout.constant_begin[i])/8;
   put(out->secondary+moved(offset,extra),0x00500000|pairs<<8);}

@@ -26,7 +26,7 @@ static int prefix(const u8*sample,size_t sample_bytes,
  put(s->sample+3020,0);
  /* Original initialized count2 keeps sampled primary in target slot0;
   * neither FIRST's disabled slot nor count4's graph-sentinel HZ view. */
- put(s->sample+3104,owner[1].base|1);put(s->sample+3108,0xf0210140);put(s->sample+3112,0x000100f0);
+ put(s->sample+3104,owner[1].base|1);put(s->sample+3108,0xf0210000|v->owner[0].width);put(s->sample+3112,0x10000|v->owner[0].height);
  put(s->sample+856*4,0x2e00040c);
  memmove(s->sample+793*4,s->sample+795*4,n-795*4);n-=8;
  color=s->attachment.end_bytes[0];

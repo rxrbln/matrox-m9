@@ -622,8 +622,8 @@ static int m9_faa_graph_continuation_state(
 	    !t->engine_transitioned || !t->restore_ready || !t->fence_cpu ||
 	    t->async_stop || t->async_pending || t->queue_count)
 		return -EBUSY;
-	/* INIT dimensions do not qualify the separate DRAW/Lock producers. */
-	if (r->graph_layout.width != 320 || r->graph_layout.height != 240)
+	/* Separate typed DRAW/clear/Lock producers admit these closed shapes. */
+	if (!m9x_faa_runtime_shape(r->graph_layout.width,r->graph_layout.height))
 		return -EOPNOTSUPP;
 	return 0;
 }
@@ -1280,11 +1280,15 @@ int m9x_faa_graph_color_prepare(struct m9x_device *mdev,
 	struct m9x_faa_graph_draw_owner owner[M9_FAA_DRAW_SOURCE_OWNERS];
 	struct m9x_faa_color_image image;
 	const struct firmware *fw = NULL;
+	struct m9x_faa_color_input typed_input;
+	struct m9x_faa_surface_layout layout;
 	u32 i;
 	int ret;
 
 	if (!binding || !input)
 		return -EINVAL;
+ if(!m9x_faa_graph_binding_layout(binding,&layout))return -ESTALE;
+ typed_input=*input;typed_input.width=layout.width;typed_input.height=layout.height;input=&typed_input;
  if(input->layout.program_count==4&&!m9_faa_color_four_experimental)return -EOPNOTSUPP;
 	ret = request_firmware(&fw, input->layout.program_count==4?M9_FAA_GRAPH_COLOR_FOUR_FIRMWARE:M9_FAA_GRAPH_COLOR_FIRMWARE,
 			       &mdev->pdev->dev);
@@ -4109,10 +4113,10 @@ int m9x_faa_lock_view_admit_locked(struct m9x_device *mdev,
 	s64 offset;
 
 	lockdep_assert_held(&t->lock);
-	/* Actual normal Lock returned after its 170 receipt: staging and
-	 * primary share owner1, with F021/320x256 CPU view and pitch1280.
-	 * Only this retained primary and this exact same-graph point qualify. */
-	if (!color || bytes != 0x50000 || m9x_local_gpu_base)
+	/* The source normal Lock staging and primary share owner1. The typed
+	 * descriptor window is distinct from backing capacity, and this exact
+	 * same-graph retirement point authenticates access. */
+	if (!color || m9x_local_gpu_base)
 		return -EOPNOTSUPP;
 	if (t->async_stop)
 		return -ENODEV;
@@ -4130,6 +4134,7 @@ int m9x_faa_lock_view_admit_locked(struct m9x_device *mdev,
 	    t->async_pending || t->queue_count || !t->transport_armed ||
 	    !t->bus_master_enabled || !t->faa_source_context || !t->faa_virtual_primary)
 		return -ENODATA;
+ if(bytes!=m9x_faa_primary_window_bytes(&r->graph_layout))return -EOPNOTSUPP;
 	/* The second normal Lock uses the exact same source mapper/format but
 	 * has its own actual retirement marker and full retained cursor join.
 	 * Unlock/preprocessing/rendering receipts alone never admit F021. */
@@ -4180,11 +4185,12 @@ int m9x_faa_lock_view_admit_locked(struct m9x_device *mdev,
 	    !m9x_faa_graph_binding_address(r->graph_binding, PARHELIA_M9_FAA_PRIMARY,
 					 &bound, &source) || source != 1 ||
 	    bound != base || r->owner[source].base != base ||
-	    r->owner[source].bytes != bytes || color->bo.base.size != bytes)
+	    r->owner[source].bytes != r->graph_layout.owner[M9_FAA_SURFACE_PRIMARY].capacity ||
+	    color->bo.base.size != r->owner[source].bytes)
 		return -ESTALE;
 	offset = drm_gem_vram_offset(color);
 	if (offset < 0 || (u64)offset != base || !IS_ALIGNED(base, PAGE_SIZE) ||
-	    bytes > (u64)U32_MAX + 1 - base)
+	    r->owner[source].bytes > (u64)U32_MAX + 1 - base)
 		return -ESTALE;
 	return 0;
 #elif defined(M9_FAA_PREPARED_FLOW_CONTROL) && defined(M9_FAA_NORMAL_LOCK_CPU_VIEW)
@@ -4249,7 +4255,7 @@ int m9x_faa_lock_view_observed_locked(struct m9x_device *mdev,
 	if (!r)
 		return -ENODATA;
 	ret = m9x_faa_lock_view_admit_locked(mdev, color,
-			r->owner[1].base, r->owner[1].bytes);
+			r->owner[1].base, m9x_faa_primary_window_bytes(&r->graph_layout));
 	if (!ret) {
 		if (r->public_vs_next_lock_retired)
 			r->public_vs_next_view_seen = true;
@@ -4308,7 +4314,7 @@ int m9x_faa_graph_unlock_get_locked(struct m9x_device *mdev,
 	if (!gem || !m9x_gem_is_vram(gem))
 		return -ESTALE;
 	ret = m9x_faa_lock_view_admit_locked(mdev, drm_gem_vram_of_gem(gem),
-			r->owner[1].base, r->owner[1].bytes);
+			r->owner[1].base, m9x_faa_primary_window_bytes(&r->graph_layout));
 	if (!ret)
 		*out = m9x_faa_graph_binding_get(r->graph_binding);
 	return ret;
@@ -4377,7 +4383,7 @@ int m9x_faa_graph_unlock_submit(struct m9x_device *mdev,
 		goto out;
 	}
 	ret = m9x_faa_graph_unlock_encode(r->owner[1].base, r->owner[1].bytes,
-			320, 240, lock_point, image, sizeof(image));
+			r->graph_layout.width, r->graph_layout.height, lock_point, image, sizeof(image));
 	if (ret)
 		goto out;
 	target = lower_32_bits(lock_point) + 0x20;
@@ -4472,7 +4478,7 @@ int m9x_faa_graph_present_get_locked(struct m9x_device *mdev,u32 generation,
   r->color_lock_point!=lock_point||r->unlock_started)return -ESTALE;
  gem=m9x_faa_graph_binding_owner(r->graph_binding,PARHELIA_M9_FAA_PRIMARY);
  if(!gem||!m9x_gem_is_vram(gem))return -ESTALE;
- ret=m9x_faa_lock_view_admit_locked(mdev,drm_gem_vram_of_gem(gem),r->owner[1].base,r->owner[1].bytes);
+ ret=m9x_faa_lock_view_admit_locked(mdev,drm_gem_vram_of_gem(gem),r->owner[1].base,m9x_faa_primary_window_bytes(&r->graph_layout));
  if(!ret)*out=m9x_faa_graph_binding_get(r->graph_binding);
  return ret;
 #else
@@ -4509,10 +4515,12 @@ int m9x_faa_graph_present_submit(struct m9x_device *mdev,
   r->graph_generation!=generation||t->generation!=generation||
   lock_point>U64_MAX-0x40){ret=-ESTALE;goto out;}
  ret=m9x_faa_lock_view_admit_locked(mdev,drm_gem_vram_of_gem(source),
-  r->owner[1].base,r->owner[1].bytes);if(ret)goto out;
+  r->owner[1].base,m9x_faa_primary_window_bytes(&r->graph_layout));if(ret)goto out;
  src=(struct m9x_faa_present_view){.gpu_base=r->owner[1].base,
-  .bytes=r->owner[1].bytes,.width=320,.height=240,.span=320,
-  .descriptor0=0xf0220140,.descriptor1=0x100f0};
+  .bytes=r->owner[1].bytes,.width=r->graph_layout.width,.height=r->graph_layout.height,
+  .span=r->graph_layout.primary.allocation_width,
+  .descriptor0=0xf0220000u|r->graph_layout.primary.allocation_width,
+  .descriptor1=0x10000u|r->graph_layout.height};
  ret=m9x_faa_present_encode(&src,view,lock_point+0x20,&image);if(ret)goto out;
  primary=m9_faa_command_owner(r,false);
  ret=m9_faa_command_owner_admit(mdev,primary);if(ret)goto out;
@@ -4535,7 +4543,8 @@ int m9x_faa_graph_present_submit(struct m9x_device *mdev,
  m9x_write(mdev,M9_REG_FRONTEND_KICK,1);
  ret=m9x_address_cpu_local_prepare(mdev,src.gpu_base,src.bytes);if(ret)goto out;
  ret=m9x_address_surface_window_bounded(mdev,src.gpu_base|1,
-  0xf0210140,0x10100,src.bytes);if(ret)goto out;
+  0xf0210000u|src.span,0x10000u|r->graph_layout.primary.allocation_height,
+  m9x_faa_primary_window_bytes(&r->graph_layout));if(ret)goto out;
  m9x_address_surface_release(mdev);
  ret=m9x_faa_lock_view_observed_locked(mdev,drm_gem_vram_of_gem(source));if(ret)goto out;
  mutex_unlock(&t->lock);
@@ -7298,7 +7307,10 @@ int m9x_faa_graph_depth_frame_prepare(struct m9x_device *mdev,
  if(!binding||!input||(!(raster_flags&1)&&m9x_faa_color_flat_fragment_valid(input))||(!first&&(raster_flags&1))||(raster_flags&~7u)||(raster_flags&6)==6||
   !m9_faa_color_four_experimental||(input->layout.program_count!=4&&(!first||input->layout.program_count!=2))||(input->declaration_count!=3&&input->declaration_count!=5)||(!first&&input->declaration_count!=5))return -EOPNOTSUPP;
  two=input->layout.program_count==2;
- typed_input=*input;typed_input.fragment_flags=raster_flags&1;input=&typed_input;
+ {struct m9x_faa_surface_layout layout;
+ if(!m9x_faa_graph_binding_layout(binding,&layout))return -ESTALE;
+ typed_input=*input;typed_input.width=layout.width;typed_input.height=layout.height;
+ typed_input.fragment_flags=raster_flags&1;input=&typed_input;}
  if(previous>U64_MAX-0x1a0||lower_32_bits(previous)>U32_MAX-0x1a0)return -ERANGE;
  frame=kzalloc(sizeof(*frame),GFP_KERNEL);attach=kmalloc(sizeof(*attach),GFP_KERNEL);
  if(!frame||!attach){ret=-ENOMEM;goto release;}
@@ -7736,7 +7748,10 @@ int m9x_faa_graph_depth_later_prepare(struct m9x_device *mdev,
   (input->declaration_count!=3&&input->declaration_count!=5)||
   (!(raster_flags&1)&&m9x_faa_color_flat_fragment_valid(input))||!m9_faa_color_four_experimental)return -EOPNOTSUPP;
  two=input->layout.program_count==2;
- typed_input=*input;typed_input.fragment_flags=raster_flags&1;input=&typed_input;
+ {struct m9x_faa_surface_layout layout;
+ if(!m9x_faa_graph_binding_layout(binding,&layout))return -ESTALE;
+ typed_input=*input;typed_input.width=layout.width;typed_input.height=layout.height;
+ typed_input.fragment_flags=raster_flags&1;input=&typed_input;}
  /* Prove reuse before replacing any CPU snapshot. A failed preparation
   * preserves current retirement/view/Unlock entitlements and all GPU owners. */
  mutex_lock(&t->lock);
@@ -7951,6 +7966,7 @@ int m9x_faa_graph_depth_batch_prepare(struct m9x_device *mdev,
    .primary_bytes=sizeof(scratch->primary),.secondary_bytes=sizeof(scratch->secondary),
    .secondary_length=&scratch->secondary_bytes};
 
+  input.width=r->graph_layout.width;input.height=r->graph_layout.height;
   input.data_offset=slots[i];
   input.fragment_flags=batch->draw[i].raster_flags&1;
   /* FIRST2 adds 0x70 before encoding its color stage. Supply its INIT-like
@@ -8001,6 +8017,7 @@ int m9x_faa_graph_depth_batch_prepare(struct m9x_device *mdev,
   struct m9x_faa_frame_first_append_image out={
    .primary=composed,.secondary=secondary+sec_cursor,
    .primary_capacity=M9_FAA_DEPTH_FRAME_PRIMARY_CAPACITY,.secondary_capacity=2700};
+  input.width=r->graph_layout.width;input.height=r->graph_layout.height;
   input.data_offset=slots[i];input.fragment_flags=batch->draw[i].raster_flags&1;
   if(initialized){
    struct m9x_faa_later_depth_append_image later={
