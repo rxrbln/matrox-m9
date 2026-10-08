@@ -4794,8 +4794,9 @@ static int m9_faa_dma_span(const struct m9_faa_owner_spec *spec,
 {
 	if (spec->local || spec->system)
 		return 0;
-	if (spec->flags30 || spec->mapped_bytes || !spec->bytes || !owner->cpu ||
-	    owner->vram || owner->cpu_wc || drm_mm_node_allocated(&owner->system_node) ||
+	if (spec->flags30 || spec->mapped_bytes || !spec->bytes ||
+	    !owner->cpu || owner->vram || owner->cpu_wc ||
+	    drm_mm_node_allocated(&owner->system_node) ||
 	    upper_32_bits(owner->dma) || !IS_ALIGNED(owner->dma, PAGE_SIZE) ||
 	    owner->base != lower_32_bits(owner->dma) ||
 	    (u64)owner->dma + owner->bytes > U32_MAX ||
