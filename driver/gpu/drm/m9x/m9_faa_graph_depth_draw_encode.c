@@ -305,7 +305,7 @@ int m9x_faa_depth_color_encode(const u8 *depth_blob, size_t depth_bytes,
 
 	/* This candidate admits the source-matched two-declaration-group shape;
 	 * one real gather output is accepted by the live first encoder. */
-	if (!owner || !in || !out || !first || !first->secondary ||
+	if (!owner || !in || (in->depth_flags && !m9x_faa_depth_flags_valid(in->depth_flags)) || !out || !first || !first->secondary ||
 	    !first->secondary_length || first->secondary == out->secondary ||
 	    in->declaration_count != 5 || clear_flags != 1 ||
 	    geometry_header_offset !=
@@ -354,7 +354,7 @@ int m9x_faa_depth_color_encode(const u8 *depth_blob, size_t depth_bytes,
 	write32(out->secondary + 1676,
 		read32(first->secondary + 1920) & ~0x20000000u);
 	write32(out->secondary + 1832, owner[33].base | 1u);
-	write32(out->secondary + 1956, 0x0038038fu);
+	write32(out->secondary + 1956, m9x_faa_depth_a8(in->depth_flags));
 	/* Four primary indirect words refer to the live secondary slice. The
 	 * final target grows by 24 bytes for the COLOR raster declaration. */
 	end = secondary_cursor + M9_FAA_DEPTH_COLOR_SECONDARY_BYTES;

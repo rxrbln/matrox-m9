@@ -1759,7 +1759,7 @@ static int m9_faa_graph_depth_frame_ioctl(struct drm_device *drm,
  first=!!(args->flags&PARHELIA_M9_FAA_COLOR_FRAME_FIRST);
  if(!m9x_faa_graph_depth_frame_profile_qualified(first))return -EOPNOTSUPP;
  if(!state||args->flags&~PARHELIA_M9_FAA_COLOR_FRAME_FIRST||
-  args->clear_flags!=3||args->clear_color||args->depth_flags!=7||(!first&&(args->raster_flags&1))||(args->raster_flags&~7u)||(args->raster_flags&6)==6||
+  args->clear_flags!=3||args->clear_color||!m9x_faa_depth_flags_valid(args->depth_flags)||(!first&&(args->raster_flags&1))||(args->raster_flags&~7u)||(args->raster_flags&6)==6||
   args->width!=320||args->height!=240||
   (args->layout.program_count!=2&&args->layout.program_count!=4)||
   !args->upload||!args->upload_bytes||args->upload_bytes>0x42000||
@@ -1786,6 +1786,7 @@ static int m9_faa_graph_depth_frame_ioctl(struct drm_device *drm,
  input.program=upload;input.constants=input.program+args->layout.program_bytes;
  input.geometry=input.constants+args->layout.constants_bytes;input.declaration=input.geometry+args->layout.geometry_bytes;
  input.record_stride=args->record_stride;input.record_count=args->record_count;input.declaration_count=args->declaration_count;
+ input.depth_flags=args->depth_flags;
  ret=!first&&args->layout.program_count==2?
   m9x_faa_graph_depth_later_prepare(mdev,binding,args->generation,args->previous_point,
                                      &input,3,args->raster_flags):

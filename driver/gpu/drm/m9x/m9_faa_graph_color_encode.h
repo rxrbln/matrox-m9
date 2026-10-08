@@ -2,6 +2,7 @@
 #ifndef M9_FAA_GRAPH_COLOR_ENCODE_H
 #define M9_FAA_GRAPH_COLOR_ENCODE_H
 #include "m9_faa_graph_draw_encode.h"
+#include "m9_faa_depth_state.h"
 #define M9_FAA_COLOR_PROGRAM_BYTES 296u
 #define M9_FAA_COLOR_CONSTANT_BYTES 136u
 #define M9_FAA_COLOR_GEOMETRY_BYTES 224u
@@ -26,6 +27,8 @@ struct m9x_faa_color_input {
  /* Paired bounded fragment/interpolation mode derived from raster state.
   * Native encoders verify its actual program and utility interface. */
  u32 fragment_flags;
+ /* Owned API comparison/write state, not a captured A8 word. */
+ u32 depth_flags;
 };
 struct m9x_faa_color_image {
  u8 *program,*constants,*primary,*secondary;

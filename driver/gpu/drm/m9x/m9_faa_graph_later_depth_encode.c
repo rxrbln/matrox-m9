@@ -70,6 +70,7 @@ int m9x_faa_later_depth_encode(const u8 *sample,size_t sample_bytes,
   previous>~(u64)0-delta||next!=previous+0x10||(u32)epoch>0xfffffea0u||
   (primary_cursor&3)||(secondary_cursor&3)||
   (input->declaration_count!=3&&input->declaration_count!=5))return -EINVAL;
+ if(input->depth_flags&&!m9x_faa_depth_flags_valid(input->depth_flags))return -EINVAL;
  ret=m9x_faa_graph_draw_owners_validate(owner);if(ret)return ret;
  ret=m9x_faa_depth_stages_encode(views,0x3f800000,&(struct m9x_faa_depth_stage_image){0});if(ret)return ret;
  for(i=0;i<M9_FAA_DEPTH_OWNERS;i++)if(owner[31+i].base!=views->owner[i].base||owner[31+i].bytes<views->owner[i].capacity_bytes)return -EINVAL;
@@ -121,7 +122,7 @@ int m9x_faa_later_depth_encode(const u8 *sample,size_t sample_bytes,
  put(out->image.secondary+later(1900+extra,extra,clear),views->owner[M9_FAA_BOUND_DEPTH].base|1);
  put(out->image.secondary+later(1916+extra,extra,clear),0);
  put(out->image.secondary+later(1920+extra,extra,clear),0xf0010100);
- put(out->image.secondary+later(2024+extra,extra,clear),0x0038038f);
+ put(out->image.secondary+later(2024+extra,extra,clear),m9x_faa_depth_a8(input->depth_flags));
  /* Restore the original final GPU43 preceding the natural Lock footer.
   * The ordinary repeat intentionally omitted it; initialized depth does not. */
  memmove(scratch->tail+3612,scratch->tail+3604,20);
@@ -238,7 +239,7 @@ int m9x_faa_later_depth_append_encode(
   * Fresh program, masks, interpolation and typed raw owner metadata remain
   * those of this independently encoded job. */
  if(get(fresh+2076-shift)!=(views->owner[2].base|1)||get(fresh+2092-shift)||
-  get(fresh+2096-shift)!=0xf0010100||get(fresh+2200-shift)!=0x0038038f||
+  get(fresh+2096-shift)!=0xf0010100||!m9x_faa_depth_a8_valid(get(fresh+2200-shift))||
   (get(fresh+1920-shift)&0x03000000)!=(raster_flags&2?0x03000000:raster_flags&4?0x02000000:0)||
   !!(get(fresh+1936-shift)&0x4000)!=!!(raster_flags&1)||
   input->fragment_flags!=!!(raster_flags&1))return -EINVAL;

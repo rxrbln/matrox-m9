@@ -92,6 +92,7 @@ int m9x_faa_first_depth_encode(const u8 *sample,size_t sample_bytes,
    M9_FAA_FIRST_DEPTH_PREFIX_CAPACITY+M9_FAA_COLOR_PRIMARY_BYTES-64||
   primary_capacity<M9_FAA_FIRST_DEPTH_PREFIX_CAPACITY+M9_FAA_COLOR_PRIMARY_BYTES-64||
   secondary_capacity<M9_FAA_COLOR_SECONDARY_CAPACITY)return -EINVAL;
+ if(input->depth_flags&&!m9x_faa_depth_flags_valid(input->depth_flags))return -EINVAL;
  ret=m9x_faa_depth_stages_encode(views,0x3f800000,
   &(struct m9x_faa_depth_stage_image){0});if(ret)return ret;
  /* The normal live encoder generates GPU transforms, shader entries,
@@ -107,7 +108,7 @@ int m9x_faa_first_depth_encode(const u8 *sample,size_t sample_bytes,
  memcpy(primary+length,first_scratch->primary+64,M9_FAA_COLOR_PRIMARY_BYTES-64);
  memcpy(secondary,first_scratch->secondary,sec);
  /* Original 181fa0 ZENABLE mode lowers EF's depth mode bit. A8 separately
-  * lowers enable/write/LESS (cmp_map LESS=0), with format3d validated above. */
+  * lowers the live enable/write/comparison state, with format3d validated above. */
  ef=(u32)secondary[1920-shift]|(u32)secondary[1921-shift]<<8|
   (u32)secondary[1922-shift]<<16|(u32)secondary[1923-shift]<<24;
  put(secondary+1920-shift,ef&~0x20000000u);
@@ -116,7 +117,7 @@ int m9x_faa_first_depth_encode(const u8 *sample,size_t sample_bytes,
   * initializes the default null G16R16 view; the bound HZ owner remains
   * separately retained by the preceding clear producers. */
  put(secondary+2092-shift,0);put(secondary+2096-shift,0xf0010100);
- put(secondary+2200-shift,0x0038038c|1u|2u);
+ put(secondary+2200-shift,m9x_faa_depth_a8(input->depth_flags));
  for(i=0;i<M9_FAA_FIRST_DEPTH_PREFIX_ENDS;i++)ends[i]+=init_bytes;
  ends[10]=init_bytes+length+60;
  ends[11]=ends[12]=init_bytes+length+M9_FAA_COLOR_PRIMARY_BYTES-64-12;

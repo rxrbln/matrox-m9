@@ -58,6 +58,7 @@ int m9x_faa_later_depth_two_encode(const u8*sample,size_t sample_bytes,
   (clear_flags&&clear_flags!=3)||(previous&15)||previous>~(u64)0-0x110||
   next!=previous+0x10||(u32)previous>0xfffffeefu||(pcursor&3)||(scursor&3)||
   input->layout.program_count!=2||(input->declaration_count!=3&&input->declaration_count!=5))return -EINVAL;
+ if(input->depth_flags&&!m9x_faa_depth_flags_valid(input->depth_flags))return -EINVAL;
  if(m9x_faa_graph_draw_owners_validate(owner)||m9x_faa_depth_stages_encode(views,0x3f800000,&(struct m9x_faa_depth_stage_image){0}))return -EINVAL;
  for(i=0;i<3;i++)if(owner[31+i].base!=views->owner[i].base||owner[31+i].bytes<views->owner[i].capacity_bytes)return -EINVAL;
  extra=input->declaration_count==5?24:0;
@@ -76,7 +77,7 @@ int m9x_faa_later_depth_two_encode(const u8*sample,size_t sample_bytes,
  put(scratch->next_secondary+660+extra,get(scratch->next_secondary+660+extra)&~0x20000000u);
  put(scratch->next_secondary+816+extra,views->owner[2].base|1);
  put(scratch->next_secondary+832+extra,0);put(scratch->next_secondary+836+extra,0xf0010100);
- put(scratch->next_secondary+940+extra,0x0038038f);
+ put(scratch->next_secondary+940+extra,m9x_faa_depth_a8(input->depth_flags));
  if(!clear){
   static const u32 sec_at[7]={12,60,592,620,632,692,788};
   static const u32 prim_at[6]={216,272,408,3172,3628,3648};

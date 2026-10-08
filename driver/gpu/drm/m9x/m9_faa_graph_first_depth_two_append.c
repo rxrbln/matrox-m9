@@ -75,7 +75,7 @@ int m9x_faa_first_depth_two_append(const struct m9x_faa_first_depth_two_append_i
   word(s+48)!=2||word(s+52)!=0x4545e3e6||word(s+56)!=1||
   word(s+moved(552,extra))!=2||word(s+moved(556,extra))!=0x45451819||
   word(s+moved(560,extra))||word(s+moved(564,extra))!=0x7fffffff||
-  word(s+940+extra)!=0x38038f)return -EINVAL;
+  !m9x_faa_depth_a8_valid(word(s+940+extra)))return -EINVAL;
  for(i=0;i<7;i++)if(word(s+moved(sec_at[i],extra))!=((u32)in->init_point+sec_delta[i]|sec_tag[i]))return -ESTALE;
  for(i=0;i<6;i++)if(word(in->old_primary+split+tail_at[i])!=((u32)oldpoint-tail_back[i]|tail_tag[i]))return -ESTALE;
  /* Every refusal above precedes output writes. Existing secondary/code/data

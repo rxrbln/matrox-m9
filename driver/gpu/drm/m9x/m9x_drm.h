@@ -66,6 +66,7 @@ struct drm_parhelia_m9_faa_graph_color_lock {
 #define DRM_PARHELIA_M9_FAA_GRAPH_COLOR_NEXT 0x1d
 #define PARHELIA_M9_FAA_COLOR_NEXT_LOCK_RETIRED 17u
 #define PARHELIA_M9_FAA_COLOR_CLEAR_TARGET 1u
+/* bit0 enabled; bit1 write; bits4:2 PIPE_FUNC_NEVER..ALWAYS. */
 #define PARHELIA_M9_FAA_COLOR_DEPTH_LESS_WRITE 7u
 struct drm_parhelia_m9_faa_graph_color_next {
  __u64 graph_id, previous_unlock_point, lock_point, upload;

@@ -41,7 +41,7 @@ int m9x_faa_color_batch_copy(const struct drm_parhelia_m9_faa_graph_color_frame_
   const struct drm_parhelia_m9_faa_upload_layout *l=&d->layout;
   struct m9x_faa_owned_color_draw *job=&batch->draw[i];
   struct m9x_faa_color_input *input=&job->input;
-  if(!d->upload||d->pad[0]||d->pad[1]||d->depth_flags!=7||(d->raster_flags&~7u)||(d->raster_flags&6)==6||
+  if(!d->upload||d->pad[0]||d->pad[1]||!m9x_faa_depth_flags_valid(d->depth_flags)||(d->raster_flags&~7u)||(d->raster_flags&6)==6||
    (d->record_stride!=32&&(d->record_stride!=16||d->declaration_count!=3))||
    !d->record_count||d->record_count%3||
    (d->declaration_count!=3&&d->declaration_count!=5)||(l->program_count!=2&&l->program_count!=4)||
@@ -65,7 +65,7 @@ int m9x_faa_color_batch_copy(const struct drm_parhelia_m9_faa_graph_color_frame_
   input->geometry=input->constants+l->constants_bytes;
   input->declaration=input->geometry+l->geometry_bytes;
   input->record_stride=d->record_stride;input->record_count=d->record_count;
-  input->declaration_count=d->declaration_count;job->bytes=sum;job->raster_flags=d->raster_flags;
+  input->declaration_count=d->declaration_count;input->depth_flags=d->depth_flags;job->bytes=sum;job->raster_flags=d->raster_flags;
   /* Each job is independently shader/constant validated by the live
    * first-stage encoder. Preserve a common viewport and cull orientation;
    * raw declarations, flat/smooth and immutable code belong to each job. */

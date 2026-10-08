@@ -65,7 +65,7 @@ int m9x_faa_later_depth_two_append_encode(
   for(i=0;i<6;i++)if(word(old+split-24+4*i)!=expected[i])return -ESTALE;}
  if(word(s)!=2||word(s+4)!=0x4545e3e6||word(s+8)!=1||word(s+48)!=2||word(s+52)!=0x4545e3e6||word(s+56)!=1||
   word(s+moved(552,extra))!=2||word(s+moved(556,extra))!=0x45451819||word(s+moved(560,extra))||word(s+moved(564,extra))!=0x7fffffff||
-  word(s+816+extra)!=(views->owner[2].base|1)||word(s+832+extra)||word(s+836+extra)!=0xf0010100||word(s+940+extra)!=0x38038f||
+  word(s+816+extra)!=(views->owner[2].base|1)||word(s+832+extra)||word(s+836+extra)!=0xf0010100||!m9x_faa_depth_a8_valid(word(s+940+extra))||
   (word(s+660+extra)&0x03000000)!=(raster_flags&2?0x03000000:raster_flags&4?0x02000000:0)||
   !!(word(s+676+extra)&0x4000)!=!!(raster_flags&1))return -EINVAL;
  for(i=0;i<7;i++)if(word(s+moved(sec_at[i],extra))!=((u32)base+sec_delta[i]|sec_tag[i]))return -ESTALE;
