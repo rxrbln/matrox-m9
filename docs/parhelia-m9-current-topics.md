@@ -4,6 +4,22 @@
 # M9 open topics and evidence, 2026-10-06
 
 
+## October 8: frame-4 command bound identified; fix awaiting hardware
+
+The extended run failed on frame4 after three complete FAA frames. Returning
+from Swap96 did not mean96 rendered frames: final submitted/completed remained
+19a0 with generation1/wedged1. Source review found a stale32 KiB ordinary-command
+limit rejecting an END within the authenticated256 KiB FAA owner. Frame3 ends
+at32168 bytes; frame4 posts early clear commands then crosses that old bound.
+DRM b011d51 fixes the FAA-only bound and adds actual-C boundary coverage.
+This is a partial-submission rejection; a GPU timeout was not established.
+[Failure capsule](../tests/m9-faa-glxgears-first-hardware-20261008/frame4-command-bound-failure/README.md).
+
+DRM3cd00f3/e8f327c/973ce66 integrates source-derived initialized two-stage
+encoding and native dispatch, with clear/no-clear epochs, mixed declarations,
+same-profile validation and CPU tests. Repeated two-stage hardware validation
+and command-pool maintenance remain pending. Quake3 FAA textures remain open.
+
 ## October 8: raw-input count fix restores FAA glxgears geometry
 
 DRM02c2d52 derives raw register22 bits12:8 from the live declaration half
