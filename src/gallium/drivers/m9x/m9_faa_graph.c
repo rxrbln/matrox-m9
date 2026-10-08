@@ -544,6 +544,14 @@ static bool
 m9_faa_color_lock_history_valid(const struct m9_faa_graph *graph)
 {
    const uint64_t delta = graph->color_lock_delta;
+   if(graph->color_texture_later)
+      return graph->color_texture_count==2&&graph->color_program_count==4&&
+         graph->color_next_lock_point&&!graph->color_frame_draw_count&&!graph->color_frame_flags&&
+         (delta==0x150||delta==0xd0)&&graph->color_next_previous_unlock_point&&
+         !(graph->color_next_previous_unlock_point&15)&&
+         graph->color_next_previous_unlock_point<=UINT64_MAX-delta&&
+         graph->color_lock_point==graph->color_next_lock_point&&
+         graph->color_lock_point==graph->color_next_previous_unlock_point+delta;
    if(graph->color_texture_count&&
       (graph->color_texture_count!=2||graph->color_program_count!=4||
        graph->color_next_lock_point||!graph->color_frame_draw_count||graph->color_frame_draw_count>3||
@@ -1573,6 +1581,7 @@ m9_faa_graph_release_kernel(struct m9_screen *screen, struct m9_faa_graph *graph
    graph->color_lock_point = 0;
    graph->color_program_count = 0;
    graph->color_texture_count = 0;
+   graph->color_texture_later = false;
    graph->color_lock_delta = 0;
    graph->color_frame_draw_count = 0;
    graph->color_depth_initialized = false;

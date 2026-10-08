@@ -65,6 +65,65 @@ dual_texture_current(const struct m9_faa_application_texture *t)
       v->mip_filter==1&&v->address_u==1&&v->address_v==1;
 }
 
+/* One retained dual DRAW after the authenticated Unlock of the previous
+ * textured Lock. The kernel admits the same program with the same pair or a
+ * source-proved stage-1 owner change, CLEAR3 or no clear, direct Unlock epoch. */
+static int
+m9_faa_surface_dual_later_kernel(struct m9_screen *screen,struct m9_faa_surface *surface,
+                                 const struct m9_faa_application_frame *frame)
+{
+   struct drm_parhelia_m9_faa_graph_dual_later request={0};
+   struct drm_parhelia_m9_faa_color_draw draw;
+   _Static_assert(sizeof(request)==sizeof(struct drm_parhelia_m9_faa_graph_dual_first),"dual LATER ABI");
+   struct m9_faa_graph *g=&surface->graph;
+   const struct m9_faa_application_upload *u=&frame->draws[0];
+   const struct m9_faa_application_state *s=&u->state;
+   if(frame->count!=1||(frame->clear_flags&&frame->clear_flags!=3)||frame->clear_color)
+      return -EOPNOTSUPP;
+   if(g->color_texture_count!=2||g->color_program_count!=4||!g->color_lock_point||
+      !g->color_unlock_attempted||g->color_lock_point>UINT64_MAX-0x20||
+      g->color_unlock_point!=g->color_lock_point+0x20||(g->color_unlock_point&15)||
+      g->color_unlock_point>UINT64_MAX-0x150||g->color_next_attempted||
+      g->color_present_attempted||g->color_present_point||g->color_frame_present_point||
+      g->color_frame_maintenance_point||!g->color_depth_initialized)
+      return -ESTALE;
+   if(u->graph_id!=g->prepared_id||u->init_point!=g->init_point||
+      u->generation!=g->prepared_generation)return -ESTALE;
+   if(u->texture_count!=2||s->width!=320||s->height!=240||
+      !s->depth_enabled||!s->depth_write||s->depth_func!=PIPE_FUNC_LESS||
+      s->flatshade||s->cull_face!=PIPE_FACE_NONE||s->scissor_enabled||
+      s->fragment.blend||s->fragment.alpha||s->fragment.source_stream||
+      u->texture[0].resource==u->texture[1].resource||
+      u->texture[0].view.handle==u->texture[1].view.handle)return -EOPNOTSUPP;
+   for(unsigned t=0;t<2;t++)
+      if(!dual_texture_current(&u->texture[t]))return -ESTALE;
+   int ret=dual_pack(&u->shader,&draw);if(ret)return ret;
+   const uint64_t delta=frame->clear_flags?0x150:0xd0;
+   request=(struct drm_parhelia_m9_faa_graph_dual_later){.graph_id=g->prepared_id,
+      .previous_unlock_point=g->color_unlock_point,.upload=draw.upload,
+      .upload_bytes=draw.upload_bytes,.generation=g->prepared_generation,
+      .version=PARHELIA_M9_FAA_DUAL_LATER_VERSION,.record_stride=draw.record_stride,
+      .record_count=draw.record_count,.declaration_count=draw.declaration_count,
+      .layout=draw.layout,.width=320,.height=240,.clear_flags=frame->clear_flags,
+      .depth_flags=draw.depth_flags};
+   request.texture[0]=u->texture[0].view;request.texture[1]=u->texture[1].view;
+   const struct drm_parhelia_m9_faa_graph_dual_later before=request;
+   g->color_next_attempted=true;
+   if(ioctl(screen->fd,DRM_IOCTL_PARHELIA_M9_FAA_GRAPH_DUAL_LATER,&request))return -errno;
+   struct drm_parhelia_m9_faa_graph_dual_later immutable=request;
+   immutable.lock_point=0;immutable.state=0;
+   if(request.lock_point!=before.previous_unlock_point+delta||
+      request.state!=PARHELIA_M9_FAA_DUAL_LATER_LOCK_RETIRED||
+      memcmp(&immutable,&before,sizeof(before)))return -EPROTO;
+   ret=m9_wait_for_point(screen,request.lock_point);if(ret)return ret;
+   g->color_next_previous_unlock_point=before.previous_unlock_point;
+   g->color_next_lock_point=g->color_lock_point=request.lock_point;
+   g->color_lock_delta=delta;g->color_texture_later=true;
+   g->color_frame_draw_count=0;g->color_frame_flags=0;
+   g->color_unlock_attempted=false;g->color_unlock_point=0;
+   return 0;
+}
+
 int
 m9_faa_surface_dual_batch_kernel(struct m9_screen *screen,struct m9_faa_surface *surface,
                                  const struct m9_faa_application_frame *frame)
@@ -74,6 +133,9 @@ m9_faa_surface_dual_batch_kernel(struct m9_screen *screen,struct m9_faa_surface 
    _Static_assert(sizeof(request)==168,"dual BATCH ABI");
    if(!screen||!surface||!frame||!frame->draws||!frame->count)return -EINVAL;
    struct m9_faa_graph *g=&surface->graph;
+   if(g->color_texture_count&&screen->faa.chip==M9_FAA_CHIP_M9&&screen->wait_point&&
+      surface->width==320&&surface->height==240&&surface->format==0x66)
+      return m9_faa_surface_dual_later_kernel(screen,surface,frame);
    if(frame->count>3||screen->faa.chip!=M9_FAA_CHIP_M9||!screen->wait_point||
       surface->width!=320||surface->height!=240||surface->format!=0x66||
       frame->clear_flags!=3||frame->clear_color)return -EOPNOTSUPP;

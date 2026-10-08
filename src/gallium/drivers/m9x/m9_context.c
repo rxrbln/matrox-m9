@@ -9748,10 +9748,11 @@ m9_context_faa_present_lock(struct m9_context *ctx, uint64_t graph_id,
        offset > destination->size || target.size > destination->size - offset)
       return -EOPNOTSUPP;
    /* The typed GPU copy producer targets the same-size ordinary destination.
-    * Other destinations continue through the existing CPU presentation path. */
+    * Other destinations continue through the existing CPU presentation path.
+    * Retained dual later DRAWs are admitted only from a direct Unlock epoch. */
    if (debug_get_bool_option("M9X_FAA_GPU_PRESENT", true) && width == surface->width && height == surface->height &&
        target.row_span == primary.row_span && target.size == primary.size && !(offset & 4095) &&
-       graph->color_depth_initialized) {
+       graph->color_depth_initialized && !graph->color_texture_count) {
       const struct m9_surface_desc target_desc = {
          .row_span = target.row_span, .height = m9_surface_even_height(height),
          .layers = 1, .layout = 1, .format = destination->format, .address_offset = true,
