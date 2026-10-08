@@ -19,6 +19,9 @@ in that directory, under `hardware-*-20261008`.
 | CW/CCW face culling | `hardware-cull-20261008` |
 | 128x128 textures (kind 0x21) | `hardware-cull-20261008` |
 | FAA gears at 1024 regression (guard field) | `hardware-gears1024-20261008` |
+| Mipmapped textures (GL level encoding, six isotropic rates) | `hardware-mip-centre-20261008` |
+| Culled 3-DRAW later batches | `hardware-mip-centre-20261008` |
+| FAA pixel centre: integer; GL needs -0.5 px | `hardware-mip-centre-20261008` |
 
 Notes on the rows:
 
@@ -58,8 +61,7 @@ Notes on the rows:
 
 ## Remaining, in order
 
-1. Mipmapped sampling: hardware probe, then the Mesa admission that is prepared but not
-   yet committed.
+1. Done (m9faa5): mipmaps, culled batches, GL pixel centre on the FAA raster.
 2. Single-texture and blended FAA stages (vendor constructors needed).
 3. Culled appends; 1024 CLEAR3 later on hardware.
 4. First Quake3 GL1 FAA run at 1024 with fallback, then the FAA<->ordinary handoff.
