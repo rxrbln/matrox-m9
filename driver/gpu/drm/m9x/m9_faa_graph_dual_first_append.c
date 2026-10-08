@@ -9,6 +9,7 @@
 #include "m9_cmd.h"
 #include "m9_faa_graph_dual_first_append.h"
 #include "m9_faa_graph_dual_later_encode.h"
+#include "m9_faa_graph_later_switch.h"
 
 struct copy_span {
 	u16 from, to, bytes;
@@ -29,17 +30,6 @@ static const struct copy_span copies[] = {
 	{ 1628, 1640, 216 }, { 1868, 1856, 56 }, { 1928, 1916, 24 },
 	{ 1956, 1944, 8 },   { 1968, 1956, 56 }, { 2028, 2016, 92 },
 	{ 2124, 2112, 756 },
-};
-
-/* The fixed 1x1 null-target state uses no GPU allocation or captured
- * address. These words are the same in the source's second and third DRAWs.
- * The surrounding source-owner and source-timeline words are not literals.
- */
-static const u32 null_target[24] = {
-	0x00040118, 3,		0x457a7978, 0,		0xcc010001, 0x00010001,
-	3,	    0x45877d7c, 0x200,	    0x0ff80000, 0,	    4,
-	0x85848382, 0,		0,	    0,		0,	    4,
-	0x7f7e8180, 0xffffffff, 0,	    0,		0,	    1,
 };
 
 static const u32 save_prefix[36] = {
@@ -78,40 +68,43 @@ static int dual_append(const struct m9x_faa_graph_draw_owner owner[31],
 		       u32 old_epoch, u32 split, u32 tail_extra, u32 old_start,
 		       u32 secondary_cursor, const u8 *old_primary,
 		       u32 old_primary_bytes, const u8 *first_secondary,
-		       const u8 *extra_first_secondary,
-		       struct m9x_faa_dual_append_image *out)
+		       const u8 *extra_first_secondary, u32 extra_bytes,
+		       bool switched, struct m9x_faa_dual_append_image *out)
 {
-	u32 new_bytes, raw, i, at, old_length, sel;
+	u32 new_bytes, raw = 0, i, at, old_length, sel, stage_bytes, mid;
 	u8 *dst;
+	int ret;
 
+	/* A switched DRAW keeps the whole FIRST stage of its new program. */
+	stage_bytes = switched ? sizeof(save_prefix) + extra_bytes +
+					 M9_FAA_SWITCH_RELOAD_BYTES +
+					 M9_FAA_SWITCH_E3_BYTES :
+				 M9_FAA_DUAL_APPEND_SECONDARY_BYTES;
 	if (old_primary_bytes > owner[27].bytes ||
 	    old_primary_bytes > U32_MAX - 60)
 		return -ERANGE;
 	new_bytes = old_primary_bytes + 60;
 	if (owner[27].bytes - old_primary_bytes < 60 ||
 	    secondary_cursor > owner[29].bytes ||
-	    owner[29].bytes - secondary_cursor <
-		    M9_FAA_DUAL_APPEND_SECONDARY_BYTES ||
-	    (u64)owner[29].base + secondary_cursor +
-			    M9_FAA_DUAL_APPEND_SECONDARY_BYTES >
-		    U32_MAX ||
+	    owner[29].bytes - secondary_cursor < stage_bytes ||
+	    (u64)owner[29].base + secondary_cursor + stage_bytes > U32_MAX ||
 	    owner[8].bytes < 20 || owner[22].bytes < 712 ||
 	    out->primary_capacity < new_bytes ||
-	    out->secondary_capacity < M9_FAA_DUAL_APPEND_SECONDARY_BYTES)
+	    out->secondary_capacity < stage_bytes)
 		return -ERANGE;
 	if (m9_cmd_overlap(out->primary, new_bytes, out->secondary,
-			   M9_FAA_DUAL_APPEND_SECONDARY_BYTES) ||
+			   stage_bytes) ||
 	    m9_cmd_overlap(out->primary, new_bytes, old_primary,
 			   old_primary_bytes) ||
 	    m9_cmd_overlap(out->primary, new_bytes, first_secondary, 2880) ||
 	    m9_cmd_overlap(out->primary, new_bytes, extra_first_secondary,
+			   extra_bytes) ||
+	    m9_cmd_overlap(out->secondary, stage_bytes, old_primary,
+			   old_primary_bytes) ||
+	    m9_cmd_overlap(out->secondary, stage_bytes, first_secondary,
 			   2880) ||
-	    m9_cmd_overlap(out->secondary, M9_FAA_DUAL_APPEND_SECONDARY_BYTES,
-			   old_primary, old_primary_bytes) ||
-	    m9_cmd_overlap(out->secondary, M9_FAA_DUAL_APPEND_SECONDARY_BYTES,
-			   first_secondary, 2880) ||
-	    m9_cmd_overlap(out->secondary, M9_FAA_DUAL_APPEND_SECONDARY_BYTES,
-			   extra_first_secondary, 2880))
+	    m9_cmd_overlap(out->secondary, stage_bytes, extra_first_secondary,
+			   extra_bytes))
 		return -EINVAL;
 	if (split < 60 || split > old_primary_bytes ||
 	    old_primary_bytes - split != 3564 + tail_extra ||
@@ -136,6 +129,13 @@ static int dual_append(const struct m9x_faa_graph_draw_owner owner[31],
 		if (m9_cmd_get(old_primary + at) !=
 		    ((old_epoch + lock_delta[i]) | lock_tag[i]))
 			return -ESTALE;
+	}
+	/* Original N2 switch: only an unculled switched DRAW is sourced. */
+	if (switched) {
+		at = extra_bytes == M9_FAA_SINGLE_STAGE_BYTES ? 1920 : 1992;
+		if (m9_cmd_get(extra_first_secondary + at) >> 24 & 3)
+			return -EINVAL;
+		goto checked;
 	}
 	/* No program/sampler switch is sourced by this bounded repeated profile. */
 	for (i = 0; i < 4; i++) {
@@ -169,23 +169,40 @@ static int dual_append(const struct m9x_faa_graph_draw_owner owner[31],
 	if ((raw & 7) != 1 || raw - 1 < owner[28].base ||
 	    raw - 1 - owner[28].base >= owner[28].bytes)
 		return -ERANGE;
+checked:
 	for (i = 0; i < ARRAY_SIZE(save_at); i++)
 		if ((owner[save_owner[i]].base & 7) ||
 		    (u64)owner[save_owner[i]].base + save_offset[i] +
 				    save_tag[i] >
 			    U32_MAX)
 			return -ERANGE;
-	/* All refusals precede output writes. Published GPU memory is untouched. */
+	/* All refusals precede output writes. Published GPU memory is untouched.
+	 * The switch composer validates its FIRST stage before it writes.
+	 */
+	mid = 1900;
+	if (switched) {
+		ret = m9x_faa_switch_stage_encode(extra_first_secondary,
+						  extra_bytes, old_epoch + 0xa0,
+						  true,
+						  out->secondary +
+							  sizeof(save_prefix),
+						  stage_bytes -
+							  sizeof(save_prefix),
+						  &i, &mid);
+		if (ret)
+			return ret;
+		mid += sizeof(save_prefix);
+	}
 	memcpy(out->primary, old_primary, split);
 	memcpy(out->primary + split, old_primary + split - 60, 60);
 	m9_cmd_put(out->primary + split + 4,
 		   (owner[29].base + secondary_cursor) | 1);
 	m9_cmd_put(out->primary + split + 8,
-		   (owner[29].base + secondary_cursor + 1900) | 2);
+		   (owner[29].base + secondary_cursor + mid) | 2);
 	m9_cmd_put(out->primary + split + 52,
-		   (owner[29].base + secondary_cursor + 1900) | 1);
+		   (owner[29].base + secondary_cursor + mid) | 1);
 	m9_cmd_put(out->primary + split + 56,
-		   (owner[29].base + secondary_cursor + 2868) | 2);
+		   (owner[29].base + secondary_cursor + stage_bytes) | 2);
 	memcpy(out->primary + split + 60, old_primary + split,
 	       3564 + tail_extra);
 	for (i = 0; i < ARRAY_SIZE(lock_at); i++)
@@ -193,15 +210,18 @@ static int dual_append(const struct m9x_faa_graph_draw_owner owner[31],
 				   (lock_at[i] >= 3288 ? tail_extra : 0),
 			   (old_epoch + 0xa0 + lock_delta[i]) | lock_tag[i]);
 	dst = out->secondary;
-	memset(dst, 0, M9_FAA_DUAL_APPEND_SECONDARY_BYTES);
+	if (!switched)
+		memset(dst, 0, M9_FAA_DUAL_APPEND_SECONDARY_BYTES);
 	for (i = 0; i < ARRAY_SIZE(save_prefix); i++)
 		m9_cmd_put(dst + i * 4, save_prefix[i]);
 	for (i = 0; i < ARRAY_SIZE(save_at); i++)
 		m9_cmd_put(dst + save_at[i],
 			   (owner[save_owner[i]].base + save_offset[i]) |
 				   save_tag[i]);
-	for (i = 0; i < ARRAY_SIZE(null_target); i++)
-		m9_cmd_put(dst + 604 + i * 4, null_target[i]);
+	if (switched)
+		goto done;
+	for (i = 0; i < ARRAY_SIZE(m9x_faa_null_target); i++)
+		m9_cmd_put(dst + 604 + i * 4, m9x_faa_null_target[i]);
 	m9_cmd_put(dst + 700, 0x454545c0);
 	m9_cmd_put(dst + 704, 4);
 	for (i = 0; i < ARRAY_SIZE(copies); i++)
@@ -221,8 +241,9 @@ static int dual_append(const struct m9x_faa_graph_draw_owner owner[31],
 	for (i = 0; i < ARRAY_SIZE(epoch); i++)
 		m9_cmd_put(dst + epoch[i].at,
 			   (old_epoch + epoch[i].delta) | epoch[i].tag);
+done:
 	out->primary_bytes = new_bytes;
-	out->secondary_bytes = M9_FAA_DUAL_APPEND_SECONDARY_BYTES;
+	out->secondary_bytes = stage_bytes;
 	return 0;
 }
 
@@ -282,7 +303,8 @@ int m9x_faa_dual_first_append_encode(const struct m9x_faa_graph_draw_owner
 				  0 :
 				  2880 + (old_draw_count - 2) * 2868,
 			  secondary_cursor, old_primary, old_primary_bytes,
-			  first_secondary, extra_first_secondary, out);
+			  first_secondary, extra_first_secondary,
+			  M9_FAA_DUAL_FIRST_SECONDARY_BYTES, false, out);
 	if (ret)
 		return ret;
 	for (i = 0; i < M9_FAA_DUAL_FIRST_ENDS; i++)
@@ -291,21 +313,13 @@ int m9x_faa_dual_first_append_encode(const struct m9x_faa_graph_draw_owner
 	return 0;
 }
 
-/* Retained later frame: the source N2/N3 later batches insert exactly the
- * FIRST append's 60-byte pair group and 2868-byte stage at the same seam,
- * with the later epoch (Unlock, or Unlock-0x80 without clear).
- */
-int m9x_faa_dual_later_append_encode(const struct m9x_faa_graph_draw_owner
-					     owner[31],
-				     u64 previous_unlock, u32 clear_flags,
-				     u32 old_draw_count,
-				     u32 first_secondary_cursor,
-				     u32 secondary_cursor,
-				     const u8 *old_primary,
-				     u32 old_primary_bytes,
-				     const u8 *first_secondary,
-				     const u8 *extra_first_secondary,
-				     struct m9x_faa_dual_append_image *out)
+static int later_append(const struct m9x_faa_graph_draw_owner owner[31],
+			u64 previous_unlock, u32 clear_flags,
+			u32 old_draw_count, u32 first_secondary_cursor,
+			u32 secondary_cursor, const u8 *old_primary,
+			u32 old_primary_bytes, const u8 *first_secondary,
+			const u8 *extra_first_secondary, u32 extra_bytes,
+			bool switched, struct m9x_faa_dual_append_image *out)
 {
 	u32 tail = clear_flags == 3 ? 3632 : 3624;
 	u32 first = clear_flags == 3 ? 2736 : 2740, epoch;
@@ -314,10 +328,7 @@ int m9x_faa_dual_later_append_encode(const struct m9x_faa_graph_draw_owner
 		   M9_FAA_DUAL_LATER_CULL_BYTES : 0;
 	u32 old_start;
 
-	if (!owner || !old_primary || !first_secondary ||
-	    !extra_first_secondary || !out || !out->primary ||
-	    !out->secondary ||
-	    (clear_flags && clear_flags != 3 && clear_flags != 2) ||
+	if ((clear_flags && clear_flags != 3 && clear_flags != 2) ||
 	    old_draw_count < 1 ||
 	    old_draw_count >= M9_FAA_DUAL_LATER_MAX_DRAWS ||
 	    (previous_unlock & 15) || previous_unlock < 0x130 ||
@@ -337,5 +348,59 @@ int m9x_faa_dual_later_append_encode(const struct m9x_faa_graph_draw_owner
 	return dual_append(owner, epoch, old_primary_bytes - (tail - 60),
 			   tail - 3624, old_start, secondary_cursor,
 			   old_primary, old_primary_bytes, first_secondary,
-			   extra_first_secondary, out);
+			   extra_first_secondary, extra_bytes, switched, out);
+}
+
+/* Retained later frame: the source N2/N3 later batches insert exactly the
+ * FIRST append's 60-byte pair group and 2868-byte stage at the same seam,
+ * with the later epoch (Unlock, or Unlock-0x80 without clear).
+ */
+int m9x_faa_dual_later_append_encode(const struct m9x_faa_graph_draw_owner
+					     owner[31],
+				     u64 previous_unlock, u32 clear_flags,
+				     u32 old_draw_count,
+				     u32 first_secondary_cursor,
+				     u32 secondary_cursor,
+				     const u8 *old_primary,
+				     u32 old_primary_bytes,
+				     const u8 *first_secondary,
+				     const u8 *extra_first_secondary,
+				     struct m9x_faa_dual_append_image *out)
+{
+	if (!owner || !old_primary || !first_secondary ||
+	    !extra_first_secondary || !out || !out->primary || !out->secondary)
+		return -EINVAL;
+	return later_append(owner, previous_unlock, clear_flags,
+			    old_draw_count, first_secondary_cursor,
+			    secondary_cursor, old_primary, old_primary_bytes,
+			    first_secondary, extra_first_secondary,
+			    M9_FAA_DUAL_FIRST_SECONDARY_BYTES, false, out);
+}
+
+/* Source N2 dual->single: the appended DRAW builds the new program. Its
+ * stage is the save prefix plus the switched FIRST stage, E3 widened.
+ */
+int m9x_faa_later_switch_append_encode(const struct m9x_faa_graph_draw_owner
+					       owner[31],
+				       u64 previous_unlock, u32 clear_flags,
+				       u32 old_draw_count,
+				       u32 first_secondary_cursor,
+				       u32 secondary_cursor,
+				       const u8 *old_primary,
+				       u32 old_primary_bytes,
+				       const u8 *first_secondary,
+				       const u8 *extra_first,
+				       u32 extra_first_bytes,
+				       struct m9x_faa_dual_append_image *out)
+{
+	if (!owner || !old_primary || !first_secondary || !extra_first ||
+	    !out || !out->primary || !out->secondary ||
+	    (extra_first_bytes != M9_FAA_SINGLE_STAGE_BYTES &&
+	     extra_first_bytes != M9_FAA_DUAL_FIRST_SECONDARY_BYTES))
+		return -EINVAL;
+	return later_append(owner, previous_unlock, clear_flags,
+			    old_draw_count, first_secondary_cursor,
+			    secondary_cursor, old_primary, old_primary_bytes,
+			    first_secondary, extra_first, extra_first_bytes,
+			    true, out);
 }

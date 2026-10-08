@@ -40,4 +40,19 @@ int m9x_faa_dual_later_append_encode(
 	const u8 *old_primary, u32 old_primary_bytes,
 	const u8 *first_secondary, const u8 *extra_first_secondary,
 	struct m9x_faa_dual_append_image *out);
+/* Appended later DRAW that builds a new program from its live FIRST stage
+ * (single 2720 or dual 2880 bytes, encoded at the appended epoch). Only an
+ * unculled switch is sourced; the next append after it is refused.
+ */
+int m9x_faa_later_switch_append_encode(const struct m9x_faa_graph_draw_owner owner[31],
+				       u64 previous_unlock, u32 clear_flags,
+				       u32 old_draw_count,
+				       u32 first_secondary_cursor,
+				       u32 secondary_cursor,
+				       const u8 *old_primary,
+				       u32 old_primary_bytes,
+				       const u8 *first_secondary,
+				       const u8 *extra_first,
+				       u32 extra_first_bytes,
+				       struct m9x_faa_dual_append_image *out);
 #endif
