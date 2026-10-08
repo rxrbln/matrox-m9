@@ -452,7 +452,14 @@ three-bit hardware codes [BIN]:
 
 | D3D comparison | `NEVER` | `LESS` | `EQUAL` | `LESSEQUAL` | `GREATER` | `NOTEQUAL` | `GREATEREQUAL` | `ALWAYS` |
 |---|---:|---:|---:|---:|---:|---:|---:|---:|
-| M9 code | `0` | `1` | `3` | `4` | `6` | `5` | `7` | `2` |
+| M9 code | `0` | `2` | `1` | `3` | `4` | `6` | `5` | `7` |
+
+October 8 correction: the comparison table above follows the actual indirect
+jump table at `1396ac`; the previous table incorrectly followed the linear
+order of return blocks. The actual validator has now been executed for all
+eight comparisons and both write masks. A complete FAA three-DRAW differential
+also proves LESS/write `38038b`, LEQUAL/write `38038f`, ALWAYS/no-write `38039d`.
+[Source check](../tests/m9-faa-depth-state-source-20261008/README.md).
 
 The stencil-operation remap at `0x1396e0` likewise converts Direct3D values
 [BIN]:
