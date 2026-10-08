@@ -44,7 +44,7 @@ struct m9x_faa_frame_stage {
 /* Later stage of a DRAW from its program's live FIRST stage (single 2720
  * or dual 2880 bytes, any epoch). epoch is the DRAW's. e3 widens the E3
  * group (no-clear first DRAW or any append). cull_state keeps the 6A cull
- * groups: the program last emitted another cull state (BUILD keeps all).
+ * groups: the previous DRAW had another raster state (BUILD keeps all).
  * A NULL out validates and sizes the stage without writing.
  */
 int m9x_faa_later_stage_encode(const u8 *first, u32 first_bytes, u32 epoch,
@@ -56,8 +56,8 @@ int m9x_faa_later_stage_encode(const u8 *first, u32 first_bytes, u32 epoch,
 int m9x_faa_first_stage_sites(u32 first_bytes, u32 *units, u32 site[2]);
 
 /* Program cache of a retained graph, after the vendor's (13cd00): every
- * built program, where it lives in the owner-26 arena and the raster cull
- * state it last emitted, and the active one. A program is identified by
+ * built program, where it lives in the owner-26 arena, the active one and
+ * the raster state of the context's last DRAW. A program is identified by
  * its kind, fragment state and exact bytes (FS and the VS-derived carry,
  * gather and position vectors). page mirrors the arena; bytes from
  * upload to page_bytes are not in owner 26 yet.
@@ -68,11 +68,11 @@ int m9x_faa_first_stage_sites(u32 first_bytes, u32 *units, u32 site[2]);
 #define M9_FAA_PROGRAM_ARENA_BYTES 0x10000u
 
 struct m9x_faa_program_entry {
-	u32 kind, fragment, hash, offset, bytes, cull;
+	u32 kind, fragment, hash, offset, bytes;
 };
 
 struct m9x_faa_program_cache {
-	u32 count, active, page_bytes, upload, arena_bytes, capacity;
+	u32 count, active, page_bytes, upload, arena_bytes, capacity, raster;
 	struct m9x_faa_program_entry *entry;
 	u8 *page;
 };

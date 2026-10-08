@@ -244,6 +244,7 @@ int m9x_faa_program_cache_copy(struct m9x_faa_program_cache *dst,
 	dst->active = src->active;
 	dst->page_bytes = src->page_bytes;
 	dst->upload = src->upload;
+	dst->raster = src->raster;
 	return 0;
 }
 
@@ -291,7 +292,7 @@ int m9x_faa_program_cache_draw(struct m9x_faa_program_cache *cache, u32 kind,
 	if (i < cache->count) {
 		*form = cache->active == i ? M9_FAA_LATER_PLAIN :
 					     M9_FAA_LATER_CACHED;
-		*cull_state = e->cull != raster;
+		*cull_state = cache->raster != raster;
 	} else {
 		at = (cache->page_bytes + 63) & ~63u;
 		if ((at & 4095) + bytes > 4096)
@@ -301,7 +302,7 @@ int m9x_faa_program_cache_draw(struct m9x_faa_program_cache *cache, u32 kind,
 			return -ERANGE;
 		e = &cache->entry[i];
 		*e = (struct m9x_faa_program_entry) {
-			kind, fragment, hash, at, bytes, 0
+			kind, fragment, hash, at, bytes
 		};
 		memcpy(cache->page + at, program, bytes);
 		cache->count++;
@@ -309,7 +310,10 @@ int m9x_faa_program_cache_draw(struct m9x_faa_program_cache *cache, u32 kind,
 		*form = M9_FAA_LATER_BUILD;
 		*cull_state = false;
 	}
-	e->cull = raster;
+	/* The vendor inserts the 6A groups when the raster state differs from
+	 * the previous DRAW's, whatever program that used (later/n3-cull-mixed).
+	 */
+	cache->raster = raster;
 	cache->active = i;
 	*offset = e->offset;
 	return 0;

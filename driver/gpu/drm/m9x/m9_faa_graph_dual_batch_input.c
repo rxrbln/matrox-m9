@@ -117,13 +117,15 @@ static int dual_draws_copy(u64 draws, u32 draw_count, u32 width, u32 height,
 		if (textured)
 			memcpy(job->texture, t->texture, sizeof(job->texture));
 		/* One declaration per kind, one program per kind and fragment
-		 * state, one depth state.
+		 * state. A later DRAW carries its own depth state in its A8
+		 * word (vendor later/depth-*); a FIRST batch keeps one.
 		 */
 		for (j = 0; j < i; j++) {
 			const struct m9x_faa_color_input *f =
 				&batch->draw[j].input;
 
-			if (d->depth_flags != f->depth_flags) {
+			if ((flags & PARHELIA_M9_FAA_COLOR_FRAME_FIRST) &&
+			    d->depth_flags != f->depth_flags) {
 				ret = -EOPNOTSUPP;
 				goto out;
 			}
