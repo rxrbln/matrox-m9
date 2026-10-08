@@ -14,9 +14,18 @@ INIT+0x110+(N-1)*0x60. It supplies no invented completion or rendered pixels.
 Mesa 61c0997/16109df adds an explicit `M9X_FAA_FUSED=1` candidate with GPU
 transforms, live shader constants and checked FIRST singleton/batch receipts.
 DRM 452e846/423e5a9 adds two-stage code placement, actual shader availability
-and live data bindings. The four-stage route remains available. First-depth
-packet composition and native batch wiring are being completed; repeated
-two-stage frames stay gated until their own contract is qualified.
+and live data bindings. DRM 8fb31ab integrates source-derived FIRST/append
+composition, checked at N1/N2/N3 and mixed declarations through N32. Native
+batch wiring is in final integration; repeated two-stage frames remain gated
+until their own transition contract is qualified. The four-stage route stays
+available.
+
+DRM 625ca05/830d3da fixes two incorrect generalizations from the old tiny
+control: secondary +296 is the literal C2 packet count 3, never vertex count;
++164/+168/+172/+176 stay 32 even with 16-byte raw records. Only +292 is the
+raw fetch stride. [Original M9128 stride proof](../tests/m9-faa-fused-stride-source-20261008/README.md)
+and [flat/cull state proof](../tests/m9-faa-first-depth-two-state-20261008/README.md)
+are integrated. These are host/source checks, not hardware completion.
 
 Mesa f051299 fixes duplicate depth conversion and the missing four-DWORD
 prefix offset in the candidate viewport constants. Emitted head and geometry
