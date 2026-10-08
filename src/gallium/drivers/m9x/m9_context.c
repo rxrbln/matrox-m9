@@ -7517,13 +7517,18 @@ m9_native_vs_note(struct m9_context *ctx, const char *reason)
 /* Native mode-1 point sampling is source-derived from the GL compiler's
  * two-component descriptor. Keep wider coordinate producers, formats and
  * sampler policy separate until they have their own native pixel proof. */
+/* Native vertex texture switches, read at context creation. */
+static struct {
+   bool enable, two, position, packed;
+} m9_vs_texture_opt;
+
 static const char *
 m9_native_vs_bind_texture(struct m9_context *ctx, struct m9_job_key *key,
                      const struct m9_vs_program *program)
 {
    if (!program->texture_count)
       return NULL;
-   if (!debug_get_bool_option("M9X_NATIVE_VS_TEXTURE", true))
+   if (!m9_vs_texture_opt.enable)
       return "native vertex texture is disabled";
    if (program->texture_count > 2 ||
        !key->variant || (key->variant->passes.count != 1 && !program->gpu_padding))
@@ -7531,13 +7536,13 @@ m9_native_vs_bind_texture(struct m9_context *ctx, struct m9_job_key *key,
    /* The second-fetch hardware image and packed-output stages are distinct
     * qualification boundaries. Keep the new fused slice opt-in. */
    if (program->texture_count == 2 &&
-       !debug_get_bool_option("M9X_NATIVE_VS_TEXTURE_TWO", false))
+       !m9_vs_texture_opt.two)
       return "dual vertex texture is disabled";
    if (program->sampled_position &&
-       !debug_get_bool_option("M9X_NATIVE_VS_TEXTURE_POSITION", false))
+       !m9_vs_texture_opt.position)
       return "sampled vertex position is disabled";
    if (program->texture_head_only) {
-      if (!debug_get_bool_option("M9X_NATIVE_VS_TEXTURE_PACKED", false))
+      if (!m9_vs_texture_opt.packed)
          return "packed vertex texture is disabled";
       if (!program->producer.size || !program->extra.size || !program->gather.size ||
           m9_vs_record_mode() < 2)
@@ -9705,7 +9710,7 @@ m9_vs_spec_for(struct m9_vs_state *vs, const uint32_t *values,
       NIR_PASS(_, nir, nir_opt_dce);
       /* Original admission mutates the graph. Save the optional partition
        * candidate before that call; ordinary accepted programs stay exact. */
-      nir_shader *sampled = debug_get_bool_option("M9X_NATIVE_VS_TEXTURE_POSITION", false) ?
+      nir_shader *sampled = m9_vs_texture_opt.position ?
                             nir_shader_clone(NULL, nir) : NULL;
       spec->native = m9_vs_compile_native_source(&nir, &spec->program,
                                          &spec->reason, m9_vs_max_slots,
@@ -11589,6 +11594,10 @@ m9_context_create(struct pipe_screen *pscreen, void *priv, unsigned flags)
    m9_context_state_init(ctx, screen);
    ctx->base.priv = priv;
    ctx->debug = debug_get_bool_option("M9X_DEBUG", false);
+   m9_vs_texture_opt.enable = debug_get_bool_option("M9X_NATIVE_VS_TEXTURE", true);
+   m9_vs_texture_opt.two = debug_get_bool_option("M9X_NATIVE_VS_TEXTURE_TWO", false);
+   m9_vs_texture_opt.position = debug_get_bool_option("M9X_NATIVE_VS_TEXTURE_POSITION", false);
+   m9_vs_texture_opt.packed = debug_get_bool_option("M9X_NATIVE_VS_TEXTURE_PACKED", false);
    m9_profile_period = debug_get_num_option("M9X_PROFILE", 0);
    m9_job_draws = debug_get_num_option("M9X_JOB_DRAWS", 0);
    m9_draw_set_job_vertices(debug_get_num_option("M9X_JOB_VERTICES",
