@@ -4598,7 +4598,8 @@ int m9x_faa_direct_view_admit_locked(struct m9x_device *mdev)
  * transport.lock. Admit only this private profile's immutable borrowed
  * primary after its final actual write wait, never another caller's BO. */
 int m9x_faa_lock_view_admit_locked(struct m9x_device *mdev,
-			struct drm_gem_vram_object *color, u32 base, u64 bytes)
+				   struct drm_gem_vram_object *color, u32 base,
+				   u64 bytes)
 {
 	struct m9x_transport *t = &mdev->transport;
 
@@ -4610,7 +4611,9 @@ int m9x_faa_lock_view_admit_locked(struct m9x_device *mdev,
 	lockdep_assert_held(&t->lock);
 	/* The source normal Lock staging and primary share owner1. The typed
 	 * descriptor window is distinct from backing capacity, and this exact
-	 * same-graph retirement point authenticates access. */
+	 * same-graph retirement point authenticates access.
+
+	 */
 	if (!color || m9x_local_gpu_base)
 		return -EOPNOTSUPP;
 	if (t->async_stop)
@@ -4627,25 +4630,42 @@ int m9x_faa_lock_view_admit_locked(struct m9x_device *mdev,
 	    t->submitted_point != r->graph_draw_point ||
 	    t->next_fence != lower_32_bits(r->graph_draw_point) + 0x10 ||
 	    t->async_pending || t->queue_count || !t->transport_armed ||
-	    !t->bus_master_enabled || !t->faa_source_context || !t->faa_virtual_primary)
+	    !t->bus_master_enabled || !t->faa_source_context ||
+	    !t->faa_virtual_primary)
 		return -ENODATA;
- if(bytes!=m9x_faa_primary_window_bytes(&r->graph_layout))return -EOPNOTSUPP;
+	if (bytes != m9x_faa_primary_window_bytes(&r->graph_layout))
+		return -EOPNOTSUPP;
 	/* The second normal Lock uses the exact same source mapper/format but
 	 * has its own actual retirement marker and full retained cursor join.
-	 * Unlock/preprocessing/rendering receipts alone never admit F021. */
- if (r->color_lock_retired) {
-  if(!r->color_image||!r->color_attempted||r->unlock_started||
-   r->graph_draw_point!=r->color_lock_point||!r->color_lock_point||
-   r->graph_draw_posts!=r->color_posts_start+(r->color_image->lock_posts?r->color_image->lock_posts:4)||
-   r->graph_draw_end_bytes!=r->color_primary_start+r->color_image->primary_length)return -ENODATA;
- } else if (r->public_vs_next_lock_retired) {
-		const struct m9_faa_public_vs_next_storage *n = r->public_vs_next_image;
+	 * Unlock/preprocessing/rendering receipts alone never admit F021.
 
-		if (!n || !r->public_vs_next_attempted || r->public_vs_head_fence ||
-		    r->public_vs_draw_fence || r->graph_draw_point != n->unlock_point + 0xd0 ||
-		    r->unlock_point != n->unlock_point || r->graph_draw_posts != 13 ||
+	 */
+	if (r->color_lock_retired) {
+		if (!r->color_image || !r->color_attempted ||
+		    r->unlock_started ||
+		    r->graph_draw_point != r->color_lock_point ||
+		    !r->color_lock_point ||
+		    r->graph_draw_posts !=
+			    r->color_posts_start +
+				    (r->color_image->lock_posts ?
+					     r->color_image->lock_posts :
+					     4) ||
+		    r->graph_draw_end_bytes !=
+			    r->color_primary_start +
+				    r->color_image->primary_length)
+			return -ENODATA;
+	} else if (r->public_vs_next_lock_retired) {
+		const struct m9_faa_public_vs_next_storage *n =
+			r->public_vs_next_image;
+
+		if (!n || !r->public_vs_next_attempted ||
+		    r->public_vs_head_fence || r->public_vs_draw_fence ||
+		    r->graph_draw_point != n->unlock_point + 0xd0 ||
+		    r->unlock_point != n->unlock_point ||
+		    r->graph_draw_posts != 13 ||
 		    r->graph_draw_end_bytes != n->lock_end ||
-		    n->lock_end != n->primary_start + 60 + M9_FAA_VS_LOCK_PRIMARY_BYTES)
+		    n->lock_end != n->primary_start + 60 +
+					   M9_FAA_VS_LOCK_PRIMARY_BYTES)
 			return -ENODATA;
 	} else if (r->public_vs_lock_retired) {
 		if (!r->public_vs_head_retired || !r->public_vs_draw_observed ||
@@ -4653,34 +4673,43 @@ int m9x_faa_lock_view_admit_locked(struct m9x_device *mdev,
 		    r->public_vs_head_fence || r->public_vs_draw_fence ||
 		    r->graph_draw_point != r->observation_point + 0xe0 ||
 		    r->graph_draw_posts != 6 ||
-		    r->graph_draw_end_bytes != r->primary_bytes + 124 +
-			M9_FAA_VS_LOCK_PRIMARY_BYTES)
+		    r->graph_draw_end_bytes !=
+			    r->primary_bytes + 124 +
+				    M9_FAA_VS_LOCK_PRIMARY_BYTES)
 			return -ENODATA;
 	} else if (r->unlock_started) {
 		if (!r->unlock_retired || !r->normal_lock_view_seen ||
 		    !r->graph_second_lock_retired ||
 		    r->graph_draw_point != r->observation_point + 0x190 ||
 		    r->graph_draw_posts != 17 ||
-		    r->graph_draw_end_bytes != r->primary_bytes +
-			M9_FAA_DRAW_PRIMARY_SUFFIX_BYTES + M9_FAA_DRAW_TAIL_PRIMARY_BYTES +
-			2 * M9_FAA_LOCK_PRIMARY_BYTES + M9_FAA_UNLOCK_PRIMARY_BYTES +
-			M9_FAA_NEXT_PRIMARY_BYTES + M9_FAA_NEXT_FINISH_PRIMARY_BYTES)
+		    r->graph_draw_end_bytes !=
+			    r->primary_bytes +
+				    M9_FAA_DRAW_PRIMARY_SUFFIX_BYTES +
+				    M9_FAA_DRAW_TAIL_PRIMARY_BYTES +
+				    2 * M9_FAA_LOCK_PRIMARY_BYTES +
+				    M9_FAA_UNLOCK_PRIMARY_BYTES +
+				    M9_FAA_NEXT_PRIMARY_BYTES +
+				    M9_FAA_NEXT_FINISH_PRIMARY_BYTES)
 			return -ENODATA;
 	} else if (r->graph_second_lock_retired ||
 		   r->graph_draw_point != r->observation_point + 0xc0 ||
 		   r->graph_draw_posts != 8 ||
-		   r->graph_draw_end_bytes != r->primary_bytes +
-			M9_FAA_DRAW_PRIMARY_SUFFIX_BYTES + M9_FAA_DRAW_TAIL_PRIMARY_BYTES +
-			M9_FAA_LOCK_PRIMARY_BYTES) {
+		   r->graph_draw_end_bytes !=
+			   r->primary_bytes + M9_FAA_DRAW_PRIMARY_SUFFIX_BYTES +
+				   M9_FAA_DRAW_TAIL_PRIMARY_BYTES +
+				   M9_FAA_LOCK_PRIMARY_BYTES) {
 		return -ENODATA;
 	}
 
-	if (m9x_faa_graph_binding_owner(r->graph_binding, PARHELIA_M9_FAA_PRIMARY) !=
-	    &color->bo.base ||
-	    !m9x_faa_graph_binding_address(r->graph_binding, PARHELIA_M9_FAA_PRIMARY,
-					 &bound, &source) || source != 1 ||
-	    bound != base || r->owner[source].base != base ||
-	    r->owner[source].bytes != r->graph_layout.owner[M9_FAA_SURFACE_PRIMARY].capacity ||
+	if (m9x_faa_graph_binding_owner(r->graph_binding,
+					PARHELIA_M9_FAA_PRIMARY) !=
+		    &color->bo.base ||
+	    !m9x_faa_graph_binding_address(r->graph_binding,
+					   PARHELIA_M9_FAA_PRIMARY, &bound,
+					   &source) ||
+	    source != 1 || bound != base || r->owner[source].base != base ||
+	    r->owner[source].bytes !=
+		    r->graph_layout.owner[M9_FAA_SURFACE_PRIMARY].capacity ||
 	    color->bo.base.size != r->owner[source].bytes)
 		return -ESTALE;
 	offset = drm_gem_vram_offset(color);
@@ -4688,31 +4717,36 @@ int m9x_faa_lock_view_admit_locked(struct m9x_device *mdev,
 	    r->owner[source].bytes > (u64)U32_MAX + 1 - base)
 		return -ESTALE;
 	return 0;
-#elif defined(M9_FAA_PREPARED_FLOW_CONTROL) && defined(M9_FAA_NORMAL_LOCK_CPU_VIEW)
+#elif defined(M9_FAA_PREPARED_FLOW_CONTROL) && \
+	defined(M9_FAA_NORMAL_LOCK_CPU_VIEW)
 	struct m9x_faa_replay *r = t->faa;
-	const struct m9_faa_owner_spec *spec = &m9_faa_owner_specs[M9_FAA_COLOR_OWNER];
+	const struct m9_faa_owner_spec *spec =
+		&m9_faa_owner_specs[M9_FAA_COLOR_OWNER];
 	s64 offset;
 	u64 physical;
 
 	lockdep_assert_held(&t->lock);
 	/* This marker follows a complete same-run normal-Lock mapper/owner
-	 * join. Earlier prepared prefixes are not that contract. */
+	 * join. Earlier prepared prefixes are not that contract.
+
+	 */
 	if (
 #ifdef M9_FAA_UNLOCK_PUBLICATION_CONTROL
-	    M9_FAA_NORMAL_LOCK_SPLIT_TARGET != 0x180 ||
+		M9_FAA_NORMAL_LOCK_SPLIT_TARGET != 0x180 ||
 #else
-	    M9_FAA_TRACKER_LAST != 0x180 ||
+		M9_FAA_TRACKER_LAST != 0x180 ||
 #endif
-	    M9_FAA_NORMAL_LOCK_CPU_VIEW != 1 ||
-	    !m9_faa_diag || m9x_local_gpu_base || !color || bytes != 0x50000 ||
-	    !spec->local || spec->system || spec->bytes != bytes)
+		M9_FAA_NORMAL_LOCK_CPU_VIEW != 1 || !m9_faa_diag ||
+		m9x_local_gpu_base || !color || bytes != 0x50000 ||
+		!spec->local || spec->system || spec->bytes != bytes)
 		return -EOPNOTSUPP;
 	if (t->async_stop)
 		return -ENODEV;
 	if (t->wedged)
 		return -EIO;
 	if (!r || !r->attempted || !r->observation_retired ||
-	    !r->observation_point || r->observation_generation != t->generation ||
+	    !r->observation_point ||
+	    r->observation_generation != t->generation ||
 	    r->observation_point > t->completed_point || t->async_pending ||
 	    t->queue_count || r->retained_color != color ||
 	    (r->unlock_started &&
