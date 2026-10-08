@@ -11347,10 +11347,9 @@ bool m9x_faa_graph_empty_primary_locked(struct m9x_device *mdev,
 	if (!r)
 		return false;
 	p = r->command_pools;
-	if (!p || !p->ready ||
-	    p->generation != t->generation || !p->primary.serial ||
-	    p->primary.cursor || p->primary.planned || p->primary.quarantined ||
-	    p->timeline.quarantined ||
+	if (!p || !p->ready || p->generation != t->generation ||
+	    !p->primary.serial || p->primary.cursor || p->primary.planned ||
+	    p->primary.quarantined || p->timeline.quarantined ||
 	    p->timeline.completed_point != p->timeline.submitted_point ||
 	    r->graph_draw_end_bytes)
 		return false;
