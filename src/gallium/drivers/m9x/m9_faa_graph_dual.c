@@ -256,9 +256,7 @@ m9_faa_surface_dual_batch_kernel(struct m9_screen *screen,struct m9_faa_surface 
    if(!screen||!surface||!frame||!frame->draws||!frame->count)return -EINVAL;
    for(uint32_t start=0;start<frame->count;){
       uint32_t n=1;
-      /* Culled DRAWs are not appended (no source for that stage yet). */
-      const bool culled=frame->draws[start].state.cull_face!=PIPE_FACE_NONE;
-      while(!culled&&start+n<frame->count&&n<3&&
+      while(start+n<frame->count&&n<3&&
             dual_same_pair(&frame->draws[start],&frame->draws[start+n]))n++;
       struct m9_faa_application_frame part={.draws=frame->draws+start,.count=n,
          .clear_flags=start?0:frame->clear_flags,
