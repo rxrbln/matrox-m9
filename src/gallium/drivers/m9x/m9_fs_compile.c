@@ -1327,13 +1327,15 @@ deswizzle(struct ctx *c, int n, uint8_t lane[2], uint8_t swz[2])
    static const uint8_t lane_id[2] = { 0, 1 }, swz_id[2] = { 1, 1 };
    int one, m;
 
-   if (n < 0 || (!memcmp(swz, swz_id, 2) && !pair_swizzled(c, n)))
+   if (n < 0 || (!memcmp(lane, lane_id, 2) &&
+                 !memcmp(swz, swz_id, 2) && !pair_swizzled(c, n)))
       return n;
    if (node_is_const(&NODES(c)[n]))
       return n;
    /* A replicating read of a value that is the same in both scalars needs
     * no field at all. */
-   if (swz[0] == swz[1] && (swz[0] == 0 || swz[0] == 3) &&
+   if (!memcmp(lane, lane_id, 2) && swz[0] == swz[1] &&
+       (swz[0] == 0 || swz[0] == 3) &&
        node_broadcast(c, n)) {
       memcpy(swz, swz_id, 2);
       return n;
@@ -1932,6 +1934,23 @@ build_alu(struct ctx *c, nir_alu_instr *alu)
       t = b < 0 ? -1 : alu_src_node(c, alu, 2, lane[2], swz[2]);
       if (t < 0)
          return -1;
+      /* Constants have no register-copy swizzle to remove. Load a
+       * permuted/broadcast constant through its actual component read
+       * first; keep identity constants inline for the existing MAD form.
+       * This also preserves scalar mix weights assembled as a vec4. */
+      {
+         int *operand[] = { &a, &b, &t };
+
+         for (unsigned i = 0; i < ARRAY_SIZE(operand); i++) {
+            if (node_is_const(&NODES(c)[*operand[i]]) &&
+                (memcmp(lane[i], lane_id, 2) ||
+                 memcmp(swz[i], swz_id, 2))) {
+               *operand[i] = materialise(c, *operand[i], lane[i], swz[i]);
+               if (*operand[i] < 0)
+                  return -1;
+            }
+         }
+      }
       a = deswizzle(c, a, lane[0], swz[0]);
       b = deswizzle(c, b, lane[1], swz[1]);
       t = deswizzle(c, t, lane[2], swz[2]);
