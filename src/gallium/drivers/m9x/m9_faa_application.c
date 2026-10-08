@@ -226,7 +226,7 @@ m9_faa_application_texture_valid(const struct m9_faa_application_texture *t)
    struct m9_render_layout layout;
    return t->resource&&t->resource->target==PIPE_TEXTURE_2D&&
       t->resource->width0==v->width&&t->resource->height0==v->height&&
-      t->resource->last_level+1u==v->levels&&t->resource->depth0==1&&
+      t->resource->last_level+1u>=v->levels&&t->resource->depth0==1&&
       t->resource->array_size==1&&
       v->handle&&v->profile==12&&v->format==102&&v->levels>=1&&v->levels<=11&&
       v->width&&v->height&&v->width<=1024&&v->height<=1024&&

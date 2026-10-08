@@ -8025,6 +8025,15 @@ m9_faa_application_enabled(void)
 }
 
 static bool
+m9_faa_mip_clamp_enabled(void)
+{
+   static int enabled = -1;
+   if (enabled < 0)
+      enabled = debug_get_bool_option("M9X_FAA_MIP_CLAMP", false);
+   return enabled;
+}
+
+static bool
 m9_faa_census_enabled(void)
 {
    static int enabled = -1;
@@ -9800,11 +9809,18 @@ m9_context_faa_texture_snapshot(struct m9_context *ctx,unsigned slot,
     * range; its last level must stay out of the 16x16 tail atlas. */
    const unsigned last=view->texture->last_level;
    const bool mipped=sampler->min_mip_filter!=PIPE_TEX_MIPFILTER_NONE&&last;
+   /* Interim (M9X_FAA_MIP_CLAMP=1): sample only the levels above the tail
+    * atlas; heavily minified texels then come from the smallest such level
+    * instead of a tail level. */
+   unsigned used=last+1;
+   if(mipped&&m9_faa_mip_clamp_enabled())
+      while(used>1&&(view->texture->width0>>(used-1))<=16&&(view->texture->height0>>(used-1))<=16)
+         used--;
    if(view->target!=PIPE_TEXTURE_2D||view->texture->target!=PIPE_TEXTURE_2D||
       view->u.tex.first_level||view->u.tex.last_level!=last||view->u.tex.first_layer||
       view->u.tex.last_layer||(last&&!mipped)||
       (mipped&&(sampler->min_lod!=0.0f||sampler->max_lod<(float)last||
-                ((view->texture->width0>>last)<=16&&(view->texture->height0>>last)<=16)))||
+                ((view->texture->width0>>(used-1))<=16&&(view->texture->height0>>(used-1))<=16&&used>1)))||
       view->texture->array_size!=1||view->texture->depth0!=1||
       util_format_is_srgb(view->format)||sampler->unnormalized_coords||
       sampler->compare_mode!=PIPE_TEX_COMPARE_NONE||sampler->lod_bias||
@@ -9835,10 +9851,10 @@ m9_context_faa_texture_snapshot(struct m9_context *ctx,unsigned slot,
    *out=(struct m9_faa_application_texture){.resource=view->texture,
       .generation=owner->generation,.owner_bytes=owner->size,.offset=owner->texture.level[0].offset,
       .view={.handle=owner->handle,.profile=12,.format=bind.code>>1,
-       .width=bind.width,.height=bind.height,.storage_kind=bind.kind,.levels=last+1,
+       .width=bind.width,.height=bind.height,.storage_kind=bind.kind,.levels=used,
        .min_filter=sampler->min_img_filter==PIPE_TEX_FILTER_LINEAR?2u:1u,
        .mag_filter=sampler->mag_img_filter==PIPE_TEX_FILTER_LINEAR?2u:1u,
-       .mip_filter=!mipped?1u:sampler->min_mip_filter==PIPE_TEX_MIPFILTER_LINEAR?3u:2u,
+       .mip_filter=!mipped||used==1?1u:sampler->min_mip_filter==PIPE_TEX_MIPFILTER_LINEAR?3u:2u,
        .address_u=sampler->wrap_s==PIPE_TEX_WRAP_REPEAT?1u:3u,
        .address_v=sampler->wrap_t==PIPE_TEX_WRAP_REPEAT?1u:3u}};
    return NULL;
