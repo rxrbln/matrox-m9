@@ -9489,9 +9489,9 @@ m9_context_faa_present_lock(struct m9_context *ctx, uint64_t graph_id,
        ctx->color_offset != offset || offset > UINT32_MAX || (offset & 255) ||
        offset > destination->size || target.size > destination->size - offset)
       return -EOPNOTSUPP;
-   /* Opt in only to the source-qualified, same-size ordinary destination.
+   /* Hardware-qualified GPU presentation for the same-size ordinary destination.
     * Other destinations continue through the existing CPU presentation path. */
-   if (debug_get_bool_option("M9X_FAA_GPU_PRESENT", false) && width == 320 && height == 240 &&
+   if (debug_get_bool_option("M9X_FAA_GPU_PRESENT", true) && width == 320 && height == 240 &&
        target.row_span == 320 && target.size == 0x50000 && !(offset & 4095) &&
        graph->color_depth_initialized) {
       const struct m9_surface_desc target_desc = {
