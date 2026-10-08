@@ -44,6 +44,8 @@ struct m9_faa_prepared_graph {
 	u32 width, height;
 	u64 init_point;
 	bool initialized;
+	/* Its file released it; a retained replay may now detach. */
+	bool released;
 };
 
 struct m9_faa_file {
@@ -603,9 +605,17 @@ void m9x_faa_graph_file_close(struct drm_device *drm, struct drm_file *file)
 
 	if (!state)
 		return;
+	if (state->graph)
+		WRITE_ONCE(state->graph->released, true);
 	m9x_faa_graph_put(state->graph);
 	kfree(state);
 	file->driver_priv = NULL;
+	m9x_faa_graph_detach_released(to_m9x(drm));
+}
+
+bool m9x_faa_graph_binding_released(const struct m9_faa_graph_binding *binding)
+{
+	return binding && READ_ONCE(binding->graph->released);
 }
 
 static int m9_faa_graph_prepare(struct drm_device *drm, void *data,
@@ -627,6 +637,8 @@ static int m9_faa_graph_prepare(struct drm_device *drm, void *data,
 	    mdev->pdev->revision != 1 || mdev->pdev->subsystem_device != 0x22c0 ||
 	    m9x_local_gpu_base || !limit)
 		return -EINVAL;
+	/* A released graph that was not idle at its release may be now. */
+	m9x_faa_graph_detach_released(mdev);
 	graph = kzalloc_obj(*graph);
 	if (!graph)
 		return -ENOMEM;
@@ -747,7 +759,9 @@ int m9x_faa_graph_release_ioctl(struct drm_device *drm, void *data,
 	}
 	state->graph = NULL;
 	mutex_unlock(&state->lock);
+	WRITE_ONCE(graph->released, true);
 	m9x_faa_graph_put(graph);
+	m9x_faa_graph_detach_released(to_m9x(drm));
 	return 0;
 }
 

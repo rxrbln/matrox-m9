@@ -1551,6 +1551,16 @@ static int m9_triangle_context_init_locked(struct m9x_device *mdev,
 	return 0;
 }
 
+/* A retired FAA source INIT activated this context; ordinary jobs keep it
+ * after its graph is detached.
+ */
+void m9x_triangle_adopt_context_locked(struct m9x_device *mdev)
+{
+	lockdep_assert_held(&mdev->transport.lock);
+	if (mdev->transport.triangle)
+		mdev->transport.triangle->context_initialized = true;
+}
+
 /* The Linux first context has retired on this requester. */
 bool m9x_triangle_context_ready_locked(struct m9x_device *mdev)
 {

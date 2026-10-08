@@ -153,6 +153,10 @@ struct m9x_transport {
 	struct m9x_address_space *address;
 	struct m9x_triangle_diag *triangle;
 	struct m9x_faa_replay *faa;
+	/* A released graph detached at an idle boundary. Its pool and sentinel
+	 * stay engine state until the next graph INIT retires.
+	 */
+	struct m9x_faa_replay *faa_retiring;
 };
 
 /* Both PInS GPIO maps hold eight function IDs in physical-bit order. */
@@ -475,6 +479,9 @@ bool m9x_ordinary_faa_context_locked(struct m9x_device *mdev);
 bool m9x_faa_ordinary_continue_enabled(void);
 bool m9x_triangle_context_ready_locked(struct m9x_device *mdev);
 u64 m9x_faa_graph_first_origin_locked(struct m9x_device *mdev, u64 init_point);
+void m9x_faa_graph_detach_released(struct m9x_device *mdev);
+bool m9x_faa_graph_binding_released(const struct m9_faa_graph_binding *binding);
+void m9x_triangle_adopt_context_locked(struct m9x_device *mdev);
 bool m9x_faa_graph_release_unposted(struct m9x_device *mdev,
 				    struct m9_faa_graph_binding *binding);
 bool m9x_faa_source_init_retired_locked(struct m9x_device *mdev);

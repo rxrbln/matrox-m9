@@ -485,6 +485,10 @@ struct m9x_faa_replay {
 	 * access boundary. Keep their source buffer through that upload. */
 	const struct firmware *program_inputs;
 	bool prepared, attempted, baseline_valid;
+	/* A later graph INIT retired after this replay was detached: it
+	 * reprogrammed the context, so no engine fetch reaches these owners.
+	 */
+	bool superseded;
 	u32 primary_bytes;
 	/* Checked extent of the caller's pinned/reserved color BO. This is
 	 * borrowed storage, never a locally mapped owner to release. */
@@ -1171,7 +1175,7 @@ static bool m9_faa_release(struct m9x_device *mdev, struct m9x_faa_replay *r)
 	 * Restore every changed allocation before freeing any owner, so a CPA
 	 * failure cannot return WC or partly converted pages to the allocator.
 	 */
-	if (r->attempted && mdev->transport.bus_master_enabled)
+	if (r->attempted && !r->superseded && mdev->transport.bus_master_enabled)
 		goto quarantine;
 	for (i = 0; i < ARRAY_SIZE(r->owner); i++)
 		if (!m9_faa_dma_restore_wb(&r->owner[i])) {
@@ -1435,12 +1439,142 @@ void m9x_faa_fini(struct m9x_device *mdev)
 		if (m9_faa_release(mdev, r))
 			mdev->transport.faa = NULL;
 	}
+	if (mdev->transport.faa_retiring) {
+		struct m9x_faa_replay *r = mdev->transport.faa_retiring;
+
+		mutex_lock(&mdev->transport.lock);
+		m9_faa_unmap_system_locked(mdev, r);
+		mutex_unlock(&mdev->transport.lock);
+		if (m9_faa_release(mdev, r))
+			mdev->transport.faa_retiring = NULL;
+	}
 }
 
 /* An INIT that never wrote COMMAND_BASE or an END for this replay leaves
  * nothing the engine can fetch: release it, so ordinary jobs bring up their
  * own context and a later graph can INIT. Returns false when kept.
  */
+#ifdef M9_FAA_GRAPH_INIT_CONTROL
+/* A graph INIT retired after the previous graph was detached: its context
+ * initializer replaced the fragment pool and sentinel bindings, and the
+ * requester fetches the new primary, so the detached replay is released.
+ */
+static void m9_faa_release_superseded(struct m9x_device *mdev)
+{
+	struct m9x_transport *t = &mdev->transport;
+	struct m9x_faa_replay *old;
+
+	mutex_lock(&t->lock);
+	old = t->faa_retiring;
+	if (old && t->faa && t->faa->observation_retired && !t->wedged) {
+		old->superseded = true;
+		m9_faa_unmap_system_locked(mdev, old);
+		t->faa_retiring = NULL;
+	} else {
+		old = NULL;
+	}
+	mutex_unlock(&t->lock);
+	if (old && !m9_faa_release(mdev, old)) {
+		mutex_lock(&t->lock);
+		t->faa_retiring = old;
+		mutex_unlock(&t->lock);
+	}
+}
+
+/* Drop the tag1 that INIT put on the restore records' DWORD9/14/19. */
+static int m9_faa_untag_virtual_restore(struct m9x_device *mdev)
+{
+	static const u32 word[] = { 9, 14, 19 };
+	struct iosys_map map;
+	u32 base, i, j;
+	int ret;
+
+	lockdep_assert_held(&mdev->transport.lock);
+	ret = m9x_address_restore_region(mdev, &map, &base);
+	if (ret)
+		return ret;
+	if (base != mdev->transport.restore_base)
+		return -ERANGE;
+	for (i = 0; i < 0x400; i++) {
+		u32 work = base + 0x200 + i * 0x600;
+		u32 expected[] = { work, base, work + 0x440 };
+
+		for (j = 0; j < ARRAY_SIZE(word); j++)
+			if (iosys_map_rd(&map, 0x700 + i * 0x600 + word[j] * 4,
+					 u32) != (expected[j] | 1u))
+				return -EINVAL;
+	}
+	for (i = 0; i < 0x400; i++) {
+		u32 work = base + 0x200 + i * 0x600;
+		u32 expected[] = { work, base, work + 0x440 };
+
+		for (j = 0; j < ARRAY_SIZE(word); j++)
+			iosys_map_wr(&map, 0x700 + i * 0x600 + word[j] * 4, u32,
+				     expected[j]);
+	}
+	/* The records are WC; publish them before the requester is rearmed. */
+	wmb();
+	return 0;
+}
+
+/* A graph stops between frames: its INIT retired, no frame, pool transition,
+ * public-VS step or PRESENT is in flight.
+ */
+static bool m9_faa_graph_idle(const struct m9x_faa_replay *r)
+{
+	if (!r->attempted || !r->observation_retired || r->graph_preparing ||
+	    (r->depth_storage && r->depth_storage->frame) ||
+	    r->public_vs_head_fence || r->public_vs_draw_fence ||
+	    r->present_destination || r->present_fence ||
+	    (r->command_pools && r->command_pools->primary.planned))
+		return false;
+	if (!r->unlock_point)
+		return !r->color_attempted && !r->graph_draw_posts;
+	return r->unlock_retired && r->present_attempted == r->present_retired;
+}
+#endif
+
+/* Once its file released the graph and the graph is idle, return the
+ * requester to the staging slots on the context the INIT activated, so a
+ * later graph INIT continues it like any used requester. The replay's owners
+ * stay engine state (fragment pool, sentinel) until that INIT retires.
+ */
+void m9x_faa_graph_detach_released(struct m9x_device *mdev)
+{
+#ifdef M9_FAA_GRAPH_INIT_CONTROL
+	struct m9x_transport *t = &mdev->transport;
+	struct m9x_faa_replay *r;
+	int ret;
+
+	mutex_lock(&t->lock);
+	r = t->faa;
+	if (!r || t->wedged || t->faa_retiring || !t->faa_virtual_primary ||
+	    !m9x_faa_graph_binding_released(r->graph_binding) ||
+	    !m9_faa_graph_idle(r))
+		goto unlock;
+	ret = m9x_transport_drain_locked(mdev);
+	if (ret || t->queue_count || t->async_pending)
+		goto unlock;
+	if (m9_faa_untag_virtual_restore(mdev))
+		goto unlock;
+	t->faa = NULL;
+	t->faa_retiring = r;
+	t->faa_virtual_primary = false;
+	t->faa_source_context = false;
+	m9x_triangle_adopt_context_locked(mdev);
+	ret = m9x_transport_rearm_locked(mdev);
+	if (ret) {
+		t->wedged = true;
+		t->generation++;
+	}
+	dev_info(&mdev->pdev->dev,
+		 "M9 FAA released graph detached at %#llx: requester back on its staging slots (%d)\n",
+		 t->completed_point, ret);
+unlock:
+	mutex_unlock(&t->lock);
+#endif
+}
+
 bool m9x_faa_graph_release_unposted(struct m9x_device *mdev,
 				    struct m9_faa_graph_binding *binding)
 {
@@ -3750,8 +3884,10 @@ int m9x_faa_submit_graph(struct m9x_device *mdev,
 	if (memcmp(check, init, sizeof(init)))
 		return -EIO;
 
-	return m9_faa_submit(mdev, 0, NULL, point, posted, &retained,
-			     binding);
+	ret = m9_faa_submit(mdev, 0, NULL, point, posted, &retained, binding);
+	if (!ret)
+		m9_faa_release_superseded(mdev);
+	return ret;
 #else
 	return -EOPNOTSUPP;
 #endif
