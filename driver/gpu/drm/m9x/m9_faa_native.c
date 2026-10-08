@@ -7959,7 +7959,12 @@ int m9x_faa_graph_depth_later_prepare(struct m9x_device *mdev,
  ret=m9_faa_depth_frame_retained_state(mdev,binding,generation,previous,&next);
  r=t->faa;
  if(!ret&&(!r->depth_storage||!r->depth_storage->initialized||r->depth_storage->frame))ret=-ESTALE;
- if(!ret)ret=m9x_faa_graph_bound_depth_views_locked(mdev,binding,generation,&views);
+ /* Count2 stages inputs privately below; its final locked owner/PTE scan
+  * still precedes encoder writes and installation of either CPU snapshot.
+  * Avoid scanning the entire attachment twice around CPU-only allocations.
+  * The legacy count4 NEXT producer replaces its snapshot earlier, so keep
+  * that path's preallocation mapping gate. */
+ if(!ret&&!two)ret=m9x_faa_graph_bound_depth_views_locked(mdev,binding,generation,&views);
  mutex_unlock(&t->lock);if(ret)return ret;
  if(two){
   /* The non-depth NEXT producer is four-stage only. Stage count2 inputs
