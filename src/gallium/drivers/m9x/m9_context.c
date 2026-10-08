@@ -11029,8 +11029,18 @@ m9_update_target(struct m9_context *ctx)
       struct m9_resource *depth = ctx->framebuffer.zsbuf.texture ?
          m9_res(ctx->framebuffer.zsbuf.texture) : NULL;
 
-      if (m9_faa_surface_prepare(ctx->screen, color, depth,
-                                 ctx->color_offset, w, h, &ctx->faa_surface))
+      int prepared = m9_faa_surface_prepare(ctx->screen, color, depth,
+                                            ctx->color_offset, w, h, &ctx->faa_surface);
+
+      if (prepared && ctx->debug)
+         fprintf(stderr, "m9x: FAA surface preparation returned %d: %ux%u handle %u "
+                 "offset %" PRIu64 " depth %u; retained %ux%u handle %u depth %s\n",
+                 prepared, w, h, color->handle, (uint64_t)ctx->color_offset,
+                 depth ? depth->handle : 0, ctx->faa_surface.width,
+                 ctx->faa_surface.height,
+                 ctx->faa_surface.destination ? m9_res(ctx->faa_surface.destination)->handle : 0,
+                 ctx->faa_surface.depth == (depth ? &depth->base : NULL) ? "same" : "changed");
+      if (prepared)
          m9_warn_once(ctx, M9_WARN_MEMORY,
                       "FAA surface preparation failed; ordinary target retained");
       else if (m9_faa_surface_prepare_kernel(ctx->screen, &ctx->faa_surface))
