@@ -1291,47 +1291,113 @@ out_state:
 	return ret;
 }
 
-int m9x_faa_graph_color_lock_ioctl(struct drm_device *drm,void *data,struct drm_file *file)
+int m9x_faa_graph_color_lock_ioctl(struct drm_device *drm, void *data,
+				   struct drm_file *file)
 {
- struct drm_parhelia_m9_faa_graph_color_lock *args=data;
- struct m9x_device *mdev=to_m9x(drm);struct m9_faa_file *state=file->driver_priv;
- struct m9_faa_prepared_graph *graph;struct m9_faa_graph_binding *binding=NULL;
- struct m9x_faa_color_input input;struct drm_exec exec;
- u8 *upload=NULL;u32 sum,tmp,address[PARHELIA_M9_FAA_GRAPH_OWNERS],i;u64 point=0;bool posted=false;int idx,ret;
- static_assert(sizeof(args->layout)==sizeof(input.layout));
- static_assert(sizeof(*args)==136);
- if(!state||!args->graph_id||!args->init_point||!args->upload||args->lock_point||args->flags||args->state||args->pad||
-  !args->declaration_count||args->declaration_count>32||!args->upload_bytes||args->upload_bytes>0x42000)return -EINVAL;
- if(check_add_overflow(args->layout.program_bytes,args->layout.constants_bytes,&sum)||
-  check_add_overflow(sum,args->layout.geometry_bytes,&sum)||
-  check_mul_overflow(args->declaration_count,4u,&tmp)||check_add_overflow(sum,tmp,&sum)||
-  sum!=args->upload_bytes)return -EINVAL;
- if(!m9x_faa_graph_profile_enabled())return -EOPNOTSUPP;
- if(!drm_dev_enter(drm,&idx))return -ENODEV;
- ret=m9x_faa_graph_continuation_acquire(mdev,file,args->graph_id,args->generation,args->init_point,&binding);
- if(ret)goto out_dev;
- mutex_lock(&state->lock);graph=state->graph;
- if(graph!=binding->graph||!m9_faa_graph_continuation_matches(graph,args->graph_id,args->generation,args->init_point)){ret=-ENOENT;goto out_binding;}
- upload=memdup_user(u64_to_user_ptr(args->upload),args->upload_bytes);
- if(IS_ERR(upload)){ret=PTR_ERR(upload);upload=NULL;goto out_binding;}
- memset(&input,0,sizeof(input));memcpy(&input.layout,&args->layout,sizeof(input.layout));
- input.program=upload;input.constants=input.program+args->layout.program_bytes;
- input.geometry=input.constants+args->layout.constants_bytes;
- input.declaration=input.geometry+args->layout.geometry_bytes;
- input.record_stride=args->record_stride;input.record_count=args->record_count;input.declaration_count=args->declaration_count;
- ret=m9x_faa_graph_color_prepare(mdev,binding,args->generation,args->init_point,&input);if(ret)goto out_binding;
- drm_exec_init(&exec,DRM_EXEC_INTERRUPTIBLE_WAIT|DRM_EXEC_IGNORE_DUPLICATES,PARHELIA_M9_FAA_GRAPH_OWNERS);
- drm_exec_until_all_locked(&exec){for(i=0;i<PARHELIA_M9_FAA_GRAPH_OWNERS;i++){
-  ret=drm_exec_prepare_obj(&exec,graph->owner[i],1);drm_exec_retry_on_contention(&exec);if(ret)goto out_exec;}}
- ret=m9_faa_graph_live_addresses(mdev,graph,address);if(ret)goto out_exec;
- if(memcmp(binding->address,address,sizeof(address))){ret=-ESTALE;goto out_exec;}
- ret=m9x_faa_graph_color_submit(mdev,binding,args->generation,args->init_point,&point,&posted);
- if(!ret){if(!point||point!=args->init_point+(args->layout.program_count==4?0xe0:0xa0))ret=-EIO;
-  else{args->lock_point=point;args->state=PARHELIA_M9_FAA_COLOR_LOCK_RETIRED;}}
-out_exec:drm_exec_fini(&exec);
-out_binding:kfree(upload);m9x_faa_graph_binding_put(binding);
-mutex_unlock(&state->lock);
-out_dev:drm_dev_exit(idx);return ret;
+	struct drm_parhelia_m9_faa_graph_color_lock *args = data;
+	struct m9x_device *mdev = to_m9x(drm);
+	struct m9_faa_file *state = file->driver_priv;
+	struct m9_faa_prepared_graph *graph;
+	struct m9_faa_graph_binding *binding = NULL;
+	struct m9x_faa_color_input input;
+	struct drm_exec exec;
+	u8 *upload = NULL;
+	u32 sum, tmp, address[PARHELIA_M9_FAA_GRAPH_OWNERS], i;
+	u64 point = 0;
+	bool posted = false;
+	int idx, ret;
+
+	static_assert(sizeof(args->layout) == sizeof(input.layout));
+	static_assert(sizeof(*args) == 136);
+	if (!state || !args->graph_id || !args->init_point || !args->upload ||
+	    args->lock_point || args->flags || args->state || args->pad ||
+	    !args->declaration_count || args->declaration_count > 32 ||
+	    !args->upload_bytes || args->upload_bytes > 0x42000)
+		return -EINVAL;
+	if (check_add_overflow(args->layout.program_bytes,
+			       args->layout.constants_bytes, &sum) ||
+	    check_add_overflow(sum, args->layout.geometry_bytes, &sum) ||
+	    check_mul_overflow(args->declaration_count, 4u, &tmp) ||
+	    check_add_overflow(sum, tmp, &sum) || sum != args->upload_bytes)
+		return -EINVAL;
+	if (!m9x_faa_graph_profile_enabled())
+		return -EOPNOTSUPP;
+	if (!drm_dev_enter(drm, &idx))
+		return -ENODEV;
+	ret = m9x_faa_graph_continuation_acquire(mdev, file, args->graph_id,
+						 args->generation,
+						 args->init_point, &binding);
+	if (ret)
+		goto out_dev;
+	mutex_lock(&state->lock);
+	graph = state->graph;
+	if (graph != binding->graph ||
+	    !m9_faa_graph_continuation_matches(graph, args->graph_id,
+					       args->generation,
+					       args->init_point)) {
+		ret = -ENOENT;
+		goto out_binding;
+	}
+	upload = memdup_user(u64_to_user_ptr(args->upload), args->upload_bytes);
+	if (IS_ERR(upload)) {
+		ret = PTR_ERR(upload);
+		upload = NULL;
+		goto out_binding;
+	}
+	memset(&input, 0, sizeof(input));
+	memcpy(&input.layout, &args->layout, sizeof(input.layout));
+	input.program = upload;
+	input.constants = input.program + args->layout.program_bytes;
+	input.geometry = input.constants + args->layout.constants_bytes;
+	input.declaration = input.geometry + args->layout.geometry_bytes;
+	input.record_stride = args->record_stride;
+	input.record_count = args->record_count;
+	input.declaration_count = args->declaration_count;
+	ret = m9x_faa_graph_color_prepare(mdev, binding, args->generation,
+					  args->init_point, &input);
+	if (ret)
+		goto out_binding;
+	drm_exec_init(&exec,
+		      DRM_EXEC_INTERRUPTIBLE_WAIT | DRM_EXEC_IGNORE_DUPLICATES,
+		      PARHELIA_M9_FAA_GRAPH_OWNERS);
+	drm_exec_until_all_locked(&exec)
+	{
+		for (i = 0; i < PARHELIA_M9_FAA_GRAPH_OWNERS; i++) {
+			ret = drm_exec_prepare_obj(&exec, graph->owner[i], 1);
+			drm_exec_retry_on_contention(&exec);
+			if (ret)
+				goto out_exec;
+		}
+	}
+	ret = m9_faa_graph_live_addresses(mdev, graph, address);
+	if (ret)
+		goto out_exec;
+	if (memcmp(binding->address, address, sizeof(address))) {
+		ret = -ESTALE;
+		goto out_exec;
+	}
+	ret = m9x_faa_graph_color_submit(mdev, binding, args->generation,
+					 args->init_point, &point, &posted);
+	if (!ret) {
+		if (!point ||
+		    point != args->init_point +
+				     (args->layout.program_count == 4 ? 0xe0 :
+									0xa0)) {
+			ret = -EIO;
+		} else {
+			args->lock_point = point;
+			args->state = PARHELIA_M9_FAA_COLOR_LOCK_RETIRED;
+		}
+	}
+out_exec:
+	drm_exec_fini(&exec);
+out_binding:
+	kfree(upload);
+	m9x_faa_graph_binding_put(binding);
+	mutex_unlock(&state->lock);
+out_dev:
+	drm_dev_exit(idx);
+	return ret;
 }
 
 int m9x_faa_graph_public_vs_next_ioctl(struct drm_device *drm, void *data, struct drm_file *file)
