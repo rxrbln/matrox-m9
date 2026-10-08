@@ -7626,8 +7626,9 @@ static int m9_faa_graph_next_state(struct m9x_transport *t, u32 generation,
 
 #endif
 
-int m9x_faa_graph_next_get_locked(struct m9x_device *mdev,
-		u32 generation, u64 unlock_point, struct m9_faa_graph_binding **out)
+int m9x_faa_graph_next_get_locked(struct m9x_device *mdev, u32 generation,
+				  u64 unlock_point,
+				  struct m9_faa_graph_binding **out)
 {
 #ifdef M9_FAA_GRAPH_INIT_CONTROL
 	int ret;
@@ -7636,7 +7637,8 @@ int m9x_faa_graph_next_get_locked(struct m9x_device *mdev,
 	if (!out)
 		return -EINVAL;
 	*out = NULL;
-	ret = m9_faa_graph_next_state(&mdev->transport, generation, unlock_point, false);
+	ret = m9_faa_graph_next_state(&mdev->transport, generation,
+				      unlock_point, false);
 	if (!ret)
 		*out = m9x_faa_graph_binding_get(mdev->transport.faa->graph_binding);
 	return ret;
