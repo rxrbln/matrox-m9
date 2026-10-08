@@ -395,11 +395,10 @@ m9_begin_query(struct pipe_context *pctx, struct pipe_query *pq)
    struct m9_context *ctx = (struct m9_context *)pctx;
    struct m9_query *q = m9_query(pq);
 
-   /* Flush earlier draws before reusing this query's CPU-written slots.
-    * In queue mode they can still publish into the old pair and pause pages. */
-   if (ctx->screen->queued_submit &&
-       (m9_context_flush_job(pctx) ||
-        m9_wait_for_point(ctx->screen, ctx->last_point))) {
+   /* Flush earlier draws before reusing this query's CPU-written slots:
+    * a posted job can still publish into the old pair and pause pages. */
+   if (m9_context_flush_job(pctx) ||
+       m9_wait_for_point(ctx->screen, ctx->last_point)) {
       q->failed = true;
       ctx->lost = true;
       return false;
