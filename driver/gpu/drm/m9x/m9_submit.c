@@ -1263,6 +1263,10 @@ static int m9_submit_execute(struct m9x_device *mdev, const u32 *image,
 		m9x_triangle_prepare_user(mdev);
 	if (ret)
 		goto out_retired;
+retry:
+	ret = m9x_faa_ordinary_wait(mdev);
+	if (ret)
+		goto out_retired;
 	drm_exec_init(&exec, DRM_EXEC_INTERRUPTIBLE_WAIT |
 		      DRM_EXEC_IGNORE_DUPLICATES, count);
 	drm_exec_until_all_locked(&exec) {
@@ -1282,6 +1286,12 @@ static int m9_submit_execute(struct m9x_device *mdev, const u32 *image,
 	if (mdev->transport.async_stop) {
 		ret = -ENODEV;
 		goto out_unlock;
+	}
+	/* The graph took the cursor again while the objects were locked. */
+	if (m9x_faa_ordinary_blocked_locked(mdev)) {
+		mutex_unlock(&mdev->transport.lock);
+		drm_exec_fini(&exec);
+		goto retry;
 	}
 	ret = queued ? m9x_transport_queue_room_locked(mdev, &secondary_slot) :
 		m9x_transport_drain_locked(mdev);

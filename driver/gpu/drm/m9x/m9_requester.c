@@ -750,6 +750,11 @@ module_param_named(faa_ordinary_continue, m9_faa_ordinary_continue, bool, 0400);
 MODULE_PARM_DESC(faa_ordinary_continue,
 		 "Append ordinary jobs to a retained FAA primary instead of refusing them (UNTESTED)");
 
+unsigned long m9x_fence_timeout_jiffies(void)
+{
+	return msecs_to_jiffies(max(m9_fence_timeout_ms, 1u));
+}
+
 bool m9x_faa_ordinary_continue_enabled(void)
 {
 	return m9_faa_ordinary_continue;

@@ -9369,16 +9369,15 @@ bool m9x_faa_graph_empty_primary_locked(struct m9x_device *mdev,
  * PRESENT). A prepared later frame or pool transition owns that cursor. At
  * capacity the drained requester restarts at the owner's base, as INIT did.
  */
-int m9x_faa_ordinary_primary_locked(struct m9x_device *mdev, u32 bytes,
-				    struct m9x_faa_ordinary_primary *out)
+#ifdef M9_FAA_GRAPH_INIT_CONTROL
+/* -EBUSY while the graph owns the cursor: until its INIT retired, from FIRST
+ * to Unlock, from a prepared frame through PRESENT, or after a pool event.
+ */
+static int m9_faa_ordinary_idle(struct m9x_device *mdev, u32 *start)
 {
 	struct m9x_transport *t = &mdev->transport;
-#ifdef M9_FAA_GRAPH_INIT_CONTROL
 	struct m9x_faa_replay *r = t->faa;
-	struct m9_faa_owner *o;
-	u32 capacity, start;
 
-	lockdep_assert_held(&t->lock);
 	if (!r || !t->faa_virtual_primary || !t->faa_source_context ||
 	    !m9x_faa_graph_active(mdev) || m9x_faa_graph_preparing(mdev))
 		return -EACCES;
@@ -9387,18 +9386,97 @@ int m9x_faa_ordinary_primary_locked(struct m9x_device *mdev, u32 bytes,
 		if (!r->observation_retired || !r->observation_point ||
 		    r->graph_draw_posts)
 			return -EBUSY;
-		start = m9_faa_first_bytes(r, r->observation_point);
-	} else {
-		/* A pool event in this idle period keeps its own origin. */
-		if (!r->unlock_retired ||
-		    r->present_attempted != r->present_retired ||
-		    (r->depth_storage && r->depth_storage->frame) ||
-		    (r->command_pools &&
-		     (r->command_pools->primary.planned ||
-		      r->command_pools->unlock_point == r->unlock_point)))
-			return -EBUSY;
-		start = r->graph_draw_end_bytes;
+		*start = m9_faa_first_bytes(r, r->observation_point);
+		return 0;
 	}
+	/* A pool event in this idle period keeps its own origin. */
+	if (!r->unlock_retired ||
+	    r->present_attempted != r->present_retired ||
+	    (r->depth_storage && r->depth_storage->frame) ||
+	    (r->command_pools &&
+	     (r->command_pools->primary.planned ||
+	      r->command_pools->unlock_point == r->unlock_point)))
+		return -EBUSY;
+	*start = r->graph_draw_end_bytes;
+	return 0;
+}
+
+/* Graph progress that can end an -EBUSY period. */
+static u64 m9_faa_ordinary_progress(const struct m9x_transport *t)
+{
+	const struct m9x_faa_replay *r = t->faa;
+
+	return t->submitted_point + t->completed_point +
+	       (r ? r->graph_draw_posts + r->unlock_point + r->present_point +
+		r->present_retired + (r->depth_storage &&
+				      r->depth_storage->frame) : 0);
+}
+#endif
+
+/* An ordinary submit waits for the graph's idle boundary instead of failing.
+ * Called without the transport lock and before any reservation is held: the
+ * graph's producers take the same objects. The wait ends without graph
+ * progress for ten fence timeouts.
+ */
+int m9x_faa_ordinary_wait(struct m9x_device *mdev)
+{
+#ifdef M9_FAA_GRAPH_INIT_CONTROL
+	struct m9x_transport *t = &mdev->transport;
+	unsigned long deadline = 0;
+	u64 progress = 0;
+	u32 start;
+	int ret;
+
+	for (;;) {
+		mutex_lock(&t->lock);
+		ret = m9x_faa_ordinary_continue_enabled() ?
+		      m9_faa_ordinary_idle(mdev, &start) : 0;
+		if (ret == -EBUSY && (!deadline ||
+				      m9_faa_ordinary_progress(t) != progress)) {
+			progress = m9_faa_ordinary_progress(t);
+			deadline = jiffies + 10 * m9x_fence_timeout_jiffies();
+		}
+		mutex_unlock(&t->lock);
+		if (ret != -EBUSY)
+			return 0;
+		if (time_after(jiffies, deadline))
+			return -EBUSY;
+		if (msleep_interruptible(1))
+			return -ERESTARTSYS;
+	}
+#else
+	return 0;
+#endif
+}
+
+/* Whether the graph owns the cursor now; see m9x_faa_ordinary_wait(). */
+bool m9x_faa_ordinary_blocked_locked(struct m9x_device *mdev)
+{
+#ifdef M9_FAA_GRAPH_INIT_CONTROL
+	u32 start;
+
+	lockdep_assert_held(&mdev->transport.lock);
+	return m9x_faa_ordinary_continue_enabled() &&
+	       m9_faa_ordinary_idle(mdev, &start) == -EBUSY;
+#else
+	return false;
+#endif
+}
+
+int m9x_faa_ordinary_primary_locked(struct m9x_device *mdev, u32 bytes,
+				    struct m9x_faa_ordinary_primary *out)
+{
+	struct m9x_transport *t = &mdev->transport;
+#ifdef M9_FAA_GRAPH_INIT_CONTROL
+	struct m9x_faa_replay *r = t->faa;
+	struct m9_faa_owner *o;
+	u32 capacity, start;
+	int ret;
+
+	lockdep_assert_held(&t->lock);
+	ret = m9_faa_ordinary_idle(mdev, &start);
+	if (ret)
+		return ret;
 	o = m9_faa_command_owner(r, false);
 	if (!o || !o->cpu || !drm_mm_node_allocated(&o->system_node) ||
 	    o->system_node.start != o->base)
