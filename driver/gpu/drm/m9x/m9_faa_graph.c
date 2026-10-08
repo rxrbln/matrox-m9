@@ -383,9 +383,10 @@ m9x_faa_graph_owner(const struct m9_faa_prepared_graph *graph, u32 role)
 /* Caller holds one WW reservation set covering all six owners. A retained
  * pin should make these positions stable, but a continuation must compare
  * its live placement to the original binding before using any address. */
-static int m9_faa_graph_live_addresses(struct m9x_device *mdev,
-		const struct m9_faa_prepared_graph *graph,
-		u32 address[PARHELIA_M9_FAA_GRAPH_OWNERS])
+static int
+m9_faa_graph_live_addresses(struct m9x_device *mdev,
+			    const struct m9_faa_prepared_graph *graph,
+			    u32 address[PARHELIA_M9_FAA_GRAPH_OWNERS])
 {
 	u64 limit = m9x_vram_gpu_limit(mdev);
 	u32 i;
@@ -403,11 +404,13 @@ static int m9_faa_graph_live_addresses(struct m9x_device *mdev,
 		offset = m9x_gem_vram_offset(gem);
 		if (offset < 0 ||
 		    !m9_faa_graph_local_span(M9_VRAM_GPU_BASE, (u64)offset,
-			graph->layout.owner[i].capacity, limit,
-			&address[i]))
+					     graph->layout.owner[i].capacity,
+					     limit, &address[i]))
 			return -ERANGE;
 	}
-	return m9_faa_graph_ranges_layout_disjoint(address, &graph->layout) ? 0 : -EINVAL;
+	return m9_faa_graph_ranges_layout_disjoint(address, &graph->layout) ?
+		       0 :
+		       -EINVAL;
 }
 
 int m9x_faa_graph_binding_acquire(struct m9x_device *mdev,
