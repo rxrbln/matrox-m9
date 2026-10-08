@@ -7,6 +7,7 @@
 #include <stdint.h>
 #include <stdbool.h>
 typedef uint32_t u32;
+typedef uint8_t u8;
 #else
 #include <linux/types.h>
 #endif
