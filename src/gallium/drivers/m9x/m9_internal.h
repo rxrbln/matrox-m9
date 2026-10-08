@@ -627,6 +627,9 @@ struct m9_context {
       bool swapped;
       /* End-of-frame flushes seen; M9X_FAA_TRACE names one to trace. */
       unsigned frame_index;
+      /* Pass-through VS of the depth-only clear quad, by COL0/TEX0/TEX1
+       * outputs read. */
+      void *depth_quad_vs[8];
       unsigned skip, backoff, fallback_run;
       uint64_t frames, fallbacks, skipped, splits, releases;
       const char *reason;

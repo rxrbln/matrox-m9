@@ -86,6 +86,8 @@ struct m9_faa_texture_fragment_state {
    enum m9_faa_blend_factor src, dst;
    enum m9_faa_alpha_func alpha_func;
    uint8_t alpha_ref; /* D3D ALPHAREF */
+   /* Colour channels not written, PIPE_MASK bits (stage ab, not the FS). */
+   uint8_t color_off;
 };
 struct m9_faa_texture_fragment_interface {
    uint32_t slots, constant_pairs;

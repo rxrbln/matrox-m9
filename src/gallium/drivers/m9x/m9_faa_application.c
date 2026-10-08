@@ -726,6 +726,9 @@ m9_faa_application_build(const struct m9_faa_application_draw *d,
                        m9_faa_live_gl_single_texture_build(&live,&fresh.shader,&why))) {
          goto fail;
       }
+      /* A colour write mask changes only the stage's ab and f0 words. */
+      fresh.fragment|=PARHELIA_M9_FAA_FRAGMENT_NO_COLOR(
+         d->state.texture_fragment_valid?d->state.texture_fragment.color_off:0);
       for(unsigned i=0;i<texture_count;i++) {
          fresh.texture[i]=d->texture[i];fresh.texture[i].resource=NULL;
          pipe_resource_reference(&fresh.texture[i].resource,d->texture[i].resource);

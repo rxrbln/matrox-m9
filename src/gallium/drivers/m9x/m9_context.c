@@ -45,6 +45,7 @@
 #include "nir/tgsi_to_nir.h"
 #include "tgsi/tgsi_from_mesa.h"
 #include "util/u_blitter.h"
+#include "util/u_simple_shaders.h"
 #include "util/u_debug.h"
 #include "util/u_debug_cb.h"
 #include "util/format/u_format.h"
@@ -8620,6 +8621,127 @@ m9_clear_locked(struct pipe_context *pctx, unsigned buffers,
                     stencil_clear_mask);
 }
 
+/* M9X_FAA_DEPTH_QUAD=1 (not yet measured): a scissored depth-only clear in
+ * an FAA frame is drawn as the vendor's light form, a colour-masked quad at
+ * the clear depth with ALWAYS + write (m9emu zclear/), so the frame stays
+ * FAA. The bound FS and textures are kept; the colour mask hides them. */
+static bool
+m9_faa_depth_quad_enabled(void)
+{
+   static int enabled = -1;
+   if (enabled < 0)
+      enabled = debug_get_bool_option("M9X_FAA_DEPTH_QUAD", false);
+   return enabled;
+}
+
+static bool
+m9_context_faa_depth_quad(struct m9_context *ctx,
+                          const struct pipe_scissor_state *scissor, double depth)
+{
+   struct pipe_context *pctx = &ctx->base;
+   if (!ctx->fs || !ctx->fs->nir || !ctx->rasterizer || !ctx->dsa || !ctx->velems)
+      return false;
+   const uint64_t read = ctx->fs->nir->info.inputs_read;
+   const unsigned key = (read & VARYING_BIT_COL0 ? 1 : 0) |
+                        (read & VARYING_BIT_TEX0 ? 2 : 0) |
+                        (read & VARYING_BIT_TEX1 ? 4 : 0);
+   if (read & ~(VARYING_BIT_COL0 | VARYING_BIT_TEX0 | VARYING_BIT_TEX1 | VARYING_BIT_POS))
+      return false;
+   enum tgsi_semantic names[4] = {TGSI_SEMANTIC_POSITION};
+   unsigned indices[4] = {0}, n = 1;
+   if (key & 1) names[n++] = TGSI_SEMANTIC_COLOR;
+   for (unsigned t = 0; t < 2; t++)
+      if (key & 2 << t) { names[n] = TGSI_SEMANTIC_TEXCOORD; indices[n++] = t; }
+   if (!ctx->faa_mode.depth_quad_vs[key])
+      ctx->faa_mode.depth_quad_vs[key] =
+         util_make_vertex_passthrough_shader(pctx, n, names, indices, false);
+   if (!ctx->faa_mode.depth_quad_vs[key])
+      return false;
+   /* Clip coordinates of the rectangle at the clear depth, white, s,t 0. */
+   const float x0 = 2.0f * scissor->minx / ctx->framebuffer_width - 1.0f;
+   const float x1 = 2.0f * scissor->maxx / ctx->framebuffer_width - 1.0f;
+   /* The viewport below maps clip y down the window, as st's does. */
+   const float y0 = 1.0f - 2.0f * scissor->miny / ctx->framebuffer_height;
+   const float y1 = 1.0f - 2.0f * scissor->maxy / ctx->framebuffer_height;
+   const float z = 2.0f * (float)depth - 1.0f;
+   const float corner[6][2] = {{x0, y0}, {x1, y0}, {x0, y1}, {x1, y0}, {x1, y1}, {x0, y1}};
+   float vertices[6][4][4] = {{{0}}};
+   for (unsigned v = 0; v < 6; v++) {
+      vertices[v][0][0] = corner[v][0]; vertices[v][0][1] = corner[v][1];
+      vertices[v][0][2] = z; vertices[v][0][3] = 1.0f;
+      for (unsigned a = 1; a < n; a++)
+         vertices[v][a][0] = vertices[v][a][1] = vertices[v][a][2] =
+            vertices[v][a][3] = names[a] == TGSI_SEMANTIC_COLOR ? 1.0f : 0.0f;
+   }
+   float packed[6 * 4 * 4];
+   for (unsigned v = 0; v < 6; v++)
+      memcpy(packed + v * n * 4, vertices[v], n * 4 * sizeof(float));
+   struct pipe_vertex_element elements[4];
+   for (unsigned a = 0; a < n; a++)
+      elements[a] = (struct pipe_vertex_element){
+         .src_offset = a * 16, .src_format = PIPE_FORMAT_R32G32B32A32_FLOAT,
+         .src_stride = n * 16, .vertex_buffer_index = 0};
+   void *velems = pctx->create_vertex_elements_state(pctx, n, elements);
+   struct pipe_rasterizer_state raster = *ctx->rasterizer;
+   raster.cull_face = PIPE_FACE_NONE;
+   raster.scissor = 1;
+   raster.offset_tri = raster.offset_line = raster.offset_point = 0;
+   void *rs = pctx->create_rasterizer_state(pctx, &raster);
+   struct pipe_depth_stencil_alpha_state dsa = {
+      .depth_enabled = 1, .depth_writemask = 1, .depth_func = PIPE_FUNC_ALWAYS};
+   void *zs = pctx->create_depth_stencil_alpha_state(pctx, &dsa);
+   struct pipe_blend_state blend = {0};
+   void *bs = pctx->create_blend_state(pctx, &blend);
+   if (!velems || !rs || !zs || !bs) {
+      if (velems) pctx->delete_vertex_elements_state(pctx, velems);
+      if (rs) pctx->delete_rasterizer_state(pctx, rs);
+      if (zs) pctx->delete_depth_stencil_alpha_state(pctx, zs);
+      if (bs) pctx->delete_blend_state(pctx, bs);
+      return false;
+   }
+   /* Saved state; vertex buffers keep their references across the swap. */
+   void *saved_vs = ctx->vs, *saved_velems = ctx->velems,
+        *saved_rs = (void *)ctx->rasterizer, *saved_zs = (void *)ctx->dsa,
+        *saved_bs = (void *)ctx->blend;
+   const struct pipe_viewport_state saved_viewport = ctx->viewport;
+   const struct pipe_scissor_state saved_scissor = ctx->scissor;
+   struct pipe_vertex_buffer saved_vb[PIPE_MAX_ATTRIBS] = {0};
+   const unsigned saved_vb_count = ctx->num_vertex_buffers;
+   for (unsigned i = 0; i < saved_vb_count; i++)
+      pipe_vertex_buffer_reference(&saved_vb[i], &ctx->vertex_buffers[i]);
+   const struct pipe_viewport_state viewport = {
+      .scale = {ctx->framebuffer_width * 0.5f, ctx->framebuffer_height * -0.5f, 0.5f},
+      .translate = {ctx->framebuffer_width * 0.5f, ctx->framebuffer_height * 0.5f, 0.5f},
+      .swizzle_x = PIPE_VIEWPORT_SWIZZLE_POSITIVE_X, .swizzle_y = PIPE_VIEWPORT_SWIZZLE_POSITIVE_Y,
+      .swizzle_z = PIPE_VIEWPORT_SWIZZLE_POSITIVE_Z, .swizzle_w = PIPE_VIEWPORT_SWIZZLE_POSITIVE_W};
+   const struct pipe_vertex_buffer vb = {.is_user_buffer = true, .buffer.user = packed};
+   pctx->bind_vs_state(pctx, ctx->faa_mode.depth_quad_vs[key]);
+   pctx->bind_vertex_elements_state(pctx, velems);
+   pctx->set_vertex_buffers(pctx, 1, &vb);
+   pctx->bind_rasterizer_state(pctx, rs);
+   pctx->bind_depth_stencil_alpha_state(pctx, zs);
+   pctx->bind_blend_state(pctx, bs);
+   pctx->set_viewport_states(pctx, 0, 1, &viewport);
+   pctx->set_scissor_states(pctx, 0, 1, scissor);
+   const struct pipe_draw_info info = {.mode = MESA_PRIM_TRIANGLES, .instance_count = 1,
+                                       .max_index = 5};
+   const struct pipe_draw_start_count_bias draw = {.start = 0, .count = 6};
+   pctx->draw_vbo(pctx, &info, 0, NULL, &draw, 1);
+   pctx->bind_vs_state(pctx, saved_vs);
+   pctx->bind_vertex_elements_state(pctx, saved_velems);
+   pctx->set_vertex_buffers(pctx, saved_vb_count, saved_vb);
+   pctx->bind_rasterizer_state(pctx, saved_rs);
+   pctx->bind_depth_stencil_alpha_state(pctx, saved_zs);
+   pctx->bind_blend_state(pctx, saved_bs);
+   pctx->set_viewport_states(pctx, 0, 1, &saved_viewport);
+   pctx->set_scissor_states(pctx, 0, 1, &saved_scissor);
+   pctx->delete_vertex_elements_state(pctx, velems);
+   pctx->delete_rasterizer_state(pctx, rs);
+   pctx->delete_depth_stencil_alpha_state(pctx, zs);
+   pctx->delete_blend_state(pctx, bs);
+   return true;
+}
+
 static void
 m9_clear(struct pipe_context *pctx, unsigned buffers,
          uint32_t color_clear_mask, uint8_t stencil_clear_mask,
@@ -8646,6 +8768,11 @@ m9_clear(struct pipe_context *pctx, unsigned buffers,
    if (m9_faa_application_enabled() && buffers && !ctx->faa_mode.fallback &&
        !ctx->faa_mode.skip && !ctx->faa_mode.split && !m9_replay_replaying(ctx) &&
        m9_context_faa_targets_surface(ctx)) {
+      if (buffers == PIPE_CLEAR_DEPTH && scissor && !m9_scissor_full(ctx, scissor) &&
+          m9_faa_depth_quad_enabled() && m9_context_faa_depth_quad(ctx, scissor, depth)) {
+         m9_prof_end(M9_PROF_CLEAR, t_clear);
+         return;
+      }
       if (ctx->faa_frame.count) m9_context_sync(ctx);
       if (ctx->lost) { m9_prof_end(M9_PROF_CLEAR, t_clear); return; }
       ctx->faa_application_clear.pending = true;
@@ -11758,6 +11885,9 @@ m9_context_destroy(struct pipe_context *pctx)
    if (m9_replay_recording(ctx))
       m9_context_sync(ctx);
    m9_vs_texture_fini(pctx);
+   for (unsigned i = 0; i < ARRAY_SIZE(ctx->faa_mode.depth_quad_vs); i++)
+      if (ctx->faa_mode.depth_quad_vs[i])
+         pctx->delete_vs_state(pctx, ctx->faa_mode.depth_quad_vs[i]);
    if (ctx->blitter) {
       util_blitter_destroy(ctx->blitter);
       ctx->blitter = NULL;

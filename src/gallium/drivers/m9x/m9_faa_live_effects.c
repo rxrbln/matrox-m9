@@ -191,7 +191,7 @@ static bool texture_factor(unsigned f,enum m9_faa_blend_factor *out)
    }
 }
 
-/* ADD with equal RGB/alpha factors and a full colour mask; ONE/ZERO is the
+/* ADD with equal RGB/alpha factors and any colour mask; ONE/ZERO is the
  * unblended program. Factor pairs and functions without source vectors are
  * refused by m9_faa_texture_fragment_build, not here. */
 bool m9_faa_texture_fragment_gallium_state(const struct pipe_blend_state *blend,
@@ -201,10 +201,11 @@ bool m9_faa_texture_fragment_gallium_state(const struct pipe_blend_state *blend,
    if(!dsa||!out)return false;
    struct m9_faa_texture_fragment_state result=*out;
    result.blend=result.alpha_test=false;
+   result.color_off=0;
    if(blend) {
       const struct pipe_rt_blend_state *rt=&blend->rt[0];
-      if(blend->logicop_enable||blend->alpha_to_coverage||blend->alpha_to_one||
-         rt->colormask!=PIPE_MASK_RGBA)return false;
+      if(blend->logicop_enable||blend->alpha_to_coverage||blend->alpha_to_one)return false;
+      result.color_off=~rt->colormask&PIPE_MASK_RGBA;
       if(rt->blend_enable) {
          if(rt->rgb_func!=PIPE_BLEND_ADD||rt->alpha_func!=PIPE_BLEND_ADD||
             rt->rgb_src_factor!=rt->alpha_src_factor||rt->rgb_dst_factor!=rt->alpha_dst_factor||
