@@ -1880,7 +1880,7 @@ int m9x_faa_graph_color_frame_batch_ioctl(struct drm_device *drm,void *data,stru
    m9x_faa_graph_depth_unlocked_get_locked(mdev,args->generation,args->previous_point,&binding):
    m9x_faa_graph_color_unlocked_get_locked(mdev,args->generation,args->previous_point,&binding));
  mutex_unlock(&mdev->transport.lock);if(ret)goto out_binding;
- if(binding->graph!=graph){ret=-ESTALE;goto out_binding;}
+ if(binding->graph!=graph||args->width!=graph->layout.width||args->height!=graph->layout.height){ret=-ESTALE;goto out_binding;}
  ret=m9x_faa_graph_depth_batch_prepare(mdev,binding,args->generation,args->previous_point,first,batch);if(ret)goto out_binding;
  drm_exec_init(&exec,DRM_EXEC_INTERRUPTIBLE_WAIT|DRM_EXEC_IGNORE_DUPLICATES,PARHELIA_M9_FAA_GRAPH_OWNERS);
  drm_exec_until_all_locked(&exec){for(i=0;i<PARHELIA_M9_FAA_GRAPH_OWNERS;i++){

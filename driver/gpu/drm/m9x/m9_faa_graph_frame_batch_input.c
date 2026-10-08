@@ -26,7 +26,7 @@ int m9x_faa_color_batch_copy(const struct drm_parhelia_m9_faa_graph_color_frame_
   args->draw_count>M9_FAA_FRAME_BATCH_MAX_DRAWS||
   args->flags&~(PARHELIA_M9_FAA_COLOR_FRAME_FIRST|PARHELIA_M9_FAA_COLOR_FRAME_INITIALIZED)||
   args->flags==(PARHELIA_M9_FAA_COLOR_FRAME_FIRST|PARHELIA_M9_FAA_COLOR_FRAME_INITIALIZED)||args->state||
-  args->width!=320||args->height!=240||
+  !m9x_faa_runtime_shape(args->width,args->height)||
   ((args->flags&PARHELIA_M9_FAA_COLOR_FRAME_INITIALIZED)?(args->clear_flags&&args->clear_flags!=3):args->clear_flags!=3)||args->clear_color||
   args->pad[0]||args->pad[1]||args->pad[2]||args->pad[3])return -EINVAL;
  static_assert(sizeof(*args)==80);
@@ -64,7 +64,7 @@ int m9x_faa_color_batch_copy(const struct drm_parhelia_m9_faa_graph_color_frame_
   input->program=job->upload;input->constants=input->program+l->program_bytes;
   input->geometry=input->constants+l->constants_bytes;
   input->declaration=input->geometry+l->geometry_bytes;
-  input->record_stride=d->record_stride;input->record_count=d->record_count;
+  input->width=args->width;input->height=args->height;input->record_stride=d->record_stride;input->record_count=d->record_count;
   input->declaration_count=d->declaration_count;input->depth_flags=d->depth_flags;job->bytes=sum;job->raster_flags=d->raster_flags;
   /* Each job is independently shader/constant validated by the live
    * first-stage encoder. Preserve a common viewport and cull orientation;
