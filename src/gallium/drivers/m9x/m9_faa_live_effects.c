@@ -186,6 +186,7 @@ static bool texture_factor(unsigned f,enum m9_faa_blend_factor *out)
    case PIPE_BLENDFACTOR_INV_SRC_ALPHA:*out=M9_FAA_FACTOR_INV_SRC_ALPHA;return true;
    case PIPE_BLENDFACTOR_DST_COLOR:*out=M9_FAA_FACTOR_DST_COLOR;return true;
    case PIPE_BLENDFACTOR_INV_DST_COLOR:*out=M9_FAA_FACTOR_INV_DST_COLOR;return true;
+   case PIPE_BLENDFACTOR_INV_SRC_COLOR:*out=M9_FAA_FACTOR_INV_SRC_COLOR;return true;
    default:return false;
    }
 }

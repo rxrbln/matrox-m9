@@ -333,6 +333,17 @@ struct drm_parhelia_m9_faa_dual_draw {
 #define PARHELIA_M9_FAA_FRAGMENT_DST(f) ((uint32_t)(f) << 8)
 #define PARHELIA_M9_FAA_FRAGMENT_FUNC(f) ((uint32_t)(f) << 12)
 #define PARHELIA_M9_FAA_FRAGMENT_REF(r) ((uint32_t)(r) << 16)
+#define PARHELIA_M9_FAA_FACTOR_ZERO 0u
+#define PARHELIA_M9_FAA_FACTOR_ONE 1u
+#define PARHELIA_M9_FAA_FACTOR_SRC_COLOR 2u
+#define PARHELIA_M9_FAA_FACTOR_SRC_ALPHA 3u
+#define PARHELIA_M9_FAA_FACTOR_INV_SRC_ALPHA 4u
+#define PARHELIA_M9_FAA_FACTOR_DST_COLOR 5u
+#define PARHELIA_M9_FAA_FACTOR_INV_DST_COLOR 6u
+#define PARHELIA_M9_FAA_FACTOR_INV_SRC_COLOR 7u
+#define PARHELIA_M9_FAA_ALPHA_GEQUAL 0u
+#define PARHELIA_M9_FAA_ALPHA_LESS 1u
+#define PARHELIA_M9_FAA_ALPHA_GREATER 2u
 struct drm_parhelia_m9_faa_graph_dual_later {
  __u64 graph_id,previous_unlock_point,lock_point,upload;
  __u32 upload_bytes,generation,version,flags,state,pad;

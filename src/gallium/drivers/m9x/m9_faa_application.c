@@ -9,6 +9,19 @@
 #include <stdlib.h>
 #include <string.h>
 
+/* The fragment word carries the generator's factor and function values. */
+static_assert(M9_FAA_FACTOR_ZERO==PARHELIA_M9_FAA_FACTOR_ZERO&&
+              M9_FAA_FACTOR_ONE==PARHELIA_M9_FAA_FACTOR_ONE&&
+              M9_FAA_FACTOR_SRC_COLOR==PARHELIA_M9_FAA_FACTOR_SRC_COLOR&&
+              M9_FAA_FACTOR_SRC_ALPHA==PARHELIA_M9_FAA_FACTOR_SRC_ALPHA&&
+              M9_FAA_FACTOR_INV_SRC_ALPHA==PARHELIA_M9_FAA_FACTOR_INV_SRC_ALPHA&&
+              M9_FAA_FACTOR_DST_COLOR==PARHELIA_M9_FAA_FACTOR_DST_COLOR&&
+              M9_FAA_FACTOR_INV_DST_COLOR==PARHELIA_M9_FAA_FACTOR_INV_DST_COLOR&&
+              M9_FAA_FACTOR_INV_SRC_COLOR==PARHELIA_M9_FAA_FACTOR_INV_SRC_COLOR,"uAPI factor");
+static_assert(M9_FAA_ALPHA_FUNC_GEQUAL==PARHELIA_M9_FAA_ALPHA_GEQUAL&&
+              M9_FAA_ALPHA_FUNC_LESS==PARHELIA_M9_FAA_ALPHA_LESS&&
+              M9_FAA_ALPHA_FUNC_GREATER==PARHELIA_M9_FAA_ALPHA_GREATER,"uAPI alpha function");
+
 static bool
 m9_faa_dual_input(nir_scalar value,unsigned location,unsigned component)
 {
