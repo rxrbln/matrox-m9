@@ -26,6 +26,7 @@
 #include <drm/drm_file.h>
 
 #include "m9_drv.h"
+#include "m9_faa_graph_present_encode.h"
 #include "m9_reg.h"
 #include "m9_faa_output.h"
 #include "m9_faa_graph_draw_encode.h"
@@ -444,6 +445,15 @@ struct m9x_faa_replay {
 	 * The first view closes at Unlock; a new view needs the relock receipt. */
 	bool normal_lock_view_seen, unlock_started, unlock_retired;
 	u64 unlock_point;
+#ifdef M9_FAA_GRAPH_INIT_CONTROL
+ /* U remains the actual Unlock. P is published only after its own wait.
+  * A failed exposed copy retains destination pin/ref/fence until DMA stop. */
+ u64 present_point;
+ u32 present_generation, present_end, present_posts;
+ bool present_attempted, present_retired;
+ struct drm_gem_object *present_destination;
+ struct m9x_fence *present_fence;
+#endif
 	/* A later genuine public Lock first copies primary back to staging and
 	 * must retire its own 0x1c0 wait before F021 can be exposed again. */
 	bool relock_started, relock_retired, relock_view_seen;
@@ -472,11 +482,20 @@ static struct m9_faa_owner *m9_faa_command_owner(struct m9x_faa_replay *r,bool s
  if(identity==(unsigned long)&p->spare[secondary?1:0])return &p->spare[secondary?1:0];
  return NULL;
 }
+static int m9_faa_command_owner_admit(struct m9x_device *,struct m9_faa_owner *);
+static u64 m9_faa_present_origin(struct m9x_faa_replay *r,u64 previous)
+{
+ return r->present_retired && r->unlock_point==previous ? r->present_point : previous;
+}
+static u32 m9_faa_idle_end(struct m9x_faa_replay *r)
+{return r->present_retired?r->present_end:r->graph_unlock_end_bytes;}
+static u32 m9_faa_idle_posts(struct m9x_faa_replay *r)
+{return r->present_retired?r->present_posts:r->graph_unlock_posts;}
 static u64 m9_faa_frame_origin(struct m9x_faa_replay *r,u64 previous)
 {
  struct m9_faa_command_pools *p=r->command_pools;
  return p&&p->ready&&p->unlock_point==previous&&p->maintenance_point?
-  p->maintenance_point:previous;
+  p->maintenance_point:m9_faa_present_origin(r,previous);
 }
 #endif
 
@@ -1046,6 +1065,17 @@ static bool m9_faa_release(struct m9x_device *mdev, struct m9x_faa_replay *r)
 	kfree(r->next_image);
 	kfree(r->next_finish_image);
 	kfree(r->next_lock_image);
+#endif
+#ifdef M9_FAA_GRAPH_INIT_CONTROL
+ if(r->present_destination) {
+  /* The attempted stream was stopped above before releasing these refs. */
+  m9x_gem_vram_unpin(r->present_destination);
+  drm_gem_object_put(r->present_destination);
+ }
+ if(r->present_fence) {
+  dma_fence_signal(&r->present_fence->base);
+  dma_fence_put(&r->present_fence->base);
+ }
 #endif
 	if (r->retained_color) {
 		m9x_vram_unpin(r->retained_color);
@@ -4318,6 +4348,8 @@ int m9x_faa_graph_unlock_submit(struct m9x_device *mdev,
 	for (i = 0; i < PARHELIA_M9_FAA_GRAPH_OWNERS; i++)
 		dma_resv_add_fence(m9x_faa_graph_binding_owner(binding, i)->resv,
 				   &fence->base, DMA_RESV_USAGE_WRITE);
+ r->present_point=0;r->present_retired=false;r->present_attempted=false;
+ r->present_end=0;r->present_posts=0;
 	r->unlock_started = true;
 	r->unlock_retired = false;
 	r->graph_second_lock_retired = false;
@@ -4382,6 +4414,138 @@ out:
 	return ret;
 #else
 	return -EOPNOTSUPP;
+#endif
+}
+
+int m9x_faa_graph_present_get_locked(struct m9x_device *mdev,u32 generation,
+ u64 lock_point,struct m9_faa_graph_binding **out)
+{
+#ifdef M9_FAA_GRAPH_INIT_CONTROL
+ struct m9x_faa_replay *r=mdev->transport.faa;struct drm_gem_object *gem;int ret;
+ lockdep_assert_held(&mdev->transport.lock);
+ if(!out)return -EINVAL;*out=NULL;
+ if(!r||!r->graph_binding||r->graph_generation!=generation||
+  mdev->transport.generation!=generation||!r->color_lock_retired||
+  r->color_lock_point!=lock_point||r->unlock_started)return -ESTALE;
+ gem=m9x_faa_graph_binding_owner(r->graph_binding,PARHELIA_M9_FAA_PRIMARY);
+ if(!gem||!m9x_gem_is_vram(gem))return -ESTALE;
+ ret=m9x_faa_lock_view_admit_locked(mdev,drm_gem_vram_of_gem(gem),r->owner[1].base,r->owner[1].bytes);
+ if(!ret)*out=m9x_faa_graph_binding_get(r->graph_binding);
+ return ret;
+#else
+ return -EOPNOTSUPP;
+#endif
+}
+
+/* A map-only normal Lock follows the same original mapper as SURFACE_ACCESS,
+ * but publishes no user pixels. The source Lock itself has already retired.
+ * The six owner reservations and destination reservation stay held throughout. */
+int m9x_faa_graph_present_submit(struct m9x_device *mdev,
+ struct m9_faa_graph_binding *binding, struct drm_gem_object *destination,
+ const struct m9x_faa_present_view *view, u32 generation, u64 lock_point,
+ u64 *unlock_point, u64 *present_point, bool *posted)
+{
+#ifdef M9_FAA_GRAPH_INIT_CONTROL
+ struct m9x_transport *t=&mdev->transport;
+ struct m9x_faa_replay *r=NULL;
+ struct m9_faa_owner *primary;
+ struct drm_gem_object *source;
+ struct m9x_faa_present_view src;
+ struct m9x_faa_present_image image;
+ struct m9x_fence *fence=NULL;
+ u64 stage=0;u32 start,i;bool exposed=false,stage_posted=false;
+ int ret;
+ if(!binding||!destination||!view||!unlock_point||!present_point||!posted)
+  return -EINVAL;
+ *unlock_point=0;*present_point=0;*posted=false;
+ mutex_lock(&t->lock);
+ r=t->faa;source=m9x_faa_graph_binding_owner(binding,PARHELIA_M9_FAA_PRIMARY);
+ if(!r||r->graph_binding!=binding||!source||!m9x_gem_is_vram(source)||
+  !r->color_lock_retired||r->color_lock_point!=lock_point||r->unlock_started||
+  r->present_destination||r->present_fence||
+  r->graph_generation!=generation||t->generation!=generation||
+  lock_point>U64_MAX-0x40){ret=-ESTALE;goto out;}
+ ret=m9x_faa_lock_view_admit_locked(mdev,drm_gem_vram_of_gem(source),
+  r->owner[1].base,r->owner[1].bytes);if(ret)goto out;
+ src=(struct m9x_faa_present_view){.gpu_base=r->owner[1].base,
+  .bytes=r->owner[1].bytes,.width=320,.height=240,.span=320,
+  .descriptor0=0xf0220140,.descriptor1=0x100f0};
+ ret=m9x_faa_present_encode(&src,view,lock_point+0x20,&image);if(ret)goto out;
+ primary=m9_faa_command_owner(r,false);
+ ret=m9_faa_command_owner_admit(mdev,primary);if(ret)goto out;
+ start=r->graph_draw_end_bytes;
+ if(start>primary->bytes||primary->bytes-start<96+sizeof(image.primary)){
+  ret=-ENOSPC;goto out;
+ }
+ ret=m9x_address_check_local_mapping(mdev,src.gpu_base,src.bytes);if(ret)goto out;
+ fence=m9x_fence_create_target_locked(mdev,lower_32_bits(image.final_point));
+ if(!fence){ret=-ENOMEM;goto out;}
+ if(fence->base.seqno!=image.final_point){ret=-ESTALE;goto out;}
+ /* Destination capacity for this fence and the graph's U/P fences was
+  * reserved before entry. Allocate every needed fence before mapper MMIO. */
+ dma_resv_add_fence(destination->resv,&fence->base,DMA_RESV_USAGE_WRITE);
+ /* Existing published metadata is preserved. A fresh ordinary allocation
+  * uses the same compact/secondary publication as its surface-access path. */
+ ret=m9x_address_check_local_mapping(mdev,view->gpu_base,view->bytes);
+ if(ret)ret=m9x_address_local_prepare(mdev,view->gpu_base,view->bytes);
+ if(ret)goto out;
+ m9x_write(mdev,M9_REG_FRONTEND_KICK,1);
+ ret=m9x_address_cpu_local_prepare(mdev,src.gpu_base,src.bytes);if(ret)goto out;
+ ret=m9x_address_surface_window_bounded(mdev,src.gpu_base|1,
+  0xf0210140,0x10100,src.bytes);if(ret)goto out;
+ m9x_address_surface_release(mdev);
+ ret=m9x_faa_lock_view_observed_locked(mdev,drm_gem_vram_of_gem(source));if(ret)goto out;
+ mutex_unlock(&t->lock);
+ ret=m9x_faa_graph_unlock_submit(mdev,binding,generation,lock_point,unlock_point,&exposed);
+ mutex_lock(&t->lock);
+ *posted=exposed;
+ if(ret)goto out;
+ if(t->faa!=r||t->generation!=generation||t->wedged||!r->unlock_retired||
+  *unlock_point!=lock_point+0x20||r->unlock_point!=*unlock_point||
+  t->submitted_point!=*unlock_point||t->completed_point!=*unlock_point||
+  t->next_fence!=lower_32_bits(*unlock_point)+0x10||t->queue_count||t->async_pending){
+  ret=-ESTALE;goto out;
+ }
+ r->present_attempted=true;
+ primary=m9_faa_command_owner(r,false);start=r->graph_draw_end_bytes;
+ ret=m9_faa_command_owner_admit(mdev,primary);if(ret)goto out;
+ ret=m9x_address_check_local_mapping(mdev,view->gpu_base,view->bytes);if(ret)goto out;
+ for(i=0;i<PARHELIA_M9_FAA_GRAPH_OWNERS;i++)
+  dma_resv_add_fence(m9x_faa_graph_binding_owner(binding,i)->resv,&fence->base,
+   i==PARHELIA_M9_FAA_PRIMARY?DMA_RESV_USAGE_READ:DMA_RESV_USAGE_WRITE);
+ for(i=0;i<3;i++) {
+  u32 end=start+image.end_bytes[i];
+  if(i==0)memcpy((u8*)primary->cpu+start,image.primary,88);
+  if(i==2)memcpy((u8*)primary->cpu+start+88,image.primary+88,12);
+  wmb();
+  ret=m9x_post_faa_graph_end_locked(mdev,&primary->system_node,primary->dma,
+   r->graph_draw_end_bytes,end,i==1,i==2?lower_32_bits(image.final_point):0,
+   &stage,&stage_posted);
+  *posted|=stage_posted;
+  if(stage_posted){r->graph_draw_end_bytes=end;r->graph_draw_posts++;}
+  if(ret)goto out;
+ }
+ if(stage!=image.final_point||t->completed_point!=image.final_point){ret=-EIO;goto out;}
+ r->present_point=stage;r->present_generation=generation;r->present_retired=true;
+ r->present_end=r->graph_draw_end_bytes;r->present_posts=r->graph_draw_posts;
+ *present_point=stage;
+ dev_info(&mdev->pdev->dev,"M9 FAA GPU present retired: Lock=%#llx Unlock=%#llx present=%#llx source=%#x destination=%#x\n",
+  lock_point,*unlock_point,stage,src.gpu_base,view->gpu_base);
+ ret=0;
+out:
+ if(fence&&ret)dma_fence_set_error(&fence->base,ret);
+ if(ret&&*posted) {
+  /* The ioctl transfers its destination pin; retain a separate lookup ref.
+   * Even a failed final wait cannot release an exposed address. */
+  drm_gem_object_get(destination);r->present_destination=destination;
+  r->present_fence=fence;fence=NULL;
+  if(!t->wedged){t->wedged=true;t->generation++;}
+ } else if(fence)dma_fence_signal(&fence->base);
+ if(fence)dma_fence_put(&fence->base);
+ mutex_unlock(&t->lock);
+ return ret;
+#else
+ return -EOPNOTSUPP;
 #endif
 }
 
@@ -6697,15 +6861,19 @@ static int m9_faa_color_unlocked_origin_get_locked(struct m9x_device *mdev,
   !previous_unlock_point||(previous_unlock_point&15)||
   lower_32_bits(previous_unlock_point)>U32_MAX-0x100||
   previous_unlock_point!=r->color_lock_point+0x20||r->unlock_point!=previous_unlock_point||
-  r->graph_draw_point!=previous_unlock_point||t->submitted_point!=origin||
+  r->graph_draw_point!=previous_unlock_point||
+  (r->present_attempted&&(!pool_scope||!r->present_retired||
+   r->present_generation!=generation||r->present_point!=previous_unlock_point+0x20||
+   r->present_posts!=r->graph_unlock_posts+3||r->present_end!=r->graph_unlock_end_bytes+100))||
+  t->submitted_point!=origin||
   t->completed_point!=origin||t->next_fence!=lower_32_bits(origin)+0x10||
-  (origin==previous_unlock_point&&!(pool_scope&&r->command_pools&&r->command_pools->unlock_point==previous_unlock_point)?
-   (r->graph_draw_end_bytes!=r->graph_unlock_end_bytes||r->graph_draw_posts!=r->graph_unlock_posts||!r->color_secondary_cursor):
+  (origin==m9_faa_present_origin(r,previous_unlock_point)&&!(pool_scope&&r->command_pools&&r->command_pools->unlock_point==previous_unlock_point)?
+   (r->graph_draw_end_bytes!=m9_faa_idle_end(r)||r->graph_draw_posts!=m9_faa_idle_posts(r)||!r->color_secondary_cursor):
    (!r->command_pools||!r->command_pools->ready||r->command_pools->generation!=generation||
     r->command_pools->unlock_point!=previous_unlock_point||m9_faa_frame_origin(r,previous_unlock_point)!=origin||
-    (origin!=previous_unlock_point&&origin!=previous_unlock_point+0x10)||r->command_pools->unlock_end!=r->graph_unlock_end_bytes||
-    r->command_pools->unlock_posts!=r->graph_unlock_posts||r->graph_draw_end_bytes!=r->command_pools->parent_end||
-    r->graph_draw_posts!=r->graph_unlock_posts+r->command_pools->posts||
+    (origin!=m9_faa_present_origin(r,previous_unlock_point)&&origin!=m9_faa_present_origin(r,previous_unlock_point)+0x10)||r->command_pools->unlock_end!=m9_faa_idle_end(r)||
+    r->command_pools->unlock_posts!=m9_faa_idle_posts(r)||r->graph_draw_end_bytes!=r->command_pools->parent_end||
+    r->graph_draw_posts!=m9_faa_idle_posts(r)+r->command_pools->posts||
     r->color_secondary_cursor!=r->command_pools->secondary_cursor))||r->color_next_attempt_point==previous_unlock_point)return -ESTALE;
  if(!t->faa_source_context||!t->faa_virtual_primary||!t->engine_transitioned||!t->restore_ready||
   !t->transport_armed||!t->bus_master_enabled||!t->fence_cpu||t->async_stop||t->async_pending||t->queue_count)return -EBUSY;
@@ -7333,7 +7501,7 @@ static int m9_faa_secondary_rotate(struct m9x_device *mdev,
  parent_start=r->graph_draw_end_bytes;
  ret=m9x_faa_secondary_pool_plan(&p->secondary,r->color_secondary_cursor,parent_start,parent->bytes,
   t->submitted_point,p->timeline.submitted_point,t->fence_bus,&observed,&image,&token);if(ret)goto unlock;
- if(image.secondary_point!=previous+0x10||image.parent_next!=parent_start+24){ret=-ESTALE;goto abort;}
+ if(image.secondary_point!=m9_faa_present_origin(r,previous)+0x10||image.parent_next!=parent_start+24){ret=-ESTALE;goto abort;}
  for(i=0;i<3;i++)put_unaligned_le32(image.old_footer[i],(u8*)old->cpu+r->color_secondary_cursor+4*i);
  for(i=0;i<6;i++)put_unaligned_le32(image.parent[i],(u8*)parent->cpu+parent_start+4*i);
  wmb();
@@ -7354,8 +7522,8 @@ static int m9_faa_secondary_rotate(struct m9x_device *mdev,
   usleep_range(100,200);
  }
  if(i==10000){ret=-ETIMEDOUT;goto quarantine;}
- p->unlock_point=previous;p->maintenance_point=point;p->unlock_end=r->graph_unlock_end_bytes;
- p->unlock_posts=r->graph_unlock_posts;p->parent_end=image.parent_next;p->secondary_cursor=0;p->posts++;
+ p->unlock_point=previous;p->maintenance_point=point;p->unlock_end=m9_faa_idle_end(r);
+ p->unlock_posts=m9_faa_idle_posts(r);p->parent_end=image.parent_next;p->secondary_cursor=0;p->posts++;
  ret=m9x_faa_secondary_pool_advance(&p->primary,parent_start,24);if(ret)goto quarantine;
  dev_info(&mdev->pdev->dev,"M9 FAA secondary pool retired: Unlock=%#llx maintenance=%#llx pool=%#llx old=%#x selected=%#x parent=%#x\n",previous,point,observed.pool_point,old->base,selected->base,parent->base+image.parent_next);
  ret=0;goto unlock;
@@ -7433,7 +7601,7 @@ static int m9_faa_primary_rotate(struct m9x_device *mdev,
   usleep_range(100,200);
  }
  if(i==10000){ret=-ETIMEDOUT;goto quarantine;}
- p->unlock_point=previous;p->unlock_end=r->graph_unlock_end_bytes;p->unlock_posts=r->graph_unlock_posts;
+ p->unlock_point=previous;p->unlock_end=m9_faa_idle_end(r);p->unlock_posts=m9_faa_idle_posts(r);
  p->parent_end=0;p->secondary_cursor=r->color_secondary_cursor;p->posts=1;
  dev_info(&mdev->pdev->dev,"M9 FAA primary pool retired: Unlock=%#llx pool=%#llx old=%#x selected=%#x END=%#x\n",previous,observed.pool_point,old->base,selected->base,image.new_end);
  ret=0;goto unlock;
@@ -7456,7 +7624,8 @@ int m9x_faa_graph_depth_frame_maintenance_locked(struct m9x_device *mdev,u32 gen
   mdev->transport.generation!=generation||!r->depth_storage||!(f=r->depth_storage->frame)||
   !f->retired||!r->color_lock_retired||f->previous_point!=previous||
   f->final_point!=final_point||mdev->transport.completed_point!=final_point)return -ESTALE;
- if(m9_faa_frame_origin(r,previous)!=previous)*maintenance=m9_faa_frame_origin(r,previous);
+ if(m9_faa_frame_origin(r,previous)!=m9_faa_present_origin(r,previous))
+  *maintenance=m9_faa_frame_origin(r,previous);
  return 0;
 #else
  return -EOPNOTSUPP;

@@ -500,6 +500,17 @@ int m9x_faa_graph_next_lock_prepare(struct m9x_device *mdev,
 int m9x_faa_graph_next_lock_submit(struct m9x_device *mdev,
 		struct m9_faa_graph_binding *binding, u32 generation,
 		u64 finish_point, u64 *point, bool *posted);
+int m9x_faa_graph_present_ioctl(struct drm_device *drm, void *data,
+ struct drm_file *file);
+struct m9x_faa_present_view;
+/* Reservations cover all graph owners and destination; destination is pinned.
+ * Native takes an extra GEM reference/pin only if a posted failure needs it. */
+int m9x_faa_graph_present_get_locked(struct m9x_device *mdev,u32 generation,
+ u64 lock_point,struct m9_faa_graph_binding **out);
+int m9x_faa_graph_present_submit(struct m9x_device *mdev,
+ struct m9_faa_graph_binding *binding, struct drm_gem_object *destination,
+ const struct m9x_faa_present_view *view, u32 generation, u64 lock_point,
+ u64 *unlock_point, u64 *present_point, bool *posted);
 int m9x_faa_graph_unlock_ioctl(struct drm_device *drm, void *data,
 		struct drm_file *file);
 /* Transport lock held for the snapshot; submit revalidates under all BO

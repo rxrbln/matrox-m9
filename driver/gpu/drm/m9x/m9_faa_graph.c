@@ -11,6 +11,7 @@
 #include <drm/drm_gem.h>
 
 #include "m9_drv.h"
+#include "m9_faa_graph_present_encode.h"
 #include "m9_faa_graph_public_vs_encode.h"
 #include "m9_faa_graph_color_encode.h"
 #include "m9_faa_graph_frame_batch_input.h"
@@ -976,6 +977,70 @@ int m9x_faa_graph_public_vs_head_ioctl(struct drm_device *drm, void *data,
 				 struct drm_file *file)
 {
 	return m9_faa_graph_public_vs_ioctl_mode(drm, data, file, true);
+}
+
+int m9x_faa_graph_present_ioctl(struct drm_device *drm,void *data,struct drm_file *file)
+{
+ struct drm_parhelia_m9_faa_graph_present *a=data;
+ struct m9x_device *mdev=to_m9x(drm);struct m9_faa_file *state=file->driver_priv;
+ struct m9_faa_prepared_graph *graph;struct m9_faa_graph_binding *binding=NULL;
+ struct drm_gem_object *destination=NULL;struct drm_exec exec;
+ struct m9x_faa_present_view view;u32 address[PARHELIA_M9_FAA_GRAPH_OWNERS],i;
+ u64 u=0,p=0,end; s64 offset;bool pinned=false,posted=false;int idx,ret;
+ if(!state||!a->graph_id||!a->destination_handle||!a->lock_point||
+  (a->lock_point&15)||a->lock_point>U64_MAX-0x40||a->unlock_point||a->present_point||
+  a->flags||a->state||a->pad[0]||a->pad[1]||a->pad[2])return -EINVAL;
+ if(a->width!=320||a->height!=240||a->descriptor0!=0xcc210140||
+  a->descriptor1!=0x100f0||!IS_ALIGNED(a->destination_offset,PAGE_SIZE))return -EOPNOTSUPP;
+ if(!m9x_faa_graph_profile_enabled())return -EOPNOTSUPP;
+ if(!drm_dev_enter(drm,&idx))return -ENODEV;
+ mutex_lock(&state->lock);graph=state->graph;
+ if(!graph||!graph->initialized||graph->id!=a->graph_id||graph->generation!=a->generation){ret=-ENOENT;goto out;}
+ destination=drm_gem_object_lookup(file,a->destination_handle);
+ if(!destination){ret=-ENOENT;goto out;}
+ if(!m9x_gem_is_vram(destination)||!m9x_gem_vram_tiled(destination)||
+  check_add_overflow((u64)a->destination_offset,0x50000ULL,&end)||end>destination->size){ret=-EINVAL;goto out;}
+ for(i=0;i<PARHELIA_M9_FAA_GRAPH_OWNERS;i++)
+  if(destination==graph->owner[i]){ret=-EINVAL;goto out;}
+ ret=m9x_gem_vram_pin(destination);if(ret)goto out;pinned=true;
+ drm_exec_init(&exec,DRM_EXEC_INTERRUPTIBLE_WAIT|DRM_EXEC_IGNORE_DUPLICATES,7);
+ drm_exec_until_all_locked(&exec) {
+  for(i=0;i<PARHELIA_M9_FAA_GRAPH_OWNERS;i++) {
+   ret=drm_exec_prepare_obj(&exec,graph->owner[i],2);
+   drm_exec_retry_on_contention(&exec);if(ret)goto out_exec;
+  }
+  ret=drm_exec_prepare_obj(&exec,destination,1);
+  drm_exec_retry_on_contention(&exec);if(ret)goto out_exec;
+ }
+ ret=m9_faa_graph_live_addresses(mdev,graph,address);if(ret)goto out_exec;
+ offset=m9x_gem_vram_offset(destination);
+ if(offset<0||!m9_faa_graph_local_span(M9_VRAM_GPU_BASE,offset+a->destination_offset,
+  0x50000,m9x_vram_gpu_limit(mdev),&view.gpu_base)){ret=-ESTALE;goto out_exec;}
+ view.bytes=0x50000;view.width=a->width;view.height=a->height;view.span=320;
+ view.descriptor0=a->descriptor0;view.descriptor1=a->descriptor1;
+ for(i=0;i<PARHELIA_M9_FAA_GRAPH_OWNERS;i++) {
+  if((u64)view.gpu_base<(u64)address[i]+graph->owner[i]->size&&
+   (u64)address[i]<(u64)view.gpu_base+view.bytes){ret=-EINVAL;goto out_exec;}
+  if(!dma_resv_test_signaled(graph->owner[i]->resv,DMA_RESV_USAGE_READ)){ret=-EBUSY;goto out_exec;}
+ }
+ if(!dma_resv_test_signaled(destination->resv,DMA_RESV_USAGE_READ)){ret=-EBUSY;goto out_exec;}
+ mutex_lock(&mdev->transport.lock);
+ ret=m9x_faa_graph_present_get_locked(mdev,a->generation,a->lock_point,&binding);
+ if(!ret&&(binding->graph!=graph||memcmp(binding->address,address,sizeof(address))))ret=-ESTALE;
+ mutex_unlock(&mdev->transport.lock);if(ret)goto out_exec;
+ ret=m9x_faa_graph_present_submit(mdev,binding,destination,&view,a->generation,a->lock_point,&u,&p,&posted);
+ if(!ret) {
+  if(u!=a->lock_point+0x20||p!=u+0x20)ret=-EIO;
+  else {a->unlock_point=u;a->present_point=p;a->state=PARHELIA_M9_FAA_PRESENT_RETIRED;}
+ }
+ /* Posted failure transfers this pin to native quarantine; never unpin an
+  * address still reachable by requester DMA. The native holds its own ref. */
+ if(ret&&posted)pinned=false;
+out_exec:drm_exec_fini(&exec);m9x_faa_graph_binding_put(binding);
+out:
+ if(pinned)m9x_gem_vram_unpin(destination);
+ if(destination)drm_gem_object_put(destination);
+ mutex_unlock(&state->lock);drm_dev_exit(idx);return ret;
 }
 
 int m9x_faa_graph_unlock_ioctl(struct drm_device *drm, void *data,
