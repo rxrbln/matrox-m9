@@ -11,7 +11,9 @@ GPU transforms and render all12 mixed raw-input draws/frame.
 [Two-stage hardware proof and screenshots](../tests/m9-faa-glxgears-first-hardware-20261008/continuous96-two-stage/README.md).
 
 DRM9543312 and Mesa1aa8d4d implement actual retained maintenance receipts and
-pool reuse. Current320x240 diagnostic performance is roughly5 FPS; short
+pool reuse. Mesa2b25e0f selects the hardware-qualified two-stage flow by default
+within opt-in FAA; M9X_FAA_FUSED=0 retains four-stage comparison. Original FF
+producer tests cover default/explicit2 and explicit4, with10752 ISA comparisons. Current320x240 diagnostic performance is roughly5 FPS; short
 windows do not establish a two-stage speedup. Application resolution remains
 320x240 on a1024x768 display. Work now covers1024x768 live layouts, Quake3
 texture ownership/shaders/state and larger batches, plus GPU presentation.
