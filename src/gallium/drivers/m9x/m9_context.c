@@ -9348,6 +9348,15 @@ m9_context_faa_submit_draw(struct m9_context *ctx,
        state->viewport.scale[0] != 160 || state->viewport.scale[1] != -120 ||
        state->viewport.translate[0] != 160 || state->viewport.translate[1] != 120 ||
        owned.shader.layout.count != 4 || owned.shader.record_bytes != 32) {
+      if (getenv("M9X_DEBUG"))
+         fprintf(stderr, "m9x: FAA draw state w=%u h=%u z=%u/%u/%u cull=%u scissor=%u viewport=%g,%g/%g,%g vectors=%u stride=%u vertices=%u flat=%u\n",
+                 state->width, state->height, state->depth_enabled,
+                 state->depth_write, state->depth_func, state->cull_face,
+                 state->scissor_enabled, state->viewport.scale[0],
+                 state->viewport.scale[1], state->viewport.translate[0],
+                 state->viewport.translate[1], owned.shader.layout.count,
+                 owned.shader.record_bytes, owned.shader.vertex_count,
+                 state->flatshade);
       why = "FAA application depth/cull/scissor/view state is not implemented";
       goto out;
    }
