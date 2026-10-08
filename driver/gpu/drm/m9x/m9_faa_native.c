@@ -11371,16 +11371,26 @@ static int m9_faa_clear_resume_state(struct m9x_device *mdev,
 }
 
 #endif
-int m9x_faa_graph_clear_resume_get_locked(struct m9x_device*mdev,u32 generation,
- u64 previous,struct m9_faa_graph_binding**out)
+int m9x_faa_graph_clear_resume_get_locked(struct m9x_device *mdev,
+					  u32 generation, u64 previous,
+					  struct m9_faa_graph_binding **out)
 {
 #ifdef M9_FAA_GRAPH_INIT_CONTROL
- struct m9x_faa_replay*r=mdev->transport.faa;u64 next;int ret;
- lockdep_assert_held(&mdev->transport.lock);if(!out)return -EINVAL;*out=NULL;
- ret=m9_faa_clear_resume_state(mdev,r?r->graph_binding:NULL,generation,previous,&next);
- if(!ret)*out=m9x_faa_graph_binding_get(r->graph_binding);return ret;
+	struct m9x_faa_replay *r = mdev->transport.faa;
+	u64 next;
+	int ret;
+
+	lockdep_assert_held(&mdev->transport.lock);
+	if (!out)
+		return -EINVAL;
+	*out = NULL;
+	ret = m9_faa_clear_resume_state(mdev, r ? r->graph_binding : NULL,
+					generation, previous, &next);
+	if (!ret)
+		*out = m9x_faa_graph_binding_get(r->graph_binding);
+	return ret;
 #else
- return -EOPNOTSUPP;
+	return -EOPNOTSUPP;
 #endif
 }
 
