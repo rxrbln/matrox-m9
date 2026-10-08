@@ -967,9 +967,30 @@ module_param_named(faa_interlude_page_align, m9_faa_interlude_page_align,
 MODULE_PARM_DESC(faa_interlude_page_align,
 		 "Diagnostic: start the FAA part after ordinary jobs at a primary page boundary");
 
+static bool m9_faa_interlude_restore;
+module_param_named(faa_interlude_restore, m9_faa_interlude_restore, bool,
+		   0400);
+MODULE_PARM_DESC(faa_interlude_restore,
+		 "Diagnostic: after ordinary jobs, reset the engine state they leave that FAA later parts never write");
+
+/*
+ * Mesa's ordinary draws leave state the vendor's D3D FAA streams never
+ * write or only set in INIT/FIRST (DERIVED, campaign regsets.py over the
+ * captured GL jobs and FAA INIT/FIRST/later streams): the linked-program
+ * words 6a/6b/6c, stream slots 05/07 and strides 11..13, and the second
+ * colour target b2. Their FAA value is zero.
+ */
+static const u32 m9_faa_interlude_reset[] = {
+	M9_HW_HDR(0x6a, 0x6b, 0x6c, 0x11), 0, 0, 0, 0,
+	M9_HW_HDR(0x05, 0x07, 0x12, 0x13), 0, 0, 0, 0,
+	M9_HW_HDR1(0xb2), 0,
+	M9_HW_HDR(M9_HW_IDX_END, M9_HW_IDX_END, M9_HW_IDX_END, M9_HW_IDX_END),
+};
+
 /* Ordinary jobs after this idle origin retire before the FAA part. With the
  * diagnostic page alignment, the primary is then padded with empty packets
  * up to its next page, as a further ordinary post without a fence point.
+ * The diagnostic restore first resets what the ordinary jobs left.
  */
 static int m9_faa_interlude_settle_locked(struct m9x_device *mdev, u64 base)
 {
@@ -991,9 +1012,31 @@ static int m9_faa_interlude_settle_locked(struct m9x_device *mdev, u64 base)
 	bool posted = false;
 
 	start = r->graph_draw_end_bytes;
+	o = m9_faa_command_owner(r, false);
+	if (m9_faa_interlude_restore && o && o->cpu &&
+	    start + sizeof(m9_faa_interlude_reset) <=
+	    min_t(u64, o->bytes, o->system_node.size)) {
+		end = start + sizeof(m9_faa_interlude_reset);
+		for (i = 0; i < ARRAY_SIZE(m9_faa_interlude_reset); i++)
+			put_unaligned_le32(m9_faa_interlude_reset[i],
+					   (u8 *)o->cpu + start + 4 * i);
+		/* The CPU stores precede their END post. */
+		wmb();
+		ret = m9x_post_faa_graph_end_locked(mdev, &o->system_node,
+						    o->dma, start, end, false,
+						    0, &point, &posted);
+		if (!posted)
+			return ret;
+		m9x_faa_ordinary_primary_commit_locked(mdev, end,
+						       r->ordinary_point,
+						       false);
+		if (ret)
+			return ret;
+		start = end;
+		posted = false;
+	}
 	if (!m9_faa_interlude_page_align || IS_ALIGNED(start, PAGE_SIZE))
 		return 0;
-	o = m9_faa_command_owner(r, false);
 	end = ALIGN(start, PAGE_SIZE);
 	if (!o || !o->cpu || end > min_t(u64, o->bytes, o->system_node.size))
 		return 0;
