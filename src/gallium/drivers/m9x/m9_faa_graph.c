@@ -826,6 +826,7 @@ m9_faa_surface_color_batch_kernel(struct m9_screen *screen,
           state->scissor_enabled || u->shader.color_flat != state->flatshade ||
           (state->cull_face != PIPE_FACE_NONE && state->cull_face != PIPE_FACE_FRONT && state->cull_face != PIPE_FACE_BACK) ||
           u->shader.layout.count != 4 || u->shader.record_bytes != 32 ||
+          (u->shader.declaration_words != 3 && u->shader.declaration_words != 5) ||
           !u->shader.vertex_count || u->shader.vertex_count % 3)
          return -EOPNOTSUPP;
       int ret = m9_faa_color_upload_request(&u->shader, &packed);
@@ -845,9 +846,9 @@ m9_faa_surface_color_batch_kernel(struct m9_screen *screen,
        * Cull launch state remains common until its transition is proved. */
       if (i && (draws[i].raster_flags & 6u) != (draws[0].raster_flags & 6u))
          return -EOPNOTSUPP;
-      if (i && (u->shader.declaration_words != head->shader.declaration_words ||
-                memcmp(u->shader.declaration, head->shader.declaration, u->shader.declaration_words * 4u)))
-         return -EOPNOTSUPP;
+      /* Each stage uploads its own validated declaration. Constant-normal
+       * and varying-normal geometry can share a frame with different
+       * input attributes; the raw record stride remains common. */
    }
    if (!graph->prepared || !graph->prepared_id || !graph->initialized ||
        !graph->init_point || (graph->init_point & 15) ||
