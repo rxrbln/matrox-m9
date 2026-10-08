@@ -1457,7 +1457,8 @@ m9_arena_reserve(struct m9_context *ctx, struct m9_resource *arena,
       return -E2BIG;
    if (bytes <= arena->size)
       return 0;
-   size = MIN2(limit, MAX2((bytes + 0xfff) & ~0xfffull, 2 * arena->size));
+   size = cpu_streams ? (bytes + 0xfff) & ~0xfffull :
+                       MAX2((bytes + 0xfff) & ~0xfffull, 2 * arena->size);
    m9_bo_destroy(ctx->screen, arena);
    int ret = m9_bo_create(ctx->screen, size, 0, M9_RESOURCE_LINEAR_BUFFER,
                           arena);
@@ -1467,6 +1468,22 @@ m9_arena_reserve(struct m9_context *ctx, struct m9_resource *arena,
               cpu_streams ? "CPU stream" : "source/index", strerror(-ret),
               bytes, size, m9_draw_max_source_vertices());
    return ret;
+}
+
+/* Linear CPU varying views are not rendered surfaces. Their immutable
+ * per-job offsets need only the copied source records; the GPU producer's
+ * transient surfaces retain their full configured allocation. */
+static int
+m9_cpu_stream_plan(const struct m9_job_key *key, unsigned records,
+                    unsigned copies, uint32_t *view_bytes)
+{
+   *view_bytes = 0;
+   if (!key->fs || !key->variant || key->vs || !key->variant->extra_count)
+      return 0;
+   if (key->variant->extra_count > M9_FS_MAX_EXTRA)
+      return -E2BIG;
+   *view_bytes = m9_cpu_stream_view_bytes(records, copies);
+   return *view_bytes ? 0 : -E2BIG;
 }
 
 static bool
@@ -1719,7 +1736,7 @@ m9_faa_store_submitted_locked(struct m9_screen *screen,
  * which the emitter drives through its single-pass path unchanged. */
 static int
 m9_job_native(struct m9_context *ctx, const struct m9_job_key *key,
-              unsigned records, unsigned index_bytes,
+              unsigned records, unsigned index_bytes, unsigned cpu_view_bytes,
               struct m9_raster_pass *out)
 {
    const struct m9_fs_variant *fs = key->variant;
@@ -1744,7 +1761,7 @@ m9_job_native(struct m9_context *ctx, const struct m9_job_key *key,
    t_varying = m9_prof_begin();
    for (unsigned j = 0; j < cpu_streams; j++) {
       uint8_t *view = (uint8_t *)ctx->cpu_streams.map +
-                      j * m9_transient_view_bytes() + gather_at;
+                      (uint64_t)j * cpu_view_bytes + gather_at;
 
       for (unsigned r = 0; r < records; r++)
          memcpy(view + r * M9_TRANSIENT_VERTEX_BYTES,
@@ -3086,7 +3103,12 @@ m9_submit_job(struct m9_context *ctx)
    unsigned index_count = util_dynarray_num_elements(&ctx->indices, uint16_t);
    /* Copies of the geometry the job preprocesses: one a raster pass. */
    unsigned copies = MAX2(pass_count, 1u);
+   uint32_t cpu_view_bytes;
    uint64_t index_base = 0;
+
+   ret = m9_cpu_stream_plan(key, records, copies, &cpu_view_bytes);
+   if (ret)
+      return ret;
 
    /* Complete-job aggregation retains independent immutable CPU arenas.
     * The first scope excludes mutable CPU clears, queries and split passes. */
@@ -3164,10 +3186,17 @@ m9_submit_job(struct m9_context *ctx)
    /* The CPU stream views are reserved for the varyings this job actually
     * gathers, so the job's record ceiling costs system memory only where a
     * fragment program reads them. */
-   if (!ret && fs && key->variant->extra_count)
+   if (!ret && cpu_view_bytes) {
       ret = m9_arena_reserve(ctx, &ctx->cpu_streams,
                              (uint64_t)key->variant->extra_count *
-                             m9_transient_view_bytes());
+                             cpu_view_bytes);
+      if (ret)
+         fprintf(stderr, "m9x: CPU stream job: records %u copies %u views %u"
+                 " stride %u active/parked capacities %" PRIu64 "/%" PRIu64
+                 " bytes\n", records, copies, key->variant->extra_count,
+                 cpu_view_bytes, ctx->cpu_streams.size,
+                 ctx->cpu_streams_alt.size);
+   }
    if (!ret) {
       uint64_t t_records = m9_prof_begin();
 
@@ -3271,7 +3300,8 @@ m9_submit_job(struct m9_context *ctx)
             ret = -EINVAL;
          } else {
             ret = m9_job_native(ctx, key, records,
-                                index_count * sizeof(uint16_t), passes);
+                                index_count * sizeof(uint16_t), cpu_view_bytes,
+                                passes);
          }
       }
       job = (struct m9_draw_job) {
@@ -3283,7 +3313,8 @@ m9_submit_job(struct m9_context *ctx)
          .program = ctx->program.handle,
          .fragment_db = ctx->fragment_db.handle,
          .transient = ctx->transient.handle,
-         .cpu_streams = ctx->cpu_streams.handle,
+         .cpu_streams = cpu_view_bytes ? ctx->cpu_streams.handle : 0,
+         .cpu_stream_view_bytes = cpu_view_bytes,
          .color = m9_res(ctx->color)->handle,
          .color_offset = ctx->color_offset,
          .depth = key->depth->handle,

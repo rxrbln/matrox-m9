@@ -310,5 +310,8 @@ uint32_t m9_vs_gather_route(unsigned target);
 void m9_draw_set_job_vertices(uint32_t vertices);
 uint32_t m9_draw_max_source_vertices(void);
 uint32_t m9_transient_view_bytes(void);
+/* CPU-filled linear stream views need only this job's copied records.
+ * GPU-rendered transient targets retain their configured surface extent. */
+uint32_t m9_cpu_stream_view_bytes(uint32_t records, uint32_t copies);
 
 #endif

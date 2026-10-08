@@ -588,3 +588,14 @@ m9_transient_view_bytes(void)
    return (bytes + M9_VS_RECORD_BANK_BYTES - 1u) &
           ~(M9_VS_RECORD_BANK_BYTES - 1u);
 }
+
+uint32_t
+m9_cpu_stream_view_bytes(uint32_t records, uint32_t copies)
+{
+   if (!records || records % 4 || !copies ||
+       copies > m9_draw_max_source_vertices() / records)
+      return 0;
+   uint32_t bytes = records * copies * M9_TRANSIENT_VERTEX_BYTES;
+   return (bytes + M9_VS_RECORD_BANK_BYTES - 1u) &
+          ~(M9_VS_RECORD_BANK_BYTES - 1u);
+}

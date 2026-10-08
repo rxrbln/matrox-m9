@@ -97,6 +97,8 @@ struct m9_draw_job {
    uint32_t fragment_db;   /* VRAM fixed-fragment database */
    uint32_t transient;     /* VRAM, M9_TRANSIENT_VIEWS stream views */
    uint32_t cpu_streams;   /* DMA32, the views the CPU writes */
+   uint32_t cpu_stream_view_bytes; /* immutable linear span per CPU view;
+                                   * zero keeps the legacy configured span */
    uint32_t color, depth, aux;
    /* Byte offset of the colour level inside job->color's object. */
    uint64_t color_offset;

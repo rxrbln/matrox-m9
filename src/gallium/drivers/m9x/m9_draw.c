@@ -358,7 +358,9 @@ m9_stream_offset(const struct m9_draw_job *job,
                  const struct m9_raster_pass *pass, unsigned view)
 {
    return m9_stream_is_cpu(job, view) ?
-          VIEW(view - M9_TRANSIENT_CPU_VIEW) +
+          (uint64_t)(view - M9_TRANSIENT_CPU_VIEW) *
+          (job->cpu_stream_view_bytes ? job->cpu_stream_view_bytes :
+                                       m9_transient_view_bytes()) +
           (pass ? pass->cpu_stream_offset : 0) : VIEW(view);
 }
 
@@ -841,6 +843,13 @@ fail:
 static bool
 m9_draw_job_valid(const struct m9_draw_job *job)
 {
+   if (job->cpu_stream_view_bytes &&
+       (!job->cpu_streams ||
+        job->cpu_stream_view_bytes % M9_VS_RECORD_BANK_BYTES ||
+        job->cpu_stream_view_bytes <
+           (uint64_t)job->source_vertices * M9_TRANSIENT_VERTEX_BYTES ||
+        job->cpu_stream_view_bytes > m9_transient_view_bytes()))
+      return false;
    if (!job->params || !job->decl || !job->source || !job->system ||
        !job->program || !job->fragment_db || !job->transient ||
        !job->color || !job->depth || !job->aux || !job->be ||
