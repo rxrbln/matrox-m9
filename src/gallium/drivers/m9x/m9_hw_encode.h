@@ -127,4 +127,56 @@ static inline M9_HW_U32 m9_hw_color_mask(M9_HW_U32 r, M9_HW_U32 g,
 	return 0xffff0000u | nibble * 0x1111u;
 }
 
+/*
+ * Texture unit words: 70 sampling form, 79 format/kind/width, 7a levels,
+ * layers and height, 7c filter and wrap, 7d LOD bias and range.
+ */
+#define M9_HW_WRAP_REPEAT		0u
+#define M9_HW_WRAP_CLAMP_TO_EDGE	1u
+#define M9_HW_WRAP_MIRROR_REPEAT	4u
+#define M9_HW_WRAP_CLAMP		6u
+#define M9_HW_WRAP_CLAMP_TO_BORDER	7u
+
+#define M9_HW_7C_MIN_LINEAR		0x002u
+#define M9_HW_7C_MAG_LINEAR		0x010u
+#define M9_HW_7C_MIP_NEAREST		0x080u
+#define M9_HW_7C_MIP_LINEAR		0x100u
+/* Captured only for NEAREST_MIPMAP_NEAREST with LINEAR magnification. */
+#define M9_HW_7C_MIP_NEAREST_MAG_LINEAR	0x400u
+
+static inline M9_HW_U32 m9_hw_texture_70(M9_HW_U32 form, M9_HW_U32 lod_range,
+					 M9_HW_U32 compare_enable,
+					 M9_HW_U32 compare)
+{
+	return 0x00040018u | ((form & 3u) << 8) | ((lod_range & 1u) << 19) |
+	       (compare_enable ? 1u << 26 | (compare & 7u) << 27 : 0);
+}
+
+static inline M9_HW_U32 m9_hw_texture_79(M9_HW_U32 code, M9_HW_U32 kind,
+					 M9_HW_U32 width)
+{
+	return (code & 0xffu) << 24 | (kind & 0xffu) << 16 | (width & 0xffffu);
+}
+
+static inline M9_HW_U32 m9_hw_texture_7a(M9_HW_U32 last_level,
+					 M9_HW_U32 layers, M9_HW_U32 height)
+{
+	return (last_level & 0xfu) << 28 | (layers & 0xfffu) << 16 |
+	       (height & 0xffffu);
+}
+
+static inline M9_HW_U32 m9_hw_sampler_7c(M9_HW_U32 filter, M9_HW_U32 wrap_s,
+					 M9_HW_U32 wrap_t, M9_HW_U32 wrap_r)
+{
+	return 0x00009200u | filter | (wrap_s & 7u) << 22 |
+	       (wrap_t & 7u) << 25 | (wrap_r & 7u) << 28;
+}
+
+/* LOD bias in 1/32 (10-bit two's complement), range lo..hi in 1/32. */
+static inline M9_HW_U32 m9_hw_sampler_7d(M9_HW_U32 bias, M9_HW_U32 lo,
+					 M9_HW_U32 hi)
+{
+	return (bias & 0x3ffu) | (lo & 0x1ffu) << 10 | (hi & 0x1ffu) << 19;
+}
+
 #endif

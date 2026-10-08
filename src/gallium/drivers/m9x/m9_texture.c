@@ -6,6 +6,7 @@
  * level use the source-derived calculators.  Larger plane levels report
  * -ENOTSUP and use the kernel texture window; larger cubes remain unplaced.
  */
+#include "m9_hw_encode.h"
 #include "m9_texture.h"
 
 #include "m9_internal.h"
@@ -730,11 +731,11 @@ static unsigned
 m9_texture_wrap(unsigned wrap, bool *ok)
 {
    switch (wrap) {
-   case PIPE_TEX_WRAP_REPEAT: return 0;
-   case PIPE_TEX_WRAP_CLAMP_TO_EDGE: return 1;
-   case PIPE_TEX_WRAP_MIRROR_REPEAT: return 4;
-   case PIPE_TEX_WRAP_CLAMP: return 6;
-   case PIPE_TEX_WRAP_CLAMP_TO_BORDER: return 7;
+   case PIPE_TEX_WRAP_REPEAT: return M9_HW_WRAP_REPEAT;
+   case PIPE_TEX_WRAP_CLAMP_TO_EDGE: return M9_HW_WRAP_CLAMP_TO_EDGE;
+   case PIPE_TEX_WRAP_MIRROR_REPEAT: return M9_HW_WRAP_MIRROR_REPEAT;
+   case PIPE_TEX_WRAP_CLAMP: return M9_HW_WRAP_CLAMP;
+   case PIPE_TEX_WRAP_CLAMP_TO_BORDER: return M9_HW_WRAP_CLAMP_TO_BORDER;
    default:
       *ok = false;
       return 0;
@@ -800,14 +801,14 @@ m9_texture_unit_init(struct m9_texture_unit *unit, uint32_t handle,
     * re-based view is a clamp rather than a second allocation. */
    mip = s->min_mip_filter != PIPE_TEX_MIPFILTER_NONE || bind->view_first_level;
    linear_min = s->min_img_filter == PIPE_TEX_FILTER_LINEAR;
-   filter = (linear_min ? 0x2 : 0) | 0x200 |
-            (s->mag_img_filter == PIPE_TEX_FILTER_LINEAR ? 0x10 : 0);
+   filter = (linear_min ? M9_HW_7C_MIN_LINEAR : 0) |
+            (s->mag_img_filter == PIPE_TEX_FILTER_LINEAR ? M9_HW_7C_MAG_LINEAR : 0);
    if (mip) {
-      filter |= s->min_mip_filter == PIPE_TEX_MIPFILTER_LINEAR ? 0x100 : 0x80;
-      /* 7c[10] is captured only for NEAREST_MIPMAP_NEAREST, LINEAR mag. */
+      filter |= s->min_mip_filter == PIPE_TEX_MIPFILTER_LINEAR ?
+                M9_HW_7C_MIP_LINEAR : M9_HW_7C_MIP_NEAREST;
       if (s->mag_img_filter == PIPE_TEX_FILTER_LINEAR && !linear_min &&
           s->min_mip_filter == PIPE_TEX_MIPFILTER_NEAREST)
-         filter |= 0x400;
+         filter |= M9_HW_7C_MIP_NEAREST_MAG_LINEAR;
       /* The sampler's LOD counts from level 0, Gallium's from the view's
        * base level. */
       unsigned base = bind->view_first_level * 32;
@@ -824,18 +825,16 @@ m9_texture_unit_init(struct m9_texture_unit *unit, uint32_t handle,
           bind->kind == M9_TEXTURE_KIND_3D || shadow ? 2 : 1;
 
    unit->handle = handle;
-   unit->w7d = ((uint32_t)bias & 0x3ff) | lo << 10 | hi << 19;
-   unit->w70 = 0x00040018u | form << 8 |
-               (unit->w7d != M9_TEXTURE_LOD_DEFAULT ? 1u << 19 : 0) |
-               (shadow ? 1u << 26 | (uint32_t)compare[s->compare_func & 7] << 27 : 0);
-   unit->w79 = (uint32_t)bind->code << 24 | (uint32_t)bind->kind << 16 |
-               bind->width;
-   unit->w7a = (mip ? bind->last_level : 0) << 28 | bind->depth << 16 |
-               bind->height;
-   unit->w7c = filter | 0x9000u |
-               m9_texture_wrap(s->wrap_s, &ok) << 22 |
-               m9_texture_wrap(s->wrap_t, &ok) << 25 |
-               m9_texture_wrap(s->wrap_r, &ok) << 28;
+   /* The unit words are shared with the kernel FAA producers. */
+   unit->w7d = m9_hw_sampler_7d((uint32_t)bias, lo, hi);
+   unit->w70 = m9_hw_texture_70(form, unit->w7d != M9_TEXTURE_LOD_DEFAULT,
+                                shadow, compare[s->compare_func & 7]);
+   unit->w79 = m9_hw_texture_79(bind->code, bind->kind, bind->width);
+   unit->w7a = m9_hw_texture_7a(mip ? bind->last_level : 0, bind->depth,
+                                bind->height);
+   unit->w7c = m9_hw_sampler_7c(filter, m9_texture_wrap(s->wrap_s, &ok),
+                                m9_texture_wrap(s->wrap_t, &ok),
+                                m9_texture_wrap(s->wrap_r, &ok));
    /* Raw DEPTH16 sampling. */
    if (bind->code == 0xb8 && !shadow)
       unit->w7c |= 1u << 31;
