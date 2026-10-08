@@ -11,6 +11,7 @@ struct m9x_faa_texture_dual_program {
 	u32 stage_count, sampler_count, coordinate_sets;
 	u32 color_op0, color_op1;
 	u32 entry_bytes[4];
+	u32 program_bytes;
 };
 
 int m9x_faa_texture_dual_bind_place(

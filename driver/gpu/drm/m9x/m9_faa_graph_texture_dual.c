@@ -42,8 +42,16 @@ int m9x_faa_texture_dual_bind_place(
 	    program->stage_count != 4 || program->sampler_count != 2 ||
 	    program->coordinate_sets != 2 || program->color_op0 != 4 ||
 	    program->color_op1 != 4 || program->entry_bytes[0] != 0 ||
-	    program->entry_bytes[1] != 72 || program->entry_bytes[2] != 144 ||
-	    program->entry_bytes[3] != 200 ||
+	    program->entry_bytes[1] != 72 ||
+	    (program->entry_bytes[2] & 7) ||
+	    (program->entry_bytes[3] & 7) ||
+	    program->entry_bytes[2] <= program->entry_bytes[1] ||
+	    program->entry_bytes[3] - program->entry_bytes[2] != 56 ||
+	    !program->program_bytes || program->program_bytes > 4096 ||
+	    (program->program_bytes & 7) ||
+	    program->program_bytes <= program->entry_bytes[3] ||
+	    (program->program_bytes - program->entry_bytes[3] != 192 &&
+	     program->program_bytes - program->entry_bytes[3] != 200) ||
 	    unit[0].stage != 0 || unit[1].stage != 1 ||
 	    unit[0].coordinate_sets != 2 || unit[1].coordinate_sets != 2 ||
 	    unit[0].coordinate_index != 0 || unit[1].coordinate_index != 1 ||
