@@ -6441,8 +6441,7 @@ int m9x_faa_graph_public_vs_next_submit(struct m9x_device *mdev,
 	*point = 0;
 	*posted = false;
 	mutex_lock(&t->lock);
-	ret = m9x_faa_graph_public_vs_unlocked_get_locked(mdev, generation,
-							  unlock_point, &checked);
+	ret = m9x_faa_graph_public_vs_unlocked_get_locked(mdev, generation, unlock_point, &checked);
 	if (ret)
 		goto out;
 	if (checked != binding) {
@@ -6496,9 +6495,7 @@ int m9x_faa_graph_public_vs_next_submit(struct m9x_device *mdev,
 	ret = m9x_triangle_system_page_admit_locked(mdev, 0x40008000);
 	if (ret)
 		goto out;
-	fence = m9x_fence_create_target_locked(mdev,
-					       lower_32_bits(unlock_point) +
-					       0xd0);
+	fence = m9x_fence_create_target_locked(mdev, lower_32_bits(unlock_point) + 0xd0);
 	if (!fence) {
 		ret = -ENOMEM;
 		goto out;
@@ -6539,9 +6536,8 @@ int m9x_faa_graph_public_vs_next_submit(struct m9x_device *mdev,
 						    r->graph_draw_end_bytes, end,
 						    i == 2,
 						    i == 3 ?
-						    lower_32_bits(unlock_point) +
-						    0xd0 : 0, &stage_point,
-						    &stage_posted);
+						    lower_32_bits(unlock_point) + 0xd0 : 0,
+						    &stage_point, &stage_posted);
 		*posted |= stage_posted;
 		if (stage_posted) {
 			r->graph_draw_end_bytes = end;
