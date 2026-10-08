@@ -1609,6 +1609,13 @@ int m9x_ordinary_ready_locked(struct m9x_device *mdev)
 	lockdep_assert_held(&mdev->transport.lock);
 	if (m9x_ordinary_faa_context_locked(mdev))
 		return 0;
+	/* The Linux context runs on the staging slots: a graph that is being
+	 * prepared, or whose INIT has not switched the requester, does not
+	 * own the context yet.
+	 */
+	if (!mdev->transport.faa_virtual_primary && !mdev->transport.wedged &&
+	    !m9_triangle_guard_scan && m9x_triangle_context_ready_locked(mdev))
+		return 0;
 	return m9x_engine_ready_locked(mdev);
 }
 
