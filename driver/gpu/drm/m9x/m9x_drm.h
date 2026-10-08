@@ -4,6 +4,7 @@
 #define __M9X_DRM_H__
 
 #include <uapi/drm/drm.h>
+#include "m9x_drm_fragment.h"
 
 /* Preserve the provisional command numbers used by the existing Mesa code. */
 #define DRM_PARHELIA_M9_CREATE_BO	0x09
@@ -214,7 +215,8 @@ struct drm_parhelia_m9_faa_graph_dual_batch {
 struct drm_parhelia_m9_faa_dual_draw {
 	struct drm_parhelia_m9_faa_color_draw draw;
 	struct drm_parhelia_m9_faa_texture_view texture[2];
-	__u32 program, pad;
+	/* PARHELIA_M9_FAA_FRAGMENT_* state; zero is the FIRST program. */
+	__u32 program, fragment;
 };
 
 struct drm_parhelia_m9_faa_graph_dual_later {

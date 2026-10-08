@@ -218,39 +218,48 @@ int m9x_faa_later_stage_encode(const u8 *first, u32 first_bytes, u32 epoch,
 }
 
 int m9x_faa_program_cache_draw(struct m9x_faa_program_cache *cache, u32 kind,
-			       const u8 *program, u32 bytes, u32 raster,
-			       bool first, enum m9x_faa_later_form *form,
-			       bool *cull_state, u32 *offset)
+			       u32 fragment, const u8 *program, u32 bytes,
+			       u32 raster, bool first,
+			       enum m9x_faa_later_form *form, bool *cull_state,
+			       u32 *offset)
 {
-	u32 at;
+	u32 i, at;
 
 	if (!cache || !program || !form || !cull_state || !offset ||
 	    kind >= M9_FAA_PROGRAM_KINDS || !bytes || (bytes & 7) ||
 	    bytes > M9_FAA_PROGRAM_PAGE_BYTES || (raster & ~6u) ||
-	    (raster & 6) == 6 || first != !cache->built)
+	    (raster & 6) == 6 || first != !cache->count ||
+	    cache->count > M9_FAA_PROGRAM_CACHE_ENTRIES)
 		return -EINVAL;
-	if (cache->built & (1u << kind)) {
-		at = cache->offset[kind];
-		if (cache->bytes[kind] != bytes ||
+	for (i = 0; i < cache->count; i++)
+		if (cache->entry[i].kind == kind &&
+		    cache->entry[i].fragment == fragment)
+			break;
+	if (i < cache->count) {
+		at = cache->entry[i].offset;
+		if (cache->entry[i].bytes != bytes ||
 		    memcmp(cache->page + at, program, bytes))
 			return -ESTALE;
-		*form = cache->active == kind ? M9_FAA_LATER_PLAIN :
-						 M9_FAA_LATER_CACHED;
-		*cull_state = cache->cull[kind] != raster;
+		*form = cache->active == i ? M9_FAA_LATER_PLAIN :
+					     M9_FAA_LATER_CACHED;
+		*cull_state = cache->entry[i].cull != raster;
 	} else {
 		at = (cache->page_bytes + 63) & ~63u;
-		if (at > M9_FAA_PROGRAM_PAGE_BYTES - bytes)
+		if (i == M9_FAA_PROGRAM_CACHE_ENTRIES ||
+		    at > M9_FAA_PROGRAM_PAGE_BYTES - bytes)
 			return -ERANGE;
 		memcpy(cache->page + at, program, bytes);
-		cache->built |= 1u << kind;
-		cache->offset[kind] = at;
-		cache->bytes[kind] = bytes;
+		cache->entry[i].kind = kind;
+		cache->entry[i].fragment = fragment;
+		cache->entry[i].offset = at;
+		cache->entry[i].bytes = bytes;
+		cache->count++;
 		cache->page_bytes = at + bytes;
 		*form = M9_FAA_LATER_BUILD;
 		*cull_state = false;
 	}
-	cache->cull[kind] = raster;
-	cache->active = kind;
+	cache->entry[i].cull = raster;
+	cache->active = i;
 	*offset = at;
 	return 0;
 }

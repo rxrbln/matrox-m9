@@ -23,6 +23,8 @@ struct m9x_faa_single_first_input {
 	const struct m9x_faa_color_input *color;
 	const struct m9x_faa_texture_bind_input *texture; /* exactly one unit */
 	u32 program_offset;
+	/* PARHELIA_M9_FAA_FRAGMENT_* state of the program; 0 is FS48. */
+	u32 fragment;
 };
 
 int m9x_faa_single_first_encode(const u8 *sample, size_t sample_bytes,

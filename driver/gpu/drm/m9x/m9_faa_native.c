@@ -9721,7 +9721,7 @@ int m9x_faa_graph_dual_first_prepare(struct m9x_device *mdev,
 		u32 offset;
 
 		ret = m9x_faa_program_cache_draw(programs,
-						 PARHELIA_M9_FAA_PROGRAM_DUAL,
+						 PARHELIA_M9_FAA_PROGRAM_DUAL, 0,
 						 input->program,
 						 input->layout.program_bytes,
 						 input->raster_flags, true, &form,
@@ -9894,6 +9894,7 @@ int m9x_faa_graph_mixed_first_prepare(struct m9x_device *mdev,
 	for (i = 0; i < batch->count; i++) {
 		struct m9x_faa_color_input job = batch->draw[i].input;
 		u32 kind = batch->draw[i].program;
+		u32 fragment = batch->draw[i].fragment;
 		const struct m9x_faa_texture_owners *own =
 			i && draw_textures && draw_textures[i].gem[0] ?
 			&draw_textures[i] : textures;
@@ -9924,7 +9925,8 @@ int m9x_faa_graph_mixed_first_prepare(struct m9x_device *mdev,
 			ret = -EINVAL;
 			goto unlock;
 		}
-		ret = m9x_faa_program_cache_draw(programs, kind, job.program,
+		ret = m9x_faa_program_cache_draw(programs, kind, fragment,
+						 job.program,
 						 job.layout.program_bytes,
 						 job.raster_flags, !i, &form,
 						 &cull_state, &offset);
@@ -9935,7 +9937,7 @@ int m9x_faa_graph_mixed_first_prepare(struct m9x_device *mdev,
 		job.height = layout.height;
 		ret = m9x_faa_mixed_first_encode(kind, &tpl, owner, &views,
 						 r->graph_draw_end_bytes, origin,
-						 &job, own->bind, offset,
+						 &job, own->bind, offset, fragment,
 						 i ? job_primary : frame->primary,
 						 M9_FAA_DEPTH_FRAME_PRIMARY_CAPACITY,
 						 i ? stage : secondary,
@@ -10200,6 +10202,7 @@ int m9x_faa_graph_dual_later_prepare(
 							 *input;
 		u32 kind = batch ? batch->draw[i].program :
 				   PARHELIA_M9_FAA_PROGRAM_DUAL;
+		u32 fragment = batch ? batch->draw[i].fragment : 0;
 		const struct m9x_faa_texture_owners *own =
 			i && draw_textures && draw_textures[i].gem[0] ?
 				&draw_textures[i] :
@@ -10230,7 +10233,8 @@ int m9x_faa_graph_dual_later_prepare(
 			ret = -EINVAL;
 			goto unlock;
 		}
-		ret = m9x_faa_program_cache_draw(programs, kind, job.program,
+		ret = m9x_faa_program_cache_draw(programs, kind, fragment,
+						 job.program,
 						 job.layout.program_bytes,
 						 job.raster_flags, false, &form,
 						 &cull_state, &offset);
@@ -10241,7 +10245,7 @@ int m9x_faa_graph_dual_later_prepare(
 		job.height = input->height;
 		ret = m9x_faa_mixed_first_encode(kind, &tpl, owner, &views,
 						 r->primary_bytes, epoch, &job,
-						 own->bind, offset,
+						 own->bind, offset, fragment,
 						 fresh_primary, 9200,
 						 fresh_secondary, &first_bytes,
 						 ends, &live, first_scratch,

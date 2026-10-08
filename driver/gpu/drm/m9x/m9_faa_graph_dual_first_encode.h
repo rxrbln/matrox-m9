@@ -6,6 +6,7 @@
 #include "m9_faa_graph_first_depth_encode.h"
 #include "m9_faa_graph_texture_dual.h"
 #include "m9_faa_graph_texture_dual_link.h"
+#include "m9_faa_graph_texture_fragment.h"
 
 #define M9_FAA_DUAL_FIRST_SECONDARY_BYTES 2880u
 #define M9_FAA_DUAL_FIRST_PRIMARY_TAIL_BYTES 3624u
@@ -18,9 +19,11 @@
  * Program, input, owner and sampler fields are supplied by live retained
  * objects. No source GPU address is an API input. */
 struct m9x_faa_dual_first_input {
- const struct m9x_faa_color_input *color;
- const struct m9x_faa_texture_bind_input *texture; /* exactly two units */
- u32 program_offset;
+	const struct m9x_faa_color_input *color;
+	const struct m9x_faa_texture_bind_input *texture; /* exactly two units */
+	u32 program_offset;
+	/* PARHELIA_M9_FAA_FRAGMENT_* state of the program; 0 is FS72. */
+	u32 fragment;
 };
 
 int m9x_faa_dual_first_encode(const u8 *sample,size_t sample_bytes,

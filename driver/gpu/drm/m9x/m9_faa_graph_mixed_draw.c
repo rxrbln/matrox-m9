@@ -38,7 +38,8 @@ int m9x_faa_mixed_first_encode(u32 kind, const struct m9x_faa_mixed_templates *t
 			       u32 init_bytes, u64 epoch,
 			       const struct m9x_faa_color_input *job,
 			       const struct m9x_faa_texture_bind_input *bind,
-			       u32 program_offset, u8 *primary,
+			       u32 program_offset, u32 fragment,
+			       u8 *primary,
 			       size_t primary_capacity, u8 *stage,
 			       u32 *primary_bytes, u32 *ends,
 			       const struct m9x_faa_color_image *live,
@@ -50,7 +51,7 @@ int m9x_faa_mixed_first_encode(u32 kind, const struct m9x_faa_mixed_templates *t
 	if (kind == M9_FAA_PROGRAM_SINGLE) {
 		struct m9x_faa_single_first_input one = {
 			.color = job, .texture = bind,
-			.program_offset = program_offset
+			.program_offset = program_offset, .fragment = fragment
 		};
 
 		*stage_bytes = M9_FAA_SINGLE_FIRST_SECONDARY_BYTES;
@@ -67,7 +68,7 @@ int m9x_faa_mixed_first_encode(u32 kind, const struct m9x_faa_mixed_templates *t
 	if (kind == M9_FAA_PROGRAM_DUAL) {
 		struct m9x_faa_dual_first_input two = {
 			.color = job, .texture = bind,
-			.program_offset = program_offset
+			.program_offset = program_offset, .fragment = fragment
 		};
 
 		*stage_bytes = M9_FAA_DUAL_FIRST_SECONDARY_BYTES;

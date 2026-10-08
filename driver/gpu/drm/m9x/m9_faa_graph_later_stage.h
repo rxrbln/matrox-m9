@@ -5,6 +5,7 @@
 
 #include "m9_faa_graph_dual_first_encode.h"
 #include "m9_faa_graph_program_arena.h"
+#include "m9_faa_graph_texture_fragment.h"
 
 /* Stage-0 null-target reload plus the C0 pair; replaces one 0x70 word. */
 #define M9_FAA_SWITCH_RELOAD_BYTES 100u
@@ -20,12 +21,6 @@
 
 /* Fixed 1x1 null-target sampler state; no allocation address. */
 extern const u32 m9x_faa_null_target[24];
-
-enum m9x_faa_program_kind {
-	M9_FAA_PROGRAM_DUAL,	/* COLOR*T0*T1 MODULATE, FS72 */
-	M9_FAA_PROGRAM_SINGLE,	/* COLOR*T0 MODULATE, FS48 */
-	M9_FAA_PROGRAM_KINDS
-};
 
 /* Vendor program cache (13cd00) outcome for a later DRAW. */
 enum m9x_faa_later_form {
@@ -60,25 +55,29 @@ int m9x_faa_later_stage_encode(const u8 *first, u32 first_bytes, u32 epoch,
 /* Sampler sites of a FIRST stage (single 2720 or dual 2880 bytes). */
 int m9x_faa_first_stage_sites(u32 first_bytes, u32 *units, u32 site[2]);
 
-/* Program cache of a retained graph, after the vendor's: where each built
- * program lives in owner 26, the active (current) one, and the raster cull
- * state each last emitted. page is the owner-26 image a frame uploads.
+/* Program cache of a retained graph, after the vendor's (13cd00): every
+ * built program (kind and fragment state, a distinct FS each), where it
+ * lives in owner 26 and the raster cull state it last emitted, and the
+ * active one. page is the owner-26 image a frame uploads.
  */
+#define M9_FAA_PROGRAM_CACHE_ENTRIES 16u
 struct m9x_faa_program_cache {
-	u32 built, active, page_bytes;
-	u32 offset[M9_FAA_PROGRAM_KINDS], bytes[M9_FAA_PROGRAM_KINDS];
-	u32 cull[M9_FAA_PROGRAM_KINDS];
+	u32 count, active, page_bytes;
+	struct {
+		u32 kind, fragment, offset, bytes, cull;
+	} entry[M9_FAA_PROGRAM_CACHE_ENTRIES];
 	u8 page[M9_FAA_PROGRAM_PAGE_BYTES];
 };
 
-/* Account one DRAW of program kind with raster cull flags. A FIRST frame
- * builds the empty cache's first program at offset 0. Returns the DRAW's
- * form, 6A decision and program offset; a cached program whose bytes
- * differ refuses with -ESTALE.
+/* Account one DRAW of program kind and fragment state with raster cull
+ * flags. A FIRST frame builds the empty cache's first program at offset
+ * 0. Returns the DRAW's form, 6A decision and program offset; a cached
+ * program whose bytes differ refuses with -ESTALE.
  */
 int m9x_faa_program_cache_draw(struct m9x_faa_program_cache *cache, u32 kind,
-			       const u8 *program, u32 bytes, u32 raster,
-			       bool first, enum m9x_faa_later_form *form,
-			       bool *cull_state, u32 *offset);
+			       u32 fragment, const u8 *program, u32 bytes,
+			       u32 raster, bool first,
+			       enum m9x_faa_later_form *form, bool *cull_state,
+			       u32 *offset);
 
 #endif

@@ -13,6 +13,8 @@ struct m9x_faa_owned_color_draw {
  struct drm_parhelia_m9_faa_texture_view texture[2];
 	/* Dual later version 3: PARHELIA_M9_FAA_PROGRAM_DUAL or _SINGLE. */
 	u32 program;
+	/* Its PARHELIA_M9_FAA_FRAGMENT_* state. */
+	u32 fragment;
 };
 struct m9x_faa_owned_color_batch {
  u32 count,flags,clear_flags;

@@ -60,17 +60,6 @@ static const u8 template_sha[SHA256_DIGEST_SIZE] = {
 	0xaf, 0x9f, 0xe1, 0x64, 0x21, 0x01, 0x30, 0x2b, 0x38, 0x6c
 };
 
-static const u8 fragment_sha[SHA256_DIGEST_SIZE] = {
-	0xbc, 0x27, 0x7c, 0x1c, 0x15, 0x13, 0x5e, 0xb2, 0x54, 0xce, 0x84,
-	0x4c, 0xbf, 0xf9, 0x26, 0xb7, 0x12, 0x5b, 0x42, 0x49, 0xba, 0x7e,
-	0xbf, 0x0b, 0xf2, 0x4e, 0xae, 0x66, 0xc6, 0xc7, 0x1e, 0xcb
-};
-
-/* FS48 binds two scalar utility pairs through C3: (0,1),(1,0.5). */
-static const u32 fragment_utility[4] = {
-	0u, 0x3f800000u, 0x3f800000u, 0x3f000000u
-};
-
 static bool sha_ok(const u8 *data, u32 bytes, const u8 expected[32])
 {
 	u8 digest[32];
@@ -99,6 +88,7 @@ int m9x_faa_single_first_encode(const u8 *sample, size_t sample_bytes,
 	const struct m9x_faa_color_input *c;
 	struct m9x_faa_texture_dual_link_input link = { 0 };
 	struct m9x_faa_texture_dual_program program = { 0 };
+	struct m9x_faa_texture_fragment_iface frag;
 	struct m9x_faa_surface_layout layout;
 	u32 length, raw, geo, padded, base, limit, off, value, bank, i, j;
 	u8 *stage;
@@ -124,7 +114,7 @@ int m9x_faa_single_first_encode(const u8 *sample, size_t sample_bytes,
 	if (!c->program || !c->constants || !c->geometry || !c->declaration ||
 	    !c->single_base_only || c->dual_base_only ||
 	    c->dual_colorpass_diagnostic || c->layout.program_count != 4 ||
-	    c->layout.entry_bytes[0] || c->layout.entry_bytes[1] != 48 ||
+	    c->layout.entry_bytes[0] ||
 	    c->layout.entry_bytes[2] <= c->layout.entry_bytes[1] ||
 	    c->layout.entry_bytes[3] - c->layout.entry_bytes[2] != 40 ||
 	    c->layout.program_bytes < c->layout.entry_bytes[3] ||
@@ -134,16 +124,19 @@ int m9x_faa_single_first_encode(const u8 *sample, size_t sample_bytes,
 	     c->record_stride != 48 && c->record_stride != 64) ||
 	    c->layout.constants_bytes > 16384 ||
 	    c->layout.constant_begin[0] > c->layout.constant_end[0] ||
-	    c->layout.constant_end[0] - c->layout.constant_begin[0] != 16 ||
 	    c->layout.constant_end[0] > c->layout.constants_bytes ||
 	    c->layout.constant_begin[3] > c->layout.constant_end[3] ||
 	    c->layout.constant_end[3] - c->layout.constant_begin[3] != 104 ||
 	    c->layout.constant_end[3] > c->layout.constants_bytes ||
-	    memcmp(c->constants + c->layout.constant_begin[0], fragment_utility,
-		   sizeof(fragment_utility)) ||
 	    c->layout.vertex_offset != 128 || c->fragment_flags ||
 	    !m9x_faa_depth_flags_valid(c->depth_flags) ||
-	    !sha_ok(c->program, 48, fragment_sha) ||
+	    m9x_faa_texture_fragment_check(M9_FAA_PROGRAM_SINGLE,
+					   input->fragment, c->program,
+					   c->layout.entry_bytes[1],
+					   c->constants +
+					   c->layout.constant_begin[0],
+					   c->layout.constant_end[0] -
+					   c->layout.constant_begin[0], &frag) ||
 	    check_mul_overflow(c->record_stride, c->record_count, &raw) ||
 	    raw != c->layout.vertex_bytes || c->record_count > 12288 ||
 	    c->data_offset > owner[28].bytes)
@@ -192,6 +185,9 @@ int m9x_faa_single_first_encode(const u8 *sample, size_t sample_bytes,
 					   m9_cmd_get(c->declaration +
 						      (i * 4 + j) * 4) :
 					   0);
+	/* The fragment program's mode and register usage words. */
+	m9_cmd_put(stage + 1916, frag.raster_f0);
+	m9_cmd_put(stage + 2276, frag.usage);
 	/* Inactive AC CPU scratch: zero, as in the dual FIRST. */
 	m9_cmd_put(stage + 2220, 0xffff);
 	m9_cmd_put(stage + 2224, 0);

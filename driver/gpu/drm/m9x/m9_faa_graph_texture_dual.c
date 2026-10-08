@@ -29,7 +29,7 @@ int m9x_faa_texture_dual_bind_place(const struct m9x_faa_texture_bind_input
 	    bytes > 0x40000 || program->stage_count != 4 ||
 	    program->sampler_count != 2 || program->coordinate_sets != 2 ||
 	    program->color_op0 != 4 || program->color_op1 != 4 ||
-	    program->entry_bytes[0] != 0 || program->entry_bytes[1] != 72 ||
+	    program->entry_bytes[0] != 0 || (program->entry_bytes[1] & 7) ||
 	    (program->entry_bytes[2] & 7) || (program->entry_bytes[3] & 7) ||
 	    program->entry_bytes[2] <= program->entry_bytes[1] ||
 	    program->entry_bytes[3] - program->entry_bytes[2] != 56 ||
@@ -402,7 +402,7 @@ int m9x_faa_texture_single_bind_place(const struct m9x_faa_texture_bind_input
 	if (!unit || !program || program->stage_count != 4 ||
 	    program->sampler_count != 1 || program->coordinate_sets != 1 ||
 	    program->color_op0 != 4 || program->entry_bytes[0] ||
-	    program->entry_bytes[1] != 48 ||
+	    (program->entry_bytes[1] & 7) ||
 	    program->entry_bytes[2] <= program->entry_bytes[1] ||
 	    program->entry_bytes[3] - program->entry_bytes[2] != 40 ||
 	    program->program_bytes - program->entry_bytes[3] != 200)

@@ -51,7 +51,8 @@ static int dual_draws_copy(u64 draws, u32 draw_count, u32 width, u32 height,
 		bool single = program == PARHELIA_M9_FAA_PROGRAM_SINGLE;
 
 		/* A single-texture DRAW names no stage-1 texture. */
-		if ((textured && t->pad) ||
+		if ((textured &&
+		     (t->fragment & ~PARHELIA_M9_FAA_FRAGMENT_MASK)) ||
 		    (program != PARHELIA_M9_FAA_PROGRAM_DUAL && !single) ||
 		    (single && memcmp(&t->texture[1], &none, sizeof(none))))
 			goto out;
@@ -112,9 +113,12 @@ static int dual_draws_copy(u64 draws, u32 draw_count, u32 width, u32 height,
 		in->single_base_only = single;
 		job->bytes = sum;
 		job->program = program;
+		job->fragment = textured ? t->fragment : 0;
 		if (textured)
 			memcpy(job->texture, t->texture, sizeof(job->texture));
-		/* One program and declaration per kind, one depth state. */
+		/* One declaration per kind, one program per kind and fragment
+		 * state, one depth state.
+		 */
 		for (j = 0; j < i; j++) {
 			const struct m9x_faa_color_input *f =
 				&batch->draw[j].input;
@@ -125,16 +129,17 @@ static int dual_draws_copy(u64 draws, u32 draw_count, u32 width, u32 height,
 			}
 			if (batch->draw[j].program != program)
 				continue;
-			if (l->program_bytes != f->layout.program_bytes ||
-			    memcmp(in->program, f->program, l->program_bytes) ||
-			    memcmp(l->entry_bytes, f->layout.entry_bytes,
-				   sizeof(l->entry_bytes)) ||
-			    memcmp(in->declaration, f->declaration,
-				   d->declaration_count * 4)) {
+			if (memcmp(in->declaration, f->declaration,
+				   d->declaration_count * 4) ||
+			    (batch->draw[j].fragment == job->fragment &&
+			     (l->program_bytes != f->layout.program_bytes ||
+			      memcmp(in->program, f->program,
+				     l->program_bytes) ||
+			      memcmp(l->entry_bytes, f->layout.entry_bytes,
+				     sizeof(l->entry_bytes))))) {
 				ret = -EOPNOTSUPP;
 				goto out;
 			}
-			break;
 		}
 		batch->count++;
 	}
