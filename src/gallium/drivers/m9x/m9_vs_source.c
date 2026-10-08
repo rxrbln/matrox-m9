@@ -580,6 +580,38 @@ m9_vs_source_store(const struct m9_vs_source_attr *s, float *dst,
    }
 }
 
+/* Channels of a plain 32-bit float format, which are copied without the
+ * generic unpack; zero for every other format. */
+static unsigned
+m9_vs_source_float_channels(enum pipe_format format)
+{
+   switch (format) {
+   case PIPE_FORMAT_R32_FLOAT:
+      return 1;
+   case PIPE_FORMAT_R32G32_FLOAT:
+      return 2;
+   case PIPE_FORMAT_R32G32B32_FLOAT:
+      return 3;
+   case PIPE_FORMAT_R32G32B32A32_FLOAT:
+      return 4;
+   default:
+      return 0;
+   }
+}
+
+static inline void
+m9_vs_source_fetch(const struct util_format_unpack_description *unpack,
+                   unsigned float_channels, const uint8_t *src, float rgba[4])
+{
+   if (float_channels) {
+      rgba[0] = rgba[1] = rgba[2] = 0.0f;
+      rgba[3] = 1.0f;
+      memcpy(rgba, src, float_channels * sizeof(float));
+   } else {
+      unpack->unpack_rgba(rgba, src, 1);
+   }
+}
+
 /* A zero-stride element addresses one bounded texel for the whole draw.
  * Expand it into ordinary source records; the GPU declaration and its record
  * stride stay the same as for per-vertex attributes. */
@@ -629,6 +661,7 @@ m9_vs_source_records(const struct m9_vs_source_layout *layout,
             return false;
          continue;
       }
+      const unsigned nf = m9_vs_source_float_channels(s->format);
       /* The last vertex this draw reads must lie inside the mapping. */
       if (!m9_vs_source_range(s, buffer_size[s->buffer],
                               (uint64_t)first + count - 1))
@@ -640,7 +673,7 @@ m9_vs_source_records(const struct m9_vs_source_layout *layout,
          float *dst = out + (uint64_t)v * layout->record_dwords + s->dword;
          float rgba[4];
 
-         unpack->unpack_rgba(rgba, src, 1);
+         m9_vs_source_fetch(unpack, nf, src, rgba);
          m9_vs_source_store(s, dst, rgba);
       }
    }
@@ -676,6 +709,7 @@ m9_vs_source_records_gather(const struct m9_vs_source_layout *layout,
             return false;
          continue;
       }
+      const unsigned nf = m9_vs_source_float_channels(s->format);
       for (unsigned v = 0; v < count; v++) {
          uint64_t at = (uint64_t)first + vertex[v];
          const uint8_t *src;
@@ -685,7 +719,7 @@ m9_vs_source_records_gather(const struct m9_vs_source_layout *layout,
          if (!m9_vs_source_range(s, buffer_size[s->buffer], at))
             return false;
          src = buffer_map[s->buffer] + at * s->stride + s->src_offset;
-         unpack->unpack_rgba(rgba, src, 1);
+         m9_vs_source_fetch(unpack, nf, src, rgba);
          m9_vs_source_store(s, dst, rgba);
       }
    }
