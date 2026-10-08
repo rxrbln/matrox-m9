@@ -60,4 +60,17 @@ static inline bool m9_cmd_overlap(const void *a, size_t an,
 	return x <= y ? y - x < an : x - y < bn;
 }
 
+/*
+ * Half-open byte ranges: an empty range never overlaps, and a range whose
+ * end wraps the address space is refused as overlapping.
+ */
+static inline bool m9_cmd_ranges_overlap(const void *a, size_t an,
+					 const void *b, size_t bn)
+{
+	unsigned long x = (unsigned long)a, y = (unsigned long)b;
+	unsigned long ex = x + an, ey = y + bn;
+
+	return ex < x || ey < y || (x < ey && y < ex);
+}
+
 #endif

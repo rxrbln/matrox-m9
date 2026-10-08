@@ -7,15 +7,6 @@
 #include "m9_cmd.h"
 #include "m9_faa_graph_raster_encode.h"
 
-static bool overlap(const void *a, u32 na, const void *b, u32 nb)
-{
-	unsigned long x = (unsigned long)a, y = (unsigned long)b, xe, ye;
-
-	return check_add_overflow(x, (unsigned long)na, &xe) ||
-	       check_add_overflow(y, (unsigned long)nb, &ye) ||
-	       (x < ye && y < xe);
-}
-
 static u32 moved(u32 at, const u32 insert[4], u32 count)
 {
 	u32 i, delta = 0;
@@ -166,21 +157,28 @@ static int raster_encode(const struct m9x_faa_raster_input *in,
 	    out->primary_capacity < in->primary_bytes ||
 	    out->secondary_capacity < n)
 		return -ERANGE;
-	if (overlap(out->primary, in->primary_bytes, out->secondary, n) ||
-	    overlap(out->primary, in->primary_bytes, in->primary,
-		    in->primary_bytes) ||
-	    overlap(out->primary, in->primary_bytes, in->secondary,
-		    in->secondary_bytes) ||
-	    overlap(out->secondary, n, in->primary, in->primary_bytes) ||
-	    overlap(out->secondary, n, in->secondary, in->secondary_bytes) ||
-	    overlap(out->secondary_bytes, sizeof(*out->secondary_bytes),
-		    out->primary, in->primary_bytes) ||
-	    overlap(out->secondary_bytes, sizeof(*out->secondary_bytes),
-		    out->secondary, n) ||
-	    overlap(out->secondary_bytes, sizeof(*out->secondary_bytes),
-		    in->primary, in->primary_bytes) ||
-	    overlap(out->secondary_bytes, sizeof(*out->secondary_bytes),
-		    in->secondary, in->secondary_bytes))
+	if (m9_cmd_ranges_overlap(out->primary, in->primary_bytes,
+				  out->secondary, n) ||
+	    m9_cmd_ranges_overlap(out->primary, in->primary_bytes, in->primary,
+				  in->primary_bytes) ||
+	    m9_cmd_ranges_overlap(out->primary, in->primary_bytes,
+				  in->secondary, in->secondary_bytes) ||
+	    m9_cmd_ranges_overlap(out->secondary, n, in->primary,
+				  in->primary_bytes) ||
+	    m9_cmd_ranges_overlap(out->secondary, n, in->secondary,
+				  in->secondary_bytes) ||
+	    m9_cmd_ranges_overlap(out->secondary_bytes,
+				  sizeof(*out->secondary_bytes), out->primary,
+				  in->primary_bytes) ||
+	    m9_cmd_ranges_overlap(out->secondary_bytes,
+				  sizeof(*out->secondary_bytes), out->secondary,
+				  n) ||
+	    m9_cmd_ranges_overlap(out->secondary_bytes,
+				  sizeof(*out->secondary_bytes), in->primary,
+				  in->primary_bytes) ||
+	    m9_cmd_ranges_overlap(out->secondary_bytes,
+				  sizeof(*out->secondary_bytes), in->secondary,
+				  in->secondary_bytes))
 		return -EINVAL;
 	/* All validation precedes this first publication. */
 	memcpy(out->primary, in->primary, in->primary_bytes);

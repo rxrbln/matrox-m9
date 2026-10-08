@@ -7,12 +7,6 @@
 #include "m9_cmd.h"
 #include "m9_faa_graph_dual_colorpass_encode.h"
 
-static bool overlaps(const void *a, size_t an, const void *b, size_t bn)
-{
-	return (uintptr_t)a < (uintptr_t)b + bn &&
-	       (uintptr_t)b < (uintptr_t)a + an;
-}
-
 /* Four register forms decoded from original 16fa20 SELECTARG2 COLOR0
  * compiler output. No program VA, texture VA, C2/C3 range or record is
  * captured here; the ISA fields are generated for the admitted operation.
@@ -82,11 +76,12 @@ int m9x_faa_dual_colorpass_shadow(const struct m9x_faa_color_input *pass,
 	    check_add_overflow(pass->layout.program_bytes, 40u, &pb) ||
 	    check_add_overflow(pass->layout.constants_bytes, 8u, &cb) ||
 	    program_capacity < pb || constants_capacity < cb ||
-	    overlaps(program, pb, pass->program, pass->layout.program_bytes) ||
-	    overlaps(constants, cb, pass->constants,
-		     pass->layout.constants_bytes) ||
-	    overlaps(program, pb, constants, cb) ||
-	    overlaps(dual, sizeof(*dual), pass, sizeof(*pass)))
+	    m9_cmd_ranges_overlap(program, pb, pass->program,
+				  pass->layout.program_bytes) ||
+	    m9_cmd_ranges_overlap(constants, cb, pass->constants,
+				  pass->layout.constants_bytes) ||
+	    m9_cmd_ranges_overlap(program, pb, constants, cb) ||
+	    m9_cmd_ranges_overlap(dual, sizeof(*dual), pass, sizeof(*pass)))
 		return -EINVAL;
 	for (i = 1; i < 4; i++)
 		if (pass->layout.entry_bytes[i] < 32 ||
@@ -153,9 +148,11 @@ int m9x_faa_dual_colorpass_encode(const struct m9x_faa_color_input *dual,
 	    dual_secondary_bytes != M9_FAA_DUAL_FIRST_SECONDARY_BYTES ||
 	    primary_bytes < 4708 || primary_capacity < primary_bytes ||
 	    secondary_capacity < M9_FAA_DUAL_COLORPASS_SECONDARY_BYTES ||
-	    overlaps(primary, primary_bytes, dual_primary, primary_bytes) ||
-	    overlaps(secondary, M9_FAA_DUAL_COLORPASS_SECONDARY_BYTES,
-		     dual_secondary, dual_secondary_bytes) ||
+	    m9_cmd_ranges_overlap(primary, primary_bytes, dual_primary,
+				  primary_bytes) ||
+	    m9_cmd_ranges_overlap(secondary,
+				  M9_FAA_DUAL_COLORPASS_SECONDARY_BYTES,
+				  dual_secondary, dual_secondary_bytes) ||
 	    dual->layout.program_count != 4 ||
 	    pass->layout.program_count != 4 || dual->layout.entry_bytes[0] ||
 	    pass->layout.entry_bytes[0] || dual->layout.entry_bytes[1] != 72 ||

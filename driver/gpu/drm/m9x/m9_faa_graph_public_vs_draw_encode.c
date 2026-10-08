@@ -68,14 +68,6 @@ struct draw_relative {
 static const struct draw_relative lengths[] = { { 28, 660 },
 						{ 704, 1280 },
 						{ 1316, 1828 } };
-static bool overlap(const void *a, size_t na, const void *b, size_t nb)
-{
-	unsigned long x = (unsigned long)a, y = (unsigned long)b, ex, ey;
-
-	return check_add_overflow(x, na, &ex) ||
-	       check_add_overflow(y, nb, &ey) || (x < ey && y < ex);
-}
-
 bool m9x_faa_public_vs_draw_template_valid(const u8 *blob, size_t bytes)
 {
 	u8 digest[32];
@@ -117,12 +109,14 @@ int m9x_faa_public_vs_draw_encode(const u8 *blob, size_t bytes,
 	dest[2] = ends;
 	spans[2] = sizeof(*ends);
 	for (i = 0; i < 3; i++) {
-		if (overlap(dest[i], spans[i], blob, bytes) ||
-		    overlap(dest[i], spans[i], owner, 31 * sizeof(*owner)) ||
-		    overlap(dest[i], spans[i], out, sizeof(*out)))
+		if (m9_cmd_ranges_overlap(dest[i], spans[i], blob, bytes) ||
+		    m9_cmd_ranges_overlap(dest[i], spans[i], owner,
+					  31 * sizeof(*owner)) ||
+		    m9_cmd_ranges_overlap(dest[i], spans[i], out, sizeof(*out)))
 			return -EINVAL;
 		for (k = i + 1; k < 3; k++)
-			if (overlap(dest[i], spans[i], dest[k], spans[k]))
+			if (m9_cmd_ranges_overlap(dest[i], spans[i], dest[k],
+						  spans[k]))
 				return -EINVAL;
 	}
 	for (i = 0; i < ARRAY_SIZE(fields); i++) {
