@@ -6274,8 +6274,7 @@ int m9x_faa_graph_color_submit(struct m9x_device *mdev,
 						    primary->dma, old, end,
 						    i == 2,
 						    i == 3 ?
-						    lower_32_bits(init_point) +
-						    n->lock_delta : 0,
+						    lower_32_bits(init_point) + n->lock_delta : 0,
 						    &stage_point, &stage_posted);
 		*posted |= stage_posted;
 		if (stage_posted) {
