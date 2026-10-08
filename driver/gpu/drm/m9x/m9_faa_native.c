@@ -7924,8 +7924,7 @@ int m9x_faa_graph_dual_later_prepare(struct m9x_device *mdev,
  struct m9x_faa_depth_views views;struct m9x_faa_color_image live;
  struct m9x_faa_dual_first_input dual;
  struct m9x_faa_dual_later_image later;
- struct m9x_faa_texture_owners *active;
- struct m9x_faa_texture_bind_input candidate;
+ struct m9x_faa_texture_owners *active,*other;
  const struct firmware *sample=NULL,*color=NULL,*dual_fw=NULL;
  u8 *fresh_primary=NULL,*fresh_secondary=NULL;
  u32 first_bytes=0,first_ends[14],fresh_length=0,geo,capacity;
@@ -8003,32 +8002,24 @@ int m9x_faa_graph_dual_later_prepare(struct m9x_device *mdev,
   !r->depth_storage||!r->depth_storage->initialized||
   r->depth_storage->frame||!r->color_image||
   r->color_image->layout.program_count!=4||
-  !r->dual_textures.gem[0]||!r->dual_textures.gem[1]||
-  r->dual_textures.generation!=generation||
+  (r->dual_active_second?&r->dual_next_textures:&r->dual_textures)->
+   generation!=generation||
   memcmp(&r->color_image->layout,&input->layout,sizeof(input->layout))||
   memcmp(r->color_image->program,input->program,input->layout.program_bytes)){
   ret=-ESTALE;goto unlock;
  }
  active=r->dual_active_second?&r->dual_next_textures:&r->dual_textures;
+ other=r->dual_active_second?&r->dual_textures:&r->dual_next_textures;
  if(!active->gem[0]||!active->gem[1]){ret=-ESTALE;goto unlock;}
- if(textures->gem[0]==active->gem[0]&&
-    textures->gem[1]==active->gem[1]&&
-    !memcmp(textures->bind,active->bind,sizeof(active->bind))){
-  new_pair=false;
- }else{
-  /* The original controlled rebind changed only stage 1's allocator
-   * base. Every sampler/format/dimension field remains identical. */
-  candidate=textures->bind[1];
-  candidate.owner_base=active->bind[1].owner_base;
-  candidate.owner_bytes=active->bind[1].owner_bytes;
-  if(r->dual_active_second||r->dual_next_textures.gem[0]||
-     textures->gem[0]!=active->gem[0]||
-     textures->gem[1]==active->gem[1]||
-     memcmp(&textures->bind[0],&active->bind[0],sizeof(candidate))||
-     memcmp(&candidate,&active->bind[1],sizeof(candidate))){
-   ret=-EOPNOTSUPP;goto unlock;
-  }
-  new_pair=true;
+ /* A new pair takes the idle slot. Its previous pair belongs to an older
+  * frame whose Lock retired before this graph's Unlock; release it now.
+  * The original rebind changes only typed sampler words; each stage's
+  * words are regenerated from its own live owner (stage 0 is DERIVED). */
+ new_pair=textures->gem[0]!=active->gem[0]||
+  textures->gem[1]!=active->gem[1]||
+  memcmp(textures->bind,active->bind,sizeof(active->bind));
+ if(new_pair&&other->gem[0]&&!m9x_faa_texture_owners_put(other,false)){
+  ret=-EBUSY;goto unlock;
  }
  ret=m9x_faa_graph_bound_depth_views_locked(mdev,binding,generation,&views);
  if(ret)goto unlock;
@@ -8130,9 +8121,9 @@ int m9x_faa_graph_dual_later_prepare(struct m9x_device *mdev,
  frame->generation=generation;frame->initialized_reuse=true;
  frame->clear_flags=clear_flags;frame->draw_count=batch?batch->count:1;
  frame->dual_first=true;frame->dual_later=true;
- frame->dual_next_pair=r->dual_active_second||new_pair;
+ frame->dual_next_pair=new_pair?!r->dual_active_second:r->dual_active_second;
  if(new_pair){
-  r->dual_next_textures=*textures;
+  *other=*textures;
   memset(textures,0,sizeof(*textures));
  }
  old_input=r->color_image;r->color_image=next_input;next_input=NULL;
