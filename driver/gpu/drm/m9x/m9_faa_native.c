@@ -7580,8 +7580,8 @@ out:
 }
 
 #ifdef M9_FAA_GRAPH_INIT_CONTROL
-static int m9_faa_graph_next_state(struct m9x_transport *t,
-		u32 generation, u64 unlock_point, bool claimed)
+static int m9_faa_graph_next_state(struct m9x_transport *t, u32 generation,
+				   u64 unlock_point, bool claimed)
 {
 	struct m9x_faa_replay *r = t->faa;
 
@@ -7590,35 +7590,40 @@ static int m9_faa_graph_next_state(struct m9x_transport *t,
 		return -EIO;
 	if (!r || !r->graph_binding || !r->normal_lock_view_seen ||
 	    !r->unlock_started || !r->unlock_retired ||
-	    (r->graph_next_claimed && r->next_unlock_point == unlock_point) != claimed ||
-	    (claimed && !r->next_image) ||
-	    r->graph_generation != generation || t->generation != generation ||
-	    r->observation_generation != generation || !r->observation_retired ||
-	    !unlock_point || unlock_point != r->unlock_point ||
-	    !r->graph_draw_payload_ready || r->public_vs_payload_ready ||
-	    !r->graph_draw_with_lock || !r->graph_draw_with_finish ||
-	    r->graph_draw_point != unlock_point ||
-	    r->graph_draw_posts !=	r->graph_unlock_posts ||
+	    (r->graph_next_claimed && r->next_unlock_point == unlock_point) !=
+		    claimed ||
+	    (claimed && !r->next_image) || r->graph_generation != generation ||
+	    t->generation != generation ||
+	    r->observation_generation != generation ||
+	    !r->observation_retired || !unlock_point ||
+	    unlock_point != r->unlock_point || !r->graph_draw_payload_ready ||
+	    r->public_vs_payload_ready || !r->graph_draw_with_lock ||
+	    !r->graph_draw_with_finish || r->graph_draw_point != unlock_point ||
+	    r->graph_draw_posts != r->graph_unlock_posts ||
 	    r->graph_unlock_posts < 11 ||
-	    r->graph_draw_end_bytes !=	r->graph_unlock_end_bytes ||
+	    r->graph_draw_end_bytes != r->graph_unlock_end_bytes ||
 	    r->graph_secondary_cursor < M9_FAA_NEXT_SECONDARY_OFFSET ||
 	    r->graph_vertex_cursor < M9_FAA_NEXT_VERTEX_OFFSET ||
-	    (claimed && (r->next_unlock_point != unlock_point ||
-	      r->next_posts_start !=	r->graph_unlock_posts ||
-	      r->next_cursor.primary !=	r->graph_unlock_end_bytes ||
+	    (claimed &&
+	     (r->next_unlock_point != unlock_point ||
+	      r->next_posts_start != r->graph_unlock_posts ||
+	      r->next_cursor.primary != r->graph_unlock_end_bytes ||
 	      r->next_cursor.secondary != r->graph_secondary_cursor ||
 	      r->next_cursor.vertices != r->graph_vertex_cursor)) ||
-	    (unlock_point & 15) || lower_32_bits(unlock_point) > U32_MAX - 0x60 ||
-	    t->submitted_point != unlock_point || t->completed_point != unlock_point ||
+	    (unlock_point & 15) ||
+	    lower_32_bits(unlock_point) > U32_MAX - 0x60 ||
+	    t->submitted_point != unlock_point ||
+	    t->completed_point != unlock_point ||
 	    t->next_fence != lower_32_bits(unlock_point) + 0x10)
 		return -ESTALE;
 	if (!t->faa_source_context || !t->faa_virtual_primary ||
 	    !t->engine_transitioned || !t->restore_ready || !t->fence_cpu ||
-	    !t->transport_armed || !t->bus_master_enabled ||
-	    t->async_stop || t->async_pending || t->queue_count)
+	    !t->transport_armed || !t->bus_master_enabled || t->async_stop ||
+	    t->async_pending || t->queue_count)
 		return -EBUSY;
 	return 0;
 }
+
 #endif
 
 int m9x_faa_graph_next_get_locked(struct m9x_device *mdev,
