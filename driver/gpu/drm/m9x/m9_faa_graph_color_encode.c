@@ -144,13 +144,19 @@ int m9x_faa_color_encode(const u8*blob,size_t bytes,
   * low mask is the separately qualified fused position/COLOR interface. */
  put(out->secondary+260,(((1u<<((in->declaration_count-1)/2))-1)<<24)|fused_mask);
  for(i=0;i<4;i++)put(out->secondary+164+i*4,in->record_stride);
- put(out->secondary+292,in->record_stride);put(out->secondary+296,in->record_count);
+ /* f5778 indexed C2 header at296 has three payload words. It is not
+  * the draw count; only the23000001 launch payloads carry that count. */
+ put(out->secondary+292,in->record_stride);put(out->secondary+296,3);
  put(out->secondary+moved(568,extra),0x23000001);
  put(out->secondary+moved(576,extra),padded_records);
  {static const u32 fsdecl[5]={0x00100d88,0x001006b6,0x00010688,0x00c231b6,0x00d30688};
   put(out->secondary+moved(1248,extra),4);put(out->secondary+moved(1272,extra),4);
   for(i=0;i<4;i++)put(out->secondary+moved(1256+i*4,extra),fsdecl[i]);
   put(out->secondary+moved(1280,extra),fsdecl[4]);}
+ /* Original182500 publishes one active COLOR input in AB slot0. Other
+  * AB/AC slots copied by182541/182549/fbee8 are inactive stack residue. */
+ put(out->secondary+moved(960,extra),0x0000ffffu);
+ put(out->secondary+moved(964,extra),0);
  if(in->fragment_flags){
   /* Same original compiler-shadow producers as COLOR4: fc203 lowers
    * compiler397 bit24 into EF20000, f5056 publishes usage at1016, and
