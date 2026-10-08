@@ -6976,8 +6976,7 @@ int m9x_faa_graph_public_vs_draw_submit(struct m9x_device *mdev,
 	ret = m9x_triangle_system_page_admit_locked(mdev, 0x40004000);
 	if (ret)
 		goto out;
-	fence = m9x_fence_create_target_locked(mdev,
-					       lower_32_bits(image->ends.observed_point));
+	fence = m9x_fence_create_target_locked(mdev, lower_32_bits(image->ends.observed_point));
 	if (!fence) {
 		ret = -ENOMEM;
 		goto out;
