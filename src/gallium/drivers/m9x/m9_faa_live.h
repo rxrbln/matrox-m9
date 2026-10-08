@@ -134,6 +134,14 @@ bool m9_faa_live_gl_texture_combine_build(const struct m9_faa_live_gl *state,
 bool m9_faa_live_gl_dual_texture_build(const struct m9_faa_live_gl *state,
                                        struct m9_faa_gl_upload *output,
                                        const char **reason);
+/* Move a bounded retained FS uniform COLOR to an owned GPU VS uniform output.
+ * NULL clones mean the original varying path; success never mutates NIR. */
+bool m9_faa_live_gl_color_uniform_normalize(const struct m9_faa_live_gl *live,
+                                           const struct nir_shader *fs,
+                                           const void *cb,size_t bytes,
+                                           struct nir_shader **vertex,
+                                           struct nir_shader **fragment,
+                                           void **constants,size_t *constant_bytes);
 bool m9_faa_fragment_gallium_state(const struct pipe_blend_state *blend,
                                   const struct pipe_depth_stencil_alpha_state *dsa,
                                   struct m9_faa_fragment_state *out);

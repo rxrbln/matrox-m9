@@ -3,6 +3,7 @@
 #include "m9_faa_live.h"
 #include "m9_faa_fragment_state.h"
 #include "nir.h"
+#include "nir_builder.h"
 #include <math.h>
 #include <stdlib.h>
 #include <string.h>
@@ -11,6 +12,89 @@ static bool overlap(const void *a,size_t ab,const void *b,size_t bb)
 {
    uintptr_t x=(uintptr_t)a,y=(uintptr_t)b;
    return x<=y ? y-x<ab : x-y<bb;
+}
+
+/* The real GL1 frontend can put current color in FS CB0 instead of a
+ * varying. Original FAA source already proves VS c0 -> COLOR0 -> smooth FS.
+ * Reconstruct that equivalent GPU route on private clones, with exact
+ * retained float words and no CPU vertex calculation. */
+bool m9_faa_live_gl_color_uniform_normalize(const struct m9_faa_live_gl *live,const nir_shader *fs,
+                                           const void *cb,size_t bytes,
+                                           nir_shader **vertex,nir_shader **fragment,
+                                           void **constants,size_t *constant_bytes)
+{
+   const nir_shader *vs=live?live->vs:NULL;
+   if(!vs||!fs||!vertex||!fragment||!constants||!constant_bytes||*constants||*constant_bytes||*vertex||*fragment||
+      vs->info.stage!=MESA_SHADER_VERTEX||fs->info.stage!=MESA_SHADER_FRAGMENT||
+      !nir_shader_get_entrypoint((nir_shader*)vs)||!fs->info.io_lowered||
+      overlap(vertex,sizeof(*vertex),fragment,sizeof(*fragment))||
+      overlap(vertex,sizeof(*vertex),vs,sizeof(*vs))||overlap(vertex,sizeof(*vertex),fs,sizeof(*fs))||
+      overlap(fragment,sizeof(*fragment),vs,sizeof(*vs))||overlap(fragment,sizeof(*fragment),fs,sizeof(*fs))||
+      overlap(vertex,sizeof(*vertex),cb,bytes)||overlap(fragment,sizeof(*fragment),cb,bytes))return false;
+   nir_function_impl *impl=nir_shader_get_entrypoint((nir_shader*)fs);
+   if(!impl||!exec_list_is_singular(&impl->body))return false;
+   nir_cf_node *node=exec_node_data(nir_cf_node,exec_list_get_head(&impl->body),node);
+   if(node->type!=nir_cf_node_block)return false;
+   nir_intrinsic_instr *store=NULL,*uniform=NULL;
+   nir_foreach_instr(instr,nir_cf_node_as_block(node)) {
+      if(instr->type!=nir_instr_type_intrinsic)continue;
+      nir_intrinsic_instr *in=nir_instr_as_intrinsic(instr);
+      if(in->intrinsic!=nir_intrinsic_store_output)continue;
+      if(store)return true; /* General outputs remain refused by old builder. */
+      store=in;
+   }
+   if(!store||nir_intrinsic_component(store)||nir_intrinsic_write_mask(store)!=15||
+      store->src[0].ssa->num_components!=4||store->src[0].ssa->bit_size!=32)return true;
+   nir_instr *producer=nir_def_instr(store->src[0].ssa);
+   if(producer->type!=nir_instr_type_intrinsic)return true;
+   uniform=nir_instr_as_intrinsic(producer);
+   if(uniform->intrinsic!=nir_intrinsic_load_ubo_vec4&&uniform->intrinsic!=nir_intrinsic_load_ubo)return true;
+   nir_io_semantics io=nir_intrinsic_io_semantics(store);
+   if((io.location!=FRAG_RESULT_COLOR&&io.location!=FRAG_RESULT_DATA0)||io.num_slots!=1||
+      io.dual_source_blend_index||io.fb_fetch_output||io.fb_fetch_output_coherent||io.per_view||
+      io.high_16bits||io.high_dvec2||io.no_sysval_output||
+      nir_intrinsic_src_type(store)!=nir_type_float32||
+      !nir_src_is_const(store->src[1])||nir_src_as_uint(store->src[1])||
+      !nir_src_is_const(uniform->src[0])||nir_src_as_uint(uniform->src[0])||
+      !nir_src_is_const(uniform->src[1]))return false;
+   uint64_t offset=nir_src_as_uint(uniform->src[1]);
+   if(uniform->intrinsic==nir_intrinsic_load_ubo_vec4)
+      offset=(offset+nir_intrinsic_base(uniform))*16+nir_intrinsic_component(uniform)*4;
+   if(!cb||(offset&3)||offset>bytes||bytes-offset<16)return false;
+   float color[4];memcpy(color,(const uint8_t*)cb+offset,16);
+   for(unsigned c=0;c<4;c++)if(!isfinite(color[c])||color[c]<0||color[c]>1)return false;
+   if(live->cb0_bytes>65520||(live->cb0_bytes&&!live->cb0))return false;
+   size_t color_offset=(live->cb0_bytes+15)&~(size_t)15;
+   void *data=calloc(1,color_offset+16);
+   nir_shader *v=nir_shader_clone(NULL,vs),*f=nir_shader_clone(NULL,fs);
+   if(!v||!f||!data){ralloc_free(v);ralloc_free(f);free(data);return false;}
+   if(live->cb0_bytes)memcpy(data,live->cb0,live->cb0_bytes);
+   memcpy((uint8_t*)data+color_offset,color,16);
+   nir_function_impl *vi=nir_shader_get_entrypoint(v),*fi=nir_shader_get_entrypoint(f);
+   nir_foreach_block(block,vi) nir_foreach_instr_safe(instr,block) {
+      if(instr->type==nir_instr_type_intrinsic) {
+         nir_intrinsic_instr *in=nir_instr_as_intrinsic(instr);
+         if(in->intrinsic==nir_intrinsic_store_output&&nir_intrinsic_io_semantics(in).location==VARYING_SLOT_COL0)nir_instr_remove(instr);
+      }
+   }
+   nir_builder vb=nir_builder_create(vi);vb.cursor=nir_after_impl(vi);
+   nir_def *zero=nir_imm_int(&vb,0);
+   nir_def *current=nir_load_ubo_vec4(&vb,4,32,zero,zero,.base=color_offset/16,.component=0);
+   nir_store_output(&vb,current,zero,
+      .base=1,.write_mask=15,.src_type=nir_type_float32,.io_semantics={.location=VARYING_SLOT_COL0,.num_slots=1});
+   nir_intrinsic_instr *load=NULL;
+   nir_foreach_block(block,fi) nir_foreach_instr(instr,block) {
+      if(instr->type==nir_instr_type_intrinsic&&nir_instr_as_intrinsic(instr)->intrinsic==nir_intrinsic_store_output)
+         load=nir_def_as_intrinsic(nir_instr_as_intrinsic(instr)->src[0].ssa);
+   }
+   nir_builder fb=nir_builder_create(fi);fb.cursor=nir_before_instr(&load->instr);
+   nir_def *value=nir_load_interpolated_input(&fb,4,32,
+      nir_load_barycentric_pixel(&fb,32,.interp_mode=INTERP_MODE_SMOOTH),nir_imm_int(&fb,0),
+      .base=0,.dest_type=nir_type_float32,.io_semantics={.location=VARYING_SLOT_COL0,.num_slots=1});
+   nir_def_rewrite_uses(&load->def,value);nir_instr_remove(&load->instr);
+   nir_progress(true,vi,nir_metadata_none);nir_progress(true,fi,nir_metadata_none);
+   nir_opt_dce(v);nir_opt_dce(f);nir_shader_gather_info(v,vi);nir_shader_gather_info(f,fi);
+   *vertex=v;*fragment=f;*constants=data;*constant_bytes=color_offset+16;return true;
 }
 
 /* Gallium GL1 factors are admitted as exact RGBA operations. Separate alpha

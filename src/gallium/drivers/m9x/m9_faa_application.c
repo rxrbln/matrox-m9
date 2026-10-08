@@ -1,6 +1,7 @@
 /* SPDX-License-Identifier: MIT */
 /* Copyright 2026 René Rebe <rene@exactco.de> */
 #include "m9_faa_application.h"
+#include "nir.h"
 #include <math.h>
 #include <stdlib.h>
 #include <string.h>
@@ -233,6 +234,8 @@ m9_faa_application_build(const struct m9_faa_application_draw *d,
 {
    const char *why = "invalid FAA application draw";
    uint32_t *indices = NULL;
+   struct nir_shader *color_vs=NULL,*color_fs=NULL;
+   void *color_constants=NULL;size_t color_constant_bytes=0;
    struct m9_faa_application_upload fresh = {0};
    if (!d || !output || output->shader.storage || !d->info || !d->draw ||
        !d->fs || !d->draw->count || d->info->instance_count != 1 ||
@@ -373,8 +376,13 @@ m9_faa_application_build(const struct m9_faa_application_draw *d,
     * builders consume owned GL state and raw records. */
    const char *fused_option = getenv("M9X_FAA_FUSED");
    bool fused = !fused_option || !strcmp(fused_option, "1");
+   if(!m9_faa_live_gl_color_uniform_normalize(&live,d->fs,d->fs_cb0,d->fs_cb0_bytes,&color_vs,&color_fs,&color_constants,&color_constant_bytes)) {
+      why="FAA current fragment color leaves its bounded retained uniform interface";goto fail;
+   }
+   const struct nir_shader *fs=color_fs?color_fs:d->fs;
+   if(color_vs){live.vs=color_vs;live.cb0=color_constants;live.cb0_bytes=color_constant_bytes;}
    enum m9_faa_alpha_mode alpha;bool alpha_present;
-   if (!m9_faa_live_gl_alpha_decode(d->fs,d->fs_cb0,d->fs_cb0_bytes,&alpha,&alpha_present)) {
+   if (!m9_faa_live_gl_alpha_decode(fs,d->fs_cb0,d->fs_cb0_bytes,&alpha,&alpha_present)) {
       why="FAA fragment discard has no source-qualified alpha interface";goto fail;
    }
    struct m9_faa_fragment_state fragment=d->state.fragment;
@@ -389,11 +397,11 @@ m9_faa_application_build(const struct m9_faa_application_draw *d,
    if (effects && (!fused||d->state.flatshade)) {
       why="FAA blend/alpha requires its source-qualified smooth fused interface";goto fail;
    }
-   if (!(effects ? m9_faa_live_gl_color_fused_effects_build_cb(&live,d->fs,&fragment,
+   if (!(effects ? m9_faa_live_gl_color_fused_effects_build_cb(&live,fs,&fragment,
                        d->fs_cb0,d->fs_cb0_bytes,&fresh.shader,&why) :
-         fused ? m9_faa_live_gl_color_fused_build_state(&live, d->fs,
+         fused ? m9_faa_live_gl_color_fused_build_state(&live, fs,
                     d->state.flatshade, &fresh.shader, &why) :
-                 m9_faa_live_gl_color_build_state(&live, d->fs,
+                 m9_faa_live_gl_color_build_state(&live, fs,
                     d->state.flatshade, &fresh.shader, &why)))
       goto fail;
    if (fresh.shader.color_flat != d->state.flatshade) {
@@ -402,12 +410,12 @@ m9_faa_application_build(const struct m9_faa_application_draw *d,
    }
    fresh.state = d->state;
    fresh.state.fragment = fragment;
-   free(indices);
+   free(indices);ralloc_free(color_vs);ralloc_free(color_fs);free(color_constants);
    *output = fresh;
    if (reason) *reason = NULL;
    return true;
 fail:
-   free(indices);
+   free(indices);ralloc_free(color_vs);ralloc_free(color_fs);free(color_constants);
    m9_faa_application_fini(&fresh);
    if (reason) *reason = why;
    return false;
