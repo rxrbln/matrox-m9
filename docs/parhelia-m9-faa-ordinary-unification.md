@@ -177,4 +177,21 @@ yet integrated.
 
 Results, gaps and the stage-2 plan are in
 [tests/m9-unify-stage1-20261008](../tests/m9-unify-stage1-20261008/README.md).
-Stage 2 (one transport namespace) needs hardware and has not started.
+Stage 2 (one transport namespace) has its host part done but is not yet
+measured. Agent m9unify4 did it on 2026-10-08 (OFFLINE), with these results:
+
+* Stage 1 is rebased and integrated: main DRM `4c9070f`, plus the m9faa3/m9faa4
+  conversions and the repair of 31 host tests.
+* The ordinary primary placement is split out of
+  `m9_submit_kernel_stream_common()`. This is behaviour-neutral: the
+  `transport-post-cpu.py` stream is byte-identical.
+* With `faa_ordinary_continue=1` (default 0), ordinary jobs continue the
+  retained FAA primary at the graph's last END. They share the context that
+  the retired FAA source INIT activated.
+* An FAA frame after an ordinary job is still refused by FAA timeline
+  admission. Allowing it is stage 2b.
+* The card test (FAA gears, then an ordinary textured triangle, scanout check)
+  is prepared but has not run.
+
+Results, the overlap-helper analysis and the card plan are in
+[tests/m9-unify-stage2-20261008](../tests/m9-unify-stage2-20261008/README.md).
