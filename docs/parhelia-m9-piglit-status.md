@@ -1,5 +1,21 @@
 # M9148 piglit status (m9x Mesa driver)
 
+## 2026-10-08 final wind-down checkpoint
+
+All three background agents completed. Canonical DRM956e813/Mesa894fe3f
+and finalfullmodule/23-objectDSObuilds pass; new builds are not deployed.
+Targetbootd4ca4e03-cf6c-4512-bff0-14a0d5182c85 remains poweredon, healthy,
+submitted=completed7b460/gen0/queue0/async0/wedged0; noX/app/testrunning.
+Current loadedDRM3f93002/Mesa01eef6c preserve seven noFAA basic passes.
+Today's focused Piglit is8PASS/1SKIP(ARB_framebuffer_objectrequired)/0FAIL.
+FAA both320x240 triangle pixel controlsPASS; Q3FAA remains unfinished.
+Later-dual pure encoder/owners integrated; unregistered runtimeca4d079 is
+preserved onwip/m9-faa-dual-later-native and as an exact archived patch.
+GL1 diagnostic saved1071jobs/529inputs but screenshotloading-only, so affected
+job inclusion is unproved. GL2 timeout cause remains open; new exact fatal-job
+capture is compiled/CPU-proved and awaits one future physicaldiagnostic.
+[Complete authoritative handover and resume order](handover-20261008.md).
+
 <!-- Copyright 2026 René Rebe <rene@exactco.de> -->
 <!-- SPDX-License-Identifier: GPL-2.0 -->
 
