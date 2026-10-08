@@ -1,27 +1,32 @@
 # M9128 generalized GL FAA upload boundary
 
-## 2026-10-08: optimized1024x768 FAA gears measures about30 FPS
+## 2026-10-08: FAA glxgears reaches48.3–48.7 FPS at1024×768
 
-A single512-frame physical M9128 run completes all512 twelve-draw batches,
-GPU Unlocks and GPU presentations with submitted/completed ae2f0,
-generation0, wedged0 and an empty queue. Independent actual scanout images
-at frames1/512 show all three gears. Fullscreen X PageFlip=true, hidden cursor
-and verified actual GLX swap interval1 activate direct tiled scanout and
-remove the CPU X detile/copy; clean windows measure22.980/23.010/22.944 FPS,
-versus the previous1024x768 CPU-presented1.394–1.399 FPS. The >30 FPS goal
-remains open. [Proof, screenshots and harness caveat](../tests/m9-faa-fullscreen-direct-bench-20261008/README.md).
+The physical M9128 completes512 original glxgears frames with GPU transforms,
+FAA16x and GPU presentation. Clean windows measure48.262/48.714 FPS; the
+requested >30 FPS glxgears milestone is verified. All512 twelve-draw batches,
+GPU Unlocks and presentations retire; final submitted/completed ae2f0,
+generation0, wedged0, empty queue. Independent actual scanout captures at
+frames1/512 show all three gears and match the corresponding live destinations.
+X PageFlip=true, hidden cursor and verified GLX interval1 remain enabled.
+[Proof, current screenshot and artifacts](../tests/m9-faa-fullscreen-direct-bench-20261008/cache-preflight512/README.md).
 
-DRM07b8c27/36850c0/2a222e1 now retain authenticated firmware for the graph
-generation, build only consumed extra-draw stages and deduplicate root-table
-reads within each mapping check. Focused sanitizer proofs and module build
-pass. The unchanged512-frame test now exits0 and reports29.719/29.840/30.023
-FPS, about30% above the direct-scanout baseline; all512 GPU retirements and
-independent scanout images pass. Sustained above30 remains unproved.
-[Optimized hardware proof](../tests/m9-faa-fullscreen-direct-bench-20261008/optimized512/README.md). DRM1cf74bd/07867a9/6d4d053 also
-integrate source-qualified disabled-depth reset/mixed constructors and
-repeated dual-texture packet/sampler constructors. Their runtime plumbing
-and corrected dual-upload hardware pixels remain in progress; Quake3 FAA
-is not yet passed. No new no-FAA GL2 application benchmark is claimed.
+DRMf97ca5d retains earlier firmware/stage/mapping optimizations and removes
+only the redundant count2 attachment scan before private staging. Mesac9be273
+retains compiled VS programs within immutable shader state; per-draw CB,
+viewport, geometry and owned uploads remain fresh. Compared with the previous
+29.719/29.840/30.023 FPS run this combined change is about63% faster. There
+is no matched current M9128 no-FAA FPS. The older527 FPS belongs to M9148.
+
+Quake3 GL1 FAA is still open. Its corrected current1108B dual-texture singleton
+retires Lock200/Unlock220 with healthy transport but collapses to one wrong
+pixel. GPU COLOR/UV/clip/screen planes are correct; zero clip codes and the
+SoA-packed EE19 view are expected, not established causes. A real padded
+texture extent bug is fixed (64×64 BGRA allocation0x4400 rather than0x4000)
+and the corrected helper is queued for a clean-boot test. Disabled-depth and
+bounded dual batching runtime work is source/CPU qualified and awaits final
+integration/hardware qualification. No new no-FAA glmark2/piglit/Quake3 GL2
+application result is claimed.
 
 ## October 8: continuous GPU-presented FAA glxgears passes
 
