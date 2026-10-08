@@ -3174,20 +3174,22 @@ static int m9_faa_clear_page_words(u32 base, u32 bytes, u32 *words,
  */
 #ifdef M9_FAA_MULTI_CLEAR
 static int m9_faa_bind_borrowed_color(struct m9x_faa_replay *r, u32 color,
-				    struct drm_gem_vram_object *color_bo)
+				      struct drm_gem_vram_object *color_bo)
 {
 	struct m9_faa_owner *owner = &r->owner[M9_FAA_COLOR_OWNER];
 	u64 base, bytes;
 	s64 offset;
 
 	/* The caller holds this BO's pin and reservation throughout submit;
-	 * its existing fence/quarantine path retains it through retirement. */
+	 * its existing fence/quarantine path retains it through retirement.
+	 */
 	if (!color_bo || owner->vram || owner->cpu || owner->bytes ||
 	    !m9_faa_owner_specs[M9_FAA_COLOR_OWNER].local)
 		return -EINVAL;
 	offset = drm_gem_vram_offset(color_bo);
 	bytes = color_bo->bo.base.size;
-	if (offset < 0 || check_add_overflow(M9_VRAM_GPU_BASE, (u64)offset, &base) ||
+	if (offset < 0 ||
+	    check_add_overflow(M9_VRAM_GPU_BASE, (u64)offset, &base) ||
 	    base != color || !IS_ALIGNED(base, PAGE_SIZE) ||
 	    bytes < m9_faa_owner_specs[M9_FAA_COLOR_OWNER].bytes ||
 	    bytes > (u64)U32_MAX + 1 - base)
@@ -3196,6 +3198,7 @@ static int m9_faa_bind_borrowed_color(struct m9x_faa_replay *r, u32 color,
 	r->borrowed_color_bytes = bytes;
 	return 0;
 }
+
 #endif
 
 /* The public one-target raster producer leaves inactive AB/AC halfwords
