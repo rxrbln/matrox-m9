@@ -4,6 +4,26 @@
 # M9 open topics and evidence, 2026-10-06
 
 
+## October 8: source two-stage application route under integration
+
+Original M9128 one-COLOR shaders use a fused two-stage route. The new
+[source FIRST/depth batch proof](../tests/m9-faa-first-depth-two-source-20261008/README.md)
+covers one, two and three genuine DRAWs before unread normal Lock and proves
+INIT+0x110+(N-1)*0x60. It supplies no invented completion or rendered pixels.
+
+Mesa 61c0997/16109df adds an explicit `M9X_FAA_FUSED=1` candidate with GPU
+transforms, live shader constants and checked FIRST singleton/batch receipts.
+DRM 452e846/423e5a9 adds two-stage code placement, actual shader availability
+and live data bindings. The four-stage route remains available. First-depth
+packet composition and native batch wiring are being completed; repeated
+two-stage frames stay gated until their own contract is qualified.
+
+Full emitted-shader review caught duplicate depth conversion and a missing
+four-DWORD prefix offset in the candidate viewport constants. These must be
+corrected and tested before hardware deployment. Head-only ISA checks do not
+prove the position tail. No two-stage glxgears hardware pass yet; the latest
+physical result remains the fragmented four-stage control below.
+
 ## October 8: true16 constant-normal control retains the same GPU misindex
 
 The current runtime completes constant NORMAL / NORMAL-array / constant
