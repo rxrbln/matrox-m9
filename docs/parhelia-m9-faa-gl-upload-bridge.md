@@ -1,21 +1,27 @@
 # M9128 generalized GL FAA upload boundary
 
 
-## October 8: actual glxgears reaches FAA INIT, clear-state refusal remains
+## October 8: glxgears clear fixed; mixed input declarations next
 
-The original glxgears now reaches M9 FAA initialization on hardware without
-wedging. All21 draws are refused by the full black/depth-one clear-state
-check; no FAA geometry is submitted and the captured window is not a pass.
-The driver remains healthy at INITb0 through cleanup. The non-glamor Xorg
-server needs its software GLX provider to expose visuals; the actual app
-uses the M9 DRI3 renderer. [Exact first-frame evidence](../tests/m9-faa-glxgears-first-hardware-20261008/README.md).
+Mesa5638487 fixes Gallium's packed color-mask handling and full-size scissor
+classification. Hardware now passes that clear gate, but19 of21 glxgears
+draws are skipped at subsequent layout/state admission; the incomplete frame
+is discarded and only INITb0 executes. Queue0/generation0/wedged0 survive
+cleanup. [Latest hardware evidence](../tests/m9-faa-glxgears-first-hardware-20261008/clearfix-state-refusal/README.md).
+Host fixed-function compilation reproduces POSITION-only constant-normal
+faces as record16/declaration3 versus varying-normal record32/declaration5.
+Mesa7cebd8e preserves real GPU shaders and pads the former records to32;
+Mesa f3a6f8b and DRM75cbc95 own/forward declarations per job. Native mixed
+3/5 declaration packet assembly remains under implementation before retest.
 
-Mesa1c700fb validates initialized BATCH maintenance points without rewriting
-prior Unlock history. Mesa29f31ae adds source-qualified MODULATE/ADD fragment
-encoding and fixes the two-varying location copy; native texture binding
-remains gated. The source-prefix check passes after integration. Initialized
-multi-draw and command-pool native integration remain active. Continuous
-glxgears FAA, textured Quake3 FAA, and FAA FPS remain unverified.
+Initialized full-N lifecycle is integrated as DRMc15f928/00250f0. Review caught
+and fixed its setup/count mismatch (dc15268); the corrected test now models
+the actual initialized singleton count. Original N2/N3 clear/no-clear source
+comparisons, real helper composition and N1..32 native allocation/failure
+checks pass. Initialized flat/cull, variable declaration lengths and pool
+rotation still require complete integration and hardware qualification.
+Mesa29f31ae texture fragment encoding is CPU-qualified only; native texture
+binding remains gated. No continuous glxgears FAA, Quake3 FAA or FAA FPS pass.
 
 ## October 8: mixed flat/smooth FAA now passes hardware
 
