@@ -76,7 +76,7 @@ m9_faa_application_texture_linkage(const nir_shader *fs,
    nir_foreach_block(block,impl)nir_foreach_instr(instr,block)
       if(instr->type==nir_instr_type_tex)textures++;
    if(!textures){*count=0;if(reason)*reason=NULL;return true;}
-   if(textures!=2||!exec_list_is_singular(&impl->body))goto fail;
+   if((textures!=1&&textures!=2)||!exec_list_is_singular(&impl->body))goto fail;
    nir_cf_node *node=exec_node_data(nir_cf_node,exec_list_get_head(&impl->body),node);
    if(node->type!=nir_cf_node_block)goto fail;
    nir_foreach_instr(instr,nir_cf_node_as_block(node)) {
@@ -100,9 +100,20 @@ m9_faa_application_texture_linkage(const nir_shader *fs,
       io.num_slots!=1||io.dual_source_blend_index||io.fb_fetch_output||
       io.fb_fetch_output_coherent||io.per_view||io.high_16bits||io.high_dvec2||
       io.no_sysval_output)goto fail;
+   /* COLOR0 * TEX0 (* TEX1) in every component. */
    for(unsigned c=0;c<4;c++)
-      if(m9_faa_dual_product(nir_get_scalar(store->src[0].ssa,c),c,0,texture,slots)!=7)
+      if(m9_faa_dual_product(nir_get_scalar(store->src[0].ssa,c),c,0,texture,slots)!=
+         (textures==2?7u:3u))
          goto fail;
+   if(textures==1) {
+      if(!texture[0]||texture[1])goto fail;
+      *linkage=(struct m9_vs_outputs){.count=2};
+      linkage->stream[0].location=VARYING_SLOT_COL0;
+      linkage->stream[1].location=VARYING_SLOT_TEX0;
+      sampler[0]=slots[0];sampler[1]=0;*count=1;
+      if(reason)*reason=NULL;
+      return true;
+   }
    if(!texture[0]||!texture[1]||slots[0]==slots[1])goto fail;
    *linkage=(struct m9_vs_outputs){.count=3};
    linkage->stream[0].location=VARYING_SLOT_COL0;
@@ -518,6 +529,20 @@ m9_faa_application_build(const struct m9_faa_application_draw *d,
    live.viewport = (struct m9_faa_viewport){x, y, w, h, .centre = 0.5f,
       .depth_range = true, .depth_near = z_near, .depth_far = z_far};
    if(!m9_faa_application_texture_linkage(d->fs,&texture_linkage,sampler,&texture_count,&why))goto fail;
+   if(texture_count==1) {
+      if(d->state.flatshade||d->state.fragment.blend!=M9_FAA_BLEND_REPLACE||
+         d->state.fragment.alpha!=M9_FAA_ALPHA_OFF||d->state.fragment.source_stream||
+         !m9_faa_application_texture_valid(&d->texture[0])) {
+         why="FAA single texture blend/alpha/flat or retained texture owner is not qualified";goto fail;
+      }
+      live.linkage=&texture_linkage;
+      if(!m9_faa_live_gl_texture_combine_build(&live,M9_FAA_TEXTURE_MODULATE,false,
+                                               &fresh.shader,&why))goto fail;
+      fresh.texture[0]=d->texture[0];fresh.texture[0].resource=NULL;
+      pipe_resource_reference(&fresh.texture[0].resource,d->texture[0].resource);
+      fresh.texture_count=1;fresh.state=d->state;
+      free(indices);*output=fresh;if(reason)*reason=NULL;return true;
+   }
    if(texture_count) {
       if(d->state.flatshade||d->state.fragment.blend!=M9_FAA_BLEND_REPLACE||
          d->state.fragment.alpha!=M9_FAA_ALPHA_OFF||d->state.fragment.source_stream||

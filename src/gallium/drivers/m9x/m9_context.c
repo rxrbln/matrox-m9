@@ -9914,6 +9914,8 @@ m9_context_faa_draw_refusal(const struct m9_faa_application_upload *owned)
                  state->flatshade);
       return "FAA application depth/cull/scissor/view state is not implemented";
    }
+   if(owned->texture_count==1)
+      return "FAA single-texture stage has no native kernel producer yet";
    if(owned->texture_count&&
       (!debug_get_bool_option("M9X_FAA_DUAL_APPLICATION",false)||
        state->cull_face==PIPE_FACE_FRONT_AND_BACK||
