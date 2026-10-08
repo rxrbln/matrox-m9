@@ -1064,7 +1064,7 @@ static int m9_faa_graph_end_shape(const struct drm_mm_node *node,
 	    node->size > 0x50000 || upper_32_bits(dma) ||
 	    !IS_ALIGNED(dma, PAGE_SIZE) ||
 	    (u64)dma + node->size > (u64)U32_MAX + 1 ||
-	    !old_bytes || !IS_ALIGNED(old_bytes | new_bytes, 4) ||
+	    !IS_ALIGNED(old_bytes | new_bytes, 4) ||
 	    new_bytes > node->size ||
 	    new_bytes > PARHELIA_M9_COMMAND_BYTES ||
 	    (repeat ? new_bytes != old_bytes : new_bytes <= old_bytes) ||
@@ -1104,6 +1104,8 @@ int m9x_post_faa_graph_end_locked(struct m9x_device *mdev,
 		return -EBUSY;
 	if (t->wedged)
 		return -EIO;
+	if (!old_bytes && !m9x_faa_graph_empty_primary_locked(mdev, node, dma))
+		return -ESTALE;
 	ret = m9_faa_graph_end_shape(node, dma, old_bytes, new_bytes,
 				     repeat, target);
 	if (ret)

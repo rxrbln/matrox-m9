@@ -357,6 +357,7 @@ int m9x_extend_faa_virtual_primary_locked(struct m9x_device *mdev,
 /* Graph-only continuation of an already published virtual primary.  A zero
  * target posts END without claiming retirement; a nonzero target waits for
  * the actual writeback.  The native caller owns the graph and stage order. */
+bool m9x_faa_graph_empty_primary_locked(struct m9x_device *,const struct drm_mm_node *,dma_addr_t);
 int m9x_post_faa_graph_end_locked(struct m9x_device *mdev,
 				 const struct drm_mm_node *node, dma_addr_t dma,
 				 u32 old_bytes, u32 new_bytes, bool repeat,
@@ -675,6 +676,9 @@ int m9x_faa_graph_color_next_submit(struct m9x_device *,struct m9_faa_graph_bind
 int m9x_faa_graph_color_next_ioctl(struct drm_device *,void *,struct drm_file *);
 bool m9x_faa_graph_depth_frame_profile_qualified(bool);
 int m9x_faa_graph_depth_frame_prepare(struct m9x_device *,struct m9_faa_graph_binding *,u32,u64,bool,const struct m9x_faa_color_input *,u32);
+int m9x_faa_graph_depth_unlocked_get_locked(struct m9x_device *,u32,u64,struct m9_faa_graph_binding **);
+int m9x_faa_graph_depth_frame_maintenance_locked(struct m9x_device *,u32,u64,u64,u64 *);
+int m9x_faa_graph_command_pool_prepare(struct m9x_device *,struct m9_faa_graph_binding *,u32,u64);
 int m9x_faa_graph_depth_later_prepare(struct m9x_device *,struct m9_faa_graph_binding *,u32,u64,const struct m9x_faa_color_input *,u32,u32);
 int m9x_faa_graph_depth_frame_submit(struct m9x_device *,struct m9_faa_graph_binding *,u32,u64,u64 *,bool *);
 int m9x_faa_graph_color_frame_ioctl(struct drm_device *,void *,struct drm_file *);
