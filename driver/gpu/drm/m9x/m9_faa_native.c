@@ -7650,8 +7650,9 @@ int m9x_faa_graph_next_get_locked(struct m9x_device *mdev, u32 generation,
 /* Authenticate and build the live command image before reserving caller BOs.
  * No new GPU owners or mappings are needed by this source continuation. */
 int m9x_faa_graph_next_prepare(struct m9x_device *mdev,
-		struct m9_faa_graph_binding *binding, u32 generation,
-		u64 unlock_point, const u32 vertices[15])
+			       struct m9_faa_graph_binding *binding,
+			       u32 generation, u64 unlock_point,
+			       const u32 vertices[15])
 {
 #ifdef M9_FAA_GRAPH_INIT_CONTROL
 	struct m9x_transport *t = &mdev->transport;
@@ -7666,14 +7667,15 @@ int m9x_faa_graph_next_prepare(struct m9x_device *mdev,
 
 	if (!binding || !vertices)
 		return -EINVAL;
-	ret = request_firmware(&fw, M9_FAA_GRAPH_NEXT_FIRMWARE, &mdev->pdev->dev);
+	ret = request_firmware(&fw, M9_FAA_GRAPH_NEXT_FIRMWARE,
+			       &mdev->pdev->dev);
 	if (ret)
 		return ret;
 	if (!m9x_faa_graph_next_blob_valid(fw->data, fw->size)) {
 		ret = -EINVAL;
 		goto out_fw;
 	}
-	storage = kmalloc(sizeof(*storage), GFP_KERNEL);
+	storage = kmalloc_obj(*storage);
 	if (!storage) {
 		ret = -ENOMEM;
 		goto out_fw;
@@ -7691,32 +7693,50 @@ int m9x_faa_graph_next_prepare(struct m9x_device *mdev,
 		struct m9_faa_owner *o;
 
 		switch (i) {
-		case 26: o = &r->draw_owner[0]; break;
-		case 27: o = &r->owner[26]; break;
-		case 28: o = &r->draw_owner[1]; break;
-		case 29: o = &r->draw_owner[2]; break;
-		case 30: o = &r->owner[27]; break;
-		default: o = &r->owner[i]; break;
+		case 26:
+			o = &r->draw_owner[0];
+			break;
+		case 27:
+			o = &r->owner[26];
+			break;
+		case 28:
+			o = &r->draw_owner[1];
+			break;
+		case 29:
+			o = &r->draw_owner[2];
+			break;
+		case 30:
+			o = &r->owner[27];
+			break;
+		default:
+			o = &r->owner[i];
+			break;
 		}
 		owner[i].base = o->base;
 		owner[i].bytes = o->bytes;
 	}
-	image = (struct m9x_faa_graph_next_image) {
-		.primary = storage->primary, .primary_bytes = sizeof(storage->primary),
-		.secondary = storage->secondary, .secondary_bytes = sizeof(storage->secondary),
-		.vertices = storage->vertices, .vertex_bytes = sizeof(storage->vertices),
+	image = (struct m9x_faa_graph_next_image){
+		.primary = storage->primary,
+		.primary_bytes = sizeof(storage->primary),
+		.secondary = storage->secondary,
+		.secondary_bytes = sizeof(storage->secondary),
+		.vertices = storage->vertices,
+		.vertex_bytes = sizeof(storage->vertices),
 	};
-	cursor = (struct m9x_faa_graph_next_cursor) {
-		r->graph_draw_end_bytes, r->graph_secondary_cursor, r->graph_vertex_cursor,
+	cursor = (struct m9x_faa_graph_next_cursor){
+		r->graph_draw_end_bytes,
+		r->graph_secondary_cursor,
+		r->graph_vertex_cursor,
 	};
-	ret = m9x_faa_graph_next_encode_at(fw->data, fw->size, owner,
-			&cursor, unlock_point, vertices, &image);
+	ret = m9x_faa_graph_next_encode_at(fw->data, fw->size, owner, &cursor,
+					   unlock_point, vertices, &image);
 	if (ret)
 		goto out_lock;
 	/* Claim only a fully encoded image; invalid inputs leave no half-state. */
 	/* The preceding cycle has actually Unlocked. Replace only CPU staging
 	 * snapshots after the new image has validated; no GPU owner or GEM lifetime
-	 * changes occur under transport.lock. */
+	 * changes occur under transport.lock.
+	 */
 	kfree(r->next_image);
 	kfree(r->next_finish_image);
 	kfree(r->next_lock_image);
