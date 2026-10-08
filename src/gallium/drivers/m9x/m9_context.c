@@ -9195,10 +9195,7 @@ m9_context_faa_build_draw(struct m9_context *ctx,
    const struct pipe_rasterizer_state *r = ctx->rasterizer;
    const struct pipe_depth_stencil_alpha_state *z = ctx->dsa;
    if (ctx->query_active || ctx->query_begin || ctx->query_end ||
-       z->stencil[0].enabled || z->stencil[1].enabled || z->alpha_enabled ||
-       (ctx->blend && (ctx->blend->logicop_enable ||
-                      ctx->blend->rt[0].blend_enable ||
-                      ctx->blend->rt[0].colormask != PIPE_MASK_RGBA)) ||
+       z->stencil[0].enabled || z->stencil[1].enabled ||
        r->rasterizer_discard || r->clip_plane_enable || r->clip_halfz ||
        !r->depth_clip_near || !r->depth_clip_far || r->light_twoside ||
        r->offset_tri || r->poly_stipple_enable ||
@@ -9207,11 +9204,15 @@ m9_context_faa_build_draw(struct m9_context *ctx,
       why = "FAA application raster/depth/blend effects need a typed draw contract";
       goto fail;
    }
+   if (!m9_faa_fragment_gallium_state(ctx->blend,z,&source.state.fragment)) {
+      why="FAA blend/alpha factors have no source-qualified RGBA interface";goto fail;
+   }
    m9_context_sync_ordinary(ctx); /* FAA draws already own their CPU inputs. */
    if (ctx->lost) { why = "FAA application context was lost while flushing"; goto fail; }
    source.info = info;
    source.draw = draw;
    source.fs = ctx->fs->nir;
+   struct m9_faa_fragment_state fragment=source.state.fragment;
    source.state = (struct m9_faa_application_state){
       .width = ctx->framebuffer_width, .height = ctx->framebuffer_height,
       .viewport = ctx->viewport, .scissor = ctx->scissor,
@@ -9219,6 +9220,7 @@ m9_context_faa_build_draw(struct m9_context *ctx,
       .depth_write = z->depth_writemask, .depth_func = z->depth_func,
       .cull_face = r->cull_face, .front_ccw = r->front_ccw,
       .flatshade = r->flatshade, .flatshade_first = r->flatshade_first,
+      .fragment = fragment,
    };
    for (unsigned i = 0; i < ctx->num_vertex_buffers; i++) {
       if (i >= PIPE_MAX_ATTRIBS) goto fail;
@@ -9252,6 +9254,23 @@ m9_context_faa_build_draw(struct m9_context *ctx,
    }
    if (data) data += cb->buffer_offset;
    else if (cb->buffer_size) goto fail;
+   /* Resolve alpha-reference uniforms while the real FS buffer is retained.
+    * The owned shader constructor replaces only its source-qualified utility
+    * prefix; no borrowed constant pointer survives construction. */
+   const struct pipe_constant_buffer *fcb=&ctx->fs_constants;
+   const uint8_t *fdata=fcb->user_buffer;
+   if(!fdata&&fcb->buffer) {
+      const struct m9_resource *owner=m9_res(fcb->buffer);
+      uint64_t available=MIN2(owner->size,fcb->buffer->width0);
+      if(fcb->buffer->target!=PIPE_BUFFER||owner->handle||
+         fcb->buffer_offset>available||fcb->buffer_size>available-fcb->buffer_offset) {
+         why="FAA fragment constant snapshot leaves its CPU-only owner";goto fail;
+      }
+      fdata=owner->map;
+   }
+   if(fdata)fdata+=fcb->buffer_offset;
+   else if(fcb->buffer_size)goto fail;
+   source.fs_cb0=fdata;source.fs_cb0_bytes=fcb->buffer_size;
    if (info->index_size) {
       if (info->has_user_indices) {
          source.index_map = info->index.user;

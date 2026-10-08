@@ -12,11 +12,14 @@ struct m9_faa_application_state {
    bool scissor_enabled, depth_enabled, depth_write;
    unsigned depth_func, cull_face;
    bool front_ccw, flatshade, flatshade_first;
+   struct m9_faa_fragment_state fragment;
 };
 
 struct m9_faa_application_draw {
    struct m9_faa_live_gl live;
    const struct nir_shader *fs;
+   const void *fs_cb0;
+   size_t fs_cb0_bytes;
    const struct pipe_draw_info *info;
    const struct pipe_draw_start_count_bias *draw;
    const void *index_map;

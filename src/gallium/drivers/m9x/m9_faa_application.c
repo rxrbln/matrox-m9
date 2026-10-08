@@ -73,7 +73,9 @@ m9_faa_application_state_equal(const struct m9_faa_application_state *a,
           a->depth_enabled == b->depth_enabled && a->depth_write == b->depth_write &&
           a->depth_func == b->depth_func && a->cull_face == b->cull_face &&
           a->front_ccw == b->front_ccw && a->flatshade == b->flatshade &&
-          a->flatshade_first == b->flatshade_first;
+          a->flatshade_first == b->flatshade_first &&
+          a->fragment.blend == b->fragment.blend && a->fragment.alpha == b->fragment.alpha &&
+          a->fragment.source_stream == b->fragment.source_stream;
 }
 
 static bool
@@ -371,7 +373,25 @@ m9_faa_application_build(const struct m9_faa_application_draw *d,
     * builders consume owned GL state and raw records. */
    const char *fused_option = getenv("M9X_FAA_FUSED");
    bool fused = !fused_option || !strcmp(fused_option, "1");
-   if (!(fused ? m9_faa_live_gl_color_fused_build_state(&live, d->fs,
+   enum m9_faa_alpha_mode alpha;bool alpha_present;
+   if (!m9_faa_live_gl_alpha_decode(d->fs,d->fs_cb0,d->fs_cb0_bytes,&alpha,&alpha_present)) {
+      why="FAA fragment discard has no source-qualified alpha interface";goto fail;
+   }
+   struct m9_faa_fragment_state fragment=d->state.fragment;
+   if(fragment.source_stream) {why="FAA effects require the bound COLOR0 stream";goto fail;}
+   if (alpha_present) {
+      if(fragment.alpha!=M9_FAA_ALPHA_OFF&&fragment.alpha!=alpha) {
+         why="FAA DSA and lowered fragment alpha predicates disagree";goto fail;
+      }
+      fragment.alpha=alpha;
+   }
+   bool effects=fragment.blend!=M9_FAA_BLEND_REPLACE||fragment.alpha!=M9_FAA_ALPHA_OFF;
+   if (effects && (!fused||d->state.flatshade)) {
+      why="FAA blend/alpha requires its source-qualified smooth fused interface";goto fail;
+   }
+   if (!(effects ? m9_faa_live_gl_color_fused_effects_build_cb(&live,d->fs,&fragment,
+                       d->fs_cb0,d->fs_cb0_bytes,&fresh.shader,&why) :
+         fused ? m9_faa_live_gl_color_fused_build_state(&live, d->fs,
                     d->state.flatshade, &fresh.shader, &why) :
                  m9_faa_live_gl_color_build_state(&live, d->fs,
                     d->state.flatshade, &fresh.shader, &why)))
@@ -381,6 +401,7 @@ m9_faa_application_build(const struct m9_faa_application_draw *d,
       goto fail;
    }
    fresh.state = d->state;
+   fresh.state.fragment = fragment;
    free(indices);
    *output = fresh;
    if (reason) *reason = NULL;

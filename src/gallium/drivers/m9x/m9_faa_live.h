@@ -3,6 +3,7 @@
 #ifndef M9_FAA_LIVE_H
 #define M9_FAA_LIVE_H
 #include "m9_faa_program.h"
+#include "m9_faa_fragment_state.h"
 #include "pipe/p_state.h"
 #include <stddef.h>
 struct nir_shader;
@@ -133,5 +134,24 @@ bool m9_faa_live_gl_texture_combine_build(const struct m9_faa_live_gl *state,
 bool m9_faa_live_gl_dual_texture_build(const struct m9_faa_live_gl *state,
                                        struct m9_faa_gl_upload *output,
                                        const char **reason);
+bool m9_faa_fragment_gallium_state(const struct pipe_blend_state *blend,
+                                  const struct pipe_depth_stencil_alpha_state *dsa,
+                                  struct m9_faa_fragment_state *out);
+bool m9_faa_live_gl_alpha_decode(const struct nir_shader *fs,const void *cb,size_t bytes,
+                                  enum m9_faa_alpha_mode *mode,bool *present);
+bool m9_faa_live_gl_color_fused_effects_build_cb(const struct m9_faa_live_gl *state,
+                                                const struct nir_shader *fs,
+                                                const struct m9_faa_fragment_state *effects,
+                                                const void *fs_cb0,size_t fs_cb0_bytes,
+                                                struct m9_faa_gl_upload *output,
+                                                const char **reason);
+/* Explicit bounded smooth COLOR0 effects. NIR must still be a pass-through
+ * COLOR fragment; the supplied source-proven test/blend state is lowered
+ * separately. Successful owned construction grants no native admission. */
+bool m9_faa_live_gl_color_fused_effects_build(const struct m9_faa_live_gl *state,
+                                             const struct nir_shader *fs,
+                                             const struct m9_faa_fragment_state *effects,
+                                             struct m9_faa_gl_upload *output,
+                                             const char **reason);
 void m9_faa_gl_upload_fini(struct m9_faa_gl_upload *upload);
 #endif
