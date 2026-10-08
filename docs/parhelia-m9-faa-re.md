@@ -1,6 +1,20 @@
 # M9 multisampling (FAA): static closure, captures, and what the silicon did
 
 
+## October 8: live shader mask restores colored glxgears, missing faces remain
+
+Canonical DRM e7712f7 derives carry register availability from the actual
+shader instead of hardcoding ffff; test b7ab0fd covers real lighting bodies.
+On M9128, three FAA glxgears frames now contain15091/19905/19887 nonblack
+pixels and complete without a wedge. The prior candidate produced allzero
+resolved rows. [Inputs, screenshots and hardware evidence](../tests/m9-faa-glxgears-first-hardware-20261008/carry-mask-colored/README.md).
+
+The gears are recognizable but many triangular faces are missing against
+the exact software reference. This is partial rendering, not complete FAA
+glxgears support. Topology/culling and actual GPU shader outputs are under
+review; continuous pool rotation and textured Quake3 remain unfinished.
+Three paused320x240 frames provide no valid FPS measurement.
+
 ## October 8: three glxgears FAA frames retire; black output isolated before presentation
 
 The combined native/runtime-mapping candidate now completes three real
