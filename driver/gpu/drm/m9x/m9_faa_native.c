@@ -4757,11 +4757,13 @@ out:
 }
 
 int m9x_faa_graph_public_vs_submit(struct m9x_device *mdev,
-		struct m9_faa_graph_binding *binding, u32 generation,
-		u64 init_point, u64 *point, bool *posted)
+				   struct m9_faa_graph_binding *binding,
+				   u32 generation, u64 init_point, u64 *point,
+				   bool *posted)
 {
 	return m9_faa_graph_public_vs_submit_mode(mdev, binding, generation,
-						init_point, point, posted, false);
+						  init_point, point, posted,
+						  false);
 }
 
 int m9x_faa_graph_public_vs_head_submit(struct m9x_device *mdev,
