@@ -916,7 +916,8 @@ m9_faa_color_batch_with_storage(struct m9_screen *screen,
        graph->color_unlock_point > UINT64_MAX - 0x20 ||
        prior_present != graph->color_unlock_point + 0x20)) return -ESTALE;
    request.previous_point = first ? graph->init_point : graph->color_unlock_point;
-   if (request.previous_point > UINT64_MAX - delta) return -ERANGE;
+   if (request.previous_point > UINT64_MAX - delta ||
+       (prior_present && prior_present > UINT64_MAX - delta)) return -ERANGE;
    request.graph_id = graph->prepared_id;
    request.draws = (uintptr_t)draws;
    request.draw_count = frame->count;
