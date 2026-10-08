@@ -8885,8 +8885,8 @@ int m9x_faa_graph_dual_unlocked_get_locked(struct m9x_device *mdev,
 	}
 	return m9_faa_color_unlocked_origin_get_locked(mdev, generation,
 						       previous,
-						       r ? m9_faa_frame_origin(r, previous) :
-							   previous,
+						       r ?
+						       m9_faa_frame_origin(r, previous) : previous,
 						       false, false, out);
 #else
 	return -EOPNOTSUPP;
