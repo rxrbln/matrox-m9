@@ -291,7 +291,8 @@ void m9x_faa_trace(struct m9x_device *mdev, const char *phase, u32 index,
 
 #endif
 #ifdef M9_FAA_GRAPH_INIT_CONTROL
-#define M9_FAA_DEPTH_PREFIX_CAPACITY (M9_FAA_ATTACHMENT_CLEAR_CAPACITY + M9_FAA_SAMPLE_CLEAR_CAPACITY)
+#define M9_FAA_DEPTH_PREFIX_CAPACITY \
+	(M9_FAA_ATTACHMENT_CLEAR_CAPACITY + M9_FAA_SAMPLE_CLEAR_CAPACITY)
 #define M9_FAA_DEPTH_FRAME_PRIMARY_CAPACITY 0x40000u
 #define M9_FAA_DEPTH_FRAME_ENDS 13
 #define M9_FAA_DEPTH_FRAME_MAX_ENDS M9_FAA_DEPTH_MODE_MAX_ENDS
@@ -820,7 +821,6 @@ static int m9_faa_template_request(struct m9x_device *mdev,
 	/* Linux's alloc_lookup_fw_priv shares the loaded immutable buffer while
 	 * any ref is retained. Use a normal request for the caller's independent
 	 * lifetime, rather than borrowing a replay pointer across an unlock.
-
 	 */
 	m9_faa_frame_trace(mdev, "template-request-begin", slot, 0, generation,
 			   0, false);
@@ -3183,7 +3183,8 @@ static u32 m9_faa_encode(u32 pc, u32 address, u32 tag)
 #endif
 #define M9_FAA_CLEAR_MAX_WORDS 20u
 
-#if !defined(M9_FAA_GRAPH_INIT_CONTROL) && (!defined(M9_FAA_HAS_COMPANION_CLEAR) || M9_FAA_HAS_COMPANION_CLEAR)
+#if !defined(M9_FAA_GRAPH_INIT_CONTROL) && \
+	(!defined(M9_FAA_HAS_COMPANION_CLEAR) || M9_FAA_HAS_COMPANION_CLEAR)
 static int m9_faa_clear_page_words(u32 base, u32 bytes, u32 *words,
 				   u32 capacity, u32 *count)
 {
@@ -5003,6 +5004,13 @@ int m9x_faa_direct_view_admit_locked(struct m9x_device *mdev)
 	return 0;
 }
 
+/* The Lock view's source target in this publication profile. */
+#ifdef M9_FAA_UNLOCK_PUBLICATION_CONTROL
+#define M9_FAA_LOCK_VIEW_TARGET M9_FAA_NORMAL_LOCK_SPLIT_TARGET
+#else
+#define M9_FAA_LOCK_VIEW_TARGET M9_FAA_TRACKER_LAST
+#endif
+
 /* The ioctl already owns the caller's pin and reservation before entering
  * transport.lock. Admit only this private profile's immutable borrowed
  * primary after its final actual write wait, never another caller's BO.
@@ -5022,7 +5030,6 @@ int m9x_faa_lock_view_admit_locked(struct m9x_device *mdev,
 	/* The source normal Lock staging and primary share owner1. The typed
 	 * descriptor window is distinct from backing capacity, and this exact
 	 * same-graph retirement point authenticates access.
-
 	 */
 	if (!color || m9x_local_gpu_base)
 		return -EOPNOTSUPP;
@@ -5048,7 +5055,6 @@ int m9x_faa_lock_view_admit_locked(struct m9x_device *mdev,
 	/* The second normal Lock uses the exact same source mapper/format but
 	 * has its own actual retirement marker and full retained cursor join.
 	 * Unlock/preprocessing/rendering receipts alone never admit F021.
-
 	 */
 	if (r->color_lock_retired) {
 		if (!r->color_image || !r->color_attempted ||
@@ -5138,17 +5144,11 @@ int m9x_faa_lock_view_admit_locked(struct m9x_device *mdev,
 	lockdep_assert_held(&t->lock);
 	/* This marker follows a complete same-run normal-Lock mapper/owner
 	 * join. Earlier prepared prefixes are not that contract.
-
 	 */
-	if (
-#ifdef M9_FAA_UNLOCK_PUBLICATION_CONTROL
-		M9_FAA_NORMAL_LOCK_SPLIT_TARGET != 0x180 ||
-#else
-		M9_FAA_TRACKER_LAST != 0x180 ||
-#endif
-		M9_FAA_NORMAL_LOCK_CPU_VIEW != 1 || !m9_faa_diag ||
-		m9x_local_gpu_base || !color || bytes != 0x50000 ||
-		!spec->local || spec->system || spec->bytes != bytes)
+	if (M9_FAA_LOCK_VIEW_TARGET != 0x180 ||
+	    M9_FAA_NORMAL_LOCK_CPU_VIEW != 1 || !m9_faa_diag ||
+	    m9x_local_gpu_base || !color || bytes != 0x50000 ||
+	    !spec->local || spec->system || spec->bytes != bytes)
 		return -EOPNOTSUPP;
 	if (t->async_stop)
 		return -ENODEV;
@@ -5348,7 +5348,6 @@ static int m9_faa_graph_unlock_post_locked(struct m9x_device *mdev,
 	target = lower_32_bits(lock_point) + 0x20;
 	/* Cover all borrowed surfaces before any release MMIO or END. A late
 	 * failure keeps both the fence and retained binding quarantined.
-
 	 */
 	fence = m9x_fence_create_target_locked(mdev, target);
 	if (!fence) {
@@ -8556,7 +8555,7 @@ int m9x_faa_unlock_diag(struct m9x_device *mdev, u32 color,
 	    unlock_source_bytes != M9_FAA_PRIMARY_BYTES ||
 	    M9_FAA_TRACKER_LAST != 0x1a0 ||
 #endif
-	    M9_FAA_NORMAL_LOCK_SPLIT_BYTES >= unlock_source_bytes) {
+	    unlock_source_bytes <= M9_FAA_NORMAL_LOCK_SPLIT_BYTES) {
 		ret = -ENODATA;
 		goto unlock;
 	}
