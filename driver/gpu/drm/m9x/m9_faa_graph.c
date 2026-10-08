@@ -985,7 +985,7 @@ out_dev:
 }
 
 static int m9_faa_graph_public_vs_ioctl_mode(struct drm_device *drm, void *data,
-				 struct drm_file *file, bool head)
+					     struct drm_file *file, bool head)
 {
 	struct drm_parhelia_m9_faa_graph_public_vs *args = data;
 	struct m9x_device *mdev = to_m9x(drm);
@@ -1003,8 +1003,9 @@ static int m9_faa_graph_public_vs_ioctl_mode(struct drm_device *drm, void *data,
 	if (!state || !args->graph_id || !args->init_point || args->flags ||
 	    args->prefix_point || args->state || args->pad)
 		return -EINVAL;
-	input = (struct m9x_faa_public_vs_input) {
-		.program = args->program, .constants = args->constants,
+	input = (struct m9x_faa_public_vs_input){
+		.program = args->program,
+		.constants = args->constants,
 		.geometry = args->geometry,
 		.program_bytes = sizeof(args->program),
 		.constants_bytes = sizeof(args->constants),
@@ -1013,31 +1014,36 @@ static int m9_faa_graph_public_vs_ioctl_mode(struct drm_device *drm, void *data,
 	memcpy(&input.layout, &args->layout, sizeof(input.layout));
 	if (!drm_dev_enter(drm, &idx))
 		return -ENODEV;
-	ret = m9x_faa_graph_continuation_acquire(mdev, file,
-			args->graph_id, args->generation, args->init_point,
-			&binding);
+	ret = m9x_faa_graph_continuation_acquire(mdev, file, args->graph_id,
+						 args->generation,
+						 args->init_point, &binding);
 	if (ret)
 		goto out_dev;
 	mutex_lock(&state->lock);
 	if (state->graph != binding->graph ||
-	    !m9_faa_graph_continuation_matches(state->graph,
-		args->graph_id, args->generation, args->init_point)) {
+	    !m9_faa_graph_continuation_matches(state->graph, args->graph_id,
+					       args->generation,
+					       args->init_point)) {
 		ret = -ENOENT;
 		goto out_state;
 	}
 	/* Firmware, typed encoding and the private local TTM reservation
 	 * finish before taking any of the six caller BO reservations. The
-	 * two SYSTEM maps remain exactly those retained by INIT. */
+	 * two SYSTEM maps remain exactly those retained by INIT.
+	 */
 	ret = m9x_faa_graph_public_vs_prepare(mdev, binding, args->generation,
-					    args->init_point, &input);
+					      args->init_point, &input);
 	if (ret)
 		goto out_state;
-	drm_exec_init(&exec, DRM_EXEC_INTERRUPTIBLE_WAIT |
-		      DRM_EXEC_IGNORE_DUPLICATES, PARHELIA_M9_FAA_GRAPH_OWNERS);
-	drm_exec_until_all_locked(&exec) {
+	drm_exec_init(&exec,
+		      DRM_EXEC_INTERRUPTIBLE_WAIT | DRM_EXEC_IGNORE_DUPLICATES,
+		      PARHELIA_M9_FAA_GRAPH_OWNERS);
+	drm_exec_until_all_locked(&exec)
+	{
 		for (i = 0; i < PARHELIA_M9_FAA_GRAPH_OWNERS; i++) {
 			ret = drm_exec_prepare_obj(&exec,
-				m9x_faa_graph_binding_owner(binding, i), 1);
+						   m9x_faa_graph_binding_owner(binding, i),
+						   1);
 			drm_exec_retry_on_contention(&exec);
 			if (ret)
 				goto out_exec;
@@ -1051,25 +1057,28 @@ static int m9_faa_graph_public_vs_ioctl_mode(struct drm_device *drm, void *data,
 		goto out_exec;
 	}
 	for (i = 0; i < PARHELIA_M9_FAA_GRAPH_OWNERS; i++) {
-		if (!dma_resv_test_signaled(
-			m9x_faa_graph_binding_owner(binding, i)->resv,
-			DMA_RESV_USAGE_READ)) {
+		if (!dma_resv_test_signaled(m9x_faa_graph_binding_owner(binding, i)->resv,
+					    DMA_RESV_USAGE_READ)) {
 			ret = -EBUSY;
 			goto out_exec;
 		}
 	}
-	ret = head ?
-		m9x_faa_graph_public_vs_head_submit(mdev, binding, args->generation,
-					 args->init_point, &point, &posted) :
-		m9x_faa_graph_public_vs_submit(mdev, binding, args->generation,
-					 args->init_point, &point, &posted);
+	ret = head ? m9x_faa_graph_public_vs_head_submit(mdev, binding,
+							 args->generation,
+							 args->init_point,
+							 &point, &posted) :
+		     m9x_faa_graph_public_vs_submit(mdev, binding,
+						    args->generation,
+						    args->init_point, &point,
+						    &posted);
 	if (!ret) {
-		if (point != args->init_point + (head ? 0x10 : 0x50))
+		if (point != args->init_point + (head ? 0x10 : 0x50)) {
 			ret = -EIO;
-		else {
+		} else {
 			args->prefix_point = point;
-			args->state = head ? PARHELIA_M9_FAA_PUBLIC_VS_HEAD_RETIRED :
-				PARHELIA_M9_FAA_PUBLIC_VS_PREFIX_RETIRED;
+			args->state =
+				head ? PARHELIA_M9_FAA_PUBLIC_VS_HEAD_RETIRED :
+				       PARHELIA_M9_FAA_PUBLIC_VS_PREFIX_RETIRED;
 		}
 	}
 out_exec:
