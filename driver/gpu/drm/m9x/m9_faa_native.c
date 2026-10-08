@@ -3615,12 +3615,13 @@ static int m9_faa_program_access(struct m9x_device *mdev,
 }
 
 static int m9_faa_publish_output_phase(struct m9x_device *mdev, u32 phase,
-                                      u64 point, void *data)
+				       u64 point, void *data)
 {
 	struct m9x_faa_replay *r = data;
 #ifdef M9_FAA_PRECLEAR_OUTPUT_WRITE_CONTROL
 	struct m9_faa_owner *output;
 	int ret;
+
 #endif
 
 	if (phase == 0 && m9_faa_program_access_kick)
@@ -3634,8 +3635,10 @@ static int m9_faa_publish_output_phase(struct m9x_device *mdev, u32 phase,
 	    m9_faa_owner_specs[M9_FAA_OUTPUT_OWNER].mapped_bytes != 0x50000)
 		return -EINVAL;
 	/* Called after the actual120 wait and before posting the160 suffix.
-	 * Existing publisher derives every PTE and C24 word from this owner. */
-	ret = m9x_address_publish_faa_output(mdev, &output->system_node, output->dma);
+	 * Existing publisher derives every PTE and C24 word from this owner.
+	 */
+	ret = m9x_address_publish_faa_output(mdev, &output->system_node,
+					     output->dma);
 
 	if (!ret)
 		dev_info(&mdev->pdev->dev,
@@ -3646,6 +3649,7 @@ static int m9_faa_publish_output_phase(struct m9x_device *mdev, u32 phase,
 	return 0;
 #endif
 }
+
 #endif
 
 #ifdef M9_FAA_STARTUP_LOCAL_OWNER
