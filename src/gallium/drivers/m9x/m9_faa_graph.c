@@ -690,11 +690,11 @@ m9_faa_surface_color_frame_kernel(struct m9_screen *screen,
       return -EOPNOTSUPP;
    uint32_t depth_flags = 0, raster_flags = 0;
    if (sampled_reset) {
-      if (!state->depth_enabled || !state->depth_write || state->depth_func != PIPE_FUNC_LESS ||
+      if (!state->depth_enabled || state->depth_func > PIPE_FUNC_ALWAYS ||
           (state->cull_face != PIPE_FACE_NONE && state->cull_face != PIPE_FACE_FRONT &&
            state->cull_face != PIPE_FACE_BACK))
          return -EOPNOTSUPP;
-      depth_flags = PARHELIA_M9_FAA_COLOR_DEPTH_LESS_WRITE;
+      depth_flags = 1u | (state->depth_write ? 2u : 0u) | (state->depth_func << 2);
       if (state->flatshade) raster_flags |= PARHELIA_M9_FAA_COLOR_RASTER_FLAT;
       if (state->cull_face != PIPE_FACE_NONE)
          raster_flags |= ((state->cull_face == PIPE_FACE_BACK) == state->front_ccw) ?
@@ -858,7 +858,7 @@ m9_faa_color_batch_with_storage(struct m9_screen *screen,
           u->generation != graph->prepared_generation)
          return -ESTALE;
       if (state->width != surface->width || state->height != surface->height ||
-          !state->depth_enabled || !state->depth_write || state->depth_func != PIPE_FUNC_LESS ||
+          !state->depth_enabled || state->depth_func > PIPE_FUNC_ALWAYS ||
           state->scissor_enabled || u->shader.color_flat != state->flatshade ||
           (state->cull_face != PIPE_FACE_NONE && state->cull_face != PIPE_FACE_FRONT && state->cull_face != PIPE_FACE_BACK) ||
           u->shader.layout.count != programs || (u->shader.record_bytes != 32 &&
@@ -874,7 +874,7 @@ m9_faa_color_batch_with_storage(struct m9_screen *screen,
       draws[i].record_count = packed.record_count;
       draws[i].declaration_count = packed.declaration_count;
       draws[i].layout = packed.layout;
-      draws[i].depth_flags = PARHELIA_M9_FAA_COLOR_DEPTH_LESS_WRITE;
+      draws[i].depth_flags = 1u | (state->depth_write ? 2u : 0u) | (state->depth_func << 2);
       if (state->flatshade) draws[i].raster_flags |= PARHELIA_M9_FAA_COLOR_RASTER_FLAT;
       if (state->cull_face != PIPE_FACE_NONE)
          draws[i].raster_flags |= ((state->cull_face == PIPE_FACE_BACK) == state->front_ccw) ?

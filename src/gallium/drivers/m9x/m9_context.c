@@ -9342,7 +9342,7 @@ m9_context_faa_submit_draw(struct m9_context *ctx,
       goto out;
    const struct m9_faa_application_state *state = &owned.state;
    if (state->width != 320 || state->height != 240 ||
-       (state->depth_enabled && (!state->depth_write || state->depth_func != PIPE_FUNC_LESS)) ||
+       (state->depth_enabled && state->depth_func > PIPE_FUNC_ALWAYS) ||
        (state->cull_face != PIPE_FACE_NONE && state->cull_face != PIPE_FACE_FRONT &&
         state->cull_face != PIPE_FACE_BACK) || state->scissor_enabled ||
        state->viewport.scale[0] != 160 || state->viewport.scale[1] != -120 ||
