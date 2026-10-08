@@ -10948,10 +10948,15 @@ m9_update_target(struct m9_context *ctx)
       else if (m9_faa_surface_prepare_kernel(ctx->screen, &ctx->faa_surface))
          m9_warn_once(ctx, M9_WARN_MEMORY,
                       "FAA kernel owner preparation unavailable; ordinary target retained");
-      else if (ctx->screen->faa.init_graph &&
-               m9_faa_surface_init_kernel(ctx->screen, &ctx->faa_surface))
-         m9_warn_once(ctx, M9_WARN_MEMORY,
-                      "FAA kernel graph initialization unavailable; ordinary target retained");
+      else if (ctx->screen->faa.init_graph) {
+         int init = m9_faa_surface_init_kernel(ctx->screen, &ctx->faa_surface);
+
+         if (init && ctx->debug)
+            fprintf(stderr, "m9x: FAA graph INIT returned %d\n", init);
+         if (init)
+            m9_warn_once(ctx, M9_WARN_MEMORY,
+                         "FAA kernel graph initialization unavailable; ordinary target retained");
+      }
    } else if (!ctx->faa_surface.graph.initialized) {
       m9_faa_surface_destroy(ctx->screen, &ctx->faa_surface);
    }
