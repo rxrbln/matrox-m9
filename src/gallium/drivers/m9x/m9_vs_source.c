@@ -833,7 +833,7 @@ m9_vs_clip_outside_near(const struct m9_vs_program *program,
                         const uint8_t *const *buffer_map,
                         const unsigned *buffer_size, unsigned buffer_count,
                         const uint8_t *constants, size_t constant_size,
-                        unsigned first, unsigned count)
+                        unsigned first, unsigned count, uint8_t *flags)
 {
    const struct m9_vs_clip_node *node = program->clip_nodes.data;
    unsigned nodes = util_dynarray_num_elements(&program->clip_nodes,
@@ -901,28 +901,64 @@ m9_vs_clip_outside_near(const struct m9_vs_program *program,
       const float *z = scratch + (size_t)program->clip_z * terms;
       const float *w = scratch + (size_t)program->clip_w * terms;
 
-      for (unsigned v = 0; v < count && !outside; v++) {
-         float cz = z[0], cw = w[0];
+      unsigned e0 = used_count == 1 ? (unsigned)ffsll(used) - 1 : 0;
 
-         u_foreach_bit64(element, used) {
-            struct clip_input *in = &input[element];
-            unsigned t = 1 + 4 * slot[element];
+      /* One float position element: read it in place. */
+      if (used_count == 1 && input[e0].floats >= 3) {
+         const struct clip_input *in = &input[e0];
+         const float *zc = z + 1, *wc = w + 1;
+         bool four = in->floats >= 4;
 
-            clip_fetch(in, first + v);
-            for (unsigned k = 0; k < 4; k++) {
-               cz += z[t + k] * in->rgba[k];
-               cw += w[t + k] * in->rgba[k];
-            }
+         for (unsigned v = 0; v < count && (flags || !outside); v++) {
+            float p[4] = { 0.0f, 0.0f, 0.0f, 1.0f };
+
+            if (four)
+               memcpy(p, in->base + (uint64_t)(first + v) * in->stride, 16);
+            else
+               memcpy(p, in->base + (uint64_t)(first + v) * in->stride, 12);
+            float cz = z[0] + zc[0] * p[0] + zc[1] * p[1] + zc[2] * p[2] +
+                       zc[3] * p[3];
+            float cw = w[0] + wc[0] * p[0] + wc[1] * p[1] + wc[2] * p[2] +
+                       wc[3] * p[3];
+
+            bool o = !(cw > 0.0f && cz >= -cw);
+
+            if (flags)
+               flags[v] = o;
+            outside |= o;
          }
-         outside = !(cw > 0.0f && cz >= -cw);
+      } else {
+         for (unsigned v = 0; v < count && (flags || !outside); v++) {
+            float cz = z[0], cw = w[0];
+
+            u_foreach_bit64(element, used) {
+               struct clip_input *in = &input[element];
+               unsigned t = 1 + 4 * slot[element];
+
+               clip_fetch(in, first + v);
+               for (unsigned k = 0; k < 4; k++) {
+                  cz += z[t + k] * in->rgba[k];
+                  cw += w[t + k] * in->rgba[k];
+               }
+            }
+            bool o = !(cw > 0.0f && cz >= -cw);
+
+            if (flags)
+               flags[v] = o;
+            outside |= o;
+         }
       }
    } else {
-      for (unsigned v = 0; v < count && !outside; v++) {
+      for (unsigned v = 0; v < count && (flags || !outside); v++) {
          u_foreach_bit64(element, used)
             clip_fetch(&input[element], first + v);
          clip_node_eval(program, constants, input, scratch);
-         outside = !(scratch[program->clip_w] > 0.0f &&
-                     scratch[program->clip_z] >= -scratch[program->clip_w]);
+         bool o = !(scratch[program->clip_w] > 0.0f &&
+                    scratch[program->clip_z] >= -scratch[program->clip_w]);
+
+         if (flags)
+            flags[v] = o;
+         outside |= o;
       }
    }
    free(scratch);

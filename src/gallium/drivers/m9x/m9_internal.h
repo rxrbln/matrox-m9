@@ -747,6 +747,9 @@ struct m9_context {
    /* Welded unindexed draws, kept across frames.  struct m9_weld_entry *. */
    struct util_dynarray weld_cache;
    uint64_t weld_clock;
+   /* Near-plane split of a fused-pair draw: per-vertex flags, then the
+    * uint32_t index lists drawn natively and through the draw module. */
+   struct util_dynarray near_flags, near_inside, near_crossing;
    unsigned job_unit_dwords;
    uint32_t warned;
    uint32_t skipped_draws;      /* dropped for an unimplemented state */

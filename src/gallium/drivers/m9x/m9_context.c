@@ -7417,16 +7417,64 @@ m9_native_vs_bind_texture(struct m9_context *ctx, struct m9_job_key *key,
 
 static void m9_vs_select_spec(struct m9_context *ctx);
 
+/* Transforms, clips and draws one draw through the draw module. */
+static void
+m9_module_draw(struct pipe_context *pctx, const struct pipe_draw_info *info,
+               unsigned drawid_offset,
+               const struct pipe_draw_start_count_bias *draw)
+{
+   struct m9_context *ctx = m9_context(pctx);
+   bool indexed = info->index_size;
+
+   /* Native vertex fetches retain the GPU image directly. Only the draw
+    * module needs a synchronized linear CPU copy of its sampled inputs. */
+   m9_vs_texture_refresh(pctx);
+   for (unsigned i = 0; i < ctx->num_vertex_buffers; i++) {
+      const struct pipe_vertex_buffer *vb = &ctx->vertex_buffers[i];
+      const void *map = vb->is_user_buffer ? vb->buffer.user :
+                        vb->buffer.resource ?
+                        m9_res(vb->buffer.resource)->map : NULL;
+
+      draw_set_mapped_vertex_buffer(ctx->draw, i, map,
+                                    vb->is_user_buffer || !vb->buffer.resource ?
+                                    ~(size_t)0 : vb->buffer.resource->width0);
+   }
+   if (indexed)
+      draw_set_indexes(ctx->draw, info->has_user_indices ? info->index.user :
+                       m9_res(info->index.resource)->map, info->index_size,
+                       info->has_user_indices ? ~0u :
+                       info->index.resource->width0);
+   for (unsigned i = 0; i < PIPE_MAX_CONSTANT_BUFFERS; i++) {
+      const struct pipe_constant_buffer *cb = &ctx->vs_constants[i];
+      const uint8_t *data = cb->user_buffer ? cb->user_buffer :
+                            cb->buffer ? m9_res(cb->buffer)->map : NULL;
+
+      draw_set_mapped_constant_buffer(ctx->draw, MESA_SHADER_VERTEX, i,
+                                      data ? data + cb->buffer_offset : NULL,
+                                      data ? cb->buffer_size : 0);
+   }
+   uint64_t t_draw = m9_prof_begin();
+
+   draw_prepare_shader_outputs(ctx->draw);
+   draw_vbo(ctx->draw, info, drawid_offset, NULL, draw, 1, 0);
+   draw_flush(ctx->draw);
+   m9_prof_end(M9_PROF_DRAW, t_draw);
+   for (unsigned i = 0; i < ctx->num_vertex_buffers; i++)
+      draw_set_mapped_vertex_buffer(ctx->draw, i, NULL, 0);
+   if (indexed)
+      draw_set_indexes(ctx->draw, NULL, 0, 0);
+}
+
 /* Whether a vertex of the draw lies outside the near plane, read through
- * constant buffer 0 as the native constant span reads it. */
+ * constant buffer 0 as the native constant span reads it.  With flags, one
+ * byte a vertex of the draw's range says which. */
 static int
 m9_native_vs_outside_near(struct m9_context *ctx, const struct m9_vs_program *p,
-                          const struct m9_native_vs *n)
+                          const struct m9_native_vs *n, uint8_t *flags)
 {
    const struct pipe_constant_buffer *cb = &ctx->vs_constants[0];
    const uint8_t *data = cb->user_buffer ? cb->user_buffer :
                          cb->buffer ? m9_res(cb->buffer)->map : NULL;
-
    uint64_t t_near = m9_prof_begin();
    int outside = m9_vs_clip_outside_near(p, ctx->velems->elements,
                                          ctx->velems->count,
@@ -7434,16 +7482,70 @@ m9_native_vs_outside_near(struct m9_context *ctx, const struct m9_vs_program *p,
                                          n->buffer_count,
                                          data ? data + cb->buffer_offset : NULL,
                                          data ? cb->buffer_size : 0,
-                                         n->first_vertex, n->vertex_count);
+                                         n->first_vertex, n->vertex_count,
+                                         flags);
 
    m9_prof_end(M9_PROF_NEAR, t_near);
    return outside;
+}
+
+/* Reordering a draw's triangles changes no pixel when nothing blends,
+ * counts or reads the destination and depth decides overlaps; only exact
+ * depth ties may resolve differently. */
+static bool
+m9_near_split_ok(const struct m9_context *ctx, const struct pipe_draw_info *info)
+{
+   if (info->mode != MESA_PRIM_TRIANGLES || !ctx->dsa ||
+       !ctx->dsa->depth_enabled || ctx->dsa->stencil[0].enabled ||
+       ctx->query_active)
+      return false;
+   for (unsigned i = 0; ctx->blend && i < MAX2(ctx->color_count, 1u); i++)
+      if (ctx->blend->rt[ctx->blend->independent_blend_enable ? i : 0].blend_enable ||
+          ctx->blend->logicop_enable)
+         return false;
+   return true;
+}
+
+/* Sorts the draw's triangles by their flagged corners: all inside stay
+ * native, all outside the near plane are clipped away entirely, the rest
+ * need the draw module's clipper.  Indices keep their original values. */
+static bool
+m9_near_partition(struct m9_context *ctx, const struct m9_native_vs *n,
+                  const struct pipe_draw_start_count_bias *draw)
+{
+   const uint8_t *flags = ctx->near_flags.data;
+   unsigned tris = draw->count / 3;
+
+   util_dynarray_clear(&ctx->near_inside);
+   util_dynarray_clear(&ctx->near_crossing);
+   for (unsigned t = 0; t < tris; t++) {
+      uint32_t v[3];
+      unsigned out = 0;
+
+      for (unsigned k = 0; k < 3; k++) {
+         int64_t vertex;
+
+         v[k] = n->indices ? m9_native_index_at(n->indices, n->index_size, 3 * t + k) :
+                             draw->start + 3 * t + k;
+         vertex = n->indices ? (int64_t)v[k] + n->index_bias : v[k];
+         out += flags[vertex - n->first_vertex];
+      }
+      if (out == 3)
+         continue;
+      uint32_t *dst = util_dynarray_grow(out ? &ctx->near_crossing :
+                                               &ctx->near_inside, uint32_t, 3);
+      if (!dst)
+         return false;
+      memcpy(dst, v, sizeof(v));
+   }
+   return true;
 }
 
 /* True when the draw was taken by the native path; false leaves it to the
  * draw module with no change in behaviour. */
 static bool
 m9_native_vs_draw(struct m9_context *ctx, const struct pipe_draw_info *info,
+                  unsigned drawid_offset,
                   const struct pipe_draw_start_count_bias *draw)
 {
    struct m9_native_vs n;
@@ -7515,11 +7617,42 @@ m9_native_vs_draw(struct m9_context *ctx, const struct pipe_draw_info *info,
    }
    /* The engine clips against the near plane only with the clip position
     * the fused pair gives up for its second varying (MEASURED, m9-nearclip). */
-   if (m9_vs_fused_pair(&variant->program) &&
-       m9_native_vs_outside_near(ctx, &variant->program, &n) > 0) {
-      m9_native_vs_note(ctx, "a fused-pair draw has a vertex outside the "
-                        "near plane, which only the clip position clips");
-      return false;
+   bool split = false;
+   unsigned near_count = draw->count;
+
+   if (m9_vs_fused_pair(&variant->program)) {
+      bool partition = m9_near_split_ok(ctx, info);
+      /* util_dynarray_resize returns the old end, not the array. */
+      uint8_t *flags = partition &&
+                       util_dynarray_resize(&ctx->near_flags, uint8_t,
+                                            n.vertex_count) ?
+                       ctx->near_flags.data : NULL;
+      int outside = m9_native_vs_outside_near(ctx, &variant->program, &n, flags);
+
+      if (outside > 0 &&
+          (!flags || !m9_near_partition(ctx, &n, draw) ||
+           !util_dynarray_num_elements(&ctx->near_inside, uint32_t))) {
+         if (flags && !util_dynarray_num_elements(&ctx->near_inside, uint32_t) &&
+             !util_dynarray_num_elements(&ctx->near_crossing, uint32_t))
+            return true;
+         m9_native_vs_note(ctx, "a fused-pair draw has a vertex outside the "
+                           "near plane, which only the clip position clips");
+         return false;
+      }
+      if (outside > 0) {
+         uint32_t lo, hi;
+         unsigned k = util_dynarray_num_elements(&ctx->near_inside, uint32_t);
+
+         split = true;
+         n.indices = ctx->near_inside.data;
+         n.index_size = 4;
+         if (!info->index_size)
+            n.index_bias = 0;
+         m9_native_index_range(n.indices, 4, 0, k, &lo, &hi);
+         n.first_vertex = lo + n.index_bias;
+         n.vertex_count = hi - lo + 1;
+         near_count = k;
+      }
    }
    if (ctx->rasterizer && ctx->rasterizer->offset_tri &&
        u_reduced_prim(info->mode) == MESA_PRIM_TRIANGLES) {
@@ -7572,9 +7705,25 @@ m9_native_vs_draw(struct m9_context *ctx, const struct pipe_draw_info *info,
       ctx->skipped_draws++;
       return true;
    }
-   if (!m9_native_vs_append(ctx, &key, &n, draw->count)) {
+   if (!m9_native_vs_append(ctx, &key, &n, near_count)) {
       m9_native_vs_note(ctx, "the native job would not take the draw");
       return false;
+   }
+   if (split && util_dynarray_num_elements(&ctx->near_crossing, uint32_t)) {
+      struct pipe_draw_info crossing = *info;
+      struct pipe_draw_start_count_bias range = {
+         .start = 0,
+         .count = util_dynarray_num_elements(&ctx->near_crossing, uint32_t),
+         .index_bias = info->index_size ? draw->index_bias : 0,
+      };
+
+      crossing.index_size = 4;
+      crossing.has_user_indices = true;
+      crossing.index.user = ctx->near_crossing.data;
+      crossing.index_bounds_valid = false;
+      m9_native_vs_note(ctx, "fused-pair triangles crossing the near plane, "
+                        "which only the clip position clips");
+      m9_module_draw(&ctx->base, &crossing, drawid_offset, &range);
    }
    if (ctx->debug && !ctx->native_vs_draws) {
       fprintf(stderr, "m9x: native vertex draw taken, %u varyings, fused "
@@ -7861,7 +8010,7 @@ m9_draw_vbo(struct pipe_context *pctx, const struct pipe_draw_info *info,
       return;
    }
    if (ctx->fs && (ctx->fs->passthrough || ctx->fs->native) &&
-       m9_native_vs_draw(ctx, info, &draws[0]))
+       m9_native_vs_draw(ctx, info, drawid_offset, &draws[0]))
       return;
    if (!ctx->fs || (!ctx->fs->passthrough && !ctx->fs->native)) {
       m9_skip_reason(ctx, ctx->fs && ctx->fs->reason ? ctx->fs->reason :
@@ -7874,43 +8023,7 @@ m9_draw_vbo(struct pipe_context *pctx, const struct pipe_draw_info *info,
       }
       return;
    }
-   /* Native vertex fetches retain the GPU image directly. Only the draw
-    * module needs a synchronized linear CPU copy of its sampled inputs. */
-   m9_vs_texture_refresh(pctx);
-   for (unsigned i = 0; i < ctx->num_vertex_buffers; i++) {
-      const struct pipe_vertex_buffer *vb = &ctx->vertex_buffers[i];
-      const void *map = vb->is_user_buffer ? vb->buffer.user :
-                        vb->buffer.resource ?
-                        m9_res(vb->buffer.resource)->map : NULL;
-
-      draw_set_mapped_vertex_buffer(ctx->draw, i, map,
-                                    vb->is_user_buffer || !vb->buffer.resource ?
-                                    ~(size_t)0 : vb->buffer.resource->width0);
-   }
-   if (indexed)
-      draw_set_indexes(ctx->draw, info->has_user_indices ? info->index.user :
-                       m9_res(info->index.resource)->map, info->index_size,
-                       info->has_user_indices ? ~0u :
-                       info->index.resource->width0);
-   for (unsigned i = 0; i < PIPE_MAX_CONSTANT_BUFFERS; i++) {
-      const struct pipe_constant_buffer *cb = &ctx->vs_constants[i];
-      const uint8_t *data = cb->user_buffer ? cb->user_buffer :
-                            cb->buffer ? m9_res(cb->buffer)->map : NULL;
-
-      draw_set_mapped_constant_buffer(ctx->draw, MESA_SHADER_VERTEX, i,
-                                      data ? data + cb->buffer_offset : NULL,
-                                      data ? cb->buffer_size : 0);
-   }
-   uint64_t t_draw = m9_prof_begin();
-
-   draw_prepare_shader_outputs(ctx->draw);
-   draw_vbo(ctx->draw, info, drawid_offset, NULL, draws, 1, 0);
-   draw_flush(ctx->draw);
-   m9_prof_end(M9_PROF_DRAW, t_draw);
-   for (unsigned i = 0; i < ctx->num_vertex_buffers; i++)
-      draw_set_mapped_vertex_buffer(ctx->draw, i, NULL, 0);
-   if (indexed)
-      draw_set_indexes(ctx->draw, NULL, 0, 0);
+   m9_module_draw(pctx, info, drawid_offset, &draws[0]);
 }
 
 /* Clears */
@@ -10843,6 +10956,9 @@ m9_context_destroy(struct pipe_context *pctx)
    if (ctx->base.stream_uploader)
       u_upload_destroy(ctx->base.stream_uploader);
    m9_weld_cache_fini(ctx);
+   util_dynarray_fini(&ctx->near_flags);
+   util_dynarray_fini(&ctx->near_inside);
+   util_dynarray_fini(&ctx->near_crossing);
    util_unreference_framebuffer_state(&ctx->framebuffer);
    util_set_vertex_buffers_count(ctx->vertex_buffers, &ctx->num_vertex_buffers,
                                  NULL, 0);
