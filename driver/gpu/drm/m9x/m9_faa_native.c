@@ -11236,20 +11236,31 @@ int m9x_faa_graph_depth_frame_receipt_locked(struct m9x_device *mdev,
 }
 
 int m9x_faa_graph_depth_mode_locked(struct m9x_device *mdev,
- struct m9_faa_graph_binding *binding,u32 generation,bool first,
- struct m9x_faa_depth_mode_state *out)
+				    struct m9_faa_graph_binding *binding,
+				    u32 generation, bool first,
+				    struct m9x_faa_depth_mode_state *out)
 {
 #ifdef M9_FAA_GRAPH_INIT_CONTROL
- struct m9x_transport *t=&mdev->transport;struct m9x_faa_replay *r=t->faa;
- if(!out||!r||r->graph_binding!=binding||r->graph_generation!=generation||t->generation!=generation||t->wedged)return -ESTALE;
- if(first){
-  if(r->depth_storage&&r->depth_storage->initialized)return -ESTALE;
-  *out=(struct m9x_faa_depth_mode_state){0};return 0;
- }
- if(!r->depth_storage||!r->depth_storage->initialized||!r->depth_storage->mode.valid)return -ESTALE;
- *out=r->depth_storage->mode;return 0;
+	struct m9x_transport *t = &mdev->transport;
+	struct m9x_faa_replay *r = t->faa;
+
+	if (!out || !r || r->graph_binding != binding ||
+	    r->graph_generation != generation || t->generation != generation ||
+	    t->wedged)
+		return -ESTALE;
+	if (first) {
+		if (r->depth_storage && r->depth_storage->initialized)
+			return -ESTALE;
+		*out = (struct m9x_faa_depth_mode_state){ 0 };
+		return 0;
+	}
+	if (!r->depth_storage || !r->depth_storage->initialized ||
+	    !r->depth_storage->mode.valid)
+		return -ESTALE;
+	*out = r->depth_storage->mode;
+	return 0;
 #else
- return -EOPNOTSUPP;
+	return -EOPNOTSUPP;
 #endif
 }
 
