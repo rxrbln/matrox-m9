@@ -260,6 +260,7 @@ void m9x_faa_trace(struct m9x_device *mdev, const char *phase, u32 index,
 		   u32 offset, u64 point, int result)
 {
 }
+
 #endif
 #ifdef M9_FAA_GRAPH_INIT_CONTROL
 #define M9_FAA_DEPTH_PREFIX_CAPACITY (M9_FAA_ATTACHMENT_CLEAR_CAPACITY + M9_FAA_SAMPLE_CLEAR_CAPACITY)
