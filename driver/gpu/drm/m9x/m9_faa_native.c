@@ -3018,7 +3018,8 @@ int m9x_faa_prepare_graph(struct m9x_device *mdev,
 {
 #ifdef M9_FAA_GRAPH_INIT_CONTROL
 	/* The producer takes the binding only after complete preparation.
-	 * A failed call leaves its reference with the ioctl. */
+	 * A failed call leaves its reference with the ioctl.
+	 */
 	if (!binding)
 		return -EINVAL;
 	return m9_faa_prepare(mdev, binding, generation);
