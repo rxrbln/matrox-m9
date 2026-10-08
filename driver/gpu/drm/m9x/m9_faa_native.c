@@ -2612,9 +2612,9 @@ static void m9_faa_public_vs_prefix_observe(struct m9x_device *mdev,
  * into an owned allocation or extending the GPU command stream. Failure to
  * map observation data never invents a zero baseline or changes submission. */
 static void m9_faa_observe_borrowed_color(struct m9x_device *mdev,
-					struct m9x_faa_replay *r,
-					struct drm_gem_vram_object *color_bo,
-					bool before)
+					  struct m9x_faa_replay *r,
+					  struct drm_gem_vram_object *color_bo,
+					  bool before)
 {
 #ifdef M9_FAA_MULTI_CLEAR
 	const u32 i = M9_FAA_COLOR_OWNER;
@@ -2639,7 +2639,8 @@ static void m9_faa_observe_borrowed_color(struct m9x_device *mdev,
 	/* m9_submit_first_triangle owns this reservation across our call. */
 	ret = drm_gem_vram_vmap(color_bo, &map);
 	if (ret) {
-		dev_warn(&mdev->pdev->dev, "M9 FAA borrowed observation unavailable: %d\n", ret);
+		dev_warn(&mdev->pdev->dev,
+			 "M9 FAA borrowed observation unavailable: %d\n", ret);
 		return;
 	}
 	rmb();
@@ -2662,8 +2663,8 @@ static void m9_faa_observe_borrowed_color(struct m9x_device *mdev,
 	dev_info(&mdev->pdev->dev,
 		 "M9 FAA %s BAR observation: owner=%u captured=%#x native=%#x bytes=%u fnv=%#x nonzero_bytes=%u nonzero_words=%u\n",
 		 before ? "before submit" : "retired", i,
-		 m9_faa_owner_specs[i].captured, r->owner[i].base, bytes,
-		 hash, nonzero, nonzero_words);
+		 m9_faa_owner_specs[i].captured, r->owner[i].base, bytes, hash,
+		 nonzero, nonzero_words);
 	if (!before && r->borrowed_color_observed)
 		dev_info(&mdev->pdev->dev,
 			 "M9 FAA BAR delta: owner=%u before_fnv=%#x after_fnv=%#x hash_changed=%u before_nonzero_bytes=%u after_nonzero_bytes=%u before_nonzero_words=%u after_nonzero_words=%u\n",
