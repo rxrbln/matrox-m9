@@ -329,19 +329,28 @@ static void m9_faa_depth_frame_free(struct m9_faa_depth_frame_storage *frame)
  * before a failing PCI transaction. Disabled by default in both settings. */
 static bool m9_faa_frame_trace_enabled;
 static unsigned int m9_faa_frame_trace_delay_ms;
-module_param_named(faa_frame_trace,m9_faa_frame_trace_enabled,bool,0600);
-module_param_named(faa_frame_trace_delay_ms,m9_faa_frame_trace_delay_ms,uint,0600);
-MODULE_PARM_DESC(faa_frame_trace,"Log bounded FAA frame prepare/upload/END phases");
-MODULE_PARM_DESC(faa_frame_trace_delay_ms,"Opt-in frame trace pre-action pause, capped100ms");
-static void m9_faa_frame_trace(struct m9x_device *mdev,const char *phase,
- u32 index,u32 offset,u64 point,int result,bool pause)
+module_param_named(faa_frame_trace, m9_faa_frame_trace_enabled, bool, 0600);
+module_param_named(faa_frame_trace_delay_ms, m9_faa_frame_trace_delay_ms, uint,
+		   0600);
+MODULE_PARM_DESC(faa_frame_trace,
+		 "Log bounded FAA frame prepare/upload/END phases");
+MODULE_PARM_DESC(faa_frame_trace_delay_ms,
+		 "Opt-in frame trace pre-action pause, capped100ms");
+
+static void m9_faa_frame_trace(struct m9x_device *mdev, const char *phase,
+			       u32 index, u32 offset, u64 point, int result,
+			       bool pause)
 {
- unsigned int delay;
- if(!READ_ONCE(m9_faa_frame_trace_enabled))return;
- dev_info(&mdev->pdev->dev,"M9 FAA frame phase: %s index=%u offset=%u point=%#llx result=%d\n",
-  phase,index,offset,point,result);
- delay=READ_ONCE(m9_faa_frame_trace_delay_ms);
- if(pause&&delay)msleep(min(delay,100u));
+	unsigned int delay;
+
+	if (!READ_ONCE(m9_faa_frame_trace_enabled))
+		return;
+	dev_info(&mdev->pdev->dev,
+		 "M9 FAA frame phase: %s index=%u offset=%u point=%#llx result=%d\n",
+		 phase, index, offset, point, result);
+	delay = READ_ONCE(m9_faa_frame_trace_delay_ms);
+	if (pause && delay)
+		msleep(min(delay, 100u));
 }
 
 /* faa_frame_trace for the graph ioctls outside this file. */
