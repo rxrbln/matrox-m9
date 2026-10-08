@@ -6361,19 +6361,25 @@ out:
 }
 
 int m9x_faa_graph_public_vs_draw_get_locked(struct m9x_device *mdev,
- u32 generation,u64 draw_point,struct m9_faa_graph_binding **out)
+					    u32 generation, u64 draw_point,
+					    struct m9_faa_graph_binding **out)
 {
 #ifdef M9_FAA_GRAPH_INIT_CONTROL
- int ret;
- if(!out)return -EINVAL;
- *out=NULL;
- ret=m9_faa_public_vs_draw_state(&mdev->transport,
-  mdev->transport.faa ? mdev->transport.faa->graph_binding : NULL,generation,draw_point);
- if(ret)return ret;
- *out=m9x_faa_graph_binding_get(mdev->transport.faa->graph_binding);
- return 0;
+	int ret;
+
+	if (!out)
+		return -EINVAL;
+	*out = NULL;
+	ret = m9_faa_public_vs_draw_state(&mdev->transport,
+					  mdev->transport.faa ?
+					  mdev->transport.faa->graph_binding :
+					  NULL, generation, draw_point);
+	if (ret)
+		return ret;
+	*out = m9x_faa_graph_binding_get(mdev->transport.faa->graph_binding);
+	return 0;
 #else
- return -EOPNOTSUPP;
+	return -EOPNOTSUPP;
 #endif
 }
 
