@@ -1,5 +1,28 @@
 # M9 FAA native testing, 2026-10-06
 
+## 2026-10-08: optimized1024x768 FAA gears measures about30 FPS
+
+A single512-frame physical M9128 run completes all512 twelve-draw batches,
+GPU Unlocks and GPU presentations with submitted/completed ae2f0,
+generation0, wedged0 and an empty queue. Independent actual scanout images
+at frames1/512 show all three gears. Fullscreen X PageFlip=true, hidden cursor
+and verified actual GLX swap interval1 activate direct tiled scanout and
+remove the CPU X detile/copy; clean windows measure22.980/23.010/22.944 FPS,
+versus the previous1024x768 CPU-presented1.394–1.399 FPS. The >30 FPS goal
+remains open. [Proof, screenshots and harness caveat](../tests/m9-faa-fullscreen-direct-bench-20261008/README.md).
+
+DRM07b8c27/36850c0/2a222e1 now retain authenticated firmware for the graph
+generation, build only consumed extra-draw stages and deduplicate root-table
+reads within each mapping check. Focused sanitizer proofs and module build
+pass. The unchanged512-frame test now exits0 and reports29.719/29.840/30.023
+FPS, about30% above the direct-scanout baseline; all512 GPU retirements and
+independent scanout images pass. Sustained above30 remains unproved.
+[Optimized hardware proof](../tests/m9-faa-fullscreen-direct-bench-20261008/optimized512/README.md). DRM1cf74bd/07867a9/6d4d053 also
+integrate source-qualified disabled-depth reset/mixed constructors and
+repeated dual-texture packet/sampler constructors. Their runtime plumbing
+and corrected dual-upload hardware pixels remain in progress; Quake3 FAA
+is not yet passed. No new no-FAA GL2 application benchmark is claimed.
+
 ## October 8: continuous GPU-presented FAA glxgears passes
 
 DRM a86fcdc / Mesa3c3e1f3 completes96 real glxgears frames with GPU transforms
