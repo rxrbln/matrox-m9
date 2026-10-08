@@ -945,8 +945,8 @@ int m9x_faa_graph_retained_get_locked(struct m9x_device *mdev, u32 generation,
  * adding to r->primary_bytes applies that delta without touching the
  * already retired prefix or resetting COMMAND_BASE.  0x60 is the source
  * timeline distance from the actual INIT receipt to the final writeback. */
-static int m9_faa_graph_stage_shape(const struct m9x_faa_replay *r,
-				    u32 stage, u64 init_point, u32 *end_bytes,
+static int m9_faa_graph_stage_shape(const struct m9x_faa_replay *r, u32 stage,
+				    u64 init_point, u32 *end_bytes,
 				    bool *repeat, u32 *target)
 {
 	u32 end;
@@ -956,8 +956,8 @@ static int m9_faa_graph_stage_shape(const struct m9x_faa_replay *r,
 	    stage >= 3 || !r->primary_bytes ||
 	    lower_32_bits(init_point) > U32_MAX - 0x60)
 		return -EINVAL;
-	if (check_add_overflow(r->primary_bytes,
-			       stage == 2 ? 88u : 64u, &end) ||
+	if (check_add_overflow(r->primary_bytes, stage == 2 ? 88u : 64u,
+			       &end) ||
 	    end > r->owner[M9_FAA_PRIMARY_OWNER].bytes ||
 	    (stage == 0 && r->graph_draw_end_bytes != r->primary_bytes) ||
 	    (stage && r->graph_draw_end_bytes != r->primary_bytes + 64))
@@ -967,6 +967,7 @@ static int m9_faa_graph_stage_shape(const struct m9x_faa_replay *r,
 	*target = stage == 2 ? lower_32_bits(init_point) + 0x60 : 0;
 	return 0;
 }
+
 #endif
 
 /* Claim the separate public caller before its CPU mapping and program
