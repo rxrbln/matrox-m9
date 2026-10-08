@@ -4185,8 +4185,8 @@ int m9x_faa_submit_diag(struct m9x_device *mdev, u32 color,
 }
 
 int m9x_faa_submit_graph(struct m9x_device *mdev,
-			 struct m9_faa_graph_binding *binding,
-			 u64 *point, bool *posted)
+			 struct m9_faa_graph_binding *binding, u64 *point,
+			 bool *posted)
 {
 #ifdef M9_FAA_GRAPH_INIT_CONTROL
 	static const u32 init[5] = {
@@ -4195,6 +4195,7 @@ int m9x_faa_submit_graph(struct m9x_device *mdev,
 	struct drm_gem_object *gem;
 	struct drm_gem_vram_object *bo;
 	struct iosys_map map = IOSYS_MAP_INIT_VADDR(NULL);
+
 	u32 check[ARRAY_SIZE(init)];
 	bool retained;
 	int ret;
@@ -4203,10 +4204,12 @@ int m9x_faa_submit_graph(struct m9x_device *mdev,
 		return -EINVAL;
 	mutex_lock(&mdev->transport.lock);
 	ret = mdev->transport.faa &&
-	      mdev->transport.faa->graph_binding == binding &&
-	      mdev->transport.faa->prepared &&
-	      mdev->transport.generation ==
-		mdev->transport.faa->graph_generation ? 0 : -ESTALE;
+			      mdev->transport.faa->graph_binding == binding &&
+			      mdev->transport.faa->prepared &&
+			      mdev->transport.generation ==
+				      mdev->transport.faa->graph_generation ?
+		      0 :
+		      -ESTALE;
 	mutex_unlock(&mdev->transport.lock);
 	if (ret)
 		return ret;
@@ -4215,7 +4218,8 @@ int m9x_faa_submit_graph(struct m9x_device *mdev,
 		return -EINVAL;
 	/* The caller holds all six drm_exec reservations through the actual
 	 * native wait. The two nonzero words are source instruction immediates,
-	 * not captured address relocations; only the known 20 bytes are written. */
+	 * not captured address relocations; only the known 20 bytes are written.
+	 */
 	bo = drm_gem_vram_of_gem(gem);
 	ret = drm_gem_vram_vmap(bo, &map);
 	if (ret)
