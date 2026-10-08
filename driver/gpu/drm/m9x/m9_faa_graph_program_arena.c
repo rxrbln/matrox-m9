@@ -49,7 +49,8 @@ int m9x_faa_program_arena_encode(
 		return -EINVAL;
 	for (i = 0; i < count; i++) {
 		const struct m9x_faa_program_arena_job *q = &job[i];
-		u32 extra, expected_bytes;
+		int extra;
+		u32 expected_bytes;
 
 		if (!q->program || !q->secondary || !q->program_bytes ||
 		    (q->program_bytes & 7) ||
@@ -65,7 +66,7 @@ int m9x_faa_program_arena_encode(
 		    overlaps(slot_offset, count * sizeof(*slot_offset),
 			     q->secondary, q->secondary_bytes))
 			return -EINVAL;
-		extra = ((q->declaration_count + 3) / 4 - 2) * 24;
+		extra = ((int)((q->declaration_count + 3) / 4) - 2) * 24;
 		expected_bytes = 2712 + extra;
 		if (q->secondary_bytes != expected_bytes ||
 		    q->entry_bytes[0] ||
@@ -75,8 +76,8 @@ int m9x_faa_program_arena_encode(
 		for (k = 0; k < 4; k++) {
 			u32 p = page_at[k], e = entry_at[k];
 
-			if (p >= 576) p += extra;
-			if (e >= 576) e += extra;
+			if (p >= 576) p = (u32)((int)p + extra);
+			if (e >= 576) e = (u32)((int)e + extra);
 			if ((q->entry_bytes[k] & 7) ||
 			    q->entry_bytes[k] >= q->program_bytes ||
 			    (k && q->entry_bytes[k] <= q->entry_bytes[k-1]) ||
@@ -114,7 +115,8 @@ int m9x_faa_program_arena_encode(
 			u32 e = entry_at[k];
 
 			if (e >= 576)
-				e += ((q->declaration_count + 3) / 4 - 2) * 24;
+				e = (u32)((int)e +
+				 ((int)((q->declaration_count + 3) / 4) - 2) * 24);
 			put(q->secondary + e, (slot[i] + q->entry_bytes[k]) / 8);
 		}
 		slot_offset[i] = slot[i];

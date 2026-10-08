@@ -81,11 +81,12 @@ int m9x_faa_first_depth_encode(const u8 *sample,size_t sample_bytes,
  const struct m9x_faa_color_image *first_scratch,
  struct m9x_faa_first_depth_scratch *prefix_scratch)
 {
- u32 length,sec,i,ef;
+ u32 length,sec,i,ef,shift;
  int ret;
  if(!owner||!primary||!secondary||!primary_bytes||!secondary_bytes||!ends||!first_scratch||
   !first_scratch->secondary_length||!prefix_scratch||!input||
-  input->layout.program_count!=4||input->declaration_count!=5||
+  input->layout.program_count!=4||
+  (input->declaration_count!=3&&input->declaration_count!=5)||
   init_point>~(u64)0-0x150||(u32)init_point>0xfffffeafu||
   init_bytes>owner[27].bytes||owner[27].bytes-init_bytes<
    M9_FAA_FIRST_DEPTH_PREFIX_CAPACITY+M9_FAA_COLOR_PRIMARY_BYTES-64||
@@ -99,22 +100,23 @@ int m9x_faa_first_depth_encode(const u8 *sample,size_t sample_bytes,
  ret=m9x_faa_color_four_encode(first,first_bytes,owner,init_bytes,
   init_point+0x70,input,first_scratch);if(ret)return ret;
  sec=*first_scratch->secondary_length;
- if(sec!=2712||sec>secondary_capacity)return -EINVAL;
+ shift=input->declaration_count==3?24:0;
+ if(sec!=2712-shift||sec>secondary_capacity)return -EINVAL;
  ret=m9x_faa_first_depth_prefix_encode(sample,sample_bytes,owner,views,init_point,
   primary,primary_capacity,&length,ends,prefix_scratch);if(ret)return ret;
  memcpy(primary+length,first_scratch->primary+64,M9_FAA_COLOR_PRIMARY_BYTES-64);
  memcpy(secondary,first_scratch->secondary,sec);
  /* Original 181fa0 ZENABLE mode lowers EF's depth mode bit. A8 separately
   * lowers enable/write/LESS (cmp_map LESS=0), with format3d validated above. */
- ef=(u32)secondary[1920]|(u32)secondary[1921]<<8|
-  (u32)secondary[1922]<<16|(u32)secondary[1923]<<24;
- put(secondary+1920,ef&~0x20000000u);
- put(secondary+2076,views->owner[M9_FAA_BOUND_DEPTH].base|1);
+ ef=(u32)secondary[1920-shift]|(u32)secondary[1921-shift]<<8|
+  (u32)secondary[1922-shift]<<16|(u32)secondary[1923-shift]<<24;
+ put(secondary+1920-shift,ef&~0x20000000u);
+ put(secondary+2076-shift,views->owner[M9_FAA_BOUND_DEPTH].base|1);
  /* FIRST's 12e75a constructor has no BA/HZ attachment in this slot. It
   * initializes the default null G16R16 view; the bound HZ owner remains
   * separately retained by the preceding clear producers. */
- put(secondary+2092,0);put(secondary+2096,0xf0010100);
- put(secondary+2200,0x0038038c|1u|2u);
+ put(secondary+2092-shift,0);put(secondary+2096-shift,0xf0010100);
+ put(secondary+2200-shift,0x0038038c|1u|2u);
  for(i=0;i<M9_FAA_FIRST_DEPTH_PREFIX_ENDS;i++)ends[i]+=init_bytes;
  ends[10]=init_bytes+length+60;
  ends[11]=ends[12]=init_bytes+length+M9_FAA_COLOR_PRIMARY_BYTES-64-12;

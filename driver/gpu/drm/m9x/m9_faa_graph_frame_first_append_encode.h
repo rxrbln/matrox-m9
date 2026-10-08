@@ -4,13 +4,14 @@
 #include "m9_faa_graph_color_encode.h"
 
 #define M9_FAA_FIRST_APPEND_SECONDARY_BYTES 2700u
+#define M9_FAA_FIRST_APPEND_SECONDARY_DECL3_BYTES 2676u
 #define M9_FAA_FIRST_APPEND_ENDS 14u
 
 struct m9x_faa_frame_first_append_image {
 	u8 *primary, *secondary;
 	u32 primary_capacity, secondary_capacity;
 	u32 end_bytes[M9_FAA_FIRST_APPEND_ENDS];
-	u32 primary_bytes;
+	u32 primary_bytes, secondary_bytes;
 	u64 final_point;
 };
 
@@ -20,7 +21,9 @@ struct m9x_faa_frame_first_append_image {
  * from trusted live COLOR4 encoders with identical program/declaration/state
  * but disjoint caller-owned constant/geometry ranges. No GPU post or fence
  * transition occurs here. Original two-output N=2/3 controls are exact;
- * live one-output/FF/count variants remain subject to hardware proof. */
+ * A source-proven one-input declaration uses a single 24-byte declaration
+ * group, so the secondary length is returned per call. Live one-output/FF
+ * program execution remains subject to hardware proof. */
 int m9x_faa_frame_first_append_encode(
 	const struct m9x_faa_graph_draw_owner owner[31],
 	u32 init_bytes, u64 init_point, u32 old_draw_count,
