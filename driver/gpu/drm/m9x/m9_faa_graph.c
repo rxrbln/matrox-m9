@@ -2026,7 +2026,9 @@ int m9x_faa_graph_dual_first_ioctl(struct drm_device *drm,void *data,
  if(!state||args->version!=PARHELIA_M9_FAA_DUAL_FIRST_VERSION||
     (args->flags&~PARHELIA_M9_FAA_DUAL_FIRST_COLORPASS_DIAGNOSTIC)||
     args->state||args->pad||args->lock_point||
-    args->width!=320||args->height!=240||args->clear_flags!=3||
+    !m9x_faa_runtime_shape(args->width,args->height)||
+    ((args->flags&PARHELIA_M9_FAA_DUAL_FIRST_COLORPASS_DIAGNOSTIC)&&
+     (args->width!=320||args->height!=240))||args->clear_flags!=3||
     args->clear_color||!m9x_faa_depth_flags_valid(args->depth_flags)||
     args->layout.program_count!=4||args->declaration_count!=9||
     args->record_stride!=64||!args->record_count||

@@ -1,4 +1,5 @@
 /* SPDX-License-Identifier: GPL-2.0-only */
+/* Copyright 2026 René Rebe <rene@exactco.de> */
 #ifndef M9_FAA_GRAPH_DUAL_FIRST_ENCODE_H
 #define M9_FAA_GRAPH_DUAL_FIRST_ENCODE_H
 
@@ -31,4 +32,5 @@ int m9x_faa_dual_first_encode(const u8 *sample,size_t sample_bytes,
  const struct m9x_faa_color_image *color_scratch,
  struct m9x_faa_first_depth_scratch *prefix_scratch);
 
+u32 m9x_faa_guard_field(u32 guard_x_bits,u32 guard_y_bits);
 #endif

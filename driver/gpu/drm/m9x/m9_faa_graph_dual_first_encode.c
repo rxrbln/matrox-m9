@@ -1,4 +1,5 @@
 /* SPDX-License-Identifier: GPL-2.0-only */
+/* Copyright 2026 René Rebe <rene@exactco.de> */
 /* Source-qualified M9128 FIRST-depth COLOR0/TEX0/TEX1 command producer. */
 #include <linux/errno.h>
 #include <linux/string.h>
@@ -49,6 +50,23 @@ static u32 rd(const u8 *p,u32 at)
 {return (u32)p[at]|(u32)p[at+1]<<8|(u32)p[at+2]<<16|(u32)p[at+3]<<24;}
 static void wr(u8 *p,u32 at,u32 v)
 {p[at]=v;p[at+1]=v>>8;p[at+2]=v>>16;p[at+3]=v>>24;}
+/* Truncated magnitude of an IEEE single, as fistp after fabs with RC=chop. */
+static u32 float_trunc(u32 bits)
+{
+ u32 e=(bits>>23)&0xff,m=(bits&0x7fffff)|0x800000;
+ if(e<127)return 0;
+ if(e>=127+31)return U32_MAX;
+ return e>=150?m<<(e-150):m>>(150-e);
+}
+static u32 floor_log2(u32 v)
+{u32 n=0;while(v>1){v>>=1;n++;}return n;}
+/* Original 13b900: guard band coefficients of the position constants select
+ * two 3-bit fields (log2-1) at bits 14:12 (x) and 7:5 (y) of setup word 84. */
+u32 m9x_faa_guard_field(u32 guard_x_bits,u32 guard_y_bits)
+{
+ return ((floor_log2(float_trunc(guard_x_bits))-1)&7)<<12|
+  ((floor_log2(float_trunc(guard_y_bits))-1)&7)<<5;
+}
 static bool sha_ok(const u8 *data,u32 bytes,const u8 expected[32])
 {u8 digest[32];sha256(data,bytes,digest);return !memcmp(digest,expected,32);}
 
@@ -66,6 +84,7 @@ int m9x_faa_dual_first_encode(const u8 *sample,size_t sample_bytes,
  const struct m9x_faa_color_input *c;
  struct m9x_faa_texture_dual_link_input link={0};
  struct m9x_faa_texture_dual_program program={0};
+ struct m9x_faa_surface_layout layout;
  u8 *stage;u32 length,raw,geo,padded,base,limit,off,value,i,j;
  int ret;
  if(!sample||!color_template||!dual_template||!owner||!views||!input||
@@ -81,6 +100,9 @@ int m9x_faa_dual_first_encode(const u8 *sample,size_t sample_bytes,
   (u32)init_point>0xfffffeafu||
   !sha_ok(dual_template,dual_template_bytes,template_sha))return -EINVAL;
  c=input->color;
+ if(!m9x_faa_surface_layout(views->owner[M9_FAA_BOUND_COLOR].width,
+  views->owner[M9_FAA_BOUND_COLOR].height,&layout)||
+  c->layout.constant_end[3]-c->layout.constant_begin[3]!=104)return -EINVAL;
  if(!c->program||!c->constants||!c->geometry||!c->declaration||
   !c->dual_base_only||c->layout.program_count!=4||
   c->layout.entry_bytes[0]||c->layout.entry_bytes[1]!=72||
@@ -137,7 +159,21 @@ int m9x_faa_dual_first_encode(const u8 *sample,size_t sample_bytes,
   wr(stage,552+i*24+j*4,j+i*4<c->declaration_count?
    rd(c->declaration,(i*4+j)*4):0);
  wr(stage,2292,0xffff);wr(stage,2296,0);
- wr(stage,2316,0xf00140);wr(stage,2324,0xf00140);
+ wr(stage,2316,layout.height<<16|layout.width);
+ wr(stage,2324,layout.height<<16|layout.width);
+ /* Seven dimension words: primary/companion descriptors, the MAIN extent
+  * AD quartet and the active rectangle above. */
+ wr(stage,2136,layout.primary_descriptor);
+ wr(stage,2152,layout.companion_descriptor);
+ for(i=0;i<4;i++)wr(stage,2240+i*4,layout.ad);
+ /* Position constants k[19]/k[21] are the live x/y guard coefficients. */
+ value=m9x_faa_guard_field(rd(c->constants,c->layout.constant_begin[3]+76),
+  rd(c->constants,c->layout.constant_begin[3]+84));
+ for(i=0;i<3;i++){
+  static const u16 at[]={76,804,1448};
+  wr(stage,at[i],(rd(stage,at[i])&~0x70e0u)|value);
+ }
+ wr(stage,1996,(rd(stage,1996)&~0x70e0u)|value);
  wr(stage,2272,m9x_faa_depth_a8(c->depth_flags));
  /* Source f0/ef/d7 and fragment usage describe this exact authenticated
   * dual-multiply FS72 interface. Other fragment programs refuse above. */
