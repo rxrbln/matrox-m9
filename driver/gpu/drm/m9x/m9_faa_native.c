@@ -1515,7 +1515,8 @@ static void m9_faa_unmap_system_locked(struct m9x_device *mdev,
 		m9x_address_unmap_system(mdev, &r->counter_node);
 	for (i = 0; i < ARRAY_SIZE(r->owner); i++)
 		if (drm_mm_node_allocated(&r->owner[i].system_node))
-			m9x_address_unmap_system(mdev, &r->owner[i].system_node);
+			m9x_address_unmap_system(mdev,
+						 &r->owner[i].system_node);
 #ifdef M9_FAA_GRAPH_INIT_CONTROL
 	for (i = 0; i < ARRAY_SIZE(r->draw_owner); i++)
 		if (drm_mm_node_allocated(&r->draw_owner[i].system_node))
