@@ -1551,6 +1551,14 @@ static int m9_triangle_context_init_locked(struct m9x_device *mdev,
 	return 0;
 }
 
+/* The Linux first context has retired on this requester. */
+bool m9x_triangle_context_ready_locked(struct m9x_device *mdev)
+{
+	lockdep_assert_held(&mdev->transport.lock);
+	return mdev->transport.triangle &&
+	       mdev->transport.triangle->context_initialized;
+}
+
 int m9x_engine_ready_locked(struct m9x_device *mdev)
 {
 	bool source_init = m9x_faa_source_init_enabled(mdev);

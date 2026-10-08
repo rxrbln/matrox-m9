@@ -748,6 +748,11 @@ module_param_named(faa_ordinary_continue, m9_faa_ordinary_continue, bool, 0400);
 MODULE_PARM_DESC(faa_ordinary_continue,
 		 "Append ordinary jobs to a retained FAA primary instead of refusing them (UNTESTED)");
 
+bool m9x_faa_ordinary_continue_enabled(void)
+{
+	return m9_faa_ordinary_continue;
+}
+
 /* The current DMA32 staging slot; only a job that does not fit switches the
  * slot, after the prior interval retired, and rebases the requester's 0x400.
  */

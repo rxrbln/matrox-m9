@@ -1023,6 +1023,22 @@ static bool m9_faa_transport_fresh(const struct m9x_transport *t)
 	       READ_ONCE(((u32 *)t->fence_cpu)[1]) == 0x10;
 }
 
+/* A used requester whose Linux first context retired: with ordinary jobs
+ * continuing the FAA primary, the graph INIT continues its live timeline.
+ * Its queue-initialize part re-establishes the vendor queue state that the
+ * M9148 sequence0 sets differently (c0, 62, 66).
+ */
+static bool m9_faa_transport_continuable(struct m9x_device *mdev)
+{
+	const struct m9x_transport *t = &mdev->transport;
+
+	return m9x_faa_ordinary_continue_enabled() && !t->faa_virtual_primary &&
+	       !t->wedged && !t->async_stop &&
+	       t->transport_armed && t->bus_master_enabled &&
+	       t->engine_transitioned && t->restore_ready && t->fence_cpu &&
+	       m9x_triangle_context_ready_locked(mdev);
+}
+
 /* The unchanged native origin10 is an initial CPU counter seed. Fresh
  * source admission must never call it a previous GPU retirement. */
 int m9x_faa_source_init_admit_locked(struct m9x_device *mdev,
@@ -1033,8 +1049,11 @@ int m9x_faa_source_init_admit_locked(struct m9x_device *mdev,
 
 	lockdep_assert_held(&t->lock);
 	if (!m9x_faa_source_init_enabled(mdev) || !r || !r->prepared ||
-	    !t->fence_cpu || t->wedged || context_initialized)
+	    !t->fence_cpu || t->wedged)
 		return -EINVAL;
+	if (context_initialized)
+		return !r->attempted && m9_faa_transport_continuable(mdev) ?
+		       0 : -EINVAL;
 	/* Repeated CPU-view preparation may reuse the admitted manager. It
 	 * cannot start a second frame: the caller's attempted gate remains. */
 	if (t->faa_source_context && r->attempted)
@@ -2391,7 +2410,8 @@ static int m9_faa_prepare(struct m9x_device *mdev,
 	/* The source INIT is the requester's first command; refuse it before
 	 * claiming the producer slot, so a refusal leaves no replay behind.
 	 */
-	if (binding && !m9_faa_transport_fresh(&mdev->transport)) {
+	if (binding && !m9_faa_transport_fresh(&mdev->transport) &&
+	    !m9_faa_transport_continuable(mdev)) {
 		ret = -ESTALE;
 		goto unlock;
 	}
@@ -2551,8 +2571,8 @@ static int m9_faa_prepare(struct m9x_device *mdev,
 		locked = true;
 		if (mdev->transport.faa != r || mdev->transport.wedged ||
 		    mdev->transport.generation != generation ||
-		    mdev->transport.submitted_point ||
-		    mdev->transport.queue_count) {
+		    (!m9_faa_transport_fresh(&mdev->transport) &&
+		     !m9_faa_transport_continuable(mdev))) {
 			ret = -ESTALE;
 			goto free;
 		}
