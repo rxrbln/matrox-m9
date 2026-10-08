@@ -270,15 +270,17 @@ void m9x_faa_trace(struct m9x_device *mdev, const char *phase, u32 index,
 #define M9_FAA_SAMPLE_CLEAR_FIRMWARE "m9x/faa-graph-sample-clear-template.bin"
 #define M9_FAA_DEPTH_DRAW_FIRMWARE "m9x/faa-graph-depth-draw-template.bin"
 struct m9_faa_command_pools {
- struct m9_faa_owner spare[2]; /* independent primary/secondary SYSTEM MDLs */
- struct m9x_faa_pool_timeline timeline;
- m9x_faa_primary_pool primary;
- struct m9x_faa_secondary_pool secondary;
- u32 generation;
- u64 unlock_point, maintenance_point;
- u32 unlock_end, unlock_posts, parent_end, secondary_cursor, posts;
- bool ready, rotated;
+	/* independent primary/secondary SYSTEM MDLs */
+	struct m9_faa_owner spare[2];
+	struct m9x_faa_pool_timeline timeline;
+	m9x_faa_primary_pool primary;
+	struct m9x_faa_secondary_pool secondary;
+	u32 generation;
+	u64 unlock_point, maintenance_point;
+	u32 unlock_end, unlock_posts, parent_end, secondary_cursor, posts;
+	bool ready, rotated;
 };
+
 struct m9_faa_depth_frame_storage {
  u8 primary[M9_FAA_DEPTH_FRAME_PRIMARY_CAPACITY];
  u8 secondary[M9_FAA_COLOR_SECONDARY_CAPACITY];
