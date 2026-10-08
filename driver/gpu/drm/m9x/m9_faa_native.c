@@ -5747,8 +5747,8 @@ static void m9_faa_dual_bound_color_observe(struct m9x_device *mdev,
  * actual Lock, and the ioctl holds their reservations here. MAIN/AUX may
  * contain initialized metadata; nonzero raw words are not render coverage. */
 static void m9_faa_dual_graph_raw_observe(struct m9x_device *mdev,
-					  struct m9x_faa_replay *r,
-					  u32 role, const char *name, u32 logical_bytes)
+					  struct m9x_faa_replay *r, u32 role,
+					  const char *name, u32 logical_bytes)
 {
 	struct m9_faa_owner *owner;
 	struct drm_gem_object *gem;
@@ -5765,10 +5765,11 @@ static void m9_faa_dual_graph_raw_observe(struct m9x_device *mdev,
 
 	lockdep_assert_held(&mdev->transport.lock);
 	/* The pre-DRAW probe runs after INIT retirement, before color_lock_point
-	 * is assigned. Log the transport's actual retired point for both probes. */
+	 * is assigned. Log the transport's actual retired point for both probes.
+	 */
 	if (!mdev->transport.completed_point ||
 	    mdev->transport.completed_point !=
-		mdev->transport.submitted_point) {
+		    mdev->transport.submitted_point) {
 		refusal = "retirement";
 		goto refused;
 	}
@@ -5779,10 +5780,11 @@ static void m9_faa_dual_graph_raw_observe(struct m9x_device *mdev,
 		goto refused;
 	owner = &r->owner[role];
 	gem = m9x_faa_graph_binding_owner(r->graph_binding, role - 1);
-	if (!gem || !m9x_faa_graph_binding_address(r->graph_binding,
-							 role - 1, &address, &source) ||
-	    source != role || address != owner->base ||
-	    owner->vram || owner->cpu ||
+	if (!gem ||
+	    !m9x_faa_graph_binding_address(r->graph_binding, role - 1, &address,
+					   &source) ||
+	    source != role || address != owner->base || owner->vram ||
+	    owner->cpu ||
 	    r->graph_layout.owner[role - 1].logical != logical_bytes ||
 	    r->graph_layout.owner[role - 1].capacity != owner->bytes) {
 		refusal = "binding";
@@ -5791,8 +5793,7 @@ static void m9_faa_dual_graph_raw_observe(struct m9x_device *mdev,
 	dma_resv_assert_held(gem->resv);
 	engine = role != 1;
 	if ((engine && !m9x_gem_is_engine_vram(gem)) ||
-	    (!engine && (!m9x_gem_is_vram(gem) ||
-			 !m9x_gem_vram_tiled(gem)))) {
+	    (!engine && (!m9x_gem_is_vram(gem) || !m9x_gem_vram_tiled(gem)))) {
 		refusal = "class";
 		goto refused;
 	}
@@ -5801,7 +5802,7 @@ static void m9_faa_dual_graph_raw_observe(struct m9x_device *mdev,
 	    r->graph_layout.owner[role - 1].capacity > gem->size ||
 	    (u64)local_offset > m9x_vram_gpu_limit(mdev) ||
 	    r->graph_layout.owner[role - 1].capacity >
-		m9x_vram_gpu_limit(mdev) - (u64)local_offset ||
+		    m9x_vram_gpu_limit(mdev) - (u64)local_offset ||
 	    check_add_overflow(M9_VRAM_GPU_BASE, (u64)local_offset, &base) ||
 	    base != owner->base) {
 		refusal = "placement";
@@ -5811,8 +5812,10 @@ static void m9_faa_dual_graph_raw_observe(struct m9x_device *mdev,
 		/* MAIN/AUX are engine-only BOs with no GEM vmap. The existing
 		 * slot-1 identity aperture is the CPU's read-only route to them.
 		 * This observer holds transport.lock, as required by the slot API,
-		 * and restores the empty slot before any later command can use it. */
-		if (!mdev->bar0_window || logical_bytes > M9_ADDRESS_SURFACE_BYTES ||
+		 * and restores the empty slot before any later command can use it.
+		 */
+		if (!mdev->bar0_window ||
+		    logical_bytes > M9_ADDRESS_SURFACE_BYTES ||
 		    (u64)local_offset > U32_MAX) {
 			refusal = "aperture";
 			goto refused;
@@ -5830,7 +5833,8 @@ static void m9_faa_dual_graph_raw_observe(struct m9x_device *mdev,
 	for (offset = 0; offset < logical_bytes; offset += sizeof(data)) {
 		chunk = min_t(u32, sizeof(data), logical_bytes - offset);
 		if (engine)
-			memcpy_fromio(data, (u8 __iomem *)mdev->bar0_window + offset,
+			memcpy_fromio(data,
+				      (u8 __iomem *)mdev->bar0_window + offset,
 				      chunk);
 		else
 			iosys_map_memcpy_from(data, &map, offset, chunk);
@@ -5850,8 +5854,7 @@ static void m9_faa_dual_graph_raw_observe(struct m9x_device *mdev,
 	}
 	dev_info(&mdev->pdev->dev,
 		 "M9 FAA dual graph raw %s owner%u: point=%#llx base=%#x bytes=%u nonzero_dwords=%u wordhash32=%08x first64=%*phN; retired physical VRAM only, preexisting metadata possible, no coverage or pixel interpretation\n",
-		 name, role,
-		 (unsigned long long)mdev->transport.completed_point,
+		 name, role, (unsigned long long)mdev->transport.completed_point,
 		 owner->base, logical_bytes, nonzero, hash, 64, data);
 	return;
 refused:
