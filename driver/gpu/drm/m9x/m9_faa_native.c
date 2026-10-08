@@ -3085,25 +3085,31 @@ static int m9_faa_normalize_raster_masks(struct m9x_faa_replay *r)
 static int m9_faa_rebase_page_clear(struct m9x_faa_replay *r)
 {
 	struct m9_faa_owner *primary = &r->owner[M9_FAA_PRIMARY_OWNER];
+
 #ifdef M9_FAA_GRAPH_INIT_CONTROL
 	u32 *scratch;
 	int ret;
 
 	if (!r->graph_binding || !primary->cpu || primary->vram ||
-	    r->owner[4].bytes < r->graph_layout.owner[M9_FAA_SURFACE_COMPANION].clear)
+	    r->owner[4].bytes <
+		    r->graph_layout.owner[M9_FAA_SURFACE_COMPANION].clear)
 		return -EINVAL;
-	scratch = kmalloc_array(M9_FAA_INIT_DIMENSION_CLEAR_WORDS, sizeof(*scratch), GFP_KERNEL);
+	scratch = kmalloc_array(M9_FAA_INIT_DIMENSION_CLEAR_WORDS,
+				sizeof(*scratch), GFP_KERNEL);
 	if (!scratch)
 		return -ENOMEM;
 	ret = m9x_faa_graph_init_dimensions_encode(primary->cpu, primary->bytes,
-		&r->graph_layout, m9_faa_owner_specs[4].captured,
-		r->owner[4].base, scratch, M9_FAA_INIT_DIMENSION_CLEAR_WORDS,
-		&r->primary_bytes);
+						   &r->graph_layout,
+						   m9_faa_owner_specs[4].captured,
+						   r->owner[4].base, scratch,
+						   M9_FAA_INIT_DIMENSION_CLEAR_WORDS,
+						   &r->primary_bytes);
 	kfree(scratch);
 	return ret;
 #elif defined(M9_FAA_HAS_COMPANION_CLEAR) && !M9_FAA_HAS_COMPANION_CLEAR
 	/* This complete source profile contains no inline companion clear.
-	 * Preserve its exact primary and independent secondary finish. */
+	 * Preserve its exact primary and independent secondary finish.
+	 */
 	if (!primary->cpu || primary->vram ||
 	    primary->bytes < M9_FAA_PRIMARY_BYTES ||
 	    M9_FAA_CLEAR_OWNER != U32_MAX || M9_FAA_CLEAR_BYTES ||
@@ -3112,7 +3118,8 @@ static int m9_faa_rebase_page_clear(struct m9x_faa_replay *r)
 	r->primary_bytes = M9_FAA_PRIMARY_BYTES;
 	return 0;
 #elif defined(M9_FAA_MULTI_CLEAR)
-	u32 replacement[ARRAY_SIZE(m9_faa_clear_segments)][M9_FAA_CLEAR_MAX_WORDS];
+	u32 replacement[ARRAY_SIZE(m9_faa_clear_segments)]
+		       [M9_FAA_CLEAR_MAX_WORDS];
 	u32 counts[ARRAY_SIZE(m9_faa_clear_segments)];
 	u32 original[M9_FAA_CLEAR_MAX_WORDS];
 	u64 bytes = M9_FAA_PRIMARY_BYTES;
@@ -3121,12 +3128,14 @@ static int m9_faa_rebase_page_clear(struct m9x_faa_replay *r)
 	int ret;
 
 	/* This profile contains two independently observed b5e70 calls. Check
-	 * every owner, packet and final extent before modifying any bytes. */
+	 * every owner, packet and final extent before modifying any bytes.
+	 */
 	if (ARRAY_SIZE(m9_faa_clear_segments) != 2 || !data || primary->vram ||
 	    primary->bytes < M9_FAA_PRIMARY_BYTES)
 		return -EINVAL;
 	for (i = 0; i < ARRAY_SIZE(m9_faa_clear_segments); i++) {
-		const struct m9_faa_clear_segment *s = &m9_faa_clear_segments[i];
+		const struct m9_faa_clear_segment *s =
+			&m9_faa_clear_segments[i];
 		struct m9_faa_owner *owner;
 
 		if (s->owner >= ARRAY_SIZE(r->owner) || !s->bytes ||
@@ -3154,25 +3163,32 @@ static int m9_faa_rebase_page_clear(struct m9x_faa_replay *r)
 		    get_unaligned_le32(data + s->end + 4) != 1)
 			return -EINVAL;
 		ret = m9_faa_clear_page_words(m9_faa_owner_specs[s->owner].captured,
-			s->bytes, original, ARRAY_SIZE(original), &original_count);
+					      s->bytes, original,
+					      ARRAY_SIZE(original),
+					      &original_count);
 		if (ret)
 			return ret;
 		if (original_count * 4 != s->end - s->start ||
 		    get_unaligned_le32(data + s->start - 4) !=
-			(0x20000000 | (original_count - 1)))
+			    (0x20000000 | (original_count - 1)))
 			return -EINVAL;
 		for (j = 0; j < original_count; j++)
-			if (get_unaligned_le32(data + s->start + j * 4) != original[j])
+			if (get_unaligned_le32(data + s->start + j * 4) !=
+			    original[j])
 				return -EINVAL;
 		ret = m9_faa_clear_page_words(owner->base, s->bytes,
-			replacement[i], ARRAY_SIZE(replacement[i]), &counts[i]);
+					      replacement[i],
+					      ARRAY_SIZE(replacement[i]),
+					      &counts[i]);
 		if (ret)
 			return ret;
 	}
 	/* Intermediate suffix growth must fit too, even when the earlier
-	 * segment later shrinks and the final length would fit the allocation. */
+	 * segment later shrinks and the final length would fit the allocation.
+	 */
 	for (i = ARRAY_SIZE(m9_faa_clear_segments); i-- > 0;) {
-		const struct m9_faa_clear_segment *s = &m9_faa_clear_segments[i];
+		const struct m9_faa_clear_segment *s =
+			&m9_faa_clear_segments[i];
 
 		bytes = bytes - (s->end - s->start) + counts[i] * 4;
 		if (bytes > primary->bytes)
@@ -3180,24 +3196,28 @@ static int m9_faa_rebase_page_clear(struct m9x_faa_replay *r)
 	}
 	/* Address and timeline fixups have already been applied at their
 	 * original offsets. Rebuild from the last segment backwards: shifting
-	 * an earlier suffix then preserves the already rebuilt later clear. */
+	 * an earlier suffix then preserves the already rebuilt later clear.
+	 */
 	bytes = M9_FAA_PRIMARY_BYTES;
 	for (i = ARRAY_SIZE(m9_faa_clear_segments); i-- > 0;) {
-		const struct m9_faa_clear_segment *s = &m9_faa_clear_segments[i];
+		const struct m9_faa_clear_segment *s =
+			&m9_faa_clear_segments[i];
 
 		memmove(data + s->start + counts[i] * 4, data + s->end,
 			bytes - s->end);
 		put_unaligned_le32(0x20000000 | (counts[i] - 1),
-			data + s->start - 4);
+				   data + s->start - 4);
 		for (j = 0; j < counts[i]; j++)
-			put_unaligned_le32(replacement[i][j], data + s->start + j * 4);
+			put_unaligned_le32(replacement[i][j],
+					   data + s->start + j * 4);
 		bytes = bytes - (s->end - s->start) + counts[i] * 4;
 	}
 	r->primary_bytes = bytes;
 	return 0;
 #else
 	struct m9_faa_owner *companion = &r->owner[M9_FAA_CLEAR_OWNER];
-	u32 original[M9_FAA_CLEAR_MAX_WORDS], replacement[M9_FAA_CLEAR_MAX_WORDS];
+	u32 original[M9_FAA_CLEAR_MAX_WORDS],
+		replacement[M9_FAA_CLEAR_MAX_WORDS];
 	u32 original_count, count, bytes, i;
 	u8 *data = primary->cpu;
 	int ret;
@@ -3216,18 +3236,22 @@ static int m9_faa_rebase_page_clear(struct m9x_faa_replay *r)
 	    get_unaligned_le32(data + M9_FAA_CLEAR_END + 4) != 1)
 		return -EINVAL;
 	ret = m9_faa_clear_page_words(m9_faa_owner_specs[M9_FAA_CLEAR_OWNER].captured,
-		M9_FAA_CLEAR_BYTES, original, ARRAY_SIZE(original), &original_count);
+				      M9_FAA_CLEAR_BYTES, original,
+				      ARRAY_SIZE(original), &original_count);
 	if (ret)
 		return ret;
-	if (original_count * sizeof(u32) != M9_FAA_CLEAR_END - M9_FAA_CLEAR_START ||
+	if (original_count * sizeof(u32) !=
+		    M9_FAA_CLEAR_END - M9_FAA_CLEAR_START ||
 	    get_unaligned_le32(data + M9_FAA_CLEAR_START - 4) !=
-		(0x20000000 | (original_count - 1)))
+		    (0x20000000 | (original_count - 1)))
 		return -EINVAL;
 	for (i = 0; i < original_count; i++)
-		if (get_unaligned_le32(data + M9_FAA_CLEAR_START + i * 4) != original[i])
+		if (get_unaligned_le32(data + M9_FAA_CLEAR_START + i * 4) !=
+		    original[i])
 			return -EINVAL;
 	ret = m9_faa_clear_page_words(companion->base, M9_FAA_CLEAR_BYTES,
-		replacement, ARRAY_SIZE(replacement), &count);
+				      replacement, ARRAY_SIZE(replacement),
+				      &count);
 	if (ret)
 		return ret;
 	bytes = M9_FAA_PRIMARY_BYTES - original_count * 4 + count * 4;
@@ -3235,9 +3259,11 @@ static int m9_faa_rebase_page_clear(struct m9x_faa_replay *r)
 		return -ENOSPC;
 	memmove(data + M9_FAA_CLEAR_START + count * 4, data + M9_FAA_CLEAR_END,
 		M9_FAA_PRIMARY_BYTES - M9_FAA_CLEAR_END);
-	put_unaligned_le32(0x20000000 | (count - 1), data + M9_FAA_CLEAR_START - 4);
+	put_unaligned_le32(0x20000000 | (count - 1),
+			   data + M9_FAA_CLEAR_START - 4);
 	for (i = 0; i < count; i++)
-		put_unaligned_le32(replacement[i], data + M9_FAA_CLEAR_START + i * 4);
+		put_unaligned_le32(replacement[i],
+				   data + M9_FAA_CLEAR_START + i * 4);
 	r->primary_bytes = bytes;
 	return 0;
 #endif
