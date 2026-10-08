@@ -5909,51 +5909,112 @@ out:
 }
 
 int m9x_faa_graph_public_vs_next_prepare(struct m9x_device *mdev,
- struct m9_faa_graph_binding *binding,u32 generation,u64 unlock_point,const u32 vertices[24])
+					 struct m9_faa_graph_binding *binding,
+					 u32 generation, u64 unlock_point,
+					 const u32 vertices[24])
 {
 #ifdef M9_FAA_GRAPH_INIT_CONTROL
- struct m9x_transport *t=&mdev->transport;struct m9x_faa_replay *r;
- struct m9_faa_public_vs_next_storage *n;
- struct m9_faa_graph_binding *checked=NULL;
- struct m9x_faa_graph_draw_owner owner[M9_FAA_DRAW_SOURCE_OWNERS];
- struct m9x_faa_public_vs_next_image out;
- const struct firmware *fw=NULL,*lock_fw=NULL;
- u32 i;int ret=m9x_faa_public_vs_next_vertices_valid(vertices);
- if(ret)return ret;
- ret=request_firmware(&fw,M9_FAA_GRAPH_PUBLIC_VS_NEXT_FIRMWARE,&mdev->pdev->dev);
- if(ret)return ret;
- ret=request_firmware(&lock_fw,M9_FAA_GRAPH_PUBLIC_VS_LOCK_FIRMWARE,&mdev->pdev->dev);
- if(ret)goto release;
- n=kzalloc(sizeof(*n),GFP_KERNEL);if(!n){ret=-ENOMEM;goto release;}
- mutex_lock(&t->lock);
- ret=m9x_faa_graph_public_vs_unlocked_get_locked(mdev,generation,unlock_point,&checked);
- if(ret)goto out;
- if(checked!=binding){ret=-ESTALE;goto out;}
- r=t->faa;
- if(r->public_vs_next_image||r->public_vs_next_attempted){ret=-ESTALE;goto out;}
- for(i=0;i<M9_FAA_DRAW_SOURCE_OWNERS;i++){
-  struct m9_faa_owner *o;
-  switch(i){case 26:o=&r->draw_owner[0];break;case 27:o=&r->owner[26];break;
-   case 28:o=&r->draw_owner[1];break;case 29:o=&r->draw_owner[2];break;
-   case 30:o=&r->owner[27];break;default:o=&r->owner[i];break;}
-  owner[i]=(struct m9x_faa_graph_draw_owner){o->base,o->bytes};
- }
- n->primary_start=r->graph_draw_end_bytes;n->draw_end=n->primary_start+60;
- n->lock_end=n->draw_end+M9_FAA_VS_LOCK_PRIMARY_BYTES;n->unlock_point=unlock_point;
- out=(struct m9x_faa_public_vs_next_image){n->primary,n->secondary,sizeof(n->primary),sizeof(n->secondary)};
- ret=m9x_faa_public_vs_next_encode(fw->data,fw->size,owner,n->primary_start,2688,512,unlock_point,
-  r->public_vs_image->layout.constant_begin[0],r->public_vs_image->layout.constant_end[0],&out);
- if(ret)goto out;
- ret=m9x_faa_public_vs_lock_encode(lock_fw->data,lock_fw->size,owner,n->draw_end,
-  320,240,unlock_point+0xa0,n->lock_primary,sizeof(n->lock_primary));
- if(ret)goto out;
- memcpy(n->vertices,vertices,sizeof(n->vertices));r->public_vs_next_image=n;n=NULL;
+	struct m9x_transport *t = &mdev->transport;
+	struct m9x_faa_replay *r;
+	struct m9_faa_public_vs_next_storage *n;
+	struct m9_faa_graph_binding *checked = NULL;
+	struct m9x_faa_graph_draw_owner owner[M9_FAA_DRAW_SOURCE_OWNERS];
+	struct m9x_faa_public_vs_next_image out;
+	const struct firmware *fw = NULL, *lock_fw = NULL;
+	u32 i;
+	int ret = m9x_faa_public_vs_next_vertices_valid(vertices);
+
+	if (ret)
+		return ret;
+	ret = request_firmware(&fw, M9_FAA_GRAPH_PUBLIC_VS_NEXT_FIRMWARE,
+			       &mdev->pdev->dev);
+	if (ret)
+		return ret;
+	ret = request_firmware(&lock_fw, M9_FAA_GRAPH_PUBLIC_VS_LOCK_FIRMWARE,
+			       &mdev->pdev->dev);
+	if (ret)
+		goto release;
+	n = kzalloc_obj(*n);
+	if (!n) {
+		ret = -ENOMEM;
+		goto release;
+	}
+	mutex_lock(&t->lock);
+	ret = m9x_faa_graph_public_vs_unlocked_get_locked(mdev, generation,
+							  unlock_point, &checked);
+	if (ret)
+		goto out;
+	if (checked != binding) {
+		ret = -ESTALE;
+		goto out;
+	}
+	r = t->faa;
+	if (r->public_vs_next_image || r->public_vs_next_attempted) {
+		ret = -ESTALE;
+		goto out;
+	}
+	for (i = 0; i < M9_FAA_DRAW_SOURCE_OWNERS; i++) {
+		struct m9_faa_owner *o;
+
+		switch (i) {
+		case 26:
+			o = &r->draw_owner[0];
+			break;
+		case 27:
+			o = &r->owner[26];
+			break;
+		case 28:
+			o = &r->draw_owner[1];
+			break;
+		case 29:
+			o = &r->draw_owner[2];
+			break;
+		case 30:
+			o = &r->owner[27];
+			break;
+		default:
+			o = &r->owner[i];
+			break;
+		}
+		owner[i] =
+			(struct m9x_faa_graph_draw_owner){ o->base, o->bytes };
+	}
+	n->primary_start = r->graph_draw_end_bytes;
+	n->draw_end = n->primary_start + 60;
+	n->lock_end = n->draw_end + M9_FAA_VS_LOCK_PRIMARY_BYTES;
+	n->unlock_point = unlock_point;
+	out = (struct m9x_faa_public_vs_next_image){ n->primary, n->secondary,
+						     sizeof(n->primary),
+						     sizeof(n->secondary) };
+	ret = m9x_faa_public_vs_next_encode(fw->data, fw->size, owner,
+					    n->primary_start, 2688, 512,
+					    unlock_point,
+					    r->public_vs_image->layout.constant_begin[0],
+					    r->public_vs_image->layout.constant_end[0],
+					    &out);
+	if (ret)
+		goto out;
+	ret = m9x_faa_public_vs_lock_encode(lock_fw->data, lock_fw->size, owner,
+					    n->draw_end, 320, 240,
+					    unlock_point + 0xa0, n->lock_primary,
+					    sizeof(n->lock_primary));
+	if (ret)
+		goto out;
+	memcpy(n->vertices, vertices, sizeof(n->vertices));
+	r->public_vs_next_image = n;
+	n = NULL;
 out:
- mutex_unlock(&t->lock);m9x_faa_graph_binding_put(checked);kfree(n);
+	mutex_unlock(&t->lock);
+	m9x_faa_graph_binding_put(checked);
+	kfree(n);
 release:
- if(lock_fw)release_firmware(lock_fw);if(fw)release_firmware(fw);return ret;
+	if (lock_fw)
+		release_firmware(lock_fw);
+	if (fw)
+		release_firmware(fw);
+	return ret;
 #else
- return -EOPNOTSUPP;
+	return -EOPNOTSUPP;
 #endif
 }
 
