@@ -881,8 +881,8 @@ bool m9x_faa_graph_preparing(struct m9x_device *mdev)
 /* First post-INIT caller only. Its source timeline starts from the same
  * retired b0-era context; an already continued primary or an outstanding
  * phase must not be admitted using INIT's receipt again. No MMIO is read. */
-static int m9_faa_graph_continuation_state(
-		const struct m9x_transport *t, u32 generation, u64 init_point)
+static int m9_faa_graph_continuation_state(const struct m9x_transport *t,
+					   u32 generation, u64 init_point)
 {
 	const struct m9x_faa_replay *r = t->faa;
 	u64 origin;
@@ -894,8 +894,7 @@ static int m9_faa_graph_continuation_state(
 	    r->graph_preparing || r->graph_draw_claimed ||
 	    r->graph_generation != generation ||
 	    r->observation_generation != generation ||
-	    t->generation != generation ||
-	    r->observation_point != init_point)
+	    t->generation != generation || r->observation_point != init_point)
 		return -ESTALE;
 	origin = m9_faa_first_origin(r, init_point);
 	if (t->submitted_point != origin || t->completed_point != origin ||
@@ -908,7 +907,8 @@ static int m9_faa_graph_continuation_state(
 	    t->async_stop || t->async_pending || t->queue_count)
 		return -EBUSY;
 	/* Separate typed DRAW/clear/Lock producers admit these closed shapes. */
-	if (!m9x_faa_runtime_shape(r->graph_layout.width,r->graph_layout.height))
+	if (!m9x_faa_runtime_shape(r->graph_layout.width,
+				   r->graph_layout.height))
 		return -EOPNOTSUPP;
 	return 0;
 }
