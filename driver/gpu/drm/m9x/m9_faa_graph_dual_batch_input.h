@@ -12,7 +12,9 @@
 int m9x_faa_dual_batch_copy(const struct drm_parhelia_m9_faa_graph_dual_batch
 				    *args,
 			    struct m9x_faa_owned_color_batch **result);
-/* Version 2 retained later DRAWs: same program and texture pair, own data. */
+/* Version 2 retained later DRAWs: same program and texture pair, own data.
+ * Version 3: each DRAW also names its own texture pair.
+ */
 int m9x_faa_dual_later_batch_copy(const struct drm_parhelia_m9_faa_graph_dual_later
 					  *args,
 				  struct m9x_faa_owned_color_batch **result);

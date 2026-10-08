@@ -390,6 +390,9 @@ struct m9x_faa_replay {
 	 * Both pinned sets survive until DMA-stop teardown. */
 	struct m9x_faa_texture_owners dual_next_textures;
 	bool dual_active_second;
+	/* Per-DRAW sets whose release met an unsignaled posted fence. */
+	struct m9x_faa_texture_owners *deferred_textures;
+	u32 deferred_count;
 	struct m9_faa_public_vs_storage *public_vs_image;
  struct m9_faa_color_storage *color_image;
  struct m9_faa_depth_storage *depth_storage;
@@ -1109,6 +1112,14 @@ static bool m9_faa_release(struct m9x_device *mdev, struct m9x_faa_replay *r)
 		goto quarantine;
 	if (!m9x_faa_texture_owners_put(&r->dual_next_textures, true))
 		goto quarantine;
+	while (r->deferred_count) {
+		if (!m9x_faa_texture_owners_put(
+			&r->deferred_textures[r->deferred_count - 1], true))
+			goto quarantine;
+		r->deferred_count--;
+	}
+	kvfree(r->deferred_textures);
+	r->deferred_textures = NULL;
 #endif
 	/* Reserve every private TTM view before freeing anything. A failed
 	 * reservation must not be followed by vunmap or a partial owner release. */
@@ -8031,7 +8042,7 @@ int m9x_faa_graph_dual_later_prepare(struct m9x_device *mdev,
  u64 next=0,origin;bool new_pair=false;int ret;
  u8 *arena=NULL,*batch_secondary=NULL,*job_primary=NULL,*job_secondary=NULL;
  u8 *composed=NULL;
- u32 slots[M9_FAA_DUAL_BATCH_MAX_DRAWS],arena_bytes=0,first_len,sec_bytes;
+ u32 *slots=NULL,arena_bytes=0,first_len,sec_bytes;
  u32 i,raw,span,job_bytes,ends[14];
  if(batch)input=&batch->draw[0].input;
  if(!binding||!input||!textures||!textures->gem[0]||!textures->gem[1]||
@@ -8043,8 +8054,10 @@ int m9x_faa_graph_dual_later_prepare(struct m9x_device *mdev,
   input->dual_colorpass_diagnostic||!input->dual_base_only||
   !m9x_faa_depth_flags_valid(input->depth_flags))return -EOPNOTSUPP;
  if(batch){
-  if(!batch->count||batch->count>M9_FAA_DUAL_BATCH_MAX_DRAWS||
+  if(!batch->count||batch->count>M9_FAA_DUAL_LATER_MAX_DRAWS||
      batch->clear_flags!=clear_flags)return -EOPNOTSUPP;
+  slots=kmalloc_array(batch->count,sizeof(*slots),GFP_KERNEL);
+  if(!slots)return -ENOMEM;
   for(i=0;i<batch->count;i++){
    const struct m9x_faa_color_input *job=&batch->draw[i].input;
    if(job->data_offset||job->layout.program_count!=4||
@@ -8055,13 +8068,13 @@ int m9x_faa_graph_dual_later_prepare(struct m9x_device *mdev,
       check_mul_overflow(ALIGN(job->record_count,4),64u,&raw)||
       check_add_overflow(ALIGN(job->layout.constants_bytes,128),
                          max(job->layout.geometry_bytes,128u+raw),&span))
-    return -EOPNOTSUPP;
+    {kfree(slots);return -EOPNOTSUPP;}
    slots[i]=ALIGN(arena_bytes,128);
    if(check_add_overflow(slots[i],span,&arena_bytes)||arena_bytes>0x40000)
-    return -ENOSPC;
+    {kfree(slots);return -ENOSPC;}
   }
  }
- ret=m9_faa_template_request(mdev,binding,generation,0,&sample);if(ret)return ret;
+ ret=m9_faa_template_request(mdev,binding,generation,0,&sample);if(ret){kfree(slots);return ret;}
  ret=m9_faa_template_request(mdev,binding,generation,2,&color);if(ret)goto release;
  ret=request_firmware(&dual_fw,"m9x/faa-graph-dual-first-template.bin",
   &mdev->pdev->dev);if(ret)goto release;
@@ -8230,7 +8243,7 @@ int m9x_faa_graph_dual_later_prepare(struct m9x_device *mdev,
  r->depth_storage->frame=frame;frame=NULL;
  ret=0;
 unlock:mutex_unlock(&t->lock);
-release:if(sample)release_firmware(sample);
+release:kfree(slots);if(sample)release_firmware(sample);
  if(color)release_firmware(color);
  if(dual_fw)release_firmware(dual_fw);
  kvfree(fresh_primary);kfree(fresh_secondary);
@@ -9493,8 +9506,11 @@ free:if(sample)release_firmware(sample);kvfree(scratch);if(!installed)kvfree(fra
 #endif
 }
 
-int m9x_faa_graph_depth_frame_submit(struct m9x_device *mdev,
- struct m9_faa_graph_binding *binding,u32 generation,u64 previous,u64 *point,bool *posted)
+/* draw_textures: NULL, or one texture owner set per DRAW of a dual later
+ * batch; a set without GEM keeps the frame's retained pair. */
+static int m9_faa_depth_frame_submit(struct m9x_device *mdev,
+ struct m9_faa_graph_binding *binding,u32 generation,u64 previous,
+ struct m9x_faa_texture_owners *draw_textures,u64 *point,bool *posted)
 {
 #ifdef M9_FAA_GRAPH_INIT_CONTROL
  struct m9x_transport *t=&mdev->transport;struct m9x_faa_replay *r;
@@ -9564,12 +9580,13 @@ int m9x_faa_graph_depth_frame_submit(struct m9x_device *mdev,
   /* A culled first later stage keeps its 24 bytes of 6A groups; the
    * same-cull appends after it do not. */
   if(frame->dual_later&&frame->draw_count&&
-     frame->draw_count<=M9_FAA_DUAL_BATCH_MAX_DRAWS&&
+     frame->draw_count<=M9_FAA_DUAL_LATER_MAX_DRAWS&&
      frame->secondary_bytes==first_len+M9_FAA_DUAL_LATER_CULL_BYTES+
       (frame->draw_count-1)*M9_FAA_DUAL_APPEND_SECONDARY_BYTES)
    first_len+=M9_FAA_DUAL_LATER_CULL_BYTES;
   if((!frame->first&&!frame->dual_later)||!frame->draw_count||
-     frame->draw_count>M9_FAA_DUAL_BATCH_MAX_DRAWS||
+     frame->draw_count>(frame->dual_later?M9_FAA_DUAL_LATER_MAX_DRAWS:
+                        M9_FAA_DUAL_BATCH_MAX_DRAWS)||
      frame->secondary_bytes!=first_len+
        (frame->draw_count-1)*M9_FAA_DUAL_APPEND_SECONDARY_BYTES||
      (frame->draw_count>1&&!frame->batch_secondary)||
@@ -9589,7 +9606,9 @@ int m9x_faa_graph_depth_frame_submit(struct m9x_device *mdev,
       &dual,sec,first_len);
   if(ret)goto out;
   for(i=1;i<frame->draw_count;i++){
-   ret=m9x_faa_texture_owners_place_append_locked(mdev,tex,
+   ret=m9x_faa_texture_owners_place_append_locked(mdev,
+    draw_textures&&frame->dual_later&&draw_textures[i].gem[0]?
+     &draw_textures[i]:tex,
     generation,&dual,sec+first_len+
      (i-1)*M9_FAA_DUAL_APPEND_SECONDARY_BYTES,
     M9_FAA_DUAL_APPEND_SECONDARY_BYTES);
@@ -9656,6 +9675,11 @@ int m9x_faa_graph_depth_frame_submit(struct m9x_device *mdev,
    &r->dual_next_textures:&r->dual_textures;
   ret=m9x_faa_texture_owners_fence_locked(tex,&fence->base);
   if(ret)goto out;
+  for(i=1;draw_textures&&frame->dual_later&&i<frame->draw_count;i++){
+   if(!draw_textures[i].gem[0])continue;
+   ret=m9x_faa_texture_owners_fence_locked(&draw_textures[i],&fence->base);
+   if(ret)goto out;
+  }
  }
  frame->attempted=true;r->color_attempted=true;
  if(!frame->first)r->color_next_attempt_point=previous;r->color_lock_retired=false;
@@ -9721,6 +9745,55 @@ out:
 #else
  return -EOPNOTSUPP;
 #endif
+}
+
+int m9x_faa_graph_depth_frame_submit(struct m9x_device *mdev,
+				     struct m9_faa_graph_binding *binding,
+				     u32 generation, u64 previous, u64 *point,
+				     bool *posted)
+{
+	return m9_faa_depth_frame_submit(mdev, binding, generation, previous,
+					 NULL, point, posted);
+}
+
+static_assert(M9_FAA_DUAL_LATER_MAX_DRAWS == PARHELIA_M9_FAA_DUAL_LATER_MAX_DRAWS);
+
+/* Keep a per-DRAW owner set past its ioctl until DMA-stop teardown. */
+void m9x_faa_graph_texture_owners_defer(struct m9x_device *mdev,
+					struct m9x_faa_texture_owners *owners)
+{
+#ifdef M9_FAA_GRAPH_INIT_CONTROL
+	struct m9x_transport *t = &mdev->transport;
+	struct m9x_faa_texture_owners *grown;
+	struct m9x_faa_replay *r;
+
+	mutex_lock(&t->lock);
+	r = t->faa;
+	if (r) {
+		grown = kvrealloc(r->deferred_textures,
+				  (r->deferred_count + 1) * sizeof(*grown),
+				  GFP_KERNEL);
+		if (grown) {
+			r->deferred_textures = grown;
+			grown[r->deferred_count++] = *owners;
+			memset(owners, 0, sizeof(*owners));
+		}
+	}
+	mutex_unlock(&t->lock);
+	if (owners->gem[0])
+		dev_warn(&mdev->pdev->dev,
+			 "M9 FAA: retaining an unreleasable texture set\n");
+#endif
+}
+
+int m9x_faa_graph_dual_later_submit(struct m9x_device *mdev,
+				    struct m9_faa_graph_binding *binding,
+				    u32 generation, u64 previous,
+				    struct m9x_faa_texture_owners *draw_textures,
+				    u64 *point, bool *posted)
+{
+	return m9_faa_depth_frame_submit(mdev, binding, generation, previous,
+					 draw_textures, point, posted);
 }
 
 #ifdef M9_FAA_GRAPH_INIT_CONTROL

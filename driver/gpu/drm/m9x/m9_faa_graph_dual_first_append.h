@@ -5,7 +5,7 @@
 #include "m9_faa_graph_dual_first_encode.h"
 
 #define M9_FAA_DUAL_APPEND_SECONDARY_BYTES 2868u
-#define M9_FAA_DUAL_LATER_MAX_DRAWS 3u
+#define M9_FAA_DUAL_LATER_MAX_DRAWS 64u
 
 struct m9x_faa_dual_append_image {
 	u8 *primary, *secondary;

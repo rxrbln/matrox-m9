@@ -7,17 +7,22 @@
 #include <linux/uaccess.h>
 #include "m9_faa_graph_dual_batch_input.h"
 
-/* Copy draw descriptors and their uploads; draw 0 defines the program. */
+/* Copy draw descriptors and their uploads; draw 0 defines the program.
+ * Records are drm_parhelia_m9_faa_dual_draw when textured is set.
+ */
 static int dual_draws_copy(u64 draws, u32 draw_count, u32 width, u32 height,
-			   u32 flags, u32 clear_flags,
+			   u32 flags, u32 clear_flags, bool textured,
 			   struct m9x_faa_owned_color_batch **result)
 {
-	struct drm_parhelia_m9_faa_color_draw *desc = NULL;
+	const u32 record = textured ?
+		sizeof(struct drm_parhelia_m9_faa_dual_draw) :
+		sizeof(struct drm_parhelia_m9_faa_color_draw);
+	u8 *desc = NULL;
 	struct m9x_faa_owned_color_batch *batch = NULL;
 	u32 i, j, bytes, sum, raw;
 	int ret = -EINVAL;
 
-	if (check_mul_overflow(draw_count, (u32)sizeof(*desc), &bytes))
+	if (check_mul_overflow(draw_count, record, &bytes))
 		return -ERANGE;
 	desc = memdup_user(u64_to_user_ptr(draws), bytes);
 	if (IS_ERR(desc))
@@ -30,7 +35,8 @@ static int dual_draws_copy(u64 draws, u32 draw_count, u32 width, u32 height,
 	batch->flags = flags;
 	batch->clear_flags = clear_flags;
 	for (i = 0; i < draw_count; i++) {
-		const struct drm_parhelia_m9_faa_color_draw *d = &desc[i];
+		const struct drm_parhelia_m9_faa_color_draw *d =
+			(const void *)(desc + i * record);
 		const struct drm_parhelia_m9_faa_upload_layout *l = &d->layout;
 		struct m9x_faa_owned_color_draw *job = &batch->draw[i];
 		struct m9x_faa_color_input *in = &job->input;
@@ -87,6 +93,10 @@ static int dual_draws_copy(u64 draws, u32 draw_count, u32 width, u32 height,
 		in->raster_flags = d->raster_flags;
 		in->dual_base_only = true;
 		job->bytes = sum;
+		if (textured)
+			memcpy(job->texture,
+			       ((const struct drm_parhelia_m9_faa_dual_draw *)d)->texture,
+			       sizeof(job->texture));
 		if (i) {
 			const struct m9x_faa_color_input *f =
 				&batch->draw[0].input;
@@ -128,7 +138,7 @@ int m9x_faa_dual_batch_copy(const struct drm_parhelia_m9_faa_graph_dual_batch
 		return -EOPNOTSUPP;
 	return dual_draws_copy(args->draws, args->draw_count, args->width,
 			       args->height, PARHELIA_M9_FAA_COLOR_FRAME_FIRST,
-			       3, result);
+			       3, false, result);
 }
 
 int m9x_faa_dual_later_batch_copy(const struct drm_parhelia_m9_faa_graph_dual_later
@@ -138,15 +148,32 @@ int m9x_faa_dual_later_batch_copy(const struct drm_parhelia_m9_faa_graph_dual_la
 	if (!result)
 		return -EINVAL;
 	*result = NULL;
+	const bool textured = args &&
+		args->version == PARHELIA_M9_FAA_DUAL_LATER_TEXTURES_VERSION;
+	struct drm_parhelia_m9_faa_texture_view first[2];
+	int ret;
+
 	if (!args ||
-	    args->version != PARHELIA_M9_FAA_DUAL_LATER_BATCH_VERSION ||
+	    (args->version != PARHELIA_M9_FAA_DUAL_LATER_BATCH_VERSION &&
+	     !textured) ||
 	    !args->draws || !args->draw_count ||
-	    args->draw_count > M9_FAA_DUAL_BATCH_MAX_DRAWS || args->pad2 ||
+	    args->draw_count > PARHELIA_M9_FAA_DUAL_LATER_MAX_DRAWS || args->pad2 ||
 	    args->upload || args->upload_bytes || args->record_count ||
 	    args->record_stride || args->declaration_count ||
 	    (args->clear_flags && args->clear_flags != 3 &&
 	     args->clear_flags != 2))
 		return -EOPNOTSUPP;
-	return dual_draws_copy(args->draws, args->draw_count, args->width,
-			       args->height, 0, args->clear_flags, result);
+	ret = dual_draws_copy(args->draws, args->draw_count, args->width,
+			      args->height, 0, args->clear_flags, textured,
+			      result);
+	if (ret || !textured)
+		return ret;
+	/* The request's pair is the first DRAW's: it binds the retained set. */
+	memcpy(first, (*result)->draw[0].texture, sizeof(first));
+	if (memcmp(first, args->texture, sizeof(first))) {
+		m9x_faa_color_batch_free(*result);
+		*result = NULL;
+		return -EINVAL;
+	}
+	return 0;
 }

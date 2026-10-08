@@ -1,4 +1,5 @@
 /* SPDX-License-Identifier: GPL-2.0-only */
+/* Copyright 2026 René Rebe <rene@exactco.de> */
 #ifndef M9_FAA_GRAPH_FRAME_BATCH_INPUT_H
 #define M9_FAA_GRAPH_FRAME_BATCH_INPUT_H
 #include "m9x_drm.h"
@@ -8,6 +9,8 @@ struct m9x_faa_owned_color_draw {
  struct m9x_faa_color_input input;
  u8 *upload;
  u32 bytes,raster_flags;
+ /* Dual later version 3: this DRAW's own texture pair. */
+ struct drm_parhelia_m9_faa_texture_view texture[2];
 };
 struct m9x_faa_owned_color_batch {
  u32 count,flags,clear_flags;

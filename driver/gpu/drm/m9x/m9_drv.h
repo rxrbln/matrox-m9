@@ -736,6 +736,13 @@ int m9x_faa_graph_clear_prefix_submit(struct m9x_device *,struct m9_faa_graph_bi
  const struct drm_parhelia_m9_faa_graph_clear_prefix *,
  struct drm_parhelia_m9_faa_graph_clear_prefix *);
 int m9x_faa_graph_depth_frame_submit(struct m9x_device *,struct m9_faa_graph_binding *,u32,u64,u64 *,bool *);
+int m9x_faa_graph_dual_later_submit(struct m9x_device *mdev,
+				    struct m9_faa_graph_binding *binding,
+				    u32 generation, u64 previous,
+				    struct m9x_faa_texture_owners *draw_textures,
+				    u64 *point, bool *posted);
+void m9x_faa_graph_texture_owners_defer(struct m9x_device *mdev,
+					struct m9x_faa_texture_owners *owners);
 int m9x_faa_graph_color_frame_ioctl(struct drm_device *,void *,struct drm_file *);
 int m9x_faa_graph_depth_batch_prepare(struct m9x_device *,struct m9_faa_graph_binding *,u32,u64,bool,const struct m9x_faa_owned_color_batch *);
 int m9x_faa_graph_color_frame_batch_ioctl(struct drm_device *,void *,struct drm_file *);

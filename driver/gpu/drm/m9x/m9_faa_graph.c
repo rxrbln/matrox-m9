@@ -2318,7 +2318,9 @@ int m9x_faa_graph_dual_later_ioctl(struct drm_device *drm,void *data,
  struct drm_gem_object *texture_bo[2]={0};
  struct m9x_faa_color_input input={0};struct drm_exec exec;
  struct m9x_faa_owned_color_batch *batch=NULL;
- u32 handles[2],address[PARHELIA_M9_FAA_GRAPH_OWNERS],sum,tmp,i;
+ /* Version 3: per-DRAW texture owners, unused where a DRAW keeps texture[]. */
+ struct m9x_faa_texture_owners *draw_textures=NULL;
+ u32 handles[2],address[PARHELIA_M9_FAA_GRAPH_OWNERS],sum,tmp,i,j;
  u64 previous=args->previous_unlock_point,point=0,expected;
  u8 *upload=NULL;bool posted=false;int idx,ret;
  if(!state||args->flags||args->state||args->pad||args->lock_point||
@@ -2326,8 +2328,9 @@ int m9x_faa_graph_dual_later_ioctl(struct drm_device *drm,void *data,
     (args->clear_flags&&args->clear_flags!=3&&args->clear_flags!=2)||
     args->clear_color||!m9x_faa_depth_flags_valid(args->depth_flags)||
     !previous||(previous&15)||previous>U64_MAX-0x1a0-
-      M9_FAA_DUAL_BATCH_MAX_DRAWS*0xa0)return -EOPNOTSUPP;
- if(args->version==PARHELIA_M9_FAA_DUAL_LATER_BATCH_VERSION){
+      PARHELIA_M9_FAA_DUAL_LATER_MAX_DRAWS*0xa0)return -EOPNOTSUPP;
+ if(args->version==PARHELIA_M9_FAA_DUAL_LATER_BATCH_VERSION||
+    args->version==PARHELIA_M9_FAA_DUAL_LATER_TEXTURES_VERSION){
   ret=m9x_faa_dual_later_batch_copy(args,&batch);if(ret)return ret;
   for(i=0;i<batch->count;i++)
    if(!m9x_faa_depth_flags_valid(batch->draw[i].input.depth_flags)){ret=-EOPNOTSUPP;goto free_batch;}
@@ -2372,6 +2375,27 @@ int m9x_faa_graph_dual_later_ioctl(struct drm_device *drm,void *data,
  for(i=0;i<2;i++){
   texture_bo[i]=textures.gem[i];drm_gem_object_get(texture_bo[i]);
  }
+ if(args->version==PARHELIA_M9_FAA_DUAL_LATER_TEXTURES_VERSION){
+  draw_textures=kcalloc(batch->count,sizeof(*draw_textures),GFP_KERNEL);
+  if(!draw_textures){ret=-ENOMEM;goto out;}
+  for(i=1;i<batch->count;i++){
+   const struct drm_parhelia_m9_faa_texture_view *t=batch->draw[i].texture;
+   struct m9x_faa_texture_bind_input own[2];
+   if(!memcmp(t,args->texture,sizeof(args->texture)))continue;
+   for(j=0;j<2;j++){
+    handles[j]=t[j].handle;
+    own[j]=(struct m9x_faa_texture_bind_input){
+     .profile=t[j].profile,.format=t[j].format,.width=t[j].width,
+     .height=t[j].height,.storage_kind=t[j].storage_kind,.levels=t[j].levels,
+     .stage=j,.min_filter=t[j].min_filter,.mag_filter=t[j].mag_filter,
+     .mip_filter=t[j].mip_filter,.address_u=t[j].address_u,
+     .address_v=t[j].address_v,.coordinate_sets=2,.coordinate_index=j};
+   }
+   ret=m9x_faa_texture_owners_acquire(mdev,file,handles,own,graph_owner,
+                                      args->generation,&draw_textures[i]);
+   if(ret)goto out;
+  }
+ }
  mutex_lock(&mdev->transport.lock);
  ret=m9x_faa_graph_color_unlocked_get_locked(mdev,args->generation,previous,
                                              &binding);
@@ -2402,17 +2426,27 @@ int m9x_faa_graph_dual_later_ioctl(struct drm_device *drm,void *data,
    ret=drm_exec_prepare_obj(&exec,bo,1);
    drm_exec_retry_on_contention(&exec);if(ret)goto out_exec;
   }
+  for(i=1;draw_textures&&i<batch->count;i++)
+   for(j=0;j<2&&draw_textures[i].gem[0];j++){
+    ret=drm_exec_prepare_obj(&exec,draw_textures[i].gem[j],1);
+    drm_exec_retry_on_contention(&exec);if(ret)goto out_exec;
+   }
  }
  ret=m9_faa_graph_live_addresses(mdev,graph,address);if(ret)goto out_exec;
  if(memcmp(binding->address,address,sizeof(address))){ret=-ESTALE;goto out_exec;}
- ret=m9x_faa_graph_depth_frame_submit(mdev,binding,args->generation,previous,
-                                      &point,&posted);
+ ret=m9x_faa_graph_dual_later_submit(mdev,binding,args->generation,previous,
+                                      draw_textures,&point,&posted);
  if(!ret){if(point!=expected)ret=-EIO;
   else{args->lock_point=point;
    args->state=PARHELIA_M9_FAA_DUAL_LATER_LOCK_RETIRED;}}
 out_exec:drm_exec_fini(&exec);
 out:kfree(upload);m9x_faa_texture_owners_put(&textures,false);
  for(i=0;i<2;i++)if(texture_bo[i])drm_gem_object_put(texture_bo[i]);
+ /* The Lock retired synchronously; a posted failure keeps the sets. */
+ for(i=1;draw_textures&&i<batch->count;i++)
+  if(draw_textures[i].gem[0]&&!m9x_faa_texture_owners_put(&draw_textures[i],false))
+   m9x_faa_graph_texture_owners_defer(mdev,&draw_textures[i]);
+ kfree(draw_textures);
  m9x_faa_graph_binding_put(binding);mutex_unlock(&state->lock);drm_dev_exit(idx);
 free_batch:m9x_faa_color_batch_free(batch);
  return ret;
