@@ -3010,7 +3010,7 @@ int m9x_faa_graph_dual_batch_ioctl(struct drm_device *drm, void *data,
 	/* Version 2: per-DRAW texture sets, unused where a DRAW keeps texture[]. */
 	struct m9x_faa_texture_owners *draw_textures = NULL;
 	u32 handles[2], address[PARHELIA_M9_FAA_GRAPH_OWNERS], i, j;
-	bool programs;
+	bool programs, prepared = false;
 	u64 point = 0, delta, ordinary = 0;
 	bool posted = false;
 	int idx, ret;
@@ -3137,6 +3137,7 @@ int m9x_faa_graph_dual_batch_ioctl(struct drm_device *drm, void *data,
 					       batch);
 	if (ret)
 		goto out;
+	prepared = true;
 	drm_exec_init(&exec,
 		      DRM_EXEC_INTERRUPTIBLE_WAIT | DRM_EXEC_IGNORE_DUPLICATES,
 		      8);
@@ -3196,6 +3197,8 @@ int m9x_faa_graph_dual_batch_ioctl(struct drm_device *drm, void *data,
 out_exec:
 	drm_exec_fini(&exec);
 out:
+	if (ret && prepared && !posted)
+		m9x_faa_graph_frame_abandon(mdev, args->generation);
 	m9x_faa_texture_owners_put(&textures, false);
 	for (i = 0; i < 2; i++)
 		if (texture_bo[i])
@@ -3240,7 +3243,7 @@ int m9x_faa_graph_dual_later_ioctl(struct drm_device *drm, void *data,
 	u64 previous = args->previous_unlock_point, point = 0, expected, delta;
 	u64 origin = 0, maintenance = 0, ordinary = 0;
 	u8 *upload = NULL;
-	bool posted = false;
+	bool posted = false, prepared = false;
 	int idx, ret;
 
 	if (!state || args->flags || args->state || args->pad ||
@@ -3420,6 +3423,7 @@ int m9x_faa_graph_dual_later_ioctl(struct drm_device *drm, void *data,
 					       batch);
 	if (ret)
 		goto out;
+	prepared = true;
 	drm_exec_init(&exec,
 		      DRM_EXEC_INTERRUPTIBLE_WAIT | DRM_EXEC_IGNORE_DUPLICATES,
 		      8);
@@ -3483,6 +3487,8 @@ int m9x_faa_graph_dual_later_ioctl(struct drm_device *drm, void *data,
 out_exec:
 	drm_exec_fini(&exec);
 out:
+	if (ret && prepared && !posted)
+		m9x_faa_graph_frame_abandon(mdev, args->generation);
 	kfree(upload);
 	m9x_faa_texture_owners_put(&textures, false);
 	for (i = 0; i < 2; i++)

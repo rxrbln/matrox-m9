@@ -13932,6 +13932,43 @@ int m9x_faa_graph_depth_frame_submit(struct m9x_device *mdev,
 
 static_assert(M9_FAA_DUAL_LATER_MAX_DRAWS == PARHELIA_M9_FAA_DUAL_LATER_MAX_DRAWS);
 
+/* A prepared frame whose ioctl failed before anything was posted: drop it
+ * and an unposted FIRST's retained pair, so ordinary jobs and the next
+ * prepare are not held behind a frame that will never run.
+ */
+void m9x_faa_graph_frame_abandon(struct m9x_device *mdev, u32 generation)
+{
+#ifdef M9_FAA_GRAPH_INIT_CONTROL
+	struct m9x_transport *t = &mdev->transport;
+	struct m9_faa_depth_frame_storage *frame = NULL;
+	struct m9x_faa_texture_owners pair = { 0 };
+	struct m9x_faa_replay *r;
+
+	mutex_lock(&t->lock);
+	r = t->faa;
+	if (r && r->depth_storage && r->depth_storage->frame &&
+	    !r->depth_storage->frame->attempted &&
+	    r->depth_storage->frame->generation == generation) {
+		frame = r->depth_storage->frame;
+		r->depth_storage->frame = NULL;
+		if (frame->first && !frame->dual_later) {
+			pair = r->dual_textures;
+			memset(&r->dual_textures, 0, sizeof(r->dual_textures));
+		}
+	}
+	mutex_unlock(&t->lock);
+	if (!frame)
+		return;
+	dev_info(&mdev->pdev->dev,
+		 "M9 FAA: unposted %s frame of %u DRAWs released\n",
+		 frame->first ? "FIRST" : "later", frame->draw_count);
+	if (pair.gem[0] && !m9x_faa_texture_owners_put(&pair, false))
+		m9x_faa_graph_texture_owners_defer(mdev, &pair);
+	m9_faa_depth_frame_free(frame);
+	m9x_faa_idle_wake(mdev);
+#endif
+}
+
 /* Keep a per-DRAW owner set past its ioctl until DMA-stop teardown. */
 void m9x_faa_graph_texture_owners_defer(struct m9x_device *mdev,
 					struct m9x_faa_texture_owners *owners)
