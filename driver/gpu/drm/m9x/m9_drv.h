@@ -699,6 +699,8 @@ struct m9x_faa_texture_owners;
 struct m9x_faa_owned_color_batch;
 int m9x_faa_graph_dual_first_prepare(struct m9x_device *,struct m9_faa_graph_binding *,u32,u64,const struct m9x_faa_color_input *,struct m9x_faa_texture_owners *,const struct m9x_faa_owned_color_batch *);
 int m9x_faa_graph_depth_unlocked_get_locked(struct m9x_device *,u32,u64,struct m9_faa_graph_binding **);
+struct m9x_faa_depth_mode_state;
+int m9x_faa_graph_depth_mode_locked(struct m9x_device *,struct m9_faa_graph_binding *,u32,bool,struct m9x_faa_depth_mode_state *);
 int m9x_faa_graph_depth_frame_receipt_locked(struct m9x_device *,u32,u64,u64,u64 *,u64 *);
 int m9x_faa_graph_depth_frame_maintenance_locked(struct m9x_device *,u32,u64,u64,u64 *);
 int m9x_faa_graph_command_pool_prepare(struct m9x_device *,struct m9_faa_graph_binding *,u32,u64);

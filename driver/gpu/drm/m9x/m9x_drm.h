@@ -68,6 +68,9 @@ struct drm_parhelia_m9_faa_graph_color_lock {
 #define PARHELIA_M9_FAA_COLOR_CLEAR_TARGET 1u
 /* bit0 enabled; bit1 write; bits4:2 PIPE_FUNC_NEVER..ALWAYS. */
 #define PARHELIA_M9_FAA_COLOR_DEPTH_LESS_WRITE 7u
+/* Explicit source disabled-depth association, mutually exclusive with bit0.
+ * Admitted only by the count2 owned BATCH path; not ALWAYS comparison. */
+#define PARHELIA_M9_FAA_COLOR_DEPTH_DISABLED 32u
 struct drm_parhelia_m9_faa_graph_color_next {
  __u64 graph_id, previous_unlock_point, lock_point, upload;
  __u32 upload_bytes, generation, flags, state, pad;

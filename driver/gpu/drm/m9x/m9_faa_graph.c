@@ -18,6 +18,7 @@
 #include "m9_faa_graph_dual_batch_input.h"
 #include "m9_faa_graph_surface_layout.h"
 #include "m9_faa_graph_texture_owner.h"
+#include "m9_faa_depth_mode_batch.h"
 
 /* Source-qualified prepared180 shape. These are allocation extents, not
  * permission to clear opaque tails or evidence of GPU initialization. */
@@ -1861,6 +1862,9 @@ int m9x_faa_graph_color_frame_batch_ioctl(struct drm_device *drm,void *data,stru
  struct m9x_device *mdev=to_m9x(drm);struct m9_faa_file *state=file->driver_priv;
  struct m9x_faa_owned_color_batch *batch=NULL;
  struct m9_faa_prepared_graph *graph;struct m9_faa_graph_binding *binding=NULL;
+ struct m9x_faa_depth_mode_batch_job *mode_jobs=NULL;
+ struct m9x_faa_depth_mode_state mode;
+ struct m9x_faa_depth_mode_batch_plan mode_plan;
  struct drm_exec exec;u32 address[PARHELIA_M9_FAA_GRAPH_OWNERS],i;
  u64 point=0,delta,origin=0,maintenance=0;bool first,posted=false;int idx,ret;
  if(!state)return -EINVAL;
@@ -1886,6 +1890,19 @@ int m9x_faa_graph_color_frame_batch_ioctl(struct drm_device *drm,void *data,stru
    m9x_faa_graph_color_unlocked_get_locked(mdev,args->generation,args->previous_point,&binding));
  mutex_unlock(&mdev->transport.lock);if(ret)goto out_binding;
  if(binding->graph!=graph||args->width!=graph->layout.width||args->height!=graph->layout.height){ret=-ESTALE;goto out_binding;}
+ if(batch->draw[0].input.layout.program_count==2){
+  mode_jobs=kmalloc_array(batch->count,sizeof(*mode_jobs),GFP_KERNEL);
+  if(!mode_jobs){ret=-ENOMEM;goto out_binding;}
+  for(i=0;i<batch->count;i++)mode_jobs[i]=(struct m9x_faa_depth_mode_batch_job){
+   batch->draw[i].input.depth_flags,batch->draw[i].input.declaration_count};
+  mutex_lock(&mdev->transport.lock);
+  ret=m9x_faa_graph_depth_mode_locked(mdev,binding,args->generation,first,&mode);
+  mutex_unlock(&mdev->transport.lock);if(ret)goto out_binding;
+  ret=m9x_faa_depth_mode_batch_count(first,args->clear_flags,&mode,mode_jobs,batch->count,&mode_plan);
+  if(ret)goto out_binding;
+  delta=mode_plan.delta;
+  if(args->previous_point>U64_MAX-delta||lower_32_bits(args->previous_point)>U32_MAX-delta){ret=-ERANGE;goto out_binding;}
+ }
  ret=m9x_faa_graph_depth_batch_prepare(mdev,binding,args->generation,args->previous_point,first,batch);if(ret)goto out_binding;
  drm_exec_init(&exec,DRM_EXEC_INTERRUPTIBLE_WAIT|DRM_EXEC_IGNORE_DUPLICATES,PARHELIA_M9_FAA_GRAPH_OWNERS);
  drm_exec_until_all_locked(&exec){for(i=0;i<PARHELIA_M9_FAA_GRAPH_OWNERS;i++){
@@ -1904,7 +1921,7 @@ int m9x_faa_graph_color_frame_batch_ioctl(struct drm_device *drm,void *data,stru
   if(!ret){args->maintenance_point=maintenance;args->lock_point=point;args->state=first?PARHELIA_M9_FAA_COLOR_BATCH_FIRST_LOCK_RETIRED:PARHELIA_M9_FAA_COLOR_BATCH_NEXT_LOCK_RETIRED;}}
 out_exec:drm_exec_fini(&exec);
 out_binding:m9x_faa_graph_binding_put(binding);mutex_unlock(&state->lock);drm_dev_exit(idx);
-out_batch:m9x_faa_color_batch_free(batch);return ret;
+out_batch:kfree(mode_jobs);m9x_faa_color_batch_free(batch);return ret;
 }
 
 int m9x_faa_graph_dual_first_ioctl(struct drm_device *drm,void *data,

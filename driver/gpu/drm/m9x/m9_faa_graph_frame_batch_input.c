@@ -4,6 +4,7 @@
 #include <linux/slab.h>
 #include <linux/uaccess.h>
 #include "m9_faa_graph_frame_batch_input.h"
+#include "m9_faa_depth_mode.h"
 
 void m9x_faa_color_batch_free(struct m9x_faa_owned_color_batch *batch)
 {
@@ -41,7 +42,7 @@ int m9x_faa_color_batch_copy(const struct drm_parhelia_m9_faa_graph_color_frame_
   const struct drm_parhelia_m9_faa_upload_layout *l=&d->layout;
   struct m9x_faa_owned_color_draw *job=&batch->draw[i];
   struct m9x_faa_color_input *input=&job->input;
-  if(!d->upload||d->pad[0]||d->pad[1]||!m9x_faa_depth_flags_valid(d->depth_flags)||(d->raster_flags&~7u)||(d->raster_flags&6)==6||
+  if(!d->upload||d->pad[0]||d->pad[1]||!(l->program_count==2?m9x_faa_depth_mode_flags_valid(d->depth_flags):m9x_faa_depth_flags_valid(d->depth_flags))||(d->raster_flags&~7u)||(d->raster_flags&6)==6||
    (d->record_stride!=32&&(d->record_stride!=16||d->declaration_count!=3))||
    !d->record_count||d->record_count%3||
    (d->declaration_count!=3&&d->declaration_count!=5)||(l->program_count!=2&&l->program_count!=4)||
@@ -53,6 +54,7 @@ int m9x_faa_color_batch_copy(const struct drm_parhelia_m9_faa_graph_color_frame_
    check_add_overflow(l->program_bytes,l->constants_bytes,&sum)||
    check_add_overflow(sum,l->geometry_bytes,&sum)||
    check_add_overflow(sum,d->declaration_count*4u,&sum)||sum!=d->upload_bytes||sum>0x42000)goto out;
+  if((d->depth_flags&32u)&&(args->width!=320||args->height!=240)){ret=-EOPNOTSUPP;goto out;}
   for(j=0;j<l->program_count;j++)if((l->entry_bytes[j]&7)||l->entry_bytes[j]>=l->program_bytes||
    (j&&l->entry_bytes[j]<=l->entry_bytes[j-1])||
    (l->constant_begin[j]&7)||(l->constant_end[j]&7)||

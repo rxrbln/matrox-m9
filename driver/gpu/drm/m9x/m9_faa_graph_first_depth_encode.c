@@ -2,6 +2,7 @@
 #include <linux/errno.h>
 #include <linux/string.h>
 #include "m9_faa_graph_first_depth_encode.h"
+#include "m9_faa_depth_mode.h"
 
 static void put(u8 *p,u32 v)
 {p[0]=v;p[1]=v>>8;p[2]=v>>16;p[3]=v>>24;}
@@ -134,17 +135,25 @@ int m9x_faa_first_depth_color_stage_encode(const u8 *first,size_t first_bytes,
  const struct m9x_faa_color_image *first_scratch)
 {
  struct m9x_faa_depth_stage_image validated;
+ struct m9x_faa_depth_mode_state before={0};
+ struct m9x_faa_depth_mode_image mode;
  u32 sec,tail,ef_at,depth_at,aux_at,a8_at;bool two;int ret;
  if(!owner||!views||!input||!primary||!secondary||!primary_bytes||!secondary_bytes||
   !first_scratch||!first_scratch->secondary_length||
   (input->layout.program_count!=2&&input->layout.program_count!=4)||
   (input->declaration_count!=3&&input->declaration_count!=5)||
   init_point>~(u64)0-0x150||(u32)init_point>0xfffffeafu||
-  (input->depth_flags&&!m9x_faa_depth_flags_valid(input->depth_flags)))return -EINVAL;
+  (input->depth_flags&&!(input->layout.program_count==2?
+   m9x_faa_depth_mode_flags_valid(input->depth_flags):m9x_faa_depth_flags_valid(input->depth_flags))))return -EINVAL;
  two=input->layout.program_count==2;tail=two?3588u:3632u;
  sec=two?(input->declaration_count==3?1352u:1376u):
          (input->declaration_count==3?2688u:2712u);
  if(primary_capacity<tail||secondary_capacity<sec)return -ERANGE;
+ if(two){
+  ret=m9x_faa_depth_mode_two_plan(input->depth_flags?input->depth_flags:15,
+   0,&before,owner,views,&mode);if(ret)return ret;
+ }
+
  ret=m9x_faa_depth_stages_encode(views,0x3f800000,&validated);if(ret)return ret;
  ret=(two?m9x_faa_color_encode:m9x_faa_color_four_encode)(first,first_bytes,
   owner,init_bytes,init_point+0x70,input,first_scratch);if(ret)return ret;
@@ -163,5 +172,12 @@ int m9x_faa_first_depth_color_stage_encode(const u8 *first,size_t first_bytes,
  put(secondary+depth_at,views->owner[M9_FAA_BOUND_DEPTH].base|1);
  put(secondary+aux_at,0);put(secondary+aux_at+4,0xf0010100);
  put(secondary+a8_at,m9x_faa_depth_a8(input->depth_flags));
+ if(two){
+  u32 ef=(u32)secondary[ef_at]|(u32)secondary[ef_at+1]<<8|
+   (u32)secondary[ef_at+2]<<16|(u32)secondary[ef_at+3]<<24;
+  mode.ef=(ef&~0x20000000u)|(mode.after.enabled?0:0x20000000u);
+  put(secondary+ef_at,mode.ef);put(secondary+depth_at,mode.a9);
+  put(secondary+aux_at,mode.ba);put(secondary+aux_at+4,mode.ba_descriptor);
+ }
  *primary_bytes=tail;*secondary_bytes=sec;return 0;
 }

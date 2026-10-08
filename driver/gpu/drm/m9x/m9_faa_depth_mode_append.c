@@ -46,7 +46,8 @@ int m9x_faa_depth_mode_append_encode(const struct m9x_faa_depth_mode_append_inpu
  insert=changed?116+n+24:24;newsec=(changed?1352:1484)+extra;
  if(in->old_end_count>M9_FAA_DEPTH_MODE_MAX_ENDS-addends||out->end_capacity<in->old_end_count+addends)return -ERANGE;
  if(in->fresh_secondary_bytes!=1352+extra||in->old_primary_bytes<3564+24||
-  (in->old_last_secondary_bytes!=1352+last_extra&&in->old_last_secondary_bytes!=1484+last_extra)||
+  (in->old_last_secondary_bytes!=1352+last_extra&&in->old_last_secondary_bytes!=1484+last_extra&&
+   !(in->old_draw_count==1&&in->initial_end_count==4&&in->old_last_secondary_bytes==1356+last_extra))||
   in->old_secondary_bytes<in->old_last_secondary_bytes||
   check_add_overflow(in->old_primary_bytes,insert,&newpb)||out->primary_capacity<newpb||
   out->secondary_capacity<newsec||out->reset_capacity<n||
