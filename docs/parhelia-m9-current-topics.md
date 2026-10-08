@@ -4,27 +4,25 @@
 # M9 open topics and evidence, 2026-10-06
 
 
-## October 8: glxgears clear fixed; mixed input declarations next
+## October 8: glxgears mixed batch prepares; stale SYSTEM addresses block submission
 
-Mesa5638487 fixes Gallium's packed color-mask handling and full-size scissor
-classification. Hardware now passes that clear gate, but19 of21 glxgears
-draws are skipped at subsequent layout/state admission; the incomplete frame
-is discarded and only INITb0 executes. Queue0/generation0/wedged0 survive
-cleanup. [Latest hardware evidence](../tests/m9-faa-glxgears-first-hardware-20261008/clearfix-state-refusal/README.md).
-Host fixed-function compilation reproduces POSITION-only constant-normal
-faces as record16/declaration3 versus varying-normal record32/declaration5.
-Mesa7cebd8e preserves real GPU shaders and pads the former records to32;
-Mesa f3a6f8b and DRM75cbc95 own/forward declarations per job. Native mixed
-3/5 declaration packet assembly remains under implementation before retest.
+The latest target run accepts all21 glxgears draws and prepares12 native FAA
+jobs (91,392 input bytes). Mesa7cebd8e and DRM8c0f6c1 resolve the clear/layout
+and mixed declaration3/5 preparation blockers. Submission returns ESTALE before
+code upload or any geometry END; INITb0 remains healthy through cleanup.
+[Exact hardware evidence](../tests/m9-faa-glxgears-first-hardware-20261008/mixed-layout-submit-refusal/README.md).
 
-Initialized full-N lifecycle is integrated as DRMc15f928/00250f0. Review caught
-and fixed its setup/count mismatch (dc15268); the corrected test now models
-the actual initialized singleton count. Original N2/N3 clear/no-clear source
-comparisons, real helper composition and N1..32 native allocation/failure
-checks pass. Initialized flat/cull, variable declaration lengths and pool
-rotation still require complete integration and hardware qualification.
-Mesa29f31ae texture fragment encoding is CPU-qualified only; native texture
-binding remains gated. No continuous glxgears FAA, Quake3 FAA or FAA FPS pass.
+The actual ordinary SYSTEM allocation is at GPUVA0x40047000, while the tested
+native submission and packet producers still use historical0x40004000 and
+0x40008000 operands. The first admission call necessarily rejects an address
+below its retained allocation. Live owner-derived command fields and matching
+validation are now the priority fix; do not remove checks or force the old
+allocation order. The exact executed refusal branch has not yet been traced.
+
+Initialized mixed-layout/flat/cull support and command-pool rotation remain
+under integration. Texture fragment code is CPU-qualified; native texture
+binding remains gated. There is no valid FAA glxgears screenshot, continuous
+run, Quake3 FAA result or FAA FPS measurement yet.
 
 ## October 8: mixed flat/smooth FAA now passes hardware
 
