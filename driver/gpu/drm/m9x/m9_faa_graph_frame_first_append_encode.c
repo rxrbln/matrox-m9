@@ -101,7 +101,9 @@ int m9x_faa_frame_first_append_encode(
 	       extra_input->layout.program_bytes ||
 	    extra_input->layout.program_bytes-
 	       extra_input->layout.entry_bytes[3]!=200 ||
-	    extra_input->record_stride!=32 ||
+	    (extra_input->record_stride!=32 &&
+	     !(extra_input->record_stride==16 &&
+	       extra_input->declaration_count==3)) ||
 	    !extra_input->record_count ||
 	    extra_input->record_count>12288 ||
 	    extra_input->record_count%3 ||

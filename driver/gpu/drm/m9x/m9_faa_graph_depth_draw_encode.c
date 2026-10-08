@@ -153,7 +153,10 @@ static int depth_encode_impl(const u8 *blob, size_t bytes,
 	    clear_flags > 1 ||
 	    ((!live_color && !source_layout(in)) ||
 	    (live_color && (!in || in->layout.program_count != 4 ||
-		in->record_count > 12288 || in->record_stride != 32))) ||
+		in->record_count > 12288 ||
+		(in->record_stride != 32 &&
+		 !(in->record_stride == 16 &&
+		   in->declaration_count == 3))))) ||
 	    !views_match(views, owner) ||
 	    m9x_faa_graph_draw_owners_validate(owner))
 		return -EINVAL;

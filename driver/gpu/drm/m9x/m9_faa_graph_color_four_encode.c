@@ -79,7 +79,9 @@ int m9x_faa_color_four_encode(const u8*blob,size_t bytes,const struct m9x_faa_gr
  (init_point&15)||(u32)init_point<0xb0||(u32)init_point>U32_MAX-0xf0||
  in->layout.program_count!=4||!in->layout.program_bytes||in->layout.program_bytes>4096||(in->layout.program_bytes&7)||
  in->layout.entry_bytes[0]||!in->layout.constants_bytes||in->layout.constants_bytes>16384||(in->layout.constants_bytes&7)||
- in->record_stride!=32||!in->record_count||in->record_count%3||in->record_count>12288||
+ (in->record_stride!=32&&
+  !(in->record_stride==16&&in->declaration_count==3))||
+ !in->record_count||in->record_count%3||in->record_count>12288||
  (in->data_offset&127)||in->data_offset>owner[28].bytes||
  (in->fragment_flags&~1u)||
  in->declaration_count<3||in->declaration_count>17||!(in->declaration_count&1)||

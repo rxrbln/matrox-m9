@@ -192,7 +192,9 @@ int m9x_faa_later_depth_append_encode(
   (input->declaration_count!=3&&input->declaration_count!=5)||
   (old_declaration_count!=3&&old_declaration_count!=5)||
   fresh_bytes!=2712-(input->declaration_count==3?24:0)||
-  input->layout.program_count!=4||input->record_stride!=32||
+  input->layout.program_count!=4||
+  (input->record_stride!=32&&
+   !(input->record_stride==16&&input->declaration_count==3))||
   !input->record_count||input->record_count%3||input->record_count>12288||
   (previous&15)||(pstart&3)||(sstart&3)||
   previous>~(u64)0-delta-count*0xa0||
