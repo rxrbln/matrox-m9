@@ -9035,20 +9035,46 @@ out:
 	return ret;
 }
 
-static void m9_faa_depth_frame_owners(struct m9x_faa_replay *r,
- struct m9x_faa_graph_draw_owner owner[M9_FAA_DEPTH_DRAW_OWNERS])
+static void
+m9_faa_depth_frame_owners(struct m9x_faa_replay *r,
+			  struct m9x_faa_graph_draw_owner owner[M9_FAA_DEPTH_DRAW_OWNERS])
 {
- u32 i;
- for(i=0;i<M9_FAA_DEPTH_DRAW_OWNERS;i++){
-  struct m9_faa_owner *o;
-  switch(i){case 26:o=&r->draw_owner[0];break;case 27:o=m9_faa_command_owner(r,false);break;
-   case 28:o=&r->draw_owner[1];break;case 29:o=m9_faa_command_owner(r,true);break;
-   case 30:o=&r->owner[27];break;
-   case 31:case 32:case 33:o=&r->depth_storage->owner[i-31];break;
-   default:o=&r->owner[i];break;}
-  owner[i]=o?(struct m9x_faa_graph_draw_owner){o->base,o->bytes}:(struct m9x_faa_graph_draw_owner){0};
- }
+	u32 i;
+
+	for (i = 0; i < M9_FAA_DEPTH_DRAW_OWNERS; i++) {
+		struct m9_faa_owner *o;
+
+		switch (i) {
+		case 26:
+			o = &r->draw_owner[0];
+			break;
+		case 27:
+			o = m9_faa_command_owner(r, false);
+			break;
+		case 28:
+			o = &r->draw_owner[1];
+			break;
+		case 29:
+			o = m9_faa_command_owner(r, true);
+			break;
+		case 30:
+			o = &r->owner[27];
+			break;
+		case 31:
+		case 32:
+		case 33:
+			o = &r->depth_storage->owner[i - 31];
+			break;
+		default:
+			o = &r->owner[i];
+			break;
+		}
+		owner[i] = o ? (struct m9x_faa_graph_draw_owner){ o->base,
+								  o->bytes } :
+			       (struct m9x_faa_graph_draw_owner){ 0 };
+	}
 }
+
 #endif
 
 /* First attachment preparation is outside all six graph BO reservations.
