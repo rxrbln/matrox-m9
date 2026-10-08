@@ -49,7 +49,7 @@ int m9x_faa_color_encode(const u8*blob,size_t bytes,
 {
  u32 padded,extra,secondary,offset,address,value,i,j,pairs,raw,padded_records,geometry_offset;u16 fused_mask;
  if(in&&in->layout.program_count==4)return m9x_faa_color_four_encode(blob,bytes,owner,init_bytes,init_point,in,out);
- if(in&&((in->data_offset&127)||in->fragment_flags))return -EINVAL;
+ if(in&&((in->data_offset&127)||(in->fragment_flags&~1u)))return -EINVAL;
  if(!in||!out||!owner||!in->program||!in->constants||!in->geometry||!in->declaration||
   !out->program||!out->constants||!out->primary||!out->secondary||!out->secondary_length||
   !m9x_faa_color_template_valid(blob,bytes)||
@@ -83,6 +83,7 @@ int m9x_faa_color_encode(const u8*blob,size_t bytes,
   if(((d>>16)&15)||((d>>24)*4+16>in->record_stride)||
    ((d>>20)&15)!=(i/2+1)||((d>>12)&15))return -ERANGE;
  }
+ if(m9x_faa_color_flat_fragment_valid(in)!=!!in->fragment_flags)return -EINVAL;
  if(m9x_faa_fused_source_mask(in->program,in->layout.program_bytes,in->layout.entry_bytes[1],&fused_mask))return -EINVAL;
  padded=(in->declaration_count+3)&~3u;extra=(padded/4-1)*24;secondary=1352+extra;
  padded_records=(in->record_count+3)&~3u;
@@ -150,6 +151,18 @@ int m9x_faa_color_encode(const u8*blob,size_t bytes,
   put(out->secondary+moved(1248,extra),4);put(out->secondary+moved(1272,extra),4);
   for(i=0;i<4;i++)put(out->secondary+moved(1256+i*4,extra),fsdecl[i]);
   put(out->secondary+moved(1280,extra),fsdecl[4]);}
+ if(in->fragment_flags){
+  /* Same original compiler-shadow producers as COLOR4: fc203 lowers
+   * compiler397 bit24 into EF20000, f5056 publishes usage at1016, and
+   * f70fa/f7102 copy the flat IR declaration pair at1256/1260. The
+   * exact FS32/utility interface above is required; C1 interpolation is
+   * emitted separately from the caller's typed raster state. */
+  put(out->secondary+moved(660,extra),word(out->secondary+moved(660,extra))&~0x20000u);
+  put(out->secondary+moved(1016,extra),
+   (word(out->secondary+moved(1016,extra))&~0x8ffffu)|0xfff0u);
+  put(out->secondary+moved(1256,extra),word(out->secondary+moved(1256,extra))|0x80000000u);
+  put(out->secondary+moved(1260,extra),word(out->secondary+moved(1260,extra))|0x80000000u);
+ }
  put(out->secondary+moved(1340,extra),0x23000001);
  put(out->secondary+moved(1348,extra),in->record_count);
  *out->secondary_length=secondary;return 0;
