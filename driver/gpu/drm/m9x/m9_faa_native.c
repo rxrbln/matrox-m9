@@ -4784,32 +4784,63 @@ static void m9_faa_dual_bound_color_observe(struct m9x_device *mdev,
 		 sample[0], sample[1], sample[2], sample[3]);
 }
 
-/* Source graph roles 1/2/3 are sampled primary, MAIN and AUX.  Their retained
- * logical extents come from the admitted source graph owner specification;
- * allocation capacity may be page-rounded.  These are physical VRAM reads,
- * distinct from the F021 CPU view.  MAIN/AUX may contain initialized metadata
- * before this draw, so a nonzero post-Lock count is not render coverage. */
+/* Source graph roles 1/2/3 are sampled primary, MAIN and AUX. They are
+ * borrowed GEM objects: r->owner[] records only their GPU address/capacity,
+ * never a local CPU map. The graph binding retains the objects across this
+ * actual Lock, and the ioctl holds their reservations here. MAIN/AUX may
+ * contain initialized metadata; nonzero raw words are not render coverage. */
 static void m9_faa_dual_graph_raw_observe(struct m9x_device *mdev,
 					  struct m9x_faa_replay *r,
 					  u32 role, const char *name, u32 logical_bytes)
 {
 	struct m9_faa_owner *owner;
+	struct drm_gem_object *gem;
+	struct drm_gem_vram_object *bo;
+	struct iosys_map map = IOSYS_MAP_INIT_VADDR(NULL);
+	const char *refusal = "admission";
 	u8 data[256];
-	u32 offset, i, chunk, nonzero = 0, hash = 2166136261u;
+	u32 offset, i, chunk, address, source, nonzero = 0;
+	u32 hash = 2166136261u;
+	s64 local_offset;
+	u64 base;
+	int ret;
 
+	lockdep_assert_held(&mdev->transport.lock);
 	if (role < 1 || role > 3 || !logical_bytes ||
 	    logical_bytes != m9_faa_owner_specs[role].bytes ||
-	    logical_bytes % 4)
-		return;
+	    logical_bytes % 4 || !r->graph_binding ||
+	    r->graph_layout.width != 320 || r->graph_layout.height != 240)
+		goto refused;
 	owner = &r->owner[role];
-	if (r->graph_layout.width != 320 || r->graph_layout.height != 240 ||
-	    !owner->vram || owner->cpu || iosys_map_is_null(&owner->map) ||
-	    owner->bytes < logical_bytes)
-		return;
+	gem = m9x_faa_graph_binding_owner(r->graph_binding, role - 1);
+	if (!gem || !m9x_faa_graph_binding_address(r->graph_binding,
+							 role - 1, &address, &source) ||
+	    source != role || address != owner->base ||
+	    owner->vram || owner->cpu ||
+	    r->graph_layout.owner[role - 1].logical != logical_bytes ||
+	    r->graph_layout.owner[role - 1].capacity != owner->bytes) {
+		refusal = "binding";
+		goto refused;
+	}
+	dma_resv_assert_held(gem->resv);
+	bo = drm_gem_vram_of_gem(gem);
+	local_offset = drm_gem_vram_offset(bo);
+	if (local_offset < 0 ||
+	    r->graph_layout.owner[role - 1].capacity > bo->bo.base.size ||
+	    check_add_overflow(M9_VRAM_GPU_BASE, (u64)local_offset, &base) ||
+	    base != owner->base) {
+		refusal = "placement";
+		goto refused;
+	}
+	ret = drm_gem_vram_vmap(bo, &map);
+	if (ret) {
+		refusal = "vmap";
+		goto refused;
+	}
 	dma_rmb();
 	for (offset = 0; offset < logical_bytes; offset += sizeof(data)) {
 		chunk = min_t(u32, sizeof(data), logical_bytes - offset);
-		iosys_map_memcpy_from(data, &owner->map, offset, chunk);
+		iosys_map_memcpy_from(data, &map, offset, chunk);
 		for (i = 0; i < chunk; i += 4) {
 			u32 word = get_unaligned_le32(data + i);
 
@@ -4817,11 +4848,17 @@ static void m9_faa_dual_graph_raw_observe(struct m9x_device *mdev,
 			hash = (hash ^ word) * 16777619u;
 		}
 	}
-	iosys_map_memcpy_from(data, &owner->map, 0, 64);
+	iosys_map_memcpy_from(data, &map, 0, 64);
+	drm_gem_vram_vunmap(bo, &map);
 	dev_info(&mdev->pdev->dev,
 		 "M9 FAA dual graph raw %s owner%u: point=%#llx base=%#x bytes=%u nonzero_dwords=%u wordhash32=%08x first64=%*phN; retired physical VRAM only, preexisting metadata possible, no coverage or pixel interpretation\n",
 		 name, role, (unsigned long long)r->color_lock_point,
 		 owner->base, logical_bytes, nonzero, hash, 64, data);
+	return;
+refused:
+	dev_info(&mdev->pdev->dev,
+		 "M9 FAA dual graph raw %s owner%u refused: reason=%s; no raw data observed\n",
+		 name, role, refusal);
 }
 
 /* These are the actual emitted B0/B2/B8 target pairs. Resolve their tagged
