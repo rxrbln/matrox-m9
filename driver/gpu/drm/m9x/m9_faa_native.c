@@ -7350,8 +7350,8 @@ int m9x_faa_graph_public_vs_follow_get_locked(struct m9x_device *mdev,
 }
 
 int m9x_faa_graph_public_vs_follow_prepare(struct m9x_device *mdev,
-					   struct m9_faa_graph_binding *binding, u32 generation,
-					   u64 prefix_point)
+					   struct m9_faa_graph_binding *binding,
+					   u32 generation, u64 prefix_point)
 {
 #ifdef M9_FAA_GRAPH_INIT_CONTROL
 	struct m9x_transport *t = &mdev->transport;
@@ -7362,16 +7362,18 @@ int m9x_faa_graph_public_vs_follow_prepare(struct m9x_device *mdev,
 	const struct firmware *fw;
 	u32 i;
 	int ret;
+
 	if (!binding)
 		return -EINVAL;
-	ret = request_firmware(&fw, M9_FAA_GRAPH_PUBLIC_VS_FOLLOW_FIRMWARE, &mdev->pdev->dev);
+	ret = request_firmware(&fw, M9_FAA_GRAPH_PUBLIC_VS_FOLLOW_FIRMWARE,
+			       &mdev->pdev->dev);
 	if (ret)
 		return ret;
 	if (!m9x_faa_public_vs_follow_template_valid(fw->data, fw->size)) {
 		ret = -EINVAL;
 		goto out_fw;
 	}
-	storage = kmalloc(sizeof(*storage), GFP_KERNEL);
+	storage = kmalloc_obj(*storage);
 	if (!storage) {
 		ret = -ENOMEM;
 		goto out_fw;
@@ -7386,12 +7388,14 @@ int m9x_faa_graph_public_vs_follow_prepare(struct m9x_device *mdev,
 		goto out_lock;
 	}
 	if (!r->draw_owner[2].cpu || r->draw_owner[2].bytes < 1368 ||
-	    READ_ONCE(((u32 *)r->draw_owner[2].cpu)[704 / 4]) != M9_FAA_VS_FOLLOW_PATCH_EXPECTED) {
+	    READ_ONCE(((u32 *)r->draw_owner[2].cpu)[704 / 4]) !=
+		    M9_FAA_VS_FOLLOW_PATCH_EXPECTED) {
 		ret = -ESTALE;
 		goto out_lock;
 	}
 	for (i = 0; i < M9_FAA_DRAW_SOURCE_OWNERS; i++) {
 		struct m9_faa_owner *o;
+
 		switch (i) {
 		case 26:
 			o = &r->draw_owner[0];
@@ -7416,13 +7420,15 @@ int m9x_faa_graph_public_vs_follow_prepare(struct m9x_device *mdev,
 		owner[i].bytes = o->bytes;
 	}
 	image = (struct m9x_faa_public_vs_follow_image){
-	    storage->primary,
-	    storage->secondary,
-	    sizeof(storage->primary),
-	    sizeof(storage->secondary),
+		storage->primary,
+		storage->secondary,
+		sizeof(storage->primary),
+		sizeof(storage->secondary),
 	};
-	ret = m9x_faa_public_vs_follow_encode(fw->data, fw->size, owner, r->graph_draw_end_bytes,
-					      prefix_point, &image, &storage->ends);
+	ret = m9x_faa_public_vs_follow_encode(fw->data, fw->size, owner,
+					      r->graph_draw_end_bytes,
+					      prefix_point, &image,
+					      &storage->ends);
 	if (ret)
 		goto out_lock;
 	r->public_vs_follow_image = storage;
@@ -7437,6 +7443,7 @@ out_fw:
 	return -EOPNOTSUPP;
 #endif
 }
+
 int m9x_faa_graph_public_vs_follow_submit(struct m9x_device *mdev,
 					  struct m9_faa_graph_binding *binding, u32 generation,
 					  u64 prefix_point, u64 *point, bool *posted)
