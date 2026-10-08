@@ -8149,6 +8149,10 @@ m9_draw_vbo(struct pipe_context *pctx, const struct pipe_draw_info *info,
       const char *why = NULL;
       if (m9_context_faa_submit_draw(ctx, info, &draws[0], &why))
          m9_context_faa_fallback(ctx, why ? why : "FAA application draw failed");
+      /* Diagnostic: an admitted draw is not rendered ordinarily; a frame
+       * that fails later loses its prefix. */
+      else if (!m9_faa_shadow_enabled())
+         return;
    }
    if (num_draws && !indirect &&
        m9_mrt_blend_split(ctx, info, drawid_offset, draws))
@@ -8528,6 +8532,10 @@ m9_clear(struct pipe_context *pctx, unsigned buffers,
        * Preserve a prior partial clear as a sticky refusal. */
       ctx->faa_application_clear.scissored |= !m9_scissor_full(ctx, scissor);
       if (scissor) ctx->faa_application_clear.scissor = *scissor;
+      if (!m9_faa_shadow_enabled()) {
+         m9_prof_end(M9_PROF_CLEAR, t_clear);
+         return;
+      }
    }
 
    /* A job held for the scratch path is copied into place before the clear
@@ -10068,6 +10076,16 @@ out:
    m9_faa_application_fini(&owned);
    if (reason) *reason = why;
    return ret;
+}
+
+/* M9X_FAA_SHADOW=0 skips the ordinary rendering of admitted FAA draws. */
+bool
+m9_faa_shadow_enabled(void)
+{
+   static int shadow = -1;
+   if (shadow < 0)
+      shadow = debug_get_bool_option("M9X_FAA_SHADOW", true);
+   return shadow;
 }
 
 /* Drop the queued FAA frame. The ordinary rendering, which ran for every

@@ -425,6 +425,7 @@ int m9_context_faa_submit_draw(struct m9_context *ctx,
                                const char **reason);
 int m9_context_faa_flush_frame(struct m9_context *ctx, const char **reason);
 void m9_context_faa_fallback(struct m9_context *ctx, const char *why);
+bool m9_faa_shadow_enabled(void);
 int m9_context_faa_present_lock(struct m9_context *ctx, uint64_t graph_id,
                                uint32_t generation, uint64_t lock_point);
 
