@@ -84,3 +84,27 @@ Allocation parity is a prerequisite for 1024 testing; it does not enable a
 
 No GPU validation or pixel result is claimed for dimensions beyond the
 existing qualified 320×240 path.
+
+The original 1024×768 INIT-only capture is retained in
+`captures/m9-faa-dimensions-20261008/init-1024`, with compressed unchanged
+source/manifest/address/startup reports, the derived plan/blob, and the exact
+historical helper sources named by the startup receipt. Its caller stops at
+the INIT-only CPU boundary, then invokes the existing genuine independent
+queue finish; it supplies no GPU execution or completion.
+`tests/m9-faa-dimensions-source-20261008/check-init.py` verifies those immutable
+pins and compares against the qualified 320×240 INIT plan/blob.
+
+All seven non-primary known spans are byte-identical. After typed address
+and timeline normalization and deletion of the companion page-run, exactly
+five primary words change: HZ allocation height/storage width at `0x454`,
+`0x1170`, `0x11b0`, and HZ reader descriptors at `0x474`, `0x1188`.
+`0x00480028` becomes `0x00c80080`; `0xf0000028` becomes `0xf0000080`.
+The companion clear grows from 19 to 193 source page words, moving the full
+primary from 4880 to 5576 bytes. The four typed address sites and all thirteen
+timeline sites retain their producer/owner/epoch semantics; later sites move
+by 696 bytes. The final source point remains `0xb0`.
+Private source owner6 follows the primary backing capacity `0x308000`, and
+owner7 follows HZ backing capacity `0x20000`; other private allocation extents
+are unchanged. This closes INIT command construction for these two dimensions,
+with live owner relocation and live page alignment. It does not qualify larger
+FRAME clears, a normal Lock window, presentation, or physical 1024 rendering.
