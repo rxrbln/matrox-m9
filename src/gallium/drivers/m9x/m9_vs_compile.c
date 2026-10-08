@@ -3348,6 +3348,7 @@ m9_vs_compile_faa(struct nir_shader *nir, const struct m9_vs_outputs *outputs,
 struct faa_gl_position_state {
    unsigned stores;
    bool invalid;
+   bool half_z;
 };
 
 static bool
@@ -3363,6 +3364,10 @@ faa_gl_position(nir_builder *b, nir_intrinsic_instr *intr, void *data)
       return false;
    }
    state->stores++;
+   /* The ordinary fused tail applies the GL depth scale/bias itself.
+    * Only the separate FAA position stage needs clip Z lowered here. */
+   if (!state->half_z)
+      return false;
    b->cursor = nir_before_instr(&intr->instr);
    nir_def *pos = intr->src[0].ssa;
    nir_def *z = nir_fmul_imm(b, nir_fadd(b, nir_channel(b, pos, 2),
@@ -3425,7 +3430,7 @@ compile_faa_gl_mode(const struct nir_shader *nir,
       return false;
    }
    faa_gl_combine_outputs(copy);
-   struct faa_gl_position_state state = {0};
+   struct faa_gl_position_state state = {.half_z = !fused};
    nir_shader_intrinsics_pass(copy, faa_gl_position,
                              nir_metadata_control_flow, &state);
    if (state.invalid || !state.stores) {

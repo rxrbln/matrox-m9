@@ -199,8 +199,10 @@ live_gl_build_mode(const struct m9_faa_live_gl *s,
       }
       /* The ordinary tested tail names sparse pairs 9..21. They belong to
        * this VS C3 span; user keys occupy its other pairs. */
+      /* The ordinary source constant record has a four-dword prefix before
+       * pair zero. The fused C3 span holds register pairs only. */
       memcpy(carry_constants + 2 * M9_VS_TAIL_FIRST_PAIR,
-             params.system_prefix + 2 * M9_VS_TAIL_FIRST_PAIR,
+             params.system_prefix + 4 + 2 * M9_VS_TAIL_FIRST_PAIR,
              2 * M9_VS_TAIL_PAIRS * sizeof(uint32_t));
    }
    const struct m9_faa_program_vector vectors[4] = {
