@@ -835,6 +835,51 @@ int m9x_submit_kernel_stream_locked(struct m9x_device *mdev,
 					     point, doorbell_posted, async, false);
 }
 
+/* Each of @pages pages from @base must map @dma + offset with @valid.
+ * On failure @bad_page and, for -ESTALE, @bad_pte name the first mismatch.
+ */
+int m9x_system_pages_mapped(struct m9x_device *mdev, u32 base, dma_addr_t dma,
+			    u32 pages, u32 valid, u32 *bad_page, u32 *bad_pte)
+{
+	u32 page, pte;
+	int ret;
+
+	for (page = 0; page < pages; page++) {
+		ret = m9x_address_read_pte(mdev, base + page * PAGE_SIZE, &pte);
+		if (!ret && pte != (m9x_address_pte_word(dma + page * PAGE_SIZE) |
+				    valid)) {
+			ret = -ESTALE;
+			if (bad_pte)
+				*bad_pte = pte;
+		}
+		if (ret) {
+			if (bad_page)
+				*bad_page = page;
+			return ret;
+		}
+	}
+	return 0;
+}
+
+static void m9_transport_publish_end(struct m9x_device *mdev, u32 end)
+{
+	m9x_write(mdev, M9_REG_COMMAND_END, end);
+	m9x_read(mdev, M9_REG_COMMAND_END);
+}
+
+static int m9_transport_finish_wait_locked(struct m9x_device *mdev, u32 target,
+					   u64 *point)
+{
+	struct m9x_transport *t = &mdev->transport;
+	int ret;
+
+	ret = m9_fence_wait_locked(mdev, target);
+	if (ret)
+		return ret;
+	*point = m9_extend_fence(t, READ_ONCE(((u32 *)t->fence_cpu)[0]));
+	return 0;
+}
+
 /* Actual MxMD 23a09 selects the retained flags30/B primary GPUVA|1;
  * 2461e posts its untagged end-exclusive GPUVA. This private synchronous
  * request consumes the already published owner, without a physical clone.
@@ -846,7 +891,7 @@ int m9x_submit_faa_virtual_primary_locked(struct m9x_device *mdev,
 				 bool *doorbell_posted)
 {
 	struct m9x_transport *t = &mdev->transport;
-	u32 base, end, page, pte;
+	u32 base, end;
 	int ret;
 
 	lockdep_assert_held(&t->lock);
@@ -876,13 +921,11 @@ int m9x_submit_faa_virtual_primary_locked(struct m9x_device *mdev,
 		return -ERANGE;
 	/* Reject an uncommitted or differently cached mapping before touching
 	 * requester controls. The allocated node bounds the consumed prefix. */
-	for (page = 0; page < DIV_ROUND_UP(bytes, PAGE_SIZE); page++) {
-		ret = m9x_address_read_pte(mdev, base + page * PAGE_SIZE, &pte);
-		if (ret)
-			return ret;
-		if (pte != (m9x_address_pte_word(dma + page * PAGE_SIZE) | 1u))
-			return -ESTALE;
-	}
+	ret = m9x_system_pages_mapped(mdev, base, dma,
+				      DIV_ROUND_UP(bytes, PAGE_SIZE), 1u,
+				      NULL, NULL);
+	if (ret)
+		return ret;
 	/* The flags30 mapping is committed before engine activation. Drain
 	 * WC command/data stores before MMIO publication: dma_wmb() is only
 	 * a compiler barrier on x86; writel() does not emit an SFENCE. */
@@ -890,18 +933,13 @@ int m9x_submit_faa_virtual_primary_locked(struct m9x_device *mdev,
 	t->faa_virtual_primary = true;
 	m9x_write(mdev, M9_REG_COMMAND_BASE, base | 1u);
 	m9x_read(mdev, M9_REG_COMMAND_BASE);
-	m9x_write(mdev, M9_REG_COMMAND_END, end);
-	m9x_read(mdev, M9_REG_COMMAND_END);
+	m9_transport_publish_end(mdev, end);
 	if (doorbell_posted)
 		*doorbell_posted = true;
 	dev_info(&mdev->pdev->dev,
 		 "M9 FAA virtual primary: base=%#x end=%#x bytes=%u policy=b\n",
 		 base | 1u, end, bytes);
-	ret = m9_fence_wait_locked(mdev, target);
-	if (ret)
-		return ret;
-	*point = m9_extend_fence(t, READ_ONCE(((u32 *)t->fence_cpu)[0]));
-	return 0;
+	return m9_transport_finish_wait_locked(mdev, target, point);
 }
 
 /* A bounded diagnostic preserves actual source retirement boundaries while
@@ -915,11 +953,10 @@ int m9x_submit_faa_virtual_phases_locked(struct m9x_device *mdev,
 				int (*retired)(struct m9x_device *, u32, u64, void *),
 				void *retired_data)
 {
-	struct m9x_transport *t = &mdev->transport;
-	u32 i, page, pte, end;
+	u32 i, end;
 	int ret;
 
-	lockdep_assert_held(&t->lock);
+	lockdep_assert_held(&mdev->transport.lock);
 	if (doorbell_posted)
 		*doorbell_posted = false;
 	/* Each strictly increasing, DWORD-aligned endpoint consumes at least
@@ -942,13 +979,11 @@ int m9x_submit_faa_virtual_phases_locked(struct m9x_device *mdev,
 	}
 	if ((u64)dma + node->size > (u64)U32_MAX + 1)
 		return -EINVAL;
-	for (page = 0; page < DIV_ROUND_UP(phases[count - 1].bytes, PAGE_SIZE); page++) {
-		ret = m9x_address_read_pte(mdev, (u32)node->start + page * PAGE_SIZE, &pte);
-		if (ret)
-			return ret;
-		if (pte != (m9x_address_pte_word(dma + page * PAGE_SIZE) | 1u))
-			return -ESTALE;
-	}
+	ret = m9x_system_pages_mapped(mdev, (u32)node->start, dma,
+				      DIV_ROUND_UP(phases[count - 1].bytes,
+						   PAGE_SIZE), 1u, NULL, NULL);
+	if (ret)
+		return ret;
 	ret = m9x_submit_faa_virtual_primary_locked(mdev, node, dma,
 			phases[0].bytes, phases[0].target, point, doorbell_posted);
 	if (ret)
@@ -962,12 +997,10 @@ int m9x_submit_faa_virtual_phases_locked(struct m9x_device *mdev,
 		/* The prior actual wait returned; neither CPU seeds nor a later
 		 * phase's desired counter are treated as GPU completion. */
 		wmb();
-		m9x_write(mdev, M9_REG_COMMAND_END, (u32)node->start + phases[i].bytes);
-		m9x_read(mdev, M9_REG_COMMAND_END);
-		ret = m9_fence_wait_locked(mdev, phases[i].target);
+		m9_transport_publish_end(mdev, (u32)node->start + phases[i].bytes);
+		ret = m9_transport_finish_wait_locked(mdev, phases[i].target, point);
 		if (ret)
 			return ret;
-		*point = m9_extend_fence(t, READ_ONCE(((u32 *)t->fence_cpu)[0]));
 		if (retired) {
 			ret = retired(mdev, i, *point, retired_data);
 			if (ret)
@@ -989,8 +1022,7 @@ int m9x_validate_faa_virtual_resume_locked(struct m9x_device *mdev,
 				 u32 old_bytes, u32 new_bytes, u32 target)
 {
 	struct m9x_transport *t = &mdev->transport;
-	u32 page, pte, end;
-	int ret;
+	u32 end;
 
 	lockdep_assert_held(&t->lock);
 	if (!m9x_faa_diag_enabled() || !t->faa || !t->faa_virtual_primary ||
@@ -1012,15 +1044,9 @@ int m9x_validate_faa_virtual_resume_locked(struct m9x_device *mdev,
 		return -EAGAIN;
 	/* The suffix can cross a page boundary after the Lock return. Demand
 	 * that the same coherent command owner still maps every consumed page. */
-	for (page = 0; page < DIV_ROUND_UP(new_bytes, PAGE_SIZE); page++) {
-		ret = m9x_address_read_pte(mdev,
-				(u32)node->start + page * PAGE_SIZE, &pte);
-		if (ret)
-			return ret;
-		if (pte != (m9x_address_pte_word(dma + page * PAGE_SIZE) | 1u))
-			return -ESTALE;
-	}
-	return 0;
+	return m9x_system_pages_mapped(mdev, (u32)node->start, dma,
+				       DIV_ROUND_UP(new_bytes, PAGE_SIZE), 1u,
+				       NULL, NULL);
 }
 
 int m9x_extend_faa_virtual_primary_locked(struct m9x_device *mdev,
@@ -1028,11 +1054,10 @@ int m9x_extend_faa_virtual_primary_locked(struct m9x_device *mdev,
 				 u32 old_bytes, u32 new_bytes, u32 target,
 				 u64 *point, bool *doorbell_posted)
 {
-	struct m9x_transport *t = &mdev->transport;
 	u32 end;
 	int ret;
 
-	lockdep_assert_held(&t->lock);
+	lockdep_assert_held(&mdev->transport.lock);
 	if (doorbell_posted)
 		*doorbell_posted = false;
 	if (!point)
@@ -1045,15 +1070,10 @@ int m9x_extend_faa_virtual_primary_locked(struct m9x_device *mdev,
 	/* The primary and consumed data/secondary owners can be WC. Order
 	 * all earlier CPU stores before exposing this range to the GPU. */
 	wmb();
-	m9x_write(mdev, M9_REG_COMMAND_END, end);
-	m9x_read(mdev, M9_REG_COMMAND_END);
+	m9_transport_publish_end(mdev, end);
 	if (doorbell_posted)
 		*doorbell_posted = true;
-	ret = m9_fence_wait_locked(mdev, target);
-	if (ret)
-		return ret;
-	*point = m9_extend_fence(t, READ_ONCE(((u32 *)t->fence_cpu)[0]));
-	return 0;
+	return m9_transport_finish_wait_locked(mdev, target, point);
 }
 
 /* A retained graph can post the same END twice before any new fence write.
@@ -1128,18 +1148,21 @@ int m9x_post_faa_graph_end_locked(struct m9x_device *mdev,
 		return -EAGAIN;
 	/* A new suffix can cross a mapped page.  Verify every consumed page
 	 * still names the same coherent primary before the first doorbell. */
-	for (page = 0; page < DIV_ROUND_UP(new_bytes, PAGE_SIZE); page++) {
-		ret = m9x_address_read_pte(mdev,
-				(u32)node->start + page * PAGE_SIZE, &pte);
-		if (ret) {
-			dev_info(&mdev->pdev->dev, "M9 FAA END refused: PTE read base=%#llx page=%u error=%d\n", (unsigned long long)node->start, page, ret);
-			return ret;
-		}
-		if (pte != (m9x_address_pte_word(dma + page * PAGE_SIZE) | 1u)) {
-			dev_info(&mdev->pdev->dev, "M9 FAA END refused: PTE base=%#llx page=%u actual=%#x expected=%#x\n",
-			 (unsigned long long)node->start, page, pte, m9x_address_pte_word(dma + page * PAGE_SIZE) | 1u);
-			return -ESTALE;
-		}
+	ret = m9x_system_pages_mapped(mdev, (u32)node->start, dma,
+				      DIV_ROUND_UP(new_bytes, PAGE_SIZE), 1u,
+				      &page, &pte);
+	if (ret == -ESTALE) {
+		dev_info(&mdev->pdev->dev,
+			 "M9 FAA END refused: PTE base=%#llx page=%u actual=%#x expected=%#x\n",
+			 (unsigned long long)node->start, page, pte,
+			 m9x_address_pte_word(dma + page * PAGE_SIZE) | 1u);
+		return ret;
+	}
+	if (ret) {
+		dev_info(&mdev->pdev->dev,
+			 "M9 FAA END refused: PTE read base=%#llx page=%u error=%d\n",
+			 (unsigned long long)node->start, page, ret);
+		return ret;
 	}
 	end = (u32)node->start + new_bytes;
 	/* The primary and consumed data/secondary owners can be WC. Order
@@ -1157,10 +1180,9 @@ int m9x_post_faa_graph_end_locked(struct m9x_device *mdev,
 	*doorbell_posted = true;
 	if (!target)
 		return 0;
-	ret = m9_fence_wait_locked(mdev, target);
+	ret = m9_transport_finish_wait_locked(mdev, target, point);
 	if (ret)
 		return ret;
-	*point = m9_extend_fence(t, READ_ONCE(((u32 *)t->fence_cpu)[0]));
 	t->next_fence = target + 0x10;
 	return 0;
 }
