@@ -89,6 +89,12 @@ bool m9_faa_dual_texture_fs_build(uint32_t color_stream,
                                   uint32_t *program,
                                   uint32_t program_capacity_bytes,
                                   struct m9_faa_dual_texture_fs_interface *interface);
+/* Public SELECTARG2 control: two bound texture stages pass COLOR0 through
+ * while the same three-varying carry/gather/position interface remains live. */
+bool m9_faa_dual_colorpass_fs_build(uint32_t color_stream,
+                                   uint32_t *program, uint32_t program_capacity_bytes,
+                                   uint32_t *constants, uint32_t constant_capacity_bytes,
+                                   struct m9_faa_color_fs_interface *interface);
 
 enum m9_faa_move_input {
    M9_FAA_MOVE_ATTRIBUTES,

@@ -247,6 +247,52 @@ m9_faa_dual_texture_fs_build(uint32_t color_stream, uint32_t texel0_unit,
    return true;
 }
 
+/* Original public SELECTARG2 on both bound stages keeps the dual draw's
+ * COLOR/UV0/UV1 preprocessing but selects the smooth COLOR0 input in the
+ * fragment frontend. 16fa20 emits these four decoded register operations:
+ * two stream-0 interpolants followed by the two halves of oC0. The caller
+ * derives live code and C3 addresses; no captured allocation is encoded. */
+bool
+m9_faa_dual_colorpass_fs_build(uint32_t color_stream,
+                              uint32_t *program, uint32_t program_capacity_bytes,
+                              uint32_t *constants, uint32_t constant_capacity_bytes,
+                              struct m9_faa_color_fs_interface *interface)
+{
+   static const struct m9_faa_color_fs_form forms[4] = {
+      {0x1e, 4, 0x04, 0xff, 0x7f, 0x02, 0xe2803f20},
+      {0x1d, 4, 0x04, 0x42, 0x79, 0x45, 0xae003c00},
+      {0x1d, 4, 0x2d, 0xc0, 0x79, 0x44, 0xae003c00},
+      {0x1e, 4, 0x2d, 0xff, 0x7f, 0x04, 0xa2803f00},
+   };
+   static const uint32_t utility[4] = {
+      0u, 0x3f800000u, 0x3f800000u, 0x3f000000u,
+   };
+   const uint32_t bytes = 4 * 8;
+   struct m9_faa_color_fs_interface result = {4, 2, 0, 0x2d};
+
+   if (color_stream || !program || !constants || !interface ||
+       (uintptr_t)program % _Alignof(uint32_t) ||
+       (uintptr_t)constants % _Alignof(uint32_t) ||
+       program_capacity_bytes < bytes ||
+       constant_capacity_bytes < sizeof(utility) ||
+       bytes > UINTPTR_MAX - (uintptr_t)program ||
+       sizeof(utility) > UINTPTR_MAX - (uintptr_t)constants ||
+       overlap(program, bytes, constants, sizeof(utility)) ||
+       overlap(program, bytes, interface, sizeof(*interface)) ||
+       overlap(constants, sizeof(utility), interface, sizeof(*interface)))
+      return false;
+   for (uint32_t i = 0; i < 4; i++) {
+      const struct m9_faa_color_fs_form *s = &forms[i];
+      program[2 * i] = ((uint32_t)(s->a & 7u) << 29) |
+         ((uint32_t)s->b << 22) | ((uint32_t)s->c << 15) |
+         ((uint32_t)s->dst << 8) | ((uint32_t)s->cls << 5) | s->op;
+      program[2 * i + 1] = s->control | s->a >> 3;
+   }
+   memcpy(constants, utility, sizeof(utility));
+   *interface = result;
+   return true;
+}
+
 bool
 m9_faa_preprocess_moves(enum m9_faa_move_input kind, const uint8_t *inputs,
                         uint32_t count, uint32_t saturate_targets, uint32_t *output,

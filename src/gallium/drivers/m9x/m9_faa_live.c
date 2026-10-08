@@ -579,6 +579,32 @@ m9_faa_live_gl_dual_texture_build(const struct m9_faa_live_gl *s,
    return true;
 }
 
+bool
+m9_faa_live_gl_dual_colorpass_build(const struct m9_faa_live_gl *s,
+                                   struct m9_faa_gl_upload *output,
+                                   const char **reason)
+{
+   uint32_t fragment[8], fragment_constants[4];
+   struct m9_faa_color_fs_interface interface;
+   if (!s || !s->linkage || s->linkage->count != 3 ||
+       s->linkage->stream[0].location != VARYING_SLOT_COL0 ||
+       s->linkage->stream[1].location != VARYING_SLOT_TEX0 ||
+       s->linkage->stream[2].location != VARYING_SLOT_TEX1 ||
+       !m9_faa_dual_colorpass_fs_build(0, fragment, sizeof(fragment),
+                                      fragment_constants,
+                                      sizeof(fragment_constants), &interface)) {
+      if (reason) *reason = "FAA diagnostic COLOR pass needs COLOR0, TEXCOORD0, TEXCOORD1";
+      return false;
+   }
+   struct m9_faa_live_gl live = *s;
+   live.fragment = (struct m9_faa_program_vector){fragment, interface.slots};
+   live.fragment_constants = (struct m9_faa_dense_constants){
+      fragment_constants, interface.constant_pairs};
+   if (!live_gl_build_mode(&live, output, reason, false, true)) return false;
+   output->native_admission = false;
+   return true;
+}
+
 static bool
 color_vec(nir_def *value, const void *cb, size_t bytes, bool uniforms_only,
           uint32_t words[4])

@@ -146,6 +146,11 @@ bool m9_faa_live_gl_texture_combine_build(const struct m9_faa_live_gl *state,
 bool m9_faa_live_gl_dual_texture_build(const struct m9_faa_live_gl *state,
                                        struct m9_faa_gl_upload *output,
                                        const char **reason);
+/* Diagnostic public SELECTARG2 profile: identical live three-varying VS
+ * preprocessing with a distinct source-generated COLOR0-pass FS32. */
+bool m9_faa_live_gl_dual_colorpass_build(const struct m9_faa_live_gl *state,
+                                         struct m9_faa_gl_upload *output,
+                                         const char **reason);
 /* Move a bounded retained FS uniform COLOR to an owned GPU VS uniform output.
  * NULL clones mean the original varying path; success never mutates NIR. */
 bool m9_faa_live_gl_color_uniform_normalize(const struct m9_faa_live_gl *live,
