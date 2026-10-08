@@ -1058,7 +1058,8 @@ int m9x_faa_graph_draw_end_locked(struct m9x_device *mdev,
 int m9x_faa_graph_continuation_selftest(void)
 {
 	/* The replay contains the full private owner table; keep it off the
-	 * module-init stack even though this is a CPU-only predicate test. */
+	 * module-init stack even though this is a CPU-only predicate test.
+	 */
 	static struct m9x_transport t;
 	static struct m9x_faa_replay r;
 	static u32 counter = 0xb1;
@@ -1074,7 +1075,8 @@ int m9x_faa_graph_continuation_selftest(void)
 	t.restore_ready = true;
 	t.submitted_point = t.completed_point = 0xb0;
 	t.next_fence = 0xc0;
-	r.graph_binding = (void *)&t; /* predicate checks presence, not identity */
+	/* predicate checks presence, not identity */
+	r.graph_binding = (void *)&t;
 	r.prepared = r.attempted = r.observation_retired = true;
 	r.observation_point = 0xb0;
 	if (m9_faa_graph_continuation_state(&t, 0, 0xb0) ||
@@ -1099,7 +1101,8 @@ int m9x_faa_graph_continuation_selftest(void)
 	t.wedged = false;
 	r.graph_binding = NULL;
 	return m9_faa_graph_continuation_state(&t, 0, 0xb0) == -ESTALE ?
-		0 : -EINVAL;
+		       0 :
+		       -EINVAL;
 }
 
 /* Where FIRST starts on the timeline: INIT, or the ordinary jobs after it. */
