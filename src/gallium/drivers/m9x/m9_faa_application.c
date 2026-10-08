@@ -536,8 +536,7 @@ m9_faa_application_build(const struct m9_faa_application_draw *d,
          why="FAA single texture blend/alpha/flat or retained texture owner is not qualified";goto fail;
       }
       live.linkage=&texture_linkage;
-      if(!m9_faa_live_gl_texture_combine_build(&live,M9_FAA_TEXTURE_MODULATE,false,
-                                               &fresh.shader,&why))goto fail;
+      if(!m9_faa_live_gl_single_texture_build(&live,&fresh.shader,&why))goto fail;
       fresh.texture[0]=d->texture[0];fresh.texture[0].resource=NULL;
       pipe_resource_reference(&fresh.texture[0].resource,d->texture[0].resource);
       fresh.texture_count=1;fresh.state=d->state;

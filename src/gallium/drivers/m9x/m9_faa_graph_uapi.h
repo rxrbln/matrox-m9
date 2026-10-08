@@ -309,9 +309,13 @@ struct drm_parhelia_m9_faa_graph_dual_batch {
  * its own texture pair; texture[] equals the first record's. */
 #define PARHELIA_M9_FAA_DUAL_LATER_TEXTURES_VERSION 3u
 #define PARHELIA_M9_FAA_DUAL_LATER_MAX_DRAWS 64u
+/* Program of a version 3 DRAW; a SINGLE DRAW has no stage-1 texture. */
+#define PARHELIA_M9_FAA_PROGRAM_DUAL 0u
+#define PARHELIA_M9_FAA_PROGRAM_SINGLE 1u
 struct drm_parhelia_m9_faa_dual_draw {
    struct drm_parhelia_m9_faa_color_draw draw;
    struct drm_parhelia_m9_faa_texture_view texture[2];
+   uint32_t program, pad;
 };
 struct drm_parhelia_m9_faa_graph_dual_later {
  __u64 graph_id,previous_unlock_point,lock_point,upload;

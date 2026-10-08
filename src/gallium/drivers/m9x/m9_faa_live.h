@@ -135,6 +135,9 @@ bool m9_faa_live_gl_color_fused_build(const struct m9_faa_live_gl *state,
  * live GPU POSITION/COLOR0/TEXCOORD0 preprocessing. This is an owned CPU
  * upload only: native texture ownership, sampler descriptors and raster
  * routing have no application admission yet. */
+bool m9_faa_live_gl_single_texture_build(const struct m9_faa_live_gl *state,
+                                         struct m9_faa_gl_upload *output,
+                                         const char **reason);
 bool m9_faa_live_gl_texture_combine_build(const struct m9_faa_live_gl *state,
                                           enum m9_faa_texture_combine combine,
                                           bool swapped_arguments,

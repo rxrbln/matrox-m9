@@ -598,6 +598,34 @@ m9_faa_live_gl_dual_texture_build(const struct m9_faa_live_gl *s,
    return true;
 }
 
+/* COLOR0 * TEX0 MODULATE: the original 48-byte single program binds the
+ * utility pairs (0,1),(1,0.5) through C3, like FS72's three. */
+bool
+m9_faa_live_gl_single_texture_build(const struct m9_faa_live_gl *s,
+                                    struct m9_faa_gl_upload *output,
+                                    const char **reason)
+{
+   static const uint32_t fragment_constants[4] = {
+      0x00000000u, 0x3f800000u, 0x3f800000u, 0x3f000000u,
+   };
+   uint32_t program[12];
+   struct m9_faa_texture_fs_interface interface;
+   if (!s || !s->linkage || s->linkage->count != 2 ||
+       s->linkage->stream[0].location != VARYING_SLOT_COL0 ||
+       s->linkage->stream[1].location != VARYING_SLOT_TEX0 ||
+       !m9_faa_texture_fs_build(M9_FAA_TEXTURE_MODULATE, false, 0, 0,
+                                program, sizeof(program), &interface)) {
+      if (reason) *reason = "FAA single texture needs COLOR0, TEXCOORD0 and MODULATE";
+      return false;
+   }
+   struct m9_faa_live_gl live = *s;
+   live.fragment = (struct m9_faa_program_vector){program, interface.slots};
+   live.fragment_constants = (struct m9_faa_dense_constants){fragment_constants, 2};
+   if (!m9_faa_live_gl_build(&live, output, reason)) return false;
+   output->native_admission = false;
+   return true;
+}
+
 bool
 m9_faa_live_gl_dual_colorpass_build(const struct m9_faa_live_gl *s,
                                    struct m9_faa_gl_upload *output,
