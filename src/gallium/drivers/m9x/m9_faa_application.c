@@ -366,11 +366,11 @@ m9_faa_application_build(const struct m9_faa_application_draw *d,
       goto fail;
    }
    live.viewport = (struct m9_faa_viewport){x, y, w, h};
-   /* Keep the existing four-stage route while the source two-stage route
-    * is qualified on hardware. Both builders consume the same owned GL
-    * state and raw records; neither replays a captured shader or draw. */
+   /* The source two-stage route has continuous M9128 rendering and pool
+    * reuse proof. Keep M9X_FAA_FUSED=0 for four-stage comparisons. Both
+    * builders consume owned GL state and raw records. */
    const char *fused_option = getenv("M9X_FAA_FUSED");
-   bool fused = fused_option && !strcmp(fused_option, "1");
+   bool fused = !fused_option || !strcmp(fused_option, "1");
    if (!(fused ? m9_faa_live_gl_color_fused_build_state(&live, d->fs,
                     d->state.flatshade, &fresh.shader, &why) :
                  m9_faa_live_gl_color_build_state(&live, d->fs,
