@@ -21,6 +21,15 @@ static const struct span stage_spans[] = {
 	{ 1868, 1724, 1012 },
 };
 
+/* A culled stage keeps the two 12-byte 6A groups the unculled later
+ * source drops (FIRST 1296 and 1856), 24 bytes in all.
+ */
+static const struct span cull_spans[] = {
+	{ 0, 0, 456 },	      { 460, 560, 440 },  { 1000, 1000, 284 },
+	{ 1296, 1284, 216 },  { 1588, 1500, 20 }, { 1628, 1520, 216 },
+	{ 1856, 1736, 1024 },
+};
+
 static const u32 null_target[] = {
 	0x00040118, 3,		0x457a7978, 0,		0xcc010001, 0x00010001,
 	3,	    0x45877d7c, 0x200,	    0x0ff80000, 0,	    4,
@@ -39,7 +48,8 @@ int m9x_faa_dual_later_encode(const u8 *sample, size_t sample_bytes,
 			      struct m9x_faa_dual_later_scratch *scratch)
 {
 	struct m9x_faa_later_depth_clear_image clear_image;
-	u32 front = 0, sec_bytes, tail_bytes, total, mid, epoch, i, mask;
+	u32 front = 0, sec_bytes, tail_bytes, total, mid, epoch, i, mask, cull;
+	const struct span *spans;
 	u8 *s, *p;
 	int ret;
 	bool clear = clear_flags == 3, depth = clear_flags == 2;
@@ -65,8 +75,11 @@ int m9x_faa_dual_later_encode(const u8 *sample, size_t sample_bytes,
 		if (owner[31 + i].base != views->owner[i].base ||
 		    owner[31 + i].bytes < views->owner[i].capacity_bytes)
 			return -EINVAL;
-	sec_bytes = clear ? M9_FAA_DUAL_LATER_SECONDARY_CLEAR :
-			    M9_FAA_DUAL_LATER_SECONDARY_NOCLEAR;
+	/* The fresh FIRST stage carries the live cull field (bits 25:24). */
+	cull = (m9_cmd_get(fresh_secondary + 1992) >> 24 & 3) ?
+		M9_FAA_DUAL_LATER_CULL_BYTES : 0;
+	sec_bytes = (clear ? M9_FAA_DUAL_LATER_SECONDARY_CLEAR :
+			     M9_FAA_DUAL_LATER_SECONDARY_NOCLEAR) + cull;
 	tail_bytes = clear ? M9_FAA_DUAL_LATER_TAIL_CLEAR :
 			     M9_FAA_DUAL_LATER_TAIL_NOCLEAR;
 	if (scursor > owner[29].bytes ||
@@ -126,19 +139,21 @@ int m9x_faa_dual_later_encode(const u8 *sample, size_t sample_bytes,
 	s = scratch->secondary;
 	p = scratch->primary;
 	memset(s, 0, sizeof(scratch->secondary));
+	spans = cull ? cull_spans : stage_spans;
 	for (i = 0; i < ARRAY_SIZE(stage_spans); i++)
-		memcpy(s + stage_spans[i].to,
-		       fresh_secondary + stage_spans[i].from,
-		       stage_spans[i].bytes);
+		memcpy(s + spans[i].to, fresh_secondary + spans[i].from,
+		       spans[i].bytes);
 	memcpy(s + 456, null_target, sizeof(null_target));
 	m9_cmd_put(s + 552, 0x454545c0);
 	m9_cmd_put(s + 556, 4);
 	m9_cmd_put(s + 28, 0x49d00000 | ((800 - 28) / 4));
-	m9_cmd_put(s + 844, 0x49d00000 | ((1328 - 844) / 4));
-	m9_cmd_put(s + 1364, 0x49d00000 | ((1756 - 1364) / 4));
+	m9_cmd_put(s + 844, 0x49d00000 | ((1328 + cull / 2 - 844) / 4));
+	m9_cmd_put(s + 1364 + cull / 2,
+		   0x49d00000 | ((1756 + cull - 1364 - cull / 2) / 4));
 	m9_cmd_put(s + 320, ((mask & 0xff1fffffu) | 0x00100000u) & ~3u);
 	if (!clear) {
-		memmove(s + 60, s + 56, M9_FAA_DUAL_LATER_SECONDARY_CLEAR - 56);
+		memmove(s + 60, s + 56,
+			M9_FAA_DUAL_LATER_SECONDARY_CLEAR + cull - 56);
 		m9_cmd_put(s + 44, 3);
 		m9_cmd_put(s + 48, 0x45e3e6e6);
 		m9_cmd_put(s + 52, 1);
@@ -154,7 +169,7 @@ int m9x_faa_dual_later_encode(const u8 *sample, size_t sample_bytes,
 	}
 	memcpy(p + front + 3348 + (clear ? 8 : 0), fresh_tail + 3348,
 	       3624 - 3348);
-	mid = clear ? 1768 : 1772;
+	mid = (clear ? 1768 : 1772) + cull;
 	m9_cmd_put(p + front + 4, (owner[29].base + scursor) | 1);
 	m9_cmd_put(p + front + 8, (owner[29].base + scursor + mid) | 2);
 	m9_cmd_put(p + front + 52, (owner[29].base + scursor + mid) | 1);

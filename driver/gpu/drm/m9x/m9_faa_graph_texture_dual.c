@@ -207,11 +207,14 @@ int m9x_faa_texture_dual_bind_later_place(const struct m9x_faa_texture_bind_inpu
 {
 	struct m9x_faa_texture_bind_input input;
 	struct m9x_faa_texture_bind_words image[2];
-	u32 j, at, shift = bytes == 2740 ? 4 : 0;
+	/* No-clear stages move 4 bytes; culled stages keep 24 more bytes. */
+	u32 j, at, shift = (bytes == 2740 || bytes == 2764 ? 4 : 0) +
+			   (bytes >= 2760 ? 24 : 0);
 	int ret;
 
 	if (!unit || !program || !secondary ||
-	    (bytes != 2736 && bytes != 2740) || program->stage_count != 4 ||
+	    (bytes != 2736 && bytes != 2740 && bytes != 2760 &&
+	     bytes != 2764) || program->stage_count != 4 ||
 	    program->sampler_count != 2 || program->coordinate_sets != 2 ||
 	    program->color_op0 != 4 || program->color_op1 != 4 ||
 	    program->entry_bytes[0] || program->entry_bytes[1] != 72 ||

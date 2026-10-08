@@ -18,6 +18,7 @@
 #define M9_FAA_DUAL_LATER_SECONDARY_NOCLEAR 2740u
 #define M9_FAA_DUAL_LATER_TAIL_CLEAR 3632u
 #define M9_FAA_DUAL_LATER_TAIL_NOCLEAR 3624u
+#define M9_FAA_DUAL_LATER_CULL_BYTES 24u
 
 struct m9x_faa_dual_later_image {
  u8 *primary, *secondary;
@@ -30,7 +31,7 @@ struct m9x_faa_dual_later_image {
 struct m9x_faa_dual_later_scratch {
  struct m9x_faa_later_depth_scratch clear;
  u8 primary[M9_FAA_LATER_DEPTH_PREFIX_CAPACITY + M9_FAA_DUAL_LATER_TAIL_CLEAR];
- u8 secondary[M9_FAA_DUAL_LATER_SECONDARY_NOCLEAR];
+ u8 secondary[M9_FAA_DUAL_LATER_SECONDARY_NOCLEAR + M9_FAA_DUAL_LATER_CULL_BYTES];
 };
 
 int m9x_faa_dual_later_encode(const u8 *sample, size_t sample_bytes,

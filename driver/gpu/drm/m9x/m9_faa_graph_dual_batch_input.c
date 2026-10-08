@@ -35,7 +35,11 @@ static int dual_draws_copy(u64 draws, u32 draw_count, u32 width, u32 height,
 		struct m9x_faa_owned_color_draw *job = &batch->draw[i];
 		struct m9x_faa_color_input *in = &job->input;
 
-		if (!d->upload || d->pad[0] || d->pad[1] || d->raster_flags ||
+		if (!d->upload || d->pad[0] || d->pad[1] ||
+		    (d->raster_flags &
+		     ~(PARHELIA_M9_FAA_COLOR_RASTER_CULL_CW |
+		       PARHELIA_M9_FAA_COLOR_RASTER_CULL_CCW)) ||
+		    (d->raster_flags & 6) == 6 ||
 		    !m9x_faa_depth_flags_valid(d->depth_flags) ||
 		    d->record_stride != 64 || !d->record_count ||
 		    d->record_count % 3 || d->record_count > 12288 ||
@@ -80,6 +84,7 @@ static int dual_draws_copy(u64 draws, u32 draw_count, u32 width, u32 height,
 		in->record_count = d->record_count;
 		in->declaration_count = d->declaration_count;
 		in->depth_flags = d->depth_flags;
+		in->raster_flags = d->raster_flags;
 		in->dual_base_only = true;
 		job->bytes = sum;
 		if (i) {
@@ -115,7 +120,7 @@ int m9x_faa_dual_batch_copy(const struct drm_parhelia_m9_faa_graph_dual_batch
 	*result = NULL;
 	if (!args || !args->graph_id || !args->init_point ||
 	    (args->init_point & 15) || args->lock_point || !args->draws ||
-	    args->draw_count < 2 ||
+	    !args->draw_count ||
 	    args->draw_count > M9_FAA_DUAL_BATCH_MAX_DRAWS ||
 	    args->version != PARHELIA_M9_FAA_DUAL_BATCH_VERSION ||
 	    args->flags || args->state || args->pad || args->width != 320 ||

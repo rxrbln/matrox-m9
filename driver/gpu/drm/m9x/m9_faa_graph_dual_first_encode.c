@@ -126,7 +126,8 @@ int m9x_faa_dual_first_encode(const u8 *sample, size_t sample_bytes,
 	if (!m9x_faa_surface_layout(views->owner[M9_FAA_BOUND_COLOR].width,
 				    views->owner[M9_FAA_BOUND_COLOR].height,
 				    &layout) ||
-	    c->layout.constant_end[3] - c->layout.constant_begin[3] != 104)
+	    c->layout.constant_end[3] - c->layout.constant_begin[3] != 104 ||
+	    (c->raster_flags & ~6u) || (c->raster_flags & 6) == 6)
 		return -EINVAL;
 	if (!c->program || !c->constants || !c->geometry || !c->declaration ||
 	    !c->dual_base_only || c->layout.program_count != 4 ||
@@ -245,6 +246,17 @@ int m9x_faa_dual_first_encode(const u8 *sample, size_t sample_bytes,
 	m9_cmd_put(stage + 1640, 0xfe201fd2);
 	m9_cmd_put(stage + 2008, 0x603);
 	m9_cmd_put(stage + 2844, 0x29340000);
+	/* Original culled FIRST: the four 6A selectors and the raster word's
+	 * cull field (CW 3, CCW 2) change; the image keeps its size.
+	 */
+	if (c->raster_flags) {
+		static const u16 sel[] = { 636, 1304, 1864, 2844 };
+
+		for (i = 0; i < ARRAY_SIZE(sel); i++)
+			m9_cmd_put(stage + sel[i], 0x28ff0000);
+		m9_cmd_put(stage + 1992, 0xd8004055 |
+			   (c->raster_flags & 2 ? 0x03000000 : 0x02000000));
+	}
 	/* The authenticated 72-byte dual-multiply fragment frontend declares
 	 * COLOR0, UV0 and UV1. These semantic records are generated from the
 	 * admitted fragment interface; they are not caller-provided commands.

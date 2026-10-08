@@ -30,6 +30,8 @@ struct m9x_faa_color_input {
  u32 fragment_flags;
  /* Owned API comparison/write state, not a captured A8 word. */
  u32 depth_flags;
+ /* Dual path face culling: PARHELIA_M9_FAA_COLOR_RASTER_CULL_CW/CCW. */
+ u32 raster_flags;
  /* Immutable retained graph geometry, populated by native preparation.
   * Zero/zero is reserved for historical 320 source fixtures. */
  u32 width,height;

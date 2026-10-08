@@ -7754,8 +7754,11 @@ int m9x_faa_graph_dual_first_prepare(struct m9x_device *mdev,
  dual=(struct m9x_faa_dual_first_input){
   .color=input->dual_colorpass_diagnostic?&shadow_input:input,
   .texture=textures->bind};
+ /* A one-DRAW descriptor batch is the plain FIRST of draw[0]. */
+ if(batch&&batch->count==1)
+  batch=NULL;
  if(batch){
-  if(batch->count<2||batch->count>M9_FAA_DUAL_BATCH_MAX_DRAWS||
+  if(!batch->count||batch->count>M9_FAA_DUAL_BATCH_MAX_DRAWS||
      batch->draw[0].input.program!=input->program)return -EOPNOTSUPP;
   for(i=0;i<batch->count;i++){
    const struct m9x_faa_color_input *job=&batch->draw[i].input;
@@ -9300,6 +9303,10 @@ int m9x_faa_graph_depth_frame_submit(struct m9x_device *mdev,
    frame->dual_colorpass?M9_FAA_DUAL_COLORPASS_SECONDARY_BYTES:
    M9_FAA_DUAL_FIRST_SECONDARY_BYTES;
   u8 *sec=frame->batch_secondary?frame->batch_secondary:frame->secondary;
+  /* A single culled later stage keeps its 24 bytes of 6A groups. */
+  if(frame->dual_later&&frame->draw_count==1&&
+     frame->secondary_bytes==first_len+M9_FAA_DUAL_LATER_CULL_BYTES)
+   first_len+=M9_FAA_DUAL_LATER_CULL_BYTES;
   if((!frame->first&&!frame->dual_later)||!frame->draw_count||
      frame->draw_count>M9_FAA_DUAL_BATCH_MAX_DRAWS||
      frame->secondary_bytes!=first_len+
