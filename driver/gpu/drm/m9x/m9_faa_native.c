@@ -816,11 +816,14 @@ bool m9x_faa_graph_active(struct m9x_device *mdev)
  * diagnostic allowance; ordinary map policy and DMA bounds stay separate. */
 u32 m9x_faa_graph_system_extent_locked(struct m9x_device *mdev)
 {
- struct m9x_faa_replay *r=mdev->transport.faa;
- lockdep_assert_held(&mdev->transport.lock);
- if(!r||(!r->graph_binding&&!r->graph_preparing)||
-  !m9x_faa_runtime_shape(r->graph_layout.width,r->graph_layout.height))return 0;
- return r->graph_layout.owner[M9_FAA_SURFACE_PRIMARY].capacity;
+	struct m9x_faa_replay *r = mdev->transport.faa;
+
+	lockdep_assert_held(&mdev->transport.lock);
+	if (!r || (!r->graph_binding && !r->graph_preparing) ||
+	    !m9x_faa_runtime_shape(r->graph_layout.width,
+				   r->graph_layout.height))
+		return 0;
+	return r->graph_layout.owner[M9_FAA_SURFACE_PRIMARY].capacity;
 }
 
 bool m9x_faa_graph_profile_enabled(void)
