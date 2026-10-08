@@ -4,6 +4,25 @@
 # M9 open topics and evidence, 2026-10-06
 
 
+## October 8: missing faces isolated to dense POSITION-only record handling
+
+A genuine OpenGL360-vertex front-face diagnostic renders identical software
+images with constant NORMAL and an enabled NORMAL array. On M9128, the
+array frame is solid while both constant-NORMAL frames lose triangles; all
+three retire without a wedge. [Exact diagnostic and GPU output evidence](../tests/m9-faa-glxgears-first-hardware-20261008/constant-normal-isolation/README.md).
+
+Array-path GPU coordinates match their intended CPU ISA indices. Constant
+NORMAL coordinates match other actual vertices, often roughly half the
+requested index. The fault is vertex indexing, not a lighting arithmetic
+error or a requirement to have multiple jobs in a batch. Original vendor
+[high-count and16-byte stride controls](../tests/m9-faa-high-count-source-20261008/README.md) prove dense POSITION-only records are supported.
+
+Mesa9eed7ca removes artificial16-to32-byte padding; DRMf4a7a1c preserves live
+stride through admission and arena allocation. Pure encoder support and the
+combined hardware qualification are in progress. Command-pool rotation is
+integrated as DRM2869cb5 with CPU lifetime/retirement tests, pending physical
+rotation proof. No complete FAA glxgears or Quake3 rendering claim yet.
+
 ## October 8: live shader mask restores colored glxgears, missing faces remain
 
 Canonical DRM e7712f7 derives carry register availability from the actual
