@@ -336,6 +336,13 @@ static void m9_faa_frame_trace(struct m9x_device *mdev,const char *phase,
  if(pause&&delay)msleep(min(delay,100u));
 }
 
+/* faa_frame_trace for the graph ioctls outside this file. */
+void m9x_faa_trace(struct m9x_device *mdev, const char *phase, u32 index,
+		   u32 offset, u64 point, int result)
+{
+	m9_faa_frame_trace(mdev, phase, index, offset, point, result, false);
+}
+
 static bool m9_faa_color_four_experimental;
 module_param_named(faa_color_four_experimental,m9_faa_color_four_experimental,bool,0600);
 MODULE_PARM_DESC(faa_color_four_experimental,"Enable unqualified four-stage COLOR launcher (diagnostic only)");

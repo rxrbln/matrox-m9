@@ -448,6 +448,15 @@ int m9x_faa_graph_binding_acquire(struct m9x_device *mdev,
 		 mdev->transport.faa || mdev->transport.faa_virtual_primary ||
 		 mdev->transport.faa_source_context)
 		ret = -EBUSY;
+	if (ret)
+		m9x_faa_trace(mdev, "graph-acquire-refused",
+			      mdev->transport.generation,
+			      !!mdev->transport.async_stop |
+			      !!mdev->transport.wedged << 1 |
+			      !!mdev->transport.faa << 2 |
+			      !!mdev->transport.faa_virtual_primary << 3 |
+			      !!mdev->transport.faa_source_context << 4,
+			      generation, ret);
 	mutex_unlock(&mdev->transport.lock);
 out_exec:
 	drm_exec_fini(&exec);
@@ -691,6 +700,8 @@ static int m9_faa_graph_prepare(struct drm_device *drm, void *data,
 	} else {
 		graph->generation = mdev->transport.generation;
 		graph->id = atomic64_inc_return(&mdev->faa_graph_next);
+		m9x_faa_trace(mdev, "graph-prepared", graph->generation, 0,
+			      graph->id, 0);
 		state->graph = graph;
 		args->graph_id = graph->id;
 		args->generation = graph->generation;
@@ -812,6 +823,8 @@ out_state:
 		m9x_faa_graph_binding_put(binding);
 out_dev:
 	drm_dev_exit(idx);
+	m9x_faa_trace(mdev, "graph-init-return", args->generation, prepared,
+		      point, ret);
 	return ret;
 }
 

@@ -1631,6 +1631,17 @@ int m9x_submit_ioctl(struct drm_device *drm, void *data,
 	if (!drm_dev_enter(drm, &idx))
 		return -ENODEV;
 	ret = m9_submit_ioctl(drm, data, file);
+	if (ret == -EBUSY) {
+		struct m9x_device *mdev = to_m9x(drm);
+
+		dev_warn_ratelimited(drm->dev,
+				     "M9 submit busy: faa=%d virtual=%d source=%d queue=%u async_stop=%d\n",
+				     !!READ_ONCE(mdev->transport.faa),
+				     READ_ONCE(mdev->transport.faa_virtual_primary),
+				     READ_ONCE(mdev->transport.faa_source_context),
+				     READ_ONCE(mdev->transport.queue_count),
+				     READ_ONCE(mdev->transport.async_stop));
+	}
 	drm_dev_exit(idx);
 	return ret;
 }

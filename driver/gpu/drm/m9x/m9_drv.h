@@ -749,6 +749,8 @@ int m9x_faa_graph_dual_later_submit(struct m9x_device *mdev,
 				    u32 generation, u64 previous,
 				    struct m9x_faa_texture_owners *draw_textures,
 				    u64 *point, bool *posted);
+void m9x_faa_trace(struct m9x_device *mdev, const char *phase, u32 index,
+		   u32 offset, u64 point, int result);
 void m9x_faa_graph_texture_owners_defer(struct m9x_device *mdev,
 					struct m9x_faa_texture_owners *owners);
 int m9x_faa_graph_color_frame_ioctl(struct drm_device *,void *,struct drm_file *);
