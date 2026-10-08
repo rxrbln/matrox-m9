@@ -8,6 +8,17 @@
 #include "m9_faa_graph_dual_batch_input.h"
 #include "m9_faa_graph_later_stage.h"
 
+/* A clip window inside the target, or zero/zero for the whole target. */
+static bool clip_valid(u32 origin, u32 end, u32 width, u32 height)
+{
+	u32 x0 = origin & 0xffff, y0 = origin >> 16;
+	u32 x1 = end & 0xffff, y1 = end >> 16;
+
+	if (!origin && !end)
+		return true;
+	return x0 < x1 && y0 < y1 && x1 <= width && y1 <= height;
+}
+
 /* Copy draw descriptors and their uploads; draw 0 defines the program.
  * Records are drm_parhelia_m9_faa_dual_draw when textured is set.
  */
@@ -56,7 +67,8 @@ static int dual_draws_copy(u64 draws, u32 draw_count, u32 width, u32 height,
 		    (program != PARHELIA_M9_FAA_PROGRAM_DUAL && !single) ||
 		    (single && memcmp(&t->texture[1], &none, sizeof(none))))
 			goto out;
-		if (!d->upload || d->pad[0] || d->pad[1] ||
+		if (!d->upload ||
+		    !clip_valid(d->clip_origin, d->clip_end, width, height) ||
 		    (d->raster_flags &
 		     ~(PARHELIA_M9_FAA_COLOR_RASTER_CULL_CW |
 		       PARHELIA_M9_FAA_COLOR_RASTER_CULL_CCW)) ||
@@ -109,6 +121,8 @@ static int dual_draws_copy(u64 draws, u32 draw_count, u32 width, u32 height,
 		in->declaration_count = d->declaration_count;
 		in->depth_flags = d->depth_flags;
 		in->raster_flags = d->raster_flags;
+		in->clip_origin = d->clip_origin;
+		in->clip_end = d->clip_end;
 		in->dual_base_only = !single;
 		in->single_base_only = single;
 		job->bytes = sum;

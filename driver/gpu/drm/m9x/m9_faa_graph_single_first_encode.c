@@ -191,8 +191,12 @@ int m9x_faa_single_first_encode(const u8 *sample, size_t sample_bytes,
 	/* Inactive AC CPU scratch: zero, as in the dual FIRST. */
 	m9_cmd_put(stage + 2220, 0xffff);
 	m9_cmd_put(stage + 2224, 0);
-	m9_cmd_put(stage + 2244, layout.height << 16 | layout.width);
-	m9_cmd_put(stage + 2252, layout.height << 16 | layout.width);
+	m9_cmd_put(stage + 2240, c->clip_origin);
+	m9_cmd_put(stage + 2248, c->clip_origin);
+	m9_cmd_put(stage + 2244, c->clip_end ? c->clip_end :
+				   layout.height << 16 | layout.width);
+	m9_cmd_put(stage + 2252, c->clip_end ? c->clip_end :
+				   layout.height << 16 | layout.width);
 	m9_cmd_put(stage + 2064, layout.primary_descriptor);
 	m9_cmd_put(stage + 2080, layout.companion_descriptor);
 	for (i = 0; i < 4; i++)

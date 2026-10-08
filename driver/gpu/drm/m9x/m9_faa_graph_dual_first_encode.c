@@ -202,8 +202,13 @@ int m9x_faa_dual_first_encode(const u8 *sample, size_t sample_bytes,
 					   0);
 	m9_cmd_put(stage + 2292, 0xffff);
 	m9_cmd_put(stage + 2296, 0);
-	m9_cmd_put(stage + 2316, layout.height << 16 | layout.width);
-	m9_cmd_put(stage + 2324, layout.height << 16 | layout.width);
+	/* Colour-pass clip window f5/f6 and c4/c5: origin, exclusive end. */
+	m9_cmd_put(stage + 2312, c->clip_origin);
+	m9_cmd_put(stage + 2320, c->clip_origin);
+	m9_cmd_put(stage + 2316, c->clip_end ? c->clip_end :
+				   layout.height << 16 | layout.width);
+	m9_cmd_put(stage + 2324, c->clip_end ? c->clip_end :
+				   layout.height << 16 | layout.width);
 	/* Seven dimension words: primary/companion descriptors, the MAIN extent
 	 * AD quartet and the active rectangle above.
 	 */

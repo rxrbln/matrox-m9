@@ -115,7 +115,12 @@ struct drm_parhelia_m9_faa_color_draw {
  __u64 upload;
  __u32 upload_bytes, record_stride, record_count, declaration_count;
  struct drm_parhelia_m9_faa_upload_layout layout;
- __u32 depth_flags, raster_flags, pad[2];
+ __u32 depth_flags, raster_flags;
+ /* Dual/single texture DRAWs: clip window y << 16 | x, end exclusive;
+  * zero/zero is the whole target (vendor scissor and sub-viewport
+  * colour-pass f5/f6). COLOR frame DRAWs keep zero.
+  */
+ __u32 clip_origin, clip_end;
 };
 
 struct drm_parhelia_m9_faa_graph_color_frame_batch {

@@ -33,6 +33,8 @@ struct m9x_faa_color_input {
  u32 depth_flags;
  /* Dual path face culling: PARHELIA_M9_FAA_COLOR_RASTER_CULL_CW/CCW. */
  u32 raster_flags;
+ /* Clip window y << 16 | x and exclusive end; zero/zero: the target. */
+ u32 clip_origin,clip_end;
  /* Immutable retained graph geometry, populated by native preparation.
   * Zero/zero is reserved for historical 320 source fixtures. */
  u32 width,height;
