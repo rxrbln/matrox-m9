@@ -569,6 +569,8 @@ MODULE_FIRMWARE(M9_FAA_GRAPH_PUBLIC_VS_FIRMWARE);
 MODULE_FIRMWARE(M9_FAA_GRAPH_PUBLIC_VS_DRAW_FIRMWARE);
 #define M9_FAA_GRAPH_COLOR_FIRMWARE "m9x/faa-graph-color-lock-template.bin"
 #define M9_FAA_GRAPH_COLOR_FOUR_FIRMWARE "m9x/faa-graph-color-four-template.bin"
+MODULE_FIRMWARE(M9_FAA_GRAPH_COLOR_FIRMWARE);
+MODULE_FIRMWARE(M9_FAA_GRAPH_COLOR_FOUR_FIRMWARE);
 #define M9_FAA_GRAPH_PUBLIC_VS_NEXT_FIRMWARE "m9x/faa-graph-public-vs-next-template.bin"
 MODULE_FIRMWARE(M9_FAA_GRAPH_PUBLIC_VS_NEXT_FIRMWARE);
 #define M9_FAA_GRAPH_PUBLIC_VS_LOCK_FIRMWARE "m9x/faa-graph-public-vs-lock-template.bin"
@@ -7208,9 +7210,6 @@ put:
 	return ret;
 }
 
-MODULE_FIRMWARE(M9_FAA_GRAPH_COLOR_FIRMWARE);
-MODULE_FIRMWARE(M9_FAA_GRAPH_COLOR_FOUR_FIRMWARE);
-
 /* A repeated COLOR frame owns the same graph/private context. Previous Unlock
  * must have retired completely before any retained code/data owner is rewritten.
  * This admission does not rebase a timeline or clear a reservation hazard. */
@@ -8518,6 +8517,7 @@ int m9x_faa_graph_clear_resume_get_locked(struct m9x_device*mdev,u32 generation,
 /* A refusal before submit may retry the already prepared image, but only
  * the exact immutable owned semantic upload. No CPU reconstruction or input
  * replacement is permitted under that retained prefix entitlement. */
+#ifdef M9_FAA_GRAPH_INIT_CONTROL
 static bool m9_faa_clear_resume_input_equal(const struct m9_faa_depth_frame_storage*f,
  const struct m9x_faa_color_input*i)
 {
@@ -8532,6 +8532,7 @@ static bool m9_faa_clear_resume_input_equal(const struct m9_faa_depth_frame_stor
   !memcmp(a->geometry,i->geometry,i->layout.geometry_bytes)&&
   !memcmp(a->declaration,i->declaration,i->declaration_count*4);
 }
+#endif
 static int m9_faa_depth_later_prepare(struct m9x_device *mdev,
  struct m9_faa_graph_binding *binding,u32 generation,u64 previous,
  const struct m9x_faa_color_input *input,u32 clear_flags,u32 raster_flags,bool resumed)
