@@ -1,5 +1,34 @@
 # M9128 generalized GL FAA upload boundary
 
+## October 8: live depth state and GPU presentation integrated, hardware pending
+
+DRM1504380 and Mesa7730b80 fix an API/state mismatch: FAA accepted GL_LESS
+but emitted vendor LEQUAL (`38038f`). The original comparison jump table and
+validator now prove all eight compare codes/write masks; complete original
+three-DRAW frames prove LESS/write (`38038b`), LEQUAL/write (`38038f`) and
+ALWAYS/no-write (`38039d`) change only A8, with identical primary/programs.
+[Source evidence](../tests/m9-faa-depth-state-source-20261008/README.md).
+Per-draw state is owned and encoded through FIRST/initialized count2/count4;
+disabled depth remains gated because its shader/EF route differs.
+
+DRMb240d60/4f13da2 and Mesaff19d34/5133bb6 integrate opt-in
+`M9X_FAA_GPU_PRESENT=1`. Live destination owners, mapping, fences and separate
+Lock/Unlock/presentation receipts are retained through retirement or failure.
+The next frame starts after the real presentation point; pool maintenance
+preserves the immutable Unlock history. CPU lifecycle/receipt/pool tests and
+the combined full module/20-object DSO build pass. GPU presentation pixels
+and speed are still pending the combined target run; CPU presentation remains
+the default. The earlier96-frame geometry proof remains the hardware baseline.
+
+Mesac7e399b/81d0bdc/3c3e1f3 adds an executable live dual-UV carry/gather,
+source-exact72B dual-MODULATE FS, and owned four-vector shader upload. Native
+textured admission is still false until the complete secondary/texture-owner
+submission is connected. Full-resolution INIT source is closed; larger
+clear/draw/Lock joins remain in progress. No Quake3 FAA pass is claimed.
+
+
+
+
 
 ## October 8: large FAA batches pass64/96/176 draws on hardware
 
