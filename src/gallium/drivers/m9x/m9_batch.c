@@ -1,6 +1,7 @@
 /* SPDX-License-Identifier: MIT */
 /* Copyright 2026 René Rebe <rene@exactco.de> */
 #include "m9_batch.h"
+#include "m9_hw_encode.h"
 #include "m9_resource69_inline.h"
 #include "m9_wait_uapi.h"
 
@@ -263,20 +264,19 @@ m9_batch_emit_range_break(struct m9_batch *batch)
    return 0;
 }
 
+/* The encoder is shared with the kernel FAA producers (m9_hw_encode.h). */
 uint32_t
 m9_surface_desc0(const struct m9_surface_desc *desc)
 {
-   return (desc->row_span & 0xffffu) |
-          ((uint32_t)(desc->layout & 7u) << 16) |
-          ((uint32_t)desc->address_offset << 21) |
-          ((uint32_t)desc->resource_layout << 23) |
-          ((uint32_t)(desc->format & 0x7fu) << 25);
+   return m9_hw_surface_desc0(desc->format, desc->resource_layout,
+                              desc->address_offset, desc->layout,
+                              desc->row_span);
 }
 
 uint32_t
 m9_surface_desc1(const struct m9_surface_desc *desc)
 {
-   return (desc->height & 0xffffu) | ((desc->layers & 0xfffu) << 16);
+   return m9_hw_surface_desc1(desc->height, desc->layers);
 }
 
 int
