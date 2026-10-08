@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: GPL-2.0-only
+/* Copyright 2026 René Rebe <rene@exactco.de> */
 /* Locate typed four-stage source packets; never copy a captured command. */
 #ifdef M9_FAA_TEXTURE_HOST_TEST
 #include <errno.h>
@@ -10,32 +11,33 @@
 static u32 rd(const u8 *p, u32 word)
 {
 	const u8 *b = p + 4 * word;
-	return (u32)b[0] | (u32)b[1] << 8 | (u32)b[2] << 16 |
-		(u32)b[3] << 24;
+
+	return (u32)b[0] | (u32)b[1] << 8 | (u32)b[2] << 16 | (u32)b[3] << 24;
 }
 
 static void wr(u8 *p, u32 word, u32 value)
 {
 	u8 *b = p + 4 * word;
+
 	b[0] = value;
 	b[1] = value >> 8;
 	b[2] = value >> 16;
 	b[3] = value >> 24;
 }
 
-int m9x_faa_texture_bind_place(
-	const struct m9x_faa_texture_bind_input *in,
-	const struct m9x_faa_texture_program_interface *program,
-	u8 *secondary, u32 bytes)
+int m9x_faa_texture_bind_place(const struct m9x_faa_texture_bind_input *in,
+			       const struct m9x_faa_texture_program_interface
+				       *program,
+			       u8 *secondary, u32 bytes)
 {
 	struct m9x_faa_texture_bind_words image;
 	u32 stream = 0, raster = 0, texture = 0, words, i;
 	int ret;
 
-	if (!secondary || !program || !bytes || (bytes & 3) ||
-	    bytes < 48 || bytes > 0x40000 ||
-	    program->stage_count != 4 || program->sampler_count != 1 ||
-	    program->color_stream != 0 || program->texcoord_stream != 1 ||
+	if (!secondary || !program || !bytes || (bytes & 3) || bytes < 48 ||
+	    bytes > 0x40000 || program->stage_count != 4 ||
+	    program->sampler_count != 1 || program->color_stream != 0 ||
+	    program->texcoord_stream != 1 ||
 	    (program->color_op != 4 && program->color_op != 7) ||
 	    program->entry_bytes[0] != 48 || program->entry_bytes[1] != 104 ||
 	    program->entry_bytes[2] != 144 || program->entry_bytes[3] != 0)
@@ -65,8 +67,7 @@ int m9x_faa_texture_bind_place(
 			raster = i;
 		}
 		if (rd(secondary, i) == 0x45454570 &&
-		    rd(secondary, i - 1) == 1 &&
-		    rd(secondary, i + 2) == 3 &&
+		    rd(secondary, i - 1) == 1 && rd(secondary, i + 2) == 3 &&
 		    rd(secondary, i + 3) == 0x457a7978 &&
 		    rd(secondary, i + 7) == 3 &&
 		    rd(secondary, i + 8) == 0x45877d7c) {
@@ -80,7 +81,8 @@ int m9x_faa_texture_bind_place(
 		return -EINVAL;
 
 	/* Every packet site was checked before the first write. Texture address
-	 * is always replaced with the retained owner's live VRAM address. */
+	 * is always replaced with the retained owner's live VRAM address.
+	 */
 	wr(secondary, stream + 2, image.stream0);
 	wr(secondary, stream + 3, image.stream1);
 	wr(secondary, raster + 3, image.raster_ae);

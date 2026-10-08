@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: GPL-2.0-only
+/* Copyright 2026 René Rebe <rene@exactco.de> */
 /* Original 102b:0540 two-texture packet motif; no captured GPU address is
- * copied. Neither a texture upload nor a whole-draw admission lives here. */
+ * copied. Neither a texture upload nor a whole-draw admission lives here.
+ */
 #ifdef M9_FAA_TEXTURE_HOST_TEST
 #include <errno.h>
 #include <stdint.h>
@@ -14,37 +16,37 @@
 static u32 rd(const u8 *p, u32 word)
 {
 	const u8 *b = p + 4 * word;
-	return (u32)b[0] | (u32)b[1] << 8 | (u32)b[2] << 16 |
-	       (u32)b[3] << 24;
+
+	return (u32)b[0] | (u32)b[1] << 8 | (u32)b[2] << 16 | (u32)b[3] << 24;
 }
 
 static void wr(u8 *p, u32 word, u32 value)
 {
 	u8 *b = p + 4 * word;
+
 	b[0] = value;
 	b[1] = value >> 8;
 	b[2] = value >> 16;
 	b[3] = value >> 24;
 }
 
-int m9x_faa_texture_dual_bind_place(
-	const struct m9x_faa_texture_bind_input unit[2],
-	const struct m9x_faa_texture_dual_program *program,
-	u8 *secondary, u32 bytes)
+int m9x_faa_texture_dual_bind_place(const struct m9x_faa_texture_bind_input
+					    unit[2],
+				    const struct m9x_faa_texture_dual_program
+					    *program,
+				    u8 *secondary, u32 bytes)
 {
 	struct m9x_faa_texture_bind_input input;
 	struct m9x_faa_texture_bind_words image[2];
-	u32 stream = 0, raster = 0, site[2] = {0, 0}, words, i, j;
+	u32 stream = 0, raster = 0, site[2] = { 0, 0 }, words, i, j;
 	int ret;
 
-	if (!unit || !program || !secondary || (bytes & 3) ||
-	    bytes < 64 || bytes > 0x40000 ||
-	    program->stage_count != 4 || program->sampler_count != 2 ||
-	    program->coordinate_sets != 2 || program->color_op0 != 4 ||
-	    program->color_op1 != 4 || program->entry_bytes[0] != 0 ||
-	    program->entry_bytes[1] != 72 ||
-	    (program->entry_bytes[2] & 7) ||
-	    (program->entry_bytes[3] & 7) ||
+	if (!unit || !program || !secondary || (bytes & 3) || bytes < 64 ||
+	    bytes > 0x40000 || program->stage_count != 4 ||
+	    program->sampler_count != 2 || program->coordinate_sets != 2 ||
+	    program->color_op0 != 4 || program->color_op1 != 4 ||
+	    program->entry_bytes[0] != 0 || program->entry_bytes[1] != 72 ||
+	    (program->entry_bytes[2] & 7) || (program->entry_bytes[3] & 7) ||
 	    program->entry_bytes[2] <= program->entry_bytes[1] ||
 	    program->entry_bytes[3] - program->entry_bytes[2] != 56 ||
 	    !program->program_bytes || program->program_bytes > 4096 ||
@@ -56,18 +58,23 @@ int m9x_faa_texture_dual_bind_place(
 	    unit[0].coordinate_sets != 2 || unit[1].coordinate_sets != 2 ||
 	    unit[0].coordinate_index != 0 || unit[1].coordinate_index != 1 ||
 	    unit[0].owner_base == unit[1].owner_base ||
-	    (unsigned long long)unit[0].owner_base + unit[0].owner_bytes > U32_MAX ||
-	    (unsigned long long)unit[1].owner_base + unit[1].owner_bytes > U32_MAX ||
+	    (unsigned long long)unit[0].owner_base + unit[0].owner_bytes >
+		    U32_MAX ||
+	    (unsigned long long)unit[1].owner_base + unit[1].owner_bytes >
+		    U32_MAX ||
 	    ((unsigned long long)unit[0].owner_base <
-	     (unsigned long long)unit[1].owner_base + unit[1].owner_bytes &&
+		     (unsigned long long)unit[1].owner_base +
+			     unit[1].owner_bytes &&
 	     (unsigned long long)unit[1].owner_base <
-	     (unsigned long long)unit[0].owner_base + unit[0].owner_bytes))
+		     (unsigned long long)unit[0].owner_base +
+			     unit[0].owner_bytes))
 		return -EINVAL;
 
 	for (j = 0; j < 2; j++) {
 		/* 467e0 and f44xx use the same descriptor/sampler producer for
 		 * both units. Bind helper coordinate words are intentionally unused:
-		 * the dual stream/raster program is checked independently below. */
+		 * the dual stream/raster program is checked independently below.
+		 */
 		input = unit[j];
 		input.stage = 0;
 		input.raster_ae_base = 0x28207006;
@@ -118,7 +125,8 @@ int m9x_faa_texture_dual_bind_place(
 		return -EINVAL;
 
 	/* Full preflight precedes all writes, including distinct live-owner and
-	 * packet-order validation. Stable opcode words came from source f44xx. */
+	 * packet-order validation. Stable opcode words came from source f44xx.
+	 */
 	for (j = 0; j < 2; j++) {
 		i = site[j];
 		wr(secondary, i + 1, image[j].unit70);
@@ -132,12 +140,11 @@ int m9x_faa_texture_dual_bind_place(
 	return 0;
 }
 
-int m9x_faa_texture_dual_bind_append_place(
-	const struct m9x_faa_texture_bind_input unit[2],
-	const struct m9x_faa_texture_dual_program *program,
-	u8 *secondary, u32 bytes)
+int m9x_faa_texture_dual_bind_append_place(const struct m9x_faa_texture_bind_input unit[2],
+					   const struct m9x_faa_texture_dual_program *program,
+					   u8 *secondary, u32 bytes)
 {
-	static const u32 site[2] = {2508, 2608};
+	static const u32 site[2] = { 2508, 2608 };
 	struct m9x_faa_texture_bind_input input;
 	struct m9x_faa_texture_bind_words image[2];
 	u32 j, at;
@@ -147,8 +154,8 @@ int m9x_faa_texture_dual_bind_append_place(
 	    program->stage_count != 4 || program->sampler_count != 2 ||
 	    program->coordinate_sets != 2 || program->color_op0 != 4 ||
 	    program->color_op1 != 4 || program->entry_bytes[0] ||
-	    program->entry_bytes[1] != 72 ||
-	    (program->entry_bytes[2] & 7) || (program->entry_bytes[3] & 7) ||
+	    program->entry_bytes[1] != 72 || (program->entry_bytes[2] & 7) ||
+	    (program->entry_bytes[3] & 7) ||
 	    program->entry_bytes[2] <= program->entry_bytes[1] ||
 	    program->entry_bytes[3] - program->entry_bytes[2] != 56 ||
 	    !program->program_bytes || program->program_bytes > 4096 ||
@@ -160,12 +167,16 @@ int m9x_faa_texture_dual_bind_append_place(
 	    unit[0].coordinate_sets != 2 || unit[1].coordinate_sets != 2 ||
 	    unit[0].coordinate_index != 0 || unit[1].coordinate_index != 1 ||
 	    unit[0].owner_base == unit[1].owner_base ||
-	    (unsigned long long)unit[0].owner_base + unit[0].owner_bytes > U32_MAX ||
-	    (unsigned long long)unit[1].owner_base + unit[1].owner_bytes > U32_MAX ||
+	    (unsigned long long)unit[0].owner_base + unit[0].owner_bytes >
+		    U32_MAX ||
+	    (unsigned long long)unit[1].owner_base + unit[1].owner_bytes >
+		    U32_MAX ||
 	    ((unsigned long long)unit[0].owner_base <
-	     (unsigned long long)unit[1].owner_base + unit[1].owner_bytes &&
+		     (unsigned long long)unit[1].owner_base +
+			     unit[1].owner_bytes &&
 	     (unsigned long long)unit[1].owner_base <
-	     (unsigned long long)unit[0].owner_base + unit[0].owner_bytes))
+		     (unsigned long long)unit[0].owner_base +
+			     unit[0].owner_bytes))
 		return -EINVAL;
 	for (j = 0; j < 2; j++) {
 		input = unit[j];
@@ -176,7 +187,8 @@ int m9x_faa_texture_dual_bind_append_place(
 			return ret;
 		at = site[j] / 4;
 		/* Check both real source packets before changing either. The
-		 * earlier null-target 70 packet at offset 600 does not qualify. */
+		 * earlier null-target 70 packet at offset 600 does not qualify.
+		 */
 		if (rd(secondary, at - 1) != 1 ||
 		    rd(secondary, at) != 0x45454570 + j ||
 		    rd(secondary, at + 2) != 3 ||
@@ -198,64 +210,79 @@ int m9x_faa_texture_dual_bind_append_place(
 	return 0;
 }
 
-int m9x_faa_texture_dual_bind_later_place(
- const struct m9x_faa_texture_bind_input unit[2],
- const struct m9x_faa_texture_dual_program *program,
- u8 *secondary,u32 bytes)
+int m9x_faa_texture_dual_bind_later_place(const struct m9x_faa_texture_bind_input
+						  unit[2],
+					  const struct m9x_faa_texture_dual_program
+						  *program,
+					  u8 *secondary, u32 bytes)
 {
- struct m9x_faa_texture_bind_input input;
- struct m9x_faa_texture_bind_words image[2];
- u32 j,at,shift=bytes==2740?4:0;
- int ret;
- if(!unit||!program||!secondary||(bytes!=2736&&bytes!=2740)||
-  program->stage_count!=4||program->sampler_count!=2||
-  program->coordinate_sets!=2||program->color_op0!=4||
-  program->color_op1!=4||program->entry_bytes[0]||
-  program->entry_bytes[1]!=72||
-  (program->entry_bytes[2]&7)||(program->entry_bytes[3]&7)||
-  program->entry_bytes[2]<=program->entry_bytes[1]||
-  program->entry_bytes[3]-program->entry_bytes[2]!=56||
-  !program->program_bytes||program->program_bytes>4096||
-  (program->program_bytes&7)||
-  program->program_bytes<=program->entry_bytes[3]||
-  (program->program_bytes-program->entry_bytes[3]!=192&&
-   program->program_bytes-program->entry_bytes[3]!=200)||
-  unit[0].stage||unit[1].stage!=1||
-  unit[0].coordinate_sets!=2||unit[1].coordinate_sets!=2||
-  unit[0].coordinate_index||unit[1].coordinate_index!=1||
-  unit[0].owner_base==unit[1].owner_base||
-  (unsigned long long)unit[0].owner_base+unit[0].owner_bytes>U32_MAX||
-  (unsigned long long)unit[1].owner_base+unit[1].owner_bytes>U32_MAX||
-  ((unsigned long long)unit[0].owner_base<
-    (unsigned long long)unit[1].owner_base+unit[1].owner_bytes&&
-   (unsigned long long)unit[1].owner_base<
-    (unsigned long long)unit[0].owner_base+unit[0].owner_bytes))return -EINVAL;
- for(j=0;j<2;j++){
-  input=unit[j];input.stage=0;input.raster_ae_base=0x28207006;
-  ret=m9x_faa_texture_bind_encode(&input,&image[j]);if(ret)return ret;
-  at=(2376+100*j+shift)/4;
-  if(rd(secondary,at-1)!=1||rd(secondary,at)!=0x45454570+j||
-   rd(secondary,at+2)!=3||rd(secondary,at+3)!=0x457a7978||
-   rd(secondary,at+7)!=3||rd(secondary,at+8)!=0x45877d7c)
-   return -EINVAL;
- }
- for(j=0;j<2;j++){
-  at=(2376+100*j+shift)/4;
-  wr(secondary,at+1,image[j].unit70);
-  wr(secondary,at+4,image[j].address78);
-  wr(secondary,at+5,image[j].descriptor79);
-  wr(secondary,at+6,image[j].descriptor7a);
-  wr(secondary,at+9,image[j].sampler7c);
-  wr(secondary,at+10,image[j].sampler7d);
-  wr(secondary,at+11,image[j].sampler87);
- }
- return 0;
+	struct m9x_faa_texture_bind_input input;
+	struct m9x_faa_texture_bind_words image[2];
+	u32 j, at, shift = bytes == 2740 ? 4 : 0;
+	int ret;
+
+	if (!unit || !program || !secondary ||
+	    (bytes != 2736 && bytes != 2740) || program->stage_count != 4 ||
+	    program->sampler_count != 2 || program->coordinate_sets != 2 ||
+	    program->color_op0 != 4 || program->color_op1 != 4 ||
+	    program->entry_bytes[0] || program->entry_bytes[1] != 72 ||
+	    (program->entry_bytes[2] & 7) || (program->entry_bytes[3] & 7) ||
+	    program->entry_bytes[2] <= program->entry_bytes[1] ||
+	    program->entry_bytes[3] - program->entry_bytes[2] != 56 ||
+	    !program->program_bytes || program->program_bytes > 4096 ||
+	    (program->program_bytes & 7) ||
+	    program->program_bytes <= program->entry_bytes[3] ||
+	    (program->program_bytes - program->entry_bytes[3] != 192 &&
+	     program->program_bytes - program->entry_bytes[3] != 200) ||
+	    unit[0].stage || unit[1].stage != 1 ||
+	    unit[0].coordinate_sets != 2 || unit[1].coordinate_sets != 2 ||
+	    unit[0].coordinate_index || unit[1].coordinate_index != 1 ||
+	    unit[0].owner_base == unit[1].owner_base ||
+	    (unsigned long long)unit[0].owner_base + unit[0].owner_bytes >
+		    U32_MAX ||
+	    (unsigned long long)unit[1].owner_base + unit[1].owner_bytes >
+		    U32_MAX ||
+	    ((unsigned long long)unit[0].owner_base <
+		     (unsigned long long)unit[1].owner_base +
+			     unit[1].owner_bytes &&
+	     (unsigned long long)unit[1].owner_base <
+		     (unsigned long long)unit[0].owner_base +
+			     unit[0].owner_bytes))
+		return -EINVAL;
+	for (j = 0; j < 2; j++) {
+		input = unit[j];
+		input.stage = 0;
+		input.raster_ae_base = 0x28207006;
+		ret = m9x_faa_texture_bind_encode(&input, &image[j]);
+		if (ret)
+			return ret;
+		at = (2376 + 100 * j + shift) / 4;
+		if (rd(secondary, at - 1) != 1 ||
+		    rd(secondary, at) != 0x45454570 + j ||
+		    rd(secondary, at + 2) != 3 ||
+		    rd(secondary, at + 3) != 0x457a7978 ||
+		    rd(secondary, at + 7) != 3 ||
+		    rd(secondary, at + 8) != 0x45877d7c)
+			return -EINVAL;
+	}
+	for (j = 0; j < 2; j++) {
+		at = (2376 + 100 * j + shift) / 4;
+		wr(secondary, at + 1, image[j].unit70);
+		wr(secondary, at + 4, image[j].address78);
+		wr(secondary, at + 5, image[j].descriptor79);
+		wr(secondary, at + 6, image[j].descriptor7a);
+		wr(secondary, at + 9, image[j].sampler7c);
+		wr(secondary, at + 10, image[j].sampler7d);
+		wr(secondary, at + 11, image[j].sampler87);
+	}
+	return 0;
 }
 
-int m9x_faa_texture_dual_colorpass_place(
-	const struct m9x_faa_texture_bind_input unit[2],
-	const struct m9x_faa_texture_dual_program *program,
-	u8 *secondary, u32 bytes)
+int m9x_faa_texture_dual_colorpass_place(const struct m9x_faa_texture_bind_input
+						 unit[2],
+					 const struct m9x_faa_texture_dual_program
+						 *program,
+					 u8 *secondary, u32 bytes)
 {
 	struct m9x_faa_texture_bind_input live;
 	struct m9x_faa_texture_bind_words image;
@@ -265,9 +292,8 @@ int m9x_faa_texture_dual_colorpass_place(
 	    program->stage_count != 4 || program->sampler_count != 2 ||
 	    program->coordinate_sets != 2 || program->color_op0 != 3 ||
 	    program->color_op1 != 3 || program->entry_bytes[0] ||
-	    program->entry_bytes[1] != 32 ||
-	    !program->program_bytes || program->program_bytes > 4096 ||
-	    (program->program_bytes & 7) ||
+	    program->entry_bytes[1] != 32 || !program->program_bytes ||
+	    program->program_bytes > 4096 || (program->program_bytes & 7) ||
 	    program->entry_bytes[2] <= program->entry_bytes[1] ||
 	    program->entry_bytes[3] >= program->program_bytes ||
 	    program->entry_bytes[3] - program->entry_bytes[2] != 56 ||
@@ -278,12 +304,16 @@ int m9x_faa_texture_dual_colorpass_place(
 	    unit[0].coordinate_sets != 2 || unit[1].coordinate_sets != 2 ||
 	    unit[0].coordinate_index || unit[1].coordinate_index != 1 ||
 	    unit[0].owner_base == unit[1].owner_base ||
-	    (unsigned long long)unit[0].owner_base + unit[0].owner_bytes > U32_MAX ||
-	    (unsigned long long)unit[1].owner_base + unit[1].owner_bytes > U32_MAX ||
+	    (unsigned long long)unit[0].owner_base + unit[0].owner_bytes >
+		    U32_MAX ||
+	    (unsigned long long)unit[1].owner_base + unit[1].owner_bytes >
+		    U32_MAX ||
 	    ((unsigned long long)unit[0].owner_base <
-	     (unsigned long long)unit[1].owner_base + unit[1].owner_bytes &&
+		     (unsigned long long)unit[1].owner_base +
+			     unit[1].owner_bytes &&
 	     (unsigned long long)unit[1].owner_base <
-	     (unsigned long long)unit[0].owner_base + unit[0].owner_bytes) ||
+		     (unsigned long long)unit[0].owner_base +
+			     unit[0].owner_bytes) ||
 	    rd(secondary, 2520 / 4) != 0x45454570 ||
 	    rd(secondary, 2528 / 4) != 3 ||
 	    rd(secondary, 2532 / 4) != 0x457a7978 ||
@@ -299,7 +329,8 @@ int m9x_faa_texture_dual_colorpass_place(
 	if (ret)
 		return ret;
 	/* All packet and owner validation precedes every write. Unit 1 remains
-	 * a retained owner, but SELECTARG2 does not sample it in this profile. */
+	 * a retained owner, but SELECTARG2 does not sample it in this profile.
+	 */
 	wr(secondary, 2524 / 4, image.unit70);
 	wr(secondary, 2536 / 4, image.address78);
 	wr(secondary, 2540 / 4, image.descriptor79);
