@@ -8114,8 +8114,8 @@ int m9x_faa_graph_dual_later_prepare(struct m9x_device *mdev,
  }
  ret=m9x_faa_graph_bound_depth_views_locked(mdev,binding,generation,&views);
  if(ret)goto unlock;
- if(views.owner[M9_FAA_BOUND_COLOR].width!=320||
-  views.owner[M9_FAA_BOUND_COLOR].height!=240){ret=-EOPNOTSUPP;goto unlock;}
+ if(!m9x_faa_runtime_shape(views.owner[M9_FAA_BOUND_COLOR].width,
+  views.owner[M9_FAA_BOUND_COLOR].height)){ret=-EOPNOTSUPP;goto unlock;}
  m9_faa_depth_frame_owners(r,owner);
  dual=(struct m9x_faa_dual_first_input){.color=input,.texture=textures->bind};
  live=(struct m9x_faa_color_image){

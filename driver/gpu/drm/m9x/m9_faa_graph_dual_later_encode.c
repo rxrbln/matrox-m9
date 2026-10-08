@@ -47,10 +47,10 @@ int m9x_faa_dual_later_encode(const u8 *sample,size_t sample_bytes,
   next!=previous+0x10||(u32)previous>0xfffffeafu)
   return -EINVAL;
  ret=m9x_faa_graph_draw_owners_validate(owner);if(ret)return ret;
- /* Only the source-qualified visible rectangle is admitted. A later dual
-  * 1024 profile needs its own original DRAW/Lock source continuation. */
- if(views->owner[M9_FAA_BOUND_COLOR].width!=320||
-  views->owner[M9_FAA_BOUND_COLOR].height!=240)return -EINVAL;
+ /* Source-qualified 320x240 and 1024x768 continuations; the fresh FIRST
+  * stage and tail already carry the live dimension words. */
+ if(!m9x_faa_runtime_shape(views->owner[M9_FAA_BOUND_COLOR].width,
+  views->owner[M9_FAA_BOUND_COLOR].height))return -EINVAL;
  for(i=0;i<3;i++)if(owner[31+i].base!=views->owner[i].base||
   owner[31+i].bytes<views->owner[i].capacity_bytes)return -EINVAL;
  sec_bytes=clear?M9_FAA_DUAL_LATER_SECONDARY_CLEAR:

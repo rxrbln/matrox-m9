@@ -2202,7 +2202,7 @@ int m9x_faa_graph_dual_later_ioctl(struct drm_device *drm,void *data,
  u64 previous=args->previous_unlock_point,point=0,expected;
  u8 *upload=NULL;bool posted=false;int idx,ret;
  if(!state||args->flags||args->state||args->pad||args->lock_point||
-    args->width!=320||args->height!=240||
+    !m9x_faa_runtime_shape(args->width,args->height)||
     (args->clear_flags&&args->clear_flags!=3)||args->clear_color||
     args->depth_flags!=7||
     !previous||(previous&15)||previous>U64_MAX-0x1a0-
@@ -2266,6 +2266,7 @@ int m9x_faa_graph_dual_later_ioctl(struct drm_device *drm,void *data,
   input.declaration=input.geometry+args->layout.geometry_bytes;
   input.record_stride=args->record_stride;input.record_count=args->record_count;
   input.declaration_count=args->declaration_count;input.depth_flags=args->depth_flags;
+  input.width=args->width;input.height=args->height;
   input.dual_base_only=true;
  }
  /* A source-proved new stage-1 owner moves into the retained set here;
