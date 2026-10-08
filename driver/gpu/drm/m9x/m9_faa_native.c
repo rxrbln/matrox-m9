@@ -7762,8 +7762,9 @@ out_fw:
 }
 
 int m9x_faa_graph_next_submit(struct m9x_device *mdev,
-		struct m9_faa_graph_binding *binding, u32 generation,
-		u64 unlock_point, u64 *point, bool *posted)
+			      struct m9_faa_graph_binding *binding,
+			      u32 generation, u64 unlock_point, u64 *point,
+			      bool *posted)
 {
 #ifdef M9_FAA_GRAPH_INIT_CONTROL
 	struct m9x_transport *t = &mdev->transport;
@@ -7791,19 +7792,24 @@ int m9x_faa_graph_next_submit(struct m9x_device *mdev,
 	secondary = &r->draw_owner[2];
 	old_bytes = r->graph_draw_end_bytes;
 	if (!primary->cpu || !drm_mm_node_allocated(&primary->system_node) ||
-	    primary->system_node.start != primary->base || old_bytes > primary->bytes ||
+	    primary->system_node.start != primary->base ||
+	    old_bytes > primary->bytes ||
 	    primary->bytes - old_bytes < M9_FAA_NEXT_PRIMARY_BYTES ||
 	    !constants->cpu || !secondary->cpu ||
 	    r->next_cursor.vertices > constants->bytes ||
-	    constants->bytes - r->next_cursor.vertices < M9_FAA_NEXT_VERTEX_STRIDE ||
-	    r->next_cursor.secondary > M9_FAA_NEXT_SECONDARY_GUARD - M9_FAA_NEXT_SECONDARY_BYTES ||
+	    constants->bytes - r->next_cursor.vertices <
+		    M9_FAA_NEXT_VERTEX_STRIDE ||
+	    r->next_cursor.secondary >
+		    M9_FAA_NEXT_SECONDARY_GUARD - M9_FAA_NEXT_SECONDARY_BYTES ||
 	    r->next_cursor.secondary > secondary->bytes ||
-	    secondary->bytes - r->next_cursor.secondary < M9_FAA_NEXT_SECONDARY_BYTES + 4) {
+	    secondary->bytes - r->next_cursor.secondary <
+		    M9_FAA_NEXT_SECONDARY_BYTES + 4) {
 		ret = -ESTALE;
 		goto out;
 	}
 	/* Recheck retained SYSTEM mappings, without remapping or reading opaque
-	 * GPU output. The requester independently checks the primary PTEs. */
+	 * GPU output. The requester independently checks the primary PTEs.
+	 */
 	for (i = 1; i < ARRAY_SIZE(r->draw_owner); i++) {
 		struct m9_faa_owner *o = &r->draw_owner[i];
 
@@ -7813,7 +7819,8 @@ int m9x_faa_graph_next_submit(struct m9x_device *mdev,
 			goto out;
 		}
 		ret = m9x_system_pages_mapped(mdev, o->base, o->dma,
-					      o->bytes / PAGE_SIZE, 1u, NULL, NULL);
+					      o->bytes / PAGE_SIZE, 1u, NULL,
+					      NULL);
 		if (ret)
 			goto out;
 	}
@@ -7829,16 +7836,19 @@ int m9x_faa_graph_next_submit(struct m9x_device *mdev,
 				   &fence->base, DMA_RESV_USAGE_WRITE);
 	/* Source writes only the new vertex records and command tails. Neither
 	 * the earlier constants gap, old command prefix nor private pools change.
-	 * The original DRAW wait is unposted; the independent finish posts once. */
+	 * The original DRAW wait is unposted; the independent finish posts once.
+	 */
 	memcpy((u8 *)constants->cpu + r->next_cursor.vertices,
 	       r->next_image->vertices, M9_FAA_NEXT_VERTEX_BYTES);
 	memcpy((u8 *)secondary->cpu + r->next_cursor.secondary,
 	       r->next_image->secondary, M9_FAA_NEXT_SECONDARY_BYTES);
-	memcpy((u8 *)primary->cpu + old_bytes,
-	       r->next_image->primary, M9_FAA_NEXT_PRIMARY_BYTES);
+	memcpy((u8 *)primary->cpu + old_bytes, r->next_image->primary,
+	       M9_FAA_NEXT_PRIMARY_BYTES);
+	/* The CPU stores precede their END post. */
 	wmb();
 	ret = m9x_post_faa_graph_end_locked(mdev, &primary->system_node,
-			primary->dma, old_bytes, end, false, target, point, posted);
+					    primary->dma, old_bytes, end, false,
+					    target, point, posted);
 	if (*posted) {
 		r->graph_draw_end_bytes = end;
 		r->graph_draw_posts++;
