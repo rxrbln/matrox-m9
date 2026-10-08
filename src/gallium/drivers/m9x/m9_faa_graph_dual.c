@@ -86,8 +86,8 @@ dual_texture_current(const struct m9_faa_application_texture *t)
 }
 
 /* Per-DRAW checks shared by later transactions and the frame pre-check.
- * prior[] holds the DRAWs before this one: every DRAW of one program (kind
- * and fragment family) must carry its exact program and declaration. */
+ * prior[] holds the DRAWs before this one: every DRAW of one kind carries
+ * the same record declaration. */
 static int
 dual_draw_admissible(const struct m9_faa_surface *surface,
                      const struct m9_faa_application_upload *u,
@@ -109,13 +109,13 @@ dual_draw_admissible(const struct m9_faa_surface *surface,
    for(unsigned t=0;t<u->texture_count;t++)
       if(!dual_texture_current(&u->texture[t]))return -ESTALE;
    int ret=dual_pack(&u->shader,s,u->texture_count==1,packed);if(ret)return ret;
+   /* Programs may differ per DRAW (the kernel caches each by its bytes);
+    * one kind keeps one record declaration. */
    const struct m9_faa_application_upload *f=NULL;
    for(unsigned i=0;i<prior_count&&!f;i++)
-      if(prior[i].texture_count==u->texture_count&&prior[i].fragment==u->fragment)f=&prior[i];
-   if(f&&(memcmp(&u->shader.layout,&f->shader.layout,sizeof(u->shader.layout))||
-           memcmp(u->shader.program,f->shader.program,u->shader.layout.bytes)||
-           u->shader.declaration_words!=f->shader.declaration_words||
-           memcmp(u->shader.declaration,f->shader.declaration,u->shader.declaration_words*4)))
+      if(prior[i].texture_count==u->texture_count)f=&prior[i];
+   if(f&&(u->shader.declaration_words!=f->shader.declaration_words||
+          memcmp(u->shader.declaration,f->shader.declaration,u->shader.declaration_words*4)))
       return -EOPNOTSUPP;
    return 0;
 }
