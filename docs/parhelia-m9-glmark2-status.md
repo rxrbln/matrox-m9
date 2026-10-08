@@ -1,5 +1,23 @@
 # glmark2 on the m9x driver: where the 60 fps goal actually stands
 
+## 2026-10-08: ordinary rendering retested; Quake3 gaps remain
+
+DRM45b33e6/Mesa6b03281 on the physical M9128 completes glxgears and six
+1024x768 glmark2 scenes with FAA disabled, GPU work retired, no skips or
+wedge and intact basic screenshots. Presentation candidate RE618895d0 avoids
+the interval-zero full-frame CPU copies: app-reported gears112.082 FPS,
+glmark113–115, versus about2 with the previous copy path. Display is60Hz;
+this submission-rate result needs physical event/scanout timing audit.
+No async hardware capability or uncapped raster-performance claim.
+
+Quake3 GL1 has an active gameplay screenshot, but stretched weapon polygons
+and corrupt HUD pixels remain. GL2 skips11594/23140 draws (9163 swizzled mix,
+2431 interpolation) and lacks a screenshot after an X-server crash. The
+previous unflip NULL copy is fixed; software cursor save-under now crashes.
+GPU stays gen0/queue0/wedged0 on one ordinary boot. Starting ordinary apps
+on a retained FAA graph still needs the ordered native context handoff.
+[Exact test evidence and pixel review](../tests/m9-nonfaa-regression-20261008/hardware-sync-fallback/README.txt).
+
 ## October 8: GL2 work resumed; full back-end clear control fails
 
 Root resumed the GL2 track while three agents continue FAA. No new general
