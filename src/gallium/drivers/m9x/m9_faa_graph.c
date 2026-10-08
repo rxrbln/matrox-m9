@@ -390,7 +390,8 @@ m9_faa_color_upload_request(const struct m9_faa_gl_upload *upload,
    uint64_t total = (uint64_t)upload->layout.bytes + upload->constants_bytes +
                     upload->geometry_bytes + (uint64_t)upload->declaration_words * 4;
    uintptr_t base = (uintptr_t)upload->storage;
-   if (!upload->layout.bytes || upload->layout.bytes % 8 ||
+   if ((upload->layout.count != 2 && upload->layout.count != 4) ||
+       !upload->layout.bytes || upload->layout.bytes % 8 ||
        upload->layout.entry_bytes[0] ||
        !upload->record_bytes || upload->record_bytes % 16 ||
        !upload->vertex_count || upload->vertex_count > M9_FAA_GL_UPLOAD_MAX_VERTICES ||
@@ -463,9 +464,13 @@ m9_faa_color_lock_history_valid(const struct m9_faa_graph *graph)
       return false;
    if (graph->color_frame_draw_count) {
       uint32_t count = graph->color_frame_draw_count;
-      if (count > 32 || graph->color_program_count != 4) return false;
+      if (count > 32 || (graph->color_program_count != 2 && graph->color_program_count != 4))
+         return false;
       bool first = !graph->color_next_lock_point;
-      uint64_t exact = ((first || initialized_frame) ? 0x150 : 0x1a0) + (count - 1u) * UINT64_C(0xa0);
+      const bool fused = graph->color_program_count == 2;
+      if (fused && !first) return false;
+      uint64_t exact = fused ? 0x110 + (count - 1u) * UINT64_C(0x60) :
+         ((first || initialized_frame) ? 0x150 : 0x1a0) + (count - 1u) * UINT64_C(0xa0);
       const uint64_t maintenance = graph->color_frame_maintenance_point;
       if (maintenance) {
          if (!initialized_frame || graph->color_next_previous_unlock_point > UINT64_MAX - 0x10 ||
@@ -491,7 +496,8 @@ m9_faa_color_lock_history_valid(const struct m9_faa_graph *graph)
    } else {
       if (graph->color_next_previous_unlock_point ||
           (graph->color_program_count != 2 && graph->color_program_count != 4) ||
-          (graph->color_program_count == 2 ? delta != 0xa0 :
+          (graph->color_program_count == 2 ?
+           (delta != 0xa0 && delta != 0x110) :
            (delta != 0xe0 && delta != 0x150)))
          return false;
       previous = graph->init_point;
@@ -666,7 +672,8 @@ m9_faa_surface_color_frame_kernel(struct m9_screen *screen,
    if (screen->faa.chip != M9_FAA_CHIP_M9 || !screen->wait_point ||
        surface->width != 320 || surface->height != 240 || surface->format != 0x66 ||
        state->width != surface->width || state->height != surface->height ||
-       state->scissor_enabled || upload->color_flat != state->flatshade || upload->layout.count != 4 || (upload->record_bytes != 32 &&
+       state->scissor_enabled || upload->color_flat != state->flatshade ||
+       (upload->layout.count != 2 && upload->layout.count != 4) || (upload->record_bytes != 32 &&
         !(upload->record_bytes == 16 && upload->declaration_words == 3)) ||
        (!upload->vertex_count || upload->vertex_count % 3) ||
        (clear_flags & ~(PARHELIA_M9_FAA_COLOR_CLEAR_TARGET | PARHELIA_M9_FAA_COLOR_CLEAR_DEPTH)) || clear_color)
@@ -687,10 +694,16 @@ m9_faa_surface_color_frame_kernel(struct m9_screen *screen,
       return -EOPNOTSUPP;
    }
    const bool first = !graph->color_lock_attempted;
+   /* Original M9128 count2 FIRST terminates normal Lock at INIT+0x110.
+    * Repeated two-stage frames require their own authenticated profile;
+    * never reuse the four-stage timeline merely because the ABI matches. */
+   if (upload->layout.count == 2 && (!first || !sampled_reset))
+      return -EOPNOTSUPP;
    if (first && clear_flags && !sampled_reset)
       return -EOPNOTSUPP; /* FIRST requires the complete sampled reset producer. */
    const bool initialized_frame = !first && sampled_reset && graph->color_depth_initialized;
-   const uint64_t delta = sampled_reset ? ((first || initialized_frame) ? 0x150 : 0x1a0) :
+   const uint64_t delta = upload->layout.count == 2 ? 0x110 :
+                          sampled_reset ? ((first || initialized_frame) ? 0x150 : 0x1a0) :
                           first ? 0xe0 : clear_flags ? 0xe0 : 0xd0;
    if (first) {
       if (!graph->prepared || !graph->prepared_id || !graph->initialized ||
@@ -749,7 +762,7 @@ m9_faa_surface_color_frame_kernel(struct m9_screen *screen,
    const struct drm_parhelia_m9_faa_graph_color_frame before = request;
    if (first) {
       graph->color_lock_attempted = true;
-      graph->color_program_count = 4;
+      graph->color_program_count = upload->layout.count;
    } else {
       graph->color_next_attempted = true;
    }
@@ -808,7 +821,13 @@ m9_faa_surface_color_batch_kernel(struct m9_screen *screen,
                                                frame->clear_color);
    const bool first = !graph->color_lock_attempted;
    const bool initialized_frame = !first && graph->color_depth_initialized;
-   const uint64_t delta = ((first || initialized_frame) ? 0x150 : 0x1a0) + (frame->count - 1u) * UINT64_C(0xa0);
+   const unsigned programs = head->shader.layout.count;
+   if ((programs != 2 && programs != 4) || (programs == 2 && !first))
+      return -EOPNOTSUPP;
+   /* Source count2 FIRST N1/N2 differs by one +0x60 draw transition.
+    * Homogeneous count2 and count4 batches retain separate exact receipts. */
+   const uint64_t delta = programs == 2 ? 0x110 + (frame->count - 1u) * UINT64_C(0x60) :
+      ((first || initialized_frame) ? 0x150 : 0x1a0) + (frame->count - 1u) * UINT64_C(0xa0);
    if (screen->faa.chip != M9_FAA_CHIP_M9 || !screen->wait_point ||
        surface->width != 320 || surface->height != 240 || surface->format != 0x66 ||
        frame->clear_flags != (PARHELIA_M9_FAA_COLOR_CLEAR_TARGET | PARHELIA_M9_FAA_COLOR_CLEAR_DEPTH) ||
@@ -827,7 +846,7 @@ m9_faa_surface_color_batch_kernel(struct m9_screen *screen,
           !state->depth_enabled || !state->depth_write || state->depth_func != PIPE_FUNC_LESS ||
           state->scissor_enabled || u->shader.color_flat != state->flatshade ||
           (state->cull_face != PIPE_FACE_NONE && state->cull_face != PIPE_FACE_FRONT && state->cull_face != PIPE_FACE_BACK) ||
-          u->shader.layout.count != 4 || (u->shader.record_bytes != 32 &&
+          u->shader.layout.count != programs || (u->shader.record_bytes != 32 &&
            !(u->shader.record_bytes == 16 && u->shader.declaration_words == 3)) ||
           (u->shader.declaration_words != 3 && u->shader.declaration_words != 5) ||
           !u->shader.vertex_count || u->shader.vertex_count % 3)
@@ -889,7 +908,7 @@ m9_faa_surface_color_batch_kernel(struct m9_screen *screen,
    const struct drm_parhelia_m9_faa_graph_color_frame_batch before = request;
    struct drm_parhelia_m9_faa_color_draw saved[32];
    memcpy(saved, draws, frame->count * sizeof(draws[0]));
-   if (first) { graph->color_lock_attempted = true; graph->color_program_count = 4; }
+   if (first) { graph->color_lock_attempted = true; graph->color_program_count = programs; }
    else graph->color_next_attempted = true;
    if (ioctl(screen->fd, DRM_IOCTL_PARHELIA_M9_FAA_GRAPH_COLOR_FRAME_BATCH, &request))
       return -errno;

@@ -43,7 +43,8 @@ m9_faa_application_packed(const struct m9_faa_gl_upload *s)
    uintptr_t base = (uintptr_t)s->storage;
    uint64_t total = (uint64_t)s->layout.bytes + s->constants_bytes +
                     s->geometry_bytes + (uint64_t)s->declaration_words * 4;
-   return base && s->layout.bytes && s->layout.count == 4 &&
+   return base && s->layout.bytes &&
+          (s->layout.count == 2 || s->layout.count == 4) &&
           s->record_bytes && !(s->record_bytes % 16) &&
           s->vertex_count && !(s->vertex_count % 3) &&
           s->vertex_count <= M9_FAA_GL_UPLOAD_MAX_VERTICES &&
@@ -87,6 +88,7 @@ m9_faa_application_merge(struct m9_faa_application_upload *last,
        a->constants_bytes != b->constants_bytes ||
        a->declaration_words != b->declaration_words ||
        a->carry_output_registers != b->carry_output_registers ||
+       a->fused_source_mask != b->fused_source_mask ||
        a->color_flat != b->color_flat ||
        a->color_legacy_interpolation != b->color_legacy_interpolation ||
        a->native_admission != b->native_admission ||
@@ -364,7 +366,15 @@ m9_faa_application_build(const struct m9_faa_application_draw *d,
       goto fail;
    }
    live.viewport = (struct m9_faa_viewport){x, y, w, h};
-   if (!m9_faa_live_gl_color_build_state(&live, d->fs, d->state.flatshade, &fresh.shader, &why))
+   /* Keep the existing four-stage route while the source two-stage route
+    * is qualified on hardware. Both builders consume the same owned GL
+    * state and raw records; neither replays a captured shader or draw. */
+   const char *fused_option = getenv("M9X_FAA_FUSED");
+   bool fused = fused_option && !strcmp(fused_option, "1");
+   if (!(fused ? m9_faa_live_gl_color_fused_build_state(&live, d->fs,
+                    d->state.flatshade, &fresh.shader, &why) :
+                 m9_faa_live_gl_color_build_state(&live, d->fs,
+                    d->state.flatshade, &fresh.shader, &why)))
       goto fail;
    if (fresh.shader.color_flat != d->state.flatshade) {
       why = "FAA COLOR interpolation and application raster state disagree";
