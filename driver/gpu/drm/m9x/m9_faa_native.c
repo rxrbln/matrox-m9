@@ -961,6 +961,61 @@ static int m9_faa_graph_continuation_state(const struct m9x_transport *t,
 	return 0;
 }
 
+static bool m9_faa_interlude_page_align;
+module_param_named(faa_interlude_page_align, m9_faa_interlude_page_align,
+		   bool, 0400);
+MODULE_PARM_DESC(faa_interlude_page_align,
+		 "Diagnostic: start the FAA part after ordinary jobs at a primary page boundary");
+
+/* Ordinary jobs after this idle origin retire before the FAA part. With the
+ * diagnostic page alignment, the primary is then padded with empty packets
+ * up to its next page, as a further ordinary post without a fence point.
+ */
+static int m9_faa_interlude_settle_locked(struct m9x_device *mdev, u64 base)
+{
+	struct m9x_transport *t = &mdev->transport;
+	struct m9x_faa_replay *r = t->faa;
+	int ret;
+
+	if (!r || !m9_faa_ordinary_after(r, base))
+		return 0;
+	if (t->queue_count || t->async_pending) {
+		ret = m9x_transport_drain_locked(mdev);
+		if (ret)
+			return ret;
+	}
+#ifdef M9_FAA_GRAPH_INIT_CONTROL
+	struct m9_faa_owner *o;
+	u32 start, end, i;
+	u64 point = 0;
+	bool posted = false;
+
+	start = r->graph_draw_end_bytes;
+	if (!m9_faa_interlude_page_align || IS_ALIGNED(start, PAGE_SIZE))
+		return 0;
+	o = m9_faa_command_owner(r, false);
+	end = ALIGN(start, PAGE_SIZE);
+	if (!o || !o->cpu || end > min_t(u64, o->bytes, o->system_node.size))
+		return 0;
+	for (i = start; i < end; i += 4)
+		put_unaligned_le32(M9_HW_HDR(M9_HW_IDX_END, M9_HW_IDX_END,
+					     M9_HW_IDX_END, M9_HW_IDX_END),
+				   (u8 *)o->cpu + i);
+	/* The CPU stores precede their END post. */
+	wmb();
+	ret = m9x_post_faa_graph_end_locked(mdev, &o->system_node, o->dma,
+					    start, end, false, 0, &point,
+					    &posted);
+	if (posted)
+		m9x_faa_ordinary_primary_commit_locked(mdev, end,
+						       r->ordinary_point,
+						       false);
+	return ret;
+#else
+	return 0;
+#endif
+}
+
 int m9x_faa_graph_retained_get_locked(struct m9x_device *mdev, u32 generation,
 				      u64 init_point,
 				      struct m9_faa_graph_binding **out)
@@ -974,13 +1029,9 @@ int m9x_faa_graph_retained_get_locked(struct m9x_device *mdev, u32 generation,
 	if (mdev->transport.faa && mdev->transport.faa->revoked)
 		return -ECANCELED;
 	/* Ordinary jobs after the retired INIT retire before FIRST. */
-	if (mdev->transport.faa &&
-	    m9_faa_ordinary_after(mdev->transport.faa, init_point) &&
-	    (mdev->transport.queue_count || mdev->transport.async_pending)) {
-		ret = m9x_transport_drain_locked(mdev);
-		if (ret)
-			return ret;
-	}
+	ret = m9_faa_interlude_settle_locked(mdev, init_point);
+	if (ret)
+		return ret;
 	ret = m9_faa_graph_continuation_state(&mdev->transport, generation,
 					      init_point);
 	if (!ret)
@@ -9052,13 +9103,11 @@ int m9x_faa_graph_dual_unlocked_get_locked(struct m9x_device *mdev,
 #ifdef M9_FAA_GRAPH_INIT_CONTROL
 	struct m9x_faa_replay *r = mdev->transport.faa;
 
-	if (r && m9_faa_ordinary_after(r, m9_faa_present_origin(r, previous)) &&
-	    (mdev->transport.queue_count || mdev->transport.async_pending)) {
-		int ret = m9x_transport_drain_locked(mdev);
+	int ret = r ? m9_faa_interlude_settle_locked(mdev,
+					m9_faa_present_origin(r, previous)) : 0;
 
-		if (ret)
-			return ret;
-	}
+	if (ret)
+		return ret;
 	return m9_faa_color_unlocked_origin_get_locked(mdev, generation,
 						       previous,
 						       r ?
@@ -9078,9 +9127,9 @@ int m9x_faa_graph_depth_unlocked_get_locked(struct m9x_device *mdev,
 	u64 origin;
 
 	/* Ordinary jobs after this idle origin retire before the FAA frame. */
-	if (r && m9_faa_ordinary_after(r, m9_faa_present_origin(r, previous)) &&
-	    (mdev->transport.queue_count || mdev->transport.async_pending)) {
-		int ret = m9x_transport_drain_locked(mdev);
+	if (r) {
+		int ret = m9_faa_interlude_settle_locked(mdev,
+				m9_faa_present_origin(r, previous));
 
 		if (ret)
 			return ret;
