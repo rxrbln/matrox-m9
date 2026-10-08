@@ -41,10 +41,6 @@ bool m9_faa_fragment_state_build(const struct m9_faa_fragment_state *state,
       return false;
    bool blend = state->blend != M9_FAA_BLEND_REPLACE;
    bool alpha = state->alpha != M9_FAA_ALPHA_OFF;
-   /* The only combined compiler allocation proved by the original control. */
-   if (blend && alpha && (state->blend != M9_FAA_BLEND_ALPHA ||
-                         state->alpha != M9_FAA_ALPHA_GE_HALF))
-      return false;
    const uint32_t slots = 8 + (blend ? 2 : 0) + (alpha ? 4 : 0);
    const uint32_t pairs = 2 + (blend ? 1 : 0) + (alpha ? 3 : 0);
    const uint32_t pb = slots * 8, cb = pairs * 8;
@@ -73,8 +69,10 @@ bool m9_faa_fragment_state_build(const struct m9_faa_fragment_state *state,
    uint8_t scale=blend ? 0 : 0x1b;
    uint8_t ba=blend ? (alpha ? 8 : 0x0a) : (alpha ? 6 : 0x2d);
    uint8_t rg=blend ? 0x0b : 0x2d;
-   bool alpha_first=blend && (state->blend==M9_FAA_BLEND_ALPHA ||
-                            state->blend==M9_FAA_BLEND_ALPHA_ADD);
+   /* Original combined controls require BA before the alpha conversion.
+    * The alpha-disabled order still follows the source-alpha factor. */
+   bool alpha_first=alpha || (blend && (state->blend==M9_FAA_BLEND_ALPHA ||
+                                      state->blend==M9_FAA_BLEND_ALPHA_ADD));
    struct form rg_move={blend ? 0x1c : 0x1d,4,rg,0x40,scale,0x44,0xae0ffc10};
    struct form ba_move={blend || alpha ? 0x1c : 0x1e,4,ba,0x42,scale,0x45,0xae0ffc10};
    if (alpha_first || !blend) { emit(words,&n,ba_move); emit(words,&n,rg_move); }
@@ -115,8 +113,15 @@ bool m9_faa_fragment_state_build(const struct m9_faa_fragment_state *state,
          emit(words,&n,(struct form){0x1e,4,0x2d,0x7f,0x0a,0x1a,0xa0400c50});
          break;
       case M9_FAA_BLEND_ALPHA_ADD:
+         /* Alpha-tested SRC_ALPHA/ONE publishes RGB before BA; original
+          * alpha-disabled allocation publishes BA before RGB. */
+         if (alpha) {
+         emit(words,&n,(struct form){0x1d,4,0x2d,0x0a,0x0b,0x18,0xac5fcf50});
+         emit(words,&n,(struct form){0x1e,4,0x2d,0x0a,0x0a,0x1a,0xac5fcf50});
+         } else {
          emit(words,&n,(struct form){0x1e,4,0x2d,0x0a,0x0a,0x1a,0xac5fcf50});
          emit(words,&n,(struct form){0x1d,4,0x2d,0x0a,0x0b,0x18,0xac5fcf50});
+         }
          break;
       case M9_FAA_BLEND_FILTER:
          emit(words,&n,(struct form){0x1d,4,0x2d,0x18,0x0b,0x7f,0xac3fc140});
