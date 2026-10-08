@@ -1540,20 +1540,24 @@ void m9x_faa_fini(struct m9x_device *mdev)
 {
 	if (mdev->transport.faa) {
 		/* Remove address nodes under their lock, but drop the caller's
-		 * GEM reference outside it: its last release takes this lock. */
+		 * GEM reference outside it: its last release takes this lock.
+		 */
 		struct m9x_faa_replay *r = mdev->transport.faa;
 
 #ifdef M9_FAA_GRAPH_INIT_CONTROL
 		if (r->public_vs_head_fence) {
 			/* HEAD's c0 is an early observation, not a tail completion.
-			 * Requester fini has already disabled bus mastering. */
-			dma_fence_set_error(&r->public_vs_head_fence->base, -EIO);
+			 * Requester fini has already disabled bus mastering.
+			 */
+			dma_fence_set_error(&r->public_vs_head_fence->base,
+					    -EIO);
 			dma_fence_signal(&r->public_vs_head_fence->base);
 			dma_fence_put(&r->public_vs_head_fence->base);
 			r->public_vs_head_fence = NULL;
 		}
 		if (r->public_vs_draw_fence) {
-			dma_fence_set_error(&r->public_vs_draw_fence->base, -EIO);
+			dma_fence_set_error(&r->public_vs_draw_fence->base,
+					    -EIO);
 			dma_fence_signal(&r->public_vs_draw_fence->base);
 			dma_fence_put(&r->public_vs_draw_fence->base);
 			r->public_vs_draw_fence = NULL;
