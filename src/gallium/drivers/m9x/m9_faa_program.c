@@ -388,7 +388,8 @@ m9_faa_preprocess_position(const struct m9_faa_viewport *viewport,
    /* Actual 134880 field writers and f485b/f4863 dense-span publication.
     * Guard coefficients include the live origin. Fixed pairs are source
     * default-depth/clip coefficients, never inherited heap contents. */
-   const float k[26] = {hx, -hy, 1, 1, x + hx, y + hy, 0,
+   const float k[26] = {hx, -hy, 1, 1, x + hx - viewport->centre,
+      y + hy - viewport->centre, 0,
       (float)viewport->height, 0, 2, -16352, 16351, x, y, 1, 0.5f,
       INFINITY, -INFINITY, 1, (15359.0f - x) / hx - 1,
       1, -((15359.0f - y) / hy - 1), 127, 128, 1.25f, 1.5f};
@@ -509,8 +510,10 @@ m9_faa_preprocess_upload_build(const struct m9_faa_preprocess_upload *input,
    memcpy(result.declaration, declaration, sizeof(declaration));
    float header[8] = {
       input->viewport.width * 0.5f, input->viewport.height * -0.5f,
-      1.0f, 0.0f, input->viewport.x + input->viewport.width * 0.5f,
-      input->viewport.y + input->viewport.height * 0.5f, 0.0f, 0.0f,
+      1.0f, 0.0f,
+      input->viewport.x + input->viewport.width * 0.5f - input->viewport.centre,
+      input->viewport.y + input->viewport.height * 0.5f - input->viewport.centre,
+      0.0f, 0.0f,
    };
    memcpy(records, header, sizeof(header));
    memcpy((unsigned char *)records + 128, input->vertices, 96);

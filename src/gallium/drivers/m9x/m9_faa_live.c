@@ -289,6 +289,13 @@ live_gl_build_mode(const struct m9_faa_live_gl *s,
       memcpy(carry_constants + 2 * M9_VS_TAIL_FIRST_PAIR,
              params.system_prefix + 4 + 2 * M9_VS_TAIL_FIRST_PAIR,
              2 * M9_VS_TAIL_PAIRS * sizeof(uint32_t));
+      /* Tail translate x/y, system dwords 26/27. */
+      for (unsigned c = 0; c < 2; c++) {
+         float t;
+         memcpy(&t, &carry_constants[22 + c], sizeof(t));
+         t -= s->viewport.centre;
+         memcpy(&carry_constants[22 + c], &t, sizeof(t));
+      }
    }
    const struct m9_faa_program_vector vectors[4] = {
       s->fragment, {carry, slots}, {gather, fused ? 0 : dual ? dual_gather_slots : gi.slots},
@@ -348,8 +355,8 @@ live_gl_build_mode(const struct m9_faa_live_gl *s,
          memcpy((uint8_t *)result.constants + result.constant_begin[i],
                 constants[i].words, constants[i].pairs * 8);
    const float header[8] = {s->viewport.width * .5f, s->viewport.height * -.5f,
-      1, 0, s->viewport.x + s->viewport.width * .5f,
-      s->viewport.y + s->viewport.height * .5f, 0, 0};
+      1, 0, s->viewport.x + s->viewport.width * .5f - s->viewport.centre,
+      s->viewport.y + s->viewport.height * .5f - s->viewport.centre, 0, 0};
    memcpy(result.geometry, header, sizeof(header));
    bool records = s->indices ?
       m9_vs_source_records_gather(&source, s->maps, s->map_bytes, s->buffer_count,

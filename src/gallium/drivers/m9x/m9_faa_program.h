@@ -123,8 +123,11 @@ bool m9_faa_preprocess_moves(enum m9_faa_move_input kind,
                             uint32_t capacity_bytes,
                             struct m9_faa_move_interface *interface);
 
+/* centre: client pixel centre minus the FAA raster's integer centre, in
+ * pixels (0.5 for GL, 0 for the vendor D3D source images). */
 struct m9_faa_viewport {
    uint32_t x, y, width, height;
+   float centre;
 };
 
 struct m9_faa_position_interface {

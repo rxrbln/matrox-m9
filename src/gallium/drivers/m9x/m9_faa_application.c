@@ -510,7 +510,9 @@ m9_faa_application_build(const struct m9_faa_application_draw *d,
       why = "FAA application viewport/depth range has no qualified position tail";
       goto fail;
    }
-   live.viewport = (struct m9_faa_viewport){x, y, w, h};
+   /* The FAA raster samples at integer pixel positions (MEASURED, edge
+    * coverage and texels); GL samples at half-integer ones. */
+   live.viewport = (struct m9_faa_viewport){x, y, w, h, .centre = 0.5f};
    if(!m9_faa_application_texture_linkage(d->fs,&texture_linkage,sampler,&texture_count,&why))goto fail;
    if(texture_count) {
       if(d->state.flatshade||d->state.fragment.blend!=M9_FAA_BLEND_REPLACE||
