@@ -10035,7 +10035,21 @@ m9_context_faa_texture_snapshot(struct m9_context *ctx,unsigned slot,
    for(unsigned i=0;i<ARRAY_SIZE(ctx->color_extra);i++)
       if(view->texture==ctx->color_extra[i])return "FAA texture framebuffer feedback is not qualified";
    const char *why=m9_texture_bind_view(view,&bind);if(why)return why;
+   /* A single-level texture st also binds as a render target is a tiled
+    * render surface: the vendor allocates FAA textures with the same
+    * surface allocator, so the view samples it in place. */
+   const bool surface=owner->tiled&&owner->kind==M9_RESOURCE_LINEAR_COLOR&&!last&&
+      (view->texture->format==PIPE_FORMAT_B8G8R8A8_UNORM||
+       view->texture->format==PIPE_FORMAT_B8G8R8X8_UNORM)&&
+      view->format==view->texture->format&&bind.code==M9_TEXTURE_CODE_BGRA;
+   bool alpha_undefined=false;
    m9_view_swizzle(view,swizzle);
+   if(surface&&view->texture->format==PIPE_FORMAT_B8G8R8X8_UNORM&&
+      swizzle[0]==PIPE_SWIZZLE_X&&swizzle[1]==PIPE_SWIZZLE_Y&&
+      swizzle[2]==PIPE_SWIZZLE_Z&&swizzle[3]==PIPE_SWIZZLE_1) {
+      swizzle[3]=PIPE_SWIZZLE_W;
+      alpha_undefined=true;
+   }
    /* An RGB view of RGBA8 storage (GL_RGB) samples it as RGBX8, the same
     * texel layout with alpha one; RGBX8 storage reads alpha one itself. */
    if((bind.code==0xc8||bind.code==0xc9)&&swizzle[0]==PIPE_SWIZZLE_X&&
@@ -10052,9 +10066,9 @@ m9_context_faa_texture_snapshot(struct m9_context *ctx,unsigned slot,
                  util_format_short_name(view->texture->format));
       return "FAA texture view swizzle has no qualified shader interface";
    }
-   if(!owner->handle||owner->domain!=M9_BO_VRAM||owner->tiled||
-      owner->kind!=M9_RESOURCE_LINEAR_TEXTURE||owner->texture.levels!=last+1||
-      owner->texture.level[0].offset||(owner->texture_unplaced&((2u<<last)-1))) {
+   if(!owner->handle||owner->domain!=M9_BO_VRAM||(!surface&&
+      (owner->tiled||owner->kind!=M9_RESOURCE_LINEAR_TEXTURE||owner->texture.levels!=last+1||
+       owner->texture.level[0].offset||(owner->texture_unplaced&((2u<<last)-1))))) {
       static unsigned reported;
       if(ctx->debug&&reported++<16)
          fprintf(stderr,"m9x: FAA texture %ux%u %s storage handle %u domain %u tiled %u "
@@ -10065,7 +10079,7 @@ m9_context_faa_texture_snapshot(struct m9_context *ctx,unsigned slot,
                  (unsigned)owner->texture.level[0].offset,owner->texture_unplaced);
       return "FAA texture live storage is not a placed linear VRAM chain";
    }
-   if((owner->levels_written&((2u<<last)-1))!=((2u<<last)-1)) {
+   if(!surface&&(owner->levels_written&((2u<<last)-1))!=((2u<<last)-1)) {
       static unsigned reported;
       if(ctx->debug&&reported++<16)
          fprintf(stderr,"m9x: FAA texture %ux%u %s levels %u written %#x\n",
@@ -10082,7 +10096,9 @@ m9_context_faa_texture_snapshot(struct m9_context *ctx,unsigned slot,
       !m9_render_surface_layout(bind.width,bind.height,4,&extent)||owner->size<extent.size)
       return "FAA texture bind shape or source allocation extent is not qualified";
    *out=(struct m9_faa_application_texture){.resource=view->texture,
-      .generation=owner->generation,.owner_bytes=owner->size,.offset=owner->texture.level[0].offset,
+      .generation=owner->generation,.owner_bytes=owner->size,
+      .offset=surface?0:owner->texture.level[0].offset,
+      .surface=surface,.alpha_undefined=alpha_undefined,
       .view={.handle=owner->handle,.profile=12,.format=bind.code,
        .width=bind.width,.height=bind.height,.storage_kind=bind.kind,.levels=used,
        .min_filter=sampler->min_img_filter==PIPE_TEX_FILTER_LINEAR?2u:1u,

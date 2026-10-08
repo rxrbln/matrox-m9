@@ -706,6 +706,12 @@ m9_faa_application_build(const struct m9_faa_application_draw *d,
       if((family.blend||family.alpha_test)&&!d->state.texture_fragment_valid) {
          why="FAA textured blend factors have no source program";goto fail;
       }
+      /* An RGBX render surface's X byte stands for its alpha. */
+      for(unsigned i=0;i<texture_count;i++)
+         if(d->texture[i].alpha_undefined&&
+            (family.blend||family.alpha_test||d->state.destination_alpha)) {
+            why="FAA RGBX surface texture alpha is observed";goto fail;
+         }
       /* COLOR0.a alone is exact only where alpha is never observed. */
       if(color_alpha&&(family.blend||family.alpha_test||d->state.destination_alpha)) {
          why="FAA texture alpha from COLOR0 alone is observed";goto fail;

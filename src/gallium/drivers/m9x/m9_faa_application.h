@@ -12,6 +12,10 @@ struct m9_faa_application_texture {
    struct pipe_resource *resource;
    struct drm_parhelia_m9_faa_texture_view view;
    uint64_t generation, offset, owner_bytes;
+   /* A tiled render surface (single level), sampled in place. */
+   bool surface;
+   /* Its X byte stands for alpha: exact only where alpha is never seen. */
+   bool alpha_undefined;
 };
 
 /* Gallium semantics, not encoded GPU registers. A future typed draw ioctl
