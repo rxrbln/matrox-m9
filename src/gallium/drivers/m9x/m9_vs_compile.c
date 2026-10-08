@@ -127,6 +127,7 @@ struct const_seed {
 struct ctx {
    bool compact;
    bool faa;
+   bool faa_dual_three;
    bool sampled_position, unsampled_stage;
    bool *identity_keys;
    nir_shader *nir;
@@ -2385,7 +2386,8 @@ head_dependencies(struct ctx *c, nir_block *block, unsigned final,
    memset(c->head_live, 0, (c->def_count + 1) * sizeof(*c->head_live));
    memset(c->last_use, 0, (c->def_count + 1) * sizeof(*c->last_use));
    head_root(c, position, final, ~0u);
-   unsigned count = position ? MIN2(nvar, M9_VS_FUSED_VARYINGS) : nvar;
+   unsigned count = position ? MIN2(nvar, c->faa_dual_three ? 3u :
+                                    M9_VS_FUSED_VARYINGS) : nvar;
 
    for (unsigned j = 0; j < count; j++) {
       if (ostream[j].coordinate)
@@ -2483,7 +2485,8 @@ compile_head(struct ctx *c, nir_block *block, unsigned final,
          c->reserved[REG_OUT_HI(j)] = 1;
       }
       pin_packed_output(c, position, REG_OUT_LO(0), REG_OUT_HI(0));
-      for (unsigned j = 0; j < MIN2(nvar, M9_VS_FUSED_VARYINGS); j++)
+      for (unsigned j = 0; j < MIN2(nvar, c->faa_dual_three ? 3u :
+                                   M9_VS_FUSED_VARYINGS); j++)
          if (!ostream[j].coordinate) {
             pin_packed_output(c, var[j], REG_OUT_LO(j + 1), REG_OUT_HI(j + 1));
          }
@@ -2566,7 +2569,8 @@ compile_head(struct ctx *c, nir_block *block, unsigned final,
    if (packed_primary) {
       if (!write_output(c, position, REG_OUT_LO(0), REG_OUT_HI(0), dflt))
          return false;
-      for (unsigned j = 0; j < MIN2(nvar, M9_VS_FUSED_VARYINGS); j++)
+      for (unsigned j = 0; j < MIN2(nvar, c->faa_dual_three ? 3u :
+                                   M9_VS_FUSED_VARYINGS); j++)
          if (!write_stream(c, var[j], ostream, base, j, REG_OUT_LO(j + 1),
                            REG_OUT_HI(j + 1), true))
             return false;
@@ -2727,8 +2731,12 @@ compile_impl(struct ctx *c, nir_function_impl *impl,
          return fail(c, "sampled position requires a complete clip position");
    }
    if (c->faa) {
-      if (nvar < 1 || nvar > 2)
-         return fail(c, "FAA requires one or two direct output streams");
+      if (nvar < 1 || nvar > (c->faa_dual_three ? 3u : 2u) ||
+          (c->faa_dual_three && (nvar != 3 || !want ||
+           want->stream[0].location != VARYING_SLOT_COL0 ||
+           want->stream[1].location != VARYING_SLOT_TEX0 ||
+           want->stream[2].location != VARYING_SLOT_TEX1)))
+         return fail(c, "FAA dual texture needs COLOR0, TEXCOORD0 and TEXCOORD1");
       if (nir_intrinsic_component(position) ||
           nir_intrinsic_write_mask(position) != 0xf ||
           position->src[0].ssa->num_components != 4)
@@ -2746,7 +2754,7 @@ compile_impl(struct ctx *c, nir_function_impl *impl,
    if (c->texture[0] && nvar > M9_VS_FUSED_VARYINGS) {
       c->p->texture_head_only = true;
    }
-   if (nvar > M9_VS_FUSED_VARYINGS) {
+   if (nvar > M9_VS_FUSED_VARYINGS && !c->faa_dual_three) {
       c->head_live = calloc(c->def_count + 1, sizeof(*c->head_live));
       if (!c->head_live)
          return fail(c, "out of memory");
@@ -2897,10 +2905,12 @@ compile_impl(struct ctx *c, nir_function_impl *impl,
    } else if (!compile_head(c, block, final, used, inputs, position, varying,
                            out.stream, 0, nvar, route_fed))
       return false;
+   if (c->faa_dual_three)
+      compile_gather(c->p, 3);
    /* Varyings past the two the fused pass carries are a program of their
     * own, run as the preprocessing draw ahead of it.  Each independently
     * emits the SSA dependencies of its output targets. */
-   if (nvar > M9_VS_FUSED_VARYINGS) {
+   if (nvar > M9_VS_FUSED_VARYINGS && !c->faa_dual_three) {
       c->out = &c->p->extra;
       if (!c->sampled_position && !compile_head(c, block, final, used, inputs, NULL,
                         varying + M9_VS_FUSED_VARYINGS,
@@ -3089,7 +3099,8 @@ static bool
 compile_program(struct nir_shader *nir, const struct m9_vs_outputs *outputs,
                 struct m9_vs_program *p, const char **reason,
                 bool geometry, const struct const_seed *seed,
-                bool *identity, bool faa, bool sampled_position)
+                bool *identity, bool faa, bool sampled_position,
+                bool faa_dual_three)
 {
    nir_function_impl *impl;
    struct ctx c;
@@ -3105,6 +3116,7 @@ compile_program(struct nir_shader *nir, const struct m9_vs_outputs *outputs,
    util_dynarray_init(&c.keys, NULL);
    c.identity_keys = identity;
    c.faa = faa;
+   c.faa_dual_three = faa_dual_three;
    c.sampled_position = sampled_position;
    c.compact = faa || seed != NULL;
    c.nir = nir;
@@ -3123,6 +3135,7 @@ compile_program(struct nir_shader *nir, const struct m9_vs_outputs *outputs,
                 fail(&c, "not a vertex shader"));
    if (ok) {
       p->faa_preprocess = faa;
+      p->faa_dual_three = faa_dual_three;
       util_dynarray_foreach(&c.keys, struct kkey, k) {
          struct m9_vs_const *out =
             util_dynarray_grow(&p->consts, struct m9_vs_const, 1);
@@ -3154,7 +3167,7 @@ bool
 m9_vs_compile(struct nir_shader *nir, const struct m9_vs_outputs *outputs,
               struct m9_vs_program *p, const char **reason)
 {
-   return compile_program(nir, outputs, p, reason, true, NULL, NULL, false, false);
+   return compile_program(nir, outputs, p, reason, true, NULL, NULL, false, false, false);
 }
 
 bool
@@ -3167,7 +3180,7 @@ m9_vs_compile_sampled_position(struct nir_shader *nir,
          *reason = "missing sampled-position shader/program";
       return false;
    }
-   return compile_program(nir, outputs, p, reason, true, NULL, NULL, false, true);
+   return compile_program(nir, outputs, p, reason, true, NULL, NULL, false, true, false);
 }
 
 /* This offset exists only on this private compilation clone. Original UBO
@@ -3275,7 +3288,7 @@ m9_vs_compile_gpu_padding(const struct nir_shader *nir,
    struct m9_vs_program trial = {0};
    bool ok = !s.invalid && s.stores == 1 &&
              compile_program(copy, outputs, &trial, &why, true, NULL, NULL,
-                             false, sampled_position);
+                             false, sampled_position, false);
    ralloc_free(copy);
    if (!ok) {
       m9_vs_program_fini(&trial);
@@ -3338,7 +3351,7 @@ m9_vs_compile_faa(struct nir_shader *nir, const struct m9_vs_outputs *outputs,
          *reason = "missing FAA shader/program";
       return false;
    }
-   return compile_program(nir, outputs, p, reason, true, NULL, NULL, true, false);
+   return compile_program(nir, outputs, p, reason, true, NULL, NULL, true, false, false);
 }
 
 /* Lowered-I/O counterpart of Mesa nir_lower_clip_halfz: the original public
@@ -3412,9 +3425,10 @@ static bool
 compile_faa_gl_mode(const struct nir_shader *nir,
                     const struct m9_vs_outputs *outputs,
                     struct m9_vs_program *p, const char **reason,
-                    bool fused)
+                    bool fused, bool dual_three)
 {
    if (!nir || !p || nir->info.stage != MESA_SHADER_VERTEX ||
+       (dual_three && (fused || !outputs || outputs->count != 3)) ||
        (fused && (!outputs || outputs->count != 1 ||
                   outputs->stream[0].location != VARYING_SLOT_COL0 ||
                   outputs->stream[0].coordinate || outputs->stream[0].paired ||
@@ -3440,7 +3454,9 @@ compile_faa_gl_mode(const struct nir_shader *nir,
       return false;
    }
    bool ok = fused ? m9_vs_compile(copy, outputs, p, reason) :
-                     m9_vs_compile_faa(copy, outputs, p, reason);
+             dual_three ? compile_program(copy, outputs, p, reason, true,
+                                          NULL, NULL, true, false, true) :
+                          m9_vs_compile_faa(copy, outputs, p, reason);
    if (ok && fused && (p->texture_count || p->extra.size || p->gather.size ||
                        p->producer.size || p->varying_count != 1)) {
       m9_vs_program_fini(p);
@@ -3456,7 +3472,15 @@ m9_vs_compile_faa_gl(const struct nir_shader *nir,
                      const struct m9_vs_outputs *outputs,
                      struct m9_vs_program *p, const char **reason)
 {
-   return compile_faa_gl_mode(nir, outputs, p, reason, false);
+   return compile_faa_gl_mode(nir, outputs, p, reason, false, false);
+}
+
+bool
+m9_vs_compile_faa_gl_dual_texture(const struct nir_shader *nir,
+                                  const struct m9_vs_outputs *outputs,
+                                  struct m9_vs_program *p, const char **reason)
+{
+   return compile_faa_gl_mode(nir, outputs, p, reason, false, true);
 }
 
 bool
@@ -3464,7 +3488,7 @@ m9_vs_compile_faa_gl_fused(const struct nir_shader *nir,
                            const struct m9_vs_outputs *outputs,
                            struct m9_vs_program *p, const char **reason)
 {
-   return compile_faa_gl_mode(nir, outputs, p, reason, true);
+   return compile_faa_gl_mode(nir, outputs, p, reason, true, false);
 }
 
 /* The ordinary source can keep independent scalar coefficient chains even
@@ -3518,7 +3542,7 @@ compile_bounded(struct nir_shader *nir,
    nir_shader *trial_nir;
    struct m9_vs_program trial;
 
-   if (!compile_program(nir, outputs, p, reason, true, NULL, identity, false, false))
+   if (!compile_program(nir, outputs, p, reason, true, NULL, identity, false, false, false))
       return false;
    if (m9_vs_const_count(p) <= max_const_pairs ||
        !program_slots_fit(p, max_slots))
@@ -3576,7 +3600,7 @@ m9_vs_compile_bounded_source(struct nir_shader **nir,
                  m9_vs_const_count(p) > max_const_pairs)) {
       const struct const_seed seed = {.program = p, .identity = identity};
 
-      if (compile_program(saved, outputs, &trial, NULL, false, &seed, NULL, false, false)) {
+      if (compile_program(saved, outputs, &trial, NULL, false, &seed, NULL, false, false, false)) {
          if (program_slots_fit(&trial, max_slots) &&
              m9_vs_const_count(&trial) <= max_const_pairs) {
             m9_vs_program_fini(p);
@@ -3824,10 +3848,36 @@ unsigned
 m9_vs_emit_faa(const struct m9_vs_program *p, uint32_t *out,
                unsigned max_dwords)
 {
-   if (!p || !p->faa_preprocess || p->slots.size || p->extra.size ||
+   if (!p || !p->faa_preprocess || p->faa_dual_three ||
+       p->slots.size || p->extra.size ||
        p->gather.size)
       return 0;
    return m9_vs_emit_body(&p->producer, out, max_dwords);
+}
+
+bool
+m9_vs_emit_faa_dual_texture(const struct m9_vs_program *p,
+                            uint32_t *carry, unsigned carry_dwords,
+                            uint32_t *gather, unsigned gather_dwords,
+                            unsigned *carry_slots, unsigned *gather_slots)
+{
+   unsigned ncarry, ngather, need_carry, need_gather;
+   if (!p || !p->faa_preprocess || !p->faa_dual_three ||
+       p->varying_count != 3 || p->slots.size || p->extra.size ||
+       !carry || !gather || !carry_slots || !gather_slots ||
+       !p->producer.size || !p->gather.size)
+      return false;
+   need_carry = 2 * MAX2(p->producer.size / (2 * sizeof(uint32_t)) + 1, 4u);
+   need_gather = 2 * MAX2(p->gather.size / (2 * sizeof(uint32_t)) + 1, 4u);
+   if (carry_dwords < need_carry || gather_dwords < need_gather)
+      return false;
+   ncarry = m9_vs_emit_body(&p->producer, carry, carry_dwords);
+   ngather = m9_vs_emit_body(&p->gather, gather, gather_dwords);
+   if (!ncarry || !ngather)
+      return false;
+   *carry_slots = ncarry / 2;
+   *gather_slots = ngather / 2;
+   return true;
 }
 
 unsigned

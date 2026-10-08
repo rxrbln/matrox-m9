@@ -270,6 +270,9 @@ struct m9_vs_program {
    /* A standalone FAA packed producer. Its constants are dense and it has
     * no ordinary position tail; ordinary image emitters must refuse it. */
    bool faa_preprocess;
+   /* Opt-in three-output COLOR0/TEXCOORD0/TEXCOORD1 source interface.
+    * The source uses one packed carry and a three-stream gather. */
+   bool faa_dual_three;
    struct util_dynarray slots;    /* uint32_t W0, W1 of the compiled head */
    struct util_dynarray consts;   /* struct m9_vs_const, user pairs in order */
    struct m9_vs_attr attrs[M9_VS_MAX_ATTRIBUTES];
@@ -413,6 +416,10 @@ bool m9_vs_compile_faa(struct nir_shader *nir,
 bool m9_vs_compile_faa_gl(const struct nir_shader *nir,
                           const struct m9_vs_outputs *outputs,
                           struct m9_vs_program *program, const char **reason);
+bool m9_vs_compile_faa_gl_dual_texture(const struct nir_shader *nir,
+                                       const struct m9_vs_outputs *outputs,
+                                       struct m9_vs_program *program,
+                                       const char **reason);
 /* One real COLOR output through the ordinary fused head/tail register
  * interface. The private NIR clone receives the same GL half-Z lowering;
  * the resulting sparse tail constants belong to this program, not to the
@@ -426,7 +433,11 @@ bool m9_vs_compile_faa_gl_fused(const struct nir_shader *nir,
 /* Finalize that producer with STOP/padding/finish. Refuses ordinary programs.
  * m9_vs_constants/m9_vs_const_span use its dense typed constant layout. */
 unsigned m9_vs_emit_faa(const struct m9_vs_program *program, uint32_t *out,
-                        unsigned max_dwords);
+                       unsigned max_dwords);
+bool m9_vs_emit_faa_dual_texture(const struct m9_vs_program *program,
+                                 uint32_t *carry, unsigned carry_dwords,
+                                 uint32_t *gather, unsigned gather_dwords,
+                                 unsigned *carry_slots, unsigned *gather_slots);
 /* Compile normally, then try coefficient vectorization on a clone only if
  * the result exceeds max_const_pairs while fitting max_slots. An unsuccessful
  * retry preserves the original program for the caller's ordinary admission
