@@ -9734,12 +9734,13 @@ m9_context_faa_texture_snapshot(struct m9_context *ctx,unsigned slot,
    return NULL;
 }
 
-bool
-m9_context_faa_build_draw(struct m9_context *ctx,
-                          const struct pipe_draw_info *info,
-                          const struct pipe_draw_start_count_bias *draw,
-                          struct m9_faa_application_upload *upload,
-                          const char **reason)
+/* require_graph false (census): judge the DRAW without a retained graph. */
+static bool
+m9_context_faa_build_draw_mode(struct m9_context *ctx,
+                               const struct pipe_draw_info *info,
+                               const struct pipe_draw_start_count_bias *draw,
+                               struct m9_faa_application_upload *upload,
+                               const char **reason, bool require_graph)
 {
    const char *why = "FAA application draw has no retained live shader/state";
    nir_shader *vs = NULL;
@@ -9749,14 +9750,16 @@ m9_context_faa_build_draw(struct m9_context *ctx,
    struct m9_faa_application_draw source = {0};
    if (!ctx || ctx->lost || !info || !draw || !upload || upload->shader.storage ||
        !ctx->vs || !ctx->vs->src || !ctx->fs || !ctx->fs->nir ||
-       !ctx->velems || !ctx->rasterizer || !ctx->dsa ||
-       ctx->color_count != 1 || !ctx->faa_surface.graph.initialized ||
+       !ctx->velems || !ctx->rasterizer || !ctx->dsa || ctx->color_count != 1)
+      goto fail;
+   if (require_graph &&
+       (!ctx->faa_surface.graph.initialized ||
        !ctx->faa_surface.graph.prepared || !ctx->faa_surface.graph.prepared_id ||
        !ctx->faa_surface.graph.init_point || (ctx->faa_surface.graph.init_point & 15) ||
        ctx->faa_surface.destination != ctx->color ||
        ctx->faa_surface.destination_offset != ctx->color_offset ||
        ctx->faa_surface.width != ctx->framebuffer_width ||
-       ctx->faa_surface.height != ctx->framebuffer_height)
+       ctx->faa_surface.height != ctx->framebuffer_height))
       goto fail;
    const struct pipe_rasterizer_state *r = ctx->rasterizer;
    const struct pipe_depth_stencil_alpha_state *z = ctx->dsa;
@@ -9889,6 +9892,16 @@ fail:
    return false;
 }
 
+bool
+m9_context_faa_build_draw(struct m9_context *ctx,
+                          const struct pipe_draw_info *info,
+                          const struct pipe_draw_start_count_bias *draw,
+                          struct m9_faa_application_upload *upload,
+                          const char **reason)
+{
+   return m9_context_faa_build_draw_mode(ctx, info, draw, upload, reason, true);
+}
+
 /* State checks of an owned FAA DRAW past its build; NULL when admitted. */
 static const char *
 m9_context_faa_draw_refusal(const struct m9_faa_application_upload *owned)
@@ -9939,7 +9952,7 @@ m9_context_faa_census(struct m9_context *ctx, const struct pipe_draw_info *info,
 {
    struct m9_faa_application_upload owned = {0};
    const char *why = NULL;
-   if (m9_context_faa_build_draw(ctx, info, draw, &owned, &why)) {
+   if (m9_context_faa_build_draw_mode(ctx, info, draw, &owned, &why, false)) {
       why = m9_context_faa_draw_refusal(&owned);
       if (!why)
          why = owned.texture_count ? "admitted: textured" : "admitted: colour";
