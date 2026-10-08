@@ -11769,6 +11769,89 @@ static void m9_faa_stall_owner(struct m9x_device *mdev, const char *name,
 			words[i + 3]);
 }
 
+/* The owner holding a GPU address among the replay's command and data owners. */
+static const struct m9_faa_owner *m9_faa_stall_find(struct m9x_faa_replay *r,
+						    u32 va, const char **name)
+{
+	static const char *const names[] = { "draw0", "draw1", "draw2",
+					     "spare0", "spare1" };
+	const struct m9_faa_owner *o[5] = { &r->draw_owner[0],
+					    &r->draw_owner[1],
+					    &r->draw_owner[2] };
+	u32 i;
+
+	if (r->command_pools) {
+		o[3] = &r->command_pools->spare[0];
+		o[4] = &r->command_pools->spare[1];
+	}
+	for (i = 0; i < ARRAY_SIZE(o); i++)
+		if (o[i] && o[i]->cpu &&
+		    drm_mm_node_allocated(&o[i]->system_node) &&
+		    va - (u32)o[i]->system_node.start < o[i]->bytes) {
+			*name = names[i];
+			return o[i];
+		}
+	return NULL;
+}
+
+/* Every secondary range linked from the primary words around the fetch:
+ * its owner, the PTE of each page it covers, and the words at each page
+ * boundary it crosses.
+ */
+static void m9_faa_stall_links(struct m9x_device *mdev,
+			       struct m9x_faa_replay *r, u32 head)
+{
+	const struct m9_faa_owner *p = &r->owner[M9_FAA_PRIMARY_OWNER];
+	const struct m9_faa_owner *o;
+	const u32 *words = p->cpu, *data;
+	u32 off, first, last, i, va, start, end, base, pte;
+	const char *name = "?";
+	int ret;
+
+	if (!p->cpu || !drm_mm_node_allocated(&p->system_node))
+		return;
+	off = (head & ~3u) - (u32)p->system_node.start;
+	if (off >= p->bytes)
+		return;
+	first = off / 4 > 32 ? off / 4 - 32 : 0;
+	last = min(off / 4 + 16, p->bytes / 4);
+	for (i = first; i + 2 < last; i++) {
+		if (words[i] != M9_CMD_LINK)
+			continue;
+		start = words[i + 1] & ~3u;
+		end = words[i + 2] & ~3u;
+		o = m9_faa_stall_find(r, start, &name);
+		dev_err(&mdev->pdev->dev,
+			"M9 FAA stall link at +%#x: %#x..%#x owner=%s base=%#llx\n",
+			i * 4, start, end, o ? name : "none",
+			o ? (u64)o->system_node.start : 0);
+		if (!o || end < start || end - start > 0x10000)
+			continue;
+		base = (u32)o->system_node.start;
+		data = o->cpu;
+		for (va = start & ~(PAGE_SIZE - 1); va < end; va += PAGE_SIZE) {
+			ret = m9x_address_read_pte(mdev, va, &pte);
+			dev_err(&mdev->pdev->dev,
+				"M9 FAA stall link page %#x pte=%#x expected=%#x ret=%d\n",
+				va, ret ? 0 : pte,
+				m9x_address_pte_word(o->dma + va - base) | 1u,
+				ret);
+			if (va > start && va - base >= 16 &&
+			    va - base + 16 <= o->bytes)
+				dev_err(&mdev->pdev->dev,
+					"M9 FAA stall link words %#x: %08x %08x %08x %08x | %08x %08x %08x %08x\n",
+					va - 16, data[(va - base) / 4 - 4],
+					data[(va - base) / 4 - 3],
+					data[(va - base) / 4 - 2],
+					data[(va - base) / 4 - 1],
+					data[(va - base) / 4],
+					data[(va - base) / 4 + 1],
+					data[(va - base) / 4 + 2],
+					data[(va - base) / 4 + 3]);
+		}
+	}
+}
+
 #endif
 
 /* After a timeout outside the staging slots: which retained FAA command
@@ -11788,6 +11871,7 @@ void m9x_faa_report_stall_locked(struct m9x_device *mdev, u32 head, u32 end)
 		r->ordinary_end, r->color_secondary_cursor);
 	m9_faa_stall_owner(mdev, "primary", &r->owner[M9_FAA_PRIMARY_OWNER],
 			   head, end);
+	m9_faa_stall_links(mdev, r, head);
 	m9_faa_stall_owner(mdev, "secondary", &r->draw_owner[2], head, end);
 	if (r->command_pools) {
 		m9_faa_stall_owner(mdev, "spare-primary",
