@@ -1748,7 +1748,8 @@ int m9x_faa_graph_color_frame_batch_ioctl(struct drm_device *drm,void *data,stru
   * or preparing any GPU-consumable state. No caller memory is read later. */
  ret=m9x_faa_color_batch_copy(args,&batch);if(ret)return ret;
  first=!!(args->flags&PARHELIA_M9_FAA_COLOR_FRAME_FIRST);
- delta=(first?0x150:0x1a0)+(u64)(batch->count-1)*0xa0;
+ delta=(args->flags&PARHELIA_M9_FAA_COLOR_FRAME_INITIALIZED?
+  (args->clear_flags?0x150:0xd0):(first?0x150:0x1a0))+(u64)(batch->count-1)*0xa0;
  if(args->previous_point>U64_MAX-delta||lower_32_bits(args->previous_point)>U32_MAX-delta){ret=-ERANGE;goto out_batch;}
  if(!m9x_faa_graph_profile_enabled()||!m9x_faa_graph_depth_frame_profile_qualified(first)){ret=-EOPNOTSUPP;goto out_batch;}
  if(!drm_dev_enter(drm,&idx)){ret=-ENODEV;goto out_batch;}

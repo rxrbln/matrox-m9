@@ -24,8 +24,10 @@ int m9x_faa_color_batch_copy(const struct drm_parhelia_m9_faa_graph_color_frame_
  if(!args||!args->graph_id||!args->previous_point||(args->previous_point&15)||
   args->lock_point||!args->draws||!args->draw_count||
   args->draw_count>M9_FAA_FRAME_BATCH_MAX_DRAWS||
-  args->flags&~PARHELIA_M9_FAA_COLOR_FRAME_FIRST||args->state||
-  args->width!=320||args->height!=240||args->clear_flags!=3||args->clear_color||
+  args->flags&~(PARHELIA_M9_FAA_COLOR_FRAME_FIRST|PARHELIA_M9_FAA_COLOR_FRAME_INITIALIZED)||
+  args->flags==(PARHELIA_M9_FAA_COLOR_FRAME_FIRST|PARHELIA_M9_FAA_COLOR_FRAME_INITIALIZED)||args->state||
+  args->width!=320||args->height!=240||
+  ((args->flags&PARHELIA_M9_FAA_COLOR_FRAME_INITIALIZED)?(args->clear_flags&&args->clear_flags!=3):args->clear_flags!=3)||args->clear_color||
   args->pad[0]||args->pad[1]||args->pad[2]||args->pad[3])return -EINVAL;
  static_assert(sizeof(*args)==80);
  static_assert(sizeof(*desc)==112);
@@ -33,6 +35,7 @@ int m9x_faa_color_batch_copy(const struct drm_parhelia_m9_faa_graph_color_frame_
  desc=memdup_user(u64_to_user_ptr(args->draws),bytes);
  if(IS_ERR(desc))return PTR_ERR(desc);
  batch=kzalloc(sizeof(*batch),GFP_KERNEL);if(!batch){ret=-ENOMEM;goto out;}
+ batch->flags=args->flags;batch->clear_flags=args->clear_flags;
  for(i=0;i<args->draw_count;i++){
   const struct drm_parhelia_m9_faa_color_draw *d=&desc[i];
   const struct drm_parhelia_m9_faa_upload_layout *l=&d->layout;

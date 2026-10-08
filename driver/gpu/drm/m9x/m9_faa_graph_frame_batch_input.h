@@ -10,7 +10,7 @@ struct m9x_faa_owned_color_draw {
  u32 bytes,raster_flags;
 };
 struct m9x_faa_owned_color_batch {
- u32 count;
+ u32 count,flags,clear_flags;
  struct m9x_faa_owned_color_draw draw[M9_FAA_FRAME_BATCH_MAX_DRAWS];
 };
 /* The caller holds no graph BO reservations. No upload pointer survives this
