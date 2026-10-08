@@ -17,17 +17,31 @@ int m9x_faa_texture_bind_encode(
 	struct m9x_faa_texture_bind_words *out)
 {
 	struct m9x_faa_texture_bind_words image;
-	u32 pitch;
+	u32 kind, extent;
 
 	if (!in || !out || in->owner_domain != M9_FAA_TEXTURE_VRAM ||
-	    (in->owner_base & 255) || in->owner_base > U32_MAX - 0x4000 ||
-	    in->owner_bytes < 0x4000 ||
+	    (in->owner_base & 255) ||
 	    in->owner_base > U32_MAX - in->owner_bytes ||
 	    in->profile != 12 ||
-	    in->format != 102 || in->width != 64 || in->height != 64 ||
-	    in->stage != 0 || in->sampler_profile != 1 ||
+	    in->format != 102 || !in->width || !in->height ||
+	    in->width > 1024 || in->height > 1024 ||
+	    (in->width & (in->width - 1)) ||
+	    (in->height & (in->height - 1)) ||
+	    in->levels != 1 || in->stage != 0 ||
+	    (in->min_filter != 1 && in->min_filter != 2) ||
+	    (in->mag_filter != 1 && in->mag_filter != 2) ||
+	    in->mip_filter != 1 ||
+	    (in->address_u != 1 && in->address_u != 3) ||
+	    (in->address_v != 1 && in->address_v != 3) ||
 	    (in->coordinate_sets != 1 && in->coordinate_sets != 2) ||
 	    in->coordinate_index >= in->coordinate_sets)
+		return -EINVAL;
+
+	kind = in->width > 64 || in->height > 64 ? 0x21 : 0x01;
+	extent = in->width * in->height * 4;
+	if (extent < 0x4000)
+		extent = 0x4000;
+	if (in->storage_kind != kind || in->owner_bytes < extent)
 		return -EINVAL;
 
 	if (in->coordinate_sets == 1) {
@@ -38,18 +52,23 @@ int m9x_faa_texture_bind_encode(
 		return -EINVAL;
 	}
 
-	/* 467e0 selector 2: idx78 low 16 is aligned horizontal extent,
+	/* 467e0 selector 2: idx78 low 16 is the requested horizontal extent,
 	 * idx79 low 16 is height and bits 27:16 are the one-layer extent.
-	 * Format code 0x66 occupies idx78[31:25]. Kind-11 relocation adds
+	 * Kind 01 becomes 21 above 64 in either dimension. Format code 0x66
+	 * occupies idx78[31:25]. Kind-11 relocation adds
 	 * texture tag 1 to a 256-byte-aligned live VRAM base. */
-	pitch = (in->width + 7) & ~7u;
 	image.unit70 = 0x40040118;
 	image.address78 = in->owner_base | 1;
-	image.descriptor79 = (0x66u << 25) | (1u << 16) | pitch;
+	image.descriptor79 = (0x66u << 25) | (kind << 16) | in->width;
 	image.descriptor7a = (1u << 16) | in->height;
-	/* Fixed source stage-0 default sampler. Other filter/wrap/LOD states
-	 * require 18b4e0 input lowering and are refused by this profile. */
-	image.sampler7c = 0x00009280;
+	/* 18afb0/18ba27 tables, checked against independent MIN/MAG and
+	 * U/V clamp controls. Mip-linear needs a resident chain, so it stays
+	 * outside this single-level owner contract. */
+	image.sampler7c = 0x00009280 |
+		((in->min_filter == 2) ? 2 : 0) |
+		((in->mag_filter == 2) ? (2 << 3) : 0) |
+		((in->address_u == 3) ? (1 << 22) : 0) |
+		((in->address_v == 3) ? (1 << 25) : 0);
 	image.sampler7d = 0x0ff80000;
 	image.sampler87 = 0;
 	/* 105648/17f91d coordinate selection leaves the program intact.

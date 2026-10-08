@@ -11,7 +11,7 @@ typedef uint32_t u32;
 #include <linux/types.h>
 #endif
 
-/* Source-bounded M9128 stage-0, profile-12, 64x64 BGRA8 texture input.
+/* Source-bounded M9128 stage-0, profile-12 BGRA8 texture input.
  * The caller must retain and fence the VRAM BO through actual retirement.
  * This builds input words only; no FAA packet is submitted by this API. */
 enum m9x_faa_texture_domain {
@@ -26,10 +26,15 @@ struct m9x_faa_texture_bind_input {
 	u32 profile;
 	u32 format;
 	u32 width, height;
-	/* This source slice covers only stage 0 with its observed default
-	 * filter/wrap state. Other sampler state needs the 18b4e0 lowerer. */
+	/* Original 2-D layout kind 01 through 64x64, kind 21 when either
+	 * dimension exceeds 64. The BO's data must use that storage layout. */
+	u32 storage_kind;
+	u32 levels;
+	/* D3D texture-stage state enums, admitted subset of the source tables:
+	 * point/linear MIN/MAG, point MIP, and wrap/clamp U/V. */
 	u32 stage;
-	u32 sampler_profile;
+	u32 min_filter, mag_filter, mip_filter;
+	u32 address_u, address_v;
 	u32 coordinate_sets;
 	u32 coordinate_index;
 	/* Actual program/raster producer's pre-selection AE word. The helper
