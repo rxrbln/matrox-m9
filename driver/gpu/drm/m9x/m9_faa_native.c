@@ -6582,27 +6582,29 @@ out:
 
 #ifdef M9_FAA_GRAPH_INIT_CONTROL
 static int m9_faa_public_vs_head_state(struct m9x_transport *t,
-		struct m9_faa_graph_binding *binding, u32 generation, u64 head_point)
+				       struct m9_faa_graph_binding *binding,
+				       u32 generation, u64 head_point)
 {
 	struct m9x_faa_replay *r = t->faa;
 
 	lockdep_assert_held(&t->lock);
 	if (t->wedged)
 		return -EIO;
-	if (!r || !binding || r->graph_binding != binding ||
-	    !r->prepared || !r->attempted || !r->observation_retired ||
+	if (!r || !binding || r->graph_binding != binding || !r->prepared ||
+	    !r->attempted || !r->observation_retired ||
 	    !r->graph_draw_claimed || !r->public_vs_payload_ready ||
 	    !r->public_vs_head_attempted || !r->public_vs_head_retired ||
 	    r->public_vs_prefix_retired || r->public_vs_follow_retired ||
-	    !r->public_vs_image || !r->public_vs_head_fence ||
-	    r->draw_image || r->graph_draw_payload_ready || r->graph_preparing ||
+	    !r->public_vs_image || !r->public_vs_head_fence || r->draw_image ||
+	    r->graph_draw_payload_ready || r->graph_preparing ||
 	    r->graph_generation != generation || t->generation != generation ||
 	    r->observation_generation != generation || !head_point ||
 	    (head_point & 15) || head_point != r->observation_point + 0x10 ||
 	    r->graph_draw_point != head_point || r->graph_draw_posts != 2 ||
 	    r->graph_draw_end_bytes != r->primary_bytes + 64 ||
 	    r->public_vs_image->ends.first_end != r->graph_draw_end_bytes ||
-	    t->submitted_point != head_point || t->completed_point != head_point ||
+	    t->submitted_point != head_point ||
+	    t->completed_point != head_point ||
 	    t->next_fence != lower_32_bits(head_point) + 0x10 ||
 	    r->public_vs_head_fence->base.context != t->fence_context ||
 	    r->public_vs_head_fence->base.seqno != head_point ||
@@ -6615,6 +6617,7 @@ static int m9_faa_public_vs_head_state(struct m9x_transport *t,
 		return -EBUSY;
 	return 0;
 }
+
 #endif
 
 /* Caller holds all six reservations. Ignore only this exact authenticated
