@@ -102,19 +102,23 @@ m9_faa_gl_upload_fini(struct m9_faa_gl_upload *upload)
 static bool
 live_gl_build_mode(const struct m9_faa_live_gl *s,
                    struct m9_faa_gl_upload *output, const char **reason,
-                   bool fused)
+                   bool fused, bool dual)
 {
    struct m9_vs_program p = {0};
    struct m9_faa_gl_upload result = {0};
    const char *why = "invalid live FAA GL upload inputs";
    bool compiled = false;
-   uint32_t carry[2 * M9_FAA_GL_UPLOAD_SLOT_BUDGET], gather[10], position[50];
+   uint32_t carry[2 * M9_FAA_GL_UPLOAD_SLOT_BUDGET], gather[14], position[50];
    uint32_t carry_constants[126] = {0}, position_constants[26], declaration[M9_VS_MAX_DECL];
    struct m9_faa_move_interface gi;
    struct m9_faa_position_interface pi;
    struct m9_vs_source_layout source;
    if (!s || !output || output->storage || !s->vs || !s->linkage ||
-       (s->linkage->count < 1 || s->linkage->count > 2 ||
+       (s->linkage->count < 1 || s->linkage->count > (dual ? 3u : 2u) ||
+        (dual && (fused || s->linkage->count != 3 ||
+                  s->linkage->stream[0].location != VARYING_SLOT_COL0 ||
+                  s->linkage->stream[1].location != VARYING_SLOT_TEX0 ||
+                  s->linkage->stream[2].location != VARYING_SLOT_TEX1)) ||
         (fused && s->linkage->count != 1)) ||
        (fused && (s->viewport.x || s->viewport.y ||
                   s->viewport.width != 320 || s->viewport.height != 240 ||
@@ -144,7 +148,8 @@ live_gl_build_mode(const struct m9_faa_live_gl *s,
       if (overlap(output, sizeof(*output), s->maps[i], s->map_bytes[i]))
          goto fail;
    if (!(fused ? m9_vs_compile_faa_gl_fused(s->vs, s->linkage, &p, &why) :
-                 m9_vs_compile_faa_gl(s->vs, s->linkage, &p, &why)))
+           dual ? m9_vs_compile_faa_gl_dual_texture(s->vs, s->linkage, &p, &why) :
+                  m9_vs_compile_faa_gl(s->vs, s->linkage, &p, &why)))
       goto fail;
    compiled = true;
    unsigned slots = fused ? m9_vs_slot_count(&p) :
@@ -173,20 +178,28 @@ live_gl_build_mode(const struct m9_faa_live_gl *s,
             }
          }
    }
-   if ((fused ? m9_vs_emit(&p, carry, ARRAY_SIZE(carry), false) :
-                m9_vs_emit_faa(&p, carry, ARRAY_SIZE(carry))) != 2 * slots ||
+   unsigned dual_carry_slots = 0, dual_gather_slots = 0;
+   bool emitted = dual ? m9_vs_emit_faa_dual_texture(&p, carry, ARRAY_SIZE(carry),
+                                                       gather, ARRAY_SIZE(gather),
+                                                       &dual_carry_slots, &dual_gather_slots) &&
+                         dual_carry_slots == slots && dual_gather_slots == 7 :
+                         (fused ? m9_vs_emit(&p, carry, ARRAY_SIZE(carry), false) :
+                                  m9_vs_emit_faa(&p, carry, ARRAY_SIZE(carry))) == 2 * slots;
+   if (!emitted ||
        m9_vs_constants(&p, s->cb0, s->cb0_bytes / 4, carry_constants,
                           ARRAY_SIZE(carry_constants)) != pairs ||
        !m9_vs_source_layout_init(&p, s->elements, s->element_count, s->buffers,
                                   s->buffer_count, &source, &why))
       goto fail;
    unsigned declarations = m9_vs_decl_words(&p, declaration, ARRAY_SIZE(declaration));
-   const uint8_t inputs[2] = {0, 1};
+   const uint8_t inputs[3] = {0, 1, 2};
    if (!declarations ||
-       (!fused &&
+       (!fused && !dual &&
         (!m9_faa_preprocess_moves(M9_FAA_MOVE_RECORDS, inputs, p.varying_count, 0, gather, sizeof(gather), &gi) ||
          !m9_faa_preprocess_position(&s->viewport, position, sizeof(position),
-                                     (float *)position_constants, sizeof(position_constants), &pi)))) {
+                                     (float *)position_constants, sizeof(position_constants), &pi))) ||
+       (dual && !m9_faa_preprocess_position(&s->viewport, position, sizeof(position),
+                                            (float *)position_constants, sizeof(position_constants), &pi))) {
       why = "FAA GL declaration or position interface";
       goto fail;
    }
@@ -206,7 +219,7 @@ live_gl_build_mode(const struct m9_faa_live_gl *s,
              2 * M9_VS_TAIL_PAIRS * sizeof(uint32_t));
    }
    const struct m9_faa_program_vector vectors[4] = {
-      s->fragment, {carry, slots}, {gather, fused ? 0 : gi.slots},
+      s->fragment, {carry, slots}, {gather, fused ? 0 : dual ? dual_gather_slots : gi.slots},
       {position, fused ? 0 : pi.slots},
    };
    const struct m9_faa_dense_constants constants[4] = {
@@ -290,7 +303,7 @@ bool
 m9_faa_live_gl_build(const struct m9_faa_live_gl *s,
                      struct m9_faa_gl_upload *output, const char **reason)
 {
-   return live_gl_build_mode(s, output, reason, false);
+   return live_gl_build_mode(s, output, reason, false, false);
 }
 
 static bool
@@ -398,7 +411,7 @@ color_build_state_mode(const struct m9_faa_live_gl *s, const nir_shader *fs,
    struct m9_faa_live_gl live = *s;
    live.fragment = (struct m9_faa_program_vector){program, interface.slots};
    live.fragment_constants = (struct m9_faa_dense_constants){constants, interface.constant_pairs};
-   if (!live_gl_build_mode(&live, output, reason, fused)) return false;
+   if (!live_gl_build_mode(&live, output, reason, fused, false)) return false;
    /* The actual FIRST frontend emits distinct smooth/flat programs and
     * utility order. Native admission must bind matching fragment metadata. */
    output->color_flat = flat;
@@ -461,6 +474,27 @@ m9_faa_live_gl_texture_combine_build(const struct m9_faa_live_gl *s,
    live.fragment = (struct m9_faa_program_vector){program, interface.slots};
    live.fragment_constants = (struct m9_faa_dense_constants){0};
    if (!m9_faa_live_gl_build(&live, output, reason)) return false;
+   output->native_admission = false;
+   return true;
+}
+
+bool
+m9_faa_live_gl_dual_texture_build(const struct m9_faa_live_gl *s,
+                                  struct m9_faa_gl_upload *output,
+                                  const char **reason)
+{
+   uint32_t fragment[18];
+   struct m9_faa_dual_texture_fs_interface interface;
+   if (!s || !s->linkage || s->linkage->count != 3 ||
+       !m9_faa_dual_texture_fs_build(0, 0, 1, fragment,
+                                     sizeof(fragment), &interface)) {
+      if (reason) *reason = "FAA dual texture requires three direct streams and two MODULATE units";
+      return false;
+   }
+   struct m9_faa_live_gl live = *s;
+   live.fragment = (struct m9_faa_program_vector){fragment, interface.slots};
+   live.fragment_constants = (struct m9_faa_dense_constants){0};
+   if (!live_gl_build_mode(&live, output, reason, false, true)) return false;
    output->native_admission = false;
    return true;
 }

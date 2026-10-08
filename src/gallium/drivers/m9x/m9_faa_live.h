@@ -80,7 +80,7 @@ struct m9_faa_gl_upload {
    uint32_t constant_begin[4], constant_end[4], constants_bytes;
    uint32_t geometry_bytes, vertex_offset, vertex_bytes;
    uint32_t declaration_words, record_bytes, vertex_count;
-   uint8_t varying_location[2];
+   uint8_t varying_location[3];
    uint64_t carry_output_registers;
    uint16_t fused_source_mask; /* Ordinary head/tail availability, count2 only. */
    bool color_flat; /* Live FS load_input vs smooth interpolation; no raster receipt. */
@@ -127,5 +127,11 @@ bool m9_faa_live_gl_texture_combine_build(const struct m9_faa_live_gl *state,
                                           bool swapped_arguments,
                                           struct m9_faa_gl_upload *output,
                                           const char **reason);
+/* Exactly COLOR0, TEXCOORD0, TEXCOORD1 and two MODULATE texture units.
+ * Builds an owned four-vector CPU upload with live VS/CB/vertex inputs; the
+ * native sampler and full dual command image remain separately gated. */
+bool m9_faa_live_gl_dual_texture_build(const struct m9_faa_live_gl *state,
+                                       struct m9_faa_gl_upload *output,
+                                       const char **reason);
 void m9_faa_gl_upload_fini(struct m9_faa_gl_upload *upload);
 #endif
