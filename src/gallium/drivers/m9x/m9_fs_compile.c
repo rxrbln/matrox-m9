@@ -2659,9 +2659,24 @@ emit_chain(struct ctx *c, int n, struct node *nd)
    if (probe.konst >= 0)
       return fail(c, "constant special function");
    src = probe.opval[0];
-   if (src < 0)
-      return fail(c, "special function of a texture read");
-   swz = probe.opswz[0] == 3 ? 3 : 0;
+   if (src < 0) {
+      /* A split value may arrive in a texel pair instead of an allocated
+       * temporary. Seeds read a value; copy its selected scalar through
+       * the existing texel-times-one form before the unchanged chain. */
+      if (probe.opreg[0] < 0)
+         return fail(c, "special function has no register operand");
+      struct lop copy = probe;
+      struct kkey one = key_literal(1.0f, 1.0f);
+      copy.kind = L_MUL_RC;
+      copy.konst = key_add(c, &one);
+      copy.dst = value_new(c, false);
+      copy.kswz = 1;
+      lop_add(c, &copy);
+      src = copy.dst;
+      swz = 0;
+   } else {
+      swz = probe.opswz[0] == 3 ? 3 : 0;
+   }
    switch (nd->kind) {
    case N_EXP2:
       t0 = chain_lop(c, n, 0x9e851d40, 0x1c, src, -1, -1, -1, false, swz << 4);
@@ -6390,8 +6405,13 @@ fs_choose_cut(struct fs_split *sp, nir_function_impl *impl, nir_def *out,
           * instead, which schedules the same shader with more records live
           * at once; it is how the record-slot ceiling is measured against a
           * fixture that passes either way otherwise. */
+         /* Interpolation cuts must shrink the widest live varying set
+          * before saving record slots. Slot-first ranking repeatedly moved
+          * arithmetic while leaving seven inputs in the consumer. */
          bool better = kind == FS_CUT_TEX ?
             (taken > best_tex || (taken == best_tex && left < best_rest)) :
+            kind == FS_CUT_INTERP ?
+            (wide < best_wide || (wide == best_wide && left < best_rest)) :
             (debug_get_bool_option("M9X_SPLIT_RANK", false) ?
              (wide < best_wide || (wide == best_wide && taken > best_tex)) :
              (left < best_rest || (left == best_rest && wide < best_wide)));
