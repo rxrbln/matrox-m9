@@ -1,4 +1,5 @@
 /* SPDX-License-Identifier: GPL-2.0-only */
+/* Copyright 2026 René Rebe <rene@exactco.de> */
 #include <linux/errno.h>
 #include <linux/overflow.h>
 #include <linux/slab.h>
@@ -6,28 +7,20 @@
 #include <linux/uaccess.h>
 #include "m9_faa_graph_dual_batch_input.h"
 
-int m9x_faa_dual_batch_copy(
- const struct drm_parhelia_m9_faa_graph_dual_batch *args,
- struct m9x_faa_owned_color_batch **result)
+/* Copy draw descriptors and their uploads; draw 0 defines the program. */
+static int dual_draws_copy(u64 draws,u32 draw_count,u32 width,u32 height,
+ u32 flags,u32 clear_flags,struct m9x_faa_owned_color_batch **result)
 {
  struct drm_parhelia_m9_faa_color_draw *desc=NULL;
  struct m9x_faa_owned_color_batch *batch=NULL;
  u32 i,j,bytes,sum,raw;int ret=-EINVAL;
- if(!result)return -EINVAL;
- *result=NULL;
- if(!args||!args->graph_id||!args->init_point||(args->init_point&15)||
-  args->lock_point||!args->draws||args->draw_count<2||
-  args->draw_count>M9_FAA_DUAL_BATCH_MAX_DRAWS||
-  args->version!=PARHELIA_M9_FAA_DUAL_BATCH_VERSION||args->flags||
-  args->state||args->pad||args->width!=320||args->height!=240||
-  args->clear_flags!=3||args->clear_color)return -EOPNOTSUPP;
- if(check_mul_overflow(args->draw_count,(u32)sizeof(*desc),&bytes))return -ERANGE;
- desc=memdup_user(u64_to_user_ptr(args->draws),bytes);
+ if(check_mul_overflow(draw_count,(u32)sizeof(*desc),&bytes))return -ERANGE;
+ desc=memdup_user(u64_to_user_ptr(draws),bytes);
  if(IS_ERR(desc))return PTR_ERR(desc);
  batch=kzalloc(sizeof(*batch),GFP_KERNEL);if(!batch){ret=-ENOMEM;goto out;}
- batch->flags=PARHELIA_M9_FAA_COLOR_FRAME_FIRST;
- batch->clear_flags=3;
- for(i=0;i<args->draw_count;i++){
+ batch->flags=flags;
+ batch->clear_flags=clear_flags;
+ for(i=0;i<draw_count;i++){
   const struct drm_parhelia_m9_faa_color_draw *d=&desc[i];
   const struct drm_parhelia_m9_faa_upload_layout *l=&d->layout;
   struct m9x_faa_owned_color_draw *job=&batch->draw[i];
@@ -61,7 +54,7 @@ int m9x_faa_dual_batch_copy(
   in->constants=in->program+l->program_bytes;
   in->geometry=in->constants+l->constants_bytes;
   in->declaration=in->geometry+l->geometry_bytes;
-  in->width=args->width;in->height=args->height;
+  in->width=width;in->height=height;
   in->record_stride=d->record_stride;in->record_count=d->record_count;
   in->declaration_count=d->declaration_count;in->depth_flags=d->depth_flags;
   in->dual_base_only=true;job->bytes=sum;
@@ -75,4 +68,36 @@ int m9x_faa_dual_batch_copy(
  }
  *result=batch;batch=NULL;ret=0;
 out:kfree(desc);m9x_faa_color_batch_free(batch);return ret;
+}
+
+int m9x_faa_dual_batch_copy(
+ const struct drm_parhelia_m9_faa_graph_dual_batch *args,
+ struct m9x_faa_owned_color_batch **result)
+{
+ if(!result)return -EINVAL;
+ *result=NULL;
+ if(!args||!args->graph_id||!args->init_point||(args->init_point&15)||
+  args->lock_point||!args->draws||args->draw_count<2||
+  args->draw_count>M9_FAA_DUAL_BATCH_MAX_DRAWS||
+  args->version!=PARHELIA_M9_FAA_DUAL_BATCH_VERSION||args->flags||
+  args->state||args->pad||args->width!=320||args->height!=240||
+  args->clear_flags!=3||args->clear_color)return -EOPNOTSUPP;
+ return dual_draws_copy(args->draws,args->draw_count,args->width,
+  args->height,PARHELIA_M9_FAA_COLOR_FRAME_FIRST,3,result);
+}
+
+int m9x_faa_dual_later_batch_copy(
+ const struct drm_parhelia_m9_faa_graph_dual_later *args,
+ struct m9x_faa_owned_color_batch **result)
+{
+ if(!result)return -EINVAL;
+ *result=NULL;
+ if(!args||args->version!=PARHELIA_M9_FAA_DUAL_LATER_BATCH_VERSION||
+  !args->draws||!args->draw_count||
+  args->draw_count>M9_FAA_DUAL_BATCH_MAX_DRAWS||args->pad2||
+  args->upload||args->upload_bytes||args->record_count||
+  args->record_stride||args->declaration_count||
+  (args->clear_flags&&args->clear_flags!=3))return -EOPNOTSUPP;
+ return dual_draws_copy(args->draws,args->draw_count,args->width,
+  args->height,0,args->clear_flags,result);
 }

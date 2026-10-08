@@ -1,4 +1,5 @@
 /* SPDX-License-Identifier: GPL-2.0-only */
+/* Copyright 2026 René Rebe <rene@exactco.de> */
 #ifndef M9_FAA_GRAPH_DUAL_BATCH_INPUT_H
 #define M9_FAA_GRAPH_DUAL_BATCH_INPUT_H
 #include "m9_faa_graph_frame_batch_input.h"
@@ -9,5 +10,9 @@
  * profile reuses one immutable program/declaration and one texture pair. */
 int m9x_faa_dual_batch_copy(
  const struct drm_parhelia_m9_faa_graph_dual_batch *args,
+ struct m9x_faa_owned_color_batch **result);
+/* Version 2 retained later DRAWs: same program and texture pair, own data. */
+int m9x_faa_dual_later_batch_copy(
+ const struct drm_parhelia_m9_faa_graph_dual_later *args,
  struct m9x_faa_owned_color_batch **result);
 #endif

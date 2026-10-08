@@ -2195,26 +2195,38 @@ int m9x_faa_graph_dual_later_ioctl(struct drm_device *drm,void *data,
  struct drm_gem_object *graph_owner[PARHELIA_M9_FAA_GRAPH_OWNERS];
  struct drm_gem_object *texture_bo[2]={0};
  struct m9x_faa_color_input input={0};struct drm_exec exec;
+ struct m9x_faa_owned_color_batch *batch=NULL;
  u32 handles[2],address[PARHELIA_M9_FAA_GRAPH_OWNERS],sum,tmp,i;
  u64 previous=args->previous_unlock_point,point=0,expected;
  u8 *upload=NULL;bool posted=false;int idx,ret;
- if(!state||args->version!=PARHELIA_M9_FAA_DUAL_LATER_VERSION||args->flags||
-    args->state||args->pad||args->lock_point||
+ if(!state||args->flags||args->state||args->pad||args->lock_point||
     args->width!=320||args->height!=240||
     (args->clear_flags&&args->clear_flags!=3)||args->clear_color||
     args->depth_flags!=7||
-    args->layout.program_count!=4||args->declaration_count!=9||
-    args->record_stride!=64||!args->record_count||
-    args->record_count>12288||args->record_count%3||
-    !args->upload||!args->upload_bytes||args->upload_bytes>0x42000||
-    !previous||(previous&15)||previous>U64_MAX-0x1a0)return -EOPNOTSUPP;
- if(check_add_overflow(args->layout.program_bytes,args->layout.constants_bytes,&sum)||
-    check_add_overflow(sum,args->layout.geometry_bytes,&sum)||
-    check_mul_overflow(args->declaration_count,4u,&tmp)||
-    check_add_overflow(sum,tmp,&sum)||sum!=args->upload_bytes)return -EINVAL;
- expected=previous+(args->clear_flags?0x150:0xd0);
- if(!m9x_faa_graph_profile_enabled())return -EOPNOTSUPP;
- if(!drm_dev_enter(drm,&idx))return -ENODEV;
+    !previous||(previous&15)||previous>U64_MAX-0x1a0-
+      M9_FAA_DUAL_BATCH_MAX_DRAWS*0xa0)return -EOPNOTSUPP;
+ if(args->version==PARHELIA_M9_FAA_DUAL_LATER_BATCH_VERSION){
+  ret=m9x_faa_dual_later_batch_copy(args,&batch);if(ret)return ret;
+  for(i=0;i<batch->count;i++)
+   if(batch->draw[i].input.depth_flags!=7){ret=-EOPNOTSUPP;goto free_batch;}
+  input=batch->draw[0].input;
+ }else{
+  if(args->version!=PARHELIA_M9_FAA_DUAL_LATER_VERSION||args->draws||
+     args->draw_count||args->pad2||
+     args->layout.program_count!=4||args->declaration_count!=9||
+     args->record_stride!=64||!args->record_count||
+     args->record_count>12288||args->record_count%3||
+     !args->upload||!args->upload_bytes||args->upload_bytes>0x42000)
+   return -EOPNOTSUPP;
+  if(check_add_overflow(args->layout.program_bytes,args->layout.constants_bytes,&sum)||
+     check_add_overflow(sum,args->layout.geometry_bytes,&sum)||
+     check_mul_overflow(args->declaration_count,4u,&tmp)||
+     check_add_overflow(sum,tmp,&sum)||sum!=args->upload_bytes)return -EINVAL;
+ }
+ expected=previous+(args->clear_flags?0x150:0xd0)+
+  (batch?batch->count-1:0)*0xa0;
+ if(!m9x_faa_graph_profile_enabled()){ret=-EOPNOTSUPP;goto free_batch;}
+ if(!drm_dev_enter(drm,&idx)){ret=-ENODEV;goto free_batch;}
  mutex_lock(&state->lock);graph=state->graph;
  if(!graph||!graph->initialized||!graph->init_point||graph->id!=args->graph_id||
     graph->generation!=args->generation||
@@ -2243,19 +2255,21 @@ int m9x_faa_graph_dual_later_ioctl(struct drm_device *drm,void *data,
                                              &binding);
  mutex_unlock(&mdev->transport.lock);if(ret)goto out;
  if(binding->graph!=graph){ret=-ESTALE;goto out;}
- upload=memdup_user(u64_to_user_ptr(args->upload),args->upload_bytes);
- if(IS_ERR(upload)){ret=PTR_ERR(upload);upload=NULL;goto out;}
- memcpy(&input.layout,&args->layout,sizeof(input.layout));input.program=upload;
- input.constants=upload+args->layout.program_bytes;
- input.geometry=input.constants+args->layout.constants_bytes;
- input.declaration=input.geometry+args->layout.geometry_bytes;
- input.record_stride=args->record_stride;input.record_count=args->record_count;
- input.declaration_count=args->declaration_count;input.depth_flags=args->depth_flags;
- input.dual_base_only=true;
+ if(!batch){
+  upload=memdup_user(u64_to_user_ptr(args->upload),args->upload_bytes);
+  if(IS_ERR(upload)){ret=PTR_ERR(upload);upload=NULL;goto out;}
+  memcpy(&input.layout,&args->layout,sizeof(input.layout));input.program=upload;
+  input.constants=upload+args->layout.program_bytes;
+  input.geometry=input.constants+args->layout.constants_bytes;
+  input.declaration=input.geometry+args->layout.geometry_bytes;
+  input.record_stride=args->record_stride;input.record_count=args->record_count;
+  input.declaration_count=args->declaration_count;input.depth_flags=args->depth_flags;
+  input.dual_base_only=true;
+ }
  /* A source-proved new stage-1 owner moves into the retained set here;
   * the local references below keep both BOs reservable until submit. */
  ret=m9x_faa_graph_dual_later_prepare(mdev,binding,args->generation,previous,
-                                      &input,&textures,args->clear_flags);
+                                      &input,&textures,args->clear_flags,batch);
  if(ret)goto out;
  drm_exec_init(&exec,DRM_EXEC_INTERRUPTIBLE_WAIT|DRM_EXEC_IGNORE_DUPLICATES,8);
  drm_exec_until_all_locked(&exec){
@@ -2277,6 +2291,7 @@ out_exec:drm_exec_fini(&exec);
 out:kfree(upload);m9x_faa_texture_owners_put(&textures,false);
  for(i=0;i<2;i++)if(texture_bo[i])drm_gem_object_put(texture_bo[i]);
  m9x_faa_graph_binding_put(binding);mutex_unlock(&state->lock);drm_dev_exit(idx);
+free_batch:m9x_faa_color_batch_free(batch);
  return ret;
 }
 
