@@ -242,4 +242,20 @@ struct drm_parhelia_m9_faa_graph_public_vs_next {
 #define DRM_IOCTL_PARHELIA_M9_FAA_GRAPH_PUBLIC_VS_NEXT \
    DRM_IOWR(DRM_COMMAND_BASE + DRM_PARHELIA_M9_FAA_GRAPH_PUBLIC_VS_NEXT, \
             struct drm_parhelia_m9_faa_graph_public_vs_next)
+#ifndef DRM_IOCTL_PARHELIA_M9_FAA_GRAPH_PRESENT
+/* Retired Lock -> authentic Unlock -> separate-owner GPU presentation.
+ * Input outputs/padding are zero. U stays immutable; P is a distinct frontier.
+ * Destination descriptor is its ordinary CC21 view, never a caller GPUVA. */
+#define DRM_PARHELIA_M9_FAA_GRAPH_PRESENT 0x20
+#define PARHELIA_M9_FAA_PRESENT_RETIRED 22u
+struct drm_parhelia_m9_faa_graph_present {
+ __u64 graph_id, lock_point, unlock_point, present_point;
+ __u32 destination_handle, generation, width, height;
+ __u32 descriptor0, descriptor1, destination_offset, flags;
+ __u32 state, pad[3];
+};
+#define DRM_IOCTL_PARHELIA_M9_FAA_GRAPH_PRESENT DRM_IOWR(DRM_COMMAND_BASE + DRM_PARHELIA_M9_FAA_GRAPH_PRESENT, struct drm_parhelia_m9_faa_graph_present)
+
+#endif
+
 #endif

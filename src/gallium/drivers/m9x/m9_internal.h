@@ -148,6 +148,9 @@ struct m9_faa_graph {
    uint64_t color_next_previous_unlock_point, color_next_lock_point;
    bool color_unlock_attempted;
    uint64_t color_unlock_point;
+   bool color_present_attempted;
+   uint64_t color_present_point; /* Retired P, distinct from immutable Unlock U. */
+   uint64_t color_frame_present_point; /* Prior P used by the current frame. */
    /* A typed preprocessing prefix is distinct from a returned DRAW/image.
     * Any attempted ioctl may consume INIT; retry needs a new graph token. */
    bool public_vs_head_attempted;

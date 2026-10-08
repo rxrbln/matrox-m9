@@ -9417,7 +9417,7 @@ m9_context_faa_flush_frame(struct m9_context *ctx, const char **reason)
    ret = m9_context_faa_present_lock(ctx, first->graph_id, first->generation,
                                     graph->color_lock_point);
    if (ret) { why = "FAA frame Lock/Unlock presentation failed"; goto done; }
-   ctx->last_point = MAX2(ctx->last_point, graph->color_unlock_point);
+   ctx->last_point = MAX2(ctx->last_point, MAX2(graph->color_unlock_point, graph->color_present_point));
    if (frame->clear_flags) {
       memset(&ctx->faa_application_clear, 0, sizeof(ctx->faa_application_clear));
       ctx->faa_surface.destination_needs_clear = false;
@@ -9489,6 +9489,29 @@ m9_context_faa_present_lock(struct m9_context *ctx, uint64_t graph_id,
        ctx->color_offset != offset || offset > UINT32_MAX || (offset & 255) ||
        offset > destination->size || target.size > destination->size - offset)
       return -EOPNOTSUPP;
+   /* Opt in only to the source-qualified, same-size ordinary destination.
+    * Other destinations continue through the existing CPU presentation path. */
+   if (debug_get_bool_option("M9X_FAA_GPU_PRESENT", false) && width == 320 && height == 240 &&
+       target.row_span == 320 && target.size == 0x50000 && !(offset & 4095) &&
+       graph->color_depth_initialized) {
+      const struct m9_surface_desc target_desc = {
+         .row_span = target.row_span, .height = m9_surface_even_height(height),
+         .layers = 1, .layout = 1, .format = destination->format, .address_offset = true,
+      };
+      pipe_resource_reference(&retained, ctx->color);
+      m9_context_sync_ordinary(ctx);
+      if (ctx->lost) {
+         pipe_resource_reference(&retained, NULL);
+         return -EIO;
+      }
+      int ret = m9_faa_surface_color_present_kernel(ctx->screen, surface,
+         destination->handle, offset, m9_surface_desc0(&target_desc), m9_surface_desc1(&target_desc));
+      /* The BO's kernel WRITE fence covers the GPU copy; invalidate cached
+       * snapshots even if a reported error occurred after publication. */
+      destination->generation++;
+      pipe_resource_reference(&retained, NULL);
+      return ret;
+   }
    size_t bytes = (size_t)surface->width * surface->height * 4;
    rows = MALLOC(bytes);
    if (!rows) return -ENOMEM;

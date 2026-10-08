@@ -461,7 +461,7 @@ m9_faa_color_lock_history_valid(const struct m9_faa_graph *graph)
    const bool initialized_frame = graph->color_frame_flags == PARHELIA_M9_FAA_COLOR_FRAME_INITIALIZED;
    if ((graph->color_frame_flags & ~3u) || graph->color_frame_flags == 3 ||
        (initialized_frame && (!graph->color_depth_initialized || !graph->color_next_lock_point)) ||
-       (graph->color_frame_maintenance_point && !graph->color_frame_draw_count))
+       ((graph->color_frame_maintenance_point || graph->color_frame_present_point) && !graph->color_frame_draw_count))
       return false;
    if (graph->color_frame_draw_count) {
       uint32_t count = graph->color_frame_draw_count;
@@ -472,10 +472,18 @@ m9_faa_color_lock_history_valid(const struct m9_faa_graph *graph)
       if (fused && !first && !initialized_frame) return false;
       uint64_t exact = fused ? 0x110 + (count - 1u) * UINT64_C(0x60) :
          ((first || initialized_frame) ? 0x150 : 0x1a0) + (count - 1u) * UINT64_C(0xa0);
+      const uint64_t prior_present = graph->color_frame_present_point;
+      uint64_t origin = graph->color_next_previous_unlock_point;
+      if (prior_present) {
+         if (!initialized_frame || origin > UINT64_MAX - 0x20 || prior_present != origin + 0x20)
+            return false;
+         exact += 0x20;
+         origin = prior_present;
+      }
       const uint64_t maintenance = graph->color_frame_maintenance_point;
       if (maintenance) {
-         if (!initialized_frame || graph->color_next_previous_unlock_point > UINT64_MAX - 0x10 ||
-             maintenance != graph->color_next_previous_unlock_point + 0x10)
+         if (!initialized_frame || origin > UINT64_MAX - 0x10 ||
+             maintenance != origin + 0x10)
             return false;
          exact += 0x10;
       }
@@ -618,6 +626,7 @@ m9_faa_surface_color_next_kernel(struct m9_screen *screen,
     * No token or address is inherited from the upload itself. */
    memcpy(&request, &input, sizeof(input));
    request.graph_id = graph->prepared_id;
+   if (graph->color_present_point || graph->color_present_attempted) return -EOPNOTSUPP;
    request.previous_unlock_point = graph->color_unlock_point;
    request.generation = graph->prepared_generation;
    request.width = state->width;
@@ -750,6 +759,7 @@ m9_faa_surface_color_frame_kernel(struct m9_screen *screen,
     * No token or address is inherited from the upload itself. */
    memcpy(&request, &input, sizeof(input));
    request.graph_id = graph->prepared_id;
+   if (graph->color_present_point || graph->color_present_attempted) return -EOPNOTSUPP;
    request.previous_point = first ? graph->init_point : graph->color_unlock_point;
    request.flags = first ? PARHELIA_M9_FAA_COLOR_FRAME_FIRST :
                    initialized_frame ? PARHELIA_M9_FAA_COLOR_FRAME_INITIALIZED : 0;
@@ -900,6 +910,11 @@ m9_faa_color_batch_with_storage(struct m9_screen *screen,
               !m9_faa_color_lock_history_valid(graph)) {
       return -ESTALE;
    }
+   const uint64_t prior_present = graph->color_present_point;
+   if (graph->color_present_attempted && !prior_present) return -ESTALE;
+   if (prior_present && (!initialized_frame || !graph->color_present_attempted ||
+       graph->color_unlock_point > UINT64_MAX - 0x20 ||
+       prior_present != graph->color_unlock_point + 0x20)) return -ESTALE;
    request.previous_point = first ? graph->init_point : graph->color_unlock_point;
    if (request.previous_point > UINT64_MAX - delta) return -ERANGE;
    request.graph_id = graph->prepared_id;
@@ -916,7 +931,7 @@ m9_faa_color_batch_with_storage(struct m9_screen *screen,
    else graph->color_next_attempted = true;
    if (ioctl(screen->fd, DRM_IOCTL_PARHELIA_M9_FAA_GRAPH_COLOR_FRAME_BATCH, &request))
       return -errno;
-   uint64_t origin = before.previous_point;
+   uint64_t origin = prior_present ? prior_present : before.previous_point;
    if (request.maintenance_point) {
       if (!initialized_frame || origin > UINT64_MAX - 0x10 ||
           request.maintenance_point != origin + 0x10)
@@ -943,6 +958,8 @@ m9_faa_color_batch_with_storage(struct m9_screen *screen,
    graph->color_lock_delta = request.lock_point - before.previous_point;
    graph->color_frame_flags = before.flags;
    graph->color_frame_maintenance_point = request.maintenance_point;
+   graph->color_frame_present_point = prior_present;
+   graph->color_present_point = 0; graph->color_present_attempted = false;
    graph->color_frame_draw_count = frame->count;
    graph->color_depth_initialized = true;
    graph->color_unlock_attempted = false; graph->color_unlock_point = 0;
@@ -969,6 +986,50 @@ m9_faa_surface_color_batch_kernel(struct m9_screen *screen,
    return ret;
 }
 
+
+int
+m9_faa_surface_color_present_kernel(struct m9_screen *screen,
+                                  struct m9_faa_surface *surface,
+                                  uint32_t destination_handle, uint32_t offset,
+                                  uint32_t descriptor0, uint32_t descriptor1)
+{
+   struct drm_parhelia_m9_faa_graph_present request = {0};
+   _Static_assert(sizeof(request) == 80, "FAA GPU presentation ABI");
+   if (!screen || !surface || !destination_handle) return -EINVAL;
+   struct m9_faa_graph *g = &surface->graph;
+   if (screen->faa.chip != M9_FAA_CHIP_M9 || !screen->wait_point ||
+       surface->width != 320 || surface->height != 240 || surface->format != 0x66 ||
+       descriptor0 != 0xcc210140 || descriptor1 != 0x100f0 || (offset & 4095))
+      return -EOPNOTSUPP;
+   if (!g->prepared || !g->initialized || !g->prepared_id ||
+       !g->color_lock_attempted || !g->color_depth_initialized ||
+       !g->color_lock_point || g->color_lock_point > UINT64_MAX - 0x40 ||
+       !m9_faa_color_lock_history_valid(g) || g->color_unlock_attempted ||
+       g->color_unlock_point || g->color_present_attempted || g->color_present_point)
+      return -ESTALE;
+   request.graph_id = g->prepared_id; request.generation = g->prepared_generation;
+   request.lock_point = g->color_lock_point; request.destination_handle = destination_handle;
+   request.destination_offset = offset; request.width = surface->width; request.height = surface->height;
+   request.descriptor0 = descriptor0; request.descriptor1 = descriptor1;
+   const struct drm_parhelia_m9_faa_graph_present before = request;
+   /* An exposed failure consumes this Lock. The fallback may only be chosen
+    * before an attempt, never after the kernel has begun genuine Unlock. */
+   g->color_present_attempted = true; g->color_unlock_attempted = true;
+   if (ioctl(screen->fd, DRM_IOCTL_PARHELIA_M9_FAA_GRAPH_PRESENT, &request)) return -errno;
+   if (request.unlock_point != before.lock_point + 0x20 ||
+       request.present_point != request.unlock_point + 0x20 ||
+       request.state != PARHELIA_M9_FAA_PRESENT_RETIRED) return -EPROTO;
+   struct drm_parhelia_m9_faa_graph_present returned = request;
+   returned.unlock_point = 0; returned.present_point = 0; returned.state = 0;
+   if (memcmp(&returned, &before, sizeof(before))) return -EPROTO;
+   int ret = m9_wait_for_point(screen, request.unlock_point);
+   if (!ret) ret = m9_wait_for_point(screen, request.present_point);
+   if (ret) return ret;
+   g->color_unlock_point = request.unlock_point;
+   g->color_present_point = request.present_point;
+   g->color_next_attempted = false;
+   return 0;
+}
 
 int
 m9_faa_surface_color_unlock_kernel(struct m9_screen *screen,
