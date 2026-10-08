@@ -11406,9 +11406,11 @@ static u64 m9_faa_ordinary_progress(const struct m9x_transport *t)
 
 	return t->submitted_point + t->completed_point +
 	       (r ? r->graph_draw_posts + r->unlock_point + r->present_point +
-		r->present_retired + (r->depth_storage &&
-				      r->depth_storage->frame) : 0);
+				r->present_retired +
+				(r->depth_storage && r->depth_storage->frame) :
+		    0);
 }
+
 #endif
 
 void m9x_faa_idle_wake(struct m9x_device *mdev)
