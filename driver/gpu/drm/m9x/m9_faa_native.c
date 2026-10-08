@@ -10724,21 +10724,34 @@ unlock:
 #endif
 
 bool m9x_faa_graph_empty_primary_locked(struct m9x_device *mdev,
- const struct drm_mm_node *node,dma_addr_t dma)
+					const struct drm_mm_node *node,
+					dma_addr_t dma)
 {
- struct m9x_transport *t=&mdev->transport;
+	struct m9x_transport *t = &mdev->transport;
+
 #ifdef M9_FAA_GRAPH_INIT_CONTROL
- struct m9x_faa_replay *r=t->faa;struct m9_faa_command_pools *p;
- struct m9_faa_owner *o;
- lockdep_assert_held(&t->lock);
- if(!r||!(p=r->command_pools)||!p->ready||p->generation!=t->generation||
-  !p->primary.serial||p->primary.cursor||p->primary.planned||p->primary.quarantined||
-  p->timeline.quarantined||p->timeline.completed_point!=p->timeline.submitted_point||
-  r->graph_draw_end_bytes)return false;
- o=m9_faa_command_owner(r,false);
- return o&&node==&o->system_node&&dma==o->dma;
+	struct m9x_faa_replay *r = t->faa;
+	struct m9_faa_command_pools *p;
+	struct m9_faa_owner *o;
+
+	lockdep_assert_held(&t->lock);
+	if (!r)
+		return false;
+	p = r->command_pools;
+	if (!p || !p->ready ||
+	    p->generation != t->generation || !p->primary.serial ||
+	    p->primary.cursor || p->primary.planned || p->primary.quarantined ||
+	    p->timeline.quarantined ||
+	    p->timeline.completed_point != p->timeline.submitted_point ||
+	    r->graph_draw_end_bytes)
+		return false;
+	o = m9_faa_command_owner(r, false);
+	return o && node == &o->system_node && dma == o->dma;
 #else
- (void)t;(void)node;(void)dma;return false;
+	(void)t;
+	(void)node;
+	(void)dma;
+	return false;
 #endif
 }
 
