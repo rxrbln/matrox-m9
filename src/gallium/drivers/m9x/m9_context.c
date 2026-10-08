@@ -678,6 +678,15 @@ m9_context_sync_ordinary(struct m9_context *ctx)
    m9_retired_variants_free(ctx);
 }
 
+/* A window-system back buffer, not an application FBO or a front buffer. */
+static bool
+m9_resource_is_window(const struct pipe_resource *resource)
+{
+   return (resource->bind & (PIPE_BIND_DISPLAY_TARGET | PIPE_BIND_SCANOUT |
+                             PIPE_BIND_SHARED)) &&
+          !(resource->bind & PIPE_BIND_USE_FRONT_RENDERING);
+}
+
 /* Whether the bound target is the FAA surface's window destination. Draws
  * into other targets (texture uploads, mip generation, FBOs) are ordinary
  * work beside the FAA frame, not a reason to drop it. */
@@ -10245,6 +10254,16 @@ out:
 void
 m9_context_faa_refused(struct m9_context *ctx, const char *why)
 {
+   if (!ctx->faa_frame.count && ctx->faa_mode.presented &&
+       !m9_faa_shadow_enabled()) {
+      /* An earlier part of this frame was presented: the rest, starting
+       * with what was recorded since, renders ordinarily without backoff. */
+      ctx->faa_mode.split = true;
+      ctx->faa_mode.reason = why;
+      ctx->faa_mode.splits++;
+      m9_context_sync(ctx);
+      return;
+   }
    if (!ctx->faa_frame.count || m9_faa_shadow_enabled()) {
       m9_context_faa_fallback(ctx, why);
       return;
@@ -10290,6 +10309,16 @@ m9_context_faa_fallback(struct m9_context *ctx, const char *why)
    memset(&ctx->faa_application_clear, 0, sizeof(ctx->faa_application_clear));
 }
 
+/* M9X_FAA_BACKOFF=0 admits every frame, also after a fallback. */
+static bool
+m9_faa_backoff_enabled(void)
+{
+   static int backoff = -1;
+   if (backoff < 0)
+      backoff = debug_get_bool_option("M9X_FAA_BACKOFF", true);
+   return backoff;
+}
+
 /* After a fallback the next 2^n - 1 frames (n <= 6) skip FAA admission. */
 static void
 m9_context_faa_frame_end(struct m9_context *ctx)
@@ -10305,7 +10334,8 @@ m9_context_faa_frame_end(struct m9_context *ctx)
    } else if (ctx->faa_mode.fallback) {
       ctx->faa_mode.fallbacks++;
       ctx->faa_mode.backoff = MIN2(ctx->faa_mode.backoff + 1, 6);
-      ctx->faa_mode.skip = (1u << ctx->faa_mode.backoff) - 1;
+      if (m9_faa_backoff_enabled())
+         ctx->faa_mode.skip = (1u << ctx->faa_mode.backoff) - 1;
       /* A graph that presents nothing for this long only holds the
        * requester: release it; the next framebuffer prepares a new one. */
       if (++ctx->faa_mode.fallback_run >= 8 && ctx->faa_surface.graph.initialized &&
@@ -10332,6 +10362,7 @@ m9_context_faa_frame_end(struct m9_context *ctx)
                       ctx->faa_mode.skipped) % 300 == 0)
       m9_context_faa_census_report(ctx);
    ctx->faa_mode.fallback = ctx->faa_mode.presented = ctx->faa_mode.split = false;
+   ctx->faa_mode.swapped = true;
    memset(&ctx->faa_application_clear, 0, sizeof(ctx->faa_application_clear));
 }
 
@@ -11203,8 +11234,20 @@ m9_update_target(struct m9_context *ctx)
       struct m9_resource *depth = ctx->framebuffer.zsbuf.texture ?
          m9_res(ctx->framebuffer.zsbuf.texture) : NULL;
 
+      const bool retarget = ctx->faa_surface.destination &&
+                            ctx->faa_surface.destination != &color->base;
+      const bool window = m9_resource_is_window(&color->base) &&
+                          (!ctx->faa_surface.destination ||
+                           m9_resource_is_window(ctx->faa_surface.destination));
       int prepared = m9_faa_surface_prepare(ctx->screen, color, depth,
                                             ctx->color_offset, w, h, &ctx->faa_surface);
+
+      /* After a swap the next window back buffer's contents are undefined,
+       * so the retained FAA image needs no reset to stand for them. */
+      if (!prepared && retarget && window && ctx->faa_mode.swapped)
+         ctx->faa_surface.destination_needs_clear = false;
+      if (!prepared)
+         ctx->faa_mode.swapped = false;
 
       if (prepared && ctx->debug)
          fprintf(stderr, "m9x: FAA surface preparation returned %d: %ux%u handle %u "

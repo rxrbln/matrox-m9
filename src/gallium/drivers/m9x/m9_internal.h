@@ -621,6 +621,8 @@ struct m9_context {
       /* The FAA part of this frame was closed at a refused draw; the rest
        * renders ordinarily on the resolved target. */
       bool split;
+      /* An end-of-frame flush since the last window retarget. */
+      bool swapped;
       unsigned skip, backoff, fallback_run;
       uint64_t frames, fallbacks, skipped, splits, releases;
       const char *reason;
