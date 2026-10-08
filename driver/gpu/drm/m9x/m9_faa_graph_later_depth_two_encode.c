@@ -45,6 +45,25 @@ static int prefix(const u8*sample,size_t sample_bytes,
  for(i=0;i<9;i++)if(ends[i]>at)return -EINVAL;
  *bytes=at;return 0;
 }
+int m9x_faa_later_depth_two_clear_encode(const u8*sample,size_t sample_bytes,
+ const struct m9x_faa_graph_draw_owner owner[34],const struct m9x_faa_depth_views*views,
+ u32 cursor,u64 origin,struct m9x_faa_later_depth_clear_image*out,
+ struct m9x_faa_later_depth_scratch*scratch)
+{
+ u32 bytes,ends[9],i;int ret;
+ if(!owner||!views||!out||!out->primary||!scratch||
+  (cursor&3)||(origin&15)||origin>~(u64)0-0x80||(u32)origin>0xffffff7fu)
+  return -EINVAL;
+ if(m9x_faa_graph_draw_owners_validate(owner))return -EINVAL;
+ for(i=0;i<3;i++)if(owner[31+i].base!=views->owner[i].base||
+  owner[31+i].bytes<views->owner[i].capacity_bytes)return -EINVAL;
+ ret=prefix(sample,sample_bytes,owner,views,origin,scratch,&bytes,ends);
+ if(ret)return ret;
+ if(cursor>owner[27].bytes||bytes>owner[27].bytes-cursor||out->capacity<bytes)return -ERANGE;
+ memmove(out->primary,scratch->prefix,bytes);
+ for(i=0;i<9;i++)out->end_bytes[i]=cursor+ends[i];
+ out->bytes=bytes;out->final_point=origin+0x80;return 0;
+}
 int m9x_faa_later_depth_two_encode(const u8*sample,size_t sample_bytes,
  const u8*first,size_t first_bytes,const struct m9x_faa_graph_draw_owner owner[34],
  const struct m9x_faa_depth_views*views,u32 init_bytes,u32 pcursor,u32 scursor,
