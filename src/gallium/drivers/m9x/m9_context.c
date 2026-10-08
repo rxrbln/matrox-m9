@@ -9796,6 +9796,22 @@ m9_vs_spec_for(struct m9_vs_state *vs, const uint32_t *values,
  * draw transaction must admit upload.state before binding its GPU program.
  * CPU-only Gallium buffers and caller user pointers are snapshotted while
  * bound; borrowed NIR/maps/CB pointers never escape this call. */
+/* The FAA view's D3D address mode: WRAP 1, CLAMP 3, and the vendor wrap
+ * table's entry 6, hardware GL CLAMP, whose border the FAA stage fixes at
+ * zero. 0 when the wrap has no FAA source form. */
+static unsigned
+m9_context_faa_wrap(unsigned wrap,const struct pipe_sampler_state *sampler)
+{
+   switch(wrap){
+   case PIPE_TEX_WRAP_REPEAT:return 1;
+   case PIPE_TEX_WRAP_CLAMP_TO_EDGE:return 3;
+   case PIPE_TEX_WRAP_CLAMP:
+      for(unsigned c=0;c<4;c++)if(sampler->border_color.ui[c])return 0;
+      return 6;
+   default:return 0;
+   }
+}
+
 static const char *
 m9_context_faa_texture_snapshot(struct m9_context *ctx,unsigned slot,
                                 struct m9_faa_application_texture *out)
@@ -9806,7 +9822,7 @@ m9_context_faa_texture_snapshot(struct m9_context *ctx,unsigned slot,
    if(!view||!view->texture||!sampler)return "FAA texture has no live view/sampler";
    struct m9_resource *owner=m9_res(view->texture);
    /* A mipmapped view must cover the whole chain with the default LOD
-    * range; its last level must stay out of the 16x16 tail atlas. */
+    * range; the kernel bounds the chain through the 32x16 tail atlas. */
    const unsigned last=view->texture->last_level;
    const bool mipped=sampler->min_mip_filter!=PIPE_TEX_MIPFILTER_NONE&&last;
    /* Interim (M9X_FAA_MIP_CLAMP=1): sample only the levels above the tail
@@ -9819,16 +9835,15 @@ m9_context_faa_texture_snapshot(struct m9_context *ctx,unsigned slot,
    if(view->target!=PIPE_TEXTURE_2D||view->texture->target!=PIPE_TEXTURE_2D||
       view->u.tex.first_level||view->u.tex.last_level!=last||view->u.tex.first_layer||
       view->u.tex.last_layer||(last&&!mipped)||
-      (mipped&&(sampler->min_lod!=0.0f||sampler->max_lod<(float)last||
-                ((view->texture->width0>>(used-1))<=16&&(view->texture->height0>>(used-1))<=16&&used>1)))||
+      (mipped&&(sampler->min_lod!=0.0f||sampler->max_lod<(float)last))||
       view->texture->array_size!=1||view->texture->depth0!=1||
       util_format_is_srgb(view->format)||sampler->unnormalized_coords||
       sampler->compare_mode!=PIPE_TEX_COMPARE_NONE||sampler->lod_bias||
       sampler->max_anisotropy>1||
       (sampler->min_img_filter!=PIPE_TEX_FILTER_NEAREST&&sampler->min_img_filter!=PIPE_TEX_FILTER_LINEAR)||
       (sampler->mag_img_filter!=PIPE_TEX_FILTER_NEAREST&&sampler->mag_img_filter!=PIPE_TEX_FILTER_LINEAR)||
-      (sampler->wrap_s!=PIPE_TEX_WRAP_REPEAT&&sampler->wrap_s!=PIPE_TEX_WRAP_CLAMP_TO_EDGE)||
-      (sampler->wrap_t!=PIPE_TEX_WRAP_REPEAT&&sampler->wrap_t!=PIPE_TEX_WRAP_CLAMP_TO_EDGE))
+      !m9_context_faa_wrap(sampler->wrap_s,sampler)||
+      !m9_context_faa_wrap(sampler->wrap_t,sampler))
       return "FAA texture requires a normalized full-chain 2-D point/linear wrap/clamp view";
    if(view->texture==ctx->color||view->texture==ctx->depth)
       return "FAA texture framebuffer feedback is not qualified";
@@ -9855,8 +9870,8 @@ m9_context_faa_texture_snapshot(struct m9_context *ctx,unsigned slot,
        .min_filter=sampler->min_img_filter==PIPE_TEX_FILTER_LINEAR?2u:1u,
        .mag_filter=sampler->mag_img_filter==PIPE_TEX_FILTER_LINEAR?2u:1u,
        .mip_filter=!mipped||used==1?1u:sampler->min_mip_filter==PIPE_TEX_MIPFILTER_LINEAR?3u:2u,
-       .address_u=sampler->wrap_s==PIPE_TEX_WRAP_REPEAT?1u:3u,
-       .address_v=sampler->wrap_t==PIPE_TEX_WRAP_REPEAT?1u:3u}};
+       .address_u=m9_context_faa_wrap(sampler->wrap_s,sampler),
+       .address_v=m9_context_faa_wrap(sampler->wrap_t,sampler)}};
    return NULL;
 }
 
