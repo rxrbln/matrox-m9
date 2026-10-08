@@ -1279,7 +1279,7 @@ static int m9_address_check_local_compact(struct m9x_device *mdev,
 {
 	struct m9x_address_space *a = mdev->transport.address;
 	u64 end = (u64)base + bytes;
-	u32 address, slot, root_slot, page;
+	u32 address, slot, root_slot, page, actual, expected;
 
 	lockdep_assert_held(&mdev->transport.lock);
 	if (!a || !a->manager_ready || !a->mapped || M9_VRAM_GPU_BASE || !bytes ||
@@ -1288,14 +1288,59 @@ static int m9_address_check_local_compact(struct m9x_device *mdev,
 		return -ERANGE;
 	for (address = base; address < end; address += PAGE_SIZE) {
 		slot = m9_address_identity_slot(&a->layout, address);
-		if (slot > a->layout.primary_base + a->layout.primary_bytes - sizeof(u32) ||
-		    iosys_map_rd(&a->map, slot, u32) != (address | 8u))
+		if (slot > a->layout.primary_base + a->layout.primary_bytes - sizeof(u32))
 			return -EFAULT;
+		actual = iosys_map_rd(&a->map, slot, u32);
+		expected = address | 8u;
+		if (actual != expected) {
+			dev_err(&mdev->pdev->dev,
+				"M9 local identity: compact address=%#x slot=%#x actual=%#x expected=%#x\n",
+				address, slot, actual, expected);
+			return -EFAULT;
+		}
 		page = slot >> PAGE_SHIFT;
 		root_slot = a->layout.translation_base + page * sizeof(u32);
-		if (root_slot > a->layout.translation_limit - sizeof(u32) ||
-		    iosys_map_rd(&a->map, root_slot, u32) != ((page << PAGE_SHIFT) | 8u))
+		if (root_slot > a->layout.translation_limit - sizeof(u32))
 			return -EFAULT;
+		actual = iosys_map_rd(&a->map, root_slot, u32);
+		expected = (page << PAGE_SHIFT) | 8u;
+		if (actual != expected) {
+			dev_err(&mdev->pdev->dev,
+				"M9 local identity: root address=%#x slot=%#x actual=%#x expected=%#x\n",
+				address, root_slot, actual, expected);
+			return -EFAULT;
+		}
+	}
+	return 0;
+}
+
+/* After FAA retirement, secondary DWORD1/2 may contain opaque metadata:
+ * the retained companion observation has nonzero values with every DWORD0
+ * still matching its live identity page. Check the address-bearing words
+ * only, including compact leaves and their roots. Caller must already own
+ * the initialized, pinned range; this does not publish or repair anything.
+ * Initial publication still uses the stricter local_identity check below. */
+int m9x_address_check_local_mapping(struct m9x_device *mdev, u32 base, u32 bytes)
+{
+	struct m9x_address_space *a = mdev->transport.address;
+	u64 end = (u64)base + bytes;
+	u32 address, slot, actual, expected;
+	int ret = m9_address_check_local_compact(mdev, base, bytes);
+
+	if (ret || !a->layout.secondary_bytes)
+		return ret;
+	for (address = base; address < end; address += PAGE_SIZE) {
+		ret = m9_address_secondary_slot(&a->layout, address, &slot);
+		if (ret)
+			return ret;
+		actual = iosys_map_rd(&a->map, slot, u32);
+		expected = address | 8u;
+		if (actual != expected) {
+			dev_err(&mdev->pdev->dev,
+				"M9 local identity: secondary address=%#x slot=%#x actual=%#x expected=%#x\n",
+				address, slot, actual, expected);
+			return -EFAULT;
+		}
 	}
 	return 0;
 }
