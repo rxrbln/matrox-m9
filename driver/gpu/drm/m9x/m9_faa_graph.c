@@ -21,7 +21,8 @@
 #include "m9_faa_depth_mode_batch.h"
 
 /* Source-qualified prepared180 shape. These are allocation extents, not
- * permission to clear opaque tails or evidence of GPU initialization. */
+ * permission to clear opaque tails or evidence of GPU initialization.
+ */
 static const struct {
 	u64 logical, capacity, clear;
 } m9_faa_graph_owner_spec[PARHELIA_M9_FAA_GRAPH_OWNERS] = {
@@ -49,12 +50,14 @@ struct m9_faa_prepared_graph {
 };
 
 struct m9_faa_file {
+	/* Serializes every graph ioctl of this file against its graph pointer. */
 	struct mutex lock;
 	struct m9_faa_prepared_graph *graph;
 };
 
 /* The original 320x240 init path's six caller-owned roles. This is only a
- * source-role join; executable words must still come from a trusted producer. */
+ * source-role join; executable words must still come from a trusted producer.
+ */
 static const u8 m9_faa_graph_source_owner[PARHELIA_M9_FAA_GRAPH_OWNERS] = {
 	[PARHELIA_M9_FAA_PRIMARY] = 1,
 	[PARHELIA_M9_FAA_MAIN] = 2,
@@ -65,7 +68,8 @@ static const u8 m9_faa_graph_source_owner[PARHELIA_M9_FAA_GRAPH_OWNERS] = {
 };
 
 /* A future posted init transfers this whole binding to its retirement or
- * quarantine record. File RELEASE only drops its own graph reference. */
+ * quarantine record. File RELEASE only drops its own graph reference.
+ */
 struct m9_faa_graph_binding {
 	struct kref refs;
 	struct m9_faa_prepared_graph *graph;
@@ -353,7 +357,8 @@ void m9x_faa_graph_put(struct m9_faa_prepared_graph *graph)
 
 /* Acquiring pins the exact group beyond RELEASE or file close. A future GPU
  * producer must also compare generation with the live transport under its
- * posting lock, then hold this reference through retirement/quarantine. */
+ * posting lock, then hold this reference through retirement/quarantine.
+ */
 struct m9_faa_prepared_graph *m9x_faa_graph_acquire(struct drm_file *file,
 						    u64 id, u32 generation)
 {
@@ -382,7 +387,8 @@ m9x_faa_graph_owner(const struct m9_faa_prepared_graph *graph, u32 role)
 
 /* Caller holds one WW reservation set covering all six owners. A retained
  * pin should make these positions stable, but a continuation must compare
- * its live placement to the original binding before using any address. */
+ * its live placement to the original binding before using any address.
+ */
 static int
 m9_faa_graph_live_addresses(struct m9x_device *mdev,
 			    const struct m9_faa_prepared_graph *graph,
@@ -544,7 +550,8 @@ void m9x_faa_graph_binding_put(struct m9_faa_graph_binding *binding)
  * second generation/placement/health check under the draw's reservations.
  * Lock order matches INIT: file state, six GEM reservations, transport. The
  * file lock prevents RELEASE from winning between token and native identity
- * checks; the returned binding kref survives either later RELEASE or fini. */
+ * checks; the returned binding kref survives either later RELEASE or fini.
+ */
 int m9x_faa_graph_continuation_acquire(struct m9x_device *mdev,
 				       struct drm_file *file, u64 id,
 				       u32 generation, u64 init_point,
@@ -2213,7 +2220,8 @@ out_binding:
 
 /* Bound-depth FRAME: one owned upload, three private attachments and
  * six borrowed graph reservations. Retained COLOR authenticates prior
- * Unlock; fresh FIRST and already initialized depth remain separate gates. */
+ * Unlock; fresh FIRST and already initialized depth remain separate gates.
+ */
 static int m9_faa_graph_depth_frame_ioctl(struct drm_device *drm,
 					  struct drm_parhelia_m9_faa_graph_color_frame *args,
 					  struct drm_file *file)
@@ -2376,7 +2384,8 @@ out_binding:
 /* One application ABI shares the established first/repeated producer paths.
  * FIRST is a CPU lifecycle selector, not an unencoded GPU state bit. The
  * old diagnostic requests remain unchanged. No output is published unless
- * the selected producer returns its exact actual retirement receipt. */
+ * the selected producer returns its exact actual retirement receipt.
+ */
 int m9x_faa_graph_color_frame_batch_ioctl(struct drm_device *drm, void *data,
 					  struct drm_file *file)
 {
@@ -3206,7 +3215,8 @@ out_batch:
 
 /* One retained same-program dual DRAW after the actual Unlock receipt.
  * Texture handles name live BOs; native code re-reads their placement at
- * submit. The returned Lock is published only after hardware retirement. */
+ * submit. The returned Lock is published only after hardware retirement.
+ */
 int m9x_faa_graph_dual_later_ioctl(struct drm_device *drm, void *data,
 				   struct drm_file *file)
 {
