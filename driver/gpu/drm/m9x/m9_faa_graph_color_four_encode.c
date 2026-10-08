@@ -111,7 +111,11 @@ int m9x_faa_color_four_encode(const u8*blob,size_t bytes,const struct m9x_faa_gr
      !(arity==3&&in->layout.program_bytes-in->layout.entry_bytes[3]==192))||
  in->layout.constant_begin[2]!=in->layout.constant_end[2]||
  in->layout.constant_end[3]-in->layout.constant_begin[3]!=104||
- in->layout.constant_end[0]-in->layout.constant_begin[0]<16)return -EINVAL;
+ /* The authenticated dual MODULATE FS72 reads COLOR and two samples but
+  * has no FS constant input. Its C3 range is empty. The ordinary four-stage
+  * COLOR frontends still require their source-proven utility vector. */
+ (!in->dual_base_only&&
+  in->layout.constant_end[0]-in->layout.constant_begin[0]<16))return -EINVAL;
  /* Pair only the classified flat interface with flat usage metadata. */
  if(m9x_faa_color_flat_fragment_valid(in)!=!!in->fragment_flags)return -EINVAL;
  /* Exact address-free RECORDS move grammar, including output register halves,

@@ -7486,13 +7486,21 @@ int m9x_faa_graph_dual_first_prepare(struct m9x_device *mdev,
  struct m9x_faa_first_depth_scratch *prefix=NULL;
  struct m9x_faa_graph_draw_owner owner[M9_FAA_DEPTH_DRAW_OWNERS];
  struct m9x_faa_depth_views views;struct m9x_faa_color_image image;
- struct m9x_faa_dual_first_input dual={.color=input,
-  .texture=textures?textures->bind:NULL};
+ struct m9x_faa_surface_layout layout;
+ struct m9x_faa_color_input sized_input;
+ struct m9x_faa_dual_first_input dual;
  const struct firmware *sample=NULL,*color=NULL,*dual_fw=NULL;
  u32 primary_bytes=0;int ret;
  if(!binding||!input||!textures||!textures->gem[0]||!textures->gem[1]||
     textures->generation!=generation||input->layout.program_count!=4||
     input->declaration_count!=9||input->fragment_flags)return -EOPNOTSUPP;
+ if(!m9x_faa_graph_binding_layout(binding,&layout))return -ESTALE;
+ sized_input=*input;
+ sized_input.width=layout.width;
+ sized_input.height=layout.height;
+ input=&sized_input;
+ dual=(struct m9x_faa_dual_first_input){.color=input,
+  .texture=textures->bind};
  frame=kzalloc(sizeof(*frame),GFP_KERNEL);
  scratch=kzalloc(sizeof(*scratch),GFP_KERNEL);
  prefix=kzalloc(sizeof(*prefix),GFP_KERNEL);
