@@ -508,7 +508,7 @@ bool m9x_faa_graph_binding_address(const struct m9_faa_graph_binding *binding,
 }
 
 bool m9x_faa_graph_binding_layout(const struct m9_faa_graph_binding *binding,
-				struct m9x_faa_surface_layout *out)
+				  struct m9x_faa_surface_layout *out)
 {
 	if (!binding || !binding->graph || !out)
 		return false;
