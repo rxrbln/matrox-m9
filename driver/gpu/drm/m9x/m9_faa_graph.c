@@ -1836,6 +1836,11 @@ static int m9_faa_graph_depth_frame_ioctl(struct drm_device *drm,
   (args->layout.program_count==2?
    m9x_faa_graph_depth_unlocked_get_locked(mdev,args->generation,args->previous_point,&binding):
    m9x_faa_graph_color_unlocked_get_locked(mdev,args->generation,args->previous_point,&binding));
+	/* This ABI cannot report an ordinary origin; COLOR_FRAME_BATCH can. */
+	if (!ret && first &&
+	    m9x_faa_graph_first_origin_locked(mdev, args->previous_point) !=
+		    args->previous_point)
+		ret = -ESTALE;
  mutex_unlock(&mdev->transport.lock);if(ret)goto out_binding;
  if(binding->graph!=graph||args->width!=graph->layout.width||args->height!=graph->layout.height){ret=-ESTALE;goto out_binding;}
  upload=memdup_user(u64_to_user_ptr(args->upload),args->upload_bytes);
@@ -2022,7 +2027,8 @@ int m9x_faa_graph_color_frame_batch_ioctl(struct drm_device *drm, void *data,
 							       &ordinary);
 		mutex_unlock(&mdev->transport.lock);
 		if (!ret && ordinary &&
-		    (!(args->flags & PARHELIA_M9_FAA_COLOR_FRAME_INITIALIZED) ||
+		    ((!first && !(args->flags &
+				  PARHELIA_M9_FAA_COLOR_FRAME_INITIALIZED)) ||
 		     (ordinary & 15) || ordinary <= origin))
 			ret = -EIO;
 		base = ordinary ? ordinary : origin;
@@ -2143,6 +2149,31 @@ out_exec:drm_exec_fini(&exec);
 out:m9x_faa_graph_binding_put(binding);mutex_unlock(&state->lock);drm_dev_exit(idx);return ret;
 }
 
+/* A retired FIRST Lock counts from INIT, or from the ordinary jobs after it. */
+static int m9_faa_graph_first_receipt(struct m9x_device *mdev, u32 generation,
+				      u64 init_point, u64 point, u64 delta,
+				      u64 *ordinary)
+{
+	u64 origin, maintenance, base;
+	int ret;
+
+	mutex_lock(&mdev->transport.lock);
+	ret = m9x_faa_graph_depth_frame_receipt_locked(mdev, generation,
+						       init_point, point,
+						       &origin, &maintenance,
+						       ordinary);
+	mutex_unlock(&mdev->transport.lock);
+	if (ret)
+		return ret;
+	if (maintenance || origin != init_point ||
+	    (*ordinary && ((*ordinary & 15) || *ordinary <= init_point)))
+		return -EIO;
+	base = *ordinary ? *ordinary : init_point;
+	if (base > U64_MAX - delta || point != base + delta)
+		return -EIO;
+	return 0;
+}
+
 int m9x_faa_graph_dual_first_ioctl(struct drm_device *drm,void *data,
  struct drm_file *file)
 {
@@ -2156,6 +2187,10 @@ int m9x_faa_graph_dual_first_ioctl(struct drm_device *drm,void *data,
  struct m9x_faa_color_input input={0};struct drm_exec exec;
  u32 handles[2],address[PARHELIA_M9_FAA_GRAPH_OWNERS],sum,tmp,i;
  u8 *upload=NULL;u64 point=0;bool posted=false;int idx,ret;
+	u64 ordinary = 0;
+
+	if (args->ordinary_point)
+		return -EINVAL;
  if(!state||args->version!=PARHELIA_M9_FAA_DUAL_FIRST_VERSION||
     (args->flags&~PARHELIA_M9_FAA_DUAL_FIRST_COLORPASS_DIAGNOSTIC)||
     args->state||args->pad||args->lock_point||
@@ -2231,8 +2266,15 @@ int m9x_faa_graph_dual_first_ioctl(struct drm_device *drm,void *data,
  if(memcmp(binding->address,address,sizeof(address))){ret=-ESTALE;goto out_exec;}
  ret=m9x_faa_graph_depth_frame_submit(mdev,binding,args->generation,args->init_point,
                                       &point,&posted);
- if(!ret){if(point!=args->init_point+0x150)ret=-EIO;
-  else{args->lock_point=point;args->state=PARHELIA_M9_FAA_DUAL_FIRST_LOCK_RETIRED;}}
+	if (!ret)
+		ret = m9_faa_graph_first_receipt(mdev, args->generation,
+						 args->init_point, point, 0x150,
+						 &ordinary);
+	if (!ret) {
+		args->lock_point = point;
+		args->ordinary_point = ordinary;
+		args->state = PARHELIA_M9_FAA_DUAL_FIRST_LOCK_RETIRED;
+	}
 out_exec:drm_exec_fini(&exec);
 out:kfree(upload);m9x_faa_texture_owners_put(&textures,false);
  for(i=0;i<2;i++)if(texture_bo[i])drm_gem_object_put(texture_bo[i]);
@@ -2255,14 +2297,19 @@ int m9x_faa_graph_dual_batch_ioctl(struct drm_device *drm,void *data,
  struct m9x_faa_texture_owners *draw_textures=NULL;
  u32 handles[2],address[PARHELIA_M9_FAA_GRAPH_OWNERS],i,j;
  bool programs;
- u64 point=0,expected;bool posted=false;int idx,ret;
- if(!state)return -EINVAL;
+	u64 point = 0, delta, ordinary = 0;
+	bool posted = false;
+	int idx, ret;
+
+	if (!state || args->ordinary_point)
+		return -EINVAL;
  ret=m9x_faa_dual_batch_copy(args,&batch);if(ret)return ret;
  programs=args->version==PARHELIA_M9_FAA_DUAL_BATCH_PROGRAMS_VERSION;
- if(args->init_point>U64_MAX-0x150-0xa0*(batch->count-1)){
-  ret=-ERANGE;goto out_batch;
- }
- expected=args->init_point+0x150+0xa0*(batch->count-1);
+	delta = 0x150 + 0xa0 * (u64)(batch->count - 1);
+	if (args->init_point > U64_MAX - delta) {
+		ret = -ERANGE;
+		goto out_batch;
+	}
  if(!m9x_faa_graph_profile_enabled()){ret=-EOPNOTSUPP;goto out_batch;}
  if(!drm_dev_enter(drm,&idx)){ret=-ENODEV;goto out_batch;}
  mutex_lock(&state->lock);graph=state->graph;
@@ -2346,9 +2393,15 @@ int m9x_faa_graph_dual_batch_ioctl(struct drm_device *drm,void *data,
    args->init_point,draw_textures,&point,&posted):
   m9x_faa_graph_depth_frame_submit(mdev,binding,args->generation,
    args->init_point,&point,&posted);
- if(!ret){if(point!=expected)ret=-EIO;
-  else{args->lock_point=point;
-   args->state=PARHELIA_M9_FAA_DUAL_BATCH_LOCK_RETIRED;}}
+	if (!ret)
+		ret = m9_faa_graph_first_receipt(mdev, args->generation,
+						 args->init_point, point, delta,
+						 &ordinary);
+	if (!ret) {
+		args->lock_point = point;
+		args->ordinary_point = ordinary;
+		args->state = PARHELIA_M9_FAA_DUAL_BATCH_LOCK_RETIRED;
+	}
 out_exec:drm_exec_fini(&exec);
 out:m9x_faa_texture_owners_put(&textures,false);
  for(i=0;i<2;i++)if(texture_bo[i])drm_gem_object_put(texture_bo[i]);

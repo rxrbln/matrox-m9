@@ -1,4 +1,5 @@
 /* SPDX-License-Identifier: GPL-2.0-only */
+/* Copyright 2026 René Rebe <rene@exactco.de> */
 #ifndef M9_FAA_GRAPH_COLOR_ENCODE_H
 #define M9_FAA_GRAPH_COLOR_ENCODE_H
 #include "m9_faa_graph_draw_encode.h"
@@ -51,8 +52,12 @@ static inline int m9x_faa_color_dimensions(const struct m9x_faa_color_input *in,
  if(!width&&!height){width=320;height=240;}
  if(!((width==320&&height==240)||(width==1024&&height==768))||
   !m9x_faa_surface_layout(width,height,layout))return 0;
- /* Original INIT length includes the live companion page run. */
- return width==320?(init_bytes==4880||init_bytes==4884):init_bytes==5576;
+	/* The original INIT length includes the live companion page run;
+	 * ordinary jobs after INIT move the cursor further.
+	 */
+	if (init_bytes & 3)
+		return 0;
+	return init_bytes >= (width == 320 ? 4880u : 5576u);
 }
 static inline int m9x_faa_color_dimension_owners(
  const struct m9x_faa_graph_draw_owner *owner,
