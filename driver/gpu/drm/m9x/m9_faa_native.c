@@ -81,35 +81,39 @@ struct m9_faa_owner_spec {
 struct m9_faa_span {
 	u32 owner, offset, blob_offset, bytes;
 };
+
 struct m9_faa_fixup {
 	u32 dst, offset, src, addend, encoder, tag, captured;
 };
+
 struct m9_faa_tracker {
 	u32 owner, offset, captured;
 };
+
 struct m9_faa_clear_segment {
 	u32 owner, bytes, start, end;
 };
+
 #if (defined(M9_FAA_CONSTANT_SHADER_CONTROL) + \
-     defined(M9_FAA_CONSTANT_RED_CONTROL) + \
-     defined(M9_FAA_ORDINARY_SYSTEM_CONTROL) + \
-     defined(M9_FAA_INIT_ONLY_CONTROL) + \
-     defined(M9_FAA_GRAPH_INIT_CONTROL) + \
-     defined(M9_FAA_PRECLEAR_CONTROL) + \
-     defined(M9_FAA_PREPARED_PRECLEAR_CONTROL) + \
-     defined(M9_FAA_PREPARED_FLOW_CONTROL) + \
-     defined(M9_FAA_PRECLEAR_DRAW_CONTROL) + \
-     defined(M9_FAA_PRECLEAR_OUTPUT_CONTROL) + \
-     defined(M9_FAA_PRECLEAR_OUTPUT_WRITE_CONTROL) + \
-     defined(M9_FAA_PRECLEAR_INPLACE_OUTPUT_CONTROL) + \
-     defined(M9_FAA_PRECLEAR_INPLACE_COPY_CONTROL) + \
-     defined(M9_FAA_PUBLIC_SHARED_DEPTH_FLUSH_CONTROL) + \
-     defined(M9_FAA_PUBLIC_SHARED_DEPTH_RESOLVE_CONTROL) + \
-     defined(M9_FAA_PUBLIC_SHARED_DEPTH_RETURNED_CONTROL) + \
-     defined(M9_FAA_PUBLIC_SHARED_DEPTH_REPLACEMENT_CONTROL) + \
-     defined(M9_FAA_PUBLIC_SHARED_DEPTH_REPLACEMENT_SUBMIT_CONTROL) + \
-     defined(M9_FAA_PUBLIC_SHARED_DEPTH_REPLACEMENT_RETURNED_CONTROL) + \
-     defined(M9_FAA_POST_TRIANGLE_CONTROL)) > 1
+	defined(M9_FAA_CONSTANT_RED_CONTROL) + \
+	defined(M9_FAA_ORDINARY_SYSTEM_CONTROL) + \
+	defined(M9_FAA_INIT_ONLY_CONTROL) + \
+	defined(M9_FAA_GRAPH_INIT_CONTROL) + \
+	defined(M9_FAA_PRECLEAR_CONTROL) + \
+	defined(M9_FAA_PREPARED_PRECLEAR_CONTROL) + \
+	defined(M9_FAA_PREPARED_FLOW_CONTROL) + \
+	defined(M9_FAA_PRECLEAR_DRAW_CONTROL) + \
+	defined(M9_FAA_PRECLEAR_OUTPUT_CONTROL) + \
+	defined(M9_FAA_PRECLEAR_OUTPUT_WRITE_CONTROL) + \
+	defined(M9_FAA_PRECLEAR_INPLACE_OUTPUT_CONTROL) + \
+	defined(M9_FAA_PRECLEAR_INPLACE_COPY_CONTROL) + \
+	defined(M9_FAA_PUBLIC_SHARED_DEPTH_FLUSH_CONTROL) + \
+	defined(M9_FAA_PUBLIC_SHARED_DEPTH_RESOLVE_CONTROL) + \
+	defined(M9_FAA_PUBLIC_SHARED_DEPTH_RETURNED_CONTROL) + \
+	defined(M9_FAA_PUBLIC_SHARED_DEPTH_REPLACEMENT_CONTROL) + \
+	defined(M9_FAA_PUBLIC_SHARED_DEPTH_REPLACEMENT_SUBMIT_CONTROL) + \
+	defined(M9_FAA_PUBLIC_SHARED_DEPTH_REPLACEMENT_RETURNED_CONTROL) + \
+	defined(M9_FAA_POST_TRIANGLE_CONTROL)) > 1
 #error "Select only one complete private FAA source profile"
 #endif
 
@@ -251,15 +255,15 @@ struct m9_faa_clear_segment {
 #define M9_FAA_COUNTER_VIRTUAL 0
 #endif
 #if defined(M9_FAA_PREPARED_FLOW_CONTROL) || \
-    defined(M9_FAA_PRECLEAR_OUTPUT_WRITE_CONTROL) || \
-    defined(M9_FAA_PRECLEAR_INPLACE_OUTPUT_CONTROL) || \
-    defined(M9_FAA_PRECLEAR_INPLACE_COPY_CONTROL) || \
-    defined(M9_FAA_PUBLIC_SHARED_DEPTH_FLUSH_CONTROL) || \
-    defined(M9_FAA_PUBLIC_SHARED_DEPTH_RESOLVE_CONTROL) || \
-    defined(M9_FAA_PUBLIC_SHARED_DEPTH_RETURNED_CONTROL) || \
-    defined(M9_FAA_PUBLIC_SHARED_DEPTH_REPLACEMENT_CONTROL) || \
-    defined(M9_FAA_PUBLIC_SHARED_DEPTH_REPLACEMENT_SUBMIT_CONTROL) || \
-    defined(M9_FAA_PUBLIC_SHARED_DEPTH_REPLACEMENT_RETURNED_CONTROL)
+	defined(M9_FAA_PRECLEAR_OUTPUT_WRITE_CONTROL) || \
+	defined(M9_FAA_PRECLEAR_INPLACE_OUTPUT_CONTROL) || \
+	defined(M9_FAA_PRECLEAR_INPLACE_COPY_CONTROL) || \
+	defined(M9_FAA_PUBLIC_SHARED_DEPTH_FLUSH_CONTROL) || \
+	defined(M9_FAA_PUBLIC_SHARED_DEPTH_RESOLVE_CONTROL) || \
+	defined(M9_FAA_PUBLIC_SHARED_DEPTH_RETURNED_CONTROL) || \
+	defined(M9_FAA_PUBLIC_SHARED_DEPTH_REPLACEMENT_CONTROL) || \
+	defined(M9_FAA_PUBLIC_SHARED_DEPTH_REPLACEMENT_SUBMIT_CONTROL) || \
+	defined(M9_FAA_PUBLIC_SHARED_DEPTH_REPLACEMENT_RETURNED_CONTROL)
 /* These profiles retain the same original public draw and C2 access
  * before their later output or target-change branches diverge.
  */
@@ -678,7 +682,8 @@ static struct m9_faa_owner *m9_faa_command_owner(struct m9x_faa_replay *r,
 	return NULL;
 }
 
-static int m9_faa_command_owner_admit(struct m9x_device *,struct m9_faa_owner *);
+static int m9_faa_command_owner_admit(struct m9x_device *mdev,
+				      struct m9_faa_owner *o);
 
 static u64 m9_faa_present_origin(const struct m9x_faa_replay *r, u64 previous)
 {
@@ -732,15 +737,15 @@ static u64 m9_faa_frame_origin(struct m9x_faa_replay *r, u64 previous)
 static bool m9_faa_diag;
 module_param(m9_faa_diag, bool, 0400);
 MODULE_PARM_DESC(m9_faa_diag,
-	"Use the kernel-owned normal FAA frame for one FIRST_TRIANGLE diagnostic (M9128 only)");
+		 "Use the kernel-owned normal FAA frame for one FIRST_TRIANGLE diagnostic (M9128 only)");
 static bool m9_faa_source_init;
 module_param(m9_faa_source_init, bool, 0400);
 MODULE_PARM_DESC(m9_faa_source_init,
-	"Let the private M9128 Windows FAA stream initialize a fresh context without Linux sequence0");
+		 "Let the private M9128 Windows FAA stream initialize a fresh context without Linux sequence0");
 static bool m9_faa_defer_output_map;
 module_param(m9_faa_defer_output_map, bool, 0400);
 MODULE_PARM_DESC(m9_faa_defer_output_map,
-	"Publish only the private output SYSTEM mapping after source120 retirement");
+		 "Publish only the private output SYSTEM mapping after source120 retirement");
 #ifdef M9_FAA_PROGRAM_UPLOAD_OWNER
 static bool m9_faa_program_access_kick = true;
 #else
@@ -748,7 +753,7 @@ static bool m9_faa_program_access_kick;
 #endif
 module_param(m9_faa_program_access_kick, bool, 0400);
 MODULE_PARM_DESC(m9_faa_program_access_kick,
-	"Preserve the private C2 CPU-access frontend kick after actual c0 retirement");
+		 "Preserve the private C2 CPU-access frontend kick after actual c0 retirement");
 #ifdef M9_FAA_PROGRAM_ACCESS_CONTROL
 /* Same-module hardware control: collapsing these waits leaves main/AA
  * stores untouched; preserving them produces GPU state. Resolve is still
@@ -760,7 +765,7 @@ static bool m9_faa_phased_submit;
 #endif
 module_param(m9_faa_phased_submit, bool, 0400);
 MODULE_PARM_DESC(m9_faa_phased_submit,
-	"Wait at source retirement boundaries in the private phased FAA diagnostic");
+		 "Wait at source retirement boundaries in the private phased FAA diagnostic");
 MODULE_FIRMWARE(M9_FAA_INPUT_FIRMWARE);
 #ifdef M9_FAA_GRAPH_INIT_CONTROL
 #define M9_FAA_GRAPH_PUBLIC_VS_FIRMWARE \
@@ -2613,6 +2618,7 @@ static void m9_faa_public_vs_prefix_observe(struct m9x_device *mdev,
 	for (j = 0; j < ARRAY_SIZE(source_offsets); j++)
 		if (source_offsets[j] > bytes || bytes - source_offsets[j] < 64)
 			return;
+	/* Read what the retired GPU work wrote, not an older CPU view. */
 	rmb();
 	dma_rmb();
 	hash = 0x811c9dc5;
@@ -2689,6 +2695,7 @@ static void m9_faa_observe_borrowed_color(struct m9x_device *mdev,
 			 "M9 FAA borrowed observation unavailable: %d\n", ret);
 		return;
 	}
+	/* Read what the retired GPU work wrote, not an older CPU view. */
 	rmb();
 	for (offset = 0; offset < bytes; offset += count) {
 		count = min_t(u32, sizeof(data), bytes - offset);
@@ -3121,6 +3128,7 @@ static int m9_faa_prepare_virtual_restore(struct m9x_device *mdev)
 				     0x700 + i * 0x600 + word[j] * sizeof(u32),
 				     u32, expected[j] | 1u);
 	}
+	/* The restore records reach memory before the engine reads them. */
 	wmb();
 	for (i = 0; i < 0x400; i++) {
 		u32 work = base + 0x200 + i * 0x600;
@@ -3549,6 +3557,7 @@ static int m9_faa_upload_program(struct m9x_device *mdev,
 					    fw->data + s->blob_offset,
 					    s->bytes);
 	}
+	/* The uploads precede the following MMIO. */
 	wmb();
 	/* Actual 2c840/2c878 releases its cached raw CPU view, then writes0.
 	 * The retained native TTM view needs no transient formatted slot.
@@ -4274,6 +4283,7 @@ int m9x_faa_submit_graph(struct m9x_device *mdev,
 	if (ret)
 		return ret;
 	iosys_map_memcpy_to(&map, 0, init, sizeof(init));
+	/* The written words land before they are read back. */
 	wmb();
 	iosys_map_memcpy_from(check, &map, 0, sizeof(check));
 	drm_gem_vram_vunmap(bo, &map);
@@ -4397,6 +4407,7 @@ int m9x_faa_graph_draw_submit(struct m9x_device *mdev,
 	memcpy((u8 *)constants->cpu + 256, r->draw_image->constants + 256, 188);
 	memcpy((u8 *)primary->cpu + r->primary_bytes,
 	       r->draw_image->primary_suffix, 64);
+	/* The CPU stores precede their END post. */
 	wmb();
 	/* The single reservation fence covers every posted part, including
 	 * the raster tail when requested. Prefix retirement does not release
@@ -4428,6 +4439,7 @@ int m9x_faa_graph_draw_submit(struct m9x_device *mdev,
 	       M9_FAA_DRAW_SECONDARY_BYTES);
 	memcpy((u8 *)primary->cpu + r->primary_bytes + 64,
 	       r->draw_image->primary_suffix + 64, 24);
+	/* The CPU stores precede their END post. */
 	wmb();
 	ret = m9x_faa_graph_draw_end_locked(mdev, binding, generation,
 					    init_point, 2, point, &stage_posted);
@@ -4724,6 +4736,7 @@ static int m9_faa_graph_public_vs_submit_mode(struct m9x_device *mdev,
 	memcpy((u8 *)constants->cpu + 256, image->constants + 256,
 	       M9_FAA_PUBLIC_VS_GEOMETRY_BYTES);
 	memcpy((u8 *)primary->cpu + r->primary_bytes, image->primary, 64);
+	/* The CPU stores precede their END post. */
 	wmb();
 	for (i = 0; i < (head ? 2 : 3); i++) {
 		u32 end = i == 2 ? image->ends.final_end :
@@ -4735,6 +4748,7 @@ static int m9_faa_graph_public_vs_submit_mode(struct m9x_device *mdev,
 			memcpy((u8 *)primary->cpu + r->primary_bytes + 64,
 			       image->primary + 64,
 			       sizeof(image->primary) - 64);
+			/* The CPU stores precede their END post. */
 			wmb();
 		}
 		ret = m9x_post_faa_graph_end_locked(mdev, &primary->system_node,
@@ -4839,6 +4853,7 @@ struct m9_faa_dma_header {
 struct m9_faa_dma_entry {
 	__le32 owner, base, bytes, allocated_bytes, data_offset, reserved;
 };
+
 #define M9_FAA_DMA_SNAPSHOT_BUDGET (16u * 1024u * 1024u)
 
 static int m9_faa_dma_span(const struct m9_faa_owner_spec *spec,
@@ -4939,6 +4954,7 @@ int m9x_faa_dma_snapshot(struct m9x_device *mdev, void **data, size_t *bytes)
 		.bytes = cpu_to_le32(total),
 	};
 	entry = (void *)(header + 1);
+	/* Read what the retired GPU work wrote, not an older CPU view. */
 	rmb();
 	dma_rmb();
 	for (i = 0; i < ARRAY_SIZE(r->owner); i++) {
@@ -6007,6 +6023,7 @@ static void m9_faa_color_intermediates_observe(struct m9x_device *mdev,
 				{ 1504, 1508, 23, 64 }, { 1520, 1524, 23, 64 },
 			};
 
+			/* Read what the retired GPU work wrote, not an older CPU view. */
 			rmb();
 			dma_rmb();
 
@@ -6111,6 +6128,7 @@ static void m9_faa_color_intermediates_observe(struct m9x_device *mdev,
 	}
 	extra = (int)n->secondary_bytes -
 		(n->previous_unlock_point ? 2536 : 2712);
+	/* Read what the retired GPU work wrote, not an older CPU view. */
 	rmb();
 	dma_rmb();
 	if (two)
@@ -7593,6 +7611,7 @@ int m9x_faa_graph_public_vs_follow_submit(struct m9x_device *mdev,
 	       1368 - 1284);
 	memcpy((u8 *)primary->cpu + old_bytes, image->primary,
 	       sizeof(image->primary));
+	/* The CPU stores precede their END post. */
 	wmb();
 	dev_info(&mdev->pdev->dev,
 		 "M9 FAA public VS follow before post: secondary=%#x dma=%pad pte0=%#x program=%#x relative704=%#x primary=%#x old=%u new=%u indirect=%#x/%#x/%#x\n",
