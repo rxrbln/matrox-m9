@@ -4784,6 +4784,46 @@ static void m9_faa_dual_bound_color_observe(struct m9x_device *mdev,
 		 sample[0], sample[1], sample[2], sample[3]);
 }
 
+/* Source graph roles 1/2/3 are sampled primary, MAIN and AUX.  Their retained
+ * logical extents come from the admitted source graph owner specification;
+ * allocation capacity may be page-rounded.  These are physical VRAM reads,
+ * distinct from the F021 CPU view.  MAIN/AUX may contain initialized metadata
+ * before this draw, so a nonzero post-Lock count is not render coverage. */
+static void m9_faa_dual_graph_raw_observe(struct m9x_device *mdev,
+					  struct m9x_faa_replay *r,
+					  u32 role, const char *name, u32 logical_bytes)
+{
+	struct m9_faa_owner *owner;
+	u8 data[256];
+	u32 offset, i, chunk, nonzero = 0, hash = 2166136261u;
+
+	if (role < 1 || role > 3 || !logical_bytes ||
+	    logical_bytes != m9_faa_owner_specs[role].bytes ||
+	    logical_bytes % 4)
+		return;
+	owner = &r->owner[role];
+	if (r->graph_layout.width != 320 || r->graph_layout.height != 240 ||
+	    !owner->vram || owner->cpu || iosys_map_is_null(&owner->map) ||
+	    owner->bytes < logical_bytes)
+		return;
+	dma_rmb();
+	for (offset = 0; offset < logical_bytes; offset += sizeof(data)) {
+		chunk = min_t(u32, sizeof(data), logical_bytes - offset);
+		iosys_map_memcpy_from(data, &owner->map, offset, chunk);
+		for (i = 0; i < chunk; i += 4) {
+			u32 word = get_unaligned_le32(data + i);
+
+			nonzero += word != 0;
+			hash = (hash ^ word) * 16777619u;
+		}
+	}
+	iosys_map_memcpy_from(data, &owner->map, 0, 64);
+	dev_info(&mdev->pdev->dev,
+		 "M9 FAA dual graph raw %s owner%u: point=%#llx base=%#x bytes=%u nonzero_dwords=%u wordhash32=%08x first64=%*phN; retired physical VRAM only, preexisting metadata possible, no coverage or pixel interpretation\n",
+		 name, role, (unsigned long long)r->color_lock_point,
+		 owner->base, logical_bytes, nonzero, hash, 64, data);
+}
+
 /* These are the actual emitted B0/B2/B8 target pairs. Resolve their tagged
  * local addresses back to the retained owner; never publish a new CPU view.
  * The declaration splice shifts every stage after the carry declaration. */
@@ -4889,6 +4929,12 @@ static void m9_faa_color_intermediates_observe(struct m9x_device *mdev,
 				}
 			}
 			m9_faa_dual_bound_color_observe(mdev, r);
+			m9_faa_dual_graph_raw_observe(mdev, r, 1, "sampled",
+						 m9_faa_owner_specs[1].bytes);
+			m9_faa_dual_graph_raw_observe(mdev, r, 2, "MAIN",
+						 m9_faa_owner_specs[2].bytes);
+			m9_faa_dual_graph_raw_observe(mdev, r, 3, "AUX",
+						 m9_faa_owner_specs[3].bytes);
 			return;
 		}
 	}
