@@ -67,11 +67,12 @@ int m9x_faa_color_batch_copy(const struct drm_parhelia_m9_faa_graph_color_frame_
   input->width=args->width;input->height=args->height;input->record_stride=d->record_stride;input->record_count=d->record_count;
   input->declaration_count=d->declaration_count;input->depth_flags=d->depth_flags;job->bytes=sum;job->raster_flags=d->raster_flags;
   /* Each job is independently shader/constant validated by the live
-   * first-stage encoder. Preserve a common viewport and cull orientation;
+   * first-stage encoder. Preserve a common viewport; count4 still requires common culling;
    * raw declarations, flat/smooth and immutable code belong to each job. */
   if(i){const struct m9x_faa_color_input *first=&batch->draw[0].input;
    if(input->layout.program_count!=first->layout.program_count||
-    (job->raster_flags&6)!=(batch->draw[0].raster_flags&6)||
+    (input->layout.program_count!=2 &&
+     (job->raster_flags&6)!=(batch->draw[0].raster_flags&6))||
     memcmp(input->geometry,first->geometry,128)){ret=-EOPNOTSUPP;goto out;}}
   batch->count++;
  }
