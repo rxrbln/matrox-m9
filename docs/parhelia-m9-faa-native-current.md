@@ -18,11 +18,14 @@ and live data bindings. The four-stage route remains available. First-depth
 packet composition and native batch wiring are being completed; repeated
 two-stage frames stay gated until their own contract is qualified.
 
-Full emitted-shader review caught duplicate depth conversion and a missing
-four-DWORD prefix offset in the candidate viewport constants. These must be
-corrected and tested before hardware deployment. Head-only ISA checks do not
-prove the position tail. No two-stage glxgears hardware pass yet; the latest
-physical result remains the fragmented four-stage control below.
+Mesa f051299 fixes duplicate depth conversion and the missing four-DWORD
+prefix offset in the candidate viewport constants. Emitted head and geometry
+tail checks now cover clip coordinates, screen X/Y and window depth (10,752
+component comparisons plus depth boundary controls). Original DLL metadata
+calculation agrees with the actual fused masks bc00/bf00. Clip-code arithmetic
+is not modeled; unchanged ordinary-M9 tail bytes are not FAA pixel proof.
+No two-stage glxgears hardware pass yet; the latest physical result remains
+the fragmented four-stage control below.
 
 ## October 8: true16 constant-normal control retains the same GPU misindex
 
