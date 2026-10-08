@@ -1,5 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0-only
-/* Original M9128 dual-texture FIRST: append one DRAW before normal Lock. */
+/* Copyright 2026 René Rebe <rene@exactco.de> */
+/* Original M9128 dual-texture FIRST and retained later frames: append one
+ * DRAW before normal Lock. */
 #include <linux/errno.h>
 #include <linux/kernel.h>
 #include <linux/string.h>
@@ -61,40 +63,24 @@ static bool overlaps(const void *a, u32 as, const void *b, u32 bs)
 	return x<=y ? y-x<as : x-y<bs;
 }
 
-int m9x_faa_dual_first_append_encode(
-	const struct m9x_faa_graph_draw_owner owner[31],
-	u32 init_bytes, u64 init_point, u32 old_draw_count,
-	u32 primary_cursor, u32 secondary_cursor,
-	const u32 old_end_bytes[M9_FAA_DUAL_FIRST_ENDS], u64 old_final_point,
-	const u8 *old_primary, u32 old_primary_bytes,
+/* Shared append after the last DRAW pair group at split. The old DRAW's
+ * secondary is [old_start, secondary_cursor); tail_extra is the CLEAR3
+ * later tail's 8-byte C0 group behind the pair and before the Lock words. */
+static int dual_append(const struct m9x_faa_graph_draw_owner owner[31],
+	u32 old_epoch, u32 split, u32 tail_extra, u32 old_start,
+	u32 secondary_cursor, const u8 *old_primary, u32 old_primary_bytes,
 	const u8 *first_secondary, const u8 *extra_first_secondary,
-	bool programs_and_textures_retained,
 	struct m9x_faa_dual_append_image *out)
 {
-	u32 low=(u32)init_point, split, prefix, old_start, old_length, old_epoch;
-	u32 new_bytes, raw, i; u8 *dst;
-	if (!owner || !old_end_bytes || !old_primary || !first_secondary ||
-	    !extra_first_secondary || !out || !out->primary || !out->secondary ||
-	    !programs_and_textures_retained || old_draw_count<1 ||
-	    old_draw_count>2 ||
-	    (init_point&15) || low<0xb0 ||
-	    init_point>~(u64)0-0x150-2*0xa0 ||
-	    low>U32_MAX-0x150-2*0xa0 ||
-	    (init_bytes!=4880 && init_bytes!=4884) ||
-	    (u64)primary_cursor!=(u64)init_bytes+old_primary_bytes ||
-	    old_primary_bytes<3624+(old_draw_count-1)*60 ||
-	    secondary_cursor!=2880+(old_draw_count-1)*2868 ||
-	    old_final_point!=init_point+0x150+(old_draw_count-1)*0xa0)
-		return -EINVAL;
-	if (m9x_faa_graph_draw_owners_validate(owner)) return -EINVAL;
-	if (old_primary_bytes>owner[27].bytes || old_primary_bytes>U32_MAX-60)
+	u32 new_bytes, raw, i, at, old_length;
+	u8 *dst;
+
+	if (old_primary_bytes > owner[27].bytes || old_primary_bytes > U32_MAX-60)
 		return -ERANGE;
-	new_bytes=old_primary_bytes+60;
-	if (primary_cursor>owner[27].bytes ||
-	    owner[27].bytes-primary_cursor<60 ||
-	    secondary_cursor>owner[29].bytes ||
+	new_bytes = old_primary_bytes + 60;
+	if (owner[27].bytes - old_primary_bytes < 60 ||
+	    secondary_cursor > owner[29].bytes ||
 	    owner[29].bytes-secondary_cursor<M9_FAA_DUAL_APPEND_SECONDARY_BYTES ||
-	    (u64)owner[27].base+primary_cursor+60>U32_MAX ||
 	    (u64)owner[29].base+secondary_cursor+
 	      M9_FAA_DUAL_APPEND_SECONDARY_BYTES>U32_MAX ||
 	    owner[8].bytes<20 || owner[22].bytes<712 ||
@@ -112,42 +98,28 @@ int m9x_faa_dual_first_append_encode(
 	             first_secondary,2880) ||
 	    overlaps(out->secondary,M9_FAA_DUAL_APPEND_SECONDARY_BYTES,
 	             extra_first_secondary,2880)) return -EINVAL;
-	prefix=old_primary_bytes-3624-(old_draw_count-1)*60;
-	/* The source prefix is 4652 bytes; regenerated sampled page runs may
-	 * widen it. The authenticated END[9] pins the actual live prefix. */
-	if (prefix<4652 || prefix>M9_FAA_FIRST_DEPTH_PREFIX_CAPACITY ||
-	    (prefix&3) || old_end_bytes[9]!=init_bytes+prefix)
-		return -ESTALE;
-	split=old_primary_bytes-3564;
-	if (split<60 || rd(old_primary,split)!=0x45454524 ||
+	if (split<60 || split>old_primary_bytes ||
+	    old_primary_bytes-split!=3564+tail_extra ||
+	    old_start>secondary_cursor ||
+	    rd(old_primary,split)!=0x45454524 ||
 	    rd(old_primary,split-60)!=0x45452d2c ||
-	    rd(old_primary,split-12)!=0x45452d2c ||
-	    rd(old_primary,split-60+4)<owner[29].base+1)
+	    rd(old_primary,split-12)!=0x45452d2c)
 		return -ESTALE;
-	old_start=rd(old_primary,split-60+4)-owner[29].base-1;
-	if (old_start>secondary_cursor) return -ESTALE;
 	old_length=secondary_cursor-old_start;
-	if (old_start!=(old_draw_count==1?0:2880+(old_draw_count-2)*2868) ||
-	    old_length!=(old_draw_count==1?2880:2868) ||
+	if (old_length<968 ||
+	    rd(old_primary,split-60+4)!=((owner[29].base+old_start)|1) ||
 	    rd(old_primary,split-60+8)!=
 	      ((owner[29].base+old_start+old_length-968)|2) ||
 	    rd(old_primary,split-60+52)!=
 	      ((owner[29].base+old_start+old_length-968)|1) ||
 	    rd(old_primary,split-60+56)!=
-	      ((owner[29].base+secondary_cursor)|2) ||
-	    old_end_bytes[10]!=init_bytes+split ||
-	    old_end_bytes[13]!=primary_cursor)
+	      ((owner[29].base+secondary_cursor)|2))
 		return -ESTALE;
-	for (i=0;i<M9_FAA_DUAL_FIRST_ENDS;i++)
-		if (old_end_bytes[i]<init_bytes ||
-		    old_end_bytes[i]>primary_cursor ||
-		    (i && old_end_bytes[i]<old_end_bytes[i-1]))
+	for (i=0;i<ARRAY_SIZE(lock_at);i++) {
+		at=split+lock_at[i]+(lock_at[i]>=3288?tail_extra:0);
+		if (rd(old_primary,at)!=((old_epoch+lock_delta[i])|lock_tag[i]))
 			return -ESTALE;
-	old_epoch=low+(old_draw_count-1)*0xa0;
-	for (i=0;i<ARRAY_SIZE(lock_at);i++)
-		if (rd(old_primary,split+lock_at[i])!=
-		    ((old_epoch+lock_delta[i])|lock_tag[i]))
-			return -ESTALE;
+	}
 	/* No program/sampler switch is sourced by this bounded repeated profile. */
 	for (i=0;i<4;i++) {
 		static const u16 c2[]={364,1032,1660,2432};
@@ -182,9 +154,10 @@ int m9x_faa_dual_first_append_encode(
 	   (owner[29].base+secondary_cursor+1900)|1);
 	wr(out->primary,split+56,
 	   (owner[29].base+secondary_cursor+2868)|2);
-	memcpy(out->primary+split+60,old_primary+split,3564);
+	memcpy(out->primary+split+60,old_primary+split,3564+tail_extra);
 	for (i=0;i<ARRAY_SIZE(lock_at);i++)
-		wr(out->primary,split+60+lock_at[i],
+		wr(out->primary,split+60+lock_at[i]+
+		   (lock_at[i]>=3288?tail_extra:0),
 		   (old_epoch+0xa0+lock_delta[i])|lock_tag[i]);
 	dst=out->secondary;
 	memset(dst,0,M9_FAA_DUAL_APPEND_SECONDARY_BYTES);
@@ -207,10 +180,96 @@ int m9x_faa_dual_first_append_encode(
 	wr(dst,1496,0x49d00000u|((1888-1496)/4));
 	for (i=0;i<ARRAY_SIZE(epoch);i++)
 		wr(dst,epoch[i].at,(old_epoch+epoch[i].delta)|epoch[i].tag);
-	for (i=0;i<M9_FAA_DUAL_FIRST_ENDS;i++)
-		out->end_bytes[i]=old_end_bytes[i]+(i<10?0:60);
 	out->primary_bytes=new_bytes;
 	out->secondary_bytes=M9_FAA_DUAL_APPEND_SECONDARY_BYTES;
+	return 0;
+}
+
+int m9x_faa_dual_first_append_encode(
+	const struct m9x_faa_graph_draw_owner owner[31],
+	u32 init_bytes, u64 init_point, u32 old_draw_count,
+	u32 primary_cursor, u32 secondary_cursor,
+	const u32 old_end_bytes[M9_FAA_DUAL_FIRST_ENDS], u64 old_final_point,
+	const u8 *old_primary, u32 old_primary_bytes,
+	const u8 *first_secondary, const u8 *extra_first_secondary,
+	bool programs_and_textures_retained,
+	struct m9x_faa_dual_append_image *out)
+{
+	u32 low=(u32)init_point, split, prefix, i;
+	int ret;
+	if (!owner || !old_end_bytes || !old_primary || !first_secondary ||
+	    !extra_first_secondary || !out || !out->primary || !out->secondary ||
+	    !programs_and_textures_retained || old_draw_count<1 ||
+	    old_draw_count>2 ||
+	    (init_point&15) || low<0xb0 ||
+	    init_point>~(u64)0-0x150-2*0xa0 ||
+	    low>U32_MAX-0x150-2*0xa0 ||
+	    (init_bytes!=4880 && init_bytes!=4884) ||
+	    (u64)primary_cursor!=(u64)init_bytes+old_primary_bytes ||
+	    old_primary_bytes<3624+(old_draw_count-1)*60 ||
+	    secondary_cursor!=2880+(old_draw_count-1)*2868 ||
+	    old_final_point!=init_point+0x150+(old_draw_count-1)*0xa0)
+		return -EINVAL;
+	if (m9x_faa_graph_draw_owners_validate(owner)) return -EINVAL;
+	if (primary_cursor>owner[27].bytes ||
+	    owner[27].bytes-primary_cursor<60 ||
+	    (u64)owner[27].base+primary_cursor+60>U32_MAX)
+		return -ERANGE;
+	prefix=old_primary_bytes-3624-(old_draw_count-1)*60;
+	/* The source prefix is 4652 bytes; regenerated sampled page runs may
+	 * widen it. The authenticated END[9] pins the actual live prefix. */
+	if (prefix<4652 || prefix>M9_FAA_FIRST_DEPTH_PREFIX_CAPACITY ||
+	    (prefix&3) || old_end_bytes[9]!=init_bytes+prefix)
+		return -ESTALE;
+	split=old_primary_bytes-3564;
+	if (old_end_bytes[10]!=init_bytes+split ||
+	    old_end_bytes[13]!=primary_cursor)
+		return -ESTALE;
+	for (i=0;i<M9_FAA_DUAL_FIRST_ENDS;i++)
+		if (old_end_bytes[i]<init_bytes ||
+		    old_end_bytes[i]>primary_cursor ||
+		    (i && old_end_bytes[i]<old_end_bytes[i-1]))
+			return -ESTALE;
+	ret=dual_append(owner,low+(old_draw_count-1)*0xa0,split,0,
+		old_draw_count==1?0:2880+(old_draw_count-2)*2868,
+		secondary_cursor,old_primary,old_primary_bytes,
+		first_secondary,extra_first_secondary,out);
+	if (ret)
+		return ret;
+	for (i=0;i<M9_FAA_DUAL_FIRST_ENDS;i++)
+		out->end_bytes[i]=old_end_bytes[i]+(i<10?0:60);
 	out->final_point=old_final_point+0xa0;
 	return 0;
+}
+
+/* Retained later frame: the source N2/N3 later batches insert exactly the
+ * FIRST append's 60-byte pair group and 2868-byte stage at the same seam,
+ * with the later epoch (Unlock, or Unlock-0x80 without clear). */
+int m9x_faa_dual_later_append_encode(
+	const struct m9x_faa_graph_draw_owner owner[31],
+	u64 previous_unlock, u32 clear_flags, u32 old_draw_count,
+	u32 first_secondary_cursor, u32 secondary_cursor,
+	const u8 *old_primary, u32 old_primary_bytes,
+	const u8 *first_secondary, const u8 *extra_first_secondary,
+	struct m9x_faa_dual_append_image *out)
+{
+	u32 tail=clear_flags?3632:3624, first=clear_flags?2736:2740, epoch;
+	u32 old_start;
+	if (!owner || !old_primary || !first_secondary ||
+	    !extra_first_secondary || !out || !out->primary || !out->secondary ||
+	    (clear_flags && clear_flags!=3) || old_draw_count<1 ||
+	    old_draw_count>=M9_FAA_DUAL_LATER_MAX_DRAWS ||
+	    (previous_unlock&15) || previous_unlock<0x130 ||
+	    previous_unlock>U32_MAX-0x150-M9_FAA_DUAL_LATER_MAX_DRAWS*0xa0 ||
+	    old_primary_bytes<tail+(old_draw_count-1)*60 ||
+	    secondary_cursor!=first_secondary_cursor+first+
+	      (old_draw_count-1)*2868)
+		return -EINVAL;
+	if (m9x_faa_graph_draw_owners_validate(owner)) return -EINVAL;
+	epoch=(u32)previous_unlock-(clear_flags?0:0x80)+(old_draw_count-1)*0xa0;
+	old_start=old_draw_count==1?first_secondary_cursor:
+		secondary_cursor-2868;
+	return dual_append(owner,epoch,old_primary_bytes-(tail-60),tail-3624,
+		old_start,secondary_cursor,old_primary,old_primary_bytes,
+		first_secondary,extra_first_secondary,out);
 }

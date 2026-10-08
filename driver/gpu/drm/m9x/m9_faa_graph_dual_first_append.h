@@ -1,9 +1,11 @@
 /* SPDX-License-Identifier: GPL-2.0-only */
+/* Copyright 2026 René Rebe <rene@exactco.de> */
 #ifndef M9_FAA_GRAPH_DUAL_FIRST_APPEND_H
 #define M9_FAA_GRAPH_DUAL_FIRST_APPEND_H
 #include "m9_faa_graph_dual_first_encode.h"
 
 #define M9_FAA_DUAL_APPEND_SECONDARY_BYTES 2868u
+#define M9_FAA_DUAL_LATER_MAX_DRAWS 3u
 
 struct m9x_faa_dual_append_image {
 	u8 *primary, *secondary;
@@ -27,5 +29,15 @@ int m9x_faa_dual_first_append_encode(
 	const u8 *old_primary, u32 old_primary_bytes,
 	const u8 *first_secondary, const u8 *extra_first_secondary,
 	bool programs_and_textures_retained,
+	struct m9x_faa_dual_append_image *out);
+/* Later counterpart: old_primary is the later frame's own command image
+ * (clear prefix, DRAWs and Lock tail), old_draw_count DRAWs already present.
+ * Only ENDs behind the first DRAW move; final point advances by 0xa0. */
+int m9x_faa_dual_later_append_encode(
+	const struct m9x_faa_graph_draw_owner owner[31],
+	u64 previous_unlock, u32 clear_flags, u32 old_draw_count,
+	u32 first_secondary_cursor, u32 secondary_cursor,
+	const u8 *old_primary, u32 old_primary_bytes,
+	const u8 *first_secondary, const u8 *extra_first_secondary,
 	struct m9x_faa_dual_append_image *out);
 #endif
