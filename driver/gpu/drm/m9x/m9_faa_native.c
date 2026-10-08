@@ -11223,9 +11223,7 @@ static int m9_faa_secondary_rotate(struct m9x_device *mdev,
 	if (ret)
 		goto unlock;
 	for (i = 0; i < PARHELIA_M9_FAA_GRAPH_OWNERS; i++)
-		if (!dma_resv_test_signaled(m9x_faa_graph_binding_owner(binding,
-									i)
-						    ->resv,
+		if (!dma_resv_test_signaled(m9x_faa_graph_binding_owner(binding, i)->resv,
 					    DMA_RESV_USAGE_READ)) {
 			ret = -EBUSY;
 			goto unlock;
@@ -11314,8 +11312,8 @@ static int m9_faa_secondary_rotate(struct m9x_device *mdev,
 		goto quarantine;
 	dev_info(&mdev->pdev->dev,
 		 "M9 FAA secondary pool retired: Unlock=%#llx maintenance=%#llx pool=%#llx old=%#x selected=%#x parent=%#x\n",
-		 previous, point, observed.pool_point, old->base,
-		 selected->base, parent->base + image.parent_next);
+		 previous, point, observed.pool_point, old->base, selected->base,
+		 parent->base + image.parent_next);
 	ret = 0;
 	goto unlock;
 abort:
@@ -11331,6 +11329,7 @@ unlock:
 	mutex_unlock(&t->lock);
 	return ret;
 }
+
 #endif
 
 bool m9x_faa_graph_empty_primary_locked(struct m9x_device *mdev,
