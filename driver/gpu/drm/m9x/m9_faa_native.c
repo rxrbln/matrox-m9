@@ -12604,16 +12604,14 @@ int m9x_faa_graph_depth_batch_prepare(struct m9x_device *mdev,
 					       &mdev->pdev->dev);
 			if (ret)
 				goto release;
-			reset_scratch = kmalloc(M9_FAA_DEPTH_MODE_RESET_CAPACITY,
-						GFP_KERNEL);
+			reset_scratch = kmalloc(M9_FAA_DEPTH_MODE_RESET_CAPACITY, GFP_KERNEL);
 			if (!reset_scratch) {
 				ret = -ENOMEM;
 				goto release;
 			}
 		}
 		if (!reset_scratch) {
-			reset_scratch = kmalloc(M9_FAA_DEPTH_MODE_RESET_CAPACITY,
-						GFP_KERNEL);
+			reset_scratch = kmalloc(M9_FAA_DEPTH_MODE_RESET_CAPACITY, GFP_KERNEL);
 			if (!reset_scratch) {
 				ret = -ENOMEM;
 				goto release;
@@ -13080,6 +13078,7 @@ int m9x_faa_graph_depth_batch_prepare(struct m9x_device *mdev,
 					M9_FAA_DEPTH_FRAME_PRIMARY_CAPACITY,
 				.secondary_capacity = 2700
 			};
+
 			typeof(m9x_faa_later_depth_append_encode) *encode =
 				two ? m9x_faa_later_depth_two_append_encode :
 				      m9x_faa_later_depth_append_encode;
