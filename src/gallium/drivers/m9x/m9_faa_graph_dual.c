@@ -34,6 +34,8 @@ dual_pack(const struct m9_faa_gl_upload *u,const struct m9_faa_application_state
    *d=(struct drm_parhelia_m9_faa_color_draw){.upload=base,.upload_bytes=total,
       .record_stride=64,.record_count=u->vertex_count,.declaration_count=9,
       .depth_flags=1u|(s->depth_write?2u:0u)|((uint32_t)s->depth_func<<2)};
+   /* A disabled depth test neither tests nor writes: ALWAYS, no write. */
+   if(!s->depth_enabled)d->depth_flags=1u|((uint32_t)PIPE_FUNC_ALWAYS<<2);
    if(s->cull_face==PIPE_FACE_FRONT||s->cull_face==PIPE_FACE_BACK)
       d->raster_flags=((s->cull_face==PIPE_FACE_BACK)==s->front_ccw)?
          PARHELIA_M9_FAA_COLOR_RASTER_CULL_CW:PARHELIA_M9_FAA_COLOR_RASTER_CULL_CCW;
@@ -108,7 +110,7 @@ m9_faa_surface_dual_later_kernel(struct m9_screen *screen,struct m9_faa_surface 
       if(u->graph_id!=g->prepared_id||u->init_point!=g->init_point||
          u->generation!=g->prepared_generation)return -ESTALE;
       if(u->texture_count!=2||s->width!=surface->width||s->height!=surface->height||
-         !s->depth_enabled||s->depth_func>PIPE_FUNC_ALWAYS||
+         (s->depth_enabled&&s->depth_func>PIPE_FUNC_ALWAYS)||
          s->flatshade||s->cull_face==PIPE_FACE_FRONT_AND_BACK||s->scissor_enabled||
          s->fragment.blend||s->fragment.alpha||s->fragment.source_stream||
          u->texture[0].resource==u->texture[1].resource||
@@ -190,7 +192,7 @@ m9_faa_surface_dual_frame_kernel(struct m9_screen *screen,struct m9_faa_surface 
       if(u->graph_id!=g->prepared_id||u->init_point!=g->init_point||
          u->generation!=g->prepared_generation)return -ESTALE;
       if(u->texture_count!=2||s->width!=surface->width||s->height!=surface->height||
-         !s->depth_enabled||s->depth_func>PIPE_FUNC_ALWAYS||
+         (s->depth_enabled&&s->depth_func>PIPE_FUNC_ALWAYS)||
          s->flatshade||s->cull_face==PIPE_FACE_FRONT_AND_BACK||s->scissor_enabled||
          s->fragment.blend||s->fragment.alpha||s->fragment.source_stream||
          s->viewport.scale[0]!=surface->width*.5f||s->viewport.scale[1]!=surface->height*-.5f||
@@ -264,7 +266,7 @@ dual_frame_admissible(const struct m9_faa_surface *surface,
       if(u->graph_id!=g->prepared_id||u->init_point!=g->init_point||
          u->generation!=g->prepared_generation)return -ESTALE;
       if(u->texture_count!=2||s->width!=surface->width||s->height!=surface->height||
-         !s->depth_enabled||s->depth_func>PIPE_FUNC_ALWAYS||
+         (s->depth_enabled&&s->depth_func>PIPE_FUNC_ALWAYS)||
          s->flatshade||s->cull_face==PIPE_FACE_FRONT_AND_BACK||s->scissor_enabled||
          s->fragment.blend||s->fragment.alpha||s->fragment.source_stream||
          u->texture[0].resource==u->texture[1].resource||

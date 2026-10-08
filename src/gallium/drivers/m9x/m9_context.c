@@ -9917,9 +9917,9 @@ m9_context_faa_draw_refusal(const struct m9_faa_application_upload *owned)
    if(owned->texture_count&&
       (!debug_get_bool_option("M9X_FAA_DUAL_APPLICATION",false)||
        state->cull_face==PIPE_FACE_FRONT_AND_BACK||
-       state->flatshade||!state->depth_enabled||owned->shader.record_bytes!=64||
+       state->flatshade||owned->shader.record_bytes!=64||
        owned->shader.declaration_words!=9)) {
-      return "FAA dual application raster requires enabled depth and smooth shading";
+      return "FAA dual application raster requires smooth shading";
    }
    return NULL;
 }
