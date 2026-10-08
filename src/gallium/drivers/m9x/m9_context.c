@@ -7493,22 +7493,27 @@ m9_native_vs_outside_near(struct m9_context *ctx, const struct m9_vs_program *p,
  * counts or reads the destination and depth decides overlaps; only exact
  * depth ties may resolve differently. */
 static bool
-m9_near_split_ok(const struct m9_context *ctx, const struct pipe_draw_info *info)
+m9_near_reorder_ok(const struct m9_context *ctx)
 {
-   if (info->mode != MESA_PRIM_TRIANGLES || !ctx->dsa ||
-       !ctx->dsa->depth_enabled || ctx->dsa->stencil[0].enabled ||
-       ctx->query_active)
+   if (!ctx->dsa || !ctx->dsa->depth_enabled || ctx->dsa->stencil[0].enabled ||
+       ctx->query_active || (ctx->blend && ctx->blend->logicop_enable))
       return false;
    for (unsigned i = 0; ctx->blend && i < MAX2(ctx->color_count, 1u); i++)
-      if (ctx->blend->rt[ctx->blend->independent_blend_enable ? i : 0].blend_enable ||
-          ctx->blend->logicop_enable)
+      if (ctx->blend->rt[ctx->blend->independent_blend_enable ? i : 0].blend_enable)
          return false;
    return true;
 }
 
+struct m9_near_run {
+   uint32_t first, count;   /* indices into the run's own list */
+   bool crossing;
+};
+
 /* Sorts the draw's triangles by their flagged corners: all inside stay
  * native, all outside the near plane are clipped away entirely, the rest
- * need the draw module's clipper.  Indices keep their original values. */
+ * need the draw module's clipper.  The decision depends on the triangle
+ * alone, so every pass over the same geometry takes the same path for it.
+ * Indices keep their original values; runs record the original order. */
 static bool
 m9_near_partition(struct m9_context *ctx, const struct m9_native_vs *n,
                   const struct pipe_draw_start_count_bias *draw)
@@ -7518,7 +7523,10 @@ m9_near_partition(struct m9_context *ctx, const struct m9_native_vs *n,
 
    util_dynarray_clear(&ctx->near_inside);
    util_dynarray_clear(&ctx->near_crossing);
+   util_dynarray_clear(&ctx->near_runs);
    for (unsigned t = 0; t < tris; t++) {
+      struct util_dynarray *list;
+      struct m9_near_run *run;
       uint32_t v[3];
       unsigned out = 0;
 
@@ -7532,13 +7540,48 @@ m9_near_partition(struct m9_context *ctx, const struct m9_native_vs *n,
       }
       if (out == 3)
          continue;
-      uint32_t *dst = util_dynarray_grow(out ? &ctx->near_crossing :
-                                               &ctx->near_inside, uint32_t, 3);
+      list = out ? &ctx->near_crossing : &ctx->near_inside;
+      run = util_dynarray_num_elements(&ctx->near_runs, struct m9_near_run) ?
+            util_dynarray_top_ptr(&ctx->near_runs, struct m9_near_run) : NULL;
+      if (!run || run->crossing != (out != 0)) {
+         run = util_dynarray_grow(&ctx->near_runs, struct m9_near_run, 1);
+         if (!run)
+            return false;
+         *run = (struct m9_near_run) {
+            .first = util_dynarray_num_elements(list, uint32_t),
+            .crossing = out != 0,
+         };
+      }
+      uint32_t *dst = util_dynarray_grow(list, uint32_t, 3);
       if (!dst)
          return false;
       memcpy(dst, v, sizeof(v));
+      run->count += 3;
    }
    return true;
+}
+
+/* Draws count crossing indices from first through the draw module. */
+static void
+m9_near_module(struct m9_context *ctx, const struct pipe_draw_info *info,
+               unsigned drawid_offset,
+               const struct pipe_draw_start_count_bias *draw,
+               unsigned first, unsigned count)
+{
+   struct pipe_draw_info crossing = *info;
+   struct pipe_draw_start_count_bias range = {
+      .start = first,
+      .count = count,
+      .index_bias = info->index_size ? draw->index_bias : 0,
+   };
+
+   crossing.index_size = 4;
+   crossing.has_user_indices = true;
+   crossing.index.user = ctx->near_crossing.data;
+   crossing.index_bounds_valid = false;
+   m9_native_vs_note(ctx, "fused-pair triangles crossing the near plane, "
+                     "which only the clip position clips");
+   m9_module_draw(&ctx->base, &crossing, drawid_offset, &range);
 }
 
 /* True when the draw was taken by the native path; false leaves it to the
@@ -7618,40 +7661,26 @@ m9_native_vs_draw(struct m9_context *ctx, const struct pipe_draw_info *info,
    /* The engine clips against the near plane only with the clip position
     * the fused pair gives up for its second varying (MEASURED, m9-nearclip). */
    bool split = false;
-   unsigned near_count = draw->count;
 
    if (m9_vs_fused_pair(&variant->program)) {
-      bool partition = m9_near_split_ok(ctx, info);
       /* util_dynarray_resize returns the old end, not the array. */
-      uint8_t *flags = partition &&
+      uint8_t *flags = info->mode == MESA_PRIM_TRIANGLES &&
                        util_dynarray_resize(&ctx->near_flags, uint8_t,
                                             n.vertex_count) ?
                        ctx->near_flags.data : NULL;
       int outside = m9_native_vs_outside_near(ctx, &variant->program, &n, flags);
 
-      if (outside > 0 &&
-          (!flags || !m9_near_partition(ctx, &n, draw) ||
-           !util_dynarray_num_elements(&ctx->near_inside, uint32_t))) {
-         if (flags && !util_dynarray_num_elements(&ctx->near_inside, uint32_t) &&
-             !util_dynarray_num_elements(&ctx->near_crossing, uint32_t))
-            return true;
+      if (outside > 0 && (!flags || !m9_near_partition(ctx, &n, draw))) {
          m9_native_vs_note(ctx, "a fused-pair draw has a vertex outside the "
                            "near plane, which only the clip position clips");
          return false;
       }
       if (outside > 0) {
-         uint32_t lo, hi;
-         unsigned k = util_dynarray_num_elements(&ctx->near_inside, uint32_t);
-
          split = true;
          n.indices = ctx->near_inside.data;
          n.index_size = 4;
          if (!info->index_size)
             n.index_bias = 0;
-         m9_native_index_range(n.indices, 4, 0, k, &lo, &hi);
-         n.first_vertex = lo + n.index_bias;
-         n.vertex_count = hi - lo + 1;
-         near_count = k;
       }
    }
    if (ctx->rasterizer && ctx->rasterizer->offset_tri &&
@@ -7705,25 +7734,45 @@ m9_native_vs_draw(struct m9_context *ctx, const struct pipe_draw_info *info,
       ctx->skipped_draws++;
       return true;
    }
-   if (!m9_native_vs_append(ctx, &key, &n, near_count)) {
-      m9_native_vs_note(ctx, "the native job would not take the draw");
-      return false;
-   }
-   if (split && util_dynarray_num_elements(&ctx->near_crossing, uint32_t)) {
-      struct pipe_draw_info crossing = *info;
-      struct pipe_draw_start_count_bias range = {
-         .start = 0,
-         .count = util_dynarray_num_elements(&ctx->near_crossing, uint32_t),
-         .index_bias = info->index_size ? draw->index_bias : 0,
-      };
+   if (!split) {
+      if (!m9_native_vs_append(ctx, &key, &n, draw->count)) {
+         m9_native_vs_note(ctx, "the native job would not take the draw");
+         return false;
+      }
+   } else if (m9_near_reorder_ok(ctx)) {
+      unsigned inside = util_dynarray_num_elements(&ctx->near_inside, uint32_t);
+      unsigned crossing = util_dynarray_num_elements(&ctx->near_crossing, uint32_t);
 
-      crossing.index_size = 4;
-      crossing.has_user_indices = true;
-      crossing.index.user = ctx->near_crossing.data;
-      crossing.index_bounds_valid = false;
-      m9_native_vs_note(ctx, "fused-pair triangles crossing the near plane, "
-                        "which only the clip position clips");
-      m9_module_draw(&ctx->base, &crossing, drawid_offset, &range);
+      if (inside)
+         m9_native_vs_append(ctx, &key, &n, inside);
+      if (crossing)
+         m9_near_module(ctx, info, drawid_offset, draw, 0, crossing);
+   } else {
+      /* Blended or order-dependent: the runs keep the draw's own order.  A
+       * draw-module run re-resolves the shared constant images, so the next
+       * native run resolves its own again. */
+      bool stale = false;
+
+      util_dynarray_foreach(&ctx->near_runs, struct m9_near_run, run) {
+         if (run->crossing) {
+            m9_near_module(ctx, info, drawid_offset, draw, run->first,
+                           run->count);
+            stale = true;
+         } else {
+            struct m9_native_vs part = n;
+            struct m9_job_key fresh;
+
+            if (stale && (!m9_job_key_current(ctx, &fresh) ||
+                          !m9_vs_resolve_consts(ctx, &key, key.vs,
+                                                &ctx->key_vs_consts))) {
+               ctx->skipped_draws++;
+               break;
+            }
+            stale = false;
+            part.indices = (const uint32_t *)ctx->near_inside.data + run->first;
+            m9_native_vs_append(ctx, &key, &part, run->count);
+         }
+      }
    }
    if (ctx->debug && !ctx->native_vs_draws) {
       fprintf(stderr, "m9x: native vertex draw taken, %u varyings, fused "
@@ -10959,6 +11008,7 @@ m9_context_destroy(struct pipe_context *pctx)
    util_dynarray_fini(&ctx->near_flags);
    util_dynarray_fini(&ctx->near_inside);
    util_dynarray_fini(&ctx->near_crossing);
+   util_dynarray_fini(&ctx->near_runs);
    util_unreference_framebuffer_state(&ctx->framebuffer);
    util_set_vertex_buffers_count(ctx->vertex_buffers, &ctx->num_vertex_buffers,
                                  NULL, 0);
