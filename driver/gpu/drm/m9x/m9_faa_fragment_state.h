@@ -74,10 +74,6 @@ static inline bool m9x_faa_fragment_state_build(const struct m9_faa_fragment_sta
       return false;
    bool blend = state->blend != M9_FAA_BLEND_REPLACE;
    bool alpha = state->alpha != M9_FAA_ALPHA_OFF;
-   /* The only combined compiler allocation proved by the original control. */
-   if (blend && alpha && (state->blend != M9_FAA_BLEND_ALPHA ||
-                         state->alpha != M9_FAA_ALPHA_GE_HALF))
-      return false;
    const u32 slots = 8 + (blend ? 2 : 0) + (alpha ? 4 : 0);
    const u32 pairs = 2 + (blend ? 1 : 0) + (alpha ? 3 : 0);
    const u32 pb = slots * 8, cb = pairs * 8;
@@ -106,8 +102,10 @@ static inline bool m9x_faa_fragment_state_build(const struct m9_faa_fragment_sta
    u8 scale=blend ? 0 : 0x1b;
    u8 ba=blend ? (alpha ? 8 : 0x0a) : (alpha ? 6 : 0x2d);
    u8 rg=blend ? 0x0b : 0x2d;
-   bool alpha_first=blend && (state->blend==M9_FAA_BLEND_ALPHA ||
-                            state->blend==M9_FAA_BLEND_ALPHA_ADD);
+   /* Original combined controls require BA before the alpha conversion.
+    * The alpha-disabled order still follows the source-alpha factor. */
+   bool alpha_first=alpha || (blend && (state->blend==M9_FAA_BLEND_ALPHA ||
+                                      state->blend==M9_FAA_BLEND_ALPHA_ADD));
    struct m9x_fragment_form rg_move={blend ? 0x1c : 0x1d,4,rg,0x40,scale,0x44,0xae0ffc10};
    struct m9x_fragment_form ba_move={blend || alpha ? 0x1c : 0x1e,4,ba,0x42,scale,0x45,0xae0ffc10};
    if (alpha_first || !blend) { m9x_fragment_emit(words,&n,ba_move); m9x_fragment_emit(words,&n,rg_move); }
@@ -148,8 +146,15 @@ static inline bool m9x_faa_fragment_state_build(const struct m9_faa_fragment_sta
          m9x_fragment_emit(words,&n,(struct m9x_fragment_form){0x1e,4,0x2d,0x7f,0x0a,0x1a,0xa0400c50});
          break;
       case M9_FAA_BLEND_ALPHA_ADD:
+         /* Alpha-tested SRC_ALPHA/ONE publishes RGB before BA; original
+          * alpha-disabled allocation publishes BA before RGB. */
+         if (alpha) {
+         m9x_fragment_emit(words,&n,(struct m9x_fragment_form){0x1d,4,0x2d,0x0a,0x0b,0x18,0xac5fcf50});
+         m9x_fragment_emit(words,&n,(struct m9x_fragment_form){0x1e,4,0x2d,0x0a,0x0a,0x1a,0xac5fcf50});
+         } else {
          m9x_fragment_emit(words,&n,(struct m9x_fragment_form){0x1e,4,0x2d,0x0a,0x0a,0x1a,0xac5fcf50});
          m9x_fragment_emit(words,&n,(struct m9x_fragment_form){0x1d,4,0x2d,0x0a,0x0b,0x18,0xac5fcf50});
+         }
          break;
       case M9_FAA_BLEND_FILTER:
          m9x_fragment_emit(words,&n,(struct m9x_fragment_form){0x1d,4,0x2d,0x18,0x0b,0x7f,0xac3fc140});
