@@ -1488,13 +1488,14 @@ quarantine:
 }
 
 static void m9_faa_release_failed_prepare(struct m9x_device *mdev,
-					struct m9x_faa_replay *r)
+					  struct m9x_faa_replay *r)
 {
 	lockdep_assert_held(&mdev->transport.lock);
 	if (mdev->transport.wedged) {
 		/* Publication may already have exposed these DMA/local owners.
 		 * Keep them through the freeze; requester teardown first disables
-		 * PCI bus mastering, then m9x_faa_fini drops their ownership. */
+		 * PCI bus mastering, then m9x_faa_fini drops their ownership.
+		 */
 		mdev->transport.faa = r;
 		dev_err(&mdev->pdev->dev,
 			"M9 FAA failed preparation retained until DMA shutdown\n");
