@@ -5686,10 +5686,13 @@ int m9x_faa_graph_public_vs_unlocked_get_locked(struct m9x_device *mdev,
  * color allocation is a retained WC SYSTEM owner, distinct from the sampled
  * F021 owner.  Its raw dwords are not assumed to be linear RGBA pixels. */
 static void m9_faa_dual_bound_color_observe(struct m9x_device *mdev,
-					  struct m9x_faa_replay *r)
+					    struct m9x_faa_replay *r)
 {
 	static const u32 probe_xy[][2] = {
-		{0, 0}, {80, 180}, {160, 120}, {240, 180},
+		{ 0, 0 },
+		{ 80, 180 },
+		{ 160, 120 },
+		{ 240, 180 },
 	};
 	struct m9_faa_depth_storage *storage = r->depth_storage;
 	struct m9_faa_owner *owner;
@@ -5697,8 +5700,8 @@ static void m9_faa_dual_bound_color_observe(struct m9x_device *mdev,
 	const u8 *cpu;
 	u32 i, nonzero = 0, hash = 2166136261u, sample[4];
 
-	if (!storage || !storage->ready ||
-	    r->graph_layout.width != 320 || r->graph_layout.height != 240)
+	if (!storage || !storage->ready || r->graph_layout.width != 320 ||
+	    r->graph_layout.height != 240)
 		return;
 	owner = &storage->owner[M9_FAA_BOUND_COLOR];
 	view = &storage->views.owner[M9_FAA_BOUND_COLOR];
@@ -5707,13 +5710,13 @@ static void m9_faa_dual_bound_color_observe(struct m9x_device *mdev,
 	    owner->system_node.start != owner->base ||
 	    view->base != owner->base || view->logical_bytes != 0x50000 ||
 	    view->capacity_bytes > owner->bytes ||
-	    owner->bytes < view->logical_bytes ||
-	    view->storage_width != 320)
+	    owner->bytes < view->logical_bytes || view->storage_width != 320)
 		return;
 
 	/* The GPU retired before this observer.  Report the complete raw view
 	 * plus a few word positions under the source storage-width hypothesis;
-	 * neither statistic by itself proves framebuffer pixel correctness. */
+	 * neither statistic by itself proves framebuffer pixel correctness.
+	 */
 	dma_rmb();
 	cpu = owner->cpu;
 	for (i = 0; i < view->logical_bytes; i += 4) {
@@ -5724,14 +5727,15 @@ static void m9_faa_dual_bound_color_observe(struct m9x_device *mdev,
 	}
 	for (i = 0; i < ARRAY_SIZE(probe_xy); i++) {
 		u32 offset = (probe_xy[i][1] * view->storage_width +
-			      probe_xy[i][0]) * 4;
+			      probe_xy[i][0]) *
+			     4;
 
 		sample[i] = get_unaligned_le32(cpu + offset);
 	}
 	dev_info(&mdev->pdev->dev,
 		 "M9 FAA dual bound color raw: point=%#llx base=%#x bytes=%u nonzero_dwords=%u wordhash32=%08x\n",
-		 (unsigned long long)r->color_lock_point, owner->base, view->logical_bytes,
-		 nonzero, hash);
+		 (unsigned long long)r->color_lock_point, owner->base,
+		 view->logical_bytes, nonzero, hash);
 	dev_info(&mdev->pdev->dev,
 		 "M9 FAA dual bound color raw words: origin=%08x edge0=%08x center=%08x edge1=%08x; storage-width offsets only\n",
 		 sample[0], sample[1], sample[2], sample[3]);
