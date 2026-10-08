@@ -8868,59 +8868,91 @@ unclaimed:
 }
 
 int m9x_faa_graph_bound_depth_views_locked(struct m9x_device *mdev,
- struct m9_faa_graph_binding *binding,u32 generation,struct m9x_faa_depth_views *views)
+					   struct m9_faa_graph_binding *binding,
+					   u32 generation,
+					   struct m9x_faa_depth_views *views)
 {
 #ifdef M9_FAA_GRAPH_INIT_CONTROL
- struct m9x_transport *t=&mdev->transport;struct m9x_faa_replay *r=t->faa;
+	struct m9x_transport *t = &mdev->transport;
+	struct m9x_faa_replay *r = t->faa;
 	struct m9_faa_depth_storage *n;
 	u32 i;
 	int ret;
- lockdep_assert_held(&t->lock);
- if(!views||!binding)return -EINVAL;
- memset(views,0,sizeof(*views));
- if(t->wedged)return -EIO;
- if(!r||r->graph_binding!=binding||r->graph_generation!=generation||t->generation!=generation||
-  !r->depth_storage||!r->depth_storage->ready)return -ESTALE;
- n=r->depth_storage;
- if(n->generation!=generation||n->views.color_policy!=M9_FAA_DEPTH_COLOR_SYSTEM_B||
-  n->views.depth_aux_role!=M9_FAA_DEPTH_HZ||
-  n->views.aux_depth_role!=M9_FAA_BOUND_DEPTH)return -ESTALE;
- m9_faa_frame_trace(mdev,"attachment-views-begin",n->initialized,n->owner[0].bytes,generation,0,false);
- for(i=0;i<M9_FAA_DEPTH_OWNERS;i++){
-  struct m9_faa_owner *o=&n->owner[i];
-  const struct m9x_faa_depth_view *v=&n->views.owner[i];
-  struct m9x_faa_depth_view expected=m9x_faa_bound_depth_profile_dimensions(i,
-   r->graph_layout.width,r->graph_layout.height);
-  expected.base=o->base;
-  if(memcmp(v,&expected,sizeof(expected)))return -ESTALE;
-  if(v->base!=o->base||v->capacity_bytes!=o->bytes||!v->logical_bytes||
-   v->logical_bytes>o->bytes||!IS_ALIGNED(o->base,PAGE_SIZE)||
-   (u64)o->base+o->bytes>U32_MAX)return -ESTALE;
-  if(i==M9_FAA_BOUND_COLOR){
-   if(o->vram||!o->cpu||!drm_mm_node_allocated(&o->system_node)||
-    o->system_node.start!=o->base||o->system_node.size!=o->bytes||
-    o->cpu_wc!=(n->views.color_policy==M9_FAA_DEPTH_COLOR_SYSTEM_B))return -ESTALE;
+
+	lockdep_assert_held(&t->lock);
+	if (!views || !binding)
+		return -EINVAL;
+	memset(views, 0, sizeof(*views));
+	if (t->wedged)
+		return -EIO;
+	if (!r || r->graph_binding != binding ||
+	    r->graph_generation != generation || t->generation != generation ||
+	    !r->depth_storage || !r->depth_storage->ready)
+		return -ESTALE;
+	n = r->depth_storage;
+	if (n->generation != generation ||
+	    n->views.color_policy != M9_FAA_DEPTH_COLOR_SYSTEM_B ||
+	    n->views.depth_aux_role != M9_FAA_DEPTH_HZ ||
+	    n->views.aux_depth_role != M9_FAA_BOUND_DEPTH)
+		return -ESTALE;
+	m9_faa_frame_trace(mdev, "attachment-views-begin", n->initialized,
+			   n->owner[0].bytes, generation, 0, false);
+	for (i = 0; i < M9_FAA_DEPTH_OWNERS; i++) {
+		struct m9_faa_owner *o = &n->owner[i];
+		const struct m9x_faa_depth_view *v = &n->views.owner[i];
+		struct m9x_faa_depth_view expected =
+			m9x_faa_bound_depth_profile_dimensions(i,
+							       r->graph_layout.width,
+							       r->graph_layout.height);
+
+		expected.base = o->base;
+		if (memcmp(v, &expected, sizeof(expected)))
+			return -ESTALE;
+		if (v->base != o->base || v->capacity_bytes != o->bytes ||
+		    !v->logical_bytes || v->logical_bytes > o->bytes ||
+		    !IS_ALIGNED(o->base, PAGE_SIZE) ||
+		    (u64)o->base + o->bytes > U32_MAX)
+			return -ESTALE;
+		if (i == M9_FAA_BOUND_COLOR) {
+			if (o->vram || !o->cpu ||
+			    !drm_mm_node_allocated(&o->system_node) ||
+			    o->system_node.start != o->base ||
+			    o->system_node.size != o->bytes ||
+			    o->cpu_wc != (n->views.color_policy ==
+					  M9_FAA_DEPTH_COLOR_SYSTEM_B))
+				return -ESTALE;
 			ret = m9x_system_pages_mapped(mdev, o->base, o->dma,
 						      o->bytes / PAGE_SIZE,
 						      n->views.color_policy ==
-						      M9_FAA_DEPTH_COLOR_SYSTEM_B ?
-						      1u : 0u, NULL, NULL);
+						      M9_FAA_DEPTH_COLOR_SYSTEM_B ? 1u : 0u,
+						      NULL, NULL);
 			if (ret)
 				return ret;
-  }else{
-   if(!o->vram||o->cpu||iosys_map_is_null(&o->map))return -ESTALE;
-   /* GPU use can update opaque secondary-record metadata. Initial
-    * publication still requires its clean image; reuse checks identities
-    * without resetting those retained metadata words. */
-   ret=n->initialized?m9x_address_check_local_mapping(mdev,o->base,o->bytes):
-    m9x_address_check_local_identity(mdev,o->base,o->bytes);
-   if(ret){m9_faa_frame_trace(mdev,"refuse-attachment-identity",31+i,o->base,o->bytes,ret,false);return ret;}
-  }
- }
- *views=n->views;
- m9_faa_frame_trace(mdev,"attachment-views-end",n->initialized,n->owner[0].bytes,generation,0,false);return 0;
+		} else {
+			if (!o->vram || o->cpu || iosys_map_is_null(&o->map))
+				return -ESTALE;
+			/* GPU use can update opaque secondary-record metadata. Initial
+			 * publication still requires its clean image; reuse checks identities
+			 * without resetting those retained metadata words.
+			 */
+			ret = n->initialized ?
+			      m9x_address_check_local_mapping(mdev, o->base, o->bytes) :
+			      m9x_address_check_local_identity(mdev, o->base, o->bytes);
+			if (ret) {
+				m9_faa_frame_trace(mdev,
+						   "refuse-attachment-identity",
+						   31 + i, o->base, o->bytes,
+						   ret, false);
+				return ret;
+			}
+		}
+	}
+	*views = n->views;
+	m9_faa_frame_trace(mdev, "attachment-views-end", n->initialized,
+			   n->owner[0].bytes, generation, 0, false);
+	return 0;
 #else
- return -EOPNOTSUPP;
+	return -EOPNOTSUPP;
 #endif
 }
 
