@@ -7941,7 +7941,7 @@ int m9x_faa_graph_dual_later_prepare(struct m9x_device *mdev,
   input->record_stride!=64||!input->record_count||
   input->record_count%3||input->fragment_flags||
   input->dual_colorpass_diagnostic||!input->dual_base_only||
-  input->depth_flags!=7)return -EOPNOTSUPP;
+  !m9x_faa_depth_flags_valid(input->depth_flags))return -EOPNOTSUPP;
  if(batch){
   if(!batch->count||batch->count>M9_FAA_DUAL_BATCH_MAX_DRAWS||
      batch->clear_flags!=clear_flags)return -EOPNOTSUPP;
@@ -7951,7 +7951,7 @@ int m9x_faa_graph_dual_later_prepare(struct m9x_device *mdev,
       job->declaration_count!=9||job->record_stride!=64||
       job->fragment_flags||job->layout.constants_bytes>16384||
       job->record_count>12288||!job->record_count||job->record_count%3||
-      job->depth_flags!=7||
+      !m9x_faa_depth_flags_valid(job->depth_flags)||
       check_mul_overflow(ALIGN(job->record_count,4),64u,&raw)||
       check_add_overflow(ALIGN(job->layout.constants_bytes,128),
                          max(job->layout.geometry_bytes,128u+raw),&span))

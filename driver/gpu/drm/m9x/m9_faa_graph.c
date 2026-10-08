@@ -2204,13 +2204,13 @@ int m9x_faa_graph_dual_later_ioctl(struct drm_device *drm,void *data,
  if(!state||args->flags||args->state||args->pad||args->lock_point||
     !m9x_faa_runtime_shape(args->width,args->height)||
     (args->clear_flags&&args->clear_flags!=3&&args->clear_flags!=2)||
-    args->clear_color||args->depth_flags!=7||
+    args->clear_color||!m9x_faa_depth_flags_valid(args->depth_flags)||
     !previous||(previous&15)||previous>U64_MAX-0x1a0-
       M9_FAA_DUAL_BATCH_MAX_DRAWS*0xa0)return -EOPNOTSUPP;
  if(args->version==PARHELIA_M9_FAA_DUAL_LATER_BATCH_VERSION){
   ret=m9x_faa_dual_later_batch_copy(args,&batch);if(ret)return ret;
   for(i=0;i<batch->count;i++)
-   if(batch->draw[i].input.depth_flags!=7){ret=-EOPNOTSUPP;goto free_batch;}
+   if(!m9x_faa_depth_flags_valid(batch->draw[i].input.depth_flags)){ret=-EOPNOTSUPP;goto free_batch;}
   input=batch->draw[0].input;
  }else{
   if(args->version!=PARHELIA_M9_FAA_DUAL_LATER_VERSION||args->draws||
