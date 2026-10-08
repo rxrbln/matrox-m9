@@ -254,6 +254,13 @@ struct m9_faa_owner {
 	bool cpu_wc;
 	struct drm_mm_node system_node;
 };
+#ifndef M9_FAA_GRAPH_INIT_CONTROL
+/* Without the graph profile there are no graph phases to trace. */
+void m9x_faa_trace(struct m9x_device *mdev, const char *phase, u32 index,
+		   u32 offset, u64 point, int result)
+{
+}
+#endif
 #ifdef M9_FAA_GRAPH_INIT_CONTROL
 #define M9_FAA_DEPTH_PREFIX_CAPACITY (M9_FAA_ATTACHMENT_CLEAR_CAPACITY + M9_FAA_SAMPLE_CLEAR_CAPACITY)
 #define M9_FAA_DEPTH_FRAME_PRIMARY_CAPACITY 0x40000u
