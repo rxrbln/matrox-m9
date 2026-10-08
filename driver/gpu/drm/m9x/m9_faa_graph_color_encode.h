@@ -38,6 +38,8 @@ int m9x_faa_color_encode(const u8 *blob,size_t bytes,
  u32 init_bytes,u64 init_point,const struct m9x_faa_color_input *input,
  const struct m9x_faa_color_image *image);
 bool m9x_faa_color_flat_fragment_valid(const struct m9x_faa_color_input *input);
+int m9x_faa_fused_source_mask(const u8 *program, u32 bytes,
+ u32 begin, u16 *mask);
 int m9x_faa_carry_source_mask(const u8 *program, u32 program_bytes,
  u32 begin, u32 end, u32 targets, u16 *mask);
 bool m9x_faa_color_four_template_valid(const u8 *blob,size_t bytes);

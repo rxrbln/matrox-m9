@@ -13,15 +13,43 @@ static const struct color_dim dims[]={{27,252},{27,3636},{29,984},{29,992}};
 static const u8 template_sha[32]={0x56,0x0f,0x8b,0xeb,0xb7,0xc9,0x6b,0x22,0x27,0xd5,0xe1,0x63,0x08,0xe5,0xfe,0x88,0x97,0x10,0x88,0x7c,0x27,0x3e,0x38,0x43,0x7f,0xbe,0x59,0x66,0xb2,0x02,0x31,0xc4};
 static u32 word(const u8*p){return (u32)p[0]|(u32)p[1]<<8|(u32)p[2]<<16|(u32)p[3]<<24;}
 static void put(u8*p,u32 v){p[0]=v;p[1]=v>>8;p[2]=v>>16;p[3]=v>>24;}
+/* Original 150dc0 bound groups for fused POSITION/COLOR. Occupied scratch
+ * halves clear availability; output halves are coupled only within the
+ * three real tail groups. Clipcode r21 lies outside the 16-pair field. */
+int m9x_faa_fused_source_mask(const u8 *program,u32 bytes,u32 begin,u16 *mask)
+{
+ u32 i,seen=0;u16 available=0xbf00;bool stopped=false,clip=false;
+ if(!program||!mask||(bytes&7)||(begin&7)||begin>=bytes||bytes-begin<8)return -EINVAL;
+ for(i=begin;i<bytes;i+=8){
+  u32 a=word(program+i),b=word(program+i+4),d=(a>>8)&127;bool output=false;
+  if(a==0xffff801c&&b==0xa01fc00f){stopped=true;continue;}
+  if(stopped)return -EINVAL;
+  for(u32 j=0;j<3;j++){
+   if(d==0x11+4*j){seen|=1u<<(2*j);output=true;}
+   else if(d==0x13+4*j){seen|=1u<<(2*j+1);output=true;}
+  }
+  if(!output){
+   if(d==0x21)clip=true;
+   else if(d>=0x20)return -EINVAL;
+   else available&=~(1u<<(d/2));
+  }
+ }
+ if(!stopped||seen!=0x3f||!clip)return -EINVAL;
+ for(i=0;i<3;i++){
+  u16 complete=(1u<<((0x11+4*i)/2))|(1u<<((0x13+4*i)/2));
+  if((available&complete)!=complete)available&=~complete;
+ }
+ *mask=available;return 0;
+}
 bool m9x_faa_color_template_valid(const u8*b,size_t n){u8 h[32];if(!b||n!=5004)return false;sha256(b,n,h);return !memcmp(h,template_sha,32);}
 static u32 moved(u32 at,u32 extra){return at>=508?at+extra:at;}
 int m9x_faa_color_encode(const u8*blob,size_t bytes,
  const struct m9x_faa_graph_draw_owner owner[31],u32 init_bytes,u64 init_point,
  const struct m9x_faa_color_input*in,const struct m9x_faa_color_image*out)
 {
- u32 padded,extra,secondary,offset,address,value,i,j,pairs,raw,padded_records,geometry_offset;
+ u32 padded,extra,secondary,offset,address,value,i,j,pairs,raw,padded_records,geometry_offset;u16 fused_mask;
  if(in&&in->layout.program_count==4)return m9x_faa_color_four_encode(blob,bytes,owner,init_bytes,init_point,in,out);
- if(in&&(in->data_offset||in->fragment_flags))return -EINVAL;
+ if(in&&((in->data_offset&127)||in->fragment_flags))return -EINVAL;
  if(!in||!out||!owner||!in->program||!in->constants||!in->geometry||!in->declaration||
   !out->program||!out->constants||!out->primary||!out->secondary||!out->secondary_length||
   !m9x_faa_color_template_valid(blob,bytes)||
@@ -55,12 +83,13 @@ int m9x_faa_color_encode(const u8*blob,size_t bytes,
   if(((d>>16)&15)||((d>>24)*4+16>in->record_stride)||
    ((d>>20)&15)!=(i/2+1)||((d>>12)&15))return -ERANGE;
  }
+ if(m9x_faa_fused_source_mask(in->program,in->layout.program_bytes,in->layout.entry_bytes[1],&fused_mask))return -EINVAL;
  padded=(in->declaration_count+3)&~3u;extra=(padded/4-1)*24;secondary=1352+extra;
  padded_records=(in->record_count+3)&~3u;
  geometry_offset=(in->layout.constants_bytes+127)&~127u;
  if(m9x_faa_graph_draw_owners_validate(owner)||init_bytes>owner[27].bytes||owner[27].bytes-init_bytes<3652||
   owner[26].bytes<in->layout.program_bytes||owner[29].bytes<secondary+560||
-  owner[28].bytes<geometry_offset+128+padded_records*in->record_stride||
+  in->data_offset>owner[28].bytes||owner[28].bytes-in->data_offset<geometry_offset+128+padded_records*in->record_stride||
   out->program_bytes<in->layout.program_bytes||out->constants_bytes<geometry_offset+128+padded_records*in->record_stride||
   out->primary_bytes<3652||out->secondary_bytes<secondary)return -ERANGE;
  /* Dry-run every live substitution before changing an image. */
@@ -73,6 +102,7 @@ int m9x_faa_color_encode(const u8*blob,size_t bytes,
   if(f->dst==29&&f->at==332)offset=in->layout.constant_end[1];
   if(f->dst==29&&f->at==1104)offset=in->layout.constant_begin[0];
   if(f->dst==29&&f->at==1108)offset=in->layout.constant_end[0];
+  if(f->owner==28&&check_add_overflow(offset,in->data_offset,&offset))return -ERANGE;
   if(offset>owner[f->owner].bytes||owner[f->owner].bytes-offset<4||check_add_overflow(owner[f->owner].base,offset,&address)||(address&3))return -ERANGE;
  }
  memcpy(out->program,in->program,in->layout.program_bytes);
@@ -96,6 +126,7 @@ int m9x_faa_color_encode(const u8*blob,size_t bytes,
   if(f->dst==29&&f->at==332)offset=in->layout.constant_end[1];
   if(f->dst==29&&f->at==1104)offset=in->layout.constant_begin[0];
   if(f->dst==29&&f->at==1108)offset=in->layout.constant_end[0];
+  if(f->owner==28)offset+=in->data_offset;
   address=owner[f->owner].base+offset;
   value=f->pc==0x248a0?(address&0xfffff000)|f->tag:
    f->pc==0x2490e?(address|f->tag)&0xfffffffc:address|f->tag;
@@ -110,7 +141,7 @@ int m9x_faa_color_encode(const u8*blob,size_t bytes,
   put(out->secondary+moved(offset,extra),0x00500000|pairs<<8);}
  /* Register88's high byte is the source raw FLOAT4 input mask. Its
   * low mask is the separately qualified fused position/COLOR interface. */
- put(out->secondary+260,(((1u<<((in->declaration_count-1)/2))-1)<<24)|0x00bf00);
+ put(out->secondary+260,(((1u<<((in->declaration_count-1)/2))-1)<<24)|fused_mask);
  for(i=0;i<4;i++)put(out->secondary+164+i*4,in->record_stride);
  put(out->secondary+292,in->record_stride);put(out->secondary+296,in->record_count);
  put(out->secondary+moved(568,extra),0x23000001);
