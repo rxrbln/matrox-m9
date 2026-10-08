@@ -1,5 +1,6 @@
 /* SPDX-License-Identifier: MIT */
 /* Copyright 2026 René Rebe <rene@exactco.de> */
+#include "m9_faa_graph_batch_limits.h"
 #include <errno.h>
 #include <string.h>
 #include <sys/ioctl.h>
@@ -464,7 +465,7 @@ m9_faa_color_lock_history_valid(const struct m9_faa_graph *graph)
       return false;
    if (graph->color_frame_draw_count) {
       uint32_t count = graph->color_frame_draw_count;
-      if (count > 32 || (graph->color_program_count != 2 && graph->color_program_count != 4))
+      if (count > M9_FAA_FRAME_BATCH_MAX_DRAWS || (graph->color_program_count != 2 && graph->color_program_count != 4))
          return false;
       bool first = !graph->color_next_lock_point;
       const bool fused = graph->color_program_count == 2;
@@ -798,18 +799,19 @@ m9_faa_surface_color_frame_kernel(struct m9_screen *screen,
 }
 
 
-int
-m9_faa_surface_color_batch_kernel(struct m9_screen *screen,
-                                   struct m9_faa_surface *surface,
-                                   const struct m9_faa_application_frame *frame)
+static int
+m9_faa_color_batch_with_storage(struct m9_screen *screen,
+                                 struct m9_faa_surface *surface,
+                                 const struct m9_faa_application_frame *frame,
+                                 struct drm_parhelia_m9_faa_color_draw *draws,
+                                 struct drm_parhelia_m9_faa_color_draw *saved)
 {
-   struct drm_parhelia_m9_faa_color_draw draws[32] = {0};
    struct drm_parhelia_m9_faa_graph_color_frame_batch request = {0};
    _Static_assert(sizeof(draws[0]) == 112, "FAA batch draw kernel ABI");
    _Static_assert(sizeof(request) == 80, "FAA frame batch kernel ABI");
    if (!screen || !surface || !frame || !frame->draws || !frame->count)
       return -EINVAL;
-   if (frame->count > ARRAY_SIZE(draws)) return -E2BIG;
+   if (frame->count > M9_FAA_FRAME_BATCH_MAX_DRAWS) return -E2BIG;
    const struct m9_faa_application_upload *head = &frame->draws[0];
    struct m9_faa_graph *graph = &surface->graph;
    if (head->graph_id != graph->prepared_id || head->init_point != graph->init_point ||
@@ -909,7 +911,6 @@ m9_faa_surface_color_batch_kernel(struct m9_screen *screen,
    request.width = surface->width; request.height = surface->height;
    request.clear_flags = frame->clear_flags; request.clear_color = frame->clear_color;
    const struct drm_parhelia_m9_faa_graph_color_frame_batch before = request;
-   struct drm_parhelia_m9_faa_color_draw saved[32];
    memcpy(saved, draws, frame->count * sizeof(draws[0]));
    if (first) { graph->color_lock_attempted = true; graph->color_program_count = programs; }
    else graph->color_next_attempted = true;
@@ -946,6 +947,26 @@ m9_faa_surface_color_batch_kernel(struct m9_screen *screen,
    graph->color_depth_initialized = true;
    graph->color_unlock_attempted = false; graph->color_unlock_point = 0;
    return 0;
+}
+
+
+int
+m9_faa_surface_color_batch_kernel(struct m9_screen *screen,
+                                  struct m9_faa_surface *surface,
+                                  const struct m9_faa_application_frame *frame)
+{
+   if (!screen || !surface || !frame || !frame->draws || !frame->count)
+      return -EINVAL;
+   if (frame->count > M9_FAA_FRAME_BATCH_MAX_DRAWS) return -E2BIG;
+   /* Keep the request and immutable receipt comparison off the application
+    * stack, sized to this frame. No attempt is published on allocation failure. */
+   struct drm_parhelia_m9_faa_color_draw *draws =
+      calloc(2u * frame->count, sizeof(*draws));
+   if (!draws) return -ENOMEM;
+   int ret = m9_faa_color_batch_with_storage(screen, surface, frame, draws,
+                                             draws + frame->count);
+   free(draws);
+   return ret;
 }
 
 
