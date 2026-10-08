@@ -169,7 +169,7 @@ m9_faa_surface_prepare(struct m9_screen *screen,
    /* The returned normal-Lock view addresses a tiled GEM primary. A
     * userspace layout field cannot turn an ENGINE_ONLY GEM into that owner.
     * Current CREATE_BO rejects TILED|ENGINE_ONLY, so use real BO_TILED. */
-   ret = m9_bo_create(screen, fresh.primary_layout.size, PARHELIA_M9_BO_TILED,
+   ret = m9_bo_create(screen, fresh.primary_layout.capacity_bytes, PARHELIA_M9_BO_TILED,
                        M9_RESOURCE_LINEAR_COLOR, &fresh.primary);
    if (!ret)
       ret = m9_faa_graph_create(screen, width, height, &fresh.graph);
@@ -213,8 +213,7 @@ m9_faa_surface_init_request(const struct m9_screen *screen,
    const struct m9_resource *owners[M9_FAA_INIT_OWNER_COUNT];
 
    if (!screen || !surface || !request || screen->faa.chip != M9_FAA_CHIP_M9 ||
-       surface->graph.initialized || surface->width != 320 ||
-       surface->height != 240 || surface->format != 0x66 ||
+       surface->graph.initialized || !m9_faa_runtime_dimensions(surface->width,surface->height) || surface->format != 0x66 ||
        !surface->destination || !surface->primary.tiled ||
        !m9_faa_graph_layout(surface->width, surface->height, &graph) ||
        !m9_faa_primary_layout(surface->width, surface->height,
@@ -255,10 +254,11 @@ m9_faa_surface_init_request(const struct m9_screen *screen,
    const uint64_t clear[M9_FAA_INIT_OWNER_COUNT] = {
       0, 0, 0, graph.companion_clear_bytes, graph.hz_clear_bytes, 0,
    };
-   /* Retained prepared180 page capacities, independently confirmed by
-    * the actual constructor/backing allocator. No initialization receipt. */
+   /* Source constructor/backing capacities for each admitted shape.
+    * These CPU contracts do not constitute an initialization receipt. */
    const uint64_t source_capacity[M9_FAA_INIT_OWNER_COUNT] = {
-      0x50000, 0x137000, 0x14000, graph.companion_capacity_bytes,
+      primary.capacity_bytes, (graph.main_bytes+4095)&~UINT64_C(4095),
+      (graph.auxiliary_bytes+4095)&~UINT64_C(4095), graph.companion_capacity_bytes,
       graph.hz_capacity_bytes, 0x1000,
    };
    fresh.source_capacity_compatible = true;
@@ -680,7 +680,7 @@ m9_faa_surface_color_frame_kernel(struct m9_screen *screen,
    const bool sampled_reset = clear_flags ==
       (PARHELIA_M9_FAA_COLOR_CLEAR_TARGET | PARHELIA_M9_FAA_COLOR_CLEAR_DEPTH);
    if (screen->faa.chip != M9_FAA_CHIP_M9 || !screen->wait_point ||
-       surface->width != 320 || surface->height != 240 || surface->format != 0x66 ||
+       !m9_faa_runtime_dimensions(surface->width,surface->height) || surface->format != 0x66 ||
        state->width != surface->width || state->height != surface->height ||
        state->scissor_enabled || upload->color_flat != state->flatshade ||
        (upload->layout.count != 2 && upload->layout.count != 4) || (upload->record_bytes != 32 &&
@@ -844,7 +844,7 @@ m9_faa_color_batch_with_storage(struct m9_screen *screen,
    const uint64_t delta = programs == 2 ? 0x110 + (frame->count - 1u) * UINT64_C(0x60) :
       ((first || initialized_frame) ? 0x150 : 0x1a0) + (frame->count - 1u) * UINT64_C(0xa0);
    if (screen->faa.chip != M9_FAA_CHIP_M9 || !screen->wait_point ||
-       surface->width != 320 || surface->height != 240 || surface->format != 0x66 ||
+       !m9_faa_runtime_dimensions(surface->width,surface->height) || surface->format != 0x66 ||
        frame->clear_flags != (PARHELIA_M9_FAA_COLOR_CLEAR_TARGET | PARHELIA_M9_FAA_COLOR_CLEAR_DEPTH) ||
        frame->clear_color)
       return -EOPNOTSUPP;
@@ -999,8 +999,8 @@ m9_faa_surface_color_present_kernel(struct m9_screen *screen,
    if (!screen || !surface || !destination_handle) return -EINVAL;
    struct m9_faa_graph *g = &surface->graph;
    if (screen->faa.chip != M9_FAA_CHIP_M9 || !screen->wait_point ||
-       surface->width != 320 || surface->height != 240 || surface->format != 0x66 ||
-       descriptor0 != 0xcc210140 || descriptor1 != 0x100f0 || (offset & 4095))
+       !m9_faa_runtime_dimensions(surface->width,surface->height) || surface->format != 0x66 ||
+       descriptor0 != (0xcc210000u|surface->width) || descriptor1 != (0x10000u|surface->height) || (offset & 4095))
       return -EOPNOTSUPP;
    if (!g->prepared || !g->initialized || !g->prepared_id ||
        !g->color_lock_attempted || !g->color_depth_initialized ||
@@ -1041,7 +1041,7 @@ m9_faa_surface_color_unlock_kernel(struct m9_screen *screen,
    if (!screen || !surface) return -EINVAL;
    struct m9_faa_graph *graph = &surface->graph;
    if (screen->faa.chip != M9_FAA_CHIP_M9 || !screen->wait_point ||
-       surface->width != 320 || surface->height != 240 || surface->format != 0x66)
+       !m9_faa_runtime_dimensions(surface->width,surface->height) || surface->format != 0x66)
       return -EOPNOTSUPP;
    if (graph->color_program_count != 2 && graph->color_program_count != 4)
       return -EINVAL;

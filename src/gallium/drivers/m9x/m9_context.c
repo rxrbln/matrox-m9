@@ -9341,12 +9341,12 @@ m9_context_faa_submit_draw(struct m9_context *ctx,
    if (!m9_context_faa_build_draw(ctx, info, draw, &owned, &why))
       goto out;
    const struct m9_faa_application_state *state = &owned.state;
-   if (state->width != 320 || state->height != 240 ||
+   if (!m9_faa_runtime_dimensions(state->width,state->height) ||
        (state->depth_enabled && state->depth_func > PIPE_FUNC_ALWAYS) ||
        (state->cull_face != PIPE_FACE_NONE && state->cull_face != PIPE_FACE_FRONT &&
         state->cull_face != PIPE_FACE_BACK) || state->scissor_enabled ||
-       state->viewport.scale[0] != 160 || state->viewport.scale[1] != -120 ||
-       state->viewport.translate[0] != 160 || state->viewport.translate[1] != 120 ||
+       state->viewport.scale[0] != state->width * .5f || state->viewport.scale[1] != state->height * -.5f ||
+       state->viewport.translate[0] != state->width * .5f || state->viewport.translate[1] != state->height * .5f ||
        (owned.shader.layout.count != 2 && owned.shader.layout.count != 4) ||
        (owned.shader.record_bytes != 32 &&
         (owned.shader.record_bytes != 16 || owned.shader.declaration_words != 3))) {
@@ -9459,10 +9459,10 @@ m9_context_faa_present_lock(struct m9_context *ctx, uint64_t graph_id,
        !graph->color_lock_attempted || graph->color_lock_point != lock_point ||
        graph->color_unlock_attempted || graph->color_unlock_point)
       return -ESTALE;
-   /* Only this shape/view has an original Lock mapper and pixel proof.
+   /* These source-qualified view geometries share the original mapper producer.
     * The kernel separately checks the exact owner, epoch and retirement. */
    struct m9_faa_primary_layout primary;
-   if (surface->width != 320 || surface->height != 240 || surface->format != 0x66 ||
+   if (!m9_faa_runtime_dimensions(surface->width,surface->height) || surface->format != 0x66 ||
        !m9_faa_primary_layout(surface->width, surface->height, surface->format, &primary) ||
        surface->primary_layout.size != primary.size ||
        surface->primary_layout.row_span != primary.row_span ||
@@ -9489,10 +9489,10 @@ m9_context_faa_present_lock(struct m9_context *ctx, uint64_t graph_id,
        ctx->color_offset != offset || offset > UINT32_MAX || (offset & 255) ||
        offset > destination->size || target.size > destination->size - offset)
       return -EOPNOTSUPP;
-   /* Hardware-qualified GPU presentation for the same-size ordinary destination.
+   /* The typed GPU copy producer targets the same-size ordinary destination.
     * Other destinations continue through the existing CPU presentation path. */
-   if (debug_get_bool_option("M9X_FAA_GPU_PRESENT", true) && width == 320 && height == 240 &&
-       target.row_span == 320 && target.size == 0x50000 && !(offset & 4095) &&
+   if (debug_get_bool_option("M9X_FAA_GPU_PRESENT", true) && width == surface->width && height == surface->height &&
+       target.row_span == primary.row_span && target.size == primary.size && !(offset & 4095) &&
        graph->color_depth_initialized) {
       const struct m9_surface_desc target_desc = {
          .row_span = target.row_span, .height = m9_surface_even_height(height),

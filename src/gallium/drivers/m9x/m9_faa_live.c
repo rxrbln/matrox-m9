@@ -121,7 +121,7 @@ live_gl_build_mode(const struct m9_faa_live_gl *s,
                   s->linkage->stream[2].location != VARYING_SLOT_TEX1)) ||
         (fused && s->linkage->count != 1)) ||
        (fused && (s->viewport.x || s->viewport.y ||
-                  s->viewport.width != 320 || s->viewport.height != 240 ||
+                  !m9_faa_runtime_dimensions(s->viewport.width,s->viewport.height) ||
                   s->fragment_constants.pairs != 2)) ||
        !s->count || s->count > M9_FAA_GL_UPLOAD_MAX_VERTICES ||
        !s->elements || !s->buffers || !s->maps || !s->map_bytes ||

@@ -5,6 +5,7 @@
 
 #include <stdbool.h>
 #include <stdint.h>
+#include "m9_faa_dimensions.h"
 
 /*
  * Multisampling state of the M-series engine.  The vendor's Direct3D user

@@ -5,6 +5,7 @@
 
 #include <stdbool.h>
 #include <stdint.h>
+#include "m9_faa_dimensions.h"
 
 /* Final native vectors, after allocation/scheduling. Vector zero is the
  * fragment program; the remaining vectors are preprocessing entries, each
