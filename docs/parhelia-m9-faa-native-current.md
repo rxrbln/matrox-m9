@@ -4,6 +4,20 @@ Copyright 2026 René Rebe <rene@exactco.de>
 SPDX-License-Identifier: GPL-2.0-only
 
 
+## October 8: continuous four-stage FAA glxgears passes96 frames
+
+DRM b011d51 completes96 real12-draw FAA frames on M9128, including3 primary
+and11 secondary command-pool rotations. Submitted/completed end at31f60;
+generation0, wedged0, queue empty after cleanup. The first image retains zero
+missing reference interior pixels; screenshots1/2/3/96 show complete gears.
+[Hardware proof and images](../tests/m9-faa-glxgears-first-hardware-20261008/continuous96-owner-bound-fixed/README.md).
+
+The old32 KiB FAA END cap is physically fixed. At320x240 on a1024x768 display,
+two uninterrupted application windows report5.042/5.066 FPS (vblank_mode=0).
+This is a diagnostic-path ballpark with remaining logging and CPU presentation,
+not a1024x768 benchmark. Paused first-frame timings are excluded. Corrected
+two-stage pool reuse, arbitrary dimensions and Quake3 FAA textures remain open.
+
 ## October 8: frame-4 command bound identified; fix awaiting hardware
 
 The extended run failed on frame4 after three complete FAA frames. Returning
