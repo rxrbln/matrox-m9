@@ -546,8 +546,9 @@ void m9x_faa_graph_binding_put(struct m9_faa_graph_binding *binding)
  * file lock prevents RELEASE from winning between token and native identity
  * checks; the returned binding kref survives either later RELEASE or fini. */
 int m9x_faa_graph_continuation_acquire(struct m9x_device *mdev,
-		struct drm_file *file, u64 id, u32 generation, u64 init_point,
-		struct m9_faa_graph_binding **out)
+				       struct drm_file *file, u64 id,
+				       u32 generation, u64 init_point,
+				       struct m9_faa_graph_binding **out)
 {
 	struct m9_faa_file *state;
 	struct m9_faa_graph_binding *binding = NULL;
@@ -560,8 +561,8 @@ int m9x_faa_graph_continuation_acquire(struct m9x_device *mdev,
 	if (!out)
 		return -EINVAL;
 	*out = NULL;
-	if (!mdev || !file || !file->minor ||
-	    file->minor->dev != &mdev->drm || !id || !init_point)
+	if (!mdev || !file || !file->minor || file->minor->dev != &mdev->drm ||
+	    !id || !init_point)
 		return -EINVAL;
 	if (!m9x_faa_graph_profile_enabled())
 		return -EOPNOTSUPP;
@@ -571,13 +572,15 @@ int m9x_faa_graph_continuation_acquire(struct m9x_device *mdev,
 	mutex_lock(&state->lock);
 	graph = state->graph;
 	if (!m9_faa_graph_continuation_matches(graph, id, generation,
-						init_point)) {
+					       init_point)) {
 		ret = -ENOENT;
 		goto out_state;
 	}
-	drm_exec_init(&exec, DRM_EXEC_INTERRUPTIBLE_WAIT |
-		      DRM_EXEC_IGNORE_DUPLICATES, PARHELIA_M9_FAA_GRAPH_OWNERS);
-	drm_exec_until_all_locked(&exec) {
+	drm_exec_init(&exec,
+		      DRM_EXEC_INTERRUPTIBLE_WAIT | DRM_EXEC_IGNORE_DUPLICATES,
+		      PARHELIA_M9_FAA_GRAPH_OWNERS);
+	drm_exec_until_all_locked(&exec)
+	{
 		for (i = 0; i < PARHELIA_M9_FAA_GRAPH_OWNERS; i++) {
 			ret = drm_exec_lock_obj(&exec, graph->owner[i]);
 			drm_exec_retry_on_contention(&exec);
@@ -589,8 +592,8 @@ int m9x_faa_graph_continuation_acquire(struct m9x_device *mdev,
 	if (ret)
 		goto out_exec;
 	mutex_lock(&mdev->transport.lock);
-	ret = m9x_faa_graph_retained_get_locked(mdev, generation,
-						  init_point, &binding);
+	ret = m9x_faa_graph_retained_get_locked(mdev, generation, init_point,
+						&binding);
 	if (!ret && (binding->graph != graph ||
 		     memcmp(binding->address, address, sizeof(address))))
 		ret = -ESTALE;
