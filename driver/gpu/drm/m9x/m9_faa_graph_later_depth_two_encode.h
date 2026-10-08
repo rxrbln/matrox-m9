@@ -1,0 +1,33 @@
+/* SPDX-License-Identifier: GPL-2.0-only */
+#ifndef M9_FAA_GRAPH_LATER_DEPTH_TWO_ENCODE_H
+#define M9_FAA_GRAPH_LATER_DEPTH_TWO_ENCODE_H
+#include "m9_faa_graph_later_depth_encode.h"
+/* Count2 initialized bound-depth profile, source b9f13f32. Same retained
+ * ownership/cursor interface as count4, distinct packet grammar/epochs.
+ * clear3: previous Unlock+110, clear0: +90; each extra DRAW adds60.
+ * No-wrap source scope. All output images remain CPU scratch; no MMIO or
+ * ownership release. Native authenticates initialization/Unlock/per-job
+ * metadata and applies the count2 raster lowering to each fresh image. */
+int m9x_faa_later_depth_two_encode(const u8 *sample,size_t sample_bytes,
+ const u8 *first,size_t first_bytes,
+ const struct m9x_faa_graph_draw_owner owner[M9_FAA_LATER_DEPTH_OWNERS],
+ const struct m9x_faa_depth_views *,u32 init_bytes,u32 primary_cursor,
+ u32 secondary_cursor,u64 previous_unlock,u64 live_next_point,u32 clear_flags,
+ const struct m9x_faa_color_input *,struct m9x_faa_later_depth_image *,
+ struct m9x_faa_later_depth_scratch *);
+/* fresh_secondary is an independent live count2 FIRST stage,1352/1376
+ * bytes, encoded at previous Unlock+70(clear3) or previous Unlock-10(clear0).
+ * Exact original source extra stage1484/1508 preserves that job's C2/C3,
+ * geometry/declarations, flat metadata and typed live owner identities.
+ * common raster state changes existing2 binds, never inserts a fourth-stage
+ * cull packet. old_secondary_bytes describes the authentic whole suffix.
+ * The native caller retains/checks immutable full declaration history. */
+int m9x_faa_later_depth_two_append_encode(
+ const struct m9x_faa_graph_draw_owner owner[M9_FAA_LATER_DEPTH_OWNERS],
+ const struct m9x_faa_depth_views *,u32 primary_start,u32 secondary_start,
+ u64 previous_unlock,u32 clear_flags,u32 raster_flags,u32 old_draw_count,
+ u32 old_last_declaration_count,const u8 *old_primary,u32 old_primary_bytes,
+ u32 old_secondary_bytes,const u32 *old_end_bytes,u32 old_end_count,
+ u64 old_final_point,const u8 *fresh_secondary,u32 fresh_secondary_bytes,
+ const struct m9x_faa_color_input *,struct m9x_faa_later_depth_append_image *);
+#endif
