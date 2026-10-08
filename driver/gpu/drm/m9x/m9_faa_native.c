@@ -7114,7 +7114,7 @@ int m9x_faa_graph_depth_batch_prepare(struct m9x_device *mdev,
  ret=initialized?m9_faa_depth_frame_retained_state(mdev,binding,generation,previous,&queue_start):
   m9_faa_depth_frame_first_state(t,binding,generation,previous);if(ret)goto unlock;
  r=t->faa;frame=r->depth_storage?r->depth_storage->frame:NULL;
- if(!frame||frame->attempted||frame->retired||frame->draw_count||frame->batch_data||frame->batch_secondary||
+ if(!frame||frame->attempted||frame->retired||frame->draw_count!=(initialized?1u:0u)||frame->batch_data||frame->batch_secondary||
   frame->first!=first||frame->initialized_reuse!=initialized||
   frame->end_count!=(initialized?(batch->clear_flags?13:4):14)||
   frame->final_point!=previous+(initialized?(batch->clear_flags?0x150:0xd0):0x150)||
