@@ -363,19 +363,26 @@ void m9x_faa_trace(struct m9x_device *mdev, const char *phase, u32 index,
 }
 
 static bool m9_faa_color_four_experimental;
-module_param_named(faa_color_four_experimental,m9_faa_color_four_experimental,bool,0600);
-MODULE_PARM_DESC(faa_color_four_experimental,"Enable unqualified four-stage COLOR launcher (diagnostic only)");
+module_param_named(faa_color_four_experimental, m9_faa_color_four_experimental,
+		   bool, 0600);
+MODULE_PARM_DESC(faa_color_four_experimental,
+		 "Enable unqualified four-stage COLOR launcher (diagnostic only)");
 static bool m9_faa_color_observe;
 module_param_named(faa_color_observe, m9_faa_color_observe, bool, 0600);
-MODULE_PARM_DESC(faa_color_observe, "Read bounded retained COLOR records and block boundaries after final retirement");
+MODULE_PARM_DESC(faa_color_observe,
+		 "Read bounded retained COLOR records and block boundaries after final retirement");
+
 struct m9_faa_color_storage {
- u8 program[4096],primary[3696],secondary[2880];
- u8 clear[128];
- u32 clear_bytes,secondary_cursor,lock_posts;
- u64 previous_unlock_point;
- u8 *constants;u32 constants_bytes,geometry_bytes,geometry_offset,program_bytes,secondary_bytes,primary_length,draw_length,lock_delta;
- struct m9x_faa_color_layout layout;
+	u8 program[4096], primary[3696], secondary[2880];
+	u8 clear[128];
+	u32 clear_bytes, secondary_cursor, lock_posts;
+	u64 previous_unlock_point;
+	u8 *constants;
+	u32 constants_bytes, geometry_bytes, geometry_offset, program_bytes,
+		secondary_bytes, primary_length, draw_length, lock_delta;
+	struct m9x_faa_color_layout layout;
 };
+
 struct m9_faa_public_vs_storage {
 	struct m9x_faa_public_vs_upload_layout layout;
 	u8 program[M9_FAA_PUBLIC_VS_PROGRAM_BYTES];
