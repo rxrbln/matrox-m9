@@ -83,6 +83,7 @@ struct m9x_fence {
 struct m9x_triangle_diag;
 struct m9x_faa_replay;
 struct m9_faa_prepared_graph;
+struct m9x_faa_surface_layout;
 struct m9_faa_graph_binding;
 struct m9x_address_space;
 
@@ -588,6 +589,10 @@ struct drm_gem_object *m9x_faa_graph_binding_owner(
 bool m9x_faa_graph_binding_address(
 		const struct m9_faa_graph_binding *binding, u32 role,
 		u32 *address, u32 *source_owner);
+/* Copies immutable graph geometry; a binding reference protects its lifetime. */
+bool m9x_faa_graph_binding_layout(
+		const struct m9_faa_graph_binding *binding,
+		struct m9x_faa_surface_layout *out);
 struct m9_faa_graph_binding *
 m9x_faa_graph_binding_get(struct m9_faa_graph_binding *binding);
 void m9x_faa_graph_binding_put(struct m9_faa_graph_binding *binding);

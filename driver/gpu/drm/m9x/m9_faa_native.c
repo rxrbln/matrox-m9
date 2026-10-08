@@ -27,6 +27,7 @@
 
 #include "m9_drv.h"
 #include "m9_faa_graph_present_encode.h"
+#include "m9_faa_graph_init_dimensions.h"
 #include "m9_reg.h"
 #include "m9_faa_output.h"
 #include "m9_faa_graph_draw_encode.h"
@@ -412,6 +413,7 @@ struct m9x_faa_replay {
 #endif
 	/* Holds all six caller GEM pins through retirement or quarantine. */
 	struct m9_faa_graph_binding *graph_binding;
+	struct m9x_faa_surface_layout graph_layout;
 	u32 graph_generation;
 	bool graph_preparing;
 	/* The first graph draw is a separate caller on the retained INIT
@@ -620,6 +622,9 @@ static int m9_faa_graph_continuation_state(
 	    !t->engine_transitioned || !t->restore_ready || !t->fence_cpu ||
 	    t->async_stop || t->async_pending || t->queue_count)
 		return -EBUSY;
+	/* INIT dimensions do not qualify the separate DRAW/Lock producers. */
+	if (r->graph_layout.width != 320 || r->graph_layout.height != 240)
+		return -EOPNOTSUPP;
 	return 0;
 }
 
@@ -762,6 +767,7 @@ int m9x_faa_graph_continuation_selftest(void)
 	static struct m9x_faa_replay r;
 	static u32 counter = 0xb1;
 
+	m9x_faa_surface_layout(320, 240, &r.graph_layout);
 	t.faa = &r;
 	t.fence_cpu = &counter;
 	t.faa_source_context = true;
@@ -2133,8 +2139,13 @@ static int m9_faa_prepare(struct m9x_device *mdev,
 			goto release_fw;
 		}
 	}
+	if (binding && !m9x_faa_graph_binding_layout(binding, &r->graph_layout)) {
+		ret = -EINVAL;
+		goto free;
+	}
 	for (i = 0; i < ARRAY_SIZE(r->owner); i++) {
 		u32 role, address, source;
+		struct m9_faa_owner_spec spec = m9_faa_owner_specs[i];
 
 		if (binding) {
 			for (role = 0; role < PARHELIA_M9_FAA_GRAPH_OWNERS; role++) {
@@ -2146,19 +2157,29 @@ static int m9_faa_prepare(struct m9x_device *mdev,
 				if (source != i)
 					continue;
 				r->owner[i].base = address;
-				r->owner[i].bytes = PAGE_ALIGN(m9_faa_owner_specs[i].bytes);
+				r->owner[i].bytes = r->graph_layout.owner[role].capacity;
 				break;
 			}
 			if (role != PARHELIA_M9_FAA_GRAPH_OWNERS)
 				continue;
 		}
+#ifdef M9_FAA_GRAPH_INIT_CONTROL
+		/* Original INIT1024 keeps all other private owner extents unchanged.
+		 * Source roles6/7 are the primary SYSTEM view and companion HZ. */
+		if (binding && i == 6) {
+			spec.bytes = r->graph_layout.owner[M9_FAA_SURFACE_PRIMARY].capacity;
+			spec.mapped_bytes = spec.bytes;
+		} else if (binding && i == 7) {
+			spec.bytes = r->graph_layout.owner[M9_FAA_SURFACE_HZ].capacity;
+		}
+#endif
 		/* Only a profile with a sampled caller color substitutes that owner.
 		 * An absent sentinel allocates every genuine source owner. */
 		if (i == M9_FAA_COLOR_OWNER)
 			continue;
 		if (binding && !m9_faa_owner_specs[i].local)
 			mutex_lock(&mdev->transport.lock);
-		ret = m9_faa_allocate(mdev, &r->owner[i], &m9_faa_owner_specs[i],
+		ret = m9_faa_allocate(mdev, &r->owner[i], &spec,
 				      m9_faa_defer_output_map && i == M9_FAA_OUTPUT_OWNER);
 		if (binding && !m9_faa_owner_specs[i].local)
 			mutex_unlock(&mdev->transport.lock);
@@ -2420,7 +2441,7 @@ static u32 m9_faa_encode(u32 pc, u32 address, u32 tag)
 #endif
 #define M9_FAA_CLEAR_MAX_WORDS 20u
 
-#if !defined(M9_FAA_HAS_COMPANION_CLEAR) || M9_FAA_HAS_COMPANION_CLEAR
+#if !defined(M9_FAA_GRAPH_INIT_CONTROL) && (!defined(M9_FAA_HAS_COMPANION_CLEAR) || M9_FAA_HAS_COMPANION_CLEAR)
 static int m9_faa_clear_page_words(u32 base, u32 bytes, u32 *words,
 				  u32 capacity, u32 *count)
 {
@@ -2543,7 +2564,23 @@ static int m9_faa_normalize_raster_masks(struct m9x_faa_replay *r)
 static int m9_faa_rebase_page_clear(struct m9x_faa_replay *r)
 {
 	struct m9_faa_owner *primary = &r->owner[M9_FAA_PRIMARY_OWNER];
-#if defined(M9_FAA_HAS_COMPANION_CLEAR) && !M9_FAA_HAS_COMPANION_CLEAR
+#ifdef M9_FAA_GRAPH_INIT_CONTROL
+	u32 *scratch;
+	int ret;
+
+	if (!r->graph_binding || !primary->cpu || primary->vram ||
+	    r->owner[4].bytes < r->graph_layout.owner[M9_FAA_SURFACE_COMPANION].clear)
+		return -EINVAL;
+	scratch = kmalloc_array(M9_FAA_INIT_DIMENSION_CLEAR_WORDS, sizeof(*scratch), GFP_KERNEL);
+	if (!scratch)
+		return -ENOMEM;
+	ret = m9x_faa_graph_init_dimensions_encode(primary->cpu, primary->bytes,
+		&r->graph_layout, m9_faa_owner_specs[4].captured,
+		r->owner[4].base, scratch, M9_FAA_INIT_DIMENSION_CLEAR_WORDS,
+		&r->primary_bytes);
+	kfree(scratch);
+	return ret;
+#elif defined(M9_FAA_HAS_COMPANION_CLEAR) && !M9_FAA_HAS_COMPANION_CLEAR
 	/* This complete source profile contains no inline companion clear.
 	 * Preserve its exact primary and independent secondary finish. */
 	if (!primary->cpu || primary->vram ||
@@ -3013,8 +3050,8 @@ static int m9_faa_submit(struct m9x_device *mdev, u32 color,
 							  &address, &source) ||
 			    source >= ARRAY_SIZE(r->owner) ||
 			    r->owner[source].base != address ||
-			    r->owner[source].bytes <
-				PAGE_ALIGN(m9_faa_owner_specs[source].bytes)) {
+			    r->owner[source].bytes !=
+				r->graph_layout.owner[i].capacity) {
 				ret = -ESTALE;
 				goto unlock;
 			}
@@ -3047,6 +3084,7 @@ static int m9_faa_submit(struct m9x_device *mdev, u32 color,
 			continue;
 #endif
 		ret = m9x_address_local_prepare(mdev, r->owner[i].base,
+				r->graph_binding ? r->owner[i].bytes :
 				PAGE_ALIGN(m9_faa_owner_specs[i].bytes));
 		if (ret) {
 			dev_err(&mdev->pdev->dev, "M9 FAA identity leaf refused: owner=%u base=%#x ret=%d\n",
@@ -3115,7 +3153,12 @@ static int m9_faa_submit(struct m9x_device *mdev, u32 color,
 	ret = m9_faa_rebase_page_clear(r);
 	if (ret)
 		goto unlock;
-#if defined(M9_FAA_MULTI_CLEAR)
+#if defined(M9_FAA_GRAPH_INIT_CONTROL)
+	dev_info(&mdev->pdev->dev,
+		 "M9 FAA graph INIT geometry: width=%u height=%u companion_bytes=%#x primary_bytes=%u\n",
+		 r->graph_layout.width, r->graph_layout.height,
+		 r->graph_layout.owner[M9_FAA_SURFACE_COMPANION].clear, r->primary_bytes);
+#elif defined(M9_FAA_MULTI_CLEAR)
 	for (i = 0; i < ARRAY_SIZE(m9_faa_clear_segments); i++)
 		dev_info(&mdev->pdev->dev,
 			 "M9 FAA page clear: segment=%u owner=%u base=%#x bytes=%#x primary_bytes=%u\n",

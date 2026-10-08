@@ -15,6 +15,7 @@
 #include "m9_faa_graph_public_vs_encode.h"
 #include "m9_faa_graph_color_encode.h"
 #include "m9_faa_graph_frame_batch_input.h"
+#include "m9_faa_graph_surface_layout.h"
 
 /* Source-qualified prepared180 shape. These are allocation extents, not
  * permission to clear opaque tails or evidence of GPU initialization. */
@@ -30,6 +31,8 @@ static const struct {
 };
 
 struct m9_faa_prepared_graph {
+	/* Immutable CPU geometry, validated before any owner is published. */
+	struct m9x_faa_surface_layout layout;
 	struct kref refs;
 	struct drm_gem_object *owner[PARHELIA_M9_FAA_GRAPH_OWNERS];
 	bool pinned[PARHELIA_M9_FAA_GRAPH_OWNERS];
@@ -80,18 +83,30 @@ static bool m9_faa_graph_local_span(u64 local_base, u64 offset, u64 bytes,
 	return true;
 }
 
-static bool m9_faa_graph_ranges_disjoint(const u32 *address)
+static bool m9_faa_graph_ranges_layout_disjoint(const u32 *address,
+		const struct m9x_faa_surface_layout *layout)
 {
 	u32 i, j;
 
+	if (!address || !layout)
+		return false;
 	for (i = 0; i < PARHELIA_M9_FAA_GRAPH_OWNERS; i++)
 		for (j = 0; j < i; j++)
 			if ((u64)address[i] < (u64)address[j] +
-				m9_faa_graph_owner_spec[j].capacity &&
+				layout->owner[j].capacity &&
 			    (u64)address[j] < (u64)address[i] +
-				m9_faa_graph_owner_spec[i].capacity)
+				layout->owner[i].capacity)
 				return false;
 	return true;
+}
+
+/* Historical 320 admission selftest; live bindings use retained geometry. */
+static bool m9_faa_graph_ranges_disjoint(const u32 *address)
+{
+	struct m9x_faa_surface_layout layout;
+
+	return m9x_faa_surface_layout(320, 240, &layout) &&
+		m9_faa_graph_ranges_layout_disjoint(address, &layout);
 }
 
 static bool m9_faa_graph_owner_distinct(
@@ -148,12 +163,18 @@ static bool m9_faa_graph_record_retired(struct m9_faa_prepared_graph *graph,
 static bool m9_faa_graph_request_valid(
 		const struct drm_parhelia_m9_faa_graph_prepare *args)
 {
+	struct m9x_faa_surface_layout layout;
 	u32 i, j;
 
-	if (args->width != 320 || args->height != 240 ||
-	    args->format != 0x66 || args->primary_desc != 0xcc220140 ||
-	    args->companion_desc != 0x7a220140 ||
-	    args->hz_desc != 0xf0010140 || args->ad != (0x136080 >> 5) ||
+	/* Whole original INIT profiles close these two command shapes. The
+	 * allocation helper's broader domain does not enable new producers. */
+	if (!args || !((args->width == 320 && args->height == 240) ||
+		      (args->width == 1024 && args->height == 768)) ||
+	    !m9x_faa_surface_layout(args->width, args->height, &layout) ||
+	    args->format != 0x66 ||
+	    args->primary_desc != layout.primary_descriptor ||
+	    args->companion_desc != layout.companion_descriptor ||
+	    args->hz_desc != layout.hz_descriptor || args->ad != layout.ad ||
 	    args->flags || args->graph_id || args->init_point ||
 	    args->generation || args->state)
 		return false;
@@ -161,9 +182,9 @@ static bool m9_faa_graph_request_valid(
 		const struct drm_parhelia_m9_faa_owner *o = &args->owners[i];
 
 		if (!o->handle || o->pad ||
-		    o->logical_bytes != m9_faa_graph_owner_spec[i].logical ||
-		    o->capacity_bytes != m9_faa_graph_owner_spec[i].capacity ||
-		    o->clear_bytes != m9_faa_graph_owner_spec[i].clear ||
+		    o->logical_bytes != layout.owner[i].logical ||
+		    o->capacity_bytes != layout.owner[i].capacity ||
+		    o->clear_bytes != layout.owner[i].clear ||
 		    o->logical_bytes > o->capacity_bytes ||
 		    o->clear_bytes > o->capacity_bytes)
 			return false;
@@ -360,16 +381,16 @@ static int m9_faa_graph_live_addresses(struct m9x_device *mdev,
 
 		if (!gem || !graph->pinned[i] ||
 		    !m9_faa_graph_owner_class_valid(i, gem) ||
-		    gem->size != m9_faa_graph_owner_spec[i].capacity)
+		    gem->size != graph->layout.owner[i].capacity)
 			return -ERANGE;
 		offset = m9x_gem_vram_offset(gem);
 		if (offset < 0 ||
 		    !m9_faa_graph_local_span(M9_VRAM_GPU_BASE, (u64)offset,
-			m9_faa_graph_owner_spec[i].capacity, limit,
+			graph->layout.owner[i].capacity, limit,
 			&address[i]))
 			return -ERANGE;
 	}
-	return m9_faa_graph_ranges_disjoint(address) ? 0 : -EINVAL;
+	return m9_faa_graph_ranges_layout_disjoint(address, &graph->layout) ? 0 : -EINVAL;
 }
 
 int m9x_faa_graph_binding_acquire(struct m9x_device *mdev,
@@ -450,6 +471,15 @@ bool m9x_faa_graph_binding_address(const struct m9_faa_graph_binding *binding,
 		return false;
 	*address = binding->address[role];
 	*source_owner = m9_faa_graph_source_owner[role];
+	return true;
+}
+
+bool m9x_faa_graph_binding_layout(const struct m9_faa_graph_binding *binding,
+				struct m9x_faa_surface_layout *out)
+{
+	if (!binding || !binding->graph || !out)
+		return false;
+	*out = binding->graph->layout;
 	return true;
 }
 
@@ -588,6 +618,11 @@ static int m9_faa_graph_prepare(struct drm_device *drm, void *data,
 	if (!graph)
 		return -ENOMEM;
 	kref_init(&graph->refs);
+	/* Request admission already validated this immutable geometry. */
+	if (!m9x_faa_surface_layout(args->width, args->height, &graph->layout)) {
+		kfree(graph);
+		return -EINVAL;
+	}
 	mutex_lock(&state->lock);
 	if (state->graph) {
 		ret = -EBUSY;
