@@ -913,9 +913,9 @@ static int m9_faa_graph_continuation_state(const struct m9x_transport *t,
 	return 0;
 }
 
-int m9x_faa_graph_retained_get_locked(struct m9x_device *mdev,
-		u32 generation, u64 init_point,
-		struct m9_faa_graph_binding **out)
+int m9x_faa_graph_retained_get_locked(struct m9x_device *mdev, u32 generation,
+				      u64 init_point,
+				      struct m9_faa_graph_binding **out)
 {
 	int ret;
 
@@ -931,8 +931,8 @@ int m9x_faa_graph_retained_get_locked(struct m9x_device *mdev,
 		if (ret)
 			return ret;
 	}
-	ret = m9_faa_graph_continuation_state(&mdev->transport,
-					    generation, init_point);
+	ret = m9_faa_graph_continuation_state(&mdev->transport, generation,
+					      init_point);
 	if (!ret)
 		*out = m9x_faa_graph_binding_get(mdev->transport.faa->graph_binding);
 	return ret;
