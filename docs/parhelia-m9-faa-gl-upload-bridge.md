@@ -23,7 +23,9 @@ retires Lock200/Unlock220 with healthy transport but collapses to one wrong
 pixel. GPU COLOR/UV/clip/screen planes are correct; zero clip codes and the
 SoA-packed EE19 view are expected, not established causes. A real padded
 texture extent bug is fixed (64×64 BGRA allocation0x4400 rather than0x4000)
-and the corrected helper is queued for a clean-boot test. Disabled-depth and
+and its clean-boot retest still has the identical pixel failure, ruling out
+that allocation bug as the raster cause.
+[Both hardware cases](../tests/m9-faa-dual-first-depth-20261008/hardware-current-20261008/README.md). Disabled-depth and
 bounded dual batching runtime work is source/CPU qualified and awaits final
 integration/hardware qualification. No new no-FAA glmark2/piglit/Quake3 GL2
 application result is claimed.
