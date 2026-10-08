@@ -1728,8 +1728,7 @@ bool m9x_faa_graph_release_unposted(struct m9x_device *mdev,
 	t->faa_source_context = false;
 	mutex_unlock(&t->lock);
 	if (m9_faa_release(mdev, r)) {
-		dev_info(&mdev->pdev->dev,
-			 "M9 FAA unposted graph released; requester unchanged\n");
+		dev_info(&mdev->pdev->dev, "M9 FAA unposted graph released; requester unchanged\n");
 		return true;
 	}
 	mutex_lock(&t->lock);
