@@ -445,6 +445,8 @@ struct m9_job_key {
     * reaches target 0: binding the rest would leave the engine writing
     * undefined data into attachments it has no program for. */
    bool single_target;
+   /* ef[7:0] 0x55: GL_DITHER off, and colour clears (the vendor clears exactly) */
+   bool no_dither;
    /* Native preprocessing program of this job, the c2 image holding it and
     * the viewport its appended tail applies; NULL runs the draw module's
     * transformed records through the captured program. */

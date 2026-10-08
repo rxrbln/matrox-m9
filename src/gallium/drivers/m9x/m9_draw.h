@@ -125,6 +125,7 @@ struct m9_draw_job {
    uint32_t stencil_a9, stencil_aa;
    uint32_t color_mask;       /* raster ab: target 0 low, target 1 high */
    uint32_t color_mask_hi;    /* raster ac: target 2 low, target 3 high */
+   bool no_dither;            /* ef[7:0] 0x55 on an 8-bit target */
    /* Render format class of each bound target, packed into raster 89 by
     * m9_raster_89; a zero count keeps the single-target word. */
    uint8_t color_class[M9_DRAW_MAX_COLOR];

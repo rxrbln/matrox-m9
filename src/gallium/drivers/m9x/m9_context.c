@@ -3579,6 +3579,7 @@ m9_submit_job(struct m9_context *ctx)
          .stencil_aa = key->stencil_aa,
          .color_mask = key->color_mask,
          .color_mask_hi = key->color_mask_hi,
+         .no_dither = key->no_dither,
          .color_count = key->single_target ? MIN2(ctx->color_count, 1u) :
                                              ctx->color_count,
          .clip_min = split_y0 << 16 | split_x0,
@@ -5457,6 +5458,7 @@ m9_job_key_current(struct m9_context *ctx, struct m9_job_key *key)
    colormask = blend ? blend->rt[0].colormask : PIPE_MASK_RGBA;
    key->color_mask = m9_color_mask(colormask);
    key->color_mask_hi = 0xffffffffu;
+   key->no_dither = blend && !blend->dither;
    if (util_format_is_srgb(ctx->framebuffer.cbufs[0].format) &&
        (ctx->color_count != 1 || ctx->lines || !m9_fs_use_native(ctx)))
       return m9_skip_reason(ctx, "sRGB RT0 needs a native single-target "
@@ -8284,6 +8286,9 @@ m9_clear_quad(struct m9_context *ctx, const struct pipe_scissor_state *scissor,
    /* Only a multiple-target framebuffer needs the flag, so a single-target
     * clear keeps the key it had and still merges with the draws around it. */
    key.single_target = ctx->color_count > 1;
+   /* The vendor writes clear colours exactly; a depth-only clear keeps the
+    * draws' dither so it still merges with them. */
+   key.no_dither = colormask || (ctx->blend && !ctx->blend->dither);
    key.clip_min = ctx->params.clip_min;
    key.clip_max = ctx->params.clip_max;
    if (scissor && !m9_scissor_key(ctx, scissor, &key))

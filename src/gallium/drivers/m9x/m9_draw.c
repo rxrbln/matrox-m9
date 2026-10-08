@@ -404,11 +404,11 @@ m9_job_f0(const struct m9_draw_job *job, uint32_t base)
 }
 
 static uint32_t
-m9_dither_ef(uint32_t color_desc)
+m9_dither_ef(const struct m9_draw_job *job, uint32_t color_desc)
 {
    uint8_t code = color_desc >> 25;
 
-   return code == M9_COLOR_FORMAT_A2B10G10R10 ||
+   return job->no_dither || code == M9_COLOR_FORMAT_A2B10G10R10 ||
           code == M9_COLOR_FORMAT_A2R10G10B10 ? 0x55u : 0;
 }
 
@@ -666,7 +666,7 @@ m9_emit_raster_range(struct m9_batch *batch, const struct m9_draw_job *job,
         V(0xef, m9_job_ef(job,
                 d0->cull | depth_ef | (pass ? pass->sequence_ef : 0) |
                 /* ef[7:0] is 0xaa under a logic op (CAPTURED, logic_*) */
-                (logic ? 0xaau : m9_dither_ef(p->color_desc)) |
+                (logic ? 0xaau : m9_dither_ef(job, p->color_desc)) |
                 (pass && pass->writes_record ? 0 :
                  m9_color_enable(job->color_count)))),
         V(0xd7, m9_raster_d7(d0->topology)));
@@ -811,7 +811,7 @@ m9_emit_raster_range(struct m9_batch *batch, const struct m9_draw_job *job,
               V(0x6a, 0x25010000));
          EMIT(V(0xf0, m9_job_f0(job, m9_raster_class(d->lines, blend))),
               V(0xef, m9_job_ef(job, d->cull | depth_ef |
-                      (logic ? 0xaau : m9_dither_ef(p->color_desc)))),
+                      (logic ? 0xaau : m9_dither_ef(job, p->color_desc)))),
               V(0xd7, m9_raster_d7(d->topology)), V(0xf4, 0));
       }
       draw_at = batch->command_count;
