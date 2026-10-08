@@ -974,8 +974,8 @@ static int m9_faa_graph_stage_shape(const struct m9x_faa_replay *r, u32 stage,
  * upload.  No command is posted here.  A repeated caller cannot use the
  * INIT receipt to begin another draw, even while its first END is pending. */
 int m9x_faa_graph_draw_claim_locked(struct m9x_device *mdev,
-		struct m9_faa_graph_binding *binding, u32 generation,
-		u64 init_point)
+				    struct m9_faa_graph_binding *binding,
+				    u32 generation, u64 init_point)
 {
 #ifdef M9_FAA_GRAPH_INIT_CONTROL
 	struct m9x_transport *t = &mdev->transport;
@@ -993,7 +993,7 @@ int m9x_faa_graph_draw_claim_locked(struct m9x_device *mdev,
 	    !r->owner[M9_FAA_PRIMARY_OWNER].cpu ||
 	    !drm_mm_node_allocated(&r->owner[M9_FAA_PRIMARY_OWNER].system_node) ||
 	    r->owner[M9_FAA_PRIMARY_OWNER].system_node.start !=
-			r->owner[M9_FAA_PRIMARY_OWNER].base)
+		    r->owner[M9_FAA_PRIMARY_OWNER].base)
 		return -ESTALE;
 	r->graph_draw_claimed = true;
 	r->graph_draw_end_bytes = m9_faa_first_bytes(r, init_point);
