@@ -969,8 +969,6 @@ m9_faa_color_batch_with_storage(struct m9_screen *screen,
       draws[i].layout = packed.layout;
       draws[i].depth_flags = (state->depth_enabled ? 1u : PARHELIA_M9_FAA_COLOR_DEPTH_DISABLED) | (state->depth_write ? 2u : 0u) | (state->depth_func << 2);
       if (programs == 2) {
-         if ((!state->depth_enabled || embedded_hz) && (surface->width != 320 || surface->height != 240))
-            return -EOPNOTSUPP;
          if (mode_valid && enabled != state->depth_enabled) { mode_changes++; delta += 0x50; }
          mode_valid = true; enabled = state->depth_enabled; embedded_hz |= !enabled;
       }
