@@ -414,8 +414,8 @@ m9_faa_graph_live_addresses(struct m9x_device *mdev,
 }
 
 int m9x_faa_graph_binding_acquire(struct m9x_device *mdev,
-		struct drm_file *file, u64 id, u32 generation,
-		struct m9_faa_graph_binding **out)
+				  struct drm_file *file, u64 id, u32 generation,
+				  struct m9_faa_graph_binding **out)
 {
 	struct m9_faa_prepared_graph *graph;
 	struct m9_faa_graph_binding *binding;
@@ -423,8 +423,8 @@ int m9x_faa_graph_binding_acquire(struct m9x_device *mdev,
 	u32 i;
 	int ret = 0;
 
-	if (!mdev || !file || !file->minor ||
-	    file->minor->dev != &mdev->drm || !out || !id)
+	if (!mdev || !file || !file->minor || file->minor->dev != &mdev->drm ||
+	    !out || !id)
 		return -EINVAL;
 	*out = NULL;
 	graph = m9x_faa_graph_acquire(file, id, generation);
@@ -440,13 +440,16 @@ int m9x_faa_graph_binding_acquire(struct m9x_device *mdev,
 	binding->generation = generation;
 	if (m9x_local_gpu_base || !m9x_vram_gpu_limit(mdev) ||
 	    mdev->pdev->device != M9X_PCI_DEVICE_PHOENIX ||
-	    mdev->pdev->revision != 1 || mdev->pdev->subsystem_device != 0x22c0) {
+	    mdev->pdev->revision != 1 ||
+	    mdev->pdev->subsystem_device != 0x22c0) {
 		ret = -EOPNOTSUPP;
 		goto out_binding;
 	}
-	drm_exec_init(&exec, DRM_EXEC_INTERRUPTIBLE_WAIT |
-		      DRM_EXEC_IGNORE_DUPLICATES, PARHELIA_M9_FAA_GRAPH_OWNERS);
-	drm_exec_until_all_locked(&exec) {
+	drm_exec_init(&exec,
+		      DRM_EXEC_INTERRUPTIBLE_WAIT | DRM_EXEC_IGNORE_DUPLICATES,
+		      PARHELIA_M9_FAA_GRAPH_OWNERS);
+	drm_exec_until_all_locked(&exec)
+	{
 		for (i = 0; i < PARHELIA_M9_FAA_GRAPH_OWNERS; i++) {
 			ret = drm_exec_lock_obj(&exec, graph->owner[i]);
 			drm_exec_retry_on_contention(&exec);
@@ -468,10 +471,11 @@ int m9x_faa_graph_binding_acquire(struct m9x_device *mdev,
 		m9x_faa_trace(mdev, "graph-acquire-refused",
 			      mdev->transport.generation,
 			      !!mdev->transport.async_stop |
-			      !!mdev->transport.wedged << 1 |
-			      !!mdev->transport.faa << 2 |
-			      !!mdev->transport.faa_virtual_primary << 3 |
-			      !!mdev->transport.faa_source_context << 4,
+				      !!mdev->transport.wedged << 1 |
+				      !!mdev->transport.faa << 2 |
+				      !!mdev->transport.faa_virtual_primary
+					      << 3 |
+				      !!mdev->transport.faa_source_context << 4,
 			      generation, ret);
 	mutex_unlock(&mdev->transport.lock);
 out_exec:
