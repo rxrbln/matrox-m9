@@ -296,7 +296,7 @@ m9_faa_application_frame_append(struct m9_faa_application_frame *frame,
           upload->generation != first->generation ||
           upload->state.width != first->state.width ||
           upload->state.height != first->state.height ||
-          upload->texture_count != first->texture_count ||
+          !upload->texture_count != !first->texture_count ||
           clear_flags != frame->clear_flags || clear_color != frame->clear_color) {
          why = "FAA draw changed graph, dimensions, texture route or pending frame clear";
          goto fail;

@@ -9927,13 +9927,11 @@ m9_context_faa_draw_refusal(const struct m9_faa_application_upload *owned)
                  state->flatshade);
       return "FAA application depth/cull/scissor/view state is not implemented";
    }
-   if(owned->texture_count==1)
-      return "FAA single-texture stage has no native kernel producer yet";
    if(owned->texture_count&&
       (!debug_get_bool_option("M9X_FAA_DUAL_APPLICATION",false)||
-       state->cull_face==PIPE_FACE_FRONT_AND_BACK||
-       state->flatshade||owned->shader.record_bytes!=64||
-       owned->shader.declaration_words!=9)) {
+       state->cull_face==PIPE_FACE_FRONT_AND_BACK||state->flatshade||
+       owned->shader.record_bytes!=(owned->texture_count==1?48u:64u)||
+       owned->shader.declaration_words!=(owned->texture_count==1?7u:9u))) {
       return "FAA dual application raster requires smooth shading";
    }
    return NULL;
