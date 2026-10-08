@@ -818,6 +818,9 @@ int m9x_faa_graph_init_ioctl(struct drm_device *drm, void *data,
 out_exec:
 	drm_exec_fini(&exec);
 out_state:
+	/* An INIT that posted nothing releases its replay again. */
+	if (prepared && ret && !posted)
+		m9x_faa_graph_release_unposted(mdev, binding);
 	mutex_unlock(&state->lock);
 	if (!prepared)
 		m9x_faa_graph_binding_put(binding);

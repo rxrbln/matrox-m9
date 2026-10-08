@@ -1354,6 +1354,36 @@ static void m9_faa_release_failed_prepare(struct m9x_device *mdev,
 	m9_faa_release(mdev, r);
 }
 
+/* Remove every system address node of the replay; owners stay allocated. */
+static void m9_faa_unmap_system_locked(struct m9x_device *mdev,
+				       struct m9x_faa_replay *r)
+{
+	u32 i;
+
+	lockdep_assert_held(&mdev->transport.lock);
+	if (drm_mm_node_allocated(&r->counter_node))
+		m9x_address_unmap_system(mdev, &r->counter_node);
+	for (i = 0; i < ARRAY_SIZE(r->owner); i++)
+		if (drm_mm_node_allocated(&r->owner[i].system_node))
+			m9x_address_unmap_system(mdev, &r->owner[i].system_node);
+#ifdef M9_FAA_GRAPH_INIT_CONTROL
+	for (i = 0; i < ARRAY_SIZE(r->draw_owner); i++)
+		if (drm_mm_node_allocated(&r->draw_owner[i].system_node))
+			m9x_address_unmap_system(mdev,
+						 &r->draw_owner[i].system_node);
+	if (r->depth_storage)
+		for (i = 0; i < M9_FAA_DEPTH_OWNERS; i++)
+			if (drm_mm_node_allocated(&r->depth_storage->owner[i].system_node))
+				m9x_address_unmap_system(mdev,
+							 &r->depth_storage->owner[i].system_node);
+	if (r->command_pools)
+		for (i = 0; i < 2; i++)
+			if (drm_mm_node_allocated(&r->command_pools->spare[i].system_node))
+				m9x_address_unmap_system(mdev,
+							 &r->command_pools->spare[i].system_node);
+#endif
+}
+
 /* Called by requester teardown only after PCI bus mastering has stopped. */
 void m9x_faa_fini(struct m9x_device *mdev)
 {
@@ -1361,7 +1391,6 @@ void m9x_faa_fini(struct m9x_device *mdev)
 		/* Remove address nodes under their lock, but drop the caller's
 		 * GEM reference outside it: its last release takes this lock. */
 		struct m9x_faa_replay *r = mdev->transport.faa;
-		u32 i;
 
 #ifdef M9_FAA_GRAPH_INIT_CONTROL
 		if (r->public_vs_head_fence) {
@@ -1382,29 +1411,45 @@ void m9x_faa_fini(struct m9x_device *mdev)
 #endif
 
 		mutex_lock(&mdev->transport.lock);
-		if (drm_mm_node_allocated(&r->counter_node))
-			m9x_address_unmap_system(mdev, &r->counter_node);
-		for (i = 0; i < ARRAY_SIZE(r->owner); i++)
-			if (drm_mm_node_allocated(&r->owner[i].system_node))
-				m9x_address_unmap_system(mdev, &r->owner[i].system_node);
-#ifdef M9_FAA_GRAPH_INIT_CONTROL
-		for (i = 0; i < ARRAY_SIZE(r->draw_owner); i++)
-			if (drm_mm_node_allocated(&r->draw_owner[i].system_node))
-				m9x_address_unmap_system(mdev,
-						 &r->draw_owner[i].system_node);
- if (r->depth_storage)
-  for(i=0;i<M9_FAA_DEPTH_OWNERS;i++)
-   if(drm_mm_node_allocated(&r->depth_storage->owner[i].system_node))
-    m9x_address_unmap_system(mdev,&r->depth_storage->owner[i].system_node);
- if (r->command_pools)
-  for(i=0;i<2;i++)
-   if(drm_mm_node_allocated(&r->command_pools->spare[i].system_node))
-    m9x_address_unmap_system(mdev,&r->command_pools->spare[i].system_node);
-#endif
+		m9_faa_unmap_system_locked(mdev, r);
 		mutex_unlock(&mdev->transport.lock);
 		if (m9_faa_release(mdev, r))
 			mdev->transport.faa = NULL;
 	}
+}
+
+/* An INIT that never wrote COMMAND_BASE or an END for this replay leaves
+ * nothing the engine can fetch: release it, so ordinary jobs bring up their
+ * own context and a later graph can INIT. Returns false when kept.
+ */
+bool m9x_faa_graph_release_unposted(struct m9x_device *mdev,
+				    struct m9_faa_graph_binding *binding)
+{
+	struct m9x_transport *t = &mdev->transport;
+	struct m9x_faa_replay *r;
+
+	mutex_lock(&t->lock);
+	r = t->faa;
+	if (!r || !binding || r->graph_binding != binding ||
+	    r->graph_preparing || r->attempted || t->faa_virtual_primary ||
+	    t->wedged || t->queue_count || t->async_pending) {
+		mutex_unlock(&t->lock);
+		return false;
+	}
+	m9_faa_unmap_system_locked(mdev, r);
+	t->faa = NULL;
+	/* Only this replay's INIT could have claimed the context. */
+	t->faa_source_context = false;
+	mutex_unlock(&t->lock);
+	if (m9_faa_release(mdev, r)) {
+		dev_info(&mdev->pdev->dev,
+			 "M9 FAA unposted graph released; requester unchanged\n");
+		return true;
+	}
+	mutex_lock(&t->lock);
+	t->faa = r;
+	mutex_unlock(&t->lock);
+	return false;
 }
 
 static int m9_faa_allocate(struct m9x_device *mdev, struct m9_faa_owner *o,
