@@ -240,12 +240,44 @@ dual_same_pair(const struct m9_faa_application_upload *a,
    if(a->state.depth_write!=b->state.depth_write||
       a->state.depth_func!=b->state.depth_func||
       a->state.cull_face!=b->state.cull_face||
-      a->state.front_ccw!=b->state.front_ccw)return false;
+      (a->state.cull_face!=PIPE_FACE_NONE&&
+       a->state.front_ccw!=b->state.front_ccw))return false;
    for(unsigned t=0;t<2;t++)
       if(a->texture[t].resource!=b->texture[t].resource||
          memcmp(&a->texture[t].view,&b->texture[t].view,sizeof(a->texture[t].view)))
          return false;
    return true;
+}
+
+/* Every DRAW of a frame is checked before its first transaction posts, so
+ * a refusal never leaves a partially rendered frame behind. */
+static int
+dual_frame_admissible(const struct m9_faa_surface *surface,
+                      const struct m9_faa_application_frame *frame)
+{
+   const struct m9_faa_graph *g=&surface->graph;
+   const struct m9_faa_application_upload *first=&frame->draws[0];
+   struct drm_parhelia_m9_faa_color_draw packed;
+   for(uint32_t i=0;i<frame->count;i++) {
+      const struct m9_faa_application_upload *u=&frame->draws[i];
+      const struct m9_faa_application_state *s=&u->state;
+      if(u->graph_id!=g->prepared_id||u->init_point!=g->init_point||
+         u->generation!=g->prepared_generation)return -ESTALE;
+      if(u->texture_count!=2||s->width!=surface->width||s->height!=surface->height||
+         !s->depth_enabled||s->depth_func>PIPE_FUNC_ALWAYS||
+         s->flatshade||s->cull_face==PIPE_FACE_FRONT_AND_BACK||s->scissor_enabled||
+         s->fragment.blend||s->fragment.alpha||s->fragment.source_stream||
+         u->texture[0].resource==u->texture[1].resource||
+         u->texture[0].view.handle==u->texture[1].view.handle)return -EOPNOTSUPP;
+      for(unsigned t=0;t<2;t++)
+         if(!dual_texture_current(&u->texture[t]))return -ESTALE;
+      int ret=dual_pack(&u->shader,s,&packed);if(ret)return ret;
+      /* The retained graph keeps one program until switches are native. */
+      if(i&&(memcmp(&u->shader.layout,&first->shader.layout,sizeof(u->shader.layout))||
+         memcmp(u->shader.program,first->shader.program,u->shader.layout.bytes)||
+         memcmp(u->shader.declaration,first->shader.declaration,36)))return -EOPNOTSUPP;
+   }
+   return 0;
 }
 
 /* A frame is submitted as consecutive retained transactions of at most
@@ -257,6 +289,8 @@ m9_faa_surface_dual_batch_kernel(struct m9_screen *screen,struct m9_faa_surface 
                                  const struct m9_faa_application_frame *frame)
 {
    if(!screen||!surface||!frame||!frame->draws||!frame->count)return -EINVAL;
+   int checked=dual_frame_admissible(surface,frame);
+   if(checked)return checked;
    for(uint32_t start=0;start<frame->count;){
       uint32_t n=1;
       while(start+n<frame->count&&n<3&&
