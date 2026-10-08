@@ -948,6 +948,17 @@ bool m9x_faa_source_init_enabled(struct m9x_device *mdev)
 #endif
 }
 
+/* No command was ever posted: the requester still holds its seeded origin. */
+static bool m9_faa_transport_fresh(const struct m9x_transport *t)
+{
+	return !t->faa_virtual_primary && !t->submitted_point &&
+	       !t->completed_point && !t->queue_count && !t->async_pending &&
+	       !t->command_slot && !t->command_offset && !t->fence_epoch &&
+	       !t->last_fence && t->next_fence == 0x20 && t->fence_cpu &&
+	       READ_ONCE(((u32 *)t->fence_cpu)[0]) == 0x10 &&
+	       READ_ONCE(((u32 *)t->fence_cpu)[1]) == 0x10;
+}
+
 /* The unchanged native origin10 is an initial CPU counter seed. Fresh
  * source admission must never call it a previous GPU retirement. */
 int m9x_faa_source_init_admit_locked(struct m9x_device *mdev,
@@ -966,12 +977,7 @@ int m9x_faa_source_init_admit_locked(struct m9x_device *mdev,
 		return t->engine_transitioned && t->restore_ready &&
 		       t->transport_armed && t->bus_master_enabled &&
 		       !t->queue_count && !t->async_pending ? 0 : -EINVAL;
-	if (r->attempted || t->faa_virtual_primary || t->submitted_point ||
-	    t->completed_point || t->queue_count || t->async_pending ||
-	    t->command_slot || t->command_offset || t->fence_epoch ||
-	    t->last_fence || t->next_fence != 0x20 ||
-	    READ_ONCE(((u32 *)t->fence_cpu)[0]) != 0x10 ||
-	    READ_ONCE(((u32 *)t->fence_cpu)[1]) != 0x10)
+	if (r->attempted || !m9_faa_transport_fresh(t))
 		return -EBUSY;
 	return 0;
 }
@@ -2258,6 +2264,13 @@ static int m9_faa_prepare(struct m9x_device *mdev,
 		ret = mdev->transport.wedged ? -EIO :
 			(binding ? -EBUSY :
 			 (mdev->transport.faa->attempted ? -EALREADY : 0));
+		goto unlock;
+	}
+	/* The source INIT is the requester's first command; refuse it before
+	 * claiming the producer slot, so a refusal leaves no replay behind.
+	 */
+	if (binding && !m9_faa_transport_fresh(&mdev->transport)) {
+		ret = -ESTALE;
 		goto unlock;
 	}
 	if (binding) {
