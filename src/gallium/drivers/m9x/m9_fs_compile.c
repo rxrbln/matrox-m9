@@ -4176,6 +4176,8 @@ assign_texels(struct ctx *c)
    struct m9_fs_coord_affine affine[M9_FS_MAX_TEXTURES];
    bool projective[M9_FS_MAX_TEXTURES], shadow[M9_FS_MAX_TEXTURES];
    bool volume[M9_FS_MAX_TEXTURES];
+   bool biased[M9_FS_MAX_TEXTURES];
+   struct m9_fs_coord_term lod_bias[M9_FS_MAX_TEXTURES];
 
    util_dynarray_foreach(&c->nodes, struct node, n) {
       for (unsigned i = 0; i < 3; i++) {
@@ -4220,6 +4222,8 @@ assign_texels(struct ctx *c)
        * slot, because the route word names the slot it feeds. */
       coord_source[i] = p->texcoord_source[order[i]];
       volume[i] = p->texcoord_volume[order[i]];
+      biased[i] = p->texcoord_biased[order[i]];
+      lod_bias[i] = p->texcoord_lod_bias[order[i]];
       pair_of[order[i]] = i;
    }
    /* A routed coordinate is emitted at 0x74 + slot and index 3 is captured
@@ -4236,6 +4240,9 @@ assign_texels(struct ctx *c)
    memcpy(p->texture_source, source, p->texture_count);
    memcpy(p->texcoord_source, coord_source, p->texture_count);
    memcpy(p->texcoord_volume, volume, p->texture_count);
+   memcpy(p->texcoord_biased, biased, p->texture_count);
+   memcpy(p->texcoord_lod_bias, lod_bias,
+          p->texture_count * sizeof(lod_bias[0]));
    util_dynarray_foreach(&c->nodes, struct node, n) {
       if (n->kind == N_TEX)
          n->texel = 4 * pair_of[n->texel / 4];
@@ -5214,6 +5221,7 @@ reset_graph(struct ctx *c)
    p->fragcoord = false;
    p->face = false;
    memset(p->texcoord_projective, 0, sizeof(p->texcoord_projective));
+   memset(p->texcoord_biased, 0, sizeof(p->texcoord_biased));
 }
 
 static bool compile_graph(struct ctx *c, nir_scalar s[4], bool discard);
