@@ -93,6 +93,7 @@ struct m9_fs_state {
    nir_shader *nir;
    bool passthrough;
    bool kill_all;                      /* every fragment is discarded */
+   bool no_color;                      /* writes no colour output */
    bool native, native_tried, warned;
    const char *reason;
    struct util_dynarray variants;      /* struct m9_fs_variant * */
@@ -5535,7 +5536,7 @@ m9_job_key_current(struct m9_context *ctx, struct m9_job_key *key)
    const struct pipe_rasterizer_state *rast = ctx->rasterizer;
    struct m9_resource *zs;
    unsigned colormask;
-   bool test, write, stencil;
+   bool test, write, stencil, masked;
 
    if (ctx->lost)
       return m9_skip_reason(ctx, "the context is lost; draw skipped");
@@ -5611,9 +5612,11 @@ m9_job_key_current(struct m9_context *ctx, struct m9_job_key *key)
    }
    /* GL discards colour writes into a framebuffer without a colour
     * attachment, and the surface bound for one is scratch. */
-   if (ctx->color_discard)
+   masked = ctx->color_discard || (ctx->fs && ctx->fs->no_color);
+   if (masked)
       key->color_mask = m9_color_mask(0);
-   /* ab/ac gate whole byte lanes, which cannot describe a 10-bit channel:
+   /* ab/ac gate whole byte lanes, which cannot describe a 10-bit channel
+    * unless every lane is on or off:
     * the vendor writes 0xffff for such a target and expresses the mask in
     * the fragment output instead (docs/parhelia-m9-gigacolor-10bit.md 4.2).
     * Until that lowering exists, a partial mask is refused rather than
@@ -5621,7 +5624,8 @@ m9_job_key_current(struct m9_context *ctx, struct m9_job_key *key)
    if (ctx->color_count < 2) {
       if (ctx->color &&
           m9_res(ctx->color)->format != M9_COLOR_FORMAT_A8R8G8B8 &&
-          key->color_mask != 0xffffffffu)
+          key->color_mask != 0xffffffffu &&
+          key->color_mask != m9_color_mask(0))
          return m9_skip_reason(ctx, "a partial colour mask on a 10-bit "
                                "target needs the fragment output lowering; "
                                "draw skipped");
@@ -5641,13 +5645,14 @@ m9_job_key_current(struct m9_context *ctx, struct m9_job_key *key)
          return m9_skip_reason(ctx, "the shader writes a colour target the "
                                "framebuffer does not bind; draw skipped");
       for (unsigned s = 0; s < ctx->color_count; s++) {
-         unsigned cm = blend && blend->independent_blend_enable ?
+         unsigned cm = masked ? 0 :
+                       blend && blend->independent_blend_enable ?
                        blend->rt[s].colormask : colormask;
 
          masks[s] = m9_color_mask((final->target_mask & BITFIELD_BIT(s)) ||
                                   m9_mrt_mask_all ? cm : 0) & 0xffffu;
          if (ctx->color_format[s] != M9_COLOR_FORMAT_A8R8G8B8 &&
-             masks[s] != 0xffffu)
+             masks[s] != 0xffffu && masks[s] != (m9_color_mask(0) & 0xffffu))
             return m9_skip_reason(ctx, "a partial colour mask on a 10-bit "
                                   "target needs the fragment output "
                                   "lowering; draw skipped");
@@ -11256,6 +11261,29 @@ m9_fs_native_init(struct m9_context *ctx, struct m9_fs_state *fs)
                 m9_fs_variant(ctx, fs, &opaque, &fs->reason);
 }
 
+/* A shader without a colour output (depth or stencil only, u_blitter's empty
+ * one) still needs one for the engine's program; its writes are masked off. */
+static bool
+m9_fs_add_color(nir_shader *nir)
+{
+   const uint64_t color = BITFIELD64_BIT(FRAG_RESULT_COLOR) |
+                          BITFIELD64_RANGE(FRAG_RESULT_DATA0,
+                                           M9_DRAW_MAX_COLOR);
+   nir_function_impl *impl = nir_shader_get_entrypoint(nir);
+   nir_builder b;
+
+   if (nir->info.outputs_written & color)
+      return false;
+   b = nir_builder_at(nir_after_impl(impl));
+   nir_store_output(&b, nir_imm_vec4(&b, 0.0f, 0.0f, 0.0f, 0.0f),
+                    nir_imm_int(&b, 0), .src_type = nir_type_float32,
+                    .io_semantics.location = FRAG_RESULT_COLOR,
+                    .io_semantics.num_slots = 1);
+   nir->info.outputs_written |= BITFIELD64_BIT(FRAG_RESULT_COLOR);
+   nir_progress(true, impl, nir_metadata_control_flow);
+   return true;
+}
+
 static void *
 m9_create_fs_state(struct pipe_context *pctx,
                    const struct pipe_shader_state *templ)
@@ -11281,6 +11309,7 @@ m9_create_fs_state(struct pipe_context *pctx,
    } else if (templ->type == PIPE_SHADER_IR_NIR)
       fs->nir = templ->ir.nir;
    if (fs->nir) {
+      fs->no_color = m9_fs_add_color(fs->nir);
       fs->kill_all = m9_fs_kills_all(fs->nir);
       fs->passthrough = m9_fs_passthrough(fs->nir);
       if (!fs->passthrough)
