@@ -820,6 +820,12 @@ m9_texture_unit_init(struct m9_texture_unit *unit, uint32_t handle,
          hi = MIN2(hi, bind->view_last_level * 32);
       if (s->max_lod + bind->view_first_level < (float)bind->last_level)
          hi = MIN2(hi, base + m9_texture_lod(s->max_lod));
+      /* The level range clamps the LOD range: min_lod past the view's
+       * last level still samples that level. */
+      lo = MIN2(lo, hi);
+      /* Without a mip filter only the base level is sampled. */
+      if (s->min_mip_filter == PIPE_TEX_MIPFILTER_NONE)
+         lo = hi = base;
    }
    bias = CLAMP(lroundf(s->lod_bias * 32.0f), -512, 511);
    shadow = s->compare_mode == PIPE_TEX_COMPARE_R_TO_TEXTURE;
