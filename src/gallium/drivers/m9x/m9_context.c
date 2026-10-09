@@ -13003,6 +13003,8 @@ m9_context_create(struct pipe_screen *pscreen, void *priv, unsigned flags)
    /* Smooth points become quads whose shader discards outside the disc and
     * scales alpha by the edge coverage. */
    draw_install_aapoint_stage(ctx->draw, &ctx->base, nir_type_bool1);
+   /* Stippled polygons sample the pattern by window position and discard. */
+   draw_install_pstipple_stage(ctx->draw, &ctx->base);
    ctx->bind_fs_wrapped = ctx->base.bind_fs_state;
    ctx->base.bind_fs_state = m9_bind_fs_handle;
    draw_set_constant_buffer_stride(ctx->draw, sizeof(float));

@@ -5612,10 +5612,9 @@ compile_impl_kills(struct ctx *c, nir_function_impl *impl,
       return true;
    }
    if (c->root) {
-      /* A producing pass computes one value for the record; the discard and
-       * alpha-test templates belong to the pass that writes the colour. */
-      if (kill || discard)
-         return fail(c, "a split pass cannot discard");
+      /* A producing pass computes one value for the record; the discard
+       * belongs to the pass that writes the colour, so a killed fragment
+       * still writes nothing the application sees. */
       if (!compile_output(c, c->root, false))
          return false;
       if (!encode_lops(c))
@@ -5629,8 +5628,11 @@ compile_impl_kills(struct ctx *c, nir_function_impl *impl,
     * keep their captured forms; every other discard takes the general one. */
    if (!general && kill && match_alpha_test(c, kill, store->src[0].ssa))
       c->alpha.enabled = true;
-   else if (!general && kill && !tmpl_stipple(c, kill, store->src[0].ssa))
+   else if (!general && kill && !tmpl_stipple(c, kill, store->src[0].ssa)) {
+      /* A template miss is no verdict on the general form. */
+      c->reason = NULL;
       general = true;
+   }
    if (!general && !depth && store && (!kill || c->alpha.enabled) &&
        !compile_output(c, store->src[0].ssa, discard)) {
       if (!discard)
@@ -6492,11 +6494,6 @@ fs_split_index(struct fs_split *sp, nir_function_impl *impl, nir_def **out,
          if (instr->type != nir_instr_type_intrinsic)
             continue;
          intr = nir_instr_as_intrinsic(instr);
-         if (intr->intrinsic == nir_intrinsic_terminate ||
-             intr->intrinsic == nir_intrinsic_terminate_if) {
-            free(location);
-            return *reason = "a split shader cannot discard", false;
-         }
          if (intr->intrinsic == nir_intrinsic_store_output) {
             /* The cut machinery follows the cone of one output.  A shader
              * writing several colour targets is refused rather than split
