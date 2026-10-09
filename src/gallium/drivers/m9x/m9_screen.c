@@ -520,10 +520,9 @@ m9_resource_create(struct pipe_screen *pscreen,
                      kind == M9_TEXTURE_KIND_3D;
       uint32_t depth = kind == M9_TEXTURE_KIND_3D ? templ->depth0 : 1;
       unsigned layers = kind == M9_TEXTURE_KIND_CUBE ? 6 : 1;
-      /* Larger cube faces are source-derived but await an M9128 pixel
-       * receipt.  Preserve the prior 16-texel admission by default. */
+      /* M9X_CUBE_64=0 restores the former 16-texel cube face limit. */
       if (kind == M9_TEXTURE_KIND_CUBE && templ->width0 > 16 &&
-          !debug_get_bool_option("M9X_CUBE_64", false))
+          !debug_get_bool_option("M9X_CUBE_64", true))
          goto fail;
 
       /* A compressed image is stored by the surface window in whole
@@ -1571,12 +1570,12 @@ m9_screen_create(int fd, const struct pipe_screen_config *config)
                                            M9_MAX_COLOR),
             1u, M9_MAX_COLOR);
    caps->max_texture_2d_size = 2048;
-   /* A cube face above 16 through 64 is source-derived and opt-in until
-    * pixel-qualified.  A volume is placed by the vendor address
+   /* Cube faces up to 64 texels are MEASURED (FBO render-to-face and
+    * mipmap generation).  A volume is placed by the vendor address
     * calculators at any extent (MEASURED to 256x4x2, 128x64x3, 64x64x64);
     * 256 keeps the largest one at 64 MiB of VRAM. */
    caps->max_texture_cube_levels =
-      debug_get_bool_option("M9X_CUBE_64", false) ? 7 : 5;
+      debug_get_bool_option("M9X_CUBE_64", true) ? 7 : 5;
    caps->max_texture_3d_levels = 9;
    caps->max_texture_array_layers = 0;
    /* 7d[9:0] is a signed bias with five fraction bits (CAPTURED,
