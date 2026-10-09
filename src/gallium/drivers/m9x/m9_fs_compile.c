@@ -5788,6 +5788,105 @@ vectorize_around_chains(const nir_instr *instr, const void *data)
    return scalar_in_prepare(instr, data) ? 1 : 4;
 }
 
+struct merged_output {
+   nir_intrinsic_instr *last;
+   nir_scalar ch[4];
+   unsigned stores, written;
+};
+
+static bool
+merged_output_whole(const struct merged_output *o)
+{
+   return o->stores == 1 && o->written == 0xf &&
+          !nir_intrinsic_component(o->last) &&
+          o->last->src[0].ssa->num_components == 4;
+}
+
+/* GLSL may write a colour output channel by channel and read it back; the
+ * linker leaves one partial store per write.  A target is written once and
+ * whole, so a branchless program's stores merge per location; a channel
+ * never written is undefined and stores zero. */
+static bool
+fs_merge_output_stores(nir_shader *nir)
+{
+   nir_function_impl *impl = nir_shader_get_entrypoint(nir);
+   struct util_dynarray outs, stores;
+   bool progress = false;
+
+   if (!exec_list_is_singular(&impl->body))
+      return false;
+   util_dynarray_init(&outs, NULL);
+   util_dynarray_init(&stores, NULL);
+   nir_foreach_block(block, impl) {
+      nir_foreach_instr(instr, block) {
+         nir_intrinsic_instr *intr;
+         struct merged_output *o = NULL;
+         unsigned loc, comp;
+
+         if (instr->type != nir_instr_type_intrinsic)
+            continue;
+         intr = nir_instr_as_intrinsic(instr);
+         if (intr->intrinsic != nir_intrinsic_store_output)
+            continue;
+         loc = nir_intrinsic_io_semantics(intr).location;
+         if ((loc != FRAG_RESULT_COLOR && loc < FRAG_RESULT_DATA0) ||
+             !nir_src_is_const(intr->src[1]))
+            continue;
+         util_dynarray_foreach(&outs, struct merged_output, it) {
+            if (nir_intrinsic_io_semantics(it->last).location == loc)
+               o = it;
+         }
+         if (!o) {
+            o = util_dynarray_grow(&outs, struct merged_output, 1);
+            memset(o, 0, sizeof(*o));
+         }
+         comp = nir_intrinsic_component(intr);
+         u_foreach_bit(i, nir_intrinsic_write_mask(intr)) {
+            if (comp + i < 4) {
+               o->ch[comp + i] = nir_get_scalar(intr->src[0].ssa, i);
+               o->written |= 1u << (comp + i);
+            }
+         }
+         o->last = intr;
+         o->stores++;
+         util_dynarray_append_typed(&stores, nir_intrinsic_instr *, intr);
+      }
+   }
+   util_dynarray_foreach(&outs, struct merged_output, o) {
+      nir_intrinsic_instr *last = o->last;
+      nir_builder b;
+      nir_def *zero;
+
+      if (merged_output_whole(o))
+         continue;
+      b = nir_builder_at(nir_after_instr(&last->instr));
+      zero = nir_imm_zero(&b, 1, last->src[0].ssa->bit_size);
+      for (unsigned k = 0; k < 4; k++) {
+         if (!(o->written & 1u << k))
+            o->ch[k] = nir_get_scalar(zero, 0);
+      }
+      nir_store_output(&b, nir_vec_scalars(&b, o->ch, 4), last->src[1].ssa,
+                       .base = nir_intrinsic_base(last),
+                       .range = nir_intrinsic_range(last),
+                       .write_mask = 0xf, .component = 0,
+                       .src_type = nir_intrinsic_src_type(last),
+                       .io_semantics = nir_intrinsic_io_semantics(last));
+      progress = true;
+   }
+   util_dynarray_foreach(&stores, nir_intrinsic_instr *, st) {
+      unsigned loc = nir_intrinsic_io_semantics(*st).location;
+
+      util_dynarray_foreach(&outs, struct merged_output, o) {
+         if (nir_intrinsic_io_semantics(o->last).location == loc &&
+             !merged_output_whole(o))
+            nir_instr_remove(&(*st)->instr);
+      }
+   }
+   util_dynarray_fini(&stores);
+   util_dynarray_fini(&outs);
+   return nir_progress(progress, impl, nir_metadata_control_flow);
+}
+
 /* st hands IO and arithmetic over scalarised; the native program is a
  * two-component machine, so put the vectors back before anything reads it.
  * The passes of a split shader share one prepared NIR. */
@@ -5812,6 +5911,7 @@ fs_prepare(nir_shader *nir)
       NIR_PASS(_, nir, nir_opt_dce);
       NIR_PASS(_, nir, nir_lower_undef_to_zero, NULL);
    } while (progress);
+   NIR_PASS(_, nir, fs_merge_output_stores);
 
    /* st lowers uniforms to UBO loads after its last folding pass, so a
     * constant slot index arrives as an iadd of two constants; without this
