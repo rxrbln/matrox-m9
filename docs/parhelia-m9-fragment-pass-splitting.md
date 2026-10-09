@@ -748,6 +748,39 @@ back in turn, which is the cheaper of the two and is the next step.  Until
 then the reading "the consumer reads the record's dword 2 where the producer
 put it" is UNTESTED, and only the input/output behaviour above is MEASURED.
 
+### 8.4d The blue cast: record flags freed unit 2's texel pair (MEASURED, 2026-10-09)
+
+8.4c's reading, that the consumer gets dword 1 where dword 2 belongs, does
+not hold on main e75ec3b. Probes that write each pixel's own position into
+the record (`p-pos01`, `p-pos23` in
+`captures/m9x-terrain-record-probes-20261009`) come back exact in all four
+dwords. Probes that carry terrain's texture mix lose dwords 2 and 3, and the
+alpha with them, on about 13000 of 35190 pixels. The fault is in the
+producer, not in the record transport.
+
+terrain's producer binds three units, and its index 88 was `0070036f`. The
+record flags `0x0c << units` set bits 5 and 6. Bit 5 is pair `0a/0b`, unit
+2's zw texel register, so the engine reused it. With only bit 5 cleared
+(`M9X_R88_AND=0xffffffdf`), the record z/w products drop to 137-259 pixels
+(rounding) and alpha to 0. The `p-pos` controls, which never read a texel
+z/w, do not change. Mesa m9x f3769f1 applies the record flags before the
+texel pairs are marked live, so a record producer never frees a texel pair a
+bound unit occupies; 2-unit producers keep `0330033f`. The split fixtures
+(tex5, coordconv, conv3/7/10/13/16, texhi:3:x/4:x) stay exact, the piglit FBO
+set and core are unchanged, and glmark2 terrain loses its blue cast: frame
+means 118/133/44 against llvmpipe's 125/125/42, where it was 118/133/231
+(captured kernel-side with `m9-scanout-grab`).
+
+No capture holds a record producer with more than one unit, so the flag rule
+beyond one unit is still extrapolated. What is measured is that the record is
+written correctly without the flag on a live texel pair.
+
+**Open.** `p-tda` (totalDiffuse plus the uniform ambient product, consumed in
+the third pass) reads totalDiffuse as zero, or as part of it, on 5395 of
+35190 pixels in a per-pixel speckle. totalDiffuse alone (`p-tdv`) and the
+ambient product alone are both exact. This does not show at frame scale in
+glmark2 terrain.
+
 ### 8.5 The defect `coordconv:4` isolated: index 88's two fields overlap
 
 `tools/m9-mesa-glsl.c` gains **`coordconv:N`**: N taps at whole-texel offsets
