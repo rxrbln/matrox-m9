@@ -3231,7 +3231,9 @@ allocate(struct ctx *c)
             /* Blending reads the destination from 18..1b. */
             if (v->rg_read && !c->blend && !reg_busy(busy, REG_I))
                reg = REG_I;
-            for (unsigned r = base; reg < 0 && r < base + 2; r++)
+            /* Four units put base at 10, the scratch band: an input
+             * interpolated there reads a constant (MEASURED, fsel4). */
+            for (unsigned r = base; reg < 0 && r < base + 2 && r < 0x10; r++)
                if (!reg_busy(busy, r))
                   reg = r;
             for (unsigned r = c->blend ? 2 : 0;
