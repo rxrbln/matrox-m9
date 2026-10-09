@@ -12445,6 +12445,11 @@ m9_context_create(struct pipe_screen *pscreen, void *priv, unsigned flags)
    }
    draw_set_rasterize_stage(ctx->draw, stage);
    draw_set_render(ctx->draw, &render->base);
+   /* The raster clips to the target, as native draws far outside it show,
+    * so the draw module clips x and y only at its guard band.  Clipping at
+    * the viewport moved the end of a wide line that crosses the window edge
+    * half a pixel inside, which lost the edge column. */
+   draw_set_driver_clipping(ctx->draw, false, false, true, false);
    /* Points become two triangles; the native point path is unverified. */
    draw_wide_point_threshold(ctx->draw, 0.0f);
    /* Smooth lines become quads whose shader computes their coverage. */
