@@ -95,3 +95,59 @@ Do not divert the active FAA capture to an invented kill-register sweep.
 No driver or kernel runtime changed in this audit. FAA remains the first
 target priority; this capture plan preserves the kill task for a later
 bounded comparison without replaying the known hang.
+
+## Update 2026-10-09: the kill state crosses jobs and processes
+
+Agent m9fbo, M9128 on nano, Mesa m9x with FBOs advertised (so piglit's
+`-fbo` takes effect). Probes in `tools/m9fbo-probes/`
+(`clearseq.c`, `killpos.c`, `zclear.c`); MEASURED unless marked.
+
+**Carry into the next job.** After `gl-1.0-dlist-bitmap -auto -fbo` (glBitmap
+draws are conditional-kill jobs), the *next process's* first colour clear of
+a fresh 160x160 FBO lost 8, 11 or 12730 of 25600 pixels (value `00000000`,
+never written); its 2nd..6th clears were exact. Command words of that clear
+are byte-identical to a clean run, so the carried state is engine-internal.
+It survives a 10 s idle and a process that submits no job (`glxinfo -B`); it
+is consumed by the next job that rasterises, whoever submits it. In window
+mode the X server's presentation jobs run in between and consume it, which
+is why it showed only once `-fbo` was effective, and why results drifted
+with whatever ran before (the late-boot bitmap failures, scissor-clear
+failing after dlist-bitmap in the core list). Queued and unqueued
+submission behave alike.
+
+**It is stale state, not only stale kill decisions.** A colour-masked quad
+job as the next job absorbs the carry (one masked full-target quad + finish:
+all six clears exact), but it is itself executed with the kill job's state:
+with a 16x16 masked quad at the origin as the drain, the quad wrote its
+(zero) colour unmasked and unscissored over most of the target -- 2003 of
+4096 pixels at 64x64 and 16309 of 16384 at 128x128 in the bitmap probe; at
+the far corner nothing; with a full-target drain nothing in one run and 12
+pixels in a run slowed by `M9X_DUMP` (timing-dependent). A colour-masked
+scissored `glClear` at the same spots without any kill job damages nothing,
+so the damage needs the preceding kill job. piglit rastercolor failed with
+either drain placement and passed without a drain.
+
+**Fix (Mesa m9x f503d17).** After every job whose fragment program kills
+conditionally, the driver binds a 16x16 scratch target of its own (own
+depth, HZ and back-end objects), submits one masked quad there, and
+rebinds the real target. Whatever lags into the drain lands in scratch;
+the carry is the engine's, so it is absorbed all the same. The drain
+swaps only the driver's target state, pauses an active occlusion query
+without a flush, and leaves a bound level proxy in place, because it can
+run inside a draw-module flush. `M9X_KILL_DRAIN` sets the scratch side
+(16), 0 turns it off. Result: next-process first clear exact (10 lost
+without), bitmap probe without damaged pixels at 64x64 and 128x128,
+occlusion probe keep draws exact (they lose up to 17 samples behind a
+kill draw without the drain), glmark2 desktop/jellyfish/ideas/
+conditionals/shadow/refract FPS unchanged, rastercolor, scissor-*,
+blend-func and stencil-twoside pass in the `-fbo` core list.
+
+**Not fixed: the in-draw artifact.** Each 8x8 glBitmap still misses 6-9
+pixels and draws green pixels to the right/below of itself; m9piglit4's
+alpha, occlusion and stipple probes are unchanged by the drain. That is
+the lane artifact above, now owned separately (register 89 bit 21 lead).
+
+**Correction.** An earlier note (Mesa m9x e0393a3/f43509b message) said a
+kill-all job neither leaves nor absorbs the state. Nothing was measured
+there: the driver drops a draw whose shader discards unconditionally
+(`fs->kill_all`), so no job reached the engine.
