@@ -205,6 +205,7 @@ struct m9_vbuf_render {
     * shader has a view per interpolated input and per coordinate stream of
     * every pass, which a one-pass bound is eight short of. */
    int extra_offset[M9_FS_MAX_EXTRA];  /* float offset, -1 if unwritten */
+#define M9_EXTRA_FRAG_ZW -2                /* (z_win * w, w) of the position */
    struct util_dynarray indices;
    struct util_dynarray quads;         /* lines expanded to triangles */
 };
@@ -5659,6 +5660,9 @@ m9_fs_variant(struct m9_context *ctx, struct m9_fs_state *fs,
    v->face_flip = want->face_flip;
    if (v->face_flip)
       m9_fs_flip_face(clone);
+   /* M9X_FRAG_ZW_VARYING=0 reads gl_FragCoord.z/w from register 7b. */
+   if (debug_get_bool_option("M9X_FRAG_ZW_VARYING", true))
+      m9_fs_lower_frag_zw(clone);
    v->srgb_texture = want->srgb_texture;
    v->no_depth_out = want->no_depth_out;
    if (v->no_depth_out)
@@ -6110,6 +6114,9 @@ m9_render_get_vertex_info(struct vbuf_render *render)
          /* The draw module scans shader outputs with need_texcoord set. */
          if (location == M9_FS_COORD_CONSTANT) {
             output = -1;
+         } else if (location == M9_FS_FRAG_ZW_LOCATION) {
+            r->extra_offset[j] = M9_EXTRA_FRAG_ZW;
+            continue;
          } else {
             tgsi_get_gl_varying_semantic(location, true, &name, &index);
             output = draw_find_shader_output(r->ctx->draw, name, index);
@@ -6178,9 +6185,18 @@ m9_render_record(const struct m9_vbuf_render *r, unsigned index, float *out,
    const float *v = (const float *)(r->vertices + (size_t)index * r->vertex_size);
    static const float missing[4] = { 0.0f, 0.0f, 0.0f, 1.0f };
 
-   for (unsigned j = 0; extra && j < r->extra_count; j++)
+   for (unsigned j = 0; extra && j < r->extra_count; j++) {
+      if (r->extra_offset[j] == M9_EXTRA_FRAG_ZW) {
+         /* The draw module left z_win and 1/w_clip in the position. */
+         const float wc = v[3] > 0.0f ? 1.0f / v[3] : 1.0f;
+         const float zw[4] = { v[2] * wc, wc, 0.0f, 1.0f };
+
+         memcpy(extra + 4 * j, zw, sizeof(zw));
+         continue;
+      }
       memcpy(extra + 4 * j, r->extra_offset[j] >= 0 ?
              v + r->extra_offset[j] : missing, 4 * sizeof(float));
+   }
 
    /* The captured ortho program flips window y and maps z = 1 - 2 z_win.
     * The draw module already divided by w and left 1/w_clip in position w,
@@ -7417,6 +7433,8 @@ m9_native_vs_layout(struct m9_context *ctx, const struct m9_job_key *key,
       for (unsigned k = 0; k < fp->varying_count; k++) {
          struct m9_vs_output stream = { .location = fp->varyings[k].location };
 
+         if (stream.location == M9_FS_FRAG_ZW_LOCATION)
+            return "gl_FragCoord.z/w comes from the window position";
          if (!m9_vs_writes_output(p, stream.location))
             return "the vertex program does not write a varying the fragment "
                    "program reads";
@@ -7470,6 +7488,9 @@ m9_native_vs_layout(struct m9_context *ctx, const struct m9_job_key *key,
           * attributes falls back to the per-job constant pair. */
          unsigned had = out->count;
          float sc[2], bi[2];
+
+         if (stream.location == M9_FS_FRAG_ZW_LOCATION)
+            return "gl_FragCoord.z/w comes from the window position";
 
          /* The pair is already in a stream this pass interpolates, and it
           * needs no transform: the raster declaration can select it out of

@@ -97,6 +97,12 @@ struct m9_fs_coord_affine {
  * (0, 0, 0, 1) and the transform's bias carries the coordinate. */
 #define M9_FS_COORD_CONSTANT 0xfeu
 
+/* gl_FragCoord.z/w as an interpolated input: the driver feeds the stream
+ * (z_win * w_clip, w_clip) from each vertex's window position, which
+ * perspective interpolation turns into (z * W, W) with W = 1 / (1/w).  A
+ * fragment shader never reads gl_PointSize, so its slot carries it. */
+#define M9_FS_FRAG_ZW_LOCATION VARYING_SLOT_PSIZ
+
 struct m9_fs_const {
    enum m9_fs_const_kind kind;
    float value[2];
@@ -224,6 +230,8 @@ bool m9_fs_kills_all(const struct nir_shader *nir);
 
 /* Inverts gl_FrontFacing, for a clockwise front face. */
 void m9_fs_flip_face(struct nir_shader *nir);
+/* Reads gl_FragCoord.z/w from M9_FS_FRAG_ZW_LOCATION instead of 7b. */
+bool m9_fs_lower_frag_zw(struct nir_shader *nir);
 
 /* Returns false with a static reason when the shader is not covered.  A NULL
  * blend, or ONE/ZERO, writes the colour unblended. */

@@ -5922,6 +5922,55 @@ m9_fs_flip_face(nir_shader *nir)
             NULL);
 }
 
+/* Register 7b's z/w is not the fragment's (MEASURED: about 1.0 in FBOs and
+ * 0 in the window, and the vendor's own fs-fragcoord reads z = 0), so z and
+ * w come from a stream of (z_win * w_clip, w_clip): z = s.x / s.y and
+ * w = 1 / s.y. */
+static bool
+frag_zw(nir_builder *b, nir_intrinsic_instr *intr, void *data)
+{
+   unsigned *base = data;
+   unsigned first, n;
+   nir_def *q, *w, *z, *chan[4];
+
+   if ((intr->intrinsic != nir_intrinsic_load_input &&
+        intr->intrinsic != nir_intrinsic_load_interpolated_input) ||
+       nir_intrinsic_io_semantics(intr).location != VARYING_SLOT_POS)
+      return false;
+   first = nir_intrinsic_component(intr);
+   n = intr->def.num_components;
+   if (first + n <= 2)
+      return false;
+   b->cursor = nir_after_instr(&intr->instr);
+   q = nir_load_input(b, 2, 32, nir_imm_int(b, 0), .base = *base,
+                      .component = 0,
+                      .io_semantics = (nir_io_semantics){
+                         .location = M9_FS_FRAG_ZW_LOCATION,
+                         .num_slots = 1 });
+   w = nir_frcp(b, nir_channel(b, q, 1));
+   z = nir_fmul(b, nir_channel(b, q, 0), w);
+   for (unsigned i = 0; i < n; i++)
+      chan[i] = first + i == 2 ? z : first + i == 3 ? w :
+                nir_channel(b, &intr->def, i);
+   nir_def_rewrite_uses_after(&intr->def, nir_vec(b, chan, n));
+   return true;
+}
+
+bool
+m9_fs_lower_frag_zw(nir_shader *nir)
+{
+   unsigned base = nir->num_inputs;
+   bool progress = false;
+
+   NIR_PASS(progress, nir, nir_shader_intrinsics_pass, frag_zw,
+            nir_metadata_control_flow, &base);
+   if (progress) {
+      nir->num_inputs = base + 1;
+      nir->info.inputs_read |= BITFIELD64_BIT(M9_FS_FRAG_ZW_LOCATION);
+   }
+   return progress;
+}
+
 void
 m9_fs_lower_srgb(nir_shader *nir)
 {
