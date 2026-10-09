@@ -9,6 +9,8 @@
 #include "m9_hw_encode.h"
 #include "m9_texture.h"
 
+#include "util/u_math.h"
+
 #include "m9_internal.h"
 
 #include <errno.h>
@@ -846,7 +848,7 @@ m9_texture_unit_init(struct m9_texture_unit *unit, uint32_t handle,
                                 m9_texture_wrap(s->wrap_t, &ok),
                                 m9_texture_wrap(s->wrap_r, &ok));
    /* Raw DEPTH16 sampling. */
-   if (bind->code == 0xb8 && !shadow)
+   if (bind->code == M9_TEXTURE_CODE_DEPTH16 && !shadow)
       unit->w7c |= 1u << 31;
    /* GL does not decode the border, so an sRGB unit stores it encoded and
     * the program's decode returns it. */
@@ -862,6 +864,24 @@ m9_texture_unit_init(struct m9_texture_unit *unit, uint32_t handle,
    unit->w7f = border[order[3]] << 24 | border[order[2]] << 8;
    unit->w80 = 0xffffffffu;
    unit->w81 = 0;
+   /* A depth unit takes 32 bits a channel, R..A, split into high halves in
+    * 7e/7f and low halves in 80/81: IEEE floats for D24, 16-bit unorm in the
+    * low halves for D16 (STATIC, MxMD.dll 0x187bc0 run per format code, and
+    * its four-word emitter 0x18be91).  The unit returns the second
+    * channel (MEASURED, texwrap), GL's depth border is R: all carry R. */
+   if (bind->code == M9_TEXTURE_CODE_DEPTH24 ||
+       bind->code == M9_TEXTURE_CODE_DEPTH16) {
+      float v = CLAMP(s->border_color.f[0], 0.0f, 1.0f);
+      uint32_t w[4];
+
+      for (unsigned c = 0; c < 4; c++)
+         w[c] = bind->code == M9_TEXTURE_CODE_DEPTH16 ?
+                (uint32_t)lroundf(v * 65535.0f) : fui(v);
+      unit->w7e = (w[1] & 0xffff0000u) | w[0] >> 16;
+      unit->w7f = (w[3] & 0xffff0000u) | w[2] >> 16;
+      unit->w80 = w[1] << 16 | (w[0] & 0xffffu);
+      unit->w81 = w[3] << 16 | (w[2] & 0xffffu);
+   }
    return ok ? 0 : -EINVAL;
 }
 

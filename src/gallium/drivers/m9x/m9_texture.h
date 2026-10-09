@@ -48,8 +48,9 @@ m9_faa_texture_address(unsigned mode)
 #define M9_TEXTURE_CODE_DXT3 0x2au
 #define M9_TEXTURE_CODE_DXT5 0x2eu
 
-/* DEPTH24 sampled as a texture (79[31:24], CAPTURED). */
+/* DEPTH24 sampled as a texture (79[31:24], CAPTURED), and DEPTH16. */
 #define M9_TEXTURE_CODE_DEPTH24 0xfau
+#define M9_TEXTURE_CODE_DEPTH16 0xb8u
 
 /* 10-bit GigaColor descriptor bytes: the 7-bit code doubled (79[31:25]). */
 #define M9_TEXTURE_CODE_A2B10G10R10 0xd0u
