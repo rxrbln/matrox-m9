@@ -6091,6 +6091,11 @@ m9_render_get_vertex_info(struct vbuf_render *render)
    int position = draw_find_shader_output(r->ctx->draw,
                                           TGSI_SEMANTIC_POSITION, 0);
    int color = draw_find_shader_output(r->ctx->draw, TGSI_SEMANTIC_COLOR, 0);
+   /* A program writing only gl_BackColor leaves the front colour undefined;
+    * the colour is then the back one, which the two-side stage could not
+    * copy over a front slot that does not exist. */
+   if (color < 0)
+      color = draw_find_shader_output(r->ctx->draw, TGSI_SEMANTIC_BCOLOR, 0);
    const struct m9_fs_state *fs = r->ctx->fs;
    const struct m9_fs_variant *v = NULL;
    const char *reason;
@@ -6120,6 +6125,9 @@ m9_render_get_vertex_info(struct vbuf_render *render)
          } else {
             tgsi_get_gl_varying_semantic(location, true, &name, &index);
             output = draw_find_shader_output(r->ctx->draw, name, index);
+            if (output < 0 && name == TGSI_SEMANTIC_COLOR)
+               output = draw_find_shader_output(r->ctx->draw,
+                                                TGSI_SEMANTIC_BCOLOR, index);
          }
          if (r->ctx->debug)
             fprintf(stderr, "m9x: CPU varying %u location %u semantic %u/%u "
