@@ -9062,6 +9062,7 @@ static int
 m9_faa_color_unlocked_origin_get_locked(struct m9x_device *mdev, u32 generation,
 					u64 previous_unlock_point, u64 origin,
 					bool pool_scope, bool allow_two,
+					bool present_scope,
 					struct m9_faa_graph_binding **out)
 {
 #ifdef M9_FAA_GRAPH_INIT_CONTROL
@@ -9096,7 +9097,7 @@ m9_faa_color_unlocked_origin_get_locked(struct m9x_device *mdev, u32 generation,
 	    r->present_attempted != r->present_retired ||
 	    (r->present_point && !r->present_retired) ||
 	    (r->present_attempted &&
-	     (!pool_scope || !r->present_retired ||
+	     (!present_scope || !r->present_retired ||
 	      r->present_generation != generation ||
 	      r->present_point != previous_unlock_point + 0x20 ||
 	      r->present_posts != r->graph_unlock_posts + 3 ||
@@ -9144,7 +9145,7 @@ int m9x_faa_graph_color_unlocked_get_locked(struct m9x_device *mdev,
 {
 	return m9_faa_color_unlocked_origin_get_locked(mdev, generation,
 						       previous, previous, false,
-						       false, out);
+						       false, false, out);
 }
 
 /* Textured later frames continue after ordinary jobs, as depth ones do. */
@@ -9164,7 +9165,7 @@ int m9x_faa_graph_dual_unlocked_get_locked(struct m9x_device *mdev,
 						       previous,
 						       r ?
 						       m9_faa_frame_origin(r, previous) : previous,
-						       false, false, out);
+						       false, false, true, out);
 #else
 	return -EOPNOTSUPP;
 #endif
@@ -9189,7 +9190,7 @@ int m9x_faa_graph_depth_unlocked_get_locked(struct m9x_device *mdev,
 	origin = r ? m9_faa_frame_origin(r, previous) : previous;
 	return m9_faa_color_unlocked_origin_get_locked(mdev, generation,
 						       previous, origin, true,
-						       true, out);
+						       true, true, out);
 #else
 	return -EOPNOTSUPP;
 #endif
