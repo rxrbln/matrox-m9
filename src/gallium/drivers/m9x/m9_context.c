@@ -3283,7 +3283,7 @@ m9_wc_zero(void *dst, size_t bytes)
    memset(dst, 0, bytes);
 }
 
-/* M9X_BE_ENGINE_CLEAR=1: the kernel zeroes the span by an engine copy it
+/* The kernel zeroes the span by an engine copy it
  * queues behind every job posted before, which is what the wait below
  * establishes for the CPU clear.  Its point becomes the object's last
  * owner; the job that binds the object is posted behind it. */
