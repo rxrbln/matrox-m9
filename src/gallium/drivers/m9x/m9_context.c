@@ -4756,10 +4756,10 @@ m9_texture_bind_view(const struct pipe_sampler_view *view,
        * (docs/parhelia-m9-s3tc-compressed-textures.md 5.1). */
       if (res->texture.block_bytes) {
          /* MEASURED: the storage kind is the one level 0 was written
-          * through, while the extent stays the logical one rounded up to
-          * whole blocks.  dxt1:132x64, whose logical width is not its
-          * 32-aligned span, samples exactly, which is what settles section
-          * 5.2's open question in favour of the logical width. */
+          * through, and the extent is the logical one.  dxt1:132x64, whose
+          * width is not its 32-aligned span, samples exactly; rounding the
+          * extent to whole blocks made the sampler derive 130 columns for
+          * level 1 of a 257-wide chain, which is stored 128 wide. */
          uint32_t span = m9_compressed_span(res->width);
          uint32_t lines = m9_compressed_lines(res->height,
                                               res->texture.block_bytes);
@@ -4768,8 +4768,7 @@ m9_texture_bind_view(const struct pipe_sampler_view *view,
             .code = res->texture_code,
             .kind = m9_compressed_kind(span, lines,
                                        res->texture.block_bytes),
-            .width = (res->width + 3) & ~3u,
-            .height = (res->height + 3) & ~3u,
+            .width = res->width, .height = res->height,
             .depth = 1,
             .last_level = res->base.last_level, .view_first_level = first,
             .view_last_level = last,
