@@ -61,6 +61,8 @@ struct m9x_bo {
 	struct page **pages;
 	struct sg_table sgt;
 	u32 flags;
+	/* Coherent write-back backing, not write-combined. */
+	bool cached;
 };
 
 /* One contiguous DMA32 range the driver holds and suballocates. */

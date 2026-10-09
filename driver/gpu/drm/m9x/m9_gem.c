@@ -49,6 +49,15 @@ static bool m9_vram_free_for(struct m9x_device *mdev, u64 size)
 			ttm_resource_manager_usage(man);
 }
 
+/*
+ * Only the submit ioctl reads a command object (into its validated copy), so
+ * write-back backing spares it uncached reads of the whole stream.
+ */
+static bool m9_bo_command_cached = true;
+module_param(m9_bo_command_cached, bool, 0400);
+MODULE_PARM_DESC(m9_bo_command_cached,
+		 "Back command BOs by cached coherent memory, not write-combined (default: on)");
+
 static bool m9_bo_force_paged;
 module_param(m9_bo_force_paged, bool, 0600);
 MODULE_PARM_DESC(m9_bo_force_paged,
@@ -192,6 +201,9 @@ static void m9_bo_free(struct drm_gem_object *gem)
 	}
 	if (drm_mm_node_allocated(&bo->reserve))
 		m9_dma_reserve_free(mdev, bo);
+	else if (bo->dma.vaddr && bo->cached)
+		dma_free_coherent(drm_dev_dma_dev(gem->dev), gem->size,
+				  bo->dma.vaddr, bo->dma.dma_addr);
 	else if (bo->dma.vaddr)
 		dma_free_wc(drm_dev_dma_dev(gem->dev), gem->size,
 			    bo->dma.vaddr, bo->dma.dma_addr);
@@ -221,12 +233,30 @@ static struct sg_table *m9_bo_get_sg_table(struct drm_gem_object *gem)
 	return sgt;
 }
 
+/* A cached object maps write-back, as its coherent backing is. */
+static int m9_bo_mmap(struct drm_gem_object *gem, struct vm_area_struct *vma)
+{
+	struct m9x_bo *bo = container_of(to_drm_gem_dma_obj(gem),
+					 struct m9x_bo, dma);
+	int ret;
+
+	if (!bo->cached)
+		return drm_gem_dma_object_mmap(gem, vma);
+	vma->vm_pgoff -= drm_vma_node_start(&gem->vma_node);
+	vm_flags_mod(vma, VM_DONTDUMP | VM_DONTEXPAND, VM_PFNMAP);
+	ret = dma_mmap_coherent(drm_dev_dma_dev(gem->dev), vma, bo->dma.vaddr,
+				bo->dma.dma_addr, vma->vm_end - vma->vm_start);
+	if (ret)
+		drm_gem_vm_close(vma);
+	return ret;
+}
+
 static const struct drm_gem_object_funcs m9_bo_funcs = {
 	.free = m9_bo_free,
 	.print_info = drm_gem_dma_object_print_info,
 	.get_sg_table = m9_bo_get_sg_table,
 	.vmap = drm_gem_dma_object_vmap,
-	.mmap = drm_gem_dma_object_mmap,
+	.mmap = m9_bo_mmap,
 	.vm_ops = &drm_gem_dma_vm_ops,
 };
 
@@ -747,7 +777,8 @@ err_put:
 	return ERR_PTR(ret);
 }
 
-static struct m9x_bo *m9_bo_create(struct drm_device *drm, size_t size)
+static struct m9x_bo *m9_bo_create(struct drm_device *drm, size_t size,
+				   bool cached)
 {
 	struct m9x_bo *bo;
 	int ret;
@@ -765,10 +796,26 @@ static struct m9x_bo *m9_bo_create(struct drm_device *drm, size_t size)
 	/* A draw range is fetched by raw bus address, so this allocation has to
 	 * be physically contiguous.  Above the costly order the page allocator
 	 * gives up before compacting unless it is told to retry. */
-	bo->dma.vaddr = dma_alloc_wc(drm_dev_dma_dev(drm), size,
-					&bo->dma.dma_addr,
-					GFP_KERNEL | __GFP_RETRY_MAYFAIL |
-					__GFP_NOWARN | __GFP_ZERO);
+	if (cached) {
+		bo->dma.vaddr = dma_alloc_coherent(drm_dev_dma_dev(drm), size,
+						   &bo->dma.dma_addr,
+						   GFP_KERNEL | __GFP_RETRY_MAYFAIL |
+						   __GFP_NOWARN | __GFP_ZERO);
+		if (bo->dma.vaddr &&
+		    (upper_32_bits(bo->dma.dma_addr) ||
+		     bo->dma.dma_addr > U32_MAX - size)) {
+			dma_free_coherent(drm_dev_dma_dev(drm), size,
+					  bo->dma.vaddr, bo->dma.dma_addr);
+			bo->dma.vaddr = NULL;
+		}
+		/* No contiguous coherent range: write-combined, as before. */
+		bo->cached = bo->dma.vaddr;
+	}
+	if (!bo->dma.vaddr)
+		bo->dma.vaddr = dma_alloc_wc(drm_dev_dma_dev(drm), size,
+					     &bo->dma.dma_addr,
+					     GFP_KERNEL | __GFP_RETRY_MAYFAIL |
+					     __GFP_NOWARN | __GFP_ZERO);
 	if (bo->dma.vaddr &&
 	    (upper_32_bits(bo->dma.dma_addr) ||
 	     bo->dma.dma_addr > U32_MAX - size)) {
@@ -910,8 +957,9 @@ static int m9_create_bo_ioctl(struct drm_device *drm, void *data,
 		bool command = args->flags & PARHELIA_M9_BO_COMMAND;
 
 		/* Only class-1 addressed BOs may fall back to scattered pages. */
-		bo = command || !m9_bo_force_paged ? m9_bo_create(drm, size) :
-						       ERR_PTR(-ENOMEM);
+		bo = command || !m9_bo_force_paged ?
+		     m9_bo_create(drm, size, command && m9_bo_command_cached) :
+		     ERR_PTR(-ENOMEM);
 		if (IS_ERR(bo) && PTR_ERR(bo) == -ENOMEM && !command) {
 			pr_warn("m9x: no contiguous DMA32 for %zu bytes; scattered pages\n",
 				size);
