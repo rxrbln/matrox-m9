@@ -6393,9 +6393,41 @@ m9_render_scratch(struct m9_vbuf_render *r, size_t bytes)
    return util_dynarray_grow_bytes(&r->indices, 1, bytes);
 }
 
-/* The line raster class with a destination read is not captured, so a
- * logic-op line is drawn as the quad draw's wide-line stage builds: offset
- * across the major axis, shifted half a pixel along it, two triangles. */
+/* A vertex at parameter t of a segment: window position on the segment,
+ * attributes perspective correct from the 1/w the position keeps in w. */
+static void
+m9_line_point(uint8_t *dst, const uint8_t *v0, const uint8_t *v1,
+              const uint8_t *flat, unsigned vs, float t, float x, float y)
+{
+   const float *a = (const float *)v0, *b = (const float *)v1;
+   float *o = (float *)dst;
+   const float q = a[3] + (b[3] - a[3]) * t;
+
+   o[0] = x;
+   o[1] = y;
+   o[2] = a[2] + (b[2] - a[2]) * t;
+   o[3] = q;
+   if (flat) {
+      memcpy(o + 4, flat + 4 * sizeof(float), vs - 4 * sizeof(float));
+      return;
+   }
+   for (unsigned c = 4; c < vs / sizeof(float); c++)
+      o[c] = q != 0.0f ? (a[c] * a[3] + (b[c] * b[3] - a[c] * a[3]) * t) / q :
+                         a[c] + (b[c] - a[c]) * t;
+}
+
+/*
+ * The line raster class with a destination read is not captured, so lines
+ * that blend or apply a logic op are drawn as triangles, which GL requires
+ * to cover what the native line raster covers.  The native rule fits all
+ * 408 measured segments (m9-diag-line-probe): a 45 degree segment steps
+ * along x; a major pixel k is drawn when its centre lies in (a0 - 1/2,
+ * a1 - 1/2] going up and [a1 + 1/2, a0 + 1/2) going down; its minor pixel
+ * is ceil(m) - 1 of the segment's minor coordinate m at that centre.
+ * Quads cannot follow it, since the raster snaps vertices to 1/16 pixel,
+ * so every run of pixels on one minor row becomes a rectangle with pixel
+ * edges.
+ */
 static void
 m9_render_line_quads(struct m9_vbuf_render *r, const struct m9_job_key *key,
                      const uint16_t *indices, unsigned start, unsigned count)
@@ -6403,13 +6435,13 @@ m9_render_line_quads(struct m9_vbuf_render *r, const struct m9_job_key *key,
    const struct pipe_rasterizer_state *rast = r->ctx->rasterizer;
    const unsigned in_pv = m9_flat_pv(rast, r->prim);
    const bool flat = rast && rast->flatshade;
-   const bool center = !rast || rast->half_pixel_center;
-   const float half = 0.5f * (rast ? rast->line_width : 1.0f);
-   const float bias = center ? 0.125f : 0.0f;
+   const float centre = !rast || rast->half_pixel_center ? 0.5f : 0.0f;
    const unsigned vs = r->vertex_size;
+   /* Corners 0, 1 at the run's first end, 2, 3 at its last; tris 023, 031. */
+   static const uint8_t order[6] = { 0, 2, 3, 0, 3, 1 };
    enum mesa_prim out_prim;
    unsigned out_size, out_count;
-   uint8_t *saved, *out;
+   uint8_t *saved;
    void *list;
 
    if (indices) {
@@ -6432,47 +6464,62 @@ m9_render_line_quads(struct m9_vbuf_render *r, const struct m9_job_key *key,
       generate(start, out_count, list);
    }
    util_dynarray_clear(&r->quads);
-   out = util_dynarray_grow_bytes(&r->quads, 6 * (out_count / 2), vs);
-   if (!out) {
-      m9_warn_once(r->ctx, M9_WARN_MEMORY, "out of memory for line quads");
-      return;
-   }
    for (unsigned l = 0; l + 1 < out_count; l += 2) {
       const uint8_t *v[2] = {
          r->vertices + (size_t)m9_index_at(list, out_size, l) * vs,
          r->vertices + (size_t)m9_index_at(list, out_size, l + 1) * vs,
       };
+      const uint8_t *pv = flat ? v[in_pv == PV_FIRST ? 0 : 1] : NULL;
       const float *p0 = (const float *)v[0], *p1 = (const float *)v[1];
-      const bool xmajor = fabsf(p0[0] - p1[0]) > fabsf(p0[1] - p1[1]);
+      const bool xmajor = fabsf(p0[0] - p1[0]) >= fabsf(p0[1] - p1[1]);
       const unsigned along = xmajor ? 0 : 1;
-      /* GL draws a segment's first pixel and not its last, so the order
-       * is kept and both ends move back half a pixel less the bias: no
-       * pixel centre then lies on an end of a quarter-pixel endpoint. */
-      const float pull = center ? 0.5f - bias : 0.0f;
-      const float shift = p0[along] < p1[along] ? -pull : pull;
-      /* Corners 0, 1 at the first end, 2, 3 at the second; tris 023, 031. */
-      static const uint8_t order[6] = { 0, 2, 3, 0, 3, 1 };
+      const float a0 = p0[along], a1 = p1[along], m0 = p0[!along];
+      const float d = a1 - a0;
+      int k, first, last;
 
-      for (unsigned i = 0; i < 6; i++) {
-         unsigned corner = order[i];
-         uint8_t *dst = out + ((size_t)l * 3 + i) * vs;
-         float *pos = (float *)dst;
-         float side = corner & 1 ? half : -half;
+      if (d == 0.0f)
+         continue;
+      /* Pixel k's centre is k + centre on both axes. */
+      first = d > 0.0f ? (int)floorf(a0 - 0.5f - centre) + 1 :
+                         (int)ceilf(a1 + 0.5f - centre);
+      last = d > 0.0f ? (int)floorf(a1 - 0.5f - centre) :
+                        (int)ceilf(a0 + 0.5f - centre) - 1;
+      const float slope = (p1[!along] - m0) / d;
 
-         memcpy(dst, v[corner >> 1], vs);
-         /* The translation above keeps the provoking vertex where it was. */
-         if (flat)
-            memcpy(dst + 4 * sizeof(float), v[in_pv == PV_FIRST ? 0 : 1] +
-                   4 * sizeof(float),
-                   vs - 4 * sizeof(float));
-         pos[along] += shift;
-         pos[!along] += xmajor ? side - bias : side + bias;
+      for (k = first; k <= last;) {
+         const int row = (int)ceilf(m0 + (k + centre - a0) * slope - centre +
+                                    0.5f) - 1;
+         int end = k;
+         uint8_t *out;
+
+         while (end < last &&
+                (int)ceilf(m0 + (end + 1 + centre - a0) * slope - centre +
+                           0.5f) - 1 == row)
+            end++;
+         out = util_dynarray_grow_bytes(&r->quads, 6, vs);
+         if (!out) {
+            m9_warn_once(r->ctx, M9_WARN_MEMORY,
+                         "out of memory for line quads");
+            return;
+         }
+         for (unsigned i = 0; i < 6; i++) {
+            const unsigned corner = order[i];
+            const float lo = (corner >> 1 ? end + 1 : k) + centre - 0.5f;
+            const float side = row + centre + (corner & 1 ? 0.5f : -0.5f);
+            const float t = CLAMP((lo - a0) / d, 0.0f, 1.0f);
+
+            m9_line_point(out + (size_t)i * vs, v[0], v[1], pv, vs, t,
+                          xmajor ? lo : side, xmajor ? side : lo);
+         }
+         k = end + 1;
       }
    }
+   if (!r->quads.size)
+      return;
    saved = r->vertices;
    r->vertices = r->quads.data;
    m9_render_append(r, key, M9_TOPOLOGY_TRIANGLES, false, 0, NULL, 0, 0,
-                    3 * out_count);
+                    r->quads.size / vs);
    r->vertices = saved;
 }
 
