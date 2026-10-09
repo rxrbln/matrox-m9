@@ -1525,6 +1525,21 @@ m9_load_fragment_db(struct m9_screen *screen)
    }
 }
 
+/* The DRI frontend otherwise waits the preceding frame after every swap,
+ * including interval zero.  The opt-in keeps explicit fence/resource waits
+ * and the bounded kernel/DRI3 queues; it changes only that extra throttle.
+ * Screen caps are immutable, so reject every mode that can prepare an FAA
+ * graph later when a framebuffer is bound, as well as raw FAA emission. */
+static bool
+m9_should_throttle_swaps(const struct m9_screen *screen)
+{
+   return !debug_get_bool_option("M9X_ASYNC_SWAP", false) ||
+          !screen->queued_submit || !screen->wait_point ||
+          m9_faa_active(&screen->faa) || screen->faa.prepare ||
+          screen->faa.init_graph ||
+          debug_get_bool_option("M9X_FAA_APPLICATION", false);
+}
+
 struct pipe_screen *
 m9_screen_create(int fd, const struct pipe_screen_config *config)
 {
@@ -1567,6 +1582,7 @@ m9_screen_create(int fd, const struct pipe_screen_config *config)
    screen->base.nir_options[MESA_SHADER_FRAGMENT] = &m9_fs_nir_options;
    m9_init_shader_caps(screen);
    caps = (struct pipe_caps *)&screen->base.caps;
+   caps->throttle = m9_should_throttle_swaps(screen);
    /* Four colour targets: b0 + 2s a target with its own descriptor, class
     * and write mask, and one native destination a target in the fragment
     * program.  M9X_MAX_RENDER_TARGETS holds it back to one, which is how a
