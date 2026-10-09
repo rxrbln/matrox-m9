@@ -741,4 +741,28 @@ struct drm_parhelia_m9_faa_graph_next_lock {
 	DRM_IOWR(DRM_COMMAND_BASE + DRM_PARHELIA_M9_FAA_GRAPH_NEXT_LOCK, \
 		struct drm_parhelia_m9_faa_graph_next_lock)
 
+/*
+ * Zero [offset, offset + size) of the caller's VRAM object by an engine copy
+ * queued behind every job posted before it; the CPU does not wait for it.
+ * offset and size are 4 KiB aligned, value is the fill dword (only 0).
+ * out_point is the copy's completion point for WAIT_POINT.  flags =
+ * PARHELIA_M9_BO_FILL_QUERY with every other field zero only asks whether
+ * the fill is enabled; -EOPNOTSUPP means it is not.
+ */
+#define DRM_PARHELIA_M9_BO_FILL	0x26
+#define PARHELIA_M9_BO_FILL_QUERY	(1u << 0)
+struct drm_parhelia_m9_bo_fill {
+	__u32 handle;
+	__u32 flags;
+	__u64 offset;
+	__u64 size;
+	__u32 value;
+	__u32 pad;
+	__u64 out_point;
+};
+
+#define DRM_IOCTL_PARHELIA_M9_BO_FILL \
+	DRM_IOWR(DRM_COMMAND_BASE + DRM_PARHELIA_M9_BO_FILL, \
+		 struct drm_parhelia_m9_bo_fill)
+
 #endif

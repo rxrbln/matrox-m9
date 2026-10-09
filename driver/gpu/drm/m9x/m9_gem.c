@@ -483,6 +483,42 @@ void m9x_gem_vram_unpin(struct drm_gem_object *gem)
 		m9x_vram_unpin(drm_gem_vram_of_gem(gem));
 }
 
+/* A kernel-owned, pinned VRAM object zeroed once through the BAR. */
+struct drm_gem_object *m9x_gem_vram_zeroed(struct drm_device *drm,
+					   size_t size)
+{
+	struct drm_gem_vram_object *vram;
+	struct iosys_map map;
+	int ret;
+
+	vram = drm_gem_vram_create(drm, size, 0);
+	if (IS_ERR(vram))
+		return ERR_CAST(vram);
+	ret = m9x_vram_pin(vram);
+	if (ret)
+		goto err_put;
+	ret = ttm_bo_reserve(&vram->bo, true, false, NULL);
+	if (ret)
+		goto err_unpin;
+	ret = drm_gem_vram_vmap(vram, &map);
+	if (!ret) {
+		iosys_map_memset(&map, 0, 0, size);
+		/* The zeroes reach VRAM before the engine reads them. */
+		wmb();
+		drm_gem_vram_vunmap(vram, &map);
+	}
+	ttm_bo_unreserve(&vram->bo);
+	if (ret)
+		goto err_unpin;
+	return &vram->bo.base;
+
+err_unpin:
+	m9x_vram_unpin(vram);
+err_put:
+	drm_gem_object_put(&vram->bo.base);
+	return ERR_PTR(ret);
+}
+
 s64 m9x_gem_vram_offset(struct drm_gem_object *gem)
 {
 	if (m9x_gem_is_engine_vram(gem))

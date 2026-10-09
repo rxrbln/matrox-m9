@@ -62,6 +62,8 @@ static const struct drm_ioctl_desc m9x_ioctls[] = {
 			  DRM_RENDER_ALLOW),
 	DRM_IOCTL_DEF_DRV(PARHELIA_M9_SURFACE_ACCESS, m9x_surface_access_ioctl,
 			  DRM_RENDER_ALLOW),
+	DRM_IOCTL_DEF_DRV(PARHELIA_M9_BO_FILL, m9x_bo_fill_ioctl,
+			  DRM_RENDER_ALLOW),
 	DRM_IOCTL_DEF_DRV(PARHELIA_M9_FAA_GRAPH_PREPARE,
 			  m9x_faa_graph_prepare_ioctl, DRM_RENDER_ALLOW),
 	DRM_IOCTL_DEF_DRV(PARHELIA_M9_FAA_GRAPH_RELEASE,
@@ -224,6 +226,13 @@ static int m9_surface_read_stats_show(struct seq_file *m, void *unused)
 	return m9x_surface_stats_show(to_m9x(entry->dev), m);
 }
 
+static int m9_bo_fill_stats_show(struct seq_file *m, void *unused)
+{
+	struct drm_debugfs_entry *entry = m->private;
+
+	return m9x_bo_fill_stats_show(to_m9x(entry->dev), m);
+}
+
 static void m9x_debugfs_init(struct drm_minor *minor)
 {
 	drm_vram_mm_debugfs_init(minor);
@@ -233,6 +242,8 @@ static void m9x_debugfs_init(struct drm_minor *minor)
 			     m9_faa_dma_snapshot_show, NULL);
 	drm_debugfs_add_file(minor->dev, "m9_surface_read_stats",
 			     m9_surface_read_stats_show, NULL);
+	drm_debugfs_add_file(minor->dev, "m9_bo_fill_stats",
+			     m9_bo_fill_stats_show, NULL);
 }
 
 /* Mesa selects the independent M9X Gallium driver from this DRM name. */

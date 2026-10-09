@@ -1655,7 +1655,13 @@ int m9x_init(struct m9x_device *mdev)
 	ret = m9_restore_selftest();
 	if (ret)
 		return dev_err_probe(dev, ret, "M9 restore selftest failed\n");
+	ret = m9x_bo_fill_selftest();
+	if (ret)
+		return dev_err_probe(dev, ret, "M9 fill selftest failed\n");
 	ret = drmm_mutex_init(&mdev->drm, &mdev->transport.lock);
+	if (ret)
+		return ret;
+	ret = m9x_bo_fill_init(mdev);
 	if (ret)
 		return ret;
 	init_waitqueue_head(&mdev->transport.faa_idle_wait);
@@ -1795,4 +1801,5 @@ void m9x_fini(struct m9x_device *mdev)
 		drm_gem_vram_put(color);
 	}
 	flush_work(&mdev->transport.async_release);
+	m9x_bo_fill_fini(mdev);
 }

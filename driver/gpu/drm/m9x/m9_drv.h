@@ -94,6 +94,17 @@ struct m9x_engine_read_staging {
 	bool failed;
 };
 
+/* The zeroed source of engine fills and their counters, under lock. */
+struct m9x_bo_fill {
+	/* Serialises fills and guards the source and the counters. */
+	struct mutex lock;
+	struct drm_gem_object *source;
+	u32 source_rows;
+	u64 fills, bytes, launches, ns;
+	u64 refused;
+	int last_refusal;
+};
+
 struct m9x_surface_read_stats {
 	u64 engine_reads, engine_bytes, engine_batches, engine_chunks;
 	u64 engine_ns;
@@ -314,6 +325,7 @@ struct m9x_device {
 	/* Engine surface readback staging and counters, under transport.lock. */
 	struct m9x_engine_read_staging engine_read;
 	struct m9x_surface_read_stats surface_stats;
+	struct m9x_bo_fill bo_fill;
 };
 
 static inline struct m9x_device *to_m9x(struct drm_device *drm)
@@ -726,6 +738,14 @@ bool m9x_gem_in_vram(struct drm_gem_object *gem);
 int m9x_gem_vram_pin(struct drm_gem_object *gem);
 void m9x_gem_vram_unpin(struct drm_gem_object *gem);
 s64 m9x_gem_vram_offset(struct drm_gem_object *gem);
+struct drm_gem_object *m9x_gem_vram_zeroed(struct drm_device *drm,
+					   size_t size);
+int m9x_bo_fill_ioctl(struct drm_device *drm, void *data,
+		      struct drm_file *file);
+int m9x_bo_fill_init(struct m9x_device *mdev);
+void m9x_bo_fill_fini(struct m9x_device *mdev);
+int m9x_bo_fill_selftest(void);
+int m9x_bo_fill_stats_show(struct m9x_device *mdev, struct seq_file *m);
 bool m9x_gem_vram_tiled(struct drm_gem_object *gem);
 int m9x_surface_access_ioctl(struct drm_device *drm, void *data,
 			     struct drm_file *file);
