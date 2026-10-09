@@ -94,6 +94,17 @@ struct m9x_engine_read_staging {
 	bool failed;
 };
 
+/* Coherent DMA32 staging the engine uploads from, at a class-1 address. */
+struct m9x_engine_write_staging {
+	void *cpu;
+	dma_addr_t bus;
+	struct drm_mm_node node;
+	u32 bytes;
+	u32 *words;
+	u32 capacity;
+	bool failed;
+};
+
 /* The zeroed source of engine fills and their counters, under lock. */
 struct m9x_bo_fill {
 	/* Serialises fills and guards the source and the counters. */
@@ -111,6 +122,11 @@ struct m9x_surface_read_stats {
 	u64 window_reads, window_bytes, window_ns;
 	u64 refused;
 	int last_refusal;
+	u64 engine_writes, engine_write_bytes, engine_write_batches;
+	u64 engine_write_ns;
+	u64 window_writes, window_write_bytes, window_write_ns;
+	u64 write_refused;
+	int last_write_refusal;
 };
 
 struct m9x_triangle_diag;
@@ -322,8 +338,9 @@ struct m9x_device {
 	struct m9x_transport transport;
 	/* Device-unique prepared-only FAA graph tokens; zero is never issued. */
 	atomic64_t faa_graph_next;
-	/* Engine surface readback staging and counters, under transport.lock. */
+	/* Engine surface readback/upload staging and counters, transport.lock. */
 	struct m9x_engine_read_staging engine_read;
+	struct m9x_engine_write_staging engine_write;
 	struct m9x_surface_read_stats surface_stats;
 	struct m9x_bo_fill bo_fill;
 };

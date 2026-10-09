@@ -20,6 +20,7 @@
 
 #include "m9_drv.h"
 #include "m9_engine_read_encode.h"
+#include "m9_engine_write_encode.h"
 #include "m9_reg.h"
 
 #define M9_SURFACE_MAX_SPAN	2048u
@@ -33,6 +34,9 @@
 /* Rows of the widest surface one 32-row chunk needs (MxMD.dll 0xb14f3). */
 #define M9_ENGINE_READ_MIN_RING	(M9_SURFACE_MAX_SPAN * 4 * 32)
 #define M9_ENGINE_READ_MAX_RING	SZ_64M
+/* Upload staging: 32 rows of the widest surface up to 64 MiB. */
+#define M9_ENGINE_WRITE_MIN_STAGING	(M9_SURFACE_MAX_SPAN * 4 * 32)
+#define M9_ENGINE_WRITE_MAX_STAGING	SZ_64M
 
 static uint m9_surface_engine_read = 1;
 module_param_named(surface_engine_read, m9_surface_engine_read, uint, 0644);
@@ -49,6 +53,21 @@ module_param_named(surface_engine_ring_kib, m9_surface_engine_ring_kib, uint,
 		   0444);
 MODULE_PARM_DESC(surface_engine_ring_kib,
 		 "Size of each of the two engine readback rings, KiB");
+static uint m9_surface_engine_write;
+module_param_named(surface_engine_write, m9_surface_engine_write, uint, 0644);
+MODULE_PARM_DESC(surface_engine_write,
+		 "Upload 32-bit colour images by engine copy from class-1 staging: 0 window, 1 engine copy (UNTESTED)");
+static uint m9_surface_engine_write_min_bytes = SZ_64K;
+module_param_named(surface_engine_write_min_bytes,
+		   m9_surface_engine_write_min_bytes, uint, 0644);
+MODULE_PARM_DESC(surface_engine_write_min_bytes,
+		 "Smallest write box the engine upload takes, in bytes");
+/* One 1024x1024 32-bit level a batch. */
+static uint m9_surface_engine_write_kib = 4096;
+module_param_named(surface_engine_write_kib, m9_surface_engine_write_kib,
+		   uint, 0444);
+MODULE_PARM_DESC(surface_engine_write_kib,
+		 "Size of the engine upload staging buffer, KiB (halved until it allocates)");
 
 struct m9_surface_view {
 	bool captured_cpu_view;
@@ -350,7 +369,7 @@ fail:
 	return -ENOMEM;
 }
 
-static bool m9_engine_read_admitted_locked(struct m9x_device *mdev)
+static bool m9_engine_copy_admitted_locked(struct m9x_device *mdev)
 {
 	struct m9x_transport *t = &mdev->transport;
 
@@ -391,7 +410,7 @@ static int m9_surface_engine_read_locked(struct m9x_device *mdev, s64 offset,
 	int ret;
 
 	lockdep_assert_held(&t->lock);
-	if (!m9_engine_read_admitted_locked(mdev)) {
+	if (!m9_engine_copy_admitted_locked(mdev)) {
 		ret = -EBUSY;
 		goto refuse;
 	}
@@ -457,6 +476,171 @@ refuse:
 	return -EOPNOTSUPP;
 }
 
+/*
+ * The upload staging and its class-1 address, kept until detach.  The engine
+ * reads it through the same compact leaves as every system BO.
+ */
+static int m9_engine_write_staging_locked(struct m9x_device *mdev)
+{
+	struct m9x_engine_write_staging *s = &mdev->engine_write;
+	struct device *dev = &mdev->pdev->dev;
+	u32 bytes, bad_page = 0, bad_pte = 0;
+	u64 want;
+	int ret;
+
+	lockdep_assert_held(&mdev->transport.lock);
+	if (s->words)
+		return 0;
+	if (s->failed)
+		return -ENOMEM;
+	s->failed = true;
+	/* Leave three quarters of the class-1 window to the BOs. */
+	want = min_t(u64, (u64)m9_surface_engine_write_kib * SZ_1K,
+		     M9_ENGINE_WRITE_MAX_STAGING);
+	want = min_t(u64, want, m9x_address_system_span(mdev) / 4);
+	if (want < M9_ENGINE_WRITE_MIN_STAGING)
+		return -ENOSPC;
+	for (bytes = PAGE_ALIGN(want); bytes >= M9_ENGINE_WRITE_MIN_STAGING;
+	     bytes = PAGE_ALIGN(bytes / 2)) {
+		s->cpu = dmam_alloc_coherent(dev, bytes, &s->bus,
+					     GFP_KERNEL | __GFP_NOWARN);
+		if (s->cpu)
+			break;
+	}
+	if (!s->cpu)
+		return -ENOMEM;
+	if (upper_32_bits(s->bus + bytes - 1)) {
+		ret = -ERANGE;
+		goto free;
+	}
+	memset(&s->node, 0, sizeof(s->node));
+	ret = m9x_address_map_system(mdev, &s->node, s->bus, bytes);
+	if (ret)
+		goto free;
+	ret = m9x_system_pages_mapped(mdev, lower_32_bits(s->node.start),
+				      s->bus, bytes >> PAGE_SHIFT, 0,
+				      &bad_page, &bad_pte);
+	if (ret)
+		goto unmap;
+	s->capacity = m9x_engine_write_words();
+	s->words = devm_kcalloc(dev, s->capacity, sizeof(*s->words),
+				GFP_KERNEL);
+	if (!s->words) {
+		ret = -ENOMEM;
+		goto unmap;
+	}
+	s->bytes = bytes;
+	s->failed = false;
+	dev_info(dev, "M9 engine upload staging: bus %#llx gpu %#llx, %u bytes\n",
+		 (u64)s->bus, s->node.start, bytes);
+	return 0;
+unmap:
+	dev_info(dev, "M9 engine upload staging unmapped (%d), page %u pte %#x\n",
+		 ret, bad_page, bad_pte);
+	m9x_address_unmap_system(mdev, &s->node);
+free:
+	dmam_free_coherent(dev, bytes, s->cpu, s->bus);
+	s->cpu = NULL;
+	return ret;
+}
+
+/*
+ * Write a box of a tiled colour target or texture level from @kbuf through
+ * the vendor system->video upload rectangle copy.  -EOPNOTSUPP means
+ * nothing was posted, or every posted batch retired: use the window.
+ */
+static int m9_surface_engine_write_locked(struct m9x_device *mdev, s64 offset,
+					  const struct drm_parhelia_m9_surface_access *args,
+					  const struct m9_surface_view *view,
+					  const u8 *kbuf, size_t row_bytes)
+{
+	struct m9x_engine_write_staging *s = &mdev->engine_write;
+	struct m9x_surface_read_stats *st = &mdev->surface_stats;
+	struct m9x_transport *t = &mdev->transport;
+	struct m9x_engine_write_request req = {
+		.descriptor0 = args->descriptor0,
+		.descriptor1 = args->descriptor1,
+		.x = args->x,
+		.width = args->width,
+		.fence_bus = lower_32_bits(t->fence_bus),
+	};
+	struct m9x_engine_write_plan plan;
+	u64 start = ktime_get_ns(), gpu, batches = 0;
+	u32 row = 0, last, r;
+	bool posted;
+	int ret;
+
+	lockdep_assert_held(&t->lock);
+	if (!m9_engine_copy_admitted_locked(mdev)) {
+		ret = -EBUSY;
+		goto refuse;
+	}
+	gpu = M9_VRAM_GPU_BASE + offset;
+	if (offset < 0 || offset + view->bytes > m9x_vram_gpu_limit(mdev) ||
+	    upper_32_bits(gpu) || upper_32_bits(t->fence_bus)) {
+		ret = -ERANGE;
+		goto refuse;
+	}
+	ret = m9_engine_write_staging_locked(mdev);
+	if (ret)
+		goto refuse;
+	/* The first and the last leaf still name the staging pages. */
+	last = s->bytes / PAGE_SIZE - 1;
+	ret = m9x_system_pages_mapped(mdev, lower_32_bits(s->node.start),
+				      s->bus, 1, 0, NULL, NULL);
+	if (!ret)
+		ret = m9x_system_pages_mapped(mdev,
+					      lower_32_bits(s->node.start) +
+					      last * PAGE_SIZE,
+					      s->bus + (u64)last * PAGE_SIZE,
+					      1, 0, NULL, NULL);
+	if (ret)
+		goto refuse;
+	req.dest = lower_32_bits(gpu);
+	req.source = lower_32_bits(s->node.start);
+	req.source_bytes = s->bytes;
+	while (row < args->height) {
+		req.y = args->y + row;
+		req.height = args->height - row;
+		req.token = t->next_fence;
+		ret = m9x_engine_write_encode(&req, s->words, s->capacity,
+					      &plan);
+		if (ret)
+			goto refuse;
+		for (r = 0; r < plan.rows; r++)
+			memcpy((u8 *)s->cpu + (size_t)r * plan.pitch,
+			       kbuf + (size_t)(row + r) * row_bytes, row_bytes);
+		posted = false;
+		ret = m9x_submit_kernel_stream_locked(mdev, s->words,
+						      plan.dwords, plan.final,
+						      NULL, &posted, false);
+		if (ret && !posted && !t->wedged)
+			goto refuse;
+		if (ret)
+			return ret;
+		t->next_fence = plan.final + 0x10;
+		if (!st->engine_writes && !batches)
+			dev_info(&mdev->pdev->dev,
+				 "M9 engine upload: first batch retired, %u dwords %u rows pitch %u dest %#x final %#x\n",
+				 plan.dwords, plan.rows, plan.pitch, req.dest,
+				 plan.final);
+		row += plan.rows;
+		batches++;
+	}
+	st->engine_writes++;
+	st->engine_write_bytes += (u64)args->height * row_bytes;
+	st->engine_write_batches += batches;
+	st->engine_write_ns += ktime_get_ns() - start;
+	return 0;
+refuse:
+	st->write_refused++;
+	st->last_write_refusal = ret;
+	dev_info_ratelimited(&mdev->pdev->dev,
+			     "M9 engine upload refused (%d), window write\n",
+			     ret);
+	return -EOPNOTSUPP;
+}
+
 static int m9_surface_access(struct m9x_device *mdev, struct drm_file *file,
 			     struct drm_parhelia_m9_surface_access *args)
 {
@@ -482,9 +666,16 @@ static int m9_surface_access(struct m9x_device *mdev, struct drm_file *file,
 	if (!mdev->bar0_window)
 		return -ENODEV;
 	row_bytes = (size_t)args->width * view.cpp;
-	engine = m9_surface_engine_read && !write && !texture &&
-		 !view.captured_cpu_view &&
-		 (u64)args->height * row_bytes >= m9_surface_engine_min_bytes;
+	if (write)
+		engine = m9_surface_engine_write && !view.captured_cpu_view &&
+			 view.cpp == 4 &&
+			 (u64)args->height * row_bytes >=
+			 m9_surface_engine_write_min_bytes;
+	else
+		engine = m9_surface_engine_read && !texture &&
+			 !view.captured_cpu_view &&
+			 (u64)args->height * row_bytes >=
+			 m9_surface_engine_min_bytes;
 	kbuf = kvmalloc_array(args->height, row_bytes, GFP_KERNEL);
 	if (!kbuf)
 		return -ENOMEM;
@@ -570,6 +761,10 @@ static int m9_surface_access(struct m9x_device *mdev, struct drm_file *file,
 		m9x_transport_drain_locked(mdev);
 	if (mdev->transport.wedged)
 		ret = -EIO;
+	else if (engine && write)
+		ret = m9_surface_engine_write_locked(mdev, offset + args->offset,
+						     args, &view, kbuf,
+						     row_bytes);
 	else if (engine)
 		ret = m9_surface_engine_read_locked(mdev, offset, args, &view,
 						    kbuf, row_bytes);
@@ -625,6 +820,12 @@ static int m9_surface_access(struct m9x_device *mdev, struct drm_file *file,
 			mdev->surface_stats.window_bytes +=
 				(u64)args->height * row_bytes;
 			mdev->surface_stats.window_ns += ktime_get_ns() - start;
+		} else {
+			mdev->surface_stats.window_writes++;
+			mdev->surface_stats.window_write_bytes +=
+				(u64)args->height * row_bytes;
+			mdev->surface_stats.window_write_ns +=
+				ktime_get_ns() - start;
 		}
 	}
 out_transport:
@@ -678,11 +879,12 @@ int m9x_surface_access_ioctl(struct drm_device *drm, void *data,
 int m9x_surface_stats_show(struct m9x_device *mdev, struct seq_file *m)
 {
 	struct m9x_surface_read_stats st;
-	u32 ring;
+	u32 ring, staging;
 
 	mutex_lock(&mdev->transport.lock);
 	st = mdev->surface_stats;
 	ring = mdev->engine_read.words ? mdev->engine_read.bytes : 0;
+	staging = mdev->engine_write.words ? mdev->engine_write.bytes : 0;
 	mutex_unlock(&mdev->transport.lock);
 	seq_printf(m, "mode=%u min_bytes=%u ring_bytes=%u\n",
 		   m9_surface_engine_read, m9_surface_engine_min_bytes, ring);
@@ -692,6 +894,17 @@ int m9x_surface_stats_show(struct m9x_device *mdev, struct seq_file *m)
 	seq_printf(m, "window reads=%llu bytes=%llu ns=%llu\n",
 		   st.window_reads, st.window_bytes, st.window_ns);
 	seq_printf(m, "refused=%llu last=%d\n", st.refused, st.last_refusal);
+	seq_printf(m, "write mode=%u min_bytes=%u staging_bytes=%u\n",
+		   m9_surface_engine_write, m9_surface_engine_write_min_bytes,
+		   staging);
+	seq_printf(m, "engine writes=%llu bytes=%llu batches=%llu ns=%llu\n",
+		   st.engine_writes, st.engine_write_bytes,
+		   st.engine_write_batches, st.engine_write_ns);
+	seq_printf(m, "window writes=%llu bytes=%llu ns=%llu\n",
+		   st.window_writes, st.window_write_bytes,
+		   st.window_write_ns);
+	seq_printf(m, "write refused=%llu last=%d\n", st.write_refused,
+		   st.last_write_refusal);
 	return 0;
 }
 
@@ -757,6 +970,67 @@ static int m9_engine_read_selftest(void)
 	ret = 0;
 out:
 	kfree(chunks);
+	kfree(w);
+	return ret;
+}
+
+/* The upload encoder at two placements, a split batch and its refusals. */
+static int m9_engine_write_selftest(void)
+{
+	struct m9x_engine_write_request req = {
+		.dest = 0x00f19000, .descriptor0 = 0xcc210140,
+		.descriptor1 = 0x000100f0, .width = 320, .height = 240,
+		.source = 0x40803000, .source_bytes = SZ_4M,
+		.fence_bus = 0x18d51000, .token = 0x40,
+	};
+	u32 capacity = m9x_engine_write_words(), *w;
+	struct m9x_engine_write_plan plan;
+	int ret = -EINVAL;
+
+	w = kcalloc(capacity, sizeof(*w), GFP_KERNEL);
+	if (!w)
+		return -ENOMEM;
+	if (m9x_engine_write_encode(&req, w, capacity, &plan) ||
+	    plan.dwords != capacity || plan.rows != 240 ||
+	    plan.pitch != 1280 || plan.final != 0x70 ||
+	    w[0] != 0x4545451b || w[1] != 0x18d51002 || w[4] != 0x41 ||
+	    w[plan.dwords - 1] != 0x71)
+		goto out;
+	/* A 128x128 level of a texture from a staging of 100 rows. */
+	req.dest = 0x02f0e100;
+	req.descriptor0 = 0xc8210080;
+	req.descriptor1 = 0x00010080;
+	req.width = 128;
+	req.height = 128;
+	req.y = 0;
+	req.source = 0x41000000;
+	req.source_bytes = 100 * 512;
+	if (m9x_engine_write_encode(&req, w, capacity, &plan) ||
+	    plan.rows != 100 || plan.pitch != 512)
+		goto out;
+	req.descriptor0 = 0xc8180080;
+	if (m9x_engine_write_encode(&req, w, capacity, &plan) != -EINVAL)
+		goto out;
+	req.descriptor0 = 0x40210080;
+	if (m9x_engine_write_encode(&req, w, capacity, &plan) != -EINVAL)
+		goto out;
+	req.descriptor0 = 0xc8210080;
+	req.source |= 0x800;
+	if (m9x_engine_write_encode(&req, w, capacity, &plan) != -EINVAL)
+		goto out;
+	req.source &= ~0x800u;
+	req.y = 100;
+	req.height = 29;
+	if (m9x_engine_write_encode(&req, w, capacity, &plan) != -EINVAL)
+		goto out;
+	req.height = 28;
+	if (m9x_engine_write_encode(&req, w, capacity - 1, &plan) != -ENOSPC)
+		goto out;
+	req.token = 0xffffffd0;
+	if (m9x_engine_write_encode(&req, w, capacity, &plan) != -ERANGE)
+		goto out;
+	ret = 0;
+out:
 	kfree(w);
 	return ret;
 }
@@ -834,5 +1108,7 @@ int m9x_surface_selftest(void)
 	if (!m9x_surface_layout_bytes(320, 240, 4, &size) || size != 0x50000 ||
 	    !m9x_surface_layout_bytes(1024, 768, 4, &size) || size != 0x301000)
 		return -EINVAL;
-	return m9_engine_read_selftest();
+	if (m9_engine_read_selftest())
+		return -EINVAL;
+	return m9_engine_write_selftest();
 }
