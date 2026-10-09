@@ -28,6 +28,7 @@
 
 #include "nir.h"
 #include "nir_builder.h"
+#include "nir_lower_blend.h"
 #include "util/u_math.h"
 #include "util/bitset.h"
 
@@ -105,6 +106,7 @@ color_cls(unsigned target)
 #define REG_S0  0x11u
 #define REG_S1  0x13u
 #define REG_I   0x1au
+#define REG_DST 0x18u        /* destination R,G; B,A in 1a */
 
 enum node_kind {
    N_VARY, N_TEX, N_UBO, N_LIT, N_MUL, N_ADD, N_SUB, N_MAD,
@@ -125,6 +127,7 @@ enum node_kind {
    N_PAIR,
    N_FACE,              /* gl_FrontFacing: zero in scalar 0 for a back face */
    N_DDX, N_DDY,        /* screen-space derivative, fs-dfdx / fs-dfdy */
+   N_DST,               /* the destination in 18..1b, read like a texel pair */
 };
 
 struct node {
@@ -193,6 +196,7 @@ struct ctx {
    nir_shader *nir;
    struct m9_fs_program *p;
    const struct m9_fs_blend *blend;  /* NULL when unblended */
+   bool dst_read;       /* the program reads the destination registers */
    struct util_dynarray nodes, lops, values, keys, key_index;
    struct util_dynarray gathers;  /* vectors already assembled from scalars */
    const char *reason;
@@ -641,6 +645,18 @@ build_intrinsic(struct ctx *c, nir_intrinsic_instr *intr)
       set_src(&NODES(c)[n], 0, a, lane_id, swz_id);
       return n;
    }
+   case nir_intrinsic_load_output:
+      if (!nir_intrinsic_io_semantics(intr).fb_fetch_output)
+         return fail(c, "unsupported fragment output read"), -1;
+      util_dynarray_foreach(&c->nodes, struct node, it)
+         if (it->kind == N_DST)
+            return it - NODES(c);
+      n = node_new(c, N_DST);
+      if (n < 0)
+         return -1;
+      NODES(c)[n].texel = REG_DST;
+      c->dst_read = true;
+      return n;
    case nir_intrinsic_load_ubo_vec4:
       /* A narrower load still names the whole vec4 slot; the components
        * above it are simply never read. */
@@ -2376,7 +2392,7 @@ node_level(struct ctx *c, int n)
    case N_VARY: case N_LOAD: case N_COMPOSE:
       level = 0;
       break;
-   case N_TEX: case N_UBO: case N_LIT:
+   case N_TEX: case N_DST: case N_UBO: case N_LIT:
       level = -1;
       break;
    default:
@@ -2451,6 +2467,7 @@ operand(struct ctx *c, struct lop *l, unsigned i, const struct node *nd,
    }
    switch (s->kind) {
    case N_TEX:
+   case N_DST:
       l->opreg[i] = s->texel + 2 * lane;
       l->opswz[i] = swz;
       break;
@@ -2948,7 +2965,7 @@ node_weight(struct ctx *c, int n)
    if (nd->weight)
       return nd->weight - 1;
    if (nd->kind == N_VARY || nd->kind == N_LOAD || nd->kind == N_COMPOSE ||
-       nd->kind == N_TEX || node_is_const(nd)) {
+       nd->kind == N_TEX || nd->kind == N_DST || node_is_const(nd)) {
       nd->weight = 2;
       return 1;
    }
@@ -2971,7 +2988,8 @@ schedule_operands(struct ctx *c, int n, int root, bool direct_ba)
    unsigned order[3] = { 0, 1, 2 };
 
    if (nd->kind == N_VARY || nd->kind == N_LOAD || nd->kind == N_COMPOSE ||
-       nd->kind == N_TEX || node_is_const(nd) || nd->value[0] >= 0 ||
+       nd->kind == N_TEX || nd->kind == N_DST || node_is_const(nd) ||
+       nd->value[0] >= 0 ||
        nd->emitted)
       return true;
    nd->emitted = true;
@@ -3013,6 +3031,7 @@ output_target(struct ctx *c, int root, unsigned target)
       l.target = target;
       switch (nd->kind) {
       case N_TEX:
+      case N_DST:
          l.opreg[0] = nd->texel + 2 * lane;
          break;
       case N_COMPOSE:
@@ -3060,6 +3079,7 @@ schedule_forest(struct ctx *c, const int *roots, unsigned targets,
       if (roots[p] >= 0)
          max_level = MAX2(max_level, node_level(c, roots[p]));
    if (single && (NODES(c)[root].kind == N_TEX ||
+                  NODES(c)[root].kind == N_DST ||
                   node_is_const(&NODES(c)[root])))
       return fail(c, "internal: leaf root");
    /* Interpolations: highest varying slot first. */
@@ -3161,6 +3181,8 @@ allocate(struct ctx *c)
    static const uint8_t interp_extra[] = { 0x1a, 0x1b, 0x1c, 0x1d, 0x1e, 0x1f };
    const uint64_t reserved = record_reserved(c);
    uint64_t busy = reserved;
+   /* Blending, or a program reading the destination, keeps 18..1b. */
+   const bool dst = c->blend || c->dst_read;
 
    /* A retry re-emits the lops against the values already in the array, so
     * every placement here starts from none: a value an earlier attempt put
@@ -3237,14 +3259,14 @@ allocate(struct ctx *c)
             continue;
          if (v->interp) {
             /* Blending reads the destination from 18..1b. */
-            if (v->rg_read && !c->blend && !reg_busy(busy, REG_I))
+            if (v->rg_read && !dst && !reg_busy(busy, REG_I))
                reg = REG_I;
             /* Four units put base at 10, the scratch band: an input
              * interpolated there reads a constant (MEASURED, fsel4). */
             for (unsigned r = base; reg < 0 && r < base + 2 && r < 0x10; r++)
                if (!reg_busy(busy, r))
                   reg = r;
-            for (unsigned r = c->blend ? 2 : 0;
+            for (unsigned r = dst ? 2 : 0;
                  reg < 0 && r < ARRAY_SIZE(interp_extra); r++)
                if (!reg_busy(busy, interp_extra[r]))
                   reg = interp_extra[r];
@@ -3311,12 +3333,12 @@ allocate(struct ctx *c)
                next_general = 0x14;
             while (next_general < 0x20u && reg_busy(reserved, next_general))
                next_general++;
-            while (next_general > (c->blend ? 0x17u : 0x19u) &&
+            while (next_general > (dst ? 0x17u : 0x19u) &&
                    next_general < 0x20u &&
-                   (c->blend || reg_busy(taken, next_general)))
+                   (dst || reg_busy(taken, next_general)))
                next_general++;
             if (next_general < 0x20u &&
-                (next_general <= (c->blend ? 0x17u : 0x19u) ||
+                (next_general <= (dst ? 0x17u : 0x19u) ||
                  !reg_busy(taken, next_general)))
                VALUES(c)[l->dst].reg = next_general++;
             else if (num_freed)
@@ -3356,7 +3378,7 @@ allocate(struct ctx *c)
          util_dynarray_foreach(&c->values, struct value, v)
             if ((v->general ||
                  (v->interp && (v->reg < 0x10 || v->reg > 0x13) &&
-                  v->reg <= (c->blend ? 0x17 : 0x1f))) &&
+                  v->reg <= (dst ? 0x17 : 0x1f))) &&
                 v->reg >= 0 && num_freed < ARRAY_SIZE(freed) &&
                 (v->last == (int)s || (v->def == (int)s && v->last < 0)))
                freed[num_freed++] = v->reg;
@@ -4206,7 +4228,6 @@ assign_texels(struct ctx *c)
 
 /* Blending */
 
-#define REG_DST 0x18u        /* destination R,G; B,A in 1a */
 #define SWZ_ALPHA 3u
 #define SWZ_LANE 1u
 
@@ -5230,7 +5251,8 @@ compile_graph(struct ctx *c, nir_scalar s[4], bool discard)
    if (discard)
       return tmpl_discard_varying(c, root);
    switch (NODES(c)[root].kind) {
-   case N_TEX: {
+   case N_TEX:
+   case N_DST: {
       unsigned t = NODES(c)[root].texel;
       struct lop l;
 
@@ -5358,8 +5380,8 @@ scalar_node(struct ctx *c, nir_scalar sc, unsigned *lane, unsigned *swz)
    }
    *lane = comp / 2;
    *swz = comp & 1 ? 3 : 0;
-   if (NODES(c)[n].kind == N_TEX || NODES(c)[n].kind == N_COMPOSE ||
-       NODES(c)[n].kind == N_PAIR) {
+   if (NODES(c)[n].kind == N_TEX || NODES(c)[n].kind == N_DST ||
+       NODES(c)[n].kind == N_COMPOSE || NODES(c)[n].kind == N_PAIR) {
       uint8_t ll[2] = { *lane, *lane }, ls[2] = { *swz, *swz };
       int one = node_new(c, N_LIT), m;
 
@@ -5581,6 +5603,7 @@ compile_impl_kills(struct ctx *c, nir_function_impl *impl,
          case nir_intrinsic_load_barycentric_pixel:
          case nir_intrinsic_load_barycentric_centroid:
          case nir_intrinsic_load_ubo_vec4:
+         case nir_intrinsic_load_output:
             break;
          case nir_intrinsic_load_input:
          case nir_intrinsic_ddx:
@@ -5610,7 +5633,7 @@ compile_impl_kills(struct ctx *c, nir_function_impl *impl,
        * per-target form here. */
       if (kill || discard)
          return fail(c, "a multiple-target shader cannot discard");
-      if (c->blend)
+      if (c->blend || c->dst_read)
          return fail(c, "blending with more than one colour target");
       if (!compile_targets(c) || !encode_lops(c))
          return false;
@@ -5625,6 +5648,8 @@ compile_impl_kills(struct ctx *c, nir_function_impl *impl,
        * still writes nothing the application sees. */
       if (!compile_output(c, c->root, false))
          return false;
+      if (c->dst_read)
+         return fail(c, "a producing pass reading the destination");
       if (!encode_lops(c))
          return false;
       finish_slots(c);
@@ -5666,6 +5691,13 @@ compile_impl_kills(struct ctx *c, nir_function_impl *impl,
    if (c->blend && !(c->blend->logic ? logic_append(c, colour) :
                                        blend_append(c, colour)))
       return false;
+   /* The destination load blend_append arranges, for a program that reads
+    * the destination itself. */
+   if (c->dst_read) {
+      c->p->blend_dest = true;
+      c->p->registers_used |= BITFIELD_BIT(0);
+      c->p->registers_used &= ~BITFIELD_BIT((REG_I - 0x08) / 2);
+   }
    finish_slots(c);
    if (c->blend && !c->blend->logic) {
       struct m9_fs_const *pad = util_dynarray_grow(&c->p->consts,
@@ -5891,9 +5923,9 @@ fs_merge_output_stores(nir_shader *nir)
  * two-component machine, so put the vectors back before anything reads it.
  * The passes of a split shader share one prepared NIR. */
 static void
-fs_prepare(nir_shader *nir)
+fs_flatten(nir_shader *nir)
 {
-   bool lowered = false, progress;
+   bool progress;
 
    m9_nir_lower_alu_if(nir);
    /* The program has no branches, and a refused program skips the draw:
@@ -5912,6 +5944,14 @@ fs_prepare(nir_shader *nir)
       NIR_PASS(_, nir, nir_lower_undef_to_zero, NULL);
    } while (progress);
    NIR_PASS(_, nir, fs_merge_output_stores);
+}
+
+static void
+fs_prepare(nir_shader *nir)
+{
+   bool lowered = false;
+
+   fs_flatten(nir);
 
    /* st lowers uniforms to UBO loads after its last folding pass, so a
     * constant slot index arrives as an iadd of two constants; without this
@@ -6170,20 +6210,117 @@ m9_fs_lower_srgb_texture(nir_shader *nir, uint32_t mask)
                nir_metadata_control_flow, &mask);
 }
 
-/* GL blends an sRGB target in linear space, which needs the destination
- * decoded before the blend and encoded after it.  Decode is not implemented,
- * so a blended sRGB draw is refused rather than blended in encoded space. */
+/* The destination as the blend reads it from 18..1b holds the stored,
+ * encoded bytes: decode its colour channels. */
 static bool
-fs_srgb(nir_shader *nir, const struct m9_fs_blend *blend, const char **reason)
+srgb_dst(nir_builder *b, nir_intrinsic_instr *intr, void *data)
 {
-   if (!blend || !blend->srgb)
+   nir_def *v, *res;
+
+   (void)data;
+   if (intr->intrinsic != nir_intrinsic_load_output ||
+       !nir_intrinsic_io_semantics(intr).fb_fetch_output ||
+       intr->def.num_components != 4)
+      return false;
+   b->cursor = nir_after_instr(&intr->instr);
+   v = &intr->def;
+   res = srgb_decode(b, nir_trim_vector(b, v, 3));
+   res = nir_vec4(b, nir_channel(b, res, 0), nir_channel(b, res, 1),
+                  nir_channel(b, res, 2), nir_channel(b, v, 3));
+   nir_def_rewrite_uses_after(v, res);
+   return true;
+}
+
+static const enum pipe_blendfactor fs_pipe_factor[] = {
+   [M9_FS_ZERO] = PIPE_BLENDFACTOR_ZERO,
+   [M9_FS_ONE] = PIPE_BLENDFACTOR_ONE,
+   [M9_FS_SRC_ALPHA] = PIPE_BLENDFACTOR_SRC_ALPHA,
+   [M9_FS_INV_SRC_ALPHA] = PIPE_BLENDFACTOR_INV_SRC_ALPHA,
+   [M9_FS_DST_ALPHA] = PIPE_BLENDFACTOR_DST_ALPHA,
+   [M9_FS_INV_DST_ALPHA] = PIPE_BLENDFACTOR_INV_DST_ALPHA,
+   [M9_FS_SRC_COLOR] = PIPE_BLENDFACTOR_SRC_COLOR,
+   [M9_FS_INV_SRC_COLOR] = PIPE_BLENDFACTOR_INV_SRC_COLOR,
+   [M9_FS_DST_COLOR] = PIPE_BLENDFACTOR_DST_COLOR,
+   [M9_FS_INV_DST_COLOR] = PIPE_BLENDFACTOR_INV_DST_COLOR,
+   [M9_FS_CONST_COLOR] = PIPE_BLENDFACTOR_CONST_COLOR,
+   [M9_FS_INV_CONST_COLOR] = PIPE_BLENDFACTOR_INV_CONST_COLOR,
+   [M9_FS_CONST_ALPHA] = PIPE_BLENDFACTOR_CONST_ALPHA,
+   [M9_FS_INV_CONST_ALPHA] = PIPE_BLENDFACTOR_INV_CONST_ALPHA,
+   [M9_FS_SRC_ALPHA_SATURATE] = PIPE_BLENDFACTOR_SRC_ALPHA_SATURATE,
+};
+
+static const enum pipe_blend_func fs_pipe_func[] = {
+   [M9_FS_FUNC_ADD] = PIPE_BLEND_ADD,
+   [M9_FS_FUNC_SUBTRACT] = PIPE_BLEND_SUBTRACT,
+   [M9_FS_FUNC_REVERSE_SUBTRACT] = PIPE_BLEND_REVERSE_SUBTRACT,
+   [M9_FS_FUNC_MIN] = PIPE_BLEND_MIN,
+   [M9_FS_FUNC_MAX] = PIPE_BLEND_MAX,
+};
+
+static bool
+fs_const_factor(unsigned f)
+{
+   return f >= M9_FS_CONST_COLOR && f <= M9_FS_INV_CONST_ALPHA;
+}
+
+static bool
+fs_reads_dst(const nir_shader *nir)
+{
+   nir_foreach_function_impl(impl, nir)
+      nir_foreach_block(block, impl)
+         nir_foreach_instr(instr, block)
+            if (instr->type == nir_instr_type_intrinsic &&
+                nir_instr_as_intrinsic(instr)->intrinsic ==
+                   nir_intrinsic_load_output &&
+                nir_intrinsic_io_semantics(nir_instr_as_intrinsic(instr))
+                   .fb_fetch_output)
+               return true;
+   return false;
+}
+
+/* GL blends an sRGB target in linear space.  The blend tail reads the
+ * destination as stored, so a blended sRGB draw blends in the program
+ * instead: the destination registers are read as a value, decoded, blended
+ * by nir_lower_blend, encoded, and written unblended.  *blend becomes the
+ * opaque blend the program then carries. */
+static bool
+fs_srgb(nir_shader *nir, const struct m9_fs_blend **blend, const char **reason)
+{
+   const struct m9_fs_blend *b = *blend;
+   nir_lower_blend_options opts = { 0 };
+   unsigned one = 1;
+
+   if (!b || !b->srgb)
       return true;
-   if (!blend_opaque(blend)) {
-      *reason = "blending into an sRGB target (destination decode is not "
-                "implemented)";
+   if (blend_opaque(b)) {
+      m9_fs_lower_srgb(nir);
+      return true;
+   }
+   /* GL has no logic op on an sRGB target (it is disabled). */
+   if (b->logic || fs_const_factor(b->src) || fs_const_factor(b->dst) ||
+       (b->separate && (fs_const_factor(b->alpha_src) ||
+                        fs_const_factor(b->alpha_dst)))) {
+      *reason = "blending into an sRGB target with a constant colour or a "
+                "logic op";
       return false;
    }
+   fs_flatten(nir);
+   NIR_PASS(_, nir, nir_shader_intrinsics_pass, fragcolor_store,
+            nir_metadata_control_flow, &one);
+   opts.rt[0].format = PIPE_FORMAT_B8G8R8A8_UNORM;
+   opts.rt[0].colormask = 0xf;
+   opts.rt[0].rgb = (nir_lower_blend_channel){
+      fs_pipe_func[b->func], fs_pipe_factor[b->src], fs_pipe_factor[b->dst] };
+   opts.rt[0].alpha = b->separate ?
+      (nir_lower_blend_channel){ fs_pipe_func[b->alpha_func],
+                                 fs_pipe_factor[b->alpha_src],
+                                 fs_pipe_factor[b->alpha_dst] } :
+      opts.rt[0].rgb;
+   NIR_PASS(_, nir, nir_lower_blend, &opts);
+   NIR_PASS(_, nir, nir_shader_intrinsics_pass, srgb_dst,
+            nir_metadata_control_flow, NULL);
    m9_fs_lower_srgb(nir);
+   *blend = NULL;
    return true;
 }
 
@@ -6337,7 +6474,7 @@ m9_fs_compile(struct nir_shader *nir, const struct m9_fs_blend *blend,
               struct m9_fs_program *program, const char **reason)
 {
    if (nir->info.stage == MESA_SHADER_FRAGMENT) {
-      if (!fs_srgb(nir, blend, reason))
+      if (!fs_srgb(nir, &blend, reason))
          return memset(program, 0, sizeof(*program)), false;
       fs_prepare(nir);
    }
@@ -6791,7 +6928,7 @@ m9_fs_compile_passes(struct nir_shader *nir, const struct m9_fs_blend *blend,
     * the captured shape is exercised against the hardware. */
    unsigned force = debug_get_num_option("M9X_FS_FORCE_SPLIT", 0);
 
-   if (!fs_srgb(nir, blend, reason))
+   if (!fs_srgb(nir, &blend, reason))
       return false;
    fs_prepare(nir);
    if (!force &&

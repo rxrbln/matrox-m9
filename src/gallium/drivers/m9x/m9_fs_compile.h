@@ -133,9 +133,8 @@ enum m9_fs_blend_func {
 
 struct m9_fs_blend {
    uint8_t src, dst;              /* enum m9_fs_factor, R,G,B (and A) */
-   /* The colour target stores sRGB, so the program encodes what it writes.
-    * Destination decode is not implemented, so a blended sRGB draw -- which
-    * would have to decode the destination -- is refused. */
+   /* The colour target stores sRGB, so the program encodes what it writes
+    * and blends against the decoded destination itself. */
    bool srgb;
    uint8_t func;                  /* enum m9_fs_blend_func */
    /* A differs from R,G,B: alpha_src/alpha_dst/alpha_func apply to it. */

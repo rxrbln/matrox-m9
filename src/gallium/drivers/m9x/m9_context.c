@@ -908,6 +908,9 @@ m9_surface_rows(struct m9_context *ctx, const struct m9_resource *resource,
 
    if (store == format)
       return m9_surface_access(ctx, resource, op, box, data);
+   /* The bytes move as stored; an sRGB pair is not decoded on the way. */
+   format = util_format_linear(format);
+   store = util_format_linear(store);
    rows = m9_staging_get(ctx, (size_t)row * box->height);
    if (!rows)
       return -ENOMEM;
@@ -4783,8 +4786,10 @@ m9_texture_bind_view(const struct pipe_sampler_view *view,
              "draw skipped";
    /* View swizzles are lowered into the fragment variant (m9_ctx_variant).
     * A depth view names the sampleable part of a depth image, so compare
-    * the descriptor code rather than the pipe format. */
-   if (view->format != res->base.format) {
+    * the descriptor code rather than the pipe format.  An sRGB view of its
+    * UNORM twin, or the reverse, reads the same bytes. */
+   if (util_format_linear(view->format) !=
+       util_format_linear(res->base.format)) {
       struct m9_format_info a, b;
 
       if (!m9_format_info(view->format, &a) ||
@@ -4891,7 +4896,8 @@ m9_texture_bind_view(const struct pipe_sampler_view *view,
     * 32-aligned row span; naming the span instead clamped and wrapped at the
     * padding (MEASURED, rtsample: CLAMP_TO_EDGE, REPEAT and linear edges
     * exact at 100x37, 200x150, 300x200). */
-   enum pipe_format store = m9_format_storage(res->base.format);
+   enum pipe_format store =
+      util_format_linear(m9_format_storage(res->base.format));
 
    if (res->tiled && res->kind == M9_RESOURCE_LINEAR_COLOR &&
        (store == PIPE_FORMAT_B8G8R8A8_UNORM ||

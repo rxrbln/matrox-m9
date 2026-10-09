@@ -9,14 +9,19 @@ m9_format_info(enum pipe_format format, struct m9_format_info *out)
 {
    struct m9_format_info info;
 
-   /* The BGRA8 sRGB target stores the same bytes as its UNORM twin.  The
-    * fragment variant encodes RT0 writes; other sRGB formats remain sampler
-    * sources only.  Screen admission separately gates target exposure. */
+   /* The BGRA8 sRGB target stores the same bytes as its UNORM twin, and
+    * RGBA8 sRGB is kept in it (m9_format_storage).  The fragment variant
+    * encodes RT0 writes; other sRGB formats remain sampler sources only.
+    * Screen admission separately gates target exposure. */
    if (util_format_is_srgb(format)) {
-      if (!m9_format_info(util_format_linear(format), &info))
+      enum pipe_format linear = format == PIPE_FORMAT_R8G8B8A8_SRGB ?
+                                PIPE_FORMAT_B8G8R8A8_UNORM :
+                                util_format_linear(format);
+
+      if (!m9_format_info(linear, &info))
          return false;
       info.usage &= M9_FORMAT_TEXTURE;
-      if (format == PIPE_FORMAT_B8G8R8A8_SRGB)
+      if (linear == PIPE_FORMAT_B8G8R8A8_UNORM)
          info.usage |= M9_FORMAT_COLOR;
       if (out)
          *out = info;
@@ -122,6 +127,9 @@ m9_format_storage(enum pipe_format format)
    case PIPE_FORMAT_R8_UNORM:
    case PIPE_FORMAT_R8G8_UNORM:
       return PIPE_FORMAT_B8G8R8X8_UNORM;
+   /* No RGBA8 colour code, and st's first choice for SRGB8_ALPHA8. */
+   case PIPE_FORMAT_R8G8B8A8_SRGB:
+      return PIPE_FORMAT_B8G8R8A8_SRGB;
    default:
       return format;
    }
