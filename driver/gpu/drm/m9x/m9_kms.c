@@ -1443,8 +1443,8 @@ static const struct drm_simple_display_pipe_funcs m9_pipe_funcs = {
 	.disable = m9_pipe_disable,
 	.check = m9_pipe_check,
 	.update = m9_pipe_update,
-	.begin_fb_access = matrox_kms_pipe_begin_fb_access,
-	.end_fb_access = matrox_kms_pipe_end_fb_access,
+	.prepare_fb = matrox_kms_pipe_prepare_fb,
+	.cleanup_fb = matrox_kms_pipe_cleanup_fb,
 	.enable_vblank = m9_pipe_enable_vblank,
 	.disable_vblank = m9_pipe_disable_vblank,
 };
