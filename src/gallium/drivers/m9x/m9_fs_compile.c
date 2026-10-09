@@ -6580,17 +6580,64 @@ fs_split_index(struct fs_split *sp, nir_function_impl *impl, nir_def **out,
    return true;
 }
 
+/* A boolean operation whose result feeds another boolean operation: the
+ * links of a chain such as failed = failed || a != b. */
+static bool
+fs_bool_link(const nir_alu_instr *alu)
+{
+   if (alu->def.bit_size != 1 ||
+       (alu->op != nir_op_ior && alu->op != nir_op_iand &&
+        alu->op != nir_op_ixor))
+      return false;
+   nir_foreach_use(src, &alu->def) {
+      nir_instr *user = nir_src_use_instr(src);
+
+      if (user->type == nir_instr_type_alu &&
+          nir_instr_as_alu(user)->def.bit_size == 1)
+         return true;
+   }
+   return false;
+}
+
+static bool
+fs_bool_chain(nir_shader *nir)
+{
+   nir_foreach_function_impl(impl, nir)
+      nir_foreach_block(block, impl)
+         nir_foreach_instr(instr, block)
+            if (instr->type == nir_instr_type_alu &&
+                fs_bool_link(nir_instr_as_alu(instr)))
+               return true;
+   return false;
+}
+
+/* Hands a chain link on as b2f32 and rebuilds the boolean from it, so the
+ * splitter finds a 32-bit value at every link. */
+static bool
+fs_bool_materialize(nir_builder *b, nir_alu_instr *alu, void *data)
+{
+   (void)data;
+   if (!fs_bool_link(alu))
+      return false;
+   b->cursor = nir_after_instr(&alu->instr);
+   nir_def *f = nir_b2f32(b, &alu->def);
+   nir_def *back = nir_fneu_imm(b, f, 0.0);
+   nir_def_rewrite_uses_after(&alu->def, back);
+   return true;
+}
+
+static bool
+fs_split_passes(struct nir_shader *nir, const struct m9_fs_blend *blend,
+                struct m9_fs_passes *passes, const char **reason,
+                unsigned force, enum fs_cut_kind kind, nir_def *blocker);
+
 bool
 m9_fs_compile_passes(struct nir_shader *nir, const struct m9_fs_blend *blend,
                      struct m9_fs_passes *passes, const char **reason)
 {
-   nir_function_impl *impl = NULL;
-   nir_def *out = NULL, *cut[M9_FS_MAX_PASSES], *rejected[M9_FS_MAX_PASSES];
    nir_def *blocker = NULL;
-   struct fs_split sp = { .cut = cut };
-   unsigned rejects = 0, words;
    enum fs_cut_kind kind = FS_CUT_TEX;
-   bool ok = false;
+   bool ok;
 
    *reason = NULL;
    memset(passes, 0, sizeof(*passes));
@@ -6614,6 +6661,37 @@ m9_fs_compile_passes(struct nir_shader *nir, const struct m9_fs_blend *blend,
    }
    if (!force && !fs_cut_kind_of(*reason, blocker, &kind))
       return false;
+   ok = fs_split_passes(nir, blend, passes, reason, force, kind, blocker);
+   /* A boolean chain has no 32-bit value to cut at: retry once with each
+    * boolean operation's result also held as a float. */
+   if (!ok && !force && fs_bool_chain(nir)) {
+      nir_shader *clone = nir_shader_clone(NULL, nir);
+      const char *why = NULL;
+
+      NIR_PASS(_, clone, nir_shader_alu_pass, fs_bool_materialize,
+               nir_metadata_control_flow, NULL);
+      if (fs_split_passes(clone, blend, passes, &why, false, kind, NULL)) {
+         *reason = NULL;
+         ok = true;
+      }
+      ralloc_free(clone);
+   }
+   return ok;
+}
+
+/* The pass loop of m9_fs_compile_passes once a single pass has failed. */
+static bool
+fs_split_passes(struct nir_shader *nir, const struct m9_fs_blend *blend,
+                struct m9_fs_passes *passes, const char **reason,
+                unsigned force, enum fs_cut_kind kind, nir_def *blocker)
+{
+   nir_function_impl *impl = NULL;
+   nir_def *out = NULL, *cut[M9_FS_MAX_PASSES], *rejected[M9_FS_MAX_PASSES];
+   struct fs_split sp = { .cut = cut };
+   unsigned rejects = 0, words;
+   bool ok = false;
+
+   memset(passes, 0, sizeof(*passes));
 
    impl = nir_shader_get_entrypoint(nir);
    if (exec_list_length(&impl->body) != 1) {
