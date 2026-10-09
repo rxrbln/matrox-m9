@@ -7385,6 +7385,10 @@ struct m9_weld_entry {
    uint32_t first_vertex, count;
    uint64_t used;
    bool refused;
+   /* Its source changed between draws: drawn unwelded until it holds still
+    * for M9_WELD_STABLE lookups, so a per-frame update is not hashed. */
+   bool dynamic;
+   unsigned stable;
 };
 
 /* M9X_WELD=0 draws every unindexed run as it arrives, which is the setting
@@ -7395,6 +7399,7 @@ static bool m9_weld_enable = true;
 #define M9_WELD_MIN_CORNERS 512u
 /* Records the welded form must save to be worth its index run. */
 #define M9_WELD_MIN_RATIO 2u
+#define M9_WELD_STABLE 8u
 /* Bytes of welded index and source runs the context keeps. */
 #define M9_WELD_BUDGET (16u << 20)
 
@@ -7425,9 +7430,9 @@ m9_weld_cache_fini(struct m9_context *ctx)
  * carried.  A buffer with no resource of its own -- the state tracker's
  * upload of a client array -- has no identity to key on and is never welded. */
 static bool
-m9_weld_entry_current(const struct m9_context *ctx,
-                      const struct m9_weld_entry *e,
-                      const struct m9_native_vs *n, unsigned count)
+m9_weld_entry_same_source(const struct m9_context *ctx,
+                          const struct m9_weld_entry *e,
+                          const struct m9_native_vs *n, unsigned count)
 {
    if (e->first_vertex != n->first_vertex || e->count != count ||
        e->buffer_count != n->buffer_count ||
@@ -7436,13 +7441,27 @@ m9_weld_entry_current(const struct m9_context *ctx,
    for (unsigned i = 0; i < e->buffer_count; i++) {
       const struct pipe_vertex_buffer *vb = &ctx->vertex_buffers[i];
 
-      if (!e->buffer[i])
-         continue;
-      if (vb->is_user_buffer || vb->buffer.resource != e->buffer[i] ||
-          m9_res(e->buffer[i])->generation != e->generation[i])
+      if (e->buffer[i] &&
+          (vb->is_user_buffer || vb->buffer.resource != e->buffer[i]))
          return false;
    }
    return true;
+}
+
+/* Whether no buffer the entry reads was written since it was built. */
+static bool
+m9_weld_entry_fresh(struct m9_weld_entry *e, bool update)
+{
+   bool fresh = true;
+
+   for (unsigned i = 0; i < e->buffer_count; i++) {
+      if (!e->buffer[i] || m9_res(e->buffer[i])->generation == e->generation[i])
+         continue;
+      fresh = false;
+      if (update)
+         e->generation[i] = m9_res(e->buffer[i])->generation;
+   }
+   return fresh;
 }
 
 /* Every buffer the layout reads, so a write to one this draw does not read
@@ -7491,6 +7510,29 @@ m9_weld_trim(struct m9_context *ctx, uint64_t want)
    }
 }
 
+/* Welds the run as it now reads; a run whose records barely repeat costs
+ * an index for every corner and saves little, so it stays a refusal. */
+static bool
+m9_weld_entry_build(struct m9_context *ctx, struct m9_weld_entry *e,
+                    const struct m9_native_vs *n, unsigned count)
+{
+   float *records = malloc((size_t)count * n->layout.record_dwords *
+                           sizeof(float));
+   bool ok = records &&
+             m9_vs_source_records(&n->layout, n->map, n->size,
+                                  n->buffer_count, n->first_vertex, count,
+                                  records) &&
+             m9_weld_build(&e->weld, records, count, n->layout.record_dwords);
+
+   free(records);
+   if (!ok)
+      return false;
+   e->refused = (uint64_t)e->weld.unique * M9_WELD_MIN_RATIO > e->weld.count;
+   if (e->refused)
+      m9_weld_fini(&e->weld);
+   return true;
+}
+
 /* The welded form of this draw, or NULL to draw it as it arrived. */
 static const struct m9_weld *
 m9_weld_lookup(struct m9_context *ctx, const struct m9_native_vs *n,
@@ -7498,37 +7540,36 @@ m9_weld_lookup(struct m9_context *ctx, const struct m9_native_vs *n,
 {
    bool read[PIPE_MAX_ATTRIBS];
    struct m9_weld_entry *entry;
-   float *records;
    uint64_t bytes;
 
    if (!m9_weld_enable || count < M9_WELD_MIN_CORNERS ||
        !m9_weld_buffers_keyable(ctx, n, read))
       return NULL;
    util_dynarray_foreach(&ctx->weld_cache, struct m9_weld_entry *, held) {
-      if (!m9_weld_entry_current(ctx, *held, n, count))
+      struct m9_weld_entry *e = *held;
+
+      if (!m9_weld_entry_same_source(ctx, e, n, count))
          continue;
-      (*held)->used = ++ctx->weld_clock;
-      return (*held)->refused ? NULL : &(*held)->weld;
+      e->used = ++ctx->weld_clock;
+      if (!m9_weld_entry_fresh(e, true)) {
+         m9_weld_fini(&e->weld);
+         e->refused = e->dynamic = true;
+         e->stable = 0;
+         return NULL;
+      }
+      if (e->dynamic && ++e->stable >= M9_WELD_STABLE) {
+         /* Held still long enough: welding it pays again. */
+         if (!m9_weld_entry_build(ctx, e, n, count))
+            return NULL;
+         e->dynamic = false;
+      }
+      return e->refused ? NULL : &e->weld;
    }
    entry = CALLOC_STRUCT(m9_weld_entry);
-   records = entry ? malloc((size_t)count * n->layout.record_dwords *
-                            sizeof(float)) : NULL;
-   if (!records ||
-       !m9_vs_source_records(&n->layout, n->map, n->size, n->buffer_count,
-                             n->first_vertex, count, records) ||
-       !m9_weld_build(&entry->weld, records, count,
-                      n->layout.record_dwords)) {
-      free(records);
+   if (!entry || !m9_weld_entry_build(ctx, entry, n, count)) {
       FREE(entry);
       return NULL;
    }
-   free(records);
-   /* A run whose records barely repeat costs an index for every corner and
-    * saves little; the entry stays as a refusal so it is not rebuilt. */
-   entry->refused = (uint64_t)entry->weld.unique * M9_WELD_MIN_RATIO >
-                    entry->weld.count;
-   if (entry->refused)
-      m9_weld_fini(&entry->weld);
    entry->layout = n->layout;
    entry->first_vertex = n->first_vertex;
    entry->count = count;
