@@ -5193,6 +5193,7 @@ reset_graph(struct ctx *c)
    p->texture_count = 0;
    p->varying_count = 0;
    memset(p->texture_source, M9_FS_ROUTE_NONE, sizeof(p->texture_source));
+   memset(p->texcoord_source, M9_FS_ROUTE_NONE, sizeof(p->texcoord_source));
    p->fragcoord = false;
    p->face = false;
    memset(p->texcoord_projective, 0, sizeof(p->texcoord_projective));
@@ -5214,15 +5215,18 @@ compile_output(struct ctx *c, nir_def *value, bool discard)
       all_const &= nir_scalar_is_const(s[i]);
       fragcoord |= scalar_is_input(s[i], VARYING_SLOT_POS, i);
    }
-   if (!discard && nir_scalar_is_alu(s[0]) &&
+   /* Raw vendor colour templates end on 0x2d. A producing pass must use
+    * the graph encoder's 0x11/0x13 float record outputs instead. */
+   if (!c->record_out && !discard && nir_scalar_is_alu(s[0]) &&
        nir_scalar_alu_op(s[0]) == nir_op_fmul &&
        s[0].def->num_components == 2 && tmpl_fragcoord(c, s))
       return true;
-   if (!discard && nir_scalar_is_alu(s[0]) &&
+   if (!c->record_out && !discard && nir_scalar_is_alu(s[0]) &&
        nir_scalar_alu_op(s[0]) == nir_op_bcsel && tmpl_select(c, s))
       return true;
    reset_output(c);
-   if (!discard && !fragcoord && (all_const || (s[0].def != s[1].def)) &&
+   if (!c->record_out && !discard && !fragcoord &&
+       (all_const || (s[0].def != s[1].def)) &&
        tmpl_scalars(c, s))
       return true;
    for (unsigned attempt = 0; attempt < 2; attempt++) {
