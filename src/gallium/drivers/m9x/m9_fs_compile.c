@@ -578,16 +578,12 @@ build_intrinsic(struct ctx *c, nir_intrinsic_instr *intr)
       int k;
 
       if (location == VARYING_SLOT_POS) {
-         if (c->p->face)
-            return fail(c, "gl_FragCoord beside gl_FrontFacing"), -1;
          n = node_new(c, N_FRAGCOORD);
          return n < 0 ? -1 : (c->p->fragcoord = true, n);
       }
-      /* Register 7b holds the facing unless the raster position is
-       * declared, when it holds z; the two together are not captured. */
+      /* Register 7b carries z and the facing under different selects; the
+       * vendor compiler reads both from it in one program (emulated). */
       if (location == VARYING_SLOT_FACE) {
-         if (c->p->fragcoord)
-            return fail(c, "gl_FrontFacing beside gl_FragCoord"), -1;
          n = node_new(c, N_FACE);
          if (n < 0)
             return -1;
@@ -2607,10 +2603,12 @@ emit_fragcoord(struct ctx *c, int n, struct node *nd)
    fl = frag_lop(c, n, 0xa28fccd0, 0x1c, REG_FRAG_XY, -1, -1, -1);
    xy = frag_lop(c, n, 0xb0400150, 0x1c, -1, fl,
                  chain_const(c, one), chain_const(c, half));
-   z = frag_lop(c, n, 0xb0400150, 0x1c, REG_FRAG_Z, -1,
+   z = frag_lop(c, n, 0xb0400150, 0x1c, -1, -1,
                 chain_const(c, one), chain_const(c, zero));
    if (fl < 0 || xy < 0 || z < 0)
       return false;
+   /* z is the b operand, as in fs-fragcoord; c carries the constant. */
+   LOPS(c)[NUM(c, lops, struct lop) - 1].opreg[1] = REG_FRAG_Z;
    nd->value[0] = xy;
    nd->value[1] = z;
    return true;
