@@ -17,6 +17,9 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/ioctl.h>
+#if defined(__SSE2__)
+#include <emmintrin.h>
+#endif
 
 #include "draw/draw_context.h"
 #include "draw/draw_vbuf.h"
@@ -3237,6 +3240,38 @@ m9_be_victim(struct m9_context *ctx, struct m9_target_depth *entry)
    return victim;
 }
 
+/* M9X_WC_STREAM=1 zeroes write-combined VRAM mappings with streaming
+ * stores.  Off: the BAR write rate bounds it, not the store form (MEASURED,
+ * nano, refract/terrain/desktop blur unchanged). */
+static bool m9_wc_stream;
+
+/* Zero a write-combined mapping with whole-line streaming stores. */
+static void
+m9_wc_zero(void *dst, size_t bytes)
+{
+#if defined(__SSE2__)
+   uint8_t *p = dst;
+   size_t head = (16 - ((uintptr_t)p & 15)) & 15;
+
+   if (m9_wc_stream && bytes >= head + 64) {
+      const __m128i zero = _mm_setzero_si128();
+
+      memset(p, 0, head);
+      p += head;
+      bytes -= head;
+      for (; bytes >= 64; p += 64, bytes -= 64) {
+         _mm_stream_si128((__m128i *)p, zero);
+         _mm_stream_si128((__m128i *)(p + 16), zero);
+         _mm_stream_si128((__m128i *)(p + 32), zero);
+         _mm_stream_si128((__m128i *)(p + 48), zero);
+      }
+      _mm_sfence();
+      dst = p;
+   }
+#endif
+   memset(dst, 0, bytes);
+}
+
 static void
 m9_be_zero(struct m9_context *ctx)
 {
@@ -3276,7 +3311,7 @@ m9_be_zero(struct m9_context *ctx)
       m9_be_select(ctx, entry, selected);
    m9_be_shape_slot(ctx)->valid = false;
    if (be->map)
-      memset(be->map, 0, m9_be_clear_span(ctx, be));
+      m9_wc_zero(be->map, m9_be_clear_span(ctx, be));
    m9_prof_end(M9_PROF_BE, t_be);
 }
 
@@ -12535,6 +12570,7 @@ m9_context_create(struct pipe_screen *pscreen, void *priv, unsigned flags)
    m9_be_pool = MAX2(debug_get_num_option("M9X_BE_POOL", 8), 2);
    m9_be_reuse = debug_get_bool_option("M9X_BE_REUSE", true);
    m9_be_shape_clip = debug_get_bool_option("M9X_BE_SHAPE_CLIP", true);
+   m9_wc_stream = debug_get_bool_option("M9X_WC_STREAM", false);
    m9_be_clear_bytes = debug_get_num_option("M9X_BE_CLEAR_BYTES", 0);
    m9_record_liveness = debug_get_bool_option("M9X_RECORD_LIVENESS", true);
    m9_split_enable = debug_get_bool_option("M9X_SPLIT", true);
