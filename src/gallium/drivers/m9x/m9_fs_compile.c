@@ -5093,11 +5093,12 @@ alpha_append(struct ctx *c, int s[2])
    if (!k)
       return fail(c, "out of memory");
    memset(k, 0, 3 * sizeof(*k));
-   /* The kill slot compares in 8.8 fixed point, as M9_FS_CONST_ALPHA_REF
-    * scales a uniform reference; a literal is scaled here instead. */
+   /* The kill slot compares the alpha byte against the reference in 8.8
+    * fixed point, as M9_FS_CONST_ALPHA_REF scales a uniform reference; a
+    * literal is scaled here instead. */
    if (c->alpha.ref_literal) {
       k[0].kind = M9_FS_CONST_LITERAL;
-      k[0].value[0] = k[0].value[1] = c->alpha.ref_value * 256.0f;
+      k[0].value[0] = k[0].value[1] = c->alpha.ref_value * 255.0f;
    } else {
       k[0].kind = M9_FS_CONST_ALPHA_REF;
       k[0].offset[0] = k[0].offset[1] = c->alpha.ref_offset;

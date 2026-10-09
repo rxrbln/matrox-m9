@@ -52,8 +52,9 @@ enum m9_fs_const_kind {
    M9_FS_CONST_LITERAL,
    M9_FS_CONST_UNIFORM,    /* two constant-buffer components or zero */
    M9_FS_CONST_FRAG_Y,     /* (0, drawable height - 1) */
-   /* Alpha-test reference, both lanes scaled by 256 (MEASURED with the
-    * vendor kill program: the reference is constant pair 0). */
+   /* Alpha-test reference in alpha-byte units, both lanes (the vendor
+    * kill program's constant pair 0 holds the integer ALPHAREF; MEASURED:
+    * a reference scaled by 256 passed LESS at an equal byte alpha). */
    M9_FS_CONST_ALPHA_REF,
    /* Blend colour channel offset[lane], or one minus it; resolved at
     * draw time so a colour change needs no recompile. */

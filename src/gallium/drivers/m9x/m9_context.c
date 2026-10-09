@@ -4567,7 +4567,7 @@ m9_fs_resolve_consts(struct m9_context *ctx, const struct m9_fs_variant *fs,
                                      "bound constant buffer; draw skipped");
             }
             memcpy(&v, data + k->offset[0], sizeof(v));
-            v *= 256.0f;
+            v *= 255.0f;
             break;
          case M9_FS_CONST_BLEND_COLOR:
          case M9_FS_CONST_BLEND_COLOR_INV:
