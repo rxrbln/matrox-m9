@@ -6529,6 +6529,11 @@ enum fs_cut_kind {
    FS_CUT_INTERP,   /* interpolation registers and stream slots */
 };
 
+/* Lowered only by the host exhaustion fixture; never a native GPU limit. */
+#ifndef M9_FS_SPLIT_SEARCH_LIMIT
+#define M9_FS_SPLIT_SEARCH_LIMIT 65536u
+#endif
+
 /* What one value reaches: the fetches below it, the varyings it
  * interpolates, and the records of earlier passes it reads instead of
  * recomputing them.  The two bitsets are slices of one pool sized from the
@@ -6735,6 +6740,19 @@ fs_choose_cut(struct fs_split *sp, nir_function_impl *impl, nir_def *out,
          if (!def || def == out || def->bit_size != 32 ||
              def->num_components > 4)
             continue;
+         /* Literals occupy the constant file, not temporary registers;
+          * spilling one adds a route without relieving any native pressure. */
+         if (instr->type == nir_instr_type_load_const)
+            continue;
+         if (instr->type == nir_instr_type_intrinsic) {
+            nir_intrinsic_instr *intr = nir_instr_as_intrinsic(instr);
+
+            if ((intr->intrinsic == nir_intrinsic_load_input ||
+                 intr->intrinsic == nir_intrinsic_load_interpolated_input) &&
+                (nir_intrinsic_io_semantics(intr).location == VARYING_SLOT_FACE ||
+                 nir_intrinsic_io_semantics(intr).location == VARYING_SLOT_POS))
+               continue;
+         }
          for (unsigned i = 0; i < sp->cut_count; i++)
             skip |= sp->cut[i] == def;
          for (unsigned i = 0; i < rejects; i++)
@@ -6805,8 +6823,8 @@ fs_choose_cut(struct fs_split *sp, nir_function_impl *impl, nir_def *out,
    }
    if (debug_get_bool_option("M9X_DEBUG_SPLIT", false))
       fprintf(stderr, "m9x split: kind %u whole tex %u routes %u vary %u "
-              "defs %u -> %s\n", kind, whole.tex, whole.routes, whole.vary,
-              whole.defs, best ? "cut" : "no candidate");
+              "defs %u -> %s %%%u\n", kind, whole.tex, whole.routes, whole.vary,
+              whole.defs, best ? "cut" : "no candidate", best ? best->index : 0);
    return best;
 }
 
@@ -6817,13 +6835,14 @@ fs_cut_kind_of(const char *reason, const nir_def *blocker,
 {
    if (reason == fail_too_many_textures)
       return *kind = FS_CUT_TEX, true;
-   /* Interpolation values occupy a restricted part of the register file.
-    * Their lifetime can exhaust it even with fewer than six inputs, so
-    * split their work just as for general temporary pressure. */
-   if (reason == fail_out_of_temporaries ||
-       reason == fail_out_of_interp_registers)
+   if (reason == fail_out_of_temporaries)
       return *kind = FS_CUT_REGS, true;
-   if (reason == fail_too_many_interp)
+   /* Interpolation values occupy a restricted part of the register file.
+    * A cut must shrink that live input set even below the six-input limit;
+    * scoring it as general arithmetic can leave all inputs in the consumer
+    * while adding independent record routes until no pass can read them. */
+   if (reason == fail_too_many_interp ||
+       reason == fail_out_of_interp_registers)
       return *kind = FS_CUT_INTERP, true;
    /* A computed coordinate is a cut, not a refusal: the pass before hands
     * it over and the consumer's unit samples at the record. */
@@ -6874,6 +6893,13 @@ fs_split_index(struct fs_split *sp, nir_function_impl *impl, nir_def **out,
              intr->intrinsic != nir_intrinsic_load_interpolated_input)
             continue;
          loc = nir_intrinsic_io_semantics(intr).location;
+         /* These inputs have their own raster registers in build_intrinsic,
+          * rather than occupying the interpolation pool.  Counting facing
+          * as an interpolator can select its boolean load as a record cut;
+          * that neither relieves interpolation pressure nor retains its
+          * condition type through the numeric route. */
+         if (loc == VARYING_SLOT_FACE || loc == VARYING_SLOT_POS)
+            continue;
          sp->varying[intr->def.index] = varyings;
          for (unsigned i = 0; i < varyings; i++)
             if (location[i] == loc)
@@ -6994,9 +7020,12 @@ fs_split_passes(struct nir_shader *nir, const struct m9_fs_blend *blend,
                 unsigned force, enum fs_cut_kind kind, nir_def *blocker)
 {
    nir_function_impl *impl = NULL;
-   nir_def *out = NULL, *cut[M9_FS_MAX_PASSES], *rejected[M9_FS_MAX_PASSES];
+   nir_def *out = NULL, *cut[M9_FS_MAX_PASSES], **rejected = NULL;
    struct fs_split sp = { .cut = cut };
-   unsigned rejects = 0, words;
+   unsigned rejects[M9_FS_MAX_PASSES] = { 0 }, words, trials = 0;
+   uint64_t budget = 0;
+   enum fs_cut_kind kinds[M9_FS_MAX_PASSES];
+   nir_def *blockers[M9_FS_MAX_PASSES] = { 0 };
    bool ok = false;
 
    memset(passes, 0, sizeof(*passes));
@@ -7008,10 +7037,17 @@ fs_split_passes(struct nir_shader *nir, const struct m9_fs_blend *blend,
    }
    nir_index_ssa_defs(impl);
    sp.defs = impl->ssa_alloc;
+   /* Alternative cut sets can grow exponentially.  Bound CPU search work,
+    * rather than relaxing any native capacity, and report its exhaustion
+    * separately from a proved absence of legal candidates. */
+   budget = MIN2((uint64_t)MAX2(sp.defs, 1u) * MAX2(sp.defs, 1u),
+                 MIN2(M9_FS_SPLIT_SEARCH_LIMIT, 65536u));
    sp.cone = calloc(sp.defs + 1, sizeof(*sp.cone));
    sp.fetch = calloc(sp.defs ? sp.defs : 1, sizeof(*sp.fetch));
    sp.varying = calloc(sp.defs ? sp.defs : 1, sizeof(*sp.varying));
-   if (!sp.cone || !sp.fetch || !sp.varying) {
+   rejected = calloc(sp.defs ? sp.defs : 1,
+                     M9_FS_MAX_PASSES * sizeof(*rejected));
+   if (!sp.cone || !sp.fetch || !sp.varying || !rejected) {
       *reason = "out of memory";
       goto done;
    }
@@ -7031,10 +7067,22 @@ fs_split_passes(struct nir_shader *nir, const struct m9_fs_blend *blend,
       *reason = "no color output";
       goto done;
    }
-   for (passes->count = 0; passes->count + 1 < M9_FS_MAX_PASSES; ) {
+   kinds[0] = kind;
+   blockers[0] = blocker;
+   for (passes->count = 0; ; ) {
       unsigned i = passes->count;
+      nir_def **refused = rejected + i * sp.defs;
       nir_def *v = NULL;
       bool taken = false;
+
+      if (trials++ >= budget) {
+         *reason = "raster pass search budget exhausted";
+         goto done;
+      }
+      kind = kinds[i];
+      blocker = blockers[i];
+      if (i + 1 >= M9_FS_MAX_PASSES)
+         goto backtrack;
 
       /* A coordinate the engine cannot interpolate is cut where it is
        * computed; anything else is cut where the resource that ran out
@@ -7044,16 +7092,16 @@ fs_split_passes(struct nir_shader *nir, const struct m9_fs_blend *blend,
 
          for (unsigned k = 0; k < sp.cut_count; k++)
             skip |= cut[k] == blocker;
-         for (unsigned k = 0; k < rejects; k++)
-            skip |= rejected[k] == blocker;
+         for (unsigned k = 0; k < rejects[i]; k++)
+            skip |= refused[k] == blocker;
          if (!skip && blocker != out)
             v = blocker;
       }
       taken = v != NULL;
       if (!v)
          v = fs_choose_cut(&sp, impl, out,
-                           force ? force : M9_FS_MAX_TEXTURES, rejected,
-                           rejects, kind, force != 0);
+                           force ? force : M9_FS_MAX_TEXTURES, refused,
+                           rejects[i], kind, force != 0);
       if (!v) {
          if (i && fs_compile_pass(nir, blend, &passes->pass[i], NULL, false,
                                   cut, sp.cut_count, reason, NULL)) {
@@ -7061,41 +7109,70 @@ fs_split_passes(struct nir_shader *nir, const struct m9_fs_blend *blend,
             ok = true;
             goto done;
          }
-         *reason = "no value splits this shader into raster passes";
-         goto done;
+         goto backtrack;
       }
       if (!fs_compile_pass(nir, NULL, &passes->pass[i], v, true, cut,
                            sp.cut_count, reason, &blocker)) {
          /* A producer that cannot compute the coordinate either is cut at
           * the coordinate *it* stopped on, one link deeper in the chain. */
-         if (*reason == fail_coord_not_varying && blocker && blocker != v)
+         if (*reason == fail_coord_not_varying && blocker && blocker != v) {
+            blockers[i] = blocker;
             continue;
-         if (rejects >= ARRAY_SIZE(rejected))
-            goto done;
-         rejected[rejects++] = v;
+         }
+         if (rejects[i] >= sp.defs)
+            goto backtrack;
+         refused[rejects[i]++] = v;
          if (taken)
-            blocker = NULL;
+            blockers[i] = NULL;
          continue;
       }
       cut[sp.cut_count++] = v;
       passes->count++;
-      rejects = 0;
+      rejects[i + 1] = 0;
       blocker = NULL;
       if (fs_compile_pass(nir, blend, &passes->pass[passes->count], NULL,
-                          false, cut, sp.cut_count, reason, &blocker) &&
-          (!force ||
-           m9_fs_sampler_count(&passes->pass[passes->count]) <= force ||
-           passes->count + 1 >= M9_FS_MAX_PASSES - 1)) {
-         passes->count++;
-         ok = true;
-         goto done;
+                          false, cut, sp.cut_count, reason, &blocker)) {
+         if (!force ||
+             m9_fs_sampler_count(&passes->pass[passes->count]) <= force ||
+             passes->count + 1 >= M9_FS_MAX_PASSES - 1) {
+            passes->count++;
+            ok = true;
+            goto done;
+         }
+         /* Forced splitting may compile a valid consumer but still need
+          * another cut.  That trial program is not retained in count and
+          * must be freed before the next producer overwrites its slot. */
+         m9_fs_program_fini(&passes->pass[passes->count]);
+         memset(&passes->pass[passes->count], 0,
+                sizeof(passes->pass[passes->count]));
       }
       if (!force && !fs_cut_kind_of(*reason, blocker, &kind))
+         goto backtrack;
+      kinds[i + 1] = kind;
+      blockers[i + 1] = blocker;
+      continue;
+
+backtrack:
+      /* A producer that compiles can still leave a consumer with no legal
+       * continuation.  Retry the previous choice instead of treating one
+       * greedy path as proof that the shader cannot split.  Its rejected
+       * choices belong to that exact earlier cut set, so deeper lists are
+       * reset whenever a new producer is accepted. */
+      if (!passes->count) {
+         *reason = "no value splits this shader into raster passes";
          goto done;
+      }
+      i = --passes->count;
+      sp.cut_count--;
+      m9_fs_program_fini(&passes->pass[i]);
+      memset(&passes->pass[i], 0, sizeof(passes->pass[i]));
+      if (rejects[i] >= sp.defs)
+         goto done;
+      rejected[i * sp.defs + rejects[i]++] = cut[i];
+      blockers[i] = NULL;
    }
-   if (!ok && !*reason)
-      *reason = "more raster passes than the driver emits";
 done:
+   free(rejected);
    free(sp.cone);
    free(sp.fetch);
    free(sp.varying);
