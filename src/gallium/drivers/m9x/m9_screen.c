@@ -256,12 +256,12 @@ m9_is_format_supported(struct pipe_screen *screen, enum pipe_format format,
                                 PIPE_BIND_CONSTANT_BUFFER |
                                 PIPE_BIND_VERTEX_STATE |
                                 PIPE_BIND_COMMAND_ARGS_BUFFER));
-   /* Only the opt-in BGRA8-stored RT0 has an encode producer, which blends
-    * in the program (fs_srgb).  This precedes the cube/3D speculative bind
-    * concession below. */
+   /* BGRA8-stored sRGB targets have a qualified encode producer, which
+    * blends in the program (fs_srgb). M9X_SRGB_TARGET=0 is the opt-out.
+    * This precedes the cube/3D speculative bind concession below. */
    if (util_format_is_srgb(format) &&
        (bind & (PIPE_BIND_RENDER_TARGET | PIPE_BIND_BLENDABLE)) &&
-       (!debug_get_bool_option("M9X_SRGB_TARGET", false) ||
+       (!debug_get_bool_option("M9X_SRGB_TARGET", true) ||
         m9_format_storage(format) != PIPE_FORMAT_B8G8R8A8_SRGB))
       return false;
    switch (target) {
@@ -1608,10 +1608,9 @@ m9_screen_create(int fd, const struct pipe_screen_config *config)
     * stay unadvertised until their GL path is qualified separately. */
    caps->draw_indirect = true;
    caps->npot_textures = true;
-   /* GL_FRAMEBUFFER_SRGB selects the encode per draw, with the opt-in sRGB
-    * target only. */
+   /* GL_FRAMEBUFFER_SRGB selects the qualified target encode per draw. */
    caps->dest_surface_srgb_control =
-      debug_get_bool_option("M9X_SRGB_TARGET", false);
+      debug_get_bool_option("M9X_SRGB_TARGET", true);
    /* ARB_framebuffer_object: the clip window limits rendering to the
     * intersection of the attachments, and every colour, depth and HZ surface
     * is addressed through a descriptor of its own extent (m9_update_target). */
