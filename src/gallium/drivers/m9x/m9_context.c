@@ -139,6 +139,7 @@ struct m9_fs_variant {
    uint32_t depth_texture;             /* samplers bound to a depth surface */
    bool face_flip;                     /* gl_FrontFacing inverted: CW front */
    uint32_t srgb_texture;              /* samplers whose view decodes sRGB */
+   bool no_depth_out;                  /* gl_FragDepth dropped: no depth test */
    bool ok;
    const char *reason;                 /* why the variant is not drawable */
    /* The raster passes the shader runs as; one for everything the engine
@@ -5384,6 +5385,19 @@ m9_select_store(nir_builder *b, nir_intrinsic_instr *intr, void *data)
    return true;
 }
 
+/* Removes the gl_FragDepth store of a variant drawn without a depth test. */
+static bool
+m9_drop_depth_store(nir_builder *b, nir_intrinsic_instr *intr, void *data)
+{
+   (void)data;
+   if (intr->intrinsic != nir_intrinsic_store_output ||
+       nir_intrinsic_io_semantics(intr).location != FRAG_RESULT_DEPTH)
+      return false;
+   nir_instr_remove(&intr->instr);
+   b->shader->info.outputs_written &= ~BITFIELD64_BIT(FRAG_RESULT_DEPTH);
+   return true;
+}
+
 static const struct m9_fs_variant *
 m9_fs_variant(struct m9_context *ctx, struct m9_fs_state *fs,
               const struct m9_fs_variant *want, const char **reason)
@@ -5401,6 +5415,7 @@ m9_fs_variant(struct m9_context *ctx, struct m9_fs_state *fs,
           (*it)->depth_texture == want->depth_texture &&
           (*it)->face_flip == want->face_flip &&
           (*it)->srgb_texture == want->srgb_texture &&
+          (*it)->no_depth_out == want->no_depth_out &&
           !memcmp((*it)->swizzle, want->swizzle, sizeof(want->swizzle))) {
          struct m9_fs_variant **last =
             util_dynarray_last_ptr(&fs->variants, struct m9_fs_variant *);
@@ -5463,6 +5478,10 @@ m9_fs_variant(struct m9_context *ctx, struct m9_fs_state *fs,
    if (v->face_flip)
       m9_fs_flip_face(clone);
    v->srgb_texture = want->srgb_texture;
+   v->no_depth_out = want->no_depth_out;
+   if (v->no_depth_out)
+      NIR_PASS(_, clone, nir_shader_intrinsics_pass, m9_drop_depth_store,
+               nir_metadata_control_flow, NULL);
    if (inline_bytes)
       m9_nir_inline_uniforms(clone, v->inline_values);
    {
@@ -5649,6 +5668,12 @@ m9_ctx_variant(struct m9_context *ctx, const char **reason,
    if (ctx->rasterizer &&
        (ctx->fs->nir->info.inputs_read & VARYING_BIT_FACE))
       want.face_flip = !ctx->rasterizer->front_ccw;
+   /* Without a depth test GL neither tests nor writes depth, so a written
+    * gl_FragDepth is dead.  Announcing it to an idle depth unit stops the
+    * engine (MEASURED: a gl_FragDepth draw with the test off timed out). */
+   if (ctx->fs->nir->info.outputs_written & BITFIELD64_BIT(FRAG_RESULT_DEPTH))
+      want.no_depth_out = !ctx->dsa || !ctx->dsa->depth_enabled ||
+                          !m9_context_depth(ctx);
    for (unsigned s = 0; s < PIPE_MAX_SAMPLERS; s++) {
       const struct pipe_sampler_view *view = ctx->fs_views[s];
 
