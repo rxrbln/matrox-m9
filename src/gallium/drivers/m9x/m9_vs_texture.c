@@ -161,14 +161,17 @@ m9_vs_texture_states(struct pipe_context *pctx, unsigned start,
 }
 
 /* Render targets sampled by a vertex program change between draws, so the
- * linear copy is refreshed rather than cached. */
+ * linear copy is refreshed rather than cached.  Only the views the bound
+ * program samples are copied: a view left bound for another program (a
+ * blitter draw after a vertex-textured one) is never read. */
 void
-m9_vs_texture_refresh(struct pipe_context *pctx)
+m9_vs_texture_refresh(struct pipe_context *pctx, uint32_t used)
 {
    struct m9_vs_textures *vs = m9_vs_context(pctx)->vs_textures;
 
    for (unsigned i = 0; vs && i < vs->num_views; i++)
-      m9_vs_map_view(pctx, vs, i);
+      if (used & BITFIELD_BIT(i))
+         m9_vs_map_view(pctx, vs, i);
 }
 
 void

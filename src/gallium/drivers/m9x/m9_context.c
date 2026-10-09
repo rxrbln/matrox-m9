@@ -20,6 +20,7 @@
 
 #include "draw/draw_context.h"
 #include "draw/draw_vbuf.h"
+#include "draw/draw_vs.h"
 #include "draw/draw_vertex.h"
 #include "indices/u_indices.h"
 #include "m9_batch.h"
@@ -7772,7 +7773,9 @@ m9_module_draw(struct pipe_context *pctx, const struct pipe_draw_info *info,
 
    /* Native vertex fetches retain the GPU image directly. Only the draw
     * module needs a synchronized linear CPU copy of its sampled inputs. */
-   m9_vs_texture_refresh(pctx);
+   if (ctx->vs && ctx->vs->draw)
+      m9_vs_texture_refresh(pctx, ((const struct draw_vertex_shader *)
+                                   ctx->vs->draw)->info.samplers_declared);
    for (unsigned i = 0; i < ctx->num_vertex_buffers; i++) {
       const struct pipe_vertex_buffer *vb = &ctx->vertex_buffers[i];
       const void *map = vb->is_user_buffer ? vb->buffer.user :

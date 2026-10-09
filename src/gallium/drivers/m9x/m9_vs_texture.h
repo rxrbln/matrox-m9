@@ -4,6 +4,7 @@
 #define M9_VS_TEXTURE_H
 
 #include <stdbool.h>
+#include <stdint.h>
 
 struct pipe_context;
 struct pipe_sampler_view;
@@ -19,7 +20,7 @@ void m9_vs_texture_views(struct pipe_context *pctx, unsigned start,
                          struct pipe_sampler_view **views);
 void m9_vs_texture_states(struct pipe_context *pctx, unsigned start,
                           unsigned count, void **states);
-void m9_vs_texture_refresh(struct pipe_context *pctx);
+void m9_vs_texture_refresh(struct pipe_context *pctx, uint32_t used);
 /* Borrow currently retained bindings; jobs snapshot words and retain the
  * resource before sampler/view state can change. */
 struct pipe_sampler_view *m9_vs_texture_view(struct pipe_context *pctx,
