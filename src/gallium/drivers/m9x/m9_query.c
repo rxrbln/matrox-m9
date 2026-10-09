@@ -532,7 +532,9 @@ m9_query_pause(struct m9_context *ctx)
 {
    struct m9_query *q = ctx->query_active;
 
-   if (!q || ctx->query_paused)
+   /* A range whose closing record went out already -- the kill drain behind
+    * the job that carried it -- has nothing left to exclude. */
+   if (!q || ctx->query_paused || q->end_emitted)
       return;
    m9_context_flush_job(&ctx->base);
    ctx->query_paused = q;
