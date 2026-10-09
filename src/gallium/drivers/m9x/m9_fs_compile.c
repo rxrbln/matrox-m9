@@ -42,6 +42,7 @@ const nir_shader_compiler_options m9_fs_nir_options = {
    .lower_fmod = true,
    .lower_fsign = true,
    .lower_ftrunc = true,
+   .lower_scmp = true,
    .lower_sincos = true,
    .lower_uniforms_to_ubo = true,
    .force_indirect_unrolling = nir_var_all,
