@@ -1415,10 +1415,10 @@ m9_probe_user_submit(struct m9_screen *screen)
          ok = !m9_batch_emit_packet(batch, &be, 1) &&
               !m9_batch_validate(screen, &command, batch, 0);
          if (ok) {
-            /* Explicitly opt in: a flags-zero client owns only two CPU
-             * banks and depends on the next submit draining its old job. */
+            /* Queued by default where the kernel admits it; M9X_QUEUE=0
+             * keeps the flags-zero path, two CPU banks and a drain per submit. */
             screen->queued_submit =
-               debug_get_bool_option("M9X_QUEUE", false) &&
+               debug_get_bool_option("M9X_QUEUE", true) &&
                !screen->faa.enable &&
                !m9_batch_validate_flags(screen, &command, batch, 0,
                                         PARHELIA_M9_SUBMIT_QUEUED);

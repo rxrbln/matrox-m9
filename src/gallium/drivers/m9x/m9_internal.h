@@ -346,7 +346,7 @@ struct m9_screen {
    bool native_depth_bias;
    bool wait_point;
    bool aggregate_submit;    /* explicit opt-in plus kernel capability */
-   bool queued_submit;       /* M9X_QUEUE=1 plus typed kernel admission */
+   bool queued_submit;       /* typed kernel admission unless M9X_QUEUE=0 */
    /* Actual successful WAIT_POINT observations, shared by contexts and
     * presentation fences. Posting a command never advances this value. */
    p_atomic_uint64_t completed_point;
