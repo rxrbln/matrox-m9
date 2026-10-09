@@ -10935,7 +10935,7 @@ int m9x_faa_graph_dual_later_prepare(
 	    sec_bytes = 0;
 	u32 i, raw, span, first_bytes, ends[14], fresh_length = 0, epoch,
 						 old_start = 0;
-	u64 next = 0, origin;
+	u64 next = 0, origin, base;
 	bool new_pair = false, single = false;
 	int ret;
 	if (!binding || !input || !textures || !textures->gem[0] ||
@@ -11014,12 +11014,14 @@ int m9x_faa_graph_dual_later_prepare(
 	if (ret)
 		goto unlock;
 	r = t->faa;
-	/* The frame continues from the Unlock, or from the ordinary jobs
-	 * after it. A GPU presentation or pool maintenance has no source form.
+	/* The frame continues from the Unlock or the retired GPU presentation
+	 * after it, or from the ordinary jobs after those, as a colour frame
+	 * does. Pool maintenance has no source form.
 	 */
 	origin = m9_faa_frame_origin(r, previous);
-	if ((origin != previous && !m9_faa_ordinary_after(r, previous)) ||
-	    r->present_point || r->command_pools ||
+	base = m9_faa_present_origin(r, previous);
+	if ((origin != base && !m9_faa_ordinary_after(r, base)) ||
+	    r->present_attempted != r->present_retired || r->command_pools ||
 	    !r->depth_storage || !r->depth_storage->initialized ||
 	    r->depth_storage->frame || !r->color_image || !r->programs ||
 	    (r->dual_active_second ? &r->dual_next_textures : &r->dual_textures)
