@@ -3194,7 +3194,11 @@ static bool
 allocate(struct ctx *c)
 {
    unsigned n = NUM(c, lops, struct lop);
-   unsigned base = 4 * c->p->texture_count, next_general;
+   /* A zero-sampler record producer still binds the runtime's placeholder
+    * unit 0.  Its texel pairs belong to that live unit even though the
+    * shader does not read them; ordinary colour passes keep their layout. */
+   unsigned units = MAX2(c->p->texture_count, c->record_out ? 1u : 0u);
+   unsigned base = 4 * units, next_general;
    static const uint8_t interp_extra[] = { 0x1a, 0x1b, 0x1c, 0x1d, 0x1e, 0x1f };
    const uint64_t reserved = record_reserved(c);
    uint64_t busy = reserved;
