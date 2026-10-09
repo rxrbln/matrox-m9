@@ -204,6 +204,11 @@ struct m9_vbuf_render {
 };
 
 static int m9_submit_job(struct m9_context *ctx);
+static void m9_clear_quad(struct m9_context *ctx,
+                          const struct pipe_scissor_state *scissor,
+                          unsigned colormask, const float *rgba, bool depth,
+                          double z, bool stencil, unsigned sref,
+                          uint8_t smask);
 static int m9_aggregate_flush(struct m9_context *ctx);
 static void m9_proxies_writeback(struct m9_context *ctx,
                                  const struct pipe_resource *tex);
@@ -591,6 +596,8 @@ struct m9_native_vs_reason {
 /* M9X_NO_CLEAR drops the clear quad; M9X_CLEAR_REPEAT draws it that many
  * extra times, which weighs one screen of fill with the frame still correct. */
 static bool m9_no_clear;
+/* M9X_KILL_DRAIN: 0 off, 1 the full target, N > 1 an N x N corner (16). */
+static unsigned m9_kill_drain;
 /* M9X_MRT_MASK_ALL leaves a bound target the shader does not write open, so
  * a destination sweep sees where an output lands rather than where the mask
  * lets it.  docs/parhelia-m9-mrt-routing.md */
@@ -3251,7 +3258,7 @@ m9_job_submitted(struct m9_context *ctx, struct m9_resource *be, uint64_t point)
 }
 
 static int
-m9_submit_job(struct m9_context *ctx)
+m9_submit_job_one(struct m9_context *ctx)
 {
    unsigned draws = util_dynarray_num_elements(&ctx->draws,
                                                struct m9_draw_record);
@@ -3996,6 +4003,50 @@ m9_submit_job(struct m9_context *ctx)
    util_dynarray_clear(&ctx->draws);
    util_dynarray_clear(&ctx->extra);
    m9_prof_end(M9_PROF_SUBMIT, t_submit);
+   return ret;
+}
+
+static bool
+m9_job_kills(const struct m9_context *ctx)
+{
+   const struct m9_job_key *key = &ctx->job_key;
+
+   if (!key->fs || !key->variant ||
+       !util_dynarray_num_elements(&ctx->draws, struct m9_draw_record))
+      return false;
+   for (unsigned i = 0; i < key->variant->passes.count; i++)
+      if (key->variant->passes.pass[i].discard)
+         return true;
+   return false;
+}
+
+/*
+ * A job with a conditional kill leaves coverage state in the engine that the
+ * next job consumes, whichever context submits it: that job loses pixels.
+ * A non-kill job with every write masked absorbs it (MEASURED: after piglit
+ * dlist-bitmap the next process's first clear lost 8 to 12730 of 25600
+ * pixels, and none behind one masked quad of the full target, 64x64 or
+ * 16x16), so a 16x16 one follows every kill job before anything else.
+ */
+static int
+m9_submit_job(struct m9_context *ctx)
+{
+   static const float zero[4];
+   const bool drain = m9_kill_drain && m9_job_kills(ctx);
+   int ret = m9_submit_job_one(ctx);
+
+   if (!ret && drain && !ctx->lost && ctx->params_valid) {
+      const struct pipe_scissor_state corner = {
+         .maxx = m9_kill_drain, .maxy = m9_kill_drain,
+      };
+
+      /* The drain passes no samples into an active occlusion query. */
+      m9_query_pause(ctx);
+      m9_clear_quad(ctx, m9_kill_drain > 1 ? &corner : NULL, 0, zero, false,
+                    0.0, false, 0, 0);
+      ret = m9_submit_job_one(ctx);
+      m9_query_resume(ctx);
+   }
    return ret;
 }
 
@@ -12314,6 +12365,7 @@ m9_context_create(struct pipe_screen *pscreen, void *priv, unsigned flags)
    m9_near_ordered = debug_get_bool_option("M9X_NEAR_ORDERED", false);
 
    m9_no_clear = debug_get_bool_option("M9X_NO_CLEAR", false);
+   m9_kill_drain = debug_get_num_option("M9X_KILL_DRAIN", 16);
    m9_mrt_mask_all = debug_get_bool_option("M9X_MRT_MASK_ALL", false);
    m9_clear_repeat = debug_get_num_option("M9X_CLEAR_REPEAT", 0);
    ctx->dump_path = debug_get_option("M9X_DUMP", NULL);
