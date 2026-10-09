@@ -5515,6 +5515,18 @@ m9_fs_use_native(struct m9_context *ctx)
    return fs->native;
 }
 
+/* GL lets a dithered colour take either neighbouring level.  On a target
+ * with eight or more bits a channel that only costs exactness, so such a
+ * target takes the nearest level, like the vendor's ten-bit ones. */
+static bool
+m9_dither_draw(const struct m9_context *ctx)
+{
+   enum pipe_format f = ctx->framebuffer.cbufs[0].format;
+
+   return ctx->blend && ctx->blend->dither && f != PIPE_FORMAT_NONE &&
+          util_format_get_component_bits(f, UTIL_FORMAT_COLORSPACE_RGB, 0) < 8;
+}
+
 static bool
 m9_job_key_current(struct m9_context *ctx, struct m9_job_key *key)
 {
@@ -5570,7 +5582,7 @@ m9_job_key_current(struct m9_context *ctx, struct m9_job_key *key)
    colormask = blend ? blend->rt[0].colormask : PIPE_MASK_RGBA;
    key->color_mask = m9_color_mask(colormask);
    key->color_mask_hi = 0xffffffffu;
-   key->no_dither = blend && !blend->dither;
+   key->no_dither = !m9_dither_draw(ctx);
    if (util_format_is_srgb(ctx->framebuffer.cbufs[0].format) &&
        (ctx->color_count != 1 || ctx->lines || !m9_fs_use_native(ctx)))
       return m9_skip_reason(ctx, "sRGB RT0 needs a native single-target "
@@ -8561,7 +8573,7 @@ m9_clear_quad(struct m9_context *ctx, const struct pipe_scissor_state *scissor,
    key.single_target = ctx->color_count > 1;
    /* The vendor writes clear colours exactly; a depth-only clear keeps the
     * draws' dither so it still merges with them. */
-   key.no_dither = colormask || (ctx->blend && !ctx->blend->dither);
+   key.no_dither = colormask || !m9_dither_draw(ctx);
    key.clip_min = ctx->params.clip_min;
    key.clip_max = ctx->params.clip_max;
    if (scissor && !m9_scissor_key(ctx, scissor, &key))
