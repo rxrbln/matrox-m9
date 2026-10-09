@@ -6988,7 +6988,7 @@ m9_fs_compile_passes(struct nir_shader *nir, const struct m9_fs_blend *blend,
 {
    nir_def *blocker = NULL;
    enum fs_cut_kind kind = FS_CUT_TEX;
-   bool ok;
+   bool ok = false;
 
    *reason = NULL;
    memset(passes, 0, sizeof(*passes));
@@ -7012,10 +7012,12 @@ m9_fs_compile_passes(struct nir_shader *nir, const struct m9_fs_blend *blend,
    }
    if (!force && !fs_cut_kind_of(*reason, blocker, &kind))
       return false;
-   ok = fs_split_passes(nir, blend, passes, reason, force, kind, blocker);
-   /* A boolean chain has no 32-bit value to cut at: retry once with each
-    * boolean operation's result also held as a float. */
-   if (!ok && !force && fs_bool_chain(nir)) {
+   /* A boolean chain has no 32-bit value to cut at.  Expose its links
+    * before searching alternative cut sets; searching the unmaterialized
+    * chain first spends the entire backtracking budget on its arithmetic
+    * leaves before reaching the legal float boundaries.  A single-pass
+    * shader returned above keeps its original representation. */
+   if (!force && fs_bool_chain(nir)) {
       nir_shader *clone = nir_shader_clone(NULL, nir);
       const char *why = NULL;
 
@@ -7026,7 +7028,10 @@ m9_fs_compile_passes(struct nir_shader *nir, const struct m9_fs_blend *blend,
          ok = true;
       }
       ralloc_free(clone);
+      if (ok)
+         return true;
    }
+   ok = fs_split_passes(nir, blend, passes, reason, force, kind, blocker);
    return ok;
 }
 
