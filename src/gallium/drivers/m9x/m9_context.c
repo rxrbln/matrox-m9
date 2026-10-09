@@ -8619,6 +8619,10 @@ m9_clear_quad(struct m9_context *ctx, const struct pipe_scissor_state *scissor,
    }
    depth = depth && zs;
    stencil = stencil && zs && smask && m9_zs_has_stencil(ctx);
+   /* The quad's depth is stored as floor(z * (2^24 - 1)) (MEASURED); aim at
+    * the centre of the nearest code, which is what GL stores. */
+   z = MIN2((floor(CLAMP(z, 0.0, 1.0) * 16777215.0 + 0.5) + 0.5) / 16777215.0,
+            1.0);
    memset(&key, 0, sizeof(key));
    key.depth = zs ? zs : ctx->target_depth;
    key.aux = zs ? zs->hz : ctx->target_aux;
@@ -8658,7 +8662,7 @@ m9_clear_quad(struct m9_context *ctx, const struct pipe_scissor_state *scissor,
 
       rec[0] = corner[i][0];
       rec[1] = corner[i][1];
-      rec[2] = 1.0f - 2.0f * (float)CLAMP(z, 0.0, 1.0);
+      rec[2] = 1.0f - 2.0f * (float)z;
       rec[3] = 1.0f;
       for (unsigned c = 0; c < 4; c++)
          rec[4 + c] = CLAMP(rgba[c], 0.0f, 1.0f);
