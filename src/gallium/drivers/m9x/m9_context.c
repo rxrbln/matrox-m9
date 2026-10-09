@@ -1542,12 +1542,10 @@ m9_arena_rotate(struct m9_context *ctx)
       ARENA_SWAP(ctx->source, bank->source);
       ARENA_SWAP(ctx->system, bank->system);
       ARENA_SWAP(ctx->index, bank->index);
-      ARENA_SWAP(ctx->cpu_streams, bank->cpu_streams);
    } else {
       ARENA_SWAP(ctx->source, ctx->source_alt);
       ARENA_SWAP(ctx->system, ctx->system_alt);
       ARENA_SWAP(ctx->index, ctx->index_alt);
-      ARENA_SWAP(ctx->cpu_streams, ctx->cpu_streams_alt);
    }
 #undef ARENA_SWAP
    point = ctx->arena_point;
@@ -1587,36 +1585,45 @@ m9_arena_reserve(struct m9_context *ctx, struct m9_resource *arena,
    return ret;
 }
 
-/* Every set's CPU stream views share one window, so five queued sets of a
- * many-varying draw can exhaust it.  Parked sets give theirs back once their
- * last reader retired; a set regrows its views when it builds such a job. */
+/* CPU stream views fill a shared window, so they rotate between two
+ * objects of their own rather than with the record sets: five queued sets
+ * of a many-varying job do not fit.  The one taken is reused only once the
+ * last job that read it has retired. */
+static int
+m9_cpu_streams_select(struct m9_context *ctx)
+{
+   struct m9_resource tmp = ctx->cpu_streams;
+
+   ctx->cpu_streams = ctx->cpu_streams_alt;
+   ctx->cpu_streams_alt = tmp;
+   if (!ctx->cpu_streams.handle)
+      return 0;
+   if (ctx->aggregate && ctx->aggregate->aggregate_jobs &&
+       m9_aggregate_flush(ctx))
+      return -EIO;
+   if (m9_wait_for_point(ctx->screen,
+                         m9_bo_point(ctx->screen, ctx->cpu_streams.handle))) {
+      ctx->lost = true;
+      return -EIO;
+   }
+   return 0;
+}
+
+/* A full window gives back the other object's views once its reader has
+ * retired; it regrows them when it is next taken. */
 static int
 m9_cpu_streams_reclaim(struct m9_context *ctx)
 {
-   struct m9_resource *bo[1 + ARRAY_SIZE(ctx->queue_arena)];
-   uint64_t *point[ARRAY_SIZE(bo)];
-   unsigned n = 0, freed = 0;
+   struct m9_resource *alt = &ctx->cpu_streams_alt;
 
-   bo[n] = &ctx->cpu_streams_alt;
-   point[n++] = &ctx->arena_alt_point;
-   for (unsigned i = 0; ctx->screen->queued_submit &&
-                        i < ARRAY_SIZE(ctx->queue_arena); i++) {
-      bo[n] = &ctx->queue_arena[i].cpu_streams;
-      point[n++] = &ctx->queue_arena[i].point;
+   if (!alt->handle)
+      return -ENOSPC;
+   if (m9_wait_for_point(ctx->screen, m9_bo_point(ctx->screen, alt->handle))) {
+      ctx->lost = true;
+      return -EIO;
    }
-   for (unsigned i = 0; i < n; i++) {
-      if (!bo[i]->handle)
-         continue;
-      if (*point[i] == M9_AGGREGATE_PENDING && m9_aggregate_flush(ctx))
-         return -EIO;
-      if (m9_wait_for_point(ctx->screen, *point[i])) {
-         ctx->lost = true;
-         return -EIO;
-      }
-      m9_bo_destroy(ctx->screen, bo[i]);
-      freed++;
-   }
-   return freed ? 0 : -ENOSPC;
+   m9_bo_destroy(ctx->screen, alt);
+   return 0;
 }
 
 /* Linear CPU varying views are not rendered surfaces. Their immutable
@@ -3599,7 +3606,9 @@ m9_submit_job_one(struct m9_context *ctx)
    if (!ret && cpu_view_bytes) {
       uint64_t bytes = (uint64_t)key->variant->extra_count * cpu_view_bytes;
 
-      ret = m9_arena_reserve(ctx, &ctx->cpu_streams, bytes);
+      ret = m9_cpu_streams_select(ctx);
+      if (!ret)
+         ret = m9_arena_reserve(ctx, &ctx->cpu_streams, bytes);
       if (ret == -ENOSPC && !m9_cpu_streams_reclaim(ctx))
          ret = m9_arena_reserve(ctx, &ctx->cpu_streams, bytes);
       if (ret)
@@ -12351,9 +12360,6 @@ m9_context_init_fixed(struct m9_context *ctx)
 
       ret = m9_bo_create(screen, M9_SYSTEM_BYTES, 0, M9_RESOURCE_SYSTEM_STATE,
                          &bank->system);
-      if (!ret)
-         ret = m9_bo_create(screen, 4096, 0, M9_RESOURCE_LINEAR_BUFFER,
-                            &bank->cpu_streams);
    }
    if (!ret)
       ret = m9_bo_create(screen, M9_BE_BYTES, PARHELIA_M9_BO_VRAM,
@@ -12459,7 +12465,6 @@ m9_context_destroy(struct pipe_context *pctx)
       m9_bo_destroy(screen, &bank->source);
       m9_bo_destroy(screen, &bank->system);
       m9_bo_destroy(screen, &bank->index);
-      m9_bo_destroy(screen, &bank->cpu_streams);
    }
    util_dynarray_foreach(&ctx->target_depths, struct m9_target_depth *, it) {
       m9_bo_destroy(screen, &(*it)->depth);

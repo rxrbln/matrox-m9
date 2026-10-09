@@ -599,7 +599,7 @@ struct m9_vs_state {
 /* Four posted readers and one CPU builder. The active set remains in the
  * context fields; the four parked sets retain their last real fence point. */
 struct m9_job_arena {
-   struct m9_resource source, system, index, cpu_streams;
+   struct m9_resource source, system, index;
    uint64_t point;
 };
 
