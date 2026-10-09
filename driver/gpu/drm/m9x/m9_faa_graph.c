@@ -3533,7 +3533,9 @@ int m9x_faa_graph_dual_later_ioctl(struct drm_device *drm, void *data,
 					      previous, draw_textures, &point,
 					      &posted);
 	if (!ret) {
-		/* The frame counts from the Unlock or the ordinary jobs after it. */
+		/* The frame counts from the Unlock or the retired GPU
+		 * presentation after it, or the ordinary jobs after those.
+		 */
 		mutex_lock(&mdev->transport.lock);
 		ret = m9x_faa_graph_depth_frame_receipt_locked(mdev,
 							       args->generation,
@@ -3544,7 +3546,9 @@ int m9x_faa_graph_dual_later_ioctl(struct drm_device *drm, void *data,
 		mutex_unlock(&mdev->transport.lock);
 		expected = (ordinary ? ordinary : origin) + delta;
 		if (!ret &&
-		    (maintenance || origin != previous || (ordinary & 15) ||
+		    (maintenance ||
+		     (origin != previous && origin != previous + 0x20) ||
+		     (ordinary & 15) ||
 		     (ordinary && ordinary <= origin) || point != expected))
 			ret = -EIO;
 		if (!ret) {
