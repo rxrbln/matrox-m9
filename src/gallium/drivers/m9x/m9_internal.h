@@ -573,6 +573,7 @@ struct m9_vs_variant {
 struct m9_vs_spec {
    struct m9_vs_format_key format_key;
    struct m9_vs_gate_key gate_key;
+   unsigned inline_count;              /* values inlined, 0 when none sent */
    uint32_t values[MAX_INLINABLE_UNIFORMS];
    /* The lowered, specialised clone the backend consumed, kept so a further
     * layout can be compiled from it. */
@@ -719,6 +720,9 @@ struct m9_context {
    struct pipe_constant_buffer fs_constants;
    uint32_t fs_inline[MAX_INLINABLE_UNIFORMS];  /* fragment inlinable uniforms */
    uint32_t vs_inline[MAX_INLINABLE_UNIFORMS];  /* vertex inlinable uniforms */
+   /* How many values st sent, and for which bound shader state. */
+   unsigned fs_inline_count, vs_inline_count;
+   const void *fs_inline_owner, *vs_inline_owner;
    struct pipe_sampler_view *fs_views[PIPE_MAX_SAMPLERS];
    const struct pipe_sampler_state *fs_samplers[PIPE_MAX_SAMPLERS];
    /* Vertex-stage sampling, done by the draw module (m9_vs_texture.c). */

@@ -135,6 +135,7 @@ struct m9_fs_variant {
    unsigned targets;
    /* 1 + the one colour output an MRT blend pass keeps, 0 for all. */
    unsigned select;
+   unsigned inline_count;              /* values inlined, 0 when none sent */
    uint32_t inline_values[MAX_INLINABLE_UNIFORMS];
    uint8_t swizzle[PIPE_MAX_SAMPLERS][4];  /* view swizzle per sampler, applied in NIR */
    uint32_t depth_texture;             /* samplers bound to a depth surface */
@@ -165,6 +166,16 @@ struct m9_fs_variant {
     * own preprocessing and raster range. */
    unsigned relocs_base, relocs_draw, dwords_base, dwords_draw;
 };
+/* st sends the values of the uniforms its own copy of the shader info
+ * lists; a variant st finalised again can list others.  Inline only what
+ * was sent for this very shader, in the order this shader lists. */
+static unsigned
+m9_inline_count(const void *owner, unsigned sent, const void *shader,
+                unsigned listed)
+{
+   return owner == shader && sent == listed ? listed : 0;
+}
+
 
 /* Words and relocations the passes of a variant cost for this many draws. */
 static unsigned
@@ -5591,8 +5602,7 @@ static const struct m9_fs_variant *
 m9_fs_variant(struct m9_context *ctx, struct m9_fs_state *fs,
               const struct m9_fs_variant *want, const char **reason)
 {
-   const size_t inline_bytes = fs->nir->info.num_inlinable_uniforms *
-                               sizeof(uint32_t);
+   const size_t inline_bytes = want->inline_count * sizeof(uint32_t);
    struct m9_fs_variant *v, **slot;
    nir_shader *clone;
 
@@ -5600,6 +5610,7 @@ m9_fs_variant(struct m9_context *ctx, struct m9_fs_state *fs,
       if (m9_fs_blend_same(&(*it)->blend, &want->blend) &&
           (*it)->targets == want->targets &&
           (*it)->select == want->select &&
+          (*it)->inline_count == want->inline_count &&
           !memcmp((*it)->inline_values, want->inline_values, inline_bytes) &&
           (*it)->depth_texture == want->depth_texture &&
           (*it)->face_flip == want->face_flip &&
@@ -5637,9 +5648,9 @@ m9_fs_variant(struct m9_context *ctx, struct m9_fs_state *fs,
     * the values the state tracker sent, which is what a refusal for control
     * flow has to be read against. */
    if (debug_get_bool_option("M9X_FS_INLINE_TRACE", false)) {
-      fprintf(stderr, "m9x: fs variant: %u inlinable uniform(s)",
-              fs->nir->info.num_inlinable_uniforms);
-      for (unsigned i = 0; i < fs->nir->info.num_inlinable_uniforms; i++)
+      fprintf(stderr, "m9x: fs variant: %u inlinable uniform(s), %u sent",
+              fs->nir->info.num_inlinable_uniforms, want->inline_count);
+      for (unsigned i = 0; i < want->inline_count; i++)
          fprintf(stderr, " dw%u=%08x",
                  fs->nir->info.inlinable_uniform_dw_offsets[i],
                  want->inline_values[i]);
@@ -5660,6 +5671,7 @@ m9_fs_variant(struct m9_context *ctx, struct m9_fs_state *fs,
       NIR_PASS(_, clone, nir_shader_intrinsics_pass, m9_select_store,
                nir_metadata_control_flow, &v->select);
    m9_fs_lower_fragcolor(clone, v->targets);
+   v->inline_count = want->inline_count;
    memcpy(v->inline_values, want->inline_values, inline_bytes);
    memcpy(v->swizzle, want->swizzle, sizeof(v->swizzle));
    v->depth_texture = want->depth_texture;
@@ -5853,6 +5865,9 @@ m9_ctx_variant(struct m9_context *ctx, const char **reason,
    if (*reason)
       return NULL;
    want.blend.srgb = util_format_is_srgb(cf);
+   want.inline_count = m9_inline_count(ctx->fs_inline_owner,
+                                       ctx->fs_inline_count, ctx->fs,
+                                       ctx->fs->nir->info.num_inlinable_uniforms);
    memcpy(want.inline_values, ctx->fs_inline, sizeof(want.inline_values));
    /* The facing register's front is counter-clockwise in the target's
     * own orientation, the one st states front_ccw in, for window buffers
@@ -8101,8 +8116,9 @@ m9_native_vs_dump_reason(struct m9_context *ctx, const char *reason)
                               "retained unspecialized shader source");
    fprintf(f, "vertex specialization: native %u slots %u consts %u "
            "inlinable words %u\n", ctx->vs->cur->native,
-           ctx->vs->cur->slots, ctx->vs->cur->consts, ctx->vs->inline_count);
-   for (unsigned i = 0; ctx->vs->src && i < ctx->vs->inline_count; i++)
+           ctx->vs->cur->slots, ctx->vs->cur->consts,
+           ctx->vs->cur->inline_count);
+   for (unsigned i = 0; ctx->vs->src && i < ctx->vs->cur->inline_count; i++)
       fprintf(f, "  inline dw%u %08x\n",
               ctx->vs->src->info.inlinable_uniform_dw_offsets[i],
               ctx->vs->cur->values[i]);
@@ -10727,15 +10743,17 @@ m9_vs_native_init(struct m9_vs_state *vs, struct nir_shader *src)
  * while a queued job can still name its program. */
 static struct m9_vs_spec *
 m9_vs_spec_for(struct m9_vs_state *vs, const uint32_t *values,
+                unsigned inline_count,
                 const struct m9_vs_format_key *format_key,
                 const struct m9_vs_gate_key *gate_key)
 {
-   const size_t bytes = vs->inline_count * sizeof(*values);
+   const size_t bytes = inline_count * sizeof(*values);
    struct m9_vs_spec *spec;
    nir_shader *nir;
 
    util_dynarray_foreach(&vs->specs, struct m9_vs_spec *, it)
-      if (!memcmp((*it)->values, values, bytes) &&
+      if ((*it)->inline_count == inline_count &&
+          !memcmp((*it)->values, values, bytes) &&
           !memcmp(&(*it)->format_key, format_key, sizeof(*format_key)) &&
           !memcmp(&(*it)->gate_key, gate_key, sizeof(*gate_key)))
          return *it;
@@ -10749,12 +10767,13 @@ m9_vs_spec_for(struct m9_vs_state *vs, const uint32_t *values,
    if (!spec)
       return NULL;
    util_dynarray_init(&spec->variants, NULL);
+   spec->inline_count = inline_count;
    memcpy(spec->values, values, bytes);
    spec->format_key = *format_key;
    spec->gate_key = *gate_key;
    nir = vs->src ? nir_shader_clone(NULL, vs->src) : NULL;
    if (nir) {
-      if (vs->inline_count)
+      if (inline_count)
          m9_nir_inline_uniforms(nir, spec->values);
       /* After the loop unrolls, so the copies of its body are fused too:
        * Mesa fuses no multiply and add on its own and the backend folds
@@ -10807,7 +10826,7 @@ m9_vs_spec_for(struct m9_vs_state *vs, const uint32_t *values,
       if (spec->slots)
          fprintf(stderr, " slots=%u consts=%u lit=%u uni=%u", spec->slots,
                  spec->consts, spec->literals, spec->uniforms);
-      for (unsigned i = 0; i < vs->inline_count; i++)
+      for (unsigned i = 0; i < inline_count; i++)
          fprintf(stderr, " dw%u=%08x",
                  vs->src->info.inlinable_uniform_dw_offsets[i],
                  spec->values[i]);
@@ -11082,7 +11101,10 @@ m9_context_faa_build_draw_mode(struct m9_context *ctx,
     * Start from original lowered VS NIR and actual inline values instead. */
    vs = nir_shader_clone(NULL, ctx->vs->src);
    if (!vs) { why = "FAA live vertex clone allocation failed"; goto fail; }
-   if (ctx->vs->inline_count) m9_nir_inline_uniforms(vs, ctx->vs_inline);
+   const unsigned inline_count =
+      m9_inline_count(ctx->vs_inline_owner, ctx->vs_inline_count, ctx->vs,
+                      ctx->vs->inline_count);
+   if (inline_count) m9_nir_inline_uniforms(vs, ctx->vs_inline);
    linkage.stream[0].location = VARYING_SLOT_COL0;
    unsigned sampler[2],texture_count=0;
    if(!m9_faa_application_texture_linkage(source.fs,&linkage,sampler,&texture_count,&why))goto fail;
@@ -11096,7 +11118,7 @@ m9_context_faa_build_draw_mode(struct m9_context *ctx,
       .vs = vs, .linkage = &linkage, .cb0 = data,
       .compile_cache = ctx->vs->faa_compile_cache,
       .source_identity = ctx->vs->src,
-      .inline_values = ctx->vs_inline, .inline_count = ctx->vs->inline_count,
+      .inline_values = ctx->vs_inline, .inline_count = inline_count,
       .cb0_bytes = cb->buffer_size, .elements = ctx->velems->elements,
       .element_count = ctx->velems->count, .buffers = ctx->vertex_buffers,
       .buffer_count = ctx->num_vertex_buffers, .maps = maps, .map_bytes = sizes,
@@ -11763,12 +11785,17 @@ m9_vs_select_spec(struct m9_context *ctx)
    if (data)
       m9_vs_gate_key_init(&vs->uniform_gates, data + cb->buffer_offset,
                             bytes, &gate_key);
-   if (vs->cur && !memcmp(vs->cur->values, ctx->vs_inline,
-                          vs->inline_count * sizeof(*ctx->vs_inline)) &&
+   const unsigned count = m9_inline_count(ctx->vs_inline_owner,
+                                          ctx->vs_inline_count, vs,
+                                          vs->inline_count);
+   if (vs->cur && vs->cur->inline_count == count &&
+       !memcmp(vs->cur->values, ctx->vs_inline,
+               count * sizeof(*ctx->vs_inline)) &&
        !memcmp(&vs->cur->format_key, &format_key, sizeof(format_key)) &&
        !memcmp(&vs->cur->gate_key, &gate_key, sizeof(gate_key)))
       return;
-   vs->cur = m9_vs_spec_for(vs, ctx->vs_inline, &format_key, &gate_key);
+   vs->cur = m9_vs_spec_for(vs, ctx->vs_inline, count, &format_key,
+                            &gate_key);
 }
 
 static void *
@@ -12151,9 +12178,15 @@ m9_set_inlinable_constants(struct pipe_context *pctx, mesa_shader_stage shader,
       if (n && memcmp(ctx->fs_inline, values, n * sizeof(*values)))
          draw_bind_fragment_shader(ctx->draw, ctx->fs ? ctx->fs->draw : NULL);
       memcpy(ctx->fs_inline, values, n * sizeof(*values));
-   } else if (shader == MESA_SHADER_VERTEX)
+      ctx->fs_inline_count = n;
+      ctx->fs_inline_owner = ctx->fs;
+   } else if (shader == MESA_SHADER_VERTEX) {
       memcpy(ctx->vs_inline, values, n * sizeof(*values));
+      ctx->vs_inline_count = n;
+      ctx->vs_inline_owner = ctx->vs;
+   }
 }
+
 
 /* The depth and HZ pair for a target of this size, allocated once and kept.
  * Depth testing is refused outright when the target has no attachment of its

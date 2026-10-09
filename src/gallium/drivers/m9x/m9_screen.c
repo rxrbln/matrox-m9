@@ -1218,8 +1218,11 @@ m9_finalize_nir(struct pipe_screen *pscreen, struct nir_shader *nir,
    (void)optimize;
    if (nir->info.stage == MESA_SHADER_FRAGMENT)
       m9_nir_lower_integers(nir);
-   if (nir->info.stage == MESA_SHADER_FRAGMENT ||
-       nir->info.stage == MESA_SHADER_VERTEX)
+   /* st reads the list once, from the first finalised copy, and sends the
+    * values in its order; a variant st finalises again keeps that list. */
+   if ((nir->info.stage == MESA_SHADER_FRAGMENT ||
+        nir->info.stage == MESA_SHADER_VERTEX) &&
+       !nir->info.num_inlinable_uniforms)
       m9_nir_find_inlinable_uniforms(nir);
 }
 
