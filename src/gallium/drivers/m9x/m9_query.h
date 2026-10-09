@@ -17,5 +17,7 @@ int m9_query_job_epilogue(struct m9_context *ctx, struct m9_batch *batch,
 /* Keep the samples of the jobs in between out of the active query. */
 void m9_query_pause(struct m9_context *ctx);
 void m9_query_resume(struct m9_context *ctx);
+void m9_query_pause_submitted(struct m9_context *ctx);
+void m9_query_resume_submitted(struct m9_context *ctx);
 
 #endif

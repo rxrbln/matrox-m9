@@ -781,6 +781,7 @@ struct m9_context {
    uint64_t scratch_clock;
    bool in_scratch;
    bool scratch_bind;   /* the target being bound is a scratch surface */
+   bool in_drain;       /* submitting the kill drain (m9_submit_job) */
    /* A colour or depth level the engine cannot render in place renders into
     * a proxy surface seeded from and written back to that level of `tex`. */
    struct m9_proxy proxy, zs_proxy;

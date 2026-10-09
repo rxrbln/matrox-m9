@@ -600,7 +600,7 @@ struct m9_native_vs_reason {
 /* M9X_NO_CLEAR drops the clear quad; M9X_CLEAR_REPEAT draws it that many
  * extra times, which weighs one screen of fill with the frame still correct. */
 static bool m9_no_clear;
-/* M9X_KILL_DRAIN: 0 off, 1 the full target (default), N > 1 an N x N corner. */
+/* M9X_KILL_DRAIN: 0 off, else the side of the drain's scratch target (16). */
 static unsigned m9_kill_drain;
 /* M9X_MRT_MASK_ALL leaves a bound target the shader does not write open, so
  * a destination sweep sees where an output lands rather than where the mask
@@ -4101,30 +4101,61 @@ m9_job_kills(const struct m9_context *ctx)
 /*
  * A job with a conditional kill leaves coverage state in the engine that the
  * next job consumes, whichever context submits it: that job loses pixels.
- * A non-kill job with every write masked absorbs it (MEASURED: after piglit
- * dlist-bitmap the next process's first clear lost 8 to 12730 of 25600
- * pixels, and none behind one masked quad of the full target, 64x64 or
- * 16x16), so a 16x16 one follows every kill job before anything else.
+ * Another job absorbs it (MEASURED: after piglit dlist-bitmap the next
+ * process's first clear lost 8 to 12730 of 25600 pixels, and none behind
+ * one masked quad), so a drain job follows every kill job before anything
+ * else (m9_submit_job).
  */
+static struct pipe_resource *m9_scratch_target(struct m9_context *ctx,
+                                               uint32_t w, uint32_t h,
+                                               enum pipe_format format);
+static void m9_update_target(struct m9_context *ctx);
+
 static int
 m9_submit_job(struct m9_context *ctx)
 {
    static const float zero[4];
    const bool drain = m9_kill_drain && m9_job_kills(ctx);
    int ret = m9_submit_job_one(ctx);
+   struct pipe_framebuffer_state saved = {0}, fb = {0};
+   struct pipe_resource *scratch;
 
-   if (!ret && drain && !ctx->lost && ctx->params_valid) {
-      const struct pipe_scissor_state corner = {
-         .maxx = m9_kill_drain, .maxy = m9_kill_drain,
-      };
-
-      /* The drain passes no samples into an active occlusion query. */
-      m9_query_pause(ctx);
-      m9_clear_quad(ctx, m9_kill_drain > 1 ? &corner : NULL, 0, zero, false,
-                    0.0, false, 0, 0);
+   /* Rebinding the target would release a prepared FAA surface. */
+   if (ret || !drain || ctx->lost || ctx->in_drain || ctx->screen->faa.prepare)
+      return ret;
+   /* The job after a kill job runs its first quads with the kill job's
+    * state, colour mask and clip window included (MEASURED: a masked drain
+    * quad wrote its colour over most of the target), so the drain renders
+    * into a scratch target of its own, where whatever lags into it is
+    * harmless.  The carried state is the engine's, not the target's. */
+   scratch = m9_scratch_target(ctx, m9_kill_drain, m9_kill_drain,
+                               PIPE_FORMAT_B8G8R8A8_UNORM);
+   if (!scratch)
+      return ret;
+   ctx->in_drain = true;
+   util_copy_framebuffer_state(&saved, &ctx->framebuffer);
+   fb.width = fb.height = m9_kill_drain;
+   fb.nr_cbufs = 1;
+   fb.cbufs[0].texture = scratch;
+   fb.cbufs[0].format = scratch->format;
+   /* The drain passes no samples into an active occlusion query; nothing is
+    * pending, and a flush could re-enter the draw module. */
+   m9_query_pause_submitted(ctx);
+   /* The target state alone: this can run inside a draw-module flush, which
+    * set_framebuffer_state would re-enter through draw_set_zs_format. */
+   ctx->scratch_bind = true;
+   util_copy_framebuffer_state(&ctx->framebuffer, &fb);
+   m9_update_target(ctx);
+   ctx->scratch_bind = false;
+   if (ctx->params_valid) {
+      m9_clear_quad(ctx, NULL, 0, zero, false, 0.0, false, 0, 0);
       ret = m9_submit_job_one(ctx);
-      m9_query_resume(ctx);
    }
+   util_copy_framebuffer_state(&ctx->framebuffer, &saved);
+   m9_update_target(ctx);
+   util_unreference_framebuffer_state(&saved);
+   m9_query_resume_submitted(ctx);
+   ctx->in_drain = false;
    return ret;
 }
 
@@ -12146,8 +12177,12 @@ m9_update_target(struct m9_context *ctx)
    uint32_t w, h;
    unsigned level;
 
-   m9_proxy_release(ctx, &ctx->proxy);
-   m9_proxy_release(ctx, &ctx->zs_proxy);
+   /* The kill drain's brief scratch binding leaves a proxy as it is: its
+    * write-back could re-enter the draw module (m9_submit_job). */
+   if (!ctx->in_drain) {
+      m9_proxy_release(ctx, &ctx->proxy);
+      m9_proxy_release(ctx, &ctx->zs_proxy);
+   }
    ctx->params_valid = false;
    ctx->color_discard = false;
    ctx->color_gaps = false;
@@ -12753,7 +12788,7 @@ m9_context_create(struct pipe_screen *pscreen, void *priv, unsigned flags)
    m9_near_ordered = debug_get_bool_option("M9X_NEAR_ORDERED", false);
 
    m9_no_clear = debug_get_bool_option("M9X_NO_CLEAR", false);
-   m9_kill_drain = debug_get_num_option("M9X_KILL_DRAIN", 1);
+   m9_kill_drain = MIN2(debug_get_num_option("M9X_KILL_DRAIN", 16), 2048);
    m9_mrt_mask_all = debug_get_bool_option("M9X_MRT_MASK_ALL", false);
    m9_clear_repeat = debug_get_num_option("M9X_CLEAR_REPEAT", 0);
    ctx->dump_path = debug_get_option("M9X_DUMP", NULL);

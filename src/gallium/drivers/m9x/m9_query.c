@@ -527,8 +527,8 @@ m9_get_query_result(struct pipe_context *pctx, struct pipe_query *pq,
  * range enabled it.  The jobs in between go out with snapshots of their own,
  * whose difference the result subtracts; before the range's first record
  * nothing has to be subtracted. */
-void
-m9_query_pause(struct m9_context *ctx)
+static void
+m9_query_pause_flush(struct m9_context *ctx, bool flush)
 {
    struct m9_query *q = ctx->query_active;
 
@@ -536,21 +536,49 @@ m9_query_pause(struct m9_context *ctx)
     * the job that carried it -- has nothing left to exclude. */
    if (!q || ctx->query_paused || q->end_emitted)
       return;
-   m9_context_flush_job(&ctx->base);
+   if (flush)
+      m9_context_flush_job(&ctx->base);
    ctx->query_paused = q;
    ctx->query_active = NULL;
    ctx->query_exclude = q->begin_emitted ? q : NULL;
 }
 
-void
-m9_query_resume(struct m9_context *ctx)
+static void
+m9_query_resume_flush(struct m9_context *ctx, bool flush)
 {
    if (!ctx->query_paused)
       return;
-   m9_context_flush_job(&ctx->base);
+   if (flush)
+      m9_context_flush_job(&ctx->base);
    ctx->query_exclude = NULL;
    ctx->query_active = ctx->query_paused;
    ctx->query_paused = NULL;
+}
+
+void
+m9_query_pause(struct m9_context *ctx)
+{
+   m9_query_pause_flush(ctx, true);
+}
+
+void
+m9_query_resume(struct m9_context *ctx)
+{
+   m9_query_resume_flush(ctx, true);
+}
+
+/* For a caller that has just submitted every pending job itself and may be
+ * running inside a draw-module flush, which a flush would re-enter. */
+void
+m9_query_pause_submitted(struct m9_context *ctx)
+{
+   m9_query_pause_flush(ctx, false);
+}
+
+void
+m9_query_resume_submitted(struct m9_context *ctx)
+{
+   m9_query_resume_flush(ctx, false);
 }
 
 void
