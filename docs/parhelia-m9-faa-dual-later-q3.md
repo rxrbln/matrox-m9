@@ -83,3 +83,74 @@ Notes on the rows:
 2. Single-texture and blended FAA stages (vendor constructors needed).
 3. Culled appends; 1024 CLEAR3 later on hardware.
 4. First Quake3 GL1 FAA run at 1024 with fallback, then the FAA<->ordinary handoff.
+
+## Status after m9faa6 (2026-10-09)
+
+The commits below are in main DRM cf418aa and main Mesa c4fcc07.
+Per-run evidence: `tests/m9-faa-q3-probe-20261009` (analytic probe) and
+`/home/ai/tmp/agents/m9faa6/runs` (Quake3 logs).
+
+### MEASURED
+
+| Item | Commits | Evidence |
+| --- | --- | --- |
+| Quake3 frames reach FAA admission: a swapped DRI3 back buffer needs no FAA reset; a refusal after a presented part is a split, not a fallback; `M9X_FAA_BACKOFF=0` | Mesa 7fc9b89 | Quake3 census, slot a |
+| RGBA8/RGBX8 textures (codes c8/c9); an RGB view of RGBA8 storage samples as c9; whole-target scissor admitted | DRM 70b1f53, Mesa 308f391/3dbe8fa/66b6326 | slot b census |
+| Each transaction of a multi-transaction frame is presented through the CPU Lock view (the kernel Unlocks only after the view); an unposted frame is released when its ioctl fails | Mesa 4af2b12, DRM 60b6bb5 | slot c (diagnostic ESTALE kernel) |
+| Quake3 frames presented through FAA: 269 frames, with a split at the first refused DRAW | | slot d, `q3/` in the probe dir |
+| Textured blend families ONE/ONE, SRC_ALPHA/INV_SRC_ALPHA and DST_COLOR/ZERO; textured alpha test GEQUAL 0.5; first card run | Mesa d9e564c (textured alpha decode) | probe `families` |
+| FAA depth top step: LEQUAL fails from window z 1-2^-17 up to 1; the range is scaled by 1-2^-16 (Quake3 sky at glDepthRange(1,1)) | Mesa 0997158 | probe `sky*`, `skyz*` |
+| Textured GPU present, followed by a dual later frame counted from the PRESENT point | DRM d403927/44c04a6/8ccff4e; Mesa `M9X_FAA_GPU_PRESENT_TEXTURED=1` | probe `present` |
+
+Correction to the slot d milestone: Quake3 draws the sky first, as two DRAWs at
+glDepthRange(1,1): an opaque cloud layer, then a ONE/ONE layer. With families
+off, every FAA part held the depth-only clear and the first sky DRAW only. The
+blended layer split the frame, so world, weapon and HUD were ordinary. The black
+FAA sky is the depth top-step defect above.
+
+### OFFLINE (host tests only, not yet run in Quake3)
+
+- Later transactions keep depth, cull and program changes. The kernel takes the
+  per-DRAW A8 word and keys the 6A groups on the previous DRAW's raster state.
+  DRM 56b1251/d42fa3e, Mesa a7d745c; vendor `later/`.
+- FIRST transactions take per-DRAW texture pairs (programs version). This
+  removes the FIRST -> present -> later chain. Mesa be5bab9.
+- Single-level render-surface textures are sampled in place. RGBX ones are
+  admitted only where alpha is never observed. Mesa 8a1ef9d.
+- Per-DRAW clip window for scissors and sub-viewports: DRM 13e49de, Mesa 25aad0e.
+- Per-DRAW colour write mask (fragment bits 27:24): DRM 2a1fa26.
+- `M9X_FAA_DEPTH_QUAD=1`: the HUD views' scissored depth clear drawn as the
+  vendor's colour-masked ALWAYS quad (m9emu `zclear/`). Mesa 2a6d1ac.
+- Whole frame image written before the first END: DRM 8398f45.
+  `faa_frame_copy_per_end` keeps the old order.
+- Diagnostics:
+  - `M9X_FAA_TRACE=N`: per-DRAW decision log for frame N.
+  - `M9X_FAA_STOP_AFTER_LOCK=N`.
+  - `M9X_FAA_DIAG_FAR`.
+  - Stale-check names under `M9X_DEBUG`.
+
+### Open
+
+1. Interlude stall: an FAA part after ordinary jobs stops the engine (Quake3
+   slots d/e/f). Things that did not cure it:
+   - whole-image copy before the first END
+   - page-aligning the FAA part
+   With `faa_interlude_restore=1`, slot g did not stall, but every 2-DRAW FIRST
+   returned -ESTALE. In every case the failing submission was "FAA frame of 2
+   DRAWs": a FIRST with two texture pairs chained through a mid-frame present.
+   Mesa be5bab9 removes that chain; it has not run in Quake3.
+   m9unify6's `faa_context_restore` is untested with Quake3.
+2. The approved but not run Quake3 group, on candidate 3
+   (nano:/root/tmp/m9-integ-3):
+   - settings: ts-faa, `M9X_FAA_FAMILIES=1`, `M9X_FAA_GPU_PRESENT_TEXTURED=1`,
+     `M9X_FAA_TRACE=200`, BACKOFF on
+   - one run with `faa_context_restore=1`, one with `faa_interlude_restore=1`
+   - script: `/home/ai/tmp/agents/m9faa6/slot-c3.sh`
+   Report the FAA frames, the FAA DRAWs per frame (from the trace) and
+   screenshots against base and llvmpipe.
+3. After a Quake3 check, make families, textured GPU present and the depth quad
+   the default. Then performance: one GPU present per frame instead of a CPU
+   read and write.
+4. Not admitted yet:
+   - FS forms beyond COLOR0*TEX0*TEX1 (census)
+   - non-zero GL_CLAMP border
