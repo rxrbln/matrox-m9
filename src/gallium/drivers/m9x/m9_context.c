@@ -4912,6 +4912,15 @@ m9_logic_tail(const struct pipe_blend_state *blend)
           blend->logicop_func != PIPE_LOGICOP_COPY;
 }
 
+/* The line raster class with a destination read is not captured: blended
+ * lines drawn natively kept only the last of overlapping draws (MEASURED),
+ * so lines that blend or apply a logic op are drawn as quads. */
+static bool
+m9_line_quads(const struct pipe_blend_state *blend)
+{
+   return m9_logic_tail(blend) || (blend && blend->rt[0].blend_enable);
+}
+
 /* Blend state as lowered factors and the channels the draw writes, or the
  * reason draws are skipped.  A group that keeps the destination is masked
  * off in the raster state, which keeps the program to one equation; A gets
@@ -5503,11 +5512,11 @@ m9_fs_use_native(struct m9_context *ctx)
 
    if (!fs || !fs->passthrough)
       return fs && fs->native;
-   /* Blended lines have no captured raster class; they stay opaque.
-    * Logic-op lines are drawn as quads (m9_render_line_quads). */
+   /* Blended and logic-op lines are drawn as quads (m9_render_line_quads),
+    * so they take the native tail as triangles do. */
    if (!util_format_is_srgb(ctx->framebuffer.cbufs[0].format) &&
        !m9_logic_tail(ctx->blend) &&
-       (!ctx->blend || !ctx->blend->rt[0].blend_enable || ctx->lines))
+       (!ctx->blend || !ctx->blend->rt[0].blend_enable))
       return false;
    if (!fs->native_tried) {
       fs->native_tried = true;
@@ -6281,7 +6290,7 @@ m9_render_line_quads(struct m9_vbuf_render *r, const struct m9_job_key *key,
       u_translate_func translate;
 
       if (u_index_translator(BITFIELD_BIT(MESA_PRIM_LINES), r->prim, 2, count,
-                             in_pv, PV_FIRST, PR_DISABLE, &out_prim, &out_size,
+                             in_pv, in_pv, PR_DISABLE, &out_prim, &out_size,
                              &out_count, &translate) == U_TRANSLATE_ERROR ||
           !(list = m9_render_scratch(r, (size_t)out_count * out_size)))
          return;
@@ -6290,7 +6299,7 @@ m9_render_line_quads(struct m9_vbuf_render *r, const struct m9_job_key *key,
       u_generate_func generate;
 
       if (u_index_generator(BITFIELD_BIT(MESA_PRIM_LINES), r->prim, start,
-                            count, in_pv, PV_FIRST, &out_prim, &out_size,
+                            count, in_pv, in_pv, &out_prim, &out_size,
                             &out_count, &generate) == U_TRANSLATE_ERROR ||
           !(list = m9_render_scratch(r, (size_t)out_count * out_size)))
          return;
@@ -6310,7 +6319,11 @@ m9_render_line_quads(struct m9_vbuf_render *r, const struct m9_job_key *key,
       const float *p0 = (const float *)v[0], *p1 = (const float *)v[1];
       const bool xmajor = fabsf(p0[0] - p1[0]) > fabsf(p0[1] - p1[1]);
       const unsigned along = xmajor ? 0 : 1;
-      const float shift = !center ? 0.0f : p0[along] < p1[along] ? -0.5f : 0.5f;
+      /* GL draws a segment's first pixel and not its last, so the order
+       * is kept and both ends move back half a pixel less the bias: no
+       * pixel centre then lies on an end of a quarter-pixel endpoint. */
+      const float pull = center ? 0.5f - bias : 0.0f;
+      const float shift = p0[along] < p1[along] ? -pull : pull;
       /* Corners 0, 1 at the first end, 2, 3 at the second; tris 023, 031. */
       static const uint8_t order[6] = { 0, 2, 3, 0, 3, 1 };
 
@@ -6321,9 +6334,10 @@ m9_render_line_quads(struct m9_vbuf_render *r, const struct m9_job_key *key,
          float side = corner & 1 ? half : -half;
 
          memcpy(dst, v[corner >> 1], vs);
-         /* The first vertex provokes after the translation above. */
+         /* The translation above keeps the provoking vertex where it was. */
          if (flat)
-            memcpy(dst + 4 * sizeof(float), v[0] + 4 * sizeof(float),
+            memcpy(dst + 4 * sizeof(float), v[in_pv == PV_FIRST ? 0 : 1] +
+                   4 * sizeof(float),
                    vs - 4 * sizeof(float));
          pos[along] += shift;
          pos[!along] += xmajor ? side - bias : side + bias;
@@ -6370,7 +6384,7 @@ m9_render_emit(struct m9_vbuf_render *r, const uint16_t *indices,
       return;
    }
    if (u_reduced_prim(prim) == MESA_PRIM_LINES &&
-       m9_logic_tail(ctx->blend)) {
+       m9_line_quads(ctx->blend)) {
       m9_render_line_quads(r, &key, indices, start, count);
       m9_prof_end(M9_PROF_EMIT, t_emit);
       return;
@@ -6829,8 +6843,9 @@ m9_native_vs_resolve(struct m9_context *ctx, const struct pipe_draw_info *info,
        (rast->line_width > 1.0f || rast->line_smooth ||
         rast->line_stipple_enable))
       return "wide, smooth or stippled lines run through the draw module";
-   if (out->lines && m9_logic_tail(ctx->blend))
-      return "logic-op lines are drawn as quads through the draw module";
+   if (out->lines && m9_line_quads(ctx->blend))
+      return "blended and logic-op lines are drawn as quads through the "
+             "draw module";
    out->buffer_count = ctx->num_vertex_buffers;
    for (unsigned i = 0; i < out->buffer_count && i < PIPE_MAX_ATTRIBS; i++) {
       const struct pipe_vertex_buffer *vb = &ctx->vertex_buffers[i];
