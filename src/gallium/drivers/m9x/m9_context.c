@@ -212,6 +212,9 @@ struct m9_vbuf_render {
    uint16_t vertex_size;
    bool has_color;
    unsigned extra_count;
+   /* Diagnostic identity of the immutable layout used by draw's translator. */
+   uint32_t layout_program;
+   unsigned layout_passes;
    /* One per CPU view of the whole variant, not of one pass: a split
     * shader has a view per interpolated input and per coordinate stream of
     * every pass, which a one-pass bound is eight short of. */
@@ -4156,16 +4159,21 @@ m9_submit_job_one(struct m9_context *ctx)
       m9_prof_refused++;
       m9_prof_skipped += draws;
       /* Name the refused job so the failing validator check is identifiable. */
-      if (ctx->debug)
-         fprintf(stderr, "m9x: refused job (%s): words %u relocs %u bos %u "
+      if (ctx->debug || (ctx->skipped_draws <= 8 &&
+                        debug_get_bool_option("M9X_RECORD_TRACE", false)))
+         fprintf(stderr, "m9x: refused job (%s at %s): words %u relocs %u bos %u "
                  "records %u draws %u units %u fs %d blend_dest %d "
-                 "indices %u base %#x first %u+%u\n",
-                 built ? "kernel" : "build",
+                 "indices %u base %#x first %u+%u passes %u extras %u "
+                 "record_floats %u extra_bytes %zu source %u cpu_streams %u\n",
+                 built ? "kernel" : "build", build_stage,
                  ctx->batch.command_count, ctx->batch.reloc_count,
                  ctx->batch.bo_count, records, draws, key->unit_count,
                  !!fs, fs ? (int)m9_fs_final(key->variant)->blend_dest : -1,
                  index_count, (unsigned)index_base, first_draw->index_first,
-                 first_draw->index_count);
+                 first_draw->index_count, pass_count,
+                 key->variant ? key->variant->extra_count : 0,
+                 ctx->record_floats, (size_t)ctx->extra.size,
+                 ctx->source.handle, ctx->cpu_streams.handle);
    } else if (ret) {
       if (ret == -ENOSPC && !built)
          fprintf(stderr, "m9x: job build capacity at %s: words %u/%u "
@@ -6228,10 +6236,15 @@ m9_render_get_vertex_info(struct vbuf_render *render)
    if (r->has_color)
       draw_emit_vertex_attr(&r->vinfo, EMIT_4F, color);
    r->extra_count = 0;
+   r->layout_program = 0;
+   r->layout_passes = 0;
    if (m9_fs_use_native(r->ctx))
       v = m9_ctx_variant(r->ctx, &reason, NULL);
    if (v) {
       unsigned offset = r->has_color ? 8 : 4;
+
+      r->layout_program = v->c2.handle;
+      r->layout_passes = v->passes.count;
 
       for (unsigned j = 0; j < v->extra_count; j++) {
          unsigned location = v->extra_location[j];
@@ -6616,6 +6629,42 @@ m9_render_drop(struct m9_context *ctx, const char *why)
    m9_prof_skipped++;
 }
 
+/* The ordinary message intentionally groups reserve failure and stale
+ * translated layouts.  Keep their diagnostic facts separate, without
+ * changing admission, record ownership or draw's prepared translation. */
+static void
+m9_render_record_drop(struct m9_vbuf_render *r, const struct m9_job_key *key,
+                       unsigned vertices, const float *out, const float *extra)
+{
+   struct m9_context *ctx = r->ctx;
+   const struct m9_fs_variant *v = key->variant;
+
+   if (ctx->debug || (ctx->skipped_draws < 8 &&
+                     debug_get_bool_option("M9X_RECORD_TRACE", false))) {
+      fprintf(stderr, "m9x: record drop %s: requested %u padded %u ceiling %u "
+              "prepared c2 %u passes %u extras %u stride %u vinfo %u color %d "
+              "current c2 %u passes %u extras %u native_vs %d extra_reserved %d "
+              "records_bytes %zu extra_bytes %zu draws %u lost %d "
+              "inline_owner %d count %u listed %u\n",
+              !out ? "reserve" : "layout", vertices,
+              m9_draw_preprocess_vertices(vertices), m9_job_max_vertices(key),
+              r->layout_program, r->layout_passes, r->extra_count,
+              r->vertex_size, r->vinfo.size, r->has_color,
+              v ? v->c2.handle : 0, v ? v->passes.count : 0,
+              v ? v->extra_count : 0, !!key->vs, !!extra,
+              (size_t)ctx->records.size, (size_t)ctx->extra.size,
+              (unsigned)util_dynarray_num_elements(&ctx->draws, struct m9_draw_record),
+              ctx->lost, ctx->fs_inline_owner == ctx->fs, ctx->fs_inline_count,
+              ctx->fs && ctx->fs->nir ? ctx->fs->nir->info.num_inlinable_uniforms : 0);
+      for (unsigned j = 0; j < MAX2(r->extra_count, v ? v->extra_count : 0) &&
+                           j < M9_FS_MAX_EXTRA; j++)
+         fprintf(stderr, "m9x: record slot %u prepared_offset %d current_location %d\n",
+                 j, j < r->extra_count ? r->extra_offset[j] : -1,
+                 v && j < v->extra_count ? v->extra_location[j] : -1);
+   }
+   m9_render_drop(ctx, "a job could not take a draw's records; draws skipped");
+}
+
 /* An index list preprocesses the vertices it spans once and rasterises them
  * through a stored index run, instead of one record per index. */
 static void
@@ -6656,8 +6705,7 @@ m9_render_append_indexed(struct m9_vbuf_render *r, const struct m9_job_key *key,
          out = m9_job_reserve(ctx, key, &ctx->key_consts, NULL,
                               M9_RECORD_FLOATS, grain, &first, &extra);
          if (!out || (extra && r->extra_count != key->variant->extra_count)) {
-            m9_render_drop(ctx, "a job could not take a draw's records; "
-                           "draws skipped");
+            m9_render_record_drop(r, key, grain, out, extra);
             return;
          }
          index_first = util_dynarray_num_elements(&ctx->indices, uint16_t);
@@ -6699,8 +6747,7 @@ m9_render_append_indexed(struct m9_vbuf_render *r, const struct m9_job_key *key,
       out = m9_job_reserve(ctx, key, &ctx->key_consts, NULL, M9_RECORD_FLOATS,
                            vertices, &first, &extra);
       if (!out || (extra && r->extra_count != key->variant->extra_count)) {
-         m9_render_drop(ctx, "a job could not take a draw's records; "
-                        "draws skipped");
+         m9_render_record_drop(r, key, vertices, out, extra);
          return;
       }
       /* An odd run is padded to a whole dword so every run stays aligned,
@@ -6781,8 +6828,7 @@ m9_render_append(struct m9_vbuf_render *r, const struct m9_job_key *key,
                                   M9_RECORD_FLOATS, n, &first, &extra);
 
       if (!out || (extra && r->extra_count != key->variant->extra_count)) {
-         m9_render_drop(r->ctx, "a job could not take a draw's records; "
-                        "draws skipped");
+         m9_render_record_drop(r, key, n, out, extra);
          return;
       }
       for (unsigned i = 0; i < n; i++) {
