@@ -5753,13 +5753,38 @@ lower_bool_int(nir_builder *b, nir_alu_instr *alu, void *data)
    return true;
 }
 
-/* Everything but the chains vectorises again afterwards, so the arithmetic
- * around them goes back to whole vectors instead of being reassembled from
- * scalars by the gather. */
+/* A vector of condition links would read the compares' lanes crosswise,
+ * which an operand cannot; a scalar link reads one lane. */
+static bool
+is_condition_link(const nir_instr *instr)
+{
+   if (instr->type != nir_instr_type_alu ||
+       nir_instr_as_alu(instr)->def.bit_size != 1)
+      return false;
+   switch (nir_instr_as_alu(instr)->op) {
+   case nir_op_iand:
+   case nir_op_ior:
+   case nir_op_ixor:
+   case nir_op_inot:
+      return true;
+   default:
+      return false;
+   }
+}
+
+static bool
+scalar_in_prepare(const nir_instr *instr, const void *data)
+{
+   return is_condition_link(instr) || is_transcendental(instr, data);
+}
+
+/* Everything but the chains and condition links vectorises again
+ * afterwards, so the arithmetic around them goes back to whole vectors
+ * instead of being reassembled from scalars by the gather. */
 static uint8_t
 vectorize_around_chains(const nir_instr *instr, const void *data)
 {
-   return is_transcendental(instr, data) ? 1 : 4;
+   return scalar_in_prepare(instr, data) ? 1 : 4;
 }
 
 /* st hands IO and arithmetic over scalarised; the native program is a
@@ -5779,7 +5804,7 @@ fs_prepare(nir_shader *nir)
    NIR_PASS(_, nir, nir_opt_vectorize_io,
             nir_var_shader_in | nir_var_shader_out, false);
    NIR_PASS(_, nir, nir_opt_vectorize, NULL, NULL);
-   NIR_PASS(_, nir, nir_lower_alu_to_scalar, is_transcendental, NULL);
+   NIR_PASS(_, nir, nir_lower_alu_to_scalar, scalar_in_prepare, NULL);
    NIR_PASS(lowered, nir, nir_shader_alu_pass, lower_bool_int,
             nir_metadata_control_flow, NULL);
    /* A boolean literal compared that way folds to 1.0 or 0.0. */
