@@ -250,6 +250,11 @@ m9_nir_lower_integers(nir_shader *nir)
 {
    if (!nir->options->no_integers)
       return;
+   /* st can hand over a temporary still behind derefs, its indexing
+    * lowered to if-trees; nir_lower_int_to_float would turn the constant
+    * element indices into float bits, so take the variables to SSA first. */
+   NIR_PASS(_, nir, nir_lower_global_vars_to_local);
+   NIR_PASS(_, nir, nir_lower_vars_to_ssa);
    NIR_PASS(_, nir, nir_lower_int_to_float);
    NIR_PASS(_, nir, nir_shader_intrinsics_pass, ubo_offset_int,
             nir_metadata_control_flow, NULL);
