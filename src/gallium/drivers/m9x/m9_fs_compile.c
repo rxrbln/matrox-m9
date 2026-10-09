@@ -5793,9 +5793,24 @@ vectorize_around_chains(const nir_instr *instr, const void *data)
 static void
 fs_prepare(nir_shader *nir)
 {
-   bool lowered = false;
+   bool lowered = false, progress;
 
    m9_nir_lower_alu_if(nir);
+   /* The program has no branches, and a refused program skips the draw:
+    * flatten what the bounded if-conversion left, texture fetches and
+    * discards included; a discard keeps its arm's condition. */
+   do {
+      progress = false;
+      NIR_PASS(progress, nir, nir_opt_peephole_select,
+               &(nir_opt_peephole_select_options){ .limit = ~0u });
+      if (!progress)
+         break;
+      NIR_PASS(_, nir, nir_opt_remove_phis);
+      NIR_PASS(_, nir, nir_opt_copy_prop);
+      NIR_PASS(_, nir, nir_opt_cse);
+      NIR_PASS(_, nir, nir_opt_dce);
+      NIR_PASS(_, nir, nir_lower_undef_to_zero, NULL);
+   } while (progress);
 
    /* st lowers uniforms to UBO loads after its last folding pass, so a
     * constant slot index arrives as an iadd of two constants; without this
