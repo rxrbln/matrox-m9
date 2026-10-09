@@ -97,6 +97,7 @@ struct m9_fs_state {
    bool passthrough;
    bool kill_all;                      /* every fragment is discarded */
    bool no_color;                      /* writes no colour output */
+   bool discards;                      /* has a discard or terminate */
    bool native, native_tried, warned;
    const char *reason;
    struct util_dynarray variants;      /* struct m9_fs_variant * */
@@ -5680,7 +5681,7 @@ m9_job_key_current(struct m9_context *ctx, struct m9_job_key *key)
    const struct pipe_rasterizer_state *rast = ctx->rasterizer;
    struct m9_resource *zs;
    unsigned colormask;
-   bool test, write, stencil, masked;
+   bool test, write, stencil, no_color;
 
    if (ctx->lost)
       return m9_skip_reason(ctx, "the context is lost; draw skipped");
@@ -5756,8 +5757,8 @@ m9_job_key_current(struct m9_context *ctx, struct m9_job_key *key)
    }
    /* GL discards colour writes into a framebuffer without a colour
     * attachment, and the surface bound for one is scratch. */
-   masked = ctx->color_discard || (ctx->fs && ctx->fs->no_color);
-   if (masked)
+   no_color = ctx->color_discard || (ctx->fs && ctx->fs->no_color);
+   if (no_color)
       key->color_mask = m9_color_mask(0);
    /* ab/ac gate whole byte lanes, which cannot describe a 10-bit channel
     * unless every lane is on or off:
@@ -5789,7 +5790,7 @@ m9_job_key_current(struct m9_context *ctx, struct m9_job_key *key)
          return m9_skip_reason(ctx, "the shader writes a colour target the "
                                "framebuffer does not bind; draw skipped");
       for (unsigned s = 0; s < ctx->color_count; s++) {
-         unsigned cm = masked ? 0 :
+         unsigned cm = no_color ? 0 :
                        blend && blend->independent_blend_enable ?
                        blend->rt[s].colormask : colormask;
 
@@ -8503,8 +8504,9 @@ m9_draw_indirect(struct pipe_context *pctx, const struct pipe_draw_info *info,
 
 /*
  * The blend tail reads the destination of colour target 0 alone; where the
- * other targets' destinations reach the program is not captured.  A draw
- * that blends into several targets is therefore drawn once a target, each
+ * other targets' destinations reach the program is not captured, and a
+ * discard has no multiple-target form.  A draw that blends or discards into
+ * several targets is therefore drawn once a target, each
  * pass binding that target alone and keeping that output.  Passes after the
  * first test depth for equality without writing it and stay out of an
  * occlusion query, so they shade exactly the fragments the first one kept.
@@ -8512,7 +8514,8 @@ m9_draw_indirect(struct pipe_context *pctx, const struct pipe_draw_info *info,
 static bool
 m9_mrt_blend_split(struct m9_context *ctx, const struct pipe_draw_info *info,
                    unsigned drawid_offset,
-                   const struct pipe_draw_start_count_bias *draw)
+                   const struct pipe_draw_start_count_bias *draws,
+                   unsigned num_draws)
 {
    const struct pipe_blend_state *blend = ctx->blend;
    const struct pipe_depth_stencil_alpha_state *dsa = ctx->dsa;
@@ -8521,15 +8524,17 @@ m9_mrt_blend_split(struct m9_context *ctx, const struct pipe_draw_info *info,
    bool any = false, first = true;
    unsigned n = ctx->color_count;
 
-   if (ctx->mrt_select || n < 2 || !blend || !ctx->fs)
+   if (ctx->mrt_select || n < 2 || !ctx->fs)
       return false;
-   for (unsigned s = 0; s < n; s++)
+   /* A discard has no multiple-target form either (m9_fs_compile). */
+   any = ctx->fs->discards;
+   for (unsigned s = 0; blend && s < n; s++)
       any |= blend->rt[blend->independent_blend_enable ? s : 0].blend_enable;
    if (!any)
       return false;
    if (dsa && (dsa->stencil[0].enabled || dsa->stencil[1].enabled)) {
-      m9_skip_reason(ctx, "blending into several colour targets under a "
-                     "stencil test; draw skipped");
+      m9_skip_reason(ctx, "blending or discarding into several colour "
+                     "targets under a stencil test; draw skipped");
       ctx->skipped_draws++;
       return true;
    }
@@ -8542,11 +8547,13 @@ m9_mrt_blend_split(struct m9_context *ctx, const struct pipe_draw_info *info,
       fb = saved;
       fb.nr_cbufs = 1;
       fb.cbufs[0] = saved.cbufs[p];
-      ctx->mrt_blend = *blend;
-      ctx->mrt_blend.independent_blend_enable = false;
-      ctx->mrt_blend.rt[0] = blend->rt[blend->independent_blend_enable ? p :
-                                                                       0];
-      ctx->blend = &ctx->mrt_blend;
+      if (blend) {
+         ctx->mrt_blend = *blend;
+         ctx->mrt_blend.independent_blend_enable = false;
+         ctx->mrt_blend.rt[0] =
+            blend->rt[blend->independent_blend_enable ? p : 0];
+         ctx->blend = &ctx->mrt_blend;
+      }
       if (!first) {
          if (dsa && dsa->depth_enabled) {
             ctx->mrt_dsa = *dsa;
@@ -8558,13 +8565,95 @@ m9_mrt_blend_split(struct m9_context *ctx, const struct pipe_draw_info *info,
       }
       ctx->base.set_framebuffer_state(&ctx->base, &fb);
       ctx->mrt_select = p + 1;
-      m9_draw_vbo(&ctx->base, info, drawid_offset, NULL, draw, 1);
+      m9_draw_vbo(&ctx->base, info, drawid_offset, NULL, draws, num_draws);
       ctx->mrt_select = 0;
       if (!first)
          m9_query_resume(ctx);
       ctx->blend = blend;
       ctx->dsa = dsa;
       first = false;
+   }
+   ctx->base.set_framebuffer_state(&ctx->base, &saved);
+   util_unreference_framebuffer_state(&saved);
+   return true;
+}
+
+/*
+ * A draw buffer of NONE ahead of a bound one would leave an engine target slot
+ * with no surface, so such a draw runs once a bound target, each pass binding
+ * that target alone and keeping its output, the way m9_mrt_blend_split does.
+ * Without a written bound target one pass keeps the depth and stencil writes.
+ */
+static bool
+m9_mrt_gap_split(struct m9_context *ctx, const struct pipe_draw_info *info,
+                 unsigned drawid_offset,
+                 const struct pipe_draw_start_count_bias *draws,
+                 unsigned num_draws)
+{
+   const struct pipe_blend_state *blend = ctx->blend;
+   const struct pipe_depth_stencil_alpha_state *dsa = ctx->dsa;
+   struct pipe_framebuffer_state saved = {0}, fb;
+   unsigned passes = 0;
+   uint64_t outputs;
+
+   bool dead = false;
+
+   if (ctx->mrt_select || !ctx->fs || !ctx->fs->nir)
+      return false;
+   outputs = ctx->fs->nir->info.outputs_written;
+   /* An output for a slot past the bound run (NONE, or past nr_cbufs) is
+    * discarded, but the engine program cannot leave it unbound. */
+   for (unsigned p = MAX2(ctx->color_count, 1); p < M9_FS_MAX_TARGETS; p++)
+      dead |= (p >= ctx->framebuffer.nr_cbufs ||
+               !ctx->framebuffer.cbufs[p].texture) &&
+              (outputs & BITFIELD64_BIT(FRAG_RESULT_DATA0 + p));
+   if (!ctx->color_gaps && !dead)
+      return false;
+   if (dsa && (dsa->stencil[0].enabled || dsa->stencil[1].enabled)) {
+      m9_skip_reason(ctx, "draw buffers of NONE between colour targets under "
+                     "a stencil test; draw skipped");
+      ctx->skipped_draws++;
+      return true;
+   }
+   util_copy_framebuffer_state(&saved, &ctx->framebuffer);
+   for (unsigned p = 0; p <= saved.nr_cbufs; p++) {
+      const bool last = p == saved.nr_cbufs;
+
+      if (last ? passes :
+          !saved.cbufs[p].texture ||
+          !(outputs & (BITFIELD64_BIT(FRAG_RESULT_COLOR) |
+                       BITFIELD64_BIT(FRAG_RESULT_DATA0 + p))))
+         continue;
+      fb = saved;
+      fb.nr_cbufs = !last;
+      memset(fb.cbufs, 0, sizeof(fb.cbufs));
+      if (!last)
+         fb.cbufs[0] = saved.cbufs[p];
+      if (blend) {
+         ctx->mrt_blend = *blend;
+         ctx->mrt_blend.independent_blend_enable = false;
+         ctx->mrt_blend.rt[0] =
+            blend->rt[blend->independent_blend_enable && !last ? p : 0];
+         ctx->blend = &ctx->mrt_blend;
+      }
+      if (passes) {
+         if (dsa && dsa->depth_enabled) {
+            ctx->mrt_dsa = *dsa;
+            ctx->mrt_dsa.depth_writemask = 0;
+            ctx->mrt_dsa.depth_func = PIPE_FUNC_EQUAL;
+            ctx->dsa = &ctx->mrt_dsa;
+         }
+         m9_query_pause(ctx);
+      }
+      ctx->base.set_framebuffer_state(&ctx->base, &fb);
+      ctx->mrt_select = last ? 1 : p + 1;
+      m9_draw_vbo(&ctx->base, info, drawid_offset, NULL, draws, num_draws);
+      ctx->mrt_select = 0;
+      if (passes)
+         m9_query_resume(ctx);
+      ctx->blend = blend;
+      ctx->dsa = dsa;
+      passes++;
    }
    ctx->base.set_framebuffer_state(&ctx->base, &saved);
    util_unreference_framebuffer_state(&saved);
@@ -8638,7 +8727,10 @@ m9_draw_vbo(struct pipe_context *pctx, const struct pipe_draw_info *info,
                                 ctx->faa_mode.skip ? "ordinary in backoff" :
                                 "ordinary, not the FAA window target");
    if (num_draws && !indirect &&
-       m9_mrt_blend_split(ctx, info, drawid_offset, draws))
+       m9_mrt_gap_split(ctx, info, drawid_offset, draws, num_draws))
+      return;
+   if (num_draws && !indirect &&
+       m9_mrt_blend_split(ctx, info, drawid_offset, draws, num_draws))
       return;
    /* The byte-lane write mask cannot gate a 10-bit channel, and the vendor
     * masks such a target in the program instead (gigacolor-10bit.md 4.2).
@@ -8893,7 +8985,7 @@ m9_clear_color_extra(struct pipe_context *pctx, unsigned buffers,
 {
    struct m9_context *ctx = m9_context(pctx);
 
-   for (unsigned p = 1; p < ctx->color_count; p++) {
+   for (unsigned p = 1; p < ctx->framebuffer.nr_cbufs; p++) {
       struct pipe_surface *dst = &ctx->framebuffer.cbufs[p];
 
       if (!(buffers & (PIPE_CLEAR_COLOR0 << p)) || !dst->texture)
@@ -11542,6 +11634,40 @@ m9_fs_native_init(struct m9_context *ctx, struct m9_fs_state *fs)
    /* Shaders specialised on inlined uniforms compile per value set. */
    fs->native = fs->nir->info.num_inlinable_uniforms ||
                 m9_fs_variant(ctx, fs, &opaque, &fs->reason);
+   /* A discard has no multiple-target form; m9_mrt_blend_split draws such a
+    * shader one target at a time, so its single-target form decides. */
+   if (!fs->native && fs->discards &&
+       util_bitcount64(fs->nir->info.outputs_written &
+                       BITFIELD64_RANGE(FRAG_RESULT_DATA0,
+                                        M9_FS_MAX_TARGETS)) > 1) {
+      const char *reason;
+
+      opaque.select = 1;
+      fs->native = m9_fs_variant(ctx, fs, &opaque, &reason);
+   }
+}
+
+static bool
+m9_fs_discards(const nir_shader *nir)
+{
+   nir_foreach_function_impl(impl, nir) {
+      nir_foreach_block(block, impl) {
+         nir_foreach_instr(instr, block) {
+            if (instr->type != nir_instr_type_intrinsic)
+               continue;
+            switch (nir_instr_as_intrinsic(instr)->intrinsic) {
+            case nir_intrinsic_terminate:
+            case nir_intrinsic_terminate_if:
+            case nir_intrinsic_demote:
+            case nir_intrinsic_demote_if:
+               return true;
+            default:
+               break;
+            }
+         }
+      }
+   }
+   return false;
 }
 
 /* A shader without a colour output (depth or stencil only, u_blitter's empty
@@ -11593,6 +11719,7 @@ m9_create_fs_state(struct pipe_context *pctx,
       fs->nir = templ->ir.nir;
    if (fs->nir) {
       fs->no_color = m9_fs_add_color(fs->nir);
+      fs->discards = m9_fs_discards(fs->nir);
       fs->kill_all = m9_fs_kills_all(fs->nir);
       fs->passthrough = m9_fs_passthrough(fs->nir);
       if (!fs->passthrough)
@@ -11797,16 +11924,16 @@ m9_target_depth_bind(struct m9_context *ctx, uint32_t w, uint32_t h,
 }
 
 /* Every raster parameter is derived from a colour surface
- * (m9_draw_params_init), so a framebuffer with a depth attachment alone is
- * given one out of the scratch pool.  GL discards colour writes into such a
- * framebuffer, so the job masks them off and nothing reads the surface. */
+ * (m9_draw_params_init), so a framebuffer without colour target 0 (depth
+ * only, or draw buffer 0 NONE) is given one out of the scratch pool.  GL
+ * discards colour writes there, so the job masks them off and nothing reads
+ * the surface. */
 static struct m9_resource *
-m9_depth_only_color(struct m9_context *ctx)
+m9_discard_color(struct m9_context *ctx)
 {
    struct pipe_resource *res;
 
-   if (!ctx->framebuffer.zsbuf.texture || !ctx->framebuffer.width ||
-       !ctx->framebuffer.height)
+   if (!ctx->framebuffer.width || !ctx->framebuffer.height)
       return NULL;
    res = m9_scratch_target(ctx, ctx->framebuffer.width,
                            ctx->framebuffer.height,
@@ -11829,12 +11956,15 @@ m9_update_color_extra(struct m9_context *ctx)
 
    for (unsigned s = 1; s < bound; s++) {
       const struct pipe_surface *cbuf = &ctx->framebuffer.cbufs[s];
-      struct m9_resource *res = cbuf->texture ? m9_res(cbuf->texture) : NULL;
+      struct m9_resource *res;
       uint32_t desc;
 
-      /* A gap in the attachment list would leave a bound target no surface
-       * answers for, so the run stops at the first one. */
-      if (!res || cbuf->level || res->width < m9_clip_width(ctx) ||
+      /* A draw buffer of NONE ends the bound run; m9_mrt_gap_split draws
+       * the targets past it one at a time. */
+      if (!cbuf->texture)
+         break;
+      res = m9_res(cbuf->texture);
+      if (cbuf->level || res->width < m9_clip_width(ctx) ||
           res->height < m9_clip_height(ctx) ||
           !(res->tiled || m9_texture_renders_level(res, 0)) ||
           m9_color_surface_desc(res->width, res->height, res->format,
@@ -11979,6 +12109,7 @@ m9_update_target(struct m9_context *ctx)
    m9_proxy_release(ctx, &ctx->zs_proxy);
    ctx->params_valid = false;
    ctx->color_discard = false;
+   ctx->color_gaps = false;
    ctx->target_zs = NULL;
    pipe_resource_reference(&ctx->color, NULL);
    for (unsigned s = 0; s < ARRAY_SIZE(ctx->color_extra); s++)
@@ -11988,11 +12119,14 @@ m9_update_target(struct m9_context *ctx)
    ctx->color_count = 0;
    ctx->color_offset = 0;
    if (!color) {
-      color = m9_depth_only_color(ctx);
+      color = m9_discard_color(ctx);
       if (!color)
          return;
       ctx->color_discard = true;
    }
+   for (unsigned s = 1; s < ctx->framebuffer.nr_cbufs; s++)
+      ctx->color_gaps |= ctx->framebuffer.cbufs[s].texture &&
+                         !ctx->framebuffer.cbufs[s - 1].texture;
    /* Every level of a mipmapped image outside the packed tail is laid out as
     * a render surface of its own extent at its chain offset, so it is a
     * target as it stands (m9_texture_renders_level); level 0 is additionally
