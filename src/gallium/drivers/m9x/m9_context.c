@@ -1533,12 +1533,45 @@ m9_arena_reserve(struct m9_context *ctx, struct m9_resource *arena,
    m9_bo_destroy(ctx->screen, arena);
    int ret = m9_bo_create(ctx->screen, size, 0, M9_RESOURCE_LINEAR_BUFFER,
                           arena);
-   if (ret)
+   /* A full stream window is retried after reclaiming parked views. */
+   if (ret && !(cpu_streams && ret == -ENOSPC))
       fprintf(stderr, "m9x: %s arena reserve failed (%s): requested %" PRIu64
               " capacity %" PRIu64 " bytes, %u source vertices per view\n",
               cpu_streams ? "CPU stream" : "source/index", strerror(-ret),
               bytes, size, m9_draw_max_source_vertices());
    return ret;
+}
+
+/* Every set's CPU stream views share one window, so five queued sets of a
+ * many-varying draw can exhaust it.  Parked sets give theirs back once their
+ * last reader retired; a set regrows its views when it builds such a job. */
+static int
+m9_cpu_streams_reclaim(struct m9_context *ctx)
+{
+   struct m9_resource *bo[1 + ARRAY_SIZE(ctx->queue_arena)];
+   uint64_t *point[ARRAY_SIZE(bo)];
+   unsigned n = 0, freed = 0;
+
+   bo[n] = &ctx->cpu_streams_alt;
+   point[n++] = &ctx->arena_alt_point;
+   for (unsigned i = 0; ctx->screen->queued_submit &&
+                        i < ARRAY_SIZE(ctx->queue_arena); i++) {
+      bo[n] = &ctx->queue_arena[i].cpu_streams;
+      point[n++] = &ctx->queue_arena[i].point;
+   }
+   for (unsigned i = 0; i < n; i++) {
+      if (!bo[i]->handle)
+         continue;
+      if (*point[i] == M9_AGGREGATE_PENDING && m9_aggregate_flush(ctx))
+         return -EIO;
+      if (m9_wait_for_point(ctx->screen, *point[i])) {
+         ctx->lost = true;
+         return -EIO;
+      }
+      m9_bo_destroy(ctx->screen, bo[i]);
+      freed++;
+   }
+   return freed ? 0 : -ENOSPC;
 }
 
 /* Linear CPU varying views are not rendered surfaces. Their immutable
@@ -3487,9 +3520,11 @@ m9_submit_job(struct m9_context *ctx)
     * gathers, so the job's record ceiling costs system memory only where a
     * fragment program reads them. */
    if (!ret && cpu_view_bytes) {
-      ret = m9_arena_reserve(ctx, &ctx->cpu_streams,
-                             (uint64_t)key->variant->extra_count *
-                             cpu_view_bytes);
+      uint64_t bytes = (uint64_t)key->variant->extra_count * cpu_view_bytes;
+
+      ret = m9_arena_reserve(ctx, &ctx->cpu_streams, bytes);
+      if (ret == -ENOSPC && !m9_cpu_streams_reclaim(ctx))
+         ret = m9_arena_reserve(ctx, &ctx->cpu_streams, bytes);
       if (ret)
          fprintf(stderr, "m9x: CPU stream job: records %u copies %u views %u"
                  " stride %u active/parked capacities %" PRIu64 "/%" PRIu64
