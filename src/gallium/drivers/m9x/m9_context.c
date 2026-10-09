@@ -811,6 +811,88 @@ m9_surface_access(struct m9_context *ctx, const struct m9_resource *resource,
 
 /* Rows of a tiled target in its pipe format, converted where the storage
  * is a wider format (m9_format_storage). */
+/* Bytes of free staging a context keeps for reuse. */
+#define M9_STAGING_KEEP (64u << 20)
+
+struct m9_staging_head {
+   size_t size;
+   size_t pad;
+};
+
+static size_t
+m9_staging_cap(const void *p)
+{
+   return ((const struct m9_staging_head *)p - 1)->size;
+}
+
+/* A transfer buffer of at least bytes, from the free list when one fits. */
+static void *
+m9_staging_get(struct m9_context *ctx, size_t bytes)
+{
+   struct m9_staging_head *h;
+   int best = -1;
+
+   for (unsigned i = 0; i < M9_STAGING_CACHED; i++)
+      if (ctx->staging_free[i] && m9_staging_cap(ctx->staging_free[i]) >= bytes &&
+          (best < 0 || m9_staging_cap(ctx->staging_free[i]) <
+                       m9_staging_cap(ctx->staging_free[best])))
+         best = i;
+   if (best >= 0) {
+      void *p = ctx->staging_free[best];
+
+      ctx->staging_free[best] = NULL;
+      return p;
+   }
+   h = MALLOC(sizeof(*h) + bytes);
+   if (!h)
+      return NULL;
+   h->size = bytes;
+   return h + 1;
+}
+
+static void
+m9_staging_put(struct m9_context *ctx, void *p)
+{
+   size_t held = 0;
+   int slot = -1;
+
+   if (!p)
+      return;
+   for (unsigned i = 0; i < M9_STAGING_CACHED; i++) {
+      if (!ctx->staging_free[i])
+         slot = slot < 0 ? (int)i : slot;
+      else
+         held += m9_staging_cap(ctx->staging_free[i]);
+   }
+   /* A full list gives up its smallest buffer for a larger one. */
+   if (slot < 0) {
+      for (unsigned i = 0; i < M9_STAGING_CACHED; i++)
+         if (slot < 0 || m9_staging_cap(ctx->staging_free[i]) <
+                         m9_staging_cap(ctx->staging_free[slot]))
+            slot = i;
+      if (m9_staging_cap(ctx->staging_free[slot]) >= m9_staging_cap(p)) {
+         FREE((struct m9_staging_head *)p - 1);
+         return;
+      }
+      held -= m9_staging_cap(ctx->staging_free[slot]);
+      FREE((struct m9_staging_head *)ctx->staging_free[slot] - 1);
+      ctx->staging_free[slot] = NULL;
+   }
+   if (held + m9_staging_cap(p) > M9_STAGING_KEEP) {
+      FREE((struct m9_staging_head *)p - 1);
+      return;
+   }
+   ctx->staging_free[slot] = p;
+}
+
+static void
+m9_staging_fini(struct m9_context *ctx)
+{
+   for (unsigned i = 0; i < M9_STAGING_CACHED; i++)
+      if (ctx->staging_free[i])
+         FREE((struct m9_staging_head *)ctx->staging_free[i] - 1);
+}
+
 static int
 m9_surface_rows(struct m9_context *ctx, const struct m9_resource *resource,
                 bool write, const struct pipe_box *box, uint8_t *data,
@@ -825,7 +907,7 @@ m9_surface_rows(struct m9_context *ctx, const struct m9_resource *resource,
 
    if (store == format)
       return m9_surface_access(ctx, resource, op, box, data);
-   rows = MALLOC((size_t)row * box->height);
+   rows = m9_staging_get(ctx, (size_t)row * box->height);
    if (!rows)
       return -ENOMEM;
    ret = write && !util_format_translate(store, rows, row, 0, 0, format,
@@ -837,7 +919,7 @@ m9_surface_rows(struct m9_context *ctx, const struct m9_resource *resource,
        !util_format_translate(format, data, stride, 0, 0, store, rows, row,
                               0, 0, box->width, box->height))
       ret = -EINVAL;
-   FREE(rows);
+   m9_staging_put(ctx, rows);
    return ret;
 }
 
@@ -957,7 +1039,7 @@ m9_texture_window_blocks(struct m9_context *ctx,
    uint32_t rows = ((uint32_t)box->height + 3) / 4;
 
    size_t bytes = (size_t)cols * rows * block;
-   uint8_t *image = MALLOC(bytes);
+   uint8_t *image = m9_staging_get(ctx, bytes);
    struct drm_parhelia_m9_surface_access access = {
       .handle = resource->handle,
       .op = write ? PARHELIA_M9_ACCESS_WRITE : PARHELIA_M9_ACCESS_READ,
@@ -998,7 +1080,7 @@ m9_texture_window_blocks(struct m9_context *ctx,
       for (uint32_t r = 0; r < rows; r++)
          memcpy(data + (size_t)r * stride, image + (size_t)r * cols * block,
                 (size_t)cols * block);
-   FREE(image);
+   m9_staging_put(ctx, image);
    return ret;
 }
 
@@ -1018,7 +1100,7 @@ m9_texture_window(struct m9_context *ctx, const struct m9_resource *resource,
    uint32_t span = (lvl->width + 31) & ~31u;
    bool small = span <= 64 && lvl->height <= 64;
    size_t bytes = (size_t)box->width * box->height * 4;
-   uint8_t *rows = MALLOC(bytes);
+   uint8_t *rows = m9_staging_get(ctx, bytes);
    struct drm_parhelia_m9_surface_access access = {
       .handle = resource->handle,
       .op = write ? PARHELIA_M9_ACCESS_WRITE : PARHELIA_M9_ACCESS_READ,
@@ -1078,7 +1160,7 @@ m9_texture_window(struct m9_context *ctx, const struct m9_resource *resource,
                               resource->texture_storage, rows, box->width * 4,
                               0, 0, box->width, box->height))
       ret = -EINVAL;
-   FREE(rows);
+   m9_staging_put(ctx, rows);
    return ret;
 }
 
@@ -1232,7 +1314,7 @@ m9_transfer_map_locked(struct pipe_context *pctx, struct pipe_resource *pres,
       /* A compressed box is in texels and its rows are block rows. */
       stride = util_format_get_stride(pres->format, box->width);
       transfer->staging = box->width && box->height ?
-                          MALLOC((size_t)stride *
+                          m9_staging_get(ctx, (size_t)stride *
                                  util_format_get_nblocksy(pres->format,
                                                           box->height) *
                                  box->depth) :
@@ -1245,7 +1327,7 @@ m9_transfer_map_locked(struct pipe_context *pctx, struct pipe_resource *pres,
           (preserve && m9_texture_access(ctx, resource, level, false, box,
                                          transfer->staging, stride))) {
          m9_warn_once(ctx, M9_WARN_TRANSFER, "texture storage read failed");
-         FREE(transfer->staging);
+         m9_staging_put(ctx, transfer->staging);
          FREE(transfer);
          return NULL;
       }
@@ -1260,7 +1342,7 @@ m9_transfer_map_locked(struct pipe_context *pctx, struct pipe_resource *pres,
                util_format_get_stride(pres->format, box->width) :
                box->width * 4;
       transfer->staging = box->width && box->height ?
-                          MALLOC((size_t)stride * box->height) : NULL;
+                          m9_staging_get(ctx, (size_t)stride * box->height) : NULL;
       if (!transfer->staging ||
           (preserve && (resource->tiled ?
                         m9_surface_rows(ctx, resource, false, box,
@@ -1270,7 +1352,7 @@ m9_transfer_map_locked(struct pipe_context *pctx, struct pipe_resource *pres,
                                         transfer->staging, stride)))) {
          m9_warn_once(ctx, M9_WARN_TRANSFER,
                       "de-tiled render target access failed");
-         FREE(transfer->staging);
+         m9_staging_put(ctx, transfer->staging);
          FREE(transfer);
          return NULL;
       }
@@ -1407,7 +1489,7 @@ m9_transfer_unmap(struct pipe_context *pctx, struct pipe_transfer *ptransfer)
             resource->levels_written |= bit;
          }
       }
-      FREE(transfer->staging);
+      m9_staging_put(m9_context(pctx), transfer->staging);
    } else if (transfer->staging && !m9_res(ptransfer->resource)->tiled) {
       struct m9_resource *zs = m9_res(ptransfer->resource);
 
@@ -1423,7 +1505,7 @@ m9_transfer_unmap(struct pipe_context *pctx, struct pipe_transfer *ptransfer)
          if (zs->hz)
             m9_fill_dwords(zs->hz, M9_HZ_CLEAR);
       }
-      FREE(transfer->staging);
+      m9_staging_put(m9_context(pctx), transfer->staging);
    } else if (transfer->staging) {
       if ((ptransfer->usage & PIPE_MAP_WRITE) &&
           m9_surface_rows(m9_context(pctx), m9_res(ptransfer->resource),
@@ -1431,7 +1513,7 @@ m9_transfer_unmap(struct pipe_context *pctx, struct pipe_transfer *ptransfer)
                           ptransfer->stride))
          m9_warn_once(m9_context(pctx), M9_WARN_TRANSFER,
                       "de-tiled render target write failed");
-      FREE(transfer->staging);
+      m9_staging_put(m9_context(pctx), transfer->staging);
    } else if (ptransfer->usage & PIPE_MAP_WRITE) {
       __sync_synchronize();
    }
@@ -12858,6 +12940,7 @@ m9_context_destroy(struct pipe_context *pctx)
    util_dynarray_fini(&ctx->job_vs_runs);
    util_dynarray_fini(&ctx->job_vs_values);
    m9_replay_fini(ctx);
+   m9_staging_fini(ctx);
    FREE(ctx);
 }
 

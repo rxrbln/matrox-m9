@@ -614,9 +614,15 @@ struct m9_native_image {
    struct m9_resource image;
 };
 
+/* CPU staging buffers a context keeps between transfers. */
+#define M9_STAGING_CACHED 4
+
 struct m9_context {
    struct pipe_context base;
    struct m9_screen *screen;
+   /* Free staging buffers, reused so each upload does not fault in and zero
+    * fresh pages; bounded by M9_STAGING_KEEP bytes in all. */
+   void *staging_free[M9_STAGING_CACHED];
    struct m9_batch batch;
    struct m9_batch *aggregate;
    struct util_dynarray aggregate_resources; /* retained pipe_resource refs */
