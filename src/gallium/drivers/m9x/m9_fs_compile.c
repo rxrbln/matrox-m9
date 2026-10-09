@@ -3670,6 +3670,12 @@ finish_slots(struct ctx *c)
    uint32_t *w;
    unsigned n;
 
+   /* A depth write is followed by a stop slot, as fs-fragdepth and
+    * fs-fragdepth-const end.  A program ending on the write itself left
+    * the engine's conditional-kill lanes wrong for the rest of the boot
+    * (MEASURED). */
+   if (c->p->fragdepth)
+      emit(c, STOP_W0, STOP_W1);
    while (m9_fs_slot_count(c->p) < 4)
       emit(c, STOP_W0, STOP_W1);
    n = m9_fs_slot_count(c->p);
