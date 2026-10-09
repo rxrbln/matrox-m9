@@ -7319,21 +7319,21 @@ m9_fs_slot_count(const struct m9_fs_program *program)
    return util_dynarray_num_elements(&program->slots, uint32_t) / 2;
 }
 
-/* A zero-sampler record producer owns ordinary temporary pairs 00..07.
+/* A record producer owns ordinary temporary pairs 00..07 beyond its texels.
  * Actual MxMD 150dc0 derives their four reuse bits from written-register
  * usage.  After 17f040/f4f50 copy that mask, f98b3 installs physical
- * placeholder unit 0 and f98ce clears its pair bits 0/1 before f5050 emits
- * the common state.  A fixed 0x0c frees live 04..07 in a uniform-only
- * arithmetic producer; it is not a record-mode flag.
+ * placeholder unit 0 for zero logical samplers and f98ce clears pair
+ * bits 0/1 before f5050 emits the common state.  A sampled producer
+ * carries its usage mask directly; fixed 0x0c flags can free live 04..07.
  *
  * Derive the writes from the final native stream, including raw templates
  * and hoisted constants.  Record outputs 11/13 and interpolation sources
  * live outside this low temporary domain.  The exact stop slot is padding,
  * not a write to the destination-zero bits it carries.  Keep higher pairs
- * and sampled producers on their separately qualified existing encoding.
+ * on their separately qualified existing encoding and conservative allocation.
  */
 static unsigned
-fs_zero_sampler_record_low_mask(const struct m9_fs_program *program)
+fs_record_low_mask(const struct m9_fs_program *program)
 {
    unsigned written = 0;
    const uint32_t *words = program->slots.data;
@@ -7353,9 +7353,9 @@ fs_zero_sampler_record_low_mask(const struct m9_fs_program *program)
    for (unsigned pair = 0; pair < 4; pair++)
       if (!(written & (3u << (2 * pair))))
          unused |= BITFIELD_BIT(pair);
-   /* The logical texture count is zero, but its physical placeholder
-    * still owns 00..03.  Apply this exclusion after native usage. */
-   return unused & ~3u;
+   /* With zero logical samplers, the physical placeholder still owns
+    * 00..03.  Apply only that exclusion after native usage. */
+   return program->texture_count ? unused : unused & ~3u;
 }
 
 uint32_t
@@ -7399,19 +7399,17 @@ m9_fs_raster_88(const struct m9_fs_program *program)
       r88 &= ~0x30u;
       low = 0xc;
    }
-   /* Zero-sampler record producers derive low pair reuse from the final
-    * native stream and then protect the installed placeholder, matching
-    * the actual vendor compiler/common-state join above.  Preserve the
-    * separately qualified sampled-producer encoding here. */
+   /* Record producers derive low pair reuse from final native usage.
+    * Keep existing bits 15:4 and the allocator's conservative reservations;
+    * their wider replacement is a separate qualification. */
    if (program->writes_record) {
       /* M9X_RECORD_88 replaces the derived low nibbles, so the value can
        * be swept against the hardware. */
       int override = debug_get_num_option("M9X_RECORD_88", -1);
 
       low = override >= 0 ? (unsigned)override & 0xff :
-                            (program->texture_count ?
-                             low | 0x0cu << program->texture_count :
-                             fs_zero_sampler_record_low_mask(program));
+                            ((low | 0x0cu << program->texture_count) & ~0xfu) |
+                            fs_record_low_mask(program);
       if (override >= 0)
          r88 = (r88 & ~0xffu) | low;
       /* The flags must not free a pair a bound unit's texel sits in: with
