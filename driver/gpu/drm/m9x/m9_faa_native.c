@@ -5385,12 +5385,14 @@ int m9x_faa_graph_unlock_get_locked(struct m9x_device *mdev, u32 generation,
 #ifdef M9_FAA_GRAPH_INIT_CONTROL
 static struct m9_faa_depth_frame_storage *
 m9_faa_depth_frame_take_retired(struct m9x_faa_replay *r, u32 generation,
-				u64 lock_point, u64 unlock_point)
+				u64 lock_point, u64 unlock_point, bool forced)
 {
 	struct m9_faa_depth_storage *depth;
 	struct m9_faa_depth_frame_storage *frame;
 
-	if (!r || !r->color_lock_retired || !r->normal_lock_view_seen ||
+	/* A forced Unlock retires a Lock its client never read back. */
+	if (!r || !r->color_lock_retired ||
+	    (!forced && !r->normal_lock_view_seen) ||
 	    !r->unlock_started || !r->unlock_retired ||
 	    r->graph_generation != generation ||
 	    r->color_lock_point != lock_point ||
@@ -5530,7 +5532,8 @@ static int m9_faa_graph_unlock_post_locked(struct m9x_device *mdev,
 		r->command_pools->posts = 0;
 	}
 	*retired_frame = m9_faa_depth_frame_take_retired(r, generation,
-							 lock_point, stage_point);
+							 lock_point, stage_point,
+							 forced);
 	dev_info(&mdev->pdev->dev,
 		 "M9 FAA graph Unlock retired: lock=%#llx unlock=%#llx bytes=%u posts=%u copyback=F021->F022\n",
 		 lock_point, *point, r->graph_draw_end_bytes,
