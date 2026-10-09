@@ -1,10 +1,19 @@
 # M9 zero-sampler record masks: source/runtime join (2026-10-10)
 
+Current hardware qualification: Mesa `3142d3d` replaces only R88 bits3:0 from
+actual native temporary usage for both sampled and zero-sampler record producers.
+The same selected 24 shader tests now all pass, including the former 19 failures;
+all five matrix and three varied floor controls match independent software
+references. Higher masks and register allocation retain their conservative
+encoding. Full advanced Quake3 still has a separate orange-floor defect.
+[Hardware evidence and exact scope](../tests/m9-mask-aggregate-hardware-20261010/README.md).
+
 The fixed `0x0c << logical_texture_count` interpretation in the older fragment
 pass-splitting notes is not a universal record-mode encoding. The actual shipping
 compiler derives register-pair reuse from usage, then the runtime excludes the
 physical placeholder. This supersedes that interpretation for zero-sampler
-record producers. Sampled producer changes still need separate qualification.
+record producers. The historical source-only milestones below precede the
+sampled producer and hardware qualification recorded above.
 
 Evidence is retained in
 [the compiler/runtime proof](../tests/m9-zero-sampler-record-mask-20261010/README.md).
