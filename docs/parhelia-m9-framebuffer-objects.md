@@ -44,22 +44,25 @@ stencil, exact).
 
 FBO set = spec@ext_framebuffer_object, arb_framebuffer_object,
 ext_framebuffer_blit, ext_packed_depth_stencil and every test named *fbo*
-(419 tests): 73 PASS before, 163 after c2a8740, 204 + the MRT/drawbuffers
-set (12 PASS / 0 FAIL) after the later commits. Core list m9x-basic (452)
-with `-fbo` effective: 268 PASS / 17 FAIL on c641ffb, 271 / 14 with the
-later work (window-mode reference 272 / 10).
+(419 tests): 73 PASS / 59 FAIL before, 163 after c2a8740, and on main
+6019d5e (with m9piglit4's stop-slot fix) 225 PASS / 13 FAIL / 176 SKIP.
+Core list m9x-basic (452) with `-fbo` effective: 268 / 17 on c641ffb,
+281 PASS / 4 FAIL on 6019d5e (window-mode reference 272 / 10); the four are
+depth-clear-precision-check, two stipple tests (fixed on later main) and
+pbo.
 
 ## Open (with cause)
 
-* In-draw conditional-kill lane artifact (dlist-bitmap, scissor-bitmap,
-  rastercolor, fbo-scissor-bitmap): late-boot drift, see the kill-state note.
-* Cube maps above 16 texels are opt-in (M9X_CUBE_64, awaiting a pixel
-  receipt): fbo-cubemap, fbo-incomplete-texture-02/03,
-  fbo-generatemipmap-cubemap fail with GL_INVALID_VALUE / incomplete maps.
+* Cube maps above 16 texels are opt-in (M9X_CUBE_64): fbo-cubemap,
+  fbo-incomplete-texture-02/03 and fbo-generatemipmap-cubemap fail at the
+  default limit and PASS with M9X_CUBE_64=1 (MEASURED, a pixel receipt for
+  32-texel render-to-face and cube mipmap generation); the S3TC DXT1 cube
+  variant fails either way.
 * gl_FragDepth is stored one code above GL's for ~1/3 of depths
   (depth-clear-precision-check); a code-rounding lowering gets 856/1256
   exact, not all, so it is not merged.
-* fbo-alphatest-nocolor(+ff): in a depth-only FBO the alpha-tested draw
+* fbo-alphatest-nocolor(+ff) PASS on 6019d5e; before it (drifted kill
+  lanes): in a depth-only FBO the alpha-tested draw
   whose fragments are all discarded still writes depth (passes on llvmpipe
   with -fbo). Not the colour mask: leaving colour writes on into the
   scratch surface changed nothing (MEASURED). The job runs ef 0000f000;

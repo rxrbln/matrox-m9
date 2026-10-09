@@ -151,3 +151,10 @@ the lane artifact above, now owned separately (register 89 bit 21 lead).
 kill-all job neither leaves nor absorbs the state. Nothing was measured
 there: the driver drops a draw whose shader discards unconditionally
 (`fs->kill_all`), so no job reached the engine.
+
+**Update, later 2026-10-09.** The in-draw lanes broke because a
+depth-writing fragment program lacked the vendor's trailing stop slot
+(m9piglit4, Mesa m9x 6019d5e). On that base and a fresh boot the carry is
+gone with the drain off (next-process clear exact, glBitmap 64/64 without
+stray pixels, rastercolor and the occlusion probe exact), so the drain is
+off by default (Mesa m9x 767b87b) and kept behind `M9X_KILL_DRAIN=16`.
