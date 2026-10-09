@@ -630,9 +630,14 @@ m9_faa_application_build(const struct m9_faa_application_draw *d,
       why = "FAA application viewport/depth range has no qualified position tail";
       goto fail;
    }
+   /* GL stores window z as z * (2^24 - 1); the FAA depth unit takes
+    * z * 2^24, so window z 1 would exceed the cleared 0xffffff and fail
+    * LEQUAL (MEASURED, probe sky/skynear). Scale the range to GL's. */
+   z_near *= 1.0f - 1.0f / 16777216.0f;
+   z_far *= 1.0f - 1.0f / 16777216.0f;
    /* Diagnostic M9X_FAA_DIAG_FAR=1 moves a glDepthRange(1,1) DRAW (Quake3's
     * sky) just below the far plane, to tell z == 1 apart from its texels. */
-   if (z_near == 1.0f && z_far == 1.0f && debug_get_num_option("M9X_FAA_DIAG_FAR", 0) == 1)
+   if (z_near == z_far && z_far > 0.999f && debug_get_num_option("M9X_FAA_DIAG_FAR", 0) == 1)
       z_near = z_far = 1.0f - 1.0f / 65536.0f;
    /* The FAA raster samples at integer pixel positions (MEASURED, edge
     * coverage and texels); GL samples at half-integer ones. */
