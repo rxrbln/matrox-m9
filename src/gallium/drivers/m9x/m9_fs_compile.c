@@ -7030,6 +7030,62 @@ m9_fs_compile_passes(struct nir_shader *nir, const struct m9_fs_blend *blend,
    return ok;
 }
 
+/* A later cut can subsume an earlier producer.  The successful search still
+ * owns that producer's program, but no surviving output reads its record.
+ * Keep the backward route closure of observable passes, then move the native
+ * programs without recompiling them.  Record producers compute only their
+ * root (compile_impl), so their unused outputs have no shader side effects.
+ * Retain any side-effect flags defensively if that contract ever expands. */
+static void
+fs_compact_passes(struct m9_fs_passes *passes)
+{
+   uint8_t map[M9_FS_MAX_PASSES];
+   uint32_t live = 0;
+   unsigned count = 0;
+
+   memset(map, M9_FS_ROUTE_NONE, sizeof(map));
+   for (unsigned i = passes->count; i-- > 0;) {
+      const struct m9_fs_program *p = &passes->pass[i];
+
+      if (!p->writes_record || p->discard || p->fragdepth || p->target_mask ||
+          p->blend_dest || p->logic_op)
+         live |= BITFIELD_BIT(i);
+      if (!(live & BITFIELD_BIT(i)))
+         continue;
+      for (unsigned k = 0; k < p->texture_count; k++) {
+         uint8_t src = p->texture_source[k];
+
+         if (src != M9_FS_ROUTE_NONE)
+            live |= BITFIELD_BIT(src);
+         src = p->texcoord_source[k];
+         if (src != M9_FS_ROUTE_NONE)
+            live |= BITFIELD_BIT(src);
+      }
+   }
+   for (unsigned i = 0; i < passes->count; i++) {
+      struct m9_fs_program *p = &passes->pass[i];
+
+      if (!(live & BITFIELD_BIT(i))) {
+         m9_fs_program_fini(p);
+         memset(p, 0, sizeof(*p));
+         continue;
+      }
+      map[i] = count;
+      for (unsigned k = 0; k < p->texture_count; k++) {
+         if (p->texture_source[k] != M9_FS_ROUTE_NONE)
+            p->texture_source[k] = map[p->texture_source[k]];
+         if (p->texcoord_source[k] != M9_FS_ROUTE_NONE)
+            p->texcoord_source[k] = map[p->texcoord_source[k]];
+      }
+      if (count != i) {
+         passes->pass[count] = *p;
+         memset(p, 0, sizeof(*p));
+      }
+      count++;
+   }
+   passes->count = count;
+}
+
 /* The pass loop of m9_fs_compile_passes once a single pass has failed. */
 static bool
 fs_split_passes(struct nir_shader *nir, const struct m9_fs_blend *blend,
@@ -7194,7 +7250,9 @@ done:
    free(sp.fetch);
    free(sp.varying);
    free(sp.pool);
-   if (!ok)
+   if (ok)
+      fs_compact_passes(passes);
+   else
       m9_fs_passes_fini(passes);
    return ok;
 }
