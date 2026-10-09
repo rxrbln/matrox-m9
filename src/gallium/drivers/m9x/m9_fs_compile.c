@@ -7319,6 +7319,45 @@ m9_fs_slot_count(const struct m9_fs_program *program)
    return util_dynarray_num_elements(&program->slots, uint32_t) / 2;
 }
 
+/* A zero-sampler record producer owns ordinary temporary pairs 00..07.
+ * Actual MxMD 150dc0 derives their four reuse bits from written-register
+ * usage.  After 17f040/f4f50 copy that mask, f98b3 installs physical
+ * placeholder unit 0 and f98ce clears its pair bits 0/1 before f5050 emits
+ * the common state.  A fixed 0x0c frees live 04..07 in a uniform-only
+ * arithmetic producer; it is not a record-mode flag.
+ *
+ * Derive the writes from the final native stream, including raw templates
+ * and hoisted constants.  Record outputs 11/13 and interpolation sources
+ * live outside this low temporary domain.  The exact stop slot is padding,
+ * not a write to the destination-zero bits it carries.  Keep higher pairs
+ * and sampled producers on their separately qualified existing encoding.
+ */
+static unsigned
+fs_zero_sampler_record_low_mask(const struct m9_fs_program *program)
+{
+   unsigned written = 0;
+   const uint32_t *words = program->slots.data;
+
+   for (unsigned i = 0; i < m9_fs_slot_count(program); i++) {
+      uint32_t w0 = words[2 * i], w1 = words[2 * i + 1] & ~MARKER;
+      unsigned dest = w0 >> 8 & 0x7f;
+
+      if (w0 == STOP_W0 && w1 == STOP_W1)
+         continue;
+      /* Every admitted temporary-writing native form has opcode 1c.
+       * 1d/1e name colour outputs, 1f is a wait, and 00 is derivative idle. */
+      if ((w0 & 0x1f) == 0x1c && dest < 8)
+         written |= BITFIELD_BIT(dest);
+   }
+   unsigned unused = 0;
+   for (unsigned pair = 0; pair < 4; pair++)
+      if (!(written & (3u << (2 * pair))))
+         unused |= BITFIELD_BIT(pair);
+   /* The logical texture count is zero, but its physical placeholder
+    * still owns 00..03.  Apply this exclusion after native usage. */
+   return unused & ~3u;
+}
+
 uint32_t
 m9_fs_raster_88(const struct m9_fs_program *program)
 {
@@ -7360,21 +7399,19 @@ m9_fs_raster_88(const struct m9_fs_program *program)
       r88 &= ~0x30u;
       low = 0xc;
    }
-   /* A pass that writes the record instead of the colour sets two more
-    * flags, one place higher for every unit it binds.  Both captured
-    * producers follow it: 0110fffc where the producer samples nothing
-    * (the seven two-pass cases, 0xfff0 | 0x0c) and 0110dffb where it
-    * samples one (the five-sampler schedule, 0xffe3 | 0x18).  Two points
-    * fix the rule; beyond one unit it is UNTESTED.  From two units up the
-    * flags land inside the register-pair field above, which record_reserved
-    * keeps empty rather than dropping a flag the captures carry. */
+   /* Zero-sampler record producers derive low pair reuse from the final
+    * native stream and then protect the installed placeholder, matching
+    * the actual vendor compiler/common-state join above.  Preserve the
+    * separately qualified sampled-producer encoding here. */
    if (program->writes_record) {
       /* M9X_RECORD_88 replaces the derived low nibbles, so the value can
        * be swept against the hardware. */
       int override = debug_get_num_option("M9X_RECORD_88", -1);
 
       low = override >= 0 ? (unsigned)override & 0xff :
-                            low | 0x0cu << program->texture_count;
+                            (program->texture_count ?
+                             low | 0x0cu << program->texture_count :
+                             fs_zero_sampler_record_low_mask(program));
       if (override >= 0)
          r88 = (r88 & ~0xffu) | low;
       /* The flags must not free a pair a bound unit's texel sits in: with
