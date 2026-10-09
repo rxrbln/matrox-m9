@@ -602,7 +602,8 @@ struct m9_native_vs_reason {
 /* M9X_NO_CLEAR drops the clear quad; M9X_CLEAR_REPEAT draws it that many
  * extra times, which weighs one screen of fill with the frame still correct. */
 static bool m9_no_clear;
-/* M9X_KILL_DRAIN: 0 off, else the side of the drain's scratch target (16). */
+/* M9X_KILL_DRAIN: 0 off (default), else the side of the drain's scratch
+ * target; 16 is the measured size. */
 static unsigned m9_kill_drain;
 /* M9X_MRT_MASK_ALL leaves a bound target the shader does not write open, so
  * a destination sweep sees where an output lands rather than where the mask
@@ -4134,8 +4135,11 @@ m9_job_kills(const struct m9_context *ctx)
  * next job consumes, whichever context submits it: that job loses pixels.
  * Another job absorbs it (MEASURED: after piglit dlist-bitmap the next
  * process's first clear lost 8 to 12730 of 25600 pixels, and none behind
- * one masked quad), so a drain job follows every kill job before anything
- * else (m9_submit_job).
+ * one masked quad), so a drain job can follow every kill job before
+ * anything else (m9_submit_job).  The carry went with the kill lanes a
+ * depth-writing program without its trailing stop slot broke for the rest of
+ * the boot (6019d5e); with that fixed the next job is exact without a drain
+ * (MEASURED), so the drain is off by default and kept for measurement.
  */
 static struct pipe_resource *m9_scratch_target(struct m9_context *ctx,
                                                uint32_t w, uint32_t h,
@@ -12843,7 +12847,7 @@ m9_context_create(struct pipe_screen *pscreen, void *priv, unsigned flags)
    m9_near_ordered = debug_get_bool_option("M9X_NEAR_ORDERED", false);
 
    m9_no_clear = debug_get_bool_option("M9X_NO_CLEAR", false);
-   m9_kill_drain = MIN2(debug_get_num_option("M9X_KILL_DRAIN", 16), 2048);
+   m9_kill_drain = MIN2(debug_get_num_option("M9X_KILL_DRAIN", 0), 2048);
    m9_mrt_mask_all = debug_get_bool_option("M9X_MRT_MASK_ALL", false);
    m9_clear_repeat = debug_get_num_option("M9X_CLEAR_REPEAT", 0);
    ctx->dump_path = debug_get_option("M9X_DUMP", NULL);
