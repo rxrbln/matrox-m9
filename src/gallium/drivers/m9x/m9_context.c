@@ -5496,13 +5496,15 @@ m9_fs_variant_upload(struct m9_context *ctx, struct m9_fs_variant *v,
    return true;
 }
 
-/* CPU view order, pass by pass: non-colour varyings, then the pass's own
- * distinct coordinate streams.  Passes share no stream: each interpolates
- * what it reads, and a value handed on between them travels through the
- * record instead. */
+/* CPU views of raw varyings are shared by location across raster passes:
+ * each reads the same vertex output from the shared gather arena.  A
+ * coordinate stream remains private because its per-job transform modifies
+ * that copy.  Values handed on between passes travel through the record. */
 static bool
 m9_fs_streams(struct m9_fs_variant *v)
 {
+   uint32_t raw_views = 0;
+
    for (unsigned i = 0; i < v->passes.count; i++) {
       const struct m9_fs_program *p = &v->passes.pass[i];
       struct m9_fs_pass_streams *st = &v->stream[i];
@@ -5514,13 +5516,22 @@ m9_fs_streams(struct m9_fs_variant *v)
       uint8_t c_owner[M9_FS_MAX_TEXTURES] = { 0 };
 
       for (unsigned k = 0; k < p->varying_count; k++) {
+         unsigned j;
+
          st->varying_extra[k] = -1;
          if (p->varyings[k].location == VARYING_SLOT_COL0)
             continue;
-         if (v->extra_count >= M9_FS_MAX_EXTRA)
-            return false;
-         st->varying_extra[k] = v->extra_count;
-         v->extra_location[v->extra_count++] = p->varyings[k].location;
+         for (j = 0; j < v->extra_count; j++)
+            if ((raw_views & BITFIELD_BIT(j)) &&
+                v->extra_location[j] == p->varyings[k].location)
+               break;
+         if (j == v->extra_count) {
+            if (v->extra_count >= M9_FS_MAX_EXTRA)
+               return false;
+            raw_views |= BITFIELD_BIT(j);
+            v->extra_location[v->extra_count++] = p->varyings[k].location;
+         }
+         st->varying_extra[k] = j;
       }
       for (unsigned t = 0; t < p->texture_count; t++) {
          unsigned first, c = 0;
