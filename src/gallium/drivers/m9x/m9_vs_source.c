@@ -685,11 +685,27 @@ m9_vs_source_put(const struct m9_vs_source_plan *p, float *record,
          memcpy(dst, src, sizeof(float));
          return;
       }
-      /* Channels past the copied ones are the GL defaults (0, 0, 0, 1). */
-      dst[0] = dst[1] = dst[2] = 0.0f;
-      dst[3] = 1.0f;
-      memcpy(dst, src, p->copy * sizeof(float));
-      return;
+      /* Channels past the copied ones are the GL defaults (0, 0, 0, 1).
+       * Constant-size copies inline; a sized libc call per element did not. */
+      switch (p->copy) {
+      case 4:
+         memcpy(dst, src, 4 * sizeof(float));
+         return;
+      case 3:
+         memcpy(dst, src, 3 * sizeof(float));
+         dst[3] = 1.0f;
+         return;
+      case 2:
+         memcpy(dst, src, 2 * sizeof(float));
+         dst[2] = 0.0f;
+         dst[3] = 1.0f;
+         return;
+      default:
+         memcpy(dst, src, sizeof(float));
+         dst[1] = dst[2] = 0.0f;
+         dst[3] = 1.0f;
+         return;
+      }
    }
    case M9_VS_SOURCE_UNPACK:
       p->unpack->unpack_rgba(rgba, p->base + vertex * p->stride, 1);
