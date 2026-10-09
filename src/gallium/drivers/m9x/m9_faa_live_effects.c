@@ -229,8 +229,25 @@ bool m9_faa_texture_fragment_gallium_state(const struct pipe_blend_state *blend,
 /* Match the state tracker's bounded discard predicate. Source instructions
  * implement the surviving comparison, while NIR discard_if states its inverse.
  * References are resolved only from actual owned FS CB0 or literal words. */
+static bool alpha_decode(const nir_shader *fs,const void *cb,size_t bytes,
+                         enum m9_faa_alpha_mode *mode,bool *present,bool textured);
+
 bool m9_faa_live_gl_alpha_decode(const nir_shader *fs,const void *cb,size_t bytes,
                                   enum m9_faa_alpha_mode *mode,bool *present)
+{
+   return alpha_decode(fs,cb,bytes,mode,present,false);
+}
+
+/* A textured FS compares the alpha it writes, whatever computed it: the
+ * family program tests that same MODULATE alpha. */
+bool m9_faa_live_gl_texture_alpha_decode(const nir_shader *fs,const void *cb,size_t bytes,
+                                          enum m9_faa_alpha_mode *mode,bool *present)
+{
+   return alpha_decode(fs,cb,bytes,mode,present,true);
+}
+
+static bool alpha_decode(const nir_shader *fs,const void *cb,size_t bytes,
+                         enum m9_faa_alpha_mode *mode,bool *present,bool textured)
 {
    if(!fs||!mode||!present||fs->info.stage!=MESA_SHADER_FRAGMENT||
       !fs->info.io_lowered||(bytes&&!cb))return false;
@@ -267,14 +284,15 @@ bool m9_faa_live_gl_alpha_decode(const nir_shader *fs,const void *cb,size_t byte
    for(unsigned swap=0;swap<2;swap++) {
       nir_scalar a=nir_scalar_chase_movs(nir_scalar_chase_alu_src(cmp,swap));
       nir_scalar ref=nir_scalar_chase_movs(nir_scalar_chase_alu_src(cmp,!swap));
-      if(!nir_scalar_equal(a,written_alpha)||!nir_scalar_is_intrinsic(a))continue;
-      nir_intrinsic_instr *load=nir_def_as_intrinsic(a.def);
-      if((load->intrinsic!=nir_intrinsic_load_input&&load->intrinsic!=nir_intrinsic_load_interpolated_input)||
+      if(!nir_scalar_equal(a,written_alpha)||a.def->bit_size!=32)continue;
+      nir_intrinsic_instr *load=nir_scalar_is_intrinsic(a)?nir_def_as_intrinsic(a.def):NULL;
+      if(!textured&&(!load||
+         (load->intrinsic!=nir_intrinsic_load_input&&load->intrinsic!=nir_intrinsic_load_interpolated_input)||
          nir_intrinsic_io_semantics(load).location!=VARYING_SLOT_COL0||
          nir_intrinsic_component(load)+a.comp!=3||a.def->bit_size!=32||
          nir_intrinsic_dest_type(load)!=nir_type_float32||
          !nir_src_is_const(load->src[load->intrinsic==nir_intrinsic_load_input?0:1])||
-         nir_src_as_uint(load->src[load->intrinsic==nir_intrinsic_load_input?0:1]))continue;
+         nir_src_as_uint(load->src[load->intrinsic==nir_intrinsic_load_input?0:1])))continue;
       float value;
       if(nir_scalar_is_const(ref))value=nir_scalar_as_float(ref);
       else {

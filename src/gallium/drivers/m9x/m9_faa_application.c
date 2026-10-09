@@ -691,7 +691,7 @@ m9_faa_application_build(const struct m9_faa_application_draw *d,
       /* Blend and the alpha test the state tracker lowered into the FS. */
       struct m9_faa_texture_fragment_state family=d->state.texture_fragment;
       enum m9_faa_alpha_mode alpha;bool alpha_present;
-      if(!m9_faa_live_gl_alpha_decode(texture_fs,d->fs_cb0,d->fs_cb0_bytes,&alpha,&alpha_present)) {
+      if(!m9_faa_live_gl_texture_alpha_decode(texture_fs,d->fs_cb0,d->fs_cb0_bytes,&alpha,&alpha_present)) {
          why="FAA textured alpha test has no source-qualified interface";goto fail;
       }
       if(d->state.fragment.alpha!=M9_FAA_ALPHA_OFF&&

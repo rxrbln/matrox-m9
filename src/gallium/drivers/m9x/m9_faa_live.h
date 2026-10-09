@@ -179,6 +179,8 @@ bool m9_faa_live_gl_texture_family_build(const struct m9_faa_live_gl *s,
 bool m9_faa_texture_fragment_gallium_state(const struct pipe_blend_state *blend,
                                            const struct pipe_depth_stencil_alpha_state *dsa,
                                            struct m9_faa_texture_fragment_state *out);
+bool m9_faa_live_gl_texture_alpha_decode(const struct nir_shader *fs,const void *cb,size_t bytes,
+                                          enum m9_faa_alpha_mode *mode,bool *present);
 bool m9_faa_live_gl_alpha_decode(const struct nir_shader *fs,const void *cb,size_t bytes,
                                   enum m9_faa_alpha_mode *mode,bool *present);
 bool m9_faa_live_gl_color_fused_effects_build_cb(const struct m9_faa_live_gl *state,
