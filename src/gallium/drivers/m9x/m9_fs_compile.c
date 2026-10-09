@@ -7121,9 +7121,12 @@ m9_fs_raster_88(const struct m9_fs_program *program)
     * texel pair the bound units occupy is marked live; the ~0x70 below is
     * the same rule for the pairs a shorter pass reaches.
     * M9X_TEXEL_HIGH=0 restores the encoding that renders wrong. */
+   uint32_t texel_live = 0;
+
    if (debug_get_bool_option("M9X_TEXEL_HIGH", true))
       for (unsigned r = 8; r < 4 * program->texture_count; r += 2)
-         r88 &= ~BITFIELD_BIT(4 + (r - 8) / 2);
+         texel_live |= BITFIELD_BIT(4 + (r - 8) / 2);
+   r88 &= ~texel_live;
    if (program->texture_count > 1) {
       r88 &= ~0x70u;
       low = 0xf;
@@ -7151,6 +7154,12 @@ m9_fs_raster_88(const struct m9_fs_program *program)
                             low | 0x0cu << program->texture_count;
       if (override >= 0)
          r88 = (r88 & ~0xffu) | low;
+      /* The flags must not free a pair a bound unit's texel sits in: with
+       * three units they named 0a/0b, unit 2's zw, which the engine then
+       * reused -- record dwords 2/3 and alpha wrong on 13000 of 35190
+       * pixels, exact with the bit clear (MEASURED, terrain record probes). */
+      else
+         low &= ~texel_live;
    }
    /* M9X_R88_AND / M9X_R88_OR sweep index 88 against the hardware, which is
     * how a field no capture pins is measured rather than guessed. */
