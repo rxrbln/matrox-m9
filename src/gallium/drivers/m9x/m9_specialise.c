@@ -346,6 +346,29 @@ m9_nir_inline_uniforms(nir_shader *nir, const uint32_t *values)
    m9_nir_fold_specialization(nir);
 }
 
+/* An inlined index leaves selects whose condition is a constant that
+ * differs per component, which constant folding keeps; the program has no
+ * boolean constants, so pick each component's source here. */
+static bool
+fold_const_bcsel(nir_builder *b, nir_alu_instr *alu, void *data)
+{
+   nir_scalar comps[NIR_MAX_VEC_COMPONENTS];
+
+   (void)data;
+   if (alu->op != nir_op_bcsel || !nir_src_is_const(alu->src[0].src))
+      return false;
+   b->cursor = nir_before_instr(&alu->instr);
+   for (unsigned c = 0; c < alu->def.num_components; c++) {
+      unsigned s = nir_src_comp_as_bool(alu->src[0].src,
+                                        alu->src[0].swizzle[c]) ? 1 : 2;
+
+      comps[c] = nir_get_scalar(alu->src[s].src.ssa, alu->src[s].swizzle[c]);
+   }
+   nir_def_replace(&alu->def,
+                   nir_vec_scalars(b, comps, alu->def.num_components));
+   return true;
+}
+
 void
 m9_nir_fold_specialization(nir_shader *nir)
 {
@@ -353,6 +376,8 @@ m9_nir_fold_specialization(nir_shader *nir)
    do {
       progress = false;
       NIR_PASS(progress, nir, nir_opt_constant_folding);
+      NIR_PASS(progress, nir, nir_shader_alu_pass, fold_const_bcsel,
+               nir_metadata_control_flow, NULL);
       /* With the bound inlined the trip count is a constant, so the loop
        * unrolls; one longer than max_unroll_iterations stays a loop and is
        * refused as control flow rather than mis-compiled. */
